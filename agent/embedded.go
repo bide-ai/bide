@@ -15,7 +15,7 @@ var toolType = reflect.TypeFor[Tool]()
 // agent cannot know whether a decorator meant to drop them, so it fails closed: when any tool
 // embedded in t (an anonymous field, at any depth) has an Approval or a Timeout that t's own spec
 // s lacks, the tool is ErrConfig. A decorator keeps them by implementing Spec, or by
-// implementing Unwrap() Tool, which SpecOf follows.
+// implementing Unwrap() Tool, whose spec New reads through Unwrap.
 func checkEmbedded(t Tool, s ToolSpec) error {
 	var approval, timeout bool
 	seen := map[uintptr]bool{}
@@ -53,7 +53,7 @@ func checkEmbedded(t Tool, s ToolSpec) error {
 				f = reflect.NewAt(f.Type(), unsafe.Pointer(f.UnsafeAddr())).Elem()
 			}
 			if inner, ok := embeddedTool(f); ok {
-				is := SpecOf(inner)
+				is := specOf(inner)
 				approval = approval || is.Approval != nil
 				timeout = timeout || is.Timeout > 0
 			}

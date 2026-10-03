@@ -11,14 +11,14 @@ import (
 // inner (call c1) and then answers "sub done".
 func clerkTree(store *Journal, inner Tool) *Agent {
 	sub := mustNew(
-		NewScriptedModel(ToolTurn("c1", inner.Name(), `{}`), TextTurn("sub done")),
+		NewScriptedModel(ToolTurn("c1", inner.Spec().Name, `{}`), TextTurn("sub done")),
 		store,
 		WithTools(inner),
 	)
 	return mustNew(
 		NewScriptedModel(ToolTurn("s1", "clerk", `{"task":"do it"}`), TextTurn("parent done")),
 		store,
-		WithTools(SubAgent("clerk", "does it", sub)),
+		WithTools(MustSubAgent("clerk", "does it", sub)),
 	)
 }
 
@@ -27,7 +27,7 @@ func clerkTree(store *Journal, inner Tool) *Agent {
 func TestSubAgentHalt_ResolvedAndContinuedFromTheRoot(t *testing.T) {
 	store := memJournal()
 	ctx, cancel := context.WithCancel(context.Background())
-	charge := Func("charge", "charge", Safety{}, func(ctx context.Context, _ struct{}) (string, error) {
+	charge := MustFunc("charge", "charge", func(ctx context.Context, _ struct{}) (string, error) {
 		cancel() // the charge went out; the run is cut off before it reports back
 		return "", ctx.Err()
 	})
@@ -57,9 +57,9 @@ func TestSubAgentHalt_ResolvedAndContinuedFromTheRoot(t *testing.T) {
 // An Interrupt inside a sub-agent: answer it against the sub-run, continue from the root.
 func TestSubAgentInterrupt_AnsweredAndContinuedFromTheRoot(t *testing.T) {
 	store := memJournal()
-	ask := Func("ask", "ask", Safety{ReadOnly: true}, func(ctx context.Context, _ struct{}) (string, error) {
+	ask := MustFunc("ask", "ask", func(ctx context.Context, _ struct{}) (string, error) {
 		return Interrupt[string](ctx, "confirm", "ok?")
-	})
+	}, WithSafety(Safety{ReadOnly: true}))
 	root := clerkTree(store, ask)
 	_, err := root.Run(context.Background(), "p", UserText("go"))
 	var intr *InterruptPending
@@ -79,12 +79,12 @@ func TestSubAgentInterrupt_AnsweredAndContinuedFromTheRoot(t *testing.T) {
 func TestSubAgentSleep_WakesTheRoot(t *testing.T) {
 	store := memJournal()
 	var fired bool
-	nap := Func("nap", "wait a moment", Safety{ReadOnly: true}, func(ctx context.Context, _ struct{}) (string, error) {
+	nap := MustFunc("nap", "wait a moment", func(ctx context.Context, _ struct{}) (string, error) {
 		if err := Sleep(ctx, "nap", 10*time.Millisecond); err != nil {
 			return "", err
 		}
 		return "rested", nil
-	})
+	}, WithSafety(Safety{ReadOnly: true}))
 	root := clerkTree(store, nap)
 	var woken []string
 	w := NewMemWaker(func(ctx context.Context, runID string) error {

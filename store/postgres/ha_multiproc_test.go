@@ -168,10 +168,9 @@ func (w *haDriver) drive(ctx context.Context, runID string) error {
 	}); err != nil {
 		return err
 	}
-	charge := agent.Func("charge", "charge the card", agent.Safety{},
-		func(_ context.Context, in struct{ Key string }) (string, error) {
-			return w.effect(runID, in.Key), nil
-		})
+	charge := agent.MustFunc("charge", "charge the card", func(_ context.Context, in struct{ Key string }) (string, error) {
+		return w.effect(runID, in.Key), nil
+	})
 	model := agent.NewScriptedModel(
 		agent.ToolTurn("c1", "charge", `{"Key":"c1"}`),
 		agent.ToolTurn("c2", "charge", `{"Key":"c2"}`),

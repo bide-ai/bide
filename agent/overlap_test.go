@@ -87,7 +87,7 @@ func TestOverlappingDrivers_SideEffectFiresOnce(t *testing.T) {
 	store.meet = newRendezvous(2)
 
 	var fired atomic.Int32
-	charge := Func("charge", "charge the card", Safety{}, func(context.Context, struct{}) (string, error) {
+	charge := MustFunc("charge", "charge the card", func(context.Context, struct{}) (string, error) {
 		fired.Add(1)
 		deadline := time.Now().Add(300 * time.Millisecond)
 		for fired.Load() < 2 && time.Now().Before(deadline) {

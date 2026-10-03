@@ -72,10 +72,9 @@ func TestSystemPrompt_PersistsAcrossToolTurns(t *testing.T) {
 	}}
 	capture := &multiCaptureModel{inner: inner, requests: &requests}
 
-	noopTool := Func("noop",
+	noopTool := MustFunc("noop",
 		"does nothing",
-		Safety{ReadOnly: true},
-		func(_ context.Context, _ struct{}) (struct{}, error) { return struct{}{}, nil })
+		func(_ context.Context, _ struct{}) (struct{}, error) { return struct{}{}, nil }, WithSafety(Safety{ReadOnly: true}))
 
 	a := mustNew(capture, memJournal(), WithTools(noopTool), WithSystemPrompt("be brief"))
 

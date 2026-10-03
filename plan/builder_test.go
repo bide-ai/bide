@@ -16,7 +16,13 @@ type stubTool struct {
 	last   json.RawMessage
 }
 
-func (t *stubTool) Name() string                { return "stub" }
+func (t *stubTool) Name() string { return "stub" }
+
+// Spec describes the tool to the agent (see agent.Tool).
+func (t *stubTool) Spec() agent.ToolSpec {
+	return agent.ToolSpec{Name: t.Name(), Description: t.Description(), Input: t.ArgsSchema(), Safety: t.Safety()}
+}
+
 func (t *stubTool) Description() string         { return "echo tool for tests" }
 func (t *stubTool) ArgsSchema() json.RawMessage { return json.RawMessage(`{"type":"object"}`) }
 func (t *stubTool) Safety() agent.Safety        { return t.safety }

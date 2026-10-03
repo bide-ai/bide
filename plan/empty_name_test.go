@@ -32,7 +32,7 @@ func TestBuild_RefusesAnEmptyStepName(t *testing.T) {
 
 	reg := NewRegistry()
 	for _, n := range []string{"a", "b"} {
-		if err := RegisterStep(reg, n, id); err != nil {
+		if err := reg.RegisterStep(n, id); err != nil {
 			t.Fatal(err)
 		}
 	}
@@ -43,11 +43,11 @@ func TestBuild_RefusesAnEmptyStepName(t *testing.T) {
 
 	reg = NewRegistry()
 	for _, n := range []string{"a", "b", "c"} {
-		if err := RegisterStep(reg, n, id); err != nil {
+		if err := reg.RegisterStep(n, id); err != nil {
 			t.Fatal(err)
 		}
 	}
-	if err := RegisterJoin2(reg, "sum", func(_ context.Context, a, c int) (int, error) { return a + c, nil }); err != nil {
+	if err := reg.RegisterJoin2("sum", func(_ context.Context, a, c int) (int, error) { return a + c, nil }); err != nil {
 		t.Fatal(err)
 	}
 	cfg = `{"version":1,"flow":"f","nodes":[{"name":"a","block":"a"},{"name":"b","block":"b"},{"name":"c","block":"c"}],` +

@@ -32,13 +32,12 @@ func (sleepModel) Stream(_ context.Context, req Request) (*Stream, error) {
 
 // waitTool sleeps one hour (durably) then reports it waited. ReadOnly, so it is retry-safe.
 func waitTool() Tool {
-	return Func("wait", "wait an hour", Safety{ReadOnly: true},
-		func(ctx context.Context, _ struct{}) (string, error) {
-			if err := Sleep(ctx, "w1", time.Hour); err != nil {
-				return "", err
-			}
-			return "waited", nil
-		})
+	return MustFunc("wait", "wait an hour", func(ctx context.Context, _ struct{}) (string, error) {
+		if err := Sleep(ctx, "w1", time.Hour); err != nil {
+			return "", err
+		}
+		return "waited", nil
+	}, WithSafety(Safety{ReadOnly: true}))
 }
 
 // TestSleep_PausesAndResumes confirms a durable timer pauses the run, keeps the same wake time

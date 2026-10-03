@@ -323,7 +323,7 @@ func TestLiveToolResult_LosingInsertUsesTheStoredResult(t *testing.T) {
 	}
 	j, _ := NewJournal(&racedStore{Store: m, name: ToolResultStep("c1"), them: theirs})
 	model := &capturingModel{Model: NewScriptedModel(ToolTurn("c1", "lookup", `{}`), TextTurn("done"))}
-	tool := Func("lookup", "", Safety{ReadOnly: true}, func(context.Context, struct{}) (string, error) { return "mine", nil })
+	tool := MustFunc("lookup", "", func(context.Context, struct{}) (string, error) { return "mine", nil }, WithSafety(Safety{ReadOnly: true}))
 	if _, err := mustNew(model, j, WithTools(tool)).Run(ctx, "r", UserText("hi")); err != nil {
 		t.Fatal(err)
 	}

@@ -56,8 +56,7 @@ func main() {
 	// encounter Interrupt returns the zero value and an *InterruptPending error that
 	// propagates out of Run; after AnswerInterrupt records a decision and Run is re-invoked, it returns that
 	// decision and the tool proceeds.
-	reviewTool := agent.Func("publish_review", "Publish a review after a human approves it",
-		agent.Safety{ReadOnly: true},
+	reviewTool := agent.MustFunc("publish_review", "Publish a review after a human approves it",
 		func(ctx context.Context, _ struct{}) (string, error) {
 			d, err := agent.Interrupt[decision](ctx, gate, "Approve publishing this review?")
 			if err != nil {
@@ -67,7 +66,7 @@ func main() {
 				return "human declined; not published", nil
 			}
 			return "published (" + d.Note + ")", nil
-		})
+		}, agent.WithSafety(agent.Safety{ReadOnly: true}))
 
 	a, err := agent.New(&scriptModel{}, store, agent.WithTools(reviewTool))
 	if err != nil {

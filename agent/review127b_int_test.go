@@ -17,30 +17,28 @@ import (
 func TestAdv127b_RerunUnknownSkipsItsSubRuns(t *testing.T) {
 	store := memJournal()
 	var undone, calls atomic.Int32
-	book := CompensatedFunc("book", "", Safety{},
-		func(context.Context, struct{}) (string, error) { return "booked", nil },
+	book := MustCompensatedFunc("book", "", func(context.Context, struct{}) (string, error) { return "booked", nil },
 		func(context.Context, struct{}, string) error { undone.Add(1); return nil })
 	child, err := New(NewScriptedModel(ToolTurn("k1", "book", `{}`), TextTurn("child done")), store, WithTools(book))
 	if err != nil {
 		t.Fatal(err)
 	}
 	started := make(chan struct{})
-	charge := CompensatedFunc("charge", "", Safety{Idempotent: true},
-		func(ctx context.Context, _ struct{}) (string, error) {
-			if calls.Add(1) == 1 {
-				close(started)
-				<-ctx.Done() // cut off by the sibling's failure
-				return "", ctx.Err()
-			}
-			info, _ := RunInfoFrom(ctx)
-			if _, err := child.Run(ctx, info.SubRunFor("child"), UserText("work"), WithSaga()); err != nil {
-				return "", err
-			}
-			return "", fmt.Errorf("charge: gateway timeout after the booking: %w", ErrToolOutcomeUnknown)
-		},
-		func(context.Context, struct{}, string) error { return nil },
+	charge := MustCompensatedFunc("charge", "", func(ctx context.Context, _ struct{}) (string, error) {
+		if calls.Add(1) == 1 {
+			close(started)
+			<-ctx.Done() // cut off by the sibling's failure
+			return "", ctx.Err()
+		}
+		info, _ := RunInfoFrom(ctx)
+		if _, err := child.Run(ctx, info.SubRunFor("child"), UserText("work"), WithSaga()); err != nil {
+			return "", err
+		}
+		return "", fmt.Errorf("charge: gateway timeout after the booking: %w", ErrToolOutcomeUnknown)
+	},
+		func(context.Context, struct{}, string) error { return nil }, WithSafety(Safety{Idempotent: true}),
 		WithSubRuns(func(string) *Agent { return child }))
-	fail := Func("fail", "", Safety{}, func(context.Context, struct{}) (string, error) {
+	fail := MustFunc("fail", "", func(context.Context, struct{}) (string, error) {
 		<-started
 		return "", errors.New("declined")
 	})

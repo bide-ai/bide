@@ -19,7 +19,7 @@ import (
 // whenever next has not yet reached the base handler when the middleware gives up.
 func TestAdv117b_AbandoningMiddlewareDoubleFiresASideEffect(t *testing.T) {
 	var charges atomic.Int32
-	charge := Func("charge", "", Safety{}, func(context.Context, struct{}) (string, error) {
+	charge := MustFunc("charge", "", func(context.Context, struct{}) (string, error) {
 		charges.Add(1)
 		return "charged", nil
 	})
@@ -77,7 +77,7 @@ func TestAdv117b_AbandoningMiddlewareDoubleFiresASideEffect(t *testing.T) {
 func TestAdv117b_MiddlewareCallingTheToolDirectlyDoubleFires(t *testing.T) {
 	var charges atomic.Int32
 	ctx, cancel := context.WithCancel(context.Background())
-	charge := Func("charge", "", Safety{}, func(context.Context, struct{}) (string, error) {
+	charge := MustFunc("charge", "", func(context.Context, struct{}) (string, error) {
 		charges.Add(1)
 		cancel() // the run is cancelled while the request is in flight
 		return "", errors.New("connection reset")
@@ -106,14 +106,14 @@ func TestAdv117b_MiddlewareCallingTheToolDirectlyDoubleFires(t *testing.T) {
 // outerWrap is a plain wrapper with no Compensate of its own.
 type outerWrap struct{ Tool }
 
-func (w outerWrap) Spec() ToolSpec { return SpecOf(w.Tool) }
+func (w outerWrap) Spec() ToolSpec { return w.Tool.Spec() }
 func (w outerWrap) Unwrap() Tool   { return w.Tool }
 
 // ADV117b-3 ((d)). checkWrapper looks only at the outermost tool: a Compensator one level down
 // the Unwrap chain is accepted, and a rollback that recurses into the sub-run never calls it.
 func TestAdv117b_NestedCompensatorWrapperIsAccepted(t *testing.T) {
 	sub := mustNew(NewScriptedModel(TextTurn("x")), memJournal())
-	tool := outerWrap{compWrap{SubAgent("delegate", "", sub)}}
+	tool := outerWrap{compWrap{MustSubAgent("delegate", "", sub)}}
 	var calls atomic.Int32
 	_, err := mustNew(&countingModel{n: &calls}, memJournal(), WithTools(tool)).Run(context.Background(), "r1", UserText("go"))
 	if !errors.Is(err, ErrConfig) {

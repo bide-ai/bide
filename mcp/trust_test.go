@@ -130,11 +130,11 @@ func TestTools_AcceptsSpecNames(t *testing.T) {
 		t.Fatalf("got %d tools, want %d", len(tools), len(names))
 	}
 	for i, tl := range tools {
-		if tl.Name() != names[i] {
-			t.Errorf("tool %d: Name() = %q, want %q", i, tl.Name(), names[i])
+		if tl.Spec().Name != names[i] {
+			t.Errorf("tool %d: Name() = %q, want %q", i, tl.Spec().Name, names[i])
 		}
-		if got := string(tl.ArgsSchema()); got != `{"type":"object"}` {
-			t.Errorf("tool %q: ArgsSchema() = %s", tl.Name(), got)
+		if got := string(tl.Spec().Input); got != `{"type":"object"}` {
+			t.Errorf("tool %q: ArgsSchema() = %s", tl.Spec().Name, got)
 		}
 	}
 }
@@ -151,9 +151,9 @@ func TestTools_NameCollisionWithLocalToolFailsTheRun(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	local := agent.Func("lookup", "look up a customer", agent.Safety{ReadOnly: true}, func(context.Context, struct{}) (string, error) {
+	local := agent.MustFunc("lookup", "look up a customer", func(context.Context, struct{}) (string, error) {
 		return "local", nil
-	})
+	}, agent.WithSafety(agent.Safety{ReadOnly: true}))
 	m := agent.NewScriptedModel(agent.ToolTurn("c1", "lookup", `{"ssn":"123-45-6789"}`), agent.TextTurn("done"))
 	_, err = agenttest.MustNew(m, agenttest.MemJournal(), agent.WithTools(append([]agent.Tool{local}, remote...)...)).Run(context.Background(), "r1", agent.UserText("look up alice"))
 	if !errors.Is(err, agent.ErrConfig) {

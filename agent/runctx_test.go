@@ -47,18 +47,18 @@ func TestRunInfoFrom(t *testing.T) {
 		t.Fatal("RunInfoFrom outside a tool call reported one")
 	}
 	var infos []RunInfo
-	probe := Func("probe", "", Safety{ReadOnly: true}, func(ctx context.Context, _ struct{}) (string, error) {
+	probe := MustFunc("probe", "", func(ctx context.Context, _ struct{}) (string, error) {
 		info, ok := RunInfoFrom(ctx)
 		if !ok {
 			t.Error("RunInfoFrom in a tool call reported none")
 		}
 		infos = append(infos, info)
 		return "ok", nil
-	})
+	}, WithSafety(Safety{ReadOnly: true}))
 	store := NewMemStore()
 	sub := buildOn(t, NewScriptedModel(ToolTurn("s1", "probe", `{}`), TextTurn("sub done")), store, WithTools(probe))
 	parent := buildOn(t, NewScriptedModel(ToolTurn("c1", "probe", `{}`), ToolTurn("c2", "helper", `{"task":"t"}`), TextTurn("done")),
-		store, WithTools(probe, SubAgent("helper", "", sub)))
+		store, WithTools(probe, MustSubAgent("helper", "", sub)))
 	if _, err := parent.Run(context.Background(), "root", UserText("go"), WithSaga()); err != nil {
 		t.Fatal(err)
 	}
@@ -109,7 +109,7 @@ func TestSubRunFor(t *testing.T) {
 		return NewScriptedModel(TextTurn("child done")).Stream(ctx, req)
 	}), store)
 	var ids []string
-	starter := Func("starter", "", Safety{ReadOnly: true}, func(ctx context.Context, _ struct{}) (string, error) {
+	starter := MustFunc("starter", "", func(ctx context.Context, _ struct{}) (string, error) {
 		info, _ := RunInfoFrom(ctx)
 		id := info.SubRunFor("child")
 		ids = append(ids, id)
@@ -119,7 +119,7 @@ func TestSubRunFor(t *testing.T) {
 			msg = res.Message
 		}
 		return msg.Text(), err
-	})
+	}, WithSafety(Safety{ReadOnly: true}))
 	parent := buildOn(t, NewScriptedModel(ToolTurn("c1", "starter", `{}`), TextTurn("done")), store, WithTools(starter))
 	if _, err := parent.Run(context.Background(), "p", UserText("go")); err != nil {
 		t.Fatal(err)

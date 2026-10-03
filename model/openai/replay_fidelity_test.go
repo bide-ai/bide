@@ -16,7 +16,13 @@ import (
 // the bytes a journal encoder is most tempted to rewrite.
 type htmlTool struct{}
 
-func (htmlTool) Name() string                { return "html" }
+func (htmlTool) Name() string { return "html" }
+
+// Spec describes the tool to the agent (see agent.Tool).
+func (t htmlTool) Spec() agent.ToolSpec {
+	return agent.ToolSpec{Name: t.Name(), Description: t.Description(), Input: t.ArgsSchema(), Safety: t.Safety()}
+}
+
 func (htmlTool) Description() string         { return "returns markup" }
 func (htmlTool) ArgsSchema() json.RawMessage { return json.RawMessage(`{"type":"object"}`) }
 func (htmlTool) Safety() agent.Safety        { return agent.Safety{ReadOnly: true} }

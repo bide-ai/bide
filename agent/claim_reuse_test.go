@@ -67,7 +67,7 @@ func TestRememberedClaimRunsUnderAVoidedMarker_Tool(t *testing.T) {
 	ctx := context.Background()
 	m := agent.NewMemStore()
 	fired := 0
-	charge := agent.Func("charge", "", agent.Safety{}, func(context.Context, struct{}) (string, error) { fired++; return "ok", nil })
+	charge := agent.MustFunc("charge", "", func(context.Context, struct{}) (string, error) { fired++; return "ok", nil })
 	model := func() agent.Model {
 		return agent.NewScriptedModel(agent.ToolTurn("c1", "charge", `{}`), agent.TextTurn("done"))
 	}
@@ -173,7 +173,7 @@ func TestReattemptWhoseResultIsLostHalts(t *testing.T) {
 	t.Run("tool", func(t *testing.T) {
 		m := agent.NewMemStore()
 		fired := 0
-		charge := agent.Func("charge", "", agent.Safety{}, func(context.Context, struct{}) (string, error) { fired++; return "ok", nil })
+		charge := agent.MustFunc("charge", "", func(context.Context, struct{}) (string, error) { fired++; return "ok", nil })
 		model := func() agent.Model {
 			return agent.NewScriptedModel(agent.ToolTurn("c1", "charge", `{}`), agent.TextTurn("done"))
 		}

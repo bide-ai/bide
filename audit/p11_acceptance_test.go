@@ -718,13 +718,12 @@ func TestP11_ApprovalsUnderPostQuantumKeys(t *testing.T) {
 	store := agent.NewMemStore()
 	j := agenttest.MustJournal(store)
 	charged := 0
-	charge := agent.Func("charge", "charge the card", agent.Safety{},
-		func(context.Context, struct {
-			Amount int `json:"amount"`
-		}) (string, error) {
-			charged++
-			return "ok", nil
-		}, agent.WithApproval(&policy))
+	charge := agent.MustFunc("charge", "charge the card", func(context.Context, struct {
+		Amount int `json:"amount"`
+	}) (string, error) {
+		charged++
+		return "ok", nil
+	}, agent.WithApproval(&policy))
 	a := agenttest.MustNew(
 		p11ChargeModel{},
 		j,

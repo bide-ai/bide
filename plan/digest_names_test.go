@@ -20,13 +20,13 @@ func namesRegistry(t *testing.T, block string) *Registry {
 	t.Helper()
 	reg := NewRegistry()
 	for _, err := range []error{
-		RegisterStep(reg, "classify", cfgClassify),
-		RegisterStep(reg, block, func(_ context.Context, a cfgAssessment) (cfgReceipt, error) {
+		reg.RegisterStep("classify", cfgClassify),
+		reg.RegisterStep(block, func(_ context.Context, a cfgAssessment) (cfgReceipt, error) {
 			return cfgReceipt{ID: a.ID, Status: block}, nil
 		}),
-		RegisterStep(reg, "decline", cfgDecline),
-		RegisterPredicate(reg, "rush", func(a cfgAssessment) bool { return a.Rush }),
-		RegisterPredicate(reg, "notRush", func(a cfgAssessment) bool { return !a.Rush }),
+		reg.RegisterStep("decline", cfgDecline),
+		reg.RegisterPredicate("rush", func(a cfgAssessment) bool { return a.Rush }),
+		reg.RegisterPredicate("notRush", func(a cfgAssessment) bool { return !a.Rush }),
 	} {
 		if err != nil {
 			t.Fatalf("register: %v", err)

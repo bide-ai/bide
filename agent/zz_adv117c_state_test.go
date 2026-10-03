@@ -15,7 +15,7 @@ import (
 // next that comes after the chain returned.
 func TestAdv117c_RefusedThenLeakedNextReachesTool(t *testing.T) {
 	var calls atomic.Int32
-	charge := Func("charge", "", Safety{}, func(context.Context, struct{}) (string, error) { calls.Add(1); return "ok", nil })
+	charge := MustFunc("charge", "", func(context.Context, struct{}) (string, error) { calls.Add(1); return "ok", nil })
 	release := make(chan struct{})
 	leaked := make(chan error, 1)
 	mw := func(next ToolHandler) ToolHandler {
@@ -54,7 +54,7 @@ func TestAdv117c_RefusedThenLeakedNextReachesTool(t *testing.T) {
 // next fires the side effect, and a resume fires it again.
 func TestAdv117c_RefusedThenLeakedNextDoubleFiresAcrossResume(t *testing.T) {
 	var calls atomic.Int32
-	charge := Func("charge", "", Safety{}, func(context.Context, struct{}) (string, error) { calls.Add(1); return "ok", nil })
+	charge := MustFunc("charge", "", func(context.Context, struct{}) (string, error) { calls.Add(1); return "ok", nil })
 	release := make(chan struct{})
 	leaked := make(chan error, 1)
 	ctx, cancel := context.WithCancel(context.Background())

@@ -51,8 +51,7 @@ func TestPersistJournal_RoundTripsAndIsIdempotent(t *testing.T) {
 	ctx := context.Background()
 	jStore := agent.NewMemStore()
 	j := agenttest.MustJournal(jStore)
-	tool := agent.Func("lookup", "", agent.Safety{ReadOnly: true},
-		func(_ context.Context, _ struct{}) (string, error) { return "ok", nil })
+	tool := agent.MustFunc("lookup", "", func(_ context.Context, _ struct{}) (string, error) { return "ok", nil }, agent.WithSafety(agent.Safety{ReadOnly: true}))
 	if _, err := agenttest.MustNew(&twoTurnModel{}, j, agent.WithTools(tool)).Run(ctx, "run", agent.UserText("hi")); err != nil {
 		t.Fatalf("run: %v", err)
 	}
@@ -99,8 +98,7 @@ func TestPersistJournal_IncrementalConsistency(t *testing.T) {
 	ctx := context.Background()
 	jStore := agent.NewMemStore()
 	j := agenttest.MustJournal(jStore)
-	tool := agent.Func("lookup", "", agent.Safety{ReadOnly: true},
-		func(_ context.Context, _ struct{}) (string, error) { return "ok", nil })
+	tool := agent.MustFunc("lookup", "", func(_ context.Context, _ struct{}) (string, error) { return "ok", nil }, agent.WithSafety(agent.Safety{ReadOnly: true}))
 	if _, err := agenttest.MustNew(&twoTurnModel{}, j, agent.WithTools(tool)).Run(ctx, "run", agent.UserText("hi")); err != nil {
 		t.Fatalf("run: %v", err)
 	}

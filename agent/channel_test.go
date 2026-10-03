@@ -17,7 +17,13 @@ type drainTool struct {
 	got   *[]string
 }
 
-func (t *drainTool) Name() string                { return t.name }
+func (t *drainTool) Name() string { return t.name }
+
+// Spec describes the tool to the agent (see Tool).
+func (t *drainTool) Spec() ToolSpec {
+	return ToolSpec{Name: t.Name(), Description: t.Description(), Input: t.ArgsSchema(), Safety: t.Safety()}
+}
+
 func (t *drainTool) Description() string         { return "" }
 func (t *drainTool) Safety() Safety              { return Safety{ReadOnly: true} }
 func (t *drainTool) ArgsSchema() json.RawMessage { return json.RawMessage(`{"type":"object"}`) }

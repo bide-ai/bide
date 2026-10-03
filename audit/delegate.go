@@ -176,7 +176,7 @@ func AttenuatingSubAgent(name, description string, sub *agent.Agent, cfg Attenua
 		panic(fmt.Errorf("audit: AttenuatingSubAgent %q: AttenuationConfig.Narrow is nil: %w", name, agent.ErrConfig))
 	}
 	return &attenuatingSubAgent{
-		Tool:   agent.SubAgent(name, description, sub, opts...),
+		Tool:   agent.MustSubAgent(name, description, sub, opts...),
 		name:   name,
 		store:  cfg.Store,
 		narrow: cfg.Narrow,
@@ -208,7 +208,7 @@ type attenuatingSubAgent struct {
 }
 
 // Spec returns the spec of the SubAgent tool it wraps.
-func (t *attenuatingSubAgent) Spec() agent.ToolSpec { return agent.SpecOf(t.Tool) }
+func (t *attenuatingSubAgent) Spec() agent.ToolSpec { return t.Tool.Spec() }
 
 // Unwrap returns the SubAgent tool it wraps, so the agent recognises the call as a delegation:
 // a saga rollback recurses into its sub-run, and the tree's token budget counts it.

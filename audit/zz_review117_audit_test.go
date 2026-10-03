@@ -22,13 +22,12 @@ func TestR117_AttenuatedSubRunIsCompensatedUnderTheParentsAuthority(t *testing.T
 	ctx := context.Background()
 	store := agenttest.MemJournal()
 	var fwdActor, undoActor, fwdLimit, undoLimit string
-	charge := agent.CompensatedFunc("charge", "charge the card", agent.Safety{},
-		func(ctx context.Context, _ struct{}) (string, error) {
-			id, _ := agent.IdentityFrom(ctx)
-			sg, _, _ := GrantFrom(ctx)
-			fwdActor, fwdLimit = id.Actor, sg.Grant.Scope["limit"]
-			return "charged", nil
-		},
+	charge := agent.MustCompensatedFunc("charge", "charge the card", func(ctx context.Context, _ struct{}) (string, error) {
+		id, _ := agent.IdentityFrom(ctx)
+		sg, _, _ := GrantFrom(ctx)
+		fwdActor, fwdLimit = id.Actor, sg.Grant.Scope["limit"]
+		return "charged", nil
+	},
 		func(ctx context.Context, _ struct{}, _ string) error {
 			id, _ := agent.IdentityFrom(ctx)
 			sg, _, _ := GrantFrom(ctx)
@@ -42,7 +41,7 @@ func TestR117_AttenuatedSubRunIsCompensatedUnderTheParentsAuthority(t *testing.T
 	)
 	exec := AttenuatingSubAgent("exec", "execute within delegated authority", sub,
 		AttenuationConfig{Store: store, Narrow: narrowLimitBy(3), Rules: ScopeRules{"limit": NumericAtMost}})
-	boom := agent.Func("boom", "fails", agent.Safety{}, func(context.Context, struct{}) (string, error) {
+	boom := agent.MustFunc("boom", "fails", func(context.Context, struct{}) (string, error) {
 		return "", errors.New("hotel sold out")
 	})
 	parent := agenttest.MustNew(
@@ -78,11 +77,10 @@ func TestR117_UngrantedDelegationIsCompensatedWithoutAGrant(t *testing.T) {
 	ctx := context.Background()
 	store := agenttest.MemJournal()
 	var undoHadGrant, fwdHadGrant bool
-	charge := agent.CompensatedFunc("charge", "", agent.Safety{},
-		func(ctx context.Context, _ struct{}) (string, error) {
-			_, _, fwdHadGrant = GrantFrom(ctx)
-			return "ok", nil
-		},
+	charge := agent.MustCompensatedFunc("charge", "", func(ctx context.Context, _ struct{}) (string, error) {
+		_, _, fwdHadGrant = GrantFrom(ctx)
+		return "ok", nil
+	},
 		func(ctx context.Context, _ struct{}, _ string) error { _, _, undoHadGrant = GrantFrom(ctx); return nil })
 	sub := agenttest.MustNew(
 		agent.NewScriptedModel(agent.ToolTurn("s1", "charge", `{}`), agent.TextTurn("done")),
@@ -91,8 +89,8 @@ func TestR117_UngrantedDelegationIsCompensatedWithoutAGrant(t *testing.T) {
 	)
 	exec := AttenuatingSubAgent("exec", "", sub, AttenuationConfig{Store: store, Narrow: narrowLimitBy(3), Rules: ScopeRules{"limit": NumericAtMost}})
 	var gated int32
-	gate := agent.Func("gate", "", agent.Safety{ReadOnly: true}, func(context.Context, struct{}) (string, error) { gated++; return "ok", nil }, agent.WithApproval(agent.SingleApproval()))
-	boom := agent.Func("boom", "", agent.Safety{}, func(context.Context, struct{}) (string, error) { return "", errors.New("sold out") })
+	gate := agent.MustFunc("gate", "", func(context.Context, struct{}) (string, error) { gated++; return "ok", nil }, agent.WithSafety(agent.Safety{ReadOnly: true}), agent.WithApproval(agent.SingleApproval()))
+	boom := agent.MustFunc("boom", "", func(context.Context, struct{}) (string, error) { return "", errors.New("sold out") })
 	m := agent.NewScriptedModel(agent.ToolTurn("c1", "exec", `{"task":"pay"}`), agent.ToolTurn("c2", "gate", `{}`), agent.ToolTurn("c3", "boom", `{}`), agent.TextTurn("x"))
 	parent := agenttest.MustNew(m, store, agent.WithTools(exec, gate, boom))
 	if _, err := parent.Run(ctx, "trip", agent.UserText("go"), agent.WithSaga()); !agent.IsPause(err) {
@@ -194,8 +192,7 @@ func TestR117_ResumedSubRollbackRunsUnderTheChildGrant(t *testing.T) {
 	store := agenttest.MemJournal()
 	var undos int
 	var lastLimit string
-	charge := agent.CompensatedFunc("charge", "", agent.Safety{},
-		func(context.Context, struct{}) (string, error) { return "ok", nil },
+	charge := agent.MustCompensatedFunc("charge", "", func(context.Context, struct{}) (string, error) { return "ok", nil },
 		func(ctx context.Context, _ struct{}, _ string) error {
 			undos++
 			sg, _, _ := GrantFrom(ctx)
@@ -205,7 +202,7 @@ func TestR117_ResumedSubRollbackRunsUnderTheChildGrant(t *testing.T) {
 			}
 			return nil
 		})
-	boom := agent.Func("boom", "", agent.Safety{}, func(context.Context, struct{}) (string, error) { return "", errors.New("sold out") })
+	boom := agent.MustFunc("boom", "", func(context.Context, struct{}) (string, error) { return "", errors.New("sold out") })
 	sub := agenttest.MustNew(
 		agent.NewScriptedModel(agent.ToolTurn("s1", "charge", `{}`), agent.ToolTurn("s2", "boom", `{}`)),
 		store,
@@ -307,8 +304,7 @@ func TestR117_ResumedDelegationKeepsItsAuthority(t *testing.T) {
 	} {
 		ctx := context.Background()
 		store := agenttest.MemJournal()
-		confirm := agent.Func("confirm", "", agent.Safety{ReadOnly: true},
-			func(context.Context, struct{}) (string, error) { return "ok", nil }, agent.WithApproval(agent.SingleApproval()))
+		confirm := agent.MustFunc("confirm", "", func(context.Context, struct{}) (string, error) { return "ok", nil }, agent.WithSafety(agent.Safety{ReadOnly: true}), agent.WithApproval(agent.SingleApproval()))
 		sub := agenttest.MustNew(
 			agent.NewScriptedModel(agent.ToolTurn("s1", "confirm", `{}`), agent.TextTurn("done")),
 			store,

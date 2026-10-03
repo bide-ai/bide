@@ -15,18 +15,18 @@ import (
 func TestSubAgent_CancelledParentWaitsForTheChild(t *testing.T) {
 	var finished atomic.Bool
 	started := make(chan struct{})
-	write := Func("write", "write the record", Safety{Idempotent: true}, func(context.Context, struct{}) (string, error) {
+	write := MustFunc("write", "write the record", func(context.Context, struct{}) (string, error) {
 		close(started)
 		time.Sleep(100 * time.Millisecond) // in flight; does not observe cancellation
 		finished.Store(true)
 		return "written", nil
-	})
+	}, WithSafety(Safety{Idempotent: true}))
 	store := memJournal()
 	child := mustNew(NewScriptedModel(ToolTurn("w1", "write", `{}`), TextTurn("done")), store, WithTools(write))
 	parent := mustNew(
 		NewScriptedModel(ToolTurn("s1", "clerk", `{"task":"file it"}`), TextTurn("done")),
 		store,
-		WithTools(SubAgent("clerk", "files records", child)),
+		WithTools(MustSubAgent("clerk", "files records", child)),
 	)
 
 	ctx, cancel := context.WithCancel(context.Background())

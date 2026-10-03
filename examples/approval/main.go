@@ -140,8 +140,7 @@ type refundArgs struct {
 // newAgent builds the agent with the approval-gated refund tool. witness, if set, gets one
 // line appended per real refund, so a test can count side effects across processes.
 func newAgent(store *agent.Journal, witness string) *agent.Agent {
-	refund := agent.Func("refund", "refund an order",
-		agent.Safety{},
+	refund := agent.MustFunc("refund", "refund an order",
 		func(_ context.Context, in refundArgs) (string, error) {
 			if witness != "" {
 				f, err := os.OpenFile(witness, os.O_APPEND|os.O_CREATE|os.O_WRONLY, 0o644)

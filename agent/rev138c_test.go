@@ -51,12 +51,11 @@ func TestRev138c_SagaSubRunFailureInACancelledTreeEndsCancelled(t *testing.T) {
 	ctx := context.Background()
 	j, m := p14Journal(t)
 	var undone counter
-	book := agent.CompensatedFunc("book", "", agent.Safety{},
-		func(context.Context, struct{}) (string, error) { return "booked", nil },
+	book := agent.MustCompensatedFunc("book", "", func(context.Context, struct{}) (string, error) { return "booked", nil },
 		func(context.Context, struct{}, string) error { undone.n.Add(1); return nil })
 	// fail cancels the root inside its call (after its claim's check) and then fails: the sub-run
 	// records the failure and rolls back for it.
-	fail := agent.Func("fail", "", agent.Safety{}, func(context.Context, struct{}) (string, error) {
+	fail := agent.MustFunc("fail", "", func(context.Context, struct{}) (string, error) {
 		if err := agent.Cancel(ctx, j, "r", "the customer left"); err != nil {
 			t.Errorf("Cancel = %v", err)
 		}
@@ -65,7 +64,7 @@ func TestRev138c_SagaSubRunFailureInACancelledTreeEndsCancelled(t *testing.T) {
 	subModel := &p14Model{turns: []p14Turn{{calls: []agent.ToolUse{call("s1", "book")}}, {calls: []agent.ToolUse{call("s2", "fail")}}, {text: "sub"}}}
 	sub := p14Build(t, subModel, j, agent.WithTools(book, fail))
 	parentModel := &p14Model{turns: []p14Turn{{calls: []agent.ToolUse{{ID: "p1", Name: "helper", Args: []byte(`{"task":"x"}`)}}}, {text: "done"}}}
-	parent := p14Build(t, parentModel, j, agent.WithTools(agent.SubAgent("helper", "", sub)))
+	parent := p14Build(t, parentModel, j, agent.WithTools(agent.MustSubAgent("helper", "", sub)))
 	_, err := parent.Run(ctx, "r", agent.UserText("go"), agent.WithSaga())
 	if st, _ := agent.Status(ctx, j, "r"); st.State != agent.RunCancelled {
 		t.Fatalf("the root's Status = %s (run %v), want cancelled", st.State, err)
@@ -98,8 +97,7 @@ func TestRev138c_TurnRollbackDoesNotHoldTheSessionMutex(t *testing.T) {
 	j, _ := p14Journal(t)
 	var s *agent.Session
 	var held, ran bool
-	book := agent.CompensatedFunc("book", "", agent.Safety{},
-		func(context.Context, struct{}) (string, error) { return "booked", nil },
+	book := agent.MustCompensatedFunc("book", "", func(context.Context, struct{}) (string, error) { return "booked", nil },
 		func(context.Context, struct{}, string) error {
 			ran, held = true, agent.SessionMuHeld(s)
 			return nil
@@ -192,10 +190,9 @@ func TestRev138c_SagaSubRunOfAPlainRootEndsCancelled(t *testing.T) {
 	ctx := context.Background()
 	j, _ := p14Journal(t)
 	var undone counter
-	book := agent.CompensatedFunc("book", "", agent.Safety{},
-		func(context.Context, struct{}) (string, error) { return "booked", nil },
+	book := agent.MustCompensatedFunc("book", "", func(context.Context, struct{}) (string, error) { return "booked", nil },
 		func(context.Context, struct{}, string) error { undone.n.Add(1); return nil })
-	fail := agent.Func("fail", "", agent.Safety{}, func(context.Context, struct{}) (string, error) {
+	fail := agent.MustFunc("fail", "", func(context.Context, struct{}) (string, error) {
 		if err := agent.Cancel(ctx, j, "r", "the customer left"); err != nil {
 			t.Errorf("Cancel = %v", err)
 		}
@@ -204,12 +201,12 @@ func TestRev138c_SagaSubRunOfAPlainRootEndsCancelled(t *testing.T) {
 	subModel := &p14Model{turns: []p14Turn{{calls: []agent.ToolUse{call("s1", "book")}}, {calls: []agent.ToolUse{call("s2", "fail")}}, {text: "sub"}}}
 	sub := p14Build(t, subModel, j, agent.WithTools(book, fail))
 	var subID string
-	work := agent.Func("work", "", agent.Safety{ReadOnly: true}, func(ctx context.Context, _ struct{}) (string, error) {
+	work := agent.MustFunc("work", "", func(ctx context.Context, _ struct{}) (string, error) {
 		info, _ := agent.RunInfoFrom(ctx)
 		subID = info.SubRunFor("w")
 		_, err := sub.Run(ctx, subID, agent.UserText("x"), agent.WithSaga())
 		return "worked", err
-	})
+	}, agent.WithSafety(agent.Safety{ReadOnly: true}))
 	parentModel := &p14Model{turns: []p14Turn{{calls: []agent.ToolUse{call("p1", "work")}}, {text: "done"}}}
 	parent := p14Build(t, parentModel, j, agent.WithTools(work))
 	_, err := parent.Run(ctx, "r", agent.UserText("go"))

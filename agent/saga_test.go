@@ -25,13 +25,12 @@ func newLedger() *ledger {
 
 // write returns a compensated tool that marks `res` active on do and clears it on undo.
 func (l *ledger) write(res string) Tool {
-	return CompensatedFunc(res, "", Safety{},
-		func(context.Context, struct{}) (struct{}, error) {
-			l.mu.Lock()
-			l.active[res] = true
-			l.mu.Unlock()
-			return struct{}{}, nil
-		},
+	return MustCompensatedFunc(res, "", func(context.Context, struct{}) (struct{}, error) {
+		l.mu.Lock()
+		l.active[res] = true
+		l.mu.Unlock()
+		return struct{}{}, nil
+	},
 		func(context.Context, struct{}, struct{}) error {
 			l.mu.Lock()
 			l.active[res] = false
@@ -70,7 +69,7 @@ func (l *ledger) assertClean(t *testing.T) {
 }
 
 func failTool(name string) Tool {
-	return Func(name, "", Safety{}, func(context.Context, struct{}) (struct{}, error) {
+	return MustFunc(name, "", func(context.Context, struct{}) (struct{}, error) {
 		return struct{}{}, errors.New(name + " failed")
 	})
 }
@@ -88,12 +87,12 @@ func TestSaga_DeepTreeFailureReverses(t *testing.T) {
 	l2 := mustNew(
 		&scriptModel{turns: [][]Emit{toolTurn("b1", "B", `{}`), toolTurn("b2", "l3", `{"task":"x"}`)}},
 		store,
-		WithTools(l.write("B"), SubAgent("l3", "", l3)),
+		WithTools(l.write("B"), MustSubAgent("l3", "", l3)),
 	)
 	l1 := mustNew(
 		&scriptModel{turns: [][]Emit{toolTurn("a1", "A", `{}`), toolTurn("a2", "l2", `{"task":"x"}`)}},
 		store,
-		WithTools(l.write("A"), SubAgent("l2", "", l2)),
+		WithTools(l.write("A"), MustSubAgent("l2", "", l2)),
 	)
 
 	_, err := l1.Run(context.Background(), "root", UserText("go"), WithSaga())
@@ -133,7 +132,7 @@ func TestSaga_SiblingSubAgentsReverse(t *testing.T) {
 			toolTurn("p2", "subB", `{"task":"x"}`),
 		}},
 		store,
-		WithTools(l.write("P"), SubAgent("subA", "", subA), SubAgent("subB", "", subB)),
+		WithTools(l.write("P"), MustSubAgent("subA", "", subA), MustSubAgent("subB", "", subB)),
 	)
 
 	_, err := parent.Run(context.Background(), "root", UserText("go"), WithSaga())
@@ -234,11 +233,11 @@ func deepSagaReverses(t *testing.T, depth int) {
 				WithTools(l.write(res), failTool("boom")),
 			)
 		} else {
-			sub := SubAgent(fmt.Sprintf("sub%d", i+1), "", child)
+			sub := MustSubAgent(fmt.Sprintf("sub%d", i+1), "", child)
 			child = mustNew(
 				&scriptModel{turns: [][]Emit{
 					toolTurn("wr", res, `{}`),
-					toolTurn("dl", sub.Name(), `{"task":"x"}`),
+					toolTurn("dl", sub.Spec().Name, `{"task":"x"}`),
 				}},
 				store,
 				WithTools(l.write(res), sub),
@@ -279,7 +278,7 @@ func TestSaga_UncompensatedWriteSurfaced(t *testing.T) {
 	store := memJournal()
 
 	// "danger" is a real write (Safety{}) with NO compensator.
-	danger := Func("danger", "", Safety{}, func(context.Context, struct{}) (struct{}, error) { return struct{}{}, nil })
+	danger := MustFunc("danger", "", func(context.Context, struct{}) (struct{}, error) { return struct{}{}, nil })
 
 	a := mustNew(
 		&scriptModel{turns: [][]Emit{

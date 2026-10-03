@@ -24,11 +24,10 @@ func TestRev133_D1_NestedAcrossRotation(t *testing.T) {
 	p1, p2 := m11Root(t, signer, "p1"), m11Root(t, signer, "p2")
 	var refunds atomic.Int32
 	charge := func(name string) agent.Tool {
-		return agent.CompensatedFunc(name, "a write", agent.Safety{},
-			func(context.Context, struct{}) (string, error) { return "charged", nil },
+		return agent.MustCompensatedFunc(name, "a write", func(context.Context, struct{}) (string, error) { return "charged", nil },
 			func(context.Context, struct{}, string) error { refunds.Add(1); return nil })
 	}
-	boom := agent.Func("boom", "fails", agent.Safety{}, func(context.Context, struct{}) (string, error) {
+	boom := agent.MustFunc("boom", "fails", func(context.Context, struct{}) (string, error) {
 		return "", errors.New("sold out")
 	})
 	cfg := AttenuationConfig{Store: store, Narrow: narrowLimitBy(1), Rules: rev117eRules}
@@ -84,10 +83,9 @@ func TestRev133_D2_GuardRefusalThroughToolRetry(t *testing.T) {
 		return g
 	}
 	var calls, undone atomic.Int32
-	idem := agent.CompensatedFunc("idem", "a retry-safe write", agent.Safety{Idempotent: true},
-		func(context.Context, struct{}) (string, error) { calls.Add(1); return "set", nil },
-		func(context.Context, struct{}, string) error { undone.Add(1); return nil })
-	boom := agent.Func("boom", "fails", agent.Safety{}, func(context.Context, struct{}) (string, error) {
+	idem := agent.MustCompensatedFunc("idem", "a retry-safe write", func(context.Context, struct{}) (string, error) { calls.Add(1); return "set", nil },
+		func(context.Context, struct{}, string) error { undone.Add(1); return nil }, agent.WithSafety(agent.Safety{Idempotent: true}))
+	boom := agent.MustFunc("boom", "fails", func(context.Context, struct{}) (string, error) {
 		for time.Now().Unix() <= notAfter {
 			time.Sleep(20 * time.Millisecond)
 		}
@@ -119,10 +117,9 @@ func TestRev133_D3_NoDoubleCompensation(t *testing.T) {
 	ctx := context.Background()
 	store := agenttest.MemJournal()
 	var undone atomic.Int32
-	charge := agent.CompensatedFunc("charge", "a write", agent.Safety{},
-		func(context.Context, struct{}) (string, error) { return "charged", nil },
+	charge := agent.MustCompensatedFunc("charge", "a write", func(context.Context, struct{}) (string, error) { return "charged", nil },
 		func(context.Context, struct{}, string) error { undone.Add(1); return nil })
-	bad := agent.Func("bad", "", agent.Safety{}, func(context.Context, struct{}) (string, error) { return "", errors.New("no") })
+	bad := agent.MustFunc("bad", "", func(context.Context, struct{}) (string, error) { return "", errors.New("no") })
 	build := func(m agent.Model, tools ...agent.Tool) *agent.Agent {
 		a, err := agent.New(m, store, agent.WithTools(tools...))
 		if err != nil {
@@ -132,7 +129,7 @@ func TestRev133_D3_NoDoubleCompensation(t *testing.T) {
 	}
 	grand := build(agent.NewScriptedModel(agent.ToolTurn("g1", "charge", `{}`), agent.ToolTurn("g2", "bad", `{}`), agent.TextTurn("y")), charge, bad)
 	// The grand sub-agent is a saga of its own: the child runs it through a programmatic RunSaga.
-	gstarter := agent.Func("gstart", "", agent.Safety{ReadOnly: true}, func(ctx context.Context, _ struct{}) (string, error) {
+	gstarter := agent.MustFunc("gstart", "", func(ctx context.Context, _ struct{}) (string, error) {
 		info, _ := agent.RunInfoFrom(ctx)
 		res, err := grand.Run(ctx, info.SubRunFor("grand"), agent.UserText("work"), agent.WithSaga())
 		var msg agent.Message
@@ -144,15 +141,15 @@ func TestRev133_D3_NoDoubleCompensation(t *testing.T) {
 			return "", errors.New("grand aborted") // a plain failure for the plain child run
 		}
 		return msg.Text(), err
-	}, agent.WithSubRuns(func(name string) *agent.Agent {
+	}, agent.WithSafety(agent.Safety{ReadOnly: true}), agent.WithSubRuns(func(name string) *agent.Agent {
 		if name == "grand" {
 			return grand
 		}
 		return nil
 	}))
 	child := build(agent.NewScriptedModel(agent.ToolTurn("k1", "worker", `{"task":"w"}`), agent.TextTurn("child done")),
-		agent.SubAgent("worker", "w", build(agent.NewScriptedModel(agent.ToolTurn("w1", "gstart", `{}`), agent.ErrorTurn(errors.New("provider rejected"))), gstarter)))
-	starter := agent.Func("starter", "", agent.Safety{ReadOnly: true}, func(ctx context.Context, _ struct{}) (string, error) {
+		agent.MustSubAgent("worker", "w", build(agent.NewScriptedModel(agent.ToolTurn("w1", "gstart", `{}`), agent.ErrorTurn(errors.New("provider rejected"))), gstarter)))
+	starter := agent.MustFunc("starter", "", func(ctx context.Context, _ struct{}) (string, error) {
 		info, _ := agent.RunInfoFrom(ctx)
 		res, err := child.Run(ctx, info.SubRunFor("child"), agent.UserText("work"))
 		var msg agent.Message
@@ -160,13 +157,13 @@ func TestRev133_D3_NoDoubleCompensation(t *testing.T) {
 			msg = res.Message
 		}
 		return msg.Text(), err
-	}, agent.WithSubRuns(func(name string) *agent.Agent {
+	}, agent.WithSafety(agent.Safety{ReadOnly: true}), agent.WithSubRuns(func(name string) *agent.Agent {
 		if name == "child" {
 			return child
 		}
 		return nil
 	}))
-	boom := agent.Func("boom", "", agent.Safety{}, func(context.Context, struct{}) (string, error) { return "", errors.New("boom") })
+	boom := agent.MustFunc("boom", "", func(context.Context, struct{}) (string, error) { return "", errors.New("boom") })
 	parent := build(agent.NewScriptedModel(agent.ToolTurn("c1", "starter", `{}`), agent.ToolTurn("c2", "boom", `{}`), agent.TextTurn("x")), starter, boom)
 	_, err := parent.Run(ctx, "p", agent.UserText("go"), agent.WithSaga())
 	var ab *agent.SagaAborted

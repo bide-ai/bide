@@ -11,7 +11,7 @@ func receiveOnce(t *testing.T, store *Journal, runID, channel string) (Received[
 	t.Helper()
 	var got Received[string]
 	var recvErr error
-	recv := Func("recv", "", Safety{ReadOnly: true}, func(ctx context.Context, _ struct{}) (string, error) {
+	recv := MustFunc("recv", "", func(ctx context.Context, _ struct{}) (string, error) {
 		m, err := Receive[string](ctx, channel)
 		if err != nil {
 			recvErr = err
@@ -19,7 +19,7 @@ func receiveOnce(t *testing.T, store *Journal, runID, channel string) (Received[
 		}
 		got = m
 		return m.Payload, nil
-	})
+	}, WithSafety(Safety{ReadOnly: true}))
 	a := mustNew(NewScriptedModel(ToolTurn("c1", "recv", `{}`), TextTurn("done")), store, WithTools(recv))
 	_, _ = a.Run(context.Background(), runID, UserText("go"))
 	return got, recvErr

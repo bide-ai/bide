@@ -16,10 +16,9 @@ import (
 type sagaCounts struct{ fired, undone int }
 
 func sagaTools(c *sagaCounts) []agent.Tool {
-	charge := agent.CompensatedFunc("charge", "", agent.Safety{},
-		func(context.Context, struct{}) (string, error) { c.fired++; return "charged", nil },
+	charge := agent.MustCompensatedFunc("charge", "", func(context.Context, struct{}) (string, error) { c.fired++; return "charged", nil },
 		func(context.Context, struct{}, string) error { c.undone++; return nil })
-	boom := agent.Func("boom", "", agent.Safety{}, func(context.Context, struct{}) (string, error) {
+	boom := agent.MustFunc("boom", "", func(context.Context, struct{}) (string, error) {
 		return "", errors.New("boom")
 	})
 	return append([]agent.Tool{}, charge, boom)

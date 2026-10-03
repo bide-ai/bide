@@ -10,8 +10,7 @@ import (
 )
 
 func simpleTool() agent.Tool {
-	return agent.Func("get_weather", "weather", agent.Safety{ReadOnly: true},
-		func(_ context.Context, _ struct{}) (string, error) { return "", nil })
+	return agent.MustFunc("get_weather", "weather", func(_ context.Context, _ struct{}) (string, error) { return "", nil }, agent.WithSafety(agent.Safety{ReadOnly: true}))
 }
 
 // A user message with image parts renders Anthropic image content blocks: a base64
@@ -76,7 +75,7 @@ func TestBuildRequest_ToolChoice(t *testing.T) {
 			m := New("k")
 			body, err := m.buildRequest(agent.Request{
 				Messages:   []agent.Message{agent.UserText("hi")},
-				Tools:      []agent.ToolSpec{agent.SpecOf(simpleTool())},
+				Tools:      []agent.ToolSpec{simpleTool().Spec()},
 				ToolChoice: &agent.ToolChoice{Mode: c.mode, Name: c.name},
 			})
 			if err != nil {

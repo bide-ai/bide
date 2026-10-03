@@ -14,7 +14,7 @@ import (
 func TestBuild_FollowsGeminisToolNameRule(t *testing.T) {
 	m := New("k")
 	for n, ok := range map[string]bool{"fs.read": true, "ns:tool": true, "get_weather": true, "1tool": false, "get weather": false} {
-		tool := agent.Func(n, "", agent.Safety{ReadOnly: true}, func(context.Context, struct{}) (string, error) { return "", nil })
+		tool := agent.MustFunc(n, "", func(context.Context, struct{}) (string, error) { return "", nil }, agent.WithSafety(agent.Safety{ReadOnly: true}))
 		_, err := agent.New(m, agenttest.MemJournal(), agent.WithTools(tool))
 		if ok != (err == nil) || err != nil && !errors.Is(err, agent.ErrConfig) {
 			t.Errorf("tool %q: Build err = %v, want accepted %v", n, err, ok)

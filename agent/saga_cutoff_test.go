@@ -18,7 +18,13 @@ type syncTool struct {
 	fn   func() (json.RawMessage, error)
 }
 
-func (t syncTool) Name() string                { return t.name }
+func (t syncTool) Name() string { return t.name }
+
+// Spec describes the tool to the agent (see agent.Tool).
+func (t syncTool) Spec() agent.ToolSpec {
+	return agent.ToolSpec{Name: t.Name(), Description: t.Description(), Input: t.ArgsSchema(), Safety: t.Safety()}
+}
+
 func (t syncTool) Description() string         { return "" }
 func (t syncTool) ArgsSchema() json.RawMessage { return json.RawMessage(`{"type":"object"}`) }
 func (t syncTool) Safety() agent.Safety        { return agent.Safety{Idempotent: true} }

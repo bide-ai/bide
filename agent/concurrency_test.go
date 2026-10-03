@@ -60,18 +60,17 @@ func TestParallelTools_RunConcurrently(t *testing.T) {
 	tools := make([]Tool, n)
 	for i := 0; i < n; i++ {
 		i := i
-		tools[i] = Func(fmt.Sprintf("t%d", i), "", Safety{ReadOnly: true},
-			func(ctx context.Context, _ struct{}) (struct{}, error) {
-				if atomic.AddInt32(&arrived, 1) == n {
-					close(barrier) // last one in releases everyone
-				}
-				select {
-				case <-barrier:
-					concurrent[i] = true
-				case <-time.After(3 * time.Second):
-				}
-				return struct{}{}, nil
-			})
+		tools[i] = MustFunc(fmt.Sprintf("t%d", i), "", func(ctx context.Context, _ struct{}) (struct{}, error) {
+			if atomic.AddInt32(&arrived, 1) == n {
+				close(barrier) // last one in releases everyone
+			}
+			select {
+			case <-barrier:
+				concurrent[i] = true
+			case <-time.After(3 * time.Second):
+			}
+			return struct{}{}, nil
+		}, WithSafety(Safety{ReadOnly: true}))
 	}
 
 	m := &scriptModel{turns: [][]Emit{

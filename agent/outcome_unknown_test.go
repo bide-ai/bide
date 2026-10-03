@@ -14,7 +14,7 @@ import (
 func TestToolOutcomeUnknown_SideEffectIsNotRecorded(t *testing.T) {
 	store := memJournal()
 	var charged int
-	charge := Func("charge", "charge the card", Safety{}, func(context.Context, struct{}) (string, error) {
+	charge := MustFunc("charge", "charge the card", func(context.Context, struct{}) (string, error) {
 		charged++
 		return "", fmt.Errorf("gateway connection reset (%w)", ErrToolOutcomeUnknown)
 	})
@@ -45,9 +45,9 @@ func TestToolOutcomeUnknown_SideEffectIsNotRecorded(t *testing.T) {
 // model sees, and the run carries on.
 func TestToolOutcomeUnknown_RetrySafeToolIsAFailure(t *testing.T) {
 	store := memJournal()
-	lookup := Func("lookup", "read a balance", Safety{ReadOnly: true}, func(context.Context, struct{}) (string, error) {
+	lookup := MustFunc("lookup", "read a balance", func(context.Context, struct{}) (string, error) {
 		return "", fmt.Errorf("connection reset (%w)", ErrToolOutcomeUnknown)
-	})
+	}, WithSafety(Safety{ReadOnly: true}))
 	m := &greedyModel{script: [][]Emit{toolTurn("c1", "lookup", `{}`), textTurn("done")}}
 	if _, err := mustNew(m, store, WithTools(lookup)).Run(context.Background(), "r1", UserText("balance?")); err != nil {
 		t.Fatalf("run err = %v, want the failure passed to the model", err)

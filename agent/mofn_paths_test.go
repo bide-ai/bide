@@ -133,7 +133,7 @@ func TestMofn_InsideSubAgent(t *testing.T) {
 			textTurn("parent-done"),
 		}},
 		store,
-		WithTools(SubAgent("worker", "does work", sub)),
+		WithTools(MustSubAgent("worker", "does work", sub)),
 	)
 
 	_, err := parent.Run(ctx, "root", UserText("delegate"))

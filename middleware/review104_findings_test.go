@@ -73,7 +73,7 @@ func TestF2_ReplayLosesModelInfo(t *testing.T) {
 	info := agent.ModelInfo{Provider: "acme", Model: "m-1"}
 	orig := agenttest.MemJournal()
 	m := describedModel{&gateModel{name: "p", u: billed}, info}
-	sys := agent.Func("noop", "d", agent.Safety{ReadOnly: true}, func(context.Context, struct{}) (string, error) { return "", nil })
+	sys := agent.MustFunc("noop", "d", func(context.Context, struct{}) (string, error) { return "", nil }, agent.WithSafety(agent.Safety{ReadOnly: true}))
 	if _, err := agenttest.MustNew(m, orig, agent.WithTools(sys)).Run(ctx, "r", agent.UserText("q")); err != nil {
 		t.Fatal(err)
 	}

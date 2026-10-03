@@ -202,7 +202,7 @@ func TestFinishedRun_SubAgentReentry(t *testing.T) {
 	parent := mustNew(
 		&greedyModel{script: [][]Emit{textTurn("parent-done")}},
 		store,
-		WithTools(SubAgent("worker", "does work", sub)),
+		WithTools(MustSubAgent("worker", "does work", sub)),
 	)
 	res, err := parent.Run(ctx, "root", UserText("delegate"))
 	if err != nil {

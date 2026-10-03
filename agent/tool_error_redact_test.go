@@ -73,7 +73,7 @@ func (s *seen) check(t *testing.T, secrets []string, want ...string) {
 
 func fetchTool(rawURL string) agent.Tool {
 	type in struct{}
-	return agent.Func("fetch", "fetch", agent.Safety{ReadOnly: true}, func(ctx context.Context, _ in) (string, error) {
+	return agent.MustFunc("fetch", "fetch", func(ctx context.Context, _ in) (string, error) {
 		req, err := http.NewRequestWithContext(ctx, "GET", rawURL, nil)
 		if err != nil {
 			return "", err
@@ -84,7 +84,7 @@ func fetchTool(rawURL string) agent.Tool {
 		}
 		resp.Body.Close()
 		return "ok", nil
-	})
+	}, agent.WithSafety(agent.Safety{ReadOnly: true}))
 }
 
 const secretURL = "http://user:PW-USERINFO-SECRET@127.0.0.1:1/v1/items?key=SK-QUERY-SECRET&page=2#FRAGMENT-SECRET"
@@ -108,9 +108,9 @@ func TestToolErrorURLCredentialsNotJournaled(t *testing.T) {
 // A URL written into an error's text by hand (not a *url.Error) is redacted the same way.
 func TestToolErrorURLInTextNotJournaled(t *testing.T) {
 	type in struct{}
-	tool := agent.Func("call", "call", agent.Safety{ReadOnly: true}, func(context.Context, in) (string, error) {
+	tool := agent.MustFunc("call", "call", func(context.Context, in) (string, error) {
 		return "", fmt.Errorf("upstream https://USER-TOKEN-SECRET@api.test/v2?token=SK-QUERY-SECRET returned 503 (see https://status.test/page)")
-	})
+	}, agent.WithSafety(agent.Safety{ReadOnly: true}))
 	var s seen
 	st := agenttest.MemJournal()
 	a := agenttest.MustNew(
@@ -134,7 +134,7 @@ func TestSubAgentErrorURLCredentialsNotJournaled(t *testing.T) {
 	parent := agenttest.MustNew(
 		agent.NewScriptedModel(agent.ToolTurn("tu1", "helper", `{"task":"x"}`), agent.TextTurn("done")),
 		st,
-		agent.WithTools(agent.SubAgent("helper", "helps", sub)), agent.WithMiddleware(s.middleware))
+		agent.WithTools(agent.MustSubAgent("helper", "helps", sub)), agent.WithMiddleware(s.middleware))
 	if _, err := parent.Run(context.Background(), "r1", agent.UserText("go")); err != nil {
 		t.Fatal(err)
 	}

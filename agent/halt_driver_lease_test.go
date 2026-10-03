@@ -63,10 +63,10 @@ func TestHaltLiveCheck_AgreesWithTheCallsRootRunID(t *testing.T) {
 		store := NewMemStore()
 		j := mustJournal(store)
 		var info RunInfo
-		probe := Func("probe", "", Safety{ReadOnly: true}, func(ctx context.Context, _ struct{}) (string, error) {
+		probe := MustFunc("probe", "", func(ctx context.Context, _ struct{}) (string, error) {
 			info, _ = RunInfoFrom(ctx)
 			return "ok", nil
-		})
+		}, WithSafety(Safety{ReadOnly: true}))
 		sub := mustNew(
 			&scriptModel{turns: [][]Emit{toolTurn("t2", "probe", `{}`), textTurn("sub done")}},
 			j,
@@ -75,7 +75,7 @@ func TestHaltLiveCheck_AgreesWithTheCallsRootRunID(t *testing.T) {
 		parent := mustNew(
 			&scriptModel{turns: [][]Emit{toolTurn("t1", "helper", `{"task":"x"}`), textTurn("done")}},
 			j,
-			WithTools(SubAgent("helper", "", sub)),
+			WithTools(MustSubAgent("helper", "", sub)),
 		)
 		if viaSession {
 			if _, err := openSession(t, parent, "c1").Send(ctx, UserText("go")); err != nil {

@@ -21,12 +21,12 @@ func TestStepPauseGuard_InsideAToolIsNotRecordedAsAToolFailure(t *testing.T) {
 	type in struct {
 		ID string `json:"id"`
 	}
-	book := agent.Func("book", "", agent.Safety{Idempotent: true}, func(ctx context.Context, a in) (string, error) {
+	book := agent.MustFunc("book", "", func(ctx context.Context, a in) (string, error) {
 		return store.Step(ctx, "wf", "charge-"+a.ID, func(ctx context.Context) (string, error) {
 			fired++ // the side effect
 			return agent.Interrupt[string](ctx, "confirm-"+a.ID, "confirm the charge?")
 		})
-	})
+	}, agent.WithSafety(agent.Safety{Idempotent: true}))
 	m := agent.NewScriptedModel(
 		agent.ToolTurn("c1", "book", `{"id":"c1"}`),
 		agent.ToolTurn("c2", "book", `{"id":"c2"}`), // the model retries a call it was told failed

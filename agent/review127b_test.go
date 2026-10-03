@@ -16,8 +16,7 @@ import (
 // RunSaga, then "boom" fails the saga.
 func adv127b(t *testing.T, parentStore, childStore *agent.Journal, starterID string, declare bool, undone *int) *agent.Agent {
 	t.Helper()
-	book := agent.CompensatedFunc("book", "", agent.Safety{},
-		func(context.Context, struct{}) (string, error) { return "booked", nil },
+	book := agent.MustCompensatedFunc("book", "", func(context.Context, struct{}) (string, error) { return "booked", nil },
 		func(context.Context, struct{}, string) error { *undone++; return nil })
 	child, err := agent.New(agent.NewScriptedModel(agent.ToolTurn("k1", "book", `{}`), agent.TextTurn("child done")),
 		childStore, agent.WithTools(book))
@@ -28,7 +27,7 @@ func adv127b(t *testing.T, parentStore, childStore *agent.Journal, starterID str
 	if declare {
 		opts = append(opts, agent.WithSubRuns(func(string) *agent.Agent { return child }))
 	}
-	starter := agent.Func("starter", "", agent.Safety{ReadOnly: true}, func(ctx context.Context, _ struct{}) (string, error) {
+	starter := agent.MustFunc("starter", "", func(ctx context.Context, _ struct{}) (string, error) {
 		info, _ := agent.RunInfoFrom(ctx)
 		res, err := child.Run(ctx, info.SubRunFor("child"), agent.UserText("work"), agent.WithSaga())
 		var msg agent.Message
@@ -36,8 +35,8 @@ func adv127b(t *testing.T, parentStore, childStore *agent.Journal, starterID str
 			msg = res.Message
 		}
 		return msg.Text(), err
-	}, opts...)
-	boom := agent.Func("boom", "", agent.Safety{}, func(context.Context, struct{}) (string, error) {
+	}, append([]agent.ToolOption{agent.WithSafety(agent.Safety{ReadOnly: true})}, opts...)...)
+	boom := agent.MustFunc("boom", "", func(context.Context, struct{}) (string, error) {
 		return "", errors.New("boom")
 	})
 	p, err := agent.New(agent.NewScriptedModel(agent.ToolTurn(starterID, "starter", `{}`), agent.ToolTurn("c2", "boom", `{}`), agent.TextTurn("x")),
@@ -100,8 +99,7 @@ func TestAdv127b_ChildOnOwnStoreRefused(t *testing.T) {
 func TestAdv127b_UnusableDeclarationListed(t *testing.T) {
 	for _, mode := range []string{"other store", "panic"} {
 		s := agenttest.MemJournal()
-		book := agent.CompensatedFunc("book", "", agent.Safety{},
-			func(context.Context, struct{}) (string, error) { return "booked", nil },
+		book := agent.MustCompensatedFunc("book", "", func(context.Context, struct{}) (string, error) { return "booked", nil },
 			func(context.Context, struct{}, string) error { t.Error("compensated by an unusable agent"); return nil })
 		child, err := agent.New(agent.NewScriptedModel(agent.ToolTurn("k1", "book", `{}`), agent.TextTurn("done")), s, agent.WithTools(book))
 		if err != nil {
@@ -117,7 +115,7 @@ func TestAdv127b_UnusableDeclarationListed(t *testing.T) {
 			}
 			return elsewhere
 		}
-		starter := agent.Func("starter", "", agent.Safety{ReadOnly: true}, func(ctx context.Context, _ struct{}) (string, error) {
+		starter := agent.MustFunc("starter", "", func(ctx context.Context, _ struct{}) (string, error) {
 			info, _ := agent.RunInfoFrom(ctx)
 			res, err := child.Run(ctx, info.SubRunFor("child"), agent.UserText("work"), agent.WithSaga())
 			var msg agent.Message
@@ -125,8 +123,8 @@ func TestAdv127b_UnusableDeclarationListed(t *testing.T) {
 				msg = res.Message
 			}
 			return msg.Text(), err
-		}, agent.WithSubRuns(declared))
-		boom := agent.Func("boom", "", agent.Safety{}, func(context.Context, struct{}) (string, error) { return "", errors.New("boom") })
+		}, agent.WithSafety(agent.Safety{ReadOnly: true}), agent.WithSubRuns(declared))
+		boom := agent.MustFunc("boom", "", func(context.Context, struct{}) (string, error) { return "", errors.New("boom") })
 		p, err := agent.New(agent.NewScriptedModel(agent.ToolTurn("c1", "starter", `{}`), agent.ToolTurn("c2", "boom", `{}`), agent.TextTurn("x")),
 			s, agent.WithTools(starter, boom))
 		if err != nil {
@@ -153,15 +151,14 @@ func TestAdv127b_NestedThroughNonSagaChild(t *testing.T) {
 	for _, midSaga := range []bool{true, false} {
 		s := agenttest.MemJournal()
 		var undone int
-		book := agent.CompensatedFunc("book", "", agent.Safety{},
-			func(context.Context, struct{}) (string, error) { return "booked", nil },
+		book := agent.MustCompensatedFunc("book", "", func(context.Context, struct{}) (string, error) { return "booked", nil },
 			func(context.Context, struct{}, string) error { undone++; return nil })
 		leaf, err := agent.New(agent.NewScriptedModel(agent.ToolTurn("k1", "book", `{}`), agent.TextTurn("leaf done")),
 			s, agent.WithTools(book))
 		if err != nil {
 			t.Fatal(err)
 		}
-		spawn := agent.Func("spawn", "", agent.Safety{ReadOnly: true}, func(ctx context.Context, _ struct{}) (string, error) {
+		spawn := agent.MustFunc("spawn", "", func(ctx context.Context, _ struct{}) (string, error) {
 			info, _ := agent.RunInfoFrom(ctx)
 			res, err := leaf.Run(ctx, info.SubRunFor("leaf"), agent.UserText("work"), agent.WithSaga())
 			var msg agent.Message
@@ -169,13 +166,13 @@ func TestAdv127b_NestedThroughNonSagaChild(t *testing.T) {
 				msg = res.Message
 			}
 			return msg.Text(), err
-		}, agent.WithSubRuns(func(string) *agent.Agent { return leaf }))
+		}, agent.WithSafety(agent.Safety{ReadOnly: true}), agent.WithSubRuns(func(string) *agent.Agent { return leaf }))
 		mid, err := agent.New(agent.NewScriptedModel(agent.ToolTurn("m1", "spawn", `{}`), agent.TextTurn("mid done")),
 			s, agent.WithTools(spawn))
 		if err != nil {
 			t.Fatal(err)
 		}
-		starter := agent.Func("starter", "", agent.Safety{ReadOnly: true}, func(ctx context.Context, _ struct{}) (string, error) {
+		starter := agent.MustFunc("starter", "", func(ctx context.Context, _ struct{}) (string, error) {
 			info, _ := agent.RunInfoFrom(ctx)
 			var opts []agent.RunOption
 			if midSaga {
@@ -183,8 +180,8 @@ func TestAdv127b_NestedThroughNonSagaChild(t *testing.T) {
 			}
 			msg, err := agenttest.Answer(mid.Run(ctx, info.SubRunFor("mid"), agent.UserText("work"), opts...))
 			return msg.Text(), err
-		}, agent.WithSubRuns(func(string) *agent.Agent { return mid }))
-		boom := agent.Func("boom", "", agent.Safety{}, func(context.Context, struct{}) (string, error) {
+		}, agent.WithSafety(agent.Safety{ReadOnly: true}), agent.WithSubRuns(func(string) *agent.Agent { return mid }))
+		boom := agent.MustFunc("boom", "", func(context.Context, struct{}) (string, error) {
 			return "", errors.New("boom")
 		})
 		p, err := agent.New(agent.NewScriptedModel(agent.ToolTurn("c1", "starter", `{}`), agent.ToolTurn("c2", "boom", `{}`), agent.TextTurn("x")),
@@ -207,8 +204,7 @@ func TestAdv127b_NestedThroughNonSagaChild(t *testing.T) {
 func TestAdv127b_NestedThroughTwoPlainRuns(t *testing.T) {
 	s := agenttest.MemJournal()
 	undone := 0
-	book := agent.CompensatedFunc("book", "", agent.Safety{},
-		func(context.Context, struct{}) (string, error) { return "booked", nil },
+	book := agent.MustCompensatedFunc("book", "", func(context.Context, struct{}) (string, error) { return "booked", nil },
 		func(context.Context, struct{}, string) error { undone++; return nil })
 	build := func(m agent.Model, tools ...agent.Tool) *agent.Agent {
 		a, err := agent.New(m, s, agent.WithTools(tools...))
@@ -218,7 +214,7 @@ func TestAdv127b_NestedThroughTwoPlainRuns(t *testing.T) {
 		return a
 	}
 	starts := func(tool, name string, sub *agent.Agent, saga bool) agent.Tool {
-		return agent.Func(tool, "", agent.Safety{ReadOnly: true}, func(ctx context.Context, _ struct{}) (string, error) {
+		return agent.MustFunc(tool, "", func(ctx context.Context, _ struct{}) (string, error) {
 			info, _ := agent.RunInfoFrom(ctx)
 			var opts []agent.RunOption
 			if saga {
@@ -226,12 +222,12 @@ func TestAdv127b_NestedThroughTwoPlainRuns(t *testing.T) {
 			}
 			msg, err := agenttest.Answer(sub.Run(ctx, info.SubRunFor(name), agent.UserText("work"), opts...))
 			return msg.Text(), err
-		}, agent.WithSubRuns(func(string) *agent.Agent { return sub }))
+		}, agent.WithSafety(agent.Safety{ReadOnly: true}), agent.WithSubRuns(func(string) *agent.Agent { return sub }))
 	}
 	leaf := build(agent.NewScriptedModel(agent.ToolTurn("k1", "book", `{}`), agent.TextTurn("leaf")), book)
 	b := build(agent.NewScriptedModel(agent.ToolTurn("b1", "to_leaf", `{}`), agent.TextTurn("b")), starts("to_leaf", "leaf", leaf, true))
 	a := build(agent.NewScriptedModel(agent.ToolTurn("a1", "to_b", `{}`), agent.TextTurn("a")), starts("to_b", "b", b, false))
-	boom := agent.Func("boom", "", agent.Safety{}, func(context.Context, struct{}) (string, error) { return "", errors.New("boom") })
+	boom := agent.MustFunc("boom", "", func(context.Context, struct{}) (string, error) { return "", errors.New("boom") })
 	root := build(agent.NewScriptedModel(agent.ToolTurn("c1", "to_a", `{}`), agent.ToolTurn("c2", "boom", `{}`), agent.TextTurn("x")),
 		starts("to_a", "a", a, false), boom)
 	_, err := root.Run(context.Background(), "root", agent.UserText("go"), agent.WithSaga())

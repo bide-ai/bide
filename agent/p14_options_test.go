@@ -81,7 +81,7 @@ func approvalAgent(t *testing.T, j *agent.Journal, opts ...agent.Option) (*agent
 		{text: "done"},
 	}}
 	tools := agent.WithTools(c.tool("pay", agent.Safety{}, agent.WithApproval(agent.SingleApproval())),
-		agent.Func("lookup", "", agent.Safety{ReadOnly: true}, func(context.Context, struct{}) (string, error) { return "ok", nil }))
+		agent.MustFunc("lookup", "", func(context.Context, struct{}) (string, error) { return "ok", nil }, agent.WithSafety(agent.Safety{ReadOnly: true})))
 	return p14Build(t, model, j, append([]agent.Option{tools}, opts...)...), model, &c
 }
 
@@ -327,7 +327,7 @@ func TestP14Rule13_FilterHoldsOnResume(t *testing.T) {
 	j, _ := p14Journal(t)
 	var pay counter
 	model := &p14Model{turns: []p14Turn{{calls: []agent.ToolUse{call("c1", "lookup"), call("c2", "pay")}}, {text: "done"}}}
-	gated := agent.Func("lookup", "", agent.Safety{ReadOnly: true}, func(context.Context, struct{}) (string, error) { return "ok", nil },
+	gated := agent.MustFunc("lookup", "", func(context.Context, struct{}) (string, error) { return "ok", nil }, agent.WithSafety(agent.Safety{ReadOnly: true}),
 		agent.WithApproval(agent.SingleApproval()))
 	a := p14Build(t, model, j, agent.WithTools(pay.tool("pay", agent.Safety{}), gated))
 	if _, err := a.Run(ctx, "r", agent.UserText("go"), agent.WithToolFilter("lookup")); err == nil {
@@ -357,10 +357,10 @@ func TestP14_PrincipalRestoredActorLive(t *testing.T) {
 	ctx := context.Background()
 	j, _ := p14Journal(t)
 	var seen agent.Identity
-	who := agent.Func("who", "", agent.Safety{ReadOnly: true}, func(ctx context.Context, _ struct{}) (string, error) {
+	who := agent.MustFunc("who", "", func(ctx context.Context, _ struct{}) (string, error) {
 		seen, _ = agent.IdentityFrom(ctx)
 		return "ok", nil
-	}, agent.WithApproval(agent.SingleApproval()))
+	}, agent.WithSafety(agent.Safety{ReadOnly: true}), agent.WithApproval(agent.SingleApproval()))
 	model := &p14Model{turns: []p14Turn{{calls: []agent.ToolUse{call("c1", "who")}}, {text: "done"}}}
 	a := p14Build(t, model, j, agent.WithTools(who))
 	if _, err := a.Run(ctx, "r", agent.UserText("go"), agent.WithIdentity(agent.Identity{Actor: "v1", OnBehalfOf: "desk", AuthorityRef: "grant-1"})); err == nil {
@@ -497,9 +497,9 @@ func TestP14_ResultOnEveryErrorKind(t *testing.T) {
 			j, _ := p14Journal(t)
 			model := &p14Model{turns: tc.turns}
 			a := p14Build(t, model, j, agent.WithTools(
-				agent.Func("gated", "", agent.Safety{ReadOnly: true}, func(context.Context, struct{}) (string, error) { return "", nil }, agent.WithApproval(agent.SingleApproval())),
-				agent.Func("lookup", "", agent.Safety{ReadOnly: true}, func(context.Context, struct{}) (string, error) { return "", nil }),
-				agent.Func("fail", "", agent.Safety{}, func(context.Context, struct{}) (string, error) { return "", errors.New("declined") })))
+				agent.MustFunc("gated", "", func(context.Context, struct{}) (string, error) { return "", nil }, agent.WithSafety(agent.Safety{ReadOnly: true}), agent.WithApproval(agent.SingleApproval())),
+				agent.MustFunc("lookup", "", func(context.Context, struct{}) (string, error) { return "", nil }, agent.WithSafety(agent.Safety{ReadOnly: true})),
+				agent.MustFunc("fail", "", func(context.Context, struct{}) (string, error) { return "", errors.New("declined") })))
 			res, err := a.Run(ctx, "r", agent.UserText("go"), tc.opts...)
 			if !tc.want(err) {
 				t.Fatalf("err = %v", err)

@@ -170,7 +170,13 @@ type safetyTool struct {
 	value  int
 }
 
-func (s safetyTool) Name() string                { return "safety-tool" }
+func (s safetyTool) Name() string { return "safety-tool" }
+
+// Spec describes the tool to the agent (see agent.Tool).
+func (s safetyTool) Spec() agent.ToolSpec {
+	return agent.ToolSpec{Name: s.Name(), Description: s.Description(), Input: s.ArgsSchema(), Safety: s.Safety()}
+}
+
 func (s safetyTool) Description() string         { return "test tool" }
 func (s safetyTool) ArgsSchema() json.RawMessage { return json.RawMessage(`{"type":"object"}`) }
 func (s safetyTool) Safety() agent.Safety        { return s.safety }

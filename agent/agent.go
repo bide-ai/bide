@@ -117,7 +117,7 @@ func (a *Agent) addTool(t Tool) error {
 	if isNil(t) {
 		return fmt.Errorf("agent: nil tool: %w", ErrConfig)
 	}
-	s := SpecOf(t)
+	s := specOf(t)
 	if err := checkWrapper(t, s); err != nil {
 		return err
 	}

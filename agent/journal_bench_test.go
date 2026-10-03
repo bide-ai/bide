@@ -23,7 +23,7 @@ func BenchmarkRunTurns(b *testing.B) {
 		turns = append(turns, agent.ToolTurn(fmt.Sprintf("c%d", i), "lookup", `{}`))
 	}
 	turns = append(turns, agent.TextTurn("done"))
-	tool := agent.Func("lookup", "", agent.Safety{ReadOnly: true}, func(context.Context, struct{}) (string, error) { return "ok", nil })
+	tool := agent.MustFunc("lookup", "", func(context.Context, struct{}) (string, error) { return "ok", nil }, agent.WithSafety(agent.Safety{ReadOnly: true}))
 	store := agenttest.MemJournal()
 	a := agenttest.MustNew(agent.NewScriptedModel(turns...), store, agent.WithTools(tool))
 	b.ReportAllocs()
@@ -40,7 +40,7 @@ func BenchmarkRunTurns(b *testing.B) {
 // its result, and the turns around it.
 func BenchmarkToolCallSideEffect(b *testing.B) {
 	ctx := context.Background()
-	tool := agent.Func("charge", "", agent.Safety{}, func(context.Context, struct{}) (string, error) { return "ok", nil })
+	tool := agent.MustFunc("charge", "", func(context.Context, struct{}) (string, error) { return "ok", nil })
 	store := agenttest.MemJournal()
 	a := agenttest.MustNew(
 		agent.NewScriptedModel(agent.ToolTurn("c1", "charge", `{}`), agent.TextTurn("done")),

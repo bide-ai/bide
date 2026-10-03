@@ -489,48 +489,46 @@ func EventTool(gov Applier, cfg EventToolConfig) agent.Tool {
 		panic(fmt.Errorf("govern: EventTool %q asks for the attested form (state digest and acting identity) with an empty PolicyDigest; set the digest of the policy it attests to: %w", cfg.Name, agent.ErrConfig))
 	}
 	if policyDigest == "" {
-		return agent.Func(cfg.Name, cfg.Description, cfg.Safety,
-			func(ctx context.Context, _ struct{}) (map[string]any, error) {
-				a, err := applyForCall(ctx, gov, event)
-				if err != nil {
-					return nil, err
-				}
-				return map[string]any{"event": event, "applied": true, "position": a.Position}, nil
-			}, cfg.Options...)
-	}
-	return agent.Func(cfg.Name, cfg.Description, cfg.Safety,
-		func(ctx context.Context, _ struct{}) (map[string]any, error) {
+		return agent.MustFunc(cfg.Name, cfg.Description, func(ctx context.Context, _ struct{}) (map[string]any, error) {
 			a, err := applyForCall(ctx, gov, event)
 			if err != nil {
 				return nil, err
 			}
-			// One leaf binds the action (this tool call), the policy that admitted it, the exact
-			// resulting state, and the event's position in the governor's order. A verifier
-			// replaying the policy over the governed events at positions [0, position] (the shared
-			// log for a log-backed governor) reproduces state_digest, so the runtime's state is
-			// checkable against the verified reference at every transition, however many processes
-			// or runs share the state.
-			result := map[string]any{
-				"event":         event,
-				"applied":       true,
-				"policy_digest": policyDigest,
-				"state_digest":  a.State.Digest(),
-				"position":      a.Position,
+			return map[string]any{"event": event, "applied": true, "position": a.Position}, nil
+		}, append([]agent.ToolOption{agent.WithSafety(cfg.Safety)}, cfg.Options...)...)
+	}
+	return agent.MustFunc(cfg.Name, cfg.Description, func(ctx context.Context, _ struct{}) (map[string]any, error) {
+		a, err := applyForCall(ctx, gov, event)
+		if err != nil {
+			return nil, err
+		}
+		// One leaf binds the action (this tool call), the policy that admitted it, the exact
+		// resulting state, and the event's position in the governor's order. A verifier
+		// replaying the policy over the governed events at positions [0, position] (the shared
+		// log for a log-backed governor) reproduces state_digest, so the runtime's state is
+		// checkable against the verified reference at every transition, however many processes
+		// or runs share the state.
+		result := map[string]any{
+			"event":         event,
+			"applied":       true,
+			"policy_digest": policyDigest,
+			"state_digest":  a.State.Digest(),
+			"position":      a.Position,
+		}
+		// If the deployment bound an acting identity to the run (agent.WithIdentity), stamp it
+		// into the same leaf, so an inclusion proof commits to WHO acted, on whose behalf, and
+		// under what authority, not merely that the action happened under the policy.
+		if id, ok := agent.IdentityFrom(ctx); ok && !id.Empty() {
+			if id.Actor != "" {
+				result["actor"] = id.Actor
 			}
-			// If the deployment bound an acting identity to the run (agent.WithIdentity), stamp it
-			// into the same leaf, so an inclusion proof commits to WHO acted, on whose behalf, and
-			// under what authority, not merely that the action happened under the policy.
-			if id, ok := agent.IdentityFrom(ctx); ok && !id.Empty() {
-				if id.Actor != "" {
-					result["actor"] = id.Actor
-				}
-				if id.OnBehalfOf != "" {
-					result["on_behalf_of"] = id.OnBehalfOf
-				}
-				if id.AuthorityRef != "" {
-					result["authority_ref"] = id.AuthorityRef
-				}
+			if id.OnBehalfOf != "" {
+				result["on_behalf_of"] = id.OnBehalfOf
 			}
-			return result, nil
-		}, cfg.Options...)
+			if id.AuthorityRef != "" {
+				result["authority_ref"] = id.AuthorityRef
+			}
+		}
+		return result, nil
+	}, append([]agent.ToolOption{agent.WithSafety(cfg.Safety)}, cfg.Options...)...)
 }

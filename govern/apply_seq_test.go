@@ -12,20 +12,20 @@ import (
 
 // composite is a retry-safe tool that calls each of tools once, in order, within its own call.
 func composite(name string, tools ...agent.Tool) agent.Tool {
-	return agent.Func(name, "", agent.Safety{Idempotent: true}, func(ctx context.Context, _ struct{}) (map[string]any, error) {
+	return agent.MustFunc(name, "", func(ctx context.Context, _ struct{}) (map[string]any, error) {
 		for _, tl := range tools {
 			if _, err := tl.Call(ctx, []byte(`{}`)); err != nil {
 				return nil, err
 			}
 		}
 		return map[string]any{"ok": true}, nil
-	})
+	}, agent.WithSafety(agent.Safety{Idempotent: true}))
 }
 
 func runOnce(t *testing.T, tool agent.Tool) {
 	t.Helper()
 	a := agenttest.MustNew(
-		agent.NewScriptedModel(agent.ToolTurn("c1", tool.Name(), `{}`), agent.TextTurn("done")),
+		agent.NewScriptedModel(agent.ToolTurn("c1", tool.Spec().Name, `{}`), agent.TextTurn("done")),
 		agenttest.MemJournal(),
 		agent.WithTools(tool),
 	)
@@ -123,7 +123,7 @@ func TestEventTool_ParallelFanOutInOneCall(t *testing.T) {
 	incA := govern.EventTool(g, govern.EventToolConfig{Name: "a", Description: "", Event: "inc_a", Safety: agent.Safety{Idempotent: true}})
 	incB := govern.EventTool(g, govern.EventToolConfig{Name: "b", Description: "", Event: "inc_b", Safety: agent.Safety{Idempotent: true}})
 	bFirst := true // which task applies first; the re-run flips it
-	fan := agent.Func("fan", "", agent.Safety{Idempotent: true}, func(ctx context.Context, _ struct{}) (map[string]any, error) {
+	fan := agent.MustFunc("fan", "", func(ctx context.Context, _ struct{}) (map[string]any, error) {
 		first, second := incA, incB
 		if bFirst {
 			first, second = incB, incA
@@ -153,7 +153,7 @@ func TestEventTool_ParallelFanOutInOneCall(t *testing.T) {
 			return nil, err
 		}
 		return map[string]any{"ok": true}, nil
-	})
+	}, agent.WithSafety(agent.Safety{Idempotent: true}))
 	runToolTwice(t, fan, func() { bFirst = false })
 	evs := logEvents(t, log, "e")
 	if !slices.Equal(evs, []string{"inc_b", "inc_a"}) {

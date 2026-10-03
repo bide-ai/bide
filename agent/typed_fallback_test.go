@@ -10,8 +10,7 @@ import (
 // message Run returns and RunTypedNative decodes. RunTyped used to take the last text of ANY turn,
 // so a draft the model wrote beside a tool call stood in for a final turn that carried no text.
 func TestRunTyped_TextFallbackIsTheFinalTurn(t *testing.T) {
-	work := Func("work", "does work", Safety{ReadOnly: true},
-		func(context.Context, struct{}) (string, error) { return "ok", nil })
+	work := MustFunc("work", "does work", func(context.Context, struct{}) (string, error) { return "ok", nil }, WithSafety(Safety{ReadOnly: true}))
 	draft := []Event{
 		TextDelta{Text: `{"name":"draft"}`},
 		ToolCallDelta{Index: 0, ID: "w1", Name: "work", ArgsFragment: []byte(`{}`)},

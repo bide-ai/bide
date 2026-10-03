@@ -103,8 +103,7 @@ func (toolModel) Stream(_ context.Context, req agent.Request) (*agent.Stream, er
 // behavior (tool called, step count) from the journal, not just the final text.
 func TestTrajectoryMetrics(t *testing.T) {
 	store := agenttest.MemJournal()
-	lookup := agent.Func("lookup", "look something up", agent.Safety{ReadOnly: true},
-		func(context.Context, struct{}) (string, error) { return "ok", nil })
+	lookup := agent.MustFunc("lookup", "look something up", func(context.Context, struct{}) (string, error) { return "ok", nil }, agent.WithSafety(agent.Safety{ReadOnly: true}))
 	a := agenttest.MustNew(toolModel{}, store, agent.WithTools(lookup))
 	run := mustRunner(t, a, store, "traj")
 	cases := []eval.Case{{Name: "with_tool", Input: "go"}}

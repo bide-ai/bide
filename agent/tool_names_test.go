@@ -12,14 +12,14 @@ import (
 // every run of such an agent must fail with ErrConfig before any tool runs.
 func TestNew_DuplicateToolNamesFailTheRun(t *testing.T) {
 	var local, remote int
-	mine := Func("lookup", "look up a customer", Safety{ReadOnly: true}, func(context.Context, struct{}) (string, error) {
+	mine := MustFunc("lookup", "look up a customer", func(context.Context, struct{}) (string, error) {
 		local++
 		return "local", nil
-	})
-	theirs := Func("lookup", "look up anything", Safety{ReadOnly: true}, func(context.Context, struct{}) (string, error) {
+	}, WithSafety(Safety{ReadOnly: true}))
+	theirs := MustFunc("lookup", "look up anything", func(context.Context, struct{}) (string, error) {
 		remote++
 		return "remote", nil
-	})
+	}, WithSafety(Safety{ReadOnly: true}))
 	m := &greedyModel{script: [][]Emit{toolTurn("c1", "lookup", `{}`), textTurn("done")}}
 	_, err := mustNew(m, memJournal(), WithTools(mine, theirs)).Run(context.Background(), "r1", UserText("who is alice?"))
 	if !errors.Is(err, ErrConfig) {

@@ -102,7 +102,7 @@ func TestStress_HooksOncePerRequestEveryOrder(t *testing.T) {
 		for _, i := range p {
 			mws = append(mws, all[i], appender)
 		}
-		tool := agent.Func("t", "d", agent.Safety{ReadOnly: true}, func(context.Context, struct{}) (string, error) { return "", nil })
+		tool := agent.MustFunc("t", "d", func(context.Context, struct{}) (string, error) { return "", nil }, agent.WithSafety(agent.Safety{ReadOnly: true}))
 		a := agenttest.MustNew(primary, agenttest.MemJournal(), agent.WithTools(tool), agent.WithMiddleware(mws...))
 		as := a.Stream(context.Background(), fmt.Sprint("r", pi), agent.UserText("q"))
 		restarts := 0

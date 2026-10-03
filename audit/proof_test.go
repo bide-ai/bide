@@ -17,8 +17,7 @@ func buildRun(t *testing.T) (*agent.Journal, string, ed25519.PublicKey, audit.Si
 	ctx := context.Background()
 	store := agent.NewMemStore()
 	j := agenttest.MustJournal(store)
-	tool := agent.Func("lookup", "", agent.Safety{ReadOnly: true},
-		func(_ context.Context, _ struct{}) (string, error) { return "ok", nil })
+	tool := agent.MustFunc("lookup", "", func(_ context.Context, _ struct{}) (string, error) { return "ok", nil }, agent.WithSafety(agent.Safety{ReadOnly: true}))
 	if _, err := agenttest.MustNew(&twoTurnModel{}, j, agent.WithTools(tool)).Run(ctx, "run", agent.UserText("hi")); err != nil {
 		t.Fatalf("run: %v", err)
 	}

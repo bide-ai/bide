@@ -46,7 +46,13 @@ type tracker struct {
 	calls atomic.Int32
 }
 
-func (t *tracker) Name() string                { return t.name }
+func (t *tracker) Name() string { return t.name }
+
+// Spec describes the tool to the agent (see Tool).
+func (t *tracker) Spec() ToolSpec {
+	return ToolSpec{Name: t.Name(), Description: t.Description(), Input: t.ArgsSchema(), Safety: t.Safety()}
+}
+
 func (t *tracker) Description() string         { return "" }
 func (t *tracker) Safety() Safety              { return Safety{} }
 func (t *tracker) ArgsSchema() json.RawMessage { return json.RawMessage(`{"type":"object"}`) }
@@ -99,10 +105,10 @@ func TestRun_AnyToolUseIDKeysItsOwnRecords(t *testing.T) {
 // can record it.
 func TestRun_ToolUseIDKeysAreBoundedAndPrintable(t *testing.T) {
 	var scopes []string
-	probe := Func("probe", "", Safety{ReadOnly: true}, func(ctx context.Context, _ struct{}) (string, error) {
+	probe := MustFunc("probe", "", func(ctx context.Context, _ struct{}) (string, error) {
 		scopes = append(scopes, runScope(ctx))
 		return "ok", nil
-	})
+	}, WithSafety(Safety{ReadOnly: true}))
 	for _, id := range []string{strings.Repeat("k", 5000), strings.Repeat(":", 2000), "日本語", "nul\x00byte"} {
 		scopes = nil
 		store := memJournal()
@@ -139,7 +145,7 @@ func TestRun_ToolUseIDsNeverNameAnotherSubRun(t *testing.T) {
 	a := mustNew(
 		NewScriptedModel(ToolTurn("b", "b", `{"task":"x"}`), TextTurn("a done")),
 		store,
-		WithTools(SubAgent("b", "b", b)),
+		WithTools(MustSubAgent("b", "b", b)),
 	)
 	cModel := &countModel{inner: fixedTextModel("from c")}
 	c := mustNew(cModel, store)
@@ -151,7 +157,7 @@ func TestRun_ToolUseIDsNeverNameAnotherSubRun(t *testing.T) {
 			TextTurn("root done"),
 		),
 		store,
-		WithTools(SubAgent("a", "a", a), SubAgent("c", "c", c)),
+		WithTools(MustSubAgent("a", "a", a), MustSubAgent("c", "c", c)),
 	)
 	if _, err := runRecovering(root, "r"); err != nil {
 		t.Fatal(err)
@@ -267,8 +273,8 @@ func TestSaga_RollbackStepAttemptIsNotAToolCallAttempt(t *testing.T) {
 			t.Fatal(err)
 		}
 	}
-	write := Func("write", "", Safety{}, func(context.Context, struct{}) (string, error) { return "ok", nil })
-	book := Func("book", "", Safety{}, func(context.Context, struct{}) (string, error) { return "", errors.New("no seats") })
+	write := MustFunc("write", "", func(context.Context, struct{}) (string, error) { return "ok", nil })
+	book := MustFunc("book", "", func(context.Context, struct{}) (string, error) { return "", errors.New("no seats") })
 	_, err := mustNew(fixedTextModel("done"), store, WithTools(write, book)).Run(ctx, "r1", UserText("trip"), WithSaga())
 	var aborted *SagaAborted
 	if !errors.As(err, &aborted) || aborted.CompensateErr != nil {

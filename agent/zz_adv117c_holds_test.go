@@ -34,7 +34,7 @@ func TestAdv117c_ReachedBeatsSentinel(t *testing.T) {
 			ctx, cancel := context.WithCancel(context.Background())
 			var tool Tool
 			if s.inner {
-				innerTool := Func("inner", "", Safety{}, func(context.Context, struct{}) (string, error) {
+				innerTool := MustFunc("inner", "", func(context.Context, struct{}) (string, error) {
 					calls.Add(1) // the sub-run's side effect
 					cancel()
 					return "", fmt.Errorf("declined (%w)", ErrToolNotCalled)
@@ -45,9 +45,9 @@ func TestAdv117c_ReachedBeatsSentinel(t *testing.T) {
 					subStore,
 					WithTools(innerTool),
 				)
-				tool = SubAgent("charge", "", sub)
+				tool = MustSubAgent("charge", "", sub)
 			} else {
-				tool = Func("charge", "", Safety{}, func(context.Context, struct{}) (string, error) {
+				tool = MustFunc("charge", "", func(context.Context, struct{}) (string, error) {
 					calls.Add(1)
 					cancel()
 					return "", fmt.Errorf("declined (%w)", ErrToolNotCalled)

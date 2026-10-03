@@ -36,7 +36,7 @@ func (m *turnsModel) Stream(context.Context, Request) (*Stream, error) {
 // recorded, so after the human answers the run completes, with no halt and one send.
 func TestParallelTurn_PauseDoesNotCancelASibling(t *testing.T) {
 	var sent atomic.Int32
-	send := Func("send", "send the email", Safety{}, func(ctx context.Context, _ struct{}) (string, error) {
+	send := MustFunc("send", "send the email", func(ctx context.Context, _ struct{}) (string, error) {
 		select {
 		case <-time.After(50 * time.Millisecond): // the provider accepts the email
 			sent.Add(1)
@@ -46,9 +46,9 @@ func TestParallelTurn_PauseDoesNotCancelASibling(t *testing.T) {
 			return "", ctx.Err()
 		}
 	})
-	ask := Func("ask", "ask the user", Safety{ReadOnly: true}, func(ctx context.Context, _ struct{}) (string, error) {
+	ask := MustFunc("ask", "ask the user", func(ctx context.Context, _ struct{}) (string, error) {
 		return Interrupt[string](ctx, "confirm", "ok to proceed?")
-	})
+	}, WithSafety(Safety{ReadOnly: true}))
 	store := memJournal()
 	m := &turnsModel{turns: [][][2]string{{{"a1", "ask"}, {"s1", "send"}}}}
 	a := mustNew(m, store, WithTools(ask, send))
@@ -71,10 +71,10 @@ func TestParallelTurn_PauseDoesNotCancelASibling(t *testing.T) {
 // In a saga, a failing tool aborts the transaction even if a sibling paused first: the run
 // rolls back now, rather than returning the pause and discarding the human's answer later.
 func TestParallelTurn_SagaFailureIsNotMaskedByAPause(t *testing.T) {
-	ask := Func("ask", "ask the user", Safety{ReadOnly: true}, func(ctx context.Context, _ struct{}) (string, error) {
+	ask := MustFunc("ask", "ask the user", func(ctx context.Context, _ struct{}) (string, error) {
 		return Interrupt[string](ctx, "confirm", "ok?")
-	})
-	fail := Func("book", "book the flight", Safety{}, func(context.Context, struct{}) (string, error) {
+	}, WithSafety(Safety{ReadOnly: true}))
+	fail := MustFunc("book", "book the flight", func(context.Context, struct{}) (string, error) {
 		time.Sleep(20 * time.Millisecond) // the pause is returned first
 		return "", errors.New("no seats")
 	})

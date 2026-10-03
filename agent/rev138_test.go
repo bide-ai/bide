@@ -28,7 +28,7 @@ func TestRev138_SubRunFiresAfterParentCancel(t *testing.T) {
 		}},
 		{text: "done"},
 	}}
-	parent := p14Build(t, parentModel, j, agent.WithTools(agent.SubAgent("helper", "", sub)))
+	parent := p14Build(t, parentModel, j, agent.WithTools(agent.MustSubAgent("helper", "", sub)))
 	_, err := parent.Run(ctx, "r", agent.UserText("go"))
 	t.Logf("parent run = %v; pay fired %d", err, c.n.Load())
 	if n := c.n.Load(); n != 0 {
@@ -172,11 +172,10 @@ func TestRev138_CancelledSagaTurnBlocksSession(t *testing.T) {
 func TestRev138_SagaCancelRollbackReportsWrongEnd(t *testing.T) {
 	ctx := context.Background()
 	j, m := p14Journal(t)
-	book := agent.CompensatedFunc("book", "", agent.Safety{},
-		func(context.Context, struct{}) (string, error) {
-			writeMarker(t, m, "r", "run:cancel-requested", reason{"stop"})
-			return "booked", nil
-		},
+	book := agent.MustCompensatedFunc("book", "", func(context.Context, struct{}) (string, error) {
+		writeMarker(t, m, "r", "run:cancel-requested", reason{"stop"})
+		return "booked", nil
+	},
 		func(context.Context, struct{}, string) error {
 			// another drive of the saga, rolling back a failure, finishes first
 			writeMarker(t, m, "r", "run:aborted", "a step failed")

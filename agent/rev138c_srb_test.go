@@ -38,8 +38,7 @@ func srbSetup(t *testing.T, leaser bool, onComp func()) (s *agent.Session, in, o
 	maxInFlight, done = new(atomic.Int32), new(atomic.Bool)
 	var inFlight atomic.Int32
 	var once sync.Once
-	book := agent.CompensatedFunc("book", "", agent.Safety{},
-		func(context.Context, struct{}) (string, error) { return "booked", nil },
+	book := agent.MustCompensatedFunc("book", "", func(context.Context, struct{}) (string, error) { return "booked", nil },
 		func(context.Context, struct{}, string) error {
 			n := inFlight.Add(1)
 			for m := maxInFlight.Load(); n > m && !maxInFlight.CompareAndSwap(m, n); m = maxInFlight.Load() {

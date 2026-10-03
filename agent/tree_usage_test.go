@@ -70,12 +70,12 @@ func (m *delegator) Stream(_ context.Context, req Request) (*Stream, error) {
 }
 
 func stepTool(fn func(ctx context.Context) error) Tool {
-	return Func("step", "one step", Safety{ReadOnly: true}, func(ctx context.Context, _ struct{}) (string, error) {
+	return MustFunc("step", "one step", func(ctx context.Context, _ struct{}) (string, error) {
 		if err := fn(ctx); err != nil {
 			return "", err
 		}
 		return "stepped", nil
-	})
+	}, WithSafety(Safety{ReadOnly: true}))
 }
 
 func times(u Usage, n int) Usage {
@@ -119,7 +119,7 @@ func TestRunResult_IncludesSubAgents(t *testing.T) {
 	parent := mustNew(
 		&delegator{ids: []string{"p1", "p2"}, u: hundred},
 		store,
-		WithTools(SubAgent("sub", "delegate", sub)),
+		WithTools(MustSubAgent("sub", "delegate", sub)),
 	)
 	res, err := parent.Run(context.Background(), "r1", UserText("q"))
 	if err != nil {
@@ -138,7 +138,7 @@ func TestTokenBudget_CoversSubAgents(t *testing.T) {
 	subModel := &stepper{n: 10, u: hundred}
 	sub := mustNew(subModel, store, WithTools(stepTool(func(context.Context) error { return nil })))
 	parentModel := &delegator{ids: []string{"p1"}, u: hundred}
-	parent := mustNew(parentModel, store, WithTools(SubAgent("sub", "delegate", sub)), WithTokenBudget(300))
+	parent := mustNew(parentModel, store, WithTools(MustSubAgent("sub", "delegate", sub)), WithTokenBudget(300))
 	_, err := parent.Run(context.Background(), "r1", UserText("q"))
 	if !errors.Is(err, ErrBudgetExceeded) {
 		t.Fatalf("err = %v, want ErrBudgetExceeded", err)
@@ -163,7 +163,7 @@ func TestTokenBudget_ParallelSubAgentsBound(t *testing.T) {
 			ids[i] = fmt.Sprintf("p%d", i)
 		}
 		parentModel := &delegator{ids: ids, u: hundred}
-		_, err := mustNew(parentModel, store, WithTools(SubAgent("sub", "delegate", sub)), WithTokenBudget(budget)).Run(context.Background(), "r1", UserText("q"))
+		_, err := mustNew(parentModel, store, WithTools(MustSubAgent("sub", "delegate", sub)), WithTokenBudget(budget)).Run(context.Background(), "r1", UserText("q"))
 		if !errors.Is(err, ErrBudgetExceeded) {
 			t.Fatalf("err = %v, want ErrBudgetExceeded", err)
 		}
@@ -212,7 +212,7 @@ func resumedTreeCountsUnfinished(t *testing.T, wrap func(Tool) Tool) {
 	subModel := &stepper{n: 3, u: hundred}
 	sub := mustNew(subModel, store, WithTools(cut))
 	parentModel := &delegator{ids: []string{"p1", "p2"}, u: hundred}
-	if _, err := mustNew(parentModel, store, WithTools(wrap(SubAgent("sub", "delegate", sub)))).Run(ctx, "r1", UserText("q")); !errors.Is(err, context.Canceled) {
+	if _, err := mustNew(parentModel, store, WithTools(wrap(MustSubAgent("sub", "delegate", sub)))).Run(ctx, "r1", UserText("q")); !errors.Is(err, context.Canceled) {
 		t.Fatalf("first invocation: err = %v, want context.Canceled", err)
 	}
 	if p, s := parentModel.calls.Load(), subModel.calls.Load(); p != 1 || s != 4 {
@@ -225,7 +225,7 @@ func resumedTreeCountsUnfinished(t *testing.T, wrap func(Tool) Tool) {
 	parent2 := must(mustNew(
 		parentModel2,
 		store,
-		WithTools(wrap(SubAgent("sub", "delegate", sub2))),
+		WithTools(wrap(MustSubAgent("sub", "delegate", sub2))),
 		WithTokenBudget(450),
 	).With(WithMaxConcurrency(1)))
 	if _, err := parent2.Run(context.Background(), "r1", UserText("q")); !errors.Is(err, ErrBudgetExceeded) {
@@ -253,7 +253,7 @@ func (m truncating) Stream(context.Context, Request) (*Stream, error) {
 func TestTokenBudget_SubAgentFailedCallCounts(t *testing.T) {
 	sub := mustNew(truncating{u: hundred}, memJournal())
 	parentModel := &delegator{ids: []string{"p1"}, u: hundred}
-	res, err := mustNew(parentModel, sub.store, WithTools(SubAgent("sub", "delegate", sub))).Run(context.Background(), "r1", UserText("q"))
+	res, err := mustNew(parentModel, sub.store, WithTools(MustSubAgent("sub", "delegate", sub))).Run(context.Background(), "r1", UserText("q"))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -265,7 +265,7 @@ func TestTokenBudget_SubAgentFailedCallCounts(t *testing.T) {
 	}
 
 	parentModel = &delegator{ids: []string{"p1"}, u: hundred}
-	_, err = mustNew(parentModel, sub.store, WithTools(SubAgent("sub", "delegate", sub)), WithTokenBudget(200)).Run(context.Background(), "r2", UserText("q"))
+	_, err = mustNew(parentModel, sub.store, WithTools(MustSubAgent("sub", "delegate", sub)), WithTokenBudget(200)).Run(context.Background(), "r2", UserText("q"))
 	if !errors.Is(err, ErrBudgetExceeded) || parentModel.calls.Load() != 1 {
 		t.Fatalf("err = %v after %d parent calls; want ErrBudgetExceeded after 1 (100 + the failed 100)", err, parentModel.calls.Load())
 	}
@@ -289,7 +289,7 @@ func TestSaga_FailureRecordCarriesSubAgentUsage(t *testing.T) {
 		parent := mustNew(
 			&delegator{ids: []string{"p1"}, u: hundred},
 			store,
-			WithTools(SubAgent("sub", "delegate", sub)),
+			WithTools(MustSubAgent("sub", "delegate", sub)),
 		)
 		var aborted *SagaAborted
 		if _, err := parent.Run(context.Background(), "r1", UserText("q"), WithSaga()); !errors.As(err, &aborted) {
@@ -343,12 +343,12 @@ func TestTokenBudget_ResumedTreeCountsEveryLevel(t *testing.T) {
 		b := mustNew(
 			&delegator{ids: []string{"g1"}, u: hundred},
 			store,
-			WithTools(SubAgent("sub", "delegate", g)),
+			WithTools(MustSubAgent("sub", "delegate", g)),
 		)
 		return mustNew(
 			&delegator{ids: []string{"p1", "p2"}, names: []string{"a", "b"}, u: hundred},
 			store,
-			WithTools(SubAgent("a", "delegate", mustNew(models[0], store, WithTools(step))), SubAgent("b", "delegate", b)),
+			WithTools(MustSubAgent("a", "delegate", mustNew(models[0], store, WithTools(step))), MustSubAgent("b", "delegate", b)),
 		)
 	}
 	var first [3]*stepper
@@ -406,7 +406,7 @@ func TestTokenBudget_ResumedTreeCountsOnce(t *testing.T) {
 	crashTree(t, ctx, mustNew(
 		&delegator{ids: []string{"p1", "p2"}, u: hundred},
 		store,
-		WithTools(SubAgent("sub", "delegate", mustNew(&stepper{n: 3, u: hundred}, store, WithTools(cut)))),
+		WithTools(MustSubAgent("sub", "delegate", mustNew(&stepper{n: 3, u: hundred}, store, WithTools(cut)))),
 	))
 
 	sub := mustNew(
@@ -417,7 +417,7 @@ func TestTokenBudget_ResumedTreeCountsOnce(t *testing.T) {
 	res, err := must(mustNew(
 		&delegator{ids: []string{"p1", "p2"}, u: hundred},
 		store,
-		WithTools(SubAgent("sub", "delegate", sub)),
+		WithTools(MustSubAgent("sub", "delegate", sub)),
 		WithTokenBudget(901),
 	).With(WithMaxConcurrency(1))).Run(context.Background(), "r1", UserText("q"))
 	if err != nil {
@@ -466,13 +466,13 @@ func TestTokenBudget_ResumedTreeCountsFinishedSubAgentOnce(t *testing.T) {
 	crashTree(t, ctx, mustNew(
 		delegateThenStep{u: hundred},
 		store,
-		WithTools(SubAgent("sub", "delegate", sub), stepTool(func(ctx context.Context) error { cancel(); return ctx.Err() })),
+		WithTools(MustSubAgent("sub", "delegate", sub), stepTool(func(ctx context.Context) error { cancel(); return ctx.Err() })),
 	))
 
 	res, err := mustNew(
 		delegateThenStep{u: hundred},
 		store,
-		WithTools(SubAgent("sub", "delegate", sub), stepTool(func(context.Context) error { return nil })),
+		WithTools(MustSubAgent("sub", "delegate", sub), stepTool(func(context.Context) error { return nil })),
 		WithTokenBudget(401),
 	).Run(context.Background(), "r1", UserText("q"))
 	if err != nil {
@@ -499,7 +499,7 @@ func TestTokenBudget_ResumedSubAgentKeepsItsBudget(t *testing.T) {
 	crashTree(t, ctx, mustNew(
 		&delegator{ids: []string{"p1"}, u: hundred},
 		store,
-		WithTools(SubAgent("sub", "delegate", mustNew(&stepper{n: 5, u: hundred}, store, WithTools(cut)))),
+		WithTools(MustSubAgent("sub", "delegate", mustNew(&stepper{n: 5, u: hundred}, store, WithTools(cut)))),
 	))
 
 	subModel := &stepper{n: 5, u: hundred}
@@ -512,7 +512,7 @@ func TestTokenBudget_ResumedSubAgentKeepsItsBudget(t *testing.T) {
 	if _, err := mustNew(
 		&delegator{ids: []string{"p1"}, u: hundred},
 		store,
-		WithTools(SubAgent("sub", "delegate", sub)),
+		WithTools(MustSubAgent("sub", "delegate", sub)),
 	).Run(context.Background(), "r1", UserText("q")); err != nil {
 		t.Fatalf("resumed: %v (the sub-agent's budget failure is its tool call's error, not the parent's)", err)
 	}

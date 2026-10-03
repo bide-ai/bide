@@ -61,15 +61,14 @@ func awaitScene() {
 	}
 	const runID, sig = "await-1", "approval"
 
-	tool := agent.Func("wait_for_approval", "Wait for an external approval signal",
-		agent.Safety{ReadOnly: true},
+	tool := agent.MustFunc("wait_for_approval", "Wait for an external approval signal",
 		func(ctx context.Context, _ struct{}) (string, error) {
 			who, err := agent.Await[string](ctx, sig)
 			if err != nil {
 				return "", err // *SignalPending on the first pass
 			}
 			return "approved by " + who, nil
-		})
+		}, agent.WithSafety(agent.Safety{ReadOnly: true}))
 	a, err := agent.New(&oneTool{tool: "wait_for_approval"}, store, agent.WithTools(tool))
 	if err != nil {
 		log.Fatal(err)
@@ -109,8 +108,7 @@ func awaitForScene() {
 	}
 	const runID = "awaitfor-1"
 
-	tool := agent.Func("wait_briefly", "Wait for a signal but give up quickly",
-		agent.Safety{ReadOnly: true},
+	tool := agent.MustFunc("wait_briefly", "Wait for a signal but give up quickly",
 		func(ctx context.Context, _ struct{}) (string, error) {
 			payload, ok, err := agent.AwaitFor[string](ctx, "late-signal", time.Millisecond)
 			if err != nil {
@@ -120,7 +118,7 @@ func awaitForScene() {
 				return "got signal: " + payload, nil
 			}
 			return "timed out waiting for the signal", nil
-		})
+		}, agent.WithSafety(agent.Safety{ReadOnly: true}))
 	a, err := agent.New(&oneTool{tool: "wait_briefly"}, store, agent.WithTools(tool))
 	if err != nil {
 		log.Fatal(err)
@@ -167,8 +165,7 @@ func channelScene() {
 		}
 	}
 
-	tool := agent.Func("drain_channel", "Consume every queued message in order, exactly once",
-		agent.Safety{ReadOnly: true},
+	tool := agent.MustFunc("drain_channel", "Consume every queued message in order, exactly once",
 		func(ctx context.Context, _ struct{}) ([]string, error) {
 			var consumed []string
 			for {
@@ -186,7 +183,7 @@ func channelScene() {
 					return nil, err
 				}
 			}
-		})
+		}, agent.WithSafety(agent.Safety{ReadOnly: true}))
 
 	a, err := agent.New(&oneTool{tool: "drain_channel"}, store, agent.WithTools(tool))
 	if err != nil {

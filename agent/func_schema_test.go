@@ -30,7 +30,7 @@ func TestFunc_UndescribableArgsPanics(t *testing.T) {
 			t.Fatalf("Func panicked with %v; want an error wrapping schema.ErrUnsupportedType naming the field", r)
 		}
 	}()
-	Func("t", "", Safety{ReadOnly: true}, func(context.Context, undecodableArgs) (string, error) { return "", nil })
+	MustFunc("t", "", func(context.Context, undecodableArgs) (string, error) { return "", nil }, WithSafety(Safety{ReadOnly: true}))
 }
 
 // RunTyped reports such a result type as a configuration error before running anything.

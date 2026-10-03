@@ -27,7 +27,7 @@ func TestRev117e_LoopReadsTallyStrictly(t *testing.T) {
 	ctx := context.Background()
 	store := memJournal()
 	var ran atomic.Int32
-	tool := Func("t", "", Safety{}, func(context.Context, struct{}) (string, error) { ran.Add(1); return "ok", nil })
+	tool := MustFunc("t", "", func(context.Context, struct{}) (string, error) { ran.Add(1); return "ok", nil })
 	m := NewScriptedModel(ToolTurn("c1", "t", `{}`), TextTurn("done"))
 	a := mustNew(m, store, WithTools(tool))
 	// A tally journaled for the call before it runs (as an m-of-n gate's terminal decision is).

@@ -87,13 +87,12 @@ func (g *gate) resolver() agent.ApproverVerifierFor {
 
 // run drives the agent once and returns its error (nil when the run completes).
 func (g *gate) run() error {
-	charge := agent.Func("charge", "charge the card", agent.Safety{},
-		func(context.Context, struct {
-			Amount int `json:"amount"`
-		}) (string, error) {
-			g.charged++
-			return "ok", nil
-		}, agent.WithApproval(&g.policy))
+	charge := agent.MustFunc("charge", "charge the card", func(context.Context, struct {
+		Amount int `json:"amount"`
+	}) (string, error) {
+		g.charged++
+		return "ok", nil
+	}, agent.WithApproval(&g.policy))
 	_, err := agenttest.MustNew(chargeModel{}, g.store, agent.WithTools(charge), agent.WithApproverVerifiers(g.resolver())).Run(context.Background(), gateRun, agent.UserText("pay"))
 	return err
 }

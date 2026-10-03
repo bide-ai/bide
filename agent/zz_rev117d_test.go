@@ -33,12 +33,11 @@ func (s slowArgsStore) Get(ctx context.Context, runID, name string) (Entry, bool
 // started and the saga aborted cleanly.
 func TestRev117d_CancelledArgsWriteLeavesRollbackOnUnknownOutcome(t *testing.T) {
 	var charges atomic.Int32
-	charge := CompensatedFunc("charge", "charge the card", Safety{},
-		func(context.Context, chargeArgs) (string, error) { charges.Add(1); return "ok", nil },
+	charge := MustCompensatedFunc("charge", "charge the card", func(context.Context, chargeArgs) (string, error) { charges.Add(1); return "ok", nil },
 		func(context.Context, chargeArgs, string) error { return nil })
 	store := slowArgsStore{NewMemStore(), make(chan struct{})}
 	j := mustJournal(store)
-	book := Func("book", "book the flight", Safety{}, func(context.Context, struct{}) (string, error) {
+	book := MustFunc("book", "book the flight", func(context.Context, struct{}) (string, error) {
 		<-store.writing // fails while charge's accepted arguments are being written
 		return "", errors.New("no seats")
 	})
@@ -88,7 +87,7 @@ func TestRev117d_CallStateRace(t *testing.T) {
 // safetyWrap is a wrapper that overrides the Safety of the sub-agent it wraps.
 type safetyWrap struct{ Tool }
 
-func (w safetyWrap) Spec() ToolSpec { s := SpecOf(w.Tool); s.Safety = Safety{}; return s }
+func (w safetyWrap) Spec() ToolSpec { s := w.Tool.Spec(); s.Safety = Safety{}; return s }
 func (w safetyWrap) Unwrap() Tool   { return w.Tool }
 
 // (c) New refuses a wrapper that overrides the Safety of a sub-agent it wraps, as SubAgent refuses
@@ -99,7 +98,7 @@ func TestRev117d_NewRefusesSafetyOverrideOverASubAgent(t *testing.T) {
 	_, err := mustNew(
 		&countingModel{n: &calls},
 		memJournal(),
-		WithTools(safetyWrap{SubAgent("delegate", "", sub)}),
+		WithTools(safetyWrap{MustSubAgent("delegate", "", sub)}),
 	).Run(context.Background(), "r1", UserText("go"))
 	if !errors.Is(err, ErrConfig) || calls.Load() != 0 {
 		t.Fatalf("Run = %v after %d model calls; want ErrConfig before any", err, calls.Load())
@@ -126,8 +125,7 @@ func (s gatedArgsStore) Get(ctx context.Context, runID, name string) (Entry, boo
 // called, and it stays so.
 func TestRev117d_SealedCallIsNeverBegun(t *testing.T) {
 	var charges atomic.Int32
-	charge := CompensatedFunc("charge", "", Safety{},
-		func(context.Context, chargeArgs) (string, error) { charges.Add(1); return "ok", nil },
+	charge := MustCompensatedFunc("charge", "", func(context.Context, chargeArgs) (string, error) { charges.Add(1); return "ok", nil },
 		func(context.Context, chargeArgs, string) error { return nil })
 	store := gatedArgsStore{NewMemStore(), make(chan struct{}), make(chan struct{})}
 	j := mustJournal(store)

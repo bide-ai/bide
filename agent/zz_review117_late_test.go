@@ -29,7 +29,7 @@ func TestR117_LateErrorBeforeTheTimerFiresIsRecordedAsAFailure(t *testing.T) {
 	defer runtime.GOMAXPROCS(runtime.GOMAXPROCS(1))
 	for range 100 {
 		var calls atomic.Int32
-		charge := Func("charge", "", Safety{}, func(ctx context.Context, _ struct{}) (string, error) {
+		charge := MustFunc("charge", "", func(ctx context.Context, _ struct{}) (string, error) {
 			calls.Add(1)
 			dl, _ := ctx.Deadline()
 			for time.Now().Before(dl) { // the provider call is in flight until the deadline

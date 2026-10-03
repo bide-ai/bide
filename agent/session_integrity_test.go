@@ -335,13 +335,12 @@ func TestSession_ResumedTurnKeepsItsTranscript(t *testing.T) {
 			a := mustNew(
 				toolThenContext{},
 				memJournal(),
-				WithTools(Func("lookup", "look up", Safety{ReadOnly: true},
-					func(ctx context.Context, _ struct{}) (string, error) {
-						if !cut.Swap(true) {
-							cancel() // the process dies inside turn "a"'s tool call
-						}
-						return "found", ctx.Err()
-					})),
+				WithTools(MustFunc("lookup", "look up", func(ctx context.Context, _ struct{}) (string, error) {
+					if !cut.Swap(true) {
+						cancel() // the process dies inside turn "a"'s tool call
+					}
+					return "found", ctx.Err()
+				}, WithSafety(Safety{ReadOnly: true}))),
 			)
 			do := func(ctx context.Context, key, text string) (Message, error) {
 				s := openSession(t, a, "c1")

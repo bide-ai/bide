@@ -63,7 +63,7 @@ func TestResolveHalt_FutureAttemptedAtIsTooYoung(t *testing.T) {
 // non-positive marker.
 func TestResumeHalt_NonPositiveAttemptedAtIsZero(t *testing.T) {
 	ctx := context.Background()
-	charge := Func("charge", "", Safety{}, func(context.Context, struct{}) (string, error) { return "ok", nil })
+	charge := MustFunc("charge", "", func(context.Context, struct{}) (string, error) { return "ok", nil })
 	a := mustNew(NewScriptedModel(), mustJournal(markerAt(t, -1)), WithTools(charge))
 	_, err := a.Run(ctx, "r", UserText("go"))
 	var halt *OutcomeUnknown
@@ -130,7 +130,7 @@ func (s claimRacer) Insert(ctx context.Context, runID, name string, data []byte)
 
 // A driver that loses the claim to a marker stamped -1 reports the attempt time as unknown.
 func TestResumeHalt_LostClaimToNonPositiveMarker(t *testing.T) {
-	charge := Func("charge", "", Safety{}, func(context.Context, struct{}) (string, error) { return "ok", nil })
+	charge := MustFunc("charge", "", func(context.Context, struct{}) (string, error) { return "ok", nil })
 	m := &sagaTurns{turns: [][][3]string{{{"c1", "charge", `{}`}}}}
 	_, err := mustNew(m, mustJournal(claimRacer{NewMemStore()}), WithTools(charge)).Run(context.Background(), "r", UserText("go"))
 	var halt *OutcomeUnknown
@@ -145,10 +145,9 @@ func TestResumeHalt_LostClaimToNonPositiveMarker(t *testing.T) {
 // A saga rollback that stops on a started call reports a non-positive marker's time as unknown.
 func TestSagaRollbackHalt_NonPositiveMarker(t *testing.T) {
 	ctx := context.Background()
-	pay := CompensatedFunc("pay", "", Safety{},
-		func(context.Context, struct{}) (string, error) { return "p", nil },
+	pay := MustCompensatedFunc("pay", "", func(context.Context, struct{}) (string, error) { return "p", nil },
 		func(context.Context, struct{}, string) error { return nil })
-	book := Func("book", "", Safety{}, func(context.Context, struct{}) (string, error) { return "", errors.New("no seats") })
+	book := MustFunc("book", "", func(context.Context, struct{}) (string, error) { return "", errors.New("no seats") })
 	s := memJournal()
 	turn := Message{Role: RoleAssistant, Parts: []Part{
 		ToolUse{ID: "p1", Name: "pay", Args: []byte(`{}`)},

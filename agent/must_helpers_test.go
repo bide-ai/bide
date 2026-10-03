@@ -11,14 +11,6 @@ func memJournal() *Journal { return mustJournal(NewMemStore()) }
 // mustJournal returns NewJournal(s), and panics if that fails.
 func mustJournal(s Store) *Journal { return must(NewJournal(s)) }
 
-// must returns v, and panics with err if it is not nil.
-func must[T any](v T, err error) T {
-	if err != nil {
-		panic(err)
-	}
-	return v
-}
-
 // mustNew returns New(model, j, opts...), and panics if it fails.
 func mustNew(model Model, j *Journal, opts ...Option) *Agent { return must(New(model, j, opts...)) }
 

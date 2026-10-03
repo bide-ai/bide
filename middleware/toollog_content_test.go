@@ -48,9 +48,9 @@ func TestToolLog_LogErrorText(t *testing.T) {
 // credential the journal keeps out.
 func TestToolLog_LogErrorTextIsTheJournaledText(t *testing.T) {
 	type in struct{}
-	tool := agent.Func("fetch", "fetch", agent.Safety{ReadOnly: true}, func(context.Context, in) (string, error) {
+	tool := agent.MustFunc("fetch", "fetch", func(context.Context, in) (string, error) {
 		return "", fmt.Errorf("account ACCT-998877: %w", &url.Error{Op: "Get", URL: "https://u:PASSWORD-1@h.test/x?key=SECRET-KEY-123", Err: errors.New("timeout")})
-	})
+	}, agent.WithSafety(agent.Safety{ReadOnly: true}))
 	var sb strings.Builder
 	st := agenttest.MemJournal()
 	a := agenttest.Must(agenttest.MustNew(

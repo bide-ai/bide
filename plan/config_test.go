@@ -54,11 +54,11 @@ func triageRegistry(t *testing.T) *Registry {
 			t.Fatalf("register: %v", err)
 		}
 	}
-	must(RegisterStep(reg, "classify", cfgClassify))
-	must(RegisterStep(reg, "reserve", cfgReserve))
-	must(RegisterStep(reg, "finalize", cfgFinalize))
-	must(RegisterStep(reg, "decline", cfgDecline))
-	must(RegisterPredicate(reg, "rush", func(a cfgAssessment) bool { return a.Rush }))
+	must(reg.RegisterStep("classify", cfgClassify))
+	must(reg.RegisterStep("reserve", cfgReserve))
+	must(reg.RegisterStep("finalize", cfgFinalize))
+	must(reg.RegisterStep("decline", cfgDecline))
+	must(reg.RegisterPredicate("rush", func(a cfgAssessment) bool { return a.Rush }))
 	return reg
 }
 
@@ -175,9 +175,9 @@ func TestDigestStableAcrossLoads(t *testing.T) {
 func TestDriftUnknownBlockAndPredicate(t *testing.T) {
 	reg := NewRegistry()
 	// Deliberately omit "reserve" (unknown block) and "rush" (unknown predicate).
-	_ = RegisterStep(reg, "classify", cfgClassify)
-	_ = RegisterStep(reg, "finalize", cfgFinalize)
-	_ = RegisterStep(reg, "decline", cfgDecline)
+	_ = reg.RegisterStep("classify", cfgClassify)
+	_ = reg.RegisterStep("finalize", cfgFinalize)
+	_ = reg.RegisterStep("decline", cfgDecline)
 
 	_, err := Load[cfgOrder, cfgReceipt]([]byte(triageConfig), reg)
 	if err == nil {
@@ -213,7 +213,7 @@ func TestPredicateTypeMismatch(t *testing.T) {
 	reg := triageRegistry(t)
 	// Re-register the rush predicate over the WRONG type (cfgOrder, not cfgAssessment)
 	// under a distinct name, then point the switch at it.
-	if err := RegisterPredicate(reg, "wrongrush", func(o cfgOrder) bool { return o.Rush }); err != nil {
+	if err := reg.RegisterPredicate("wrongrush", func(o cfgOrder) bool { return o.Rush }); err != nil {
 		t.Fatalf("register: %v", err)
 	}
 	cfg := strings.Replace(triageConfig, `"pred": "rush"`, `"pred": "wrongrush"`, 1)
@@ -245,8 +245,8 @@ func TestEdgeTypeMismatch(t *testing.T) {
 	// finalize is used, reserve/decline are not; that would also be flagged, so use a
 	// registry with just the two blocks to isolate the type-mismatch error.
 	reg := NewRegistry()
-	_ = RegisterStep(reg, "classify", cfgClassify)
-	_ = RegisterStep(reg, "finalize", cfgFinalize)
+	_ = reg.RegisterStep("classify", cfgClassify)
+	_ = reg.RegisterStep("finalize", cfgFinalize)
 	_, err := Load[cfgOrder, cfgReceipt]([]byte(cfg), reg)
 	if err == nil {
 		t.Fatal("expected edge-type mismatch, got nil")
@@ -338,10 +338,10 @@ func TestValidateCatchesDrift(t *testing.T) {
 	}
 	// Drifted registry (missing reserve block) fails.
 	reg := NewRegistry()
-	_ = RegisterStep(reg, "classify", cfgClassify)
-	_ = RegisterStep(reg, "finalize", cfgFinalize)
-	_ = RegisterStep(reg, "decline", cfgDecline)
-	_ = RegisterPredicate(reg, "rush", func(a cfgAssessment) bool { return a.Rush })
+	_ = reg.RegisterStep("classify", cfgClassify)
+	_ = reg.RegisterStep("finalize", cfgFinalize)
+	_ = reg.RegisterStep("decline", cfgDecline)
+	_ = reg.RegisterPredicate("rush", func(a cfgAssessment) bool { return a.Rush })
 	if err := Validate([]byte(triageConfig), reg); err == nil {
 		t.Error("Validate expected drift error, got nil")
 	}
@@ -351,10 +351,10 @@ func TestValidateCatchesDrift(t *testing.T) {
 // register time and surfaces at Load rather than overwriting.
 func TestDuplicateRegistration(t *testing.T) {
 	reg := NewRegistry()
-	if err := RegisterStep(reg, "classify", cfgClassify); err != nil {
+	if err := reg.RegisterStep("classify", cfgClassify); err != nil {
 		t.Fatalf("first register: %v", err)
 	}
-	if err := RegisterStep(reg, "classify", cfgClassify); err == nil {
+	if err := reg.RegisterStep("classify", cfgClassify); err == nil {
 		t.Error("expected duplicate-registration error, got nil")
 	}
 	// The duplicate is also collected and surfaces at Load.
@@ -380,10 +380,10 @@ func diamondRegistry(t *testing.T) *Registry {
 			t.Fatalf("register: %v", err)
 		}
 	}
-	must(RegisterStep(reg, "split", func(_ context.Context, n int) (int, error) { return n * 2, nil }))
-	must(RegisterStep(reg, "y", func(_ context.Context, n int) (int, error) { return n + 1, nil }))
-	must(RegisterStep(reg, "z", func(_ context.Context, n int) (string, error) { return fmt.Sprintf("z%d", n), nil }))
-	must(RegisterJoin2(reg, "mergeBlock", func(_ context.Context, a int, s string) (string, error) {
+	must(reg.RegisterStep("split", func(_ context.Context, n int) (int, error) { return n * 2, nil }))
+	must(reg.RegisterStep("y", func(_ context.Context, n int) (int, error) { return n + 1, nil }))
+	must(reg.RegisterStep("z", func(_ context.Context, n int) (string, error) { return fmt.Sprintf("z%d", n), nil }))
+	must(reg.RegisterJoin2("mergeBlock", func(_ context.Context, a int, s string) (string, error) {
 		return fmt.Sprintf("%s+%d", s, a), nil
 	}))
 	return reg
@@ -495,17 +495,17 @@ func loopRegistry(t *testing.T) *Registry {
 			t.Fatalf("register: %v", err)
 		}
 	}
-	must(RegisterStep(reg, "seed", func(_ context.Context, n int) (loopState, error) {
+	must(reg.RegisterStep("seed", func(_ context.Context, n int) (loopState, error) {
 		return loopState{N: n, Trace: "seed"}, nil
 	}))
-	must(RegisterStep(reg, "refine", func(_ context.Context, s loopState) (loopState, error) {
+	must(reg.RegisterStep("refine", func(_ context.Context, s loopState) (loopState, error) {
 		return loopState{N: s.N - 1, Trace: s.Trace + "|refine"}, nil
 	}))
-	must(RegisterStep(reg, "check", func(_ context.Context, s loopState) (loopState, error) { return s, nil }))
-	must(RegisterStep(reg, "done", func(_ context.Context, s loopState) (string, error) {
+	must(reg.RegisterStep("check", func(_ context.Context, s loopState) (loopState, error) { return s, nil }))
+	must(reg.RegisterStep("done", func(_ context.Context, s loopState) (string, error) {
 		return fmt.Sprintf("done N=%d trace=%s", s.N, s.Trace), nil
 	}))
-	must(RegisterPredicate(reg, "again", func(s loopState) bool { return s.N > 0 }))
+	must(reg.RegisterPredicate("again", func(s loopState) bool { return s.N > 0 }))
 	return reg
 }
 
@@ -630,7 +630,7 @@ const safetyNodeConfig = `{
 func loadReadFlow(t *testing.T, reads *int, value int, safety string) (*Flow[int, int], error) {
 	t.Helper()
 	reg := NewRegistry()
-	if err := RegisterStep(reg, "read", func(context.Context, int) (int, error) { *reads++; return value, nil }, ReadOnly()); err != nil {
+	if err := reg.RegisterStep("read", func(context.Context, int) (int, error) { *reads++; return value, nil }, ReadOnly()); err != nil {
 		t.Fatalf("register: %v", err)
 	}
 	cfg := safetyNodeConfig
@@ -776,7 +776,7 @@ func TestLoadSafetyDefaultHalts(t *testing.T) {
 // load error naming the node and the bad value.
 func TestLoadUnknownSafetyStringIsError(t *testing.T) {
 	reg := NewRegistry()
-	if err := RegisterStep(reg, "read", func(_ context.Context, n int) (int, error) { return n, nil }); err != nil {
+	if err := reg.RegisterStep("read", func(_ context.Context, n int) (int, error) { return n, nil }); err != nil {
 		t.Fatalf("register: %v", err)
 	}
 	cfg := strings.Replace(safetyNodeConfig, `"safety": "readonly"`, `"safety": "sometimes"`, 1)

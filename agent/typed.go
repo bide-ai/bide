@@ -190,7 +190,7 @@ func (a *Agent) clone() *Agent {
 // cloneWith returns a clone with one extra tool and appended model middleware.
 func (a *Agent) cloneWith(extra Tool, mw ...Middleware) *Agent {
 	c := a.clone()
-	s := SpecOf(extra)
+	s := specOf(extra)
 	c.tools[s.Name], c.specs[s.Name] = extra, &s
 	c.sortSpecs()
 	c.mw = append(c.mw, mw...)

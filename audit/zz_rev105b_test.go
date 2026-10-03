@@ -131,7 +131,7 @@ func Test_R105b_StartedRetrySafeCallIsNotProvablyAbsent(t *testing.T) {
 			ctx := context.Background()
 			m := agent.NewMemStore()
 			fired := 0
-			charge := agent.Func("charge", "", safety.s, func(context.Context, struct{}) (string, error) { fired++; return "charged", nil })
+			charge := agent.MustFunc("charge", "", func(context.Context, struct{}) (string, error) { fired++; return "charged", nil }, agent.WithSafety(safety.s))
 			j, err := agent.NewJournal(&failResultStore{m: m})
 			if err != nil {
 				t.Fatal(err)

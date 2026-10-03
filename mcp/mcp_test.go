@@ -59,13 +59,13 @@ func TestTools(t *testing.T) {
 	}
 	tool := tools[0]
 
-	if tool.Name() != "echo" {
-		t.Errorf("Name() = %q, want %q", tool.Name(), "echo")
+	if tool.Spec().Name != "echo" {
+		t.Errorf("Name() = %q, want %q", tool.Spec().Name, "echo")
 	}
-	if s := tool.Safety(); s != (agent.Safety{ReadOnly: true}) {
+	if s := tool.Spec().Safety; s != (agent.Safety{ReadOnly: true}) {
 		t.Errorf("Safety() = %+v, want {ReadOnly:true}", s)
 	}
-	if len(tool.ArgsSchema()) == 0 {
+	if len(tool.Spec().Input) == 0 {
 		t.Errorf("ArgsSchema() is empty, want the server's dynamic input schema")
 	}
 

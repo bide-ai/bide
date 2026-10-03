@@ -17,20 +17,13 @@ import (
 // runtime and can't be a Go struct. Native tools get compile-time typing via Func (below); that's
 // the primary ergonomic.
 //
-// A tool describes itself with a ToolSpec. A tool that also has a Spec() ToolSpec method is
-// described by it, and the agent reads nothing else (see SpecOf); every tool this module builds
-// has one. A tool with only this method set is described by Name, Description, ArgsSchema and
-// Safety, and has no approval gate, timeout, title or output schema: give it a Spec method for
-// those.
+// A tool describes itself with a ToolSpec: its name, what the model is shown, how a call may be
+// retried, whether it waits for approval, and how long a call may take. The agent reads the spec
+// once, when the tool is registered, and decides every call from that copy.
 type Tool interface {
-	Name() string
-	Description() string
-	// ArgsSchema is the provider-NEUTRAL argument schema. The schema/ package emits
-	// per-provider dialects (OpenAI-strict / Gemini / Anthropic) from it, so this is
-	// never a single frozen blob handed straight to a provider.
-	ArgsSchema() json.RawMessage
-	// Safety declares how the tool may be retried on resume.
-	Safety() Safety
+	// Spec describes the tool (see ToolSpec).
+	Spec() ToolSpec
+	// Call runs the tool on the arguments the model sent, and returns its result as JSON.
 	Call(ctx context.Context, args json.RawMessage) (json.RawMessage, error)
 }
 
@@ -63,52 +56,12 @@ type ToolSpec struct {
 	Timeout time.Duration
 }
 
-// specTool is a tool that describes itself with a ToolSpec.
-type specTool interface{ Spec() ToolSpec }
-
-// SpecOf returns t's ToolSpec: t.Spec() if t has that method, and otherwise the spec its Name,
-// Description, ArgsSchema and Safety methods describe. A tool with no Spec method that wraps
-// another (Unwrap() Tool) takes the fields that method set cannot express (Title, Output,
-// Approval and Timeout) from the wrapped tool's spec, so a wrapper keeps the approval gate and
-// timeout of the tool it wraps; any other tool with no Spec method has none of them. The Approval
-// policy is a copy, so changing it does not change the tool.
-//
-// New refuses a tool that hides a gate: one that embeds a tool with an approval gate or a timeout
-// (as a decorator embeds the tool it decorates) while its own spec has none (see checkWrapper).
-//
-// Deprecated: transitional; renamed by the 1.0 rewrite, where Tool has a Spec method and t.Spec()
-// replaces SpecOf(t).
-func SpecOf(t Tool) ToolSpec {
-	var s ToolSpec
-	if st, ok := t.(specTool); ok {
-		s = st.Spec()
-	} else {
-		s = ToolSpec{Name: t.Name(), Description: t.Description(), Input: t.ArgsSchema(), Safety: t.Safety()}
-		if inner := unwrapSpec(t); inner != nil {
-			s.Title, s.Output, s.Approval, s.Timeout = inner.Title, inner.Output, inner.Approval, inner.Timeout
-		}
-	}
+// specOf returns t's spec with a copy of its approval policy, so changing the policy does not
+// change the tool.
+func specOf(t Tool) ToolSpec {
+	s := t.Spec()
 	s.Approval = s.Approval.Clone()
 	return s
-}
-
-// unwrapSpec returns the spec of the first tool on t's Unwrap chain that has a Spec method, or
-// nil when no tool on the chain (bounded, as asSubAgent's walk) has one.
-func unwrapSpec(t Tool) *ToolSpec {
-	for range 64 {
-		u, ok := t.(interface{ Unwrap() Tool })
-		if !ok {
-			return nil
-		}
-		if t = u.Unwrap(); t == nil {
-			return nil
-		}
-		if st, ok := t.(specTool); ok {
-			s := st.Spec()
-			return &s
-		}
-	}
-	return nil
 }
 
 // Safety declares how a tool call may be retried: when a run resumes after a crash and the call's
@@ -365,30 +318,47 @@ func applyToolOptions(c *toolConfig, opts []ToolOption) error {
 // handler won't compile. The Tool interface itself stays untyped so a map of mixed tools (and
 // runtime MCP tools) works.
 //
-// opts set the rest of the tool's spec: WithApproval, WithTimeout, WithTitle, WithOutputSchema,
-// and WithSafety, which replaces the safety argument. WithSubRuns declares the agents the tool
-// runs programmatic sub-runs with, for a saga's rollback.
+// opts set the rest of the tool's spec: WithSafety (the default is a side effect, Safety{}),
+// WithApproval, WithTimeout, WithTitle and WithOutputSchema. WithSubRuns declares the agents the
+// tool runs programmatic sub-runs with, for a saga's rollback.
 //
-// Func panics, as New does for a missing model, if schema.For cannot describe In: such a type
-// (a field reached through an embedded pointer to an unexported struct) could never be decoded
-// from a call's arguments, so the tool would fail every call. It panics, with an error wrapping
-// ErrConfig, on an invalid option too.
-func Func[In, Out any](name, description string, safety Safety, fn func(context.Context, In) (Out, error), opts ...ToolOption) Tool {
-	return newFuncTool(name, description, safety, fn, opts)
+// Func returns an error wrapping ErrConfig if schema.For cannot describe In (such a type, a field
+// reached through an embedded pointer to an unexported struct, could never be decoded from a
+// call's arguments, so the tool would fail every call) or an option is invalid. MustFunc panics
+// instead, for a tool built at init.
+func Func[In, Out any](name, description string, fn func(context.Context, In) (Out, error), opts ...ToolOption) (Tool, error) {
+	t, err := newFuncTool(name, description, fn, opts)
+	if err != nil {
+		return nil, err
+	}
+	return t, nil
 }
 
-func newFuncTool[In, Out any](name, description string, safety Safety, fn func(context.Context, In) (Out, error), opts []ToolOption) *funcTool[In, Out] {
+// MustFunc is Func for a tool built at init: it panics with Func's error.
+func MustFunc[In, Out any](name, description string, fn func(context.Context, In) (Out, error), opts ...ToolOption) Tool {
+	return must(Func(name, description, fn, opts...))
+}
+
+// must returns v, and panics with err if it is not nil: the Must constructors' body.
+func must[T any](v T, err error) T {
+	if err != nil {
+		panic(err)
+	}
+	return v
+}
+
+func newFuncTool[In, Out any](name, description string, fn func(context.Context, In) (Out, error), opts []ToolOption) (*funcTool[In, Out], error) {
 	// Derive the provider-neutral argument schema from In once, at construction. Adapters
 	// dialectize it (schema.OpenAIStrict etc.) at request time.
 	argsSchema, err := schema.For[In]()
 	if err != nil {
-		panic(fmt.Errorf("agent: Func %q: argument type: %w", name, err))
+		return nil, fmt.Errorf("agent: Func %q: argument type: %w (%w)", name, err, ErrConfig)
 	}
-	c := toolConfig{spec: ToolSpec{Name: name, Description: description, Input: argsSchema, Safety: safety}}
+	c := toolConfig{spec: ToolSpec{Name: name, Description: description, Input: argsSchema}}
 	if err := applyToolOptions(&c, opts); err != nil {
-		panic(err)
+		return nil, err
 	}
-	return &funcTool[In, Out]{spec: c.spec, fn: fn, subRuns: c.subRuns}
+	return &funcTool[In, Out]{spec: c.spec, fn: fn, subRuns: c.subRuns}, nil
 }
 
 type funcTool[In, Out any] struct {
@@ -403,11 +373,6 @@ func (t *funcTool[In, Out]) subRunAgent(name string) *Agent {
 	}
 	return t.subRuns(name)
 }
-
-func (t *funcTool[In, Out]) Name() string                { return t.spec.Name }
-func (t *funcTool[In, Out]) Description() string         { return t.spec.Description }
-func (t *funcTool[In, Out]) Safety() Safety              { return t.spec.Safety }
-func (t *funcTool[In, Out]) ArgsSchema() json.RawMessage { return t.spec.Input }
 
 // Spec returns the tool's spec, with a copy of its approval policy.
 func (t *funcTool[In, Out]) Spec() ToolSpec {

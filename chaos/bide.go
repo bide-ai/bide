@@ -147,7 +147,13 @@ func (chargeModel) Stream(_ context.Context, req agent.Request) (*agent.Stream, 
 // chargeTool is a non-idempotent side effect (Safety{}): it must never run twice.
 type chargeTool struct{ count *int }
 
-func (chargeTool) Name() string                { return "charge" }
+func (chargeTool) Name() string { return "charge" }
+
+// Spec describes the tool to the agent (see agent.Tool).
+func (t chargeTool) Spec() agent.ToolSpec {
+	return agent.ToolSpec{Name: t.Name(), Description: t.Description(), Input: t.ArgsSchema(), Safety: t.Safety()}
+}
+
 func (chargeTool) Description() string         { return "" }
 func (chargeTool) Safety() agent.Safety        { return agent.Safety{} }
 func (chargeTool) ArgsSchema() json.RawMessage { return json.RawMessage(`{"type":"object"}`) }

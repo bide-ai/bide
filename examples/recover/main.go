@@ -53,12 +53,11 @@ func main() {
 	// runs; a memoized (replayed) step does not run the body, so the counter is the visible
 	// witness of at-most-once execution. Marked Idempotent so a resume is retry-safe.
 	var charges atomic.Int64
-	charge := agent.Func("charge_card", "Charge the customer's card once",
-		agent.Safety{Idempotent: true},
+	charge := agent.MustFunc("charge_card", "Charge the customer's card once",
 		func(_ context.Context, _ struct{}) (string, error) {
 			n := charges.Add(1)
 			return fmt.Sprintf("charged (execution #%d)", n), nil
-		})
+		}, agent.WithSafety(agent.Safety{Idempotent: true}))
 
 	// A fresh scriptModel per Run: the model is only asked for turns that are NOT already
 	// journaled, so on the second Run the recorded model turns are replayed from the store

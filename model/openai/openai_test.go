@@ -65,8 +65,7 @@ func TestBuildRequest_MessagesAndStrictSchema(t *testing.T) {
 	type Args struct {
 		City string `json:"city"`
 	}
-	tool := agent.Func("get_weather", "weather", agent.Safety{ReadOnly: true},
-		func(_ context.Context, a Args) (string, error) { return "", nil })
+	tool := agent.MustFunc("get_weather", "weather", func(_ context.Context, a Args) (string, error) { return "", nil }, agent.WithSafety(agent.Safety{ReadOnly: true}))
 
 	m := New("k", WithStrictSchema(), WithModel("gpt-4o"))
 	body, err := m.buildRequest(agent.Request{
@@ -80,7 +79,7 @@ func TestBuildRequest_MessagesAndStrictSchema(t *testing.T) {
 				agent.ToolResult{ToolUseID: "call_1", Result: json.RawMessage(`{"temp":68}`)},
 			}},
 		},
-		Tools: []agent.ToolSpec{agent.SpecOf(tool)},
+		Tools: []agent.ToolSpec{tool.Spec()},
 	})
 	if err != nil {
 		t.Fatal(err)

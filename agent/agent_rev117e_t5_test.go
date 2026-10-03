@@ -27,15 +27,14 @@ func TestRev117e_T4_SiblingInvocationStillRunning(t *testing.T) {
 	release, finished := make(chan struct{}), make(chan struct{})
 	var calls atomic.Int32
 	inTool := make(chan struct{})
-	charge := CompensatedFunc("charge", "", Safety{Idempotent: true},
-		func(ctx context.Context, _ struct{}) (string, error) {
-			if calls.Add(1) == 1 {
-				close(inTool)
-				<-release
-			}
-			return "ok", nil
-		},
-		func(context.Context, struct{}, string) error { return nil })
+	charge := MustCompensatedFunc("charge", "", func(ctx context.Context, _ struct{}) (string, error) {
+		if calls.Add(1) == 1 {
+			close(inTool)
+			<-release
+		}
+		return "ok", nil
+	},
+		func(context.Context, struct{}, string) error { return nil }, WithSafety(Safety{Idempotent: true}))
 	hedge := ToolMiddleware(func(next ToolHandler) ToolHandler {
 		return func(ctx context.Context, call ToolCall) (json.RawMessage, error) {
 			if call.Use.Name != "charge" {
@@ -46,7 +45,7 @@ func TestRev117e_T4_SiblingInvocationStillRunning(t *testing.T) {
 			return next(ctx, call)                                                  // a hedge: the second answers first
 		}
 	})
-	fail := Func("fail", "", Safety{}, func(context.Context, struct{}) (string, error) { return "", errors.New("declined") })
+	fail := MustFunc("fail", "", func(context.Context, struct{}) (string, error) { return "", errors.New("declined") })
 	m := NewScriptedModel(ToolTurn("c1", "charge", `{}`), ToolTurn("c2", "fail", `{}`), TextTurn("done"))
 	_, err := mustNew(m, memJournal(), WithTools(charge, fail), WithToolMiddleware(hedge)).Run(context.Background(), "r", UserText("go"), WithSaga())
 	close(release)
@@ -66,17 +65,16 @@ func TestRev117e_T4_EarlierDriveInvocationStillRunning(t *testing.T) {
 	release, finished := make(chan struct{}), make(chan struct{})
 	var calls atomic.Int32
 	ctx1, cancel := context.WithCancel(context.Background())
-	charge := CompensatedFunc("charge", "", Safety{Idempotent: true},
-		func(ctx context.Context, _ struct{}) (string, error) {
-			if calls.Add(1) == 1 {
-				cancel()
-				<-release // ignores its context: still running after the drive ends
-				close(finished)
-				return "", ctx.Err()
-			}
-			return "ok", nil
-		},
-		func(context.Context, struct{}, string) error { return nil })
+	charge := MustCompensatedFunc("charge", "", func(ctx context.Context, _ struct{}) (string, error) {
+		if calls.Add(1) == 1 {
+			cancel()
+			<-release // ignores its context: still running after the drive ends
+			close(finished)
+			return "", ctx.Err()
+		}
+		return "ok", nil
+	},
+		func(context.Context, struct{}, string) error { return nil }, WithSafety(Safety{Idempotent: true}))
 	leak := ToolMiddleware(func(next ToolHandler) ToolHandler {
 		return func(ctx context.Context, call ToolCall) (json.RawMessage, error) {
 			if call.Use.Name != "charge" || calls.Load() > 0 {
@@ -88,7 +86,7 @@ func TestRev117e_T4_EarlierDriveInvocationStillRunning(t *testing.T) {
 			return nil, ctx.Err()
 		}
 	})
-	fail := Func("fail", "", Safety{}, func(context.Context, struct{}) (string, error) { return "", errors.New("declined") })
+	fail := MustFunc("fail", "", func(context.Context, struct{}) (string, error) { return "", errors.New("declined") })
 	st := memJournal()
 	a := mustNew(
 		NewScriptedModel(ToolTurn("c1", "charge", `{}`), ToolTurn("c2", "fail", `{}`), TextTurn("done")),
@@ -114,15 +112,14 @@ func TestRev117e_T4_EarlierDriveInvocationStillRunning(t *testing.T) {
 func TestRev117e_T4_RollbackRerunCacheAnswerIsUnknown(t *testing.T) {
 	var calls, refunded atomic.Int32
 	started := make(chan struct{})
-	charge := CompensatedFunc("charge", "", Safety{Idempotent: true},
-		func(ctx context.Context, _ struct{}) (string, error) {
-			calls.Add(1)
-			close(started)
-			<-ctx.Done() // cut off by the sibling's failure
-			return "", ctx.Err()
-		},
-		func(context.Context, struct{}, string) error { refunded.Add(1); return nil })
-	fail := Func("fail", "", Safety{}, func(context.Context, struct{}) (string, error) {
+	charge := MustCompensatedFunc("charge", "", func(ctx context.Context, _ struct{}) (string, error) {
+		calls.Add(1)
+		close(started)
+		<-ctx.Done() // cut off by the sibling's failure
+		return "", ctx.Err()
+	},
+		func(context.Context, struct{}, string) error { refunded.Add(1); return nil }, WithSafety(Safety{Idempotent: true}))
+	fail := MustFunc("fail", "", func(context.Context, struct{}) (string, error) {
 		<-started
 		return "", errors.New("declined")
 	})
@@ -163,9 +160,8 @@ func (s *secondArgsGate) Get(ctx context.Context, runID, name string) (Entry, bo
 // closed check stops the second from beginning it again.
 func TestRev117e_T5_ReachedBeforeCloseBeginsAfter(t *testing.T) {
 	var charges atomic.Int32
-	charge := CompensatedFunc("charge", "", Safety{Idempotent: true},
-		func(context.Context, struct{}) (string, error) { charges.Add(1); return "ok", nil },
-		func(context.Context, struct{}, string) error { return nil })
+	charge := MustCompensatedFunc("charge", "", func(context.Context, struct{}) (string, error) { charges.Add(1); return "ok", nil },
+		func(context.Context, struct{}, string) error { return nil }, WithSafety(Safety{Idempotent: true}))
 	store := &secondArgsGate{MemStore: NewMemStore(), writing: make(chan struct{}), release: make(chan struct{})}
 	j := mustJournal(store)
 	second := make(chan error, 1)
@@ -197,7 +193,7 @@ func TestRev117e_T4_OwnFailureWhileEarlierInvocationRuns(t *testing.T) {
 	release, finished := make(chan struct{}), make(chan struct{})
 	var calls atomic.Int32
 	ctx1, cancel := context.WithCancel(context.Background())
-	write := Func("write", "", Safety{Idempotent: true}, func(ctx context.Context, _ struct{}) (string, error) {
+	write := MustFunc("write", "", func(ctx context.Context, _ struct{}) (string, error) {
 		if calls.Add(1) == 1 {
 			cancel()
 			<-release
@@ -205,7 +201,7 @@ func TestRev117e_T4_OwnFailureWhileEarlierInvocationRuns(t *testing.T) {
 			return "", ctx.Err()
 		}
 		return "", errors.New("rejected")
-	})
+	}, WithSafety(Safety{Idempotent: true}))
 	leak := ToolMiddleware(func(next ToolHandler) ToolHandler {
 		return func(ctx context.Context, call ToolCall) (json.RawMessage, error) {
 			if calls.Load() > 0 {
@@ -238,12 +234,12 @@ func TestRev117e_T4_OwnFailureWhileEarlierInvocationRuns(t *testing.T) {
 // tool, does not make this run's result unknown.
 func TestRev117e_T4_InflightIsPerStore(t *testing.T) {
 	release, inTool, done := make(chan struct{}), make(chan struct{}), make(chan error, 1)
-	slow := Func("send", "", Safety{}, func(context.Context, struct{}) (string, error) {
+	slow := MustFunc("send", "", func(context.Context, struct{}) (string, error) {
 		close(inTool)
 		<-release
 		return "ok", nil
 	})
-	fast := Func("send", "", Safety{}, func(context.Context, struct{}) (string, error) { return "ok", nil })
+	fast := MustFunc("send", "", func(context.Context, struct{}) (string, error) { return "ok", nil })
 	m := func() Model { return NewScriptedModel(ToolTurn("c1", "send", `{}`), TextTurn("done")) }
 	go func() {
 		_, err := mustNew(m(), memJournal(), WithTools(slow)).Run(context.Background(), "r", UserText("go"))

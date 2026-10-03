@@ -49,7 +49,7 @@ func TestRev117d_UnrecordedRefusalCutsOffSiblingSideEffect(t *testing.T) {
 	store := agenttest.MemJournal()
 	var fired atomic.Int32
 	started := make(chan struct{})
-	charge := agent.Func("charge", "", agent.Safety{}, func(ctx context.Context, _ struct{}) (string, error) {
+	charge := agent.MustFunc("charge", "", func(ctx context.Context, _ struct{}) (string, error) {
 		if fired.Add(1) == 1 {
 			close(started) // the charge request has gone out
 		}
@@ -99,11 +99,9 @@ func TestRev117d_ExpiredJournaledGrantWedgesTheSagaForever(t *testing.T) {
 	ctx := context.Background()
 	store := agenttest.MemJournal()
 	var charged, undone atomic.Int32
-	charge := agent.CompensatedFunc("charge", "", agent.Safety{},
-		func(context.Context, struct{}) (string, error) { charged.Add(1); return "charged", nil },
+	charge := agent.MustCompensatedFunc("charge", "", func(context.Context, struct{}) (string, error) { charged.Add(1); return "charged", nil },
 		func(context.Context, struct{}, string) error { undone.Add(1); return nil })
-	confirm := agent.Func("confirm", "", agent.Safety{ReadOnly: true},
-		func(context.Context, struct{}) (string, error) { return "ok", nil }, agent.WithApproval(agent.SingleApproval()))
+	confirm := agent.MustFunc("confirm", "", func(context.Context, struct{}) (string, error) { return "ok", nil }, agent.WithSafety(agent.Safety{ReadOnly: true}), agent.WithApproval(agent.SingleApproval()))
 	sub := agenttest.MustNew(
 		agent.NewScriptedModel(agent.ToolTurn("s1", "charge", `{}`), agent.ToolTurn("s2", "confirm", `{}`), agent.TextTurn("done")),
 		store,
@@ -114,7 +112,7 @@ func TestRev117d_ExpiredJournaledGrantWedgesTheSagaForever(t *testing.T) {
 		return Grant{ID: "grant/" + subAgent, Scope: map[string]string{"limit": "4"}, NotAfterUnix: childNotAfter}
 	}
 	exec := AttenuatingSubAgent("exec", "", sub, AttenuationConfig{Store: store, Narrow: narrow, Rules: ScopeRules{"limit": NumericAtMost}})
-	boom := agent.Func("boom", "", agent.Safety{}, func(context.Context, struct{}) (string, error) { return "", errors.New("sold out") })
+	boom := agent.MustFunc("boom", "", func(context.Context, struct{}) (string, error) { return "", errors.New("sold out") })
 	parent := agenttest.MustNew(
 		agent.NewScriptedModel(agent.ToolTurn("c1", "exec", `{"task":"x"}`), agent.ToolTurn("c2", "boom", `{}`), agent.TextTurn("done")),
 		store,
@@ -162,13 +160,13 @@ func TestRev117d_SubRunFiresEffectsAfterItsGrantExpired(t *testing.T) {
 	store := agenttest.MemJournal()
 	childNotAfter := time.Now().Unix() + 1
 	var firedAt atomic.Int64
-	slow := agent.Func("slow", "", agent.Safety{ReadOnly: true}, func(context.Context, struct{}) (string, error) {
+	slow := agent.MustFunc("slow", "", func(context.Context, struct{}) (string, error) {
 		for time.Now().Unix() <= childNotAfter { // a long read outlives the grant
 			time.Sleep(50 * time.Millisecond)
 		}
 		return "ok", nil
-	})
-	charge := agent.Func("charge", "", agent.Safety{}, func(context.Context, struct{}) (string, error) {
+	}, agent.WithSafety(agent.Safety{ReadOnly: true}))
+	charge := agent.MustFunc("charge", "", func(context.Context, struct{}) (string, error) {
 		firedAt.Store(time.Now().Unix())
 		return "charged", nil
 	})
@@ -204,9 +202,9 @@ func TestRev117d_UnrecordedAndSiblingPauseBothSurface(t *testing.T) {
 	store := agenttest.MemJournal()
 	sub := agenttest.MustNew(agent.NewScriptedModel(agent.TextTurn("sub done")), store)
 	exec := AttenuatingSubAgent("exec", "", sub, AttenuationConfig{Store: store, Narrow: narrowLimitBy(3), Rules: ScopeRules{"limit": NumericAtMost}})
-	gated := agent.Func("gated", "", agent.Safety{ReadOnly: true}, func(ctx context.Context, _ struct{}) (string, error) {
+	gated := agent.MustFunc("gated", "", func(ctx context.Context, _ struct{}) (string, error) {
 		return agent.Interrupt[string](ctx, "confirm", "go ahead?") // a pause while the call runs
-	})
+	}, agent.WithSafety(agent.Safety{ReadOnly: true}))
 	model := multiTurns{{{"c1", "exec", `{"task":"x"}`}, {"c2", "gated", `{}`}}}
 	_, priv, _ := ed25519.GenerateKey(rand.Reader)
 	signer := Ed25519Signer{Priv: priv}

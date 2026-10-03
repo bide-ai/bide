@@ -11,7 +11,7 @@ import (
 // Unwrap. Its Call adds nothing; what matters is that it is not the SubAgent tool itself.
 type wrappedSub struct{ Tool }
 
-func (w wrappedSub) Spec() ToolSpec { return SpecOf(w.Tool) }
+func (w wrappedSub) Spec() ToolSpec { return w.Tool.Spec() }
 func (w wrappedSub) Unwrap() Tool   { return w.Tool }
 func (w wrappedSub) Call(ctx context.Context, args json.RawMessage) (json.RawMessage, error) {
 	return w.Tool.Call(ctx, args)
@@ -34,7 +34,7 @@ func TestSaga_RollbackRecursesThroughAWrappedSubAgent(t *testing.T) {
 			toolTurn("p2", "boom", `{}`),
 		}},
 		store,
-		WithTools(wrappedSub{SubAgent("delegate", "", sub)}, failTool("boom")),
+		WithTools(wrappedSub{MustSubAgent("delegate", "", sub)}, failTool("boom")),
 	)
 
 	_, err := parent.Run(context.Background(), "root", UserText("go"), WithSaga())
@@ -61,7 +61,7 @@ func TestSaga_RollbackReportsAWrappedSubAgentsOwnRollback(t *testing.T) {
 	parent := mustNew(
 		&scriptModel{turns: [][]Emit{toolTurn("p1", "delegate", `{"task":"x"}`)}},
 		store,
-		WithTools(wrappedSub{SubAgent("delegate", "", sub)}),
+		WithTools(wrappedSub{MustSubAgent("delegate", "", sub)}),
 	)
 
 	_, err := parent.Run(context.Background(), "root", UserText("go"), WithSaga())

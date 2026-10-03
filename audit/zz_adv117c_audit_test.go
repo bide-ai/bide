@@ -23,11 +23,9 @@ func TestAdv117c_RefusedResumeLeavesSubRunChargeUnaccounted(t *testing.T) {
 			ctx := context.Background()
 			store := agenttest.MemJournal()
 			var charged, undone atomic.Int32
-			charge := agent.CompensatedFunc("charge", "", agent.Safety{},
-				func(context.Context, struct{}) (string, error) { charged.Add(1); return "charged", nil },
+			charge := agent.MustCompensatedFunc("charge", "", func(context.Context, struct{}) (string, error) { charged.Add(1); return "charged", nil },
 				func(context.Context, struct{}, string) error { undone.Add(1); return nil })
-			confirm := agent.Func("confirm", "", agent.Safety{ReadOnly: true},
-				func(context.Context, struct{}) (string, error) { return "ok", nil }, agent.WithApproval(agent.SingleApproval()))
+			confirm := agent.MustFunc("confirm", "", func(context.Context, struct{}) (string, error) { return "ok", nil }, agent.WithSafety(agent.Safety{ReadOnly: true}), agent.WithApproval(agent.SingleApproval()))
 			sub := agenttest.MustNew(
 				agent.NewScriptedModel(agent.ToolTurn("s1", "charge", `{}`), agent.ToolTurn("s2", "confirm", `{}`), agent.TextTurn("done")),
 				store,
@@ -90,8 +88,7 @@ func TestAdv117c_PreChangeUngrantedJournalCannotRollBack(t *testing.T) {
 	store := agent.NewMemStore()
 	j := agenttest.MustJournal(store)
 	var undone atomic.Int32
-	charge := agent.CompensatedFunc("charge", "", agent.Safety{},
-		func(context.Context, struct{}) (string, error) { return "charged", nil },
+	charge := agent.MustCompensatedFunc("charge", "", func(context.Context, struct{}) (string, error) { return "charged", nil },
 		func(context.Context, struct{}, string) error { undone.Add(1); return nil })
 	build := func(authStore *agent.Journal) *agent.Agent {
 		sub := agenttest.MustNew(
@@ -100,8 +97,8 @@ func TestAdv117c_PreChangeUngrantedJournalCannotRollBack(t *testing.T) {
 			agent.WithTools(charge),
 		)
 		exec := AttenuatingSubAgent("exec", "", sub, AttenuationConfig{Store: authStore, Narrow: narrowLimitBy(3), Rules: ScopeRules{"limit": NumericAtMost}})
-		gate := agent.Func("gate", "", agent.Safety{ReadOnly: true}, func(context.Context, struct{}) (string, error) { return "ok", nil }, agent.WithApproval(agent.SingleApproval()))
-		boom := agent.Func("boom", "", agent.Safety{}, func(context.Context, struct{}) (string, error) { return "", errors.New("sold out") })
+		gate := agent.MustFunc("gate", "", func(context.Context, struct{}) (string, error) { return "ok", nil }, agent.WithSafety(agent.Safety{ReadOnly: true}), agent.WithApproval(agent.SingleApproval()))
+		boom := agent.MustFunc("boom", "", func(context.Context, struct{}) (string, error) { return "", errors.New("sold out") })
 		m := agent.NewScriptedModel(agent.ToolTurn("c1", "exec", `{"task":"pay"}`), agent.ToolTurn("c2", "gate", `{}`), agent.ToolTurn("c3", "boom", `{}`), agent.TextTurn("x"))
 		return agenttest.MustNew(m, j, agent.WithTools(exec, gate, boom))
 	}
@@ -155,7 +152,7 @@ func TestAdv117c_ExpiredOrForeignGrantIsRefusedUnrecorded(t *testing.T) {
 			sub := agenttest.MustNew(
 				agent.NewScriptedModel(agent.TextTurn("done")),
 				store,
-				agent.WithTools(agent.Func("noop", "", agent.Safety{}, func(context.Context, struct{}) (string, error) { ran.Add(1); return "", nil })),
+				agent.WithTools(agent.MustFunc("noop", "", func(context.Context, struct{}) (string, error) { ran.Add(1); return "", nil })),
 			)
 			exec := AttenuatingSubAgent("exec", "", sub, AttenuationConfig{Store: store, Narrow: narrowLimitBy(3), Rules: ScopeRules{"limit": NumericAtMost}})
 			parent := agenttest.MustNew(

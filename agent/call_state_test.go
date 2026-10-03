@@ -35,7 +35,7 @@ func TestCallState_ClosedChain(t *testing.T) {
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			var calls atomic.Int32
-			tool := Func("t", "", tc.safety, func(context.Context, struct{}) (string, error) { calls.Add(1); return "ran", nil })
+			tool := MustFunc("t", "", func(context.Context, struct{}) (string, error) { calls.Add(1); return "ran", nil }, WithSafety(tc.safety))
 			store := memJournal()
 			m := NewScriptedModel(ToolTurn("c1", "t", `{}`), TextTurn("done"))
 			_, err := mustNew(m, store, WithTools(tool), WithToolMiddleware(tc.mw)).Run(context.Background(), "r1", UserText("go"))
@@ -88,7 +88,7 @@ func TestCallState_EnterTool(t *testing.T) {
 // failure, not a halt, because the call's state says refused.
 func TestCallState_RefusedSurvivesAReplacedError(t *testing.T) {
 	var calls atomic.Int32
-	charge := Func("charge", "", Safety{}, func(context.Context, struct{}) (string, error) { calls.Add(1); return "ok", nil })
+	charge := MustFunc("charge", "", func(context.Context, struct{}) (string, error) { calls.Add(1); return "ok", nil })
 	rename := func(next ToolHandler) ToolHandler {
 		return func(ctx context.Context, call ToolCall) (json.RawMessage, error) {
 			call.Use.ID = "other" // the base handler refuses a re-identified call
@@ -112,7 +112,7 @@ func TestCallState_RefusedSurvivesAReplacedError(t *testing.T) {
 // started, so a resume calls the tool instead of halting for it.
 func TestCallState_RefusedOnCancelRecordsNotStarted(t *testing.T) {
 	var calls atomic.Int32
-	charge := Func("charge", "", Safety{}, func(context.Context, struct{}) (string, error) { calls.Add(1); return "ok", nil })
+	charge := MustFunc("charge", "", func(context.Context, struct{}) (string, error) { calls.Add(1); return "ok", nil })
 	ctx, cancel := context.WithCancel(context.Background())
 	cancelFirst := func(next ToolHandler) ToolHandler {
 		return func(c context.Context, call ToolCall) (json.RawMessage, error) {
@@ -156,7 +156,7 @@ func TestCallState_CloseCall(t *testing.T) {
 // handler refused (its context already done) does not make a later invocation "already ran".
 func TestCallState_RefusalDoesNotMarkTheCallRun(t *testing.T) {
 	var calls atomic.Int32
-	charge := Func("charge", "", Safety{}, func(context.Context, struct{}) (string, error) { calls.Add(1); return "ok", nil })
+	charge := MustFunc("charge", "", func(context.Context, struct{}) (string, error) { calls.Add(1); return "ok", nil })
 	tryExpiredFirst := func(next ToolHandler) ToolHandler {
 		return func(ctx context.Context, call ToolCall) (json.RawMessage, error) {
 			done, cancel := context.WithCancel(ctx)
@@ -181,7 +181,7 @@ func TestCallState_RefusalDoesNotMarkTheCallRun(t *testing.T) {
 // the arguments the tool accepted, and not the tool's effect.
 func TestCallState_LeakedNextWritesNoAcceptedArgs(t *testing.T) {
 	var calls atomic.Int32
-	hold := CompensatedFunc("hold", "", Safety{}, func(context.Context, chargeArgs) (string, error) { calls.Add(1); return "held", nil },
+	hold := MustCompensatedFunc("hold", "", func(context.Context, chargeArgs) (string, error) { calls.Add(1); return "held", nil },
 		func(context.Context, chargeArgs, string) error { return nil })
 	release := make(chan struct{})
 	leaked := make(chan error, 1)

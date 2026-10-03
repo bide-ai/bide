@@ -18,11 +18,11 @@ import (
 // base handler then refuses the call as not started, so the tool never runs. In a bubble the
 // clock advances only once the tool blocks on its context, so the call always reaches it.
 func lateTool(name string, safety Safety, calls *atomic.Int32, answer func(ctx context.Context) (string, error), opts ...ToolOption) Tool {
-	return Func(name, "", safety, func(ctx context.Context, _ struct{}) (string, error) {
+	return MustFunc(name, "", func(ctx context.Context, _ struct{}) (string, error) {
 		calls.Add(1)
 		<-ctx.Done()
 		return answer(ctx)
-	}, opts...)
+	}, append([]ToolOption{WithSafety(safety)}, opts...)...)
 }
 
 // A call that returns a result after its deadline is recorded, like any other result: its
@@ -103,7 +103,7 @@ func testLateErrorOfARetrySafeToolIsRecorded(t *testing.T) {
 // An error returned before the deadline is an ordinary failure, recorded for the model: only an
 // error after the deadline has an unknown outcome.
 func TestTimeout_ErrorBeforeTheDeadlineIsAFailure(t *testing.T) {
-	charge := Func("charge", "", Safety{}, func(context.Context, struct{}) (string, error) {
+	charge := MustFunc("charge", "", func(context.Context, struct{}) (string, error) {
 		return "", errors.New("card declined")
 	}, WithTimeout(time.Hour))
 	store := memJournal()
@@ -119,14 +119,14 @@ func TestTimeout_ErrorBeforeTheDeadlineIsAFailure(t *testing.T) {
 // The call runs under the deadline: a tool sees it on its context.
 func TestTimeout_TheCallSeesTheDeadline(t *testing.T) {
 	var left time.Duration
-	lookup := Func("lookup", "", Safety{ReadOnly: true}, func(ctx context.Context, _ struct{}) (string, error) {
+	lookup := MustFunc("lookup", "", func(ctx context.Context, _ struct{}) (string, error) {
 		d, ok := ctx.Deadline()
 		if !ok {
 			return "", errors.New("no deadline")
 		}
 		left = time.Until(d)
 		return "ok", nil
-	}, WithTimeout(time.Hour))
+	}, WithSafety(Safety{ReadOnly: true}), WithTimeout(time.Hour))
 	m := NewScriptedModel(ToolTurn("c1", "lookup", `{}`), TextTurn("done"))
 	if _, err := mustNew(m, memJournal(), WithTools(lookup)).Run(context.Background(), "r1", UserText("q")); err != nil {
 		t.Fatalf("Run: %v", err)
@@ -139,8 +139,8 @@ func TestTimeout_TheCallSeesTheDeadline(t *testing.T) {
 // Every tool result records the Safety and approval gate its call ran under, as journaled bytes.
 func TestToolResult_RecordsSafetyAndApproval(t *testing.T) {
 	ctx := context.Background()
-	lookup := Func("lookup", "", Safety{ReadOnly: true}, func(context.Context, struct{}) (string, error) { return "x", nil })
-	charge := Func("charge", "", Safety{}, func(context.Context, struct{}) (string, error) { return "ok", nil }, WithApproval(SingleApproval()))
+	lookup := MustFunc("lookup", "", func(context.Context, struct{}) (string, error) { return "x", nil }, WithSafety(Safety{ReadOnly: true}))
+	charge := MustFunc("charge", "", func(context.Context, struct{}) (string, error) { return "ok", nil }, WithApproval(SingleApproval()))
 	store := memJournal()
 	m := NewScriptedModel(ToolTurn("c1", "lookup", `{}`), ToolTurn("c2", "charge", `{}`), TextTurn("done"))
 	a := mustNew(m, store, WithTools(lookup, charge))
@@ -170,12 +170,12 @@ func TestRollback_UsesTheRecordedSafety(t *testing.T) {
 	var undone int
 	undo := func(context.Context, struct{}, string) error { undone++; return nil }
 	do := func(context.Context, struct{}) (string, error) { return "ok", nil }
-	got := relabelSaga(t, CompensatedFunc("hold", "", Safety{}, do, undo), CompensatedFunc("hold", "", Safety{ReadOnly: true}, do, undo))
+	got := relabelSaga(t, MustCompensatedFunc("hold", "", do, undo), MustCompensatedFunc("hold", "", do, undo, WithSafety(Safety{ReadOnly: true})))
 	if undone != 1 || !slices.Contains(got.Compensated, "hold") {
 		t.Fatalf("write relabelled ReadOnly: compensations %d, compensated %q; want it compensated once", undone, got.Compensated)
 	}
 	undone = 0
-	got = relabelSaga(t, CompensatedFunc("hold", "", Safety{ReadOnly: true}, do, undo), CompensatedFunc("hold", "", Safety{}, do, undo))
+	got = relabelSaga(t, MustCompensatedFunc("hold", "", do, undo, WithSafety(Safety{ReadOnly: true})), MustCompensatedFunc("hold", "", do, undo))
 	if undone != 0 || len(got.Compensated) != 0 || len(got.Uncompensated) != 0 {
 		t.Fatalf("read relabelled a write: compensations %d, compensated %q, uncompensated %q; want it skipped", undone, got.Compensated, got.Uncompensated)
 	}
@@ -188,7 +188,7 @@ func TestSubAgent_WithApprovalPauses(t *testing.T) {
 	store := memJournal()
 	var subCalls atomic.Int32
 	sub := mustNew(&countingModel{n: &subCalls}, store)
-	delegate := SubAgent("research", "delegate research", sub, WithApproval(SingleApproval()))
+	delegate := MustSubAgent("research", "delegate research", sub, WithApproval(SingleApproval()))
 	m := NewScriptedModel(ToolTurn("c1", "research", `{"task":"find it"}`), TextTurn("done"))
 	parent := mustNew(m, store, WithTools(delegate))
 	_, err := parent.Run(ctx, "r1", UserText("go"))
@@ -243,24 +243,24 @@ func TestToolOptions_Refusals(t *testing.T) {
 	sub := mustNew(NewScriptedModel(TextTurn("x")), memJournal())
 	fn := func(context.Context, struct{}) (string, error) { return "", nil }
 	for name, build := range map[string]func(){
-		"SubAgent WithSafety":         func() { SubAgent("s", "", sub, WithSafety(Safety{ReadOnly: true})) },
-		"SubAgent WithTimeout":        func() { SubAgent("s", "", sub, WithTimeout(time.Second)) },
-		"nil approval":                func() { Func("f", "", Safety{}, fn, WithApproval(nil)) },
-		"approval with no approvers":  func() { Func("f", "", Safety{}, fn, WithApproval(&ApprovalPolicy{Need: 2})) },
-		"approval need above n":       func() { Func("f", "", Safety{}, fn, WithApproval(&ApprovalPolicy{Need: 2, Approvers: []string{"a"}})) },
-		"zero timeout":                func() { Func("f", "", Safety{}, fn, WithTimeout(0)) },
-		"output schema not an object": func() { Func("f", "", Safety{}, fn, WithOutputSchema(json.RawMessage(`[1]`))) },
-		"output schema null":          func() { Func("f", "", Safety{}, fn, WithOutputSchema(json.RawMessage(`null`))) },
-		"nil option":                  func() { Func("f", "", Safety{}, fn, nil) },
+		"SubAgent WithSafety":         func() { MustSubAgent("s", "", sub, WithSafety(Safety{ReadOnly: true})) },
+		"SubAgent WithTimeout":        func() { MustSubAgent("s", "", sub, WithTimeout(time.Second)) },
+		"nil approval":                func() { MustFunc("f", "", fn, WithApproval(nil)) },
+		"approval with no approvers":  func() { MustFunc("f", "", fn, WithApproval(&ApprovalPolicy{Need: 2})) },
+		"approval need above n":       func() { MustFunc("f", "", fn, WithApproval(&ApprovalPolicy{Need: 2, Approvers: []string{"a"}})) },
+		"zero timeout":                func() { MustFunc("f", "", fn, WithTimeout(0)) },
+		"output schema not an object": func() { MustFunc("f", "", fn, WithOutputSchema(json.RawMessage(`[1]`))) },
+		"output schema null":          func() { MustFunc("f", "", fn, WithOutputSchema(json.RawMessage(`null`))) },
+		"nil option":                  func() { MustFunc("f", "", fn, nil) },
 		"CompensatedFunc bad option": func() {
-			CompensatedFunc("f", "", Safety{}, fn, func(context.Context, struct{}, string) error { return nil }, WithTimeout(-1))
+			MustCompensatedFunc("f", "", fn, func(context.Context, struct{}, string) error { return nil }, WithTimeout(-1))
 		},
 	} {
 		if err := panicsWith(build); !errors.Is(err, ErrConfig) {
 			t.Errorf("%s: panicked with %v, want an error wrapping ErrConfig", name, err)
 		}
 	}
-	if err := panicsWith(func() { SubAgent("s", "", sub, WithApproval(SingleApproval()), WithTitle("Research")) }); err != nil {
+	if err := panicsWith(func() { MustSubAgent("s", "", sub, WithApproval(SingleApproval()), WithTitle("Research")) }); err != nil {
 		t.Errorf("SubAgent with WithApproval and WithTitle: %v", err)
 	}
 }
@@ -270,19 +270,19 @@ func TestToolOptions_Refusals(t *testing.T) {
 func TestToolOptions_SetTheSpec(t *testing.T) {
 	pol := &ApprovalPolicy{Need: 1, Approvers: []string{"ops"}}
 	out := json.RawMessage(`{"type":"string"}`)
-	tool := Func("f", "does f", Safety{}, func(context.Context, struct{}) (string, error) { return "", nil },
+	tool := MustFunc("f", "does f", func(context.Context, struct{}) (string, error) { return "", nil },
 		WithSafety(Safety{Idempotent: true}), WithApproval(pol), WithTimeout(time.Second), WithTitle("F"), WithOutputSchema(out))
 	pol.Approvers[0] = "mallory"
-	s := SpecOf(tool)
+	s := tool.Spec()
 	if s.Name != "f" || s.Description != "does f" || s.Title != "F" || !s.Safety.Idempotent || s.Timeout != time.Second ||
 		string(s.Output) != `{"type":"string"}` || s.Approval == nil || s.Approval.Need != 1 || !slices.Equal(s.Approval.Approvers, []string{"ops"}) {
 		t.Fatalf("spec = %+v", s)
 	}
-	if tool.Safety() != (Safety{Idempotent: true}) || string(tool.ArgsSchema()) != string(s.Input) {
-		t.Fatalf("the old methods disagree with the spec: safety %+v", tool.Safety())
+	if tool.Spec().Safety != (Safety{Idempotent: true}) || string(tool.Spec().Input) != string(s.Input) {
+		t.Fatalf("the old methods disagree with the spec: safety %+v", tool.Spec().Safety)
 	}
 	s.Approval.Approvers[0] = "mallory"
-	if SpecOf(tool).Approval.Approvers[0] != "ops" {
+	if tool.Spec().Approval.Approvers[0] != "ops" {
 		t.Fatal("changing a returned spec's policy changed the tool's")
 	}
 }
@@ -290,7 +290,13 @@ func TestToolOptions_SetTheSpec(t *testing.T) {
 // oldTool has only the old method set: SpecOf describes it by those methods.
 type oldTool struct{ safety Safety }
 
-func (oldTool) Name() string                { return "old" }
+func (oldTool) Name() string { return "old" }
+
+// Spec describes the tool to the agent (see Tool).
+func (t oldTool) Spec() ToolSpec {
+	return ToolSpec{Name: t.Name(), Description: t.Description(), Input: t.ArgsSchema(), Safety: t.Safety()}
+}
+
 func (oldTool) Description() string         { return "an old tool" }
 func (oldTool) ArgsSchema() json.RawMessage { return json.RawMessage(`{"type":"object"}`) }
 func (t oldTool) Safety() Safety            { return t.safety }
@@ -299,7 +305,7 @@ func (oldTool) Call(context.Context, json.RawMessage) (json.RawMessage, error) {
 }
 
 func TestSpecOf_OldMethodSet(t *testing.T) {
-	s := SpecOf(oldTool{safety: Safety{ReadOnly: true}})
+	s := (oldTool{safety: Safety{ReadOnly: true}}).Spec()
 	want := ToolSpec{Name: "old", Description: "an old tool", Input: json.RawMessage(`{"type":"object"}`), Safety: Safety{ReadOnly: true}}
 	if s.Name != want.Name || s.Description != want.Description || string(s.Input) != string(want.Input) || s.Safety != want.Safety || s.Approval != nil || s.Timeout != 0 {
 		t.Fatalf("SpecOf = %+v, want %+v", s, want)
@@ -356,8 +362,8 @@ func TestSpec_ReadOnceAtRegistration(t *testing.T) {
 // that appends to or reorders one request's tools does not change the next request's.
 func TestRequestTools_SortedAndOwnedPerRequest(t *testing.T) {
 	fn := func(context.Context, struct{}) (string, error) { return "", nil }
-	b := Func("b", "", Safety{ReadOnly: true}, fn)
-	a := Func("a", "", Safety{ReadOnly: true}, fn)
+	b := MustFunc("b", "", fn, WithSafety(Safety{ReadOnly: true}))
+	a := MustFunc("a", "", fn, WithSafety(Safety{ReadOnly: true}))
 	var seen [][]string
 	mw := func(next ModelHandler) ModelHandler {
 		return func(ctx context.Context, call ModelCall) (ModelResponse, error) {
@@ -386,7 +392,7 @@ func TestDenialAndSagaFailure_RecordSafetyAndApproval(t *testing.T) {
 	ctx := context.Background()
 	store := memJournal()
 	fn := func(context.Context, struct{}) (string, error) { return "ok", nil }
-	charge := Func("charge", "", Safety{}, fn, WithApproval(SingleApproval()))
+	charge := MustFunc("charge", "", fn, WithApproval(SingleApproval()))
 	m := NewScriptedModel(ToolTurn("c1", "charge", `{}`), TextTurn("done"))
 	a := mustNew(m, store, WithTools(charge))
 	if _, err := a.Run(ctx, "r1", UserText("pay")); !IsPause(err) {
@@ -402,9 +408,9 @@ func TestDenialAndSagaFailure_RecordSafetyAndApproval(t *testing.T) {
 		t.Fatalf("denial journaled %s, want the safety and the gate", rec.Raw())
 	}
 
-	book := Func("book", "", Safety{Idempotent: true}, func(context.Context, struct{}) (string, error) {
+	book := MustFunc("book", "", func(context.Context, struct{}) (string, error) {
 		return "", errors.New("no rooms left")
-	}, WithApproval(&ApprovalPolicy{Need: 1, Approvers: []string{"ops"}}))
+	}, WithSafety(Safety{Idempotent: true}), WithApproval(&ApprovalPolicy{Need: 1, Approvers: []string{"ops"}}))
 	sm := NewScriptedModel(ToolTurn("b1", "book", `{}`), TextTurn("done"))
 	sa := mustNew(sm, store, WithTools(book), WithApproverVerifiers(fakeVerifiers("ops")))
 	if _, err := sa.Run(ctx, "s1", UserText("trip"), WithSaga()); !IsPause(err) {

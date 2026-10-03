@@ -16,7 +16,13 @@ type askTool struct {
 	got    *string
 }
 
-func (t *askTool) Name() string                { return t.name }
+func (t *askTool) Name() string { return t.name }
+
+// Spec describes the tool to the agent (see Tool).
+func (t *askTool) Spec() ToolSpec {
+	return ToolSpec{Name: t.Name(), Description: t.Description(), Input: t.ArgsSchema(), Safety: t.Safety()}
+}
+
 func (t *askTool) Description() string         { return "" }
 func (t *askTool) Safety() Safety              { return t.safety }
 func (t *askTool) ArgsSchema() json.RawMessage { return json.RawMessage(`{"type":"object"}`) }
@@ -81,15 +87,14 @@ func TestInterrupt_StructValue(t *testing.T) {
 		Weight int    `json:"weight"`
 	}
 	var picked choice
-	tool := Func("pick", "", Safety{ReadOnly: true},
-		func(ctx context.Context, _ struct{}) (string, error) {
-			c, err := Interrupt[choice](ctx, "pick", nil)
-			if err != nil {
-				return "", err
-			}
-			picked = c
-			return c.Option, nil
-		})
+	tool := MustFunc("pick", "", func(ctx context.Context, _ struct{}) (string, error) {
+		c, err := Interrupt[choice](ctx, "pick", nil)
+		if err != nil {
+			return "", err
+		}
+		picked = c
+		return c.Option, nil
+	}, WithSafety(Safety{ReadOnly: true}))
 	m := &scriptModel{turns: [][]Emit{toolTurn("c1", "pick", `{}`), textTurn("ok")}}
 	a := mustNew(m, store, WithTools(tool))
 

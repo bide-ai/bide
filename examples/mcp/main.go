@@ -80,7 +80,7 @@ func main() {
 	fmt.Printf("discovered %d MCP tool(s):\n", len(tools))
 	for _, t := range tools {
 		// The echo tool's readOnlyHint became Safety{ReadOnly: true}, so it is retry-safe.
-		fmt.Printf("  %s: readOnly=%v\n", t.Name(), t.Safety().ReadOnly)
+		fmt.Printf("  %s: readOnly=%v\n", t.Spec().Name, t.Spec().Safety.ReadOnly)
 	}
 
 	// The discovered MCP tools are plain agent.Tool values now; the session must stay open

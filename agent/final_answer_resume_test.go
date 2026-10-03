@@ -309,7 +309,7 @@ func TestFinalAnswerCrash_SubAgentResume(t *testing.T) {
 	parent := mustNew(
 		&greedyModel{script: [][]Emit{textTurn("parent-done")}},
 		j,
-		WithTools(SubAgent("worker", "does work", mustNew(subResume, j, WithTools(charge)))),
+		WithTools(MustSubAgent("worker", "does work", mustNew(subResume, j, WithTools(charge)))),
 	)
 	res, err := parent.Run(ctx, "root", UserText("delegate"))
 	if err != nil {

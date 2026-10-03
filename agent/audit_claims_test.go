@@ -20,7 +20,7 @@ func TestAuditReadsClaimBookkeeping(t *testing.T) {
 	pub, priv, _ := ed25519.GenerateKey(nil)
 	m := agent.NewMemStore()
 	fired := 0
-	charge := agent.Func("charge", "", agent.Safety{}, func(context.Context, struct{}) (string, error) { fired++; return "ok", nil })
+	charge := agent.MustFunc("charge", "", func(context.Context, struct{}) (string, error) { fired++; return "ok", nil })
 	model := func() agent.Model {
 		return agent.NewScriptedModel(agent.ToolTurn("c1", "charge", `{}`), agent.ToolTurn("c2", "charge", `{}`), agent.TextTurn("done"))
 	}

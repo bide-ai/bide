@@ -53,10 +53,10 @@ func TestP14Rule02_DriveChecksCancelAtTurnBoundary(t *testing.T) {
 	ctx := context.Background()
 	j, m := p14Journal(t)
 	var c counter
-	lookup := agent.Func("lookup", "", agent.Safety{ReadOnly: true}, func(context.Context, struct{}) (string, error) {
+	lookup := agent.MustFunc("lookup", "", func(context.Context, struct{}) (string, error) {
 		writeMarker(t, m, "r", "run:cancelled", reason{"stop"}) // Cancel lands while the turn's call runs
 		return "ok", nil
-	})
+	}, agent.WithSafety(agent.Safety{ReadOnly: true}))
 	model := &p14Model{turns: []p14Turn{
 		{calls: []agent.ToolUse{call("c1", "lookup")}},
 		{calls: []agent.ToolUse{call("c2", "pay")}},
@@ -116,7 +116,7 @@ func TestP14Rule03_CheckAfterWonClaim(t *testing.T) {
 func TestP14Rule03_InFlightCallFinishes(t *testing.T) {
 	ctx := context.Background()
 	j, m := p14Journal(t)
-	pay := agent.Func("pay", "", agent.Safety{}, func(context.Context, struct{}) (string, error) {
+	pay := agent.MustFunc("pay", "", func(context.Context, struct{}) (string, error) {
 		writeMarker(t, m, "r", "run:cancelled", reason{"stop"}) // lands while the call runs
 		return "paid", nil
 	})
@@ -176,8 +176,7 @@ func TestP14Rule05_SagaRollbackRequest(t *testing.T) {
 	ctx := context.Background()
 	j, m := p14Journal(t)
 	var undone counter
-	book := agent.CompensatedFunc("book", "", agent.Safety{},
-		func(context.Context, struct{}) (string, error) { return "booked", nil },
+	book := agent.MustCompensatedFunc("book", "", func(context.Context, struct{}) (string, error) { return "booked", nil },
 		func(context.Context, struct{}, string) error { undone.n.Add(1); return nil })
 	var c counter
 	model := &p14Model{turns: []p14Turn{
@@ -208,11 +207,10 @@ func TestP14Rule05_SagaRequestAtTurnBoundary(t *testing.T) {
 	ctx := context.Background()
 	j, m := p14Journal(t)
 	var undone counter
-	book := agent.CompensatedFunc("book", "", agent.Safety{},
-		func(context.Context, struct{}) (string, error) {
-			writeMarker(t, m, "r", "run:cancel-requested", reason{"stop"})
-			return "booked", nil
-		},
+	book := agent.MustCompensatedFunc("book", "", func(context.Context, struct{}) (string, error) {
+		writeMarker(t, m, "r", "run:cancel-requested", reason{"stop"})
+		return "booked", nil
+	},
 		func(context.Context, struct{}, string) error { undone.n.Add(1); return nil })
 	model := &p14Model{turns: []p14Turn{{calls: []agent.ToolUse{call("c1", "book")}}, {text: "done"}}}
 	a := p14Build(t, model, j, agent.WithTools(book))

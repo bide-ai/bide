@@ -40,7 +40,7 @@ func runToolTwice(t *testing.T, tool agent.Tool, between func()) map[string]any 
 	j := agenttest.MustJournal(store)
 	crashing := agenttest.MustJournal(&crashAfterStep{Store: store, name: agent.ToolResultStep("c1")})
 	first := agenttest.MustNew(
-		agent.NewScriptedModel(agent.ToolTurn("c1", tool.Name(), `{}`), agent.TextTurn("done")),
+		agent.NewScriptedModel(agent.ToolTurn("c1", tool.Spec().Name, `{}`), agent.TextTurn("done")),
 		crashing,
 		agent.WithTools(tool),
 	)
@@ -51,7 +51,7 @@ func runToolTwice(t *testing.T, tool agent.Tool, between func()) map[string]any 
 		between()
 	}
 	second := agenttest.MustNew(
-		agent.NewScriptedModel(agent.ToolTurn("c1", tool.Name(), `{}`), agent.TextTurn("done")),
+		agent.NewScriptedModel(agent.ToolTurn("c1", tool.Spec().Name, `{}`), agent.TextTurn("done")),
 		j,
 		agent.WithTools(tool),
 	)
@@ -164,7 +164,7 @@ func TestEventToolConfig_SpecCarriesSafetyAndOptions(t *testing.T) {
 		"plain":    govern.EventTool(g, govern.EventToolConfig{Name: "bump", Event: "inc_a", Safety: agent.Safety{Idempotent: true}, Options: opts}),
 		"attested": govern.EventTool(g, govern.EventToolConfig{Name: "bump", Event: "inc_a", PolicyDigest: "p", Safety: agent.Safety{Idempotent: true}, Options: opts}),
 	} {
-		s := agent.SpecOf(tool)
+		s := tool.Spec()
 		if s.Name != "bump" || !s.Safety.Idempotent || s.Approval == nil || s.Timeout != time.Minute || s.Title != "Bump" {
 			t.Errorf("%s: spec %+v; want the config's name, safety and options", name, s)
 		}
@@ -174,7 +174,7 @@ func TestEventToolConfig_SpecCarriesSafetyAndOptions(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	s := agent.SpecOf(govern.FederatedEventTool(fg, govern.FederatedEventToolConfig{Name: "publish", Registry: "manufacturer", Event: "epub", Safety: agent.Safety{Idempotent: true}, Options: opts}))
+	s := govern.FederatedEventTool(fg, govern.FederatedEventToolConfig{Name: "publish", Registry: "manufacturer", Event: "epub", Safety: agent.Safety{Idempotent: true}, Options: opts}).Spec()
 	if s.Name != "publish" || !s.Safety.Idempotent || s.Approval == nil || s.Timeout != time.Minute {
 		t.Errorf("federated: spec %+v; want the config's name, safety and options", s)
 	}

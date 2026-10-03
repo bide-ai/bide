@@ -22,7 +22,13 @@ import (
 // boomTool always errors — the step whose failure triggers the saga abort.
 type boomTool struct{}
 
-func (boomTool) Name() string                { return "failB" }
+func (boomTool) Name() string { return "failB" }
+
+// Spec describes the tool to the agent (see Tool).
+func (t boomTool) Spec() ToolSpec {
+	return ToolSpec{Name: t.Name(), Description: t.Description(), Input: t.ArgsSchema(), Safety: t.Safety()}
+}
+
 func (boomTool) Description() string         { return "" }
 func (boomTool) Safety() Safety              { return Safety{ReadOnly: true} }
 func (boomTool) ArgsSchema() json.RawMessage { return json.RawMessage(`{"type":"object"}`) }
@@ -66,8 +72,7 @@ func incompleteRollback(err error) bool {
 
 // chargeSaga builds the compensatable charge tool over fresh counters.
 func chargeSaga(charge, refund *int) Tool {
-	return CompensatedFunc("chargeA", "", Safety{}, // non-idempotent forward
-		func(context.Context, struct{}) (struct{}, error) { *charge++; return struct{}{}, nil },
+	return MustCompensatedFunc("chargeA", "", func(context.Context, struct{}) (struct{}, error) { *charge++; return struct{}{}, nil },
 		func(context.Context, struct{}, struct{}) error { *refund++; return nil })
 }
 

@@ -68,13 +68,12 @@ func (botModel) Stream(_ context.Context, req agent.Request) (*agent.Stream, err
 func newAgent(store *agent.Journal) *agent.Agent {
 	// create_ticket is a genuine side effect: NOT ReadOnly, so a naive re-run would open a
 	// second ticket. The durable journal is what prevents that on redelivery.
-	createTicket := agent.Func("create_ticket", "open a support ticket", agent.Safety{},
-		func(context.Context, struct {
-			Summary string `json:"summary"`
-		}) (string, error) {
-			atomic.AddInt64(&tickets, 1)
-			return "ticket-4711", nil
-		})
+	createTicket := agent.MustFunc("create_ticket", "open a support ticket", func(context.Context, struct {
+		Summary string `json:"summary"`
+	}) (string, error) {
+		atomic.AddInt64(&tickets, 1)
+		return "ticket-4711", nil
+	})
 	ag, err := agent.New(botModel{}, store, agent.WithTools(createTicket))
 	if err != nil {
 		log.Fatal(err)

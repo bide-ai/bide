@@ -47,8 +47,7 @@ func TestRecover_SkipsCompletedRedrivesIncomplete(t *testing.T) {
 		t.Fatalf("done2: %v", err)
 	}
 	// One run that pauses for human approval (never reaches the terminal marker).
-	charge := Func("charge", "charge a card", Safety{},
-		func(context.Context, struct{}) (string, error) { return "charged", nil }, WithApproval(SingleApproval()))
+	charge := MustFunc("charge", "charge a card", func(context.Context, struct{}) (string, error) { return "charged", nil }, WithApproval(SingleApproval()))
 	paused := mustNew(approvalModel{}, store, WithTools(charge))
 	_, err := paused.Run(ctx, "paused1", UserText("hi"))
 	var pa *ApprovalPending
@@ -91,8 +90,7 @@ func TestRecover_StillPausedCountsAsRecovered(t *testing.T) {
 	ctx := context.Background()
 	store := memJournal()
 
-	charge := Func("charge", "charge a card", Safety{},
-		func(context.Context, struct{}) (string, error) { return "charged", nil }, WithApproval(SingleApproval()))
+	charge := MustFunc("charge", "charge a card", func(context.Context, struct{}) (string, error) { return "charged", nil }, WithApproval(SingleApproval()))
 	a := mustNew(approvalModel{}, store, WithTools(charge))
 	if _, err := a.Run(ctx, "p", UserText("hi")); !IsPause(err) {
 		t.Fatalf("run should pause, got %v", err)

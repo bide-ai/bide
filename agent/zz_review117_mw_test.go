@@ -18,7 +18,7 @@ import (
 // whether it reached t.Call.
 func TestR117_MiddlewareTimeoutBeforeTheToolRunsHaltsAsIfItMayHaveFired(t *testing.T) {
 	var calls atomic.Int32
-	charge := Func("charge", "", Safety{}, func(context.Context, struct{}) (string, error) {
+	charge := MustFunc("charge", "", func(context.Context, struct{}) (string, error) {
 		calls.Add(1)
 		return "charged", nil
 	}, WithTimeout(time.Millisecond))

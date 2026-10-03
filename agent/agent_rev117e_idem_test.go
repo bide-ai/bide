@@ -15,9 +15,8 @@ import (
 // rollback skips it as "made no change", and SagaAborted lists it nowhere.
 func TestRev117e_IdempotentSagaStepRejectedSuccessIsNotAccounted(t *testing.T) {
 	var charged, refunded atomic.Int32
-	charge := CompensatedFunc("charge", "", Safety{Idempotent: true},
-		func(context.Context, struct{}) (string, error) { charged.Add(1); return "ok", nil },
-		func(context.Context, struct{}, string) error { refunded.Add(1); return nil })
+	charge := MustCompensatedFunc("charge", "", func(context.Context, struct{}) (string, error) { charged.Add(1); return "ok", nil },
+		func(context.Context, struct{}, string) error { refunded.Add(1); return nil }, WithSafety(Safety{Idempotent: true}))
 	check := ToolMiddleware(func(next ToolHandler) ToolHandler {
 		return func(ctx context.Context, call ToolCall) (json.RawMessage, error) {
 			res, err := next(ctx, call)
@@ -52,7 +51,7 @@ func TestRev117e_ReadOnlySagaStepRejectedSuccessIsAFailure(t *testing.T) {
 }
 
 func testReadOnlySagaStepRejectedSuccess(t *testing.T, safety Safety) {
-	look := Func("look", "", safety, func(context.Context, struct{}) (string, error) { return "ok", nil })
+	look := MustFunc("look", "", func(context.Context, struct{}) (string, error) { return "ok", nil }, WithSafety(safety))
 	check := ToolMiddleware(func(next ToolHandler) ToolHandler {
 		return func(ctx context.Context, call ToolCall) (json.RawMessage, error) {
 			if _, err := next(ctx, call); err != nil {

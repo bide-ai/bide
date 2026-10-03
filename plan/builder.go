@@ -189,7 +189,7 @@ func (b *Builder[In, Out]) Step[I, O any](name string, fn func(context.Context, 
 // (options apply after the literal), for the rare case the author knows better
 // than the tool's own declaration.
 func (b *Builder[In, Out]) Tool[I, O any](name string, t agent.Tool, opts ...NodeOption) Handle[I, O] {
-	spec := agent.SpecOf(t) // read once, as the agent reads it
+	spec := t.Spec() // read once, as the agent reads it
 	if err := checkTool(t); err != nil {
 		b.core.errs = append(b.core.errs, fmt.Errorf("plan: tool step %q: %w", name, err)) // surfaced at Build
 	}
@@ -382,7 +382,7 @@ func (b *Builder[In, Out]) Model[I, O any](name, prompt string, opts ...NodeOpti
 func callTool(ctx context.Context, t agent.Tool, timeout time.Duration, args json.RawMessage) (json.RawMessage, error) {
 	if guard := toolhook.CallGuard; guard != nil {
 		if err := guard(ctx); err != nil {
-			return nil, fmt.Errorf("plan: tool %q was not called: %w (%w)", agent.SpecOf(t).Name, err, agent.ErrToolNotCalled)
+			return nil, fmt.Errorf("plan: tool %q was not called: %w (%w)", t.Spec().Name, err, agent.ErrToolNotCalled)
 		}
 	}
 	// A deadline that has already passed leaves the tool uncalled, as the agent's base handler
@@ -392,7 +392,7 @@ func callTool(ctx context.Context, t agent.Tool, timeout time.Duration, args jso
 		if cause == nil {
 			cause = context.DeadlineExceeded // the deadline passed and its timer has not run yet
 		}
-		return nil, fmt.Errorf("plan: tool %q was not called: its context was done: %w (%w)", agent.SpecOf(t).Name, cause, agent.ErrToolNotCalled)
+		return nil, fmt.Errorf("plan: tool %q was not called: its context was done: %w (%w)", t.Spec().Name, cause, agent.ErrToolNotCalled)
 	}
 	if timeout <= 0 {
 		return t.Call(ctx, args)
@@ -401,7 +401,7 @@ func callTool(ctx context.Context, t agent.Tool, timeout time.Duration, args jso
 	defer cancel()
 	raw, err := t.Call(tctx, args)
 	if err != nil && pastDeadline(tctx) && !pastDeadline(ctx) {
-		return nil, fmt.Errorf("plan: tool %q returned an error after its %s timeout: %w (%w)", agent.SpecOf(t).Name, timeout, err, agent.ErrToolOutcomeUnknown)
+		return nil, fmt.Errorf("plan: tool %q returned an error after its %s timeout: %w (%w)", t.Spec().Name, timeout, err, agent.ErrToolOutcomeUnknown)
 	}
 	return raw, err
 }

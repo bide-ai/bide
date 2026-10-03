@@ -17,7 +17,7 @@ import (
 // is recorded. GOMAXPROCS(1) keeps the timer from firing while the tool busy-waits.
 func TestR117_ErrorAfterTheRunsDeadlineBeforeItsTimerIsNotRecorded(t *testing.T) {
 	defer runtime.GOMAXPROCS(runtime.GOMAXPROCS(1))
-	charge := Func("charge", "", Safety{}, func(ctx context.Context, _ struct{}) (string, error) {
+	charge := MustFunc("charge", "", func(ctx context.Context, _ struct{}) (string, error) {
 		dl, _ := ctx.Deadline()
 		for time.Now().Before(dl) {
 		}
@@ -42,8 +42,8 @@ func TestR117_MiddlewareCannotRenameOrReIDACall(t *testing.T) {
 	} {
 		t.Run(name, func(t *testing.T) {
 			var looked, wired atomic.Int32
-			lookup := Func("lookup", "", Safety{ReadOnly: true}, func(context.Context, struct{}) (string, error) { looked.Add(1); return "x", nil })
-			wire := Func("wire", "", Safety{}, func(context.Context, struct{}) (string, error) { wired.Add(1); return "sent", nil })
+			lookup := MustFunc("lookup", "", func(context.Context, struct{}) (string, error) { looked.Add(1); return "x", nil }, WithSafety(Safety{ReadOnly: true}))
+			wire := MustFunc("wire", "", func(context.Context, struct{}) (string, error) { wired.Add(1); return "sent", nil })
 			rewrite := ToolMiddleware(func(next ToolHandler) ToolHandler {
 				return func(ctx context.Context, call ToolCall) (json.RawMessage, error) {
 					change(&call)
@@ -65,14 +65,14 @@ func TestR117_MiddlewareCannotRenameOrReIDACall(t *testing.T) {
 // refuses.
 type timedWrap struct{ Tool }
 
-func (w timedWrap) Spec() ToolSpec { s := SpecOf(w.Tool); s.Timeout = time.Second; return s }
+func (w timedWrap) Spec() ToolSpec { s := w.Tool.Spec(); s.Timeout = time.Second; return s }
 func (w timedWrap) Unwrap() Tool   { return w.Tool }
 
 // compWrap is a wrapper that unwraps and is also a Compensator: rollback would take it for a
 // sub-agent and never call its Compensate.
 type compWrap struct{ Tool }
 
-func (w compWrap) Spec() ToolSpec { return SpecOf(w.Tool) }
+func (w compWrap) Spec() ToolSpec { return w.Tool.Spec() }
 func (w compWrap) Unwrap() Tool   { return w.Tool }
 func (w compWrap) Compensate(context.Context, json.RawMessage, json.RawMessage) error {
 	return nil
@@ -83,9 +83,9 @@ func (w compWrap) Compensate(context.Context, json.RawMessage, json.RawMessage) 
 func TestR117_NewRefusesUnsafeWrappers(t *testing.T) {
 	sub := mustNew(NewScriptedModel(TextTurn("x")), memJournal())
 	for name, tool := range map[string]Tool{
-		"timeout over a sub-agent":      timedWrap{SubAgent("delegate", "", sub)},
-		"compensator that unwraps":      compWrap{SubAgent("delegate", "", sub)},
-		"compensator unwrapping a tool": compWrap{Func("f", "", Safety{}, func(context.Context, struct{}) (string, error) { return "", nil })},
+		"timeout over a sub-agent":      timedWrap{MustSubAgent("delegate", "", sub)},
+		"compensator that unwraps":      compWrap{MustSubAgent("delegate", "", sub)},
+		"compensator unwrapping a tool": compWrap{MustFunc("f", "", func(context.Context, struct{}) (string, error) { return "", nil })},
 	} {
 		var calls atomic.Int32
 		_, err := mustNew(&countingModel{n: &calls}, memJournal(), WithTools(tool)).Run(context.Background(), "r1", UserText("go"))
@@ -100,7 +100,7 @@ func TestR117_NewRefusesUnsafeWrappers(t *testing.T) {
 // fails as a known timeout, recorded, with no halt on resume.
 func TestR117_BaseHandlerDoesNotStartACallPastItsDeadline(t *testing.T) {
 	var calls atomic.Int32
-	charge := Func("charge", "", Safety{}, func(context.Context, struct{}) (string, error) {
+	charge := MustFunc("charge", "", func(context.Context, struct{}) (string, error) {
 		calls.Add(1)
 		return "charged", nil
 	}, WithTimeout(time.Millisecond))
@@ -126,7 +126,7 @@ func TestR117_BaseHandlerDoesNotStartACallPastItsDeadline(t *testing.T) {
 // the tool instead of halting.
 func TestR117_RunCancelledInMiddlewareRecordsNotStarted(t *testing.T) {
 	var calls atomic.Int32
-	charge := Func("charge", "", Safety{}, func(context.Context, struct{}) (string, error) {
+	charge := MustFunc("charge", "", func(context.Context, struct{}) (string, error) {
 		calls.Add(1)
 		return "charged", nil
 	})

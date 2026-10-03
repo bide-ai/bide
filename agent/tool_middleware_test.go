@@ -15,7 +15,13 @@ type recordTool struct {
 	lastArg *string
 }
 
-func (t *recordTool) Name() string                { return t.name }
+func (t *recordTool) Name() string { return t.name }
+
+// Spec describes the tool to the agent (see Tool).
+func (t *recordTool) Spec() ToolSpec {
+	return ToolSpec{Name: t.Name(), Description: t.Description(), Input: t.ArgsSchema(), Safety: t.Safety()}
+}
+
 func (t *recordTool) Description() string         { return "" }
 func (t *recordTool) Safety() Safety              { return t.safety }
 func (t *recordTool) ArgsSchema() json.RawMessage { return json.RawMessage(`{"type":"object"}`) }

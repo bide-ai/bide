@@ -46,12 +46,12 @@ func TestStream_ToolCallIDsDifferAcrossTurns(t *testing.T) {
 		`{"candidates":[{"content":{"parts":[{"text":"done"}]},"finishReason":"STOP"}]}`,
 	)
 	var calls []string
-	tool := agent.Func("lookup", "l", agent.Safety{ReadOnly: true}, func(_ context.Context, in struct {
+	tool := agent.MustFunc("lookup", "l", func(_ context.Context, in struct {
 		Q string `json:"q"`
 	}) (string, error) {
 		calls = append(calls, in.Q)
 		return "res:" + in.Q, nil
-	})
+	}, agent.WithSafety(agent.Safety{ReadOnly: true}))
 	a := agenttest.MustNew(New("k", WithBaseURL(srv.URL)), agenttest.MemJournal(), agent.WithTools(tool))
 	if _, err := a.Run(context.Background(), "r1", agent.UserText("go")); err != nil {
 		t.Fatal(err)

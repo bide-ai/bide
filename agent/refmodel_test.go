@@ -277,7 +277,7 @@ func (w *rmWorld) agents(store *agent.Journal, model agent.Model) *agent.Agent {
 	build = func(depth int) *agent.Agent {
 		ts := w.tools()
 		if depth < 2 {
-			ts = append(ts, agent.SubAgent(fmt.Sprintf("sub%d", depth+1), "", build(depth+1)))
+			ts = append(ts, agent.MustSubAgent(fmt.Sprintf("sub%d", depth+1), "", build(depth+1)))
 		}
 		return agenttest.MustNew(model, store, agent.WithTools(ts...), agent.WithMaxConcurrency(max(w.sc.MaxConc, 0)))
 	}

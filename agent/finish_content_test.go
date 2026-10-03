@@ -41,10 +41,10 @@ func (m *stopCallModel) Stream(context.Context, Request) (*Stream, error) {
 // turn that calls a tool and reports "stop" still runs the call.
 func TestRun_ToolCallsRunWhateverTheReason(t *testing.T) {
 	var calls atomic.Int32
-	tool := Func("lookup", "", Safety{ReadOnly: true}, func(context.Context, struct{}) (string, error) {
+	tool := MustFunc("lookup", "", func(context.Context, struct{}) (string, error) {
 		calls.Add(1)
 		return "found", nil
-	})
+	}, WithSafety(Safety{ReadOnly: true}))
 	res, err := mustNew(&stopCallModel{}, memJournal(), WithTools(tool)).Run(context.Background(), "r", UserText("go"))
 	var final Message
 	if res != nil {

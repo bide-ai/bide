@@ -12,16 +12,15 @@ import (
 
 // t3Charge is a compensable retry-safe write whose first call takes effect and cancels the drive.
 func t3Charge(cancel *context.CancelFunc, calls, charged *atomic.Int32, later func() (string, error)) Tool {
-	return CompensatedFunc("charge", "", Safety{Idempotent: true},
-		func(ctx context.Context, _ struct{}) (string, error) {
-			if calls.Add(1) == 1 {
-				charged.Add(1)
-				(*cancel)()
-				return "", ctx.Err()
-			}
-			return later()
-		},
-		func(context.Context, struct{}, string) error { return nil })
+	return MustCompensatedFunc("charge", "", func(ctx context.Context, _ struct{}) (string, error) {
+		if calls.Add(1) == 1 {
+			charged.Add(1)
+			(*cancel)()
+			return "", ctx.Err()
+		}
+		return later()
+	},
+		func(context.Context, struct{}, string) error { return nil }, WithSafety(Safety{Idempotent: true}))
 }
 
 // T3 with a middleware that denies the re-drive's call without calling next (ErrToolNotCalled):
@@ -63,14 +62,13 @@ func TestRev117e_T3_RedriveDenialAfterEarlierAttempt(t *testing.T) {
 // invocation's effect is in place, so the step's outcome is unknown.
 func TestRev117e_T3_InDriveRetryAfterSuccess(t *testing.T) {
 	var calls atomic.Int32
-	charge := CompensatedFunc("charge", "", Safety{Idempotent: true},
-		func(context.Context, struct{}) (string, error) {
-			if calls.Add(1) == 1 {
-				return "ok", nil
-			}
-			return "", errors.New("card declined")
-		},
-		func(context.Context, struct{}, string) error { return nil })
+	charge := MustCompensatedFunc("charge", "", func(context.Context, struct{}) (string, error) {
+		if calls.Add(1) == 1 {
+			return "ok", nil
+		}
+		return "", errors.New("card declined")
+	},
+		func(context.Context, struct{}, string) error { return nil }, WithSafety(Safety{Idempotent: true}))
 	retry := ToolMiddleware(func(next ToolHandler) ToolHandler {
 		return func(ctx context.Context, call ToolCall) (json.RawMessage, error) {
 			if _, err := next(ctx, call); err != nil {
@@ -95,9 +93,8 @@ func TestRev117e_T3_InDriveRetryAfterSuccess(t *testing.T) {
 // Precision: with no earlier attempt, the tool's own error is a known failure, and the rollback
 // reports nothing unknown.
 func TestRev117e_T3_FirstAttemptOwnFailureIsKnown(t *testing.T) {
-	charge := CompensatedFunc("charge", "", Safety{Idempotent: true},
-		func(context.Context, struct{}) (string, error) { return "", errors.New("card declined") },
-		func(context.Context, struct{}, string) error { return nil })
+	charge := MustCompensatedFunc("charge", "", func(context.Context, struct{}) (string, error) { return "", errors.New("card declined") },
+		func(context.Context, struct{}, string) error { return nil }, WithSafety(Safety{Idempotent: true}))
 	retry := ToolMiddleware(func(next ToolHandler) ToolHandler {
 		return func(ctx context.Context, call ToolCall) (json.RawMessage, error) {
 			if _, err := next(ctx, call); err == nil {
@@ -124,9 +121,8 @@ func TestRev117e_T3_FirstAttemptOwnFailureIsKnown(t *testing.T) {
 func TestRev117e_T3_RollbackReportsDeniedStepWithEarlierAttempt(t *testing.T) {
 	ctx := context.Background()
 	st := memJournal()
-	charge := CompensatedFunc("charge", "", Safety{Idempotent: true},
-		func(context.Context, struct{}) (string, error) { return "ok", nil },
-		func(context.Context, struct{}, string) error { return nil })
+	charge := MustCompensatedFunc("charge", "", func(context.Context, struct{}) (string, error) { return "ok", nil },
+		func(context.Context, struct{}, string) error { return nil }, WithSafety(Safety{Idempotent: true}))
 	a := mustNew(NewScriptedModel(TextTurn("x")), st, WithTools(charge))
 	asst := &Message{Role: RoleAssistant, Parts: []Part{ToolUse{ID: "c1", Name: "charge", Args: json.RawMessage(`{}`)}}}
 	safety := Safety{Idempotent: true}
@@ -152,17 +148,16 @@ func TestRev117e_T3_RollbackReportsDeniedStepWithEarlierAttempt(t *testing.T) {
 func TestRev117e_T4_RollbackRerunRejectedSuccessIsUnknown(t *testing.T) {
 	var calls, refunded atomic.Int32
 	started := make(chan struct{})
-	charge := CompensatedFunc("charge", "", Safety{Idempotent: true},
-		func(ctx context.Context, _ struct{}) (string, error) {
-			if calls.Add(1) == 1 {
-				close(started)
-				<-ctx.Done() // cut off by the sibling's failure
-				return "", ctx.Err()
-			}
-			return "ok", nil
-		},
-		func(context.Context, struct{}, string) error { refunded.Add(1); return nil })
-	fail := Func("fail", "", Safety{}, func(context.Context, struct{}) (string, error) {
+	charge := MustCompensatedFunc("charge", "", func(ctx context.Context, _ struct{}) (string, error) {
+		if calls.Add(1) == 1 {
+			close(started)
+			<-ctx.Done() // cut off by the sibling's failure
+			return "", ctx.Err()
+		}
+		return "ok", nil
+	},
+		func(context.Context, struct{}, string) error { refunded.Add(1); return nil }, WithSafety(Safety{Idempotent: true}))
+	fail := MustFunc("fail", "", func(context.Context, struct{}) (string, error) {
 		<-started // charge is in flight
 		return "", errors.New("declined")
 	})

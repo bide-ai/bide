@@ -30,10 +30,10 @@ func (m *meteredModel) Stream(_ context.Context, req Request) (*Stream, error) {
 }
 
 func lookupTool(onCall func()) Tool {
-	return Func("lookup", "look up", Safety{ReadOnly: true}, func(ctx context.Context, _ struct{}) (string, error) {
+	return MustFunc("lookup", "look up", func(ctx context.Context, _ struct{}) (string, error) {
 		onCall()
 		return "found", ctx.Err()
-	})
+	}, WithSafety(Safety{ReadOnly: true}))
 }
 
 var turnUsage = Usage{InputTokens: 100, OutputTokens: 20} // 120 tokens per model call

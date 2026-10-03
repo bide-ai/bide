@@ -17,7 +17,13 @@ type signalTool struct {
 	fn   func() (json.RawMessage, error)
 }
 
-func (t signalTool) Name() string                { return t.name }
+func (t signalTool) Name() string { return t.name }
+
+// Spec describes the tool to the agent (see agent.Tool).
+func (t signalTool) Spec() agent.ToolSpec {
+	return agent.ToolSpec{Name: t.Name(), Description: t.Description(), Input: t.ArgsSchema(), Safety: t.Safety()}
+}
+
 func (t signalTool) Description() string         { return "" }
 func (t signalTool) ArgsSchema() json.RawMessage { return json.RawMessage(`{"type":"object"}`) }
 func (t signalTool) Safety() agent.Safety        { return agent.Safety{ReadOnly: true} }

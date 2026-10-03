@@ -78,8 +78,7 @@ func TestSession_IDWithSubRunSeparatorIsRefused(t *testing.T) {
 func TestRecover_SkipsSubRuns(t *testing.T) {
 	ctx := context.Background()
 	store := memJournal()
-	charge := Func("charge", "charge a card", Safety{},
-		func(context.Context, struct{}) (string, error) { return "charged", nil }, WithApproval(SingleApproval()))
+	charge := MustFunc("charge", "charge a card", func(context.Context, struct{}) (string, error) { return "charged", nil }, WithApproval(SingleApproval()))
 	root := clerkTree(store, charge)
 	var pa *ApprovalPending
 	if _, err := root.Run(ctx, "p", UserText("go")); !errors.As(err, &pa) {

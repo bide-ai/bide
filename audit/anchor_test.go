@@ -81,8 +81,7 @@ func TestAuditedStore_AnchorsEachStep(t *testing.T) {
 
 	var ts int64
 	store := agenttest.MustJournal(mustAuditedStore(t, j, priv, anchorLog).WithClock(func() int64 { ts++; return ts }))
-	tool := agent.Func("lookup", "", agent.Safety{ReadOnly: true},
-		func(_ context.Context, _ struct{}) (string, error) { return "ok", nil })
+	tool := agent.MustFunc("lookup", "", func(_ context.Context, _ struct{}) (string, error) { return "ok", nil }, agent.WithSafety(agent.Safety{ReadOnly: true}))
 	if _, err := agenttest.MustNew(&twoTurnModel{}, store, agent.WithTools(tool)).Run(ctx, "run", agent.UserText("hi")); err != nil {
 		t.Fatalf("run: %v", err)
 	}
@@ -156,8 +155,7 @@ func TestAuditedStore_NoReanchorOnResume(t *testing.T) {
 	anchorLog := audit.NewMemAnchorLog()
 	var ts int64
 	store := agenttest.MustJournal(mustAuditedStore(t, jStore, priv, anchorLog).WithClock(func() int64 { ts++; return ts }))
-	tool := agent.Func("lookup", "", agent.Safety{ReadOnly: true},
-		func(_ context.Context, _ struct{}) (string, error) { return "ok", nil })
+	tool := agent.MustFunc("lookup", "", func(_ context.Context, _ struct{}) (string, error) { return "ok", nil }, agent.WithSafety(agent.Safety{ReadOnly: true}))
 
 	// Crash mid-run: the tool call + result commit, the second model turn dies.
 	if _, err := agenttest.MustNew(&crashyModel{}, store, agent.WithTools(tool)).Run(ctx, "run", agent.UserText("hi")); err == nil {
@@ -199,8 +197,7 @@ func TestAuditedStore_PublishErrorDoesNotFailStep(t *testing.T) {
 	var pubCalls, errCalls int
 	store := agenttest.MustJournal(mustAuditedStore(t, jStore, priv, errAnchor{&pubCalls}).
 		OnError(func(string, error) { errCalls++ }))
-	tool := agent.Func("lookup", "", agent.Safety{ReadOnly: true},
-		func(_ context.Context, _ struct{}) (string, error) { return "ok", nil })
+	tool := agent.MustFunc("lookup", "", func(_ context.Context, _ struct{}) (string, error) { return "ok", nil }, agent.WithSafety(agent.Safety{ReadOnly: true}))
 
 	res, err := agenttest.MustNew(&twoTurnModel{}, store, agent.WithTools(tool)).Run(ctx, "run", agent.UserText("hi"))
 	if err != nil {

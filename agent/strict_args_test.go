@@ -37,10 +37,10 @@ type strictItem struct {
 // filling in zero values, dropping names, or keeping the last duplicate.
 func TestFunc_ArgumentsDecodeStrictly(t *testing.T) {
 	var got strictArgs
-	tool := Func("t", "strict", Safety{ReadOnly: true}, func(_ context.Context, in strictArgs) (string, error) {
+	tool := MustFunc("t", "strict", func(_ context.Context, in strictArgs) (string, error) {
 		got = in
 		return "ok", nil
-	})
+	}, WithSafety(Safety{ReadOnly: true}))
 	ok := `{"region":"eu","name":"a","inner":{"id":"i"}}`
 	for _, args := range []string{
 		ok,
@@ -77,7 +77,7 @@ func TestFunc_ArgumentsDecodeStrictly(t *testing.T) {
 
 // A sub-agent's arguments decode strictly too, and a bad call is ErrToolArgs like any other.
 func TestSubAgent_ArgumentsDecodeStrictly(t *testing.T) {
-	sub := SubAgent("helper", "helps", mustNew(NewScriptedModel(TextTurn("done")), memJournal()))
+	sub := MustSubAgent("helper", "helps", mustNew(NewScriptedModel(TextTurn("done")), memJournal()))
 	for _, args := range []string{`{}`, `{"task":"x","extra":1}`, `{"Task":"x"}`, `{"task":"x","task":"y"}`} {
 		if _, err := sub.Call(context.Background(), json.RawMessage(args)); !errors.Is(err, ErrToolArgs) {
 			t.Errorf("SubAgent.Call(%s) = %v, want ErrToolArgs", args, err)
@@ -181,7 +181,13 @@ func TestRunTyped_AnswerFromAnOlderJournal(t *testing.T) {
 // Func decoded with encoding/json): it accepts loose arguments and acknowledges with {}.
 type legacyAnswerTool struct{}
 
-func (legacyAnswerTool) Name() string                { return finalAnswerTool }
+func (legacyAnswerTool) Name() string { return finalAnswerTool }
+
+// Spec describes the tool to the agent (see Tool).
+func (t legacyAnswerTool) Spec() ToolSpec {
+	return ToolSpec{Name: t.Name(), Description: t.Description(), Input: t.ArgsSchema(), Safety: t.Safety()}
+}
+
 func (legacyAnswerTool) Description() string         { return "answer" }
 func (legacyAnswerTool) Safety() Safety              { return Safety{ReadOnly: true} }
 func (legacyAnswerTool) ArgsSchema() json.RawMessage { return json.RawMessage(`{"type":"object"}`) }
@@ -253,7 +259,7 @@ type nullArgs struct {
 // any value (any, json.RawMessage) takes null, and so does an optional one (a pointer, omitempty,
 // omitzero), which OpenAI strict mode sends as null.
 func TestFunc_NullForARequiredFieldIsRejected(t *testing.T) {
-	tool := Func("t", "nulls", Safety{ReadOnly: true}, func(context.Context, nullArgs) (string, error) { return "ok", nil })
+	tool := MustFunc("t", "nulls", func(context.Context, nullArgs) (string, error) { return "ok", nil }, WithSafety(Safety{ReadOnly: true}))
 	base := map[string]string{
 		"s": `"x"`, "l": `[1]`, "m": `{"a":1}`, "in": `{"id":"i"}`, "at": `"2026-01-02T03:04:05Z"`,
 		"any": `1`, "raw": `{}`, "opt": `"o"`, "ptr": `"p"`, "tags": `{}`,
@@ -287,7 +293,7 @@ func TestFunc_NullForARequiredFieldIsRejected(t *testing.T) {
 		}
 	}
 	// Nested: null for a required field of a nested struct.
-	strict := Func("t2", "strict", Safety{ReadOnly: true}, func(context.Context, strictArgs) (string, error) { return "ok", nil })
+	strict := MustFunc("t2", "strict", func(context.Context, strictArgs) (string, error) { return "ok", nil }, WithSafety(Safety{ReadOnly: true}))
 	if _, err := strict.Call(context.Background(), json.RawMessage(`{"region":"eu","name":"a","inner":{"id":null}}`)); !errors.Is(err, ErrToolArgs) {
 		t.Errorf("null for a nested required field: Call = %v, want ErrToolArgs", err)
 	}
@@ -295,7 +301,7 @@ func TestFunc_NullForARequiredFieldIsRejected(t *testing.T) {
 
 // SubAgent and final_answer reject null for a required field the same way.
 func TestNullForARequiredField_SubAgentAndFinalAnswer(t *testing.T) {
-	sub := SubAgent("helper", "helps", mustNew(NewScriptedModel(TextTurn("done")), memJournal()))
+	sub := MustSubAgent("helper", "helps", mustNew(NewScriptedModel(TextTurn("done")), memJournal()))
 	if _, err := sub.Call(context.Background(), json.RawMessage(`{"task":null}`)); !errors.Is(err, ErrToolArgs) {
 		t.Errorf("SubAgent.Call({\"task\":null}) = %v, want ErrToolArgs", err)
 	}

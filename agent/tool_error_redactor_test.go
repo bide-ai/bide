@@ -45,9 +45,9 @@ func TestToolErrorTextURLError(t *testing.T) {
 // redacted from whatever it returns.
 func TestWithToolErrorRedactor(t *testing.T) {
 	type in struct{}
-	tool := Func("lookup", "lookup", Safety{ReadOnly: true}, func(context.Context, in) (string, error) {
+	tool := MustFunc("lookup", "lookup", func(context.Context, in) (string, error) {
 		return "", errors.New("account ACCT-NUMBER-SECRET not found")
-	})
+	}, WithSafety(Safety{ReadOnly: true}))
 	var gotTool string
 	var gotErr error
 	redact := func(tool string, err error) string {
@@ -87,9 +87,9 @@ func TestWithToolErrorRedactor(t *testing.T) {
 // agent's redactor's, with URLs redacted. Outside an agent's tool call it redacts URLs only.
 func TestToolErrorTextInMiddleware(t *testing.T) {
 	type in struct{}
-	tool := Func("lookup", "lookup", Safety{ReadOnly: true}, func(context.Context, in) (string, error) {
+	tool := MustFunc("lookup", "lookup", func(context.Context, in) (string, error) {
 		return "", errors.New("account ACCT-NUMBER-SECRET: https://h.test/x?key=SK-SECRET")
-	})
+	}, WithSafety(Safety{ReadOnly: true}))
 	var seen string
 	st := memJournal()
 	a := must(mustNew(

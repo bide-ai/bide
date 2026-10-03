@@ -22,7 +22,7 @@ func (pastDeadlineCtx) Deadline() (time.Time, bool) { return time.Now().Add(-tim
 func TestP14_PlanToolRefusedPastDeadline(t *testing.T) {
 	for _, timeout := range []time.Duration{0, time.Minute} {
 		called := false
-		tool := agent.Func("t", "", agent.Safety{}, func(context.Context, int) (int, error) { called = true; return 1, nil })
+		tool := agent.MustFunc("t", "", func(context.Context, int) (int, error) { called = true; return 1, nil })
 		args, _ := json.Marshal(1)
 		_, err := callTool(pastDeadlineCtx{context.Background()}, tool, timeout, args)
 		if called || !errors.Is(err, agent.ErrToolNotCalled) {

@@ -61,7 +61,7 @@ func (m *billedModel) Stream(ctx context.Context, req agent.Request) (*agent.Str
 func TestRetry_SpendCountsEveryAttempt(t *testing.T) {
 	m := &billedModel{u: billed, bad: 1, toolFirst: true} // the tool call leaves a next turn to stop
 	var meter middleware.CostMeter
-	lookup := agent.Func("lookup", "", agent.Safety{ReadOnly: true}, func(context.Context, struct{}) (string, error) { return "x", nil })
+	lookup := agent.MustFunc("lookup", "", func(context.Context, struct{}) (string, error) { return "x", nil }, agent.WithSafety(agent.Safety{ReadOnly: true}))
 	a := agenttest.Must(agenttest.MustNew(
 		m,
 		agenttest.MemJournal(),

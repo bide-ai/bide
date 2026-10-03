@@ -50,9 +50,9 @@ func TestModelVisibleJSON_NotHTMLEscaped(t *testing.T) {
 			HTML string `json:"html"`
 		}
 		m := &lastToolResultModel{script: script()}
-		tool := Func("t", "", Safety{ReadOnly: true}, func(context.Context, struct{}) (out, error) {
+		tool := MustFunc("t", "", func(context.Context, struct{}) (out, error) {
 			return out{HTML: "<b>a & b</b>"}, nil
-		})
+		}, WithSafety(Safety{ReadOnly: true}))
 		if _, err := mustNew(m, memJournal(), WithTools(tool)).Run(ctx, "r", UserText("go")); err != nil {
 			t.Fatal(err)
 		}
@@ -63,9 +63,9 @@ func TestModelVisibleJSON_NotHTMLEscaped(t *testing.T) {
 
 	t.Run("tool error text", func(t *testing.T) {
 		m := &lastToolResultModel{script: script()}
-		tool := Func("t", "", Safety{ReadOnly: true}, func(context.Context, struct{}) (string, error) {
+		tool := MustFunc("t", "", func(context.Context, struct{}) (string, error) {
 			return "", errors.New("bad <input> & more")
-		})
+		}, WithSafety(Safety{ReadOnly: true}))
 		if _, err := mustNew(m, memJournal(), WithTools(tool)).Run(ctx, "r", UserText("go")); err != nil {
 			t.Fatal(err)
 		}
@@ -77,7 +77,7 @@ func TestModelVisibleJSON_NotHTMLEscaped(t *testing.T) {
 	t.Run("sub-agent answer", func(t *testing.T) {
 		m := &lastToolResultModel{script: NewScriptedModel(ToolTurn("c1", "t", `{"task":"go"}`), TextTurn("done"))}
 		child := mustNew(NewScriptedModel(TextTurn("<ok> & done")), memJournal())
-		if _, err := mustNew(m, memJournal(), WithTools(SubAgent("t", "", child))).Run(ctx, "r", UserText("go")); err != nil {
+		if _, err := mustNew(m, memJournal(), WithTools(MustSubAgent("t", "", child))).Run(ctx, "r", UserText("go")); err != nil {
 			t.Fatal(err)
 		}
 		if got := m.results(); len(got) != 1 || got[0] != `"<ok> & done"` {
@@ -88,7 +88,7 @@ func TestModelVisibleJSON_NotHTMLEscaped(t *testing.T) {
 	t.Run("resolved halt", func(t *testing.T) {
 		store := memJournal()
 		m := &lastToolResultModel{script: script()}
-		tool := Func("t", "", Safety{}, func(context.Context, struct{}) (string, error) { return "", nil })
+		tool := MustFunc("t", "", func(context.Context, struct{}) (string, error) { return "", nil })
 		if _, err := store.do(ctx, "r", toolAttemptStep("c1"), func(context.Context) (Record, error) {
 			return Record{Kind: StepAttempt, ToolUseID: "c1"}, nil
 		}); err != nil {

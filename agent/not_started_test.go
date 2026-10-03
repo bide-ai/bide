@@ -42,7 +42,7 @@ func TestTool_CancelledBeforeItStartsIsReattempted(t *testing.T) {
 	store := &markerHookStore{MemStore: NewMemStore(), cancel: cancel}
 	j := mustJournal(store)
 	var calls atomic.Int32
-	charge := Func("charge", "charge the card", Safety{}, func(context.Context, struct{}) (string, error) {
+	charge := MustFunc("charge", "charge the card", func(context.Context, struct{}) (string, error) {
 		calls.Add(1)
 		return "charged", nil
 	})
@@ -73,7 +73,7 @@ func TestTool_CrashBeforeItStartsStillHalts(t *testing.T) {
 	store := &markerHookStore{MemStore: NewMemStore(), cancel: cancel, crash: true}
 	j := mustJournal(store)
 	var calls atomic.Int32
-	charge := Func("charge", "charge the card", Safety{}, func(context.Context, struct{}) (string, error) {
+	charge := MustFunc("charge", "charge the card", func(context.Context, struct{}) (string, error) {
 		calls.Add(1)
 		return "charged", nil
 	})

@@ -16,7 +16,13 @@ type awaitTool struct {
 	got    *string
 }
 
-func (t *awaitTool) Name() string                { return t.name }
+func (t *awaitTool) Name() string { return t.name }
+
+// Spec describes the tool to the agent (see Tool).
+func (t *awaitTool) Spec() ToolSpec {
+	return ToolSpec{Name: t.Name(), Description: t.Description(), Input: t.ArgsSchema(), Safety: t.Safety()}
+}
+
 func (t *awaitTool) Description() string         { return "" }
 func (t *awaitTool) Safety() Safety              { return t.safety }
 func (t *awaitTool) ArgsSchema() json.RawMessage { return json.RawMessage(`{"type":"object"}`) }

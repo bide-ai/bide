@@ -17,7 +17,7 @@ func TestRev117e_NullOutputSchemaAndLaterApproval(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Tools = %v", err)
 	}
-	s := agent.SpecOf(tools[0])
+	s := tools[0].Spec()
 	if s.Output != nil || s.Approval == nil || len(s.Approval.Approvers) != 1 || s.Timeout != 0 {
 		t.Fatalf("spec = %+v", s)
 	}

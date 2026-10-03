@@ -188,9 +188,9 @@ func (m *turnModel) Stream(ctx context.Context, req agent.Request) (*agent.Strea
 // skip as already done. It must count as that target failing, so the primary's valid answer
 // wins, rather than winning the race.
 func TestHedge_BackupReusingToolUseIDLoses(t *testing.T) {
-	lookup := agent.Func("lookup", "", agent.Safety{ReadOnly: true}, func(context.Context, struct{}) (string, error) {
+	lookup := agent.MustFunc("lookup", "", func(context.Context, struct{}) (string, error) {
 		return "ok", nil
-	})
+	}, agent.WithSafety(agent.Safety{ReadOnly: true}))
 	reuse := agent.Message{Role: agent.RoleAssistant, Parts: []agent.Part{agent.ToolUse{ID: "c1", Name: "lookup", Args: json.RawMessage(`{}`)}}}
 	primary := &turnModel{
 		delays: []time.Duration{0, 100 * time.Millisecond},

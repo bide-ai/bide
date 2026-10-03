@@ -52,7 +52,7 @@ func TestBuild_EveryValidationError(t *testing.T) {
 	stringType.spec.Input = json.RawMessage(`{"type":"string"}`)
 	notJSON.spec.Input = json.RawMessage(`{`)
 	sub := buildT(t, NewScriptedModel())
-	subTimeout := wrapTool{Tool: SubAgent("helper", "", sub), spec: SpecOf(SubAgent("helper", "", sub))}
+	subTimeout := wrapTool{Tool: MustSubAgent("helper", "", sub), spec: MustSubAgent("helper", "", sub).Spec()}
 	subTimeout.spec.Timeout = time.Second
 
 	cases := map[string][]Option{
@@ -388,12 +388,12 @@ func TestPrecedence_RunBeatsAgentBeatsDefault(t *testing.T) {
 		now   time.Time
 	}
 	var got seen
-	probe := Func("probe", "", Safety{ReadOnly: true}, func(ctx context.Context, _ struct{}) (string, error) {
+	probe := MustFunc("probe", "", func(ctx context.Context, _ struct{}) (string, error) {
 		got.id, got.idSet = IdentityFrom(ctx)
 		got.waker = wakerFrom(ctx)
 		got.now = clockFrom(ctx)()
 		return "ok", nil
-	})
+	}, WithSafety(Safety{ReadOnly: true}))
 	run := func(a *Agent, ctx context.Context) seen {
 		t.Helper()
 		got = seen{}

@@ -40,11 +40,11 @@ func wantCounts(t *testing.T, cs *agenttest.CountingStore, what string, names []
 }
 
 func sideEffect() agent.Tool {
-	return agent.Func("charge", "", agent.Safety{}, func(context.Context, struct{}) (string, error) { return "ok", nil })
+	return agent.MustFunc("charge", "", func(context.Context, struct{}) (string, error) { return "ok", nil })
 }
 
 func readOnly() agent.Tool {
-	return agent.Func("lookup", "", agent.Safety{ReadOnly: true}, func(context.Context, struct{}) (string, error) { return "ok", nil })
+	return agent.MustFunc("lookup", "", func(context.Context, struct{}) (string, error) { return "ok", nil }, agent.WithSafety(agent.Safety{ReadOnly: true}))
 }
 
 // A new run that answers at once: one Load (which finds the run empty), the header, the start
@@ -76,7 +76,7 @@ func TestBudget_ToolCalls(t *testing.T) {
 	} {
 		t.Run(c.name, func(t *testing.T) {
 			j, cs, _ := countingJournal(t)
-			m := agent.NewScriptedModel(agent.ToolTurn("c1", c.tool.Name(), `{}`), agent.TextTurn("done"))
+			m := agent.NewScriptedModel(agent.ToolTurn("c1", c.tool.Spec().Name, `{}`), agent.TextTurn("done"))
 			if _, err := agenttest.MustNew(m, j, agent.WithTools(c.tool)).Run(context.Background(), "r", agent.UserText("hi")); err != nil {
 				t.Fatal(err)
 			}

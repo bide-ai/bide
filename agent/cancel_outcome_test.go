@@ -18,7 +18,7 @@ func TestCancelledToolCall_IsNotRecordedAsItsOutcome(t *testing.T) {
 	var charged int
 	fired := make(chan struct{})
 	var fireOnce sync.Once
-	charge := Func("charge", "charge the card", Safety{}, func(ctx context.Context, _ struct{}) (string, error) {
+	charge := MustFunc("charge", "charge the card", func(ctx context.Context, _ struct{}) (string, error) {
 		charged++ // the request reached the provider
 		fireOnce.Do(func() { close(fired) })
 		<-ctx.Done() // cancelled while waiting for the response
@@ -84,7 +84,7 @@ func TestCancelledToolCall_ResumeDoesNotChargeTwice(t *testing.T) {
 	store := memJournal()
 	var charged int
 	fired := make(chan struct{}, 1)
-	charge := Func("charge", "charge the card", Safety{}, func(ctx context.Context, _ struct{}) (string, error) {
+	charge := MustFunc("charge", "charge the card", func(ctx context.Context, _ struct{}) (string, error) {
 		charged++
 		select {
 		case fired <- struct{}{}:
@@ -120,10 +120,10 @@ func TestCancelledToolCall_ResumeDoesNotChargeTwice(t *testing.T) {
 func TestCancelledRun_StopsBeforeTheNextTurn(t *testing.T) {
 	store := memJournal()
 	ctx, cancel := context.WithCancel(context.Background())
-	lookup := Func("lookup", "look up the order", Safety{ReadOnly: true}, func(context.Context, struct{}) (string, error) {
+	lookup := MustFunc("lookup", "look up the order", func(context.Context, struct{}) (string, error) {
 		cancel() // the caller cancels while the call is in flight; the call completes regardless
 		return "shipped", nil
-	})
+	}, WithSafety(Safety{ReadOnly: true}))
 	m := &greedyModel{script: [][]Emit{toolTurn("c1", "lookup", `{}`), textTurn("done")}}
 	_, err := mustNew(m, store, WithTools(lookup)).Run(ctx, "r1", UserText("status?"))
 	if !errors.Is(err, context.Canceled) {

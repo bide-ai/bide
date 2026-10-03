@@ -16,14 +16,14 @@ func TestAwaitFor_TimeoutOutcomeSurvivesALateSignal(t *testing.T) {
 	var clk int64 = 1000
 	ctx := contextWithClock(context.Background(), func() time.Time { return time.Unix(atomic.LoadInt64(&clk), 0) })
 	var outcomes []bool
-	tool := Func("watch", "", Safety{ReadOnly: true}, func(ctx context.Context, _ struct{}) (string, error) {
+	tool := MustFunc("watch", "", func(ctx context.Context, _ struct{}) (string, error) {
 		_, ok, err := AwaitFor[string](ctx, "webhook", time.Minute)
 		if err != nil {
 			return "", err
 		}
 		outcomes = append(outcomes, ok)
 		return Interrupt[string](ctx, "confirm", nil) // a later pause in the same tool
-	})
+	}, WithSafety(Safety{ReadOnly: true}))
 	a := mustNew(NewScriptedModel(ToolTurn("c1", "watch", `{}`), TextTurn("done")), store, WithTools(tool))
 	var aw *SignalPending
 	if _, err := a.Run(ctx, "r", UserText("go")); !errors.As(err, &aw) {
@@ -54,7 +54,7 @@ func TestSubAgentAwaitFor_WakesTheRoot(t *testing.T) {
 	store := memJournal()
 	var clk int64 = 1000
 	now := func() time.Time { return time.Unix(atomic.LoadInt64(&clk), 0) }
-	watch := Func("watch", "wait for a webhook", Safety{ReadOnly: true}, func(ctx context.Context, _ struct{}) (string, error) {
+	watch := MustFunc("watch", "wait for a webhook", func(ctx context.Context, _ struct{}) (string, error) {
 		_, ok, err := AwaitFor[string](ctx, "webhook", time.Minute)
 		if err != nil {
 			return "", err
@@ -63,7 +63,7 @@ func TestSubAgentAwaitFor_WakesTheRoot(t *testing.T) {
 			return "signaled", nil
 		}
 		return "timed out", nil
-	})
+	}, WithSafety(Safety{ReadOnly: true}))
 	root := clerkTree(store, watch)
 	var woken []string
 	var completed bool

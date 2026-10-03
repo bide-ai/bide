@@ -10,7 +10,7 @@ import (
 // it as a failure on every pass, which buries real recovery failures in noise.
 func TestRecover_SkipsAFinishedSagaAbort(t *testing.T) {
 	store := memJournal()
-	fail := Func("book", "book it", Safety{}, func(context.Context, struct{}) (string, error) { return "", errors.New("no seats") })
+	fail := MustFunc("book", "book it", func(context.Context, struct{}) (string, error) { return "", errors.New("no seats") })
 	a := mustNew(NewScriptedModel(ToolTurn("b1", "book", `{}`), TextTurn("done")), store, WithTools(fail))
 	var aborted *SagaAborted
 	if _, err := a.Run(context.Background(), "r1", UserText("go"), WithSaga()); !errors.As(err, &aborted) {

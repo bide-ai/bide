@@ -62,8 +62,7 @@ func main() {
 		}
 	}
 
-	tool := agent.Func("noop", "no-op", agent.Safety{ReadOnly: true},
-		func(_ context.Context, _ struct{}) (string, error) { return "ok", nil })
+	tool := agent.MustFunc("noop", "no-op", func(_ context.Context, _ struct{}) (string, error) { return "ok", nil }, agent.WithSafety(agent.Safety{ReadOnly: true}))
 	store, err := agent.NewJournal(agent.NewMemStore())
 	if err != nil {
 		log.Fatal(err)

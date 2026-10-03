@@ -556,7 +556,7 @@ func cSubjects() []cSubject {
 			if err != nil {
 				return "", err
 			}
-			charge := agent.Func("charge", "", agent.Safety{Idempotent: rs}, func(ctx context.Context, _ struct{}) (string, error) { return p.fire(ctx) })
+			charge := agent.MustFunc("charge", "", func(ctx context.Context, _ struct{}) (string, error) { return p.fire(ctx) }, agent.WithSafety(agent.Safety{Idempotent: rs}))
 			m := agent.NewScriptedModel(agent.ToolTurn("c1", "charge", `{}`), agent.TextTurn("done"))
 			res, err := agenttest.MustNew(m, j, agent.WithTools(charge), agent.WithMaxConcurrency(1)).Run(ctx, runID, agent.UserText("hi"))
 			var msg agent.Message

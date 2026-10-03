@@ -35,12 +35,11 @@ func main() {
 		openai.WithMaxTokens(512),
 	)
 
-	weather := agent.Func("get_weather", "Get the current weather for a city",
-		agent.Safety{ReadOnly: true},
+	weather := agent.MustFunc("get_weather", "Get the current weather for a city",
 		func(_ context.Context, in WeatherArgs) (Weather, error) {
 			log.Printf("[tool] get_weather(%q) called", in.City)
 			return Weather{TempF: 68, Sky: "sunny"}, nil
-		})
+		}, agent.WithSafety(agent.Safety{ReadOnly: true}))
 
 	j, err := agent.NewJournal(agent.NewMemStore())
 	if err != nil {

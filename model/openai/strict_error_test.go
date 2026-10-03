@@ -19,13 +19,13 @@ type tagsArgs struct {
 // A tool whose arguments strict mode cannot express (here a map) fails the request with an error
 // that names the tool, instead of silently sending a non-strict schema under WithStrictSchema.
 func TestStrictSchema_InexpressibleToolIsAnError(t *testing.T) {
-	tool := agent.Func("tag", "sets tags", agent.Safety{ReadOnly: true}, func(context.Context, tagsArgs) (string, error) { return "", nil })
-	_, err := New("k", WithStrictSchema()).buildRequest(agent.Request{Messages: []agent.Message{agent.UserText("hi")}, Tools: []agent.ToolSpec{agent.SpecOf(tool)}})
+	tool := agent.MustFunc("tag", "sets tags", func(context.Context, tagsArgs) (string, error) { return "", nil }, agent.WithSafety(agent.Safety{ReadOnly: true}))
+	_, err := New("k", WithStrictSchema()).buildRequest(agent.Request{Messages: []agent.Message{agent.UserText("hi")}, Tools: []agent.ToolSpec{tool.Spec()}})
 	if !errors.Is(err, schema.ErrStrictUnsupported) || !errors.Is(err, agent.ErrConfig) || !strings.Contains(err.Error(), `"tag"`) {
 		t.Fatalf("buildRequest = %v; want ErrStrictUnsupported and ErrConfig naming tool \"tag\"", err)
 	}
 	// Without WithStrictSchema the neutral schema is sent as is.
-	if _, err := New("k").buildRequest(agent.Request{Messages: []agent.Message{agent.UserText("hi")}, Tools: []agent.ToolSpec{agent.SpecOf(tool)}}); err != nil {
+	if _, err := New("k").buildRequest(agent.Request{Messages: []agent.Message{agent.UserText("hi")}, Tools: []agent.ToolSpec{tool.Spec()}}); err != nil {
 		t.Fatalf("non-strict buildRequest = %v", err)
 	}
 }

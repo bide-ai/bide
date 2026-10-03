@@ -21,8 +21,7 @@ func attenuatingSaga(t *testing.T, withGrant bool) (*agent.SagaAborted, int) {
 	ctx := context.Background()
 	store := agenttest.MemJournal()
 	var charges, refunds int
-	charge := agent.CompensatedFunc("charge", "charge the card", agent.Safety{},
-		func(context.Context, struct{}) (string, error) { charges++; return "charged", nil },
+	charge := agent.MustCompensatedFunc("charge", "charge the card", func(context.Context, struct{}) (string, error) { charges++; return "charged", nil },
 		func(context.Context, struct{}, string) error { refunds++; return nil })
 	sub := agenttest.MustNew(
 		agent.NewScriptedModel(agent.ToolTurn("s1", "charge", `{}`), agent.TextTurn("done")),
@@ -31,7 +30,7 @@ func attenuatingSaga(t *testing.T, withGrant bool) (*agent.SagaAborted, int) {
 	)
 	exec := AttenuatingSubAgent("exec", "execute within delegated authority", sub,
 		AttenuationConfig{Store: store, Narrow: narrowLimitBy(3), Rules: ScopeRules{"limit": NumericAtMost}})
-	boom := agent.Func("boom", "fails", agent.Safety{}, func(context.Context, struct{}) (string, error) {
+	boom := agent.MustFunc("boom", "fails", func(context.Context, struct{}) (string, error) {
 		return "", errors.New("hotel sold out")
 	})
 	parent := agenttest.MustNew(
@@ -80,12 +79,12 @@ func TestAttenuatingSubAgent_SpecAndUnwrap(t *testing.T) {
 	store := agenttest.MemJournal()
 	tool := AttenuatingSubAgent("exec", "execute", agenttest.MustNew(answerModel{"done"}, store),
 		AttenuationConfig{Store: store, Narrow: narrowLimitBy(1)}, agent.WithTitle("Executor"))
-	s := agent.SpecOf(tool)
+	s := tool.Spec()
 	if s.Name != "exec" || s.Title != "Executor" || !s.Safety.Idempotent || len(s.Input) == 0 {
 		t.Fatalf("spec = %+v; want the wrapped SubAgent's spec with its title", s)
 	}
 	u, ok := tool.(interface{ Unwrap() agent.Tool })
-	if !ok || agent.SpecOf(u.Unwrap()).Name != "exec" {
+	if !ok || u.Unwrap().Spec().Name != "exec" {
 		t.Fatalf("Unwrap missing or wrong: %v", ok)
 	}
 }

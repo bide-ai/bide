@@ -17,7 +17,7 @@ import (
 func TestSubAgent_SagaAbortWrappingStorageIsAVerdict(t *testing.T) {
 	ctx := context.Background()
 	store := agenttest.MemJournal()
-	save := agent.Func("save", "", agent.Safety{}, func(context.Context, struct{}) (struct{}, error) {
+	save := agent.MustFunc("save", "", func(context.Context, struct{}) (struct{}, error) {
 		return struct{}{}, fmt.Errorf("insert row: %w", agent.ErrStorage)
 	})
 	sub := agenttest.MustNew(
@@ -28,7 +28,7 @@ func TestSubAgent_SagaAbortWrappingStorageIsAVerdict(t *testing.T) {
 	root := agenttest.MustNew(
 		agent.NewScriptedModel(agent.ToolTurn("c1", "saver", `{"task":"save it"}`), agent.TextTurn("done")),
 		store,
-		agent.WithTools(agent.SubAgent("saver", "", sub)),
+		agent.WithTools(agent.MustSubAgent("saver", "", sub)),
 	)
 	for attempt := range 3 {
 		_, err := root.Run(ctx, "r", agent.UserText("go"), agent.WithSaga())

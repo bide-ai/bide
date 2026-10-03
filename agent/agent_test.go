@@ -298,7 +298,7 @@ func TestSubAgent_DurableTree(t *testing.T) {
 	ctx := context.Background()
 
 	sub := mustNew(&scriptModel{turns: [][]Emit{textTurn("sub-answer")}}, store)
-	researcher := SubAgent("researcher", "researches things", sub)
+	researcher := MustSubAgent("researcher", "researches things", sub)
 
 	parent := mustNew(
 		&scriptModel{turns: [][]Emit{
@@ -377,16 +377,13 @@ func TestSaga_CompensatesCompletedWritesOnAbort(t *testing.T) {
 	ctx := context.Background()
 	var charged, booked bool
 
-	charge := CompensatedFunc("charge_card", "charge the customer", Safety{},
-		func(context.Context, struct{}) (struct{}, error) { charged = true; return struct{}{}, nil },
+	charge := MustCompensatedFunc("charge_card", "charge the customer", func(context.Context, struct{}) (struct{}, error) { charged = true; return struct{}{}, nil },
 		func(context.Context, struct{}, struct{}) error { charged = false; return nil }) // refund
 
-	bookFlight := CompensatedFunc("book_flight", "book the flight", Safety{},
-		func(context.Context, struct{}) (struct{}, error) { booked = true; return struct{}{}, nil },
+	bookFlight := MustCompensatedFunc("book_flight", "book the flight", func(context.Context, struct{}) (struct{}, error) { booked = true; return struct{}{}, nil },
 		func(context.Context, struct{}, struct{}) error { booked = false; return nil }) // cancel
 
-	bookHotel := Func("book_hotel", "book the hotel", Safety{},
-		func(context.Context, struct{}) (struct{}, error) { return struct{}{}, errors.New("no rooms") })
+	bookHotel := MustFunc("book_hotel", "book the hotel", func(context.Context, struct{}) (struct{}, error) { return struct{}{}, errors.New("no rooms") })
 
 	model := &scriptModel{turns: [][]Emit{
 		toolTurn("c1", "charge_card", `{}`),
@@ -421,17 +418,14 @@ func TestSaga_CompensatorFailureIsFlagged(t *testing.T) {
 	ctx := context.Background()
 	var charged = true
 
-	charge := CompensatedFunc("charge_card", "", Safety{},
-		func(context.Context, struct{}) (struct{}, error) { return struct{}{}, nil },
+	charge := MustCompensatedFunc("charge_card", "", func(context.Context, struct{}) (struct{}, error) { return struct{}{}, nil },
 		func(context.Context, struct{}, struct{}) error { charged = false; return nil })
 
 	// This write's compensator FAILS (e.g. the airline API is down).
-	bookFlight := CompensatedFunc("book_flight", "", Safety{},
-		func(context.Context, struct{}) (struct{}, error) { return struct{}{}, nil },
+	bookFlight := MustCompensatedFunc("book_flight", "", func(context.Context, struct{}) (struct{}, error) { return struct{}{}, nil },
 		func(context.Context, struct{}, struct{}) error { return errors.New("cancel API down") })
 
-	bookHotel := Func("book_hotel", "", Safety{},
-		func(context.Context, struct{}) (struct{}, error) { return struct{}{}, errors.New("no rooms") })
+	bookHotel := MustFunc("book_hotel", "", func(context.Context, struct{}) (struct{}, error) { return struct{}{}, errors.New("no rooms") })
 
 	model := &scriptModel{turns: [][]Emit{
 		toolTurn("c1", "charge_card", `{}`),
@@ -463,18 +457,16 @@ func TestSaga_DistributedRollbackAcrossSubAgent(t *testing.T) {
 	store := memJournal()
 	var subCharged bool
 
-	subCharge := CompensatedFunc("charge_card", "", Safety{},
-		func(context.Context, struct{}) (struct{}, error) { subCharged = true; return struct{}{}, nil },
+	subCharge := MustCompensatedFunc("charge_card", "", func(context.Context, struct{}) (struct{}, error) { subCharged = true; return struct{}{}, nil },
 		func(context.Context, struct{}, struct{}) error { subCharged = false; return nil })
 	payAgent := mustNew(
 		&scriptModel{turns: [][]Emit{toolTurn("s1", "charge_card", `{}`), textTurn("charged")}},
 		store,
 		WithTools(subCharge),
 	)
-	payment := SubAgent("payment", "handles payment", payAgent)
+	payment := MustSubAgent("payment", "handles payment", payAgent)
 
-	bookHotel := Func("book_hotel", "", Safety{},
-		func(context.Context, struct{}) (struct{}, error) { return struct{}{}, errors.New("no rooms") })
+	bookHotel := MustFunc("book_hotel", "", func(context.Context, struct{}) (struct{}, error) { return struct{}{}, errors.New("no rooms") })
 
 	parent := mustNew(
 		&scriptModel{turns: [][]Emit{
@@ -512,16 +504,13 @@ func TestSaga_SubAgentFailureReversesWholeTree(t *testing.T) {
 	var parentCharged, seatReserved bool
 
 	// Parent write: charge the customer (succeeds).
-	chargeParent := CompensatedFunc("charge_customer", "", Safety{},
-		func(context.Context, struct{}) (struct{}, error) { parentCharged = true; return struct{}{}, nil },
+	chargeParent := MustCompensatedFunc("charge_customer", "", func(context.Context, struct{}) (struct{}, error) { parentCharged = true; return struct{}{}, nil },
 		func(context.Context, struct{}, struct{}) error { parentCharged = false; return nil })
 
 	// Sub-agent (booking): reserves a seat (succeeds), then hits a failing step.
-	reserveSeat := CompensatedFunc("reserve_seat", "", Safety{},
-		func(context.Context, struct{}) (struct{}, error) { seatReserved = true; return struct{}{}, nil },
+	reserveSeat := MustCompensatedFunc("reserve_seat", "", func(context.Context, struct{}) (struct{}, error) { seatReserved = true; return struct{}{}, nil },
 		func(context.Context, struct{}, struct{}) error { seatReserved = false; return nil })
-	failStep := Func("confirm_booking", "", Safety{},
-		func(context.Context, struct{}) (struct{}, error) { return struct{}{}, errors.New("carrier rejected") })
+	failStep := MustFunc("confirm_booking", "", func(context.Context, struct{}) (struct{}, error) { return struct{}{}, errors.New("carrier rejected") })
 	bookingAgent := mustNew(
 		&scriptModel{turns: [][]Emit{
 			toolTurn("s1", "reserve_seat", `{}`),
@@ -530,7 +519,7 @@ func TestSaga_SubAgentFailureReversesWholeTree(t *testing.T) {
 		store,
 		WithTools(reserveSeat, failStep),
 	)
-	booking := SubAgent("booking", "books travel", bookingAgent)
+	booking := MustSubAgent("booking", "books travel", bookingAgent)
 
 	parent := mustNew(
 		&scriptModel{turns: [][]Emit{
@@ -577,7 +566,7 @@ func TestSubAgent_PropagatesHaltAndApproval(t *testing.T) {
 			store,
 			WithTools(charge),
 		)
-		worker := SubAgent("worker", "does work", sub)
+		worker := MustSubAgent("worker", "does work", sub)
 		parent := mustNew(
 			&scriptModel{turns: [][]Emit{
 				toolTurn("c1", "worker", `{"task":"charge it"}`),
@@ -646,7 +635,7 @@ func TestSubAgent_PropagatesHaltAndApproval(t *testing.T) {
 			store,
 			WithTools(approve),
 		)
-		worker := SubAgent("worker", "does work", sub)
+		worker := MustSubAgent("worker", "does work", sub)
 		parent := mustNew(
 			&scriptModel{turns: [][]Emit{
 				toolTurn("c1", "worker", `{"task":"charge it"}`),

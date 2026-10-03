@@ -38,11 +38,11 @@ type inner struct{ Tool }
 // decorator with Unwrap keeps the gate.
 func TestRev117e_EmbeddingDecoratorDropsApprovalGate(t *testing.T) {
 	var sent, seen atomic.Int32
-	send := Func("send", "", Safety{}, func(context.Context, struct{}) (string, error) { sent.Add(1); return "sent", nil },
+	send := MustFunc("send", "", func(context.Context, struct{}) (string, error) { sent.Add(1); return "sent", nil },
 		WithApproval(SingleApproval()))
-	timed := Func("send", "", Safety{}, func(context.Context, struct{}) (string, error) { sent.Add(1); return "sent", nil },
+	timed := MustFunc("send", "", func(context.Context, struct{}) (string, error) { sent.Add(1); return "sent", nil },
 		WithTimeout(time.Minute))
-	if SpecOf(send).Approval == nil {
+	if send.Spec().Approval == nil {
 		t.Fatal("setup: the inner tool is gated")
 	}
 	run := func(tool Tool) error {
@@ -60,17 +60,17 @@ func TestRev117e_EmbeddingDecoratorDropsApprovalGate(t *testing.T) {
 			t.Fatalf("%s: Run = %v, sent %d time(s); want ErrConfig before the tool runs", name, err, sent.Load())
 		}
 	}
-	if s := SpecOf(unwrapped{logged{Tool: send, seen: &seen}}); s.Approval == nil {
+	if s := (unwrapped{logged{Tool: send, seen: &seen}}).Spec(); s.Approval == nil {
 		t.Fatalf("SpecOf does not follow Unwrap: %+v", s)
 	}
-	if s := SpecOf(unwrapped{logged{Tool: timed, seen: &seen}}); s.Timeout != time.Minute {
+	if s := (unwrapped{logged{Tool: timed, seen: &seen}}).Spec(); s.Timeout != time.Minute {
 		t.Fatalf("SpecOf does not take the timeout through Unwrap: %+v", s)
 	}
 	var ap *ApprovalPending
 	if err := run(unwrapped{logged{Tool: send, seen: &seen}}); !errors.As(err, &ap) || sent.Load() != 0 {
 		t.Fatalf("Unwrap decorator: Run = %v, sent %d; want ApprovalPending", err, sent.Load())
 	}
-	if err := run(logged{Tool: Func("send", "", Safety{}, func(context.Context, struct{}) (string, error) { return "", nil }), seen: &seen}); err != nil {
+	if err := run(logged{Tool: MustFunc("send", "", func(context.Context, struct{}) (string, error) { return "", nil }), seen: &seen}); err != nil {
 		t.Fatalf("an ungated embedded tool: Run = %v", err)
 	}
 }

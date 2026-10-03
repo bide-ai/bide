@@ -23,11 +23,9 @@ func TestAdv117b_ResumedDelegationWithFreshGrantIDsCannotRollBack(t *testing.T) 
 	ctx := context.Background()
 	store := agenttest.MemJournal()
 	var undos int
-	charge := agent.CompensatedFunc("charge", "", agent.Safety{},
-		func(context.Context, struct{}) (string, error) { return "ok", nil },
+	charge := agent.MustCompensatedFunc("charge", "", func(context.Context, struct{}) (string, error) { return "ok", nil },
 		func(context.Context, struct{}, string) error { undos++; return nil })
-	confirm := agent.Func("confirm", "", agent.Safety{ReadOnly: true},
-		func(context.Context, struct{}) (string, error) { return "ok", nil }, agent.WithApproval(agent.SingleApproval()))
+	confirm := agent.MustFunc("confirm", "", func(context.Context, struct{}) (string, error) { return "ok", nil }, agent.WithSafety(agent.Safety{ReadOnly: true}), agent.WithApproval(agent.SingleApproval()))
 	sub := agenttest.MustNew(
 		agent.NewScriptedModel(agent.ToolTurn("s1", "charge", `{}`), agent.ToolTurn("s2", "confirm", `{}`), agent.TextTurn("done")),
 		store,
@@ -40,7 +38,7 @@ func TestAdv117b_ResumedDelegationWithFreshGrantIDsCannotRollBack(t *testing.T) 
 		return Grant{ID: fmt.Sprintf("grant/%s/%d", subAgent, minted), Scope: map[string]string{"limit": strconv.Itoa(l - 3)}}
 	}
 	exec := AttenuatingSubAgent("exec", "", sub, AttenuationConfig{Store: store, Narrow: narrow, Rules: ScopeRules{"limit": NumericAtMost}})
-	boom := agent.Func("boom", "", agent.Safety{}, func(context.Context, struct{}) (string, error) { return "", errors.New("sold out") })
+	boom := agent.MustFunc("boom", "", func(context.Context, struct{}) (string, error) { return "", errors.New("sold out") })
 	parent := agenttest.MustNew(
 		agent.NewScriptedModel(agent.ToolTurn("c1", "exec", `{"task":"pay"}`), agent.ToolTurn("c2", "boom", `{}`), agent.TextTurn("x")),
 		store,

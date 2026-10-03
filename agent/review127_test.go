@@ -192,7 +192,7 @@ func TestSystemPromptFunc_OnlyWhenTheModelIsCalled(t *testing.T) {
 		}
 		return "you are helpful", nil
 	}
-	noop := agent.Func("noop", "", agent.Safety{ReadOnly: true}, func(context.Context, struct{}) (string, error) { return "ok", nil })
+	noop := agent.MustFunc("noop", "", func(context.Context, struct{}) (string, error) { return "ok", nil }, agent.WithSafety(agent.Safety{ReadOnly: true}))
 	a, err := agent.New(agent.NewScriptedModel(agent.ToolTurn("c1", "noop", `{}`), agent.TextTurn("answer")), store,
 		agent.WithSystemPromptFunc(fn), agent.WithTools(noop))
 	if err != nil {
@@ -221,9 +221,9 @@ func TestSystemPromptFunc_OnlyWhenTheModelIsCalled(t *testing.T) {
 // Sanity: retrieval runs once across a pause and a resume (replayed from the journal).
 func TestRev127_RetrievalOnceAcrossPause(t *testing.T) {
 	r := &flakyRetriever{}
-	ask := agent.Func("ask", "", agent.Safety{ReadOnly: true}, func(ctx context.Context, _ struct{}) (string, error) {
+	ask := agent.MustFunc("ask", "", func(ctx context.Context, _ struct{}) (string, error) {
 		return agent.Interrupt[string](ctx, "q", "ok?")
-	})
+	}, agent.WithSafety(agent.Safety{ReadOnly: true}))
 	store := agenttest.MemJournal()
 	var sent []int
 	count := func(next agent.ModelHandler) agent.ModelHandler {
@@ -281,7 +281,7 @@ func (m unwrapModel) Unwrap() agent.Model { return m.Model }
 // (ToolRules), through an Unwrap chain, and checks nothing for a model that declares none.
 func TestBuild_ToolNamesFollowTheModelsRule(t *testing.T) {
 	named := func(n string) agent.Tool {
-		return agent.Func(n, "", agent.Safety{ReadOnly: true}, func(context.Context, struct{}) (string, error) { return "", nil })
+		return agent.MustFunc(n, "", func(context.Context, struct{}) (string, error) { return "", nil }, agent.WithSafety(agent.Safety{ReadOnly: true}))
 	}
 	strict := regexp.MustCompile(`^[a-zA-Z0-9_-]{1,64}$`)
 	gemini := regexp.MustCompile(`^[a-zA-Z_][a-zA-Z0-9_.:-]{0,63}$`)
@@ -361,11 +361,11 @@ func TestRunInfoSaga_IsTheRunsOwnFlag(t *testing.T) {
 	store := agenttest.MemJournal()
 	seen := map[string]bool{}
 	probe := func(name string) agent.Tool {
-		return agent.Func(name, "", agent.Safety{ReadOnly: true}, func(ctx context.Context, _ struct{}) (string, error) {
+		return agent.MustFunc(name, "", func(ctx context.Context, _ struct{}) (string, error) {
 			info, _ := agent.RunInfoFrom(ctx)
 			seen[name] = info.Saga
 			return "ok", nil
-		})
+		}, agent.WithSafety(agent.Safety{ReadOnly: true}))
 	}
 	childAgent := func(tool string) *agent.Agent {
 		c, err := agent.New(agent.NewScriptedModel(agent.ToolTurn("k1", tool, `{}`), agent.TextTurn("done")),
@@ -376,7 +376,7 @@ func TestRunInfoSaga_IsTheRunsOwnFlag(t *testing.T) {
 		return c
 	}
 	plainChild, sagaChild, sub := childAgent("in_plain_child"), childAgent("in_saga_child"), childAgent("in_sub_agent")
-	starter := agent.Func("starter", "", agent.Safety{ReadOnly: true}, func(ctx context.Context, _ struct{}) (string, error) {
+	starter := agent.MustFunc("starter", "", func(ctx context.Context, _ struct{}) (string, error) {
 		info, _ := agent.RunInfoFrom(ctx)
 		seen["starter"] = info.Saga
 		if _, err := plainChild.Run(ctx, info.SubRunFor("plain"), agent.UserText("go")); err != nil {
@@ -384,9 +384,9 @@ func TestRunInfoSaga_IsTheRunsOwnFlag(t *testing.T) {
 		}
 		_, err := sagaChild.Run(ctx, info.SubRunFor("saga"), agent.UserText("go"), agent.WithSaga())
 		return "ok", err
-	})
+	}, agent.WithSafety(agent.Safety{ReadOnly: true}))
 	p, err := agent.New(agent.NewScriptedModel(agent.ToolTurn("c1", "starter", `{}`), agent.ToolTurn("c2", "sub", `{"task":"go"}`), agent.TextTurn("done")),
-		store, agent.WithTools(starter, agent.SubAgent("sub", "", sub)))
+		store, agent.WithTools(starter, agent.MustSubAgent("sub", "", sub)))
 	if err != nil {
 		t.Fatal(err)
 	}

@@ -19,14 +19,14 @@ func TestR90_WakeFailureCutsOffSiblingInFlight(t *testing.T) {
 	bIn := make(chan struct{})
 	var bOnce sync.Once
 	var bFired atomic.Int32
-	nap := Func("nap", "", Safety{ReadOnly: true}, func(ctx context.Context, _ struct{}) (string, error) {
+	nap := MustFunc("nap", "", func(ctx context.Context, _ struct{}) (string, error) {
 		<-bIn // the sibling's effect is in flight
 		if err := Sleep(ctx, "nap", time.Hour); err != nil {
 			return "", err
 		}
 		return "rested", nil
-	})
-	send := Func("send", "", Safety{}, func(ctx context.Context, _ struct{}) (string, error) {
+	}, WithSafety(Safety{ReadOnly: true}))
+	send := MustFunc("send", "", func(ctx context.Context, _ struct{}) (string, error) {
 		bOnce.Do(func() { close(bIn) })
 		select {
 		case <-ctx.Done():
@@ -59,7 +59,7 @@ func TestR90_LiveToolClaimIsClassifiedCrashed(t *testing.T) {
 	store := newXprocStore() // separate processes: no in-process singleflight
 	inEffect, release := make(chan struct{}), make(chan struct{})
 	var once sync.Once
-	charge := Func("charge", "", Safety{}, func(ctx context.Context, _ struct{}) (string, error) {
+	charge := MustFunc("charge", "", func(ctx context.Context, _ struct{}) (string, error) {
 		once.Do(func() { close(inEffect) })
 		<-release
 		return "charged:txn-1", nil
@@ -141,7 +141,7 @@ func TestR90_LiveStepClaimIsClassifiedCrashed(t *testing.T) {
 // in the chain); the PR's AsPause switch looks only at the FIRST pause and returns ErrConfig.
 func TestR90_JoinedInterruptThenHaltKeepsTheHalt(t *testing.T) {
 	store := memJournal()
-	mixed := Func("mixed", "", Safety{}, func(ctx context.Context, _ struct{}) (string, error) {
+	mixed := MustFunc("mixed", "", func(ctx context.Context, _ struct{}) (string, error) {
 		d, runID, _ := runContext(ctx)
 		_, e1 := Interrupt[string](ctx, "q", nil)
 		_, _, _ = ClaimAttempt(ctx, d, runID, stepAttemptStep("inner"), Record{Kind: StepAttempt, ToolUseID: "inner", AttemptedAt: 1})
@@ -302,10 +302,10 @@ func jsonEq(a, b any) bool {
 // A wake failure beside an ordinary pause in the same turn fails the run: the run is not merely
 // waiting, since the failed wake was never registered and must be scheduled again.
 func TestWaker_FailureBesideAPauseFailsTheRun(t *testing.T) {
-	ask := Func("ask", "", Safety{ReadOnly: true}, func(ctx context.Context, _ struct{}) (string, error) {
+	ask := MustFunc("ask", "", func(ctx context.Context, _ struct{}) (string, error) {
 		_, err := Interrupt[string](ctx, "q", nil)
 		return "", err
-	})
+	}, WithSafety(Safety{ReadOnly: true}))
 	turn := multiToolTurn([2]string{"c1", "ask"}, [2]string{"c2", "nap"})
 	ctx := contextWithWaker(context.Background(), &failingWaker{fail: 1})
 	_, err := mustNew(

@@ -87,7 +87,7 @@ func TestRev117e_UnrecordedHidesDeepHaltInSaga(t *testing.T) {
 		ctx = WithGrant(ctx, rev117eRoot(t, signer, notAfter), signer)
 		deleg := AttenuatingSubAgent("deleg", "d", agenttest.MustNew(answerModel{text: "ok"}, store),
 			AttenuationConfig{Store: store, Narrow: narrowLimitBy(1), Rules: rev117eRules})
-		lost := agent.Func("lost", "outcome lost", agent.Safety{}, func(context.Context, struct{}) (string, error) {
+		lost := agent.MustFunc("lost", "outcome lost", func(context.Context, struct{}) (string, error) {
 			return "", fmt.Errorf("connection dropped after send: %w", agent.ErrToolOutcomeUnknown)
 		})
 		inner := agenttest.MustNew(
@@ -97,14 +97,14 @@ func TestRev117e_UnrecordedHidesDeepHaltInSaga(t *testing.T) {
 			agent.WithMaxConcurrency(1),
 		) // deleg refuses first, then lost halts
 		var side atomic.Int32
-		sideTool := agent.Func("side", "a later step", agent.Safety{}, func(context.Context, struct{}) (string, error) {
+		sideTool := agent.MustFunc("side", "a later step", func(context.Context, struct{}) (string, error) {
 			side.Add(1)
 			return "ok", nil
 		})
 		parent := agenttest.MustNew(
 			rev117eMultiModel{calls: [][2]string{{"c1", "inner"}, {"c2", "side"}}},
 			store,
-			agent.WithTools(agent.SubAgent("inner", "i", inner), sideTool),
+			agent.WithTools(agent.MustSubAgent("inner", "i", inner), sideTool),
 			agent.WithMaxConcurrency(1),
 		)
 		_, err := parent.Run(ctx, "p", agent.UserText("go"), agent.WithSaga())
@@ -345,7 +345,7 @@ func TestRev117e_UnrecordedJoinedWithCrashHaltInSaga(t *testing.T) {
 		AttenuationConfig{Store: store, Narrow: narrowLimitBy(1), Rules: rev117eRules})
 	var cancelFirst context.CancelFunc
 	var fired atomic.Int32
-	fire := agent.Func("fire", "a side effect", agent.Safety{}, func(ctx context.Context, _ struct{}) (string, error) {
+	fire := agent.MustFunc("fire", "a side effect", func(ctx context.Context, _ struct{}) (string, error) {
 		if fired.Add(1) == 1 {
 			cancelFirst() // the drive is cut off while the effect is in flight
 			return "", ctx.Err()
@@ -358,18 +358,18 @@ func TestRev117e_UnrecordedJoinedWithCrashHaltInSaga(t *testing.T) {
 	inner := agenttest.MustNew(
 		rev117eMultiModel{calls: [][2]string{{"i1", "deleg"}, {"i2", "deep"}}},
 		store,
-		agent.WithTools(deleg, agent.SubAgent("deep", "d", deep)),
+		agent.WithTools(deleg, agent.MustSubAgent("deep", "d", deep)),
 		agent.WithMaxConcurrency(1),
 	)
 	var side atomic.Int32
-	sideTool := agent.Func("side", "a later step", agent.Safety{}, func(context.Context, struct{}) (string, error) {
+	sideTool := agent.MustFunc("side", "a later step", func(context.Context, struct{}) (string, error) {
 		side.Add(1)
 		return "ok", nil
 	})
 	parent := agenttest.MustNew(
 		rev117eMultiModel{calls: [][2]string{{"c1", "inner"}, {"c2", "side"}}},
 		store,
-		agent.WithTools(agent.SubAgent("inner", "i", inner), sideTool),
+		agent.WithTools(agent.MustSubAgent("inner", "i", inner), sideTool),
 		agent.WithMaxConcurrency(1),
 	)
 	ctx1, cancel := context.WithCancel(WithGrant(context.Background(), expired, signer))

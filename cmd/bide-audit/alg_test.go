@@ -84,12 +84,11 @@ func TestCLI_MLDSAAndHybridEndToEnd(t *testing.T) {
 			store := agenttest.MemJournal()
 			const runID = "run-alg"
 			policy := agent.ApprovalPolicy{Need: 1, Approvers: []string{"alice"}}
-			charge := agent.Func("charge", "charge the card", agent.Safety{},
-				func(context.Context, struct {
-					Amount int `json:"amount"`
-				}) (string, error) {
-					return "ok", nil
-				}, agent.WithApproval(&policy))
+			charge := agent.MustFunc("charge", "charge the card", func(context.Context, struct {
+				Amount int `json:"amount"`
+			}) (string, error) {
+				return "ok", nil
+			}, agent.WithApproval(&policy))
 			resolver := func(id string) (agent.ApproverVerifier, bool) { return approverV, id == "alice" }
 			a := agenttest.MustNew(algChargeModel{}, store, agent.WithTools(charge), agent.WithApproverVerifiers(resolver))
 			if _, err := a.Run(ctx, runID, agent.UserText("pay")); err == nil {

@@ -32,10 +32,9 @@ func scaleCharge(next ToolHandler) ToolHandler {
 // compensated. It returns what was charged and what was refunded.
 func rewrittenChargeSaga(t *testing.T, store *Journal, safety Safety, mw ...ToolMiddleware) (charged, refunded int, err error) {
 	t.Helper()
-	charge := CompensatedFunc("charge", "charge the card", safety,
-		func(_ context.Context, in chargeArgs) (string, error) { charged = in.Amount; return "ok", nil },
-		func(_ context.Context, in chargeArgs, _ string) error { refunded = in.Amount; return nil })
-	fail := Func("book", "book the flight", Safety{}, func(context.Context, struct{}) (string, error) {
+	charge := MustCompensatedFunc("charge", "charge the card", func(_ context.Context, in chargeArgs) (string, error) { charged = in.Amount; return "ok", nil },
+		func(_ context.Context, in chargeArgs, _ string) error { refunded = in.Amount; return nil }, WithSafety(safety))
+	fail := MustFunc("book", "book the flight", func(context.Context, struct{}) (string, error) {
 		return "", errors.New("no seats")
 	})
 	m := NewScriptedModel(ToolTurn("c1", "charge", `{"amount":5}`), ToolTurn("b1", "book", `{}`), TextTurn("done"))
@@ -77,8 +76,7 @@ func TestSaga_AcceptedArgumentsAreJournaledOnlyWhenRewritten(t *testing.T) {
 
 	// A Run (not a saga) never compensates, so it journals no arguments either.
 	var ran atomic.Int32
-	charge := CompensatedFunc("charge", "charge the card", Safety{},
-		func(context.Context, chargeArgs) (string, error) { ran.Add(1); return "ok", nil },
+	charge := MustCompensatedFunc("charge", "charge the card", func(context.Context, chargeArgs) (string, error) { ran.Add(1); return "ok", nil },
 		func(context.Context, chargeArgs, string) error { return nil })
 	j = memJournal()
 	m := NewScriptedModel(ToolTurn("c1", "charge", `{"amount":5}`), TextTurn("done"))
@@ -100,13 +98,12 @@ func TestSaga_ResolvedUnknownOutcomeCompensatesTheAcceptedArguments(t *testing.T
 	var charged, refunded atomic.Int32
 	store := memJournal()
 	build := func() *Agent {
-		charge := CompensatedFunc("charge", "charge the card", Safety{},
-			func(_ context.Context, in chargeArgs) (string, error) {
-				charged.Store(int32(in.Amount))
-				return "", ErrToolOutcomeUnknown // the connection dropped after the request went out
-			},
+		charge := MustCompensatedFunc("charge", "charge the card", func(_ context.Context, in chargeArgs) (string, error) {
+			charged.Store(int32(in.Amount))
+			return "", ErrToolOutcomeUnknown // the connection dropped after the request went out
+		},
 			func(_ context.Context, in chargeArgs, _ string) error { refunded.Store(int32(in.Amount)); return nil })
-		fail := Func("book", "book the flight", Safety{}, func(context.Context, struct{}) (string, error) {
+		fail := MustFunc("book", "book the flight", func(context.Context, struct{}) (string, error) {
 			return "", errors.New("no seats")
 		})
 		m := NewScriptedModel(ToolTurn("c1", "charge", `{"amount":5}`), ToolTurn("b1", "book", `{}`), TextTurn("done"))
@@ -156,18 +153,17 @@ func TestSaga_RollbackRerunGoesThroughToolMiddleware(t *testing.T) {
 	// book fails only once the live charge has started: a call the failure reaches before it
 	// starts never starts, and would leave the rollback's re-run the first call.
 	chargeStarted := make(chan struct{})
-	charge := CompensatedFunc("charge", "charge the card", Safety{Idempotent: true},
-		func(ctx context.Context, in chargeArgs) (string, error) {
-			record(&charges, in.Amount)
-			if calls.Add(1) == 1 {
-				close(chargeStarted)
-				<-ctx.Done() // the live call is cut off waiting for its response
-				return "", ctx.Err()
-			}
-			return "ok", nil
-		},
-		func(_ context.Context, in chargeArgs, _ string) error { record(&refunded, in.Amount); return nil })
-	book := Func("book", "book the flight", Safety{}, func(context.Context, struct{}) (string, error) {
+	charge := MustCompensatedFunc("charge", "charge the card", func(ctx context.Context, in chargeArgs) (string, error) {
+		record(&charges, in.Amount)
+		if calls.Add(1) == 1 {
+			close(chargeStarted)
+			<-ctx.Done() // the live call is cut off waiting for its response
+			return "", ctx.Err()
+		}
+		return "ok", nil
+	},
+		func(_ context.Context, in chargeArgs, _ string) error { record(&refunded, in.Amount); return nil }, WithSafety(Safety{Idempotent: true}))
+	book := MustFunc("book", "book the flight", func(context.Context, struct{}) (string, error) {
 		<-chargeStarted
 		return "", errors.New("no seats")
 	})
@@ -185,8 +181,8 @@ func TestSaga_RollbackRerunGoesThroughToolMiddleware(t *testing.T) {
 // Only a compensable call journals its accepted arguments: a rewritten call to a tool with no
 // compensator has nothing to undo them with.
 func TestSaga_NonCompensableCallJournalsNoArguments(t *testing.T) {
-	charge := Func("charge", "charge the card", Safety{}, func(context.Context, chargeArgs) (string, error) { return "ok", nil })
-	fail := Func("book", "book the flight", Safety{}, func(context.Context, struct{}) (string, error) {
+	charge := MustFunc("charge", "charge the card", func(context.Context, chargeArgs) (string, error) { return "ok", nil })
+	fail := MustFunc("book", "book the flight", func(context.Context, struct{}) (string, error) {
 		return "", errors.New("no seats")
 	})
 	store := memJournal()
@@ -224,16 +220,15 @@ func TestSaga_UnjournaledArgumentsStopTheCall(t *testing.T) {
 // refund undoes the 500 the re-run charged.
 func TestSaga_RollbackRerunJournalsTheAcceptedArguments(t *testing.T) {
 	var charges, refunds atomic.Int32
-	charge := CompensatedFunc("charge", "charge the card", Safety{Idempotent: true},
-		func(_ context.Context, in chargeArgs) (string, error) {
-			charges.Store(int32(in.Amount))
-			return "ok", nil
-		},
-		func(_ context.Context, in chargeArgs, _ string) error { refunds.Store(int32(in.Amount)); return nil })
+	charge := MustCompensatedFunc("charge", "charge the card", func(_ context.Context, in chargeArgs) (string, error) {
+		charges.Store(int32(in.Amount))
+		return "ok", nil
+	},
+		func(_ context.Context, in chargeArgs, _ string) error { refunds.Store(int32(in.Amount)); return nil }, WithSafety(Safety{Idempotent: true}))
 	// book fails only once the live charge has started: a call the failure reaches before it
 	// starts never starts, and would leave the rollback's re-run the one that stalls.
 	chargeStarted := make(chan struct{})
-	book := Func("book", "book the flight", Safety{}, func(context.Context, struct{}) (string, error) {
+	book := MustFunc("book", "book the flight", func(context.Context, struct{}) (string, error) {
 		<-chargeStarted
 		return "", errors.New("no seats")
 	})
@@ -289,11 +284,10 @@ func (s failArgsReadStore) Load(ctx context.Context, runID string, after int64) 
 // rather than compensate with the model's arguments.
 func TestSaga_RollbackRerunStopsWhenItCannotReadTheArguments(t *testing.T) {
 	var refunds atomic.Int32
-	charge := CompensatedFunc("charge", "charge the card", Safety{Idempotent: true},
-		func(context.Context, chargeArgs) (string, error) { return "ok", nil },
-		func(_ context.Context, in chargeArgs, _ string) error { refunds.Store(int32(in.Amount)); return nil })
+	charge := MustCompensatedFunc("charge", "charge the card", func(context.Context, chargeArgs) (string, error) { return "ok", nil },
+		func(_ context.Context, in chargeArgs, _ string) error { refunds.Store(int32(in.Amount)); return nil }, WithSafety(Safety{Idempotent: true}))
 	chargeStarted := make(chan struct{}) // book fails once the live charge has started
-	book := Func("book", "book the flight", Safety{}, func(context.Context, struct{}) (string, error) {
+	book := MustFunc("book", "book the flight", func(context.Context, struct{}) (string, error) {
 		<-chargeStarted
 		return "", errors.New("no seats")
 	})

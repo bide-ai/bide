@@ -43,12 +43,11 @@ func main() {
 	}
 
 	// The specialist sub-agent: it owns the weather tool and answers weather questions.
-	weather := agent.Func("get_weather", "Get the current weather for a city",
-		agent.Safety{ReadOnly: true},
+	weather := agent.MustFunc("get_weather", "Get the current weather for a city",
 		func(_ context.Context, in CityArgs) (Weather, error) {
 			log.Printf("[tool] get_weather(%q) called", in.City)
 			return Weather{TempF: 68, Sky: "sunny"}, nil
-		})
+		}, agent.WithSafety(agent.Safety{ReadOnly: true}))
 	weatherAgent, err := agent.New(
 		model,
 		store,
@@ -60,7 +59,7 @@ func main() {
 	}
 
 	// Expose the sub-agent to the parent as a tool it can delegate to.
-	weatherTool := agent.SubAgent("weather_agent",
+	weatherTool := agent.MustSubAgent("weather_agent",
 		"Delegate any weather question to the weather specialist sub-agent.", weatherAgent)
 
 	parent, err := agent.New(

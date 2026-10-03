@@ -23,7 +23,7 @@ func TestP14_B1_PerRunOptionsSurviveRecoverLoop(t *testing.T) {
 	}}
 	a := p14Build(t, model, j, agent.WithTools(
 		pay.tool("pay", agent.Safety{}, agent.WithApproval(agent.SingleApproval())),
-		agent.Func("lookup", "", agent.Safety{ReadOnly: true}, func(context.Context, struct{}) (string, error) { return "ok", nil })))
+		agent.MustFunc("lookup", "", func(context.Context, struct{}) (string, error) { return "ok", nil }, agent.WithSafety(agent.Safety{ReadOnly: true}))))
 	ctx := context.Background()
 	_, err := a.Run(ctx, "r", agent.UserText("go"), agent.WithTokenBudget(30), agent.WithSystemPrompt("per-run"))
 	if _, ok := errors.AsType[*agent.ApprovalPending](err); !ok {

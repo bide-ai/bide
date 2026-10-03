@@ -18,7 +18,7 @@ func (r staticRetriever) Retrieve(context.Context, string, int) ([]agent.Doc, er
 // makes: a drive reads the documents once, at its first model call, and its later calls reuse them.
 func TestWithRetrieval_OneStepPerDrive(t *testing.T) {
 	j, cs, _ := countingJournal(t)
-	noop := agent.Func("noop", "", agent.Safety{ReadOnly: true}, func(context.Context, struct{}) (string, error) { return "ok", nil })
+	noop := agent.MustFunc("noop", "", func(context.Context, struct{}) (string, error) { return "ok", nil }, agent.WithSafety(agent.Safety{ReadOnly: true}))
 	m := agent.NewScriptedModel(agent.ToolTurn("c1", "noop", `{}`), agent.ToolTurn("c2", "noop", `{}`), agent.TextTurn("done"))
 	a, err := agent.New(m, j, agent.WithTools(noop), agent.WithRetrieval(staticRetriever{{Text: "doc"}}, 1))
 	if err != nil {

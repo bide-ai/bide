@@ -20,7 +20,7 @@ func TestRev117e_PlanToolNodeSkipsCallGuard(t *testing.T) {
 	defer func() { toolhook.CallGuard = prev }()
 	toolhook.CallGuard = func(context.Context) error { return errors.New("grant expired") }
 	var ran atomic.Int32
-	tool := agent.Func("send", "", agent.Safety{}, func(context.Context, int) (int, error) { ran.Add(1); return 1, nil })
+	tool := agent.MustFunc("send", "", func(context.Context, int) (int, error) { ran.Add(1); return 1, nil })
 	args, _ := json.Marshal(1)
 	_, err := callTool(context.Background(), tool, 0, args)
 	if ran.Load() != 0 {

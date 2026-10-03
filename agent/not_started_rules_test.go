@@ -95,10 +95,9 @@ func TestStep_NotStartedIsRecordedOnAStoreThatChecksContext(t *testing.T) {
 // neither halts on it nor compensates it.
 func TestSaga_NotStartedCallIsNotCompensated(t *testing.T) {
 	var charged, refunded atomic.Int32
-	pay := CompensatedFunc("pay", "charge the card", Safety{},
-		func(context.Context, struct{}) (string, error) { charged.Add(1); return "paid", nil },
+	pay := MustCompensatedFunc("pay", "charge the card", func(context.Context, struct{}) (string, error) { charged.Add(1); return "paid", nil },
 		func(context.Context, struct{}, string) error { refunded.Add(1); return nil })
-	book := Func("book", "book the flight", Safety{}, func(context.Context, struct{}) (string, error) {
+	book := MustFunc("book", "book the flight", func(context.Context, struct{}) (string, error) {
 		return "", errors.New("no seats")
 	})
 	store := mustJournal(&holdClaimStore{MemStore: NewMemStore(), toolUseID: "p1"})
@@ -162,7 +161,7 @@ func TestTool_CrashInAReattemptHalts(t *testing.T) {
 	store := &markerHookStore{MemStore: NewMemStore(), cancel: cancel}
 	j := mustJournal(store)
 	var calls atomic.Int32
-	charge := Func("charge", "charge the card", Safety{}, func(context.Context, struct{}) (string, error) {
+	charge := MustFunc("charge", "charge the card", func(context.Context, struct{}) (string, error) {
 		calls.Add(1)
 		return "charged", nil
 	})
@@ -193,7 +192,7 @@ func TestStream_NotStartedCallEmitsNoToolStarted(t *testing.T) {
 	ctx, cancel := context.WithCancel(context.Background())
 	store := &markerHookStore{MemStore: NewMemStore(), cancel: cancel}
 	j := mustJournal(store)
-	charge := Func("charge", "charge the card", Safety{}, func(context.Context, struct{}) (string, error) {
+	charge := MustFunc("charge", "charge the card", func(context.Context, struct{}) (string, error) {
 		return "charged", nil
 	})
 	m := &greedyModel{script: [][]Emit{toolTurn("c1", "charge", `{}`), textTurn("done")}}
@@ -235,13 +234,12 @@ func TestStream_NotStartedCallEmitsNoToolStarted(t *testing.T) {
 // the rollback undoes those.
 func TestSaga_NotStartedReattemptCompensatesTheAcceptedArguments(t *testing.T) {
 	var charged, refunded atomic.Int32
-	charge := CompensatedFunc("charge", "charge the card", Safety{},
-		func(_ context.Context, in chargeArgs) (string, error) {
-			charged.Add(int32(in.Amount))
-			return "ok", nil
-		},
+	charge := MustCompensatedFunc("charge", "charge the card", func(_ context.Context, in chargeArgs) (string, error) {
+		charged.Add(int32(in.Amount))
+		return "ok", nil
+	},
 		func(_ context.Context, in chargeArgs, _ string) error { refunded.Add(int32(in.Amount)); return nil })
-	fail := Func("book", "book the flight", Safety{}, func(context.Context, struct{}) (string, error) {
+	fail := MustFunc("book", "book the flight", func(context.Context, struct{}) (string, error) {
 		return "", errors.New("no seats")
 	})
 	model := func() Model {

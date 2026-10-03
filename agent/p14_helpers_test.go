@@ -130,10 +130,10 @@ func has(t *testing.T, s agent.Store, runID, name string) bool {
 type counter struct{ n atomic.Int32 }
 
 func (c *counter) tool(name string, safety agent.Safety, opts ...agent.ToolOption) agent.Tool {
-	return agent.Func(name, "", safety, func(context.Context, struct{}) (string, error) {
+	return agent.MustFunc(name, "", func(context.Context, struct{}) (string, error) {
 		c.n.Add(1)
 		return "ok", nil
-	}, opts...)
+	}, append([]agent.ToolOption{agent.WithSafety(safety)}, opts...)...)
 }
 
 // reason is the value Cancel journals.

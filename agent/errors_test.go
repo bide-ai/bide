@@ -47,12 +47,11 @@ func TestErrors_UnknownToolClassified(t *testing.T) {
 // Bad tool arguments classify as ErrToolArgs (and ErrTool), while the underlying JSON
 // error stays inspectable in the chain.
 func TestErrors_ToolArgsClassified(t *testing.T) {
-	tool := Func("adder", "", Safety{ReadOnly: true},
-		func(_ context.Context, in struct {
-			A int `json:"a"`
-		}) (int, error) {
-			return in.A, nil
-		})
+	tool := MustFunc("adder", "", func(_ context.Context, in struct {
+		A int `json:"a"`
+	}) (int, error) {
+		return in.A, nil
+	}, WithSafety(Safety{ReadOnly: true}))
 
 	_, err := tool.Call(context.Background(), json.RawMessage(`{"a":"not-an-int"}`))
 	if !errors.Is(err, ErrToolArgs) {

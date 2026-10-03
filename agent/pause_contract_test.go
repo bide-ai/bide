@@ -38,12 +38,12 @@ func (w *failingWaker) scheduled() []Wake {
 
 // napTool sleeps for an hour under the name "nap", from a retry-safe tool.
 func napTool() Tool {
-	return Func("nap", "sleep for an hour", Safety{ReadOnly: true}, func(ctx context.Context, _ struct{}) (string, error) {
+	return MustFunc("nap", "sleep for an hour", func(ctx context.Context, _ struct{}) (string, error) {
 		if err := Sleep(ctx, "nap", time.Hour); err != nil {
 			return "", err
 		}
 		return "rested", nil
-	})
+	}, WithSafety(Safety{ReadOnly: true}))
 }
 
 // A Waker that cannot schedule the wake must not let the run pause (nothing might ever wake it)
@@ -224,7 +224,7 @@ func TestResolveHaltRef_ToolHalt(t *testing.T) {
 	ctx := context.Background()
 	store := memJournal()
 	var charged int
-	charge := Func("charge", "charge the card", Safety{}, func(context.Context, struct{}) (string, error) {
+	charge := MustFunc("charge", "charge the card", func(context.Context, struct{}) (string, error) {
 		charged++
 		return "", fmt.Errorf("gateway connection reset (%w)", ErrToolOutcomeUnknown)
 	})
@@ -455,13 +455,13 @@ func TestVerbs_WrappersWriteTheSameRecords(t *testing.T) {
 func TestAnswerInterrupt_ResumesThePause(t *testing.T) {
 	ctx := context.Background()
 	store := memJournal()
-	ask := Func("ask", "ask a human", Safety{ReadOnly: true}, func(ctx context.Context, _ struct{}) (string, error) {
+	ask := MustFunc("ask", "ask a human", func(ctx context.Context, _ struct{}) (string, error) {
 		n, err := Interrupt[int](ctx, "how-many", "how many?")
 		if err != nil {
 			return "", err
 		}
 		return fmt.Sprint(n), nil
-	})
+	}, WithSafety(Safety{ReadOnly: true}))
 	_, err := mustNew(
 		&greedyModel{script: [][]Emit{toolTurn("c1", "ask", `{}`), textTurn("done")}},
 		store,
@@ -492,7 +492,7 @@ func TestLoop_SubTreePausePropagatesFromAnyTool(t *testing.T) {
 		&ApprovalPending{RunRef: ref, ToolUseID: "inner", ToolName: "gated"},
 		&OutcomeUnknown{RunRef: ref, Op: OpRef{Kind: OpTool, ID: "inner", ToolName: "charge"}, Cause: HaltCrashed},
 	} {
-		delegate := Func("delegate", "a side-effecting call that ran a sub-run", Safety{}, func(context.Context, struct{}) (string, error) {
+		delegate := MustFunc("delegate", "a side-effecting call that ran a sub-run", func(context.Context, struct{}) (string, error) {
 			return "", fmt.Errorf("sub-run: %w", p)
 		})
 		_, err := mustNew(

@@ -19,16 +19,15 @@ func TestT3_IdempotentSagaStepEarlierAttemptNotAccounted(t *testing.T) {
 	var calls, charged, refunded atomic.Int32
 	ctx1, cancel1 := context.WithCancel(context.Background())
 	defer cancel1()
-	charge := CompensatedFunc("charge", "", Safety{Idempotent: true},
-		func(ctx context.Context, _ struct{}) (string, error) {
-			if calls.Add(1) == 1 {
-				charged.Add(1) // the effect takes place, then the run is cancelled
-				cancel1()
-				return "", ctx.Err()
-			}
-			return "", errors.New("card declined") // the tool's own error: nothing done this time
-		},
-		func(context.Context, struct{}, string) error { refunded.Add(1); return nil })
+	charge := MustCompensatedFunc("charge", "", func(ctx context.Context, _ struct{}) (string, error) {
+		if calls.Add(1) == 1 {
+			charged.Add(1) // the effect takes place, then the run is cancelled
+			cancel1()
+			return "", ctx.Err()
+		}
+		return "", errors.New("card declined") // the tool's own error: nothing done this time
+	},
+		func(context.Context, struct{}, string) error { refunded.Add(1); return nil }, WithSafety(Safety{Idempotent: true}))
 	st := memJournal()
 	m := NewScriptedModel(ToolTurn("c1", "charge", `{}`), TextTurn("done"))
 	a := mustNew(m, st, WithTools(charge))
@@ -55,18 +54,17 @@ func TestT4_LeakedNextEffectAfterCompensation(t *testing.T) {
 	release, ran := make(chan struct{}), make(chan struct{})
 	var charged, refunded atomic.Int32
 	var refundedBeforeCharge atomic.Bool
-	charge := CompensatedFunc("charge", "", Safety{Idempotent: true},
-		func(ctx context.Context, _ struct{}) (string, error) {
-			<-release
-			if refunded.Load() > 0 {
-				refundedBeforeCharge.Store(true)
-			}
-			charged.Add(1)
-			close(ran)
-			return "ok", nil
-		},
-		func(context.Context, struct{}, string) error { refunded.Add(1); return nil })
-	fail := Func("fail", "", Safety{}, func(context.Context, struct{}) (string, error) { return "", errors.New("declined") })
+	charge := MustCompensatedFunc("charge", "", func(ctx context.Context, _ struct{}) (string, error) {
+		<-release
+		if refunded.Load() > 0 {
+			refundedBeforeCharge.Store(true)
+		}
+		charged.Add(1)
+		close(ran)
+		return "ok", nil
+	},
+		func(context.Context, struct{}, string) error { refunded.Add(1); return nil }, WithSafety(Safety{Idempotent: true}))
+	fail := MustFunc("fail", "", func(context.Context, struct{}) (string, error) { return "", errors.New("declined") })
 	leak := ToolMiddleware(func(next ToolHandler) ToolHandler {
 		return func(ctx context.Context, call ToolCall) (json.RawMessage, error) {
 			if call.Use.Name != "charge" {
@@ -97,16 +95,15 @@ func TestT5_RetrySafeBeginsAfterChainReturned(t *testing.T) {
 	release, done := make(chan struct{}), make(chan struct{})
 	var charged, refunded atomic.Int32
 	var chargedAfterRefund atomic.Bool
-	charge := CompensatedFunc("charge", "", Safety{Idempotent: true},
-		func(ctx context.Context, _ struct{}) (string, error) {
-			if refunded.Load() > 0 {
-				chargedAfterRefund.Store(true)
-			}
-			charged.Add(1)
-			return "ok", nil
-		},
-		func(context.Context, struct{}, string) error { refunded.Add(1); return nil })
-	fail := Func("fail", "", Safety{}, func(context.Context, struct{}) (string, error) { return "", errors.New("declined") })
+	charge := MustCompensatedFunc("charge", "", func(ctx context.Context, _ struct{}) (string, error) {
+		if refunded.Load() > 0 {
+			chargedAfterRefund.Store(true)
+		}
+		charged.Add(1)
+		return "ok", nil
+	},
+		func(context.Context, struct{}, string) error { refunded.Add(1); return nil }, WithSafety(Safety{Idempotent: true}))
+	fail := MustFunc("fail", "", func(context.Context, struct{}) (string, error) { return "", errors.New("declined") })
 	leak := ToolMiddleware(func(next ToolHandler) ToolHandler {
 		return func(ctx context.Context, call ToolCall) (json.RawMessage, error) {
 			if call.Use.Name != "charge" {

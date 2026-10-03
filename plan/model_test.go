@@ -114,7 +114,7 @@ func TestModel_LoadedFlow_BindsModel(t *testing.T) {
 	fake := &fakeModel{reply: `{"verdict":"deny","score":10}`, lastSeen: &seen}
 
 	reg := NewRegistry()
-	if err := RegisterModel[ticket, review](reg, "assessBlock", "Subject: {{.Subject}}"); err != nil {
+	if err := reg.RegisterModel[ticket, review]("assessBlock", "Subject: {{.Subject}}"); err != nil {
 		t.Fatalf("RegisterModel: %v", err)
 	}
 	cfg := `{"version":1,"flow":"triage","entry":"assess","nodes":[{"name":"assess","block":"assessBlock"}],"wiring":[]}`
@@ -139,7 +139,7 @@ func TestModel_LoadedFlow_BindsModel(t *testing.T) {
 // block loaded WITHOUT a bound model fails Build (via Load), naming the node.
 func TestModel_LoadedFlow_NoBoundModel_ErrorsAtBuild(t *testing.T) {
 	reg := NewRegistry()
-	if err := RegisterModel[ticket, review](reg, "assessBlock", "prompt"); err != nil {
+	if err := reg.RegisterModel[ticket, review]("assessBlock", "prompt"); err != nil {
 		t.Fatalf("RegisterModel: %v", err)
 	}
 	cfg := `{"version":1,"flow":"triage","entry":"assess","nodes":[{"name":"assess","block":"assessBlock"}],"wiring":[]}`

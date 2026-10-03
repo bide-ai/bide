@@ -116,11 +116,10 @@ func TestSession_SendOnceOpenTurnDifferentInputIsRefused(t *testing.T) {
 func TestResume_SagaRunThroughRunIsRefused(t *testing.T) {
 	ctx := context.Background()
 	var undone, gated int
-	charge := CompensatedFunc("charge", "", Safety{},
-		func(context.Context, struct{}) (string, error) { return "ch_1", nil },
+	charge := MustCompensatedFunc("charge", "", func(context.Context, struct{}) (string, error) { return "ch_1", nil },
 		func(context.Context, struct{}, string) error { undone++; return nil })
 	gate := &countingTool{name: "gate", safety: Safety{ReadOnly: true}, approval: SingleApproval(), calls: &gated}
-	book := Func("book", "", Safety{}, func(context.Context, struct{}) (string, error) {
+	book := MustFunc("book", "", func(context.Context, struct{}) (string, error) {
 		return "", errors.New("no rooms left")
 	})
 	store := memJournal()
@@ -275,7 +274,7 @@ func TestSaga_UnregisteredWriteIsReportedUncompensated(t *testing.T) {
 	var reserved, gated int
 	reserve := &countingTool{name: "reserve", safety: Safety{}, calls: &reserved}
 	gate := &countingTool{name: "gate", safety: Safety{ReadOnly: true}, approval: SingleApproval(), calls: &gated}
-	book := Func("book", "", Safety{}, func(context.Context, struct{}) (string, error) {
+	book := MustFunc("book", "", func(context.Context, struct{}) (string, error) {
 		return "", errors.New("no rooms left")
 	})
 	store := memJournal()
@@ -308,12 +307,12 @@ func TestSaga_UnregisteredAttemptedCallStillHalts(t *testing.T) {
 	// reserve and book run concurrently in one turn; once reserve has been called, book fails,
 	// the saga cancels reserve, and reserve's attempt marker stays without a result.
 	entered := make(chan struct{})
-	reserve := Func("reserve", "", Safety{}, func(ctx context.Context, _ struct{}) (string, error) {
+	reserve := MustFunc("reserve", "", func(ctx context.Context, _ struct{}) (string, error) {
 		close(entered)
 		<-ctx.Done()
 		return "", ctx.Err()
 	})
-	book := Func("book", "", Safety{}, func(context.Context, struct{}) (string, error) {
+	book := MustFunc("book", "", func(context.Context, struct{}) (string, error) {
 		<-entered
 		return "", errors.New("no rooms left")
 	})
@@ -369,11 +368,11 @@ func relabelSaga(t *testing.T, first Tool, then ...Tool) *SagaAborted {
 	ctx := context.Background()
 	var gated int
 	gate := &countingTool{name: "gate", safety: Safety{ReadOnly: true}, approval: SingleApproval(), calls: &gated}
-	book := Func("book", "", Safety{}, func(context.Context, struct{}) (string, error) {
+	book := MustFunc("book", "", func(context.Context, struct{}) (string, error) {
 		return "", errors.New("no rooms left")
 	})
 	store := memJournal()
-	m := NewScriptedModel(ToolTurn("c1", first.Name(), `{}`), ToolTurn("c2", "gate", `{}`), ToolTurn("c3", "book", `{}`), TextTurn("done"))
+	m := NewScriptedModel(ToolTurn("c1", first.Spec().Name, `{}`), ToolTurn("c2", "gate", `{}`), ToolTurn("c3", "book", `{}`), TextTurn("done"))
 	var pa *ApprovalPending
 	if _, err := mustNew(m, store, WithTools(first, gate, book)).Run(ctx, "r", UserText("trip"), WithSaga()); !errors.As(err, &pa) {
 		t.Fatalf("first drive: err = %v, want *PendingApproval", err)
@@ -403,7 +402,7 @@ func TestSaga_RelabelledReadOnlyWriteIsStillRolledBack(t *testing.T) {
 	var undone int
 	undo := func(context.Context, struct{}, string) error { undone++; return nil }
 	do := func(context.Context, struct{}) (string, error) { return "ok", nil }
-	got := relabelSaga(t, CompensatedFunc("hold", "", Safety{}, do, undo), CompensatedFunc("hold", "", Safety{ReadOnly: true}, do, undo))
+	got := relabelSaga(t, MustCompensatedFunc("hold", "", do, undo), MustCompensatedFunc("hold", "", do, undo, WithSafety(Safety{ReadOnly: true})))
 	if undone != 1 || !slices.Contains(got.Compensated, "hold") {
 		t.Fatalf("compensations %d, compensated %q; want the relabelled write compensated once", undone, got.Compensated)
 	}
@@ -429,12 +428,12 @@ func TestSaga_ReadOnlyCallStaysSkipped(t *testing.T) {
 // KNOWN-LIMITATIONS.)
 func TestSaga_CutOffReadOnlyCallIsSkipped(t *testing.T) {
 	entered := make(chan struct{})
-	lookup := Func("lookup", "", Safety{ReadOnly: true}, func(ctx context.Context, _ struct{}) (string, error) {
+	lookup := MustFunc("lookup", "", func(ctx context.Context, _ struct{}) (string, error) {
 		close(entered)
 		<-ctx.Done()
 		return "", ctx.Err()
-	})
-	book := Func("book", "", Safety{}, func(context.Context, struct{}) (string, error) {
+	}, WithSafety(Safety{ReadOnly: true}))
+	book := MustFunc("book", "", func(context.Context, struct{}) (string, error) {
 		<-entered // fail once the read is in flight, so the abort cuts it off
 		return "", errors.New("no rooms left")
 	})

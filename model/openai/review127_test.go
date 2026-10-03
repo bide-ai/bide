@@ -24,7 +24,7 @@ func TestBuild_FollowsTheAdaptersToolRules(t *testing.T) {
 	defer srv.Close()
 	m := New("k", WithBaseURL(srv.URL), WithHTTPClient(srv.Client()))
 	for _, n := range []string{"get weather", "fs.read", "fs:read"} {
-		tool := agent.Func(n, "", agent.Safety{ReadOnly: true}, func(context.Context, struct{}) (string, error) { return "", nil })
+		tool := agent.MustFunc(n, "", func(context.Context, struct{}) (string, error) { return "", nil }, agent.WithSafety(agent.Safety{ReadOnly: true}))
 		if _, err := agent.New(m, agenttest.MemJournal(), agent.WithTools(tool)); !errors.Is(err, agent.ErrConfig) {
 			t.Errorf("tool %q: Build err = %v, want ErrConfig", n, err)
 		}

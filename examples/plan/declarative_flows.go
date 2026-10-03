@@ -88,22 +88,22 @@ func buildDiamondRegistry() (*plan.Registry, error) {
 	reg := plan.NewRegistry()
 
 	// split: int -> int, the entry that fans out to y and z.
-	if err := plan.RegisterStep(reg, "split", func(_ context.Context, n int) (int, error) { return n * 2, nil }); err != nil {
+	if err := reg.RegisterStep("split", func(_ context.Context, n int) (int, error) { return n * 2, nil }); err != nil {
 		return nil, err
 	}
 	// y: int -> int, one fan-out arm.
-	if err := plan.RegisterStep(reg, "y", func(_ context.Context, n int) (int, error) { return n + 1, nil }); err != nil {
+	if err := reg.RegisterStep("y", func(_ context.Context, n int) (int, error) { return n + 1, nil }); err != nil {
 		return nil, err
 	}
 	// z: int -> string, the other fan-out arm.
-	if err := plan.RegisterStep(reg, "z", func(_ context.Context, n int) (string, error) { return fmt.Sprintf("z%d", n), nil }); err != nil {
+	if err := reg.RegisterStep("z", func(_ context.Context, n int) (string, error) { return fmt.Sprintf("z%d", n), nil }); err != nil {
 		return nil, err
 	}
 	// mergeBlock: the Join2 merge fanning y (int) and z (string) back into one string. Load
 	// checks its arity (2) against the join's declared input count and its input types
 	// against y's and z's outputs. It is registered ReadOnly: only Go code can mark a block
 	// safe to run twice, and the config's "safety" may only keep or lower that.
-	if err := plan.RegisterJoin2(reg, "mergeBlock", func(_ context.Context, a int, s string) (string, error) {
+	if err := reg.RegisterJoin2("mergeBlock", func(_ context.Context, a int, s string) (string, error) {
 		return fmt.Sprintf("%s+%d", s, a), nil
 	}, plan.ReadOnly()); err != nil {
 		return nil, err
@@ -138,30 +138,30 @@ func buildLoopRegistry() (*plan.Registry, error) {
 	reg := plan.NewRegistry()
 
 	// seed: int -> LoopState, the entry that primes the countdown.
-	if err := plan.RegisterStep(reg, "seed", func(_ context.Context, n int) (LoopState, error) {
+	if err := reg.RegisterStep("seed", func(_ context.Context, n int) (LoopState, error) {
 		return LoopState{N: n, Trace: "seed"}, nil
 	}); err != nil {
 		return nil, err
 	}
 	// refine: LoopState -> LoopState, the loop head. It decrements N and appends a marker
 	// so the terminal output shows one entry per body pass.
-	if err := plan.RegisterStep(reg, "refine", func(_ context.Context, s LoopState) (LoopState, error) {
+	if err := reg.RegisterStep("refine", func(_ context.Context, s LoopState) (LoopState, error) {
 		return LoopState{N: s.N - 1, Trace: s.Trace + "|refine"}, nil
 	}); err != nil {
 		return nil, err
 	}
 	// check: LoopState -> LoopState, the loop switch's switched node (a pass-through).
-	if err := plan.RegisterStep(reg, "check", func(_ context.Context, s LoopState) (LoopState, error) { return s, nil }); err != nil {
+	if err := reg.RegisterStep("check", func(_ context.Context, s LoopState) (LoopState, error) { return s, nil }); err != nil {
 		return nil, err
 	}
 	// done: LoopState -> string, the loop exit terminal.
-	if err := plan.RegisterStep(reg, "done", func(_ context.Context, s LoopState) (string, error) {
+	if err := reg.RegisterStep("done", func(_ context.Context, s LoopState) (string, error) {
 		return fmt.Sprintf("done N=%d trace=%s", s.N, s.Trace), nil
 	}); err != nil {
 		return nil, err
 	}
 	// again: the loop-back predicate over LoopState. The When arm loops back while it holds.
-	if err := plan.RegisterPredicate(reg, "again", func(s LoopState) bool { return s.N > 0 }); err != nil {
+	if err := reg.RegisterPredicate("again", func(s LoopState) bool { return s.N > 0 }); err != nil {
 		return nil, err
 	}
 	return reg, nil

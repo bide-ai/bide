@@ -25,7 +25,7 @@ func TestReview138b_CrossStoreSubRunIgnoresRootCancel(t *testing.T) {
 		}},
 		{text: "done"},
 	}}
-	parent := p14Build(t, parentModel, j, agent.WithTools(agent.SubAgent("helper", "", sub)))
+	parent := p14Build(t, parentModel, j, agent.WithTools(agent.MustSubAgent("helper", "", sub)))
 	if _, err := parent.Run(ctx, "r", agent.UserText("go")); !errors.Is(err, agent.ErrRunCancelled) {
 		t.Fatalf("parent run = %v, want ErrRunCancelled", err)
 	}
@@ -141,9 +141,9 @@ func TestReview138b_CrossStoreNestedSubRunSeesRootCancel(t *testing.T) {
 		}},
 		{text: "mid"},
 	}}
-	mid := p14Build(t, midModel, j2, agent.WithTools(agent.SubAgent("inner", "", inner)))
+	mid := p14Build(t, midModel, j2, agent.WithTools(agent.MustSubAgent("inner", "", inner)))
 	parentModel := &p14Model{turns: []p14Turn{{calls: []agent.ToolUse{{ID: "p1", Name: "mid", Args: []byte(`{"task":"x"}`)}}}, {text: "done"}}}
-	parent := p14Build(t, parentModel, j, agent.WithTools(agent.SubAgent("mid", "", mid)))
+	parent := p14Build(t, parentModel, j, agent.WithTools(agent.MustSubAgent("mid", "", mid)))
 	if _, err := parent.Run(ctx, "r", agent.UserText("go")); !errors.Is(err, agent.ErrRunCancelled) {
 		t.Fatalf("parent run = %v, want ErrRunCancelled", err)
 	}

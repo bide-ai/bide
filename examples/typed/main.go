@@ -45,12 +45,11 @@ func main() {
 		openai.WithMaxTokens(512),
 	)
 
-	lookup := agent.Func("get_population", "Get the population of a city",
-		agent.Safety{ReadOnly: true},
+	lookup := agent.MustFunc("get_population", "Get the population of a city",
 		func(_ context.Context, in CityArgs) (Population, error) {
 			log.Printf("[tool] get_population(%q) called", in.City)
 			return Population{Count: 8_336_000}, nil
-		})
+		}, agent.WithSafety(agent.Safety{ReadOnly: true}))
 
 	j, err := agent.NewJournal(agent.NewMemStore())
 	if err != nil {

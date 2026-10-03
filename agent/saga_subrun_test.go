@@ -22,8 +22,7 @@ type subRunFixture struct {
 // child builds the child agent, fresh each time (as a new process would).
 func (f *subRunFixture) child(t *testing.T) *agent.Agent {
 	t.Helper()
-	book := agent.CompensatedFunc("book", "", agent.Safety{},
-		func(context.Context, struct{}) (string, error) { return "booked", nil },
+	book := agent.MustCompensatedFunc("book", "", func(context.Context, struct{}) (string, error) { return "booked", nil },
 		func(context.Context, struct{}, string) error {
 			if err := f.undoErr; err != nil {
 				f.undoErr = nil
@@ -54,7 +53,7 @@ func (f *subRunFixture) parent(t *testing.T, declare, failAfter bool) *agent.Age
 			return nil
 		}))
 	}
-	starter := agent.Func("starter", "", agent.Safety{ReadOnly: true}, func(ctx context.Context, _ struct{}) (string, error) {
+	starter := agent.MustFunc("starter", "", func(ctx context.Context, _ struct{}) (string, error) {
 		info, _ := agent.RunInfoFrom(ctx)
 		res, err := child.Run(ctx, info.SubRunFor("child"), agent.UserText("work"), agent.WithSaga())
 		var msg agent.Message
@@ -65,8 +64,8 @@ func (f *subRunFixture) parent(t *testing.T, declare, failAfter bool) *agent.Age
 			err = errors.New("starter failed after its sub-run")
 		}
 		return msg.Text(), err
-	}, opts...)
-	boom := agent.Func("boom", "", agent.Safety{}, func(context.Context, struct{}) (string, error) {
+	}, append([]agent.ToolOption{agent.WithSafety(agent.Safety{ReadOnly: true})}, opts...)...)
+	boom := agent.MustFunc("boom", "", func(context.Context, struct{}) (string, error) {
 		return "", errors.New("boom")
 	})
 	turns := []agent.ScriptedTurn{agent.ToolTurn("c1", "starter", `{}`), agent.ToolTurn("c2", "boom", `{}`), agent.TextTurn("x")}
@@ -165,7 +164,7 @@ func TestSubRunFor_RefusedAfterTheCallReturned(t *testing.T) {
 			t.Fatal(err)
 		}
 		release, result := make(chan struct{}), make(chan error, 1)
-		spawn := agent.Func("spawn", "", agent.Safety{ReadOnly: true}, func(ctx context.Context, _ struct{}) (string, error) {
+		spawn := agent.MustFunc("spawn", "", func(ctx context.Context, _ struct{}) (string, error) {
 			info, _ := agent.RunInfoFrom(ctx)
 			id := info.SubRunFor("late")
 			go func() {
@@ -174,7 +173,7 @@ func TestSubRunFor_RefusedAfterTheCallReturned(t *testing.T) {
 				result <- err
 			}()
 			return "spawned", nil
-		})
+		}, agent.WithSafety(agent.Safety{ReadOnly: true}))
 		p, err := agent.New(agent.NewScriptedModel(agent.ToolTurn("c1", "spawn", `{}`), agent.TextTurn("done")),
 			store, agent.WithTools(spawn))
 		if err != nil {
@@ -202,14 +201,14 @@ func TestSubRunFor_LongNameInASaga(t *testing.T) {
 		t.Fatal(err)
 	}
 	long := strings.Repeat("n", 200)
-	starter := agent.Func("starter", "", agent.Safety{ReadOnly: true}, func(ctx context.Context, _ struct{}) (string, error) {
+	starter := agent.MustFunc("starter", "", func(ctx context.Context, _ struct{}) (string, error) {
 		info, _ := agent.RunInfoFrom(ctx)
 		_, err := child.Run(ctx, info.SubRunFor(long), agent.UserText("work"))
 		if !errors.Is(err, agent.ErrConfig) {
 			return "", errors.New("long name accepted in a saga: " + errString(err))
 		}
 		return "refused", nil
-	})
+	}, agent.WithSafety(agent.Safety{ReadOnly: true}))
 	p, err := agent.New(agent.NewScriptedModel(agent.ToolTurn("c1", "starter", `{}`), agent.TextTurn("done")),
 		store, agent.WithTools(starter))
 	if err != nil {
@@ -235,10 +234,10 @@ func TestWithSubRuns_Refusals(t *testing.T) {
 	}
 	for name, build := range map[string]func(){
 		"nil function": func() {
-			agent.Func("f", "", agent.Safety{}, func(context.Context, struct{}) (string, error) { return "", nil }, agent.WithSubRuns(nil))
+			agent.MustFunc("f", "", func(context.Context, struct{}) (string, error) { return "", nil }, agent.WithSubRuns(nil))
 		},
 		"on a SubAgent": func() {
-			agent.SubAgent("s", "", sub, agent.WithSubRuns(func(string) *agent.Agent { return sub }))
+			agent.MustSubAgent("s", "", sub, agent.WithSubRuns(func(string) *agent.Agent { return sub }))
 		},
 	} {
 		func() {

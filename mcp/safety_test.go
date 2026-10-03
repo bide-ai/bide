@@ -124,7 +124,7 @@ func TestWithSafety_OverridesAnnotations(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if s := tools[0].Safety(); s != (agent.Safety{}) {
+	if s := tools[0].Spec().Safety; s != (agent.Safety{}) {
 		t.Fatalf("Safety() = %+v, want the zero Safety set by WithSafety", s)
 	}
 	srv, _ = transferServer(t, nil)
@@ -132,7 +132,7 @@ func TestWithSafety_OverridesAnnotations(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if s := agent.SpecOf(tools[0]).Safety; s != (agent.Safety{Idempotent: true}) {
+	if s := tools[0].Spec().Safety; s != (agent.Safety{Idempotent: true}) {
 		t.Fatalf("Safety() = %+v, want the Safety set by WithSafety", s)
 	}
 }

@@ -86,8 +86,7 @@ func main() {
 	defer func() { _ = tp.Shutdown(ctx) }()
 	tracer := tp.Tracer("observability-example")
 
-	weather := agent.Func("get_weather", "Get the weather", agent.Safety{ReadOnly: true},
-		func(_ context.Context, _ struct{}) (string, error) { return "sunny", nil })
+	weather := agent.MustFunc("get_weather", "Get the weather", func(_ context.Context, _ struct{}) (string, error) { return "sunny", nil }, agent.WithSafety(agent.Safety{ReadOnly: true}))
 
 	// Instrument wires the chat span (with cost) and the execute_tool span in one call.
 	// Rates turn token usage into a USD cost recorded as gen_ai.usage.cost on the chat span.

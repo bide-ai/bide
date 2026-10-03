@@ -175,8 +175,7 @@ func runDisagree(ctx context.Context, m *gsm.Machine, votesFor, committed gsm.Va
 	// The disagreement policy is explicit: escalate to a human under dual control. The escalate
 	// tool has an approval gate, so calling it through the agent loop pauses the run durably rather
 	// than acting.
-	escalate := agent.Func("escalate", "route the ungoverned decision to a human",
-		agent.Safety{},
+	escalate := agent.MustFunc("escalate", "route the ungoverned decision to a human",
 		func(context.Context, struct{}) (map[string]any, error) {
 			return map[string]any{"escalated": true}, nil
 		}, agent.WithApproval(agent.SingleApproval()))

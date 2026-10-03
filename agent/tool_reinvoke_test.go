@@ -31,7 +31,7 @@ func naiveRetry(n int, spoof bool) ToolMiddleware {
 
 func chargeRun(t *testing.T, mw ToolMiddleware) (charged int, result string) {
 	t.Helper()
-	charge := Func("charge", "charge the card", Safety{}, func(context.Context, struct{}) (string, error) {
+	charge := MustFunc("charge", "charge the card", func(context.Context, struct{}) (string, error) {
 		charged++ // the payment went through
 		return "", errors.New("gateway timeout")
 	})
@@ -56,12 +56,12 @@ func TestToolReinvoke_NaiveRetryCannotRepeatASideEffect(t *testing.T) {
 // A retry-safe tool is not held to one invocation: retrying it is the middleware's call.
 func TestToolReinvoke_RetrySafeToolMayRetry(t *testing.T) {
 	var calls int
-	flaky := Func("lookup", "look up", Safety{Idempotent: true}, func(context.Context, struct{}) (string, error) {
+	flaky := MustFunc("lookup", "look up", func(context.Context, struct{}) (string, error) {
 		if calls++; calls < 3 {
 			return "", errors.New("flaky")
 		}
 		return "found", nil
-	})
+	}, WithSafety(Safety{Idempotent: true}))
 	store := memJournal()
 	m := NewScriptedModel(ToolTurn("c1", "lookup", `{}`), TextTurn("done"))
 	if _, err := mustNew(m, store, WithTools(flaky), WithToolMiddleware(naiveRetry(3, false))).Run(context.Background(), "r1", UserText("q")); err != nil {
@@ -81,7 +81,7 @@ func TestToolCall_CarriesTheSpec(t *testing.T) {
 			return next(ctx, call)
 		}
 	}
-	lookup := Func("lookup", "look up", Safety{ReadOnly: true}, func(context.Context, struct{}) (string, error) { return "x", nil }, WithTitle("Lookup"), WithTimeout(time.Minute))
+	lookup := MustFunc("lookup", "look up", func(context.Context, struct{}) (string, error) { return "x", nil }, WithSafety(Safety{ReadOnly: true}), WithTitle("Lookup"), WithTimeout(time.Minute))
 	m := NewScriptedModel(ToolTurn("c1", "lookup", `{}`), TextTurn("done"))
 	if _, err := mustNew(m, memJournal(), WithTools(lookup), WithToolMiddleware(peek)).Run(context.Background(), "r1", UserText("q")); err != nil {
 		t.Fatal(err)

@@ -83,7 +83,7 @@ func main() {
 
 	// Agentic RAG: expose retrieval as a tool the model calls on demand. An agent searching
 	// several stores gives each tool its own name.
-	search := agent.RetrievalTool("search_support_kb",
+	search := agent.MustRetrievalTool("search_support_kb",
 		"Search the support knowledge base: shipping, warranty, returns, and hours.", kb, 2)
 	agentic, err := agent.New(model, j, agent.WithTools(search))
 	if err != nil {

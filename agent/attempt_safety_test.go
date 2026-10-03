@@ -12,7 +12,7 @@ import (
 // with no result in the journal of run r1, as a crash between the two would.
 func chargeOnce(t *testing.T, store *Journal, charged *int) {
 	t.Helper()
-	charge := Func("charge", "charge the card", Safety{}, func(context.Context, struct{}) (string, error) {
+	charge := MustFunc("charge", "charge the card", func(context.Context, struct{}) (string, error) {
 		*charged++
 		return "", fmt.Errorf("gateway connection reset (%w)", ErrToolOutcomeUnknown)
 	})
@@ -30,10 +30,10 @@ func TestResume_RelabelledRetrySafeStillHalts(t *testing.T) {
 	var charged int
 	chargeOnce(t, store, &charged)
 
-	relabelled := Func("charge", "charge the card", Safety{ReadOnly: true}, func(context.Context, struct{}) (string, error) {
+	relabelled := MustFunc("charge", "charge the card", func(context.Context, struct{}) (string, error) {
 		charged++
 		return "charged", nil
-	})
+	}, WithSafety(Safety{ReadOnly: true}))
 	m := &greedyModel{script: [][]Emit{textTurn("done")}} // the charge turn replays from the journal
 	_, err := mustNew(m, store, WithTools(relabelled)).Run(context.Background(), "r1", UserText("pay"))
 	var halt *OutcomeUnknown

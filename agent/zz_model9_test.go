@@ -20,8 +20,7 @@ import (
 // nor as an unknown outcome. (Model: findings/t1-saga-maperr, SagaAccounted.)
 func TestModel9_T1_SagaStepWhoseSuccessAMiddlewareRejectedIsNotAccounted(t *testing.T) {
 	var charged, refunded atomic.Int32
-	charge := CompensatedFunc("charge", "", Safety{},
-		func(context.Context, struct{}) (string, error) { charged.Add(1); return "ok", nil },
+	charge := MustCompensatedFunc("charge", "", func(context.Context, struct{}) (string, error) { charged.Add(1); return "ok", nil },
 		func(context.Context, struct{}, string) error { refunded.Add(1); return nil })
 	check := ToolMiddleware(func(next ToolHandler) ToolHandler {
 		return func(ctx context.Context, call ToolCall) (json.RawMessage, error) {
@@ -56,7 +55,7 @@ func TestModel9_T1_SagaStepWhoseSuccessAMiddlewareRejectedIsNotAccounted(t *test
 // halted it. (Model: findings/t1-retry, NoDoubleFire.)
 func TestModel9_T1_RetryAfterAnUnknownOutcomeRecordsAKnownFailure(t *testing.T) {
 	var charged atomic.Int32
-	charge := Func("charge", "", Safety{}, func(context.Context, struct{}) (string, error) {
+	charge := MustFunc("charge", "", func(context.Context, struct{}) (string, error) {
 		charged.Add(1)
 		return "", fmt.Errorf("connection reset after the request went out: %w", ErrToolOutcomeUnknown)
 	})
@@ -99,8 +98,7 @@ func (s *argsFailStore) Insert(ctx context.Context, runID, name string, data []b
 // TruthfulRecord.)
 func TestModel9_T2_FailedArgsWriteThenRetryRecordsAlreadyRan(t *testing.T) {
 	var charged atomic.Int32
-	charge := CompensatedFunc("charge", "", Safety{},
-		func(_ context.Context, in chargeArgs) (string, error) { charged.Add(1); return "ok", nil },
+	charge := MustCompensatedFunc("charge", "", func(_ context.Context, in chargeArgs) (string, error) { charged.Add(1); return "ok", nil },
 		func(context.Context, chargeArgs, string) error { return nil })
 	retry := ToolMiddleware(func(next ToolHandler) ToolHandler {
 		return func(ctx context.Context, call ToolCall) (res json.RawMessage, err error) {
@@ -126,7 +124,7 @@ func TestModel9_T2_FailedArgsWriteThenRetryRecordsAlreadyRan(t *testing.T) {
 // A retry-safe tool is outside T1's rule: running it again is safe, so a middleware that turns its
 // success into an error leaves an ordinary recorded failure, not an unknown outcome.
 func TestModel9_RetrySafeRejectedSuccessIsAnOrdinaryFailure(t *testing.T) {
-	lookup := Func("lookup", "", Safety{Idempotent: true}, func(context.Context, struct{}) (string, error) { return "found", nil })
+	lookup := MustFunc("lookup", "", func(context.Context, struct{}) (string, error) { return "found", nil }, WithSafety(Safety{Idempotent: true}))
 	check := ToolMiddleware(func(next ToolHandler) ToolHandler {
 		return func(ctx context.Context, call ToolCall) (json.RawMessage, error) {
 			if _, err := next(ctx, call); err != nil {

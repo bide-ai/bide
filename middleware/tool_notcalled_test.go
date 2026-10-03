@@ -26,7 +26,7 @@ func TestToolRateLimit_GivingUpRecordsNotCalled(t *testing.T) {
 func testToolRateLimitGivingUpRecordsNotCalled(t *testing.T) {
 	r := middleware.NewRateLimiter(time.Hour, 1) // one slot an hour
 	var calls atomic.Int32
-	charge := agent.Func("charge", "", agent.Safety{}, func(context.Context, struct{}) (string, error) {
+	charge := agent.MustFunc("charge", "", func(context.Context, struct{}) (string, error) {
 		calls.Add(1)
 		return "charged", nil
 	}, agent.WithTimeout(20*time.Millisecond))

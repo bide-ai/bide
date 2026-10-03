@@ -55,13 +55,13 @@ func TestSpec_MCPMapping(t *testing.T) {
 		"plain":  {Name: "plain", Input: inJSON, Approval: agent.SingleApproval(), Timeout: 3 * time.Second},
 	}
 	for _, tool := range tools {
-		got := agent.SpecOf(tool)
+		got := tool.Spec()
 		w := want[got.Name]
 		if !reflect.DeepEqual(got, w) {
 			t.Errorf("%s: spec\n got %+v\nwant %+v", got.Name, got, w)
 		}
 		// The old method set describes the same tool.
-		if tool.Name() != got.Name || tool.Description() != got.Description || string(tool.ArgsSchema()) != string(got.Input) || tool.Safety() != got.Safety {
+		if tool.Spec().Name != got.Name || tool.Spec().Description != got.Description || string(tool.Spec().Input) != string(got.Input) || tool.Spec().Safety != got.Safety {
 			t.Errorf("%s: the old methods disagree with Spec", got.Name)
 		}
 	}
@@ -72,7 +72,7 @@ func TestSpec_MCPMapping(t *testing.T) {
 		t.Fatal(err)
 	}
 	for _, tool := range tools {
-		if s := agent.SpecOf(tool); s.Safety != (agent.Safety{}) || s.Timeout != 0 || s.Approval != nil {
+		if s := tool.Spec(); s.Safety != (agent.Safety{}) || s.Timeout != 0 || s.Approval != nil {
 			t.Errorf("%s untrusted: spec %+v, want a side effect with no timeout or gate", s.Name, s)
 		}
 	}
@@ -87,12 +87,12 @@ func TestSpec_ApprovalIsCopied(t *testing.T) {
 		t.Fatal(err)
 	}
 	pol.Approvers[0] = "mallory"
-	s := agent.SpecOf(tools[0])
+	s := tools[0].Spec()
 	if s.Approval.Approvers[0] != "alice" {
 		t.Fatalf("the option kept the caller's policy: %v", s.Approval.Approvers)
 	}
 	s.Approval.Approvers[0] = "mallory"
-	if agent.SpecOf(tools[0]).Approval.Approvers[0] != "alice" {
+	if tools[0].Spec().Approval.Approvers[0] != "alice" {
 		t.Fatal("changing a returned spec changed the tool")
 	}
 }

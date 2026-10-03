@@ -58,7 +58,7 @@ func buildDeclarativeRegistry() (*plan.Registry, error) {
 
 	// classify: Order -> Assessment, the entry step the Switch routes on. Identical to the
 	// code-built classify body.
-	if err := plan.RegisterStep(reg, "classify", func(_ context.Context, o Order) (Assessment, error) {
+	if err := reg.RegisterStep("classify", func(_ context.Context, o Order) (Assessment, error) {
 		return Assessment{OrderID: o.ID, Amount: o.Amount, Rush: o.Amount > 100}, nil
 	}); err != nil {
 		return nil, err
@@ -67,21 +67,21 @@ func buildDeclarativeRegistry() (*plan.Registry, error) {
 	// reserve: Assessment -> Reservation, the rush-arm step. In the code-built flow this is
 	// the one non-idempotent effect; the declarative demo uses the clean variant with no witness
 	// append or crash injection, since it only needs to run to completion.
-	if err := plan.RegisterStep(reg, "reserve", func(_ context.Context, a Assessment) (Reservation, error) {
+	if err := reg.RegisterStep("reserve", func(_ context.Context, a Assessment) (Reservation, error) {
 		return Reservation{OrderID: a.OrderID, Ref: "hold-" + a.OrderID}, nil
 	}); err != nil {
 		return nil, err
 	}
 
 	// finalize: Reservation -> Receipt, the rush-arm terminal.
-	if err := plan.RegisterStep(reg, "finalize", func(_ context.Context, r Reservation) (Receipt, error) {
+	if err := reg.RegisterStep("finalize", func(_ context.Context, r Reservation) (Receipt, error) {
 		return Receipt{OrderID: r.OrderID, Outcome: "reserved", Detail: r.Ref, Reserved: true}, nil
 	}); err != nil {
 		return nil, err
 	}
 
 	// decline: Assessment -> Receipt, the Else-arm terminal.
-	if err := plan.RegisterStep(reg, "decline", func(_ context.Context, a Assessment) (Receipt, error) {
+	if err := reg.RegisterStep("decline", func(_ context.Context, a Assessment) (Receipt, error) {
 		return Receipt{OrderID: a.OrderID, Outcome: "declined", Detail: "below rush threshold"}, nil
 	}); err != nil {
 		return nil, err
@@ -89,7 +89,7 @@ func buildDeclarativeRegistry() (*plan.Registry, error) {
 
 	// rush: the Switch predicate over Assessment. Load checks its M (Assessment) equals the
 	// switched node's output type, a strict improvement over the Go builder.
-	if err := plan.RegisterPredicate(reg, "rush", func(a Assessment) bool { return a.Rush }); err != nil {
+	if err := reg.RegisterPredicate("rush", func(a Assessment) bool { return a.Rush }); err != nil {
 		return nil, err
 	}
 

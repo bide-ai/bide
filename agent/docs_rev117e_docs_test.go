@@ -44,7 +44,7 @@ func TestRev117eDocs_ReadmeRequireTagHaltsSideEffect(t *testing.T) {
 			}
 		}
 	}
-	tool := agent.Func("refund", "", agent.Safety{}, func(context.Context, struct{}) (string, error) { return "ran", nil })
+	tool := agent.MustFunc("refund", "", func(context.Context, struct{}) (string, error) { return "ran", nil })
 	store := agenttest.MemJournal()
 	m := agent.NewScriptedModel(agent.ToolTurn("c1", "refund", `{}`), agent.TextTurn("done"))
 	_, err := agenttest.MustNew(m, store, agent.WithTools(tool), agent.WithToolMiddleware(RequireTag("x"))).Run(context.Background(), "r1", agent.UserText("go"))
@@ -90,7 +90,7 @@ func TestRev117eDocs_TimeoutRule(t *testing.T) {
 		t.Run(tc.name, func(t *testing.T) {
 			synctest.Test(t, func(t *testing.T) {
 				var calls atomic.Int32
-				tool := agent.Func("t", "", tc.safety, func(ctx context.Context, a struct{}) (string, error) { calls.Add(1); return late(tc.ok)(ctx, a) }, agent.WithTimeout(10*time.Millisecond))
+				tool := agent.MustFunc("t", "", func(ctx context.Context, a struct{}) (string, error) { calls.Add(1); return late(tc.ok)(ctx, a) }, agent.WithSafety(tc.safety), agent.WithTimeout(10*time.Millisecond))
 				store := agenttest.MemJournal()
 				m := agent.NewScriptedModel(agent.ToolTurn("c1", "t", `{}`), agent.TextTurn("done"))
 				_, err := agenttest.MustNew(m, store, agent.WithTools(tool)).Run(context.Background(), "r1", agent.UserText("go"))
@@ -121,7 +121,7 @@ func TestRev117eDocs_SuccessTurnedError(t *testing.T) {
 		safety      agent.Safety
 		wantUnknown bool
 	}{{agent.Safety{}, true}, {agent.Safety{Idempotent: true}, false}} {
-		tool := agent.Func("t", "", tc.safety, func(context.Context, struct{}) (string, error) { return "ok", nil })
+		tool := agent.MustFunc("t", "", func(context.Context, struct{}) (string, error) { return "ok", nil }, agent.WithSafety(tc.safety))
 		store := agenttest.MemJournal()
 		m := agent.NewScriptedModel(agent.ToolTurn("c1", "t", `{}`), agent.TextTurn("done"))
 		_, err := agenttest.MustNew(m, store, agent.WithTools(tool), agent.WithToolMiddleware(mw)).Run(context.Background(), "r1", agent.UserText("go"))
@@ -147,10 +147,10 @@ func TestRev117eDocs_SubAgentOptions(t *testing.T) {
 					t.Fatalf("%s: recover = %v, want ErrConfig", name, err)
 				}
 			}()
-			agent.SubAgent("s", "", sub, opt)
+			agent.MustSubAgent("s", "", sub, opt)
 		}()
 	}
-	if s := agent.SpecOf(agent.SubAgent("s", "", sub, agent.WithApproval(agent.SingleApproval()))); s.Approval == nil {
+	if s := agent.MustSubAgent("s", "", sub, agent.WithApproval(agent.SingleApproval())).Spec(); s.Approval == nil {
 		t.Fatal("SubAgent dropped WithApproval")
 	}
 }
@@ -169,7 +169,7 @@ func TestRev117eDocs_ApprovalWire(t *testing.T) {
 				t.Fatalf("recover = %v, want ErrConfig", err)
 			}
 		}()
-		agent.Func("t", "", agent.Safety{}, func(context.Context, struct{}) (string, error) { return "", nil }, agent.WithApproval(&agent.ApprovalPolicy{Need: 1}))
+		agent.MustFunc("t", "", func(context.Context, struct{}) (string, error) { return "", nil }, agent.WithApproval(&agent.ApprovalPolicy{Need: 1}))
 	}()
 	var p agent.ApprovalPolicy
 	if err := json.Unmarshal([]byte(`{"single":true,"need":1}`), &p); !errors.Is(err, agent.ErrProtocol) {
@@ -196,7 +196,7 @@ func TestRev117eDocs_ReadmeRequireTagWithNotCalled(t *testing.T) {
 		}
 	}
 	ran := false
-	tool := agent.Func("refund", "", agent.Safety{}, func(context.Context, struct{}) (string, error) { ran = true; return "ran", nil })
+	tool := agent.MustFunc("refund", "", func(context.Context, struct{}) (string, error) { ran = true; return "ran", nil })
 	store := agenttest.MemJournal()
 	m := agent.NewScriptedModel(agent.ToolTurn("c1", "refund", `{}`), agent.TextTurn("done"))
 	_, err := agenttest.MustNew(m, store, agent.WithTools(tool), agent.WithToolMiddleware(RequireTag("x"))).Run(context.Background(), "r1", agent.UserText("go"))
