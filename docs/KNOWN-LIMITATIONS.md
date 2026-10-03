@@ -294,6 +294,10 @@ with no footprint shortcut. A `govern.CertifyConvergence` certificate, or any ot
 produced under v0.11.0 and anchored in a trail is still what v0.11.0 said: rebuild the machine
 under v0.12.0 and record a new certificate before relying on it.
 
+**Declared pairs narrow the guarantee.** With pairs declared, CC checks only those pairs, so the
+guarantee covers runs whose events are reordered only across declared pairs; other events must
+arrive in a fixed order.
+
 **What the proof-derived checks cover.** Since gsm v0.12.0, `Build` returns a machine only after
 the table oracle (and, within its fragment and cap, the rules oracle), generated from gsm's Coq/Rocq
 proof, re-checks it in-process:
