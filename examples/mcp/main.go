@@ -93,9 +93,10 @@ func main() {
 	if err != nil {
 		log.Fatal(err)
 	}
-	out, err := a.Run(ctx, "mcp-1", "Echo the word hello.")
+	res, err := a.Run(ctx, "mcp-1", agent.UserText("Echo the word hello."))
 	if err != nil {
 		log.Fatal(err)
 	}
+	out := res.Message
 	fmt.Printf("final answer: %s\n", out.Text())
 }

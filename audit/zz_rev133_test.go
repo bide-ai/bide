@@ -56,11 +56,11 @@ func TestRev133_D1_NestedAcrossRotation(t *testing.T) {
 		store,
 		agent.WithTools(tools()...),
 	)
-	if _, err := parent1.RunSaga(WithGrant(ctx, p1, signer), "trip", "go"); err == nil {
+	if _, err := parent1.Run(WithGrant(ctx, p1, signer), "trip", agent.UserText("go"), agent.WithSaga()); err == nil {
 		t.Fatal("drive 1: want the provider error")
 	}
 	m := agent.NewScriptedModel(agent.ToolTurn("c1", "d1", `{"task":"a"}`), agent.ToolTurn("c2", "d2", `{"task":"b"}`), agent.TextTurn("x"))
-	_, err := agenttest.MustNew(m, store, agent.WithTools(tools()...)).RunSaga(WithRollbackGrants(WithGrant(ctx, p2, signer), signer, p1), "trip", "go")
+	_, err := agenttest.MustNew(m, store, agent.WithTools(tools()...)).Run(WithRollbackGrants(WithGrant(ctx, p2, signer), signer, p1), "trip", agent.UserText("go"), agent.WithSaga())
 	var ab *agent.SagaAborted
 	if !errors.As(err, &ab) {
 		t.Fatalf("RunSaga = %v", err)
@@ -101,7 +101,7 @@ func TestRev133_D2_GuardRefusalThroughToolRetry(t *testing.T) {
 	}
 	deleg := AttenuatingSubAgent("deleg", "d", sub, AttenuationConfig{Store: store, Narrow: narrow, Rules: rev117eRules})
 	parent := agenttest.MustNew(rev117eMultiModel{calls: [][2]string{{"c1", "deleg"}}}, store, agent.WithTools(deleg))
-	_, err = parent.RunSaga(WithGrant(ctx, m11Root(t, signer, "p"), signer), "trip", "go")
+	_, err = parent.Run(WithGrant(ctx, m11Root(t, signer, "p"), signer), "trip", agent.UserText("go"), agent.WithSaga())
 	var ab *agent.SagaAborted
 	if !errors.As(err, &ab) {
 		t.Fatalf("RunSaga = %v", err)
@@ -134,7 +134,11 @@ func TestRev133_D3_NoDoubleCompensation(t *testing.T) {
 	// The grand sub-agent is a saga of its own: the child runs it through a programmatic RunSaga.
 	gstarter := agent.Func("gstart", "", agent.Safety{ReadOnly: true}, func(ctx context.Context, _ struct{}) (string, error) {
 		info, _ := agent.RunInfoFrom(ctx)
-		msg, err := grand.RunSaga(ctx, info.SubRunFor("grand"), "work")
+		res, err := grand.Run(ctx, info.SubRunFor("grand"), agent.UserText("work"), agent.WithSaga())
+		var msg agent.Message
+		if res != nil {
+			msg = res.Message
+		}
 		var ab *agent.SagaAborted
 		if errors.As(err, &ab) {
 			return "", errors.New("grand aborted") // a plain failure for the plain child run
@@ -150,7 +154,11 @@ func TestRev133_D3_NoDoubleCompensation(t *testing.T) {
 		agent.SubAgent("worker", "w", build(agent.NewScriptedModel(agent.ToolTurn("w1", "gstart", `{}`), agent.ErrorTurn(errors.New("provider rejected"))), gstarter)))
 	starter := agent.Func("starter", "", agent.Safety{ReadOnly: true}, func(ctx context.Context, _ struct{}) (string, error) {
 		info, _ := agent.RunInfoFrom(ctx)
-		msg, err := child.Run(ctx, info.SubRunFor("child"), "work")
+		res, err := child.Run(ctx, info.SubRunFor("child"), agent.UserText("work"))
+		var msg agent.Message
+		if res != nil {
+			msg = res.Message
+		}
 		return msg.Text(), err
 	}, agent.WithSubRuns(func(name string) *agent.Agent {
 		if name == "child" {
@@ -160,7 +168,7 @@ func TestRev133_D3_NoDoubleCompensation(t *testing.T) {
 	}))
 	boom := agent.Func("boom", "", agent.Safety{}, func(context.Context, struct{}) (string, error) { return "", errors.New("boom") })
 	parent := build(agent.NewScriptedModel(agent.ToolTurn("c1", "starter", `{}`), agent.ToolTurn("c2", "boom", `{}`), agent.TextTurn("x")), starter, boom)
-	_, err := parent.RunSaga(ctx, "p", "go")
+	_, err := parent.Run(ctx, "p", agent.UserText("go"), agent.WithSaga())
 	var ab *agent.SagaAborted
 	if !errors.As(err, &ab) {
 		t.Fatalf("RunSaga = %v", err)

@@ -19,7 +19,7 @@ func TestToolOutcomeUnknown_SideEffectIsNotRecorded(t *testing.T) {
 		return "", fmt.Errorf("gateway connection reset (%w)", ErrToolOutcomeUnknown)
 	})
 	m := &greedyModel{script: [][]Emit{toolTurn("c1", "charge", `{}`), toolTurn("c2", "charge", `{}`), textTurn("done")}}
-	_, err := mustNew(m, store, WithTools(charge)).Run(context.Background(), "r1", "pay")
+	_, err := mustNew(m, store, WithTools(charge)).Run(context.Background(), "r1", UserText("pay"))
 	if !errors.Is(err, ErrToolOutcomeUnknown) {
 		t.Fatalf("run err = %v, want ErrToolOutcomeUnknown", err)
 	}
@@ -28,7 +28,7 @@ func TestToolOutcomeUnknown_SideEffectIsNotRecorded(t *testing.T) {
 	}
 
 	m2 := &greedyModel{script: [][]Emit{toolTurn("c2", "charge", `{}`), textTurn("done")}}
-	_, err = mustNew(m2, store, WithTools(charge)).Run(context.Background(), "r1", "pay")
+	_, err = mustNew(m2, store, WithTools(charge)).Run(context.Background(), "r1", UserText("pay"))
 	var halt *ResumeHalt
 	if !errors.As(err, &halt) || halt.Op.ID != "c1" {
 		t.Fatalf("resume err = %v, want ResumeHalt for c1", err)
@@ -49,7 +49,7 @@ func TestToolOutcomeUnknown_RetrySafeToolIsAFailure(t *testing.T) {
 		return "", fmt.Errorf("connection reset (%w)", ErrToolOutcomeUnknown)
 	})
 	m := &greedyModel{script: [][]Emit{toolTurn("c1", "lookup", `{}`), textTurn("done")}}
-	if _, err := mustNew(m, store, WithTools(lookup)).Run(context.Background(), "r1", "balance?"); err != nil {
+	if _, err := mustNew(m, store, WithTools(lookup)).Run(context.Background(), "r1", UserText("balance?")); err != nil {
 		t.Fatalf("run err = %v, want the failure passed to the model", err)
 	}
 	if rec, ok := hasStep(t, store, "r1", ToolResultStep("c1")); !ok || !rec.IsError {

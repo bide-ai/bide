@@ -19,7 +19,11 @@ func runRecovering(a *Agent, runID string) (out Message, err error) {
 			err = fmt.Errorf("panic: %v", r)
 		}
 	}()
-	return a.Run(context.Background(), runID, "go")
+	res, err := a.Run(context.Background(), runID, UserText("go"))
+	if err != nil {
+		return Message{}, err
+	}
+	return res.Message, nil
 }
 
 // adversarialToolUseIDs are tool-use IDs a provider may send that name, or nearly name, a key
@@ -266,7 +270,7 @@ func TestSaga_RollbackStepAttemptIsNotAToolCallAttempt(t *testing.T) {
 	}
 	write := Func("write", "", Safety{}, func(context.Context, struct{}) (string, error) { return "ok", nil })
 	book := Func("book", "", Safety{}, func(context.Context, struct{}) (string, error) { return "", errors.New("no seats") })
-	_, err := mustNew(fixedTextModel("done"), store, WithTools(write, book)).RunSaga(ctx, "r1", "trip")
+	_, err := mustNew(fixedTextModel("done"), store, WithTools(write, book)).Run(ctx, "r1", UserText("trip"), WithSaga())
 	var aborted *SagaAborted
 	if !errors.As(err, &aborted) || aborted.CompensateErr != nil {
 		t.Fatalf("err = %v, want *SagaAborted with a finished rollback (the write never started)", err)

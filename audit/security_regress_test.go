@@ -658,7 +658,7 @@ func secDelegate(t *testing.T, store *agent.Journal, tool agent.Tool, ctx contex
 		store,
 		agent.WithTools(tool),
 	)
-	_, err := parent.Run(ctx, runID, "go")
+	_, err := parent.Run(ctx, runID, agent.UserText("go"))
 	return err
 }
 

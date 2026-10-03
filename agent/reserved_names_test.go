@@ -43,17 +43,23 @@ func TestParallel_ReservedTaskNameIsRefused(t *testing.T) {
 func TestRun_RunIDWithSubRunSeparatorIsRefused(t *testing.T) {
 	a := mustNew(NewScriptedModel(TextTurn("done")), memJournal())
 	for _, run := range []func(string) error{
-		func(id string) error { _, err := a.Run(context.Background(), id, "go"); return err },
-		func(id string) error { _, err := a.RunSaga(context.Background(), id, "go"); return err },
-		func(id string) error { _, err := a.RunResult(context.Background(), id, "go"); return err },
-		func(id string) error { _, err := a.Stream(context.Background(), id, "go").Final(); return err },
+		func(id string) error { _, err := a.Run(context.Background(), id, UserText("go")); return err },
+		func(id string) error {
+			_, err := a.Run(context.Background(), id, UserText("go"), WithSaga())
+			return err
+		},
+		func(id string) error { _, err := a.Run(context.Background(), id, UserText("go")); return err },
+		func(id string) error {
+			_, err := a.Stream(context.Background(), id, UserText("go")).Result()
+			return err
+		},
 	} {
 		if err := run("tenant>1"); !errors.Is(err, ErrConfig) || !strings.Contains(err.Error(), "tenant>1") {
 			t.Fatalf("err = %v, want ErrConfig naming the run ID", err)
 		}
 	}
 	b := mustNew(NewScriptedModel(TextTurn("done")), memJournal())
-	if out, err := b.Run(context.Background(), "tenant/123", "go"); err != nil || out.Text() != "done" {
+	if out, err := answerOf(b.Run(context.Background(), "tenant/123", UserText("go"))); err != nil || out.Text() != "done" {
 		t.Fatalf("run tenant/123: %q, %v", out.Text(), err)
 	}
 }
@@ -76,13 +82,13 @@ func TestRecover_SkipsSubRuns(t *testing.T) {
 		func(context.Context, struct{}) (string, error) { return "charged", nil }, WithApproval(SingleApproval()))
 	root := clerkTree(store, charge)
 	var pa *PendingApproval
-	if _, err := root.Run(ctx, "p", "go"); !errors.As(err, &pa) {
+	if _, err := root.Run(ctx, "p", UserText("go")); !errors.As(err, &pa) {
 		t.Fatalf("run: %v, want a pending approval inside the sub-agent", err)
 	}
 	var asked []string
 	if _, err := Recover(ctx, store, func(ctx context.Context, runID string, _ RunStart) error {
 		asked = append(asked, runID)
-		_, err := root.Run(ctx, runID, "go")
+		_, err := root.Run(ctx, runID, UserText("go"))
 		return err
 	}); err != nil {
 		t.Fatalf("Recover: %v (asked %v)", err, asked)

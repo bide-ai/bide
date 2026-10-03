@@ -33,7 +33,7 @@ func (lateStreamer) Stream(context.Context, agent.Request) (*agent.Stream, error
 
 // render ranges a stream as a UI does: it appends each text delta and clears the text on
 // agent.TurnRestarted, which retracts what the turn streamed so far.
-func render(as *agent.AgentStream) string {
+func render(as *agent.RunStream) string {
 	var b strings.Builder
 	for ev := range as.Events() {
 		switch e := ev.(type) {
@@ -55,12 +55,13 @@ func TestHedge_StreamShowsOnlyTheWinner(t *testing.T) {
 	backup := &stubModel{text: "backup", delay: 5 * time.Millisecond}
 	a := agenttest.MustNew(lateStreamer{}, agenttest.MemJournal(), agent.WithMiddleware(middleware.Hedge(0, backup)))
 
-	as := a.Stream(context.Background(), "r1", "hi")
+	as := a.Stream(context.Background(), "r1", agent.UserText("hi"))
 	streamed := render(as)
-	final, err := as.Final()
+	res, err := as.Result()
 	if err != nil {
 		t.Fatalf("Final: %v", err)
 	}
+	final := res.Message
 
 	// Give the losing primary time to produce its late deltas. Before the fix, its next delta
 	// was sent on the closed event channel, which panics and takes down the process.
@@ -104,12 +105,13 @@ func TestHedge_StreamMatchesRecordedAnswer(t *testing.T) {
 	backup := &stubModel{text: "backup", delay: 20 * time.Millisecond}
 	a := agenttest.MustNew(earlyStreamer{}, agenttest.MemJournal(), agent.WithMiddleware(middleware.Hedge(0, backup)))
 
-	as := a.Stream(context.Background(), "r1", "hi")
+	as := a.Stream(context.Background(), "r1", agent.UserText("hi"))
 	streamed := render(as)
-	final, err := as.Final()
+	res, err := as.Result()
 	if err != nil {
 		t.Fatalf("Final: %v", err)
 	}
+	final := res.Message
 	var recorded strings.Builder
 	for _, p := range final.Parts {
 		if tx, ok := p.(agent.Text); ok {
@@ -139,7 +141,7 @@ func TestHedge_StreamedFinishCarriesWinnerUsage(t *testing.T) {
 	store := agenttest.MemJournal()
 	a := agenttest.MustNew(earlyStreamer{}, store, agent.WithMiddleware(middleware.Hedge(0, meteredStub{u: u})))
 
-	as := a.Stream(context.Background(), "r1", "hi")
+	as := a.Stream(context.Background(), "r1", agent.UserText("hi"))
 	var finishes []agent.Finish
 	for ev := range as.Events() {
 		if me, ok := ev.(agent.ModelEvent); ok {
@@ -148,7 +150,7 @@ func TestHedge_StreamedFinishCarriesWinnerUsage(t *testing.T) {
 			}
 		}
 	}
-	if _, err := as.Final(); err != nil {
+	if _, err := as.Result(); err != nil {
 		t.Fatalf("Final: %v", err)
 	}
 	recs, err := store.History(context.Background(), "r1")

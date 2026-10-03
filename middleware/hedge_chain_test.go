@@ -24,10 +24,11 @@ func TestHedge_InnerMiddlewareWrapsEveryTarget(t *testing.T) {
 		}
 	}
 	a := agenttest.MustNew(primary, agenttest.MemJournal(), agent.WithMiddleware(middleware.Hedge(0, backup), count))
-	out, err := a.Run(context.Background(), "r", "q")
+	res, err := a.Run(context.Background(), "r", agent.UserText("q"))
 	if err != nil {
 		t.Fatal(err)
 	}
+	out := res.Message
 	if out.Text() != "backup" {
 		t.Fatalf("answer = %q, want the backup's", out.Text())
 	}
@@ -57,7 +58,7 @@ func TestRateLimit_CountsEveryRequestSent(t *testing.T) {
 			agenttest.MemJournal(),
 			agent.WithMiddleware(middleware.RateLimit(r), middleware.Hedge(0, backup)),
 		)
-		if _, err := a.Run(context.Background(), "r", "q"); err != nil {
+		if _, err := a.Run(context.Background(), "r", agent.UserText("q")); err != nil {
 			t.Fatal(err)
 		}
 		if !exhausted(t, r) {
@@ -72,7 +73,7 @@ func TestRateLimit_CountsEveryRequestSent(t *testing.T) {
 			agenttest.MemJournal(),
 			agent.WithMiddleware(middleware.RateLimit(r), middleware.Retry(1, middleware.WithBackoff(0, 0))),
 		)
-		if _, err := a.Run(context.Background(), "r", "q"); err != nil {
+		if _, err := a.Run(context.Background(), "r", agent.UserText("q")); err != nil {
 			t.Fatal(err)
 		}
 		if !exhausted(t, r) {

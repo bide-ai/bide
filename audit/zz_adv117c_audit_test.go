@@ -43,7 +43,7 @@ func TestAdv117c_RefusedResumeLeavesSubRunChargeUnaccounted(t *testing.T) {
 			_, priv, _ := ed25519.GenerateKey(rand.Reader)
 			signer := Ed25519Signer{Priv: priv}
 			root, _ := SignGrant(Grant{ID: "g0", Issuer: "corp", Subject: "desk", Scope: map[string]string{"limit": "7"}, NotAfterUnix: time.Now().Add(time.Hour).Unix()}, signer)
-			_, err := parent.RunSaga(WithGrant(ctx, root, signer), "trip", "go")
+			_, err := parent.Run(WithGrant(ctx, root, signer), "trip", agent.UserText("go"), agent.WithSaga())
 			var pend *agent.ApprovalPending
 			if !errors.As(err, &pend) || charged.Load() != 1 {
 				t.Fatalf("first drive: %v (charged %d), want the sub-run's pause after the charge", err, charged.Load())
@@ -58,7 +58,7 @@ func TestAdv117c_RefusedResumeLeavesSubRunChargeUnaccounted(t *testing.T) {
 			}
 			// Resumed under other authority: the delegation refuses with ErrConfig and records
 			// nothing, so the saga does not abort and the call is not failed for good.
-			_, err = parent.RunSaga(rctx, "trip", "go")
+			_, err = parent.Run(rctx, "trip", agent.UserText("go"), agent.WithSaga())
 			if !errors.Is(err, agent.ErrConfig) {
 				t.Fatalf("resume under other authority: %v, want ErrConfig", err)
 			}
@@ -72,7 +72,7 @@ func TestAdv117c_RefusedResumeLeavesSubRunChargeUnaccounted(t *testing.T) {
 				}
 			}
 			// The operator binds the right grant and drives again: the delegation continues.
-			_, err2 := parent.RunSaga(WithGrant(ctx, root, signer), "trip", "go")
+			_, err2 := parent.Run(WithGrant(ctx, root, signer), "trip", agent.UserText("go"), agent.WithSaga())
 			if err2 != nil || charged.Load() != 1 || undone.Load() != 0 {
 				t.Fatalf("re-drive under the original grant: %v (charged %d, undone %d); want the saga to finish, the charge made once and kept", err2, charged.Load(), undone.Load())
 			}
@@ -105,13 +105,13 @@ func TestAdv117c_PreChangeUngrantedJournalCannotRollBack(t *testing.T) {
 		m := agent.NewScriptedModel(agent.ToolTurn("c1", "exec", `{"task":"pay"}`), agent.ToolTurn("c2", "gate", `{}`), agent.ToolTurn("c3", "boom", `{}`), agent.TextTurn("x"))
 		return agenttest.MustNew(m, j, agent.WithTools(exec, gate, boom))
 	}
-	if _, err := build(agenttest.MemJournal()).RunSaga(ctx, "trip", "go"); !agent.IsPause(err) {
+	if _, err := build(agenttest.MemJournal()).Run(ctx, "trip", agent.UserText("go"), agent.WithSaga()); !agent.IsPause(err) {
 		t.Fatalf("first drive (the old build): %v, want the approval pause", err)
 	}
 	if err := agent.Approve(ctx, j, "trip", "c2", true); err != nil {
 		t.Fatal(err)
 	}
-	_, err := build(j).RunSaga(ctx, "trip", "go") // the upgraded build
+	_, err := build(j).Run(ctx, "trip", agent.UserText("go"), agent.WithSaga()) // the upgraded build
 	// Documented break (CHANGELOG, delegation guide): such a journal cannot be rolled back, because
 	// its sub-run records no authority; the rollback stops rather than guess, and nothing is undone.
 	var ab *agent.SagaAborted
@@ -163,7 +163,7 @@ func TestAdv117c_ExpiredOrForeignGrantIsRefusedUnrecorded(t *testing.T) {
 				store,
 				agent.WithTools(exec),
 			)
-			_, err := parent.Run(WithGrant(ctx, tc.root, signer), "r", "go")
+			_, err := parent.Run(WithGrant(ctx, tc.root, signer), "r", agent.UserText("go"))
 			var result *agent.Record
 			recs, _ := store.History(ctx, "r")
 			for i := range recs {
@@ -207,7 +207,7 @@ func TestAdv117c_MintRefusesExpiredOrForeignChild(t *testing.T) {
 			store,
 			agent.WithTools(exec),
 		)
-		_, err := parent.Run(WithGrant(ctx, root, signer), "r", "go")
+		_, err := parent.Run(WithGrant(ctx, root, signer), "r", agent.UserText("go"))
 		recs, _ := store.History(ctx, agent.SubRunID("r", "c1"))
 		if len(recs) != 0 {
 			t.Errorf("%s: Run = %v with %d sub-run records; want the delegation refused before anything is journaled", name, err, len(recs))

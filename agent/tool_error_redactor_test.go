@@ -61,7 +61,7 @@ func TestWithToolErrorRedactor(t *testing.T) {
 		WithTools(tool),
 		WithToolErrorRedactor(redact),
 	)
-	if _, err := a.Run(context.Background(), "r1", "go"); err != nil {
+	if _, err := a.Run(context.Background(), "r1", UserText("go")); err != nil {
 		t.Fatal(err)
 	}
 	if gotTool != "lookup" || gotErr == nil || !strings.Contains(gotErr.Error(), "ACCT-NUMBER-SECRET") {
@@ -108,7 +108,7 @@ func TestToolErrorTextInMiddleware(t *testing.T) {
 			return res, err
 		}
 	})))
-	if _, err := a.Run(context.Background(), "r1", "go"); err != nil {
+	if _, err := a.Run(context.Background(), "r1", UserText("go")); err != nil {
 		t.Fatal(err)
 	}
 	recs, _ := st.History(context.Background(), "r1")

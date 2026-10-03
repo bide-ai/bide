@@ -56,7 +56,7 @@ func TestWithRetrievalRetry_RetriesTheStep(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if _, err := a.Run(ctx, "plain", "q"); err == nil || r.calls != 1 {
+	if _, err := a.Run(ctx, "plain", agent.UserText("q")); err == nil || r.calls != 1 {
 		t.Fatalf("under Retry middleware only: err %v after %d retriever calls; want the retrieval error after 1", err, r.calls)
 	}
 
@@ -68,7 +68,7 @@ func TestWithRetrievalRetry_RetriesTheStep(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if _, err := a.Run(ctx, "retried", "q"); err != nil || r.calls != 3 {
+	if _, err := a.Run(ctx, "retried", agent.UserText("q")); err != nil || r.calls != 3 {
 		t.Fatalf("WithRetrievalRetry(2) over two failures: err %v after %d calls; want success after 3", err, r.calls)
 	}
 	if got := retrievalRecords(t, store, "retried"); !slices.Equal(got, []string{"@retrieval/0"}) {
@@ -83,11 +83,11 @@ func TestWithRetrievalRetry_RetriesTheStep(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if _, err := a.Run(ctx, "spent", "q"); err == nil || r.calls != 2 || len(retrievalRecords(t, store, "spent")) != 0 {
+	if _, err := a.Run(ctx, "spent", agent.UserText("q")); err == nil || r.calls != 2 || len(retrievalRecords(t, store, "spent")) != 0 {
 		t.Fatalf("retries spent: err %v, %d calls, records %v; want an error after 2 calls and no record",
 			err, r.calls, retrievalRecords(t, store, "spent"))
 	}
-	if _, err := a.Run(ctx, "spent", "q"); err != nil || r.calls != 4 {
+	if _, err := a.Run(ctx, "spent", agent.UserText("q")); err != nil || r.calls != 4 {
 		t.Fatalf("next drive: err %v, %d calls in all; want success on the fourth", err, r.calls)
 	}
 }
@@ -105,7 +105,7 @@ func TestWithRetrievalRetry_StopsAndValidates(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if _, err := a.Run(context.Background(), "cfg", "q"); !errors.Is(err, agent.ErrConfig) || calls != 1 {
+	if _, err := a.Run(context.Background(), "cfg", agent.UserText("q")); !errors.Is(err, agent.ErrConfig) || calls != 1 {
 		t.Fatalf("ErrConfig from the Retriever: err %v after %d calls; want it unretried", err, calls)
 	}
 
@@ -120,7 +120,7 @@ func TestWithRetrievalRetry_StopsAndValidates(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if _, err := a.Run(ctx, "cancel", "q"); !errors.Is(err, context.Canceled) {
+	if _, err := a.Run(ctx, "cancel", agent.UserText("q")); !errors.Is(err, context.Canceled) {
 		t.Fatalf("cancelled during the backoff: err %v, want context.Canceled", err)
 	}
 
@@ -151,7 +151,7 @@ func TestWithRetrieval_RunsBeforeModelMiddleware(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if _, err := a.Run(context.Background(), "denied", "secret question"); err == nil {
+	if _, err := a.Run(context.Background(), "denied", agent.UserText("secret question")); err == nil {
 		t.Fatal("want the denial")
 	}
 	if got := retrievalRecords(t, store, "denied"); r.calls != 1 || !slices.Equal(got, []string{"@retrieval/0"}) {
@@ -172,7 +172,7 @@ func TestWithRetrieval_RunsBeforeModelMiddleware(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if _, err := a.Run(context.Background(), "gated", "secret question"); err == nil {
+	if _, err := a.Run(context.Background(), "gated", agent.UserText("secret question")); err == nil {
 		t.Fatal("want the denial")
 	}
 	if got := retrievalRecords(t, store, "gated"); r.calls != 0 || len(got) != 0 {
@@ -198,14 +198,18 @@ func TestSystemPromptFunc_OnlyWhenTheModelIsCalled(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if _, err := a.Run(context.Background(), "r3", "q"); err != nil {
+	if _, err := a.Run(context.Background(), "r3", agent.UserText("q")); err != nil {
 		t.Fatal(err)
 	}
 	if calls != 1 {
 		t.Fatalf("a drive of two model turns called the prompt function %d times, want 1", calls)
 	}
 	down = true
-	msg, err := a.Run(context.Background(), "r3", "q")
+	res, err := a.Run(context.Background(), "r3", agent.UserText("q"))
+	var msg agent.Message
+	if res != nil {
+		msg = res.Message
+	}
 	if err != nil || msg.Text() != "answer" {
 		t.Fatalf("re-reading a finished run: %q, %v; want the recorded answer", msg.Text(), err)
 	}
@@ -239,13 +243,13 @@ func TestRev127_RetrievalOnceAcrossPause(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if _, err := a.Run(context.Background(), "r4", "q"); err == nil {
+	if _, err := a.Run(context.Background(), "r4", agent.UserText("q")); err == nil {
 		t.Fatal("want a pause")
 	}
 	if err := agent.AnswerInterrupt(context.Background(), store, "r4", "q", "yes"); err != nil {
 		t.Fatal(err)
 	}
-	if _, err := a.Run(context.Background(), "r4", "q"); err != nil {
+	if _, err := a.Run(context.Background(), "r4", agent.UserText("q")); err != nil {
 		t.Fatal(err)
 	}
 	if r.calls != 1 || len(sent) != 2 || sent[0] != 1 || sent[1] != 1 {
@@ -323,7 +327,7 @@ func TestRequiredChoice_CheckedAtTheRun(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Build refused required with no tools: %v", err)
 	}
-	if _, err := a.Run(context.Background(), "plain", "hi"); !errors.Is(err, agent.ErrConfig) || m.calls != 0 {
+	if _, err := a.Run(context.Background(), "plain", agent.UserText("hi")); !errors.Is(err, agent.ErrConfig) || m.calls != 0 {
 		t.Fatalf("Run: err %v after %d model calls, want ErrConfig and none", err, m.calls)
 	}
 	if recs, _ := store.History(context.Background(), "plain"); len(recs) != 0 {
@@ -334,7 +338,7 @@ func TestRequiredChoice_CheckedAtTheRun(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	got, err := agent.RunTyped[struct{ N int }](context.Background(), b, "typed", "count")
+	got, _, err := b.RunTyped[struct{ N int }](context.Background(), "typed", agent.UserText("count"))
 	if err != nil || got.N != 7 {
 		t.Fatalf("RunTyped under required with no tools of its own: %+v, %v", got, err)
 	}
@@ -344,7 +348,7 @@ func TestRequiredChoice_CheckedAtTheRun(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if _, err := c.Run(context.Background(), "free", "hi"); err != nil || free.calls != 1 {
+	if _, err := c.Run(context.Background(), "free", agent.UserText("hi")); err != nil || free.calls != 1 {
 		t.Fatalf("a model with no rule: err %v after %d calls", err, free.calls)
 	}
 }
@@ -375,10 +379,10 @@ func TestRunInfoSaga_IsTheRunsOwnFlag(t *testing.T) {
 	starter := agent.Func("starter", "", agent.Safety{ReadOnly: true}, func(ctx context.Context, _ struct{}) (string, error) {
 		info, _ := agent.RunInfoFrom(ctx)
 		seen["starter"] = info.Saga
-		if _, err := plainChild.Run(ctx, info.SubRunFor("plain"), "go"); err != nil {
+		if _, err := plainChild.Run(ctx, info.SubRunFor("plain"), agent.UserText("go")); err != nil {
 			return "", err
 		}
-		_, err := sagaChild.RunSaga(ctx, info.SubRunFor("saga"), "go")
+		_, err := sagaChild.Run(ctx, info.SubRunFor("saga"), agent.UserText("go"), agent.WithSaga())
 		return "ok", err
 	})
 	p, err := agent.New(agent.NewScriptedModel(agent.ToolTurn("c1", "starter", `{}`), agent.ToolTurn("c2", "sub", `{"task":"go"}`), agent.TextTurn("done")),
@@ -386,7 +390,7 @@ func TestRunInfoSaga_IsTheRunsOwnFlag(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if _, err := p.RunSaga(context.Background(), "root", "go"); err != nil {
+	if _, err := p.Run(context.Background(), "root", agent.UserText("go"), agent.WithSaga()); err != nil {
 		t.Fatal(err)
 	}
 	want := map[string]bool{"starter": true, "in_plain_child": false, "in_saga_child": true, "in_sub_agent": true}

@@ -94,7 +94,7 @@ func (g *gate) run() error {
 			g.charged++
 			return "ok", nil
 		}, agent.WithApproval(&g.policy))
-	_, err := agenttest.MustNew(chargeModel{}, g.store, agent.WithTools(charge), agent.WithApproverVerifiers(g.resolver())).Run(context.Background(), gateRun, "pay")
+	_, err := agenttest.MustNew(chargeModel{}, g.store, agent.WithTools(charge), agent.WithApproverVerifiers(g.resolver())).Run(context.Background(), gateRun, agent.UserText("pay"))
 	return err
 }
 

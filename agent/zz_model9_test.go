@@ -33,7 +33,7 @@ func TestModel9_T1_SagaStepWhoseSuccessAMiddlewareRejectedIsNotAccounted(t *test
 		}
 	})
 	m := NewScriptedModel(ToolTurn("c1", "charge", `{}`), TextTurn("done"))
-	_, err := mustNew(m, memJournal(), WithTools(charge), WithToolMiddleware(check)).RunSaga(context.Background(), "r", "go")
+	_, err := mustNew(m, memJournal(), WithTools(charge), WithToolMiddleware(check)).Run(context.Background(), "r", UserText("go"), WithSaga())
 	var ab *SagaAborted
 	if !errors.As(err, &ab) {
 		// The other sound answer: the run halts for the step's outcome, recording nothing.
@@ -72,7 +72,7 @@ func TestModel9_T1_RetryAfterAnUnknownOutcomeRecordsAKnownFailure(t *testing.T) 
 	})
 	store := memJournal()
 	m := NewScriptedModel(ToolTurn("c1", "charge", `{}`), TextTurn("done"))
-	_, err := mustNew(m, store, WithTools(charge), WithToolMiddleware(retry)).Run(context.Background(), "r", "go")
+	_, err := mustNew(m, store, WithTools(charge), WithToolMiddleware(retry)).Run(context.Background(), "r", UserText("go"))
 	r, ok := hasStep(t, store, "r", ToolResultStep("c1"))
 	if charged.Load() == 1 && ok && r.IsError {
 		t.Fatalf("the effect fired, its outcome was unknown, and the journal records a known failure %s (run err %v)", r.Result, err)
@@ -114,7 +114,7 @@ func TestModel9_T2_FailedArgsWriteThenRetryRecordsAlreadyRan(t *testing.T) {
 	})
 	store := mustJournal(&argsFailStore{MemStore: NewMemStore()})
 	m := NewScriptedModel(ToolTurn("c1", "charge", `{"amount":5}`), TextTurn("done"))
-	_, _ = mustNew(m, store, WithTools(charge), WithToolMiddleware(retry, scaleCharge)).RunSaga(context.Background(), "r", "go")
+	_, _ = mustNew(m, store, WithTools(charge), WithToolMiddleware(retry, scaleCharge)).Run(context.Background(), "r", UserText("go"), WithSaga())
 	recs, _ := store.History(context.Background(), "r")
 	for _, r := range recs {
 		if r.ToolUseID == "c1" && (r.Kind == StepSagaFail || r.Kind == StepToolResult) && strings.Contains(string(r.Result), "already ran") {
@@ -137,7 +137,7 @@ func TestModel9_RetrySafeRejectedSuccessIsAnOrdinaryFailure(t *testing.T) {
 	})
 	store := memJournal()
 	m := NewScriptedModel(ToolTurn("c1", "lookup", `{}`), TextTurn("done"))
-	if _, err := mustNew(m, store, WithTools(lookup), WithToolMiddleware(check)).Run(context.Background(), "r", "go"); err != nil {
+	if _, err := mustNew(m, store, WithTools(lookup), WithToolMiddleware(check)).Run(context.Background(), "r", UserText("go")); err != nil {
 		t.Fatalf("Run: %v", err)
 	}
 	r, ok := hasStep(t, store, "r", ToolResultStep("c1"))

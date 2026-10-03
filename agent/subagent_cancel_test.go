@@ -31,7 +31,7 @@ func TestSubAgent_CancelledParentWaitsForTheChild(t *testing.T) {
 
 	ctx, cancel := context.WithCancel(context.Background())
 	go func() { <-started; cancel() }()
-	_, _ = parent.Run(ctx, "r1", "file the record")
+	_, _ = parent.Run(ctx, "r1", UserText("file the record"))
 	if !finished.Load() {
 		t.Fatal("Run returned while the sub-agent's write was still in flight")
 	}

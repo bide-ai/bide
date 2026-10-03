@@ -64,10 +64,11 @@ func TestRun_ToolThenAnswer(t *testing.T) {
 	m := &scriptModel{turns: [][]Emit{toolTurn("c1", "lookup", `{"q":"x"}`), textTurn("final")}}
 	a := mustNew(m, memJournal(), WithTools(tool))
 
-	out, err := a.Run(context.Background(), "run1", "hi")
+	res, err := a.Run(context.Background(), "run1", UserText("hi"))
 	if err != nil {
 		t.Fatalf("Run: %v", err)
 	}
+	out := res.Message
 	if got := textOf(out); got != "final" {
 		t.Fatalf("answer = %q, want %q", got, "final")
 	}
@@ -86,7 +87,7 @@ func TestResume_DoesNotRerunCompletedTool(t *testing.T) {
 	// Turn 1 asks for the tool; turn 2 "crashes" (model error) after the tool result
 	// is already journaled.
 	crashy := &scriptModel{turns: [][]Emit{toolTurn("c1", "lookup", `{"q":"x"}`), errTurn(errors.New("boom"))}}
-	if _, err := mustNew(crashy, store, WithTools(tool)).Run(context.Background(), "run2", "hi"); err == nil {
+	if _, err := mustNew(crashy, store, WithTools(tool)).Run(context.Background(), "run2", UserText("hi")); err == nil {
 		t.Fatal("expected crash error on first attempt")
 	}
 	if calls != 1 {
@@ -95,10 +96,11 @@ func TestResume_DoesNotRerunCompletedTool(t *testing.T) {
 
 	// Fresh agent (new process), same store: resume and finish.
 	recovered := &scriptModel{turns: [][]Emit{textTurn("final")}}
-	out, err := mustNew(recovered, store, WithTools(tool)).Run(context.Background(), "run2", "hi")
+	res, err := mustNew(recovered, store, WithTools(tool)).Run(context.Background(), "run2", UserText("hi"))
 	if err != nil {
 		t.Fatalf("resume: %v", err)
 	}
+	out := res.Message
 	if got := textOf(out); got != "final" {
 		t.Fatalf("resumed answer = %q, want %q", got, "final")
 	}
@@ -123,7 +125,7 @@ func TestResume_HaltsOnUnsafeWrite(t *testing.T) {
 
 	var calls int
 	write := &countingTool{name: "charge", safety: Safety{}, calls: &calls} // not ReadOnly, not Idempotent
-	_, err := mustNew(&scriptModel{}, store, WithTools(write)).Run(ctx, "run3", "hi")
+	_, err := mustNew(&scriptModel{}, store, WithTools(write)).Run(ctx, "run3", UserText("hi"))
 
 	var halt *ResumeHalt
 	if !errors.As(err, &halt) {
@@ -216,7 +218,7 @@ func TestHITL_PausesForApprovalThenResumes(t *testing.T) {
 	charge := &countingTool{name: "charge", approval: SingleApproval(), calls: &charged}
 
 	m := &scriptModel{turns: [][]Emit{toolTurn("c1", "charge", `{}`), textTurn("done")}}
-	_, err := mustNew(m, store, WithTools(charge)).Run(ctx, "r1", "pay")
+	_, err := mustNew(m, store, WithTools(charge)).Run(ctx, "r1", UserText("pay"))
 
 	var pend *PendingApproval
 	if !errors.As(err, &pend) {
@@ -231,10 +233,11 @@ func TestHITL_PausesForApprovalThenResumes(t *testing.T) {
 		t.Fatal(err)
 	}
 	m2 := &scriptModel{turns: [][]Emit{textTurn("done")}}
-	out, err := mustNew(m2, store, WithTools(charge)).Run(ctx, "r1", "pay")
+	res, err := mustNew(m2, store, WithTools(charge)).Run(ctx, "r1", UserText("pay"))
 	if err != nil {
 		t.Fatalf("resume after approval: %v", err)
 	}
+	out := res.Message
 	if textOf(out) != "done" || charged != 1 {
 		t.Fatalf("out=%q charged=%d, want done/1", textOf(out), charged)
 	}
@@ -273,7 +276,7 @@ func TestRenderMermaid_ReflectsExecution(t *testing.T) {
 	tool := &countingTool{name: "lookup", safety: Safety{ReadOnly: true}, calls: &calls}
 	store := memJournal()
 	m := &scriptModel{turns: [][]Emit{toolTurn("c1", "lookup", `{"q":"x"}`), textTurn("final")}}
-	if _, err := mustNew(m, store, WithTools(tool)).Run(context.Background(), "g1", "hi"); err != nil {
+	if _, err := mustNew(m, store, WithTools(tool)).Run(context.Background(), "g1", UserText("hi")); err != nil {
 		t.Fatal(err)
 	}
 
@@ -306,10 +309,11 @@ func TestSubAgent_DurableTree(t *testing.T) {
 		WithTools(researcher),
 	)
 
-	out, err := parent.Run(ctx, "root", "do it")
+	res, err := parent.Run(ctx, "root", UserText("do it"))
 	if err != nil {
 		t.Fatal(err)
 	}
+	out := res.Message
 	if textOf(out) != "parent-final" {
 		t.Fatalf("parent answer = %q", textOf(out))
 	}
@@ -343,7 +347,7 @@ func TestReplay_ReExecutesFromJournal(t *testing.T) {
 	var calls1 int
 	tool1 := &countingTool{name: "lookup", safety: Safety{ReadOnly: true}, calls: &calls1}
 	recModel := &scriptModel{turns: [][]Emit{toolTurn("c1", "lookup", `{"q":"x"}`), textTurn("recorded-final")}}
-	if _, err := mustNew(recModel, rec, WithTools(tool1)).Run(ctx, "orig", "go"); err != nil {
+	if _, err := mustNew(recModel, rec, WithTools(tool1)).Run(ctx, "orig", UserText("go")); err != nil {
 		t.Fatal(err)
 	}
 
@@ -354,10 +358,11 @@ func TestReplay_ReExecutesFromJournal(t *testing.T) {
 	}
 	var calls2 int
 	tool2 := &countingTool{name: "lookup", safety: Safety{ReadOnly: true}, calls: &calls2}
-	out, err := mustNew(rm, memJournal(), WithTools(tool2)).Run(ctx, "replay", "go")
+	res, err := mustNew(rm, memJournal(), WithTools(tool2)).Run(ctx, "replay", UserText("go"))
 	if err != nil {
 		t.Fatalf("replay run: %v", err)
 	}
+	out := res.Message
 	if textOf(out) != "recorded-final" {
 		t.Fatalf("replayed answer = %q, want recorded-final", textOf(out))
 	}
@@ -391,7 +396,7 @@ func TestSaga_CompensatesCompletedWritesOnAbort(t *testing.T) {
 	}}
 
 	a := mustNew(model, memJournal(), WithTools(charge, bookFlight, bookHotel))
-	_, err := a.RunSaga(ctx, "trip-1", "book my trip")
+	_, err := a.Run(ctx, "trip-1", UserText("book my trip"), WithSaga())
 
 	var aborted *SagaAborted
 	if !errors.As(err, &aborted) {
@@ -435,7 +440,7 @@ func TestSaga_CompensatorFailureIsFlagged(t *testing.T) {
 	}}
 
 	a := mustNew(model, memJournal(), WithTools(charge, bookFlight, bookHotel))
-	_, err := a.RunSaga(ctx, "trip-2", "book")
+	_, err := a.Run(ctx, "trip-2", UserText("book"), WithSaga())
 
 	var aborted *SagaAborted
 	if !errors.As(err, &aborted) {
@@ -480,7 +485,7 @@ func TestSaga_DistributedRollbackAcrossSubAgent(t *testing.T) {
 		WithTools(payment, bookHotel),
 	)
 
-	_, err := parent.RunSaga(ctx, "trip", "book")
+	_, err := parent.Run(ctx, "trip", UserText("book"), WithSaga())
 	var aborted *SagaAborted
 	if !errors.As(err, &aborted) {
 		t.Fatalf("err = %v, want *SagaAborted", err)
@@ -536,7 +541,7 @@ func TestSaga_SubAgentFailureReversesWholeTree(t *testing.T) {
 		WithTools(chargeParent, booking),
 	)
 
-	_, err := parent.RunSaga(ctx, "trip", "charge then book")
+	_, err := parent.Run(ctx, "trip", UserText("charge then book"), WithSaga())
 	var aborted *SagaAborted
 	if !errors.As(err, &aborted) {
 		t.Fatalf("err = %v, want *SagaAborted", err)
@@ -597,7 +602,7 @@ func TestSubAgent_PropagatesHaltAndApproval(t *testing.T) {
 			t.Fatal(err)
 		}
 
-		_, err := parent.Run(ctx, "root", "delegate")
+		_, err := parent.Run(ctx, "root", UserText("delegate"))
 		var halt *ResumeHalt
 		if !errors.As(err, &halt) {
 			t.Fatalf("parent Run err = %v, want *ResumeHalt propagated from sub-agent", err)
@@ -616,10 +621,11 @@ func TestSubAgent_PropagatesHaltAndApproval(t *testing.T) {
 		if err := ResolveHalt(ctx, store, subRunID, "s1", "charged (confirmed)", false); err != nil {
 			t.Fatal(err)
 		}
-		out, err := parent.Run(ctx, "root", "delegate")
+		res, err := parent.Run(ctx, "root", UserText("delegate"))
 		if err != nil {
 			t.Fatalf("re-run after ResolveHalt: %v", err)
 		}
+		out := res.Message
 		if textOf(out) != "parent-done" {
 			t.Fatalf("resumed parent answer = %q, want parent-done", textOf(out))
 		}
@@ -650,7 +656,7 @@ func TestSubAgent_PropagatesHaltAndApproval(t *testing.T) {
 			WithTools(worker),
 		)
 
-		_, err := parent.Run(ctx, "root", "delegate")
+		_, err := parent.Run(ctx, "root", UserText("delegate"))
 		var pend *PendingApproval
 		if !errors.As(err, &pend) {
 			t.Fatalf("parent Run err = %v, want *PendingApproval propagated from sub-agent", err)
@@ -669,10 +675,11 @@ func TestSubAgent_PropagatesHaltAndApproval(t *testing.T) {
 		if err := Approve(ctx, store, pend.RunID, pend.ToolUseID, true); err != nil {
 			t.Fatal(err)
 		}
-		out, err := parent.Run(ctx, "root", "delegate")
+		res, err := parent.Run(ctx, "root", UserText("delegate"))
 		if err != nil {
 			t.Fatalf("re-run after Approve: %v", err)
 		}
+		out := res.Message
 		if textOf(out) != "parent-done" {
 			t.Fatalf("resumed parent answer = %q, want parent-done", textOf(out))
 		}

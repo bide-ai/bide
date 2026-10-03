@@ -246,7 +246,7 @@ func (f modelFunc) Stream(ctx context.Context, req Request) (*Stream, error) { r
 // turnsTaken runs a to its turn cap and returns how many turns it took.
 func turnsTaken(t *testing.T, a *Agent, runID string) int {
 	t.Helper()
-	_, err := a.Run(context.Background(), runID, "go")
+	_, err := a.Run(context.Background(), runID, UserText("go"))
 	m := turnsRE.FindStringSubmatch(fmt.Sprint(err))
 	if !errors.Is(err, ErrMaxTurns) || m == nil {
 		t.Fatalf("run %s: %v, want ErrMaxTurns", runID, err)
@@ -299,7 +299,7 @@ func systemOf(t *testing.T, a *Agent) string {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if _, err := c.Run(context.Background(), fmt.Sprintf("r%d", runSeq.Add(1)), "hi"); err != nil {
+	if _, err := c.Run(context.Background(), fmt.Sprintf("r%d", runSeq.Add(1)), UserText("hi")); err != nil {
 		t.Fatal(err)
 	}
 	return strings.Join(got, "|")
@@ -351,7 +351,7 @@ func TestSystemPromptFunc_RunInfoAndError(t *testing.T) {
 	var got RunInfo
 	fn := func(_ context.Context, info RunInfo) (string, error) { got = info; return "", nil }
 	a := buildT(t, NewScriptedModel(TextTurn("ok")), WithSystemPromptFunc(fn))
-	if _, err := a.RunSaga(context.Background(), "r1", "hi"); err != nil {
+	if _, err := a.Run(context.Background(), "r1", UserText("hi"), WithSaga()); err != nil {
 		t.Fatal(err)
 	}
 	if got != (RunInfo{RunID: "r1", RootRunID: "r1", Saga: true}) {
@@ -360,7 +360,7 @@ func TestSystemPromptFunc_RunInfoAndError(t *testing.T) {
 	boom := errors.New("tenant lookup failed")
 	m := &countModel{inner: NewScriptedModel(TextTurn("ok"))}
 	b := buildT(t, m, WithSystemPromptFunc(func(context.Context, RunInfo) (string, error) { return "", boom }))
-	if _, err := b.Run(context.Background(), "r2", "hi"); !errors.Is(err, boom) || !strings.Contains(err.Error(), "r2") {
+	if _, err := b.Run(context.Background(), "r2", UserText("hi")); !errors.Is(err, boom) || !strings.Contains(err.Error(), "r2") {
 		t.Errorf("Run = %v, want the function's error, naming the run", err)
 	}
 	if m.calls.Load() != 0 {
@@ -401,7 +401,7 @@ func TestPrecedence_RunBeatsAgentBeatsDefault(t *testing.T) {
 		if err != nil {
 			t.Fatal(err)
 		}
-		if _, err := c.Run(ctx, fmt.Sprintf("r%d", runSeq.Add(1)), "go"); err != nil {
+		if _, err := c.Run(ctx, fmt.Sprintf("r%d", runSeq.Add(1)), UserText("go")); err != nil {
 			t.Fatal(err)
 		}
 		return got
@@ -490,7 +490,7 @@ func TestWith_IsolationUnderRace(t *testing.T) {
 				errs <- err
 				return
 			}
-			if _, err := child.Run(context.Background(), fmt.Sprintf("c%d", i), "go"); err != nil {
+			if _, err := child.Run(context.Background(), fmt.Sprintf("c%d", i), UserText("go")); err != nil {
 				errs <- err
 				return
 			}
@@ -514,7 +514,7 @@ func TestWith_IsolationUnderRace(t *testing.T) {
 				errs <- err
 				return
 			}
-			if _, err := c.Run(context.Background(), fmt.Sprintf("p%d", i), "go"); err != nil {
+			if _, err := c.Run(context.Background(), fmt.Sprintf("p%d", i), UserText("go")); err != nil {
 				errs <- err
 			}
 		}()
@@ -572,7 +572,7 @@ func TestWithRetrieval_EveryMiddlewareSeesTheDocuments(t *testing.T) {
 	var got []string
 	r := &fakeRetriever{docs: []Doc{{Text: "doc"}}}
 	a := buildT(t, NewScriptedModel(TextTurn("ok")), WithMiddleware(captureRequests(&got)), WithRetrieval(r, 1))
-	if _, err := a.Run(context.Background(), "r", "q"); err != nil {
+	if _, err := a.Run(context.Background(), "r", UserText("q")); err != nil {
 		t.Fatal(err)
 	}
 	if len(got) != 1 || !strings.Contains(got[0], "doc") {

@@ -38,7 +38,7 @@ func TestR137_ResolveHaltDoesNotSeeALiveSessionTurn(t *testing.T) {
 	a := mustNew(model, store, WithTools(tool))
 	h := openSession(t, a, "c1")
 	sent := make(chan error, 1)
-	go func() { _, err := h.Send(ctx, "pay"); sent <- err }()
+	go func() { _, err := h.Send(ctx, UserText("pay")); sent <- err }()
 	select { // the turn's driver holds its lease and is running the tool's effect
 	case <-tool.entered:
 	case err := <-sent:
@@ -84,7 +84,11 @@ func TestR137_FinishedRunUnderLeaseSkipsTheInputCheck(t *testing.T) {
 					t.Fatalf("AcquireLease = %v, %v", ok, err)
 				}
 			}
-			msg, err := openSession(t, a, "c1").SendOnce(ctx, "k", "B")
+			res, err := openSession(t, a, "c1").SendOnce(ctx, "k", UserText("B"))
+			var msg Message
+			if res != nil {
+				msg = res.Message
+			}
 			if !errors.Is(err, ErrConfig) {
 				t.Fatalf(`SendOnce("k", "B") after k's run answered "A" = %q, %v; want ErrConfig (history %v)`,
 					msg.Text(), err, texts(openSession(t, a, "c1").History()))

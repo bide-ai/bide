@@ -41,7 +41,7 @@ func TestRetry_StreamedPartialAttemptIsMarkedDiscarded(t *testing.T) {
 		agenttest.MemJournal(),
 		agent.WithMiddleware(middleware.Retry(2, middleware.WithBackoff(time.Millisecond, time.Millisecond))),
 	)
-	as := a.Stream(context.Background(), "r", "q")
+	as := a.Stream(context.Background(), "r", agent.UserText("q"))
 	var rendered strings.Builder
 	for ev := range as.Events() {
 		switch e := ev.(type) {
@@ -53,10 +53,11 @@ func TestRetry_StreamedPartialAttemptIsMarkedDiscarded(t *testing.T) {
 			rendered.Reset()
 		}
 	}
-	final, err := as.Final()
+	res, err := as.Result()
 	if err != nil {
 		t.Fatalf("Final: %v", err)
 	}
+	final := res.Message
 	if m.calls.Load() != 2 {
 		t.Fatalf("model called %d times, want 2", m.calls.Load())
 	}

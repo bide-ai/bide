@@ -51,7 +51,7 @@ func TestRunTyped_EndsAtFinalAnswer(t *testing.T) {
 		ToolTurn("f3", finalAnswerTool, `{"name":"third"}`),
 	)}
 	a := mustNew(m, memJournal(), WithMaxTurns(3))
-	got, err := RunTyped[typedAnswer](context.Background(), a, "r", "go")
+	got, _, err := a.RunTyped[typedAnswer](context.Background(), "r", UserText("go"))
 	if err != nil {
 		t.Fatalf("RunTyped: %v", err)
 	}
@@ -68,7 +68,7 @@ func TestRunTyped_AnswerIsTheAcceptedCall(t *testing.T) {
 		ToolTurn("f2", finalAnswerTool, `{"name":"ok"}`),
 		TextTurn("done"),
 	)}
-	got, err := RunTyped[typedAnswer](context.Background(), mustNew(m, memJournal()), "r", "go")
+	got, _, err := mustNew(m, memJournal()).RunTyped[typedAnswer](context.Background(), "r", UserText("go"))
 	if err != nil {
 		t.Fatalf("RunTyped: %v", err)
 	}
@@ -90,7 +90,7 @@ func TestRunTyped_EmptyFinalAnswerIsNotReplacedByProse(t *testing.T) {
 		{TextDelta{Text: `{"name":"from prose"}`}, Finish{Reason: "stop"}},
 	}
 	store := memJournal()
-	got, err := RunTyped[optionalAnswer](context.Background(), mustNew(m, store), "r", "go")
+	got, _, err := mustNew(m, store).RunTyped[optionalAnswer](context.Background(), "r", UserText("go"))
 	if err != nil {
 		t.Fatalf("RunTyped: %v", err)
 	}
@@ -113,7 +113,7 @@ func TestRunTyped_FirstAcceptedCallInATurnWins(t *testing.T) {
 		ToolCallDelta{Index: 1, ID: "f2", Name: finalAnswerTool, ArgsFragment: []byte(`{"name":"b"}`)},
 		Finish{Reason: "tool_use"},
 	}}
-	got, err := RunTyped[typedAnswer](context.Background(), mustNew(m, memJournal()), "r", "go")
+	got, _, err := mustNew(m, memJournal()).RunTyped[typedAnswer](context.Background(), "r", UserText("go"))
 	if err != nil || got.Name != "a" {
 		t.Fatalf("RunTyped = %+v, %v; want the first call's answer \"a\"", got, err)
 	}
@@ -142,10 +142,10 @@ func TestRunTyped_ResumeAfterFinalAnswerDoesNotAskAgain(t *testing.T) {
 		ToolTurn("f2", finalAnswerTool, `{"name":"second"}`),
 	)}
 	a := mustNew(m, store, WithMaxTurns(3))
-	if _, err := RunTyped[typedAnswer](context.Background(), a, "r", "go"); err == nil {
+	if _, _, err := a.RunTyped[typedAnswer](context.Background(), "r", UserText("go")); err == nil {
 		t.Fatal("the first attempt should fail writing the completion marker")
 	}
-	got, err := RunTyped[typedAnswer](context.Background(), a, "r", "go")
+	got, _, err := a.RunTyped[typedAnswer](context.Background(), "r", UserText("go"))
 	if err != nil {
 		t.Fatalf("resumed RunTyped: %v", err)
 	}

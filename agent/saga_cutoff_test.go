@@ -43,7 +43,7 @@ func TestSaga_CallAfterTheFailureIsNotCalled(t *testing.T) {
 		modelFunc(func() []agent.Emit { return turn }),
 		agenttest.MemJournal(),
 		agent.WithTools(fail, notify), agent.WithMaxConcurrency(1))
-	_, err := a.RunSaga(context.Background(), "r", "go")
+	_, err := a.Run(context.Background(), "r", agent.UserText("go"), agent.WithSaga())
 	var aborted *agent.SagaAborted
 	if !errors.As(err, &aborted) {
 		t.Fatalf("RunSaga = %v, want *SagaAborted", err)

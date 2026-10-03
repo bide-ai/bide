@@ -42,7 +42,7 @@ func TestAwait_PausesAndResumesOnSignal(t *testing.T) {
 	m := &scriptModel{turns: [][]Emit{toolTurn("c1", "watch", `{}`), textTurn("done")}}
 	a := mustNew(m, store, WithTools(tool))
 
-	_, err := a.Run(context.Background(), "r", "hi")
+	_, err := a.Run(context.Background(), "r", UserText("hi"))
 	var awt *Awaiting
 	if !errors.As(err, &awt) {
 		t.Fatalf("err = %v, want *Awaiting", err)
@@ -58,10 +58,11 @@ func TestAwait_PausesAndResumesOnSignal(t *testing.T) {
 		t.Fatalf("Signal: %v", err)
 	}
 
-	out, err := a.Run(context.Background(), "r", "hi") // same agent, resumes
+	res, err := a.Run(context.Background(), "r", UserText("hi")) // same agent, resumes
 	if err != nil {
 		t.Fatalf("resume Run: %v", err)
 	}
+	out := res.Message
 	if textOf(out) != "done" {
 		t.Fatalf("answer = %q", textOf(out))
 	}
@@ -112,7 +113,7 @@ func TestAwait_RequiresRetrySafe(t *testing.T) {
 	m := &scriptModel{turns: [][]Emit{toolTurn("c1", "write", `{}`), textTurn("done")}}
 	a := mustNew(m, store, WithTools(tool))
 
-	_, err := a.Run(context.Background(), "r", "hi")
+	_, err := a.Run(context.Background(), "r", UserText("hi"))
 	if !errors.Is(err, ErrConfig) {
 		t.Fatalf("err = %v, want errors.Is ErrConfig", err)
 	}

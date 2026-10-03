@@ -64,9 +64,9 @@ func TestWaker_ScheduleFailureFailsTheRunAndRecordsNothing(t *testing.T) {
 				)
 				var err error
 				if saga {
-					_, err = a.RunSaga(ctx, "r1", "rest")
+					_, err = a.Run(ctx, "r1", UserText("rest"), WithSaga())
 				} else {
-					_, err = a.Run(ctx, "r1", "rest")
+					_, err = a.Run(ctx, "r1", UserText("rest"))
 				}
 				return err
 			}
@@ -112,7 +112,7 @@ func TestRecoverLoop_RetriesAFailedWakeSchedule(t *testing.T) {
 	}
 	// The first drive has no Waker: it pauses at the timer with nothing scheduled, as a run does
 	// whose process died before its wake was registered anywhere.
-	if _, err := newAgent().Run(context.Background(), "r1", "rest"); !IsPause(err) {
+	if _, err := newAgent().Run(context.Background(), "r1", UserText("rest")); !IsPause(err) {
 		t.Fatalf("first drive = %v; want a pause", err)
 	}
 
@@ -122,7 +122,7 @@ func TestRecoverLoop_RetriesAFailedWakeSchedule(t *testing.T) {
 	var mu sync.Mutex
 	var reported []error
 	resume := func(ctx context.Context, runID string, _ RunStart) error {
-		_, err := newAgent().Run(ContextWithWaker(ctx, w), runID, "rest")
+		_, err := newAgent().Run(ContextWithWaker(ctx, w), runID, UserText("rest"))
 		return err
 	}
 	done := make(chan error, 1)
@@ -232,10 +232,10 @@ func TestResolveHaltRef_ToolHalt(t *testing.T) {
 		&greedyModel{script: [][]Emit{toolTurn("c1", "charge", `{}`), textTurn("done")}},
 		store,
 		WithTools(charge),
-	).Run(ctx, "r1", "pay"); !errors.Is(err, ErrToolOutcomeUnknown) {
+	).Run(ctx, "r1", UserText("pay")); !errors.Is(err, ErrToolOutcomeUnknown) {
 		t.Fatalf("first drive = %v; want ErrToolOutcomeUnknown", err)
 	}
-	_, err := mustNew(&greedyModel{script: [][]Emit{textTurn("done")}}, store, WithTools(charge)).Run(ctx, "r1", "pay")
+	_, err := mustNew(&greedyModel{script: [][]Emit{textTurn("done")}}, store, WithTools(charge)).Run(ctx, "r1", UserText("pay"))
 	halt, ok := errors.AsType[*OutcomeUnknown](err)
 	if !ok {
 		t.Fatalf("resume = %v; want *OutcomeUnknown", err)
@@ -251,7 +251,11 @@ func TestResolveHaltRef_ToolHalt(t *testing.T) {
 	if !ok || rec.Kind != StepToolResult || rec.IsError || string(rec.Result) != `"charged"` || !rec.Reconciled || string(rec.Evidence) != `{"charge":"ch_1"}` {
 		t.Fatalf("resolved record = %+v; want the reconciled result with its evidence", rec)
 	}
-	msg, err := mustNew(&greedyModel{script: [][]Emit{textTurn("done")}}, store, WithTools(charge)).Run(ctx, "r1", "pay")
+	res, err := mustNew(&greedyModel{script: [][]Emit{textTurn("done")}}, store, WithTools(charge)).Run(ctx, "r1", UserText("pay"))
+	var msg Message
+	if res != nil {
+		msg = res.Message
+	}
 	if err != nil || msg.Text() != "done" {
 		t.Fatalf("run after resolution = %q, %v; want it to finish", msg.Text(), err)
 	}
@@ -462,7 +466,7 @@ func TestAnswerInterrupt_ResumesThePause(t *testing.T) {
 		&greedyModel{script: [][]Emit{toolTurn("c1", "ask", `{}`), textTurn("done")}},
 		store,
 		WithTools(ask),
-	).Run(ctx, "r1", "go")
+	).Run(ctx, "r1", UserText("go"))
 	p, ok := errors.AsType[*InterruptPending](err)
 	if !ok || p.Name != "how-many" || p.Prompt != "how many?" || p.Paused() != (RunRef{RunID: "r1", RootRunID: "r1"}) {
 		t.Fatalf("run = %v; want *InterruptPending at how-many for r1", err)
@@ -470,7 +474,7 @@ func TestAnswerInterrupt_ResumesThePause(t *testing.T) {
 	if err := AnswerInterrupt(ctx, store, p.RunID, p.Name, 3); err != nil {
 		t.Fatal(err)
 	}
-	if _, err := mustNew(&greedyModel{script: [][]Emit{textTurn("done")}}, store, WithTools(ask)).Run(ctx, p.RootRunID, "go"); err != nil {
+	if _, err := mustNew(&greedyModel{script: [][]Emit{textTurn("done")}}, store, WithTools(ask)).Run(ctx, p.RootRunID, UserText("go")); err != nil {
 		t.Fatal(err)
 	}
 	if rec, ok := hasStep(t, store, "r1", ToolResultStep("c1")); !ok || string(rec.Result) != `"3"` {
@@ -495,7 +499,7 @@ func TestLoop_SubTreePausePropagatesFromAnyTool(t *testing.T) {
 			&greedyModel{script: [][]Emit{toolTurn("c1", "delegate", `{}`), textTurn("done")}},
 			memJournal(),
 			WithTools(delegate),
-		).Run(context.Background(), "r1", "go")
+		).Run(context.Background(), "r1", UserText("go"))
 		if got, ok := AsPause(err); !ok || got != p {
 			t.Errorf("%T from a side-effecting tool: Run = %v; want the pause propagated", p, err)
 		}

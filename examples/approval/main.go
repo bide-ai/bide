@@ -169,7 +169,11 @@ func newAgent(store *agent.Journal, witness string) *agent.Agent {
 
 // cmdRun drives the agent once. It either pauses at the gate (printing the tally) or completes.
 func cmdRun(ctx context.Context, store *agent.Journal, witness string) error {
-	out, err := newAgent(store, witness).Run(ctx, runID, "Refund order 42.")
+	res, err := newAgent(store, witness).Run(ctx, runID, agent.UserText("Refund order 42."))
+	var out agent.Message
+	if res != nil {
+		out = res.Message
+	}
 	pend, paused := errors.AsType[*agent.ApprovalPending](err)
 	switch {
 	case paused && pend.Quorum != nil:

@@ -45,7 +45,7 @@ func rev104eResolverRace(t *testing.T, through func(s Store) Store) {
 	var charged int
 	charge := &countingTool{name: "charge", safety: Safety{}, calls: &charged}
 	m := &scriptModel{turns: [][]Emit{toolTurn("c1", "charge", `{}`)}}
-	if _, err := mustNew(m, mustJournal(through(st)), WithTools(charge)).Run(ctx, "r", "go"); err == nil {
+	if _, err := mustNew(m, mustJournal(through(st)), WithTools(charge)).Run(ctx, "r", UserText("go")); err == nil {
 		t.Fatal("want the claim's write failure")
 	}
 	var raced error
@@ -57,7 +57,7 @@ func rev104eResolverRace(t *testing.T, through func(s Store) Store) {
 		}
 		once.Do(func() {
 			m2 := &scriptModel{turns: [][]Emit{textTurn("done")}}
-			_, raced = mustNew(m2, mustJournal(through(st)), WithTools(charge)).Run(ctx, "r", "go")
+			_, raced = mustNew(m2, mustJournal(through(st)), WithTools(charge)).Run(ctx, "r", UserText("go"))
 		})
 	}
 	later := func() time.Time { return time.Now().Add(time.Hour) }
@@ -155,14 +155,14 @@ func TestRev104e_TenantWrapperSharesRememberedClaims(t *testing.T) {
 	charge := &countingTool{name: "charge", safety: Safety{}, calls: &charged}
 	a := mustJournal(&tenantWrap{inner: st, tenant: "A"})
 	b := mustJournal(&tenantWrap{inner: st, tenant: "B"})
-	if _, err := mustNew(&scriptModel{turns: [][]Emit{toolTurn("c1", "charge", `{}`)}}, a, WithTools(charge)).Run(ctx, "r", "go"); err == nil {
+	if _, err := mustNew(&scriptModel{turns: [][]Emit{toolTurn("c1", "charge", `{}`)}}, a, WithTools(charge)).Run(ctx, "r", UserText("go")); err == nil {
 		t.Fatal("want tenant A's claim write failure")
 	}
 	if _, err := mustNew(
 		&scriptModel{turns: [][]Emit{toolTurn("c1", "charge", `{}`), textTurn("done")}},
 		b,
 		WithTools(charge),
-	).Run(ctx, "r", "go"); err != nil {
+	).Run(ctx, "r", UserText("go")); err != nil {
 		t.Fatalf("tenant B: %v", err)
 	}
 	var foreign []string
@@ -177,7 +177,11 @@ func TestRev104e_TenantWrapperSharesRememberedClaims(t *testing.T) {
 	if len(foreign) > 0 {
 		t.Fatalf("tenant B's journal holds %v, a not-started record of tenant A's claim, written through B's wrapper", foreign)
 	}
-	out, errA := mustNew(&scriptModel{turns: [][]Emit{textTurn("done")}}, a, WithTools(charge)).Run(ctx, "r", "go")
+	res, errA := mustNew(&scriptModel{turns: [][]Emit{textTurn("done")}}, a, WithTools(charge)).Run(ctx, "r", UserText("go"))
+	var out Message
+	if res != nil {
+		out = res.Message
+	}
 	if errA != nil || out.Text() != "done" || charged != 2 {
 		t.Fatalf("tenant A's next drive = %q, %v, tool calls %d; want done, nil, 2 (one per tenant)", out.Text(), errA, charged)
 	}
@@ -199,19 +203,19 @@ func TestRev104e_TenantWrapperSharesKeptSpend(t *testing.T) {
 			return resp, err
 		}
 	}
-	if _, err := mustNew(&scriptModel{turns: [][]Emit{textTurnWithUsage("done", billed)}}, a, WithMiddleware(arm)).RunResult(context.Background(), "r", "go"); err == nil {
+	if _, err := mustNew(&scriptModel{turns: [][]Emit{textTurnWithUsage("done", billed)}}, a, WithMiddleware(arm)).Run(context.Background(), "r", UserText("go")); err == nil {
 		t.Fatal("want the write failure")
 	}
 	fail.Store(false)
 	b := mustJournal(&tenantWrap{inner: st, tenant: "B"})
-	resB, err := mustNew(&scriptModel{turns: [][]Emit{textTurnWithUsage("done", billed)}}, b).RunResult(context.Background(), "r", "go")
+	resB, err := mustNew(&scriptModel{turns: [][]Emit{textTurnWithUsage("done", billed)}}, b).Run(context.Background(), "r", UserText("go"))
 	if err != nil {
 		t.Fatal(err)
 	}
 	if resB.Spend != billed {
 		t.Fatalf("tenant B's run spent %+v, want only its own %+v: tenant A's kept spend was journaled into B's run", resB.Spend, billed)
 	}
-	resA, err := mustNew(&scriptModel{turns: [][]Emit{textTurnWithUsage("done", billed)}}, a).RunResult(context.Background(), "r", "go")
+	resA, err := mustNew(&scriptModel{turns: [][]Emit{textTurnWithUsage("done", billed)}}, a).Run(context.Background(), "r", UserText("go"))
 	if err != nil {
 		t.Fatal(err)
 	}

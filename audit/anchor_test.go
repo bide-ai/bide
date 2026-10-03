@@ -83,7 +83,7 @@ func TestAuditedStore_AnchorsEachStep(t *testing.T) {
 	store := agenttest.MustJournal(mustAuditedStore(t, j, priv, anchorLog).WithClock(func() int64 { ts++; return ts }))
 	tool := agent.Func("lookup", "", agent.Safety{ReadOnly: true},
 		func(_ context.Context, _ struct{}) (string, error) { return "ok", nil })
-	if _, err := agenttest.MustNew(&twoTurnModel{}, store, agent.WithTools(tool)).Run(ctx, "run", "hi"); err != nil {
+	if _, err := agenttest.MustNew(&twoTurnModel{}, store, agent.WithTools(tool)).Run(ctx, "run", agent.UserText("hi")); err != nil {
 		t.Fatalf("run: %v", err)
 	}
 
@@ -160,7 +160,7 @@ func TestAuditedStore_NoReanchorOnResume(t *testing.T) {
 		func(_ context.Context, _ struct{}) (string, error) { return "ok", nil })
 
 	// Crash mid-run: the tool call + result commit, the second model turn dies.
-	if _, err := agenttest.MustNew(&crashyModel{}, store, agent.WithTools(tool)).Run(ctx, "run", "hi"); err == nil {
+	if _, err := agenttest.MustNew(&crashyModel{}, store, agent.WithTools(tool)).Run(ctx, "run", agent.UserText("hi")); err == nil {
 		t.Fatal("expected the injected crash to fail the run")
 	}
 	crashRecs, _ := jStore.History(ctx, "run")
@@ -170,7 +170,7 @@ func TestAuditedStore_NoReanchorOnResume(t *testing.T) {
 	}
 
 	// Resume: replayed steps must NOT re-anchor; only the final turn adds one.
-	if _, err := agenttest.MustNew(finalModel{}, store, agent.WithTools(tool)).Run(ctx, "run", "hi"); err != nil {
+	if _, err := agenttest.MustNew(finalModel{}, store, agent.WithTools(tool)).Run(ctx, "run", agent.UserText("hi")); err != nil {
 		t.Fatalf("resume: %v", err)
 	}
 	finalRecs, _ := jStore.History(ctx, "run")
@@ -202,10 +202,11 @@ func TestAuditedStore_PublishErrorDoesNotFailStep(t *testing.T) {
 	tool := agent.Func("lookup", "", agent.Safety{ReadOnly: true},
 		func(_ context.Context, _ struct{}) (string, error) { return "ok", nil })
 
-	out, err := agenttest.MustNew(&twoTurnModel{}, store, agent.WithTools(tool)).Run(ctx, "run", "hi")
+	res, err := agenttest.MustNew(&twoTurnModel{}, store, agent.WithTools(tool)).Run(ctx, "run", agent.UserText("hi"))
 	if err != nil {
 		t.Fatalf("run must succeed despite anchor failures: %v", err)
 	}
+	out := res.Message
 	if textOf(out) != "final" {
 		t.Fatalf("answer = %q, want %q", textOf(out), "final")
 	}

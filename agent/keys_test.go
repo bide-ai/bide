@@ -382,8 +382,8 @@ func TestRunSaga_SubRunIDIsRefusedBeforeRollback(t *testing.T) {
 	}
 	a := mustNew(NewScriptedModel(TextTurn("done")), j)
 	for _, run := range []func() error{
-		func() error { _, err := a.RunSaga(ctx, sub, "go"); return err },
-		func() error { _, err := a.RunSagaResult(ctx, sub, "go"); return err },
+		func() error { _, err := a.Run(ctx, sub, UserText("go"), WithSaga()); return err },
+		func() error { _, err := a.Run(ctx, sub, UserText("go"), WithSaga()); return err },
 	} {
 		if err := run(); !errors.Is(err, ErrConfig) {
 			t.Fatalf("err = %v, want ErrConfig", err)

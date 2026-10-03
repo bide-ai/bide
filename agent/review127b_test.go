@@ -30,7 +30,11 @@ func adv127b(t *testing.T, parentStore, childStore *agent.Journal, starterID str
 	}
 	starter := agent.Func("starter", "", agent.Safety{ReadOnly: true}, func(ctx context.Context, _ struct{}) (string, error) {
 		info, _ := agent.RunInfoFrom(ctx)
-		msg, err := child.RunSaga(ctx, info.SubRunFor("child"), "work")
+		res, err := child.Run(ctx, info.SubRunFor("child"), agent.UserText("work"), agent.WithSaga())
+		var msg agent.Message
+		if res != nil {
+			msg = res.Message
+		}
 		return msg.Text(), err
 	}, opts...)
 	boom := agent.Func("boom", "", agent.Safety{}, func(context.Context, struct{}) (string, error) {
@@ -60,7 +64,7 @@ func TestAdv127b_LongToolUseIDLinkIgnored(t *testing.T) {
 	for _, id := range []string{"c1", strings.Repeat("a", 97), strings.Repeat("|", 33)} {
 		var undone int
 		s := agenttest.MemJournal()
-		_, err := adv127b(t, s, s, id, true, &undone).RunSaga(context.Background(), "root", "go")
+		_, err := adv127b(t, s, s, id, true, &undone).Run(context.Background(), "root", agent.UserText("go"), agent.WithSaga())
 		ab := adv127bAbort(t, err)
 		if undone != 1 || !slices.Contains(ab.Compensated, "book") {
 			t.Errorf("tool-use id len %d: undone %d, compensated %v, uncompensated %v, unknown %v; want book compensated",
@@ -76,7 +80,7 @@ func TestAdv127b_ChildOnOwnStoreRefused(t *testing.T) {
 	for _, declare := range []bool{false, true} {
 		var undone int
 		ps, cs := agenttest.MemJournal(), agent.NewMemStore()
-		_, err := adv127b(t, ps, agenttest.MustJournal(cs), "c1", declare, &undone).RunSaga(context.Background(), "root", "go")
+		_, err := adv127b(t, ps, agenttest.MustJournal(cs), "c1", declare, &undone).Run(context.Background(), "root", agent.UserText("go"), agent.WithSaga())
 		ab := adv127bAbort(t, err)
 		if !strings.Contains(ab.Cause.Error(), "another store") {
 			t.Errorf("declare %v: abort cause %v, want the child refused for its store", declare, ab.Cause)
@@ -115,7 +119,11 @@ func TestAdv127b_UnusableDeclarationListed(t *testing.T) {
 		}
 		starter := agent.Func("starter", "", agent.Safety{ReadOnly: true}, func(ctx context.Context, _ struct{}) (string, error) {
 			info, _ := agent.RunInfoFrom(ctx)
-			msg, err := child.RunSaga(ctx, info.SubRunFor("child"), "work")
+			res, err := child.Run(ctx, info.SubRunFor("child"), agent.UserText("work"), agent.WithSaga())
+			var msg agent.Message
+			if res != nil {
+				msg = res.Message
+			}
 			return msg.Text(), err
 		}, agent.WithSubRuns(declared))
 		boom := agent.Func("boom", "", agent.Safety{}, func(context.Context, struct{}) (string, error) { return "", errors.New("boom") })
@@ -124,7 +132,7 @@ func TestAdv127b_UnusableDeclarationListed(t *testing.T) {
 		if err != nil {
 			t.Fatal(err)
 		}
-		_, err = p.RunSaga(context.Background(), "root", "go")
+		_, err = p.Run(context.Background(), "root", agent.UserText("go"), agent.WithSaga())
 		ab := adv127bAbort(t, err)
 		want := map[string]string{"other store": "another store", "panic": "tenant lookup failed"}[mode]
 		listed := slices.ContainsFunc(ab.Uncompensated, func(u string) bool {
@@ -155,7 +163,11 @@ func TestAdv127b_NestedThroughNonSagaChild(t *testing.T) {
 		}
 		spawn := agent.Func("spawn", "", agent.Safety{ReadOnly: true}, func(ctx context.Context, _ struct{}) (string, error) {
 			info, _ := agent.RunInfoFrom(ctx)
-			msg, err := leaf.RunSaga(ctx, info.SubRunFor("leaf"), "work")
+			res, err := leaf.Run(ctx, info.SubRunFor("leaf"), agent.UserText("work"), agent.WithSaga())
+			var msg agent.Message
+			if res != nil {
+				msg = res.Message
+			}
 			return msg.Text(), err
 		}, agent.WithSubRuns(func(string) *agent.Agent { return leaf }))
 		mid, err := agent.New(agent.NewScriptedModel(agent.ToolTurn("m1", "spawn", `{}`), agent.TextTurn("mid done")),
@@ -165,11 +177,11 @@ func TestAdv127b_NestedThroughNonSagaChild(t *testing.T) {
 		}
 		starter := agent.Func("starter", "", agent.Safety{ReadOnly: true}, func(ctx context.Context, _ struct{}) (string, error) {
 			info, _ := agent.RunInfoFrom(ctx)
-			run := mid.Run
+			var opts []agent.RunOption
 			if midSaga {
-				run = mid.RunSaga
+				opts = append(opts, agent.WithSaga())
 			}
-			msg, err := run(ctx, info.SubRunFor("mid"), "work")
+			msg, err := agenttest.Answer(mid.Run(ctx, info.SubRunFor("mid"), agent.UserText("work"), opts...))
 			return msg.Text(), err
 		}, agent.WithSubRuns(func(string) *agent.Agent { return mid }))
 		boom := agent.Func("boom", "", agent.Safety{}, func(context.Context, struct{}) (string, error) {
@@ -180,7 +192,7 @@ func TestAdv127b_NestedThroughNonSagaChild(t *testing.T) {
 		if err != nil {
 			t.Fatal(err)
 		}
-		_, err = p.RunSaga(context.Background(), "root", "go")
+		_, err = p.Run(context.Background(), "root", agent.UserText("go"), agent.WithSaga())
 		ab := adv127bAbort(t, err)
 		if undone != 1 && !slices.Contains(ab.Uncompensated, "book") {
 			t.Errorf("mid as saga %v: undone %d, compensated %v, uncompensated %v, unknown %v; leaf's book is listed nowhere",
@@ -208,11 +220,11 @@ func TestAdv127b_NestedThroughTwoPlainRuns(t *testing.T) {
 	starts := func(tool, name string, sub *agent.Agent, saga bool) agent.Tool {
 		return agent.Func(tool, "", agent.Safety{ReadOnly: true}, func(ctx context.Context, _ struct{}) (string, error) {
 			info, _ := agent.RunInfoFrom(ctx)
-			run := sub.Run
+			var opts []agent.RunOption
 			if saga {
-				run = sub.RunSaga
+				opts = append(opts, agent.WithSaga())
 			}
-			msg, err := run(ctx, info.SubRunFor(name), "work")
+			msg, err := agenttest.Answer(sub.Run(ctx, info.SubRunFor(name), agent.UserText("work"), opts...))
 			return msg.Text(), err
 		}, agent.WithSubRuns(func(string) *agent.Agent { return sub }))
 	}
@@ -222,7 +234,7 @@ func TestAdv127b_NestedThroughTwoPlainRuns(t *testing.T) {
 	boom := agent.Func("boom", "", agent.Safety{}, func(context.Context, struct{}) (string, error) { return "", errors.New("boom") })
 	root := build(agent.NewScriptedModel(agent.ToolTurn("c1", "to_a", `{}`), agent.ToolTurn("c2", "boom", `{}`), agent.TextTurn("x")),
 		starts("to_a", "a", a, false), boom)
-	_, err := root.RunSaga(context.Background(), "root", "go")
+	_, err := root.Run(context.Background(), "root", agent.UserText("go"), agent.WithSaga())
 	ab := adv127bAbort(t, err)
 	if undone != 1 || !slices.Contains(ab.Compensated, "book") {
 		t.Errorf("undone %d, compensated %v, uncompensated %v; want leaf's book undone", undone, ab.Compensated, ab.Uncompensated)

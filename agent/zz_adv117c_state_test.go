@@ -33,7 +33,7 @@ func TestAdv117c_RefusedThenLeakedNextReachesTool(t *testing.T) {
 	}
 	store := memJournal()
 	m := NewScriptedModel(ToolTurn("c1", "charge", `{}`), TextTurn("done"))
-	if _, err := mustNew(m, store, WithTools(charge), WithToolMiddleware(mw)).Run(context.Background(), "r1", "go"); err != nil {
+	if _, err := mustNew(m, store, WithTools(charge), WithToolMiddleware(mw)).Run(context.Background(), "r1", UserText("go")); err != nil {
 		t.Fatalf("Run: %v", err)
 	}
 	rec, ok := hasStep(t, store, "r1", ToolResultStep("c1"))
@@ -75,13 +75,13 @@ func TestAdv117c_RefusedThenLeakedNextDoubleFiresAcrossResume(t *testing.T) {
 	}
 	store := memJournal()
 	m := NewScriptedModel(ToolTurn("c1", "charge", `{}`), TextTurn("done"))
-	_, err1 := mustNew(m, store, WithTools(charge), WithToolMiddleware(mw)).Run(ctx, "r1", "go")
+	_, err1 := mustNew(m, store, WithTools(charge), WithToolMiddleware(mw)).Run(ctx, "r1", UserText("go"))
 	if _, recorded := hasStep(t, store, "r1", ToolResultStep("c1")); recorded || calls.Load() != 0 {
 		t.Fatalf("setup: first drive %v; want no result recorded and no call yet", err1)
 	}
 	close(release)
 	e := <-leaked
-	if _, err := mustNew(m, store, WithTools(charge)).Run(context.Background(), "r1", "go"); err != nil {
+	if _, err := mustNew(m, store, WithTools(charge)).Run(context.Background(), "r1", UserText("go")); err != nil {
 		t.Fatalf("resume: %v", err)
 	}
 	if n := calls.Load(); n > 1 {

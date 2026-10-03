@@ -62,14 +62,14 @@ func TestCommitThenFailSweep(t *testing.T) {
 				}
 				s := &sweepStore{m: m, k: k}
 				j, _ := agent.NewJournal(s)
-				_, err1 := agenttest.MustNew(model(), j, agent.WithTools(charge), agent.WithMaxConcurrency(1)).Run(ctx, "r", "hi")
+				_, err1 := agenttest.MustNew(model(), j, agent.WithTools(charge), agent.WithMaxConcurrency(1)).Run(ctx, "r", agent.UserText("hi"))
 				var j2 *agent.Journal
 				if sameProcess {
 					j2, _ = agent.NewJournal(s) // same store value: shares the process's memory
 				} else {
 					j2, _ = agent.NewJournal(&sweepStore{m: m}) // a new process
 				}
-				_, err2 := agenttest.MustNew(model(), j2, agent.WithTools(charge), agent.WithMaxConcurrency(1)).Run(ctx, "r", "hi")
+				_, err2 := agenttest.MustNew(model(), j2, agent.WithTools(charge), agent.WithMaxConcurrency(1)).Run(ctx, "r", agent.UserText("hi"))
 				var halt *agent.ResumeHalt
 				t.Logf("failed %q: first %v; second %v; fired %d", s.failed, err1, err2, fired)
 				if fired > 1 {

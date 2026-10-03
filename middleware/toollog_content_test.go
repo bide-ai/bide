@@ -59,7 +59,7 @@ func TestToolLog_LogErrorTextIsTheJournaledText(t *testing.T) {
 		agent.WithTools(tool),
 		agent.WithToolErrorRedactor(func(_ string, err error) string { return strings.ReplaceAll(err.Error(), "ACCT-998877", "ACCT") }),
 	).With(agent.WithToolMiddleware(ToolLog(func(format string, args ...any) { fmt.Fprintf(&sb, format, args...) }, LogErrorText()))))
-	if _, err := a.Run(context.Background(), "r", "go"); err != nil {
+	if _, err := a.Run(context.Background(), "r", agent.UserText("go")); err != nil {
 		t.Fatal(err)
 	}
 	var journaled string

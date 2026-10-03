@@ -55,14 +55,14 @@ func TestToolOutcomeUnknown_SiblingInFlightFinishes(t *testing.T) {
 	}
 	store := agenttest.MemJournal()
 	ag := agenttest.MustNew(modelFunc(func() []agent.Emit { return turn }), store, agent.WithTools(a, b))
-	_, err := ag.Run(context.Background(), "r", "go")
+	_, err := ag.Run(context.Background(), "r", agent.UserText("go"))
 	if !errors.Is(err, agent.ErrToolOutcomeUnknown) {
 		t.Fatalf("Run = %v; want the lost answer", err)
 	}
 	if bFired.Load() != 1 {
 		t.Fatalf("b's effect fired %d times; want 1: a lost answer must not cut off a sibling in flight", bFired.Load())
 	}
-	_, err = ag.Run(context.Background(), "r", "go")
+	_, err = ag.Run(context.Background(), "r", agent.UserText("go"))
 	var halt *agent.ResumeHalt
 	if !errors.As(err, &halt) || halt.Op.ID != "ca" {
 		t.Fatalf("resume = %v; want a halt on ca alone", err)

@@ -78,10 +78,11 @@ func TestParallelTools_RunConcurrently(t *testing.T) {
 		multiToolTurn([2]string{"c0", "t0"}, [2]string{"c1", "t1"}, [2]string{"c2", "t2"}),
 		textTurn("done"),
 	}}
-	out, err := mustNew(m, memJournal(), WithTools(tools...)).Run(context.Background(), "r", "go")
+	res, err := mustNew(m, memJournal(), WithTools(tools...)).Run(context.Background(), "r", UserText("go"))
 	if err != nil {
 		t.Fatal(err)
 	}
+	out := res.Message
 	if textOf(out) != "done" {
 		t.Fatalf("answer = %q, want done", textOf(out))
 	}

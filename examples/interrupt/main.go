@@ -75,7 +75,7 @@ func main() {
 	}
 
 	// First Run: the tool interrupts, so Run returns *InterruptPending rather than a final answer.
-	_, err = a.Run(ctx, runID, "Review and publish the draft.")
+	_, err = a.Run(ctx, runID, agent.UserText("Review and publish the draft."))
 	itr, ok := errors.AsType[*agent.InterruptPending](err)
 	if !ok {
 		log.Fatalf("expected an *InterruptPending pause, got: %v", err)
@@ -91,9 +91,10 @@ func main() {
 
 	// Re-invoke Run with the pause's RootRunID (the same run here): Interrupt now returns the
 	// decision, the tool completes, and the model produces its final answer.
-	out, err := a.Run(ctx, itr.RootRunID, "Review and publish the draft.")
+	res, err := a.Run(ctx, itr.RootRunID, agent.UserText("Review and publish the draft."))
 	if err != nil {
 		log.Fatalf("resume run: %v", err)
 	}
+	out := res.Message
 	fmt.Printf("resumed result: %s\n", out.Text())
 }

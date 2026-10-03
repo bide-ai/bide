@@ -30,9 +30,9 @@ func TestR117_MiddlewareTimeoutBeforeTheToolRunsHaltsAsIfItMayHaveFired(t *testi
 	})
 	store := memJournal()
 	m := NewScriptedModel(ToolTurn("c1", "charge", `{}`), TextTurn("done"))
-	_, err := mustNew(m, store, WithTools(charge), WithToolMiddleware(waitForSlot)).Run(context.Background(), "r1", "pay")
+	_, err := mustNew(m, store, WithTools(charge), WithToolMiddleware(waitForSlot)).Run(context.Background(), "r1", UserText("pay"))
 	t.Logf("first drive: %v", err)
-	_, err = mustNew(m, store, WithTools(charge)).Run(context.Background(), "r1", "pay") // resume, limiter gone
+	_, err = mustNew(m, store, WithTools(charge)).Run(context.Background(), "r1", UserText("pay")) // resume, limiter gone
 	var halt *OutcomeUnknown
 	if calls.Load() == 0 && errors.As(err, &halt) {
 		t.Fatalf("the tool was never called, yet the resume halts for its outcome: %v", err)

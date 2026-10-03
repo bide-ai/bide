@@ -264,7 +264,7 @@ func TestInstrument_WiresChatAndToolSpans(t *testing.T) {
 	tracer := tp.Tracer("test")
 
 	a := buildAgent(t, agent.NewMemStore(), agent.WithTools(pingTool{}), Instrument(tracer))
-	if _, err := a.Run(context.Background(), "r", "hi"); err != nil {
+	if _, err := a.Run(context.Background(), "r", agent.UserText("hi")); err != nil {
 		t.Fatal(err)
 	}
 

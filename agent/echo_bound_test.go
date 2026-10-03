@@ -47,7 +47,7 @@ func TestTruncatedToolArgs_ErrorBoundsTheName(t *testing.T) {
 // but not all of a name of any length.
 func TestUnknownTool_ErrorIsBounded(t *testing.T) {
 	m := NewScriptedModel(ToolTurn("c1", strings.Repeat("x", 1<<20), `{}`), TextTurn("done"))
-	_, err := mustNew(m, memJournal()).Run(context.Background(), "run", "go")
+	_, err := mustNew(m, memJournal()).Run(context.Background(), "run", UserText("go"))
 	if !errors.Is(err, ErrUnknownTool) {
 		t.Fatalf("err = %v, want ErrUnknownTool", err)
 	}

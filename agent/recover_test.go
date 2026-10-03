@@ -40,17 +40,17 @@ func TestRecover_SkipsCompletedRedrivesIncomplete(t *testing.T) {
 
 	// Two runs that finish (their journals get a completion marker).
 	done := mustNew(answerModel{}, store)
-	if _, err := done.Run(ctx, "done1", "hi"); err != nil {
+	if _, err := done.Run(ctx, "done1", UserText("hi")); err != nil {
 		t.Fatalf("done1: %v", err)
 	}
-	if _, err := done.Run(ctx, "done2", "hi"); err != nil {
+	if _, err := done.Run(ctx, "done2", UserText("hi")); err != nil {
 		t.Fatalf("done2: %v", err)
 	}
 	// One run that pauses for human approval (never reaches the terminal marker).
 	charge := Func("charge", "charge a card", Safety{},
 		func(context.Context, struct{}) (string, error) { return "charged", nil }, WithApproval(SingleApproval()))
 	paused := mustNew(approvalModel{}, store, WithTools(charge))
-	_, err := paused.Run(ctx, "paused1", "hi")
+	_, err := paused.Run(ctx, "paused1", UserText("hi"))
 	var pa *PendingApproval
 	if !errors.As(err, &pa) {
 		t.Fatalf("paused1 should await approval, got %v", err)
@@ -70,7 +70,7 @@ func TestRecover_SkipsCompletedRedrivesIncomplete(t *testing.T) {
 	var asked []string
 	n, err := Recover(ctx, store, func(ctx context.Context, runID string, _ RunStart) error {
 		asked = append(asked, runID)
-		_, err := paused.Run(ctx, runID, "hi") // still paused -> a pause error, treated as success
+		_, err := paused.Run(ctx, runID, UserText("hi")) // still paused -> a pause error, treated as success
 		return err
 	})
 	if err != nil {
@@ -94,12 +94,12 @@ func TestRecover_StillPausedCountsAsRecovered(t *testing.T) {
 	charge := Func("charge", "charge a card", Safety{},
 		func(context.Context, struct{}) (string, error) { return "charged", nil }, WithApproval(SingleApproval()))
 	a := mustNew(approvalModel{}, store, WithTools(charge))
-	if _, err := a.Run(ctx, "p", "hi"); !IsPause(err) {
+	if _, err := a.Run(ctx, "p", UserText("hi")); !IsPause(err) {
 		t.Fatalf("run should pause, got %v", err)
 	}
 
 	n, err := Recover(ctx, store, func(ctx context.Context, runID string, _ RunStart) error {
-		_, err := a.Run(ctx, runID, "hi") // re-drives, still pauses for approval
+		_, err := a.Run(ctx, runID, UserText("hi")) // re-drives, still pauses for approval
 		return err
 	})
 	if err != nil {
@@ -144,21 +144,21 @@ func TestRecover_WakerRebuild(t *testing.T) {
 	a := mustNew(sleepModel{}, store, WithTools(waitTool()))
 
 	// The run sleeps for an hour and pauses durably. Its wake time is journaled.
-	if _, err := a.Run(ContextWithClock(context.Background(), now), "sleeper", "go"); !errorsIsSleeping(err) {
+	if _, err := a.Run(ContextWithClock(context.Background(), now), "sleeper", UserText("go")); !errorsIsSleeping(err) {
 		t.Fatalf("run should sleep, got %v", err)
 	}
 
 	// Crash: a brand-new MemWaker has an EMPTY timer set (the in-memory timers are lost).
 	var w *MemWaker
 	w = NewMemWaker(func(ctx context.Context, runID string) error {
-		_, err := a.Run(ContextWithWaker(ContextWithClock(ctx, now), w), runID, "go")
+		_, err := a.Run(ContextWithWaker(ContextWithClock(ctx, now), w), runID, UserText("go"))
 		return err
 	})
 
 	// Recover rebuilds the timer set: it re-drives the incomplete run with a Waker-bound
 	// resume, and Sleep re-registers the journaled wake on the fresh waker.
 	n, err := Recover(context.Background(), store, func(ctx context.Context, runID string, _ RunStart) error {
-		_, err := a.Run(ContextWithWaker(ContextWithClock(ctx, now), w), runID, "go")
+		_, err := a.Run(ContextWithWaker(ContextWithClock(ctx, now), w), runID, UserText("go"))
 		return err
 	})
 	if err != nil {

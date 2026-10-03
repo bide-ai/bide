@@ -47,11 +47,11 @@ func TestRev117e_T3_RedriveDenialAfterEarlierAttempt(t *testing.T) {
 		WithTools(charge),
 		WithToolMiddleware(mw),
 	)
-	if _, err := a.RunSaga(ctx1, "r", "go"); err == nil {
+	if _, err := a.Run(ctx1, "r", UserText("go"), WithSaga()); err == nil {
 		t.Fatal("first drive: want the cancellation")
 	}
 	deny.Store(true)
-	_, err := a.RunSaga(context.Background(), "r", "go")
+	_, err := a.Run(context.Background(), "r", UserText("go"), WithSaga())
 	var ab *SagaAborted
 	if !errors.As(err, &ab) || !slices.Contains(ab.UnknownOutcome, "charge") {
 		t.Fatalf("second drive = %v; want *SagaAborted listing charge as unknown", err)
@@ -85,7 +85,7 @@ func TestRev117e_T3_InDriveRetryAfterSuccess(t *testing.T) {
 		WithTools(charge),
 		WithToolMiddleware(retry),
 	)
-	_, err := a.RunSaga(context.Background(), "r", "go")
+	_, err := a.Run(context.Background(), "r", UserText("go"), WithSaga())
 	var ab *SagaAborted
 	if !errors.As(err, &ab) || !slices.Contains(ab.UnknownOutcome, "charge") {
 		t.Fatalf("RunSaga = %v; want *SagaAborted listing charge as unknown", err)
@@ -112,7 +112,7 @@ func TestRev117e_T3_FirstAttemptOwnFailureIsKnown(t *testing.T) {
 		WithTools(charge),
 		WithToolMiddleware(retry),
 	)
-	_, err := a.RunSaga(context.Background(), "r", "go")
+	_, err := a.Run(context.Background(), "r", UserText("go"), WithSaga())
 	var ab *SagaAborted
 	if !errors.As(err, &ab) || len(ab.UnknownOutcome) != 0 {
 		t.Fatalf("RunSaga = %v; want *SagaAborted with no unknown outcome", err)
@@ -177,7 +177,7 @@ func TestRev117e_T4_RollbackRerunRejectedSuccessIsUnknown(t *testing.T) {
 	})
 	a := mustNew(t4TwoCalls{}, memJournal(), WithTools(charge, fail), WithToolMiddleware(check))
 	for drive := 1; drive <= 2; drive++ {
-		_, err := a.RunSaga(context.Background(), "r", "go")
+		_, err := a.Run(context.Background(), "r", UserText("go"), WithSaga())
 		var ab *SagaAborted
 		if !errors.As(err, &ab) || !slices.Contains(ab.UnknownOutcome, "charge") || refunded.Load() != 0 {
 			t.Fatalf("drive %d: RunSaga = %v (refunded %d); want *SagaAborted listing charge as unknown", drive, err, refunded.Load())

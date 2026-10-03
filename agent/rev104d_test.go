@@ -69,13 +69,13 @@ func TestRev104d_KeptSpendOtherWrapperSameStore(t *testing.T) {
 		}
 	}
 	m := &scriptModel{turns: [][]Emit{textTurnWithUsage("done", billed)}}
-	if _, err := mustNew(m, mustJournal(w1), WithMiddleware(arm)).RunResult(context.Background(), "r", "go"); err == nil {
+	if _, err := mustNew(m, mustJournal(w1), WithMiddleware(arm)).Run(context.Background(), "r", UserText("go")); err == nil {
 		t.Fatal("want the write failure")
 	}
 	fail.Store(false)
 	w2 := &wrapStore{Store: st, failLoad: &fail}
 	m2 := &scriptModel{turns: [][]Emit{textTurnWithUsage("done", billed)}}
-	res, err := mustNew(m2, mustJournal(w2)).RunResult(context.Background(), "r", "go")
+	res, err := mustNew(m2, mustJournal(w2)).Run(context.Background(), "r", UserText("go"))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -144,12 +144,12 @@ func TestRev104d_KeptSpendSameWrapperControl(t *testing.T) {
 		}
 	}
 	m := &scriptModel{turns: [][]Emit{textTurnWithUsage("done", billed)}}
-	if _, err := mustNew(m, w1, WithMiddleware(arm)).RunResult(context.Background(), "r", "go"); err == nil {
+	if _, err := mustNew(m, w1, WithMiddleware(arm)).Run(context.Background(), "r", UserText("go")); err == nil {
 		t.Fatal("want the write failure")
 	}
 	fail.Store(false)
 	m2 := &scriptModel{turns: [][]Emit{textTurnWithUsage("done", billed)}}
-	res, err := mustNew(m2, w1).RunResult(context.Background(), "r", "go")
+	res, err := mustNew(m2, w1).Run(context.Background(), "r", UserText("go"))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -211,11 +211,15 @@ func TestRev104d_ToolClaimBehindWrapperResumes(t *testing.T) {
 	var charged int
 	charge := &countingTool{name: "charge", safety: Safety{}, calls: &charged}
 	m := &scriptModel{turns: [][]Emit{toolTurn("c1", "charge", `{}`)}}
-	if _, err := mustNew(m, mustJournal(&wrapStore{Store: st, failLoad: &fail}), WithTools(charge)).Run(ctx, "r", "go"); err == nil {
+	if _, err := mustNew(m, mustJournal(&wrapStore{Store: st, failLoad: &fail}), WithTools(charge)).Run(ctx, "r", UserText("go")); err == nil {
 		t.Fatal("want the claim's write failure")
 	}
 	m2 := &scriptModel{turns: [][]Emit{textTurn("done")}}
-	out, err := mustNew(m2, mustJournal(&wrapStore{Store: st, failLoad: &fail}), WithTools(charge)).Run(ctx, "r", "go")
+	res, err := mustNew(m2, mustJournal(&wrapStore{Store: st, failLoad: &fail}), WithTools(charge)).Run(ctx, "r", UserText("go"))
+	var out Message
+	if res != nil {
+		out = res.Message
+	}
 	if err != nil || out.Text() != "done" || charged != 1 {
 		t.Fatalf("second drive = %q, %v, tool ran %d times; want done, nil, once", out.Text(), err, charged)
 	}

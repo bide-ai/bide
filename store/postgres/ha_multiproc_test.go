@@ -177,7 +177,7 @@ func (w *haDriver) drive(ctx context.Context, runID string) error {
 		agent.ToolTurn("c2", "charge", `{"Key":"c2"}`),
 		agent.TextTurn("done"),
 	)
-	_, err := agenttest.MustNew(model, agenttest.MustJournal(w.s), agent.WithTools(charge)).Run(ctx, runID, "go")
+	_, err := agenttest.MustNew(model, agenttest.MustJournal(w.s), agent.WithTools(charge)).Run(ctx, runID, agent.UserText("go"))
 	return err
 }
 

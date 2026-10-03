@@ -74,13 +74,13 @@ func TestRev117d_UnrecordedRefusalCutsOffSiblingSideEffect(t *testing.T) {
 	_, priv, _ := ed25519.GenerateKey(rand.Reader)
 	signer := Ed25519Signer{Priv: priv}
 	expired, _ := SignGrant(Grant{ID: "g0", Issuer: "corp", Subject: "desk", Scope: map[string]string{"limit": "7"}, NotAfterUnix: time.Now().Add(-time.Hour).Unix()}, signer)
-	_, err1 := agenttest.MustNew(model, store, agent.WithTools(exec, charge), agent.WithToolMiddleware(waitForCharge)).Run(WithGrant(ctx, expired, signer), "r", "go")
+	_, err1 := agenttest.MustNew(model, store, agent.WithTools(exec, charge), agent.WithToolMiddleware(waitForCharge)).Run(WithGrant(ctx, expired, signer), "r", agent.UserText("go"))
 	if !errors.Is(err1, agent.ErrConfig) {
 		t.Fatalf("first drive: %v, want the delegation's unrecorded ErrConfig", err1)
 	}
 	// The operator binds a live grant and drives again, as the delegation guide says to.
 	live, _ := SignGrant(Grant{ID: "g1", Issuer: "corp", Subject: "desk", Scope: map[string]string{"limit": "7"}, NotAfterUnix: time.Now().Add(time.Hour).Unix()}, signer)
-	_, err2 := agenttest.MustNew(model, store, agent.WithTools(exec, charge)).Run(WithGrant(ctx, live, signer), "r", "go")
+	_, err2 := agenttest.MustNew(model, store, agent.WithTools(exec, charge)).Run(WithGrant(ctx, live, signer), "r", agent.UserText("go"))
 	var halt *agent.OutcomeUnknown
 	if errors.As(err2, &halt) {
 		t.Fatalf("the unrecorded refusal of c1 cancelled sibling c2 (charge) after its request went out (fired %d); the re-drive under a live grant halts on c2 instead of continuing: %v (first drive: %v)", fired.Load(), err2, err1)
@@ -124,7 +124,7 @@ func TestRev117d_ExpiredJournaledGrantWedgesTheSagaForever(t *testing.T) {
 	_, priv, _ := ed25519.GenerateKey(rand.Reader)
 	signer := Ed25519Signer{Priv: priv}
 	root, _ := SignGrant(Grant{ID: "g0", Issuer: "corp", Subject: "desk", Scope: map[string]string{"limit": "7"}, NotAfterUnix: time.Now().Add(time.Hour).Unix()}, signer)
-	_, err := parent.RunSaga(WithGrant(ctx, root, signer), "trip", "go")
+	_, err := parent.Run(WithGrant(ctx, root, signer), "trip", agent.UserText("go"), agent.WithSaga())
 	var pend *agent.ApprovalPending
 	if !errors.As(err, &pend) || charged.Load() != 1 {
 		t.Fatalf("first drive: %v (charged %d), want the sub-run's pause after the charge", err, charged.Load())
@@ -138,10 +138,10 @@ func TestRev117d_ExpiredJournaledGrantWedgesTheSagaForever(t *testing.T) {
 	renewed, _ := SignGrant(Grant{ID: "g0", Issuer: "corp", Subject: "desk", Scope: map[string]string{"limit": "7"}, NotAfterUnix: time.Now().Add(2 * time.Hour).Unix()}, signer)
 	var errs []error
 	for _, g := range []SignedGrant{root, renewed, root} {
-		_, err := parent.RunSaga(WithGrant(ctx, g, signer), "trip", "go")
+		_, err := parent.Run(WithGrant(ctx, g, signer), "trip", agent.UserText("go"), agent.WithSaga())
 		errs = append(errs, err)
 	}
-	_, errNone := parent.RunSaga(ctx, "trip", "go")
+	_, errNone := parent.Run(ctx, "trip", agent.UserText("go"), agent.WithSaga())
 	errs = append(errs, errNone)
 	stuck := true
 	for _, e := range errs {
@@ -189,7 +189,7 @@ func TestRev117d_SubRunFiresEffectsAfterItsGrantExpired(t *testing.T) {
 	_, priv, _ := ed25519.GenerateKey(rand.Reader)
 	signer := Ed25519Signer{Priv: priv}
 	root, _ := SignGrant(Grant{ID: "g0", Issuer: "corp", Subject: "desk", Scope: map[string]string{"limit": "7"}, NotAfterUnix: time.Now().Add(time.Hour).Unix()}, signer)
-	if _, err := parent.Run(WithGrant(ctx, root, signer), "r", "go"); err != nil {
+	if _, err := parent.Run(WithGrant(ctx, root, signer), "r", agent.UserText("go")); err != nil {
 		t.Fatalf("Run: %v", err)
 	}
 	if at := firedAt.Load(); at > childNotAfter {
@@ -211,7 +211,7 @@ func TestRev117d_UnrecordedAndSiblingPauseBothSurface(t *testing.T) {
 	_, priv, _ := ed25519.GenerateKey(rand.Reader)
 	signer := Ed25519Signer{Priv: priv}
 	expired, _ := SignGrant(Grant{ID: "g0", Issuer: "corp", Subject: "desk", Scope: map[string]string{"limit": "7"}, NotAfterUnix: time.Now().Add(-time.Hour).Unix()}, signer)
-	_, err := agenttest.MustNew(model, store, agent.WithTools(exec, gated)).Run(WithGrant(ctx, expired, signer), "r", "go")
+	_, err := agenttest.MustNew(model, store, agent.WithTools(exec, gated)).Run(WithGrant(ctx, expired, signer), "r", agent.UserText("go"))
 	if _, pause := agent.AsPause(err); !errors.Is(err, agent.ErrConfig) || !pause {
 		t.Fatalf("Run = %v; want both the delegation's ErrConfig and the sibling's pause", err)
 	}

@@ -26,7 +26,7 @@ func TestMaxTurns_StopsRunawayLoop(t *testing.T) {
 	tool := &countingTool{name: "spin", safety: Safety{ReadOnly: true}, calls: &calls}
 	a := mustNew(&loopModel{}, memJournal(), WithTools(tool), WithMaxTurns(3))
 
-	_, err := a.Run(context.Background(), "r", "go")
+	_, err := a.Run(context.Background(), "r", UserText("go"))
 	if !errors.Is(err, ErrMaxTurns) {
 		t.Fatalf("err = %v, want errors.Is ErrMaxTurns", err)
 	}
@@ -46,10 +46,11 @@ func TestMaxTurns_UnderLimitCompletes(t *testing.T) {
 	m := &scriptModel{turns: [][]Emit{toolTurn("c1", "lookup", `{}`), textTurn("done")}}
 	a := mustNew(m, memJournal(), WithTools(tool), WithMaxTurns(5))
 
-	out, err := a.Run(context.Background(), "r", "go")
+	res, err := a.Run(context.Background(), "r", UserText("go"))
 	if err != nil {
 		t.Fatalf("Run: %v", err)
 	}
+	out := res.Message
 	if textOf(out) != "done" {
 		t.Fatalf("answer = %q", textOf(out))
 	}
@@ -59,7 +60,7 @@ func TestMaxTurns_UnderLimitCompletes(t *testing.T) {
 func TestMaxTurns_ZeroIsUnbounded(t *testing.T) {
 	m := &scriptModel{turns: [][]Emit{textTurn("ok")}}
 	a := mustNew(m, memJournal(), WithMaxTurns(0))
-	if _, err := a.Run(context.Background(), "r", "hi"); err != nil {
+	if _, err := a.Run(context.Background(), "r", UserText("hi")); err != nil {
 		t.Fatalf("Run: %v", err)
 	}
 }

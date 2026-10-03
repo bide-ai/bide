@@ -79,7 +79,7 @@ func PersistJournal(ctx context.Context, evStore EventStore, jStore *agent.Journ
 // retry of the same event is a no-op and a different event is still refused as a fork. Do not
 // mix it with PersistJournal on one run: the two salt the same event differently, so the second
 // reports a fork.
-func PersistEvent(ctx context.Context, evStore EventStore, runID string, seq int, e agent.AgentEvent) error {
+func PersistEvent(ctx context.Context, evStore EventStore, runID string, seq int, e agent.RunEvent) error {
 	stored, err := evStore.Load(ctx, runID)
 	if err != nil {
 		return fmt.Errorf("audit: load event trail %s: %w", runID, err)

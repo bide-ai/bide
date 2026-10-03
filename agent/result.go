@@ -1,21 +1,20 @@
 package agent
 
 import (
-	"context"
 	"encoding/json"
 	"time"
 )
 
-// Result is what a run entry point returns (RunMessage, ResumeRun, AgentStream.Result,
-// RunTypedMessage, Session.SendMessage, and the transitional RunResult and RunSagaResult): the
-// final answer and the run's telemetry. RunMessage and the other Message entry points return a
+// Result is what a run entry point returns (Run, Resume, RunStream.Result,
+// RunTyped, Session.Send, and the transitional RunResult and RunSagaResult): the
+// final answer and the run's telemetry. Run and the other Message entry points return a
 // non-nil Result whenever the run ID is valid, whatever the error: a pause, a halt, a failure, a
 // saga's abort, or a cancellation.
 type Result struct {
 	// Message is the final assistant answer. It is zero unless the run returned no error.
 	Message Message
 
-	// Output is a typed run's answer as its journal holds it (RunTypedMessage): the arguments the
+	// Output is a typed run's answer as its journal holds it (RunTyped): the arguments the
 	// final_answer tool accepted, or the model's native structured output. It is nil for an
 	// untyped run, and for a typed run that returned an error.
 	Output json.RawMessage
@@ -44,47 +43,4 @@ type Result struct {
 
 	// RunID echoes the run identifier passed to RunResult / RunSagaResult.
 	RunID string
-}
-
-// RunResult is the envelope-returning counterpart of Run. It drives the agent to
-// completion and returns a *Result carrying the final message plus accumulated telemetry
-// (usage totals, turn count, duration). Run remains unchanged; existing callers need not
-// change.
-func (a *Agent) RunResult(ctx context.Context, runID, input string) (*Result, error) {
-	start := time.Now()
-	in := UserText(input)
-	msg, usage, turns, err := a.run(ctx, runID, &driveSpec{input: &in, strictSaga: true})
-	elapsed := time.Since(start)
-	if err != nil {
-		return nil, err
-	}
-	return &Result{
-		Message:  msg,
-		Usage:    usage.answer,
-		Spend:    usage.spend,
-		Turns:    turns,
-		Duration: elapsed,
-		RunID:    runID,
-	}, nil
-}
-
-// RunSagaResult is the envelope-returning counterpart of RunSaga. It behaves identically
-// to RunSaga (transactional run with reverse-order compensation on failure) but returns
-// the richer *Result envelope on success.
-func (a *Agent) RunSagaResult(ctx context.Context, runID, input string) (*Result, error) {
-	start := time.Now()
-	in := UserText(input)
-	msg, usage, turns, err := a.drive(ctx, runID, &driveSpec{input: &in, cfg: runConfig{saga: true}})
-	elapsed := time.Since(start)
-	if err != nil {
-		return nil, err
-	}
-	return &Result{
-		Message:  msg,
-		Usage:    usage.answer,
-		Spend:    usage.spend,
-		Turns:    turns,
-		Duration: elapsed,
-		RunID:    runID,
-	}, nil
 }

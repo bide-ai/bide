@@ -29,7 +29,7 @@ func runOnce(t *testing.T, tool agent.Tool) {
 		agenttest.MemJournal(),
 		agent.WithTools(tool),
 	)
-	if _, err := a.Run(context.Background(), "r", "go"); err != nil {
+	if _, err := a.Run(context.Background(), "r", agent.UserText("go")); err != nil {
 		t.Fatal(err)
 	}
 }

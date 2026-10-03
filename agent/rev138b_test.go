@@ -26,7 +26,7 @@ func TestReview138b_CrossStoreSubRunIgnoresRootCancel(t *testing.T) {
 		{text: "done"},
 	}}
 	parent := p14Build(t, parentModel, j, agent.WithTools(agent.SubAgent("helper", "", sub)))
-	if _, err := parent.RunMessage(ctx, "r", agent.UserText("go")); !errors.Is(err, agent.ErrRunCancelled) {
+	if _, err := parent.Run(ctx, "r", agent.UserText("go")); !errors.Is(err, agent.ErrRunCancelled) {
 		t.Fatalf("parent run = %v, want ErrRunCancelled", err)
 	}
 	if n := subModel.calls.Load(); n != 0 {
@@ -78,7 +78,7 @@ func TestReview138b_LostStartInsertSkipsReload(t *testing.T) {
 	}
 	model := &p14Model{turns: []p14Turn{{text: "answer"}}}
 	a := p14Build(t, model, j)
-	_, err = a.RunMessage(ctx, "r", agent.UserText("go"))
+	_, err = a.Run(ctx, "r", agent.UserText("go"))
 	if n := model.calls.Load(); n != 0 {
 		t.Errorf("the drive called its model %d times after the run was cancelled (err %v)", n, err)
 	}
@@ -112,7 +112,7 @@ func TestReview138b_LostStartInsertSkipsReloadSaga(t *testing.T) {
 	}
 	model := &p14Model{turns: []p14Turn{{text: "answer"}}}
 	a := p14Build(t, model, j)
-	_, err = a.RunMessage(ctx, "r", agent.UserText("go"), agent.WithSaga())
+	_, err = a.Run(ctx, "r", agent.UserText("go"), agent.WithSaga())
 	if n := model.calls.Load(); n != 0 {
 		t.Errorf("the saga's drive called its model %d times after its rollback was requested (err %v)", n, err)
 	}
@@ -144,7 +144,7 @@ func TestReview138b_CrossStoreNestedSubRunSeesRootCancel(t *testing.T) {
 	mid := p14Build(t, midModel, j2, agent.WithTools(agent.SubAgent("inner", "", inner)))
 	parentModel := &p14Model{turns: []p14Turn{{calls: []agent.ToolUse{{ID: "p1", Name: "mid", Args: []byte(`{"task":"x"}`)}}}, {text: "done"}}}
 	parent := p14Build(t, parentModel, j, agent.WithTools(agent.SubAgent("mid", "", mid)))
-	if _, err := parent.RunMessage(ctx, "r", agent.UserText("go")); !errors.Is(err, agent.ErrRunCancelled) {
+	if _, err := parent.Run(ctx, "r", agent.UserText("go")); !errors.Is(err, agent.ErrRunCancelled) {
 		t.Fatalf("parent run = %v, want ErrRunCancelled", err)
 	}
 	if n := innerModel.calls.Load(); n != 0 {

@@ -21,7 +21,7 @@ func TestNew_DuplicateToolNamesFailTheRun(t *testing.T) {
 		return "remote", nil
 	})
 	m := &greedyModel{script: [][]Emit{toolTurn("c1", "lookup", `{}`), textTurn("done")}}
-	_, err := mustNew(m, memJournal(), WithTools(mine, theirs)).Run(context.Background(), "r1", "who is alice?")
+	_, err := mustNew(m, memJournal(), WithTools(mine, theirs)).Run(context.Background(), "r1", UserText("who is alice?"))
 	if !errors.Is(err, ErrConfig) {
 		t.Fatalf("run err = %v, want ErrConfig for two tools named lookup", err)
 	}
@@ -38,8 +38,14 @@ func TestNew_DuplicateToolNamesFailTheSagaRollback(t *testing.T) {
 		name string
 		run  func(*Agent) error
 	}{
-		{"RunSaga", func(a *Agent) error { _, err := a.RunSaga(context.Background(), "root", "go"); return err }},
-		{"RunSagaResult", func(a *Agent) error { _, err := a.RunSagaResult(context.Background(), "root", "go"); return err }},
+		{"RunSaga", func(a *Agent) error {
+			_, err := a.Run(context.Background(), "root", UserText("go"), WithSaga())
+			return err
+		}},
+		{"RunSagaResult", func(a *Agent) error {
+			_, err := a.Run(context.Background(), "root", UserText("go"), WithSaga())
+			return err
+		}},
 	} {
 		t.Run(entry.name, func(t *testing.T) {
 			l := newLedger()

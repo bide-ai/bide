@@ -75,7 +75,7 @@ func TestStepPauseGuard_JoinedWithAHaltPropagatesTheHalt(t *testing.T) {
 		&greedyModel{script: [][]Emit{toolTurn("c1", "mixed", `{}`), textTurn("done")}},
 		store,
 		WithTools(mixed),
-	).Run(context.Background(), "r1", "go")
+	).Run(context.Background(), "r1", UserText("go"))
 	halt, ok := errors.AsType[*OutcomeUnknown](err)
 	if !ok || halt.Op.ID != "inner" {
 		t.Fatalf("run = %v; want the inner step's halt", err)

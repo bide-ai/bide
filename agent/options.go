@@ -27,8 +27,8 @@ type Option interface {
 	applyAgent(*agentConfig) error
 }
 
-// RunOption configures one run (RunMessage, ResumeRun, StreamMessage, RunTypedMessage,
-// Session.SendMessage). It is the scope of the settings a caller may choose per run, which take
+// RunOption configures one run (Run, Resume, Stream, RunTyped,
+// Session.Send). It is the scope of the settings a caller may choose per run, which take
 // precedence over the agent's (see New). The settings a run's first drive is given are journaled
 // in its run:start and hold for every later drive (see RunStart); the clock, the Waker, the
 // concurrency cap and the identity's Actor are the deployment's, and are not journaled.
@@ -157,7 +157,7 @@ func WithSaga() RunOption {
 // replayed from the journal) is refused at dispatch, with an error result recorded that the model
 // reads, and the tool never runs. The filter is journaled (run:start's tools) and enforced against
 // the journaled filter by every drive, a recovery drive included; a later drive that passes
-// another filter is ErrConfig. RunTypedMessage's answer tool is always offered. No name, an empty
+// another filter is ErrConfig. RunTyped's answer tool is always offered. No name, an empty
 // name, or (at the run's first drive) a name the agent has no tool for is ErrConfig.
 func WithToolFilter(names ...string) RunOption {
 	return runOption(func(c *runConfig) error {
@@ -177,7 +177,7 @@ func WithToolFilter(names ...string) RunOption {
 	})
 }
 
-// WithOutputMode sets how a typed run (RunTypedMessage) collects its answer: OutputTool (the
+// WithOutputMode sets how a typed run (RunTyped) collects its answer: OutputTool (the
 // default) or OutputNative (see OutputMode). It is journaled with the run's typed start, and a
 // later drive that passes another mode is ErrConfig. Any other mode, and the option on an untyped
 // run, is ErrConfig.

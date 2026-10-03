@@ -30,17 +30,21 @@ func TestModel12_S1_StaleOpenTurnRefusesNextMessage(t *testing.T) {
 	ctx := context.Background()
 	a := mustNew(&failFirstModel{}, memJournal())
 	h1 := openSession(t, a, "c1")
-	if _, err := h1.Send(ctx, "x"); err == nil {
+	if _, err := h1.Send(ctx, UserText("x")); err == nil {
 		t.Fatal(`first Send("x") succeeded; the test needs it to fail`)
 	}
 	// A second worker (or a restarted process) gets "x" again and finishes its turn.
 	h2 := openSession(t, a, "c1")
-	if msg, err := h2.Send(ctx, "x"); err != nil || msg.Text() != "re: x" {
+	if msg, err := answerOf(h2.Send(ctx, UserText("x"))); err != nil || msg.Text() != "re: x" {
 		t.Fatalf(`h2 Send("x") = %q, %v`, msg.Text(), err)
 	}
 	// "x" is answered and recorded. The next message must go through on either handle.
 	for i := 0; i < 3; i++ {
-		msg, err := h1.Send(ctx, "y")
+		res, err := h1.Send(ctx, UserText("y"))
+		var msg Message
+		if res != nil {
+			msg = res.Message
+		}
 		if err == nil {
 			if msg.Text() != "re: y" {
 				t.Fatalf(`h1 Send("y") = %q`, msg.Text())
@@ -115,9 +119,17 @@ func TestModel12_S2_SharedHandleRecordsATurnTwice(t *testing.T) {
 			h := openSession(t, a, "c1")
 			send := func() (Message, error) {
 				if once {
-					return h.SendOnce(ctx, "k", "x")
+					res, err := h.SendOnce(ctx, "k", UserText("x"))
+					if err != nil {
+						return Message{}, err
+					}
+					return res.Message, nil
 				}
-				return h.Send(ctx, "x")
+				res2, err := h.Send(ctx, UserText("x"))
+				if err != nil {
+					return Message{}, err
+				}
+				return res2.Message, nil
 			}
 			wait := func(ch chan struct{}, what string) {
 				select {
@@ -268,14 +280,14 @@ func TestModel12_S4_TwoWorkersOvershootATurnBudget(t *testing.T) {
 	var wg sync.WaitGroup
 	wg.Add(2)
 	var errA, errB error
-	go func() { defer wg.Done(); _, errA = hA.Send(ctxA, "x"); m.finish("A") }()
+	go func() { defer wg.Done(); _, errA = hA.Send(ctxA, UserText("x")); m.finish("A") }()
 	// B starts once A has claimed the turn (start/0), so B joins it rather than claiming it.
 	select {
 	case <-started:
 	case <-time.After(5 * time.Second):
 		t.Fatal("timed out waiting for A's turn start")
 	}
-	go func() { defer wg.Done(); _, errB = hB.Send(ctxB, "x"); m.finish("B") }()
+	go func() { defer wg.Done(); _, errB = hB.Send(ctxB, UserText("x")); m.finish("B") }()
 	done := make(chan struct{})
 	go func() { wg.Wait(); close(done) }()
 	select {
@@ -314,13 +326,13 @@ func TestSession_TurnLeaseExcludesASecondDriver(t *testing.T) {
 	a := proc()
 	h1, h2 := openSession(t, a, "c1"), openSession(t, proc(), "c1")
 	first := make(chan error, 1)
-	go func() { _, err := h1.Send(ctx, "x"); first <- err }()
+	go func() { _, err := h1.Send(ctx, UserText("x")); first <- err }()
 	select {
 	case <-model.entered:
 	case <-time.After(5 * time.Second):
 		t.Fatal("timed out waiting for h1's model call")
 	}
-	_, err := h2.Send(ctx, "x")
+	_, err := h2.Send(ctx, UserText("x"))
 	if !errors.Is(err, ErrTurnContended) {
 		t.Fatalf(`h2.Send("x") while h1 holds the turn's lease = %v; want ErrTurnContended`, err)
 	}
@@ -334,7 +346,11 @@ func TestSession_TurnLeaseExcludesASecondDriver(t *testing.T) {
 	if err := <-first; err != nil {
 		t.Fatalf("h1: %v", err)
 	}
-	msg, err := h2.Send(ctx, "x")
+	res, err := h2.Send(ctx, UserText("x"))
+	var msg Message
+	if res != nil {
+		msg = res.Message
+	}
 	if err != nil || msg.Text() != "re: x" {
 		t.Fatalf(`h2.Send("x") after h1 finished = %q, %v; want the recorded "re: x"`, msg.Text(), err)
 	}
@@ -360,7 +376,7 @@ func BenchmarkSession_Send(b *testing.B) {
 		if err != nil {
 			b.Fatal(err)
 		}
-		if _, err := s.Send(ctx, "m"); err != nil {
+		if _, err := s.Send(ctx, UserText("m")); err != nil {
 			b.Fatal(err)
 		}
 		i++
@@ -383,7 +399,7 @@ func TestSession_LeaseOptions(t *testing.T) {
 		t.Fatal(err)
 	}
 	done := make(chan error, 1)
-	go func() { _, err := s.SendOnce(ctx, "k", "x"); done <- err }()
+	go func() { _, err := s.SendOnce(ctx, "k", UserText("x")); done <- err }()
 	select {
 	case <-model.entered:
 	case <-time.After(5 * time.Second):
@@ -433,7 +449,11 @@ func TestSession_FinishedTurnRunNeedsNoLease(t *testing.T) {
 	if ok, err := store.AcquireLease(ctx, st.RunID, "h1-still-holding", time.Hour); err != nil || !ok {
 		t.Fatalf("AcquireLease = %v, %v", ok, err)
 	}
-	msg, err := openSession(t, a, "c1").Send(ctx, "x")
+	res, err := openSession(t, a, "c1").Send(ctx, UserText("x"))
+	var msg Message
+	if res != nil {
+		msg = res.Message
+	}
 	if err != nil || msg.Text() != "re: x" {
 		t.Fatalf(`Send("x") of a finished turn run another holder leases = %q, %v; want its recorded answer`, msg.Text(), err)
 	}

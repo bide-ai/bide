@@ -78,10 +78,10 @@ func TestHaltLiveCheck_AgreesWithTheCallsRootRunID(t *testing.T) {
 			WithTools(SubAgent("helper", "", sub)),
 		)
 		if viaSession {
-			if _, err := openSession(t, parent, "c1").Send(ctx, "go"); err != nil {
+			if _, err := openSession(t, parent, "c1").Send(ctx, UserText("go")); err != nil {
 				t.Fatal(err)
 			}
-		} else if _, err := parent.Run(ctx, "r1", "go"); err != nil {
+		} else if _, err := parent.Run(ctx, "r1", UserText("go")); err != nil {
 			t.Fatal(err)
 		}
 		if ok, err := store.AcquireLease(ctx, info.RootRunID, "driver", time.Hour); err != nil || !ok {
@@ -106,13 +106,13 @@ func TestRun_FinishedRunRefusesAnotherInput(t *testing.T) {
 	ctx := context.Background()
 	model := &replyModel{}
 	a := mustNew(model, memJournal())
-	if msg, err := a.Run(ctx, "r1", "A"); err != nil || msg.Text() != "re: A" {
+	if msg, err := answerOf(a.Run(ctx, "r1", UserText("A"))); err != nil || msg.Text() != "re: A" {
 		t.Fatalf(`Run("A") = %q, %v`, msg.Text(), err)
 	}
-	if msg, err := a.Run(ctx, "r1", "B"); !errors.Is(err, ErrConfig) {
+	if msg, err := answerOf(a.Run(ctx, "r1", UserText("B"))); !errors.Is(err, ErrConfig) {
 		t.Fatalf(`Run("B") of the run that answered "A" = %q, %v; want ErrConfig`, msg.Text(), err)
 	}
-	if msg, err := a.Run(ctx, "r1", "A"); err != nil || msg.Text() != "re: A" {
+	if msg, err := answerOf(a.Run(ctx, "r1", UserText("A"))); err != nil || msg.Text() != "re: A" {
 		t.Fatalf(`Run("A") again = %q, %v; want the recorded answer`, msg.Text(), err)
 	}
 	if n := model.calls.Load(); n != 1 {

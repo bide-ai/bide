@@ -87,10 +87,11 @@ func newAgent(store *agent.Journal) *agent.Agent {
 // re-running the agent. Returns the reply to post back to the channel.
 func statelessCommand(ctx context.Context, a *agent.Agent, channelID, eventID, text string) (string, error) {
 	runID := "msg/" + channelID + "/" + eventID // stable across redeliveries of the same event
-	msg, err := a.Run(ctx, runID, text)
+	res, err := a.Run(ctx, runID, agent.UserText(text))
 	if err != nil {
 		return "", err
 	}
+	msg := res.Message
 	return msg.Text(), nil
 }
 
@@ -104,7 +105,11 @@ func handleConversational(ctx context.Context, a *agent.Agent, conversationID, e
 	if err != nil {
 		return "", err
 	}
-	msg, err := sess.SendOnce(ctx, eventID, text)
+	res, err := sess.SendOnce(ctx, eventID, agent.UserText(text))
+	var msg agent.Message
+	if res != nil {
+		msg = res.Message
+	}
 	if p, ok := agent.AsPause(err); ok {
 		// A pause (an approval, an interrupt, a signal, a timer, a halt) is not a failure: the turn
 		// waits durably. Acknowledge the event rather than let the messenger redeliver it on a loop;

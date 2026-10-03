@@ -108,7 +108,11 @@ func mofnRun(store *Journal, runID string, first bool, pol *ApprovalPolicy, veri
 	if err != nil {
 		return Message{}, err // an invalid policy is refused when the agent is built
 	}
-	return a.Run(context.Background(), runID, "pay")
+	res, err := a.Run(context.Background(), runID, UserText("pay"))
+	if err != nil {
+		return Message{}, err
+	}
+	return res.Message, nil
 }
 
 func wantPending(t *testing.T, err error, want counts) {
@@ -242,11 +246,11 @@ func TestMofn_AutoDenyWhenUnreachable(t *testing.T) {
 	legacy := memJournal()
 	var n int
 	one := &countingTool{name: "charge", approval: SingleApproval(), calls: &n}
-	_, _ = mustNew(&scriptModel{turns: [][]Emit{toolTurn("c1", "charge", `{}`)}}, legacy, WithTools(one)).Run(context.Background(), "r1", "pay")
+	_, _ = mustNew(&scriptModel{turns: [][]Emit{toolTurn("c1", "charge", `{}`)}}, legacy, WithTools(one)).Run(context.Background(), "r1", UserText("pay"))
 	if err := Approve(context.Background(), legacy, "r1", "c1", false); err != nil {
 		t.Fatal(err)
 	}
-	if _, err := mustNew(&scriptModel{turns: [][]Emit{textTurn("done")}}, legacy, WithTools(one)).Run(context.Background(), "r1", "pay"); err != nil {
+	if _, err := mustNew(&scriptModel{turns: [][]Emit{textTurn("done")}}, legacy, WithTools(one)).Run(context.Background(), "r1", UserText("pay")); err != nil {
 		t.Fatal(err)
 	}
 	want, _ := hasStep(t, legacy, "r1", ToolResultStep("c1"))
@@ -326,7 +330,7 @@ func TestMofn_NilApprovalKeepsOneOfOne(t *testing.T) {
 			store,
 			WithTools(charge),
 			WithApproverVerifiers(fakeVerifiers(abc...)),
-		).Run(ctx, "r1", "pay")
+		).Run(ctx, "r1", UserText("pay"))
 		return err
 	}
 

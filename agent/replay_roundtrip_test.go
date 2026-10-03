@@ -212,7 +212,7 @@ func TestReplay_StreamKeepsRedactedReasoningAndCallSignature(t *testing.T) {
 	rec := memJournal()
 	var calls1 int
 	tool1 := &countingTool{name: "lookup", safety: Safety{ReadOnly: true}, calls: &calls1}
-	if _, err := mustNew(&scriptModel{turns: [][]Emit{turn1, textTurn("done")}}, rec, WithTools(tool1)).Run(ctx, "orig", "go"); err != nil {
+	if _, err := mustNew(&scriptModel{turns: [][]Emit{turn1, textTurn("done")}}, rec, WithTools(tool1)).Run(ctx, "orig", UserText("go")); err != nil {
 		t.Fatal(err)
 	}
 	if got := modelMessages(t, rec, "orig"); len(got) == 0 || !reflect.DeepEqual(got[0], wantTurn1) {
@@ -244,7 +244,7 @@ func TestReplay_StreamKeepsRedactedReasoningAndCallSignature(t *testing.T) {
 	var calls2 int
 	tool2 := &countingTool{name: "lookup", safety: Safety{ReadOnly: true}, calls: &calls2}
 	fresh := memJournal()
-	if _, err := mustNew(rm, fresh, WithTools(tool2)).Run(ctx, "replay", "go"); err != nil {
+	if _, err := mustNew(rm, fresh, WithTools(tool2)).Run(ctx, "replay", UserText("go")); err != nil {
 		t.Fatalf("replay run: %v", err)
 	}
 	if a, b := modelMessages(t, rec, "orig"), modelMessages(t, fresh, "replay"); !reflect.DeepEqual(a, b) {

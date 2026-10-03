@@ -36,7 +36,7 @@ func TestRev117e_LoopReadsTallyStrictly(t *testing.T) {
 	}); err != nil {
 		t.Fatal(err)
 	}
-	_, err := a.Run(ctx, "r", "go")
+	_, err := a.Run(ctx, "r", UserText("go"))
 	if !errors.Is(err, ErrStorage) || ran.Load() != 0 {
 		t.Fatalf("Run = %v, ran %d; want ErrStorage before the tool runs", err, ran.Load())
 	}

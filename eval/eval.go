@@ -508,7 +508,7 @@ func AgentRunner(a *agent.Agent, store *agent.Journal, runIDPrefix string) (RunF
 	nonce := hex.EncodeToString(b[:])
 	return func(ctx context.Context, input string) RunOutput {
 		id := fmt.Sprintf("%s-%s-%d", runIDPrefix, nonce, atomic.AddInt64(&n, 1))
-		res, err := a.RunMessage(ctx, id, agent.UserText(input))
+		res, err := a.Run(ctx, id, agent.UserText(input))
 		out := RunOutput{Err: err, RunID: id}
 		if res != nil {
 			out.Final = res.Message

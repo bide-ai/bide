@@ -80,7 +80,7 @@ type SessionRef struct {
 	Key  string `json:"key,omitempty"`
 }
 
-// TypedStart is how a typed run (RunTypedMessage) was started: its output mode and the JSON
+// TypedStart is how a typed run (RunTyped) was started: its output mode and the JSON
 // schema of its answer type, in full and as a digest. Resuming a typed run through an untyped
 // entry point, or with another answer type, is ErrConfig before any model call.
 type TypedStart struct {
@@ -199,13 +199,13 @@ const (
 	RunKindAgent RunKind = "agent"
 	// RunKindFlow is a run a plan flow drives (plan.Flow.Run). RunStart.Flow names the flow.
 	RunKindFlow RunKind = "flow"
-	// RunKindSessionTurn is a Session turn's run (Session.SendMessage, Session.SendMessageOnce).
+	// RunKindSessionTurn is a Session turn's run (Session.Send, Session.SendOnce).
 	// RunStart.Session names the session. Only the session drives it: it is seeded with the
 	// session's transcript, and only the session records the turn (see Recover).
 	RunKindSessionTurn RunKind = "session_turn"
 )
 
-// OutputMode is how a typed run (RunTypedMessage) collects its answer: OutputTool (the default)
+// OutputMode is how a typed run (RunTyped) collects its answer: OutputTool (the default)
 // through a final_answer tool call whose arguments are the answer, or OutputNative through the
 // provider's native structured-output constraint (a JSON-schema response format).
 type OutputMode string
@@ -376,7 +376,7 @@ func holdToStart(ctx context.Context, d *Journal, runID string, recs []Record, w
 	case got.kind() == RunKindFlow && (got.Flow == nil || want.Flow == nil || got.Flow.Name != want.Flow.Name):
 		return fmt.Errorf("run %s was started by flow %s, not %s; resume it with the flow it started with: %w", runID, flowName(got.Flow), flowName(want.Flow), ErrConfig)
 	case got.Saga && !want.Saga:
-		return fmt.Errorf("run %s was started as a saga; resume it with RunSaga (or StreamSaga): %w", runID, ErrConfig)
+		return fmt.Errorf("run %s was started as a saga; drive it with WithSaga(): %w", runID, ErrConfig)
 	case !got.Saga && want.Saga:
 		return fmt.Errorf("run %s was not started as a saga; resume it with Run (or Stream): %w", runID, ErrConfig)
 	case got.kind() == RunKindFlow:

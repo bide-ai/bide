@@ -16,14 +16,18 @@ func streamMofn(t *testing.T, store *Journal, runID string, first bool, pol *App
 		turns = [][]Emit{toolTurn("c1", "charge", `{}`), textTurn("done")}
 	}
 	charge := &countingTool{name: "charge", approval: pol, calls: charged}
-	as := mustNew(&scriptModel{turns: turns}, store, WithTools(charge), WithApproverVerifiers(vf)).Stream(context.Background(), runID, "pay")
+	as := mustNew(&scriptModel{turns: turns}, store, WithTools(charge), WithApproverVerifiers(vf)).Stream(context.Background(), runID, UserText("pay"))
 	var reqs []ApprovalRequired
 	for ev := range as.Events() {
 		if r, ok := ev.(ApprovalRequired); ok {
 			reqs = append(reqs, r)
 		}
 	}
-	msg, err := as.Final()
+	res, err := as.Result()
+	var msg Message
+	if res != nil {
+		msg = res.Message
+	}
 	return reqs, msg, err
 }
 
@@ -86,8 +90,7 @@ func TestMofn_StreamOneOfOneHasNoTally(t *testing.T) {
 		&scriptModel{turns: [][]Emit{toolTurn("c1", "charge", `{}`), textTurn("done")}},
 		memJournal(),
 		WithTools(charge),
-	).
-		Stream(context.Background(), "s1", "pay")
+	).Stream(context.Background(), "s1", UserText("pay"))
 	var seen bool
 	for ev := range as.Events() {
 		if r, ok := ev.(ApprovalRequired); ok {
@@ -100,7 +103,7 @@ func TestMofn_StreamOneOfOneHasNoTally(t *testing.T) {
 	if !seen {
 		t.Fatal("no ApprovalRequired event for a RequiresApproval tool")
 	}
-	if _, err := as.Final(); !errors.As(err, new(*PendingApproval)) {
+	if _, err := as.Result(); !errors.As(err, new(*PendingApproval)) {
 		t.Fatalf("Final err = %v, want *PendingApproval", err)
 	}
 }
@@ -133,7 +136,7 @@ func TestMofn_InsideSubAgent(t *testing.T) {
 		WithTools(SubAgent("worker", "does work", sub)),
 	)
 
-	_, err := parent.Run(ctx, "root", "delegate")
+	_, err := parent.Run(ctx, "root", UserText("delegate"))
 	var pend *PendingApproval
 	if !errors.As(err, &pend) || pend.Quorum == nil {
 		t.Fatalf("parent Run err = %v, want an m-of-n *PendingApproval from the sub-agent", err)
@@ -154,7 +157,7 @@ func TestMofn_InsideSubAgent(t *testing.T) {
 	if err := decideAs(ctx, store, subRunID, "s1", "alice", true, sig); err != nil {
 		t.Fatal(err)
 	}
-	_, err = parent.Run(ctx, "root", "delegate")
+	_, err = parent.Run(ctx, "root", UserText("delegate"))
 	if !errors.As(err, &pend) || pend.Quorum == nil || pend.Quorum.Approved != 0 {
 		t.Fatalf("after a parent-run-id signature: err=%v, want still 0 approved", err)
 	}
@@ -165,10 +168,11 @@ func TestMofn_InsideSubAgent(t *testing.T) {
 		t.Fatal(err)
 	}
 	approveAs(t, store, subRunID, "s1", "bob", true)
-	out, err := parent.Run(ctx, "root", "delegate")
+	res, err := parent.Run(ctx, "root", UserText("delegate"))
 	if err != nil {
 		t.Fatalf("parent re-run at quorum: %v", err)
 	}
+	out := res.Message
 	if textOf(out) != "parent-done" || charged != 1 {
 		t.Fatalf("out=%q charged=%d, want parent-done/1", textOf(out), charged)
 	}

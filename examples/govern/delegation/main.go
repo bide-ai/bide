@@ -108,7 +108,7 @@ func main() {
 	if err != nil {
 		log.Fatal(err)
 	}
-	if _, err := sub.Run(ctx, runID, "buy $6M"); err != nil {
+	if _, err := sub.Run(ctx, runID, agent.UserText("buy $6M")); err != nil {
 		panic(err)
 	}
 	fmt.Printf("\nsub-agent tried to buy $6M, governed to $%dM by its delegated limit\n", gov.State().GetInt(exposure))

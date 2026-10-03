@@ -36,10 +36,10 @@ func TestFunc_UndescribableArgsPanics(t *testing.T) {
 // RunTyped reports such a result type as a configuration error before running anything.
 func TestRunTyped_UndescribableTypeIsConfigError(t *testing.T) {
 	a := mustNew(NewScriptedModel(TextTurn(`{}`)), memJournal())
-	if _, err := RunTyped[undecodableArgs](context.Background(), a, "r", "go"); !errors.Is(err, ErrConfig) || !errors.Is(err, schema.ErrUnsupportedType) {
+	if _, _, err := a.RunTyped[undecodableArgs](context.Background(), "r", UserText("go")); !errors.Is(err, ErrConfig) || !errors.Is(err, schema.ErrUnsupportedType) {
 		t.Fatalf("RunTyped = %v; want ErrConfig wrapping schema.ErrUnsupportedType", err)
 	}
-	if _, err := RunTypedNative[undecodableArgs](context.Background(), a, "r2", "go"); !errors.Is(err, ErrConfig) || !errors.Is(err, schema.ErrUnsupportedType) {
+	if _, _, err := a.RunTyped[undecodableArgs](context.Background(), "r2", UserText("go"), WithOutputMode(OutputNative)); !errors.Is(err, ErrConfig) || !errors.Is(err, schema.ErrUnsupportedType) {
 		t.Fatalf("RunTypedNative = %v; want ErrConfig wrapping schema.ErrUnsupportedType", err)
 	}
 }

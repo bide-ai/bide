@@ -17,7 +17,7 @@ func TestS2_RetryStreamRestart(t *testing.T) {
 		agenttest.MemJournal(),
 		agent.WithMiddleware(middleware.Retry(2, middleware.WithBackoff(0, 0))),
 	)
-	if n := streamCheck(t, a.Stream(context.Background(), "r", "q")); n != 1 {
+	if n := streamCheck(t, a.Stream(context.Background(), "r", agent.UserText("q"))); n != 1 {
 		t.Fatalf("restarts %d, want 1", n)
 	}
 }
@@ -42,7 +42,7 @@ func TestS3_GuardRejectsStreamedResponse(t *testing.T) {
 		agenttest.MemJournal(),
 		agent.WithMiddleware(middleware.Retry(2, middleware.WithBackoff(0, 0)), guard),
 	)
-	if n := streamCheck(t, a.Stream(context.Background(), "r", "q")); n != 1 {
+	if n := streamCheck(t, a.Stream(context.Background(), "r", agent.UserText("q"))); n != 1 {
 		t.Fatalf("restarts %d, want 1", n)
 	}
 }

@@ -96,7 +96,7 @@ func TestSaga_DeepTreeFailureReverses(t *testing.T) {
 		WithTools(l.write("A"), SubAgent("l2", "", l2)),
 	)
 
-	_, err := l1.RunSaga(context.Background(), "root", "go")
+	_, err := l1.Run(context.Background(), "root", UserText("go"), WithSaga())
 	var ab *SagaAborted
 	if !errors.As(err, &ab) {
 		t.Fatalf("err = %v, want *SagaAborted", err)
@@ -136,7 +136,7 @@ func TestSaga_SiblingSubAgentsReverse(t *testing.T) {
 		WithTools(l.write("P"), SubAgent("subA", "", subA), SubAgent("subB", "", subB)),
 	)
 
-	_, err := parent.RunSaga(context.Background(), "root", "go")
+	_, err := parent.Run(context.Background(), "root", UserText("go"), WithSaga())
 	var ab *SagaAborted
 	if !errors.As(err, &ab) {
 		t.Fatalf("err = %v, want *SagaAborted", err)
@@ -191,7 +191,7 @@ func TestSaga_CrashDuringRollbackResumes(t *testing.T) {
 	}
 
 	// First attempt: the failing step trips the saga, then rollback itself crashes.
-	_, err := build().RunSaga(context.Background(), "root", "go")
+	_, err := build().Run(context.Background(), "root", UserText("go"), WithSaga())
 	var ab *SagaAborted
 	if !errors.As(err, &ab) || ab.CompensateErr == nil {
 		t.Fatalf("first attempt err = %v, want *SagaAborted with CompensateErr", err)
@@ -202,7 +202,7 @@ func TestSaga_CrashDuringRollbackResumes(t *testing.T) {
 	store.failCompensations = 0
 	store.mu.Unlock()
 
-	_, err = build().RunSaga(context.Background(), "root", "go")
+	_, err = build().Run(context.Background(), "root", UserText("go"), WithSaga())
 	if !errors.As(err, &ab) {
 		t.Fatalf("resume err = %v, want *SagaAborted", err)
 	}
@@ -246,7 +246,7 @@ func deepSagaReverses(t *testing.T, depth int) {
 		}
 	}
 
-	_, err := child.RunSaga(context.Background(), "root", "go")
+	_, err := child.Run(context.Background(), "root", UserText("go"), WithSaga())
 	var ab *SagaAborted
 	if !errors.As(err, &ab) {
 		t.Fatalf("err = %v, want *SagaAborted", err)
@@ -291,7 +291,7 @@ func TestSaga_UncompensatedWriteSurfaced(t *testing.T) {
 		WithTools(l.write("A"), danger, failTool("boom")),
 	)
 
-	_, err := a.RunSaga(context.Background(), "root", "go")
+	_, err := a.Run(context.Background(), "root", UserText("go"), WithSaga())
 	var ab *SagaAborted
 	if !errors.As(err, &ab) {
 		t.Fatalf("err = %v, want *SagaAborted", err)

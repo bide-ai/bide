@@ -45,8 +45,8 @@ func (m eventModel) Stream(_ context.Context, _ agent.Request) (*agent.Stream, e
 }
 
 // sampleEvents is a hand-built lifecycle sequence for the pure-log tests.
-func sampleEvents() []agent.AgentEvent {
-	return []agent.AgentEvent{
+func sampleEvents() []agent.RunEvent {
+	return []agent.RunEvent{
 		agent.TurnStarted{Seq: 0},
 		agent.ModelEvent{Event: agent.TextDelta{Text: "charging"}},
 		agent.ToolStarted{ToolUseID: "t1", Name: "charge", Args: []byte(`{"amt":500}`)},
@@ -56,7 +56,7 @@ func sampleEvents() []agent.AgentEvent {
 	}
 }
 
-func buildLog(t *testing.T, evs []agent.AgentEvent) *audit.EventLog {
+func buildLog(t *testing.T, evs []agent.RunEvent) *audit.EventLog {
 	t.Helper()
 	log := audit.NewEventLog()
 	for i, e := range evs {
@@ -252,14 +252,15 @@ func TestEventLog_Consistency(t *testing.T) {
 // AND a committed log whose every event proves. This is the end-to-end sink.
 func TestRecord_DrainsRealStream(t *testing.T) {
 	a := agenttest.MustNew(eventModel{text: "hello"}, agenttest.MemJournal())
-	stream := a.Stream(context.Background(), "run-1", "hi")
+	stream := a.Stream(context.Background(), "run-1", agent.UserText("hi"))
 
 	log := audit.NewEventLog()
-	var seen []agent.AgentEvent
-	msg, err := audit.Record(log, stream, func(e agent.AgentEvent) { seen = append(seen, e) })
+	var seen []agent.RunEvent
+	res, err := audit.RecordStream(log, stream, func(e agent.RunEvent) { seen = append(seen, e) })
 	if err != nil {
 		t.Fatalf("Record: %v", err)
 	}
+	msg := res.Message
 	if got := textOf(msg); got != "hello" {
 		t.Fatalf("final message = %q, want %q", got, "hello")
 	}
@@ -291,7 +292,7 @@ func TestEventLogFromJournal(t *testing.T) {
 	j := agenttest.MustJournal(store)
 	tool := agent.Func("lookup", "", agent.Safety{ReadOnly: true},
 		func(_ context.Context, _ struct{}) (string, error) { return "ok", nil })
-	if _, err := agenttest.MustNew(&twoTurnModel{}, j, agent.WithTools(tool)).Run(ctx, "run", "hi"); err != nil {
+	if _, err := agenttest.MustNew(&twoTurnModel{}, j, agent.WithTools(tool)).Run(ctx, "run", agent.UserText("hi")); err != nil {
 		t.Fatalf("run: %v", err)
 	}
 

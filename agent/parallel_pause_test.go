@@ -52,7 +52,7 @@ func TestParallelTurn_PauseDoesNotCancelASibling(t *testing.T) {
 	store := memJournal()
 	m := &turnsModel{turns: [][][2]string{{{"a1", "ask"}, {"s1", "send"}}}}
 	a := mustNew(m, store, WithTools(ask, send))
-	_, err := a.Run(context.Background(), "r1", "go")
+	_, err := a.Run(context.Background(), "r1", UserText("go"))
 	var intr *Interrupted
 	if !errors.As(err, &intr) {
 		t.Fatalf("first run: %v, want *Interrupted", err)
@@ -60,7 +60,7 @@ func TestParallelTurn_PauseDoesNotCancelASibling(t *testing.T) {
 	if err := Resume(context.Background(), store, "r1", "confirm", "yes"); err != nil {
 		t.Fatal(err)
 	}
-	if _, err := a.Run(context.Background(), "r1", "go"); err != nil {
+	if _, err := a.Run(context.Background(), "r1", UserText("go")); err != nil {
 		t.Fatalf("after the human answered: %v (the sibling's send was cut off by the pause)", err)
 	}
 	if n := sent.Load(); n != 1 {
@@ -79,7 +79,7 @@ func TestParallelTurn_SagaFailureIsNotMaskedByAPause(t *testing.T) {
 		return "", errors.New("no seats")
 	})
 	m := &turnsModel{turns: [][][2]string{{{"a1", "ask"}, {"b1", "book"}}}}
-	_, err := mustNew(m, memJournal(), WithTools(ask, fail)).RunSaga(context.Background(), "r1", "go")
+	_, err := mustNew(m, memJournal(), WithTools(ask, fail)).Run(context.Background(), "r1", UserText("go"), WithSaga())
 	var aborted *SagaAborted
 	if !errors.As(err, &aborted) {
 		t.Fatalf("err = %v, want *SagaAborted", err)

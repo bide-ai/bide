@@ -84,7 +84,7 @@ func main() {
 			log.Fatal(err)
 		}
 		runID := "run/" + d.principal
-		if _, err := a.Run(ctx, runID, "buy $6M"); err != nil {
+		if _, err := a.Run(ctx, runID, agent.UserText("buy $6M")); err != nil {
 			panic(err)
 		}
 		final := gov.State().GetInt(exposure)

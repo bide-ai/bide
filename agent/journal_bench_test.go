@@ -30,7 +30,7 @@ func BenchmarkRunTurns(b *testing.B) {
 	i := 0
 	for b.Loop() {
 		i++
-		if _, err := a.Run(ctx, fmt.Sprintf("run-%d", i), "hi"); err != nil {
+		if _, err := a.Run(ctx, fmt.Sprintf("run-%d", i), agent.UserText("hi")); err != nil {
 			b.Fatal(err)
 		}
 	}
@@ -51,7 +51,7 @@ func BenchmarkToolCallSideEffect(b *testing.B) {
 	i := 0
 	for b.Loop() {
 		i++
-		if _, err := a.Run(ctx, fmt.Sprintf("run-%d", i), "hi"); err != nil {
+		if _, err := a.Run(ctx, fmt.Sprintf("run-%d", i), agent.UserText("hi")); err != nil {
 			b.Fatal(err)
 		}
 	}

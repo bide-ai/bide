@@ -631,7 +631,7 @@ func TestP11_RedactionTombstoneKeepsTheTree(t *testing.T) {
 // the leaf.
 func TestP11_EventLeavesAreSnakeCase(t *testing.T) {
 	log := audit.NewEventLog()
-	events := []agent.AgentEvent{
+	events := []agent.RunEvent{
 		agent.TurnStarted{Seq: 1},
 		agent.TurnRestarted{Seq: 1},
 		agent.ModelEvent{Event: agent.TextDelta{Text: "hi"}},
@@ -731,7 +731,7 @@ func TestP11_ApprovalsUnderPostQuantumKeys(t *testing.T) {
 		agent.WithTools(charge),
 		agent.WithApproverVerifiers(resolver(approvers)),
 	)
-	_, err := a.Run(ctx, "gate", "pay")
+	_, err := a.Run(ctx, "gate", agent.UserText("pay"))
 	var pend *agent.PendingApproval
 	if !errors.As(err, &pend) {
 		t.Fatalf("err = %v, want a pause", err)
@@ -747,7 +747,7 @@ func TestP11_ApprovalsUnderPostQuantumKeys(t *testing.T) {
 			t.Fatalf("%s: %v", id, err)
 		}
 	}
-	if _, err := a.Run(ctx, "gate", "pay"); err != nil || charged != 1 {
+	if _, err := a.Run(ctx, "gate", agent.UserText("pay")); err != nil || charged != 1 {
 		t.Fatalf("after two decisions: charged %d, err %v", charged, err)
 	}
 	recs, _ := j.History(ctx, "gate")

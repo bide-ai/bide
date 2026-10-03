@@ -63,7 +63,11 @@ func TestRun_CutOffFinalTurnDoesNotComplete(t *testing.T) {
 	ctx := context.Background()
 	for _, reason := range []FinishReason{FinishLength, FinishFiltered} {
 		store := memJournal()
-		msg, err := mustNew(reasonModel{reason}, store).Run(ctx, "r", "sum it")
+		res, err := mustNew(reasonModel{reason}, store).Run(ctx, "r", UserText("sum it"))
+		var msg Message
+		if res != nil {
+			msg = res.Message
+		}
 		if err == nil {
 			t.Errorf("reason %q: Run returned %q with no error", reason, msg.Text())
 		}

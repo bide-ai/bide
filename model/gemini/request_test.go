@@ -108,7 +108,7 @@ func TestRun_ThoughtSignatureRoundTrips(t *testing.T) {
 		`{"candidates":[{"content":{"parts":[{"text":"done"}]},"finishReason":"STOP"}]}`,
 	)
 	tool := agent.Func("lookup", "l", agent.Safety{ReadOnly: true}, func(context.Context, struct{}) (string, error) { return "r", nil })
-	if _, err := agenttest.MustNew(New("k", WithBaseURL(srv.URL)), agenttest.MemJournal(), agent.WithTools(tool)).Run(context.Background(), "r", "go"); err != nil {
+	if _, err := agenttest.MustNew(New("k", WithBaseURL(srv.URL)), agenttest.MemJournal(), agent.WithTools(tool)).Run(context.Background(), "r", agent.UserText("go")); err != nil {
 		t.Fatal(err)
 	}
 	var req struct {

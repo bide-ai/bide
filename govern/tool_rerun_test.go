@@ -44,7 +44,7 @@ func runToolTwice(t *testing.T, tool agent.Tool, between func()) map[string]any 
 		crashing,
 		agent.WithTools(tool),
 	)
-	if _, err := first.Run(ctx, "r", "go"); err == nil {
+	if _, err := first.Run(ctx, "r", agent.UserText("go")); err == nil {
 		t.Fatal("the first run did not crash")
 	}
 	if between != nil {
@@ -55,7 +55,7 @@ func runToolTwice(t *testing.T, tool agent.Tool, between func()) map[string]any 
 		j,
 		agent.WithTools(tool),
 	)
-	if _, err := second.Run(ctx, "r", "go"); err != nil {
+	if _, err := second.Run(ctx, "r", agent.UserText("go")); err != nil {
 		t.Fatalf("re-run: %v", err)
 	}
 	recs, err := j.History(ctx, "r")

@@ -36,7 +36,7 @@ func TestCall_ConnectionLostMidCallIsUnknownOutcome(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	_, err = agenttest.MustNew(script(), store, agent.WithTools(tools...)).Run(context.Background(), "r1", "send $5")
+	_, err = agenttest.MustNew(script(), store, agent.WithTools(tools...)).Run(context.Background(), "r1", agent.UserText("send $5"))
 	if !errors.Is(err, agent.ErrToolOutcomeUnknown) {
 		t.Fatalf("run err = %v, want ErrToolOutcomeUnknown: the transfer may have happened", err)
 	}
@@ -52,7 +52,7 @@ func TestCall_ConnectionLostMidCallIsUnknownOutcome(t *testing.T) {
 	if tools, err = Tools(context.Background(), session); err != nil {
 		t.Fatal(err)
 	}
-	_, err = agenttest.MustNew(script(), store, agent.WithTools(tools...)).Run(context.Background(), "r1", "send $5")
+	_, err = agenttest.MustNew(script(), store, agent.WithTools(tools...)).Run(context.Background(), "r1", agent.UserText("send $5"))
 	var halt *agent.ResumeHalt
 	if !errors.As(err, &halt) || halt.Op.ID != "c1" {
 		t.Fatalf("resume err = %v, want *ResumeHalt for c1", err)
@@ -120,7 +120,7 @@ func TestCall_ConnectionLostOnRetrySafeToolIsAFailure(t *testing.T) {
 		t.Fatal(err)
 	}
 	m := agent.NewScriptedModel(agent.ToolTurn("c1", "balance", `{}`), agent.TextTurn("could not read it"))
-	if _, err := agenttest.MustNew(m, agenttest.MemJournal(), agent.WithTools(tools...)).Run(context.Background(), "r1", "balance?"); err != nil {
+	if _, err := agenttest.MustNew(m, agenttest.MemJournal(), agent.WithTools(tools...)).Run(context.Background(), "r1", agent.UserText("balance?")); err != nil {
 		t.Fatalf("run err = %v, want the lost read to be a failure the model sees", err)
 	}
 }
@@ -139,7 +139,7 @@ func TestResume_RelabelledByTrustedServerStillHalts(t *testing.T) {
 		t.Fatal(err)
 	}
 	m := agent.NewScriptedModel(agent.ToolTurn("c1", "transfer", `{"cents":500}`), agent.TextTurn("done"))
-	if _, err := agenttest.MustNew(m, store, agent.WithTools(tools...)).Run(context.Background(), "r1", "send $5"); !errors.Is(err, agent.ErrToolOutcomeUnknown) {
+	if _, err := agenttest.MustNew(m, store, agent.WithTools(tools...)).Run(context.Background(), "r1", agent.UserText("send $5")); !errors.Is(err, agent.ErrToolOutcomeUnknown) {
 		t.Fatalf("run err = %v, want ErrToolOutcomeUnknown", err)
 	}
 
@@ -152,7 +152,7 @@ func TestResume_RelabelledByTrustedServerStillHalts(t *testing.T) {
 	if tools, err = Tools(context.Background(), session, TrustAnnotations()); err != nil {
 		t.Fatal(err)
 	}
-	_, err = agenttest.MustNew(agent.NewScriptedModel(agent.TextTurn("done")), store, agent.WithTools(tools...)).Run(context.Background(), "r1", "send $5")
+	_, err = agenttest.MustNew(agent.NewScriptedModel(agent.TextTurn("done")), store, agent.WithTools(tools...)).Run(context.Background(), "r1", agent.UserText("send $5"))
 	var halt *agent.ResumeHalt
 	if !errors.As(err, &halt) || halt.Op.ID != "c1" {
 		t.Fatalf("resume err = %v after %d transfers, want *ResumeHalt for c1", err, transfers.Load())

@@ -53,7 +53,7 @@ func TestPersistJournal_RoundTripsAndIsIdempotent(t *testing.T) {
 	j := agenttest.MustJournal(jStore)
 	tool := agent.Func("lookup", "", agent.Safety{ReadOnly: true},
 		func(_ context.Context, _ struct{}) (string, error) { return "ok", nil })
-	if _, err := agenttest.MustNew(&twoTurnModel{}, j, agent.WithTools(tool)).Run(ctx, "run", "hi"); err != nil {
+	if _, err := agenttest.MustNew(&twoTurnModel{}, j, agent.WithTools(tool)).Run(ctx, "run", agent.UserText("hi")); err != nil {
 		t.Fatalf("run: %v", err)
 	}
 
@@ -101,7 +101,7 @@ func TestPersistJournal_IncrementalConsistency(t *testing.T) {
 	j := agenttest.MustJournal(jStore)
 	tool := agent.Func("lookup", "", agent.Safety{ReadOnly: true},
 		func(_ context.Context, _ struct{}) (string, error) { return "ok", nil })
-	if _, err := agenttest.MustNew(&twoTurnModel{}, j, agent.WithTools(tool)).Run(ctx, "run", "hi"); err != nil {
+	if _, err := agenttest.MustNew(&twoTurnModel{}, j, agent.WithTools(tool)).Run(ctx, "run", agent.UserText("hi")); err != nil {
 		t.Fatalf("run: %v", err)
 	}
 	evs, _ := agent.ReplayEvents(ctx, j, "run")
@@ -157,7 +157,7 @@ func (s *dyingStore) Append(ctx context.Context, runID string, seq int, leaf []b
 func TestEventStore_PersistsSalts(t *testing.T) {
 	ctx := context.Background()
 	evStore := audit.NewMemEventStore()
-	evs := []agent.AgentEvent{agent.TurnStarted{Seq: 0}, agent.ToolCompleted{ToolUseID: "t1", Result: []byte(`true`)}}
+	evs := []agent.RunEvent{agent.TurnStarted{Seq: 0}, agent.ToolCompleted{ToolUseID: "t1", Result: []byte(`true`)}}
 	for seq, e := range evs {
 		if err := audit.PersistEvent(ctx, evStore, "run", seq, e); err != nil {
 			t.Fatalf("PersistEvent %d: %v", seq, err)

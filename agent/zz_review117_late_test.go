@@ -38,7 +38,7 @@ func TestR117_LateErrorBeforeTheTimerFiresIsRecordedAsAFailure(t *testing.T) {
 		}, WithTimeout(2*time.Millisecond))
 		store := memJournal()
 		m := NewScriptedModel(ToolTurn("c1", "charge", `{}`), TextTurn("done"))
-		_, err := mustNew(m, store, WithTools(charge)).Run(context.Background(), "r1", "pay")
+		_, err := mustNew(m, store, WithTools(charge)).Run(context.Background(), "r1", UserText("pay"))
 		rec, ok := hasStep(t, store, "r1", ToolResultStep("c1"))
 		if calls.Load() == 0 {
 			// Not reached: the deadline passed before dispatch. That is a known failure, recorded.

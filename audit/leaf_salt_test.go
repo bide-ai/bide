@@ -224,7 +224,7 @@ func TestNeighbourEventNotGuessable(t *testing.T) {
 	}
 
 	live := NewEventLog()
-	for _, e := range []agent.AgentEvent{result("toolu_A", `{"charged":true}`), result("toolu_B", `{"fraud_flag":true}`)} {
+	for _, e := range []agent.RunEvent{result("toolu_A", `{"charged":true}`), result("toolu_B", `{"fraud_flag":true}`)} {
 		if err := live.Add(e); err != nil {
 			t.Fatal(err)
 		}

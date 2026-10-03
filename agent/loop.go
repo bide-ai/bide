@@ -16,22 +16,6 @@ import (
 	"github.com/bide-ai/bide/internal/toolhook"
 )
 
-// Run drives the agent to completion for runID, resuming from the journal if steps
-// already exist. Completed steps are reused; retry-safe tools with no recorded result
-// are re-run; a non-retry-safe tool with no result triggers OutcomeUnknown; a tool that
-// requires approval with no recorded decision triggers ApprovalPending. A run that already
-// finished is final: Run returns its recorded answer without calling the model, whatever
-// input is passed, so retrying a completed run never repeats its side effects.
-//
-// The first drive of a run records its input, and a run that has not finished resumes only with
-// that input: another input is ErrConfig, as is resuming through RunSaga a run started through
-// Run, or the reverse (see RunStart; RecordedStart reads the recorded input back).
-func (a *Agent) Run(ctx context.Context, runID, input string) (Message, error) {
-	in := UserText(input)
-	msg, _, _, err := a.run(ctx, runID, &driveSpec{input: &in, strictSaga: true})
-	return msg, err
-}
-
 // run is the single loop shared by Run/RunSaga (emit == nil) and Stream/StreamSaga
 // (emit receives lifecycle events). It drives one durable run seeded with `seed` — the
 // conversation to start from: a single user turn for Run, or the full transcript plus
@@ -94,7 +78,7 @@ func (a *Agent) runLoop(ctx context.Context, runID string, d *driveSpec) (Messag
 	}
 	// protocol:delegation end
 	ctx = a.runDefaults(ctx) // the agent's identity, Waker and clock, where the run was given none
-	fire := func(e AgentEvent) {
+	fire := func(e RunEvent) {
 		if emit != nil {
 			emit(e)
 		}

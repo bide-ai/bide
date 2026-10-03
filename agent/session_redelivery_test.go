@@ -32,7 +32,11 @@ func deliver(a *Agent, conversation, eventID, text string) (Message, error) {
 	if err != nil {
 		return Message{}, err
 	}
-	return sess.SendOnce(context.Background(), eventID, text)
+	res, err := sess.SendOnce(context.Background(), eventID, UserText(text))
+	if err != nil {
+		return Message{}, err
+	}
+	return res.Message, nil
 }
 
 func turnsOf(t *testing.T, a *Agent, conversation string) int {

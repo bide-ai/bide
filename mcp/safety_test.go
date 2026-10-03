@@ -38,7 +38,7 @@ func TestWithApproval_PausesAndResumes(t *testing.T) {
 	store := agenttest.MemJournal()
 	m := agent.NewScriptedModel(agent.ToolTurn("c1", "transfer", `{"cents":500}`), agent.TextTurn("done"))
 	a := agenttest.MustNew(m, store, agent.WithTools(tools...))
-	_, err = a.Run(context.Background(), "r1", "send $5")
+	_, err = a.Run(context.Background(), "r1", agent.UserText("send $5"))
 	var pend *agent.PendingApproval
 	if !errors.As(err, &pend) || pend.ToolName != "transfer" || pend.ToolUseID != "c1" {
 		t.Fatalf("run err = %v, want *PendingApproval for transfer", err)
@@ -49,7 +49,7 @@ func TestWithApproval_PausesAndResumes(t *testing.T) {
 	if err := agent.Approve(context.Background(), store, "r1", "c1", true); err != nil {
 		t.Fatal(err)
 	}
-	if _, err := a.Run(context.Background(), "r1", "send $5"); err != nil {
+	if _, err := a.Run(context.Background(), "r1", agent.UserText("send $5")); err != nil {
 		t.Fatalf("resume err = %v", err)
 	}
 	if n := calls.Load(); n != 1 {
@@ -97,7 +97,7 @@ func TestWithApproval_Quorum(t *testing.T) {
 				t.Fatal(err)
 			}
 		}
-		_, err := a.Run(context.Background(), "r1", "send $5")
+		_, err := a.Run(context.Background(), "r1", agent.UserText("send $5"))
 		if i < 2 {
 			if !errors.As(err, &pend) || pend.Quorum == nil {
 				t.Fatalf("after %d approvals: err = %v, want *PendingApproval with a quorum", i, err)

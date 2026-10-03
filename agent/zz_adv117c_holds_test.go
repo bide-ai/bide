@@ -63,8 +63,8 @@ func TestAdv117c_ReachedBeatsSentinel(t *testing.T) {
 			if s.mw != nil {
 				a = must(a.With(WithToolMiddleware(s.mw)))
 			}
-			_, err1 := a.Run(ctx, "r1", "go")
-			_, err2 := mustNew(m, store, WithTools(tool)).Run(context.Background(), "r1", "go")
+			_, err1 := a.Run(ctx, "r1", UserText("go"))
+			_, err2 := mustNew(m, store, WithTools(tool)).Run(context.Background(), "r1", UserText("go"))
 			var halt *OutcomeUnknown
 			if calls.Load() != 1 || !errors.As(err2, &halt) {
 				t.Fatalf("calls %d; first %v; resume %v", calls.Load(), err1, err2)

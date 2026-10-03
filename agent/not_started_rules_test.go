@@ -103,7 +103,7 @@ func TestSaga_NotStartedCallIsNotCompensated(t *testing.T) {
 	})
 	store := mustJournal(&holdClaimStore{MemStore: NewMemStore(), toolUseID: "p1"})
 	m := &sagaTurns{turns: [][][3]string{{{"p1", "pay", `{}`}, {"b1", "book", `{}`}}}}
-	_, err := mustNew(m, store, WithTools(pay, book)).RunSaga(context.Background(), "r1", "trip")
+	_, err := mustNew(m, store, WithTools(pay, book)).Run(context.Background(), "r1", UserText("trip"), WithSaga())
 	var aborted *SagaAborted
 	if !errors.As(err, &aborted) {
 		t.Fatalf("err = %v, want *SagaAborted", err)
@@ -167,19 +167,19 @@ func TestTool_CrashInAReattemptHalts(t *testing.T) {
 		return "charged", nil
 	})
 	m := &greedyModel{script: [][]Emit{toolTurn("c1", "charge", `{}`), textTurn("done")}}
-	_, _ = mustNew(m, j, WithTools(charge)).Run(ctx, "r1", "pay") // cancelled before the call: recorded as not started
+	_, _ = mustNew(m, j, WithTools(charge)).Run(ctx, "r1", UserText("pay")) // cancelled before the call: recorded as not started
 
 	ctx2, cancel2 := context.WithCancel(context.Background())
 	crashing := mustJournal(&markerHookStore{MemStore: store.MemStore, cancel: cancel2, crash: true})
 	resume := &greedyModel{script: [][]Emit{textTurn("done")}}
-	if _, err := mustNew(resume, crashing, WithTools(charge)).Run(ctx2, "r1", "pay"); err == nil {
+	if _, err := mustNew(resume, crashing, WithTools(charge)).Run(ctx2, "r1", UserText("pay")); err == nil {
 		t.Fatal("the re-attempt whose process died succeeded")
 	}
 	_, err := mustNew(
 		&greedyModel{script: [][]Emit{textTurn("done")}},
 		mustJournal(store.MemStore),
 		WithTools(charge),
-	).Run(context.Background(), "r1", "pay")
+	).Run(context.Background(), "r1", UserText("pay"))
 	var halt *ResumeHalt
 	if !errors.As(err, &halt) || halt.Op.ID != "c1" || calls.Load() != 0 {
 		t.Fatalf("resume after a crash in the re-attempt = %v with %d charges, want *ResumeHalt for c1 and no charge", err, calls.Load())
@@ -197,7 +197,7 @@ func TestStream_NotStartedCallEmitsNoToolStarted(t *testing.T) {
 		return "charged", nil
 	})
 	m := &greedyModel{script: [][]Emit{toolTurn("c1", "charge", `{}`), textTurn("done")}}
-	evs, _, err := collect(mustNew(m, j, WithTools(charge)).Stream(ctx, "r1", "pay"))
+	evs, _, err := collect(mustNew(m, j, WithTools(charge)).Stream(ctx, "r1", UserText("pay")))
 	if !errors.Is(err, context.Canceled) {
 		t.Fatalf("cancelled stream err = %v, want context.Canceled", err)
 	}
@@ -212,7 +212,7 @@ func TestStream_NotStartedCallEmitsNoToolStarted(t *testing.T) {
 		&greedyModel{script: [][]Emit{textTurn("done")}},
 		mustJournal(store.MemStore),
 		WithTools(charge),
-	).Stream(context.Background(), "r1", "pay"))
+	).Stream(context.Background(), "r1", UserText("pay")))
 	if err != nil {
 		t.Fatalf("resumed stream err = %v", err)
 	}
@@ -250,7 +250,7 @@ func TestSaga_NotStartedReattemptCompensatesTheAcceptedArguments(t *testing.T) {
 	ctx, cancel := context.WithCancel(context.Background())
 	store := &markerHookStore{MemStore: NewMemStore(), cancel: cancel}
 	j := mustJournal(store)
-	if _, err := mustNew(model(), j, WithTools(charge, fail), WithToolMiddleware(scaleCharge)).RunSaga(ctx, "r", "trip"); !errors.Is(err, context.Canceled) {
+	if _, err := mustNew(model(), j, WithTools(charge, fail), WithToolMiddleware(scaleCharge)).Run(ctx, "r", UserText("trip"), WithSaga()); !errors.Is(err, context.Canceled) {
 		t.Fatalf("cancelled saga err = %v, want context.Canceled", err)
 	}
 	if charged.Load() != 0 {
@@ -268,7 +268,7 @@ func TestSaga_NotStartedReattemptCompensatesTheAcceptedArguments(t *testing.T) {
 		mustJournal(store.MemStore),
 		WithTools(charge, fail),
 		WithToolMiddleware(scaleCharge),
-	).RunSaga(context.Background(), "r", "trip")
+	).Run(context.Background(), "r", UserText("trip"), WithSaga())
 	var aborted *SagaAborted
 	if !errors.As(err, &aborted) || aborted.CompensateErr != nil {
 		t.Fatalf("resumed saga = %v, want a clean *SagaAborted", err)

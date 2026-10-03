@@ -60,7 +60,7 @@ func srbSetup(t *testing.T, leaser bool, onComp func()) (s *agent.Session, in, o
 	if s, err = a.Session(ctx, "s"); err != nil {
 		t.Fatal(err)
 	}
-	if _, err := s.SendMessage(ctx, agent.UserText("one"), agent.WithSaga()); err == nil {
+	if _, err := s.Send(ctx, agent.UserText("one"), agent.WithSaga()); err == nil {
 		t.Fatal("want the approval pause")
 	}
 	if err := agent.Cancel(ctx, j, "s>@turn/0", "stop"); err != nil {
@@ -76,9 +76,9 @@ func TestRev138c_SiblingSendDuringRollback(t *testing.T) {
 	ctx := context.Background()
 	s, in, out, maxInFlight, _ := srbSetup(t, true, nil)
 	errA := make(chan error, 1)
-	go func() { _, err := s.SendMessage(ctx, agent.UserText("two")); errA <- err }()
+	go func() { _, err := s.Send(ctx, agent.UserText("two")); errA <- err }()
 	<-in // A is inside the compensator, without s.mu
-	_, errB := s.SendMessage(ctx, agent.UserText("three"))
+	_, errB := s.Send(ctx, agent.UserText("three"))
 	close(out)
 	if err := <-errA; err != nil && !agent.IsPause(err) && !errors.Is(err, agent.ErrConfig) {
 		t.Fatalf("A: %v", err) // its own turn pauses (pay), or B's open turn refuses it
@@ -99,7 +99,7 @@ func TestRev138c_RollbackHoldsTheSessionMutexWithoutALeaser(t *testing.T) {
 	var held bool
 	s, in, out, _, _ := srbSetup(t, false, func() { held = agent.SessionMuHeld(s) })
 	close(out)
-	if _, err := s.SendMessage(ctx, agent.UserText("two")); err != nil && !agent.IsPause(err) {
+	if _, err := s.Send(ctx, agent.UserText("two")); err != nil && !agent.IsPause(err) {
 		t.Fatal(err) // its own turn pauses on pay's approval
 	}
 	select {
@@ -122,12 +122,12 @@ func TestRev138c_SiblingSendWaitsForRollbackWithoutALeaser(t *testing.T) {
 	defer cancel()
 	s, in, out, maxInFlight, done := srbSetup(t, false, nil)
 	errA := make(chan error, 1)
-	go func() { _, err := s.SendMessage(ctx, agent.UserText("two")); errA <- err }()
+	go func() { _, err := s.Send(ctx, agent.UserText("two")); errA <- err }()
 	<-in // A is inside the compensator
 	errB := make(chan error, 1)
 	returnedEarly := make(chan bool, 1)
 	go func() {
-		_, err := s.SendMessage(ctx, agent.UserText("three"))
+		_, err := s.Send(ctx, agent.UserText("three"))
 		returnedEarly <- !done.Load()
 		errB <- err
 	}()

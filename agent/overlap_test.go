@@ -96,7 +96,7 @@ func TestOverlappingDrivers_SideEffectFiresOnce(t *testing.T) {
 		return "ok", nil
 	})
 	drive := func() error {
-		_, err := mustNew(&greedyModel{script: [][]Emit{textTurn("done")}}, store.proc(), WithTools(charge)).Run(ctx, "r1", "pay")
+		_, err := mustNew(&greedyModel{script: [][]Emit{textTurn("done")}}, store.proc(), WithTools(charge)).Run(ctx, "r1", UserText("pay"))
 		return err
 	}
 

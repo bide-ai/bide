@@ -66,7 +66,7 @@ func TestModel11_D1_RollbackAcrossRotatedGrants(t *testing.T) {
 		store,
 		agent.WithTools(tools()...),
 	)
-	if _, err := parent1.RunSaga(WithGrant(ctx, p1, signer), "trip", "go"); err == nil {
+	if _, err := parent1.Run(WithGrant(ctx, p1, signer), "trip", agent.UserText("go"), agent.WithSaga()); err == nil {
 		t.Fatal("drive 1: want the provider error")
 	}
 	// Drive 2, under p2 (the rotated grant): d2 mints from p2, its sub-run fails, the saga rolls back.
@@ -74,7 +74,7 @@ func TestModel11_D1_RollbackAcrossRotatedGrants(t *testing.T) {
 		return agent.NewScriptedModel(agent.ToolTurn("c1", "d1", `{"task":"a"}`), agent.ToolTurn("c2", "d2", `{"task":"b"}`), agent.TextTurn("x"))
 	}
 	drive := func(ctx context.Context) *agent.SagaAborted {
-		_, err := agenttest.MustNew(script(), store, agent.WithTools(tools()...)).RunSaga(ctx, "trip", "go")
+		_, err := agenttest.MustNew(script(), store, agent.WithTools(tools()...)).Run(ctx, "trip", agent.UserText("go"), agent.WithSaga())
 		var ab *agent.SagaAborted
 		if !errors.As(err, &ab) {
 			t.Fatalf("RunSaga = %v, want *SagaAborted", err)
@@ -129,7 +129,7 @@ func TestModel11_D2_RollbackRerunAfterGrantExpiry(t *testing.T) {
 	)
 	deleg := AttenuatingSubAgent("deleg", "d", sub, AttenuationConfig{Store: store, Narrow: narrow, Rules: rev117eRules})
 	parent := agenttest.MustNew(rev117eMultiModel{calls: [][2]string{{"c1", "deleg"}}}, store, agent.WithTools(deleg))
-	_, err := parent.RunSaga(WithGrant(ctx, m11Root(t, signer, "p"), signer), "trip", "go")
+	_, err := parent.Run(WithGrant(ctx, m11Root(t, signer, "p"), signer), "trip", agent.UserText("go"), agent.WithSaga())
 	var ab *agent.SagaAborted
 	if !errors.As(err, &ab) {
 		t.Fatalf("RunSaga = %v, want *SagaAborted", err)
@@ -167,7 +167,11 @@ func TestModel11_D3_FailedSubAgentInPlainSubRunSkipped(t *testing.T) {
 		agent.SubAgent("worker", "w", grand))
 	starter := agent.Func("starter", "", agent.Safety{ReadOnly: true}, func(ctx context.Context, _ struct{}) (string, error) {
 		info, _ := agent.RunInfoFrom(ctx)
-		msg, err := child.Run(ctx, info.SubRunFor("child"), "work")
+		res, err := child.Run(ctx, info.SubRunFor("child"), agent.UserText("work"))
+		var msg agent.Message
+		if res != nil {
+			msg = res.Message
+		}
 		return msg.Text(), err
 	}, agent.WithSubRuns(func(name string) *agent.Agent {
 		if name == "child" {
@@ -179,7 +183,7 @@ func TestModel11_D3_FailedSubAgentInPlainSubRunSkipped(t *testing.T) {
 		return "", errors.New("boom")
 	})
 	parent := build(agent.NewScriptedModel(agent.ToolTurn("c1", "starter", `{}`), agent.ToolTurn("c2", "boom", `{}`), agent.TextTurn("x")), starter, boom)
-	_, err := parent.RunSaga(ctx, "p", "go")
+	_, err := parent.Run(ctx, "p", agent.UserText("go"), agent.WithSaga())
 	var ab *agent.SagaAborted
 	if !errors.As(err, &ab) {
 		t.Fatalf("RunSaga = %v, want *SagaAborted", err)
@@ -233,12 +237,12 @@ func TestModel11_D1_RollbackAcrossRotatedKeys(t *testing.T) {
 		store,
 		agent.WithTools(tools()...),
 	)
-	if _, err := parent1.RunSaga(WithGrant(ctx, p1, oldSigner), "trip", "go"); err == nil {
+	if _, err := parent1.Run(WithGrant(ctx, p1, oldSigner), "trip", agent.UserText("go"), agent.WithSaga()); err == nil {
 		t.Fatal("drive 1: want the provider error")
 	}
 	drive := func(ctx context.Context) *agent.SagaAborted {
 		m := agent.NewScriptedModel(agent.ToolTurn("c1", "d1", `{"task":"a"}`), agent.ToolTurn("c2", "d2", `{"task":"b"}`), agent.TextTurn("x"))
-		_, err := agenttest.MustNew(m, store, agent.WithTools(tools()...)).RunSaga(ctx, "trip", "go")
+		_, err := agenttest.MustNew(m, store, agent.WithTools(tools()...)).Run(ctx, "trip", agent.UserText("go"), agent.WithSaga())
 		var ab *agent.SagaAborted
 		if !errors.As(err, &ab) {
 			t.Fatalf("RunSaga = %v, want *SagaAborted", err)
@@ -338,7 +342,7 @@ func TestModel11_D2_UnknownEvenWithoutABeganRecord(t *testing.T) {
 	)
 	deleg := AttenuatingSubAgent("deleg", "d", sub, AttenuationConfig{Store: store, Narrow: narrow, Rules: rev117eRules})
 	parent := agenttest.MustNew(rev117eMultiModel{calls: [][2]string{{"c1", "deleg"}}}, store, agent.WithTools(deleg))
-	_, err := parent.RunSaga(WithGrant(ctx, m11Root(t, signer, "p"), signer), "trip", "go")
+	_, err := parent.Run(WithGrant(ctx, m11Root(t, signer, "p"), signer), "trip", agent.UserText("go"), agent.WithSaga())
 	var ab *agent.SagaAborted
 	if !errors.As(err, &ab) {
 		t.Fatalf("RunSaga = %v, want *SagaAborted", err)
@@ -382,7 +386,7 @@ func TestModel11_TypedNilSignerRefused(t *testing.T) {
 		store,
 		agent.WithTools(deleg),
 	)
-	if _, err := parent.Run(WithGrant(ctx, root, typedNil), "r", "go"); !errors.Is(err, agent.ErrConfig) {
+	if _, err := parent.Run(WithGrant(ctx, root, typedNil), "r", agent.UserText("go")); !errors.Is(err, agent.ErrConfig) {
 		t.Fatalf("Run under a grant with a typed-nil signer = %v, want ErrConfig", err)
 	}
 	recs, err := store.History(ctx, agent.SubRunID("r", "c1"))

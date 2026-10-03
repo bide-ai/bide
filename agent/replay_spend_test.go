@@ -19,7 +19,7 @@ func TestReplay_ReportsDiscardedSpend(t *testing.T) {
 		toolTurnWithUsage("c1", "lookup", `{}`, billed),
 		textTurnWithUsage("done", billed),
 	}}
-	orig, err := mustNew(m, rec, WithTools(tool), WithMiddleware(retryOnceMW)).RunResult(ctx, "run", "go")
+	orig, err := mustNew(m, rec, WithTools(tool), WithMiddleware(retryOnceMW)).Run(ctx, "run", UserText("go"))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -29,7 +29,7 @@ func TestReplay_ReportsDiscardedSpend(t *testing.T) {
 		t.Fatal(err)
 	}
 	fresh := memJournal()
-	replayed, err := mustNew(rm, fresh, WithTools(tool)).RunResult(ctx, "run", "go")
+	replayed, err := mustNew(rm, fresh, WithTools(tool)).Run(ctx, "run", UserText("go"))
 	if err != nil {
 		t.Fatalf("replay run: %v", err)
 	}
@@ -50,7 +50,7 @@ func TestReplay_BudgetCountsDiscardedSpend(t *testing.T) {
 		toolTurnWithUsage("c1", "lookup", `{}`, billed),
 		textTurnWithUsage("done", billed),
 	}}
-	_, origErr := must(mustNew(m, rec, WithTools(tool), WithMiddleware(retryOnceMW)).With(WithTokenBudget(200))).Run(ctx, "run", "go")
+	_, origErr := must(mustNew(m, rec, WithTools(tool), WithMiddleware(retryOnceMW)).With(WithTokenBudget(200))).Run(ctx, "run", UserText("go"))
 	if !errors.Is(origErr, ErrBudgetExceeded) {
 		t.Fatalf("setup: err = %v, want ErrBudgetExceeded", origErr)
 	}
@@ -59,7 +59,7 @@ func TestReplay_BudgetCountsDiscardedSpend(t *testing.T) {
 		t.Fatal(err)
 	}
 	fresh := memJournal()
-	_, replayErr := mustNew(rm, fresh, WithTools(tool), WithTokenBudget(200)).Run(ctx, "run", "go")
+	_, replayErr := mustNew(rm, fresh, WithTools(tool), WithTokenBudget(200)).Run(ctx, "run", UserText("go"))
 	if replayErr == nil || replayErr.Error() != origErr.Error() {
 		t.Fatalf("replay err = %v, want %v", replayErr, origErr)
 	}
@@ -75,7 +75,7 @@ func TestReplay_FailedCallsFailAndCountAtTheSamePoint(t *testing.T) {
 	m := &scriptModel{turns: [][]Emit{truncatedTurn(billed), truncatedTurn(billed), textTurnWithUsage("done", billed)}}
 	var origErrs []error
 	for range 3 {
-		_, err := mustNew(m, rec, WithTokenBudget(200)).Run(ctx, "run", "go")
+		_, err := mustNew(m, rec, WithTokenBudget(200)).Run(ctx, "run", UserText("go"))
 		origErrs = append(origErrs, err)
 	}
 	if !errors.Is(origErrs[0], ErrModel) || !errors.Is(origErrs[1], ErrModel) || !errors.Is(origErrs[2], ErrBudgetExceeded) {
@@ -88,7 +88,7 @@ func TestReplay_FailedCallsFailAndCountAtTheSamePoint(t *testing.T) {
 	}
 	fresh := memJournal()
 	for i := range 3 {
-		_, err := mustNew(rm, fresh, WithTokenBudget(200)).Run(ctx, "run", "go")
+		_, err := mustNew(rm, fresh, WithTokenBudget(200)).Run(ctx, "run", UserText("go"))
 		if errors.Is(err, ErrBudgetExceeded) != errors.Is(origErrs[i], ErrBudgetExceeded) || errors.Is(err, ErrModel) != errors.Is(origErrs[i], ErrModel) {
 			t.Fatalf("replay invocation %d: err = %v, want the original's %v", i, err, origErrs[i])
 		}

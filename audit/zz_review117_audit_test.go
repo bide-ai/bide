@@ -61,7 +61,7 @@ func TestR117_AttenuatedSubRunIsCompensatedUnderTheParentsAuthority(t *testing.T
 	}
 	ctx = agent.ContextWithIdentity(ctx, agent.Identity{Actor: "desk"})
 	ctx = WithGrant(ctx, rootSG, signer)
-	_, err = parent.RunSaga(ctx, "trip", "book the trip")
+	_, err = parent.Run(ctx, "trip", agent.UserText("book the trip"), agent.WithSaga())
 	var aborted *agent.SagaAborted
 	if !errors.As(err, &aborted) {
 		t.Fatalf("RunSaga = %v, want *SagaAborted", err)
@@ -96,7 +96,7 @@ func TestR117_UngrantedDelegationIsCompensatedWithoutAGrant(t *testing.T) {
 	boom := agent.Func("boom", "", agent.Safety{}, func(context.Context, struct{}) (string, error) { return "", errors.New("sold out") })
 	m := agent.NewScriptedModel(agent.ToolTurn("c1", "exec", `{"task":"pay"}`), agent.ToolTurn("c2", "gate", `{}`), agent.ToolTurn("c3", "boom", `{}`), agent.TextTurn("x"))
 	parent := agenttest.MustNew(m, store, agent.WithTools(exec, gate, boom))
-	if _, err := parent.RunSaga(ctx, "trip", "go"); !agent.IsPause(err) {
+	if _, err := parent.Run(ctx, "trip", agent.UserText("go"), agent.WithSaga()); !agent.IsPause(err) {
 		t.Fatalf("first drive: %v, want the approval pause", err)
 	}
 	if err := agent.Approve(ctx, store, "trip", "c2", true); err != nil {
@@ -109,7 +109,7 @@ func TestR117_UngrantedDelegationIsCompensatedWithoutAGrant(t *testing.T) {
 		t.Fatal(err)
 	}
 	var aborted *agent.SagaAborted
-	if _, err := parent.RunSaga(WithGrant(ctx, rootSG, signer), "trip", "go"); !errors.As(err, &aborted) || len(aborted.Compensated) != 1 {
+	if _, err := parent.Run(WithGrant(ctx, rootSG, signer), "trip", agent.UserText("go"), agent.WithSaga()); !errors.As(err, &aborted) || len(aborted.Compensated) != 1 {
 		t.Fatalf("resume: %v, want *SagaAborted compensating the charge", err)
 	}
 	if fwdHadGrant || undoHadGrant {
@@ -224,7 +224,7 @@ func TestR117_ResumedSubRollbackRunsUnderTheChildGrant(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	_, _ = parent.RunSaga(WithGrant(ctx, rootSG, signer), "trip", "go")
+	_, _ = parent.Run(WithGrant(ctx, rootSG, signer), "trip", agent.UserText("go"), agent.WithSaga())
 	if undos != 2 || lastLimit != "4" {
 		t.Fatalf("compensations %d, the resumed one under limit %q; want 2, the second under the child grant's 4", undos, lastLimit)
 	}
@@ -321,7 +321,7 @@ func TestR117_ResumedDelegationKeepsItsAuthority(t *testing.T) {
 			store,
 			agent.WithTools(exec),
 		)
-		_, err := parent.Run(drives[0](ctx), "r", "go")
+		_, err := parent.Run(drives[0](ctx), "r", agent.UserText("go"))
 		var pend *agent.ApprovalPending
 		if !errors.As(err, &pend) {
 			t.Fatalf("%s: first drive %v, want the sub-run's pause", name, err)
@@ -329,7 +329,7 @@ func TestR117_ResumedDelegationKeepsItsAuthority(t *testing.T) {
 		if err := agent.Approve(ctx, store, pend.RunID, pend.ToolUseID, true); err != nil {
 			t.Fatal(err)
 		}
-		if _, err := parent.Run(drives[1](ctx), "r", "go"); !errors.Is(err, agent.ErrConfig) {
+		if _, err := parent.Run(drives[1](ctx), "r", agent.UserText("go")); !errors.Is(err, agent.ErrConfig) {
 			t.Fatalf("%s: resume = %v, want ErrConfig", name, err)
 		}
 		recs, err := store.History(ctx, "r")
@@ -341,7 +341,7 @@ func TestR117_ResumedDelegationKeepsItsAuthority(t *testing.T) {
 				t.Fatalf("%s: the refusal was recorded as the delegation's result %s", name, r.Result)
 			}
 		}
-		if _, err := parent.Run(drives[0](ctx), "r", "go"); err != nil {
+		if _, err := parent.Run(drives[0](ctx), "r", agent.UserText("go")); err != nil {
 			t.Fatalf("%s: re-drive under the authority it began with: %v", name, err)
 		}
 	}

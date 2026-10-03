@@ -276,7 +276,7 @@ func TestLowering_RunStartHoldsTheFlowAndItsInput(t *testing.T) {
 		t.Fatalf("resume under another flow's name: err = %v, want ErrConfig", err)
 	}
 	a := agenttest.MustNew(agent.NewScriptedModel(agent.TextTurn("hi")), mem)
-	if _, err := a.Run(ctx, "r", "5"); !errors.Is(err, agent.ErrConfig) {
+	if _, err := a.Run(ctx, "r", agent.UserText("5")); !errors.Is(err, agent.ErrConfig) {
 		t.Fatalf("an Agent driving a flow's run: err = %v, want ErrConfig", err)
 	}
 	after, err := mem.History(ctx, "r")
@@ -294,7 +294,7 @@ func TestLowering_RunStartHoldsTheFlowAndItsInput(t *testing.T) {
 	}
 
 	// The other way round: a flow does not drive a run an Agent started.
-	if _, err := a.Run(ctx, "agent-run", "hello"); err != nil {
+	if _, err := a.Run(ctx, "agent-run", agent.UserText("hello")); err != nil {
 		t.Fatal(err)
 	}
 	if _, err := flow.Run(ctx, mem, "agent-run", 5); !errors.Is(err, agent.ErrConfig) {

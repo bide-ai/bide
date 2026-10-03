@@ -41,7 +41,7 @@ func TestInterrupt_PausesAndResumesTyped(t *testing.T) {
 	m := &scriptModel{turns: [][]Emit{toolTurn("c1", "ask", `{}`), textTurn("done")}}
 	a := mustNew(m, store, WithTools(tool))
 
-	_, err := a.Run(context.Background(), "r", "hi")
+	_, err := a.Run(context.Background(), "r", UserText("hi"))
 	var intr *Interrupted
 	if !errors.As(err, &intr) {
 		t.Fatalf("err = %v, want *Interrupted", err)
@@ -57,10 +57,11 @@ func TestInterrupt_PausesAndResumesTyped(t *testing.T) {
 		t.Fatalf("Resume: %v", err)
 	}
 
-	out, err := a.Run(context.Background(), "r", "hi") // same agent, resumes
+	res, err := a.Run(context.Background(), "r", UserText("hi")) // same agent, resumes
 	if err != nil {
 		t.Fatalf("resume Run: %v", err)
 	}
+	out := res.Message
 	if textOf(out) != "done" {
 		t.Fatalf("answer = %q", textOf(out))
 	}
@@ -92,13 +93,13 @@ func TestInterrupt_StructValue(t *testing.T) {
 	m := &scriptModel{turns: [][]Emit{toolTurn("c1", "pick", `{}`), textTurn("ok")}}
 	a := mustNew(m, store, WithTools(tool))
 
-	if _, err := a.Run(context.Background(), "r", "hi"); !errorsAsInterrupted(err) {
+	if _, err := a.Run(context.Background(), "r", UserText("hi")); !errorsAsInterrupted(err) {
 		t.Fatalf("want interrupt, got %v", err)
 	}
 	if err := Resume(context.Background(), store, "r", "pick", choice{Option: "b", Weight: 3}); err != nil {
 		t.Fatal(err)
 	}
-	if _, err := a.Run(context.Background(), "r", "hi"); err != nil {
+	if _, err := a.Run(context.Background(), "r", UserText("hi")); err != nil {
 		t.Fatal(err)
 	}
 	if picked.Option != "b" || picked.Weight != 3 {
@@ -115,7 +116,7 @@ func TestInterrupt_RequiresRetrySafe(t *testing.T) {
 	m := &scriptModel{turns: [][]Emit{toolTurn("c1", "write", `{}`), textTurn("done")}}
 	a := mustNew(m, store, WithTools(tool))
 
-	_, err := a.Run(context.Background(), "r", "hi")
+	_, err := a.Run(context.Background(), "r", UserText("hi"))
 	if !errors.Is(err, ErrConfig) {
 		t.Fatalf("err = %v, want errors.Is ErrConfig", err)
 	}

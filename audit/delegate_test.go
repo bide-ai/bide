@@ -84,7 +84,7 @@ func TestAttenuatingSubAgent_Default(t *testing.T) {
 	ctx = agent.ContextWithIdentity(ctx, agent.Identity{Actor: "desk-agent", OnBehalfOf: "desk", AuthorityRef: root.Digest()})
 	ctx = WithGrant(ctx, rootSG, signer)
 
-	if _, err := parent.Run(ctx, "p1", "go"); err != nil {
+	if _, err := parent.Run(ctx, "p1", agent.UserText("go")); err != nil {
 		t.Fatalf("delegating run: %v", err)
 	}
 

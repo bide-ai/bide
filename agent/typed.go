@@ -18,36 +18,6 @@ import (
 // finalAnswerTool is the synthetic tool RunTyped injects to collect the structured result.
 const finalAnswerTool = "final_answer"
 
-// RunTyped runs the agent to completion like Run, but returns a typed result T instead of
-// a free-form Message. It injects a synthetic final_answer tool whose JSON schema is
-// derived from T (via the schema package) and instructs the model to call it once, with
-// the structured answer, when its work is done. Real tools still run first, so a
-// tool-using agent can do work and then answer typed. The first final_answer call the tool
-// accepts ends the run: the model is not asked for another turn.
-//
-// The answer is the arguments the final_answer tool accepted: what it received, after any tool
-// middleware (a middleware that rewrites arguments rewrites the answer, as it would for any
-// tool). The tool decodes them strictly as T (see Func: a missing required field, an unknown or
-// case-variant name, a duplicate name, and so on are a tool error the model corrects) and
-// journals them as its result, {"accepted": <arguments>}. RunTyped reads that JOURNALED result,
-// not a value captured live, so it is resume-safe: on resume, or when the run already finished,
-// the answer is recovered from the log without re-running anything. (A run journaled before
-// final_answer recorded its arguments has the result {}; its answer is the model's arguments,
-// decoded with encoding/json as the tool then accepted them.)
-//
-// Only if the model never makes an accepted final_answer call (it answers in plain text
-// instead) does RunTyped parse the text of the run's final turn (the message Run returns) as T,
-// strictly too; a text that does not decode is ErrProtocol.
-//
-// T must be a type whose schema is a JSON object (a struct, a pointer to one, or a map): the
-// answer is a tool call's arguments, which providers take only as an object. Any other T is an
-// ErrConfig before the run starts. Because Go methods cannot add type parameters, this is a
-// package function: agent.RunTyped[MyResult](ctx, a, id, in).
-func RunTyped[T any](ctx context.Context, a *Agent, runID, input string) (T, error) {
-	v, _, err := runTyped[T](ctx, a, runID, &driveSpec{input: ptrMessage(UserText(input)), strictSaga: true}, OutputTool, nil)
-	return v, err
-}
-
 func ptrMessage(m Message) *Message { return &m }
 
 // typedAgent returns the agent that drives a's typed run of T in mode, and the run's typed start:
@@ -199,18 +169,6 @@ func readAnswer(result, args json.RawMessage, out any) error {
 	return decodeArgs(rec.Accepted, out)
 }
 
-// RunTypedNative is like RunTyped but uses the provider's NATIVE structured-output
-// constraint (a JSON-schema response format) instead of the injected final_answer tool:
-// it sets Request.ResponseFormat from T's schema and decodes the model's direct JSON
-// output. Prefer it on OpenAI-compatible providers with strict structured outputs (schema
-// adherence is enforced provider-side, no tool round-trip). An adapter that does not support
-// response formats (Anthropic) fails the run with ErrConfig before calling the model; use
-// the provider-agnostic RunTyped there. Package function (Go methods can't add type parameters).
-func RunTypedNative[T any](ctx context.Context, a *Agent, runID, input string) (T, error) {
-	v, _, err := runTyped[T](ctx, a, runID, &driveSpec{input: ptrMessage(UserText(input)), strictSaga: true}, OutputNative, nil)
-	return v, err
-}
-
 // clone returns a copy of the agent that shares nothing mutable with it. The tool set, specs map,
 // middleware lists and retrievals are the copy's own, so adding to either agent's never reaches
 // the other's. Everything else is shared: the model, store, tools and functions are values the
@@ -251,17 +209,41 @@ func injectSystem(s string) Middleware {
 	}
 }
 
-// RunTypedMessage runs the agent to the end of runID's run like RunMessage, and returns its answer
-// as a T, with the run's Result (whose Output is the answer as journaled). Its output mode
-// (WithOutputMode) is OutputTool by default: see RunTyped for how the final_answer tool collects
-// and decodes the answer; OutputNative uses the provider's native structured output instead (see
-// RunTypedNative). The mode and T's schema (in full and as a digest) are journaled in run:start:
-// driving a typed run through RunMessage or ResumeRun, or with another T or mode, is ErrConfig
-// before any model call. Recovery resumes a typed run with ResumeTyped[T].
+// RunTyped runs the agent to the end of runID's run like Run, and returns its answer as a T
+// instead of a free-form Message, with the run's Result (whose Output is the answer as
+// journaled). It injects a synthetic final_answer tool whose JSON schema is
+// derived from T (via the schema package) and instructs the model to call it once, with
+// the structured answer, when its work is done. Real tools still run first, so a
+// tool-using agent can do work and then answer typed. The first final_answer call the tool
+// accepts ends the run: the model is not asked for another turn.
 //
-// Deprecated: transitional; renamed by the 1.0 rewrite. RunTypedMessage becomes the method
-// RunTyped, and the package functions RunTyped and RunTypedNative are removed.
-func (a *Agent) RunTypedMessage[T any](ctx context.Context, runID string, input Message, opts ...RunOption) (T, *Result, error) {
+// The answer is the arguments the final_answer tool accepted: what it received, after any tool
+// middleware (a middleware that rewrites arguments rewrites the answer, as it would for any
+// tool). The tool decodes them strictly as T (see Func: a missing required field, an unknown or
+// case-variant name, a duplicate name, and so on are a tool error the model corrects) and
+// journals them as its result, {"accepted": <arguments>}. RunTyped reads that JOURNALED result,
+// not a value captured live, so it is resume-safe: on resume, or when the run already finished,
+// the answer is recovered from the log without re-running anything. (A run journaled before
+// final_answer recorded its arguments has the result {}; its answer is the model's arguments,
+// decoded with encoding/json as the tool then accepted them.)
+//
+// Only if the model never makes an accepted final_answer call (it answers in plain text
+// instead) does RunTyped parse the text of the run's final turn (the message Run returns) as T,
+// strictly too; a text that does not decode is ErrProtocol.
+//
+// T must be a type whose schema is a JSON object (a struct, a pointer to one, or a map): the
+// answer is a tool call's arguments, which providers take only as an object. Any other T is an
+// ErrConfig before the run starts.
+//
+// The output mode (WithOutputMode) is OutputTool by default: the final_answer tool collects the
+// answer as above. OutputNative uses the provider's native structured output instead (a JSON-schema
+// response format, Request.ResponseFormat, from T's schema), decoding the model's direct JSON
+// output: prefer it on providers with strict structured outputs; an adapter that does not support
+// response formats fails the run with ErrConfig before calling the model. The mode and T's schema
+// (in full and as a digest) are journaled in run:start: driving a typed run through Run or Resume,
+// or with another T or mode, is ErrConfig before any model call. Recovery resumes a typed run with
+// ResumeTyped[T].
+func (a *Agent) RunTyped[T any](ctx context.Context, runID string, input Message, opts ...RunOption) (T, *Result, error) {
 	var zero T
 	if err := checkRunID(ctx, runID); err != nil {
 		return zero, nil, err

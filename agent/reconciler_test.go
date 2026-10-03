@@ -106,7 +106,7 @@ func TestResumeHalt_AttemptedAt(t *testing.T) {
 
 	var calls int
 	write := &countingTool{name: "charge", safety: Safety{}, calls: &calls} // not retry-safe
-	_, err := mustNew(&scriptModel{}, store, WithTools(write)).Run(ctx, "r", "hi")
+	_, err := mustNew(&scriptModel{}, store, WithTools(write)).Run(ctx, "r", UserText("hi"))
 
 	var halt *ResumeHalt
 	if !errors.As(err, &halt) {

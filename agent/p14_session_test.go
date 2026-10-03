@@ -6,6 +6,7 @@ import (
 	"testing"
 
 	"github.com/bide-ai/bide/agent"
+	"github.com/bide-ai/bide/agent/agenttest"
 )
 
 // Rule 16 (S3, model 12's findings/s3-cancel-wedge): Cancel of an open Send turn's run does not
@@ -22,7 +23,7 @@ func TestP14Rule16_CancelledTurnIsClosed(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	_, err = s.Send(ctx, "x")
+	_, err = s.Send(ctx, agent.UserText("x"))
 	pa, ok := errors.AsType[*agent.ApprovalPending](err)
 	if !ok {
 		t.Fatalf("Send(x) = %v, want the approval pause", err)
@@ -30,13 +31,17 @@ func TestP14Rule16_CancelledTurnIsClosed(t *testing.T) {
 	if err := agent.Cancel(ctx, j, pa.RunID, "operator"); err != nil {
 		t.Fatalf("Cancel of the turn's run = %v", err)
 	}
-	if _, err := s.Send(ctx, "x"); !errors.Is(err, agent.ErrRunCancelled) {
+	if _, err := s.Send(ctx, agent.UserText("x")); !errors.Is(err, agent.ErrRunCancelled) {
 		t.Fatalf("Send(x) again = %v, want ErrRunCancelled", err)
 	}
 	// "y" is a new message, and its model turn answers at once (the model has seen no assistant
 	// turn in y's run).
 	model.turns = []p14Turn{{text: "answer to y"}}
-	got, err := s.Send(ctx, "y")
+	res, err := s.Send(ctx, agent.UserText("y"))
+	var got agent.Message
+	if res != nil {
+		got = res.Message
+	}
 	if err != nil || got.Text() != "answer to y" {
 		t.Fatalf("Send(y) = %q, %v; want y answered once x's cancelled turn is closed", got.Text(), err)
 	}
@@ -54,7 +59,7 @@ func TestP14Rule16_CancelledTurnIsClosed(t *testing.T) {
 		t.Fatalf("history = %v, want only y's turn", h)
 	}
 	// x's turn is closed: sending x again opens a new turn, which the model answers.
-	if got, err := s2.Send(ctx, "x"); err != nil || got.Text() != "answer to y" {
+	if got, err := agenttest.Answer(s2.Send(ctx, agent.UserText("x"))); err != nil || got.Text() != "answer to y" {
 		t.Fatalf("Send(x) after the close = %q, %v; want a new turn answered", got.Text(), err)
 	}
 }
@@ -70,14 +75,14 @@ func TestP14_SessionSendMessage(t *testing.T) {
 		t.Fatal(err)
 	}
 	in := agent.UserParts(agent.Text{Text: "look"}, agent.ImageData("image/png", []byte{1, 2}))
-	res, err := s.SendMessage(ctx, in, agent.WithSystemPrompt("be brief"))
+	res, err := s.Send(ctx, in, agent.WithSystemPrompt("be brief"))
 	if err != nil || res == nil || res.Message.Text() != "seen" {
 		t.Fatalf("SendMessage = %+v, %v", res, err)
 	}
 	if systemText(model.lastReq(t)) != "be brief" {
 		t.Fatal("the turn did not run under its run option")
 	}
-	res, err = s.SendMessageOnce(ctx, "evt-1", agent.UserText("hi"))
+	res, err = s.SendOnce(ctx, "evt-1", agent.UserText("hi"))
 	if err != nil || res.Message.Text() != "seen" {
 		t.Fatalf("SendMessageOnce = %+v, %v", res, err)
 	}

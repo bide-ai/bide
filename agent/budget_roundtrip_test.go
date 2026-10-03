@@ -55,7 +55,7 @@ func readOnly() agent.Tool {
 // check: its Load read the run.
 func TestBudget_FirstDriveAndCompletion(t *testing.T) {
 	j, cs, _ := countingJournal(t)
-	if _, err := agenttest.MustNew(agent.NewScriptedModel(agent.TextTurn("done")), j).Run(context.Background(), "r", "hi"); err != nil {
+	if _, err := agenttest.MustNew(agent.NewScriptedModel(agent.TextTurn("done")), j).Run(context.Background(), "r", agent.UserText("hi")); err != nil {
 		t.Fatal(err)
 	}
 	wantCounts(t, cs, "first drive, one turn, completion",
@@ -77,7 +77,7 @@ func TestBudget_ToolCalls(t *testing.T) {
 		t.Run(c.name, func(t *testing.T) {
 			j, cs, _ := countingJournal(t)
 			m := agent.NewScriptedModel(agent.ToolTurn("c1", c.tool.Name(), `{}`), agent.TextTurn("done"))
-			if _, err := agenttest.MustNew(m, j, agent.WithTools(c.tool)).Run(context.Background(), "r", "hi"); err != nil {
+			if _, err := agenttest.MustNew(m, j, agent.WithTools(c.tool)).Run(context.Background(), "r", agent.UserText("hi")); err != nil {
 				t.Fatal(err)
 			}
 			want := append([]string{"insert @journal", "insert run:start", "get @llm/0", "insert @llm/0"}, c.want...)
@@ -101,13 +101,13 @@ func TestBudget_Resume(t *testing.T) {
 	if _, err := agent.Step(ctx, j, "r", "warm", func(context.Context) (int, error) { return 1, nil }, agent.WithSafety(agent.Safety{ReadOnly: true})); err != nil {
 		t.Fatal(err)
 	}
-	if _, err := a.Run(ctx, "r", "hi"); err != nil {
+	if _, err := a.Run(ctx, "r", agent.UserText("hi")); err != nil {
 		t.Fatal(err)
 	}
 	n := len(must(agenttest.MustJournal(m).History(ctx, "r")))
 	cs.Reset()
 
-	if _, err := a.Run(ctx, "r", "hi"); err != nil {
+	if _, err := a.Run(ctx, "r", agent.UserText("hi")); err != nil {
 		t.Fatal(err)
 	}
 	wantCounts(t, cs, "resume of a finished run, same Journal", nil, 1, n)
@@ -116,7 +116,7 @@ func TestBudget_Resume(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if _, err := agenttest.MustNew(agent.NewScriptedModel(agent.TextTurn("done")), cold, agent.WithTools(sideEffect())).Run(ctx, "r", "hi"); err != nil {
+	if _, err := agenttest.MustNew(agent.NewScriptedModel(agent.TextTurn("done")), cold, agent.WithTools(sideEffect())).Run(ctx, "r", agent.UserText("hi")); err != nil {
 		t.Fatal(err)
 	}
 	wantCounts(t, cs, "resume of a finished run, new Journal", nil, 1, n)
@@ -137,7 +137,7 @@ func TestBudget_Resume(t *testing.T) {
 		t.Fatal(err)
 	}
 	cs.Reset()
-	_, err = a.Run(ctx, "h", "hi")
+	_, err = a.Run(ctx, "h", agent.UserText("hi"))
 	var halt *agent.ResumeHalt
 	if !errors.As(err, &halt) {
 		t.Fatalf("resume = %v, want the halt", err)

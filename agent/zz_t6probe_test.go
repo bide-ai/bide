@@ -50,10 +50,10 @@ func TestT6_CacheAnswerWhileEarlierDriveInvocationRuns(t *testing.T) {
 	st := memJournal()
 	m := NewScriptedModel(ToolTurn("c1", "charge", `{}`), ToolTurn("c2", "fail", `{}`), TextTurn("done"))
 	a := mustNew(m, st, WithTools(charge, fail), WithToolMiddleware(leak))
-	if _, err := a.RunSaga(ctx1, "r", "go"); err == nil {
+	if _, err := a.Run(ctx1, "r", UserText("go"), WithSaga()); err == nil {
 		t.Fatal("first drive: want the cancellation")
 	}
-	_, err := a.RunSaga(context.Background(), "r", "go")
+	_, err := a.Run(context.Background(), "r", UserText("go"), WithSaga())
 	close(release)
 	<-ran
 	var ab *SagaAborted

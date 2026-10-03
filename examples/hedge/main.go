@@ -40,7 +40,11 @@ func (m stub) Stream(ctx context.Context, _ agent.Request) (*agent.Stream, error
 
 func run(label string, a *agent.Agent) {
 	start := time.Now()
-	msg, err := a.Run(context.Background(), "run/"+label, "hello")
+	res, err := a.Run(context.Background(), "run/"+label, agent.UserText("hello"))
+	var msg agent.Message
+	if res != nil {
+		msg = res.Message
+	}
 	elapsed := time.Since(start).Round(time.Millisecond)
 	if err != nil {
 		fmt.Printf("%-28s FAILED after %v: %v\n", label, elapsed, err)

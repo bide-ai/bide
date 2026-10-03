@@ -75,7 +75,7 @@ func awaitScene() {
 		log.Fatal(err)
 	}
 
-	_, err = a.Run(ctx, runID, "Wait for approval, then confirm.")
+	_, err = a.Run(ctx, runID, agent.UserText("Wait for approval, then confirm."))
 	awt, ok := errors.AsType[*agent.SignalPending](err)
 	if !ok {
 		log.Fatalf("expected *SignalPending, got %v", err)
@@ -90,10 +90,11 @@ func awaitScene() {
 	if err != nil {
 		log.Fatal(err)
 	}
-	out, err := ag.Run(ctx, runID, "Wait for approval, then confirm.")
+	res, err := ag.Run(ctx, runID, agent.UserText("Wait for approval, then confirm."))
 	if err != nil {
 		log.Fatalf("resume: %v", err)
 	}
+	out := res.Message
 	fmt.Printf("  resumed: tool observed the signal, final answer: %s\n\n", out.Text())
 }
 
@@ -127,7 +128,7 @@ func awaitForScene() {
 
 	// First Run journals the 1ms deadline and pauses; by the resume the deadline has passed
 	// and no signal arrived, so AwaitFor returns (zero, false, nil): the timeout wins.
-	if _, err := a.Run(ctx, runID, "Wait briefly."); err != nil {
+	if _, err := a.Run(ctx, runID, agent.UserText("Wait briefly.")); err != nil {
 		if !agent.IsPause(err) {
 			log.Fatalf("first run: %v", err)
 		}
@@ -137,7 +138,7 @@ func awaitForScene() {
 	if err != nil {
 		log.Fatal(err)
 	}
-	if _, err = ag.Run(ctx, runID, "Wait briefly."); err != nil {
+	if _, err = ag.Run(ctx, runID, agent.UserText("Wait briefly.")); err != nil {
 		log.Fatalf("resume: %v", err)
 	}
 	recs, _ := store.History(ctx, runID)
@@ -191,7 +192,7 @@ func channelScene() {
 	if err != nil {
 		log.Fatal(err)
 	}
-	if _, err := a.Run(ctx, runID, "Drain the channel."); err != nil {
+	if _, err := a.Run(ctx, runID, agent.UserText("Drain the channel.")); err != nil {
 		log.Fatalf("run: %v", err)
 	}
 	recs, _ := store.History(ctx, runID)

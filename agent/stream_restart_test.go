@@ -11,7 +11,7 @@ import (
 
 // renderTurns ranges a stream the way a UI does: it appends each text delta and clears the
 // turn's text on TurnRestarted. It returns the rendered text and the TurnRestarted events.
-func renderTurns(t *testing.T, as *AgentStream) (string, []TurnRestarted) {
+func renderTurns(t *testing.T, as *RunStream) (string, []TurnRestarted) {
 	t.Helper()
 	var text strings.Builder
 	var restarts []TurnRestarted
@@ -48,12 +48,13 @@ func TestStream_RetriedTurnMarksDiscardedDeltas(t *testing.T) {
 		{{Event: TextDelta{Text: "partial "}}, {Err: errors.New("connection reset")}},
 		textTurn("complete"),
 	}}
-	as := mustNew(m, memJournal(), WithMiddleware(retryOnceMW)).Stream(context.Background(), "r", "go")
+	as := mustNew(m, memJournal(), WithMiddleware(retryOnceMW)).Stream(context.Background(), "r", UserText("go"))
 	rendered, restarts := renderTurns(t, as)
-	final, err := as.Final()
+	res, err := as.Result()
 	if err != nil {
 		t.Fatalf("Final: %v", err)
 	}
+	final := res.Message
 	if rendered != final.Text() {
 		t.Fatalf("the consumer rendered %q but the run recorded %q", rendered, final.Text())
 	}
@@ -77,12 +78,13 @@ func TestStream_FallbackResponseMarksDiscardedDeltas(t *testing.T) {
 			return ModelResponse{Message: Message{Role: RoleAssistant, Parts: []Part{Text{Text: "fallback"}}}}, nil
 		}
 	}
-	as := mustNew(m, memJournal(), WithMiddleware(fallback)).Stream(context.Background(), "r", "go")
+	as := mustNew(m, memJournal(), WithMiddleware(fallback)).Stream(context.Background(), "r", UserText("go"))
 	rendered, restarts := renderTurns(t, as)
-	final, err := as.Final()
+	res, err := as.Result()
 	if err != nil {
 		t.Fatalf("Final: %v", err)
 	}
+	final := res.Message
 	if rendered != final.Text() {
 		t.Fatalf("the consumer rendered %q but the run recorded %q", rendered, final.Text())
 	}
@@ -114,12 +116,13 @@ func TestStream_RestartOnlyAfterStreamedDeltas(t *testing.T) {
 		errTurn(errors.New("refused")),                                 // turn 1, second attempt: fails before streaming
 		textTurn("done"),
 	}}
-	as := mustNew(m, memJournal(), WithTools(tool), WithMiddleware(retryTwiceMW)).Stream(context.Background(), "r", "go")
+	as := mustNew(m, memJournal(), WithTools(tool), WithMiddleware(retryTwiceMW)).Stream(context.Background(), "r", UserText("go"))
 	rendered, restarts := renderTurns(t, as)
-	final, err := as.Final()
+	res, err := as.Result()
 	if err != nil {
 		t.Fatalf("Final: %v", err)
 	}
+	final := res.Message
 	if len(restarts) != 1 || restarts[0].Seq != 1 {
 		t.Fatalf("restarts = %+v, want one TurnRestarted{Seq: 1}", restarts)
 	}
@@ -168,7 +171,7 @@ func chanOf(es ...Emit) <-chan Emit {
 // once it is over.
 func TestStream_RetryStreamsLive(t *testing.T) {
 	m := &liveRetryModel{sawA: make(chan struct{}), timeout: 5 * time.Second}
-	as := mustNew(m, memJournal(), WithMiddleware(retryOnceMW)).Stream(context.Background(), "r", "go")
+	as := mustNew(m, memJournal(), WithMiddleware(retryOnceMW)).Stream(context.Background(), "r", UserText("go"))
 	var got []string
 	for ev := range as.Events() {
 		switch e := ev.(type) {
@@ -183,7 +186,7 @@ func TestStream_RetryStreamsLive(t *testing.T) {
 			got = append(got, "restart")
 		}
 	}
-	if _, err := as.Final(); err != nil {
+	if _, err := as.Result(); err != nil {
 		t.Fatal(err)
 	}
 	if want := []string{"partial", "restart", "a", "b"}; fmt.Sprint(got) != fmt.Sprint(want) {

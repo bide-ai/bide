@@ -53,7 +53,7 @@ func TestModelVisibleJSON_NotHTMLEscaped(t *testing.T) {
 		tool := Func("t", "", Safety{ReadOnly: true}, func(context.Context, struct{}) (out, error) {
 			return out{HTML: "<b>a & b</b>"}, nil
 		})
-		if _, err := mustNew(m, memJournal(), WithTools(tool)).Run(ctx, "r", "go"); err != nil {
+		if _, err := mustNew(m, memJournal(), WithTools(tool)).Run(ctx, "r", UserText("go")); err != nil {
 			t.Fatal(err)
 		}
 		if got := m.results(); len(got) != 1 || got[0] != `{"html":"<b>a & b</b>"}` {
@@ -66,7 +66,7 @@ func TestModelVisibleJSON_NotHTMLEscaped(t *testing.T) {
 		tool := Func("t", "", Safety{ReadOnly: true}, func(context.Context, struct{}) (string, error) {
 			return "", errors.New("bad <input> & more")
 		})
-		if _, err := mustNew(m, memJournal(), WithTools(tool)).Run(ctx, "r", "go"); err != nil {
+		if _, err := mustNew(m, memJournal(), WithTools(tool)).Run(ctx, "r", UserText("go")); err != nil {
 			t.Fatal(err)
 		}
 		if got := m.results(); len(got) != 1 || got[0] != `"bad <input> & more"` {
@@ -77,7 +77,7 @@ func TestModelVisibleJSON_NotHTMLEscaped(t *testing.T) {
 	t.Run("sub-agent answer", func(t *testing.T) {
 		m := &lastToolResultModel{script: NewScriptedModel(ToolTurn("c1", "t", `{"task":"go"}`), TextTurn("done"))}
 		child := mustNew(NewScriptedModel(TextTurn("<ok> & done")), memJournal())
-		if _, err := mustNew(m, memJournal(), WithTools(SubAgent("t", "", child))).Run(ctx, "r", "go"); err != nil {
+		if _, err := mustNew(m, memJournal(), WithTools(SubAgent("t", "", child))).Run(ctx, "r", UserText("go")); err != nil {
 			t.Fatal(err)
 		}
 		if got := m.results(); len(got) != 1 || got[0] != `"<ok> & done"` {
@@ -103,7 +103,7 @@ func TestModelVisibleJSON_NotHTMLEscaped(t *testing.T) {
 		if err := ResolveHalt(ctx, store, "r", "c1", "charged <id=7> & sent", false); err != nil {
 			t.Fatal(err)
 		}
-		if _, err := mustNew(m, store, WithTools(tool)).Run(ctx, "r", "go"); err != nil {
+		if _, err := mustNew(m, store, WithTools(tool)).Run(ctx, "r", UserText("go")); err != nil {
 			t.Fatal(err)
 		}
 		if got := m.results(); len(got) != 1 || got[0] != `"charged <id=7> & sent"` {

@@ -198,8 +198,14 @@ func TestGovernor_TwoRealAgentsConverge(t *testing.T) {
 
 		var wg sync.WaitGroup
 		wg.Add(2)
-		go func() { defer wg.Done(); _, _ = payAgent.Run(context.Background(), "pay-run", "pay the order") }()
-		go func() { defer wg.Done(); _, _ = invAgent.Run(context.Background(), "inv-run", "restock") }()
+		go func() {
+			defer wg.Done()
+			_, _ = payAgent.Run(context.Background(), "pay-run", agent.UserText("pay the order"))
+		}()
+		go func() {
+			defer wg.Done()
+			_, _ = invAgent.Run(context.Background(), "inv-run", agent.UserText("restock"))
+		}()
 		wg.Wait()
 
 		// payment ⊥ restock (proven) → converges regardless of which agent's tool landed first.

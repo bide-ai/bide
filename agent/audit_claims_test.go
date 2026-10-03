@@ -28,12 +28,12 @@ func TestAuditReadsClaimBookkeeping(t *testing.T) {
 	// attempt:retry:1. c2: claim taken back and held.
 	s := &r3Store{m: m, faults: []r3Fault{{"attempt:tool:c1", "c"}}}
 	j, _ := agent.NewJournal(s)
-	_, err := agenttest.MustNew(model(), j, agent.WithTools(charge), agent.WithMaxConcurrency(1)).Run(ctx, "r", "hi")
+	_, err := agenttest.MustNew(model(), j, agent.WithTools(charge), agent.WithMaxConcurrency(1)).Run(ctx, "r", agent.UserText("hi"))
 	t.Logf("drive 1: %v", err)
 	s.faults = []r3Fault{{"attempt:tool:c2", "nc"}, {"attempt:not-started:", "nc"}}
-	_, err = agenttest.MustNew(model(), j, agent.WithTools(charge), agent.WithMaxConcurrency(1)).Run(ctx, "r", "hi")
+	_, err = agenttest.MustNew(model(), j, agent.WithTools(charge), agent.WithMaxConcurrency(1)).Run(ctx, "r", agent.UserText("hi"))
 	t.Logf("drive 2: %v", err)
-	_, err = agenttest.MustNew(model(), j, agent.WithTools(charge), agent.WithMaxConcurrency(1)).Run(ctx, "r", "hi")
+	_, err = agenttest.MustNew(model(), j, agent.WithTools(charge), agent.WithMaxConcurrency(1)).Run(ctx, "r", agent.UserText("hi"))
 	t.Logf("drive 3: %v; fired %d", err, fired)
 	r3Dump(t, m, "r")
 	if fired != 2 {

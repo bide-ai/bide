@@ -36,7 +36,7 @@ func testResultAfterTheDeadlineIsRecorded(t *testing.T) {
 	charge := lateTool("charge", Safety{}, &calls, func(context.Context) (string, error) { return "charged", nil }, WithTimeout(time.Millisecond))
 	store := memJournal()
 	m := NewScriptedModel(ToolTurn("c1", "charge", `{}`), TextTurn("done"))
-	if _, err := mustNew(m, store, WithTools(charge)).Run(context.Background(), "r1", "pay"); err != nil {
+	if _, err := mustNew(m, store, WithTools(charge)).Run(context.Background(), "r1", UserText("pay")); err != nil {
 		t.Fatalf("Run: %v", err)
 	}
 	rec, ok := hasStep(t, store, "r1", ToolResultStep("c1"))
@@ -60,14 +60,14 @@ func TestTimeout_LateErrorHaltsASideEffect(t *testing.T) {
 				charge := lateTool("charge", Safety{}, &calls, answer, WithTimeout(time.Millisecond))
 				store := memJournal()
 				m := NewScriptedModel(ToolTurn("c1", "charge", `{}`), TextTurn("done"))
-				_, err := mustNew(m, store, WithTools(charge)).Run(context.Background(), "r1", "pay")
+				_, err := mustNew(m, store, WithTools(charge)).Run(context.Background(), "r1", UserText("pay"))
 				if !errors.Is(err, ErrToolOutcomeUnknown) || !strings.Contains(err.Error(), "timeout") {
 					t.Fatalf("Run: err = %v, want ErrToolOutcomeUnknown naming the timeout", err)
 				}
 				if _, ok := hasStep(t, store, "r1", ToolResultStep("c1")); ok {
 					t.Fatal("a result was recorded for a call whose outcome is unknown")
 				}
-				_, err = mustNew(m, store, WithTools(charge)).Run(context.Background(), "r1", "pay")
+				_, err = mustNew(m, store, WithTools(charge)).Run(context.Background(), "r1", UserText("pay"))
 				var halt *OutcomeUnknown
 				if !errors.As(err, &halt) || halt.Op.ID != "c1" {
 					t.Fatalf("resume: err = %v, want *OutcomeUnknown for c1", err)
@@ -91,7 +91,7 @@ func testLateErrorOfARetrySafeToolIsRecorded(t *testing.T) {
 	lookup := lateTool("lookup", Safety{Idempotent: true}, &calls, func(ctx context.Context) (string, error) { return "", ctx.Err() }, WithTimeout(time.Millisecond))
 	store := memJournal()
 	m := NewScriptedModel(ToolTurn("c1", "lookup", `{}`), TextTurn("done"))
-	if _, err := mustNew(m, store, WithTools(lookup)).Run(context.Background(), "r1", "q"); err != nil {
+	if _, err := mustNew(m, store, WithTools(lookup)).Run(context.Background(), "r1", UserText("q")); err != nil {
 		t.Fatalf("Run: %v", err)
 	}
 	rec, ok := hasStep(t, store, "r1", ToolResultStep("c1"))
@@ -108,7 +108,7 @@ func TestTimeout_ErrorBeforeTheDeadlineIsAFailure(t *testing.T) {
 	}, WithTimeout(time.Hour))
 	store := memJournal()
 	m := NewScriptedModel(ToolTurn("c1", "charge", `{}`), TextTurn("done"))
-	if _, err := mustNew(m, store, WithTools(charge)).Run(context.Background(), "r1", "pay"); err != nil {
+	if _, err := mustNew(m, store, WithTools(charge)).Run(context.Background(), "r1", UserText("pay")); err != nil {
 		t.Fatalf("Run: %v", err)
 	}
 	if rec, ok := hasStep(t, store, "r1", ToolResultStep("c1")); !ok || !rec.IsError || !strings.Contains(string(rec.Result), "declined") {
@@ -128,7 +128,7 @@ func TestTimeout_TheCallSeesTheDeadline(t *testing.T) {
 		return "ok", nil
 	}, WithTimeout(time.Hour))
 	m := NewScriptedModel(ToolTurn("c1", "lookup", `{}`), TextTurn("done"))
-	if _, err := mustNew(m, memJournal(), WithTools(lookup)).Run(context.Background(), "r1", "q"); err != nil {
+	if _, err := mustNew(m, memJournal(), WithTools(lookup)).Run(context.Background(), "r1", UserText("q")); err != nil {
 		t.Fatalf("Run: %v", err)
 	}
 	if left <= 59*time.Minute || left > time.Hour {
@@ -144,13 +144,13 @@ func TestToolResult_RecordsSafetyAndApproval(t *testing.T) {
 	store := memJournal()
 	m := NewScriptedModel(ToolTurn("c1", "lookup", `{}`), ToolTurn("c2", "charge", `{}`), TextTurn("done"))
 	a := mustNew(m, store, WithTools(lookup, charge))
-	if _, err := a.Run(ctx, "r1", "pay"); !IsPause(err) {
+	if _, err := a.Run(ctx, "r1", UserText("pay")); !IsPause(err) {
 		t.Fatalf("first drive: %v, want the approval pause", err)
 	}
 	if err := Approve(ctx, store, "r1", "c2", true); err != nil {
 		t.Fatal(err)
 	}
-	if _, err := a.Run(ctx, "r1", "pay"); err != nil {
+	if _, err := a.Run(ctx, "r1", UserText("pay")); err != nil {
 		t.Fatalf("resume: %v", err)
 	}
 	for id, want := range map[string]string{
@@ -191,7 +191,7 @@ func TestSubAgent_WithApprovalPauses(t *testing.T) {
 	delegate := SubAgent("research", "delegate research", sub, WithApproval(SingleApproval()))
 	m := NewScriptedModel(ToolTurn("c1", "research", `{"task":"find it"}`), TextTurn("done"))
 	parent := mustNew(m, store, WithTools(delegate))
-	_, err := parent.Run(ctx, "r1", "go")
+	_, err := parent.Run(ctx, "r1", UserText("go"))
 	var pa *ApprovalPending
 	if !errors.As(err, &pa) || pa.ToolName != "research" || pa.ToolUseID != "c1" {
 		t.Fatalf("Run: err = %v, want *ApprovalPending for the delegation", err)
@@ -202,7 +202,7 @@ func TestSubAgent_WithApprovalPauses(t *testing.T) {
 	if err := Approve(ctx, store, "r1", "c1", true); err != nil {
 		t.Fatal(err)
 	}
-	if _, err := parent.Run(ctx, "r1", "go"); err != nil {
+	if _, err := parent.Run(ctx, "r1", UserText("go")); err != nil {
 		t.Fatalf("resume: %v", err)
 	}
 	if subCalls.Load() != 1 {
@@ -341,7 +341,7 @@ func TestSpec_ReadOnceAtRegistration(t *testing.T) {
 		WithTools(fickleTool{asked: &asked, calls: &calls}),
 		WithToolMiddleware(naiveRetry(3, false)),
 	)
-	if _, err := a.Run(context.Background(), "r1", "pay"); err != nil {
+	if _, err := a.Run(context.Background(), "r1", UserText("pay")); err != nil {
 		t.Fatal(err)
 	}
 	if calls.Load() != 1 || asked.Load() != 1 {
@@ -372,7 +372,7 @@ func TestRequestTools_SortedAndOwnedPerRequest(t *testing.T) {
 		}
 	}
 	m := NewScriptedModel(ToolTurn("c1", "a", `{}`), TextTurn("done"))
-	if _, err := mustNew(m, memJournal(), WithTools(b, a), WithMiddleware(mw)).Run(context.Background(), "r1", "q"); err != nil {
+	if _, err := mustNew(m, memJournal(), WithTools(b, a), WithMiddleware(mw)).Run(context.Background(), "r1", UserText("q")); err != nil {
 		t.Fatal(err)
 	}
 	if len(seen) != 2 || !slices.Equal(seen[0], []string{"a", "b"}) || !slices.Equal(seen[1], []string{"a", "b"}) {
@@ -389,13 +389,13 @@ func TestDenialAndSagaFailure_RecordSafetyAndApproval(t *testing.T) {
 	charge := Func("charge", "", Safety{}, fn, WithApproval(SingleApproval()))
 	m := NewScriptedModel(ToolTurn("c1", "charge", `{}`), TextTurn("done"))
 	a := mustNew(m, store, WithTools(charge))
-	if _, err := a.Run(ctx, "r1", "pay"); !IsPause(err) {
+	if _, err := a.Run(ctx, "r1", UserText("pay")); !IsPause(err) {
 		t.Fatalf("first drive: %v, want the approval pause", err)
 	}
 	if err := Approve(ctx, store, "r1", "c1", false); err != nil {
 		t.Fatal(err)
 	}
-	if _, err := a.Run(ctx, "r1", "pay"); err != nil {
+	if _, err := a.Run(ctx, "r1", UserText("pay")); err != nil {
 		t.Fatalf("resume: %v", err)
 	}
 	if rec, ok := hasStep(t, store, "r1", ToolResultStep("c1")); !ok || !rec.IsError || !strings.Contains(string(rec.Raw()), `"safety":{},"approval":{"single":true}`) {
@@ -407,12 +407,12 @@ func TestDenialAndSagaFailure_RecordSafetyAndApproval(t *testing.T) {
 	}, WithApproval(&ApprovalPolicy{Need: 1, Approvers: []string{"ops"}}))
 	sm := NewScriptedModel(ToolTurn("b1", "book", `{}`), TextTurn("done"))
 	sa := mustNew(sm, store, WithTools(book), WithApproverVerifiers(fakeVerifiers("ops")))
-	if _, err := sa.RunSaga(ctx, "s1", "trip"); !IsPause(err) {
+	if _, err := sa.Run(ctx, "s1", UserText("trip"), WithSaga()); !IsPause(err) {
 		t.Fatalf("saga first drive: %v, want the quorum pause", err)
 	}
 	approveAs(t, store, "s1", "b1", "ops", true)
 	var aborted *SagaAborted
-	if _, err := sa.RunSaga(ctx, "s1", "trip"); !errors.As(err, &aborted) {
+	if _, err := sa.Run(ctx, "s1", UserText("trip"), WithSaga()); !errors.As(err, &aborted) {
 		t.Fatalf("saga resume: %v, want *SagaAborted", err)
 	}
 	recs, err := store.History(ctx, "s1")

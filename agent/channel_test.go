@@ -54,7 +54,7 @@ func TestChannel_OrderExactlyOnce(t *testing.T) {
 	m := &scriptModel{turns: [][]Emit{toolTurn("c1", "drain", `{}`), textTurn("done")}}
 	a := mustNew(m, store, WithTools(tool))
 
-	_, err := a.Run(ctx, "r", "hi")
+	_, err := a.Run(ctx, "r", UserText("hi"))
 	var awt *Awaiting
 	if !errors.As(err, &awt) {
 		t.Fatalf("err = %v, want *Awaiting after draining", err)
@@ -113,7 +113,7 @@ func TestChannel_EmptyPausesThenResumes(t *testing.T) {
 	m := &scriptModel{turns: [][]Emit{toolTurn("c1", "drain", `{}`), textTurn("done")}}
 	a := mustNew(m, store, WithTools(tool))
 
-	_, err := a.Run(ctx, "r", "hi") // channel empty: pauses immediately
+	_, err := a.Run(ctx, "r", UserText("hi")) // channel empty: pauses immediately
 	var awt *Awaiting
 	if !errors.As(err, &awt) {
 		t.Fatalf("err = %v, want *Awaiting on empty channel", err)
@@ -129,7 +129,11 @@ func TestChannel_EmptyPausesThenResumes(t *testing.T) {
 		t.Fatalf("Send: %v", err)
 	}
 
-	out, err := a.Run(ctx, "r", "hi") // re-run: Receive now resolves, drains, then pauses again? no:
+	res, err := a.Run(ctx, "r", UserText("hi"))
+	var out Message
+	if res != nil {
+		out = res.Message
+	} // re-run: Receive now resolves, drains, then pauses again? no:
 	// after handling k1 the tool loops back, finds the channel drained, and pauses again. So the
 	// resolved-and-drained run pauses once more rather than completing. Assert it consumed k1.
 	var awt2 *Awaiting

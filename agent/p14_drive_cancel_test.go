@@ -21,7 +21,7 @@ func TestP14Rule02_DriveChecksCancelAtStart(t *testing.T) {
 	var c counter
 	model := &p14Model{turns: []p14Turn{{calls: []agent.ToolUse{call("c1", "pay")}}, {text: "done"}}}
 	a := p14Build(t, model, j, agent.WithTools(c.tool("pay", agent.Safety{}, agent.WithApproval(agent.SingleApproval()))))
-	res, err := a.RunMessage(ctx, "r", agent.UserText("go"))
+	res, err := a.Run(ctx, "r", agent.UserText("go"))
 	if _, ok := errors.AsType[*agent.ApprovalPending](err); !ok {
 		t.Fatalf("first drive = %v, want the approval pause", err)
 	}
@@ -33,7 +33,7 @@ func TestP14Rule02_DriveChecksCancelAtStart(t *testing.T) {
 		t.Fatal(err)
 	}
 	before := model.calls.Load()
-	res, err = a.RunMessage(ctx, "r", agent.UserText("go"))
+	res, err = a.Run(ctx, "r", agent.UserText("go"))
 	if !errors.Is(err, agent.ErrRunCancelled) || res == nil {
 		t.Fatalf("drive of a cancelled run = %v, %v; want ErrRunCancelled with a Result", res, err)
 	}
@@ -44,7 +44,7 @@ func TestP14Rule02_DriveChecksCancelAtStart(t *testing.T) {
 		t.Fatal("a cancelled run called the model or claimed a call")
 	}
 	// Whatever input it is given, as a finished run.
-	if _, err := a.RunMessage(ctx, "r", agent.UserText("other")); !errors.Is(err, agent.ErrRunCancelled) {
+	if _, err := a.Run(ctx, "r", agent.UserText("other")); !errors.Is(err, agent.ErrRunCancelled) {
 		t.Fatalf("drive with another input = %v, want ErrRunCancelled", err)
 	}
 }
@@ -63,7 +63,7 @@ func TestP14Rule02_DriveChecksCancelAtTurnBoundary(t *testing.T) {
 		{text: "done"},
 	}}
 	a := p14Build(t, model, j, agent.WithTools(lookup, c.tool("pay", agent.Safety{})))
-	res, err := a.RunMessage(ctx, "r", agent.UserText("go"))
+	res, err := a.Run(ctx, "r", agent.UserText("go"))
 	if !errors.Is(err, agent.ErrRunCancelled) || res == nil {
 		t.Fatalf("run = %v, %v; want ErrRunCancelled with a Result", res, err)
 	}
@@ -89,7 +89,7 @@ func TestP14Rule03_CheckAfterWonClaim(t *testing.T) {
 		{text: "done"},
 	}}
 	a := p14Build(t, model, j, agent.WithTools(c.tool("pay", agent.Safety{})))
-	res, err := a.RunMessage(ctx, "r", agent.UserText("go"))
+	res, err := a.Run(ctx, "r", agent.UserText("go"))
 	if !errors.Is(err, agent.ErrRunCancelled) || res == nil {
 		t.Fatalf("run = %v, %v; want ErrRunCancelled with a Result", res, err)
 	}
@@ -122,7 +122,7 @@ func TestP14Rule03_InFlightCallFinishes(t *testing.T) {
 	})
 	model := &p14Model{turns: []p14Turn{{calls: []agent.ToolUse{call("c1", "pay")}}, {text: "done"}}}
 	a := p14Build(t, model, j, agent.WithTools(pay))
-	if _, err := a.RunMessage(ctx, "r", agent.UserText("go")); !errors.Is(err, agent.ErrRunCancelled) {
+	if _, err := a.Run(ctx, "r", agent.UserText("go")); !errors.Is(err, agent.ErrRunCancelled) {
 		t.Fatalf("run = %v, want ErrRunCancelled", err)
 	}
 	if !has(t, m, "r", "tool:c1") {
@@ -140,14 +140,14 @@ func TestP14Rule04_DriveReadsBackEndMarkers(t *testing.T) {
 		writeMarker(t, m, "r", "run:cancelled", reason{"stop"})
 	}}}}
 	a := p14Build(t, model, j)
-	res, err := a.RunMessage(ctx, "r", agent.UserText("go"))
+	res, err := a.Run(ctx, "r", agent.UserText("go"))
 	if !errors.Is(err, agent.ErrRunCancelled) || res == nil {
 		t.Fatalf("run = %v, %v; want ErrRunCancelled: run:cancelled is the first end marker", res, err)
 	}
 	if res.Message.Text() != "" {
 		t.Fatalf("a cancelled run's Result carries the answer %q", res.Message.Text())
 	}
-	if _, err := a.RunMessage(ctx, "r", agent.UserText("go")); !errors.Is(err, agent.ErrRunCancelled) {
+	if _, err := a.Run(ctx, "r", agent.UserText("go")); !errors.Is(err, agent.ErrRunCancelled) {
 		t.Fatalf("later drive = %v, want ErrRunCancelled", err)
 	}
 }
@@ -159,11 +159,11 @@ func TestP14Rule04_CompleteFirstIsComplete(t *testing.T) {
 	j, m := p14Journal(t)
 	model := &p14Model{turns: []p14Turn{{text: "answer"}}}
 	a := p14Build(t, model, j)
-	if _, err := a.RunMessage(ctx, "r", agent.UserText("go")); err != nil {
+	if _, err := a.Run(ctx, "r", agent.UserText("go")); err != nil {
 		t.Fatal(err)
 	}
 	writeMarker(t, m, "r", "run:cancelled", reason{"late"})
-	res, err := a.RunMessage(ctx, "r", agent.UserText("go"))
+	res, err := a.Run(ctx, "r", agent.UserText("go"))
 	if err != nil || res.Message.Text() != "answer" {
 		t.Fatalf("drive = %v, %v; want the recorded answer", res, err)
 	}
@@ -186,11 +186,11 @@ func TestP14Rule05_SagaRollbackRequest(t *testing.T) {
 		{text: "done"},
 	}}
 	a := p14Build(t, model, j, agent.WithTools(book, c.tool("pay", agent.Safety{}, agent.WithApproval(agent.SingleApproval()))))
-	if _, err := a.RunMessage(ctx, "r", agent.UserText("go"), agent.WithSaga()); err == nil {
+	if _, err := a.Run(ctx, "r", agent.UserText("go"), agent.WithSaga()); err == nil {
 		t.Fatal("the saga did not pause for the approval")
 	}
 	writeMarker(t, m, "r", "run:cancel-requested", reason{"stop"})
-	res, err := a.ResumeRun(ctx, "r")
+	res, err := a.Resume(ctx, "r")
 	if !errors.Is(err, agent.ErrRunCancelled) || res == nil {
 		t.Fatalf("drive of a saga with a rollback request = %v, %v; want ErrRunCancelled", res, err)
 	}
@@ -216,7 +216,7 @@ func TestP14Rule05_SagaRequestAtTurnBoundary(t *testing.T) {
 		func(context.Context, struct{}, string) error { undone.n.Add(1); return nil })
 	model := &p14Model{turns: []p14Turn{{calls: []agent.ToolUse{call("c1", "book")}}, {text: "done"}}}
 	a := p14Build(t, model, j, agent.WithTools(book))
-	_, err := a.RunMessage(ctx, "r", agent.UserText("go"), agent.WithSaga())
+	_, err := a.Run(ctx, "r", agent.UserText("go"), agent.WithSaga())
 	if !errors.Is(err, agent.ErrRunCancelled) {
 		t.Fatalf("saga = %v, want ErrRunCancelled", err)
 	}
@@ -231,11 +231,11 @@ func TestP14Rule05_SagaCompleteBeforeRequest(t *testing.T) {
 	j, m := p14Journal(t)
 	model := &p14Model{turns: []p14Turn{{text: "done"}}}
 	a := p14Build(t, model, j)
-	if _, err := a.RunMessage(ctx, "r", agent.UserText("go"), agent.WithSaga()); err != nil {
+	if _, err := a.Run(ctx, "r", agent.UserText("go"), agent.WithSaga()); err != nil {
 		t.Fatal(err)
 	}
 	writeMarker(t, m, "r", "run:cancel-requested", reason{"late"})
-	res, err := a.ResumeRun(ctx, "r")
+	res, err := a.Resume(ctx, "r")
 	if err != nil || res.Message.Text() != "done" {
 		t.Fatalf("resume = %v, %v; want the completed answer", res, err)
 	}

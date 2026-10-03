@@ -54,8 +54,7 @@ func main() {
 	ctx, cancel := context.WithTimeout(context.Background(), 60*time.Second)
 	defer cancel()
 
-	stream := a.Stream(ctx, "stream-1",
-		"What's the weather in San Francisco? Use the get_weather tool, then answer in one sentence.")
+	stream := a.Stream(ctx, "stream-1", agent.UserText("What's the weather in San Francisco? Use the get_weather tool, then answer in one sentence."))
 
 	// Range the semantic lifecycle events. Text deltas arrive inside ModelEvent as the
 	// model generates; tool start/finish bracket each call.
@@ -75,10 +74,11 @@ func main() {
 	}
 
 	// Final drains anything left and returns the terminal answer (or error), exactly as Run would.
-	final, err := stream.Final()
+	res, err := stream.Result()
 	if err != nil {
 		log.Fatalf("stream: %v", err)
 	}
+	final := res.Message
 	fmt.Println("\n\n=== final answer ===")
 	fmt.Println(final.Text())
 }

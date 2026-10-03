@@ -18,7 +18,7 @@ import (
 func completeUnderLease(t *testing.T, s *MemStore, runID string) {
 	t.Helper()
 	driven, err := Lease(context.Background(), mustJournal(s), runID, func(ctx context.Context) error {
-		_, err := mustNew(NewScriptedModel(TextTurn("done")), mustJournal(s)).Run(ctx, runID, "go")
+		_, err := mustNew(NewScriptedModel(TextTurn("done")), mustJournal(s)).Run(ctx, runID, UserText("go"))
 		return err
 	}, WithLeaseHolder("other"))
 	if err != nil || !driven {
@@ -97,7 +97,7 @@ func TestRecover_DoesNotResumeARunCompletedWhileItWaited(t *testing.T) {
 				resumedComplete = append(resumedComplete, id)
 				// The documented resume: Run replays a finished run and returns its answer.
 				before, _ := j.History(ctx, id)
-				_, err := mustNew(NewScriptedModel(), j).Run(ctx, id, "go")
+				_, err := mustNew(NewScriptedModel(), j).Run(ctx, id, UserText("go"))
 				after, _ := j.History(ctx, id)
 				if len(after) != len(before) {
 					t.Errorf("replaying completed run %s wrote %d records", id, len(after)-len(before))
@@ -215,7 +215,7 @@ func TestRecover_ForeignFormatIsNotAStorageError(t *testing.T) {
 			}
 			d := wrap(s)
 			_, err := Recover(context.Background(), d, func(ctx context.Context, id string, _ RunStart) error {
-				_, err := mustNew(NewScriptedModel(TextTurn("x")), d).Run(ctx, id, "go")
+				_, err := mustNew(NewScriptedModel(TextTurn("x")), d).Run(ctx, id, UserText("go"))
 				return err
 			}, WithLeaseHolder("w"))
 			var jv *JournalVersionError

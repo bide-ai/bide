@@ -67,7 +67,7 @@ func TestResumeHalt_NonPositiveAttemptedAtIsZero(t *testing.T) {
 	ctx := context.Background()
 	charge := Func("charge", "", Safety{}, func(context.Context, struct{}) (string, error) { return "ok", nil })
 	a := mustNew(NewScriptedModel(), mustJournal(markerAt(t, -1)), WithTools(charge))
-	_, err := a.Run(ctx, "r", "go")
+	_, err := a.Run(ctx, "r", UserText("go"))
 	var halt *ResumeHalt
 	if !errors.As(err, &halt) {
 		t.Fatalf("Run = %v, want *ResumeHalt", err)
@@ -134,7 +134,7 @@ func (s claimRacer) Insert(ctx context.Context, runID, name string, data []byte)
 func TestResumeHalt_LostClaimToNonPositiveMarker(t *testing.T) {
 	charge := Func("charge", "", Safety{}, func(context.Context, struct{}) (string, error) { return "ok", nil })
 	m := &sagaTurns{turns: [][][3]string{{{"c1", "charge", `{}`}}}}
-	_, err := mustNew(m, mustJournal(claimRacer{NewMemStore()}), WithTools(charge)).Run(context.Background(), "r", "go")
+	_, err := mustNew(m, mustJournal(claimRacer{NewMemStore()}), WithTools(charge)).Run(context.Background(), "r", UserText("go"))
 	var halt *ResumeHalt
 	if !errors.As(err, &halt) {
 		t.Fatalf("Run = %v, want *ResumeHalt from the lost claim", err)
@@ -165,7 +165,7 @@ func TestSagaRollbackHalt_NonPositiveMarker(t *testing.T) {
 			t.Fatal(err)
 		}
 	}
-	_, err := mustNew(&sagaTurns{}, s, WithTools(pay, book)).RunSaga(ctx, "r", "trip")
+	_, err := mustNew(&sagaTurns{}, s, WithTools(pay, book)).Run(ctx, "r", UserText("trip"), WithSaga())
 	var aborted *SagaAborted
 	if !errors.As(err, &aborted) {
 		t.Fatalf("RunSaga = %v, want *SagaAborted", err)

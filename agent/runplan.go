@@ -314,22 +314,22 @@ func (a *Agent) holdDrive(runID string, d *driveSpec, start RunStart, idn Identi
 		return mismatch("input")
 	case start.Saga && !d.cfg.saga:
 		if d.strictSaga {
-			return fmt.Errorf("run %s was started as a saga; resume it with RunSaga (or StreamSaga): %w", runID, ErrConfig)
+			return fmt.Errorf("run %s was started as a saga; drive it with WithSaga(): %w", runID, ErrConfig)
 		}
 		return errSagaRun
 	case !start.Saga && d.cfg.saga:
-		return fmt.Errorf("run %s was not started as a saga; resume it without WithSaga (Run, Stream, ResumeRun): %w", runID, ErrConfig)
+		return fmt.Errorf("run %s was not started as a saga; resume it without WithSaga (Run, Stream, Resume): %w", runID, ErrConfig)
 	case !start.legacy() && (start.Typed == nil) != (d.typed == nil):
 		if start.Typed != nil {
-			return fmt.Errorf("run %s is a typed run; resume it with RunTypedMessage or ResumeTyped and its answer type: %w", runID, ErrConfig)
+			return fmt.Errorf("run %s is a typed run; resume it with RunTyped or ResumeTyped and its answer type: %w", runID, ErrConfig)
 		}
-		return fmt.Errorf("run %s is not a typed run; resume it with RunMessage or ResumeRun: %w", runID, ErrConfig)
+		return fmt.Errorf("run %s is not a typed run; resume it with Run or Resume: %w", runID, ErrConfig)
 	case d.typed != nil && start.Typed != nil && d.typed.SchemaDigest != start.Typed.SchemaDigest:
 		return mismatch("answer type (its schema digest differs)")
 	case d.typed != nil && start.Typed != nil && d.typed.Mode != "" && d.typed.Mode != start.Typed.Mode:
 		return mismatch("output mode")
 	case d.typed == nil && d.cfg.outputMode != "":
-		return fmt.Errorf("WithOutputMode applies to a typed run (RunTypedMessage), and run %s is not one: %w", runID, ErrConfig)
+		return fmt.Errorf("WithOutputMode applies to a typed run (RunTyped), and run %s is not one: %w", runID, ErrConfig)
 	case d.cfg.tools != nil && !slices.Equal(d.cfg.tools, start.Tools):
 		return mismatch("tool filter")
 	case d.cfg.systemPrompt != nil && !sameSetting(d.cfg.systemPrompt, start.Settings.SystemPrompt):

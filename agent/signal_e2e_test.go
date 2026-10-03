@@ -55,7 +55,7 @@ func runAwaitCharge(mem *Journal, awaitCalls, chargeCount *int, crashAt int) err
 		WithTools(awaitT, chargeT),
 		WithMaxConcurrency(1),
 	)
-	_, err := a.Run(context.Background(), "dst-sig", "start")
+	_, err := a.Run(context.Background(), "dst-sig", UserText("start"))
 	return err
 }
 
@@ -117,7 +117,11 @@ func TestSignal_DeliverThenWake(t *testing.T) {
 	var a *Agent
 	var completed bool
 	waker := NewMemWaker(func(ctx context.Context, runID string) error {
-		out, err := a.Run(ctx, runID, "hi")
+		res, err := a.Run(ctx, runID, UserText("hi"))
+		var out Message
+		if res != nil {
+			out = res.Message
+		}
 		var awt *Awaiting
 		if errors.As(err, &awt) {
 			return nil // still waiting is not an error
@@ -134,7 +138,7 @@ func TestSignal_DeliverThenWake(t *testing.T) {
 	ctx := ContextWithWaker(context.Background(), waker)
 
 	// First run pauses on the await (plain Await does not self-schedule a wake).
-	_, err := a.Run(ctx, "r", "hi")
+	_, err := a.Run(ctx, "r", UserText("hi"))
 	var awt *Awaiting
 	if !errors.As(err, &awt) {
 		t.Fatalf("first run err = %v, want *Awaiting", err)

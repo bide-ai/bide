@@ -63,12 +63,12 @@ func TestCompletion_FinishedFlowRun(t *testing.T) {
 		t.Fatalf("another flow over the finished run: %v, want ErrConfig", err)
 	}
 	a := agenttest.MustNew(agent.NewScriptedModel(agent.TextTurn("hi")), mem)
-	if _, err := a.Run(ctx, "r", "5"); !errors.Is(err, agent.ErrConfig) {
+	if _, err := a.Run(ctx, "r", agent.UserText("5")); !errors.Is(err, agent.ErrConfig) {
 		t.Fatalf("an Agent over a finished flow run: %v, want ErrConfig", err)
 	}
 
 	// A flow over an agent's finished run is refused, not handed the agent's completion.
-	if _, err := a.Run(ctx, "agent-run", "hello"); err != nil {
+	if _, err := a.Run(ctx, "agent-run", agent.UserText("hello")); err != nil {
 		t.Fatal(err)
 	}
 	if _, err := flow.Run(ctx, mem, "agent-run", 5); !errors.Is(err, agent.ErrConfig) {

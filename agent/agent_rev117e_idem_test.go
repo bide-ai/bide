@@ -28,7 +28,7 @@ func TestRev117e_IdempotentSagaStepRejectedSuccessIsNotAccounted(t *testing.T) {
 		}
 	})
 	m := NewScriptedModel(ToolTurn("c1", "charge", `{}`), TextTurn("done"))
-	_, err := mustNew(m, memJournal(), WithTools(charge), WithToolMiddleware(check)).RunSaga(context.Background(), "r", "go")
+	_, err := mustNew(m, memJournal(), WithTools(charge), WithToolMiddleware(check)).Run(context.Background(), "r", UserText("go"), WithSaga())
 	var ab *SagaAborted
 	if !errors.As(err, &ab) {
 		if !errors.Is(err, ErrToolOutcomeUnknown) {
@@ -62,7 +62,7 @@ func testReadOnlySagaStepRejectedSuccess(t *testing.T, safety Safety) {
 		}
 	})
 	m := NewScriptedModel(ToolTurn("c1", "look", `{}`), TextTurn("done"))
-	_, err := mustNew(m, memJournal(), WithTools(look), WithToolMiddleware(check)).RunSaga(context.Background(), "r", "go")
+	_, err := mustNew(m, memJournal(), WithTools(look), WithToolMiddleware(check)).Run(context.Background(), "r", UserText("go"), WithSaga())
 	var ab *SagaAborted
 	if !errors.As(err, &ab) || len(ab.UnknownOutcome) != 0 {
 		t.Fatalf("%+v: RunSaga = %v; want a SagaAborted with no unknown outcome", safety, err)

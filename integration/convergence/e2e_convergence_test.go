@@ -184,7 +184,7 @@ func runScale(t *testing.T, ctx context.Context, m *gsm.Machine, base []string, 
 			store := agenttest.MemJournal()
 			ag := agenttest.MustNew(seqModel{events: shuffled(base, i)}, store, agent.WithTools(tools...))
 			runID := "run"
-			if _, err := ag.Run(ctx, runID, "go"); err != nil {
+			if _, err := ag.Run(ctx, runID, agent.UserText("go")); err != nil {
 				atomic.AddInt64(&runErrs, 1)
 				return
 			}

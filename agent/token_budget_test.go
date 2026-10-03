@@ -47,7 +47,7 @@ func TestTokenBudget_IsPerRun(t *testing.T) {
 		WithTokenBudget(300),
 	)
 	for _, run := range []string{"r1", "r2", "r3"} {
-		if _, err := a.Run(context.Background(), run, "q"); err != nil {
+		if _, err := a.Run(context.Background(), run, UserText("q")); err != nil {
 			t.Errorf("run %s (240 tokens, budget 300): %v", run, err)
 		}
 	}
@@ -57,7 +57,7 @@ func TestTokenBudget_IsPerRun(t *testing.T) {
 // the next call is refused before it reaches the model.
 func TestTokenBudget_RefusesTheNextCall(t *testing.T) {
 	m := &meteredModel{u: turnUsage}
-	_, err := mustNew(m, memJournal(), WithTools(lookupTool(func() {})), WithTokenBudget(100)).Run(context.Background(), "r1", "q")
+	_, err := mustNew(m, memJournal(), WithTools(lookupTool(func() {})), WithTokenBudget(100)).Run(context.Background(), "r1", UserText("q"))
 	if !errors.Is(err, ErrBudgetExceeded) || !errors.Is(err, ErrBudget) {
 		t.Fatalf("err = %v, want ErrBudgetExceeded", err)
 	}
@@ -69,7 +69,7 @@ func TestTokenBudget_RefusesTheNextCall(t *testing.T) {
 // Cached input counts: a call that reads most of its prompt from the cache still used it.
 func TestTokenBudget_CountsCachedInput(t *testing.T) {
 	m := &meteredModel{u: Usage{InputTokens: 10, CacheReadTokens: 200, OutputTokens: 5}}
-	_, err := mustNew(m, memJournal(), WithTools(lookupTool(func() {})), WithTokenBudget(100)).Run(context.Background(), "r1", "q")
+	_, err := mustNew(m, memJournal(), WithTools(lookupTool(func() {})), WithTokenBudget(100)).Run(context.Background(), "r1", UserText("q"))
 	if !errors.Is(err, ErrBudgetExceeded) || m.calls.Load() != 1 {
 		t.Fatalf("err = %v after %d calls; want ErrBudgetExceeded after 1 (215 tokens, budget 100)", err, m.calls.Load())
 	}
@@ -81,11 +81,11 @@ func TestTokenBudget_CountsCachedInput(t *testing.T) {
 func TestTokenBudget_HoldsAcrossResume(t *testing.T) {
 	store := memJournal()
 	ctx, cancel := context.WithCancel(context.Background())
-	if _, err := mustNew(&meteredModel{u: turnUsage}, store, WithTools(lookupTool(cancel)), WithTokenBudget(1000)).Run(ctx, "r1", "q"); !errors.Is(err, context.Canceled) {
+	if _, err := mustNew(&meteredModel{u: turnUsage}, store, WithTools(lookupTool(cancel)), WithTokenBudget(1000)).Run(ctx, "r1", UserText("q")); !errors.Is(err, context.Canceled) {
 		t.Fatalf("setup: %v", err)
 	}
 	m := &meteredModel{u: turnUsage}
-	_, err := mustNew(m, store, WithTools(lookupTool(func() {})), WithTokenBudget(100)).Run(context.Background(), "r1", "q")
+	_, err := mustNew(m, store, WithTools(lookupTool(func() {})), WithTokenBudget(100)).Run(context.Background(), "r1", UserText("q"))
 	if !errors.Is(err, ErrBudgetExceeded) {
 		t.Fatalf("resumed run: err = %v, want ErrBudgetExceeded (120 tokens already used, budget 100)", err)
 	}
@@ -108,7 +108,7 @@ func TestTokenBudget_ConcurrentRuns(t *testing.T) {
 		wg.Add(1)
 		go func() {
 			defer wg.Done()
-			if _, err := a.Run(context.Background(), string(rune('a'+i)), "q"); err != nil {
+			if _, err := a.Run(context.Background(), string(rune('a'+i)), UserText("q")); err != nil {
 				errs <- err
 			}
 		}()

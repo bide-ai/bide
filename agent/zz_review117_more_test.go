@@ -27,7 +27,7 @@ func TestR117_ErrorAfterTheRunsDeadlineBeforeItsTimerIsNotRecorded(t *testing.T)
 	m := NewScriptedModel(ToolTurn("c1", "charge", `{}`), TextTurn("done"))
 	ctx, cancel := context.WithTimeout(context.Background(), 20*time.Millisecond)
 	defer cancel()
-	_, err := mustNew(m, store, WithTools(charge)).Run(ctx, "r1", "pay")
+	_, err := mustNew(m, store, WithTools(charge)).Run(ctx, "r1", UserText("pay"))
 	if rec, ok := hasStep(t, store, "r1", ToolResultStep("c1")); ok {
 		t.Fatalf("an error after the run's deadline was recorded as a failure (%s); Run err = %v", rec.Result, err)
 	}
@@ -52,7 +52,7 @@ func TestR117_MiddlewareCannotRenameOrReIDACall(t *testing.T) {
 			})
 			store := memJournal()
 			m := NewScriptedModel(ToolTurn("c1", "lookup", `{}`), TextTurn("done"))
-			_, _ = mustNew(m, store, WithTools(lookup, wire), WithToolMiddleware(rewrite)).Run(context.Background(), "r1", "q")
+			_, _ = mustNew(m, store, WithTools(lookup, wire), WithToolMiddleware(rewrite)).Run(context.Background(), "r1", UserText("q"))
 			rec, ok := hasStep(t, store, "r1", ToolResultStep("c1"))
 			if wired.Load() != 0 || looked.Load() != 0 || !ok || !rec.IsError {
 				t.Fatalf("lookup ran %d, wire ran %d, result %s (recorded %v); want neither run and the call failed", looked.Load(), wired.Load(), rec.Result, ok)
@@ -88,7 +88,7 @@ func TestR117_NewRefusesUnsafeWrappers(t *testing.T) {
 		"compensator unwrapping a tool": compWrap{Func("f", "", Safety{}, func(context.Context, struct{}) (string, error) { return "", nil })},
 	} {
 		var calls atomic.Int32
-		_, err := mustNew(&countingModel{n: &calls}, memJournal(), WithTools(tool)).Run(context.Background(), "r1", "go")
+		_, err := mustNew(&countingModel{n: &calls}, memJournal(), WithTools(tool)).Run(context.Background(), "r1", UserText("go"))
 		if !errors.Is(err, ErrConfig) || calls.Load() != 0 {
 			t.Errorf("%s: Run = %v after %d model calls; want ErrConfig before any", name, err, calls.Load())
 		}
@@ -112,7 +112,7 @@ func TestR117_BaseHandlerDoesNotStartACallPastItsDeadline(t *testing.T) {
 	})
 	store := memJournal()
 	m := NewScriptedModel(ToolTurn("c1", "charge", `{}`), TextTurn("done"))
-	if _, err := mustNew(m, store, WithTools(charge), WithToolMiddleware(slow)).Run(context.Background(), "r1", "pay"); err != nil {
+	if _, err := mustNew(m, store, WithTools(charge), WithToolMiddleware(slow)).Run(context.Background(), "r1", UserText("pay")); err != nil {
 		t.Fatalf("Run: %v", err)
 	}
 	rec, ok := hasStep(t, store, "r1", ToolResultStep("c1"))
@@ -140,10 +140,10 @@ func TestR117_RunCancelledInMiddlewareRecordsNotStarted(t *testing.T) {
 	})
 	store := memJournal()
 	m := NewScriptedModel(ToolTurn("c1", "charge", `{}`), TextTurn("done"))
-	if _, err := mustNew(m, store, WithTools(charge), WithToolMiddleware(waiting)).Run(ctx, "r1", "pay"); !errors.Is(err, context.Canceled) {
+	if _, err := mustNew(m, store, WithTools(charge), WithToolMiddleware(waiting)).Run(ctx, "r1", UserText("pay")); !errors.Is(err, context.Canceled) {
 		t.Fatalf("first drive: %v, want context.Canceled", err)
 	}
-	if _, err := mustNew(m, store, WithTools(charge)).Run(context.Background(), "r1", "pay"); err != nil {
+	if _, err := mustNew(m, store, WithTools(charge)).Run(context.Background(), "r1", UserText("pay")); err != nil {
 		t.Fatalf("resume: %v, want the call attempted again", err)
 	}
 	if calls.Load() != 1 {

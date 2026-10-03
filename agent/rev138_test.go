@@ -29,7 +29,7 @@ func TestRev138_SubRunFiresAfterParentCancel(t *testing.T) {
 		{text: "done"},
 	}}
 	parent := p14Build(t, parentModel, j, agent.WithTools(agent.SubAgent("helper", "", sub)))
-	_, err := parent.RunMessage(ctx, "r", agent.UserText("go"))
+	_, err := parent.Run(ctx, "r", agent.UserText("go"))
 	t.Logf("parent run = %v; pay fired %d", err, c.n.Load())
 	if n := c.n.Load(); n != 0 {
 		t.Errorf("the sub-run's side effect fired %d times after Cancel(parent) returned nil", n)
@@ -53,7 +53,7 @@ func TestRev138_RetrySafeCallInTheTurnInFlightMayRun(t *testing.T) {
 		{text: "done"},
 	}}
 	a := p14Build(t, model, j, agent.WithTools(c.tool("put", agent.Safety{Idempotent: true})))
-	_, err := a.RunMessage(ctx, "r", agent.UserText("go"))
+	_, err := a.Run(ctx, "r", agent.UserText("go"))
 	if !errors.Is(err, agent.ErrRunCancelled) {
 		t.Errorf("run = %v, want ErrRunCancelled", err)
 	}
@@ -90,7 +90,7 @@ func TestRev138_MainSessionTurnRunStillDrives(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	_, err = s.Send(ctx, "hi")
+	_, err = s.Send(ctx, agent.UserText("hi"))
 	t.Logf("Send of a turn main started = %v", err)
 	if err != nil {
 		t.Errorf("a session turn started on main does not resume: %v", err)
@@ -108,7 +108,7 @@ func TestRev138_MainTypedRunStillResumes(t *testing.T) {
 	type out struct {
 		N int `json:"n"`
 	}
-	_, err := agent.RunTyped[out](ctx, a, "r", "go")
+	_, _, err := a.RunTyped[out](ctx, "r", agent.UserText("go"))
 	t.Logf("RunTyped of a typed run main started = %v", err)
 	if errors.Is(err, agent.ErrConfig) {
 		t.Errorf("a typed run started on main is refused on resume: %v", err)
@@ -127,7 +127,7 @@ func TestRev138_IsCompleteIgnoresFirstEnd(t *testing.T) {
 		}
 	}}}}
 	a := p14Build(t, model, j)
-	_, err := a.RunMessage(ctx, "r", agent.UserText("go"))
+	_, err := a.Run(ctx, "r", agent.UserText("go"))
 	st, _ := agent.Status(ctx, j, "r")
 	done, _ := agent.IsComplete(ctx, j, "r")
 	t.Logf("run = %v; Status = %s; IsComplete = %v", err, st.State, done)
@@ -149,13 +149,13 @@ func TestRev138_CancelledSagaTurnBlocksSession(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if _, err := s.SendMessage(ctx, agent.UserText("one"), agent.WithSaga()); err == nil {
+	if _, err := s.Send(ctx, agent.UserText("one"), agent.WithSaga()); err == nil {
 		t.Fatal("want the approval pause")
 	}
 	if err := agent.Cancel(ctx, j, "s>@turn/0", "stop"); err != nil {
 		t.Fatalf("Cancel = %v", err)
 	}
-	_, err = s.SendMessage(ctx, agent.UserText("two"))
+	_, err = s.Send(ctx, agent.UserText("two"))
 	t.Logf("next message after cancelling a saga turn = %v", err)
 	// The next message runs its own turn (turn 1; the model's script pauses it for approval too).
 	if errors.Is(err, agent.ErrConfig) {
@@ -184,7 +184,7 @@ func TestRev138_SagaCancelRollbackReportsWrongEnd(t *testing.T) {
 		})
 	model := &p14Model{turns: []p14Turn{{calls: []agent.ToolUse{call("c1", "book")}}, {text: "done"}}}
 	a := p14Build(t, model, j, agent.WithTools(book))
-	_, err := a.RunMessage(ctx, "r", agent.UserText("go"), agent.WithSaga())
+	_, err := a.Run(ctx, "r", agent.UserText("go"), agent.WithSaga())
 	st, _ := agent.Status(ctx, j, "r")
 	t.Logf("saga drive = %v; Status = %s", err, st.State)
 	if errors.Is(err, agent.ErrRunCancelled) && st.State == agent.RunAborted {
@@ -225,7 +225,7 @@ func TestRev138_NoRecheckAfterStart(t *testing.T) {
 	var c counter
 	model := &p14Model{turns: []p14Turn{{calls: []agent.ToolUse{call("c1", "put")}}, {text: "done"}}}
 	a := p14Build(t, model, j, agent.WithTools(c.tool("put", agent.Safety{Idempotent: true})))
-	_, err = a.RunMessage(ctx, "r", agent.UserText("go"))
+	_, err = a.Run(ctx, "r", agent.UserText("go"))
 	t.Logf("run = %v; model calls %d; put fired %d", err, model.calls.Load(), c.n.Load())
 	if model.calls.Load() != 0 || c.n.Load() != 0 {
 		t.Errorf("after Cancel returned nil the drive called the model %d times and the tool %d times", model.calls.Load(), c.n.Load())

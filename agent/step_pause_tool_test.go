@@ -32,12 +32,12 @@ func TestStepPauseGuard_InsideAToolIsNotRecordedAsAToolFailure(t *testing.T) {
 		agent.ToolTurn("c2", "book", `{"id":"c2"}`), // the model retries a call it was told failed
 		agent.TextTurn("done"))
 	a := agenttest.MustNew(m, store, agent.WithTools(book))
-	_, err := a.Run(ctx, "r", "book it")
+	_, err := a.Run(ctx, "r", agent.UserText("book it"))
 	if !errors.Is(err, agent.ErrConfig) || errors.Is(err, agent.ErrTool) {
 		t.Errorf("Run = %v; want the guard's ErrConfig, not a tool failure", err)
 	}
 	// The call recorded nothing: a resume runs it again, and the step halts on its marker.
-	_, err = a.Run(ctx, "r", "book it")
+	_, err = a.Run(ctx, "r", agent.UserText("book it"))
 	var halt *agent.ResumeHalt
 	if !errors.As(err, &halt) {
 		t.Errorf("resume = %v; want the step's halt", err)

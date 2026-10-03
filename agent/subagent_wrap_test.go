@@ -37,7 +37,7 @@ func TestSaga_RollbackRecursesThroughAWrappedSubAgent(t *testing.T) {
 		WithTools(wrappedSub{SubAgent("delegate", "", sub)}, failTool("boom")),
 	)
 
-	_, err := parent.RunSaga(context.Background(), "root", "go")
+	_, err := parent.Run(context.Background(), "root", UserText("go"), WithSaga())
 	var ab *SagaAborted
 	if !errors.As(err, &ab) {
 		t.Fatalf("err = %v, want *SagaAborted", err)
@@ -64,7 +64,7 @@ func TestSaga_RollbackReportsAWrappedSubAgentsOwnRollback(t *testing.T) {
 		WithTools(wrappedSub{SubAgent("delegate", "", sub)}),
 	)
 
-	_, err := parent.RunSaga(context.Background(), "root", "go")
+	_, err := parent.Run(context.Background(), "root", UserText("go"), WithSaga())
 	var ab *SagaAborted
 	if !errors.As(err, &ab) {
 		t.Fatalf("err = %v, want *SagaAborted", err)

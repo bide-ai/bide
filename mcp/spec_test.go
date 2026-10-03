@@ -142,14 +142,14 @@ func TestSpec_TimeoutHaltsASideEffect(t *testing.T) {
 	store := agenttest.MemJournal()
 	m := agent.NewScriptedModel(agent.ToolTurn("c1", "transfer", `{}`), agent.TextTurn("done"))
 	a := agenttest.MustNew(m, store, agent.WithTools(tools...))
-	if _, err := a.Run(context.Background(), "r1", "go"); !errors.Is(err, agent.ErrToolOutcomeUnknown) {
+	if _, err := a.Run(context.Background(), "r1", agent.UserText("go")); !errors.Is(err, agent.ErrToolOutcomeUnknown) {
 		t.Fatalf("run err = %v, want ErrToolOutcomeUnknown", err)
 	}
-	if _, err := a.Run(context.Background(), "r1", "go"); !agent.IsPause(err) {
+	if _, err := a.Run(context.Background(), "r1", agent.UserText("go")); !agent.IsPause(err) {
 		t.Fatalf("resume err = %v, want an OutcomeUnknown halt", err)
 	}
 	var ou *agent.OutcomeUnknown
-	if _, err := a.Run(context.Background(), "r1", "go"); !errors.As(err, &ou) {
+	if _, err := a.Run(context.Background(), "r1", agent.UserText("go")); !errors.As(err, &ou) {
 		t.Fatalf("resume err = %v, want *OutcomeUnknown", err)
 	}
 	if n := calls.Load(); n != 1 {

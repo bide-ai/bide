@@ -60,7 +60,7 @@ func TestResume_ConversationFromJournal(t *testing.T) {
 		m,
 		store,
 		WithTools(&countingTool{name: "lookup", safety: Safety{ReadOnly: true}, calls: &calls}),
-	).Run(context.Background(), "r", "go"); err != nil {
+	).Run(context.Background(), "r", UserText("go")); err != nil {
 		t.Fatal(err)
 	}
 	if want := []string{"c1=1", "c2=2"}; !reflect.DeepEqual(m.results, want) || calls != 0 {

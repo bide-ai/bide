@@ -71,25 +71,6 @@ func unknownStepOutcome(err error) bool {
 	return errors.Is(err, ErrToolOutcomeUnknown)
 }
 
-// RunSaga runs the agent as a transaction: on success it behaves like Run; if a step
-// fails after earlier writes succeeded, it compensates the completed writes in reverse
-// order (recursing into sub-agent trees) and returns *SagaAborted.
-//
-// The abort is derived from the journal (a durable StepSagaFail record), so a crash at
-// any point resumes correctly: on re-entry a recorded failure sends us straight to
-// rollback, and each compensation is a durable memoized step: once recorded it never
-// runs again, and a crash mid-compensation re-runs it (so Compensate must be idempotent).
-//
-// Note: if a non-retriable step's outcome is genuinely unknown (crashed after its attempt
-// marker but before any result), resume returns *OutcomeUnknown instead: you can't safely
-// auto-roll-back a step that may have committed; a human decides. A failure a human then
-// records with ResolveHaltRef (Outcome.IsError) is a failed step: the next RunSaga rolls back.
-func (a *Agent) RunSaga(ctx context.Context, runID, input string) (Message, error) {
-	in := UserText(input)
-	out, _, _, err := a.drive(ctx, runID, &driveSpec{input: &in, cfg: runConfig{saga: true}})
-	return out, err
-}
-
 // protocol:delegation begin DOpen DRb DRbEnd RbOpen RbLoop RbSub RbSubRet RbBind RbRec RbBindRet RbComp RbRe RbReRun RbReRet RbReW
 
 // runSagaWithTelemetry is a saga's drive: the rollback of a saga whose failure is recorded, or the

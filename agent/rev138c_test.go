@@ -66,7 +66,7 @@ func TestRev138c_SagaSubRunFailureInACancelledTreeEndsCancelled(t *testing.T) {
 	sub := p14Build(t, subModel, j, agent.WithTools(book, fail))
 	parentModel := &p14Model{turns: []p14Turn{{calls: []agent.ToolUse{{ID: "p1", Name: "helper", Args: []byte(`{"task":"x"}`)}}}, {text: "done"}}}
 	parent := p14Build(t, parentModel, j, agent.WithTools(agent.SubAgent("helper", "", sub)))
-	_, err := parent.RunMessage(ctx, "r", agent.UserText("go"), agent.WithSaga())
+	_, err := parent.Run(ctx, "r", agent.UserText("go"), agent.WithSaga())
 	if st, _ := agent.Status(ctx, j, "r"); st.State != agent.RunCancelled {
 		t.Fatalf("the root's Status = %s (run %v), want cancelled", st.State, err)
 	}
@@ -111,13 +111,13 @@ func TestRev138c_TurnRollbackDoesNotHoldTheSessionMutex(t *testing.T) {
 	if s, err = a.Session(ctx, "s"); err != nil {
 		t.Fatal(err)
 	}
-	if _, err := s.SendMessage(ctx, agent.UserText("one"), agent.WithSaga()); err == nil {
+	if _, err := s.Send(ctx, agent.UserText("one"), agent.WithSaga()); err == nil {
 		t.Fatal("want the approval pause")
 	}
 	if err := agent.Cancel(ctx, j, "s>@turn/0", "stop"); err != nil {
 		t.Fatalf("Cancel = %v", err)
 	}
-	_, err = s.SendMessage(ctx, agent.UserText("two"))
+	_, err = s.Send(ctx, agent.UserText("two"))
 	if errors.Is(err, agent.ErrConfig) {
 		t.Fatalf("the next message was refused: %v", err)
 	}
@@ -168,13 +168,13 @@ func TestRev138c_TurnRollbackThatCompletesIsDrivenOnce(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if _, err := s.SendMessage(ctx, agent.UserText("one"), agent.WithSaga()); err == nil {
+	if _, err := s.Send(ctx, agent.UserText("one"), agent.WithSaga()); err == nil {
 		t.Fatal("want the injected failure of run:complete")
 	}
 	if err := agent.Cancel(ctx, j, "s>@turn/0", "stop"); err != nil {
 		t.Fatalf("Cancel = %v", err)
 	}
-	if _, err := s.SendMessage(ctx, agent.UserText("two")); !errors.Is(err, agent.ErrConfig) {
+	if _, err := s.Send(ctx, agent.UserText("two")); !errors.Is(err, agent.ErrConfig) {
 		t.Fatalf("the next message = %v, want ErrConfig: turn 0 completed (its answer was recorded first), it is not closed", err)
 	}
 	if got, _ := agent.Status(ctx, j, "s>@turn/0"); got.State != agent.RunCompleted {
@@ -207,12 +207,12 @@ func TestRev138c_SagaSubRunOfAPlainRootEndsCancelled(t *testing.T) {
 	work := agent.Func("work", "", agent.Safety{ReadOnly: true}, func(ctx context.Context, _ struct{}) (string, error) {
 		info, _ := agent.RunInfoFrom(ctx)
 		subID = info.SubRunFor("w")
-		_, err := sub.RunMessage(ctx, subID, agent.UserText("x"), agent.WithSaga())
+		_, err := sub.Run(ctx, subID, agent.UserText("x"), agent.WithSaga())
 		return "worked", err
 	})
 	parentModel := &p14Model{turns: []p14Turn{{calls: []agent.ToolUse{call("p1", "work")}}, {text: "done"}}}
 	parent := p14Build(t, parentModel, j, agent.WithTools(work))
-	_, err := parent.RunMessage(ctx, "r", agent.UserText("go"))
+	_, err := parent.Run(ctx, "r", agent.UserText("go"))
 	if st, _ := agent.Status(ctx, j, "r"); st.State != agent.RunCancelled {
 		t.Fatalf("the root's Status = %s (run %v), want cancelled", st.State, err)
 	}

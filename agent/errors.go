@@ -130,7 +130,7 @@ var ErrRunCancelled = errors.New("run cancelled")
 var ErrRunEnded = errors.New("run already ended")
 
 // ErrNotStarted is a run with no run:start record: one never driven (a Signal sent to a mistyped
-// run ID, say), or one whose first drive has not written it yet. ResumeRun and Cancel refuse such
+// run ID, say), or one whose first drive has not written it yet. Resume and Cancel refuse such
 // a run, and Recover skips it and reports it once per process. It wraps no category: the run may
 // be a race with its first drive, which a later call does not lose, rather than a configuration
 // error.
@@ -141,7 +141,7 @@ var ErrNotStarted = errors.New("run has no run:start record")
 // run no Resumer drives once per process. Like ErrLeaseLost it wraps no category.
 var ErrNotResumable = errors.New("run not resumable by this resumer")
 
-// ErrTurnContended is returned by a Session's Send, SendOnce, SendMessage and SendMessageOnce when another driver holds
+// ErrTurnContended is returned by a Session's Send, SendOnce, Send and SendOnce when another driver holds
 // the lease on the turn's run (see Session): another worker, or, while a cancelled saga turn's
 // rollback is in progress, another caller on the same session handle (see Session.Send). The
 // turn's run was not driven and its answer was not recorded.

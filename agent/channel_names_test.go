@@ -21,7 +21,7 @@ func receiveOnce(t *testing.T, store *Journal, runID, channel string) (Received[
 		return m.Payload, nil
 	})
 	a := mustNew(NewScriptedModel(ToolTurn("c1", "recv", `{}`), TextTurn("done")), store, WithTools(recv))
-	_, _ = a.Run(context.Background(), runID, "go")
+	_, _ = a.Run(context.Background(), runID, UserText("go"))
 	return got, recvErr
 }
 

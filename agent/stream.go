@@ -8,17 +8,17 @@ import (
 	"sync"
 )
 
-// AgentEvent is a lifecycle event emitted by Agent.Stream as the run loop advances:
+// RunEvent is a lifecycle event emitted by Agent.Stream as the run loop advances:
 // turn boundaries, live model token deltas, and tool start/finish. It is the
 // SEMANTIC-layer companion to the model's byte-level Event — a UI ranges over these
 // to render progress while the durable loop runs underneath.
 //
-// The terminal answer and any error are NOT events: they come from AgentStream.Final
+// The terminal answer and any error are NOT events: they come from RunStream.Final
 // (mirroring how the model Stream yields Events but returns the assembled Message
 // separately). A run that pauses for approval or halts on an unsafe resume emits the
 // relevant lifecycle event and then surfaces the *ApprovalPending / *OutcomeUnknown via
 // Final, exactly as Run returns it.
-type AgentEvent interface{ agentEvent() }
+type RunEvent interface{ agentEvent() }
 
 // TurnStarted marks the beginning of a fresh model turn (Seq is the model-call
 // sequence number within the run). Not emitted for turns replayed from the journal.
@@ -120,7 +120,7 @@ func (Finished) agentEvent() {}
 // deltas, TurnStarted, TurnRestarted, ToolStarted, and the terminal Finished — are not
 // journaled and so are not part of the durable projection; the durable content is the turns and
 // tool results.
-func ReplayEvents(ctx context.Context, store *Journal, runID string) ([]AgentEvent, error) {
+func ReplayEvents(ctx context.Context, store *Journal, runID string) ([]RunEvent, error) {
 	recs, err := store.History(ctx, runID)
 	if err != nil {
 		return nil, fmt.Errorf("load history %s: %w (%w)", runID, err, ErrStorage)
@@ -132,7 +132,7 @@ func ReplayEvents(ctx context.Context, store *Journal, runID string) ([]AgentEve
 // ProjectEvents returns the events ReplayEvents returns for a journal holding recs, and for each
 // event the index in recs of the record it projects: each event comes from exactly one record.
 // The audit package uses the index to salt a projected event from its record's salt.
-func ProjectEvents(recs []Record) (events []AgentEvent, sources []int) {
+func ProjectEvents(recs []Record) (events []RunEvent, sources []int) {
 	for i, r := range recs {
 		switch r.Kind {
 		case StepModel:
@@ -149,32 +149,29 @@ func ProjectEvents(recs []Record) (events []AgentEvent, sources []int) {
 	return events, sources
 }
 
-// AgentStream is a live view of a running agent: range Events for progress, then call
-// Final for the terminal answer (or error). It is the streaming counterpart of Run,
-// the same way the model Stream is the counterpart of Generate — Run is literally
-// Stream(...).Final().
+// RunStream is a live view of a running agent: range Events for progress, then call Result for
+// the run's Result and error, as Run returns them. Stream and Run share one loop.
 //
-// A Stream is consumed once. Either range Events fully (Final then returns
-// immediately) or call Final directly (it drains and discards events); calling Final
-// after breaking out of Events early drains whatever remains. Cancel ctx to abandon a
-// run without draining — pending emits then unblock on ctx.Done rather than leaking.
-type AgentStream struct {
-	ch     chan AgentEvent
+// A stream is consumed once. Either range Events fully (Result then returns immediately) or call
+// Result directly (it drains and discards events); calling Result after breaking out of Events
+// early drains whatever remains. Cancel ctx to abandon a run without draining: pending emits then
+// unblock on ctx.Done rather than leaking.
+type RunStream struct {
+	ch     chan RunEvent
 	result chan agentResult // buffered(1); the run goroutine's return value
 	res    *agentResult     // memoized after first read
 }
 
 type agentResult struct {
-	msg Message
-	res *Result // the Result RunMessage would return; nil for a stream from Stream or StreamSaga
+	res *Result
 	err error
 }
 
 // Events returns a range-over-func iterator over lifecycle events until the run ends.
 // Per-event errors do not occur here (a mid-stream model error aborts the run and is
 // reported by Final); the iterator simply ends when the run stops producing events.
-func (as *AgentStream) Events() iter.Seq[AgentEvent] {
-	return func(yield func(AgentEvent) bool) {
+func (as *RunStream) Events() iter.Seq[RunEvent] {
+	return func(yield func(RunEvent) bool) {
 		for e := range as.ch {
 			if !yield(e) {
 				return
@@ -183,72 +180,32 @@ func (as *AgentStream) Events() iter.Seq[AgentEvent] {
 	}
 }
 
-// Final drains any un-consumed events and returns the run's terminal message and
-// error (including *ApprovalPending / *OutcomeUnknown, matching Run). Safe to call after
-// fully or partially ranging Events, or on its own.
-func (as *AgentStream) Final() (Message, error) {
+// Result drains any un-consumed events and returns the run's Result and error, as Run returns
+// them: the Result is non-nil whenever the run ID is valid, whatever the error (including a
+// *ApprovalPending or an *OutcomeUnknown).
+func (as *RunStream) Result() (*Result, error) {
 	for range as.ch { // drain remaining events so the run goroutine can finish
 	}
 	if as.res == nil {
 		r := <-as.result
 		as.res = &r
 	}
-	return as.res.msg, as.res.err
+	return as.res.res, as.res.err
 }
 
-// Result drains any un-consumed events and returns the run's Result and error, as RunMessage
-// returns them: the Result is non-nil whenever the run ID is valid, whatever the error. For a
-// stream from the transitional Stream or StreamSaga it returns a Result built from Final's
-// message.
-func (as *AgentStream) Result() (*Result, error) {
-	msg, err := as.Final()
-	if as.res.res != nil {
-		return as.res.res, err
-	}
-	return &Result{Message: msg}, err
-}
-
-// Stream drives the agent like Run but returns a live AgentStream: token deltas, turn
-// boundaries, and tool start/finish arrive as events while the durable loop runs.
-// Resume, approval, and side-effect safety are identical to Run — Stream and Run share
-// one loop; Run is Stream(...).Final().
-func (a *Agent) Stream(ctx context.Context, runID, input string) *AgentStream {
-	return a.stream(ctx, runID, input, false)
-}
-
-// StreamSaga is the streaming counterpart of RunSaga (transactional run with reverse-
-// order compensation on failure).
-func (a *Agent) StreamSaga(ctx context.Context, runID, input string) *AgentStream {
-	return a.stream(ctx, runID, input, true)
-}
-
-func (a *Agent) stream(ctx context.Context, runID, input string, saga bool) *AgentStream {
-	var cfg runConfig
-	cfg.saga = saga
-	in := UserText(input)
-	return a.startStream(ctx, func(emit func(AgentEvent)) agentResult {
-		msg, _, _, err := a.drive(ctx, runID, &driveSpec{input: &in, cfg: cfg, emit: emit, strictSaga: !saga})
-		return agentResult{msg: msg, err: err}
-	})
-}
-
-// streamEntry is StreamMessage's body: RunMessage's, with events.
-func (a *Agent) streamEntry(ctx context.Context, runID string, d *driveSpec, opts []RunOption) *AgentStream {
-	return a.startStream(ctx, func(emit func(AgentEvent)) agentResult {
+// streamEntry is Stream's body: Run's, with events.
+func (a *Agent) streamEntry(ctx context.Context, runID string, d *driveSpec, opts []RunOption) *RunStream {
+	return a.startStream(ctx, func(emit func(RunEvent)) agentResult {
 		d.emit = emit
 		res, err := a.runEntry(ctx, runID, d, opts)
-		r := agentResult{res: res, err: err}
-		if res != nil {
-			r.msg = res.Message
-		}
-		return r
+		return agentResult{res: res, err: err}
 	})
 }
 
 // startStream runs body on its own goroutine, handing it the emit function that feeds the
 // stream's events, and returns the stream.
-func (a *Agent) startStream(ctx context.Context, body func(emit func(AgentEvent)) agentResult) *AgentStream {
-	as := &AgentStream{ch: make(chan AgentEvent), result: make(chan agentResult, 1)}
+func (a *Agent) startStream(ctx context.Context, body func(emit func(RunEvent)) agentResult) *RunStream {
+	as := &RunStream{ch: make(chan RunEvent), result: make(chan agentResult, 1)}
 	// mu and closed let an event that arrives after the run has ended be dropped rather than
 	// sent on the closed channel, which would panic and take down the process. That can happen
 	// only through a goroutine outliving its call, such as a middleware that fans a model call
@@ -258,7 +215,7 @@ func (a *Agent) startStream(ctx context.Context, body func(emit func(AgentEvent)
 		mu     sync.Mutex
 		closed bool
 	)
-	emit := func(e AgentEvent) {
+	emit := func(e RunEvent) {
 		mu.Lock()
 		defer mu.Unlock()
 		if closed {

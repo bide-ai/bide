@@ -260,7 +260,7 @@ func TestMofnDST_CrashSweepAfterQuorum(t *testing.T) {
 			WithTools(charge),
 			WithApproverVerifiers(vf),
 		)
-		_, err := a.Run(context.Background(), "r1", "pay")
+		_, err := a.Run(context.Background(), "r1", UserText("pay"))
 		return err
 	}
 

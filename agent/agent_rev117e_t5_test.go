@@ -48,7 +48,7 @@ func TestRev117e_T4_SiblingInvocationStillRunning(t *testing.T) {
 	})
 	fail := Func("fail", "", Safety{}, func(context.Context, struct{}) (string, error) { return "", errors.New("declined") })
 	m := NewScriptedModel(ToolTurn("c1", "charge", `{}`), ToolTurn("c2", "fail", `{}`), TextTurn("done"))
-	_, err := mustNew(m, memJournal(), WithTools(charge, fail), WithToolMiddleware(hedge)).RunSaga(context.Background(), "r", "go")
+	_, err := mustNew(m, memJournal(), WithTools(charge, fail), WithToolMiddleware(hedge)).Run(context.Background(), "r", UserText("go"), WithSaga())
 	close(release)
 	<-finished
 	var ab *SagaAborted
@@ -96,10 +96,10 @@ func TestRev117e_T4_EarlierDriveInvocationStillRunning(t *testing.T) {
 		WithTools(charge, fail),
 		WithToolMiddleware(leak),
 	)
-	if _, err := a.RunSaga(ctx1, "r", "go"); err == nil {
+	if _, err := a.Run(ctx1, "r", UserText("go"), WithSaga()); err == nil {
 		t.Fatal("first drive: want the cancellation")
 	}
-	_, err := a.RunSaga(context.Background(), "r", "go")
+	_, err := a.Run(context.Background(), "r", UserText("go"), WithSaga())
 	close(release)
 	<-finished
 	var ab *SagaAborted
@@ -134,7 +134,7 @@ func TestRev117e_T4_RollbackRerunCacheAnswerIsUnknown(t *testing.T) {
 			return next(ctx, call)
 		}
 	})
-	_, err := mustNew(t4TwoCalls{}, memJournal(), WithTools(charge, fail), WithToolMiddleware(cache)).RunSaga(context.Background(), "r", "go")
+	_, err := mustNew(t4TwoCalls{}, memJournal(), WithTools(charge, fail), WithToolMiddleware(cache)).Run(context.Background(), "r", UserText("go"), WithSaga())
 	var ab *SagaAborted
 	if !errors.As(err, &ab) || !slices.Contains(ab.UnknownOutcome, "charge") || refunded.Load() != 0 {
 		t.Fatalf("RunSaga = %v (refunded %d); want charge listed as unknown and not compensated", err, refunded.Load())
@@ -178,7 +178,7 @@ func TestRev117e_T5_ReachedBeforeCloseBeginsAfter(t *testing.T) {
 		}
 	})
 	m := NewScriptedModel(ToolTurn("c1", "charge", `{}`), TextTurn("done"))
-	if _, err := mustNew(m, j, WithTools(charge), WithToolMiddleware(leak)).RunSaga(context.Background(), "r", "go"); err != nil {
+	if _, err := mustNew(m, j, WithTools(charge), WithToolMiddleware(leak)).Run(context.Background(), "r", UserText("go"), WithSaga()); err != nil {
 		t.Fatal(err)
 	}
 	close(store.release)
@@ -222,10 +222,10 @@ func TestRev117e_T4_OwnFailureWhileEarlierInvocationRuns(t *testing.T) {
 		WithTools(write),
 		WithToolMiddleware(leak),
 	)
-	if _, err := a.RunSaga(ctx1, "r", "go"); err == nil {
+	if _, err := a.Run(ctx1, "r", UserText("go"), WithSaga()); err == nil {
 		t.Fatal("first drive: want the cancellation")
 	}
-	_, err := a.RunSaga(context.Background(), "r", "go")
+	_, err := a.Run(context.Background(), "r", UserText("go"), WithSaga())
 	close(release)
 	<-finished
 	var ab *SagaAborted
@@ -246,11 +246,11 @@ func TestRev117e_T4_InflightIsPerStore(t *testing.T) {
 	fast := Func("send", "", Safety{}, func(context.Context, struct{}) (string, error) { return "ok", nil })
 	m := func() Model { return NewScriptedModel(ToolTurn("c1", "send", `{}`), TextTurn("done")) }
 	go func() {
-		_, err := mustNew(m(), memJournal(), WithTools(slow)).Run(context.Background(), "r", "go")
+		_, err := mustNew(m(), memJournal(), WithTools(slow)).Run(context.Background(), "r", UserText("go"))
 		done <- err
 	}()
 	<-inTool
-	_, err := mustNew(m(), memJournal(), WithTools(fast)).Run(context.Background(), "r", "go")
+	_, err := mustNew(m(), memJournal(), WithTools(fast)).Run(context.Background(), "r", UserText("go"))
 	close(release)
 	if err != nil {
 		t.Fatalf("Run on another store = %v; a call of the same run ID elsewhere is not this call", err)

@@ -179,7 +179,7 @@ func TestCaptureOnRecordsNoCredentials(t *testing.T) {
 		agent.WithToolErrorRedactor(func(_ string, err error) string {
 			return strings.ReplaceAll(err.Error(), "ACCT-998877", "ACCT-XXXX")
 		}))
-	if _, err := a.Run(context.Background(), "r", "hi"); err != nil {
+	if _, err := a.Run(context.Background(), "r", agent.UserText("hi")); err != nil {
 		t.Fatal(err)
 	}
 	var journaled string

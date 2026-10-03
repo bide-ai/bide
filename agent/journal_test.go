@@ -167,7 +167,7 @@ func TestJournal_RedactedRecord(t *testing.T) {
 	if err != nil || !ok || !rec.Redacted || rec.Name != "secret" || rec.Result != nil || string(rec.Raw()) != string(tomb) {
 		t.Fatalf("Get of a tombstone = %+v, %v, %v", rec, ok, err)
 	}
-	if _, err := mustNew(NewScriptedModel(), j).Run(ctx, "r", "hi"); !errors.Is(err, ErrConfig) || !strings.Contains(err.Error(), "redacted") {
+	if _, err := mustNew(NewScriptedModel(), j).Run(ctx, "r", UserText("hi")); !errors.Is(err, ErrConfig) || !strings.Contains(err.Error(), "redacted") {
 		t.Fatalf("Run over a redacted run = %v, want ErrConfig naming the redaction", err)
 	}
 	for _, b := range []string{`{"redacted":{"at_ms":1}}`, `{"redacted":{"leaf_hash":"ab"},"x":1}`, `{"name":"x","redacted":{"leaf_hash":"ab"}}`} {
@@ -324,7 +324,7 @@ func TestLiveToolResult_LosingInsertUsesTheStoredResult(t *testing.T) {
 	j, _ := NewJournal(&racedStore{Store: m, name: ToolResultStep("c1"), them: theirs})
 	model := &capturingModel{Model: NewScriptedModel(ToolTurn("c1", "lookup", `{}`), TextTurn("done"))}
 	tool := Func("lookup", "", Safety{ReadOnly: true}, func(context.Context, struct{}) (string, error) { return "mine", nil })
-	if _, err := mustNew(model, j, WithTools(tool)).Run(ctx, "r", "hi"); err != nil {
+	if _, err := mustNew(model, j, WithTools(tool)).Run(ctx, "r", UserText("hi")); err != nil {
 		t.Fatal(err)
 	}
 	if len(model.seen) != 1 || model.seen[0] != `"theirs"` {

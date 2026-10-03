@@ -47,7 +47,7 @@ func leaveAndFail(m *lateModel) Middleware {
 func TestF3_InFlightRequestOfFailedTurnIsJournaled(t *testing.T) {
 	m := &lateModel{u: billed, started: make(chan struct{}), gate: make(chan struct{})}
 	store := memJournal()
-	if _, err := mustNew(m, store, WithMiddleware(leaveAndFail(m))).RunResult(context.Background(), "r", "go"); err == nil {
+	if _, err := mustNew(m, store, WithMiddleware(leaveAndFail(m))).Run(context.Background(), "r", UserText("go")); err == nil {
 		t.Fatal("want the call's failure")
 	}
 	var journaled Usage
@@ -81,7 +81,7 @@ func TestF3_WaitIsBounded(t *testing.T) {
 	done := make(chan struct{})
 	go func() {
 		defer close(done)
-		res, err := mustNew(m, memJournal(), WithMiddleware(stuck)).RunResult(context.Background(), "r", "go")
+		res, err := mustNew(m, memJournal(), WithMiddleware(stuck)).Run(context.Background(), "r", UserText("go"))
 		if err != nil || res.Spend != (Usage{}) {
 			t.Errorf("res %+v, err %v: want the run to finish without the stuck request's spend", res, err)
 		}
@@ -117,11 +117,11 @@ func TestF3_LateSpendIsJournaledAndReplayed(t *testing.T) {
 	}
 	store := memJournal()
 	a := mustNew(m, store, WithMiddleware(answer))
-	res, err := a.RunResult(context.Background(), "r", "go")
+	res, err := a.Run(context.Background(), "r", UserText("go"))
 	if err != nil {
 		t.Fatal(err)
 	}
-	again, err := a.RunResult(context.Background(), "r", "go")
+	again, err := a.Run(context.Background(), "r", UserText("go"))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -132,7 +132,7 @@ func TestF3_LateSpendIsJournaledAndReplayed(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	replayed, err := mustNew(rm, memJournal()).RunResult(context.Background(), "r", "go")
+	replayed, err := mustNew(rm, memJournal()).Run(context.Background(), "r", UserText("go"))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -168,10 +168,10 @@ func TestF4_LandedRecordIsNotCountedTwice(t *testing.T) {
 	}
 	m := &scriptModel{turns: [][]Emit{textTurnWithUsage("done", billed), textTurnWithUsage("again", billed)}}
 	a := mustNew(m, j)
-	if _, err := a.RunResult(ctx, "r", "go"); err == nil {
+	if _, err := a.Run(ctx, "r", UserText("go")); err == nil {
 		t.Fatal("want the write failure")
 	}
-	res, err := a.RunResult(ctx, "r", "go")
+	res, err := a.Run(ctx, "r", UserText("go"))
 	if err != nil {
 		t.Fatal(err)
 	}

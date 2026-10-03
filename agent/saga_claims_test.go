@@ -47,7 +47,7 @@ func TestSagaSkipsVoidedAttempt(t *testing.T) {
 	}
 	s := &r3Store{m: m, faults: []r3Fault{{"attempt:tool:c1", "c"}}} // marker commits, errors: voided
 	j, _ := agent.NewJournal(s)
-	_, err1 := agenttest.MustNew(model(), j, agent.WithTools(sagaTools(c)...), agent.WithMaxConcurrency(1)).RunSaga(ctx, "r", "hi")
+	_, err1 := agenttest.MustNew(model(), j, agent.WithTools(sagaTools(c)...), agent.WithMaxConcurrency(1)).Run(ctx, "r", agent.UserText("hi"), agent.WithSaga())
 	t.Logf("drive 1: %v", err1)
 	sagaFail(t, m, "r")
 	_, err2 := agenttest.MustNew(
@@ -55,7 +55,7 @@ func TestSagaSkipsVoidedAttempt(t *testing.T) {
 		agenttest.MustJournal(m),
 		agent.WithTools(sagaTools(c)...),
 		agent.WithMaxConcurrency(1),
-	).RunSaga(ctx, "r", "hi")
+	).Run(ctx, "r", agent.UserText("hi"), agent.WithSaga())
 	t.Logf("drive 2: %v; fired %d undone %d", err2, c.fired, c.undone)
 	r3Dump(t, m, "r")
 	var ab *agent.SagaAborted
@@ -75,8 +75,8 @@ func TestSagaCompensatesCallFiredUnderHeldClaim(t *testing.T) {
 	}
 	s := &r3Store{m: m, faults: []r3Fault{{"attempt:tool:c1", "nc"}, {"attempt:not-started:", "nc"}}}
 	j, _ := agent.NewJournal(s)
-	_, err1 := agenttest.MustNew(model(), j, agent.WithTools(sagaTools(c)...), agent.WithMaxConcurrency(1)).RunSaga(ctx, "r", "hi")
-	_, err2 := agenttest.MustNew(model(), j, agent.WithTools(sagaTools(c)...), agent.WithMaxConcurrency(1)).RunSaga(ctx, "r", "hi")
+	_, err1 := agenttest.MustNew(model(), j, agent.WithTools(sagaTools(c)...), agent.WithMaxConcurrency(1)).Run(ctx, "r", agent.UserText("hi"), agent.WithSaga())
+	_, err2 := agenttest.MustNew(model(), j, agent.WithTools(sagaTools(c)...), agent.WithMaxConcurrency(1)).Run(ctx, "r", agent.UserText("hi"), agent.WithSaga())
 	t.Logf("drive 1: %v\ndrive 2: %v; fired %d undone %d", err1, err2, c.fired, c.undone)
 	r3Dump(t, m, "r")
 	var ab *agent.SagaAborted
@@ -96,16 +96,16 @@ func TestSagaHaltsOnHeldClaimWithoutResult(t *testing.T) {
 	}
 	s := &r3Store{m: m, faults: []r3Fault{{"attempt:tool:c1", "nc"}, {"attempt:not-started:", "nc"}}}
 	j, _ := agent.NewJournal(s)
-	_, err1 := agenttest.MustNew(model(), j, agent.WithTools(sagaTools(c)...), agent.WithMaxConcurrency(1)).RunSaga(ctx, "r", "hi")
+	_, err1 := agenttest.MustNew(model(), j, agent.WithTools(sagaTools(c)...), agent.WithMaxConcurrency(1)).Run(ctx, "r", agent.UserText("hi"), agent.WithSaga())
 	s.faults = []r3Fault{{"tool:c1", "nc"}} // the result write is lost after the call fired
-	_, err2 := agenttest.MustNew(model(), j, agent.WithTools(sagaTools(c)...), agent.WithMaxConcurrency(1)).RunSaga(ctx, "r", "hi")
+	_, err2 := agenttest.MustNew(model(), j, agent.WithTools(sagaTools(c)...), agent.WithMaxConcurrency(1)).Run(ctx, "r", agent.UserText("hi"), agent.WithSaga())
 	sagaFail(t, m, "r")
 	_, err3 := agenttest.MustNew(
 		model(),
 		agenttest.MustJournal(m),
 		agent.WithTools(sagaTools(c)...),
 		agent.WithMaxConcurrency(1),
-	).RunSaga(ctx, "r", "hi")
+	).Run(ctx, "r", agent.UserText("hi"), agent.WithSaga())
 	t.Logf("drive 1: %v\ndrive 2: %v\ndrive 3: %v; fired %d undone %d", err1, err2, err3, c.fired, c.undone)
 	r3Dump(t, m, "r")
 	var ab *agent.SagaAborted

@@ -141,7 +141,7 @@ func Test_R105b_StartedRetrySafeCallIsNotProvablyAbsent(t *testing.T) {
 				j,
 				agent.WithTools(charge),
 				agent.WithMaxConcurrency(1),
-			).Run(ctx, "r", "hi")
+			).Run(ctx, "r", agent.UserText("hi"))
 			if runErr == nil || fired != 1 {
 				t.Fatalf("setup: run err %v, fired %d (want an error and one firing)", runErr, fired)
 			}

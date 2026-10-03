@@ -502,25 +502,41 @@ func rmDriveOnce(ctx context.Context, root *agent.Agent, sc *rmScenario) (agent.
 	in := sc.Root.Name
 	switch {
 	case sc.API == 1 && sc.Saga:
-		res, err := root.RunSagaResult(ctx, rmRunID, in)
+		res, err := root.Run(ctx, rmRunID, agent.UserText(in), agent.WithSaga())
 		if err != nil {
 			return agent.Message{}, err
 		}
 		return res.Message, nil
 	case sc.API == 1:
-		res, err := root.RunResult(ctx, rmRunID, in)
+		res, err := root.Run(ctx, rmRunID, agent.UserText(in))
 		if err != nil {
 			return agent.Message{}, err
 		}
 		return res.Message, nil
 	case sc.API == 2 && sc.Saga:
-		return root.StreamSaga(ctx, rmRunID, in).Final()
+		res2, err := root.Stream(ctx, rmRunID, agent.UserText(in), agent.WithSaga()).Result()
+		if err != nil {
+			return agent.Message{}, err
+		}
+		return res2.Message, nil
 	case sc.API == 2:
-		return root.Stream(ctx, rmRunID, in).Final()
+		res3, err := root.Stream(ctx, rmRunID, agent.UserText(in)).Result()
+		if err != nil {
+			return agent.Message{}, err
+		}
+		return res3.Message, nil
 	case sc.Saga:
-		return root.RunSaga(ctx, rmRunID, in)
+		res4, err := root.Run(ctx, rmRunID, agent.UserText(in), agent.WithSaga())
+		if err != nil {
+			return agent.Message{}, err
+		}
+		return res4.Message, nil
 	default:
-		return root.Run(ctx, rmRunID, in)
+		res5, err := root.Run(ctx, rmRunID, agent.UserText(in))
+		if err != nil {
+			return agent.Message{}, err
+		}
+		return res5.Message, nil
 	}
 }
 

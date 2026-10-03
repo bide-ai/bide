@@ -51,7 +51,7 @@ func TestAdv117b_AbandoningMiddlewareDoubleFiresASideEffect(t *testing.T) {
 	})
 	store := memJournal()
 	m := NewScriptedModel(ToolTurn("c1", "charge", `{}`), TextTurn("done"))
-	if _, err := mustNew(m, store, WithTools(charge), WithToolMiddleware(abandon)).Run(ctx, "r1", "pay"); !errors.Is(err, context.Canceled) {
+	if _, err := mustNew(m, store, WithTools(charge), WithToolMiddleware(abandon)).Run(ctx, "r1", UserText("pay")); !errors.Is(err, context.Canceled) {
 		t.Fatalf("first drive: %v, want context.Canceled", err)
 	}
 	close(gate) // the queued request goes out after the drive returned
@@ -59,7 +59,7 @@ func TestAdv117b_AbandoningMiddlewareDoubleFiresASideEffect(t *testing.T) {
 	// The chain had returned, so the call was closed: the late request is refused and never reaches
 	// the tool. The chain's error did not say ErrToolNotCalled, so the side effect's outcome is
 	// unknown to the loop, and the resume halts for it rather than fire it.
-	_, err := mustNew(m, store, WithTools(charge)).Run(context.Background(), "r1", "pay")
+	_, err := mustNew(m, store, WithTools(charge)).Run(context.Background(), "r1", UserText("pay"))
 	var halt *OutcomeUnknown
 	if charges.Load() > 1 {
 		t.Fatalf("the side effect fired %d times (resume err %v); the claim was recorded as not started although the chain went on to call the tool", charges.Load(), err)
@@ -92,8 +92,8 @@ func TestAdv117b_MiddlewareCallingTheToolDirectlyDoubleFires(t *testing.T) {
 	})
 	store := memJournal()
 	m := NewScriptedModel(ToolTurn("c1", "charge", `{}`), TextTurn("done"))
-	_, _ = mustNew(m, store, WithTools(charge), WithToolMiddleware(direct)).Run(ctx, "r1", "pay")
-	_, err := mustNew(m, store, WithTools(charge)).Run(context.Background(), "r1", "pay")
+	_, _ = mustNew(m, store, WithTools(charge), WithToolMiddleware(direct)).Run(ctx, "r1", UserText("pay"))
+	_, err := mustNew(m, store, WithTools(charge)).Run(context.Background(), "r1", UserText("pay"))
 	if charges.Load() > 1 {
 		t.Fatalf("the side effect fired %d times (resume err %v)", charges.Load(), err)
 	}
@@ -115,7 +115,7 @@ func TestAdv117b_NestedCompensatorWrapperIsAccepted(t *testing.T) {
 	sub := mustNew(NewScriptedModel(TextTurn("x")), memJournal())
 	tool := outerWrap{compWrap{SubAgent("delegate", "", sub)}}
 	var calls atomic.Int32
-	_, err := mustNew(&countingModel{n: &calls}, memJournal(), WithTools(tool)).Run(context.Background(), "r1", "go")
+	_, err := mustNew(&countingModel{n: &calls}, memJournal(), WithTools(tool)).Run(context.Background(), "r1", UserText("go"))
 	if !errors.Is(err, ErrConfig) {
 		t.Fatalf("Run = %v; want ErrConfig for a Compensator inside the Unwrap chain", err)
 	}

@@ -72,10 +72,11 @@ func main() {
 	}
 
 	// First Run: drives to completion, journaling the model turns and the tool result.
-	out1, err := newAgent().Run(ctx, runID, "Charge the card, then confirm.")
+	res, err := newAgent().Run(ctx, runID, agent.UserText("Charge the card, then confirm."))
 	if err != nil {
 		log.Fatalf("first run: %v", err)
 	}
+	out1 := res.Message
 	fmt.Printf("first run:  %s\n", out1.Text())
 	fmt.Printf("side effect fired %d time(s)\n", charges.Load())
 
@@ -87,10 +88,11 @@ func main() {
 
 	// Second Run, SAME runID + SAME store: every step is memoized, so the model is not
 	// called and the tool body does not run again. The counter stays at 1.
-	out2, err := newAgent().Run(ctx, runID, "Charge the card, then confirm.")
+	res2, err := newAgent().Run(ctx, runID, agent.UserText("Charge the card, then confirm."))
 	if err != nil {
 		log.Fatalf("resume run: %v", err)
 	}
+	out2 := res2.Message
 	fmt.Printf("second run: %s\n", out2.Text())
 	fmt.Printf("side effect fired %d time(s) total (unchanged: at-most-once across resume)\n", charges.Load())
 

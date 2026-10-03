@@ -59,7 +59,7 @@ func TestRunInfoFrom(t *testing.T) {
 	sub := buildOn(t, NewScriptedModel(ToolTurn("s1", "probe", `{}`), TextTurn("sub done")), store, WithTools(probe))
 	parent := buildOn(t, NewScriptedModel(ToolTurn("c1", "probe", `{}`), ToolTurn("c2", "helper", `{"task":"t"}`), TextTurn("done")),
 		store, WithTools(probe, SubAgent("helper", "", sub)))
-	if _, err := parent.RunSaga(context.Background(), "root", "go"); err != nil {
+	if _, err := parent.Run(context.Background(), "root", UserText("go"), WithSaga()); err != nil {
 		t.Fatal(err)
 	}
 	want := []RunInfo{
@@ -70,7 +70,7 @@ func TestRunInfoFrom(t *testing.T) {
 		t.Errorf("RunInfo = %+v, want %+v", infos, want)
 	}
 	infos = nil
-	if _, err := buildOn(t, NewScriptedModel(ToolTurn("c1", "probe", `{}`), TextTurn("done")), store, WithTools(probe)).Run(context.Background(), "plain", "go"); err != nil {
+	if _, err := buildOn(t, NewScriptedModel(ToolTurn("c1", "probe", `{}`), TextTurn("done")), store, WithTools(probe)).Run(context.Background(), "plain", UserText("go")); err != nil {
 		t.Fatal(err)
 	}
 	if len(infos) != 1 || infos[0] != (RunInfo{RunID: "plain", RootRunID: "plain", ToolUseID: "c1"}) {
@@ -113,11 +113,15 @@ func TestSubRunFor(t *testing.T) {
 		info, _ := RunInfoFrom(ctx)
 		id := info.SubRunFor("child")
 		ids = append(ids, id)
-		msg, err := child.Run(ctx, id, "work")
+		res, err := child.Run(ctx, id, UserText("work"))
+		var msg Message
+		if res != nil {
+			msg = res.Message
+		}
 		return msg.Text(), err
 	})
 	parent := buildOn(t, NewScriptedModel(ToolTurn("c1", "starter", `{}`), TextTurn("done")), store, WithTools(starter))
-	if _, err := parent.Run(context.Background(), "p", "go"); err != nil {
+	if _, err := parent.Run(context.Background(), "p", UserText("go")); err != nil {
 		t.Fatal(err)
 	}
 	if want := (RunInfo{RunID: "p", ToolUseID: "c1"}).SubRunFor("child"); len(ids) != 1 || ids[0] != want {
@@ -162,7 +166,7 @@ func TestSubRunFor_OnlyTheCallsOwnIDs(t *testing.T) {
 			t.Errorf("checkRunID(%q) from the call = %v, want ErrConfig", id, err)
 		}
 	}
-	if _, err := a.Run(context.Background(), in.SubRunFor("x"), "go"); !errors.Is(err, ErrConfig) {
+	if _, err := a.Run(context.Background(), in.SubRunFor("x"), UserText("go")); !errors.Is(err, ErrConfig) {
 		t.Errorf("Run of a sub-run ID outside its call = %v, want ErrConfig", err)
 	}
 }

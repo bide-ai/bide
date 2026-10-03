@@ -92,8 +92,7 @@ func synthesizeScene() {
 	if err != nil {
 		log.Fatal(err)
 	}
-	if _, err = ag.
-		Run(context.Background(), "gov-1", "Increment a five times."); err != nil {
+	if _, err = ag.Run(context.Background(), "gov-1", agent.UserText("Increment a five times.")); err != nil {
 		log.Fatalf("run: %v", err)
 	}
 	st := gov.State()

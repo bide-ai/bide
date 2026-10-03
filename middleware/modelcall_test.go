@@ -146,7 +146,7 @@ func TestModelCallHook_OncePerSentRequest(t *testing.T) {
 			}
 			mw := append([]agent.Middleware{outer.middleware}, c.mw(backup)...)
 			mw = append(mw, inner.middleware)
-			if _, err := agenttest.MustNew(c.primary, agenttest.MemJournal(), agent.WithMiddleware(mw...)).Run(context.Background(), "r", "q"); err != nil {
+			if _, err := agenttest.MustNew(c.primary, agenttest.MemJournal(), agent.WithMiddleware(mw...)).Run(context.Background(), "r", agent.UserText("q")); err != nil {
 				t.Fatal(err)
 			}
 			sent := c.primary.sent()
@@ -232,7 +232,7 @@ func TestHedge_AttemptUniqueAcrossBranches(t *testing.T) {
 		agenttest.MemJournal(),
 		agent.WithMiddleware(middleware.Hedge(0, backup), l.middleware),
 	)
-	if _, err := a.Run(context.Background(), "r", "q"); err != nil {
+	if _, err := a.Run(context.Background(), "r", agent.UserText("q")); err != nil {
 		t.Fatal(err)
 	}
 	// Hedge returns on the first success; the other request's After follows when it ends.
@@ -283,7 +283,7 @@ func TestHedge_AppendingMiddlewareIsRaceFree(t *testing.T) {
 		agenttest.MemJournal(),
 		agent.WithMiddleware(spare, middleware.Hedge(0, backup), tag, l.middleware),
 	)
-	if _, err := a.Run(context.Background(), "r", "q"); err != nil {
+	if _, err := a.Run(context.Background(), "r", agent.UserText("q")); err != nil {
 		t.Fatal(err)
 	}
 	waitFor(t, func() bool { _, after := l.sorted(); return len(after) == 2 }, "both requests to end")
@@ -321,7 +321,7 @@ func TestHedge_StreamKeepsOnlyTheWinner(t *testing.T) {
 		agenttest.MemJournal(),
 		agent.WithMiddleware(middleware.Hedge(0, backup), holdBackup),
 	)
-	as := a.Stream(context.Background(), "r", "q")
+	as := a.Stream(context.Background(), "r", agent.UserText("q"))
 	var got []string
 	for ev := range as.Events() {
 		switch e := ev.(type) {
@@ -341,10 +341,11 @@ func TestHedge_StreamKeepsOnlyTheWinner(t *testing.T) {
 			got = append(got, "turn:"+e.Message.Text())
 		}
 	}
-	final, err := as.Final()
+	res, err := as.Result()
 	if err != nil {
 		t.Fatal(err)
 	}
+	final := res.Message
 	want := []string{"delta:primary-partial", "restart", "delta:backup", "finish:stop", "turn:backup"}
 	if !slices.Equal(got, want) || final.Text() != "backup" {
 		t.Fatalf("stream = %q, answer %q; want %q and backup", got, final.Text(), want)
@@ -396,7 +397,7 @@ func TestHedge_ClaimerWinsLive(t *testing.T) {
 			return next(ctx, call)
 		}
 	}
-	as := agenttest.MustNew(primary, agenttest.MemJournal(), agent.WithMiddleware(middleware.Hedge(0, backup), order)).Stream(context.Background(), "r", "q")
+	as := agenttest.MustNew(primary, agenttest.MemJournal(), agent.WithMiddleware(middleware.Hedge(0, backup), order)).Stream(context.Background(), "r", agent.UserText("q"))
 	var got []string
 	for ev := range as.Events() {
 		switch e := ev.(type) {
@@ -411,10 +412,11 @@ func TestHedge_ClaimerWinsLive(t *testing.T) {
 			got = append(got, "restart")
 		}
 	}
-	final, err := as.Final()
+	res, err := as.Result()
 	if err != nil {
 		t.Fatal(err)
 	}
+	final := res.Message
 	if want := []string{"p1", "p2"}; !slices.Equal(got, want) || final.Text() != "p1p2" {
 		t.Fatalf("stream = %q, answer %q; want %q and p1p2", got, final.Text(), want)
 	}
@@ -432,7 +434,7 @@ func (f streamFunc) Stream(ctx context.Context, _ agent.Request) (*agent.Stream,
 func TestCost_CountsReplayedDiscardedSpend(t *testing.T) {
 	store := agenttest.MemJournal()
 	m := &billedModel{u: billed, bad: 1}
-	if _, err := agenttest.MustNew(m, store, agent.WithMiddleware(middleware.Retry(1, middleware.WithBackoff(0, 0)))).Run(context.Background(), "r", "q"); err != nil {
+	if _, err := agenttest.MustNew(m, store, agent.WithMiddleware(middleware.Retry(1, middleware.WithBackoff(0, 0)))).Run(context.Background(), "r", agent.UserText("q")); err != nil {
 		t.Fatal(err)
 	}
 	rm, err := agent.Replay(context.Background(), store, "r")
@@ -440,7 +442,7 @@ func TestCost_CountsReplayedDiscardedSpend(t *testing.T) {
 		t.Fatal(err)
 	}
 	var meter middleware.CostMeter
-	if _, err := agenttest.MustNew(rm, agenttest.MemJournal(), agent.WithMiddleware(middleware.Cost(&meter, perInput))).Run(context.Background(), "r", "q"); err != nil {
+	if _, err := agenttest.MustNew(rm, agenttest.MemJournal(), agent.WithMiddleware(middleware.Cost(&meter, perInput))).Run(context.Background(), "r", agent.UserText("q")); err != nil {
 		t.Fatal(err)
 	}
 	if s := meter.Snapshot(); s.Answer != billed || s.Spend != twice(billed) || s.SpendUSD != 200 || s.AnswerUSD != 100 {

@@ -13,14 +13,14 @@ func TestRecover_SkipsAFinishedSagaAbort(t *testing.T) {
 	fail := Func("book", "book it", Safety{}, func(context.Context, struct{}) (string, error) { return "", errors.New("no seats") })
 	a := mustNew(NewScriptedModel(ToolTurn("b1", "book", `{}`), TextTurn("done")), store, WithTools(fail))
 	var aborted *SagaAborted
-	if _, err := a.RunSaga(context.Background(), "r1", "go"); !errors.As(err, &aborted) {
+	if _, err := a.Run(context.Background(), "r1", UserText("go"), WithSaga()); !errors.As(err, &aborted) {
 		t.Fatalf("setup: %v", err)
 	}
 	var redriven int
 	for pass := range 2 {
 		n, err := Recover(context.Background(), store, func(ctx context.Context, runID string, _ RunStart) error {
 			redriven++
-			_, err := a.RunSaga(ctx, runID, "go")
+			_, err := a.Run(ctx, runID, UserText("go"), WithSaga())
 			return err
 		})
 		if n != 0 || err != nil {

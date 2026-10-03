@@ -19,16 +19,16 @@ func TestP14Rule10_AmendmentBindsLaterDrives(t *testing.T) {
 	ctx := context.Background()
 	j, _ := p14Journal(t)
 	a, model, _ := approvalAgent(t, j)
-	if _, err := a.RunMessage(ctx, "r", agent.UserText("go"), agent.WithMaxTurns(1)); !agent.IsPause(err) {
+	if _, err := a.Run(ctx, "r", agent.UserText("go"), agent.WithMaxTurns(1)); !agent.IsPause(err) {
 		t.Fatalf("first drive = %v, want the approval pause", err)
 	}
-	if _, err := a.ResumeRun(ctx, "r", agent.WithMaxTurns(3)); !agent.IsPause(err) {
+	if _, err := a.Resume(ctx, "r", agent.WithMaxTurns(3)); !agent.IsPause(err) {
 		t.Fatalf("amending drive = %v, want the pause again", err)
 	}
 	if err := agent.Approve(ctx, j, "r", "c1", true); err != nil {
 		t.Fatal(err)
 	}
-	if _, err := a.ResumeRun(ctx, "r"); !errors.Is(err, agent.ErrMaxTurns) {
+	if _, err := a.Resume(ctx, "r"); !errors.Is(err, agent.ErrMaxTurns) {
 		t.Fatalf("drive with no option = %v, want ErrMaxTurns at the amended 3", err)
 	}
 	if n := model.calls.Load(); n != 3 {
@@ -49,7 +49,7 @@ func TestP14Rule03_SiblingsDoNotStartAfterCancel(t *testing.T) {
 		{text: "done"},
 	}}
 	a := p14Build(t, model, j, agent.WithTools(pay.tool("pay", agent.Safety{}), pay.tool("pay2", agent.Safety{}), look.tool("lookup", agent.Safety{ReadOnly: true})))
-	if _, err := a.RunMessage(ctx, "r", agent.UserText("go"), agent.WithMaxConcurrency(1)); !errors.Is(err, agent.ErrRunCancelled) {
+	if _, err := a.Run(ctx, "r", agent.UserText("go"), agent.WithMaxConcurrency(1)); !errors.Is(err, agent.ErrRunCancelled) {
 		t.Fatalf("run = %v, want ErrRunCancelled", err)
 	}
 	if pay.n.Load() != 0 || look.n.Load() != 0 || has(t, m, "r", "attempt:tool:c2") {
@@ -86,11 +86,11 @@ func TestP14Rule05_SagaRecordedAnswerBeatsALaterRequest(t *testing.T) {
 		t.Fatal(err)
 	}
 	a := p14Build(t, &p14Model{turns: []p14Turn{{text: "done"}}}, j)
-	if _, err := a.RunMessage(ctx, "r", agent.UserText("go"), agent.WithSaga()); !errors.Is(err, agent.ErrStorage) {
+	if _, err := a.Run(ctx, "r", agent.UserText("go"), agent.WithSaga()); !errors.Is(err, agent.ErrStorage) {
 		t.Fatalf("first drive = %v, want the failed run:complete", err)
 	}
 	writeMarker(t, mem, "r", "run:cancel-requested", reason{"late"})
-	res, err := a.ResumeRun(ctx, "r")
+	res, err := a.Resume(ctx, "r")
 	if err != nil || res.Message.Text() != "done" {
 		t.Fatalf("resume = %v, %v; want the recorded answer", res, err)
 	}
@@ -133,14 +133,14 @@ func TestP14Rule16_CompletedFirstIsNotClosed(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	_, err = s.Send(ctx, "x")
+	_, err = s.Send(ctx, agent.UserText("x"))
 	pa, ok := errors.AsType[*agent.ApprovalPending](err)
 	if !ok {
 		t.Fatalf("Send(x) = %v, want the approval pause", err)
 	}
 	writeMarker(t, m, pa.RunID, "run:complete", nil)
 	writeMarker(t, m, pa.RunID, "run:cancelled", reason{"late"})
-	if _, err := s.Send(ctx, "y"); !errors.Is(err, agent.ErrConfig) {
+	if _, err := s.Send(ctx, agent.UserText("y")); !errors.Is(err, agent.ErrConfig) {
 		t.Fatalf("Send(y) = %v, want ErrConfig: x's turn completed, it was not cancelled", err)
 	}
 }

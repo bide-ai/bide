@@ -93,11 +93,19 @@ func TestFinalAnswerCrash_ResumeReplaysAnswer(t *testing.T) {
 		entry  func(a *Agent) (string, error)
 	}{
 		{name: "Run", runID: "r1", script: chargeThenAnswer, entry: func(a *Agent) (string, error) {
-			m, err := a.Run(ctx, "r1", "pay")
+			res, err := a.Run(ctx, "r1", UserText("pay"))
+			var m Message
+			if res != nil {
+				m = res.Message
+			}
 			return textOf(m), err
 		}},
 		{name: "RunAnswerOnly", runID: "r1", script: [][]Emit{textTurn("done")}, entry: func(a *Agent) (string, error) {
-			m, err := a.Run(ctx, "r1", "hi")
+			res, err := a.Run(ctx, "r1", UserText("hi"))
+			var m Message
+			if res != nil {
+				m = res.Message
+			}
 			return textOf(m), err
 		}},
 		{
@@ -106,7 +114,11 @@ func TestFinalAnswerCrash_ResumeReplaysAnswer(t *testing.T) {
 			name: "RunAtMaxTurns", runID: "r1", script: chargeThenAnswer,
 			opts: func(a *Agent) *Agent { return must(a.With(WithMaxTurns(2))) },
 			entry: func(a *Agent) (string, error) {
-				m, err := a.Run(ctx, "r1", "pay")
+				res, err := a.Run(ctx, "r1", UserText("pay"))
+				var m Message
+				if res != nil {
+					m = res.Message
+				}
 				return textOf(m), err
 			},
 		},
@@ -120,27 +132,39 @@ func TestFinalAnswerCrash_ResumeReplaysAnswer(t *testing.T) {
 			},
 			opts: func(a *Agent) *Agent { return must(a.With(WithTokenBudget(20))) },
 			entry: func(a *Agent) (string, error) {
-				m, err := a.Run(ctx, "r1", "pay")
+				res, err := a.Run(ctx, "r1", UserText("pay"))
+				var m Message
+				if res != nil {
+					m = res.Message
+				}
 				return textOf(m), err
 			},
 		},
 		{name: "RunResult", runID: "r1", script: chargeThenAnswer, entry: func(a *Agent) (string, error) {
-			res, err := a.RunResult(ctx, "r1", "pay")
+			res, err := a.Run(ctx, "r1", UserText("pay"))
 			if err != nil {
 				return "", err
 			}
 			return textOf(res.Message), nil
 		}},
 		{name: "RunSaga", runID: "r1", script: chargeThenAnswer, entry: func(a *Agent) (string, error) {
-			m, err := a.RunSaga(ctx, "r1", "pay")
+			res, err := a.Run(ctx, "r1", UserText("pay"), WithSaga())
+			var m Message
+			if res != nil {
+				m = res.Message
+			}
 			return textOf(m), err
 		}},
 		{name: "StreamSaga", runID: "r1", script: chargeThenAnswer, entry: func(a *Agent) (string, error) {
-			m, err := a.StreamSaga(ctx, "r1", "pay").Final()
+			res, err := a.Stream(ctx, "r1", UserText("pay"), WithSaga()).Result()
+			var m Message
+			if res != nil {
+				m = res.Message
+			}
 			return textOf(m), err
 		}},
 		{name: "Stream", runID: "r1", script: chargeThenAnswer, entry: func(a *Agent) (string, error) {
-			as := a.Stream(ctx, "r1", "pay")
+			as := a.Stream(ctx, "r1", UserText("pay"))
 			var finished bool
 			var live int
 			for ev := range as.Events() {
@@ -153,10 +177,11 @@ func TestFinalAnswerCrash_ResumeReplaysAnswer(t *testing.T) {
 					}
 				}
 			}
-			m, err := as.Final()
+			res, err := as.Result()
 			if err != nil {
 				return "", err
 			}
+			m := res.Message
 			if !finished {
 				return "", errors.New("no Finished event")
 			}
@@ -167,17 +192,17 @@ func TestFinalAnswerCrash_ResumeReplaysAnswer(t *testing.T) {
 		}},
 		{name: "RunTypedText", runID: "r1", script: [][]Emit{toolTurn("c1", "charge", `{}`), textTurn(`{"name":"done"}`)},
 			entry: func(a *Agent) (string, error) {
-				out, err := RunTyped[typedAnswer](ctx, a, "r1", "pay")
+				out, _, err := a.RunTyped[typedAnswer](ctx, "r1", UserText("pay"))
 				return out.Name, err
 			}},
 		{name: "RunTypedTool", runID: "r1", script: [][]Emit{toolTurn("c1", "charge", `{}`), toolTurn("f1", "final_answer", `{"name":"done"}`)},
 			entry: func(a *Agent) (string, error) {
-				out, err := RunTyped[typedAnswer](ctx, a, "r1", "pay")
+				out, _, err := a.RunTyped[typedAnswer](ctx, "r1", UserText("pay"))
 				return out.Name, err
 			}},
 		{name: "RunTypedNative", runID: "r1", script: [][]Emit{toolTurn("c1", "charge", `{}`), textTurn(`{"name":"done"}`)},
 			entry: func(a *Agent) (string, error) {
-				out, err := RunTypedNative[typedAnswer](ctx, a, "r1", "pay")
+				out, _, err := a.RunTyped[typedAnswer](ctx, "r1", UserText("pay"), WithOutputMode(OutputNative))
 				return out.Name, err
 			}},
 		{name: "SessionSend", runID: sessionTurnRunID("s", 0), script: chargeThenAnswer, entry: func(a *Agent) (string, error) {
@@ -185,7 +210,11 @@ func TestFinalAnswerCrash_ResumeReplaysAnswer(t *testing.T) {
 			if err != nil {
 				return "", err
 			}
-			m, err := s.Send(ctx, "pay")
+			res, err := s.Send(ctx, UserText("pay"))
+			var m Message
+			if res != nil {
+				m = res.Message
+			}
 			if err == nil && s.Turns() != 1 {
 				return "", fmt.Errorf("session has %d turns, want 1", s.Turns())
 			}
@@ -196,7 +225,11 @@ func TestFinalAnswerCrash_ResumeReplaysAnswer(t *testing.T) {
 			if err != nil {
 				return "", err
 			}
-			m, err := s.SendOnce(ctx, "k1", "pay")
+			res, err := s.SendOnce(ctx, "k1", UserText("pay"))
+			var m Message
+			if res != nil {
+				m = res.Message
+			}
 			return textOf(m), err
 		}},
 	}
@@ -260,7 +293,7 @@ func TestFinalAnswerCrash_SubAgentResume(t *testing.T) {
 
 	subRunID := SubRunID("root", "c1")
 	subFirst := &greedyModel{script: [][]Emit{toolTurn("s1", "charge", `{}`), textTurn("sub-done")}}
-	if _, err := mustNew(subFirst, mustJournal(&markerCrashStore{Store: store, runID: subRunID}), WithTools(charge)).Run(asToolCall(ctx, "root", "c1"), subRunID, "charge it"); !errors.Is(err, errCrash) {
+	if _, err := mustNew(subFirst, mustJournal(&markerCrashStore{Store: store, runID: subRunID}), WithTools(charge)).Run(asToolCall(ctx, "root", "c1"), subRunID, UserText("charge it")); !errors.Is(err, errCrash) {
 		t.Fatalf("sub-run: err = %v, want the injected crash at the completion marker", err)
 	}
 	before := wantAnswerRecordedNoMarker(t, j, subRunID, 2)
@@ -278,10 +311,11 @@ func TestFinalAnswerCrash_SubAgentResume(t *testing.T) {
 		j,
 		WithTools(SubAgent("worker", "does work", mustNew(subResume, j, WithTools(charge)))),
 	)
-	out, err := parent.Run(ctx, "root", "delegate")
+	res, err := parent.Run(ctx, "root", UserText("delegate"))
 	if err != nil {
 		t.Fatalf("parent resume: %v", err)
 	}
+	out := res.Message
 	if subResume.calls != 0 || charged != 1 {
 		t.Fatalf("resumed sub-run made %d model calls and charged %d times; want 0, 1", subResume.calls, charged)
 	}

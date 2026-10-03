@@ -33,7 +33,7 @@ func TestBuild_FollowsTheAdaptersToolRules(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Build refused required with no tools (RunTyped may supply one): %v", err)
 	}
-	if _, err := a.Run(context.Background(), "r", "hi"); !errors.Is(err, agent.ErrConfig) || hits.Load() != 0 {
+	if _, err := a.Run(context.Background(), "r", agent.UserText("hi")); !errors.Is(err, agent.ErrConfig) || hits.Load() != 0 {
 		t.Errorf("run with required and no tools: err %v, %d requests sent; want ErrConfig and none", err, hits.Load())
 	}
 }

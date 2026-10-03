@@ -30,7 +30,7 @@ func twice(u Usage) Usage {
 func TestRunResult_ReportsDiscardedSpend(t *testing.T) {
 	m := &scriptModel{turns: [][]Emit{truncatedTurn(billed), textTurnWithUsage("done", billed)}}
 	store := memJournal()
-	res, err := mustNew(m, store, WithMiddleware(retryOnceMW)).RunResult(context.Background(), "r", "go")
+	res, err := mustNew(m, store, WithMiddleware(retryOnceMW)).Run(context.Background(), "r", UserText("go"))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -68,7 +68,7 @@ func TestTokenBudget_StopsOnDiscardedSpend(t *testing.T) {
 		toolTurnWithUsage("c1", "lookup", `{}`, billed),
 		textTurnWithUsage("done", billed),
 	}}
-	_, err := must(mustNew(m, memJournal(), WithTools(tool), WithMiddleware(retryOnceMW)).With(WithTokenBudget(200))).Run(context.Background(), "r", "go")
+	_, err := must(mustNew(m, memJournal(), WithTools(tool), WithMiddleware(retryOnceMW)).With(WithTokenBudget(200))).Run(context.Background(), "r", UserText("go"))
 	if !errors.Is(err, ErrBudgetExceeded) {
 		t.Fatalf("err = %v, want ErrBudgetExceeded", err)
 	}
@@ -84,7 +84,7 @@ func TestTokenBudget_DiscardedSpendSurvivesResume(t *testing.T) {
 	var calls int
 	gated := &countingTool{name: "lookup", safety: Safety{ReadOnly: true}, approval: SingleApproval(), calls: &calls}
 	m := &scriptModel{turns: [][]Emit{truncatedTurn(billed), toolTurnWithUsage("c1", "lookup", `{}`, billed)}}
-	_, err := mustNew(m, store, WithTools(gated), WithMiddleware(retryOnceMW)).Run(ctx, "r", "go")
+	_, err := mustNew(m, store, WithTools(gated), WithMiddleware(retryOnceMW)).Run(ctx, "r", UserText("go"))
 	var pa *PendingApproval
 	if !errors.As(err, &pa) {
 		t.Fatalf("err = %v, want PendingApproval", err)
@@ -93,7 +93,7 @@ func TestTokenBudget_DiscardedSpendSurvivesResume(t *testing.T) {
 		t.Fatal(err)
 	}
 	resumed := &scriptModel{turns: [][]Emit{textTurnWithUsage("done", billed)}}
-	_, err = mustNew(resumed, store, WithTools(gated), WithTokenBudget(200)).Run(ctx, "r", "go")
+	_, err = mustNew(resumed, store, WithTools(gated), WithTokenBudget(200)).Run(ctx, "r", UserText("go"))
 	if !errors.Is(err, ErrBudgetExceeded) {
 		t.Fatalf("err = %v, want ErrBudgetExceeded (240 tokens already spent)", err)
 	}
@@ -110,12 +110,12 @@ func TestTokenBudget_CountsFailedCalls(t *testing.T) {
 	m := &scriptModel{turns: [][]Emit{truncatedTurn(billed), truncatedTurn(billed), truncatedTurn(billed)}}
 	a := mustNew(m, store, WithTokenBudget(200))
 	for i := range 2 {
-		if _, err := a.Run(ctx, "r", "go"); !errors.Is(err, ErrModel) {
+		if _, err := a.Run(ctx, "r", UserText("go")); !errors.Is(err, ErrModel) {
 			t.Fatalf("run %d: err = %v, want ErrModel", i, err)
 		}
 	}
 	// 240 tokens spent on two failed calls: the third invocation must not call the model.
-	_, err := mustNew(m, store, WithTokenBudget(200)).Run(ctx, "r", "go")
+	_, err := mustNew(m, store, WithTokenBudget(200)).Run(ctx, "r", UserText("go"))
 	if !errors.Is(err, ErrBudgetExceeded) {
 		t.Fatalf("err = %v, want ErrBudgetExceeded", err)
 	}
@@ -129,7 +129,7 @@ func TestTokenBudget_CountsFailedCalls(t *testing.T) {
 func TestRunResult_SpendOfBrokenStream(t *testing.T) {
 	broken := append(textTurnWithUsage("draft", billed), Emit{Event: TextDelta{Text: "late"}})
 	m := &scriptModel{turns: [][]Emit{broken, textTurnWithUsage("done", billed)}}
-	res, err := mustNew(m, memJournal(), WithMiddleware(retryOnceMW)).RunResult(context.Background(), "r", "go")
+	res, err := mustNew(m, memJournal(), WithMiddleware(retryOnceMW)).Run(context.Background(), "r", UserText("go"))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -147,7 +147,7 @@ func TestRunResult_SpendOfSuppliedResponse(t *testing.T) {
 		}
 	}
 	store := memJournal()
-	res, err := mustNew(&scriptModel{}, store, WithMiddleware(cache)).RunResult(context.Background(), "r", "go")
+	res, err := mustNew(&scriptModel{}, store, WithMiddleware(cache)).Run(context.Background(), "r", UserText("go"))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -172,7 +172,7 @@ func TestRunResult_SpendAcrossTurns(t *testing.T) {
 		toolTurnWithUsage("c1", "lookup", `{}`, billed),
 		textTurnWithUsage("done", billed),
 	}}
-	res, err := mustNew(m, memJournal(), WithTools(tool), WithMiddleware(retryOnceMW)).RunResult(context.Background(), "r", "go")
+	res, err := mustNew(m, memJournal(), WithTools(tool), WithMiddleware(retryOnceMW)).Run(context.Background(), "r", UserText("go"))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -225,7 +225,7 @@ func TestTokenBudget_JournalsSpendOfCancelledCall(t *testing.T) {
 	}
 	store := mustJournal(cancelAwareStore{NewMemStore()})
 	m := &scriptModel{turns: [][]Emit{textTurnWithUsage("done", billed)}}
-	if _, err := mustNew(m, store, WithMiddleware(cancelling)).Run(ctx, "r", "go"); !errors.Is(err, context.Canceled) {
+	if _, err := mustNew(m, store, WithMiddleware(cancelling)).Run(ctx, "r", UserText("go")); !errors.Is(err, context.Canceled) {
 		t.Fatalf("err = %v, want context.Canceled", err)
 	}
 	recs, _ := store.History(context.Background(), "r")

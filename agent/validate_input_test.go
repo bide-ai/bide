@@ -25,10 +25,10 @@ func TestEntryPoints_RejectEmptyRunID(t *testing.T) {
 	s := memJournal()
 	a := mustNew(stubModel{}, s)
 
-	if _, err := a.Run(ctx, "", "hi"); !errors.Is(err, ErrConfig) {
+	if _, err := a.Run(ctx, "", UserText("hi")); !errors.Is(err, ErrConfig) {
 		t.Errorf("Run(empty) err = %v, want ErrConfig", err)
 	}
-	if _, err := a.RunSaga(ctx, "", "hi"); !errors.Is(err, ErrConfig) {
+	if _, err := a.Run(ctx, "", UserText("hi"), WithSaga()); !errors.Is(err, ErrConfig) {
 		t.Errorf("RunSaga(empty) err = %v, want ErrConfig", err)
 	}
 	if _, err := a.Session(ctx, ""); !errors.Is(err, ErrConfig) {

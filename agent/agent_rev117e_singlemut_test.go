@@ -38,7 +38,7 @@ func TestRev117e_MutatedSingleApprovalFiresThenCannotRecord(t *testing.T) {
 	m := NewScriptedModel(ToolTurn("c1", "send", `{}`), TextTurn("done"))
 	a := mustNew(m, store, WithTools(tool))
 	ctx := context.Background()
-	_, err := a.Run(ctx, "r", "go")
+	_, err := a.Run(ctx, "r", UserText("go"))
 	var ap *ApprovalPending
 	if !errors.As(err, &ap) {
 		if errors.Is(err, ErrConfig) && calls.Load() == 0 {
@@ -49,7 +49,7 @@ func TestRev117e_MutatedSingleApprovalFiresThenCannotRecord(t *testing.T) {
 	if err := Approve(ctx, store, "r", "c1", true); err != nil {
 		t.Fatal(err)
 	}
-	_, err = a.Run(ctx, "r", "go")
+	_, err = a.Run(ctx, "r", UserText("go"))
 	if calls.Load() > 0 && err != nil {
 		t.Fatalf("the tool ran %d time(s) and the run then failed with %v", calls.Load(), err)
 	}

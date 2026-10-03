@@ -54,10 +54,11 @@ func main() {
 	ctx, cancel := context.WithTimeout(context.Background(), 60*time.Second)
 	defer cancel()
 
-	out, err := a.Run(ctx, "smoke-1", "What's the weather in San Francisco? Use the get_weather tool, then answer in one sentence.")
+	res, err := a.Run(ctx, "smoke-1", agent.UserText("What's the weather in San Francisco? Use the get_weather tool, then answer in one sentence."))
 	if err != nil {
 		log.Fatalf("run: %v", err)
 	}
+	out := res.Message
 
 	for _, p := range out.Parts {
 		if t, ok := p.(agent.Text); ok {

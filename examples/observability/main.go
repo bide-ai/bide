@@ -106,7 +106,11 @@ func main() {
 
 	// Invoke starts the top-level invoke_agent span around the run.
 	ctx, end := trace.Invoke(ctx, tracer, "weather-agent")
-	out, err := a.Run(ctx, "obs-1", "What's the weather?")
+	res, err := a.Run(ctx, "obs-1", agent.UserText("What's the weather?"))
+	var out agent.Message
+	if res != nil {
+		out = res.Message
+	}
 	end(err)
 	if err != nil {
 		log.Fatalf("run: %v", err)

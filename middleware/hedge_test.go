@@ -198,16 +198,16 @@ func TestHedge_BackupReusingToolUseIDLoses(t *testing.T) {
 	}
 	backup := &turnModel{delays: []time.Duration{time.Hour, 0}, msgs: []agent.Message{reuse, reuse}}
 
-	out, err := agenttest.Must(agenttest.MustNew(
+	res, err := agenttest.Must(agenttest.MustNew(
 		primary,
 		agenttest.MemJournal(),
 		agent.WithTools(lookup),
 		agent.WithMiddleware(middleware.Hedge(0, backup)),
-	).With(agent.WithMaxTurns(4))).
-		Run(context.Background(), "r", "go")
+	).With(agent.WithMaxTurns(4))).Run(context.Background(), "r", agent.UserText("go"))
 	if err != nil {
 		t.Fatalf("Run: %v", err)
 	}
+	out := res.Message
 	if out.Text() != "done" {
 		t.Fatalf("answer = %q, want the primary's %q", out.Text(), "done")
 	}

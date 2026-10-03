@@ -19,7 +19,7 @@ func buildRun(t *testing.T) (*agent.Journal, string, ed25519.PublicKey, audit.Si
 	j := agenttest.MustJournal(store)
 	tool := agent.Func("lookup", "", agent.Safety{ReadOnly: true},
 		func(_ context.Context, _ struct{}) (string, error) { return "ok", nil })
-	if _, err := agenttest.MustNew(&twoTurnModel{}, j, agent.WithTools(tool)).Run(ctx, "run", "hi"); err != nil {
+	if _, err := agenttest.MustNew(&twoTurnModel{}, j, agent.WithTools(tool)).Run(ctx, "run", agent.UserText("hi")); err != nil {
 		t.Fatalf("run: %v", err)
 	}
 	pub, priv, _ := ed25519.GenerateKey(nil)

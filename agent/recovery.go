@@ -211,7 +211,7 @@ func completedAnswer(recs []Record) (Message, bool) {
 // resumes it. It skips a session's journal and turn runs (IsSessionRun) too: a turn is seeded with
 // the transcript before its message, which only the session holds, and only the session records
 // its answer, so an unfinished turn resumes when its message is sent again (the same message
-// through Send or SendMessage, or the redelivered SendOnce or SendMessageOnce). Recover re-drives
+// through Send or Send, or the redelivered SendOnce or SendOnce). Recover re-drives
 // every other incomplete run it enumerates. A nil resume is ErrConfig.
 func Recover(ctx context.Context, store *Journal, resume Resumer, opts ...RecoverOption) (int, error) {
 	if resume == nil {

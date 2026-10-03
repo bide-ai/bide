@@ -28,7 +28,7 @@ func TestCancelledToolCall_IsNotRecordedAsItsOutcome(t *testing.T) {
 	ctx, cancel := context.WithCancel(context.Background())
 	go func() { <-fired; cancel() }()
 	m := &greedyModel{script: [][]Emit{toolTurn("c1", "charge", `{}`), textTurn("done")}}
-	_, err := mustNew(m, store, WithTools(charge)).Run(ctx, "r1", "pay")
+	_, err := mustNew(m, store, WithTools(charge)).Run(ctx, "r1", UserText("pay"))
 	if rec, ok := hasStep(t, store, "r1", ToolResultStep("c1")); ok {
 		t.Errorf("the cancelled call's outcome was journaled as %s (is_error=%v); want no result recorded, since the outcome is unknown", rec.Result, rec.IsError)
 	}
@@ -49,7 +49,7 @@ func TestCancelledToolCall_IsNotRecordedAsItsOutcome(t *testing.T) {
 	var resumeErr error
 	go func() {
 		defer close(done)
-		_, resumeErr = mustNew(m2, store, WithTools(charge)).Run(context.Background(), "r1", "pay")
+		_, resumeErr = mustNew(m2, store, WithTools(charge)).Run(context.Background(), "r1", UserText("pay"))
 	}()
 	select {
 	case <-done:
@@ -97,13 +97,13 @@ func TestCancelledToolCall_ResumeDoesNotChargeTwice(t *testing.T) {
 	ctx, cancel := context.WithCancel(context.Background())
 	go func() { <-fired; cancel() }()
 	first := ctxModel{&greedyModel{script: [][]Emit{toolTurn("c1", "charge", `{}`), textTurn("done")}}}
-	_, _ = mustNew(first, store, WithTools(charge)).Run(ctx, "r1", "pay")
+	_, _ = mustNew(first, store, WithTools(charge)).Run(ctx, "r1", UserText("pay"))
 
 	// The retry would block in the charge until its context ends, so give the resume one.
 	rctx, rcancel := context.WithTimeout(context.Background(), 500*time.Millisecond)
 	defer rcancel()
 	retry := ctxModel{&greedyModel{script: [][]Emit{toolTurn("c2", "charge", `{}`), textTurn("done")}}}
-	_, err := mustNew(retry, store, WithTools(charge)).Run(rctx, "r1", "pay")
+	_, err := mustNew(retry, store, WithTools(charge)).Run(rctx, "r1", UserText("pay"))
 	if charged != 1 {
 		t.Fatalf("charged %d times, want 1 (resume err: %v)", charged, err)
 	}
@@ -125,7 +125,7 @@ func TestCancelledRun_StopsBeforeTheNextTurn(t *testing.T) {
 		return "shipped", nil
 	})
 	m := &greedyModel{script: [][]Emit{toolTurn("c1", "lookup", `{}`), textTurn("done")}}
-	_, err := mustNew(m, store, WithTools(lookup)).Run(ctx, "r1", "status?")
+	_, err := mustNew(m, store, WithTools(lookup)).Run(ctx, "r1", UserText("status?"))
 	if !errors.Is(err, context.Canceled) {
 		t.Errorf("run err = %v, want a cancellation", err)
 	}

@@ -56,7 +56,7 @@ func TestAwaitFor_SignalFirst(t *testing.T) {
 	m := &scriptModel{turns: [][]Emit{toolTurn("c1", "watch", `{}`), textTurn("done")}}
 	a := mustNew(m, store, WithTools(tool))
 
-	_, err := a.Run(ctx, "r", "hi")
+	_, err := a.Run(ctx, "r", UserText("hi"))
 	var awt *Awaiting
 	if !errors.As(err, &awt) {
 		t.Fatalf("err = %v, want *Awaiting", err)
@@ -73,10 +73,11 @@ func TestAwaitFor_SignalFirst(t *testing.T) {
 		t.Fatalf("Signal: %v", err)
 	}
 
-	out, err := a.Run(ctx, "r", "hi") // same agent, resumes
+	res, err := a.Run(ctx, "r", UserText("hi")) // same agent, resumes
 	if err != nil {
 		t.Fatalf("resume Run: %v", err)
 	}
+	out := res.Message
 	if textOf(out) != "done" {
 		t.Fatalf("answer = %q", textOf(out))
 	}
@@ -108,7 +109,7 @@ func TestAwaitFor_TimeoutFirst(t *testing.T) {
 	a := mustNew(m, store, WithTools(tool))
 
 	// First run: no signal, before the deadline, so the run pauses durably.
-	_, err := a.Run(ctx, "r", "hi")
+	_, err := a.Run(ctx, "r", UserText("hi"))
 	var awt *Awaiting
 	if !errors.As(err, &awt) {
 		t.Fatalf("err = %v, want *Awaiting", err)
@@ -119,10 +120,11 @@ func TestAwaitFor_TimeoutFirst(t *testing.T) {
 
 	// Advance past the deadline (now+1h) and resume: the timeout wins.
 	atomic.StoreInt64(&clk, 1000+3600)
-	out, err := a.Run(ctx, "r", "hi")
+	res, err := a.Run(ctx, "r", UserText("hi"))
 	if err != nil {
 		t.Fatalf("resume Run: %v", err)
 	}
+	out := res.Message
 	if textOf(out) != "done" {
 		t.Fatalf("answer = %q", textOf(out))
 	}
@@ -154,14 +156,14 @@ func TestAwaitFor_DeadlineStable(t *testing.T) {
 	a := mustNew(m, store, WithTools(tool))
 
 	// First run at t=1000: deadline is journaled as 1000+3600.
-	if _, err := a.Run(ctx, "r", "hi"); !errorsIsAwaiting(err) {
+	if _, err := a.Run(ctx, "r", UserText("hi")); !errorsIsAwaiting(err) {
 		t.Fatalf("first run should pause with *Awaiting, got %v", err)
 	}
 
 	// Resume at +30m: still before the original deadline. If the deadline had drifted to
 	// now()+1h it would push out, but it must stay fixed, so the run pauses again.
 	atomic.StoreInt64(&clk, 1000+1800)
-	if _, err := a.Run(ctx, "r", "hi"); !errorsIsAwaiting(err) {
+	if _, err := a.Run(ctx, "r", UserText("hi")); !errorsIsAwaiting(err) {
 		t.Fatalf("resume before the fixed deadline should still pause, got %v", err)
 	}
 
@@ -189,10 +191,11 @@ func TestAwaitFor_DeadlineStable(t *testing.T) {
 
 	// Resume at the original deadline: now the timeout wins and the run completes.
 	atomic.StoreInt64(&clk, 1000+3600)
-	out, err := a.Run(ctx, "r", "hi")
+	res, err := a.Run(ctx, "r", UserText("hi"))
 	if err != nil {
 		t.Fatalf("resume at the deadline should complete, got %v", err)
 	}
+	out := res.Message
 	if textOf(out) != "done" {
 		t.Fatalf("answer = %q", textOf(out))
 	}

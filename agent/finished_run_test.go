@@ -44,7 +44,11 @@ func finishedCharge(t *testing.T, charged *int) (*Journal, Message, []Record) {
 	store := memJournal()
 	charge := &countingTool{name: "charge", safety: Safety{}, calls: charged} // a non-idempotent write
 	m := &greedyModel{script: [][]Emit{toolTurn("c1", "charge", `{}`), textTurn("done")}}
-	out, err := mustNew(m, store, WithTools(charge)).Run(context.Background(), "r1", "pay")
+	res, err := mustNew(m, store, WithTools(charge)).Run(context.Background(), "r1", UserText("pay"))
+	var out Message
+	if res != nil {
+		out = res.Message
+	}
 	if err != nil || *charged != 1 {
 		t.Fatalf("first run: err=%v charged=%d, want nil/1", err, *charged)
 	}
@@ -87,13 +91,18 @@ func TestFinishedRun_RunIsFinal(t *testing.T) {
 	charge := &countingTool{name: "charge", safety: Safety{}, calls: &charged}
 	for i := 0; i < 3; i++ {
 		m := &greedyModel{}
-		out, err := mustNew(m, store, WithTools(charge)).Run(context.Background(), "r1", "pay")
+		res, err := mustNew(m, store, WithTools(charge)).Run(context.Background(), "r1", UserText("pay"))
 		if err != nil {
 			t.Fatalf("re-run %d: %v", i, err)
 		}
+		out := res.Message
 		wantUntouched(t, store, m, charged, before, out, first)
 		m = &greedyModel{}
-		out, err = mustNew(m, store, WithTools(charge)).Run(context.Background(), "r1", "a different input")
+		var res2 *Result
+		res2, err = mustNew(m, store, WithTools(charge)).Run(context.Background(), "r1", UserText("a different input"))
+		if res2 != nil {
+			out = res2.Message
+		}
 		if !errors.Is(err, ErrConfig) {
 			t.Fatalf("re-run %d with a different input = %q, %v; want ErrConfig", i, textOf(out), err)
 		}
@@ -107,15 +116,21 @@ func TestFinishedRun_EveryEntryPoint(t *testing.T) {
 	ctx := context.Background()
 	entries := map[string]func(a *Agent) (Message, error){
 		"RunResult": func(a *Agent) (Message, error) {
-			res, err := a.RunResult(ctx, "r1", "pay")
+			res, err := a.Run(ctx, "r1", UserText("pay"))
 			if err == nil && (res.Usage != (Usage{}) || res.Turns != 0) {
 				return Message{}, fmt.Errorf("RunResult usage=%+v turns=%d, want zero for a finished run", res.Usage, res.Turns)
 			}
 			return res.Message, err
 		},
-		"RunSaga": func(a *Agent) (Message, error) { return a.RunSaga(ctx, "r1", "pay") },
+		"RunSaga": func(a *Agent) (Message, error) {
+			res, err := a.Run(ctx, "r1", UserText("pay"), WithSaga())
+			if err != nil {
+				return Message{}, err
+			}
+			return res.Message, nil
+		},
 		"Stream": func(a *Agent) (Message, error) {
-			as := a.Stream(ctx, "r1", "pay")
+			as := a.Stream(ctx, "r1", UserText("pay"))
 			var finished bool
 			for ev := range as.Events() {
 				switch e := ev.(type) {
@@ -130,9 +145,19 @@ func TestFinishedRun_EveryEntryPoint(t *testing.T) {
 			if !finished {
 				return Message{}, errors.New("no Finished event for a finished run")
 			}
-			return as.Final()
+			res, err := as.Result()
+			if err != nil {
+				return Message{}, err
+			}
+			return res.Message, nil
 		},
-		"StreamSaga": func(a *Agent) (Message, error) { return a.StreamSaga(ctx, "r1", "pay").Final() },
+		"StreamSaga": func(a *Agent) (Message, error) {
+			res, err := a.Stream(ctx, "r1", UserText("pay"), WithSaga()).Result()
+			if err != nil {
+				return Message{}, err
+			}
+			return res.Message, nil
+		},
 	}
 	for name, run := range entries {
 		t.Run(name, func(t *testing.T) {
@@ -162,7 +187,7 @@ func TestFinishedRun_SubAgentReentry(t *testing.T) {
 
 	// The sub-run completes (as it would have inside the first parent run).
 	subRunID := SubRunID("root", "c1")
-	if _, err := sub.Run(asToolCall(ctx, "root", "c1"), subRunID, "charge it"); err != nil || charged != 1 {
+	if _, err := sub.Run(asToolCall(ctx, "root", "c1"), subRunID, UserText("charge it")); err != nil || charged != 1 {
 		t.Fatalf("sub-run: err=%v charged=%d, want nil/1", err, charged)
 	}
 	// The parent's journal holds the turn that called the sub-agent, and no result for it.
@@ -179,10 +204,11 @@ func TestFinishedRun_SubAgentReentry(t *testing.T) {
 		store,
 		WithTools(SubAgent("worker", "does work", sub)),
 	)
-	out, err := parent.Run(ctx, "root", "delegate")
+	res, err := parent.Run(ctx, "root", UserText("delegate"))
 	if err != nil {
 		t.Fatalf("parent resume: %v", err)
 	}
+	out := res.Message
 	if textOf(out) != "parent-done" || charged != 1 || subModel.calls != subCalls {
 		t.Fatalf("out=%q charged=%d new sub model calls=%d, want parent-done, 1 charge, 0 new sub calls", textOf(out), charged, subModel.calls-subCalls)
 	}
@@ -208,10 +234,11 @@ func TestFinishedRun_SessionTurnReentry(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	out, err := s.Send(ctx, "pay")
+	res, err := s.Send(ctx, UserText("pay"))
 	if err != nil {
 		t.Fatalf("Send: %v", err)
 	}
+	out := res.Message
 	if textOf(out) != "done" || charged != 1 || m.calls != calls || s.Turns() != 1 {
 		t.Fatalf("out=%q charged=%d new model calls=%d turns=%d, want done, 1, 0, 1", textOf(out), charged, m.calls-calls, s.Turns())
 	}

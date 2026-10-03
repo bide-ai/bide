@@ -106,7 +106,7 @@ func main() {
 			defer wg.Done()
 			defer func() { <-sem }()
 			t0 := time.Now()
-			if _, err := a.Run(context.Background(), fmt.Sprintf("run-%d", i), "go"); err != nil {
+			if _, err := a.Run(context.Background(), fmt.Sprintf("run-%d", i), agent.UserText("go")); err != nil {
 				atomic.AddInt64(&errs, 1)
 			}
 			lat[i] = time.Since(t0)

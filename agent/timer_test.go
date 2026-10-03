@@ -51,7 +51,7 @@ func TestSleep_PausesAndResumes(t *testing.T) {
 	a := mustNew(sleepModel{}, memJournal(), WithTools(waitTool()))
 
 	// First run: the wait tool sleeps, so the run pauses with *Sleeping at now+1h.
-	_, err := a.Run(ctx, "r1", "go")
+	_, err := a.Run(ctx, "r1", UserText("go"))
 	var slp *Sleeping
 	if !errors.As(err, &slp) {
 		t.Fatalf("expected *Sleeping, got %v", err)
@@ -63,7 +63,7 @@ func TestSleep_PausesAndResumes(t *testing.T) {
 
 	// Resume 30 minutes in: still before the wake time, and the wake time did NOT move (at-most-once).
 	atomic.StoreInt64(&clk, 1000+1800)
-	_, err = a.Run(ctx, "r1", "go")
+	_, err = a.Run(ctx, "r1", UserText("go"))
 	if !errors.As(err, &slp) {
 		t.Fatalf("should still be sleeping at +30m, got %v", err)
 	}
@@ -73,10 +73,11 @@ func TestSleep_PausesAndResumes(t *testing.T) {
 
 	// At the wake time: the run resumes and completes.
 	atomic.StoreInt64(&clk, 1000+3600)
-	msg, err := a.Run(ctx, "r1", "go")
+	res, err := a.Run(ctx, "r1", UserText("go"))
 	if err != nil {
 		t.Fatalf("run should resume once due, got %v", err)
 	}
+	msg := res.Message
 	if msg.Text() != "done" {
 		t.Fatalf("resumed run should finish, got %q", msg.Text())
 	}
@@ -91,13 +92,13 @@ func TestMemWaker_FiresDueRun(t *testing.T) {
 	var w *MemWaker
 	w = NewMemWaker(func(ctx context.Context, runID string) error {
 		rctx := ContextWithWaker(ContextWithClock(ctx, now), w) // resumed run can reschedule if it sleeps again
-		_, err := a.Run(rctx, runID, "go")
+		_, err := a.Run(rctx, runID, UserText("go"))
 		return err
 	})
 	ctx := ContextWithWaker(ContextWithClock(context.Background(), now), w)
 
 	// First run pauses and registers a wake with the waker.
-	if _, err := a.Run(ctx, "r1", "go"); !errorsIsSleeping(err) {
+	if _, err := a.Run(ctx, "r1", UserText("go")); !errorsIsSleeping(err) {
 		t.Fatalf("expected the run to sleep, got %v", err)
 	}
 
@@ -113,7 +114,11 @@ func TestMemWaker_FiresDueRun(t *testing.T) {
 		t.Fatalf("waker should resume exactly one run, fired %d err %v", n, err)
 	}
 	// The resumed run completed: a replay now returns the final answer with no pause.
-	msg, err := a.Run(ContextWithClock(context.Background(), now), "r1", "go")
+	res, err := a.Run(ContextWithClock(context.Background(), now), "r1", UserText("go"))
+	var msg Message
+	if res != nil {
+		msg = res.Message
+	}
 	if err != nil || msg.Text() != "done" {
 		t.Fatalf("run should be complete after the waker fired it, got %q err %v", msg.Text(), err)
 	}

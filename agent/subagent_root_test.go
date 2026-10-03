@@ -32,8 +32,8 @@ func TestSubAgentHalt_ResolvedAndContinuedFromTheRoot(t *testing.T) {
 		return "", ctx.Err()
 	})
 	root := clerkTree(store, charge)
-	_, _ = root.Run(ctx, "p", "go")
-	_, err := root.Run(context.Background(), "p", "go")
+	_, _ = root.Run(ctx, "p", UserText("go"))
+	_, err := root.Run(context.Background(), "p", UserText("go"))
 	var halt *ResumeHalt
 	if !errors.As(err, &halt) || halt.RunID != "p>s1" || halt.RootRunID != "p" {
 		t.Fatalf("halt = %+v (%v); want RunID p>s1 and RootRunID p", halt, err)
@@ -41,7 +41,11 @@ func TestSubAgentHalt_ResolvedAndContinuedFromTheRoot(t *testing.T) {
 	if err := ResolveHalt(context.Background(), store, halt.RunID, halt.Op.ID, "charged", false); err != nil {
 		t.Fatal(err)
 	}
-	msg, err := root.Run(context.Background(), halt.RootRunID, "go")
+	res, err := root.Run(context.Background(), halt.RootRunID, UserText("go"))
+	var msg Message
+	if res != nil {
+		msg = res.Message
+	}
 	if err != nil || msg.Text() != "parent done" {
 		t.Fatalf("continue from the root = %q, %v", msg.Text(), err)
 	}
@@ -57,7 +61,7 @@ func TestSubAgentInterrupt_AnsweredAndContinuedFromTheRoot(t *testing.T) {
 		return Interrupt[string](ctx, "confirm", "ok?")
 	})
 	root := clerkTree(store, ask)
-	_, err := root.Run(context.Background(), "p", "go")
+	_, err := root.Run(context.Background(), "p", UserText("go"))
 	var intr *Interrupted
 	if !errors.As(err, &intr) || intr.RunID != "p>s1" || intr.RootRunID != "p" {
 		t.Fatalf("interrupt = %+v (%v); want RunID p>s1 and RootRunID p", intr, err)
@@ -65,7 +69,7 @@ func TestSubAgentInterrupt_AnsweredAndContinuedFromTheRoot(t *testing.T) {
 	if err := Resume(context.Background(), store, intr.RunID, intr.Name, "yes"); err != nil {
 		t.Fatal(err)
 	}
-	if msg, err := root.Run(context.Background(), intr.RootRunID, "go"); err != nil || msg.Text() != "parent done" {
+	if msg, err := answerOf(root.Run(context.Background(), intr.RootRunID, UserText("go"))); err != nil || msg.Text() != "parent done" {
 		t.Fatalf("continue from the root = %q, %v", msg.Text(), err)
 	}
 }
@@ -85,11 +89,15 @@ func TestSubAgentSleep_WakesTheRoot(t *testing.T) {
 	var woken []string
 	w := NewMemWaker(func(ctx context.Context, runID string) error {
 		woken = append(woken, runID)
-		msg, err := root.Run(ctx, runID, "go")
+		res, err := root.Run(ctx, runID, UserText("go"))
+		var msg Message
+		if res != nil {
+			msg = res.Message
+		}
 		fired = err == nil && msg.Text() == "parent done"
 		return err
 	})
-	_, err := root.Run(ContextWithWaker(context.Background(), w), "p", "go")
+	_, err := root.Run(ContextWithWaker(context.Background(), w), "p", UserText("go"))
 	var slp *Sleeping
 	if !errors.As(err, &slp) || slp.RootRunID != "p" {
 		t.Fatalf("sleep = %+v (%v); want RootRunID p", slp, err)

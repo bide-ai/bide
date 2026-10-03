@@ -94,7 +94,7 @@ func TestWithRetrieval_ErrorAborts(t *testing.T) {
 	r := &fakeRetriever{err: errors.New("vector store down")}
 	m := &countModel{inner: NewScriptedModel(TextTurn("done"))}
 	a := buildT(t, m, WithRetrieval(r, 2))
-	_, err := a.Run(context.Background(), "run-1", "q")
+	_, err := a.Run(context.Background(), "run-1", UserText("q"))
 	if err == nil || !strings.Contains(err.Error(), "vector store down") {
 		t.Fatalf("err = %v, want the retrieval error", err)
 	}
@@ -142,7 +142,11 @@ func ExampleRetrieverFunc() {
 		fmt.Println(err)
 		return
 	}
-	msg, err := a.Run(context.Background(), "gated-1", "what does the record say?")
+	res, err := a.Run(context.Background(), "gated-1", UserText("what does the record say?"))
+	var msg Message
+	if res != nil {
+		msg = res.Message
+	}
 	fmt.Println(msg.Text(), err)
 	// Output: answered without the record <nil>
 }
@@ -369,9 +373,9 @@ func TestWithRetrieval_ContextKeptAcrossTheRun(t *testing.T) {
 			a := buildT(t, m, WithTools(noopTool), WithSystemPrompt("OPERATOR"), WithRetrieval(r, 2), WithMiddleware(captureRequests(&got)))
 			var err error
 			if mode == "Run" {
-				_, err = a.Run(context.Background(), "run-1", "q")
+				_, err = a.Run(context.Background(), "run-1", UserText("q"))
 			} else {
-				_, err = a.Stream(context.Background(), "run-1", "q").Final()
+				_, err = a.Stream(context.Background(), "run-1", UserText("q")).Result()
 			}
 			if err != nil {
 				t.Fatal(err)
@@ -399,14 +403,14 @@ func TestWithRetrieval_ResumeInjectsRecordedDocs(t *testing.T) {
 	store := NewMemStore()
 	j := mustJournal(store)
 	crash := NewScriptedModel(ToolTurn("c1", "noop", `{}`), ErrorTurn(errors.New("process died")))
-	if _, err := buildOn(t, crash, store, WithTools(noopTool), WithRetrieval(r, 2)).Run(context.Background(), "run-1", "q"); err == nil {
+	if _, err := buildOn(t, crash, store, WithTools(noopTool), WithRetrieval(r, 2)).Run(context.Background(), "run-1", UserText("q")); err == nil {
 		t.Fatal("first run: want the scripted crash")
 	}
 
 	var got []string
 	m := NewScriptedModel(ToolTurn("c1", "noop", `{}`), TextTurn("done"))
 	a := buildOn(t, m, store, WithTools(noopTool), WithRetrieval(r, 2), WithMiddleware(captureRequests(&got)))
-	if _, err := a.Run(context.Background(), "run-1", "q"); err != nil {
+	if _, err := a.Run(context.Background(), "run-1", UserText("q")); err != nil {
 		t.Fatal(err)
 	}
 	if len(got) != 1 || !strings.Contains(got[0], "version-1") {
@@ -445,7 +449,7 @@ func TestWithRetrieval_SubAgentRetrievesForItself(t *testing.T) {
 	sub := buildOn(t, NewScriptedModel(TextTurn("sub answer")), store, WithRetrieval(subR, 1), WithMiddleware(captureRequests(&subGot)))
 	parent := buildOn(t, NewScriptedModel(ToolTurn("c1", "helper", `{"task":"sub question"}`), TextTurn("done")), store,
 		WithTools(SubAgent("helper", "a helper", sub)), WithRetrieval(parentR, 1), WithMiddleware(captureRequests(&parentGot)))
-	if _, err := parent.Run(context.Background(), "run-1", "q"); err != nil {
+	if _, err := parent.Run(context.Background(), "run-1", UserText("q")); err != nil {
 		t.Fatal(err)
 	}
 	if len(subGot) != 1 || !strings.Contains(subGot[0], "sub-doc") {
@@ -490,7 +494,7 @@ func TestWithRetrieval_TwoLayers(t *testing.T) {
 	}
 	m := NewScriptedModel(ToolTurn("c1", "noop", `{}`), TextTurn("done"))
 	a := buildT(t, m, WithTools(noopTool), WithRetrieval(docsR, 1), WithRetrieval(ticketsR, 1), WithMiddleware(capture))
-	if _, err := a.Run(context.Background(), "run-1", "q"); err != nil {
+	if _, err := a.Run(context.Background(), "run-1", UserText("q")); err != nil {
 		t.Fatal(err)
 	}
 	if len(got) != 2 {
@@ -512,12 +516,12 @@ func TestWithRetrieval_FailedRetrievalRetriesOnResume(t *testing.T) {
 	store := NewMemStore()
 	r := &fakeRetriever{err: errors.New("vector store down")}
 	m := NewScriptedModel(TextTurn("done"))
-	if _, err := buildOn(t, m, store, WithRetrieval(r, 1)).Run(context.Background(), "run-1", "q"); err == nil {
+	if _, err := buildOn(t, m, store, WithRetrieval(r, 1)).Run(context.Background(), "run-1", UserText("q")); err == nil {
 		t.Fatal("first run: want the retrieval error")
 	}
 	r.err, r.docs = nil, []Doc{{Text: "back up"}}
 	var got []string
-	if _, err := buildOn(t, m, store, WithRetrieval(r, 1), WithMiddleware(captureRequests(&got))).Run(context.Background(), "run-1", "q"); err != nil {
+	if _, err := buildOn(t, m, store, WithRetrieval(r, 1), WithMiddleware(captureRequests(&got))).Run(context.Background(), "run-1", UserText("q")); err != nil {
 		t.Fatalf("resume after a failed retrieval: %v", err)
 	}
 	if len(got) != 1 || !strings.Contains(got[0], "back up") {
@@ -553,7 +557,7 @@ func TestRetrievalTool_Named(t *testing.T) {
 		ToolTurn("c2", "search_tickets", `{"query":"outage"}`),
 		TextTurn("done"),
 	)
-	if _, err := mustNew(m, memJournal(), WithTools(docs, tickets)).Run(context.Background(), "run-1", "q"); err != nil {
+	if _, err := mustNew(m, memJournal(), WithTools(docs, tickets)).Run(context.Background(), "run-1", UserText("q")); err != nil {
 		t.Fatal(err)
 	}
 	if docsR.lastQ != "install" || ticketsR.lastQ != "outage" {
@@ -578,7 +582,7 @@ func TestWithRetrieval_UnencodableMetadataIsAnError(t *testing.T) {
 	// In a run the documents are journaled before they are formatted, and the record cannot be
 	// encoded either: the run fails before the model is called.
 	m := &countModel{inner: NewScriptedModel(TextTurn("done"))}
-	_, err := buildT(t, m, WithRetrieval(r, 2)).Run(context.Background(), "run-1", "q")
+	_, err := buildT(t, m, WithRetrieval(r, 2)).Run(context.Background(), "run-1", UserText("q"))
 	if err == nil || !strings.Contains(err.Error(), "chan int") {
 		t.Fatalf("err = %v, want the encoding error", err)
 	}

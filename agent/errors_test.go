@@ -35,7 +35,7 @@ func TestErrors_UnknownToolClassified(t *testing.T) {
 	m := &scriptModel{turns: [][]Emit{toolTurn("c1", "nope", `{}`)}}
 	a := mustNew(m, memJournal())
 
-	_, err := a.Run(context.Background(), "r", "hi")
+	_, err := a.Run(context.Background(), "r", UserText("hi"))
 	if !errors.Is(err, ErrUnknownTool) {
 		t.Fatalf("err = %v, want errors.Is ErrUnknownTool", err)
 	}
@@ -88,7 +88,7 @@ func TestErrors_ControlFlowStillTyped(t *testing.T) {
 	m := &scriptModel{turns: [][]Emit{toolTurn("c1", "charge", `{}`), textTurn("done")}}
 	a := mustNew(m, memJournal(), WithTools(tool))
 
-	_, err := a.Run(context.Background(), "r", "pay")
+	_, err := a.Run(context.Background(), "r", UserText("pay"))
 	var pend *PendingApproval
 	if !errors.As(err, &pend) {
 		t.Fatalf("err = %v, want *PendingApproval", err)

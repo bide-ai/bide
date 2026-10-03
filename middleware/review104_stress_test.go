@@ -104,14 +104,14 @@ func TestStress_HooksOncePerRequestEveryOrder(t *testing.T) {
 		}
 		tool := agent.Func("t", "d", agent.Safety{ReadOnly: true}, func(context.Context, struct{}) (string, error) { return "", nil })
 		a := agenttest.MustNew(primary, agenttest.MemJournal(), agent.WithTools(tool), agent.WithMiddleware(mws...))
-		as := a.Stream(context.Background(), fmt.Sprint("r", pi), "q")
+		as := a.Stream(context.Background(), fmt.Sprint("r", pi), agent.UserText("q"))
 		restarts := 0
 		for ev := range as.Events() {
 			if _, ok := ev.(agent.TurnRestarted); ok {
 				restarts++
 			}
 		}
-		if _, err := as.Final(); err != nil {
+		if _, err := as.Result(); err != nil {
 			t.Fatalf("perm %v: %v", p, err)
 		}
 		sent := int(primary.calls.Load() + backup.calls.Load())

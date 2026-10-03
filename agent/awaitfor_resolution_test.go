@@ -26,12 +26,12 @@ func TestAwaitFor_TimeoutOutcomeSurvivesALateSignal(t *testing.T) {
 	})
 	a := mustNew(NewScriptedModel(ToolTurn("c1", "watch", `{}`), TextTurn("done")), store, WithTools(tool))
 	var aw *Awaiting
-	if _, err := a.Run(ctx, "r", "go"); !errors.As(err, &aw) {
+	if _, err := a.Run(ctx, "r", UserText("go")); !errors.As(err, &aw) {
 		t.Fatalf("first run: %v, want *Awaiting", err)
 	}
 	atomic.StoreInt64(&clk, 2000) // the deadline passes: the timeout wins
 	var in *Interrupted
-	if _, err := a.Run(ctx, "r", "go"); !errors.As(err, &in) {
+	if _, err := a.Run(ctx, "r", UserText("go")); !errors.As(err, &in) {
 		t.Fatalf("second run: %v, want *Interrupted", err)
 	}
 	if err := Signal(context.Background(), store, "r", "webhook", "late"); err != nil {
@@ -40,7 +40,7 @@ func TestAwaitFor_TimeoutOutcomeSurvivesALateSignal(t *testing.T) {
 	if err := Resume(context.Background(), store, "r", "confirm", "yes"); err != nil {
 		t.Fatal(err)
 	}
-	if _, err := a.Run(ctx, "r", "go"); err != nil {
+	if _, err := a.Run(ctx, "r", UserText("go")); err != nil {
 		t.Fatalf("third run: %v", err)
 	}
 	if len(outcomes) != 2 || outcomes[0] || outcomes[1] {
@@ -69,12 +69,16 @@ func TestSubAgentAwaitFor_WakesTheRoot(t *testing.T) {
 	var completed bool
 	w := NewMemWaker(func(ctx context.Context, runID string) error {
 		woken = append(woken, runID)
-		msg, err := root.Run(ctx, runID, "go")
+		res, err := root.Run(ctx, runID, UserText("go"))
+		var msg Message
+		if res != nil {
+			msg = res.Message
+		}
 		completed = err == nil && msg.Text() == "parent done"
 		return err
 	})
 	ctx := ContextWithWaker(ContextWithClock(context.Background(), now), w)
-	_, err := root.Run(ctx, "p", "go")
+	_, err := root.Run(ctx, "p", UserText("go"))
 	var aw *Awaiting
 	if !errors.As(err, &aw) || aw.RunID != "p>s1" || aw.RootRunID != "p" {
 		t.Fatalf("await = %+v (%v); want RunID p>s1 and RootRunID p", aw, err)

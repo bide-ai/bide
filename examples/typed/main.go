@@ -68,8 +68,7 @@ func main() {
 	// (On an OpenAI-compatible provider with strict structured outputs, prefer
 	// agent.RunTypedNative[CityReport] instead: the schema is enforced provider-side
 	// with no final_answer tool round-trip.)
-	report, err := agent.RunTyped[CityReport](ctx, a, "typed-1",
-		"Look up the population of New York City with the get_population tool, then produce the report.")
+	report, _, err := a.RunTyped[CityReport](ctx, "typed-1", agent.UserText("Look up the population of New York City with the get_population tool, then produce the report."))
 	if err != nil {
 		log.Fatalf("run typed: %v", err)
 	}

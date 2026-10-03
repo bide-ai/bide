@@ -43,7 +43,7 @@ func TestRev117d_CancelledArgsWriteLeavesRollbackOnUnknownOutcome(t *testing.T) 
 		return "", errors.New("no seats")
 	})
 	m := &sagaTurns{turns: [][][3]string{{{"c1", "charge", `{"amount":5}`}, {"b1", "book", `{}`}}}}
-	_, err := mustNew(m, j, WithTools(charge, book), WithToolMiddleware(scaleCharge)).RunSaga(context.Background(), "r", "trip")
+	_, err := mustNew(m, j, WithTools(charge, book), WithToolMiddleware(scaleCharge)).Run(context.Background(), "r", UserText("trip"), WithSaga())
 	var aborted *SagaAborted
 	if !errors.As(err, &aborted) {
 		t.Fatalf("RunSaga = %v, want *SagaAborted", err)
@@ -100,7 +100,7 @@ func TestRev117d_NewRefusesSafetyOverrideOverASubAgent(t *testing.T) {
 		&countingModel{n: &calls},
 		memJournal(),
 		WithTools(safetyWrap{SubAgent("delegate", "", sub)}),
-	).Run(context.Background(), "r1", "go")
+	).Run(context.Background(), "r1", UserText("go"))
 	if !errors.Is(err, ErrConfig) || calls.Load() != 0 {
 		t.Fatalf("Run = %v after %d model calls; want ErrConfig before any", err, calls.Load())
 	}
@@ -144,7 +144,7 @@ func TestRev117d_SealedCallIsNeverBegun(t *testing.T) {
 		}
 	}
 	m := &sagaTurns{turns: [][][3]string{{{"c1", "charge", `{"amount":5}`}}}}
-	_, _ = mustNew(m, j, WithTools(charge), WithToolMiddleware(leak)).RunSaga(context.Background(), "r", "trip")
+	_, _ = mustNew(m, j, WithTools(charge), WithToolMiddleware(leak)).Run(context.Background(), "r", UserText("trip"), WithSaga())
 	close(store.release)
 	if err := <-leaked; !errors.Is(err, ErrToolNotCalled) || charges.Load() != 0 {
 		t.Fatalf("the invocation that outlived the chain: %v, charges %d; want it refused, the tool never called", err, charges.Load())

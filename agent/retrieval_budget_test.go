@@ -24,7 +24,7 @@ func TestWithRetrieval_OneStepPerDrive(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if _, err := a.Run(context.Background(), "r", "q"); err != nil {
+	if _, err := a.Run(context.Background(), "r", agent.UserText("q")); err != nil {
 		t.Fatal(err)
 	}
 	var got []string

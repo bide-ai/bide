@@ -47,7 +47,7 @@ func TestTool_CancelledBeforeItStartsIsReattempted(t *testing.T) {
 		return "charged", nil
 	})
 	m := &greedyModel{script: [][]Emit{toolTurn("c1", "charge", `{}`), textTurn("done")}}
-	_, err := mustNew(m, j, WithTools(charge)).Run(ctx, "r1", "pay")
+	_, err := mustNew(m, j, WithTools(charge)).Run(ctx, "r1", UserText("pay"))
 	if !errors.Is(err, context.Canceled) {
 		t.Fatalf("cancelled run err = %v, want context.Canceled", err)
 	}
@@ -56,10 +56,11 @@ func TestTool_CancelledBeforeItStartsIsReattempted(t *testing.T) {
 	}
 
 	resume := &greedyModel{script: [][]Emit{textTurn("done")}}
-	out, err := mustNew(resume, mustJournal(store.MemStore), WithTools(charge)).Run(context.Background(), "r1", "pay")
+	res, err := mustNew(resume, mustJournal(store.MemStore), WithTools(charge)).Run(context.Background(), "r1", UserText("pay"))
 	if err != nil {
 		t.Fatalf("resume err = %v, want the run to call the tool that never started", err)
 	}
+	out := res.Message
 	if out.Text() != "done" || calls.Load() != 1 {
 		t.Fatalf("resume = %q with %d charges, want \"done\" and exactly 1", out.Text(), calls.Load())
 	}
@@ -77,11 +78,11 @@ func TestTool_CrashBeforeItStartsStillHalts(t *testing.T) {
 		return "charged", nil
 	})
 	m := &greedyModel{script: [][]Emit{toolTurn("c1", "charge", `{}`), textTurn("done")}}
-	if _, err := mustNew(m, j, WithTools(charge)).Run(ctx, "r1", "pay"); err == nil {
+	if _, err := mustNew(m, j, WithTools(charge)).Run(ctx, "r1", UserText("pay")); err == nil {
 		t.Fatal("the run whose process died succeeded")
 	}
 	resume := &greedyModel{script: [][]Emit{textTurn("done")}}
-	_, err := mustNew(resume, mustJournal(store.MemStore), WithTools(charge)).Run(context.Background(), "r1", "pay")
+	_, err := mustNew(resume, mustJournal(store.MemStore), WithTools(charge)).Run(context.Background(), "r1", UserText("pay"))
 	var halt *ResumeHalt
 	if !errors.As(err, &halt) || halt.Op.ID != "c1" {
 		t.Fatalf("resume err = %v after %d charges, want *ResumeHalt for c1", err, calls.Load())

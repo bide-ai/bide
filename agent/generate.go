@@ -30,7 +30,7 @@ func newModelChain(mws []Middleware) *modelChain {
 func (a *Agent) modelChain() *modelChain { return newModelChain(a.mw) }
 
 // newTurnSink returns the sink of streaming turn seq, which forwards to fire.
-func newTurnSink(seq int, fire func(AgentEvent)) *turnSink { return &turnSink{seq: seq, fire: fire} }
+func newTurnSink(seq int, fire func(RunEvent)) *turnSink { return &turnSink{seq: seq, fire: fire} }
 
 // turnState is one model turn's state, shared by every request the turn sends. Middleware cannot
 // reach it: a ModelCall carries it unexported, and the chain's model handler accepts only a call
@@ -274,7 +274,7 @@ func checkResponse(resp ModelResponse, usedIDs map[string]bool) (ModelResponse, 
 type turnSink struct {
 	mu        sync.Mutex
 	seq       int
-	fire      func(AgentEvent)
+	fire      func(RunEvent)
 	holder    int           // the number of the request holding the claim; 0 for none
 	streamed  bool          // events were forwarded since the turn started or last restarted
 	delivered ModelResponse // the response the holder's request completed with, if it succeeded

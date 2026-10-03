@@ -94,7 +94,7 @@ func TestRunTyped_LooseAnswerIsCorrected(t *testing.T) {
 			ToolTurn("f2", finalAnswerTool, `{"name":"ok"}`),
 		)}
 		store := memJournal()
-		got, err := RunTyped[typedAnswer](context.Background(), mustNew(m, store), "r", "go")
+		got, _, err := mustNew(m, store).RunTyped[typedAnswer](context.Background(), "r", UserText("go"))
 		if err != nil || got.Name != "ok" || m.calls.Load() != 2 {
 			t.Errorf("%s: RunTyped = %+v, %v after %d model calls; want the corrected answer after 2", bad, got, err, m.calls.Load())
 			continue
@@ -117,11 +117,11 @@ func TestRunTyped_LooseAnswerIsCorrected(t *testing.T) {
 func TestRunTyped_TextAnswersDecodeStrictly(t *testing.T) {
 	for _, text := range []string{`{}`, `{"NAME":"x"}`, `{"name":"x","extra":1}`, `{"name":"a","name":"b"}`, `{"name":"x"} {}`} {
 		m := NewScriptedModel(TextTurn(text))
-		if got, err := RunTyped[typedAnswer](context.Background(), mustNew(m, memJournal()), "r", "go"); !errors.Is(err, ErrProtocol) {
+		if got, _, err := mustNew(m, memJournal()).RunTyped[typedAnswer](context.Background(), "r", UserText("go")); !errors.Is(err, ErrProtocol) {
 			t.Errorf("RunTyped with text %s = %+v, %v; want ErrProtocol", text, got, err)
 		}
 		m = NewScriptedModel(TextTurn(text))
-		if got, err := RunTypedNative[typedAnswer](context.Background(), mustNew(m, memJournal()), "r", "go"); !errors.Is(err, ErrProtocol) {
+		if got, _, err := mustNew(m, memJournal()).RunTyped[typedAnswer](context.Background(), "r", UserText("go"), WithOutputMode(OutputNative)); !errors.Is(err, ErrProtocol) {
 			t.Errorf("RunTypedNative with %s = %+v, %v; want ErrProtocol", text, got, err)
 		}
 	}
@@ -147,7 +147,7 @@ func TestRunTyped_AnswerIsWhatTheToolAccepted(t *testing.T) {
 		}),
 	)
 	for i := range 2 { // the first call runs, the second reads the finished run's journal
-		got, err := RunTyped[typedAnswer](context.Background(), a, "r", "go")
+		got, _, err := a.RunTyped[typedAnswer](context.Background(), "r", UserText("go"))
 		if err != nil || got.Name != "5" {
 			t.Fatalf("call %d: RunTyped = %+v, %v; want the rewritten answer \"5\"", i, got, err)
 		}
@@ -168,10 +168,10 @@ func TestRunTyped_AnswerFromAnOlderJournal(t *testing.T) {
 	// encoding/json and acknowledges with {}.
 	old := mustNew(m, store).cloneWith(legacyAnswerTool{})
 	old.terminalTool = finalAnswerTool
-	if _, err := old.Run(context.Background(), "r", "go"); err != nil {
+	if _, err := old.Run(context.Background(), "r", UserText("go")); err != nil {
 		t.Fatalf("old run: %v", err)
 	}
-	got, err := RunTyped[typedAnswer](context.Background(), mustNew(m, store), "r", "go")
+	got, _, err := mustNew(m, store).RunTyped[typedAnswer](context.Background(), "r", UserText("go"))
 	if err != nil || got.Name != "old" || m.calls.Load() != 1 {
 		t.Fatalf("RunTyped over an older journal = %+v, %v after %d model calls; want \"old\" after 1", got, err, m.calls.Load())
 	}
@@ -202,10 +202,10 @@ func TestRunTyped_EmptyAnswerFromAnOlderJournal(t *testing.T) {
 	m := &countModel{inner: eventTurnsModel{{ToolCallDelta{Index: 0, ID: "f1", Name: finalAnswerTool}, Finish{Reason: "tool_use"}}}}
 	old := mustNew(m, store).cloneWith(legacyAnswerTool{})
 	old.terminalTool = finalAnswerTool
-	if _, err := old.Run(context.Background(), "r", "go"); err != nil {
+	if _, err := old.Run(context.Background(), "r", UserText("go")); err != nil {
 		t.Fatalf("old run: %v", err)
 	}
-	got, err := RunTyped[typedAnswer](context.Background(), mustNew(m, store), "r", "go")
+	got, _, err := mustNew(m, store).RunTyped[typedAnswer](context.Background(), "r", UserText("go"))
 	if err != nil || got != (typedAnswer{}) || m.calls.Load() != 1 {
 		t.Fatalf("RunTyped over an older journal = %+v, %v after %d model calls; want the zero answer after 1", got, err, m.calls.Load())
 	}
@@ -228,7 +228,7 @@ func TestRunTyped_RewrittenResultIsReadStrictly(t *testing.T) {
 				}
 			}),
 		)
-		if got, err := RunTyped[typedAnswer](context.Background(), a, "r", "go"); !errors.Is(err, ErrProtocol) {
+		if got, _, err := a.RunTyped[typedAnswer](context.Background(), "r", UserText("go")); !errors.Is(err, ErrProtocol) {
 			t.Errorf("result %s: RunTyped = %+v, %v; want ErrProtocol", result, got, err)
 		}
 	}
@@ -303,7 +303,7 @@ func TestNullForARequiredField_SubAgentAndFinalAnswer(t *testing.T) {
 		ToolTurn("f1", finalAnswerTool, `{"name":null}`),
 		ToolTurn("f2", finalAnswerTool, `{"name":"ok"}`),
 	)}
-	got, err := RunTyped[typedAnswer](context.Background(), mustNew(m, memJournal()), "r", "go")
+	got, _, err := mustNew(m, memJournal()).RunTyped[typedAnswer](context.Background(), "r", UserText("go"))
 	if err != nil || got.Name != "ok" || m.calls.Load() != 2 {
 		t.Errorf("RunTyped = %+v, %v after %d model calls; want the corrected answer after 2", got, err, m.calls.Load())
 	}

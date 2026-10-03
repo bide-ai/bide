@@ -37,7 +37,7 @@ func chargeRun(t *testing.T, mw ToolMiddleware) (charged int, result string) {
 	})
 	store := memJournal()
 	m := NewScriptedModel(ToolTurn("c1", "charge", `{}`), TextTurn("done"))
-	if _, err := mustNew(m, store, WithTools(charge), WithToolMiddleware(mw)).Run(context.Background(), "r1", "pay"); err != nil {
+	if _, err := mustNew(m, store, WithTools(charge), WithToolMiddleware(mw)).Run(context.Background(), "r1", UserText("pay")); err != nil {
 		t.Fatal(err)
 	}
 	rec, _ := hasStep(t, store, "r1", ToolResultStep("c1"))
@@ -64,7 +64,7 @@ func TestToolReinvoke_RetrySafeToolMayRetry(t *testing.T) {
 	})
 	store := memJournal()
 	m := NewScriptedModel(ToolTurn("c1", "lookup", `{}`), TextTurn("done"))
-	if _, err := mustNew(m, store, WithTools(flaky), WithToolMiddleware(naiveRetry(3, false))).Run(context.Background(), "r1", "q"); err != nil {
+	if _, err := mustNew(m, store, WithTools(flaky), WithToolMiddleware(naiveRetry(3, false))).Run(context.Background(), "r1", UserText("q")); err != nil {
 		t.Fatal(err)
 	}
 	if rec, _ := hasStep(t, store, "r1", ToolResultStep("c1")); calls != 3 || rec.IsError || !strings.Contains(string(rec.Result), "found") {
@@ -83,7 +83,7 @@ func TestToolCall_CarriesTheSpec(t *testing.T) {
 	}
 	lookup := Func("lookup", "look up", Safety{ReadOnly: true}, func(context.Context, struct{}) (string, error) { return "x", nil }, WithTitle("Lookup"), WithTimeout(time.Minute))
 	m := NewScriptedModel(ToolTurn("c1", "lookup", `{}`), TextTurn("done"))
-	if _, err := mustNew(m, memJournal(), WithTools(lookup), WithToolMiddleware(peek)).Run(context.Background(), "r1", "q"); err != nil {
+	if _, err := mustNew(m, memJournal(), WithTools(lookup), WithToolMiddleware(peek)).Run(context.Background(), "r1", UserText("q")); err != nil {
 		t.Fatal(err)
 	}
 	if got.Use.ID != "c1" || got.RunID != "r1" || got.Spec.Name != "lookup" || !got.Spec.Safety.ReadOnly || got.Spec.Title != "Lookup" || got.Spec.Timeout != time.Minute {

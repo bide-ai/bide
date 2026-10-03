@@ -33,7 +33,7 @@ func TestAdv127b_RerunUnknownSkipsItsSubRuns(t *testing.T) {
 				return "", ctx.Err()
 			}
 			info, _ := RunInfoFrom(ctx)
-			if _, err := child.RunSaga(ctx, info.SubRunFor("child"), "work"); err != nil {
+			if _, err := child.Run(ctx, info.SubRunFor("child"), UserText("work"), WithSaga()); err != nil {
 				return "", err
 			}
 			return "", fmt.Errorf("charge: gateway timeout after the booking: %w", ErrToolOutcomeUnknown)
@@ -44,7 +44,7 @@ func TestAdv127b_RerunUnknownSkipsItsSubRuns(t *testing.T) {
 		<-started
 		return "", errors.New("declined")
 	})
-	_, err = mustNew(t4TwoCalls{}, store, WithTools(charge, fail)).RunSaga(context.Background(), "r", "go")
+	_, err = mustNew(t4TwoCalls{}, store, WithTools(charge, fail)).Run(context.Background(), "r", UserText("go"), WithSaga())
 	var ab *SagaAborted
 	if !errors.As(err, &ab) {
 		t.Fatalf("RunSaga = %v, want *SagaAborted", err)
@@ -57,7 +57,7 @@ func TestAdv127b_RerunUnknownSkipsItsSubRuns(t *testing.T) {
 			undone.Load(), ab.Compensated, ab.Uncompensated, ab.UnknownOutcome, ab.CompensateErr)
 	}
 	// The rollback finished and marked the run terminal, so no later drive revisits it.
-	if _, err := mustNew(t4TwoCalls{}, store, WithTools(charge, fail)).RunSaga(context.Background(), "r", "go"); errors.As(err, &ab) && undone.Load() == 0 {
+	if _, err := mustNew(t4TwoCalls{}, store, WithTools(charge, fail)).Run(context.Background(), "r", UserText("go"), WithSaga()); errors.As(err, &ab) && undone.Load() == 0 {
 		t.Logf("second drive: compensated %v, unknown %v; book still not undone", ab.Compensated, ab.UnknownOutcome)
 	}
 }

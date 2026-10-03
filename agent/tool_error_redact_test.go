@@ -96,7 +96,7 @@ func TestToolErrorURLCredentialsNotJournaled(t *testing.T) {
 		agent.NewScriptedModel(agent.ToolTurn("tu1", "fetch", `{}`), agent.TextTurn("done")),
 		st,
 		agent.WithTools(fetchTool(secretURL)), agent.WithMiddleware(s.middleware))
-	if _, err := a.Run(context.Background(), "r1", "go"); err != nil {
+	if _, err := a.Run(context.Background(), "r1", agent.UserText("go")); err != nil {
 		t.Fatal(err)
 	}
 	s.journal(t, st, "r1")
@@ -117,7 +117,7 @@ func TestToolErrorURLInTextNotJournaled(t *testing.T) {
 		agent.NewScriptedModel(agent.ToolTurn("tu1", "call", `{}`), agent.TextTurn("done")),
 		st,
 		agent.WithTools(tool), agent.WithMiddleware(s.middleware))
-	if _, err := a.Run(context.Background(), "r1", "go"); err != nil {
+	if _, err := a.Run(context.Background(), "r1", agent.UserText("go")); err != nil {
 		t.Fatal(err)
 	}
 	s.journal(t, st, "r1")
@@ -135,7 +135,7 @@ func TestSubAgentErrorURLCredentialsNotJournaled(t *testing.T) {
 		agent.NewScriptedModel(agent.ToolTurn("tu1", "helper", `{"task":"x"}`), agent.TextTurn("done")),
 		st,
 		agent.WithTools(agent.SubAgent("helper", "helps", sub)), agent.WithMiddleware(s.middleware))
-	if _, err := parent.Run(context.Background(), "r1", "go"); err != nil {
+	if _, err := parent.Run(context.Background(), "r1", agent.UserText("go")); err != nil {
 		t.Fatal(err)
 	}
 	s.journal(t, st, "r1")
@@ -151,7 +151,7 @@ func TestSagaToolErrorURLCredentialsNotJournaled(t *testing.T) {
 		st,
 		agent.WithTools(fetchTool(secretURL)),
 	)
-	_, err := a.RunSaga(context.Background(), "r1", "go")
+	_, err := a.Run(context.Background(), "r1", agent.UserText("go"), agent.WithSaga())
 	var aborted *agent.SagaAborted
 	if !errors.As(err, &aborted) {
 		t.Fatalf("RunSaga = %v, want *SagaAborted", err)
@@ -176,7 +176,7 @@ func TestSagaToolErrorURLCredentialsNotJournaled(t *testing.T) {
 		t.Errorf("the rollback's terminal marker records %s, want the saga failure's text %s", marker, failure)
 	}
 	// A resumed saga reads the cause back from the journal: the terminal marker holds it redacted.
-	_, err = a.RunSaga(context.Background(), "r1", "go")
+	_, err = a.Run(context.Background(), "r1", agent.UserText("go"), agent.WithSaga())
 	if !errors.As(err, &aborted) || strings.Contains(aborted.Cause.Error(), "SK-QUERY-SECRET") {
 		t.Errorf("resumed RunSaga = %v, want *SagaAborted with the journaled (redacted) cause", err)
 	}

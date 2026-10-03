@@ -68,7 +68,7 @@ func TestRetry_SpendCountsEveryAttempt(t *testing.T) {
 		agent.WithTools(lookup),
 		agent.WithMiddleware(middleware.Cost(&meter, perInput), middleware.Retry(1, middleware.WithBackoff(0, 0))),
 	).With(agent.WithTokenBudget(200)))
-	_, err := a.Run(context.Background(), "r", "q")
+	_, err := a.Run(context.Background(), "r", agent.UserText("q"))
 	if !errors.Is(err, agent.ErrBudgetExceeded) {
 		t.Fatalf("err = %v, want ErrBudgetExceeded (the first turn used 240 tokens)", err)
 	}
@@ -98,7 +98,7 @@ func TestHedge_SpendCountsFailedTargets(t *testing.T) {
 		agenttest.MemJournal(),
 		agent.WithMiddleware(middleware.Cost(&meter, perInput), middleware.Hedge(time.Hour, backup)),
 	)
-	res, err := a.RunResult(context.Background(), "r", "q")
+	res, err := a.Run(context.Background(), "r", agent.UserText("q"))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -123,7 +123,7 @@ func TestRetry_SpendWhenCancelledMidAttempt(t *testing.T) {
 		store,
 		agent.WithMiddleware(middleware.Cost(&meter, perInput), middleware.Retry(3, middleware.WithBackoff(0, 0))),
 	)
-	if _, err := a.Run(ctx, "r", "q"); !errors.Is(err, context.Canceled) {
+	if _, err := a.Run(ctx, "r", agent.UserText("q")); !errors.Is(err, context.Canceled) {
 		t.Fatalf("err = %v, want context.Canceled", err)
 	}
 	if meter.Snapshot().Spend != billed || meter.Snapshot().Answer != (agent.Usage{}) {

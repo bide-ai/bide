@@ -69,7 +69,7 @@ func TestSQLite_DurableResumeAcrossReopen(t *testing.T) {
 	}
 	j := agenttest.MustJournal(store1)
 	crashy := &scriptModel{turns: [][]agent.Emit{toolTurn("c1", "lookup", `{"q":"x"}`), errTurn(errors.New("boom"))}}
-	if _, err := agenttest.MustNew(crashy, j, agent.WithTools(tool)).Run(ctx, "r1", "hi"); err == nil {
+	if _, err := agenttest.MustNew(crashy, j, agent.WithTools(tool)).Run(ctx, "r1", agent.UserText("hi")); err == nil {
 		t.Fatal("expected crash on first attempt")
 	}
 	if calls != 1 {
@@ -85,10 +85,11 @@ func TestSQLite_DurableResumeAcrossReopen(t *testing.T) {
 	j2 := agenttest.MustJournal(store2)
 	defer store2.Close()
 	recovered := &scriptModel{turns: [][]agent.Emit{textTurn("final")}}
-	out, err := agenttest.MustNew(recovered, j2, agent.WithTools(tool)).Run(ctx, "r1", "hi")
+	res, err := agenttest.MustNew(recovered, j2, agent.WithTools(tool)).Run(ctx, "r1", agent.UserText("hi"))
 	if err != nil {
 		t.Fatalf("resume: %v", err)
 	}
+	out := res.Message
 	if textOf(out) != "final" {
 		t.Fatalf("resumed answer = %q, want final", textOf(out))
 	}
@@ -148,7 +149,7 @@ func TestSQLite_RecoverReDrivesInFlightRun(t *testing.T) {
 	}
 	j := agenttest.MustJournal(store1)
 	crashy := &scriptModel{turns: [][]agent.Emit{toolTurn("c1", "lookup", `{"q":"x"}`), errTurn(errors.New("boom"))}}
-	if _, err := agenttest.MustNew(crashy, j, agent.WithTools(tool)).Run(ctx, "r1", "hi"); err == nil {
+	if _, err := agenttest.MustNew(crashy, j, agent.WithTools(tool)).Run(ctx, "r1", agent.UserText("hi")); err == nil {
 		t.Fatal("expected crash on first attempt")
 	}
 	store1.Close() // process exits
@@ -166,7 +167,7 @@ func TestSQLite_RecoverReDrivesInFlightRun(t *testing.T) {
 	resume := func(ctx context.Context, runID string, _ agent.RunStart) error {
 		resumed = append(resumed, runID)
 		recovered := &scriptModel{turns: [][]agent.Emit{textTurn("final")}}
-		_, err := agenttest.MustNew(recovered, j2, agent.WithTools(tool)).Run(ctx, runID, "hi")
+		_, err := agenttest.MustNew(recovered, j2, agent.WithTools(tool)).Run(ctx, runID, agent.UserText("hi"))
 		return err
 	}
 	n, err := agent.Recover(ctx, j2, resume)

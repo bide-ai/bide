@@ -107,7 +107,7 @@ func TestRev117e_UnrecordedHidesDeepHaltInSaga(t *testing.T) {
 			agent.WithTools(agent.SubAgent("inner", "i", inner), sideTool),
 			agent.WithMaxConcurrency(1),
 		)
-		_, err := parent.RunSaga(ctx, "p", "go")
+		_, err := parent.Run(ctx, "p", agent.UserText("go"), agent.WithSaga())
 		return side.Load(), err
 	}
 	t.Run("control: live grant, halt only", func(t *testing.T) {
@@ -166,8 +166,8 @@ func TestRev117e_StorageReadFailureRecordedAsDelegationFailure(t *testing.T) {
 				j,
 				agent.WithTools(deleg),
 			)
-			_, err1 := parent.Run(ctx, "p", "go")
-			_, err2 := parent.Run(ctx, "p", "go") // resume once the store is healthy
+			_, err1 := parent.Run(ctx, "p", agent.UserText("go"))
+			_, err2 := parent.Run(ctx, "p", agent.UserText("go")) // resume once the store is healthy
 			if subCalls.Load() == 0 {
 				recs, _ := j.History(ctx, "p")
 				var res string
@@ -208,7 +208,7 @@ func TestRev117e_GrantMintedOntoSubRunWithoutAuthority(t *testing.T) {
 		store,
 		agent.WithTools(tool),
 	)
-	_, err := parent.Run(ctx, "p", "go")
+	_, err := parent.Run(ctx, "p", agent.UserText("go"))
 	if err == nil || !errors.Is(err, agent.ErrConfig) {
 		g, _, _, _ := tool.journaledAuthority(ctx, subRun)
 		_, berr := tool.BindRollback(ctx, subRun)
@@ -240,7 +240,7 @@ func TestRev117e_BindRollbackAcceptsForeignSubject(t *testing.T) {
 		store,
 		agent.WithTools(tool),
 	)
-	if _, err := parent.Run(ctx, "p", "go"); err != nil {
+	if _, err := parent.Run(ctx, "p", agent.UserText("go")); err != nil {
 		t.Logf("Run: %v", err)
 	}
 	recs, _ := store.History(ctx, "p")
@@ -325,8 +325,8 @@ func TestRev117e_StorageWriteFailureRecordsNothing(t *testing.T) {
 				j,
 				agent.WithTools(deleg),
 			)
-			_, err1 := parent.Run(ctx, "p", "go")
-			_, err2 := parent.Run(ctx, "p", "go")
+			_, err1 := parent.Run(ctx, "p", agent.UserText("go"))
+			_, err2 := parent.Run(ctx, "p", agent.UserText("go"))
 			if subCalls.Load() == 0 || err2 != nil {
 				t.Fatalf("delegation never ran: first Run err=%v, resume err=%v", err1, err2)
 			}
@@ -374,9 +374,9 @@ func TestRev117e_UnrecordedJoinedWithCrashHaltInSaga(t *testing.T) {
 	)
 	ctx1, cancel := context.WithCancel(WithGrant(context.Background(), expired, signer))
 	cancelFirst = cancel
-	_, err1 := parent.RunSaga(ctx1, "p", "go")
+	_, err1 := parent.Run(ctx1, "p", agent.UserText("go"), agent.WithSaga())
 	cancel()
-	_, err2 := parent.RunSaga(WithGrant(context.Background(), expired, signer), "p", "go")
+	_, err2 := parent.Run(WithGrant(context.Background(), expired, signer), "p", agent.UserText("go"), agent.WithSaga())
 	var halt *agent.OutcomeUnknown
 	if !errors.As(err2, &halt) {
 		t.Fatalf("setup: second drive = %v (first %v), want a crash halt joined with the refusal", err2, err1)

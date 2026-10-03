@@ -51,7 +51,7 @@ func retrievedRequest(t *testing.T, model agent.Model, docs agent.Retriever, inp
 		t.Fatal(err)
 	}
 	for _, in := range inputs {
-		if _, err := s.Send(ctx, in); err != nil {
+		if _, err := s.Send(ctx, agent.UserText(in)); err != nil {
 			t.Fatal(err)
 		}
 	}

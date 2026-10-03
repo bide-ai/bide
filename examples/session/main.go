@@ -57,10 +57,11 @@ func main() {
 		"Double the number I mentioned. What do you get?",
 	} {
 		fmt.Printf("\nuser> %s\n", turn)
-		answer, err := sess.Send(ctx, turn)
+		res, err := sess.Send(ctx, agent.UserText(turn))
 		if err != nil {
 			log.Fatalf("send: %v", err)
 		}
+		answer := res.Message
 		fmt.Printf("agent> %s\n", answer.Text())
 	}
 

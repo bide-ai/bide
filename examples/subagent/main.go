@@ -76,11 +76,11 @@ func main() {
 	ctx, cancel := context.WithTimeout(context.Background(), 90*time.Second)
 	defer cancel()
 
-	out, err := parent.Run(ctx, "trip-1",
-		"I'm visiting San Francisco. Ask the weather specialist what to expect, then suggest what to pack in one sentence.")
+	res, err := parent.Run(ctx, "trip-1", agent.UserText("I'm visiting San Francisco. Ask the weather specialist what to expect, then suggest what to pack in one sentence."))
 	if err != nil {
 		log.Fatalf("run: %v", err)
 	}
+	out := res.Message
 
 	fmt.Println("\n=== planner answer ===")
 	fmt.Println(out.Text())

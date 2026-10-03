@@ -17,7 +17,7 @@ func chargeOnce(t *testing.T, store *Journal, charged *int) {
 		return "", fmt.Errorf("gateway connection reset (%w)", ErrToolOutcomeUnknown)
 	})
 	m := &greedyModel{script: [][]Emit{toolTurn("c1", "charge", `{}`), textTurn("done")}}
-	if _, err := mustNew(m, store, WithTools(charge)).Run(context.Background(), "r1", "pay"); !errors.Is(err, ErrToolOutcomeUnknown) {
+	if _, err := mustNew(m, store, WithTools(charge)).Run(context.Background(), "r1", UserText("pay")); !errors.Is(err, ErrToolOutcomeUnknown) {
 		t.Fatalf("first run err = %v, want ErrToolOutcomeUnknown", err)
 	}
 }
@@ -35,7 +35,7 @@ func TestResume_RelabelledRetrySafeStillHalts(t *testing.T) {
 		return "charged", nil
 	})
 	m := &greedyModel{script: [][]Emit{textTurn("done")}} // the charge turn replays from the journal
-	_, err := mustNew(m, store, WithTools(relabelled)).Run(context.Background(), "r1", "pay")
+	_, err := mustNew(m, store, WithTools(relabelled)).Run(context.Background(), "r1", UserText("pay"))
 	var halt *ResumeHalt
 	if !errors.As(err, &halt) || halt.Op.ID != "c1" {
 		t.Fatalf("resume err = %v after %d charges, want *ResumeHalt for c1", err, charged)
@@ -53,7 +53,7 @@ func TestResume_AttemptedToolNoLongerRegisteredHalts(t *testing.T) {
 	chargeOnce(t, store, &charged)
 
 	m := &greedyModel{script: [][]Emit{textTurn("done")}}
-	_, err := mustNew(m, store).Run(context.Background(), "r1", "pay")
+	_, err := mustNew(m, store).Run(context.Background(), "r1", UserText("pay"))
 	var halt *ResumeHalt
 	if !errors.As(err, &halt) || halt.Op.ID != "c1" || halt.Op.ToolName != "charge" {
 		t.Fatalf("resume err = %v, want *ResumeHalt for charge (c1)", err)

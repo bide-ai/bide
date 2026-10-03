@@ -31,7 +31,7 @@ func TestAdv104_KeptCallAfterTurnIsNotAnAnswer(t *testing.T) {
 		agenttest.MemJournal(),
 		agent.WithMiddleware(keep, middleware.Cost(&meter, perInput), cache),
 	)
-	if _, err := a.Run(context.Background(), "r", "q"); err != nil {
+	if _, err := a.Run(context.Background(), "r", agent.UserText("q")); err != nil {
 		t.Fatal(err)
 	}
 	before := meter.Snapshot()

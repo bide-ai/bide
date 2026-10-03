@@ -13,8 +13,20 @@ import (
 // model call: a reply to a different message, from a different conversation.
 func TestSessionTurn_RootRunCannotShareItsJournal(t *testing.T) {
 	ctx := context.Background()
-	send := func(s *Session) (Message, error) { return s.Send(ctx, "hello") }
-	sendOnce := func(s *Session) (Message, error) { return s.SendOnce(ctx, "k1", "hello") }
+	send := func(s *Session) (Message, error) {
+		res, err := s.Send(ctx, UserText("hello"))
+		if err != nil {
+			return Message{}, err
+		}
+		return res.Message, nil
+	}
+	sendOnce := func(s *Session) (Message, error) {
+		res, err := s.SendOnce(ctx, "k1", UserText("hello"))
+		if err != nil {
+			return Message{}, err
+		}
+		return res.Message, nil
+	}
 	for _, tc := range []struct {
 		name  string
 		runID string // the root run ID that named the turn's journal on main
@@ -25,7 +37,7 @@ func TestSessionTurn_RootRunCannotShareItsJournal(t *testing.T) {
 	} {
 		t.Run(tc.name+"/run first", func(t *testing.T) {
 			a := mustNew(&replyModel{}, memJournal())
-			if out, err := a.Run(ctx, tc.runID, "wire the money"); err != nil || out.Text() != "re: wire the money" {
+			if out, err := answerOf(a.Run(ctx, tc.runID, UserText("wire the money"))); err != nil || out.Text() != "re: wire the money" {
 				t.Fatalf("Run(%q) = %q, %v", tc.runID, out.Text(), err)
 			}
 			msg, err := tc.turn(openSession(t, a, "chat"))
@@ -38,7 +50,11 @@ func TestSessionTurn_RootRunCannotShareItsJournal(t *testing.T) {
 			if msg, err := tc.turn(openSession(t, a, "chat")); err != nil || msg.Text() != "re: hello" {
 				t.Fatalf("session turn = %q, %v", msg.Text(), err)
 			}
-			out, err := a.Run(ctx, tc.runID, "wire the money")
+			res, err := a.Run(ctx, tc.runID, UserText("wire the money"))
+			var out Message
+			if res != nil {
+				out = res.Message
+			}
 			if err != nil || out.Text() != "re: wire the money" {
 				t.Fatalf("Run(%q) = %q, %v; want %q, not the session's reply", tc.runID, out.Text(), err, "re: wire the money")
 			}
@@ -54,13 +70,13 @@ func TestSessionJournal_RootRunCannotShareIt(t *testing.T) {
 	ctx := context.Background()
 	store := memJournal()
 	a := mustNew(&replyModel{}, store)
-	if msg, err := openSession(t, a, "chat").Send(ctx, "hello"); err != nil || msg.Text() != "re: hello" {
+	if msg, err := answerOf(openSession(t, a, "chat").Send(ctx, UserText("hello"))); err != nil || msg.Text() != "re: hello" {
 		t.Fatalf("Send = %q, %v", msg.Text(), err)
 	}
 	if _, ok, err := RecordedStart(ctx, store, "chat"); err != nil || ok {
 		t.Fatalf("RecordedStart(chat) = %v, %v before any run; want none", ok, err)
 	}
-	if out, err := a.Run(ctx, "chat", "wire the money"); err != nil || out.Text() != "re: wire the money" {
+	if out, err := answerOf(a.Run(ctx, "chat", UserText("wire the money"))); err != nil || out.Text() != "re: wire the money" {
 		t.Fatalf("Run(chat) = %q, %v", out.Text(), err)
 	}
 	recs, err := store.History(ctx, "chat")
@@ -84,15 +100,15 @@ func TestRecover_SkipsSessionRuns(t *testing.T) {
 	store := memJournal()
 	a := mustNew(&replyModel{}, store)
 	s := openSession(t, a, "chat")
-	if _, err := s.Send(ctx, "hello"); err != nil {
+	if _, err := s.Send(ctx, UserText("hello")); err != nil {
 		t.Fatal(err)
 	}
 	// The second turn's run starts and dies before it finishes.
 	failing := mustNew(failingModel{}, store)
-	if _, err := openSession(t, failing, "chat").Send(ctx, "again"); err == nil {
+	if _, err := openSession(t, failing, "chat").Send(ctx, UserText("again")); err == nil {
 		t.Fatal("second turn finished; want it left unfinished")
 	}
-	if _, err := openSession(t, failing, "chat").SendOnce(ctx, "k1", "keyed"); err == nil {
+	if _, err := openSession(t, failing, "chat").SendOnce(ctx, "k1", UserText("keyed")); err == nil {
 		t.Fatal("keyed turn finished; want it left unfinished")
 	}
 	var resumed []string
@@ -105,10 +121,10 @@ func TestRecover_SkipsSessionRuns(t *testing.T) {
 	}
 	// The session resumes its open turn when the message is sent again.
 	s = openSession(t, a, "chat")
-	if msg, err := s.Send(ctx, "again"); err != nil || msg.Text() != "re: again" || s.Turns() != 2 {
+	if msg, err := answerOf(s.Send(ctx, UserText("again"))); err != nil || msg.Text() != "re: again" || s.Turns() != 2 {
 		t.Fatalf("resend = %q, %v, turns %d", msg.Text(), err, s.Turns())
 	}
-	if msg, err := s.SendOnce(ctx, "k1", "keyed"); err != nil || msg.Text() != "re: keyed" || s.Turns() != 3 {
+	if msg, err := answerOf(s.SendOnce(ctx, "k1", UserText("keyed"))); err != nil || msg.Text() != "re: keyed" || s.Turns() != 3 {
 		t.Fatalf("redeliver = %q, %v, turns %d", msg.Text(), err, s.Turns())
 	}
 }
@@ -175,7 +191,7 @@ func TestSessionRunIDs_Unambiguous(t *testing.T) {
 		t.Fatalf("checkRunID(%q) = %v under withSessionRun, want ErrConfig", sub, err)
 	}
 	a := mustNew(&replyModel{}, memJournal())
-	if _, err := a.Run(ctx, sessionTurnRunID("chat", 0), "hi"); !errors.Is(err, ErrConfig) {
+	if _, err := a.Run(ctx, sessionTurnRunID("chat", 0), UserText("hi")); !errors.Is(err, ErrConfig) {
 		t.Fatalf("Run(session turn run) = %v, want ErrConfig", err)
 	}
 }

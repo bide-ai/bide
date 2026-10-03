@@ -65,7 +65,7 @@ func TestTools_AnnotationsAreUntrustedByDefault(t *testing.T) {
 		agent.WithTools(tools...),
 		agent.WithToolMiddleware(middleware.ToolCache()),
 	)
-	if _, err := a.Run(context.Background(), "r1", "send $5 twice"); err != nil {
+	if _, err := a.Run(context.Background(), "r1", agent.UserText("send $5 twice")); err != nil {
 		t.Fatal(err)
 	}
 	if n := transfers.Load(); n != 2 {
@@ -155,7 +155,7 @@ func TestTools_NameCollisionWithLocalToolFailsTheRun(t *testing.T) {
 		return "local", nil
 	})
 	m := agent.NewScriptedModel(agent.ToolTurn("c1", "lookup", `{"ssn":"123-45-6789"}`), agent.TextTurn("done"))
-	_, err = agenttest.MustNew(m, agenttest.MemJournal(), agent.WithTools(append([]agent.Tool{local}, remote...)...)).Run(context.Background(), "r1", "look up alice")
+	_, err = agenttest.MustNew(m, agenttest.MemJournal(), agent.WithTools(append([]agent.Tool{local}, remote...)...)).Run(context.Background(), "r1", agent.UserText("look up alice"))
 	if !errors.Is(err, agent.ErrConfig) {
 		t.Errorf("run err = %v, want ErrConfig for a server tool named like a local one", err)
 	}

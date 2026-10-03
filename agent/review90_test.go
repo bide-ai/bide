@@ -38,14 +38,14 @@ func TestR90_WakeFailureCutsOffSiblingInFlight(t *testing.T) {
 	})
 	turn := multiToolTurn([2]string{"c1", "nap"}, [2]string{"c2", "send"})
 	ctx := ContextWithWaker(context.Background(), &failingWaker{fail: 1})
-	_, err := mustNew(&greedyModel{script: [][]Emit{turn, textTurn("done")}}, store, WithTools(nap, send)).Run(ctx, "r1", "go")
+	_, err := mustNew(&greedyModel{script: [][]Emit{turn, textTurn("done")}}, store, WithTools(nap, send)).Run(ctx, "r1", UserText("go"))
 	if !errors.Is(err, ErrStorage) {
 		t.Fatalf("first drive = %v; want the wake failure (ErrStorage)", err)
 	}
 	if bFired.Load() != 1 {
 		t.Errorf("send fired %d times; want 1: a wake failure must not cut off a sibling in flight", bFired.Load())
 	}
-	_, err = mustNew(&greedyModel{script: [][]Emit{textTurn("done")}}, store, WithTools(nap, send)).Run(ctx, "r1", "go")
+	_, err = mustNew(&greedyModel{script: [][]Emit{textTurn("done")}}, store, WithTools(nap, send)).Run(ctx, "r1", UserText("go"))
 	if h, ok := errors.AsType[*OutcomeUnknown](err); ok {
 		t.Errorf("re-drive = %v (op %s); a transient scheduler failure turned send into an unknown-outcome halt in a run that never crashed", err, h.Op.ID)
 	}
@@ -70,7 +70,7 @@ func TestR90_LiveToolClaimIsClassifiedCrashed(t *testing.T) {
 			&greedyModel{script: [][]Emit{toolTurn("c1", "charge", `{}`), textTurn("done")}},
 			store.proc(),
 			WithTools(charge),
-		).Run(ctx, "r1", "pay")
+		).Run(ctx, "r1", UserText("pay"))
 		errA <- e
 	}()
 	<-inEffect // driver A holds the claim and is inside the effect
@@ -79,7 +79,7 @@ func TestR90_LiveToolClaimIsClassifiedCrashed(t *testing.T) {
 		&greedyModel{script: [][]Emit{toolTurn("c1", "charge", `{}`), textTurn("done")}},
 		store.proc(),
 		WithTools(charge),
-	).Run(ctx, "r1", "pay")
+	).Run(ctx, "r1", UserText("pay"))
 	halt, ok := errors.AsType[*OutcomeUnknown](err)
 	if !ok {
 		close(release)
@@ -152,7 +152,7 @@ func TestR90_JoinedInterruptThenHaltKeepsTheHalt(t *testing.T) {
 		&greedyModel{script: [][]Emit{toolTurn("c1", "mixed", `{}`), textTurn("done")}},
 		store,
 		WithTools(mixed),
-	).Run(context.Background(), "r1", "go")
+	).Run(context.Background(), "r1", UserText("go"))
 	var halt *ResumeHalt
 	if !errors.As(err, &halt) || errors.Is(err, ErrConfig) {
 		t.Errorf("run = %v; want the inner halt propagated (as on main), not ErrConfig", err)
@@ -312,7 +312,7 @@ func TestWaker_FailureBesideAPauseFailsTheRun(t *testing.T) {
 		&greedyModel{script: [][]Emit{turn, textTurn("done")}},
 		memJournal(),
 		WithTools(ask, napTool()),
-	).Run(ctx, "r1", "go")
+	).Run(ctx, "r1", UserText("go"))
 	if !errors.Is(err, ErrStorage) || IsPause(err) {
 		t.Fatalf("run = %v; want the wake failure (ErrStorage), not the pause", err)
 	}

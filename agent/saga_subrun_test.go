@@ -56,7 +56,11 @@ func (f *subRunFixture) parent(t *testing.T, declare, failAfter bool) *agent.Age
 	}
 	starter := agent.Func("starter", "", agent.Safety{ReadOnly: true}, func(ctx context.Context, _ struct{}) (string, error) {
 		info, _ := agent.RunInfoFrom(ctx)
-		msg, err := child.RunSaga(ctx, info.SubRunFor("child"), "work")
+		res, err := child.Run(ctx, info.SubRunFor("child"), agent.UserText("work"), agent.WithSaga())
+		var msg agent.Message
+		if res != nil {
+			msg = res.Message
+		}
 		if err == nil && failAfter {
 			err = errors.New("starter failed after its sub-run")
 		}
@@ -87,7 +91,7 @@ func abortOf(t *testing.T, err error) *agent.SagaAborted {
 func TestSagaRollback_ProgrammaticSubRunCompensated(t *testing.T) {
 	for _, failAfter := range []bool{false, true} {
 		f := &subRunFixture{store: agenttest.MemJournal()}
-		_, err := f.parent(t, true, failAfter).RunSaga(context.Background(), "root", "go")
+		_, err := f.parent(t, true, failAfter).Run(context.Background(), "root", agent.UserText("go"), agent.WithSaga())
 		ab := abortOf(t, err)
 		if f.undone != 1 || !slices.Equal(ab.Compensated, []string{"book"}) || len(ab.Uncompensated) != 0 || ab.CompensateErr != nil {
 			t.Errorf("starter fails after its sub-run %v: undone %d; compensated %v, uncompensated %v, err %v; want book undone once",
@@ -99,7 +103,7 @@ func TestSagaRollback_ProgrammaticSubRunCompensated(t *testing.T) {
 // Without WithSubRuns the rollback cannot undo the child's write, and reports it.
 func TestSagaRollback_UndeclaredSubRunReported(t *testing.T) {
 	f := &subRunFixture{store: agenttest.MemJournal()}
-	_, err := f.parent(t, false, false).RunSaga(context.Background(), "root", "go")
+	_, err := f.parent(t, false, false).Run(context.Background(), "root", agent.UserText("go"), agent.WithSaga())
 	ab := abortOf(t, err)
 	if f.undone != 0 || !slices.Equal(ab.Uncompensated, []string{"book"}) || len(ab.Compensated) != 0 {
 		t.Errorf("undeclared sub-run: undone %d; compensated %v, uncompensated %v; want book reported uncompensated",
@@ -111,11 +115,11 @@ func TestSagaRollback_UndeclaredSubRunReported(t *testing.T) {
 // failed) and is resumed by fresh agents, as after a restart, still undoes the child's write.
 func TestSagaRollback_SubRunResumedByFreshAgents(t *testing.T) {
 	f := &subRunFixture{store: agenttest.MemJournal(), undoErr: errors.New("booking service down")}
-	_, err := f.parent(t, true, false).RunSaga(context.Background(), "root", "go")
+	_, err := f.parent(t, true, false).Run(context.Background(), "root", agent.UserText("go"), agent.WithSaga())
 	if ab := abortOf(t, err); ab.CompensateErr == nil || f.undone != 0 {
 		t.Fatalf("first rollback: undone %d, err %v; want it stopped at the failed compensation", f.undone, ab.CompensateErr)
 	}
-	_, err = f.parent(t, true, false).RunSaga(context.Background(), "root", "go")
+	_, err = f.parent(t, true, false).Run(context.Background(), "root", agent.UserText("go"), agent.WithSaga())
 	if ab := abortOf(t, err); ab.CompensateErr != nil || f.undone != 1 || !slices.Equal(ab.Compensated, []string{"book"}) {
 		t.Fatalf("resumed rollback: undone %d, compensated %v, err %v; want book undone", f.undone, ab.Compensated, ab.CompensateErr)
 	}
@@ -126,7 +130,7 @@ func TestSagaRollback_SubRunResumedByFreshAgents(t *testing.T) {
 // TestAdv127b_NestedThroughNonSagaChild.)
 func TestSubRunLink_OnlyInASagaTree(t *testing.T) {
 	f := &subRunFixture{store: agenttest.MemJournal()}
-	_, _ = f.parent(t, true, false).Run(context.Background(), "plain", "go")
+	_, _ = f.parent(t, true, false).Run(context.Background(), "plain", agent.UserText("go"))
 	recs, err := f.store.History(context.Background(), "plain")
 	if err != nil {
 		t.Fatal(err)
@@ -137,7 +141,7 @@ func TestSubRunLink_OnlyInASagaTree(t *testing.T) {
 		}
 	}
 	f = &subRunFixture{store: agenttest.MemJournal()}
-	_, _ = f.parent(t, true, false).RunSaga(context.Background(), "saga", "go")
+	_, _ = f.parent(t, true, false).Run(context.Background(), "saga", agent.UserText("go"), agent.WithSaga())
 	recs, _ = f.store.History(context.Background(), "saga")
 	n := 0
 	for _, r := range recs {
@@ -166,7 +170,7 @@ func TestSubRunFor_RefusedAfterTheCallReturned(t *testing.T) {
 			id := info.SubRunFor("late")
 			go func() {
 				<-release
-				_, err := child.Run(ctx, id, "work")
+				_, err := child.Run(ctx, id, agent.UserText("work"))
 				result <- err
 			}()
 			return "spawned", nil
@@ -176,11 +180,11 @@ func TestSubRunFor_RefusedAfterTheCallReturned(t *testing.T) {
 		if err != nil {
 			t.Fatal(err)
 		}
-		run := p.Run
+		var opts []agent.RunOption
 		if saga {
-			run = p.RunSaga
+			opts = append(opts, agent.WithSaga())
 		}
-		if _, err := run(context.Background(), "r", "go"); err != nil {
+		if _, err := p.Run(context.Background(), "r", agent.UserText("go"), opts...); err != nil {
 			t.Fatal(err)
 		}
 		close(release)
@@ -200,7 +204,7 @@ func TestSubRunFor_LongNameInASaga(t *testing.T) {
 	long := strings.Repeat("n", 200)
 	starter := agent.Func("starter", "", agent.Safety{ReadOnly: true}, func(ctx context.Context, _ struct{}) (string, error) {
 		info, _ := agent.RunInfoFrom(ctx)
-		_, err := child.Run(ctx, info.SubRunFor(long), "work")
+		_, err := child.Run(ctx, info.SubRunFor(long), agent.UserText("work"))
 		if !errors.Is(err, agent.ErrConfig) {
 			return "", errors.New("long name accepted in a saga: " + errString(err))
 		}
@@ -211,7 +215,7 @@ func TestSubRunFor_LongNameInASaga(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if _, err := p.RunSaga(context.Background(), "r", "go"); err != nil {
+	if _, err := p.Run(context.Background(), "r", agent.UserText("go"), agent.WithSaga()); err != nil {
 		t.Fatal(err)
 	}
 }

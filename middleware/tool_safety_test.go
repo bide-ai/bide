@@ -40,7 +40,7 @@ func TestToolRetry_DoesNotRetryANonIdempotentTool(t *testing.T) {
 		agent.WithTools(charge),
 		agent.WithToolMiddleware(ToolCache(), ToolRetry(3, WithBackoff(0, 0))),
 	)
-	if _, err := a.Run(context.Background(), "r1", "charge $5"); err != nil {
+	if _, err := a.Run(context.Background(), "r1", agent.UserText("charge $5")); err != nil {
 		t.Fatal(err)
 	}
 	if charged != 1 {
@@ -71,7 +71,7 @@ func TestToolCache_DoesNotCacheANonReadOnlyTool(t *testing.T) {
 		agent.WithTools(charge),
 		agent.WithToolMiddleware(ToolCache(), ToolRetry(3)),
 	)
-	if _, err := a.Run(context.Background(), "r1", "charge $5 twice"); err != nil {
+	if _, err := a.Run(context.Background(), "r1", agent.UserText("charge $5 twice")); err != nil {
 		t.Fatal(err)
 	}
 	if charged != 2 {

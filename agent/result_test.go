@@ -39,7 +39,7 @@ func TestRunResult_TwoTurnAccumulatesUsage(t *testing.T) {
 	}}
 	a := mustNew(m, memJournal(), WithTools(tool))
 
-	res, err := a.RunResult(context.Background(), "run-result-1", "hi")
+	res, err := a.Run(context.Background(), "run-result-1", UserText("hi"))
 	if err != nil {
 		t.Fatalf("RunResult: %v", err)
 	}
@@ -100,13 +100,14 @@ func TestRunResult_MessageMatchesRun(t *testing.T) {
 	}
 
 	m1 := &scriptModel{turns: turns()}
-	plainMsg, err := mustNew(m1, store1, WithTools(tool1)).Run(context.Background(), "r1", "hi")
+	res2, err := mustNew(m1, store1, WithTools(tool1)).Run(context.Background(), "r1", UserText("hi"))
 	if err != nil {
 		t.Fatalf("Run: %v", err)
 	}
+	plainMsg := res2.Message
 
 	m2 := &scriptModel{turns: turns()}
-	res, err := mustNew(m2, store2, WithTools(tool2)).RunResult(context.Background(), "r2", "hi")
+	res, err := mustNew(m2, store2, WithTools(tool2)).Run(context.Background(), "r2", UserText("hi"))
 	if err != nil {
 		t.Fatalf("RunResult: %v", err)
 	}
@@ -122,7 +123,7 @@ func TestRunResult_SingleTurnNoTools(t *testing.T) {
 	m := &scriptModel{turns: [][]Emit{textTurnWithUsage("hello", u)}}
 	a := mustNew(m, memJournal())
 
-	res, err := a.RunResult(context.Background(), "single", "hi")
+	res, err := a.Run(context.Background(), "single", UserText("hi"))
 	if err != nil {
 		t.Fatalf("RunResult: %v", err)
 	}

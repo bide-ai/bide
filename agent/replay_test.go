@@ -18,8 +18,8 @@ func TestReplayEvents_MatchesLiveStream(t *testing.T) {
 	store := memJournal()
 
 	// Collect the semantic subset from a live run.
-	var live []AgentEvent
-	for e := range mustNew(m, store, WithTools(tool)).Stream(ctx, "run", "hi").Events() {
+	var live []RunEvent
+	for e := range mustNew(m, store, WithTools(tool)).Stream(ctx, "run", UserText("hi")).Events() {
 		switch ev := e.(type) {
 		case AssistantTurn:
 			ev.Replayed = true // normalize: the projection reads back as a replay
@@ -52,7 +52,7 @@ func TestReplayEvents_AppendOnlyAcrossCrash(t *testing.T) {
 
 	// Crash on the second model turn, after the tool call + result are journaled.
 	crashy := &scriptModel{turns: [][]Emit{toolTurn("c1", "lookup", `{"q":"x"}`), errTurn(errCrash)}}
-	if _, err := mustNew(crashy, store, WithTools(tool)).Run(ctx, "run", "hi"); err == nil {
+	if _, err := mustNew(crashy, store, WithTools(tool)).Run(ctx, "run", UserText("hi")); err == nil {
 		t.Fatal("expected the injected crash to fail the run")
 	}
 
@@ -68,7 +68,7 @@ func TestReplayEvents_AppendOnlyAcrossCrash(t *testing.T) {
 	// Resume with a healed model: the tool call + result replay from the journal, only the
 	// final turn is produced live.
 	recovered := &scriptModel{turns: [][]Emit{textTurn("final")}}
-	if _, err := mustNew(recovered, store, WithTools(tool)).Run(ctx, "run", "hi"); err != nil {
+	if _, err := mustNew(recovered, store, WithTools(tool)).Run(ctx, "run", UserText("hi")); err != nil {
 		t.Fatalf("resume: %v", err)
 	}
 

@@ -134,7 +134,7 @@ func runAgree(ctx context.Context, m *gsm.Machine, votesFor, committed gsm.Var, 
 	if err != nil {
 		log.Fatal(err)
 	}
-	if _, err := a.Run(ctx, runID, "commit the quorum decision"); err != nil {
+	if _, err := a.Run(ctx, runID, agent.UserText("commit the quorum decision")); err != nil {
 		panic(err)
 	}
 	leaf := toolResult(ctx, store, runID, "commit/leaf")
@@ -193,7 +193,7 @@ func runDisagree(ctx context.Context, m *gsm.Machine, votesFor, committed gsm.Va
 	if err != nil {
 		log.Fatal(err)
 	}
-	_, runErr := a.Run(ctx, runID, "commit the quorum decision")
+	_, runErr := a.Run(ctx, runID, agent.UserText("commit the quorum decision"))
 
 	didCommit := gov.State().GetBool(committed)
 	fmt.Printf("committed=%v (quorum NOT met); the guard made commit a no-op\n", didCommit)

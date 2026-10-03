@@ -174,7 +174,7 @@ func refused(t *testing.T, s agent.Store, id, found string) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	_, err = ag.Run(ctx, id, "hi")
+	_, err = ag.Run(ctx, id, agent.UserText("hi"))
 	check("Run", err)
 	if after := names(entries(t, s, id)); !slices.Equal(after, before) {
 		t.Fatalf("a drive wrote to a run the journal refuses: %v, then %v", before, after)

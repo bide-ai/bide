@@ -45,7 +45,7 @@ func TestStream_ResponseFormatIsAConfigError(t *testing.T) {
 	type out struct {
 		A string `json:"a"`
 	}
-	got, err := agent.RunTypedNative[out](context.Background(), agenttest.MustNew(m, agenttest.MemJournal()), "r", "hi")
+	got, _, err := agenttest.MustNew(m, agenttest.MemJournal()).RunTyped[out](context.Background(), "r", agent.UserText("hi"), agent.WithOutputMode(agent.OutputNative))
 	if !errors.Is(err, agent.ErrConfig) {
 		t.Fatalf("RunTypedNative = %+v, %v; want ErrConfig", got, err)
 	}

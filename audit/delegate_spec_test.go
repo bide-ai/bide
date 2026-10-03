@@ -51,7 +51,7 @@ func attenuatingSaga(t *testing.T, withGrant bool) (*agent.SagaAborted, int) {
 		}
 		ctx = WithGrant(ctx, rootSG, signer)
 	}
-	_, err := parent.RunSaga(ctx, "trip", "book the trip")
+	_, err := parent.Run(ctx, "trip", agent.UserText("book the trip"), agent.WithSaga())
 	var aborted *agent.SagaAborted
 	if !errors.As(err, &aborted) {
 		t.Fatalf("RunSaga = %v, want *SagaAborted", err)
@@ -125,7 +125,7 @@ func TestAttenuatingSubAgent_WithApprovalPausesBeforeDelegating(t *testing.T) {
 		agent.WithTools(exec),
 	)
 
-	_, err := parent.Run(ctx, "p", "go")
+	_, err := parent.Run(ctx, "p", agent.UserText("go"))
 	var pa *agent.ApprovalPending
 	if !errors.As(err, &pa) || pa.ToolName != "exec" {
 		t.Fatalf("Run = %v, want *ApprovalPending for exec", err)
@@ -136,7 +136,7 @@ func TestAttenuatingSubAgent_WithApprovalPausesBeforeDelegating(t *testing.T) {
 	if err := agent.Approve(ctx, store, "p", "c1", true); err != nil {
 		t.Fatal(err)
 	}
-	if out, err := parent.Run(ctx, "p", "go"); err != nil || out.Text() != "ok" {
+	if out, err := agenttest.Answer(parent.Run(ctx, "p", agent.UserText("go"))); err != nil || out.Text() != "ok" {
 		t.Fatalf("resume after Approve = %q, %v; want ok", out.Text(), err)
 	}
 	if recs, _ := store.History(ctx, agent.SubRunID("p", "c1")); len(recs) == 0 {

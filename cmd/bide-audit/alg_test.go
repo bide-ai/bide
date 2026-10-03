@@ -92,7 +92,7 @@ func TestCLI_MLDSAAndHybridEndToEnd(t *testing.T) {
 				}, agent.WithApproval(&policy))
 			resolver := func(id string) (agent.ApproverVerifier, bool) { return approverV, id == "alice" }
 			a := agenttest.MustNew(algChargeModel{}, store, agent.WithTools(charge), agent.WithApproverVerifiers(resolver))
-			if _, err := a.Run(ctx, runID, "pay"); err == nil {
+			if _, err := a.Run(ctx, runID, agent.UserText("pay")); err == nil {
 				t.Fatal("the gated run did not pause")
 			}
 			recs, err := store.History(ctx, runID)
@@ -111,7 +111,7 @@ func TestCLI_MLDSAAndHybridEndToEnd(t *testing.T) {
 			if err := agent.SubmitDecision(ctx, store, agent.Decision{RunID: runID, ToolUseID: "c1", ApproverID: "alice", Approved: true, Alg: approver.Alg(), Signature: sig}); err != nil {
 				t.Fatal(err)
 			}
-			if _, err := a.Run(ctx, runID, "pay"); err != nil {
+			if _, err := a.Run(ctx, runID, agent.UserText("pay")); err != nil {
 				t.Fatalf("the approved run: %v", err)
 			}
 

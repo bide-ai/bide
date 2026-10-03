@@ -131,7 +131,11 @@ func runOnce(mem *Journal, tool chargeTool, afterAnswer *int, crashAt int) error
 		WithTools(tool),
 		WithMaxConcurrency(1),
 	)
-	out, err := a.Run(context.Background(), "dst", "charge me")
+	res, err := a.Run(context.Background(), "dst", UserText("charge me"))
+	var out Message
+	if res != nil {
+		out = res.Message
+	}
 	if err == nil && textOf(out) != "done" {
 		return fmt.Errorf("completed run answered %q, want done", textOf(out))
 	}

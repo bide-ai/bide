@@ -8,9 +8,9 @@ import (
 )
 
 // streamFinishes runs a streamed run and returns the Finish events its model calls sent.
-func streamFinishes(t *testing.T, a *Agent, runID string) ([]Finish, *AgentStream) {
+func streamFinishes(t *testing.T, a *Agent, runID string) ([]Finish, *RunStream) {
 	t.Helper()
-	as := a.Stream(context.Background(), runID, "go")
+	as := a.Stream(context.Background(), runID, UserText("go"))
 	var out []Finish
 	for ev := range as.Events() {
 		if me, ok := ev.(ModelEvent); ok {
@@ -33,7 +33,7 @@ func TestReplay_ReportsRecordedUsage(t *testing.T) {
 	var calls1 int
 	tool1 := &countingTool{name: "lookup", safety: Safety{ReadOnly: true}, calls: &calls1}
 	m := &scriptModel{turns: [][]Emit{toolTurnWithUsage("c1", "lookup", `{"q":"x"}`, u1), textTurnWithUsage("final", u2)}}
-	orig, err := mustNew(m, rec, WithTools(tool1)).RunResult(ctx, "run", "go")
+	orig, err := mustNew(m, rec, WithTools(tool1)).Run(ctx, "run", UserText("go"))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -45,7 +45,7 @@ func TestReplay_ReportsRecordedUsage(t *testing.T) {
 	fresh := memJournal()
 	var calls2 int
 	tool2 := &countingTool{name: "lookup", safety: Safety{ReadOnly: true}, calls: &calls2}
-	replayed, err := mustNew(rm, fresh, WithTools(tool2)).RunResult(ctx, "run", "go")
+	replayed, err := mustNew(rm, fresh, WithTools(tool2)).Run(ctx, "run", UserText("go"))
 	if err != nil {
 		t.Fatalf("replay run: %v", err)
 	}
@@ -60,7 +60,7 @@ func TestReplay_ReportsRecordedUsage(t *testing.T) {
 func TestReplay_TokenBudgetStopsAtSamePoint(t *testing.T) {
 	ctx := context.Background()
 	rec := memJournal()
-	_, origErr := mustNew(&meteredModel{u: turnUsage}, rec, WithTools(lookupTool(func() {})), WithTokenBudget(100)).Run(ctx, "run", "q")
+	_, origErr := mustNew(&meteredModel{u: turnUsage}, rec, WithTools(lookupTool(func() {})), WithTokenBudget(100)).Run(ctx, "run", UserText("q"))
 	if !errors.Is(origErr, ErrBudgetExceeded) {
 		t.Fatalf("setup: err = %v, want ErrBudgetExceeded", origErr)
 	}
@@ -70,7 +70,7 @@ func TestReplay_TokenBudgetStopsAtSamePoint(t *testing.T) {
 		t.Fatal(err)
 	}
 	fresh := memJournal()
-	_, replayErr := mustNew(rm, fresh, WithTools(lookupTool(func() {})), WithTokenBudget(100)).Run(ctx, "run", "q")
+	_, replayErr := mustNew(rm, fresh, WithTools(lookupTool(func() {})), WithTokenBudget(100)).Run(ctx, "run", UserText("q"))
 	if replayErr == nil || replayErr.Error() != origErr.Error() {
 		t.Fatalf("replay err = %v, want %v", replayErr, origErr)
 	}
@@ -89,7 +89,7 @@ func TestReplay_StreamedFinishMatchesLive(t *testing.T) {
 	tool1 := &countingTool{name: "lookup", safety: Safety{ReadOnly: true}, calls: &calls1}
 	m := &scriptModel{turns: [][]Emit{toolTurnWithUsage("c1", "lookup", `{"q":"x"}`, u1), textTurnWithUsage("final", u2)}}
 	live, as := streamFinishes(t, mustNew(m, rec, WithTools(tool1)), "run")
-	if _, err := as.Final(); err != nil {
+	if _, err := as.Result(); err != nil {
 		t.Fatal(err)
 	}
 	want := []Finish{{Reason: "tool_use", Usage: u1}, {Reason: "stop", Usage: u2}}
@@ -104,7 +104,7 @@ func TestReplay_StreamedFinishMatchesLive(t *testing.T) {
 	var calls2 int
 	tool2 := &countingTool{name: "lookup", safety: Safety{ReadOnly: true}, calls: &calls2}
 	replayed, as := streamFinishes(t, mustNew(rm, memJournal(), WithTools(tool2)), "run")
-	if _, err := as.Final(); err != nil {
+	if _, err := as.Result(); err != nil {
 		t.Fatal(err)
 	}
 	if !reflect.DeepEqual(replayed, live) {

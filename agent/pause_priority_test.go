@@ -55,7 +55,7 @@ func TestRun_HaltReportedAheadOfAnEarlierCallsPause(t *testing.T) {
 		{Event: agent.Finish{Reason: "tool_use"}},
 	}
 	model := modelFunc(func() []agent.Emit { return turn })
-	_, err := agenttest.MustNew(model, agenttest.MemJournal(), agent.WithTools(a, b, c), agent.WithMaxConcurrency(2)).Run(context.Background(), "r", "go")
+	_, err := agenttest.MustNew(model, agenttest.MemJournal(), agent.WithTools(a, b, c), agent.WithMaxConcurrency(2)).Run(context.Background(), "r", agent.UserText("go"))
 	var halt *agent.ResumeHalt
 	if !errors.As(err, &halt) || halt.Op.ID != "effect" {
 		t.Fatalf("Run = %v; want the halt on effect", err)

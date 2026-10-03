@@ -57,10 +57,11 @@ func TestToolMiddleware_OrderMutateTransform(t *testing.T) {
 	}
 
 	a := mustNew(m, memJournal(), WithTools(tool), WithToolMiddleware(mw("outer"), mw("inner"), rewrite))
-	out, err := a.Run(context.Background(), "r", "go")
+	res2, err := a.Run(context.Background(), "r", UserText("go"))
 	if err != nil {
 		t.Fatalf("Run: %v", err)
 	}
+	out := res2.Message
 	if got := textOf(out); got != "done" {
 		t.Fatalf("answer = %q", got)
 	}
@@ -88,7 +89,7 @@ func TestToolMiddleware_ShortCircuits(t *testing.T) {
 		}
 	}
 	a := mustNew(m, memJournal(), WithTools(tool), WithToolMiddleware(deny))
-	if _, err := a.Run(context.Background(), "r", "go"); err != nil {
+	if _, err := a.Run(context.Background(), "r", UserText("go")); err != nil {
 		t.Fatalf("Run: %v", err)
 	}
 	if calls != 0 {
@@ -112,7 +113,7 @@ func TestToolMiddleware_ResultIsJournaled(t *testing.T) {
 
 	// First run: model asks for the tool, then crashes before answering.
 	crashy := &scriptModel{turns: [][]Emit{toolTurn("c1", "act", `{}`), errTurn(errCrash)}}
-	if _, err := mustNew(crashy, store, WithTools(tool), WithToolMiddleware(counting)).Run(context.Background(), "r", "go"); err == nil {
+	if _, err := mustNew(crashy, store, WithTools(tool), WithToolMiddleware(counting)).Run(context.Background(), "r", UserText("go")); err == nil {
 		t.Fatal("expected crash on first attempt")
 	}
 	if calls != 1 || mwHits != 1 {
@@ -122,10 +123,11 @@ func TestToolMiddleware_ResultIsJournaled(t *testing.T) {
 	// Resume with a healthy model. The journaled tool result replays — neither the tool
 	// nor the middleware runs again.
 	recovered := &scriptModel{turns: [][]Emit{textTurn("done")}}
-	out, err := mustNew(recovered, store, WithTools(tool), WithToolMiddleware(counting)).Run(context.Background(), "r", "go")
+	res, err := mustNew(recovered, store, WithTools(tool), WithToolMiddleware(counting)).Run(context.Background(), "r", UserText("go"))
 	if err != nil {
 		t.Fatalf("resume: %v", err)
 	}
+	out := res.Message
 	if got := textOf(out); got != "done" {
 		t.Fatalf("answer = %q", got)
 	}

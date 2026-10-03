@@ -50,7 +50,7 @@ func TestSaga_RollbackHaltsOnAnUnknownOutcome(t *testing.T) {
 		return "", errors.New("no seats")
 	})
 	m := &sagaTurns{turns: [][][3]string{{{"p1", "pay", `{}`}, {"b1", "book", `{}`}}}}
-	_, err := mustNew(m, memJournal(), WithTools(pay, book)).RunSaga(context.Background(), "r1", "trip")
+	_, err := mustNew(m, memJournal(), WithTools(pay, book)).Run(context.Background(), "r1", UserText("trip"), WithSaga())
 	var aborted *SagaAborted
 	if !errors.As(err, &aborted) {
 		t.Fatalf("err = %v, want *SagaAborted", err)
@@ -77,7 +77,7 @@ func TestSaga_RollbackReachesACancelledSubAgent(t *testing.T) {
 		return "", errors.New("visa refused")
 	})
 	m := &sagaTurns{turns: [][][3]string{{{"s1", "clerk", `{"task":"book"}`}, {"v1", "visa", `{}`}}}}
-	_, err := mustNew(m, store, WithTools(SubAgent("clerk", "books things", clerk), fail)).RunSaga(context.Background(), "r1", "trip")
+	_, err := mustNew(m, store, WithTools(SubAgent("clerk", "books things", clerk), fail)).Run(context.Background(), "r1", UserText("trip"), WithSaga())
 	var aborted *SagaAborted
 	if !errors.As(err, &aborted) {
 		t.Fatalf("err = %v, want *SagaAborted", err)
@@ -117,7 +117,7 @@ func TestSaga_RollbackHaltInASubAgentNamesTheRoot(t *testing.T) {
 			}
 			clerk := mustNew(&sagaTurns{turns: [][][3]string{subTurn}}, store, WithTools(subTools...))
 			parentTools = append(parentTools, SubAgent("clerk", "pays", clerk))
-			_, err := mustNew(&sagaTurns{turns: [][][3]string{parentTurn}}, store, WithTools(parentTools...)).RunSaga(context.Background(), "r1", "trip")
+			_, err := mustNew(&sagaTurns{turns: [][][3]string{parentTurn}}, store, WithTools(parentTools...)).Run(context.Background(), "r1", UserText("trip"), WithSaga())
 			halt := rollbackHalt(err)
 			if halt == nil {
 				t.Fatalf("err = %v; want a rollback halted on p1", err)
@@ -173,7 +173,7 @@ func TestSaga_IdempotentWriteWithoutCompensatorIsReported(t *testing.T) {
 	set := Func("set_status", "mark the order approved", Safety{Idempotent: true}, func(context.Context, struct{}) (string, error) { return "ok", nil })
 	fail := Func("ship", "ship it", Safety{}, func(context.Context, struct{}) (string, error) { return "", errors.New("no stock") })
 	m := &sagaTurns{turns: [][][3]string{{{"s1", "set_status", `{}`}}, {{"x1", "ship", `{}`}}}}
-	_, err := mustNew(m, memJournal(), WithTools(set, fail)).RunSaga(context.Background(), "r1", "go")
+	_, err := mustNew(m, memJournal(), WithTools(set, fail)).Run(context.Background(), "r1", UserText("go"), WithSaga())
 	var aborted *SagaAborted
 	if !errors.As(err, &aborted) || len(aborted.Uncompensated) != 1 || aborted.Uncompensated[0] != "set_status" {
 		t.Fatalf("err = %v; want set_status reported as uncompensated", err)
@@ -205,11 +205,11 @@ func TestSaga_ResolvedUnknownOutcomeIsCompensated(t *testing.T) {
 	store := memJournal()
 	m := &sagaTurns{turns: [][][3]string{{{"p1", "pay", `{}`}, {"b1", "book", `{}`}}}}
 	a := mustNew(m, store, WithTools(pay, book))
-	_, _ = a.RunSaga(context.Background(), "r1", "trip")
+	_, _ = a.Run(context.Background(), "r1", UserText("trip"), WithSaga())
 	if err := ResolveHalt(context.Background(), store, "r1", "p1", "rcpt-9", false); err != nil {
 		t.Fatal(err)
 	}
-	_, err := a.RunSaga(context.Background(), "r1", "trip")
+	_, err := a.Run(context.Background(), "r1", UserText("trip"), WithSaga())
 	var aborted *SagaAborted
 	if !errors.As(err, &aborted) || aborted.CompensateErr != nil || refunded.Load() != 1 {
 		t.Fatalf("after resolving: %v (refunds=%d); want a completed rollback that refunded once", err, refunded.Load())
@@ -240,7 +240,7 @@ func TestSaga_CutOffRetrySafeWriteIsUndone(t *testing.T) {
 		return "", errors.New("no seats")
 	})
 	m := &sagaTurns{turns: [][][3]string{{{"r1", "reserve", `{}`}, {"b1", "book", `{}`}}}}
-	_, err := mustNew(m, memJournal(), WithTools(reserve, book)).RunSaga(context.Background(), "run", "trip")
+	_, err := mustNew(m, memJournal(), WithTools(reserve, book)).Run(context.Background(), "run", UserText("trip"), WithSaga())
 	var aborted *SagaAborted
 	if !errors.As(err, &aborted) || released.Load() != 1 {
 		t.Fatalf("err = %v, released = %d; want the held seat released", err, released.Load())

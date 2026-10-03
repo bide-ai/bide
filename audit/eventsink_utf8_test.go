@@ -13,7 +13,7 @@ import (
 // a proof of one would verify another. The log refuses such an event, as the journal and anchor
 // leaves do, and so does the verifier.
 func TestEventLog_InvalidUTF8IsRefused(t *testing.T) {
-	for name, e := range map[string]agent.AgentEvent{
+	for name, e := range map[string]agent.RunEvent{
 		"tool name":        agent.ToolStarted{ToolUseID: "c", Name: "\xff"},
 		"model text delta": agent.ModelEvent{Event: agent.TextDelta{Text: "ok \xfe"}},
 		"assistant text":   agent.AssistantTurn{Message: agent.Message{Role: agent.RoleAssistant, Parts: []agent.Part{agent.Text{Text: "\xc3"}}}},

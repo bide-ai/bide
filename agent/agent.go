@@ -42,10 +42,10 @@ func addUsage(dst *Usage, src Usage) {
 // safe to call concurrently with a run or with each other, and the 1.0 rewrite removes them in
 // favour of the options.
 type Agent struct {
-	model    Model
-	tools    map[string]Tool
-	specs    map[string]*ToolSpec // each tool's spec, read once when it was registered; never changed
-	specList []ToolSpec           // specs sorted by name, as model requests are sent them
+	model        Model
+	tools        map[string]Tool
+	specs        map[string]*ToolSpec // each tool's spec, read once when it was registered; never changed
+	specList     []ToolSpec           // specs sorted by name, as model requests are sent them
 	store        *Journal
 	mw           []Middleware
 	toolMW       []ToolMiddleware
@@ -191,4 +191,3 @@ func checkInputSchema(s ToolSpec) error {
 	}
 	return nil
 }
-

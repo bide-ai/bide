@@ -67,7 +67,7 @@ func TestResumedTurnSendsLiveBytes(t *testing.T) {
 	}
 
 	live := &wireModel{m: New("k"), script: script()}
-	if _, err := agenttest.MustNew(live, agenttest.MemJournal(), agent.WithTools(htmlTool{})).Run(ctx, "r", "hi"); err != nil {
+	if _, err := agenttest.MustNew(live, agenttest.MemJournal(), agent.WithTools(htmlTool{})).Run(ctx, "r", agent.UserText("hi")); err != nil {
 		t.Fatalf("live run: %v", err)
 	}
 	if len(live.wire) != 2 {
@@ -76,11 +76,11 @@ func TestResumedTurnSendsLiveBytes(t *testing.T) {
 
 	store := agenttest.MemJournal()
 	crashed := &wireModel{m: New("k"), script: script(), failOn: 2}
-	if _, err := agenttest.MustNew(crashed, store, agent.WithTools(htmlTool{})).Run(ctx, "r", "hi"); err == nil {
+	if _, err := agenttest.MustNew(crashed, store, agent.WithTools(htmlTool{})).Run(ctx, "r", agent.UserText("hi")); err == nil {
 		t.Fatal("the crashing run should fail on its second model call")
 	}
 	resumed := &wireModel{m: New("k"), script: script()}
-	if _, err := agenttest.MustNew(resumed, store, agent.WithTools(htmlTool{})).Run(ctx, "r", "hi"); err != nil {
+	if _, err := agenttest.MustNew(resumed, store, agent.WithTools(htmlTool{})).Run(ctx, "r", agent.UserText("hi")); err != nil {
 		t.Fatalf("resumed run: %v", err)
 	}
 	if len(resumed.wire) != 1 {

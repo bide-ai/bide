@@ -14,7 +14,7 @@ func TestSystemPrompt_SeededAsFirstMessage(t *testing.T) {
 	m := &captureModel{inner: &scriptModel{turns: [][]Emit{textTurn("ok")}}, got: &got}
 	a := mustNew(m, memJournal(), WithSystemPrompt("you are terse"))
 
-	if _, err := a.Run(context.Background(), "r1", "hi"); err != nil {
+	if _, err := a.Run(context.Background(), "r1", UserText("hi")); err != nil {
 		t.Fatalf("Run: %v", err)
 	}
 
@@ -49,7 +49,7 @@ func TestSystemPrompt_AbsentByDefault(t *testing.T) {
 	m := &captureModel{inner: &scriptModel{turns: [][]Emit{textTurn("ok")}}, got: &got}
 	a := mustNew(m, memJournal())
 
-	if _, err := a.Run(context.Background(), "r2", "hello"); err != nil {
+	if _, err := a.Run(context.Background(), "r2", UserText("hello")); err != nil {
 		t.Fatalf("Run: %v", err)
 	}
 
@@ -79,7 +79,7 @@ func TestSystemPrompt_PersistsAcrossToolTurns(t *testing.T) {
 
 	a := mustNew(capture, memJournal(), WithTools(noopTool), WithSystemPrompt("be brief"))
 
-	if _, err := a.Run(context.Background(), "r3", "go"); err != nil {
+	if _, err := a.Run(context.Background(), "r3", UserText("go")); err != nil {
 		t.Fatalf("Run: %v", err)
 	}
 

@@ -53,7 +53,7 @@ func TestStream_ToolCallIDsDifferAcrossTurns(t *testing.T) {
 		return "res:" + in.Q, nil
 	})
 	a := agenttest.MustNew(New("k", WithBaseURL(srv.URL)), agenttest.MemJournal(), agent.WithTools(tool))
-	if _, err := a.Run(context.Background(), "r1", "go"); err != nil {
+	if _, err := a.Run(context.Background(), "r1", agent.UserText("go")); err != nil {
 		t.Fatal(err)
 	}
 	if len(calls) != 2 {

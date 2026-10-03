@@ -58,7 +58,7 @@ func Test_R105b_KeylessApproverIsRefused(t *testing.T) {
 	_, err := agenttest.MustNew(
 		agent.NewScriptedModel(agent.ToolTurn("c", "wire", `{}`), agent.TextTurn("done")),
 		agenttest.MemJournal(),
-		agent.WithTools(wire), agent.WithApproverVerifiers(resolve)).Run(context.Background(), "r", "hi")
+		agent.WithTools(wire), agent.WithApproverVerifiers(resolve)).Run(context.Background(), "r", agent.UserText("hi"))
 	if !errors.Is(err, agent.ErrConfig) || ran != 0 {
 		t.Fatalf("a gate whose approvers resolve to verifiers with no key identity: err %v, tool ran %d times; want ErrConfig and no run", err, ran)
 	}
@@ -92,7 +92,7 @@ func Test_R105c_GateReadsTheRecordedTallyStrictly(t *testing.T) {
 			agent.WithTools(wire), agent.WithApproverVerifiers(resolve))
 	}
 	var pend *agent.PendingApproval
-	if _, err := newAgent().Run(ctx, "r", "hi"); !errors.As(err, &pend) {
+	if _, err := newAgent().Run(ctx, "r", agent.UserText("hi")); !errors.As(err, &pend) {
 		t.Fatalf("setup: first run err %v, want a pending approval", err)
 	}
 	salt := base64.StdEncoding.EncodeToString(bytes.Repeat([]byte{7}, agent.SaltSize))
@@ -100,7 +100,7 @@ func Test_R105c_GateReadsTheRecordedTallyStrictly(t *testing.T) {
 	if _, _, err := s.Store().Insert(ctx, "r", agent.ApprovalTallyStep("c1"), []byte(tally)); err != nil {
 		t.Fatal(err)
 	}
-	_, err := newAgent().Run(ctx, "r", "hi")
+	_, err := newAgent().Run(ctx, "r", agent.UserText("hi"))
 	if err == nil || ran != 0 {
 		t.Fatalf("a recorded tally that reads approved 0 to an exact-name reader and 2 to encoding/json: run err %v, tool ran %d times; want an error and no run", err, ran)
 	}

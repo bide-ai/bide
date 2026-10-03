@@ -20,14 +20,14 @@ func TestRunTyped_TextFallbackIsTheFinalTurn(t *testing.T) {
 
 	// The final turn has no text: there is no answer, not the draft.
 	m := eventTurnsModel{draft, {Finish{Reason: "stop"}}}
-	got, err := RunTyped[typedAnswer](context.Background(), mustNew(m, memJournal(), WithTools(work)), "r1", "go")
+	got, _, err := mustNew(m, memJournal(), WithTools(work)).RunTyped[typedAnswer](context.Background(), "r1", UserText("go"))
 	if !errors.Is(err, ErrProtocol) {
 		t.Fatalf("RunTyped = %+v, %v; want ErrProtocol (the final turn has no answer)", got, err)
 	}
 
 	// The final turn's text is the answer.
 	m = eventTurnsModel{draft, {TextDelta{Text: `{"name":"final"}`}, Finish{Reason: "stop"}}}
-	got, err = RunTyped[typedAnswer](context.Background(), mustNew(m, memJournal(), WithTools(work)), "r2", "go")
+	got, _, err = mustNew(m, memJournal(), WithTools(work)).RunTyped[typedAnswer](context.Background(), "r2", UserText("go"))
 	if err != nil || got.Name != "final" {
 		t.Fatalf("RunTyped = %+v, %v; want the final turn's answer", got, err)
 	}
@@ -49,17 +49,17 @@ func TestRunTyped_NonObjectTypeIsAConfigError(t *testing.T) {
 		}
 	}
 	ctx := context.Background()
-	check("[]string", func(a *Agent) error { _, err := RunTyped[[]string](ctx, a, "r", "go"); return err })
-	check("string", func(a *Agent) error { _, err := RunTyped[string](ctx, a, "r", "go"); return err })
-	check("any", func(a *Agent) error { _, err := RunTyped[any](ctx, a, "r", "go"); return err })
+	check("[]string", func(a *Agent) error { _, _, err := a.RunTyped[[]string](ctx, "r", UserText("go")); return err })
+	check("string", func(a *Agent) error { _, _, err := a.RunTyped[string](ctx, "r", UserText("go")); return err })
+	check("any", func(a *Agent) error { _, _, err := a.RunTyped[any](ctx, "r", UserText("go")); return err })
 
 	// A pointer to a struct, or a map, is an object.
 	m := NewScriptedModel(ToolTurn("f1", finalAnswerTool, `{"name":"p"}`))
-	if got, err := RunTyped[*typedAnswer](ctx, mustNew(m, memJournal()), "p", "go"); err != nil || got == nil || got.Name != "p" {
+	if got, _, err := mustNew(m, memJournal()).RunTyped[*typedAnswer](ctx, "p", UserText("go")); err != nil || got == nil || got.Name != "p" {
 		t.Errorf("RunTyped[*typedAnswer] = %+v, %v", got, err)
 	}
 	m = NewScriptedModel(ToolTurn("f1", finalAnswerTool, `{"k":1}`))
-	if got, err := RunTyped[map[string]int](ctx, mustNew(m, memJournal()), "m", "go"); err != nil || got["k"] != 1 {
+	if got, _, err := mustNew(m, memJournal()).RunTyped[map[string]int](ctx, "m", UserText("go")); err != nil || got["k"] != 1 {
 		t.Errorf("RunTyped[map[string]int] = %v, %v", got, err)
 	}
 }

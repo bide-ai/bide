@@ -21,7 +21,7 @@ func TestR117Base_SagaUnknownOutcomeOfARetrySafeWrite(t *testing.T) {
 		func(context.Context, struct{}, string) error { undone.Add(1); return nil })
 	store := memJournal()
 	m := NewScriptedModel(ToolTurn("c1", "hold", `{}`), TextTurn("done"))
-	_, err := mustNew(m, store, WithTools(hold)).RunSaga(context.Background(), "s1", "book")
+	_, err := mustNew(m, store, WithTools(hold)).Run(context.Background(), "s1", UserText("book"), WithSaga())
 	var ab *SagaAborted
 	if !errors.As(err, &ab) {
 		t.Fatalf("RunSaga: err = %v, want *SagaAborted", err)
@@ -50,7 +50,7 @@ func TestR117_UnknownOutcomeInASubAgentIsReportedAtTheRoot(t *testing.T) {
 		store,
 		WithTools(SubAgent("delegate", "", sub)),
 	)
-	_, err := parent.RunSaga(context.Background(), "root", "go")
+	_, err := parent.Run(context.Background(), "root", UserText("go"), WithSaga())
 	var ab *SagaAborted
 	if !errors.As(err, &ab) || len(ab.UnknownOutcome) != 1 || ab.UnknownOutcome[0] != "hold" {
 		t.Fatalf("RunSaga = %v; want *SagaAborted naming hold as unknown", err)

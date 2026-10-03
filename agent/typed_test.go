@@ -7,9 +7,9 @@ import (
 	"testing"
 )
 
-// ExampleRunTyped shows structured output: RunTyped returns a typed value, decoded from
+// ExampleAgent_RunTyped shows structured output: RunTyped returns a typed value, decoded from
 // a schema-guided final_answer tool call (a real adapter streams the call the same way).
-func ExampleRunTyped() {
+func ExampleAgent_RunTyped() {
 	type Weather struct {
 		City  string `json:"city"`
 		TempF int    `json:"temp_f"`
@@ -20,7 +20,7 @@ func ExampleRunTyped() {
 	}}
 	a := mustNew(m, memJournal())
 
-	w, err := RunTyped[Weather](context.Background(), a, "run-1", "weather in SF?")
+	w, _, err := a.RunTyped[Weather](context.Background(), "run-1", UserText("weather in SF?"))
 	if err != nil {
 		fmt.Println("error:", err)
 		return
@@ -42,7 +42,7 @@ func TestRunTyped_ExtractsFromToolCall(t *testing.T) {
 	}}
 	a := mustNew(m, memJournal())
 
-	got, err := RunTyped[answer](context.Background(), a, "r", "what is the meaning?")
+	got, _, err := a.RunTyped[answer](context.Background(), "r", UserText("what is the meaning?"))
 	if err != nil {
 		t.Fatalf("RunTyped: %v", err)
 	}
@@ -57,7 +57,7 @@ func TestRunTyped_FallbackToText(t *testing.T) {
 	m := &scriptModel{turns: [][]Emit{textTurn(`{"answer":"7","score":5}`)}}
 	a := mustNew(m, memJournal())
 
-	got, err := RunTyped[answer](context.Background(), a, "r", "q")
+	got, _, err := a.RunTyped[answer](context.Background(), "r", UserText("q"))
 	if err != nil {
 		t.Fatalf("RunTyped: %v", err)
 	}
@@ -77,7 +77,7 @@ func TestRunTyped_WithWorkTool(t *testing.T) {
 	}}
 	a := mustNew(m, memJournal(), WithTools(work))
 
-	got, err := RunTyped[answer](context.Background(), a, "r", "q")
+	got, _, err := a.RunTyped[answer](context.Background(), "r", UserText("q"))
 	if err != nil {
 		t.Fatalf("RunTyped: %v", err)
 	}
@@ -98,12 +98,12 @@ func TestRunTyped_ResumeSafe(t *testing.T) {
 	crashy := &scriptModel{turns: [][]Emit{
 		toolTurn("c1", "final_answer", `{"answer":"42","score":9}`),
 	}}
-	if _, err := RunTyped[answer](context.Background(), mustNew(crashy, store), "r", "q"); err == nil {
+	if _, _, err := mustNew(crashy, store).RunTyped[answer](context.Background(), "r", UserText("q")); err == nil {
 		t.Fatal("expected crash on first attempt")
 	}
 
 	recovered := &scriptModel{turns: [][]Emit{textTurn("done")}}
-	got, err := RunTyped[answer](context.Background(), mustNew(recovered, store), "r", "q")
+	got, _, err := mustNew(recovered, store).RunTyped[answer](context.Background(), "r", UserText("q"))
 	if err != nil {
 		t.Fatalf("resume RunTyped: %v", err)
 	}
@@ -118,7 +118,7 @@ func TestRunTyped_RejectsNameCollision(t *testing.T) {
 	clash := &countingTool{name: "final_answer", safety: Safety{ReadOnly: true}, calls: &c}
 	a := mustNew(&scriptModel{turns: [][]Emit{textTurn("x")}}, memJournal(), WithTools(clash))
 
-	_, err := RunTyped[answer](context.Background(), a, "r", "q")
+	_, _, err := a.RunTyped[answer](context.Background(), "r", UserText("q"))
 	if !errors.Is(err, ErrConfig) {
 		t.Fatalf("err = %v, want errors.Is ErrConfig", err)
 	}

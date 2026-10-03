@@ -184,7 +184,7 @@ func (r *bideRun) Step(crashAt int) bool {
 	if err != nil {
 		panic(err)
 	}
-	_, err = a.Run(context.Background(), "chaos", "charge me")
+	_, err = a.Run(context.Background(), "chaos", agent.UserText("charge me"))
 	return errors.Is(err, errCrash)
 }
 

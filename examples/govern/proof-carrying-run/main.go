@@ -99,7 +99,7 @@ func main() {
 	if err != nil {
 		log.Fatal(err)
 	}
-	if _, err := a.Run(ctx, runID, "decide the KYC case"); err != nil {
+	if _, err := a.Run(ctx, runID, agent.UserText("decide the KYC case")); err != nil {
 		panic(err)
 	}
 	fmt.Println("governed actions (each journaled with the policy that admitted it):")

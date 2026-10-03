@@ -34,7 +34,7 @@ func TestT1_TraceFinishOfBuiltResponse(t *testing.T) {
 	}
 	store := agenttest.MemJournal()
 	a := agenttest.MustNew(okModel{}, store, agent.WithMiddleware(btrace.Model(tp.Tracer("t")), built))
-	if _, err := a.Run(context.Background(), "r", "q"); err != nil {
+	if _, err := a.Run(context.Background(), "r", agent.UserText("q")); err != nil {
 		t.Fatal(err)
 	}
 	recs, _ := store.History(context.Background(), "r")

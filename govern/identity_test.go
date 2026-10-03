@@ -98,7 +98,7 @@ func TestProof_CommitsToIdentity(t *testing.T) {
 		store,
 		agent.WithTools(tool),
 	)
-	if _, err := a.Run(agent.ContextWithIdentity(ctx, id), runID, "go"); err != nil {
+	if _, err := a.Run(agent.ContextWithIdentity(ctx, id), runID, agent.UserText("go")); err != nil {
 		t.Fatalf("Run: %v", err)
 	}
 
