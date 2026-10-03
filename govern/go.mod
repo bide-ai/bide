@@ -7,7 +7,7 @@ go 1.27.0
 
 require (
 	github.com/bide-ai/bide v0.0.0
-	github.com/blackwell-systems/gsm v0.11.0
+	github.com/blackwell-systems/gsm v0.12.0
 )
 
 require (
