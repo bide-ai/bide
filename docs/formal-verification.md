@@ -61,7 +61,7 @@ of result differ in what they cover:
   then prove the property in every reachable state, at any depth, with no bound on the fault
   counters. What stays bounded is what the check fixes: the number of drivers, the attempts and
   the claim ids, and since claim ids are never reused, the id pool also bounds how many claims,
-  and so how many faults that force a new claim, a run can have.
+  and so how many faults that force a new claim a run can have.
 
 When a property fails, TLC prints a **counterexample**: the step-by-step trace of states that
 leads to the violation, each state one atomic step such as a store write, a crash or a

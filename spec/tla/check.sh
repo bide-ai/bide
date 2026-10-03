@@ -411,8 +411,14 @@ apalache_run() {
   # shows how far it has got in a live CI log.
   progress_pid=
   if [ "${APALACHE_PROGRESS:-300}" -gt 0 ]; then
-    (start=$(date +%s); while sleep "${APALACHE_PROGRESS:-300}"; do
-       kill -0 "$apalache_pid" 2>/dev/null || exit 0; apalache_progress "$odir" "$start"; done) &
+    # The sleep runs in the background and is waited for, so the TERM that stops the loop also
+    # stops the sleep (the trap) instead of leaving it orphaned.
+    (start=$(date +%s); nap=
+     trap '[ -z "$nap" ] || kill "$nap" 2>/dev/null; exit 0' TERM
+     while :; do
+       sleep "${APALACHE_PROGRESS:-300}" & nap=$!; wait "$nap" || true; nap=
+       kill -0 "$apalache_pid" 2>/dev/null || exit 0; apalache_progress "$odir" "$start"
+     done) &
     progress_pid=$!
   fi
   apalache_status=0
