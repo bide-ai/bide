@@ -1,3 +1,5 @@
+github.com/bide-ai/bide v0.10.0 h1:C5IVtSUuIpwQ+u3phvoHdGwlhxVXbE1kuaShdFFKT0I=
+github.com/bide-ai/bide v0.10.0/go.mod h1:4FthWX4lXlVQcyO7KNnnO7S6v7W06M7DM14fu9tOVGI=
 github.com/cespare/xxhash/v2 v2.3.0 h1:UL815xU9SqsFlibzuggzjXhog7bL6oX9BbNZnL2UFvs=
 github.com/cespare/xxhash/v2 v2.3.0/go.mod h1:VGX0DQ3Q6kWi7AoAeZDth3/j3BFtOZR5XLFGgcrjCOs=
 github.com/go-logr/logr v1.2.2/go.mod h1:jdQByPbusPIv2/zmleS9BjJVeZ6kBagPoEUsqbVz/1A=

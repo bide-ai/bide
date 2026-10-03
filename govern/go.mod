@@ -6,7 +6,7 @@ module github.com/bide-ai/bide/govern
 go 1.27.0
 
 require (
-	github.com/bide-ai/bide v0.0.0
+	github.com/bide-ai/bide v0.10.0
 	github.com/blackwell-systems/gsm v0.12.0
 )
 
@@ -14,5 +14,3 @@ require (
 	golang.org/x/sync v0.23.0 // indirect
 	golang.org/x/text v0.42.0 // indirect
 )
-
-replace github.com/bide-ai/bide => ../
