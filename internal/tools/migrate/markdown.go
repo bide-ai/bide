@@ -3,6 +3,7 @@ package main
 import (
 	"fmt"
 	"go/token"
+	"go/types"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -57,7 +58,7 @@ func MigrateMarkdown(root string, mdFiles []string, rules []Rule) (map[string][]
 			before[f] = []byte(c)
 		}
 		from := len(res.Findings)
-		if err := markdownPass(root, names, content, r, res); err != nil {
+		if err := markdownPass(root, names, content, r, res, len(passes) == 0); err != nil {
 			return nil, nil, err
 		}
 		passes = append(passes, passFindings{from, len(res.Findings), before})
@@ -133,7 +134,16 @@ type snipUnit struct {
 	path  string // the Go file
 }
 
-func markdownPass(root string, names map[string]string, content map[string]string, rule Rule, res *Run) error {
+// markdownPass runs rule over the Go blocks of content. The first pass (first) also reports each
+// block it cannot rewrite at all: one that does not parse as docsnip reads blocks, and one that
+// names something it cannot resolve (a package the block does not import, a variable no setup
+// directive declares), so a block is never left alone silently.
+func markdownPass(root string, names map[string]string, content map[string]string, rule Rule, res *Run, first bool) error {
+	skip := func(b snip.Block, f, why string) {
+		if first {
+			res.Findings = append(res.Findings, Finding{Pos: token.Position{Filename: f, Line: b.Line}, Rule: "markdown", Msg: "not rewritten: " + why})
+		}
+	}
 	tmp, err := os.MkdirTemp(root, "migratesnip")
 	if err != nil {
 		return err
@@ -164,7 +174,8 @@ func markdownPass(root string, names map[string]string, content map[string]strin
 			elided, spans := snip.ElideSpans(b.Code)
 			u, err := snip.Synthesize(fset, b, setup, autoImports(elided+"\n"+strings.Join(setup.Decls, "\n"), names, setup))
 			if err != nil {
-				continue // a block that does not parse: docsnip reports it
+				skip(b, f, "the block does not parse as Go ("+err.Error()+")")
+				continue
 			}
 			dir := filepath.Join(tmp, fmt.Sprintf("b%d", len(units)))
 			if err := os.MkdirAll(dir, 0o755); err != nil {
@@ -185,12 +196,28 @@ func markdownPass(root string, names map[string]string, content map[string]strin
 		return err
 	}
 	byPath := map[string]*File{}
+	var undefined []types.Error // positions are the blocks' own (line directives)
 	for _, p := range pkgs {
-		if os.Getenv("MIGRATE_DEBUG") != "" {
-			fmt.Fprintln(os.Stderr, "pkg", p.ID, len(p.Files), p.TypeErrors)
-		}
 		for _, f := range p.Files {
 			byPath[f.Path] = f
+		}
+		for _, e := range p.TypeErrors {
+			if te, ok := e.(types.Error); ok && strings.HasPrefix(te.Msg, "undefined: ") {
+				undefined = append(undefined, te)
+			}
+		}
+	}
+	for _, u := range units {
+		if byPath[u.path] == nil {
+			skip(u.block, u.md, "the block could not be loaded")
+			continue
+		}
+		for _, te := range undefined {
+			pos := te.Fset.Position(te.Pos)
+			if pos.Filename == u.md && pos.Line >= u.block.Line && pos.Line < u.block.Line+u.block.Lines {
+				skip(u.block, u.md, "the block names something it does not declare or import ("+te.Msg+"): give it an import line or a <!-- docsnip: setup ... --> directive")
+				break
+			}
 		}
 	}
 	// rewrite each block, then apply each file's blocks from the last up, so line numbers hold
