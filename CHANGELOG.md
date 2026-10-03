@@ -9,8 +9,6 @@ minor version (0.x.0) may include breaking API or journal-format changes; each o
 
 ## [Unreleased]
 
-<!-- pending #155 (gsm claims wording): fold its CHANGELOG entry, if any, into [0.10.0] under Documentation, testing and tooling, and its link. -->
-
 ## [0.10.0] - 2026-10-03
 
 ### Added
@@ -78,7 +76,7 @@ minor version (0.x.0) may include breaking API or journal-format changes; each o
 
 - [Formal verification](docs/formal-verification.md), an overview of bide's TLA+ models: why bide model-checks, what each model guarantees and which code it covers, the bugs the models caught before release (F1 to F5, P1, P2, T1 to T6, L1 to L3) and where each was fixed, what runs on a pull request and nightly, how the models and the code stay in step, the models planned next, and what the models do not cover. The formal-models plan's status markers and the roadmap are brought up to date (models 9 and 10, M4 done) ([#128]); a section explains TLA+, PlusCal, TLC and model checking for readers new to them ([#131]).
 - The gsm convergence-proof claims (README section 4, the governance guide and its translations) state what the mechanization proves: CI-verified on Coq 8.18, 8.20 and Rocq 9.3; the federated result machine-checked for the acyclic structural core and the monotone-cycle case; the cohomological layer through the cycle basis, with the full H¹ classification paper-proven ([#139]).
-- The gsm convergence claims now say what holds today. The Coq/Rocq theorem is unchanged and correct, but gsm v0.11.0, which `govern` pins, has a `Build` gap: its commute shortcut does not check what event guards and effects read, so a machine where one event's guard or effect reads a variable another event writes (pay/ship) can be certified convergent when it is not ([gsm#2](https://github.com/blackwell-systems/gsm/pull/2) is the fix in progress). The README (and its four translations), the governance, audit and testing guides, `CONCEPTS.md`, the `govern` godoc and the `examples/govern` comments no longer say that `Build` proves every interleaving converges, or that the two checkers extracted from the proof re-certify every machine: they can re-check an exported machine but run neither in gsm's CI nor at runtime today, and a proof-derived gate on every build is planned. `KNOWN-LIMITATIONS.md` has a new "Governed state (gsm)" entry: do not rely on a v0.11.0 convergence verdict for such a machine until bide moves to the fixed gsm ([#142]).
+- The gsm convergence wording states the final state once. gsm v0.11.0, which bide required until this release, had a `Build` gap: its commute shortcut did not check what event guards and effects read, so a machine where one event's guard or effect reads a variable another event writes (pay/ship) could be certified convergent when it is not. [#142] scoped the docs to that while it held (no "`Build` proves every interleaving converges", no proof-derived re-check claimed). With gsm v0.12.0, which fixes the gap ([#154]), the README section 4 and its comparison-table footnote, the four i18n READMEs, the governance guide, `CONCEPTS.md` and the docs-site front page say what backs convergence now: `Build` returns a machine only after the table oracle generated from gsm's Rocq proof re-checks it in-process (and, for combinator rules inside its fragment and within a cost cap, the rules oracle), a federation's own conditions are checked by gsm's Go code, and the required gsm machine gate runs the proof's checkers on every machine the governance examples build. `KNOWN-LIMITATIONS.md` ("Governed state (gsm)") gives the exact scope, including which pairs CC covers and that a verdict recorded under v0.11.0 is not covered by the fix ([#155]).
 - The roadmap is brought up to date: P12 to P14 done, models 11 and 12, and gsm convergence ([#153]).
 - Tests: the tool-timeout tests that need their tool to run use a `testing/synctest` bubble, so a short deadline can no longer pass while the call is being dispatched ([#134]).
 - Tests: `modelsync`'s fixture git repositories are isolated from auto-gc, maintenance, fsmonitor and the global and system git config, so no background git process races a test's cleanup ([#136]).
@@ -891,6 +889,7 @@ First public release.
 [#152]: https://github.com/bide-ai/bide/pull/152
 [#153]: https://github.com/bide-ai/bide/pull/153
 [#154]: https://github.com/bide-ai/bide/pull/154
+[#155]: https://github.com/bide-ai/bide/pull/155
 
 [78f8db6]: https://github.com/bide-ai/bide/commit/78f8db6
 [994721b]: https://github.com/bide-ai/bide/commit/994721b
