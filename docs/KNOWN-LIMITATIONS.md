@@ -305,7 +305,7 @@ the variables other events write, or check the machine another way (run its even
 states in a test, or run the extracted rules checker with `bide-audit`'s `-checker` flag). The fix is
 merged in gsm ([gsm#2](https://github.com/blackwell-systems/gsm/pull/2): `Build` checks every event
 pair exactly) but is in no gsm release yet. gsm's two checkers extracted from the proof re-check
-every machine bide's examples build in bide's required `gsm machine gate` CI check, and gsm's
+every machine bide's examples build in bide's required `gsm machine gate` CI check, built against a pinned gsm commit, and gsm's
 main branch runs the proof's table oracle in-process on every successful build (and the rules
 oracle within a cost cap), but that gate is also unreleased, so bide's runtime does not have it.
 See the [roadmap](ROADMAP.md#gsm-convergence) and
