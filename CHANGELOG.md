@@ -72,6 +72,7 @@ minor version (0.x.0) may include breaking API or journal-format changes; each o
 - `Leaser.ReapLeases` also deletes the lapsed leases of runs whose ID contains `>` (a session's or a sub-agent's run), which no recovery pass takes over, so a worker that died mid-turn does not leave a lease every later lapsed pass reads. `MemStore`, SQLite and Postgres implement it, and `storetest`'s `Leaser_ReapLeases` checks it. A custom `Leaser` must do the same ([#137]).
 
 - The required Models job checks four configurations at a time (one TLC worker each) and, on a pull request, only the models whose `spec/tla/<model>/` directory the pull request changes; the merge queue and main still check every model. The largest passing pull-request configurations of models 1, 2, 7 and 8 (1.4 to 2.9 million states) and two of model 1's liveness checks run nightly, each safety one with a smaller pull-request counterpart of the same invariants, so every path keeps a passing configuration and its vacuity run on pull requests. The job takes about 6 minutes, down from 9 to 15.5 ([#132]).
+- The gsm machine gate checks with gsm at 031db4e, whose `Build` also runs the proof's rules oracle in-process (gsm#17); every registry the governance examples build with `Build` is certified by both oracles (the synthesized machine in `coordination` by the table oracle), with no measurable change in run time ([#152]).
 - The gsm machine gate checks with gsm at fcf884a, which records only the synthesized machines a program receives, not the candidate synthesis certifies (gsm#16), so the gate reads 23 machine records again ([#151]).
 - The gsm machine gate checks with gsm at c2eecd6, which runs the proof's table oracle in-process on every successful `Build` (gsm#12), so the examples also Build under it ([#150]).
 - The gsm machine gate checks with gsm at 150133b, whose pinned table checker carries normalization-confluence#12's speed-up ([#149]).
@@ -815,6 +816,7 @@ First public release.
 [#149]: https://github.com/bide-ai/bide/pull/149
 [#150]: https://github.com/bide-ai/bide/pull/150
 [#151]: https://github.com/bide-ai/bide/pull/151
+[#152]: https://github.com/bide-ai/bide/pull/152
 
 [78f8db6]: https://github.com/bide-ai/bide/commit/78f8db6
 [994721b]: https://github.com/bide-ai/bide/commit/994721b
