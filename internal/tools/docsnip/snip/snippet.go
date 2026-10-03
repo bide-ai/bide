@@ -1,4 +1,6 @@
-package main
+// Package snip reads the Go code blocks of bide's markdown documentation and makes each a Go
+// file: docsnip type-checks them, and the migrate tool rewrites them.
+package snip
 
 import (
 	"errors"
@@ -25,13 +27,13 @@ const (
 	KindAPI     Kind = "api" // declarations checked against a package's own (see api.go)
 )
 
-// wrapperFile names the positions of the code docsnip adds around a statement block, so
+// WrapperFile names the positions of the code docsnip adds around a statement block, so
 // errors there (a missing return at the wrapper's closing brace) can be told apart.
-const wrapperFile = "docsnip-wrapper"
+const WrapperFile = "docsnip-wrapper"
 
-// setupFile names the positions of the imports and declarations docsnip adds from a setup
+// SetupFile names the positions of the imports and declarations docsnip adds from a setup
 // directive, so errors there are reported at the directive.
-const setupFile = "docsnip-setup"
+const SetupFile = "docsnip-setup"
 
 // Setup is a parsed setup directive.
 type Setup struct {
@@ -118,14 +120,85 @@ var (
 	elidedLine = regexp.MustCompile(`(?m)^([ \t]*)\.\.\.[ \t]*$`)
 )
 
-// elide replaces the elision forms docs use with code that compiles. Following gofmt's
+// Elide replaces the elision forms docs use with code that compiles. Following gofmt's
 // spacing, "{ ... }" (or "{...}", "{ /* ... */ }") after a space is a function body and becomes
 // a body that panics, and directly after a type name it is a composite literal and becomes
 // "{}"; a line holding only "..." becomes a comment.
-func elide(code string) string {
+func Elide(code string) string {
 	code = elidedBody.ReplaceAllString(code, ` { panic("docsnip: elided") }`)
 	code = elidedLit.ReplaceAllString(code, `$1{}`)
 	return elidedLine.ReplaceAllString(code, "$1// ...")
+}
+
+// Span is a replacement Elide made: Elided[EStart:EEnd] stands for the original code's
+// [OStart:OEnd].
+type Span struct{ EStart, EEnd, OStart, OEnd int }
+
+// ElideSpans returns Elide(code) with the replacements it made, in order, so an offset into the
+// elided code outside them maps back to the original code.
+func ElideSpans(code string) (string, []Span) {
+	type rep struct {
+		re  *regexp.Regexp
+		tpl string
+	}
+	reps := []rep{{elidedBody, ` { panic("docsnip: elided") }`}, {elidedLit, `$1{}`}, {elidedLine, "$1// ..."}}
+	// apply each regexp in turn, composing the offset maps
+	var spans []Span // in terms of the original code, kept as the code changes
+	cur := code
+	for _, r := range reps {
+		var b strings.Builder
+		var next []Span
+		last := 0
+		for _, m := range r.re.FindAllStringSubmatchIndex(cur, -1) {
+			b.WriteString(cur[last:m[0]])
+			start := b.Len()
+			b.Write(r.re.ExpandString(nil, r.tpl, cur, m))
+			next = append(next, Span{start, b.Len(), m[0], m[1]})
+			last = m[1]
+		}
+		b.WriteString(cur[last:])
+		if len(next) > 0 {
+			spans = composeSpans(spans, next)
+		}
+		cur = b.String()
+	}
+	return cur, spans
+}
+
+// composeSpans composes the spans of two successive rewrites: old maps the code before the first
+// to the original, next maps the code after the second to the code before it.
+func composeSpans(old, next []Span) []Span {
+	toOrig := func(off int) int { // an offset of the intermediate code, outside old's spans
+		shift := 0
+		for _, s := range old {
+			if s.EEnd <= off {
+				shift = s.OEnd - s.EEnd
+			}
+		}
+		return off + shift
+	}
+	var out []Span
+	for _, n := range next {
+		out = append(out, Span{n.EStart, n.EEnd, toOrig(n.OStart), toOrig(n.OEnd)})
+	}
+	// the old spans shift by the next rewrite's length changes before them
+	for _, s := range old {
+		shift := 0
+		inside := false
+		for _, n := range next {
+			if n.OEnd <= s.EStart {
+				shift = n.EEnd - n.OEnd
+			}
+			if n.OStart < s.EEnd && n.OEnd > s.EStart {
+				inside = true
+			}
+		}
+		if !inside {
+			out = append(out, Span{s.EStart + shift, s.EEnd + shift, s.OStart, s.OEnd})
+		}
+	}
+	sort.Slice(out, func(i, j int) bool { return out[i].EStart < out[j].EStart })
+	return out
 }
 
 // BlockError is a problem with a block's directive, at a line of its markdown file.
@@ -136,23 +209,19 @@ type BlockError struct {
 
 func (e *BlockError) Error() string { return e.Msg }
 
-// locate maps a position in a synthesized file to the markdown: into the block, onto its
-// directive for code from a setup, and onto the block's first line for any other added code.
-func (b Block) locate(pos token.Position, msg string) Finding {
-	switch {
-	case pos.Filename == b.File:
-		return Finding{b.File, pos.Line, msg}
-	case pos.Filename == setupFile && b.Dir != nil:
-		return Finding{b.File, b.Dir.Line, "setup: " + msg}
-	}
-	return Finding{b.File, b.Line, msg}
-}
-
 // Unit is a block made into a Go file.
 type Unit struct {
 	Kind Kind
 	File *ast.File
+	// Src is the file's source, and Regions where the block's code is in it: one region, or two
+	// for declarations followed by statements. The code there is the block's after Elide.
+	Src     string
+	Regions []Region
 }
+
+// Region is a run of a block's (elided) code in a Unit's source: Src[Start:End] is the code
+// from offset Code of the elided code on.
+type Region struct{ Start, End, Code int }
 
 // Synthesize turns a block into a parsed Go file. autoImports maps package names the block
 // uses without importing to their import paths. A complete file is parsed as written; any
@@ -160,13 +229,14 @@ type Unit struct {
 // declarations followed by statements, and the parse error that got furthest into the block
 // is returned when none parses.
 func Synthesize(fset *token.FileSet, b Block, setup Setup, autoImports map[string]string) (*Unit, error) {
-	code := elide(b.Code)
+	code, _ := ElideSpans(b.Code)
 	loc := func(line int) string { return fmt.Sprintf("//line %s:%d\n", b.File, line) }
 	if isCompleteFile(code) {
 		if b.Dir != nil && b.Dir.Kind != "skip" {
 			return nil, &BlockError{b.Dir.Line, "a " + b.Dir.Kind + " directive cannot apply to a complete file (it has a package clause)"}
 		}
-		f, err := parser.ParseFile(fset, "", loc(b.Line)+code, parser.ParseComments)
+		src := loc(b.Line) + code
+		f, err := parser.ParseFile(fset, "", src, parser.ParseComments)
 		if err != nil {
 			return nil, err
 		}
@@ -174,12 +244,12 @@ func Synthesize(fset *token.FileSet, b Block, setup Setup, autoImports map[strin
 		if f.Name.Name == "main" {
 			kind = KindProgram
 		}
-		return &Unit{Kind: kind, File: f}, nil
+		return &Unit{Kind: kind, File: f, Src: src, Regions: []Region{{len(src) - len(code), len(src), 0}}}, nil
 	}
 
 	var head strings.Builder
 	head.WriteString("package docsnip\n")
-	head.WriteString("//line " + setupFile + ":1\n")
+	head.WriteString("//line " + SetupFile + ":1\n")
 	for _, spec := range setup.Imports {
 		head.WriteString("import " + spec + "\n")
 	}
@@ -192,7 +262,7 @@ func Synthesize(fset *token.FileSet, b Block, setup Setup, autoImports map[strin
 		fmt.Fprintf(&head, "import %s %q\n", n, autoImports[n])
 	}
 	var tail strings.Builder
-	tail.WriteString("\n//line " + setupFile + ":1\n")
+	tail.WriteString("\n//line " + SetupFile + ":1\n")
 	for _, d := range setup.Decls {
 		tail.WriteString(d + "\n")
 	}
@@ -203,13 +273,15 @@ func Synthesize(fset *token.FileSet, b Block, setup Setup, autoImports map[strin
 		if setup.Returns != "" {
 			return nil, &BlockError{b.Dir.Line, "setup has a returns item, but the block is declarations, not statements"}
 		}
-		return &Unit{Kind: KindDecls, File: df}, nil
+		start := len(head.String()) + len(loc(b.Line))
+		return &Unit{Kind: KindDecls, File: df, Src: declSrc, Regions: []Region{{start, start + len(code), 0}}}, nil
 	}
 	results := setup.Returns
-	stmtSrc := head.String() + "func _() " + results + " {\n" + loc(b.Line) + code + "\n//line " + wrapperFile + ":1\n}\n" + tail.String()
+	stmtSrc := head.String() + "func _() " + results + " {\n" + loc(b.Line) + code + "\n//line " + WrapperFile + ":1\n}\n" + tail.String()
 	sf, serr := parser.ParseFile(fset, "", stmtSrc, parser.ParseComments)
 	if serr == nil {
-		return &Unit{Kind: KindStmts, File: sf}, nil
+		start := len(head.String()) + len("func _() "+results+" {\n") + len(loc(b.Line))
+		return &Unit{Kind: KindStmts, File: sf, Src: stmtSrc, Regions: []Region{{start, start + len(code), 0}}}, nil
 	}
 	// Declarations (imports, types, funcs) followed by statements: split where the
 	// declarations stop parsing, and wrap the rest in the function.
@@ -219,10 +291,14 @@ func Synthesize(fset *token.FileSet, b Block, setup Setup, autoImports map[strin
 			lines := strings.SplitAfter(code, "\n")
 			if split < len(lines) {
 				decls, stmts := strings.Join(lines[:split], ""), strings.Join(lines[split:], "")
-				mixedSrc := head.String() + loc(b.Line) + decls + "\nfunc _() " + results + " {\n" + loc(b.Line+split) + stmts + "\n//line " + wrapperFile + ":1\n}\n" + tail.String()
+				mixedSrc := head.String() + loc(b.Line) + decls + "\nfunc _() " + results + " {\n" + loc(b.Line+split) + stmts + "\n//line " + WrapperFile + ":1\n}\n" + tail.String()
 				mf, merr := parser.ParseFile(fset, "", mixedSrc, parser.ParseComments)
 				if merr == nil {
-					return &Unit{Kind: KindMixed, File: mf}, nil
+					d0 := len(head.String()) + len(loc(b.Line))
+					s0 := d0 + len(decls) + len("\nfunc _() "+results+" {\n") + len(loc(b.Line+split))
+					return &Unit{Kind: KindMixed, File: mf, Src: mixedSrc, Regions: []Region{
+						{d0, d0 + len(decls), 0}, {s0, s0 + len(stmts), len(decls)},
+					}}, nil
 				}
 				if errPos(fset, merr) > errPos(fset, serr) && errPos(fset, merr) > errPos(fset, derr) {
 					return nil, merr

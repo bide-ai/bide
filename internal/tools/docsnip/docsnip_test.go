@@ -9,6 +9,8 @@ import (
 	"strings"
 	"sync"
 	"testing"
+
+	"github.com/bide-ai/bide/internal/tools/docsnip/snip"
 )
 
 // The golden markdown is under testdata. A code line that must yield a finding ends with
@@ -64,13 +66,13 @@ func checkDir(t *testing.T, dir string) (*Report, []string) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	var blocks []Block
+	var blocks []snip.Block
 	for _, f := range files {
 		data, err := os.ReadFile(filepath.Join(dir, f))
 		if err != nil {
 			t.Fatal(err)
 		}
-		bs, err := Extract(f, data)
+		bs, err := snip.Extract(f, data)
 		if err != nil {
 			t.Fatal(err)
 		}
@@ -178,7 +180,7 @@ func TestExtractErrors(t *testing.T) {
 		{"unclosed fence", "```go\nx := 1\n", "x.md:1: unclosed code fence"},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
-			_, err := Extract("x.md", []byte(tc.md))
+			_, err := snip.Extract("x.md", []byte(tc.md))
 			if err == nil || !strings.HasPrefix(err.Error(), tc.err) {
 				t.Fatalf("err = %v, want prefix %q", err, tc.err)
 			}
@@ -192,7 +194,7 @@ func TestExtract(t *testing.T) {
 		"~~~go\nc := 3\n~~~\n" +
 		"```text\n<!-- docsnip: skip not a directive inside a fence -->\n```\n" +
 		"inline ```go code``` is not a fence\n"
-	blocks, err := Extract("x.md", []byte(md))
+	blocks, err := snip.Extract("x.md", []byte(md))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -211,7 +213,7 @@ func TestExtract(t *testing.T) {
 }
 
 func TestParseSetup(t *testing.T) {
-	s, err := ParseSetup(`ctx context.Context; a, b string
+	s, err := snip.ParseSetup(`ctx context.Context; a, b string
 type T struct{ X int; Y string }
 import "fmt"; import f2 "fmt"
 func g() (int, error); var v = "x;y"; const c = ';'
@@ -229,7 +231,7 @@ returns (string, error)`)
 	if s.Returns != "(string, error)" {
 		t.Errorf("returns = %q", s.Returns)
 	}
-	if _, err := ParseSetup("returns error; returns int"); err == nil {
+	if _, err := snip.ParseSetup("returns error; returns int"); err == nil {
 		t.Error("two returns items: no error")
 	}
 }
@@ -245,7 +247,7 @@ func TestElide(t *testing.T) {
 		"f(args...)":                   "f(args...)",
 		"// ... a comment stays":       "// ... a comment stays",
 	} {
-		if got := elide(in); got != want {
+		if got := snip.Elide(in); got != want {
 			t.Errorf("elide(%q) = %q, want %q", in, got, want)
 		}
 	}

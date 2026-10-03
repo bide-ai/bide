@@ -1,0 +1,43 @@
+package construct
+
+import (
+	"context"
+	"testing"
+
+	"github.com/bide-ai/bide/agent"
+	"github.com/bide-ai/bide/agent/agenttest"
+)
+
+func tool() agent.Tool { return nil }
+
+func TestConstruct(t *testing.T) {
+	m := agenttest.NewScriptedModel(agenttest.TextTurn("done"))
+	a := agenttest.MustNew(m, agenttest.MemJournal(), agent.WithTools(tool()))
+	_ = a
+
+	b := agenttest.MustNew(
+		m,
+		agenttest.MemJournal(),
+		agent.WithMaxTurns(3),
+		agent.WithMiddleware(nil),
+		agent.WithSystemPromptFunc(func(ctx context.Context, _ agent.RunInfo) (string, error) { return "p", nil }),
+	)
+	_ = b
+
+	c := agenttest.MustNew(
+		m,
+		agenttest.MemJournal(),
+		agent.WithTools(tool(), tool()),
+		agent.WithMaxConcurrency(0),
+		agent.WithSystemPrompt("sys"),
+	)
+	_ = c
+
+	j, _ := agent.NewJournal(agent.NewMemStore())
+	d, err := agent.New(m, j, agent.WithMaxTurns(2))
+	_, _ = d, err
+}
+
+func helper(n int) *agent.Agent {
+	return agenttest.MustNew(agenttest.NewScriptedModel(), agenttest.MemJournal(), agent.WithMaxTurns(max(n, 0)))
+}

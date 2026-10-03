@@ -1,0 +1,55 @@
+package tools
+
+import (
+	"context"
+	"encoding/json"
+
+	"github.com/bide-ai/bide/agent"
+	"github.com/bide-ai/bide/plan"
+)
+
+type in struct{ Q string }
+
+var lookup = agent.MustFunc("lookup", "looks up",
+	func(ctx context.Context, x in) (string, error) { return x.Q, nil }, agent.WithSafety(agent.Safety{ReadOnly: true}))
+
+var pay = agent.MustFunc("pay", "pays", func(ctx context.Context, x in) (int, error) { return 0, nil }, agent.WithTimeout(0))
+
+var book = agent.MustCompensatedFunc("book", "books",
+	func(ctx context.Context, x in) (int, error) { return 0, nil },
+	func(ctx context.Context, x in, out int) error { return nil }, agent.WithSafety(agent.Safety{Idempotent: true}))
+
+func sub(a *agent.Agent) agent.Tool { return agent.MustSubAgent("helper", "helps", a) }
+
+// legacy implements the old Tool method set.
+type legacy struct{ name string }
+
+func (t *legacy) Name() string { return t.name }
+
+// Spec describes the tool to the agent (see agent.Tool).
+func (t *legacy) Spec() agent.ToolSpec {
+	return agent.ToolSpec{Name: t.Name(), Description: t.Description(), Input: t.ArgsSchema(), Safety: t.Safety()}
+}
+
+func (t *legacy) Description() string         { return "legacy" }
+func (t *legacy) ArgsSchema() json.RawMessage { return nil }
+func (t *legacy) Safety() agent.Safety        { return agent.Safety{} }
+func (t *legacy) Call(ctx context.Context, args json.RawMessage) (json.RawMessage, error) {
+	return nil, nil
+}
+
+func names(ts []agent.Tool) []string {
+	var out []string
+	for _, t := range ts {
+		out = append(out, t.Spec().Name, t.Spec().Description)
+	}
+	return out
+}
+
+func register(r *plan.Registry) error {
+	return r.RegisterStep("double", func(ctx context.Context, n int) (int, error) { return 2 * n, nil })
+}
+
+func withOpts(opts ...agent.ToolOption) agent.Tool {
+	return agent.MustFunc("x", "d", func(ctx context.Context, x in) (int, error) { return 0, nil }, append([]agent.ToolOption{agent.WithSafety(agent.Safety{ReadOnly: true})}, opts...)...)
+}

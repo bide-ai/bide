@@ -1,4 +1,4 @@
-package main
+package snip
 
 import (
 	"fmt"
@@ -7,19 +7,22 @@ import (
 
 // Block is one fenced ```go code block of a markdown file.
 type Block struct {
-	File string // path as given to Extract, used in every report
-	Line int    // line of the block's first code line (1-based)
-	Code string // the block's content, with the fence's indentation removed
-	Dir  *Directive
+	File   string // path as given to Extract, used in every report
+	Line   int    // line of the block's first code line (1-based)
+	Code   string // the block's content, with the fence's indentation removed
+	Dir    *Directive
+	Lines  int    // how many lines the content has
+	Indent string // the fence's indentation, which each content line had removed
 }
 
 // Directive is the docsnip annotation directly above a block: an HTML comment
 // "<!-- docsnip: skip reason -->", "<!-- docsnip: setup items -->" or
 // "<!-- docsnip: api package -->".
 type Directive struct {
-	Line int    // line where the comment starts
-	Kind string // "skip", "setup" or "api"
-	Arg  string // the skip reason, the setup items, or the api package
+	Line    int    // line where the comment starts
+	EndLine int    // line where the comment ends
+	Kind    string // "skip", "setup" or "api"
+	Arg     string // the skip reason, the setup items, or the api package
 }
 
 // Extract returns every ```go block of a markdown document, each with the docsnip directive
@@ -55,7 +58,7 @@ func Extract(file string, data []byte) ([]Block, error) {
 			if err != nil {
 				return nil, fmt.Errorf("%s:%d: %v", file, start+1, err)
 			}
-			d.Line = start + 1
+			d.Line, d.EndLine = start+1, i+1
 			pending = d
 			continue
 		}
@@ -85,7 +88,12 @@ func Extract(file string, data []byte) ([]Block, error) {
 			}
 			continue
 		}
-		blocks = append(blocks, Block{File: file, Line: first + 1, Code: strings.Join(body, "\n") + "\n", Dir: pending})
+		prefix := line[:len(line)-len(strings.TrimLeft(line, " \t"))]
+		if len(prefix) > indent {
+			prefix = prefix[:indent]
+		}
+		blocks = append(blocks, Block{File: file, Line: first + 1, Code: strings.Join(body, "\n") + "\n", Dir: pending,
+			Lines: len(body), Indent: prefix})
 		pending = nil
 	}
 	if pending != nil {
