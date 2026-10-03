@@ -6,7 +6,8 @@ name: Models
 # spec/tla the pull request changes (all of them when it changes check.sh, tools.lock, shards.sh or
 # this file).
 # Nightly (and on demand): the "nightly" configurations, with larger bounds and the liveness checks
-# at the larger fault budget.
+# at the larger fault budget; and, in a job of its own beside it, the Apalache checks (symbolic and
+# inductive, spec/tla/README.md "Apalache"), which no pull request runs.
 on:
   push:
     branches: [ main ]
@@ -16,6 +17,13 @@ on:
   schedule:
     - cron: '17 3 * * *'
   workflow_dispatch:
+    inputs:
+      only:
+        description: 'Run only these nightly jobs: all, tlc or apalache'
+        required: false
+        default: all
+        type: choice
+        options: [all, tlc, apalache]
 
 permissions:
   contents: read
@@ -159,7 +167,7 @@ jobs:
 
   models-nightly:
     name: Models (nightly)
-    if: github.event_name == 'schedule' || github.event_name == 'workflow_dispatch'
+    if: github.event_name == 'schedule' || (github.event_name == 'workflow_dispatch' && inputs.only != 'apalache')
     runs-on: ubuntu-latest
     timeout-minutes: 240
     steps:
@@ -174,3 +182,47 @@ jobs:
           key: tla-tools-${{ hashFiles('spec/tla/tools.lock') }}
       - name: Nightly configurations
         run: spec/tla/check.sh nightly
+
+  # One job per Apalache configuration (spec/tla/*/apalache/*.cfg, and the TLC cross-checks in
+  # spec/tla/*/apalache/tlc/), in parallel: the largest
+  # check takes hours, and a job is capped at 6. The resolver scope's induction step is split by
+  # FullNext's disjuncts into four configurations for this reason.
+  apalache-list:
+    name: Apalache configurations
+    if: github.event_name == 'schedule' || (github.event_name == 'workflow_dispatch' && inputs.only != 'tlc')
+    runs-on: ubuntu-latest
+    outputs:
+      cfgs: ${{ steps.list.outputs.cfgs }}
+    steps:
+      - uses: actions/checkout@v4
+      - id: list
+        run: echo "cfgs=$(ls spec/tla/*/apalache/*.cfg spec/tla/*/apalache/tlc/*.cfg | jq -R . | jq -sc .)" >> "$GITHUB_OUTPUT"
+
+  apalache-nightly:
+    name: Apalache (nightly)
+    needs: apalache-list
+    if: github.event_name == 'schedule' || (github.event_name == 'workflow_dispatch' && inputs.only != 'tlc')
+    runs-on: ubuntu-latest
+    timeout-minutes: 350
+    strategy:
+      fail-fast: false
+      matrix:
+        cfg: ${{ fromJSON(needs.apalache-list.outputs.cfgs) }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: '21'
+      # The TLA+ tools and the Apalache archive (about 190 MB) are cached apart, so the pull-request
+      # job never restores the archive.
+      - uses: actions/cache@v4
+        with:
+          path: ~/.cache/bide-tla
+          key: tla-tools-${{ hashFiles('spec/tla/tools.lock') }}
+      - uses: actions/cache@v4
+        with:
+          path: ~/.cache/bide-apalache
+          key: apalache-${{ hashFiles('spec/tla/tools.lock') }}
+      - name: Apalache checks of ${{ matrix.cfg }}
+        run: BIDE_APALACHE_CACHE="$HOME/.cache/bide-apalache" spec/tla/check.sh apalache "${{ matrix.cfg }}"

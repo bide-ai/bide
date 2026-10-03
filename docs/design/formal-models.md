@@ -723,10 +723,13 @@ speak about the same records:
   (re-translate in place). The script needs Java 11 or later on `PATH` or in `JAVA_HOME`, `curl`
   and a SHA-256 tool; nothing else. The repository has no Makefile, and adding one only for this is
   not worth a second entry point.
-- **Apalache (optional):** v0.62.2 can check an inductive invariant symbolically, with no bound on
-  claim ids or re-drives. It is not needed for model 1's plan; it is worth trying once model 1 is
-  stable, to find an inductive strengthening of `NotStartedExclusive`, and for model 4, where
-  `Seq` values and concurrent readers make explicit-state checking expensive.
+- **Apalache:** v0.62.2, pinned in `tools.lock` like TLC and run by `spec/tla/check.sh apalache`
+  in its own nightly job. TLC stays the checker of record on every pull request: it is exhaustive
+  within its bounds, fast at the small bounds that find most bugs, and checks liveness. Apalache
+  adds what TLC cannot do: bounded symbolic checks with the configuration's placements left to the
+  solver, and inductive invariants, which prove a safety property at any depth, within the attempts and
+  claim ids the check fixes. Status: model 1's inductive invariant proves, for two drivers over two processes, `AtMostOnce` and `NotStartedExclusive` on one call (attempts 0..3, 8 claim ids) and all four of `AtMostOnce`, `NotStartedExclusive`, `NoLiveOverride` and `AtMostOncePerIntent` with halt resolution and the caller's second call (attempts 0..3, 6 claim ids), without the approval gate, and, under the lease check, assuming no plain run holds the live attempt at the check (`PlainRunIdleAtCheck`), at any depth and for any number and mix of faults within the run's 8 (6) claim ids and attempts 0..3 (claim ids are never reused, so this bounds the number of claims); bounded symbolic checks proved too slow on these models to reach a fire (see [Apalache results](../../spec/tla/README.md#apalache-results)); model 9 has a typed wrapper and no check yet. Apalache remains the candidate for model 4, where `Seq`
+  values and concurrent readers make explicit-state checking expensive.
 
 ## 8. Milestones
 
@@ -759,7 +762,9 @@ here.
   covers every fault placement on every write of one attempt. The small-scope argument (most
   protocol bugs have small counterexamples) is an observation, not a guarantee; the three
   historical double fires needed at most two drivers, three faults and three attempts. An
-  inductive invariant checked by Apalache would remove the bound for safety; it is optional work.
+  inductive invariant checked by Apalache removes the depth and fault bounds for safety: model 1
+  has one ([Apalache results](../../spec/tla/README.md#apalache-results)); the number of drivers,
+  attempts and claim ids it covers stays bounded.
 - **The model encodes the code's misunderstanding.** If the model is written from the code, it can
   share the code's error. The regression configs are the check that each invariant has teeth; the
   vacuity invariant checks the effect is reachable; TLC's coverage report (`-coverage`) must show

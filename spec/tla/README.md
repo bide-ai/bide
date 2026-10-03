@@ -23,6 +23,7 @@ spec/tla/check.sh run spec/tla/claims/step-same.cfg
 spec/tla/check.sh translate       # re-translate the PlusCal after editing it
 spec/tla/check.sh self-test       # prove a stale translation and a wrong jar checksum both fail
 spec/tla/check.sh list ci regress # the configs of the groups, one per line (no Java needed)
+spec/tla/check.sh apalache        # the Apalache checks (see Apalache below)
 ```
 
 The script needs Java 11 or later (`JAVA_HOME` or `java` on `PATH`), `curl`, and `sha256sum` or
@@ -81,6 +82,76 @@ runs the `nightly` configurations on a schedule and on demand (`workflow_dispatc
 counterpart, the full-bound fault-schedule explorations of the claim protocol and of flow lowering
 (`BIDE_EXPLORE=1`), runs nightly in `.github/workflows/explore.yml`; see
 [verification](../../docs/testing/verification.md).
+
+## Apalache
+
+[Apalache](https://github.com/apalache-mc/apalache) is a second model checker for the same models.
+TLC enumerates states one by one; Apalache translates a model's states and steps into SMT formulas
+and lets a solver (Z3) search them. That gives two kinds of check TLC cannot make:
+
+- **A bounded symbolic check** (`apalache-mc check --length=N`): every behavior of up to N steps,
+  with the constants a configuration leaves open (which process each driver runs in, the kind of
+  call, whether errored writes may commit late, which drivers hold the lease) chosen by the solver,
+  so one check covers what TLC needs one configuration each for. Its bound is the number of steps,
+  not the number of states, so it reaches larger parameters but shorter behaviors than TLC.
+- **An inductive invariant**: a state predicate `IndInv` such that `Init` implies it, every step
+  from any state satisfying it leads to a state satisfying it, and it implies the property. Each
+  of the three is one Apalache query of at most one step, and together they prove the property in
+  every reachable state, at any depth. TLC's result says nothing beyond its bounds; an inductive
+  result has no depth bound and no bound on the fault counters, though the attempts and claim ids
+  the check fixes still bound how many claims a run can make (see below).
+
+```sh
+spec/tla/check.sh apalache                    # every model's Apalache checks
+spec/tla/check.sh apalache claims             # one model's
+spec/tla/check.sh apalache spec/tla/claims/apalache/inductive-2x2x1.cfg
+```
+
+Apalache needs Java 17 or later. The script downloads the release archive pinned in
+[tools.lock](tools.lock) (`apalache-0.62.2.tgz`, about 190 MB) into the tool cache (or
+`$BIDE_APALACHE_CACHE`), refuses it if its SHA-256 differs, and unpacks a fresh copy into its work
+directory for each run, so only verified bytes run. Apalache's output directory and its JVM
+temporary directory live under that work directory too, and are removed on exit, on failure and on
+interrupt. `APALACHE_JAVA_OPTS` replaces the JVM options (default `-Xmx8g`), and
+`APALACHE_KEEP_OUTPUT=<dir>` keeps each check's output and counterexample. While a check runs, the
+script prints a progress line every `APALACHE_PROGRESS` seconds (default 300, 0 for none): the step,
+the transition and how many there are, how many were enabled or disabled so far, and the
+invariant conjunct being checked, read from Apalache's detailed log; it is output only, and no
+result depends on it. Neither TLC check needs
+Apalache, and `check.sh` downloads it only for the `apalache` and `fetch` commands.
+
+**Types.** Apalache's type checker needs a type for every constant and variable. The PlusCal
+translator rewrites the variable declarations of the translation, so the annotations cannot live
+there; instead each checked model has a typed wrapper module (`claims/ClaimsApalache.tla`) that
+declares every constant and variable with its type and instantiates the model unchanged, with
+model values written as strings. The checks run the model's own `Init` and `FullNext`. Typing model
+1 took three edits to `Claims.tla`, none of which changes its meaning, and TLC passes every
+configuration as before: `CountsFor` takes a call and an index instead of a record (Apalache cannot
+type a record parameter), the m-of-n count ranges over `DOMAIN dlog[c]` instead of
+`1..Len(dlog[c])` (Apalache needs constant range bounds), and the resume gate's `CHOOSE` names its
+bound variable `y` instead of shadowing the `with` variable `x`.
+
+**Configurations.** A model's Apalache configurations live in its `apalache/` directory, which TLC
+never reads. Each is a TLC-style `.cfg` (Apalache reads the same format) that sets the constants
+the checks fix, and names its module and its checks in comment lines; `check.sh` runs every check
+and compares the result:
+
+```text
+\* SPEC: ClaimsInductive.tla
+\* CHECK: pass | --cinit=CInit2x2x1 --init=IndInit --inv=IndInv --length=1
+\* CHECK: invariant EffectNotReachable | --cinit=CInit2x2x1 --init=IndInit --inv=EffectNotReachable --length=0
+```
+
+A `pass` check must report no error; an `invariant <Name>` check must report that invariant
+violated (exit status 12), which is how the vacuity and regression checks are stated; a
+`typecheck` check runs only Apalache's type checker (`toolcall/apalache/typecheck.cfg` keeps model
+9's wrapper typed until it has checks of its own). A configuration in a model's `apalache/tlc/`
+directory is run by TLC on the module its `SPEC` line names, and must find no error.
+
+**In CI.** The **Apalache (nightly)** jobs of `models.yml` run `check.sh apalache <file.cfg>`, one
+job per configuration in parallel (the largest check takes hours, and a GitHub job at most 6), on
+the nightly schedule and on demand, beside the TLC nightly job; no pull request runs them, so the required
+**Models** job is unchanged. Results for model 1 are in [Apalache results](#apalache-results).
 
 ## Keeping the code and the models in step
 
@@ -163,12 +234,17 @@ spec/tla/
                      and the properties
     ClaimsMC.tla     named placements of drivers, processes and calls, and symmetry sets, which
                      the configurations select with <-
+    ClaimsApalache.tla  the typed wrapper Apalache checks (see Apalache)
+    ClaimsInductive.tla the inductive invariant of model 1's safety properties
+    apalache/        the Apalache configurations (no TLC group reads them), and in tlc/ the TLC
+                     checks that IndInv is a plain invariant
     *.cfg            the configurations (group ci or nightly)
     regress/         historical rules, each of which must still produce its counterexample
     findings/        open findings, which fail until they are fixed (none open at present)
     limits/          accepted behavior, stated as an expected violation
   flows/, protocol/, spend/, toolcall/, lifecycle/, delegation/, sessions/
-                     models 7, 2, 8, 9, 10, 11 and 12, laid out the same way
+                     models 7, 2, 8, 9, 10, 11 and 12, laid out the same way (toolcall/ also
+                     holds ToolCallApalache.tla, model 9's typed wrapper, not yet checked)
 ```
 
 ## Model 1: claims and attempts
@@ -441,6 +517,100 @@ cannot change silently:
   true ("not charged"), no effect fires, and every safety property holds in the same model
   (`resolve-minage-claim-a3`, `resolve-lease-claim`): the driver that voided the attempt loses
   the next one to the resolution and reads its verdict.
+
+### Apalache results
+
+**The inductive invariant.** `claims/ClaimsInductive.tla` defines `IndInv`, the conjunction of:
+
+- `TypeOK`: every variable in its range. The fault counters (`ambig`, `crashes`, `cancels`,
+  `evictions`) are any natural number.
+- `Locals`: what a driver's or the resolver's position says about its own variables (a driver at
+  `GateWrite` holds a remembered id, a driver at `Lost` lost to another id, a driver at `Record`
+  fired under its own claim).
+- `Chain`: attempts are claimed in order. A driver claims attempt x (writes its marker, has a late
+  marker write in flight, or works on it) only once every earlier attempt is voided; the
+  resolver's claim sits on the attempt after the live one it checked.
+- `Fired`: an attempt that fired keeps the firing claim in its marker, no not-started record names
+  that claim, and nothing that could write one (a remembered id, a retry list, a late
+  not-started write, the resume gate's write) holds it; only the driver that fired still knows it.
+- `Holders`: a driver holding a won claim (`Win`, `WinnerWait`, `Call`) is the only holder of its
+  id, the call has not fired, and no resolution of the call is recorded or claimed; a driver at
+  `Record` finds no resolution either.
+- `Resolver`: once the resolver has checked the live attempt, no driver holds that attempt's claim
+  while running (the check's assumption), and once it has claimed the next attempt, that marker
+  stays live and nothing could void it, so no driver wins an attempt of the call again; a recorded
+  resolution comes from such a resolver, and "not charged" only for a call that never fired.
+- `Intent`: the caller's second call moves only after the first reads as not charged.
+
+**What it proves.** `apalache/inductive-*.cfg` each run three checks of at most one step: `Init`
+implies `IndInv` (`--length=0`); from any state satisfying `IndInv`, every `FullNext` step leads to
+a state satisfying it (`--init=IndInit --length=1`, where `IndInit` generates every such state);
+and `IndInv` implies the properties (`IndProps`). Together: `AtMostOnce` and `NotStartedExclusive`
+(and, in the resolver scope, `NoLiveOverride` and `AtMostOncePerIntent`) hold in every reachable
+state, at any depth. `IndInv` does not mention the fault counters, so a state satisfying it with
+the counters at 0, where every fault is enabled, does too: the result holds for any number and mix
+of error replies of every kind, late commits, crashes, cancellations and evictions within the
+run's claim ids (8, or 6 in the resolver scope) and attempts 0..3. Claim ids are never reused, and
+a claim blocks when none is free, so the id pool bounds the number of claims in a covered run, and
+with it the faults that force a new claim. A
+fourth check is for vacuity: `IndInv` admits states in which the effect
+has fired.
+
+**Assumptions and bounds.** The current protocol (`Bug = "none"`), no approval gate (model 1b),
+and the constants of each configuration:
+
+| Configuration | Drivers, processes, calls | Attempts, claim ids | Halt resolution | Properties | Result |
+|---|---|---|---|---|---|
+| `inductive-2x2x1` | 2, 2, 1 | 0..3, 8 | none | `AtMostOnce`, `NotStartedExclusive` | inductive; 40 minutes on the CI runner for the four checks (the step check took 78 minutes on the development machine under load) |
+| `inductive-resolver` and its four `-step-*` shards | 2, 2, 2 (the second call is issued when the first reads as not charged) | 0..3, 6 | the fixed resolution, lease or minimum-age check, in either process or neither | `AtMostOnce`, `NotStartedExclusive`, `NoLiveOverride`, `AtMostOncePerIntent` | inductive; on the CI runner the base checks take 2 minutes and the step shards `StepD1` 2 h 48 min, `StepD2` 2 h 50 min, `StepResolver` 54 min, `StepEnv` 2 min, in parallel |
+
+Each configuration leaves to the solver which process each driver runs in, which call it drives,
+each call's kind (tool, Step or plan flow), whether a Step pauses, which drivers hold the lease,
+and whether errored writes may commit late (`CInit*` in `ClaimsApalache.tla`), so one check covers
+every placement. What stays bounded is the number of drivers, processes and calls, the attempt
+numbers (`0..MaxGen`) and the claim-id pool (`1..MaxIds`): a behavior that needs more attempts or
+more claim ids than that is not covered, since a driver in the model blocks at those bounds (TLC's
+`BoundNotHit` checks that its own configurations never do; nothing checks it here). The resolver
+scope assumes the fixed resolution (`ResolveClaim`, `ResolveVoidOnError = FALSE`) and, under the
+lease check, that no plain run holds the live attempt at the check (`PlainRunIdleAtCheck`, #90's
+accepted limit, which `limits/lease-plain-run-claims-first` states). That the invariant is
+inductive for every larger number of drivers, attempts or ids is plausible (it quantifies over
+them uniformly) but not checked.
+
+**An inductive invariant is also a true one.** A conjunct added to exclude a counterexample to
+induction could be false of some reachable state, which would make the induction check pass for
+a property while ruling out real behavior. So TLC checks `IndInv` itself as a plain invariant on
+every reachable state of the configurations in `apalache/tlc/` (no TLC group runs them; `check.sh
+apalache` does, nightly, and so does `spec/tla/check.sh apalache spec/tla/claims/apalache/tlc/<name>.cfg`):
+`minage-in-proc` (halt resolution with the minimum-age check in the
+drivers' process, a Step and a tool call, weak A3; 8,988,594 distinct states, 10 min 47 s on the
+development machine) and `lease-cross` (the lease check, drivers in two processes, one leased,
+cancellations and an eviction; 4,142,552 states, 5 min 9 s) and `two-calls` (each of the intent's
+two calls with its own driver, so `AtMostOncePerIntent` meets a live second call; 11,981 states, 3 s). All pass with
+every conjunct.
+
+**How the invariant was found.** Each counterexample to induction Apalache reported was a state
+the invariant did not yet exclude, never a reachable violation: a driver at `GateWrite` holding a
+remembered id outside every custody set, a driver holding the resolver's claim id, the resolver
+at `RNotStarted` (which the fixed resolution never reaches), and the resolver's claim id as the
+marker of an attempt other than the one it claims. Each added one conjunct.
+
+**Bounded symbolic checks.** On this model they reach far less than TLC. Each step is a
+disjunction of a few hundred transitions (every label of every driver and of the resolver,
+crashes, evictions, late commits), and Apalache checks each one at each step. Measured on the
+development machine (Apple Silicon, shared with other work, so the times are rough): three drivers
+over two processes on one call with every placement, kind and LateCommit left open reached 4
+steps in about 25 minutes; two drivers on two calls with the resolver and the caller, 2 steps in
+about an hour; model 9 (one call, its kind, saga and timeout left open), 8 steps in 75 minutes.
+The arrays SMT encoding (`--smt-encoding=arrays`) was faster for the first steps and then stalled
+on single queries for over 30 minutes. An effect needs at least 7 steps to fire in model 1 (13 in
+model 9), so a check that short says nothing about the fire properties, while TLC searches the
+same kind of configuration to its full depth (25 to 61 steps) in seconds. The nightly job
+therefore runs no bounded check of the properties. It runs one bounded regression, to show the
+symbolic check can fail on this model: with fixed placements (`apalache/regress-resolve-no-check`),
+Apalache must find #90's F2, a resolution with no live-driver check overriding a driver that
+called the effect (`NoLiveOverride`), which it does within 12 steps (TLC's trace is 11 states) in about an hour on the development
+machine under load.
 
 ### Findings
 
@@ -2043,4 +2213,8 @@ Two drivers (three in `deep-drivers`, nightly, with one error reply), one crash,
 cancellation, up to two error replies per run on pull requests (three in the F3 configs) and
 four nightly; one call except in the intent configurations.
 Calls interact only through the fault budgets and the id pool, so two independent calls add no
-behavior the one-call configurations miss. A bug that needs more than these is outside the check.
+behavior the one-call configurations miss. A bug that needs more than these is outside the check,
+except for the properties model 1's inductive invariant proves: for those, the depth is
+unbounded and any number and mix of faults is covered within its configurations' drivers,
+processes, calls, attempts and claim ids (claim ids are never reused, so the pool bounds the
+number of claims) ([Apalache results](#apalache-results)).

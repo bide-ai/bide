@@ -188,11 +188,12 @@ define
   \* first record, valid or not, took their only place; and (UnboundSubject) a signature did not
   \* bind the call.
   Known(a)      == a \in DOMAIN keys
-  CountsFor(r)  == Known(r.a) /\ r.k \in keys[r.a] /\ (r.subj = "this" \/ Bug = "UnboundSubject")
-  Deciding(c, a) == {i \in 1..Len(dlog[c]) :
-                      dlog[c][i].a = a /\ (Bug = "SlotPerApprover" \/ CountsFor(dlog[c][i]))}
+  CountsFor(c, i) == LET r == dlog[c][i] IN
+                     Known(r.a) /\ r.k \in keys[r.a] /\ (r.subj = "this" \/ Bug = "UnboundSubject")
+  Deciding(c, a) == {i \in DOMAIN dlog[c] :
+                      dlog[c][i].a = a /\ (Bug = "SlotPerApprover" \/ CountsFor(c, i))}
   Dec(c, a)     == IF Deciding(c, a) = {} THEN 0 ELSE Min(Deciding(c, a))
-  Counted(c, a) == Dec(c, a) # 0 /\ CountsFor(dlog[c][Dec(c, a)])
+  Counted(c, a) == Dec(c, a) # 0 /\ CountsFor(c, Dec(c, a))
   \* The count never seats an approver whose key set is empty or meets another eligible
   \* approver's (#109), whatever the resolver answered the gate's check: it may have changed.
   Excluded(n, a) == /\ Bug \notin {"NoCountExclusion", "SetEqualityCheck"}
@@ -222,7 +223,7 @@ define
   Denied(c)     == one[c] = "no" \/ (tally[c].rec /\ ~tally[c].passed)
   \* The approvals already in, by the counting rule without its history: every seated approver's
   \* first valid decision over this call (for NoStuckPause).
-  TrueDeciding(c, a) == {i \in 1..Len(dlog[c]) : dlog[c][i].a = a /\ Known(a) /\ dlog[c][i].k \in keys[a]
+  TrueDeciding(c, a) == {i \in DOMAIN dlog[c] : dlog[c][i].a = a /\ Known(a) /\ dlog[c][i].k \in keys[a]
                                                 /\ dlog[c][i].subj = "this"}
   TrueDec(c, a) == IF TrueDeciding(c, a) = {} THEN 0 ELSE Min(TrueDeciding(c, a))
   TrueVoters(c, n, v) == {a \in Policies[n].apprs : ~Excluded(n, a) /\ TrueDec(c, a) # 0
@@ -308,7 +309,7 @@ Open:
     outcome := "halt_crashed"; goto Finish;
   elsif Kind[CallOf[self]] = "tool" /\ AnyLive(CallOf[self]) then
     \* The resume gate: a live marker halts, unless this process remembers its claim.
-    with x = CHOOSE x \in Gens : Live(CallOf[self], x) do
+    with x = CHOOSE y \in Gens : Live(CallOf[self], y) do
       gg := x; oldId[self] := marker[CallOf[self]][x];
     end with;
     outcome := None; goto GateTake;
@@ -681,11 +682,12 @@ Window  == {"ClaimNS", "Hold", "Win", "WinnerWait", "Call", "Record", "NotStarte
 
 
 Known(a)      == a \in DOMAIN keys
-CountsFor(r)  == Known(r.a) /\ r.k \in keys[r.a] /\ (r.subj = "this" \/ Bug = "UnboundSubject")
-Deciding(c, a) == {i \in 1..Len(dlog[c]) :
-                    dlog[c][i].a = a /\ (Bug = "SlotPerApprover" \/ CountsFor(dlog[c][i]))}
+CountsFor(c, i) == LET r == dlog[c][i] IN
+                   Known(r.a) /\ r.k \in keys[r.a] /\ (r.subj = "this" \/ Bug = "UnboundSubject")
+Deciding(c, a) == {i \in DOMAIN dlog[c] :
+                    dlog[c][i].a = a /\ (Bug = "SlotPerApprover" \/ CountsFor(c, i))}
 Dec(c, a)     == IF Deciding(c, a) = {} THEN 0 ELSE Min(Deciding(c, a))
-Counted(c, a) == Dec(c, a) # 0 /\ CountsFor(dlog[c][Dec(c, a)])
+Counted(c, a) == Dec(c, a) # 0 /\ CountsFor(c, Dec(c, a))
 
 
 Excluded(n, a) == /\ Bug \notin {"NoCountExclusion", "SetEqualityCheck"}
@@ -715,7 +717,7 @@ Sufficient(c) == one[c] = "yes" \/ (tally[c].rec /\ tally[c].passed)
 Denied(c)     == one[c] = "no" \/ (tally[c].rec /\ ~tally[c].passed)
 
 
-TrueDeciding(c, a) == {i \in 1..Len(dlog[c]) : dlog[c][i].a = a /\ Known(a) /\ dlog[c][i].k \in keys[a]
+TrueDeciding(c, a) == {i \in DOMAIN dlog[c] : dlog[c][i].a = a /\ Known(a) /\ dlog[c][i].k \in keys[a]
                                               /\ dlog[c][i].subj = "this"}
 TrueDec(c, a) == IF TrueDeciding(c, a) = {} THEN 0 ELSE Min(TrueDeciding(c, a))
 TrueVoters(c, n, v) == {a \in Policies[n].apprs : ~Excluded(n, a) /\ TrueDec(c, a) # 0
@@ -829,7 +831,7 @@ Open(self) == /\ pc[self] = "Open"
                                     /\ pc' = [pc EXCEPT ![self] = "Finish"]
                                     /\ UNCHANGED << oldId, gg >>
                                ELSE /\ IF Kind[CallOf[self]] = "tool" /\ AnyLive(CallOf[self])
-                                          THEN /\ LET x == CHOOSE x \in Gens : Live(CallOf[self], x) IN
+                                          THEN /\ LET x == CHOOSE y \in Gens : Live(CallOf[self], y) IN
                                                     /\ gg' = [gg EXCEPT ![self] = x]
                                                     /\ oldId' = [oldId EXCEPT ![self] = marker[CallOf[self]][x]]
                                                /\ outcome' = [outcome EXCEPT ![self] = None]
@@ -1972,7 +1974,7 @@ Submit(c, h, a, v, sj, k) ==
         /\ \/ a \in DOMAIN KeyOf /\ k \in KeyOf[a]
            \/ a \in DOMAIN KeyOf2 /\ k \in KeyOf2[a]
      \/ Held(h) = {} /\ k = "none"
-  /\ \A i \in 1..Len(dlog[c]) : dlog[c][i] # r
+  /\ \A i \in DOMAIN dlog[c] : dlog[c][i] # r
   /\ submits' = submits + 1
   /\ dlog' = [dlog EXCEPT ![c] = Append(dlog[c], r)]
   /\ UNCHANGED <<one, tally, policy, approves1, redeploys, keys, resChanges>>
