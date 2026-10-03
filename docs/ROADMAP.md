@@ -6,7 +6,7 @@ This page describes intent, not promises of dates. Shipped work is recorded in t
 
 ## Now: v0.9.0
 
-- The claim protocol, the approval gate, flow semantics, spend accounting and the bide protocol's claim rules as TLA+ models, checked by TLC on every pull request.
+- The claim protocol, the approval gate, flow semantics, spend accounting and the bide protocol's claim rules as TLA+ models, checked by TLC in CI.
 - The redesign's Waves 1 to 3: the `Store` port and `Journal` with a journal format header, the sealed pause contract, `ModelCall` and `ModelResponse` with exact spend accounting, `plan` nodes lowered onto `agent.Step`, and proofs over raw stored bytes with signature agility.
 - Approval seats counted per signing key (`KeyIDs`), with weak Ed25519 keys refused.
 - The bide protocol accepted as the design for SDKs in other languages.
@@ -21,7 +21,8 @@ Shipped earlier: v0.8.0 made runs recover themselves (`RecoverLoop`), put one to
 The pre-1.0 API redesign ([design proposal](https://github.com/bide-ai/bide/pull/64)) settles the shape bide will keep at 1.0:
 
 - Done in v0.9.0: a storage port (`Store`) separated from the journal semantics bide owns (`Journal`), with the store contract stated as numbered requirements and a conformance suite every store must pass (P6a); a sealed pause contract (P10); typed model calls (P9); flow nodes lowered onto `agent.Step` (P5b); and versioned journal and proof formats (P6a, P11).
-- Next (P12 to P16): tool internals, construction under `Build`, one run entry point with per-run options that survive recovery, a tool specification type, and the consolidated rewrite that removes the transitional names.
+- Done on main, for v0.10.0 (not yet released): tool internals built on a tool specification type, `agent.ToolSpec` (P12, [#117](https://github.com/bide-ai/bide/pull/117)); construction under `Build` (P13, [#127](https://github.com/bide-ai/bide/pull/127)); and one run entry point, under transitional names, whose per-run options are journaled when a run starts and survive recovery, with `Cancel` and `Status` (P14, [#138](https://github.com/bide-ai/bide/pull/138)).
+- Left before the 1.0 candidate: the scripted rewrite that renames the transitional names and removes the old API (P15), then docs and cleanup, with the journal format tag moving from `bide.journal.v1-dev` to `bide.journal.v1` at the release commit (P16).
 - Go 1.27 generic methods where a generic operation has a natural receiver.
 
 Changes that touch claims, the journal, leases, sagas or proofs are reviewed adversarially before they merge.
@@ -32,21 +33,18 @@ The hardest bugs in a durable runtime live in interleavings: two drivers, a cras
 
 1. **Claims and attempts:** claims, not-started records, numbered retries, the resume gate, and halt resolution while a driver may still be live. Invariant: every side effect fires at most once. Done: [model 1](../spec/tla/README.md#model-1-claims-and-attempts).
 2. **The bide protocol,** before any SDK is built on it (see below): done, [spec/tla/protocol](../spec/tla/README.md#model-2-the-bide-protocols-claim-rules), including retry-safe re-dispatch.
-3. **Leases and recovery:** acquire, renew, release, takeover, and a holder that stalls past its lease. Invariant: safety holds with leases failing arbitrarily, because it rests on claims.
+3. **Leases and recovery:** acquire, renew, release, takeover, and a holder that stalls past its lease. Invariant: safety holds with leases failing arbitrarily, because it rests on claims. Model 10 covers the lease and recovery part: lease acquisition, renewal, lapse and takeover, a holder that stalls past its TTL and wakes, `Recover` and `RecoverLoop` passes, and the lease the operator's live-driver check takes, under crashes and ambiguous writes, with each call firing at most once and one live lease holder per epoch. Left, among others: model 1's numbered attempts and remembered claims under a lease that lapses while its holder lives (model 10 reduces each call's claim to one marker, and model 1 holds a lease for a whole drive), renewal errors short of a lapse, `Recover` without a `Leaser`, and a recovery pass's concurrency above 1. Leases are not fenced: a stalled holder that wakes drives beside the run's new holder until its renewer notices, a limit model 10 records.
 4. **The store contract and journal header:** prefix-closed visibility and first-writer races.
 5. **Saga rollback:** parallel siblings, sub-agents and calls that never started.
 6. **Approval and halt resolution,** an extension of model 1: 1-of-1 and m-of-n tallies, final denials, contended and crashed halts, resolution while a driver may be live, and approvers' key sets. Done: [model 1b](../spec/tla/README.md#model-1b-the-approval-gate).
-7. **Sessions:** concurrent sends, turn ordering, starting points and crashes between turns, when the session code next changes.
+7. **Sessions:** concurrent sends, turn ordering, starting points, crashes between and within turns, and P14's `Cancel` of a turn's run. Done: [model 12](../spec/tla/README.md#model-12-sessions); it found S1, S2 and S4 (fixed in [#137](https://github.com/bide-ai/bide/pull/137)) and S3 (its rule implemented by P14, [#138](https://github.com/bide-ai/bide/pull/138)).
 8. **Flow semantics:** switch and loop replay, flow completion and per-iteration step scoping. Done: [model 7](../spec/tla/README.md#model-7-flow-semantics), with the lowering of #103.
 9. **The whole-tree budget:** how far concurrent sub-agents can overshoot a shared token budget (low priority). The spend accounting of model calls that the budget counts is done: [model 8](../spec/tla/README.md#model-8-spend-accounting), with #104.
 10. **The tool-call state machine of P12:** tool middleware, retries, sibling calls and the saga rollback's re-run. Done: [model 9](../spec/tla/README.md#model-9-the-tool-call-state-machine); it found T1 to T6 in #117 before it merged.
-11. **The run lifecycle and recovery:** end markers, leases, `Recover` and `RecoverLoop`, and the bounded pickup of a dead holder's run. Done: [model 10](../spec/tla/README.md#model-10-the-run-lifecycle-and-recovery); it found L1 (fixed in #126), L2 and L3, and, extended for P14 in #129, L4 to L7; L2 to L7 are adopted and open until P14.
+11. **The run lifecycle and recovery:** end markers, leases, `Recover` and `RecoverLoop`, and the bounded pickup of a dead holder's run. Done: [model 10](../spec/tla/README.md#model-10-the-run-lifecycle-and-recovery); it found L1 (fixed in #126), L2 and L3, and, extended for P14 in #129, L4 to L7. P14 ([#138](https://github.com/bide-ai/bide/pull/138)) implements the rules adopted for L2 to L7, each tested by a Go test, and each finding is kept as a regression configuration that still fails under its old rule.
+12. **Delegation and sub-run authority, including saga trees:** grants, recorded authority, rollback binding, halts propagating from sub-runs, and programmatic sub-runs. Done: [model 11](../spec/tla/README.md#model-11-delegation-sub-run-authority-and-saga-trees); it found D1 to D3, fixed in [#133](https://github.com/bide-ai/bide/pull/133).
 
-Next, in order:
-
-1. **Delegation and sub-run authority, including saga trees:** grants, recorded authority, rollback binding, halts propagating from sub-runs, and links to programmatic sub-runs. Most of P12's and P13's late bugs were here, and model 9 treats a delegation as a black box. Next up.
-2. **Sessions:** multiple turns, resumes and shared history. Built when P14 or later work touches sessions.
-3. **M3 trace validation:** checks real Go runs against the existing models, so they cannot drift.
+Next: **M3 trace validation,** which checks real Go runs against the existing models, so they cannot drift.
 
 The store contract and the whole-tree budget bound remain candidates.
 
@@ -54,7 +52,16 @@ The store contract and the whole-tree budget bound remain candidates.
 
 Models live in the repository and run in CI. A counterexample the checker finds becomes a deterministic Go regression test.
 
-The design and plan: [formal models of the coordination protocols](design/formal-models.md) (accepted, in progress). Done: models 1, 1b, 2, 7, 8, 9 and 10 are in [spec/tla](../spec/tla/README.md) and checked on every pull request. The code the models describe is marked, and CI fails a change to it that does not change its model or say why. The overview, with every bug the models caught, is [Formal verification](formal-verification.md).
+The design and plan: [formal models of the coordination protocols](design/formal-models.md) (accepted, in progress). Done: models 1, 1b, 2, 7, 8, 9, 10, 11 and 12 are in [spec/tla](../spec/tla/README.md), checked by TLC on every pull request that changes them (all of them when it changes `check.sh`, `tools.lock`, the shard script or the Models workflow), and all of them in the merge queue and on main. The code the models describe is marked, and CI fails a change to it that does not change its model or say why. The overview, with every bug the models caught, is [Formal verification](formal-verification.md).
+
+### gsm convergence
+
+bide's governance tier (`govern`) builds its state machines with [gsm](https://github.com/blackwell-systems/gsm), whose convergence theorem is proved in Coq/Rocq. bide still requires gsm v0.11.0, whose `Build` can certify a machine that does not converge ([known limitations](KNOWN-LIMITATIONS.md#governed-state-gsm)); none of the gsm work below is in a gsm release yet.
+
+- Done in gsm: `Build` soundness fixes: the commute check accounts for what guards and effects read, and certificates are re-checked ([gsm#2](https://github.com/blackwell-systems/gsm/pull/2)); duplicate event and variable names are refused ([gsm#5](https://github.com/blackwell-systems/gsm/pull/5)); closure results that are not states of the machine are refused ([gsm#6](https://github.com/blackwell-systems/gsm/pull/6)); declared rules copy the caller's slices, and `Certify` certifies the federation as called ([gsm#7](https://github.com/blackwell-systems/gsm/pull/7)); and hardening for unknown registries, coordination points, enum labels, ports, digest names and `DiagnoseCycle` ([gsm#11](https://github.com/blackwell-systems/gsm/pull/11)).
+- Done in gsm: an in-process gate. `Build`, synthesis and `BuildCompositional` return a machine only once the table oracle, Go generated from the Rocq proof, certifies its tables (per component for `BuildCompositional`, where independence across components rests on gsm's footprint check) ([gsm#12](https://github.com/blackwell-systems/gsm/pull/12)); `Build` also runs the rules oracle, generated the same way, when the machine's rules are combinators inside the oracle's fragment and its work is within a cost cap, and reports why when it does not ([gsm#17](https://github.com/blackwell-systems/gsm/pull/17)).
+- Done in bide: **gsm machine gate**, a required CI check that runs the two checkers extracted from gsm's proof on every gsm machine bide's examples build ([#144](https://github.com/bide-ai/bide/pull/144)), against a pinned gsm commit that carries the table-oracle gate ([#150](https://github.com/bide-ai/bide/pull/150), [#151](https://github.com/bide-ai/bide/pull/151)). It checks the examples' machines in CI, not the machines an application builds at runtime.
+- Next: bide moving to a gsm release that contains the gate (until then, a `Build` in bide's runtime is gsm v0.11.0's, with no gate); in gsm, restructuring the rules oracle to work from tables (in progress), which is expected to lift its cost cap; and, before 1.0, a change to gsm's policy format that puts names in the policy bytes, with `bide-audit` still verifying records written under the old format (adding variable kinds to the policy bytes is under consideration).
 
 ### bide underneath other agent frameworks (Go)
 

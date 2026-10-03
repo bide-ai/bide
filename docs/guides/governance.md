@@ -322,7 +322,7 @@ go run ./quorum     # governed model quorum: k-of-n agreement gates the commit, 
   pairs it judges independent from what they write, without checking what their guards and effects
   read, so a machine where one event's guard or effect reads a variable another event writes can
   be certified convergent when it is not. Do not rely on a v0.11.0 convergence verdict for such a
-  machine. A fix is in progress in [gsm#2](https://github.com/blackwell-systems/gsm/pull/2); see
+  machine. The fix is merged in gsm ([gsm#2](https://github.com/blackwell-systems/gsm/pull/2)) but in no gsm release yet; see
   [known limitations](../KNOWN-LIMITATIONS.md#governed-state-gsm).
 - **Finite state spaces.** The semantic state must be finite (bounded enums/ints). Unbounded
   numeric state is a theory extension, not shipped.
