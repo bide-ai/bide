@@ -81,7 +81,7 @@ type Flow[In, Out any] struct {
 //     Result is the JSON-encoded chosen target step name);
 //     "switch:iter:<i>:"+over for a loop Switch's iteration i.
 //   - "run:complete" -- the run's completion: the flow's name and its output.
-func (f *Flow[In, Out]) Run(ctx context.Context, store agent.Durable, runID string, in In) (Out, error) {
+func (f *Flow[In, Out]) Run(ctx context.Context, store *agent.Journal, runID string, in In) (Out, error) {
 	var out Out
 	c := f.core
 	if err := journalhook.CheckRunID(ctx, runID); err != nil {
@@ -115,7 +115,7 @@ func (f *Flow[In, Out]) Run(ctx context.Context, store agent.Durable, runID stri
 	if encErr != nil {
 		return out, fmt.Errorf("plan: run %q: encode topology digest: %w", c.flowName, encErr)
 	}
-	rec, err := store.Do(ctx, runID, flowDigestStep, func(context.Context) (agent.Record, error) {
+	rec, err := doRecord(ctx, store, runID, flowDigestStep, func(context.Context) (agent.Record, error) {
 		return agent.Record{Kind: agent.StepValue, Result: want}, nil
 	})
 	if err != nil {
@@ -354,7 +354,7 @@ func decodeCompletion[Out any](flowName, runID string, raw json.RawMessage) (Out
 // arm, runLoop returns a runaway-loop error rather than looping forever. The runtime
 // iteration count is NOT part of the digest (it is runtime, like Safety); only the
 // loop structure and its max bound are.
-func (f *Flow[In, Out]) runLoop(ctx context.Context, store agent.Durable, runID string, c *builderCore, lp *loopSpec, in In, results map[string]json.RawMessage, live map[string]bool, branchOf map[string]branch, outEdges map[string][]string, headInput any) (string, json.RawMessage, error) {
+func (f *Flow[In, Out]) runLoop(ctx context.Context, store *agent.Journal, runID string, c *builderCore, lp *loopSpec, in In, results map[string]json.RawMessage, live map[string]bool, branchOf map[string]branch, outEdges map[string][]string, headInput any) (string, json.RawMessage, error) {
 	br := branchOf[lp.over]
 	for iter := 0; ; iter++ {
 		if iter >= lp.max {
@@ -522,7 +522,7 @@ func iterSwitchKey(iter int, over string) string {
 //     in which case it halts as that attempt would have;
 //   - a body that returns a pause from a node that is not retry-safe is ErrConfig (the
 //     Step pause guard).
-func runNode(ctx context.Context, store agent.Durable, runID string, model agent.Model, node *node, key string, input any) (json.RawMessage, error) {
+func runNode(ctx context.Context, store *agent.Journal, runID string, model agent.Model, node *node, key string, input any) (json.RawMessage, error) {
 	return journalhook.Step(ctx, store, runID, key, node.safety, func(ctx context.Context) (json.RawMessage, error) {
 		var result any
 		var runErr error
@@ -613,7 +613,7 @@ func runModel(ctx context.Context, model agent.Model, node *node, input any) (an
 // the predicates: this is why the predicates must be pure over the switched value
 // (see When). It returns the chosen target step name; the name is "" when no When
 // arm matched and there is no Else.
-func (f *Flow[In, Out]) chooseArm(ctx context.Context, store agent.Durable, runID string, br branch, switchedType reflect.Type, switchedOut json.RawMessage) (string, error) {
+func (f *Flow[In, Out]) chooseArm(ctx context.Context, store *agent.Journal, runID string, br branch, switchedType reflect.Type, switchedOut json.RawMessage) (string, error) {
 	return f.chooseArmKeyed(ctx, store, runID, "switch:"+br.over, br, switchedType, switchedOut)
 }
 
@@ -624,8 +624,8 @@ func (f *Flow[In, Out]) chooseArm(ctx context.Context, store agent.Durable, runI
 // (switch:iter:<n>:<over>). The recorded choice is replayed on resume exactly as for
 // a linear Switch, so each iteration's branch decision is made once and the
 // predicates stay pure over the switched value.
-func (f *Flow[In, Out]) chooseArmKeyed(ctx context.Context, store agent.Durable, runID, key string, br branch, switchedType reflect.Type, switchedOut json.RawMessage) (string, error) {
-	rec, err := store.Do(ctx, runID, key, func(context.Context) (agent.Record, error) {
+func (f *Flow[In, Out]) chooseArmKeyed(ctx context.Context, store *agent.Journal, runID, key string, br branch, switchedType reflect.Type, switchedOut json.RawMessage) (string, error) {
+	rec, err := doRecord(ctx, store, runID, key, func(context.Context) (agent.Record, error) {
 		// Decode the switched output into the switched node's concrete Go type, so a
 		// predicate typed to that value (the type-erased closure asserts v.(M), see
 		// wiring.go) receives the Go value rather than the neutral JSON shape a plain
@@ -695,3 +695,11 @@ func decodeInto(raw json.RawMessage, into reflect.Type) (any, error) {
 // diagram, as opposed to agent.RenderMermaid, which derives the actual-ran
 // diagram from the journal, and Conform compares the two.
 func (f *Flow[In, Out]) RenderMermaid() string { return f.core.renderMermaid() }
+
+// doRecord runs fn as the step name of runID in j, at most once, through the journal's internal
+// hook (the journal's raw write is not exported), and returns the record the journal holds.
+func doRecord(ctx context.Context, j *agent.Journal, runID, name string, fn func(context.Context) (agent.Record, error)) (agent.Record, error) {
+	v, err := journalhook.Do(ctx, j, runID, name, func(ctx context.Context) (any, error) { return fn(ctx) })
+	rec, _ := v.(agent.Record)
+	return rec, err
+}

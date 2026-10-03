@@ -69,7 +69,7 @@ func main() {
 	if err != nil {
 		log.Fatal(err)
 	}
-	classic, err := agent.Build(model, j, agent.WithRetrieval(kb, 2))
+	classic, err := agent.New(model, j, agent.WithRetrieval(kb, 2))
 	if err != nil {
 		log.Fatal(err)
 	}
@@ -85,7 +85,7 @@ func main() {
 	// several stores gives each tool its own name.
 	search := agent.RetrievalTool("search_support_kb",
 		"Search the support knowledge base: shipping, warranty, returns, and hours.", kb, 2)
-	agentic, err := agent.Build(model, j, agent.WithTools(search))
+	agentic, err := agent.New(model, j, agent.WithTools(search))
 	if err != nil {
 		log.Fatal(err)
 	}

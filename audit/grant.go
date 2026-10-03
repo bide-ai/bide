@@ -113,12 +113,12 @@ func grantLeafName(digest string) string { return grantLeafPrefix + digest }
 // (runID, digest)), so it is covered by the same signed tree head and inclusion proofs as the
 // actions taken under it. A governed action whose Identity.AuthorityRef equals the grant's digest
 // then links to an anchored, issuer-signed authority.
-func RecordGrant(ctx context.Context, store agent.Durable, runID string, sg SignedGrant) (agent.Record, error) {
+func RecordGrant(ctx context.Context, store *agent.Journal, runID string, sg SignedGrant) (agent.Record, error) {
 	content, err := json.Marshal(sg)
 	if err != nil {
 		return agent.Record{}, fmt.Errorf("audit: marshal signed grant: %w", err)
 	}
-	return store.Do(ctx, runID, grantLeafName(sg.Grant.Digest()), func(context.Context) (agent.Record, error) {
+	return doRecord(ctx, store, runID, grantLeafName(sg.Grant.Digest()), func(context.Context) (agent.Record, error) {
 		return agent.Record{Kind: agent.StepValue, Result: content}, nil
 	})
 }
@@ -126,7 +126,7 @@ func RecordGrant(ctx context.Context, store agent.Durable, runID string, sg Sign
 // ProveGrant builds a ProofBundle proving the grant with this digest was committed in the tree sth
 // signs. Pair it with an action's bundle whose Identity.AuthorityRef matches the digest to show the
 // action ran under an in-log, issuer-signed authority.
-func ProveGrant(ctx context.Context, store agent.Durable, runID, digest string, sth SignedTreeHead) (ProofBundle, error) {
+func ProveGrant(ctx context.Context, store *agent.Journal, runID, digest string, sth SignedTreeHead) (ProofBundle, error) {
 	recs, err := store.History(ctx, runID)
 	if err != nil {
 		return ProofBundle{}, fmt.Errorf("audit: load journal %s: %w", runID, err)

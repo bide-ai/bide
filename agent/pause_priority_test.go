@@ -8,6 +8,7 @@ import (
 	"time"
 
 	"github.com/bide-ai/bide/agent"
+	"github.com/bide-ai/bide/agent/agenttest"
 )
 
 // signalTool is a read-only tool whose call runs fn.
@@ -18,7 +19,7 @@ type signalTool struct {
 
 func (t signalTool) Name() string                { return t.name }
 func (t signalTool) Description() string         { return "" }
-func (t signalTool) ArgsSchema() json.RawMessage { return nil }
+func (t signalTool) ArgsSchema() json.RawMessage { return json.RawMessage(`{"type":"object"}`) }
 func (t signalTool) Safety() agent.Safety        { return agent.Safety{ReadOnly: true} }
 func (t signalTool) Call(context.Context, json.RawMessage) (json.RawMessage, error) {
 	return t.fn()
@@ -54,7 +55,7 @@ func TestRun_HaltReportedAheadOfAnEarlierCallsPause(t *testing.T) {
 		{Event: agent.Finish{Reason: "tool_use"}},
 	}
 	model := modelFunc(func() []agent.Emit { return turn })
-	_, err := agent.New(model, agent.NewMemStore(), a, b, c).SetMaxConcurrency(2).Run(context.Background(), "r", "go")
+	_, err := agenttest.MustNew(model, agenttest.MemJournal(), agent.WithTools(a, b, c), agent.WithMaxConcurrency(2)).Run(context.Background(), "r", "go")
 	var halt *agent.ResumeHalt
 	if !errors.As(err, &halt) || halt.Op.ID != "effect" {
 		t.Fatalf("Run = %v; want the halt on effect", err)

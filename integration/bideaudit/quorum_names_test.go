@@ -11,6 +11,7 @@ import (
 	"testing"
 
 	"github.com/bide-ai/bide/agent"
+	"github.com/bide-ai/bide/agent/agenttest"
 	"github.com/bide-ai/bide/audit"
 	"github.com/bide-ai/bide/govern"
 )
@@ -19,7 +20,7 @@ import (
 // runs a bide-audit binary built for the test.
 type quorumBundles struct {
 	t      *testing.T
-	store  agent.Durable
+	store  *agent.Journal
 	runID  string
 	dir    string
 	bin    string
@@ -27,7 +28,7 @@ type quorumBundles struct {
 	sth    audit.SignedTreeHead
 }
 
-func newQuorumBundles(t *testing.T, store agent.Durable, runID string) *quorumBundles {
+func newQuorumBundles(t *testing.T, store *agent.Journal, runID string) *quorumBundles {
 	t.Helper()
 	pub, priv, _ := ed25519.GenerateKey(rand.Reader)
 	th, err := audit.NewTreeHead(context.Background(), store, runID, 1)
@@ -69,7 +70,7 @@ func (b *quorumBundles) verify(name, tallyStep string, voteSteps ...string) (str
 // quorum's votes or tally stand in for the other's.
 func TestVerifyQuorumCLI_OtherQuorumsVotesDoNotCount(t *testing.T) {
 	ctx := context.Background()
-	store := agent.NewMemStore()
+	store := agenttest.MemJournal()
 	voters := func(d string) []govern.Voter {
 		return []govern.Voter{fixedCLIVoter("model-A", d), fixedCLIVoter("model-B", d), fixedCLIVoter("model-C", "abstain")}
 	}
@@ -100,7 +101,7 @@ func TestVerifyQuorumCLI_OtherQuorumsVotesDoNotCount(t *testing.T) {
 // tally does not record, or a disclosed decision that differs from the tally's, fails.
 func TestVerifyQuorumCLI_DisclosedVotesMustBeTheRecordedOnes(t *testing.T) {
 	ctx := context.Background()
-	store := agent.NewMemStore()
+	store := agenttest.MemJournal()
 	record := func(step string, v any) {
 		t.Helper()
 		if _, err := agent.Step(ctx, store, "run", step, func(context.Context) (any, error) { return v, nil }); err != nil {
@@ -157,7 +158,7 @@ func TestVerifyQuorumCLI_DisclosedVotesMustBeTheRecordedOnes(t *testing.T) {
 // voter's bundle beside it, the disclosed votes are not the votes the tally records.
 func TestVerifyQuorumCLI_OneVoterCountsOnce(t *testing.T) {
 	ctx := context.Background()
-	store := agent.NewMemStore()
+	store := agenttest.MemJournal()
 	record := func(step string, v any) {
 		t.Helper()
 		if _, err := agent.Step(ctx, store, "run", step, func(context.Context) (any, error) { return v, nil }); err != nil {

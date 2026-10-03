@@ -13,6 +13,8 @@ import (
 	"time"
 
 	"github.com/bide-ai/bide/agent"
+	"github.com/bide-ai/bide/agent/agenttest"
+	"github.com/bide-ai/bide/internal/journaltest"
 )
 
 // stricterLevels are the default_transaction_isolation settings a deployment may configure above
@@ -61,6 +63,7 @@ func TestPostgres_ConcurrentStepsUnderStricterDefaultIsolation(t *testing.T) {
 			if err != nil {
 				t.Fatal(err)
 			}
+			j := agenttest.MustJournal(s)
 			defer s.Close()
 			runID := uniqueID(t, "pg-iso-")
 			const steps = 32
@@ -70,7 +73,7 @@ func TestPostgres_ConcurrentStepsUnderStricterDefaultIsolation(t *testing.T) {
 			for i := range steps {
 				wg.Go(func() {
 					<-start
-					_, errs[i] = s.Do(ctx, runID, fmt.Sprintf("step-%02d", i), func(context.Context) (agent.Record, error) {
+					_, errs[i] = journaltest.Do(ctx, j, runID, fmt.Sprintf("step-%02d", i), func(context.Context) (agent.Record, error) {
 						return agent.Record{Kind: agent.StepValue, Result: json.RawMessage(fmt.Sprint(i))}, nil
 					})
 				})
@@ -87,7 +90,7 @@ func TestPostgres_ConcurrentStepsUnderStricterDefaultIsolation(t *testing.T) {
 			if failed > 0 {
 				t.Fatalf("%d of %d concurrent steps failed at %s", failed, steps, level)
 			}
-			hist, err := s.History(ctx, runID)
+			hist, err := j.History(ctx, runID)
 			if err != nil {
 				t.Fatal(err)
 			}
@@ -130,7 +133,7 @@ func TestPostgres_RacingNodesUnderStricterDefaultIsolation(t *testing.T) {
 				for n, s := range nodes {
 					wg.Go(func() {
 						<-start
-						_, err := s.Do(ctx, fmt.Sprintf("%s-%d", prefix, r), "step", func(context.Context) (agent.Record, error) {
+						_, err := journaltest.Do(ctx, agenttest.MustJournal(s), fmt.Sprintf("%s-%d", prefix, r), "step", func(context.Context) (agent.Record, error) {
 							return agent.Record{Kind: agent.StepValue, Result: json.RawMessage(fmt.Sprint(n))}, nil
 						})
 						if err != nil {

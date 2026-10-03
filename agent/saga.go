@@ -99,9 +99,6 @@ func (a *Agent) runSagaWithTelemetry(ctx context.Context, runID string, d *drive
 	if err := checkRunID(ctx, runID); err != nil {
 		return Message{}, usageTotals{}, 0, err
 	}
-	if err := a.checkTools(); err != nil {
-		return Message{}, usageTotals{}, 0, err // before a rollback, which looks compensators up by name
-	}
 	recs, err := a.store.History(ctx, runID)
 	if err != nil {
 		return Message{}, usageTotals{}, 0, err
@@ -180,7 +177,7 @@ func (a *Agent) rollback(ctx context.Context, runID string, cause error, causeTe
 			// Cancel has asked for the rollback, the run's end is run:cancelled, whichever cause
 			// started the rollback (one Get, on a failure's rollback only). A sub-run's tree root's
 			// cancellation asks for it too (up to two Gets more, from the root's store).
-			r, ok, err := lookup(ctx, a.store, runID, runCancelRequestedStep)
+			r, ok, err := a.store.Get(ctx, runID, runCancelRequestedStep)
 			if root := treeRootID(runID); err == nil && !ok && root != runID {
 				r, ok, err = rootCancelRecord(ctx, rootStoreOf(ctx, root, a.store), root)
 			}
@@ -432,7 +429,7 @@ func (a *Agent) rollbackRun(ctx context.Context, runID, root string) (compensate
 				// saga context, so the arguments it accepts are journaled as the live call's were.
 				toolH := a.toolHandler(runID)
 				spec := a.specs[tu.Name]
-				rec, ce := a.store.Do(ctx, runID, ToolResultStep(tu.ID), func(ctx context.Context) (Record, error) {
+				rec, ce := a.store.do(ctx, runID, ToolResultStep(tu.ID), func(ctx context.Context) (Record, error) {
 					live := &callUsage{} // the re-run's own call, from which it may resume its programmatic sub-runs
 					out, state, _, e := callTool(withCallUsage(withRunContext(ctx, a.store, runID, tu.ID, true), live), spec.Timeout, func(ctx context.Context) (json.RawMessage, int32, error) { return toolH(ctx, tu) })
 					live.callReturned()
@@ -497,7 +494,7 @@ func (a *Agent) rollbackRun(ctx context.Context, runID, root string) (compensate
 			if !ok {
 				args, _ = argsFor(recs, tu.ID)
 			}
-			if _, ce := a.store.Do(ctx, runID, sagaCompensateStep(tu.ID), func(ctx context.Context) (Record, error) {
+			if _, ce := a.store.do(ctx, runID, sagaCompensateStep(tu.ID), func(ctx context.Context) (Record, error) {
 				if e := comp.Compensate(ctx, args, res.Result); e != nil {
 					return Record{}, e
 				}

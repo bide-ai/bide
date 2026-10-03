@@ -10,6 +10,7 @@ import (
 	"time"
 
 	"github.com/bide-ai/bide/agent"
+	"github.com/bide-ai/bide/agent/agenttest"
 )
 
 // listed returns the tools a raw server listing defs maps to, with opts.
@@ -138,9 +139,9 @@ func TestSpec_TimeoutHaltsASideEffect(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	store := agent.NewMemStore()
+	store := agenttest.MemJournal()
 	m := agent.NewScriptedModel(agent.ToolTurn("c1", "transfer", `{}`), agent.TextTurn("done"))
-	a := agent.New(m, store, tools...)
+	a := agenttest.MustNew(m, store, agent.WithTools(tools...))
 	if _, err := a.Run(context.Background(), "r1", "go"); !errors.Is(err, agent.ErrToolOutcomeUnknown) {
 		t.Fatalf("run err = %v, want ErrToolOutcomeUnknown", err)
 	}

@@ -9,9 +9,9 @@ import (
 // A saga that aborted and finished its rollback is over. Recover must not re-drive it and report
 // it as a failure on every pass, which buries real recovery failures in noise.
 func TestRecover_SkipsAFinishedSagaAbort(t *testing.T) {
-	store := NewMemStore()
+	store := memJournal()
 	fail := Func("book", "book it", Safety{}, func(context.Context, struct{}) (string, error) { return "", errors.New("no seats") })
-	a := New(NewScriptedModel(ToolTurn("b1", "book", `{}`), TextTurn("done")), store, fail)
+	a := mustNew(NewScriptedModel(ToolTurn("b1", "book", `{}`), TextTurn("done")), store, WithTools(fail))
 	var aborted *SagaAborted
 	if _, err := a.RunSaga(context.Background(), "r1", "go"); !errors.As(err, &aborted) {
 		t.Fatalf("setup: %v", err)

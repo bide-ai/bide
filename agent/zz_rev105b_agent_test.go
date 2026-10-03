@@ -9,6 +9,7 @@ import (
 	"testing"
 
 	"github.com/bide-ai/bide/agent"
+	"github.com/bide-ai/bide/agent/agenttest"
 )
 
 // keylessVerifier is an ApproverVerifier that reports no key identity (a verifier that checks
@@ -54,8 +55,10 @@ func Test_R105b_KeylessApproverIsRefused(t *testing.T) {
 	// The gate refuses the policy before any decision is read, and the tool never runs.
 	ran := 0
 	wire := agent.Func("wire", "", agent.Safety{}, func(context.Context, struct{}) (string, error) { ran++; return "sent", nil }, agent.WithApproval(&p))
-	_, err := agent.New(agent.NewScriptedModel(agent.ToolTurn("c", "wire", `{}`), agent.TextTurn("done")), agent.NewMemStore(), wire).
-		WithApproverVerifiers(resolve).Run(context.Background(), "r", "hi")
+	_, err := agenttest.MustNew(
+		agent.NewScriptedModel(agent.ToolTurn("c", "wire", `{}`), agent.TextTurn("done")),
+		agenttest.MemJournal(),
+		agent.WithTools(wire), agent.WithApproverVerifiers(resolve)).Run(context.Background(), "r", "hi")
 	if !errors.Is(err, agent.ErrConfig) || ran != 0 {
 		t.Fatalf("a gate whose approvers resolve to verifiers with no key identity: err %v, tool ran %d times; want ErrConfig and no run", err, ran)
 	}
@@ -81,9 +84,12 @@ func Test_R105c_GateReadsTheRecordedTallyStrictly(t *testing.T) {
 	ran := 0
 	wire := agent.Func("wire", "", agent.Safety{}, func(context.Context, struct{}) (string, error) { ran++; return "sent", nil }, agent.WithApproval(&p))
 	resolve := func(id string) (agent.ApproverVerifier, bool) { return keyedVerifier{id + "-key"}, true }
-	s := agent.NewMemStore()
+	s := agenttest.MemJournal()
 	newAgent := func() *agent.Agent {
-		return agent.New(agent.NewScriptedModel(agent.ToolTurn("c1", "wire", `{}`), agent.TextTurn("done")), s, wire).WithApproverVerifiers(resolve)
+		return agenttest.MustNew(
+			agent.NewScriptedModel(agent.ToolTurn("c1", "wire", `{}`), agent.TextTurn("done")),
+			s,
+			agent.WithTools(wire), agent.WithApproverVerifiers(resolve))
 	}
 	var pend *agent.PendingApproval
 	if _, err := newAgent().Run(ctx, "r", "hi"); !errors.As(err, &pend) {
@@ -91,7 +97,7 @@ func Test_R105c_GateReadsTheRecordedTallyStrictly(t *testing.T) {
 	}
 	salt := base64.StdEncoding.EncodeToString(bytes.Repeat([]byte{7}, agent.SaltSize))
 	tally := `{"name":"` + agent.ApprovalTallyStep("c1") + `","kind":"value","result":{"need":2,"approvers":["alice","bob"],"approved":0,"denied":0,"Approved":2},"salt":"` + salt + `"}`
-	if _, _, err := s.Insert(ctx, "r", agent.ApprovalTallyStep("c1"), []byte(tally)); err != nil {
+	if _, _, err := s.Store().Insert(ctx, "r", agent.ApprovalTallyStep("c1"), []byte(tally)); err != nil {
 		t.Fatal(err)
 	}
 	_, err := newAgent().Run(ctx, "r", "hi")

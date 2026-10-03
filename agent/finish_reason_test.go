@@ -62,8 +62,8 @@ func (m reasonModel) Stream(context.Context, Request) (*Stream, error) {
 func TestRun_CutOffFinalTurnDoesNotComplete(t *testing.T) {
 	ctx := context.Background()
 	for _, reason := range []FinishReason{FinishLength, FinishFiltered} {
-		store := NewMemStore()
-		msg, err := New(reasonModel{reason}, store).Run(ctx, "r", "sum it")
+		store := memJournal()
+		msg, err := mustNew(reasonModel{reason}, store).Run(ctx, "r", "sum it")
 		if err == nil {
 			t.Errorf("reason %q: Run returned %q with no error", reason, msg.Text())
 		}

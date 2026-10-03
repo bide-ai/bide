@@ -11,6 +11,7 @@ import (
 
 	"github.com/bide-ai/bide/agent"
 	"github.com/bide-ai/bide/agent/agenttest"
+	"github.com/bide-ai/bide/internal/journaltest"
 )
 
 // The store round trips each engine operation costs, counted by agenttest.CountingStore. These are
@@ -54,7 +55,7 @@ func readOnly() agent.Tool {
 // check: its Load read the run.
 func TestBudget_FirstDriveAndCompletion(t *testing.T) {
 	j, cs, _ := countingJournal(t)
-	if _, err := agent.New(agent.NewScriptedModel(agent.TextTurn("done")), j).Run(context.Background(), "r", "hi"); err != nil {
+	if _, err := agenttest.MustNew(agent.NewScriptedModel(agent.TextTurn("done")), j).Run(context.Background(), "r", "hi"); err != nil {
 		t.Fatal(err)
 	}
 	wantCounts(t, cs, "first drive, one turn, completion",
@@ -76,7 +77,7 @@ func TestBudget_ToolCalls(t *testing.T) {
 		t.Run(c.name, func(t *testing.T) {
 			j, cs, _ := countingJournal(t)
 			m := agent.NewScriptedModel(agent.ToolTurn("c1", c.tool.Name(), `{}`), agent.TextTurn("done"))
-			if _, err := agent.New(m, j, c.tool).Run(context.Background(), "r", "hi"); err != nil {
+			if _, err := agenttest.MustNew(m, j, agent.WithTools(c.tool)).Run(context.Background(), "r", "hi"); err != nil {
 				t.Fatal(err)
 			}
 			want := append([]string{"insert @journal", "insert run:start", "get @llm/0", "insert @llm/0"}, c.want...)
@@ -92,14 +93,18 @@ func TestBudget_Resume(t *testing.T) {
 	ctx := context.Background()
 	j, cs, m := countingJournal(t)
 	// A side-effect call claimed and never recorded: the resume halts on it.
-	a := agent.New(agent.NewScriptedModel(agent.ToolTurn("c1", "charge", `{}`), agent.TextTurn("done")), j, sideEffect())
+	a := agenttest.MustNew(
+		agent.NewScriptedModel(agent.ToolTurn("c1", "charge", `{}`), agent.TextTurn("done")),
+		j,
+		agent.WithTools(sideEffect()),
+	)
 	if _, err := agent.Step(ctx, j, "r", "warm", func(context.Context) (int, error) { return 1, nil }, agent.WithSafety(agent.Safety{ReadOnly: true})); err != nil {
 		t.Fatal(err)
 	}
 	if _, err := a.Run(ctx, "r", "hi"); err != nil {
 		t.Fatal(err)
 	}
-	n := len(must(m.History(ctx, "r")))
+	n := len(must(agenttest.MustJournal(m).History(ctx, "r")))
 	cs.Reset()
 
 	if _, err := a.Run(ctx, "r", "hi"); err != nil {
@@ -111,7 +116,7 @@ func TestBudget_Resume(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if _, err := agent.New(agent.NewScriptedModel(agent.TextTurn("done")), cold, sideEffect()).Run(ctx, "r", "hi"); err != nil {
+	if _, err := agenttest.MustNew(agent.NewScriptedModel(agent.TextTurn("done")), cold, agent.WithTools(sideEffect())).Run(ctx, "r", "hi"); err != nil {
 		t.Fatal(err)
 	}
 	wantCounts(t, cs, "resume of a finished run, new Journal", nil, 1, n)
@@ -120,12 +125,12 @@ func TestBudget_Resume(t *testing.T) {
 	if _, _, err := agent.ClaimAttempt(ctx, j, "h", "attempt:tool:c1", agent.Record{Kind: agent.StepAttempt, ToolUseID: "c1"}); err != nil {
 		t.Fatal(err)
 	}
-	if _, err := j.Do(ctx, "h", "run:start", func(context.Context) (agent.Record, error) {
+	if _, err := journaltest.Do(ctx, j, "h", "run:start", func(context.Context) (agent.Record, error) {
 		return agent.Record{Kind: agent.StepValue, Result: []byte(`{"input":"hi"}`)}, nil
 	}); err != nil {
 		t.Fatal(err)
 	}
-	if _, err := j.Do(ctx, "h", "@llm/0", func(context.Context) (agent.Record, error) {
+	if _, err := journaltest.Do(ctx, j, "h", "@llm/0", func(context.Context) (agent.Record, error) {
 		msg := agent.Message{Role: agent.RoleAssistant, Parts: []agent.Part{agent.ToolUse{ID: "c1", Name: "charge", Args: []byte(`{}`)}}}
 		return agent.Record{Kind: agent.StepModel, Message: &msg}, nil
 	}); err != nil {
@@ -192,13 +197,14 @@ func TestBudget_RecoverPass(t *testing.T) {
 	ctx := context.Background()
 	m := agent.NewMemStore()
 	const runs = 1000
+	mj := agenttest.MustJournal(m)
 	for i := range runs {
 		id := fmt.Sprintf("run-%04d", i)
 		name := "run:start"
 		if i%2 == 0 {
 			name = "run:complete"
 		}
-		if _, err := m.Do(ctx, id, name, func(context.Context) (agent.Record, error) {
+		if _, err := journaltest.Do(ctx, mj, id, name, func(context.Context) (agent.Record, error) {
 			return agent.Record{Kind: agent.StepValue, Result: []byte(`{"input":"x"}`)}, nil
 		}); err != nil {
 			t.Fatal(err)

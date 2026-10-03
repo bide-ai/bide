@@ -24,7 +24,7 @@ func TestSessionTurn_RootRunCannotShareItsJournal(t *testing.T) {
 		{"SendOnce", "chat/e/k1", sendOnce},
 	} {
 		t.Run(tc.name+"/run first", func(t *testing.T) {
-			a := New(&replyModel{}, NewMemStore())
+			a := mustNew(&replyModel{}, memJournal())
 			if out, err := a.Run(ctx, tc.runID, "wire the money"); err != nil || out.Text() != "re: wire the money" {
 				t.Fatalf("Run(%q) = %q, %v", tc.runID, out.Text(), err)
 			}
@@ -34,7 +34,7 @@ func TestSessionTurn_RootRunCannotShareItsJournal(t *testing.T) {
 			}
 		})
 		t.Run(tc.name+"/session first", func(t *testing.T) {
-			a := New(&replyModel{}, NewMemStore())
+			a := mustNew(&replyModel{}, memJournal())
 			if msg, err := tc.turn(openSession(t, a, "chat")); err != nil || msg.Text() != "re: hello" {
 				t.Fatalf("session turn = %q, %v", msg.Text(), err)
 			}
@@ -52,8 +52,8 @@ func TestSessionTurn_RootRunCannotShareItsJournal(t *testing.T) {
 // it as an agent run.
 func TestSessionJournal_RootRunCannotShareIt(t *testing.T) {
 	ctx := context.Background()
-	store := NewMemStore()
-	a := New(&replyModel{}, store)
+	store := memJournal()
+	a := mustNew(&replyModel{}, store)
 	if msg, err := openSession(t, a, "chat").Send(ctx, "hello"); err != nil || msg.Text() != "re: hello" {
 		t.Fatalf("Send = %q, %v", msg.Text(), err)
 	}
@@ -81,14 +81,14 @@ func TestSessionJournal_RootRunCannotShareIt(t *testing.T) {
 // "chat/t1" to the resume callback, which would drive them as root runs.
 func TestRecover_SkipsSessionRuns(t *testing.T) {
 	ctx := context.Background()
-	store := NewMemStore()
-	a := New(&replyModel{}, store)
+	store := memJournal()
+	a := mustNew(&replyModel{}, store)
 	s := openSession(t, a, "chat")
 	if _, err := s.Send(ctx, "hello"); err != nil {
 		t.Fatal(err)
 	}
 	// The second turn's run starts and dies before it finishes.
-	failing := New(failingModel{}, store)
+	failing := mustNew(failingModel{}, store)
 	if _, err := openSession(t, failing, "chat").Send(ctx, "again"); err == nil {
 		t.Fatal("second turn finished; want it left unfinished")
 	}
@@ -174,7 +174,7 @@ func TestSessionRunIDs_Unambiguous(t *testing.T) {
 	if err := checkRunID(withSessionRun(ctx, sub), sub); !errors.Is(err, ErrConfig) {
 		t.Fatalf("checkRunID(%q) = %v under withSessionRun, want ErrConfig", sub, err)
 	}
-	a := New(&replyModel{}, NewMemStore())
+	a := mustNew(&replyModel{}, memJournal())
 	if _, err := a.Run(ctx, sessionTurnRunID("chat", 0), "hi"); !errors.Is(err, ErrConfig) {
 		t.Fatalf("Run(session turn run) = %v, want ErrConfig", err)
 	}

@@ -9,13 +9,14 @@ import (
 	"time"
 
 	"github.com/bide-ai/bide/agent"
+	"github.com/bide-ai/bide/agent/agenttest"
 )
 
 // A RegisterTool the agent's wrapper check refuses is not recorded on the Registry, unlike a
 // duplicate registration, so Load (for a caller that did not check the return) reports an
 // unknown block rather than the refusal.
 func TestRev117e_RegisterToolRefusalSurfacesAtLoad(t *testing.T) {
-	sub := agent.New(agent.NewScriptedModel(agent.TextTurn("x")), agent.NewMemStore())
+	sub := agenttest.MustNew(agent.NewScriptedModel(agent.TextTurn("x")), agenttest.MemJournal())
 	reg := NewRegistry()
 	_ = RegisterTool[int, int](reg, "delegate", timedSubWrap{agent.SubAgent("delegate", "", sub)})
 	cfg := `{"version":1,"flow":"f","in":"int","out":"int","entry":"delegate",

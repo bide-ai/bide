@@ -76,16 +76,16 @@ func TestRememberedClaimRunsUnderAVoidedMarker_Tool(t *testing.T) {
 		failNoCommit: map[string]bool{},
 	}
 	j1, _ := agent.NewJournal(s)
-	_, err1 := agent.New(model(), j1, charge).SetMaxConcurrency(1).Run(ctx, "r", "hi")
+	_, err1 := agenttest.MustNew(model(), j1, agent.WithTools(charge), agent.WithMaxConcurrency(1)).Run(ctx, "r", "hi")
 	t.Logf("drive 1: %v (fired %d)", err1, fired)
 
 	s.failNoCommit["tool:c1"] = true // the result write of drive 2 is lost (or the process dies here)
 	j2, _ := agent.NewJournal(s)     // same process: same store value
-	_, err2 := agent.New(model(), j2, charge).SetMaxConcurrency(1).Run(ctx, "r", "hi")
+	_, err2 := agenttest.MustNew(model(), j2, agent.WithTools(charge), agent.WithMaxConcurrency(1)).Run(ctx, "r", "hi")
 	t.Logf("drive 2: %v (fired %d)", err2, fired)
 
 	j3, _ := agent.NewJournal(&faultStore{m: m}) // a new process
-	_, err3 := agent.New(model(), j3, charge).SetMaxConcurrency(1).Run(ctx, "r", "hi")
+	_, err3 := agenttest.MustNew(model(), j3, agent.WithTools(charge), agent.WithMaxConcurrency(1)).Run(ctx, "r", "hi")
 	t.Logf("drive 3: %v (fired %d)", err3, fired)
 	t.Logf("faults: %v", s.log)
 	if fired > 1 {
@@ -182,16 +182,16 @@ func TestReattemptWhoseResultIsLostHalts(t *testing.T) {
 			failNoCommit: map[string]bool{"attempt:tool:c1": true, "attempt:not-started:": true},
 		}
 		j1, _ := agent.NewJournal(s)
-		_, _ = agent.New(model(), j1, charge).SetMaxConcurrency(1).Run(ctx, "r", "hi")
+		_, _ = agenttest.MustNew(model(), j1, agent.WithTools(charge), agent.WithMaxConcurrency(1)).Run(ctx, "r", "hi")
 		s.failNoCommit["tool:c1"] = true
 		j2, _ := agent.NewJournal(s)
-		_, err2 := agent.New(model(), j2, charge).SetMaxConcurrency(1).Run(ctx, "r", "hi")
+		_, err2 := agenttest.MustNew(model(), j2, agent.WithTools(charge), agent.WithMaxConcurrency(1)).Run(ctx, "r", "hi")
 		if fired != 1 {
 			t.Fatalf("the held claim's drive fired %d times (%v), want once", fired, err2)
 		}
 		cs := agenttest.NewCountingStore(m)
 		j3, _ := agent.NewJournal(cs)
-		_, err3 := agent.New(model(), j3, charge).SetMaxConcurrency(1).Run(ctx, "r", "hi")
+		_, err3 := agenttest.MustNew(model(), j3, agent.WithTools(charge), agent.WithMaxConcurrency(1)).Run(ctx, "r", "hi")
 		var halt *agent.ResumeHalt
 		if fired != 1 || !errors.As(err3, &halt) {
 			t.Fatalf("a new process = %v with the effect fired %d times; want a halt and once", err3, fired)

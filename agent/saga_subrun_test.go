@@ -8,12 +8,13 @@ import (
 	"testing"
 
 	"github.com/bide-ai/bide/agent"
+	"github.com/bide-ai/bide/agent/agenttest"
 )
 
 // subRunFixture is a parent saga whose tool "starter" runs the programmatic sub-run "child" (an
 // agent whose one write, "book", is compensable), then a tool "boom" fails the saga.
 type subRunFixture struct {
-	store   *agent.MemStore
+	store   *agent.Journal
 	undone  int
 	undoErr error // returned by the next compensation, then cleared
 }
@@ -31,8 +32,8 @@ func (f *subRunFixture) child(t *testing.T) *agent.Agent {
 			f.undone++
 			return nil
 		})
-	c, err := agent.Build(agent.NewScriptedModel(agent.ToolTurn("k1", "book", `{}`), agent.TextTurn("child done")),
-		f.store.Journal(), agent.WithTools(book))
+	c, err := agent.New(agent.NewScriptedModel(agent.ToolTurn("k1", "book", `{}`), agent.TextTurn("child done")),
+		f.store, agent.WithTools(book))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -65,7 +66,7 @@ func (f *subRunFixture) parent(t *testing.T, declare, failAfter bool) *agent.Age
 		return "", errors.New("boom")
 	})
 	turns := []agent.ScriptedTurn{agent.ToolTurn("c1", "starter", `{}`), agent.ToolTurn("c2", "boom", `{}`), agent.TextTurn("x")}
-	p, err := agent.Build(agent.NewScriptedModel(turns...), f.store.Journal(), agent.WithTools(starter, boom))
+	p, err := agent.New(agent.NewScriptedModel(turns...), f.store, agent.WithTools(starter, boom))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -85,7 +86,7 @@ func abortOf(t *testing.T, err error) *agent.SagaAborted {
 // walks a sub-agent's: with the agent the tool declares (WithSubRuns), the child's write is undone.
 func TestSagaRollback_ProgrammaticSubRunCompensated(t *testing.T) {
 	for _, failAfter := range []bool{false, true} {
-		f := &subRunFixture{store: agent.NewMemStore()}
+		f := &subRunFixture{store: agenttest.MemJournal()}
 		_, err := f.parent(t, true, failAfter).RunSaga(context.Background(), "root", "go")
 		ab := abortOf(t, err)
 		if f.undone != 1 || !slices.Equal(ab.Compensated, []string{"book"}) || len(ab.Uncompensated) != 0 || ab.CompensateErr != nil {
@@ -97,7 +98,7 @@ func TestSagaRollback_ProgrammaticSubRunCompensated(t *testing.T) {
 
 // Without WithSubRuns the rollback cannot undo the child's write, and reports it.
 func TestSagaRollback_UndeclaredSubRunReported(t *testing.T) {
-	f := &subRunFixture{store: agent.NewMemStore()}
+	f := &subRunFixture{store: agenttest.MemJournal()}
 	_, err := f.parent(t, false, false).RunSaga(context.Background(), "root", "go")
 	ab := abortOf(t, err)
 	if f.undone != 0 || !slices.Equal(ab.Uncompensated, []string{"book"}) || len(ab.Compensated) != 0 {
@@ -109,7 +110,7 @@ func TestSagaRollback_UndeclaredSubRunReported(t *testing.T) {
 // The link is durable, and the declaration is code: a rollback that stopped (a compensation
 // failed) and is resumed by fresh agents, as after a restart, still undoes the child's write.
 func TestSagaRollback_SubRunResumedByFreshAgents(t *testing.T) {
-	f := &subRunFixture{store: agent.NewMemStore(), undoErr: errors.New("booking service down")}
+	f := &subRunFixture{store: agenttest.MemJournal(), undoErr: errors.New("booking service down")}
 	_, err := f.parent(t, true, false).RunSaga(context.Background(), "root", "go")
 	if ab := abortOf(t, err); ab.CompensateErr == nil || f.undone != 0 {
 		t.Fatalf("first rollback: undone %d, err %v; want it stopped at the failed compensation", f.undone, ab.CompensateErr)
@@ -124,7 +125,7 @@ func TestSagaRollback_SubRunResumedByFreshAgents(t *testing.T) {
 // plain run started from a saga's call is in the tree and links its own; see
 // TestAdv127b_NestedThroughNonSagaChild.)
 func TestSubRunLink_OnlyInASagaTree(t *testing.T) {
-	f := &subRunFixture{store: agent.NewMemStore()}
+	f := &subRunFixture{store: agenttest.MemJournal()}
 	_, _ = f.parent(t, true, false).Run(context.Background(), "plain", "go")
 	recs, err := f.store.History(context.Background(), "plain")
 	if err != nil {
@@ -135,7 +136,7 @@ func TestSubRunLink_OnlyInASagaTree(t *testing.T) {
 			t.Errorf("a plain run recorded the link %s", r.Name)
 		}
 	}
-	f = &subRunFixture{store: agent.NewMemStore()}
+	f = &subRunFixture{store: agenttest.MemJournal()}
 	_, _ = f.parent(t, true, false).RunSaga(context.Background(), "saga", "go")
 	recs, _ = f.store.History(context.Background(), "saga")
 	n := 0
@@ -154,8 +155,8 @@ func TestSubRunLink_OnlyInASagaTree(t *testing.T) {
 // is refused with ErrConfig, in a saga or not.
 func TestSubRunFor_RefusedAfterTheCallReturned(t *testing.T) {
 	for _, saga := range []bool{false, true} {
-		store := agent.NewMemStore()
-		child, err := agent.Build(agent.NewScriptedModel(agent.TextTurn("late")), store.Journal())
+		store := agenttest.MemJournal()
+		child, err := agent.New(agent.NewScriptedModel(agent.TextTurn("late")), store)
 		if err != nil {
 			t.Fatal(err)
 		}
@@ -170,8 +171,8 @@ func TestSubRunFor_RefusedAfterTheCallReturned(t *testing.T) {
 			}()
 			return "spawned", nil
 		})
-		p, err := agent.Build(agent.NewScriptedModel(agent.ToolTurn("c1", "spawn", `{}`), agent.TextTurn("done")),
-			store.Journal(), agent.WithTools(spawn))
+		p, err := agent.New(agent.NewScriptedModel(agent.ToolTurn("c1", "spawn", `{}`), agent.TextTurn("done")),
+			store, agent.WithTools(spawn))
 		if err != nil {
 			t.Fatal(err)
 		}
@@ -191,8 +192,8 @@ func TestSubRunFor_RefusedAfterTheCallReturned(t *testing.T) {
 
 // In a saga, a programmatic sub-run's name must be short enough to be recovered from its link.
 func TestSubRunFor_LongNameInASaga(t *testing.T) {
-	store := agent.NewMemStore()
-	child, err := agent.Build(agent.NewScriptedModel(agent.TextTurn("ok")), store.Journal())
+	store := agenttest.MemJournal()
+	child, err := agent.New(agent.NewScriptedModel(agent.TextTurn("ok")), store)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -205,8 +206,8 @@ func TestSubRunFor_LongNameInASaga(t *testing.T) {
 		}
 		return "refused", nil
 	})
-	p, err := agent.Build(agent.NewScriptedModel(agent.ToolTurn("c1", "starter", `{}`), agent.TextTurn("done")),
-		store.Journal(), agent.WithTools(starter))
+	p, err := agent.New(agent.NewScriptedModel(agent.ToolTurn("c1", "starter", `{}`), agent.TextTurn("done")),
+		store, agent.WithTools(starter))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -224,7 +225,7 @@ func errString(err error) string {
 
 // WithSubRuns(nil) is ErrConfig, and SubAgent refuses the option.
 func TestWithSubRuns_Refusals(t *testing.T) {
-	sub, err := agent.Build(agent.NewScriptedModel(), agent.NewMemStore().Journal())
+	sub, err := agent.New(agent.NewScriptedModel(), agenttest.MemJournal())
 	if err != nil {
 		t.Fatal(err)
 	}

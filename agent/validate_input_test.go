@@ -16,14 +16,14 @@ func TestNew_PanicsOnNilModelOrStore(t *testing.T) {
 		}()
 		fn()
 	}
-	mustPanicNew("nil model", func() { New(nil, NewMemStore()) })
-	mustPanicNew("nil store", func() { New(stubModel{}, nil) })
+	mustPanicNew("nil model", func() { New(nil, memJournal()) })
+	mustPanicNew("nil store", func() { mustNew(stubModel{}, nil) })
 }
 
 func TestEntryPoints_RejectEmptyRunID(t *testing.T) {
 	ctx := context.Background()
-	s := NewMemStore()
-	a := New(stubModel{}, s)
+	s := memJournal()
+	a := mustNew(stubModel{}, s)
 
 	if _, err := a.Run(ctx, "", "hi"); !errors.Is(err, ErrConfig) {
 		t.Errorf("Run(empty) err = %v, want ErrConfig", err)

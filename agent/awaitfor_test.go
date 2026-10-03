@@ -25,7 +25,7 @@ type awaitForTool struct {
 func (t *awaitForTool) Name() string                { return t.name }
 func (t *awaitForTool) Description() string         { return "" }
 func (t *awaitForTool) Safety() Safety              { return t.safety }
-func (t *awaitForTool) ArgsSchema() json.RawMessage { return nil }
+func (t *awaitForTool) ArgsSchema() json.RawMessage { return json.RawMessage(`{"type":"object"}`) }
 func (t *awaitForTool) Call(ctx context.Context, _ json.RawMessage) (json.RawMessage, error) {
 	*t.calls++
 	v, ok, err := AwaitFor[string](ctx, t.sig, t.d)
@@ -44,7 +44,7 @@ func (t *awaitForTool) Call(ctx context.Context, _ json.RawMessage) (json.RawMes
 // Signal-first: a tool pauses on AwaitFor; Signal delivers the event before the deadline;
 // re-running the same run resolves the await with (payload, true) and completes.
 func TestAwaitFor_SignalFirst(t *testing.T) {
-	store := NewMemStore()
+	store := memJournal()
 	var clk int64 = 1000
 	now := func() time.Time { return time.Unix(atomic.LoadInt64(&clk), 0) }
 	ctx := ContextWithClock(context.Background(), now)
@@ -54,7 +54,7 @@ func TestAwaitFor_SignalFirst(t *testing.T) {
 	var arrived bool
 	tool := &awaitForTool{name: "watch", safety: Safety{ReadOnly: true}, sig: "webhook", d: time.Hour, calls: &calls, got: &got, arrived: &arrived}
 	m := &scriptModel{turns: [][]Emit{toolTurn("c1", "watch", `{}`), textTurn("done")}}
-	a := New(m, store, tool)
+	a := mustNew(m, store, WithTools(tool))
 
 	_, err := a.Run(ctx, "r", "hi")
 	var awt *Awaiting
@@ -95,7 +95,7 @@ func TestAwaitFor_SignalFirst(t *testing.T) {
 // resume run resolves the await with (zero, false) and the run completes on the timeout
 // branch.
 func TestAwaitFor_TimeoutFirst(t *testing.T) {
-	store := NewMemStore()
+	store := memJournal()
 	var clk int64 = 1000
 	now := func() time.Time { return time.Unix(atomic.LoadInt64(&clk), 0) }
 	ctx := ContextWithClock(context.Background(), now)
@@ -105,7 +105,7 @@ func TestAwaitFor_TimeoutFirst(t *testing.T) {
 	var arrived bool = true
 	tool := &awaitForTool{name: "watch", safety: Safety{ReadOnly: true}, sig: "webhook", d: time.Hour, calls: &calls, got: &got, arrived: &arrived}
 	m := &scriptModel{turns: [][]Emit{toolTurn("c1", "watch", `{}`), textTurn("done")}}
-	a := New(m, store, tool)
+	a := mustNew(m, store, WithTools(tool))
 
 	// First run: no signal, before the deadline, so the run pauses durably.
 	_, err := a.Run(ctx, "r", "hi")
@@ -142,7 +142,7 @@ func TestAwaitFor_TimeoutFirst(t *testing.T) {
 // deadline expires. This proves the wake time is fixed on the first encounter (at-most
 // once), not recomputed as now()+d on each resume.
 func TestAwaitFor_DeadlineStable(t *testing.T) {
-	store := NewMemStore()
+	store := memJournal()
 	var clk int64 = 1000
 	now := func() time.Time { return time.Unix(atomic.LoadInt64(&clk), 0) }
 	ctx := ContextWithClock(context.Background(), now)
@@ -151,7 +151,7 @@ func TestAwaitFor_DeadlineStable(t *testing.T) {
 	var arrived bool = true
 	tool := &awaitForTool{name: "watch", safety: Safety{ReadOnly: true}, sig: "webhook", d: time.Hour, calls: &calls, arrived: &arrived}
 	m := &scriptModel{turns: [][]Emit{toolTurn("c1", "watch", `{}`), textTurn("done")}}
-	a := New(m, store, tool)
+	a := mustNew(m, store, WithTools(tool))
 
 	// First run at t=1000: deadline is journaled as 1000+3600.
 	if _, err := a.Run(ctx, "r", "hi"); !errorsIsAwaiting(err) {

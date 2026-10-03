@@ -6,6 +6,7 @@ import (
 	"time"
 
 	"github.com/bide-ai/bide/agent"
+	"github.com/bide-ai/bide/agent/agenttest"
 )
 
 type timedSubWrap struct{ agent.Tool }
@@ -21,7 +22,7 @@ func (w timedSubWrap) Unwrap() agent.Tool { return w.Tool }
 // timeout would cut the sub-run off mid-call. plan now applies ToolSpec.Timeout to Tool nodes,
 // but Build does not run the same check, so the same wrapper is accepted as a flow node.
 func TestAdv117b_PlanAcceptsATimedWrapperOverASubAgent(t *testing.T) {
-	sub := agent.New(agent.NewScriptedModel(agent.TextTurn("x")), agent.NewMemStore())
+	sub := agenttest.MustNew(agent.NewScriptedModel(agent.TextTurn("x")), agenttest.MemJournal())
 	b := New[string, string]("f")
 	b.Tool[string, string]("delegate", timedSubWrap{agent.SubAgent("delegate", "", sub)})
 	_, err := b.Build()
@@ -32,7 +33,7 @@ func TestAdv117b_PlanAcceptsATimedWrapperOverASubAgent(t *testing.T) {
 
 // RegisterTool refuses the same wrapper, and a Compensator nested in an Unwrap chain.
 func TestAdv117b_RegisterToolRefusesUnsafeWrappers(t *testing.T) {
-	sub := agent.New(agent.NewScriptedModel(agent.TextTurn("x")), agent.NewMemStore())
+	sub := agenttest.MustNew(agent.NewScriptedModel(agent.TextTurn("x")), agenttest.MemJournal())
 	reg := NewRegistry()
 	if err := RegisterTool[string, string](reg, "delegate", timedSubWrap{agent.SubAgent("delegate", "", sub)}); !errors.Is(err, agent.ErrConfig) {
 		t.Fatalf("RegisterTool = %v, want ErrConfig", err)

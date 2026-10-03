@@ -120,7 +120,7 @@ func (Finished) agentEvent() {}
 // deltas, TurnStarted, TurnRestarted, ToolStarted, and the terminal Finished — are not
 // journaled and so are not part of the durable projection; the durable content is the turns and
 // tool results.
-func ReplayEvents(ctx context.Context, store Durable, runID string) ([]AgentEvent, error) {
+func ReplayEvents(ctx context.Context, store *Journal, runID string) ([]AgentEvent, error) {
 	recs, err := store.History(ctx, runID)
 	if err != nil {
 		return nil, fmt.Errorf("load history %s: %w (%w)", runID, err, ErrStorage)

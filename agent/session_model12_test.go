@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"iter"
 	"strconv"
 	"strings"
 	"sync"
@@ -27,7 +28,7 @@ func (m *failFirstModel) Stream(ctx context.Context, req Request) (*Stream, erro
 // open, and never reloads. The godoc says a handle that finds the journal moved on reloads it.
 func TestModel12_S1_StaleOpenTurnRefusesNextMessage(t *testing.T) {
 	ctx := context.Background()
-	a := New(&failFirstModel{}, NewMemStore())
+	a := mustNew(&failFirstModel{}, memJournal())
 	h1 := openSession(t, a, "c1")
 	if _, err := h1.Send(ctx, "x"); err == nil {
 		t.Fatal(`first Send("x") succeeded; the test needs it to fail`)
@@ -52,9 +53,10 @@ func TestModel12_S1_StaleOpenTurnRefusesNextMessage(t *testing.T) {
 	}
 }
 
-// loadGate blocks the n-th History call of one run until released.
+// loadGate blocks the n-th read of one run's whole history (a Load from its start) until
+// released.
 type loadGate struct {
-	Durable
+	Store
 	runID   string
 	mu      sync.Mutex
 	loads   int
@@ -63,8 +65,8 @@ type loadGate struct {
 	release chan struct{}
 }
 
-func (g *loadGate) History(ctx context.Context, runID string) ([]Record, error) {
-	if runID == g.runID {
+func (g *loadGate) Load(ctx context.Context, runID string, after int64) iter.Seq2[Entry, error] {
+	if runID == g.runID && after < 0 {
 		g.mu.Lock()
 		g.loads++
 		block := g.loads == g.n
@@ -74,7 +76,7 @@ func (g *loadGate) History(ctx context.Context, runID string) ([]Record, error) 
 			<-g.release
 		}
 	}
-	return g.Durable.History(ctx, runID)
+	return g.Store.Load(ctx, runID, after)
 }
 
 // blockFirstModel blocks its first call until released, then answers as replyModel does.
@@ -107,9 +109,9 @@ func TestModel12_S2_SharedHandleRecordsATurnTwice(t *testing.T) {
 			ctx := context.Background()
 			// The third Load of the run is the second caller's: the first caller's drive loads it
 			// twice (its open, and again once it has written run:start).
-			gate := &loadGate{Durable: NewMemStore(), runID: runID, n: 3, arrived: make(chan struct{}), release: make(chan struct{})}
+			gate := &loadGate{Store: NewMemStore(), runID: runID, n: 3, arrived: make(chan struct{}), release: make(chan struct{})}
 			model := &blockFirstModel{entered: make(chan struct{}), release: make(chan struct{})}
-			a := New(model, gate)
+			a := mustNew(model, mustJournal(gate))
 			h := openSession(t, a, "c1")
 			send := func() (Message, error) {
 				if once {
@@ -258,8 +260,8 @@ func TestModel12_S4_TwoWorkersOvershootATurnBudget(t *testing.T) {
 		}
 		return j
 	}
-	aA := New(m, journal(), tool).WithTokenBudget(budget)
-	aB := New(m, journal(), tool).WithTokenBudget(budget)
+	aA := mustNew(m, journal(), WithTools(tool), WithTokenBudget(budget))
+	aB := mustNew(m, journal(), WithTools(tool), WithTokenBudget(budget))
 	hA, hB := openSession(t, aA, "c1"), openSession(t, aB, "c1")
 	ctxA := context.WithValue(context.Background(), m12drv{}, "A")
 	ctxB := context.WithValue(context.Background(), m12drv{}, "B")
@@ -307,7 +309,7 @@ func TestSession_TurnLeaseExcludesASecondDriver(t *testing.T) {
 		if err != nil {
 			t.Fatal(err)
 		}
-		return New(model, j)
+		return mustNew(model, j)
 	}
 	a := proc()
 	h1, h2 := openSession(t, a, "c1"), openSession(t, proc(), "c1")
@@ -350,7 +352,7 @@ func TestSession_TurnLeaseExcludesASecondDriver(t *testing.T) {
 // transcript (which every later turn reloads and is seeded with) does not grow with b.N.
 func BenchmarkSession_Send(b *testing.B) {
 	ctx := context.Background()
-	a := New(&replyModel{}, NewMemStore())
+	a := mustNew(&replyModel{}, memJournal())
 	b.ReportAllocs()
 	i := 0
 	for b.Loop() {
@@ -370,8 +372,9 @@ func BenchmarkSession_Send(b *testing.B) {
 func TestSession_LeaseOptions(t *testing.T) {
 	ctx := context.Background()
 	store := NewMemStore()
+	j := mustJournal(store)
 	model := &blockFirstModel{entered: make(chan struct{}), release: make(chan struct{})}
-	a := New(model, store)
+	a := mustNew(model, j)
 	if _, err := a.Session(ctx, "c1", WithLeaseTTL(0)); !errors.Is(err, ErrConfig) {
 		t.Fatalf("Session with a zero lease TTL = %v; want ErrConfig", err)
 	}
@@ -411,8 +414,9 @@ func TestSession_LeaseOptions(t *testing.T) {
 func TestSession_FinishedTurnRunNeedsNoLease(t *testing.T) {
 	ctx := context.Background()
 	store := NewMemStore()
+	j := mustJournal(store)
 	model := &replyModel{}
-	a := New(model, store)
+	a := mustNew(model, j)
 	h1 := openSession(t, a, "c1")
 	st, n, err := h1.startTurn(ctx, UserText("x"))
 	if err != nil {

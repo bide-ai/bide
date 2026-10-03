@@ -15,11 +15,6 @@ func TestMemStore(t *testing.T) {
 	storetest.Run(t, func(*testing.T) agent.Store { return m })
 }
 
-// MemStore's transitional Do and History hand back the record a replay reads, on the live path too.
-func TestMemStore_DurableFidelity(t *testing.T) {
-	storetest.RunDurable(t, func(*testing.T) agent.Durable { return agent.NewMemStore() })
-}
-
 // The counting wrapper passes keys through unchanged, whatever the context, and may Unwrap.
 func TestCountingStore_IsAWellBehavedWrapper(t *testing.T) {
 	type tenant struct{}

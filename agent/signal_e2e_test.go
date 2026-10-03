@@ -46,10 +46,15 @@ func (awaitThenChargeModel) Stream(_ context.Context, req Request) (*Stream, err
 	return NewStream(ch), nil
 }
 
-func runAwaitCharge(mem Durable, awaitCalls, chargeCount *int, crashAt int) error {
+func runAwaitCharge(mem *Journal, awaitCalls, chargeCount *int, crashAt int) error {
 	awaitT := &awaitTool{name: "await", safety: Safety{ReadOnly: true}, sig: "go", calls: awaitCalls}
 	chargeT := chargeTool{count: chargeCount}
-	a := New(awaitThenChargeModel{}, crashJournal(mem, crashAt), awaitT, chargeT).SetMaxConcurrency(1)
+	a := mustNew(
+		awaitThenChargeModel{},
+		crashJournal(mem, crashAt),
+		WithTools(awaitT, chargeT),
+		WithMaxConcurrency(1),
+	)
 	_, err := a.Run(context.Background(), "dst-sig", "start")
 	return err
 }
@@ -62,7 +67,7 @@ func TestDST_Signal_NoDoubleFire_CrashSweep(t *testing.T) {
 	haltSeen := false
 	for crashAt := 1; crashAt <= 40; crashAt++ {
 		var awaitCalls, count int
-		mem := NewMemStore()
+		mem := memJournal()
 		// The signal is delivered (persisted) up front, so the await resolves on the first run;
 		// the crash sweep then exercises the resume-and-charge path.
 		if err := Signal(context.Background(), mem, "dst-sig", "go", "payload"); err != nil {
@@ -104,7 +109,7 @@ func TestDST_Signal_NoDoubleFire_CrashSweep(t *testing.T) {
 // which resolves the await and completes. This is the idiom stage 4 (a separate Notifier)
 // would have added, shown to already work with the existing Waker.
 func TestSignal_DeliverThenWake(t *testing.T) {
-	mem := NewMemStore()
+	mem := memJournal()
 	var got string
 	awaitT := &awaitTool{name: "await", safety: Safety{ReadOnly: true}, sig: "go", calls: new(int), got: &got}
 	m := &scriptModel{turns: [][]Emit{toolTurn("c1", "await", `{}`), textTurn("done")}}
@@ -125,7 +130,7 @@ func TestSignal_DeliverThenWake(t *testing.T) {
 		}
 		return nil
 	})
-	a = New(m, mem, awaitT)
+	a = mustNew(m, mem, WithTools(awaitT))
 	ctx := ContextWithWaker(context.Background(), waker)
 
 	// First run pauses on the await (plain Await does not self-schedule a wake).

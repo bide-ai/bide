@@ -3,6 +3,7 @@ package agent
 import (
 	"context"
 	"errors"
+	"iter"
 	"testing"
 )
 
@@ -28,8 +29,8 @@ func twice(u Usage) Usage {
 // RunResult and in the journal.
 func TestRunResult_ReportsDiscardedSpend(t *testing.T) {
 	m := &scriptModel{turns: [][]Emit{truncatedTurn(billed), textTurnWithUsage("done", billed)}}
-	store := NewMemStore()
-	res, err := New(m, store).Use(retryOnceMW).RunResult(context.Background(), "r", "go")
+	store := memJournal()
+	res, err := mustNew(m, store, WithMiddleware(retryOnceMW)).RunResult(context.Background(), "r", "go")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -67,7 +68,7 @@ func TestTokenBudget_StopsOnDiscardedSpend(t *testing.T) {
 		toolTurnWithUsage("c1", "lookup", `{}`, billed),
 		textTurnWithUsage("done", billed),
 	}}
-	_, err := New(m, NewMemStore(), tool).Use(retryOnceMW).WithTokenBudget(200).Run(context.Background(), "r", "go")
+	_, err := must(mustNew(m, memJournal(), WithTools(tool), WithMiddleware(retryOnceMW)).With(WithTokenBudget(200))).Run(context.Background(), "r", "go")
 	if !errors.Is(err, ErrBudgetExceeded) {
 		t.Fatalf("err = %v, want ErrBudgetExceeded", err)
 	}
@@ -79,11 +80,11 @@ func TestTokenBudget_StopsOnDiscardedSpend(t *testing.T) {
 // The discarded spend is journaled, so a resumed run's budget still counts it.
 func TestTokenBudget_DiscardedSpendSurvivesResume(t *testing.T) {
 	ctx := context.Background()
-	store := NewMemStore()
+	store := memJournal()
 	var calls int
 	gated := &countingTool{name: "lookup", safety: Safety{ReadOnly: true}, approval: SingleApproval(), calls: &calls}
 	m := &scriptModel{turns: [][]Emit{truncatedTurn(billed), toolTurnWithUsage("c1", "lookup", `{}`, billed)}}
-	_, err := New(m, store, gated).Use(retryOnceMW).Run(ctx, "r", "go")
+	_, err := mustNew(m, store, WithTools(gated), WithMiddleware(retryOnceMW)).Run(ctx, "r", "go")
 	var pa *PendingApproval
 	if !errors.As(err, &pa) {
 		t.Fatalf("err = %v, want PendingApproval", err)
@@ -92,7 +93,7 @@ func TestTokenBudget_DiscardedSpendSurvivesResume(t *testing.T) {
 		t.Fatal(err)
 	}
 	resumed := &scriptModel{turns: [][]Emit{textTurnWithUsage("done", billed)}}
-	_, err = New(resumed, store, gated).WithTokenBudget(200).Run(ctx, "r", "go")
+	_, err = mustNew(resumed, store, WithTools(gated), WithTokenBudget(200)).Run(ctx, "r", "go")
 	if !errors.Is(err, ErrBudgetExceeded) {
 		t.Fatalf("err = %v, want ErrBudgetExceeded (240 tokens already spent)", err)
 	}
@@ -105,16 +106,16 @@ func TestTokenBudget_DiscardedSpendSurvivesResume(t *testing.T) {
 // re-invoking a failing run is still stopped by the budget.
 func TestTokenBudget_CountsFailedCalls(t *testing.T) {
 	ctx := context.Background()
-	store := NewMemStore()
+	store := memJournal()
 	m := &scriptModel{turns: [][]Emit{truncatedTurn(billed), truncatedTurn(billed), truncatedTurn(billed)}}
-	a := New(m, store).WithTokenBudget(200)
+	a := mustNew(m, store, WithTokenBudget(200))
 	for i := range 2 {
 		if _, err := a.Run(ctx, "r", "go"); !errors.Is(err, ErrModel) {
 			t.Fatalf("run %d: err = %v, want ErrModel", i, err)
 		}
 	}
 	// 240 tokens spent on two failed calls: the third invocation must not call the model.
-	_, err := New(m, store).WithTokenBudget(200).Run(ctx, "r", "go")
+	_, err := mustNew(m, store, WithTokenBudget(200)).Run(ctx, "r", "go")
 	if !errors.Is(err, ErrBudgetExceeded) {
 		t.Fatalf("err = %v, want ErrBudgetExceeded", err)
 	}
@@ -128,7 +129,7 @@ func TestTokenBudget_CountsFailedCalls(t *testing.T) {
 func TestRunResult_SpendOfBrokenStream(t *testing.T) {
 	broken := append(textTurnWithUsage("draft", billed), Emit{Event: TextDelta{Text: "late"}})
 	m := &scriptModel{turns: [][]Emit{broken, textTurnWithUsage("done", billed)}}
-	res, err := New(m, NewMemStore()).Use(retryOnceMW).RunResult(context.Background(), "r", "go")
+	res, err := mustNew(m, memJournal(), WithMiddleware(retryOnceMW)).RunResult(context.Background(), "r", "go")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -145,8 +146,8 @@ func TestRunResult_SpendOfSuppliedResponse(t *testing.T) {
 			return ModelResponse{Message: Message{Role: RoleAssistant, Parts: []Part{Text{Text: "cached"}}}, Usage: billed}, nil
 		}
 	}
-	store := NewMemStore()
-	res, err := New(&scriptModel{}, store).Use(cache).RunResult(context.Background(), "r", "go")
+	store := memJournal()
+	res, err := mustNew(&scriptModel{}, store, WithMiddleware(cache)).RunResult(context.Background(), "r", "go")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -171,7 +172,7 @@ func TestRunResult_SpendAcrossTurns(t *testing.T) {
 		toolTurnWithUsage("c1", "lookup", `{}`, billed),
 		textTurnWithUsage("done", billed),
 	}}
-	res, err := New(m, NewMemStore(), tool).Use(retryOnceMW).RunResult(context.Background(), "r", "go")
+	res, err := mustNew(m, memJournal(), WithTools(tool), WithMiddleware(retryOnceMW)).RunResult(context.Background(), "r", "go")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -182,15 +183,29 @@ func TestRunResult_SpendAcrossTurns(t *testing.T) {
 	}
 }
 
-// cancelAwareStore is a MemStore whose Do fails once its context is cancelled, as a database
-// store's does.
+// cancelAwareStore is a MemStore whose every method fails once its context is cancelled, as a
+// database store's does.
 type cancelAwareStore struct{ *MemStore }
 
-func (s cancelAwareStore) Do(ctx context.Context, runID, name string, fn func(context.Context) (Record, error)) (Record, error) {
+func (s cancelAwareStore) Insert(ctx context.Context, runID, name string, data []byte) (Entry, bool, error) {
 	if err := ctx.Err(); err != nil {
-		return Record{}, err
+		return Entry{}, false, err
 	}
-	return s.MemStore.Do(ctx, runID, name, fn)
+	return s.MemStore.Insert(ctx, runID, name, data)
+}
+
+func (s cancelAwareStore) Get(ctx context.Context, runID, name string) (Entry, bool, error) {
+	if err := ctx.Err(); err != nil {
+		return Entry{}, false, err
+	}
+	return s.MemStore.Get(ctx, runID, name)
+}
+
+func (s cancelAwareStore) Load(ctx context.Context, runID string, after int64) iter.Seq2[Entry, error] {
+	if err := ctx.Err(); err != nil {
+		return func(yield func(Entry, error) bool) { yield(Entry{}, err) }
+	}
+	return s.MemStore.Load(ctx, runID, after)
 }
 
 // A model call that fails because the run was cancelled was still billed: its spend is journaled
@@ -208,9 +223,9 @@ func TestTokenBudget_JournalsSpendOfCancelledCall(t *testing.T) {
 			return resp, err
 		}
 	}
-	store := cancelAwareStore{NewMemStore()}
+	store := mustJournal(cancelAwareStore{NewMemStore()})
 	m := &scriptModel{turns: [][]Emit{textTurnWithUsage("done", billed)}}
-	if _, err := New(m, store).Use(cancelling).Run(ctx, "r", "go"); !errors.Is(err, context.Canceled) {
+	if _, err := mustNew(m, store, WithMiddleware(cancelling)).Run(ctx, "r", "go"); !errors.Is(err, context.Canceled) {
 		t.Fatalf("err = %v, want context.Canceled", err)
 	}
 	recs, _ := store.History(context.Background(), "r")

@@ -8,7 +8,9 @@ import (
 	"testing"
 
 	"github.com/bide-ai/bide/agent"
+	"github.com/bide-ai/bide/agent/agenttest"
 	"github.com/bide-ai/bide/audit"
+	"github.com/bide-ai/bide/internal/journaltest"
 )
 
 func mustFailRun(t *testing.T, what string, cert audit.RunCertificate, approved []string, pub ed25519.PublicKey) {
@@ -25,16 +27,17 @@ func plainRun(t *testing.T, runID string, vals ...string) ([]agent.Record, audit
 	t.Helper()
 	ctx := context.Background()
 	s := agent.NewMemStore()
+	j := agenttest.MustJournal(s)
 	for i, v := range vals {
 		v := v
-		if _, err := s.Do(ctx, runID, "s"+string(rune('a'+i)), func(context.Context) (agent.Record, error) {
+		if _, err := journaltest.Do(ctx, j, runID, "s"+string(rune('a'+i)), func(context.Context) (agent.Record, error) {
 			return agent.Record{Kind: agent.StepValue, Result: json.RawMessage(`"` + v + `"`)}, nil
 		}); err != nil {
 			t.Fatal(err)
 		}
 	}
-	recs, _ := s.History(ctx, runID)
-	th, err := audit.NewTreeHead(ctx, s, runID, 1)
+	recs, _ := j.History(ctx, runID)
+	th, err := audit.NewTreeHead(ctx, j, runID, 1)
 	if err != nil {
 		t.Fatal(err)
 	}

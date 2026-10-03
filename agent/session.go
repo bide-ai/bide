@@ -356,7 +356,7 @@ func (s *Session) startTurn(ctx context.Context, input Message) (turnStart, int,
 		if err != nil {
 			return turnStart{}, 0, fmt.Errorf("session %s: encode turn start: %w (%w)", s.id, err, ErrConfig)
 		}
-		got, err := s.agent.store.Do(ctx, sessionJournalID(s.id), sessionStartStep(n), func(context.Context) (Record, error) {
+		got, err := s.agent.store.do(ctx, sessionJournalID(s.id), sessionStartStep(n), func(context.Context) (Record, error) {
 			return Record{Kind: StepValue, Result: b}, nil
 		})
 		if err != nil {
@@ -395,7 +395,7 @@ func (s *Session) closeIfCancelled(ctx context.Context) (closed bool, requested 
 	if err != nil || !cancelled {
 		if err == nil {
 			var ok bool
-			if _, ok, err = lookup(ctx, s.agent.store, runID, runCancelRequestedStep); ok {
+			if _, ok, err = s.agent.store.Get(ctx, runID, runCancelRequestedStep); ok {
 				requested = runID
 			}
 		}
@@ -429,7 +429,7 @@ func (s *Session) closeIfCancelled(ctx context.Context) (closed bool, requested 
 // request returns nil, and the turn is not closed. The caller holds s.mu; over a store with a
 // Leaser it is released for the drive and held again when rollbackTurn returns.
 func (s *Session) rollbackTurn(ctx context.Context, runID string) error {
-	if _, leased := capabilityOf[Leaser](s.agent.store); leased {
+	if _, leased := Capability[Leaser](s.agent.store.store); leased {
 		s.mu.Unlock()
 		defer s.mu.Lock()
 	}
@@ -597,7 +597,7 @@ func (s *Session) turnSeed(ctx context.Context, runID string) ([]Message, error)
 		return nil, fmt.Errorf("session %s: encode turn start point: %w (%w)", s.id, err, ErrConfig)
 	}
 	name := sessionFromStep(runID)
-	got, err := s.agent.store.Do(ctx, sessionJournalID(s.id), name, func(context.Context) (Record, error) {
+	got, err := s.agent.store.do(ctx, sessionJournalID(s.id), name, func(context.Context) (Record, error) {
 		return Record{Kind: StepValue, Result: b}, nil
 	})
 	if err != nil {
@@ -639,7 +639,7 @@ func (s *Session) appendTurn(ctx context.Context, rec turnRecord) error {
 		return fmt.Errorf("session %s: encode turn: %w (%w)", s.id, err, ErrConfig)
 	}
 	for n := s.turns; ; n++ {
-		got, err := s.agent.store.Do(ctx, sessionJournalID(s.id), sessionTurnStep(n), func(context.Context) (Record, error) {
+		got, err := s.agent.store.do(ctx, sessionJournalID(s.id), sessionTurnStep(n), func(context.Context) (Record, error) {
 			return Record{Kind: StepValue, Result: b}, nil
 		})
 		if err != nil {

@@ -33,7 +33,7 @@ func buildT(t testing.TB, m Model, opts ...Option) *Agent {
 // buildOn builds an agent over m and store's journal, failing the test on an error.
 func buildOn(t testing.TB, m Model, store *MemStore, opts ...Option) *Agent {
 	t.Helper()
-	a, err := Build(m, store.Journal(), opts...)
+	a, err := New(m, mustJournal(store), opts...)
 	if err != nil {
 		t.Fatalf("Build: %v", err)
 	}
@@ -102,6 +102,7 @@ func TestSubRunFor(t *testing.T) {
 
 	// A tool starts a sub-run of another agent under SubRunFor; the parent's resume re-enters it.
 	store := NewMemStore()
+	j := mustJournal(store)
 	var subCalls int
 	child := buildOn(t, modelFunc(func(ctx context.Context, req Request) (*Stream, error) {
 		subCalls++
@@ -122,12 +123,12 @@ func TestSubRunFor(t *testing.T) {
 	if want := (RunInfo{RunID: "p", ToolUseID: "c1"}).SubRunFor("child"); len(ids) != 1 || ids[0] != want {
 		t.Fatalf("sub-run IDs = %v, want [%s]", ids, want)
 	}
-	if done, err := IsComplete(context.Background(), store, ids[0]); err != nil || !done {
+	if done, err := IsComplete(context.Background(), j, ids[0]); err != nil || !done {
 		t.Errorf("the programmatic sub-run is not complete: %v, %v", done, err)
 	}
 	// Recover drives roots only: the finished parent and its sub-run are not driven again.
 	var resumed []string
-	if _, err := Recover(context.Background(), store, func(_ context.Context, id string, _ RunStart) error { resumed = append(resumed, id); return nil }); err != nil {
+	if _, err := Recover(context.Background(), j, func(_ context.Context, id string, _ RunStart) error { resumed = append(resumed, id); return nil }); err != nil {
 		t.Fatal(err)
 	}
 	if slices.Contains(resumed, ids[0]) {

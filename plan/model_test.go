@@ -7,6 +7,7 @@ import (
 	"testing"
 
 	"github.com/bide-ai/bide/agent"
+	"github.com/bide-ai/bide/agent/agenttest"
 )
 
 // A Model node binds a real model to the flow: it renders the node's prompt from the
@@ -75,7 +76,7 @@ func TestModel_RendersCallsAndDecodes(t *testing.T) {
 		t.Fatalf("Build: %v", err)
 	}
 
-	out, err := flow.Run(context.Background(), agent.NewMemStore(), "run1", ticket{Subject: "refund", Body: "please refund my order"})
+	out, err := flow.Run(context.Background(), agenttest.MemJournal(), "run1", ticket{Subject: "refund", Body: "please refund my order"})
 	if err != nil {
 		t.Fatalf("Run: %v", err)
 	}
@@ -122,7 +123,7 @@ func TestModel_LoadedFlow_BindsModel(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Load: %v", err)
 	}
-	out, err := flow.Run(context.Background(), agent.NewMemStore(), "loaded1", ticket{Subject: "spam"})
+	out, err := flow.Run(context.Background(), agenttest.MemJournal(), "loaded1", ticket{Subject: "spam"})
 	if err != nil {
 		t.Fatalf("Run: %v", err)
 	}
@@ -166,13 +167,14 @@ func buildModelFlow(fake agent.Model) (*Flow[int, review], error) {
 // Run returns *agent.OutcomeUnknown and does NOT re-call the model. This mirrors the DST
 // crash-sweep in flow_dst_test.go (crashFlowStore, errCrash, per-write sweep).
 func TestModel_DefaultHaltsOnAmbiguousCrash(t *testing.T) {
-	var mem agent.Durable
+	var mem *agent.Journal
 	var haltCalls int // how many times the model was called at the halt point
 	found := false
 	for crashAt := 1; crashAt <= 32; crashAt++ {
 		calls := 0
 		m := agent.NewMemStore()
-		store := &crashFlowStore{inner: m, crashAt: crashAt}
+		j := agenttest.MustJournal(m)
+		store := agenttest.MustJournal(&crashFlowStore{inner: j, crashAt: crashAt})
 		fake := &countingModel{reply: `{"verdict":"ok","score":1}`, calls: &calls}
 		flow, err := buildModelFlow(fake)
 		if err != nil {
@@ -184,7 +186,7 @@ func TestModel_DefaultHaltsOnAmbiguousCrash(t *testing.T) {
 		}
 		// The ambiguous window is the "assess" result write: attempt marker persisted,
 		// result missing.
-		recs, hErr := m.History(context.Background(), "model-crash")
+		recs, hErr := j.History(context.Background(), "model-crash")
 		if hErr != nil {
 			t.Fatalf("History: %v", hErr)
 		}
@@ -198,7 +200,7 @@ func TestModel_DefaultHaltsOnAmbiguousCrash(t *testing.T) {
 			}
 		}
 		if haveAttempt && !haveResult {
-			mem = m
+			mem = j
 			haltCalls = calls
 			found = true
 			break
@@ -255,7 +257,7 @@ func TestModel_GenerateErrorPropagates(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Build: %v", err)
 	}
-	_, err = flow.Run(context.Background(), agent.NewMemStore(), "err1", ticket{Subject: "x"})
+	_, err = flow.Run(context.Background(), agenttest.MemJournal(), "err1", ticket{Subject: "x"})
 	if err == nil {
 		t.Fatal("Run succeeded despite a failing model; want an error")
 	}

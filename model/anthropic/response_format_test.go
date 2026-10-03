@@ -10,6 +10,7 @@ import (
 	"testing"
 
 	"github.com/bide-ai/bide/agent"
+	"github.com/bide-ai/bide/agent/agenttest"
 	"github.com/bide-ai/bide/middleware"
 )
 
@@ -44,7 +45,7 @@ func TestStream_ResponseFormatIsAConfigError(t *testing.T) {
 	type out struct {
 		A string `json:"a"`
 	}
-	got, err := agent.RunTypedNative[out](context.Background(), agent.New(m, agent.NewMemStore()), "r", "hi")
+	got, err := agent.RunTypedNative[out](context.Background(), agenttest.MustNew(m, agenttest.MemJournal()), "r", "hi")
 	if !errors.Is(err, agent.ErrConfig) {
 		t.Fatalf("RunTypedNative = %+v, %v; want ErrConfig", got, err)
 	}

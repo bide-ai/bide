@@ -25,13 +25,13 @@ func TestRev117e_SagaFailureReadsTallyStrictly(t *testing.T) {
 // The loop's read of a recorded tally (a terminal decision for a call not yet run) is strict too.
 func TestRev117e_LoopReadsTallyStrictly(t *testing.T) {
 	ctx := context.Background()
-	store := NewMemStore()
+	store := memJournal()
 	var ran atomic.Int32
 	tool := Func("t", "", Safety{}, func(context.Context, struct{}) (string, error) { ran.Add(1); return "ok", nil })
 	m := NewScriptedModel(ToolTurn("c1", "t", `{}`), TextTurn("done"))
-	a := New(m, store, tool)
+	a := mustNew(m, store, WithTools(tool))
 	// A tally journaled for the call before it runs (as an m-of-n gate's terminal decision is).
-	if _, err := store.Do(ctx, "r", ApprovalTallyStep("c1"), func(context.Context) (Record, error) {
+	if _, err := store.do(ctx, "r", ApprovalTallyStep("c1"), func(context.Context) (Record, error) {
 		return Record{Kind: StepValue, Result: dupTally}, nil
 	}); err != nil {
 		t.Fatal(err)

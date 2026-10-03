@@ -31,7 +31,7 @@ import (
 //
 // Conform forwards to the internal (*builderCore).conform so a single method owns
 // the logic against the frozen spec; the exported method only unwraps the Flow.
-func (f *Flow[In, Out]) Conform(ctx context.Context, store agent.Durable, runID string) (ok bool, diffs []string, err error) {
+func (f *Flow[In, Out]) Conform(ctx context.Context, store *agent.Journal, runID string) (ok bool, diffs []string, err error) {
 	return f.core.conform(ctx, store, runID)
 }
 
@@ -71,7 +71,7 @@ func (f *Flow[In, Out]) Conform(ctx context.Context, store agent.Durable, runID 
 // not a divergence: conform reports what is observable and does not require every
 // attempted node to have completed. conform never panics on a partial, halted, or
 // empty journal.
-func (c *builderCore) conform(ctx context.Context, store agent.Durable, runID string) (bool, []string, error) {
+func (c *builderCore) conform(ctx context.Context, store *agent.Journal, runID string) (bool, []string, error) {
 	recs, err := store.History(ctx, runID)
 	if err != nil {
 		return false, nil, fmt.Errorf("plan: conform run %q: load history: %w", runID, err)

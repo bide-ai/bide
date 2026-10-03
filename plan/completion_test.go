@@ -10,6 +10,8 @@ import (
 	"testing"
 
 	"github.com/bide-ai/bide/agent"
+	"github.com/bide-ai/bide/agent/agenttest"
+	"github.com/bide-ai/bide/internal/journaltest"
 )
 
 // A completed flow run records run:complete with its flow and output: recovery skips it, a drive
@@ -17,7 +19,7 @@ import (
 // input, under another flow's name, or by an Agent is ErrConfig.
 func TestCompletion_FinishedFlowRun(t *testing.T) {
 	ctx := context.Background()
-	mem := agent.NewMemStore()
+	mem := agenttest.MemJournal()
 	var fired int
 	flow := effectFlow(t, &fired, Idempotent())
 	if _, err := flow.Run(ctx, mem, "r", 5); err == nil {
@@ -60,7 +62,7 @@ func TestCompletion_FinishedFlowRun(t *testing.T) {
 	if _, err := other.Run(ctx, mem, "r", 5); !errors.Is(err, agent.ErrConfig) {
 		t.Fatalf("another flow over the finished run: %v, want ErrConfig", err)
 	}
-	a := agent.New(agent.NewScriptedModel(agent.TextTurn("hi")), mem)
+	a := agenttest.MustNew(agent.NewScriptedModel(agent.TextTurn("hi")), mem)
 	if _, err := a.Run(ctx, "r", "5"); !errors.Is(err, agent.ErrConfig) {
 		t.Fatalf("an Agent over a finished flow run: %v, want ErrConfig", err)
 	}
@@ -101,11 +103,11 @@ func TestConform_ReplaysTheRouting(t *testing.T) {
 		{"node:refine:step:x", `1`, "node:refine:step:x (a loop body node recorded outside an iteration)"},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
-			mem := agent.NewMemStore()
+			mem := agenttest.MemJournal()
 			if _, err := flow.Run(ctx, mem, "r", 2); err != nil {
 				t.Fatal(err)
 			}
-			if _, err := mem.Do(ctx, "r", tc.name, func(context.Context) (agent.Record, error) {
+			if _, err := journaltest.Do(ctx, mem, "r", tc.name, func(context.Context) (agent.Record, error) {
 				return agent.Record{Kind: agent.StepValue, Result: json.RawMessage(tc.value)}, nil
 			}); err != nil {
 				t.Fatal(err)
@@ -131,11 +133,11 @@ func TestConform_ReplaysTheRouting(t *testing.T) {
 		{"node:a:x", "node:a:x (unexpected step)"},
 		{"node:a:step:", "node:a:step: (unexpected step)"},
 	} {
-		smem := agent.NewMemStore()
+		smem := agenttest.MemJournal()
 		if _, err := swFlow.Run(ctx, smem, "r", 1); err != nil {
 			t.Fatal(err)
 		}
-		if _, err := smem.Do(ctx, "r", tc.name, func(context.Context) (agent.Record, error) {
+		if _, err := journaltest.Do(ctx, smem, "r", tc.name, func(context.Context) (agent.Record, error) {
 			return agent.Record{Kind: agent.StepValue, Result: json.RawMessage(`"no"`)}, nil
 		}); err != nil {
 			t.Fatal(err)
@@ -146,7 +148,7 @@ func TestConform_ReplaysTheRouting(t *testing.T) {
 	}
 	// A journal missing only its start, or only its digest.
 	for _, missing := range []string{"run:start", flowDigestStep} {
-		smem := agent.NewMemStore()
+		smem := agenttest.MemJournal()
 		for _, w := range []struct{ name, value string }{
 			{"run:start", `{"input":"1","kind":"flow","flow":{"name":"sw"}}`},
 			{flowDigestStep, strconv.Quote(swFlow.Digest())},
@@ -155,7 +157,7 @@ func TestConform_ReplaysTheRouting(t *testing.T) {
 			if w.name == missing {
 				continue
 			}
-			if _, err := smem.Do(ctx, "r", w.name, func(context.Context) (agent.Record, error) {
+			if _, err := journaltest.Do(ctx, smem, "r", w.name, func(context.Context) (agent.Record, error) {
 				return agent.Record{Kind: agent.StepValue, Result: json.RawMessage(w.value)}, nil
 			}); err != nil {
 				t.Fatal(err)
@@ -166,13 +168,13 @@ func TestConform_ReplaysTheRouting(t *testing.T) {
 		}
 	}
 
-	mem := agent.NewMemStore()
+	mem := agenttest.MemJournal()
 	for _, w := range []struct{ name, value string }{
 		{"run:start", `{"input":"2","kind":"flow","flow":{"name":"countdown"}}`},
 		{flowDigestStep, strconv.Quote(flow.Digest())},
 		{"run:complete", `{"flow":"other","output":"x"}`},
 	} {
-		if _, err := mem.Do(ctx, "r", w.name, func(context.Context) (agent.Record, error) {
+		if _, err := journaltest.Do(ctx, mem, "r", w.name, func(context.Context) (agent.Record, error) {
 			return agent.Record{Kind: agent.StepValue, Result: json.RawMessage(w.value)}, nil
 		}); err != nil {
 			t.Fatal(err)
@@ -189,10 +191,11 @@ func TestFlowResolveHalt_ChecksTheResolution(t *testing.T) {
 	halted := func(t *testing.T) (*Flow[int, string], *agent.MemStore, *agent.OutcomeUnknown) {
 		t.Helper()
 		mem := agent.NewMemStore()
+		j := agenttest.MustJournal(mem)
 		var fired int
 		flow := effectFlow(t, &fired)
-		_, _ = flow.Run(ctx, mem, "r", 5)
-		_, err := flow.Run(ctx, mem, "r", 5)
+		_, _ = flow.Run(ctx, j, "r", 5)
+		_, err := flow.Run(ctx, j, "r", 5)
 		halt, ok := errors.AsType[*agent.OutcomeUnknown](err)
 		if !ok {
 			t.Fatalf("want a halt: %v", err)
@@ -217,29 +220,32 @@ func TestFlowResolveHalt_ChecksTheResolution(t *testing.T) {
 	} {
 		if tc.name == "an iteration outside a loop" {
 			flow, mem, halt := halted(t)
-			if err := flow.ResolveHalt(ctx, mem, tc.ref(halt.Ref()), tc.out); !errors.Is(err, agent.ErrConfig) || !strings.Contains(err.Error(), "loop body") {
+			j := agenttest.MustJournal(mem)
+			if err := flow.ResolveHalt(ctx, j, tc.ref(halt.Ref()), tc.out); !errors.Is(err, agent.ErrConfig) || !strings.Contains(err.Error(), "loop body") {
 				t.Fatalf("ResolveHalt of an iteration outside a loop: %v, want the flow's refusal", err)
 			}
 			continue
 		}
 		if tc.name == "a tool call" {
 			flow, mem, halt := halted(t)
+			j3 := agenttest.MustJournal(mem)
 			ref := tc.ref(halt.Ref())
-			if err := flow.ResolveHalt(ctx, mem, ref, tc.out); !errors.Is(err, agent.ErrConfig) || !strings.Contains(err.Error(), "halts are on Steps") {
+			if err := flow.ResolveHalt(ctx, j3, ref, tc.out); !errors.Is(err, agent.ErrConfig) || !strings.Contains(err.Error(), "halts are on Steps") {
 				t.Fatalf("ResolveHalt of a tool call: %v, want the flow's refusal", err)
 			}
 			continue
 		}
 		t.Run(tc.name, func(t *testing.T) {
 			flow, mem, halt := halted(t)
+			j := agenttest.MustJournal(mem)
 			ref := halt.Ref()
 			if tc.ref != nil {
 				ref = tc.ref(ref)
 			}
-			if err := flow.ResolveHalt(ctx, mem, ref, tc.out); !errors.Is(err, agent.ErrConfig) {
+			if err := flow.ResolveHalt(ctx, j, ref, tc.out); !errors.Is(err, agent.ErrConfig) {
 				t.Fatalf("ResolveHalt: %v, want ErrConfig", err)
 			}
-			recs, _ := mem.History(ctx, "r")
+			recs, _ := j.History(ctx, "r")
 			if hasRecord(recs, "node:charge") {
 				t.Fatal("a refused resolution recorded the node's output")
 			}
@@ -262,7 +268,7 @@ func TestFlowResolveHalt_ChecksTheResolution(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	smem := agent.NewMemStore()
+	smem := agenttest.MemJournal()
 	_, _ = sflow.Run(ctx, smem, "s", 1)
 	_, err = sflow.Run(ctx, smem, "s", 1)
 	shalt, ok := errors.AsType[*agent.OutcomeUnknown](err)
@@ -280,19 +286,21 @@ func TestFlowResolveHalt_ChecksTheResolution(t *testing.T) {
 	}
 
 	flow, mem, halt := halted(t)
-	if err := flow.ResolveHalt(ctx, mem, halt.Ref(), agent.Outcome{Result: 9}); err != nil {
+	j2 := agenttest.MustJournal(mem)
+	if err := flow.ResolveHalt(ctx, j2, halt.Ref(), agent.Outcome{Result: 9}); err != nil {
 		t.Fatalf("ResolveHalt: %v", err)
 	}
-	if out, err := flow.Run(ctx, mem, "r", 5); err != nil || out != "charged 9" {
+	if out, err := flow.Run(ctx, j2, "r", 5); err != nil || out != "charged 9" {
 		t.Fatalf("after the resolution: %q, %v", out, err)
 	}
 
 	// A failed outcome needs no value of the node's type: the node then fails on every drive.
 	flow, mem, halt = halted(t)
-	if err := flow.ResolveHalt(ctx, mem, halt.Ref(), agent.Outcome{Result: "declined", IsError: true}); err != nil {
+	j2 = agenttest.MustJournal(mem)
+	if err := flow.ResolveHalt(ctx, j2, halt.Ref(), agent.Outcome{Result: "declined", IsError: true}); err != nil {
 		t.Fatalf("ResolveHalt of a failure: %v", err)
 	}
-	if _, err := flow.Run(ctx, mem, "r", 5); !errors.Is(err, agent.ErrTool) || !strings.Contains(err.Error(), "resolved as failed") {
+	if _, err := flow.Run(ctx, j2, "r", 5); !errors.Is(err, agent.ErrTool) || !strings.Contains(err.Error(), "resolved as failed") {
 		t.Fatalf("after a failed resolution: %v, want the node's failure", err)
 	}
 }
@@ -302,7 +310,7 @@ func TestFlowResolveHalt_ChecksTheResolution(t *testing.T) {
 // without running its effect.
 func TestNestedStep_HaltResolvesUnderTheNodeKey(t *testing.T) {
 	ctx := context.Background()
-	mem := agent.NewMemStore()
+	mem := agenttest.MemJournal()
 	var charges, bodies int
 	b := New[int, int]("nested")
 	b.Step("a", func(ctx context.Context, n int) (int, error) {
@@ -348,10 +356,11 @@ func TestFlowResolveHalt_RefusesARunOfAnotherFlow(t *testing.T) {
 	halted := func(t *testing.T) (*agent.MemStore, *agent.OutcomeUnknown) {
 		t.Helper()
 		mem := agent.NewMemStore()
+		j := agenttest.MustJournal(mem)
 		var fired int
 		flow := effectFlow(t, &fired)
-		_, _ = flow.Run(ctx, mem, "r", 5)
-		_, err := flow.Run(ctx, mem, "r", 5)
+		_, _ = flow.Run(ctx, j, "r", 5)
+		_, err := flow.Run(ctx, j, "r", 5)
 		halt, ok := errors.AsType[*agent.OutcomeUnknown](err)
 		if !ok {
 			t.Fatalf("want a halt: %v", err)
@@ -371,11 +380,12 @@ func TestFlowResolveHalt_RefusesARunOfAnotherFlow(t *testing.T) {
 		t.Fatal(err)
 	}
 	mem, halt := halted(t)
-	if err := changed.ResolveHalt(ctx, mem, halt.Ref(), agent.Outcome{Result: 7}); !errors.Is(err, agent.ErrConfig) || !strings.Contains(err.Error(), "digest") {
+	j := agenttest.MustJournal(mem)
+	if err := changed.ResolveHalt(ctx, j, halt.Ref(), agent.Outcome{Result: 7}); !errors.Is(err, agent.ErrConfig) || !strings.Contains(err.Error(), "digest") {
 		t.Fatalf("a changed flow of the same name: %v, want ErrConfig naming the digest", err)
 	}
 	// A journal whose start names another flow, under this flow's digest.
-	forged := agent.NewMemStore()
+	forged := agenttest.MemJournal()
 	for _, w := range []struct {
 		name string
 		rec  agent.Record
@@ -384,7 +394,7 @@ func TestFlowResolveHalt_RefusesARunOfAnotherFlow(t *testing.T) {
 		{flowDigestStep, agent.Record{Kind: agent.StepValue, Result: json.RawMessage(strconv.Quote(effectFlow(t, &fired).Digest()))}},
 		{"attempt:step:node:charge", agent.Record{Kind: agent.StepAttempt, ToolUseID: "node:charge", AttemptedAt: 1}},
 	} {
-		if _, err := forged.Do(ctx, "r", w.name, func(context.Context) (agent.Record, error) { return w.rec, nil }); err != nil {
+		if _, err := journaltest.Do(ctx, forged, "r", w.name, func(context.Context) (agent.Record, error) { return w.rec, nil }); err != nil {
 			t.Fatal(err)
 		}
 	}
@@ -394,13 +404,13 @@ func TestFlowResolveHalt_RefusesARunOfAnotherFlow(t *testing.T) {
 	// A run with no recorded start.
 	var f2 int
 	flow := effectFlow(t, &f2)
-	bare := agent.NewMemStore()
+	bare := agenttest.MemJournal()
 	ref := halt.Ref()
 	if err := flow.ResolveHalt(ctx, bare, ref, agent.Outcome{Result: 7}); !errors.Is(err, agent.ErrConfig) || !strings.Contains(err.Error(), "not a run of this flow") {
 		t.Fatalf("a run with no start: %v, want ErrConfig", err)
 	}
 	// The run's own flow resolves it.
-	if err := flow.ResolveHalt(ctx, mem, halt.Ref(), agent.Outcome{Result: 7}); err != nil {
+	if err := flow.ResolveHalt(ctx, j, halt.Ref(), agent.Outcome{Result: 7}); err != nil {
 		t.Fatalf("the run's own flow: %v", err)
 	}
 }
@@ -412,14 +422,14 @@ func TestConform_CompletionIsTheTerminalOutput(t *testing.T) {
 	// A completion recorded while the run halted on its first node: the reached nodes, the terminal
 	// among them, are not recorded.
 	{
-		mem := agent.NewMemStore()
+		mem := agenttest.MemJournal()
 		var fired int
 		flow := effectFlow(t, &fired)
 		_, _ = flow.Run(ctx, mem, "r", 5)
 		if _, err := flow.Run(ctx, mem, "r", 5); err == nil {
 			t.Fatal("want a halt")
 		}
-		if _, err := mem.Do(ctx, "r", "run:complete", func(context.Context) (agent.Record, error) {
+		if _, err := journaltest.Do(ctx, mem, "r", "run:complete", func(context.Context) (agent.Record, error) {
 			return agent.Record{Kind: agent.StepValue, Result: json.RawMessage(`{"flow":"charge-flow","output":"charged 5"}`)}, nil
 		}); err != nil {
 			t.Fatal(err)
@@ -436,19 +446,20 @@ func TestConform_CompletionIsTheTerminalOutput(t *testing.T) {
 		{`"charged 5"`, ""},
 	} {
 		mem := agent.NewMemStore()
+		j := agenttest.MustJournal(mem)
 		var fired int
 		flow := effectFlow(t, &fired, Idempotent())
 		// Run to the end but lose the completion, then record one by hand.
-		_, _ = flow.Run(ctx, noComplete{mem}, "r", 5)
-		if _, err := flow.Run(ctx, noComplete{mem}, "r", 5); !errors.Is(err, errNoComplete) {
+		_, _ = flow.Run(ctx, agenttest.MustJournal(noComplete{mem}), "r", 5)
+		if _, err := flow.Run(ctx, agenttest.MustJournal(noComplete{mem}), "r", 5); !errors.Is(err, errNoComplete) {
 			t.Fatalf("drive: %v", err)
 		}
-		if _, err := mem.Do(ctx, "r", "run:complete", func(context.Context) (agent.Record, error) {
+		if _, err := journaltest.Do(ctx, j, "r", "run:complete", func(context.Context) (agent.Record, error) {
 			return agent.Record{Kind: agent.StepValue, Result: json.RawMessage(`{"flow":"charge-flow","output":` + tc.output + `}`)}, nil
 		}); err != nil {
 			t.Fatal(err)
 		}
-		ok, diffs, err := flow.Conform(ctx, mem, "r")
+		ok, diffs, err := flow.Conform(ctx, j, "r")
 		if tc.diff == "" {
 			if err != nil || !ok {
 				t.Fatalf("Conform of the right completion = %v, %q, %v", ok, diffs, err)
@@ -472,7 +483,7 @@ func TestRunStart_ExactIntegerInputs(t *testing.T) {
 		t.Fatal(err)
 	}
 	const top = ^uint64(0)
-	mem := agent.NewMemStore()
+	mem := agenttest.MemJournal()
 	if out, err := flow.Run(ctx, mem, "r", top); err != nil || out != top {
 		t.Fatalf("first drive: %d, %v", out, err)
 	}
@@ -492,7 +503,7 @@ func TestConform_CompletionRequiresEveryIteration(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	src := agent.NewMemStore()
+	src := agenttest.MemJournal()
 	if _, err := flow.Run(ctx, src, "r", 3); err != nil {
 		t.Fatal(err)
 	}
@@ -501,12 +512,12 @@ func TestConform_CompletionRequiresEveryIteration(t *testing.T) {
 		t.Fatal(err)
 	}
 	for _, drop := range []string{"node:iter:1:refine", "switch:iter:0:check", "node:seed", "node:done"} {
-		forged := agent.NewMemStore()
+		forged := agenttest.MemJournal()
 		for _, r := range recs {
 			if r.Name == drop || r.Kind == agent.StepHeader {
 				continue
 			}
-			if _, err := forged.Do(ctx, "r", r.Name, func(context.Context) (agent.Record, error) { return r, nil }); err != nil {
+			if _, err := journaltest.Do(ctx, forged, "r", r.Name, func(context.Context) (agent.Record, error) { return r, nil }); err != nil {
 				t.Fatal(err)
 			}
 		}
@@ -526,7 +537,7 @@ func TestRun_InputWithARepeatedKeyIsRefused(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	mem := agent.NewMemStore()
+	mem := agenttest.MemJournal()
 	if _, err := flow.Run(ctx, mem, "r", json.RawMessage(`{"a":1,"a":2}`)); !errors.Is(err, agent.ErrConfig) {
 		t.Fatalf("Run with a repeated key: %v, want ErrConfig", err)
 	}
@@ -544,17 +555,17 @@ func TestConform_CompletionChoicesAndTerminals(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	src := agent.NewMemStore()
+	src := agenttest.MemJournal()
 	if _, err := sw.Run(ctx, src, "r", 0); err != nil {
 		t.Fatal(err)
 	}
 	recs, _ := src.History(ctx, "r")
-	forged := agent.NewMemStore()
+	forged := agenttest.MemJournal()
 	for _, r := range recs {
 		if r.Name == "switch:entry" || r.Kind == agent.StepHeader {
 			continue
 		}
-		if _, err := forged.Do(ctx, "r", r.Name, func(context.Context) (agent.Record, error) { return r, nil }); err != nil {
+		if _, err := journaltest.Do(ctx, forged, "r", r.Name, func(context.Context) (agent.Record, error) { return r, nil }); err != nil {
 			t.Fatal(err)
 		}
 	}
@@ -573,7 +584,7 @@ func TestConform_CompletionChoicesAndTerminals(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	mem := agent.NewMemStore()
+	mem := agenttest.MemJournal()
 	out, err := fan.Run(ctx, mem, "r", 1)
 	if err != nil {
 		t.Fatal(err)
@@ -599,13 +610,13 @@ func TestConform_CompletionComparedAsJSONValues(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	src := agent.NewMemStore()
+	src := agenttest.MemJournal()
 	if _, err := flow.Run(ctx, src, "r", 1); err != nil {
 		t.Fatal(err)
 	}
 	esc := string([]byte{'\\', 'u', '0', '0', '3', 'c'})
 	recs, _ := src.History(ctx, "r")
-	forged := agent.NewMemStore()
+	forged := agenttest.MemJournal()
 	for _, r := range recs {
 		if r.Kind == agent.StepHeader {
 			continue
@@ -613,7 +624,7 @@ func TestConform_CompletionComparedAsJSONValues(t *testing.T) {
 		if r.Name == "node:t" {
 			r.Result = json.RawMessage(`"a` + esc + `b"`)
 		}
-		if _, err := forged.Do(ctx, "r", r.Name, func(context.Context) (agent.Record, error) { return r, nil }); err != nil {
+		if _, err := journaltest.Do(ctx, forged, "r", r.Name, func(context.Context) (agent.Record, error) { return r, nil }); err != nil {
 			t.Fatal(err)
 		}
 	}

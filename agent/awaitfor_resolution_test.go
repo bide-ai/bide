@@ -12,7 +12,7 @@ import (
 // same outcome every time: once the timeout has won, a signal delivered after the deadline does
 // not flip the call to the signal branch.
 func TestAwaitFor_TimeoutOutcomeSurvivesALateSignal(t *testing.T) {
-	store := NewMemStore()
+	store := memJournal()
 	var clk int64 = 1000
 	ctx := ContextWithClock(context.Background(), func() time.Time { return time.Unix(atomic.LoadInt64(&clk), 0) })
 	var outcomes []bool
@@ -24,7 +24,7 @@ func TestAwaitFor_TimeoutOutcomeSurvivesALateSignal(t *testing.T) {
 		outcomes = append(outcomes, ok)
 		return Interrupt[string](ctx, "confirm", nil) // a later pause in the same tool
 	})
-	a := New(NewScriptedModel(ToolTurn("c1", "watch", `{}`), TextTurn("done")), store, tool)
+	a := mustNew(NewScriptedModel(ToolTurn("c1", "watch", `{}`), TextTurn("done")), store, WithTools(tool))
 	var aw *Awaiting
 	if _, err := a.Run(ctx, "r", "go"); !errors.As(err, &aw) {
 		t.Fatalf("first run: %v, want *Awaiting", err)
@@ -51,7 +51,7 @@ func TestAwaitFor_TimeoutOutcomeSurvivesALateSignal(t *testing.T) {
 // AwaitFor inside a sub-agent schedules its wake for the root run, which the waker's resume
 // callback (the root agent) can drive; the woken tree completes on the timeout branch.
 func TestSubAgentAwaitFor_WakesTheRoot(t *testing.T) {
-	store := NewMemStore()
+	store := memJournal()
 	var clk int64 = 1000
 	now := func() time.Time { return time.Unix(atomic.LoadInt64(&clk), 0) }
 	watch := Func("watch", "wait for a webhook", Safety{ReadOnly: true}, func(ctx context.Context, _ struct{}) (string, error) {

@@ -21,9 +21,6 @@ type MemStore struct {
 	runs   map[string]*memRun
 	leases map[string]memLease // run leasing (see lease.go); in-process, for tests and the reference
 	now    func() time.Time    // lease clock (settable in tests); defaults to time.Now
-
-	jOnce sync.Once
-	j     *Journal // the Journal the Do and History shims delegate to
 }
 
 type memRun struct {
@@ -59,10 +56,9 @@ func (m *MemStore) setNow(now func() time.Time) {
 }
 
 var (
-	_ Store   = (*MemStore)(nil)
-	_ Durable = (*MemStore)(nil) // transitional: Do and History go through its Journal
-	_ Lister  = (*MemStore)(nil)
-	_ Leaser  = (*MemStore)(nil)
+	_ Store  = (*MemStore)(nil)
+	_ Lister = (*MemStore)(nil)
+	_ Leaser = (*MemStore)(nil)
 )
 
 // Insert implements Store.
@@ -162,26 +158,4 @@ func (m *MemStore) Runs(ctx context.Context, f RunFilter) iter.Seq2[string, erro
 			}
 		}
 	}
-}
-
-// Journal returns the Journal over m that its Do and History shims delegate to.
-//
-// Deprecated: transitional; removed by the 1.0 rewrite. Use NewJournal(m).
-func (m *MemStore) Journal() *Journal {
-	m.jOnce.Do(func() { m.j = newJournal(m) })
-	return m.j
-}
-
-// Do runs a memoized step through m's Journal (see Journal.Do).
-//
-// Deprecated: transitional; removed by the 1.0 rewrite. Use a Journal over the store.
-func (m *MemStore) Do(ctx context.Context, runID, name string, fn func(context.Context) (Record, error)) (Record, error) {
-	return m.Journal().Do(ctx, runID, name, fn)
-}
-
-// History reads a run back through m's Journal (see Journal.History).
-//
-// Deprecated: transitional; removed by the 1.0 rewrite. Use a Journal over the store.
-func (m *MemStore) History(ctx context.Context, runID string) ([]Record, error) {
-	return m.Journal().History(ctx, runID)
 }

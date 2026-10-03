@@ -326,7 +326,7 @@ func buildAgent(t *testing.T, store *agent.MemStore, opts ...agent.Option) *agen
 	if err != nil {
 		t.Fatal(err)
 	}
-	a, err := agent.Build(instrModel{}, j, opts...)
+	a, err := agent.New(instrModel{}, j, opts...)
 	if err != nil {
 		t.Fatal(err)
 	}

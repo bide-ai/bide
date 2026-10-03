@@ -96,7 +96,7 @@ func main() {
 	if err != nil {
 		log.Fatal(err)
 	}
-	a, err := agent.Build(&scriptModel{}, j,
+	a, err := agent.New(&scriptModel{}, j,
 		agent.WithTools(weather),
 		trace.Instrument(tracer, trace.WithRates(rates)),
 	)

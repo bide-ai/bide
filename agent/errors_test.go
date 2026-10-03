@@ -33,7 +33,7 @@ func TestErrors_ConditionsWrapCategories(t *testing.T) {
 // (and therefore ErrTool).
 func TestErrors_UnknownToolClassified(t *testing.T) {
 	m := &scriptModel{turns: [][]Emit{toolTurn("c1", "nope", `{}`)}}
-	a := New(m, NewMemStore())
+	a := mustNew(m, memJournal())
 
 	_, err := a.Run(context.Background(), "r", "hi")
 	if !errors.Is(err, ErrUnknownTool) {
@@ -86,7 +86,7 @@ func TestErrors_ControlFlowStillTyped(t *testing.T) {
 	var calls int
 	tool := &countingTool{name: "charge", approval: SingleApproval(), calls: &calls}
 	m := &scriptModel{turns: [][]Emit{toolTurn("c1", "charge", `{}`), textTurn("done")}}
-	a := New(m, NewMemStore(), tool)
+	a := mustNew(m, memJournal(), WithTools(tool))
 
 	_, err := a.Run(context.Background(), "r", "pay")
 	var pend *PendingApproval

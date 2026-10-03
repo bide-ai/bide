@@ -29,7 +29,7 @@ import (
 //	    // confirm out of band that the charge went through, then record the node's output
 //	    err = flow.ResolveHalt(ctx, store, halt.Ref(), agent.Outcome{Result: receipt})
 //	}
-func (f *Flow[In, Out]) ResolveHalt(ctx context.Context, store agent.Durable, ref agent.HaltRef, out agent.Outcome, opts ...agent.ResolveOption) error {
+func (f *Flow[In, Out]) ResolveHalt(ctx context.Context, store *agent.Journal, ref agent.HaltRef, out agent.Outcome, opts ...agent.ResolveOption) error {
 	c := f.core
 	if ref.Op.Kind != agent.OpStep {
 		return fmt.Errorf("plan: flow %q: resolve %s %q: a flow's halts are on Steps (%q): %w", c.flowName, ref.Op.Kind, ref.Op.ID, agent.OpStep, agent.ErrConfig)
@@ -90,7 +90,7 @@ func decodeStrict(raw []byte, into reflect.Type) error {
 // a flow run of c's name, or whose recorded topology digest is not c's. A resolution recorded
 // through another flow, even one with a node of the same name, would record a value of that
 // flow's node type, which the run's own flow may not be able to read.
-func (c *builderCore) checkRunOfFlow(ctx context.Context, store agent.Durable, runID string) error {
+func (c *builderCore) checkRunOfFlow(ctx context.Context, store *agent.Journal, runID string) error {
 	recs, err := store.History(ctx, runID)
 	if err != nil {
 		return fmt.Errorf("plan: flow %q: read run %s: %w", c.flowName, runID, err)

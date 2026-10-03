@@ -34,9 +34,9 @@ func TestTimeout_ResultAfterTheDeadlineIsRecorded(t *testing.T) {
 func testResultAfterTheDeadlineIsRecorded(t *testing.T) {
 	var calls atomic.Int32
 	charge := lateTool("charge", Safety{}, &calls, func(context.Context) (string, error) { return "charged", nil }, WithTimeout(time.Millisecond))
-	store := NewMemStore()
+	store := memJournal()
 	m := NewScriptedModel(ToolTurn("c1", "charge", `{}`), TextTurn("done"))
-	if _, err := New(m, store, charge).Run(context.Background(), "r1", "pay"); err != nil {
+	if _, err := mustNew(m, store, WithTools(charge)).Run(context.Background(), "r1", "pay"); err != nil {
 		t.Fatalf("Run: %v", err)
 	}
 	rec, ok := hasStep(t, store, "r1", ToolResultStep("c1"))
@@ -58,16 +58,16 @@ func TestTimeout_LateErrorHaltsASideEffect(t *testing.T) {
 			synctest.Test(t, func(t *testing.T) {
 				var calls atomic.Int32
 				charge := lateTool("charge", Safety{}, &calls, answer, WithTimeout(time.Millisecond))
-				store := NewMemStore()
+				store := memJournal()
 				m := NewScriptedModel(ToolTurn("c1", "charge", `{}`), TextTurn("done"))
-				_, err := New(m, store, charge).Run(context.Background(), "r1", "pay")
+				_, err := mustNew(m, store, WithTools(charge)).Run(context.Background(), "r1", "pay")
 				if !errors.Is(err, ErrToolOutcomeUnknown) || !strings.Contains(err.Error(), "timeout") {
 					t.Fatalf("Run: err = %v, want ErrToolOutcomeUnknown naming the timeout", err)
 				}
 				if _, ok := hasStep(t, store, "r1", ToolResultStep("c1")); ok {
 					t.Fatal("a result was recorded for a call whose outcome is unknown")
 				}
-				_, err = New(m, store, charge).Run(context.Background(), "r1", "pay")
+				_, err = mustNew(m, store, WithTools(charge)).Run(context.Background(), "r1", "pay")
 				var halt *OutcomeUnknown
 				if !errors.As(err, &halt) || halt.Op.ID != "c1" {
 					t.Fatalf("resume: err = %v, want *OutcomeUnknown for c1", err)
@@ -89,9 +89,9 @@ func TestTimeout_LateErrorOfARetrySafeToolIsRecorded(t *testing.T) {
 func testLateErrorOfARetrySafeToolIsRecorded(t *testing.T) {
 	var calls atomic.Int32
 	lookup := lateTool("lookup", Safety{Idempotent: true}, &calls, func(ctx context.Context) (string, error) { return "", ctx.Err() }, WithTimeout(time.Millisecond))
-	store := NewMemStore()
+	store := memJournal()
 	m := NewScriptedModel(ToolTurn("c1", "lookup", `{}`), TextTurn("done"))
-	if _, err := New(m, store, lookup).Run(context.Background(), "r1", "q"); err != nil {
+	if _, err := mustNew(m, store, WithTools(lookup)).Run(context.Background(), "r1", "q"); err != nil {
 		t.Fatalf("Run: %v", err)
 	}
 	rec, ok := hasStep(t, store, "r1", ToolResultStep("c1"))
@@ -106,9 +106,9 @@ func TestTimeout_ErrorBeforeTheDeadlineIsAFailure(t *testing.T) {
 	charge := Func("charge", "", Safety{}, func(context.Context, struct{}) (string, error) {
 		return "", errors.New("card declined")
 	}, WithTimeout(time.Hour))
-	store := NewMemStore()
+	store := memJournal()
 	m := NewScriptedModel(ToolTurn("c1", "charge", `{}`), TextTurn("done"))
-	if _, err := New(m, store, charge).Run(context.Background(), "r1", "pay"); err != nil {
+	if _, err := mustNew(m, store, WithTools(charge)).Run(context.Background(), "r1", "pay"); err != nil {
 		t.Fatalf("Run: %v", err)
 	}
 	if rec, ok := hasStep(t, store, "r1", ToolResultStep("c1")); !ok || !rec.IsError || !strings.Contains(string(rec.Result), "declined") {
@@ -128,7 +128,7 @@ func TestTimeout_TheCallSeesTheDeadline(t *testing.T) {
 		return "ok", nil
 	}, WithTimeout(time.Hour))
 	m := NewScriptedModel(ToolTurn("c1", "lookup", `{}`), TextTurn("done"))
-	if _, err := New(m, NewMemStore(), lookup).Run(context.Background(), "r1", "q"); err != nil {
+	if _, err := mustNew(m, memJournal(), WithTools(lookup)).Run(context.Background(), "r1", "q"); err != nil {
 		t.Fatalf("Run: %v", err)
 	}
 	if left <= 59*time.Minute || left > time.Hour {
@@ -141,9 +141,9 @@ func TestToolResult_RecordsSafetyAndApproval(t *testing.T) {
 	ctx := context.Background()
 	lookup := Func("lookup", "", Safety{ReadOnly: true}, func(context.Context, struct{}) (string, error) { return "x", nil })
 	charge := Func("charge", "", Safety{}, func(context.Context, struct{}) (string, error) { return "ok", nil }, WithApproval(SingleApproval()))
-	store := NewMemStore()
+	store := memJournal()
 	m := NewScriptedModel(ToolTurn("c1", "lookup", `{}`), ToolTurn("c2", "charge", `{}`), TextTurn("done"))
-	a := New(m, store, lookup, charge)
+	a := mustNew(m, store, WithTools(lookup, charge))
 	if _, err := a.Run(ctx, "r1", "pay"); !IsPause(err) {
 		t.Fatalf("first drive: %v, want the approval pause", err)
 	}
@@ -185,12 +185,12 @@ func TestRollback_UsesTheRecordedSafety(t *testing.T) {
 // only once a human approves.
 func TestSubAgent_WithApprovalPauses(t *testing.T) {
 	ctx := context.Background()
-	store := NewMemStore()
+	store := memJournal()
 	var subCalls atomic.Int32
-	sub := New(&countingModel{n: &subCalls}, store)
+	sub := mustNew(&countingModel{n: &subCalls}, store)
 	delegate := SubAgent("research", "delegate research", sub, WithApproval(SingleApproval()))
 	m := NewScriptedModel(ToolTurn("c1", "research", `{"task":"find it"}`), TextTurn("done"))
-	parent := New(m, store, delegate)
+	parent := mustNew(m, store, WithTools(delegate))
 	_, err := parent.Run(ctx, "r1", "go")
 	var pa *ApprovalPending
 	if !errors.As(err, &pa) || pa.ToolName != "research" || pa.ToolUseID != "c1" {
@@ -240,7 +240,7 @@ func panicsWith(f func()) (err error) {
 // would cut the sub-run off mid-call), and every tool option refuses an invalid value, each with
 // ErrConfig.
 func TestToolOptions_Refusals(t *testing.T) {
-	sub := New(NewScriptedModel(TextTurn("x")), NewMemStore())
+	sub := mustNew(NewScriptedModel(TextTurn("x")), memJournal())
 	fn := func(context.Context, struct{}) (string, error) { return "", nil }
 	for name, build := range map[string]func(){
 		"SubAgent WithSafety":         func() { SubAgent("s", "", sub, WithSafety(Safety{ReadOnly: true})) },
@@ -322,7 +322,7 @@ func (t fickleTool) Spec() ToolSpec {
 }
 func (fickleTool) Name() string                { return "charge" }
 func (fickleTool) Description() string         { return "" }
-func (fickleTool) ArgsSchema() json.RawMessage { return nil }
+func (fickleTool) ArgsSchema() json.RawMessage { return json.RawMessage(`{"type":"object"}`) }
 func (fickleTool) Safety() Safety              { return Safety{ReadOnly: true} }
 func (t fickleTool) Call(context.Context, json.RawMessage) (json.RawMessage, error) {
 	t.calls.Add(1)
@@ -333,9 +333,14 @@ func (t fickleTool) Call(context.Context, json.RawMessage) (json.RawMessage, err
 // agent makes about its calls: it is claimed, and a middleware that retries it cannot run it twice.
 func TestSpec_ReadOnceAtRegistration(t *testing.T) {
 	var asked, calls atomic.Int32
-	store := NewMemStore()
+	store := memJournal()
 	m := NewScriptedModel(ToolTurn("c1", "charge", `{}`), TextTurn("done"))
-	a := New(m, store, fickleTool{asked: &asked, calls: &calls}).UseTool(naiveRetry(3, false))
+	a := mustNew(
+		m,
+		store,
+		WithTools(fickleTool{asked: &asked, calls: &calls}),
+		WithToolMiddleware(naiveRetry(3, false)),
+	)
 	if _, err := a.Run(context.Background(), "r1", "pay"); err != nil {
 		t.Fatal(err)
 	}
@@ -367,7 +372,7 @@ func TestRequestTools_SortedAndOwnedPerRequest(t *testing.T) {
 		}
 	}
 	m := NewScriptedModel(ToolTurn("c1", "a", `{}`), TextTurn("done"))
-	if _, err := New(m, NewMemStore(), b, a).Use(mw).Run(context.Background(), "r1", "q"); err != nil {
+	if _, err := mustNew(m, memJournal(), WithTools(b, a), WithMiddleware(mw)).Run(context.Background(), "r1", "q"); err != nil {
 		t.Fatal(err)
 	}
 	if len(seen) != 2 || !slices.Equal(seen[0], []string{"a", "b"}) || !slices.Equal(seen[1], []string{"a", "b"}) {
@@ -379,11 +384,11 @@ func TestRequestTools_SortedAndOwnedPerRequest(t *testing.T) {
 // safety and gate the step ran under, as a completed call's result does.
 func TestDenialAndSagaFailure_RecordSafetyAndApproval(t *testing.T) {
 	ctx := context.Background()
-	store := NewMemStore()
+	store := memJournal()
 	fn := func(context.Context, struct{}) (string, error) { return "ok", nil }
 	charge := Func("charge", "", Safety{}, fn, WithApproval(SingleApproval()))
 	m := NewScriptedModel(ToolTurn("c1", "charge", `{}`), TextTurn("done"))
-	a := New(m, store, charge)
+	a := mustNew(m, store, WithTools(charge))
 	if _, err := a.Run(ctx, "r1", "pay"); !IsPause(err) {
 		t.Fatalf("first drive: %v, want the approval pause", err)
 	}
@@ -401,7 +406,7 @@ func TestDenialAndSagaFailure_RecordSafetyAndApproval(t *testing.T) {
 		return "", errors.New("no rooms left")
 	}, WithApproval(&ApprovalPolicy{Need: 1, Approvers: []string{"ops"}}))
 	sm := NewScriptedModel(ToolTurn("b1", "book", `{}`), TextTurn("done"))
-	sa := New(sm, store, book).WithApproverVerifiers(fakeVerifiers("ops"))
+	sa := mustNew(sm, store, WithTools(book), WithApproverVerifiers(fakeVerifiers("ops")))
 	if _, err := sa.RunSaga(ctx, "s1", "trip"); !IsPause(err) {
 		t.Fatalf("saga first drive: %v, want the quorum pause", err)
 	}

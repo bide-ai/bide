@@ -21,7 +21,7 @@ func TestNew_DuplicateToolNamesFailTheRun(t *testing.T) {
 		return "remote", nil
 	})
 	m := &greedyModel{script: [][]Emit{toolTurn("c1", "lookup", `{}`), textTurn("done")}}
-	_, err := New(m, NewMemStore(), mine, theirs).Run(context.Background(), "r1", "who is alice?")
+	_, err := mustNew(m, memJournal(), WithTools(mine, theirs)).Run(context.Background(), "r1", "who is alice?")
 	if !errors.Is(err, ErrConfig) {
 		t.Fatalf("run err = %v, want ErrConfig for two tools named lookup", err)
 	}
@@ -43,12 +43,13 @@ func TestNew_DuplicateToolNamesFailTheSagaRollback(t *testing.T) {
 	} {
 		t.Run(entry.name, func(t *testing.T) {
 			l := newLedger()
-			store := &flakyStore{MemStore: NewMemStore(), failCompensations: 1} // the rollback stops
+			store := &flakyStore{MemStore: NewMemStore(), failCompensations: 1}
+			j := mustJournal(store) // the rollback stops
 			model := func() Model {
 				return &scriptModel{turns: [][]Emit{toolTurn("c1", "A", `{}`), toolTurn("c2", "boom", `{}`)}}
 			}
 			var ab *SagaAborted
-			if err := entry.run(New(model(), store, l.write("A"), failTool("boom"))); !errors.As(err, &ab) || ab.CompensateErr == nil {
+			if err := entry.run(mustNew(model(), j, WithTools(l.write("A"), failTool("boom")))); !errors.As(err, &ab) || ab.CompensateErr == nil {
 				t.Fatalf("first attempt err = %v, want *SagaAborted with CompensateErr", err)
 			}
 			store.mu.Lock()
@@ -56,7 +57,7 @@ func TestNew_DuplicateToolNamesFailTheSagaRollback(t *testing.T) {
 			store.mu.Unlock()
 
 			impostor := newLedger()
-			err := entry.run(New(model(), store, l.write("A"), failTool("boom"), impostor.write("A")))
+			err := entry.run(mustNew(model(), j, WithTools(l.write("A"), failTool("boom"), impostor.write("A"))))
 			if !errors.Is(err, ErrConfig) {
 				t.Fatalf("resume err = %v, want ErrConfig for two tools named A", err)
 			}

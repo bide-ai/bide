@@ -14,6 +14,8 @@ import (
 	"testing"
 
 	"github.com/bide-ai/bide/agent"
+	"github.com/bide-ai/bide/agent/agenttest"
+	"github.com/bide-ai/bide/internal/journaltest"
 	"github.com/bide-ai/bide/plan"
 )
 
@@ -40,23 +42,24 @@ func twoNode(t *testing.T, name string, fired *atomic.Int64, extra bool) *plan.F
 func TestF1_CompletedFlowIsRecoveredEveryPass(t *testing.T) {
 	ctx := context.Background()
 	mem := agent.NewMemStore()
+	j := agenttest.MustJournal(mem)
 	var fired atomic.Int64
 	flow := twoNode(t, "two", &fired, false)
-	if out, err := flow.Run(ctx, mem, "r", 1); err != nil || out != 20 {
+	if out, err := flow.Run(ctx, j, "r", 1); err != nil || out != 20 {
 		t.Fatalf("Run: %d, %v", out, err)
 	}
-	done, err := agent.IsComplete(ctx, mem, "r")
+	done, err := agent.IsComplete(ctx, j, "r")
 	if err != nil {
 		t.Fatal(err)
 	}
 	drives := 0
 	resume := func(ctx context.Context, runID string, _ agent.RunStart) error {
 		drives++
-		_, err := flow.Run(ctx, mem, runID, 1)
+		_, err := flow.Run(ctx, j, runID, 1)
 		return err
 	}
 	for range 3 {
-		if _, err := agent.Recover(ctx, mem, resume); err != nil {
+		if _, err := agent.Recover(ctx, j, resume); err != nil {
 			t.Fatal(err)
 		}
 	}
@@ -64,8 +67,8 @@ func TestF1_CompletedFlowIsRecoveredEveryPass(t *testing.T) {
 	changed := twoNode(t, "two", &fired, true)
 	var failures int
 	for range 3 {
-		_, err := agent.Recover(ctx, mem, func(ctx context.Context, runID string, _ agent.RunStart) error {
-			_, err := changed.Run(ctx, mem, runID, 1)
+		_, err := agent.Recover(ctx, j, func(ctx context.Context, runID string, _ agent.RunStart) error {
+			_, err := changed.Run(ctx, j, runID, 1)
 			return err
 		})
 		if errors.Is(err, agent.ErrConfig) {
@@ -90,6 +93,7 @@ func TestF2_RecordedStartInputDoesNotRoundTrip(t *testing.T) {
 		t.Run(tc.name, func(t *testing.T) {
 			ctx := context.Background()
 			mem := agent.NewMemStore()
+			j := agenttest.MustJournal(mem)
 			var calls atomic.Int64
 			b := plan.New[any, string]("rt")
 			b.Step("a", func(_ context.Context, v any) (string, error) {
@@ -102,10 +106,10 @@ func TestF2_RecordedStartInputDoesNotRoundTrip(t *testing.T) {
 			if err != nil {
 				t.Fatal(err)
 			}
-			if _, err := flow.Run(ctx, mem, "r", tc.in); err == nil {
+			if _, err := flow.Run(ctx, j, "r", tc.in); err == nil {
 				t.Fatal("first drive: want the node's error")
 			}
-			start, ok, err := agent.RecordedStart(ctx, mem, "r")
+			start, ok, err := agent.RecordedStart(ctx, j, "r")
 			if err != nil || !ok || start.Kind != agent.RunKindFlow {
 				t.Fatalf("RecordedStart: %+v %v %v", start, ok, err)
 			}
@@ -116,7 +120,7 @@ func TestF2_RecordedStartInputDoesNotRoundTrip(t *testing.T) {
 			if err := dec.Decode(&in); err != nil {
 				t.Fatal(err)
 			}
-			_, err = flow.Run(ctx, mem, "r", in)
+			_, err = flow.Run(ctx, j, "r", in)
 			if errors.Is(err, agent.ErrConfig) {
 				t.Fatalf("resume with the recorded input (%s) decoded: %v; want the run's halt, not ErrConfig", start.Input, err)
 			}
@@ -125,7 +129,7 @@ func TestF2_RecordedStartInputDoesNotRoundTrip(t *testing.T) {
 			if err := json.Unmarshal([]byte(start.Input.Text()), &lossy); err != nil {
 				t.Fatal(err)
 			}
-			if _, err := flow.Run(ctx, mem, "r", lossy); !errors.Is(err, agent.ErrConfig) {
+			if _, err := flow.Run(ctx, j, "r", lossy); !errors.Is(err, agent.ErrConfig) {
 				t.Fatalf("resume with the input rounded to a double: %v, want ErrConfig", err)
 			}
 		})
@@ -139,17 +143,18 @@ func TestF2_RecordedStartInputDoesNotRoundTrip(t *testing.T) {
 func TestF3_ResolveHaltRefOnANodeThatNeverHalted(t *testing.T) {
 	ctx := context.Background()
 	mem := agent.NewMemStore()
+	j := agenttest.MustJournal(mem)
 	var fired atomic.Int64
 	flow := twoNode(t, "two", &fired, false)
 	ref := agent.HaltRef{RunID: "r", Op: agent.OpRef{Kind: agent.OpStep, ID: "node:a"}, Cause: agent.HaltCrashed}
-	err := agent.ResolveHaltRef(ctx, mem, ref, agent.Outcome{Result: 7})
-	out, rerr := flow.Run(ctx, mem, "r", 1)
+	err := agent.ResolveHaltRef(ctx, j, ref, agent.Outcome{Result: 7})
+	out, rerr := flow.Run(ctx, j, "r", 1)
 	t.Logf("resolve of an unattempted node: %v; Run -> %d, %v; body ran %d times", err, out, rerr, fired.Load())
 	if err == nil {
 		t.Errorf("ResolveHaltRef recorded an output for node:a, which never attempted anything: want a refusal")
 	}
 	ref.Op.ID = "node:iter:01:a"
-	if err := agent.ResolveHaltRef(ctx, agent.NewMemStore(), ref, agent.Outcome{Result: 7}); err == nil {
+	if err := agent.ResolveHaltRef(ctx, agenttest.MemJournal(), ref, agent.Outcome{Result: 7}); err == nil {
 		t.Errorf("ResolveHaltRef accepted node:iter:01:a, a key Run never writes (it writes node:iter:1:a)")
 	}
 }
@@ -160,7 +165,7 @@ func TestF3_ResolveHaltRefOnANodeThatNeverHalted(t *testing.T) {
 // against the node's output type, so the wrong one is refused and the correction completes.
 func TestF4_ResolutionOfTheWrongTypeStrandsTheRun(t *testing.T) {
 	ctx := context.Background()
-	mem := agent.NewMemStore()
+	mem := agenttest.MemJournal()
 	var calls atomic.Int64
 	b := plan.New[int, int]("typed")
 	a := b.Step("a", func(_ context.Context, n int) (int, error) {
@@ -196,18 +201,19 @@ func TestF4_ResolutionOfTheWrongTypeStrandsTheRun(t *testing.T) {
 func TestF5_ConformFlagsAStepInsideANodeBody(t *testing.T) {
 	ctx := context.Background()
 	mem := agent.NewMemStore()
+	j := agenttest.MustJournal(mem)
 	b := plan.New[int, int]("nested")
 	b.Step("a", func(ctx context.Context, n int) (int, error) {
-		return agent.Step(ctx, mem, "r", "fetch", func(context.Context) (int, error) { return n + 1, nil })
+		return agent.Step(ctx, j, "r", "fetch", func(context.Context) (int, error) { return n + 1, nil })
 	})
 	flow, err := b.Build()
 	if err != nil {
 		t.Fatal(err)
 	}
-	if out, err := flow.Run(ctx, mem, "r", 1); err != nil || out != 2 {
+	if out, err := flow.Run(ctx, j, "r", 1); err != nil || out != 2 {
 		t.Fatalf("Run: %d %v", out, err)
 	}
-	if ok, diffs, err := flow.Conform(ctx, mem, "r"); err != nil || !ok {
+	if ok, diffs, err := flow.Conform(ctx, j, "r"); err != nil || !ok {
 		t.Fatalf("Conform of a clean run = %v, %q, %v; want it to conform", ok, diffs, err)
 	}
 }
@@ -217,6 +223,7 @@ func TestF5_ConformFlagsAStepInsideANodeBody(t *testing.T) {
 func TestF5b_ConformMissesOffPathRecords(t *testing.T) {
 	ctx := context.Background()
 	mem := agent.NewMemStore()
+	j := agenttest.MustJournal(mem)
 	b := plan.New[int, string]("sw")
 	a := b.Step("a", func(_ context.Context, n int) (int, error) { return n, nil }, plan.ReadOnly())
 	yes := b.Step("yes", func(_ context.Context, n int) (string, error) { return "yes", nil }, plan.ReadOnly())
@@ -226,17 +233,17 @@ func TestF5b_ConformMissesOffPathRecords(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if out, err := flow.Run(ctx, mem, "r", 1); err != nil || out != "yes" {
+	if out, err := flow.Run(ctx, j, "r", 1); err != nil || out != "yes" {
 		t.Fatalf("Run: %q %v", out, err)
 	}
 	for _, name := range []string{"node:no", "node:iter:3:a"} {
-		if _, err := mem.Do(ctx, "r", name, func(context.Context) (agent.Record, error) {
+		if _, err := journaltest.Do(ctx, j, "r", name, func(context.Context) (agent.Record, error) {
 			return agent.Record{Kind: agent.StepValue, Result: json.RawMessage(`"x"`)}, nil
 		}); err != nil {
 			t.Fatal(err)
 		}
 	}
-	if ok, diffs, _ := flow.Conform(ctx, mem, "r"); ok {
+	if ok, diffs, _ := flow.Conform(ctx, j, "r"); ok {
 		t.Errorf("Conform = ok (%q) with node:no (the untaken arm) and node:iter:3:a (no loop) in the journal", diffs)
 	}
 }
@@ -248,7 +255,7 @@ func TestF6_FlowRunAcceptsRunIDsAgentRefuses(t *testing.T) {
 	var fired atomic.Int64
 	flow := twoNode(t, "two", &fired, false)
 	for _, id := range []string{"", "parent>call"} {
-		if _, err := flow.Run(ctx, agent.NewMemStore(), id, 1); !errors.Is(err, agent.ErrConfig) {
+		if _, err := flow.Run(ctx, agenttest.MemJournal(), id, 1); !errors.Is(err, agent.ErrConfig) {
 			t.Errorf("Flow.Run with run ID %q: err = %v, want ErrConfig as agent.Run gives", id, err)
 		}
 	}
@@ -259,11 +266,12 @@ func TestF6_FlowRunAcceptsRunIDsAgentRefuses(t *testing.T) {
 func TestF7_NestedStepInLoopBodyIsNotIterationScoped(t *testing.T) {
 	ctx := context.Background()
 	mem := agent.NewMemStore()
+	j := agenttest.MustJournal(mem)
 	var charges atomic.Int64
 	b := plan.New[int, string]("nloop")
 	seed := b.Step("seed", func(_ context.Context, n int) (fLoopState, error) { return fLoopState{n}, nil }, plan.ReadOnly())
 	inc := b.Step("inc", func(ctx context.Context, s fLoopState) (fLoopState, error) {
-		v, err := agent.Step(ctx, mem, "r", "charge", func(context.Context) (int, error) { return int(charges.Add(1)), nil })
+		v, err := agent.Step(ctx, j, "r", "charge", func(context.Context) (int, error) { return int(charges.Add(1)), nil })
 		return fLoopState{s.N + 1 + 0*v}, err
 	})
 	check := b.Step("check", func(_ context.Context, s fLoopState) (fLoopState, error) { return s, nil }, plan.ReadOnly())
@@ -275,7 +283,7 @@ func TestF7_NestedStepInLoopBodyIsNotIterationScoped(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if out, err := flow.Run(ctx, mem, "r", 0); err != nil || out != "2" {
+	if out, err := flow.Run(ctx, j, "r", 0); err != nil || out != "2" {
 		t.Fatalf("Run: %q %v", out, err)
 	}
 	if charges.Load() != 2 {
@@ -288,7 +296,7 @@ func TestF7_NestedStepInLoopBodyIsNotIterationScoped(t *testing.T) {
 func TestF8_ConcurrentDrivers(t *testing.T) {
 	for i := range 300 {
 		ctx := context.Background()
-		mem := agent.NewMemStore()
+		mem := agenttest.MemJournal()
 		var fired atomic.Int64
 		flow := twoNode(t, "two", &fired, false)
 		var wg sync.WaitGroup
@@ -333,7 +341,7 @@ func TestF9_SingleNodeLoop(t *testing.T) {
 	if err != nil {
 		t.Skipf("Build refuses a one-node loop: %v", err)
 	}
-	if out, err := flow.Run(context.Background(), agent.NewMemStore(), "r", 0); err != nil || out != "2" {
+	if out, err := flow.Run(context.Background(), agenttest.MemJournal(), "r", 0); err != nil || out != "2" {
 		t.Fatalf("Run: %q, %v; want \"2\"", out, err)
 	}
 }
@@ -345,14 +353,15 @@ func TestF10_ConformWithoutRunStartOrDigest(t *testing.T) {
 	var fired atomic.Int64
 	flow := twoNode(t, "two", &fired, false)
 	mem := agent.NewMemStore()
+	j := agenttest.MustJournal(mem)
 	for _, w := range []struct{ name, val string }{{"node:a", "2"}, {"node:c", "20"}} {
-		if _, err := mem.Do(ctx, "r", w.name, func(context.Context) (agent.Record, error) {
+		if _, err := journaltest.Do(ctx, j, "r", w.name, func(context.Context) (agent.Record, error) {
 			return agent.Record{Kind: agent.StepValue, Result: json.RawMessage(w.val)}, nil
 		}); err != nil {
 			t.Fatal(err)
 		}
 	}
-	if ok, diffs, err := flow.Conform(ctx, mem, "r"); err != nil || ok {
+	if ok, diffs, err := flow.Conform(ctx, j, "r"); err != nil || ok {
 		t.Fatalf("Conform = %v, %q, %v on a journal with no run:start and no flow:digest; want a divergence", ok, diffs, err)
 	}
 }

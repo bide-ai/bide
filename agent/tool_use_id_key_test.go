@@ -45,7 +45,7 @@ type tracker struct {
 func (t *tracker) Name() string                { return t.name }
 func (t *tracker) Description() string         { return "" }
 func (t *tracker) Safety() Safety              { return Safety{} }
-func (t *tracker) ArgsSchema() json.RawMessage { return nil }
+func (t *tracker) ArgsSchema() json.RawMessage { return json.RawMessage(`{"type":"object"}`) }
 func (t *tracker) Call(context.Context, json.RawMessage) (json.RawMessage, error) {
 	t.calls.Add(1)
 	return json.RawMessage(`"ok"`), nil
@@ -63,8 +63,8 @@ func TestRun_AnyToolUseIDKeysItsOwnRecords(t *testing.T) {
 	}
 	turn = append(turn, Emit{Event: Finish{Reason: "tool_use"}})
 	tool := &tracker{name: "w"}
-	store := NewMemStore()
-	a := New(&scriptModel{turns: [][]Emit{turn, textTurn("done")}}, store, tool)
+	store := memJournal()
+	a := mustNew(&scriptModel{turns: [][]Emit{turn, textTurn("done")}}, store, WithTools(tool))
 	out, err := runRecovering(a, "r")
 	if err != nil || out.Text() != "done" || int(tool.calls.Load()) != len(ids) {
 		t.Fatalf("out = %q, err = %v, tool ran %d times; want done, nil, %d", out.Text(), err, tool.calls.Load(), len(ids))
@@ -101,9 +101,9 @@ func TestRun_ToolUseIDKeysAreBoundedAndPrintable(t *testing.T) {
 	})
 	for _, id := range []string{strings.Repeat("k", 5000), strings.Repeat(":", 2000), "日本語", "nul\x00byte"} {
 		scopes = nil
-		store := NewMemStore()
+		store := memJournal()
 		m := &scriptModel{turns: [][]Emit{toolTurn(id, "probe", `{}`), textTurn("done")}}
-		if _, err := runRecovering(New(m, store, probe), "r"); err != nil {
+		if _, err := runRecovering(mustNew(m, store, WithTools(probe)), "r"); err != nil {
 			t.Fatalf("id %.20q: %v", id, err)
 		}
 		recs, _ := store.History(context.Background(), "r")
@@ -130,17 +130,25 @@ func (m fixedTextModel) Stream(ctx context.Context, req Request) (*Stream, error
 // on main the root's call "a/b" ran as "r/a/b", the run of call "b" made by the sub-agent behind
 // the root's call "a", and was handed that run's answer.
 func TestRun_ToolUseIDsNeverNameAnotherSubRun(t *testing.T) {
-	store := NewMemStore()
-	b := New(fixedTextModel("from b"), store)
-	a := New(NewScriptedModel(ToolTurn("b", "b", `{"task":"x"}`), TextTurn("a done")), store, SubAgent("b", "b", b))
+	store := memJournal()
+	b := mustNew(fixedTextModel("from b"), store)
+	a := mustNew(
+		NewScriptedModel(ToolTurn("b", "b", `{"task":"x"}`), TextTurn("a done")),
+		store,
+		WithTools(SubAgent("b", "b", b)),
+	)
 	cModel := &countModel{inner: fixedTextModel("from c")}
-	c := New(cModel, store)
-	root := New(NewScriptedModel(
-		ToolTurn("a", "a", `{"task":"x"}`),
-		ToolTurn("a/b", "c", `{"task":"y"}`),
-		ToolTurn("a>b", "c", `{"task":"y"}`),
-		TextTurn("root done"),
-	), store, SubAgent("a", "a", a), SubAgent("c", "c", c))
+	c := mustNew(cModel, store)
+	root := mustNew(
+		NewScriptedModel(
+			ToolTurn("a", "a", `{"task":"x"}`),
+			ToolTurn("a/b", "c", `{"task":"y"}`),
+			ToolTurn("a>b", "c", `{"task":"y"}`),
+			TextTurn("root done"),
+		),
+		store,
+		WithTools(SubAgent("a", "a", a), SubAgent("c", "c", c)),
+	)
 	if _, err := runRecovering(root, "r"); err != nil {
 		t.Fatal(err)
 	}
@@ -161,33 +169,30 @@ func TestRun_ToolUseIDNotValidUTF8IsRejected(t *testing.T) {
 	var calls int
 	tool := &countingTool{name: "lookup", safety: Safety{ReadOnly: true}, calls: &calls}
 	m := &scriptModel{turns: [][]Emit{toolTurn("bad\xff", "lookup", `{}`), textTurn("done")}}
-	_, err := runRecovering(New(m, NewMemStore(), tool), "r")
+	_, err := runRecovering(mustNew(m, memJournal(), WithTools(tool)), "r")
 	if !errors.Is(err, ErrToolUseIDReused) || calls != 0 {
 		t.Fatalf("err = %v, tool ran %d times; want ErrToolUseIDReused and 0", err, calls)
 	}
 }
 
-// crashOnKind runs the first step whose record has the given kind and then fails as if the
-// process died before the record was written.
+// crashOnKind fails the first Insert of a record of the given kind without storing it, as if the
+// process died after the step that made the record ran and before the record was written.
 type crashOnKind struct {
-	Durable
+	Store
 	kind    StepKind
 	crashed atomic.Bool
 }
 
-func (c *crashOnKind) Do(ctx context.Context, runID, name string, fn func(context.Context) (Record, error)) (Record, error) {
-	return c.Durable.Do(ctx, runID, name, func(ctx context.Context) (Record, error) {
-		rec, err := fn(ctx)
-		if err == nil && rec.Kind == c.kind && c.crashed.CompareAndSwap(false, true) {
-			return Record{}, errDied
-		}
-		return rec, err
-	})
+func (c *crashOnKind) Insert(ctx context.Context, runID, name string, data []byte) (Entry, bool, error) {
+	if rec, err := DecodeRecord(data); err == nil && rec.Kind == c.kind && c.crashed.CompareAndSwap(false, true) {
+		return Entry{}, false, errDied
+	}
+	return c.Store.Insert(ctx, runID, name, data)
 }
 
 // seedStepAttempt journals the attempt marker a side-effecting Step named name leaves when it
 // dies mid-effect, attempted at at.
-func seedStepAttempt(t *testing.T, d Durable, runID, name string, at time.Time) {
+func seedStepAttempt(t *testing.T, d *Journal, runID, name string, at time.Time) {
 	t.Helper()
 	rec := Record{Kind: StepAttempt, ToolUseID: name, AttemptedAt: at.UnixMilli()}
 	if _, _, err := ClaimAttempt(context.Background(), d, runID, "attempt:step:"+name, rec); err != nil {
@@ -200,11 +205,12 @@ func seedStepAttempt(t *testing.T, d Durable, runID, name string, at time.Time) 
 // call that never started halted as if its effect were unknown.
 func TestRun_StepAttemptIsNotAToolCallAttempt(t *testing.T) {
 	inner := NewMemStore()
-	seedStepAttempt(t, inner, "r", "x", time.Now())
+	j := mustJournal(inner)
+	seedStepAttempt(t, j, "r", "x", time.Now())
 	tool := &tracker{name: "w"}
 	m := &scriptModel{turns: [][]Emit{toolTurn("x", "w", `{}`), textTurn("done")}}
-	store := &crashOnKind{Durable: inner, kind: StepAttempt} // the call's claim dies before it is written
-	a := New(m, store, tool)
+	store := &crashOnKind{Store: inner, kind: StepAttempt} // the call's claim dies before it is written
+	a := mustNew(m, mustJournal(store), WithTools(tool))
 	if _, err := runRecovering(a, "r"); !errors.Is(err, errDied) {
 		t.Fatalf("first run: %v, want the simulated crash", err)
 	}
@@ -218,15 +224,16 @@ func TestRun_StepAttemptIsNotAToolCallAttempt(t *testing.T) {
 // shares its string: on main an old step marker let a call attempted a moment ago be resolved.
 func TestResolveHalt_MinAgeReadsTheCallsOwnAttempt(t *testing.T) {
 	inner := NewMemStore()
+	j := mustJournal(inner)
 	now := time.Now()
-	seedStepAttempt(t, inner, "r", "x", now.Add(-time.Hour))
+	seedStepAttempt(t, j, "r", "x", now.Add(-time.Hour))
 	tool := &tracker{name: "w"}
 	m := &scriptModel{turns: [][]Emit{toolTurn("x", "w", `{}`), textTurn("done")}}
-	store := &crashOnKind{Durable: inner, kind: StepToolResult} // the call's result dies before it is written
-	if _, err := runRecovering(New(m, store, tool), "r"); !errors.Is(err, errDied) {
+	store := &crashOnKind{Store: inner, kind: StepToolResult} // the call's result dies before it is written
+	if _, err := runRecovering(mustNew(m, mustJournal(store), WithTools(tool)), "r"); !errors.Is(err, errDied) {
 		t.Fatalf("run: %v, want the simulated crash", err)
 	}
-	err := ResolveHalt(context.Background(), inner, "r", "x", "ok", false,
+	err := ResolveHalt(context.Background(), j, "r", "x", "ok", false,
 		WithMinHaltAge(time.Minute), WithClock(func() time.Time { return now }))
 	var young *HaltTooYoung
 	if !errors.As(err, &young) {
@@ -238,7 +245,7 @@ func TestResolveHalt_MinAgeReadsTheCallsOwnAttempt(t *testing.T) {
 // on main the step's attempt marker made the call look started, and the rollback halted.
 func TestSaga_RollbackStepAttemptIsNotAToolCallAttempt(t *testing.T) {
 	ctx := context.Background()
-	store := NewMemStore()
+	store := memJournal()
 	seedStepAttempt(t, store, "r1", "w1", time.Now())
 	// The model called write (w1) and book (b1); the booking failed and aborted the saga before
 	// the write started.
@@ -253,13 +260,13 @@ func TestSaga_RollbackStepAttemptIsNotAToolCallAttempt(t *testing.T) {
 		{"@llm/0", Record{Kind: StepModel, Message: turn}},
 		{"b1 failed", Record{Kind: StepSagaFail, ToolUseID: "b1", Result: mustJSON("no seats")}},
 	} {
-		if _, err := store.Do(ctx, "r1", r.name, func(context.Context) (Record, error) { return r.rec, nil }); err != nil {
+		if _, err := store.do(ctx, "r1", r.name, func(context.Context) (Record, error) { return r.rec, nil }); err != nil {
 			t.Fatal(err)
 		}
 	}
 	write := Func("write", "", Safety{}, func(context.Context, struct{}) (string, error) { return "ok", nil })
 	book := Func("book", "", Safety{}, func(context.Context, struct{}) (string, error) { return "", errors.New("no seats") })
-	_, err := New(fixedTextModel("done"), store, write, book).RunSaga(ctx, "r1", "trip")
+	_, err := mustNew(fixedTextModel("done"), store, WithTools(write, book)).RunSaga(ctx, "r1", "trip")
 	var aborted *SagaAborted
 	if !errors.As(err, &aborted) || aborted.CompensateErr != nil {
 		t.Fatalf("err = %v, want *SagaAborted with a finished rollback (the write never started)", err)

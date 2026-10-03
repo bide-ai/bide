@@ -19,7 +19,7 @@ func (t *blockTool) Spec() ToolSpec              { return ToolSpec{Name: "charge
 func (t *blockTool) Name() string                { return "charge" }
 func (t *blockTool) Description() string         { return "" }
 func (t *blockTool) Safety() Safety              { return Safety{} }
-func (t *blockTool) ArgsSchema() json.RawMessage { return nil }
+func (t *blockTool) ArgsSchema() json.RawMessage { return json.RawMessage(`{"type":"object"}`) }
 func (t *blockTool) Call(context.Context, json.RawMessage) (json.RawMessage, error) {
 	close(t.entered)
 	<-t.release
@@ -34,8 +34,8 @@ func TestR137_ResolveHaltDoesNotSeeALiveSessionTurn(t *testing.T) {
 	ctx := context.Background()
 	tool := &blockTool{entered: make(chan struct{}), release: make(chan struct{})}
 	model := &scriptModel{turns: [][]Emit{toolTurn("t1", "charge", `{}`), textTurn("done")}}
-	store := NewMemStore()
-	a := New(model, store, tool)
+	store := memJournal()
+	a := mustNew(model, store, WithTools(tool))
 	h := openSession(t, a, "c1")
 	sent := make(chan error, 1)
 	go func() { _, err := h.Send(ctx, "pay"); sent <- err }()
@@ -71,7 +71,8 @@ func TestR137_FinishedRunUnderLeaseSkipsTheInputCheck(t *testing.T) {
 		t.Run(map[bool]string{false: "lease free", true: "lease held"}[leased], func(t *testing.T) {
 			ctx := context.Background()
 			store := NewMemStore()
-			a := New(&replyModel{}, store)
+			j := mustJournal(store)
+			a := mustNew(&replyModel{}, j)
 			h1 := openSession(t, a, "c1")
 			run := sessionEventRunID("c1", "k")
 			// h1 drives key k's run for message "A" to completion and stops before recording it.

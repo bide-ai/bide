@@ -15,6 +15,7 @@ import (
 	"context"
 	"flag"
 	"fmt"
+	"log"
 	"os"
 	"runtime"
 	"sort"
@@ -63,8 +64,14 @@ func main() {
 
 	tool := agent.Func("noop", "no-op", agent.Safety{ReadOnly: true},
 		func(_ context.Context, _ struct{}) (string, error) { return "ok", nil })
-	store := agent.NewMemStore()
-	a := agent.New(stubModel{latency: *latency}, store, tool)
+	store, err := agent.NewJournal(agent.NewMemStore())
+	if err != nil {
+		log.Fatal(err)
+	}
+	a, err := agent.New(stubModel{latency: *latency}, store, agent.WithTools(tool))
+	if err != nil {
+		log.Fatal(err)
+	}
 
 	// Peak-goroutine sampler.
 	var peak int64

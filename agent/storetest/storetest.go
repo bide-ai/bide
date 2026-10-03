@@ -50,7 +50,7 @@ func Run(t *testing.T, open func(t *testing.T) agent.Store) {
 	t.Run("Journal_SharedInFlightSteps", func(t *testing.T) { sharedFlights(t, open(t)) })
 	t.Run("Journal_AmbiguousClaimReused", func(t *testing.T) { ambiguousClaim(t, open(t)) })
 	t.Run("Fidelity", func(t *testing.T) {
-		RunDurable(t, func(t *testing.T) agent.Durable { return journal(t, open(t)) })
+		runFidelity(t, func(t *testing.T) *agent.Journal { return journal(t, open(t)) })
 	})
 }
 

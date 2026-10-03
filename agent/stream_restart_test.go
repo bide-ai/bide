@@ -48,7 +48,7 @@ func TestStream_RetriedTurnMarksDiscardedDeltas(t *testing.T) {
 		{{Event: TextDelta{Text: "partial "}}, {Err: errors.New("connection reset")}},
 		textTurn("complete"),
 	}}
-	as := New(m, NewMemStore()).Use(retryOnceMW).Stream(context.Background(), "r", "go")
+	as := mustNew(m, memJournal(), WithMiddleware(retryOnceMW)).Stream(context.Background(), "r", "go")
 	rendered, restarts := renderTurns(t, as)
 	final, err := as.Final()
 	if err != nil {
@@ -77,7 +77,7 @@ func TestStream_FallbackResponseMarksDiscardedDeltas(t *testing.T) {
 			return ModelResponse{Message: Message{Role: RoleAssistant, Parts: []Part{Text{Text: "fallback"}}}}, nil
 		}
 	}
-	as := New(m, NewMemStore()).Use(fallback).Stream(context.Background(), "r", "go")
+	as := mustNew(m, memJournal(), WithMiddleware(fallback)).Stream(context.Background(), "r", "go")
 	rendered, restarts := renderTurns(t, as)
 	final, err := as.Final()
 	if err != nil {
@@ -114,7 +114,7 @@ func TestStream_RestartOnlyAfterStreamedDeltas(t *testing.T) {
 		errTurn(errors.New("refused")),                                 // turn 1, second attempt: fails before streaming
 		textTurn("done"),
 	}}
-	as := New(m, NewMemStore(), tool).Use(retryTwiceMW).Stream(context.Background(), "r", "go")
+	as := mustNew(m, memJournal(), WithTools(tool), WithMiddleware(retryTwiceMW)).Stream(context.Background(), "r", "go")
 	rendered, restarts := renderTurns(t, as)
 	final, err := as.Final()
 	if err != nil {
@@ -168,7 +168,7 @@ func chanOf(es ...Emit) <-chan Emit {
 // once it is over.
 func TestStream_RetryStreamsLive(t *testing.T) {
 	m := &liveRetryModel{sawA: make(chan struct{}), timeout: 5 * time.Second}
-	as := New(m, NewMemStore()).Use(retryOnceMW).Stream(context.Background(), "r", "go")
+	as := mustNew(m, memJournal(), WithMiddleware(retryOnceMW)).Stream(context.Background(), "r", "go")
 	var got []string
 	for ev := range as.Events() {
 		switch e := ev.(type) {

@@ -1,5 +1,6 @@
-// Package agenttest holds test doubles for code built on package agent: a Store that counts its
-// round trips (CountingStore).
+// Package agenttest holds test doubles and helpers for code built on package agent: a Store that
+// counts its round trips (CountingStore), and constructors that panic instead of returning an
+// error (MemJournal, MustJournal, MustNew, Must), for tests whose setup cannot fail.
 package agenttest
 
 import (

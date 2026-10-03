@@ -5,6 +5,7 @@ import (
 	"testing"
 
 	"github.com/bide-ai/bide/agent"
+	"github.com/bide-ai/bide/agent/agenttest"
 	"github.com/bide-ai/bide/middleware"
 )
 
@@ -25,7 +26,11 @@ func TestAdv104_KeptCallAfterTurnIsNotAnAnswer(t *testing.T) {
 		}
 	}
 	var meter middleware.CostMeter
-	a := agent.New(&stubModel{text: "x"}, agent.NewMemStore()).Use(keep, middleware.Cost(&meter, perInput), cache)
+	a := agenttest.MustNew(
+		&stubModel{text: "x"},
+		agenttest.MemJournal(),
+		agent.WithMiddleware(keep, middleware.Cost(&meter, perInput), cache),
+	)
 	if _, err := a.Run(context.Background(), "r", "q"); err != nil {
 		t.Fatal(err)
 	}

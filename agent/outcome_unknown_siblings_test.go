@@ -10,6 +10,7 @@ import (
 	"time"
 
 	"github.com/bide-ai/bide/agent"
+	"github.com/bide-ai/bide/agent/agenttest"
 )
 
 // effectTool is a non-retry-safe tool whose call runs fn.
@@ -20,7 +21,7 @@ type effectTool struct {
 
 func (t effectTool) Name() string                { return t.name }
 func (t effectTool) Description() string         { return "" }
-func (t effectTool) ArgsSchema() json.RawMessage { return nil }
+func (t effectTool) ArgsSchema() json.RawMessage { return json.RawMessage(`{"type":"object"}`) }
 func (t effectTool) Safety() agent.Safety        { return agent.Safety{} }
 func (t effectTool) Call(ctx context.Context, _ json.RawMessage) (json.RawMessage, error) {
 	return t.fn(ctx)
@@ -52,8 +53,8 @@ func TestToolOutcomeUnknown_SiblingInFlightFinishes(t *testing.T) {
 		{Event: agent.ToolCallDelta{Index: 1, ID: "cb", Name: "b", ArgsFragment: json.RawMessage(`{}`)}},
 		{Event: agent.Finish{Reason: "tool_use"}},
 	}
-	store := agent.NewMemStore()
-	ag := agent.New(modelFunc(func() []agent.Emit { return turn }), store, a, b)
+	store := agenttest.MemJournal()
+	ag := agenttest.MustNew(modelFunc(func() []agent.Emit { return turn }), store, agent.WithTools(a, b))
 	_, err := ag.Run(context.Background(), "r", "go")
 	if !errors.Is(err, agent.ErrToolOutcomeUnknown) {
 		t.Fatalf("Run = %v; want the lost answer", err)

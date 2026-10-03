@@ -12,6 +12,7 @@ import (
 	"testing"
 
 	"github.com/bide-ai/bide/agent"
+	"github.com/bide-ai/bide/agent/agenttest"
 	"github.com/bide-ai/bide/audit"
 )
 
@@ -49,7 +50,7 @@ const gateRun = "run-kofn"
 // gate is a real agent run through an m-of-n gate on the "charge" tool, plus the keys an
 // offline auditor holds: each registered approver's key and the log operator's key.
 type gate struct {
-	store   agent.Durable
+	store   *agent.Journal
 	policy  agent.ApprovalPolicy
 	pubs    map[string]ed25519.PublicKey
 	privs   map[string]ed25519.PrivateKey
@@ -61,7 +62,7 @@ type gate struct {
 // newGate registers a key for every id in registered (eligible or not).
 func newGate(need int, approvers, registered []string) *gate {
 	g := &gate{
-		store:  agent.NewMemStore(),
+		store:  agenttest.MemJournal(),
 		policy: agent.ApprovalPolicy{Need: need, Approvers: approvers},
 		pubs:   map[string]ed25519.PublicKey{},
 		privs:  map[string]ed25519.PrivateKey{},
@@ -93,7 +94,7 @@ func (g *gate) run() error {
 			g.charged++
 			return "ok", nil
 		}, agent.WithApproval(&g.policy))
-	_, err := agent.New(chargeModel{}, g.store, charge).WithApproverVerifiers(g.resolver()).Run(context.Background(), gateRun, "pay")
+	_, err := agenttest.MustNew(chargeModel{}, g.store, agent.WithTools(charge), agent.WithApproverVerifiers(g.resolver())).Run(context.Background(), gateRun, "pay")
 	return err
 }
 

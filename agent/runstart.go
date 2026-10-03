@@ -268,8 +268,8 @@ func (s RunStart) admits(k RunKind) bool {
 //	} else {
 //	    _, err = a.Run(ctx, runID, start.Input)
 //	}
-func RecordedStart(ctx context.Context, d Durable, runID string) (RunStart, bool, error) {
-	r, ok, err := lookup(ctx, d, runID, runStartStep)
+func RecordedStart(ctx context.Context, d *Journal, runID string) (RunStart, bool, error) {
+	r, ok, err := d.Get(ctx, runID, runStartStep)
 	if err != nil || !ok || r.Kind != StepValue {
 		return RunStart{}, false, err
 	}
@@ -282,7 +282,7 @@ func RecordedStart(ctx context.Context, d Durable, runID string) (RunStart, bool
 
 // beginRun is journalhook.Begin: the completion of a finished run, or else want held as the run's
 // start (see holdToStart).
-func beginRun(ctx context.Context, d Durable, runID string, want RunStart) (json.RawMessage, bool, error) {
+func beginRun(ctx context.Context, d *Journal, runID string, want RunStart) (json.RawMessage, bool, error) {
 	if want.kind() == RunKindFlow {
 		// A flow's input is held by its canonical JSON (see equalJSON); one that has none (a
 		// repeated key, a lone surrogate) could not be told apart from another, so it is refused.
@@ -294,17 +294,14 @@ func beginRun(ctx context.Context, d Durable, runID string, want RunStart) (json
 	if err != nil {
 		return nil, false, fmt.Errorf("encode %s (run %s): %w (%w)", runStartStep, runID, err, ErrConfig)
 	}
-	var recs []Record
-	if j := journalOf(d); j != nil {
-		rec, inserted, err := j.putNew(ctx, runID, runStartStep, Record{Kind: StepValue, Result: b})
-		if err != nil {
-			return nil, false, fmt.Errorf("record %s (run %s): %w", runStartStep, runID, err)
-		}
-		if inserted {
-			return nil, false, nil // a new run: nothing to hold it to, and no completion
-		}
-		recs = []Record{rec}
+	rec, inserted, err := d.putNew(ctx, runID, runStartStep, Record{Kind: StepValue, Result: b})
+	if err != nil {
+		return nil, false, fmt.Errorf("record %s (run %s): %w", runStartStep, runID, err)
 	}
+	if inserted {
+		return nil, false, nil // a new run: nothing to hold it to, and no completion
+	}
+	recs := []Record{rec}
 	end, ok, err := firstEndOf(ctx, d, runID, runCompleteStep, runCancelledStep)
 	if err != nil {
 		return nil, false, err
@@ -350,7 +347,7 @@ func checkFinishedStart(runID string, recs []Record, want RunKind, input *Messag
 // against the recorded one: a drive that differs is ErrConfig, since the run's journal answers
 // the recorded input under the recorded entry point's rules. recs is the run's journal as the
 // drive read it; a start recorded there is checked without another read.
-func holdToStart(ctx context.Context, d Durable, runID string, recs []Record, want RunStart) error {
+func holdToStart(ctx context.Context, d *Journal, runID string, recs []Record, want RunStart) error {
 	var rec Record
 	found := false
 	for _, r := range recs {
@@ -364,7 +361,7 @@ func holdToStart(ctx context.Context, d Durable, runID string, recs []Record, wa
 		if err != nil {
 			return fmt.Errorf("encode %s (run %s): %w (%w)", runStartStep, runID, err, ErrConfig)
 		}
-		rec, err = putRecord(ctx, d, runID, runStartStep, Record{Kind: StepValue, Result: b})
+		rec, err = d.put(ctx, runID, runStartStep, Record{Kind: StepValue, Result: b})
 		if err != nil {
 			return fmt.Errorf("record %s (run %s): %w (%w)", runStartStep, runID, err, ErrStorage)
 		}

@@ -22,12 +22,20 @@ func (w wrappedSub) Call(ctx context.Context, args json.RawMessage) (json.RawMes
 // delegation being reported as a write nothing can undo.
 func TestSaga_RollbackRecursesThroughAWrappedSubAgent(t *testing.T) {
 	l := newLedger()
-	store := NewMemStore()
-	sub := New(&scriptModel{turns: [][]Emit{toolTurn("x1", "X", `{}`), textTurn("done")}}, store, l.write("X"))
-	parent := New(&scriptModel{turns: [][]Emit{
-		toolTurn("p1", "delegate", `{"task":"x"}`),
-		toolTurn("p2", "boom", `{}`),
-	}}, store, wrappedSub{SubAgent("delegate", "", sub)}, failTool("boom"))
+	store := memJournal()
+	sub := mustNew(
+		&scriptModel{turns: [][]Emit{toolTurn("x1", "X", `{}`), textTurn("done")}},
+		store,
+		WithTools(l.write("X")),
+	)
+	parent := mustNew(
+		&scriptModel{turns: [][]Emit{
+			toolTurn("p1", "delegate", `{"task":"x"}`),
+			toolTurn("p2", "boom", `{}`),
+		}},
+		store,
+		WithTools(wrappedSub{SubAgent("delegate", "", sub)}, failTool("boom")),
+	)
 
 	_, err := parent.RunSaga(context.Background(), "root", "go")
 	var ab *SagaAborted
@@ -44,9 +52,17 @@ func TestSaga_RollbackRecursesThroughAWrappedSubAgent(t *testing.T) {
 // it again to report what it undid, so the tree's lists are whole, as for a plain SubAgent.
 func TestSaga_RollbackReportsAWrappedSubAgentsOwnRollback(t *testing.T) {
 	l := newLedger()
-	store := NewMemStore()
-	sub := New(&scriptModel{turns: [][]Emit{toolTurn("x1", "X", `{}`), toolTurn("x2", "boom", `{}`)}}, store, l.write("X"), failTool("boom"))
-	parent := New(&scriptModel{turns: [][]Emit{toolTurn("p1", "delegate", `{"task":"x"}`)}}, store, wrappedSub{SubAgent("delegate", "", sub)})
+	store := memJournal()
+	sub := mustNew(
+		&scriptModel{turns: [][]Emit{toolTurn("x1", "X", `{}`), toolTurn("x2", "boom", `{}`)}},
+		store,
+		WithTools(l.write("X"), failTool("boom")),
+	)
+	parent := mustNew(
+		&scriptModel{turns: [][]Emit{toolTurn("p1", "delegate", `{"task":"x"}`)}},
+		store,
+		WithTools(wrappedSub{SubAgent("delegate", "", sub)}),
+	)
 
 	_, err := parent.RunSaga(context.Background(), "root", "go")
 	var ab *SagaAborted

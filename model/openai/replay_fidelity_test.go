@@ -9,6 +9,7 @@ import (
 	"testing"
 
 	"github.com/bide-ai/bide/agent"
+	"github.com/bide-ai/bide/agent/agenttest"
 )
 
 // htmlTool echoes a result whose JSON carries HTML-significant characters and extra whitespace,
@@ -66,20 +67,20 @@ func TestResumedTurnSendsLiveBytes(t *testing.T) {
 	}
 
 	live := &wireModel{m: New("k"), script: script()}
-	if _, err := agent.New(live, agent.NewMemStore(), htmlTool{}).Run(ctx, "r", "hi"); err != nil {
+	if _, err := agenttest.MustNew(live, agenttest.MemJournal(), agent.WithTools(htmlTool{})).Run(ctx, "r", "hi"); err != nil {
 		t.Fatalf("live run: %v", err)
 	}
 	if len(live.wire) != 2 {
 		t.Fatalf("live run made %d model calls, want 2", len(live.wire))
 	}
 
-	store := agent.NewMemStore()
+	store := agenttest.MemJournal()
 	crashed := &wireModel{m: New("k"), script: script(), failOn: 2}
-	if _, err := agent.New(crashed, store, htmlTool{}).Run(ctx, "r", "hi"); err == nil {
+	if _, err := agenttest.MustNew(crashed, store, agent.WithTools(htmlTool{})).Run(ctx, "r", "hi"); err == nil {
 		t.Fatal("the crashing run should fail on its second model call")
 	}
 	resumed := &wireModel{m: New("k"), script: script()}
-	if _, err := agent.New(resumed, store, htmlTool{}).Run(ctx, "r", "hi"); err != nil {
+	if _, err := agenttest.MustNew(resumed, store, agent.WithTools(htmlTool{})).Run(ctx, "r", "hi"); err != nil {
 		t.Fatalf("resumed run: %v", err)
 	}
 	if len(resumed.wire) != 1 {

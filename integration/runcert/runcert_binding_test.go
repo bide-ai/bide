@@ -7,14 +7,15 @@ import (
 	"testing"
 
 	"github.com/bide-ai/bide/agent"
+	"github.com/bide-ai/bide/agent/agenttest"
 	"github.com/bide-ai/bide/audit"
 )
 
 // certRun anchors a run that used policies dA and dB, signs its journal head, and certifies it.
-func certRun(t *testing.T, runID string) (agent.Durable, audit.RunCertificate, []string, ed25519.PublicKey, ed25519.PrivateKey) {
+func certRun(t *testing.T, runID string) (*agent.Journal, audit.RunCertificate, []string, ed25519.PublicKey, ed25519.PrivateKey) {
 	t.Helper()
 	ctx := context.Background()
-	store := agent.NewMemStore()
+	store := agenttest.MemJournal()
 	dA, pbA, cbA := buildKYC(t, "kyc-A", false)
 	dB, pbB, cbB := buildKYC(t, "kyc-B", true)
 	anchorGovernedRun(t, ctx, store, runID, dA, pbA, cbA)

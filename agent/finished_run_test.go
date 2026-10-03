@@ -39,12 +39,12 @@ func (m *greedyModel) Stream(_ context.Context, _ Request) (*Stream, error) {
 
 // finishedCharge completes one run that charges once, and returns its store, answer, and
 // journal, plus a fresh greedy model for the re-entries.
-func finishedCharge(t *testing.T, charged *int) (Durable, Message, []Record) {
+func finishedCharge(t *testing.T, charged *int) (*Journal, Message, []Record) {
 	t.Helper()
-	store := NewMemStore()
+	store := memJournal()
 	charge := &countingTool{name: "charge", safety: Safety{}, calls: charged} // a non-idempotent write
 	m := &greedyModel{script: [][]Emit{toolTurn("c1", "charge", `{}`), textTurn("done")}}
-	out, err := New(m, store, charge).Run(context.Background(), "r1", "pay")
+	out, err := mustNew(m, store, WithTools(charge)).Run(context.Background(), "r1", "pay")
 	if err != nil || *charged != 1 {
 		t.Fatalf("first run: err=%v charged=%d, want nil/1", err, *charged)
 	}
@@ -57,7 +57,7 @@ func finishedCharge(t *testing.T, charged *int) (Durable, Message, []Record) {
 
 // wantUntouched checks a re-entry changed nothing: no model call, no second charge, the
 // same answer, and not one journal record appended.
-func wantUntouched(t *testing.T, store Durable, m *greedyModel, charged int, before []Record, gotAnswer, wantAnswer Message) {
+func wantUntouched(t *testing.T, store *Journal, m *greedyModel, charged int, before []Record, gotAnswer, wantAnswer Message) {
 	t.Helper()
 	if m.calls != 0 {
 		t.Fatalf("re-entering a finished run called the model %d times, want 0", m.calls)
@@ -87,13 +87,13 @@ func TestFinishedRun_RunIsFinal(t *testing.T) {
 	charge := &countingTool{name: "charge", safety: Safety{}, calls: &charged}
 	for i := 0; i < 3; i++ {
 		m := &greedyModel{}
-		out, err := New(m, store, charge).Run(context.Background(), "r1", "pay")
+		out, err := mustNew(m, store, WithTools(charge)).Run(context.Background(), "r1", "pay")
 		if err != nil {
 			t.Fatalf("re-run %d: %v", i, err)
 		}
 		wantUntouched(t, store, m, charged, before, out, first)
 		m = &greedyModel{}
-		out, err = New(m, store, charge).Run(context.Background(), "r1", "a different input")
+		out, err = mustNew(m, store, WithTools(charge)).Run(context.Background(), "r1", "a different input")
 		if !errors.Is(err, ErrConfig) {
 			t.Fatalf("re-run %d with a different input = %q, %v; want ErrConfig", i, textOf(out), err)
 		}
@@ -139,7 +139,7 @@ func TestFinishedRun_EveryEntryPoint(t *testing.T) {
 			var charged int
 			store, first, before := finishedCharge(t, &charged)
 			m := &greedyModel{}
-			out, err := run(New(m, store, &countingTool{name: "charge", safety: Safety{}, calls: &charged}))
+			out, err := run(mustNew(m, store, WithTools(&countingTool{name: "charge", safety: Safety{}, calls: &charged})))
 			if err != nil {
 				t.Fatal(err)
 			}
@@ -154,11 +154,11 @@ func TestFinishedRun_EveryEntryPoint(t *testing.T) {
 // model for another turn, so the charge inside it does not fire twice.
 func TestFinishedRun_SubAgentReentry(t *testing.T) {
 	ctx := context.Background()
-	store := NewMemStore()
+	store := memJournal()
 	var charged int
 	charge := &countingTool{name: "charge", safety: Safety{}, calls: &charged}
 	subModel := &greedyModel{script: [][]Emit{toolTurn("s1", "charge", `{}`), textTurn("sub-done")}}
-	sub := New(subModel, store, charge)
+	sub := mustNew(subModel, store, WithTools(charge))
 
 	// The sub-run completes (as it would have inside the first parent run).
 	subRunID := SubRunID("root", "c1")
@@ -167,14 +167,18 @@ func TestFinishedRun_SubAgentReentry(t *testing.T) {
 	}
 	// The parent's journal holds the turn that called the sub-agent, and no result for it.
 	asst := Message{Role: RoleAssistant, Parts: []Part{ToolUse{ID: "c1", Name: "worker", Args: json.RawMessage(`{"task":"charge it"}`)}}}
-	if _, err := store.Do(ctx, "root", "@llm/0", func(context.Context) (Record, error) {
+	if _, err := store.do(ctx, "root", "@llm/0", func(context.Context) (Record, error) {
 		return Record{Kind: StepModel, Message: &asst}, nil
 	}); err != nil {
 		t.Fatal(err)
 	}
 
 	subCalls := subModel.calls
-	parent := New(&greedyModel{script: [][]Emit{textTurn("parent-done")}}, store, SubAgent("worker", "does work", sub))
+	parent := mustNew(
+		&greedyModel{script: [][]Emit{textTurn("parent-done")}},
+		store,
+		WithTools(SubAgent("worker", "does work", sub)),
+	)
 	out, err := parent.Run(ctx, "root", "delegate")
 	if err != nil {
 		t.Fatalf("parent resume: %v", err)
@@ -188,11 +192,11 @@ func TestFinishedRun_SubAgentReentry(t *testing.T) {
 // recording it: Send retries the same turn run, which must return the recorded answer.
 func TestFinishedRun_SessionTurnReentry(t *testing.T) {
 	ctx := context.Background()
-	store := NewMemStore()
+	store := memJournal()
 	var charged int
 	charge := &countingTool{name: "charge", safety: Safety{}, calls: &charged}
 	m := &greedyModel{script: [][]Emit{toolTurn("c1", "charge", `{}`), textTurn("done")}}
-	a := New(m, store, charge)
+	a := mustNew(m, store, WithTools(charge))
 
 	// Turn 0's run finishes, but the session-level record of the turn was never written.
 	turn := sessionTurnRunID("s", 0)

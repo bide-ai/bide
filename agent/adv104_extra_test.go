@@ -67,14 +67,14 @@ func TestAdv104_TwoDriversLateSpend(t *testing.T) {
 	mB := &scriptModel{turns: [][]Emit{toolTurnWithUsage("c1", "wait", `{}`, billed)}}
 	doneB := make(chan error, 1)
 	go func() {
-		_, err := New(mB, journal(), tool).Use(answerAndLeave(bgB)).RunResult(ctx, "r", "go")
+		_, err := mustNew(mB, journal(), WithTools(tool), WithMiddleware(answerAndLeave(bgB))).RunResult(ctx, "r", "go")
 		doneB <- err
 	}()
 	<-tool.blocked
 	// Driver A: resumes the run while B is blocked, runs the tool (retry-safe), answers turn 1
 	// with a request of its own in flight, and completes.
 	mA := &scriptModel{turns: [][]Emit{textTurnWithUsage("done", billed)}}
-	if _, err := New(mA, jA, tool).Use(answerAndLeave(bgA)).RunResult(ctx, "r", "go"); err != nil {
+	if _, err := mustNew(mA, jA, WithTools(tool), WithMiddleware(answerAndLeave(bgA))).RunResult(ctx, "r", "go"); err != nil {
 		t.Fatal(err)
 	}
 	close(bgB.gate)
@@ -82,7 +82,7 @@ func TestAdv104_TwoDriversLateSpend(t *testing.T) {
 	if err := <-doneB; err != nil {
 		t.Fatal(err)
 	}
-	res, err := New(&scriptModel{}, store, tool).RunResult(ctx, "r", "go")
+	res, err := mustNew(&scriptModel{}, store, WithTools(tool)).RunResult(ctx, "r", "go")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -100,15 +100,15 @@ func TestAdv104_TwoDriversLateSpend(t *testing.T) {
 // spend: Replay carries it to the first turn.
 func TestAdv104_ReplayLateRecordBeforeAnyTurn(t *testing.T) {
 	ctx := context.Background()
-	src := NewMemStore()
-	if _, err := src.Do(ctx, "r", lateSpendStep("x"), func(context.Context) (Record, error) {
+	src := memJournal()
+	if _, err := src.do(ctx, "r", lateSpendStep("x"), func(context.Context) (Record, error) {
 		return Record{Kind: StepValue, DiscardedUsage: &late}, nil
 	}); err != nil {
 		t.Fatal(err)
 	}
 	msg := Message{Role: RoleAssistant, Parts: []Part{Text{Text: "done"}}}
 	u := billed
-	if _, err := src.Do(ctx, "r", modelStep(0), func(context.Context) (Record, error) {
+	if _, err := src.do(ctx, "r", modelStep(0), func(context.Context) (Record, error) {
 		return Record{Kind: StepModel, Message: &msg, Usage: &u, ModelTurn: &ModelTurn{Finish: FinishStop}}, nil
 	}); err != nil {
 		t.Fatal(err)
@@ -117,7 +117,7 @@ func TestAdv104_ReplayLateRecordBeforeAnyTurn(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	res, err := New(rm, NewMemStore()).RunResult(ctx, "r", "go")
+	res, err := mustNew(rm, memJournal()).RunResult(ctx, "r", "go")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -150,17 +150,17 @@ func (w rewrap) Stream(ctx context.Context, req Request) (*Stream, error) {
 // (c) A decorator that re-wraps the replay stream keeps the replayed turn's recorded model.
 func TestAdv104_ReplayThroughADecoratorKeepsModel(t *testing.T) {
 	ctx := context.Background()
-	src := NewMemStore()
+	src := memJournal()
 	m := describedScript{&scriptModel{turns: [][]Emit{textTurnWithUsage("done", billed)}}}
-	if _, err := New(m, src).Run(ctx, "r", "go"); err != nil {
+	if _, err := mustNew(m, src).Run(ctx, "r", "go"); err != nil {
 		t.Fatal(err)
 	}
 	rm, err := Replay(ctx, src, "r")
 	if err != nil {
 		t.Fatal(err)
 	}
-	dst := NewMemStore()
-	if _, err := New(rewrap{rm}, dst).Run(ctx, "r", "go"); err != nil {
+	dst := memJournal()
+	if _, err := mustNew(rewrap{rm}, dst).Run(ctx, "r", "go"); err != nil {
 		t.Fatal(err)
 	}
 	a, b := modelRecords(t, src, "r"), modelRecords(t, dst, "r")
@@ -190,7 +190,7 @@ func TestAdv104_LookupErrorAnswerRunsOnNextDrive(t *testing.T) {
 		}
 	}
 	m := &scriptModel{turns: [][]Emit{textTurnWithUsage("done", billed)}}
-	if _, err := New(m, j).Use(count).RunResult(ctx, "r", "go"); err == nil {
+	if _, err := mustNew(m, j, WithMiddleware(count)).RunResult(ctx, "r", "go"); err == nil {
 		t.Fatal("want the write failure")
 	}
 	if answers != 0 {
@@ -199,7 +199,7 @@ func TestAdv104_LookupErrorAnswerRunsOnNextDrive(t *testing.T) {
 	st.mu.Lock()
 	st.failGet = map[string]bool{}
 	st.mu.Unlock()
-	if _, err := New(&scriptModel{}, j).RunResult(ctx, "r", "go"); err != nil {
+	if _, err := mustNew(&scriptModel{}, j).RunResult(ctx, "r", "go"); err != nil {
 		t.Fatal(err)
 	}
 	if answers != 1 {
@@ -252,14 +252,14 @@ func TestAdv104_LostRaceSpendIsLate(t *testing.T) {
 		wg.Add(1)
 		go func() {
 			defer wg.Done()
-			if _, err := New(m, j).RunResult(ctx, "r", "go"); err != nil {
+			if _, err := mustNew(m, j).RunResult(ctx, "r", "go"); err != nil {
 				t.Error(err)
 			}
 		}()
 	}
 	wg.Wait()
 	j, _ := NewJournal(procStore{mem})
-	res, err := New(&scriptModel{}, j).RunResult(ctx, "r", "go")
+	res, err := mustNew(&scriptModel{}, j).RunResult(ctx, "r", "go")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -287,10 +287,10 @@ func TestAdv104_FailedLateSpendWriteIsWrittenNextDrive(t *testing.T) {
 		t.Fatal(err)
 	}
 	m := &scriptModel{turns: [][]Emit{textTurnWithUsage("done", billed)}}
-	if _, err := New(m, j).Use(answerAndLeave(bg)).RunResult(ctx, "r", "go"); err == nil {
+	if _, err := mustNew(m, j, WithMiddleware(answerAndLeave(bg))).RunResult(ctx, "r", "go"); err == nil {
 		t.Fatal("want the late spend write's error")
 	}
-	res, err := New(&scriptModel{}, j).RunResult(ctx, "r", "go")
+	res, err := mustNew(&scriptModel{}, j).RunResult(ctx, "r", "go")
 	if err != nil {
 		t.Fatal(err)
 	}

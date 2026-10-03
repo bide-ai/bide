@@ -7,6 +7,7 @@ import (
 	"testing"
 
 	"github.com/bide-ai/bide/agent"
+	"github.com/bide-ai/bide/agent/agenttest"
 	"github.com/bide-ai/bide/eval"
 )
 
@@ -30,15 +31,15 @@ var answersItsInput = eval.Metric{Name: "answers-its-input", Fn: func(_ context.
 // A second evaluation against the same durable store, as with a SQLite store kept between eval
 // runs, must sample the model again and score each answer against its own case.
 func TestAgentRunner_EvalsAreIndependentOverOneStore(t *testing.T) {
-	store := agent.NewMemStore()
+	store := agenttest.MemJournal()
 	cases := []eval.Case{{Name: "a", Input: "alpha"}, {Name: "b", Input: "beta"}}
 	opts := eval.Options{Runs: 3, Concurrency: 1}
 
 	first := &echoModel{}
-	mustRun(t, context.Background(), mustRunner(t, agent.New(first, store), store, "sentiment"), cases, []eval.Metric{answersItsInput}, opts)
+	mustRun(t, context.Background(), mustRunner(t, agenttest.MustNew(first, store), store, "sentiment"), cases, []eval.Metric{answersItsInput}, opts)
 
 	second := &echoModel{}
-	rep := mustRun(t, context.Background(), mustRunner(t, agent.New(second, store), store, "sentiment"), cases, []eval.Metric{answersItsInput}, opts)
+	rep := mustRun(t, context.Background(), mustRunner(t, agenttest.MustNew(second, store), store, "sentiment"), cases, []eval.Metric{answersItsInput}, opts)
 	if n := second.calls.Load(); n != 6 {
 		t.Errorf("the second eval called the model %d times, want 6 (it replayed the first eval's recorded answers)", n)
 	}

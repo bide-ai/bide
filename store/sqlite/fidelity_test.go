@@ -8,7 +8,9 @@ import (
 	"testing"
 
 	"github.com/bide-ai/bide/agent"
+	"github.com/bide-ai/bide/agent/agenttest"
 	"github.com/bide-ai/bide/agent/storetest"
+	"github.com/bide-ai/bide/internal/journaltest"
 )
 
 func openFileStore(t *testing.T) *Store {
@@ -21,7 +23,9 @@ func openFileStore(t *testing.T) *Store {
 	return s
 }
 
-// The store meets every store requirement, through several handles on one file.
+// The store meets every store requirement, through several handles on one file, and a Journal on
+// it hands back on the live path the record a replay reads back, for any content (the suite's
+// Fidelity cases).
 func TestSQLite_Store(t *testing.T) {
 	path := filepath.Join(t.TempDir(), "journal.db")
 	storetest.Run(t, func(t *testing.T) agent.Store {
@@ -44,19 +48,15 @@ func TestSQLite_MemoryStore(t *testing.T) {
 	storetest.Run(t, func(*testing.T) agent.Store { return s })
 }
 
-// The live record the transitional Do returns is the record a replay reads back, for any content.
-func TestSQLite_Fidelity(t *testing.T) {
-	storetest.RunDurable(t, func(t *testing.T) agent.Durable { return openFileStore(t) })
-}
-
 // The journal holds exactly the canonical encoding of the record it hands back, so an audit leaf
 // computed from a replayed record is the bytes on disk.
 func TestSQLite_PersistsCanonicalBytes(t *testing.T) {
 	s := openFileStore(t)
+	j := agenttest.MustJournal(s)
 	ctx := context.Background()
 	for i, c := range storetest.Cases() {
 		runID := fmt.Sprintf("canon-%d", i)
-		live, err := s.Do(ctx, runID, "step", func(context.Context) (agent.Record, error) { return c.Record, nil })
+		live, err := journaltest.Do(ctx, j, runID, "step", func(context.Context) (agent.Record, error) { return c.Record, nil })
 		if err != nil {
 			t.Fatalf("%s: Do: %v", c.Name, err)
 		}

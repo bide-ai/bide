@@ -34,9 +34,9 @@ func TestRev117e_MutatedSingleApprovalFiresThenCannotRecord(t *testing.T) {
 	p.Need = 2
 	var calls atomic.Int32
 	tool := specOnlyTool{spec: ToolSpec{Name: "send", Approval: p}, calls: &calls}
-	store := NewMemStore()
+	store := memJournal()
 	m := NewScriptedModel(ToolTurn("c1", "send", `{}`), TextTurn("done"))
-	a := New(m, store, tool)
+	a := mustNew(m, store, WithTools(tool))
 	ctx := context.Background()
 	_, err := a.Run(ctx, "r", "go")
 	var ap *ApprovalPending

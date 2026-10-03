@@ -11,7 +11,9 @@ import (
 	"testing"
 
 	"github.com/bide-ai/bide/agent"
+	"github.com/bide-ai/bide/agent/agenttest"
 	"github.com/bide-ai/bide/audit"
+	"github.com/bide-ai/bide/internal/journaltest"
 )
 
 // r105cJournal journals, in run "r", a model turn that requested call "x" and the call's result.
@@ -19,18 +21,19 @@ func r105cJournal(t *testing.T) (*agent.MemStore, []agent.Record) {
 	t.Helper()
 	ctx := context.Background()
 	s := agent.NewMemStore()
+	j := agenttest.MustJournal(s)
 	turn := agent.Message{Role: agent.RoleAssistant, Parts: []agent.Part{agent.ToolUse{ID: "x", Name: "wire", Args: json.RawMessage(`{}`)}}}
-	if _, err := s.Do(ctx, "r", "@llm/0", func(context.Context) (agent.Record, error) {
+	if _, err := journaltest.Do(ctx, j, "r", "@llm/0", func(context.Context) (agent.Record, error) {
 		return agent.Record{Kind: agent.StepModel, Message: &turn}, nil
 	}); err != nil {
 		t.Fatal(err)
 	}
-	if _, err := s.Do(ctx, "r", agent.ToolResultStep("x"), func(context.Context) (agent.Record, error) {
+	if _, err := journaltest.Do(ctx, j, "r", agent.ToolResultStep("x"), func(context.Context) (agent.Record, error) {
 		return agent.Record{Kind: agent.StepToolResult, ToolUseID: "x", Result: json.RawMessage(`"sent"`)}, nil
 	}); err != nil {
 		t.Fatal(err)
 	}
-	recs, err := s.History(ctx, "r")
+	recs, err := j.History(ctx, "r")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -49,6 +52,7 @@ func r105cJournal(t *testing.T) (*agent.MemStore, []agent.Record) {
 func Test_R105c_ProjectionReadsFieldsTheJournalRootDoesNotBind(t *testing.T) {
 	ctx := context.Background()
 	s, recs := r105cJournal(t)
+	j := agenttest.MustJournal(s)
 	changed := slices.Clone(recs)
 	// changed[0] is the journal header; [1] the model turn; [2] the call's result.
 	changed[1].Message = &agent.Message{Role: agent.RoleAssistant, Parts: []agent.Part{agent.Text{Text: "no calls"}}}
@@ -59,7 +63,7 @@ func Test_R105c_ProjectionReadsFieldsTheJournalRootDoesNotBind(t *testing.T) {
 
 	signer := p11Signers(t)["ed25519"]
 	v := p11Verifier(t, signer)
-	jth, err := audit.NewTreeHead(ctx, s, "r", p11Now())
+	jth, err := audit.NewTreeHead(ctx, j, "r", p11Now())
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -121,9 +125,10 @@ func Test_R105c_CheckFormatsZeroAndNilValues(t *testing.T) {
 func Test_R105c_EveryProjectionRefusesFieldsThatDisagreeWithTheStoredBytes(t *testing.T) {
 	ctx := context.Background()
 	s, recs := r105cJournal(t)
+	j := agenttest.MustJournal(s)
 	changed := slices.Clone(recs)
 	changed[2].Kind = agent.StepValue
-	jth, err := audit.NewTreeHead(ctx, s, "r", p11Now())
+	jth, err := audit.NewTreeHead(ctx, j, "r", p11Now())
 	if err != nil {
 		t.Fatal(err)
 	}

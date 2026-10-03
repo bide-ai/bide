@@ -15,7 +15,7 @@ func TestNextOnceKey(t *testing.T) {
 	call := func() []string {
 		cctx := withOnceScope(ctx, "r/c1")
 		keys := []string{NextOnceKey(cctx), NextOnceKey(cctx)}
-		d := NewMemStore()
+		d := memJournal()
 		for _, st := range [][2]string{{"a:1", "b"}, {"a", "1:b"}} {
 			k, err := Step(cctx, d, st[0], st[1], func(sctx context.Context) (string, error) { return NextOnceKey(sctx), nil })
 			if err != nil {

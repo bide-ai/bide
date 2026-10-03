@@ -78,14 +78,23 @@ func failTool(name string) Tool {
 // Depth-3 tree: the deepest sub-agent fails → every level's writes reverse.
 func TestSaga_DeepTreeFailureReverses(t *testing.T) {
 	l := newLedger()
-	store := NewMemStore()
+	store := memJournal()
 
-	l3 := New(&scriptModel{turns: [][]Emit{toolTurn("d1", "C", `{}`), toolTurn("d2", "boom3", `{}`)}},
-		store, l.write("C"), failTool("boom3"))
-	l2 := New(&scriptModel{turns: [][]Emit{toolTurn("b1", "B", `{}`), toolTurn("b2", "l3", `{"task":"x"}`)}},
-		store, l.write("B"), SubAgent("l3", "", l3))
-	l1 := New(&scriptModel{turns: [][]Emit{toolTurn("a1", "A", `{}`), toolTurn("a2", "l2", `{"task":"x"}`)}},
-		store, l.write("A"), SubAgent("l2", "", l2))
+	l3 := mustNew(
+		&scriptModel{turns: [][]Emit{toolTurn("d1", "C", `{}`), toolTurn("d2", "boom3", `{}`)}},
+		store,
+		WithTools(l.write("C"), failTool("boom3")),
+	)
+	l2 := mustNew(
+		&scriptModel{turns: [][]Emit{toolTurn("b1", "B", `{}`), toolTurn("b2", "l3", `{"task":"x"}`)}},
+		store,
+		WithTools(l.write("B"), SubAgent("l3", "", l3)),
+	)
+	l1 := mustNew(
+		&scriptModel{turns: [][]Emit{toolTurn("a1", "A", `{}`), toolTurn("a2", "l2", `{"task":"x"}`)}},
+		store,
+		WithTools(l.write("A"), SubAgent("l2", "", l2)),
+	)
 
 	_, err := l1.RunSaga(context.Background(), "root", "go")
 	var ab *SagaAborted
@@ -104,17 +113,28 @@ func TestSaga_DeepTreeFailureReverses(t *testing.T) {
 // writes (self-rollback) and the parent's write all reverse, each once.
 func TestSaga_SiblingSubAgentsReverse(t *testing.T) {
 	l := newLedger()
-	store := NewMemStore()
+	store := memJournal()
 
-	subA := New(&scriptModel{turns: [][]Emit{toolTurn("x1", "X", `{}`), textTurn("done")}}, store, l.write("X"))
-	subB := New(&scriptModel{turns: [][]Emit{toolTurn("y1", "Y", `{}`), toolTurn("y2", "boomB", `{}`)}},
-		store, l.write("Y"), failTool("boomB"))
+	subA := mustNew(
+		&scriptModel{turns: [][]Emit{toolTurn("x1", "X", `{}`), textTurn("done")}},
+		store,
+		WithTools(l.write("X")),
+	)
+	subB := mustNew(
+		&scriptModel{turns: [][]Emit{toolTurn("y1", "Y", `{}`), toolTurn("y2", "boomB", `{}`)}},
+		store,
+		WithTools(l.write("Y"), failTool("boomB")),
+	)
 
-	parent := New(&scriptModel{turns: [][]Emit{
-		toolTurn("p0", "P", `{}`),
-		toolTurn("p1", "subA", `{"task":"x"}`),
-		toolTurn("p2", "subB", `{"task":"x"}`),
-	}}, store, l.write("P"), SubAgent("subA", "", subA), SubAgent("subB", "", subB))
+	parent := mustNew(
+		&scriptModel{turns: [][]Emit{
+			toolTurn("p0", "P", `{}`),
+			toolTurn("p1", "subA", `{"task":"x"}`),
+			toolTurn("p2", "subB", `{"task":"x"}`),
+		}},
+		store,
+		WithTools(l.write("P"), SubAgent("subA", "", subA), SubAgent("subB", "", subB)),
+	)
 
 	_, err := parent.RunSaga(context.Background(), "root", "go")
 	var ab *SagaAborted
@@ -129,7 +149,9 @@ func TestSaga_SiblingSubAgentsReverse(t *testing.T) {
 	}
 }
 
-// flakyStore fails the first N compensation writes to simulate a crash DURING rollback.
+// flakyStore fails the first N compensation steps, before their compensators run, to simulate a
+// crash DURING rollback. A compensation step reads its record first (to run at most once) and
+// calls the compensator only if it is not recorded, so failing that read stops the step there.
 type flakyStore struct {
 	*MemStore
 	mu                sync.Mutex
@@ -137,30 +159,35 @@ type flakyStore struct {
 	seen              int
 }
 
-func (f *flakyStore) Do(ctx context.Context, runID, name string, fn func(context.Context) (Record, error)) (Record, error) {
+func (f *flakyStore) Get(ctx context.Context, runID, name string) (Entry, bool, error) {
 	if strings.HasPrefix(name, "@saga/compensate/") {
 		f.mu.Lock()
 		f.seen++
 		fail := f.seen <= f.failCompensations
 		f.mu.Unlock()
 		if fail {
-			return Record{}, errors.New("crash during rollback")
+			return Entry{}, false, errors.New("crash during rollback")
 		}
 	}
-	return f.MemStore.Do(ctx, runID, name, fn)
+	return f.MemStore.Get(ctx, runID, name)
 }
 
 // Crash during rollback → resume → rollback completes, each compensator still runs once.
 func TestSaga_CrashDuringRollbackResumes(t *testing.T) {
 	l := newLedger()
-	store := &flakyStore{MemStore: NewMemStore(), failCompensations: 1} // crash on the first compensation
+	store := &flakyStore{MemStore: NewMemStore(), failCompensations: 1}
+	j := mustJournal(store) // crash on the first compensation
 
 	build := func() *Agent {
-		return New(&scriptModel{turns: [][]Emit{
-			toolTurn("c1", "A", `{}`),
-			toolTurn("c2", "Bw", `{}`),
-			toolTurn("c3", "boom", `{}`),
-		}}, store, l.write("A"), l.write("Bw"), failTool("boom"))
+		return mustNew(
+			&scriptModel{turns: [][]Emit{
+				toolTurn("c1", "A", `{}`),
+				toolTurn("c2", "Bw", `{}`),
+				toolTurn("c3", "boom", `{}`),
+			}},
+			j,
+			WithTools(l.write("A"), l.write("Bw"), failTool("boom")),
+		)
 	}
 
 	// First attempt: the failing step trips the saga, then rollback itself crashes.
@@ -192,22 +219,30 @@ func TestSaga_CrashDuringRollbackResumes(t *testing.T) {
 // every level's write undone exactly once, nothing left active.
 func deepSagaReverses(t *testing.T, depth int) {
 	l := newLedger()
-	store := NewMemStore()
+	store := memJournal()
 
 	var child *Agent
 	for i := depth; i >= 1; i-- {
 		res := fmt.Sprintf("w%d", i)
 		if i == depth {
-			child = New(&scriptModel{turns: [][]Emit{
-				toolTurn("wr", res, `{}`),
-				toolTurn("bm", "boom", `{}`),
-			}}, store, l.write(res), failTool("boom"))
+			child = mustNew(
+				&scriptModel{turns: [][]Emit{
+					toolTurn("wr", res, `{}`),
+					toolTurn("bm", "boom", `{}`),
+				}},
+				store,
+				WithTools(l.write(res), failTool("boom")),
+			)
 		} else {
 			sub := SubAgent(fmt.Sprintf("sub%d", i+1), "", child)
-			child = New(&scriptModel{turns: [][]Emit{
-				toolTurn("wr", res, `{}`),
-				toolTurn("dl", sub.Name(), `{"task":"x"}`),
-			}}, store, l.write(res), sub)
+			child = mustNew(
+				&scriptModel{turns: [][]Emit{
+					toolTurn("wr", res, `{}`),
+					toolTurn("dl", sub.Name(), `{"task":"x"}`),
+				}},
+				store,
+				WithTools(l.write(res), sub),
+			)
 		}
 	}
 
@@ -241,16 +276,20 @@ func TestSaga_100LevelsDeep(t *testing.T) { deepSagaReverses(t, 100) }
 // A completed write with no compensator inside the tree is surfaced, not silently lost.
 func TestSaga_UncompensatedWriteSurfaced(t *testing.T) {
 	l := newLedger()
-	store := NewMemStore()
+	store := memJournal()
 
 	// "danger" is a real write (Safety{}) with NO compensator.
 	danger := Func("danger", "", Safety{}, func(context.Context, struct{}) (struct{}, error) { return struct{}{}, nil })
 
-	a := New(&scriptModel{turns: [][]Emit{
-		toolTurn("c1", "A", `{}`),
-		toolTurn("c2", "danger", `{}`),
-		toolTurn("c3", "boom", `{}`),
-	}}, store, l.write("A"), danger, failTool("boom"))
+	a := mustNew(
+		&scriptModel{turns: [][]Emit{
+			toolTurn("c1", "A", `{}`),
+			toolTurn("c2", "danger", `{}`),
+			toolTurn("c3", "boom", `{}`),
+		}},
+		store,
+		WithTools(l.write("A"), danger, failTool("boom")),
+	)
 
 	_, err := a.RunSaga(context.Background(), "root", "go")
 	var ab *SagaAborted

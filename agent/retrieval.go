@@ -188,7 +188,7 @@ func (a *Agent) withRetrieved(ctx context.Context, runID string, msgs []Message,
 
 // retrieveOnce returns the top-k documents for query: the run's step "@retrieval/<layer>", which
 // the first call retrieves and records, and every later call reads back.
-func retrieveOnce(ctx context.Context, d Durable, runID string, l retrievalLayer, query string, layer int) ([]Doc, error) {
+func retrieveOnce(ctx context.Context, d *Journal, runID string, l retrievalLayer, query string, layer int) ([]Doc, error) {
 	rec, err := step(ctx, d, runID, retrievalStep(layer), func(ctx context.Context) (retrieval, error) {
 		docs, err := l.retrieve(ctx, query)
 		if err != nil {

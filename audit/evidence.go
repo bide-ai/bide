@@ -206,7 +206,7 @@ func WithConsistencyFrom(earlier SignedTreeHead) EvidenceOption {
 // document a verifier re-checks offline with EvidencePackage.Verify against the out-of-band key.
 // The signer's scheme and public key are recorded as metadata (Verify requires them to match the
 // verifier it is given; it does not trust the embedded ones).
-func Evidence(ctx context.Context, store agent.Durable, runID string, s Signer, timestamp int64, opts ...EvidenceOption) (EvidencePackage, error) {
+func Evidence(ctx context.Context, store *agent.Journal, runID string, s Signer, timestamp int64, opts ...EvidenceOption) (EvidencePackage, error) {
 	cfg := evidenceOptions{}
 	for _, opt := range opts {
 		opt(&cfg)

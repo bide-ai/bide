@@ -14,7 +14,7 @@ import (
 // Run with -race to also prove no data race. Prevents double side effects under
 // concurrency (parallel tools / retries) — the Durable "at-most-once execution" contract.
 func TestMemStore_SingleFlight(t *testing.T) {
-	store := NewMemStore()
+	store := memJournal()
 	var calls int32
 	var wg sync.WaitGroup
 
@@ -22,7 +22,7 @@ func TestMemStore_SingleFlight(t *testing.T) {
 		wg.Add(1)
 		go func() {
 			defer wg.Done()
-			_, _ = store.Do(context.Background(), "run", "step", func(context.Context) (Record, error) {
+			_, _ = store.do(context.Background(), "run", "step", func(context.Context) (Record, error) {
 				atomic.AddInt32(&calls, 1)
 				time.Sleep(2 * time.Millisecond) // widen the race window
 				return Record{Kind: StepValue, Result: json.RawMessage(`1`)}, nil
@@ -78,7 +78,7 @@ func TestParallelTools_RunConcurrently(t *testing.T) {
 		multiToolTurn([2]string{"c0", "t0"}, [2]string{"c1", "t1"}, [2]string{"c2", "t2"}),
 		textTurn("done"),
 	}}
-	out, err := New(m, NewMemStore(), tools...).Run(context.Background(), "r", "go")
+	out, err := mustNew(m, memJournal(), WithTools(tools...)).Run(context.Background(), "r", "go")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -95,7 +95,7 @@ func TestParallelTools_RunConcurrently(t *testing.T) {
 // Thread-safety: concurrent Do on DISTINCT keys (the parallel-tools shape) all record,
 // with no race. Proves the store is safe for concurrent tool execution.
 func TestMemStore_ConcurrentDistinctKeys(t *testing.T) {
-	store := NewMemStore()
+	store := memJournal()
 	var wg sync.WaitGroup
 
 	for i := 0; i < 100; i++ {
@@ -103,7 +103,7 @@ func TestMemStore_ConcurrentDistinctKeys(t *testing.T) {
 		wg.Add(1)
 		go func() {
 			defer wg.Done()
-			_, _ = store.Do(context.Background(), "run", fmt.Sprintf("s%d", i), func(context.Context) (Record, error) {
+			_, _ = store.do(context.Background(), "run", fmt.Sprintf("s%d", i), func(context.Context) (Record, error) {
 				return Record{Kind: StepValue}, nil
 			})
 		}()

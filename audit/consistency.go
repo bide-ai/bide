@@ -116,7 +116,7 @@ type Consistency struct {
 
 // ProveConsistency proves that runID's first `first` records are an append-only prefix of
 // its current journal — i.e. nothing before `first` was changed or reordered, only appended.
-func ProveConsistency(ctx context.Context, store agent.Durable, runID string, first int) (Consistency, error) {
+func ProveConsistency(ctx context.Context, store *agent.Journal, runID string, first int) (Consistency, error) {
 	recs, err := store.History(ctx, runID)
 	if err != nil {
 		return Consistency{}, fmt.Errorf("audit: load journal %s: %w", runID, err)

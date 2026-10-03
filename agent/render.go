@@ -11,7 +11,7 @@ import (
 // RenderMermaid returns a Mermaid flowchart of a run's journaled steps — the "graph as
 // derived OUTPUT" (Option B): you write plain Go, and the graph is rendered from what
 // actually ran, not hand-authored. Feed it to the dev UI, a trace viewer, or a PR.
-func RenderMermaid(ctx context.Context, d Durable, runID string) (string, error) {
+func RenderMermaid(ctx context.Context, d *Journal, runID string) (string, error) {
 	recs, err := d.History(ctx, runID)
 	if err != nil {
 		return "", err

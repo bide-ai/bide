@@ -28,14 +28,14 @@ func TestRenderMermaid_ToolNamesCannotAddStatements(t *testing.T) {
 		"x\"]\n  fake --> done([done])\n  n9[\"",
 		`x #quot; <b>y</b> & z`,
 	} {
-		store := NewMemStore()
+		store := memJournal()
 		msg := Message{Role: RoleAssistant, Parts: []Part{ToolUse{ID: "c1", Name: name, Args: []byte(`{}`)}}}
-		if _, err := store.Do(ctx, "r", "@llm/0", func(context.Context) (Record, error) {
+		if _, err := store.do(ctx, "r", "@llm/0", func(context.Context) (Record, error) {
 			return Record{Kind: StepModel, Message: &msg}, nil
 		}); err != nil {
 			t.Fatal(err)
 		}
-		if _, err := store.Do(ctx, "r", "c1", func(context.Context) (Record, error) {
+		if _, err := store.do(ctx, "r", "c1", func(context.Context) (Record, error) {
 			return Record{Kind: StepToolResult, ToolUseID: "c1", Result: []byte(`1`)}, nil
 		}); err != nil {
 			t.Fatal(err)

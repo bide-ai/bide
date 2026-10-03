@@ -53,12 +53,12 @@ func TestResolveHaltRef_ClaimsTheNextAttemptUnlessOptedOut(t *testing.T) {
 	ctx := context.Background()
 	for name, tc := range map[string]struct {
 		opts  []ResolveOption
-		store func() Durable
+		store func() *Journal
 		claim bool
 	}{
-		"lease":   {nil, func() Durable { return NewMemStore() }, true},
-		"min age": {[]ResolveOption{WithMinHaltAge(time.Second)}, func() Durable { return newJournal(plainStore{NewMemStore()}) }, true},
-		"opt-out": {[]ResolveOption{WithoutLiveDriverCheck()}, func() Durable { return NewMemStore() }, false},
+		"lease":   {nil, func() *Journal { return memJournal() }, true},
+		"min age": {[]ResolveOption{WithMinHaltAge(time.Second)}, func() *Journal { return newJournal(plainStore{NewMemStore()}) }, true},
+		"opt-out": {[]ResolveOption{WithoutLiveDriverCheck()}, func() *Journal { return memJournal() }, false},
 	} {
 		t.Run(name, func(t *testing.T) {
 			d := tc.store()
@@ -69,7 +69,7 @@ func TestResolveHaltRef_ClaimsTheNextAttemptUnlessOptedOut(t *testing.T) {
 			if err := ResolveHaltRef(ctx, d, ref, Outcome{Result: "charged"}, tc.opts...); err != nil {
 				t.Fatal(err)
 			}
-			rec, ok, err := lookup(ctx, d, "r1", retryAttemptStep(toolAttemptStep("c1"), 1))
+			rec, ok, err := d.Get(ctx, "r1", retryAttemptStep(toolAttemptStep("c1"), 1))
 			if err != nil {
 				t.Fatal(err)
 			}

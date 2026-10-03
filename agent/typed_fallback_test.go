@@ -20,14 +20,14 @@ func TestRunTyped_TextFallbackIsTheFinalTurn(t *testing.T) {
 
 	// The final turn has no text: there is no answer, not the draft.
 	m := eventTurnsModel{draft, {Finish{Reason: "stop"}}}
-	got, err := RunTyped[typedAnswer](context.Background(), New(m, NewMemStore(), work), "r1", "go")
+	got, err := RunTyped[typedAnswer](context.Background(), mustNew(m, memJournal(), WithTools(work)), "r1", "go")
 	if !errors.Is(err, ErrProtocol) {
 		t.Fatalf("RunTyped = %+v, %v; want ErrProtocol (the final turn has no answer)", got, err)
 	}
 
 	// The final turn's text is the answer.
 	m = eventTurnsModel{draft, {TextDelta{Text: `{"name":"final"}`}, Finish{Reason: "stop"}}}
-	got, err = RunTyped[typedAnswer](context.Background(), New(m, NewMemStore(), work), "r2", "go")
+	got, err = RunTyped[typedAnswer](context.Background(), mustNew(m, memJournal(), WithTools(work)), "r2", "go")
 	if err != nil || got.Name != "final" {
 		t.Fatalf("RunTyped = %+v, %v; want the final turn's answer", got, err)
 	}
@@ -41,7 +41,7 @@ func TestRunTyped_NonObjectTypeIsAConfigError(t *testing.T) {
 	check := func(name string, run func(*Agent) error) {
 		t.Helper()
 		m := &countModel{inner: NewScriptedModel(TextTurn("{}"))}
-		if err := run(New(m, NewMemStore())); !errors.Is(err, ErrConfig) {
+		if err := run(mustNew(m, memJournal())); !errors.Is(err, ErrConfig) {
 			t.Errorf("RunTyped[%s] = %v, want ErrConfig", name, err)
 		}
 		if n := m.calls.Load(); n != 0 {
@@ -55,11 +55,11 @@ func TestRunTyped_NonObjectTypeIsAConfigError(t *testing.T) {
 
 	// A pointer to a struct, or a map, is an object.
 	m := NewScriptedModel(ToolTurn("f1", finalAnswerTool, `{"name":"p"}`))
-	if got, err := RunTyped[*typedAnswer](ctx, New(m, NewMemStore()), "p", "go"); err != nil || got == nil || got.Name != "p" {
+	if got, err := RunTyped[*typedAnswer](ctx, mustNew(m, memJournal()), "p", "go"); err != nil || got == nil || got.Name != "p" {
 		t.Errorf("RunTyped[*typedAnswer] = %+v, %v", got, err)
 	}
 	m = NewScriptedModel(ToolTurn("f1", finalAnswerTool, `{"k":1}`))
-	if got, err := RunTyped[map[string]int](ctx, New(m, NewMemStore()), "m", "go"); err != nil || got["k"] != 1 {
+	if got, err := RunTyped[map[string]int](ctx, mustNew(m, memJournal()), "m", "go"); err != nil || got["k"] != 1 {
 		t.Errorf("RunTyped[map[string]int] = %v, %v", got, err)
 	}
 }

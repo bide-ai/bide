@@ -54,8 +54,13 @@ func TestWithToolErrorRedactor(t *testing.T) {
 		gotTool, gotErr = tool, err
 		return "lookup failed: not found (see https://docs.test/errors?session=SK-QUERY-SECRET)"
 	}
-	st := NewMemStore()
-	a := New(NewScriptedModel(ToolTurn("tu1", "lookup", `{}`), TextTurn("done")), st, tool).WithToolErrorRedactor(redact)
+	st := memJournal()
+	a := mustNew(
+		NewScriptedModel(ToolTurn("tu1", "lookup", `{}`), TextTurn("done")),
+		st,
+		WithTools(tool),
+		WithToolErrorRedactor(redact),
+	)
 	if _, err := a.Run(context.Background(), "r1", "go"); err != nil {
 		t.Fatal(err)
 	}
@@ -86,20 +91,23 @@ func TestToolErrorTextInMiddleware(t *testing.T) {
 		return "", errors.New("account ACCT-NUMBER-SECRET: https://h.test/x?key=SK-SECRET")
 	})
 	var seen string
-	st := NewMemStore()
-	a := New(NewScriptedModel(ToolTurn("tu1", "lookup", `{}`), TextTurn("done")), st, tool).
+	st := memJournal()
+	a := must(mustNew(
+		NewScriptedModel(ToolTurn("tu1", "lookup", `{}`), TextTurn("done")),
+		st,
+		WithTools(tool),
 		WithToolErrorRedactor(func(_ string, err error) string {
 			return strings.ReplaceAll(err.Error(), "ACCT-NUMBER-SECRET", "ACCT")
-		}).
-		UseTool(func(next ToolHandler) ToolHandler {
-			return func(ctx context.Context, call ToolCall) (json.RawMessage, error) {
-				res, err := next(ctx, call)
-				if err != nil {
-					seen = call.ErrorText(err)
-				}
-				return res, err
+		}),
+	).With(WithToolMiddleware(func(next ToolHandler) ToolHandler {
+		return func(ctx context.Context, call ToolCall) (json.RawMessage, error) {
+			res, err := next(ctx, call)
+			if err != nil {
+				seen = call.ErrorText(err)
 			}
-		})
+			return res, err
+		}
+	})))
 	if _, err := a.Run(context.Background(), "r1", "go"); err != nil {
 		t.Fatal(err)
 	}

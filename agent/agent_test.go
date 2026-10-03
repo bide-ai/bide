@@ -45,13 +45,13 @@ type countingTool struct {
 }
 
 func (t *countingTool) Spec() ToolSpec {
-	return ToolSpec{Name: t.name, Safety: t.safety, Approval: t.approval}
+	return ToolSpec{Name: t.name, Input: json.RawMessage(`{"type":"object"}`), Safety: t.safety, Approval: t.approval}
 }
 
 func (t *countingTool) Name() string                { return t.name }
 func (t *countingTool) Description() string         { return "" }
 func (t *countingTool) Safety() Safety              { return t.safety }
-func (t *countingTool) ArgsSchema() json.RawMessage { return nil }
+func (t *countingTool) ArgsSchema() json.RawMessage { return json.RawMessage(`{"type":"object"}`) }
 func (t *countingTool) Call(context.Context, json.RawMessage) (json.RawMessage, error) {
 	*t.calls++
 	return json.RawMessage(`{"ok":true}`), nil
@@ -62,7 +62,7 @@ func TestRun_ToolThenAnswer(t *testing.T) {
 	var calls int
 	tool := &countingTool{name: "lookup", safety: Safety{ReadOnly: true}, calls: &calls}
 	m := &scriptModel{turns: [][]Emit{toolTurn("c1", "lookup", `{"q":"x"}`), textTurn("final")}}
-	a := New(m, NewMemStore(), tool)
+	a := mustNew(m, memJournal(), WithTools(tool))
 
 	out, err := a.Run(context.Background(), "run1", "hi")
 	if err != nil {
@@ -81,12 +81,12 @@ func TestRun_ToolThenAnswer(t *testing.T) {
 func TestResume_DoesNotRerunCompletedTool(t *testing.T) {
 	var calls int
 	tool := &countingTool{name: "lookup", safety: Safety{ReadOnly: true}, calls: &calls}
-	store := NewMemStore()
+	store := memJournal()
 
 	// Turn 1 asks for the tool; turn 2 "crashes" (model error) after the tool result
 	// is already journaled.
 	crashy := &scriptModel{turns: [][]Emit{toolTurn("c1", "lookup", `{"q":"x"}`), errTurn(errors.New("boom"))}}
-	if _, err := New(crashy, store, tool).Run(context.Background(), "run2", "hi"); err == nil {
+	if _, err := mustNew(crashy, store, WithTools(tool)).Run(context.Background(), "run2", "hi"); err == nil {
 		t.Fatal("expected crash error on first attempt")
 	}
 	if calls != 1 {
@@ -95,7 +95,7 @@ func TestResume_DoesNotRerunCompletedTool(t *testing.T) {
 
 	// Fresh agent (new process), same store: resume and finish.
 	recovered := &scriptModel{turns: [][]Emit{textTurn("final")}}
-	out, err := New(recovered, store, tool).Run(context.Background(), "run2", "hi")
+	out, err := mustNew(recovered, store, WithTools(tool)).Run(context.Background(), "run2", "hi")
 	if err != nil {
 		t.Fatalf("resume: %v", err)
 	}
@@ -109,21 +109,21 @@ func TestResume_DoesNotRerunCompletedTool(t *testing.T) {
 
 // Safety: a write tool journaled without a result has unknown outcome → halt.
 func TestResume_HaltsOnUnsafeWrite(t *testing.T) {
-	store := NewMemStore()
+	store := memJournal()
 	ctx := context.Background()
 	// Seed a journal where a WRITE tool was requested, we recorded an attempt marker
 	// (started the side effect), but no result was written → crashed mid-write.
 	asst := Message{Role: RoleAssistant, Parts: []Part{ToolUse{ID: "c1", Name: "charge", Args: json.RawMessage(`{}`)}}}
-	_, _ = store.Do(ctx, "run3", "@llm/0", func(context.Context) (Record, error) {
+	_, _ = store.do(ctx, "run3", "@llm/0", func(context.Context) (Record, error) {
 		return Record{Kind: StepModel, Message: &asst}, nil
 	})
-	_, _ = store.Do(ctx, "run3", toolAttemptStep("c1"), func(context.Context) (Record, error) {
+	_, _ = store.do(ctx, "run3", toolAttemptStep("c1"), func(context.Context) (Record, error) {
 		return Record{Kind: StepAttempt, ToolUseID: "c1"}, nil
 	})
 
 	var calls int
 	write := &countingTool{name: "charge", safety: Safety{}, calls: &calls} // not ReadOnly, not Idempotent
-	_, err := New(&scriptModel{}, store, write).Run(ctx, "run3", "hi")
+	_, err := mustNew(&scriptModel{}, store, WithTools(write)).Run(ctx, "run3", "hi")
 
 	var halt *ResumeHalt
 	if !errors.As(err, &halt) {
@@ -137,7 +137,7 @@ func TestResume_HaltsOnUnsafeWrite(t *testing.T) {
 // The Option-B primitive: named durable steps in plain-Go control flow memoize across
 // a crash — a completed step is not re-run on resume.
 func TestNamedStep_MemoizesAcrossResume(t *testing.T) {
-	store := NewMemStore()
+	store := memJournal()
 	var loads int
 
 	work := func(runID string, crashAfterLoad bool) (string, error) {
@@ -210,13 +210,13 @@ func TestStream_AssemblesFragmentedToolArgs(t *testing.T) {
 // HITL: a tool requiring approval pauses the run durably (PendingApproval) without
 // executing; after Approve, re-running resumes and executes it exactly once.
 func TestHITL_PausesForApprovalThenResumes(t *testing.T) {
-	store := NewMemStore()
+	store := memJournal()
 	ctx := context.Background()
 	var charged int
 	charge := &countingTool{name: "charge", approval: SingleApproval(), calls: &charged}
 
 	m := &scriptModel{turns: [][]Emit{toolTurn("c1", "charge", `{}`), textTurn("done")}}
-	_, err := New(m, store, charge).Run(ctx, "r1", "pay")
+	_, err := mustNew(m, store, WithTools(charge)).Run(ctx, "r1", "pay")
 
 	var pend *PendingApproval
 	if !errors.As(err, &pend) {
@@ -231,7 +231,7 @@ func TestHITL_PausesForApprovalThenResumes(t *testing.T) {
 		t.Fatal(err)
 	}
 	m2 := &scriptModel{turns: [][]Emit{textTurn("done")}}
-	out, err := New(m2, store, charge).Run(ctx, "r1", "pay")
+	out, err := mustNew(m2, store, WithTools(charge)).Run(ctx, "r1", "pay")
 	if err != nil {
 		t.Fatalf("resume after approval: %v", err)
 	}
@@ -271,9 +271,9 @@ func TestMessage_JSONRoundTrip(t *testing.T) {
 func TestRenderMermaid_ReflectsExecution(t *testing.T) {
 	var calls int
 	tool := &countingTool{name: "lookup", safety: Safety{ReadOnly: true}, calls: &calls}
-	store := NewMemStore()
+	store := memJournal()
 	m := &scriptModel{turns: [][]Emit{toolTurn("c1", "lookup", `{"q":"x"}`), textTurn("final")}}
-	if _, err := New(m, store, tool).Run(context.Background(), "g1", "hi"); err != nil {
+	if _, err := mustNew(m, store, WithTools(tool)).Run(context.Background(), "g1", "hi"); err != nil {
 		t.Fatal(err)
 	}
 
@@ -291,16 +291,20 @@ func TestRenderMermaid_ReflectsExecution(t *testing.T) {
 // Landmark 1: a sub-agent runs as a durable tool; its sub-run journals under a
 // hierarchical ID (parentRunID/toolUseID) in the shared store — a resumable tree.
 func TestSubAgent_DurableTree(t *testing.T) {
-	store := NewMemStore()
+	store := memJournal()
 	ctx := context.Background()
 
-	sub := New(&scriptModel{turns: [][]Emit{textTurn("sub-answer")}}, store)
+	sub := mustNew(&scriptModel{turns: [][]Emit{textTurn("sub-answer")}}, store)
 	researcher := SubAgent("researcher", "researches things", sub)
 
-	parent := New(&scriptModel{turns: [][]Emit{
-		toolTurn("c1", "researcher", `{"task":"find x"}`),
-		textTurn("parent-final"),
-	}}, store, researcher)
+	parent := mustNew(
+		&scriptModel{turns: [][]Emit{
+			toolTurn("c1", "researcher", `{"task":"find x"}`),
+			textTurn("parent-final"),
+		}},
+		store,
+		WithTools(researcher),
+	)
 
 	out, err := parent.Run(ctx, "root", "do it")
 	if err != nil {
@@ -335,11 +339,11 @@ func TestReplay_ReExecutesFromJournal(t *testing.T) {
 	ctx := context.Background()
 
 	// Record.
-	rec := NewMemStore()
+	rec := memJournal()
 	var calls1 int
 	tool1 := &countingTool{name: "lookup", safety: Safety{ReadOnly: true}, calls: &calls1}
 	recModel := &scriptModel{turns: [][]Emit{toolTurn("c1", "lookup", `{"q":"x"}`), textTurn("recorded-final")}}
-	if _, err := New(recModel, rec, tool1).Run(ctx, "orig", "go"); err != nil {
+	if _, err := mustNew(recModel, rec, WithTools(tool1)).Run(ctx, "orig", "go"); err != nil {
 		t.Fatal(err)
 	}
 
@@ -350,7 +354,7 @@ func TestReplay_ReExecutesFromJournal(t *testing.T) {
 	}
 	var calls2 int
 	tool2 := &countingTool{name: "lookup", safety: Safety{ReadOnly: true}, calls: &calls2}
-	out, err := New(rm, NewMemStore(), tool2).Run(ctx, "replay", "go")
+	out, err := mustNew(rm, memJournal(), WithTools(tool2)).Run(ctx, "replay", "go")
 	if err != nil {
 		t.Fatalf("replay run: %v", err)
 	}
@@ -386,7 +390,7 @@ func TestSaga_CompensatesCompletedWritesOnAbort(t *testing.T) {
 		textTurn("booked!"), // never reached
 	}}
 
-	a := New(model, NewMemStore(), charge, bookFlight, bookHotel)
+	a := mustNew(model, memJournal(), WithTools(charge, bookFlight, bookHotel))
 	_, err := a.RunSaga(ctx, "trip-1", "book my trip")
 
 	var aborted *SagaAborted
@@ -430,7 +434,7 @@ func TestSaga_CompensatorFailureIsFlagged(t *testing.T) {
 		toolTurn("c3", "book_hotel", `{}`),
 	}}
 
-	a := New(model, NewMemStore(), charge, bookFlight, bookHotel)
+	a := mustNew(model, memJournal(), WithTools(charge, bookFlight, bookHotel))
 	_, err := a.RunSaga(ctx, "trip-2", "book")
 
 	var aborted *SagaAborted
@@ -451,22 +455,30 @@ func TestSaga_CompensatorFailureIsFlagged(t *testing.T) {
 // later parent step fails — rollback must recurse into the sub-run and undo its charge.
 func TestSaga_DistributedRollbackAcrossSubAgent(t *testing.T) {
 	ctx := context.Background()
-	store := NewMemStore()
+	store := memJournal()
 	var subCharged bool
 
 	subCharge := CompensatedFunc("charge_card", "", Safety{},
 		func(context.Context, struct{}) (struct{}, error) { subCharged = true; return struct{}{}, nil },
 		func(context.Context, struct{}, struct{}) error { subCharged = false; return nil })
-	payAgent := New(&scriptModel{turns: [][]Emit{toolTurn("s1", "charge_card", `{}`), textTurn("charged")}}, store, subCharge)
+	payAgent := mustNew(
+		&scriptModel{turns: [][]Emit{toolTurn("s1", "charge_card", `{}`), textTurn("charged")}},
+		store,
+		WithTools(subCharge),
+	)
 	payment := SubAgent("payment", "handles payment", payAgent)
 
 	bookHotel := Func("book_hotel", "", Safety{},
 		func(context.Context, struct{}) (struct{}, error) { return struct{}{}, errors.New("no rooms") })
 
-	parent := New(&scriptModel{turns: [][]Emit{
-		toolTurn("c1", "payment", `{"task":"charge the customer"}`),
-		toolTurn("c2", "book_hotel", `{}`),
-	}}, store, payment, bookHotel)
+	parent := mustNew(
+		&scriptModel{turns: [][]Emit{
+			toolTurn("c1", "payment", `{"task":"charge the customer"}`),
+			toolTurn("c2", "book_hotel", `{}`),
+		}},
+		store,
+		WithTools(payment, bookHotel),
+	)
 
 	_, err := parent.RunSaga(ctx, "trip", "book")
 	var aborted *SagaAborted
@@ -491,7 +503,7 @@ func TestSaga_DistributedRollbackAcrossSubAgent(t *testing.T) {
 // reverses the WHOLE tree — the sub-agent's own writes and the parent's writes both undo.
 func TestSaga_SubAgentFailureReversesWholeTree(t *testing.T) {
 	ctx := context.Background()
-	store := NewMemStore()
+	store := memJournal()
 	var parentCharged, seatReserved bool
 
 	// Parent write: charge the customer (succeeds).
@@ -505,16 +517,24 @@ func TestSaga_SubAgentFailureReversesWholeTree(t *testing.T) {
 		func(context.Context, struct{}, struct{}) error { seatReserved = false; return nil })
 	failStep := Func("confirm_booking", "", Safety{},
 		func(context.Context, struct{}) (struct{}, error) { return struct{}{}, errors.New("carrier rejected") })
-	bookingAgent := New(&scriptModel{turns: [][]Emit{
-		toolTurn("s1", "reserve_seat", `{}`),
-		toolTurn("s2", "confirm_booking", `{}`),
-	}}, store, reserveSeat, failStep)
+	bookingAgent := mustNew(
+		&scriptModel{turns: [][]Emit{
+			toolTurn("s1", "reserve_seat", `{}`),
+			toolTurn("s2", "confirm_booking", `{}`),
+		}},
+		store,
+		WithTools(reserveSeat, failStep),
+	)
 	booking := SubAgent("booking", "books travel", bookingAgent)
 
-	parent := New(&scriptModel{turns: [][]Emit{
-		toolTurn("c1", "charge_customer", `{}`),
-		toolTurn("c2", "booking", `{"task":"book the trip"}`),
-	}}, store, chargeParent, booking)
+	parent := mustNew(
+		&scriptModel{turns: [][]Emit{
+			toolTurn("c1", "charge_customer", `{}`),
+			toolTurn("c2", "booking", `{"task":"book the trip"}`),
+		}},
+		store,
+		WithTools(chargeParent, booking),
+	)
 
 	_, err := parent.RunSaga(ctx, "trip", "charge then book")
 	var aborted *SagaAborted
@@ -540,30 +560,38 @@ func TestSubAgent_PropagatesHaltAndApproval(t *testing.T) {
 	ctx := context.Background()
 
 	t.Run("resume-halt", func(t *testing.T) {
-		store := NewMemStore()
+		store := memJournal()
 		var charged int
 		// Non-retriable write tool inside the sub-agent.
 		charge := &countingTool{name: "charge", safety: Safety{}, calls: &charged}
-		sub := New(&scriptModel{turns: [][]Emit{
-			toolTurn("s1", "charge", `{}`),
-			textTurn("sub-done"),
-		}}, store, charge)
+		sub := mustNew(
+			&scriptModel{turns: [][]Emit{
+				toolTurn("s1", "charge", `{}`),
+				textTurn("sub-done"),
+			}},
+			store,
+			WithTools(charge),
+		)
 		worker := SubAgent("worker", "does work", sub)
-		parent := New(&scriptModel{turns: [][]Emit{
-			toolTurn("c1", "worker", `{"task":"charge it"}`),
-			textTurn("parent-done"),
-		}}, store, worker)
+		parent := mustNew(
+			&scriptModel{turns: [][]Emit{
+				toolTurn("c1", "worker", `{"task":"charge it"}`),
+				textTurn("parent-done"),
+			}},
+			store,
+			WithTools(worker),
+		)
 
 		// Seed the sub-run's journal so its charge is ATTEMPTED (side effect started) but has
 		// no recorded result — a crash mid-write. On resume the sub-agent must halt.
 		subRunID := SubRunID("root", "c1")
 		asst := Message{Role: RoleAssistant, Parts: []Part{ToolUse{ID: "s1", Name: "charge", Args: json.RawMessage(`{}`)}}}
-		if _, err := store.Do(ctx, subRunID, "@llm/0", func(context.Context) (Record, error) {
+		if _, err := store.do(ctx, subRunID, "@llm/0", func(context.Context) (Record, error) {
 			return Record{Kind: StepModel, Message: &asst}, nil
 		}); err != nil {
 			t.Fatal(err)
 		}
-		if _, err := store.Do(ctx, subRunID, toolAttemptStep("s1"), func(context.Context) (Record, error) {
+		if _, err := store.do(ctx, subRunID, toolAttemptStep("s1"), func(context.Context) (Record, error) {
 			return Record{Kind: StepAttempt, ToolUseID: "s1"}, nil
 		}); err != nil {
 			t.Fatal(err)
@@ -601,18 +629,26 @@ func TestSubAgent_PropagatesHaltAndApproval(t *testing.T) {
 	})
 
 	t.Run("pending-approval", func(t *testing.T) {
-		store := NewMemStore()
+		store := memJournal()
 		var charged int
 		approve := &countingTool{name: "charge", approval: SingleApproval(), calls: &charged}
-		sub := New(&scriptModel{turns: [][]Emit{
-			toolTurn("s1", "charge", `{}`),
-			textTurn("sub-done"),
-		}}, store, approve)
+		sub := mustNew(
+			&scriptModel{turns: [][]Emit{
+				toolTurn("s1", "charge", `{}`),
+				textTurn("sub-done"),
+			}},
+			store,
+			WithTools(approve),
+		)
 		worker := SubAgent("worker", "does work", sub)
-		parent := New(&scriptModel{turns: [][]Emit{
-			toolTurn("c1", "worker", `{"task":"charge it"}`),
-			textTurn("parent-done"),
-		}}, store, worker)
+		parent := mustNew(
+			&scriptModel{turns: [][]Emit{
+				toolTurn("c1", "worker", `{"task":"charge it"}`),
+				textTurn("parent-done"),
+			}},
+			store,
+			WithTools(worker),
+		)
 
 		_, err := parent.Run(ctx, "root", "delegate")
 		var pend *PendingApproval

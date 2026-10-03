@@ -28,7 +28,8 @@ func memTamper(t *testing.T, m *MemStore, runID, name string, data []byte) {
 func TestMemStore_RowWhoseRecordNamesAnotherStepIsRefused(t *testing.T) {
 	ctx := context.Background()
 	m := NewMemStore()
-	if _, err := m.Do(ctx, "r", "x", func(context.Context) (Record, error) { return Record{Kind: StepValue, Result: []byte(`1`)}, nil }); err != nil {
+	j := mustJournal(m)
+	if _, err := j.do(ctx, "r", "x", func(context.Context) (Record, error) { return Record{Kind: StepValue, Result: []byte(`1`)}, nil }); err != nil {
 		t.Fatal(err)
 	}
 	forged, err := JournalEntry(runCompleteStep, Record{Kind: StepValue})
@@ -37,14 +38,14 @@ func TestMemStore_RowWhoseRecordNamesAnotherStepIsRefused(t *testing.T) {
 	}
 	memTamper(t, m, "r", "x", forged)
 
-	if done, err := IsComplete(ctx, m, "r"); !errors.Is(err, ErrStorage) {
+	if done, err := IsComplete(ctx, j, "r"); !errors.Is(err, ErrStorage) {
 		t.Errorf("IsComplete = %v, %v; want an ErrStorage error, not a run marked complete by a misfiled row", done, err)
 	}
-	if _, err := m.History(ctx, "r"); !errors.Is(err, ErrStorage) || !strings.Contains(err.Error(), `"x"`) {
+	if _, err := j.History(ctx, "r"); !errors.Is(err, ErrStorage) || !strings.Contains(err.Error(), `"x"`) {
 		t.Errorf("History = %v; want ErrStorage naming the row's key", err)
 	}
 	ran := false
-	if _, err := m.Do(ctx, "r", "x", func(context.Context) (Record, error) { ran = true; return Record{}, nil }); !errors.Is(err, ErrStorage) {
+	if _, err := j.do(ctx, "r", "x", func(context.Context) (Record, error) { ran = true; return Record{}, nil }); !errors.Is(err, ErrStorage) {
 		t.Errorf("Do(memoized) = %v; want ErrStorage", err)
 	}
 	if ran {
@@ -57,15 +58,16 @@ func TestMemStore_RowWhoseRecordNamesAnotherStepIsRefused(t *testing.T) {
 func TestMemStore_UnknownFieldStillReads(t *testing.T) {
 	ctx := context.Background()
 	m := NewMemStore()
-	if _, err := m.Do(ctx, "r", "x", func(context.Context) (Record, error) { return Record{Kind: StepValue, Result: []byte(`1`)}, nil }); err != nil {
+	j := mustJournal(m)
+	if _, err := j.do(ctx, "r", "x", func(context.Context) (Record, error) { return Record{Kind: StepValue, Result: []byte(`1`)}, nil }); err != nil {
 		t.Fatal(err)
 	}
 	memTamper(t, m, "r", "x", []byte(`{"name":"x","kind":"value","result":1,"future_field":{"a":1}}`))
-	recs, err := m.History(ctx, "r")
+	recs, err := j.History(ctx, "r")
 	if err != nil || len(recs) != 2 || recs[1].Name != "x" { // the header, then the record
 		t.Fatalf("History = %+v, %v; want the one record", recs, err)
 	}
-	if rec, err := m.Do(ctx, "r", "x", func(context.Context) (Record, error) { return Record{}, errors.New("must not run") }); err != nil || string(rec.Result) != "1" {
+	if rec, err := j.do(ctx, "r", "x", func(context.Context) (Record, error) { return Record{}, errors.New("must not run") }); err != nil || string(rec.Result) != "1" {
 		t.Fatalf("Do = %+v, %v", rec, err)
 	}
 }
@@ -75,11 +77,12 @@ func TestMemStore_UnknownFieldStillReads(t *testing.T) {
 func TestMemStore_UndecodableRowIsReportedAsUndecodable(t *testing.T) {
 	ctx := context.Background()
 	m := NewMemStore()
-	if _, err := m.Do(ctx, "r", "x", func(context.Context) (Record, error) { return Record{Kind: StepValue}, nil }); err != nil {
+	j := mustJournal(m)
+	if _, err := j.do(ctx, "r", "x", func(context.Context) (Record, error) { return Record{Kind: StepValue}, nil }); err != nil {
 		t.Fatal(err)
 	}
 	memTamper(t, m, "r", "x", []byte(`not json`))
-	_, err := m.History(ctx, "r")
+	_, err := j.History(ctx, "r")
 	if !errors.Is(err, ErrStorage) || !strings.Contains(err.Error(), "decode stored record") || !strings.Contains(err.Error(), `"x"`) {
 		t.Fatalf("History = %v; want the decode failure, naming the key", err)
 	}

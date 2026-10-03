@@ -10,6 +10,7 @@ import (
 	"time"
 
 	"github.com/bide-ai/bide/agent"
+	"github.com/bide-ai/bide/agent/agenttest"
 )
 
 // A saga delegation began under a grant, fired a compensable charge in its sub-run, and paused on
@@ -20,16 +21,24 @@ func TestAdv117c_RefusedResumeLeavesSubRunChargeUnaccounted(t *testing.T) {
 	for _, name := range []string{"renewed root grant", "no grant bound"} {
 		t.Run(name, func(t *testing.T) {
 			ctx := context.Background()
-			store := agent.NewMemStore()
+			store := agenttest.MemJournal()
 			var charged, undone atomic.Int32
 			charge := agent.CompensatedFunc("charge", "", agent.Safety{},
 				func(context.Context, struct{}) (string, error) { charged.Add(1); return "charged", nil },
 				func(context.Context, struct{}, string) error { undone.Add(1); return nil })
 			confirm := agent.Func("confirm", "", agent.Safety{ReadOnly: true},
 				func(context.Context, struct{}) (string, error) { return "ok", nil }, agent.WithApproval(agent.SingleApproval()))
-			sub := agent.New(agent.NewScriptedModel(agent.ToolTurn("s1", "charge", `{}`), agent.ToolTurn("s2", "confirm", `{}`), agent.TextTurn("done")), store, charge, confirm)
+			sub := agenttest.MustNew(
+				agent.NewScriptedModel(agent.ToolTurn("s1", "charge", `{}`), agent.ToolTurn("s2", "confirm", `{}`), agent.TextTurn("done")),
+				store,
+				agent.WithTools(charge, confirm),
+			)
 			exec := AttenuatingSubAgent("exec", "", sub, AttenuationConfig{Store: store, Narrow: narrowLimitBy(3), Rules: ScopeRules{"limit": NumericAtMost}})
-			parent := agent.New(agent.NewScriptedModel(agent.ToolTurn("c1", "exec", `{"task":"x"}`), agent.TextTurn("done")), store, exec)
+			parent := agenttest.MustNew(
+				agent.NewScriptedModel(agent.ToolTurn("c1", "exec", `{"task":"x"}`), agent.TextTurn("done")),
+				store,
+				agent.WithTools(exec),
+			)
 
 			_, priv, _ := ed25519.GenerateKey(rand.Reader)
 			signer := Ed25519Signer{Priv: priv}
@@ -79,25 +88,30 @@ func TestAdv117c_RefusedResumeLeavesSubRunChargeUnaccounted(t *testing.T) {
 func TestAdv117c_PreChangeUngrantedJournalCannotRollBack(t *testing.T) {
 	ctx := context.Background()
 	store := agent.NewMemStore()
+	j := agenttest.MustJournal(store)
 	var undone atomic.Int32
 	charge := agent.CompensatedFunc("charge", "", agent.Safety{},
 		func(context.Context, struct{}) (string, error) { return "charged", nil },
 		func(context.Context, struct{}, string) error { undone.Add(1); return nil })
-	build := func(authStore agent.Durable) *agent.Agent {
-		sub := agent.New(agent.NewScriptedModel(agent.ToolTurn("s1", "charge", `{}`), agent.TextTurn("done")), store, charge)
+	build := func(authStore *agent.Journal) *agent.Agent {
+		sub := agenttest.MustNew(
+			agent.NewScriptedModel(agent.ToolTurn("s1", "charge", `{}`), agent.TextTurn("done")),
+			j,
+			agent.WithTools(charge),
+		)
 		exec := AttenuatingSubAgent("exec", "", sub, AttenuationConfig{Store: authStore, Narrow: narrowLimitBy(3), Rules: ScopeRules{"limit": NumericAtMost}})
 		gate := agent.Func("gate", "", agent.Safety{ReadOnly: true}, func(context.Context, struct{}) (string, error) { return "ok", nil }, agent.WithApproval(agent.SingleApproval()))
 		boom := agent.Func("boom", "", agent.Safety{}, func(context.Context, struct{}) (string, error) { return "", errors.New("sold out") })
 		m := agent.NewScriptedModel(agent.ToolTurn("c1", "exec", `{"task":"pay"}`), agent.ToolTurn("c2", "gate", `{}`), agent.ToolTurn("c3", "boom", `{}`), agent.TextTurn("x"))
-		return agent.New(m, store, exec, gate, boom)
+		return agenttest.MustNew(m, j, agent.WithTools(exec, gate, boom))
 	}
-	if _, err := build(agent.NewMemStore()).RunSaga(ctx, "trip", "go"); !agent.IsPause(err) {
+	if _, err := build(agenttest.MemJournal()).RunSaga(ctx, "trip", "go"); !agent.IsPause(err) {
 		t.Fatalf("first drive (the old build): %v, want the approval pause", err)
 	}
-	if err := agent.Approve(ctx, store, "trip", "c2", true); err != nil {
+	if err := agent.Approve(ctx, j, "trip", "c2", true); err != nil {
 		t.Fatal(err)
 	}
-	_, err := build(store).RunSaga(ctx, "trip", "go") // the upgraded build
+	_, err := build(j).RunSaga(ctx, "trip", "go") // the upgraded build
 	// Documented break (CHANGELOG, delegation guide): such a journal cannot be rolled back, because
 	// its sub-run records no authority; the rollback stops rather than guess, and nothing is undone.
 	var ab *agent.SagaAborted
@@ -128,7 +142,7 @@ func TestAdv117c_ExpiredOrForeignGrantIsRefusedUnrecorded(t *testing.T) {
 	} {
 		t.Run(name, func(t *testing.T) {
 			ctx := context.Background()
-			store := agent.NewMemStore()
+			store := agenttest.MemJournal()
 			if tc.journal != nil {
 				g := *tc.journal
 				g.ParentRef = tc.root.Grant.Digest()
@@ -138,9 +152,17 @@ func TestAdv117c_ExpiredOrForeignGrantIsRefusedUnrecorded(t *testing.T) {
 				}
 			}
 			var ran atomic.Int32
-			sub := agent.New(agent.NewScriptedModel(agent.TextTurn("done")), store, agent.Func("noop", "", agent.Safety{}, func(context.Context, struct{}) (string, error) { ran.Add(1); return "", nil }))
+			sub := agenttest.MustNew(
+				agent.NewScriptedModel(agent.TextTurn("done")),
+				store,
+				agent.WithTools(agent.Func("noop", "", agent.Safety{}, func(context.Context, struct{}) (string, error) { ran.Add(1); return "", nil })),
+			)
 			exec := AttenuatingSubAgent("exec", "", sub, AttenuationConfig{Store: store, Narrow: narrowLimitBy(3), Rules: ScopeRules{"limit": NumericAtMost}})
-			parent := agent.New(agent.NewScriptedModel(agent.ToolTurn("c1", "exec", `{"task":"x"}`), agent.TextTurn("done")), store, exec)
+			parent := agenttest.MustNew(
+				agent.NewScriptedModel(agent.ToolTurn("c1", "exec", `{"task":"x"}`), agent.TextTurn("done")),
+				store,
+				agent.WithTools(exec),
+			)
 			_, err := parent.Run(WithGrant(ctx, tc.root, signer), "r", "go")
 			var result *agent.Record
 			recs, _ := store.History(ctx, "r")
@@ -177,10 +199,14 @@ func TestAdv117c_MintRefusesExpiredOrForeignChild(t *testing.T) {
 		},
 	} {
 		ctx := context.Background()
-		store := agent.NewMemStore()
-		sub := agent.New(agent.NewScriptedModel(agent.TextTurn("done")), store)
+		store := agenttest.MemJournal()
+		sub := agenttest.MustNew(agent.NewScriptedModel(agent.TextTurn("done")), store)
 		exec := AttenuatingSubAgent("exec", "", sub, AttenuationConfig{Store: store, Narrow: narrow, Rules: ScopeRules{"limit": NumericAtMost}})
-		parent := agent.New(agent.NewScriptedModel(agent.ToolTurn("c1", "exec", `{"task":"x"}`), agent.TextTurn("done")), store, exec)
+		parent := agenttest.MustNew(
+			agent.NewScriptedModel(agent.ToolTurn("c1", "exec", `{"task":"x"}`), agent.TextTurn("done")),
+			store,
+			agent.WithTools(exec),
+		)
 		_, err := parent.Run(WithGrant(ctx, root, signer), "r", "go")
 		recs, _ := store.History(ctx, agent.SubRunID("r", "c1"))
 		if len(recs) != 0 {

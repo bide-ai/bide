@@ -42,7 +42,7 @@ func retrievedRequest(t *testing.T, model agent.Model, docs agent.Retriever, inp
 			return next(ctx, call)
 		}
 	}
-	a, err := agent.Build(model, j, append(opts, agent.WithRetrieval(docs, 1), agent.WithMiddleware(capture))...)
+	a, err := agent.New(model, j, append(opts, agent.WithRetrieval(docs, 1), agent.WithMiddleware(capture))...)
 	if err != nil {
 		t.Fatal(err)
 	}

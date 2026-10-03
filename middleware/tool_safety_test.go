@@ -7,6 +7,7 @@ import (
 	"testing"
 
 	"github.com/bide-ai/bide/agent"
+	"github.com/bide-ai/bide/agent/agenttest"
 )
 
 // twoCharges asks for two separate $5 charges (two tool calls with identical arguments), then answers.
@@ -32,8 +33,13 @@ func TestToolRetry_DoesNotRetryANonIdempotentTool(t *testing.T) {
 		agent.ToolTurn("c1", "charge", `{"cents":500}`),
 		agent.TextTurn("done"),
 	)
-	store := agent.NewMemStore()
-	a := agent.New(m, store, charge).UseTool(ToolCache(), ToolRetry(3, WithBackoff(0, 0)))
+	store := agenttest.MemJournal()
+	a := agenttest.MustNew(
+		m,
+		store,
+		agent.WithTools(charge),
+		agent.WithToolMiddleware(ToolCache(), ToolRetry(3, WithBackoff(0, 0))),
+	)
 	if _, err := a.Run(context.Background(), "r1", "charge $5"); err != nil {
 		t.Fatal(err)
 	}
@@ -59,7 +65,12 @@ func TestToolCache_DoesNotCacheANonReadOnlyTool(t *testing.T) {
 		charged++
 		return "ok", nil
 	})
-	a := agent.New(twoCharges(), agent.NewMemStore(), charge).UseTool(ToolCache(), ToolRetry(3))
+	a := agenttest.MustNew(
+		twoCharges(),
+		agenttest.MemJournal(),
+		agent.WithTools(charge),
+		agent.WithToolMiddleware(ToolCache(), ToolRetry(3)),
+	)
 	if _, err := a.Run(context.Background(), "r1", "charge $5 twice"); err != nil {
 		t.Fatal(err)
 	}

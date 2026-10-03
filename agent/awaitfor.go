@@ -45,7 +45,7 @@ func AwaitFor[T any](ctx context.Context, name string, d time.Duration) (T, bool
 	// Journal the deadline once (at-most-once by name), computed as now()+d on the first
 	// encounter, so it is stable across resume and restart (same pattern as waitUntil).
 	now := clockFrom(ctx)
-	rec, err := dur.Do(ctx, runID, awaitTimeoutStep(name), func(context.Context) (Record, error) {
+	rec, err := dur.do(ctx, runID, awaitTimeoutStep(name), func(context.Context) (Record, error) {
 		b, err := marshalJournal(now().Add(d))
 		if err != nil {
 			return Record{}, fmt.Errorf("agent: encode deadline for %q: %w (%w)", name, err, ErrConfig)
@@ -63,7 +63,7 @@ func AwaitFor[T any](ctx context.Context, name string, d time.Duration) (T, bool
 	// Resolve the race once, durably. Do returns a recorded outcome without evaluating the race
 	// again. Otherwise the signal wins if it has been delivered, the timeout wins if the deadline
 	// has passed, and with neither nothing is recorded (errAwaitPending) and the run pauses.
-	rec, err = dur.Do(ctx, runID, awaitResolvedStep(name), func(ctx context.Context) (Record, error) {
+	rec, err = dur.do(ctx, runID, awaitResolvedStep(name), func(ctx context.Context) (Record, error) {
 		recs, err := dur.History(ctx, runID)
 		if err != nil {
 			return Record{}, fmt.Errorf("agent: awaitfor %q: %w (%w)", name, err, ErrStorage)

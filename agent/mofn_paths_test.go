@@ -9,14 +9,14 @@ import (
 
 // streamMofn drives one streamed run of a quorum-gated "charge" tool and returns every
 // ApprovalRequired event it emitted plus the Final result.
-func streamMofn(t *testing.T, store Durable, runID string, first bool, pol *ApprovalPolicy, vf ApproverVerifierFor, charged *int) ([]ApprovalRequired, Message, error) {
+func streamMofn(t *testing.T, store *Journal, runID string, first bool, pol *ApprovalPolicy, vf ApproverVerifierFor, charged *int) ([]ApprovalRequired, Message, error) {
 	t.Helper()
 	turns := [][]Emit{textTurn("done")}
 	if first {
 		turns = [][]Emit{toolTurn("c1", "charge", `{}`), textTurn("done")}
 	}
 	charge := &countingTool{name: "charge", approval: pol, calls: charged}
-	as := New(&scriptModel{turns: turns}, store, charge).WithApproverVerifiers(vf).Stream(context.Background(), runID, "pay")
+	as := mustNew(&scriptModel{turns: turns}, store, WithTools(charge), WithApproverVerifiers(vf)).Stream(context.Background(), runID, "pay")
 	var reqs []ApprovalRequired
 	for ev := range as.Events() {
 		if r, ok := ev.(ApprovalRequired); ok {
@@ -31,7 +31,7 @@ func streamMofn(t *testing.T, store Durable, runID string, first bool, pol *Appr
 // carrying the running tally (so a UI can show progress before Final), Final returns the
 // matching *PendingApproval, and the run proceeds exactly once at Need.
 func TestMofn_StreamEmitsTally(t *testing.T) {
-	store := NewMemStore()
+	store := memJournal()
 	pol := &ApprovalPolicy{Need: 2, Approvers: abc}
 	vf := fakeVerifiers(abc...)
 	var charged int
@@ -82,7 +82,11 @@ func TestMofn_StreamEmitsTally(t *testing.T) {
 func TestMofn_StreamOneOfOneHasNoTally(t *testing.T) {
 	var charged int
 	charge := &countingTool{name: "charge", approval: SingleApproval(), calls: &charged}
-	as := New(&scriptModel{turns: [][]Emit{toolTurn("c1", "charge", `{}`), textTurn("done")}}, NewMemStore(), charge).
+	as := mustNew(
+		&scriptModel{turns: [][]Emit{toolTurn("c1", "charge", `{}`), textTurn("done")}},
+		memJournal(),
+		WithTools(charge),
+	).
 		Stream(context.Background(), "s1", "pay")
 	var seen bool
 	for ev := range as.Events() {
@@ -108,18 +112,26 @@ func TestMofn_StreamOneOfOneHasNoTally(t *testing.T) {
 // out: re-signed correctly, it counts. At Need the parent completes and the tool runs once.
 func TestMofn_InsideSubAgent(t *testing.T) {
 	ctx := context.Background()
-	store := NewMemStore()
+	store := memJournal()
 	pol := &ApprovalPolicy{Need: 2, Approvers: abc}
 	vf := fakeVerifiers(abc...)
 	var charged int
 	charge := &countingTool{name: "charge", approval: pol, calls: &charged}
 	// The gate runs in the sub-agent, so the sub-agent carries the verifier resolver.
-	sub := New(&scriptModel{turns: [][]Emit{toolTurn("s1", "charge", `{}`), textTurn("sub-done")}}, store, charge).
-		WithApproverVerifiers(vf)
-	parent := New(&scriptModel{turns: [][]Emit{
-		toolTurn("c1", "worker", `{"task":"charge it"}`),
-		textTurn("parent-done"),
-	}}, store, SubAgent("worker", "does work", sub))
+	sub := mustNew(
+		&scriptModel{turns: [][]Emit{toolTurn("s1", "charge", `{}`), textTurn("sub-done")}},
+		store,
+		WithTools(charge),
+		WithApproverVerifiers(vf),
+	)
+	parent := mustNew(
+		&scriptModel{turns: [][]Emit{
+			toolTurn("c1", "worker", `{"task":"charge it"}`),
+			textTurn("parent-done"),
+		}},
+		store,
+		WithTools(SubAgent("worker", "does work", sub)),
+	)
 
 	_, err := parent.Run(ctx, "root", "delegate")
 	var pend *PendingApproval

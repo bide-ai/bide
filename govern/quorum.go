@@ -83,7 +83,7 @@ type QuorumResult struct {
 // The boundary, stated plainly: this returns a tally. The tally makes the k-of-n gate provable
 // once a caller wires VotesFor into an invariant; the agreement itself is statistical and never a
 // guarantee of correctness. Do not blur the two.
-func Quorum(ctx context.Context, store agent.Durable, runID, name string, k int, voters ...Voter) (QuorumResult, error) {
+func Quorum(ctx context.Context, store *agent.Journal, runID, name string, k int, voters ...Voter) (QuorumResult, error) {
 	cfg := quorumConfig{K: k, Voters: make([]string, len(voters))}
 	if name == "" || strings.Contains(name, "/") {
 		return QuorumResult{}, fmt.Errorf("govern: quorum name %q must be non-empty and contain no '/': %w", name, agent.ErrConfig)

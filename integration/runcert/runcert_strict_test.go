@@ -10,7 +10,9 @@ import (
 	"testing"
 
 	"github.com/bide-ai/bide/agent"
+	"github.com/bide-ai/bide/agent/agenttest"
 	"github.com/bide-ai/bide/audit"
+	"github.com/bide-ai/bide/internal/journaltest"
 )
 
 // strictRun journals a governed run whose policy and convergence leaves carry the given Result
@@ -19,7 +21,7 @@ import (
 func strictRun(t *testing.T, digest string, policyLeaf, convLeaf []byte) (audit.RunCertificate, ed25519.PublicKey) {
 	t.Helper()
 	ctx := context.Background()
-	store := agent.NewMemStore()
+	store := agenttest.MemJournal()
 	const runID = "run-strict"
 	for _, r := range []agent.Record{
 		{Name: "audit:policy:" + digest, Kind: agent.StepValue, Result: policyLeaf},
@@ -27,7 +29,7 @@ func strictRun(t *testing.T, digest string, policyLeaf, convLeaf []byte) (audit.
 		{Name: "action", Kind: agent.StepToolResult, ToolUseID: "call_1",
 			Result: []byte(`{"event":"approve","applied":true,"policy_digest":"` + digest + `"}`)},
 	} {
-		if _, err := store.Do(ctx, runID, r.Name, func(context.Context) (agent.Record, error) { return r, nil }); err != nil {
+		if _, err := journaltest.Do(ctx, store, runID, r.Name, func(context.Context) (agent.Record, error) { return r, nil }); err != nil {
 			t.Fatal(err)
 		}
 	}

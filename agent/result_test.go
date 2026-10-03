@@ -37,7 +37,7 @@ func TestRunResult_TwoTurnAccumulatesUsage(t *testing.T) {
 		toolTurnWithUsage("c1", "lookup", `{"q":"x"}`, u1),
 		textTurnWithUsage("final answer", u2),
 	}}
-	a := New(m, NewMemStore(), tool)
+	a := mustNew(m, memJournal(), WithTools(tool))
 
 	res, err := a.RunResult(context.Background(), "run-result-1", "hi")
 	if err != nil {
@@ -86,8 +86,8 @@ func TestRunResult_TwoTurnAccumulatesUsage(t *testing.T) {
 // message for an identical run, confirming backward compatibility.
 func TestRunResult_MessageMatchesRun(t *testing.T) {
 	u := Usage{InputTokens: 5, OutputTokens: 3}
-	store1 := NewMemStore()
-	store2 := NewMemStore()
+	store1 := memJournal()
+	store2 := memJournal()
 	var calls1, calls2 int
 	tool1 := &countingTool{name: "lookup", safety: Safety{ReadOnly: true}, calls: &calls1}
 	tool2 := &countingTool{name: "lookup", safety: Safety{ReadOnly: true}, calls: &calls2}
@@ -100,13 +100,13 @@ func TestRunResult_MessageMatchesRun(t *testing.T) {
 	}
 
 	m1 := &scriptModel{turns: turns()}
-	plainMsg, err := New(m1, store1, tool1).Run(context.Background(), "r1", "hi")
+	plainMsg, err := mustNew(m1, store1, WithTools(tool1)).Run(context.Background(), "r1", "hi")
 	if err != nil {
 		t.Fatalf("Run: %v", err)
 	}
 
 	m2 := &scriptModel{turns: turns()}
-	res, err := New(m2, store2, tool2).RunResult(context.Background(), "r2", "hi")
+	res, err := mustNew(m2, store2, WithTools(tool2)).RunResult(context.Background(), "r2", "hi")
 	if err != nil {
 		t.Fatalf("RunResult: %v", err)
 	}
@@ -120,7 +120,7 @@ func TestRunResult_MessageMatchesRun(t *testing.T) {
 func TestRunResult_SingleTurnNoTools(t *testing.T) {
 	u := Usage{InputTokens: 7, OutputTokens: 4}
 	m := &scriptModel{turns: [][]Emit{textTurnWithUsage("hello", u)}}
-	a := New(m, NewMemStore())
+	a := mustNew(m, memJournal())
 
 	res, err := a.RunResult(context.Background(), "single", "hi")
 	if err != nil {

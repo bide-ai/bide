@@ -48,7 +48,7 @@ func TestRev117e_T4_SiblingInvocationStillRunning(t *testing.T) {
 	})
 	fail := Func("fail", "", Safety{}, func(context.Context, struct{}) (string, error) { return "", errors.New("declined") })
 	m := NewScriptedModel(ToolTurn("c1", "charge", `{}`), ToolTurn("c2", "fail", `{}`), TextTurn("done"))
-	_, err := New(m, NewMemStore(), charge, fail).UseTool(hedge).RunSaga(context.Background(), "r", "go")
+	_, err := mustNew(m, memJournal(), WithTools(charge, fail), WithToolMiddleware(hedge)).RunSaga(context.Background(), "r", "go")
 	close(release)
 	<-finished
 	var ab *SagaAborted
@@ -89,8 +89,13 @@ func TestRev117e_T4_EarlierDriveInvocationStillRunning(t *testing.T) {
 		}
 	})
 	fail := Func("fail", "", Safety{}, func(context.Context, struct{}) (string, error) { return "", errors.New("declined") })
-	st := NewMemStore()
-	a := New(NewScriptedModel(ToolTurn("c1", "charge", `{}`), ToolTurn("c2", "fail", `{}`), TextTurn("done")), st, charge, fail).UseTool(leak)
+	st := memJournal()
+	a := mustNew(
+		NewScriptedModel(ToolTurn("c1", "charge", `{}`), ToolTurn("c2", "fail", `{}`), TextTurn("done")),
+		st,
+		WithTools(charge, fail),
+		WithToolMiddleware(leak),
+	)
 	if _, err := a.RunSaga(ctx1, "r", "go"); err == nil {
 		t.Fatal("first drive: want the cancellation")
 	}
@@ -129,27 +134,28 @@ func TestRev117e_T4_RollbackRerunCacheAnswerIsUnknown(t *testing.T) {
 			return next(ctx, call)
 		}
 	})
-	_, err := New(t4TwoCalls{}, NewMemStore(), charge, fail).UseTool(cache).RunSaga(context.Background(), "r", "go")
+	_, err := mustNew(t4TwoCalls{}, memJournal(), WithTools(charge, fail), WithToolMiddleware(cache)).RunSaga(context.Background(), "r", "go")
 	var ab *SagaAborted
 	if !errors.As(err, &ab) || !slices.Contains(ab.UnknownOutcome, "charge") || refunded.Load() != 0 {
 		t.Fatalf("RunSaga = %v (refunded %d); want charge listed as unknown and not compensated", err, refunded.Load())
 	}
 }
 
-// secondArgsGate holds the second Do of c1's saga-arguments record (the second invocation's) until
-// release is closed.
+// secondArgsGate holds the second write of c1's saga-arguments record (the second invocation's)
+// until release is closed. Each write starts with a read of the record (the journal reads a step
+// before it runs it), so the gate is on the second Get.
 type secondArgsGate struct {
 	*MemStore
 	n                int32
 	writing, release chan struct{}
 }
 
-func (s *secondArgsGate) Do(ctx context.Context, runID, name string, fn func(context.Context) (Record, error)) (Record, error) {
+func (s *secondArgsGate) Get(ctx context.Context, runID, name string) (Entry, bool, error) {
 	if name == sagaArgsStep("c1") && atomic.AddInt32(&s.n, 1) == 2 {
 		close(s.writing)
 		<-s.release
 	}
-	return s.MemStore.Do(ctx, runID, name, fn)
+	return s.MemStore.Get(ctx, runID, name)
 }
 
 // T5's window: a second invocation of a retry-safe write reaches the call while the chain runs, and
@@ -161,6 +167,7 @@ func TestRev117e_T5_ReachedBeforeCloseBeginsAfter(t *testing.T) {
 		func(context.Context, struct{}) (string, error) { charges.Add(1); return "ok", nil },
 		func(context.Context, struct{}, string) error { return nil })
 	store := &secondArgsGate{MemStore: NewMemStore(), writing: make(chan struct{}), release: make(chan struct{})}
+	j := mustJournal(store)
 	second := make(chan error, 1)
 	leak := ToolMiddleware(func(next ToolHandler) ToolHandler {
 		return func(ctx context.Context, call ToolCall) (json.RawMessage, error) {
@@ -171,7 +178,7 @@ func TestRev117e_T5_ReachedBeforeCloseBeginsAfter(t *testing.T) {
 		}
 	})
 	m := NewScriptedModel(ToolTurn("c1", "charge", `{}`), TextTurn("done"))
-	if _, err := New(m, store, charge).UseTool(leak).RunSaga(context.Background(), "r", "go"); err != nil {
+	if _, err := mustNew(m, j, WithTools(charge), WithToolMiddleware(leak)).RunSaga(context.Background(), "r", "go"); err != nil {
 		t.Fatal(err)
 	}
 	close(store.release)
@@ -209,7 +216,12 @@ func TestRev117e_T4_OwnFailureWhileEarlierInvocationRuns(t *testing.T) {
 			return nil, ctx.Err()
 		}
 	})
-	a := New(NewScriptedModel(ToolTurn("c1", "write", `{}`), TextTurn("done")), NewMemStore(), write).UseTool(leak)
+	a := mustNew(
+		NewScriptedModel(ToolTurn("c1", "write", `{}`), TextTurn("done")),
+		memJournal(),
+		WithTools(write),
+		WithToolMiddleware(leak),
+	)
 	if _, err := a.RunSaga(ctx1, "r", "go"); err == nil {
 		t.Fatal("first drive: want the cancellation")
 	}
@@ -233,9 +245,12 @@ func TestRev117e_T4_InflightIsPerStore(t *testing.T) {
 	})
 	fast := Func("send", "", Safety{}, func(context.Context, struct{}) (string, error) { return "ok", nil })
 	m := func() Model { return NewScriptedModel(ToolTurn("c1", "send", `{}`), TextTurn("done")) }
-	go func() { _, err := New(m(), NewMemStore(), slow).Run(context.Background(), "r", "go"); done <- err }()
+	go func() {
+		_, err := mustNew(m(), memJournal(), WithTools(slow)).Run(context.Background(), "r", "go")
+		done <- err
+	}()
 	<-inTool
-	_, err := New(m(), NewMemStore(), fast).Run(context.Background(), "r", "go")
+	_, err := mustNew(m(), memJournal(), WithTools(fast)).Run(context.Background(), "r", "go")
 	close(release)
 	if err != nil {
 		t.Fatalf("Run on another store = %v; a call of the same run ID elsewhere is not this call", err)

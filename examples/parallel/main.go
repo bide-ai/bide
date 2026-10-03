@@ -25,7 +25,10 @@ type Check struct {
 
 func main() {
 	ctx := context.Background()
-	store := agent.NewMemStore()
+	store, err := agent.NewJournal(agent.NewMemStore())
+	if err != nil {
+		log.Fatal(err)
+	}
 
 	// Each Task has a unique Name (its durable memoization key within the run) and a Fn
 	// returning a T. Here T is Check. Each task runs on a goroutine of its own; pass

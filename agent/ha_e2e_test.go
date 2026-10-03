@@ -16,6 +16,7 @@ import (
 func TestHA_MutualExclusionUnderConcurrency(t *testing.T) {
 	ctx := context.Background()
 	s := NewMemStore()
+	j := mustJournal(s)
 	runIDs := []string{"r0", "r1", "r2", "r3", "r4"}
 	for _, r := range runIDs {
 		seedRun(t, s, r)
@@ -33,7 +34,7 @@ func TestHA_MutualExclusionUnderConcurrency(t *testing.T) {
 			}
 			time.Sleep(time.Millisecond) // widen the window so a lease failure would overlap
 			atomic.StoreInt32(f, 0)
-			_, _ = s.Do(ctx, runID, runCompleteStep, func(context.Context) (Record, error) {
+			_, _ = j.do(ctx, runID, runCompleteStep, func(context.Context) (Record, error) {
 				return Record{Kind: StepValue}, nil
 			})
 			return nil
@@ -57,12 +58,12 @@ func TestHA_MutualExclusionUnderConcurrency(t *testing.T) {
 			for {
 				allDone := true
 				for _, r := range runIDs {
-					done, _ := IsComplete(ctx, s, r)
+					done, _ := IsComplete(ctx, j, r)
 					if done {
 						continue
 					}
 					allDone = false
-					_, _ = Lease(ctx, s, r, drive(r), WithLeaseHolder(holder), WithLeaseTTL(time.Second))
+					_, _ = Lease(ctx, j, r, drive(r), WithLeaseHolder(holder), WithLeaseTTL(time.Second))
 				}
 				if allDone {
 					return
@@ -81,7 +82,7 @@ func TestHA_MutualExclusionUnderConcurrency(t *testing.T) {
 		t.Fatalf("%d concurrent drives of the same run: the lease failed to exclude", v)
 	}
 	for _, r := range runIDs {
-		if done, _ := IsComplete(ctx, s, r); !done {
+		if done, _ := IsComplete(ctx, j, r); !done {
 			t.Fatalf("run %s never completed", r)
 		}
 	}
@@ -93,6 +94,7 @@ func TestHA_MutualExclusionUnderConcurrency(t *testing.T) {
 func TestHA_CrashTakeover(t *testing.T) {
 	ctx := context.Background()
 	s := NewMemStore()
+	j := mustJournal(s)
 	clk := time.Unix(1000, 0)
 	s.setNow(func() time.Time { return clk })
 	ttl := time.Minute
@@ -106,7 +108,7 @@ func TestHA_CrashTakeover(t *testing.T) {
 	clk = clk.Add(2 * ttl) // A crashed: it never renewed, so its lease expires
 
 	driven := false
-	took, err := Lease(ctx, s, "x", func(context.Context) error { driven = true; return nil },
+	took, err := Lease(ctx, j, "x", func(context.Context) error { driven = true; return nil },
 		WithLeaseHolder("B"), WithLeaseTTL(ttl))
 	if err != nil || !took || !driven {
 		t.Fatalf("B should take over A's expired lease (took=%v driven=%v err=%v)", took, driven, err)
@@ -119,15 +121,16 @@ func TestHA_CrashTakeover(t *testing.T) {
 func TestHA_AtMostOnceUnderConcurrentDriving(t *testing.T) {
 	ctx := context.Background()
 	s := NewMemStore()
+	j := mustJournal(s)
 	seedRun(t, s, "run")
 
 	var charges int32
 	drive := func(ctx context.Context) error {
-		_, _ = s.Do(ctx, "run", "charge", func(context.Context) (Record, error) {
+		_, _ = j.do(ctx, "run", "charge", func(context.Context) (Record, error) {
 			atomic.AddInt32(&charges, 1) // the non-idempotent side effect
 			return Record{Kind: StepValue}, nil
 		})
-		_, _ = s.Do(ctx, "run", runCompleteStep, func(context.Context) (Record, error) {
+		_, _ = j.do(ctx, "run", runCompleteStep, func(context.Context) (Record, error) {
 			return Record{Kind: StepValue}, nil
 		})
 		return nil
@@ -141,10 +144,10 @@ func TestHA_AtMostOnceUnderConcurrentDriving(t *testing.T) {
 			defer wg.Done()
 			holder := fmt.Sprintf("w%d", id)
 			for iter := 0; iter < 1000; iter++ {
-				if done, _ := IsComplete(ctx, s, "run"); done {
+				if done, _ := IsComplete(ctx, j, "run"); done {
 					return
 				}
-				_, _ = Lease(ctx, s, "run", drive, WithLeaseHolder(holder), WithLeaseTTL(time.Second))
+				_, _ = Lease(ctx, j, "run", drive, WithLeaseHolder(holder), WithLeaseTTL(time.Second))
 			}
 		}(w)
 	}
@@ -153,7 +156,7 @@ func TestHA_AtMostOnceUnderConcurrentDriving(t *testing.T) {
 	if c := atomic.LoadInt32(&charges); c != 1 {
 		t.Fatalf("charge fired %d times under concurrent HA driving, want exactly 1", c)
 	}
-	if done, _ := IsComplete(ctx, s, "run"); !done {
+	if done, _ := IsComplete(ctx, j, "run"); !done {
 		t.Fatal("run never completed")
 	}
 }

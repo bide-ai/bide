@@ -21,6 +21,7 @@ import (
 	"time"
 
 	"github.com/bide-ai/bide/agent"
+	"github.com/bide-ai/bide/agent/agenttest"
 )
 
 type cDrvKey struct{}
@@ -557,7 +558,7 @@ func cSubjects() []cSubject {
 			}
 			charge := agent.Func("charge", "", agent.Safety{Idempotent: rs}, func(ctx context.Context, _ struct{}) (string, error) { return p.fire(ctx) })
 			m := agent.NewScriptedModel(agent.ToolTurn("c1", "charge", `{}`), agent.TextTurn("done"))
-			msg, err := agent.New(m, j, charge).SetMaxConcurrency(1).Run(ctx, runID, "hi")
+			msg, err := agenttest.MustNew(m, j, agent.WithTools(charge), agent.WithMaxConcurrency(1)).Run(ctx, runID, "hi")
 			return msg.Text(), err
 		}
 	}

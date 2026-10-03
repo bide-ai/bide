@@ -33,7 +33,7 @@ func TestModel9_T1_SagaStepWhoseSuccessAMiddlewareRejectedIsNotAccounted(t *test
 		}
 	})
 	m := NewScriptedModel(ToolTurn("c1", "charge", `{}`), TextTurn("done"))
-	_, err := New(m, NewMemStore(), charge).UseTool(check).RunSaga(context.Background(), "r", "go")
+	_, err := mustNew(m, memJournal(), WithTools(charge), WithToolMiddleware(check)).RunSaga(context.Background(), "r", "go")
 	var ab *SagaAborted
 	if !errors.As(err, &ab) {
 		// The other sound answer: the run halts for the step's outcome, recording nothing.
@@ -70,9 +70,9 @@ func TestModel9_T1_RetryAfterAnUnknownOutcomeRecordsAKnownFailure(t *testing.T) 
 			return res, err
 		}
 	})
-	store := NewMemStore()
+	store := memJournal()
 	m := NewScriptedModel(ToolTurn("c1", "charge", `{}`), TextTurn("done"))
-	_, err := New(m, store, charge).UseTool(retry).Run(context.Background(), "r", "go")
+	_, err := mustNew(m, store, WithTools(charge), WithToolMiddleware(retry)).Run(context.Background(), "r", "go")
 	r, ok := hasStep(t, store, "r", ToolResultStep("c1"))
 	if charged.Load() == 1 && ok && r.IsError {
 		t.Fatalf("the effect fired, its outcome was unknown, and the journal records a known failure %s (run err %v)", r.Result, err)
@@ -85,11 +85,11 @@ type argsFailStore struct {
 	failed atomic.Bool
 }
 
-func (s *argsFailStore) Do(ctx context.Context, runID, name string, fn func(context.Context) (Record, error)) (Record, error) {
+func (s *argsFailStore) Insert(ctx context.Context, runID, name string, data []byte) (Entry, bool, error) {
 	if name == sagaArgsStep("c1") && s.failed.CompareAndSwap(false, true) {
-		return Record{}, errors.New("store unavailable")
+		return Entry{}, false, errors.New("store unavailable")
 	}
-	return s.MemStore.Do(ctx, runID, name, fn)
+	return s.MemStore.Insert(ctx, runID, name, data)
 }
 
 // T2: round 4's fix (c) marks a call as run only once it is reached, but the mark still comes
@@ -112,9 +112,9 @@ func TestModel9_T2_FailedArgsWriteThenRetryRecordsAlreadyRan(t *testing.T) {
 			return res, err
 		}
 	})
-	store := &argsFailStore{MemStore: NewMemStore()}
+	store := mustJournal(&argsFailStore{MemStore: NewMemStore()})
 	m := NewScriptedModel(ToolTurn("c1", "charge", `{"amount":5}`), TextTurn("done"))
-	_, _ = New(m, store, charge).UseTool(retry, scaleCharge).RunSaga(context.Background(), "r", "go")
+	_, _ = mustNew(m, store, WithTools(charge), WithToolMiddleware(retry, scaleCharge)).RunSaga(context.Background(), "r", "go")
 	recs, _ := store.History(context.Background(), "r")
 	for _, r := range recs {
 		if r.ToolUseID == "c1" && (r.Kind == StepSagaFail || r.Kind == StepToolResult) && strings.Contains(string(r.Result), "already ran") {
@@ -135,9 +135,9 @@ func TestModel9_RetrySafeRejectedSuccessIsAnOrdinaryFailure(t *testing.T) {
 			return nil, errors.New("result failed validation")
 		}
 	})
-	store := NewMemStore()
+	store := memJournal()
 	m := NewScriptedModel(ToolTurn("c1", "lookup", `{}`), TextTurn("done"))
-	if _, err := New(m, store, lookup).UseTool(check).Run(context.Background(), "r", "go"); err != nil {
+	if _, err := mustNew(m, store, WithTools(lookup), WithToolMiddleware(check)).Run(context.Background(), "r", "go"); err != nil {
 		t.Fatalf("Run: %v", err)
 	}
 	r, ok := hasStep(t, store, "r", ToolResultStep("c1"))

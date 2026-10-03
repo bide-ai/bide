@@ -6,6 +6,7 @@ import (
 	"testing"
 
 	"github.com/bide-ai/bide/agent"
+	"github.com/bide-ai/bide/agent/agenttest"
 )
 
 // buildTriage builds a small switched flow shaped like the example, so the digest
@@ -117,7 +118,7 @@ func TestDigestChangesOnBoundaryType(t *testing.T) {
 // commits to.
 func TestRunJournalsDigest(t *testing.T) {
 	flow := buildTriage(t, "triage")
-	mem := agent.NewMemStore()
+	mem := agenttest.MemJournal()
 	ctx := context.Background()
 	if _, err := flow.Run(ctx, mem, "digest-run", 1); err != nil {
 		t.Fatalf("Run: %v", err)
@@ -146,7 +147,7 @@ func TestRunJournalsDigest(t *testing.T) {
 // divergence and the topologies match.
 func TestConformDigestMatch(t *testing.T) {
 	flow := buildTriage(t, "triage")
-	mem := agent.NewMemStore()
+	mem := agenttest.MemJournal()
 	ctx := context.Background()
 	if _, err := flow.Run(ctx, mem, "match", 1); err != nil {
 		t.Fatalf("Run: %v", err)
@@ -166,7 +167,7 @@ func TestConformDigestMatch(t *testing.T) {
 // digest, then conforms a DIFFERENT flow (a different topology) against that journal.
 func TestConformDigestMismatch(t *testing.T) {
 	ran := buildTriage(t, "triage")
-	mem := agent.NewMemStore()
+	mem := agenttest.MemJournal()
 	ctx := context.Background()
 	if _, err := ran.Run(ctx, mem, "mismatch", 1); err != nil {
 		t.Fatalf("Run: %v", err)

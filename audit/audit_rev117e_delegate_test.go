@@ -7,12 +7,15 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"iter"
 	"strings"
 	"sync/atomic"
 	"testing"
 	"time"
 
 	"github.com/bide-ai/bide/agent"
+	"github.com/bide-ai/bide/agent/agenttest"
+	"github.com/bide-ai/bide/internal/journaltest"
 )
 
 // rev117eMultiModel emits several tool calls in its first turn, then a final answer.
@@ -79,22 +82,31 @@ var rev117eRules = ScopeRules{"limit": NumericAtMost}
 func TestRev117e_UnrecordedHidesDeepHaltInSaga(t *testing.T) {
 	run := func(t *testing.T, notAfter int64) (int32, error) {
 		ctx := context.Background()
-		store := agent.NewMemStore()
+		store := agenttest.MemJournal()
 		signer := rev117eSigner(t)
 		ctx = WithGrant(ctx, rev117eRoot(t, signer, notAfter), signer)
-		deleg := AttenuatingSubAgent("deleg", "d", agent.New(answerModel{text: "ok"}, store),
+		deleg := AttenuatingSubAgent("deleg", "d", agenttest.MustNew(answerModel{text: "ok"}, store),
 			AttenuationConfig{Store: store, Narrow: narrowLimitBy(1), Rules: rev117eRules})
 		lost := agent.Func("lost", "outcome lost", agent.Safety{}, func(context.Context, struct{}) (string, error) {
 			return "", fmt.Errorf("connection dropped after send: %w", agent.ErrToolOutcomeUnknown)
 		})
-		inner := agent.New(rev117eMultiModel{calls: [][2]string{{"i1", "deleg"}, {"i2", "lost"}}}, store, deleg, lost).SetMaxConcurrency(1) // deleg refuses first, then lost halts
+		inner := agenttest.MustNew(
+			rev117eMultiModel{calls: [][2]string{{"i1", "deleg"}, {"i2", "lost"}}},
+			store,
+			agent.WithTools(deleg, lost),
+			agent.WithMaxConcurrency(1),
+		) // deleg refuses first, then lost halts
 		var side atomic.Int32
 		sideTool := agent.Func("side", "a later step", agent.Safety{}, func(context.Context, struct{}) (string, error) {
 			side.Add(1)
 			return "ok", nil
 		})
-		parent := agent.New(rev117eMultiModel{calls: [][2]string{{"c1", "inner"}, {"c2", "side"}}}, store,
-			agent.SubAgent("inner", "i", inner), sideTool).SetMaxConcurrency(1)
+		parent := agenttest.MustNew(
+			rev117eMultiModel{calls: [][2]string{{"c1", "inner"}, {"c2", "side"}}},
+			store,
+			agent.WithTools(agent.SubAgent("inner", "i", inner), sideTool),
+			agent.WithMaxConcurrency(1),
+		)
 		_, err := parent.RunSaga(ctx, "p", "go")
 		return side.Load(), err
 	}
@@ -113,18 +125,22 @@ func TestRev117e_UnrecordedHidesDeepHaltInSaga(t *testing.T) {
 	})
 }
 
-// rev117eFlakyStore fails History once for one run with a storage error.
+// rev117eFlakyStore fails a load of one run once with a storage error.
 type rev117eFlakyStore struct {
-	agent.Durable
+	agent.Store
 	run   string
 	fails atomic.Int32
 }
 
-func (s *rev117eFlakyStore) History(ctx context.Context, runID string) ([]agent.Record, error) {
+func (s *rev117eFlakyStore) Unwrap() agent.Store { return s.Store }
+
+func (s *rev117eFlakyStore) Load(ctx context.Context, runID string, after int64) iter.Seq2[agent.Entry, error] {
 	if runID == s.run && s.fails.Add(-1) >= 0 {
-		return nil, fmt.Errorf("transient read failure: %w", agent.ErrStorage)
+		return func(yield func(agent.Entry, error) bool) {
+			yield(agent.Entry{}, fmt.Errorf("transient read failure: %w", agent.ErrStorage))
+		}
 	}
-	return s.Durable.History(ctx, runID)
+	return s.Store.Load(ctx, runID, after)
 }
 
 // A transient storage failure reading the sub-run's journaled authority is recorded as the
@@ -135,20 +151,25 @@ func TestRev117e_StorageReadFailureRecordedAsDelegationFailure(t *testing.T) {
 		t.Run(fmt.Sprintf("grant=%v", withGrant), func(t *testing.T) {
 			ctx := context.Background()
 			store := agent.NewMemStore()
-			flaky := &rev117eFlakyStore{Durable: store, run: agent.SubRunID("p", "c1")}
+			j := agenttest.MustJournal(store)
+			flaky := &rev117eFlakyStore{Store: store, run: agent.SubRunID("p", "c1")}
 			flaky.fails.Store(1)
 			if withGrant {
 				signer := rev117eSigner(t)
 				ctx = WithGrant(ctx, rev117eRoot(t, signer, 0), signer)
 			}
 			var subCalls atomic.Int32
-			deleg := AttenuatingSubAgent("deleg", "d", agent.New(rev117eCountModel{n: &subCalls}, store),
-				AttenuationConfig{Store: flaky, Narrow: narrowLimitBy(1), Rules: rev117eRules})
-			parent := agent.New(agent.NewScriptedModel(agent.ToolTurn("c1", "deleg", `{"task":"go"}`), agent.TextTurn("done")), store, deleg)
+			deleg := AttenuatingSubAgent("deleg", "d", agenttest.MustNew(rev117eCountModel{n: &subCalls}, j),
+				AttenuationConfig{Store: agenttest.MustJournal(flaky), Narrow: narrowLimitBy(1), Rules: rev117eRules})
+			parent := agenttest.MustNew(
+				agent.NewScriptedModel(agent.ToolTurn("c1", "deleg", `{"task":"go"}`), agent.TextTurn("done")),
+				j,
+				agent.WithTools(deleg),
+			)
 			_, err1 := parent.Run(ctx, "p", "go")
 			_, err2 := parent.Run(ctx, "p", "go") // resume once the store is healthy
 			if subCalls.Load() == 0 {
-				recs, _ := store.History(ctx, "p")
+				recs, _ := j.History(ctx, "p")
 				var res string
 				for _, r := range recs {
 					if r.Kind == agent.StepToolResult && r.ToolUseID == "c1" {
@@ -168,21 +189,25 @@ func TestRev117e_StorageReadFailureRecordedAsDelegationFailure(t *testing.T) {
 // to the new grant.
 func TestRev117e_GrantMintedOntoSubRunWithoutAuthority(t *testing.T) {
 	ctx := context.Background()
-	store := agent.NewMemStore()
+	store := agenttest.MemJournal()
 	subRun := agent.SubRunID("p", "c1")
-	if _, err := store.Do(ctx, subRun, "legacy-step", func(context.Context) (agent.Record, error) {
+	if _, err := journaltest.Do(ctx, store, subRun, "legacy-step", func(context.Context) (agent.Record, error) {
 		return agent.Record{Kind: agent.StepValue, Result: json.RawMessage(`"x"`)}, nil
 	}); err != nil {
 		t.Fatal(err)
 	}
 	signer := rev117eSigner(t)
 	ctx = WithGrant(ctx, rev117eRoot(t, signer, 0), signer)
-	tool := AttenuatingSubAgent("deleg", "d", agent.New(answerModel{text: "ok"}, store),
+	tool := AttenuatingSubAgent("deleg", "d", agenttest.MustNew(answerModel{text: "ok"}, store),
 		AttenuationConfig{Store: store, Narrow: narrowLimitBy(1), Rules: rev117eRules}).(*attenuatingSubAgent)
 	if _, err := tool.BindRollback(ctx, subRun); !errors.Is(err, agent.ErrProtocol) {
 		t.Fatalf("precondition: BindRollback = %v, want ErrProtocol", err)
 	}
-	parent := agent.New(agent.NewScriptedModel(agent.ToolTurn("c1", "deleg", `{"task":"go"}`), agent.TextTurn("done")), store, tool)
+	parent := agenttest.MustNew(
+		agent.NewScriptedModel(agent.ToolTurn("c1", "deleg", `{"task":"go"}`), agent.TextTurn("done")),
+		store,
+		agent.WithTools(tool),
+	)
 	_, err := parent.Run(ctx, "p", "go")
 	if err == nil || !errors.Is(err, agent.ErrConfig) {
 		g, _, _, _ := tool.journaledAuthority(ctx, subRun)
@@ -196,7 +221,7 @@ func TestRev117e_GrantMintedOntoSubRunWithoutAuthority(t *testing.T) {
 // subject's grant, an identity whose actor is not the grant's subject.
 func TestRev117e_BindRollbackAcceptsForeignSubject(t *testing.T) {
 	ctx := context.Background()
-	store := agent.NewMemStore()
+	store := agenttest.MemJournal()
 	signer := rev117eSigner(t)
 	root := rev117eRoot(t, signer, 0)
 	ctx = WithGrant(ctx, root, signer)
@@ -208,9 +233,13 @@ func TestRev117e_BindRollbackAcceptsForeignSubject(t *testing.T) {
 	if _, err := RecordGrant(ctx, store, subRun, foreign); err != nil {
 		t.Fatal(err)
 	}
-	tool := AttenuatingSubAgent("deleg", "d", agent.New(answerModel{text: "ok"}, store),
+	tool := AttenuatingSubAgent("deleg", "d", agenttest.MustNew(answerModel{text: "ok"}, store),
 		AttenuationConfig{Store: store, Narrow: narrowLimitBy(1), Rules: rev117eRules}).(*attenuatingSubAgent)
-	parent := agent.New(agent.NewScriptedModel(agent.ToolTurn("c1", "deleg", `{"task":"go"}`), agent.TextTurn("done")), store, tool)
+	parent := agenttest.MustNew(
+		agent.NewScriptedModel(agent.ToolTurn("c1", "deleg", `{"task":"go"}`), agent.TextTurn("done")),
+		store,
+		agent.WithTools(tool),
+	)
 	if _, err := parent.Run(ctx, "p", "go"); err != nil {
 		t.Logf("Run: %v", err)
 	}
@@ -233,7 +262,7 @@ func TestRev117e_BindRollbackAcceptsForeignSubject(t *testing.T) {
 // or the ungranted marker's name is not what RecordGrant or the marker wrote.
 func TestRev117e_JournaledAuthorityValueRecordsOnly(t *testing.T) {
 	ctx := context.Background()
-	store := agent.NewMemStore()
+	store := agenttest.MemJournal()
 	signer := rev117eSigner(t)
 	subRun := agent.SubRunID("p", "c1")
 	sg := rev117eRoot(t, signer, 0)
@@ -242,13 +271,13 @@ func TestRev117e_JournaledAuthorityValueRecordsOnly(t *testing.T) {
 		t.Fatal(err)
 	}
 	for _, name := range []string{grantLeafName(sg.Grant.Digest()), ungrantedLeafName} {
-		if _, err := store.Do(ctx, subRun, name, func(context.Context) (agent.Record, error) {
+		if _, err := journaltest.Do(ctx, store, subRun, name, func(context.Context) (agent.Record, error) {
 			return agent.Record{Kind: agent.StepSignal, Result: b}, nil
 		}); err != nil {
 			t.Fatal(err)
 		}
 	}
-	tool := AttenuatingSubAgent("deleg", "d", agent.New(answerModel{text: "ok"}, store),
+	tool := AttenuatingSubAgent("deleg", "d", agenttest.MustNew(answerModel{text: "ok"}, store),
 		AttenuationConfig{Store: store, Narrow: narrowLimitBy(1), Rules: rev117eRules}).(*attenuatingSubAgent)
 	g, ungranted, any, err := tool.journaledAuthority(ctx, subRun)
 	if err != nil || g != nil || ungranted || !any {
@@ -256,18 +285,21 @@ func TestRev117e_JournaledAuthorityValueRecordsOnly(t *testing.T) {
 	}
 }
 
-// rev117eFlakyDoStore fails one Do whose step name has prefix, once, with a storage error.
+// rev117eFlakyDoStore fails one insert whose step name has prefix, once, with a storage error,
+// before the insert reaches the store.
 type rev117eFlakyDoStore struct {
-	agent.Durable
+	agent.Store
 	prefix string
 	fails  atomic.Int32
 }
 
-func (s *rev117eFlakyDoStore) Do(ctx context.Context, runID, name string, fn func(context.Context) (agent.Record, error)) (agent.Record, error) {
+func (s *rev117eFlakyDoStore) Unwrap() agent.Store { return s.Store }
+
+func (s *rev117eFlakyDoStore) Insert(ctx context.Context, runID, name string, data []byte) (agent.Entry, bool, error) {
 	if strings.HasPrefix(name, s.prefix) && s.fails.Add(-1) >= 0 {
-		return agent.Record{}, fmt.Errorf("transient write failure: %w", agent.ErrStorage)
+		return agent.Entry{}, false, fmt.Errorf("transient write failure: %w", agent.ErrStorage)
 	}
-	return s.Durable.Do(ctx, runID, name, fn)
+	return s.Store.Insert(ctx, runID, name, data)
 }
 
 // A failure writing the delegation's authority (the child grant, or the ungranted marker) records
@@ -277,7 +309,8 @@ func TestRev117e_StorageWriteFailureRecordsNothing(t *testing.T) {
 		t.Run(fmt.Sprintf("grant=%v", withGrant), func(t *testing.T) {
 			ctx := context.Background()
 			store := agent.NewMemStore()
-			flaky := &rev117eFlakyDoStore{Durable: store, prefix: ungrantedLeafName}
+			j := agenttest.MustJournal(store)
+			flaky := &rev117eFlakyDoStore{Store: store, prefix: ungrantedLeafName}
 			if withGrant {
 				signer := rev117eSigner(t)
 				ctx = WithGrant(ctx, rev117eRoot(t, signer, 0), signer)
@@ -285,9 +318,13 @@ func TestRev117e_StorageWriteFailureRecordsNothing(t *testing.T) {
 			}
 			flaky.fails.Store(1)
 			var subCalls atomic.Int32
-			deleg := AttenuatingSubAgent("deleg", "d", agent.New(rev117eCountModel{n: &subCalls}, store),
-				AttenuationConfig{Store: flaky, Narrow: narrowLimitBy(1), Rules: rev117eRules})
-			parent := agent.New(agent.NewScriptedModel(agent.ToolTurn("c1", "deleg", `{"task":"go"}`), agent.TextTurn("done")), store, deleg)
+			deleg := AttenuatingSubAgent("deleg", "d", agenttest.MustNew(rev117eCountModel{n: &subCalls}, j),
+				AttenuationConfig{Store: agenttest.MustJournal(flaky), Narrow: narrowLimitBy(1), Rules: rev117eRules})
+			parent := agenttest.MustNew(
+				agent.NewScriptedModel(agent.ToolTurn("c1", "deleg", `{"task":"go"}`), agent.TextTurn("done")),
+				j,
+				agent.WithTools(deleg),
+			)
 			_, err1 := parent.Run(ctx, "p", "go")
 			_, err2 := parent.Run(ctx, "p", "go")
 			if subCalls.Load() == 0 || err2 != nil {
@@ -301,10 +338,10 @@ func TestRev117e_StorageWriteFailureRecordsNothing(t *testing.T) {
 // was cut off after it began) joined with the unrecorded refusal: the sibling saga step still does
 // not start.
 func TestRev117e_UnrecordedJoinedWithCrashHaltInSaga(t *testing.T) {
-	store := agent.NewMemStore()
+	store := agenttest.MemJournal()
 	signer := rev117eSigner(t)
 	expired := rev117eRoot(t, signer, time.Now().Unix()-3600)
-	deleg := AttenuatingSubAgent("deleg", "d", agent.New(answerModel{text: "ok"}, store),
+	deleg := AttenuatingSubAgent("deleg", "d", agenttest.MustNew(answerModel{text: "ok"}, store),
 		AttenuationConfig{Store: store, Narrow: narrowLimitBy(1), Rules: rev117eRules})
 	var cancelFirst context.CancelFunc
 	var fired atomic.Int32
@@ -317,16 +354,24 @@ func TestRev117e_UnrecordedJoinedWithCrashHaltInSaga(t *testing.T) {
 	})
 	// The side effect runs one level deeper, so its halt reaches the inner turn as a sub-agent's
 	// halt (*OutcomeUnknown), joined there with the delegation's refusal.
-	deep := agent.New(rev117eMultiModel{calls: [][2]string{{"d1", "fire"}}}, store, fire)
-	inner := agent.New(rev117eMultiModel{calls: [][2]string{{"i1", "deleg"}, {"i2", "deep"}}}, store, deleg,
-		agent.SubAgent("deep", "d", deep)).SetMaxConcurrency(1)
+	deep := agenttest.MustNew(rev117eMultiModel{calls: [][2]string{{"d1", "fire"}}}, store, agent.WithTools(fire))
+	inner := agenttest.MustNew(
+		rev117eMultiModel{calls: [][2]string{{"i1", "deleg"}, {"i2", "deep"}}},
+		store,
+		agent.WithTools(deleg, agent.SubAgent("deep", "d", deep)),
+		agent.WithMaxConcurrency(1),
+	)
 	var side atomic.Int32
 	sideTool := agent.Func("side", "a later step", agent.Safety{}, func(context.Context, struct{}) (string, error) {
 		side.Add(1)
 		return "ok", nil
 	})
-	parent := agent.New(rev117eMultiModel{calls: [][2]string{{"c1", "inner"}, {"c2", "side"}}}, store,
-		agent.SubAgent("inner", "i", inner), sideTool).SetMaxConcurrency(1)
+	parent := agenttest.MustNew(
+		rev117eMultiModel{calls: [][2]string{{"c1", "inner"}, {"c2", "side"}}},
+		store,
+		agent.WithTools(agent.SubAgent("inner", "i", inner), sideTool),
+		agent.WithMaxConcurrency(1),
+	)
 	ctx1, cancel := context.WithCancel(WithGrant(context.Background(), expired, signer))
 	cancelFirst = cancel
 	_, err1 := parent.RunSaga(ctx1, "p", "go")

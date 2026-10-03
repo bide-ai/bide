@@ -16,7 +16,7 @@ func TestStep_ReservedNameIsRefused(t *testing.T) {
 		"tool:x", "attempt:step:x", "attempt:tool:x", "approval:x", "approval-tally:x", "signal:x",
 		"await-timeout:x", "await-resolved:x", "timer:x", "interrupt:x", "chan:1:c:k", "chanack:1:c:k",
 		"turn/0", "start/0", "from/x", "audit:policy:x"} {
-		store := NewMemStore()
+		store := memJournal()
 		ran := false
 		_, err := Step(context.Background(), store, "r", name, func(context.Context) (string, error) { ran = true; return "v", nil })
 		if !errors.Is(err, ErrConfig) || !strings.Contains(err.Error(), name) || ran {
@@ -30,7 +30,7 @@ func TestStep_ReservedNameIsRefused(t *testing.T) {
 func TestParallel_ReservedTaskNameIsRefused(t *testing.T) {
 	var ran int
 	task := func(context.Context) (int, error) { ran++; return 1, nil }
-	_, err := Parallel(context.Background(), NewMemStore(), "r", []Task[int]{
+	_, err := Parallel(context.Background(), memJournal(), "r", []Task[int]{
 		{Name: "fine", Fn: task, Safety: Safety{ReadOnly: true}},
 		{Name: "@llm/0", Fn: task, Safety: Safety{ReadOnly: true}}})
 	if !errors.Is(err, ErrConfig) || !strings.Contains(err.Error(), "@llm/0") || ran != 0 {
@@ -41,7 +41,7 @@ func TestParallel_ReservedTaskNameIsRefused(t *testing.T) {
 // A sub-agent's run is "<parent>><call>", so a top-level run ID with a '>' could name one; it is
 // refused. A '/' stays allowed ("tenant/123").
 func TestRun_RunIDWithSubRunSeparatorIsRefused(t *testing.T) {
-	a := New(NewScriptedModel(TextTurn("done")), NewMemStore())
+	a := mustNew(NewScriptedModel(TextTurn("done")), memJournal())
 	for _, run := range []func(string) error{
 		func(id string) error { _, err := a.Run(context.Background(), id, "go"); return err },
 		func(id string) error { _, err := a.RunSaga(context.Background(), id, "go"); return err },
@@ -52,7 +52,7 @@ func TestRun_RunIDWithSubRunSeparatorIsRefused(t *testing.T) {
 			t.Fatalf("err = %v, want ErrConfig naming the run ID", err)
 		}
 	}
-	b := New(NewScriptedModel(TextTurn("done")), NewMemStore())
+	b := mustNew(NewScriptedModel(TextTurn("done")), memJournal())
 	if out, err := b.Run(context.Background(), "tenant/123", "go"); err != nil || out.Text() != "done" {
 		t.Fatalf("run tenant/123: %q, %v", out.Text(), err)
 	}
@@ -61,7 +61,7 @@ func TestRun_RunIDWithSubRunSeparatorIsRefused(t *testing.T) {
 // A session's run IDs are "<id>>@...", so a session ID with a '>' is refused. (A SendOnce key is
 // encoded, so it may hold one; see TestSendOnce_AnyKeyGetsItsOwnTurn.)
 func TestSession_IDWithSubRunSeparatorIsRefused(t *testing.T) {
-	a := New(NewScriptedModel(TextTurn("done")), NewMemStore())
+	a := mustNew(NewScriptedModel(TextTurn("done")), memJournal())
 	if _, err := a.Session(context.Background(), "chat>1"); !errors.Is(err, ErrConfig) || !strings.Contains(err.Error(), "chat>1") {
 		t.Fatalf("Session err = %v, want ErrConfig naming the id", err)
 	}
@@ -71,7 +71,7 @@ func TestSession_IDWithSubRunSeparatorIsRefused(t *testing.T) {
 // alone cannot be driven by the root agent's resume callback.
 func TestRecover_SkipsSubRuns(t *testing.T) {
 	ctx := context.Background()
-	store := NewMemStore()
+	store := memJournal()
 	charge := Func("charge", "charge a card", Safety{},
 		func(context.Context, struct{}) (string, error) { return "charged", nil }, WithApproval(SingleApproval()))
 	root := clerkTree(store, charge)

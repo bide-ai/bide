@@ -189,7 +189,7 @@ type AttenuationConfig struct {
 	// Store is the Durable store the sub-runs journal to, where each child grant is recorded as
 	// a durable leaf of its sub-run. Give it the store the parent and the sub-agent use, for a
 	// unified, provable journal.
-	Store agent.Durable
+	Store *agent.Journal
 	// Narrow derives each child grant from the parent's (see AttenuateFunc).
 	Narrow AttenuateFunc
 	// Rules says how each scope key may narrow; CheckAttenuation enforces it before a child
@@ -202,7 +202,7 @@ type AttenuationConfig struct {
 type attenuatingSubAgent struct {
 	agent.Tool
 	name   string
-	store  agent.Durable
+	store  *agent.Journal
 	narrow AttenuateFunc
 	rules  ScopeRules
 }
@@ -283,7 +283,7 @@ func (t *attenuatingSubAgent) journaledAuthority(ctx context.Context, subRunID s
 	if grant != nil && ungranted {
 		return nil, false, true, fmt.Errorf("audit: delegation %q (sub-run %s) journaled both a grant and running without one: %w", t.name, subRunID, agent.ErrProtocol)
 	}
-	return grant, ungranted, len(recs) > 0, nil
+	return grant, ungranted, slices.ContainsFunc(recs, func(r agent.Record) bool { return r.Kind != agent.StepHeader }), nil
 }
 
 // checkChild verifies a journaled child grant against the grant and signer bound to ctx: its
@@ -389,7 +389,7 @@ func (t *attenuatingSubAgent) Call(ctx context.Context, args json.RawMessage) (j
 			if existing != nil {
 				return nil, unrecorded(fmt.Errorf("audit: delegation %q (sub-run %s) began under a grant; resume it with the grant and signer bound (WithGrant): %w", t.name, subRunID, agent.ErrConfig))
 			}
-			if _, err := t.store.Do(ctx, subRunID, ungrantedLeafName, func(context.Context) (agent.Record, error) {
+			if _, err := doRecord(ctx, t.store, subRunID, ungrantedLeafName, func(context.Context) (agent.Record, error) {
 				return agent.Record{Kind: agent.StepValue, Result: json.RawMessage(`{"ungranted":true}`)}, nil
 			}); err != nil {
 				return nil, unrecorded(fmt.Errorf("audit: record that delegation %q ran without a grant: %w", t.name, err))

@@ -9,6 +9,7 @@ import (
 	"testing"
 
 	"github.com/bide-ai/bide/agent"
+	"github.com/bide-ai/bide/agent/agenttest"
 	"github.com/bide-ai/bide/audit"
 )
 
@@ -49,14 +50,15 @@ func TestMemEventStore_AppendOnly(t *testing.T) {
 func TestPersistJournal_RoundTripsAndIsIdempotent(t *testing.T) {
 	ctx := context.Background()
 	jStore := agent.NewMemStore()
+	j := agenttest.MustJournal(jStore)
 	tool := agent.Func("lookup", "", agent.Safety{ReadOnly: true},
 		func(_ context.Context, _ struct{}) (string, error) { return "ok", nil })
-	if _, err := agent.New(&twoTurnModel{}, jStore, tool).Run(ctx, "run", "hi"); err != nil {
+	if _, err := agenttest.MustNew(&twoTurnModel{}, j, agent.WithTools(tool)).Run(ctx, "run", "hi"); err != nil {
 		t.Fatalf("run: %v", err)
 	}
 
 	evStore := audit.NewMemEventStore()
-	if err := audit.PersistJournal(ctx, evStore, jStore, "run"); err != nil {
+	if err := audit.PersistJournal(ctx, evStore, j, "run"); err != nil {
 		t.Fatalf("PersistJournal: %v", err)
 	}
 
@@ -65,13 +67,13 @@ func TestPersistJournal_RoundTripsAndIsIdempotent(t *testing.T) {
 	if err != nil {
 		t.Fatalf("LoadEventLog: %v", err)
 	}
-	fromJournal, _ := audit.EventLogFromJournal(ctx, jStore, "run")
+	fromJournal, _ := audit.EventLogFromJournal(ctx, j, "run")
 	if fromStore.Len() == 0 || !bytes.Equal(fromStore.Root(), fromJournal.Root()) {
 		t.Fatalf("store-backed Root != journal projection Root (len=%d)", fromStore.Len())
 	}
 
 	// Idempotent: re-mirroring appends nothing new and does not fork.
-	if err := audit.PersistJournal(ctx, evStore, jStore, "run"); err != nil {
+	if err := audit.PersistJournal(ctx, evStore, j, "run"); err != nil {
 		t.Fatalf("second PersistJournal must be a no-op: %v", err)
 	}
 	reload, _ := audit.LoadEventLog(ctx, evStore, "run")
@@ -83,7 +85,7 @@ func TestPersistJournal_RoundTripsAndIsIdempotent(t *testing.T) {
 	pub, priv, _ := ed25519.GenerateKey(nil)
 	sth := signTH(t, fromStore.TreeHead("run", 1000), priv)
 	proof, _ := fromStore.Prove(0)
-	evs, _ := agent.ReplayEvents(ctx, jStore, "run") // the disclosed event (held by the verifier)
+	evs, _ := agent.ReplayEvents(ctx, j, "run") // the disclosed event (held by the verifier)
 	incl := audit.VerifyEventInclusion(sth.Root, evs[0], proof)
 	if sth.Verify(edV(pub)) != nil || incl != nil {
 		t.Fatalf("store-only anchor/proof failed (sth=%v incl=%v)", sth.Verify(edV(pub)), incl)
@@ -96,12 +98,13 @@ func TestPersistJournal_RoundTripsAndIsIdempotent(t *testing.T) {
 func TestPersistJournal_IncrementalConsistency(t *testing.T) {
 	ctx := context.Background()
 	jStore := agent.NewMemStore()
+	j := agenttest.MustJournal(jStore)
 	tool := agent.Func("lookup", "", agent.Safety{ReadOnly: true},
 		func(_ context.Context, _ struct{}) (string, error) { return "ok", nil })
-	if _, err := agent.New(&twoTurnModel{}, jStore, tool).Run(ctx, "run", "hi"); err != nil {
+	if _, err := agenttest.MustNew(&twoTurnModel{}, j, agent.WithTools(tool)).Run(ctx, "run", "hi"); err != nil {
 		t.Fatalf("run: %v", err)
 	}
-	evs, _ := agent.ReplayEvents(ctx, jStore, "run")
+	evs, _ := agent.ReplayEvents(ctx, j, "run")
 	if len(evs) < 2 {
 		t.Fatalf("need >= 2 events, got %d", len(evs))
 	}
@@ -109,7 +112,7 @@ func TestPersistJournal_IncrementalConsistency(t *testing.T) {
 	evStore := audit.NewMemEventStore()
 	// Mirror a prefix: the process dies after the first events are appended.
 	dying := &dyingStore{EventStore: evStore, left: len(evs) - 1}
-	if err := audit.PersistJournal(ctx, dying, jStore, "run"); err == nil {
+	if err := audit.PersistJournal(ctx, dying, j, "run"); err == nil {
 		t.Fatal("PersistJournal succeeded past the crash")
 	}
 	early, err := audit.LoadEventLog(ctx, evStore, "run")
@@ -119,7 +122,7 @@ func TestPersistJournal_IncrementalConsistency(t *testing.T) {
 	earlyRoot := early.Root()
 
 	// Now mirror the whole journal; the missing tail is appended, prefix untouched.
-	if err := audit.PersistJournal(ctx, evStore, jStore, "run"); err != nil {
+	if err := audit.PersistJournal(ctx, evStore, j, "run"); err != nil {
 		t.Fatalf("PersistJournal: %v", err)
 	}
 	full, _ := audit.LoadEventLog(ctx, evStore, "run")
@@ -219,10 +222,10 @@ func TestEventLogFromJournal_RefusesUnsaltedRecords(t *testing.T) {
 	ctx := context.Background()
 	h := toolResults(2)
 	h[1] = withSalt(h[1], nil)
-	if _, err := audit.EventLogFromJournal(ctx, h, "run"); err == nil {
+	if _, err := audit.EventLogFromJournal(ctx, h.journal(), "run"); err == nil {
 		t.Error("EventLogFromJournal projected an unsalted record")
 	}
-	if err := audit.PersistJournal(ctx, audit.NewMemEventStore(), h, "run"); err == nil {
+	if err := audit.PersistJournal(ctx, audit.NewMemEventStore(), h.journal(), "run"); err == nil {
 		t.Error("PersistJournal projected an unsalted record")
 	}
 }

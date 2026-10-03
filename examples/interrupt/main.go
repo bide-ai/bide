@@ -45,7 +45,10 @@ type decision struct {
 
 func main() {
 	ctx := context.Background()
-	store := agent.NewMemStore()
+	store, err := agent.NewJournal(agent.NewMemStore())
+	if err != nil {
+		log.Fatal(err)
+	}
 	const runID = "interrupt-1"
 	const gate = "review-gate"
 
@@ -66,10 +69,13 @@ func main() {
 			return "published (" + d.Note + ")", nil
 		})
 
-	a := agent.New(&scriptModel{}, store, reviewTool)
+	a, err := agent.New(&scriptModel{}, store, agent.WithTools(reviewTool))
+	if err != nil {
+		log.Fatal(err)
+	}
 
 	// First Run: the tool interrupts, so Run returns *InterruptPending rather than a final answer.
-	_, err := a.Run(ctx, runID, "Review and publish the draft.")
+	_, err = a.Run(ctx, runID, "Review and publish the draft.")
 	itr, ok := errors.AsType[*agent.InterruptPending](err)
 	if !ok {
 		log.Fatalf("expected an *InterruptPending pause, got: %v", err)

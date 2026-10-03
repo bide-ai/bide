@@ -9,6 +9,7 @@ import (
 	"testing"
 
 	"github.com/bide-ai/bide/agent"
+	"github.com/bide-ai/bide/agent/agenttest"
 )
 
 // attenuatingSaga runs a saga whose first turn delegates through AttenuatingSubAgent (the sub-run
@@ -18,21 +19,29 @@ import (
 func attenuatingSaga(t *testing.T, withGrant bool) (*agent.SagaAborted, int) {
 	t.Helper()
 	ctx := context.Background()
-	store := agent.NewMemStore()
+	store := agenttest.MemJournal()
 	var charges, refunds int
 	charge := agent.CompensatedFunc("charge", "charge the card", agent.Safety{},
 		func(context.Context, struct{}) (string, error) { charges++; return "charged", nil },
 		func(context.Context, struct{}, string) error { refunds++; return nil })
-	sub := agent.New(agent.NewScriptedModel(agent.ToolTurn("s1", "charge", `{}`), agent.TextTurn("done")), store, charge)
+	sub := agenttest.MustNew(
+		agent.NewScriptedModel(agent.ToolTurn("s1", "charge", `{}`), agent.TextTurn("done")),
+		store,
+		agent.WithTools(charge),
+	)
 	exec := AttenuatingSubAgent("exec", "execute within delegated authority", sub,
 		AttenuationConfig{Store: store, Narrow: narrowLimitBy(3), Rules: ScopeRules{"limit": NumericAtMost}})
 	boom := agent.Func("boom", "fails", agent.Safety{}, func(context.Context, struct{}) (string, error) {
 		return "", errors.New("hotel sold out")
 	})
-	parent := agent.New(agent.NewScriptedModel(
-		agent.ToolTurn("c1", "exec", `{"task":"pay"}`),
-		agent.ToolTurn("c2", "boom", `{}`),
-		agent.TextTurn("unreachable")), store, exec, boom)
+	parent := agenttest.MustNew(
+		agent.NewScriptedModel(
+			agent.ToolTurn("c1", "exec", `{"task":"pay"}`),
+			agent.ToolTurn("c2", "boom", `{}`),
+			agent.TextTurn("unreachable")),
+		store,
+		agent.WithTools(exec, boom),
+	)
 	if withGrant {
 		_, priv, _ := ed25519.GenerateKey(rand.Reader)
 		signer := Ed25519Signer{Priv: priv}
@@ -68,8 +77,8 @@ func TestAttenuatingSubAgent_SagaRollbackCompensatesTheSubRun(t *testing.T) {
 
 // The wrapper is described by the SubAgent it wraps, and Unwrap returns that tool.
 func TestAttenuatingSubAgent_SpecAndUnwrap(t *testing.T) {
-	store := agent.NewMemStore()
-	tool := AttenuatingSubAgent("exec", "execute", agent.New(answerModel{"done"}, store),
+	store := agenttest.MemJournal()
+	tool := AttenuatingSubAgent("exec", "execute", agenttest.MustNew(answerModel{"done"}, store),
 		AttenuationConfig{Store: store, Narrow: narrowLimitBy(1)}, agent.WithTitle("Executor"))
 	s := agent.SpecOf(tool)
 	if s.Name != "exec" || s.Title != "Executor" || !s.Safety.Idempotent || len(s.Input) == 0 {
@@ -83,8 +92,8 @@ func TestAttenuatingSubAgent_SpecAndUnwrap(t *testing.T) {
 
 // A nil Store or Narrow is a configuration error, raised when the tool is built.
 func TestAttenuatingSubAgent_ConfigErrors(t *testing.T) {
-	store := agent.NewMemStore()
-	sub := agent.New(answerModel{"done"}, store)
+	store := agenttest.MemJournal()
+	sub := agenttest.MustNew(answerModel{"done"}, store)
 	for name, cfg := range map[string]AttenuationConfig{
 		"nil store":  {Narrow: narrowLimitBy(1)},
 		"nil narrow": {Store: store},
@@ -105,12 +114,16 @@ func TestAttenuatingSubAgent_ConfigErrors(t *testing.T) {
 // sub-run started, and delegates once the call is approved.
 func TestAttenuatingSubAgent_WithApprovalPausesBeforeDelegating(t *testing.T) {
 	ctx := context.Background()
-	store := agent.NewMemStore()
-	sub := agent.New(answerModel{"done"}, store)
+	store := agenttest.MemJournal()
+	sub := agenttest.MustNew(answerModel{"done"}, store)
 	exec := AttenuatingSubAgent("exec", "execute", sub,
 		AttenuationConfig{Store: store, Narrow: narrowLimitBy(3), Rules: ScopeRules{"limit": NumericAtMost}},
 		agent.WithApproval(agent.SingleApproval()))
-	parent := agent.New(agent.NewScriptedModel(agent.ToolTurn("c1", "exec", `{"task":"pay"}`), agent.TextTurn("ok")), store, exec)
+	parent := agenttest.MustNew(
+		agent.NewScriptedModel(agent.ToolTurn("c1", "exec", `{"task":"pay"}`), agent.TextTurn("ok")),
+		store,
+		agent.WithTools(exec),
+	)
 
 	_, err := parent.Run(ctx, "p", "go")
 	var pa *agent.ApprovalPending

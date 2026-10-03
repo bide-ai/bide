@@ -10,7 +10,9 @@ import (
 	"testing"
 
 	"github.com/bide-ai/bide/agent"
+	"github.com/bide-ai/bide/agent/agenttest"
 	"github.com/bide-ai/bide/audit"
+	"github.com/bide-ai/bide/internal/journaltest"
 )
 
 // badKeys are private keys of the wrong length: ed25519.Sign panics on each.
@@ -30,6 +32,7 @@ func TestAuditedStore_BadKeyIsRefusedBeforeAnyStep(t *testing.T) {
 	for name, priv := range badKeys {
 		ctx := context.Background()
 		inner := agent.NewMemStore()
+		j := agenttest.MustJournal(inner)
 		var store *audit.AuditedStore
 		var err error
 		if p := catch(func() { store, err = audit.NewAuditedStore(inner, edS(priv), audit.NewMemAnchorLog()) }); p != nil {
@@ -40,11 +43,11 @@ func TestAuditedStore_BadKeyIsRefusedBeforeAnyStep(t *testing.T) {
 			continue // refused at construction: nothing was written
 		}
 		p := catch(func() {
-			_, _ = store.Do(ctx, "r", "s", func(context.Context) (agent.Record, error) {
+			_, _ = journaltest.Do(ctx, agenttest.MustJournal(store), "r", "s", func(context.Context) (agent.Record, error) {
 				return agent.Record{Kind: agent.StepValue, Result: json.RawMessage(`1`)}, nil
 			})
 		})
-		recs, _ := inner.History(ctx, "r")
+		recs, _ := j.History(ctx, "r")
 		t.Errorf("%s key: NewAuditedStore accepted it (err %v); Do then panicked (%v) with %d records already written", name, err, p, len(recs))
 	}
 }
@@ -54,13 +57,14 @@ func TestAuditedStore_BadKeyIsRefusedBeforeAnyStep(t *testing.T) {
 func TestSigningWithBadKey_IsAnError(t *testing.T) {
 	ctx := context.Background()
 	store := agent.NewMemStore()
-	if _, err := store.Do(ctx, "r", "s", func(context.Context) (agent.Record, error) {
+	j := agenttest.MustJournal(store)
+	if _, err := journaltest.Do(ctx, j, "r", "s", func(context.Context) (agent.Record, error) {
 		return agent.Record{Kind: agent.StepValue, Result: json.RawMessage(`1`)}, nil
 	}); err != nil {
 		t.Fatal(err)
 	}
-	recs, _ := store.History(ctx, "r")
-	th, err := audit.NewTreeHead(ctx, store, "r", 1)
+	recs, _ := j.History(ctx, "r")
+	th, err := audit.NewTreeHead(ctx, j, "r", 1)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -77,7 +81,7 @@ func TestSigningWithBadKey_IsAnError(t *testing.T) {
 				return err
 			},
 			"CertifyRun": func() error {
-				_, err := audit.CertifyRun(ctx, store, "r", sth, audit.RunCertSpec{Signer: edS(priv), TimestampNanos: 2})
+				_, err := audit.CertifyRun(ctx, j, "r", sth, audit.RunCertSpec{Signer: edS(priv), TimestampNanos: 2})
 				return err
 			},
 		}

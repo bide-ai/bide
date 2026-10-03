@@ -21,7 +21,6 @@ import (
 	"fmt"
 	"iter"
 	"reflect"
-	"runtime"
 	"slices"
 	"sync"
 	"sync/atomic"
@@ -166,8 +165,7 @@ func (f RunFilter) Admits(runID string, holds func(name string) bool, lapsed fun
 // step with new capabilities. A wrapper that must change what a capability means implements that
 // capability itself, which takes precedence over the wrapped store's, as with errors.As. Only a
 // wrapper that passes run IDs and names through unchanged may implement Unwrap (see Store). The
-// same holds for a Durable wrapper's Unwrap() Durable (see Durable), which the engine follows to
-// the store beneath for its capabilities and for what the process keeps per run.
+// engine follows Unwrap to the store beneath for what the process keeps per run.
 func Capability[T any](store Store) (T, bool) {
 	for store != nil {
 		if c, ok := store.(T); ok {
@@ -181,68 +179,6 @@ func Capability[T any](store Store) (T, bool) {
 	}
 	var zero T
 	return zero, false
-}
-
-// capabilityOf is Capability for the store behind a Durable: the Durable itself, then the store a
-// Journal writes to, then a Durable wrapper's Unwrap (the transitional form), then the Durable as
-// a Store.
-func capabilityOf[T any](d Durable) (T, bool) {
-	var zero T
-	if d == nil {
-		return zero, false
-	}
-	if c, ok := d.(T); ok {
-		return c, true
-	}
-	if j := journalOf(d); j != nil {
-		return Capability[T](j.store)
-	}
-	if u, ok := d.(interface{ Unwrap() Durable }); ok {
-		if inner := u.Unwrap(); inner != nil {
-			return capabilityOf[T](inner)
-		}
-		return zero, false
-	}
-	if s, ok := d.(Store); ok {
-		return Capability[T](s)
-	}
-	return zero, false
-}
-
-// Durable is the step-memoization interface the engine and its callers use during the transition
-// to Journal: Do runs a step at most once per (runID, name), and History reads a run back. *Journal
-// implements it, and so do MemStore and the SQL stores, whose Do and History go through a Journal
-// over themselves.
-//
-// Deprecated: transitional; renamed by the 1.0 rewrite. Use *Journal.
-//
-// A Durable that is not a Journal must keep the Journal's guarantees, which the engine's
-// accounting relies on as much as its at-most-once does: it records a step's result at most once
-// under one name (a second record under the name is never written, and Do returns the one the
-// journal holds); it calls fn at most once per record it writes, never again for a name already
-// recorded; and it keeps each record's bytes, the salt among them, exactly as JournalEntry built
-// them (a salt a step's record carries from the engine is the one the journal must hold).
-//
-// A Durable that wraps another (such as audit.AuditedStore) may implement
-//
-//	Unwrap() Durable
-//
-// so the engine reaches the store beneath it: its capabilities (Lister, Leaser, as Capability
-// finds them), and the identity under which the process keeps what it keeps per run (claims it
-// could not record as not started, spend it could not journal), which every Journal and wrapper
-// over that store then shares. It may do so only if it passes run IDs and step names through
-// unchanged, as for Unwrap() Store. A wrapper that rewrites keys (a tenant prefix, say) must not
-// implement Unwrap: its runs would be kept under the run IDs it was given, and two tenants' runs
-// of one name would share them. storetest.CheckDurableWrapper checks this.
-type Durable interface {
-	// Do returns the recorded Record for (runID, name) without running fn if present; otherwise
-	// runs fn, records the returned Record (with Name set and a fresh salt), and returns the
-	// record the journal holds. If fn errors, nothing is recorded and the step runs again on the
-	// next attempt. Once fn has returned a record, Do records it even if ctx was cancelled
-	// meanwhile: fn may have fired a side effect, and its outcome must not be lost.
-	Do(ctx context.Context, runID, name string, fn func(context.Context) (Record, error)) (Record, error)
-	// History returns all recorded steps for a run, in order, the journal header first.
-	History(ctx context.Context, runID string) ([]Record, error)
 }
 
 // JournalOption configures NewJournal.
@@ -270,8 +206,6 @@ type Journal struct {
 	id    any    // the store's identity for sharing in-flight steps and claims (see storeIdentity)
 	good  runSet // runs whose header this Journal has checked
 }
-
-var _ Durable = (*Journal)(nil)
 
 // NewJournal returns a Journal over s. A nil s is ErrConfig.
 func NewJournal(s Store, opts ...JournalOption) (*Journal, error) {
@@ -306,11 +240,26 @@ func isNil(v any) bool {
 	return rv.Kind() == reflect.Pointer && rv.IsNil()
 }
 
-// storeIdentity is the key under which Journals in this process share in-flight steps and
-// remembered claims for s: s itself when it is a pointer (every store in this module is), and
-// otherwise j, so a store whose identity cannot be compared safely shares only within one Journal.
-// Claims keep that safe; it only loses the in-process deduplication across Journals.
+// storeIdentity is the key under which Journals in this process share in-flight steps and keep
+// what they keep per run (remembered claims, kept spend) for s: the store beneath s, following a
+// wrapper's Unwrap() Store (which only a wrapper that passes run IDs and names through unchanged
+// may implement, see Store), so every Journal over the store, directly or through such a wrapper
+// (audit.AuditedStore), shares them; the innermost store itself when it is a pointer (every store
+// in this module is), and otherwise j, so a store whose identity cannot be compared safely shares
+// only within one Journal. Claims keep that safe; it only loses the in-process deduplication
+// across Journals.
 func storeIdentity(s Store, j *Journal) any {
+	for range maxUnwrap {
+		u, ok := s.(interface{ Unwrap() Store })
+		if !ok {
+			break
+		}
+		inner := u.Unwrap()
+		if isNil(inner) {
+			break
+		}
+		s = inner
+	}
 	if reflect.ValueOf(s).Kind() == reflect.Pointer {
 		return s
 	}
@@ -447,7 +396,7 @@ func (j *Journal) Format(ctx context.Context, runID string) (string, error) {
 //
 // Deprecated: transitional; the 1.0 rewrite unexports it. Engine code writes through the journal's
 // own paths; audit and plan reach it through internal/journalhook.
-func (j *Journal) Do(ctx context.Context, runID, name string, fn func(context.Context) (Record, error)) (Record, error) {
+func (j *Journal) do(ctx context.Context, runID, name string, fn func(context.Context) (Record, error)) (Record, error) {
 	b, err := shareFlight(flightKey{j.id, runID, name}, func() ([]byte, error) {
 		e, ok, err := j.getEntry(ctx, runID, name)
 		if err != nil {
@@ -861,188 +810,22 @@ func (j *Journal) notStarted(ctx context.Context, runID, key string, marker Reco
 
 // protocol:claims end
 
-// ===========================================================================
-// The engine's view of a Durable
-// ===========================================================================
+// identity is the identity under which this process keys what it keeps for j's runs (remembered
+// claims, kept spend, in-flight tool calls, recovery reports): the store's (see storeIdentity), so
+// every Journal over one store shares it. ok is false for a nil journal, for which nothing is kept.
+func (j *Journal) identity() (any, bool) {
+	if j == nil {
+		return nil, false
+	}
+	return j.id, true
+}
 
-// journalOf returns the Journal that d writes through: d itself, or the Journal a store's Do and
-// History shims delegate to. It returns nil for any other Durable (a test's wrapper that
-// intercepts Do, say), which the engine then drives through its Do and History only. A wrapper
-// that embeds a store is not the store: its Journal writes to the embedded store, not to the
-// wrapper, so the wrapper's own Do is kept.
-func journalOf(d Durable) *Journal {
-	switch v := d.(type) {
-	case *Journal:
-		return v
-	case interface{ Journal() *Journal }:
-		if j := v.Journal(); j != nil && sameValue(j.store, d) {
-			return j
-		}
+// checkJournal refuses a nil journal.
+func checkJournal(j *Journal) error {
+	if j == nil {
+		return fmt.Errorf("agent: nil journal: %w", ErrConfig)
 	}
 	return nil
-}
-
-// checkDurable refuses a Durable whose Do and History would write past a Store method it has: a
-// wrapper that gets its Do from a store with the transitional Do and History (MemStore, the SQL
-// stores), or from an embedded Durable interface, while its Insert, Get or Load comes from
-// somewhere else (the wrapper itself, or another embedded field). Those Do and History write
-// through a Journal over the store they come from, so every write would bypass the wrapper's
-// Insert. Such a wrapper is used through a Journal over it (NewJournal(wrapper)). A wrapper that
-// declares Do itself, at any depth, is driven through its Do, as any Durable is.
-func checkDurable(d Durable) error {
-	if d == nil {
-		return fmt.Errorf("agent: nil store: %w", ErrConfig)
-	}
-	if journalOf(d) != nil {
-		return nil
-	}
-	if _, ok := d.(Store); !ok {
-		return nil
-	}
-	t := reflect.TypeOf(d)
-	do := methodOrigin(t, "Do")
-	if do.Kind() != reflect.Interface && !isShim(do) {
-		return nil // the wrapper's own Do
-	}
-	for _, name := range []string{"Insert", "Get", "Load"} {
-		if o := methodOrigin(t, name); o != do {
-			return fmt.Errorf("agent: %T takes %s from %v but Do and History from %v, which write past it; use it through agent.NewJournal(wrapper): %w", d, name, o, do, ErrConfig)
-		}
-	}
-	return nil
-}
-
-// isShim reports whether t, the type that declares a Do, is a store whose Do is the transitional
-// shim over a Journal of its own: t declares Journal() *Journal too. A wrapper that declares Do
-// and inherits Journal from a store it embeds is not one.
-func isShim(t reflect.Type) bool {
-	m, ok := t.MethodByName("Journal")
-	return ok && m.Type.NumOut() == 1 && m.Type.Out(0) == reflect.TypeFor[*Journal]() && methodOrigin(t, "Journal") == t
-}
-
-// methodOrigin returns the type that provides method name to type t: t itself if it declares the
-// method (on a value or pointer receiver), otherwise the origin in the embedded field that
-// provides it, or the embedded interface type whose method it is.
-func methodOrigin(t reflect.Type, name string) reflect.Type {
-	if declares(t, name) {
-		return t
-	}
-	st := t
-	if st.Kind() == reflect.Pointer {
-		st = st.Elem()
-	}
-	if st.Kind() != reflect.Struct {
-		return t
-	}
-	for i := range st.NumField() {
-		f := st.Field(i)
-		if !f.Anonymous {
-			continue
-		}
-		ft := f.Type
-		if ft.Kind() == reflect.Interface {
-			if _, ok := ft.MethodByName(name); ok {
-				return ft
-			}
-			continue
-		}
-		if ft.Kind() != reflect.Pointer {
-			ft = reflect.PointerTo(ft)
-		}
-		if _, ok := ft.MethodByName(name); ok {
-			return methodOrigin(ft, name)
-		}
-	}
-	return t
-}
-
-// declares reports whether type t declares its method name itself, on a pointer or a value
-// receiver, rather than inheriting it from an embedded field: an inherited method, and a pointer
-// method standing for a value method, are wrappers the compiler generates.
-func declares(t reflect.Type, name string) bool {
-	for _, c := range []reflect.Type{t, elemOf(t)} {
-		if c == nil {
-			continue
-		}
-		m, ok := c.MethodByName(name)
-		if !ok {
-			continue
-		}
-		f := runtime.FuncForPC(m.Func.Pointer())
-		if f == nil {
-			return true
-		}
-		if file, _ := f.FileLine(f.Entry()); file != "<autogenerated>" {
-			return true
-		}
-	}
-	return false
-}
-
-// elemOf returns the element type of a pointer type, and nil for any other type.
-func elemOf(t reflect.Type) reflect.Type {
-	if t.Kind() == reflect.Pointer {
-		return t.Elem()
-	}
-	return nil
-}
-
-// sameValue reports whether a and b are the same pointer.
-func sameValue(a, b any) bool {
-	va, vb := reflect.ValueOf(a), reflect.ValueOf(b)
-	return va.Kind() == reflect.Pointer && va.Type() == vb.Type() && va.Pointer() == vb.Pointer()
-}
-
-// lookup returns the record named name in runID's journal, if any: one Get through d's Journal,
-// or, for a Durable without one, a scan of its History.
-func lookup(ctx context.Context, d Durable, runID, name string) (Record, bool, error) {
-	if j := journalOf(d); j != nil {
-		return j.Get(ctx, runID, name)
-	}
-	recs, err := d.History(ctx, runID)
-	if err != nil {
-		return Record{}, false, fmt.Errorf("load history %s: %w (%w)", runID, err, ErrStorage)
-	}
-	for _, r := range recs {
-		if r.Name == name {
-			return r, true, nil
-		}
-	}
-	return Record{}, false, nil
-}
-
-// putRecord records rec, a pure value, as the step name of runID unless it is recorded, and
-// returns the record the journal holds.
-func putRecord(ctx context.Context, d Durable, runID, name string, rec Record) (Record, error) {
-	if j := journalOf(d); j != nil {
-		return j.put(ctx, runID, name, rec)
-	}
-	return d.Do(ctx, runID, name, func(context.Context) (Record, error) { return rec, nil })
-}
-
-// protocol:lifecycle begin DCall DRecord
-
-// recordFresh runs fn as the step name of runID, which the caller found unrecorded when it last
-// read the run (see Journal.doFresh).
-func recordFresh(ctx context.Context, d Durable, runID, name string, fn func(context.Context) (Record, error)) (Record, error) {
-	if j := journalOf(d); j != nil {
-		return j.doFresh(ctx, runID, name, fn)
-	}
-	return d.Do(ctx, runID, name, fn)
-}
-
-// protocol:lifecycle end
-
-// openRun reads runID's journal at the start of a drive (see Journal.open).
-func openRun(ctx context.Context, d Durable, runID string) ([]Record, error) {
-	if j := journalOf(d); j != nil {
-		return j.open(ctx, runID)
-	}
-	recs, err := d.History(ctx, runID)
-	if err != nil {
-		return nil, fmt.Errorf("load history %s: %w (%w)", runID, err, ErrStorage)
-	}
-	return recs, nil
 }
 
 // ===========================================================================

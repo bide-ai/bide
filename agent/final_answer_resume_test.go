@@ -6,6 +6,7 @@ import (
 	"errors"
 	"fmt"
 	"reflect"
+	"sync/atomic"
 	"testing"
 )
 
@@ -14,32 +15,21 @@ import (
 // answer included, is durably recorded; the marker is not, and the run unwinds as if the
 // process died between the two writes.
 type markerCrashStore struct {
-	inner   Durable
+	Store
 	runID   string
-	crashed bool
+	crashed atomic.Bool
 }
 
-func (s *markerCrashStore) Do(ctx context.Context, runID, name string, fn func(context.Context) (Record, error)) (Record, error) {
-	return s.inner.Do(ctx, runID, name, func(ctx context.Context) (Record, error) {
-		rec, err := fn(ctx)
-		if err != nil {
-			return rec, err
-		}
-		if name == runCompleteStep && (s.runID == "" || runID == s.runID) && !s.crashed {
-			s.crashed = true
-			return Record{}, errCrash // crash: the marker is NOT persisted
-		}
-		return rec, nil
-	})
-}
-
-func (s *markerCrashStore) History(ctx context.Context, runID string) ([]Record, error) {
-	return s.inner.History(ctx, runID)
+func (s *markerCrashStore) Insert(ctx context.Context, runID, name string, data []byte) (Entry, bool, error) {
+	if name == runCompleteStep && (s.runID == "" || runID == s.runID) && s.crashed.CompareAndSwap(false, true) {
+		return Entry{}, false, errCrash // crash: the marker is NOT persisted
+	}
+	return s.Store.Insert(ctx, runID, name, data)
 }
 
 // wantAnswerRecordedNoMarker checks the crash landed where intended: every scripted model turn
 // is journaled (the final answer included) and the completion marker is not.
-func wantAnswerRecordedNoMarker(t *testing.T, store Durable, runID string, turns int) []Record {
+func wantAnswerRecordedNoMarker(t *testing.T, store *Journal, runID string, turns int) []Record {
 	t.Helper()
 	ctx := context.Background()
 	recs, err := store.History(ctx, runID)
@@ -62,7 +52,7 @@ func wantAnswerRecordedNoMarker(t *testing.T, store Durable, runID string, turns
 }
 
 // wantMarkerOnlyAppended checks the resume wrote the completion marker and nothing else.
-func wantMarkerOnlyAppended(t *testing.T, store Durable, runID string, before []Record) {
+func wantMarkerOnlyAppended(t *testing.T, store *Journal, runID string, before []Record) {
 	t.Helper()
 	ctx := context.Background()
 	after, err := store.History(ctx, runID)
@@ -114,7 +104,7 @@ func TestFinalAnswerCrash_ResumeReplaysAnswer(t *testing.T) {
 			// The run used its last allowed turn on the answer: resume must not refuse with
 			// ErrMaxTurns for a turn it has no need to take.
 			name: "RunAtMaxTurns", runID: "r1", script: chargeThenAnswer,
-			opts: func(a *Agent) *Agent { return a.WithMaxTurns(2) },
+			opts: func(a *Agent) *Agent { return must(a.With(WithMaxTurns(2))) },
 			entry: func(a *Agent) (string, error) {
 				m, err := a.Run(ctx, "r1", "pay")
 				return textOf(m), err
@@ -128,7 +118,7 @@ func TestFinalAnswerCrash_ResumeReplaysAnswer(t *testing.T) {
 				toolTurnWithUsage("c1", "charge", `{}`, Usage{InputTokens: 10}),
 				textTurnWithUsage("done", Usage{InputTokens: 10}),
 			},
-			opts: func(a *Agent) *Agent { return a.WithTokenBudget(20) },
+			opts: func(a *Agent) *Agent { return must(a.With(WithTokenBudget(20))) },
 			entry: func(a *Agent) (string, error) {
 				m, err := a.Run(ctx, "r1", "pay")
 				return textOf(m), err
@@ -217,6 +207,7 @@ func TestFinalAnswerCrash_ResumeReplaysAnswer(t *testing.T) {
 				opts = func(a *Agent) *Agent { return a }
 			}
 			store := NewMemStore()
+			j := mustJournal(store)
 			var charged int
 			charge := &countingTool{name: "charge", safety: Safety{}, calls: &charged}
 			wantCharged := 0
@@ -228,17 +219,17 @@ func TestFinalAnswerCrash_ResumeReplaysAnswer(t *testing.T) {
 
 			// First attempt: crashes between the final answer and the completion marker.
 			first := &greedyModel{script: tc.script}
-			if _, err := tc.entry(opts(New(first, &markerCrashStore{inner: store, runID: tc.runID}, charge))); !errors.Is(err, errCrash) {
+			if _, err := tc.entry(opts(mustNew(first, mustJournal(&markerCrashStore{Store: store, runID: tc.runID}), WithTools(charge)))); !errors.Is(err, errCrash) {
 				t.Fatalf("first attempt: err = %v, want the injected crash at the completion marker", err)
 			}
 			if first.calls != len(tc.script) || charged != wantCharged {
 				t.Fatalf("first attempt: %d model calls, %d charges; want %d, %d", first.calls, charged, len(tc.script), wantCharged)
 			}
-			before := wantAnswerRecordedNoMarker(t, store, tc.runID, len(tc.script))
+			before := wantAnswerRecordedNoMarker(t, j, tc.runID, len(tc.script))
 
 			// Resume: the recorded final turn ends the run.
 			resume := &greedyModel{}
-			got, err := tc.entry(opts(New(resume, store, charge)))
+			got, err := tc.entry(opts(mustNew(resume, j, WithTools(charge))))
 			if err != nil {
 				t.Fatalf("resume: %v", err)
 			}
@@ -251,7 +242,7 @@ func TestFinalAnswerCrash_ResumeReplaysAnswer(t *testing.T) {
 			if got != "done" {
 				t.Errorf("resume answered %q, want the recorded %q", got, "done")
 			}
-			wantMarkerOnlyAppended(t, store, tc.runID, before)
+			wantMarkerOnlyAppended(t, j, tc.runID, before)
 		})
 	}
 }
@@ -263,25 +254,30 @@ func TestFinalAnswerCrash_ResumeReplaysAnswer(t *testing.T) {
 func TestFinalAnswerCrash_SubAgentResume(t *testing.T) {
 	ctx := context.Background()
 	store := NewMemStore()
+	j := mustJournal(store)
 	var charged int
 	charge := &countingTool{name: "charge", safety: Safety{}, calls: &charged}
 
 	subRunID := SubRunID("root", "c1")
 	subFirst := &greedyModel{script: [][]Emit{toolTurn("s1", "charge", `{}`), textTurn("sub-done")}}
-	if _, err := New(subFirst, &markerCrashStore{inner: store, runID: subRunID}, charge).Run(asToolCall(ctx, "root", "c1"), subRunID, "charge it"); !errors.Is(err, errCrash) {
+	if _, err := mustNew(subFirst, mustJournal(&markerCrashStore{Store: store, runID: subRunID}), WithTools(charge)).Run(asToolCall(ctx, "root", "c1"), subRunID, "charge it"); !errors.Is(err, errCrash) {
 		t.Fatalf("sub-run: err = %v, want the injected crash at the completion marker", err)
 	}
-	before := wantAnswerRecordedNoMarker(t, store, subRunID, 2)
+	before := wantAnswerRecordedNoMarker(t, j, subRunID, 2)
 	// The parent's journal holds the turn that called the sub-agent, and no result for it.
 	asst := Message{Role: RoleAssistant, Parts: []Part{ToolUse{ID: "c1", Name: "worker", Args: json.RawMessage(`{"task":"charge it"}`)}}}
-	if _, err := store.Do(ctx, "root", "@llm/0", func(context.Context) (Record, error) {
+	if _, err := j.do(ctx, "root", "@llm/0", func(context.Context) (Record, error) {
 		return Record{Kind: StepModel, Message: &asst}, nil
 	}); err != nil {
 		t.Fatal(err)
 	}
 
 	subResume := &greedyModel{}
-	parent := New(&greedyModel{script: [][]Emit{textTurn("parent-done")}}, store, SubAgent("worker", "does work", New(subResume, store, charge)))
+	parent := mustNew(
+		&greedyModel{script: [][]Emit{textTurn("parent-done")}},
+		j,
+		WithTools(SubAgent("worker", "does work", mustNew(subResume, j, WithTools(charge)))),
+	)
 	out, err := parent.Run(ctx, "root", "delegate")
 	if err != nil {
 		t.Fatalf("parent resume: %v", err)
@@ -292,7 +288,7 @@ func TestFinalAnswerCrash_SubAgentResume(t *testing.T) {
 	if textOf(out) != "parent-done" {
 		t.Fatalf("parent answered %q, want parent-done", textOf(out))
 	}
-	recs, err := store.History(ctx, "root")
+	recs, err := j.History(ctx, "root")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -305,5 +301,5 @@ func TestFinalAnswerCrash_SubAgentResume(t *testing.T) {
 	if subResult != "sub-done" {
 		t.Fatalf("parent recorded sub-agent result %q, want the sub-run's recorded answer sub-done", subResult)
 	}
-	wantMarkerOnlyAppended(t, store, subRunID, before)
+	wantMarkerOnlyAppended(t, j, subRunID, before)
 }

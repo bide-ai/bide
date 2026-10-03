@@ -7,6 +7,7 @@ package main
 import (
 	"context"
 	"fmt"
+	"log"
 	"time"
 
 	"github.com/bide-ai/bide/agent"
@@ -49,22 +50,49 @@ func run(label string, a *agent.Agent) {
 }
 
 func main() {
-	store := agent.NewMemStore()
+	store, err := agent.NewJournal(agent.NewMemStore())
+	if err != nil {
+		log.Fatal(err)
+	}
 
 	// 1) Tail latency: the primary is slow (400ms); a backup answers in 30ms. Without hedging you
 	// wait for the slow primary; with a 50ms hedge delay you take the backup.
 	slowPrimary := stub{name: "primary", delay: 400 * time.Millisecond}
 	fastBackup := stub{name: "backup", delay: 30 * time.Millisecond}
 	fmt.Println("== tail latency ==")
-	run("no hedge (slow primary)", agent.New(slowPrimary, store))
-	run("hedged (delay 50ms)", agent.New(slowPrimary, store).Use(middleware.Hedge(50*time.Millisecond, fastBackup)))
+	ag, err := agent.New(slowPrimary, store)
+	if err != nil {
+		log.Fatal(err)
+	}
+	run("no hedge (slow primary)", ag)
+	ag2, err := agent.New(
+		slowPrimary,
+		store,
+		agent.WithMiddleware(middleware.Hedge(50*time.Millisecond, fastBackup)),
+	)
+	if err != nil {
+		log.Fatal(err)
+	}
+	run("hedged (delay 50ms)", ag2)
 
 	// 2) Failover: the primary is down (fails fast). The hedge delay is long (500ms), but a failed
 	// target brings the backup forward immediately, so the run does not wait out the delay.
 	downPrimary := stub{name: "primary", delay: 20 * time.Millisecond, down: true}
 	fmt.Println("\n== provider outage ==")
-	run("no hedge (primary down)", agent.New(downPrimary, store))
-	run("hedged (fast failover)", agent.New(downPrimary, store).Use(middleware.Hedge(500*time.Millisecond, fastBackup)))
+	ag3, err := agent.New(downPrimary, store)
+	if err != nil {
+		log.Fatal(err)
+	}
+	run("no hedge (primary down)", ag3)
+	ag4, err := agent.New(
+		downPrimary,
+		store,
+		agent.WithMiddleware(middleware.Hedge(500*time.Millisecond, fastBackup)),
+	)
+	if err != nil {
+		log.Fatal(err)
+	}
+	run("hedged (fast failover)", ag4)
 
 	fmt.Println("\nThe winning response is journaled once by the durable loop; the losing call is")
 	fmt.Println("cancelled and never touches state, so the record stays exactly-once either way.")

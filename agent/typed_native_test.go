@@ -14,7 +14,7 @@ func TestRunTypedNative_ResponseFormatAndDecode(t *testing.T) {
 	}
 	var got Request
 	m := &captureModel{inner: &scriptModel{turns: [][]Emit{textTurn(`{"answer":"42","score":7}`)}}, got: &got}
-	a := New(m, NewMemStore())
+	a := mustNew(m, memJournal())
 
 	out, err := RunTypedNative[R](context.Background(), a, "r", "q")
 	if err != nil {
@@ -41,7 +41,7 @@ func TestRunTypedNative_DoesNotMutateAgent(t *testing.T) {
 		X int `json:"x"`
 	}
 	m := &scriptModel{turns: [][]Emit{textTurn(`{"x":1}`)}}
-	a := New(m, NewMemStore())
+	a := mustNew(m, memJournal())
 	if _, err := RunTypedNative[R](context.Background(), a, "r", "q"); err != nil {
 		t.Fatal(err)
 	}

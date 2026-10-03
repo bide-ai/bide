@@ -5,13 +5,18 @@ import (
 	"testing"
 
 	"github.com/bide-ai/bide/agent"
+	"github.com/bide-ai/bide/agent/agenttest"
 	"github.com/bide-ai/bide/middleware"
 )
 
 // S2: a retried streaming turn: one TurnRestarted, and the consumer's text matches the journal.
 func TestS2_RetryStreamRestart(t *testing.T) {
 	m := &flakyModel{name: "p", fail: 1}
-	a := agent.New(m, agent.NewMemStore()).Use(middleware.Retry(2, middleware.WithBackoff(0, 0)))
+	a := agenttest.MustNew(
+		m,
+		agenttest.MemJournal(),
+		agent.WithMiddleware(middleware.Retry(2, middleware.WithBackoff(0, 0))),
+	)
 	if n := streamCheck(t, a.Stream(context.Background(), "r", "q")); n != 1 {
 		t.Fatalf("restarts %d, want 1", n)
 	}
@@ -32,7 +37,11 @@ func TestS3_GuardRejectsStreamedResponse(t *testing.T) {
 			return r, err
 		}
 	}
-	a := agent.New(m, agent.NewMemStore()).Use(middleware.Retry(2, middleware.WithBackoff(0, 0)), guard)
+	a := agenttest.MustNew(
+		m,
+		agenttest.MemJournal(),
+		agent.WithMiddleware(middleware.Retry(2, middleware.WithBackoff(0, 0)), guard),
+	)
 	if n := streamCheck(t, a.Stream(context.Background(), "r", "q")); n != 1 {
 		t.Fatalf("restarts %d, want 1", n)
 	}

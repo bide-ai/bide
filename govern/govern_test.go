@@ -8,6 +8,7 @@ import (
 	"testing"
 
 	"github.com/bide-ai/bide/agent"
+	"github.com/bide-ai/bide/agent/agenttest"
 	gsm "github.com/blackwell-systems/gsm"
 )
 
@@ -183,9 +184,17 @@ func TestGovernor_TwoRealAgentsConverge(t *testing.T) {
 		payTool := EventTool(gov, EventToolConfig{Name: "pay", Description: "process the payment", Event: "process_payment"})
 		restockTool := EventTool(gov, EventToolConfig{Name: "restock", Description: "restock inventory", Event: "restock"})
 
-		store := agent.NewMemStore()
-		payAgent := agent.New(&scriptModel{turns: [][]agent.Emit{toolTurn("p1", "pay"), textTurn("done")}}, store, payTool)
-		invAgent := agent.New(&scriptModel{turns: [][]agent.Emit{toolTurn("r1", "restock"), textTurn("done")}}, store, restockTool)
+		store := agenttest.MemJournal()
+		payAgent := agenttest.MustNew(
+			&scriptModel{turns: [][]agent.Emit{toolTurn("p1", "pay"), textTurn("done")}},
+			store,
+			agent.WithTools(payTool),
+		)
+		invAgent := agenttest.MustNew(
+			&scriptModel{turns: [][]agent.Emit{toolTurn("r1", "restock"), textTurn("done")}},
+			store,
+			agent.WithTools(restockTool),
+		)
 
 		var wg sync.WaitGroup
 		wg.Add(2)

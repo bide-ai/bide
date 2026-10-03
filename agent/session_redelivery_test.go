@@ -55,11 +55,11 @@ func TestSendOnce_RedeliveryIsOneTurn(t *testing.T) {
 	for name, crashAt := range cases {
 		t.Run(name, func(t *testing.T) {
 			m := &replyModel{}
-			var store Durable = NewMemStore()
+			var store Store = NewMemStore()
 			if crashAt != "" {
-				store = &crashOnce{Durable: store, crashName: crashAt}
+				store = &crashOnce{Store: store, crashName: crashAt}
 			}
-			a := New(m, store)
+			a := mustNew(m, mustJournal(store))
 			_, _ = deliver(a, "c1", "evt-1", "hello")
 			msg, err := deliver(a, "c1", "evt-1", "hello") // redelivery
 			if err != nil || msg.Text() != "re: hello" {
@@ -74,7 +74,7 @@ func TestSendOnce_RedeliveryIsOneTurn(t *testing.T) {
 
 // Distinct messages are distinct turns, in order, and the conversation carries across them.
 func TestSendOnce_DistinctKeysAreDistinctTurns(t *testing.T) {
-	a := New(&replyModel{}, NewMemStore())
+	a := mustNew(&replyModel{}, memJournal())
 	for _, ev := range []string{"evt-1", "evt-2", "evt-1"} {
 		if _, err := deliver(a, "c1", ev, "msg "+ev); err != nil {
 			t.Fatal(err)
@@ -87,7 +87,7 @@ func TestSendOnce_DistinctKeysAreDistinctTurns(t *testing.T) {
 
 // A key names one message: reusing it for different text is a caller error, not a new turn.
 func TestSendOnce_KeyReuseWithDifferentInput(t *testing.T) {
-	a := New(&replyModel{}, NewMemStore())
+	a := mustNew(&replyModel{}, memJournal())
 	if _, err := deliver(a, "c1", "evt-1", "hello"); err != nil {
 		t.Fatal(err)
 	}
@@ -101,7 +101,7 @@ func TestSendOnce_KeyReuseWithDifferentInput(t *testing.T) {
 // process dies before the session records it; evt-2 arrives next, then evt-1 is redelivered.
 func TestSendOnce_InterleavedMessagesKeepTheirOwnTurns(t *testing.T) {
 	m := &replyModel{}
-	a := New(m, &crashOnce{Durable: NewMemStore(), crashName: "turn/0"})
+	a := mustNew(m, mustJournal(&crashOnce{Store: NewMemStore(), crashName: "turn/0"}))
 	_, _ = deliver(a, "c1", "evt-1", "first")
 	second, err := deliver(a, "c1", "evt-2", "second")
 	if err != nil || second.Text() != "re: second" {

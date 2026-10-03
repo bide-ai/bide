@@ -162,7 +162,7 @@ func VerifyEventInclusion(root []byte, event agent.AgentEvent, proof EventInclus
 // It errors if a source record has no agent.SaltSize salt, and refuses a journal it cannot
 // project: one holding a redacted record (ErrRedacted) or a record whose stored bytes read two
 // ways to JSON readers (ErrMalformed).
-func EventLogFromJournal(ctx context.Context, store agent.Durable, runID string) (*EventLog, error) {
+func EventLogFromJournal(ctx context.Context, store *agent.Journal, runID string) (*EventLog, error) {
 	evs, salts, err := projectJournal(ctx, store, runID)
 	if err != nil {
 		return nil, err
@@ -192,7 +192,7 @@ func journalEventSalt(recordSalt []byte) []byte {
 
 // projectJournal returns the events agent.ReplayEvents returns for runID's journal and each
 // event's salt, derived from the record the event projects (journalEventSalt).
-func projectJournal(ctx context.Context, store agent.Durable, runID string) ([]agent.AgentEvent, [][]byte, error) {
+func projectJournal(ctx context.Context, store *agent.Journal, runID string) ([]agent.AgentEvent, [][]byte, error) {
 	recs, err := store.History(ctx, runID)
 	if err != nil {
 		return nil, nil, fmt.Errorf("audit: load history %s: %w", runID, err)

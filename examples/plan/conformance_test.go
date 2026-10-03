@@ -15,7 +15,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/bide-ai/bide/agent"
+	"github.com/bide-ai/bide/agent/agenttest"
 	"github.com/bide-ai/bide/audit"
 )
 
@@ -28,7 +28,7 @@ func TestCryptographicConformance(t *testing.T) {
 	if err != nil {
 		t.Fatalf("buildFlow: %v", err)
 	}
-	store := agent.NewMemStore()
+	store := agenttest.MemJournal()
 	const runID = "crypto-run"
 	if _, err := flow.Run(ctx, store, runID, Order{ID: runID, Amount: 500}); err != nil {
 		t.Fatalf("Run: %v", err)

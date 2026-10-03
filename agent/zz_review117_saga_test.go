@@ -38,9 +38,9 @@ func testR117SagaLateErrorOfARetrySafeWrite(t *testing.T) {
 		},
 		func(context.Context, struct{}, string) error { undone.Add(1); return nil },
 		WithTimeout(time.Millisecond))
-	store := NewMemStore()
+	store := memJournal()
 	m := NewScriptedModel(ToolTurn("c1", "hold", `{}`), TextTurn("done"))
-	_, err := New(m, store, hold).RunSaga(context.Background(), "s1", "book")
+	_, err := mustNew(m, store, WithTools(hold)).RunSaga(context.Background(), "s1", "book")
 	var ab *SagaAborted
 	if !errors.As(err, &ab) {
 		t.Fatalf("RunSaga: err = %v, want *SagaAborted", err)
@@ -70,9 +70,9 @@ func testR117NextOnceKeyIsScopedToOneCall(t *testing.T) {
 		<-ctx.Done()
 		return "", ctx.Err()
 	}, WithTimeout(time.Millisecond))
-	store := NewMemStore()
+	store := memJournal()
 	m := NewScriptedModel(ToolTurn("c1", "post", `{}`), ToolTurn("c2", "post", `{}`), TextTurn("done"))
-	if _, err := New(m, store, post).Run(context.Background(), "r1", "post it"); err != nil {
+	if _, err := mustNew(m, store, WithTools(post)).Run(context.Background(), "r1", "post it"); err != nil {
 		t.Fatalf("Run: %v", err)
 	}
 	if len(applied) != 2 || !applied[SubRunID("r1", "c1")+"#0"] || !applied[SubRunID("r1", "c2")+"#0"] {

@@ -45,7 +45,7 @@ func TestRun_ToolCallsRunWhateverTheReason(t *testing.T) {
 		calls.Add(1)
 		return "found", nil
 	})
-	final, err := New(&stopCallModel{}, NewMemStore(), tool).Run(context.Background(), "r", "go")
+	final, err := mustNew(&stopCallModel{}, memJournal(), WithTools(tool)).Run(context.Background(), "r", "go")
 	if err != nil || final.Text() != "done" || calls.Load() != 1 {
 		t.Fatalf("final %q, err %v, tool ran %d times; want done, nil, 1", final.Text(), err, calls.Load())
 	}

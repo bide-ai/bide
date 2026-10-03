@@ -72,7 +72,7 @@ func TestDriveStackHighWater(t *testing.T) {
 	for i := range 9 {
 		turns = append(turns, TextTurn(fmt.Sprint("answer ", i)))
 	}
-	a := New(NewScriptedModel(turns...), NewMemStore())
+	a := mustNew(NewScriptedModel(turns...), memJournal())
 	probe := 0 // the stack probeDriveStack touches: its frame, at least driveStackProbe bytes
 	worst, valid := 0, 0
 	for i := range 9 { // the first drive (one-time initialization in the process) is not counted

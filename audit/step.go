@@ -12,7 +12,7 @@ import (
 // counterpart to ProveToolCall: after a Parallel run, each task is an independently provable
 // record, so an auditor can prove "this specific compliance check ran and produced this result"
 // without disclosing the other stages.
-func ProveStep(ctx context.Context, store agent.Durable, runID, name string, sth SignedTreeHead) (ProofBundle, error) {
+func ProveStep(ctx context.Context, store *agent.Journal, runID, name string, sth SignedTreeHead) (ProofBundle, error) {
 	recs, err := store.History(ctx, runID)
 	if err != nil {
 		return ProofBundle{}, fmt.Errorf("audit: load journal %s: %w", runID, err)

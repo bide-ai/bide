@@ -6,7 +6,9 @@ import (
 	"testing"
 
 	"github.com/bide-ai/bide/agent"
+	"github.com/bide-ai/bide/agent/agenttest"
 	"github.com/bide-ai/bide/audit"
+	"github.com/bide-ai/bide/internal/journaltest"
 )
 
 // keyRecs builds a set of records whose ToolUseKeys are exactly the given tool-use IDs.
@@ -106,14 +108,15 @@ func TestAbsence_AdjacencyIsEnforced(t *testing.T) {
 func TestAbsence_Bundle(t *testing.T) {
 	ctx := context.Background()
 	store := agent.NewMemStore()
+	j := agenttest.MustJournal(store)
 	for _, r := range keyRecs("b", "d", "f") {
 		r := r
-		if _, err := store.Do(ctx, "run", r.ToolUseID, func(context.Context) (agent.Record, error) { return r, nil }); err != nil {
+		if _, err := journaltest.Do(ctx, j, "run", r.ToolUseID, func(context.Context) (agent.Record, error) { return r, nil }); err != nil {
 			t.Fatal(err)
 		}
 	}
-	recs, _ := store.History(ctx, "run")
-	journal, err := audit.NewTreeHead(ctx, store, "run", 1000)
+	recs, _ := j.History(ctx, "run")
+	journal, err := audit.NewTreeHead(ctx, j, "run", 1000)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -139,12 +142,13 @@ func TestAbsence_Bundle(t *testing.T) {
 
 	// An STH over a different run's key set is rejected at proof time (fidelity guard).
 	other := agent.NewMemStore()
+	j2 := agenttest.MustJournal(other)
 	for _, r := range keyRecs("x", "y", "z") {
 		r := r
-		_, _ = other.Do(ctx, "run", r.ToolUseID, func(context.Context) (agent.Record, error) { return r, nil })
+		_, _ = journaltest.Do(ctx, j2, "run", r.ToolUseID, func(context.Context) (agent.Record, error) { return r, nil })
 	}
-	otherRecs, _ := other.History(ctx, "run")
-	otherJournal, _ := audit.NewTreeHead(ctx, other, "run", 1000)
+	otherRecs, _ := j2.History(ctx, "run")
+	otherJournal, _ := audit.NewTreeHead(ctx, j2, "run", 1000)
 	otherSTH, err := audit.SignAbsenceRoot(otherRecs, audit.ToolUseKeys, otherJournal, edS(priv), 1000)
 	if err != nil {
 		t.Fatal(err)

@@ -48,6 +48,7 @@ func lapsedTakeover(t *testing.T, halted int, visit, interval, deadTTL time.Dura
 	t.Helper()
 	ctx := context.Background()
 	s := NewMemStore()
+	j := mustJournal(s)
 	for i := 1; i <= halted; i++ {
 		seedRun(t, s, fmt.Sprintf("h%d", i))
 	}
@@ -57,7 +58,7 @@ func lapsedTakeover(t *testing.T, halted int, visit, interval, deadTTL time.Dura
 	}
 	lapse := time.Now().Add(deadTTL)
 	drivenAt := make(chan time.Time, 1)
-	stop := runLoop(t, s, func(ctx context.Context, id string, _ RunStart) error {
+	stop := runLoop(t, j, func(ctx context.Context, id string, _ RunStart) error {
 		if id != "z" {
 			time.Sleep(visit)
 			return &OutcomeUnknown{RunRef: RunRef{RunID: id}} // halted: stays unfinished
@@ -66,7 +67,7 @@ func lapsedTakeover(t *testing.T, halted int, visit, interval, deadTTL time.Dura
 		case drivenAt <- time.Now():
 		default:
 		}
-		_, err := s.Do(ctx, id, runCompleteStep, func(context.Context) (Record, error) { return Record{Kind: StepValue}, nil })
+		_, err := j.do(ctx, id, runCompleteStep, func(context.Context) (Record, error) { return Record{Kind: StepValue}, nil })
 		return err
 	}, WithRecoverInterval(interval), WithRecoverConcurrency(1), WithLeaseTTL(10*interval))
 	defer stop()
@@ -93,6 +94,7 @@ func TestRecoverLoop_LoopsDoNotStartARunTheOtherIsDriving(t *testing.T) {
 func testRecoverLoopLoopsDoNotStartARunTheOtherIsDriving(t *testing.T) {
 	ctx := context.Background()
 	s := &countingStore{MemStore: NewMemStore()}
+	j := mustJournal(s)
 	seedRun(t, s.MemStore, "h")
 	seedRun(t, s.MemStore, "z")
 	if ok, _ := s.MemStore.AcquireLease(ctx, "z", "dead-worker#0", 30*time.Millisecond); !ok {
@@ -100,7 +102,7 @@ func testRecoverLoopLoopsDoNotStartARunTheOtherIsDriving(t *testing.T) {
 	}
 	release := make(chan struct{})
 	zStarted := make(chan struct{})
-	stop := runLoop(t, s, func(ctx context.Context, id string, _ RunStart) error {
+	stop := runLoop(t, j, func(ctx context.Context, id string, _ RunStart) error {
 		if id == "h" {
 			time.Sleep(50 * time.Millisecond) // holds the full pass's only slot past z's lapse
 			return &OutcomeUnknown{RunRef: RunRef{RunID: id}}
@@ -130,10 +132,11 @@ func TestRecoverLoop_LapsedLoopSkipsARunItsProcessIsDriving(t *testing.T) {
 
 func testRecoverLoopLapsedLoopSkipsARunItsProcessIsDriving(t *testing.T) {
 	s := &failRenewStore{countingStore{MemStore: NewMemStore()}}
+	j := mustJournal(s)
 	seedRun(t, s.MemStore, "r")
 	release := make(chan struct{})
 	started := make(chan struct{})
-	stop := runLoop(t, s, func(ctx context.Context, id string, _ RunStart) error {
+	stop := runLoop(t, j, func(ctx context.Context, id string, _ RunStart) error {
 		close(started)
 		<-release // ignores ctx: still driving after the lease lapsed
 		return nil
@@ -173,7 +176,7 @@ func TestRecoverLoop_NoLapsedLoopWithoutLeaser(t *testing.T) {
 
 func testRecoverLoopNoLapsedLoopWithoutLeaser(t *testing.T) {
 	s := &unleasedStore{m: NewMemStore()}
-	stop := runLoop(t, s, func(context.Context, string, RunStart) error { return nil }, WithRecoverInterval(10*time.Millisecond))
+	stop := runLoop(t, mustJournal(s), func(context.Context, string, RunStart) error { return nil }, WithRecoverInterval(10*time.Millisecond))
 	time.Sleep(55 * time.Millisecond)
 	_ = stop()
 	s.mu.Lock()
@@ -183,19 +186,23 @@ func testRecoverLoopNoLapsedLoopWithoutLeaser(t *testing.T) {
 	}
 }
 
-// unleasedStore is a Durable that implements Lister and not Leaser, counting its listings.
+// unleasedStore is a Store that implements Lister and not Leaser, counting its listings.
 type unleasedStore struct {
 	m            *MemStore
 	mu           sync.Mutex
 	full, lapsed int
 }
 
-func (u *unleasedStore) Do(ctx context.Context, runID, name string, fn func(context.Context) (Record, error)) (Record, error) {
-	return u.m.Do(ctx, runID, name, fn)
+func (u *unleasedStore) Insert(ctx context.Context, runID, name string, data []byte) (Entry, bool, error) {
+	return u.m.Insert(ctx, runID, name, data)
 }
 
-func (u *unleasedStore) History(ctx context.Context, runID string) ([]Record, error) {
-	return u.m.History(ctx, runID)
+func (u *unleasedStore) Get(ctx context.Context, runID, name string) (Entry, bool, error) {
+	return u.m.Get(ctx, runID, name)
+}
+
+func (u *unleasedStore) Load(ctx context.Context, runID string, after int64) iter.Seq2[Entry, error] {
+	return u.m.Load(ctx, runID, after)
 }
 
 func (u *unleasedStore) Runs(ctx context.Context, f RunFilter) iter.Seq2[string, error] {
@@ -220,10 +227,11 @@ func testRecoverLoopLapsedLoopDrivesOnlyLapsedUnfinishedRuns(t *testing.T) {
 	ctx := context.Background()
 	// Reaping is off, so the finished run's lapsed lease stays and the listing must exclude it.
 	s := &noReapStore{countingStore{MemStore: NewMemStore()}}
+	j := mustJournal(s)
 	for _, id := range []string{"a", "done", "live", "none"} {
 		seedRun(t, s.MemStore, id)
 	}
-	if _, err := s.Do(ctx, "done", runCompleteStep, func(context.Context) (Record, error) { return Record{Kind: StepValue}, nil }); err != nil {
+	if _, err := j.do(ctx, "done", runCompleteStep, func(context.Context) (Record, error) { return Record{Kind: StepValue}, nil }); err != nil {
 		t.Fatal(err)
 	}
 	if ok, _ := s.MemStore.AcquireLease(ctx, "done", "dead-worker#0", time.Millisecond); !ok {
@@ -233,7 +241,7 @@ func testRecoverLoopLapsedLoopDrivesOnlyLapsedUnfinishedRuns(t *testing.T) {
 		t.Fatal("setup: the other worker should hold live")
 	}
 	release := make(chan struct{})
-	stop := runLoop(t, s, func(ctx context.Context, id string, _ RunStart) error {
+	stop := runLoop(t, j, func(ctx context.Context, id string, _ RunStart) error {
 		if id == "a" {
 			<-release // holds the full pass's only slot
 		}
@@ -292,9 +300,10 @@ func TestRecoverLoop_PassDoesNotWaitForASlotForARunInFlight(t *testing.T) {
 
 func testRecoverLoopPassDoesNotWaitForASlotForARunInFlight(t *testing.T) {
 	s := &countingStore{MemStore: NewMemStore()}
+	j := mustJournal(s)
 	seedRun(t, s.MemStore, "a")
 	release := make(chan struct{})
-	stop := runLoop(t, s, func(ctx context.Context, id string, _ RunStart) error {
+	stop := runLoop(t, j, func(ctx context.Context, id string, _ RunStart) error {
 		<-release
 		return nil
 	}, WithRecoverInterval(20*time.Millisecond), WithRecoverConcurrency(1))
@@ -317,6 +326,7 @@ func TestRecoverLoop_ReportsAFailedReap(t *testing.T) {
 
 func testRecoverLoopReportsAFailedReap(t *testing.T) {
 	s := &failReapStore{countingStore{MemStore: NewMemStore()}}
+	j := mustJournal(s)
 	seedRun(t, s.MemStore, "z")
 	if ok, _ := s.MemStore.AcquireLease(context.Background(), "z", "dead-worker#0", time.Millisecond); !ok {
 		t.Fatal("setup: the dead worker should hold z")
@@ -325,7 +335,7 @@ func testRecoverLoopReportsAFailedReap(t *testing.T) {
 	var errs []error
 	driven := make(chan struct{})
 	var once sync.Once
-	stop := runLoop(t, s, func(context.Context, string, RunStart) error {
+	stop := runLoop(t, j, func(context.Context, string, RunStart) error {
 		once.Do(func() { close(driven) })
 		return &OutcomeUnknown{RunRef: RunRef{RunID: "z"}}
 	}, WithRecoverInterval(20*time.Millisecond), WithRecoverErrors(func(err error) {

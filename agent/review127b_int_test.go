@@ -15,12 +15,12 @@ import (
 // never read: the child's completed, compensable book is neither compensated nor listed (only
 // "charge" is listed as unknown). The live path walks a failed-unknown call's sub-runs.
 func TestAdv127b_RerunUnknownSkipsItsSubRuns(t *testing.T) {
-	store := NewMemStore()
+	store := memJournal()
 	var undone, calls atomic.Int32
 	book := CompensatedFunc("book", "", Safety{},
 		func(context.Context, struct{}) (string, error) { return "booked", nil },
 		func(context.Context, struct{}, string) error { undone.Add(1); return nil })
-	child, err := Build(NewScriptedModel(ToolTurn("k1", "book", `{}`), TextTurn("child done")), store.Journal(), WithTools(book))
+	child, err := New(NewScriptedModel(ToolTurn("k1", "book", `{}`), TextTurn("child done")), store, WithTools(book))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -44,7 +44,7 @@ func TestAdv127b_RerunUnknownSkipsItsSubRuns(t *testing.T) {
 		<-started
 		return "", errors.New("declined")
 	})
-	_, err = New(t4TwoCalls{}, store, charge, fail).RunSaga(context.Background(), "r", "go")
+	_, err = mustNew(t4TwoCalls{}, store, WithTools(charge, fail)).RunSaga(context.Background(), "r", "go")
 	var ab *SagaAborted
 	if !errors.As(err, &ab) {
 		t.Fatalf("RunSaga = %v, want *SagaAborted", err)
@@ -57,7 +57,7 @@ func TestAdv127b_RerunUnknownSkipsItsSubRuns(t *testing.T) {
 			undone.Load(), ab.Compensated, ab.Uncompensated, ab.UnknownOutcome, ab.CompensateErr)
 	}
 	// The rollback finished and marked the run terminal, so no later drive revisits it.
-	if _, err := New(t4TwoCalls{}, store, charge, fail).RunSaga(context.Background(), "r", "go"); errors.As(err, &ab) && undone.Load() == 0 {
+	if _, err := mustNew(t4TwoCalls{}, store, WithTools(charge, fail)).RunSaga(context.Background(), "r", "go"); errors.As(err, &ab) && undone.Load() == 0 {
 		t.Logf("second drive: compensated %v, unknown %v; book still not undone", ab.Compensated, ab.UnknownOutcome)
 	}
 }

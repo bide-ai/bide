@@ -16,14 +16,15 @@ func TestRV126_LapsedRowOnFinishedRunIsNeverReaped(t *testing.T) {
 	synctest.Test(t, func(t *testing.T) {
 		ctx := context.Background()
 		s := NewMemStore()
+		j := mustJournal(s)
 		seedRun(t, s, "f")
-		if _, err := s.Do(ctx, "f", runCompleteStep, func(context.Context) (Record, error) { return Record{Kind: StepValue}, nil }); err != nil {
+		if _, err := j.do(ctx, "f", runCompleteStep, func(context.Context) (Record, error) { return Record{Kind: StepValue}, nil }); err != nil {
 			t.Fatal(err)
 		}
 		if ok, _ := s.AcquireLease(ctx, "f", "dead-worker#0", time.Millisecond); !ok {
 			t.Fatal("setup: the dead worker should hold f")
 		}
-		stop := runLoop(t, s, func(context.Context, string, RunStart) error { return nil }, WithRecoverInterval(20*time.Millisecond))
+		stop := runLoop(t, j, func(context.Context, string, RunStart) error { return nil }, WithRecoverInterval(20*time.Millisecond))
 		time.Sleep(2 * time.Second) // a hundred passes of each loop
 		synctest.Wait()
 		_ = stop()

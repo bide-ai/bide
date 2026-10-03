@@ -56,9 +56,10 @@ func TestLease_RetriesAFailedRenewal(t *testing.T) { synctest.Test(t, testRetrie
 func testRetriesAFailedRenewal(t *testing.T) {
 	const ttl = 400 * time.Millisecond
 	s := &failingRenewLeaser{MemStore: NewMemStore(), failures: 2}
+	j := mustJournal(s)
 	var stopped time.Duration
 	var cancelled bool
-	driven, err := Lease(context.Background(), s, "r", driveFor(2*ttl, &stopped, &cancelled),
+	driven, err := Lease(context.Background(), j, "r", driveFor(2*ttl, &stopped, &cancelled),
 		WithLeaseHolder("a"), WithLeaseTTL(ttl))
 	if !driven || err != nil || cancelled {
 		t.Fatalf("Lease = (%v, %v), cancelled after %v: two failed renewals, with time left to retry, cancelled the drive", driven, err, stopped)
@@ -89,10 +90,11 @@ func TestLease_GivesUpBeforeTheLeaseCanExpire(t *testing.T) {
 		t.Run(tc.name, func(t *testing.T) {
 			synctest.Test(t, func(t *testing.T) {
 				s := tc.store()
+				j := mustJournal(s)
 				var stopped time.Duration
 				var cancelled bool
 				start := time.Now()
-				driven, _ := Lease(context.Background(), s, "r", driveFor(3*ttl, &stopped, &cancelled),
+				driven, _ := Lease(context.Background(), j, "r", driveFor(3*ttl, &stopped, &cancelled),
 					WithLeaseHolder("a"), WithLeaseTTL(ttl))
 				elapsed := time.Since(start)
 				if !driven || !cancelled {

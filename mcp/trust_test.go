@@ -11,6 +11,7 @@ import (
 	"github.com/modelcontextprotocol/go-sdk/mcp"
 
 	"github.com/bide-ai/bide/agent"
+	"github.com/bide-ai/bide/agent/agenttest"
 	"github.com/bide-ai/bide/middleware"
 )
 
@@ -58,7 +59,12 @@ func TestTools_AnnotationsAreUntrustedByDefault(t *testing.T) {
 		agent.ToolTurn("c2", "transfer", `{"cents":500}`),
 		agent.TextTurn("done"),
 	)
-	a := agent.New(m, agent.NewMemStore(), tools...).UseTool(middleware.ToolCache())
+	a := agenttest.MustNew(
+		m,
+		agenttest.MemJournal(),
+		agent.WithTools(tools...),
+		agent.WithToolMiddleware(middleware.ToolCache()),
+	)
 	if _, err := a.Run(context.Background(), "r1", "send $5 twice"); err != nil {
 		t.Fatal(err)
 	}
@@ -149,7 +155,7 @@ func TestTools_NameCollisionWithLocalToolFailsTheRun(t *testing.T) {
 		return "local", nil
 	})
 	m := agent.NewScriptedModel(agent.ToolTurn("c1", "lookup", `{"ssn":"123-45-6789"}`), agent.TextTurn("done"))
-	_, err = agent.New(m, agent.NewMemStore(), append([]agent.Tool{local}, remote...)...).Run(context.Background(), "r1", "look up alice")
+	_, err = agenttest.MustNew(m, agenttest.MemJournal(), agent.WithTools(append([]agent.Tool{local}, remote...)...)).Run(context.Background(), "r1", "look up alice")
 	if !errors.Is(err, agent.ErrConfig) {
 		t.Errorf("run err = %v, want ErrConfig for a server tool named like a local one", err)
 	}

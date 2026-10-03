@@ -8,6 +8,7 @@ import (
 	"testing"
 
 	"github.com/bide-ai/bide/agent"
+	"github.com/bide-ai/bide/agent/agenttest"
 	"github.com/bide-ai/bide/audit"
 )
 
@@ -74,18 +75,19 @@ func TestMemAnchorLog_InclusionAndConsistency(t *testing.T) {
 func TestAuditedStore_AnchorsEachStep(t *testing.T) {
 	ctx := context.Background()
 	jStore := agent.NewMemStore()
+	j := agenttest.MustJournal(jStore)
 	pub, priv, _ := ed25519.GenerateKey(nil)
 	anchorLog := audit.NewMemAnchorLog()
 
 	var ts int64
-	store := mustAuditedStore(t, jStore, priv, anchorLog).WithClock(func() int64 { ts++; return ts })
+	store := agenttest.MustJournal(mustAuditedStore(t, j, priv, anchorLog).WithClock(func() int64 { ts++; return ts }))
 	tool := agent.Func("lookup", "", agent.Safety{ReadOnly: true},
 		func(_ context.Context, _ struct{}) (string, error) { return "ok", nil })
-	if _, err := agent.New(&twoTurnModel{}, store, tool).Run(ctx, "run", "hi"); err != nil {
+	if _, err := agenttest.MustNew(&twoTurnModel{}, store, agent.WithTools(tool)).Run(ctx, "run", "hi"); err != nil {
 		t.Fatalf("run: %v", err)
 	}
 
-	recs, _ := jStore.History(ctx, "run")
+	recs, _ := j.History(ctx, "run")
 	entries := anchorLog.Entries()
 	// One anchored STH per journal growth: each step grows the journal by one, and the first
 	// also writes the journal header.
@@ -104,7 +106,7 @@ func TestAuditedStore_AnchorsEachStep(t *testing.T) {
 	if last.STH.Size != len(recs) || last.STH.Verify(edV(pub)) != nil {
 		t.Fatalf("final STH bad (size=%d/%d verify=%v)", last.STH.Size, len(recs), last.STH.Verify(edV(pub)))
 	}
-	jRoot, _ := audit.Root(ctx, jStore, "run")
+	jRoot, _ := audit.Root(ctx, j, "run")
 	if !bytes.Equal(last.STH.Root, jRoot) {
 		t.Fatal("final anchored root != journal Merkle root")
 	}
@@ -149,16 +151,16 @@ func (finalModel) Stream(_ context.Context, _ agent.Request) (*agent.Stream, err
 // exactly once, so total anchors == total records even across a crash+resume.
 func TestAuditedStore_NoReanchorOnResume(t *testing.T) {
 	ctx := context.Background()
-	jStore := agent.NewMemStore()
+	jStore := agenttest.MemJournal()
 	_, priv, _ := ed25519.GenerateKey(nil)
 	anchorLog := audit.NewMemAnchorLog()
 	var ts int64
-	store := mustAuditedStore(t, jStore, priv, anchorLog).WithClock(func() int64 { ts++; return ts })
+	store := agenttest.MustJournal(mustAuditedStore(t, jStore, priv, anchorLog).WithClock(func() int64 { ts++; return ts }))
 	tool := agent.Func("lookup", "", agent.Safety{ReadOnly: true},
 		func(_ context.Context, _ struct{}) (string, error) { return "ok", nil })
 
 	// Crash mid-run: the tool call + result commit, the second model turn dies.
-	if _, err := agent.New(&crashyModel{}, store, tool).Run(ctx, "run", "hi"); err == nil {
+	if _, err := agenttest.MustNew(&crashyModel{}, store, agent.WithTools(tool)).Run(ctx, "run", "hi"); err == nil {
 		t.Fatal("expected the injected crash to fail the run")
 	}
 	crashRecs, _ := jStore.History(ctx, "run")
@@ -168,7 +170,7 @@ func TestAuditedStore_NoReanchorOnResume(t *testing.T) {
 	}
 
 	// Resume: replayed steps must NOT re-anchor; only the final turn adds one.
-	if _, err := agent.New(finalModel{}, store, tool).Run(ctx, "run", "hi"); err != nil {
+	if _, err := agenttest.MustNew(finalModel{}, store, agent.WithTools(tool)).Run(ctx, "run", "hi"); err != nil {
 		t.Fatalf("resume: %v", err)
 	}
 	finalRecs, _ := jStore.History(ctx, "run")
@@ -192,15 +194,15 @@ func (e errAnchor) Publish(context.Context, string, audit.SignedTreeHead) error 
 // step — the journal is the source of truth and a non-idempotent step must not be retried.
 func TestAuditedStore_PublishErrorDoesNotFailStep(t *testing.T) {
 	ctx := context.Background()
-	jStore := agent.NewMemStore()
+	jStore := agenttest.MemJournal()
 	_, priv, _ := ed25519.GenerateKey(nil)
 	var pubCalls, errCalls int
-	store := mustAuditedStore(t, jStore, priv, errAnchor{&pubCalls}).
-		OnError(func(string, error) { errCalls++ })
+	store := agenttest.MustJournal(mustAuditedStore(t, jStore, priv, errAnchor{&pubCalls}).
+		OnError(func(string, error) { errCalls++ }))
 	tool := agent.Func("lookup", "", agent.Safety{ReadOnly: true},
 		func(_ context.Context, _ struct{}) (string, error) { return "ok", nil })
 
-	out, err := agent.New(&twoTurnModel{}, store, tool).Run(ctx, "run", "hi")
+	out, err := agenttest.MustNew(&twoTurnModel{}, store, agent.WithTools(tool)).Run(ctx, "run", "hi")
 	if err != nil {
 		t.Fatalf("run must succeed despite anchor failures: %v", err)
 	}

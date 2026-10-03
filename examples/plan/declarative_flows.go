@@ -13,6 +13,7 @@ package main
 import (
 	"context"
 	"fmt"
+	"log"
 
 	"github.com/bide-ai/bide/agent"
 	"github.com/bide-ai/bide/plan"
@@ -220,7 +221,10 @@ func demoDeclarativeJoin(ctx context.Context) {
 	fmt.Println("Declared topology from config (flow.RenderMermaid):")
 	fmt.Println(loaded.RenderMermaid())
 
-	store := agent.NewMemStore()
+	store, err := agent.NewJournal(agent.NewMemStore())
+	if err != nil {
+		log.Fatal(err)
+	}
 	const runID = "diamond-config-demo"
 	out, err := loaded.Run(ctx, store, runID, 3)
 	if err != nil {
@@ -275,7 +279,10 @@ func demoDeclarativeLoop(ctx context.Context) {
 	fmt.Println("Declared topology from config (flow.RenderMermaid):")
 	fmt.Println(loaded.RenderMermaid())
 
-	store := agent.NewMemStore()
+	store, err := agent.NewJournal(agent.NewMemStore())
+	if err != nil {
+		log.Fatal(err)
+	}
 	const runID = "loop-config-demo"
 	out, err := loaded.Run(ctx, store, runID, 3)
 	if err != nil {

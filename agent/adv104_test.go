@@ -94,7 +94,7 @@ func answerAndLeave(bg *lateModel) Middleware {
 	}
 }
 
-func names(t *testing.T, d Durable, runID string) []string {
+func names(t *testing.T, d *Journal, runID string) []string {
 	t.Helper()
 	recs, err := d.History(context.Background(), runID)
 	if err != nil {
@@ -130,10 +130,10 @@ func TestAdv104_F4LandedResidualSpendIsAFailedTurnInReplay(t *testing.T) {
 		t.Fatal(err)
 	}
 	m := &scriptModel{turns: [][]Emit{textTurnWithUsage("done", billed)}}
-	if _, err := New(m, j).Use(answerAndLeave(bg)).RunResult(ctx, "r", "go"); err == nil {
+	if _, err := mustNew(m, j, WithMiddleware(answerAndLeave(bg))).RunResult(ctx, "r", "go"); err == nil {
 		t.Fatal("want the write failure")
 	}
-	res, err := New(&scriptModel{}, j).RunResult(ctx, "r", "go")
+	res, err := mustNew(&scriptModel{}, j).RunResult(ctx, "r", "go")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -146,7 +146,7 @@ func TestAdv104_F4LandedResidualSpendIsAFailedTurnInReplay(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	rres, rerr := New(rm, NewMemStore()).RunResult(ctx, "r", "go")
+	rres, rerr := mustNew(rm, memJournal()).RunResult(ctx, "r", "go")
 	t.Logf("original journal: %v", names(t, j, "r"))
 	if rerr != nil {
 		t.Fatalf("replayed run failed: %v", rerr)
@@ -169,13 +169,13 @@ func TestAdv104_F4LookupErrorDoubleCounts(t *testing.T) {
 		t.Fatal(err)
 	}
 	m := &scriptModel{turns: [][]Emit{textTurnWithUsage("done", billed)}}
-	if _, err := New(m, j).RunResult(ctx, "r", "go"); err == nil {
+	if _, err := mustNew(m, j).RunResult(ctx, "r", "go"); err == nil {
 		t.Fatal("want the write failure")
 	}
 	st.mu.Lock()
 	st.failGet = map[string]bool{}
 	st.mu.Unlock()
-	res, err := New(&scriptModel{}, j).RunResult(ctx, "r", "go")
+	res, err := mustNew(&scriptModel{}, j).RunResult(ctx, "r", "go")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -202,7 +202,7 @@ func TestAdv104_F3FailedTurnWaitsTwice(t *testing.T) {
 			}
 		}
 		start := time.Now()
-		_, err := New(bg, NewMemStore()).Use(fail).RunResult(context.Background(), "r", "go")
+		_, err := mustNew(bg, memJournal(), WithMiddleware(fail)).RunResult(context.Background(), "r", "go")
 		elapsed := time.Since(start)
 		close(gate)
 		wg.Wait()
@@ -231,10 +231,10 @@ func TestAdv104_LateSpendCommittedThenErrored(t *testing.T) {
 	}
 	j, _ := NewJournal(st)
 	m := &scriptModel{turns: [][]Emit{textTurnWithUsage("done", billed)}}
-	if _, err := New(m, j).Use(answerAndLeave(bg)).RunResult(ctx, "r", "go"); err == nil {
+	if _, err := mustNew(m, j, WithMiddleware(answerAndLeave(bg))).RunResult(ctx, "r", "go"); err == nil {
 		t.Fatal("want the late spend write's error")
 	}
-	res, err := New(&scriptModel{}, j).RunResult(ctx, "r", "go")
+	res, err := mustNew(&scriptModel{}, j).RunResult(ctx, "r", "go")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -261,10 +261,10 @@ func TestAdv104_CrashBetweenLateSpendAndComplete(t *testing.T) {
 	}
 	j, _ := NewJournal(st)
 	m := &scriptModel{turns: [][]Emit{textTurnWithUsage("done", billed)}}
-	if _, err := New(m, j).Use(answerAndLeave(bg)).RunResult(ctx, "r", "go"); err == nil {
+	if _, err := mustNew(m, j, WithMiddleware(answerAndLeave(bg))).RunResult(ctx, "r", "go"); err == nil {
 		t.Fatal("want the run:complete write's error")
 	}
-	res, err := New(&scriptModel{}, j).RunResult(ctx, "r", "go")
+	res, err := mustNew(&scriptModel{}, j).RunResult(ctx, "r", "go")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -292,7 +292,7 @@ func TestAdv104_PauseThenResumeLateSpendOnce(t *testing.T) {
 	var charged int
 	charge := &countingTool{name: "charge", approval: SingleApproval(), calls: &charged}
 	m := &scriptModel{turns: [][]Emit{toolTurnWithUsage("c1", "charge", `{}`, billed)}}
-	_, err := New(m, j, charge).Use(answerAndLeave(bg)).RunResult(ctx, "r", "go")
+	_, err := mustNew(m, j, WithTools(charge), WithMiddleware(answerAndLeave(bg))).RunResult(ctx, "r", "go")
 	var pend *PendingApproval
 	if !errors.As(err, &pend) {
 		t.Fatalf("err = %v, want a pause", err)
@@ -300,7 +300,7 @@ func TestAdv104_PauseThenResumeLateSpendOnce(t *testing.T) {
 	if err := Approve(ctx, j, "r", pend.ToolUseID, true); err != nil {
 		t.Fatal(err)
 	}
-	res, err := New(&scriptModel{turns: [][]Emit{textTurnWithUsage("done", billed)}}, j, charge).RunResult(ctx, "r", "go")
+	res, err := mustNew(&scriptModel{turns: [][]Emit{textTurnWithUsage("done", billed)}}, j, WithTools(charge)).RunResult(ctx, "r", "go")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -332,7 +332,7 @@ func TestAdv104_OnAnswerRunsForUnrecordedResponse(t *testing.T) {
 		}
 	}
 	m := &scriptModel{turns: [][]Emit{textTurnWithUsage("one", billed), textTurnWithUsage("two", billed)}}
-	a := New(m, j).Use(count)
+	a := mustNew(m, j, WithMiddleware(count))
 	if _, err := a.RunResult(ctx, "r", "go"); err == nil {
 		t.Fatal("want the write failure")
 	}

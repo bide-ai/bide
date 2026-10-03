@@ -60,9 +60,9 @@ func ModelInfoOf(m Model) (ModelInfo, bool) {
 }
 
 // ToolRules is an optional interface a Model implements to declare the tool setups its provider
-// refuses, so Build and With refuse them when the agent is built instead of every run failing.
+// refuses, so New and With refuse them when the agent is built instead of every run failing.
 // A Model that does not implement it (itself or through an Unwrap() Model chain, as for
-// ModelInfoOf) declares nothing, and Build checks nothing of the kind for it.
+// ModelInfoOf) declares nothing, and New checks nothing of the kind for it.
 type ToolRules interface {
 	// ToolNameRule is the pattern every tool name must match; nil declares none.
 	ToolNameRule() *regexp.Regexp

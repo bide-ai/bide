@@ -20,7 +20,7 @@ type drainTool struct {
 func (t *drainTool) Name() string                { return t.name }
 func (t *drainTool) Description() string         { return "" }
 func (t *drainTool) Safety() Safety              { return Safety{ReadOnly: true} }
-func (t *drainTool) ArgsSchema() json.RawMessage { return nil }
+func (t *drainTool) ArgsSchema() json.RawMessage { return json.RawMessage(`{"type":"object"}`) }
 func (t *drainTool) Call(ctx context.Context, _ json.RawMessage) (json.RawMessage, error) {
 	*t.calls++
 	d, runID, _ := runContext(ctx)
@@ -38,7 +38,7 @@ func (t *drainTool) Call(ctx context.Context, _ json.RawMessage) (json.RawMessag
 
 // Order + exactly-once: three messages are consumed in delivery order, each once.
 func TestChannel_OrderExactlyOnce(t *testing.T) {
-	store := NewMemStore()
+	store := memJournal()
 	ctx := context.Background()
 	for _, m := range []struct{ k, v string }{{"k1", "one"}, {"k2", "two"}, {"k3", "three"}} {
 		if err := Send(ctx, store, "r", "inbox", m.k, m.v); err != nil {
@@ -52,7 +52,7 @@ func TestChannel_OrderExactlyOnce(t *testing.T) {
 	// After draining all three the tool loops back to Receive, hits an empty channel, and
 	// pauses with *Awaiting; the second turn's script line is never reached.
 	m := &scriptModel{turns: [][]Emit{toolTurn("c1", "drain", `{}`), textTurn("done")}}
-	a := New(m, store, tool)
+	a := mustNew(m, store, WithTools(tool))
 
 	_, err := a.Run(ctx, "r", "hi")
 	var awt *Awaiting
@@ -73,7 +73,7 @@ func TestChannel_OrderExactlyOnce(t *testing.T) {
 // Redelivery dedup: sending the same key twice with different payloads records one message and
 // the first payload wins (at-most-once intake over at-least-once transport).
 func TestSend_RedeliveryIsAtMostOnce(t *testing.T) {
-	store := NewMemStore()
+	store := memJournal()
 	ctx := context.Background()
 	if err := Send(ctx, store, "r", "inbox", "k1", "first"); err != nil {
 		t.Fatal(err)
@@ -104,14 +104,14 @@ func TestSend_RedeliveryIsAtMostOnce(t *testing.T) {
 // Empty channel pauses: Receive on an empty channel yields *Awaiting; after Send + re-run it
 // resolves and the run completes.
 func TestChannel_EmptyPausesThenResumes(t *testing.T) {
-	store := NewMemStore()
+	store := memJournal()
 	ctx := context.Background()
 
 	var calls int
 	var got []string
 	tool := &drainTool{name: "drain", ch: "inbox", calls: &calls, got: &got}
 	m := &scriptModel{turns: [][]Emit{toolTurn("c1", "drain", `{}`), textTurn("done")}}
-	a := New(m, store, tool)
+	a := mustNew(m, store, WithTools(tool))
 
 	_, err := a.Run(ctx, "r", "hi") // channel empty: pauses immediately
 	var awt *Awaiting
@@ -145,7 +145,7 @@ func TestChannel_EmptyPausesThenResumes(t *testing.T) {
 // Resume mid-stream: acking k1 (as a durable journal entry) makes a fresh Receive return k2,
 // simulating replay where acks are journaled and Receive advances past handled messages.
 func TestChannel_ResumeMidStream(t *testing.T) {
-	store := NewMemStore()
+	store := memJournal()
 	ctx := context.Background()
 	for _, m := range []struct{ k, v string }{{"k1", "one"}, {"k2", "two"}, {"k3", "three"}} {
 		if err := Send(ctx, store, "r", "inbox", m.k, m.v); err != nil {

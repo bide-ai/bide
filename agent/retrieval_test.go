@@ -136,7 +136,7 @@ func ExampleRetrieverFunc() {
 		return store.Retrieve(ctx, query, k)
 	})
 
-	a, err := Build(NewScriptedModel(TextTurn("answered without the record")), NewMemStore().Journal(),
+	a, err := New(NewScriptedModel(TextTurn("answered without the record")), memJournal(),
 		WithRetrieval(gated, 3))
 	if err != nil {
 		fmt.Println(err)
@@ -161,7 +161,7 @@ func TestRetrieval_NonPositiveKRefused(t *testing.T) {
 			}()
 			RetrievalTool("retrieve", "search", &fakeRetriever{}, k)
 		}()
-		if _, err := Build(NewScriptedModel(), NewMemStore().Journal(), WithRetrieval(&fakeRetriever{}, k)); !errors.Is(err, ErrConfig) {
+		if _, err := New(NewScriptedModel(), memJournal(), WithRetrieval(&fakeRetriever{}, k)); !errors.Is(err, ErrConfig) {
 			t.Errorf("Build with WithRetrieval(k=%d) = %v, want ErrConfig", k, err)
 		}
 	}
@@ -397,6 +397,7 @@ func TestWithRetrieval_ContextKeptAcrossTheRun(t *testing.T) {
 func TestWithRetrieval_ResumeInjectsRecordedDocs(t *testing.T) {
 	r := &seqRetriever{}
 	store := NewMemStore()
+	j := mustJournal(store)
 	crash := NewScriptedModel(ToolTurn("c1", "noop", `{}`), ErrorTurn(errors.New("process died")))
 	if _, err := buildOn(t, crash, store, WithTools(noopTool), WithRetrieval(r, 2)).Run(context.Background(), "run-1", "q"); err == nil {
 		t.Fatal("first run: want the scripted crash")
@@ -415,7 +416,7 @@ func TestWithRetrieval_ResumeInjectsRecordedDocs(t *testing.T) {
 		t.Errorf("retriever called %d times across a crash and resume, want 1", n)
 	}
 
-	recs, err := store.History(context.Background(), "run-1")
+	recs, err := j.History(context.Background(), "run-1")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -552,7 +553,7 @@ func TestRetrievalTool_Named(t *testing.T) {
 		ToolTurn("c2", "search_tickets", `{"query":"outage"}`),
 		TextTurn("done"),
 	)
-	if _, err := New(m, NewMemStore(), docs, tickets).Run(context.Background(), "run-1", "q"); err != nil {
+	if _, err := mustNew(m, memJournal(), WithTools(docs, tickets)).Run(context.Background(), "run-1", "q"); err != nil {
 		t.Fatal(err)
 	}
 	if docsR.lastQ != "install" || ticketsR.lastQ != "outage" {

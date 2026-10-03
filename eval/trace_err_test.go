@@ -4,31 +4,23 @@ import (
 	"context"
 	"errors"
 	"fmt"
-	"sync"
-	"sync/atomic"
+	"iter"
 	"testing"
 
 	"github.com/bide-ai/bide/agent"
+	"github.com/bide-ai/bide/agent/agenttest"
 	"github.com/bide-ai/bide/eval"
 )
 
-// unreadableJournal serves the agent's own three reads of a run's history (its Load, its Load again
-// once run:start is written, and its read-back of the end markers after run:complete), then fails
-// every later read of that run, as a SQL store does when its connection drops between the run and
-// the eval's read.
-type unreadableJournal struct {
-	agent.Durable
-	reads sync.Map // runID -> *atomic.Int32
-}
+// unreadableStore fails every load, as a SQL store does when its connection drops between the run
+// and the eval's read. The agent runs over a Journal on the healthy store; the eval reads the same
+// runs through a Journal on this wrapper.
+type unreadableStore struct{ agent.Store }
 
 var errReadFailed = fmt.Errorf("history unavailable: %w", agent.ErrStorage)
 
-func (j *unreadableJournal) History(ctx context.Context, runID string) ([]agent.Record, error) {
-	n, _ := j.reads.LoadOrStore(runID, new(atomic.Int32))
-	if n.(*atomic.Int32).Add(1) > 3 {
-		return nil, errReadFailed
-	}
-	return j.Durable.History(ctx, runID)
+func (unreadableStore) Load(context.Context, string, int64) iter.Seq2[agent.Entry, error] {
+	return func(yield func(agent.Entry, error) bool) { yield(agent.Entry{}, errReadFailed) }
 }
 
 // A run whose journal cannot be read has no known trajectory. Its trajectory metrics must not pass
@@ -36,9 +28,9 @@ func (j *unreadableJournal) History(ctx context.Context, runID string) ([]agent.
 // them, and the output carries the read failure rather than look like a clean run. The run itself succeeded, so Err stays nil and
 // NoError still passes: the failure is the trajectory's, in TraceErr.
 func TestAgentRunner_UnreadableJournalFailsTrajectoryMetrics(t *testing.T) {
-	store := &unreadableJournal{Durable: agent.NewMemStore()}
-	a := agent.New(&echoModel{}, store)
-	run := mustRunner(t, a, store, "unreadable")
+	mem := agent.NewMemStore()
+	a := agenttest.MustNew(&echoModel{}, agenttest.MustJournal(mem))
+	run := mustRunner(t, a, agenttest.MustJournal(unreadableStore{mem}), "unreadable")
 
 	out := run(context.Background(), "hello")
 	if out.Err != nil {

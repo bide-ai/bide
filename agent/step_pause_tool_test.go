@@ -6,6 +6,7 @@ import (
 	"testing"
 
 	"github.com/bide-ai/bide/agent"
+	"github.com/bide-ai/bide/agent/agenttest"
 )
 
 // A retry-safe tool whose body runs a side-effect Step per call, and the Step's fn fires its
@@ -15,7 +16,7 @@ import (
 // id, and the effect fires a second time.
 func TestStepPauseGuard_InsideAToolIsNotRecordedAsAToolFailure(t *testing.T) {
 	ctx := context.Background()
-	store := agent.NewMemStore()
+	store := agenttest.MemJournal()
 	fired := 0
 	type in struct {
 		ID string `json:"id"`
@@ -30,7 +31,7 @@ func TestStepPauseGuard_InsideAToolIsNotRecordedAsAToolFailure(t *testing.T) {
 		agent.ToolTurn("c1", "book", `{"id":"c1"}`),
 		agent.ToolTurn("c2", "book", `{"id":"c2"}`), // the model retries a call it was told failed
 		agent.TextTurn("done"))
-	a := agent.New(m, store, book)
+	a := agenttest.MustNew(m, store, agent.WithTools(book))
 	_, err := a.Run(ctx, "r", "book it")
 	if !errors.Is(err, agent.ErrConfig) || errors.Is(err, agent.ErrTool) {
 		t.Errorf("Run = %v; want the guard's ErrConfig, not a tool failure", err)

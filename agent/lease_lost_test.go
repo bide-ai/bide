@@ -38,10 +38,10 @@ func waitForCancel(cause *error) func(context.Context) error {
 func TestLease_LostLeaseEndsWithErrLeaseLost(t *testing.T) {
 	for _, tc := range []struct {
 		name  string
-		store func() Durable
+		store func() *Journal
 	}{
-		{"taken", func() Durable { return notHeldLeaser{NewMemStore()} }},
-		{"not renewable in time", func() Durable { return &failingRenewLeaser{MemStore: NewMemStore(), failures: -1} }},
+		{"taken", func() *Journal { return mustJournal(notHeldLeaser{NewMemStore()}) }},
+		{"not renewable in time", func() *Journal { return mustJournal(&failingRenewLeaser{MemStore: NewMemStore(), failures: -1}) }},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			synctest.Test(t, func(t *testing.T) {
@@ -57,7 +57,7 @@ func TestLease_LostLeaseEndsWithErrLeaseLost(t *testing.T) {
 				if !errors.Is(err, ErrLeaseLost) || !errors.Is(err, context.Canceled) {
 					t.Fatalf("Lease returned %v, want the drive's error (context.Canceled) wrapped with ErrLeaseLost", err)
 				}
-				if _, failing := s.(*failingRenewLeaser); failing && !errors.Is(cause, errStoreDown) {
+				if _, failing := s.Store().(*failingRenewLeaser); failing && !errors.Is(cause, errStoreDown) {
 					t.Fatalf("the cause %v does not carry the store error that kept the lease from being renewed", cause)
 				}
 			})
@@ -75,10 +75,10 @@ func testErrLeaseLostOnlyForALostLease(t *testing.T) {
 	ctx, cancel := context.WithCancel(context.Background())
 	var cause error
 	go func() { time.Sleep(10 * time.Millisecond); cancel() }()
-	if _, err := Lease(ctx, NewMemStore(), "r", waitForCancel(&cause), WithLeaseTTL(time.Hour)); errors.Is(err, ErrLeaseLost) || errors.Is(cause, ErrLeaseLost) {
+	if _, err := Lease(ctx, memJournal(), "r", waitForCancel(&cause), WithLeaseTTL(time.Hour)); errors.Is(err, ErrLeaseLost) || errors.Is(cause, ErrLeaseLost) {
 		t.Fatalf("a caller's cancellation was reported as a lost lease (err %v, cause %v)", err, cause)
 	}
-	driven, err := Lease(context.Background(), notHeldLeaser{NewMemStore()}, "r", func(ctx context.Context) error {
+	driven, err := Lease(context.Background(), mustJournal(notHeldLeaser{NewMemStore()}), "r", func(ctx context.Context) error {
 		<-ctx.Done()
 		return nil // the work finished anyway
 	}, WithLeaseTTL(40*time.Millisecond))
@@ -95,9 +95,10 @@ func TestRecover_LostLeaseIsNotAFailure(t *testing.T) {
 
 func testRecoverLostLeaseIsNotAFailure(t *testing.T) {
 	s := notHeldLeaser{NewMemStore()}
+	j := mustJournal(s)
 	seedRun(t, s.MemStore, "r")
 	var cause error
-	n, err := Recover(context.Background(), s, func(ctx context.Context, _ string, _ RunStart) error { return waitForCancel(&cause)(ctx) },
+	n, err := Recover(context.Background(), j, func(ctx context.Context, _ string, _ RunStart) error { return waitForCancel(&cause)(ctx) },
 		WithLeaseTTL(40*time.Millisecond))
 	if err != nil {
 		t.Fatalf("Recover = %v, want nil: a lost lease is not a failure", err)

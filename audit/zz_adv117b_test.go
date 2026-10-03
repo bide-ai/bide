@@ -10,6 +10,7 @@ import (
 	"testing"
 
 	"github.com/bide-ai/bide/agent"
+	"github.com/bide-ai/bide/agent/agenttest"
 )
 
 // ADV117b-4 (R117-4). An AttenuateFunc that gives each child grant its own ID (Grant.ID is "unique
@@ -20,14 +21,18 @@ import (
 // rollback stops, although nothing about the run was wrong.
 func TestAdv117b_ResumedDelegationWithFreshGrantIDsCannotRollBack(t *testing.T) {
 	ctx := context.Background()
-	store := agent.NewMemStore()
+	store := agenttest.MemJournal()
 	var undos int
 	charge := agent.CompensatedFunc("charge", "", agent.Safety{},
 		func(context.Context, struct{}) (string, error) { return "ok", nil },
 		func(context.Context, struct{}, string) error { undos++; return nil })
 	confirm := agent.Func("confirm", "", agent.Safety{ReadOnly: true},
 		func(context.Context, struct{}) (string, error) { return "ok", nil }, agent.WithApproval(agent.SingleApproval()))
-	sub := agent.New(agent.NewScriptedModel(agent.ToolTurn("s1", "charge", `{}`), agent.ToolTurn("s2", "confirm", `{}`), agent.TextTurn("done")), store, charge, confirm)
+	sub := agenttest.MustNew(
+		agent.NewScriptedModel(agent.ToolTurn("s1", "charge", `{}`), agent.ToolTurn("s2", "confirm", `{}`), agent.TextTurn("done")),
+		store,
+		agent.WithTools(charge, confirm),
+	)
 	var minted int
 	narrow := func(parent Grant, subAgent string) Grant {
 		minted++
@@ -36,7 +41,11 @@ func TestAdv117b_ResumedDelegationWithFreshGrantIDsCannotRollBack(t *testing.T) 
 	}
 	exec := AttenuatingSubAgent("exec", "", sub, AttenuationConfig{Store: store, Narrow: narrow, Rules: ScopeRules{"limit": NumericAtMost}})
 	boom := agent.Func("boom", "", agent.Safety{}, func(context.Context, struct{}) (string, error) { return "", errors.New("sold out") })
-	parent := agent.New(agent.NewScriptedModel(agent.ToolTurn("c1", "exec", `{"task":"pay"}`), agent.ToolTurn("c2", "boom", `{}`), agent.TextTurn("x")), store, exec, boom)
+	parent := agenttest.MustNew(
+		agent.NewScriptedModel(agent.ToolTurn("c1", "exec", `{"task":"pay"}`), agent.ToolTurn("c2", "boom", `{}`), agent.TextTurn("x")),
+		store,
+		agent.WithTools(exec, boom),
+	)
 	_, priv, _ := ed25519.GenerateKey(rand.Reader)
 	signer := Ed25519Signer{Priv: priv}
 	rootSG, err := SignGrant(Grant{ID: "g0", Issuer: "corp", Subject: "desk", Scope: map[string]string{"limit": "7"}}, signer)

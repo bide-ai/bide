@@ -17,7 +17,7 @@ func TestWaker_SameNamedTimersInTwoSubRunsAreDistinct(t *testing.T) {
 			return err
 		},
 	} {
-		store := NewMemStore()
+		store := memJournal()
 		t0 := time.Unix(1_000_000, 0)
 		var resumed []string
 		w := NewMemWaker(func(_ context.Context, runID string) error { resumed = append(resumed, runID); return nil })

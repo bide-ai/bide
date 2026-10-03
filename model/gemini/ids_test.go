@@ -10,6 +10,7 @@ import (
 	"testing"
 
 	"github.com/bide-ai/bide/agent"
+	"github.com/bide-ai/bide/agent/agenttest"
 )
 
 // sseServer answers the i-th request (from 0) with turns[i] framed as one SSE data line; the
@@ -51,7 +52,7 @@ func TestStream_ToolCallIDsDifferAcrossTurns(t *testing.T) {
 		calls = append(calls, in.Q)
 		return "res:" + in.Q, nil
 	})
-	a := agent.New(New("k", WithBaseURL(srv.URL)), agent.NewMemStore(), tool)
+	a := agenttest.MustNew(New("k", WithBaseURL(srv.URL)), agenttest.MemJournal(), agent.WithTools(tool))
 	if _, err := a.Run(context.Background(), "r1", "go"); err != nil {
 		t.Fatal(err)
 	}

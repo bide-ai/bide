@@ -43,7 +43,10 @@ func (m *scriptModel) Stream(_ context.Context, _ agent.Request) (*agent.Stream,
 
 func main() {
 	ctx := context.Background()
-	store := agent.NewMemStore()
+	store, err := agent.NewJournal(agent.NewMemStore())
+	if err != nil {
+		log.Fatal(err)
+	}
 	const runID = "recover-1"
 
 	// The counter stands in for a real side effect. It increments only when the tool BODY
@@ -60,7 +63,13 @@ func main() {
 	// A fresh scriptModel per Run: the model is only asked for turns that are NOT already
 	// journaled, so on the second Run the recorded model turns are replayed from the store
 	// and this fresh model is never called.
-	newAgent := func() *agent.Agent { return agent.New(&scriptModel{}, store, charge) }
+	newAgent := func() *agent.Agent {
+		ag, err := agent.New(&scriptModel{}, store, agent.WithTools(charge))
+		if err != nil {
+			log.Fatal(err)
+		}
+		return ag
+	}
 
 	// First Run: drives to completion, journaling the model turns and the tool result.
 	out1, err := newAgent().Run(ctx, runID, "Charge the card, then confirm.")
@@ -92,7 +101,7 @@ func main() {
 // runs. Its connection drops after the request went out, so nothing is recorded but the marker;
 // the resumed Step cannot know whether the invoice was sent, and halts instead of sending it
 // again. The operator checks the provider and resolves the halt with what really happened.
-func haltScene(ctx context.Context, store agent.Durable) {
+func haltScene(ctx context.Context, store *agent.Journal) {
 	const runID = "recover-2"
 	var sends atomic.Int64
 	send := func(context.Context) (string, error) {

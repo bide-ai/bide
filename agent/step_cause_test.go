@@ -61,7 +61,7 @@ func TestStep_LoserOfALiveClaimHaltsContended(t *testing.T) {
 // also holds a side-effect Step's refusal to pause (*stepPauseError): the halt comes back, and the
 // call records nothing, so the model is not told the call failed.
 func TestStepPauseGuard_JoinedWithAHaltPropagatesTheHalt(t *testing.T) {
-	store := NewMemStore()
+	store := memJournal()
 	mixed := Func("mixed", "", Safety{Idempotent: true}, func(ctx context.Context, _ struct{}) (string, error) {
 		d, runID, _ := runContext(ctx)
 		_, guard := Step(ctx, d, runID, "confirm", func(ctx context.Context) (int, error) {
@@ -71,7 +71,11 @@ func TestStepPauseGuard_JoinedWithAHaltPropagatesTheHalt(t *testing.T) {
 		_, halt := Step(ctx, d, runID, "inner", func(context.Context) (int, error) { return 1, nil })
 		return "", errors.Join(guard, halt)
 	})
-	_, err := New(&greedyModel{script: [][]Emit{toolTurn("c1", "mixed", `{}`), textTurn("done")}}, store, mixed).Run(context.Background(), "r1", "go")
+	_, err := mustNew(
+		&greedyModel{script: [][]Emit{toolTurn("c1", "mixed", `{}`), textTurn("done")}},
+		store,
+		WithTools(mixed),
+	).Run(context.Background(), "r1", "go")
 	halt, ok := errors.AsType[*OutcomeUnknown](err)
 	if !ok || halt.Op.ID != "inner" {
 		t.Fatalf("run = %v; want the inner step's halt", err)

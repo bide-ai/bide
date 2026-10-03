@@ -35,12 +35,12 @@ func PolicyLeafName(digest string) string { return policyLeafName(digest) }
 // gsm.Registry.PolicyDigest); audit treats it as opaque and does not recompute it from the bytes.
 // A verifier recomputes the digest from the disclosed bytes and runs the external oracle
 // (bide-audit verify-governance), so a leaf that lies about its digest is caught there.
-func RecordPolicy(ctx context.Context, store agent.Durable, runID string, policy []byte, digest string) (agent.Record, error) {
+func RecordPolicy(ctx context.Context, store *agent.Journal, runID string, policy []byte, digest string) (agent.Record, error) {
 	content, err := json.Marshal(PolicyContent{Digest: digest, Policy: string(policy)})
 	if err != nil {
 		return agent.Record{}, fmt.Errorf("audit: marshal policy content: %w", err)
 	}
-	return store.Do(ctx, runID, policyLeafName(digest), func(context.Context) (agent.Record, error) {
+	return doRecord(ctx, store, runID, policyLeafName(digest), func(context.Context) (agent.Record, error) {
 		return agent.Record{Kind: agent.StepValue, Result: content}, nil
 	})
 }
@@ -49,7 +49,7 @@ func RecordPolicy(ctx context.Context, store agent.Durable, runID string, policy
 // sth signs. Pair it with an action's ProofBundle whose result embeds the same digest to show the
 // action ran under an in-log, anchored policy; the verifier then recomputes the digest from the
 // disclosed bytes and runs the external oracle to certify the policy converges.
-func ProvePolicy(ctx context.Context, store agent.Durable, runID, digest string, sth SignedTreeHead) (ProofBundle, error) {
+func ProvePolicy(ctx context.Context, store *agent.Journal, runID, digest string, sth SignedTreeHead) (ProofBundle, error) {
 	recs, err := store.History(ctx, runID)
 	if err != nil {
 		return ProofBundle{}, fmt.Errorf("audit: load journal %s: %w", runID, err)

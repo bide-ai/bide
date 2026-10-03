@@ -3,10 +3,12 @@ package plan
 import (
 	"context"
 	"errors"
+	"iter"
 	"sync"
 	"testing"
 
 	"github.com/bide-ai/bide/agent"
+	"github.com/bide-ai/bide/agent/agenttest"
 )
 
 // Deterministic Simulation Testing of the substrate invariant as it reaches the
@@ -22,36 +24,45 @@ import (
 // the durable record of it.
 var errCrash = errors.New("simulated crash")
 
-// crashFlowStore fails to persist the crashAt-th write (0 = never), simulating a
-// crash at that write: the record is not recorded and the run unwinds with
-// errCrash. A resume drives the same runID against the same underlying journal
-// with crashAt = 0 so the run can finish. It mirrors the core dst_test crashStore.
+// crashFlowStore is a store wrapper that fails to persist the crashAt-th write
+// (0 = never) of a new entry, the journal header aside, simulating a crash at that
+// write: the entry is not stored and the run unwinds with errCrash. A step's write
+// comes after its fn ran, so a crash on a result's write is a crash between the
+// step's side effect and the durable record of it. A resume drives the same runID
+// against the same underlying store with crashAt = 0 so the run can finish. Each
+// wrapper is its own process: it does not Unwrap, so a Journal over it shares no
+// in-process state (flights, remembered claims) with a Journal over another. It
+// mirrors the core dst_test crashStore.
 type crashFlowStore struct {
-	inner   agent.Durable
+	inner   *agent.Journal // the journal whose store the crash wraps, shared across a crash and its resume
 	mu      sync.Mutex
 	writes  int
 	crashAt int
 }
 
-func (c *crashFlowStore) Do(ctx context.Context, runID, name string, fn func(context.Context) (agent.Record, error)) (agent.Record, error) {
-	return c.inner.Do(ctx, runID, name, func(ctx context.Context) (agent.Record, error) {
-		rec, err := fn(ctx) // the real work (incl. any side effect) runs here
-		if err != nil {
-			return rec, err
+func (c *crashFlowStore) Insert(ctx context.Context, runID, name string, data []byte) (agent.Entry, bool, error) {
+	s := c.inner.Store()
+	if name != "@journal" { // the journal header (see agent.Journal)
+		if _, ok, err := s.Get(ctx, runID, name); err != nil || ok {
+			return s.Insert(ctx, runID, name, data) // stored already: not a write
 		}
 		c.mu.Lock()
 		c.writes++
 		w := c.writes
 		c.mu.Unlock()
 		if c.crashAt > 0 && w == c.crashAt {
-			return agent.Record{}, errCrash // crash: record is NOT persisted
+			return agent.Entry{}, false, errCrash // crash: the entry is NOT persisted
 		}
-		return rec, nil
-	})
+	}
+	return s.Insert(ctx, runID, name, data)
 }
 
-func (c *crashFlowStore) History(ctx context.Context, runID string) ([]agent.Record, error) {
-	return c.inner.History(ctx, runID)
+func (c *crashFlowStore) Get(ctx context.Context, runID, name string) (agent.Entry, bool, error) {
+	return c.inner.Store().Get(ctx, runID, name)
+}
+
+func (c *crashFlowStore) Load(ctx context.Context, runID string, after int64) iter.Seq2[agent.Entry, error] {
+	return c.inner.Store().Load(ctx, runID, after)
 }
 
 // bumpCounter is a plain, NON-IDEMPOTENT step body: it increments a shared counter
@@ -86,8 +97,8 @@ func buildCounterFlow(count *int) (*Flow[int, string], error) {
 // at the crashAt-th write. mem is the durable journal shared across a crash and its
 // resume, so the automatic guard's attempt markers and results survive the crash
 // wrapper.
-func runFlowOnce(mem agent.Durable, count *int, crashAt int) error {
-	store := &crashFlowStore{inner: mem, crashAt: crashAt}
+func runFlowOnce(mem *agent.Journal, count *int, crashAt int) error {
+	store := agenttest.MustJournal(&crashFlowStore{inner: mem, crashAt: crashAt})
 	flow, err := buildCounterFlow(count)
 	if err != nil {
 		return err
@@ -108,7 +119,7 @@ func TestDST_Flow_NoDoubleFire_CrashSweep(t *testing.T) {
 	haltSeen := false
 	for crashAt := 1; crashAt <= 32; crashAt++ {
 		var count int
-		mem := agent.NewMemStore()
+		mem := agenttest.MemJournal()
 
 		err := runFlowOnce(mem, &count, crashAt)
 		didCrash := errors.Is(err, errCrash)
@@ -162,7 +173,7 @@ func TestDST_Flow_NoDoubleFire_CrashSweep(t *testing.T) {
 // own; Run's memoized attempt/result records provide the reuse.
 func TestDST_Flow_ResumeReusesJournaledSteps(t *testing.T) {
 	var count int
-	mem := agent.NewMemStore()
+	mem := agenttest.MemJournal()
 	flow, err := buildCounterFlow(&count)
 	if err != nil {
 		t.Fatalf("Build: %v", err)
@@ -198,7 +209,7 @@ func TestDST_Flow_ResumeReusesJournaledSteps(t *testing.T) {
 // (attempt markers are internal records of their node, not divergences).
 func TestDST_Flow_JournalRecordScheme(t *testing.T) {
 	var count int
-	mem := agent.NewMemStore()
+	mem := agenttest.MemJournal()
 	flow, err := buildCounterFlow(&count)
 	if err != nil {
 		t.Fatalf("Build: %v", err)
@@ -243,11 +254,11 @@ func TestDST_Flow_HaltThenResolveCompletes(t *testing.T) {
 	// so the crash point is a few writes in; find it robustly rather than hard-coding
 	// the count.
 	var count int
-	var mem agent.Durable
+	var mem *agent.Journal
 	var halt *agent.OutcomeUnknown
 	for crashAt := 1; crashAt <= 32; crashAt++ {
 		count = 0
-		mem = agent.NewMemStore()
+		mem = agenttest.MemJournal()
 		err := runFlowOnce(mem, &count, crashAt)
 		if !errors.Is(err, errCrash) {
 			continue

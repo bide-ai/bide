@@ -8,6 +8,8 @@ import (
 	"testing"
 
 	"github.com/bide-ai/bide/agent"
+	"github.com/bide-ai/bide/agent/agenttest"
+	"github.com/bide-ai/bide/internal/journaltest"
 )
 
 // TestPolicyLeaf_AnchorsAndCrossLinks commits a policy as a journal leaf, records a governed
@@ -17,7 +19,7 @@ import (
 // share the same tree, and their digests link.
 func TestPolicyLeaf_AnchorsAndCrossLinks(t *testing.T) {
 	ctx := context.Background()
-	store := agent.NewMemStore()
+	store := agenttest.MemJournal()
 	const runID = "run1"
 
 	policy := []byte("(doms 4 4)\n(inv (le (var 0) (lit 3)) (do (set 0 (lit 3))))\n(ev (do (set 0 (add (var 0) (lit 1)))))\n")
@@ -30,7 +32,7 @@ func TestPolicyLeaf_AnchorsAndCrossLinks(t *testing.T) {
 
 	// Record a governed action whose result embeds the policy digest (as an attested EventTool does).
 	actionResult, _ := json.Marshal(map[string]any{"event": "inc_a", "applied": true, "policy_digest": digest})
-	if _, err := store.Do(ctx, runID, "call1", func(context.Context) (agent.Record, error) {
+	if _, err := journaltest.Do(ctx, store, runID, "call1", func(context.Context) (agent.Record, error) {
 		return agent.Record{Kind: agent.StepToolResult, ToolUseID: "call1", Result: actionResult}, nil
 	}); err != nil {
 		t.Fatalf("record action: %v", err)
@@ -89,7 +91,7 @@ func TestPolicyLeaf_AnchorsAndCrossLinks(t *testing.T) {
 // TestRecordPolicy_Idempotent confirms recording the same policy twice yields one leaf.
 func TestRecordPolicy_Idempotent(t *testing.T) {
 	ctx := context.Background()
-	store := agent.NewMemStore()
+	store := agenttest.MemJournal()
 	const runID = "run1"
 	policy := []byte("(doms 2)\n")
 	const digest = "abc123"

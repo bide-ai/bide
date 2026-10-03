@@ -55,7 +55,10 @@ func main() {
 func awaitScene() {
 	fmt.Println("== Await: wait for an external signal ==")
 	ctx := context.Background()
-	store := agent.NewMemStore()
+	store, err := agent.NewJournal(agent.NewMemStore())
+	if err != nil {
+		log.Fatal(err)
+	}
 	const runID, sig = "await-1", "approval"
 
 	tool := agent.Func("wait_for_approval", "Wait for an external approval signal",
@@ -67,9 +70,12 @@ func awaitScene() {
 			}
 			return "approved by " + who, nil
 		})
-	a := agent.New(&oneTool{tool: "wait_for_approval"}, store, tool)
+	a, err := agent.New(&oneTool{tool: "wait_for_approval"}, store, agent.WithTools(tool))
+	if err != nil {
+		log.Fatal(err)
+	}
 
-	_, err := a.Run(ctx, runID, "Wait for approval, then confirm.")
+	_, err = a.Run(ctx, runID, "Wait for approval, then confirm.")
 	awt, ok := errors.AsType[*agent.SignalPending](err)
 	if !ok {
 		log.Fatalf("expected *SignalPending, got %v", err)
@@ -80,7 +86,11 @@ func awaitScene() {
 	if err := agent.Signal(ctx, store, runID, sig, "alice"); err != nil {
 		log.Fatalf("signal: %v", err)
 	}
-	out, err := agent.New(&oneTool{tool: "wait_for_approval"}, store, tool).Run(ctx, runID, "Wait for approval, then confirm.")
+	ag, err := agent.New(&oneTool{tool: "wait_for_approval"}, store, agent.WithTools(tool))
+	if err != nil {
+		log.Fatal(err)
+	}
+	out, err := ag.Run(ctx, runID, "Wait for approval, then confirm.")
 	if err != nil {
 		log.Fatalf("resume: %v", err)
 	}
@@ -92,7 +102,10 @@ func awaitScene() {
 func awaitForScene() {
 	fmt.Println("== AwaitFor: signal-or-timeout race ==")
 	ctx := context.Background()
-	store := agent.NewMemStore()
+	store, err := agent.NewJournal(agent.NewMemStore())
+	if err != nil {
+		log.Fatal(err)
+	}
 	const runID = "awaitfor-1"
 
 	tool := agent.Func("wait_briefly", "Wait for a signal but give up quickly",
@@ -107,7 +120,10 @@ func awaitForScene() {
 			}
 			return "timed out waiting for the signal", nil
 		})
-	a := agent.New(&oneTool{tool: "wait_briefly"}, store, tool)
+	a, err := agent.New(&oneTool{tool: "wait_briefly"}, store, agent.WithTools(tool))
+	if err != nil {
+		log.Fatal(err)
+	}
 
 	// First Run journals the 1ms deadline and pauses; by the resume the deadline has passed
 	// and no signal arrived, so AwaitFor returns (zero, false, nil): the timeout wins.
@@ -117,7 +133,11 @@ func awaitForScene() {
 		}
 	}
 	time.Sleep(5 * time.Millisecond) // let the durable deadline elapse before resuming
-	if _, err := agent.New(&oneTool{tool: "wait_briefly"}, store, tool).Run(ctx, runID, "Wait briefly."); err != nil {
+	ag, err := agent.New(&oneTool{tool: "wait_briefly"}, store, agent.WithTools(tool))
+	if err != nil {
+		log.Fatal(err)
+	}
+	if _, err = ag.Run(ctx, runID, "Wait briefly."); err != nil {
 		log.Fatalf("resume: %v", err)
 	}
 	recs, _ := store.History(ctx, runID)
@@ -133,7 +153,10 @@ func awaitForScene() {
 func channelScene() {
 	fmt.Println("== Channel: ordered Enqueue / Receive / Ack ==")
 	ctx := context.Background()
-	store := agent.NewMemStore()
+	store, err := agent.NewJournal(agent.NewMemStore())
+	if err != nil {
+		log.Fatal(err)
+	}
 	const runID, chName = "channel-1", "jobs"
 
 	// Deliver three ordered messages before the run consumes them. Enqueue dedups by key.
@@ -164,7 +187,10 @@ func channelScene() {
 			}
 		})
 
-	a := agent.New(&oneTool{tool: "drain_channel"}, store, tool)
+	a, err := agent.New(&oneTool{tool: "drain_channel"}, store, agent.WithTools(tool))
+	if err != nil {
+		log.Fatal(err)
+	}
 	if _, err := a.Run(ctx, runID, "Drain the channel."); err != nil {
 		log.Fatalf("run: %v", err)
 	}

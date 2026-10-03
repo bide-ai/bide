@@ -8,6 +8,7 @@ import (
 	"testing"
 
 	"github.com/bide-ai/bide/agent"
+	"github.com/bide-ai/bide/agent/agenttest"
 )
 
 // The rung-2 test domain: a tiny triage flow. classify maps an Order to an
@@ -119,7 +120,7 @@ func TestLoadValidConfigRunsAndConforms(t *testing.T) {
 
 	// Run a rush order: classify -> (rush) reserve -> finalize -> Receipt{reserved}.
 	ctx := context.Background()
-	store := agent.NewMemStore()
+	store := agenttest.MemJournal()
 	out, err := flow.Run(ctx, store, "run-rush", cfgOrder{ID: 7, Rush: true})
 	if err != nil {
 		t.Fatalf("Run rush: %v", err)
@@ -136,7 +137,7 @@ func TestLoadValidConfigRunsAndConforms(t *testing.T) {
 	}
 
 	// Run a non-rush order: classify -> (else) decline -> Receipt{declined}.
-	store2 := agent.NewMemStore()
+	store2 := agenttest.MemJournal()
 	out2, err := flow.Run(ctx, store2, "run-plain", cfgOrder{ID: 9, Rush: false})
 	if err != nil {
 		t.Fatalf("Run plain: %v", err)
@@ -431,7 +432,7 @@ func TestLoadJoinConfigRunsConformsAndMatchesHandBuilt(t *testing.T) {
 
 	// Runs to the merged output: split(3)=6; y=7; z="z6"; merge="z6+7".
 	ctx := context.Background()
-	store := agent.NewMemStore()
+	store := agenttest.MemJournal()
 	out, err := flow.Run(ctx, store, "diamond-cfg", 3)
 	if err != nil {
 		t.Fatalf("Run: %v", err)
@@ -549,7 +550,7 @@ func TestLoadLoopConfigIteratesExitsConformsAndMatchesHandBuilt(t *testing.T) {
 	}
 
 	ctx := context.Background()
-	store := agent.NewMemStore()
+	store := agenttest.MemJournal()
 	out, err := flow.Run(ctx, store, "loop-cfg", 3)
 	if err != nil {
 		t.Fatalf("Run: %v", err)
@@ -654,12 +655,13 @@ func safetySuffix(safety string) string {
 // "side_effect" halts (TestLoadSafetyDefaultHalts). It reuses the crashFlowStore DST harness from flow_dst_test.go.
 func TestLoadSafetyConfigRerunsOnAmbiguousCrash(t *testing.T) {
 	// Find the crash landing on the read node's result write, with the readonly config.
-	var mem agent.Durable
+	var mem *agent.Journal
 	var readsAtCrash int
 	for crashAt := 1; crashAt <= 32; crashAt++ {
 		reads := 0
 		m := agent.NewMemStore()
-		store := &crashFlowStore{inner: m, crashAt: crashAt}
+		j := agenttest.MustJournal(m)
+		store := agenttest.MustJournal(&crashFlowStore{inner: j, crashAt: crashAt})
 		flow, err := loadReadFlow(t, &reads, 42, "readonly")
 		if err != nil {
 			t.Fatalf("Load: %v", err)
@@ -668,7 +670,7 @@ func TestLoadSafetyConfigRerunsOnAmbiguousCrash(t *testing.T) {
 		if !errors.Is(err, errCrash) {
 			continue
 		}
-		recs, hErr := m.History(context.Background(), "cfg-safety")
+		recs, hErr := j.History(context.Background(), "cfg-safety")
 		if hErr != nil {
 			t.Fatalf("History: %v", hErr)
 		}
@@ -681,7 +683,7 @@ func TestLoadSafetyConfigRerunsOnAmbiguousCrash(t *testing.T) {
 			}
 		}
 		if !haveResult && reads >= 1 {
-			mem = m
+			mem = j
 			readsAtCrash = reads
 			break
 		}
@@ -717,12 +719,13 @@ func TestLoadSafetyConfigRerunsOnAmbiguousCrash(t *testing.T) {
 // with config "safety": "side_effect" is lowered to the conservative halt and HALTS on
 // the ambiguous crash, proving the config safety is what changed the behavior.
 func TestLoadSafetyDefaultHalts(t *testing.T) {
-	var mem agent.Durable
+	var mem *agent.Journal
 	var readsAtCrash int
 	for crashAt := 1; crashAt <= 32; crashAt++ {
 		reads := 0
 		m := agent.NewMemStore()
-		store := &crashFlowStore{inner: m, crashAt: crashAt}
+		j := agenttest.MustJournal(m)
+		store := agenttest.MustJournal(&crashFlowStore{inner: j, crashAt: crashAt})
 		flow, err := loadReadFlow(t, &reads, 42, "side_effect")
 		if err != nil {
 			t.Fatalf("Load: %v", err)
@@ -731,7 +734,7 @@ func TestLoadSafetyDefaultHalts(t *testing.T) {
 		if !errors.Is(err, errCrash) {
 			continue
 		}
-		recs, _ := m.History(context.Background(), "cfg-default")
+		recs, _ := j.History(context.Background(), "cfg-default")
 		var haveAttempt, haveResult bool
 		for _, r := range recs {
 			switch r.Name {
@@ -742,7 +745,7 @@ func TestLoadSafetyDefaultHalts(t *testing.T) {
 			}
 		}
 		if haveAttempt && !haveResult && reads >= 1 {
-			mem = m
+			mem = j
 			readsAtCrash = reads
 			break
 		}

@@ -50,7 +50,7 @@ func TestRunTyped_EndsAtFinalAnswer(t *testing.T) {
 		ToolTurn("f2", finalAnswerTool, `{"name":"second"}`),
 		ToolTurn("f3", finalAnswerTool, `{"name":"third"}`),
 	)}
-	a := New(m, NewMemStore()).WithMaxTurns(3)
+	a := mustNew(m, memJournal(), WithMaxTurns(3))
 	got, err := RunTyped[typedAnswer](context.Background(), a, "r", "go")
 	if err != nil {
 		t.Fatalf("RunTyped: %v", err)
@@ -68,7 +68,7 @@ func TestRunTyped_AnswerIsTheAcceptedCall(t *testing.T) {
 		ToolTurn("f2", finalAnswerTool, `{"name":"ok"}`),
 		TextTurn("done"),
 	)}
-	got, err := RunTyped[typedAnswer](context.Background(), New(m, NewMemStore()), "r", "go")
+	got, err := RunTyped[typedAnswer](context.Background(), mustNew(m, memJournal()), "r", "go")
 	if err != nil {
 		t.Fatalf("RunTyped: %v", err)
 	}
@@ -89,8 +89,8 @@ func TestRunTyped_EmptyFinalAnswerIsNotReplacedByProse(t *testing.T) {
 		{ToolCallDelta{Index: 0, ID: "f1", Name: finalAnswerTool}, Finish{Reason: "tool_use"}},
 		{TextDelta{Text: `{"name":"from prose"}`}, Finish{Reason: "stop"}},
 	}
-	store := NewMemStore()
-	got, err := RunTyped[optionalAnswer](context.Background(), New(m, store), "r", "go")
+	store := memJournal()
+	got, err := RunTyped[optionalAnswer](context.Background(), mustNew(m, store), "r", "go")
 	if err != nil {
 		t.Fatalf("RunTyped: %v", err)
 	}
@@ -113,7 +113,7 @@ func TestRunTyped_FirstAcceptedCallInATurnWins(t *testing.T) {
 		ToolCallDelta{Index: 1, ID: "f2", Name: finalAnswerTool, ArgsFragment: []byte(`{"name":"b"}`)},
 		Finish{Reason: "tool_use"},
 	}}
-	got, err := RunTyped[typedAnswer](context.Background(), New(m, NewMemStore()), "r", "go")
+	got, err := RunTyped[typedAnswer](context.Background(), mustNew(m, memJournal()), "r", "go")
 	if err != nil || got.Name != "a" {
 		t.Fatalf("RunTyped = %+v, %v; want the first call's answer \"a\"", got, err)
 	}
@@ -126,22 +126,22 @@ type failOnceStore struct {
 	failed atomic.Bool
 }
 
-func (s *failOnceStore) Do(ctx context.Context, runID, name string, fn func(context.Context) (Record, error)) (Record, error) {
+func (s *failOnceStore) Insert(ctx context.Context, runID, name string, data []byte) (Entry, bool, error) {
 	if name == s.name && s.failed.CompareAndSwap(false, true) {
-		return Record{}, errors.New("crash")
+		return Entry{}, false, errors.New("crash")
 	}
-	return s.MemStore.Do(ctx, runID, name, fn)
+	return s.MemStore.Insert(ctx, runID, name, data)
 }
 
 // A run that crashed after its final_answer was recorded, but before it was marked complete,
 // completes on resume without asking the model again.
 func TestRunTyped_ResumeAfterFinalAnswerDoesNotAskAgain(t *testing.T) {
-	store := &failOnceStore{MemStore: NewMemStore(), name: runCompleteStep}
+	store := mustJournal(&failOnceStore{MemStore: NewMemStore(), name: runCompleteStep})
 	m := &countModel{inner: NewScriptedModel(
 		ToolTurn("f1", finalAnswerTool, `{"name":"first"}`),
 		ToolTurn("f2", finalAnswerTool, `{"name":"second"}`),
 	)}
-	a := New(m, store).WithMaxTurns(3)
+	a := mustNew(m, store, WithMaxTurns(3))
 	if _, err := RunTyped[typedAnswer](context.Background(), a, "r", "go"); err == nil {
 		t.Fatal("the first attempt should fail writing the completion marker")
 	}

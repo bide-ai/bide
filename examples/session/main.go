@@ -30,8 +30,18 @@ func main() {
 	)
 
 	// One store backs the session; the same id reopened later rebuilds this transcript.
-	store := agent.NewMemStore()
-	a := agent.New(model, store).WithSystemPrompt("You are a concise assistant. Answer in one short sentence.")
+	store, err := agent.NewJournal(agent.NewMemStore())
+	if err != nil {
+		log.Fatal(err)
+	}
+	a, err := agent.New(
+		model,
+		store,
+		agent.WithSystemPrompt("You are a concise assistant. Answer in one short sentence."),
+	)
+	if err != nil {
+		log.Fatal(err)
+	}
 
 	ctx, cancel := context.WithTimeout(context.Background(), 90*time.Second)
 	defer cancel()

@@ -349,7 +349,7 @@ const spendStepPrefix = "@spend/"
 // for requests that ended late). It is written even when ctx is cancelled, the common way a call
 // fails, since the requests were billed either way. It returns the record the journal holds.
 func (a *Agent) recordSpend(ctx context.Context, runID, name string, spent Usage) (Record, error) {
-	rec, err := a.store.Do(context.WithoutCancel(ctx), runID, name, func(context.Context) (Record, error) {
+	rec, err := a.store.do(context.WithoutCancel(ctx), runID, name, func(context.Context) (Record, error) {
 		return Record{Kind: StepValue, DiscardedUsage: &spent}, nil
 	})
 	if err != nil {
@@ -413,7 +413,7 @@ var maxPendingSpends = 4096 // a variable so tests can lower it
 // (durableIdentity, as remembered claims are keyed), so any Journal over the store, and any
 // wrapper over one, sees it. ok is false for a store with no identity, whose spend is not kept.
 func (a *Agent) spendKey(runID string) (pendingKey, bool) {
-	id, ok := durableIdentity(a.store)
+	id, ok := a.store.identity()
 	return pendingKey{id, runID}, ok
 }
 

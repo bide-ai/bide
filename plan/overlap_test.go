@@ -10,56 +10,24 @@ import (
 	"time"
 
 	"github.com/bide-ai/bide/agent"
+	"github.com/bide-ai/bide/agent/agenttest"
 )
 
-// xprocStore gives Do the semantics of a store shared by separate processes: no in-process
-// singleflight, so two drivers can both run fn for the same name, and an atomic insert, so a later
-// insert of an already-recorded name returns the earlier record. If meet is set, Do on an attempt
+// xprocStore is one process's handle on a store shared by separate processes: it does not
+// Unwrap, so a Journal over one handle shares no in-process state (in-flight steps, remembered
+// claims) with a Journal over another, and two drivers can both reach the same step; the shared
+// store's single-winner Insert decides between them. If meet is set, an Insert of an attempt
 // marker waits there first, forcing two drivers into the same window (released once, then open).
 type xprocStore struct {
-	mu    sync.Mutex
-	order map[string][]agent.Record
-	index map[string]map[string]int
-	meet  *rendezvous
+	agent.Store
+	meet *rendezvous
 }
 
-func newXprocStore() *xprocStore {
-	return &xprocStore{order: map[string][]agent.Record{}, index: map[string]map[string]int{}}
-}
-
-func (s *xprocStore) Do(ctx context.Context, runID, name string, fn func(context.Context) (agent.Record, error)) (agent.Record, error) {
+func (s *xprocStore) Insert(ctx context.Context, runID, name string, data []byte) (agent.Entry, bool, error) {
 	if s.meet != nil && strings.HasPrefix(name, "attempt:") {
 		s.meet.arrive()
 	}
-	s.mu.Lock()
-	if i, ok := s.index[runID][name]; ok {
-		r := s.order[runID][i]
-		s.mu.Unlock()
-		return r, nil
-	}
-	s.mu.Unlock()
-	rec, err := fn(ctx)
-	if err != nil {
-		return agent.Record{}, err
-	}
-	rec.Name = name
-	s.mu.Lock()
-	defer s.mu.Unlock()
-	if i, ok := s.index[runID][name]; ok {
-		return s.order[runID][i], nil
-	}
-	if s.index[runID] == nil {
-		s.index[runID] = map[string]int{}
-	}
-	s.index[runID][name] = len(s.order[runID])
-	s.order[runID] = append(s.order[runID], rec)
-	return rec, nil
-}
-
-func (s *xprocStore) History(_ context.Context, runID string) ([]agent.Record, error) {
-	s.mu.Lock()
-	defer s.mu.Unlock()
-	return append([]agent.Record(nil), s.order[runID]...), nil
+	return s.Store.Insert(ctx, runID, name, data)
 }
 
 type rendezvous struct {
@@ -104,15 +72,14 @@ func TestOverlappingDrivers_FlowNodeFiresOnce(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	store := newXprocStore()
-	store.meet = newRendezvous(2)
+	shared, meet := agent.NewMemStore(), newRendezvous(2)
 	errs := make([]error, 2)
 	var wg sync.WaitGroup
 	for i := range errs {
 		wg.Add(1)
 		go func() {
 			defer wg.Done()
-			_, errs[i] = flow.Run(context.Background(), store, "r1", 1)
+			_, errs[i] = flow.Run(context.Background(), agenttest.MustJournal(&xprocStore{Store: shared, meet: meet}), "r1", 1)
 		}()
 	}
 	wg.Wait()

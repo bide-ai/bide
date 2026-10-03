@@ -10,6 +10,7 @@ import (
 	"testing"
 
 	"github.com/bide-ai/bide/agent"
+	"github.com/bide-ai/bide/agent/agenttest"
 	"github.com/bide-ai/bide/eval"
 )
 
@@ -106,8 +107,8 @@ func TestGovernanceHeld_ReceivesContext(t *testing.T) {
 // AgentRunner refuses a nil agent or store with ErrConfig instead of returning a RunFunc that
 // panics on its first call.
 func TestAgentRunner_NilArgumentsAreErrConfig(t *testing.T) {
-	store := agent.NewMemStore()
-	a := agent.New(&echoModel{}, store)
+	store := agenttest.MemJournal()
+	a := agenttest.MustNew(&echoModel{}, store)
 	if run, err := eval.AgentRunner(nil, store, "p"); !errors.Is(err, agent.ErrConfig) || run != nil {
 		t.Errorf("nil agent: run=%v err=%v, want nil and ErrConfig", run != nil, err)
 	}

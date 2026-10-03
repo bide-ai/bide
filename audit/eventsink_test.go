@@ -5,11 +5,11 @@ import (
 	"context"
 	"crypto/ed25519"
 	"encoding/json"
-	"errors"
 	"fmt"
 	"testing"
 
 	"github.com/bide-ai/bide/agent"
+	"github.com/bide-ai/bide/agent/agenttest"
 	"github.com/bide-ai/bide/audit"
 )
 
@@ -67,15 +67,9 @@ func buildLog(t *testing.T, evs []agent.AgentEvent) *audit.EventLog {
 	return log
 }
 
-// history is a read-only Durable whose history is exactly the records it holds, salts included,
+// history is a fixedHistory: exactly the records it holds, salts included,
 // as a journal exported from a store is.
-type history []agent.Record
-
-func (h history) History(context.Context, string) ([]agent.Record, error) { return h, nil }
-
-func (history) Do(context.Context, string, string, func(context.Context) (agent.Record, error)) (agent.Record, error) {
-	return agent.Record{}, errors.New("history is read-only")
-}
+type history = fixedHistory
 
 // toolResults is a journal of n tool results, each with its own fixed salt.
 func toolResults(n int) history {
@@ -89,7 +83,7 @@ func toolResults(n int) history {
 
 func projectLog(t *testing.T, h history) *audit.EventLog {
 	t.Helper()
-	log, err := audit.EventLogFromJournal(context.Background(), h, "run")
+	log, err := audit.EventLogFromJournal(context.Background(), h.journal(), "run")
 	if err != nil {
 		t.Fatalf("EventLogFromJournal: %v", err)
 	}
@@ -257,7 +251,7 @@ func TestEventLog_Consistency(t *testing.T) {
 // TestRecord_DrainsRealStream: Record over a live Agent.Stream yields the terminal answer
 // AND a committed log whose every event proves. This is the end-to-end sink.
 func TestRecord_DrainsRealStream(t *testing.T) {
-	a := agent.New(eventModel{text: "hello"}, agent.NewMemStore())
+	a := agenttest.MustNew(eventModel{text: "hello"}, agenttest.MemJournal())
 	stream := a.Stream(context.Background(), "run-1", "hi")
 
 	log := audit.NewEventLog()
@@ -294,20 +288,21 @@ func TestRecord_DrainsRealStream(t *testing.T) {
 func TestEventLogFromJournal(t *testing.T) {
 	ctx := context.Background()
 	store := agent.NewMemStore()
+	j := agenttest.MustJournal(store)
 	tool := agent.Func("lookup", "", agent.Safety{ReadOnly: true},
 		func(_ context.Context, _ struct{}) (string, error) { return "ok", nil })
-	if _, err := agent.New(&twoTurnModel{}, store, tool).Run(ctx, "run", "hi"); err != nil {
+	if _, err := agenttest.MustNew(&twoTurnModel{}, j, agent.WithTools(tool)).Run(ctx, "run", "hi"); err != nil {
 		t.Fatalf("run: %v", err)
 	}
 
-	log1, err := audit.EventLogFromJournal(ctx, store, "run")
+	log1, err := audit.EventLogFromJournal(ctx, j, "run")
 	if err != nil {
 		t.Fatalf("EventLogFromJournal: %v", err)
 	}
 	if log1.Len() == 0 {
 		t.Fatal("durable projection is empty")
 	}
-	log2, _ := audit.EventLogFromJournal(ctx, store, "run")
+	log2, _ := audit.EventLogFromJournal(ctx, j, "run")
 	if !bytes.Equal(log1.Root(), log2.Root()) {
 		t.Fatal("durable Root not deterministic across two projections of the same journal")
 	}
@@ -321,7 +316,7 @@ func TestEventLogFromJournal(t *testing.T) {
 
 	// The trail up to any earlier point (the projection of a journal prefix, as it stood before
 	// the run finished) is an append-only prefix of the full run.
-	recs, _ := store.History(ctx, "run")
+	recs, _ := j.History(ctx, "run")
 	if log1.Len() < 2 {
 		t.Fatalf("need >= 2 projected events, got %d", log1.Len())
 	}

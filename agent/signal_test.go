@@ -19,7 +19,7 @@ type awaitTool struct {
 func (t *awaitTool) Name() string                { return t.name }
 func (t *awaitTool) Description() string         { return "" }
 func (t *awaitTool) Safety() Safety              { return t.safety }
-func (t *awaitTool) ArgsSchema() json.RawMessage { return nil }
+func (t *awaitTool) ArgsSchema() json.RawMessage { return json.RawMessage(`{"type":"object"}`) }
 func (t *awaitTool) Call(ctx context.Context, _ json.RawMessage) (json.RawMessage, error) {
 	*t.calls++
 	v, err := Await[string](ctx, t.sig)
@@ -35,12 +35,12 @@ func (t *awaitTool) Call(ctx context.Context, _ json.RawMessage) (json.RawMessag
 // A tool pauses on Await; Signal delivers an external event; re-running the same run resolves
 // the await and continues, and the tool ran exactly twice (once to pause, once to resolve).
 func TestAwait_PausesAndResumesOnSignal(t *testing.T) {
-	store := NewMemStore()
+	store := memJournal()
 	var calls int
 	var got string
 	tool := &awaitTool{name: "watch", safety: Safety{ReadOnly: true}, sig: "webhook", calls: &calls, got: &got}
 	m := &scriptModel{turns: [][]Emit{toolTurn("c1", "watch", `{}`), textTurn("done")}}
-	a := New(m, store, tool)
+	a := mustNew(m, store, WithTools(tool))
 
 	_, err := a.Run(context.Background(), "r", "hi")
 	var awt *Awaiting
@@ -76,7 +76,7 @@ func TestAwait_PausesAndResumesOnSignal(t *testing.T) {
 // A redelivered signal (at-least-once transport) is applied at most once: the first payload
 // wins and later deliveries are no-ops. This is the exactly-once-intake guarantee.
 func TestSignal_RedeliveryIsAtMostOnce(t *testing.T) {
-	store := NewMemStore()
+	store := memJournal()
 	ctx := context.Background()
 	if err := Signal(ctx, store, "r", "webhook", "first"); err != nil {
 		t.Fatal(err)
@@ -106,11 +106,11 @@ func TestSignal_RedeliveryIsAtMostOnce(t *testing.T) {
 
 // Await from a non-retry-safe tool is a misuse and fails with ErrConfig, not a resumable pause.
 func TestAwait_RequiresRetrySafe(t *testing.T) {
-	store := NewMemStore()
+	store := memJournal()
 	var calls int
 	tool := &awaitTool{name: "write", safety: Safety{}, sig: "e", calls: &calls} // not retry-safe
 	m := &scriptModel{turns: [][]Emit{toolTurn("c1", "write", `{}`), textTurn("done")}}
-	a := New(m, store, tool)
+	a := mustNew(m, store, WithTools(tool))
 
 	_, err := a.Run(context.Background(), "r", "hi")
 	if !errors.Is(err, ErrConfig) {

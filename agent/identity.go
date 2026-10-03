@@ -38,7 +38,7 @@ type identityKey struct{}
 // the agent's WithIdentity option.
 //
 // Deprecated: transitional; the 1.0 rewrite removes it. The Run API takes the identity as a run
-// option (WithIdentity); until then, an agent-wide identity is the WithIdentity option of Build.
+// option (WithIdentity); until then, an agent-wide identity is the WithIdentity option of New.
 func ContextWithIdentity(ctx context.Context, id Identity) context.Context {
 	return context.WithValue(ctx, identityKey{}, id)
 }

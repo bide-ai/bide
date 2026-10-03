@@ -23,11 +23,11 @@ func TestR117_ErrorAfterTheRunsDeadlineBeforeItsTimerIsNotRecorded(t *testing.T)
 		}
 		return "", errors.New("gateway: client timeout awaiting response")
 	})
-	store := NewMemStore()
+	store := memJournal()
 	m := NewScriptedModel(ToolTurn("c1", "charge", `{}`), TextTurn("done"))
 	ctx, cancel := context.WithTimeout(context.Background(), 20*time.Millisecond)
 	defer cancel()
-	_, err := New(m, store, charge).Run(ctx, "r1", "pay")
+	_, err := mustNew(m, store, WithTools(charge)).Run(ctx, "r1", "pay")
 	if rec, ok := hasStep(t, store, "r1", ToolResultStep("c1")); ok {
 		t.Fatalf("an error after the run's deadline was recorded as a failure (%s); Run err = %v", rec.Result, err)
 	}
@@ -50,9 +50,9 @@ func TestR117_MiddlewareCannotRenameOrReIDACall(t *testing.T) {
 					return next(ctx, call)
 				}
 			})
-			store := NewMemStore()
+			store := memJournal()
 			m := NewScriptedModel(ToolTurn("c1", "lookup", `{}`), TextTurn("done"))
-			_, _ = New(m, store, lookup, wire).UseTool(rewrite).Run(context.Background(), "r1", "q")
+			_, _ = mustNew(m, store, WithTools(lookup, wire), WithToolMiddleware(rewrite)).Run(context.Background(), "r1", "q")
 			rec, ok := hasStep(t, store, "r1", ToolResultStep("c1"))
 			if wired.Load() != 0 || looked.Load() != 0 || !ok || !rec.IsError {
 				t.Fatalf("lookup ran %d, wire ran %d, result %s (recorded %v); want neither run and the call failed", looked.Load(), wired.Load(), rec.Result, ok)
@@ -81,14 +81,14 @@ func (w compWrap) Compensate(context.Context, json.RawMessage, json.RawMessage) 
 // Suspicions (b) and (d): New refuses a wrapper with a timeout over a sub-agent, and a wrapper
 // that unwraps and is also a Compensator, each with ErrConfig before any model call.
 func TestR117_NewRefusesUnsafeWrappers(t *testing.T) {
-	sub := New(NewScriptedModel(TextTurn("x")), NewMemStore())
+	sub := mustNew(NewScriptedModel(TextTurn("x")), memJournal())
 	for name, tool := range map[string]Tool{
 		"timeout over a sub-agent":      timedWrap{SubAgent("delegate", "", sub)},
 		"compensator that unwraps":      compWrap{SubAgent("delegate", "", sub)},
 		"compensator unwrapping a tool": compWrap{Func("f", "", Safety{}, func(context.Context, struct{}) (string, error) { return "", nil })},
 	} {
 		var calls atomic.Int32
-		_, err := New(&countingModel{n: &calls}, NewMemStore(), tool).Run(context.Background(), "r1", "go")
+		_, err := mustNew(&countingModel{n: &calls}, memJournal(), WithTools(tool)).Run(context.Background(), "r1", "go")
 		if !errors.Is(err, ErrConfig) || calls.Load() != 0 {
 			t.Errorf("%s: Run = %v after %d model calls; want ErrConfig before any", name, err, calls.Load())
 		}
@@ -110,9 +110,9 @@ func TestR117_BaseHandlerDoesNotStartACallPastItsDeadline(t *testing.T) {
 			return next(ctx, call)
 		}
 	})
-	store := NewMemStore()
+	store := memJournal()
 	m := NewScriptedModel(ToolTurn("c1", "charge", `{}`), TextTurn("done"))
-	if _, err := New(m, store, charge).UseTool(slow).Run(context.Background(), "r1", "pay"); err != nil {
+	if _, err := mustNew(m, store, WithTools(charge), WithToolMiddleware(slow)).Run(context.Background(), "r1", "pay"); err != nil {
 		t.Fatalf("Run: %v", err)
 	}
 	rec, ok := hasStep(t, store, "r1", ToolResultStep("c1"))
@@ -138,12 +138,12 @@ func TestR117_RunCancelledInMiddlewareRecordsNotStarted(t *testing.T) {
 			return nil, fmt.Errorf("no slot: %w (%w)", ctx.Err(), ErrToolNotCalled)
 		}
 	})
-	store := NewMemStore()
+	store := memJournal()
 	m := NewScriptedModel(ToolTurn("c1", "charge", `{}`), TextTurn("done"))
-	if _, err := New(m, store, charge).UseTool(waiting).Run(ctx, "r1", "pay"); !errors.Is(err, context.Canceled) {
+	if _, err := mustNew(m, store, WithTools(charge), WithToolMiddleware(waiting)).Run(ctx, "r1", "pay"); !errors.Is(err, context.Canceled) {
 		t.Fatalf("first drive: %v, want context.Canceled", err)
 	}
-	if _, err := New(m, store, charge).Run(context.Background(), "r1", "pay"); err != nil {
+	if _, err := mustNew(m, store, WithTools(charge)).Run(context.Background(), "r1", "pay"); err != nil {
 		t.Fatalf("resume: %v, want the call attempted again", err)
 	}
 	if calls.Load() != 1 {

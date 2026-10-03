@@ -8,6 +8,7 @@ import (
 	"time"
 
 	"github.com/bide-ai/bide/agent"
+	"github.com/bide-ai/bide/internal/journaltest"
 )
 
 // A signed tree head's Timestamp is Unix nanoseconds. The rule EvidencePackage.Verify applies to
@@ -210,7 +211,7 @@ func TestEvidence_RunCertificateConvergenceHeadsAreChecked(t *testing.T) {
 		if _, err := RecordConvergence(ctx, s, "A", []byte(`{}`), "D"); err != nil {
 			t.Fatal(err)
 		}
-		if _, err := s.Do(ctx, "A", "governed", func(context.Context) (agent.Record, error) {
+		if _, err := journaltest.Do(ctx, s, "A", "governed", func(context.Context) (agent.Record, error) {
 			return agent.Record{Kind: agent.StepToolResult, ToolUseID: "g", Result: json.RawMessage(`{"policy_digest":"D"}`)}, nil
 		}); err != nil {
 			t.Fatal(err)

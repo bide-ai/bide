@@ -8,24 +8,26 @@ import (
 	"time"
 
 	"github.com/bide-ai/bide/agent"
+	"github.com/bide-ai/bide/agent/agenttest"
 	"github.com/bide-ai/bide/govern"
 )
 
-// crashAfterStep stands in for a process that dies after a step's work ran but before its
-// record was written: the first Do for step name runs fn, then fails without recording.
+// crashAfterStep is a store wrapper standing in for a process that dies after a step's work ran
+// but before its record was written: the first Insert of step name (which comes after the step's
+// work ran) fails without storing. It does not Unwrap: the dying process shares nothing in-process
+// with the one that re-runs the run.
 type crashAfterStep struct {
-	agent.Durable
+	agent.Store
 	name    string
 	crashed bool
 }
 
-func (s *crashAfterStep) Do(ctx context.Context, runID, name string, fn func(context.Context) (agent.Record, error)) (agent.Record, error) {
+func (s *crashAfterStep) Insert(ctx context.Context, runID, name string, data []byte) (agent.Entry, bool, error) {
 	if name == s.name && !s.crashed {
 		s.crashed = true
-		_, _ = fn(ctx)
-		return agent.Record{}, errors.New("process died before the tool result was recorded")
+		return agent.Entry{}, false, errors.New("process died before the tool result was recorded")
 	}
-	return s.Durable.Do(ctx, runID, name, fn)
+	return s.Store.Insert(ctx, runID, name, data)
 }
 
 // runToolTwice drives one retry-safe tool call (c1) through a run that crashes before the
@@ -35,19 +37,28 @@ func runToolTwice(t *testing.T, tool agent.Tool, between func()) map[string]any 
 	t.Helper()
 	ctx := context.Background()
 	store := agent.NewMemStore()
-	crashing := &crashAfterStep{Durable: store, name: agent.ToolResultStep("c1")}
-	first := agent.New(agent.NewScriptedModel(agent.ToolTurn("c1", tool.Name(), `{}`), agent.TextTurn("done")), crashing, tool)
+	j := agenttest.MustJournal(store)
+	crashing := agenttest.MustJournal(&crashAfterStep{Store: store, name: agent.ToolResultStep("c1")})
+	first := agenttest.MustNew(
+		agent.NewScriptedModel(agent.ToolTurn("c1", tool.Name(), `{}`), agent.TextTurn("done")),
+		crashing,
+		agent.WithTools(tool),
+	)
 	if _, err := first.Run(ctx, "r", "go"); err == nil {
 		t.Fatal("the first run did not crash")
 	}
 	if between != nil {
 		between()
 	}
-	second := agent.New(agent.NewScriptedModel(agent.ToolTurn("c1", tool.Name(), `{}`), agent.TextTurn("done")), store, tool)
+	second := agenttest.MustNew(
+		agent.NewScriptedModel(agent.ToolTurn("c1", tool.Name(), `{}`), agent.TextTurn("done")),
+		j,
+		agent.WithTools(tool),
+	)
 	if _, err := second.Run(ctx, "r", "go"); err != nil {
 		t.Fatalf("re-run: %v", err)
 	}
-	recs, err := store.History(ctx, "r")
+	recs, err := j.History(ctx, "r")
 	if err != nil {
 		t.Fatal(err)
 	}

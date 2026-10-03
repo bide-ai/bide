@@ -9,6 +9,7 @@ import (
 	"testing"
 
 	"github.com/bide-ai/bide/agent"
+	"github.com/bide-ai/bide/agent/agenttest"
 )
 
 // transferServer lists one tool, "transfer", and counts the calls it answers.
@@ -34,9 +35,9 @@ func TestWithApproval_PausesAndResumes(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	store := agent.NewMemStore()
+	store := agenttest.MemJournal()
 	m := agent.NewScriptedModel(agent.ToolTurn("c1", "transfer", `{"cents":500}`), agent.TextTurn("done"))
-	a := agent.New(m, store, tools...)
+	a := agenttest.MustNew(m, store, agent.WithTools(tools...))
 	_, err = a.Run(context.Background(), "r1", "send $5")
 	var pend *agent.PendingApproval
 	if !errors.As(err, &pend) || pend.ToolName != "transfer" || pend.ToolUseID != "c1" {
@@ -84,9 +85,9 @@ func TestWithApproval_Quorum(t *testing.T) {
 		}
 		return nil, false
 	}
-	store := agent.NewMemStore()
+	store := agenttest.MemJournal()
 	m := agent.NewScriptedModel(agent.ToolTurn("c1", "transfer", `{"cents":500}`), agent.TextTurn("done"))
-	a := agent.New(m, store, tools...).WithApproverVerifiers(verifiers)
+	a := agenttest.MustNew(m, store, agent.WithTools(tools...), agent.WithApproverVerifiers(verifiers))
 	var pend *agent.PendingApproval
 	for i, approver := range []string{"", "alice", "bob"} {
 		if approver != "" {

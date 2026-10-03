@@ -19,9 +19,9 @@ func TestR117Base_SagaUnknownOutcomeOfARetrySafeWrite(t *testing.T) {
 			return "", fmt.Errorf("connection reset: %w", ErrToolOutcomeUnknown)
 		},
 		func(context.Context, struct{}, string) error { undone.Add(1); return nil })
-	store := NewMemStore()
+	store := memJournal()
 	m := NewScriptedModel(ToolTurn("c1", "hold", `{}`), TextTurn("done"))
-	_, err := New(m, store, hold).RunSaga(context.Background(), "s1", "book")
+	_, err := mustNew(m, store, WithTools(hold)).RunSaga(context.Background(), "s1", "book")
 	var ab *SagaAborted
 	if !errors.As(err, &ab) {
 		t.Fatalf("RunSaga: err = %v, want *SagaAborted", err)
@@ -43,9 +43,13 @@ func TestR117_UnknownOutcomeInASubAgentIsReportedAtTheRoot(t *testing.T) {
 			return "", fmt.Errorf("connection reset: %w", ErrToolOutcomeUnknown)
 		},
 		func(context.Context, struct{}, string) error { return nil })
-	store := NewMemStore()
-	sub := New(NewScriptedModel(ToolTurn("h1", "hold", `{}`), TextTurn("done")), store, hold)
-	parent := New(NewScriptedModel(ToolTurn("p1", "delegate", `{"task":"x"}`), TextTurn("done")), store, SubAgent("delegate", "", sub))
+	store := memJournal()
+	sub := mustNew(NewScriptedModel(ToolTurn("h1", "hold", `{}`), TextTurn("done")), store, WithTools(hold))
+	parent := mustNew(
+		NewScriptedModel(ToolTurn("p1", "delegate", `{"task":"x"}`), TextTurn("done")),
+		store,
+		WithTools(SubAgent("delegate", "", sub)),
+	)
 	_, err := parent.RunSaga(context.Background(), "root", "go")
 	var ab *SagaAborted
 	if !errors.As(err, &ab) || len(ab.UnknownOutcome) != 1 || ab.UnknownOutcome[0] != "hold" {

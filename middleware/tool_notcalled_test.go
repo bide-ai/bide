@@ -10,6 +10,7 @@ import (
 	"time"
 
 	"github.com/bide-ai/bide/agent"
+	"github.com/bide-ai/bide/agent/agenttest"
 	"github.com/bide-ai/bide/middleware"
 )
 
@@ -29,9 +30,9 @@ func testToolRateLimitGivingUpRecordsNotCalled(t *testing.T) {
 		calls.Add(1)
 		return "charged", nil
 	}, agent.WithTimeout(20*time.Millisecond))
-	store := agent.NewMemStore()
+	store := agenttest.MemJournal()
 	m := agent.NewScriptedModel(agent.ToolTurn("c1", "charge", `{}`), agent.ToolTurn("c2", "charge", `{}`), agent.TextTurn("done"))
-	a := agent.New(m, store, charge).UseTool(middleware.ToolRateLimit(r))
+	a := agenttest.MustNew(m, store, agent.WithTools(charge), agent.WithToolMiddleware(middleware.ToolRateLimit(r)))
 	if _, err := a.Run(context.Background(), "r1", "pay"); err != nil {
 		t.Fatalf("Run: %v", err)
 	}

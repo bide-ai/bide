@@ -4,7 +4,7 @@ import (
 	"context"
 	"testing"
 
-	"github.com/bide-ai/bide/agent"
+	"github.com/bide-ai/bide/agent/agenttest"
 )
 
 // A tie for the most votes is not agreement. With four voters and k = 2, two for "approve" and
@@ -14,7 +14,7 @@ func TestQuorum_TieIsNotAgreement(t *testing.T) {
 	vote := func(name, d string) Voter {
 		return Voter{Name: name, Decide: func(context.Context) (string, error) { return d, nil }}
 	}
-	res, err := Quorum(context.Background(), agent.NewMemStore(), "r1", "q", 2,
+	res, err := Quorum(context.Background(), agenttest.MemJournal(), "r1", "q", 2,
 		vote("a", "approve"), vote("b", "approve"), vote("c", "deny"), vote("d", "deny"))
 	if err != nil {
 		t.Fatal(err)

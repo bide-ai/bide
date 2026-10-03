@@ -7,7 +7,7 @@ import (
 )
 
 // receiveOnce runs one retry-safe tool that calls Receive on channel and reports what it got.
-func receiveOnce(t *testing.T, store Durable, runID, channel string) (Received[string], error) {
+func receiveOnce(t *testing.T, store *Journal, runID, channel string) (Received[string], error) {
 	t.Helper()
 	var got Received[string]
 	var recvErr error
@@ -20,7 +20,7 @@ func receiveOnce(t *testing.T, store Durable, runID, channel string) (Received[s
 		got = m
 		return m.Payload, nil
 	})
-	a := New(NewScriptedModel(ToolTurn("c1", "recv", `{}`), TextTurn("done")), store, recv)
+	a := mustNew(NewScriptedModel(ToolTurn("c1", "recv", `{}`), TextTurn("done")), store, WithTools(recv))
 	_, _ = a.Run(context.Background(), runID, "go")
 	return got, recvErr
 }
@@ -28,7 +28,7 @@ func receiveOnce(t *testing.T, store Durable, runID, channel string) (Received[s
 // A channel whose name extends another's with ':' is a different channel: Receive on
 // "orders" does not see a message sent to "orders:vip".
 func TestChannel_NameWithColonIsItsOwnChannel(t *testing.T) {
-	store := NewMemStore()
+	store := memJournal()
 	if err := Send(context.Background(), store, "r", "orders:vip", "k1", "vip-order"); err != nil {
 		t.Fatal(err)
 	}
@@ -37,7 +37,7 @@ func TestChannel_NameWithColonIsItsOwnChannel(t *testing.T) {
 	if !errors.As(err, &aw) {
 		t.Fatalf("Receive(\"orders\") = %+v, %v; want *Awaiting (the message is on \"orders:vip\")", got, err)
 	}
-	store2 := NewMemStore()
+	store2 := memJournal()
 	if err := Send(context.Background(), store2, "r", "orders:vip", "k1", "vip-order"); err != nil {
 		t.Fatal(err)
 	}
@@ -50,7 +50,7 @@ func TestChannel_NameWithColonIsItsOwnChannel(t *testing.T) {
 // "b:c" on channel "a" does not ack key "c" on channel "a:b", and the two sends are distinct.
 func TestChannel_ColonsNeverCollide(t *testing.T) {
 	ctx := context.Background()
-	store := NewMemStore()
+	store := memJournal()
 	if err := Send(ctx, store, "r", "a:b", "c", "on a:b"); err != nil {
 		t.Fatal(err)
 	}

@@ -14,6 +14,7 @@ import (
 	"time"
 
 	"github.com/bide-ai/bide/agent"
+	"github.com/bide-ai/bide/agent/agenttest"
 	"github.com/bide-ai/bide/middleware"
 )
 
@@ -145,7 +146,7 @@ func TestModelCallHook_OncePerSentRequest(t *testing.T) {
 			}
 			mw := append([]agent.Middleware{outer.middleware}, c.mw(backup)...)
 			mw = append(mw, inner.middleware)
-			if _, err := agent.New(c.primary, agent.NewMemStore()).Use(mw...).Run(context.Background(), "r", "q"); err != nil {
+			if _, err := agenttest.MustNew(c.primary, agenttest.MemJournal(), agent.WithMiddleware(mw...)).Run(context.Background(), "r", "q"); err != nil {
 				t.Fatal(err)
 			}
 			sent := c.primary.sent()
@@ -226,7 +227,11 @@ func TestHedge_AttemptUniqueAcrossBranches(t *testing.T) {
 	g := newGate(2)
 	primary, backup := &barrierModel{name: "p", gate: g}, &barrierModel{name: "b", gate: g}
 	var l hookLog
-	a := agent.New(primary, agent.NewMemStore()).Use(middleware.Hedge(0, backup), l.middleware)
+	a := agenttest.MustNew(
+		primary,
+		agenttest.MemJournal(),
+		agent.WithMiddleware(middleware.Hedge(0, backup), l.middleware),
+	)
 	if _, err := a.Run(context.Background(), "r", "q"); err != nil {
 		t.Fatal(err)
 	}
@@ -273,7 +278,11 @@ func TestHedge_AppendingMiddlewareIsRaceFree(t *testing.T) {
 		}
 	}
 	var l hookLog
-	a := agent.New(primary, agent.NewMemStore()).Use(spare, middleware.Hedge(0, backup), tag, l.middleware)
+	a := agenttest.MustNew(
+		primary,
+		agenttest.MemJournal(),
+		agent.WithMiddleware(spare, middleware.Hedge(0, backup), tag, l.middleware),
+	)
 	if _, err := a.Run(context.Background(), "r", "q"); err != nil {
 		t.Fatal(err)
 	}
@@ -307,7 +316,11 @@ func TestHedge_StreamKeepsOnlyTheWinner(t *testing.T) {
 			return next(ctx, call)
 		}
 	}
-	a := agent.New(partialPrimary{}, agent.NewMemStore()).Use(middleware.Hedge(0, backup), holdBackup)
+	a := agenttest.MustNew(
+		partialPrimary{},
+		agenttest.MemJournal(),
+		agent.WithMiddleware(middleware.Hedge(0, backup), holdBackup),
+	)
 	as := a.Stream(context.Background(), "r", "q")
 	var got []string
 	for ev := range as.Events() {
@@ -383,7 +396,7 @@ func TestHedge_ClaimerWinsLive(t *testing.T) {
 			return next(ctx, call)
 		}
 	}
-	as := agent.New(primary, agent.NewMemStore()).Use(middleware.Hedge(0, backup), order).Stream(context.Background(), "r", "q")
+	as := agenttest.MustNew(primary, agenttest.MemJournal(), agent.WithMiddleware(middleware.Hedge(0, backup), order)).Stream(context.Background(), "r", "q")
 	var got []string
 	for ev := range as.Events() {
 		switch e := ev.(type) {
@@ -417,9 +430,9 @@ func (f streamFunc) Stream(ctx context.Context, _ agent.Request) (*agent.Stream,
 // A replayed run reports each turn's recorded discarded spend (agent.ModelAttempt.Discarded), so
 // Cost counts the original run's spend again, not only its answers.
 func TestCost_CountsReplayedDiscardedSpend(t *testing.T) {
-	store := agent.NewMemStore()
+	store := agenttest.MemJournal()
 	m := &billedModel{u: billed, bad: 1}
-	if _, err := agent.New(m, store).Use(middleware.Retry(1, middleware.WithBackoff(0, 0))).Run(context.Background(), "r", "q"); err != nil {
+	if _, err := agenttest.MustNew(m, store, agent.WithMiddleware(middleware.Retry(1, middleware.WithBackoff(0, 0)))).Run(context.Background(), "r", "q"); err != nil {
 		t.Fatal(err)
 	}
 	rm, err := agent.Replay(context.Background(), store, "r")
@@ -427,7 +440,7 @@ func TestCost_CountsReplayedDiscardedSpend(t *testing.T) {
 		t.Fatal(err)
 	}
 	var meter middleware.CostMeter
-	if _, err := agent.New(rm, agent.NewMemStore()).Use(middleware.Cost(&meter, perInput)).Run(context.Background(), "r", "q"); err != nil {
+	if _, err := agenttest.MustNew(rm, agenttest.MemJournal(), agent.WithMiddleware(middleware.Cost(&meter, perInput))).Run(context.Background(), "r", "q"); err != nil {
 		t.Fatal(err)
 	}
 	if s := meter.Snapshot(); s.Answer != billed || s.Spend != twice(billed) || s.SpendUSD != 200 || s.AnswerUSD != 100 {

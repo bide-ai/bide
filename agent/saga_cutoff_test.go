@@ -8,6 +8,7 @@ import (
 	"testing"
 
 	"github.com/bide-ai/bide/agent"
+	"github.com/bide-ai/bide/agent/agenttest"
 )
 
 // syncTool is a retry-safe tool that does not watch its context: it runs whatever state the run
@@ -19,7 +20,7 @@ type syncTool struct {
 
 func (t syncTool) Name() string                { return t.name }
 func (t syncTool) Description() string         { return "" }
-func (t syncTool) ArgsSchema() json.RawMessage { return nil }
+func (t syncTool) ArgsSchema() json.RawMessage { return json.RawMessage(`{"type":"object"}`) }
 func (t syncTool) Safety() agent.Safety        { return agent.Safety{Idempotent: true} }
 func (t syncTool) Call(context.Context, json.RawMessage) (json.RawMessage, error) {
 	return t.fn()
@@ -38,7 +39,10 @@ func TestSaga_CallAfterTheFailureIsNotCalled(t *testing.T) {
 		{Event: agent.ToolCallDelta{Index: 1, ID: "n1", Name: "notify", ArgsFragment: json.RawMessage(`{}`)}},
 		{Event: agent.Finish{Reason: "tool_use"}},
 	}
-	a := agent.New(modelFunc(func() []agent.Emit { return turn }), agent.NewMemStore(), fail, notify).SetMaxConcurrency(1)
+	a := agenttest.MustNew(
+		modelFunc(func() []agent.Emit { return turn }),
+		agenttest.MemJournal(),
+		agent.WithTools(fail, notify), agent.WithMaxConcurrency(1))
 	_, err := a.RunSaga(context.Background(), "r", "go")
 	var aborted *agent.SagaAborted
 	if !errors.As(err, &aborted) {

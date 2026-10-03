@@ -36,9 +36,9 @@ func TestCallState_ClosedChain(t *testing.T) {
 		t.Run(tc.name, func(t *testing.T) {
 			var calls atomic.Int32
 			tool := Func("t", "", tc.safety, func(context.Context, struct{}) (string, error) { calls.Add(1); return "ran", nil })
-			store := NewMemStore()
+			store := memJournal()
 			m := NewScriptedModel(ToolTurn("c1", "t", `{}`), TextTurn("done"))
-			_, err := New(m, store, tool).UseTool(tc.mw).Run(context.Background(), "r1", "go")
+			_, err := mustNew(m, store, WithTools(tool), WithToolMiddleware(tc.mw)).Run(context.Background(), "r1", "go")
 			rec, recorded := hasStep(t, store, "r1", ToolResultStep("c1"))
 			if calls.Load() != 0 {
 				t.Fatalf("the tool ran %d times; the middleware never called next", calls.Load())
@@ -47,7 +47,7 @@ func TestCallState_ClosedChain(t *testing.T) {
 				if !errors.Is(err, ErrToolOutcomeUnknown) || recorded {
 					t.Fatalf("Run = %v, recorded %v; want ErrToolOutcomeUnknown and nothing recorded", err, recorded)
 				}
-				_, err = New(m, store, tool).Run(context.Background(), "r1", "go")
+				_, err = mustNew(m, store, WithTools(tool)).Run(context.Background(), "r1", "go")
 				var halt *OutcomeUnknown
 				if !errors.As(err, &halt) {
 					t.Fatalf("resume = %v, want *OutcomeUnknown", err)
@@ -98,9 +98,9 @@ func TestCallState_RefusedSurvivesAReplacedError(t *testing.T) {
 			return nil, nil
 		}
 	}
-	store := NewMemStore()
+	store := memJournal()
 	m := NewScriptedModel(ToolTurn("c1", "charge", `{}`), TextTurn("done"))
-	if _, err := New(m, store, charge).UseTool(rename).Run(context.Background(), "r1", "go"); err != nil {
+	if _, err := mustNew(m, store, WithTools(charge), WithToolMiddleware(rename)).Run(context.Background(), "r1", "go"); err != nil {
 		t.Fatalf("Run: %v", err)
 	}
 	if rec, ok := hasStep(t, store, "r1", ToolResultStep("c1")); calls.Load() != 0 || !ok || !rec.IsError {
@@ -121,12 +121,12 @@ func TestCallState_RefusedOnCancelRecordsNotStarted(t *testing.T) {
 			return next(c, call)
 		}
 	}
-	store := NewMemStore()
+	store := memJournal()
 	m := NewScriptedModel(ToolTurn("c1", "charge", `{}`), TextTurn("done"))
-	if _, err := New(m, store, charge).UseTool(cancelFirst).Run(ctx, "r1", "go"); !errors.Is(err, context.Canceled) {
+	if _, err := mustNew(m, store, WithTools(charge), WithToolMiddleware(cancelFirst)).Run(ctx, "r1", "go"); !errors.Is(err, context.Canceled) {
 		t.Fatalf("first drive: %v, want context.Canceled", err)
 	}
-	if _, err := New(m, store, charge).Run(context.Background(), "r1", "go"); err != nil || calls.Load() != 1 {
+	if _, err := mustNew(m, store, WithTools(charge)).Run(context.Background(), "r1", "go"); err != nil || calls.Load() != 1 {
 		t.Fatalf("resume: %v after %d calls; want the call attempted again, once", err, calls.Load())
 	}
 }
@@ -167,9 +167,9 @@ func TestCallState_RefusalDoesNotMarkTheCallRun(t *testing.T) {
 			return next(ctx, call) // a second, live invocation runs the tool
 		}
 	}
-	store := NewMemStore()
+	store := memJournal()
 	m := NewScriptedModel(ToolTurn("c1", "charge", `{}`), TextTurn("done"))
-	if _, err := New(m, store, charge).UseTool(tryExpiredFirst).Run(context.Background(), "r1", "go"); err != nil {
+	if _, err := mustNew(m, store, WithTools(charge), WithToolMiddleware(tryExpiredFirst)).Run(context.Background(), "r1", "go"); err != nil {
 		t.Fatalf("Run: %v", err)
 	}
 	if rec, _ := hasStep(t, store, "r1", ToolResultStep("c1")); calls.Load() != 1 || rec.IsError {
@@ -196,9 +196,9 @@ func TestCallState_LeakedNextWritesNoAcceptedArgs(t *testing.T) {
 			return nil, fmt.Errorf("deferred (%w)", ErrToolNotCalled)
 		}
 	}
-	store := NewMemStore()
+	store := memJournal()
 	m := NewScriptedModel(ToolTurn("c1", "hold", `{"amount":5}`), TextTurn("done"))
-	if _, err := New(m, store, hold).UseTool(leak).RunSaga(context.Background(), "s1", "go"); err == nil {
+	if _, err := mustNew(m, store, WithTools(hold), WithToolMiddleware(leak)).RunSaga(context.Background(), "s1", "go"); err == nil {
 		t.Fatal("RunSaga: want the saga to abort on the deferred call")
 	}
 	close(release)

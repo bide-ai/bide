@@ -17,14 +17,14 @@ import (
 // through Agent.Run, which writes run:complete and then releases the lease.
 func completeUnderLease(t *testing.T, s *MemStore, runID string) {
 	t.Helper()
-	driven, err := Lease(context.Background(), s, runID, func(ctx context.Context) error {
-		_, err := New(NewScriptedModel(TextTurn("done")), s).Run(ctx, runID, "go")
+	driven, err := Lease(context.Background(), mustJournal(s), runID, func(ctx context.Context) error {
+		_, err := mustNew(NewScriptedModel(TextTurn("done")), mustJournal(s)).Run(ctx, runID, "go")
 		return err
 	}, WithLeaseHolder("other"))
 	if err != nil || !driven {
 		t.Fatalf("other holder's drive of %s: driven=%v err=%v", runID, driven, err)
 	}
-	if done, err := IsComplete(context.Background(), s, runID); err != nil || !done {
+	if done, err := IsComplete(context.Background(), mustJournal(s), runID); err != nil || !done {
 		t.Fatalf("run %s not complete after the other holder's drive: %v %v", runID, done, err)
 	}
 }
@@ -33,8 +33,8 @@ func completeUnderLease(t *testing.T, s *MemStore, runID string) {
 // marker name and then releases the lease.
 func endUnderLease(t *testing.T, s *MemStore, runID, name string) {
 	t.Helper()
-	driven, err := Lease(context.Background(), s, runID, func(ctx context.Context) error {
-		_, err := putRecord(ctx, s, runID, name, Record{Kind: StepValue})
+	driven, err := Lease(context.Background(), mustJournal(s), runID, func(ctx context.Context) error {
+		_, err := mustJournal(s).put(ctx, runID, name, Record{Kind: StepValue})
 		return err
 	}, WithLeaseHolder("other"))
 	if err != nil || !driven {
@@ -45,14 +45,15 @@ func endUnderLease(t *testing.T, s *MemStore, runID, name string) {
 func TestRecoverLoop_DoesNotResumeARunCompletedWhileItWaited(t *testing.T) {
 	synctest.Test(t, func(t *testing.T) {
 		s := NewMemStore()
+		j := mustJournal(s)
 		for _, id := range []string{"a", "b"} {
 			seedRun(t, s, id)
 		}
 		first, release := make(chan string, 1), make(chan struct{})
 		var mu sync.Mutex
 		var resumedComplete []string
-		stop := runLoop(t, s, func(ctx context.Context, id string, _ RunStart) error {
-			if done, _ := IsComplete(ctx, s, id); done {
+		stop := runLoop(t, j, func(ctx context.Context, id string, _ RunStart) error {
+			if done, _ := IsComplete(ctx, j, id); done {
 				mu.Lock()
 				resumedComplete = append(resumedComplete, id)
 				mu.Unlock()
@@ -86,17 +87,18 @@ func TestRecoverLoop_DoesNotResumeARunCompletedWhileItWaited(t *testing.T) {
 func TestRecover_DoesNotResumeARunCompletedWhileItWaited(t *testing.T) {
 	synctest.Test(t, func(t *testing.T) {
 		s := NewMemStore()
+		j := mustJournal(s)
 		for _, id := range []string{"a", "b"} {
 			seedRun(t, s, id)
 		}
 		var resumedComplete []string
-		n, err := Recover(context.Background(), s, func(ctx context.Context, id string, _ RunStart) error {
-			if done, _ := IsComplete(ctx, s, id); done {
+		n, err := Recover(context.Background(), j, func(ctx context.Context, id string, _ RunStart) error {
+			if done, _ := IsComplete(ctx, j, id); done {
 				resumedComplete = append(resumedComplete, id)
 				// The documented resume: Run replays a finished run and returns its answer.
-				before, _ := s.History(ctx, id)
-				_, err := New(NewScriptedModel(), s).Run(ctx, id, "go")
-				after, _ := s.History(ctx, id)
+				before, _ := j.History(ctx, id)
+				_, err := mustNew(NewScriptedModel(), j).Run(ctx, id, "go")
+				after, _ := j.History(ctx, id)
 				if len(after) != len(before) {
 					t.Errorf("replaying completed run %s wrote %d records", id, len(after)-len(before))
 				}
@@ -119,13 +121,11 @@ func TestRecover_DoesNotResumeARunCompletedWhileItWaited(t *testing.T) {
 	})
 }
 
-// Every marker that ends a run, not only run:complete, is checked under the lease: over a Journal
-// (point reads) and over a Durable that is not one (History).
+// Every marker that ends a run, not only run:complete, is checked under the lease.
 func TestRecover_DoesNotResumeARunEndedWhileItWaited(t *testing.T) {
 	for _, name := range []string{runCompleteStep, runAbortedStep, runCancelledStep} {
-		for path, wrap := range map[string]func(*MemStore) Durable{
-			"journal": func(s *MemStore) Durable { return s },
-			"durable": func(s *MemStore) Durable { return durableWrapper{s} },
+		for path, wrap := range map[string]func(*MemStore) *Journal{
+			"journal": func(s *MemStore) *Journal { return mustJournal(s) },
 		} {
 			t.Run(name+"/"+path, func(t *testing.T) {
 				s := NewMemStore()
@@ -202,11 +202,10 @@ func TestRecover_DoesNotResumeARunItCannotCheck(t *testing.T) {
 }
 
 // A run in a journal format this version cannot read is refused with *JournalVersionError, not
-// reported as a storage failure, whether the check reads it through a Journal or a Durable.
+// reported as a storage failure.
 func TestRecover_ForeignFormatIsNotAStorageError(t *testing.T) {
-	for path, wrap := range map[string]func(*MemStore) Durable{
-		"journal": func(s *MemStore) Durable { return s },
-		"durable": func(s *MemStore) Durable { return durableWrapper{s} },
+	for path, wrap := range map[string]func(*MemStore) *Journal{
+		"journal": func(s *MemStore) *Journal { return mustJournal(s) },
 	} {
 		t.Run(path, func(t *testing.T) {
 			s := NewMemStore()
@@ -216,7 +215,7 @@ func TestRecover_ForeignFormatIsNotAStorageError(t *testing.T) {
 			}
 			d := wrap(s)
 			_, err := Recover(context.Background(), d, func(ctx context.Context, id string, _ RunStart) error {
-				_, err := New(NewScriptedModel(TextTurn("x")), d).Run(ctx, id, "go")
+				_, err := mustNew(NewScriptedModel(TextTurn("x")), d).Run(ctx, id, "go")
 				return err
 			}, WithLeaseHolder("w"))
 			var jv *JournalVersionError

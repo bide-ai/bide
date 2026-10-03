@@ -23,6 +23,7 @@ package main
 import (
 	"context"
 	"fmt"
+	"log"
 	"sync/atomic"
 
 	"github.com/bide-ai/bide/agent"
@@ -64,7 +65,7 @@ func (botModel) Stream(_ context.Context, req agent.Request) (*agent.Stream, err
 	return agent.NewStream(ch), nil
 }
 
-func newAgent(store agent.Durable) *agent.Agent {
+func newAgent(store *agent.Journal) *agent.Agent {
 	// create_ticket is a genuine side effect: NOT ReadOnly, so a naive re-run would open a
 	// second ticket. The durable journal is what prevents that on redelivery.
 	createTicket := agent.Func("create_ticket", "open a support ticket", agent.Safety{},
@@ -74,7 +75,11 @@ func newAgent(store agent.Durable) *agent.Agent {
 			atomic.AddInt64(&tickets, 1)
 			return "ticket-4711", nil
 		})
-	return agent.New(botModel{}, store, createTicket)
+	ag, err := agent.New(botModel{}, store, agent.WithTools(createTicket))
+	if err != nil {
+		log.Fatal(err)
+	}
+	return ag
 }
 
 // statelessCommand handles a command-style event with no conversation memory. The run is keyed
@@ -118,7 +123,10 @@ func handleConversational(ctx context.Context, a *agent.Agent, conversationID, e
 
 func main() {
 	ctx := context.Background()
-	store := agent.NewMemStore()
+	store, err := agent.NewJournal(agent.NewMemStore())
+	if err != nil {
+		log.Fatal(err)
+	}
 	a := newAgent(store)
 
 	fmt.Println("== stateless command bot ==")

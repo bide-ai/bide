@@ -11,6 +11,7 @@ import (
 	"time"
 
 	"github.com/bide-ai/bide/agent"
+	"github.com/bide-ai/bide/agent/agenttest"
 	"github.com/bide-ai/bide/middleware"
 )
 
@@ -102,7 +103,7 @@ func TestStress_HooksOncePerRequestEveryOrder(t *testing.T) {
 			mws = append(mws, all[i], appender)
 		}
 		tool := agent.Func("t", "d", agent.Safety{ReadOnly: true}, func(context.Context, struct{}) (string, error) { return "", nil })
-		a := agent.New(primary, agent.NewMemStore(), tool).Use(mws...)
+		a := agenttest.MustNew(primary, agenttest.MemJournal(), agent.WithTools(tool), agent.WithMiddleware(mws...))
 		as := a.Stream(context.Background(), fmt.Sprint("r", pi), "q")
 		restarts := 0
 		for ev := range as.Events() {

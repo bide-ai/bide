@@ -11,7 +11,7 @@ import (
 // all, reports it again, in RunResult and in its journal.
 func TestReplay_ReportsDiscardedSpend(t *testing.T) {
 	ctx := context.Background()
-	rec := NewMemStore()
+	rec := memJournal()
 	var calls int
 	tool := &countingTool{name: "lookup", safety: Safety{ReadOnly: true}, calls: &calls}
 	m := &scriptModel{turns: [][]Emit{
@@ -19,7 +19,7 @@ func TestReplay_ReportsDiscardedSpend(t *testing.T) {
 		toolTurnWithUsage("c1", "lookup", `{}`, billed),
 		textTurnWithUsage("done", billed),
 	}}
-	orig, err := New(m, rec, tool).Use(retryOnceMW).RunResult(ctx, "run", "go")
+	orig, err := mustNew(m, rec, WithTools(tool), WithMiddleware(retryOnceMW)).RunResult(ctx, "run", "go")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -28,8 +28,8 @@ func TestReplay_ReportsDiscardedSpend(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	fresh := NewMemStore()
-	replayed, err := New(rm, fresh, tool).RunResult(ctx, "run", "go")
+	fresh := memJournal()
+	replayed, err := mustNew(rm, fresh, WithTools(tool)).RunResult(ctx, "run", "go")
 	if err != nil {
 		t.Fatalf("replay run: %v", err)
 	}
@@ -42,7 +42,7 @@ func TestReplay_ReportsDiscardedSpend(t *testing.T) {
 // The budget stops a replayed run where it stopped the original, counting discarded spend.
 func TestReplay_BudgetCountsDiscardedSpend(t *testing.T) {
 	ctx := context.Background()
-	rec := NewMemStore()
+	rec := memJournal()
 	var calls int
 	tool := &countingTool{name: "lookup", safety: Safety{ReadOnly: true}, calls: &calls}
 	m := &scriptModel{turns: [][]Emit{
@@ -50,7 +50,7 @@ func TestReplay_BudgetCountsDiscardedSpend(t *testing.T) {
 		toolTurnWithUsage("c1", "lookup", `{}`, billed),
 		textTurnWithUsage("done", billed),
 	}}
-	_, origErr := New(m, rec, tool).Use(retryOnceMW).WithTokenBudget(200).Run(ctx, "run", "go")
+	_, origErr := must(mustNew(m, rec, WithTools(tool), WithMiddleware(retryOnceMW)).With(WithTokenBudget(200))).Run(ctx, "run", "go")
 	if !errors.Is(origErr, ErrBudgetExceeded) {
 		t.Fatalf("setup: err = %v, want ErrBudgetExceeded", origErr)
 	}
@@ -58,8 +58,8 @@ func TestReplay_BudgetCountsDiscardedSpend(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	fresh := NewMemStore()
-	_, replayErr := New(rm, fresh, tool).WithTokenBudget(200).Run(ctx, "run", "go")
+	fresh := memJournal()
+	_, replayErr := mustNew(rm, fresh, WithTools(tool), WithTokenBudget(200)).Run(ctx, "run", "go")
 	if replayErr == nil || replayErr.Error() != origErr.Error() {
 		t.Fatalf("replay err = %v, want %v", replayErr, origErr)
 	}
@@ -71,11 +71,11 @@ func TestReplay_BudgetCountsDiscardedSpend(t *testing.T) {
 // did.
 func TestReplay_FailedCallsFailAndCountAtTheSamePoint(t *testing.T) {
 	ctx := context.Background()
-	rec := NewMemStore()
+	rec := memJournal()
 	m := &scriptModel{turns: [][]Emit{truncatedTurn(billed), truncatedTurn(billed), textTurnWithUsage("done", billed)}}
 	var origErrs []error
 	for range 3 {
-		_, err := New(m, rec).WithTokenBudget(200).Run(ctx, "run", "go")
+		_, err := mustNew(m, rec, WithTokenBudget(200)).Run(ctx, "run", "go")
 		origErrs = append(origErrs, err)
 	}
 	if !errors.Is(origErrs[0], ErrModel) || !errors.Is(origErrs[1], ErrModel) || !errors.Is(origErrs[2], ErrBudgetExceeded) {
@@ -86,9 +86,9 @@ func TestReplay_FailedCallsFailAndCountAtTheSamePoint(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	fresh := NewMemStore()
+	fresh := memJournal()
 	for i := range 3 {
-		_, err := New(rm, fresh).WithTokenBudget(200).Run(ctx, "run", "go")
+		_, err := mustNew(rm, fresh, WithTokenBudget(200)).Run(ctx, "run", "go")
 		if errors.Is(err, ErrBudgetExceeded) != errors.Is(origErrs[i], ErrBudgetExceeded) || errors.Is(err, ErrModel) != errors.Is(origErrs[i], ErrModel) {
 			t.Fatalf("replay invocation %d: err = %v, want the original's %v", i, err, origErrs[i])
 		}

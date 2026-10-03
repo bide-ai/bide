@@ -12,15 +12,17 @@ import (
 	"testing"
 
 	"github.com/bide-ai/bide/agent"
+	"github.com/bide-ai/bide/agent/agenttest"
 	"github.com/bide-ai/bide/audit"
+	"github.com/bide-ai/bide/internal/journaltest"
 )
 
 // capBundle writes an authentic ProofBundle and its key, for the input-cap tests.
 func capBundle(t *testing.T, dir string) (bundlePath, pubHex string) {
 	t.Helper()
 	ctx := context.Background()
-	store := agent.NewMemStore()
-	if _, err := store.Do(ctx, "r", "charge", func(context.Context) (agent.Record, error) {
+	store := agenttest.MemJournal()
+	if _, err := journaltest.Do(ctx, store, "r", "charge", func(context.Context) (agent.Record, error) {
 		return agent.Record{Kind: agent.StepToolResult, ToolUseID: "c1", Result: json.RawMessage(`{"ok":true}`)}, nil
 	}); err != nil {
 		t.Fatal(err)
@@ -85,8 +87,8 @@ func TestCLI_MaxInputBytesAppliesToEveryInput(t *testing.T) {
 	}
 	// A digest list, read by verify-evidence after the package and the key.
 	ctx := context.Background()
-	store := agent.NewMemStore()
-	if _, err := store.Do(ctx, "r", "charge", func(context.Context) (agent.Record, error) {
+	store := agenttest.MemJournal()
+	if _, err := journaltest.Do(ctx, store, "r", "charge", func(context.Context) (agent.Record, error) {
 		return agent.Record{Kind: agent.StepToolResult, ToolUseID: "c1", Result: json.RawMessage(`{"ok":true}`)}, nil
 	}); err != nil {
 		t.Fatal(err)

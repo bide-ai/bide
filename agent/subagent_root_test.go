@@ -9,15 +9,23 @@ import (
 
 // clerkTree builds a root agent whose one tool is a sub-agent ("clerk", call s1) that calls
 // inner (call c1) and then answers "sub done".
-func clerkTree(store Durable, inner Tool) *Agent {
-	sub := New(NewScriptedModel(ToolTurn("c1", inner.Name(), `{}`), TextTurn("sub done")), store, inner)
-	return New(NewScriptedModel(ToolTurn("s1", "clerk", `{"task":"do it"}`), TextTurn("parent done")), store, SubAgent("clerk", "does it", sub))
+func clerkTree(store *Journal, inner Tool) *Agent {
+	sub := mustNew(
+		NewScriptedModel(ToolTurn("c1", inner.Name(), `{}`), TextTurn("sub done")),
+		store,
+		WithTools(inner),
+	)
+	return mustNew(
+		NewScriptedModel(ToolTurn("s1", "clerk", `{"task":"do it"}`), TextTurn("parent done")),
+		store,
+		WithTools(SubAgent("clerk", "does it", sub)),
+	)
 }
 
 // A halt inside a sub-agent is resolved against the sub-run and continued from the root: the
 // signal says which run to re-invoke, and doing so completes the whole tree.
 func TestSubAgentHalt_ResolvedAndContinuedFromTheRoot(t *testing.T) {
-	store := NewMemStore()
+	store := memJournal()
 	ctx, cancel := context.WithCancel(context.Background())
 	charge := Func("charge", "charge", Safety{}, func(ctx context.Context, _ struct{}) (string, error) {
 		cancel() // the charge went out; the run is cut off before it reports back
@@ -44,7 +52,7 @@ func TestSubAgentHalt_ResolvedAndContinuedFromTheRoot(t *testing.T) {
 
 // An Interrupt inside a sub-agent: answer it against the sub-run, continue from the root.
 func TestSubAgentInterrupt_AnsweredAndContinuedFromTheRoot(t *testing.T) {
-	store := NewMemStore()
+	store := memJournal()
 	ask := Func("ask", "ask", Safety{ReadOnly: true}, func(ctx context.Context, _ struct{}) (string, error) {
 		return Interrupt[string](ctx, "confirm", "ok?")
 	})
@@ -65,7 +73,7 @@ func TestSubAgentInterrupt_AnsweredAndContinuedFromTheRoot(t *testing.T) {
 // A Sleep inside a sub-agent schedules a wake for the root run, which the waker's resume
 // callback (the root agent) can drive; the woken run completes.
 func TestSubAgentSleep_WakesTheRoot(t *testing.T) {
-	store := NewMemStore()
+	store := memJournal()
 	var fired bool
 	nap := Func("nap", "wait a moment", Safety{ReadOnly: true}, func(ctx context.Context, _ struct{}) (string, error) {
 		if err := Sleep(ctx, "nap", 10*time.Millisecond); err != nil {

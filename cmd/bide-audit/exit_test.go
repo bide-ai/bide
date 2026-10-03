@@ -21,7 +21,9 @@ import (
 	"time"
 
 	"github.com/bide-ai/bide/agent"
+	"github.com/bide-ai/bide/agent/agenttest"
 	"github.com/bide-ai/bide/audit"
+	"github.com/bide-ai/bide/internal/journaltest"
 )
 
 // exitFixture is one signed run with every artifact the verbs read, genuine and tampered, written
@@ -73,7 +75,7 @@ func newExitFixture(t *testing.T) *exitFixture {
 	policy, digest := testPolicy()
 	f.digest = digest
 
-	store := agent.NewMemStore()
+	store := agenttest.MemJournal()
 	const runID = "run1"
 	if _, err := audit.RecordPolicy(ctx, store, runID, []byte(policy), digest); err != nil {
 		t.Fatal(err)
@@ -99,7 +101,7 @@ func newExitFixture(t *testing.T) *exitFixture {
 		toolLeaf("fake-policy", string(must(json.Marshal(audit.PolicyContent{Digest: digest, Policy: policy})))),
 		toolLeaf("act2", `{"event":"approve","applied":true,"policy_digest":"`+digest2+`"}`),
 	} {
-		if _, err := store.Do(ctx, runID, r.Name, func(context.Context) (agent.Record, error) { return r, nil }); err != nil {
+		if _, err := journaltest.Do(ctx, store, runID, r.Name, func(context.Context) (agent.Record, error) { return r, nil }); err != nil {
 			t.Fatal(err)
 		}
 	}

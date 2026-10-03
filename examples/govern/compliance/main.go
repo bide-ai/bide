@@ -16,6 +16,7 @@ import (
 	"crypto/ed25519"
 	"crypto/rand"
 	"fmt"
+	"log"
 
 	"github.com/bide-ai/bide/agent"
 	"github.com/bide-ai/bide/audit"
@@ -37,7 +38,10 @@ type decision struct {
 
 func main() {
 	ctx := context.Background()
-	store := agent.NewMemStore()
+	store, err := agent.NewJournal(agent.NewMemStore())
+	if err != nil {
+		log.Fatal(err)
+	}
 	const runID = "kyc-applicant-42"
 
 	// 1) Parallel, durable, independently-provable compliance checks. adverse_media flags.

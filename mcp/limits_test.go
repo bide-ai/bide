@@ -9,6 +9,7 @@ import (
 	"time"
 
 	"github.com/bide-ai/bide/agent"
+	"github.com/bide-ai/bide/agent/agenttest"
 )
 
 // textResult is a tools/call result holding one text block.
@@ -97,9 +98,9 @@ func TestOversizedResult_RunRecordsAFailure(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	store := agent.NewMemStore()
+	store := agenttest.MemJournal()
 	m := agent.NewScriptedModel(agent.ToolTurn("c1", "export", `{}`), agent.TextTurn("done"))
-	if _, err := agent.New(m, store, tools...).Run(context.Background(), "r1", "export"); err != nil {
+	if _, err := agenttest.MustNew(m, store, agent.WithTools(tools...)).Run(context.Background(), "r1", "export"); err != nil {
 		t.Fatalf("run err = %v, want the failure passed to the model", err)
 	}
 	hist, _ := store.History(context.Background(), "r1")

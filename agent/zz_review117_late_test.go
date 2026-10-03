@@ -36,9 +36,9 @@ func TestR117_LateErrorBeforeTheTimerFiresIsRecordedAsAFailure(t *testing.T) {
 			}
 			return "", errors.New("gateway: client timeout awaiting response")
 		}, WithTimeout(2*time.Millisecond))
-		store := NewMemStore()
+		store := memJournal()
 		m := NewScriptedModel(ToolTurn("c1", "charge", `{}`), TextTurn("done"))
-		_, err := New(m, store, charge).Run(context.Background(), "r1", "pay")
+		_, err := mustNew(m, store, WithTools(charge)).Run(context.Background(), "r1", "pay")
 		rec, ok := hasStep(t, store, "r1", ToolResultStep("c1"))
 		if calls.Load() == 0 {
 			// Not reached: the deadline passed before dispatch. That is a known failure, recorded.

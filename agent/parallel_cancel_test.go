@@ -23,7 +23,7 @@ func TestParallel_StartsNoTaskAfterCancel(t *testing.T) {
 			return i, nil
 		}}
 	}
-	_, err := Parallel(ctx, NewMemStore(), "r1", tasks, WithMaxConcurrency(1))
+	_, err := Parallel(ctx, memJournal(), "r1", tasks, WithMaxConcurrency(1))
 	if n := ran.Load(); n != 1 {
 		t.Fatalf("%d tasks ran; want 1 (none started after the cancellation)", n)
 	}
@@ -36,7 +36,7 @@ func TestParallel_StartsNoTaskAfterCancel(t *testing.T) {
 func TestStep_DoesNotStartWhenCancelled(t *testing.T) {
 	ctx, cancel := context.WithCancel(context.Background())
 	cancel()
-	store := NewMemStore()
+	store := memJournal()
 	var ran bool
 	_, err := Step(ctx, store, "r1", "charge", func(context.Context) (int, error) { ran = true; return 1, nil })
 	if ran || !errors.Is(err, context.Canceled) {

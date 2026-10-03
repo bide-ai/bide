@@ -8,6 +8,7 @@ import (
 	"testing"
 
 	"github.com/bide-ai/bide/agent"
+	"github.com/bide-ai/bide/agent/agenttest"
 	"github.com/bide-ai/bide/audit"
 	"github.com/bide-ai/bide/govern"
 	gsm "github.com/blackwell-systems/gsm"
@@ -87,18 +88,18 @@ func TestProof_CommitsToIdentity(t *testing.T) {
 	tool := govern.EventTool(gov, govern.EventToolConfig{Name: "credit", Description: "credit $1", Event: "credit", PolicyDigest: digest})
 
 	id := agent.Identity{Actor: "exec-agent@1.4.2", OnBehalfOf: "desk-EQ-US", AuthorityRef: "grant#a1b2"}
-	raw, err := tool.Call(agent.ContextWithIdentity(ctx, id), []byte(`{}`))
-	if err != nil {
-		t.Fatalf("Call: %v", err)
-	}
 
-	// Journal the tool result as a governed-action leaf, as the agent loop would.
-	store := agent.NewMemStore()
+	// The agent loop calls the tool under the identity and journals its result as a
+	// governed-action leaf.
+	store := agenttest.MemJournal()
 	const runID = "run1"
-	if _, err := store.Do(ctx, runID, "call1", func(context.Context) (agent.Record, error) {
-		return agent.Record{Kind: agent.StepToolResult, ToolUseID: "call1", Result: raw}, nil
-	}); err != nil {
-		t.Fatalf("record leaf: %v", err)
+	a := agenttest.MustNew(
+		agent.NewScriptedModel(agent.ToolTurn("call1", "credit", `{}`), agent.TextTurn("done")),
+		store,
+		agent.WithTools(tool),
+	)
+	if _, err := a.Run(agent.ContextWithIdentity(ctx, id), runID, "go"); err != nil {
+		t.Fatalf("Run: %v", err)
 	}
 
 	pub, priv, _ := ed25519.GenerateKey(rand.Reader)

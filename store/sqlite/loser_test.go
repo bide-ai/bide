@@ -8,7 +8,9 @@ import (
 	"testing"
 
 	"github.com/bide-ai/bide/agent"
+	"github.com/bide-ai/bide/agent/agenttest"
 	"github.com/bide-ai/bide/internal/journalhook"
+	"github.com/bide-ai/bide/internal/journaltest"
 )
 
 // flipCtx reports itself cancelled after lim Done calls, so a sweep over lim lands the
@@ -47,14 +49,16 @@ func TestDo_LoserIsNeverToldItWon(t *testing.T) {
 		if err != nil {
 			t.Fatal(err)
 		}
+		j2 := agenttest.MustJournal(a)
 		b, err := Open(p)
 		if err != nil {
 			t.Fatal(err)
 		}
+		j := agenttest.MustJournal(b)
 		ctx := &flipCtx{Context: context.Background(), ch: make(chan struct{})}
 		ctx.lim.Store(1 << 40)
-		got, err := b.Do(ctx, "r", "attempt:x", func(context.Context) (agent.Record, error) {
-			if _, _, err := agent.ClaimAttempt(context.Background(), a, "r", "attempt:x", agent.Record{Kind: agent.StepAttempt}); err != nil {
+		got, err := journaltest.Do(ctx, j, "r", "attempt:x", func(context.Context) (agent.Record, error) {
+			if _, _, err := agent.ClaimAttempt(context.Background(), j2, "r", "attempt:x", agent.Record{Kind: agent.StepAttempt}); err != nil {
 				t.Fatal(err)
 			}
 			ctx.n.Store(0)
@@ -62,7 +66,7 @@ func TestDo_LoserIsNeverToldItWon(t *testing.T) {
 			return journalhook.WithClaim(agent.Record{Kind: agent.StepAttempt}, "B").(agent.Record), nil
 		})
 		if err == nil && got.ClaimID() == "B" {
-			rec, _, _ := a.Journal().Get(context.Background(), "r", "attempt:x")
+			rec, _, _ := j2.Get(context.Background(), "r", "attempt:x")
 			t.Errorf("cancel after %d checks: the losing driver was told it won; the journal holds claim %q", lim, rec.ClaimID())
 		}
 		b.Close()

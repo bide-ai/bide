@@ -109,14 +109,4 @@ type ToolHandler func(ctx context.Context, call ToolCall) (json.RawMessage, erro
 // middleware/ package (ToolLog, ToolCache, ToolRetry).
 type ToolMiddleware func(ToolHandler) ToolHandler
 
-// UseTool appends tool middleware wrapping every tool call (first added = outermost).
-// Returns the agent for chaining. Composes with model middleware (Use) independently:
-// Use wraps the model call, UseTool wraps tool calls.
-//
-// Deprecated: transitional; the 1.0 rewrite removes it. Use the WithToolMiddleware option.
-func (a *Agent) UseTool(mw ...ToolMiddleware) *Agent {
-	a.toolMW = append(a.toolMW, mw...)
-	return a
-}
-
 // protocol:toolcall end

@@ -19,6 +19,7 @@ import (
 	"crypto/ed25519"
 	"crypto/rand"
 	"fmt"
+	"log"
 
 	"github.com/bide-ai/bide/agent"
 	"github.com/bide-ai/bide/audit"
@@ -44,7 +45,10 @@ func main() {
 	// The controller: baseline 2, then 5, then 10 (the ceiling), promoting every 3 compliant actions.
 	// Each issued grant is appended to a ledger run; its last leaf is the current grant. The log
 	// operator signs the ledger's heads (anchor them in production) with its own key.
-	ledger := agent.NewMemStore()
+	ledger, err := agent.NewJournal(agent.NewMemStore())
+	if err != nil {
+		log.Fatal(err)
+	}
 	const ledgerRun = "ledger/exec-agent"
 	logPub, logPriv, _ := ed25519.GenerateKey(rand.Reader)
 	ctrl, err := audit.NewEarnedAuthority(ctx, []int{2, 5, 10}, 3, rootSG, signer, "exec-agent", ledger, ledgerRun)

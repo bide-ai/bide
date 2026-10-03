@@ -252,7 +252,7 @@ func decodeRecordBytes(b []byte) (agent.Record, error) {
 // Root returns the RFC 6962 Merkle root committing to runID's journal (records in
 // persisted order, each leaf = the canonical record bytes). Anchor it like Head; unlike
 // Head it supports per-record inclusion proofs (Prove / VerifyInclusion).
-func Root(ctx context.Context, store agent.Durable, runID string) ([]byte, error) {
+func Root(ctx context.Context, store *agent.Journal, runID string) ([]byte, error) {
 	recs, err := store.History(ctx, runID)
 	if err != nil {
 		return nil, fmt.Errorf("audit: load journal %s: %w", runID, err)
@@ -274,7 +274,7 @@ type Inclusion struct {
 // Prove returns an inclusion proof for the record at index in runID's journal: enough to verify
 // that record's stored bytes (agent.Record.Raw) against Root WITHOUT revealing any other record
 // (selective disclosure). A redacted record cannot be proven.
-func Prove(ctx context.Context, store agent.Durable, runID string, index int) (Inclusion, error) {
+func Prove(ctx context.Context, store *agent.Journal, runID string, index int) (Inclusion, error) {
 	recs, err := store.History(ctx, runID)
 	if err != nil {
 		return Inclusion{}, fmt.Errorf("audit: load journal %s: %w", runID, err)

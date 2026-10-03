@@ -12,6 +12,7 @@ import (
 	"testing"
 
 	"github.com/bide-ai/bide/agent"
+	"github.com/bide-ai/bide/agent/agenttest"
 )
 
 func rmScr(name string, depth int, turns ...[]*rmCall) *rmScript {
@@ -172,7 +173,7 @@ func TestRefModel_HaltHoldsNoSiblingOutsideASaga(t *testing.T) {
 	if _, err := w.agents(rmJournal(&rmCrashStore{inner: mem, crashAt: 8}), &rmModel{w: w}).Run(context.Background(), rmRunID, "S0"); !errors.Is(err, errRMCrash) {
 		t.Fatalf("first drive: %v, want the injected failure", err)
 	}
-	_, err := w.agents(mem, &rmModel{w: w}).Run(context.Background(), rmRunID, "S0")
+	_, err := w.agents(agenttest.MustJournal(mem), &rmModel{w: w}).Run(context.Background(), rmRunID, "S0")
 	var halt *agent.ResumeHalt
 	if !errors.As(err, &halt) || halt.Op.ID != "c3" {
 		t.Fatalf("second drive: %v, want a halt on c3", err)

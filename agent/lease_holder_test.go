@@ -15,12 +15,13 @@ import (
 func TestLease_SameHolderDoesNotDriveTwice(t *testing.T) {
 	ctx := context.Background()
 	s := NewMemStore()
+	j := mustJournal(s)
 	seedRun(t, s, "r")
 
 	entered, finish := make(chan struct{}), make(chan struct{})
 	primaryDone := make(chan error, 1)
 	go func() {
-		_, err := Lease(ctx, s, "r", func(context.Context) error {
+		_, err := Lease(ctx, j, "r", func(context.Context) error {
 			close(entered)
 			<-finish
 			return nil
@@ -30,7 +31,7 @@ func TestLease_SameHolderDoesNotDriveTwice(t *testing.T) {
 	<-entered
 
 	redriven := false
-	n, err := Recover(ctx, s, func(context.Context, string, RunStart) error { redriven = true; return nil },
+	n, err := Recover(ctx, j, func(context.Context, string, RunStart) error { redriven = true; return nil },
 		WithLeaseHolder("worker-1"), WithLeaseTTL(time.Hour))
 	if err != nil {
 		t.Fatalf("Recover: %v", err)
@@ -59,7 +60,7 @@ func TestLease_SameHolderDoesNotDriveTwice(t *testing.T) {
 // synctest clock, so how busy the machine is does not decide when the renewer wakes.
 func TestLease_RenewsItsOwnClaim(t *testing.T) {
 	synctest.Test(t, func(t *testing.T) {
-		driven, err := Lease(context.Background(), NewMemStore(), "r", func(ctx context.Context) error {
+		driven, err := Lease(context.Background(), memJournal(), "r", func(ctx context.Context) error {
 			select {
 			case <-ctx.Done():
 				return errors.New("the drive was cancelled: its own lease was not renewed")

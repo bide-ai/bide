@@ -14,22 +14,22 @@ import (
 //
 // Every option is an interface with an unexported method, so only this package defines options,
 // and an option's apply method returns an error, so a bad value fails where the option is used
-// (Build, With, a run, Step, and so on) rather than later. A setting that applies at several
+// (New, With, a run, Step, and so on) rather than later. A setting that applies at several
 // scopes is one constructor whose result type is a combination of those scopes' interfaces (see
 // AgentRunOption, ConcurrencyOption, ClockOption, SafetyOption and LeaseControl). Each constructor
 // returns its narrowest type, so passing an option where it does not apply is a compile error.
 // A later minor release may widen a constructor's result to a larger combination; that change is
 // additive.
 
-// Option configures an Agent: Build applies options to a new agent, and With to a copy of one.
-// Build an []Option to choose options conditionally; an AgentRunOption fits in one as well.
+// Option configures an Agent: New applies options to a new agent, and With to a copy of one.
+// New an []Option to choose options conditionally; an AgentRunOption fits in one as well.
 type Option interface {
 	applyAgent(*agentConfig) error
 }
 
 // RunOption configures one run (RunMessage, ResumeRun, StreamMessage, RunTypedMessage,
 // Session.SendMessage). It is the scope of the settings a caller may choose per run, which take
-// precedence over the agent's (see Build). The settings a run's first drive is given are journaled
+// precedence over the agent's (see New). The settings a run's first drive is given are journaled
 // in its run:start and hold for every later drive (see RunStart); the clock, the Waker, the
 // concurrency cap and the identity's Actor are the deployment's, and are not journaled.
 type RunOption interface {
@@ -114,7 +114,7 @@ type LeaseControl interface {
 // Configs
 // ===========================================================================
 
-// agentConfig is what Option values write: the agent being built (a new one in Build, a deep
+// agentConfig is what Option values write: the agent being built (a new one in New, a deep
 // copy in With). Settings are written straight into it, and tools are registered as they come,
 // so a duplicate name is refused at the option that repeats it. The checks that depend on more
 // than one option (an m-of-n approval needs approver verifiers; a forced tool must be one of the
@@ -124,7 +124,7 @@ type agentConfig struct {
 }
 
 // runConfig is what RunOption values write: the settings a caller chose for one run. A nil
-// pointer is a setting the caller left alone, so the agent's value applies (see Build).
+// pointer is a setting the caller left alone, so the agent's value applies (see New).
 type runConfig struct {
 	maxTurns, tokenBudget, maxConc *int
 	systemPrompt                   *string
@@ -212,10 +212,10 @@ func applyOptions[O comparable, C any](what string, cfg *C, opts []O, apply func
 }
 
 // ===========================================================================
-// Build and With
+// New and With
 // ===========================================================================
 
-// Build constructs an Agent over model and the journal j, configured by opts. Every
+// New constructs an Agent over model and the journal j, configured by opts. Every
 // configuration problem is an error wrapping ErrConfig, returned here rather than at the first
 // run:
 //
@@ -236,17 +236,12 @@ func applyOptions[O comparable, C any](what string, cfg *C, opts []O, apply func
 // WithWaker and WithClock apply to a run whose context carries none.
 //
 // The agent is immutable once built: With returns a configured copy and leaves the agent alone.
-// (The builder methods, such as Agent.WithMaxTurns, still change the agent in place; they are
-// transitional and are removed by the 1.0 rewrite.)
-//
-// Deprecated: transitional; renamed by the 1.0 rewrite. Build becomes New(model, j, opts...),
-// and the current New is removed.
-func Build(model Model, j *Journal, opts ...Option) (*Agent, error) {
+func New(model Model, j *Journal, opts ...Option) (*Agent, error) {
 	if isNil(model) {
-		return nil, fmt.Errorf("agent: Build: nil model: %w", ErrConfig)
+		return nil, fmt.Errorf("agent: New: nil model: %w", ErrConfig)
 	}
 	if j == nil {
-		return nil, fmt.Errorf("agent: Build: nil journal: %w", ErrConfig)
+		return nil, fmt.Errorf("agent: New: nil journal: %w", ErrConfig)
 	}
 	a := newAgent(model, j)
 	if err := configure(a, opts); err != nil {
@@ -255,16 +250,13 @@ func Build(model Model, j *Journal, opts ...Option) (*Agent, error) {
 	return a, nil
 }
 
-// With returns a copy of a configured by opts, applied over a's configuration as Build applies
+// With returns a copy of a configured by opts, applied over a's configuration as New applies
 // them: a setting given here replaces a's, and tools, middleware and retrievals given here are
 // added after a's. The copy shares nothing mutable with a (its tool set, middleware lists and
 // retrievals are its own, and settings are replaced, never written through), so the two may be
 // used, and configured further, from different goroutines. a is never changed. A configuration problem is an error wrapping
-// ErrConfig, as for Build, including a tool whose name a already uses.
+// ErrConfig, as for New, including a tool whose name a already uses.
 func (a *Agent) With(opts ...Option) (*Agent, error) {
-	if err := a.checkTools(); err != nil {
-		return nil, err // an agent New was given a bad tool set: nothing built on it can run
-	}
 	c := a.clone()
 	if err := configure(c, opts); err != nil {
 		return nil, err
@@ -272,17 +264,15 @@ func (a *Agent) With(opts ...Option) (*Agent, error) {
 	return c, nil
 }
 
-// Journal returns the journal the agent writes through: the one Build was given, or, for an
-// agent made by New, the journal of its store (nil for a Durable with none, such as a test
-// wrapper that intercepts Do).
-func (a *Agent) Journal() *Journal { return journalOf(a.store) }
+// Journal returns the journal the agent writes through: the one New was given.
+func (a *Agent) Journal() *Journal { return a.store }
 
 // newAgent returns an agent over model and store with no tools and no options.
-func newAgent(model Model, store Durable) *Agent {
+func newAgent(model Model, store *Journal) *Agent {
 	return &Agent{model: model, store: store, tools: map[string]Tool{}, specs: map[string]*ToolSpec{}}
 }
 
-// configure applies opts to a and runs the checks that span options. a is either new (Build) or
+// configure applies opts to a and runs the checks that span options. a is either new (New) or
 // a's own deep copy (With), so a failure leaves nothing the caller holds half-configured.
 func configure(a *Agent, opts []Option) error {
 	c := &agentConfig{a: a}
@@ -361,7 +351,7 @@ func (f agentOption) applyAgent(c *agentConfig) error { return f(c) }
 func WithTools(tools ...Tool) Option {
 	return agentOption(func(c *agentConfig) error {
 		for _, t := range tools {
-			if err := c.a.addTool(t, true); err != nil {
+			if err := c.a.addTool(t); err != nil {
 				return err
 			}
 		}
@@ -399,7 +389,7 @@ func WithToolMiddleware(mw ...ToolMiddleware) Option {
 
 // WithApproverVerifiers sets how the m-of-n approval gate resolves an approver id to the verifier
 // of its decision signatures. An agent with any tool whose ToolSpec.Approval is an m-of-n policy
-// needs it: Build and With refuse such an agent without one, and refuse a policy two of whose
+// needs it: New and With refuse such an agent without one, and refuse a policy two of whose
 // approvers it resolves to one signing key (ApprovalPolicy.ValidateKeys). The gate checks again on
 // every evaluation, since fn is a function. A nil fn is ErrConfig.
 func WithApproverVerifiers(fn ApproverVerifierFor) Option {

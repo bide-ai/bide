@@ -48,7 +48,7 @@ func TestSleep_PausesAndResumes(t *testing.T) {
 	now := func() time.Time { return time.Unix(atomic.LoadInt64(&clk), 0) }
 	ctx := ContextWithClock(context.Background(), now)
 
-	a := New(sleepModel{}, NewMemStore(), waitTool())
+	a := mustNew(sleepModel{}, memJournal(), WithTools(waitTool()))
 
 	// First run: the wait tool sleeps, so the run pauses with *Sleeping at now+1h.
 	_, err := a.Run(ctx, "r1", "go")
@@ -86,7 +86,7 @@ func TestSleep_PausesAndResumes(t *testing.T) {
 func TestMemWaker_FiresDueRun(t *testing.T) {
 	var clk int64 = 1000
 	now := func() time.Time { return time.Unix(atomic.LoadInt64(&clk), 0) }
-	a := New(sleepModel{}, NewMemStore(), waitTool())
+	a := mustNew(sleepModel{}, memJournal(), WithTools(waitTool()))
 
 	var w *MemWaker
 	w = NewMemWaker(func(ctx context.Context, runID string) error {

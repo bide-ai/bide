@@ -25,7 +25,7 @@ type boomTool struct{}
 func (boomTool) Name() string                { return "failB" }
 func (boomTool) Description() string         { return "" }
 func (boomTool) Safety() Safety              { return Safety{ReadOnly: true} }
-func (boomTool) ArgsSchema() json.RawMessage { return nil }
+func (boomTool) ArgsSchema() json.RawMessage { return json.RawMessage(`{"type":"object"}`) }
 func (boomTool) Call(context.Context, json.RawMessage) (json.RawMessage, error) {
 	return nil, errors.New("failB always fails")
 }
@@ -52,8 +52,8 @@ func (sagaModel) Stream(_ context.Context, req Request) (*Stream, error) {
 	return NewStream(ch), nil
 }
 
-func runSagaOnce(mem Durable, tools []Tool, crashAt int) error {
-	a := New(sagaModel{}, crashJournal(mem, crashAt), tools...).SetMaxConcurrency(1)
+func runSagaOnce(mem *Journal, tools []Tool, crashAt int) error {
+	a := mustNew(sagaModel{}, crashJournal(mem, crashAt), WithTools(tools...), WithMaxConcurrency(1))
 	_, err := a.RunSaga(context.Background(), "dst", "go")
 	return err
 }
@@ -78,7 +78,7 @@ func TestDST_Saga_CrashSweep(t *testing.T) {
 	haltSeen, abortSeen := false, false
 	for crashAt := 1; crashAt <= 40; crashAt++ {
 		var charge, refund int
-		mem := NewMemStore()
+		mem := memJournal()
 		tools := []Tool{chargeSaga(&charge, &refund), boomTool{}}
 
 		err := runSagaOnce(mem, tools, crashAt)
@@ -125,7 +125,7 @@ func TestDST_Saga_Randomized(t *testing.T) {
 	for seed := uint64(1); seed <= 300; seed++ {
 		rng := rand.New(rand.NewPCG(seed, 0xD1B54A32D192ED03))
 		var charge, refund int
-		mem := NewMemStore()
+		mem := memJournal()
 		tools := []Tool{chargeSaga(&charge, &refund), boomTool{}}
 
 		var err error

@@ -8,6 +8,8 @@ import (
 	"time"
 
 	"github.com/bide-ai/bide/agent"
+	"github.com/bide-ai/bide/agent/agenttest"
+	"github.com/bide-ai/bide/internal/journaltest"
 )
 
 // Two different steps are never one step, whatever bytes their run IDs and names hold. The
@@ -26,12 +28,13 @@ func distinctSteps(t *testing.T, run1, name1, run2, name2 string) {
 	if err != nil {
 		t.Fatal(err)
 	}
+	j := agenttest.MustJournal(s)
 	defer s.Close()
 	ctx := context.Background()
 	release, started := make(chan struct{}), make(chan struct{})
 	firstDone := make(chan agent.Record, 1)
 	go func() {
-		rec, err := s.Do(ctx, run1, name1, func(context.Context) (agent.Record, error) {
+		rec, err := journaltest.Do(ctx, j, run1, name1, func(context.Context) (agent.Record, error) {
 			close(started)
 			<-release
 			return agent.Record{Kind: agent.StepValue, Result: json.RawMessage(`"first"`)}, nil
@@ -45,7 +48,7 @@ func distinctSteps(t *testing.T, run1, name1, run2, name2 string) {
 	ran := false
 	secondDone := make(chan agent.Record, 1)
 	go func() {
-		rec, err := s.Do(ctx, run2, name2, func(context.Context) (agent.Record, error) {
+		rec, err := journaltest.Do(ctx, j, run2, name2, func(context.Context) (agent.Record, error) {
 			ran = true
 			return agent.Record{Kind: agent.StepValue, Result: json.RawMessage(`"second"`)}, nil
 		})

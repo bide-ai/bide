@@ -9,9 +9,10 @@ import (
 	"testing"
 
 	"github.com/bide-ai/bide/agent"
+	"github.com/bide-ai/bide/agent/agenttest"
 )
 
-func journal(t *testing.T, store agent.Durable, runID string, vals ...string) {
+func journal(t *testing.T, store *agent.Journal, runID string, vals ...string) {
 	t.Helper()
 	for i, v := range vals {
 		if _, err := agent.Step(context.Background(), store, runID, fmt.Sprintf("s%d", i),
@@ -23,7 +24,7 @@ func journal(t *testing.T, store agent.Durable, runID string, vals ...string) {
 
 func TestSTH_SignVerifyAndTamper(t *testing.T) {
 	pub, priv, _ := ed25519.GenerateKey(rand.Reader)
-	store := agent.NewMemStore()
+	store := agenttest.MemJournal()
 	journal(t, store, "run", "a", "b", "c")
 
 	th, err := NewTreeHead(context.Background(), store, "run", 1_700_000_000)
@@ -101,7 +102,7 @@ func TestSTH_SignVerifyAndTamper(t *testing.T) {
 func TestSTH_EndToEndComplianceFlow(t *testing.T) {
 	ctx := context.Background()
 	pub, priv, _ := ed25519.GenerateKey(rand.Reader)
-	store := agent.NewMemStore()
+	store := agenttest.MemJournal()
 	journal(t, store, "case-42", "open", "charge-500", "email-receipt")
 
 	// Vendor publishes a signed commitment to the run so far.

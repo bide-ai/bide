@@ -92,7 +92,7 @@ func p14Journal(t *testing.T) (*agent.Journal, *agent.MemStore) {
 // p14Build builds an agent over j, failing the test on an error.
 func p14Build(t *testing.T, model agent.Model, j *agent.Journal, opts ...agent.Option) *agent.Agent {
 	t.Helper()
-	a, err := agent.Build(model, j, opts...)
+	a, err := agent.New(model, j, opts...)
 	if err != nil {
 		t.Fatal(err)
 	}

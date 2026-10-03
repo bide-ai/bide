@@ -16,8 +16,8 @@ func TestRun_NegativeUsageIsRejected(t *testing.T) {
 		"truncate": truncatedTurn(neg),
 	} {
 		m := &scriptModel{turns: [][]Emit{turn}}
-		store := NewMemStore()
-		_, err := New(m, store).Run(context.Background(), "r", "go")
+		store := memJournal()
+		_, err := mustNew(m, store).Run(context.Background(), "r", "go")
 		if !errors.Is(err, ErrProtocol) || !errors.Is(err, ErrModel) {
 			t.Fatalf("%s: err = %v, want a model protocol error", name, err)
 		}
@@ -42,7 +42,7 @@ func TestRun_NegativeUsageFromMiddlewareIsRejected(t *testing.T) {
 			return resp, err
 		}
 	}
-	_, err := New(m, NewMemStore()).Use(neg).Run(context.Background(), "r", "go")
+	_, err := mustNew(m, memJournal(), WithMiddleware(neg)).Run(context.Background(), "r", "go")
 	if !errors.Is(err, ErrProtocol) {
 		t.Fatalf("err = %v, want a protocol error", err)
 	}

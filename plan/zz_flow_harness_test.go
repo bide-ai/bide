@@ -23,6 +23,7 @@ import (
 	"time"
 
 	"github.com/bide-ai/bide/agent"
+	"github.com/bide-ai/bide/agent/agenttest"
 	"github.com/bide-ai/bide/plan"
 )
 
@@ -420,7 +421,7 @@ func fRun(sub fSubject, sameProc [2]bool, ex *fExplorer, leased bool) (viol []fV
 			break
 		}
 		if !leased {
-			if rerr := agent.ResolveHaltRef(context.Background(), h.mem, halt.Ref(), agent.Outcome{Result: val}, agent.WithoutLiveDriverCheck()); rerr != nil {
+			if rerr := agent.ResolveHaltRef(context.Background(), agenttest.MustJournal(h.mem), halt.Ref(), agent.Outcome{Result: val}, agent.WithoutLiveDriverCheck()); rerr != nil {
 				add("I7-resolve-failed", "ResolveHaltRef(%s): %v", halt.Op.ID, rerr)
 				break
 			}
@@ -443,7 +444,7 @@ func fRun(sub fSubject, sameProc [2]bool, ex *fExplorer, leased bool) (viol []fV
 				add("I7-lease", "a live driver could not lease %s: %v %v", halt.RootRunID, won, err)
 				break
 			}
-			rerr := flow.ResolveHalt(ctx, h.mem, halt.Ref(), agent.Outcome{Result: val})
+			rerr := flow.ResolveHalt(ctx, agenttest.MustJournal(h.mem), halt.Ref(), agent.Outcome{Result: val})
 			if _, inFlight := errors.AsType[*agent.HaltInFlight](rerr); !inFlight {
 				add("I9-resolved-under-a-live-driver", "Flow.ResolveHalt(%s) while a driver holds the lease: %v", halt.Op.ID, rerr)
 			}
@@ -454,7 +455,7 @@ func fRun(sub fSubject, sameProc [2]bool, ex *fExplorer, leased bool) (viol []fV
 				add("I7-lease", "release: %v", err)
 				break
 			}
-			if rerr := flow.ResolveHalt(ctx, h.mem, halt.Ref(), agent.Outcome{Result: val}); rerr != nil {
+			if rerr := flow.ResolveHalt(ctx, agenttest.MustJournal(h.mem), halt.Ref(), agent.Outcome{Result: val}); rerr != nil {
 				add("I7-resolve-failed", "Flow.ResolveHalt(%s): %v", halt.Op.ID, rerr)
 				break
 			}
@@ -493,7 +494,7 @@ func fRun(sub fSubject, sameProc [2]bool, ex *fExplorer, leased bool) (viol []fV
 	} else {
 		// I8: a completed run conforms.
 		flow, _ := sub.build(&fProc{h: h}, 9)
-		ok, diffs, err := flow.Conform(context.Background(), h.mem, runID)
+		ok, diffs, err := flow.Conform(context.Background(), agenttest.MustJournal(h.mem), runID)
 		if err != nil || !ok {
 			add("I8-conform-false-positive", "Conform = %v %v %v", ok, diffs, err)
 		}

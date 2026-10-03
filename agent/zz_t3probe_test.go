@@ -29,9 +29,9 @@ func TestT3_IdempotentSagaStepEarlierAttemptNotAccounted(t *testing.T) {
 			return "", errors.New("card declined") // the tool's own error: nothing done this time
 		},
 		func(context.Context, struct{}, string) error { refunded.Add(1); return nil })
-	st := NewMemStore()
+	st := memJournal()
 	m := NewScriptedModel(ToolTurn("c1", "charge", `{}`), TextTurn("done"))
-	a := New(m, st, charge)
+	a := mustNew(m, st, WithTools(charge))
 	_, err := a.RunSaga(ctx1, "r", "go")
 	if err == nil {
 		t.Fatalf("first drive: want the cancellation, got nil")
@@ -78,7 +78,7 @@ func TestT4_LeakedNextEffectAfterCompensation(t *testing.T) {
 		}
 	})
 	m := NewScriptedModel(ToolTurn("c1", "charge", `{}`), ToolTurn("c2", "fail", `{}`), TextTurn("done"))
-	_, err := New(m, NewMemStore(), charge, fail).UseTool(leak).RunSaga(context.Background(), "r", "go")
+	_, err := mustNew(m, memJournal(), WithTools(charge, fail), WithToolMiddleware(leak)).RunSaga(context.Background(), "r", "go")
 	close(release)
 	<-ran
 	var ab *SagaAborted
@@ -118,7 +118,7 @@ func TestT5_RetrySafeBeginsAfterChainReturned(t *testing.T) {
 		}
 	})
 	m := NewScriptedModel(ToolTurn("c1", "charge", `{}`), ToolTurn("c2", "fail", `{}`), TextTurn("done"))
-	_, err := New(m, NewMemStore(), charge, fail).UseTool(leak).RunSaga(context.Background(), "r", "go")
+	_, err := mustNew(m, memJournal(), WithTools(charge, fail), WithToolMiddleware(leak)).RunSaga(context.Background(), "r", "go")
 	close(release)
 	<-done
 	var ab *SagaAborted

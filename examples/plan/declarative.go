@@ -16,6 +16,7 @@ package main
 import (
 	"context"
 	"fmt"
+	"log"
 
 	"github.com/bide-ai/bide/agent"
 	"github.com/bide-ai/bide/plan"
@@ -126,7 +127,10 @@ func demoDeclarative(ctx context.Context, codeBuilt *plan.Flow[Order, Receipt]) 
 	fmt.Println(loaded.RenderMermaid())
 
 	// A config-loaded flow is an ordinary flow: Run it against a store to a typed Receipt.
-	store := agent.NewMemStore()
+	store, err := agent.NewJournal(agent.NewMemStore())
+	if err != nil {
+		log.Fatal(err)
+	}
 	const runID = "triage-config-demo"
 	out, err := loaded.Run(ctx, store, runID, Order{ID: runID, Amount: 500})
 	if err != nil {

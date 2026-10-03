@@ -17,11 +17,11 @@ import (
 // idempotent: the first decision for a (runID, toolUseID) wins. After approving, re-run
 // the agent with the pause's RootRunID and it resumes past the *ApprovalPending pause. The
 // decision survives a crash because it's a journaled step like any other.
-func Approve(ctx context.Context, d Durable, runID, toolUseID string, approved bool) error {
+func Approve(ctx context.Context, d *Journal, runID, toolUseID string, approved bool) error {
 	if runID == "" {
 		return fmt.Errorf("Approve: empty runID: %w", ErrConfig)
 	}
-	_, err := d.Do(ctx, runID, approvalStep(toolUseID), func(context.Context) (Record, error) {
+	_, err := d.do(ctx, runID, approvalStep(toolUseID), func(context.Context) (Record, error) {
 		return Record{Kind: StepApproval, ToolUseID: toolUseID, Approved: approved}, nil
 	})
 	return err
@@ -142,7 +142,7 @@ type Outcome struct {
 // is young could record an outcome that driver is about to contradict.
 //
 // Deciding the true outcome is a human (or reconciler) judgment the runtime cannot make for you.
-func ResolveHaltRef(ctx context.Context, store Durable, ref HaltRef, out Outcome, opts ...ResolveOption) error {
+func ResolveHaltRef(ctx context.Context, store *Journal, ref HaltRef, out Outcome, opts ...ResolveOption) error {
 	return resolveHalt(ctx, store, "ResolveHaltRef", ref, out, opts)
 }
 
@@ -152,7 +152,7 @@ func ResolveHaltRef(ctx context.Context, store Durable, ref HaltRef, out Outcome
 //
 // Deprecated: transitional; replaced by ResolveHaltRef, which the 1.0 rewrite renames to
 // ResolveHalt.
-func ResolveHalt(ctx context.Context, store Durable, runID, toolUseID string, result any, isError bool, opts ...ResolveOption) error {
+func ResolveHalt(ctx context.Context, store *Journal, runID, toolUseID string, result any, isError bool, opts ...ResolveOption) error {
 	if toolUseID == "" {
 		return fmt.Errorf("ResolveHalt: empty toolUseID: %w", ErrConfig)
 	}
@@ -164,7 +164,7 @@ func ResolveHalt(ctx context.Context, store Durable, runID, toolUseID string, re
 // a tool call, with the same live-driver check.
 //
 // Deprecated: transitional; use ResolveHaltRef with OpRef{Kind: OpStep}.
-func ResolveStepHalt(ctx context.Context, store Durable, runID, name string, result any, isError bool, opts ...ResolveOption) error {
+func ResolveStepHalt(ctx context.Context, store *Journal, runID, name string, result any, isError bool, opts ...ResolveOption) error {
 	ref := HaltRef{RunID: runID, Op: OpRef{Kind: OpStep, ID: name}, Cause: HaltCrashed}
 	return resolveHalt(ctx, store, "ResolveStepHalt", ref, Outcome{Result: result, IsError: isError}, opts)
 }
@@ -180,7 +180,7 @@ type haltKeys struct {
 // protocol:lifecycle begin OPick OLease OWrite ORel
 // protocol:claims begin RCheck RClaim RWrite RRelease
 
-func resolveHalt(ctx context.Context, store Durable, op string, ref HaltRef, out Outcome, opts []ResolveOption) error {
+func resolveHalt(ctx context.Context, store *Journal, op string, ref HaltRef, out Outcome, opts []ResolveOption) error {
 	if ref.RunID == "" {
 		return fmt.Errorf("%s: empty runID: %w", op, ErrConfig)
 	}
@@ -291,7 +291,7 @@ func resolveHalt(ctx context.Context, store Durable, op string, ref HaltRef, out
 	if h.kind == StepToolResult {
 		rec.ToolUseID = id
 	}
-	got, err := store.Do(ctx, ref.RunID, h.result, func(context.Context) (Record, error) { return rec, nil })
+	got, err := store.do(ctx, ref.RunID, h.result, func(context.Context) (Record, error) { return rec, nil })
 	if err != nil {
 		// The verdict may have committed all the same, so the resolution's attempt stays live: a
 		// driver that lost it to this resolution must not find it voided and run the effect under
@@ -318,13 +318,13 @@ const resolveLeaseTTL = 30 * time.Second
 // it) for the resolution, which fails (*HaltInFlight) while any driver holds it, and keeps it until release is called, so no
 // leased driver takes the run meanwhile. A store without Leaser cannot say whether a driver is
 // live, so the resolution needs WithMinHaltAge. WithoutLiveDriverCheck skips both.
-func checkNoLiveDriver(ctx context.Context, store Durable, op string, ref HaltRef, cfg resolveConfig) (func(), bool, error) {
+func checkNoLiveDriver(ctx context.Context, store *Journal, op string, ref HaltRef, cfg resolveConfig) (func(), bool, error) {
 	noop := func() {}
 	if cfg.noLiveCheck {
 		return noop, false, nil
 	}
 	root := treeRootID(ref.RunID)
-	l, ok := capabilityOf[Leaser](store)
+	l, ok := Capability[Leaser](store.store)
 	if !ok {
 		if cfg.minHaltAge <= 0 {
 			return nil, false, fmt.Errorf("%s: the store cannot say whether a driver of run %s is still running %q (it does not implement Leaser); pass WithMinHaltAge so the halt is resolved only once no driver can still be running it, or WithoutLiveDriverCheck to take that risk: %w", op, root, ref.Op.ID, ErrConfig)

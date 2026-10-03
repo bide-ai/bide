@@ -7,6 +7,7 @@ import (
 	"testing"
 
 	"github.com/bide-ai/bide/agent"
+	"github.com/bide-ai/bide/agent/agenttest"
 )
 
 // A redelivered signal dedups ACROSS PROCESSES on the on-disk store: the second delivery,
@@ -24,7 +25,8 @@ func TestSQLite_SignalRedeliveryDedupsAcrossProcesses(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if err := agent.Signal(ctx, s1, runID, "webhook", "first"); err != nil {
+	j := agenttest.MustJournal(s1)
+	if err := agent.Signal(ctx, j, runID, "webhook", "first"); err != nil {
 		t.Fatalf("Signal (process 1): %v", err)
 	}
 	s1.Close()
@@ -35,12 +37,13 @@ func TestSQLite_SignalRedeliveryDedupsAcrossProcesses(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
+	j2 := agenttest.MustJournal(s2)
 	defer s2.Close()
-	if err := agent.Signal(ctx, s2, runID, "webhook", "second"); err != nil {
+	if err := agent.Signal(ctx, j2, runID, "webhook", "second"); err != nil {
 		t.Fatalf("Signal (process 2): %v", err)
 	}
 
-	recs, err := s2.History(ctx, runID)
+	recs, err := j2.History(ctx, runID)
 	if err != nil {
 		t.Fatal(err)
 	}

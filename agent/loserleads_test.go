@@ -26,23 +26,27 @@ func (s *getHookStore) Get(ctx context.Context, runID, name string) (Entry, bool
 	return s.Store.Get(ctx, runID, name)
 }
 
-// doHookDurable is a Durable wrapper (audit.AuditedStore's shape) whose Do of a name calls do first.
-type doHookDurable struct {
-	Durable
-	do func(ctx context.Context, name string)
+// claimHookStore is a Store wrapper (audit.AuditedStore's shape: it passes run IDs and names
+// through and implements Unwrap) whose Insert of a name calls inserted once the inner Insert
+// returns. The Insert of a step's attempt marker is its claim, so a hook on it runs when a driver
+// has just won (or lost) the claim and is about to send the step.
+type claimHookStore struct {
+	Store
+	inserted func(ctx context.Context, name string)
 }
 
-func (w *doHookDurable) Unwrap() Durable { return w.Durable }
+func (w *claimHookStore) Unwrap() Store { return w.Store }
 
-func (w *doHookDurable) Do(ctx context.Context, runID, name string, fn func(context.Context) (Record, error)) (Record, error) {
-	if w.do != nil {
-		w.do(ctx, name)
+func (w *claimHookStore) Insert(ctx context.Context, runID, name string, data []byte) (Entry, bool, error) {
+	e, ok, err := w.Store.Insert(ctx, runID, name, data)
+	if w.inserted != nil {
+		w.inserted(ctx, name)
 	}
-	return w.Durable.Do(ctx, runID, name, fn)
+	return e, ok, err
 }
 
 // The claim model's regress/loser-leads schedule (spec/tla/claims/regress/loser-leads.cfg,
-// WinnerNeverHalts), through a Durable wrapper: two drivers of one Step in one process. d1 wins
+// WinnerNeverHalts), through a store wrapper: two drivers of one Step in one process. d1 wins
 // the attempt's claim; d2 loses it and reads the step's result; d1 then sends the step. The
 // loser's read must not be a call in flight that the winner joins: the winner would take the
 // loser's halt as its own outcome, record that it never started, and halt though it owns the
@@ -74,19 +78,18 @@ func TestLoserLeads_WinnerNeverHaltsThroughWrapper(t *testing.T) {
 			})
 		}
 	}}
-	j, err := NewJournal(st)
-	if err != nil {
-		t.Fatal(err)
-	}
 	var atOnce sync.Once
-	w := &doHookDurable{Durable: j, do: func(ctx context.Context, name string) {
-		if name == "pay" && drvOf(ctx) == 1 {
+	w, err := NewJournal(&claimHookStore{Store: st, inserted: func(ctx context.Context, name string) {
+		if name == stepAttemptStep("pay") && drvOf(ctx) == 1 {
 			atOnce.Do(func() {
 				close(d1At)
 				<-d2Reading
 			})
 		}
-	}}
+	}})
+	if err != nil {
+		t.Fatal(err)
+	}
 	var runs int
 	pay := func(context.Context) (string, error) { runs++; return "paid", nil }
 
@@ -112,7 +115,7 @@ func TestLoserLeads_WinnerNeverHaltsThroughWrapper(t *testing.T) {
 	}
 }
 
-// A loser that finds the winner's call of the step in flight, through a Durable wrapper, and sees
+// A loser that finds the winner's call of the step in flight, through a store wrapper, and sees
 // it fail, halts with HaltContended, as through the Journal: the winner was live after the claim
 // and owns the effect.
 func TestLoserJoinsFailedFlight_HaltContendedThroughWrapper(t *testing.T) {
@@ -128,11 +131,10 @@ func TestLoserJoinsFailedFlight_HaltContendedThroughWrapper(t *testing.T) {
 	}
 	flightJoinHook.Store(&h)
 	t.Cleanup(func() { flightJoinHook.Store(nil) })
-	j, err := NewJournal(NewMemStore())
+	w, err := NewJournal(&claimHookStore{Store: NewMemStore()})
 	if err != nil {
 		t.Fatal(err)
 	}
-	w := &doHookDurable{Durable: j}
 	winnerDone := make(chan error, 1)
 	go func() {
 		_, err := Step(ctx, w, "r", "pay", func(context.Context) (string, error) {
@@ -194,13 +196,9 @@ func TestLoserLeads_LoserStartsNoCallAfterItsRead(t *testing.T) {
 			}
 		}
 	}}
-	j, err := NewJournal(st)
-	if err != nil {
-		t.Fatal(err)
-	}
 	var atOnce sync.Once
-	w := &doHookDurable{Durable: j, do: func(ctx context.Context, name string) {
-		if name == "pay" && drvOf(ctx) == 1 {
+	w, err := NewJournal(&claimHookStore{Store: st, inserted: func(ctx context.Context, name string) {
+		if name == stepAttemptStep("pay") && drvOf(ctx) == 1 {
 			atOnce.Do(func() {
 				close(d1At)
 				select {
@@ -209,7 +207,10 @@ func TestLoserLeads_LoserStartsNoCallAfterItsRead(t *testing.T) {
 				}
 			})
 		}
-	}}
+	}})
+	if err != nil {
+		t.Fatal(err)
+	}
 	var runs int
 	pay := func(context.Context) (string, error) { runs++; return "paid", nil }
 	var got1 string

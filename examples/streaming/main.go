@@ -42,7 +42,14 @@ func main() {
 			return Weather{TempF: 68, Sky: "sunny"}, nil
 		})
 
-	a := agent.New(model, agent.NewMemStore(), weather)
+	j, err := agent.NewJournal(agent.NewMemStore())
+	if err != nil {
+		log.Fatal(err)
+	}
+	a, err := agent.New(model, j, agent.WithTools(weather))
+	if err != nil {
+		log.Fatal(err)
+	}
 
 	ctx, cancel := context.WithTimeout(context.Background(), 60*time.Second)
 	defer cancel()

@@ -11,6 +11,8 @@ import (
 	"testing"
 
 	"github.com/bide-ai/bide/agent"
+	"github.com/bide-ai/bide/agent/agenttest"
+	"github.com/bide-ai/bide/internal/journaltest"
 )
 
 // F2: "a later drive ... with an input that differs as canonical JSON ... is ErrConfig". An int64
@@ -25,7 +27,7 @@ func TestRev103b_F2_Int64InputsBeyond2p53AreOneInput(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	mem := agent.NewMemStore()
+	mem := agenttest.MemJournal()
 	const first, second int64 = 9007199254740993, 9007199254740992 // 2^53+1, 2^53
 	if out, err := flow.Run(ctx, mem, "r", first); err != nil || out != first {
 		t.Fatalf("first drive: %d, %v", out, err)
@@ -42,7 +44,7 @@ func TestRev103b_F2_Int64InputsBeyond2p53AreOneInput(t *testing.T) {
 // then cannot decode it on any drive.
 func TestRev103b_F4_ResolveHaltThroughAnotherFlow(t *testing.T) {
 	ctx := context.Background()
-	mem := agent.NewMemStore()
+	mem := agenttest.MemJournal()
 	var fired int
 	flow := effectFlow(t, &fired) // "charge-flow": charge is int -> int
 	_, _ = flow.Run(ctx, mem, "r", 5)
@@ -71,7 +73,7 @@ func TestRev103b_F4_ResolveHaltThroughAnotherFlow(t *testing.T) {
 // Step's body runs and records no such key, and the journal conforms.
 func TestRev103b_F7_EmptyStepNameInsideNodeDoesNotConform(t *testing.T) {
 	ctx := context.Background()
-	mem := agent.NewMemStore()
+	mem := agenttest.MemJournal()
 	b := New[int, int]("nested-empty")
 	b.Step("a", func(ctx context.Context, n int) (int, error) {
 		return agent.Step(ctx, mem, "r", "", func(context.Context) (int, error) { return n + 1, nil })
@@ -92,7 +94,7 @@ func TestRev103b_F7_EmptyStepNameInsideNodeDoesNotConform(t *testing.T) {
 // refused before its body runs, so it never halts and its effect never fires.
 func TestRev103b_F7_EmptyStepNameHaltIsUnresolvable(t *testing.T) {
 	ctx := context.Background()
-	mem := agent.NewMemStore()
+	mem := agenttest.MemJournal()
 	var charges int
 	b := New[int, int]("nested-empty-halt")
 	b.Step("a", func(ctx context.Context, n int) (int, error) {
@@ -123,7 +125,7 @@ func TestRev103b_F7_EmptyStepNameHaltIsUnresolvable(t *testing.T) {
 // first node) is reported as conforming.
 func TestRev103b_F5_CompletionWithoutTerminalConforms(t *testing.T) {
 	ctx := context.Background()
-	mem := agent.NewMemStore()
+	mem := agenttest.MemJournal()
 	var fired int
 	flow := effectFlow(t, &fired)
 	_, _ = flow.Run(ctx, mem, "r", 5)
@@ -131,7 +133,7 @@ func TestRev103b_F5_CompletionWithoutTerminalConforms(t *testing.T) {
 		t.Fatal("want a halt")
 	}
 	done, _ := json.Marshal(completion{Flow: "charge-flow", Output: json.RawMessage(`"charged 5"`)})
-	if _, err := mem.Do(ctx, "r", "run:complete", func(context.Context) (agent.Record, error) {
+	if _, err := journaltest.Do(ctx, mem, "r", "run:complete", func(context.Context) (agent.Record, error) {
 		return agent.Record{Kind: agent.StepValue, Result: done}, nil
 	}); err != nil {
 		t.Fatal(err)

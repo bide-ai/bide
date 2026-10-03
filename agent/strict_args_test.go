@@ -77,7 +77,7 @@ func TestFunc_ArgumentsDecodeStrictly(t *testing.T) {
 
 // A sub-agent's arguments decode strictly too, and a bad call is ErrToolArgs like any other.
 func TestSubAgent_ArgumentsDecodeStrictly(t *testing.T) {
-	sub := SubAgent("helper", "helps", New(NewScriptedModel(TextTurn("done")), NewMemStore()))
+	sub := SubAgent("helper", "helps", mustNew(NewScriptedModel(TextTurn("done")), memJournal()))
 	for _, args := range []string{`{}`, `{"task":"x","extra":1}`, `{"Task":"x"}`, `{"task":"x","task":"y"}`} {
 		if _, err := sub.Call(context.Background(), json.RawMessage(args)); !errors.Is(err, ErrToolArgs) {
 			t.Errorf("SubAgent.Call(%s) = %v, want ErrToolArgs", args, err)
@@ -93,8 +93,8 @@ func TestRunTyped_LooseAnswerIsCorrected(t *testing.T) {
 			ToolTurn("f1", finalAnswerTool, bad),
 			ToolTurn("f2", finalAnswerTool, `{"name":"ok"}`),
 		)}
-		store := NewMemStore()
-		got, err := RunTyped[typedAnswer](context.Background(), New(m, store), "r", "go")
+		store := memJournal()
+		got, err := RunTyped[typedAnswer](context.Background(), mustNew(m, store), "r", "go")
 		if err != nil || got.Name != "ok" || m.calls.Load() != 2 {
 			t.Errorf("%s: RunTyped = %+v, %v after %d model calls; want the corrected answer after 2", bad, got, err, m.calls.Load())
 			continue
@@ -117,11 +117,11 @@ func TestRunTyped_LooseAnswerIsCorrected(t *testing.T) {
 func TestRunTyped_TextAnswersDecodeStrictly(t *testing.T) {
 	for _, text := range []string{`{}`, `{"NAME":"x"}`, `{"name":"x","extra":1}`, `{"name":"a","name":"b"}`, `{"name":"x"} {}`} {
 		m := NewScriptedModel(TextTurn(text))
-		if got, err := RunTyped[typedAnswer](context.Background(), New(m, NewMemStore()), "r", "go"); !errors.Is(err, ErrProtocol) {
+		if got, err := RunTyped[typedAnswer](context.Background(), mustNew(m, memJournal()), "r", "go"); !errors.Is(err, ErrProtocol) {
 			t.Errorf("RunTyped with text %s = %+v, %v; want ErrProtocol", text, got, err)
 		}
 		m = NewScriptedModel(TextTurn(text))
-		if got, err := RunTypedNative[typedAnswer](context.Background(), New(m, NewMemStore()), "r", "go"); !errors.Is(err, ErrProtocol) {
+		if got, err := RunTypedNative[typedAnswer](context.Background(), mustNew(m, memJournal()), "r", "go"); !errors.Is(err, ErrProtocol) {
 			t.Errorf("RunTypedNative with %s = %+v, %v; want ErrProtocol", text, got, err)
 		}
 	}
@@ -133,15 +133,19 @@ func TestRunTyped_TextAnswersDecodeStrictly(t *testing.T) {
 // then failed it for good with ErrProtocol, on this call and every later one.
 func TestRunTyped_AnswerIsWhatTheToolAccepted(t *testing.T) {
 	m := &countModel{inner: NewScriptedModel(ToolTurn("f1", finalAnswerTool, `{"name":5}`))}
-	store := NewMemStore()
-	a := New(m, store).UseTool(func(next ToolHandler) ToolHandler {
-		return func(ctx context.Context, call ToolCall) (json.RawMessage, error) {
-			if call.Use.Name == finalAnswerTool {
-				call.Use.Args = json.RawMessage(`{"name":"5"}`)
+	store := memJournal()
+	a := mustNew(
+		m,
+		store,
+		WithToolMiddleware(func(next ToolHandler) ToolHandler {
+			return func(ctx context.Context, call ToolCall) (json.RawMessage, error) {
+				if call.Use.Name == finalAnswerTool {
+					call.Use.Args = json.RawMessage(`{"name":"5"}`)
+				}
+				return next(ctx, call)
 			}
-			return next(ctx, call)
-		}
-	})
+		}),
+	)
 	for i := range 2 { // the first call runs, the second reads the finished run's journal
 		got, err := RunTyped[typedAnswer](context.Background(), a, "r", "go")
 		if err != nil || got.Name != "5" {
@@ -158,16 +162,16 @@ func TestRunTyped_AnswerIsWhatTheToolAccepted(t *testing.T) {
 // the old tool decoded them (encoding/json, loosely), so a finished run reads back the answer it
 // finished with.
 func TestRunTyped_AnswerFromAnOlderJournal(t *testing.T) {
-	store := NewMemStore()
+	store := memJournal()
 	m := &countModel{inner: NewScriptedModel(ToolTurn("f1", finalAnswerTool, `{"name":"old","NOTE":"loose"}`))}
 	// The agent as the older RunTyped built it: a final_answer tool that decodes with
 	// encoding/json and acknowledges with {}.
-	old := New(m, store).cloneWith(legacyAnswerTool{})
+	old := mustNew(m, store).cloneWith(legacyAnswerTool{})
 	old.terminalTool = finalAnswerTool
 	if _, err := old.Run(context.Background(), "r", "go"); err != nil {
 		t.Fatalf("old run: %v", err)
 	}
-	got, err := RunTyped[typedAnswer](context.Background(), New(m, store), "r", "go")
+	got, err := RunTyped[typedAnswer](context.Background(), mustNew(m, store), "r", "go")
 	if err != nil || got.Name != "old" || m.calls.Load() != 1 {
 		t.Fatalf("RunTyped over an older journal = %+v, %v after %d model calls; want \"old\" after 1", got, err, m.calls.Load())
 	}
@@ -194,14 +198,14 @@ func (legacyAnswerTool) Call(_ context.Context, args json.RawMessage) (json.RawM
 // An older journal whose final_answer call had no arguments answers the zero value, as the older
 // tool accepted it.
 func TestRunTyped_EmptyAnswerFromAnOlderJournal(t *testing.T) {
-	store := NewMemStore()
+	store := memJournal()
 	m := &countModel{inner: eventTurnsModel{{ToolCallDelta{Index: 0, ID: "f1", Name: finalAnswerTool}, Finish{Reason: "tool_use"}}}}
-	old := New(m, store).cloneWith(legacyAnswerTool{})
+	old := mustNew(m, store).cloneWith(legacyAnswerTool{})
 	old.terminalTool = finalAnswerTool
 	if _, err := old.Run(context.Background(), "r", "go"); err != nil {
 		t.Fatalf("old run: %v", err)
 	}
-	got, err := RunTyped[typedAnswer](context.Background(), New(m, store), "r", "go")
+	got, err := RunTyped[typedAnswer](context.Background(), mustNew(m, store), "r", "go")
 	if err != nil || got != (typedAnswer{}) || m.calls.Load() != 1 {
 		t.Fatalf("RunTyped over an older journal = %+v, %v after %d model calls; want the zero answer after 1", got, err, m.calls.Load())
 	}
@@ -212,14 +216,18 @@ func TestRunTyped_EmptyAnswerFromAnOlderJournal(t *testing.T) {
 func TestRunTyped_RewrittenResultIsReadStrictly(t *testing.T) {
 	for _, result := range []string{`{"accepted":{"name":"a"},"extra":1}`, `{"Accepted":{"name":"a"}}`, `{"accepted":{"name":"a","x":1}}`} {
 		m := NewScriptedModel(ToolTurn("f1", finalAnswerTool, `{"name":"a"}`))
-		a := New(m, NewMemStore()).UseTool(func(next ToolHandler) ToolHandler {
-			return func(ctx context.Context, call ToolCall) (json.RawMessage, error) {
-				if _, err := next(ctx, call); err != nil {
-					return nil, err
+		a := mustNew(
+			m,
+			memJournal(),
+			WithToolMiddleware(func(next ToolHandler) ToolHandler {
+				return func(ctx context.Context, call ToolCall) (json.RawMessage, error) {
+					if _, err := next(ctx, call); err != nil {
+						return nil, err
+					}
+					return json.RawMessage(result), nil
 				}
-				return json.RawMessage(result), nil
-			}
-		})
+			}),
+		)
 		if got, err := RunTyped[typedAnswer](context.Background(), a, "r", "go"); !errors.Is(err, ErrProtocol) {
 			t.Errorf("result %s: RunTyped = %+v, %v; want ErrProtocol", result, got, err)
 		}
@@ -287,7 +295,7 @@ func TestFunc_NullForARequiredFieldIsRejected(t *testing.T) {
 
 // SubAgent and final_answer reject null for a required field the same way.
 func TestNullForARequiredField_SubAgentAndFinalAnswer(t *testing.T) {
-	sub := SubAgent("helper", "helps", New(NewScriptedModel(TextTurn("done")), NewMemStore()))
+	sub := SubAgent("helper", "helps", mustNew(NewScriptedModel(TextTurn("done")), memJournal()))
 	if _, err := sub.Call(context.Background(), json.RawMessage(`{"task":null}`)); !errors.Is(err, ErrToolArgs) {
 		t.Errorf("SubAgent.Call({\"task\":null}) = %v, want ErrToolArgs", err)
 	}
@@ -295,7 +303,7 @@ func TestNullForARequiredField_SubAgentAndFinalAnswer(t *testing.T) {
 		ToolTurn("f1", finalAnswerTool, `{"name":null}`),
 		ToolTurn("f2", finalAnswerTool, `{"name":"ok"}`),
 	)}
-	got, err := RunTyped[typedAnswer](context.Background(), New(m, NewMemStore()), "r", "go")
+	got, err := RunTyped[typedAnswer](context.Background(), mustNew(m, memJournal()), "r", "go")
 	if err != nil || got.Name != "ok" || m.calls.Load() != 2 {
 		t.Errorf("RunTyped = %+v, %v after %d model calls; want the corrected answer after 2", got, err, m.calls.Load())
 	}

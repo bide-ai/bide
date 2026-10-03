@@ -10,15 +10,18 @@ import (
 	"testing"
 
 	"github.com/bide-ai/bide/agent"
+	"github.com/bide-ai/bide/agent/agenttest"
 	"github.com/bide-ai/bide/audit"
+	"github.com/bide-ai/bide/internal/journaltest"
 )
 
 // buildEvidenceRun journals a run with two completed tool calls and one anchored, issuer-signed
 // grant, then returns the store, run id, and the log key pair (distinct from the grant issuer's key).
-func buildEvidenceRun(t *testing.T) (agent.Durable, string, ed25519.PublicKey, ed25519.PrivateKey) {
+func buildEvidenceRun(t *testing.T) (*agent.Journal, string, ed25519.PublicKey, ed25519.PrivateKey) {
 	t.Helper()
 	ctx := context.Background()
 	store := agent.NewMemStore()
+	j := agenttest.MustJournal(store)
 	const runID = "run-evidence"
 
 	// Two completed tool calls, recorded as StepToolResult leaves under stable names.
@@ -27,7 +30,7 @@ func buildEvidenceRun(t *testing.T) (agent.Durable, string, ed25519.PublicKey, e
 		{"call:notify", "call-notify", `{"sent":true}`},
 	} {
 		tc := tc
-		if _, err := store.Do(ctx, runID, tc.name, func(context.Context) (agent.Record, error) {
+		if _, err := journaltest.Do(ctx, j, runID, tc.name, func(context.Context) (agent.Record, error) {
 			return agent.Record{Kind: agent.StepToolResult, ToolUseID: tc.id, Result: json.RawMessage(tc.result)}, nil
 		}); err != nil {
 			t.Fatalf("record tool call %q: %v", tc.id, err)
@@ -41,24 +44,24 @@ func buildEvidenceRun(t *testing.T) (agent.Durable, string, ed25519.PublicKey, e
 	if err != nil {
 		t.Fatalf("SignGrant: %v", err)
 	}
-	if _, err := audit.RecordGrant(ctx, store, runID, sg); err != nil {
+	if _, err := audit.RecordGrant(ctx, j, runID, sg); err != nil {
 		t.Fatalf("RecordGrant: %v", err)
 	}
 
 	pub, priv, _ := ed25519.GenerateKey(rand.Reader) // log operator key, distinct from the issuer's
-	return store, runID, pub, priv
+	return j, runID, pub, priv
 }
 
 // earlyHead signs, with priv, the journal head runID had after its first n records, standing in for
 // an earlier head an auditor took from the anchor log.
-func earlyHead(t *testing.T, store agent.Durable, runID string, n int, priv ed25519.PrivateKey) audit.SignedTreeHead {
+func earlyHead(t *testing.T, store *agent.Journal, runID string, n int, priv ed25519.PrivateKey) audit.SignedTreeHead {
 	t.Helper()
 	ctx := context.Background()
 	recs, err := store.History(ctx, runID)
 	if err != nil {
 		t.Fatal(err)
 	}
-	th, err := audit.NewTreeHead(ctx, fixedHistory(recs[:n]), runID, 1)
+	th, err := audit.NewTreeHead(ctx, fixedHistory(recs[:n]).journal(), runID, 1)
 	if err != nil {
 		t.Fatal(err)
 	}

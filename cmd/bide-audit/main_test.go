@@ -69,7 +69,7 @@ func signHead(t *testing.T, th audit.TreeHead, s audit.Signer) audit.SignedTreeH
 func keyText(s audit.Signer) string { return audit.FormatPublicKey(s.Alg(), s.PublicKey()) }
 
 // exportJournal is the journal export of runID in store, as prove and prove-absent read it.
-func exportJournal(t *testing.T, store agent.Durable, runID string) audit.JournalExport {
+func exportJournal(t *testing.T, store *agent.Journal, runID string) audit.JournalExport {
 	t.Helper()
 	x, err := audit.ExportJournal(context.Background(), store, runID)
 	if err != nil {

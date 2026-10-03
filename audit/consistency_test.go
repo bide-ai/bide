@@ -8,6 +8,7 @@ import (
 	"testing"
 
 	"github.com/bide-ai/bide/agent"
+	"github.com/bide-ai/bide/agent/agenttest"
 )
 
 func leavesN(n int) [][]byte {
@@ -74,7 +75,7 @@ func TestConsistency_DetectsRewrite(t *testing.T) {
 // prefix is an append-only prefix of the grown journal.
 func TestConsistency_JournalAppendOnly(t *testing.T) {
 	ctx := context.Background()
-	store := agent.NewMemStore()
+	store := agenttest.MemJournal()
 	add := func(name, v string) {
 		if _, err := agent.Step(ctx, store, "run", name, func(context.Context) (string, error) { return v, nil }, agent.WithSafety(agent.Safety{ReadOnly: true})); err != nil {
 			t.Fatal(err)

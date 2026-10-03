@@ -13,7 +13,9 @@ import (
 	"time"
 
 	"github.com/bide-ai/bide/agent"
+	"github.com/bide-ai/bide/agent/agenttest"
 	"github.com/bide-ai/bide/audit"
+	"github.com/bide-ai/bide/internal/journaltest"
 )
 
 // algChargeModel calls the "charge" tool until a tool result is in the conversation, then answers.
@@ -79,7 +81,7 @@ func TestCLI_MLDSAAndHybridEndToEnd(t *testing.T) {
 			}
 
 			// A 1-of-1 gated charge, approved under the scheme.
-			store := agent.NewMemStore()
+			store := agenttest.MemJournal()
 			const runID = "run-alg"
 			policy := agent.ApprovalPolicy{Need: 1, Approvers: []string{"alice"}}
 			charge := agent.Func("charge", "charge the card", agent.Safety{},
@@ -89,7 +91,7 @@ func TestCLI_MLDSAAndHybridEndToEnd(t *testing.T) {
 					return "ok", nil
 				}, agent.WithApproval(&policy))
 			resolver := func(id string) (agent.ApproverVerifier, bool) { return approverV, id == "alice" }
-			a := agent.New(algChargeModel{}, store, charge).WithApproverVerifiers(resolver)
+			a := agenttest.MustNew(algChargeModel{}, store, agent.WithTools(charge), agent.WithApproverVerifiers(resolver))
 			if _, err := a.Run(ctx, runID, "pay"); err == nil {
 				t.Fatal("the gated run did not pause")
 			}
@@ -122,7 +124,7 @@ func TestCLI_MLDSAAndHybridEndToEnd(t *testing.T) {
 				t.Fatal(err)
 			}
 			act := toolLeaf("act", `{"event":"approve","applied":true,"policy_digest":"`+digest+`"}`)
-			if _, err := store.Do(ctx, runID, act.Name, func(context.Context) (agent.Record, error) { return act, nil }); err != nil {
+			if _, err := journaltest.Do(ctx, store, runID, act.Name, func(context.Context) (agent.Record, error) { return act, nil }); err != nil {
 				t.Fatal(err)
 			}
 
@@ -237,9 +239,9 @@ func TestCLI_StrippedHybridHalfIsNotVerified(t *testing.T) {
 	ctx := context.Background()
 	dir := t.TempDir()
 	signer := newHybridSigner(t)
-	store := agent.NewMemStore()
+	store := agenttest.MemJournal()
 	r := toolLeaf("c1", `{"ok":true}`)
-	if _, err := store.Do(ctx, "r", r.Name, func(context.Context) (agent.Record, error) { return r, nil }); err != nil {
+	if _, err := journaltest.Do(ctx, store, "r", r.Name, func(context.Context) (agent.Record, error) { return r, nil }); err != nil {
 		t.Fatal(err)
 	}
 	th, err := audit.NewTreeHead(ctx, store, "r", 1)

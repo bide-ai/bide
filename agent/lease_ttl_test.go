@@ -15,14 +15,15 @@ func TestLease_RejectsNonPositiveTTL(t *testing.T) {
 	for _, ttl := range []time.Duration{0, -time.Second, time.Nanosecond} {
 		ctx := context.Background()
 		s := &countingLister{MemStore: NewMemStore()}
+		j := mustJournal(s)
 		ran := false
-		driven, err := Lease(ctx, s, "r", func(context.Context) error { ran = true; return nil }, WithLeaseTTL(ttl))
+		driven, err := Lease(ctx, j, "r", func(context.Context) error { ran = true; return nil }, WithLeaseTTL(ttl))
 		if ttl <= 0 {
 			if !errors.Is(err, ErrConfig) || driven || ran {
 				t.Fatalf("ttl %v: Lease = (%v, %v), ran=%v; want (false, ErrConfig) and no drive", ttl, driven, err, ran)
 			}
 			seedRun(t, s.MemStore, "r")
-			if _, err := Recover(ctx, s, func(context.Context, string, RunStart) error { ran = true; return nil }, WithLeaseTTL(ttl)); !errors.Is(err, ErrConfig) || ran || s.listed {
+			if _, err := Recover(ctx, j, func(context.Context, string, RunStart) error { ran = true; return nil }, WithLeaseTTL(ttl)); !errors.Is(err, ErrConfig) || ran || s.listed {
 				t.Fatalf("ttl %v: Recover err = %v, ran=%v, listed runs=%v; want ErrConfig before touching the store", ttl, err, ran, s.listed)
 			}
 			continue

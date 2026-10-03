@@ -84,7 +84,15 @@ func synthesizeScene() {
 
 	// The agent calls increment_a five times; the cap is 3, so the synthesized compensation
 	// clamps the shared state to a valid normal form regardless of how the calls interleave.
-	if _, err := agent.New(&callN{tool: "increment_a", n: 5}, agent.NewMemStore(), incA).
+	j, err := agent.NewJournal(agent.NewMemStore())
+	if err != nil {
+		log.Fatal(err)
+	}
+	ag, err := agent.New(&callN{tool: "increment_a", n: 5}, j, agent.WithTools(incA))
+	if err != nil {
+		log.Fatal(err)
+	}
+	if _, err = ag.
 		Run(context.Background(), "gov-1", "Increment a five times."); err != nil {
 		log.Fatalf("run: %v", err)
 	}

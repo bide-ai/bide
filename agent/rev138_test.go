@@ -7,6 +7,7 @@ import (
 	"testing"
 
 	"github.com/bide-ai/bide/agent"
+	"github.com/bide-ai/bide/internal/journaltest"
 )
 
 // rev138 A: Cancel of the parent lands while the parent's model turn is in flight (after the turn
@@ -69,7 +70,7 @@ func TestRev138_RetrySafeCallInTheTurnInFlightMayRun(t *testing.T) {
 func putMainStart(t *testing.T, j *agent.Journal, runID, input string) {
 	t.Helper()
 	b, _ := json.Marshal(map[string]string{"input": input})
-	if _, err := j.Do(context.Background(), runID, "run:start", func(context.Context) (agent.Record, error) {
+	if _, err := journaltest.Do(context.Background(), j, runID, "run:start", func(context.Context) (agent.Record, error) {
 		return agent.Record{Kind: agent.StepValue, Result: b}, nil
 	}); err != nil {
 		t.Fatal(err)

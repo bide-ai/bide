@@ -14,6 +14,7 @@ import (
 	"testing"
 
 	"github.com/bide-ai/bide/agent"
+	"github.com/bide-ai/bide/agent/agenttest"
 )
 
 var errR3 = errors.New("connection lost")
@@ -127,17 +128,17 @@ func TestClaimHeldThenCancelled_ToolHaltsForever(t *testing.T) {
 	}
 	s := &r3Store{m: m, faults: []r3Fault{{"attempt:tool:c1", "nc"}, {"attempt:not-started:", "nc"}}}
 	j1, _ := agent.NewJournal(s)
-	_, err1 := agent.New(model(), j1, charge).SetMaxConcurrency(1).Run(ctx, "r", "hi")
+	_, err1 := agenttest.MustNew(model(), j1, agent.WithTools(charge), agent.WithMaxConcurrency(1)).Run(ctx, "r", "hi")
 	t.Logf("drive 1: %v", err1)
 
 	ctx2, cancel := context.WithCancel(ctx)
 	s.after = map[string]func(){"attempt:not-started:": cancel}
 	j2, _ := agent.NewJournal(s)
-	_, err2 := agent.New(model(), j2, charge).SetMaxConcurrency(1).Run(ctx2, "r", "hi")
+	_, err2 := agenttest.MustNew(model(), j2, agent.WithTools(charge), agent.WithMaxConcurrency(1)).Run(ctx2, "r", "hi")
 	t.Logf("drive 2: %v", err2)
 
 	j3, _ := agent.NewJournal(&r3Store{m: m})
-	_, err3 := agent.New(model(), j3, charge).SetMaxConcurrency(1).Run(ctx, "r", "hi")
+	_, err3 := agenttest.MustNew(model(), j3, agent.WithTools(charge), agent.WithMaxConcurrency(1)).Run(ctx, "r", "hi")
 	t.Logf("drive 3: %v; fired %d", err3, fired)
 	r3Dump(t, m, "r")
 	var halt *agent.ResumeHalt
@@ -185,8 +186,8 @@ func TestToolGateIgnoresRememberedClaim(t *testing.T) {
 	}
 	s := &r3Store{m: m, faults: []r3Fault{{"attempt:tool:c1", "c"}, {"attempt:not-started:", "nc"}}}
 	j, _ := agent.NewJournal(s)
-	_, err1 := agent.New(model(), j, charge).SetMaxConcurrency(1).Run(ctx, "r", "hi")
-	_, err2 := agent.New(model(), j, charge).SetMaxConcurrency(1).Run(ctx, "r", "hi") // same process
+	_, err1 := agenttest.MustNew(model(), j, agent.WithTools(charge), agent.WithMaxConcurrency(1)).Run(ctx, "r", "hi")
+	_, err2 := agenttest.MustNew(model(), j, agent.WithTools(charge), agent.WithMaxConcurrency(1)).Run(ctx, "r", "hi") // same process
 	t.Logf("drive 1: %v\ndrive 2: %v; fired %d", err1, err2, fired)
 	var halt *agent.ResumeHalt
 	if fired == 0 && errors.As(err2, &halt) {
@@ -245,13 +246,13 @@ func TestRememberedClaimDoesNotVoidAnotherDriversAttempt(t *testing.T) {
 	}
 	a := &r3Store{m: m, faults: []r3Fault{{"attempt:tool:c1", "nc"}, {"attempt:not-started:", "nc"}}}
 	ja, _ := agent.NewJournal(a)
-	_, errA1 := agent.New(model(), ja, charge).SetMaxConcurrency(1).Run(ctx, "r", "hi")
+	_, errA1 := agenttest.MustNew(model(), ja, agent.WithTools(charge), agent.WithMaxConcurrency(1)).Run(ctx, "r", "hi")
 
 	b := &r3Store{m: m, faults: []r3Fault{{"tool:c1", "nc"}}} // B fires, then loses its result
 	jb, _ := agent.NewJournal(b)
-	_, errB := agent.New(model(), jb, charge).SetMaxConcurrency(1).Run(ctx, "r", "hi")
+	_, errB := agenttest.MustNew(model(), jb, agent.WithTools(charge), agent.WithMaxConcurrency(1)).Run(ctx, "r", "hi")
 
-	_, errA2 := agent.New(model(), ja, charge).SetMaxConcurrency(1).Run(ctx, "r", "hi")
+	_, errA2 := agenttest.MustNew(model(), ja, agent.WithTools(charge), agent.WithMaxConcurrency(1)).Run(ctx, "r", "hi")
 	t.Logf("A: %v\nB: %v (fired %d)\nA again: %v", errA1, errB, fired, errA2)
 	var halt *agent.ResumeHalt
 	if fired != 1 || !errors.As(errA2, &halt) {

@@ -12,6 +12,7 @@ import (
 	"testing"
 
 	"github.com/bide-ai/bide/agent"
+	"github.com/bide-ai/bide/agent/agenttest"
 )
 
 // A tool's error text is journaled and sent to the model as the call's result, so it is also
@@ -36,7 +37,7 @@ func (s *seen) middleware(next agent.ModelHandler) agent.ModelHandler {
 	}
 }
 
-func (s *seen) journal(t *testing.T, st agent.Durable, runIDs ...string) {
+func (s *seen) journal(t *testing.T, st *agent.Journal, runIDs ...string) {
 	t.Helper()
 	for _, id := range runIDs {
 		recs, err := st.History(context.Background(), id)
@@ -90,8 +91,11 @@ const secretURL = "http://user:PW-USERINFO-SECRET@127.0.0.1:1/v1/items?key=SK-QU
 
 func TestToolErrorURLCredentialsNotJournaled(t *testing.T) {
 	var s seen
-	st := agent.NewMemStore()
-	a := agent.New(agent.NewScriptedModel(agent.ToolTurn("tu1", "fetch", `{}`), agent.TextTurn("done")), st, fetchTool(secretURL)).Use(s.middleware)
+	st := agenttest.MemJournal()
+	a := agenttest.MustNew(
+		agent.NewScriptedModel(agent.ToolTurn("tu1", "fetch", `{}`), agent.TextTurn("done")),
+		st,
+		agent.WithTools(fetchTool(secretURL)), agent.WithMiddleware(s.middleware))
 	if _, err := a.Run(context.Background(), "r1", "go"); err != nil {
 		t.Fatal(err)
 	}
@@ -108,8 +112,11 @@ func TestToolErrorURLInTextNotJournaled(t *testing.T) {
 		return "", fmt.Errorf("upstream https://USER-TOKEN-SECRET@api.test/v2?token=SK-QUERY-SECRET returned 503 (see https://status.test/page)")
 	})
 	var s seen
-	st := agent.NewMemStore()
-	a := agent.New(agent.NewScriptedModel(agent.ToolTurn("tu1", "call", `{}`), agent.TextTurn("done")), st, tool).Use(s.middleware)
+	st := agenttest.MemJournal()
+	a := agenttest.MustNew(
+		agent.NewScriptedModel(agent.ToolTurn("tu1", "call", `{}`), agent.TextTurn("done")),
+		st,
+		agent.WithTools(tool), agent.WithMiddleware(s.middleware))
 	if _, err := a.Run(context.Background(), "r1", "go"); err != nil {
 		t.Fatal(err)
 	}
@@ -121,11 +128,13 @@ func TestToolErrorURLInTextNotJournaled(t *testing.T) {
 // parent journals it.
 func TestSubAgentErrorURLCredentialsNotJournaled(t *testing.T) {
 	failing := agent.NewScriptedModel(agent.ErrorTurn(&url.Error{Op: "Post", URL: "https://api.test/v1/chat?key=SK-QUERY-SECRET", Err: errors.New("EOF")}))
-	st := agent.NewMemStore()
-	sub := agent.New(failing, st)
+	st := agenttest.MemJournal()
+	sub := agenttest.MustNew(failing, st)
 	var s seen
-	parent := agent.New(agent.NewScriptedModel(agent.ToolTurn("tu1", "helper", `{"task":"x"}`), agent.TextTurn("done")), st,
-		agent.SubAgent("helper", "helps", sub)).Use(s.middleware)
+	parent := agenttest.MustNew(
+		agent.NewScriptedModel(agent.ToolTurn("tu1", "helper", `{"task":"x"}`), agent.TextTurn("done")),
+		st,
+		agent.WithTools(agent.SubAgent("helper", "helps", sub)), agent.WithMiddleware(s.middleware))
 	if _, err := parent.Run(context.Background(), "r1", "go"); err != nil {
 		t.Fatal(err)
 	}
@@ -136,8 +145,12 @@ func TestSubAgentErrorURLCredentialsNotJournaled(t *testing.T) {
 // In a saga, a failing tool's error is journaled twice: as the saga's failure record and as the
 // terminal marker of the finished rollback. Both are redacted; the caller still gets the error.
 func TestSagaToolErrorURLCredentialsNotJournaled(t *testing.T) {
-	st := agent.NewMemStore()
-	a := agent.New(agent.NewScriptedModel(agent.ToolTurn("tu1", "fetch", `{}`), agent.TextTurn("done")), st, fetchTool(secretURL))
+	st := agenttest.MemJournal()
+	a := agenttest.MustNew(
+		agent.NewScriptedModel(agent.ToolTurn("tu1", "fetch", `{}`), agent.TextTurn("done")),
+		st,
+		agent.WithTools(fetchTool(secretURL)),
+	)
 	_, err := a.RunSaga(context.Background(), "r1", "go")
 	var aborted *agent.SagaAborted
 	if !errors.As(err, &aborted) {

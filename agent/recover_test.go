@@ -3,6 +3,7 @@ package agent
 import (
 	"context"
 	"errors"
+	"iter"
 	"sort"
 	"sync/atomic"
 	"testing"
@@ -35,10 +36,10 @@ func (approvalModel) Stream(_ context.Context, req Request) (*Stream, error) {
 // one paused for approval, then asserts Recover re-drives only the incomplete run.
 func TestRecover_SkipsCompletedRedrivesIncomplete(t *testing.T) {
 	ctx := context.Background()
-	store := NewMemStore()
+	store := memJournal()
 
 	// Two runs that finish (their journals get a completion marker).
-	done := New(answerModel{}, store)
+	done := mustNew(answerModel{}, store)
 	if _, err := done.Run(ctx, "done1", "hi"); err != nil {
 		t.Fatalf("done1: %v", err)
 	}
@@ -48,7 +49,7 @@ func TestRecover_SkipsCompletedRedrivesIncomplete(t *testing.T) {
 	// One run that pauses for human approval (never reaches the terminal marker).
 	charge := Func("charge", "charge a card", Safety{},
 		func(context.Context, struct{}) (string, error) { return "charged", nil }, WithApproval(SingleApproval()))
-	paused := New(approvalModel{}, store, charge)
+	paused := mustNew(approvalModel{}, store, WithTools(charge))
 	_, err := paused.Run(ctx, "paused1", "hi")
 	var pa *PendingApproval
 	if !errors.As(err, &pa) {
@@ -88,11 +89,11 @@ func TestRecover_SkipsCompletedRedrivesIncomplete(t *testing.T) {
 // is a SUCCESS (no error joined) and is counted as recovered.
 func TestRecover_StillPausedCountsAsRecovered(t *testing.T) {
 	ctx := context.Background()
-	store := NewMemStore()
+	store := memJournal()
 
 	charge := Func("charge", "charge a card", Safety{},
 		func(context.Context, struct{}) (string, error) { return "charged", nil }, WithApproval(SingleApproval()))
-	a := New(approvalModel{}, store, charge)
+	a := mustNew(approvalModel{}, store, WithTools(charge))
 	if _, err := a.Run(ctx, "p", "hi"); !IsPause(err) {
 		t.Fatalf("run should pause, got %v", err)
 	}
@@ -112,19 +113,25 @@ func TestRecover_StillPausedCountsAsRecovered(t *testing.T) {
 // TestRecover_NeedsLister confirms Recover reports a config error for a store that cannot
 // enumerate its runs.
 func TestRecover_NeedsLister(t *testing.T) {
-	_, err := Recover(context.Background(), noListStore{}, func(context.Context, string, RunStart) error { return nil })
+	_, err := Recover(context.Background(), mustJournal(noListStore{}), func(context.Context, string, RunStart) error { return nil })
 	if !errors.Is(err, ErrConfig) {
 		t.Fatalf("err = %v, want ErrConfig for a non-Lister store", err)
 	}
 }
 
-// noListStore is a Durable that does NOT implement Lister.
+// noListStore is a Store that does NOT implement Lister (or Leaser). It stores nothing: every
+// Insert reports stored, and every read finds nothing.
 type noListStore struct{}
 
-func (noListStore) Do(context.Context, string, string, func(context.Context) (Record, error)) (Record, error) {
-	return Record{}, nil
+func (noListStore) Insert(_ context.Context, _, name string, data []byte) (Entry, bool, error) {
+	return Entry{Seq: 1, Name: name, Data: data}, true, nil
 }
-func (noListStore) History(context.Context, string) ([]Record, error) { return nil, nil }
+func (noListStore) Get(context.Context, string, string) (Entry, bool, error) {
+	return Entry{}, false, nil
+}
+func (noListStore) Load(context.Context, string, int64) iter.Seq2[Entry, error] {
+	return func(func(Entry, error) bool) {}
+}
 
 // TestRecover_WakerRebuild is Part 2: after a "crash" (fresh MemWaker, timers lost),
 // Recover with a Waker-bound resume re-registers the sleeping run's wake, so advancing the
@@ -133,8 +140,8 @@ func (noListStore) History(context.Context, string) ([]Record, error) { return n
 func TestRecover_WakerRebuild(t *testing.T) {
 	var clk int64 = 1000
 	now := func() time.Time { return time.Unix(atomic.LoadInt64(&clk), 0) }
-	store := NewMemStore()
-	a := New(sleepModel{}, store, waitTool())
+	store := memJournal()
+	a := mustNew(sleepModel{}, store, WithTools(waitTool()))
 
 	// The run sleeps for an hour and pauses durably. Its wake time is journaled.
 	if _, err := a.Run(ContextWithClock(context.Background(), now), "sleeper", "go"); !errorsIsSleeping(err) {

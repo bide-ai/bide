@@ -9,10 +9,13 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"slices"
 	"strings"
 	"testing"
 
 	"github.com/bide-ai/bide/agent"
+	"github.com/bide-ai/bide/agent/agenttest"
+	"github.com/bide-ai/bide/internal/journaltest"
 )
 
 // A proof bundle's audit path holds the hashes of the proven record's neighbours: path[0] is the
@@ -22,10 +25,10 @@ import (
 // its own record's bundle discloses.
 func TestNeighbourLeafNotGuessable(t *testing.T) {
 	ctx := context.Background()
-	st := agent.NewMemStore()
+	st := agenttest.MemJournal()
 	do := func(name string, r agent.Record) {
 		t.Helper()
-		if _, err := st.Do(ctx, "run", name, func(context.Context) (agent.Record, error) { return r, nil }); err != nil {
+		if _, err := journaltest.Do(ctx, st, "run", name, func(context.Context) (agent.Record, error) { return r, nil }); err != nil {
 			t.Fatal(err)
 		}
 	}
@@ -88,13 +91,33 @@ func TestNeighbourLeafNotGuessable(t *testing.T) {
 	}
 }
 
-// recordsStore is a read-only Durable whose history is exactly the records it holds.
-type recordsStore []agent.Record
-
-func (s recordsStore) History(context.Context, string) ([]agent.Record, error) { return s, nil }
-
-func (recordsStore) Do(context.Context, string, string, func(context.Context) (agent.Record, error)) (agent.Record, error) {
-	return agent.Record{}, errors.New("recordsStore is read-only")
+// recordsJournal returns a Journal whose run "r" holds a journal header and then exactly recs, each
+// stored as its journal encoding (its Raw when it has one), salt or no salt: a journal no Journal
+// would have written.
+func recordsJournal(tb testing.TB, recs ...agent.Record) *agent.Journal {
+	tb.Helper()
+	ctx := context.Background()
+	scratch := agenttest.MemJournal()
+	if _, err := journaltest.Put(ctx, scratch, "h", "s", agent.Record{Kind: agent.StepValue, Result: json.RawMessage(`1`)}); err != nil {
+		tb.Fatal(err)
+	}
+	hist, err := scratch.History(ctx, "h")
+	if err != nil || len(hist) == 0 || hist[0].Kind != agent.StepHeader {
+		tb.Fatalf("no journal header to copy: %v", err)
+	}
+	s := agent.NewMemStore()
+	for _, r := range append([]agent.Record{hist[0]}, recs...) {
+		b := r.Raw()
+		if b == nil {
+			if b, err = agent.EncodeRecord(r); err != nil {
+				tb.Fatal(err)
+			}
+		}
+		if _, _, err := s.Insert(ctx, "r", r.Name, b); err != nil {
+			tb.Fatal(err)
+		}
+	}
+	return agenttest.MustJournal(s)
 }
 
 // A record without a salt of agent.SaltSize bytes is never committed to a Merkle tree or proven:
@@ -102,14 +125,14 @@ func (recordsStore) Do(context.Context, string, string, func(context.Context) (a
 func TestUnsaltedRecordRefused(t *testing.T) {
 	ctx := context.Background()
 	for _, salt := range [][]byte{nil, make([]byte, agent.SaltSize-1), make([]byte, agent.SaltSize+1)} {
-		st := recordsStore{stored(withSalt(agent.Record{Name: "s", Kind: agent.StepValue, Result: json.RawMessage(`1`)}, salt))}
+		st := recordsJournal(t, stored(withSalt(agent.Record{Name: "s", Kind: agent.StepValue, Result: json.RawMessage(`1`)}, salt)))
 		if _, err := Root(ctx, st, "r"); err == nil || !strings.Contains(err.Error(), "salt") {
 			t.Errorf("Root over a record with a %d-byte salt = %v, want a salt error", len(salt), err)
 		}
 		if _, err := NewTreeHead(ctx, st, "r", 1); err == nil {
 			t.Errorf("NewTreeHead committed a record with a %d-byte salt", len(salt))
 		}
-		if _, err := Prove(ctx, st, "r", 0); err == nil {
+		if _, err := Prove(ctx, st, "r", 1); err == nil { // the record after the header
 			t.Errorf("Prove proved a record with a %d-byte salt", len(salt))
 		}
 	}
@@ -128,8 +151,8 @@ func TestLeafFormats(t *testing.T) {
 		return s[:]
 	}
 
-	st := agent.NewMemStore()
-	if _, err := st.Do(ctx, "r", "s", func(context.Context) (agent.Record, error) {
+	st := agenttest.MemJournal()
+	if _, err := journaltest.Do(ctx, st, "r", "s", func(context.Context) (agent.Record, error) {
 		return agent.Record{Kind: agent.StepValue, Result: json.RawMessage(`"v"`)}, nil
 	}); err != nil {
 		t.Fatal(err)
@@ -144,11 +167,13 @@ func TestLeafFormats(t *testing.T) {
 	if !bytes.Equal(recs[0].Raw(), enc) {
 		t.Fatalf("stored bytes = %s, want the journal encoding %s", recs[0].Raw(), enc)
 	}
-	if root, _ := Root(ctx, recordsStore(recs), "r"); !bytes.Equal(root, h("bide.audit.journal-leaf.v1\x00", string(recs[0].Raw()))) {
+	// Two leaves, the header's and the record's, under an RFC 6962 node: SHA-256(0x01 || l || r).
+	node := sha256.Sum256(slices.Concat([]byte{1}, h("bide.audit.journal-leaf.v1\x00", string(all[0].Raw())), h("bide.audit.journal-leaf.v1\x00", string(recs[0].Raw()))))
+	if root, _ := Root(ctx, st, "r"); !bytes.Equal(root, node[:]) {
 		t.Error("a journal leaf does not hash as SHA-256(0x00 || \"bide.audit.journal-leaf.v1\\x00\" || the record's stored bytes)")
 	}
 
-	keyRecs := recordsStore{withSalt(agent.Record{Name: "c", Kind: agent.StepToolResult, ToolUseID: "c"}, recs[0].Salt())}
+	keyRecs := []agent.Record{withSalt(agent.Record{Name: "c", Kind: agent.StepToolResult, ToolUseID: "c"}, recs[0].Salt())}
 	if root, _, err := AbsenceRoot(keyRecs, ToolUseKeys); err != nil || !bytes.Equal(root, h("bide.audit.key-leaf.v1\x00", "tooluse:c")) {
 		t.Error("a key leaf does not hash as SHA-256(0x00 || \"bide.audit.key-leaf.v1\\x00\" || key)")
 	}
@@ -167,7 +192,7 @@ func TestLeafFormats(t *testing.T) {
 	// salt of the record it projects, not of a record before it that projects no event.
 	toolRec := withSalt(agent.Record{Name: "c", Kind: agent.StepToolResult, ToolUseID: "c", Result: json.RawMessage(`1`)}, recs[0].Salt())
 	valueRec := withSalt(agent.Record{Name: "v", Kind: agent.StepValue, Result: json.RawMessage(`2`)}, bytes.Repeat([]byte{5}, agent.SaltSize))
-	projected, err := EventLogFromJournal(ctx, recordsStore{valueRec, toolRec}, "r")
+	projected, err := EventLogFromJournal(ctx, recordsJournal(t, valueRec, toolRec), "r")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -205,12 +230,12 @@ func TestNeighbourEventNotGuessable(t *testing.T) {
 		}
 	}
 
-	st := agent.NewMemStore()
+	st := agenttest.MemJournal()
 	for _, r := range []agent.Record{
 		{Kind: agent.StepToolResult, ToolUseID: "toolu_A", Result: json.RawMessage(`{"charged":true}`)},
 		{Kind: agent.StepToolResult, ToolUseID: "toolu_B", Result: json.RawMessage(`{"fraud_flag":true}`)},
 	} {
-		if _, err := st.Do(ctx, "run", r.ToolUseID, func(context.Context) (agent.Record, error) { return r, nil }); err != nil {
+		if _, err := journaltest.Do(ctx, st, "run", r.ToolUseID, func(context.Context) (agent.Record, error) { return r, nil }); err != nil {
 			t.Fatal(err)
 		}
 	}

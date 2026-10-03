@@ -21,10 +21,13 @@ func TestSubAgent_CancelledParentWaitsForTheChild(t *testing.T) {
 		finished.Store(true)
 		return "written", nil
 	})
-	store := NewMemStore()
-	child := New(NewScriptedModel(ToolTurn("w1", "write", `{}`), TextTurn("done")), store, write)
-	parent := New(NewScriptedModel(ToolTurn("s1", "clerk", `{"task":"file it"}`), TextTurn("done")), store,
-		SubAgent("clerk", "files records", child))
+	store := memJournal()
+	child := mustNew(NewScriptedModel(ToolTurn("w1", "write", `{}`), TextTurn("done")), store, WithTools(write))
+	parent := mustNew(
+		NewScriptedModel(ToolTurn("s1", "clerk", `{"task":"file it"}`), TextTurn("done")),
+		store,
+		WithTools(SubAgent("clerk", "files records", child)),
+	)
 
 	ctx, cancel := context.WithCancel(context.Background())
 	go func() { <-started; cancel() }()

@@ -12,7 +12,7 @@ import (
 // The lockout regression: a forged decision recorded under an approver's id does not take
 // their place. Their real decision, recorded afterwards, counts.
 func TestMofn_ForgedThenRealCounts(t *testing.T) {
-	store := NewMemStore()
+	store := memJournal()
 	pol := &ApprovalPolicy{Need: 2, Approvers: abc}
 	vf := fakeVerifiers(abc...)
 	var charged int
@@ -45,7 +45,7 @@ func TestMofn_ForgedThenRealCounts(t *testing.T) {
 // A signature approves one exact call: the same run and call id with other arguments, another
 // tool name, another call, or another run does not verify.
 func TestMofn_SignatureBindsTheCall(t *testing.T) {
-	store := NewMemStore()
+	store := memJournal()
 	pol := &ApprovalPolicy{Need: 1, Approvers: []string{"alice"}}
 	vf := fakeVerifiers("alice")
 	var charged int
@@ -80,7 +80,7 @@ func TestMofn_SignatureBindsTheCall(t *testing.T) {
 // Records written straight into the journal, bypassing SubmitDecision, can neither block an
 // approver nor force a denial: invalid denials do not count toward "unreachable".
 func TestMofn_JunkCannotBlockOrDeny(t *testing.T) {
-	store := NewMemStore()
+	store := memJournal()
 	pol := &ApprovalPolicy{Need: 2, Approvers: abc}
 	vf := fakeVerifiers(abc...)
 	var charged int
@@ -160,9 +160,9 @@ func TestApprovalDecisionBytes_Canonical(t *testing.T) {
 	}
 
 	// A call recorded in the journal and read back signs the same as the live call.
-	store := NewMemStore()
+	store := memJournal()
 	msg := Message{Role: RoleAssistant, Parts: []Part{ToolUse{ID: "c1", Name: "refund", Args: base.Args}}}
-	if _, err := store.Do(context.Background(), "r1", "@llm/0", func(context.Context) (Record, error) {
+	if _, err := store.do(context.Background(), "r1", "@llm/0", func(context.Context) (Record, error) {
 		return Record{Kind: StepModel, Message: &msg}, nil
 	}); err != nil {
 		t.Fatal(err)
@@ -176,7 +176,7 @@ func TestApprovalDecisionBytes_Canonical(t *testing.T) {
 // nothing for it; correctness never depends on it.
 func TestApproveAs_DecisionCheck(t *testing.T) {
 	ctx := context.Background()
-	store := NewMemStore()
+	store := memJournal()
 	pol := &ApprovalPolicy{Need: 2, Approvers: abc}
 	vf := fakeVerifiers(abc...)
 	var charged int
@@ -255,7 +255,7 @@ func TestApprovalPolicy_Validate(t *testing.T) {
 // under a scheme the approver's key is not.
 func TestMofn_DecisionCountsOnlyUnderItsScheme(t *testing.T) {
 	ctx := context.Background()
-	store := NewMemStore()
+	store := memJournal()
 	pol := &ApprovalPolicy{Need: 1, Approvers: abc}
 	vf := fakeVerifiers(abc...)
 	var charged int

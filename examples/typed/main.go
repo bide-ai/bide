@@ -52,7 +52,14 @@ func main() {
 			return Population{Count: 8_336_000}, nil
 		})
 
-	a := agent.New(model, agent.NewMemStore(), lookup)
+	j, err := agent.NewJournal(agent.NewMemStore())
+	if err != nil {
+		log.Fatal(err)
+	}
+	a, err := agent.New(model, j, agent.WithTools(lookup))
+	if err != nil {
+		log.Fatal(err)
+	}
 
 	ctx, cancel := context.WithTimeout(context.Background(), 60*time.Second)
 	defer cancel()

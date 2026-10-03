@@ -3,7 +3,6 @@ package agent
 import (
 	"context"
 	"encoding/json"
-	"errors"
 	"fmt"
 	"sync/atomic"
 	"time"
@@ -28,58 +27,12 @@ import (
 // and writes it again at the next claim of the same name, which then loses to the marker its
 // earlier claim may have left: a caller that claims one name only (rather than numbered
 // re-attempts, as Step and tool calls do) halts on it, which is safe.
-func ClaimAttempt(ctx context.Context, d Durable, runID, name string, rec Record) (won bool, got Record, err error) {
-	if j := journalOf(d); j != nil {
-		return j.claim(ctx, runID, name, rec)
-	}
-	// A Durable the engine drives through its Do (a wrapper such as audit.AuditedStore) claims as
-	// the Journal does, through d, so the wrapper sees every write: remembered claims of the name
-	// are recorded as not started first, and a claim whose marker write fails records that it did
-	// not start, or is remembered, under the identity of the store beneath d (durableIdentity).
-	if id, keyed := durableIdentity(d); keyed {
-		for _, old := range pendingClaims.takeAll(flightKey{id, runID, name}) {
-			m := rec
-			m.claim = old
-			_ = recordNotStarted(ctx, d, runID, name, m) // on failure it remembers old again
-		}
-	}
-	claim := newClaimID()
-	rec.claim = claim
-	got, err = d.Do(ctx, runID, name, func(context.Context) (Record, error) { return rec, nil })
-	if errors.Is(err, errNoRecord) {
-		return false, Record{}, err // a probe's shared call answered: no marker was written (see claimAttempt)
-	}
-	if err != nil {
-		// The marker may have committed all the same; this driver never called the effect.
-		if nerr := recordNotStarted(ctx, d, runID, name, rec); nerr != nil {
-			return false, Record{}, fmt.Errorf("claim %s: %w (%w)", name, err, nerr)
-		}
-		return false, Record{}, fmt.Errorf("claim %s: %w", name, err)
-	}
-	return got.claim == claim, got, nil
-}
-
-// claimAttempt is ClaimAttempt for a marker key a probe of this process may be reading at the
-// same moment (see doShared): it claims again rather than fail with the probe's outcome.
-func claimAttempt(ctx context.Context, d Durable, runID, name string, rec Record) (bool, Record, error) {
-	for {
-		won, got, err := ClaimAttempt(ctx, d, runID, name, rec)
-		if !errors.Is(err, errNoRecord) {
-			return won, got, err
-		}
-		if err := ctx.Err(); err != nil {
-			return false, Record{}, err
-		}
-	}
+func ClaimAttempt(ctx context.Context, d *Journal, runID, name string, rec Record) (won bool, got Record, err error) {
+	j := d
+	return j.claim(ctx, runID, name, rec)
 }
 
 // protocol:claims end
-
-// hasValueStep reports whether runID's journal holds a StepValue record named name.
-func hasValueStep(ctx context.Context, store Durable, runID, name string) (bool, error) {
-	r, ok, err := lookup(ctx, store, runID, name)
-	return ok && r.Kind == StepValue, err
-}
 
 // Step runs fn as a named durable step and returns its typed result. On resume, a
 // completed step returns its recorded result without re-running fn. This is the
@@ -116,7 +69,7 @@ func hasValueStep(ctx context.Context, store Durable, runID, name string) (bool,
 // name must not be empty, and must not start with a prefix the engine reserves for its own journal keys ("@", "run:",
 // "tool:", "attempt:", "approval:", "signal:", and the rest; see IsReservedStepName): such a
 // name is ErrConfig.
-func Step[T any](ctx context.Context, d Durable, runID, name string, fn func(context.Context) (T, error), opts ...StepOption) (T, error) {
+func Step[T any](ctx context.Context, d *Journal, runID, name string, fn func(context.Context) (T, error), opts ...StepOption) (T, error) {
 	if err := checkStepName("Step", name); err != nil {
 		var zero T
 		return zero, err
@@ -125,12 +78,12 @@ func Step[T any](ctx context.Context, d Durable, runID, name string, fn func(con
 }
 
 // step is Step without the check on name, for the engine's own steps.
-func step[T any](ctx context.Context, d Durable, runID, name string, fn func(context.Context) (T, error), opts ...StepOption) (T, error) {
+func step[T any](ctx context.Context, d *Journal, runID, name string, fn func(context.Context) (T, error), opts ...StepOption) (T, error) {
 	var out T
 	if err := ctx.Err(); err != nil {
 		return out, err // a cancelled caller starts no new step
 	}
-	if err := checkDurable(d); err != nil {
+	if err := checkJournal(d); err != nil {
 		return out, err
 	}
 	var cfg stepConfig
@@ -154,11 +107,8 @@ func step[T any](ctx context.Context, d Durable, runID, name string, fn func(con
 	}
 	var rec Record
 	var err error
-	if j := journalOf(d); j != nil {
-		rec, err = journalStep(ctx, j, runID, name, cfg, body)
-	} else {
-		rec, err = durableStep(ctx, d, runID, name, cfg, body)
-	}
+	j := d
+	rec, err = journalStep(ctx, j, runID, name, cfg, body)
 	if err != nil {
 		return out, err
 	}
@@ -247,76 +197,6 @@ func journalStep(ctx context.Context, j *Journal, runID, name string, cfg stepCo
 		// This driver claimed the attempt and never called fn (it was cancelled, or the store
 		// failed, first): record that, so the next attempt runs fn instead of halting.
 		if nerr := j.notStarted(ctx, runID, key, marker); nerr != nil {
-			err = fmt.Errorf("%w (%w)", err, nerr)
-		}
-	}
-	return rec, err
-}
-
-// durableStep runs a step through a Durable that is not a Journal's (a wrapper that intercepts
-// Do): every read and write goes through its Do.
-func durableStep(ctx context.Context, d Durable, runID, name string, cfg stepConfig, body func(context.Context) (Record, error)) (Record, error) {
-	base := stepAttemptStep(name)
-	claimed, won := true, false
-	var marker Record
-	var markerKey string
-	var attemptedAt time.Time
-	if !cfg.safety.RetrySafe() {
-		w, got, key, err := claimNextAttempt(ctx, d, runID, base,
-			Record{Kind: StepAttempt, ToolUseID: name, AttemptedAt: time.Now().UnixMilli()})
-		if err != nil {
-			return Record{}, err
-		}
-		claimed, won, marker, markerKey = w, w, got, key
-		attemptedAt = markerTime(got.AttemptedAt)
-		if j := innerJournal(d); !won && j != nil {
-			// The loser rule of journalStep, for the Journal beneath the wrapper: the loser only
-			// joins a call of the step in flight and never starts one, so the owner in this process
-			// never finds the loser's read in flight and takes its halt as its own outcome
-			// (WinnerNeverHalts). A joined call that fails is a halt on a live owner.
-			if b, ok, err := joinFlight(flightKey{j.id, runID, name}); ok {
-				if err != nil {
-					return Record{}, stepHalt(runID, name, attemptedAt, HaltContended)
-				}
-				return decodeStored(runID, name, b)
-			}
-			if rec, ok, err := j.Get(ctx, runID, name); err != nil || ok {
-				return rec, err
-			}
-			return Record{}, stepHalt(runID, name, attemptedAt, HaltCrashed)
-		}
-	}
-	var started atomic.Bool // fn was called: from here on its effect may have fired
-	rec, err := d.Do(ctx, runID, name, func(ctx context.Context) (Record, error) {
-		if claimed && cfg.safety.RetrySafe() {
-			// See journalStep: an earlier attempt's marker is its recorded safety.
-			m, ok, err := liveAttempt(ctx, d, runID, base)
-			if err != nil {
-				return Record{}, err
-			}
-			if ok {
-				claimed = false
-				attemptedAt = markerTime(m.AttemptedAt)
-			}
-		}
-		if !claimed {
-			// Attempted before, with no recorded result: the outcome is unknown. No live claimant
-			// is known (a lost claim may be to a driver that died), so the cause is HaltCrashed.
-			return Record{}, stepHalt(runID, name, attemptedAt, HaltCrashed)
-		}
-		if err := ctx.Err(); won && err != nil {
-			return Record{}, err // cancelled after the claim: fn is not called, and that is recorded below
-		}
-		if err := cfg.checkCancelled(ctx); err != nil {
-			return Record{}, err // the run was cancelled: fn is not called, and a won claim records that below
-		}
-		started.Store(true)
-		return body(ctx)
-	})
-	if err != nil && won && !started.Load() {
-		// This driver claimed the attempt and never called fn (it was cancelled, or the store
-		// failed, first): record that, so the next attempt runs fn instead of halting.
-		if nerr := recordNotStarted(ctx, d, runID, markerKey, marker); nerr != nil {
 			err = fmt.Errorf("%w (%w)", err, nerr)
 		}
 	}

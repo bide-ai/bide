@@ -5,7 +5,9 @@ import (
 	"testing"
 
 	"github.com/bide-ai/bide/agent"
+	"github.com/bide-ai/bide/agent/agenttest"
 	"github.com/bide-ai/bide/internal/journalhook"
+	"github.com/bide-ai/bide/internal/journaltest"
 )
 
 // A claim's bookkeeping (a not-started record, written when a node's claim failed before its body
@@ -18,7 +20,7 @@ func TestConformIgnoresNotStartedRecords(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	mem := agent.NewMemStore()
+	mem := agenttest.MemJournal()
 	ctx := context.Background()
 	if _, err := flow.Run(ctx, mem, "r", 1); err != nil {
 		t.Fatal(err)
@@ -27,7 +29,7 @@ func TestConformIgnoresNotStartedRecords(t *testing.T) {
 		"attempt:not-started:0123abcd:attempt:step:node:entry": agent.StepNotStarted,
 	} {
 		rec := journalhook.WithClaim(agent.Record{Kind: kind}, name[len("attempt:not-started:"):len("attempt:not-started:")+8]).(agent.Record)
-		if _, err := mem.Do(ctx, "r", name, func(context.Context) (agent.Record, error) { return rec, nil }); err != nil {
+		if _, err := journaltest.Do(ctx, mem, "r", name, func(context.Context) (agent.Record, error) { return rec, nil }); err != nil {
 			t.Fatal(err)
 		}
 	}

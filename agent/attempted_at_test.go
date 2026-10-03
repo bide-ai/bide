@@ -13,13 +13,14 @@ func markerAt(t *testing.T, ms int64) *MemStore {
 	t.Helper()
 	ctx := context.Background()
 	s := NewMemStore()
+	j := mustJournal(s)
 	turn := Message{Role: RoleAssistant, Parts: []Part{ToolUse{ID: "c1", Name: "charge", Args: []byte(`{}`)}}}
-	if _, err := s.Do(ctx, "r", modelStep(0), func(context.Context) (Record, error) {
+	if _, err := j.do(ctx, "r", modelStep(0), func(context.Context) (Record, error) {
 		return Record{Kind: StepModel, Message: &turn}, nil
 	}); err != nil {
 		t.Fatal(err)
 	}
-	if _, err := s.Do(ctx, "r", toolAttemptStep("c1"), func(context.Context) (Record, error) {
+	if _, err := j.do(ctx, "r", toolAttemptStep("c1"), func(context.Context) (Record, error) {
 		return Record{Kind: StepAttempt, ToolUseID: "c1", AttemptedAt: ms}, nil
 	}); err != nil {
 		t.Fatal(err)
@@ -34,7 +35,7 @@ func TestResolveHalt_NonPositiveAttemptedAtIsNoTimestamp(t *testing.T) {
 	ctx := context.Background()
 	now := time.Date(2026, 1, 1, 0, 0, 0, 0, time.UTC)
 	for _, ms := range []int64{0, -1, -now.UnixMilli()} {
-		s := markerAt(t, ms)
+		s := mustJournal(markerAt(t, ms))
 		err := ResolveHalt(ctx, s, "r", "c1", "charged", false,
 			WithMinHaltAge(time.Hour), WithClock(func() time.Time { return now }))
 		if !errors.Is(err, ErrConfig) {
@@ -51,7 +52,7 @@ func TestResolveHalt_NonPositiveAttemptedAtIsNoTimestamp(t *testing.T) {
 func TestResolveHalt_FutureAttemptedAtIsTooYoung(t *testing.T) {
 	ctx := context.Background()
 	now := time.Date(2026, 1, 1, 0, 0, 0, 0, time.UTC)
-	s := markerAt(t, now.Add(24*time.Hour).UnixMilli())
+	s := mustJournal(markerAt(t, now.Add(24*time.Hour).UnixMilli()))
 	err := ResolveHalt(ctx, s, "r", "c1", "charged", false,
 		WithMinHaltAge(time.Minute), WithClock(func() time.Time { return now }))
 	var young *HaltTooYoung
@@ -65,7 +66,7 @@ func TestResolveHalt_FutureAttemptedAtIsTooYoung(t *testing.T) {
 func TestResumeHalt_NonPositiveAttemptedAtIsZero(t *testing.T) {
 	ctx := context.Background()
 	charge := Func("charge", "", Safety{}, func(context.Context, struct{}) (string, error) { return "ok", nil })
-	a := New(NewScriptedModel(), markerAt(t, -1), charge)
+	a := mustNew(NewScriptedModel(), mustJournal(markerAt(t, -1)), WithTools(charge))
 	_, err := a.Run(ctx, "r", "go")
 	var halt *ResumeHalt
 	if !errors.As(err, &halt) {
@@ -76,8 +77,8 @@ func TestResumeHalt_NonPositiveAttemptedAtIsZero(t *testing.T) {
 	}
 
 	// A Step's marker too.
-	s := NewMemStore()
-	if _, err := s.Do(ctx, "r", stepAttemptStep("reserve"), func(context.Context) (Record, error) {
+	s := memJournal()
+	if _, err := s.do(ctx, "r", stepAttemptStep("reserve"), func(context.Context) (Record, error) {
 		return Record{Kind: StepAttempt, ToolUseID: "reserve", AttemptedAt: -1}, nil
 	}); err != nil {
 		t.Fatal(err)
@@ -95,8 +96,8 @@ func TestResumeHalt_NonPositiveAttemptedAtIsZero(t *testing.T) {
 // timestamp is reported as unknown.
 func TestStepHalt_RetrySafeFindsNonPositiveMarker(t *testing.T) {
 	ctx := context.Background()
-	s := NewMemStore()
-	if _, err := s.Do(ctx, "r", stepAttemptStep("reserve"), func(context.Context) (Record, error) {
+	s := memJournal()
+	if _, err := s.do(ctx, "r", stepAttemptStep("reserve"), func(context.Context) (Record, error) {
 		return Record{Kind: StepAttempt, ToolUseID: "reserve", AttemptedAt: -1}, nil
 	}); err != nil {
 		t.Fatal(err)
@@ -116,22 +117,24 @@ func TestStepHalt_RetrySafeFindsNonPositiveMarker(t *testing.T) {
 // just before this driver's claim, so this driver loses the claim.
 type claimRacer struct{ *MemStore }
 
-func (s claimRacer) Do(ctx context.Context, runID, name string, fn func(context.Context) (Record, error)) (Record, error) {
+func (s claimRacer) Insert(ctx context.Context, runID, name string, data []byte) (Entry, bool, error) {
 	if name == toolAttemptStep("c1") {
-		if _, err := s.MemStore.Do(ctx, runID, name, func(context.Context) (Record, error) {
-			return Record{Kind: StepAttempt, ToolUseID: "c1", AttemptedAt: -1, claim: "other"}, nil
-		}); err != nil {
-			return Record{}, err
+		other, err := JournalEntry(name, Record{Kind: StepAttempt, ToolUseID: "c1", AttemptedAt: -1, claim: "other"})
+		if err != nil {
+			return Entry{}, false, err
+		}
+		if _, _, err := s.MemStore.Insert(ctx, runID, name, other); err != nil {
+			return Entry{}, false, err
 		}
 	}
-	return s.MemStore.Do(ctx, runID, name, fn)
+	return s.MemStore.Insert(ctx, runID, name, data)
 }
 
 // A driver that loses the claim to a marker stamped -1 reports the attempt time as unknown.
 func TestResumeHalt_LostClaimToNonPositiveMarker(t *testing.T) {
 	charge := Func("charge", "", Safety{}, func(context.Context, struct{}) (string, error) { return "ok", nil })
 	m := &sagaTurns{turns: [][][3]string{{{"c1", "charge", `{}`}}}}
-	_, err := New(m, claimRacer{NewMemStore()}, charge).Run(context.Background(), "r", "go")
+	_, err := mustNew(m, mustJournal(claimRacer{NewMemStore()}), WithTools(charge)).Run(context.Background(), "r", "go")
 	var halt *ResumeHalt
 	if !errors.As(err, &halt) {
 		t.Fatalf("Run = %v, want *ResumeHalt from the lost claim", err)
@@ -148,7 +151,7 @@ func TestSagaRollbackHalt_NonPositiveMarker(t *testing.T) {
 		func(context.Context, struct{}) (string, error) { return "p", nil },
 		func(context.Context, struct{}, string) error { return nil })
 	book := Func("book", "", Safety{}, func(context.Context, struct{}) (string, error) { return "", errors.New("no seats") })
-	s := NewMemStore()
+	s := memJournal()
 	turn := Message{Role: RoleAssistant, Parts: []Part{
 		ToolUse{ID: "p1", Name: "pay", Args: []byte(`{}`)},
 		ToolUse{ID: "b1", Name: "book", Args: []byte(`{}`)},
@@ -158,11 +161,11 @@ func TestSagaRollbackHalt_NonPositiveMarker(t *testing.T) {
 		toolAttemptStep("p1"): {Kind: StepAttempt, ToolUseID: "p1", AttemptedAt: -1},
 		ToolResultStep("b1"):  {Kind: StepSagaFail, ToolUseID: "b1", Result: []byte(`"no seats"`)},
 	} {
-		if _, err := s.Do(ctx, "r", name, func(context.Context) (Record, error) { return rec, nil }); err != nil {
+		if _, err := s.do(ctx, "r", name, func(context.Context) (Record, error) { return rec, nil }); err != nil {
 			t.Fatal(err)
 		}
 	}
-	_, err := New(&sagaTurns{}, s, pay, book).RunSaga(ctx, "r", "trip")
+	_, err := mustNew(&sagaTurns{}, s, WithTools(pay, book)).RunSaga(ctx, "r", "trip")
 	var aborted *SagaAborted
 	if !errors.As(err, &aborted) {
 		t.Fatalf("RunSaga = %v, want *SagaAborted", err)

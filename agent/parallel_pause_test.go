@@ -49,9 +49,9 @@ func TestParallelTurn_PauseDoesNotCancelASibling(t *testing.T) {
 	ask := Func("ask", "ask the user", Safety{ReadOnly: true}, func(ctx context.Context, _ struct{}) (string, error) {
 		return Interrupt[string](ctx, "confirm", "ok to proceed?")
 	})
-	store := NewMemStore()
+	store := memJournal()
 	m := &turnsModel{turns: [][][2]string{{{"a1", "ask"}, {"s1", "send"}}}}
-	a := New(m, store, ask, send)
+	a := mustNew(m, store, WithTools(ask, send))
 	_, err := a.Run(context.Background(), "r1", "go")
 	var intr *Interrupted
 	if !errors.As(err, &intr) {
@@ -79,7 +79,7 @@ func TestParallelTurn_SagaFailureIsNotMaskedByAPause(t *testing.T) {
 		return "", errors.New("no seats")
 	})
 	m := &turnsModel{turns: [][][2]string{{{"a1", "ask"}, {"b1", "book"}}}}
-	_, err := New(m, NewMemStore(), ask, fail).RunSaga(context.Background(), "r1", "go")
+	_, err := mustNew(m, memJournal(), WithTools(ask, fail)).RunSaga(context.Background(), "r1", "go")
 	var aborted *SagaAborted
 	if !errors.As(err, &aborted) {
 		t.Fatalf("err = %v, want *SagaAborted", err)

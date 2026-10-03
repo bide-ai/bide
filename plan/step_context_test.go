@@ -6,7 +6,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/bide-ai/bide/agent"
+	"github.com/bide-ai/bide/agent/agenttest"
 )
 
 type stepCtxKey struct{}
@@ -66,7 +66,7 @@ func TestStepBodiesReceiveRunContext(t *testing.T) {
 			t.Fatal(err)
 		}
 		expectCancelled(t, started, func(ctx context.Context) error {
-			_, err := flow.Run(ctx, agent.NewMemStore(), "r", 1)
+			_, err := flow.Run(ctx, agenttest.MemJournal(), "r", 1)
 			return err
 		})
 	})
@@ -83,7 +83,7 @@ func TestStepBodiesReceiveRunContext(t *testing.T) {
 			t.Fatal(err)
 		}
 		expectCancelled(t, started, func(ctx context.Context) error {
-			_, err := flow.Run(ctx, agent.NewMemStore(), "r", 1)
+			_, err := flow.Run(ctx, agenttest.MemJournal(), "r", 1)
 			return err
 		})
 	})
@@ -101,7 +101,7 @@ func TestStepBodiesReceiveRunContext(t *testing.T) {
 			t.Fatal(err)
 		}
 		expectCancelled(t, started, func(ctx context.Context) error {
-			_, err := flow.Run(ctx, agent.NewMemStore(), "r", 1)
+			_, err := flow.Run(ctx, agenttest.MemJournal(), "r", 1)
 			return err
 		})
 	})
@@ -121,7 +121,7 @@ func TestRegisteredBodiesReceiveRunContext(t *testing.T) {
 	}
 	run := func(flow *Flow[int, int]) func(ctx context.Context) error {
 		return func(ctx context.Context) error {
-			_, err := flow.Run(ctx, agent.NewMemStore(), "r", 1)
+			_, err := flow.Run(ctx, agenttest.MemJournal(), "r", 1)
 			return err
 		}
 	}

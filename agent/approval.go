@@ -503,13 +503,13 @@ type Decision struct {
 // no-op. The gate counts each approver's first valid decision and ignores the rest, so an
 // invalid record never blocks a valid one. Without WithDecisionCheck, SubmitDecision does not
 // verify: a decision that will not count is recorded and reported by the gate as ignored.
-func SubmitDecision(ctx context.Context, store Durable, d Decision, opts ...ApproveOption) error {
+func SubmitDecision(ctx context.Context, store *Journal, d Decision, opts ...ApproveOption) error {
 	return submitDecision(ctx, store, "SubmitDecision", d, opts)
 }
 
 // protocol:claims end
 
-func submitDecision(ctx context.Context, store Durable, op string, d Decision, opts []ApproveOption) error {
+func submitDecision(ctx context.Context, store *Journal, op string, d Decision, opts []ApproveOption) error {
 	if d.RunID == "" {
 		return fmt.Errorf("%s: empty runID: %w", op, ErrConfig)
 	}
@@ -535,7 +535,7 @@ func submitDecision(ctx context.Context, store Durable, op string, d Decision, o
 			return err
 		}
 	}
-	_, err := store.Do(ctx, d.RunID, name, func(context.Context) (Record, error) {
+	_, err := store.do(ctx, d.RunID, name, func(context.Context) (Record, error) {
 		return Record{Kind: StepApproval, ToolUseID: d.ToolUseID, Approved: d.Approved, ApproverSignature: &ApproverSignature{Approver: d.ApproverID, ApproverAlg: d.Alg, Signature: d.Signature}}, nil
 	})
 	return err
@@ -543,7 +543,7 @@ func submitDecision(ctx context.Context, store Durable, op string, d Decision, o
 
 // checkDecision is WithDecisionCheck's pre-flight: the decision verifies for the recorded
 // call, and the approver has no other valid decision on it (an identical one is fine).
-func checkDecision(ctx context.Context, store Durable, op string, d Decision, name string, verifierFor ApproverVerifierFor) error {
+func checkDecision(ctx context.Context, store *Journal, op string, d Decision, name string, verifierFor ApproverVerifierFor) error {
 	recs, err := store.History(ctx, d.RunID)
 	if err != nil {
 		return fmt.Errorf("%s: load history %s: %w (%w)", op, d.RunID, err, ErrStorage)

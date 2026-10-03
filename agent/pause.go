@@ -132,7 +132,7 @@ func Interrupt[T any](ctx context.Context, name string, prompt any) (T, error) {
 // point name (see Interrupt); then re-invoke Run with the pause's RootRunID to continue.
 // It is idempotent: the first value for a (runID, name) wins. The value survives a crash:
 // it is a journaled step.
-func AnswerInterrupt[T any](ctx context.Context, d Durable, runID, name string, value T) error {
+func AnswerInterrupt[T any](ctx context.Context, d *Journal, runID, name string, value T) error {
 	if runID == "" {
 		return fmt.Errorf("AnswerInterrupt: empty runID: %w", ErrConfig)
 	}
@@ -140,7 +140,7 @@ func AnswerInterrupt[T any](ctx context.Context, d Durable, runID, name string, 
 	if err != nil {
 		return fmt.Errorf("agent: encode interrupt answer for %q: %w (%w)", name, err, ErrConfig)
 	}
-	_, err = d.Do(ctx, runID, interruptStep(name), func(context.Context) (Record, error) {
+	_, err = d.do(ctx, runID, interruptStep(name), func(context.Context) (Record, error) {
 		return Record{Kind: StepValue, Result: b}, nil
 	})
 	return err
@@ -149,7 +149,7 @@ func AnswerInterrupt[T any](ctx context.Context, d Durable, runID, name string, 
 // Resume is the former name of AnswerInterrupt.
 //
 // Deprecated: transitional; renamed by the 1.0 rewrite. Use AnswerInterrupt.
-func Resume[T any](ctx context.Context, d Durable, runID, key string, value T) error {
+func Resume[T any](ctx context.Context, d *Journal, runID, key string, value T) error {
 	return AnswerInterrupt(ctx, d, runID, key, value)
 }
 
@@ -189,7 +189,7 @@ type clockKey struct{}
 // option.
 //
 // Deprecated: transitional; the 1.0 rewrite removes it. The Run API takes the clock as a run
-// option (WithClock); until then, an agent-wide clock is the WithClock option of Build.
+// option (WithClock); until then, an agent-wide clock is the WithClock option of New.
 func ContextWithClock(ctx context.Context, now func() time.Time) context.Context {
 	return context.WithValue(ctx, clockKey{}, now)
 }
@@ -232,7 +232,7 @@ func waitUntil(ctx context.Context, name string, fireAtFrom func(now time.Time) 
 	now := clockFrom(ctx)
 
 	// Journal the wake time once (at-most-once by name), so it is stable across resume and restart.
-	rec, err := d.Do(ctx, runID, timerStep(name), func(context.Context) (Record, error) {
+	rec, err := d.do(ctx, runID, timerStep(name), func(context.Context) (Record, error) {
 		b, err := marshalJournal(fireAtFrom(now()))
 		if err != nil {
 			return Record{}, fmt.Errorf("agent: encode wake time for %q: %w (%w)", name, err, ErrConfig)
@@ -295,7 +295,7 @@ type wakerKey struct{}
 // time on its own schedule. A Waker bound here takes precedence over the agent's.
 //
 // Deprecated: transitional; the 1.0 rewrite removes it. The Run API takes the Waker as a run
-// option (WithWaker); until then, an agent-wide Waker is the WithWaker option of Build.
+// option (WithWaker); until then, an agent-wide Waker is the WithWaker option of New.
 func ContextWithWaker(ctx context.Context, w Waker) context.Context {
 	return context.WithValue(ctx, wakerKey{}, w)
 }
@@ -515,7 +515,7 @@ func Await[T any](ctx context.Context, name string) (T, error) {
 //
 // Signal only records the payload. After delivering, re-invoke Run with the pause's RootRunID
 // to resume the awaiting run: directly, or via a Waker scheduled at the current time.
-func Signal[T any](ctx context.Context, d Durable, runID, name string, payload T) error {
+func Signal[T any](ctx context.Context, d *Journal, runID, name string, payload T) error {
 	if runID == "" {
 		return fmt.Errorf("Signal: empty runID: %w", ErrConfig)
 	}
@@ -523,7 +523,7 @@ func Signal[T any](ctx context.Context, d Durable, runID, name string, payload T
 	if err != nil {
 		return fmt.Errorf("agent: encode signal %q: %w (%w)", name, err, ErrConfig)
 	}
-	_, err = d.Do(ctx, runID, signalStep(name), func(context.Context) (Record, error) {
+	_, err = d.do(ctx, runID, signalStep(name), func(context.Context) (Record, error) {
 		return Record{Kind: StepSignal, Result: b}, nil
 	})
 	return err

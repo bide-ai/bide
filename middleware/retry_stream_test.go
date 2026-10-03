@@ -9,6 +9,7 @@ import (
 	"time"
 
 	"github.com/bide-ai/bide/agent"
+	"github.com/bide-ai/bide/agent/agenttest"
 	"github.com/bide-ai/bide/middleware"
 )
 
@@ -35,7 +36,11 @@ func (m *flakyStreamer) Stream(context.Context, agent.Request) (*agent.Stream, e
 // partial text followed by the full text.
 func TestRetry_StreamedPartialAttemptIsMarkedDiscarded(t *testing.T) {
 	m := &flakyStreamer{}
-	a := agent.New(m, agent.NewMemStore()).Use(middleware.Retry(2, middleware.WithBackoff(time.Millisecond, time.Millisecond)))
+	a := agenttest.MustNew(
+		m,
+		agenttest.MemJournal(),
+		agent.WithMiddleware(middleware.Retry(2, middleware.WithBackoff(time.Millisecond, time.Millisecond))),
+	)
 	as := a.Stream(context.Background(), "r", "q")
 	var rendered strings.Builder
 	for ev := range as.Events() {

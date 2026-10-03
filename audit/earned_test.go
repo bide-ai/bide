@@ -7,6 +7,8 @@ import (
 	"testing"
 
 	"github.com/bide-ai/bide/agent"
+	"github.com/bide-ai/bide/agent/agenttest"
+	"github.com/bide-ai/bide/internal/journaltest"
 )
 
 func mustSign(t *testing.T, g Grant, s Signer) SignedGrant {
@@ -42,7 +44,7 @@ func TestEarnedAuthority_Ladder(t *testing.T) {
 		}
 	}
 
-	ea, err := NewEarnedAuthority(ctx, []int{2, 5, 10}, 3, root, signer, "exec", agent.NewMemStore(), "ledger")
+	ea, err := NewEarnedAuthority(ctx, []int{2, 5, 10}, 3, root, signer, "exec", agenttest.MemJournal(), "ledger")
 	if err != nil {
 		t.Fatalf("NewEarnedAuthority: %v", err)
 	}
@@ -95,7 +97,7 @@ func TestEarnedAuthority_CeilingEnforced(t *testing.T) {
 	signer := Ed25519Signer{Priv: priv}
 	root := mustSign(t, Grant{ID: "root", Subject: "desk", Scope: map[string]string{"limit": "10"}}, signer)
 
-	if _, err := NewEarnedAuthority(context.Background(), []int{2, 20}, 3, root, signer, "exec", agent.NewMemStore(), "ledger"); err == nil {
+	if _, err := NewEarnedAuthority(context.Background(), []int{2, 20}, 3, root, signer, "exec", agenttest.MemJournal(), "ledger"); err == nil {
 		t.Fatal("expected an error: a ladder rung (20) exceeds the root ceiling (10)")
 	}
 }
@@ -103,7 +105,7 @@ func TestEarnedAuthority_CeilingEnforced(t *testing.T) {
 // earnedFixture is a controller over ledger run "ledger" that has issued a baseline grant, promoted
 // it (high), and demoted it again, with the log key that signs ledger heads.
 type earnedFixture struct {
-	store          agent.Durable
+	store          *agent.Journal
 	logPub         ed25519.PublicKey
 	logPriv        ed25519.PrivateKey
 	high, demoted  SignedGrant
@@ -119,7 +121,7 @@ func newEarnedFixture(t *testing.T) earnedFixture {
 	_, priv, _ := ed25519.GenerateKey(rand.Reader)
 	signer := Ed25519Signer{Priv: priv}
 	root := mustSign(t, Grant{ID: "root", Issuer: "corp", Subject: "desk", Scope: map[string]string{"limit": "10"}}, signer)
-	f.store = agent.NewMemStore()
+	f.store = agenttest.MemJournal()
 	ea, err := NewEarnedAuthority(ctx, []int{2, 5, 10}, 1, root, signer, "exec", f.store, "ledger")
 	if err != nil {
 		t.Fatal(err)
@@ -222,7 +224,7 @@ func TestEarnedAuthority_StaleHeadIsNotCurrent(t *testing.T) {
 	// A run holding the same records as the ledger has the same roots under another run id.
 	recs, _ := f.store.History(ctx, "ledger")
 	for _, r := range recs[:f.head2.Size] {
-		if _, err := f.store.Do(ctx, "copy", r.Name, func(context.Context) (agent.Record, error) { return r, nil }); err != nil {
+		if _, err := journaltest.Do(ctx, f.store, "copy", r.Name, func(context.Context) (agent.Record, error) { return r, nil }); err != nil {
 			t.Fatal(err)
 		}
 	}

@@ -21,7 +21,7 @@ func mofnDSTPolicy() *ApprovalPolicy {
 }
 
 // mofnHistory returns the full journal for runID.
-func mofnHistory(t *testing.T, store Durable, runID string) []Record {
+func mofnHistory(t *testing.T, store *Journal, runID string) []Record {
 	t.Helper()
 	recs, err := store.History(context.Background(), runID)
 	if err != nil {
@@ -31,7 +31,7 @@ func mofnHistory(t *testing.T, store Durable, runID string) []Record {
 }
 
 // countSteps reports how many journal records for runID are named name.
-func countSteps(t *testing.T, store Durable, runID, name string) int {
+func countSteps(t *testing.T, store *Journal, runID, name string) int {
 	t.Helper()
 	n := 0
 	for _, r := range mofnHistory(t, store, runID) {
@@ -43,7 +43,7 @@ func countSteps(t *testing.T, store Durable, runID, name string) int {
 }
 
 // countDecisions reports how many decision records approver has on toolUseID.
-func countDecisions(t *testing.T, store Durable, runID, toolUseID, approver string) int {
+func countDecisions(t *testing.T, store *Journal, runID, toolUseID, approver string) int {
 	t.Helper()
 	n := 0
 	for _, r := range mofnHistory(t, store, runID) {
@@ -56,7 +56,7 @@ func countDecisions(t *testing.T, store Durable, runID, toolUseID, approver stri
 
 // journaledTally reads the final approval-tally step back from the journal. Step returns the
 // recorded value without running fn, so a missing record fails the test.
-func journaledTally(t *testing.T, store Durable, runID, toolUseID string) ApprovalTally {
+func journaledTally(t *testing.T, store *Journal, runID, toolUseID string) ApprovalTally {
 	t.Helper()
 	got, err := step(context.Background(), store, runID, ApprovalTallyStep(toolUseID), func(context.Context) (ApprovalTally, error) {
 		return ApprovalTally{}, errors.New("approval tally not journaled")
@@ -72,7 +72,7 @@ func journaledTally(t *testing.T, store Durable, runID, toolUseID string) Approv
 // distinct decision is its own record; an identical resubmission is not.
 func TestMofnDST_AtMostOncePerApprover(t *testing.T) {
 	ctx := context.Background()
-	store := NewMemStore()
+	store := memJournal()
 	pol := mofnDSTPolicy()
 	vf := fakeVerifiers(opsFinRisk...)
 	var charged int
@@ -131,7 +131,7 @@ func TestMofnDST_AtMostOncePerApprover(t *testing.T) {
 // journaled tally is authoritative, so the outcome holds even if the verifier set later
 // changes and would no longer verify the recorded signatures.
 func TestMofnDST_DeterministicAcrossResume(t *testing.T) {
-	store := NewMemStore()
+	store := memJournal()
 	pol := mofnDSTPolicy()
 	vf := fakeVerifiers(opsFinRisk...)
 	var charged int
@@ -201,7 +201,7 @@ func TestMofnDST_DeterministicAcrossResume(t *testing.T) {
 // A decision landing between two resumes: the intermediate pause reports the exact running
 // tally and journals nothing final; the next decision tips the gate and the run proceeds.
 func TestMofnDST_InterleavedDecisions(t *testing.T) {
-	store := NewMemStore()
+	store := memJournal()
 	pol := mofnDSTPolicy()
 	vf := fakeVerifiers(opsFinRisk...)
 	var charged int
@@ -252,9 +252,14 @@ func TestMofnDST_CrashSweepAfterQuorum(t *testing.T) {
 	pol := mofnDSTPolicy()
 	vf := fakeVerifiers(opsFinRisk...)
 	wantTally := counts{Need: 2, Approved: 2, ApprovedBy: []string{"ops", "finance"}, Pending: []string{"risk"}}
-	resume := func(store Durable, charged *int) error {
+	resume := func(store *Journal, charged *int) error {
 		charge := &countingTool{name: "charge", approval: pol, calls: charged}
-		a := New(&scriptModel{turns: [][]Emit{textTurn("done")}}, store, charge).WithApproverVerifiers(vf)
+		a := mustNew(
+			&scriptModel{turns: [][]Emit{textTurn("done")}},
+			store,
+			WithTools(charge),
+			WithApproverVerifiers(vf),
+		)
 		_, err := a.Run(context.Background(), "r1", "pay")
 		return err
 	}
@@ -262,16 +267,17 @@ func TestMofnDST_CrashSweepAfterQuorum(t *testing.T) {
 	haltSeen := false
 	for crashAt := 1; crashAt <= 32; crashAt++ {
 		mem := NewMemStore()
+		j := mustJournal(mem)
 		var charged int
-		_, err := mofnRun(mem, "r1", true, pol, vf, &charged)
+		_, err := mofnRun(j, "r1", true, pol, vf, &charged)
 		wantPending(t, err, counts{Need: 2, Pending: []string{"ops", "finance", "risk"}})
-		approveAs(t, mem, "r1", "c1", "ops", true)
-		approveAs(t, mem, "r1", "c1", "finance", true)
+		approveAs(t, j, "r1", "c1", "ops", true)
+		approveAs(t, j, "r1", "c1", "finance", true)
 
-		err = resume(crashJournal(mem, crashAt), &charged)
+		err = resume(crashJournal(j, crashAt), &charged)
 		crashed := errors.Is(err, errCrash)
 		for errors.Is(err, errCrash) {
-			err = resume(mem, &charged)
+			err = resume(j, &charged)
 		}
 
 		if charged > 1 {
@@ -288,14 +294,14 @@ func TestMofnDST_CrashSweepAfterQuorum(t *testing.T) {
 		default:
 			t.Fatalf("crashAt=%d: unexpected terminal error: %v", crashAt, err)
 		}
-		if n := countSteps(t, mem, "r1", "approval-tally:c1"); n != 1 {
+		if n := countSteps(t, j, "r1", "approval-tally:c1"); n != 1 {
 			t.Fatalf("crashAt=%d: %d approval-tally:c1 records, want exactly 1", crashAt, n)
 		}
-		if got := countsOf(journaledTally(t, mem, "r1", "c1")); !reflect.DeepEqual(got, wantTally) {
+		if got := countsOf(journaledTally(t, j, "r1", "c1")); !reflect.DeepEqual(got, wantTally) {
 			t.Fatalf("crashAt=%d: journaled tally = %+v, want %+v", crashAt, got, wantTally)
 		}
 		for _, id := range []string{"ops", "finance"} {
-			if n := countDecisions(t, mem, "r1", "c1", id); n != 1 {
+			if n := countDecisions(t, j, "r1", "c1", id); n != 1 {
 				t.Fatalf("crashAt=%d: %d decision records by %s, want 1", crashAt, n, id)
 			}
 		}

@@ -77,8 +77,8 @@ func (c *crashStore) Load(ctx context.Context, runID string, after int64) iter.S
 
 // crashJournal returns a Journal, a new process, over mem's store behind a crashStore that crashes
 // at its crashAt-th write.
-func crashJournal(mem Durable, crashAt int) Durable {
-	return newJournal(&crashStore{inner: mem.(Store), crashAt: crashAt})
+func crashJournal(mem *Journal, crashAt int) *Journal {
+	return newJournal(&crashStore{inner: mem.Store(), crashAt: crashAt})
 }
 
 // dstModel: call charge until there's a tool result in the conversation, then answer.
@@ -118,14 +118,19 @@ type chargeTool struct{ count *int }
 func (chargeTool) Name() string                { return "charge" }
 func (chargeTool) Description() string         { return "" }
 func (chargeTool) Safety() Safety              { return Safety{} }
-func (chargeTool) ArgsSchema() json.RawMessage { return nil }
+func (chargeTool) ArgsSchema() json.RawMessage { return json.RawMessage(`{"type":"object"}`) }
 func (t chargeTool) Call(context.Context, json.RawMessage) (json.RawMessage, error) {
 	*t.count++ // the real-world side effect (the "charge")
 	return json.RawMessage(`{"charged":true}`), nil
 }
 
-func runOnce(mem Durable, tool chargeTool, afterAnswer *int, crashAt int) error {
-	a := New(dstModel{afterAnswer: afterAnswer}, crashJournal(mem, crashAt), tool).SetMaxConcurrency(1)
+func runOnce(mem *Journal, tool chargeTool, afterAnswer *int, crashAt int) error {
+	a := mustNew(
+		dstModel{afterAnswer: afterAnswer},
+		crashJournal(mem, crashAt),
+		WithTools(tool),
+		WithMaxConcurrency(1),
+	)
 	out, err := a.Run(context.Background(), "dst", "charge me")
 	if err == nil && textOf(out) != "done" {
 		return fmt.Errorf("completed run answered %q, want done", textOf(out))
@@ -135,7 +140,7 @@ func runOnce(mem Durable, tool chargeTool, afterAnswer *int, crashAt int) error 
 
 // wantFinished checks the invariants of a run that ended: no model call after its final
 // answer was recorded, and a completed run is marked complete.
-func wantFinished(t *testing.T, mem Durable, err error, afterAnswer int, schedule string) {
+func wantFinished(t *testing.T, mem *Journal, err error, afterAnswer int, schedule string) {
 	t.Helper()
 	if afterAnswer != 0 {
 		t.Fatalf("%s: the model was called %d times after the final answer was recorded", schedule, afterAnswer)
@@ -154,7 +159,7 @@ func TestDST_NoDoubleFire_CrashSweep(t *testing.T) {
 	haltSeen := false
 	for crashAt := 1; crashAt <= 32; crashAt++ {
 		var count, afterAnswer int
-		mem := NewMemStore()
+		mem := memJournal()
 		tool := chargeTool{count: &count}
 
 		err := runOnce(mem, tool, &afterAnswer, crashAt)
@@ -194,7 +199,7 @@ func TestDST_NoDoubleFire_Randomized(t *testing.T) {
 	for seed := uint64(1); seed <= 500; seed++ {
 		rng := rand.New(rand.NewPCG(seed, 0x9E3779B97F4A7C15))
 		var count, afterAnswer int
-		mem := NewMemStore()
+		mem := memJournal()
 		tool := chargeTool{count: &count}
 
 		var err error

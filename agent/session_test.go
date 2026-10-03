@@ -10,7 +10,7 @@ func TestSession_MultiTurnCarriesHistory(t *testing.T) {
 	var got Request
 	inner := &scriptModel{turns: [][]Emit{textTurn("hello"), textTurn("as I said, hello")}}
 	m := &captureModel{inner: inner, got: &got}
-	a := New(m, NewMemStore())
+	a := mustNew(m, memJournal())
 
 	s, err := a.Session(context.Background(), "conv")
 	if err != nil {
@@ -55,9 +55,9 @@ func TestSession_MultiTurnCarriesHistory(t *testing.T) {
 
 // A session reloaded from the same store rebuilds the transcript and continues.
 func TestSession_DurableReloadContinues(t *testing.T) {
-	store := NewMemStore()
+	store := memJournal()
 	m := &scriptModel{turns: [][]Emit{textTurn("a1"), textTurn("a2"), textTurn("a3")}}
-	a := New(m, store)
+	a := mustNew(m, store)
 
 	s1, err := a.Session(context.Background(), "conv")
 	if err != nil {
@@ -103,7 +103,7 @@ func TestSession_ToolTurnThenPlainHistory(t *testing.T) {
 	m := &captureModel{inner: inner, got: &got}
 	var calls int
 	tool := &countingTool{name: "lookup", safety: Safety{ReadOnly: true}, calls: &calls}
-	a := New(m, NewMemStore(), tool)
+	a := mustNew(m, memJournal(), WithTools(tool))
 
 	s, _ := a.Session(context.Background(), "c")
 	if _, err := s.Send(context.Background(), "look"); err != nil {

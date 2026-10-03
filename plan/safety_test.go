@@ -7,6 +7,7 @@ import (
 	"testing"
 
 	"github.com/bide-ai/bide/agent"
+	"github.com/bide-ai/bide/agent/agenttest"
 )
 
 // Safety opt-in on the plan surface: a node marked ReadOnly/Idempotent RE-RUNS its
@@ -49,12 +50,13 @@ func buildUnmarkedReadFlow(reads *int, value int) (*Flow[int, int], error) {
 // lost (a node that is not retry-safe also leaves its attempt marker persisted). That is the
 // exact ambiguous-crash window this feature changes. It returns the shared journal
 // primed to that state and the reads count at the crash.
-func findEntryResultCrash(t *testing.T, build func(reads *int) (*Flow[int, int], error)) (agent.Durable, int) {
+func findEntryResultCrash(t *testing.T, build func(reads *int) (*Flow[int, int], error)) (*agent.Journal, int) {
 	t.Helper()
 	for crashAt := 1; crashAt <= 32; crashAt++ {
 		reads := 0
 		mem := agent.NewMemStore()
-		store := &crashFlowStore{inner: mem, crashAt: crashAt}
+		j := agenttest.MustJournal(mem)
+		store := agenttest.MustJournal(&crashFlowStore{inner: j, crashAt: crashAt})
 		flow, err := build(&reads)
 		if err != nil {
 			t.Fatalf("Build: %v", err)
@@ -66,12 +68,12 @@ func findEntryResultCrash(t *testing.T, build func(reads *int) (*Flow[int, int],
 		// The crash landed in the window iff the body ran but the journal holds no
 		// node:read result. A node that is not retry-safe also holds its attempt marker
 		// then (its claim precedes the body); a retry-safe node writes none.
-		recs, hErr := mem.History(context.Background(), "safety")
+		recs, hErr := j.History(context.Background(), "safety")
 		if hErr != nil {
 			t.Fatalf("History: %v", hErr)
 		}
 		if !hasRecord(recs, "node:read") && reads >= 1 {
-			return mem, reads
+			return j, reads
 		}
 	}
 	t.Fatal("no crash point produced the entry-result ambiguous window")
@@ -170,7 +172,7 @@ type safetyTool struct {
 
 func (s safetyTool) Name() string                { return "safety-tool" }
 func (s safetyTool) Description() string         { return "test tool" }
-func (s safetyTool) ArgsSchema() json.RawMessage { return nil }
+func (s safetyTool) ArgsSchema() json.RawMessage { return json.RawMessage(`{"type":"object"}`) }
 func (s safetyTool) Safety() agent.Safety        { return s.safety }
 func (s safetyTool) Call(_ context.Context, _ json.RawMessage) (json.RawMessage, error) {
 	*s.calls++
@@ -187,11 +189,12 @@ func buildToolFlow(t agent.Tool) (*Flow[int, int], error) {
 
 // findToolResultCrash is findEntryResultCrash for the Tool flow: it sweeps for the
 // crash landing on the "call" node's result write.
-func findToolResultCrash(t *testing.T, tool safetyTool) agent.Durable {
+func findToolResultCrash(t *testing.T, tool safetyTool) *agent.Journal {
 	t.Helper()
 	for crashAt := 1; crashAt <= 32; crashAt++ {
 		mem := agent.NewMemStore()
-		store := &crashFlowStore{inner: mem, crashAt: crashAt}
+		j := agenttest.MustJournal(mem)
+		store := agenttest.MustJournal(&crashFlowStore{inner: j, crashAt: crashAt})
 		flow, err := buildToolFlow(tool)
 		if err != nil {
 			t.Fatalf("Build: %v", err)
@@ -200,12 +203,12 @@ func findToolResultCrash(t *testing.T, tool safetyTool) agent.Durable {
 		if !errors.Is(err, errCrash) {
 			continue
 		}
-		recs, hErr := mem.History(context.Background(), "tool")
+		recs, hErr := j.History(context.Background(), "tool")
 		if hErr != nil {
 			t.Fatalf("History: %v", hErr)
 		}
 		if !hasRecord(recs, "node:call") && *tool.calls >= 1 {
-			return mem
+			return j
 		}
 	}
 	t.Fatal("no crash point produced the tool-result ambiguous window")
@@ -273,11 +276,12 @@ func TestSafety_ExplicitOptionOverridesToolSafety(t *testing.T) {
 	calls := 0
 	tool := safetyTool{safety: agent.Safety{}, calls: &calls, value: 5}
 	// Sweep with the override in place so the built flow carries ReadOnly.
-	var mem agent.Durable
+	var mem *agent.Journal
 	for crashAt := 1; crashAt <= 32; crashAt++ {
 		calls = 0
 		m := agent.NewMemStore()
-		store := &crashFlowStore{inner: m, crashAt: crashAt}
+		j := agenttest.MustJournal(m)
+		store := agenttest.MustJournal(&crashFlowStore{inner: j, crashAt: crashAt})
 		b := New[int, int]("tool-flow")
 		b.Tool[int, int]("call", tool, ReadOnly())
 		flow, err := b.Build()
@@ -288,9 +292,9 @@ func TestSafety_ExplicitOptionOverridesToolSafety(t *testing.T) {
 		if !errors.Is(err, errCrash) {
 			continue
 		}
-		recs, _ := m.History(context.Background(), "override")
+		recs, _ := j.History(context.Background(), "override")
 		if !hasRecord(recs, "node:call") && calls >= 1 {
-			mem = m
+			mem = j
 			break
 		}
 	}

@@ -34,7 +34,7 @@ func sharedKey() (ed25519.PublicKey, ed25519.PrivateKey) {
 }
 
 // signAs records a decision for approverID signed with priv, over the recorded call.
-func signAs(t *testing.T, store Durable, runID, toolUseID, approverID string, priv ed25519.PrivateKey) {
+func signAs(t *testing.T, store *Journal, runID, toolUseID, approverID string, priv ed25519.PrivateKey) {
 	t.Helper()
 	sig := ed25519.Sign(priv, ApprovalDecisionBytes(subjectOf(t, store, runID, toolUseID), approverID, true))
 	if err := SubmitDecision(context.Background(), store, Decision{RunID: runID, ToolUseID: toolUseID, ApproverID: approverID, Approved: true, Alg: "ed25519", Signature: sig}); err != nil {
@@ -46,7 +46,7 @@ func signAs(t *testing.T, store Durable, runID, toolUseID, approverID string, pr
 // two seats for one person. The holder of that key signs as both and meets a 2-of-2 quorum
 // alone. The gate must refuse such a policy with ErrConfig and never run the tool.
 func TestMofn_SharedKeyIsOneSeat(t *testing.T) {
-	store := NewMemStore()
+	store := memJournal()
 	pub, priv := sharedKey()
 	pol := &ApprovalPolicy{Need: 2, Approvers: []string{"a1", "a2"}}
 	vf := func(id string) (ApproverVerifier, bool) {
@@ -164,7 +164,7 @@ func TestTallyApprovals_SharedKeyNeverCounts(t *testing.T) {
 // seats of a 2-of-2 excluded the quorum is unreachable, so the gate denies (fails closed) and
 // journals a tally naming them as Excluded.
 func TestMofn_SharedKeyAfterCheckNeverCounts(t *testing.T) {
-	store := NewMemStore()
+	store := memJournal()
 	pol := &ApprovalPolicy{Need: 2, Approvers: []string{"a1", "a2"}}
 	calls := map[string]int{}
 	vf := func(id string) (ApproverVerifier, bool) {
@@ -200,7 +200,7 @@ func TestMofn_SharedKeyAfterCheckNeverCounts(t *testing.T) {
 // The check runs on every evaluation: a resolver that moves a second approver onto the first
 // one's key between tally rounds is refused on the next round.
 func TestMofn_SharedKeyBetweenRounds(t *testing.T) {
-	store := NewMemStore()
+	store := memJournal()
 	pol := &ApprovalPolicy{Need: 2, Approvers: []string{"a1", "a2", "a3"}}
 	var charged int
 	_, err := mofnRun(store, "r1", true, pol, fakeVerifiers("a1", "a2", "a3"), &charged)
@@ -267,7 +267,7 @@ func TestMofn_TypedNilVerifierRefused(t *testing.T) {
 			t.Fatalf("tally = %+v checks = %+v, want a1's record not counted", tally, checks)
 		}
 	})
-	store := NewMemStore()
+	store := memJournal()
 	var charged int
 	noPanic(t, "the gate", func() {
 		_, err := mofnRun(store, "r1", true, &pol, vf, &charged)
@@ -312,7 +312,7 @@ func TestTallyApprovals_UnreachableExcludesSharedSeats(t *testing.T) {
 // the adversarial review of #109; it asserts the behaviour rather than a fix, by decision.
 func TestMofn_RecordedTallyIsReusedNotRecounted(t *testing.T) {
 	ctx := context.Background()
-	store := NewMemStore()
+	store := memJournal()
 	pol := &ApprovalPolicy{Need: 2, Approvers: []string{"a1", "a2"}}
 	var charged int
 	if _, err := mofnRun(store, "r1", true, pol, fakeVerifiers("a1", "a2"), &charged); err == nil {

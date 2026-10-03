@@ -51,7 +51,7 @@ func (describedScript) Describe() ModelInfo {
 }
 
 // modelRecords returns the StepModel records of run runID.
-func modelRecords(t *testing.T, store Durable, runID string) []Record {
+func modelRecords(t *testing.T, store *Journal, runID string) []Record {
 	t.Helper()
 	recs, err := store.History(context.Background(), runID)
 	if err != nil {
@@ -76,7 +76,7 @@ func TestModelCall_ForeignCallIsRefused(t *testing.T) {
 			return next(ctx, ModelCall{Request: call.Request, Model: call.Model, RunID: call.RunID, Turn: call.Turn})
 		}
 	}
-	_, err := New(m, NewMemStore()).Use(fresh).Run(context.Background(), "r", "go")
+	_, err := mustNew(m, memJournal(), WithMiddleware(fresh)).Run(context.Background(), "r", "go")
 	if !errors.Is(err, ErrConfig) {
 		t.Fatalf("err = %v, want ErrConfig", err)
 	}
@@ -89,7 +89,7 @@ func TestModelCall_ForeignCallIsRefused(t *testing.T) {
 			return next(ctx, call)
 		}
 	}
-	if _, err := New(m, NewMemStore()).Use(nilModel).Run(context.Background(), "r", "go"); !errors.Is(err, ErrConfig) {
+	if _, err := mustNew(m, memJournal(), WithMiddleware(nilModel)).Run(context.Background(), "r", "go"); !errors.Is(err, ErrConfig) {
 		t.Fatalf("a call retargeted to a nil Model: err = %v, want ErrConfig", err)
 	}
 }
@@ -109,7 +109,7 @@ func TestModelCall_MiddlewareCannotHideSpend(t *testing.T) {
 			return next(ctx, call)
 		}
 	}
-	res, err := New(m, NewMemStore()).Use(twiceMW).RunResult(context.Background(), "r", "go")
+	res, err := mustNew(m, memJournal(), WithMiddleware(twiceMW)).RunResult(context.Background(), "r", "go")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -197,8 +197,8 @@ func TestModelResponse_BuiltByMiddleware(t *testing.T) {
 		}
 	}
 	text := Message{Role: RoleAssistant, Parts: []Part{Text{Text: "built"}}}
-	store := NewMemStore()
-	if _, err := New(&scriptModel{}, store).Use(build(ModelResponse{Message: text})).Run(context.Background(), "r", "go"); err != nil {
+	store := memJournal()
+	if _, err := mustNew(&scriptModel{}, store, WithMiddleware(build(ModelResponse{Message: text}))).Run(context.Background(), "r", "go"); err != nil {
 		t.Fatal(err)
 	}
 	recs := modelRecords(t, store, "r")
@@ -211,7 +211,11 @@ func TestModelResponse_BuiltByMiddleware(t *testing.T) {
 		FinishToolUse:  ErrStreamProtocol, // no tool call
 		"invented":     ErrStreamProtocol,
 	} {
-		_, err := New(&scriptModel{}, NewMemStore()).Use(build(ModelResponse{Message: text, Finish: reason})).Run(context.Background(), "r", "go")
+		_, err := mustNew(
+			&scriptModel{},
+			memJournal(),
+			WithMiddleware(build(ModelResponse{Message: text, Finish: reason})),
+		).Run(context.Background(), "r", "go")
 		if !errors.Is(err, want) {
 			t.Errorf("Finish %q: err = %v, want %v", reason, err, want)
 		}
@@ -229,7 +233,7 @@ func TestModelResponse_BuiltByMiddleware(t *testing.T) {
 		}
 	}
 	m := &scriptModel{turns: [][]Emit{textTurn("done")}}
-	if _, err := New(m, NewMemStore(), tool).Use(stopWithCall).Run(context.Background(), "r", "go"); err != nil {
+	if _, err := mustNew(m, memJournal(), WithTools(tool), WithMiddleware(stopWithCall)).Run(context.Background(), "r", "go"); err != nil {
 		t.Fatal(err)
 	}
 	if calls != 1 {
@@ -256,8 +260,8 @@ func TestModelRecord_JournalsPerTurnDigests(t *testing.T) {
 			return next(ctx, call)
 		}
 	}
-	store := NewMemStore()
-	if _, err := New(m, store, tool).WithSystemPrompt("OPERATOR").Use(amend).Run(context.Background(), "r", "go"); err != nil {
+	store := memJournal()
+	if _, err := must(mustNew(m, store, WithTools(tool), WithSystemPrompt("OPERATOR")).With(WithMiddleware(amend))).Run(context.Background(), "r", "go"); err != nil {
 		t.Fatal(err)
 	}
 	recs := modelRecords(t, store, "r")
@@ -323,8 +327,8 @@ func TestReplay_ReproducesFinishAndSpend(t *testing.T) {
 		{{Event: ToolCallDelta{Index: 0, ID: "c1", Name: "lookup", ArgsFragment: json.RawMessage(`{}`)}}, {Event: Finish{Reason: FinishToolUse, Raw: "tool_calls", Usage: billed}}},
 		finishTurn("done", FinishStop, "end_turn", billed),
 	}}
-	src := NewMemStore()
-	orig, err := New(m, src, tool).Use(retryOnceMW).RunResult(context.Background(), "r", "go")
+	src := memJournal()
+	orig, err := mustNew(m, src, WithTools(tool), WithMiddleware(retryOnceMW)).RunResult(context.Background(), "r", "go")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -332,8 +336,8 @@ func TestReplay_ReproducesFinishAndSpend(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	dst := NewMemStore()
-	again, err := New(rm, dst, tool).RunResult(context.Background(), "r", "go")
+	dst := memJournal()
+	again, err := mustNew(rm, dst, WithTools(tool)).RunResult(context.Background(), "r", "go")
 	if err != nil {
 		t.Fatal(err)
 	}

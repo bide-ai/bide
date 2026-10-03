@@ -35,7 +35,7 @@ import (
 // middleware in the replaying agent that retries such a failure moves on to the next recorded
 // response instead. This is only possible because the durable substrate records
 // a complete, replayable history in the first place.
-func Replay(ctx context.Context, source Durable, runID string) (Model, error) {
+func Replay(ctx context.Context, source *Journal, runID string) (Model, error) {
 	recs, err := source.History(ctx, runID)
 	if err != nil {
 		return nil, err

@@ -6,6 +6,7 @@ import (
 	"testing"
 
 	"github.com/bide-ai/bide/agent"
+	"github.com/bide-ai/bide/agent/agenttest"
 	"github.com/bide-ai/bide/govern"
 )
 
@@ -23,7 +24,11 @@ func composite(name string, tools ...agent.Tool) agent.Tool {
 
 func runOnce(t *testing.T, tool agent.Tool) {
 	t.Helper()
-	a := agent.New(agent.NewScriptedModel(agent.ToolTurn("c1", tool.Name(), `{}`), agent.TextTurn("done")), agent.NewMemStore(), tool)
+	a := agenttest.MustNew(
+		agent.NewScriptedModel(agent.ToolTurn("c1", tool.Name(), `{}`), agent.TextTurn("done")),
+		agenttest.MemJournal(),
+		agent.WithTools(tool),
+	)
 	if _, err := a.Run(context.Background(), "r", "go"); err != nil {
 		t.Fatal(err)
 	}
@@ -141,7 +146,7 @@ func TestEventTool_ParallelFanOutInOneCall(t *testing.T) {
 			second: task(second, firstDone, nil),
 		}
 		// A fresh journal each time the call runs, so the re-run runs both tasks again.
-		_, err := agent.Parallel(ctx, agent.NewMemStore(), "fan", []agent.Task[bool]{
+		_, err := agent.Parallel(ctx, agenttest.MemJournal(), "fan", []agent.Task[bool]{
 			{Name: "a", Fn: fnFor[incA], Safety: agent.Safety{Idempotent: true}},
 			{Name: "b", Fn: fnFor[incB], Safety: agent.Safety{Idempotent: true}}})
 		if err != nil {

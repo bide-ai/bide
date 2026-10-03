@@ -14,8 +14,10 @@ import (
 	"testing"
 
 	"github.com/bide-ai/bide/agent"
+	"github.com/bide-ai/bide/agent/agenttest"
 	"github.com/bide-ai/bide/audit"
 	"github.com/bide-ai/bide/govern"
+	"github.com/bide-ai/bide/internal/journaltest"
 	gsm "github.com/blackwell-systems/gsm"
 )
 
@@ -58,7 +60,7 @@ func TestVerifyConvergenceCLI(t *testing.T) {
 	policyBytes, _ := r.PolicyBytes()
 
 	// Anchor the policy and its convergence certificate, then sign a tree head and prove both.
-	store := agent.NewMemStore()
+	store := agenttest.MemJournal()
 	const runID = "run1"
 	if _, err := audit.RecordPolicy(ctx, store, runID, policyBytes, digest); err != nil {
 		t.Fatalf("RecordPolicy: %v", err)
@@ -167,7 +169,7 @@ func writeJSON(t *testing.T, path string, v any) {
 func TestVerifyRunCLI(t *testing.T) {
 	ctx := context.Background()
 	dir := t.TempDir()
-	store := agent.NewMemStore()
+	store := agenttest.MemJournal()
 	const runID = "run1"
 
 	// A real convergent policy, anchored with its certificate, exercised by one governed action.
@@ -196,7 +198,7 @@ func TestVerifyRunCLI(t *testing.T) {
 	}
 	// A governed-action leaf: a completed tool call whose result embeds the policy digest, as
 	// an attested govern.EventTool journals.
-	if _, err := store.Do(ctx, runID, "action", func(context.Context) (agent.Record, error) {
+	if _, err := journaltest.Do(ctx, store, runID, "action", func(context.Context) (agent.Record, error) {
 		return agent.Record{
 			Kind:      agent.StepToolResult,
 			ToolUseID: "call_1",
@@ -258,7 +260,7 @@ func TestVerifyRunCLI(t *testing.T) {
 func TestVerifyQuorumCLI(t *testing.T) {
 	ctx := context.Background()
 	dir := t.TempDir()
-	store := agent.NewMemStore()
+	store := agenttest.MemJournal()
 	const runID = "run1"
 
 	// Three voters, two agree on "approve"; k = 2. govern.Quorum records each vote and the tally
@@ -335,7 +337,7 @@ func TestVerifyQuorumCLI(t *testing.T) {
 func TestVerifyQuorumCLI_TieIsNotAgreement(t *testing.T) {
 	ctx := context.Background()
 	dir := t.TempDir()
-	store := agent.NewMemStore()
+	store := agenttest.MemJournal()
 	const runID = "run1"
 	decide := func(v string) func(context.Context) (string, error) {
 		return func(context.Context) (string, error) { return v, nil }

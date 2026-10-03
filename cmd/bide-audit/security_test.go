@@ -13,7 +13,9 @@ import (
 	"testing"
 
 	"github.com/bide-ai/bide/agent"
+	"github.com/bide-ai/bide/agent/agenttest"
 	"github.com/bide-ai/bide/audit"
+	"github.com/bide-ai/bide/internal/journaltest"
 )
 
 // buildCLI builds the bide-audit binary into dir and returns its path.
@@ -46,8 +48,8 @@ func TestVerifyAbsentCLI_RejectsCrossKindForgery(t *testing.T) {
 	ctx := context.Background()
 	dir := t.TempDir()
 	pub, priv, _ := ed25519.GenerateKey(rand.Reader)
-	store := agent.NewMemStore()
-	if _, err := store.Do(ctx, "r", "charge", func(context.Context) (agent.Record, error) {
+	store := agenttest.MemJournal()
+	if _, err := journaltest.Do(ctx, store, "r", "charge", func(context.Context) (agent.Record, error) {
 		return agent.Record{Kind: agent.StepToolResult, ToolUseID: "charge", Result: json.RawMessage(`{"policy_digest":"EVIL"}`)}, nil
 	}); err != nil {
 		t.Fatal(err)
@@ -97,8 +99,8 @@ func TestCLI_ShortPublicKeyExitsFour(t *testing.T) {
 
 	// An approver key of the wrong length is refused the same way.
 	ctx := context.Background()
-	store := agent.NewMemStore()
-	if _, err := store.Do(ctx, "run1", "pay", func(context.Context) (agent.Record, error) {
+	store := agenttest.MemJournal()
+	if _, err := journaltest.Do(ctx, store, "run1", "pay", func(context.Context) (agent.Record, error) {
 		return agent.Record{Kind: agent.StepToolResult, ToolUseID: "c1", Result: json.RawMessage(`1`)}, nil
 	}); err != nil {
 		t.Fatal(err)
@@ -123,8 +125,8 @@ func TestCLI_ShortPublicKeyExitsFour(t *testing.T) {
 func TestCLI_RejectsDuplicateKeys(t *testing.T) {
 	ctx := context.Background()
 	dir := t.TempDir()
-	store := agent.NewMemStore()
-	if _, err := store.Do(ctx, "run1", "pay", func(context.Context) (agent.Record, error) {
+	store := agenttest.MemJournal()
+	if _, err := journaltest.Do(ctx, store, "run1", "pay", func(context.Context) (agent.Record, error) {
 		return agent.Record{Kind: agent.StepToolResult, ToolUseID: "pay", Result: json.RawMessage(`{"usd":10}`)}, nil
 	}); err != nil {
 		t.Fatal(err)

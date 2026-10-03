@@ -18,7 +18,7 @@ type recordTool struct {
 func (t *recordTool) Name() string                { return t.name }
 func (t *recordTool) Description() string         { return "" }
 func (t *recordTool) Safety() Safety              { return t.safety }
-func (t *recordTool) ArgsSchema() json.RawMessage { return nil }
+func (t *recordTool) ArgsSchema() json.RawMessage { return json.RawMessage(`{"type":"object"}`) }
 func (t *recordTool) Call(_ context.Context, args json.RawMessage) (json.RawMessage, error) {
 	*t.calls++
 	if t.lastArg != nil {
@@ -56,7 +56,7 @@ func TestToolMiddleware_OrderMutateTransform(t *testing.T) {
 		}
 	}
 
-	a := New(m, NewMemStore(), tool).UseTool(mw("outer"), mw("inner"), rewrite)
+	a := mustNew(m, memJournal(), WithTools(tool), WithToolMiddleware(mw("outer"), mw("inner"), rewrite))
 	out, err := a.Run(context.Background(), "r", "go")
 	if err != nil {
 		t.Fatalf("Run: %v", err)
@@ -87,7 +87,7 @@ func TestToolMiddleware_ShortCircuits(t *testing.T) {
 			return json.RawMessage(`"cached"`), nil // never calls next
 		}
 	}
-	a := New(m, NewMemStore(), tool).UseTool(deny)
+	a := mustNew(m, memJournal(), WithTools(tool), WithToolMiddleware(deny))
 	if _, err := a.Run(context.Background(), "r", "go"); err != nil {
 		t.Fatalf("Run: %v", err)
 	}
@@ -99,7 +99,7 @@ func TestToolMiddleware_ShortCircuits(t *testing.T) {
 // The middleware chain runs INSIDE the durable step: a short-circuit result is
 // journaled, so on resume it replays without re-running the middleware or the tool.
 func TestToolMiddleware_ResultIsJournaled(t *testing.T) {
-	store := NewMemStore()
+	store := memJournal()
 	var calls, mwHits int
 	tool := &recordTool{name: "act", safety: Safety{ReadOnly: true}, calls: &calls}
 
@@ -112,7 +112,7 @@ func TestToolMiddleware_ResultIsJournaled(t *testing.T) {
 
 	// First run: model asks for the tool, then crashes before answering.
 	crashy := &scriptModel{turns: [][]Emit{toolTurn("c1", "act", `{}`), errTurn(errCrash)}}
-	if _, err := New(crashy, store, tool).UseTool(counting).Run(context.Background(), "r", "go"); err == nil {
+	if _, err := mustNew(crashy, store, WithTools(tool), WithToolMiddleware(counting)).Run(context.Background(), "r", "go"); err == nil {
 		t.Fatal("expected crash on first attempt")
 	}
 	if calls != 1 || mwHits != 1 {
@@ -122,7 +122,7 @@ func TestToolMiddleware_ResultIsJournaled(t *testing.T) {
 	// Resume with a healthy model. The journaled tool result replays — neither the tool
 	// nor the middleware runs again.
 	recovered := &scriptModel{turns: [][]Emit{textTurn("done")}}
-	out, err := New(recovered, store, tool).UseTool(counting).Run(context.Background(), "r", "go")
+	out, err := mustNew(recovered, store, WithTools(tool), WithToolMiddleware(counting)).Run(context.Background(), "r", "go")
 	if err != nil {
 		t.Fatalf("resume: %v", err)
 	}

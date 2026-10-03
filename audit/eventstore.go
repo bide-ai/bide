@@ -55,7 +55,7 @@ type EventStore interface {
 // before the redaction keep the redacted record's content (a tool's arguments or result, a model
 // turn's text), so a deployment that redacts must delete or redact the run's event trail in
 // evStore as well.
-func PersistJournal(ctx context.Context, evStore EventStore, jStore agent.Durable, runID string) error {
+func PersistJournal(ctx context.Context, evStore EventStore, jStore *agent.Journal, runID string) error {
 	evs, salts, err := projectJournal(ctx, jStore, runID)
 	if err != nil {
 		return err

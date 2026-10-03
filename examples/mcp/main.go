@@ -85,7 +85,14 @@ func main() {
 
 	// The discovered MCP tools are plain agent.Tool values now; the session must stay open
 	// for their lifetime because they call back through it.
-	a := agent.New(&scriptModel{}, agent.NewMemStore(), tools...)
+	j, err := agent.NewJournal(agent.NewMemStore())
+	if err != nil {
+		log.Fatal(err)
+	}
+	a, err := agent.New(&scriptModel{}, j, agent.WithTools(tools...))
+	if err != nil {
+		log.Fatal(err)
+	}
 	out, err := a.Run(ctx, "mcp-1", "Echo the word hello.")
 	if err != nil {
 		log.Fatal(err)

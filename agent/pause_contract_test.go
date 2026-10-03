@@ -53,11 +53,15 @@ func napTool() Tool {
 func TestWaker_ScheduleFailureFailsTheRunAndRecordsNothing(t *testing.T) {
 	for _, saga := range []bool{false, true} {
 		t.Run(fmt.Sprintf("saga=%v", saga), func(t *testing.T) {
-			store := NewMemStore()
+			store := memJournal()
 			w := &failingWaker{fail: 1}
 			ctx := ContextWithWaker(context.Background(), w)
 			drive := func() error {
-				a := New(&greedyModel{script: [][]Emit{toolTurn("c1", "nap", `{}`), textTurn("done")}}, store, napTool())
+				a := mustNew(
+					&greedyModel{script: [][]Emit{toolTurn("c1", "nap", `{}`), textTurn("done")}},
+					store,
+					WithTools(napTool()),
+				)
 				var err error
 				if saga {
 					_, err = a.RunSaga(ctx, "r1", "rest")
@@ -98,9 +102,13 @@ func TestWaker_ScheduleFailureFailsTheRunAndRecordsNothing(t *testing.T) {
 // RecoverLoop retries a run whose wake could not be scheduled: the failure is reported (it wraps
 // ErrStorage), and a later pass drives the run again, which schedules the wake and pauses.
 func TestRecoverLoop_RetriesAFailedWakeSchedule(t *testing.T) {
-	store := NewMemStore()
+	store := memJournal()
 	newAgent := func() *Agent {
-		return New(&greedyModel{script: [][]Emit{toolTurn("c1", "nap", `{}`), textTurn("done")}}, store, napTool())
+		return mustNew(
+			&greedyModel{script: [][]Emit{toolTurn("c1", "nap", `{}`), textTurn("done")}},
+			store,
+			WithTools(napTool()),
+		)
 	}
 	// The first drive has no Waker: it pauses at the timer with nothing scheduled, as a run does
 	// whose process died before its wake was registered anywhere.
@@ -214,16 +222,20 @@ func TestMemWaker_SubRunTimersAreDistinct(t *testing.T) {
 // in the Outcome: the resumed run proceeds past the call without running it again.
 func TestResolveHaltRef_ToolHalt(t *testing.T) {
 	ctx := context.Background()
-	store := NewMemStore()
+	store := memJournal()
 	var charged int
 	charge := Func("charge", "charge the card", Safety{}, func(context.Context, struct{}) (string, error) {
 		charged++
 		return "", fmt.Errorf("gateway connection reset (%w)", ErrToolOutcomeUnknown)
 	})
-	if _, err := New(&greedyModel{script: [][]Emit{toolTurn("c1", "charge", `{}`), textTurn("done")}}, store, charge).Run(ctx, "r1", "pay"); !errors.Is(err, ErrToolOutcomeUnknown) {
+	if _, err := mustNew(
+		&greedyModel{script: [][]Emit{toolTurn("c1", "charge", `{}`), textTurn("done")}},
+		store,
+		WithTools(charge),
+	).Run(ctx, "r1", "pay"); !errors.Is(err, ErrToolOutcomeUnknown) {
 		t.Fatalf("first drive = %v; want ErrToolOutcomeUnknown", err)
 	}
-	_, err := New(&greedyModel{script: [][]Emit{textTurn("done")}}, store, charge).Run(ctx, "r1", "pay")
+	_, err := mustNew(&greedyModel{script: [][]Emit{textTurn("done")}}, store, WithTools(charge)).Run(ctx, "r1", "pay")
 	halt, ok := errors.AsType[*OutcomeUnknown](err)
 	if !ok {
 		t.Fatalf("resume = %v; want *OutcomeUnknown", err)
@@ -239,7 +251,7 @@ func TestResolveHaltRef_ToolHalt(t *testing.T) {
 	if !ok || rec.Kind != StepToolResult || rec.IsError || string(rec.Result) != `"charged"` || !rec.Reconciled || string(rec.Evidence) != `{"charge":"ch_1"}` {
 		t.Fatalf("resolved record = %+v; want the reconciled result with its evidence", rec)
 	}
-	msg, err := New(&greedyModel{script: [][]Emit{textTurn("done")}}, store, charge).Run(ctx, "r1", "pay")
+	msg, err := mustNew(&greedyModel{script: [][]Emit{textTurn("done")}}, store, WithTools(charge)).Run(ctx, "r1", "pay")
 	if err != nil || msg.Text() != "done" {
 		t.Fatalf("run after resolution = %q, %v; want it to finish", msg.Text(), err)
 	}
@@ -252,7 +264,7 @@ func TestResolveHaltRef_ToolHalt(t *testing.T) {
 // kind is not the kind of operation that halted.
 func TestResolveHaltRef_StepHalt(t *testing.T) {
 	ctx := context.Background()
-	store := NewMemStore()
+	store := memJournal()
 	lost := func(context.Context) (string, error) { return "", errors.New("connection dropped") }
 	halted := func(name string) *OutcomeUnknown {
 		t.Helper()
@@ -296,7 +308,7 @@ func TestResolveHaltRef_StepHalt(t *testing.T) {
 // evidence given twice; none of them records anything.
 func TestResolveHaltRef_RefusesAnIncompleteRef(t *testing.T) {
 	ctx := context.Background()
-	store := NewMemStore()
+	store := memJournal()
 	good := HaltRef{RunID: "r1", Op: OpRef{Kind: OpTool, ID: "c1"}, Cause: HaltCrashed}
 	for name, c := range map[string]struct {
 		ref  HaltRef
@@ -326,7 +338,7 @@ func TestResolveHaltRef_RefusesAnIncompleteRef(t *testing.T) {
 // crashed halt of the same age is resolved without a minimum, as before.
 func TestResolveHaltRef_ContendedHaltIsNotResolvedWhileYoung(t *testing.T) {
 	ctx := context.Background()
-	store := NewMemStore()
+	store := memJournal()
 	t0 := time.Unix(1_000_000, 0)
 	// c1's first attempt, claimed an hour ago, never started; its live re-attempt is at t0.
 	base := toolAttemptStep("c1")
@@ -381,22 +393,24 @@ func TestResolveHaltRef_ContendedHaltIsNotResolvedWhileYoung(t *testing.T) {
 // whichever a caller used, and they check their arguments under their own names.
 func TestVerbs_WrappersWriteTheSameRecords(t *testing.T) {
 	ctx := context.Background()
-	type verb struct{ newer, older func(Durable) error }
+	type verb struct{ newer, older func(*Journal) error }
 	for name, v := range map[string]verb{
 		"AnswerInterrupt/Resume": {
-			func(d Durable) error { return AnswerInterrupt(ctx, d, "r1", "q", 42) },
-			func(d Durable) error { return Resume(ctx, d, "r1", "q", 42) },
+			func(d *Journal) error { return AnswerInterrupt(ctx, d, "r1", "q", 42) },
+			func(d *Journal) error { return Resume(ctx, d, "r1", "q", 42) },
 		},
 		"Enqueue/Send": {
-			func(d Durable) error { return Enqueue(ctx, d, "r1", "jobs", "k1", "body") },
-			func(d Durable) error { return Send(ctx, d, "r1", "jobs", "k1", "body") },
+			func(d *Journal) error { return Enqueue(ctx, d, "r1", "jobs", "k1", "body") },
+			func(d *Journal) error { return Send(ctx, d, "r1", "jobs", "k1", "body") },
 		},
 	} {
 		a, b := NewMemStore(), NewMemStore()
-		if err := v.newer(a); err != nil {
+		j := mustJournal(a)
+		j2 := mustJournal(b)
+		if err := v.newer(j); err != nil {
 			t.Fatalf("%s: %v", name, err)
 		}
-		if err := v.older(b); err != nil {
+		if err := v.older(j2); err != nil {
 			t.Fatalf("%s: %v", name, err)
 		}
 		// The salt is random per record, so compare what the verb chose to write.
@@ -407,7 +421,7 @@ func TestVerbs_WrappersWriteTheSameRecords(t *testing.T) {
 			Approved                  bool
 			Signature                 []byte
 		}
-		project := func(d Durable) []written {
+		project := func(d *Journal) []written {
 			recs, _ := d.History(ctx, "r1")
 			var out []written
 			for _, r := range recs {
@@ -415,7 +429,7 @@ func TestVerbs_WrappersWriteTheSameRecords(t *testing.T) {
 			}
 			return out
 		}
-		ra, rb := project(a), project(b)
+		ra, rb := project(j), project(j2)
 		ja, _ := json.Marshal(ra)
 		jb, _ := json.Marshal(rb)
 		if len(ra) != 2 || string(ja) != string(jb) { // the @journal header, then the verb's record
@@ -423,9 +437,9 @@ func TestVerbs_WrappersWriteTheSameRecords(t *testing.T) {
 		}
 	}
 	for name, err := range map[string]error{
-		"SubmitDecision":  SubmitDecision(ctx, NewMemStore(), Decision{ToolUseID: "c1", ApproverID: "a", Signature: []byte("s")}),
-		"AnswerInterrupt": AnswerInterrupt(ctx, NewMemStore(), "", "q", 1),
-		"Enqueue":         Enqueue(ctx, NewMemStore(), "", "jobs", "k", 1),
+		"SubmitDecision":  SubmitDecision(ctx, memJournal(), Decision{ToolUseID: "c1", ApproverID: "a", Signature: []byte("s")}),
+		"AnswerInterrupt": AnswerInterrupt(ctx, memJournal(), "", "q", 1),
+		"Enqueue":         Enqueue(ctx, memJournal(), "", "jobs", "k", 1),
 	} {
 		if !errors.Is(err, ErrConfig) || err.Error()[:len(name)] != name {
 			t.Errorf("%s with no runID = %v; want ErrConfig naming %s", name, err, name)
@@ -436,7 +450,7 @@ func TestVerbs_WrappersWriteTheSameRecords(t *testing.T) {
 // An interrupt is answered against the pause's own RunID and Name.
 func TestAnswerInterrupt_ResumesThePause(t *testing.T) {
 	ctx := context.Background()
-	store := NewMemStore()
+	store := memJournal()
 	ask := Func("ask", "ask a human", Safety{ReadOnly: true}, func(ctx context.Context, _ struct{}) (string, error) {
 		n, err := Interrupt[int](ctx, "how-many", "how many?")
 		if err != nil {
@@ -444,7 +458,11 @@ func TestAnswerInterrupt_ResumesThePause(t *testing.T) {
 		}
 		return fmt.Sprint(n), nil
 	})
-	_, err := New(&greedyModel{script: [][]Emit{toolTurn("c1", "ask", `{}`), textTurn("done")}}, store, ask).Run(ctx, "r1", "go")
+	_, err := mustNew(
+		&greedyModel{script: [][]Emit{toolTurn("c1", "ask", `{}`), textTurn("done")}},
+		store,
+		WithTools(ask),
+	).Run(ctx, "r1", "go")
 	p, ok := errors.AsType[*InterruptPending](err)
 	if !ok || p.Name != "how-many" || p.Prompt != "how many?" || p.Paused() != (RunRef{RunID: "r1", RootRunID: "r1"}) {
 		t.Fatalf("run = %v; want *InterruptPending at how-many for r1", err)
@@ -452,7 +470,7 @@ func TestAnswerInterrupt_ResumesThePause(t *testing.T) {
 	if err := AnswerInterrupt(ctx, store, p.RunID, p.Name, 3); err != nil {
 		t.Fatal(err)
 	}
-	if _, err := New(&greedyModel{script: [][]Emit{textTurn("done")}}, store, ask).Run(ctx, p.RootRunID, "go"); err != nil {
+	if _, err := mustNew(&greedyModel{script: [][]Emit{textTurn("done")}}, store, WithTools(ask)).Run(ctx, p.RootRunID, "go"); err != nil {
 		t.Fatal(err)
 	}
 	if rec, ok := hasStep(t, store, "r1", ToolResultStep("c1")); !ok || string(rec.Result) != `"3"` {
@@ -473,7 +491,11 @@ func TestLoop_SubTreePausePropagatesFromAnyTool(t *testing.T) {
 		delegate := Func("delegate", "a side-effecting call that ran a sub-run", Safety{}, func(context.Context, struct{}) (string, error) {
 			return "", fmt.Errorf("sub-run: %w", p)
 		})
-		_, err := New(&greedyModel{script: [][]Emit{toolTurn("c1", "delegate", `{}`), textTurn("done")}}, NewMemStore(), delegate).Run(context.Background(), "r1", "go")
+		_, err := mustNew(
+			&greedyModel{script: [][]Emit{toolTurn("c1", "delegate", `{}`), textTurn("done")}},
+			memJournal(),
+			WithTools(delegate),
+		).Run(context.Background(), "r1", "go")
 		if got, ok := AsPause(err); !ok || got != p {
 			t.Errorf("%T from a side-effecting tool: Run = %v; want the pause propagated", p, err)
 		}

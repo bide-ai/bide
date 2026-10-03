@@ -36,7 +36,7 @@ func namedTool(name string) objTool {
 // built: nothing is returned that a run would only then refuse.
 func TestBuild_EveryValidationError(t *testing.T) {
 	m := NewScriptedModel()
-	j := NewMemStore().Journal()
+	j := memJournal()
 	mofn := &ApprovalPolicy{Need: 1, Approvers: []string{"alice", "bob"}}
 	gated := namedTool("pay")
 	gated.spec.Approval = mofn
@@ -93,7 +93,7 @@ func TestBuild_EveryValidationError(t *testing.T) {
 	}
 	for name, opts := range cases {
 		t.Run(name, func(t *testing.T) {
-			a, err := Build(m, j, opts...)
+			a, err := New(m, j, opts...)
 			if !errors.Is(err, ErrConfig) || a != nil {
 				t.Fatalf("Build = %v, %v; want nil, ErrConfig", a, err)
 			}
@@ -106,13 +106,13 @@ func TestBuild_EveryValidationError(t *testing.T) {
 	}
 
 	// Build itself.
-	if _, err := Build(nil, j); !errors.Is(err, ErrConfig) {
+	if _, err := New(nil, j); !errors.Is(err, ErrConfig) {
 		t.Errorf("Build(nil model) = %v, want ErrConfig", err)
 	}
-	if _, err := Build((*ScriptedModel)(nil), j); !errors.Is(err, ErrConfig) {
+	if _, err := New((*ScriptedModel)(nil), j); !errors.Is(err, ErrConfig) {
 		t.Errorf("Build(typed nil model) = %v, want ErrConfig", err)
 	}
-	if _, err := Build(m, nil); !errors.Is(err, ErrConfig) {
+	if _, err := New(m, nil); !errors.Is(err, ErrConfig) {
 		t.Errorf("Build(nil journal) = %v, want ErrConfig", err)
 	}
 	// A tool With adds may not take a name the agent already has.
@@ -120,19 +120,19 @@ func TestBuild_EveryValidationError(t *testing.T) {
 		t.Errorf("With adding a second tool named a = %v, want ErrConfig", err)
 	}
 	// The forced tool is checked against the tools once every option is applied, in any order.
-	if _, err := Build(m, j, WithToolChoice(ToolChoice{Mode: "tool", Name: "a"}), WithTools(namedTool("a"))); err != nil {
+	if _, err := New(m, j, WithToolChoice(ToolChoice{Mode: "tool", Name: "a"}), WithTools(namedTool("a"))); err != nil {
 		t.Errorf("forcing a tool given after the choice: %v", err)
 	}
 	// The error for an m-of-n policy with no resolver says what is missing.
-	if _, err := Build(m, j, WithTools(gated)); err == nil || !strings.Contains(err.Error(), "WithApproverVerifiers") {
+	if _, err := New(m, j, WithTools(gated)); err == nil || !strings.Contains(err.Error(), "WithApproverVerifiers") {
 		t.Errorf("m-of-n without verifiers = %v, want an error naming WithApproverVerifiers", err)
 	}
 	// An m-of-n policy with distinct keys and verifiers given after the tool builds.
-	if _, err := Build(m, j, WithTools(gated), WithApproverVerifiers(distinct)); err != nil {
+	if _, err := New(m, j, WithTools(gated), WithApproverVerifiers(distinct)); err != nil {
 		t.Errorf("m-of-n policy with verifiers: %v", err)
 	}
 	// An agent New was given a bad tool set cannot be configured further: With returns its error.
-	if _, err := New(m, NewMemStore(), namedTool("a"), namedTool("a")).With(); !errors.Is(err, ErrConfig) {
+	if _, err := mustNew(m, memJournal(), WithTools(namedTool("a"), namedTool("a"))).With(); !errors.Is(err, ErrConfig) {
 		t.Errorf("With on an agent New refused tools for = %v, want ErrConfig", err)
 	}
 }
@@ -149,7 +149,7 @@ func (w wrapTool) Unwrap() Tool   { return w.Tool }
 // The options of the other scopes refuse a nil option and a bad value with ErrConfig too.
 func TestOptions_OtherScopesValidate(t *testing.T) {
 	ctx := context.Background()
-	store := NewMemStore()
+	store := memJournal()
 	task := []Task[int]{{Name: "t", Fn: func(context.Context) (int, error) { return 1, nil }}}
 	if _, err := Parallel(ctx, store, "r", task, nil); !errors.Is(err, ErrConfig) {
 		t.Errorf("Parallel(nil option) = %v, want ErrConfig", err)
@@ -331,11 +331,15 @@ func TestPrecedence_SystemPromptSlot(t *testing.T) {
 	if got := systemOf(t, a); got != "FUNC" {
 		t.Errorf("the agent With copied: system %q, want its own FUNC", got)
 	}
-	old := New(model(), NewMemStore()).WithSystemPromptFunc(func(context.Context) string { return "FUNC" }).WithSystemPrompt("TEXT")
+	old := must(mustNew(
+		model(),
+		memJournal(),
+		WithSystemPromptFunc(func(_ context.Context, _ RunInfo) (string, error) { return "FUNC", nil }),
+	).With(WithSystemPrompt("TEXT")))
 	if got := systemOf(t, old); got != "TEXT" {
 		t.Errorf("builder methods, func then text: system %q, want TEXT", got)
 	}
-	old = New(model(), NewMemStore()).WithSystemPrompt("TEXT").WithSystemPromptFunc(func(context.Context) string { return "FUNC" })
+	old = must(mustNew(model(), memJournal(), WithSystemPrompt("TEXT")).With(WithSystemPromptFunc(func(_ context.Context, _ RunInfo) (string, error) { return "FUNC", nil })))
 	if got := systemOf(t, old); got != "FUNC" {
 		t.Errorf("builder methods, text then func: system %q, want FUNC", got)
 	}
@@ -486,8 +490,6 @@ func TestWith_IsolationUnderRace(t *testing.T) {
 				errs <- err
 				return
 			}
-			// The transitional builders mutate the copy, never the agent or a sibling.
-			child.Use(noMW).UseTool(noToolMW).WithSystemPrompt(mark)
 			if _, err := child.Run(context.Background(), fmt.Sprintf("c%d", i), "go"); err != nil {
 				errs <- err
 				return
@@ -552,14 +554,14 @@ func TestAgent_Journal(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	a, err := Build(NewScriptedModel(), j)
+	a, err := New(NewScriptedModel(), j)
 	if err != nil {
 		t.Fatal(err)
 	}
 	if a.Journal() != j {
 		t.Error("Journal() is not the journal Build was given")
 	}
-	if New(NewScriptedModel(), store).Journal() != store.Journal() {
+	if mustNew(NewScriptedModel(), j).Journal() != j {
 		t.Error("Journal() of New over a MemStore is not the store's journal")
 	}
 }

@@ -25,6 +25,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"iter"
 	"os"
 	"os/exec"
 	"reflect"
@@ -172,13 +173,36 @@ that does not depend on an unusable one, so a tampered input is reported as 1 ev
 unreadable one.
 `
 
-// staticStore is a read-only Durable backed by an exported journal, so the CLI can reuse the
+// staticStore is a read-only agent.Store backed by an exported journal: every run holds the
+// export's records, in order, as their stored bytes. A Journal over it lets the CLI reuse the
 // audit package's proof builders without a live store.
 type staticStore struct{ recs []agent.Record }
 
-func (s staticStore) History(context.Context, string) ([]agent.Record, error) { return s.recs, nil }
-func (staticStore) Do(context.Context, string, string, func(context.Context) (agent.Record, error)) (agent.Record, error) {
-	return agent.Record{}, errors.New("bide-audit: journal is read-only")
+func (s staticStore) entry(i int) agent.Entry {
+	return agent.Entry{Seq: int64(i + 1), Name: s.recs[i].Name, Data: s.recs[i].Raw()}
+}
+
+func (staticStore) Insert(context.Context, string, string, []byte) (agent.Entry, bool, error) {
+	return agent.Entry{}, false, errors.New("bide-audit: journal is read-only")
+}
+
+func (s staticStore) Get(_ context.Context, _, name string) (agent.Entry, bool, error) {
+	for i, r := range s.recs {
+		if r.Name == name {
+			return s.entry(i), true, nil
+		}
+	}
+	return agent.Entry{}, false, nil
+}
+
+func (s staticStore) Load(_ context.Context, _ string, after int64) iter.Seq2[agent.Entry, error] {
+	return func(yield func(agent.Entry, error) bool) {
+		for i := range s.recs {
+			if e := s.entry(i); e.Seq > after && !yield(e, nil) {
+				return
+			}
+		}
+	}
 }
 
 func (c *cli) prove(args []string) {
@@ -202,7 +226,11 @@ func (c *cli) prove(args []string) {
 		return
 	}
 
-	store := staticStore{recs: recs}
+	store, err := agent.NewJournal(staticStore{recs: recs})
+	if err != nil {
+		c.note(unusable(err))
+		return
+	}
 	var bundle audit.ProofBundle
 	if *tool != "" {
 		bundle, err = audit.ProveToolCall(context.Background(), store, sth.RunID, *tool, sth)

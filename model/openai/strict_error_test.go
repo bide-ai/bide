@@ -8,6 +8,7 @@ import (
 	"testing"
 
 	"github.com/bide-ai/bide/agent"
+	"github.com/bide-ai/bide/agent/agenttest"
 	"github.com/bide-ai/bide/schema"
 )
 
@@ -46,7 +47,7 @@ func TestStrictSchema_InexpressibleResponseFormatIsAnError(t *testing.T) {
 
 // RunTypedNative with a result type strict mode cannot express reports it before any request.
 func TestRunTypedNative_InexpressibleTypeIsAnError(t *testing.T) {
-	a := agent.New(New("k", WithBaseURL("http://127.0.0.1:1")), agent.NewMemStore())
+	a := agenttest.MustNew(New("k", WithBaseURL("http://127.0.0.1:1")), agenttest.MemJournal())
 	_, err := agent.RunTypedNative[tagsArgs](context.Background(), a, "r", "hi")
 	if !errors.Is(err, schema.ErrStrictUnsupported) {
 		t.Fatalf("RunTypedNative = %v; want ErrStrictUnsupported", err)

@@ -47,7 +47,7 @@ func TestRev117e_EmbeddingDecoratorDropsApprovalGate(t *testing.T) {
 	}
 	run := func(tool Tool) error {
 		m := NewScriptedModel(ToolTurn("c1", "send", `{}`), TextTurn("done"))
-		_, err := New(m, NewMemStore(), tool).Run(context.Background(), "r", "go")
+		_, err := mustNew(m, memJournal(), WithTools(tool)).Run(context.Background(), "r", "go")
 		return err
 	}
 	for name, tool := range map[string]Tool{
@@ -95,7 +95,7 @@ func (h *specHider) Spec() ToolSpec { return ToolSpec{Name: h.spec.Name} }
 func TestRev117e_ValueEmbeddedPointerToolSpecHidesGate(t *testing.T) {
 	h := &specHider{ptrTool{spec: ToolSpec{Name: "send", Approval: SingleApproval()}}}
 	m := NewScriptedModel(ToolTurn("c1", "send", `{}`), TextTurn("done"))
-	if _, err := New(m, NewMemStore(), h).Run(context.Background(), "r", "go"); !errors.Is(err, ErrConfig) {
+	if _, err := mustNew(m, memJournal(), WithTools(h)).Run(context.Background(), "r", "go"); !errors.Is(err, ErrConfig) {
 		t.Fatalf("Run = %v, want ErrConfig: the outer Spec hides the embedded tool's gate", err)
 	}
 }

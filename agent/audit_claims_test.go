@@ -11,6 +11,7 @@ import (
 	"testing"
 
 	"github.com/bide-ai/bide/agent"
+	"github.com/bide-ai/bide/agent/agenttest"
 	"github.com/bide-ai/bide/audit"
 )
 
@@ -27,19 +28,19 @@ func TestAuditReadsClaimBookkeeping(t *testing.T) {
 	// attempt:retry:1. c2: claim taken back and held.
 	s := &r3Store{m: m, faults: []r3Fault{{"attempt:tool:c1", "c"}}}
 	j, _ := agent.NewJournal(s)
-	_, err := agent.New(model(), j, charge).SetMaxConcurrency(1).Run(ctx, "r", "hi")
+	_, err := agenttest.MustNew(model(), j, agent.WithTools(charge), agent.WithMaxConcurrency(1)).Run(ctx, "r", "hi")
 	t.Logf("drive 1: %v", err)
 	s.faults = []r3Fault{{"attempt:tool:c2", "nc"}, {"attempt:not-started:", "nc"}}
-	_, err = agent.New(model(), j, charge).SetMaxConcurrency(1).Run(ctx, "r", "hi")
+	_, err = agenttest.MustNew(model(), j, agent.WithTools(charge), agent.WithMaxConcurrency(1)).Run(ctx, "r", "hi")
 	t.Logf("drive 2: %v", err)
-	_, err = agent.New(model(), j, charge).SetMaxConcurrency(1).Run(ctx, "r", "hi")
+	_, err = agenttest.MustNew(model(), j, agent.WithTools(charge), agent.WithMaxConcurrency(1)).Run(ctx, "r", "hi")
 	t.Logf("drive 3: %v; fired %d", err, fired)
 	r3Dump(t, m, "r")
 	if fired != 2 {
 		t.Fatalf("fired %d, want 2", fired)
 	}
 
-	pkg, err := audit.Evidence(ctx, m, "r", audit.Ed25519Signer{Priv: priv}, 1, audit.WithAllToolCalls())
+	pkg, err := audit.Evidence(ctx, agenttest.MustJournal(m), "r", audit.Ed25519Signer{Priv: priv}, 1, audit.WithAllToolCalls())
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -61,13 +62,14 @@ func TestAuditReadsClaimBookkeeping(t *testing.T) {
 		t.Fatalf("verify: %v %+v", err, rep)
 	}
 	// Every leaf, bookkeeping included, proves against the root.
-	hist, _ := m.History(ctx, "r")
-	root, err := audit.Root(ctx, m, "r")
+	mj := agenttest.MustJournal(m)
+	hist, _ := mj.History(ctx, "r")
+	root, err := audit.Root(ctx, mj, "r")
 	if err != nil {
 		t.Fatal(err)
 	}
 	for i, r := range hist {
-		p, err := audit.Prove(ctx, m, "r", i)
+		p, err := audit.Prove(ctx, mj, "r", i)
 		if err != nil {
 			t.Fatal(err)
 		}

@@ -155,7 +155,7 @@ func (m *MemStore) ReleaseLease(_ context.Context, runID, holder string) error {
 //	    _, err := ag.Run(ctx, runID, input)
 //	    return err
 //	}, agent.WithLeaseHolder("worker-1"))
-func Lease(ctx context.Context, store Durable, runID string, drive func(context.Context) error, opts ...LeaseOption) (bool, error) {
+func Lease(ctx context.Context, store *Journal, runID string, drive func(context.Context) error, opts ...LeaseOption) (bool, error) {
 	cfg, err := leaseConfig("Lease", opts, LeaseOption.applyLease)
 	if err != nil {
 		return false, err
@@ -165,8 +165,8 @@ func Lease(ctx context.Context, store Durable, runID string, drive func(context.
 
 // leaseRun is Lease under a configuration leaseConfig validated: a recovery pass calls it for
 // each run with its own, so it builds no options per run.
-func leaseRun(ctx context.Context, store Durable, runID string, drive func(context.Context) error, cfg recoverConfig) (bool, error) {
-	leaser, ok := capabilityOf[Leaser](store)
+func leaseRun(ctx context.Context, store *Journal, runID string, drive func(context.Context) error, cfg recoverConfig) (bool, error) {
+	leaser, ok := Capability[Leaser](store.store)
 	if !ok {
 		return true, drive(ctx) // no leasing available: drive unconditionally
 	}

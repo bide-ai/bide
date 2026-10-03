@@ -25,10 +25,10 @@ func (m *requestModel) Stream(_ context.Context, req Request) (*Stream, error) {
 	return NewStream(ch), nil
 }
 
-func journal(t *testing.T, store Durable, runID string, recs ...Record) {
+func journal(t *testing.T, store *Journal, runID string, recs ...Record) {
 	t.Helper()
 	for _, r := range recs {
-		if _, err := store.Do(context.Background(), runID, r.Name, func(context.Context) (Record, error) { return r, nil }); err != nil {
+		if _, err := store.do(context.Background(), runID, r.Name, func(context.Context) (Record, error) { return r, nil }); err != nil {
 			t.Fatal(err)
 		}
 	}
@@ -46,7 +46,7 @@ func assistantCalls(ids ...string) *Message {
 // results in, and places each result once, after the first turn that made the call (a journal
 // written before tool-use IDs were checked may reuse one). A result no call made is left out.
 func TestResume_ConversationFromJournal(t *testing.T) {
-	store := NewMemStore()
+	store := memJournal()
 	journal(t, store, "r",
 		Record{Name: "@llm/0", Kind: StepModel, Message: assistantCalls("c1", "c2")},
 		Record{Name: "c2", Kind: StepToolResult, ToolUseID: "c2", Result: json.RawMessage(`2`)},
@@ -56,7 +56,11 @@ func TestResume_ConversationFromJournal(t *testing.T) {
 	)
 	var calls int
 	m := &requestModel{}
-	if _, err := New(m, store, &countingTool{name: "lookup", safety: Safety{ReadOnly: true}, calls: &calls}).Run(context.Background(), "r", "go"); err != nil {
+	if _, err := mustNew(
+		m,
+		store,
+		WithTools(&countingTool{name: "lookup", safety: Safety{ReadOnly: true}, calls: &calls}),
+	).Run(context.Background(), "r", "go"); err != nil {
 		t.Fatal(err)
 	}
 	if want := []string{"c1=1", "c2=2"}; !reflect.DeepEqual(m.results, want) || calls != 0 {

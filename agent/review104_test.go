@@ -46,8 +46,8 @@ func leaveAndFail(m *lateModel) Middleware {
 // count it.
 func TestF3_InFlightRequestOfFailedTurnIsJournaled(t *testing.T) {
 	m := &lateModel{u: billed, started: make(chan struct{}), gate: make(chan struct{})}
-	store := NewMemStore()
-	if _, err := New(m, store).Use(leaveAndFail(m)).RunResult(context.Background(), "r", "go"); err == nil {
+	store := memJournal()
+	if _, err := mustNew(m, store, WithMiddleware(leaveAndFail(m))).RunResult(context.Background(), "r", "go"); err == nil {
 		t.Fatal("want the call's failure")
 	}
 	var journaled Usage
@@ -81,7 +81,7 @@ func TestF3_WaitIsBounded(t *testing.T) {
 	done := make(chan struct{})
 	go func() {
 		defer close(done)
-		res, err := New(m, NewMemStore()).Use(stuck).RunResult(context.Background(), "r", "go")
+		res, err := mustNew(m, memJournal(), WithMiddleware(stuck)).RunResult(context.Background(), "r", "go")
 		if err != nil || res.Spend != (Usage{}) {
 			t.Errorf("res %+v, err %v: want the run to finish without the stuck request's spend", res, err)
 		}
@@ -94,7 +94,7 @@ func TestF3_WaitIsBounded(t *testing.T) {
 }
 
 // modelRecordsAll returns every record of run runID.
-func modelRecordsAll(t *testing.T, store Durable, runID string) []Record {
+func modelRecordsAll(t *testing.T, store *Journal, runID string) []Record {
 	t.Helper()
 	recs, err := store.History(context.Background(), runID)
 	if err != nil {
@@ -115,8 +115,8 @@ func TestF3_LateSpendIsJournaledAndReplayed(t *testing.T) {
 			return ModelResponse{Message: Message{Role: RoleAssistant, Parts: []Part{Text{Text: "own"}}}}, nil
 		}
 	}
-	store := NewMemStore()
-	a := New(m, store).Use(answer)
+	store := memJournal()
+	a := mustNew(m, store, WithMiddleware(answer))
 	res, err := a.RunResult(context.Background(), "r", "go")
 	if err != nil {
 		t.Fatal(err)
@@ -132,7 +132,7 @@ func TestF3_LateSpendIsJournaledAndReplayed(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	replayed, err := New(rm, NewMemStore()).RunResult(context.Background(), "r", "go")
+	replayed, err := mustNew(rm, memJournal()).RunResult(context.Background(), "r", "go")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -167,7 +167,7 @@ func TestF4_LandedRecordIsNotCountedTwice(t *testing.T) {
 		t.Fatal(err)
 	}
 	m := &scriptModel{turns: [][]Emit{textTurnWithUsage("done", billed), textTurnWithUsage("again", billed)}}
-	a := New(m, j)
+	a := mustNew(m, j)
 	if _, err := a.RunResult(ctx, "r", "go"); err == nil {
 		t.Fatal("want the write failure")
 	}

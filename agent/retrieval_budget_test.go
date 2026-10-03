@@ -20,7 +20,7 @@ func TestWithRetrieval_OneStepPerDrive(t *testing.T) {
 	j, cs, _ := countingJournal(t)
 	noop := agent.Func("noop", "", agent.Safety{ReadOnly: true}, func(context.Context, struct{}) (string, error) { return "ok", nil })
 	m := agent.NewScriptedModel(agent.ToolTurn("c1", "noop", `{}`), agent.ToolTurn("c2", "noop", `{}`), agent.TextTurn("done"))
-	a, err := agent.Build(m, j, agent.WithTools(noop), agent.WithRetrieval(staticRetriever{{Text: "doc"}}, 1))
+	a, err := agent.New(m, j, agent.WithTools(noop), agent.WithRetrieval(staticRetriever{{Text: "doc"}}, 1))
 	if err != nil {
 		t.Fatal(err)
 	}

@@ -8,6 +8,8 @@ import (
 	"testing"
 
 	"github.com/bide-ai/bide/agent"
+	"github.com/bide-ai/bide/agent/agenttest"
+	"github.com/bide-ai/bide/internal/journaltest"
 )
 
 // R117-4. Rollback now recurses through Unwrap into an attenuating sub-run, but it calls the
@@ -18,7 +20,7 @@ import (
 // sees authority the delegation never granted, and the identity is the parent's.
 func TestR117_AttenuatedSubRunIsCompensatedUnderTheParentsAuthority(t *testing.T) {
 	ctx := context.Background()
-	store := agent.NewMemStore()
+	store := agenttest.MemJournal()
 	var fwdActor, undoActor, fwdLimit, undoLimit string
 	charge := agent.CompensatedFunc("charge", "charge the card", agent.Safety{},
 		func(ctx context.Context, _ struct{}) (string, error) {
@@ -33,16 +35,24 @@ func TestR117_AttenuatedSubRunIsCompensatedUnderTheParentsAuthority(t *testing.T
 			undoActor, undoLimit = id.Actor, sg.Grant.Scope["limit"]
 			return nil
 		})
-	sub := agent.New(agent.NewScriptedModel(agent.ToolTurn("s1", "charge", `{}`), agent.TextTurn("done")), store, charge)
+	sub := agenttest.MustNew(
+		agent.NewScriptedModel(agent.ToolTurn("s1", "charge", `{}`), agent.TextTurn("done")),
+		store,
+		agent.WithTools(charge),
+	)
 	exec := AttenuatingSubAgent("exec", "execute within delegated authority", sub,
 		AttenuationConfig{Store: store, Narrow: narrowLimitBy(3), Rules: ScopeRules{"limit": NumericAtMost}})
 	boom := agent.Func("boom", "fails", agent.Safety{}, func(context.Context, struct{}) (string, error) {
 		return "", errors.New("hotel sold out")
 	})
-	parent := agent.New(agent.NewScriptedModel(
-		agent.ToolTurn("c1", "exec", `{"task":"pay"}`),
-		agent.ToolTurn("c2", "boom", `{}`),
-		agent.TextTurn("unreachable")), store, exec, boom)
+	parent := agenttest.MustNew(
+		agent.NewScriptedModel(
+			agent.ToolTurn("c1", "exec", `{"task":"pay"}`),
+			agent.ToolTurn("c2", "boom", `{}`),
+			agent.TextTurn("unreachable")),
+		store,
+		agent.WithTools(exec, boom),
+	)
 	_, priv, _ := ed25519.GenerateKey(rand.Reader)
 	signer := Ed25519Signer{Priv: priv}
 	rootSG, err := SignGrant(Grant{ID: "g0", Issuer: "corp", Subject: "desk", Scope: map[string]string{"limit": "7"}}, signer)
@@ -67,7 +77,7 @@ func TestR117_AttenuatedSubRunIsCompensatedUnderTheParentsAuthority(t *testing.T
 // delegation did not have.
 func TestR117_UngrantedDelegationIsCompensatedWithoutAGrant(t *testing.T) {
 	ctx := context.Background()
-	store := agent.NewMemStore()
+	store := agenttest.MemJournal()
 	var undoHadGrant, fwdHadGrant bool
 	charge := agent.CompensatedFunc("charge", "", agent.Safety{},
 		func(ctx context.Context, _ struct{}) (string, error) {
@@ -75,13 +85,17 @@ func TestR117_UngrantedDelegationIsCompensatedWithoutAGrant(t *testing.T) {
 			return "ok", nil
 		},
 		func(ctx context.Context, _ struct{}, _ string) error { _, _, undoHadGrant = GrantFrom(ctx); return nil })
-	sub := agent.New(agent.NewScriptedModel(agent.ToolTurn("s1", "charge", `{}`), agent.TextTurn("done")), store, charge)
+	sub := agenttest.MustNew(
+		agent.NewScriptedModel(agent.ToolTurn("s1", "charge", `{}`), agent.TextTurn("done")),
+		store,
+		agent.WithTools(charge),
+	)
 	exec := AttenuatingSubAgent("exec", "", sub, AttenuationConfig{Store: store, Narrow: narrowLimitBy(3), Rules: ScopeRules{"limit": NumericAtMost}})
 	var gated int32
 	gate := agent.Func("gate", "", agent.Safety{ReadOnly: true}, func(context.Context, struct{}) (string, error) { gated++; return "ok", nil }, agent.WithApproval(agent.SingleApproval()))
 	boom := agent.Func("boom", "", agent.Safety{}, func(context.Context, struct{}) (string, error) { return "", errors.New("sold out") })
 	m := agent.NewScriptedModel(agent.ToolTurn("c1", "exec", `{"task":"pay"}`), agent.ToolTurn("c2", "gate", `{}`), agent.ToolTurn("c3", "boom", `{}`), agent.TextTurn("x"))
-	parent := agent.New(m, store, exec, gate, boom)
+	parent := agenttest.MustNew(m, store, agent.WithTools(exec, gate, boom))
 	if _, err := parent.RunSaga(ctx, "trip", "go"); !agent.IsPause(err) {
 		t.Fatalf("first drive: %v, want the approval pause", err)
 	}
@@ -107,7 +121,7 @@ func TestR117_UngrantedDelegationIsCompensatedWithoutAGrant(t *testing.T) {
 // delegation ran under, so it does not guess.
 func TestR117_BindRollbackRefusesTwoGrants(t *testing.T) {
 	ctx := context.Background()
-	store := agent.NewMemStore()
+	store := agenttest.MemJournal()
 	_, priv, _ := ed25519.GenerateKey(rand.Reader)
 	signer := Ed25519Signer{Priv: priv}
 	for _, id := range []string{"a", "b"} {
@@ -119,7 +133,7 @@ func TestR117_BindRollbackRefusesTwoGrants(t *testing.T) {
 			t.Fatal(err)
 		}
 	}
-	sub := agent.New(agent.NewScriptedModel(agent.TextTurn("x")), store)
+	sub := agenttest.MustNew(agent.NewScriptedModel(agent.TextTurn("x")), store)
 	tool := AttenuatingSubAgent("exec", "", sub, AttenuationConfig{Store: store, Narrow: narrowLimitBy(1)})
 	b, ok := tool.(interface {
 		BindRollback(context.Context, string) (context.Context, error)
@@ -136,7 +150,7 @@ func TestR117_BindRollbackRefusesTwoGrants(t *testing.T) {
 // rollback does not compensate under a chain it cannot establish.
 func TestR117_BindRollbackRefusesAForeignParent(t *testing.T) {
 	ctx := context.Background()
-	store := agent.NewMemStore()
+	store := agenttest.MemJournal()
 	_, priv, _ := ed25519.GenerateKey(rand.Reader)
 	signer := Ed25519Signer{Priv: priv}
 	parent, _ := SignGrant(Grant{ID: "p", Issuer: "corp", Subject: "desk"}, signer)
@@ -145,7 +159,7 @@ func TestR117_BindRollbackRefusesAForeignParent(t *testing.T) {
 	if _, err := RecordGrant(ctx, store, "sub", child); err != nil {
 		t.Fatal(err)
 	}
-	sub := agent.New(agent.NewScriptedModel(agent.TextTurn("x")), store)
+	sub := agenttest.MustNew(agent.NewScriptedModel(agent.TextTurn("x")), store)
 	b := AttenuatingSubAgent("exec", "", sub, AttenuationConfig{Store: store, Narrow: narrowLimitBy(1)}).(interface {
 		BindRollback(context.Context, string) (context.Context, error)
 	})
@@ -178,7 +192,7 @@ func TestR117_BindRollbackRefusesAForeignParent(t *testing.T) {
 // too, not the parent's.
 func TestR117_ResumedSubRollbackRunsUnderTheChildGrant(t *testing.T) {
 	ctx := context.Background()
-	store := agent.NewMemStore()
+	store := agenttest.MemJournal()
 	var undos int
 	var lastLimit string
 	charge := agent.CompensatedFunc("charge", "", agent.Safety{},
@@ -193,9 +207,17 @@ func TestR117_ResumedSubRollbackRunsUnderTheChildGrant(t *testing.T) {
 			return nil
 		})
 	boom := agent.Func("boom", "", agent.Safety{}, func(context.Context, struct{}) (string, error) { return "", errors.New("sold out") })
-	sub := agent.New(agent.NewScriptedModel(agent.ToolTurn("s1", "charge", `{}`), agent.ToolTurn("s2", "boom", `{}`)), store, charge, boom)
+	sub := agenttest.MustNew(
+		agent.NewScriptedModel(agent.ToolTurn("s1", "charge", `{}`), agent.ToolTurn("s2", "boom", `{}`)),
+		store,
+		agent.WithTools(charge, boom),
+	)
 	exec := AttenuatingSubAgent("exec", "", sub, AttenuationConfig{Store: store, Narrow: narrowLimitBy(3), Rules: ScopeRules{"limit": NumericAtMost}})
-	parent := agent.New(agent.NewScriptedModel(agent.ToolTurn("c1", "exec", `{"task":"pay"}`)), store, exec)
+	parent := agenttest.MustNew(
+		agent.NewScriptedModel(agent.ToolTurn("c1", "exec", `{"task":"pay"}`)),
+		store,
+		agent.WithTools(exec),
+	)
 	_, priv, _ := ed25519.GenerateKey(rand.Reader)
 	signer := Ed25519Signer{Priv: priv}
 	rootSG, err := SignGrant(Grant{ID: "g0", Issuer: "corp", Subject: "desk", Scope: map[string]string{"limit": "7"}}, signer)
@@ -209,11 +231,11 @@ func TestR117_ResumedSubRollbackRunsUnderTheChildGrant(t *testing.T) {
 }
 
 // bindOf returns the rollback-binding hook of an AttenuatingSubAgent over store.
-func bindOf(t *testing.T, store agent.Durable) interface {
+func bindOf(t *testing.T, store *agent.Journal) interface {
 	BindRollback(context.Context, string) (context.Context, error)
 } {
 	t.Helper()
-	sub := agent.New(agent.NewScriptedModel(agent.TextTurn("x")), store)
+	sub := agenttest.MustNew(agent.NewScriptedModel(agent.TextTurn("x")), store)
 	return AttenuatingSubAgent("exec", "", sub, AttenuationConfig{Store: store, Narrow: narrowLimitBy(1), Rules: ScopeRules{"limit": NumericAtMost}}).(interface {
 		BindRollback(context.Context, string) (context.Context, error)
 	})
@@ -241,7 +263,7 @@ func TestR117_BindRollbackVerifiesTheJournaledGrant(t *testing.T) {
 		"forged signature": {child, forger, true, ErrNotVerified},
 		"widening grant":   {wide, signer, true, ErrNotVerified},
 	} {
-		store := agent.NewMemStore()
+		store := agenttest.MemJournal()
 		sg, err := SignGrant(tc.grant, tc.by)
 		if err != nil {
 			t.Fatal(err)
@@ -257,8 +279,8 @@ func TestR117_BindRollbackVerifiesTheJournaledGrant(t *testing.T) {
 			t.Errorf("%s: BindRollback = %v, want %v", name, err, tc.reason)
 		}
 	}
-	store := agent.NewMemStore()
-	if _, err := store.Do(ctx, "sub", "some-step", func(context.Context) (agent.Record, error) {
+	store := agenttest.MemJournal()
+	if _, err := journaltest.Do(ctx, store, "sub", "some-step", func(context.Context) (agent.Record, error) {
 		return agent.Record{Kind: agent.StepValue, Result: []byte(`1`)}, nil
 	}); err != nil {
 		t.Fatal(err)
@@ -285,12 +307,20 @@ func TestR117_ResumedDelegationKeepsItsAuthority(t *testing.T) {
 		"began under a grant, resumed without":    {withGrant, plain},
 	} {
 		ctx := context.Background()
-		store := agent.NewMemStore()
+		store := agenttest.MemJournal()
 		confirm := agent.Func("confirm", "", agent.Safety{ReadOnly: true},
 			func(context.Context, struct{}) (string, error) { return "ok", nil }, agent.WithApproval(agent.SingleApproval()))
-		sub := agent.New(agent.NewScriptedModel(agent.ToolTurn("s1", "confirm", `{}`), agent.TextTurn("done")), store, confirm)
+		sub := agenttest.MustNew(
+			agent.NewScriptedModel(agent.ToolTurn("s1", "confirm", `{}`), agent.TextTurn("done")),
+			store,
+			agent.WithTools(confirm),
+		)
 		exec := AttenuatingSubAgent("exec", "", sub, AttenuationConfig{Store: store, Narrow: narrowLimitBy(3), Rules: ScopeRules{"limit": NumericAtMost}})
-		parent := agent.New(agent.NewScriptedModel(agent.ToolTurn("c1", "exec", `{"task":"x"}`), agent.TextTurn("done")), store, exec)
+		parent := agenttest.MustNew(
+			agent.NewScriptedModel(agent.ToolTurn("c1", "exec", `{"task":"x"}`), agent.TextTurn("done")),
+			store,
+			agent.WithTools(exec),
+		)
 		_, err := parent.Run(drives[0](ctx), "r", "go")
 		var pend *agent.ApprovalPending
 		if !errors.As(err, &pend) {

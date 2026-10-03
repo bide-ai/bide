@@ -11,6 +11,7 @@ import (
 
 	"github.com/bide-ai/bide/agent"
 	"github.com/bide-ai/bide/agent/agenttest"
+	"github.com/bide-ai/bide/internal/journaltest"
 )
 
 // Tests of plan lowering: every node runs as an agent.Step through the engine's step hook, under
@@ -44,7 +45,7 @@ func effectFlow(t *testing.T, fired *int, opts ...NodeOption) *Flow[int, string]
 // resolved output downstream.
 func TestLowering_ResolveHaltRefClearsNodeHalt(t *testing.T) {
 	ctx := context.Background()
-	mem := agent.NewMemStore()
+	mem := agenttest.MemJournal()
 	var fired int
 	flow := effectFlow(t, &fired)
 	if _, err := flow.Run(ctx, mem, "r", 5); err == nil {
@@ -84,7 +85,7 @@ func TestLowering_ResolveHaltRefClearsNodeHalt(t *testing.T) {
 // way; the loop continues from the resolved iteration.
 func TestLowering_ResolveHaltRefClearsLoopIterationHalt(t *testing.T) {
 	ctx := context.Background()
-	mem := agent.NewMemStore()
+	mem := agenttest.MemJournal()
 	var calls int
 	build := func() *Flow[int, string] {
 		b := New[int, string]("countdown")
@@ -133,7 +134,7 @@ func TestLowering_ResolveHaltRefClearsLoopIterationHalt(t *testing.T) {
 func TestLowering_ResolveHaltRefRefusesOtherReservedNames(t *testing.T) {
 	for _, id := range []string{"switch:x", "flow:digest", "node:", "node:a:b", "node:iter:x:a", "attempt:step:x"} {
 		ref := agent.HaltRef{RunID: "r", Op: agent.OpRef{Kind: agent.OpStep, ID: id}, Cause: agent.HaltCrashed}
-		err := agent.ResolveHaltRef(context.Background(), agent.NewMemStore(), ref, agent.Outcome{Result: 1})
+		err := agent.ResolveHaltRef(context.Background(), agenttest.MemJournal(), ref, agent.Outcome{Result: 1})
 		if !errors.Is(err, agent.ErrConfig) {
 			t.Errorf("ResolveHaltRef on step %q: err = %v, want ErrConfig", id, err)
 		}
@@ -164,6 +165,7 @@ func (s *cancelOnInsert) Unwrap() agent.Store { return s.Store }
 // of halting, and the node's effect fires once.
 func TestLowering_NodeCancelledBeforeBodyIsReattempted(t *testing.T) {
 	mem := agent.NewMemStore()
+	j2 := agenttest.MustJournal(mem)
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
 	j, err := agent.NewJournal(&cancelOnInsert{Store: mem, name: "attempt:step:node:charge", cancel: cancel})
@@ -185,7 +187,7 @@ func TestLowering_NodeCancelledBeforeBodyIsReattempted(t *testing.T) {
 	if fired != 0 {
 		t.Fatalf("the cancelled drive ran the node's body %d times, want 0", fired)
 	}
-	recs, err := mem.History(context.Background(), "r")
+	recs, err := j2.History(context.Background(), "r")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -199,17 +201,17 @@ func TestLowering_NodeCancelledBeforeBodyIsReattempted(t *testing.T) {
 		t.Fatalf("after the cancelled drive the journal holds %v; want the node's marker and one not-started record", names(recs))
 	}
 
-	out, err := flow.Run(context.Background(), mem, "r", 5)
+	out, err := flow.Run(context.Background(), j2, "r", 5)
 	if err != nil || out != "charged 5" {
 		t.Fatalf("re-drive: out %q, err %v; want the node re-attempted, not a halt", out, err)
 	}
 	if fired != 1 {
 		t.Fatalf("the node's body ran %d times, want 1", fired)
 	}
-	if recs, err = mem.History(context.Background(), "r"); err != nil || !hasRecord(recs, "attempt:retry:1:step:node:charge") {
+	if recs, err = j2.History(context.Background(), "r"); err != nil || !hasRecord(recs, "attempt:retry:1:step:node:charge") {
 		t.Fatalf("the re-attempt claimed no numbered marker: %v (err %v)", names(recs), err)
 	}
-	if ok, diffs, err := flow.Conform(context.Background(), mem, "r"); err != nil || !ok {
+	if ok, diffs, err := flow.Conform(context.Background(), j2, "r"); err != nil || !ok {
 		t.Fatalf("Conform = %v, %v, %v; want the re-attempted run to conform", ok, diffs, err)
 	}
 }
@@ -217,15 +219,16 @@ func TestLowering_NodeCancelledBeforeBodyIsReattempted(t *testing.T) {
 // errNoComplete is what noComplete returns for a run's completion.
 var errNoComplete = errors.New("the completion was lost")
 
-// noComplete is a Durable that loses every run's completion: a flow driven through it runs to the
-// end and records everything but run:complete, as a process that died at the end would.
+// noComplete is a store that loses every run's completion: a flow driven over a Journal on it
+// runs to the end and records everything but run:complete, as a process that died at the end
+// would.
 type noComplete struct{ *agent.MemStore }
 
-func (s noComplete) Do(ctx context.Context, runID, name string, fn func(context.Context) (agent.Record, error)) (agent.Record, error) {
+func (s noComplete) Insert(ctx context.Context, runID, name string, data []byte) (agent.Entry, bool, error) {
 	if name == "run:complete" {
-		return agent.Record{}, errNoComplete
+		return agent.Entry{}, false, errNoComplete
 	}
-	return s.MemStore.Do(ctx, runID, name, fn)
+	return s.MemStore.Insert(ctx, runID, name, data)
 }
 
 // names lists the names of recs, for failure messages.
@@ -242,7 +245,7 @@ func names(recs []agent.Record) []string {
 // records nothing; the recorded start reads back through agent.RecordedStart.
 func TestLowering_RunStartHoldsTheFlowAndItsInput(t *testing.T) {
 	ctx := context.Background()
-	mem := agent.NewMemStore()
+	mem := agenttest.MemJournal()
 	var fired int
 	flow := effectFlow(t, &fired, Idempotent())
 	if _, err := flow.Run(ctx, mem, "r", 5); err == nil {
@@ -272,7 +275,7 @@ func TestLowering_RunStartHoldsTheFlowAndItsInput(t *testing.T) {
 	if _, err := otherFlow.Run(ctx, mem, "r", 5); !errors.Is(err, agent.ErrConfig) {
 		t.Fatalf("resume under another flow's name: err = %v, want ErrConfig", err)
 	}
-	a := agent.New(agent.NewScriptedModel(agent.TextTurn("hi")), mem)
+	a := agenttest.MustNew(agent.NewScriptedModel(agent.TextTurn("hi")), mem)
 	if _, err := a.Run(ctx, "r", "5"); !errors.Is(err, agent.ErrConfig) {
 		t.Fatalf("an Agent driving a flow's run: err = %v, want ErrConfig", err)
 	}
@@ -310,7 +313,7 @@ func TestLowering_RunStartComparesInputJSON(t *testing.T) {
 		Items []string `json:"items"`
 	}
 	ctx := context.Background()
-	mem := agent.NewMemStore()
+	mem := agenttest.MemJournal()
 	b := New[order, int]("orders")
 	b.Step("count", func(_ context.Context, o order) (int, error) { return len(o.Items), nil })
 	flow, err := b.Build()
@@ -396,7 +399,7 @@ func TestLowering_StepPauseGuard(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	mem := agent.NewMemStore()
+	mem := agenttest.MemJournal()
 	_, err = flow.Run(ctx, mem, "r", 1)
 	if !errors.Is(err, agent.ErrConfig) || agent.IsPause(err) {
 		t.Fatalf("a side-effect node that paused: err = %v, want ErrConfig and not a pause", err)
@@ -413,7 +416,7 @@ func TestLowering_StepPauseGuard(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	_, err = rflow.Run(ctx, agent.NewMemStore(), "r", 1)
+	_, err = rflow.Run(ctx, agenttest.MemJournal(), "r", 1)
 	if p, ok := errors.AsType[*agent.SignalPending](err); !ok || p.Name != "go" {
 		t.Fatalf("a retry-safe node that paused: err = %v, want its *agent.SignalPending", err)
 	}
@@ -422,7 +425,7 @@ func TestLowering_StepPauseGuard(t *testing.T) {
 // RecoverLoop drives a flow run that halts as a pause, not a failure: the halt is not reported,
 // while a flow run that fails is.
 func TestLowering_RecoverLoopTreatsAFlowHaltAsAPause(t *testing.T) {
-	mem := agent.NewMemStore()
+	mem := agenttest.MemJournal()
 	var fired int
 	halting := effectFlow(t, &fired)
 	if _, err := halting.Run(context.Background(), mem, "halting", 5); err == nil {
@@ -516,8 +519,8 @@ func TestLowering_ConformReadsTheLoweredKeys(t *testing.T) {
 		{"attempt:step:node:charge", agent.Record{Kind: agent.StepValue}, "attempt:step:node:charge (unexpected step)"},
 	} {
 		t.Run(tc.name+"/"+tc.diff, func(t *testing.T) {
-			mem := agent.NewMemStore()
-			if _, err := mem.Do(ctx, "r", tc.name, func(context.Context) (agent.Record, error) { return tc.rec, nil }); err != nil {
+			mem := agenttest.MemJournal()
+			if _, err := journaltest.Do(ctx, mem, "r", tc.name, func(context.Context) (agent.Record, error) { return tc.rec, nil }); err != nil {
 				t.Fatal(err)
 			}
 			ok, diffs, err := flow.Conform(ctx, mem, "r")
@@ -526,7 +529,7 @@ func TestLowering_ConformReadsTheLoweredKeys(t *testing.T) {
 			}
 		})
 	}
-	mem := agent.NewMemStore()
+	mem := agenttest.MemJournal()
 	if _, err := flow.Run(ctx, mem, "clean", 5); err == nil {
 		t.Fatal("first drive: want the node's error")
 	}

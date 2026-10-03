@@ -19,7 +19,7 @@ type askTool struct {
 func (t *askTool) Name() string                { return t.name }
 func (t *askTool) Description() string         { return "" }
 func (t *askTool) Safety() Safety              { return t.safety }
-func (t *askTool) ArgsSchema() json.RawMessage { return nil }
+func (t *askTool) ArgsSchema() json.RawMessage { return json.RawMessage(`{"type":"object"}`) }
 func (t *askTool) Call(ctx context.Context, _ json.RawMessage) (json.RawMessage, error) {
 	*t.calls++
 	v, err := Interrupt[string](ctx, t.key, "what should I use?")
@@ -34,12 +34,12 @@ func (t *askTool) Call(ctx context.Context, _ json.RawMessage) (json.RawMessage,
 
 // A tool pauses via Interrupt; Resume supplies a typed value; re-running continues.
 func TestInterrupt_PausesAndResumesTyped(t *testing.T) {
-	store := NewMemStore()
+	store := memJournal()
 	var calls int
 	var got string
 	tool := &askTool{name: "ask", safety: Safety{ReadOnly: true}, key: "q", calls: &calls, got: &got}
 	m := &scriptModel{turns: [][]Emit{toolTurn("c1", "ask", `{}`), textTurn("done")}}
-	a := New(m, store, tool)
+	a := mustNew(m, store, WithTools(tool))
 
 	_, err := a.Run(context.Background(), "r", "hi")
 	var intr *Interrupted
@@ -74,7 +74,7 @@ func TestInterrupt_PausesAndResumesTyped(t *testing.T) {
 
 // A struct resume value round-trips through the journal.
 func TestInterrupt_StructValue(t *testing.T) {
-	store := NewMemStore()
+	store := memJournal()
 	type choice struct {
 		Option string `json:"option"`
 		Weight int    `json:"weight"`
@@ -90,7 +90,7 @@ func TestInterrupt_StructValue(t *testing.T) {
 			return c.Option, nil
 		})
 	m := &scriptModel{turns: [][]Emit{toolTurn("c1", "pick", `{}`), textTurn("ok")}}
-	a := New(m, store, tool)
+	a := mustNew(m, store, WithTools(tool))
 
 	if _, err := a.Run(context.Background(), "r", "hi"); !errorsAsInterrupted(err) {
 		t.Fatalf("want interrupt, got %v", err)
@@ -109,11 +109,11 @@ func TestInterrupt_StructValue(t *testing.T) {
 // Interrupt from a non-retry-safe tool is a misuse and fails with ErrConfig (rather than
 // silently halting on resume).
 func TestInterrupt_RequiresRetrySafe(t *testing.T) {
-	store := NewMemStore()
+	store := memJournal()
 	var calls int
 	tool := &askTool{name: "write", safety: Safety{}, key: "q", calls: &calls} // not retry-safe
 	m := &scriptModel{turns: [][]Emit{toolTurn("c1", "write", `{}`), textTurn("done")}}
-	a := New(m, store, tool)
+	a := mustNew(m, store, WithTools(tool))
 
 	_, err := a.Run(context.Background(), "r", "hi")
 	if !errors.Is(err, ErrConfig) {

@@ -9,6 +9,7 @@ import (
 	"time"
 
 	"github.com/bide-ai/bide/agent"
+	"github.com/bide-ai/bide/agent/agenttest"
 	"github.com/bide-ai/bide/middleware"
 )
 
@@ -197,7 +198,12 @@ func TestHedge_BackupReusingToolUseIDLoses(t *testing.T) {
 	}
 	backup := &turnModel{delays: []time.Duration{time.Hour, 0}, msgs: []agent.Message{reuse, reuse}}
 
-	out, err := agent.New(primary, agent.NewMemStore(), lookup).Use(middleware.Hedge(0, backup)).WithMaxTurns(4).
+	out, err := agenttest.Must(agenttest.MustNew(
+		primary,
+		agenttest.MemJournal(),
+		agent.WithTools(lookup),
+		agent.WithMiddleware(middleware.Hedge(0, backup)),
+	).With(agent.WithMaxTurns(4))).
 		Run(context.Background(), "r", "go")
 	if err != nil {
 		t.Fatalf("Run: %v", err)

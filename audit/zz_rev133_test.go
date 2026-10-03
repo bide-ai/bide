@@ -11,6 +11,7 @@ import (
 	"time"
 
 	"github.com/bide-ai/bide/agent"
+	"github.com/bide-ai/bide/agent/agenttest"
 	"github.com/bide-ai/bide/middleware"
 )
 
@@ -18,7 +19,7 @@ import (
 // p1 bound for the rollback: e's grant must verify against d1's child, not against p1 or p2.
 func TestRev133_D1_NestedAcrossRotation(t *testing.T) {
 	ctx := context.Background()
-	store := agent.NewMemStore()
+	store := agenttest.MemJournal()
 	signer := rev117eSigner(t)
 	p1, p2 := m11Root(t, signer, "p1"), m11Root(t, signer, "p2")
 	var refunds atomic.Int32
@@ -32,20 +33,34 @@ func TestRev133_D1_NestedAcrossRotation(t *testing.T) {
 	})
 	cfg := AttenuationConfig{Store: store, Narrow: narrowLimitBy(1), Rules: rev117eRules}
 	tools := func() []agent.Tool {
-		inner := agent.New(agent.NewScriptedModel(agent.ToolTurn("i1", "chargeE", `{}`), agent.TextTurn("e done")), store, charge("chargeE"))
+		inner := agenttest.MustNew(
+			agent.NewScriptedModel(agent.ToolTurn("i1", "chargeE", `{}`), agent.TextTurn("e done")),
+			store,
+			agent.WithTools(charge("chargeE")),
+		)
 		e := AttenuatingSubAgent("e", "inner", inner, cfg)
-		sub1 := agent.New(agent.NewScriptedModel(agent.ToolTurn("s0", "e", `{"task":"x"}`), agent.ToolTurn("s1", "charge1", `{}`), agent.TextTurn("d1 done")),
-			store, charge("charge1"), e)
-		sub2 := agent.New(agent.NewScriptedModel(agent.ToolTurn("s2", "charge2", `{}`), agent.ToolTurn("s3", "boom", `{}`), agent.TextTurn("x")),
-			store, charge("charge2"), boom)
+		sub1 := agenttest.MustNew(
+			agent.NewScriptedModel(agent.ToolTurn("s0", "e", `{"task":"x"}`), agent.ToolTurn("s1", "charge1", `{}`), agent.TextTurn("d1 done")),
+			store,
+			agent.WithTools(charge("charge1"), e),
+		)
+		sub2 := agenttest.MustNew(
+			agent.NewScriptedModel(agent.ToolTurn("s2", "charge2", `{}`), agent.ToolTurn("s3", "boom", `{}`), agent.TextTurn("x")),
+			store,
+			agent.WithTools(charge("charge2"), boom),
+		)
 		return []agent.Tool{AttenuatingSubAgent("d1", "first", sub1, cfg), AttenuatingSubAgent("d2", "second", sub2, cfg)}
 	}
-	parent1 := agent.New(agent.NewScriptedModel(agent.ToolTurn("c1", "d1", `{"task":"a"}`), agent.ErrorTurn(errors.New("provider down"))), store, tools()...)
+	parent1 := agenttest.MustNew(
+		agent.NewScriptedModel(agent.ToolTurn("c1", "d1", `{"task":"a"}`), agent.ErrorTurn(errors.New("provider down"))),
+		store,
+		agent.WithTools(tools()...),
+	)
 	if _, err := parent1.RunSaga(WithGrant(ctx, p1, signer), "trip", "go"); err == nil {
 		t.Fatal("drive 1: want the provider error")
 	}
 	m := agent.NewScriptedModel(agent.ToolTurn("c1", "d1", `{"task":"a"}`), agent.ToolTurn("c2", "d2", `{"task":"b"}`), agent.TextTurn("x"))
-	_, err := agent.New(m, store, tools()...).RunSaga(WithRollbackGrants(WithGrant(ctx, p2, signer), signer, p1), "trip", "go")
+	_, err := agenttest.MustNew(m, store, agent.WithTools(tools()...)).RunSaga(WithRollbackGrants(WithGrant(ctx, p2, signer), signer, p1), "trip", "go")
 	var ab *agent.SagaAborted
 	if !errors.As(err, &ab) {
 		t.Fatalf("RunSaga = %v", err)
@@ -60,7 +75,7 @@ func TestRev133_D1_NestedAcrossRotation(t *testing.T) {
 // and still must come out as an unknown outcome, never a rollback that stops.
 func TestRev133_D2_GuardRefusalThroughToolRetry(t *testing.T) {
 	ctx := context.Background()
-	store := agent.NewMemStore()
+	store := agenttest.MemJournal()
 	signer := rev117eSigner(t)
 	notAfter := time.Now().Unix() + 1
 	narrow := func(parent Grant, sub string) Grant {
@@ -78,14 +93,14 @@ func TestRev133_D2_GuardRefusalThroughToolRetry(t *testing.T) {
 		}
 		return "", errors.New("sold out")
 	})
-	sub, err := agent.Build(rev117eMultiModel{calls: [][2]string{{"s1", "boom"}, {"s2", "idem"}}}, store.Journal(),
-		agent.WithTools(boom, idem), agent.WithToolMiddleware(middleware.ToolRetry(1, middleware.WithBackoff(time.Millisecond, time.Millisecond))))
+	sub, err := agent.New(rev117eMultiModel{calls: [][2]string{{"s1", "boom"}, {"s2", "idem"}}}, store,
+		agent.WithTools(boom, idem), agent.WithToolMiddleware(middleware.ToolRetry(1, middleware.WithBackoff(time.Millisecond, time.Millisecond))),
+		agent.WithMaxConcurrency(1))
 	if err != nil {
 		t.Fatal(err)
 	}
-	sub.SetMaxConcurrency(1)
 	deleg := AttenuatingSubAgent("deleg", "d", sub, AttenuationConfig{Store: store, Narrow: narrow, Rules: rev117eRules})
-	parent := agent.New(rev117eMultiModel{calls: [][2]string{{"c1", "deleg"}}}, store, deleg)
+	parent := agenttest.MustNew(rev117eMultiModel{calls: [][2]string{{"c1", "deleg"}}}, store, agent.WithTools(deleg))
 	_, err = parent.RunSaga(WithGrant(ctx, m11Root(t, signer, "p"), signer), "trip", "go")
 	var ab *agent.SagaAborted
 	if !errors.As(err, &ab) {
@@ -102,14 +117,14 @@ func TestRev133_D2_GuardRefusalThroughToolRetry(t *testing.T) {
 // its write a second time.
 func TestRev133_D3_NoDoubleCompensation(t *testing.T) {
 	ctx := context.Background()
-	store := agent.NewMemStore()
+	store := agenttest.MemJournal()
 	var undone atomic.Int32
 	charge := agent.CompensatedFunc("charge", "a write", agent.Safety{},
 		func(context.Context, struct{}) (string, error) { return "charged", nil },
 		func(context.Context, struct{}, string) error { undone.Add(1); return nil })
 	bad := agent.Func("bad", "", agent.Safety{}, func(context.Context, struct{}) (string, error) { return "", errors.New("no") })
 	build := func(m agent.Model, tools ...agent.Tool) *agent.Agent {
-		a, err := agent.Build(m, store.Journal(), agent.WithTools(tools...))
+		a, err := agent.New(m, store, agent.WithTools(tools...))
 		if err != nil {
 			t.Fatal(err)
 		}

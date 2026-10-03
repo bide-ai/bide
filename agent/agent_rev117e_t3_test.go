@@ -40,8 +40,13 @@ func TestRev117e_T3_RedriveDenialAfterEarlierAttempt(t *testing.T) {
 			return next(ctx, call)
 		}
 	})
-	st := NewMemStore()
-	a := New(NewScriptedModel(ToolTurn("c1", "charge", `{}`), TextTurn("done")), st, charge).UseTool(mw)
+	st := memJournal()
+	a := mustNew(
+		NewScriptedModel(ToolTurn("c1", "charge", `{}`), TextTurn("done")),
+		st,
+		WithTools(charge),
+		WithToolMiddleware(mw),
+	)
 	if _, err := a.RunSaga(ctx1, "r", "go"); err == nil {
 		t.Fatal("first drive: want the cancellation")
 	}
@@ -74,7 +79,12 @@ func TestRev117e_T3_InDriveRetryAfterSuccess(t *testing.T) {
 			return next(ctx, call) // the result check wants a second look
 		}
 	})
-	a := New(NewScriptedModel(ToolTurn("c1", "charge", `{}`), TextTurn("done")), NewMemStore(), charge).UseTool(retry)
+	a := mustNew(
+		NewScriptedModel(ToolTurn("c1", "charge", `{}`), TextTurn("done")),
+		memJournal(),
+		WithTools(charge),
+		WithToolMiddleware(retry),
+	)
 	_, err := a.RunSaga(context.Background(), "r", "go")
 	var ab *SagaAborted
 	if !errors.As(err, &ab) || !slices.Contains(ab.UnknownOutcome, "charge") {
@@ -96,7 +106,12 @@ func TestRev117e_T3_FirstAttemptOwnFailureIsKnown(t *testing.T) {
 			return next(ctx, call) // a retry after the tool's own failure
 		}
 	})
-	a := New(NewScriptedModel(ToolTurn("c1", "charge", `{}`), TextTurn("done")), NewMemStore(), charge).UseTool(retry)
+	a := mustNew(
+		NewScriptedModel(ToolTurn("c1", "charge", `{}`), TextTurn("done")),
+		memJournal(),
+		WithTools(charge),
+		WithToolMiddleware(retry),
+	)
 	_, err := a.RunSaga(context.Background(), "r", "go")
 	var ab *SagaAborted
 	if !errors.As(err, &ab) || len(ab.UnknownOutcome) != 0 {
@@ -108,11 +123,11 @@ func TestRev117e_T3_FirstAttemptOwnFailureIsKnown(t *testing.T) {
 // journaled (its "may have begun" marker): the attempt may have taken effect.
 func TestRev117e_T3_RollbackReportsDeniedStepWithEarlierAttempt(t *testing.T) {
 	ctx := context.Background()
-	st := NewMemStore()
+	st := memJournal()
 	charge := CompensatedFunc("charge", "", Safety{Idempotent: true},
 		func(context.Context, struct{}) (string, error) { return "ok", nil },
 		func(context.Context, struct{}, string) error { return nil })
-	a := New(NewScriptedModel(TextTurn("x")), st, charge)
+	a := mustNew(NewScriptedModel(TextTurn("x")), st, WithTools(charge))
 	asst := &Message{Role: RoleAssistant, Parts: []Part{ToolUse{ID: "c1", Name: "charge", Args: json.RawMessage(`{}`)}}}
 	safety := Safety{Idempotent: true}
 	for _, r := range []Record{
@@ -120,7 +135,7 @@ func TestRev117e_T3_RollbackReportsDeniedStepWithEarlierAttempt(t *testing.T) {
 		{Name: sagaArgsStep("c1"), Kind: StepValue, Result: json.RawMessage(`{}`)},
 		{Name: ToolResultStep("c1"), Kind: StepToolResult, ToolUseID: "c1", IsError: true, Result: json.RawMessage(`"tool call denied by human"`), Safety: &safety},
 	} {
-		if _, err := st.Do(ctx, "r", r.Name, func(context.Context) (Record, error) { return r, nil }); err != nil {
+		if _, err := st.do(ctx, "r", r.Name, func(context.Context) (Record, error) { return r, nil }); err != nil {
 			t.Fatal(err)
 		}
 	}
@@ -160,7 +175,7 @@ func TestRev117e_T4_RollbackRerunRejectedSuccessIsUnknown(t *testing.T) {
 			return res, err
 		}
 	})
-	a := New(t4TwoCalls{}, NewMemStore(), charge, fail).UseTool(check)
+	a := mustNew(t4TwoCalls{}, memJournal(), WithTools(charge, fail), WithToolMiddleware(check))
 	for drive := 1; drive <= 2; drive++ {
 		_, err := a.RunSaga(context.Background(), "r", "go")
 		var ab *SagaAborted

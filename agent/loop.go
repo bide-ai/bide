@@ -82,13 +82,10 @@ func (a *Agent) runLoop(ctx context.Context, runID string, d *driveSpec) (Messag
 	if err := checkRunID(ctx, runID); err != nil {
 		return Message{}, usageTotals{}, 0, err
 	}
-	if err := a.checkTools(); err != nil {
-		return Message{}, usageTotals{}, 0, err
-	}
 	if err := a.checkRequiredChoice(); err != nil {
 		return Message{}, usageTotals{}, 0, err
 	}
-	if err := checkDurable(a.store); err != nil {
+	if err := checkJournal(a.store); err != nil {
 		return Message{}, usageTotals{}, 0, err
 	}
 	// protocol:delegation begin SLink
@@ -122,7 +119,7 @@ func (a *Agent) runLoop(ctx context.Context, runID string, d *driveSpec) (Messag
 			// protocol:spend begin Open
 			// protocol:toolcall begin DOpen
 			var err error
-			if recs, err = openRun(open, a.store, runID); err != nil {
+			if recs, err = a.store.open(open, runID); err != nil {
 				return Message{}, usageTotals{}, 0, err
 			}
 			// protocol:toolcall end
@@ -319,7 +316,7 @@ func (a *Agent) runLoop(ctx context.Context, runID string, d *driveSpec) (Messag
 		}
 		if seen {
 			if saga {
-				r, _, err := lookup(ctx, p.rootStore, p.root, runCancelRequestedStep)
+				r, _, err := p.rootStore.Get(ctx, p.root, runCancelRequestedStep)
 				if err != nil {
 					return Message{}, tot, 0, err
 				}
@@ -462,7 +459,7 @@ func (a *Agent) runLoop(ctx context.Context, runID string, d *driveSpec) (Messag
 				built  *Record       // the record the step built, if it ran
 				answer ModelResponse // the response it records
 			)
-			rec, err := a.store.Do(ctx, runID, modelStep(modelSeq),
+			rec, err := a.store.do(ctx, runID, modelStep(modelSeq),
 				func(ctx context.Context) (Record, error) {
 					ts.usedIDs = toolUseIDs(msgs)
 					sent := msgs
@@ -520,7 +517,7 @@ func (a *Agent) runLoop(ctx context.Context, runID string, d *driveSpec) (Messag
 				landed := false
 				var lerr error
 				if built != nil {
-					held, landed, lerr = lookup(context.WithoutCancel(ctx), a.store, runID, modelStep(seq))
+					held, landed, lerr = a.store.Get(context.WithoutCancel(ctx), runID, modelStep(seq))
 				}
 				switch {
 				case built != nil && lerr != nil:
@@ -660,7 +657,7 @@ func (a *Agent) runLoop(ctx context.Context, runID string, d *driveSpec) (Messag
 			}
 			if denied { // record a denial and let the model react
 				const deniedResult = `"tool call denied by human"`
-				if _, err := putRecord(ctx, a.store, runID, ToolResultStep(tu.ID), Record{Kind: StepToolResult, ToolUseID: tu.ID, IsError: true, Result: json.RawMessage(deniedResult), Safety: recordedSafety(*spec), Approval: spec.Approval.Clone()}); err != nil {
+				if _, err := a.store.put(ctx, runID, ToolResultStep(tu.ID), Record{Kind: StepToolResult, ToolUseID: tu.ID, IsError: true, Result: json.RawMessage(deniedResult), Safety: recordedSafety(*spec), Approval: spec.Approval.Clone()}); err != nil {
 					return leave(err)
 				}
 				done[tu.ID] = true
@@ -815,7 +812,7 @@ func (a *Agent) runLoop(ctx context.Context, runID string, d *driveSpec) (Messag
 				// side effect is left with no recorded outcome and resume would halt on it (or, worse,
 				// re-fire it). The attempt marker above stays on gctx: if we are cancelled before it
 				// commits, the tool has not started, so there is nothing to record.
-				rec, err := recordFresh(context.WithoutCancel(gctx), a.store, runID, ToolResultStep(c.tu.ID), func(context.Context) (Record, error) {
+				rec, err := a.store.doFresh(context.WithoutCancel(gctx), runID, ToolResultStep(c.tu.ID), func(context.Context) (Record, error) {
 					if claimed && ctxDone(sctx) {
 						// Cancelled after the claim and before the call: the tool is not called,
 						// and that is recorded below, so a resume calls it instead of halting.

@@ -8,6 +8,7 @@ import (
 	"testing"
 
 	"github.com/bide-ai/bide/agent"
+	"github.com/bide-ai/bide/agent/agenttest"
 	amodel "github.com/bide-ai/bide/plan/internal/digesttypes/a/model"
 	bmodel "github.com/bide-ai/bide/plan/internal/digesttypes/b/model"
 )
@@ -71,12 +72,13 @@ func TestDigest_CommitsToPredicateAndBlockNames(t *testing.T) {
 func TestRun_RefusesAFlowWithASwappedPredicate(t *testing.T) {
 	ctx := context.Background()
 	store := agent.NewMemStore()
+	j := agenttest.MustJournal(store)
 	// The first drive does not complete (its completion is lost), so the run is resumed, not
 	// returned as finished.
-	if _, err := loadNames(t, "rush", "approve").Run(ctx, noComplete{store}, "r1", cfgOrder{ID: 1, Rush: true}); !errors.Is(err, errNoComplete) {
+	if _, err := loadNames(t, "rush", "approve").Run(ctx, agenttest.MustJournal(noComplete{store}), "r1", cfgOrder{ID: 1, Rush: true}); !errors.Is(err, errNoComplete) {
 		t.Fatalf("first run: %v", err)
 	}
-	_, err := loadNames(t, "notRush", "approve").Run(ctx, store, "r1", cfgOrder{ID: 1, Rush: true})
+	_, err := loadNames(t, "notRush", "approve").Run(ctx, j, "r1", cfgOrder{ID: 1, Rush: true})
 	if !errors.Is(err, agent.ErrConfig) {
 		t.Fatalf("resume under a flow with a swapped predicate: err = %v, want ErrConfig", err)
 	}

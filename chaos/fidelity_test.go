@@ -3,17 +3,13 @@ package chaos
 import (
 	"context"
 	"errors"
+	"sync"
 	"testing"
 
 	"github.com/bide-ai/bide/agent"
+	"github.com/bide-ai/bide/agent/agenttest"
 	"github.com/bide-ai/bide/agent/storetest"
 )
-
-// The crash-injecting wrapper, when it does not crash, hands back its inner store's record
-// unchanged, so live and replay agree through it as they do on the store itself.
-func TestCrashStore_Fidelity(t *testing.T) {
-	storetest.RunDurable(t, func(*testing.T) agent.Durable { return &crashStore{inner: agent.NewMemStore()} })
-}
 
 // The storage-port crash wrapper, when it does not crash, is a store like any other.
 func TestCrashingStore_MeetsTheStoreRequirements(t *testing.T) {
@@ -57,7 +53,7 @@ func TestCrashingStore_StaysDeadAfterTheCrash(t *testing.T) {
 // the ADK adapter's for any System built on crashStore.
 func TestCrashStore_StaysDeadAfterTheCrash(t *testing.T) {
 	ctx := context.Background()
-	inner := agent.NewMemStore()
+	inner := agenttest.MemJournal()
 	cs := &crashStore{inner: inner, crashAt: 1}
 	step := func(name string, ran *bool) error {
 		_, err := cs.Do(ctx, "r", name, func(context.Context) (agent.Record, error) {
@@ -85,7 +81,7 @@ func TestCrashStore_StaysDeadAfterTheCrash(t *testing.T) {
 // A dead store does not replay either: a step recorded before the crash is not served after it.
 func TestCrashStore_NoReplayAfterTheCrash(t *testing.T) {
 	ctx := context.Background()
-	cs := &crashStore{inner: agent.NewMemStore(), crashAt: 2}
+	cs := &crashStore{inner: agenttest.MemJournal(), crashAt: 2}
 	ok := func(context.Context) (agent.Record, error) { return agent.Record{Kind: agent.StepValue}, nil }
 	if _, err := cs.Do(ctx, "r", "a", ok); err != nil {
 		t.Fatal(err)
@@ -98,26 +94,32 @@ func TestCrashStore_NoReplayAfterTheCrash(t *testing.T) {
 	}
 }
 
-// gateStore holds a step named "late" until released, so a test can land the crash while that
+// gateStore holds the first read of a step named "late" until released: the journal's read of
+// whether the step is recorded, which comes before its fn runs. A test lands the crash while that
 // step is already inside the store.
 type gateStore struct {
-	agent.Durable
+	agent.Store
+	once             sync.Once
 	entered, release chan struct{}
 }
 
-func (g gateStore) Do(ctx context.Context, runID, name string, fn func(context.Context) (agent.Record, error)) (agent.Record, error) {
+func (g *gateStore) Unwrap() agent.Store { return g.Store }
+
+func (g *gateStore) Get(ctx context.Context, runID, name string) (agent.Entry, bool, error) {
 	if name == "late" {
-		close(g.entered)
-		<-g.release
+		g.once.Do(func() {
+			close(g.entered)
+			<-g.release
+		})
 	}
-	return g.Durable.Do(ctx, runID, name, fn)
+	return g.Store.Get(ctx, runID, name)
 }
 
 // A step already inside the store when the crash lands does not run its side effect either.
 func TestCrashStore_InFlightStepDoesNotRunAfterTheCrash(t *testing.T) {
 	ctx := context.Background()
-	g := gateStore{Durable: agent.NewMemStore(), entered: make(chan struct{}), release: make(chan struct{})}
-	cs := &crashStore{inner: g, crashAt: 1}
+	g := &gateStore{Store: agent.NewMemStore(), entered: make(chan struct{}), release: make(chan struct{})}
+	cs := &crashStore{inner: agenttest.MustJournal(g), crashAt: 1}
 	ran := false
 	done := make(chan error)
 	go func() {

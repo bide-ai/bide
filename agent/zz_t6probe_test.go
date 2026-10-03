@@ -47,9 +47,9 @@ func TestT6_CacheAnswerWhileEarlierDriveInvocationRuns(t *testing.T) {
 			return json.RawMessage(`"ok"`), nil // a cache hit, without next
 		}
 	})
-	st := NewMemStore()
+	st := memJournal()
 	m := NewScriptedModel(ToolTurn("c1", "charge", `{}`), ToolTurn("c2", "fail", `{}`), TextTurn("done"))
-	a := New(m, st, charge, fail).UseTool(leak)
+	a := mustNew(m, st, WithTools(charge, fail), WithToolMiddleware(leak))
 	if _, err := a.RunSaga(ctx1, "r", "go"); err == nil {
 		t.Fatal("first drive: want the cancellation")
 	}

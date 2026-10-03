@@ -25,6 +25,7 @@ import (
 	"testing"
 
 	"github.com/bide-ai/bide/agent"
+	"github.com/bide-ai/bide/agent/agenttest"
 )
 
 type hOutcome int
@@ -270,7 +271,7 @@ func hSubjects() []hSubject {
 			}
 			charge := agent.Func("charge", "", agent.Safety{Idempotent: rs}, func(context.Context, struct{}) (string, error) { return p.fire(drive) })
 			m := agent.NewScriptedModel(agent.ToolTurn("c1", "charge", `{}`), agent.TextTurn("done"))
-			msg, err := agent.New(m, j, charge).SetMaxConcurrency(1).Run(ctx, runID, "hi")
+			msg, err := agenttest.MustNew(m, j, agent.WithTools(charge), agent.WithMaxConcurrency(1)).Run(ctx, runID, "hi")
 			return msg.Text(), err
 		}
 	}

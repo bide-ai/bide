@@ -8,17 +8,19 @@ import (
 	"testing"
 
 	"github.com/bide-ai/bide/agent"
+	"github.com/bide-ai/bide/agent/agenttest"
+	"github.com/bide-ai/bide/internal/journaltest"
 )
 
 // TestSignAbsenceRoot_OneCall confirms the one-step signer produces a tree head that
 // ProveAbsentBundle accepts, and the resulting proof verifies offline.
 func TestSignAbsenceRoot_OneCall(t *testing.T) {
 	ctx := context.Background()
-	store := agent.NewMemStore()
+	store := agenttest.MemJournal()
 	const runID = "run1"
 
 	res, _ := json.Marshal(map[string]any{"event": "e", "applied": true, "policy_digest": "aaaa"})
-	store.Do(ctx, runID, "call1", func(context.Context) (agent.Record, error) {
+	journaltest.Do(ctx, store, runID, "call1", func(context.Context) (agent.Record, error) {
 		return agent.Record{Kind: agent.StepToolResult, ToolUseID: "call1", Result: res}, nil
 	})
 	recs, _ := store.History(ctx, runID)

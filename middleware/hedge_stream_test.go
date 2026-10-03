@@ -7,6 +7,7 @@ import (
 	"time"
 
 	"github.com/bide-ai/bide/agent"
+	"github.com/bide-ai/bide/agent/agenttest"
 	"github.com/bide-ai/bide/middleware"
 )
 
@@ -52,7 +53,7 @@ func render(as *agent.AgentStream) string {
 // then keeps producing deltas after the run has finished and its event stream has closed.
 func TestHedge_StreamShowsOnlyTheWinner(t *testing.T) {
 	backup := &stubModel{text: "backup", delay: 5 * time.Millisecond}
-	a := agent.New(lateStreamer{}, agent.NewMemStore()).Use(middleware.Hedge(0, backup))
+	a := agenttest.MustNew(lateStreamer{}, agenttest.MemJournal(), agent.WithMiddleware(middleware.Hedge(0, backup)))
 
 	as := a.Stream(context.Background(), "r1", "hi")
 	streamed := render(as)
@@ -101,7 +102,7 @@ func (earlyStreamer) Stream(ctx context.Context, _ agent.Request) (*agent.Stream
 // not be what the run recorded.
 func TestHedge_StreamMatchesRecordedAnswer(t *testing.T) {
 	backup := &stubModel{text: "backup", delay: 20 * time.Millisecond}
-	a := agent.New(earlyStreamer{}, agent.NewMemStore()).Use(middleware.Hedge(0, backup))
+	a := agenttest.MustNew(earlyStreamer{}, agenttest.MemJournal(), agent.WithMiddleware(middleware.Hedge(0, backup)))
 
 	as := a.Stream(context.Background(), "r1", "hi")
 	streamed := render(as)
@@ -135,8 +136,8 @@ func (m meteredStub) Stream(context.Context, agent.Request) (*agent.Stream, erro
 // usage the run records for the call, as a live stream does.
 func TestHedge_StreamedFinishCarriesWinnerUsage(t *testing.T) {
 	u := agent.Usage{InputTokens: 30, OutputTokens: 7, CacheReadTokens: 5}
-	store := agent.NewMemStore()
-	a := agent.New(earlyStreamer{}, store).Use(middleware.Hedge(0, meteredStub{u: u}))
+	store := agenttest.MemJournal()
+	a := agenttest.MustNew(earlyStreamer{}, store, agent.WithMiddleware(middleware.Hedge(0, meteredStub{u: u})))
 
 	as := a.Stream(context.Background(), "r1", "hi")
 	var finishes []agent.Finish

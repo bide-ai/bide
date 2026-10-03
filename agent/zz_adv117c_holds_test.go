@@ -39,8 +39,12 @@ func TestAdv117c_ReachedBeatsSentinel(t *testing.T) {
 					cancel()
 					return "", fmt.Errorf("declined (%w)", ErrToolNotCalled)
 				})
-				subStore := NewMemStore()
-				sub := New(NewScriptedModel(ToolTurn("i1", "inner", `{}`), TextTurn("done")), subStore, innerTool)
+				subStore := memJournal()
+				sub := mustNew(
+					NewScriptedModel(ToolTurn("i1", "inner", `{}`), TextTurn("done")),
+					subStore,
+					WithTools(innerTool),
+				)
 				tool = SubAgent("charge", "", sub)
 			} else {
 				tool = Func("charge", "", Safety{}, func(context.Context, struct{}) (string, error) {
@@ -49,18 +53,18 @@ func TestAdv117c_ReachedBeatsSentinel(t *testing.T) {
 					return "", fmt.Errorf("declined (%w)", ErrToolNotCalled)
 				})
 			}
-			store := NewMemStore()
+			store := memJournal()
 			args := `{}`
 			if s.inner {
 				args = `{"task":"x"}`
 			}
 			m := NewScriptedModel(ToolTurn("c1", "charge", args), TextTurn("done"))
-			a := New(m, store, tool)
+			a := mustNew(m, store, WithTools(tool))
 			if s.mw != nil {
-				a = a.UseTool(s.mw)
+				a = must(a.With(WithToolMiddleware(s.mw)))
 			}
 			_, err1 := a.Run(ctx, "r1", "go")
-			_, err2 := New(m, store, tool).Run(context.Background(), "r1", "go")
+			_, err2 := mustNew(m, store, WithTools(tool)).Run(context.Background(), "r1", "go")
 			var halt *OutcomeUnknown
 			if calls.Load() != 1 || !errors.As(err2, &halt) {
 				t.Fatalf("calls %d; first %v; resume %v", calls.Load(), err1, err2)
