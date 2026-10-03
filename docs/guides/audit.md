@@ -623,7 +623,7 @@ bide-audit verify-governed-action -action action.json -policy-bundle policy.json
 ### Anchoring the convergence proof itself
 
 `gsm.Registry.Build` checks convergence exhaustively at build time (WFC over every repair chain, CC
-over every event pair across the enumerated state space; see
+over every independent event pair, on the valid states (and the zero state); see
 [known limitations](../KNOWN-LIMITATIONS.md#governed-state-gsm)) and returns a `Report`.
 `govern.CertifyConvergence(report, digest)` carries that result across as a portable
 `ConfluenceCertificate`: the WFC and CC verdicts, the longest compensation chain, the number of

@@ -102,7 +102,8 @@ state; a second, independent implementation can re-check that verdict, so one ve
 not pass a non-convergent machine silently.** That second check runs only where it is wired in:
 here, when `GSM_AST_CHECKER` is set (below); in bide's required `gsm machine gate` CI check, on
 every machine the governance examples build (`.github/gsm-gate`); and, since gsm v0.12.0, inside
-`Build` itself, which runs oracles generated from the proof before it returns a machine (see
+`Build` itself, which runs the table oracle (and, within its fragment and cap, the rules oracle),
+generated from the proof, before it returns a machine (see
 [known limitations](../KNOWN-LIMITATIONS.md#governed-state-gsm) for their scope). The two-independent-implementations principle:
 if two programs written from the same axiom-free proof, by different routes, both accept a
 machine, a single implementation bug is far less likely to have admitted a bad one.

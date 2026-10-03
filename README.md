@@ -182,8 +182,9 @@ skipped the commute check for event pairs it judged independent from what they w
 checking what their guards and effects read, so a machine where one event's guard or effect reads a
 variable another event writes (a `ship` event guarded on `paid`, which `pay` sets) could be
 certified convergent when it is not. The theorem is correct; the implementation applied it without
-checking that precondition. gsm v0.12.0's `Build` checks every event pair exactly. A convergence
-verdict or certificate recorded under v0.11.0 is not covered by that fix; see
+checking that precondition. gsm v0.12.0's `Build` checks every pair it checks for CC (every event
+pair, or only the pairs declared with `Independent`) exactly, with no footprint shortcut. A
+convergence verdict or certificate recorded under v0.11.0 is not covered by that fix; see
 [known limitations](docs/KNOWN-LIMITATIONS.md#governed-state-gsm).
 
 Made concrete at scale: an integration test drives up to **10,000,000 governed agents, 2,048 at a

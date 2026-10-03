@@ -289,12 +289,14 @@ events write, and did not look at what their guards and effects read, so a machi
 event's guard or effect reads a variable another event writes could pass `Build` although two
 orders of its events end in different states (the order machine with `pay` and a `ship` event
 guarded on `paid` is the standard case). bide now requires gsm v0.12.0, whose `Build` checks every
-event pair exactly. A `govern.CertifyConvergence` certificate, or any other verdict, produced under
-v0.11.0 and anchored in a trail is still what v0.11.0 said: rebuild the machine under v0.12.0 and
-record a new certificate before relying on it.
+pair it checks for CC (every event pair, or only the pairs declared with `Independent`) exactly,
+with no footprint shortcut. A `govern.CertifyConvergence` certificate, or any other verdict,
+produced under v0.11.0 and anchored in a trail is still what v0.11.0 said: rebuild the machine
+under v0.12.0 and record a new certificate before relying on it.
 
 **What the proof-derived checks cover.** Since gsm v0.12.0, `Build` returns a machine only after
-oracles generated from gsm's Coq/Rocq proof re-check it in-process:
+the table oracle (and, within its fragment and cap, the rules oracle), generated from gsm's Coq/Rocq
+proof, re-checks it in-process:
 
 - The table oracle checks every machine `Build` returns: its step tables, for every state.
   `BuildCompositional` is checked per footprint component, and independence across components rests

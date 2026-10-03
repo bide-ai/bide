@@ -321,8 +321,9 @@ go run ./quorum     # governed model quorum: k-of-n agreement gates the commit, 
 - **Verdicts recorded under gsm v0.11.0.** bide required gsm v0.11.0 before; its `Build` skipped
   the CC check for event pairs it judged independent from what they write, without checking what
   their guards and effects read, so it could certify a machine that does not converge. gsm v0.12.0,
-  which bide requires now, checks every pair exactly; a verdict or certificate recorded under
-  v0.11.0 is not covered by that fix. See
+  which bide requires now, checks every pair it checks for CC (every event pair, or only the pairs
+  declared with `Independent`) exactly, with no footprint shortcut; a verdict or certificate
+  recorded under v0.11.0 is not covered by that fix. See
   [known limitations](../KNOWN-LIMITATIONS.md#governed-state-gsm), which also gives what the
   proof-derived checks cover.
 - **Finite state spaces.** The semantic state must be finite (bounded enums/ints). Unbounded
@@ -355,9 +356,9 @@ read-footprint precondition, which gsm v0.12.0 fixed (see [Limits](#limits)).
 **Two independent oracles are extracted from the Coq development**: a *table oracle* that
 re-certifies that gsm's emitted step tables converge, and a *rules oracle* that recomputes
 convergence straight from the combinator declarations (trusting neither gsm's enumeration nor its
-normalization). Since gsm v0.12.0, `Build` runs oracles generated from the proof in-process
-before it returns a machine; their scope is in
-[known limitations](../KNOWN-LIMITATIONS.md#governed-state-gsm). bide's required `gsm machine gate`
+normalization). Since gsm v0.12.0, `Build` runs the table oracle (and, within its fragment and
+cap, the rules oracle), generated from the proof, in-process before it returns a machine; their
+scope is in [known limitations](../KNOWN-LIMITATIONS.md#governed-state-gsm). bide's required `gsm machine gate`
 CI check also runs the two extracted checkers on every machine the governance examples build. An auditor can run the rules oracle on a disclosed
 policy with `bide-audit`'s `-checker` flag (see [Audit](audit.md)). The rules are built from a fixed combinator vocabulary rather than arbitrary Go closures,
 which is what makes them inspectable and serializable to those checkers in the first place; and
