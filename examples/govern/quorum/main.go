@@ -67,8 +67,7 @@ func main() {
 // buildPolicy expresses the k-of-n requirement as a gsm invariant. The decision may be committed
 // only with quorum, and the commit event is guarded so it is a no-op below k. Build succeeding is
 // gsm's certificate that the policy converges (WFC + CC) over every (decision, votes_for,
-// committed) state. commit is the only event, so no event reads another's writes and the gsm
-// v0.11.0 Build gap does not apply.
+// committed) state.
 func buildPolicy() (*gsm.Machine, gsm.Var, gsm.Var, string) {
 	r := gsm.NewRegistry("model-quorum")
 	decision := r.Enum("decision", "approve", "deny", "escalate")

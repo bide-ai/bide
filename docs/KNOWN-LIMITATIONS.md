@@ -282,33 +282,36 @@ be public.
 
 ## Governed state (gsm)
 
-**gsm v0.11.0's `Build` can certify a machine that does not converge.** bide's `govern` module pins
-gsm v0.11.0. Its `Build` skips the compensation-commutativity (CC) check for an event pair it
-judges independent from what the two events write, and does not look at what their guards and
-effects read. The Coq/Rocq lemma behind that shortcut assumes each event reads only its own
-footprint, and v0.11.0 does not check that precondition. So a machine where one event's guard or
-effect reads a variable another event writes can pass `Build` although two orders of its events end
-in different states: the order machine with `pay` and a `ship` event guarded on `paid` is the
-standard case. Two events that write the same variable no invariant watches are skipped the same
-way. The convergence theorem itself is correct; the gap is in how v0.11.0 applies it.
+**A convergence verdict recorded under gsm v0.11.0 is not covered by v0.12.0's fix.** bide's
+`govern` module required gsm v0.11.0 before this release. Its `Build` skipped the
+compensation-commutativity (CC) check for an event pair it judged independent from what the two
+events write, and did not look at what their guards and effects read, so a machine where one
+event's guard or effect reads a variable another event writes could pass `Build` although two
+orders of its events end in different states (the order machine with `pay` and a `ship` event
+guarded on `paid` is the standard case). bide now requires gsm v0.12.0, whose `Build` checks every
+event pair exactly. A `govern.CertifyConvergence` certificate, or any other verdict, produced under
+v0.11.0 and anchored in a trail is still what v0.11.0 said: rebuild the machine under v0.12.0 and
+record a new certificate before relying on it.
 
-What it affects: a convergence verdict from gsm v0.11.0 for such a machine, whether it is `Build`
-succeeding, the report's CC verdict, or a `govern.CertifyConvergence` certificate built from that
-report.
-Do not rely on it. gsm's `Certificate.Verify` and `EmbedCertified` trust the verdict stored in a
-certificate rather than re-checking it, so they do not catch the gap either. A machine is not
-affected when no event's guard or effect reads a variable another event writes and no two events
-write the same variable.
+**What the proof-derived checks cover.** Since gsm v0.12.0, `Build` returns a machine only after
+oracles generated from gsm's Coq/Rocq proof re-check it in-process:
 
-What to do: until bide moves to a gsm release with the fix, keep each event's guard and effect off
-the variables other events write, or check the machine another way (run its events in every order over its
-states in a test, or run the extracted rules checker with `bide-audit`'s `-checker` flag). The fix is
-merged in gsm ([gsm#2](https://github.com/blackwell-systems/gsm/pull/2): `Build` checks every event
-pair exactly) but is in no gsm release yet. gsm's two checkers extracted from the proof re-check
-every machine bide's examples build in bide's required `gsm machine gate` CI check, built against a pinned gsm commit, and gsm's
-main branch runs the proof's table oracle in-process on every successful build (and the rules
-oracle within a cost cap), but that gate is also unreleased, so bide's runtime does not have it.
-See the [roadmap](ROADMAP.md#gsm-convergence) and
+- The table oracle checks every machine `Build` returns: its step tables, for every state.
+  `BuildCompositional` is checked per footprint component, and independence across components rests
+  on gsm's footprint check, not on an oracle.
+- The rules oracle also checks the machine from its rules, independently of gsm's tables, only when
+  the rules are combinator declarations (not Go closures), inside the oracle's arithmetic fragment,
+  and within a work cap of 2^29 units; otherwise `Build` certifies with the table oracle alone and
+  says why in `Report.RulesOracleSkipped`.
+- A federation's own conditions (morphisms, resolvers, acyclicity, the monotone-cycle check) are
+  checked by gsm's Go code, not by an oracle. Each component registry is a machine `Build` checks
+  as above.
+- `govern.ConfluenceCertificate` records the WFC and CC verdicts and `Converges`, which needs a
+  machine `Build` returned, but not which oracles certified it (`Report.Assurance`).
+
+bide's required `gsm machine gate` CI check runs the two checkers extracted from the proof on every
+machine the governance examples build (see `.github/gsm-gate`); it covers those examples, not the
+machines an application builds. See the [roadmap](ROADMAP.md#gsm-convergence) and
 [Convergent governance](guides/governance.md#under-the-hood).
 
 ## Stores
