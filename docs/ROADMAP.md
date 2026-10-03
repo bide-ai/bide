@@ -4,15 +4,18 @@ Where bide is going, in order. The priority is to harden what exists before addi
 
 This page describes intent, not promises of dates. Shipped work is recorded in the [changelog](../CHANGELOG.md).
 
-## Now: v0.9.0
+## Now: v0.10.0
 
-- The claim protocol, the approval gate, flow semantics, spend accounting and the bide protocol's claim rules as TLA+ models, checked by TLC in CI.
-- The redesign's Waves 1 to 3: the `Store` port and `Journal` with a journal format header, the sealed pause contract, `ModelCall` and `ModelResponse` with exact spend accounting, `plan` nodes lowered onto `agent.Step`, and proofs over raw stored bytes with signature agility.
-- Approval seats counted per signing key (`KeyIDs`), with weak Ed25519 keys refused.
-- The bide protocol accepted as the design for SDKs in other languages.
-- Postgres stores whose writes are single statements holding no lock between round trips, with every name qualified and the schema pinned by `WithSchema`.
+- The Run API under transitional names (P14): a `Message` input, per-run options journaled in `run:start` that hold for every later drive, recovery included, `Cancel` and `Status`, a per-run tool filter enforced at dispatch, and recovery dispatch through `Resumer` (`ResumeAgent`, `ResumeTyped`).
+- Tool internals on a tool specification (P12): `ToolSpec`, the approval gate split from `Safety`, and tool timeouts.
+- Construction under `Build` (P13): option scopes checked by the compiler, `RunInfo`, and programmatic sub-runs that a saga's rollback reaches.
+- A lapsed lease taken over within about one recovery interval, however many halted runs the store holds.
+- Nine TLA+ models in CI, four of them new (models 9 to 12): the tool-call state machine, the run lifecycle and recovery, delegation and saga trees, and sessions. Every bug the new models found is fixed and kept as a regression configuration, and CI keeps the marked Go code and the models in step.
+- The claim protocol's safety properties proved at any depth by an inductive invariant that Apalache checks nightly, for two drivers, bounded attempts and claim ids, and without the approval gate (scope under [Proofs beyond the bounds](#formal-models-of-the-coordination-protocols) below).
+- The gsm machine gate: every gsm machine the governance examples build is checked in CI by the two checkers extracted from gsm's proof.
+- bide on gsm v0.12.0, whose `Build` runs the oracles generated from gsm's proof in-process before it returns a machine.
 
-Shipped earlier: v0.8.0 made runs recover themselves (`RecoverLoop`), put one token budget across an agent tree and made every library module installable with `go get`.
+Shipped earlier: v0.9.0 put the claim protocol under a model checker and rebuilt the engine around a storage port and a journal with its own format; v0.8.0 made runs recover themselves (`RecoverLoop`) and put one token budget across an agent tree.
 
 ## Next: toward 1.0
 
@@ -21,8 +24,8 @@ Shipped earlier: v0.8.0 made runs recover themselves (`RecoverLoop`), put one to
 The pre-1.0 API redesign ([design proposal](https://github.com/bide-ai/bide/pull/64)) settles the shape bide will keep at 1.0:
 
 - Done in v0.9.0: a storage port (`Store`) separated from the journal semantics bide owns (`Journal`), with the store contract stated as numbered requirements and a conformance suite every store must pass (P6a); a sealed pause contract (P10); typed model calls (P9); flow nodes lowered onto `agent.Step` (P5b); and versioned journal and proof formats (P6a, P11).
-- Done on main, for v0.10.0 (not yet released): tool internals built on a tool specification type, `agent.ToolSpec` (P12, [#117](https://github.com/bide-ai/bide/pull/117)); construction under `Build` (P13, [#127](https://github.com/bide-ai/bide/pull/127)); and one run entry point, under transitional names, whose per-run options are journaled when a run starts and survive recovery, with `Cancel` and `Status` (P14, [#138](https://github.com/bide-ai/bide/pull/138)).
-- Left before the 1.0 candidate: the scripted rewrite that renames the transitional names and removes the old API (P15), then docs and cleanup, with the journal format tag moving from `bide.journal.v1-dev` to `bide.journal.v1` at the release commit (P16).
+- Done in v0.10.0: tool internals on a tool specification, with approval split from safety and tool timeouts (P12); construction under `Build`, with option scopes and `RunInfo` (P13); and one run entry point with per-run options that survive recovery, `Cancel`, `Status` and recovery dispatch, under transitional names (P14).
+- Next (P15 and P16): the consolidated rewrite that renames the transitional API to its 1.0 names and removes the old one.
 - Go 1.27 generic methods where a generic operation has a natural receiver.
 
 Changes that touch claims, the journal, leases, sagas or proofs are reviewed adversarially before they merge.
