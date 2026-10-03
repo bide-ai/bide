@@ -76,19 +76,29 @@ func (a *AuditedStore) OnError(fn func(runID string, err error)) *AuditedStore {
 // journalHeader is the name of a run's journal header, its first entry (see agent.StepHeader).
 const journalHeader = "@journal"
 
-// Insert stores the entry in the inner store, then, when this call stored it, anchors the run's
-// new tree head. An entry that was already stored (another writer's) does not grow the journal,
-// and anchors nothing. Neither does the journal header: a journal writes it just before the run's
-// first record, whose insert anchors both, so a run's anchored heads never stop at its header.
+// Insert stores the entry in the inner store, then anchors the run's tree head if the journal grew
+// past the last anchored head. It anchors after every insert but the journal header's (a journal
+// writes the header just before the run's first record, whose insert anchors both, so a run's
+// anchored heads never stop at its header): also after an insert that found the entry stored
+// (another writer's, or this writer's retry of a write whose first attempt committed but
+// reported an error, A3), and after one that failed, which may have committed all the same. The
+// anchoring never changes what Insert returns.
 func (a *AuditedStore) Insert(ctx context.Context, runID, name string, data []byte) (agent.Entry, bool, error) {
 	e, inserted, err := a.inner.Insert(ctx, runID, name, data)
-	if err != nil || !inserted || name == journalHeader {
-		return e, inserted, err // nothing stored by this call, or only the header: nothing to anchor
+	if name != journalHeader {
+		if aerr := a.anchorIfGrown(ctx, runID); aerr != nil && a.onErr != nil {
+			a.onErr(runID, aerr)
+		}
 	}
-	if aerr := a.anchorIfGrown(ctx, runID); aerr != nil && a.onErr != nil {
-		a.onErr(runID, aerr)
-	}
-	return e, true, nil
+	return e, inserted, err
+}
+
+// Reanchor anchors runID's journal now, if it holds records no published head covers. A failed
+// publish is covered by the run's next write, but a run's last write has none: OnError is the
+// signal to call Reanchor for that run (once the anchor is reachable again), out of band. It
+// returns the anchoring error, and publishes nothing when the anchored head is current.
+func (a *AuditedStore) Reanchor(ctx context.Context, runID string) error {
+	return a.anchorIfGrown(ctx, runID)
 }
 
 // Get reads through to the inner store.
@@ -134,8 +144,8 @@ func (a *AuditedStore) anchorIfGrown(ctx context.Context, runID string) error {
 	a.mu.Lock()
 	grown := len(recs) > a.lastSize[runID]
 	a.mu.Unlock()
-	if !grown {
-		return nil
+	if !grown || len(recs) == 1 && recs[0].Kind == agent.StepHeader {
+		return nil // nothing new, or the header alone (its run's first record failed)
 	}
 	th, err := journalHead(runID, recs, a.now())
 	if err != nil {

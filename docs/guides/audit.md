@@ -125,15 +125,18 @@ The signer is any `audit.Signer`: `Ed25519Signer`, `MLDSASigner`, or `HybridSign
 [Signature schemes](#signature-schemes-and-post-quantum-anchoring)).
 
 On every journal growth (each `Insert` that stores an entry) `AuditedStore` commits the run's
-Merkle root, signs an STH, and calls `Anchor.Publish`. An insert that finds the entry already
-stored (another writer's, or a memoized replay) grows nothing and anchors nothing, and the journal
-header is anchored together with the run's first record, so a run's anchored heads never stop at
-its header.
+Merkle root, signs an STH, and calls `Anchor.Publish`. It anchors after every insert, whether it
+stored the entry, found it stored (another writer's, or the retry of a write that committed but
+reported an error), or failed (it may have committed all the same), and publishes only when the
+run's journal grew past its last anchored head. The journal header is anchored together with the
+run's first record, so a run's anchored heads never stop at its header.
 Anchoring is serialized per run, so the heads one `AuditedStore` publishes for a run only ever grow,
 even when parallel tool calls land at once. Anchoring is a **side channel**: a `Publish` failure never
 fails the durable step (the write already succeeded; failing it could wrongly retry a
 non-idempotent step), so publish errors go to an optional `OnError` hook instead, and the run's next
-write anchors a head covering the unanchored entries (a replay that writes nothing does not). When two processes anchor the same run (around a lease handoff),
+write anchors a head covering the unanchored entries (a replay that writes nothing does not). A
+run's last write has no next write: on `OnError`, call `Reanchor(ctx, runID)` once the anchor is
+reachable, which publishes a head over the whole journal if no published head covers it. When two processes anchor the same run (around a lease handoff),
 a smaller head can reach the anchor after a larger one; both are valid, so monitors compare a run's
 heads by size, not by arrival.
 
