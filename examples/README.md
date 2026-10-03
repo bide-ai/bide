@@ -25,7 +25,7 @@ streaming, sessions, sub-agents, parallel steps, and retrieval.
 | `streaming` | `Agent.Stream`: range lifecycle Events for token deltas and tool start/finish, then `Result` for the answer. | `OPENROUTER_API_KEY=sk-... go run ./examples/streaming` |
 | `session` | Durable multi-turn `Session.Send`, then rebuilding the transcript from the store. | `OPENROUTER_API_KEY=sk-... go run ./examples/session` |
 | `subagent` | A parent agent delegating to a `SubAgent` exposed as a tool, sharing one store. | `OPENROUTER_API_KEY=sk-... go run ./examples/subagent` |
-| `parallel` | `agent.Parallel` over several `Task[T]`: durable, auditable fan-out/fan-in (offline). | `go run ./examples/parallel` |
+| `parallel` | `agent.Journal.Parallel` over several `Task[T]`: durable, auditable fan-out/fan-in (offline). | `go run ./examples/parallel` |
 | `rag` | A trivial in-memory `Retriever` wired via `WithRetrieval` (classic) and `RetrievalTool` (agentic). | `OPENROUTER_API_KEY=sk-... go run ./examples/rag` |
 
 ## Accountability, durability & integration

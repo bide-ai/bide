@@ -40,3 +40,7 @@ pkg/bad.go:43: transitional
 pkg/bad.go:44: ResolveHaltRef
 pkg/bad.go:45: RunSaga
 README.md:5: RunSaga
+pkg/bad.go:46: agent.Step
+pkg/bad.go:47: agent.ToolTurn
+pkg/bad.go:48: RunDurable
+mod/go.mod:1: agent.Durable

@@ -65,6 +65,9 @@ var patterns = []pattern{
 	{regexp.MustCompile(`\bagent\.Send\b`), "Journal.Enqueue", false},
 	{regexp.MustCompile(`\bagent\.(New)?ScriptedModel\b`), "agenttest.ScriptedModel", false},
 	{regexp.MustCompile(`\.Final\(\)`), "RunStream.Result", false},
+	{regexp.MustCompile(`\bagent\.(Step|Parallel|Signal|Enqueue|AnswerInterrupt|Resume)\b`), "the Journal method (j.Step, j.Parallel, j.Signal, j.Enqueue, j.AnswerInterrupt)", false},
+	{regexp.MustCompile(`\bagent\.(TextTurn|ToolTurn|ErrorTurn|ScriptedTurn)\b`), "agenttest's", false},
+	word("RunDurable", "storetest.Run"),
 	{regexp.MustCompile(`bide-ai/bide/mcp([^a-z]|$)`), "github.com/bide-ai/bide/mcptools", false},
 }
 
@@ -90,7 +93,7 @@ func isExcluded(rel string) bool {
 	return false
 }
 
-// CheckTree scans every .go and .md file below root, except the excluded paths, and returns one
+// CheckTree scans every .go, go.mod and .md file below root, except the excluded paths, and returns one
 // finding per match, as "path:line: Name: use X".
 func CheckTree(root string) ([]string, error) {
 	var findings []string
@@ -109,7 +112,7 @@ func CheckTree(root string) ([]string, error) {
 			}
 			return nil
 		}
-		isGo := strings.HasSuffix(rel, ".go")
+		isGo := strings.HasSuffix(rel, ".go") || filepath.Base(rel) == "go.mod"
 		if (!isGo && !strings.HasSuffix(rel, ".md")) || isExcluded(rel) {
 			return nil
 		}

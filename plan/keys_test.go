@@ -69,7 +69,7 @@ func TestValidate_JoinNameWithColonIsRejected(t *testing.T) {
 	}
 }
 
-// Every key Run writes is one agent reserves, so no agent.Step a node body runs can name it, and a
+// Every key Run writes is one agent reserves, so no agent.Journal.Step a node body runs can name it, and a
 // node's key is one the engine's step hook and ResolveHalt accept as a plan node's.
 func TestRunKeys_AreReserved(t *testing.T) {
 	for _, k := range []string{nodeKey("x"), iterNodeKey(3, "x"), iterNodeKey(0, "iter"), nodeKey("iter"),
@@ -80,7 +80,7 @@ func TestRunKeys_AreReserved(t *testing.T) {
 	}
 	if _, err := agenttest.MemJournal().Step(context.Background(), "r", nodeKey("x"),
 		func(context.Context) (int, error) { return 1, nil }); err == nil {
-		t.Fatalf("agent.Step accepted the node key %q", nodeKey("x"))
+		t.Fatalf("agent.Journal.Step accepted the node key %q", nodeKey("x"))
 	}
 }
 

@@ -54,7 +54,7 @@ func TestResume_NodeRelabelledRetrySafeStillHalts(t *testing.T) {
 }
 
 // The other direction: a node attempted as retry-safe writes no marker (its author declared it
-// safe to repeat when it ran), so a resume under a side-effect label runs it again, as agent.Step
+// safe to repeat when it ran), so a resume under a side-effect label runs it again, as agent.Journal.Step
 // does, and claims a marker for this attempt. Unchanged labels re-run a retry-safe node.
 func TestResume_NodeRelabelledSideEffectRunsUnderAClaim(t *testing.T) {
 	ctx := context.Background()

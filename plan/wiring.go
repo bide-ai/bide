@@ -104,7 +104,7 @@ func LoopBack[M any](max int, pred func(M) bool, head Consumer[M]) Arm[M] {
 
 // Switch routes on over.Out to exactly one arm. M unifies the switched producer's
 // output with every arm's predicate/target input, so an arm typed to the wrong
-// value does not compile. The branch choice is journaled as its own agent.Step at
+// value does not compile. The branch choice is journaled as its own agent.Journal.Step at
 // Build/Run time (Agent D), so a resumed run replays the recorded arm and only the
 // taken arm executes. Arms do not reconverge in rung-1 (open design point a): each
 // arm terminates a path that Build checks produces Out.

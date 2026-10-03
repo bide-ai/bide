@@ -7,7 +7,7 @@ import (
 	"github.com/bide-ai/bide/agent"
 )
 
-// ProveStep builds a ProofBundle proving that the durable step with this name (an agent.Step /
+// ProveStep builds a ProofBundle proving that the durable step with this name (an agent.Journal.Step /
 // Parallel task, recorded as a StepValue) is committed in the tree sth signs. It is the fan-in
 // counterpart to ProveToolCall: after a Parallel run, each task is an independently provable
 // record, so an auditor can prove "this specific compliance check ran and produced this result"

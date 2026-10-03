@@ -110,7 +110,7 @@ func TestEventTool_ReRunOfATwoApplyCallRecordsEachOnce(t *testing.T) {
 	}
 }
 
-// A tool call that fans out with agent.Parallel, each task applying its own event, records every
+// A tool call that fans out with agent.Journal.Parallel, each task applying its own event, records every
 // event once, even when the tasks apply in a different order when the call runs again.
 func TestEventTool_ParallelFanOutInOneCall(t *testing.T) {
 	ctx := context.Background()

@@ -38,8 +38,8 @@ func ClaimAttempt(ctx context.Context, j *Journal, runID, name string, rec Recor
 // Option-B authoring primitive: write plain Go control flow, and name the operations
 // that must survive a crash.
 //
-//	inv, err := agent.Step(ctx, dur, runID, "fetch-invoice", fetchInvoice, agent.WithSafety(agent.Safety{ReadOnly: true}))
-//	res, err := agent.Step(ctx, dur, runID, "reserve", reserve) // a side effect: at most once
+//	inv, err := j.Step(ctx, runID, "fetch-invoice", fetchInvoice, agent.WithSafety(agent.Safety{ReadOnly: true}))
+//	res, err := j.Step(ctx, runID, "reserve", reserve) // a side effect: at most once
 //
 // A step runs at most once, like a tool call. By default it is treated as a side effect: an
 // attempt marker is journaled before fn runs, so if the process dies after fn's effect and

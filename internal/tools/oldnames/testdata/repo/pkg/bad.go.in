@@ -43,3 +43,6 @@ var _ = storetest.CheckDurableWrapper
 // the transitional names
 func TestResolveHaltRef_X(t *testing.T) {}
 func TestLowering_RunSagaClears(t *testing.T) {}
+var _ = agent.Step(ctx, j, "r", "s", fn)
+var _ = agent.ToolTurn("c", "t", "{}")
+var _ = storetest.RunDurable

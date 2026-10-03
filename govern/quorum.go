@@ -50,7 +50,7 @@ type QuorumResult struct {
 
 // Quorum fans the voters out concurrently and durably, tallies their normalized decisions, and
 // returns the plurality decision with its count. It is a composition helper over existing seams,
-// not a new agent type: the fan-out is agent.Parallel (each vote is a journaled Step, so it is
+// not a new agent type: the fan-out is agent.Journal.Parallel (each vote is a journaled Step, so it is
 // at-most-once and replayable), each vote and the final tally are recorded as durable Step values
 // (provable one by one via audit.ProveStep), and the k-of-n gate itself is left to the caller to
 // express as a gsm invariant over VotesFor (see examples/govern/quorum). Keeping the model call inside

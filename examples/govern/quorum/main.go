@@ -3,7 +3,7 @@
 // only under k-of-n agreement, and the whole vote is in the audit trail.
 //
 // The pieces are all seams the SDK already has:
-//   - fan-out: govern.Quorum runs the voters with agent.Parallel, so each vote is a durable Step;
+//   - fan-out: govern.Quorum runs the voters with agent.Journal.Parallel, so each vote is a durable Step;
 //   - tally: plain Go, counting agreement on the normalized decision;
 //   - govern: a gsm invariant makes the k-of-n gate provable (verified over every possible count);
 //   - commit: govern.EventTool with a PolicyDigest journals the commit, binding it to the policy and state;

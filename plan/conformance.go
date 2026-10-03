@@ -418,7 +418,7 @@ func splitIter(name string) (string, int) {
 
 // attemptedStep returns the step key an attempt marker guards: name without
 // "attempt:step:" for a first attempt, or without "attempt:retry:<g>:step:" for a
-// numbered re-attempt (see agent.Step). ok is false for any other key, a tool
+// numbered re-attempt (see agent.Journal.Step). ok is false for any other key, a tool
 // call's marker among them.
 func attemptedStep(name string) (string, bool) {
 	if key, ok := strings.CutPrefix(name, "attempt:step:"); ok {

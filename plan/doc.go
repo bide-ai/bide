@@ -9,11 +9,11 @@
 // an internal spec (nodes, edges, branches) rather than executed eagerly.
 //
 // Builder.Build lowers that spec onto the existing durable runtime: every node
-// becomes an agent.Step keyed by its journal name, and each Switch choice
+// becomes an agent.Journal.Step keyed by its journal name, and each Switch choice
 // becomes its own journaled step recording the taken arm. Flow.Run drives the
 // lowered flow sequentially with no goroutines or errgroup, so it inherits the
 // substrate's at-most-once, halt, and resume guarantees unchanged. The builder
-// is a surface over agent.Step control flow; it introduces no separate
+// is a surface over agent.Journal.Step control flow; it introduces no separate
 // scheduler or executor.
 //
 // Builder.Join2 and Builder.Join3 add fixed-arity fan-in: a node that consumes two

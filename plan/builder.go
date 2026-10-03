@@ -134,12 +134,12 @@ func checkStepName(name string) error {
 // must be unique across the flow; a duplicate is recorded as a deferred error
 // surfaced at Build. Step infers I and O from fn.
 //
-// The func body is the escape hatch: arbitrary Go. Run runs every node as an agent.Step
+// The func body is the escape hatch: arbitrary Go. Run runs every node as an agent.Journal.Step
 // under its node key "node:<name>" (an attempt claim written before the body, the result
 // after), so a crash whose outcome was never recorded HALTS the run (*agent.OutcomeUnknown,
 // cleared with agent.ResolveHalt) rather than re-firing the body. A non-idempotent side
 // effect is therefore safe by default, with no per-step opt-in. A Step that is not
-// retry-safe must not pause (its body's pause is ErrConfig, as for agent.Step). See
+// retry-safe must not pause (its body's pause is ErrConfig, as for agent.Journal.Step). See
 // docs/guides/flows.md.
 //
 // Pass plan.ReadOnly() or plan.Idempotent() to opt

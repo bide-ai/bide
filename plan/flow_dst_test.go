@@ -12,7 +12,7 @@ import (
 )
 
 // Deterministic Simulation Testing of the substrate invariant as it reaches the
-// plan surface: Flow.Run runs every node as an agent.Step, so a NON-IDEMPOTENT side
+// plan surface: Flow.Run runs every node as an agent.Journal.Step, so a NON-IDEMPOTENT side
 // effect written as a plain step body fires AT MOST ONCE across a crash and resume,
 // with NO per-step opt-in. The step here is a bare increment; the guard is the Step's
 // attempt claim, not the step body's. This mirrors the core dst_test crash-sweep,

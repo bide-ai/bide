@@ -14,7 +14,7 @@ import (
 	"github.com/bide-ai/bide/internal/journaltest"
 )
 
-// Tests of plan lowering: every node runs as an agent.Step through the engine's step hook, under
+// Tests of plan lowering: every node runs as an agent.Journal.Step through the engine's step hook, under
 // its node key, so the Step's claim protocol, halts, resolution, not-started records and pause
 // guard cover flow nodes, and a flow's run records how it started.
 
@@ -380,7 +380,7 @@ func TestLowering_NoHistoryReadsPerNode(t *testing.T) {
 	}
 }
 
-// A node that is not retry-safe must not pause, as for agent.Step: its body's pause is ErrConfig,
+// A node that is not retry-safe must not pause, as for agent.Journal.Step: its body's pause is ErrConfig,
 // and its marker stays, so the next drive halts rather than run the body again. A retry-safe node
 // pauses.
 func TestLowering_StepPauseGuard(t *testing.T) {

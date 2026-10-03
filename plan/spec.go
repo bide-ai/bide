@@ -33,7 +33,7 @@ type node struct {
 	inType  reflect.Type
 	outType reflect.Type
 	// run is the type-erased lowering closure the constructor installs; Build
-	// wraps it in an agent.Step call keyed by name. It takes the decoded input
+	// wraps it in an agent.Journal.Step call keyed by name. It takes the decoded input
 	// (as any) and returns the output (as any) or an error. nil for kindSwitch.
 	run func(ctx context.Context, in any) (any, error)
 	// safety is the node's retry-on-resume classification, mirroring agent.Safety

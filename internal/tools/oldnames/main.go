@@ -4,10 +4,10 @@
 // RunResult, ...), the pause aliases, the Durable interface and its shims, the old Tool method
 // set's SpecOf, the context decorators, the mcp package's old path, and agent.ScriptedModel.
 //
-// It scans every .go and .md file below the root, except the migrate tool (which rewrites
+// It scans every .go, go.mod and .md file below the root, except the migrate tool (which rewrites
 // these names and so must name them), this command, CHANGELOG.md, the release notes
 // (docs/releases) and the dated design records (docs/design), which describe the API as it was.
-// With -godoc, it also runs `go doc -all` on every package of the root module and checks its
+// With -godoc, it also runs `go doc -all` on every public package of every module and checks its
 // output, the API as a user reads it, for the same names and for the word "transitional".
 //
 // Usage, from the repository root:
@@ -32,7 +32,7 @@ func run(args []string, stdout, stderr io.Writer) int {
 	fl := flag.NewFlagSet("oldnames", flag.ContinueOnError)
 	fl.SetOutput(stderr)
 	root := fl.String("root", ".", "repository root; every .go and .md file below it is checked")
-	godoc := fl.Bool("godoc", false, "also check `go doc -all` of every package of the root module")
+	godoc := fl.Bool("godoc", false, "also check `go doc -all` of every public package of every module")
 	if err := fl.Parse(args); err != nil {
 		return 2
 	}

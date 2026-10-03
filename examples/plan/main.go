@@ -13,7 +13,7 @@
 //
 // The point it demonstrates is the substrate guarantee the plan surface inherits for
 // free: a non-idempotent side effect (reserving inventory, modelled as one appended
-// witness line) fires AT MOST ONCE across a crash. Run drives every node as an agent.Step,
+// witness line) fires AT MOST ONCE across a crash. Run drives every node as an agent.Journal.Step,
 // whose attempt claim guards its body, so a node whose attempt was recorded but whose
 // result was lost to a crash HALTS the resumed run (*agent.OutcomeUnknown) rather than
 // re-firing the body.

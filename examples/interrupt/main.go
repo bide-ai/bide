@@ -1,6 +1,6 @@
 // Command interrupt shows human-in-the-loop as a durable pause: a retry-safe tool calls
 // agent.Interrupt to ask a human a typed question, Run returns *InterruptPending (the run
-// has paused at the interrupt point), the caller records an answer with agent.AnswerInterrupt,
+// has paused at the interrupt point), the caller records an answer with agent.Journal.AnswerInterrupt,
 // and re-invoking Run with the SAME runID resumes past the interrupt with that answer.
 //
 // It runs with NO API key: the model is a small inline scripted Model that calls the tool

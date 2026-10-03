@@ -1,4 +1,4 @@
-// Command parallel shows agent.Parallel: a durable, auditable fan-out/fan-in. Several
+// Command parallel shows agent.Journal.Parallel: a durable, auditable fan-out/fan-in. Several
 // independent checks run concurrently, each as a journaled named step, so a resumed run
 // returns a completed check's recorded result without re-running it. All tasks run even
 // if some fail; the returned error joins every task's error.

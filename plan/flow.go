@@ -17,7 +17,7 @@ import (
 // Build, ready to run durably. In and Out are the pinned flow boundary types.
 // Its spec is sealed at Build time, so a Flow value is immutable and safe to run
 // repeatedly (each Run keyed by a distinct runID). Flow adds no executor: Run
-// lowers the topology onto the journal-backed runtime via agent.Step.
+// lowers the topology onto the journal-backed runtime via agent.Journal.Step.
 type Flow[In, Out any] struct {
 	core *builderCore // frozen at Build; never mutated after
 }
@@ -27,8 +27,8 @@ type Flow[In, Out any] struct {
 // terminal step produces is decoded into Out and returned.
 //
 // Run is STRICTLY SEQUENTIAL and adds no executor: it walks the declared
-// topology one node at a time and runs each node as an agent.Step, exactly as
-// plain Go control flow over agent.Step would (see docs/guides/flows.md). It
+// topology one node at a time and runs each node as an agent.Journal.Step, exactly as
+// plain Go control flow over agent.Journal.Step would (see docs/guides/flows.md). It
 // therefore inherits the Step's guarantees unchanged: a completed node returns
 // its recorded value without re-running (at-most-once by name), and a resumed
 // run replays recorded nodes rather than re-executing them.
@@ -45,8 +45,8 @@ type Flow[In, Out any] struct {
 // body) is recorded as not started, and the next Run re-attempts the node under
 // a numbered marker instead of halting. A node marked ReadOnly or Idempotent
 // writes no marker and re-runs after a crash. A node that is not retry-safe must
-// not pause: a body that returns a pause is ErrConfig, as for agent.Step. An
-// agent.Step (or agent.Parallel task) a node's body runs for runID is recorded
+// not pause: a body that returns a pause is ErrConfig, as for agent.Journal.Step. An
+// agent.Journal.Step (or agent.Journal.Parallel task) a node's body runs for runID is recorded
 // under the node's key ("node:<node>:step:<name>", per iteration in a loop body),
 // so each loop iteration runs its own.
 //
@@ -239,7 +239,7 @@ func (f *Flow[In, Out]) Run(ctx context.Context, store *agent.Journal, runID str
 			return out, inErr
 		}
 
-		// Run the node as an agent.Step under its node key (see runNode): a recorded
+		// Run the node as an agent.Journal.Step under its node key (see runNode): a recorded
 		// result replays without re-running; an attempt with no result halts rather than
 		// re-firing a possibly-completed effect; a fresh node claims an attempt, runs,
 		// then records its result. This holds for a Join
@@ -506,7 +506,7 @@ func iterSwitchKey(iter int, over string) string {
 
 // protocol:flows begin Node NGet NClaim NBody NNested NRecord
 
-// runNode runs one node as an agent.Step named key (nodeKey, or iterNodeKey inside a
+// runNode runs one node as an agent.Journal.Step named key (nodeKey, or iterNodeKey inside a
 // loop body) through the engine's step hook, with the node's Safety, and returns the
 // JSON output the journal holds for it. It adds no primitive of its own: the Step
 // decides everything a node's durability needs.

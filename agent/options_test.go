@@ -543,7 +543,7 @@ func TestWith_FailureLeavesAgentUnchanged(t *testing.T) {
 	}
 }
 
-// Journal returns the journal Build was given, and for New the journal of its store.
+// Journal returns the journal New was given.
 func TestAgent_Journal(t *testing.T) {
 	store := NewMemStore()
 	j, err := NewJournal(store)
@@ -555,7 +555,7 @@ func TestAgent_Journal(t *testing.T) {
 		t.Fatal(err)
 	}
 	if a.Journal() != j {
-		t.Error("Journal() is not the journal Build was given")
+		t.Error("Journal() is not the journal New was given")
 	}
 	if mustNew(NewScriptedModel(), j).Journal() != j {
 		t.Error("Journal() of New over a MemStore is not the store's journal")

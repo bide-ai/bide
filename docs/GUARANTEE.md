@@ -107,7 +107,7 @@ the journal holds, and so what a resume cannot be talked out of by a redeploy:
   `ReadOnly` since, and a call whose tool is no longer registered is reported uncompensated (or
   halts, if it was attempted with no result);
 - for a flow (`plan`), its flow name and input (`run:start`, kind `flow`), its topology digest,
-  each switch's choice, and each node's attempt marker (a node runs as an `agent.Step`, so a node
+  each switch's choice, and each node's attempt marker (a node runs as an `agent.Journal.Step`, so a node
   attempted as a side effect halts on resume even if it is relabelled retry-safe since); a flow run
   resumed with another input or flow, or driven by an `Agent`, is `ErrConfig`; a finished flow run
   records `run:complete` with its output, which a later drive returns.

@@ -66,10 +66,10 @@ func TestRev103b_F4_ResolveHaltThroughAnotherFlow(t *testing.T) {
 	}
 }
 
-// F7: a node's body may run agent.Step with any name agent.Step accepts outside a flow, "" among
+// F7: a node's body may run agent.Journal.Step with any name agent.Journal.Step accepts outside a flow, "" among
 // them. Inside a node it was recorded as "node:<node>:step:", which neither ResolveHalt nor
 // Flow.ResolveHalt nor Conform accepts: a completed run of the declared graph did not conform.
-// agent.Step now refuses an empty name everywhere (ErrConfig), so the drive fails before the
+// agent.Journal.Step now refuses an empty name everywhere (ErrConfig), so the drive fails before the
 // Step's body runs and records no such key, and the journal conforms.
 func TestRev103b_F7_EmptyStepNameInsideNodeDoesNotConform(t *testing.T) {
 	ctx := context.Background()

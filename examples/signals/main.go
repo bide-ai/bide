@@ -1,5 +1,5 @@
 // Command signals shows the externally-pushed durable pauses: Await for a single-shot
-// signal delivered from outside the run with agent.Signal, AwaitFor with a durable timeout
+// signal delivered from outside the run with agent.Journal.Signal, AwaitFor with a durable timeout
 // (the signal-vs-deadline race), and an ordered per-run channel consumed exactly-once with
 // Enqueue / Receive / Ack. All three ride the same durable journal, so a signal is applied at
 // most once and channel consumption is replay-safe.
