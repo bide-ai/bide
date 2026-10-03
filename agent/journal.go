@@ -244,11 +244,16 @@ func isNil(v any) bool {
 // what they keep per run (remembered claims, kept spend) for s: the store beneath s, following a
 // wrapper's Unwrap() Store (which only a wrapper that passes run IDs and names through unchanged
 // may implement, see Store), so every Journal over the store, directly or through such a wrapper
-// (audit.AuditedStore), shares them; the innermost store itself when it is a pointer (every store
-// in this module is), and otherwise j, so a store whose identity cannot be compared safely shares
-// only within one Journal. Claims keep that safe; it only loses the in-process deduplication
-// across Journals.
+// (audit.AuditedStore), shares them. The key is the innermost store on the Unwrap chain that is a
+// pointer (every store in this module is one): a value store beneath a pointer wrapper is keyed by
+// that wrapper. With no pointer on the chain it is j, so a store whose identity cannot be compared
+// safely shares only within one Journal. Claims keep that safe; it only loses the in-process
+// deduplication across Journals.
 func storeIdentity(s Store, j *Journal) any {
+	var key any = j
+	if reflect.ValueOf(s).Kind() == reflect.Pointer {
+		key = s
+	}
 	for range maxUnwrap {
 		u, ok := s.(interface{ Unwrap() Store })
 		if !ok {
@@ -259,11 +264,11 @@ func storeIdentity(s Store, j *Journal) any {
 			break
 		}
 		s = inner
+		if reflect.ValueOf(s).Kind() == reflect.Pointer {
+			key = s
+		}
 	}
-	if reflect.ValueOf(s).Kind() == reflect.Pointer {
-		return s
-	}
-	return j
+	return key
 }
 
 // Store returns the store the journal writes to.
