@@ -1,4 +1,4 @@
-// fidelity.go holds the record-fidelity suite (RunDurable): the record a journal hands back on the
+// fidelity.go holds the record-fidelity suite (run by storetest.Run): the record a journal hands back on the
 // live path is exactly the record a replay reads back, for any content a model or tool can
 // produce.
 //
@@ -32,7 +32,10 @@ import (
 // persistent backend. Run runs it over a Journal on the store under test.
 func runFidelity(t *testing.T, open func(t *testing.T) *agent.Journal) {
 	for _, c := range Cases() {
-		t.Run(c.Name, func(t *testing.T) { fidelity(t, open(t), c) })
+		t.Run(c.Name, func(t *testing.T) { fidelity(t, open(t), c, journaltest.Do) })
+		// the live path of the engine's model turns and tool results, which writes without
+		// reading the step first
+		t.Run(c.Name+"/fresh", func(t *testing.T) { fidelity(t, open(t), c, journaltest.DoFresh) })
 	}
 	t.Run("ReturnedRecordIsACopy", func(t *testing.T) { returnedCopy(t, open(t)) })
 	t.Run("Salted", func(t *testing.T) { salted(t, open(t)) })
@@ -144,10 +147,10 @@ func history(t *testing.T, d *agent.Journal, runID string) []agent.Record {
 	return hist[1:]
 }
 
-func fidelity(t *testing.T, d *agent.Journal, c Case) {
+func fidelity(t *testing.T, d *agent.Journal, c Case, write func(context.Context, *agent.Journal, string, string, func(context.Context) (agent.Record, error)) (agent.Record, error)) {
 	ctx := context.Background()
 	id := runID(t)
-	live, err := journaltest.Do(ctx, d, id, "step", func(context.Context) (agent.Record, error) { return c.Record, nil })
+	live, err := write(ctx, d, id, "step", func(context.Context) (agent.Record, error) { return c.Record, nil })
 	if err != nil {
 		t.Fatalf("Do: %v", err)
 	}
@@ -274,7 +277,7 @@ func recordsAfterCancel(t *testing.T, d *agent.Journal) {
 	}
 }
 
-// stepAttemptSafety: agent.Step goes by the safety a step was attempted under. A retry-safe step
+// stepAttemptSafety: agent.Journal.Step goes by the safety a step was attempted under. A retry-safe step
 // looks for an earlier attempt marker without recording one; and a step attempted as a side effect
 // halts on resume even when it is declared retry-safe by then.
 func stepAttemptSafety(t *testing.T, d *agent.Journal) {

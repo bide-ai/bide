@@ -740,7 +740,7 @@ func checkWrapper(t reporter, wrap func(agent.Store) agent.Store, ctxs ...contex
 	}
 	same = same && string(e.Data) == "v"
 	if _, unwraps := w.(interface{ Unwrap() agent.Store }); unwraps && !same {
-		t.Errorf("%T rewrites run IDs or names but implements Unwrap, so Capability exposes the wrapped store's Lister and Leaser under the wrong keys; implement each capability on the wrapper instead", w)
+		t.Errorf("%T rewrites run IDs or names but implements Unwrap: Capability would expose the wrapped store's Lister and Leaser under the wrong keys, and Journals over it would share remembered claims and kept spend with the store beneath (the store identity follows Unwrap); do not implement Unwrap, and implement each capability on the wrapper instead", w)
 	}
 	if l, ok := agent.Capability[agent.Lister](w); ok {
 		found := false

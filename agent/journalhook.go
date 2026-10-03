@@ -10,21 +10,10 @@ import (
 
 func init() {
 	journalhook.Do = func(ctx context.Context, j any, runID, name string, fn func(context.Context) (any, error)) (any, error) {
-		d, ok := j.(*Journal)
-		if !ok {
-			return Record{}, fmt.Errorf("journalhook.Do: %T is not a journal: %w", j, ErrConfig)
-		}
-		return d.do(ctx, runID, name, func(ctx context.Context) (Record, error) {
-			v, err := fn(ctx)
-			if err != nil {
-				return Record{}, err
-			}
-			rec, ok := v.(Record)
-			if !ok {
-				return Record{}, fmt.Errorf("journalhook.Do: step %q returned %T, not an agent.Record: %w", name, v, ErrConfig)
-			}
-			return rec, nil
-		})
+		return hookDo(ctx, j, runID, name, fn, false)
+	}
+	journalhook.DoFresh = func(ctx context.Context, j any, runID, name string, fn func(context.Context) (any, error)) (any, error) {
+		return hookDo(ctx, j, runID, name, fn, true)
 	}
 	// protocol:flows begin NGet NClaim NRecord
 	journalhook.Step = func(ctx context.Context, j any, runID, name string, safety any, fn func(context.Context) (json.RawMessage, error)) (json.RawMessage, error) {
@@ -110,4 +99,27 @@ func init() {
 		}
 		return r
 	}
+}
+
+// hookDo is journalhook.Do over a *Journal, or, fresh, journalhook.DoFresh.
+func hookDo(ctx context.Context, j any, runID, name string, fn func(context.Context) (any, error), fresh bool) (any, error) {
+	d, ok := j.(*Journal)
+	if !ok {
+		return Record{}, fmt.Errorf("journalhook.Do: %T is not a journal: %w", j, ErrConfig)
+	}
+	do := d.do
+	if fresh {
+		do = d.doFresh
+	}
+	return do(ctx, runID, name, func(ctx context.Context) (Record, error) {
+		v, err := fn(ctx)
+		if err != nil {
+			return Record{}, err
+		}
+		rec, ok := v.(Record)
+		if !ok {
+			return Record{}, fmt.Errorf("journalhook.Do: step %q returned %T, not an agent.Record: %w", name, v, ErrConfig)
+		}
+		return rec, nil
+	})
 }

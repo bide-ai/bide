@@ -15,13 +15,17 @@ import (
 // fn returns the agent.Record to record.
 var Do func(ctx context.Context, j any, runID, name string, fn func(context.Context) (any, error)) (any, error)
 
+// DoFresh is Do for a step the caller knows is not recorded (the journal's doFresh: the engine's
+// live model turns and tool results), for tests that hold that path to the journal's rules.
+var DoFresh func(ctx context.Context, j any, runID, name string, fn func(context.Context) (any, error)) (any, error)
+
 // Step runs fn as the Step named name of runID in j, an *agent.Journal, with
 // agent.Journal.Step's semantics (an attempt claim before fn unless safety is
 // retry-safe, the not-started record when fn never ran, numbered re-attempts, a halt as
 // *agent.OutcomeUnknown, the pause guard), and returns the JSON value it records. safety is the
 // step's agent.Safety. name must be a plan node key (agent's planNodeKey: "node:<name>" or
 // "node:iter:<n>:<name>"); any other name is ErrConfig, so the hook runs no other reserved key. A
-// Step that fn runs for the same run is recorded under name (see agent.Step), so each node, and
+// Step that fn runs for the same run is recorded under name (see agent.Journal.Step), so each node, and
 // each loop iteration of one, records its own.
 var Step func(ctx context.Context, j any, runID, name string, safety any, fn func(context.Context) (json.RawMessage, error)) (json.RawMessage, error)
 

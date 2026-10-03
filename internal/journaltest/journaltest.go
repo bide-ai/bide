@@ -19,6 +19,14 @@ func Do(ctx context.Context, j *agent.Journal, runID, name string, fn func(conte
 	return rec, err
 }
 
+// DoFresh is Do through the path the engine's live steps take (the journal's doFresh), which
+// does not read the step first: for a step known not to be recorded.
+func DoFresh(ctx context.Context, j *agent.Journal, runID, name string, fn func(context.Context) (agent.Record, error)) (agent.Record, error) {
+	v, err := journalhook.DoFresh(ctx, j, runID, name, func(ctx context.Context) (any, error) { return fn(ctx) })
+	rec, _ := v.(agent.Record)
+	return rec, err
+}
+
 // Put records rec as the step name of runID in j unless the step is recorded, and returns the
 // record the journal holds.
 func Put(ctx context.Context, j *agent.Journal, runID, name string, rec agent.Record) (agent.Record, error) {
