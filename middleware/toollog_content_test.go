@@ -54,7 +54,7 @@ func TestToolLog_LogErrorTextIsTheJournaledText(t *testing.T) {
 	var sb strings.Builder
 	st := agenttest.MemJournal()
 	a := agenttest.Must(agenttest.MustNew(
-		agent.NewScriptedModel(agent.ToolTurn("c1", "fetch", `{}`), agent.TextTurn("done")),
+		agenttest.NewScriptedModel(agenttest.ToolTurn("c1", "fetch", `{}`), agenttest.TextTurn("done")),
 		st,
 		agent.WithTools(tool),
 		agent.WithToolErrorRedactor(func(_ string, err error) string { return strings.ReplaceAll(err.Error(), "ACCT-998877", "ACCT") }),

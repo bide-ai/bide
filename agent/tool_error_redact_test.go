@@ -93,7 +93,7 @@ func TestToolErrorURLCredentialsNotJournaled(t *testing.T) {
 	var s seen
 	st := agenttest.MemJournal()
 	a := agenttest.MustNew(
-		agent.NewScriptedModel(agent.ToolTurn("tu1", "fetch", `{}`), agent.TextTurn("done")),
+		agenttest.NewScriptedModel(agenttest.ToolTurn("tu1", "fetch", `{}`), agenttest.TextTurn("done")),
 		st,
 		agent.WithTools(fetchTool(secretURL)), agent.WithMiddleware(s.middleware))
 	if _, err := a.Run(context.Background(), "r1", agent.UserText("go")); err != nil {
@@ -114,7 +114,7 @@ func TestToolErrorURLInTextNotJournaled(t *testing.T) {
 	var s seen
 	st := agenttest.MemJournal()
 	a := agenttest.MustNew(
-		agent.NewScriptedModel(agent.ToolTurn("tu1", "call", `{}`), agent.TextTurn("done")),
+		agenttest.NewScriptedModel(agenttest.ToolTurn("tu1", "call", `{}`), agenttest.TextTurn("done")),
 		st,
 		agent.WithTools(tool), agent.WithMiddleware(s.middleware))
 	if _, err := a.Run(context.Background(), "r1", agent.UserText("go")); err != nil {
@@ -127,12 +127,12 @@ func TestToolErrorURLInTextNotJournaled(t *testing.T) {
 // A sub-agent's failure becomes the parent's tool error: its text is redacted before the
 // parent journals it.
 func TestSubAgentErrorURLCredentialsNotJournaled(t *testing.T) {
-	failing := agent.NewScriptedModel(agent.ErrorTurn(&url.Error{Op: "Post", URL: "https://api.test/v1/chat?key=SK-QUERY-SECRET", Err: errors.New("EOF")}))
+	failing := agenttest.NewScriptedModel(agenttest.ErrorTurn(&url.Error{Op: "Post", URL: "https://api.test/v1/chat?key=SK-QUERY-SECRET", Err: errors.New("EOF")}))
 	st := agenttest.MemJournal()
 	sub := agenttest.MustNew(failing, st)
 	var s seen
 	parent := agenttest.MustNew(
-		agent.NewScriptedModel(agent.ToolTurn("tu1", "helper", `{"task":"x"}`), agent.TextTurn("done")),
+		agenttest.NewScriptedModel(agenttest.ToolTurn("tu1", "helper", `{"task":"x"}`), agenttest.TextTurn("done")),
 		st,
 		agent.WithTools(agent.MustSubAgent("helper", "helps", sub)), agent.WithMiddleware(s.middleware))
 	if _, err := parent.Run(context.Background(), "r1", agent.UserText("go")); err != nil {
@@ -147,7 +147,7 @@ func TestSubAgentErrorURLCredentialsNotJournaled(t *testing.T) {
 func TestSagaToolErrorURLCredentialsNotJournaled(t *testing.T) {
 	st := agenttest.MemJournal()
 	a := agenttest.MustNew(
-		agent.NewScriptedModel(agent.ToolTurn("tu1", "fetch", `{}`), agent.TextTurn("done")),
+		agenttest.NewScriptedModel(agenttest.ToolTurn("tu1", "fetch", `{}`), agenttest.TextTurn("done")),
 		st,
 		agent.WithTools(fetchTool(secretURL)),
 	)

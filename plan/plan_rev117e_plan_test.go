@@ -16,7 +16,7 @@ import (
 // duplicate registration, so Load (for a caller that did not check the return) reports an
 // unknown block rather than the refusal.
 func TestRev117e_RegisterToolRefusalSurfacesAtLoad(t *testing.T) {
-	sub := agenttest.MustNew(agent.NewScriptedModel(agent.TextTurn("x")), agenttest.MemJournal())
+	sub := agenttest.MustNew(agenttest.NewScriptedModel(agenttest.TextTurn("x")), agenttest.MemJournal())
 	reg := NewRegistry()
 	_ = reg.RegisterTool[int, int]("delegate", timedSubWrap{agent.MustSubAgent("delegate", "", sub)})
 	cfg := `{"version":1,"flow":"f","in":"int","out":"int","entry":"delegate",

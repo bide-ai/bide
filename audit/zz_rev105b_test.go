@@ -137,7 +137,7 @@ func Test_R105b_StartedRetrySafeCallIsNotProvablyAbsent(t *testing.T) {
 				t.Fatal(err)
 			}
 			_, runErr := agenttest.MustNew(
-				agent.NewScriptedModel(agent.ToolTurn("c1", "charge", `{}`), agent.TextTurn("done")),
+				agenttest.NewScriptedModel(agenttest.ToolTurn("c1", "charge", `{}`), agenttest.TextTurn("done")),
 				j,
 				agent.WithTools(charge),
 				agent.WithMaxConcurrency(1),

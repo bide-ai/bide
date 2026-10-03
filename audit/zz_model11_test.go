@@ -48,12 +48,12 @@ func TestModel11_D1_RollbackAcrossRotatedGrants(t *testing.T) {
 	cfg := AttenuationConfig{Store: store, Narrow: narrowLimitBy(1), Rules: rev117eRules}
 	tools := func() []agent.Tool {
 		sub1 := agenttest.MustNew(
-			agent.NewScriptedModel(agent.ToolTurn("s1", "charge1", `{}`), agent.TextTurn("d1 done")),
+			agenttest.NewScriptedModel(agenttest.ToolTurn("s1", "charge1", `{}`), agenttest.TextTurn("d1 done")),
 			store,
 			agent.WithTools(charge("charge1")),
 		)
 		sub2 := agenttest.MustNew(
-			agent.NewScriptedModel(agent.ToolTurn("s2", "charge2", `{}`), agent.ToolTurn("s3", "boom", `{}`), agent.TextTurn("x")),
+			agenttest.NewScriptedModel(agenttest.ToolTurn("s2", "charge2", `{}`), agenttest.ToolTurn("s3", "boom", `{}`), agenttest.TextTurn("x")),
 			store,
 			agent.WithTools(charge("charge2"), boom),
 		)
@@ -61,7 +61,7 @@ func TestModel11_D1_RollbackAcrossRotatedGrants(t *testing.T) {
 	}
 	// Drive 1, under p1: d1 delegates and finishes; the next model turn fails (the run stops).
 	parent1 := agenttest.MustNew(
-		agent.NewScriptedModel(agent.ToolTurn("c1", "d1", `{"task":"a"}`), agent.ErrorTurn(errors.New("provider down"))),
+		agenttest.NewScriptedModel(agenttest.ToolTurn("c1", "d1", `{"task":"a"}`), agenttest.ErrorTurn(errors.New("provider down"))),
 		store,
 		agent.WithTools(tools()...),
 	)
@@ -70,7 +70,7 @@ func TestModel11_D1_RollbackAcrossRotatedGrants(t *testing.T) {
 	}
 	// Drive 2, under p2 (the rotated grant): d2 mints from p2, its sub-run fails, the saga rolls back.
 	script := func() agent.Model {
-		return agent.NewScriptedModel(agent.ToolTurn("c1", "d1", `{"task":"a"}`), agent.ToolTurn("c2", "d2", `{"task":"b"}`), agent.TextTurn("x"))
+		return agenttest.NewScriptedModel(agenttest.ToolTurn("c1", "d1", `{"task":"a"}`), agenttest.ToolTurn("c2", "d2", `{"task":"b"}`), agenttest.TextTurn("x"))
 	}
 	drive := func(ctx context.Context) *agent.SagaAborted {
 		_, err := agenttest.MustNew(script(), store, agent.WithTools(tools()...)).Run(ctx, "trip", agent.UserText("go"), agent.WithSaga())
@@ -159,8 +159,8 @@ func TestModel11_D3_FailedSubAgentInPlainSubRunSkipped(t *testing.T) {
 		}
 		return a
 	}
-	grand := build(agent.NewScriptedModel(agent.ToolTurn("g1", "charge", `{}`), agent.ErrorTurn(errors.New("provider rejected the request"))), charge)
-	child := build(agent.NewScriptedModel(agent.ToolTurn("k1", "worker", `{"task":"w"}`), agent.TextTurn("child done")),
+	grand := build(agenttest.NewScriptedModel(agenttest.ToolTurn("g1", "charge", `{}`), agenttest.ErrorTurn(errors.New("provider rejected the request"))), charge)
+	child := build(agenttest.NewScriptedModel(agenttest.ToolTurn("k1", "worker", `{"task":"w"}`), agenttest.TextTurn("child done")),
 		agent.MustSubAgent("worker", "w", grand))
 	starter := agent.MustFunc("starter", "", func(ctx context.Context, _ struct{}) (string, error) {
 		info, _ := agent.RunInfoFrom(ctx)
@@ -179,7 +179,7 @@ func TestModel11_D3_FailedSubAgentInPlainSubRunSkipped(t *testing.T) {
 	boom := agent.MustFunc("boom", "", func(context.Context, struct{}) (string, error) {
 		return "", errors.New("boom")
 	})
-	parent := build(agent.NewScriptedModel(agent.ToolTurn("c1", "starter", `{}`), agent.ToolTurn("c2", "boom", `{}`), agent.TextTurn("x")), starter, boom)
+	parent := build(agenttest.NewScriptedModel(agenttest.ToolTurn("c1", "starter", `{}`), agenttest.ToolTurn("c2", "boom", `{}`), agenttest.TextTurn("x")), starter, boom)
 	_, err := parent.Run(ctx, "p", agent.UserText("go"), agent.WithSaga())
 	var ab *agent.SagaAborted
 	if !errors.As(err, &ab) {
@@ -217,19 +217,19 @@ func TestModel11_D1_RollbackAcrossRotatedKeys(t *testing.T) {
 	cfg := AttenuationConfig{Store: store, Narrow: narrowLimitBy(1), Rules: rev117eRules}
 	tools := func() []agent.Tool {
 		sub1 := agenttest.MustNew(
-			agent.NewScriptedModel(agent.ToolTurn("s1", "charge1", `{}`), agent.TextTurn("d1 done")),
+			agenttest.NewScriptedModel(agenttest.ToolTurn("s1", "charge1", `{}`), agenttest.TextTurn("d1 done")),
 			store,
 			agent.WithTools(charge("charge1")),
 		)
 		sub2 := agenttest.MustNew(
-			agent.NewScriptedModel(agent.ToolTurn("s2", "charge2", `{}`), agent.ToolTurn("s3", "boom", `{}`), agent.TextTurn("x")),
+			agenttest.NewScriptedModel(agenttest.ToolTurn("s2", "charge2", `{}`), agenttest.ToolTurn("s3", "boom", `{}`), agenttest.TextTurn("x")),
 			store,
 			agent.WithTools(charge("charge2"), boom),
 		)
 		return []agent.Tool{AttenuatingSubAgent("d1", "first", sub1, cfg), AttenuatingSubAgent("d2", "second", sub2, cfg)}
 	}
 	parent1 := agenttest.MustNew(
-		agent.NewScriptedModel(agent.ToolTurn("c1", "d1", `{"task":"a"}`), agent.ErrorTurn(errors.New("provider down"))),
+		agenttest.NewScriptedModel(agenttest.ToolTurn("c1", "d1", `{"task":"a"}`), agenttest.ErrorTurn(errors.New("provider down"))),
 		store,
 		agent.WithTools(tools()...),
 	)
@@ -237,7 +237,7 @@ func TestModel11_D1_RollbackAcrossRotatedKeys(t *testing.T) {
 		t.Fatal("drive 1: want the provider error")
 	}
 	drive := func(ctx context.Context) *agent.SagaAborted {
-		m := agent.NewScriptedModel(agent.ToolTurn("c1", "d1", `{"task":"a"}`), agent.ToolTurn("c2", "d2", `{"task":"b"}`), agent.TextTurn("x"))
+		m := agenttest.NewScriptedModel(agenttest.ToolTurn("c1", "d1", `{"task":"a"}`), agenttest.ToolTurn("c2", "d2", `{"task":"b"}`), agenttest.TextTurn("x"))
 		_, err := agenttest.MustNew(m, store, agent.WithTools(tools()...)).Run(ctx, "trip", agent.UserText("go"), agent.WithSaga())
 		var ab *agent.SagaAborted
 		if !errors.As(err, &ab) {
@@ -273,7 +273,7 @@ func TestModel11_BindRollbackScope(t *testing.T) {
 	if _, err := RecordGrant(ctx, store, "sub", child); err != nil {
 		t.Fatal(err)
 	}
-	sub := agenttest.MustNew(agent.NewScriptedModel(agent.TextTurn("x")), store)
+	sub := agenttest.MustNew(agenttest.NewScriptedModel(agenttest.TextTurn("x")), store)
 	b := AttenuatingSubAgent("exec", "", sub, AttenuationConfig{Store: store, Narrow: narrowLimitBy(1), Rules: rev117eRules}).(interface {
 		BindRollback(context.Context, string) (context.Context, error)
 	})
@@ -374,10 +374,10 @@ func TestModel11_TypedNilSignerRefused(t *testing.T) {
 	if ps := rollbackParents(WithRollbackGrants(ctx, typedNil, root)); len(ps) != 0 {
 		t.Fatalf("WithRollbackGrants with a typed-nil signer bound %d grant(s)", len(ps))
 	}
-	sub := agenttest.MustNew(agent.NewScriptedModel(agent.TextTurn("done")), store)
+	sub := agenttest.MustNew(agenttest.NewScriptedModel(agenttest.TextTurn("done")), store)
 	deleg := AttenuatingSubAgent("deleg", "d", sub, AttenuationConfig{Store: store, Narrow: narrowLimitBy(1), Rules: rev117eRules})
 	parent := agenttest.MustNew(
-		agent.NewScriptedModel(agent.ToolTurn("c1", "deleg", `{"task":"a"}`), agent.TextTurn("x")),
+		agenttest.NewScriptedModel(agenttest.ToolTurn("c1", "deleg", `{"task":"a"}`), agenttest.TextTurn("x")),
 		store,
 		agent.WithTools(deleg),
 	)

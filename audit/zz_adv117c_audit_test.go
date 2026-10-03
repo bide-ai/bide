@@ -27,13 +27,13 @@ func TestAdv117c_RefusedResumeLeavesSubRunChargeUnaccounted(t *testing.T) {
 				func(context.Context, struct{}, string) error { undone.Add(1); return nil })
 			confirm := agent.MustFunc("confirm", "", func(context.Context, struct{}) (string, error) { return "ok", nil }, agent.WithSafety(agent.Safety{ReadOnly: true}), agent.WithApproval(agent.SingleApproval()))
 			sub := agenttest.MustNew(
-				agent.NewScriptedModel(agent.ToolTurn("s1", "charge", `{}`), agent.ToolTurn("s2", "confirm", `{}`), agent.TextTurn("done")),
+				agenttest.NewScriptedModel(agenttest.ToolTurn("s1", "charge", `{}`), agenttest.ToolTurn("s2", "confirm", `{}`), agenttest.TextTurn("done")),
 				store,
 				agent.WithTools(charge, confirm),
 			)
 			exec := AttenuatingSubAgent("exec", "", sub, AttenuationConfig{Store: store, Narrow: narrowLimitBy(3), Rules: ScopeRules{"limit": NumericAtMost}})
 			parent := agenttest.MustNew(
-				agent.NewScriptedModel(agent.ToolTurn("c1", "exec", `{"task":"x"}`), agent.TextTurn("done")),
+				agenttest.NewScriptedModel(agenttest.ToolTurn("c1", "exec", `{"task":"x"}`), agenttest.TextTurn("done")),
 				store,
 				agent.WithTools(exec),
 			)
@@ -92,14 +92,14 @@ func TestAdv117c_PreChangeUngrantedJournalCannotRollBack(t *testing.T) {
 		func(context.Context, struct{}, string) error { undone.Add(1); return nil })
 	build := func(authStore *agent.Journal) *agent.Agent {
 		sub := agenttest.MustNew(
-			agent.NewScriptedModel(agent.ToolTurn("s1", "charge", `{}`), agent.TextTurn("done")),
+			agenttest.NewScriptedModel(agenttest.ToolTurn("s1", "charge", `{}`), agenttest.TextTurn("done")),
 			j,
 			agent.WithTools(charge),
 		)
 		exec := AttenuatingSubAgent("exec", "", sub, AttenuationConfig{Store: authStore, Narrow: narrowLimitBy(3), Rules: ScopeRules{"limit": NumericAtMost}})
 		gate := agent.MustFunc("gate", "", func(context.Context, struct{}) (string, error) { return "ok", nil }, agent.WithSafety(agent.Safety{ReadOnly: true}), agent.WithApproval(agent.SingleApproval()))
 		boom := agent.MustFunc("boom", "", func(context.Context, struct{}) (string, error) { return "", errors.New("sold out") })
-		m := agent.NewScriptedModel(agent.ToolTurn("c1", "exec", `{"task":"pay"}`), agent.ToolTurn("c2", "gate", `{}`), agent.ToolTurn("c3", "boom", `{}`), agent.TextTurn("x"))
+		m := agenttest.NewScriptedModel(agenttest.ToolTurn("c1", "exec", `{"task":"pay"}`), agenttest.ToolTurn("c2", "gate", `{}`), agenttest.ToolTurn("c3", "boom", `{}`), agenttest.TextTurn("x"))
 		return agenttest.MustNew(m, j, agent.WithTools(exec, gate, boom))
 	}
 	if _, err := build(agenttest.MemJournal()).Run(ctx, "trip", agent.UserText("go"), agent.WithSaga()); !agent.IsPause(err) {
@@ -150,13 +150,13 @@ func TestAdv117c_ExpiredOrForeignGrantIsRefusedUnrecorded(t *testing.T) {
 			}
 			var ran atomic.Int32
 			sub := agenttest.MustNew(
-				agent.NewScriptedModel(agent.TextTurn("done")),
+				agenttest.NewScriptedModel(agenttest.TextTurn("done")),
 				store,
 				agent.WithTools(agent.MustFunc("noop", "", func(context.Context, struct{}) (string, error) { ran.Add(1); return "", nil })),
 			)
 			exec := AttenuatingSubAgent("exec", "", sub, AttenuationConfig{Store: store, Narrow: narrowLimitBy(3), Rules: ScopeRules{"limit": NumericAtMost}})
 			parent := agenttest.MustNew(
-				agent.NewScriptedModel(agent.ToolTurn("c1", "exec", `{"task":"x"}`), agent.TextTurn("done")),
+				agenttest.NewScriptedModel(agenttest.ToolTurn("c1", "exec", `{"task":"x"}`), agenttest.TextTurn("done")),
 				store,
 				agent.WithTools(exec),
 			)
@@ -197,10 +197,10 @@ func TestAdv117c_MintRefusesExpiredOrForeignChild(t *testing.T) {
 	} {
 		ctx := context.Background()
 		store := agenttest.MemJournal()
-		sub := agenttest.MustNew(agent.NewScriptedModel(agent.TextTurn("done")), store)
+		sub := agenttest.MustNew(agenttest.NewScriptedModel(agenttest.TextTurn("done")), store)
 		exec := AttenuatingSubAgent("exec", "", sub, AttenuationConfig{Store: store, Narrow: narrow, Rules: ScopeRules{"limit": NumericAtMost}})
 		parent := agenttest.MustNew(
-			agent.NewScriptedModel(agent.ToolTurn("c1", "exec", `{"task":"x"}`), agent.TextTurn("done")),
+			agenttest.NewScriptedModel(agenttest.ToolTurn("c1", "exec", `{"task":"x"}`), agenttest.TextTurn("done")),
 			store,
 			agent.WithTools(exec),
 		)

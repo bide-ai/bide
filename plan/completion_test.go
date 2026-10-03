@@ -62,7 +62,7 @@ func TestCompletion_FinishedFlowRun(t *testing.T) {
 	if _, err := other.Run(ctx, mem, "r", 5); !errors.Is(err, agent.ErrConfig) {
 		t.Fatalf("another flow over the finished run: %v, want ErrConfig", err)
 	}
-	a := agenttest.MustNew(agent.NewScriptedModel(agent.TextTurn("hi")), mem)
+	a := agenttest.MustNew(agenttest.NewScriptedModel(agenttest.TextTurn("hi")), mem)
 	if _, err := a.Run(ctx, "r", agent.UserText("5")); !errors.Is(err, agent.ErrConfig) {
 		t.Fatalf("an Agent over a finished flow run: %v, want ErrConfig", err)
 	}

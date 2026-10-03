@@ -1,4 +1,4 @@
-package mcp
+package mcptools
 
 import (
 	"context"
@@ -99,7 +99,7 @@ func TestOversizedResult_RunRecordsAFailure(t *testing.T) {
 		t.Fatal(err)
 	}
 	store := agenttest.MemJournal()
-	m := agent.NewScriptedModel(agent.ToolTurn("c1", "export", `{}`), agent.TextTurn("done"))
+	m := agenttest.NewScriptedModel(agenttest.ToolTurn("c1", "export", `{}`), agenttest.TextTurn("done"))
 	if _, err := agenttest.MustNew(m, store, agent.WithTools(tools...)).Run(context.Background(), "r1", agent.UserText("export")); err != nil {
 		t.Fatalf("run err = %v, want the failure passed to the model", err)
 	}

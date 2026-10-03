@@ -52,7 +52,7 @@ func TestWithRetrievalRetry_RetriesTheStep(t *testing.T) {
 	// Retry middleware alone: the transient error fails the drive after one call.
 	r := &flakyRetriever{fail: 1}
 	store := agenttest.MemJournal()
-	a, err := agent.New(agent.NewScriptedModel(agent.TextTurn("done")), store, retry, agent.WithRetrieval(r, 1))
+	a, err := agent.New(agenttest.NewScriptedModel(agenttest.TextTurn("done")), store, retry, agent.WithRetrieval(r, 1))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -63,7 +63,7 @@ func TestWithRetrievalRetry_RetriesTheStep(t *testing.T) {
 	// WithRetrievalRetry(2): two failures, then the documents, recorded once.
 	r = &flakyRetriever{fail: 2}
 	store = agenttest.MemJournal()
-	a, err = agent.New(agent.NewScriptedModel(agent.TextTurn("done")), store,
+	a, err = agent.New(agenttest.NewScriptedModel(agenttest.TextTurn("done")), store,
 		agent.WithRetrieval(r, 1, agent.WithRetrievalRetry(2, time.Millisecond, 2*time.Millisecond)))
 	if err != nil {
 		t.Fatal(err)
@@ -78,7 +78,7 @@ func TestWithRetrievalRetry_RetriesTheStep(t *testing.T) {
 	// Every attempt fails: nothing is recorded, and the next drive retrieves again.
 	r = &flakyRetriever{fail: 3}
 	store = agenttest.MemJournal()
-	a, err = agent.New(agent.NewScriptedModel(agent.TextTurn("done")), store,
+	a, err = agent.New(agenttest.NewScriptedModel(agenttest.TextTurn("done")), store,
 		agent.WithRetrieval(r, 1, agent.WithRetrievalRetry(1, 0, 0)))
 	if err != nil {
 		t.Fatal(err)
@@ -100,7 +100,7 @@ func TestWithRetrievalRetry_StopsAndValidates(t *testing.T) {
 		calls++
 		return nil, fmt.Errorf("bad index name: %w", agent.ErrConfig)
 	})
-	a, err := agent.New(agent.NewScriptedModel(agent.TextTurn("done")), agenttest.MemJournal(),
+	a, err := agent.New(agenttest.NewScriptedModel(agenttest.TextTurn("done")), agenttest.MemJournal(),
 		agent.WithRetrieval(refuse, 1, agent.WithRetrievalRetry(5, 0, 0)))
 	if err != nil {
 		t.Fatal(err)
@@ -115,7 +115,7 @@ func TestWithRetrievalRetry_StopsAndValidates(t *testing.T) {
 		cancel() // the caller gives up while the step backs off
 		return nil, errors.New("transient")
 	})
-	a, err = agent.New(agent.NewScriptedModel(agent.TextTurn("done")), agenttest.MemJournal(),
+	a, err = agent.New(agenttest.NewScriptedModel(agenttest.TextTurn("done")), agenttest.MemJournal(),
 		agent.WithRetrieval(cancelling, 1, agent.WithRetrievalRetry(5, time.Hour, time.Hour)))
 	if err != nil {
 		t.Fatal(err)
@@ -127,7 +127,7 @@ func TestWithRetrievalRetry_StopsAndValidates(t *testing.T) {
 	for _, o := range []agent.RetrievalOption{
 		agent.WithRetrievalRetry(-1, 0, 0), agent.WithRetrievalRetry(1, -1, 0), agent.WithRetrievalRetry(1, 2, 1), nil,
 	} {
-		if _, err := agent.New(agent.NewScriptedModel(), agenttest.MemJournal(),
+		if _, err := agent.New(agenttest.NewScriptedModel(), agenttest.MemJournal(),
 			agent.WithRetrieval(&flakyRetriever{}, 1, o)); !errors.Is(err, agent.ErrConfig) {
 			t.Errorf("WithRetrieval with option %v: Build err %v, want ErrConfig", o, err)
 		}
@@ -146,7 +146,7 @@ func TestWithRetrieval_RunsBeforeModelMiddleware(t *testing.T) {
 	}
 	r := &flakyRetriever{}
 	store := agenttest.MemJournal()
-	a, err := agent.New(agent.NewScriptedModel(agent.TextTurn("done")), store,
+	a, err := agent.New(agenttest.NewScriptedModel(agenttest.TextTurn("done")), store,
 		agent.WithMiddleware(deny), agent.WithRetrieval(r, 1))
 	if err != nil {
 		t.Fatal(err)
@@ -168,7 +168,7 @@ func TestWithRetrieval_RunsBeforeModelMiddleware(t *testing.T) {
 		return r.Retrieve(ctx, q, k)
 	})
 	store = agenttest.MemJournal()
-	a, err = agent.New(agent.NewScriptedModel(agent.TextTurn("done")), store, agent.WithRetrieval(gated, 1))
+	a, err = agent.New(agenttest.NewScriptedModel(agenttest.TextTurn("done")), store, agent.WithRetrieval(gated, 1))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -193,7 +193,7 @@ func TestSystemPromptFunc_OnlyWhenTheModelIsCalled(t *testing.T) {
 		return "you are helpful", nil
 	}
 	noop := agent.MustFunc("noop", "", func(context.Context, struct{}) (string, error) { return "ok", nil }, agent.WithSafety(agent.Safety{ReadOnly: true}))
-	a, err := agent.New(agent.NewScriptedModel(agent.ToolTurn("c1", "noop", `{}`), agent.TextTurn("answer")), store,
+	a, err := agent.New(agenttest.NewScriptedModel(agenttest.ToolTurn("c1", "noop", `{}`), agenttest.TextTurn("answer")), store,
 		agent.WithSystemPromptFunc(fn), agent.WithTools(noop))
 	if err != nil {
 		t.Fatal(err)
@@ -238,7 +238,7 @@ func TestRev127_RetrievalOnceAcrossPause(t *testing.T) {
 			return next(ctx, c)
 		}
 	}
-	m := agent.NewScriptedModel(agent.ToolTurn("c1", "ask", `{}`), agent.TextTurn("done"))
+	m := agenttest.NewScriptedModel(agenttest.ToolTurn("c1", "ask", `{}`), agenttest.TextTurn("done"))
 	a, err := agent.New(m, store, agent.WithTools(ask), agent.WithMiddleware(count), agent.WithRetrieval(r, 1))
 	if err != nil {
 		t.Fatal(err)
@@ -292,22 +292,22 @@ func TestBuild_ToolNamesFollowTheModelsRule(t *testing.T) {
 		tool  string
 		ok    bool
 	}{
-		{"strict refuses a space", &rulesModel{Model: agent.NewScriptedModel(), name: strict}, "get weather", false},
-		{"strict refuses a dot", &rulesModel{Model: agent.NewScriptedModel(), name: strict}, "fs.read", false},
-		{"strict refuses 65 chars", &rulesModel{Model: agent.NewScriptedModel(), name: strict}, strings.Repeat("a", 65), false},
-		{"strict accepts", &rulesModel{Model: agent.NewScriptedModel(), name: strict}, "get_weather-1", true},
-		{"gemini accepts a dot", &rulesModel{Model: agent.NewScriptedModel(), name: gemini}, "fs.read", true},
-		{"gemini refuses a leading digit", &rulesModel{Model: agent.NewScriptedModel(), name: gemini}, "1tool", false},
-		{"through Unwrap", unwrapModel{&rulesModel{Model: agent.NewScriptedModel(), name: strict}}, "fs.read", false},
-		{"no rule declared", agent.NewScriptedModel(), "fs.read", true},
-		{"nil rule", &rulesModel{Model: agent.NewScriptedModel()}, "get weather", true},
+		{"strict refuses a space", &rulesModel{Model: agenttest.NewScriptedModel(), name: strict}, "get weather", false},
+		{"strict refuses a dot", &rulesModel{Model: agenttest.NewScriptedModel(), name: strict}, "fs.read", false},
+		{"strict refuses 65 chars", &rulesModel{Model: agenttest.NewScriptedModel(), name: strict}, strings.Repeat("a", 65), false},
+		{"strict accepts", &rulesModel{Model: agenttest.NewScriptedModel(), name: strict}, "get_weather-1", true},
+		{"gemini accepts a dot", &rulesModel{Model: agenttest.NewScriptedModel(), name: gemini}, "fs.read", true},
+		{"gemini refuses a leading digit", &rulesModel{Model: agenttest.NewScriptedModel(), name: gemini}, "1tool", false},
+		{"through Unwrap", unwrapModel{&rulesModel{Model: agenttest.NewScriptedModel(), name: strict}}, "fs.read", false},
+		{"no rule declared", agenttest.NewScriptedModel(), "fs.read", true},
+		{"nil rule", &rulesModel{Model: agenttest.NewScriptedModel()}, "get weather", true},
 	} {
 		_, err := agent.New(tc.model, j, agent.WithTools(named(tc.tool)))
 		if tc.ok != (err == nil) || err != nil && !errors.Is(err, agent.ErrConfig) {
 			t.Errorf("%s: Build err = %v, want ok %v", tc.name, err, tc.ok)
 		}
 	}
-	a, err := agent.New(&rulesModel{Model: agent.NewScriptedModel(), name: strict}, j)
+	a, err := agent.New(&rulesModel{Model: agenttest.NewScriptedModel(), name: strict}, j)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -322,7 +322,7 @@ func TestBuild_ToolNamesFollowTheModelsRule(t *testing.T) {
 func TestRequiredChoice_CheckedAtTheRun(t *testing.T) {
 	required := agent.WithToolChoice(agent.ToolChoice{Mode: "required"})
 	store := agenttest.MemJournal()
-	m := &rulesModel{Model: agent.NewScriptedModel(), required: true}
+	m := &rulesModel{Model: agenttest.NewScriptedModel(), required: true}
 	a, err := agent.New(m, store, required)
 	if err != nil {
 		t.Fatalf("Build refused required with no tools: %v", err)
@@ -333,7 +333,7 @@ func TestRequiredChoice_CheckedAtTheRun(t *testing.T) {
 	if recs, _ := store.History(context.Background(), "plain"); len(recs) != 0 {
 		t.Fatalf("the refused run journaled %d records", len(recs))
 	}
-	typed := &rulesModel{Model: agent.NewScriptedModel(agent.ToolTurn("c1", "final_answer", `{"N":7}`)), required: true}
+	typed := &rulesModel{Model: agenttest.NewScriptedModel(agenttest.ToolTurn("c1", "final_answer", `{"N":7}`)), required: true}
 	b, err := agent.New(typed, store, required)
 	if err != nil {
 		t.Fatal(err)
@@ -343,7 +343,7 @@ func TestRequiredChoice_CheckedAtTheRun(t *testing.T) {
 		t.Fatalf("RunTyped under required with no tools of its own: %+v, %v", got, err)
 	}
 	// A model that does not declare the rule is not second-guessed: the run reaches it.
-	free := &rulesModel{Model: agent.NewScriptedModel(agent.TextTurn("ok"))}
+	free := &rulesModel{Model: agenttest.NewScriptedModel(agenttest.TextTurn("ok"))}
 	c, err := agent.New(free, store, required)
 	if err != nil {
 		t.Fatal(err)
@@ -368,7 +368,7 @@ func TestRunInfoSaga_IsTheRunsOwnFlag(t *testing.T) {
 		}, agent.WithSafety(agent.Safety{ReadOnly: true}))
 	}
 	childAgent := func(tool string) *agent.Agent {
-		c, err := agent.New(agent.NewScriptedModel(agent.ToolTurn("k1", tool, `{}`), agent.TextTurn("done")),
+		c, err := agent.New(agenttest.NewScriptedModel(agenttest.ToolTurn("k1", tool, `{}`), agenttest.TextTurn("done")),
 			store, agent.WithTools(probe(tool)))
 		if err != nil {
 			t.Fatal(err)
@@ -385,7 +385,7 @@ func TestRunInfoSaga_IsTheRunsOwnFlag(t *testing.T) {
 		_, err := sagaChild.Run(ctx, info.SubRunFor("saga"), agent.UserText("go"), agent.WithSaga())
 		return "ok", err
 	}, agent.WithSafety(agent.Safety{ReadOnly: true}))
-	p, err := agent.New(agent.NewScriptedModel(agent.ToolTurn("c1", "starter", `{}`), agent.ToolTurn("c2", "sub", `{"task":"go"}`), agent.TextTurn("done")),
+	p, err := agent.New(agenttest.NewScriptedModel(agenttest.ToolTurn("c1", "starter", `{}`), agenttest.ToolTurn("c2", "sub", `{"task":"go"}`), agenttest.TextTurn("done")),
 		store, agent.WithTools(starter, agent.MustSubAgent("sub", "", sub)))
 	if err != nil {
 		t.Fatal(err)

@@ -1,4 +1,4 @@
-package mcp
+package mcptools
 
 import (
 	"context"
@@ -54,10 +54,10 @@ func TestTools_AnnotationsAreUntrustedByDefault(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	m := agent.NewScriptedModel(
-		agent.ToolTurn("c1", "transfer", `{"cents":500}`),
-		agent.ToolTurn("c2", "transfer", `{"cents":500}`),
-		agent.TextTurn("done"),
+	m := agenttest.NewScriptedModel(
+		agenttest.ToolTurn("c1", "transfer", `{"cents":500}`),
+		agenttest.ToolTurn("c2", "transfer", `{"cents":500}`),
+		agenttest.TextTurn("done"),
 	)
 	a := agenttest.MustNew(
 		m,
@@ -154,10 +154,11 @@ func TestTools_NameCollisionWithLocalToolFailsTheRun(t *testing.T) {
 	local := agent.MustFunc("lookup", "look up a customer", func(context.Context, struct{}) (string, error) {
 		return "local", nil
 	}, agent.WithSafety(agent.Safety{ReadOnly: true}))
-	m := agent.NewScriptedModel(agent.ToolTurn("c1", "lookup", `{"ssn":"123-45-6789"}`), agent.TextTurn("done"))
-	_, err = agenttest.MustNew(m, agenttest.MemJournal(), agent.WithTools(append([]agent.Tool{local}, remote...)...)).Run(context.Background(), "r1", agent.UserText("look up alice"))
+	m := agenttest.NewScriptedModel(agenttest.ToolTurn("c1", "lookup", `{"ssn":"123-45-6789"}`), agenttest.TextTurn("done"))
+	// the agent refuses the tool set when it is built, before any run reaches either tool
+	_, err = agent.New(m, agenttest.MemJournal(), agent.WithTools(append([]agent.Tool{local}, remote...)...))
 	if !errors.Is(err, agent.ErrConfig) {
-		t.Errorf("run err = %v, want ErrConfig for a server tool named like a local one", err)
+		t.Errorf("New err = %v, want ErrConfig for a server tool named like a local one", err)
 	}
 	if n := reached.Load(); n != 0 {
 		t.Errorf("the server received %d calls meant for the local tool", n)

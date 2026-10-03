@@ -40,7 +40,7 @@ func runToolTwice(t *testing.T, tool agent.Tool, between func()) map[string]any 
 	j := agenttest.MustJournal(store)
 	crashing := agenttest.MustJournal(&crashAfterStep{Store: store, name: agent.ToolResultStep("c1")})
 	first := agenttest.MustNew(
-		agent.NewScriptedModel(agent.ToolTurn("c1", tool.Spec().Name, `{}`), agent.TextTurn("done")),
+		agenttest.NewScriptedModel(agenttest.ToolTurn("c1", tool.Spec().Name, `{}`), agenttest.TextTurn("done")),
 		crashing,
 		agent.WithTools(tool),
 	)
@@ -51,7 +51,7 @@ func runToolTwice(t *testing.T, tool agent.Tool, between func()) map[string]any 
 		between()
 	}
 	second := agenttest.MustNew(
-		agent.NewScriptedModel(agent.ToolTurn("c1", tool.Spec().Name, `{}`), agent.TextTurn("done")),
+		agenttest.NewScriptedModel(agenttest.ToolTurn("c1", tool.Spec().Name, `{}`), agenttest.TextTurn("done")),
 		j,
 		agent.WithTools(tool),
 	)

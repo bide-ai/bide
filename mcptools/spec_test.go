@@ -1,4 +1,4 @@
-package mcp
+package mcptools
 
 import (
 	"context"
@@ -140,7 +140,7 @@ func TestSpec_TimeoutHaltsASideEffect(t *testing.T) {
 		t.Fatal(err)
 	}
 	store := agenttest.MemJournal()
-	m := agent.NewScriptedModel(agent.ToolTurn("c1", "transfer", `{}`), agent.TextTurn("done"))
+	m := agenttest.NewScriptedModel(agenttest.ToolTurn("c1", "transfer", `{}`), agenttest.TextTurn("done"))
 	a := agenttest.MustNew(m, store, agent.WithTools(tools...))
 	if _, err := a.Run(context.Background(), "r1", agent.UserText("go")); !errors.Is(err, agent.ErrToolOutcomeUnknown) {
 		t.Fatalf("run err = %v, want ErrToolOutcomeUnknown", err)

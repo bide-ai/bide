@@ -94,7 +94,7 @@ func TestProof_CommitsToIdentity(t *testing.T) {
 	store := agenttest.MemJournal()
 	const runID = "run1"
 	a := agenttest.MustNew(
-		agent.NewScriptedModel(agent.ToolTurn("call1", "credit", `{}`), agent.TextTurn("done")),
+		agenttest.NewScriptedModel(agenttest.ToolTurn("call1", "credit", `{}`), agenttest.TextTurn("done")),
 		store,
 		agent.WithTools(tool),
 	)

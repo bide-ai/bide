@@ -124,7 +124,7 @@ func TestClaimHeldThenCancelled_ToolHaltsForever(t *testing.T) {
 	fired := 0
 	charge := agent.MustFunc("charge", "", func(context.Context, struct{}) (string, error) { fired++; return "ok", nil })
 	model := func() agent.Model {
-		return agent.NewScriptedModel(agent.ToolTurn("c1", "charge", `{}`), agent.TextTurn("done"))
+		return agenttest.NewScriptedModel(agenttest.ToolTurn("c1", "charge", `{}`), agenttest.TextTurn("done"))
 	}
 	s := &r3Store{m: m, faults: []r3Fault{{"attempt:tool:c1", "nc"}, {"attempt:not-started:", "nc"}}}
 	j1, _ := agent.NewJournal(s)
@@ -182,7 +182,7 @@ func TestToolGateIgnoresRememberedClaim(t *testing.T) {
 	fired := 0
 	charge := agent.MustFunc("charge", "", func(context.Context, struct{}) (string, error) { fired++; return "ok", nil })
 	model := func() agent.Model {
-		return agent.NewScriptedModel(agent.ToolTurn("c1", "charge", `{}`), agent.TextTurn("done"))
+		return agenttest.NewScriptedModel(agenttest.ToolTurn("c1", "charge", `{}`), agenttest.TextTurn("done"))
 	}
 	s := &r3Store{m: m, faults: []r3Fault{{"attempt:tool:c1", "c"}, {"attempt:not-started:", "nc"}}}
 	j, _ := agent.NewJournal(s)
@@ -242,7 +242,7 @@ func TestRememberedClaimDoesNotVoidAnotherDriversAttempt(t *testing.T) {
 	fired := 0
 	charge := agent.MustFunc("charge", "", func(context.Context, struct{}) (string, error) { fired++; return "ok", nil })
 	model := func() agent.Model {
-		return agent.NewScriptedModel(agent.ToolTurn("c1", "charge", `{}`), agent.TextTurn("done"))
+		return agenttest.NewScriptedModel(agenttest.ToolTurn("c1", "charge", `{}`), agenttest.TextTurn("done"))
 	}
 	a := &r3Store{m: m, faults: []r3Fault{{"attempt:tool:c1", "nc"}, {"attempt:not-started:", "nc"}}}
 	ja, _ := agent.NewJournal(a)

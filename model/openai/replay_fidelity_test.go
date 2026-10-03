@@ -35,7 +35,7 @@ func (htmlTool) Call(context.Context, json.RawMessage) (json.RawMessage, error) 
 // turn is journaled.
 type wireModel struct {
 	m      *Model
-	script *agent.ScriptedModel
+	script *agenttest.ScriptedModel
 	failOn int
 
 	mu    sync.Mutex
@@ -65,10 +65,10 @@ func (w *wireModel) Stream(ctx context.Context, req agent.Request) (*agent.Strea
 // read without one.
 func TestResumedTurnSendsLiveBytes(t *testing.T) {
 	ctx := context.Background()
-	script := func() *agent.ScriptedModel {
-		return agent.NewScriptedModel(
-			agent.ToolTurn("c1", "html", `{ "q" : "a<b && c>d" ,  "n": 1.50 }`),
-			agent.TextTurn("done"),
+	script := func() *agenttest.ScriptedModel {
+		return agenttest.NewScriptedModel(
+			agenttest.ToolTurn("c1", "html", `{ "q" : "a<b && c>d" ,  "n": 1.50 }`),
+			agenttest.TextTurn("done"),
 		)
 	}
 

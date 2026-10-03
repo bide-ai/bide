@@ -162,7 +162,7 @@ func TestRev117e_StorageReadFailureRecordedAsDelegationFailure(t *testing.T) {
 			deleg := AttenuatingSubAgent("deleg", "d", agenttest.MustNew(rev117eCountModel{n: &subCalls}, j),
 				AttenuationConfig{Store: agenttest.MustJournal(flaky), Narrow: narrowLimitBy(1), Rules: rev117eRules})
 			parent := agenttest.MustNew(
-				agent.NewScriptedModel(agent.ToolTurn("c1", "deleg", `{"task":"go"}`), agent.TextTurn("done")),
+				agenttest.NewScriptedModel(agenttest.ToolTurn("c1", "deleg", `{"task":"go"}`), agenttest.TextTurn("done")),
 				j,
 				agent.WithTools(deleg),
 			)
@@ -204,7 +204,7 @@ func TestRev117e_GrantMintedOntoSubRunWithoutAuthority(t *testing.T) {
 		t.Fatalf("precondition: BindRollback = %v, want ErrProtocol", err)
 	}
 	parent := agenttest.MustNew(
-		agent.NewScriptedModel(agent.ToolTurn("c1", "deleg", `{"task":"go"}`), agent.TextTurn("done")),
+		agenttest.NewScriptedModel(agenttest.ToolTurn("c1", "deleg", `{"task":"go"}`), agenttest.TextTurn("done")),
 		store,
 		agent.WithTools(tool),
 	)
@@ -236,7 +236,7 @@ func TestRev117e_BindRollbackAcceptsForeignSubject(t *testing.T) {
 	tool := AttenuatingSubAgent("deleg", "d", agenttest.MustNew(answerModel{text: "ok"}, store),
 		AttenuationConfig{Store: store, Narrow: narrowLimitBy(1), Rules: rev117eRules}).(*attenuatingSubAgent)
 	parent := agenttest.MustNew(
-		agent.NewScriptedModel(agent.ToolTurn("c1", "deleg", `{"task":"go"}`), agent.TextTurn("done")),
+		agenttest.NewScriptedModel(agenttest.ToolTurn("c1", "deleg", `{"task":"go"}`), agenttest.TextTurn("done")),
 		store,
 		agent.WithTools(tool),
 	)
@@ -321,7 +321,7 @@ func TestRev117e_StorageWriteFailureRecordsNothing(t *testing.T) {
 			deleg := AttenuatingSubAgent("deleg", "d", agenttest.MustNew(rev117eCountModel{n: &subCalls}, j),
 				AttenuationConfig{Store: agenttest.MustJournal(flaky), Narrow: narrowLimitBy(1), Rules: rev117eRules})
 			parent := agenttest.MustNew(
-				agent.NewScriptedModel(agent.ToolTurn("c1", "deleg", `{"task":"go"}`), agent.TextTurn("done")),
+				agenttest.NewScriptedModel(agenttest.ToolTurn("c1", "deleg", `{"task":"go"}`), agenttest.TextTurn("done")),
 				j,
 				agent.WithTools(deleg),
 			)

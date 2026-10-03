@@ -17,7 +17,7 @@ permissions:
 # fails if a module in the tree is missing from this list or from go.work;
 # benchmarks is the one module left out of both (bench.yml runs it on demand).
 env:
-  MODULES: ". mcp trace store/sqlite store/postgres govern govern/redislog govern/sqlitelog govern/postgreslog codec/gcf examples/approval examples/plan examples/mcp examples/observability examples/govern integration"
+  MODULES: ". mcptools trace store/sqlite store/postgres govern govern/redislog govern/sqlitelog govern/postgreslog codec/gcf examples/approval examples/plan examples/mcp examples/observability examples/govern integration"
   UNLISTED_MODULES: "benchmarks"
   # The Linux test shards, one job each, balanced by measured time: the core's agent package alone
   # (".:agent", the package in the core's agent directory, not its subpackages; the longest -race
@@ -28,7 +28,7 @@ env:
   TEST_SHARDS: |
     agent: .:agent
     core: .
-    rest: mcp trace store/sqlite store/postgres govern govern/redislog govern/sqlitelog govern/postgreslog codec/gcf examples/approval examples/plan examples/mcp examples/observability examples/govern integration
+    rest: mcptools trace store/sqlite store/postgres govern govern/redislog govern/sqlitelog govern/postgreslog codec/gcf examples/approval examples/plan examples/mcp examples/observability examples/govern integration
 
 jobs:
   # Decides whether a pull request touches anything the Go jobs test. A PR that changes only

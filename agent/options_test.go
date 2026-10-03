@@ -132,7 +132,7 @@ func TestBuild_EveryValidationError(t *testing.T) {
 		t.Errorf("m-of-n policy with verifiers: %v", err)
 	}
 	// An agent New was given a bad tool set cannot be configured further: With returns its error.
-	if _, err := mustNew(m, memJournal(), WithTools(namedTool("a"), namedTool("a"))).With(); !errors.Is(err, ErrConfig) {
+	if _, err := New(m, memJournal(), WithTools(namedTool("a"), namedTool("a"))); !errors.Is(err, ErrConfig) {
 		t.Errorf("With on an agent New refused tools for = %v, want ErrConfig", err)
 	}
 }

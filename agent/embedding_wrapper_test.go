@@ -29,7 +29,7 @@ func TestEmbeddingWrapper_JournalWritesThroughItsInsert(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if _, err := agenttest.MustNew(agent.NewScriptedModel(agent.TextTurn("done")), j).Run(ctx, "r", agent.UserText("hi")); err != nil {
+	if _, err := agenttest.MustNew(agenttest.NewScriptedModel(agenttest.TextTurn("done")), j).Run(ctx, "r", agent.UserText("hi")); err != nil {
 		t.Fatal(err)
 	}
 	if w.inserts.Load() == 0 {

@@ -1,4 +1,4 @@
-package mcp
+package mcptools
 
 import (
 	"bytes"
@@ -36,7 +36,7 @@ func TestWithApproval_PausesAndResumes(t *testing.T) {
 		t.Fatal(err)
 	}
 	store := agenttest.MemJournal()
-	m := agent.NewScriptedModel(agent.ToolTurn("c1", "transfer", `{"cents":500}`), agent.TextTurn("done"))
+	m := agenttest.NewScriptedModel(agenttest.ToolTurn("c1", "transfer", `{"cents":500}`), agenttest.TextTurn("done"))
 	a := agenttest.MustNew(m, store, agent.WithTools(tools...))
 	_, err = a.Run(context.Background(), "r1", agent.UserText("send $5"))
 	var pend *agent.ApprovalPending
@@ -86,7 +86,7 @@ func TestWithApproval_Quorum(t *testing.T) {
 		return nil, false
 	}
 	store := agenttest.MemJournal()
-	m := agent.NewScriptedModel(agent.ToolTurn("c1", "transfer", `{"cents":500}`), agent.TextTurn("done"))
+	m := agenttest.NewScriptedModel(agenttest.ToolTurn("c1", "transfer", `{"cents":500}`), agenttest.TextTurn("done"))
 	a := agenttest.MustNew(m, store, agent.WithTools(tools...), agent.WithApproverVerifiers(verifiers))
 	var pend *agent.ApprovalPending
 	for i, approver := range []string{"", "alice", "bob"} {

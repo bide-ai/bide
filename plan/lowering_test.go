@@ -275,7 +275,7 @@ func TestLowering_RunStartHoldsTheFlowAndItsInput(t *testing.T) {
 	if _, err := otherFlow.Run(ctx, mem, "r", 5); !errors.Is(err, agent.ErrConfig) {
 		t.Fatalf("resume under another flow's name: err = %v, want ErrConfig", err)
 	}
-	a := agenttest.MustNew(agent.NewScriptedModel(agent.TextTurn("hi")), mem)
+	a := agenttest.MustNew(agenttest.NewScriptedModel(agenttest.TextTurn("hi")), mem)
 	if _, err := a.Run(ctx, "r", agent.UserText("5")); !errors.Is(err, agent.ErrConfig) {
 		t.Fatalf("an Agent driving a flow's run: err = %v, want ErrConfig", err)
 	}

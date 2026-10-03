@@ -60,7 +60,7 @@ func TestPostgres_V070JournalIsRefusedWithoutAWrite(t *testing.T) {
 	before := names()
 	fired := 0
 	charge := agent.MustFunc("charge", "", func(context.Context, struct{}) (string, error) { fired++; return "charged", nil })
-	m := agent.NewScriptedModel(agent.ToolTurn("c1", "charge", `{}`), agent.TextTurn("done"))
+	m := agenttest.NewScriptedModel(agenttest.ToolTurn("c1", "charge", `{}`), agenttest.TextTurn("done"))
 	_, err = agenttest.MustNew(m, j, agent.WithTools(charge)).Run(ctx, "order-1", agent.UserText("charge me"))
 	if fired != 0 || !errors.Is(err, agent.ErrJournalVersion) {
 		t.Fatalf("Run of a v0.7.0 run = %v, fired %d; want ErrJournalVersion and nothing fired", err, fired)

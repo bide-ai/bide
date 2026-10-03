@@ -60,7 +60,7 @@ func TestRev117d_UnrecordedRefusalCutsOffSiblingSideEffect(t *testing.T) {
 			return "charged", nil
 		}
 	})
-	sub := agenttest.MustNew(agent.NewScriptedModel(agent.TextTurn("sub done")), store)
+	sub := agenttest.MustNew(agenttest.NewScriptedModel(agenttest.TextTurn("sub done")), store)
 	exec := AttenuatingSubAgent("exec", "", sub, AttenuationConfig{Store: store, Narrow: narrowLimitBy(3), Rules: ScopeRules{"limit": NumericAtMost}})
 	waitForCharge := func(next agent.ToolHandler) agent.ToolHandler {
 		return func(ctx context.Context, call agent.ToolCall) (json.RawMessage, error) {
@@ -103,7 +103,7 @@ func TestRev117d_ExpiredJournaledGrantWedgesTheSagaForever(t *testing.T) {
 		func(context.Context, struct{}, string) error { undone.Add(1); return nil })
 	confirm := agent.MustFunc("confirm", "", func(context.Context, struct{}) (string, error) { return "ok", nil }, agent.WithSafety(agent.Safety{ReadOnly: true}), agent.WithApproval(agent.SingleApproval()))
 	sub := agenttest.MustNew(
-		agent.NewScriptedModel(agent.ToolTurn("s1", "charge", `{}`), agent.ToolTurn("s2", "confirm", `{}`), agent.TextTurn("done")),
+		agenttest.NewScriptedModel(agenttest.ToolTurn("s1", "charge", `{}`), agenttest.ToolTurn("s2", "confirm", `{}`), agenttest.TextTurn("done")),
 		store,
 		agent.WithTools(charge, confirm),
 	)
@@ -114,7 +114,7 @@ func TestRev117d_ExpiredJournaledGrantWedgesTheSagaForever(t *testing.T) {
 	exec := AttenuatingSubAgent("exec", "", sub, AttenuationConfig{Store: store, Narrow: narrow, Rules: ScopeRules{"limit": NumericAtMost}})
 	boom := agent.MustFunc("boom", "", func(context.Context, struct{}) (string, error) { return "", errors.New("sold out") })
 	parent := agenttest.MustNew(
-		agent.NewScriptedModel(agent.ToolTurn("c1", "exec", `{"task":"x"}`), agent.ToolTurn("c2", "boom", `{}`), agent.TextTurn("done")),
+		agenttest.NewScriptedModel(agenttest.ToolTurn("c1", "exec", `{"task":"x"}`), agenttest.ToolTurn("c2", "boom", `{}`), agenttest.TextTurn("done")),
 		store,
 		agent.WithTools(exec, boom),
 	)
@@ -171,7 +171,7 @@ func TestRev117d_SubRunFiresEffectsAfterItsGrantExpired(t *testing.T) {
 		return "charged", nil
 	})
 	sub := agenttest.MustNew(
-		agent.NewScriptedModel(agent.ToolTurn("s1", "slow", `{}`), agent.ToolTurn("s2", "charge", `{}`), agent.TextTurn("done")),
+		agenttest.NewScriptedModel(agenttest.ToolTurn("s1", "slow", `{}`), agenttest.ToolTurn("s2", "charge", `{}`), agenttest.TextTurn("done")),
 		store,
 		agent.WithTools(slow, charge),
 	)
@@ -180,7 +180,7 @@ func TestRev117d_SubRunFiresEffectsAfterItsGrantExpired(t *testing.T) {
 	}
 	exec := AttenuatingSubAgent("exec", "", sub, AttenuationConfig{Store: store, Narrow: narrow, Rules: ScopeRules{"limit": NumericAtMost}})
 	parent := agenttest.MustNew(
-		agent.NewScriptedModel(agent.ToolTurn("c1", "exec", `{"task":"x"}`), agent.TextTurn("done")),
+		agenttest.NewScriptedModel(agenttest.ToolTurn("c1", "exec", `{"task":"x"}`), agenttest.TextTurn("done")),
 		store,
 		agent.WithTools(exec),
 	)
@@ -200,7 +200,7 @@ func TestRev117d_SubRunFiresEffectsAfterItsGrantExpired(t *testing.T) {
 func TestRev117d_UnrecordedAndSiblingPauseBothSurface(t *testing.T) {
 	ctx := context.Background()
 	store := agenttest.MemJournal()
-	sub := agenttest.MustNew(agent.NewScriptedModel(agent.TextTurn("sub done")), store)
+	sub := agenttest.MustNew(agenttest.NewScriptedModel(agenttest.TextTurn("sub done")), store)
 	exec := AttenuatingSubAgent("exec", "", sub, AttenuationConfig{Store: store, Narrow: narrowLimitBy(3), Rules: ScopeRules{"limit": NumericAtMost}})
 	gated := agent.MustFunc("gated", "", func(ctx context.Context, _ struct{}) (string, error) {
 		return agent.Interrupt[string](ctx, "confirm", "go ahead?") // a pause while the call runs

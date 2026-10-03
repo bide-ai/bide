@@ -18,14 +18,14 @@ import (
 // MemStore: the journal's cost per live turn.
 func BenchmarkRunTurns(b *testing.B) {
 	ctx := context.Background()
-	turns := make([]agent.ScriptedTurn, 0, 6)
+	turns := make([]agenttest.ScriptedTurn, 0, 6)
 	for i := range 5 {
-		turns = append(turns, agent.ToolTurn(fmt.Sprintf("c%d", i), "lookup", `{}`))
+		turns = append(turns, agenttest.ToolTurn(fmt.Sprintf("c%d", i), "lookup", `{}`))
 	}
-	turns = append(turns, agent.TextTurn("done"))
+	turns = append(turns, agenttest.TextTurn("done"))
 	tool := agent.MustFunc("lookup", "", func(context.Context, struct{}) (string, error) { return "ok", nil }, agent.WithSafety(agent.Safety{ReadOnly: true}))
 	store := agenttest.MemJournal()
-	a := agenttest.MustNew(agent.NewScriptedModel(turns...), store, agent.WithTools(tool))
+	a := agenttest.MustNew(agenttest.NewScriptedModel(turns...), store, agent.WithTools(tool))
 	b.ReportAllocs()
 	i := 0
 	for b.Loop() {
@@ -43,7 +43,7 @@ func BenchmarkToolCallSideEffect(b *testing.B) {
 	tool := agent.MustFunc("charge", "", func(context.Context, struct{}) (string, error) { return "ok", nil })
 	store := agenttest.MemJournal()
 	a := agenttest.MustNew(
-		agent.NewScriptedModel(agent.ToolTurn("c1", "charge", `{}`), agent.TextTurn("done")),
+		agenttest.NewScriptedModel(agenttest.ToolTurn("c1", "charge", `{}`), agenttest.TextTurn("done")),
 		store,
 		agent.WithTools(tool),
 	)

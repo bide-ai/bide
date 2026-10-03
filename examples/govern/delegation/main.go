@@ -19,6 +19,7 @@ import (
 	"strconv"
 
 	"github.com/bide-ai/bide/agent"
+	"github.com/bide-ai/bide/agent/agenttest"
 	"github.com/bide-ai/bide/audit"
 	"github.com/bide-ai/bide/govern"
 	gsm "github.com/blackwell-systems/gsm"
@@ -99,12 +100,12 @@ func main() {
 
 	// The sub-agent tries to buy $6M: its (scripted, LLM-free) model calls the governed buy tool six
 	// times, and the run journals each call as a tool-result leaf, the last under "buy/last".
-	turns := make([]agent.ScriptedTurn, 0, 7)
+	turns := make([]agenttest.ScriptedTurn, 0, 7)
 	for i := 1; i < 6; i++ {
-		turns = append(turns, agent.ToolTurn(fmt.Sprintf("buy/%d", i), "buy", `{}`))
+		turns = append(turns, agenttest.ToolTurn(fmt.Sprintf("buy/%d", i), "buy", `{}`))
 	}
-	turns = append(turns, agent.ToolTurn("buy/last", "buy", `{}`), agent.TextTurn("done"))
-	sub, err := agent.New(agent.NewScriptedModel(turns...), store, agent.WithTools(buy), agent.WithIdentity(subID))
+	turns = append(turns, agenttest.ToolTurn("buy/last", "buy", `{}`), agenttest.TextTurn("done"))
+	sub, err := agent.New(agenttest.NewScriptedModel(turns...), store, agent.WithTools(buy), agent.WithIdentity(subID))
 	if err != nil {
 		log.Fatal(err)
 	}

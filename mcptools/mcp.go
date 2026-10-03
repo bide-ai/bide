@@ -34,7 +34,7 @@
 // idempotent re-runs, and so re-elicits, on resume, while any other tool halts on an
 // unknown-outcome resume). For input that must survive a crash and resume in a
 // fresh process, use the native agent.Interrupt in a native tool.
-package mcp
+package mcptools
 
 import (
 	"context"

@@ -13,7 +13,7 @@ use (
 	./govern/redislog
 	./govern/sqlitelog
 	./integration
-	./mcp
+	./mcptools
 	./store/postgres
 	./store/sqlite
 	./trace

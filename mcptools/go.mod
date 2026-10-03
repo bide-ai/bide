@@ -1,4 +1,4 @@
-module github.com/bide-ai/bide/mcp
+module github.com/bide-ai/bide/mcptools
 
 go 1.27.0
 

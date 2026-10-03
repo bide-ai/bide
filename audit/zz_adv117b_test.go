@@ -27,7 +27,7 @@ func TestAdv117b_ResumedDelegationWithFreshGrantIDsCannotRollBack(t *testing.T) 
 		func(context.Context, struct{}, string) error { undos++; return nil })
 	confirm := agent.MustFunc("confirm", "", func(context.Context, struct{}) (string, error) { return "ok", nil }, agent.WithSafety(agent.Safety{ReadOnly: true}), agent.WithApproval(agent.SingleApproval()))
 	sub := agenttest.MustNew(
-		agent.NewScriptedModel(agent.ToolTurn("s1", "charge", `{}`), agent.ToolTurn("s2", "confirm", `{}`), agent.TextTurn("done")),
+		agenttest.NewScriptedModel(agenttest.ToolTurn("s1", "charge", `{}`), agenttest.ToolTurn("s2", "confirm", `{}`), agenttest.TextTurn("done")),
 		store,
 		agent.WithTools(charge, confirm),
 	)
@@ -40,7 +40,7 @@ func TestAdv117b_ResumedDelegationWithFreshGrantIDsCannotRollBack(t *testing.T) 
 	exec := AttenuatingSubAgent("exec", "", sub, AttenuationConfig{Store: store, Narrow: narrow, Rules: ScopeRules{"limit": NumericAtMost}})
 	boom := agent.MustFunc("boom", "", func(context.Context, struct{}) (string, error) { return "", errors.New("sold out") })
 	parent := agenttest.MustNew(
-		agent.NewScriptedModel(agent.ToolTurn("c1", "exec", `{"task":"pay"}`), agent.ToolTurn("c2", "boom", `{}`), agent.TextTurn("x")),
+		agenttest.NewScriptedModel(agenttest.ToolTurn("c1", "exec", `{"task":"pay"}`), agenttest.ToolTurn("c2", "boom", `{}`), agenttest.TextTurn("x")),
 		store,
 		agent.WithTools(exec, boom),
 	)

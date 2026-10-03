@@ -36,9 +36,15 @@ func TestRev117e_MutatedSingleApprovalFiresThenCannotRecord(t *testing.T) {
 	tool := specOnlyTool{spec: ToolSpec{Name: "send", Approval: p}, calls: &calls}
 	store := memJournal()
 	m := NewScriptedModel(ToolTurn("c1", "send", `{}`), TextTurn("done"))
-	a := mustNew(m, store, WithTools(tool))
+	a, err := New(m, store, WithTools(tool))
+	if errors.Is(err, ErrConfig) && calls.Load() == 0 {
+		return // refused up front, when the agent is built: sound
+	}
+	if err != nil {
+		t.Fatal(err)
+	}
 	ctx := context.Background()
-	_, err := a.Run(ctx, "r", UserText("go"))
+	_, err = a.Run(ctx, "r", UserText("go"))
 	var ap *ApprovalPending
 	if !errors.As(err, &ap) {
 		if errors.Is(err, ErrConfig) && calls.Load() == 0 {

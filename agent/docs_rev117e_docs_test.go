@@ -46,7 +46,7 @@ func TestRev117eDocs_ReadmeRequireTagHaltsSideEffect(t *testing.T) {
 	}
 	tool := agent.MustFunc("refund", "", func(context.Context, struct{}) (string, error) { return "ran", nil })
 	store := agenttest.MemJournal()
-	m := agent.NewScriptedModel(agent.ToolTurn("c1", "refund", `{}`), agent.TextTurn("done"))
+	m := agenttest.NewScriptedModel(agenttest.ToolTurn("c1", "refund", `{}`), agenttest.TextTurn("done"))
 	_, err := agenttest.MustNew(m, store, agent.WithTools(tool), agent.WithToolMiddleware(RequireTag("x"))).Run(context.Background(), "r1", agent.UserText("go"))
 	_, recorded := rev117eResult(t, store, "r1", "c1")
 	if !errors.Is(err, agent.ErrToolOutcomeUnknown) || recorded {
@@ -92,7 +92,7 @@ func TestRev117eDocs_TimeoutRule(t *testing.T) {
 				var calls atomic.Int32
 				tool := agent.MustFunc("t", "", func(ctx context.Context, a struct{}) (string, error) { calls.Add(1); return late(tc.ok)(ctx, a) }, agent.WithSafety(tc.safety), agent.WithTimeout(10*time.Millisecond))
 				store := agenttest.MemJournal()
-				m := agent.NewScriptedModel(agent.ToolTurn("c1", "t", `{}`), agent.TextTurn("done"))
+				m := agenttest.NewScriptedModel(agenttest.ToolTurn("c1", "t", `{}`), agenttest.TextTurn("done"))
 				_, err := agenttest.MustNew(m, store, agent.WithTools(tool)).Run(context.Background(), "r1", agent.UserText("go"))
 				rec, recorded := rev117eResult(t, store, "r1", "c1")
 				if calls.Load() != 1 || errors.Is(err, agent.ErrToolOutcomeUnknown) != tc.wantUnknown || recorded != tc.wantRecorded || recorded && rec.IsError != tc.wantIsError {
@@ -123,7 +123,7 @@ func TestRev117eDocs_SuccessTurnedError(t *testing.T) {
 	}{{agent.Safety{}, true}, {agent.Safety{Idempotent: true}, false}} {
 		tool := agent.MustFunc("t", "", func(context.Context, struct{}) (string, error) { return "ok", nil }, agent.WithSafety(tc.safety))
 		store := agenttest.MemJournal()
-		m := agent.NewScriptedModel(agent.ToolTurn("c1", "t", `{}`), agent.TextTurn("done"))
+		m := agenttest.NewScriptedModel(agenttest.ToolTurn("c1", "t", `{}`), agenttest.TextTurn("done"))
 		_, err := agenttest.MustNew(m, store, agent.WithTools(tool), agent.WithToolMiddleware(mw)).Run(context.Background(), "r1", agent.UserText("go"))
 		_, recorded := rev117eResult(t, store, "r1", "c1")
 		if errors.Is(err, agent.ErrToolOutcomeUnknown) != tc.wantUnknown || recorded == tc.wantUnknown {
@@ -135,7 +135,7 @@ func TestRev117eDocs_SuccessTurnedError(t *testing.T) {
 // subagent.go / CHANGELOG: SubAgent refuses WithSafety and WithTimeout with an ErrConfig panic,
 // and takes WithApproval.
 func TestRev117eDocs_SubAgentOptions(t *testing.T) {
-	sub := agenttest.MustNew(agent.NewScriptedModel(agent.TextTurn("x")), agenttest.MemJournal())
+	sub := agenttest.MustNew(agenttest.NewScriptedModel(agenttest.TextTurn("x")), agenttest.MemJournal())
 	for name, opt := range map[string]agent.ToolOption{
 		"safety":  agent.WithSafety(agent.Safety{ReadOnly: true}),
 		"timeout": agent.WithTimeout(time.Second),
@@ -198,7 +198,7 @@ func TestRev117eDocs_ReadmeRequireTagWithNotCalled(t *testing.T) {
 	ran := false
 	tool := agent.MustFunc("refund", "", func(context.Context, struct{}) (string, error) { ran = true; return "ran", nil })
 	store := agenttest.MemJournal()
-	m := agent.NewScriptedModel(agent.ToolTurn("c1", "refund", `{}`), agent.TextTurn("done"))
+	m := agenttest.NewScriptedModel(agenttest.ToolTurn("c1", "refund", `{}`), agenttest.TextTurn("done"))
 	_, err := agenttest.MustNew(m, store, agent.WithTools(tool), agent.WithToolMiddleware(RequireTag("x"))).Run(context.Background(), "r1", agent.UserText("go"))
 	rec, recorded := rev117eResult(t, store, "r1", "c1")
 	if err != nil || ran || !recorded || !rec.IsError {

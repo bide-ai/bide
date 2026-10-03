@@ -22,7 +22,7 @@ func TestAuditReadsClaimBookkeeping(t *testing.T) {
 	fired := 0
 	charge := agent.MustFunc("charge", "", func(context.Context, struct{}) (string, error) { fired++; return "ok", nil })
 	model := func() agent.Model {
-		return agent.NewScriptedModel(agent.ToolTurn("c1", "charge", `{}`), agent.ToolTurn("c2", "charge", `{}`), agent.TextTurn("done"))
+		return agenttest.NewScriptedModel(agenttest.ToolTurn("c1", "charge", `{}`), agenttest.ToolTurn("c2", "charge", `{}`), agenttest.TextTurn("done"))
 	}
 	// c1: marker commits and errors, then not-started is recorded (voided); re-attempted under
 	// attempt:retry:1. c2: claim taken back and held.

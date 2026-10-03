@@ -50,7 +50,7 @@ func TestEmbeddingWrapper_ShapesWriteThroughTheirInsert(t *testing.T) {
 		"generic":                   {g, g.inserts.Load},
 		"nested":                    {n, n.inserts.Load},
 	} {
-		_, err := agenttest.MustNew(agent.NewScriptedModel(agent.TextTurn("done")), agenttest.MustJournal(tc.store)).Run(context.Background(), "r", agent.UserText("hi"))
+		_, err := agenttest.MustNew(agenttest.NewScriptedModel(agenttest.TextTurn("done")), agenttest.MustJournal(tc.store)).Run(context.Background(), "r", agent.UserText("hi"))
 		if err != nil || tc.inserts() == 0 {
 			t.Errorf("%s: Run = %v with %d wrapper Inserts; want nil and every write through the wrapper's Insert", name, err, tc.inserts())
 		}
@@ -64,7 +64,7 @@ func TestEmbeddingWrapper_PlainShapesAreAccepted(t *testing.T) {
 		"MemStore":        agent.NewMemStore(),
 		"embeds MemStore": &countsRuns{agent.NewMemStore()},
 	} {
-		if _, err := agenttest.MustNew(agent.NewScriptedModel(agent.TextTurn("done")), agenttest.MustJournal(s)).Run(context.Background(), "r", agent.UserText("hi")); err != nil {
+		if _, err := agenttest.MustNew(agenttest.NewScriptedModel(agenttest.TextTurn("done")), agenttest.MustJournal(s)).Run(context.Background(), "r", agent.UserText("hi")); err != nil {
 			t.Errorf("%s: %v", name, err)
 		}
 	}

@@ -36,6 +36,7 @@ import (
 	"log"
 
 	"github.com/bide-ai/bide/agent"
+	"github.com/bide-ai/bide/agent/agenttest"
 	"github.com/bide-ai/bide/audit"
 	"github.com/bide-ai/bide/govern"
 	gsm "github.com/blackwell-systems/gsm"
@@ -90,10 +91,10 @@ func main() {
 	//
 	// The agent's model is scripted (no LLM): it calls approve, then flag, then answers. The run
 	// journals each call as a tool-result leaf, the way it records every tool call.
-	model := agent.NewScriptedModel(
-		agent.ToolTurn("call_approve", "approve", `{}`),
-		agent.ToolTurn("call_flag", "flag", `{}`),
-		agent.TextTurn("case decided"),
+	model := agenttest.NewScriptedModel(
+		agenttest.ToolTurn("call_approve", "approve", `{}`),
+		agenttest.ToolTurn("call_flag", "flag", `{}`),
+		agenttest.TextTurn("case decided"),
 	)
 	a, err := agent.New(model, store, agent.WithTools(approveTool, flagTool))
 	if err != nil {

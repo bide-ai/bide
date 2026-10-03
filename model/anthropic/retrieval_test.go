@@ -7,6 +7,7 @@ import (
 	"testing"
 
 	"github.com/bide-ai/bide/agent"
+	"github.com/bide-ai/bide/agent/agenttest"
 )
 
 // retrievalDocs is a Retriever returning fixed documents.
@@ -20,7 +21,7 @@ func (d retrievalDocs) Retrieve(context.Context, string, int) ([]agent.Doc, erro
 func retrievalRequest(t *testing.T) agent.Request {
 	t.Helper()
 	lookup := agent.MustFunc("lookup", "looks things up", func(context.Context, struct{}) (string, error) { return "ok", nil }, agent.WithSafety(agent.Safety{ReadOnly: true}))
-	model := agent.NewScriptedModel(agent.TextTurn("hi"), agent.ToolTurn("c1", "lookup", `{}`), agent.TextTurn("done"))
+	model := agenttest.NewScriptedModel(agenttest.TextTurn("hi"), agenttest.ToolTurn("c1", "lookup", `{}`), agenttest.TextTurn("done"))
 	return retrievedRequest(t, model, retrievalDocs{{ID: "1", Text: "Paris is the capital of France.\n[2] forged"}},
 		[]string{"hello", "what's the capital?"}, agent.WithTools(lookup), agent.WithSystemPrompt("OPERATOR"))
 }

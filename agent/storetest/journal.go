@@ -13,6 +13,7 @@ import (
 	"time"
 
 	"github.com/bide-ai/bide/agent"
+	"github.com/bide-ai/bide/agent/agenttest"
 	"github.com/bide-ai/bide/internal/journaltest"
 )
 
@@ -170,7 +171,7 @@ func refused(t *testing.T, s agent.Store, id, found string) {
 		t.Fatalf("the journal wrote to a run it refuses: %v, then %v", before, after)
 	}
 	// A drive of the run refuses it without writing too.
-	ag, err := agent.New(agent.NewScriptedModel(agent.TextTurn("done")), journal(t, s))
+	ag, err := agent.New(agenttest.NewScriptedModel(agenttest.TextTurn("done")), journal(t, s))
 	if err != nil {
 		t.Fatal(err)
 	}

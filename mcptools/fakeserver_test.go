@@ -1,4 +1,4 @@
-package mcp
+package mcptools
 
 import (
 	"bufio"

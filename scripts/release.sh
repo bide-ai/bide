@@ -40,7 +40,7 @@ GITHUB_REPO=${BIDE_GITHUB_REPO:-bide-ai/bide}
 PROXY=https://proxy.golang.org
 
 # Libraries users import. Each is tagged <dir>/vX.Y.Z at every release.
-PUBLISHED="govern store/sqlite store/postgres mcp trace codec/gcf govern/sqlitelog govern/redislog govern/postgreslog"
+PUBLISHED="govern store/sqlite store/postgres mcptools trace codec/gcf govern/sqlitelog govern/redislog govern/postgreslog"
 # Modules that exist only to keep their dependencies out of the core. They keep their replace
 # directives and are never tagged.
 REPO_ONLY="examples/approval examples/govern examples/mcp examples/observability examples/plan integration benchmarks"

@@ -21,7 +21,7 @@ import (
 	sdkmcp "github.com/modelcontextprotocol/go-sdk/mcp"
 
 	"github.com/bide-ai/bide/agent"
-	"github.com/bide-ai/bide/mcp"
+	"github.com/bide-ai/bide/mcptools"
 )
 
 // scriptModel calls the discovered "echo" tool once, then answers in text on the next turn,
@@ -67,13 +67,13 @@ func main() {
 	defer serverSession.Close()
 
 	// Connect as the MCP client and discover its tools at runtime.
-	session, err := mcp.Connect(ctx, clientT)
+	session, err := mcptools.Connect(ctx, clientT)
 	if err != nil {
 		log.Fatal(err)
 	}
 	defer session.Close()
 
-	tools, err := mcp.Tools(ctx, session, mcp.TrustAnnotations()) // our own server: trust its labels
+	tools, err := mcptools.Tools(ctx, session, mcptools.TrustAnnotations()) // our own server: trust its labels
 	if err != nil {
 		log.Fatal(err)
 	}

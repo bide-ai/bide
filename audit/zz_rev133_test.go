@@ -33,32 +33,32 @@ func TestRev133_D1_NestedAcrossRotation(t *testing.T) {
 	cfg := AttenuationConfig{Store: store, Narrow: narrowLimitBy(1), Rules: rev117eRules}
 	tools := func() []agent.Tool {
 		inner := agenttest.MustNew(
-			agent.NewScriptedModel(agent.ToolTurn("i1", "chargeE", `{}`), agent.TextTurn("e done")),
+			agenttest.NewScriptedModel(agenttest.ToolTurn("i1", "chargeE", `{}`), agenttest.TextTurn("e done")),
 			store,
 			agent.WithTools(charge("chargeE")),
 		)
 		e := AttenuatingSubAgent("e", "inner", inner, cfg)
 		sub1 := agenttest.MustNew(
-			agent.NewScriptedModel(agent.ToolTurn("s0", "e", `{"task":"x"}`), agent.ToolTurn("s1", "charge1", `{}`), agent.TextTurn("d1 done")),
+			agenttest.NewScriptedModel(agenttest.ToolTurn("s0", "e", `{"task":"x"}`), agenttest.ToolTurn("s1", "charge1", `{}`), agenttest.TextTurn("d1 done")),
 			store,
 			agent.WithTools(charge("charge1"), e),
 		)
 		sub2 := agenttest.MustNew(
-			agent.NewScriptedModel(agent.ToolTurn("s2", "charge2", `{}`), agent.ToolTurn("s3", "boom", `{}`), agent.TextTurn("x")),
+			agenttest.NewScriptedModel(agenttest.ToolTurn("s2", "charge2", `{}`), agenttest.ToolTurn("s3", "boom", `{}`), agenttest.TextTurn("x")),
 			store,
 			agent.WithTools(charge("charge2"), boom),
 		)
 		return []agent.Tool{AttenuatingSubAgent("d1", "first", sub1, cfg), AttenuatingSubAgent("d2", "second", sub2, cfg)}
 	}
 	parent1 := agenttest.MustNew(
-		agent.NewScriptedModel(agent.ToolTurn("c1", "d1", `{"task":"a"}`), agent.ErrorTurn(errors.New("provider down"))),
+		agenttest.NewScriptedModel(agenttest.ToolTurn("c1", "d1", `{"task":"a"}`), agenttest.ErrorTurn(errors.New("provider down"))),
 		store,
 		agent.WithTools(tools()...),
 	)
 	if _, err := parent1.Run(WithGrant(ctx, p1, signer), "trip", agent.UserText("go"), agent.WithSaga()); err == nil {
 		t.Fatal("drive 1: want the provider error")
 	}
-	m := agent.NewScriptedModel(agent.ToolTurn("c1", "d1", `{"task":"a"}`), agent.ToolTurn("c2", "d2", `{"task":"b"}`), agent.TextTurn("x"))
+	m := agenttest.NewScriptedModel(agenttest.ToolTurn("c1", "d1", `{"task":"a"}`), agenttest.ToolTurn("c2", "d2", `{"task":"b"}`), agenttest.TextTurn("x"))
 	_, err := agenttest.MustNew(m, store, agent.WithTools(tools()...)).Run(WithRollbackGrants(WithGrant(ctx, p2, signer), signer, p1), "trip", agent.UserText("go"), agent.WithSaga())
 	var ab *agent.SagaAborted
 	if !errors.As(err, &ab) {
@@ -127,7 +127,7 @@ func TestRev133_D3_NoDoubleCompensation(t *testing.T) {
 		}
 		return a
 	}
-	grand := build(agent.NewScriptedModel(agent.ToolTurn("g1", "charge", `{}`), agent.ToolTurn("g2", "bad", `{}`), agent.TextTurn("y")), charge, bad)
+	grand := build(agenttest.NewScriptedModel(agenttest.ToolTurn("g1", "charge", `{}`), agenttest.ToolTurn("g2", "bad", `{}`), agenttest.TextTurn("y")), charge, bad)
 	// The grand sub-agent is a saga of its own: the child runs it through a programmatic RunSaga.
 	gstarter := agent.MustFunc("gstart", "", func(ctx context.Context, _ struct{}) (string, error) {
 		info, _ := agent.RunInfoFrom(ctx)
@@ -147,8 +147,8 @@ func TestRev133_D3_NoDoubleCompensation(t *testing.T) {
 		}
 		return nil
 	}))
-	child := build(agent.NewScriptedModel(agent.ToolTurn("k1", "worker", `{"task":"w"}`), agent.TextTurn("child done")),
-		agent.MustSubAgent("worker", "w", build(agent.NewScriptedModel(agent.ToolTurn("w1", "gstart", `{}`), agent.ErrorTurn(errors.New("provider rejected"))), gstarter)))
+	child := build(agenttest.NewScriptedModel(agenttest.ToolTurn("k1", "worker", `{"task":"w"}`), agenttest.TextTurn("child done")),
+		agent.MustSubAgent("worker", "w", build(agenttest.NewScriptedModel(agenttest.ToolTurn("w1", "gstart", `{}`), agenttest.ErrorTurn(errors.New("provider rejected"))), gstarter)))
 	starter := agent.MustFunc("starter", "", func(ctx context.Context, _ struct{}) (string, error) {
 		info, _ := agent.RunInfoFrom(ctx)
 		res, err := child.Run(ctx, info.SubRunFor("child"), agent.UserText("work"))
@@ -164,7 +164,7 @@ func TestRev133_D3_NoDoubleCompensation(t *testing.T) {
 		return nil
 	}))
 	boom := agent.MustFunc("boom", "", func(context.Context, struct{}) (string, error) { return "", errors.New("boom") })
-	parent := build(agent.NewScriptedModel(agent.ToolTurn("c1", "starter", `{}`), agent.ToolTurn("c2", "boom", `{}`), agent.TextTurn("x")), starter, boom)
+	parent := build(agenttest.NewScriptedModel(agenttest.ToolTurn("c1", "starter", `{}`), agenttest.ToolTurn("c2", "boom", `{}`), agenttest.TextTurn("x")), starter, boom)
 	_, err := parent.Run(ctx, "p", agent.UserText("go"), agent.WithSaga())
 	var ab *agent.SagaAborted
 	if !errors.As(err, &ab) {

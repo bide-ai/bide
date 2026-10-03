@@ -30,6 +30,7 @@ import (
 	"log"
 
 	"github.com/bide-ai/bide/agent"
+	"github.com/bide-ai/bide/agent/agenttest"
 	"github.com/bide-ai/bide/audit"
 	"github.com/bide-ai/bide/govern"
 	gsm "github.com/blackwell-systems/gsm"
@@ -129,7 +130,7 @@ func runAgree(ctx context.Context, m *gsm.Machine, votesFor, committed gsm.Var, 
 	// The agent commits through the attested tool in the same run, so the commit leaf is journaled
 	// next to the votes as the run's provable action. Its model is scripted (no LLM): it calls
 	// commit, then answers.
-	model := agent.NewScriptedModel(agent.ToolTurn("commit/leaf", "commit", `{}`), agent.TextTurn("committed"))
+	model := agenttest.NewScriptedModel(agenttest.ToolTurn("commit/leaf", "commit", `{}`), agenttest.TextTurn("committed"))
 	a, err := agent.New(model, store, agent.WithTools(commit))
 	if err != nil {
 		log.Fatal(err)
@@ -183,10 +184,10 @@ func runDisagree(ctx context.Context, m *gsm.Machine, votesFor, committed gsm.Va
 	// The agent's (scripted, LLM-free) model tries the commit, then escalates. The commit is
 	// attested and journaled either way, so the audit trail records that the action was gated out,
 	// not silently dropped; the escalate call has no recorded approval, so the run pauses.
-	model := agent.NewScriptedModel(
-		agent.ToolTurn("commit/1", "commit", `{}`),
-		agent.ToolTurn("escalate/1", "escalate", `{}`),
-		agent.TextTurn("escalated"),
+	model := agenttest.NewScriptedModel(
+		agenttest.ToolTurn("commit/1", "commit", `{}`),
+		agenttest.ToolTurn("escalate/1", "escalate", `{}`),
+		agenttest.TextTurn("escalated"),
 	)
 	a, err := agent.New(model, store, agent.WithTools(commit, escalate))
 	if err != nil {

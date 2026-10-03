@@ -654,7 +654,7 @@ func narrowTo(g Grant) AttenuateFunc { return func(Grant, string) Grant { return
 func secDelegate(t *testing.T, store *agent.Journal, tool agent.Tool, ctx context.Context, runID string) error {
 	t.Helper()
 	parent := agenttest.MustNew(
-		agent.NewScriptedModel(agent.ToolTurn("c1", "exec", `{"task":"go"}`), agent.TextTurn("ok")),
+		agenttest.NewScriptedModel(agenttest.ToolTurn("c1", "exec", `{"task":"go"}`), agenttest.TextTurn("ok")),
 		store,
 		agent.WithTools(tool),
 	)

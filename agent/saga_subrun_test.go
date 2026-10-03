@@ -31,7 +31,7 @@ func (f *subRunFixture) child(t *testing.T) *agent.Agent {
 			f.undone++
 			return nil
 		})
-	c, err := agent.New(agent.NewScriptedModel(agent.ToolTurn("k1", "book", `{}`), agent.TextTurn("child done")),
+	c, err := agent.New(agenttest.NewScriptedModel(agenttest.ToolTurn("k1", "book", `{}`), agenttest.TextTurn("child done")),
 		f.store, agent.WithTools(book))
 	if err != nil {
 		t.Fatal(err)
@@ -68,8 +68,8 @@ func (f *subRunFixture) parent(t *testing.T, declare, failAfter bool) *agent.Age
 	boom := agent.MustFunc("boom", "", func(context.Context, struct{}) (string, error) {
 		return "", errors.New("boom")
 	})
-	turns := []agent.ScriptedTurn{agent.ToolTurn("c1", "starter", `{}`), agent.ToolTurn("c2", "boom", `{}`), agent.TextTurn("x")}
-	p, err := agent.New(agent.NewScriptedModel(turns...), f.store, agent.WithTools(starter, boom))
+	turns := []agenttest.ScriptedTurn{agenttest.ToolTurn("c1", "starter", `{}`), agenttest.ToolTurn("c2", "boom", `{}`), agenttest.TextTurn("x")}
+	p, err := agent.New(agenttest.NewScriptedModel(turns...), f.store, agent.WithTools(starter, boom))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -159,7 +159,7 @@ func TestSubRunLink_OnlyInASagaTree(t *testing.T) {
 func TestSubRunFor_RefusedAfterTheCallReturned(t *testing.T) {
 	for _, saga := range []bool{false, true} {
 		store := agenttest.MemJournal()
-		child, err := agent.New(agent.NewScriptedModel(agent.TextTurn("late")), store)
+		child, err := agent.New(agenttest.NewScriptedModel(agenttest.TextTurn("late")), store)
 		if err != nil {
 			t.Fatal(err)
 		}
@@ -174,7 +174,7 @@ func TestSubRunFor_RefusedAfterTheCallReturned(t *testing.T) {
 			}()
 			return "spawned", nil
 		}, agent.WithSafety(agent.Safety{ReadOnly: true}))
-		p, err := agent.New(agent.NewScriptedModel(agent.ToolTurn("c1", "spawn", `{}`), agent.TextTurn("done")),
+		p, err := agent.New(agenttest.NewScriptedModel(agenttest.ToolTurn("c1", "spawn", `{}`), agenttest.TextTurn("done")),
 			store, agent.WithTools(spawn))
 		if err != nil {
 			t.Fatal(err)
@@ -196,7 +196,7 @@ func TestSubRunFor_RefusedAfterTheCallReturned(t *testing.T) {
 // In a saga, a programmatic sub-run's name must be short enough to be recovered from its link.
 func TestSubRunFor_LongNameInASaga(t *testing.T) {
 	store := agenttest.MemJournal()
-	child, err := agent.New(agent.NewScriptedModel(agent.TextTurn("ok")), store)
+	child, err := agent.New(agenttest.NewScriptedModel(agenttest.TextTurn("ok")), store)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -209,7 +209,7 @@ func TestSubRunFor_LongNameInASaga(t *testing.T) {
 		}
 		return "refused", nil
 	}, agent.WithSafety(agent.Safety{ReadOnly: true}))
-	p, err := agent.New(agent.NewScriptedModel(agent.ToolTurn("c1", "starter", `{}`), agent.TextTurn("done")),
+	p, err := agent.New(agenttest.NewScriptedModel(agenttest.ToolTurn("c1", "starter", `{}`), agenttest.TextTurn("done")),
 		store, agent.WithTools(starter))
 	if err != nil {
 		t.Fatal(err)
@@ -228,7 +228,7 @@ func errString(err error) string {
 
 // WithSubRuns(nil) is ErrConfig, and SubAgent refuses the option.
 func TestWithSubRuns_Refusals(t *testing.T) {
-	sub, err := agent.New(agent.NewScriptedModel(), agenttest.MemJournal())
+	sub, err := agent.New(agenttest.NewScriptedModel(), agenttest.MemJournal())
 	if err != nil {
 		t.Fatal(err)
 	}

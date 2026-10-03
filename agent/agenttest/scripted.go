@@ -1,13 +1,15 @@
-package agent
+package agenttest
 
 import (
 	"context"
 	"encoding/json"
+
+	"github.com/bide-ai/bide/agent"
 )
 
 // ScriptedModel is a deterministic, LLM-free Model that replays a fixed script of turns,
 // one turn per model call. It is the batteries-included version of the model fakes people
-// otherwise reverse-engineer from ToolCallDelta + Finish for tests, examples, and local
+// otherwise reverse-engineer from agent.ToolCallDelta + agent.Finish for tests, examples, and local
 // dev, so you can drive the whole agent loop offline.
 //
 // It is replay-safe: it selects the turn to emit by counting the assistant messages
@@ -19,12 +21,13 @@ import (
 //
 // Build turns with ToolTurn, TextTurn, and ErrorTurn:
 //
-//	m := agent.NewScriptedModel(
-//	    agent.ToolTurn("call-1", "lookup", `{"q":"weather"}`),
-//	    agent.TextTurn("it is sunny"),
+//	m := agenttest.NewScriptedModel(
+//	    agenttest.ToolTurn("call-1", "lookup", `{"q":"weather"}`),
+//	    agenttest.TextTurn("it is sunny"),
 //	)
-//	a := agent.New(m, agent.NewMemStore(), lookupTool)
-//	out, err := a.Run(ctx, "run-1", "what's the weather?")
+//	a, err := agent.New(m, j, agent.WithTools(lookupTool))
+//	...
+//	res, err := a.Run(ctx, "run-1", agent.UserText("what's the weather?"))
 //
 // A ScriptedModel is safe for the sequential agent loop; it is not intended for concurrent
 // Stream calls from multiple runs at once.
@@ -64,12 +67,12 @@ func ErrorTurn(err error) ScriptedTurn {
 	return ScriptedTurn{err: err}
 }
 
-// Stream implements Model. It counts the assistant turns already in the request to pick
+// Stream implements agent.Model. It counts the assistant turns already in the request to pick
 // the script entry to emit, so replay after a durable resume lines up with the live turn.
-func (m *ScriptedModel) Stream(_ context.Context, req Request) (*Stream, error) {
+func (m *ScriptedModel) Stream(_ context.Context, req agent.Request) (*agent.Stream, error) {
 	idx := 0
 	for _, msg := range req.Messages {
-		if msg.Role == RoleAssistant {
+		if msg.Role == agent.RoleAssistant {
 			idx++
 		}
 	}
@@ -79,20 +82,20 @@ func (m *ScriptedModel) Stream(_ context.Context, req Request) (*Stream, error) 
 	t := m.turns[idx]
 
 	if t.err != nil {
-		ch := make(chan Emit, 1)
-		ch <- Emit{Err: t.err}
+		ch := make(chan agent.Emit, 1)
+		ch <- agent.Emit{Err: t.err}
 		close(ch)
-		return NewStream(ch), nil
+		return agent.NewStream(ch), nil
 	}
 
-	ch := make(chan Emit, 2)
+	ch := make(chan agent.Emit, 2)
 	if t.toolName != "" {
-		ch <- Emit{Event: ToolCallDelta{Index: 0, ID: t.toolID, Name: t.toolName, ArgsFragment: t.args}}
-		ch <- Emit{Event: Finish{Reason: "tool_use"}}
+		ch <- agent.Emit{Event: agent.ToolCallDelta{Index: 0, ID: t.toolID, Name: t.toolName, ArgsFragment: t.args}}
+		ch <- agent.Emit{Event: agent.Finish{Reason: "tool_use"}}
 	} else {
-		ch <- Emit{Event: TextDelta{Text: t.text}}
-		ch <- Emit{Event: Finish{Reason: "stop"}}
+		ch <- agent.Emit{Event: agent.TextDelta{Text: t.text}}
+		ch <- agent.Emit{Event: agent.Finish{Reason: "stop"}}
 	}
 	close(ch)
-	return NewStream(ch), nil
+	return agent.NewStream(ch), nil
 }

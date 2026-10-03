@@ -24,7 +24,7 @@ func attenuatingSaga(t *testing.T, withGrant bool) (*agent.SagaAborted, int) {
 	charge := agent.MustCompensatedFunc("charge", "charge the card", func(context.Context, struct{}) (string, error) { charges++; return "charged", nil },
 		func(context.Context, struct{}, string) error { refunds++; return nil })
 	sub := agenttest.MustNew(
-		agent.NewScriptedModel(agent.ToolTurn("s1", "charge", `{}`), agent.TextTurn("done")),
+		agenttest.NewScriptedModel(agenttest.ToolTurn("s1", "charge", `{}`), agenttest.TextTurn("done")),
 		store,
 		agent.WithTools(charge),
 	)
@@ -34,10 +34,10 @@ func attenuatingSaga(t *testing.T, withGrant bool) (*agent.SagaAborted, int) {
 		return "", errors.New("hotel sold out")
 	})
 	parent := agenttest.MustNew(
-		agent.NewScriptedModel(
-			agent.ToolTurn("c1", "exec", `{"task":"pay"}`),
-			agent.ToolTurn("c2", "boom", `{}`),
-			agent.TextTurn("unreachable")),
+		agenttest.NewScriptedModel(
+			agenttest.ToolTurn("c1", "exec", `{"task":"pay"}`),
+			agenttest.ToolTurn("c2", "boom", `{}`),
+			agenttest.TextTurn("unreachable")),
 		store,
 		agent.WithTools(exec, boom),
 	)
@@ -119,7 +119,7 @@ func TestAttenuatingSubAgent_WithApprovalPausesBeforeDelegating(t *testing.T) {
 		AttenuationConfig{Store: store, Narrow: narrowLimitBy(3), Rules: ScopeRules{"limit": NumericAtMost}},
 		agent.WithApproval(agent.SingleApproval()))
 	parent := agenttest.MustNew(
-		agent.NewScriptedModel(agent.ToolTurn("c1", "exec", `{"task":"pay"}`), agent.TextTurn("ok")),
+		agenttest.NewScriptedModel(agenttest.ToolTurn("c1", "exec", `{"task":"pay"}`), agenttest.TextTurn("ok")),
 		store,
 		agent.WithTools(exec),
 	)

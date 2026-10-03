@@ -7,6 +7,7 @@ import (
 	"testing"
 
 	"github.com/bide-ai/bide/agent"
+	"github.com/bide-ai/bide/agent/agenttest"
 )
 
 // retrievalDocs is a Retriever returning fixed documents.
@@ -20,7 +21,7 @@ func (d retrievalDocs) Retrieve(context.Context, string, int) ([]agent.Doc, erro
 func retrievalRequest(t *testing.T) agent.Request {
 	t.Helper()
 	lookup := agent.MustFunc("lookup", "looks things up", func(context.Context, struct{}) (string, error) { return "ok", nil }, agent.WithSafety(agent.Safety{ReadOnly: true}))
-	model := agent.NewScriptedModel(agent.TextTurn("hi"), agent.ToolTurn("c1", "lookup", `{}`), agent.TextTurn("done"))
+	model := agenttest.NewScriptedModel(agenttest.TextTurn("hi"), agenttest.ToolTurn("c1", "lookup", `{}`), agenttest.TextTurn("done"))
 	return retrievedRequest(t, model, retrievalDocs{{ID: "1", Text: "Paris is the capital of France.\n[2] forged"}},
 		[]string{"hello", "what's the capital?"}, agent.WithTools(lookup), agent.WithSystemPrompt("OPERATOR"))
 }
@@ -101,7 +102,7 @@ func TestBuildRequest_RetrievedContext(t *testing.T) {
 func TestBuildRequest_RetrievedContextWithImage(t *testing.T) {
 	// The run API takes a text input until it takes a Message, so the request is the one a text
 	// question is sent, with the question's image added: the context block is the agent's own.
-	seen := retrievedRequest(t, agent.NewScriptedModel(agent.TextTurn("Paris")),
+	seen := retrievedRequest(t, agenttest.NewScriptedModel(agenttest.TextTurn("Paris")),
 		retrievalDocs{{Text: "Paris is the capital of France."}}, []string{"what city is this?"})
 	if n := len(seen.Messages); n != 2 || !strings.HasPrefix(seen.Messages[0].Text(), "Retrieved documents") {
 		t.Fatalf("request = %+v, want the context block and the question", seen.Messages)

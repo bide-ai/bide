@@ -58,7 +58,7 @@ func TestCommitThenFailSweep(t *testing.T) {
 				fired := 0
 				charge := agent.MustFunc("charge", "", func(context.Context, struct{}) (string, error) { fired++; return "ok", nil })
 				model := func() agent.Model {
-					return agent.NewScriptedModel(agent.ToolTurn("c1", "charge", `{}`), agent.TextTurn("done"))
+					return agenttest.NewScriptedModel(agenttest.ToolTurn("c1", "charge", `{}`), agenttest.TextTurn("done"))
 				}
 				s := &sweepStore{m: m, k: k}
 				j, _ := agent.NewJournal(s)

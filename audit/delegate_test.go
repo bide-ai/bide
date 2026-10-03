@@ -76,7 +76,7 @@ func TestAttenuatingSubAgent_Default(t *testing.T) {
 	sub := agenttest.MustNew(answerModel{"done"}, store)
 	tool := AttenuatingSubAgent("exec", "execute within delegated authority", sub, AttenuationConfig{Store: store, Narrow: narrowLimitBy(3), Rules: ScopeRules{"limit": NumericAtMost}})
 	parent := agenttest.MustNew(
-		agent.NewScriptedModel(agent.ToolTurn("c1", "exec", `{"task":"do the thing"}`), agent.TextTurn("ok")),
+		agenttest.NewScriptedModel(agenttest.ToolTurn("c1", "exec", `{"task":"do the thing"}`), agenttest.TextTurn("ok")),
 		store,
 		agent.WithTools(tool),
 	)

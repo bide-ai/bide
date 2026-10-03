@@ -27,10 +27,10 @@ func TestStepPauseGuard_InsideAToolIsNotRecordedAsAToolFailure(t *testing.T) {
 			return agent.Interrupt[string](ctx, "confirm-"+a.ID, "confirm the charge?")
 		})
 	}, agent.WithSafety(agent.Safety{Idempotent: true}))
-	m := agent.NewScriptedModel(
-		agent.ToolTurn("c1", "book", `{"id":"c1"}`),
-		agent.ToolTurn("c2", "book", `{"id":"c2"}`), // the model retries a call it was told failed
-		agent.TextTurn("done"))
+	m := agenttest.NewScriptedModel(
+		agenttest.ToolTurn("c1", "book", `{"id":"c1"}`),
+		agenttest.ToolTurn("c2", "book", `{"id":"c2"}`), // the model retries a call it was told failed
+		agenttest.TextTurn("done"))
 	a := agenttest.MustNew(m, store, agent.WithTools(book))
 	_, err := a.Run(ctx, "r", agent.UserText("book it"))
 	if !errors.Is(err, agent.ErrConfig) || errors.Is(err, agent.ErrTool) {

@@ -44,7 +44,8 @@ func signAs(t *testing.T, store *Journal, runID, toolUseID, approverID string, p
 
 // F5 (spec/tla, findings/ap-shared-key): two approvers whose verifiers resolve to one key are
 // two seats for one person. The holder of that key signs as both and meets a 2-of-2 quorum
-// alone. The gate must refuse such a policy with ErrConfig and never run the tool.
+// alone. New refuses such a policy with ErrConfig, so the tool never runs (the gate checks it
+// again on every evaluation: TestMofn_SharedKeyBetweenRounds).
 func TestMofn_SharedKeyIsOneSeat(t *testing.T) {
 	store := memJournal()
 	pub, priv := sharedKey()
@@ -57,10 +58,8 @@ func TestMofn_SharedKeyIsOneSeat(t *testing.T) {
 	}
 	var charged int
 
-	_, _ = mofnRun(store, "r1", true, pol, vf, &charged)
-	signAs(t, store, "r1", "c1", "a1", priv)
-	signAs(t, store, "r1", "c1", "a2", priv)
-	_, err := mofnRun(store, "r1", false, pol, vf, &charged)
+	_ = priv // the key's holder could sign as both seats
+	_, err := mofnRun(store, "r1", true, pol, vf, &charged)
 	if charged != 0 {
 		t.Fatalf("charge ran %d times on one person's approval of a 2-of-2 quorum, want 0", charged)
 	}
@@ -175,14 +174,19 @@ func TestMofn_SharedKeyAfterCheckNeverCounts(t *testing.T) {
 		return keyVerifier{signer: "h1", keys: []string{"k:h1"}}, true // the count
 	}
 	var charged int
-	_, _ = mofnRun(store, "r1", true, pol, vf, &charged)
+	charge := &countingTool{name: "charge", approval: pol, calls: &charged}
+	a := mustNew(&scriptModel{turns: [][]Emit{toolTurn("c1", "charge", `{}`), textTurn("done")}}, store,
+		WithTools(charge), WithApproverVerifiers(vf))
+	clear(calls) // New checked the keys once per approver; the gate's evaluations alternate from here
+	ctx := context.Background()
+	_, _ = a.Run(ctx, "r1", UserText("pay"))
 	for _, a := range pol.Approvers {
 		sig := fakeSign("h1", ApprovalDecisionBytes(subjectOf(t, store, "r1", "c1"), a, true))
 		if err := SubmitDecision(context.Background(), store, Decision{RunID: "r1", ToolUseID: "c1", ApproverID: a, Approved: true, Alg: fakeAlg, Signature: sig}); err != nil {
 			t.Fatal(err)
 		}
 	}
-	_, err := mofnRun(store, "r1", false, pol, vf, &charged)
+	_, err := a.Run(ctx, "r1", UserText("pay"))
 	if charged != 0 {
 		t.Fatalf("charge ran %d times on one person's approval, want 0", charged)
 	}

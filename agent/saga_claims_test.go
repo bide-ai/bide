@@ -42,7 +42,7 @@ func TestSagaSkipsVoidedAttempt(t *testing.T) {
 	m := agent.NewMemStore()
 	c := &sagaCounts{}
 	model := func() agent.Model {
-		return agent.NewScriptedModel(agent.ToolTurn("c1", "charge", `{}`), agent.ToolTurn("c2", "boom", `{}`), agent.TextTurn("done"))
+		return agenttest.NewScriptedModel(agenttest.ToolTurn("c1", "charge", `{}`), agenttest.ToolTurn("c2", "boom", `{}`), agenttest.TextTurn("done"))
 	}
 	s := &r3Store{m: m, faults: []r3Fault{{"attempt:tool:c1", "c"}}} // marker commits, errors: voided
 	j, _ := agent.NewJournal(s)
@@ -70,7 +70,7 @@ func TestSagaCompensatesCallFiredUnderHeldClaim(t *testing.T) {
 	m := agent.NewMemStore()
 	c := &sagaCounts{}
 	model := func() agent.Model {
-		return agent.NewScriptedModel(agent.ToolTurn("c1", "charge", `{}`), agent.ToolTurn("c2", "boom", `{}`), agent.TextTurn("done"))
+		return agenttest.NewScriptedModel(agenttest.ToolTurn("c1", "charge", `{}`), agenttest.ToolTurn("c2", "boom", `{}`), agenttest.TextTurn("done"))
 	}
 	s := &r3Store{m: m, faults: []r3Fault{{"attempt:tool:c1", "nc"}, {"attempt:not-started:", "nc"}}}
 	j, _ := agent.NewJournal(s)
@@ -91,7 +91,7 @@ func TestSagaHaltsOnHeldClaimWithoutResult(t *testing.T) {
 	m := agent.NewMemStore()
 	c := &sagaCounts{}
 	model := func() agent.Model {
-		return agent.NewScriptedModel(agent.ToolTurn("c1", "charge", `{}`), agent.ToolTurn("c2", "boom", `{}`), agent.TextTurn("done"))
+		return agenttest.NewScriptedModel(agenttest.ToolTurn("c1", "charge", `{}`), agenttest.ToolTurn("c2", "boom", `{}`), agenttest.TextTurn("done"))
 	}
 	s := &r3Store{m: m, faults: []r3Fault{{"attempt:tool:c1", "nc"}, {"attempt:not-started:", "nc"}}}
 	j, _ := agent.NewJournal(s)

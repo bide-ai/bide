@@ -56,7 +56,7 @@ func Test_R105b_KeylessApproverIsRefused(t *testing.T) {
 	ran := 0
 	wire := agent.MustFunc("wire", "", func(context.Context, struct{}) (string, error) { ran++; return "sent", nil }, agent.WithApproval(&p))
 	_, err := agenttest.MustNew(
-		agent.NewScriptedModel(agent.ToolTurn("c", "wire", `{}`), agent.TextTurn("done")),
+		agenttest.NewScriptedModel(agenttest.ToolTurn("c", "wire", `{}`), agenttest.TextTurn("done")),
 		agenttest.MemJournal(),
 		agent.WithTools(wire), agent.WithApproverVerifiers(resolve)).Run(context.Background(), "r", agent.UserText("hi"))
 	if !errors.Is(err, agent.ErrConfig) || ran != 0 {
@@ -87,7 +87,7 @@ func Test_R105c_GateReadsTheRecordedTallyStrictly(t *testing.T) {
 	s := agenttest.MemJournal()
 	newAgent := func() *agent.Agent {
 		return agenttest.MustNew(
-			agent.NewScriptedModel(agent.ToolTurn("c1", "wire", `{}`), agent.TextTurn("done")),
+			agenttest.NewScriptedModel(agenttest.ToolTurn("c1", "wire", `{}`), agenttest.TextTurn("done")),
 			s,
 			agent.WithTools(wire), agent.WithApproverVerifiers(resolve))
 	}

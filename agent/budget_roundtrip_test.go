@@ -55,7 +55,7 @@ func readOnly() agent.Tool {
 // check: its Load read the run.
 func TestBudget_FirstDriveAndCompletion(t *testing.T) {
 	j, cs, _ := countingJournal(t)
-	if _, err := agenttest.MustNew(agent.NewScriptedModel(agent.TextTurn("done")), j).Run(context.Background(), "r", agent.UserText("hi")); err != nil {
+	if _, err := agenttest.MustNew(agenttest.NewScriptedModel(agenttest.TextTurn("done")), j).Run(context.Background(), "r", agent.UserText("hi")); err != nil {
 		t.Fatal(err)
 	}
 	wantCounts(t, cs, "first drive, one turn, completion",
@@ -76,7 +76,7 @@ func TestBudget_ToolCalls(t *testing.T) {
 	} {
 		t.Run(c.name, func(t *testing.T) {
 			j, cs, _ := countingJournal(t)
-			m := agent.NewScriptedModel(agent.ToolTurn("c1", c.tool.Spec().Name, `{}`), agent.TextTurn("done"))
+			m := agenttest.NewScriptedModel(agenttest.ToolTurn("c1", c.tool.Spec().Name, `{}`), agenttest.TextTurn("done"))
 			if _, err := agenttest.MustNew(m, j, agent.WithTools(c.tool)).Run(context.Background(), "r", agent.UserText("hi")); err != nil {
 				t.Fatal(err)
 			}
@@ -94,7 +94,7 @@ func TestBudget_Resume(t *testing.T) {
 	j, cs, m := countingJournal(t)
 	// A side-effect call claimed and never recorded: the resume halts on it.
 	a := agenttest.MustNew(
-		agent.NewScriptedModel(agent.ToolTurn("c1", "charge", `{}`), agent.TextTurn("done")),
+		agenttest.NewScriptedModel(agenttest.ToolTurn("c1", "charge", `{}`), agenttest.TextTurn("done")),
 		j,
 		agent.WithTools(sideEffect()),
 	)
@@ -116,7 +116,7 @@ func TestBudget_Resume(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if _, err := agenttest.MustNew(agent.NewScriptedModel(agent.TextTurn("done")), cold, agent.WithTools(sideEffect())).Run(ctx, "r", agent.UserText("hi")); err != nil {
+	if _, err := agenttest.MustNew(agenttest.NewScriptedModel(agenttest.TextTurn("done")), cold, agent.WithTools(sideEffect())).Run(ctx, "r", agent.UserText("hi")); err != nil {
 		t.Fatal(err)
 	}
 	wantCounts(t, cs, "resume of a finished run, new Journal", nil, 1, n)

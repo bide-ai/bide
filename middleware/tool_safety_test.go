@@ -11,11 +11,11 @@ import (
 )
 
 // twoCharges asks for two separate $5 charges (two tool calls with identical arguments), then answers.
-func twoCharges() *agent.ScriptedModel {
-	return agent.NewScriptedModel(
-		agent.ToolTurn("c1", "charge", `{"cents":500}`),
-		agent.ToolTurn("c2", "charge", `{"cents":500}`),
-		agent.TextTurn("done"),
+func twoCharges() *agenttest.ScriptedModel {
+	return agenttest.NewScriptedModel(
+		agenttest.ToolTurn("c1", "charge", `{"cents":500}`),
+		agenttest.ToolTurn("c2", "charge", `{"cents":500}`),
+		agenttest.TextTurn("done"),
 	)
 }
 
@@ -29,9 +29,9 @@ func TestToolRetry_DoesNotRetryANonIdempotentTool(t *testing.T) {
 		charged++ // the payment went through
 		return "", errors.New("gateway timeout")
 	})
-	m := agent.NewScriptedModel(
-		agent.ToolTurn("c1", "charge", `{"cents":500}`),
-		agent.TextTurn("done"),
+	m := agenttest.NewScriptedModel(
+		agenttest.ToolTurn("c1", "charge", `{"cents":500}`),
+		agenttest.TextTurn("done"),
 	)
 	store := agenttest.MemJournal()
 	a := agenttest.MustNew(

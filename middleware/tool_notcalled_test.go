@@ -31,7 +31,7 @@ func testToolRateLimitGivingUpRecordsNotCalled(t *testing.T) {
 		return "charged", nil
 	}, agent.WithTimeout(20*time.Millisecond))
 	store := agenttest.MemJournal()
-	m := agent.NewScriptedModel(agent.ToolTurn("c1", "charge", `{}`), agent.ToolTurn("c2", "charge", `{}`), agent.TextTurn("done"))
+	m := agenttest.NewScriptedModel(agenttest.ToolTurn("c1", "charge", `{}`), agenttest.ToolTurn("c2", "charge", `{}`), agenttest.TextTurn("done"))
 	a := agenttest.MustNew(m, store, agent.WithTools(charge), agent.WithToolMiddleware(middleware.ToolRateLimit(r)))
 	if _, err := a.Run(context.Background(), "r1", agent.UserText("pay")); err != nil {
 		t.Fatalf("Run: %v", err)

@@ -21,12 +21,12 @@ func TestSubAgent_SagaAbortWrappingStorageIsAVerdict(t *testing.T) {
 		return struct{}{}, fmt.Errorf("insert row: %w", agent.ErrStorage)
 	})
 	sub := agenttest.MustNew(
-		agent.NewScriptedModel(agent.ToolTurn("s1", "save", `{}`), agent.TextTurn("saved")),
+		agenttest.NewScriptedModel(agenttest.ToolTurn("s1", "save", `{}`), agenttest.TextTurn("saved")),
 		store,
 		agent.WithTools(save),
 	)
 	root := agenttest.MustNew(
-		agent.NewScriptedModel(agent.ToolTurn("c1", "saver", `{"task":"save it"}`), agent.TextTurn("done")),
+		agenttest.NewScriptedModel(agenttest.ToolTurn("c1", "saver", `{"task":"save it"}`), agenttest.TextTurn("done")),
 		store,
 		agent.WithTools(agent.MustSubAgent("saver", "", sub)),
 	)

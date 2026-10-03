@@ -25,7 +25,7 @@ func composite(name string, tools ...agent.Tool) agent.Tool {
 func runOnce(t *testing.T, tool agent.Tool) {
 	t.Helper()
 	a := agenttest.MustNew(
-		agent.NewScriptedModel(agent.ToolTurn("c1", tool.Spec().Name, `{}`), agent.TextTurn("done")),
+		agenttest.NewScriptedModel(agenttest.ToolTurn("c1", tool.Spec().Name, `{}`), agenttest.TextTurn("done")),
 		agenttest.MemJournal(),
 		agent.WithTools(tool),
 	)

@@ -171,10 +171,10 @@ func (w *haDriver) drive(ctx context.Context, runID string) error {
 	charge := agent.MustFunc("charge", "charge the card", func(_ context.Context, in struct{ Key string }) (string, error) {
 		return w.effect(runID, in.Key), nil
 	})
-	model := agent.NewScriptedModel(
-		agent.ToolTurn("c1", "charge", `{"Key":"c1"}`),
-		agent.ToolTurn("c2", "charge", `{"Key":"c2"}`),
-		agent.TextTurn("done"),
+	model := agenttest.NewScriptedModel(
+		agenttest.ToolTurn("c1", "charge", `{"Key":"c1"}`),
+		agenttest.ToolTurn("c2", "charge", `{"Key":"c2"}`),
+		agenttest.TextTurn("done"),
 	)
 	_, err := agenttest.MustNew(model, agenttest.MustJournal(w.s), agent.WithTools(charge)).Run(ctx, runID, agent.UserText("go"))
 	return err
