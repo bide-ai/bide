@@ -79,7 +79,7 @@ whose whole point is "never double-fire" defaults to safe rather than to guessin
 
 Most unknowns never reach a person: an idempotency key lets the provider dedupe a safe retry, and
 for systems without one (email, internal services) a reconciler resolves the step from the record
-it left (`agent.ResolveHaltRef`). The human is the floor, not the default.
+it left (`agent.ResolveHalt`). The human is the floor, not the default.
 
 > [!IMPORTANT]
 > **The rule underneath it:** when an action moves money, touches a record, or happens under audit
@@ -268,21 +268,21 @@ journal-backed runtime. See [docs/guides/flows.md](docs/guides/flows.md).
 
 The same order-triage flow, three ways. Plain Go is the default: write ordinary control flow, and name the steps the journal must make crash-safe.
 
-<!-- docsnip: setup ctx context.Context; store agent.Durable; order Order; type Order struct{}; type Receipt struct{}; type Assessment struct{ Rush bool }; type Reservation struct{}; func classify(Order) (Assessment, error); func reserve(Assessment) (Reservation, error); func finalize(Reservation) (Receipt, error); func decline(Assessment) (Receipt, error) -->
+<!-- docsnip: setup ctx context.Context; store *agent.Journal; order Order; type Order struct{}; type Receipt struct{}; type Assessment struct{ Rush bool }; type Reservation struct{}; func classify(Order) (Assessment, error); func reserve(Assessment) (Reservation, error); func finalize(Reservation) (Receipt, error); func decline(Assessment) (Receipt, error) -->
 ```go
 // classify, then branch: rush orders reserve-then-finalize, the rest decline.
-assess, _ := agent.Step(ctx, store, "order-42", "classify",
+assess, _ := store.Step(ctx, "order-42", "classify",
     func(ctx context.Context) (Assessment, error) { return classify(order) },
     agent.WithSafety(agent.Safety{ReadOnly: true})) // safe to re-run after a crash
 
 var receipt Receipt
 if assess.Rush {
-    res, _ := agent.Step(ctx, store, "order-42", "reserve", // a side effect: at most once
+    res, _ := store.Step(ctx, "order-42", "reserve", // a side effect: at most once
         func(ctx context.Context) (Reservation, error) { return reserve(assess) })
-    receipt, _ = agent.Step(ctx, store, "order-42", "finalize",
+    receipt, _ = store.Step(ctx, "order-42", "finalize",
         func(ctx context.Context) (Receipt, error) { return finalize(res) })
 } else {
-    receipt, _ = agent.Step(ctx, store, "order-42", "decline",
+    receipt, _ = store.Step(ctx, "order-42", "decline",
         func(ctx context.Context) (Receipt, error) { return decline(assess) })
 }
 ```
@@ -359,12 +359,11 @@ into a waiting run), `examples/interrupt` (human-in-the-loop pause/resume), and 
 <!-- docsnip: setup ctx context.Context; a *agent.Agent; runID string; input string; type ChargeArgs struct{}; type Receipt struct{} -->
 ```go
 // A tool that moves money is a write: not ReadOnly, not Idempotent.
-charge := agent.Func("charge_card", "Charge the customer", agent.Safety{},
-	func(ctx context.Context, in ChargeArgs) (Receipt, error) { /* ... */ })
+charge := agent.MustFunc("charge_card", "Charge the customer", func(ctx context.Context, in ChargeArgs) (Receipt, error) { /* ... */ })
 
 // If the process crashes after the charge fires but before its result is journaled,
 // resume does NOT run it again: it returns *OutcomeUnknown so you confirm, not double-charge:
-_, err := a.Run(ctx, runID, input)
+_, err := a.Run(ctx, runID, agent.UserText(input))
 if halt, ok := errors.AsType[*agent.OutcomeUnknown](err); ok {
 	// halt.Op.ToolName == "charge_card": outcome unknown, a human decides, no double side effect.
 }
@@ -386,6 +385,7 @@ package main
 import (
 	"context"
 	"fmt"
+	"log"
 	"os"
 
 	"github.com/bide-ai/bide/agent"
@@ -408,24 +408,33 @@ func main() {
 		openai.WithModel("openai/gpt-4o-mini"))
 
 	// A tool is a typed Go function; its schema is derived automatically.
-	weather := agent.Func("get_weather", "Current weather for a city",
-		agent.Safety{ReadOnly: true},
+	weather := agent.MustFunc("get_weather", "Current weather for a city",
 		func(_ context.Context, in WeatherArgs) (Weather, error) {
 			return Weather{TempF: 68, Sky: "sunny"}, nil
-		})
+		}, agent.WithSafety(agent.Safety{ReadOnly: true}))
 
 	// Durable on-disk store: a crash mid-run resumes from here.
 	store, _ := sqlite.Open("agent.db")
+	j, err := agent.NewJournal(store)
+	if err != nil {
+		log.Fatal(err)
+	}
 	defer store.Close()
 
-	a := agent.New(model, store, weather).
-		WithSystemPrompt("You are a concise weather assistant.")
-	out, _ := a.Run(context.Background(), "run-1", "Weather in SF? Use the tool.")
-	for _, p := range out.Parts {
-		if t, ok := p.(agent.Text); ok {
-			fmt.Println(t.Text)
-		}
+	a, err := agent.New(
+		model,
+		j,
+		agent.WithTools(weather),
+		agent.WithSystemPrompt("You are a concise weather assistant."),
+	)
+	if err != nil {
+		log.Fatal(err)
 	}
+	out, err := a.Run(context.Background(), "run-1", agent.UserText("Weather in SF? Use the tool."))
+	if err != nil {
+		log.Fatal(err)
+	}
+	fmt.Println(out.Message.Text())
 }
 ```
 
@@ -441,39 +450,36 @@ model as the call's result, so the model can correct the call. `encoding/json` w
 values, match names case-insensitively, drop unknown names, and keep the last duplicate. Give each
 argument field the json tag the model sees in the schema.
 
-`Run` returns just the final message. The Run API, under its transitional names until the 1.0
-rewrite renames them (`RunMessage` becomes `Run`, `ResumeRun` becomes `Resume`), takes a `Message`
-input (text, or text and images) and per-run options, and returns a `Result` (token usage for the
-whole run, including cache and sub-agents; model-turn count; wall-clock duration). The `Result` is
-non-nil on every error once the run ID is valid: a pause, a halt, a failure, a saga's abort, a
-cancellation:
+`Run` takes a `Message` input (text, or text and images) and per-run options, and returns a
+`Result`: the final message, token usage for the whole run (including cache and sub-agents), the
+model-turn count, and the wall-clock duration. The `Result` is non-nil on every error once the run
+ID is valid: a pause, a halt, a failure, a saga's abort, a cancellation:
 
 <!-- docsnip: setup ctx context.Context; a *agent.Agent; runID string; input string -->
 ```go
-res, err := a.RunMessage(ctx, runID, agent.UserText(input),
+res, err := a.Run(ctx, runID, agent.UserText(input),
 	agent.WithTokenBudget(50_000), agent.WithSystemPrompt("You are terse."))
 // res.Message, res.Usage, res.Spend, res.Turns, res.Duration, res.RunID
 _ = err
 ```
 
 A run's first drive journals its input and the options its caller passed in `run:start`, and
-every later drive runs under them, a recovery drive included: `ResumeRun(ctx, runID)` needs
+every later drive runs under them, a recovery drive included: `Resume(ctx, runID)` needs
 neither, a later drive may raise or lower a limit (`WithMaxTurns`, `WithTokenBudget`: journaled
 as an amendment), and any other different setting is `ErrConfig`. `WithSaga()` runs the run as a
 saga, and `WithToolFilter(names...)` restricts it to some of the agent's tools, enforced when each
 call is dispatched. `agent.Cancel(ctx, j, runID, reason)` cancels a run (a saga is rolled back
-first), and `agent.Status(ctx, j, runID)` reads its state from the journal. `RunResult` and
-`RunSagaResult` are the transitional string forms.
+first), and `agent.Status(ctx, j, runID)` reads its state from the journal.
 
 ## Streaming
 
 `Run` blocks and returns the final answer. To watch the agent work (token deltas, turn
-boundaries, tool start/finish), use `Stream`. It drives the **same loop** (`Run` is literally
-`Stream(...).Final()`), so durability, resume, and side-effect safety are identical:
+boundaries, tool start/finish), use `Stream`. It drives the **same loop** as `Run`
+(`Stream(...).Result()` returns what `Run` would), so durability, resume, and side-effect safety are identical:
 
 <!-- docsnip: setup ctx context.Context; a *agent.Agent; runID string; input string -->
 ```go
-stream := a.Stream(ctx, runID, input)
+stream := a.Stream(ctx, runID, agent.UserText(input))
 for ev := range stream.Events() {
 	switch e := ev.(type) {
 	case agent.ModelEvent: // live token/reasoning/tool-call deltas
@@ -486,12 +492,12 @@ for ev := range stream.Events() {
 		fmt.Printf("[%s done]\n", e.Name)
 	}
 }
-answer, err := stream.Final() // terminal message + error (incl. a Pause: *ApprovalPending, *OutcomeUnknown, ...)
+res, err := stream.Result() // what Run returns: the Result and an error (incl. a pause: *ApprovalPending, *OutcomeUnknown, ...)
 ```
 
 Events: `TurnStarted`, `ModelEvent` (the token feed), `TurnRestarted`, `AssistantTurn`, `ToolStarted` /
-`ToolCompleted`, `ApprovalRequired`, `Finished`. Range `Events()` for a UI then call `Final()`,
-or call `Final()` alone to behave exactly like `Run` (it drains events for you). `ToolStarted`
+`ToolCompleted`, `ApprovalRequired`, `Finished`. Range `Events()` for a UI then call `Result()`,
+or call `Result()` alone to behave exactly like `Run` (it drains events for you). `ToolStarted`
 fires immediately before a tool is called, so a call cancelled before it starts (and recorded as
 not started) emits neither `ToolStarted` nor `ToolCompleted`.
 
@@ -507,8 +513,8 @@ Two things worth knowing, both consequences of durability:
   `ToolCompleted` before live progress, so a fresh UI reconstructs the whole story after a
   crash, and a replayed turn produces no token deltas (it was already decided).
 
-`StreamSaga` is the streaming counterpart of `RunSaga`. `StreamMessage(ctx, runID, input, opts...)`
-is `RunMessage`'s, and its `AgentStream.Result()` returns what `RunMessage` would.
+`Stream` takes the same options as `Run` (`WithSaga()` for a saga), and its `RunStream.Result()`
+returns what `Run` would.
 
 ## Typed output
 
@@ -524,12 +530,12 @@ type Weather struct {
 	TempF int    `json:"temp_f"`
 }
 
-w, err := agent.RunTyped[Weather](ctx, a, runID, "weather in SF?")
+w, _, err := a.RunTyped[Weather](ctx, runID, agent.UserText("weather in SF?"))
 // w.City == "SF", w.TempF == 68
 ```
 
-`a.RunTypedMessage[T](ctx, runID, input, opts...)` is the Run API's form, a Go 1.27 generic method
-that returns the run's `Result` too (its `Output` is the answer as journaled). A typed run journals
+`a.RunTyped[T](ctx, runID, input, opts...)` is a Go 1.27 generic method; it returns the run's
+`Result` too (its `Output` is the answer as journaled). A typed run journals
 its output mode and `T`'s schema in `run:start`, so resuming it through an untyped entry point, or
 with another `T`, is `ErrConfig`; recovery resumes it with `agent.ResumeTyped[T](a)`. The answer is the
 arguments `final_answer` accepted, decoded strictly like any `Func` tool's (a loose call goes back
@@ -540,21 +546,28 @@ Only if the model never makes one (it replies in plain JSON text instead) does `
 the text of the run's final turn. `T` must be a JSON object (a struct, a pointer to one, or a map),
 since providers take tool arguments only as an object; any other `T` is `ErrConfig`.
 
-On OpenAI-compatible providers with strict structured outputs, `RunTypedNative[T]` (or
-`RunTypedMessage` with `agent.WithOutputMode(agent.OutputNative)`) uses the provider's native
+On OpenAI-compatible providers with strict structured outputs, `RunTyped[T]` with
+`agent.WithOutputMode(agent.OutputNative)` uses the provider's native
 JSON-schema response format instead of the tool (schema enforced provider-side, no tool
-round-trip); the Anthropic adapter does not support it and returns `ErrConfig`, so use `RunTyped`
-there for provider-agnostic output.
+round-trip); the Anthropic adapter does not support it and returns `ErrConfig`, so use the default
+tool mode there for provider-agnostic output.
 
 ## Sampling
 
 Generation controls are provider-neutral and set once; each adapter maps them onto its wire
 format (and drops what it can't do, e.g. Anthropic has no `seed`):
 
-<!-- docsnip: setup model agent.Model; store agent.Durable; tools []agent.Tool -->
+<!-- docsnip: setup model agent.Model; store *agent.Journal; tools []agent.Tool -->
 ```go
-a := agent.New(model, store, tools...).
-	WithSampling(agent.Temperature(0), agent.MaxTokens(500), agent.TopP(0.9), agent.Seed(42))
+a, err := agent.New(
+	model,
+	store,
+	agent.WithTools(tools...),
+	agent.WithSampling(agent.Temperature(0), agent.MaxTokens(500), agent.TopP(0.9), agent.Seed(42)),
+)
+if err != nil {
+	panic(err)
+}
 ```
 
 Fields are optional by design: an unset field uses the provider default, so an explicit
@@ -585,8 +598,15 @@ earlier turns.
 <!-- docsnip: setup ctx context.Context; a *agent.Agent -->
 ```go
 s, _ := a.Session(ctx, "user-42")   // reopens + rebuilds the transcript from the store
-a1, _ := s.Send(ctx, "what's the capital of France?")
-a2, _ := s.Send(ctx, "and its population?")   // sees turn 1 in context
+r1, err := s.Send(ctx, agent.UserText("what's the capital of France?"))
+if err != nil {
+	panic(err)
+}
+r2, err := s.Send(ctx, agent.UserText("and its population?")) // sees turn 1 in context
+if err != nil {
+	panic(err)
+}
+fmt.Println(r1.Message.Text(), r2.Message.Text())
 ```
 
 The transcript is journaled turn-by-turn under the session id, so a restarted process
@@ -596,14 +616,13 @@ transcript: a turn's intermediate tool calls stay in that turn and don't leak in
 a turn pauses (approval / `Interrupt`), `Send` returns that error; resolve it and call `Send` again
 with the same input to resume. Until then, `Send` with a different message returns `ErrConfig`: the
 open turn belongs to its message. For inbound messages that may be redelivered, `SendOnce(ctx, id,
-text)` answers each message id once. Several handles on one session never lose a turn, record one
+input)` answers each message id once. Several handles on one session never lose a turn, record one
 twice, or answer one message with another's reply. Over a store with leases (`MemStore`, SQLite,
 Postgres), a turn is driven by one worker at a time under its run's lease, so its token budget
 holds across workers; a second worker sent the same message meanwhile gets `ErrTurnContended` and
 sends it again later. A turn resumed after a crash is seeded with the same transcript it started
-with, even if other messages were answered in between. `SendMessage` and `SendMessageOnce`
-(transitional names for the 1.0 `Send` and `SendOnce`) take a `Message` and run options and return
-a `Result`. A turn whose run was cancelled (`agent.Cancel`) is closed: `Send` of its message
+with, even if other messages were answered in between. `Send` and `SendOnce` take a `Message` and
+run options and return a `Result`. A turn whose run was cancelled (`agent.Cancel`) is closed: `Send` of its message
 returns `ErrRunCancelled`, and the next message's `Send` records the turn closed, with no answer and
 outside the transcript, and runs its own turn.
 
@@ -612,7 +631,7 @@ outside the transcript, and runs its own turn.
 The durable journal already records every step of a run. The `audit` package commits to that
 history with a hash chain, so a run's execution is verifiable:
 
-<!-- docsnip: setup ctx context.Context; store agent.Durable; runID string; priv ed25519.PrivateKey -->
+<!-- docsnip: setup ctx context.Context; store *agent.Journal; runID string; priv ed25519.PrivateKey -->
 ```go
 head, _ := audit.Head(ctx, store, runID)                     // SHA-256 chain over the stored journal bytes
 sig, _ := audit.Sign(head, audit.Ed25519Signer{Priv: priv}) // anchor it: sign / publish out-of-band
@@ -657,11 +676,11 @@ Then wire it in one of two ways:
 <!-- docsnip: setup model agent.Model; journal *agent.Journal; myStore agent.Retriever -->
 ```go
 // Agentic RAG: the model searches on demand:
-a, err := agent.Build(model, journal,
-	agent.WithTools(agent.RetrievalTool("search_kb", "Search the knowledge base.", myStore, 5)))
+a, err := agent.New(model, journal,
+	agent.WithTools(agent.MustRetrievalTool("search_kb", "Search the knowledge base.", myStore, 5)))
 
 // Classic RAG: top-k auto-injected as context on each user turn:
-a, err = agent.Build(model, journal, agent.WithRetrieval(myStore, 5))
+a, err = agent.New(model, journal, agent.WithRetrieval(myStore, 5))
 ```
 
 Conversational memory is already built in (`Session`); dynamic context goes through
@@ -705,35 +724,42 @@ so both limits are rebuilt from the journal and hold across a crash and resume.
 Three flavors. **Approve/deny**: a tool marked `WithApproval(SingleApproval())` pauses *before* running; the
 human decision is a bool:
 
-<!-- docsnip: setup ctx context.Context; a *agent.Agent; store agent.Durable; runID string; input string -->
+<!-- docsnip: setup ctx context.Context; a *agent.Agent; store *agent.Journal; runID string; input string -->
 ```go
-_, err := a.Run(ctx, runID, input)
+_, err := a.Run(ctx, runID, agent.UserText(input))
 if pend, ok := errors.AsType[*agent.ApprovalPending](err); ok {
 	// ... get a human decision ...
 	agent.Approve(ctx, store, pend.RunID, pend.ToolUseID, true)
-	out, _ := a.Run(ctx, pend.RootRunID, input) // resumes past the pause
+	res, _ := a.Run(ctx, pend.RootRunID, agent.UserText(input))
+	var out agent.Message
+	if res != nil {
+		out = res.Message
+	} // resumes past the pause
 }
 ```
 
 **Interrupt/resume**: a tool pauses *at an arbitrary point* and resumes with a *typed* value
 (generalizing the bool). Call `agent.Interrupt[T]` inside a retry-safe tool:
 
-<!-- docsnip: setup ctx context.Context; a *agent.Agent; store agent.Durable; runID string; input string; type Options struct{}; type Plan struct{}; chosenPlan Plan -->
+<!-- docsnip: setup ctx context.Context; a *agent.Agent; store *agent.Journal; runID string; input string; type Options struct{}; type Plan struct{}; chosenPlan Plan -->
 ```go
-tool := agent.Func("choose_plan", "pick a plan", agent.Safety{ReadOnly: true},
-	func(ctx context.Context, in Options) (Plan, error) {
+tool := agent.MustFunc("choose_plan", "pick a plan", func(ctx context.Context, in Options) (Plan, error) {
 		pick, err := agent.Interrupt[Plan](ctx, "plan", in) // pauses the run; in is shown to the human
 		if err != nil {
 			return Plan{}, err // *InterruptPending propagates out of Run
 		}
 		return pick, nil // on resume, pick is the human's typed answer
-	})
+	}, agent.WithSafety(agent.Safety{ReadOnly: true}))
 
-_, err := a.Run(ctx, runID, input)
+_, err := a.Run(ctx, runID, agent.UserText(input))
 if intr, ok := errors.AsType[*agent.InterruptPending](err); ok {
 	// ... show intr.Prompt, get a typed answer ...
-	agent.AnswerInterrupt(ctx, store, intr.RunID, intr.Name, chosenPlan)
-	out, _ := a.Run(ctx, intr.RootRunID, input) // resumes; Interrupt now returns chosenPlan
+	store.AnswerInterrupt(ctx, intr.RunID, intr.Name, chosenPlan)
+	res, _ := a.Run(ctx, intr.RootRunID, agent.UserText(input))
+	var out agent.Message
+	if res != nil {
+		out = res.Message
+	} // resumes; Interrupt now returns chosenPlan
 }
 ```
 
@@ -746,11 +772,14 @@ of n approvers. Each approver signs the exact call (tool and arguments); the gat
 approvals, denies once k is unreachable, and otherwise pauses with the running tally. A forged or
 mistaken decision is ignored without locking its approver out:
 
-<!-- docsnip: setup ctx context.Context; model agent.Model; store agent.Durable; pend *agent.ApprovalPending; type RefundArgs struct{}; doRefund func(context.Context, RefundArgs) (string, error); keysByApprover agent.ApproverVerifierFor; signer audit.Signer -->
+<!-- docsnip: setup ctx context.Context; model agent.Model; store *agent.Journal; pend *agent.ApprovalPending; type RefundArgs struct{}; doRefund func(context.Context, RefundArgs) (string, error); keysByApprover agent.ApproverVerifierFor; signer audit.Signer -->
 ```go
-refund := agent.Func("refund", "refund the order", agent.Safety{}, doRefund,
+refund := agent.MustFunc("refund", "refund the order", doRefund,
 	agent.WithApproval(&agent.ApprovalPolicy{Need: 2, Approvers: []string{"ops", "finance", "risk"}}))
-a := agent.New(model, store, refund).WithApproverVerifiers(keysByApprover)
+a, err := agent.New(model, store, agent.WithTools(refund), agent.WithApproverVerifiers(keysByApprover))
+if err != nil {
+	panic(err)
+}
 
 // each approver, out of band, signs the paused call they were shown:
 sig, _ := signer.Sign(agent.ApprovalDecisionBytes(pend.Subject(), "finance", true))
@@ -775,7 +804,7 @@ you need:
 
 <!-- docsnip: setup ctx context.Context; a *agent.Agent; runID string; input string; func backOffAndRetry(); func fixToolWiring(); func alertOps() -->
 ```go
-_, err := a.Run(ctx, runID, input)
+_, err := a.Run(ctx, runID, agent.UserText(input))
 switch {
 case errors.Is(err, agent.ErrModel):       // any provider fault (HTTP status, decode, stream)
 	backOffAndRetry()
@@ -807,7 +836,7 @@ node runs as a `Step` and halts as one, named by its node key `node:<name>`, and
 clears it). Test for one
 with `agent.IsPause(err)`, read it with `agent.AsPause(err)` (its `Paused()` names the run to answer
 and the run to re-invoke), or match a kind with `errors.As`. The others are `*SagaAborted` (rolled
-back) and `*HaltTooYoung` (from `ResolveHaltRef`, when `WithMinHaltAge` has not elapsed yet). A
+back) and `*HaltTooYoung` (from `ResolveHalt`, when `WithMinHaltAge` has not elapsed yet). A
 paused or halted run is not a "failure" category; inspect the struct for its run, operation, or
 compensation details. A run cancelled with `agent.Cancel` returns `ErrRunCancelled` (with a
 `Result`), which carries no category: it is a terminal status, not a fault. Context cancellation
@@ -818,24 +847,31 @@ surfaces as the usual `context.Canceled` /
 ## Middleware & observability
 
 Two independent `func(Handler) Handler` chains at the two boundaries that matter: the model
-call (`Use`) and each tool call (`UseTool`). First added = outermost. Both are *mutating and
+call (`WithMiddleware`) and each tool call (`WithToolMiddleware`). First added = outermost. Both are *mutating and
 short-circuiting*: rewrite what goes in, transform what comes out, or return without calling
 `next`.
 
-<!-- docsnip: setup model agent.Model; store agent.Durable; tools []agent.Tool; import oteltrace "go.opentelemetry.io/otel/trace"; tracer oteltrace.Tracer -->
+<!-- docsnip: setup model agent.Model; store *agent.Journal; tools []agent.Tool; import oteltrace "go.opentelemetry.io/otel/trace"; tracer oteltrace.Tracer -->
 ```go
 var cost middleware.CostMeter
-a := agent.New(model, store, tools...).
-	WithTokenBudget(100_000). // per run, rebuilt from the journal on resume
-	Use(
+a, err := agent.New(model, store,
+	agent.WithTools(tools...),
+	agent.WithTokenBudget(100_000), // per run, rebuilt from the journal on resume
+	agent.WithMiddleware(
 		middleware.Retry(3, middleware.WithBackoff(200*time.Millisecond, 10*time.Second)),
 		middleware.Cost(&cost, middleware.Rates{InputPer1M: 3, OutputPer1M: 15}),
-	).
-	UseTool(middleware.ToolLog(log.Printf), middleware.ToolCache(), middleware.ToolRetry(3))
+	),
+	agent.WithToolMiddleware(middleware.ToolLog(log.Printf), middleware.ToolCache(), middleware.ToolRetry(3)),
+)
+if err != nil {
+	panic(err)
+}
 
 // opt-in OTel gen_ai.* spans (provider and model from agent.ModelInfoOf); the core has no OTel dependency:
-a.Use(trace.Model(tracer))
-a.UseTool(trace.Tool(tracer)) // execute_tool span per call; nests across the sub-agent boundary
+a, err = a.With(
+	agent.WithMiddleware(trace.Model(tracer)),
+	agent.WithToolMiddleware(trace.Tool(tracer)), // execute_tool span per call; nests across the sub-agent boundary
+)
 // ... after the run: cost.Snapshot() (answer and spend, in tokens and USD)
 ```
 
@@ -902,7 +938,7 @@ func RequireTag(tag string) agent.ToolMiddleware {
 
 Bide is a multi-module repo: a dependency-light **core** (`github.com/bide-ai/bide`,
 the loop, schema, middleware, model adapters, the `plan` flow builder, `audit`; deps are just `x/sync` and `x/text`) plus one
-module per heavy adapter (`mcp`, `trace`, `store/sqlite`, `store/postgres`, `govern/redislog`,
+module per heavy adapter (`mcptools`, `trace`, `store/sqlite`, `store/postgres`, `govern/redislog`,
 `govern/sqlitelog`, `govern/postgreslog`, `codec/gcf`) and the `govern` module, which carries gsm and stays v0.x until gsm
 is stable. Import an adapter and you pull its dependency tree; import only the core
 and you don't. A core-only consumer's external-module surface is 2, not 54. See
@@ -974,7 +1010,7 @@ New here? Start with **[Getting started](docs/getting-started.md)**, use the **[
 **Authoring**
 
 - **[Flows](docs/guides/flows.md)**: the `plan` typed flow builder. Author topology (`Step`/`Tool`/`Model`/`Switch`/`Join`/`LoopBack`) that lowers to the same journal, then prove a run followed it (`Conform`). Runnable: `examples/plan`.
-- **[Durable steps](docs/guides/durable-steps.md)**: compose your own durable work: `Step`, `Parallel`/`Task` fan-in, sagas (`RunSaga`), and durable timers (`Sleep`/`WaitUntil`). Runnable: `examples/parallel`.
+- **[Durable steps](docs/guides/durable-steps.md)**: compose your own durable work: `Step`, `Parallel`/`Task` fan-in, sagas (`WithSaga`), and durable timers (`Sleep`/`WaitUntil`). Runnable: `examples/parallel`.
 - **[Reliability](docs/guides/reliability.md)**: per-attempt timeouts, classified retry, hedged model calls, rate limiting, and cost tracking, and how they compose. Runnable: `examples/hedge`.
 - **[Signals and ambient](docs/guides/signals.md)**: external events into a run: durable timers and the `Waker`, human-in-the-loop (`Interrupt`/`AnswerInterrupt`), and durable signals (at-least-once in, exactly-once applied). Runnable: `examples/signals`, `examples/interrupt`.
 - **[Models](docs/guides/models.md)**: the Anthropic, OpenAI-compatible, and Gemini adapters: `WithBaseURL`, sampling, prompt caching, typed errors, and multimodal image input.

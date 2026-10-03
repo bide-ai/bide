@@ -25,7 +25,7 @@ The pre-1.0 API redesign ([design proposal](https://github.com/bide-ai/bide/pull
 
 - Done in v0.9.0: a storage port (`Store`) separated from the journal semantics bide owns (`Journal`), with the store contract stated as numbered requirements and a conformance suite every store must pass (P6a); a sealed pause contract (P10); typed model calls (P9); flow nodes lowered onto `agent.Step` (P5b); and versioned journal and proof formats (P6a, P11).
 - Done in v0.10.0: tool internals on a tool specification, with approval split from safety and tool timeouts (P12); construction under `Build`, with option scopes and `RunInfo` (P13); and one run entry point with per-run options that survive recovery, `Cancel`, `Status` and recovery dispatch, under transitional names (P14).
-- Next (P15 and P16): the consolidated rewrite that renames the transitional API to its 1.0 names and removes the old one.
+- In progress (P15, unreleased): the consolidated rewrite that gives the transitional API its final names and removes the old one (the `Durable` interface, the string entry points, the builder methods, the old `Tool` method set), with a migration tool (`internal/tools/migrate`) that rewrites code written against v0.10.0. P16 (docs and cleanup) follows.
 - Go 1.27 generic methods where a generic operation has a natural receiver.
 
 Changes that touch claims, the journal, leases, sagas or proofs are reviewed adversarially before they merge.

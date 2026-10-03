@@ -2,7 +2,7 @@
 
 The `plan` package is a typed flow builder: a Go-embedded builder you author as typed handles,
 compiled to the same journal-backed runtime as plain Go. It adds a way to *author*, never a way to
-*execute*. Every node lowers to a memoized `Do` step, so a flow inherits at-most-once side effects,
+*execute*. Every node lowers to a memoized journal step (`Journal.Step`), so a flow inherits at-most-once side effects,
 halt-on-ambiguity, and durable resume for free, and it can be checked against its declared shape
 (conformance).
 
@@ -18,7 +18,7 @@ is simpler and wins on every other axis.
 
 ## A flow, end to end
 
-<!-- docsnip: setup ctx context.Context; store agent.Durable; runID string; order Order; type Order struct{}; type Receipt struct{}; type Assessment struct{ Rush bool }; type Reservation struct{}; func classifyOrder(context.Context, Order) (Assessment, error); func reserveInventory(context.Context, Assessment) (Reservation, error); func finalizeReceipt(context.Context, Reservation) (Receipt, error); func declineReceipt(context.Context, Assessment) (Receipt, error); returns error -->
+<!-- docsnip: setup ctx context.Context; store *agent.Journal; runID string; order Order; type Order struct{}; type Receipt struct{}; type Assessment struct{ Rush bool }; type Reservation struct{}; func classifyOrder(context.Context, Order) (Assessment, error); func reserveInventory(context.Context, Assessment) (Reservation, error); func finalizeReceipt(context.Context, Reservation) (Receipt, error); func declineReceipt(context.Context, Assessment) (Receipt, error); returns error -->
 ```go
 import (
     "github.com/bide-ai/bide/agent"
@@ -46,8 +46,8 @@ if err != nil {
 out, err := flow.Run(ctx, store, runID, order)           // Order in, Receipt out
 ```
 
-`store` is any `agent.Durable` (an in-memory store for tests; `store/sqlite` or `store/postgres` for
-production). `runID` is the durable identity: re-running the same `runID` resumes from the journal.
+`store` is an `*agent.Journal` over any store (an in-memory store for tests; `store/sqlite` or
+`store/postgres` for production). `runID` is the durable identity: re-running the same `runID` resumes from the journal.
 
 ## The pieces
 
@@ -60,7 +60,7 @@ production). `runID` is the durable identity: re-running the same `runID` resume
     `ctx` is done (return `ctx.Err()` or `context.Cause(ctx)`). A body that returns an error records no
     result, so on resume a default step halts on its attempt marker (`*agent.OutcomeUnknown`) and a
     `ReadOnly`/`Idempotent` step runs again. A default step must not pause: a body that returns a pause
-    (an `Interrupt`, a pending approval) is `ErrConfig`, as for `agent.Step`; put the pause in a
+    (an `Interrupt`, a pending approval) is `ErrConfig`, as for `Journal.Step`; put the pause in a
     `ReadOnly` step of its own.
     `Join2`/`Join3` merge bodies take the same leading `ctx`. `When` predicates and `Switch` routing
     take no ctx: they must be pure functions of the value, since resume replays the recorded arm.
@@ -99,7 +99,7 @@ production). `runID` is the durable identity: re-running the same `runID` resume
 
 ## What you get, and the semantics to know
 
-Every node runs as an [`agent.Step`](durable-steps.md) under its node key, so it has exactly a Step's
+Every node runs as a [`Journal.Step`](durable-steps.md) under its node key, so it has exactly a Step's
 guarantees:
 
 - **At-most-once with halt, automatic.** Before a default node's body runs, its Step claims the attempt
@@ -114,11 +114,11 @@ guarantees:
   treats it as waiting, not failed. Once you know the node's true outcome, record it with
   `flow.ResolveHalt(ctx, store, halt.Ref(), agent.Outcome{Result: output})`, where `output` is the
   node's output value; the next `Run` continues past the node without running its body, feeding
-  `output` downstream. `flow.ResolveHalt` is `agent.ResolveHaltRef` after three checks against the
+  `output` downstream. `flow.ResolveHalt` is `agent.ResolveHalt` after three checks against the
   flow: the halt names a node of this flow, the run is a run of this flow (its recorded start names
   the flow and its recorded digest is the flow's), and `output` decodes as the node's output type (a
   resolution is final, so one the flow could not read would leave the run unable to continue). Like
-  `agent.ResolveHaltRef`, it resolves only a node that halted: one with a live attempt marker
+  `agent.ResolveHalt`, it resolves only a node that halted: one with a live attempt marker
   (`agent.ErrNoLiveAttempt` otherwise).
 - **A cancelled flow stops at its next node.** `agent.Cancel(ctx, j, runID, reason)` of a flow's run
   writes `run:cancelled`. A node reads it once it will run (after a side-effect node's claim is won,
@@ -165,14 +165,14 @@ guarantees:
   flow's name and its output, so `Recover` and `RecoverLoop` skip the run and `agent.IsComplete`
   reports it. A later drive with the run's input returns the recorded output with one point read,
   whatever the flow's topology is now.
-- **Steps inside a node are scoped to it.** An `agent.Step` (or `agent.Parallel` task) a node's body
+- **Steps inside a node are scoped to it.** A `Journal.Step` (or `Journal.Parallel` task) a node's body
   runs for the same run ID is recorded under the node's key, `node:<name>:step:<step>` (and
   `node:iter:<n>:<name>:step:<step>` in a loop body), so each loop iteration runs its own Steps
-  instead of replaying the first iteration's, and a Step name need be unique only within its node (and must not be empty: an empty name is `ErrConfig`, for every `agent.Step`). A
+  instead of replaying the first iteration's, and a Step name need be unique only within its node (and must not be empty: an empty name is `ErrConfig`, for every `Journal.Step`). A
   halt of such a Step names that key; resolve it with the halt's `Ref()`. Other pauses a body takes
   (`Interrupt`, `Await`, `Sleep`) are not scoped: give them names unique per iteration.
 - **Reserved keys.** `node:`, `switch:` and `flow:` are reserved prefixes, like `run:` and `attempt:`,
-  so an `agent.Step` a node's body runs cannot name one of the flow's records.
+  so a `Journal.Step` a node's body runs cannot name one of the flow's records.
 - **Conformance.** Because the flow is authored and the actual path is derived from the journal, a run
   can be proven to have followed the declared topology, at node-visitation granularity plus the
   journaled branch choice. `Conform` replays the run's routing from its recorded choices: a record of
@@ -258,11 +258,11 @@ Registration maps config names to typed Go blocks, capturing each block's I/O ty
 <!-- docsnip: setup type Order struct{}; type Receipt struct{}; type Assessment struct{ Rush bool }; type Reservation struct{}; func classifyOrder(context.Context, Order) (Assessment, error); func reserveInventory(context.Context, Assessment) (Reservation, error); func finalizeReceipt(context.Context, Reservation) (Receipt, error); func declineReceipt(context.Context, Assessment) (Receipt, error) -->
 ```go
 reg := plan.NewRegistry()
-plan.RegisterStep(reg, "classify", classifyOrder)              // infers Order -> Assessment
-plan.RegisterStep(reg, "reserve", reserveInventory)            // Assessment -> Reservation
-plan.RegisterStep(reg, "finalize", finalizeReceipt)            // Reservation -> Receipt
-plan.RegisterStep(reg, "decline", declineReceipt)              // Assessment -> Receipt
-plan.RegisterPredicate(reg, "rush", func(a Assessment) bool { return a.Rush })
+reg.RegisterStep("classify", classifyOrder)              // infers Order -> Assessment
+reg.RegisterStep("reserve", reserveInventory)            // Assessment -> Reservation
+reg.RegisterStep("finalize", finalizeReceipt)            // Reservation -> Receipt
+reg.RegisterStep("decline", declineReceipt)              // Assessment -> Receipt
+reg.RegisterPredicate("rush", func(a Assessment) bool { return a.Rush })
 ```
 
 - **`NewRegistry()`** returns a fresh, explicit, per-`Load` registry. There is no global mutable
@@ -339,7 +339,7 @@ The `merge` block:
 
 <!-- docsnip: setup reg *plan.Registry -->
 ```go
-plan.RegisterJoin2(reg, "mergeBlock", func(_ context.Context, a int, s string) (string, error) {
+reg.RegisterJoin2("mergeBlock", func(_ context.Context, a int, s string) (string, error) {
     return fmt.Sprintf("%s+%d", s, a), nil
 })
 ```

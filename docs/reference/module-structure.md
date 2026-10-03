@@ -23,7 +23,7 @@ only when that adapter is imported.
 |---|---|---|
 | **core** | `github.com/bide-ai/bide` | `x/sync`, `x/text` |
 | govern | `…/govern` | blackwell-systems/gsm |
-| mcp | `…/mcp` | modelcontextprotocol/go-sdk (+ jsonschema, segmentio, …) |
+| mcptools | `…/mcptools` | modelcontextprotocol/go-sdk (+ jsonschema, segmentio, …) |
 | trace | `…/trace` | go.opentelemetry.io/otel |
 | sqlite store | `…/store/sqlite` | modernc.org/sqlite |
 | postgres store | `…/store/postgres` | jackc/pgx |
@@ -50,7 +50,7 @@ core:
 |---|---|---|
 | approval example | `…/examples/approval` | imports `store/sqlite` |
 | plan example | `…/examples/plan` | imports `store/sqlite` |
-| mcp example | `…/examples/mcp` | imports `mcp` and the MCP go-sdk |
+| mcp example | `…/examples/mcp` | imports `mcptools` and the MCP go-sdk |
 | observability example | `…/examples/observability` | imports `trace` and the OpenTelemetry SDK |
 | governance examples | `…/examples/govern` | nine programs (`authority`, `compliance`, `compose`, `coordination`, `delegation`, `earned-authority`, `mesh`, `proof-carrying-run`, `quorum`) that import `govern` and gsm |
 | integration tests | `…/integration` | test-only: the core's tests that need `govern` and gsm (the many-agent convergence test, the run-certificate tests over real gsm policies, and the `bide-audit` CLI tests fed by quorum runs and convergence certificates) |
@@ -87,7 +87,7 @@ sets each library module's `require` on the core (and on `govern`, for the log b
 It tags each library module `<dir>/vX.Y.Z` at that commit, so a consumer's `go get` resolves every
 module from the proxy. Main keeps its `replace` directives, so development is unchanged.
 
-Published (tagged at every release): `govern`, `store/sqlite`, `store/postgres`, `mcp`, `trace`,
+Published (tagged at every release): `govern`, `store/sqlite`, `store/postgres`, `mcptools`, `trace`,
 `codec/gcf`, `govern/sqlitelog`, `govern/redislog`, `govern/postgreslog`.
 
 Repo-only (never tagged; they keep their `replace` directives): `examples/approval`,

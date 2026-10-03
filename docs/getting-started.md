@@ -7,7 +7,7 @@
 
 ## Install
 
-The core module is published: `go get github.com/bide-ai/bide@latest` gives you the `agent` package and everything else in the core (the model adapters, `plan`, `audit`). The adapter modules (`store/sqlite`, `store/postgres`, `mcp`, `trace`, `codec/gcf`, `govern`, and the `govern/*log` backends) are published from v0.8.0 on, tagged with the same version as the core, so you add the ones you use the same way, for example `go get github.com/bide-ai/bide/store/sqlite@latest`. To build against unreleased code instead, clone the repository and use its `go.work` (see [Building the repository](#building-the-repository)).
+The core module is published: `go get github.com/bide-ai/bide@latest` gives you the `agent` package and everything else in the core (the model adapters, `plan`, `audit`). The adapter modules (`store/sqlite`, `store/postgres`, `mcptools` (published as `mcp` up to v0.10.0), `trace`, `codec/gcf`, `govern`, and the `govern/*log` backends) are published from v0.8.0 on, tagged with the same version as the core, so you add the ones you use the same way, for example `go get github.com/bide-ai/bide/store/sqlite@latest`. To build against unreleased code instead, clone the repository and use its `go.work` (see [Building the repository](#building-the-repository)).
 
 ## Your first agent
 
@@ -36,25 +36,24 @@ func main() {
 		openai.WithBaseURL("https://openrouter.ai/api/v1"),
 		openai.WithModel("openai/gpt-4o-mini"),
 	)
-	weather := agent.Func("get_weather", "Get the weather for a city",
-		agent.Safety{ReadOnly: true},
+	weather := agent.MustFunc("get_weather", "Get the weather for a city",
 		func(_ context.Context, in WeatherArgs) (string, error) {
 			return "72F and clear in " + in.City, nil
-		})
+		}, agent.WithSafety(agent.Safety{ReadOnly: true}))
 
 	journal, err := agent.NewJournal(agent.NewMemStore())
 	if err != nil {
 		panic(err)
 	}
-	a, err := agent.Build(model, journal, agent.WithTools(weather))
+	a, err := agent.New(model, journal, agent.WithTools(weather))
 	if err != nil {
 		panic(err)
 	}
-	out, err := a.Run(context.Background(), "run-1", "Weather in SF?")
+	out, err := a.Run(context.Background(), "run-1", agent.UserText("Weather in SF?"))
 	if err != nil {
 		panic(err)
 	}
-	fmt.Println(out.Text())
+	fmt.Println(out.Message.Text())
 }
 ```
 
@@ -62,11 +61,11 @@ func main() {
 
 ## Configuring an agent
 
-`agent.Build(model, journal, opts...)` builds an agent from options, and checks them all when the agent is built: a nil model, a duplicate or reserved tool name, a tool name the agent's model refuses (when the model declares its rule, as the bundled adapters do), a tool whose input schema is not a JSON object, an m-of-n approval policy with no `WithApproverVerifiers`, a negative limit and every other configuration problem is an error wrapping `agent.ErrConfig`, returned by `Build`, never by the first run.
+`agent.New(model, journal, opts...)` builds an agent from options, and checks them all when the agent is built: a nil model, a duplicate or reserved tool name, a tool name the agent's model refuses (when the model declares its rule, as the bundled adapters do), a tool whose input schema is not a JSON object, an m-of-n approval policy with no `WithApproverVerifiers`, a negative limit and every other configuration problem is an error wrapping `agent.ErrConfig`, returned by `New`, never by the first run.
 
 <!-- docsnip: setup model agent.Model; journal *agent.Journal; weather agent.Tool -->
 ```go
-a, err := agent.Build(model, journal,
+a, err := agent.New(model, journal,
 	agent.WithTools(weather),
 	agent.WithSystemPrompt("You are a concise assistant."),
 	agent.WithMaxTurns(8),
@@ -76,9 +75,7 @@ a, err := agent.Build(model, journal,
 
 An agent built this way does not change. `a.With(opts...)` returns a configured copy (a stricter budget for one tenant, an extra tool for one route) and leaves `a` as it was, so both can run at once. For any setting the last value given wins; `WithSystemPrompt` and `WithSystemPromptFunc` share one slot, so the later of the two wins. Build a `[]agent.Option` to choose options conditionally.
 
-Some options apply at more than one scope, and each constructor's type says which: `WithMaxTurns`, for one, is an `agent.AgentRunOption`, a setting for an agent now and for a single run once the run API takes options; `WithSafety` is an `agent.SafetyOption`, which a tool and a `Step` both take; `WithMaxConcurrency` caps an agent's tool calls and `Parallel`'s tasks alike. An option passed where it does not apply does not compile.
-
-`Build` is a transitional name: the 1.0 release renames it `New`, and removes today's `agent.New(model, store, tools...)` and the builder methods (`a.WithMaxTurns(n)`, `a.Use(mw)`, and the rest), which still work until then and change the agent they are called on.
+Some options apply at more than one scope, and each constructor's type says which: `WithMaxTurns`, for one, is an `agent.AgentRunOption`, a setting for an agent and, passed to `Run`, for a single run; `WithSafety` is an `agent.SafetyOption`, which a tool and a `Step` both take; `WithMaxConcurrency` caps an agent's tool calls and `Parallel`'s tasks alike. An option passed where it does not apply does not compile.
 
 ## Run an example
 
@@ -99,7 +96,7 @@ See [examples/README.md](../examples/README.md) for the full list.
 
 ## Building the repository
 
-This is a multi-module workspace (`go.work`): the core is one module and adapters such as `trace`, `mcp`, `store/*`, `govern`, and the `govern/*log` backends are their own modules. To build or test everything with the module versions pinned in each `go.mod` rather than the workspace, set `GOWORK=off`:
+This is a multi-module workspace (`go.work`): the core is one module and adapters such as `trace`, `mcptools`, `store/*`, `govern`, and the `govern/*log` backends are their own modules. To build or test everything with the module versions pinned in each `go.mod` rather than the workspace, set `GOWORK=off`:
 
 ```
 GOWORK=off go build ./...

@@ -23,7 +23,7 @@ Statements, with the free identifiers from a setup (unused ones are fine in an e
 <!-- docsnip: setup ctx context.Context; a *agent.Agent; runID, input string -->
 
 ```go
-msg, err := a.Run(ctx, runID, input)
+res, err := a.Run(ctx, runID, agent.UserText(input))
 unused := 1
 ```
 
@@ -44,10 +44,10 @@ _ = mrand.IntN(o.Total)
 
 A statement block that returns, with a returns item:
 
-<!-- docsnip: setup ctx context.Context; store agent.Durable; returns (string, error) -->
+<!-- docsnip: setup ctx context.Context; store *agent.Journal; returns (string, error) -->
 
 ```go
-out, err := agent.Step(ctx, store, "run-1", "fetch",
+out, err := store.Step(ctx, "run-1", "fetch",
 	func(ctx context.Context) (string, error) { ... })
 if err != nil {
 	return "", err

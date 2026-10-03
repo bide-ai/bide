@@ -256,7 +256,7 @@ each call, its attempt markers (`attempt:tool:<id>` or `attempt:step:<name>`, th
 `attempt:retry:<n>:...`), the not-started keys `attempt:not-started:<claim>:<marker>`, and its
 result key. Drivers belong to processes: two drivers of one process share `pendingClaims` and the
 in-flight step calls (`shareFlight`), as two Journals over one store value do; drivers of different
-processes share only the store. Optionally, an operator resolving halts (`ResolveHaltRef`), and a
+processes share only the store. Optionally, an operator resolving halts (`ResolveHalt`), and a
 caller that issues a new call when it reads a failure (the model's own conversation).
 
 Every `Store.Insert` is one atomic step with three replies: `ok` (the first writer of the key wins,
@@ -270,8 +270,8 @@ Abstracted away: record encoding, salts, `Seq` and pagination (A2 is assumed); t
 failed reads (a failed read fails the drive and changes nothing, so it is a re-drive); lease
 internals (a leased driver holds the run's lease for its whole drive, and a crash releases it);
 wall-clock time (`WithMinHaltAge` is an assumption, below); a lease that expires under a live
-holder (two leased drivers exclude each other here; a holder that stalls past its TTL is model 3); the transitional `Durable` path
-(`durableStep`, `claimAttempt`); retry-safe Steps and tools, which write no marker.
+holder (two leased drivers exclude each other here; a holder that stalls past its TTL is model 3);
+retry-safe Steps and tools, which write no marker.
 
 Also modelled, each in its own configurations:
 
@@ -881,7 +881,7 @@ digest) run around it.
 | `Choose` (`CDo`, `CRoute`) | `chooseArmKeyed`: `switch:<over>` or `switch:iter:<i>:<over>` |
 | `LoopH`, `AfterH`, `RunS`, `AfterS`, `ChooseS`, `AfterChooseS` | `runLoop`, with its `lp.max` bound (a runaway-loop error) |
 | `Complete` | `journalhook.Complete`: `run:complete` with the terminal's output |
-| `RPick`, `RWrite` | `Flow.ResolveHalt`: a node of this flow with a live attempt and no result, in a run of this flow and digest (`checkRunOfFlow`), then `ResolveHaltRef` |
+| `RPick`, `RWrite` | `Flow.ResolveHalt`: a node of this flow with a live attempt and no result, in a run of this flow and digest (`checkRunOfFlow`), then `agent.ResolveHalt` |
 
 | Property | Kind | Statement |
 |---|---|---|
@@ -1012,11 +1012,11 @@ succeeds or its process crashes.
 - **The saga's rollback** (`rollbackRun`): the calls in reverse order. A failed step is skipped
   (an unknown outcome is listed); a side effect with a live marker and no result halts it; a
   result is compensated, as a memoized step whose record can fail; a retry-safe step with no
-  result is re-run through its middleware chain, in a later `RunSaga`'s context, and its result
+  result is re-run through its middleware chain, in a later saga drive's context, and its result
   compensated; only a re-run that reached the tool has a result. A re-run with an unknown
   outcome, or refused by the guard (the delegation's grant expired, so every later re-run would
   be refused too), is listed and the walk goes on; any other error, or a failed write, stops the
-  rollback, and a later `RunSaga` resumes it.
+  rollback, and a later drive of the saga resumes it.
 - **Faults**, each with a budget: a store write that errors (committed or not, A3), a process
   crash (every goroutine, leaked ones included, and `pendingClaims`), a run cancellation, a tool
   deadline, a guard refusal (a delegated grant expired; once it has refused it may refuse every
@@ -1048,7 +1048,7 @@ region in the Go code, which modelsync checks.
 | `ICall` | T `t.Call` and the tool's own outcome (`toolRunning`, `toolSucceeded`, `toolFailed`, `toolUnknown` in `call.out`), through `callCounted`, whose `countOut` runs on return |
 | `LStart` | L the goroutine's `gctx.Err()` check and `claimNextAttempt` (side effects only: `!retriableOnResume`) |
 | `LPre` | L `recordFresh`'s pre-call check (`claimed && ctxDone(sctx)`); T `Agent.toolCallFor` and the fresh `st`, `began`, `out`, `earlier` of the chain |
-| `LMw`, `LWait` | M the `ToolMiddleware` chain built by `Agent.UseTool`, as the `MW` sets allow |
+| `LMw`, `LWait` | M the `ToolMiddleware` chain built by `WithToolMiddleware`, as the `MW` sets allow |
 | `LClose` | T `callTool` (the timeout and `late`), `closeCall`, the seal (`began` CAS to `beganSealed`), `running` (`tracked` and `countRunning`, whatever the chain's state, T6) and the unknown-outcome rules after `h` returns, with `Agent.unprovenFailure`; L `notCalled`, the `late` rule, `argsJournalError`, `sagaStepMayHaveBegun`, `StepSagaFail` with `OutcomeUnknown`; in a rollback re-run (`rbm`), S the `state != callReached` check |
 | `LRec`, `LNS` | L `recordFresh`'s insert (S `a.store.Do` of `ToolResultStep` in a re-run), `recordNotStarted` |
 | `LRet` | L the goroutine's deferred classification (held or cancelling the errgroup) |
@@ -1193,7 +1193,7 @@ Found by the model's extension to retry-safe steps and the rollback's re-run, in
   no invocation begins the tool once its chain has returned.
 - **The rollback's re-run had no end** (`regress/rollback-no-end`, `NoRbUnknown`,
   `RollbackEnds`). `rollbackRun` stopped on any error of the re-run, so a result check that
-  rejects every success left the rollback returning an error on every `RunSaga`, with no
+  rejects every success left the rollback returning an error on every drive of the saga, with no
   `SagaAborted` and no halt to resolve. The fix: a re-run whose outcome is unknown is listed, and
   the rollback goes on; a re-run answered without reaching the tool (a cache) is such an outcome.
 
@@ -1223,7 +1223,7 @@ errored claim leaving the run halted.
   `Cancel`, D1 in `docs/design/api-v1.md`). Each is its own key, first writer wins, and the model
   keeps them in journal order (A2).
 - **Drives.** A leased `Run` (`Lease` around `Agent.Run`, the primary), a plain `Run` (no lease),
-  and the `resume` a recovery pass calls (the model's resume is `Run` or `RunSaga`). A drive loads
+  and the `resume` a recovery pass calls (the model's resume is `Run`, as a saga or not). A drive loads
   the run, returns a finished run's end, halts on a live attempt with no result (the resume gate),
   pauses on a pending approval, claims and calls up to two side effects, records each result, and
   writes `run:complete`, or, for a saga whose call failed, rolls back and writes `run:aborted`.
@@ -1305,14 +1305,14 @@ and their resumers (`ResumeTyped`), and image input.
 | `DTurn` | `Agent.runLoop`'s turn boundary: `cancelSeen` (one `Get` of `run:cancelled`, or of `run:cancel-requested` on a saga) once a turn's calls have run since the `Load` (`runPlan.checkTurn`), `leaveCancelled`, and the turn limit (`runPlan.maxTurns`) |
 | `DClaim` | `claimNextAttempt` / `Journal.claim` (model 1), under the drive's context; the journaled tool filter at dispatch (`runPlan.allows`, `refuseFiltered`: the call's error result recorded) |
 | `DPost` | `postClaim`: `cancelSeen` once the claim is won, before the call, and `recordNotStarted`; the turn's calls not yet claimed do not start (`cancelled`) |
-| `DCall` | `recordFresh`: the `sctx.Err()` check, `t.Call` |
-| `DRecord` | `recordFresh`'s insert of the result (`putRecord` under `context.WithoutCancel`) |
+| `DCall` | `Journal.doFresh` (the tool call's result step): the `sctx.Err()` check, `t.Call` |
+| `DRecord` | `Journal.doFresh`'s insert of the result (under `context.WithoutCancel`) |
 | `DRollback`, `DAbort` | `Agent.rollback`: `rollbackRun`, then `writeEnd` of `run:aborted`, or of `run:cancelled` after a rollback a cancellation asked for (`cancelTrip`, L4) or a failure's rollback of a saga whose rollback request exists (one `Get` of `run:cancel-requested`: `AbortKind`, #138 review), or, for a saga sub-run, whose tree root was cancelled (`rootCancelRecord`, from the root's store; this model has one run, and model 11 does not tell the end markers apart, so Go tests cover it); `runSagaWithTelemetry` reads the request before a recorded failure (`DOpen`'s order) |
 | `DComplete` | the loop's terminal: `putRecord` of `run:complete` |
 | `DVerdict` | `writeEnd`'s read-back after `run:complete` (and after `Agent.rollback`'s marker): one `Get` per end marker the run can hold beside it (`endOthers`), the lowest `Seq` first; `endedErr`, `endVerdict` |
 | `DRel` | `Lease`'s deferred `ReleaseLease` |
 | `PList`, `PNext`, `PSlot`, `PWait` | `RecoverLoop`'s `pass` and `every`: `lister.Runs(ctx, recoverFilter)` in the full pass (process `"pass"`), `lister.Runs(ctx, lapsedFilter)` in the lapsed loop (process `"tkp"`, `PassRule = "split"`; its slots are `WithRecoverLapsedConcurrency`'s, the `"tko"` driver); `recoverable`; `PNext`'s `InFlight` is the `inFlight` check before the slot wait; `PSlot` is the slot wait, then the in-flight re-check and mark under the lock (the model does not re-check: a run the other loop took meanwhile reaches `DIdle` and is refused by the lease, where the code skips it before acquiring); the ticker (`Recover`: one pass) |
-| `OPick`, `OLease`, `OWrite`, `ORel` | `ResolveHaltRef` / `resolveHalt` with `checkNoLiveDriver`'s lease of the halted run's tree root (`treeRootID`); `Approve` |
+| `OPick`, `OLease`, `OWrite`, `ORel` | `ResolveHalt` / `resolveHalt` with `checkNoLiveDriver`'s lease of the halted run's tree root (`treeRootID`); `Approve` |
 | `CGet`, `CIns`, `CRead`, `CReq` | `Cancel` (D1): the end-marker `Get`s (a run already cancelled is `nil`, a run otherwise over `ErrRunEnded`: `cancelVerdict`, a maintainer decision) and `RecordedStart` (L4: none is `ErrNotStarted`), `writeEnd` of `run:cancelled` and its read-back (L3), and a saga's rollback request `run:cancel-requested` (L4). `Cancel`'s reads are not one atomic step (a drive can write `run:complete` between them): the model's `CGet` is one step, and the read-back after the write is what settles the run's end, which `VerdictAgreement` checks |
 | `SPick`, `SStart`, `SGet` | `Status` (D8): one `Load` (`Journal.Records`), `run:start`, then the first end marker in it (`firstEnd`) |
 | `Tick` | wall-clock time: `driveWithRenew`'s renewal, lease expiry, `RecoverLoop`'s `time.Ticker` |
@@ -1721,7 +1721,7 @@ which are models 1 and 9.
 | `DgUng` | A `Call` with no grant bound: the `audit:delegation:ungranted` marker |
 | `DgMint` | A `Call`'s mint: the bound grant's expiry, `t.narrow`, the subject, `CheckAttenuation`, the child's expiry |
 | `DgRec` | A `SignGrant`, `RecordGrant` (a failure is Unrecorded) |
-| `DgRun`, `DgRet` | A the rebound identity and `grantCarrier` (`delegated`) through `bindDelegated`, which also clears the rollback grants (`withRollbackScope`); U `subAgentTool.Call` (`RunSaga` in a saga, `Run` otherwise; `subRunUnfinished`) |
+| `DgRun`, `DgRet` | A the rebound identity and `grantCarrier` (`delegated`) through `bindDelegated`, which also clears the rollback grants (`withRollbackScope`); U `subAgentTool.Call` (the sub-agent's `drive`, as a saga in a saga; `subRunUnfinished`) |
 | `SStart` | K `checkRunID`; R `derivedRunID`, `stepRunName`, `withRunContext`'s `sagaTree`; `linkSubRun`'s other-store refusal (`sameStore`) |
 | `SLink` | R `linkSubRun`'s `subRunLinkStep` write; L `Agent.runLoop`'s call of it |
 | `DClass` | L the goroutine's deferred hold (Unrecorded, `halted` for a joined halt or lost outcome) and the classification through `subRunUnfinished`; U `subRunUnfinished`; H `Unrecorded` |
@@ -1736,7 +1736,7 @@ which are models 1 and 9.
 | `ECx` | E `cancelSeen` and `rootCancelled` (the tree root's `run:cancelled` and rollback request, for a sub-run: `runPlan.root`, `treeRootID`, read from the root's store, `runPlan.rootStore`), called by `postClaim` once a claim is won; `recordNotStarted` (#138 review) |
 | `Idle`, `Back`, `Tick`, `WrongAuth`, `FixAuth`, `Crash`, `CancelRoot` | the root's drives and the environment (`CancelRoot`: P14's `Cancel` of the root) |
 | `EMark`, `EFire`, `ERes` | a side effect's claim, call and outcome (models 1 and 9) |
-| `SRun`, `SRet`, `SWrite`, `SLateRet` | the tool's own code: `Run` or `RunSaga` of its `SubRunFor` ID, and its own write |
+| `SRun`, `SRet`, `SWrite`, `SLateRet` | the tool's own code: `Run` (a saga or not) of its `SubRunFor` ID, and its own write |
 
 ### Properties
 

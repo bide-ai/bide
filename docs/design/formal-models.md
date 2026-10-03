@@ -573,12 +573,11 @@ multi-process paragraph below covers the merge.
 - nightly, the multi-process HA harness (`TestHA_MultiProcessKillAndRestart`,
   `TestHA_MultiProcessStallPastTTL`).
 
-One caveat on the producers. The DST and reference-model suites crash through a `Durable` wrapper
-that intercepts `Do` (`crashStore` in `agent/dst_test.go`, `rmCrashStore` in
-`agent/refmodel_test.go`). `journalOf` returns nil for such a wrapper, so those runs take the
-transitional `Durable` path (`ClaimAttempt` without a Journal, `claimAttempt`, `probe`,
-`durableStep`), which has no remembered claims. Their traces validate that
-path, not the Journal's. See open question 10.
+The DST and reference-model suites crash at the storage port: `crashStore` in `agent/dst_test.go`
+and `rmCrashStore` in `agent/refmodel_test.go` are `Store` wrappers that fail an `Insert`, under a
+Journal, so their traces validate the Journal's claim rules. (Until P15 they wrapped the
+transitional `Durable` interface and drove its separate path, which P15 removed; see open
+question 10.)
 
 **How TLC checks a trace.** A trace spec, `ClaimsTrace.tla`, extends the model. It reads the
 trace with `ndJsonDeserialize` (CommunityModules `Json`), taking the file path from the
@@ -826,9 +825,7 @@ here.
 9. **Who reviews models?** Recommendation: the model-code map is reviewed by a second person on
    every change, as the adversarial review already requires for the code; a model change without
    that review does not merge.
-10. **Which claim implementation do the DST and reference-model traces validate?** Their crash
-    wrappers intercept `Do`, so they drive the transitional `Durable` path, not the Journal's
-    (section 6.1). Recommendation: move both suites' crash injection to the storage port, as #92
-    did for chaos (`crashingStore` under a Journal), so they exercise the rules the model states;
-    keep one `Durable`-path suite until P15 removes that path, and validate its traces against a
-    `DurablePath` variant of the model (no remembered claims) rather than leave it unchecked.
+10. **Which claim implementation do the DST and reference-model traces validate?** Resolved by
+    P15: both suites' crash injection moved to the storage port (`Store` wrappers under a
+    Journal), as #92 did for chaos, and the transitional `Durable` path is removed, so their traces
+    validate the Journal's rules (section 6.1).

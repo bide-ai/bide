@@ -29,21 +29,21 @@ form of a `Waker` trigger:
   run waits (buffered).
 - **Sleep/Waker (time):** wake at a deadline. A signal is a wake on an *event*, with data.
 
-All three ride the same substrate: a named durable step (`Durable.Do`, at-most-once by
-name) plus `History` replay, and a typed pause error that `Run` propagates. No new
+All three ride the same substrate: a named journal record (written through the `Journal`,
+at-most-once by name) plus journal replay, and a typed pause error that `Run` propagates. No new
 persistence model.
 
 ## API
 
-The signatures below match the shipped code (`agent/pause.go` for `Await`, `Signal`, and
-`Awaiting`; `agent/awaitfor.go` for `AwaitFor`; `agent/channel.go` for the ordered channel).
+The signatures below match the shipped code (`agent/pause.go` for `Await`, `Journal.Signal`, and
+`SignalPending`; `agent/awaitfor.go` for `AwaitFor`; `agent/channel.go` for the ordered channel).
 
 ### Consume (run-side, inside a retry-safe tool)
 
 <!-- docsnip: api agent -->
 ```go
 // Await blocks the run until a single-shot signal `name` is delivered, then returns its
-// payload. Until then it returns *Awaiting and the run pauses durably. On resume it returns
+// payload. Until then it returns *SignalPending and the run pauses durably. On resume it returns
 // the journaled payload (deterministic replay). Retry-safe-tool only, like Interrupt/Sleep.
 func Await[T any](ctx context.Context, name string) (T, error)
 
@@ -53,7 +53,7 @@ func Await[T any](ctx context.Context, name string) (T, error)
 func AwaitFor[T any](ctx context.Context, name string, d time.Duration) (T, bool, error)
 
 // Receive returns the oldest not-yet-acked message on an ordered channel, in delivery order.
-// Pauses (*Awaiting) when the channel is drained. The run must Ack(channel, msg.Key) after it
+// Pauses (*SignalPending) when the channel is drained. The run must Ack(channel, msg.Key) after it
 // durably handles the message; until then Receive keeps returning the SAME message, which is
 // what makes streaming consumption replay-safe and exactly-once (Receive writes nothing; only
 // Ack writes). Call from a retry-safe tool, like Await.
@@ -62,7 +62,7 @@ type Received[T any] struct {
 	Payload T
 }
 func Receive[T any](ctx context.Context, channel string) (Received[T], error)
-func Ack(ctx context.Context, d Durable, runID, channel, key string) error
+func Ack(ctx context.Context, d *Journal, runID, channel, key string) error
 ```
 
 ### Deliver (external, at-most-once intake)
@@ -72,16 +72,16 @@ func Ack(ctx context.Context, d Durable, runID, channel, key string) error
 // Signal delivers a single-shot signal to a run, journaled at-most-once by name: a redelivery
 // (a retried webhook) is a no-op and the first payload wins. Safe from any process; the
 // store's PK / ON CONFLICT is the cross-process dedup. After delivering, wake the run.
-func Signal[T any](ctx context.Context, d Durable, runID, name string, payload T) error
+func (j *Journal) Signal[T any](ctx context.Context, runID, name string, payload T) error
 
-// Send appends a message to an ordered channel for a run, deduped by key: a redelivery with
+// Enqueue appends a message to an ordered channel for a run, deduped by key: a redelivery with
 // the same (runID, channel, key) is a no-op and the first payload wins. At-most-once per key.
-func Send[T any](ctx context.Context, d Durable, runID, channel, key string, payload T) error
+func (j *Journal) Enqueue[T any](ctx context.Context, runID, channel, key string, payload T) error
 ```
 
 ### Pause error (parallels `*InterruptPending` / `*TimerPending`)
 
-First shipped as `Awaiting`; now `SignalPending` (`Awaiting` is a transitional alias), one of the five kinds of the sealed `agent.Pause`.
+First shipped as `Awaiting`; now `SignalPending` (the `Awaiting` alias is removed), one of the five kinds of the sealed `agent.Pause`.
 
 <!-- docsnip: api agent -->
 ```go
@@ -98,32 +98,32 @@ func (e *SignalPending) Error() string // "run <id> awaiting signal <name>"
 ## Journal semantics
 
 - New kind: `StepSignal StepKind = "signal"` (in `store.go`).
-- **Single-shot delivery:** `Do(runID, "signal:"+name, ...)` records `Record{Kind:
-  StepSignal, Result: payload}`. Idempotent by name. `Await` scans `History` for
-  `"signal:"+name`: present decodes and returns; absent returns `*Awaiting`.
+- **Single-shot delivery:** `Journal.Signal` writes `"signal:"+name`, recording `Record{Kind:
+  StepSignal, Result: payload}`. Idempotent by name. `Await` scans the run's records for
+  `"signal:"+name`: present decodes and returns; absent returns `*SignalPending`.
 - **AwaitFor:** journals a companion deadline (`await-timeout:<name>`, the same pattern as
   `Sleep`'s wake time), then resolves the race through one more named step,
   `await-resolved:<name>`: if the signal is present it records `(v, true)`; else if the
   deadline has passed it records `(zero, false)`; else it records nothing, schedules the
-  waker for the top-level run, and returns `*Awaiting`. Once the outcome is recorded every
+  waker for the top-level run, and returns `*SignalPending`. Once the outcome is recorded every
   later entry returns it, so a signal delivered after the timeout won cannot flip a re-run
   tool to the signal branch.
-- **Ordered channel (shipped, explicit-Ack):** `Send` records
+- **Ordered channel (shipped, explicit-Ack):** `Journal.Enqueue` (first shipped as `Send`) records
   `"chan:"+len(channel)+":"+channel+":"+key` (`StepSignal`), deduped by that name so a
   redelivery is a no-op. `Ack` records `"chanack:"+len(channel)+":"+channel+":"+key`
   (`StepValue`). The channel name's byte length makes the boundary exact when names contain
-  `:`, so no two (channel, key) pairs share a step. `Receive` scans `History`, collects the
+  `:`, so no two (channel, key) pairs share a step. `Receive` scans the run's records, collects the
   acked keys, and returns the first message under its channel's prefix (in delivery order)
   whose ack is absent. `Receive` writes nothing; only `Ack` writes, so on a tool re-run `Receive`
   returns the same oldest-unacked message deterministically, and the run consumes exactly once
   by looping Receive, durably handle, Ack. This is replay-safe without any per-execution cursor
-  state, so it needs no change to the `Durable` interface.
-- Delivery and consumption both go through `Durable.Do`, so both are at-most-once and
+  state, so it needs no change to the `Store` port.
+- Delivery and consumption both go through the Journal's named records, so both are at-most-once and
   replay-deterministic by construction.
 
 ## Waking the run (composition with Waker)
 
-An `Awaiting` run is paused exactly like a `Sleeping` one, so delivery must trigger a
+A run paused on `SignalPending` is paused exactly like one on `TimerPending`, so delivery must trigger a
 resume. Reuse the `Waker` seam: after journaling, the deliverer calls
 `w.Schedule(runID, "signal:"+name, now())` and the existing `MemWaker.Fire` resumes the run
 on its next tick; or the deployment resumes `Run(runID)` directly (webhook handler ->
@@ -135,12 +135,12 @@ pending awaits by scanning runs, exactly as it does for timers.
 
 ## Ordering and concurrency
 
-- Single-shot and keyed delivery need only `Durable.Do` (the store's PK / ON CONFLICT gives
+- Single-shot and keyed delivery need only the Journal's insert-if-absent (the store's PK / ON CONFLICT gives
   cross-process dedup). Ship this first.
 - Ordered channels need monotonic positions under concurrent delivery. Two options:
-  (a) derive order from `History` insertion order and dedup by idempotency key, adding no
+  (a) derive order from journal insertion order and dedup by idempotency key, adding no
   store API; (b) add an atomic next-seq to the store. Prefer (a) first, to avoid widening
-  the `Durable` interface.
+  the store port.
 
 ## Retry-safety
 
@@ -150,10 +150,10 @@ await resolves, so everything before the `Await` call must be safe to repeat.
 
 ## Rollout
 
-1. **Single-shot `Signal`/`Await`** (+ `*Awaiting`, `StepSignal`): shipped. Mirrors
-   `Interrupt`/`Resume`, reuses `Do`.
+1. **Single-shot `Signal`/`Await`** (+ `*Awaiting`, now `*SignalPending`, and `StepSignal`): shipped.
+   Mirrors `Interrupt`/`Resume`, reuses the named journal record.
 2. **`AwaitFor`** (Await plus durable timeout): shipped. The ambient "wait or give up" case.
-3. **Ordered channels `Send`/`Receive`/`Ack`**: shipped, explicit-Ack design (above).
+3. **Ordered channels `Send` (now `Journal.Enqueue`)/`Receive`/`Ack`**: shipped, explicit-Ack design (above).
 4. **Push-`Notifier`**: dropped. Deliver-then-wake via the existing `Waker` covers it.
 
 ## Tests
@@ -162,7 +162,7 @@ await resolves, so everything before the `Await` call must be safe to repeat.
   the run resumes deterministically (mirror `dst_test.go`).
 - **Duplicate delivery** (same name or key) applies once.
 - **AwaitFor** races: signal-first and timeout-first, each across a crash.
-- **Ordered channel:** interleaved `Send`/`Receive`, consume-once, order preserved, resume
+- **Ordered channel:** interleaved `Enqueue`/`Receive`, consume-once, order preserved, resume
   mid-stream.
 
 ## Positioning

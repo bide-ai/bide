@@ -41,7 +41,11 @@ For command-style bots with no memory, key the run itself by the event id:
 ```go
 // Slack sends a stable event_id / client_msg_id; the X-Slack-Retry-Num header marks redelivery.
 runID := "msg/" + channelID + "/" + eventID
-reply, err := a.Run(ctx, runID, text) // redelivery hits the same runID and replays the journal
+res, err := a.Run(ctx, runID, agent.UserText(text))
+var reply agent.Message
+if res != nil {
+	reply = res.Message
+} // redelivery hits the same runID and replays the journal
 ```
 
 A redelivered event resumes the recorded run rather than re-calling the model and re-firing tools.
@@ -58,10 +62,11 @@ sess, err := a.Session(ctx, conversationID)
 if err != nil {
 	return "", err
 }
-msg, err := sess.SendOnce(ctx, eventID, text)
+res, err := sess.SendOnce(ctx, eventID, agent.UserText(text))
 if err != nil {
 	return "", err // a pause/error: the redelivered event resumes the same turn
 }
+msg := res.Message
 return msg.Text(), nil
 ```
 
@@ -85,9 +90,8 @@ holding the handle, so other callers are not blocked behind its compensators: wh
 is in progress, any other caller gets `ErrTurnContended`, another worker or a second caller on the
 same handle alike (and the `Send` itself gets it if another worker is driving the turn). Over a
 store with no `Leaser`, the handle stays held across the rollback, so a second caller on the same
-handle waits for it. `SendMessage` and `SendMessageOnce` (the
-1.0 `Send` and `SendOnce`, under transitional names) take a `Message` and run options, journaled
-with the turn's run, and return a `Result`. Several workers may hold handles on one conversation:
+handle waits for it. `Send` and `SendOnce` take a `Message` and run
+options, journaled with the turn's run, and return a `Result`. Several workers may hold handles on one conversation:
 every message is recorded once, and a handle that is behind catches up from the journal before
 answering (or before refusing a message because another message's turn looks open to it), so each
 new turn sees the conversation as it stands.
@@ -109,7 +113,11 @@ resumes the turn.
 
 <!-- docsnip: setup ctx context.Context; sess *agent.Session; eventID, text string; returns (string, error) -->
 ```go
-msg, err := sess.SendOnce(ctx, eventID, text)
+res, err := sess.SendOnce(ctx, eventID, agent.UserText(text))
+var msg agent.Message
+if res != nil {
+	msg = res.Message
+}
 if errors.Is(err, agent.ErrTurnContended) {
 	return "", err // another worker is answering this message: let the provider redeliver it
 }

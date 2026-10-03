@@ -100,33 +100,44 @@ it, and re-anchor under the new version rather than comparing with an older head
 
 The primitives above are pull-based (commit when you ask). `AuditedStore` makes anchoring
 automatic and push-based, and it's the piece that operationalizes the security model's "anchor
-out-of-band" requirement. Wrap any `Durable` and every durable step is signed and published to
+out-of-band" requirement. Wrap any `Store` and every journal write is signed and published to
 a separate trust domain with no changes to the agent loop:
 
-<!-- docsnip: setup ctx context.Context; journal agent.Durable; priv ed25519.PrivateKey; model agent.Model; tools []agent.Tool; runID string; input string; returns error -->
+<!-- docsnip: setup ctx context.Context; inner agent.Store; priv ed25519.PrivateKey; model agent.Model; tools []agent.Tool; runID string; input string; returns error -->
 ```go
 anchor := audit.NewMemAnchorLog()                                                // your external transparency log
-store, err := audit.NewAuditedStore(journal, audit.Ed25519Signer{Priv: priv}, anchor) // drop-in Durable
+store, err := audit.NewAuditedStore(inner, audit.Ed25519Signer{Priv: priv}, anchor) // a drop-in Store
 if err != nil {
 	return err // a nil store or anchor, or a signer without a usable key (agent.ErrConfig)
 }
-agent.New(model, store, tools...).Run(ctx, runID, input) // each step → a signed STH, published
+j, err := agent.NewJournal(store)
+if err != nil {
+	return err
+}
+ag, err := agent.New(model, j, agent.WithTools(tools...))
+if err != nil {
+	return err
+}
+ag.Run(ctx, runID, agent.UserText(input)) // each step → a signed STH, published
 ```
 
 The signer is any `audit.Signer`: `Ed25519Signer`, `MLDSASigner`, or `HybridSigner` (see
 [Signature schemes](#signature-schemes-and-post-quantum-anchoring)).
 
-On every journal growth `AuditedStore` commits the run's Merkle root, signs an STH, and calls
-`Anchor.Publish`. A memoized replay (resume) does **not** re-anchor an already anchored head.
+On every journal growth (each `Insert` that stores an entry) `AuditedStore` commits the run's
+Merkle root, signs an STH, and calls `Anchor.Publish`. An insert that finds the entry already
+stored (another writer's, or a memoized replay) grows nothing and anchors nothing, and the journal
+header is anchored together with the run's first record, so a run's anchored heads never stop at
+its header.
 Anchoring is serialized per run, so the heads one `AuditedStore` publishes for a run only ever grow,
 even when parallel tool calls land at once. Anchoring is a **side channel**: a `Publish` failure never
 fails the durable step (the write already succeeded; failing it could wrongly retry a
 non-idempotent step), so publish errors go to an optional `OnError` hook instead, and the run's next
-step retries the unanchored head. When two processes anchor the same run (around a lease handoff),
+write anchors a head covering the unanchored entries (a replay that writes nothing does not). When two processes anchor the same run (around a lease handoff),
 a smaller head can reach the anchor after a larger one; both are valid, so monitors compare a run's
 heads by size, not by arrival.
 
-`AuditedStore` implements `Unwrap() Durable`, so it keeps every optional capability of the store
+`AuditedStore` implements `Unwrap() Store`, so it keeps every optional capability of the store
 it wraps and adds none: `agent.Lease`, `agent.Recover` and `agent.RecoverLoop` find the inner
 store's `Leaser` and `Lister` through it (see `agent.Capability`). Leases are not journaled, so
 acquiring, renewing or releasing one anchors nothing.
@@ -148,11 +159,15 @@ final answer). This closes the seam where durability lived in the journal but th
 event feed was ephemeral: now "stream for the UI" and "commit a provable audit trail" are one
 pass.
 
-<!-- docsnip: setup signer audit.Signer; agentStream *agent.AgentStream; render func(agent.AgentEvent); approvalIndex int; approvalEvent agent.AgentEvent -->
+<!-- docsnip: setup signer audit.Signer; agentStream *agent.RunStream; render func(agent.RunEvent); approvalIndex int; approvalEvent agent.RunEvent -->
 ```go
 log := audit.NewEventLog()
 // Record drains the stream, commits every event, and forwards it live to the UI:
-msg, err := audit.Record(log, agentStream, func(e agent.AgentEvent) { render(e) })
+res, err := audit.RecordStream(log, agentStream, func(e agent.RunEvent) { render(e) })
+var msg agent.Message
+if res != nil {
+	msg = res.Message
+}
 
 root := log.Root()                  // RFC 6962 commitment over what was observed, in order
 sig, _ := audit.Sign(root, signer) // anchor it out-of-band, same caveat as the journal
@@ -165,7 +180,7 @@ err = audit.VerifyEventInclusion(root, approvalEvent, proof) // nil means includ
 The event log gets the **full transparency-log surface**, reusing the journal's STH and
 consistency machinery unchanged:
 
-<!-- docsnip: setup log, laterLog *audit.EventLog; signer audit.Signer; v audit.Verifier; runID string; event agent.AgentEvent; proof audit.EventInclusion; sth1, sth2 audit.SignedTreeHead -->
+<!-- docsnip: setup log, laterLog *audit.EventLog; signer audit.Signer; v audit.Verifier; runID string; event agent.RunEvent; proof audit.EventInclusion; sth1, sth2 audit.SignedTreeHead -->
 ```go
 sth, _ := audit.SignTreeHead(log.TreeHead(runID, time.Now().UnixNano()), signer) // kind "events", run, root, size, time
 sth.Verify(v)                                                                    // anchored commitment (nil = authentic)
@@ -187,7 +202,7 @@ even shifts between a fresh run and its own replay (live-only events like token 
 For the durable audit artifact, don't store a second log: **derive it from the journal**, which
 is already the crash-safe, at-most-once substrate.
 
-<!-- docsnip: setup ctx context.Context; store agent.Durable; runID string; signer audit.Signer; ts int64 -->
+<!-- docsnip: setup ctx context.Context; store *agent.Journal; runID string; signer audit.Signer; ts int64 -->
 ```go
 log, _ := audit.EventLogFromJournal(ctx, store, runID)          // projection of the DURABLE journal
 sth, _ := audit.SignTreeHead(log.TreeHead(runID, ts), signer) // anchor THIS: crash-durable, resume-stable
@@ -209,7 +224,7 @@ trail often has to outlive it (keep for years, on WORM storage, in a different t
 `EventStore` is the bring-your-own port for that: append canonical event leaves to a backend
 you run, on its own retention lifecycle, and rebuild an `EventLog` from it later.
 
-<!-- docsnip: setup ctx context.Context; evStore audit.EventStore; journal agent.Durable; runID string; signer audit.Signer; ts int64; i int -->
+<!-- docsnip: setup ctx context.Context; evStore audit.EventStore; journal *agent.Journal; runID string; signer audit.Signer; ts int64; i int -->
 ```go
 // Mirror the run's durable trail into your store (idempotent: call it whenever).
 audit.PersistJournal(ctx, evStore, journal, runID)
@@ -269,7 +284,7 @@ disclosed record as the bytes the journal stores for it (`RecordBytes`), its inc
 signed tree head it is proven against, and it verifies offline against a public key obtained
 out-of-band:
 
-<!-- docsnip: setup ctx context.Context; store agent.Durable; runID string; toolUseID string; sth audit.SignedTreeHead; pub ed25519.PublicKey -->
+<!-- docsnip: setup ctx context.Context; store *agent.Journal; runID string; toolUseID string; sth audit.SignedTreeHead; pub ed25519.PublicKey -->
 ```go
 // Produce: prove one tool call happened, against an anchored STH. Semantic, not by index.
 bundle, _ := audit.ProveToolCall(ctx, store, runID, toolUseID, sth) // or audit.ProveRecord(..., index, sth)
@@ -344,7 +359,7 @@ evidence into a single portable file: one signed tree head, an inclusion proof p
 and optionally the run certificate, the authority grant chain, and a consistency proof. It is pure
 JSON (store it, email it, publish it) and verifies offline:
 
-<!-- docsnip: setup ctx context.Context; store agent.Durable; runID string; signer audit.Signer; v audit.Verifier; spec audit.RunCertSpec; earlierSTH audit.SignedTreeHead; allowlist []string -->
+<!-- docsnip: setup ctx context.Context; store *agent.Journal; runID string; signer audit.Signer; v audit.Verifier; spec audit.RunCertSpec; earlierSTH audit.SignedTreeHead; allowlist []string -->
 ```go
 pkg, _ := audit.Evidence(ctx, store, runID, signer, time.Now().UnixNano(),
 	audit.WithAllToolCalls(), audit.WithRunCertificate(spec), audit.WithGrants(),
@@ -413,7 +428,7 @@ decision record the gate read (valid or not), the gate's recorded tally, and the
 it to a package that already carries the call (built with `WithToolCall` or `WithAllToolCalls`), drop
 the trailing result entry and reseal the package:
 
-<!-- docsnip: setup ctx context.Context; store agent.Durable; runID string; toolUseID string; signer audit.Signer; pkg audit.EvidencePackage -->
+<!-- docsnip: setup ctx context.Context; store *agent.Journal; runID string; toolUseID string; signer audit.Signer; pkg audit.EvidencePackage -->
 ```go
 approvals, _ := audit.ApprovalEvidence(ctx, store, runID, toolUseID, pkg.STH)
 pkg.Actions = append(pkg.Actions, approvals[:len(approvals)-1]...) // the result is already packaged
@@ -544,7 +559,7 @@ hand-derived consistency vector, and rewrite-detection tests. It is not a homegr
 
 ## End-to-end compliance flow
 
-<!-- docsnip: setup ctx context.Context; store agent.Durable; runID string; signer audit.Signer; v audit.Verifier; chargeIndex int; sth1, sth2 audit.SignedTreeHead -->
+<!-- docsnip: setup ctx context.Context; store *agent.Journal; runID string; signer audit.Signer; v audit.Verifier; chargeIndex int; sth1, sth2 audit.SignedTreeHead -->
 ```go
 // 1. After a run, commit to the journal and PUBLISH a signed tree head.
 th, _ := audit.NewTreeHead(ctx, store, runID, time.Now().UnixNano())
@@ -770,7 +785,7 @@ Composing them yields "every governed state in the run was produced by an approv
 oracle-certified-convergent policy," so the enforced invariant held throughout the governed
 boundary.
 
-<!-- docsnip: setup ctx context.Context; store agent.Durable; runID string; signer audit.Signer; v audit.Verifier; th audit.TreeHead; policyDigest string; allowlist []string -->
+<!-- docsnip: setup ctx context.Context; store *agent.Journal; runID string; signer audit.Signer; v audit.Verifier; th audit.TreeHead; policyDigest string; allowlist []string -->
 ```go
 // Emit: recompute the used-policy set, confirm it is a subset of the allowlist, and assemble the
 // anchored policy + convergence proofs for each used policy against the run's signed tree head.

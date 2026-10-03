@@ -11,7 +11,7 @@ so a binary that does not import `trace` pays nothing.
 
 <!-- docsnip: setup model agent.Model; journal *agent.Journal; tools []agent.Tool; import oteltrace "go.opentelemetry.io/otel/trace"; tracer oteltrace.Tracer; rates middleware.Rates -->
 ```go
-a, err := agent.Build(model, journal, agent.WithTools(tools...), trace.Instrument(tracer, trace.WithRates(rates)))
+a, err := agent.New(model, journal, agent.WithTools(tools...), trace.Instrument(tracer, trace.WithRates(rates)))
 ```
 
 `tracer` is any `go.opentelemetry.io/otel/trace.Tracer`. Under the hood `Instrument` attaches
@@ -37,7 +37,11 @@ wraps the `Run` call. Start it with `Invoke` and close it with the returned `end
 <!-- docsnip: setup ctx context.Context; a *agent.Agent; runID string; input string; import oteltrace "go.opentelemetry.io/otel/trace"; tracer oteltrace.Tracer -->
 ```go
 ctx, end := trace.Invoke(ctx, tracer, "support-agent")
-msg, err := a.Run(ctx, runID, input)
+res, err := a.Run(ctx, runID, agent.UserText(input))
+var msg agent.Message
+if res != nil {
+	msg = res.Message
+}
 end(err)
 ```
 
@@ -57,7 +61,7 @@ computed from the call's token usage:
 
 <!-- docsnip: setup model agent.Model; journal *agent.Journal; tools []agent.Tool; import oteltrace "go.opentelemetry.io/otel/trace"; tracer oteltrace.Tracer; rates middleware.Rates -->
 ```go
-a, err := agent.Build(model, journal, agent.WithTools(tools...), trace.Instrument(tracer, trace.WithRates(rates)))
+a, err := agent.New(model, journal, agent.WithTools(tools...), trace.Instrument(tracer, trace.WithRates(rates)))
 ```
 
 `rates` is a `middleware.Rates`, the same rate table used to meter runs with a `CostMeter`, so
