@@ -13,7 +13,7 @@ This page describes intent, not promises of dates. Shipped work is recorded in t
 - Nine TLA+ models in CI, four of them new (models 9 to 12): the tool-call state machine, the run lifecycle and recovery, delegation and saga trees, and sessions. Every bug the new models found is fixed and kept as a regression configuration, and CI keeps the marked Go code and the models in step.
 - The claim protocol's safety properties proved at any depth by an inductive invariant that Apalache checks nightly, for two drivers, bounded attempts and claim ids, and without the approval gate (scope under [Proofs beyond the bounds](#formal-models-of-the-coordination-protocols) below).
 - The gsm machine gate: every gsm machine the governance examples build is checked in CI by the two checkers extracted from gsm's proof.
-<!-- pending #154: add "- gsm v0.12.0, whose Build runs the proof's oracles in-process." -->
+- bide on gsm v0.12.0, whose `Build` runs the oracles generated from gsm's proof in-process before it returns a machine.
 
 Shipped earlier: v0.9.0 put the claim protocol under a model checker and rebuilt the engine around a storage port and a journal with its own format; v0.8.0 made runs recover themselves (`RecoverLoop`) and put one token budget across an agent tree.
 

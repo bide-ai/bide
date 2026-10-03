@@ -9,6 +9,8 @@ minor version (0.x.0) may include breaking API or journal-format changes; each o
 
 ## [Unreleased]
 
+<!-- pending #155 (gsm claims wording): fold its CHANGELOG entry, if any, into [0.10.0] under Documentation, testing and tooling, and its link. -->
+
 ## [0.10.0] - 2026-10-03
 
 ### Added
@@ -162,7 +164,8 @@ minor version (0.x.0) may include breaking API or journal-format changes; each o
 
 #### Governance (gsm)
 
-<!-- pending #154 (gsm v0.12.0): put its two Changed entries here, first ("Upgrade: bide requires gsm v0.12.0" and "Behaviour change: govern.CertifyConvergence"), and add its [#154] link below. -->
+- **Upgrade: bide requires gsm v0.12.0** (`govern`, `govern/postgreslog`, `govern/redislog`, `govern/sqlitelog`, `examples/govern` and `integration`; was v0.11.0), so an application that uses `govern` builds with gsm v0.12.0. Its `Build` checks every pair it checks for CC (every event pair, or only the pairs declared with `Independent`) exactly, with no footprint shortcut, which fixes v0.11.0's gap for guards and effects that read another event's writes, and returns a machine only after the table oracle (and, within its fragment and cap, the rules oracle), generated from gsm's proof, re-checks it in-process (scope in [known limitations](docs/KNOWN-LIMITATIONS.md#governed-state-gsm)). Upgrade impact, from gsm's upgrade notes: rebuild every machine, since `Build` may now reject one v0.11.0 accepted; event names, variable names and enum labels must be unique; closures (effects, repairs, morphism maps) must return states of their machine; `Machine.MergeProjection` returns an error for out-of-domain values; `BuildOrSynthesize` falls back to synthesis only when the compensation failed; re-issue gsm certificates with `Certify`; `Report.String` text changed; `Build` costs more (no measurable slowdown for the governance examples). `PolicyDigest` is unchanged, so anchored policy digests stay valid. A convergence verdict or `ConfluenceCertificate` recorded under v0.11.0 is not covered by the fix: rebuild and record a new one. The gsm machine gate pins ecaf453, the v0.12.0 release commit ([#154]).
+- **Behaviour change:** `govern.CertifyConvergence` reports `Converges` only for a machine `Build` returned (`Report.Assurance` set). Under gsm v0.12.0 a machine can pass gsm's WFC and CC checks and still be refused by the in-process oracle gate (`Report.OracleDisagreement`); its certificate now says `Converges: false` ([#154]).
 - Three governance examples declare the gsm rules of six registries with combinators instead of closures (`examples/govern/compose`'s inventory, `coordination`'s two registries, `mesh`'s three lines), so both of gsm's extracted checkers, not only the table checker, certify them in the gsm machine gate. Their behaviour and output are unchanged ([#146]).
 - The gsm machine gate's pinned gsm commit followed gsm's `main`: 219dcaa, whose rules checker carries normalization-confluence#11's fixes ([#147]); 150133b, whose table checker carries normalization-confluence#12's speed-up ([#149]); c2eecd6, which runs the proof's table oracle in-process on every successful `Build` (gsm#12), so the examples also Build under it ([#150]); fcf884a, which records only the synthesized machines a program receives, not the candidate synthesis certifies (gsm#16), so the gate reads 23 machine records again ([#151]); and 031db4e, whose `Build` also runs the proof's rules oracle in-process (gsm#17), so every registry the governance examples build with `Build` is certified by both oracles (the synthesized machine in `coordination` by the table oracle), with no measurable change in run time ([#152]).
 
@@ -887,6 +890,7 @@ First public release.
 [#151]: https://github.com/bide-ai/bide/pull/151
 [#152]: https://github.com/bide-ai/bide/pull/152
 [#153]: https://github.com/bide-ai/bide/pull/153
+[#154]: https://github.com/bide-ai/bide/pull/154
 
 [78f8db6]: https://github.com/bide-ai/bide/commit/78f8db6
 [994721b]: https://github.com/bide-ai/bide/commit/994721b
