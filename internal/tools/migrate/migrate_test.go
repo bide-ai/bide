@@ -47,7 +47,7 @@ func TestGolden(t *testing.T) {
 	var findings bytes.Buffer
 	for _, f := range res.Findings {
 		rel, _ := filepath.Rel(old, f.Pos.Filename)
-		fmt.Fprintf(&findings, "%s:%d: %s: %s\n", rel, f.Pos.Line, f.Rule, f.Msg)
+		fmt.Fprintf(&findings, "%s:%d: %s: %s\n", filepath.ToSlash(rel), f.Pos.Line, f.Rule, f.Msg)
 	}
 	golden(t, "testdata/golden/findings.txt", findings.Bytes())
 
