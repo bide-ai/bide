@@ -43,13 +43,13 @@ func TestStep_CrashAfterEffectDoesNotRepeatIt(t *testing.T) {
 	}
 	var halt *OutcomeUnknown
 	if !errors.As(err, &halt) {
-		t.Fatalf("resume err = %v, want *ResumeHalt for the unconfirmed reservation", err)
+		t.Fatalf("resume err = %v, want *OutcomeUnknown for the unconfirmed reservation", err)
 	}
 }
 
 // A halted step is cleared the way a halted tool call is: ResolveHalt records the confirmed
-// outcome under the step's name (ResolveStepHalt), and the resumed step returns it without running fn.
-func TestStep_HaltResolvedByResolveStepHalt(t *testing.T) {
+// outcome under the step's name (ResolveHalt (OpStep)), and the resumed step returns it without running fn.
+func TestStep_HaltResolvedByResolveHalt(t *testing.T) {
 	for _, failed := range []bool{false, true} {
 		store := mustJournal(&crashOnce{Store: NewMemStore(), crashName: "reserve"})
 		var reserved int

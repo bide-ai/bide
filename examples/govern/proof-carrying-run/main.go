@@ -5,7 +5,7 @@
 // head) into one per-run certificate plus a verifier; there is no new cryptography.
 //
 // The example is offline: no LLM, no network. An agent with a scripted model
-// (agent.NewScriptedModel) applies governed actions through attested govern.EventTools, each
+// (agenttest.ScriptedModel) applies governed actions through attested govern.EventTools, each
 // journaled by the run with the policy digest that admitted it; with a real model the governed
 // guarantees are identical. It:
 //

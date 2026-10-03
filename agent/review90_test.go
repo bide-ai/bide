@@ -52,7 +52,7 @@ func TestR90_WakeFailureCutsOffSiblingInFlight(t *testing.T) {
 }
 
 // F2. A tool call a LIVE driver is running is reported to a second driver as HaltCrashed (the
-// second driver cannot know the first is live). ResolveHaltRef must not resolve it blind: the
+// second driver cannot know the first is live). ResolveHalt must not resolve it blind: the
 // live driver's own result must be the one recorded.
 func TestR90_LiveToolClaimIsClassifiedCrashed(t *testing.T) {
 	ctx := context.Background()
@@ -93,7 +93,7 @@ func TestR90_LiveToolClaimIsClassifiedCrashed(t *testing.T) {
 		t.Logf("driver A: %v", aerr)
 	}
 	if rerr == nil {
-		t.Errorf("ResolveHaltRef(halt.Ref()) resolved a call still in flight")
+		t.Errorf("ResolveHalt(halt.Ref()) resolved a call still in flight")
 	}
 	if rec, ok := hasStep(t, store.proc(), "r1", ToolResultStep("c1")); !ok || string(rec.Result) != `"charged:txn-1"` || rec.IsError {
 		t.Errorf("journal says %s (IsError=%v); want the live driver's own result charged:txn-1", rec.Result, rec.IsError)
@@ -190,7 +190,7 @@ func TestR90_SecondConflictingResolutionIsSilent(t *testing.T) {
 // With a store that leases runs, a resolution is refused while any driver holds the root run's
 // lease (a sub-run's halt checks its root), holds the lease itself while it writes, and gives it
 // back after.
-func TestResolveHaltRef_RefusesWhileTheRunIsLeased(t *testing.T) {
+func TestResolveHalt_RefusesWhileTheRunIsLeased(t *testing.T) {
 	ctx := context.Background()
 	store := NewMemStore()
 	j := mustJournal(store)
@@ -221,7 +221,7 @@ func TestResolveHaltRef_RefusesWhileTheRunIsLeased(t *testing.T) {
 }
 
 // A store that cannot lease runs needs WithMinHaltAge, or the explicit WithoutLiveDriverCheck.
-func TestResolveHaltRef_WithoutALeaserNeedsAnAgeOrAnOptOut(t *testing.T) {
+func TestResolveHalt_WithoutALeaserNeedsAnAgeOrAnOptOut(t *testing.T) {
 	ctx := context.Background()
 	store := newXprocStore().proc()
 	if won, _, err := ClaimAttempt(ctx, store, "r1", toolAttemptStep("c1"), Record{Kind: StepAttempt, ToolUseID: "c1", AttemptedAt: 1}); err != nil || !won {
@@ -244,7 +244,7 @@ func TestResolveHaltRef_WithoutALeaserNeedsAnAgeOrAnOptOut(t *testing.T) {
 	}
 }
 
-// F5. The resolve wrappers write what ResolveHaltRef writes (expected to pass).
+// F5. The resolve wrappers write what ResolveHalt writes (expected to pass).
 func TestR90_ResolveWrappersSameRecords(t *testing.T) {
 	ctx := context.Background()
 	type w struct {

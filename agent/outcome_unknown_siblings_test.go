@@ -19,16 +19,11 @@ type effectTool struct {
 	fn   func(ctx context.Context) (json.RawMessage, error)
 }
 
-func (t effectTool) Name() string { return t.name }
-
 // Spec describes the tool to the agent (see agent.Tool).
 func (t effectTool) Spec() agent.ToolSpec {
-	return agent.ToolSpec{Name: t.Name(), Description: t.Description(), Input: t.ArgsSchema(), Safety: t.Safety()}
+	return agent.ToolSpec{Name: t.name, Description: "", Input: json.RawMessage(`{"type":"object"}`), Safety: agent.Safety{}}
 }
 
-func (t effectTool) Description() string         { return "" }
-func (t effectTool) ArgsSchema() json.RawMessage { return json.RawMessage(`{"type":"object"}`) }
-func (t effectTool) Safety() agent.Safety        { return agent.Safety{} }
 func (t effectTool) Call(ctx context.Context, _ json.RawMessage) (json.RawMessage, error) {
 	return t.fn(ctx)
 }

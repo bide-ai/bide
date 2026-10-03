@@ -7,7 +7,7 @@ import (
 )
 
 // With no accepted final_answer call, the answer is the text of the run's final turn, the same
-// message Run returns and RunTypedNative decodes. RunTyped used to take the last text of ANY turn,
+// message Run returns and RunTyped (OutputNative) decodes. RunTyped used to take the last text of ANY turn,
 // so a draft the model wrote beside a tool call stood in for a final turn that carried no text.
 func TestRunTyped_TextFallbackIsTheFinalTurn(t *testing.T) {
 	work := MustFunc("work", "does work", func(context.Context, struct{}) (string, error) { return "ok", nil }, WithSafety(Safety{ReadOnly: true}))

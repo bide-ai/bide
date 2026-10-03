@@ -51,10 +51,8 @@ func (j *Journal) putEntry(ctx context.Context, runID, name string, rec Record) 
 // the writer must report it: the first end marker in journal order, read back after the write.
 // others are the end markers that can precede this one in the run (an end marker the run cannot
 // hold is not read). Over a Journal the read-back is one Get per name in others: the writer's own
-// marker is visible, so by A2 every marker before it is too, and the lowest Seq is the first. Over
-// another Durable it is one History.
-func writeEnd(ctx context.Context, d *Journal, runID, name string, rec Record, others []string) (endMarker, error) {
-	j := d
+// marker is visible, so by A2 every marker before it is too, and the lowest Seq is the first.
+func writeEnd(ctx context.Context, j *Journal, runID, name string, rec Record, others []string) (endMarker, error) {
 	got, seq, err := j.putEntry(ctx, runID, name, rec)
 	if err != nil {
 		return endMarker{}, err
@@ -78,9 +76,8 @@ func writeEnd(ctx context.Context, d *Journal, runID, name string, rec Record, o
 }
 
 // firstEndOf returns the first of runID's end markers names in journal order, read with one Get
-// each over a Journal (the lowest Seq is the first), or one History over another Durable.
-func firstEndOf(ctx context.Context, d *Journal, runID string, names ...string) (endMarker, bool, error) {
-	j := d
+// each (the lowest Seq is the first).
+func firstEndOf(ctx context.Context, j *Journal, runID string, names ...string) (endMarker, bool, error) {
 	var first endMarker
 	found := false
 	for _, name := range names {
@@ -123,7 +120,7 @@ func endedErr(runID string, end endMarker) error {
 	if end.name == runCancelledStep {
 		return fmt.Errorf("run %s: %w", runID, ErrRunCancelled)
 	}
-	return fmt.Errorf("run %s was aborted: it is a saga whose rollback finished; drive it as a saga (RunSaga, WithSaga): %w", runID, ErrConfig)
+	return fmt.Errorf("run %s was aborted: it is a saga whose rollback finished; drive it as a saga (WithSaga): %w", runID, ErrConfig)
 }
 
 // endVerdict reads runID's journal and returns its end as a drive reports it: the recorded answer
@@ -266,8 +263,7 @@ func answerRecorded(msgs []Message, terminal string) bool {
 // cancelledFirst reports whether runID's first end marker is run:cancelled. Over a Journal it Gets
 // run:cancelled, and, when it is there, each end marker that could precede it: by A2 every marker
 // before a visible one is visible too, so the lowest Seq is the first.
-func cancelledFirst(ctx context.Context, d *Journal, runID string) (bool, error) {
-	j := d
+func cancelledFirst(ctx context.Context, j *Journal, runID string) (bool, error) {
 	c, ok, err := j.getEntry(ctx, runID, runCancelledStep)
 	if err != nil || !ok {
 		return false, err

@@ -124,7 +124,7 @@ func TestOverlappingDrivers_SideEffectFiresOnce(t *testing.T) {
 			}
 			// The winner may still be running the charge, so its halt cannot be resolved blind.
 			if rerr := ResolveHalt(ctx, store.proc(), halt.Ref(), Outcome{Result: "ok"}); !errors.Is(rerr, ErrConfig) {
-				t.Fatalf("ResolveHaltRef on a contended halt without WithMinHaltAge = %v, want ErrConfig", rerr)
+				t.Fatalf("ResolveHalt on a contended halt without WithMinHaltAge = %v, want ErrConfig", rerr)
 			}
 			halts++
 		default:

@@ -170,7 +170,7 @@ func completedAnswer(recs []Record) (Message, bool) {
 // failures (nil if none).
 //
 // The store must implement Lister; a store that cannot enumerate its runs (the base
-// Durable contract does not require it) yields an ErrConfig-wrapped error.
+// Store contract does not require it) yields an ErrConfig-wrapped error.
 //
 // If the store also implements Leaser, Recover coordinates across processes: it claims an
 // exclusive, renewed lease per run before driving it and skips a run another holder currently
@@ -346,9 +346,8 @@ var lapsedFilter = RunFilter{ExcludeHolding: endOfRunMarkers, LeaseLapsed: true}
 // recoverFilter's test, applied to one run. Like the filter, it asks only whether the entry exists,
 // so it reads no header and decodes nothing: a run in a format this version cannot read that is
 // not over still reaches resume, which refuses it. Over a Journal it costs one point read (Store.Get)
-// per marker, stopping at the first it finds; over another Durable, one History.
-func runEnded(ctx context.Context, store *Journal, runID string) (bool, error) {
-	j := store
+// per marker, stopping at the first it finds.
+func runEnded(ctx context.Context, j *Journal, runID string) (bool, error) {
 	for _, name := range endOfRunMarkers {
 		if _, ok, err := j.store.Get(ctx, runID, name); err != nil || ok {
 			if err != nil {
@@ -364,9 +363,7 @@ func runEnded(ctx context.Context, store *Journal, runID string) (bool, error) {
 // for a run that holds it, it is one point read (Store.Get) that, like runEnded, does not check the
 // run's header: a run in a format this version cannot read still reaches resume, which refuses it.
 // A run in another format whose run:start is missing or does not decode is a *JournalVersionError.
-// Over another Durable it is RecordedStart.
-func startUnderLease(ctx context.Context, store *Journal, runID string) (RunStart, bool, error) {
-	j := store
+func startUnderLease(ctx context.Context, j *Journal, runID string) (RunStart, bool, error) {
 	e, ok, err := j.store.Get(ctx, runID, runStartStep)
 	if err != nil {
 		return RunStart{}, false, storageErr(fmt.Sprintf("read step %q of run %s", runStartStep, runID), err)
@@ -661,7 +658,7 @@ func recoverable(runID string) bool { return !IsSubRun(runID) && !IsSessionRun(r
 // lease (a plain Agent.Run), and one by a lease holder that stalled past its TTL: a drive that
 // stalls past the TTL between the check and resume loses the lease, and another driver may finish
 // the run in that window. Either way at-most-once still holds: resume is handed a finished run,
-// which a resume that calls Run or RunSaga replays without firing anything again.
+// which a resume that calls Run replays without firing anything again.
 func recoverRun(ctx context.Context, store *Journal, runID string, resume Resumer, cfg recoverConfig) (bool, error) {
 	var (
 		resumed      bool

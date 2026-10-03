@@ -9,7 +9,7 @@ import (
 	"github.com/bide-ai/bide/agent/agenttest"
 )
 
-// V1 (review of #127): Gemini declares its own, looser tool-name rule, so agent.Build accepts a
+// V1 (review of #127): Gemini declares its own, looser tool-name rule, so agent.New accepts a
 // dotted name for it and refuses one Gemini refuses.
 func TestBuild_FollowsGeminisToolNameRule(t *testing.T) {
 	m := New("k")

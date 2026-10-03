@@ -86,7 +86,7 @@ func TestRev117e_T3_InDriveRetryAfterSuccess(t *testing.T) {
 	_, err := a.Run(context.Background(), "r", UserText("go"), WithSaga())
 	var ab *SagaAborted
 	if !errors.As(err, &ab) || !slices.Contains(ab.UnknownOutcome, "charge") {
-		t.Fatalf("RunSaga = %v; want *SagaAborted listing charge as unknown", err)
+		t.Fatalf("saga Run = %v; want *SagaAborted listing charge as unknown", err)
 	}
 }
 
@@ -112,7 +112,7 @@ func TestRev117e_T3_FirstAttemptOwnFailureIsKnown(t *testing.T) {
 	_, err := a.Run(context.Background(), "r", UserText("go"), WithSaga())
 	var ab *SagaAborted
 	if !errors.As(err, &ab) || len(ab.UnknownOutcome) != 0 {
-		t.Fatalf("RunSaga = %v; want *SagaAborted with no unknown outcome", err)
+		t.Fatalf("saga Run = %v; want *SagaAborted with no unknown outcome", err)
 	}
 }
 
@@ -175,7 +175,7 @@ func TestRev117e_T4_RollbackRerunRejectedSuccessIsUnknown(t *testing.T) {
 		_, err := a.Run(context.Background(), "r", UserText("go"), WithSaga())
 		var ab *SagaAborted
 		if !errors.As(err, &ab) || !slices.Contains(ab.UnknownOutcome, "charge") || refunded.Load() != 0 {
-			t.Fatalf("drive %d: RunSaga = %v (refunded %d); want *SagaAborted listing charge as unknown", drive, err, refunded.Load())
+			t.Fatalf("drive %d: saga Run = %v (refunded %d); want *SagaAborted listing charge as unknown", drive, err, refunded.Load())
 		}
 	}
 }

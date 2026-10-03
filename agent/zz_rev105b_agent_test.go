@@ -52,15 +52,15 @@ func Test_R105b_KeylessApproverIsRefused(t *testing.T) {
 		}
 	}
 
-	// The gate refuses the policy before any decision is read, and the tool never runs.
+	// New refuses the policy before any run, so the tool never runs.
 	ran := 0
 	wire := agent.MustFunc("wire", "", func(context.Context, struct{}) (string, error) { ran++; return "sent", nil }, agent.WithApproval(&p))
-	_, err := agenttest.MustNew(
+	a, err := agent.New(
 		agenttest.NewScriptedModel(agenttest.ToolTurn("c", "wire", `{}`), agenttest.TextTurn("done")),
 		agenttest.MemJournal(),
-		agent.WithTools(wire), agent.WithApproverVerifiers(resolve)).Run(context.Background(), "r", agent.UserText("hi"))
-	if !errors.Is(err, agent.ErrConfig) || ran != 0 {
-		t.Fatalf("a gate whose approvers resolve to verifiers with no key identity: err %v, tool ran %d times; want ErrConfig and no run", err, ran)
+		agent.WithTools(wire), agent.WithApproverVerifiers(resolve))
+	if !errors.Is(err, agent.ErrConfig) || a != nil || ran != 0 {
+		t.Fatalf("a gate whose approvers resolve to verifiers with no key identity: New = %v, %v, tool ran %d times; want nil, ErrConfig and no run", a, err, ran)
 	}
 }
 

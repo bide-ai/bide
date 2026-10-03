@@ -85,7 +85,7 @@ func times(u Usage, n int) Usage {
 // Result.Usage and Result.Spend are the whole run's, however many invocations it took: a run
 // cut off after its first model call and resumed reports both calls, and re-entering it once
 // finished reports the same again.
-func TestRunResult_WholeRunAcrossResume(t *testing.T) {
+func TestResult_WholeRunAcrossResume(t *testing.T) {
 	store := memJournal()
 	ctx, cancel := context.WithCancel(context.Background())
 	cut := stepTool(func(ctx context.Context) error { cancel(); return ctx.Err() })
@@ -109,7 +109,7 @@ func TestRunResult_WholeRunAcrossResume(t *testing.T) {
 }
 
 // A sub-agent's model calls are part of its parent's run: the parent's Result counts them.
-func TestRunResult_IncludesSubAgents(t *testing.T) {
+func TestResult_IncludesSubAgents(t *testing.T) {
 	store := memJournal()
 	sub := mustNew(
 		&stepper{n: 1, u: hundred},

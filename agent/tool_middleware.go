@@ -100,7 +100,7 @@ type ToolHandler func(ctx context.Context, call ToolCall) (json.RawMessage, erro
 // re-run the agent's call guard refused (audit: the delegation's grant has expired), which the
 // rollback recognises by the error next returned. A middleware that returns its own error in place
 // of next's, rather than wrapping it (%w), hides that refusal: the rollback then stops at the step
-// with the middleware's error, and a later RunSaga meets the same refusal. Return next's error, or
+// with the middleware's error, and the saga's next drive meets the same refusal. Return next's error, or
 // wrap it, so the error chain (errors.Is, errors.As) still reaches it.
 //
 // The chain runs INSIDE the durable, memoized step, so a short-circuit result or a

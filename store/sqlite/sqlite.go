@@ -49,7 +49,6 @@ type Store struct {
 	w, r, l *sql.DB // writer (one connection), readers, leases (one connection)
 	own     bool    // Close closes the pools: Open opened them
 	t       tables
-
 }
 
 var (
@@ -537,4 +536,3 @@ func (s *Store) ReapLeases(ctx context.Context, ended []string) (int, error) {
 	}
 	return int(n), nil
 }
-

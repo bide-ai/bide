@@ -15,7 +15,7 @@ import (
 )
 
 // F5: a terminal node resolved through Flow.ResolveHalt with an output holding '<', '>' or '&'.
-// agent.ResolveHaltRef records the Result unescaped (marshalJournal), Run replays those bytes as
+// agent.ResolveHalt records the Result unescaped (marshalJournal), Run replays those bytes as
 // the terminal's result, and json.Marshal(completion{...}) HTML-escapes them inside Output. The
 // completion is the terminal's output, but sameJSON compares bytes after json.Compact (which does
 // not undo escapes), so Conform reports a divergence on a run Run itself produced.

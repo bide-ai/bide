@@ -2,7 +2,7 @@
 // (see pause.go's single-shot Signal/Await). Enqueue appends deduped by key; Receive returns
 // the oldest not-yet-acked message in delivery order and pauses (*SignalPending) when the channel
 // is drained; Ack marks a message consumed so Receive advances. Enqueue, Ack, and the records
-// Receive reads all ride Durable.Do and History, so intake is at-most-once and consumption is
+// Receive reads are all named journal steps, so intake is at-most-once and consumption is
 // replay-safe and exactly-once by construction, with no new persistence model.
 //
 // Replay-safety: Receive writes nothing (only Ack writes), so on a tool re-run Receive returns
@@ -25,7 +25,7 @@ import (
 // at-least-once transport). Safe to call from any process; the store's PK / ON CONFLICT is the
 // cross-process dedup, exactly as for Signal. After enqueueing, re-invoke a run paused on the
 // channel (*SignalPending) with the pause's RootRunID.
-func (d *Journal) Enqueue[T any](ctx context.Context, runID, channel, key string, payload T) error {
+func (j *Journal) Enqueue[T any](ctx context.Context, runID, channel, key string, payload T) error {
 	if runID == "" {
 		return fmt.Errorf("Enqueue: empty runID: %w", ErrConfig)
 	}
@@ -33,7 +33,7 @@ func (d *Journal) Enqueue[T any](ctx context.Context, runID, channel, key string
 	if err != nil {
 		return fmt.Errorf("agent: encode channel message %q/%q: %w (%w)", channel, key, err, ErrConfig)
 	}
-	_, err = d.do(ctx, runID, chanStep(channel, key), func(context.Context) (Record, error) {
+	_, err = j.do(ctx, runID, chanStep(channel, key), func(context.Context) (Record, error) {
 		return Record{Kind: StepSignal, Result: b}, nil
 	})
 	return err

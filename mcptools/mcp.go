@@ -346,11 +346,8 @@ type tool struct {
 	cfg     *toolsConfig
 }
 
-func (t *tool) Name() string        { return t.def.Name }
-func (t *tool) Description() string { return t.def.Description }
-
 // Spec describes the tool to the agent: the server's name, title (its title, or the title its
-// annotations carry), description, input and output schemas, the Safety (see Safety), the
+// annotations carry), description, input and output schemas, the Safety (see safety), the
 // approval gate WithApproval set for it, and the timeout WithCallTimeout set.
 func (t *tool) Spec() agent.ToolSpec {
 	s := agent.ToolSpec{
@@ -359,7 +356,7 @@ func (t *tool) Spec() agent.ToolSpec {
 		Description: t.def.Description,
 		Input:       t.schema,
 		Output:      t.output,
-		Safety:      t.Safety(),
+		Safety:      t.safety(),
 		Timeout:     t.cfg.timeout,
 	}
 	if s.Timeout < 0 {
@@ -383,11 +380,7 @@ func (t *tool) title() string {
 	return ""
 }
 
-// ArgsSchema returns the MCP tool's InputSchema as raw JSON, checked and encoded once by Tools,
-// for the schema/ package to dialectize per provider.
-func (t *tool) ArgsSchema() json.RawMessage { return t.schema }
-
-// Safety is the Safety WithSafety set for this tool, if any. Otherwise it is the zero
+// safety is the Safety WithSafety set for this tool, if any. Otherwise it is the zero
 // agent.Safety (a side effect) unless the tool came from Tools with TrustAnnotations, in which
 // case it derives from the MCP tool annotations:
 //
@@ -398,7 +391,7 @@ func (t *tool) ArgsSchema() json.RawMessage { return t.schema }
 // ReadOnly wins if both hints are set: a read-only tool has no side effect to
 // double-fire. An absent Annotations block is treated as the destructive default per
 // the MCP spec, which is the conservative choice for resume.
-func (t *tool) Safety() agent.Safety {
+func (t *tool) safety() agent.Safety {
 	if s, ok := t.cfg.safety[t.def.Name]; ok {
 		return s
 	}

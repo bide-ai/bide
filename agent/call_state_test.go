@@ -199,7 +199,7 @@ func TestCallState_LeakedNextWritesNoAcceptedArgs(t *testing.T) {
 	store := memJournal()
 	m := NewScriptedModel(ToolTurn("c1", "hold", `{"amount":5}`), TextTurn("done"))
 	if _, err := mustNew(m, store, WithTools(hold), WithToolMiddleware(leak)).Run(context.Background(), "s1", UserText("go"), WithSaga()); err == nil {
-		t.Fatal("RunSaga: want the saga to abort on the deferred call")
+		t.Fatal("saga Run: want the saga to abort on the deferred call")
 	}
 	close(release)
 	if err := <-leaked; !errors.Is(err, ErrToolNotCalled) {

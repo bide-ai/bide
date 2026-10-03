@@ -31,7 +31,7 @@ func TestRev117e_IdempotentSagaStepRejectedSuccessIsNotAccounted(t *testing.T) {
 	var ab *SagaAborted
 	if !errors.As(err, &ab) {
 		if !errors.Is(err, ErrToolOutcomeUnknown) {
-			t.Fatalf("RunSaga = %v, want *SagaAborted or a halt on the step's outcome", err)
+			t.Fatalf("saga Run = %v, want *SagaAborted or a halt on the step's outcome", err)
 		}
 		return
 	}
@@ -64,6 +64,6 @@ func testReadOnlySagaStepRejectedSuccess(t *testing.T, safety Safety) {
 	_, err := mustNew(m, memJournal(), WithTools(look), WithToolMiddleware(check)).Run(context.Background(), "r", UserText("go"), WithSaga())
 	var ab *SagaAborted
 	if !errors.As(err, &ab) || len(ab.UnknownOutcome) != 0 {
-		t.Fatalf("%+v: RunSaga = %v; want a SagaAborted with no unknown outcome", safety, err)
+		t.Fatalf("%+v: saga Run = %v; want a SagaAborted with no unknown outcome", safety, err)
 	}
 }

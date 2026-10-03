@@ -45,7 +45,7 @@ func TestRev117d_CancelledArgsWriteLeavesRollbackOnUnknownOutcome(t *testing.T) 
 	_, err := mustNew(m, j, WithTools(charge, book), WithToolMiddleware(scaleCharge)).Run(context.Background(), "r", UserText("trip"), WithSaga())
 	var aborted *SagaAborted
 	if !errors.As(err, &aborted) {
-		t.Fatalf("RunSaga = %v, want *SagaAborted", err)
+		t.Fatalf("saga Run = %v, want *SagaAborted", err)
 	}
 	if charges.Load() != 0 {
 		t.Fatalf("setup: the charge ran %d times", charges.Load())
@@ -95,13 +95,13 @@ func (w safetyWrap) Unwrap() Tool   { return w.Tool }
 func TestRev117d_NewRefusesSafetyOverrideOverASubAgent(t *testing.T) {
 	sub := mustNew(NewScriptedModel(TextTurn("x")), memJournal())
 	var calls atomic.Int32
-	_, err := mustNew(
+	a, err := New(
 		&countingModel{n: &calls},
 		memJournal(),
 		WithTools(safetyWrap{MustSubAgent("delegate", "", sub)}),
-	).Run(context.Background(), "r1", UserText("go"))
-	if !errors.Is(err, ErrConfig) || calls.Load() != 0 {
-		t.Fatalf("Run = %v after %d model calls; want ErrConfig before any", err, calls.Load())
+	)
+	if !errors.Is(err, ErrConfig) || a != nil || calls.Load() != 0 {
+		t.Fatalf("New = %v, %v after %d model calls; want nil and ErrConfig before any", a, err, calls.Load())
 	}
 }
 

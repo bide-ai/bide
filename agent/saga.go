@@ -19,11 +19,11 @@ type sagaTrip struct {
 
 func (e *sagaTrip) Error() string { return fmt.Sprintf("saga step %q failed: %v", e.toolName, e.cause) }
 
-// SagaAborted is returned by RunSaga when a step failed and the transaction was rolled
+// SagaAborted is returned by a saga run (WithSaga) when a step failed and the transaction was rolled
 // back. Compensated lists tools whose side effects were undone (reverse of execution,
 // including sub-agent trees). Uncompensated lists the writes the rollback did not undo: a
 // completed write with no compensator, a call whose outcome is unknown (the rollback halted on it,
-// with a *ResumeHalt in CompensateErr, whether or not it has a compensator), or a call whose tool
+// with a *OutcomeUnknown in CompensateErr, whether or not it has a compensator), or a call whose tool
 // is no longer registered. They are side effects that may need manual cleanup. CompensateErr is
 // non-nil if the rollback stopped (a compensator failed, or an outcome is unknown), so writes
 // before it remain uncompensated. A programmatic sub-run whose declared agent (WithSubRuns) could
@@ -211,7 +211,7 @@ func mustJSONValue(v any) json.RawMessage {
 //
 //   - a call with no result but an attempt marker (a side effect that started) has an unknown
 //     outcome, so the rollback stops there with a *OutcomeUnknown: a human, or a reconciler via
-//     ResolveHaltRef, records what happened, and the next RunSaga resumes the rollback. The halt
+//     ResolveHalt, records what happened, and the run's next drive resumes the rollback. The halt
 //     names root, the top-level run to re-invoke, even when the call is in a sub-agent's run;
 //   - a side effect with neither result nor marker never started, and is skipped;
 //   - a retry-safe call with a compensator and no result is run again to learn its result
@@ -571,7 +571,7 @@ func declaredSubRunAgent(t Tool, name string) (sub *Agent, why string) {
 //
 // A step's failure is normally recorded as a StepSagaFail. A crash can come between the failure
 // and that record: the step then has an attempt marker and no outcome, the run halts, and the
-// operator records the verified outcome with ResolveHaltRef. A failure recorded that way is a failed
+// operator records the verified outcome with ResolveHalt. A failure recorded that way is a failed
 // step too, and aborts the saga as the StepSagaFail would have. In a saga, the only other failed
 // result a call can have is a human's denial, which the model reacts to, as it does outside one.
 //

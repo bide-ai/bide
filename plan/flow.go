@@ -565,7 +565,7 @@ func runNode(ctx context.Context, store *agent.Journal, runID string, model agen
 // text/template with the decoded input as data, calls the flow's bound model, and
 // decodes the model's text response as JSON into a fresh value of the node's output
 // type (returned boxed as any, mirroring a Step's run closure). This mirrors the
-// core's typed-output decode path (RunTypedNative json.Unmarshal-s the assistant's
+// core's typed-output decode path (a native typed run json.Unmarshal-s the assistant's
 // text into the typed result): because the plan surface imports only stdlib and the
 // core agent (not the schema helper, which is generic over a type parameter and
 // cannot be reached from a reflect.Type here), the output type O must be JSON-shaped

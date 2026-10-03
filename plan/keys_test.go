@@ -70,7 +70,7 @@ func TestValidate_JoinNameWithColonIsRejected(t *testing.T) {
 }
 
 // Every key Run writes is one agent reserves, so no agent.Step a node body runs can name it, and a
-// node's key is one the engine's step hook and ResolveHaltRef accept as a plan node's.
+// node's key is one the engine's step hook and ResolveHalt accept as a plan node's.
 func TestRunKeys_AreReserved(t *testing.T) {
 	for _, k := range []string{nodeKey("x"), iterNodeKey(3, "x"), iterNodeKey(0, "iter"), nodeKey("iter"),
 		"switch:x", iterSwitchKey(2, "x"), flowDigestStep, runStartStep} {

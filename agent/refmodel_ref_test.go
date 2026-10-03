@@ -113,11 +113,11 @@ type rmScript struct {
 // rmScenario is one generated test case.
 type rmScenario struct {
 	Seed    uint64
-	Saga    bool  // drive the root with RunSaga
-	MaxConc int   // SetMaxConcurrency for every agent (0 = unbounded)
+	Saga    bool  // drive the root with saga Run
+	MaxConc int   // WithMaxConcurrency for every agent (0 = unbounded)
 	Dead    bool  // crash mode: true = the process dies at the crash (every later write fails too)
 	Crashes []int // per drive attempt, the persist that fails (0 or past the end = none)
-	API     int   // how the root is driven: 0 Run/RunSaga, 1 RunResult/RunSagaResult, 2 Stream/StreamSaga
+	API     int   // how the root is driven: 0 Run/saga Run, 1 Run/saga Run, 2 Stream/saga Stream
 	Root    *rmScript
 }
 
@@ -572,7 +572,7 @@ func (r *rmRef) forward(s *rmScript) rmOutcome {
 }
 
 // rollback undoes a saga run's completed writes in reverse call order, recursing into sub-agent
-// runs, per RunSaga's documented contract:
+// runs, per saga Run's documented contract:
 //   - the step that failed made no change (steps are atomic), and neither did a call that
 //     returned an error or was denied;
 //   - a ReadOnly call needs no undo;
@@ -584,7 +584,7 @@ func (r *rmRef) forward(s *rmScript) rmOutcome {
 //     is run to learn its result and then compensated (bide cannot tell a retry-safe call that
 //     never started from one whose result a crash lost, so it treats both alike); if that run
 //     fails, the rollback stops (stuck), since bide cannot tell a lasting failure from a passing
-//     one, and a later RunSaga tries it again;
+//     one, and a later saga Run tries it again;
 //   - a retry-safe call with no compensator and no result may have taken effect: uncompensated;
 //   - a completed write with a compensator is compensated, one without is uncompensated;
 //   - a compensation that fails stops the rollback (stuck); writes before it stay as they are.

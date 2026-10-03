@@ -386,16 +386,14 @@ func (j *Journal) Format(ctx context.Context, runID string) (string, error) {
 
 // protocol:claims begin RWrite RRecord RWait
 
-// Do runs fn as the named step name of runID, at most once: if the step is recorded, Do returns
+// do runs fn as the named step name of runID, at most once: if the step is recorded, do returns
 // the recorded record without calling fn; otherwise it calls fn and records the record fn returns
 // (with Name set and a fresh salt), and returns the record the journal holds, which is another
 // caller's if one recorded the step first. If fn errors, nothing is recorded. Once fn has
-// returned a record, Do records it even if ctx was cancelled meanwhile, since fn may have fired a
+// returned a record, do records it even if ctx was cancelled meanwhile, since fn may have fired a
 // side effect whose outcome must not be lost. Callers of the same step in this process, through
-// any Journal over the same store, share one call of fn.
-//
-// Deprecated: transitional; the 1.0 rewrite unexports it. Engine code writes through the journal's
-// own paths; audit and plan reach it through internal/journalhook.
+// any Journal over the same store, share one call of fn. audit and plan reach it through
+// internal/journalhook.
 func (j *Journal) do(ctx context.Context, runID, name string, fn func(context.Context) (Record, error)) (Record, error) {
 	b, err := shareFlight(flightKey{j.id, runID, name}, func() ([]byte, error) {
 		e, ok, err := j.getEntry(ctx, runID, name)
@@ -425,6 +423,7 @@ func (j *Journal) do(ctx context.Context, runID, name string, fn func(context.Co
 // protocol:claims end
 
 // protocol:claims begin Win WinnerWait Record
+// protocol:lifecycle begin DCall DRecord
 
 // doFresh is Do for a step its caller knows was not recorded when it last read the run (the
 // engine's live model turns and tool calls): it calls fn without reading the step first. If
@@ -448,6 +447,7 @@ func (j *Journal) doFresh(ctx context.Context, runID, name string, fn func(conte
 	return decodeStored(runID, name, b)
 }
 
+// protocol:lifecycle end
 // protocol:claims end
 
 // put records rec as the step name of runID unless the step is recorded, and returns the record

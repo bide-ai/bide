@@ -119,10 +119,10 @@ func wantPending(t *testing.T, err error, want counts) {
 	t.Helper()
 	var pend *ApprovalPending
 	if !errors.As(err, &pend) {
-		t.Fatalf("err = %v, want *PendingApproval", err)
+		t.Fatalf("err = %v, want *ApprovalPending", err)
 	}
 	if pend.Quorum == nil {
-		t.Fatalf("PendingApproval.Quorum = nil, want %+v", want)
+		t.Fatalf("ApprovalPending.Quorum = nil, want %+v", want)
 	}
 	if got := countsOf(*pend.Quorum); !reflect.DeepEqual(got, want) {
 		t.Fatalf("Quorum = %+v, want %+v", got, want)
@@ -318,7 +318,7 @@ func TestMofn_DuplicateApproverDeduped(t *testing.T) {
 }
 
 // A tool with a nil Approval keeps the 1-of-1 path: it pauses with no Quorum, a per-approver
-// ApproveAs decision does not satisfy it, and Approve resumes it.
+// SubmitDecision decision does not satisfy it, and Approve resumes it.
 func TestMofn_NilApprovalKeepsOneOfOne(t *testing.T) {
 	store := memJournal()
 	ctx := context.Background()
@@ -337,12 +337,12 @@ func TestMofn_NilApprovalKeepsOneOfOne(t *testing.T) {
 	err := run(toolTurn("c1", "charge", `{}`), textTurn("done"))
 	var pend *ApprovalPending
 	if !errors.As(err, &pend) || pend.Quorum != nil {
-		t.Fatalf("err = %v, want *PendingApproval with nil Quorum", err)
+		t.Fatalf("err = %v, want *ApprovalPending with nil Quorum", err)
 	}
 
 	approveAs(t, store, "r1", "c1", "alice", true)
 	if err := run(textTurn("done")); !errors.As(err, &pend) {
-		t.Fatalf("after ApproveAs err = %v, want still *PendingApproval on the 1-of-1 path", err)
+		t.Fatalf("after SubmitDecision err = %v, want still *ApprovalPending on the 1-of-1 path", err)
 	}
 
 	if err := Approve(ctx, store, "r1", "c1", true); err != nil {

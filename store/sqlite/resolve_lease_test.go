@@ -11,10 +11,10 @@ import (
 	"github.com/bide-ai/bide/agent/agenttest"
 )
 
-// store/sqlite leases runs, so ResolveHaltRef checks for a live driver with its lease, as on
+// store/sqlite leases runs, so ResolveHalt checks for a live driver with its lease, as on
 // MemStore and Postgres: it refuses while another handle on the file holds the root run's lease,
 // and resolves without WithMinHaltAge once the lease is free.
-func TestResolveHaltRef_UsesTheLease(t *testing.T) {
+func TestResolveHalt_UsesTheLease(t *testing.T) {
 	ctx := context.Background()
 	path := filepath.Join(t.TempDir(), "resolve.db")
 	a, err := Open(path)

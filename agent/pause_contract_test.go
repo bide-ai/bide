@@ -218,9 +218,9 @@ func TestMemWaker_SubRunTimersAreDistinct(t *testing.T) {
 	}
 }
 
-// ResolveHaltRef clears a tool call's halt from the halt's own Ref, and records the evidence given
+// ResolveHalt clears a tool call's halt from the halt's own Ref, and records the evidence given
 // in the Outcome: the resumed run proceeds past the call without running it again.
-func TestResolveHaltRef_ToolHalt(t *testing.T) {
+func TestResolveHalt_ToolHalt(t *testing.T) {
 	ctx := context.Background()
 	store := memJournal()
 	var charged int
@@ -264,9 +264,9 @@ func TestResolveHaltRef_ToolHalt(t *testing.T) {
 	}
 }
 
-// ResolveHaltRef clears a Step's halt too, as a value or as a failure, and refuses a ref whose
+// ResolveHalt clears a Step's halt too, as a value or as a failure, and refuses a ref whose
 // kind is not the kind of operation that halted.
-func TestResolveHaltRef_StepHalt(t *testing.T) {
+func TestResolveHalt_StepHalt(t *testing.T) {
 	ctx := context.Background()
 	store := memJournal()
 	lost := func(context.Context) (string, error) { return "", errors.New("connection dropped") }
@@ -310,7 +310,7 @@ func TestResolveHaltRef_StepHalt(t *testing.T) {
 
 // A ref that does not say why the run halted, or what kind of operation halted, is refused, as is
 // evidence given twice; none of them records anything.
-func TestResolveHaltRef_RefusesAnIncompleteRef(t *testing.T) {
+func TestResolveHalt_RefusesAnIncompleteRef(t *testing.T) {
 	ctx := context.Background()
 	store := memJournal()
 	good := HaltRef{RunID: "r1", Op: OpRef{Kind: OpTool, ID: "c1"}, Cause: HaltCrashed}
@@ -328,7 +328,7 @@ func TestResolveHaltRef_RefusesAnIncompleteRef(t *testing.T) {
 		"evidence twice": {ref: good, out: Outcome{Evidence: 1}, opts: []ResolveOption{WithEvidence(2)}},
 	} {
 		if err := ResolveHalt(ctx, store, c.ref, c.out, c.opts...); !errors.Is(err, ErrConfig) {
-			t.Errorf("%s: ResolveHaltRef = %v; want ErrConfig", name, err)
+			t.Errorf("%s: ResolveHalt = %v; want ErrConfig", name, err)
 		}
 	}
 	if recs, _ := store.History(ctx, "r1"); len(recs) != 0 {
@@ -340,7 +340,7 @@ func TestResolveHaltRef_RefusesAnIncompleteRef(t *testing.T) {
 // while it is young: without WithMinHaltAge it is refused outright, and with it the age is
 // measured from the live attempt (an older attempt recorded as never started does not count). A
 // crashed halt of the same age is resolved without a minimum, as before.
-func TestResolveHaltRef_ContendedHaltIsNotResolvedWhileYoung(t *testing.T) {
+func TestResolveHalt_ContendedHaltIsNotResolvedWhileYoung(t *testing.T) {
 	ctx := context.Background()
 	store := memJournal()
 	t0 := time.Unix(1_000_000, 0)

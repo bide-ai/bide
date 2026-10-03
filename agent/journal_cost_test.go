@@ -159,6 +159,29 @@ func TestMemStoreDo_SharedWriteCopies(t *testing.T) {
 	}
 }
 
+// A live run decodes each record it writes once: its budget and token totals are kept up to date
+// from the records it writes, not by decoding them again or reading the journal back each turn.
+// Its reads decode nothing: the Load once run:start is written (model 10's DStart returns to
+// DOpen) needs only the entries' names, and the point reads of the end markers (at the turn
+// boundary, and after run:complete) find none but run:complete, which carries no marker.
+// TestBudget_FirstDriveAndCompletion and its neighbours hold the store round trips themselves.
+func TestLiveRun_DecodesEachWriteOnce(t *testing.T) {
+	const marker = "journal-ops-marker"
+	decodes := countDecodes(t, marker)
+	tool := MustFunc("noop", "no-op", func(context.Context, struct{}) (string, error) { return "ok", nil }, WithSafety(Safety{ReadOnly: true}))
+	a := mustNew(NewScriptedModel(ToolTurn("c1-"+marker, "noop", `{}`), TextTurn("done "+marker)), memJournal(),
+		WithTools(tool), WithTokenBudget(1_000_000))
+	if _, err := a.Run(context.Background(), "r", UserText("go "+marker)); err != nil {
+		t.Fatal(err)
+	}
+	// run:start, @llm/0, the tool's result and @llm/1 carry the marker (the input, the call's ID,
+	// the answer). The three steps are decoded once each, as they are recorded; run:start is
+	// written from its encoding and never decoded on the live path.
+	if n := decodes.Load(); n != 3 {
+		t.Fatalf("the run decoded the records that carry the marker %d times, want 3 (each step once)", n)
+	}
+}
+
 // A raw value holding one line or paragraph separator alone is written with that separator's
 // escape: the encoder's fast check for the separators' lead byte must skip neither replacement.
 // The default JSON build escapes both itself, so this pins the check in a GOEXPERIMENT=nojsonv2

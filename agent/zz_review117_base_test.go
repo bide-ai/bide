@@ -23,7 +23,7 @@ func TestR117Base_SagaUnknownOutcomeOfARetrySafeWrite(t *testing.T) {
 	_, err := mustNew(m, store, WithTools(hold)).Run(context.Background(), "s1", UserText("book"), WithSaga())
 	var ab *SagaAborted
 	if !errors.As(err, &ab) {
-		t.Fatalf("RunSaga: err = %v, want *SagaAborted", err)
+		t.Fatalf("saga Run: err = %v, want *SagaAborted", err)
 	}
 	// Reported in the distinct UnknownOutcome list (it may have committed), not compensated blind.
 	if undone.Load() != 0 || len(ab.UnknownOutcome) != 1 || ab.UnknownOutcome[0] != "hold" || len(ab.Uncompensated) != 0 {
@@ -51,6 +51,6 @@ func TestR117_UnknownOutcomeInASubAgentIsReportedAtTheRoot(t *testing.T) {
 	_, err := parent.Run(context.Background(), "root", UserText("go"), WithSaga())
 	var ab *SagaAborted
 	if !errors.As(err, &ab) || len(ab.UnknownOutcome) != 1 || ab.UnknownOutcome[0] != "hold" {
-		t.Fatalf("RunSaga = %v; want *SagaAborted naming hold as unknown", err)
+		t.Fatalf("saga Run = %v; want *SagaAborted naming hold as unknown", err)
 	}
 }

@@ -492,7 +492,7 @@ func pctIndex(n, p int) int {
 // independent, durable, and auditable. The ID is the prefix, a random nonce drawn once per
 // AgentRunner, and a counter: an eval never reuses an earlier eval's runs, which would replay their
 // recorded answers instead of sampling the model, even over a store kept between evals. It reads
-// the run's journal from store (the same Durable the Agent was built with) to populate the
+// the run's journal from store (the same journal the Agent was built with) to populate the
 // Trajectory for trajectory metrics; if that read fails, the output's TraceErr carries the failure
 // and the trajectory metrics fail the run. A nil a or store is an error wrapping agent.ErrConfig.
 func AgentRunner(a *agent.Agent, store *agent.Journal, runIDPrefix string) (RunFunc, error) {

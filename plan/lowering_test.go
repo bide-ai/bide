@@ -40,10 +40,10 @@ func effectFlow(t *testing.T, fired *int, opts ...NodeOption) *Flow[int, string]
 	return flow
 }
 
-// A node that halted with an unknown outcome is a Step halt: ResolveHaltRef clears it with the
+// A node that halted with an unknown outcome is a Step halt: ResolveHalt clears it with the
 // node's output, and the next Run continues past the node without running its body, feeding the
 // resolved output downstream.
-func TestLowering_ResolveHaltRefClearsNodeHalt(t *testing.T) {
+func TestLowering_ResolveHaltClearsNodeHalt(t *testing.T) {
 	ctx := context.Background()
 	mem := agenttest.MemJournal()
 	var fired int
@@ -67,7 +67,7 @@ func TestLowering_ResolveHaltRefClearsNodeHalt(t *testing.T) {
 		t.Fatalf("the halted node ran %d times, want 1", fired)
 	}
 	if err := agent.ResolveHalt(ctx, mem, halt.Ref(), agent.Outcome{Result: 7}); err != nil {
-		t.Fatalf("ResolveHaltRef: %v", err)
+		t.Fatalf("ResolveHalt: %v", err)
 	}
 	out, err := flow.Run(ctx, mem, "r", 5)
 	if err != nil || out != "charged 7" {
@@ -83,7 +83,7 @@ func TestLowering_ResolveHaltRefClearsNodeHalt(t *testing.T) {
 
 // A node that halts inside a loop body is the Step of its iteration's key, and resolves the same
 // way; the loop continues from the resolved iteration.
-func TestLowering_ResolveHaltRefClearsLoopIterationHalt(t *testing.T) {
+func TestLowering_ResolveHaltClearsLoopIterationHalt(t *testing.T) {
 	ctx := context.Background()
 	mem := agenttest.MemJournal()
 	var calls int
@@ -119,7 +119,7 @@ func TestLowering_ResolveHaltRefClearsLoopIterationHalt(t *testing.T) {
 		t.Fatalf("second drive: err = %v, want a halt on node:iter:1:refine", err)
 	}
 	if err := agent.ResolveHalt(ctx, mem, halt.Ref(), agent.Outcome{Result: loopState{N: 0, Trace: "seed|refine|resolved"}}); err != nil {
-		t.Fatalf("ResolveHaltRef: %v", err)
+		t.Fatalf("ResolveHalt: %v", err)
 	}
 	out, err := build().Run(ctx, mem, "loop", 3)
 	if err != nil || out != "done N=0 trace=seed|refine|resolved" {
@@ -130,13 +130,13 @@ func TestLowering_ResolveHaltRefClearsLoopIterationHalt(t *testing.T) {
 	}
 }
 
-// ResolveHaltRef accepts a node key as a Step's name, but no other reserved name.
-func TestLowering_ResolveHaltRefRefusesOtherReservedNames(t *testing.T) {
+// ResolveHalt accepts a node key as a Step's name, but no other reserved name.
+func TestLowering_ResolveHaltRefusesOtherReservedNames(t *testing.T) {
 	for _, id := range []string{"switch:x", "flow:digest", "node:", "node:a:b", "node:iter:x:a", "attempt:step:x"} {
 		ref := agent.HaltRef{RunID: "r", Op: agent.OpRef{Kind: agent.OpStep, ID: id}, Cause: agent.HaltCrashed}
 		err := agent.ResolveHalt(context.Background(), agenttest.MemJournal(), ref, agent.Outcome{Result: 1})
 		if !errors.Is(err, agent.ErrConfig) {
-			t.Errorf("ResolveHaltRef on step %q: err = %v, want ErrConfig", id, err)
+			t.Errorf("ResolveHalt on step %q: err = %v, want ErrConfig", id, err)
 		}
 	}
 }

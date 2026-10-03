@@ -10,16 +10,11 @@ import (
 
 type toolStub struct{ name string }
 
-func (t toolStub) Name() string { return t.name }
-
 // Spec describes the tool to the agent (see agent.Tool).
 func (t toolStub) Spec() agent.ToolSpec {
-	return agent.ToolSpec{Name: t.Name(), Description: t.Description(), Input: t.ArgsSchema(), Safety: t.Safety()}
+	return agent.ToolSpec{Name: t.name, Description: "", Input: json.RawMessage(`{"type":"object"}`), Safety: agent.Safety{}}
 }
 
-func (t toolStub) Description() string         { return "" }
-func (t toolStub) Safety() agent.Safety        { return agent.Safety{} }
-func (t toolStub) ArgsSchema() json.RawMessage { return json.RawMessage(`{"type":"object"}`) }
 func (t toolStub) Call(context.Context, json.RawMessage) (json.RawMessage, error) {
 	return nil, nil
 }

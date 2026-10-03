@@ -62,7 +62,7 @@ func TestRev133_D1_NestedAcrossRotation(t *testing.T) {
 	_, err := agenttest.MustNew(m, store, agent.WithTools(tools()...)).Run(WithRollbackGrants(WithGrant(ctx, p2, signer), signer, p1), "trip", agent.UserText("go"), agent.WithSaga())
 	var ab *agent.SagaAborted
 	if !errors.As(err, &ab) {
-		t.Fatalf("RunSaga = %v", err)
+		t.Fatalf("saga Run = %v", err)
 	}
 	t.Logf("compensated %v, uncompensated %v, unknown %v, err %v, refunds %d", ab.Compensated, ab.Uncompensated, ab.UnknownOutcome, ab.CompensateErr, refunds.Load())
 	if ab.CompensateErr != nil || refunds.Load() != 3 {
@@ -102,7 +102,7 @@ func TestRev133_D2_GuardRefusalThroughToolRetry(t *testing.T) {
 	_, err = parent.Run(WithGrant(ctx, m11Root(t, signer, "p"), signer), "trip", agent.UserText("go"), agent.WithSaga())
 	var ab *agent.SagaAborted
 	if !errors.As(err, &ab) {
-		t.Fatalf("RunSaga = %v", err)
+		t.Fatalf("saga Run = %v", err)
 	}
 	t.Logf("unknown %v, err %v, calls %d", ab.UnknownOutcome, ab.CompensateErr, calls.Load())
 	if calls.Load() != 0 || ab.CompensateErr != nil || !slices.Contains(ab.UnknownOutcome, "idem") {
@@ -128,7 +128,7 @@ func TestRev133_D3_NoDoubleCompensation(t *testing.T) {
 		return a
 	}
 	grand := build(agenttest.NewScriptedModel(agenttest.ToolTurn("g1", "charge", `{}`), agenttest.ToolTurn("g2", "bad", `{}`), agenttest.TextTurn("y")), charge, bad)
-	// The grand sub-agent is a saga of its own: the child runs it through a programmatic RunSaga.
+	// The grand sub-agent is a saga of its own: the child runs it through a programmatic saga Run.
 	gstarter := agent.MustFunc("gstart", "", func(ctx context.Context, _ struct{}) (string, error) {
 		info, _ := agent.RunInfoFrom(ctx)
 		res, err := grand.Run(ctx, info.SubRunFor("grand"), agent.UserText("work"), agent.WithSaga())
@@ -168,7 +168,7 @@ func TestRev133_D3_NoDoubleCompensation(t *testing.T) {
 	_, err := parent.Run(ctx, "p", agent.UserText("go"), agent.WithSaga())
 	var ab *agent.SagaAborted
 	if !errors.As(err, &ab) {
-		t.Fatalf("RunSaga = %v", err)
+		t.Fatalf("saga Run = %v", err)
 	}
 	t.Logf("compensated %v, uncompensated %v, unknown %v, err %v, undone %d", ab.Compensated, ab.Uncompensated, ab.UnknownOutcome, ab.CompensateErr, undone.Load())
 	if undone.Load() > 1 {

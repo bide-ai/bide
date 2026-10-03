@@ -180,7 +180,7 @@ func recordedSafety(spec ToolSpec) *Safety {
 
 // sortSpecs sets specList to a.specs sorted by name, the list each model request is sent. The
 // specs are the snapshot New (or cloneWith) took of each tool's spec when it was registered (see
-// SpecOf): the agent decides every call from it, so a tool whose Spec or Safety method would
+// specOf): the agent decides every call from it, so a tool whose Spec method would
 // answer differently later cannot change a decision the agent makes for the run's calls.
 func (a *Agent) sortSpecs() {
 	a.specList = make([]ToolSpec, 0, len(a.specs))
@@ -657,7 +657,7 @@ func (a *Agent) unprovenFailure(ctx context.Context, name string) bool {
 // journalAcceptedArgs records, before the side effect fires, the arguments a compensable call in
 // a saga is about to run with, when a tool middleware changed them from the model's (see
 // sagaArgsStep): compensation then undoes what the tool did, even when the call's outcome is
-// later resolved by ResolveHaltRef. It is a memoized step, so a retry-safe call that runs again
+// later resolved by ResolveHalt. It is a memoized step, so a retry-safe call that runs again
 // keeps the first record; a middleware that rewrites arguments must rewrite them the same way
 // every time. Unchanged arguments, or a call outside a saga, journal nothing, so compensation
 // reads the model's arguments, as for a journal written before this record existed. A ToolCall

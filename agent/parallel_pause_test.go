@@ -55,7 +55,7 @@ func TestParallelTurn_PauseDoesNotCancelASibling(t *testing.T) {
 	_, err := a.Run(context.Background(), "r1", UserText("go"))
 	var intr *InterruptPending
 	if !errors.As(err, &intr) {
-		t.Fatalf("first run: %v, want *Interrupted", err)
+		t.Fatalf("first run: %v, want *InterruptPending", err)
 	}
 	if err := store.AnswerInterrupt(context.Background(), "r1", "confirm", "yes"); err != nil {
 		t.Fatal(err)

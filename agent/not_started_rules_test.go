@@ -35,7 +35,7 @@ func TestNotStarted_OnlyTheClaimantVoidsAnAttempt(t *testing.T) {
 			_, err = store.Step(ctx, "r1", "reserve", reserveFn(&entered, &ran))
 			var halt *OutcomeUnknown
 			if !errors.As(err, &halt) || entered.Load() != 0 {
-				t.Fatalf("Step = %v with fn called %d times, want a ResumeHalt: the attempt was never recorded as not started by its claimant", err, entered.Load())
+				t.Fatalf("Step = %v with fn called %d times, want a OutcomeUnknown: the attempt was never recorded as not started by its claimant", err, entered.Load())
 			}
 		})
 	}
@@ -181,7 +181,7 @@ func TestTool_CrashInAReattemptHalts(t *testing.T) {
 	).Run(context.Background(), "r1", UserText("pay"))
 	var halt *OutcomeUnknown
 	if !errors.As(err, &halt) || halt.Op.ID != "c1" || calls.Load() != 0 {
-		t.Fatalf("resume after a crash in the re-attempt = %v with %d charges, want *ResumeHalt for c1 and no charge", err, calls.Load())
+		t.Fatalf("resume after a crash in the re-attempt = %v with %d charges, want *OutcomeUnknown for c1 and no charge", err, calls.Load())
 	}
 }
 

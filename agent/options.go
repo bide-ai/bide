@@ -46,7 +46,7 @@ type StepOption interface {
 	applyStep(*stepConfig) error
 }
 
-// ResolveOption configures ResolveHaltRef (and its wrappers ResolveHalt and ResolveStepHalt).
+// ResolveOption configures ResolveHalt.
 type ResolveOption interface {
 	applyResolve(*resolveConfig) error
 }
@@ -230,10 +230,8 @@ func applyOptions[O comparable, C any](what string, cfg *C, opts []O, apply func
 //
 // Options apply in order, and for any setting the last one given wins. WithSystemPrompt and
 // WithSystemPromptFunc fill one slot: the later of the two wins. Precedence for a setting is: a
-// value the run was given, then the agent's, then the default. Today a run is given its
-// identity, Waker and clock through its context (ContextWithIdentity, ContextWithWaker,
-// ContextWithClock, which a sub-agent's run inherits from its parent's); the agent's WithIdentity,
-// WithWaker and WithClock apply to a run whose context carries none.
+// value the run was given (a run option; a sub-agent's run inherits its parent run's identity,
+// Waker and clock), then the agent's, then the default.
 //
 // The agent is immutable once built: With returns a configured copy and leaves the agent alone.
 func New(model Model, j *Journal, opts ...Option) (*Agent, error) {
@@ -711,7 +709,7 @@ func (f clockOption) applyResolve(c *resolveConfig) error {
 }
 
 // WithClock sets the clock that reads "now": for a run (an agent's runs, or one run), the clock
-// its durable timers (Sleep, WaitUntil, AwaitFor) measure against; for ResolveHaltRef, the clock
+// its durable timers (Sleep, WaitUntil, AwaitFor) measure against; for ResolveHalt, the clock
 // WithMinHaltAge measures against. The default is time.Now. Deployments leave it unset; tests
 // pass a controllable clock to advance time deterministically. A nil now is ErrConfig.
 func WithClock(now func() time.Time) ClockOption { return clockOption(now) }

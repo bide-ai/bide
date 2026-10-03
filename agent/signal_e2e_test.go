@@ -100,7 +100,7 @@ func TestDST_Signal_NoDoubleFire_CrashSweep(t *testing.T) {
 		}
 	}
 	if !haltSeen {
-		t.Fatal("no crash point exercised ResumeHalt: the halt path was never tested")
+		t.Fatal("no crash point exercised OutcomeUnknown: the halt path was never tested")
 	}
 }
 
@@ -141,7 +141,7 @@ func TestSignal_DeliverThenWake(t *testing.T) {
 	_, err := a.Run(ctx, "r", UserText("hi"))
 	var awt *SignalPending
 	if !errors.As(err, &awt) {
-		t.Fatalf("first run err = %v, want *Awaiting", err)
+		t.Fatalf("first run err = %v, want *SignalPending", err)
 	}
 
 	// The deliverer records the signal, then schedules a wake now (the deliver-then-wake idiom).

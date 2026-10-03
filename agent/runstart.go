@@ -191,7 +191,7 @@ func plainUserText(m Message) (string, bool) {
 type RunKind string
 
 const (
-	// RunKindAgent is a run an Agent drives (Run, RunSaga, Stream, a sub-agent, a session turn).
+	// RunKindAgent is a run an Agent drives (Run, Stream, a sub-agent, a session turn).
 	// A run:start journaled before P14 records no kind (an agent run's did not; a flow's always
 	// recorded its kind): any agent entry point may drive it (a plain run, a session turn, a typed
 	// run), as before, since the record does not say which started it. P14 writes the kind of
@@ -215,7 +215,7 @@ const (
 	// default; see RunTyped).
 	OutputTool OutputMode = "tool"
 	// OutputNative collects a typed run's answer through the provider's native structured output
-	// (see RunTypedNative).
+	// (WithOutputMode(OutputNative)).
 	OutputNative OutputMode = "native"
 )
 
@@ -263,11 +263,7 @@ func (s RunStart) admits(k RunKind) bool {
 //	if start.Kind == agent.RunKindFlow {
 //	    return driveFlow(ctx, start.Flow.Name, runID, start.Input) // the flow's Run, with the input decoded
 //	}
-//	if start.Saga {
-//	    _, err = a.RunSaga(ctx, runID, start.Input)
-//	} else {
-//	    _, err = a.Run(ctx, runID, start.Input)
-//	}
+//	_, err = a.Run(ctx, runID, start.Input) // a saga's later drives run as the saga
 func RecordedStart(ctx context.Context, d *Journal, runID string) (RunStart, bool, error) {
 	r, ok, err := d.Get(ctx, runID, runStartStep)
 	if err != nil || !ok || r.Kind != StepValue {

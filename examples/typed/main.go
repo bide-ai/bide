@@ -65,7 +65,7 @@ func main() {
 
 	// RunTyped drives the loop to completion and decodes the answer into CityReport.
 	// (On an OpenAI-compatible provider with strict structured outputs, prefer
-	// agent.RunTypedNative[CityReport] instead: the schema is enforced provider-side
+	// agent.WithOutputMode(agent.OutputNative) instead: the schema is enforced provider-side
 	// with no final_answer tool round-trip.)
 	report, _, err := a.RunTyped[CityReport](ctx, "typed-1", agent.UserText("Look up the population of New York City with the get_population tool, then produce the report."))
 	if err != nil {

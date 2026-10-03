@@ -276,11 +276,11 @@ func TestDST_Flow_HaltThenResolveCompletes(t *testing.T) {
 		t.Fatalf("at halt the effect fired %d times, want exactly 1", count)
 	}
 
-	// Resolve out of band with ResolveHaltRef, as an operator confirming the effect
+	// Resolve out of band with ResolveHalt, as an operator confirming the effect
 	// landed would: it records the node's output. Then a fresh Run completes by replay
 	// without re-firing the increment (count stays 1).
 	if err := agent.ResolveHalt(context.Background(), mem, halt.Ref(), agent.Outcome{Result: 1}); err != nil {
-		t.Fatalf("ResolveHaltRef: %v", err)
+		t.Fatalf("ResolveHalt: %v", err)
 	}
 
 	flow, err := buildCounterFlow(&count)

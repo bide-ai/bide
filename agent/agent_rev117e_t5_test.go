@@ -52,7 +52,7 @@ func TestRev117e_T4_SiblingInvocationStillRunning(t *testing.T) {
 	<-finished
 	var ab *SagaAborted
 	if !errors.As(err, &ab) || !slices.Contains(ab.UnknownOutcome, "charge") || slices.Contains(ab.Compensated, "charge") {
-		t.Fatalf("RunSaga = %v; want charge listed as unknown and not compensated", err)
+		t.Fatalf("saga Run = %v; want charge listed as unknown and not compensated", err)
 	}
 	if n := inflightEntries(); n != 0 {
 		t.Fatalf("%d in-flight entries left", n)
@@ -134,7 +134,7 @@ func TestRev117e_T4_RollbackRerunCacheAnswerIsUnknown(t *testing.T) {
 	_, err := mustNew(t4TwoCalls{}, memJournal(), WithTools(charge, fail), WithToolMiddleware(cache)).Run(context.Background(), "r", UserText("go"), WithSaga())
 	var ab *SagaAborted
 	if !errors.As(err, &ab) || !slices.Contains(ab.UnknownOutcome, "charge") || refunded.Load() != 0 {
-		t.Fatalf("RunSaga = %v (refunded %d); want charge listed as unknown and not compensated", err, refunded.Load())
+		t.Fatalf("saga Run = %v (refunded %d); want charge listed as unknown and not compensated", err, refunded.Load())
 	}
 }
 

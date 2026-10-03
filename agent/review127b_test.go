@@ -13,7 +13,7 @@ import (
 
 // adv127b builds: child agent (one compensable write "book") on childStore; parent saga on
 // parentStore whose tool "starter" (call id starterID) runs the child as SubRunFor("child") with
-// RunSaga, then "boom" fails the saga.
+// saga Run, then "boom" fails the saga.
 func adv127b(t *testing.T, parentStore, childStore *agent.Journal, starterID string, declare bool, undone *int) *agent.Agent {
 	t.Helper()
 	book := agent.MustCompensatedFunc("book", "", func(context.Context, struct{}) (string, error) { return "booked", nil },
@@ -143,7 +143,7 @@ func TestAdv127b_UnusableDeclarationListed(t *testing.T) {
 }
 
 // B3: nesting through a non-saga intermediate. parent saga -> starter runs mid with Run (not
-// RunSaga) -> mid's tool runs leaf with RunSaga as SubRunFor("leaf") -> leaf books. The parent's
+// saga Run) -> mid's tool runs leaf with saga Run as SubRunFor("leaf") -> leaf books. The parent's
 // rollback walks mid's journal (and would undo mid's own writes), but mid's call context has
 // saga=false, so no link to leaf was written: leaf's book is neither compensated nor listed.
 // midSaga=true is the control.

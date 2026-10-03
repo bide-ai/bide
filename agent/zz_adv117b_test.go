@@ -109,14 +109,14 @@ type outerWrap struct{ Tool }
 func (w outerWrap) Spec() ToolSpec { return w.Tool.Spec() }
 func (w outerWrap) Unwrap() Tool   { return w.Tool }
 
-// ADV117b-3 ((d)). checkWrapper looks only at the outermost tool: a Compensator one level down
-// the Unwrap chain is accepted, and a rollback that recurses into the sub-run never calls it.
+// ADV117b-3 ((d)). checkWrapper looked only at the outermost tool: a Compensator one level down
+// the Unwrap chain was accepted, and a rollback that recurses into the sub-run never calls it.
+// New refuses it.
 func TestAdv117b_NestedCompensatorWrapperIsAccepted(t *testing.T) {
 	sub := mustNew(NewScriptedModel(TextTurn("x")), memJournal())
 	tool := outerWrap{compWrap{MustSubAgent("delegate", "", sub)}}
 	var calls atomic.Int32
-	_, err := mustNew(&countingModel{n: &calls}, memJournal(), WithTools(tool)).Run(context.Background(), "r1", UserText("go"))
-	if !errors.Is(err, ErrConfig) {
-		t.Fatalf("Run = %v; want ErrConfig for a Compensator inside the Unwrap chain", err)
+	if a, err := New(&countingModel{n: &calls}, memJournal(), WithTools(tool)); !errors.Is(err, ErrConfig) || a != nil {
+		t.Fatalf("New = %v, %v; want nil and ErrConfig for a Compensator inside the Unwrap chain", a, err)
 	}
 }

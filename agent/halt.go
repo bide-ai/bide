@@ -38,7 +38,7 @@ const (
 	// driver knows of no live claimant. That is what the halting driver saw, not proof: a
 	// driver of the same run may still be running the effect (a Step that lost its claim with no
 	// call of it in flight in this process, or a drive that read the journal after the claim,
-	// cannot tell). ResolveHaltRef therefore checks for a live driver itself, whatever the cause.
+	// cannot tell). ResolveHalt therefore checks for a live driver itself, whatever the cause.
 	HaltCrashed HaltCause = "crashed"
 	// HaltContended: another driver of the same run won the claim on the operation while this
 	// one was running: a tool call's claim lost after this drive read no marker for it, or a
@@ -65,7 +65,7 @@ type OpRef struct {
 	ToolName string
 }
 
-// HaltRef is what ResolveHaltRef needs to clear a halt: the run whose journal holds the
+// HaltRef is what ResolveHalt needs to clear a halt: the run whose journal holds the
 // operation, the operation, and why it halted. Take it from the halt with OutcomeUnknown.Ref.
 //
 // Cause matters: a HaltContended halt may still be running in another driver, and
@@ -77,7 +77,7 @@ type HaltRef struct {
 	Cause HaltCause
 }
 
-// Outcome is the verified outcome of a halted operation, recorded by ResolveHaltRef as the
+// Outcome is the verified outcome of a halted operation, recorded by ResolveHalt as the
 // operation's result. Result is the value an actual call would have returned (JSON-marshalled);
 // IsError marks an outcome the model should read as a failure (in a saga, a failed step, which
 // rolls the saga back). A non-nil Evidence marks the resolution reconciled from evidence and
@@ -95,7 +95,7 @@ type Outcome struct {
 //
 //	if halt, ok := errors.AsType[*agent.OutcomeUnknown](err); ok {
 //	    // confirm out of band that the charge did go through
-//	    err = agent.ResolveHaltRef(ctx, store, halt.Ref(), agent.Outcome{Result: "charged (operator-confirmed)"},
+//	    err = agent.ResolveHalt(ctx, store, halt.Ref(), agent.Outcome{Result: "charged (operator-confirmed)"},
 //	        agent.WithMinHaltAge(time.Minute))
 //	    msg, err = a.Run(ctx, halt.RootRunID, input) // resumes past the halt
 //	}
@@ -113,7 +113,7 @@ type Outcome struct {
 //     any driver holds it. Only
 //     drivers that lease the run (Lease, Recover, RecoverLoop, and a Session's turn) are seen; a
 //     plain Run holds no lease, which the claim below covers.
-//   - with a store that cannot (a custom store with no Leaser, or a Durable that exposes none), it
+//   - with a store that cannot (a custom store with no Leaser, or a wrapper that exposes none), it
 //     requires WithMinHaltAge, so the halt is resolved only once no driver can still be running it.
 //
 // On either path, it then claims the attempt after the live one, under a claim of its own, before
@@ -285,7 +285,7 @@ func resolveHalt(ctx context.Context, store *Journal, op string, ref HaltRef, ou
 	return nil
 }
 
-// resolveLeaseTTL is how long ResolveHaltRef holds the run's lease while it resolves: long enough
+// resolveLeaseTTL is how long ResolveHalt holds the run's lease while it resolves: long enough
 // for one read and one write, short enough that a resolver that dies leaves the run free soon.
 const resolveLeaseTTL = 30 * time.Second
 
@@ -326,9 +326,9 @@ func checkNoLiveDriver(ctx context.Context, store *Journal, op string, ref HaltR
 // protocol:claims end
 // protocol:lifecycle end
 
-// HaltInFlight is returned by ResolveHaltRef when a driver may be running the operation's effect
+// HaltInFlight is returned by ResolveHalt when a driver may be running the operation's effect
 // right now, and its own result must win over a resolution: a driver holds the lease on the halted
-// run's root (a session turn's run, for a turn and the sub-runs inside it), or (see ResolveHaltRef) a driver holds the claim on the
+// run's root (a session turn's run, for a turn and the sub-runs inside it), or (see ResolveHalt) a driver holds the claim on the
 // attempt after the live one, having found the live one recorded as never started. Retry once the
 // driver has finished (its lease released or expired, or its result recorded); a retry reads the
 // run again.
@@ -360,7 +360,7 @@ var ErrNoLiveAttempt = fmt.Errorf("operation has no live attempt to resolve: %w"
 // a different recorded outcome (see HaltAlreadyResolved). It wraps ErrConfig.
 var ErrAlreadyResolved = fmt.Errorf("halt already has a different recorded outcome: %w", ErrConfig)
 
-// HaltAlreadyResolved is returned by ResolveHaltRef when the operation already has a recorded
+// HaltAlreadyResolved is returned by ResolveHalt when the operation already has a recorded
 // outcome that differs from the one given: an earlier resolution, or the result the live driver
 // recorded. The recorded outcome stands; Result and IsError report it. Resolving again with the
 // same outcome is not an error. It wraps ErrAlreadyResolved.
@@ -409,12 +409,12 @@ type resolveConfig struct {
 // it must cover the tool's real worst-case run time, not its ToolSpec.Timeout: a result the tool
 // returns after its deadline is still recorded, and a tool that ignores cancellation can run past
 // the timeout, so a halt resolved at the timeout can race a call still running. On a store that
-// leases runs, the lease check that ResolveHaltRef makes first is not affected by this.
+// leases runs, the lease check that ResolveHalt makes first is not affected by this.
 func WithMinHaltAge(d time.Duration) ResolveOption {
 	return resolveOption(func(c *resolveConfig) error { c.minHaltAge = d; return nil })
 }
 
-// WithoutLiveDriverCheck skips ResolveHaltRef's check that no driver may still be running the
+// WithoutLiveDriverCheck skips ResolveHalt's check that no driver may still be running the
 // halted operation: the lease probe on a store that leases runs, and the WithMinHaltAge
 // requirement on one that does not. With it, a resolution can race a live driver's own result.
 // Pass it only when you know no driver of the run is running, for example with every worker
@@ -440,7 +440,7 @@ func WithEvidence(v any) ResolveOption {
 	})
 }
 
-// HaltTooYoung is returned by ResolveHaltRef when WithMinHaltAge is set and the halt has not
+// HaltTooYoung is returned by ResolveHalt when WithMinHaltAge is set and the halt has not
 // aged past the grace period yet. Wait and retry the resolution later.
 type HaltTooYoung struct {
 	RunID     string
@@ -483,7 +483,7 @@ func (*ApprovalPending) pause() {}
 // this node's lease lapsed); that driver owns the effect, and once it records the result,
 // re-running proceeds normally.
 //
-// Clear it with ResolveHaltRef(ctx, store, halt.Ref(), outcome), then re-run RootRunID.
+// Clear it with ResolveHalt(ctx, store, halt.Ref(), outcome), then re-run RootRunID.
 type OutcomeUnknown struct {
 	RunRef
 	Op OpRef
@@ -512,7 +512,7 @@ func (e *OutcomeUnknown) Error() string {
 
 func (*OutcomeUnknown) pause() {}
 
-// Ref returns the reference ResolveHaltRef takes to clear this halt.
+// Ref returns the reference ResolveHalt takes to clear this halt.
 func (e *OutcomeUnknown) Ref() HaltRef { return HaltRef{RunID: e.RunID, Op: e.Op, Cause: e.Cause} }
 
 // toolHalt and stepHalt build the halts the engine returns.

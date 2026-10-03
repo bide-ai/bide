@@ -200,8 +200,7 @@ var startWritten = []string{runStartStep}
 
 // onlyWritten loads runID again after its open wrote the records wrote, and reports whether the
 // run holds nothing that before (the open's Load) did not but those records and the journal
-// header. Over a Journal it is one Load whose entries are not decoded (their names suffice); over
-// another Durable, one History.
+// header. It is one Load whose entries are not decoded (their names suffice).
 func (a *Agent) onlyWritten(ctx context.Context, runID string, before []Record, wrote []string) (bool, error) {
 	j := a.store
 	for e, err := range j.store.Load(ctx, runID, -1) {

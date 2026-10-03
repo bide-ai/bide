@@ -112,7 +112,7 @@ func TestRunTyped_LooseAnswerIsCorrected(t *testing.T) {
 	}
 }
 
-// A typed answer that reaches RunTyped as text, or RunTypedNative as the provider's JSON, decodes
+// A typed answer that reaches RunTyped as text, or RunTyped (OutputNative) as the provider's JSON, decodes
 // strictly as well: a loose answer is ErrProtocol, not a value with zero or dropped fields.
 func TestRunTyped_TextAnswersDecodeStrictly(t *testing.T) {
 	for _, text := range []string{`{}`, `{"NAME":"x"}`, `{"name":"x","extra":1}`, `{"name":"a","name":"b"}`, `{"name":"x"} {}`} {
@@ -122,7 +122,7 @@ func TestRunTyped_TextAnswersDecodeStrictly(t *testing.T) {
 		}
 		m = NewScriptedModel(TextTurn(text))
 		if got, _, err := mustNew(m, memJournal()).RunTyped[typedAnswer](context.Background(), "r", UserText("go"), WithOutputMode(OutputNative)); !errors.Is(err, ErrProtocol) {
-			t.Errorf("RunTypedNative with %s = %+v, %v; want ErrProtocol", text, got, err)
+			t.Errorf("RunTyped (OutputNative) with %s = %+v, %v; want ErrProtocol", text, got, err)
 		}
 	}
 }
@@ -181,16 +181,11 @@ func TestRunTyped_AnswerFromAnOlderJournal(t *testing.T) {
 // Func decoded with encoding/json): it accepts loose arguments and acknowledges with {}.
 type legacyAnswerTool struct{}
 
-func (legacyAnswerTool) Name() string { return finalAnswerTool }
-
 // Spec describes the tool to the agent (see Tool).
 func (t legacyAnswerTool) Spec() ToolSpec {
-	return ToolSpec{Name: t.Name(), Description: t.Description(), Input: t.ArgsSchema(), Safety: t.Safety()}
+	return ToolSpec{Name: finalAnswerTool, Description: "answer", Input: json.RawMessage(`{"type":"object"}`), Safety: Safety{ReadOnly: true}}
 }
 
-func (legacyAnswerTool) Description() string         { return "answer" }
-func (legacyAnswerTool) Safety() Safety              { return Safety{ReadOnly: true} }
-func (legacyAnswerTool) ArgsSchema() json.RawMessage { return json.RawMessage(`{"type":"object"}`) }
 func (legacyAnswerTool) Call(_ context.Context, args json.RawMessage) (json.RawMessage, error) {
 	var v typedAnswer
 	if len(args) > 0 { // empty arguments were the zero value

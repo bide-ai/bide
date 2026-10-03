@@ -88,9 +88,8 @@ func TestR117_NewRefusesUnsafeWrappers(t *testing.T) {
 		"compensator unwrapping a tool": compWrap{MustFunc("f", "", func(context.Context, struct{}) (string, error) { return "", nil })},
 	} {
 		var calls atomic.Int32
-		_, err := mustNew(&countingModel{n: &calls}, memJournal(), WithTools(tool)).Run(context.Background(), "r1", UserText("go"))
-		if !errors.Is(err, ErrConfig) || calls.Load() != 0 {
-			t.Errorf("%s: Run = %v after %d model calls; want ErrConfig before any", name, err, calls.Load())
+		if a, err := New(&countingModel{n: &calls}, memJournal(), WithTools(tool)); !errors.Is(err, ErrConfig) || a != nil || calls.Load() != 0 {
+			t.Errorf("%s: New = %v, %v after %d model calls; want nil and ErrConfig before any", name, a, err, calls.Load())
 		}
 	}
 }

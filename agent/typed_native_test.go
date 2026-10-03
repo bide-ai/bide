@@ -5,9 +5,9 @@ import (
 	"testing"
 )
 
-// RunTypedNative sets a JSON-schema ResponseFormat on the request and decodes the model's
+// RunTyped (OutputNative) sets a JSON-schema ResponseFormat on the request and decodes the model's
 // direct JSON output (no final_answer tool).
-func TestRunTypedNative_ResponseFormatAndDecode(t *testing.T) {
+func TestRunTyped_NativeResponseFormatAndDecode(t *testing.T) {
 	type R struct {
 		Answer string `json:"answer"`
 		Score  int    `json:"score"`
@@ -18,7 +18,7 @@ func TestRunTypedNative_ResponseFormatAndDecode(t *testing.T) {
 
 	out, _, err := a.RunTyped[R](context.Background(), "r", UserText("q"), WithOutputMode(OutputNative))
 	if err != nil {
-		t.Fatalf("RunTypedNative: %v", err)
+		t.Fatalf("RunTyped (OutputNative): %v", err)
 	}
 	if out.Answer != "42" || out.Score != 7 {
 		t.Fatalf("out = %+v, want {42 7}", out)
@@ -35,8 +35,8 @@ func TestRunTypedNative_ResponseFormatAndDecode(t *testing.T) {
 	}
 }
 
-// The caller's agent is untouched (RunTypedNative works on a clone).
-func TestRunTypedNative_DoesNotMutateAgent(t *testing.T) {
+// The caller's agent is untouched (RunTyped (OutputNative) works on a clone).
+func TestRunTyped_NativeDoesNotMutateAgent(t *testing.T) {
 	type R struct {
 		X int `json:"x"`
 	}
@@ -46,6 +46,6 @@ func TestRunTypedNative_DoesNotMutateAgent(t *testing.T) {
 		t.Fatal(err)
 	}
 	if a.responseFormat != nil {
-		t.Fatal("RunTypedNative must not set responseFormat on the caller's agent")
+		t.Fatal("RunTyped (OutputNative) must not set responseFormat on the caller's agent")
 	}
 }

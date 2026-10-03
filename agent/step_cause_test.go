@@ -9,7 +9,7 @@ import (
 
 // A Step driver that loses the claim to a call of the step in flight in this process has seen its
 // claimant live: that driver owns the effect and may be running it now, so the halt is
-// HaltContended, which ResolveHaltRef does not resolve without WithMinHaltAge. A driver that loses
+// HaltContended, which ResolveHalt does not resolve without WithMinHaltAge. A driver that loses
 // the claim with no call in flight knows of no live claimant (the owner may have died), so its
 // halt is HaltCrashed, as for a marker found on resume.
 //

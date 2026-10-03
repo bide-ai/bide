@@ -50,7 +50,7 @@ func TestSaga_CompensatesTheArgumentsTheToolAccepted(t *testing.T) {
 		charged, refunded, err := rewrittenChargeSaga(t, memJournal(), safety, scaleCharge)
 		var aborted *SagaAborted
 		if !errors.As(err, &aborted) || aborted.CompensateErr != nil {
-			t.Fatalf("safety %+v: RunSaga = %v, want a clean *SagaAborted", safety, err)
+			t.Fatalf("safety %+v: saga Run = %v, want a clean *SagaAborted", safety, err)
 		}
 		if charged != 500 || refunded != 500 {
 			t.Errorf("safety %+v: charged %d, refunded %d; want the refund to undo the 500 charged", safety, charged, refunded)
@@ -110,12 +110,12 @@ func TestSaga_ResolvedUnknownOutcomeCompensatesTheAcceptedArguments(t *testing.T
 		return mustNew(m, store, WithTools(charge, fail), WithToolMiddleware(scaleCharge))
 	}
 	if _, err := build().Run(context.Background(), "r", UserText("trip"), WithSaga()); !errors.Is(err, ErrToolOutcomeUnknown) {
-		t.Fatalf("RunSaga = %v, want ErrToolOutcomeUnknown", err)
+		t.Fatalf("saga Run = %v, want ErrToolOutcomeUnknown", err)
 	}
 	_, err := build().Run(context.Background(), "r", UserText("trip"), WithSaga()) // the resume halts on the charge
 	var halt *OutcomeUnknown
 	if !errors.As(err, &halt) || halt.Op.ID != "c1" {
-		t.Fatalf("resumed RunSaga = %v, want a ResumeHalt on the charge", err)
+		t.Fatalf("resumed saga Run = %v, want a OutcomeUnknown on the charge", err)
 	}
 	if err := ResolveHalt(context.Background(), store, HaltRef{RunID: halt.RunID, Op: OpRef{Kind: OpTool, ID: halt.Op.ID}, Cause: HaltCrashed}, Outcome{Result: "charged (operator-confirmed)", IsError: false}); err != nil {
 		t.Fatalf("ResolveHalt: %v", err)
@@ -123,7 +123,7 @@ func TestSaga_ResolvedUnknownOutcomeCompensatesTheAcceptedArguments(t *testing.T
 	_, err = build().Run(context.Background(), "r", UserText("trip"), WithSaga())
 	var aborted *SagaAborted
 	if !errors.As(err, &aborted) || aborted.CompensateErr != nil {
-		t.Fatalf("resumed RunSaga = %v, want a clean *SagaAborted", err)
+		t.Fatalf("resumed saga Run = %v, want a clean *SagaAborted", err)
 	}
 	if charged.Load() != 500 || refunded.Load() != 500 {
 		t.Fatalf("charged %d, refunded %d; want the refund to undo the 500 charged", charged.Load(), refunded.Load())
@@ -137,7 +137,7 @@ func TestSaga_JournalWithoutAcceptedArgumentsUsesTheModelArguments(t *testing.T)
 	charged, refunded, err := rewrittenChargeSaga(t, memJournal(), Safety{})
 	var aborted *SagaAborted
 	if !errors.As(err, &aborted) || charged != 5 || refunded != 5 {
-		t.Fatalf("RunSaga = %v; charged %d, refunded %d; want 5 and 5", err, charged, refunded)
+		t.Fatalf("saga Run = %v; charged %d, refunded %d; want 5 and 5", err, charged, refunded)
 	}
 }
 
@@ -171,7 +171,7 @@ func TestSaga_RollbackRerunGoesThroughToolMiddleware(t *testing.T) {
 	_, err := mustNew(m, memJournal(), WithTools(charge, book), WithToolMiddleware(scaleCharge)).Run(context.Background(), "r", UserText("trip"), WithSaga())
 	var aborted *SagaAborted
 	if !errors.As(err, &aborted) || aborted.CompensateErr != nil {
-		t.Fatalf("RunSaga = %v, want a clean *SagaAborted", err)
+		t.Fatalf("saga Run = %v, want a clean *SagaAborted", err)
 	}
 	if len(charges) != 2 || charges[0] != 500 || charges[1] != 500 || len(refunded) != 1 || refunded[0] != 500 {
 		t.Fatalf("charges %v, refunds %v; want the re-run to charge 500 like the live call, and a refund of 500", charges, refunded)
@@ -211,7 +211,7 @@ func (s failArgsStore) Insert(ctx context.Context, runID, name string, data []by
 func TestSaga_UnjournaledArgumentsStopTheCall(t *testing.T) {
 	charged, _, err := rewrittenChargeSaga(t, mustJournal(failArgsStore{NewMemStore()}), Safety{}, scaleCharge)
 	if charged != 0 || !errors.Is(err, ErrStorage) {
-		t.Fatalf("charged %d, RunSaga = %v; want no charge and ErrStorage", charged, err)
+		t.Fatalf("charged %d, saga Run = %v; want no charge and ErrStorage", charged, err)
 	}
 }
 
@@ -247,7 +247,7 @@ func TestSaga_RollbackRerunJournalsTheAcceptedArguments(t *testing.T) {
 	_, err := mustNew(m, memJournal(), WithTools(charge, book), WithToolMiddleware(stall, scaleCharge)).Run(context.Background(), "r", UserText("trip"), WithSaga())
 	var aborted *SagaAborted
 	if !errors.As(err, &aborted) || aborted.CompensateErr != nil {
-		t.Fatalf("RunSaga = %v, want a clean *SagaAborted", err)
+		t.Fatalf("saga Run = %v, want a clean *SagaAborted", err)
 	}
 	if charges.Load() != 500 || refunds.Load() != 500 {
 		t.Fatalf("charged %d, refunded %d; want the refund to undo the 500 the re-run charged", charges.Load(), refunds.Load())
@@ -311,6 +311,6 @@ func TestSaga_RollbackRerunStopsWhenItCannotReadTheArguments(t *testing.T) {
 	).Run(context.Background(), "r", UserText("trip"), WithSaga())
 	var aborted *SagaAborted
 	if !errors.As(err, &aborted) || aborted.CompensateErr == nil || refunds.Load() != 0 {
-		t.Fatalf("RunSaga = %v, refunded %d; want the rollback stopped with the read error and no refund", err, refunds.Load())
+		t.Fatalf("saga Run = %v, refunded %d; want the rollback stopped with the read error and no refund", err, refunds.Load())
 	}
 }

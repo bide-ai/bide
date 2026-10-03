@@ -169,11 +169,11 @@ func TestRev138_AbortedSagaResumedWithoutWithSaga(t *testing.T) {
 	}
 	_, err := a.Resume(ctx, "r")
 	if _, ok := errors.AsType[*agent.SagaAborted](err); !ok || errors.Is(err, agent.ErrConfig) {
-		t.Fatalf("ResumeRun of an aborted saga = %v; want *SagaAborted, not ErrConfig", err)
+		t.Fatalf("Resume of an aborted saga = %v; want *SagaAborted, not ErrConfig", err)
 	}
 	_, err = a.Run(ctx, "r", agent.UserText("go"))
 	if _, ok := errors.AsType[*agent.SagaAborted](err); !ok || errors.Is(err, agent.ErrConfig) {
-		t.Fatalf("RunMessage without WithSaga of an aborted saga = %v; want *SagaAborted, not ErrConfig", err)
+		t.Fatalf("Run without WithSaga of an aborted saga = %v; want *SagaAborted, not ErrConfig", err)
 	}
 }
 

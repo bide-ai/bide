@@ -174,7 +174,7 @@ func TestParallel_FailedSideEffectHaltsOnResume(t *testing.T) {
 	_, err := store.Parallel(ctx, "r1", tasks)
 	var halt *agent.OutcomeUnknown
 	if !errors.As(err, &halt) || halt.Op.ID != "charge" || charges != 1 {
-		t.Fatalf("resume: err = %v after %d charges; want *ResumeHalt for charge after 1", err, charges)
+		t.Fatalf("resume: err = %v after %d charges; want *OutcomeUnknown for charge after 1", err, charges)
 	}
 }
 

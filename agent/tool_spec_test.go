@@ -287,31 +287,6 @@ func TestToolOptions_SetTheSpec(t *testing.T) {
 	}
 }
 
-// oldTool has only the old method set: SpecOf describes it by those methods.
-type oldTool struct{ safety Safety }
-
-func (oldTool) Name() string { return "old" }
-
-// Spec describes the tool to the agent (see Tool).
-func (t oldTool) Spec() ToolSpec {
-	return ToolSpec{Name: t.Name(), Description: t.Description(), Input: t.ArgsSchema(), Safety: t.Safety()}
-}
-
-func (oldTool) Description() string         { return "an old tool" }
-func (oldTool) ArgsSchema() json.RawMessage { return json.RawMessage(`{"type":"object"}`) }
-func (t oldTool) Safety() Safety            { return t.safety }
-func (oldTool) Call(context.Context, json.RawMessage) (json.RawMessage, error) {
-	return json.RawMessage(`"ok"`), nil
-}
-
-func TestSpecOf_OldMethodSet(t *testing.T) {
-	s := (oldTool{safety: Safety{ReadOnly: true}}).Spec()
-	want := ToolSpec{Name: "old", Description: "an old tool", Input: json.RawMessage(`{"type":"object"}`), Safety: Safety{ReadOnly: true}}
-	if s.Name != want.Name || s.Description != want.Description || string(s.Input) != string(want.Input) || s.Safety != want.Safety || s.Approval != nil || s.Timeout != 0 {
-		t.Fatalf("SpecOf = %+v, want %+v", s, want)
-	}
-}
-
 // fickleTool describes itself differently each time it is asked: the agent must ask once, when
 // the tool is registered, and decide every call from that answer.
 type fickleTool struct {
@@ -326,10 +301,6 @@ func (t fickleTool) Spec() ToolSpec {
 	}
 	return s
 }
-func (fickleTool) Name() string                { return "charge" }
-func (fickleTool) Description() string         { return "" }
-func (fickleTool) ArgsSchema() json.RawMessage { return json.RawMessage(`{"type":"object"}`) }
-func (fickleTool) Safety() Safety              { return Safety{ReadOnly: true} }
 func (t fickleTool) Call(context.Context, json.RawMessage) (json.RawMessage, error) {
 	t.calls.Add(1)
 	return nil, errors.New("gateway timeout")

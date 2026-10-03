@@ -1,7 +1,7 @@
 // Package agent is a durability-first, Go-idiomatic toolkit for building AI agents.
 //
-// The agent loop journals every step to a Durable store via named-step memoization
-// (Durable.Do) and resumes after a crash — reusing recorded steps, re-running
+// The agent loop journals every step to a Journal over a Store via named-step memoization
+// and resumes after a crash — reusing recorded steps, re-running
 // retry-safe tools, halting (rather than double-executing) a non-idempotent tool whose
 // outcome is unknown, and pausing durably for human approval when a tool requires it.
 // Orchestration is plain Go (Option B); the model call is wrapped by a func(Handler)
@@ -35,12 +35,6 @@ func addUsage(dst *Usage, src Usage) {
 // Build an Agent with New and options, and derive a differently configured one with With,
 // which copies it: an agent built that way is never changed, so it is safe for concurrent
 // Run/Stream/Session calls and for concurrent With calls.
-//
-// The transitional builder methods (WithMaxTurns, Use, UseTool, SetMaxConcurrency and the rest)
-// MUTATE the receiver in place and return it for chaining; they do not copy. Two variables
-// assigned from the same New(...) are aliases: reconfiguring one reconfigures both. They are not
-// safe to call concurrently with a run or with each other, and the 1.0 rewrite removes them in
-// favour of the options.
 type Agent struct {
 	model        Model
 	tools        map[string]Tool
@@ -58,7 +52,7 @@ type Agent struct {
 	// current time, tenant, retrieved state). It shares one slot with systemPrompt: it takes
 	// precedence over the text, and setting the text clears it, so the later of the two wins.
 	systemPromptFn func(context.Context, RunInfo) (string, error)
-	responseFormat *ResponseFormat  // native structured-output constraint (see RunTypedNative)
+	responseFormat *ResponseFormat  // native structured-output constraint (see OutputNative)
 	toolChoice     *ToolChoice      // tool-choice control applied to every model call (see WithToolChoice)
 	terminalTool   string           // a successful call to this tool ends the run (RunTyped's final_answer)
 	retrievals     []retrievalLayer // WithRetrieval steps, in the order given

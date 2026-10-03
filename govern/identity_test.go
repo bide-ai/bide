@@ -40,7 +40,7 @@ func TestEventToolAttested_StampsIdentity(t *testing.T) {
 	tool := govern.EventTool(gov, govern.EventToolConfig{Name: "credit", Description: "credit $1", Event: "credit", PolicyDigest: digest})
 
 	id := agent.Identity{Actor: "exec-agent@1.4.2", OnBehalfOf: "desk-EQ-US", AuthorityRef: "grant#a1b2"}
-	ctx := agenttest.ContextWithIdentity(context.Background(), id)
+	ctx := agenttest.IdentityContext(context.Background(), id)
 
 	raw, err := tool.Call(ctx, []byte(`{}`))
 	if err != nil {

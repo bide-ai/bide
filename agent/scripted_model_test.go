@@ -22,7 +22,6 @@ import (
 //
 // Build turns with ToolTurn, TextTurn, and ErrorTurn:
 //
-//
 // A ScriptedModel is safe for the sequential agent loop; it is not intended for concurrent
 // Stream calls from multiple runs at once.
 type ScriptedModel struct {

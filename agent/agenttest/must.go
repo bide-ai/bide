@@ -37,9 +37,9 @@ func Answer(res *agent.Result, err error) (agent.Message, error) {
 	return res.Message, err
 }
 
-// ContextWithIdentity returns ctx carrying id as the acting identity, as a run binds its
+// IdentityContext returns ctx carrying id as the acting identity, as a run binds its
 // WithIdentity option for its tool calls: for a test that calls a tool directly, outside a run,
 // and checks what it does with agent.IdentityFrom.
-func ContextWithIdentity(ctx context.Context, id agent.Identity) context.Context {
+func IdentityContext(ctx context.Context, id agent.Identity) context.Context {
 	return toolhook.WithIdentity(ctx, id.Actor, id.OnBehalfOf, id.AuthorityRef)
 }

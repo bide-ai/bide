@@ -12,7 +12,7 @@ import (
 
 // Single-flight: many concurrent Do calls on the SAME (runID,name) run fn exactly once.
 // Run with -race to also prove no data race. Prevents double side effects under
-// concurrency (parallel tools / retries) — the Durable "at-most-once execution" contract.
+// concurrency (parallel tools / retries) — the journal's "at-most-once execution" contract.
 func TestMemStore_SingleFlight(t *testing.T) {
 	store := memJournal()
 	var calls int32

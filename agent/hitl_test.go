@@ -16,16 +16,11 @@ type askTool struct {
 	got    *string
 }
 
-func (t *askTool) Name() string { return t.name }
-
 // Spec describes the tool to the agent (see Tool).
 func (t *askTool) Spec() ToolSpec {
-	return ToolSpec{Name: t.Name(), Description: t.Description(), Input: t.ArgsSchema(), Safety: t.Safety()}
+	return ToolSpec{Name: t.name, Description: "", Input: json.RawMessage(`{"type":"object"}`), Safety: t.safety}
 }
 
-func (t *askTool) Description() string         { return "" }
-func (t *askTool) Safety() Safety              { return t.safety }
-func (t *askTool) ArgsSchema() json.RawMessage { return json.RawMessage(`{"type":"object"}`) }
 func (t *askTool) Call(ctx context.Context, _ json.RawMessage) (json.RawMessage, error) {
 	*t.calls++
 	v, err := Interrupt[string](ctx, t.key, "what should I use?")
@@ -50,7 +45,7 @@ func TestInterrupt_PausesAndResumesTyped(t *testing.T) {
 	_, err := a.Run(context.Background(), "r", UserText("hi"))
 	var intr *InterruptPending
 	if !errors.As(err, &intr) {
-		t.Fatalf("err = %v, want *Interrupted", err)
+		t.Fatalf("err = %v, want *InterruptPending", err)
 	}
 	if intr.Name != "q" || intr.Prompt != "what should I use?" {
 		t.Fatalf("interrupt = %+v", intr)

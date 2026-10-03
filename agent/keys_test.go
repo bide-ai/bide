@@ -158,7 +158,7 @@ func TestResolve_RefusesTheOtherKindsHalt(t *testing.T) {
 		t.Fatal(err)
 	}
 	if err := ResolveHalt(ctx, store, HaltRef{RunID: "r", Op: OpRef{Kind: OpStep, ID: "c1"}, Cause: HaltCrashed}, Outcome{Result: "ok", IsError: false}); !errors.Is(err, ErrConfig) {
-		t.Fatalf("ResolveStepHalt on a call's halt = %v, want ErrConfig", err)
+		t.Fatalf("ResolveHalt (OpStep) on a call's halt = %v, want ErrConfig", err)
 	}
 	// Each records its own kind of result: a step's is a step value (provable as a step).
 	if err := ResolveHalt(ctx, store, HaltRef{RunID: "r", Op: OpRef{Kind: OpStep, ID: "reserve"}, Cause: HaltCrashed}, Outcome{Result: "ok", IsError: false}); err != nil {
@@ -359,8 +359,8 @@ func parseAgentPackage(t *testing.T) map[string]*ast.File {
 	return files
 }
 
-// ResolveStepHalt names a step, so it refuses a reserved name as Step does.
-func TestResolveStepHalt_ReservedNameIsRefused(t *testing.T) {
+// ResolveHalt (OpStep) names a step, so it refuses a reserved name as Step does.
+func TestResolveHalt_StepReservedNameIsRefused(t *testing.T) {
 	store := memJournal()
 	err := ResolveHalt(context.Background(), store, HaltRef{RunID: "r", Op: OpRef{Kind: OpStep, ID: runCompleteStep}, Cause: HaltCrashed}, Outcome{Result: "ok", IsError: false})
 	if complete, _ := IsComplete(context.Background(), store, "r"); !errors.Is(err, ErrConfig) || complete {
@@ -368,9 +368,9 @@ func TestResolveStepHalt_ReservedNameIsRefused(t *testing.T) {
 	}
 }
 
-// RunSaga refuses a sub-run ID before it reads the journal, so it never rolls back a sub-agent's
-// run on its own (a recorded saga failure sends RunSaga straight to rollback).
-func TestRunSaga_SubRunIDIsRefusedBeforeRollback(t *testing.T) {
+// saga Run refuses a sub-run ID before it reads the journal, so it never rolls back a sub-agent's
+// run on its own (a recorded saga failure sends saga Run straight to rollback).
+func TestSagaRun_SubRunIDIsRefusedBeforeRollback(t *testing.T) {
 	ctx := context.Background()
 	store := NewMemStore()
 	j := mustJournal(store)

@@ -154,7 +154,7 @@ func TestSagaToolErrorURLCredentialsNotJournaled(t *testing.T) {
 	_, err := a.Run(context.Background(), "r1", agent.UserText("go"), agent.WithSaga())
 	var aborted *agent.SagaAborted
 	if !errors.As(err, &aborted) {
-		t.Fatalf("RunSaga = %v, want *SagaAborted", err)
+		t.Fatalf("saga Run = %v, want *SagaAborted", err)
 	}
 	if !strings.Contains(aborted.Cause.Error(), "SK-QUERY-SECRET") {
 		t.Errorf("SagaAborted.Cause = %v, want the tool's own error", aborted.Cause)
@@ -178,6 +178,6 @@ func TestSagaToolErrorURLCredentialsNotJournaled(t *testing.T) {
 	// A resumed saga reads the cause back from the journal: the terminal marker holds it redacted.
 	_, err = a.Run(context.Background(), "r1", agent.UserText("go"), agent.WithSaga())
 	if !errors.As(err, &aborted) || strings.Contains(aborted.Cause.Error(), "SK-QUERY-SECRET") {
-		t.Errorf("resumed RunSaga = %v, want *SagaAborted with the journaled (redacted) cause", err)
+		t.Errorf("resumed saga Run = %v, want *SagaAborted with the journaled (redacted) cause", err)
 	}
 }

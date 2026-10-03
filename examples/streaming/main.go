@@ -1,6 +1,6 @@
 // Command streaming shows Agent.Stream: range the lifecycle Events to render progress
 // (token deltas, turn boundaries, tool start/finish) while the durable loop runs
-// underneath, then call Final for the terminal answer. Run is literally Stream(...).Final().
+// underneath, then call Result for the terminal answer, which is what Run returns.
 //
 //	OPENROUTER_API_KEY=sk-... go run ./examples/streaming
 package main
@@ -72,7 +72,7 @@ func main() {
 		}
 	}
 
-	// Final drains anything left and returns the terminal answer (or error), exactly as Run would.
+	// Result drains anything left and returns the terminal answer (or error), exactly as Run would.
 	res, err := stream.Result()
 	if err != nil {
 		log.Fatalf("stream: %v", err)

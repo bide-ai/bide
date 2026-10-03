@@ -178,7 +178,7 @@ func TestOptionScopes_TypeChecked(t *testing.T) {
 
 // typeCheck type-checks body as the body of a function in a file that imports the agent package.
 func typeCheck(imp types.Importer, body string) error {
-	src := "package p\n\nimport \"github.com/bide-ai/bide/agent\"\n\nvar _ = agent.Build\n\nfunc _() {\n" + body + "\n}\n"
+	src := "package p\n\nimport \"github.com/bide-ai/bide/agent\"\n\nvar _ = agent.New\n\nfunc _() {\n" + body + "\n}\n"
 	fset := token.NewFileSet()
 	f, err := parser.ParseFile(fset, "p.go", src, 0)
 	if err != nil {

@@ -208,7 +208,7 @@ func testRecoverLoopWaitsForItsDrivesOnShutdown(t *testing.T) {
 	}
 }
 
-// Genuine failures reach the error handler; pauses (a ResumeHalt), lost leases and runs held by
+// Genuine failures reach the error handler; pauses (a OutcomeUnknown), lost leases and runs held by
 // another holder do not, and a run that completes is not driven again.
 func TestRecoverLoop_ReportsOnlyGenuineFailures(t *testing.T) {
 	synctest.Test(t, testRecoverLoopReportsOnlyGenuineFailures)

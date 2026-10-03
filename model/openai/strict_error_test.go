@@ -45,11 +45,11 @@ func TestStrictSchema_InexpressibleResponseFormatIsAnError(t *testing.T) {
 	}
 }
 
-// RunTypedNative with a result type strict mode cannot express reports it before any request.
-func TestRunTypedNative_InexpressibleTypeIsAnError(t *testing.T) {
+// RunTyped (OutputNative) with a result type strict mode cannot express reports it before any request.
+func TestRunTyped_NativeInexpressibleTypeIsAnError(t *testing.T) {
 	a := agenttest.MustNew(New("k", WithBaseURL("http://127.0.0.1:1")), agenttest.MemJournal())
 	_, _, err := a.RunTyped[tagsArgs](context.Background(), "r", agent.UserText("hi"), agent.WithOutputMode(agent.OutputNative))
 	if !errors.Is(err, schema.ErrStrictUnsupported) {
-		t.Fatalf("RunTypedNative = %v; want ErrStrictUnsupported", err)
+		t.Fatalf("RunTyped (OutputNative) = %v; want ErrStrictUnsupported", err)
 	}
 }

@@ -37,7 +37,7 @@ func TestModel9_T1_SagaStepWhoseSuccessAMiddlewareRejectedIsNotAccounted(t *test
 	if !errors.As(err, &ab) {
 		// The other sound answer: the run halts for the step's outcome, recording nothing.
 		if !errors.Is(err, ErrToolOutcomeUnknown) {
-			t.Fatalf("RunSaga = %v, want *SagaAborted or a halt on the step's outcome", err)
+			t.Fatalf("saga Run = %v, want *SagaAborted or a halt on the step's outcome", err)
 		}
 		return
 	}

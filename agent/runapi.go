@@ -1,6 +1,4 @@
-// runapi.go holds the Run API (docs/design/api-v1.md, item 1) under its transitional names:
-// Run, Resume, Stream and RunTyped. The 1.0 rewrite renames them Run,
-// Resume, Stream and RunTyped, and removes the string entry points they replace.
+// runapi.go holds the Run API (docs/design/api-v1.md, item 1): Run, Resume, Stream and RunTyped.
 
 package agent
 

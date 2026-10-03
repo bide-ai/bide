@@ -85,11 +85,7 @@ func TestRev117e_EmbeddingDecoratorDropsApprovalGate(t *testing.T) {
 // which drops the embedded tool's approval gate.
 type ptrTool struct{ spec ToolSpec }
 
-func (t *ptrTool) Name() string                { return t.spec.Name }
-func (t *ptrTool) Description() string         { return "" }
-func (t *ptrTool) ArgsSchema() json.RawMessage { return json.RawMessage(`{"type":"object"}`) }
-func (t *ptrTool) Safety() Safety              { return Safety{} }
-func (t *ptrTool) Spec() ToolSpec              { return t.spec }
+func (t *ptrTool) Spec() ToolSpec { return t.spec }
 func (t *ptrTool) Call(context.Context, json.RawMessage) (json.RawMessage, error) {
 	return json.RawMessage(`"sent"`), nil
 }

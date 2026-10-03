@@ -20,7 +20,7 @@ import (
 //
 // This is the accountability property of a declared flow (docs/guides/flows.md):
 // prove the run followed the declared graph, or point at where it diverged.
-// Conform reads history via agent.Durable.History and compares it to the frozen
+// Conform reads history via agent.Journal.History and compares it to the frozen
 // spec; it runs nothing, adds no executor, and never mutates the store.
 //
 // Conform is DECLARATION-vs-JOURNAL, not value verification. Its blind spot: it

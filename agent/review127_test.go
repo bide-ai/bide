@@ -356,7 +356,7 @@ func TestRequiredChoice_CheckedAtTheRun(t *testing.T) {
 // Suspicion (a) of the review of #127: whether a tool call is in a saga is its own run's flag. A
 // plain run started from a saga's tool call (child.Run with a SubRunFor ID) is not a saga, and its
 // calls are not in one; the context's saga mode used to be inherited from the call that started
-// the run. child.RunSaga is, and a sub-agent called from a saga runs as one.
+// the run. child.saga Run is, and a sub-agent called from a saga runs as one.
 func TestRunInfoSaga_IsTheRunsOwnFlag(t *testing.T) {
 	store := agenttest.MemJournal()
 	seen := map[string]bool{}

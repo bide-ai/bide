@@ -246,7 +246,7 @@ func TestMofnDST_InterleavedDecisions(t *testing.T) {
 
 // Crash at every write the resume performs once quorum is met. The gated tool is
 // non-idempotent, so it must fire at most once under every crash schedule, the run must end
-// completed or in ResumeHalt, and the final tally must be journaled exactly once with the
+// completed or in OutcomeUnknown, and the final tally must be journaled exactly once with the
 // same value regardless of where the crash landed.
 func TestMofnDST_CrashSweepAfterQuorum(t *testing.T) {
 	pol := mofnDSTPolicy()
@@ -311,6 +311,6 @@ func TestMofnDST_CrashSweepAfterQuorum(t *testing.T) {
 		}
 	}
 	if !haltSeen {
-		t.Fatal("no crash point exercised ResumeHalt; the halt path was never tested")
+		t.Fatal("no crash point exercised OutcomeUnknown; the halt path was never tested")
 	}
 }

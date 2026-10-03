@@ -14,16 +14,11 @@ type blockOnce struct {
 	blocked, release chan struct{}
 }
 
-func (*blockOnce) Name() string { return "wait" }
-
 // Spec describes the tool to the agent (see Tool).
 func (t *blockOnce) Spec() ToolSpec {
-	return ToolSpec{Name: t.Name(), Description: t.Description(), Input: t.ArgsSchema(), Safety: t.Safety()}
+	return ToolSpec{Name: "wait", Description: "", Input: json.RawMessage(`{"type":"object"}`), Safety: Safety{ReadOnly: true}}
 }
 
-func (*blockOnce) Description() string         { return "" }
-func (*blockOnce) ArgsSchema() json.RawMessage { return json.RawMessage(`{"type":"object"}`) }
-func (*blockOnce) Safety() Safety              { return Safety{ReadOnly: true} }
 func (t *blockOnce) Call(context.Context, json.RawMessage) (json.RawMessage, error) {
 	first := false
 	t.once.Do(func() { first = true })

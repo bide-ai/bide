@@ -12,7 +12,7 @@ import (
 )
 
 // This file is the event→audit sink: it turns Agent.Stream's ephemeral SEMANTIC lifecycle
-// events (AgentEvents — turn boundaries, tool start/finish, approvals, the final answer)
+// events (RunEvents — turn boundaries, tool start/finish, approvals, the final answer)
 // into a verifiable, tamper-evident log. Root/Head/Prove in this package commit over the
 // durable JOURNAL after a run; an EventLog commits over the live EVENT STREAM as it happens,
 // with the SAME RFC 6962 machinery (merkleRoot / auditPath / verifyPath) and the same
@@ -26,7 +26,7 @@ import (
 // eventDomain separates the event-log hash chain from the journal chain (audit.domain).
 var eventDomain = sha256.Sum256([]byte("bide.audit.events.v1"))
 
-// EventLog is an append-only, tamper-evident log of one run's AgentEvents. Build it by
+// EventLog is an append-only, tamper-evident log of one run's RunEvents. Build it by
 // Add-ing events in emission order (Agent.Stream emits them ordered from a single
 // goroutine); then Root/Head to commit, Prove for selective disclosure, and audit.Sign to
 // anchor. Not safe for concurrent Add — feed it from the one goroutine ranging Events.

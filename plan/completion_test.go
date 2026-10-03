@@ -185,7 +185,7 @@ func TestConform_ReplaysTheRouting(t *testing.T) {
 	}
 }
 
-// Flow.ResolveHalt checks a resolution against the flow before agent.ResolveHaltRef records it.
+// Flow.ResolveHalt checks a resolution against the flow before agent.ResolveHalt records it.
 func TestFlowResolveHalt_ChecksTheResolution(t *testing.T) {
 	ctx := context.Background()
 	halted := func(t *testing.T) (*Flow[int, string], *agent.MemStore, *agent.OutcomeUnknown) {

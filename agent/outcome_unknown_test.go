@@ -31,7 +31,7 @@ func TestToolOutcomeUnknown_SideEffectIsNotRecorded(t *testing.T) {
 	_, err = mustNew(m2, store, WithTools(charge)).Run(context.Background(), "r1", UserText("pay"))
 	var halt *OutcomeUnknown
 	if !errors.As(err, &halt) || halt.Op.ID != "c1" {
-		t.Fatalf("resume err = %v, want ResumeHalt for c1", err)
+		t.Fatalf("resume err = %v, want OutcomeUnknown for c1", err)
 	}
 	if halt.Cause != HaltCrashed || halt.Op != (OpRef{Kind: OpTool, ID: "c1", ToolName: "charge"}) {
 		t.Fatalf("halt = %+v, want an OpTool halt on charge c1 with Cause %q (a marker found on resume)", halt, HaltCrashed)

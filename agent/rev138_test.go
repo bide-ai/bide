@@ -136,7 +136,7 @@ func TestRev138_IsCompleteIgnoresFirstEnd(t *testing.T) {
 	}
 }
 
-// rev138 F: a saga session turn (SendMessage WithSaga) paused for approval is cancelled; Cancel
+// rev138 F: a saga session turn (Send WithSaga) paused for approval is cancelled; Cancel
 // writes only the rollback request, so cancelledFirst is false and the next message is refused:
 // rule 16's wedge, for a saga turn, until the cancelled message is sent again.
 func TestRev138_CancelledSagaTurnBlocksSession(t *testing.T) {

@@ -38,7 +38,7 @@ func TestResume_RelabelledRetrySafeStillHalts(t *testing.T) {
 	_, err := mustNew(m, store, WithTools(relabelled)).Run(context.Background(), "r1", UserText("pay"))
 	var halt *OutcomeUnknown
 	if !errors.As(err, &halt) || halt.Op.ID != "c1" {
-		t.Fatalf("resume err = %v after %d charges, want *ResumeHalt for c1", err, charged)
+		t.Fatalf("resume err = %v after %d charges, want *OutcomeUnknown for c1", err, charged)
 	}
 	if charged != 1 {
 		t.Fatalf("charged %d times, want 1", charged)
@@ -56,7 +56,7 @@ func TestResume_AttemptedToolNoLongerRegisteredHalts(t *testing.T) {
 	_, err := mustNew(m, store).Run(context.Background(), "r1", UserText("pay"))
 	var halt *OutcomeUnknown
 	if !errors.As(err, &halt) || halt.Op.ID != "c1" || halt.Op.ToolName != "charge" {
-		t.Fatalf("resume err = %v, want *ResumeHalt for charge (c1)", err)
+		t.Fatalf("resume err = %v, want *OutcomeUnknown for charge (c1)", err)
 	}
 }
 
@@ -75,7 +75,7 @@ func TestStep_RelabelledRetrySafeStillHalts(t *testing.T) {
 	_, err := store.Step(context.Background(), "r1", "reserve", reserve, WithSafety(Safety{Idempotent: true}))
 	var halt *OutcomeUnknown
 	if !errors.As(err, &halt) || halt.Op.ID != "reserve" {
-		t.Fatalf("resume err = %v after %d runs, want *ResumeHalt for reserve", err, ran)
+		t.Fatalf("resume err = %v after %d runs, want *OutcomeUnknown for reserve", err, ran)
 	}
 	if ran != 1 {
 		t.Fatalf("the step ran %d times, want 1", ran)

@@ -12,7 +12,7 @@ import (
 	"github.com/bide-ai/bide/agent/agenttest"
 )
 
-// V1 (review of #127): the adapter declares its tool rules (agent.ToolRules), so agent.Build
+// V1 (review of #127): the adapter declares its tool rules (agent.ToolRules), so agent.New
 // refuses a tool name OpenAI refuses, and a run of an agent with tool choice "required" and
 // nothing to call fails with ErrConfig before anything reaches the provider.
 func TestBuild_FollowsTheAdaptersToolRules(t *testing.T) {

@@ -41,7 +41,7 @@ func TestWithApproval_PausesAndResumes(t *testing.T) {
 	_, err = a.Run(context.Background(), "r1", agent.UserText("send $5"))
 	var pend *agent.ApprovalPending
 	if !errors.As(err, &pend) || pend.ToolName != "transfer" || pend.ToolUseID != "c1" {
-		t.Fatalf("run err = %v, want *PendingApproval for transfer", err)
+		t.Fatalf("run err = %v, want *ApprovalPending for transfer", err)
 	}
 	if n := calls.Load(); n != 0 {
 		t.Fatalf("the server received %d calls before approval, want 0", n)
@@ -100,7 +100,7 @@ func TestWithApproval_Quorum(t *testing.T) {
 		_, err := a.Run(context.Background(), "r1", agent.UserText("send $5"))
 		if i < 2 {
 			if !errors.As(err, &pend) || pend.Quorum == nil {
-				t.Fatalf("after %d approvals: err = %v, want *PendingApproval with a quorum", i, err)
+				t.Fatalf("after %d approvals: err = %v, want *ApprovalPending with a quorum", i, err)
 			}
 			if n := calls.Load(); n != 0 {
 				t.Fatalf("after %d approvals the server received %d calls", i, n)

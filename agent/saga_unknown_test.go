@@ -33,7 +33,7 @@ func (m *sagaTurns) Stream(context.Context, Request) (*Stream, error) {
 // A saga turn charges the card and books a flight at once. The booking fails; the charge had
 // already gone through and was waiting for its response when the failure cancelled it. The
 // rollback cannot know the charge's outcome, so it must not report a clean abort: it stops with
-// a ResumeHalt for the charge, which lists it as uncompensated.
+// a OutcomeUnknown for the charge, which lists it as uncompensated.
 func TestSaga_RollbackHaltsOnAnUnknownOutcome(t *testing.T) {
 	var charged, refunded atomic.Int32
 	paying := make(chan struct{})
@@ -178,7 +178,7 @@ func TestSaga_IdempotentWriteWithoutCompensatorIsReported(t *testing.T) {
 }
 
 // Resolving the halted charge lets the rollback finish: ResolveHalt records that the charge
-// went through, and the next RunSaga refunds it.
+// went through, and the next saga Run refunds it.
 func TestSaga_ResolvedUnknownOutcomeIsCompensated(t *testing.T) {
 	paying := make(chan struct{})
 	var refunded atomic.Int32

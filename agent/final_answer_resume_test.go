@@ -140,14 +140,14 @@ func TestFinalAnswerCrash_ResumeReplaysAnswer(t *testing.T) {
 				return textOf(m), err
 			},
 		},
-		{name: "RunResult", runID: "r1", script: chargeThenAnswer, entry: func(a *Agent) (string, error) {
+		{name: "Run Result", runID: "r1", script: chargeThenAnswer, entry: func(a *Agent) (string, error) {
 			res, err := a.Run(ctx, "r1", UserText("pay"))
 			if err != nil {
 				return "", err
 			}
 			return textOf(res.Message), nil
 		}},
-		{name: "RunSaga", runID: "r1", script: chargeThenAnswer, entry: func(a *Agent) (string, error) {
+		{name: "Run WithSaga", runID: "r1", script: chargeThenAnswer, entry: func(a *Agent) (string, error) {
 			res, err := a.Run(ctx, "r1", UserText("pay"), WithSaga())
 			var m Message
 			if res != nil {
@@ -155,7 +155,7 @@ func TestFinalAnswerCrash_ResumeReplaysAnswer(t *testing.T) {
 			}
 			return textOf(m), err
 		}},
-		{name: "StreamSaga", runID: "r1", script: chargeThenAnswer, entry: func(a *Agent) (string, error) {
+		{name: "Stream WithSaga", runID: "r1", script: chargeThenAnswer, entry: func(a *Agent) (string, error) {
 			res, err := a.Stream(ctx, "r1", UserText("pay"), WithSaga()).Result()
 			var m Message
 			if res != nil {
@@ -200,7 +200,7 @@ func TestFinalAnswerCrash_ResumeReplaysAnswer(t *testing.T) {
 				out, _, err := a.RunTyped[typedAnswer](ctx, "r1", UserText("pay"))
 				return out.Name, err
 			}},
-		{name: "RunTypedNative", runID: "r1", script: [][]Emit{toolTurn("c1", "charge", `{}`), textTurn(`{"name":"done"}`)},
+		{name: "RunTyped OutputNative", runID: "r1", script: [][]Emit{toolTurn("c1", "charge", `{}`), textTurn(`{"name":"done"}`)},
 			entry: func(a *Agent) (string, error) {
 				out, _, err := a.RunTyped[typedAnswer](ctx, "r1", UserText("pay"), WithOutputMode(OutputNative))
 				return out.Name, err

@@ -85,7 +85,7 @@ func TestTool_CrashBeforeItStartsStillHalts(t *testing.T) {
 	_, err := mustNew(resume, mustJournal(store.MemStore), WithTools(charge)).Run(context.Background(), "r1", UserText("pay"))
 	var halt *OutcomeUnknown
 	if !errors.As(err, &halt) || halt.Op.ID != "c1" {
-		t.Fatalf("resume err = %v after %d charges, want *ResumeHalt for c1", err, calls.Load())
+		t.Fatalf("resume err = %v after %d charges, want *OutcomeUnknown for c1", err, calls.Load())
 	}
 }
 
@@ -142,7 +142,7 @@ func TestStep_ReattemptIsClaimedOnce(t *testing.T) {
 			_, err := mustJournal(store.MemStore).Step(context.Background(), "r1", "reserve", reserve)
 			var halt *OutcomeUnknown
 			if err != nil && !errors.As(err, &halt) {
-				t.Errorf("a racing re-attempt failed with %v, want the result or a ResumeHalt", err)
+				t.Errorf("a racing re-attempt failed with %v, want the result or a OutcomeUnknown", err)
 			}
 		}()
 	}

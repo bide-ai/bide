@@ -26,8 +26,8 @@ func twice(u Usage) Usage {
 
 // A turn whose first attempt failed and was retried used both attempts' tokens. The recorded
 // turn keeps the answer's usage; the failed attempt's is reported as discarded spend, in
-// RunResult and in the journal.
-func TestRunResult_ReportsDiscardedSpend(t *testing.T) {
+// Run and in the journal.
+func TestResult_ReportsDiscardedSpend(t *testing.T) {
 	m := &scriptModel{turns: [][]Emit{truncatedTurn(billed), textTurnWithUsage("done", billed)}}
 	store := memJournal()
 	res, err := mustNew(m, store, WithMiddleware(retryOnceMW)).Run(context.Background(), "r", UserText("go"))
@@ -87,7 +87,7 @@ func TestTokenBudget_DiscardedSpendSurvivesResume(t *testing.T) {
 	_, err := mustNew(m, store, WithTools(gated), WithMiddleware(retryOnceMW)).Run(ctx, "r", UserText("go"))
 	var pa *ApprovalPending
 	if !errors.As(err, &pa) {
-		t.Fatalf("err = %v, want PendingApproval", err)
+		t.Fatalf("err = %v, want ApprovalPending", err)
 	}
 	if err := Approve(ctx, store, "r", "c1", true); err != nil {
 		t.Fatal(err)
@@ -126,7 +126,7 @@ func TestTokenBudget_CountsFailedCalls(t *testing.T) {
 
 // A stream that fails after reporting its usage was billed for it: a Finish followed by another
 // event breaks the stream protocol, and the usage the Finish carried still counts.
-func TestRunResult_SpendOfBrokenStream(t *testing.T) {
+func TestResult_SpendOfBrokenStream(t *testing.T) {
 	broken := append(textTurnWithUsage("draft", billed), Emit{Event: TextDelta{Text: "late"}})
 	m := &scriptModel{turns: [][]Emit{broken, textTurnWithUsage("done", billed)}}
 	res, err := mustNew(m, memJournal(), WithMiddleware(retryOnceMW)).Run(context.Background(), "r", UserText("go"))
@@ -140,7 +140,7 @@ func TestRunResult_SpendOfBrokenStream(t *testing.T) {
 
 // A response a middleware supplies without sending a request (a cache) reports usage no request
 // spent; the turn's discarded spend is then zero, never negative.
-func TestRunResult_SpendOfSuppliedResponse(t *testing.T) {
+func TestResult_SpendOfSuppliedResponse(t *testing.T) {
 	cache := func(ModelHandler) ModelHandler {
 		return func(context.Context, ModelCall) (ModelResponse, error) {
 			return ModelResponse{Message: Message{Role: RoleAssistant, Parts: []Part{Text{Text: "cached"}}}, Usage: billed}, nil
@@ -164,7 +164,7 @@ func TestRunResult_SpendOfSuppliedResponse(t *testing.T) {
 
 // Each turn records only its own discarded spend: what one turn discarded is not counted again
 // with the next.
-func TestRunResult_SpendAcrossTurns(t *testing.T) {
+func TestResult_SpendAcrossTurns(t *testing.T) {
 	var calls int
 	tool := &countingTool{name: "lookup", safety: Safety{ReadOnly: true}, calls: &calls}
 	m := &scriptModel{turns: [][]Emit{

@@ -42,7 +42,7 @@ func testR117SagaLateErrorOfARetrySafeWrite(t *testing.T) {
 	_, err := mustNew(m, store, WithTools(hold)).Run(context.Background(), "s1", UserText("book"), WithSaga())
 	var ab *SagaAborted
 	if !errors.As(err, &ab) {
-		t.Fatalf("RunSaga: err = %v, want *SagaAborted", err)
+		t.Fatalf("saga Run: err = %v, want *SagaAborted", err)
 	}
 	if committed.Load() != 1 || undone.Load() != 0 || len(ab.UnknownOutcome) != 1 || ab.UnknownOutcome[0] != "hold" {
 		t.Fatalf("a write with an unknown outcome: committed %d, undone %d, compensated %q, uncompensated %q, unknown %q; want it committed once, reported as unknown, not compensated",

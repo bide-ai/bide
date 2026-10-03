@@ -56,7 +56,7 @@ func (h *hookStore) Load(ctx context.Context, runID string, after int64) iter.Se
 // Two drivers of one side-effect Step in one process, through one Journal. The driver that wins
 // the claim must run the step (or hand its value to the other). Instead, when the loser's
 // halt-probe Do starts the shared in-flight entry first, the winner joins it, gets the loser's
-// ResumeHalt, never calls fn, and records its attempt as not started: both drivers halt and
+// OutcomeUnknown, never calls fn, and records its attempt as not started: both drivers halt and
 // nobody runs the step.
 func TestStep_ClaimWinnerRunsTheStepWhenALoserReadsFirst(t *testing.T) {
 	ctx := context.Background()
@@ -104,6 +104,6 @@ func TestStep_ClaimWinnerRunsTheStepWhenALoserReadsFirst(t *testing.T) {
 		t.Errorf("fn ran %d times across the two drivers, want exactly 1 (the claim winner)", ran.Load())
 	}
 	if errors.As(winnerErr, &halt) {
-		t.Errorf("the driver that won the claim got a ResumeHalt (an unknown outcome) for a step nobody started")
+		t.Errorf("the driver that won the claim got a OutcomeUnknown (an unknown outcome) for a step nobody started")
 	}
 }

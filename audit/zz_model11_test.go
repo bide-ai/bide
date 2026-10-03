@@ -76,7 +76,7 @@ func TestModel11_D1_RollbackAcrossRotatedGrants(t *testing.T) {
 		_, err := agenttest.MustNew(script(), store, agent.WithTools(tools()...)).Run(ctx, "trip", agent.UserText("go"), agent.WithSaga())
 		var ab *agent.SagaAborted
 		if !errors.As(err, &ab) {
-			t.Fatalf("RunSaga = %v, want *SagaAborted", err)
+			t.Fatalf("saga Run = %v, want *SagaAborted", err)
 		}
 		return ab
 	}
@@ -130,7 +130,7 @@ func TestModel11_D2_RollbackRerunAfterGrantExpiry(t *testing.T) {
 	_, err := parent.Run(WithGrant(ctx, m11Root(t, signer, "p"), signer), "trip", agent.UserText("go"), agent.WithSaga())
 	var ab *agent.SagaAborted
 	if !errors.As(err, &ab) {
-		t.Fatalf("RunSaga = %v, want *SagaAborted", err)
+		t.Fatalf("saga Run = %v, want *SagaAborted", err)
 	}
 	t.Logf("compensated %v, unknown %v, err %v; idem called %d times, undone %d", ab.Compensated, ab.UnknownOutcome, ab.CompensateErr, calls.Load(), undone.Load())
 	if calls.Load() != 0 {
@@ -142,7 +142,7 @@ func TestModel11_D2_RollbackRerunAfterGrantExpiry(t *testing.T) {
 }
 
 // D3 (findings/d3-plain-deleg): a saga's call starts a plain programmatic sub-run (Run, not
-// RunSaga); in it, a sub-agent's run makes a compensable write and then fails, so the plain run
+// saga Run); in it, a sub-agent's run makes a compensable write and then fails, so the plain run
 // records the sub-agent call as an error result and goes on. The saga's rollback walks the
 // sub-run, but rollbackRun skips a call with an error result before its sub-agent recursion, so
 // the write is neither compensated nor listed.
@@ -183,7 +183,7 @@ func TestModel11_D3_FailedSubAgentInPlainSubRunSkipped(t *testing.T) {
 	_, err := parent.Run(ctx, "p", agent.UserText("go"), agent.WithSaga())
 	var ab *agent.SagaAborted
 	if !errors.As(err, &ab) {
-		t.Fatalf("RunSaga = %v, want *SagaAborted", err)
+		t.Fatalf("saga Run = %v, want *SagaAborted", err)
 	}
 	t.Logf("compensated %v, uncompensated %v, unknown %v, err %v", ab.Compensated, ab.Uncompensated, ab.UnknownOutcome, ab.CompensateErr)
 	listed := slices.Contains(ab.Uncompensated, "charge") || slices.Contains(ab.Uncompensated, "worker")
@@ -241,7 +241,7 @@ func TestModel11_D1_RollbackAcrossRotatedKeys(t *testing.T) {
 		_, err := agenttest.MustNew(m, store, agent.WithTools(tools()...)).Run(ctx, "trip", agent.UserText("go"), agent.WithSaga())
 		var ab *agent.SagaAborted
 		if !errors.As(err, &ab) {
-			t.Fatalf("RunSaga = %v, want *SagaAborted", err)
+			t.Fatalf("saga Run = %v, want *SagaAborted", err)
 		}
 		return ab
 	}
@@ -340,7 +340,7 @@ func TestModel11_D2_UnknownEvenWithoutABeganRecord(t *testing.T) {
 	_, err := parent.Run(WithGrant(ctx, m11Root(t, signer, "p"), signer), "trip", agent.UserText("go"), agent.WithSaga())
 	var ab *agent.SagaAborted
 	if !errors.As(err, &ab) {
-		t.Fatalf("RunSaga = %v, want *SagaAborted", err)
+		t.Fatalf("saga Run = %v, want *SagaAborted", err)
 	}
 	recs, err := store.History(ctx, agent.SubRunID("trip", "c1"))
 	if err != nil {

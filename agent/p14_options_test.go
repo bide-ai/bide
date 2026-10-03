@@ -102,14 +102,14 @@ func pauseThenApprove(t *testing.T, a *agent.Agent, j *agent.Journal, opts ...ag
 // Rule 9: every later drive runs under run:start's options, whatever the agent's defaults are and
 // whatever entry point resumes it.
 func TestP14Rule09_LaterDrivesRunUnderJournaledOptions(t *testing.T) {
-	for _, entry := range []string{"ResumeRun", "Run"} {
+	for _, entry := range []string{"Resume", "Run"} {
 		t.Run(entry, func(t *testing.T) {
 			ctx := context.Background()
 			j, _ := p14Journal(t)
 			a, model, _ := approvalAgent(t, j, agent.WithSystemPrompt("agent"), agent.WithMaxTurns(10), agent.WithSampling(agent.Temperature(0.9)))
 			pauseThenApprove(t, a, j, agent.WithSystemPrompt("per-run"), agent.WithMaxTurns(2), agent.WithSampling(agent.Temperature(0.3)))
 			var err error
-			if entry == "ResumeRun" {
+			if entry == "Resume" {
 				_, err = a.Resume(ctx, "r")
 			} else {
 				_, err = a.Run(ctx, "r", agent.UserText("go"))
@@ -128,14 +128,14 @@ func TestP14Rule09_LaterDrivesRunUnderJournaledOptions(t *testing.T) {
 	}
 }
 
-// ResumeRun of a run with no run:start is ErrNotStarted, and drives nothing.
+// Resume of a run with no run:start is ErrNotStarted, and drives nothing.
 func TestP14Rule09_ResumeOfUnstartedRun(t *testing.T) {
 	j, _ := p14Journal(t)
 	model := &p14Model{turns: []p14Turn{{text: "done"}}}
 	a := p14Build(t, model, j)
 	res, err := a.Resume(context.Background(), "nope")
 	if !errors.Is(err, agent.ErrNotStarted) || res == nil || model.calls.Load() != 0 {
-		t.Fatalf("ResumeRun = %v, %v (model calls %d); want ErrNotStarted with a Result", res, err, model.calls.Load())
+		t.Fatalf("Resume = %v, %v (model calls %d); want ErrNotStarted with a Result", res, err, model.calls.Load())
 	}
 }
 
@@ -516,7 +516,7 @@ func TestP14_ResultOnEveryErrorKind(t *testing.T) {
 	a := p14Build(t, &p14Model{turns: []p14Turn{{text: "x"}}}, j)
 	for _, id := range []string{"", "a>b"} {
 		if res, err := a.Run(ctx, id, agent.UserText("go")); res != nil || !errors.Is(err, agent.ErrConfig) {
-			t.Fatalf("RunMessage(%q) = %v, %v; want ErrConfig and no Result", id, res, err)
+			t.Fatalf("Run(%q) = %v, %v; want ErrConfig and no Result", id, res, err)
 		}
 	}
 	if err := agent.ValidateRunID("ok:run/1"); err != nil {

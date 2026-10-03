@@ -6,8 +6,8 @@ package agent_test
 //
 // For each scenario, the harness runs the real runtime against a MemStore wrapped to fail the
 // scheduled persists, and re-drives the run the way an operator would until it settles: a crash is
-// resumed, a PendingApproval gets the scenario's decision (Approve) and is resumed, and a
-// ResumeHalt is reconciled with the call's true outcome (ResolveHalt) and resumed. It then checks:
+// resumed, a ApprovalPending gets the scenario's decision (Approve) and is resumed, and a
+// OutcomeUnknown is reconciled with the call's true outcome (ResolveHalt) and resumed. It then checks:
 //
 //   - the settled outcome (answer, pause, or saga abort with its compensated and uncompensated
 //     lists) equals the reference's;
@@ -183,18 +183,17 @@ type rmTool struct {
 	comp, gated bool
 }
 
-func (t *rmTool) Name() string                { return rmToolName(t.kind, t.comp, t.gated) }
-func (t *rmTool) Description() string         { return "" }
-func (t *rmTool) ArgsSchema() json.RawMessage { return json.RawMessage(`{"type":"object"}`) }
+func (t *rmTool) name() string { return rmToolName(t.kind, t.comp, t.gated) }
+
 func (t *rmTool) Spec() agent.ToolSpec {
-	s := agent.ToolSpec{Name: t.Name(), Input: t.ArgsSchema(), Safety: t.Safety()}
+	s := agent.ToolSpec{Name: t.name(), Input: json.RawMessage(`{"type":"object"}`), Safety: t.safety()}
 	if t.gated {
 		s.Approval = agent.SingleApproval()
 	}
 	return s
 }
 
-func (t *rmTool) Safety() agent.Safety {
+func (t *rmTool) safety() agent.Safety {
 	var s agent.Safety
 	switch t.kind {
 	case rmRO:
@@ -206,7 +205,7 @@ func (t *rmTool) Safety() agent.Safety {
 }
 
 func (t *rmTool) Call(ctx context.Context, args json.RawMessage) (json.RawMessage, error) {
-	c := t.w.callFor(t.Name(), args)
+	c := t.w.callFor(t.name(), args)
 	if c == nil {
 		return nil, errors.New("unexpected call")
 	}
@@ -231,7 +230,7 @@ func (t *rmTool) Call(ctx context.Context, args json.RawMessage) (json.RawMessag
 type rmCompTool struct{ *rmTool }
 
 func (t rmCompTool) Compensate(_ context.Context, args, result json.RawMessage) error {
-	c := t.w.callFor(t.Name(), args)
+	c := t.w.callFor(t.name(), args)
 	if c == nil {
 		return errors.New("unexpected compensation")
 	}

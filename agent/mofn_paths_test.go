@@ -33,7 +33,7 @@ func streamMofn(t *testing.T, store *Journal, runID string, first bool, pol *App
 
 // The streaming path runs the same m-of-n gate as Run: each pause emits ApprovalRequired
 // carrying the running tally (so a UI can show progress before Final), Final returns the
-// matching *PendingApproval, and the run proceeds exactly once at Need.
+// matching *ApprovalPending, and the run proceeds exactly once at Need.
 func TestMofn_StreamEmitsTally(t *testing.T) {
 	store := memJournal()
 	pol := &ApprovalPolicy{Need: 2, Approvers: abc}
@@ -54,12 +54,12 @@ func TestMofn_StreamEmitsTally(t *testing.T) {
 	reqs, _, err := streamMofn(t, store, "s1", true, pol, vf, &charged)
 	wantPause(reqs, err, counts{Need: 2, Pending: []string{"alice", "bob", "carol"}})
 
-	// The event's tally is its own copy: mutating it does not reach the returned PendingApproval.
+	// The event's tally is its own copy: mutating it does not reach the returned ApprovalPending.
 	reqs[0].Quorum.Pending[0] = "mutated"
 	var pend *ApprovalPending
 	errors.As(err, &pend)
 	if pend.Quorum.Pending[0] != "alice" {
-		t.Fatalf("PendingApproval.Quorum shares the event's Pending slice: %v", pend.Quorum.Pending)
+		t.Fatalf("ApprovalPending.Quorum shares the event's Pending slice: %v", pend.Quorum.Pending)
 	}
 
 	approveAs(t, store, "s1", "c1", "alice", true)
@@ -104,12 +104,12 @@ func TestMofn_StreamOneOfOneHasNoTally(t *testing.T) {
 		t.Fatal("no ApprovalRequired event for a RequiresApproval tool")
 	}
 	if _, err := as.Result(); !errors.As(err, new(*ApprovalPending)) {
-		t.Fatalf("Final err = %v, want *PendingApproval", err)
+		t.Fatalf("Final err = %v, want *ApprovalPending", err)
 	}
 }
 
 // An m-of-n gate on a tool inside a sub-agent pauses the whole tree: the parent's Run
-// surfaces the sub-run's *PendingApproval (with its tally), and approvers sign its Subject(),
+// surfaces the sub-run's *ApprovalPending (with its tally), and approvers sign its Subject(),
 // whose RunID is the SUB-run's id, because the run id is part of the signed decision bytes. A
 // decision signed against the parent's run id does not count, and does not lock the approver
 // out: re-signed correctly, it counts. At Need the parent completes and the tool runs once.
@@ -139,7 +139,7 @@ func TestMofn_InsideSubAgent(t *testing.T) {
 	_, err := parent.Run(ctx, "root", UserText("delegate"))
 	var pend *ApprovalPending
 	if !errors.As(err, &pend) || pend.Quorum == nil {
-		t.Fatalf("parent Run err = %v, want an m-of-n *PendingApproval from the sub-agent", err)
+		t.Fatalf("parent Run err = %v, want an m-of-n *ApprovalPending from the sub-agent", err)
 	}
 	subRunID := SubRunID("root", "c1")
 	if pend.RunID != subRunID || pend.ToolUseID != "s1" || pend.ToolName != "charge" {

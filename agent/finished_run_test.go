@@ -110,19 +110,19 @@ func TestFinishedRun_RunIsFinal(t *testing.T) {
 	}
 }
 
-// The same holds through RunResult (zero usage, zero live turns), RunSaga, Stream, and
-// StreamSaga, which all share the loop.
+// The same holds through Run (zero usage, zero live turns), saga Run, Stream, and
+// saga Stream, which all share the loop.
 func TestFinishedRun_EveryEntryPoint(t *testing.T) {
 	ctx := context.Background()
 	entries := map[string]func(a *Agent) (Message, error){
-		"RunResult": func(a *Agent) (Message, error) {
+		"Run Result": func(a *Agent) (Message, error) {
 			res, err := a.Run(ctx, "r1", UserText("pay"))
 			if err == nil && (res.Usage != (Usage{}) || res.Turns != 0) {
-				return Message{}, fmt.Errorf("RunResult usage=%+v turns=%d, want zero for a finished run", res.Usage, res.Turns)
+				return Message{}, fmt.Errorf("Run usage=%+v turns=%d, want zero for a finished run", res.Usage, res.Turns)
 			}
 			return res.Message, err
 		},
-		"RunSaga": func(a *Agent) (Message, error) {
+		"Run WithSaga": func(a *Agent) (Message, error) {
 			res, err := a.Run(ctx, "r1", UserText("pay"), WithSaga())
 			if err != nil {
 				return Message{}, err
@@ -151,7 +151,7 @@ func TestFinishedRun_EveryEntryPoint(t *testing.T) {
 			}
 			return res.Message, nil
 		},
-		"StreamSaga": func(a *Agent) (Message, error) {
+		"Stream WithSaga": func(a *Agent) (Message, error) {
 			res, err := a.Stream(ctx, "r1", UserText("pay"), WithSaga()).Result()
 			if err != nil {
 				return Message{}, err

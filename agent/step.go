@@ -27,8 +27,7 @@ import (
 // and writes it again at the next claim of the same name, which then loses to the marker its
 // earlier claim may have left: a caller that claims one name only (rather than numbered
 // re-attempts, as Step and tool calls do) halts on it, which is safe.
-func ClaimAttempt(ctx context.Context, d *Journal, runID, name string, rec Record) (won bool, got Record, err error) {
-	j := d
+func ClaimAttempt(ctx context.Context, j *Journal, runID, name string, rec Record) (won bool, got Record, err error) {
 	return j.claim(ctx, runID, name, rec)
 }
 
@@ -45,7 +44,7 @@ func ClaimAttempt(ctx context.Context, d *Journal, runID, name string, rec Recor
 // A step runs at most once, like a tool call. By default it is treated as a side effect: an
 // attempt marker is journaled before fn runs, so if the process dies after fn's effect and
 // before its result is recorded, the resumed step returns *OutcomeUnknown instead of running fn
-// again. Clear it with ResolveHaltRef (the halt's Op is OpRef{Kind: OpStep, ID: name}) once the
+// again. Clear it with ResolveHalt (the halt's Op is OpRef{Kind: OpStep, ID: name}) once the
 // true outcome is known. A step that is safe to re-run declares it with WithSafety (ReadOnly or
 // Idempotent); it then skips the marker and simply re-runs after a crash.
 //
@@ -69,21 +68,21 @@ func ClaimAttempt(ctx context.Context, d *Journal, runID, name string, rec Recor
 // name must not be empty, and must not start with a prefix the engine reserves for its own journal keys ("@", "run:",
 // "tool:", "attempt:", "approval:", "signal:", and the rest; see IsReservedStepName): such a
 // name is ErrConfig.
-func (d *Journal) Step[T any](ctx context.Context, runID, name string, fn func(context.Context) (T, error), opts ...StepOption) (T, error) {
+func (j *Journal) Step[T any](ctx context.Context, runID, name string, fn func(context.Context) (T, error), opts ...StepOption) (T, error) {
 	if err := checkStepName("Step", name); err != nil {
 		var zero T
 		return zero, err
 	}
-	return step(ctx, d, runID, planScopedStep(ctx, runID, name), fn, opts...)
+	return step(ctx, j, runID, planScopedStep(ctx, runID, name), fn, opts...)
 }
 
 // step is Step without the check on name, for the engine's own steps.
-func step[T any](ctx context.Context, d *Journal, runID, name string, fn func(context.Context) (T, error), opts ...StepOption) (T, error) {
+func step[T any](ctx context.Context, j *Journal, runID, name string, fn func(context.Context) (T, error), opts ...StepOption) (T, error) {
 	var out T
 	if err := ctx.Err(); err != nil {
 		return out, err // a cancelled caller starts no new step
 	}
-	if err := checkJournal(d); err != nil {
+	if err := checkJournal(j); err != nil {
 		return out, err
 	}
 	var cfg stepConfig
@@ -107,7 +106,6 @@ func step[T any](ctx context.Context, d *Journal, runID, name string, fn func(co
 	}
 	var rec Record
 	var err error
-	j := d
 	rec, err = journalStep(ctx, j, runID, name, cfg, body)
 	if err != nil {
 		return out, err
@@ -168,7 +166,7 @@ func journalStep(ctx context.Context, j *Journal, runID, name string, cfg stepCo
 		// The halt's cause is what this driver saw of the owner. An owner whose call it found in
 		// flight was live after the claim: HaltContended, since that driver owns the effect and
 		// may still be running it. Otherwise nothing says the owner is live (it may have died, or
-		// be in another process, or not have called yet): HaltCrashed, which ResolveHaltRef
+		// be in another process, or not have called yet): HaltCrashed, which ResolveHalt
 		// resolves only after its own live-driver check.
 		at := markerTime(marker.AttemptedAt)
 		if b, ok, err := joinFlight(flightKey{j.id, runID, name}); ok {

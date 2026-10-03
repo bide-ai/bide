@@ -254,7 +254,7 @@ func (r *Registry) RegisterStep[I, O any](name string, fn func(context.Context, 
 // wrapper check refuses (as agent.New would), is an error, surfaced at Load and
 // returned here for inline checking.
 //
-// Safety AUTO-DERIVES from the tool's spec (agent.SpecOf), mirroring Builder.Tool; an explicit
+// Safety AUTO-DERIVES from the tool's spec (agent.Tool.Spec), mirroring Builder.Tool; an explicit
 // plan.ReadOnly()/plan.Idempotent() option overrides the derived Safety. Safety is
 // recorded in Go here, not in the config JSON.
 func (r *Registry) RegisterTool[I, O any](name string, t agent.Tool, opts ...NodeOption) error {

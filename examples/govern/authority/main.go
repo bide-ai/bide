@@ -5,7 +5,7 @@
 // every governed action's leaf commits to who acted, on whose behalf, under what authority, and the
 // resulting state.
 //
-// No LLM or network: the agent's model is scripted (agent.NewScriptedModel) to call the governed
+// No LLM or network: the agent's model is scripted (agenttest.ScriptedModel) to call the governed
 // buy tool six times, so the example runs offline and exercises the governance + identity + audit
 // machinery through a real agent run. Swap the scripted model for a real one and the guarantees are
 // identical.

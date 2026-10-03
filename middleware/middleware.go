@@ -3,7 +3,7 @@
 // calls, and token usage, not raw bytes). Attach with the agent.WithMiddleware option (and tool
 // middleware with agent.WithToolMiddleware).
 //
-//	a, err := agent.Build(model, journal, agent.WithTools(tools...), agent.WithMiddleware(
+//	a, err := agent.New(model, journal, agent.WithTools(tools...), agent.WithMiddleware(
 //		middleware.Retry(3, middleware.WithRetryIf(middleware.Retryable)),
 //		middleware.RateLimit(middleware.NewRateLimiter(time.Second, 5)),
 //	))

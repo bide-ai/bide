@@ -16,7 +16,7 @@ import (
 	"github.com/bide-ai/bide/internal/toolhook"
 )
 
-// run is the single loop shared by Run/RunSaga (emit == nil) and Stream/StreamSaga
+// run is the single loop shared by Run (emit == nil) and Stream
 // (emit receives lifecycle events). It drives one durable run seeded with `seed` — the
 // conversation to start from: a single user turn for Run, or the full transcript plus
 // the new user turn for a Session turn. The system prompt, if set, is prepended ahead of
@@ -983,7 +983,7 @@ func (a *Agent) runLoop(ctx context.Context, runID string, d *driveSpec) (Messag
 		if err := werr; err != nil {
 			var trip *sagaTrip
 			if errors.As(err, &trip) {
-				return leave(trip) // RunSaga catches → compensates
+				return leave(trip) // the saga driver catches it and compensates
 			}
 			return leave(err)
 		}

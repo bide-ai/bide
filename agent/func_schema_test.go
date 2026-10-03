@@ -40,6 +40,6 @@ func TestRunTyped_UndescribableTypeIsConfigError(t *testing.T) {
 		t.Fatalf("RunTyped = %v; want ErrConfig wrapping schema.ErrUnsupportedType", err)
 	}
 	if _, _, err := a.RunTyped[undecodableArgs](context.Background(), "r2", UserText("go"), WithOutputMode(OutputNative)); !errors.Is(err, ErrConfig) || !errors.Is(err, schema.ErrUnsupportedType) {
-		t.Fatalf("RunTypedNative = %v; want ErrConfig wrapping schema.ErrUnsupportedType", err)
+		t.Fatalf("RunTyped (OutputNative) = %v; want ErrConfig wrapping schema.ErrUnsupportedType", err)
 	}
 }

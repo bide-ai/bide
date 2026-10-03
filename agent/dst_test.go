@@ -19,7 +19,7 @@ import (
 // re-calling it after a crash returns the same turn — exactly how a replayable model
 // behaves). The store can be told to "crash" (fail to persist) at the Kth write, and the
 // driver resumes by re-running the same runID against the same store. The invariant:
-// charge() executes at most once, and the run always ends completed or in *ResumeHalt.
+// charge() executes at most once, and the run always ends completed or in *OutcomeUnknown.
 
 // crashStore fails the crashAt-th Insert that would store a new entry (0 = never), simulating a
 // process crash at that point: the entry is not stored, and the process is dead from then on, so
@@ -115,16 +115,11 @@ func (m dstModel) Stream(_ context.Context, req Request) (*Stream, error) {
 // chargeTool is a NON-idempotent side effect (Safety{}): it must never run twice.
 type chargeTool struct{ count *int }
 
-func (chargeTool) Name() string { return "charge" }
-
 // Spec describes the tool to the agent (see Tool).
 func (t chargeTool) Spec() ToolSpec {
-	return ToolSpec{Name: t.Name(), Description: t.Description(), Input: t.ArgsSchema(), Safety: t.Safety()}
+	return ToolSpec{Name: "charge", Description: "", Input: json.RawMessage(`{"type":"object"}`), Safety: Safety{}}
 }
 
-func (chargeTool) Description() string         { return "" }
-func (chargeTool) Safety() Safety              { return Safety{} }
-func (chargeTool) ArgsSchema() json.RawMessage { return json.RawMessage(`{"type":"object"}`) }
 func (t chargeTool) Call(context.Context, json.RawMessage) (json.RawMessage, error) {
 	*t.count++ // the real-world side effect (the "charge")
 	return json.RawMessage(`{"charged":true}`), nil
@@ -163,7 +158,7 @@ func wantFinished(t *testing.T, mem *Journal, err error, afterAnswer int, schedu
 }
 
 // Sweep a crash at every write point; the charge must fire at most once each time, and
-// the run must end completed or in ResumeHalt. At least one point must exercise the halt
+// the run must end completed or in OutcomeUnknown. At least one point must exercise the halt
 // path (crash while persisting the tool result), or the test would be vacuous.
 func TestDST_NoDoubleFire_CrashSweep(t *testing.T) {
 	haltSeen := false
@@ -199,7 +194,7 @@ func TestDST_NoDoubleFire_CrashSweep(t *testing.T) {
 		}
 	}
 	if !haltSeen {
-		t.Fatal("no crash point exercised ResumeHalt — the halt path was never tested")
+		t.Fatal("no crash point exercised OutcomeUnknown — the halt path was never tested")
 	}
 }
 

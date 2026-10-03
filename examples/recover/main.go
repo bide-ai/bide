@@ -7,7 +7,7 @@
 //
 // It then shows the other side of at-most-once: a side effect whose outcome was lost is not
 // fired again. The resumed Step halts with *agent.OutcomeUnknown, an operator records the
-// verified outcome with agent.ResolveHaltRef, and the Step then returns it.
+// verified outcome with agent.ResolveHalt, and the Step then returns it.
 //
 // It runs with NO API key: the model is a small inline scripted Model.
 //

@@ -15,18 +15,16 @@ type blockTool struct {
 	release chan struct{}
 }
 
-func (t *blockTool) Spec() ToolSpec              { return ToolSpec{Name: "charge"} }
-func (t *blockTool) Name() string                { return "charge" }
-func (t *blockTool) Description() string         { return "" }
-func (t *blockTool) Safety() Safety              { return Safety{} }
-func (t *blockTool) ArgsSchema() json.RawMessage { return json.RawMessage(`{"type":"object"}`) }
+func (t *blockTool) Spec() ToolSpec {
+	return ToolSpec{Name: "charge", Input: json.RawMessage(`{"type":"object"}`)}
+}
 func (t *blockTool) Call(context.Context, json.RawMessage) (json.RawMessage, error) {
 	close(t.entered)
 	<-t.release
 	return json.RawMessage(`"charged"`), nil
 }
 
-// R137-1: halt.go's godoc (edited by this PR) says ResolveHaltRef sees "a Session's turn" as a
+// R137-1: halt.go's godoc (edited by this PR) says ResolveHalt sees "a Session's turn" as a
 // live driver. checkNoLiveDriver leases strings.Cut(runID, ">") ("c1"), not the turn run the
 // session leases ("c1>@turn/0"), so a resolution of a tool call the turn is running right now
 // goes through instead of returning *HaltInFlight, and its outcome replaces the real one.
@@ -47,8 +45,8 @@ func TestR137_ResolveHaltDoesNotSeeALiveSessionTurn(t *testing.T) {
 
 	turnRun := sessionTurnRunID("c1", 0)
 	ref := HaltRef{RunID: turnRun, Op: OpRef{Kind: OpTool, ID: "t1"}, Cause: HaltCrashed}
-	// ResolveHaltRef's first step (before any read or write) is this check.
-	release, _, err := checkNoLiveDriver(ctx, store, "ResolveHaltRef", ref, resolveConfig{now: time.Now})
+	// ResolveHalt's first step (before any read or write) is this check.
+	release, _, err := checkNoLiveDriver(ctx, store, "ResolveHalt", ref, resolveConfig{now: time.Now})
 	if err == nil {
 		release()
 	}

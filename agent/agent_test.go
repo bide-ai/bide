@@ -48,10 +48,6 @@ func (t *countingTool) Spec() ToolSpec {
 	return ToolSpec{Name: t.name, Input: json.RawMessage(`{"type":"object"}`), Safety: t.safety, Approval: t.approval}
 }
 
-func (t *countingTool) Name() string                { return t.name }
-func (t *countingTool) Description() string         { return "" }
-func (t *countingTool) Safety() Safety              { return t.safety }
-func (t *countingTool) ArgsSchema() json.RawMessage { return json.RawMessage(`{"type":"object"}`) }
 func (t *countingTool) Call(context.Context, json.RawMessage) (json.RawMessage, error) {
 	*t.calls++
 	return json.RawMessage(`{"ok":true}`), nil
@@ -129,7 +125,7 @@ func TestResume_HaltsOnUnsafeWrite(t *testing.T) {
 
 	var halt *OutcomeUnknown
 	if !errors.As(err, &halt) {
-		t.Fatalf("err = %v, want *ResumeHalt", err)
+		t.Fatalf("err = %v, want *OutcomeUnknown", err)
 	}
 	if calls != 0 {
 		t.Fatalf("unsafe write tool ran %d times on resume, want 0", calls)
@@ -209,7 +205,7 @@ func TestStream_AssemblesFragmentedToolArgs(t *testing.T) {
 	}
 }
 
-// HITL: a tool requiring approval pauses the run durably (PendingApproval) without
+// HITL: a tool requiring approval pauses the run durably (ApprovalPending) without
 // executing; after Approve, re-running resumes and executes it exactly once.
 func TestHITL_PausesForApprovalThenResumes(t *testing.T) {
 	store := memJournal()
@@ -222,7 +218,7 @@ func TestHITL_PausesForApprovalThenResumes(t *testing.T) {
 
 	var pend *ApprovalPending
 	if !errors.As(err, &pend) {
-		t.Fatalf("err = %v, want *PendingApproval", err)
+		t.Fatalf("err = %v, want *ApprovalPending", err)
 	}
 	if pend.ToolName != "charge" || charged != 0 {
 		t.Fatalf("paused wrong: charged=%d (want 0), pend=%+v", charged, pend)
@@ -543,11 +539,11 @@ func TestSaga_SubAgentFailureReversesWholeTree(t *testing.T) {
 	}
 }
 
-// Regression (sub-agent halt/approval propagation): a *ResumeHalt or *PendingApproval
+// Regression (sub-agent halt/approval propagation): a *OutcomeUnknown or *ApprovalPending
 // raised INSIDE a sub-agent must propagate up through a non-saga parent Run — the parent
 // must surface it (errors.As matches), must NOT mark the run complete, and after the
 // operator resolves it (ResolveHalt / Approve) a re-Run must complete. Before the fix the
-// parent loop only special-cased *Interrupted/*Sleeping/*Awaiting, so a sub-agent halt or
+// parent loop only special-cased *InterruptPending/*TimerPending/*SignalPending, so a sub-agent halt or
 // approval fell through to an errored tool-result and the parent ran to completion,
 // permanently burying the signal.
 func TestSubAgent_PropagatesHaltAndApproval(t *testing.T) {
@@ -594,7 +590,7 @@ func TestSubAgent_PropagatesHaltAndApproval(t *testing.T) {
 		_, err := parent.Run(ctx, "root", UserText("delegate"))
 		var halt *OutcomeUnknown
 		if !errors.As(err, &halt) {
-			t.Fatalf("parent Run err = %v, want *ResumeHalt propagated from sub-agent", err)
+			t.Fatalf("parent Run err = %v, want *OutcomeUnknown propagated from sub-agent", err)
 		}
 		if halt.RunID != subRunID || halt.Op.ToolName != "charge" || halt.Op.ID != "s1" {
 			t.Fatalf("halt = %+v, want sub-run charge/s1", halt)
@@ -648,7 +644,7 @@ func TestSubAgent_PropagatesHaltAndApproval(t *testing.T) {
 		_, err := parent.Run(ctx, "root", UserText("delegate"))
 		var pend *ApprovalPending
 		if !errors.As(err, &pend) {
-			t.Fatalf("parent Run err = %v, want *PendingApproval propagated from sub-agent", err)
+			t.Fatalf("parent Run err = %v, want *ApprovalPending propagated from sub-agent", err)
 		}
 		if pend.ToolName != "charge" || pend.ToolUseID != "s1" {
 			t.Fatalf("pend = %+v, want sub-run charge/s1", pend)

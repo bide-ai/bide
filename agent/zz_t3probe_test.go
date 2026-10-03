@@ -81,7 +81,7 @@ func TestT4_LeakedNextEffectAfterCompensation(t *testing.T) {
 	<-ran
 	var ab *SagaAborted
 	if !errors.As(err, &ab) {
-		t.Fatalf("RunSaga = %v, want *SagaAborted", err)
+		t.Fatalf("saga Run = %v, want *SagaAborted", err)
 	}
 	if slices.Contains(ab.Compensated, "charge") && refundedBeforeCharge.Load() {
 		t.Fatalf("charge reported compensated, but its tool charged after the refund: charged %d, refunded %d", charged.Load(), refunded.Load())
@@ -120,7 +120,7 @@ func TestT5_RetrySafeBeginsAfterChainReturned(t *testing.T) {
 	<-done
 	var ab *SagaAborted
 	if !errors.As(err, &ab) {
-		t.Fatalf("RunSaga = %v, want *SagaAborted", err)
+		t.Fatalf("saga Run = %v, want *SagaAborted", err)
 	}
 	if chargedAfterRefund.Load() {
 		t.Fatalf("the tool began after its chain returned and charged after the refund: charged %d, refunded %d, compensated %v", charged.Load(), refunded.Load(), ab.Compensated)

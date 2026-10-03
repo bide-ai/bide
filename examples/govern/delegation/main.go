@@ -5,7 +5,7 @@
 // The sub-agent is then governed to the limit its grant seeded, and its action's leaf links to that
 // grant, whose chain proves, unbroken and never widened, back to the root.
 //
-// Offline, no LLM or network: the sub-agent's model is scripted (agent.NewScriptedModel) to call
+// Offline, no LLM or network: the sub-agent's model is scripted (agenttest.ScriptedModel) to call
 // the governed tool. The keyring stands in for a PKI/IdP.
 package main
 

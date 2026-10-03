@@ -250,16 +250,11 @@ func (instrModel) Stream(_ context.Context, req agent.Request) (*agent.Stream, e
 
 type pingTool struct{}
 
-func (pingTool) Name() string { return "ping" }
-
 // Spec describes the tool to the agent (see agent.Tool).
 func (t pingTool) Spec() agent.ToolSpec {
-	return agent.ToolSpec{Name: t.Name(), Description: t.Description(), Input: t.ArgsSchema(), Safety: t.Safety()}
+	return agent.ToolSpec{Name: "ping", Description: "", Input: json.RawMessage(`{"type":"object"}`), Safety: agent.Safety{ReadOnly: true}}
 }
 
-func (pingTool) Description() string         { return "" }
-func (pingTool) Safety() agent.Safety        { return agent.Safety{ReadOnly: true} }
-func (pingTool) ArgsSchema() json.RawMessage { return json.RawMessage(`{"type":"object"}`) }
 func (pingTool) Call(context.Context, json.RawMessage) (json.RawMessage, error) {
 	return json.RawMessage(`{"pong":1}`), nil
 }

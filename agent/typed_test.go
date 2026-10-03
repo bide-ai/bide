@@ -112,14 +112,11 @@ func TestRunTyped_ResumeSafe(t *testing.T) {
 	}
 }
 
-// If the agent already has a tool named final_answer, RunTyped refuses (config error).
+// RunTyped reserves the tool name final_answer for its answer, so New refuses a tool of that name.
 func TestRunTyped_RejectsNameCollision(t *testing.T) {
 	var c int
 	clash := &countingTool{name: "final_answer", safety: Safety{ReadOnly: true}, calls: &c}
-	a := mustNew(&scriptModel{turns: [][]Emit{textTurn("x")}}, memJournal(), WithTools(clash))
-
-	_, _, err := a.RunTyped[answer](context.Background(), "r", UserText("q"))
-	if !errors.Is(err, ErrConfig) {
-		t.Fatalf("err = %v, want errors.Is ErrConfig", err)
+	if a, err := New(&scriptModel{turns: [][]Emit{textTurn("x")}}, memJournal(), WithTools(clash)); !errors.Is(err, ErrConfig) || a != nil {
+		t.Fatalf("New = %v, %v; want nil and ErrConfig for a tool named final_answer", a, err)
 	}
 }

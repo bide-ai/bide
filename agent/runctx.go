@@ -144,7 +144,7 @@ func (r RunInfo) callScope() string {
 // refuses the ID (ErrConfig) for an empty name, once the tool call has returned (start the
 // sub-run within the call, not from a goroutine that outlives it), and, in a saga, for a name
 // longer than 96 bytes once escaped or for an agent that journals to another store than the run
-// (a saga's tree shares one store). Start it with RunSaga to keep it a saga: whether a call is in
+// (a saga's tree shares one store). Start it with WithSaga to keep it a saga: whether a call is in
 // one is its own run's flag; a plain run started from a saga's call still links its own
 // programmatic sub-runs, since the saga's rollback walks it.
 func (r RunInfo) SubRunFor(name string) string {

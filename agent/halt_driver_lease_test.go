@@ -26,7 +26,7 @@ func TestHaltLiveCheck_LeasesTheRunItsDriverLeases(t *testing.T) {
 		ctx := context.Background()
 		ref := HaltRef{RunID: c.halted, Op: OpRef{Kind: OpTool, ID: "x"}, Cause: HaltCrashed}
 		check := func(store *MemStore) error {
-			release, _, err := checkNoLiveDriver(ctx, mustJournal(store), "ResolveHaltRef", ref, resolveConfig{now: time.Now})
+			release, _, err := checkNoLiveDriver(ctx, mustJournal(store), "ResolveHalt", ref, resolveConfig{now: time.Now})
 			if err == nil {
 				release()
 			}
@@ -88,7 +88,7 @@ func TestHaltLiveCheck_AgreesWithTheCallsRootRunID(t *testing.T) {
 			t.Fatal(ok, err)
 		}
 		ref := HaltRef{RunID: info.RunID, Op: OpRef{Kind: OpTool, ID: "t2"}, Cause: HaltCrashed}
-		release, _, err := checkNoLiveDriver(ctx, j, "ResolveHaltRef", ref, resolveConfig{now: time.Now})
+		release, _, err := checkNoLiveDriver(ctx, j, "ResolveHalt", ref, resolveConfig{now: time.Now})
 		if err == nil {
 			release()
 		}

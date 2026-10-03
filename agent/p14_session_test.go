@@ -64,8 +64,8 @@ func TestP14Rule16_CancelledTurnIsClosed(t *testing.T) {
 	}
 }
 
-// SendMessage takes a Message and run options, and returns a Result.
-func TestP14_SessionSendMessage(t *testing.T) {
+// Send takes a Message and run options, and returns a Result.
+func TestP14_SessionSendResult(t *testing.T) {
 	ctx := context.Background()
 	j, _ := p14Journal(t)
 	model := &p14Model{turns: []p14Turn{{text: "seen"}}}
@@ -77,14 +77,14 @@ func TestP14_SessionSendMessage(t *testing.T) {
 	in := agent.UserParts(agent.Text{Text: "look"}, agent.ImageData("image/png", []byte{1, 2}))
 	res, err := s.Send(ctx, in, agent.WithSystemPrompt("be brief"))
 	if err != nil || res == nil || res.Message.Text() != "seen" {
-		t.Fatalf("SendMessage = %+v, %v", res, err)
+		t.Fatalf("Send = %+v, %v", res, err)
 	}
 	if systemText(model.lastReq(t)) != "be brief" {
 		t.Fatal("the turn did not run under its run option")
 	}
 	res, err = s.SendOnce(ctx, "evt-1", agent.UserText("hi"))
 	if err != nil || res.Message.Text() != "seen" {
-		t.Fatalf("SendMessageOnce = %+v, %v", res, err)
+		t.Fatalf("SendOnce = %+v, %v", res, err)
 	}
 	h := s.History()
 	if len(h) != 4 || len(h[0].Parts) != 2 {

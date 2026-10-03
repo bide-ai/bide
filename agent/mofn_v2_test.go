@@ -174,7 +174,7 @@ func TestApprovalDecisionBytes_Canonical(t *testing.T) {
 
 // WithDecisionCheck rejects, at submission, a decision that would not count, and records
 // nothing for it; correctness never depends on it.
-func TestApproveAs_DecisionCheck(t *testing.T) {
+func TestWithDecisionCheck_RejectsAtSubmission(t *testing.T) {
 	ctx := context.Background()
 	store := memJournal()
 	pol := &ApprovalPolicy{Need: 2, Approvers: abc}

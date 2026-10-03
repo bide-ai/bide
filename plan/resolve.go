@@ -15,12 +15,12 @@ import (
 
 // protocol:flows begin RPick RWrite
 
-// ResolveHalt clears a halt of a node of this flow, as agent.ResolveHaltRef does, once it has
+// ResolveHalt clears a halt of a node of this flow, as agent.ResolveHalt does, once it has
 // checked the resolution against the flow: ref must name a node of this flow (the halt's Ref: a
 // node key, a loop iteration's key for a node in a loop body, or the key of a Step a node's body
 // ran), the run must be a run of this flow (its recorded start names this flow, and its recorded
 // topology digest is this flow's), and a successful outcome's Result must decode as the node's
-// output type, so the next Run can feed it downstream. A resolution agent.ResolveHaltRef records is final, so one the flow
+// output type, so the next Run can feed it downstream. A resolution agent.ResolveHalt records is final, so one the flow
 // cannot read would leave the run unable to continue; ResolveHalt refuses it (ErrConfig) instead
 // and records nothing. A Step a node's body ran returns a type the flow does not declare, so its
 // Result is not checked.
@@ -50,7 +50,7 @@ func (f *Flow[In, Out]) ResolveHalt(ctx context.Context, store *agent.Journal, r
 	}
 	rest, _ := splitIter(strings.TrimPrefix(ref.Op.ID, "node:"))
 	if nodeOwn := !strings.Contains(rest, ":"); nodeOwn && !out.IsError {
-		b, err := journalhook.Marshal(out.Result) // as agent.ResolveHaltRef will record it
+		b, err := journalhook.Marshal(out.Result) // as agent.ResolveHalt will record it
 		if err != nil {
 			return fmt.Errorf("plan: flow %q: resolve %q: encode the outcome: %w (%w)", c.flowName, ref.Op.ID, err, agent.ErrConfig)
 		}

@@ -25,8 +25,8 @@ import (
 //	if errors.Is(err, agent.ErrUnknownTool) { … }          // one specific condition
 //
 // The control-flow signals are richer than a category, so they stay concrete types
-// matched with errors.As, not sentinels: *PendingApproval (human approval needed),
-// *ResumeHalt (unsafe to resume), *SagaAborted (transaction rolled back). context
+// matched with errors.As, not sentinels: *ApprovalPending (human approval needed),
+// *OutcomeUnknown (unsafe to resume), *SagaAborted (transaction rolled back). context
 // cancellation surfaces as the usual context.Canceled / context.DeadlineExceeded.
 var (
 	// ErrConfig is a programmer-facing misuse or misconfiguration, not a runtime fault.
@@ -51,7 +51,7 @@ var (
 	// sent its request but lost the connection (or its deadline passed) before the answer
 	// came back. A tool returns an error wrapping it instead of an ordinary failure when it
 	// cannot tell. For a tool that is not retry-safe the agent records no result, as it does
-	// for a cancelled call: the run stops with this error, and a resume halts (*ResumeHalt)
+	// for a cancelled call: the run stops with this error, and a resume halts (*OutcomeUnknown)
 	// rather than run the side effect a second time. For a retry-safe tool the call is an
 	// ordinary failure the model sees, since running it again does no harm.
 	ErrToolOutcomeUnknown = fmt.Errorf("tool outcome unknown: %w", ErrTool)

@@ -7,7 +7,7 @@ import (
 )
 
 // Compensator is an optional interface a Tool implements to declare how to UNDO its side
-// effect. In a saga run (RunSaga), if a step fails after earlier writes succeeded, the
+// effect. In a saga run (WithSaga), if a step fails after earlier writes succeeded, the
 // completed compensatable writes are rolled back in reverse order — automatically, and
 // recursively through sub-agent trees.
 //

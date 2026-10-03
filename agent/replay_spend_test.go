@@ -8,7 +8,7 @@ import (
 
 // A replayed run reports the same spend as the original: a turn whose first attempt failed and
 // was retried discarded that attempt's usage, and the replay, run with no retry middleware at
-// all, reports it again, in RunResult and in its journal.
+// all, reports it again, in Run and in its journal.
 func TestReplay_ReportsDiscardedSpend(t *testing.T) {
 	ctx := context.Background()
 	rec := memJournal()

@@ -38,7 +38,7 @@ func TestRev117e_EmptyDigestAttestedFormLost(t *testing.T) {
 		}()
 		govern.EventTool(gov, govern.EventToolConfig{Name: "credit", Event: "credit", Attested: true})
 	}()
-	ctx := agenttest.ContextWithIdentity(context.Background(), agent.Identity{Actor: "a"})
+	ctx := agenttest.IdentityContext(context.Background(), agent.Identity{Actor: "a"})
 	for _, tc := range []struct {
 		cfg      govern.EventToolConfig
 		attested bool

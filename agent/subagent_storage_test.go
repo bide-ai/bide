@@ -34,7 +34,7 @@ func TestSubAgent_SagaAbortWrappingStorageIsAVerdict(t *testing.T) {
 		_, err := root.Run(ctx, "r", agent.UserText("go"), agent.WithSaga())
 		var sa *agent.SagaAborted
 		if !errors.As(err, &sa) || sa.RunID != "r" || sa.CompensateErr != nil {
-			t.Fatalf("attempt %d: RunSaga = %v; want the root saga aborted, rolled back", attempt, err)
+			t.Fatalf("attempt %d: saga Run = %v; want the root saga aborted, rolled back", attempt, err)
 		}
 	}
 }

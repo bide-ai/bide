@@ -18,11 +18,7 @@ import (
 // objTool is a tool with a Spec method whose spec the test chooses.
 type objTool struct{ spec ToolSpec }
 
-func (t objTool) Spec() ToolSpec              { return t.spec }
-func (t objTool) Name() string                { return t.spec.Name }
-func (t objTool) Description() string         { return t.spec.Description }
-func (t objTool) ArgsSchema() json.RawMessage { return t.spec.Input }
-func (t objTool) Safety() Safety              { return t.spec.Safety }
+func (t objTool) Spec() ToolSpec { return t.spec }
 func (objTool) Call(context.Context, json.RawMessage) (json.RawMessage, error) {
 	return json.RawMessage(`"ok"`), nil
 }
@@ -163,7 +159,7 @@ func TestOptions_OtherScopesValidate(t *testing.T) {
 	ref := HaltRef{RunID: "r", Op: OpRef{Kind: OpTool, ID: "c1", ToolName: "t"}}
 	for name, opt := range map[string]ResolveOption{"nil": nil, "nil clock": WithClock(nil)} {
 		if err := ResolveHalt(ctx, store, ref, Outcome{Result: "x"}, opt); !errors.Is(err, ErrConfig) {
-			t.Errorf("ResolveHaltRef(%s) = %v, want ErrConfig", name, err)
+			t.Errorf("ResolveHalt(%s) = %v, want ErrConfig", name, err)
 		}
 	}
 	drive := func(context.Context) error { return nil }
@@ -305,8 +301,8 @@ func systemOf(t *testing.T, a *Agent) string {
 	return strings.Join(got, "|")
 }
 
-// WithSystemPrompt and WithSystemPromptFunc fill one slot: the later of the two wins, as options
-// and as the transitional builder methods.
+// WithSystemPrompt and WithSystemPromptFunc fill one slot: the later of the two wins, in New and
+// in With.
 func TestPrecedence_SystemPromptSlot(t *testing.T) {
 	fn := func(context.Context, RunInfo) (string, error) { return "FUNC", nil }
 	model := func() Model {
@@ -331,17 +327,12 @@ func TestPrecedence_SystemPromptSlot(t *testing.T) {
 	if got := systemOf(t, a); got != "FUNC" {
 		t.Errorf("the agent With copied: system %q, want its own FUNC", got)
 	}
-	old := must(mustNew(
-		model(),
-		memJournal(),
-		WithSystemPromptFunc(func(_ context.Context, _ RunInfo) (string, error) { return "FUNC", nil }),
-	).With(WithSystemPrompt("TEXT")))
-	if got := systemOf(t, old); got != "TEXT" {
-		t.Errorf("builder methods, func then text: system %q, want TEXT", got)
+	c, err := buildT(t, model(), WithSystemPrompt("TEXT")).With(WithSystemPromptFunc(fn))
+	if err != nil {
+		t.Fatal(err)
 	}
-	old = must(mustNew(model(), memJournal(), WithSystemPrompt("TEXT")).With(WithSystemPromptFunc(func(_ context.Context, _ RunInfo) (string, error) { return "FUNC", nil })))
-	if got := systemOf(t, old); got != "FUNC" {
-		t.Errorf("builder methods, text then func: system %q, want FUNC", got)
+	if got := systemOf(t, c); got != "FUNC" {
+		t.Errorf("With(WithSystemPromptFunc) over a text: system %q, want FUNC", got)
 	}
 }
 
@@ -432,7 +423,7 @@ func TestPrecedence_RunBeatsAgentBeatsDefault(t *testing.T) {
 }
 
 // With returns a copy that shares nothing mutable with the agent: under -race, many goroutines
-// derive, configure (with options and with the transitional builder methods) and run copies of
+// derive, configure (with options) and run copies of
 // one agent while it runs, and each sees exactly its own configuration. The agent's middleware,
 // tool middleware and retrieval lists have spare capacity, so a copy that shared their arrays
 // would write its additions into a sibling's.
@@ -487,6 +478,11 @@ func TestWith_IsolationUnderRace(t *testing.T) {
 				}),
 			)
 			if err != nil {
+				errs <- err
+				return
+			}
+			// With on the copy configures another copy, never the agent or a sibling.
+			if child, err = child.With(WithMiddleware(noMW), WithToolMiddleware(noToolMW), WithSystemPrompt(mark)); err != nil {
 				errs <- err
 				return
 			}

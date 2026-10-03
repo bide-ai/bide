@@ -55,7 +55,7 @@ func planNodeKey(name string) bool {
 }
 
 // planNodeStep reports whether name is the key of a plan flow node (planNodeKey) or of a Step a
-// node's body runs (planScopedStep): the reserved step names ResolveHaltRef accepts, since each
+// node's body runs (planScopedStep): the reserved step names ResolveHalt accepts, since each
 // halts as a Step does.
 func planNodeStep(name string) bool {
 	_, _, ok := parsePlanKey(name)
@@ -126,8 +126,8 @@ func planScopedStep(ctx context.Context, runID, name string) string {
 // protocol:flows end
 
 // IsReservedStepName reports whether name starts with a prefix the engine reserves for its own
-// journal keys. Step and Parallel refuse such a name, and so do ResolveHaltRef and ResolveStepHalt
-// for a step, except a plan flow node's key ("node:<name>"), which halts as a Step does.
+// journal keys. Step and Parallel refuse such a name, and so does ResolveHalt for a step,
+// except a plan flow node's key ("node:<name>"), which halts as a Step does.
 func IsReservedStepName(name string) bool {
 	for _, p := range reservedPrefixes {
 		if strings.HasPrefix(name, p) {

@@ -14,7 +14,7 @@ import (
 // primitive, as a durable tree rather than a fragile handoff.
 //
 // The sub-run journals under a hierarchical, deterministic ID (SubRunID(parentRunID, toolUseID)),
-// so give `sub` the SAME Durable store as the parent for a unified journal. Then a crash
+// so give `sub` the SAME journal as the parent for a unified journal. Then a crash
 // ANYWHERE in the tree resumes the whole tree precisely: completed sub-agents are reused,
 // the in-flight one resumes from its own journal, and OutcomeUnknown / ApprovalPending from
 // deep in the tree propagate up (approve, re-run the root, and it resumes down the path).
@@ -72,7 +72,6 @@ type subAgentTool struct {
 	sub  *Agent
 }
 
-
 // Spec returns the tool's spec, with a copy of its approval policy.
 func (t *subAgentTool) Spec() ToolSpec {
 	s := t.spec
@@ -95,7 +94,7 @@ func (t *subAgentTool) Call(ctx context.Context, args json.RawMessage) (json.Raw
 		// Fallback for a SubAgent tool invoked outside the agent loop (which always sets the run
 		// scope: see RunInfoFrom). This id is NOT unique per call: two calls to a same-named
 		// sub-agent would share one journal and the second would memoize to the first's result. Drive
-		// sub-agents through Agent.Run/RunSaga (the normal path) so each call gets a distinct scope.
+		// sub-agents through Agent.Run (the normal path) so each call gets a distinct scope.
 		subRunID = "sub/" + t.spec.Name
 	}
 	// Run the sub-agent on its OWN goroutine (fresh, small stack) rather than recursing on

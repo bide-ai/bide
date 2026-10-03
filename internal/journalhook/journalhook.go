@@ -10,13 +10,13 @@ import (
 	"encoding/json"
 )
 
-// Do runs fn as the memoized step name of runID in j, which is an *agent.Journal or an
-// agent.Durable, and returns the agent.Record the journal holds for it (see agent.Journal.Do).
+// Do runs fn as the memoized step name of runID in j, an *agent.Journal, and returns the
+// agent.Record the journal holds for it.
 // fn returns the agent.Record to record.
 var Do func(ctx context.Context, j any, runID, name string, fn func(context.Context) (any, error)) (any, error)
 
-// Step runs fn as the Step named name of runID in j, which is an *agent.Journal or an
-// agent.Durable, with agent.Step's semantics (an attempt claim before fn unless safety is
+// Step runs fn as the Step named name of runID in j, an *agent.Journal, with
+// agent.Journal.Step's semantics (an attempt claim before fn unless safety is
 // retry-safe, the not-started record when fn never ran, numbered re-attempts, a halt as
 // *agent.OutcomeUnknown, the pause guard), and returns the JSON value it records. safety is the
 // step's agent.Safety. name must be a plan node key (agent's planNodeKey: "node:<name>" or

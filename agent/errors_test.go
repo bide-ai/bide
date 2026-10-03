@@ -90,7 +90,7 @@ func TestErrors_ControlFlowStillTyped(t *testing.T) {
 	_, err := a.Run(context.Background(), "r", UserText("pay"))
 	var pend *ApprovalPending
 	if !errors.As(err, &pend) {
-		t.Fatalf("err = %v, want *PendingApproval", err)
+		t.Fatalf("err = %v, want *ApprovalPending", err)
 	}
 	if errors.Is(err, ErrTool) {
 		t.Fatal("an approval pause is not a tool failure")

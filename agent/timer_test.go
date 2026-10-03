@@ -49,11 +49,11 @@ func TestSleep_PausesAndResumes(t *testing.T) {
 
 	a := mustNew(sleepModel{}, memJournal(), WithTools(waitTool()))
 
-	// First run: the wait tool sleeps, so the run pauses with *Sleeping at now+1h.
+	// First run: the wait tool sleeps, so the run pauses with *TimerPending at now+1h.
 	_, err := a.Run(ctx, "r1", UserText("go"))
 	var slp *TimerPending
 	if !errors.As(err, &slp) {
-		t.Fatalf("expected *Sleeping, got %v", err)
+		t.Fatalf("expected *TimerPending, got %v", err)
 	}
 	wake := time.Unix(1000+3600, 0)
 	if !slp.FireAt.Equal(wake) {

@@ -45,7 +45,7 @@ func TestAdv127b_RerunUnknownSkipsItsSubRuns(t *testing.T) {
 	_, err = mustNew(t4TwoCalls{}, store, WithTools(charge, fail)).Run(context.Background(), "r", UserText("go"), WithSaga())
 	var ab *SagaAborted
 	if !errors.As(err, &ab) {
-		t.Fatalf("RunSaga = %v, want *SagaAborted", err)
+		t.Fatalf("saga Run = %v, want *SagaAborted", err)
 	}
 	if calls.Load() != 2 {
 		t.Fatalf("charge ran %d times, want 2 (live, then the rollback's re-run)", calls.Load())

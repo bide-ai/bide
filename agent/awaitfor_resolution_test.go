@@ -27,12 +27,12 @@ func TestAwaitFor_TimeoutOutcomeSurvivesALateSignal(t *testing.T) {
 	a := mustNew(NewScriptedModel(ToolTurn("c1", "watch", `{}`), TextTurn("done")), store, WithTools(tool))
 	var aw *SignalPending
 	if _, err := a.Run(ctx, "r", UserText("go")); !errors.As(err, &aw) {
-		t.Fatalf("first run: %v, want *Awaiting", err)
+		t.Fatalf("first run: %v, want *SignalPending", err)
 	}
 	atomic.StoreInt64(&clk, 2000) // the deadline passes: the timeout wins
 	var in *InterruptPending
 	if _, err := a.Run(ctx, "r", UserText("go")); !errors.As(err, &in) {
-		t.Fatalf("second run: %v, want *Interrupted", err)
+		t.Fatalf("second run: %v, want *InterruptPending", err)
 	}
 	if err := store.Signal(context.Background(), "r", "webhook", "late"); err != nil {
 		t.Fatal(err)

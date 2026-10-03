@@ -154,7 +154,7 @@ type AttenuateFunc func(parent Grant, subAgent string) Grant
 // sub-agent, OnBehalfOf = the parent's Subject, AuthorityRef = the child's digest), and propagates
 // the child grant so a deeper delegation narrows again. With no grant on ctx it is a plain
 // sub-agent (it inherits the identity), so it is safe to use either way. With a grant, it must be
-// called from an agent run (Agent.Run / RunSaga), whose run scope gives each call its own sub-run
+// called from an agent run (Agent.Run), whose run scope gives each call its own sub-run
 // (agent.SubRunID of the parent run and the tool-use id); called outside one it refuses rather
 // than fall back to a sub-run ID that every parent run would share.
 //
@@ -186,7 +186,7 @@ func AttenuatingSubAgent(name, description string, sub *agent.Agent, cfg Attenua
 
 // AttenuationConfig configures AttenuatingSubAgent.
 type AttenuationConfig struct {
-	// Store is the Durable store the sub-runs journal to, where each child grant is recorded as
+	// Store is the journal the sub-runs journal to, where each child grant is recorded as
 	// a durable leaf of its sub-run. Give it the store the parent and the sub-agent use, for a
 	// unified, provable journal.
 	Store *agent.Journal

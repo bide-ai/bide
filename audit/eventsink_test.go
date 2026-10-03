@@ -32,7 +32,7 @@ func (m *twoTurnModel) Stream(_ context.Context, _ agent.Request) (*agent.Stream
 }
 
 // eventTurn is a mock model turn that streams one text answer, so Agent.Stream produces a
-// real, ordered AgentEvent sequence (TurnStarted → ModelEvent(TextDelta) → ModelEvent(Finish)
+// real, ordered RunEvent sequence (TurnStarted → ModelEvent(TextDelta) → ModelEvent(Finish)
 // → AssistantTurn → Finished).
 type eventModel struct{ text string }
 

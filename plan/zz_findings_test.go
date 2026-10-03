@@ -136,11 +136,11 @@ func TestF2_RecordedStartInputDoesNotRoundTrip(t *testing.T) {
 	}
 }
 
-// F3: ResolveHaltRef accepts any well-formed node key and records it whether or not that node
+// F3: ResolveHalt accepts any well-formed node key and records it whether or not that node
 // ever attempted anything: a key for a node that never halted pre-records its output, so its body
 // (a side effect) never runs; a key the flow never reads ("node:iter:01:x") succeeds and does
 // nothing.
-func TestF3_ResolveHaltRefOnANodeThatNeverHalted(t *testing.T) {
+func TestF3_ResolveHaltOnANodeThatNeverHalted(t *testing.T) {
 	ctx := context.Background()
 	mem := agent.NewMemStore()
 	j := agenttest.MustJournal(mem)
@@ -151,11 +151,11 @@ func TestF3_ResolveHaltRefOnANodeThatNeverHalted(t *testing.T) {
 	out, rerr := flow.Run(ctx, j, "r", 1)
 	t.Logf("resolve of an unattempted node: %v; Run -> %d, %v; body ran %d times", err, out, rerr, fired.Load())
 	if err == nil {
-		t.Errorf("ResolveHaltRef recorded an output for node:a, which never attempted anything: want a refusal")
+		t.Errorf("ResolveHalt recorded an output for node:a, which never attempted anything: want a refusal")
 	}
 	ref.Op.ID = "node:iter:01:a"
 	if err := agent.ResolveHalt(ctx, agenttest.MemJournal(), ref, agent.Outcome{Result: 7}); err == nil {
-		t.Errorf("ResolveHaltRef accepted node:iter:01:a, a key Run never writes (it writes node:iter:1:a)")
+		t.Errorf("ResolveHalt accepted node:iter:01:a, a key Run never writes (it writes node:iter:1:a)")
 	}
 }
 
@@ -249,7 +249,7 @@ func TestF5b_ConformMissesOffPathRecords(t *testing.T) {
 }
 
 // F6: Flow.Run does not check its run ID as agent.Run does: an empty ID, and an ID in the
-// sub-agent form (which Recover skips and ResolveHaltRef leases by its root) are accepted.
+// sub-agent form (which Recover skips and ResolveHalt leases by its root) are accepted.
 func TestF6_FlowRunAcceptsRunIDsAgentRefuses(t *testing.T) {
 	ctx := context.Background()
 	var fired atomic.Int64

@@ -16,7 +16,7 @@ import (
 
 // The adapter does not send a JSON-schema response format, so a request that sets one is a
 // config error before anything is sent, rather than a request sent without the constraint: the
-// model then answers in free text, and RunTypedNative fails to decode it only after the run is
+// model then answers in free text, and RunTyped (OutputNative) fails to decode it only after the run is
 // complete, or decodes JSON that no schema constrained.
 func TestStream_ResponseFormatIsAConfigError(t *testing.T) {
 	var hits atomic.Int32
@@ -47,7 +47,7 @@ func TestStream_ResponseFormatIsAConfigError(t *testing.T) {
 	}
 	got, _, err := agenttest.MustNew(m, agenttest.MemJournal()).RunTyped[out](context.Background(), "r", agent.UserText("hi"), agent.WithOutputMode(agent.OutputNative))
 	if !errors.Is(err, agent.ErrConfig) {
-		t.Fatalf("RunTypedNative = %+v, %v; want ErrConfig", got, err)
+		t.Fatalf("RunTyped (OutputNative) = %+v, %v; want ErrConfig", got, err)
 	}
 	if n := hits.Load(); n != 0 {
 		t.Fatalf("the adapter sent %d requests, want 0", n)

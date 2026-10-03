@@ -17,23 +17,18 @@ type drainTool struct {
 	got   *[]string
 }
 
-func (t *drainTool) Name() string { return t.name }
-
 // Spec describes the tool to the agent (see Tool).
 func (t *drainTool) Spec() ToolSpec {
-	return ToolSpec{Name: t.Name(), Description: t.Description(), Input: t.ArgsSchema(), Safety: t.Safety()}
+	return ToolSpec{Name: t.name, Description: "", Input: json.RawMessage(`{"type":"object"}`), Safety: Safety{ReadOnly: true}}
 }
 
-func (t *drainTool) Description() string         { return "" }
-func (t *drainTool) Safety() Safety              { return Safety{ReadOnly: true} }
-func (t *drainTool) ArgsSchema() json.RawMessage { return json.RawMessage(`{"type":"object"}`) }
 func (t *drainTool) Call(ctx context.Context, _ json.RawMessage) (json.RawMessage, error) {
 	*t.calls++
 	d, runID, _ := runContext(ctx)
 	for {
 		msg, err := Receive[string](ctx, t.ch)
 		if err != nil {
-			return nil, err // *Awaiting when drained: pauses the run durably
+			return nil, err // *SignalPending when drained: pauses the run durably
 		}
 		*t.got = append(*t.got, msg.Payload)
 		if err := Ack(ctx, d, runID, t.ch, msg.Key); err != nil {
@@ -56,14 +51,14 @@ func TestChannel_OrderExactlyOnce(t *testing.T) {
 	var got []string
 	tool := &drainTool{name: "drain", ch: "inbox", calls: &calls, got: &got}
 	// After draining all three the tool loops back to Receive, hits an empty channel, and
-	// pauses with *Awaiting; the second turn's script line is never reached.
+	// pauses with *SignalPending; the second turn's script line is never reached.
 	m := &scriptModel{turns: [][]Emit{toolTurn("c1", "drain", `{}`), textTurn("done")}}
 	a := mustNew(m, store, WithTools(tool))
 
 	_, err := a.Run(ctx, "r", UserText("hi"))
 	var awt *SignalPending
 	if !errors.As(err, &awt) {
-		t.Fatalf("err = %v, want *Awaiting after draining", err)
+		t.Fatalf("err = %v, want *SignalPending after draining", err)
 	}
 	want := []string{"one", "two", "three"}
 	if len(got) != len(want) {
@@ -107,7 +102,7 @@ func TestSend_RedeliveryIsAtMostOnce(t *testing.T) {
 	}
 }
 
-// Empty channel pauses: Receive on an empty channel yields *Awaiting; after Send + re-run it
+// Empty channel pauses: Receive on an empty channel yields *SignalPending; after Send + re-run it
 // resolves and the run completes.
 func TestChannel_EmptyPausesThenResumes(t *testing.T) {
 	store := memJournal()
@@ -122,7 +117,7 @@ func TestChannel_EmptyPausesThenResumes(t *testing.T) {
 	_, err := a.Run(ctx, "r", UserText("hi")) // channel empty: pauses immediately
 	var awt *SignalPending
 	if !errors.As(err, &awt) {
-		t.Fatalf("err = %v, want *Awaiting on empty channel", err)
+		t.Fatalf("err = %v, want *SignalPending on empty channel", err)
 	}
 	if awt.Name != "inbox" {
 		t.Fatalf("awaiting = %+v, want channel inbox", awt)
@@ -144,7 +139,7 @@ func TestChannel_EmptyPausesThenResumes(t *testing.T) {
 	// resolved-and-drained run pauses once more rather than completing. Assert it consumed k1.
 	var awt2 *SignalPending
 	if !errors.As(err, &awt2) {
-		t.Fatalf("resume err = %v, want *Awaiting (drained after consuming k1)", err)
+		t.Fatalf("resume err = %v, want *SignalPending (drained after consuming k1)", err)
 	}
 	_ = out
 	if len(got) != 1 || got[0] != "hello" {

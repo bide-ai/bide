@@ -55,19 +55,3 @@ func TestPause_Kinds(t *testing.T) {
 		t.Fatal("IsPause accepted a non-pause")
 	}
 }
-
-// The former names are aliases of the same types, so code matching either keeps working until
-// the 1.0 rewrite removes them.
-func TestPause_TransitionalAliases(t *testing.T) {
-	for _, c := range [][2]reflect.Type{
-		{reflect.TypeFor[agent.ApprovalPending](), reflect.TypeFor[agent.ApprovalPending]()},
-		{reflect.TypeFor[agent.InterruptPending](), reflect.TypeFor[agent.InterruptPending]()},
-		{reflect.TypeFor[agent.SignalPending](), reflect.TypeFor[agent.SignalPending]()},
-		{reflect.TypeFor[agent.TimerPending](), reflect.TypeFor[agent.TimerPending]()},
-		{reflect.TypeFor[agent.OutcomeUnknown](), reflect.TypeFor[agent.OutcomeUnknown]()},
-	} {
-		if c[0] != c[1] {
-			t.Errorf("%v is not an alias of %v", c[0], c[1])
-		}
-	}
-}

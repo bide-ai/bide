@@ -1,8 +1,8 @@
 // Package trace adds OpenTelemetry GenAI instrumentation to an agent — opt-in, so the
 // core agent package carries NO OTel dependency (a user who doesn't import trace pays
 // nothing; contrast frameworks whose core drags the full OTel + Temporal stack into
-// every binary). It plugs in through the existing middleware hooks — Model (a .Use
-// middleware) and Tool (a .UseTool middleware) — emitting spans with the OTel GenAI
+// every binary). It plugs in through the existing middleware hooks — Model (an
+// agent.WithMiddleware middleware) and Tool (an agent.WithToolMiddleware middleware) — emitting spans with the OTel GenAI
 // semantic-convention attributes. Instrument wires both onto an agent as one agent.Option.
 //
 // We hardcode the stable gen_ai.* attribute keys rather than import the semconv module,
@@ -170,7 +170,7 @@ func Model(tracer oteltrace.Tracer, opts ...Option) agent.Middleware {
 }
 
 // Tool returns tool middleware that wraps every tool call in a gen_ai "execute_tool"
-// span. Attach via agent.Agent.UseTool. Because it runs inside the agent loop, the span
+// span. Attach with agent.WithToolMiddleware. Because it runs inside the agent loop, the span
 // lives in the context passed to the tool — so when a tool is itself a sub-agent, that
 // sub-agent's run (and its own spans) nest as children of this span: the trace crosses
 // the sub-agent boundary automatically, a gap in ADK / AgenticGoKit / trpc-agent-go.
@@ -207,7 +207,7 @@ func Tool(tracer oteltrace.Tracer) agent.ToolMiddleware {
 // appears among the agent's options. For the top-level "invoke_agent" span, wrap the run with
 // Invoke, which lives at the call site rather than on the agent.
 //
-//	a, err := agent.Build(model, journal, agent.WithTools(tools...), trace.Instrument(tracer, trace.WithRates(rates)))
+//	a, err := agent.New(model, journal, agent.WithTools(tools...), trace.Instrument(tracer, trace.WithRates(rates)))
 func Instrument(tracer oteltrace.Tracer, opts ...Option) agent.Option {
 	return agent.WithOptions(agent.WithMiddleware(Model(tracer, opts...)), agent.WithToolMiddleware(Tool(tracer)))
 }

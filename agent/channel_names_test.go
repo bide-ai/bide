@@ -35,7 +35,7 @@ func TestChannel_NameWithColonIsItsOwnChannel(t *testing.T) {
 	got, err := receiveOnce(t, store, "r", "orders")
 	var aw *SignalPending
 	if !errors.As(err, &aw) {
-		t.Fatalf("Receive(\"orders\") = %+v, %v; want *Awaiting (the message is on \"orders:vip\")", got, err)
+		t.Fatalf("Receive(\"orders\") = %+v, %v; want *SignalPending (the message is on \"orders:vip\")", got, err)
 	}
 	store2 := memJournal()
 	if err := store2.Enqueue(context.Background(), "r", "orders:vip", "k1", "vip-order"); err != nil {

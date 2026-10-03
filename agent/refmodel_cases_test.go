@@ -1,7 +1,7 @@
 package agent_test
 
 // Minimal scenarios for the discrepancies the reference model found, each shrunk from a random
-// failure and pinned here as a regression test. Every one runs sequentially (SetMaxConcurrency(1))
+// failure and pinned here as a regression test. Every one runs sequentially (WithMaxConcurrency(1))
 // and, where it crashes, at a fixed persist, so it is deterministic. The write numbers in the
 // comments count the persists of the drive attempt the crash is scheduled in.
 

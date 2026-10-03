@@ -21,7 +21,7 @@ import (
 // several processes recovering against a shared store all re-drive the same in-flight runs. That is
 // safe but wasteful: side effects stay at-most-once because each non-idempotent call is guarded by
 // an exclusive attempt claim (ClaimAttempt), but the drivers duplicate model calls and a loser of a
-// claim halts with ResumeHalt. A store that implements Leaser lets a driver take a time-bounded lease
+// claim halts with OutcomeUnknown. A store that implements Leaser lets a driver take a time-bounded lease
 // on a run so normally only the holder drives it; a dead holder's lease expires and another process
 // takes over, which is the high-availability property. Recover uses it automatically when the store
 // provides it. A lease is an efficiency and liveness mechanism, not the safety one: no lease can

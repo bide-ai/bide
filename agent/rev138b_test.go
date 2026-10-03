@@ -83,7 +83,7 @@ func TestReview138b_LostStartInsertSkipsReload(t *testing.T) {
 		t.Errorf("the drive called its model %d times after the run was cancelled (err %v)", n, err)
 	}
 	if !errors.Is(err, agent.ErrRunCancelled) {
-		t.Errorf("RunMessage = %v, want ErrRunCancelled", err)
+		t.Errorf("Run = %v, want ErrRunCancelled", err)
 	}
 }
 

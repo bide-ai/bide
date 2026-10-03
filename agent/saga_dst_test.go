@@ -22,16 +22,11 @@ import (
 // boomTool always errors — the step whose failure triggers the saga abort.
 type boomTool struct{}
 
-func (boomTool) Name() string { return "failB" }
-
 // Spec describes the tool to the agent (see Tool).
 func (t boomTool) Spec() ToolSpec {
-	return ToolSpec{Name: t.Name(), Description: t.Description(), Input: t.ArgsSchema(), Safety: t.Safety()}
+	return ToolSpec{Name: "failB", Description: "", Input: json.RawMessage(`{"type":"object"}`), Safety: Safety{ReadOnly: true}}
 }
 
-func (boomTool) Description() string         { return "" }
-func (boomTool) Safety() Safety              { return Safety{ReadOnly: true} }
-func (boomTool) ArgsSchema() json.RawMessage { return json.RawMessage(`{"type":"object"}`) }
 func (boomTool) Call(context.Context, json.RawMessage) (json.RawMessage, error) {
 	return nil, errors.New("failB always fails")
 }

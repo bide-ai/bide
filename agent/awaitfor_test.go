@@ -22,16 +22,11 @@ type awaitForTool struct {
 	arrived *bool
 }
 
-func (t *awaitForTool) Name() string { return t.name }
-
 // Spec describes the tool to the agent (see Tool).
 func (t *awaitForTool) Spec() ToolSpec {
-	return ToolSpec{Name: t.Name(), Description: t.Description(), Input: t.ArgsSchema(), Safety: t.Safety()}
+	return ToolSpec{Name: t.name, Description: "", Input: json.RawMessage(`{"type":"object"}`), Safety: t.safety}
 }
 
-func (t *awaitForTool) Description() string         { return "" }
-func (t *awaitForTool) Safety() Safety              { return t.safety }
-func (t *awaitForTool) ArgsSchema() json.RawMessage { return json.RawMessage(`{"type":"object"}`) }
 func (t *awaitForTool) Call(ctx context.Context, _ json.RawMessage) (json.RawMessage, error) {
 	*t.calls++
 	v, ok, err := AwaitFor[string](ctx, t.sig, t.d)
@@ -65,7 +60,7 @@ func TestAwaitFor_SignalFirst(t *testing.T) {
 	_, err := a.Run(ctx, "r", UserText("hi"))
 	var awt *SignalPending
 	if !errors.As(err, &awt) {
-		t.Fatalf("err = %v, want *Awaiting", err)
+		t.Fatalf("err = %v, want *SignalPending", err)
 	}
 	if awt.Name != "webhook" {
 		t.Fatalf("awaiting = %+v", awt)
@@ -118,7 +113,7 @@ func TestAwaitFor_TimeoutFirst(t *testing.T) {
 	_, err := a.Run(ctx, "r", UserText("hi"))
 	var awt *SignalPending
 	if !errors.As(err, &awt) {
-		t.Fatalf("err = %v, want *Awaiting", err)
+		t.Fatalf("err = %v, want *SignalPending", err)
 	}
 	if calls != 1 {
 		t.Fatalf("tool ran %d times before timeout, want 1", calls)
@@ -163,7 +158,7 @@ func TestAwaitFor_DeadlineStable(t *testing.T) {
 
 	// First run at t=1000: deadline is journaled as 1000+3600.
 	if _, err := a.Run(ctx, "r", UserText("hi")); !errorsIsAwaiting(err) {
-		t.Fatalf("first run should pause with *Awaiting, got %v", err)
+		t.Fatalf("first run should pause with *SignalPending, got %v", err)
 	}
 
 	// Resume at +30m: still before the original deadline. If the deadline had drifted to

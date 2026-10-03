@@ -6,7 +6,7 @@ package plan_test
 // cancel-after-ok, crash-before and crash-after. Budget: at most 2 non-ok outcomes over the 3
 // faulty drives, at most 1 crash per drive. Each faulty drive runs in the process of the previous
 // drive (unless it crashed) or a new one, per plan. Then clean verification drives: the same
-// process (if alive), then a new one; a halt is resolved with ResolveHaltRef when the halted
+// process (if alive), then a new one; a halt is resolved with ResolveHalt when the halted
 // node's body fired, and the run driven again.
 
 import (
@@ -422,7 +422,7 @@ func fRun(sub fSubject, sameProc [2]bool, ex *fExplorer, leased bool) (viol []fV
 		}
 		if !leased {
 			if rerr := agent.ResolveHalt(context.Background(), agenttest.MustJournal(h.mem), halt.Ref(), agent.Outcome{Result: val}, agent.WithoutLiveDriverCheck()); rerr != nil {
-				add("I7-resolve-failed", "ResolveHaltRef(%s): %v", halt.Op.ID, rerr)
+				add("I7-resolve-failed", "ResolveHalt(%s): %v", halt.Op.ID, rerr)
 				break
 			}
 		} else {

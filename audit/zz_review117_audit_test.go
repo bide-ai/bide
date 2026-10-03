@@ -62,7 +62,7 @@ func TestR117_AttenuatedSubRunIsCompensatedUnderTheParentsAuthority(t *testing.T
 	_, err = parent.Run(ctx, "trip", agent.UserText("book the trip"), agent.WithSaga(), agent.WithIdentity(agent.Identity{Actor: "desk"}))
 	var aborted *agent.SagaAborted
 	if !errors.As(err, &aborted) {
-		t.Fatalf("RunSaga = %v, want *SagaAborted", err)
+		t.Fatalf("saga Run = %v, want *SagaAborted", err)
 	}
 	t.Logf("forward: actor %q limit %q; compensation: actor %q limit %q", fwdActor, fwdLimit, undoActor, undoLimit)
 	if undoActor != fwdActor || undoLimit != fwdLimit {

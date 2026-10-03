@@ -1,7 +1,7 @@
 // pause.go groups the runtime's durable-pause primitives: the sealed Pause contract every
 // pause error satisfies, human-in-the-loop (Interrupt/AnswerInterrupt), durable timers
 // (Sleep/WaitUntil) and the Waker that fires them, and signals (Signal/Await) that deliver
-// external events into a run. They share one mechanism: a named durable step (Durable.Do)
+// external events into a run. They share one mechanism: a named journal step
 // plus a typed pause error the agent loop propagates, so a paused run resumes
 // deterministically after a crash and each pause resolves at most once.
 
@@ -39,7 +39,7 @@ type Pause interface {
 }
 
 // RunRef names a paused run. RunID is the journal the pause lives in: record the answer
-// against it (Approve, AnswerInterrupt, Signal, ResolveHaltRef). RootRunID is the top-level
+// against it (Approve, AnswerInterrupt, Signal, ResolveHalt). RootRunID is the top-level
 // run to re-invoke to continue; it differs from RunID when the pause comes from inside a
 // sub-agent, whose journal is RunID.
 type RunRef struct {
@@ -127,7 +127,7 @@ func Interrupt[T any](ctx context.Context, name string, prompt any) (T, error) {
 // point name (see Interrupt); then re-invoke Run with the pause's RootRunID to continue.
 // It is idempotent: the first value for a (runID, name) wins. The value survives a crash:
 // it is a journaled step.
-func (d *Journal) AnswerInterrupt[T any](ctx context.Context, runID, name string, value T) error {
+func (j *Journal) AnswerInterrupt[T any](ctx context.Context, runID, name string, value T) error {
 	if runID == "" {
 		return fmt.Errorf("AnswerInterrupt: empty runID: %w", ErrConfig)
 	}
@@ -135,7 +135,7 @@ func (d *Journal) AnswerInterrupt[T any](ctx context.Context, runID, name string
 	if err != nil {
 		return fmt.Errorf("agent: encode interrupt answer for %q: %w (%w)", name, err, ErrConfig)
 	}
-	_, err = d.do(ctx, runID, interruptStep(name), func(context.Context) (Record, error) {
+	_, err = j.do(ctx, runID, interruptStep(name), func(context.Context) (Record, error) {
 		return Record{Kind: StepValue, Result: b}, nil
 	})
 	return err
@@ -144,7 +144,7 @@ func (d *Journal) AnswerInterrupt[T any](ctx context.Context, runID, name string
 func interruptStep(name string) string { return "interrupt:" + name }
 
 // ===========================================================================
-// Durable timers: Sleep / WaitUntil
+// Durable timers: Sleep, WaitUntil
 // ===========================================================================
 
 // TimerPending is returned by Run when a tool called Sleep or WaitUntil and the wake time has
@@ -255,7 +255,7 @@ type Wake struct {
 }
 
 // Waker is the pluggable trigger that re-invokes a sleeping run when its durable timer is due. Sleep
-// registers a wake with the run's Waker (WithWaker, ContextWithWaker); the Waker later calls back
+// registers a wake with the run's Waker (WithWaker); the Waker later calls back
 // to resume the run. The SDK provides the durable, at-most-once timer and its resume safety; what
 // re-invokes the run at the wake time is deployment policy (an in-process loop, a cron, a queue),
 // exactly as the inbound trigger for an event-driven run is (see docs/guides/messaging.md). MemWaker is the
@@ -487,7 +487,7 @@ func Await[T any](ctx context.Context, name string) (T, error) {
 //
 // Signal only records the payload. After delivering, re-invoke Run with the pause's RootRunID
 // to resume the awaiting run: directly, or via a Waker scheduled at the current time.
-func (d *Journal) Signal[T any](ctx context.Context, runID, name string, payload T) error {
+func (j *Journal) Signal[T any](ctx context.Context, runID, name string, payload T) error {
 	if runID == "" {
 		return fmt.Errorf("Signal: empty runID: %w", ErrConfig)
 	}
@@ -495,7 +495,7 @@ func (d *Journal) Signal[T any](ctx context.Context, runID, name string, payload
 	if err != nil {
 		return fmt.Errorf("agent: encode signal %q: %w (%w)", name, err, ErrConfig)
 	}
-	_, err = d.do(ctx, runID, signalStep(name), func(context.Context) (Record, error) {
+	_, err = j.do(ctx, runID, signalStep(name), func(context.Context) (Record, error) {
 		return Record{Kind: StepSignal, Result: b}, nil
 	})
 	return err

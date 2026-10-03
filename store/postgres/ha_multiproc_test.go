@@ -501,7 +501,7 @@ func without(runs []string, drop string) []string {
 // Workers are SIGKILLed with a non-retriable tool call in flight, one before its effect fires and
 // one after the effect fired but before its result is journaled, and each is restarted under the
 // same holder name. The dead worker's lease expires and a survivor takes the run over, finds the
-// call's attempt marker with no result, and halts with ResumeHalt instead of firing the effect: its
+// call's attempt marker with no result, and halts with OutcomeUnknown instead of firing the effect: its
 // outcome is unknown to the journal, so a human must resolve it. Every other run completes with
 // each effect fired exactly once.
 func TestHA_MultiProcessKillAndRestart(t *testing.T) {
@@ -555,7 +555,7 @@ func TestHA_MultiProcessKillAndRestart(t *testing.T) {
 // A worker is SIGSTOPped inside a non-retriable effect (a Step, or a tool call), before the
 // effect fires, for well past its lease TTL, while an orchestrator restarts it under the same
 // holder name. No other process may take the run while the stalled worker's lease is live. Once
-// it lapses, the drivers that take over find the stalled worker's claim and halt with ResumeHalt
+// it lapses, the drivers that take over find the stalled worker's claim and halt with OutcomeUnknown
 // rather than fire the effect. On SIGCONT the stalled worker, still inside the effect, fires the
 // effect it owns, loses its lease, and must still journal the outcome, so the run is driven to
 // completion afterwards with every effect fired exactly once.

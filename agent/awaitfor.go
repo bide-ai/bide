@@ -4,7 +4,7 @@
 // pause.go): the signal delivery, the wake time, and the race's outcome are all journaled
 // steps, so the race between "signal arrived" and "timeout elapsed" resolves once and
 // deterministically across resume and crash-recovery. It adds no new persistence model; it
-// reuses Durable.Do.
+// reuses the journal's named steps.
 
 package agent
 

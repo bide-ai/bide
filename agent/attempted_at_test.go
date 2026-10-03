@@ -59,19 +59,19 @@ func TestResolveHalt_FutureAttemptedAtIsTooYoung(t *testing.T) {
 	}
 }
 
-// ResumeHalt.AttemptedAt reports an unknown time as zero, never a 1969 instant from a
+// OutcomeUnknown.AttemptedAt reports an unknown time as zero, never a 1969 instant from a
 // non-positive marker.
-func TestResumeHalt_NonPositiveAttemptedAtIsZero(t *testing.T) {
+func TestOutcomeUnknown_NonPositiveAttemptedAtIsZero(t *testing.T) {
 	ctx := context.Background()
 	charge := MustFunc("charge", "", func(context.Context, struct{}) (string, error) { return "ok", nil })
 	a := mustNew(NewScriptedModel(), mustJournal(markerAt(t, -1)), WithTools(charge))
 	_, err := a.Run(ctx, "r", UserText("go"))
 	var halt *OutcomeUnknown
 	if !errors.As(err, &halt) {
-		t.Fatalf("Run = %v, want *ResumeHalt", err)
+		t.Fatalf("Run = %v, want *OutcomeUnknown", err)
 	}
 	if !halt.AttemptedAt.IsZero() {
-		t.Errorf("ResumeHalt.AttemptedAt = %v, want zero for a marker stamped -1", halt.AttemptedAt)
+		t.Errorf("OutcomeUnknown.AttemptedAt = %v, want zero for a marker stamped -1", halt.AttemptedAt)
 	}
 
 	// A Step's marker too.
@@ -83,10 +83,10 @@ func TestResumeHalt_NonPositiveAttemptedAtIsZero(t *testing.T) {
 	}
 	_, err = s.Step(ctx, "r", "reserve", func(context.Context) (int, error) { return 1, nil })
 	if !errors.As(err, &halt) {
-		t.Fatalf("Step = %v, want *ResumeHalt", err)
+		t.Fatalf("Step = %v, want *OutcomeUnknown", err)
 	}
 	if !halt.AttemptedAt.IsZero() {
-		t.Errorf("Step ResumeHalt.AttemptedAt = %v, want zero for a marker stamped -1", halt.AttemptedAt)
+		t.Errorf("Step OutcomeUnknown.AttemptedAt = %v, want zero for a marker stamped -1", halt.AttemptedAt)
 	}
 }
 
@@ -104,10 +104,10 @@ func TestStepHalt_RetrySafeFindsNonPositiveMarker(t *testing.T) {
 		WithSafety(Safety{ReadOnly: true}))
 	var halt *OutcomeUnknown
 	if !errors.As(err, &halt) {
-		t.Fatalf("Step = %v, want *ResumeHalt", err)
+		t.Fatalf("Step = %v, want *OutcomeUnknown", err)
 	}
 	if !halt.AttemptedAt.IsZero() {
-		t.Errorf("ResumeHalt.AttemptedAt = %v, want zero", halt.AttemptedAt)
+		t.Errorf("OutcomeUnknown.AttemptedAt = %v, want zero", halt.AttemptedAt)
 	}
 }
 
@@ -129,16 +129,16 @@ func (s claimRacer) Insert(ctx context.Context, runID, name string, data []byte)
 }
 
 // A driver that loses the claim to a marker stamped -1 reports the attempt time as unknown.
-func TestResumeHalt_LostClaimToNonPositiveMarker(t *testing.T) {
+func TestOutcomeUnknown_LostClaimToNonPositiveMarker(t *testing.T) {
 	charge := MustFunc("charge", "", func(context.Context, struct{}) (string, error) { return "ok", nil })
 	m := &sagaTurns{turns: [][][3]string{{{"c1", "charge", `{}`}}}}
 	_, err := mustNew(m, mustJournal(claimRacer{NewMemStore()}), WithTools(charge)).Run(context.Background(), "r", UserText("go"))
 	var halt *OutcomeUnknown
 	if !errors.As(err, &halt) {
-		t.Fatalf("Run = %v, want *ResumeHalt from the lost claim", err)
+		t.Fatalf("Run = %v, want *OutcomeUnknown from the lost claim", err)
 	}
 	if !halt.AttemptedAt.IsZero() {
-		t.Errorf("ResumeHalt.AttemptedAt = %v, want zero", halt.AttemptedAt)
+		t.Errorf("OutcomeUnknown.AttemptedAt = %v, want zero", halt.AttemptedAt)
 	}
 }
 
@@ -165,13 +165,13 @@ func TestSagaRollbackHalt_NonPositiveMarker(t *testing.T) {
 	_, err := mustNew(&sagaTurns{}, s, WithTools(pay, book)).Run(ctx, "r", UserText("trip"), WithSaga())
 	var aborted *SagaAborted
 	if !errors.As(err, &aborted) {
-		t.Fatalf("RunSaga = %v, want *SagaAborted", err)
+		t.Fatalf("saga Run = %v, want *SagaAborted", err)
 	}
 	var halt *OutcomeUnknown
 	if !errors.As(aborted.CompensateErr, &halt) || halt.Op.ID != "p1" {
-		t.Fatalf("CompensateErr = %v, want a ResumeHalt on p1", aborted.CompensateErr)
+		t.Fatalf("CompensateErr = %v, want a OutcomeUnknown on p1", aborted.CompensateErr)
 	}
 	if !halt.AttemptedAt.IsZero() {
-		t.Errorf("ResumeHalt.AttemptedAt = %v, want zero", halt.AttemptedAt)
+		t.Errorf("OutcomeUnknown.AttemptedAt = %v, want zero", halt.AttemptedAt)
 	}
 }

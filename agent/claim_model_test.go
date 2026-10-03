@@ -172,7 +172,7 @@ func TestClaimMemo_KeepsEveryRememberedClaim(t *testing.T) {
 // record "not charged" over a live driver's effect: the caller would call again and charge twice.
 // The resolver claims the attempt after the live one under its own claim, and refuses
 // (*HaltInFlight) when a driver holds it already.
-func TestResolveHaltRef_MinAgeDoesNotOverrideARevivedClaim(t *testing.T) {
+func TestResolveHalt_MinAgeDoesNotOverrideARevivedClaim(t *testing.T) {
 	ctx := context.Background()
 	mem := agent.NewMemStore()
 	pa := &modelProc{mem: mem}
@@ -256,7 +256,7 @@ func TestResolveHaltRef_MinAgeDoesNotOverrideARevivedClaim(t *testing.T) {
 // next attempt and runs the effect, though the journal now says "not charged". An errored verdict
 // write leaves the resolution's attempt live: the driver then reads the verdict, or halts until
 // the halt is resolved again.
-func TestResolveHaltRef_AnErroredVerdictLeavesItsAttemptLive(t *testing.T) {
+func TestResolveHalt_AnErroredVerdictLeavesItsAttemptLive(t *testing.T) {
 	ctx := context.Background()
 	mem := agent.NewMemStore()
 	pa := &modelProc{mem: mem}
@@ -353,7 +353,7 @@ func (l leasingProc) Unwrap() agent.Store { return l.mem }
 // the first attempt and claims the second. The lease does not see d2, so the resolution must claim
 // the attempt after the live one itself, as on the min-age path: d2 then loses it and reads the
 // verdict instead of running the effect beside it.
-func TestResolveHaltRef_LeasePathDoesNotOverrideARevivedClaim(t *testing.T) {
+func TestResolveHalt_LeasePathDoesNotOverrideARevivedClaim(t *testing.T) {
 	ctx := context.Background()
 	mem := agent.NewMemStore()
 	pa := &modelProc{mem: mem}

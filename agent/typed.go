@@ -131,11 +131,6 @@ type answerRecord struct {
 // answerToolDescription is what the model is told the final_answer tool is for.
 const answerToolDescription = "Call this exactly once, with the final answer structured per the schema, to complete the task."
 
-func (t *answerTool[T]) Name() string                { return finalAnswerTool }
-func (t *answerTool[T]) Description() string         { return answerToolDescription }
-func (t *answerTool[T]) Safety() Safety              { return Safety{ReadOnly: true} }
-func (t *answerTool[T]) ArgsSchema() json.RawMessage { return t.schema }
-
 // Spec returns the final_answer tool's spec: read-only, ungated, with T's schema as its input.
 func (t *answerTool[T]) Spec() ToolSpec {
 	return ToolSpec{Name: finalAnswerTool, Description: answerToolDescription, Input: t.schema, Safety: Safety{ReadOnly: true}}
@@ -175,7 +170,7 @@ func readAnswer(result, args json.RawMessage, out any) error {
 // agent only calls, the specs are never written through (specList is only copied, see
 // requestTools), and the settings held by pointer (sampling's, the tool choice, the identity,
 // the response format) are replaced when set, never written through. With configures a clone,
-// and RunTyped and RunTypedNative run one, so neither changes the agent it came from, and the two
+// and RunTyped runs one, so neither changes the agent it came from, and the two
 // may be used from different goroutines.
 func (a *Agent) clone() *Agent {
 	c := *a // copies every value field and pointer, so a newly added option field can't be forgotten

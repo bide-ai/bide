@@ -53,7 +53,7 @@ func attenuatingSaga(t *testing.T, withGrant bool) (*agent.SagaAborted, int) {
 	_, err := parent.Run(ctx, "trip", agent.UserText("book the trip"), agent.WithSaga())
 	var aborted *agent.SagaAborted
 	if !errors.As(err, &aborted) {
-		t.Fatalf("RunSaga = %v, want *SagaAborted", err)
+		t.Fatalf("saga Run = %v, want *SagaAborted", err)
 	}
 	if charges != 1 {
 		t.Fatalf("charged %d times, want 1", charges)

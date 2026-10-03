@@ -58,7 +58,7 @@ func TestCancelledToolCall_IsNotRecordedAsItsOutcome(t *testing.T) {
 	}
 	var halt *OutcomeUnknown
 	if !errors.As(resumeErr, &halt) || halt.Op.ID != "c1" {
-		t.Fatalf("resume err = %v, want ResumeHalt for c1 (charged %d times)", resumeErr, charged)
+		t.Fatalf("resume err = %v, want OutcomeUnknown for c1 (charged %d times)", resumeErr, charged)
 	}
 	if charged != 1 {
 		t.Fatalf("charged %d times, want 1", charged)
@@ -109,7 +109,7 @@ func TestCancelledToolCall_ResumeDoesNotChargeTwice(t *testing.T) {
 	}
 	var halt *OutcomeUnknown
 	if !errors.As(err, &halt) || halt.Op.ID != "c1" {
-		t.Fatalf("resume err = %v, want ResumeHalt for c1", err)
+		t.Fatalf("resume err = %v, want OutcomeUnknown for c1", err)
 	}
 }
 

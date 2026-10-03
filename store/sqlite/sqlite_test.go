@@ -45,16 +45,11 @@ type countingTool struct {
 	calls *int
 }
 
-func (t *countingTool) Name() string { return "lookup" }
-
 // Spec describes the tool to the agent (see agent.Tool).
 func (t *countingTool) Spec() agent.ToolSpec {
-	return agent.ToolSpec{Name: t.Name(), Description: t.Description(), Input: t.ArgsSchema(), Safety: t.Safety()}
+	return agent.ToolSpec{Name: "lookup", Description: "", Input: json.RawMessage(`{"type":"object"}`), Safety: agent.Safety{ReadOnly: true}}
 }
 
-func (t *countingTool) Description() string         { return "" }
-func (t *countingTool) Safety() agent.Safety        { return agent.Safety{ReadOnly: true} }
-func (t *countingTool) ArgsSchema() json.RawMessage { return json.RawMessage(`{"type":"object"}`) }
 func (t *countingTool) Call(context.Context, json.RawMessage) (json.RawMessage, error) {
 	*t.calls++
 	return json.RawMessage(`{"ok":true}`), nil

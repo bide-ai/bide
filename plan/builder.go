@@ -137,7 +137,7 @@ func checkStepName(name string) error {
 // The func body is the escape hatch: arbitrary Go. Run runs every node as an agent.Step
 // under its node key "node:<name>" (an attempt claim written before the body, the result
 // after), so a crash whose outcome was never recorded HALTS the run (*agent.OutcomeUnknown,
-// cleared with agent.ResolveHaltRef) rather than re-firing the body. A non-idempotent side
+// cleared with agent.ResolveHalt) rather than re-firing the body. A non-idempotent side
 // effect is therefore safe by default, with no per-step opt-in. A Step that is not
 // retry-safe must not pause (its body's pause is ErrConfig, as for agent.Step). See
 // docs/guides/flows.md.
@@ -182,7 +182,7 @@ func (b *Builder[In, Out]) Step[I, O any](name string, fn func(context.Context, 
 // tool's JSON result is decoded into O.
 //
 // Safety AUTO-DERIVES from the wrapped agent.Tool: Tool records its spec's Safety
-// (agent.SpecOf) on the node, so a tool the core classifies as retry-safe (ReadOnly
+// (agent.Tool.Spec) on the node, so a tool the core classifies as retry-safe (ReadOnly
 // or Idempotent) RE-RUNS on an ambiguous mid-node crash while a
 // non-idempotent tool HALTS, matching the core loop's own resume decision. An
 // explicit plan.ReadOnly()/plan.Idempotent() option OVERRIDES the derived Safety

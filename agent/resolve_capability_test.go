@@ -7,12 +7,12 @@ import (
 	"time"
 )
 
-// ResolveHaltRef's live-driver check finds the run's Leaser through a Journal and through store
+// ResolveHalt's live-driver check finds the run's Leaser through a Journal and through store
 // wrappers that implement Unwrap() Store, as Lease and Recover do: a resolution through a Journal
 // over a wrapped MemStore is refused while a driver holds the root run's lease, and goes through
 // once it is released. A Journal over a store that exposes no Leaser falls back to the rule for a
 // store that cannot lease runs: WithMinHaltAge, or the explicit opt-out.
-func TestResolveHaltRef_FindsTheLeaserThroughAJournal(t *testing.T) {
+func TestResolveHalt_FindsTheLeaserThroughAJournal(t *testing.T) {
 	ctx := context.Background()
 	mem := NewMemStore()
 	j := newJournal(unwrapStore{unwrapStore{mem}})
@@ -49,7 +49,7 @@ func TestResolveHaltRef_FindsTheLeaserThroughAJournal(t *testing.T) {
 // A resolution claims the attempt after the live one, on the lease path as on the min-age path,
 // and journals that claim as an attempt marker of the operation; WithoutLiveDriverCheck skips it
 // with the other checks.
-func TestResolveHaltRef_ClaimsTheNextAttemptUnlessOptedOut(t *testing.T) {
+func TestResolveHalt_ClaimsTheNextAttemptUnlessOptedOut(t *testing.T) {
 	ctx := context.Background()
 	for name, tc := range map[string]struct {
 		opts  []ResolveOption

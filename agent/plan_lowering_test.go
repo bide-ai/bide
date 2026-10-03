@@ -146,10 +146,10 @@ func TestRunStartEncoding(t *testing.T) {
 	}
 }
 
-// ResolveHaltRef resolves only an operation that halted: one with a live attempt marker. A tool
+// ResolveHalt resolves only an operation that halted: one with a live attempt marker. A tool
 // call or Step never attempted, or whose only attempt is recorded as not started (the next drive
 // re-attempts it), is refused with ErrNoLiveAttempt, and nothing is recorded.
-func TestResolveHaltRef_RefusesAnOperationWithNoLiveAttempt(t *testing.T) {
+func TestResolveHalt_RefusesAnOperationWithNoLiveAttempt(t *testing.T) {
 	ctx := context.Background()
 	m := memJournal()
 	claim := "0123abcd0123abcd"
@@ -167,7 +167,7 @@ func TestResolveHaltRef_RefusesAnOperationWithNoLiveAttempt(t *testing.T) {
 	for _, op := range []OpRef{{Kind: OpTool, ID: "never"}, {Kind: OpStep, ID: "never"}, {Kind: OpStep, ID: "voided"}, {Kind: OpStep, ID: "node:a"}} {
 		err := ResolveHalt(ctx, m, HaltRef{RunID: "r", Op: op, Cause: HaltCrashed}, Outcome{Result: 1})
 		if !errors.Is(err, ErrNoLiveAttempt) || !errors.Is(err, ErrConfig) {
-			t.Errorf("ResolveHaltRef(%+v): err = %v, want ErrNoLiveAttempt", op, err)
+			t.Errorf("ResolveHalt(%+v): err = %v, want ErrNoLiveAttempt", op, err)
 		}
 	}
 	recs, err := m.History(ctx, "r")
@@ -241,7 +241,7 @@ func TestEmptyStepNameIsRefused(t *testing.T) {
 		t.Errorf("Parallel with an empty task name: %v, want ErrConfig", err)
 	}
 	if err := ResolveHalt(ctx, m, HaltRef{RunID: "r", Op: OpRef{Kind: OpStep, ID: ""}, Cause: HaltCrashed}, Outcome{Result: 1}); !errors.Is(err, ErrConfig) {
-		t.Errorf("ResolveHaltRef of an empty step: %v, want ErrConfig", err)
+		t.Errorf("ResolveHalt of an empty step: %v, want ErrConfig", err)
 	}
 	if ran != 0 {
 		t.Fatalf("a refused step ran %d times", ran)

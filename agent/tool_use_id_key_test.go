@@ -46,16 +46,11 @@ type tracker struct {
 	calls atomic.Int32
 }
 
-func (t *tracker) Name() string { return t.name }
-
 // Spec describes the tool to the agent (see Tool).
 func (t *tracker) Spec() ToolSpec {
-	return ToolSpec{Name: t.Name(), Description: t.Description(), Input: t.ArgsSchema(), Safety: t.Safety()}
+	return ToolSpec{Name: t.name, Description: "", Input: json.RawMessage(`{"type":"object"}`), Safety: Safety{}}
 }
 
-func (t *tracker) Description() string         { return "" }
-func (t *tracker) Safety() Safety              { return Safety{} }
-func (t *tracker) ArgsSchema() json.RawMessage { return json.RawMessage(`{"type":"object"}`) }
 func (t *tracker) Call(context.Context, json.RawMessage) (json.RawMessage, error) {
 	t.calls.Add(1)
 	return json.RawMessage(`"ok"`), nil

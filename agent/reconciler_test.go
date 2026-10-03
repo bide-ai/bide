@@ -90,7 +90,7 @@ func TestResolveHalt_Evidence(t *testing.T) {
 }
 
 // The halt surfaces when the effect was attempted, so a reconciler can honor a grace period.
-func TestResumeHalt_AttemptedAt(t *testing.T) {
+func TestOutcomeUnknown_AttemptedAt(t *testing.T) {
 	ctx := context.Background()
 	store := memJournal()
 	at := time.Date(2026, 2, 2, 3, 4, 5, 0, time.UTC)
@@ -108,7 +108,7 @@ func TestResumeHalt_AttemptedAt(t *testing.T) {
 
 	var halt *OutcomeUnknown
 	if !errors.As(err, &halt) {
-		t.Fatalf("err = %v, want *ResumeHalt", err)
+		t.Fatalf("err = %v, want *OutcomeUnknown", err)
 	}
 	if !halt.AttemptedAt.Equal(at) {
 		t.Fatalf("halt.AttemptedAt = %v, want %v", halt.AttemptedAt, at)

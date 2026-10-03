@@ -18,16 +18,11 @@ type syncTool struct {
 	fn   func() (json.RawMessage, error)
 }
 
-func (t syncTool) Name() string { return t.name }
-
 // Spec describes the tool to the agent (see agent.Tool).
 func (t syncTool) Spec() agent.ToolSpec {
-	return agent.ToolSpec{Name: t.Name(), Description: t.Description(), Input: t.ArgsSchema(), Safety: t.Safety()}
+	return agent.ToolSpec{Name: t.name, Description: "", Input: json.RawMessage(`{"type":"object"}`), Safety: agent.Safety{Idempotent: true}}
 }
 
-func (t syncTool) Description() string         { return "" }
-func (t syncTool) ArgsSchema() json.RawMessage { return json.RawMessage(`{"type":"object"}`) }
-func (t syncTool) Safety() agent.Safety        { return agent.Safety{Idempotent: true} }
 func (t syncTool) Call(context.Context, json.RawMessage) (json.RawMessage, error) {
 	return t.fn()
 }
@@ -52,7 +47,7 @@ func TestSaga_CallAfterTheFailureIsNotCalled(t *testing.T) {
 	_, err := a.Run(context.Background(), "r", agent.UserText("go"), agent.WithSaga())
 	var aborted *agent.SagaAborted
 	if !errors.As(err, &aborted) {
-		t.Fatalf("RunSaga = %v, want *SagaAborted", err)
+		t.Fatalf("saga Run = %v, want *SagaAborted", err)
 	}
 	if fired.Load() != 0 {
 		t.Fatalf("notify ran %d times after the saga's step failed, want 0", fired.Load())

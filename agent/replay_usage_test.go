@@ -23,7 +23,7 @@ func streamFinishes(t *testing.T, a *Agent, runID string) ([]Finish, *RunStream)
 }
 
 // A replayed run reports the same usage as the original, per turn in its journal and in total
-// in its RunResult.
+// in its Run.
 func TestReplay_ReportsRecordedUsage(t *testing.T) {
 	ctx := context.Background()
 	u1 := Usage{InputTokens: 10, OutputTokens: 5, CacheReadTokens: 2, CacheWriteTokens: 1}

@@ -5,9 +5,8 @@ import (
 	"time"
 )
 
-// Result is what a run entry point returns (Run, Resume, RunStream.Result,
-// RunTyped, Session.Send, and the transitional RunResult and RunSagaResult): the
-// final answer and the run's telemetry. Run and the other Message entry points return a
+// Result is what a run entry point returns (Run, Resume, RunStream.Result, RunTyped,
+// Session.Send): the final answer and the run's telemetry. Each returns a
 // non-nil Result whenever the run ID is valid, whatever the error: a pause, a halt, a failure, a
 // saga's abort, or a cancellation.
 type Result struct {
@@ -41,6 +40,6 @@ type Result struct {
 	// Duration is the wall-clock elapsed time for the run (from entry to return).
 	Duration time.Duration
 
-	// RunID echoes the run identifier passed to RunResult / RunSagaResult.
+	// RunID echoes the run identifier the run was driven under.
 	RunID string
 }

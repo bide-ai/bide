@@ -10,8 +10,7 @@ import (
 	"testing"
 )
 
-// stepPaths are the paths the engine drives a step through: since the Durable interface was
-// removed, only a Journal's own.
+// stepPaths are the paths the engine drives a step through: a Journal's own.
 func stepPaths() map[string]func() *Journal {
 	return map[string]func() *Journal{
 		"journal": func() *Journal { return memJournal() },
