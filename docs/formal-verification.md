@@ -22,8 +22,7 @@ At a glance:
 - **29 bugs caught before release** in bide's own design or code (F1 to F5, P1, P2, T1 to T6, a
   rollback that never ended, L1 to L7, a spend-accounting bug model 8 confirmed, D1 to D3, and
   S1 to S4). Each fixed one is kept as a regression configuration (L2 to L7 and S3 since P14
-  implemented their rules, S1, S2 and S4 since #137); D1 to D3 stay open until their fixes land
-  in the code.
+  implemented their rules, S1, S2 and S4 since #137, D1 to D3 since #133).
 
 ## What TLA+ and model checking are
 
@@ -177,9 +176,9 @@ details are in the linked README sections.
 | L5 | 10 | The per-run tool filter was journaled but not said to apply at dispatch; a turn naming a filtered-out tool (unoffered, or replayed) would fire, with no fault. | Filtered tool fires | Rule adopted by [#129](https://github.com/bide-ai/bide/pull/129): the filter is enforced at dispatch; implemented by P14 (`TestP14Rule13_*`) |
 | L6 | 10 | `Status` by one `Get` per end marker can read `run:complete` before the run completes and `run:cancelled` after `Cancel` lands, and report a completed run cancelled. | Wrong status reported | Rule adopted by [#129](https://github.com/bide-ai/bide/pull/129): one `Load`, or the `Get`s again once a marker is found; implemented by P14 (`Status` reads one `Load`; `TestP14Rule07_*`) |
 | L7 | 10 | Recovery that remembers a not-started run's skip, not its report, never recovers the run once it starts and its holder dies. | Run never recovered | Rule adopted by [#129](https://github.com/bide-ai/bide/pull/129): `run:start` read again every pass; implemented by P14 (`TestP14Rule15_StartedAfterSkipIsRecovered`) |
-| D1 | 11 | `BindRollback` checked each journaled grant against the one grant bound now, so a saga that delegated under two bound grants (the refusal for an expired grant asks for a live one) could not verify both, and its rollback never ended. | Stuck rollback | Open: the caller binds every grant the saga delegated under, and each child grant is checked against its own parent (found in [#130](https://github.com/bide-ai/bide/pull/130)) |
-| D2 | 11 | `BindRollback` dropped the delegated mark, so the rollback's re-run of a retry-safe write in a delegated sub-run passed `CallGuard` and called the tool after the grant expired. | Act past grant expiry | Open: keep the mark, and list a refused re-run as an unknown outcome (found in [#130](https://github.com/bide-ai/bide/pull/130)) |
-| D3 | 11 | In a plain sub-run of a saga, a failed sub-agent call is an error result, and the rollback skipped error results before recursing, so the sub-agent's writes were neither compensated nor listed. | Write left in place, listed nowhere | Open: recurse into a sub-agent call whatever its result (found in [#130](https://github.com/bide-ai/bide/pull/130)) |
+| D1 | 11 | `BindRollback` checked each journaled grant against the one grant bound now, so a saga that delegated under two bound grants (the refusal for an expired grant asks for a live one) could not verify both, and its rollback never ended. | Stuck rollback | [#133](https://github.com/bide-ai/bide/pull/133): the caller binds every grant the saga delegated under (`WithRollbackGrants`), and each child grant is checked against its own parent (found in [#130](https://github.com/bide-ai/bide/pull/130)) |
+| D2 | 11 | `BindRollback` dropped the delegated mark, so the rollback's re-run of a retry-safe write in a delegated sub-run passed `CallGuard` and called the tool after the grant expired. | Act past grant expiry | [#133](https://github.com/bide-ai/bide/pull/133): keep the mark, and list a refused re-run as an unknown outcome (found in [#130](https://github.com/bide-ai/bide/pull/130)) |
+| D3 | 11 | In a plain sub-run of a saga, a failed sub-agent call is an error result, and the rollback skipped error results before recursing, so the sub-agent's writes were neither compensated nor listed. | Write left in place, listed nowhere | [#133](https://github.com/bide-ai/bide/pull/133): recurse into a sub-agent call whatever its result (found in [#130](https://github.com/bide-ai/bide/pull/130)) |
 | S1 | 12 | A handle whose `Send` started a turn and then failed or paused keeps it open in its own view; once another worker finished that turn, the handle refused every other message with `ErrConfig` ("a turn for x is still open") and never read the journal again. | Session refuses every new message on that handle | [#137](https://github.com/bide-ai/bide/pull/137): reload before refusing |
 | S2 | 12 | Two callers on one handle sending one message both drive its run; the second's append started past the slot the first had recorded and its reload had loaded, so the run's turn was recorded twice (and a `SendOnce` key had two records). | Duplicate turn in the history | [#137](https://github.com/bide-ai/bide/pull/137): `appendTurn` returns at once for a run among the loaded turns |
 | S3 | 12 | Against P14's design: `Cancel` of an open Send turn's run leaves the turn open for ever, so every other message on the session is refused. | Session blocked for ever | Rule adopted into P14's contract (rule 16 in [api-v1](design/api-v1.md)); implemented by P14 (`TestP14Rule16_CancelledTurnIsClosed`) |
@@ -252,17 +251,11 @@ step says is checked by review. The planned work closes that gap.
 
 ### Planned
 
-The next models, in order (also on the [roadmap](ROADMAP.md#formal-models-of-the-coordination-protocols)):
-
-1. **Delegation and sub-run authority, including saga trees** (next up): grants, recorded
-   authority, rollback binding, halts propagating from sub-runs, and links to programmatic
-   sub-runs. Most of P12's and P13's late bugs were in this area, and model 9 treats a delegation
-   as a black box.
-2. **Sessions:** multiple turns, resumes and shared history, built when P14 or later work touches
-   sessions.
-3. **M3 trace validation:** the Go test suites emit protocol events under a build tag, and TLC
-   checks that every emitted trace is a behavior of the model, so the models cannot drift from real
-   Go runs ([plan, section 6.1](design/formal-models.md#61-trace-validation)).
+The next model work (also on the [roadmap](ROADMAP.md#formal-models-of-the-coordination-protocols)):
+**M3 trace validation:** the Go test suites emit protocol events under a build tag, and TLC
+checks that every emitted trace is a behavior of the model, so the models cannot drift from real
+Go runs ([plan, section 6.1](design/formal-models.md#61-trace-validation)). Delegation (model 11)
+and sessions (model 12), planned here before, are done.
 
 Also planned in the [milestones](design/formal-models.md#8-milestones): the rest of M2, a helper
 (`agent/internal/interleave`) that turns a TLC counterexample into a deterministic Go test
@@ -284,9 +277,6 @@ skeleton; and M5, merging and validating the traces of the multi-process HA harn
   `storetest` conformance suite and the multi-process harness against real Postgres
   (`store/postgres`, the required Integration check), not by a model. The store contract and
   journal header model (plan model 4) is not built.
-- **Sessions** (concurrent sends, turn ordering, resumes): planned.
-- **Delegation and sub-run authority**: sub-agent rollback recursion, grants and halts from
-  sub-runs. Model 9 treats a delegation as a black box. This is the next model.
 - **Multi-process traces** (M5) and trace validation of any kind (M3).
 - **Wall-clock time** outside model 10: `WithMinHaltAge` is encoded as the assumption it rests on.
 - **Per-model gaps** listed in the README: the bide protocol's call deadline as a clock, push

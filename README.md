@@ -182,8 +182,8 @@ pairs it judges independent from what they write, without checking what their gu
 read. The proof's commutation lemma assumes each event reads only its own footprint, so a machine
 where one event's guard or effect reads a variable another event writes (a `ship` event guarded on
 `paid`, which `pay` sets) can be certified convergent when it is not. The theorem is correct; the
-implementation applied it without checking that precondition. A fix is in progress in
-[gsm#2](https://github.com/blackwell-systems/gsm/pull/2); until bide moves to a gsm release with
+implementation applied it without checking that precondition. The fix is merged in gsm
+([gsm#2](https://github.com/blackwell-systems/gsm/pull/2)) but in no gsm release yet; until bide moves to a gsm release with
 it, do not rely on a v0.11.0 convergence verdict for such a machine. See [known limitations](docs/KNOWN-LIMITATIONS.md#governed-state-gsm).
 
 Made concrete at scale: an integration test drives up to **10,000,000 governed agents, 2,048 at a

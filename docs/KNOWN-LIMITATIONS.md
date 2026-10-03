@@ -302,11 +302,13 @@ write the same variable.
 
 What to do: until bide moves to a gsm release with the fix, keep each event's guard and effect off
 the variables other events write, or check the machine another way (run its events in every order over its
-states in a test, or run the extracted rules checker with `bide-audit`'s `-checker` flag). The fix is in
-progress in [gsm#2](https://github.com/blackwell-systems/gsm/pull/2): `Build` checks every event
-pair exactly. gsm's two checkers extracted from the proof can re-check an exported machine, but
-today they run neither in gsm's CI nor at runtime; a proof-derived gate that runs an extracted
-checker on every successful build is planned. See
+states in a test, or run the extracted rules checker with `bide-audit`'s `-checker` flag). The fix is
+merged in gsm ([gsm#2](https://github.com/blackwell-systems/gsm/pull/2): `Build` checks every event
+pair exactly) but is in no gsm release yet. gsm's two checkers extracted from the proof re-check
+every machine bide's examples build in bide's required `gsm machine gate` CI check, and gsm's
+main branch runs the proof's table oracle in-process on every successful build (and the rules
+oracle within a cost cap), but that gate is also unreleased, so bide's runtime does not have it.
+See the [roadmap](ROADMAP.md#gsm-convergence) and
 [Convergent governance](guides/governance.md#under-the-hood).
 
 ## Stores
