@@ -24,10 +24,9 @@ type ConfluenceCertificate struct {
 	Machine      string `json:"machine"`       // name of the gsm machine the certificate is about
 	PolicyDigest string `json:"policy_digest"` // stable identifier of the policy this certificate certifies
 
-	// Converges is the headline: WFC && CC. True means gsm's Build certified that every
-	// interleaving of events reaches the same normal form, checked exhaustively at build time
-	// (gsm v0.11.0 can certify a machine whose event guards or effects read another event's
-	// writes when it does not converge; see docs/KNOWN-LIMITATIONS.md).
+	// Converges is the headline: gsm's Build returned a machine (WFC && CC, and the verified
+	// table oracle gsm runs in-process certified its tables). True means every interleaving of
+	// events reaches the same normal form, checked exhaustively at build time.
 	Converges bool `json:"converges"`
 
 	// WFC (well-founded compensation): every repair chain terminates; MaxRepairLen is the longest
@@ -37,7 +36,8 @@ type ConfluenceCertificate struct {
 	MaxRepairLen int  `json:"max_repair_len"`
 
 	// The CC evidence: how many independent pairs were checked, split into those discharged by
-	// footprint-disjointness and those checked by brute force over all valid states.
+	// footprint-disjointness (BuildCompositional only; always 0 for Build since gsm v0.12.0) and
+	// those checked by brute force over all valid states.
 	PairsTotal    int `json:"pairs_total"`
 	PairsDisjoint int `json:"pairs_disjoint"`
 	PairsBrute    int `json:"pairs_brute"`
@@ -59,13 +59,15 @@ type ConfluenceCertificate struct {
 
 // CertifyConvergence translates a gsm build Report and the policy's digest into a portable
 // certificate. Pass the Report returned by gsm.Registry.Build and the digest from
-// Registry.PolicyDigest. A Report whose machine failed to build (WFC or CC false) still produces a
-// certificate; it simply reports Converges == false, which a caller should refuse to deploy.
+// Registry.PolicyDigest. A Report whose machine failed to build still produces a certificate; it
+// simply reports Converges == false, which a caller should refuse to deploy. That includes a
+// machine that passed gsm's WFC and CC checks but that gsm's in-process oracle gate refused
+// (Report.OracleDisagreement): Build returned no machine, so its Assurance is none.
 func CertifyConvergence(rep *gsm.Report, policyDigest string) ConfluenceCertificate {
 	return ConfluenceCertificate{
 		Machine:          rep.Name,
 		PolicyDigest:     policyDigest,
-		Converges:        rep.WFC && rep.CC,
+		Converges:        rep.WFC && rep.CC && rep.Assurance != gsm.AssuranceNone,
 		WFC:              rep.WFC,
 		CC:               rep.CC,
 		MaxRepairLen:     rep.MaxRepairLen,

@@ -7,9 +7,7 @@
 // core package: there is no single causal order to reverse, so correctness can't be
 // "reverse-the-log." Instead each agent's action is a gsm Event, shared business state is
 // gsm's finite-domain state, business rules are Invariants, and compensations are Repairs.
-// gsm checks at build time that every interleaving reaches the same normal form. gsm v0.11.0
-// can wrongly certify a machine whose event guards or effects read variables another event
-// writes; see docs/KNOWN-LIMITATIONS.md ("Governed state (gsm)").
+// gsm checks at build time that every interleaving reaches the same normal form.
 //
 // It lives OUTSIDE the core, in its own module (github.com/bide-ai/bide/govern), so the core
 // module never depends on gsm: an edge integration, and the lean hexagonal core is untouched.

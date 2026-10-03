@@ -73,8 +73,7 @@ func main() {
 	r.On("approve").Does(gsm.SetTo(approved, 1)).Add()
 
 	// Build succeeding is gsm's certificate that the rule converges (WFC + CC over the enumerated
-	// states). Neither event's effect reads a variable the other writes, so this machine is outside
-	// the gsm v0.11.0 Build gap (docs/KNOWN-LIMITATIONS.md, "Governed state (gsm)").
+	// states; see docs/KNOWN-LIMITATIONS.md, "Governed state (gsm)").
 	m, rep, err := r.Build()
 	if err != nil {
 		panic(fmt.Sprintf("build: %v\n%s", err, rep))

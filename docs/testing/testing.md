@@ -100,9 +100,11 @@ attempt in turn. A failing scenario is shrunk to a minimal one. `BIDE_REFMODEL_N
 **gsm checks at build time that every interleaving of agent events converges to the same valid
 state; a second, independent implementation can re-check that verdict, so one verifier's bug need
 not pass a non-convergent machine silently.** That second check runs only where it is wired in:
-here, when `GSM_AST_CHECKER` is set (below). gsm's extracted checkers run neither in gsm's CI nor
-at runtime today, and gsm v0.11.0's `Build` has a known gap for event guards and effects that read
-another event's writes (see [known limitations](../KNOWN-LIMITATIONS.md#governed-state-gsm)). The two-independent-implementations principle:
+here, when `GSM_AST_CHECKER` is set (below); in bide's required `gsm machine gate` CI check, on
+every machine the governance examples build (`.github/gsm-gate`); and, since gsm v0.12.0, inside
+`Build` itself, which runs the table oracle (and, within its fragment and cap, the rules oracle),
+generated from the proof, before it returns a machine (see
+[known limitations](../KNOWN-LIMITATIONS.md#governed-state-gsm) for their scope). The two-independent-implementations principle:
 if two programs written from the same axiom-free proof, by different routes, both accept a
 machine, a single implementation bug is far less likely to have admitted a bad one.
 

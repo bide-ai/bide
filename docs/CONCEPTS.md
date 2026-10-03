@@ -34,7 +34,7 @@ The vocabulary, defined once. Terms are grouped by the layer they belong to. See
 
 ## Governed state (Tier-2, gsm)
 
-- **gsm**: the convergence engine underneath governed state. At build time it checks that concurrent agents applying the same events converge to the same valid state, against the conditions of a machine-checked convergence theorem. gsm v0.11.0, which bide pins, can wrongly certify a machine whose event guards or effects read variables another event writes; a fix is in progress. See [known limitations](KNOWN-LIMITATIONS.md#governed-state-gsm).
+- **gsm**: the convergence engine underneath governed state. At build time it checks that concurrent agents applying the same events converge to the same valid state, against the conditions of a machine-checked convergence theorem. bide requires gsm v0.12.0, which fixes the `Build` gap of v0.11.0 for event guards and effects that read variables another event writes. See [known limitations](KNOWN-LIMITATIONS.md#governed-state-gsm).
 - **Governed state**: shared state described as a registry of variables, invariants, and events. The governor prevents, repairs, or halts on invariant violations.
 - **Convergence**: order-independent agreement on the replayed state, certified at build time, not assumed. `CertifyConvergence` emits a portable `ConfluenceCertificate`, re-checkable offline.
 - **Federation**: multiple governed registries connected by morphisms, converging across boundaries (trees, multi-source DAGs, monotone cycles).

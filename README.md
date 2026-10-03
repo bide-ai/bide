@@ -177,14 +177,15 @@ order-independence for finite-height lattices. The cohomological layer is mechan
 cycle basis: in the invertible fragment, a federation has a convergent global state iff every
 fundamental cycle has trivial holonomy. Its full H¹ classification is paper-proven.
 
-**Known gap in gsm v0.11.0, the version bide pins.** `Build` skips the commute check for event
-pairs it judges independent from what they write, without checking what their guards and effects
-read. The proof's commutation lemma assumes each event reads only its own footprint, so a machine
-where one event's guard or effect reads a variable another event writes (a `ship` event guarded on
-`paid`, which `pay` sets) can be certified convergent when it is not. The theorem is correct; the
-implementation applied it without checking that precondition. The fix is merged in gsm
-([gsm#2](https://github.com/blackwell-systems/gsm/pull/2)) but in no gsm release yet; until bide moves to a gsm release with
-it, do not rely on a v0.11.0 convergence verdict for such a machine. See [known limitations](docs/KNOWN-LIMITATIONS.md#governed-state-gsm).
+**bide requires gsm v0.12.0.** gsm v0.11.0, which bide required before, had a `Build` gap: it
+skipped the commute check for event pairs it judged independent from what they write, without
+checking what their guards and effects read, so a machine where one event's guard or effect reads a
+variable another event writes (a `ship` event guarded on `paid`, which `pay` sets) could be
+certified convergent when it is not. The theorem is correct; the implementation applied it without
+checking that precondition. gsm v0.12.0's `Build` checks every pair it checks for CC (every event
+pair, or only the pairs declared with `Independent`) exactly, with no footprint shortcut. A
+convergence verdict or certificate recorded under v0.11.0 is not covered by that fix; see
+[known limitations](docs/KNOWN-LIMITATIONS.md#governed-state-gsm).
 
 Made concrete at scale: an integration test drives up to **10,000,000 governed agents, 2,048 at a
 time,** through *random, invariant-violating* orders (every run breaches a capped invariant and is
@@ -203,7 +204,7 @@ governance and audit machinery at scale, not a live LLM or a production database
 | Tamper-evident audit | **RFC 6962 Merkle spine (same journal)** | Not built in | None |
 | Convergent shared state | **Provable (gsm)**[^gsm] | N/A | None |
 
-[^gsm]: The convergence theorem is machine-checked; gsm's `Build` certifies each machine against its conditions. In gsm v0.11.0, which bide pins, `Build` can wrongly certify a machine whose guards or effects read variables another event writes; a fix is in progress. See [known limitations](docs/KNOWN-LIMITATIONS.md#governed-state-gsm).
+[^gsm]: The convergence theorem is machine-checked; gsm's `Build` certifies each machine against its conditions. bide requires gsm v0.12.0, which fixes the `Build` gap of v0.11.0 for guards and effects that read variables another event writes. See [known limitations](docs/KNOWN-LIMITATIONS.md#governed-state-gsm).
 
 ### The craft underneath
 
@@ -933,9 +934,8 @@ artifacts without trusting anyone else's agent.
 
 **Agreement on shared state (convergence).** Describe the shared state as a registry (variables +
 invariants + events); gsm checks *at build time* that every interleaving of agent actions reaches
-the same valid state, or refuses to build and shows you a counterexample (gsm v0.11.0 has a known
-gap for guards and effects that read another event's writes; see
-[known limitations](docs/KNOWN-LIMITATIONS.md#governed-state-gsm)). Runtime is O(1) table
+the same valid state, or refuses to build and shows you a counterexample (see
+[known limitations](docs/KNOWN-LIMITATIONS.md#governed-state-gsm) for its scope). Runtime is O(1) table
 lookups; state is event-sourced and crash-recoverable. It scales from a single shared registry up
 through **federations** (cross-boundary constraints: trees, multi-source DAGs with resolvers,
 monotone cyclic *meshes*), composes via `Embed`, and can even **synthesize** the compensation for
@@ -984,7 +984,7 @@ New here? Start with **[Getting started](docs/getting-started.md)**, use the **[
 - **[Audit](docs/guides/audit.md)**: proof-carrying runs. A run ships one portable `RunCertificate`, checkable offline with `bide-audit verify-run`. Runnable: `examples/govern/proof-carrying-run`.
 - **[Delegation](docs/guides/delegation.md)**: signed capability grants a sub-agent can only narrow (`Grant`/`SignGrant`), verified offline (`VerifyDelegationChain`), plus authority earned from a clean trail. Runnable: `examples/govern/delegation`, `examples/govern/authority`.
 - **[Security model](docs/guides/security-model.md)**: the exact scope of the cryptographic guarantees (integrity, authenticity, tamper-evidence, non-repudiation, selective disclosure) and what is out of scope (confidentiality). Read before relying on the trail.
-- **[Governance](docs/guides/governance.md)**: the Tier-2 governed-state substrate (gsm). Describe shared state as a registry, and `Build()` checks that every interleaving converges or returns a counterexample (with a known gap in gsm v0.11.0). Runnable: `examples/govern/mesh`, `examples/govern/compose`.
+- **[Governance](docs/guides/governance.md)**: the Tier-2 governed-state substrate (gsm). Describe shared state as a registry, and `Build()` checks that every interleaving converges or returns a counterexample. Runnable: `examples/govern/mesh`, `examples/govern/compose`.
 - **[Human approval (human-in-the-loop)](docs/guides/hitl-approval.md)**: durable human sign-off before a tool runs, from 1-of-1 to signed m-of-n (`ApprovalPolicy`, `SubmitDecision`), with offline proof that k named approvers approved before the action (`audit.ApprovalEvidence`, `audit.VerifyApprovals`). Runnable: `examples/approval`.
 - **[Quorum](docs/guides/quorum.md)**: governed k-of-n model agreement (`govern.Quorum`), the tally anchored in the journal and re-checkable offline (`bide-audit verify-quorum`). Runnable: `examples/govern/quorum`.
 
