@@ -61,7 +61,7 @@ func TestCheckTree(t *testing.T) {
 		t.Errorf("only %d expectations: the fixture lost its cases", len(wants))
 	}
 	for _, w := range wants {
-		pos, name, _ := strings.Cut(w, ": ")
+		pos, name, _ := strings.Cut(strings.TrimRight(w, "\r"), ": ")
 		if g := got[pos]; len(g) != 1 || !strings.HasPrefix(g[0], name) {
 			t.Errorf("%s: found %q, want one finding naming %q", pos, g, name)
 		}

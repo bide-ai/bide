@@ -1,4 +1,4 @@
-// Package mcp adapts a Model Context Protocol server's tools into agent.Tool. Our
+// Package mcptools adapts a Model Context Protocol server's tools into agent.Tool. Our
 // agent is the MCP client/host; an MCP server is a runtime source of tools whose
 // schemas are only known at connect time (the untyped json.RawMessage path, not a Go
 // struct). Tools() lists a connected session's tools and wraps each one so the agent

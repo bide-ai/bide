@@ -207,6 +207,7 @@ type BlockError struct {
 	Msg  string
 }
 
+// Error returns the message.
 func (e *BlockError) Error() string { return e.Msg }
 
 // Unit is a block made into a Go file.

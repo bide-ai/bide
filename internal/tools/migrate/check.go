@@ -68,6 +68,7 @@ func CheckModule(dir string, patterns []string, out map[string][]byte, bide stri
 			fs = append(fs, Finding{Pos: pos, Rule: "check", Msg: "does not type-check after the rewrite: " + te.Msg})
 		}
 	}
+	remapFindings(fs, out, nil) // the errors are in the rewritten files: name the lines on disk
 	sort.SliceStable(fs, func(i, j int) bool {
 		a, b := fs[i].Pos, fs[j].Pos
 		if a.Filename != b.Filename {

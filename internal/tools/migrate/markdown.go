@@ -63,17 +63,16 @@ func MigrateMarkdown(root string, mdFiles []string, rules []Rule) (map[string][]
 		passes = append(passes, passFindings{from, len(res.Findings), before})
 	}
 	out := map[string][]byte{}
-	final := map[string][]byte{}
 	for _, f := range mdFiles {
 		c := rewriteSetups(content[f])
-		final[f] = []byte(c)
 		if orig, _ := os.ReadFile(f); string(orig) != c {
 			out[f] = []byte(c)
 		}
 	}
-	// each pass's findings name lines of the files as it read them: name them in the result
+	// each pass's findings name lines of the files as it read them: name them in the files on
+	// disk, as the run found them
 	for _, p := range passes {
-		remapFindings(res.Findings[p.from:p.to], p.before, final)
+		remapFindings(res.Findings[p.from:p.to], p.before, nil)
 	}
 	return out, res, nil
 }

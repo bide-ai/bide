@@ -1,6 +1,8 @@
 package main
 
 import (
+	"bytes"
+	"io/fs"
 	"os"
 	"path/filepath"
 	"strings"
@@ -49,7 +51,7 @@ func TestCheckModule_AgainstTheNewAPI(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	dir := userModule(t, "package user\n")
+	dir := userModule(t, brokenUser) // as on disk before the rewrite: findings name its lines
 	user := filepath.Join(dir, "user.go")
 	fs, err := CheckModule(dir, []string{"./..."}, map[string][]byte{user: []byte(newAPIUser)}, nw)
 	if err != nil || len(fs) != 0 {
@@ -151,5 +153,38 @@ func TestRebase(t *testing.T) {
 	}
 	if got := string(out[f]); !strings.Contains(got, "a := agenttest.MustNew(m, j)") {
 		t.Fatalf("the old New was not rewritten:\n%s", got)
+	}
+}
+
+// The migrated cases with CRLF line endings (a Windows checkout) are left alone by a second run:
+// gofmt writes LF, which alone is no change (a rule's edit that writes the same text, as the
+// rename rule's can, used to count as one).
+func TestIdempotent_CRLF(t *testing.T) {
+	t.Setenv("GOWORK", "off")
+	nw := copyTree(t, "testdata/newapi")
+	err := filepath.WalkDir("testdata/golden/cases", func(p string, d fs.DirEntry, err error) error {
+		if err != nil || d.IsDir() || strings.Contains(p, string(filepath.Separator)+"manual"+string(filepath.Separator)) {
+			return err
+		}
+		rel, _ := filepath.Rel("testdata/golden", strings.TrimSuffix(p, ".golden"))
+		b, err := os.ReadFile(p)
+		if err != nil {
+			return err
+		}
+		dst := filepath.Join(nw, rel)
+		if err := os.MkdirAll(filepath.Dir(dst), 0o755); err != nil {
+			return err
+		}
+		return os.WriteFile(dst, bytes.ReplaceAll(b, []byte("\n"), []byte("\r\n")), 0o644)
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	out, _, err := MigrateModule(nw, []string{"./cases/..."}, Rules())
+	if err != nil {
+		t.Fatal(err)
+	}
+	for p := range out {
+		t.Errorf("a second run rewrote %s", p)
 	}
 }

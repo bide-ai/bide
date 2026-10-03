@@ -48,10 +48,10 @@ func MigrateModule(dir string, patterns []string, rules []Rule) (map[string][]by
 		}
 		passes = append(passes, passFindings{rr.Findings, before})
 	}
-	// Each pass found its sites in the files as it read them: name them in the files as the run
-	// leaves them.
+	// Each pass found its sites in the files as it read them: name them in the files on disk,
+	// as the run found them.
 	for _, p := range passes {
-		remapFindings(p.fs, p.before, out)
+		remapFindings(p.fs, p.before, nil)
 		res.Findings = append(res.Findings, p.fs...)
 	}
 	return out, res, nil
@@ -108,8 +108,8 @@ func migrateFile(run *Run, f *File, rules []Rule) (src []byte, err error) {
 	if err != nil {
 		return nil, fmt.Errorf("%s: the rewritten file does not parse: %v\n%s", f.Path, err, b)
 	}
-	if bytes.Equal(fb, f.Src) {
-		return nil, nil
+	if bytes.Equal(fb, f.Src) || bytes.Equal(fb, bytes.ReplaceAll(f.Src, []byte("\r\n"), []byte("\n"))) {
+		return nil, nil // unchanged (gofmt writes LF: a CRLF file that only differs in that is too)
 	}
 	return fb, nil
 }

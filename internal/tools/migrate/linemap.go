@@ -75,9 +75,20 @@ func backtrack(trace [][]int, a, b []string, off, d, n, m int) []int {
 	return out
 }
 
+// normLines splits src into lines with their spacing normalized, so a line gofmt only realigned
+// (a trailing comment's column moves when a neighbour changes) still matches.
+func normLines(src []byte) []string {
+	lines := strings.Split(strings.ReplaceAll(string(src), "\r\n", "\n"), "\n")
+	for i, l := range lines {
+		lines[i] = strings.Join(strings.Fields(l), " ")
+	}
+	return lines
+}
+
 // remapFindings moves the findings made on the contents before (by path) to the line their site
-// holds in after (the final contents; a path missing from after is read from disk), so every
-// finding names a line of the file as the run leaves it.
+// holds in after (a path missing from after is read from disk: the file as the user has it), so
+// every finding names a line of the file the run started from. A line the rewrite added maps to
+// the original line after it.
 func remapFindings(fs []Finding, before, after map[string][]byte) {
 	maps := map[string][]int{}
 	for i, f := range fs {
@@ -91,7 +102,7 @@ func remapFindings(fs []Finding, before, after map[string][]byte) {
 			if !ok {
 				final, _ = os.ReadFile(f.Pos.Filename)
 			}
-			lm = lineMap(strings.Split(string(src), "\n"), strings.Split(string(final), "\n"))
+			lm = lineMap(normLines(src), normLines(final))
 			maps[f.Pos.Filename] = lm
 		}
 		if f.Pos.Line < len(lm) {
