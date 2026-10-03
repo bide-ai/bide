@@ -338,7 +338,7 @@ those of #92 (P6a); where #92 has not yet adopted a rule, the step names the rul
 | `Lost` | `Journal.claimNext` and `Journal.voided`; on the tool path the `!won` halt of the tool call |
 | `Join`, `LoserRead`, `LoserWait` | `journalStep`'s loser branch: `joinFlight`, then `j.Get`, else the halt |
 | `LoserLead` | historical only (`Bug = "LoserLeads"`): the loser's probe through `Do` starting the flight |
-| `Win`, `WinnerWait` | `Journal.doFresh` (`recordFresh` on the tool path): `shareFlight` on the result key |
+| `Win`, `WinnerWait` | `Journal.doFresh` (the tool path too): `shareFlight` on the result key |
 | `Call` | the `doFresh` closure: `journalStep`'s `ctx.Err()` check and `started.Store(true)`, the tool call's `sctx.Err()` check and `called.Store(true)`; a Step body that pauses returns `stepPauseError` |
 | `Record` | `Journal.insert` of the result inside `doFresh` |
 | `NotStarted` | `recordNotStarted` / `Journal.notStarted` after `!started` or `!called` |
@@ -704,7 +704,7 @@ resolution all run around it.
 | `QTally` | `Agent.quorumTally`: `ApprovalPolicy.Validate` and the key check, `History`, a recorded `ApprovalTallyStep` |
 | `QCount` | `TallyApprovals` with the resolver as it is now: shared and keyless seats excluded (`ReasonSharedKey`, `ReasonNoKeyID`) |
 | `QRecord` | `quorumTally`'s `step` recording the tally (retry-safe, first writer wins) |
-| `Deny` | the pre-pass's `putRecord` of the denied result |
+| `Deny` | the pre-pass's `Journal.put` of the denied result |
 | `Approve1` | `Approve` |
 | `Submit` | `SubmitDecision` (without `WithDecisionCheck`: the gate never depends on it) |
 | `Redeploy` | a new deployment of a process's tools |
@@ -859,7 +859,7 @@ gate).
 
 ## Model 7: flow semantics
 
-`flows/Flows.tla` checks a lowered plan flow (P5b, #103): every node runs as an `agent.Step`
+`flows/Flows.tla` checks a lowered plan flow (P5b, #103): every node runs as an `agent.Journal.Step`
 under its node key, so this model abstracts the Step's claim to one marker (first writer wins; a
 drive that finds a marker with no result halts until the halt is resolved) and leaves the claim
 protocol itself to model 1. Nodes are Steps since P5b: flows no longer claim through
@@ -1006,7 +1006,7 @@ succeeds or its process crashes.
   done context; call the tool itself (`direct`).
 - **The loop**: the claim, the pre-call check, the chain under the tool's timeout, the decision
   of `notCalled`, the late rule, the unknown-outcome rules, the saga failure record, the result
-  write (`recordFresh`), and `recordNotStarted` (a failed write is remembered, and the resume gate
+  write (`Journal.doFresh`), and `recordNotStarted` (a failed write is remembered, and the resume gate
   retries it: model 1's rule 4). The errgroup holds an Unrecorded refusal and a pause or halt until
   the siblings finish and joins them (`errors.Join`); every other error cancels the group.
 - **The saga's rollback** (`rollbackRun`): the calls in reverse order. A failed step is skipped
@@ -1047,10 +1047,10 @@ region in the Go code, which modelsync checks.
 | `IBegin` | T `countIn` (calls that are not ReadOnly, `tracked`), then `callIsClosed` (T5: no begin once the chain returned), then `beginCall` (`sealed`; `ErrToolReinvoked` for a side effect already begun); the `earlier` flag (T3) |
 | `ICall` | T `t.Call` and the tool's own outcome (`toolRunning`, `toolSucceeded`, `toolFailed`, `toolUnknown` in `call.out`), through `callCounted`, whose `countOut` runs on return |
 | `LStart` | L the goroutine's `gctx.Err()` check and `claimNextAttempt` (side effects only: `!retriableOnResume`) |
-| `LPre` | L `recordFresh`'s pre-call check (`claimed && ctxDone(sctx)`); T `Agent.toolCallFor` and the fresh `st`, `began`, `out`, `earlier` of the chain |
+| `LPre` | L `Journal.doFresh`'s pre-call check (`claimed && ctxDone(sctx)`); T `Agent.toolCallFor` and the fresh `st`, `began`, `out`, `earlier` of the chain |
 | `LMw`, `LWait` | M the `ToolMiddleware` chain built by `WithToolMiddleware`, as the `MW` sets allow |
 | `LClose` | T `callTool` (the timeout and `late`), `closeCall`, the seal (`began` CAS to `beganSealed`), `running` (`tracked` and `countRunning`, whatever the chain's state, T6) and the unknown-outcome rules after `h` returns, with `Agent.unprovenFailure`; L `notCalled`, the `late` rule, `argsJournalError`, `sagaStepMayHaveBegun`, `StepSagaFail` with `OutcomeUnknown`; in a rollback re-run (`rbm`), S the `state != callReached` check |
-| `LRec`, `LNS` | L `recordFresh`'s insert (S `a.store.Do` of `ToolResultStep` in a re-run), `recordNotStarted` |
+| `LRec`, `LNS` | L `Journal.doFresh`'s insert (S `a.store.do` of `ToolResultStep` in a re-run), `recordNotStarted` |
 | `LRet` | L the goroutine's deferred classification (held or cancelling the errgroup) |
 | `DOpen`, `DGate`, `DWait` | L `Agent.runLoop`'s `Load` (its `values`), the resume gate (`liveAttempts`, `toolHalt`), the errgroup's `Wait`, `errors.Join` and the drive's return |
 | `DRollback`, `DRbStep` | S `Agent.rollback` and `Agent.rollbackRun`'s reverse walk: `failed` and `failedUnknown`, the `sagaArgsStep` listing of a failed retry-safe write (T3), the `started` halt (`toolHalt`), `!safety.RetrySafe()` skip |
@@ -1218,7 +1218,7 @@ errored claim leaving the run halted.
 
 ### What is modelled
 
-- **End markers.** `run:complete` (the loop's terminal turn, `putRecord`), `run:aborted` (a saga
+- **End markers.** `run:complete` (the loop's terminal turn, `Journal.put`), `run:aborted` (a saga
   whose rollback finished, `Agent.rollback`) and `run:cancelled` (reserved; written by P14's
   `Cancel`, D1 in `docs/design/api-v1.md`). Each is its own key, first writer wins, and the model
   keeps them in journal order (A2).
@@ -1299,8 +1299,8 @@ and their resumers (`ResumeTyped`), and image input.
 | `DIdle` | `Lease` (`AcquireLease` under `<holder>#<token>`, `leaseToken`); for the primary, the caller's `Lease` around `Agent.Run`, or a plain `Agent.Run` |
 | `DCheck` | `recoverRun`'s `runEnded` under the lease: `Store.Get` of each name in `endOfRunMarkers`; P14's dispatch: `startUnderLease` (one `Get` of `run:start`, decoded in one pass, `decodeStartEntry`), a run with none skipped and reported once per process (`ErrNotStarted` through `WithRecoverErrors`; the process remembers its 65,536 most recent reports, an LRU the model does not bound) |
 | `DResume` | `recoverRun` calling `resume(ctx, runID)` |
-| `DOpen` | `Agent.runLoop`: `openRun`, `firstEnd` (the first end marker in the `Load` is the run's end: `completedAnswer` for a completed run, to a drive with the input it answered (`checkFinishedStart`, #137), `endedErr` for a cancelled one), `openPlan` (`run:start`'s options and the limit amendments from the same `Load`, `holdDrive`'s `ErrConfig` comparison), the resume gate (`toolHalt`, `HaltCrashed`), a saga's rollback request in the `Load` (`cancelTrip`), the approval pre-pass (`ApprovalPending`) |
-| `DStart` | `openPlan`: the first drive's `run:start` insert (`newStart`, the caller's options; `putRecord`, first writer wins); `openPlan` reports the write and `Agent.runLoop`'s open loads the run again (`goto DOpen`, #138 review) |
+| `DOpen` | `Agent.runLoop`: `Journal.open`, `firstEnd` (the first end marker in the `Load` is the run's end: `completedAnswer` for a completed run, to a drive with the input it answered (`checkFinishedStart`, #137), `endedErr` for a cancelled one), `openPlan` (`run:start`'s options and the limit amendments from the same `Load`, `holdDrive`'s `ErrConfig` comparison), the resume gate (`toolHalt`, `HaltCrashed`), a saga's rollback request in the `Load` (`cancelTrip`), the approval pre-pass (`ApprovalPending`) |
+| `DStart` | `openPlan`: the first drive's `run:start` insert (`newStart`, the caller's options; `Journal.put`, first writer wins); `openPlan` reports the write and `Agent.runLoop`'s open loads the run again (`goto DOpen`, #138 review) |
 | `DAmend` | `openPlan`: the `run:limits:<n>` insert of a later drive's different limit (`journaledLimits`, `applyAmendment`); then, as for `DStart`, the open loads the run again |
 | `DTurn` | `Agent.runLoop`'s turn boundary: `cancelSeen` (one `Get` of `run:cancelled`, or of `run:cancel-requested` on a saga) once a turn's calls have run since the `Load` (`runPlan.checkTurn`), `leaveCancelled`, and the turn limit (`runPlan.maxTurns`) |
 | `DClaim` | `claimNextAttempt` / `Journal.claim` (model 1), under the drive's context; the journaled tool filter at dispatch (`runPlan.allows`, `refuseFiltered`: the call's error result recorded) |
@@ -1308,7 +1308,7 @@ and their resumers (`ResumeTyped`), and image input.
 | `DCall` | `Journal.doFresh` (the tool call's result step): the `sctx.Err()` check, `t.Call` |
 | `DRecord` | `Journal.doFresh`'s insert of the result (under `context.WithoutCancel`) |
 | `DRollback`, `DAbort` | `Agent.rollback`: `rollbackRun`, then `writeEnd` of `run:aborted`, or of `run:cancelled` after a rollback a cancellation asked for (`cancelTrip`, L4) or a failure's rollback of a saga whose rollback request exists (one `Get` of `run:cancel-requested`: `AbortKind`, #138 review), or, for a saga sub-run, whose tree root was cancelled (`rootCancelRecord`, from the root's store; this model has one run, and model 11 does not tell the end markers apart, so Go tests cover it); `runSagaWithTelemetry` reads the request before a recorded failure (`DOpen`'s order) |
-| `DComplete` | the loop's terminal: `putRecord` of `run:complete` |
+| `DComplete` | the loop's terminal: `Journal.put` of `run:complete` |
 | `DVerdict` | `writeEnd`'s read-back after `run:complete` (and after `Agent.rollback`'s marker): one `Get` per end marker the run can hold beside it (`endOthers`), the lowest `Seq` first; `endedErr`, `endVerdict` |
 | `DRel` | `Lease`'s deferred `ReleaseLease` |
 | `PList`, `PNext`, `PSlot`, `PWait` | `RecoverLoop`'s `pass` and `every`: `lister.Runs(ctx, recoverFilter)` in the full pass (process `"pass"`), `lister.Runs(ctx, lapsedFilter)` in the lapsed loop (process `"tkp"`, `PassRule = "split"`; its slots are `WithRecoverLapsedConcurrency`'s, the `"tko"` driver); `recoverable`; `PNext`'s `InFlight` is the `inFlight` check before the slot wait; `PSlot` is the slot wait, then the in-flight re-check and mark under the lock (the model does not re-check: a run the other loop took meanwhile reaches `DIdle` and is refused by the lease, where the code skips it before acquiring); the ticker (`Recover`: one pass) |
@@ -1966,7 +1966,7 @@ it. Function names are those of `main` after #130; `S` is `agent/session.go`, `K
 | `SRb` | S `rollbackTurn`: a cancelled saga turn's rollback, `driveRun` under the turn lease with `s.mu` released; `startTurn` reloads after it. Over a store with no `Leaser`, `s.mu` stays held across it (#138 round 4): callers on that handle cannot interleave with it, a subset of the model's behaviours |
 | `KLook` | S `SendOnce` and `keyedTurn`: the reload of an unseen key, the recorded answer, the input check |
 | `Seed`, `FDo`, `FReload` | S `turnSeed`: `store.Do` of `from/<run>`, the reload when it names more turns than the handle holds |
-| `DLoad`, `DCall`, `DDone` | S `driveRun`: a finished run (`completedAnswer`) answers only the input its `run:start` recorded, else `ErrConfig` (`checkFinishedStart`, #137); S4's rule (`TurnLease`), `leaseRun` of the turn run's lease, and for a lease another holder has, the read of `run:complete`, else `ErrTurnContended` (`"contended"`); then `Agent.runLoop` of the turn's run under the lease: `openRun`, `completedAnswer` and `checkFinishedStart`, `holdToStart`'s input check, the approval and interrupt pauses, the budget check and `@llm/<n>` (`recorded`), `run:complete`, and the lease's release when it returns; P14's `run:cancelled` reads |
+| `DLoad`, `DCall`, `DDone` | S `driveRun`: a finished run (`completedAnswer`) answers only the input its `run:start` recorded, else `ErrConfig` (`checkFinishedStart`, #137); S4's rule (`TurnLease`), `leaseRun` of the turn run's lease, and for a lease another holder has, the read of `run:complete`, else `ErrTurnContended` (`"contended"`); then `Agent.runLoop` of the turn's run under the lease: `Journal.open`, `completedAnswer` and `checkFinishedStart`, `holdToStart`'s input check, the approval and interrupt pauses, the budget check and `@llm/<n>` (`recorded`), `run:complete`, and the lease's release when it returns; P14's `run:cancelled` reads |
 | `ADo` | S `appendTurn`: `store.Do` of `turn/<n>`, the claim and same-run checks, the skip of a slot another handle took; S2's fix checks the turns the handle has loaded first |
 | `AReload` | S `runTurn`'s `reload` after the append |
 | `TurnId`, `EventId` | K `sessionTurnRunID`, `sessionEventRunID`, and `checkRunID`'s refusal of `>` in a root run ID |

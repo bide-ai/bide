@@ -177,7 +177,7 @@ step abstracts is named, so the model-code map is explicit.
 | `ClaimNS` | `Journal.claim` → `Journal.notStarted` | Insert the not-started record under the claim's own id (three replies). On error: `pendingClaims.remember`. The drive fails. |
 | `Lost` | `Journal.claimNext`, `Journal.voided` | If the stored marker is voided by its claimant's not-started record: next `g`, back to `Claim`. Else the tool path halts (`HaltContended`); the Step path goes to `JoinOrRead`. |
 | `JoinOrRead` | `journalStep` loser branch: `joinFlight`, then `Journal.Get` | Join the process's in-flight call if there is one and take its outcome (if it fails, halt `HaltContended`); else read the result; else halt (`HaltCrashed`). Never lead a flight. |
-| `Call` | `journalStep`'s `doFresh` closure; `loop.go`'s `recordFresh` closure (`sctx.Err()` check, `called.Store(true)`) | Either the context is cancelled (the effect is not called: `NotStarted`), or the effect is called: `fired[c]` increments and `firedAt[c][g]` is set. |
+| `Call` | `journalStep`'s `doFresh` closure; `loop.go`'s `doFresh` closure (`sctx.Err()` check, `called.Store(true)`) | Either the context is cancelled (the effect is not called: `NotStarted`), or the effect is called: `fired[c]` increments and `firedAt[c][g]` is set. |
 | `Record` | `Journal.doFresh` → `Journal.insert` | Insert the result (three replies). An error leaves the marker without a result: the next drive halts. |
 | `NotStarted` | `recordNotStarted` → `Journal.notStarted` | Insert the not-started record (three replies). On error: `pendingClaims.remember`, as for every failed not-started write. |
 | `Finish` | the caller, `Recover`/`RecoverLoop` | A drive that did not end with a result is driven again. |
@@ -508,7 +508,7 @@ Journal and engine events are recorded by hook calls at these sites:
 | `pending_remember` | `claimMemo.remember` (called from `Journal.claim`) | entry |
 | `voided_check` (result) | `Journal.claimNext`, `Journal.voided` | after the check |
 | `gate_halt` | the resume gate in `loop.go` (`Agent.runLoop`'s `for id := range attempted`) | before the `ResumeHalt` return |
-| `effect_skip` (cancelled before the call) | `journalStep` (`ctx.Err()` in the `doFresh` closure), `loop.go` (`sctx.Err()` in the `recordFresh` closure), `durableStep` | the early return |
+| `effect_skip` (cancelled before the call) | `journalStep` (`ctx.Err()` in the `doFresh` closure), `loop.go` (`sctx.Err()` in the `doFresh` closure) | the early return |
 | `effect_call` | the same three closures | at `started.Store(true)` / `called.Store(true)` |
 | `not_started` | `Journal.notStarted` | entry |
 | `flight_lead`, `flight_join` | `shareFlight`, `joinFlight` | entry |
@@ -658,8 +658,7 @@ speak about the same records:
 
 - **A CI path rule.** The claim code is marked with region comments
   (`// protocol:claims begin` / `// protocol:claims end`) in `agent/journal.go` (the claim section
-  and the flight and memo types), `agent/attempt.go`, `agent/step.go` (`journalStep`,
-  `durableStep`), `agent/loop.go` (the resume gate and the claim block of the tool call),
+  and the flight and memo types), `agent/attempt.go`, `agent/step.go` (`journalStep`), `agent/loop.go` (the resume gate and the claim block of the tool call),
   `agent/halt.go` (`resolveHalt`, `checkNoLiveDriver`), `agent/keys.go` (the attempt constructors)
   and `agent/saga.go` (its `liveAttempts` use). A CI job fails a pull request whose diff touches a
   marked region unless it also changes `spec/tla/claims/` or its description holds a line

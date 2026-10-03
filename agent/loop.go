@@ -30,7 +30,7 @@ func (a *Agent) run(ctx context.Context, runID string, d *driveSpec) (Message, u
 }
 
 // driveStackProbe is the stack a drive needs below Agent.run, less a margin: about 23 KiB at its
-// deepest (the journal header's insert under openRun), of which drive's own frame is about 12 KiB.
+// deepest (the journal header's insert under Journal.open), of which drive's own frame is about 12 KiB.
 // It stays below that need, so the probe never grows a stack the drive would not.
 // TestDriveStackHighWater (drive_stack_test.go) pins that need between 17 and 32 KiB and fails
 // when the drive changes enough that this size should be revisited.
@@ -43,7 +43,7 @@ const driveStackProbe = 16 << 10
 //
 // Why it exists: a run in a fresh goroutine (a server handler, a Recover worker, a parallel
 // sub-run) starts with an 8 KiB stack. Without the probe, the drive outgrows it twice, once deep
-// under openRun and once more further down, and each growth copies every frame above it,
+// under Journal.open and once more further down, and each growth copies every frame above it,
 // including drive's own large one, a cost the overhead benchmark (short runs) is sensitive to.
 // With the probe, the stack grows here once, while only run's small frame is above it, and the
 // drive then fits. When the stack is already large enough, the probe costs one call (its frame's

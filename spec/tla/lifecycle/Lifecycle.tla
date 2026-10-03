@@ -290,7 +290,7 @@ DResume:
   \* resume(ctx, runID) is called.
   if Ended(jr[self]) then resumedEnded := TRUE; end if;
 DOpen:
-  \* Agent.run's Load (openRun), the end of a finished run, the resume gate, the approval pause.
+  \* Agent.run's Load (Journal.open), the end of a finished run, the resume gate, the approval pause.
   \* P14: the Load also holds run:start (the journaled options) and the limit amendments.
   if ctxDead[self] then
     ret[self] := "lost"; goto DRel;
@@ -399,7 +399,7 @@ DPost:
     end if;
   end if;
 DCall:
-  \* recordFresh: the sctx.Err() check, then the effect.
+  \* Journal.doFresh (the tool call's closure): the sctx.Err() check, then the effect.
   if ctxDead[self] then
     marker[jr[self]][cc[self]] := NoClaim;
     ret[self] := "lost"; goto DRel;
@@ -453,7 +453,7 @@ DAbort:
     end if;
   end if;
 DComplete:
-  \* run:complete, first writer wins (putRecord).
+  \* run:complete, first writer wins (Journal.put).
   if ctxDead[self] then
     ret[self] := "lost"; goto DRel;
   else
