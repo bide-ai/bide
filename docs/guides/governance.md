@@ -3,10 +3,11 @@
 How to let **multiple concurrent agents mutate shared state and still agree**, without a
 lock, a leader, or a consensus round. This is the `govern` package. It's built on
 [gsm](https://github.com/blackwell-systems/gsm) (Governed State Machines), which checks *at
-build time* that every interleaving of agent actions converges to the same valid state, against
-the conditions of a machine-checked convergence theorem. `Build` returns a machine only after the
-table oracle, Go generated from gsm's machine-checked Rocq proof, re-checks it in-process, and for
-combinator rules within a cost cap the rules oracle re-checks it from the rules as well. A
+build time* that every interleaving of agent actions (every order of the event pairs declared with
+`Independent`, when pairs are declared) converges to the same valid state, against the conditions
+of a machine-checked convergence theorem. `Build` returns a machine only after the table oracle, Go
+generated from gsm's machine-checked Rocq proof, re-checks it in-process, and for combinator rules
+inside its fragment and within a cost cap, the rules oracle re-checks it from the rules as well. A
 federation's own conditions are checked by gsm's Go code. In CI, bide's required gsm machine gate
 runs the proof's checkers on every machine the governance examples build. The exact scope,
 including which event pairs CC covers (every event pair, or only those declared with

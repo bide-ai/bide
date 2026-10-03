@@ -161,10 +161,11 @@ cannot change the result. The proof is axiom-free and CI-verified on Coq 8.18, 8
 proof](https://github.com/blackwell-systems/normalization-confluence/tree/main/coq)
 ([![verify](https://github.com/blackwell-systems/normalization-confluence/actions/workflows/verify.yml/badge.svg)](https://github.com/blackwell-systems/normalization-confluence/actions/workflows/verify.yml)).
 Describe the shared state as a registry; gsm checks at build time that every interleaving of agent
-actions reaches the same valid state, or refuses to build and shows you a counterexample. `Build`
-returns a machine only after the table oracle, Go generated from gsm's machine-checked Rocq proof,
-re-checks it in-process, and for combinator rules within a cost cap the rules oracle re-checks it
-from the rules as well. A federation's own conditions are checked by gsm's Go code. In CI, bide's
+actions (every order of the event pairs declared with `Independent`, when pairs are declared)
+reaches the same valid state, or refuses to build and shows you a counterexample. `Build` returns a
+machine only after the table oracle, Go generated from gsm's machine-checked Rocq proof, re-checks
+it in-process, and for combinator rules inside its fragment and within a cost cap, the rules oracle
+re-checks it from the rules as well. A federation's own conditions are checked by gsm's Go code. In CI, bide's
 required gsm machine gate runs the proof's checkers on every machine the governance examples build.
 The exact scope, including which event pairs CC covers (every event pair, or only those declared
 with `Independent`), is in [known limitations](docs/KNOWN-LIMITATIONS.md#governed-state-gsm). Rules are
@@ -207,7 +208,7 @@ governance and audit machinery at scale, not a live LLM or a production database
 | Tamper-evident audit | **RFC 6962 Merkle spine (same journal)** | Not built in | None |
 | Convergent shared state | **Provable (gsm)**[^gsm] | N/A | None |
 
-[^gsm]: The convergence theorem is machine-checked. gsm's `Build` checks each machine against its conditions and returns it only after the table oracle, Go generated from the proof, re-checks it in-process; for combinator rules within a cost cap the rules oracle re-checks it from the rules as well. A federation's own conditions are checked by gsm's Go code. bide requires gsm v0.12.0, which fixes the `Build` gap of v0.11.0 for guards and effects that read variables another event writes. Exact scope: [known limitations](docs/KNOWN-LIMITATIONS.md#governed-state-gsm).
+[^gsm]: The convergence theorem is machine-checked. gsm's `Build` checks each machine against its conditions and returns it only after the table oracle, Go generated from the proof, re-checks it in-process; for combinator rules inside its fragment and within a cost cap, the rules oracle re-checks it from the rules as well. A federation's own conditions are checked by gsm's Go code. bide requires gsm v0.12.0, which fixes the `Build` gap of v0.11.0 for guards and effects that read variables another event writes. Exact scope: [known limitations](docs/KNOWN-LIMITATIONS.md#governed-state-gsm).
 
 ### The craft underneath
 
