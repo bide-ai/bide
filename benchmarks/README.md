@@ -86,6 +86,75 @@ sees no charge in history, and it re-fires. ADK has no framework-level attempt-m
 halt-on-unknown-outcome to close that window: the same gap trpc has, and the same one
 Bide closes to hold `maxFired=1`.
 
+## CANDIDATE, pending fairness review: LangGraph (Python)
+
+Not part of the result table above, and not run in CI. These numbers wait for an
+independent fairness review before they appear anywhere else.
+
+`python/langgraph/` is a Python harness, isolated from the Go modules, pinned with `uv`
+(`pyproject.toml` + `uv.lock`): langgraph 1.2.12, langgraph-checkpoint-sqlite 3.1.1,
+langgraph-checkpoint 4.2.0, Python 3.13. `chaos.py` is a line-for-line port of
+`chaos.Verify` and of Go's `math/rand/v2` PCG, so it runs the same crash schedules (checked
+against Go's output in the tests) and prints the same rows.
+
+Run it (needs `uv`):
+
+```
+cd benchmarks/python/langgraph
+uv run pytest -q        # fairness checks
+uv run python bench.py  # the benchmark, every configuration
+```
+
+Measured on 2026-10-03:
+
+```
+langgraph        sweeps=9   schedules=209   maxFired=3  FAIL ✗ (40 double-fires, worst=3)
+```
+
+That row is the `trpc.go` shape (`start → charge`, the side effect in the `charge` node) on a
+`SqliteSaver` with `durability="sync"`, which LangGraph documents as its most durable mode.
+`bench.py` also runs three other documented ways to write the side effect (inside a
+`@task` called from the node; the Functional API's `@entrypoint` + `@task`, the pattern the
+docs give for side effects; a node `CachePolicy` on a durable `SqliteCache`) under each
+durability mode. Every configuration double-fires. Under `"sync"`, maxFired is 3 (node),
+4 (`@task` in a node, and the cache variant) and 5 (Functional API); `"exit"` reaches 6.
+maxFired differs between them mainly because each makes a different number of writes, so
+the same seeded schedules land on different events; it is not a ranking of how protective
+each one is.
+
+**Crashes are real.** Each step runs in a forked child process. The checkpointer is a
+`SqliteSaver` whose `put` and `put_writes` (and, for the cache variant, `SqliteCache.set`)
+report to the parent and wait; at the crash point the parent sends `SIGKILL`, so the
+process dies before that write reaches SQLite, with no exception handling or cleanup.
+LangGraph issues writes from background threads, so the hook holds one lock across the
+hand-off and the write: a crash at write K means writes 1..K-1 committed and nothing after
+did, the same model as `chaos.Run`. The charge appends a line to a separate file and
+fsyncs it before returning. Resume is what the docs describe: `invoke(None, config)` on the
+same `thread_id` when the thread has a checkpoint, the original input when it has none.
+
+**Fairness checks** (`test_fairness.py`, all pass, every variant and mode): a clean run
+charges exactly once; resuming a completed thread is a no-op (no charge, no writes); a crash
+at any write before the charge, then resume, charges exactly once; and in the `"sync"` graph
+variants a crash after the start step persisted resumes without re-running it, so resume
+continues from the checkpoint rather than restarting the thread.
+
+**The window.** A single crash at the first durable write after the side effect ran (its
+result never persisted) re-fires the charge on resume, in every variant and durability mode
+(`test_crash_right_after_charge_refires`). Under `"async"` the charge can run before even
+the start step's writes are persisted, so the window is wider. That is LangGraph's
+documented model. The [Functional API docs](https://docs.langchain.com/oss/python/langgraph/functional-api#idempotency)
+say: "A **task** that started but did not finish may run again on that resume, so design
+side effects to be idempotent. Use idempotency keys or verify existing results to avoid
+unintended duplication." The [durability modes](https://docs.langchain.com/oss/python/langgraph/checkpointers#durability-modes)
+section describes `"sync"` as: "LangGraph persists changes synchronously before the next
+step starts."
+
+Known limits of this measurement: SQLite only (not Postgres or LangGraph Platform); the
+order of LangGraph's background writes varies between runs, so the K-th write is not
+always the same event and the double-fire count moves by a few between runs (maxFired was
+stable over five runs); and a side effect written with an idempotency key, as the docs
+advise, would not double-charge, which is true of every SDK in this table.
+
 ## Adding another SDK
 
 Implement `chaos.System` for it (see `trpc.go` as a template), add it to `bench_test.go`,
