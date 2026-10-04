@@ -20,3 +20,5 @@ cases/manual/manual_test.go:85: construct: builder methods after the constructio
 cases/manual/manual_test.go:89: construct: builder methods after the construction take p, which may not evaluate the same where the agent is built: pass the options to agent.New where the values are final
 cases/manual/manual_test.go:95: construct: builder methods after the construction take n, which may not evaluate the same where the agent is built: pass the options to agent.New where the values are final
 cases/manual/manual_test.go:99: construct: builder methods on an agent that was built elsewhere or is already in use: pass the options to agent.New, or use a.With (which returns a copy)
+cases/manual/manual_test.go:117: construct: builder methods after the construction take tc, which may not evaluate the same where the agent is built: pass the options to agent.New where the values are final
+cases/manual/manual_test.go:122: construct: builder methods after the construction take mws, which may not evaluate the same where the agent is built: pass the options to agent.New where the values are final

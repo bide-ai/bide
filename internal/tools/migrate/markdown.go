@@ -164,6 +164,9 @@ func markdownPass(root string, names map[string]string, content map[string]strin
 		for _, b := range blocks {
 			var setup snip.Setup
 			if b.Dir != nil {
+				if b.Dir.Kind == "api" {
+					skip(b, f, "an api block lists a package's declarations: update it by hand to the package's current ones")
+				}
 				if b.Dir.Kind != "setup" {
 					continue
 				}

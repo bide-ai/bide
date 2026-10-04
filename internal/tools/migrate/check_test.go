@@ -191,13 +191,13 @@ func TestIdempotent_CRLF(t *testing.T) {
 	}
 }
 
-// A block the markdown mode cannot rewrite (it names a variable nothing declares, or does not
-// parse) is reported, once, at its line: never left alone silently.
+// A block the markdown mode cannot rewrite (it names a variable nothing declares, does not parse,
+// or is an api listing) is reported, once, at its line: never left alone silently.
 func TestMigrateMarkdown_UnresolvableBlocksAreReported(t *testing.T) {
 	t.Setenv("GOWORK", "off")
 	dir := userModule(t, "package user\n")
 	md := filepath.Join(dir, "README.md")
-	doc := "# Use\n\n```go\na, err := agent.Build(model, journal)\n```\n\n```go\nfunc (x {\n```\n"
+	doc := "# Use\n\n```go\na, err := agent.Build(model, journal)\n```\n\n```go\nfunc (x {\n```\n\n<!-- docsnip: api agent -->\n```go\nfunc Approve(ctx context.Context, d Durable, runID, toolUseID string, approved bool) error\n```\n"
 	if err := os.WriteFile(md, []byte(doc), 0o644); err != nil {
 		t.Fatal(err)
 	}
@@ -212,7 +212,7 @@ func TestMigrateMarkdown_UnresolvableBlocksAreReported(t *testing.T) {
 		}
 	}
 	slices.Sort(got)
-	if len(got) != 2 || !strings.HasPrefix(got[0], "4 not rewritten: the block names something") || !strings.HasPrefix(got[1], "8 not rewritten: the block does not parse") {
-		t.Fatalf("markdown findings %q; want the undeclared block at 4 and the broken one at 8", got)
+	if len(got) != 3 || !strings.HasPrefix(got[0], "13 not rewritten: an api block") || !strings.HasPrefix(got[1], "4 not rewritten: the block names something") || !strings.HasPrefix(got[2], "8 not rewritten: the block does not parse") {
+		t.Fatalf("markdown findings %q; want the api block at 13, the undeclared block at 4 and the broken one at 8", got)
 	}
 }

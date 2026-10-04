@@ -107,3 +107,18 @@ func TestDecoratorsWithSliceOptions(t *testing.T) {
 	opts := []agent.RunOption{agent.WithSaga()}
 	_, _ = a.RunMessage(agent.ContextWithWaker(context.Background(), waker{}), "r", agent.UserText("x"), opts...)
 }
+
+// Composite variables change through a field or an element without being assigned: reported.
+func TestFoldNeedsBasicArguments(t *testing.T) {
+	var x, y agent.Middleware
+	tc := agent.ToolChoice{Mode: "auto"}
+	a := agent.New(agent.NewScriptedModel(), agent.NewMemStore())
+	tc.Mode = "required"
+	a.WithToolChoice(tc) // a field changed between
+
+	mws := []agent.Middleware{x}
+	b := agent.New(agent.NewScriptedModel(), agent.NewMemStore())
+	mws[0] = y
+	b.Use(mws...) // an element changed between
+	_, _ = a, b
+}

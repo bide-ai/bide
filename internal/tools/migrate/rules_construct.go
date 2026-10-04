@@ -368,9 +368,11 @@ func foldBuilders(c *Ctx, list []ast.Stmt) {
 
 // stableArgs reports whether every argument of the builder calls (in the statement at) evaluates
 // at the construction (stmt) to what it evaluated to after the statements between: a constant, a
-// function literal, a function, or a local variable declared before the construction that nothing
-// between assigns, and whose address no code of the function takes or no closure captures (a
-// call between could change it through either). Anything else (a pointer dereference, a call, a
+// function literal, a function, or a local variable of a basic type (a number, a string, a bool)
+// declared before the construction that nothing between assigns, and whose address no code of the
+// function takes or no closure captures (a call between could change it through either). A
+// variable of any other type may change through a field, an element or a callee without being
+// assigned, so it is not folded. Anything else (a pointer dereference, a call, a
 // field) may change in between, as a flag's value does at flag.Parse; the site is reported.
 func (c *Ctx) stableArgs(calls []*ast.CallExpr, stmt, at ast.Stmt, between []ast.Stmt) bool {
 	fn := c.enclosingBody()
@@ -406,6 +408,9 @@ func (c *Ctx) stableArg(a ast.Expr, stmt ast.Stmt, between []ast.Stmt, fn ast.No
 		case *types.Var:
 			if o.Pkg() == nil || o.Parent() == o.Pkg().Scope() || o.Pos() >= stmt.Pos() {
 				return false // a package variable, or one declared after the construction
+			}
+			if _, basic := o.Type().Underlying().(*types.Basic); !basic {
+				return false // a struct, slice, map or pointer may change through a field, an element or a call
 			}
 			for _, t := range between {
 				if c.assignsTo(t, o) {
