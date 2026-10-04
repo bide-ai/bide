@@ -9,6 +9,10 @@ minor version (0.x.0) may include breaking API or journal-format changes; each o
 
 ## [Unreleased]
 
+### Fixed
+
+- Documentation: the formal verification overview said the TLA+ models caught 29 bugs, all before release. They found 28 and confirmed one more found in review, and four of them (L1, S1, S2 and S4) were in v0.9.0 and fixed in v0.10.0. The overview, the README and the docs index now say so.
+
 ## [0.11.1] - 2026-10-04
 
 ### Fixed

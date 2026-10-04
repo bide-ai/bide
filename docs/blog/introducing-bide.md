@@ -18,7 +18,7 @@ agent.
 
 bide runs an agent loop (a model, some tools, a store) on top of an append-only journal. Every model
 turn and every tool result is a named record. When a process dies and you call `Run` again with the
-same run ID, the run replays its journal and continues from where it stopped, without redoing the
+same run ID and input, the run replays its journal and continues from where it stopped, without redoing the
 work it already recorded.
 
 The core promise is about side effects. A tool that changes the world is, by default, a side
@@ -100,11 +100,12 @@ func main() {
 
 ## One crash, end to end
 
-One run we did by hand: the agent had two tools: `charge_card`, a side effect that appends
-a line to a file, and a slower read-only report tool. The model was `openai/gpt-4o-mini` through
-OpenRouter, and the journal was on `store/sqlite`. While the run was in progress we killed the
-process with `SIGKILL`, started it again, and called `Run` with the same run ID. The read-only report tool, cut
-off mid-call, ran again; the charge, already recorded, did not, and the run finished. The charge file held one line.
+One run we did by hand used an agent with two tools: `charge_card`, a side effect that appends a
+line to a file, and `write_report`, a slow tool declared `ReadOnly`. The model was
+`openai/gpt-4o-mini` through OpenRouter, and the journal was on `store/sqlite`. While
+`write_report` was running we killed the process with `SIGKILL`, started it again, and called
+`Run` with the same run ID and input. The read-only report tool, cut off mid-call, ran again; the
+charge, already recorded, did not, and the run finished. The charge file held one line.
 
 That is one schedule, not a proof. Had the kill landed between the attempt marker and the journaled
 result, the resumed run would have halted with `OutcomeUnknown` instead of finishing, which is the
@@ -118,7 +119,7 @@ go run github.com/bide-ai/bide/examples/recover@latest
 
 ## What else is in the box
 
-**A verifiable audit trail.** The journal is committed to an RFC 6962 Merkle tree, the structure
+**A verifiable audit trail.** The `audit` package commits the journal to an RFC 6962 Merkle tree, the structure
 Certificate Transparency uses. An inclusion proof shows one action is in the log; a consistency
 proof shows the log was only appended to. The `bide-audit` CLI checks these offline, from an exported
 bundle and a public key, with no access to your database:
@@ -127,13 +128,13 @@ bundle and a public key, with no access to your database:
 brew install bide-ai/tap/bide-audit
 ```
 
-Hashes and signed tree heads always detect accidental corruption, but they
-detect deliberate tampering only when the root is also committed somewhere the operator cannot
+Verifying the hashes detects accidental corruption, but it detects
+deliberate tampering only when the root is also committed somewhere the operator cannot
 rewrite (signed with a key the application cannot use freely, or published to a separate system).
 See [Audit](../guides/audit.md).
 
-**Human approval, including m-of-n.** A tool can carry an approval gate that pauses the run before
-the tool executes. An m-of-n gate needs k signed decisions from a fixed, named set of n approvers,
+**Human approval, including k-of-n.** A tool can carry an approval gate that pauses the run before
+the tool executes. A k-of-n gate needs k signed decisions from a fixed, named set of n approvers,
 each signed over the exact call, and `bide-audit verify-approvals` checks offline that k named
 approvers approved that call. bide checks signatures against the keys you provide; tying a key to a
 person is your identity provider's job, and bide cannot tell when one person holds two keys. See
@@ -143,7 +144,8 @@ person is your identity provider's job, and bide cannot tell when one person hol
 calls, the run lifecycle and recovery, sessions and more are TLA+ models (nine in all). The TLC
 model checker explores every interleaving within each configuration's bounds; the models run in
 CI on every pull request that changes them, and all of them in the merge queue and on main. So far
-they have caught 29 bugs in bide's own design or code before a release. Nightly, the Apalache
+they have found 28 bugs in bide's own design or code, and confirmed one more found in review. Most
+were caught before release; four (L1, S1, S2, S4) were in v0.9.0 and fixed in v0.10.0. Nightly, the Apalache
 model checker proves an inductive invariant of the claim protocol: for two drivers over two
 processes, with attempts 0 to 3 and a fixed pool of claim ids, at-most-once holds at any depth and
 for any number and mix of faults within those bounds. That proof excludes the approval gate and
@@ -160,14 +162,14 @@ generated from the Rocq proof re-checks it in-process. `CertifyConvergence` emit
 can re-check offline. The claim is order-independent convergence of the replay for a machine that
 meets the theorem's conditions; with event pairs declared `Independent`, it covers only reorderings
 across those pairs, and a federation's own conditions are checked by gsm's Go code, not an oracle.
-bide requires gsm v0.12.0, and a verdict recorded under v0.11.0 is not covered by its fix. See
+bide requires gsm v0.12.0, and a verdict recorded under gsm v0.11.0 is not covered by its fix. See
 [Governance](../guides/governance.md).
 
 ## Limits
 
-bide is pre-1.0. A minor release may change the API or the journal format, and each such change is
-marked **Breaking** in the [changelog](https://github.com/bide-ai/bide/blob/main/CHANGELOG.md). A run is not promised to resume across
-pre-releases, so finish or resolve runs before you upgrade. Durability needs a durable store and
+bide is pre-1.0. Breaking API changes are marked **Breaking** in the
+[changelog](https://github.com/bide-ai/bide/blob/main/CHANGELOG.md). The journal format can change
+between pre-releases without a version bump, so finish or resolve runs before you upgrade. Durability needs a durable store and
 waker, and recovery needs a `Resumer` you supply. The full list is on
 [Known limitations](../KNOWN-LIMITATIONS.md); read it before you rely on any guarantee above.
 
