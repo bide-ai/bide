@@ -9,6 +9,11 @@ minor version (0.x.0) may include breaking API or journal-format changes; each o
 
 ## [Unreleased]
 
+### Fixed
+
+- A failed model call's error said `(model) (model)`: the run wrapped `ErrModel` around an adapter error that already wrapped it. It wraps it only when it is missing.
+- `model/openai` with an empty API key: a server that needs a key refuses the request with 401 or 403, which read like a bad key or a provider fault. The `*agent.APIError` now says no API key was set (`openai.New` was given an empty key); a server that needs none, such as Ollama, works as before.
+
 ## [0.11.0] - 2026-10-04
 
 ### Changed
