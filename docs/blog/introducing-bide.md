@@ -18,7 +18,7 @@ agent.
 
 bide runs an agent loop (a model, some tools, a store) on top of an append-only journal. Every model
 turn and every tool result is a named record. When a process dies and you call `Run` again with the
-same run ID and input, the run replays its journal and continues from where it stopped, without redoing the
+same run ID and input, the run replays its journal and continues where it stopped, without redoing the
 work it already recorded.
 
 The core promise is about side effects. A tool that changes the world is, by default, a side
@@ -101,15 +101,16 @@ func main() {
 ## One crash, end to end
 
 One run we did by hand used an agent with two tools: `charge_card`, a side effect that appends a
-line to a file, and `write_report`, a slow tool declared `ReadOnly`. The model was
+line to a file, and `write_report`, a slow tool that overwrites a marker file, declared
+`ReadOnly` because re-running it is harmless. The model was
 `openai/gpt-4o-mini` through OpenRouter, and the journal was on `store/sqlite`. While
 `write_report` was running we killed the process with `SIGKILL`, started it again, and called
-`Run` with the same run ID and input. The read-only report tool, cut off mid-call, ran again; the
+`Run` with the same run ID and input. The report tool, cut off mid-call, ran again; the
 charge, already recorded, did not, and the run finished. The charge file held one line.
 
 That is one schedule, not a proof. Had the kill landed between the attempt marker and the journaled
-result, the resumed run would have halted with `OutcomeUnknown` instead of finishing, which is the
-intended behavior. To see both sides without an API key, `examples/recover` runs offline with a
+result, the resumed run would have halted with `OutcomeUnknown` instead of finishing, as
+intended. Without an API key, `examples/recover` runs offline with a
 scripted model: it resumes a finished run without firing its tool again, then halts on a lost
 outcome and resolves it with `ResolveHalt`:
 
@@ -143,9 +144,9 @@ person is your identity provider's job, and bide cannot tell when one person hol
 **Formal models of the coordination protocols.** The claim protocol, the approval gate, tool
 calls, the run lifecycle and recovery, sessions and more are TLA+ models (nine in all). The TLC
 model checker explores every interleaving within each configuration's bounds; the models run in
-CI on every pull request that changes them, and all of them in the merge queue and on main. So far
-they have found 28 bugs in bide's own design or code, and confirmed one more found in review. Most
-were caught before release; four (L1, S1, S2, S4) were in v0.9.0 and fixed in v0.10.0. Nightly, the Apalache
+CI on every pull request that changes them, and all of them in the merge queue and on main. They have
+found 28 bugs in bide's own design or code, and confirmed one more found in review. Most
+were caught before release; four (L1, S1, S2, S4) shipped in releases up to v0.9.0 and were fixed in v0.10.0. Nightly, the Apalache
 model checker proves an inductive invariant of the claim protocol: for two drivers over two
 processes, with attempts 0 to 3 and a fixed pool of claim ids, at-most-once holds at any depth and
 for any number and mix of faults within those bounds. That proof excludes the approval gate and

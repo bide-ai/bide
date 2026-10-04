@@ -21,8 +21,8 @@ At a glance:
 - **Apalache, nightly:** an inductive invariant proves, for two drivers over two processes, `AtMostOnce` and `NotStartedExclusive` on one call (attempts 0..3, 8 claim ids) and all four of `AtMostOnce`, `NotStartedExclusive`, `NoLiveOverride` and `AtMostOncePerIntent` with halt resolution and the caller's second call (attempts 0..3, 6 claim ids), without the approval gate, and, under the lease check, assuming no plain run holds the live attempt at the check (`PlainRunIdleAtCheck`), at any depth and for any number and mix of faults within the run's 8 (6) claim ids and attempts 0..3 (claim ids are never reused, so this bounds the number of claims); a bounded symbolic regression must find #90's F2.
 - **28 bugs found** in bide's own design or code (F1 to F5, P1, P2, T1 to T6, a rollback that
   never ended, L1 to L7, D1 to D3, and S1 to S4), and **one more confirmed** (a spend-accounting
-  bug found in review, which model 8 confirmed). Most were caught before release; four (L1, S1, S2
-  and S4) were in v0.9.0 and fixed in v0.10.0. Each fixed one is kept as a regression configuration (L2 to L7 and S3 since P14
+  bug found in review, which model 8 confirmed). Most were caught before release; four (L1, S1, S2,
+  S4) shipped in releases up to v0.9.0 and were fixed in v0.10.0. Each fixed one is kept as a regression configuration (L2 to L7 and S3 since P14
   implemented their rules, S1, S2 and S4 since #137, D1 to D3 since #133).
 
 ## What TLA+ and model checking are
@@ -149,8 +149,8 @@ rollback) are partly covered by models 10, 9 and 11; its model 4 (the store cont
 
 ## Bugs the models caught
 
-Most rows were caught before they reached a release; L1, S1, S2 and S4 were in v0.9.0 and fixed
-in v0.10.0 (#126, #137). Each fixed one is now a regression
+Most rows were caught before they reached a release; four (L1, S1, S2, S4) shipped in releases up
+to v0.9.0 and were fixed in v0.10.0 (#126, #137). Each fixed one is now a regression
 configuration: the old rule, restored behind a `Bug` flag, that must keep failing with its
 property. L2 to L7 are regressions of the rules P14 replaced: each fails under its old rule, and P14's code implements the adopted one. Trace lengths and
 details are in the linked README sections.
