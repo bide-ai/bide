@@ -9,9 +9,11 @@ minor version (0.x.0) may include breaking API or journal-format changes; each o
 
 ## [Unreleased]
 
+## [0.11.0] - 2026-10-04
+
 ### Changed
 
-- **Breaking:** the API redesign's final names (P15, docs/design/api-v1.md section 10.2). The transitional names and the old API they stood beside are gone. The list below is the upgrade path, name by name; a module that used `github.com/bide-ai/bide/mcp` requires `github.com/bide-ai/bide/mcptools` instead.
+- **Breaking:** the API redesign's new names (P15, docs/design/api-v1.md section 10.2, [#156]). The transitional names and the old API they stood beside are gone. The list below is the upgrade path, name by name; a module that used `github.com/bide-ai/bide/mcp` requires `github.com/bide-ai/bide/mcptools` instead.
 
   - Construction: `Build` is `New(model, journal, opts...) (*Agent, error)`; the old `New(model, store, tools...)` and the builder methods (`Use`, `UseTool`, `WithMaxTurns`, `SetMaxConcurrency`, ...) are removed: pass `WithTools`, `WithMiddleware`, `WithToolMiddleware` and the other options, or derive a copy with `With`. `New` makes every check `Build` made (two tools with one name, a non-object schema, an m-of-n policy's keys), so a configuration problem fails at construction rather than at a run.
   - Runs: `RunMessage`, `StreamMessage`, `ResumeRun`, `RunTypedMessage` and `Session.SendMessage`/`SendMessageOnce` are `Run`, `Stream`, `Resume`, `RunTyped` and `Session.Send`/`SendOnce`, each taking a `Message` (`agent.UserText(s)`) and run options and returning a `*Result`. The string entry points they replaced (`Run` and `Stream` on a string, `RunSaga`, `RunResult`, `RunSagaResult`, `StreamSaga`, the `RunTyped` and `RunTypedNative` functions, `AgentStream.Final`) are removed: a saga is `Run(..., WithSaga())`, native structured output is `WithOutputMode(OutputNative)`. `AgentStream` and `AgentEvent` are `RunStream` and `RunEvent`; `audit.Record` is `audit.RecordStream`, which returns `(*agent.Result, error)`.
@@ -772,7 +774,8 @@ First public release.
 - `bide-audit` standalone verifier, prebuilt for Linux, macOS and Windows on amd64 and arm64.
 - `eval` statistical evaluation harness, `chaos` crash-injection harness, and `cmd/bench`.
 
-[Unreleased]: https://github.com/bide-ai/bide/compare/v0.10.0...HEAD
+[Unreleased]: https://github.com/bide-ai/bide/compare/v0.11.0...HEAD
+[0.11.0]: https://github.com/bide-ai/bide/compare/v0.10.0...v0.11.0
 [0.10.0]: https://github.com/bide-ai/bide/compare/v0.9.0...v0.10.0
 [0.9.0]: https://github.com/bide-ai/bide/compare/v0.8.0...v0.9.0
 [0.8.0]: https://github.com/bide-ai/bide/compare/v0.7.0...v0.8.0
@@ -913,6 +916,7 @@ First public release.
 [#153]: https://github.com/bide-ai/bide/pull/153
 [#154]: https://github.com/bide-ai/bide/pull/154
 [#155]: https://github.com/bide-ai/bide/pull/155
+[#156]: https://github.com/bide-ai/bide/pull/156
 
 [78f8db6]: https://github.com/bide-ai/bide/commit/78f8db6
 [994721b]: https://github.com/bide-ai/bide/commit/994721b

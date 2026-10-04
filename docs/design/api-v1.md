@@ -1,6 +1,6 @@
 # Pre-1.0 API redesign (proposal, v2)
 
-Status: accepted, in progress. The maintainer approved this plan as the work to do; it is not a 1.0 freeze, and any part may still change before 1.0. Waves 1 to 3 (P1 to P11) are merged and ship in v0.9.0; P12 to P14 are merged and ship in v0.10.0; P15 (the final names, the removal of the transitional API, and the migrate tool) is unreleased, and P16 follows (see the CHANGELOG). v2 folds in an independent adversarial critique.
+Status: accepted, in progress. The maintainer approved this plan as the work to do; it is not a 1.0 freeze, and any part may still change before 1.0. Waves 1 to 3 (P1 to P11) are merged and ship in v0.9.0; P12 to P14 are merged and ship in v0.10.0; P15 (the final names and the removal of the transitional API) ships in v0.11.0, and P16 follows (see the CHANGELOG). v2 folds in an independent adversarial critique.
 
 ## 0. Baseline, what is already done, and how v2 changes v1
 
