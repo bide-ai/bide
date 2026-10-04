@@ -86,12 +86,12 @@ is minted.
 something the caller has to remember. Bind the acting grant and signer once at the root with
 `WithGrant`; then each delegation through the tool narrows automatically.
 
-<!-- docsnip: setup ctx context.Context; store *agent.Journal; rootSG audit.SignedGrant; signer audit.Signer; subAgent *agent.Agent -->
+<!-- docsnip: setup ctx context.Context; journal *agent.Journal; rootSG audit.SignedGrant; signer audit.Signer; subAgent *agent.Agent -->
 ```go
 ctx = audit.WithGrant(ctx, rootSG, signer)
 
 tool := audit.AttenuatingSubAgent("researcher", "does research", subAgent, audit.AttenuationConfig{
-    Store: store,
+    Store: journal,
     Narrow: func(parent audit.Grant, subAgent string) audit.Grant {
         // return a narrower grant: keep every constraint, lower the limit.
         scope := maps.Clone(parent.Scope)

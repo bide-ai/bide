@@ -25,7 +25,7 @@ Give each voter a name and a `Decide` function that asks one model and returns a
 `govern.Quorum` runs the voters in parallel, tallies their answers, and tells you whether at least
 `k` of them agreed. You also give the quorum itself a name, so one run can hold several quorums.
 
-<!-- docsnip: setup ctx context.Context; store *agent.Journal; claudeAgent, gptAgent, geminiAgent *agent.Agent; ticket string; func apply(string) error; func escalate(govern.QuorumResult) error; returns error -->
+<!-- docsnip: setup ctx context.Context; journal *agent.Journal; claudeAgent, gptAgent, geminiAgent *agent.Agent; ticket string; func apply(string) error; func escalate(govern.QuorumResult) error; returns error -->
 ```go
 // Each model answers with one label from a fixed set.
 type verdict struct {
@@ -43,7 +43,7 @@ func voter(name string, a *agent.Agent, ticket string) govern.Voter {
     }
 }
 
-res, err := govern.Quorum(ctx, store, "refund-1234", "refund", 2,
+res, err := govern.Quorum(ctx, journal, "refund-1234", "refund", 2,
     voter("claude", claudeAgent, ticket),
     voter("gpt", gptAgent, ticket),
     voter("gemini", geminiAgent, ticket),
@@ -179,10 +179,10 @@ Commit through an attested `govern.EventTool` (`EventToolConfig.PolicyDigest` se
 Anyone holding the published proofs can check the decision without access to your systems. Export
 a proof for the tally and for every vote with `audit.ProveStep`, signed under the run's tree head:
 
-<!-- docsnip: setup ctx context.Context; store *agent.Journal; sth audit.SignedTreeHead -->
+<!-- docsnip: setup ctx context.Context; journal *agent.Journal; sth audit.SignedTreeHead -->
 ```go
-tally, err := audit.ProveStep(ctx, store, "refund-1234", govern.QuorumTallyStep("refund"), sth)
-vote, err := audit.ProveStep(ctx, store, "refund-1234", govern.QuorumVoteStep("refund", "claude"), sth)
+tally, err := audit.ProveStep(ctx, journal, "refund-1234", govern.QuorumTallyStep("refund"), sth)
+vote, err := audit.ProveStep(ctx, journal, "refund-1234", govern.QuorumVoteStep("refund", "claude"), sth)
 // ... one proof per voter
 ```
 

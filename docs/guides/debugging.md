@@ -105,9 +105,9 @@ after a crash, which is what makes it a resume-stable audit artifact. The `audit
 builds its event trail on exactly this projection (`audit.PersistJournal`,
 `audit.EventLogFromJournal`).
 
-<!-- docsnip: setup ctx context.Context; store *agent.Journal; runID string -->
+<!-- docsnip: setup ctx context.Context; journal *agent.Journal; runID string -->
 ```go
-events, err := agent.ReplayEvents(ctx, store, runID)
+events, err := agent.ReplayEvents(ctx, journal, runID)
 if err != nil {
 	log.Fatal(err)
 }
@@ -145,9 +145,9 @@ Each record maps to a node in run order:
 
 The chart opens with a `start([user])` node and closes with a `done([done])` node.
 
-<!-- docsnip: setup ctx context.Context; store *agent.Journal; runID string -->
+<!-- docsnip: setup ctx context.Context; journal *agent.Journal; runID string -->
 ```go
-diagram, err := agent.RenderMermaid(ctx, store, runID)
+diagram, err := agent.RenderMermaid(ctx, journal, runID)
 if err != nil {
 	log.Fatal(err)
 }
@@ -255,9 +255,9 @@ flows and session turns with `ErrNotResumable`, and so a run whose `run:start` a
 wrote (no kind and no typed start: the record does not say whether the run is typed). Recover
 those with a `Resumer` of your own, placed after `ResumeAgent`; `ResumeAny` combines several:
 
-<!-- docsnip: setup ctx context.Context; store *agent.Journal; a *agent.Agent; w agent.Waker -->
+<!-- docsnip: setup ctx context.Context; journal *agent.Journal; a *agent.Agent; w agent.Waker -->
 ```go
-n, err := agent.Recover(ctx, store, agent.ResumeAgent(a, agent.WithWaker(w)))
+n, err := agent.Recover(ctx, journal, agent.ResumeAgent(a, agent.WithWaker(w)))
 // n = runs re-driven; err = joined genuine failures (nil if the only "errors" were pauses)
 ```
 
@@ -297,10 +297,10 @@ halted runs the store holds, as long as the lapsed loop has a free slot. A run w
 lease (a plain `Run`) is left to the full pass, whose length still bounds its pickup, so resolve
 halted runs rather than leaving them for every full pass to visit:
 
-<!-- docsnip: setup ctx context.Context; store *agent.Journal; resume agent.Resumer -->
+<!-- docsnip: setup ctx context.Context; journal *agent.Journal; resume agent.Resumer -->
 ```go
 go func() {
-	err := agent.RecoverLoop(ctx, store, resume,
+	err := agent.RecoverLoop(ctx, journal, resume,
 		agent.WithLeaseHolder("worker-1"),
 		agent.WithRecoverErrors(func(err error) { log.Printf("recover: %v", err) }))
 	// err is ctx's error once ctx is done (or a configuration error at once)
