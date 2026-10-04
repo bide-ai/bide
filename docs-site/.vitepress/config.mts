@@ -32,6 +32,7 @@ export default defineConfig({
       { text: 'Concepts', link: '/CONCEPTS' },
       { text: 'Guides', link: '/guides/flows' },
       { text: 'Reference', link: '/reference/module-structure' },
+      { text: 'Blog', link: '/blog/' },
     ],
     sidebar: [
       {

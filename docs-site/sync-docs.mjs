@@ -12,6 +12,7 @@ const items = [
   'guides',
   'reference',
   'testing',
+  'blog',
 ]
 
 for (const item of items) {

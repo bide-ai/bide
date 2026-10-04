@@ -10,6 +10,7 @@ The map. Read in roughly this order; each entry notes who it is for.
 - **[Known limitations](KNOWN-LIMITATIONS.md)** (evaluator): the bounds and edges of the guarantees. Read alongside the guarantee.
 - **[Changelog](../CHANGELOG.md)** (everyone): every release's changes, breaking changes marked; highlights per release in [releases/](releases/).
 - **[Roadmap](ROADMAP.md)** (everyone): where bide is going next, in order.
+- **[Blog](blog/index.md)** (everyone): longer posts on the design and how to use it, starting with the launch post.
 
 ## Guides (how to build on it)
 
