@@ -9,10 +9,17 @@ minor version (0.x.0) may include breaking API or journal-format changes; each o
 
 ## [Unreleased]
 
+## [0.11.1] - 2026-10-04
+
 ### Fixed
 
-- A failed model call's error said `(model) (model)`: the run wrapped `ErrModel` around an adapter error that already wrapped it. It wraps it only when it is missing.
-- `model/openai` with an empty API key: a server that needs a key refuses the request with 401 or 403, which read like a bad key or a provider fault. The `*agent.APIError` now says no API key was set (`openai.New` was given an empty key); a server that needs none, such as Ollama, works as before.
+- A failed model call's error said `(model) (model)`: the run wrapped `ErrModel` around an adapter error that already wrapped it. It wraps it only when it is missing ([#160]).
+- `model/openai` with an empty API key: a server that needs a key refuses the request with 401 or 403, which read like a bad key or a provider fault. The `*agent.APIError` now says no API key was set (`openai.New` was given an empty key); a server that needs none, such as Ollama, works as before ([#160]).
+
+### Changed
+
+- Getting started works without an API key: an `agenttest` scripted model runs the first agent offline. The install step gets the `agent` package (`go get github.com/bide-ai/bide/agent@latest`), since getting the module root left `go.sum` incomplete; the core examples run with `go run github.com/bide-ai/bide/examples/<name>@latest`; and the guide says what a run prints and how a crashed run continues ([#161]).
+- The examples name a `*agent.Journal` `journal`, not `store`, so `agent.New(model, journal, ...)` does not read like the removed `New(model, store, tools...)` ([#159]).
 
 ## [0.11.0] - 2026-10-04
 
@@ -779,7 +786,8 @@ First public release.
 - `bide-audit` standalone verifier, prebuilt for Linux, macOS and Windows on amd64 and arm64.
 - `eval` statistical evaluation harness, `chaos` crash-injection harness, and `cmd/bench`.
 
-[Unreleased]: https://github.com/bide-ai/bide/compare/v0.11.0...HEAD
+[Unreleased]: https://github.com/bide-ai/bide/compare/v0.11.1...HEAD
+[0.11.1]: https://github.com/bide-ai/bide/compare/v0.11.0...v0.11.1
 [0.11.0]: https://github.com/bide-ai/bide/compare/v0.10.0...v0.11.0
 [0.10.0]: https://github.com/bide-ai/bide/compare/v0.9.0...v0.10.0
 [0.9.0]: https://github.com/bide-ai/bide/compare/v0.8.0...v0.9.0
@@ -922,6 +930,9 @@ First public release.
 [#154]: https://github.com/bide-ai/bide/pull/154
 [#155]: https://github.com/bide-ai/bide/pull/155
 [#156]: https://github.com/bide-ai/bide/pull/156
+[#159]: https://github.com/bide-ai/bide/pull/159
+[#160]: https://github.com/bide-ai/bide/pull/160
+[#161]: https://github.com/bide-ai/bide/pull/161
 
 [78f8db6]: https://github.com/bide-ai/bide/commit/78f8db6
 [994721b]: https://github.com/bide-ai/bide/commit/994721b
