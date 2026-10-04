@@ -149,10 +149,10 @@ were caught before release; four (L1, S1, S2, S4) were in v0.9.0 and fixed in v0
 model checker proves an inductive invariant of the claim protocol: for two drivers over two
 processes, with attempts 0 to 3 and a fixed pool of claim ids, at-most-once holds at any depth and
 for any number and mix of faults within those bounds. That proof excludes the approval gate and
-rests on a stated assumption about the lease check. Two limits apply to all of it: nothing is
+rests on a stated assumption about the lease check. Nothing is
 proven beyond the stated bounds, and the models describe the design, not the Go code. CI checks
-that marked code changes with its model and that names agree; whether each Go function does what
-its model step says is checked by review. Details: [How bide is verified](../testing/verification.md)
+that marked code changes with its model; review checks that the code does what the model says.
+Details: [How bide is verified](../testing/verification.md)
 and the [formal verification overview](https://github.com/bide-ai/bide/blob/main/docs/formal-verification.md).
 
 **Certified convergence for shared state.** The optional `govern` module describes shared state as
