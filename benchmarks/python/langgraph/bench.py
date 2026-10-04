@@ -10,6 +10,8 @@ in a throwaway database (skipped when no Postgres is reachable, see lg_adapter.P
 
 import argparse
 import importlib.metadata as md
+import signal
+import sys
 
 from chaos import verify
 from lg_adapter import DURABILITY, VARIANTS, WRITES, LangGraph, LangGraphPostgres, postgres_unavailable
@@ -19,6 +21,8 @@ def main() -> None:
     ap = argparse.ArgumentParser()
     ap.add_argument("--seeds", type=int, default=200)
     args = ap.parse_args()
+    # Exit through the finally blocks on SIGTERM too, so the Postgres database is dropped.
+    signal.signal(signal.SIGTERM, lambda *_: sys.exit(1))
     print(
         f"langgraph=={md.version('langgraph')} "
         f"langgraph-checkpoint-sqlite=={md.version('langgraph-checkpoint-sqlite')} "
@@ -42,11 +46,11 @@ def main() -> None:
 
 
 def run(name: str, cls, variant: str, durability: str, seeds: int):
-    sys = cls(variant, durability)
+    system = cls(variant, durability)
     try:
-        return verify(name, sys, seeds)
+        return verify(name, system, seeds)
     finally:
-        sys.close()
+        system.close()
 
 
 if __name__ == "__main__":
