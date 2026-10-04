@@ -162,10 +162,25 @@ proof](https://github.com/blackwell-systems/normalization-confluence/tree/main/c
 ([![verify](https://github.com/blackwell-systems/normalization-confluence/actions/workflows/verify.yml/badge.svg)](https://github.com/blackwell-systems/normalization-confluence/actions/workflows/verify.yml)).
 Describe the shared state as a registry; gsm checks at build time that every interleaving of agent
 actions (every order of the event pairs declared with `Independent`, when pairs are declared)
-reaches the same valid state, or refuses to build and shows you a counterexample. `Build` returns a
+reaches the same valid state, or refuses to build and shows you a counterexample. The proof also
+covers causal delivery: convergence needs only *concurrent* events to commute after compensation,
+never causally ordered ones, so standard op-based CRDTs (concurrent operations commute, no
+compensation) converge as an instance, and the compensation-free fragment is exactly the op-based
+CRDTs ([SUBSUMPTION.md](https://github.com/blackwell-systems/normalization-confluence/blob/main/SUBSUMPTION.md)).
+In bide, a governor's events replay from one durable log in one total order, and a writer only
+observes events already in that log, so that order respects causality. The causal result therefore
+covers concurrent writers whose appends to one registry's log race, provided every pair of events
+that can be concurrent is checked (all pairs, or each such pair declared with `Independent`); bide
+does not track causality, so declaring those pairs is the caller's job. `Build` returns a
 machine only after the table oracle, Go generated from gsm's machine-checked Rocq proof, re-checks
 it in-process, and for combinator rules inside its fragment and within a cost cap, the rules oracle
-re-checks it from the rules as well. A federation's own conditions are checked by gsm's Go code. In CI, bide's
+re-checks it from the rules as well; if an oracle does not certify the machine, the build fails
+closed and returns no machine. The table oracle gates `SynthesizeWith` and `BuildOrSynthesize` the
+same way, and each `BuildCompositional` component (commutation across components rests on gsm's
+footprint check). A federation (`govern.NewFederated`) is oracle-gated per component only:
+`Federation.Build` rebuilds each component with `Build`, while the federation-level checks (the
+morphism and resolver conditions, acyclicity, and the fixed-point iteration of monotone cycles) are
+gsm's Go code and are not oracle-certified. In CI, bide's
 required gsm machine gate runs the proof's checkers on every machine the governance examples build.
 The exact scope, including which event pairs CC covers (every event pair, or only those declared
 with `Independent`), is in [known limitations](docs/KNOWN-LIMITATIONS.md#governed-state-gsm). Rules are
