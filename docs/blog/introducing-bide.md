@@ -103,8 +103,8 @@ func main() {
 One run we did by hand: the agent had two tools: `charge_card`, a side effect that appends
 a line to a file, and a slower read-only lookup. The model was `openai/gpt-4o-mini` through
 OpenRouter, and the journal was on `store/sqlite`. While the run was in progress we killed the
-process with `SIGKILL`, started it again, and called `Run` with the same run ID. The run read its
-journal, did not repeat the work it had recorded, and finished. The charge file held one line.
+process with `SIGKILL`, started it again, and called `Run` with the same run ID. The read-only report tool, cut
+off mid-call, ran again; the charge, already recorded, did not, and the run finished. The charge file held one line.
 
 That is one schedule, not a proof. Had the kill landed between the attempt marker and the journaled
 result, the resumed run would have halted with `OutcomeUnknown` instead of finishing, which is the
