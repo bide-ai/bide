@@ -28,6 +28,13 @@
 # The release commits are reachable from their tags only; main keeps its replace directives, so
 # development is unchanged. Repo-only modules (examples, integration, benchmarks) are never tagged.
 #
+# A --push run that stopped (waiting for the proxy, say) is run again with the same arguments; it
+# reuses the tags already on the remote. It resumes even when main has moved since the root tag was
+# pushed (a pull request merged meanwhile), as long as the root tag points at the commit released.
+#
+# Nobody should `go get`, `go run` or `go list` a version before its tag is pushed: the module proxy
+# caches the miss (for about 30 minutes), and the release then waits until the cached miss expires.
+#
 # Without --push nothing leaves the machine: the same steps run in a scratch clone, "pushing" to a
 # scratch bare repository that stands in for GitHub, and the go command resolves the bide modules
 # from it directly (GOPRIVATE, git url.insteadOf, a scratch module cache) instead of from the
@@ -152,6 +159,17 @@ changelog_has() {
 # awk reads all of its input and compares the ref literally.
 remote_has_tag() { awk -v t="$2" '$2 == t {found = 1} END {exit !found}' <<<"$1"; }
 
+# main_check sha main root_remote: whether a release of sha may go on with $REMOTE/main at main,
+# when the root tag is on the remote at root_remote (empty when it is not): "main" when sha is main;
+# "resuming" when it is not but the root tag already points at sha (a resumed --push run, after
+# main moved while the release waited for the proxy); "moved" otherwise.
+main_check() {
+  if [ "$1" = "$2" ]; then echo main
+  elif [ -n "$3" ] && [ "$3" = "$1" ]; then echo resuming
+  else echo moved
+  fi
+}
+
 # GitHub creates no push event, and so runs no workflow (Release modules, Release), for the tags
 # of a push that carries more than three tags.
 MAX_TAGS_PER_PUSH=3
@@ -231,6 +249,12 @@ self_test() {
   remote_has_tag "$tags" refs/tags/govern/v0.8.0 || { echo "self-test: a remote tag was not found"; fail=true; }
   remote_has_tag "$(printf '%040d\trefs/tags/govern/v0x8x0\n' 0)" refs/tags/govern/v0.8.0 && { echo "self-test: govern/v0x8x0 was taken for govern/v0.8.0"; fail=true; }
   remote_has_tag "$tags" refs/tags/mcp/v0.8.0 && { echo "self-test: a missing remote tag was found"; fail=true; }
+  # A release resumed after main moved goes on when the root tag already points at its commit.
+  local a b; a=$(printf '%040d' 1); b=$(printf '%040d' 2)
+  [ "$(main_check "$a" "$a" "")" = main ] || { echo "self-test: a release of main was refused"; fail=true; }
+  [ "$(main_check "$a" "$b" "$a")" = resuming ] || { echo "self-test: a release whose root tag is on the remote at its commit did not resume after main moved"; fail=true; }
+  [ "$(main_check "$a" "$b" "")" = moved ] || { echo "self-test: a release of a commit that is not main, with no root tag, was not refused"; fail=true; }
+  [ "$(main_check "$a" "$b" "$b")" = moved ] || { echo "self-test: a root tag at another commit let a release that is not main go on"; fail=true; }
   # GitHub creates no push event, so runs no workflow, for the tags of a push that carries more
   # than three. The scratch target's pre-receive hook refuses such a push and logs each push's
   # size; every tag must still arrive.
@@ -286,11 +310,14 @@ note "published: $PUBLISHED"
 note "repo-only: $REPO_ONLY"
 [ -z "$(git -C "$REPO" status --porcelain)" ] || problem "the working tree has uncommitted changes"
 git -C "$REPO" fetch --quiet "$REMOTE" main --tags || problem "could not fetch $REMOTE"
-if [ "$SHA" != "$(git -C "$REPO" rev-parse "$REMOTE/main" 2>/dev/null || true)" ]; then
-  problem "$SHA is not $REMOTE/main"
-else
-  note "$SHA is $REMOTE/main"
-fi
+remote_tags=$(git -C "$REPO" ls-remote --tags "$REMOTE" 2>/dev/null || true)
+root_remote=$(echo "$remote_tags" | awk -v t="refs/tags/$VERSION^{}" '$2 == t {print $1}')
+[ -n "$root_remote" ] || root_remote=$(echo "$remote_tags" | awk -v t="refs/tags/$VERSION" '$2 == t {print $1}')
+case "$(main_check "$SHA" "$(git -C "$REPO" rev-parse "$REMOTE/main" 2>/dev/null || true)" "$root_remote")" in
+  main) note "$SHA is $REMOTE/main" ;;
+  resuming) note "$SHA is not $REMOTE/main any more, but $VERSION is on $REMOTE at it; resuming" ;;
+  *) problem "$SHA is not $REMOTE/main" ;;
+esac
 if command -v gh >/dev/null 2>&1; then
   ci=$(gh run list -R "$GITHUB_REPO" --workflow ci.yml --commit "$SHA" --event push --json status,conclusion \
     --jq '[.[] | select(.status == "completed")] | map(.conclusion) | if length == 0 then "none" elif all(. == "success") then "success" else "failure" end' 2>/dev/null || echo "unknown")
@@ -301,10 +328,7 @@ fi
 git -C "$REPO" show "$SHA:docs/releases/$VERSION.md" >/dev/null 2>&1 || problem "docs/releases/$VERSION.md does not exist at $SHA"
 changelog=$(git -C "$REPO" show "$SHA:CHANGELOG.md" 2>/dev/null || true)
 changelog_has "$changelog" "${VERSION#v}" || problem "CHANGELOG.md has no [${VERSION#v}] section at $SHA"
-remote_tags=$(git -C "$REPO" ls-remote --tags "$REMOTE" 2>/dev/null || true)
 ROOT_TAGGED=false
-root_remote=$(echo "$remote_tags" | awk -v t="refs/tags/$VERSION^{}" '$2 == t {print $1}')
-[ -n "$root_remote" ] || root_remote=$(echo "$remote_tags" | awk -v t="refs/tags/$VERSION" '$2 == t {print $1}')
 if [ -n "$root_remote" ]; then
   [ "$root_remote" = "$SHA" ] || die "$VERSION is already tagged on $REMOTE at $root_remote, not $SHA"
   if $PUSH; then ROOT_TAGGED=true; note "$VERSION is already on $REMOTE at $SHA; resuming"; else problem "$VERSION is already on $REMOTE"; fi
