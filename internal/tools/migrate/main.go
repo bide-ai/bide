@@ -1,8 +1,9 @@
 // Command migrate rewrites Go code written against bide v0.10's API to the pre-1.0 API
 // (docs/design/api-v1.md, section 10.2): it renames the transitional names, rewrites the call
 // sites of the string entry points, the builder methods, the Durable interface and the old tool
-// constructors, and moves the names that changed package. It is how bide itself was migrated,
-// and how an application moves to the new API.
+// constructors, and moves the names that changed package. It is how bide itself was migrated;
+// it is not offered to applications (the CHANGELOG's list of changes is their upgrade path), and
+// is removed once the rewrite has merged.
 //
 // It works from type information: it loads the packages of one module (with their tests)
 // through the go command, type-checks them, and rewrites each call by what it calls, so a
@@ -11,9 +12,9 @@
 // in), where the old names no longer resolve: an unresolved call is matched by its receiver's
 // type. A site it cannot rewrite safely is reported, with its position, for a person to finish.
 //
-// Usage, from the root of the module to migrate:
+// Usage, from bide's root (-C names the module to migrate):
 //
-//	go run github.com/bide-ai/bide/internal/tools/migrate@<version> [-n] [-rules r1,r2] [packages]
+//	go run ./internal/tools/migrate [-C dir] [-n] [-rules r1,r2] [packages]
 //
 // Packages default to ./... . After rewriting, it type-checks the module against the new API
 // (-bide: a version, or the directory of a bide checkout; by default the version it was built

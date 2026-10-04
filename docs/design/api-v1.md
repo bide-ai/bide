@@ -621,7 +621,7 @@ The tombstone format is reserved now.
   - `Open(ctx, ...)`, `New(ctx, *sql.DB)`;
   - `bide_` table names, a `bide_schema_version` row, `WithTablePrefix`;
   - paged `Load`: keyset on `seq`, 256 rows per page, no connection held across a yield.
-- **`audit.NewAnchoredStore(inner agent.Store, s Signer, anchor, opts...) (*AnchoredStore, error)`** replaces `AuditedStore`.
+- **`audit.NewAnchoredStore(inner agent.Store, s Signer, anchor, opts...) (*AnchoredStore, error)`** replaces `AuditedStore`. (Dropped from the plan by the maintainer, 2026-10-03: `AuditedStore` stays, a `Store` wrapper since P15.)
   - It hashes stored bytes incrementally, using a Merkle frontier keyed by position.
   - It does one `Load(after = last seq)` per insert. This is O(log n) per insert, down from O(n²) per run today.
 
@@ -953,7 +953,7 @@ What remains after #66:
 - `Func` and `CompensatedFunc`
 - `RetrievalTool` and `WithRetrieval`
 - `SubAgent`
-- `audit.NewAuditedStore`'s nil and key-length panic (added by #68), which becomes `NewAnchoredStore(...) (..., error)`
+- `audit.NewAuditedStore`'s nil and key-length panic (added by #68), which becomes `NewAnchoredStore(...) (..., error)` (with `AnchoredStore` dropped, `NewAuditedStore` returns the error)
 - `eval.Matches(*regexp.Regexp)`
 - the dead `crypto/rand` branches: since Go 1.24, `crypto/rand.Read` never returns an error
 
@@ -1133,7 +1133,7 @@ Within a wave, no two PRs edit the same file. Sizes:
 
 **P15: the consolidated mechanical rewrite and shim removal (XL).**
 - **Files:** every call site in every module, plus deletion of the shims and transitional names.
-- **Script:** `internal/tools/migrate` (go/ast, committed), which does all of the following:
+- **Script:** `internal/tools/migrate` (go/ast, committed; it migrated bide itself and is not offered to users, maintainer decision 2026-10-03: the CHANGELOG's list is the upgrade path), which does all of the following:
   - `Durable` becomes `*Journal`, and store construction becomes `NewJournal(...)`;
   - `Build` becomes `New`, and builder chains become options;
   - `RunMessage` becomes `Run`, the old `Run` and `RunSaga` calls become `Run(..., UserText(x))`/`WithSaga()`, and results are rewritten;
@@ -1184,7 +1184,7 @@ Within a wave, no two PRs edit the same file. Sizes:
    | `Status` | 1 `Load` |
    | resume of a run with n records | 1 `Load` of n entries, no point reads for markers |
    | `Recover` pass over R runs, D of them driven | ceil(R/500) `Runs` pages on SQL stores (MemStore the same), no `Load`, and 4 `Get` per driven run (the terminal markers, re-checked under its lease, and `run:start`: P14 rule 14): 4D in all, none for the finished runs the filter excludes; a run with no `run:start` costs one `Load` of its first entry more (its format is checked) and is not driven |
-   | anchored insert | 1 `Load` of the new entries only, O(log n) hashes |
+   | anchored insert | 1 `Load` of the new entries only, O(log n) hashes (`AnchoredStore`, dropped from the plan 2026-10-03; no budget) |
 
    The `Recover` row was raised after P6a, with the maintainer's approval: a pass read no run at all until it was found to call `resume` for a run another driver finished between the listing and the lease, and the three point reads close that gap.
 
@@ -1195,7 +1195,7 @@ Within a wave, no two PRs edit the same file. Sizes:
    - The bench workflow's A/B mode (bench.yml, standard runner) runs `BenchmarkRunTurns` and `BenchmarkToolCallSideEffect` with `-benchmem` ten times per ref, base and head interleaved in one job, and prints the benchstat table in the job summary (added with #117; before it the gate assumed a benchstat run the workflow did not make).
    - P6a, P9, P12, P14 and P15 must show no benchstat regression over 5% in time/op or allocs/op at p < 0.05 in that table, and no regression over 5% in the `cmd/bench` A/B's mean, p90 or p99, and must paste both into the PR.
    - For the `cmd/bench` A/B (bench.yml), "time" means the mean (wall-clock, and throughput as its inverse), p90 and p99 of run latency, never p50: under the closed-loop harness's contention the overhead scenario's p50 is bimodal, a scheduling artifact that shifts with changes that add no work (maintainer decision, recorded with #116, which moves bench reporting to mean, p90 and p99).
-   - `BenchmarkAnchoredInsert` must show the O(n) to O(log n) improvement.
+   - `BenchmarkAnchoredInsert` was to show the O(n) to O(log n) improvement of `AnchoredStore`, dropped from the plan (2026-10-03); it measures `AuditedStore`.
 
 ### 10.4 Order relative to the follow-ups
 - Follow-ups A, B and C are done by #65, #67 and #69.
