@@ -90,16 +90,18 @@ sees no charge in history, and it re-fires. ADK has no framework-level attempt-m
 halt-on-unknown-outcome to close that window: the same gap trpc has, and the same one
 Bide closes to hold `maxFired=1`.
 
-## CANDIDATE, pending fairness review: LangGraph (Python)
+## LangGraph (Python)
 
-Not part of the result table above, and not run in CI. These numbers wait for an
-independent fairness review before they appear anywhere else.
+Not part of the result table above, and not run in CI. The SQLite result passed an
+independent fairness review ([#166](https://github.com/bide-ai/bide/pull/166)). The Postgres
+rows (`langgraph-pg`) are pending a review of their own.
 
 `python/langgraph/` is a Python harness, isolated from the Go modules, pinned with `uv`
 (`pyproject.toml` + `uv.lock`): langgraph 1.2.12, langgraph-checkpoint-sqlite 3.1.1,
-langgraph-checkpoint-postgres 3.1.2 (psycopg 3.3.6), langgraph-checkpoint 4.2.0, Python 3.13. `chaos.py` is a line-for-line port of
-`chaos.Verify` and of Go's `math/rand/v2` PCG, so it runs the same crash schedules (checked
-against Go's output in the tests) and prints the same rows.
+langgraph-checkpoint-postgres 3.1.2 (psycopg 3.3.6), langgraph-checkpoint 4.2.0, Python
+3.13. `chaos.py` is a line-for-line port of `chaos.Verify` and of Go's `math/rand/v2` PCG,
+so it runs the same crash schedules (checked against Go's output in the tests) and prints
+the same rows.
 
 Run it (needs `uv`):
 
@@ -113,6 +115,11 @@ The Postgres runs use the server at `LGCHAOS_PG_DSN` (default `dbname=postgres`,
 socket). The harness creates a throwaway database, runs `PostgresSaver.setup()` there
 before any crash hook is installed, gives each run its own `thread_id`, and drops the
 database at the end. With no reachable server, the Postgres tests and rows are skipped.
+A run killed with SIGKILL leaves its database behind; drop any leftovers with:
+
+```
+psql -d postgres -Atc "SELECT datname FROM pg_database WHERE datname LIKE 'lgchaos\_%'" | xargs -I{} psql -d postgres -c 'DROP DATABASE "{}" WITH (FORCE)'
+```
 
 Measured on 2026-10-03 (Postgres 16.15, local socket):
 
@@ -174,21 +181,23 @@ persisted, so a task whose side effect ran but whose `put_writes` did not commit
 section describes `"sync"` as: "LangGraph persists changes synchronously before the next
 step starts."
 
-**Postgres.** The second row is the same configuration on `PostgresSaver` (one autocommit
+**Postgres (pending review).** The second row is the same configuration on `PostgresSaver` (one autocommit
 connection, as `PostgresSaver.from_conn_string` opens it), with the same crash model and
-lock. The result is the same: every configuration re-fires, and a crash at the first write
+lock. The outcome is the same: every configuration re-fires, and a crash at the first write
 after the charge re-fires in every variant and mode. In three runs node/sync gave
 maxFired=3 on both backends, with 39 to 40 double-fires on SQLite and 41 to 44 on
-Postgres; the other `"sync"` variants matched SQLite except Functional API, which reached
-maxFired 6 in one of two Postgres runs. These differences are in the size of the count,
-not the outcome, and come from timing rather than the saver: both savers write a
+Postgres. The Functional API differs more: on Postgres it reached maxFired 5 or 6 (6 in 2
+of 3 review runs and 2 of 4 of ours) with 44 to 56 double-fires, against 5 and 28 on
+SQLite every time. Its window is wider on Postgres: the charge task had already run when
+the start task's `put_writes` was reported in 13 of 20 traces in the review and 15 of 20
+in ours, against 0 of 20 on SQLite, so more crash points fall after the charge and before
+its record. The cause is timing, not the saver's semantics: both savers write a
 `put_writes` as an upsert keyed on (thread, namespace, checkpoint, task, index) and a `put`
 as one checkpoint row (plus channel blobs on Postgres), both serialize writes on their own
 connection lock, and neither is involved in the re-fire. The window is in LangGraph's
 Pregel loop, between a task returning and its `put_writes` committing, and the crash hook
-sits above either saver. A Postgres round trip changes when LangGraph's background writes
-land relative to the next step, which changes which event is the K-th write (the same
-run-to-run variation SQLite shows, slightly wider).
+sits above either saver. A Postgres round trip makes each write slower, so LangGraph's
+background writes land later relative to the tasks that run next.
 
 Known limits of this measurement: SQLite and a local Postgres only (not LangGraph
 Platform), and a crash inside a single write is not modelled on either backend; the
