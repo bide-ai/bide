@@ -208,7 +208,7 @@ governance and audit machinery at scale, not a live LLM or a production database
 | Tamper-evident audit | **RFC 6962 Merkle spine (same journal)** | Not built in | None |
 | Convergent shared state | **Provable (gsm)**[^gsm] | N/A | None |
 
-[^gsm]: The convergence theorem is machine-checked. gsm's `Build` checks each machine against its conditions and returns it only after the table oracle, Go generated from the proof, re-checks it in-process; for combinator rules inside its fragment and within a cost cap, the rules oracle re-checks it from the rules as well. A federation's own conditions are checked by gsm's Go code. bide requires gsm v0.12.0, which fixes the `Build` gap of v0.11.0 for guards and effects that read variables another event writes. Exact scope: [known limitations](docs/KNOWN-LIMITATIONS.md#governed-state-gsm).
+[^gsm]: The convergence theorem is machine-checked. gsm's `Build` checks each machine against its conditions and returns it only after the table oracle, Go generated from the proof, re-checks it in-process; for combinator rules inside its fragment and within a cost cap, the rules oracle re-checks it from the rules as well. A federation's own conditions are checked by gsm's Go code. bide requires gsm v0.12.0, which fixes the `Build` gap of v0.11.0 for guards and effects that read variables another event writes. Exact scope: [known limitations](https://github.com/bide-ai/bide/blob/main/docs/KNOWN-LIMITATIONS.md#governed-state-gsm).
 
 ### The craft underneath
 
