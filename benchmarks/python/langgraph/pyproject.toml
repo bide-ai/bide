@@ -1,0 +1,13 @@
+[project]
+name = "langgraph-chaos"
+version = "0.1.0"
+requires-python = ">=3.13"
+dependencies = [
+    "langgraph==1.2.12",
+    "langgraph-checkpoint-sqlite==3.1.1",
+]
+
+[dependency-groups]
+dev = [
+    "pytest==9.1.1",
+]
