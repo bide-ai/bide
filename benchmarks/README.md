@@ -23,6 +23,10 @@ naive-loop       sweeps=5   schedules=205   maxFired=5  FAIL ✗ (45 double-fire
 
 `maxFired` is the most times a single non-idempotent side effect ("charge") actually
 executed across a crash schedule. **1 is correct; anything higher is a double-charge.** The
+result is pass/fail: an SDK either re-fires (maxFired > 1) or holds at 1. The size of
+maxFired is not comparable across SDKs and is not a ranking: it mostly tracks how many
+durable writes each SDK makes, which sets the crash range the seeded schedules draw from
+and so how often they land in the re-fire window. The
 failure shapes fall into two camps. **Real persistence, narrow re-fire window** (trpc-agent-go,
 adk-go): resume genuinely works, but a crash in the window between a side effect *executing*
 and its record *persisting* re-fires it (worst 4 to 6). **No crash durability at all**
@@ -119,8 +123,8 @@ docs give for side effects; a node `CachePolicy` on a durable `SqliteCache`) und
 durability mode. Every configuration double-fires. Under `"sync"`, maxFired is 3 (node),
 4 (`@task` in a node, and the cache variant) and 5 (Functional API); `"exit"` reaches 6.
 maxFired differs between them mainly because each makes a different number of writes, so
-the same seeded schedules land on different events; it is not a ranking of how protective
-each one is.
+the same seeded schedules land on different events. As across SDKs, it is not a ranking of
+how protective each one is: the result is that every configuration re-fires.
 
 **Crashes are real.** Each step runs in a forked child process. The checkpointer is a
 `SqliteSaver` whose `put` and `put_writes` (and, for the cache variant, `SqliteCache.set`)
@@ -128,9 +132,21 @@ report to the parent and wait; at the crash point the parent sends `SIGKILL`, so
 process dies before that write reaches SQLite, with no exception handling or cleanup.
 LangGraph issues writes from background threads, so the hook holds one lock across the
 hand-off and the write: a crash at write K means writes 1..K-1 committed and nothing after
-did, the same model as `chaos.Run`. The charge appends a line to a separate file and
+did, the same model as `chaos.Run`. The lock does more than fix the order: it stops a crash
+from also dropping an earlier write the parent had already approved that was still in
+flight on another thread. That makes it conservative, in LangGraph's favour. Without it,
+node/sync measured maxFired=4 with 71 to 90 double-fires and cache/exit up to 11 (two runs
+here and the fairness review's run). The charge appends a line to a separate file and
 fsyncs it before returning. Resume is what the docs describe: `invoke(None, config)` on the
 same `thread_id` when the thread has a checkpoint, the original input when it has none.
+With `durability="exit"` a crash leaves no checkpoint (the only write is at exit), so that
+second case is a restart of the thread, not a resume.
+
+The crash is placed before the K-th write commits. Crashing after a write commits instead
+gives a strict subset of these states (after write K is before write K+1), and cannot
+express a crash between the charge returning and its `put_writes` committing, which an OOM
+kill or a power loss can hit. Measured under that model for comparison: cache/sync holds at
+1, node/sync reaches 2 with 3 to 6 double-fires (4 in the fairness review's run).
 
 **Fairness checks** (`test_fairness.py`, all pass, every variant and mode): a clean run
 charges exactly once; resuming a completed thread is a no-op (no charge, no writes); a crash
@@ -145,7 +161,9 @@ the start step's writes are persisted, so the window is wider. That is LangGraph
 documented model. The [Functional API docs](https://docs.langchain.com/oss/python/langgraph/functional-api#idempotency)
 say: "A **task** that started but did not finish may run again on that resume, so design
 side effects to be idempotent. Use idempotency keys or verify existing results to avoid
-unintended duplication." The [durability modes](https://docs.langchain.com/oss/python/langgraph/checkpointers#durability-modes)
+unintended duplication." LangGraph counts a task as finished only once its writes have
+persisted, so a task whose side effect ran but whose `put_writes` did not commit is one that
+"did not finish". The [durability modes](https://docs.langchain.com/oss/python/langgraph/checkpointers#durability-modes)
 section describes `"sync"` as: "LangGraph persists changes synchronously before the next
 step starts."
 

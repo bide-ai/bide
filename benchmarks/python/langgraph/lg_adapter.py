@@ -160,8 +160,10 @@ def _child(variant, durability, dirpath, ev_w, ctl_r) -> None:
     # Holding one lock across the hand-off AND the write makes every write that was
     # allowed commit before the next one is reported: a crash at write K then means
     # exactly "writes 1..K-1 persisted, K and later did not", the chaos.Run model.
-    # SqliteSaver already serializes its writes on one connection lock, so this only
-    # fixes the order in which the parent sees them.
+    # This is conservative and favours LangGraph: without it, a crash at write K can also
+    # drop an earlier write the parent already approved that was still in flight on
+    # another thread, which re-fires more (measured without the lock: node/sync
+    # maxFired=4, cache/exit up to 11; see benchmarks/README.md).
     lock = threading.Lock()
 
     def hook(kind: str, write):
