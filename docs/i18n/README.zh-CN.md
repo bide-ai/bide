@@ -205,7 +205,7 @@ if halt, ok := errors.AsType[*agent.OutcomeUnknown](err); ok {
 
 需要 Go 1.27（核心用到了泛型方法）。如果 `go version` 更旧，请升级或设置 `GOTOOLCHAIN=go1.27.0`。
 
-核心包是 `agent`，从 `github.com/bide-ai/bide/agent` 导入（如下面的代码块所示）。
+核心包是 `agent`，从 `github.com/bide-ai/bide/agent` 导入（如下面的代码块所示）。在你自己的模块中，用 `go get github.com/bide-ai/bide/agent@latest github.com/bide-ai/bide/store/sqlite@latest` 安装它和 SQLite 存储（或先写代码再运行 `go mod tidy`）。没有 API 密钥？[入门指南](../getting-started.md#no-api-key-use-agenttest) 用脚本化模型离线运行同一个智能体。
 
 ```go
 package main
@@ -242,12 +242,15 @@ func main() {
 		}, agent.WithSafety(agent.Safety{ReadOnly: true}))
 
 	// Durable on-disk store: a crash mid-run resumes from here.
-	store, _ := sqlite.Open("agent.db")
-	j, err := agent.NewJournal(store)
+	store, err := sqlite.Open("agent.db")
 	if err != nil {
 		log.Fatal(err)
 	}
 	defer store.Close()
+	j, err := agent.NewJournal(store)
+	if err != nil {
+		log.Fatal(err)
+	}
 
 	a, err := agent.New(
 		model,
@@ -266,7 +269,7 @@ func main() {
 }
 ```
 
-运行实地冒烟示例：`OPENROUTER_API_KEY=sk-... go run ./examples/smoke`
+运行实地冒烟示例：`OPENROUTER_API_KEY=sk-... go run github.com/bide-ai/bide/examples/smoke@latest`
 
 `Run` 接受一个 `Message` 输入（文本，或文本加图像）和每次运行的选项，并返回一个 `Result`：最终消息、整次运行的 token 用量（含缓存与子智能体）、模型轮次计数和墙钟时长。只要运行 ID 有效，`Result` 在任何错误时都不为 nil：暂停、停机、失败、saga 中止、取消：
 

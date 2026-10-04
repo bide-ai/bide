@@ -7,7 +7,13 @@
 
 ## Install
 
-The core module is published: `go get github.com/bide-ai/bide@latest` gives you the `agent` package and everything else in the core (the model adapters, `plan`, `audit`). The adapter modules (`store/sqlite`, `store/postgres`, `mcptools` (published as `mcp` up to v0.10.0), `trace`, `codec/gcf`, `govern`, and the `govern/*log` backends) are published from v0.8.0 on, tagged with the same version as the core, so you add the ones you use the same way, for example `go get github.com/bide-ai/bide/store/sqlite@latest`. To build against unreleased code instead, clone the repository and use its `go.work` (see [Building the repository](#building-the-repository)).
+In a module of your own (`go mod init example.com/hello` in a new directory):
+
+```
+go get github.com/bide-ai/bide/agent@latest
+```
+
+Get the `agent` package, not the module root: `go get github.com/bide-ai/bide@latest` records the module but not the dependencies of its packages, and the first build then stops with `missing go.sum entry`. Equally, write your code first and run `go mod tidy`, which adds every package you import. The core module holds the `agent` package and everything else in the core (the model adapters, `plan`, `audit`). The adapter modules (`store/sqlite`, `store/postgres`, `mcptools` (published as `mcp` up to v0.10.0), `trace`, `codec/gcf`, `govern`, and the `govern/*log` backends) are published from v0.8.0 on, tagged with the same version as the core, so you add the ones you use the same way, for example `go get github.com/bide-ai/bide/store/sqlite@latest`. To build against unreleased code instead, clone the repository and use its `go.work` (see [Building the repository](#building-the-repository)).
 
 ## Your first agent
 
@@ -21,6 +27,7 @@ package main
 import (
 	"context"
 	"fmt"
+	"log"
 	"os"
 
 	"github.com/bide-ai/bide/agent"
@@ -32,6 +39,7 @@ type WeatherArgs struct {
 }
 
 func main() {
+	// Any OpenAI-compatible endpoint; get a key at openrouter.ai, or see "No API key?" below.
 	model := openai.New(os.Getenv("OPENROUTER_API_KEY"),
 		openai.WithBaseURL("https://openrouter.ai/api/v1"),
 		openai.WithModel("openai/gpt-4o-mini"),
@@ -43,19 +51,44 @@ func main() {
 
 	journal, err := agent.NewJournal(agent.NewMemStore())
 	if err != nil {
-		panic(err)
+		log.Fatal(err)
 	}
 	a, err := agent.New(model, journal, agent.WithTools(weather))
 	if err != nil {
-		panic(err)
+		log.Fatal(err)
 	}
 	out, err := a.Run(context.Background(), "run-1", agent.UserText("Weather in SF?"))
 	if err != nil {
-		panic(err)
+		log.Fatal(err)
 	}
 	fmt.Println(out.Message.Text())
+
+	// The same run ID again: the run is finished, so its journaled answer comes back, and the
+	// model is not called.
+	again, err := a.Run(context.Background(), "run-1", agent.UserText("Weather in SF?"))
+	if err != nil {
+		log.Fatal(err)
+	}
+	fmt.Println(again.Message.Text() == out.Message.Text()) // true
 }
 ```
+
+Run it with `OPENROUTER_API_KEY=sk-... go run .`. It prints the model's answer (a sentence such as "It's 72F and clear in SF.", in the model's words), then `true`: the second `Run` of `run-1` read the answer back from the journal instead of calling the model or the tool again. That is how a crashed or repeated run resumes: steps already journaled are not repeated.
+
+### No API key? Use agenttest
+
+`agent/agenttest` has a scripted model that plays back turns you write, so the same agent runs offline (in tests, too). Swap it in for the OpenAI model: the first turn calls the tool, the second answers.
+
+<!-- docsnip: setup journal *agent.Journal; weather agent.Tool -->
+```go
+model := agenttest.NewScriptedModel(
+	agenttest.ToolTurn("c1", "get_weather", `{"city":"SF"}`),
+	agenttest.TextTurn("It's 72F and clear in SF."),
+)
+a, err := agent.New(model, journal, agent.WithTools(weather))
+```
+
+With it the program prints `It's 72F and clear in SF.` and then `true`, with no network access.
 
 `NewMemStore` is in-memory; for durable resume across restarts use the SQLite store (`store/sqlite`) or the Postgres store (`store/postgres`) for high availability. See the [durable steps guide](guides/durable-steps.md) and [debugging and recovery](guides/debugging.md).
 
@@ -79,18 +112,19 @@ Some options apply at more than one scope, and each constructor's type says whic
 
 ## Run an example
 
-The repository ships runnable examples in `examples/`. Some need a live model; several run offline with a small inline model, which is the fastest way to see the durable mechanics:
+The repository ships runnable examples in `examples/`. Some need a live model; several run offline with a small inline model, which is the fastest way to see the durable mechanics. The examples in the core module run from anywhere, without a clone:
 
 ```
 # needs a key (any OpenAI-compatible endpoint)
-OPENROUTER_API_KEY=sk-... go run ./examples/smoke
+OPENROUTER_API_KEY=sk-... go run github.com/bide-ai/bide/examples/smoke@latest
 
 # no key needed: durable mechanics with an inline model
-go run ./examples/interrupt      # human-in-the-loop pause and resume
-go run ./examples/signals        # deliver an external event into a waiting run
-go run ./examples/recover        # durable resume after a simulated crash
-go run ./examples/observability  # OTel spans printed to stdout, with token-to-cost
+go run github.com/bide-ai/bide/examples/interrupt@latest   # human-in-the-loop pause and resume
+go run github.com/bide-ai/bide/examples/signals@latest     # deliver an external event into a waiting run
+go run github.com/bide-ai/bide/examples/recover@latest     # durable resume after a simulated crash
 ```
+
+From a clone (`git clone https://github.com/bide-ai/bide && cd bide`), the same examples run as `go run ./examples/<name>`. A few examples are modules of their own, to keep their dependencies out of the core (`approval`, `govern`, `mcp`, `observability`, `plan`): run them from the clone, where the workspace (`go.work`) resolves them, for example `go run ./examples/observability` (OTel spans printed to stdout, with token-to-cost), or `cd examples/observability && go run .`.
 
 See [examples/README.md](../examples/README.md) for the full list.
 

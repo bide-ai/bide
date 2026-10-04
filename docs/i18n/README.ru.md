@@ -207,7 +207,7 @@ if halt, ok := errors.AsType[*agent.OutcomeUnknown](err); ok {
 
 Требуется Go 1.27 (ядро использует обобщённые методы). Если `go version` старше, обновитесь или задайте `GOTOOLCHAIN=go1.27.0`.
 
-Ядровой пакет – `agent`, импортируется из `github.com/bide-ai/bide/agent` (как показывает блок ниже).
+Ядровой пакет – `agent`, импортируется из `github.com/bide-ai/bide/agent` (как показывает блок ниже). В своём модуле установите его и хранилище SQLite командой `go get github.com/bide-ai/bide/agent@latest github.com/bide-ai/bide/store/sqlite@latest` (или напишите код и выполните `go mod tidy`). Нет API-ключа? [Руководство по началу работы](../getting-started.md#no-api-key-use-agenttest) запускает того же агента офлайн со скриптовой моделью.
 
 ```go
 package main
@@ -244,12 +244,15 @@ func main() {
 		}, agent.WithSafety(agent.Safety{ReadOnly: true}))
 
 	// Durable on-disk store: a crash mid-run resumes from here.
-	store, _ := sqlite.Open("agent.db")
-	j, err := agent.NewJournal(store)
+	store, err := sqlite.Open("agent.db")
 	if err != nil {
 		log.Fatal(err)
 	}
 	defer store.Close()
+	j, err := agent.NewJournal(store)
+	if err != nil {
+		log.Fatal(err)
+	}
 
 	a, err := agent.New(
 		model,
@@ -268,7 +271,7 @@ func main() {
 }
 ```
 
-Запустите живой пример-дымоход: `OPENROUTER_API_KEY=sk-... go run ./examples/smoke`
+Запустите живой пример-дымоход: `OPENROUTER_API_KEY=sk-... go run github.com/bide-ai/bide/examples/smoke@latest`
 
 `Run` принимает вход `Message` (текст, или текст и изображения) и опции прогона, и возвращает `Result`: финальное сообщение, использование токенов за весь прогон (включая кэш и суб-агентов), счётчик ходов модели и длительность по настенным часам. `Result` не равен nil при любой ошибке, если ID прогона корректен: пауза, остановка, сбой, откат саги, отмена:
 
