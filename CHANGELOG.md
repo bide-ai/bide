@@ -4,10 +4,14 @@ All notable changes to bide are documented in this file.
 
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and this project
 adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html). While bide is pre-1.0, a
-minor version (0.x.0) may include breaking API or journal-format changes; each one is marked
-**Breaking:** below. Curated highlights for each release are in [docs/releases](docs/releases).
+minor version (0.x.0) may include breaking API changes, which are marked **Breaking:** below; the
+journal format can change between pre-releases without a version bump. Curated highlights for each release are in [docs/releases](docs/releases).
 
 ## [Unreleased]
+
+### Fixed
+
+- Documentation: the formal verification overview said the TLA+ models caught 29 bugs, all before release. They found 28 and confirmed one more found in review, and four (L1, S1, S2, S4) shipped in releases up to v0.9.0 and were fixed in v0.10.0. The overview, the README and the docs index now say so.
 
 ## [0.11.1] - 2026-10-04
 

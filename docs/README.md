@@ -10,6 +10,7 @@ The map. Read in roughly this order; each entry notes who it is for.
 - **[Known limitations](KNOWN-LIMITATIONS.md)** (evaluator): the bounds and edges of the guarantees. Read alongside the guarantee.
 - **[Changelog](../CHANGELOG.md)** (everyone): every release's changes, breaking changes marked; highlights per release in [releases/](releases/).
 - **[Roadmap](ROADMAP.md)** (everyone): where bide is going next, in order.
+- **[Blog](blog/index.md)** (everyone): longer posts on the design and how to use it, starting with the launch post.
 
 ## Guides (how to build on it)
 
@@ -46,7 +47,7 @@ Accountability and governance:
 
 - **[How bide is verified](testing/verification.md)** (evaluator): the discipline behind the guarantees: no fix without a failing test, mutation checks, crash and cancellation sweeps, forced interleavings, conformance suites, and CI.
 - **[Testing](testing/testing.md)**: what is tested and how, the chaos crash-injection benchmark, differential oracles, and the statistical `eval` boundary.
-- **[Formal verification](formal-verification.md)** (evaluator): an overview of the TLA+ models, what each guarantees and covers, every bug they caught before release, what runs in CI, and what they do not cover.
+- **[Formal verification](formal-verification.md)** (evaluator): an overview of the TLA+ models, what each guarantees and covers, every bug they found or confirmed, what runs in CI, and what they do not cover.
 - **[Formal models](../spec/tla/README.md)**: the reference for each TLA+ model (the claim protocol, the approval gate, the bide protocol's claim rules, flow semantics, spend accounting, the tool-call state machine, the run lifecycle, delegation and saga trees, and sessions), what TLC checks on every pull request, and the bounds.
 
 ## Examples
