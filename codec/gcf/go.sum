@@ -1,3 +1,5 @@
+github.com/bide-ai/bide v0.11.1 h1:T9MPdhBj2FmwNXVVNSZy1R9zbPIXz+o15ZoUzQN3qiI=
+github.com/bide-ai/bide v0.11.1/go.mod h1:4FthWX4lXlVQcyO7KNnnO7S6v7W06M7DM14fu9tOVGI=
 github.com/blackwell-systems/gcf-go v1.7.1 h1:hpdCf/GHXS/CrsXsHnnIw6hXBHhtC2dopGOdiFMnsc4=
 github.com/blackwell-systems/gcf-go v1.7.1/go.mod h1:hYxLOn6JHzNNNH7wfgRXWETX2lMtRtjG8FEX45I6SAI=
 golang.org/x/sync v0.23.0 h1:KameEIfc1IkluZyXWLn39Wd4tURc6GbCiISGiZm2bQk=
