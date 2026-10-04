@@ -488,7 +488,11 @@ func (a *Agent) runLoop(ctx context.Context, runID string, d *driveSpec) (Messag
 				}
 			}
 			if err != nil {
-				err = fmt.Errorf("generate (run %s): %w (%w)", runID, err, ErrModel)
+				if errors.Is(err, ErrModel) { // an adapter's error says so already
+					err = fmt.Errorf("generate (run %s): %w", runID, err)
+				} else {
+					err = fmt.Errorf("generate (run %s): %w (%w)", runID, err, ErrModel)
+				}
 				// The call failed for good, but its requests were billed: journal their spend so the
 				// budget counts it on this and every later invocation of the run. Requests still in
 				// flight are waited for (bounded, once per drive), so their spend is in the same

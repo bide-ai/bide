@@ -14,6 +14,7 @@ import (
 	"context"
 	"encoding/base64"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"net/http"
@@ -129,7 +130,14 @@ func (m *Model) Stream(ctx context.Context, req agent.Request) (*agent.Stream, e
 		return nil, err
 	}
 	if resp.StatusCode != http.StatusOK {
-		return nil, provider.ClassifyHTTPError("openai", resp)
+		err := provider.ClassifyHTTPError("openai", resp)
+		// A server that needs a key refuses a request without one: say the key is missing, so the
+		// provider's 401 does not read as a bad key. A server that needs none never gets here.
+		var api *agent.APIError
+		if m.apiKey == "" && (resp.StatusCode == http.StatusUnauthorized || resp.StatusCode == http.StatusForbidden) && errors.As(err, &api) {
+			api.Err = fmt.Errorf("no API key: openai.New was given an empty key: %w", api.Err)
+		}
+		return nil, err
 	}
 
 	return agent.NewStreamFunc(ctx, func(send func(agent.Emit) bool) { streamSSE(provider.LimitResponse(resp.Body, m.maxResponse), send) }), nil
