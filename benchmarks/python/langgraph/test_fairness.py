@@ -5,6 +5,9 @@ once, resuming a finished run is a no-op, resume really continues from the check
 (completed steps are not re-run), and the crash schedules match the Go harness.
 
     uv run pytest -q
+
+Every check runs on SqliteSaver and on PostgresSaver; the Postgres ones skip when no
+server is reachable (see lg_adapter.PG_ADMIN_DSN).
 """
 
 import itertools
@@ -12,14 +15,21 @@ import itertools
 import pytest
 
 from chaos import PCG, verify
-from lg_adapter import DURABILITY, VARIANTS, WRITES, LangGraph
+from lg_adapter import DURABILITY, VARIANTS, WRITES, LangGraph, LangGraphPostgres, postgres_unavailable
 
 CONFIGS = list(itertools.product(VARIANTS, DURABILITY))
 
 
+@pytest.fixture(params=["sqlite", "postgres"])
+def backend(request):
+    if request.param == "postgres" and (why := postgres_unavailable()):
+        pytest.skip(why)
+    return request.param
+
+
 @pytest.fixture
-def system(request):
-    sys = LangGraph(*request.param)
+def system(request, backend):
+    sys = (LangGraph if backend == "sqlite" else LangGraphPostgres)(*request.param)
     yield sys
     sys.close()
 

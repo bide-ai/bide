@@ -1,11 +1,12 @@
-"""chaos.System adapter for LangGraph with a SqliteSaver checkpointer and REAL crashes.
+"""chaos.System adapter for LangGraph with a SqliteSaver or PostgresSaver checkpointer
+and REAL crashes.
 
 Each Step forks a child process (langgraph is already imported in the parent, so a
-fork is cheap) that opens the run's SQLite checkpoint database and runs or resumes
-the graph. The checkpointer is a SqliteSaver whose put and put_writes first report
+fork is cheap) that opens the run's checkpoint database and runs or resumes the
+graph. The checkpointer is a saver whose put and put_writes first report
 to the parent over a pipe and block until the parent answers. At the crashAt-th
 checkpoint write the parent sends SIGKILL instead of an answer, so the process dies
-before that write reaches SQLite, with no cleanup, no exception handlers, no
+before that write reaches the database, with no cleanup, no exception handlers, no
 atexit. This matches chaos.Run: "crashing at the crashAt-th write" means that write
 never persisted and nothing after it ran.
 
@@ -22,15 +23,19 @@ import sqlite3
 import tempfile
 import threading
 import traceback
+import uuid
 from typing import Annotated, TypedDict
 
+import psycopg
+from psycopg.rows import dict_row
+
 from langgraph.cache.sqlite import SqliteCache
+from langgraph.checkpoint.postgres import PostgresSaver
 from langgraph.checkpoint.sqlite import SqliteSaver
 from langgraph.func import entrypoint, task
 from langgraph.graph import END, START, StateGraph
 from langgraph.types import CachePolicy
 
-THREAD = {"configurable": {"thread_id": "chaos"}}
 
 # Each variant is one documented way to write the start -> charge workflow.
 #   node:       StateGraph, the side effect runs directly in the "charge" node.
@@ -47,26 +52,34 @@ class State(TypedDict):
     steps: Annotated[list[str], operator.add]
 
 
-class HookedSaver(SqliteSaver):
-    """A SqliteSaver that hands control to the parent before every checkpoint write.
+class _Hooked:
+    """Hands control to the parent before every checkpoint write.
 
     hook(label, write) reports the write, waits for the parent, then performs it."""
 
-    def __init__(self, conn, hook):
-        super().__init__(conn)
-        self._hook = hook
+    _hook = None
 
     def put(self, config, checkpoint, metadata, new_versions):
         step = metadata.get("step")
-        return self._hook(
-            f"put(step={step})", lambda: super(HookedSaver, self).put(config, checkpoint, metadata, new_versions)
-        )
+        return self._hook(f"put(step={step})", lambda: super(_Hooked, self).put(config, checkpoint, metadata, new_versions))
 
     def put_writes(self, config, writes, task_id, task_path=""):
         chans = ",".join(sorted({c for c, _ in writes}))
         return self._hook(
-            f"put_writes({chans})", lambda: super(HookedSaver, self).put_writes(config, writes, task_id, task_path)
+            f"put_writes({chans})", lambda: super(_Hooked, self).put_writes(config, writes, task_id, task_path)
         )
+
+
+class HookedSaver(_Hooked, SqliteSaver):
+    def __init__(self, conn, hook):
+        super().__init__(conn)
+        self._hook = hook
+
+
+class HookedPostgresSaver(_Hooked, PostgresSaver):
+    def __init__(self, conn, hook):
+        super().__init__(conn)
+        self._hook = hook
 
 
 class HookedCache(SqliteCache):
@@ -139,23 +152,32 @@ def build(variant: str, saver, dirpath: str, cache=None):
     return g.compile(checkpointer=saver, cache=cache)
 
 
-def run_once(variant: str, durability: str, dirpath: str, hook) -> None:
-    """Run the graph, or resume it the documented way if this thread has a checkpoint."""
-    conn = sqlite3.connect(os.path.join(dirpath, "checkpoints.db"), check_same_thread=False)
-    saver = HookedSaver(conn, hook)
+def run_once(variant: str, durability: str, dirpath: str, hook, pg_dsn: str | None = None) -> None:
+    """Run the graph, or resume it the documented way if this thread has a checkpoint.
+
+    The checkpointer is a SqliteSaver on a file in dirpath, or with pg_dsn a PostgresSaver
+    (one connection, autocommit, as PostgresSaver.from_conn_string opens it). Each run is
+    its own thread_id, so runs sharing one Postgres database never see each other."""
+    if pg_dsn is None:
+        conn = sqlite3.connect(os.path.join(dirpath, "checkpoints.db"), check_same_thread=False)
+        saver = HookedSaver(conn, hook)
+    else:
+        conn = psycopg.connect(pg_dsn, autocommit=True, prepare_threshold=0, row_factory=dict_row)
+        saver = HookedPostgresSaver(conn, hook)
+    thread = {"configurable": {"thread_id": os.path.basename(dirpath)}}
     cache = None
     if variant == "cache":
         cache = HookedCache(os.path.join(dirpath, "cache.db"), hook)
     graph = build(variant, saver, dirpath, cache)
-    if graph.get_state(THREAD).created_at is None:
+    if graph.get_state(thread).created_at is None:
         inp = {} if variant == "functional" else {"steps": []}
-        graph.invoke(inp, THREAD, durability=durability)
+        graph.invoke(inp, thread, durability=durability)
     else:
         # Resume from the last checkpoint: invoke with None on the same thread_id.
-        graph.invoke(None, THREAD, durability=durability)
+        graph.invoke(None, thread, durability=durability)
 
 
-def _child(variant, durability, dirpath, ev_w, ctl_r) -> None:
+def _child(variant, durability, dirpath, pg_dsn, ev_w, ctl_r) -> None:
     # LangGraph issues writes from background threads, so two can be in flight at once.
     # Holding one lock across the hand-off AND the write makes every write that was
     # allowed commit before the next one is reported: a crash at write K then means
@@ -174,7 +196,7 @@ def _child(variant, durability, dirpath, ev_w, ctl_r) -> None:
             return write()
 
     try:
-        run_once(variant, durability, dirpath, hook)
+        run_once(variant, durability, dirpath, hook, pg_dsn)
     except BaseException:
         traceback.print_exc()
         os._exit(1)
@@ -182,9 +204,10 @@ def _child(variant, durability, dirpath, ev_w, ctl_r) -> None:
 
 
 class LangGraphRun:
-    def __init__(self, variant: str, durability: str, root: str | None = None):
+    def __init__(self, variant: str, durability: str, root: str | None = None, pg_dsn: str | None = None):
         self.variant = variant
         self.durability = durability
+        self.pg_dsn = pg_dsn
         self.dir = tempfile.mkdtemp(prefix="run-", dir=root)
         self.trace: list[list[str]] = []  # the checkpoint writes each Step made
 
@@ -213,7 +236,7 @@ class LangGraphRun:
         if pid == 0:
             os.close(ev_r)
             os.close(ctl_w)
-            _child(self.variant, self.durability, self.dir, ev_w, ctl_r)
+            _child(self.variant, self.durability, self.dir, self.pg_dsn, ev_w, ctl_r)
         os.close(ev_w)
         os.close(ctl_r)
         events: list[str] = []
@@ -264,7 +287,7 @@ WRITES = {
 
 
 class LangGraph:
-    """chaos.System for one (variant, durability) configuration."""
+    """chaos.System for one (variant, durability) configuration on SQLite."""
 
     def __init__(self, variant: str = "node", durability: str = "sync"):
         self.variant = variant
@@ -279,3 +302,41 @@ class LangGraph:
 
     def writes(self) -> int:
         return WRITES[(self.variant, self.durability)]
+
+
+# The admin connection used to create and drop the throwaway database. Override with
+# LGCHAOS_PG_DSN (any database the user may CREATE DATABASE from).
+PG_ADMIN_DSN = os.environ.get("LGCHAOS_PG_DSN", "dbname=postgres")
+
+
+def postgres_unavailable() -> str | None:
+    """Why Postgres cannot be used, or None if it can."""
+    try:
+        with psycopg.connect(PG_ADMIN_DSN, autocommit=True, connect_timeout=3) as conn:
+            conn.execute("SELECT 1")
+    except Exception as e:  # any failure to reach Postgres means skip
+        return f"no Postgres at {PG_ADMIN_DSN!r}: {e}".splitlines()[0]
+    return None
+
+
+class LangGraphPostgres(LangGraph):
+    """The same System on PostgresSaver, in a throwaway database created here and
+    dropped by close(). The tables are created (PostgresSaver.setup) in the parent before
+    any run, outside the crash hooks."""
+
+    def __init__(self, variant: str = "node", durability: str = "sync"):
+        super().__init__(variant, durability)
+        self.dbname = f"lgchaos_{uuid.uuid4().hex[:12]}"
+        with psycopg.connect(PG_ADMIN_DSN, autocommit=True) as admin:
+            admin.execute(f'CREATE DATABASE "{self.dbname}"')
+        self.dsn = psycopg.conninfo.make_conninfo(PG_ADMIN_DSN, dbname=self.dbname)
+        with PostgresSaver.from_conn_string(self.dsn) as saver:
+            saver.setup()
+
+    def new_run(self) -> LangGraphRun:
+        return LangGraphRun(self.variant, self.durability, self.root, self.dsn)
+
+    def close(self) -> None:
+        super().close()
+        with psycopg.connect(PG_ADMIN_DSN, autocommit=True) as admin:
+            admin.execute(f'DROP DATABASE IF EXISTS "{self.dbname}" WITH (FORCE)')
