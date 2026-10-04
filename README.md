@@ -177,9 +177,11 @@ agents share state without a single writer. The claim is precise: *order-indepen
 of the replay* for a machine that meets the theorem's conditions, not "agents always agree." The
 federated convergence results are mechanized: the acyclic structural core (limit, retraction,
 compositionality) and the monotone-cycle case, including asynchronous (chaotic)
-order-independence for finite-height lattices. The cohomological layer is mechanized through the
-cycle basis: in the invertible fragment, a federation has a convergent global state iff every
-fundamental cycle has trivial holonomy. Its full H¹ classification is paper-proven.
+order-independence for finite-height lattices. The cohomological layer is mechanized as well:
+in the invertible fragment, a federation has a convergent global state iff every fundamental cycle
+has trivial holonomy, and H¹ is mechanized as the quotient of fundamental-cycle holonomies modulo
+simultaneous conjugation, with rank |E| − |V| + 1. The rank on the nerve as a 2-complex and the
+non-invertible case are paper-proven.
 
 **bide requires gsm v0.12.0.** gsm v0.11.0, which bide required before, had a `Build` gap: it
 skipped the commute check for event pairs it judged independent from what they write, without
