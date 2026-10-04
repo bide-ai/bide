@@ -271,7 +271,7 @@ func main() {
 
 运行实地冒烟示例：`OPENROUTER_API_KEY=sk-... go run github.com/bide-ai/bide/examples/smoke@latest`
 
-`Run` 接受一个 `Message` 输入（文本，或文本加图像）和每次运行的选项，并返回一个 `Result`：最终消息、整次运行的 token 用量（含缓存与子智能体）、模型轮次计数和墙钟时长。只要运行 ID 有效，`Result` 在任何错误时都不为 nil：暂停、停机、失败、saga 中止、取消：
+`Run` 接受一个 `Message` 输入（文本，或文本加图像）和每次运行的选项，并返回一个 `Result`：最终消息、整次运行的 token 用量（含缓存与子智能体）、模型轮次计数和墙钟时长。`Turns` 只计本次调用的模型轮次，因此恢复的运行，或再次驱动的已完成运行，显示的轮次可能少于整次运行的轮次（`Usage` 和 `Spend` 是整次运行的）。只要运行 ID 有效，`Result` 在任何错误时都不为 nil：暂停、停机、失败、saga 中止、取消：
 
 <!-- docsnip: setup ctx context.Context; a *agent.Agent; runID string; input string -->
 ```go

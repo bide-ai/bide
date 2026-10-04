@@ -458,7 +458,9 @@ argument field the json tag the model sees in the schema.
 
 `Run` takes a `Message` input (text, or text and images) and per-run options, and returns a
 `Result`: the final message, token usage for the whole run (including cache and sub-agents), the
-model-turn count, and the wall-clock duration. The `Result` is non-nil on every error once the run
+model-turn count, and the wall-clock duration. `Turns` counts only the model turns this invocation
+made, so a resumed run, or a finished one driven again, can show fewer turns than the run made
+overall (`Usage` and `Spend` are the whole run's). The `Result` is non-nil on every error once the run
 ID is valid: a pause, a halt, a failure, a saga's abort, a cancellation:
 
 <!-- docsnip: setup ctx context.Context; a *agent.Agent; runID string; input string -->

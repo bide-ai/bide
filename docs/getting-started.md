@@ -73,7 +73,7 @@ func main() {
 }
 ```
 
-Run it with `OPENROUTER_API_KEY=sk-... go run .`. It prints the model's answer (a sentence such as "It's 72F and clear in SF.", in the model's words), then `true`: the second `Run` of `run-1` read the answer back from the journal instead of calling the model or the tool again. That is how a crashed or repeated run resumes: steps already journaled are not repeated.
+Run it with `OPENROUTER_API_KEY=sk-... go run .`. It prints the model's answer (a sentence such as "It's 72F and clear in SF.", in the model's words), then `true`: the second `Run` of `run-1` read the answer back from the journal instead of calling the model or the tool again. That is how a crashed or repeated run resumes: steps already journaled are not repeated. After a crash, call `Run` again with the same run ID (or `Resume`, which needs no input): the run continues from the journal, and a side-effect tool call it completed is not made again (see the [durable steps guide](guides/durable-steps.md)).
 
 ### No API key? Use agenttest
 
@@ -124,7 +124,7 @@ go run github.com/bide-ai/bide/examples/signals@latest     # deliver an external
 go run github.com/bide-ai/bide/examples/recover@latest     # durable resume after a simulated crash
 ```
 
-From a clone (`git clone https://github.com/bide-ai/bide && cd bide`), the same examples run as `go run ./examples/<name>`. A few examples are modules of their own, to keep their dependencies out of the core (`approval`, `govern`, `mcp`, `observability`, `plan`): run them from the clone, where the workspace (`go.work`) resolves them, for example `go run ./examples/observability` (OTel spans printed to stdout, with token-to-cost), or `cd examples/observability && go run .`.
+From a clone (`git clone https://github.com/bide-ai/bide && cd bide`), the same examples run as `go run ./examples/<name>`. A few examples are modules of their own, to keep their dependencies out of the core (`approval`, `govern`, `mcp`, `observability`, `plan`): run them from their own directory in the clone, as [examples/README.md](../examples/README.md) does, for example `cd examples/observability && go run .` (OTel spans printed to stdout, with token-to-cost).
 
 See [examples/README.md](../examples/README.md) for the full list.
 
