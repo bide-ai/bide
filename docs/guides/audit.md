@@ -206,9 +206,9 @@ even shifts between a fresh run and its own replay (live-only events like token 
 For the durable audit artifact, don't store a second log: **derive it from the journal**, which
 is already the crash-safe, at-most-once substrate.
 
-<!-- docsnip: setup ctx context.Context; store *agent.Journal; runID string; signer audit.Signer; ts int64 -->
+<!-- docsnip: setup ctx context.Context; journal *agent.Journal; runID string; signer audit.Signer; ts int64 -->
 ```go
-log, _ := audit.EventLogFromJournal(ctx, store, runID)          // projection of the DURABLE journal
+log, _ := audit.EventLogFromJournal(ctx, journal, runID)          // projection of the DURABLE journal
 sth, _ := audit.SignTreeHead(log.TreeHead(runID, ts), signer) // anchor THIS: crash-durable, resume-stable
 ```
 
@@ -288,11 +288,11 @@ disclosed record as the bytes the journal stores for it (`RecordBytes`), its inc
 signed tree head it is proven against, and it verifies offline against a public key obtained
 out-of-band:
 
-<!-- docsnip: setup ctx context.Context; store *agent.Journal; runID string; toolUseID string; sth audit.SignedTreeHead; pub ed25519.PublicKey -->
+<!-- docsnip: setup ctx context.Context; journal *agent.Journal; runID string; toolUseID string; sth audit.SignedTreeHead; pub ed25519.PublicKey -->
 ```go
 // Produce: prove one tool call happened, against an anchored STH. Semantic, not by index.
-bundle, _ := audit.ProveToolCall(ctx, store, runID, toolUseID, sth) // or audit.ProveRecord(..., index, sth)
-blob, _ := json.Marshal(bundle)                                     // store / email / publish it
+bundle, _ := audit.ProveToolCall(ctx, journal, runID, toolUseID, sth) // or audit.ProveRecord(..., index, sth)
+blob, _ := json.Marshal(bundle)                                     // journal / email / publish it
 
 // Verify: offline, trusting only the out-of-band public key. nil means verified.
 err := bundle.Verify(audit.Ed25519Verifier{Pub: pub}) // STH signature, kind and run binding, size binding, inclusion
@@ -363,9 +363,9 @@ evidence into a single portable file: one signed tree head, an inclusion proof p
 and optionally the run certificate, the authority grant chain, and a consistency proof. It is pure
 JSON (store it, email it, publish it) and verifies offline:
 
-<!-- docsnip: setup ctx context.Context; store *agent.Journal; runID string; signer audit.Signer; v audit.Verifier; spec audit.RunCertSpec; earlierSTH audit.SignedTreeHead; allowlist []string -->
+<!-- docsnip: setup ctx context.Context; journal *agent.Journal; runID string; signer audit.Signer; v audit.Verifier; spec audit.RunCertSpec; earlierSTH audit.SignedTreeHead; allowlist []string -->
 ```go
-pkg, _ := audit.Evidence(ctx, store, runID, signer, time.Now().UnixNano(),
+pkg, _ := audit.Evidence(ctx, journal, runID, signer, time.Now().UnixNano(),
 	audit.WithAllToolCalls(), audit.WithRunCertificate(spec), audit.WithGrants(),
 	audit.WithConsistencyFrom(earlierSTH)) // an earlier signed head of this run, e.g. from the anchor log
 report, err := pkg.Verify(v, audit.WithApprovedPolicies(allowlist...)) // trusting only the out-of-band key
@@ -432,9 +432,9 @@ decision record the gate read (valid or not), the gate's recorded tally, and the
 it to a package that already carries the call (built with `WithToolCall` or `WithAllToolCalls`), drop
 the trailing result entry and reseal the package:
 
-<!-- docsnip: setup ctx context.Context; store *agent.Journal; runID string; toolUseID string; signer audit.Signer; pkg audit.EvidencePackage -->
+<!-- docsnip: setup ctx context.Context; journal *agent.Journal; runID string; toolUseID string; signer audit.Signer; pkg audit.EvidencePackage -->
 ```go
-approvals, _ := audit.ApprovalEvidence(ctx, store, runID, toolUseID, pkg.STH)
+approvals, _ := audit.ApprovalEvidence(ctx, journal, runID, toolUseID, pkg.STH)
 pkg.Actions = append(pkg.Actions, approvals[:len(approvals)-1]...) // the result is already packaged
 _ = pkg.Seal(signer)                                               // the package changed after Evidence sealed it
 ```
@@ -563,16 +563,16 @@ hand-derived consistency vector, and rewrite-detection tests. It is not a homegr
 
 ## End-to-end compliance flow
 
-<!-- docsnip: setup ctx context.Context; store *agent.Journal; runID string; signer audit.Signer; v audit.Verifier; chargeIndex int; sth1, sth2 audit.SignedTreeHead -->
+<!-- docsnip: setup ctx context.Context; journal *agent.Journal; runID string; signer audit.Signer; v audit.Verifier; chargeIndex int; sth1, sth2 audit.SignedTreeHead -->
 ```go
 // 1. After a run, commit to the journal and PUBLISH a signed tree head.
-th, _ := audit.NewTreeHead(ctx, store, runID, time.Now().UnixNano())
+th, _ := audit.NewTreeHead(ctx, journal, runID, time.Now().UnixNano())
 sth, _ := audit.SignTreeHead(th, signer) // publish/anchor sth (out-of-band)
 
 // 2. Later, an auditor asks: "did the agent issue THIS charge?"
 //    Disclose only that one record's stored bytes + its inclusion proof, nothing else.
-proof, _ := audit.Prove(ctx, store, runID, chargeIndex)
-recs, _ := store.History(ctx, runID)
+proof, _ := audit.Prove(ctx, journal, runID, chargeIndex)
+recs, _ := journal.History(ctx, runID)
 charge := recs[chargeIndex].Raw() // the bytes the journal stores for it
 
 // 3. The auditor verifies, from public artifacts alone (nil means it holds):
@@ -581,7 +581,7 @@ _ = audit.VerifyInclusion(sth.Root, charge, proof) // the charge is in it
 // ...revealing no other customer, prompt, or PII.
 
 // 4. Prove the log only grew between two published STHs (no retroactive edits):
-cproof, _ := audit.ProveConsistency(ctx, store, runID, sth1.Size)
+cproof, _ := audit.ProveConsistency(ctx, journal, runID, sth1.Size)
 audit.VerifyConsistency(sth1.Root, sth2.Root, cproof)
 ```
 
@@ -789,19 +789,19 @@ Composing them yields "every governed state in the run was produced by an approv
 oracle-certified-convergent policy," so the enforced invariant held throughout the governed
 boundary.
 
-<!-- docsnip: setup ctx context.Context; store *agent.Journal; runID string; signer audit.Signer; v audit.Verifier; th audit.TreeHead; policyDigest string; allowlist []string -->
+<!-- docsnip: setup ctx context.Context; journal *agent.Journal; runID string; signer audit.Signer; v audit.Verifier; th audit.TreeHead; policyDigest string; allowlist []string -->
 ```go
 // Emit: recompute the used-policy set, confirm it is a subset of the allowlist, and assemble the
 // anchored policy + convergence proofs for each used policy against the run's signed tree head.
 sth, _ := audit.SignTreeHead(th, signer)
-cert, _ := audit.CertifyRun(ctx, store, runID, sth, audit.RunCertSpec{
+cert, _ := audit.CertifyRun(ctx, journal, runID, sth, audit.RunCertSpec{
 	ApprovedPolicies: []string{policyDigest},
 	Signer:           signer, // must hold the key that signed sth
 	TimestampNanos:   time.Now().UnixNano(),
 })
 
 // Anchor the certificate itself so it is provable in the run (mirrors RecordPolicy / RecordConvergence):
-audit.RecordRunCertificate(ctx, store, runID, cert) // + audit.ProveRunCertificate(..., laterSTH)
+audit.RecordRunCertificate(ctx, journal, runID, cert) // + audit.ProveRunCertificate(..., laterSTH)
 
 // Verify: offline, against the auditor's allowlist, trusting only the out-of-band key.
 res, err := audit.VerifyRun(cert, allowlist, v) // err == nil: both properties hold; res says which failed

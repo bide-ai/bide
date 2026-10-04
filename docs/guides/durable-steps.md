@@ -36,13 +36,13 @@ under a new marker instead of halting; only a process that dies in that gap leav
 that is safe to re-run declares it with `WithSafety`, and then simply re-runs after
 a crash or an error:
 
-<!-- docsnip: setup ctx context.Context; store *agent.Journal; runID string; type Invoice struct{}; type Reservation struct{}; id, sku string; billing interface{ Lookup(context.Context, string) (Invoice, error) }; inventory interface{ Reserve(context.Context, string) (Reservation, error) } -->
+<!-- docsnip: setup ctx context.Context; journal *agent.Journal; runID string; type Invoice struct{}; type Reservation struct{}; id, sku string; billing interface{ Lookup(context.Context, string) (Invoice, error) }; inventory interface{ Reserve(context.Context, string) (Reservation, error) } -->
 ```go
-inv, err := store.Step(ctx, runID, "fetch-invoice",
+inv, err := journal.Step(ctx, runID, "fetch-invoice",
     func(ctx context.Context) (Invoice, error) { return billing.Lookup(ctx, id) },
     agent.WithSafety(agent.Safety{ReadOnly: true}))
 
-res, err := store.Step(ctx, runID, "reserve", // at most once; halts on an unknown outcome
+res, err := journal.Step(ctx, runID, "reserve", // at most once; halts on an unknown outcome
     func(ctx context.Context) (Reservation, error) { return inventory.Reserve(ctx, sku) })
 ```
 
@@ -97,14 +97,14 @@ each result committed to the journal and provable on its own, then aggregate.
   memoized on resume; a failed `ReadOnly` task re-runs, and a failed side effect halts.
 - `maxConcurrency` caps in-flight tasks; `<= 0` means one goroutine per task.
 
-<!-- docsnip: setup ctx context.Context; store *agent.Journal; runID string; type CheckResult struct{}; runSanctions, runPEP, runAdverseMedia func(context.Context) (CheckResult, error) -->
+<!-- docsnip: setup ctx context.Context; journal *agent.Journal; runID string; type CheckResult struct{}; runSanctions, runPEP, runAdverseMedia func(context.Context) (CheckResult, error) -->
 ```go
 checks := []agent.Task[CheckResult]{
     {Name: "sanctions_check",     Fn: runSanctions,    Safety: agent.Safety{ReadOnly: true}},
     {Name: "pep_check",           Fn: runPEP,          Safety: agent.Safety{ReadOnly: true}},
     {Name: "adverse_media_check", Fn: runAdverseMedia, Safety: agent.Safety{ReadOnly: true}},
 }
-results, err := store.Parallel(ctx, runID, checks) // add agent.WithMaxConcurrency(n) to cap tasks in flight
+results, err := journal.Parallel(ctx, runID, checks) // add agent.WithMaxConcurrency(n) to cap tasks in flight
 ```
 
 This is deliberately a thin primitive over the journal, not a graph engine. Dynamic, model-driven
@@ -273,11 +273,11 @@ committed. Once you have verified it out of band, `ResolveHalt` is the sanctione
 records the missing result under the halted operation's key (the same journal key the loop or
 `Step` uses), so a re-run proceeds past the halt instead of halting again:
 
-<!-- docsnip: setup ctx context.Context; a *agent.Agent; store *agent.Journal; input string; err error; msg agent.Message -->
+<!-- docsnip: setup ctx context.Context; a *agent.Agent; journal *agent.Journal; input string; err error; msg agent.Message -->
 ```go
 if halt, ok := errors.AsType[*agent.OutcomeUnknown](err); ok {
     // operator confirmed the charge did go through
-    _ = agent.ResolveHalt(ctx, store, halt.Ref(), agent.Outcome{Result: "charged (confirmed)"})
+    _ = agent.ResolveHalt(ctx, journal, halt.Ref(), agent.Outcome{Result: "charged (confirmed)"})
     res, err := a.Run(ctx, halt.RootRunID, agent.UserText(input)) // resumes past the halt
     if err == nil {
         msg = res.Message
@@ -351,12 +351,12 @@ decide, and call `ResolveHalt` itself. Two options make that safe:
   hole in the very thing the trail exists to protect. With it, a later reader tells a reconciled
   step from a clean one and re-checks the evidence.
 
-<!-- docsnip: setup ctx context.Context; store *agent.Journal; err error; func providerSays(*agent.OutcomeUnknown) (bool, json.RawMessage) -->
+<!-- docsnip: setup ctx context.Context; journal *agent.Journal; err error; func providerSays(*agent.OutcomeUnknown) (bool, json.RawMessage) -->
 ```go
 if halt, ok := errors.AsType[*agent.OutcomeUnknown](err); ok {
     sent, record := providerSays(halt) // query the system of record
     if sent {
-        _ = agent.ResolveHalt(ctx, store, halt.Ref(),
+        _ = agent.ResolveHalt(ctx, journal, halt.Ref(),
             agent.Outcome{Result: "sent (reconciled)", Evidence: record}, // the basis, signed with the outcome
             agent.WithMinHaltAge(30*time.Second))                         // do not decide before the record can settle
     }

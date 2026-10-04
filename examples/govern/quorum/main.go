@@ -105,7 +105,7 @@ func buildPolicy() (*gsm.Machine, gsm.Var, gsm.Var, string) {
 // runAgree: three voters, two agree on approve. Quorum is met, so the commit event fires under the
 // attested tool and the decision is committed. The vote, the tally, and the commit are all provable.
 func runAgree(ctx context.Context, m *gsm.Machine, votesFor, committed gsm.Var, policyDigest string) {
-	store, err := agent.NewJournal(agent.NewMemStore())
+	journal, err := agent.NewJournal(agent.NewMemStore())
 	if err != nil {
 		log.Fatal(err)
 	}
@@ -116,7 +116,7 @@ func runAgree(ctx context.Context, m *gsm.Machine, votesFor, committed gsm.Var, 
 		{Name: "model-B", Decide: decide("approve")},
 		{Name: "model-C", Decide: decide("deny")},
 	}
-	res, err := govern.Quorum(ctx, store, runID, quorumName, k, voters...)
+	res, err := govern.Quorum(ctx, journal, runID, quorumName, k, voters...)
 	if err != nil {
 		panic(err)
 	}
@@ -131,27 +131,27 @@ func runAgree(ctx context.Context, m *gsm.Machine, votesFor, committed gsm.Var, 
 	// next to the votes as the run's provable action. Its model is scripted (no LLM): it calls
 	// commit, then answers.
 	model := agenttest.NewScriptedModel(agenttest.ToolTurn("commit/leaf", "commit", `{}`), agenttest.TextTurn("committed"))
-	a, err := agent.New(model, store, agent.WithTools(commit))
+	a, err := agent.New(model, journal, agent.WithTools(commit))
 	if err != nil {
 		log.Fatal(err)
 	}
 	if _, err := a.Run(ctx, runID, agent.UserText("commit the quorum decision")); err != nil {
 		panic(err)
 	}
-	leaf := toolResult(ctx, store, runID, "commit/leaf")
+	leaf := toolResult(ctx, journal, runID, "commit/leaf")
 	var m2 map[string]any
 	_ = json.Unmarshal(leaf, &m2)
 	fmt.Printf("committed=%v (quorum met); leaf binds policy=%v state=%v\n",
 		gov.State().GetBool(committed), m2["policy_digest"].(string)[:12]+"...", m2["state_digest"].(string)[:12]+"...")
 
-	proveRun(ctx, store, runID, quorumSteps(voters), "commit/leaf")
+	proveRun(ctx, journal, runID, quorumSteps(voters), "commit/leaf")
 }
 
 // runDisagree: three voters split three ways. Quorum is NOT met, so the guard makes commit a no-op
 // and the invariant forces the decision to escalate. The escalate path routes to human approval
 // (agent.WithApproval), which pauses the run durably; nothing commits.
 func runDisagree(ctx context.Context, m *gsm.Machine, votesFor, committed gsm.Var, policyDigest string) {
-	store, err := agent.NewJournal(agent.NewMemStore())
+	journal, err := agent.NewJournal(agent.NewMemStore())
 	if err != nil {
 		log.Fatal(err)
 	}
@@ -162,7 +162,7 @@ func runDisagree(ctx context.Context, m *gsm.Machine, votesFor, committed gsm.Va
 		{Name: "model-B", Decide: decide("deny")},
 		{Name: "model-C", Decide: decide("escalate")},
 	}
-	res, err := govern.Quorum(ctx, store, runID, quorumName, k, voters...)
+	res, err := govern.Quorum(ctx, journal, runID, quorumName, k, voters...)
 	if err != nil {
 		panic(err)
 	}
@@ -189,7 +189,7 @@ func runDisagree(ctx context.Context, m *gsm.Machine, votesFor, committed gsm.Va
 		agenttest.ToolTurn("escalate/1", "escalate", `{}`),
 		agenttest.TextTurn("escalated"),
 	)
-	a, err := agent.New(model, store, agent.WithTools(commit, escalate))
+	a, err := agent.New(model, journal, agent.WithTools(commit, escalate))
 	if err != nil {
 		log.Fatal(err)
 	}
@@ -206,7 +206,7 @@ func runDisagree(ctx context.Context, m *gsm.Machine, votesFor, committed gsm.Va
 	}
 	fmt.Printf("escalate path: paused for human approval under dual control: %s\n", pending.Error())
 
-	proveRun(ctx, store, runID, quorumSteps(voters), "")
+	proveRun(ctx, journal, runID, quorumSteps(voters), "")
 }
 
 // quorumSteps lists the steps to prove for the quorum: each voter's vote, then the tally.
@@ -235,9 +235,9 @@ func printTally(res govern.QuorumResult) {
 
 // proveRun signs a tree head and proves each step (and the optional commit leaf) offline, so a
 // third party confirms with the public key alone that these votes and this outcome are committed.
-func proveRun(ctx context.Context, store *agent.Journal, runID string, steps []string, toolUseID string) {
+func proveRun(ctx context.Context, journal *agent.Journal, runID string, steps []string, toolUseID string) {
 	pub, priv, _ := ed25519.GenerateKey(rand.Reader)
-	th, err := audit.NewTreeHead(ctx, store, runID, 1)
+	th, err := audit.NewTreeHead(ctx, journal, runID, 1)
 	if err != nil {
 		panic(err)
 	}
@@ -248,7 +248,7 @@ func proveRun(ctx context.Context, store *agent.Journal, runID string, steps []s
 
 	fmt.Println("offline proofs (verify with the public key alone):")
 	for _, name := range steps {
-		b, err := audit.ProveStep(ctx, store, runID, name, sth)
+		b, err := audit.ProveStep(ctx, journal, runID, name, sth)
 		if err != nil {
 			panic(err)
 		}
@@ -258,7 +258,7 @@ func proveRun(ctx context.Context, store *agent.Journal, runID string, steps []s
 		fmt.Printf("  %-30s inclusion proof verified: %v\n", name, true)
 	}
 	if toolUseID != "" {
-		pb, err := audit.ProveToolCall(ctx, store, runID, toolUseID, sth)
+		pb, err := audit.ProveToolCall(ctx, journal, runID, toolUseID, sth)
 		if err != nil {
 			panic(err)
 		}
@@ -270,8 +270,8 @@ func proveRun(ctx context.Context, store *agent.Journal, runID string, steps []s
 }
 
 // toolResult reads the result the run journaled for the tool call toolUseID.
-func toolResult(ctx context.Context, store *agent.Journal, runID, toolUseID string) json.RawMessage {
-	for rec, err := range store.Records(ctx, runID) {
+func toolResult(ctx context.Context, journal *agent.Journal, runID, toolUseID string) json.RawMessage {
+	for rec, err := range journal.Records(ctx, runID) {
 		if err != nil {
 			log.Fatal(err)
 		}

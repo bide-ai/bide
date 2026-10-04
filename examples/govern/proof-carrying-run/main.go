@@ -44,7 +44,7 @@ import (
 
 func main() {
 	ctx := context.Background()
-	store, err := agent.NewJournal(agent.NewMemStore())
+	journal, err := agent.NewJournal(agent.NewMemStore())
 	if err != nil {
 		log.Fatal(err)
 	}
@@ -72,11 +72,11 @@ func main() {
 	// Anchor the policy and its portable convergence certificate as journal leaves, so a verifier can
 	// later prove from the signed tree alone that the anchored policy was certified convergent.
 	cert := govern.CertifyConvergence(rep, policyDigest)
-	if _, err := audit.RecordPolicy(ctx, store, runID, policyBytes, policyDigest); err != nil {
+	if _, err := audit.RecordPolicy(ctx, journal, runID, policyBytes, policyDigest); err != nil {
 		panic(err)
 	}
 	certBytes, _ := cert.Marshal()
-	if _, err := audit.RecordConvergence(ctx, store, runID, certBytes, policyDigest); err != nil {
+	if _, err := audit.RecordConvergence(ctx, journal, runID, certBytes, policyDigest); err != nil {
 		panic(err)
 	}
 	fmt.Printf("policy %s anchored and certified convergent over %d states\n\n", short(policyDigest), rep.StateCount)
@@ -96,7 +96,7 @@ func main() {
 		agenttest.ToolTurn("call_flag", "flag", `{}`),
 		agenttest.TextTurn("case decided"),
 	)
-	a, err := agent.New(model, store, agent.WithTools(approveTool, flagTool))
+	a, err := agent.New(model, journal, agent.WithTools(approveTool, flagTool))
 	if err != nil {
 		log.Fatal(err)
 	}
@@ -125,7 +125,7 @@ func main() {
 		panic(err)
 	}
 	signer := audit.HybridSigner{Ed: audit.Ed25519Signer{Priv: edPriv}, ML: audit.MLDSASigner{Priv: mlPriv}}
-	th, err := audit.NewTreeHead(ctx, store, runID, 1)
+	th, err := audit.NewTreeHead(ctx, journal, runID, 1)
 	if err != nil {
 		panic(err)
 	}
@@ -135,7 +135,7 @@ func main() {
 	}
 
 	approvedAllowlist := []string{policyDigest}
-	runCert, err := audit.CertifyRun(ctx, store, runID, sth, audit.RunCertSpec{ApprovedPolicies: approvedAllowlist, Signer: signer, TimestampNanos: 2})
+	runCert, err := audit.CertifyRun(ctx, journal, runID, sth, audit.RunCertSpec{ApprovedPolicies: approvedAllowlist, Signer: signer, TimestampNanos: 2})
 	if err != nil {
 		panic(err)
 	}
@@ -147,7 +147,7 @@ func main() {
 
 	// Anchor the certificate itself so it is provable in the run, then verify offline. The verifier
 	// trusts only the out-of-band public key: it re-derives every property from the disclosed proofs.
-	if _, err := audit.RecordRunCertificate(ctx, store, runID, runCert); err != nil {
+	if _, err := audit.RecordRunCertificate(ctx, journal, runID, runCert); err != nil {
 		panic(err)
 	}
 	// The auditor holds the log's public key out of band; here it is derived from the signer.

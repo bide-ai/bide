@@ -115,21 +115,21 @@ eino           maxFired=64   ✗
 
 Один и тот же поток сортировки заказов, тремя способами. Обычный Go используется по умолчанию: пишите обычный поток управления и называйте шаги, которые журнал должен сделать безопасными при сбое.
 
-<!-- docsnip: setup ctx context.Context; store *agent.Journal; order Order; type Order struct{}; type Receipt struct{}; type Assessment struct{ Rush bool }; type Reservation struct{}; func classify(Order) (Assessment, error); func reserve(Assessment) (Reservation, error); func finalize(Reservation) (Receipt, error); func decline(Assessment) (Receipt, error) -->
+<!-- docsnip: setup ctx context.Context; journal *agent.Journal; order Order; type Order struct{}; type Receipt struct{}; type Assessment struct{ Rush bool }; type Reservation struct{}; func classify(Order) (Assessment, error); func reserve(Assessment) (Reservation, error); func finalize(Reservation) (Receipt, error); func decline(Assessment) (Receipt, error) -->
 ```go
 // classify, then branch: rush orders reserve-then-finalize, the rest decline.
-assess, _ := store.Step(ctx, "order-42", "classify",
+assess, _ := journal.Step(ctx, "order-42", "classify",
     func(ctx context.Context) (Assessment, error) { return classify(order) },
     agent.WithSafety(agent.Safety{ReadOnly: true})) // safe to re-run after a crash
 
 var receipt Receipt
 if assess.Rush {
-    res, _ := store.Step(ctx, "order-42", "reserve", // a side effect: at most once
+    res, _ := journal.Step(ctx, "order-42", "reserve", // a side effect: at most once
         func(ctx context.Context) (Reservation, error) { return reserve(assess) })
-    receipt, _ = store.Step(ctx, "order-42", "finalize",
+    receipt, _ = journal.Step(ctx, "order-42", "finalize",
         func(ctx context.Context) (Receipt, error) { return finalize(res) })
 } else {
-    receipt, _ = store.Step(ctx, "order-42", "decline",
+    receipt, _ = journal.Step(ctx, "order-42", "decline",
         func(ctx context.Context) (Receipt, error) { return decline(assess) })
 }
 ```
@@ -335,11 +335,11 @@ w, _, err := a.RunTyped[Weather](ctx, runID, agent.UserText("weather in SF?"))
 
 Контролы генерации нейтральны к поставщику и задаются один раз; каждый адаптер отображает их на свой проводной формат (и отбрасывает то, что не может, например у Anthropic нет `seed`):
 
-<!-- docsnip: setup model agent.Model; store *agent.Journal; tools []agent.Tool -->
+<!-- docsnip: setup model agent.Model; journal *agent.Journal; tools []agent.Tool -->
 ```go
 a, err := agent.New(
 	model,
-	store,
+	journal,
 	agent.WithTools(tools...),
 	agent.WithSampling(agent.Temperature(0), agent.MaxTokens(500), agent.TopP(0.9), agent.Seed(42)),
 )
@@ -385,9 +385,9 @@ fmt.Println(r1.Message.Text(), r2.Message.Text())
 
 Надёжный журнал уже записывает каждый шаг прогона. Пакет `audit` фиксирует эту историю цепочкой хешей, так что выполнение прогона проверяемо:
 
-<!-- docsnip: setup ctx context.Context; store *agent.Journal; runID string; priv ed25519.PrivateKey -->
+<!-- docsnip: setup ctx context.Context; journal *agent.Journal; runID string; priv ed25519.PrivateKey -->
 ```go
-head, _ := audit.Head(ctx, store, runID)                     // SHA-256 chain over the stored journal bytes
+head, _ := audit.Head(ctx, journal, runID)                     // SHA-256 chain over the stored journal bytes
 sig, _ := audit.Sign(head, audit.Ed25519Signer{Priv: priv}) // anchor it: sign / publish out-of-band
 ```
 
@@ -443,12 +443,12 @@ agent.WithApproval(agent.SingleApproval()) // not Safety: a tool option that pau
 
 Три вкуса. **Одобрить/отклонить**: инструмент, помеченный `WithApproval(SingleApproval())`, приостанавливается *перед* запуском; решение человека булево:
 
-<!-- docsnip: setup ctx context.Context; a *agent.Agent; store *agent.Journal; runID string; input string -->
+<!-- docsnip: setup ctx context.Context; a *agent.Agent; journal *agent.Journal; runID string; input string -->
 ```go
 _, err := a.Run(ctx, runID, agent.UserText(input))
 if pend, ok := errors.AsType[*agent.ApprovalPending](err); ok {
 	// ... get a human decision ...
-	agent.Approve(ctx, store, pend.RunID, pend.ToolUseID, true)
+	agent.Approve(ctx, journal, pend.RunID, pend.ToolUseID, true)
 	res, _ := a.Run(ctx, pend.RootRunID, agent.UserText(input))
 	var out agent.Message
 	if res != nil {
@@ -459,7 +459,7 @@ if pend, ok := errors.AsType[*agent.ApprovalPending](err); ok {
 
 **Прерывание/возобновление**: инструмент приостанавливается *в произвольной точке* и возобновляется с *типизированным* значением (обобщая булево). Вызовите `agent.Interrupt[T]` внутри безопасного при повторе инструмента:
 
-<!-- docsnip: setup ctx context.Context; a *agent.Agent; store *agent.Journal; runID string; input string; type Options struct{}; type Plan struct{}; chosenPlan Plan -->
+<!-- docsnip: setup ctx context.Context; a *agent.Agent; journal *agent.Journal; runID string; input string; type Options struct{}; type Plan struct{}; chosenPlan Plan -->
 ```go
 tool := agent.MustFunc("choose_plan", "pick a plan", func(ctx context.Context, in Options) (Plan, error) {
 		pick, err := agent.Interrupt[Plan](ctx, "plan", in) // pauses the run; in is shown to the human
@@ -472,7 +472,7 @@ tool := agent.MustFunc("choose_plan", "pick a plan", func(ctx context.Context, i
 _, err := a.Run(ctx, runID, agent.UserText(input))
 if intr, ok := errors.AsType[*agent.InterruptPending](err); ok {
 	// ... show intr.Prompt, get a typed answer ...
-	store.AnswerInterrupt(ctx, intr.RunID, intr.Name, chosenPlan)
+	journal.AnswerInterrupt(ctx, intr.RunID, intr.Name, chosenPlan)
 	res, _ := a.Run(ctx, intr.RootRunID, agent.UserText(input))
 	var out agent.Message
 	if res != nil {
@@ -485,18 +485,18 @@ if intr, ok := errors.AsType[*agent.InterruptPending](err); ok {
 
 **Одобрение m-из-n**: когда одной подписи недостаточно, требуйте k подписанных решений от именованного набора из n одобряющих. Каждый одобряющий подписывает конкретный вызов (инструмент и аргументы); шлюз пропускает при k одобрениях, отклоняет, как только k становится недостижимым, а иначе приостанавливается с текущим подсчётом. Подделанное или ошибочное решение игнорируется, не блокируя его одобряющего:
 
-<!-- docsnip: setup ctx context.Context; model agent.Model; store *agent.Journal; pend *agent.ApprovalPending; type RefundArgs struct{}; doRefund func(context.Context, RefundArgs) (string, error); keysByApprover agent.ApproverVerifierFor; signer audit.Signer -->
+<!-- docsnip: setup ctx context.Context; model agent.Model; journal *agent.Journal; pend *agent.ApprovalPending; type RefundArgs struct{}; doRefund func(context.Context, RefundArgs) (string, error); keysByApprover agent.ApproverVerifierFor; signer audit.Signer -->
 ```go
 refund := agent.MustFunc("refund", "refund the order", doRefund,
 	agent.WithApproval(&agent.ApprovalPolicy{Need: 2, Approvers: []string{"ops", "finance", "risk"}}))
-a, err := agent.New(model, store, agent.WithTools(refund), agent.WithApproverVerifiers(keysByApprover))
+a, err := agent.New(model, journal, agent.WithTools(refund), agent.WithApproverVerifiers(keysByApprover))
 if err != nil {
 	panic(err)
 }
 
 // each approver, out of band, signs the paused call they were shown:
 sig, _ := signer.Sign(agent.ApprovalDecisionBytes(pend.Subject(), "finance", true))
-agent.SubmitDecision(ctx, store, agent.Decision{RunID: pend.RunID, ToolUseID: pend.ToolUseID,
+agent.SubmitDecision(ctx, journal, agent.Decision{RunID: pend.RunID, ToolUseID: pend.ToolUseID,
 	ApproverID: "finance", Approved: true, Alg: signer.Alg(), Signature: sig})
 ```
 
@@ -527,10 +527,10 @@ case errors.Is(err, agent.ErrStorage):      // durable-store I/O
 
 Две независимые цепочки `func(Handler) Handler` на двух важных границах: вызов модели (`WithMiddleware`) и каждый вызов инструмента (`WithToolMiddleware`). Добавленное первым = самое внешнее. Обе *мутирующие и коротко-замыкающие*: перепишите то, что входит, преобразуйте то, что выходит, или вернитесь, не вызывая `next`.
 
-<!-- docsnip: setup model agent.Model; store *agent.Journal; tools []agent.Tool; import oteltrace "go.opentelemetry.io/otel/trace"; tracer oteltrace.Tracer -->
+<!-- docsnip: setup model agent.Model; journal *agent.Journal; tools []agent.Tool; import oteltrace "go.opentelemetry.io/otel/trace"; tracer oteltrace.Tracer -->
 ```go
 var cost middleware.CostMeter
-a, err := agent.New(model, store,
+a, err := agent.New(model, journal,
 	agent.WithTools(tools...),
 	agent.WithTokenBudget(100_000), // per run, rebuilt from the journal on resume
 	agent.WithMiddleware(

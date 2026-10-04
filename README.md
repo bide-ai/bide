@@ -268,21 +268,21 @@ journal-backed runtime. See [docs/guides/flows.md](docs/guides/flows.md).
 
 The same order-triage flow, three ways. Plain Go is the default: write ordinary control flow, and name the steps the journal must make crash-safe.
 
-<!-- docsnip: setup ctx context.Context; store *agent.Journal; order Order; type Order struct{}; type Receipt struct{}; type Assessment struct{ Rush bool }; type Reservation struct{}; func classify(Order) (Assessment, error); func reserve(Assessment) (Reservation, error); func finalize(Reservation) (Receipt, error); func decline(Assessment) (Receipt, error) -->
+<!-- docsnip: setup ctx context.Context; journal *agent.Journal; order Order; type Order struct{}; type Receipt struct{}; type Assessment struct{ Rush bool }; type Reservation struct{}; func classify(Order) (Assessment, error); func reserve(Assessment) (Reservation, error); func finalize(Reservation) (Receipt, error); func decline(Assessment) (Receipt, error) -->
 ```go
 // classify, then branch: rush orders reserve-then-finalize, the rest decline.
-assess, _ := store.Step(ctx, "order-42", "classify",
+assess, _ := journal.Step(ctx, "order-42", "classify",
     func(ctx context.Context) (Assessment, error) { return classify(order) },
     agent.WithSafety(agent.Safety{ReadOnly: true})) // safe to re-run after a crash
 
 var receipt Receipt
 if assess.Rush {
-    res, _ := store.Step(ctx, "order-42", "reserve", // a side effect: at most once
+    res, _ := journal.Step(ctx, "order-42", "reserve", // a side effect: at most once
         func(ctx context.Context) (Reservation, error) { return reserve(assess) })
-    receipt, _ = store.Step(ctx, "order-42", "finalize",
+    receipt, _ = journal.Step(ctx, "order-42", "finalize",
         func(ctx context.Context) (Receipt, error) { return finalize(res) })
 } else {
-    receipt, _ = store.Step(ctx, "order-42", "decline",
+    receipt, _ = journal.Step(ctx, "order-42", "decline",
         func(ctx context.Context) (Receipt, error) { return decline(assess) })
 }
 ```
@@ -557,11 +557,11 @@ tool mode there for provider-agnostic output.
 Generation controls are provider-neutral and set once; each adapter maps them onto its wire
 format (and drops what it can't do, e.g. Anthropic has no `seed`):
 
-<!-- docsnip: setup model agent.Model; store *agent.Journal; tools []agent.Tool -->
+<!-- docsnip: setup model agent.Model; journal *agent.Journal; tools []agent.Tool -->
 ```go
 a, err := agent.New(
 	model,
-	store,
+	journal,
 	agent.WithTools(tools...),
 	agent.WithSampling(agent.Temperature(0), agent.MaxTokens(500), agent.TopP(0.9), agent.Seed(42)),
 )
@@ -631,9 +631,9 @@ outside the transcript, and runs its own turn.
 The durable journal already records every step of a run. The `audit` package commits to that
 history with a hash chain, so a run's execution is verifiable:
 
-<!-- docsnip: setup ctx context.Context; store *agent.Journal; runID string; priv ed25519.PrivateKey -->
+<!-- docsnip: setup ctx context.Context; journal *agent.Journal; runID string; priv ed25519.PrivateKey -->
 ```go
-head, _ := audit.Head(ctx, store, runID)                     // SHA-256 chain over the stored journal bytes
+head, _ := audit.Head(ctx, journal, runID)                     // SHA-256 chain over the stored journal bytes
 sig, _ := audit.Sign(head, audit.Ed25519Signer{Priv: priv}) // anchor it: sign / publish out-of-band
 ```
 
@@ -724,12 +724,12 @@ so both limits are rebuilt from the journal and hold across a crash and resume.
 Three flavors. **Approve/deny**: a tool marked `WithApproval(SingleApproval())` pauses *before* running; the
 human decision is a bool:
 
-<!-- docsnip: setup ctx context.Context; a *agent.Agent; store *agent.Journal; runID string; input string -->
+<!-- docsnip: setup ctx context.Context; a *agent.Agent; journal *agent.Journal; runID string; input string -->
 ```go
 _, err := a.Run(ctx, runID, agent.UserText(input))
 if pend, ok := errors.AsType[*agent.ApprovalPending](err); ok {
 	// ... get a human decision ...
-	agent.Approve(ctx, store, pend.RunID, pend.ToolUseID, true)
+	agent.Approve(ctx, journal, pend.RunID, pend.ToolUseID, true)
 	res, _ := a.Run(ctx, pend.RootRunID, agent.UserText(input))
 	var out agent.Message
 	if res != nil {
@@ -741,7 +741,7 @@ if pend, ok := errors.AsType[*agent.ApprovalPending](err); ok {
 **Interrupt/resume**: a tool pauses *at an arbitrary point* and resumes with a *typed* value
 (generalizing the bool). Call `agent.Interrupt[T]` inside a retry-safe tool:
 
-<!-- docsnip: setup ctx context.Context; a *agent.Agent; store *agent.Journal; runID string; input string; type Options struct{}; type Plan struct{}; chosenPlan Plan -->
+<!-- docsnip: setup ctx context.Context; a *agent.Agent; journal *agent.Journal; runID string; input string; type Options struct{}; type Plan struct{}; chosenPlan Plan -->
 ```go
 tool := agent.MustFunc("choose_plan", "pick a plan", func(ctx context.Context, in Options) (Plan, error) {
 		pick, err := agent.Interrupt[Plan](ctx, "plan", in) // pauses the run; in is shown to the human
@@ -754,7 +754,7 @@ tool := agent.MustFunc("choose_plan", "pick a plan", func(ctx context.Context, i
 _, err := a.Run(ctx, runID, agent.UserText(input))
 if intr, ok := errors.AsType[*agent.InterruptPending](err); ok {
 	// ... show intr.Prompt, get a typed answer ...
-	store.AnswerInterrupt(ctx, intr.RunID, intr.Name, chosenPlan)
+	journal.AnswerInterrupt(ctx, intr.RunID, intr.Name, chosenPlan)
 	res, _ := a.Run(ctx, intr.RootRunID, agent.UserText(input))
 	var out agent.Message
 	if res != nil {
@@ -772,18 +772,18 @@ of n approvers. Each approver signs the exact call (tool and arguments); the gat
 approvals, denies once k is unreachable, and otherwise pauses with the running tally. A forged or
 mistaken decision is ignored without locking its approver out:
 
-<!-- docsnip: setup ctx context.Context; model agent.Model; store *agent.Journal; pend *agent.ApprovalPending; type RefundArgs struct{}; doRefund func(context.Context, RefundArgs) (string, error); keysByApprover agent.ApproverVerifierFor; signer audit.Signer -->
+<!-- docsnip: setup ctx context.Context; model agent.Model; journal *agent.Journal; pend *agent.ApprovalPending; type RefundArgs struct{}; doRefund func(context.Context, RefundArgs) (string, error); keysByApprover agent.ApproverVerifierFor; signer audit.Signer -->
 ```go
 refund := agent.MustFunc("refund", "refund the order", doRefund,
 	agent.WithApproval(&agent.ApprovalPolicy{Need: 2, Approvers: []string{"ops", "finance", "risk"}}))
-a, err := agent.New(model, store, agent.WithTools(refund), agent.WithApproverVerifiers(keysByApprover))
+a, err := agent.New(model, journal, agent.WithTools(refund), agent.WithApproverVerifiers(keysByApprover))
 if err != nil {
 	panic(err)
 }
 
 // each approver, out of band, signs the paused call they were shown:
 sig, _ := signer.Sign(agent.ApprovalDecisionBytes(pend.Subject(), "finance", true))
-agent.SubmitDecision(ctx, store, agent.Decision{RunID: pend.RunID, ToolUseID: pend.ToolUseID,
+agent.SubmitDecision(ctx, journal, agent.Decision{RunID: pend.RunID, ToolUseID: pend.ToolUseID,
 	ApproverID: "finance", Approved: true, Alg: signer.Alg(), Signature: sig})
 ```
 
@@ -851,10 +851,10 @@ call (`WithMiddleware`) and each tool call (`WithToolMiddleware`). First added =
 short-circuiting*: rewrite what goes in, transform what comes out, or return without calling
 `next`.
 
-<!-- docsnip: setup model agent.Model; store *agent.Journal; tools []agent.Tool; import oteltrace "go.opentelemetry.io/otel/trace"; tracer oteltrace.Tracer -->
+<!-- docsnip: setup model agent.Model; journal *agent.Journal; tools []agent.Tool; import oteltrace "go.opentelemetry.io/otel/trace"; tracer oteltrace.Tracer -->
 ```go
 var cost middleware.CostMeter
-a, err := agent.New(model, store,
+a, err := agent.New(model, journal,
 	agent.WithTools(tools...),
 	agent.WithTokenBudget(100_000), // per run, rebuilt from the journal on resume
 	agent.WithMiddleware(
