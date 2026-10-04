@@ -175,7 +175,8 @@ func checkWrapper(t Tool, s ToolSpec) error {
 	return fmt.Errorf("agent: tool %q unwraps more than 64 times (a cycle?): %w", s.Name, ErrConfig)
 }
 
-// init shares checkWrapper with plan (see toolhook.CheckTool), so a flow refuses what New refuses,
+// init shares checkWrapper and checkOldMethods with plan (see toolhook.CheckTool), so a flow refuses
+// what New refuses,
 // and lets audit's delegation bind its sub-run's identity (toolhook.WithIdentity).
 func init() {
 	toolhook.CheckTool = func(t any) error {
@@ -183,7 +184,11 @@ func init() {
 		if !ok {
 			return fmt.Errorf("agent: %T is not a Tool: %w", t, ErrConfig)
 		}
-		return checkWrapper(tool, specOf(tool))
+		s := specOf(tool)
+		if err := checkWrapper(tool, s); err != nil {
+			return err
+		}
+		return checkOldMethods(tool, s)
 	}
 	toolhook.WithIdentity = func(ctx context.Context, actor, onBehalfOf, authorityRef string) context.Context {
 		return contextWithIdentity(ctx, Identity{Actor: actor, OnBehalfOf: onBehalfOf, AuthorityRef: authorityRef})

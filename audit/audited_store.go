@@ -82,10 +82,12 @@ const journalHeader = "@journal"
 // anchored heads never stop at its header): also after an insert that found the entry stored
 // (another writer's, or this writer's retry of a write whose first attempt committed but
 // reported an error, A3), and after one that failed, which may have committed all the same. The
-// anchoring never changes what Insert returns.
+// anchoring never changes what Insert returns. Under a context that is done it does not anchor
+// (the read and the publish would fail with the context, and OnError would report only that): the
+// run's next write, or Reanchor, covers what the call stored.
 func (a *AuditedStore) Insert(ctx context.Context, runID, name string, data []byte) (agent.Entry, bool, error) {
 	e, inserted, err := a.inner.Insert(ctx, runID, name, data)
-	if name != journalHeader {
+	if name != journalHeader && ctx.Err() == nil {
 		if aerr := a.anchorIfGrown(ctx, runID); aerr != nil && a.onErr != nil {
 			a.onErr(runID, aerr)
 		}
@@ -96,7 +98,10 @@ func (a *AuditedStore) Insert(ctx context.Context, runID, name string, data []by
 // Reanchor anchors runID's journal now, if it holds records no published head covers. A failed
 // publish is covered by the run's next write, but a run's last write has none: OnError is the
 // signal to call Reanchor for that run (once the anchor is reachable again), out of band. It
-// returns the anchoring error, and publishes nothing when the anchored head is current.
+// returns the anchoring error, and publishes nothing when the anchored head is current as far as
+// this AuditedStore knows: it remembers the heads it published, so another AuditedStore over the
+// same store (another process, or after a restart) publishes the current head again, which a
+// monitor reads as the same size, not a change.
 func (a *AuditedStore) Reanchor(ctx context.Context, runID string) error {
 	return a.anchorIfGrown(ctx, runID)
 }

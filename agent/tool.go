@@ -5,6 +5,7 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"reflect"
 	"slices"
 	"strings"
 	"time"
@@ -65,32 +66,91 @@ func specOf(t Tool) ToolSpec {
 	return s
 }
 
-// checkOldMethods refuses a tool with a method of the Tool interface's old method set (Name()
-// string, Description() string, ArgsSchema() json.RawMessage, Safety() Safety) whose value is not
-// its Spec's. The agent reads only Spec, so such a method is an override written for the old
-// interface that no longer overrides anything: typically a decorator that embeds the tool it
-// decorates, whose Spec is the embedded tool's, and whose own Safety() (a side effect it adds)
-// would be ignored, so a resume would run it again. A method that agrees with Spec changes nothing
-// and is accepted.
+// checkOldMethods refuses a tool with a method of the Tool interface's old method set (Name,
+// Description, ArgsSchema, Safety) whose value is not its Spec's. The agent reads only Spec, so
+// such a method is an override written for the old interface that no longer overrides anything:
+// typically a decorator that embeds the tool it decorates, whose Spec is the embedded tool's, and
+// whose own Safety() (a side effect it adds) would be ignored, so a resume would run it again.
+//
+// It looks at the methods a pointer to the tool's value has (a pointer-receiver Safety counts when
+// the tool is registered by value: it was written to override), and refuses:
+//   - such a method that returns another value than Spec holds (ArgsSchema is compared as JSON, so
+//     a reformatted schema agrees);
+//   - such a method with another signature (Safety() returning another type);
+//   - such a method that an embedded field declares but the tool's method set lacks (two embedded
+//     fields declare it, so neither is promoted, and the one meant to override is lost).
+//
+// A method that agrees with Spec changes nothing and is accepted. A method named like one of them
+// that means something else (a display Name() that is not the tool's name) is refused all the
+// same: rename it, or make Spec say the same.
 func checkOldMethods(t Tool, s ToolSpec) error {
+	v := reflect.ValueOf(t)
+	pv := v
+	if v.Kind() != reflect.Pointer {
+		pv = reflect.New(v.Type())
+		pv.Elem().Set(v)
+	}
 	var dead []string
-	if m, ok := t.(interface{ Name() string }); ok && m.Name() != s.Name {
-		dead = append(dead, "Name")
-	}
-	if m, ok := t.(interface{ Description() string }); ok && m.Description() != s.Description {
-		dead = append(dead, "Description")
-	}
-	if m, ok := t.(interface{ ArgsSchema() json.RawMessage }); ok && !bytes.Equal(m.ArgsSchema(), s.Input) {
-		dead = append(dead, "ArgsSchema")
-	}
-	if m, ok := t.(interface{ Safety() Safety }); ok && m.Safety() != s.Safety {
-		dead = append(dead, "Safety")
+	for _, name := range []string{"Name", "Description", "ArgsSchema", "Safety"} {
+		m := pv.MethodByName(name)
+		if !m.IsValid() {
+			if embeddedDeclares(pv.Type().Elem(), name, 0) {
+				dead = append(dead, name+" (declared by more than one embedded field, so not promoted)")
+			}
+			continue
+		}
+		if m.Type().NumIn() != 0 || m.Type().NumOut() != 1 {
+			dead = append(dead, name+" (another signature)")
+			continue
+		}
+		out := m.Call(nil)[0]
+		agree := false
+		switch name {
+		case "Name", "Description":
+			want := s.Name
+			if name == "Description" {
+				want = s.Description
+			}
+			agree = out.Kind() == reflect.String && out.String() == want
+		case "ArgsSchema":
+			b, ok := out.Interface().(json.RawMessage)
+			agree = ok && sameJSON(b, s.Input)
+		case "Safety":
+			got, ok := out.Interface().(Safety)
+			agree = ok && got == s.Safety
+		}
+		if !agree {
+			dead = append(dead, name)
+		}
 	}
 	if len(dead) > 0 {
-		return fmt.Errorf("agent: tool %q (%T): %s disagrees with its Spec, which is all the agent reads: set the value in Spec (a decorator: s := d.Tool.Spec(), then the fields it overrides): %w",
+		return fmt.Errorf("agent: tool %q (%T): %s disagrees with its Spec, which is all the agent reads: set the value in Spec (a decorator: s := d.Tool.Spec(), then the fields it overrides), or rename a method that means something else: %w",
 			s.Name, t, strings.Join(dead, ", "), ErrConfig)
 	}
 	return nil
+}
+
+// embeddedDeclares reports whether a field embedded in t (a struct), at any depth, has a method
+// name. Interface fields (the embedded Tool) are not searched: the Tool interface has none of the
+// old methods.
+func embeddedDeclares(t reflect.Type, name string, depth int) bool {
+	if t.Kind() != reflect.Struct || depth > 8 {
+		return false
+	}
+	for i := range t.NumField() {
+		f := t.Field(i)
+		if !f.Anonymous || f.Type.Kind() == reflect.Interface {
+			continue
+		}
+		ft := f.Type
+		if ft.Kind() != reflect.Pointer {
+			ft = reflect.PointerTo(ft)
+		}
+		if _, ok := ft.MethodByName(name); ok || embeddedDeclares(ft.Elem(), name, depth+1) {
+			return true
+		}
+	}
+	return false
 }
 
 // Safety declares how a tool call may be retried: when a run resumes after a crash and the call's

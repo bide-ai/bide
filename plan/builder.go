@@ -406,8 +406,9 @@ func callTool(ctx context.Context, t agent.Tool, timeout time.Duration, args jso
 	return raw, err
 }
 
-// checkTool refuses a tool agent.New would refuse for how it wraps another: a Compensator on its
-// Unwrap chain, or a timeout over a sub-agent (the agent's own check, shared through toolhook).
+// checkTool refuses a tool agent.New would refuse for how it wraps another (a Compensator on its
+// Unwrap chain, a timeout over a sub-agent) or for an old Tool method that disagrees with its spec
+// (the agent's own checks, shared through toolhook).
 func checkTool(t agent.Tool) error {
 	if toolhook.CheckTool == nil { // set by the agent package's init, which plan imports
 		return nil

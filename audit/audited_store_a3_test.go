@@ -11,6 +11,7 @@ import (
 	"github.com/bide-ai/bide/agent"
 	"github.com/bide-ai/bide/agent/agenttest"
 	"github.com/bide-ai/bide/audit"
+	"github.com/bide-ai/bide/internal/journaltest"
 )
 
 // a3Store commits an Insert of the names in failAfter, then reports an error (A3: an errored
@@ -174,5 +175,29 @@ func TestAuditedStore_FailedFirstRecordAnchorsNoHeaderOnlyHead(t *testing.T) {
 		if e.STH.Size < 2 {
 			t.Fatalf("a head of size %d was anchored", e.STH.Size)
 		}
+	}
+}
+
+// An insert under a context that is done anchors nothing and reports nothing to OnError (the
+// anchoring would fail with the context); the next write covers what it stored.
+func TestAuditedStore_DoneContextDoesNotAnchor(t *testing.T) {
+	_, priv, _ := ed25519.GenerateKey(nil)
+	log := audit.NewMemAnchorLog()
+	var errs int
+	as, err := audit.NewAuditedStore(agent.NewMemStore(), edS(priv), log)
+	if err != nil {
+		t.Fatal(err)
+	}
+	as.OnError(func(string, error) { errs++ })
+	j := agenttest.MustJournal(as)
+	ctx, cancel := context.WithCancel(context.Background())
+	if _, err := journaltest.Put(context.Background(), j, "r", "a", agent.Record{Kind: agent.StepValue}); err != nil {
+		t.Fatal(err)
+	}
+	n := len(log.Entries())
+	cancel()
+	_, _, _ = as.Insert(ctx, "r", "b", nil)
+	if errs != 0 || len(log.Entries()) != n {
+		t.Fatalf("a done context: %d OnError calls, %d heads (was %d); want none and none", errs, len(log.Entries()), n)
 	}
 }
