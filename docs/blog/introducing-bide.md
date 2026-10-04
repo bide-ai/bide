@@ -21,8 +21,7 @@ turn and every tool result is a named record. When a process dies and you call `
 same run ID and input, the run replays its journal and continues where it stopped, without redoing the
 work it already recorded.
 
-The core promise is about side effects. A tool that changes the world is, by default, a side
-effect, and bide runs it **at most once**. Before calling it, the run writes an attempt marker. On
+A tool that changes the world is, by default, a side effect, and bide runs it **at most once**. Before calling it, the run writes an attempt marker. On
 resume there are three cases:
 
 1. Nothing was recorded: the call never started, so it runs.
@@ -31,12 +30,12 @@ resume there are three cases:
    not guess. The run halts with `OutcomeUnknown` and waits for a person or a reconciler to record
    what happened.
 
-The third case is the one that matters. The guarantee is at-most-once, not exactly-once: a crash in
+The guarantee is at-most-once, not exactly-once: a crash in
 that window can leave an effect fired once but unconfirmed, and the run stops rather than pretend it
 knows. A tool you declare `ReadOnly` or `Idempotent` skips the marker and is retried instead, so
 the halt is reserved for effects that are neither.
 
-The guarantee has conditions, and the [guarantee page](../GUARANTEE.md) states them: the store must
+The [guarantee page](../GUARANTEE.md) states its conditions: the store must
 survive the crash (SQLite or Postgres; the in-memory store is for development), its writes must be
 atomic, and each tool must declare its safety accurately. It promises safety, not liveness: a run
 can still end up halted and need a decision.
@@ -59,6 +58,7 @@ package main
 import (
 	"context"
 	"fmt"
+	"log"
 	"os"
 
 	"github.com/bide-ai/bide/agent"
@@ -70,6 +70,7 @@ type WeatherArgs struct {
 }
 
 func main() {
+	// Any OpenAI-compatible endpoint; get a key at openrouter.ai, or see "No API key?" below.
 	model := openai.New(os.Getenv("OPENROUTER_API_KEY"),
 		openai.WithBaseURL("https://openrouter.ai/api/v1"),
 		openai.WithModel("openai/gpt-4o-mini"),
@@ -81,26 +82,37 @@ func main() {
 
 	journal, err := agent.NewJournal(agent.NewMemStore())
 	if err != nil {
-		panic(err)
+		log.Fatal(err)
 	}
 	a, err := agent.New(model, journal, agent.WithTools(weather))
 	if err != nil {
-		panic(err)
+		log.Fatal(err)
 	}
 	out, err := a.Run(context.Background(), "run-1", agent.UserText("Weather in SF?"))
 	if err != nil {
-		panic(err)
+		log.Fatal(err)
 	}
 	fmt.Println(out.Message.Text())
+
+	// The same run ID again: the run is finished, so its journaled answer comes back, and the
+	// model is not called.
+	again, err := a.Run(context.Background(), "run-1", agent.UserText("Weather in SF?"))
+	if err != nil {
+		log.Fatal(err)
+	}
+	fmt.Println(again.Message.Text() == out.Message.Text()) // true
 }
 ```
 
-`NewMemStore` keeps the journal in memory. To survive a restart, pass the SQLite store
+It prints the model's answer, then `true`: the second `Run` of `run-1` read the answer back from
+the journal instead of calling the model. Without a key, the guide's
+[agenttest section](../getting-started.md#no-api-key-use-agenttest) swaps in a scripted model.
+`NewMemStore` keeps the journal in memory; to survive a restart, pass the SQLite store
 (`store/sqlite`) or the Postgres store (`store/postgres`) to `NewJournal` instead.
 
 ## One crash, end to end
 
-One run we did by hand used an agent with two tools: `charge_card`, a side effect that appends a
+One run we did by hand had two tools: `charge_card`, a side effect that appends a
 line to a file, and `write_report`, a slow tool that overwrites a marker file, declared
 `ReadOnly` because re-running it is harmless. The model was
 `openai/gpt-4o-mini` through OpenRouter, and the journal was on `store/sqlite`. While
@@ -110,9 +122,9 @@ charge, already recorded, did not, and the run finished. The charge file held on
 
 That is one schedule, not a proof. Had the kill landed between the attempt marker and the journaled
 result, the resumed run would have halted with `OutcomeUnknown` instead of finishing, as
-intended. Without an API key, `examples/recover` runs offline with a
-scripted model: it resumes a finished run without firing its tool again, then halts on a lost
-outcome and resolves it with `ResolveHalt`:
+intended. `examples/recover` shows both sides offline, with a scripted model:
+it resumes without firing its tool again, then halts on a lost outcome and resolves it with
+`ResolveHalt`:
 
 ```
 go run github.com/bide-ai/bide/examples/recover@latest
@@ -178,7 +190,6 @@ waker, and recovery needs a `Resumer` you supply. The full list is on
 
 - [Getting started](../getting-started.md): install, the first agent, examples.
 - [Concepts](../CONCEPTS.md) and [the guarantee](../GUARANTEE.md): the vocabulary and the exact promise.
-- [Known limitations](../KNOWN-LIMITATIONS.md): where the guarantees stop.
 - Repository: [github.com/bide-ai/bide](https://github.com/bide-ai/bide) (Apache-2.0).
 - Install: `go get github.com/bide-ai/bide/agent@latest`, and for the auditor CLI,
   `brew install bide-ai/tap/bide-audit`.
