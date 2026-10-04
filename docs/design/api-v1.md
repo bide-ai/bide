@@ -1133,7 +1133,7 @@ Within a wave, no two PRs edit the same file. Sizes:
 
 **P15: the consolidated mechanical rewrite and shim removal (XL).**
 - **Files:** every call site in every module, plus deletion of the shims and transitional names.
-- **Script:** `internal/tools/migrate` (go/ast, committed; it migrated bide itself and is not offered to users, maintainer decision 2026-10-03: the CHANGELOG's list is the upgrade path), which does all of the following:
+- **Script:** `internal/tools/migrate` (go/ast; it migrated bide itself, was not offered to users, and was deleted after P15 merged, maintainer decision 2026-10-03: the CHANGELOG's list is the upgrade path), which did all of the following:
   - `Durable` becomes `*Journal`, and store construction becomes `NewJournal(...)`;
   - `Build` becomes `New`, and builder chains become options;
   - `RunMessage` becomes `Run`, the old `Run` and `RunSaga` calls become `Run(..., UserText(x))`/`WithSaga()`, and results are rewritten;

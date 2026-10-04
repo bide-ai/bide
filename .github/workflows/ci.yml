@@ -212,8 +212,7 @@ jobs:
       - name: no removed API names
         # No name the pre-1.0 redesign removed (docs/design/api-v1.md, section 10.2: RunSaga,
         # ResolveHaltRef, agent.Durable, the pause aliases, ...) appears in Go code, godoc or docs,
-        # outside the migrate tool and the historical records (CHANGELOG.md, docs/releases,
-        # docs/design). -godoc checks `go doc -all` of every public package too.
+        # outside the historical records (CHANGELOG.md, docs/releases, docs/design). -godoc checks `go doc -all` of every public package too.
         run: go run ./internal/tools/oldnames -godoc
       - name: govulncheck (all modules)
         if: needs.changes.outputs.code != 'false'

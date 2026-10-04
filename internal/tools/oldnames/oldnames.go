@@ -75,9 +75,8 @@ var patterns = []pattern{
 var transitional = pattern{regexp.MustCompile(`(?i)\btransitional\b`), "remove the comment, or name the current API", false}
 
 // excluded are the paths (relative to the root, slash-separated) whose files may name the
-// removed API: the migrate tool, this command, and the historical records.
+// removed API: this command and the historical records.
 var excluded = []string{
-	"internal/tools/migrate/",
 	"internal/tools/oldnames/",
 	"CHANGELOG.md",
 	"docs/releases/",
