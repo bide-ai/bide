@@ -50,10 +50,10 @@ func TestModelVisibleJSON_NotHTMLEscaped(t *testing.T) {
 			HTML string `json:"html"`
 		}
 		m := &lastToolResultModel{script: script()}
-		tool := Func("t", "", Safety{ReadOnly: true}, func(context.Context, struct{}) (out, error) {
+		tool := MustFunc("t", "", func(context.Context, struct{}) (out, error) {
 			return out{HTML: "<b>a & b</b>"}, nil
-		})
-		if _, err := New(m, NewMemStore(), tool).Run(ctx, "r", "go"); err != nil {
+		}, WithSafety(Safety{ReadOnly: true}))
+		if _, err := mustNew(m, memJournal(), WithTools(tool)).Run(ctx, "r", UserText("go")); err != nil {
 			t.Fatal(err)
 		}
 		if got := m.results(); len(got) != 1 || got[0] != `{"html":"<b>a & b</b>"}` {
@@ -63,10 +63,10 @@ func TestModelVisibleJSON_NotHTMLEscaped(t *testing.T) {
 
 	t.Run("tool error text", func(t *testing.T) {
 		m := &lastToolResultModel{script: script()}
-		tool := Func("t", "", Safety{ReadOnly: true}, func(context.Context, struct{}) (string, error) {
+		tool := MustFunc("t", "", func(context.Context, struct{}) (string, error) {
 			return "", errors.New("bad <input> & more")
-		})
-		if _, err := New(m, NewMemStore(), tool).Run(ctx, "r", "go"); err != nil {
+		}, WithSafety(Safety{ReadOnly: true}))
+		if _, err := mustNew(m, memJournal(), WithTools(tool)).Run(ctx, "r", UserText("go")); err != nil {
 			t.Fatal(err)
 		}
 		if got := m.results(); len(got) != 1 || got[0] != `"bad <input> & more"` {
@@ -76,8 +76,8 @@ func TestModelVisibleJSON_NotHTMLEscaped(t *testing.T) {
 
 	t.Run("sub-agent answer", func(t *testing.T) {
 		m := &lastToolResultModel{script: NewScriptedModel(ToolTurn("c1", "t", `{"task":"go"}`), TextTurn("done"))}
-		child := New(NewScriptedModel(TextTurn("<ok> & done")), NewMemStore())
-		if _, err := New(m, NewMemStore(), SubAgent("t", "", child)).Run(ctx, "r", "go"); err != nil {
+		child := mustNew(NewScriptedModel(TextTurn("<ok> & done")), memJournal())
+		if _, err := mustNew(m, memJournal(), WithTools(MustSubAgent("t", "", child))).Run(ctx, "r", UserText("go")); err != nil {
 			t.Fatal(err)
 		}
 		if got := m.results(); len(got) != 1 || got[0] != `"<ok> & done"` {
@@ -86,24 +86,24 @@ func TestModelVisibleJSON_NotHTMLEscaped(t *testing.T) {
 	})
 
 	t.Run("resolved halt", func(t *testing.T) {
-		store := NewMemStore()
+		store := memJournal()
 		m := &lastToolResultModel{script: script()}
-		tool := Func("t", "", Safety{}, func(context.Context, struct{}) (string, error) { return "", nil })
-		if _, err := store.Do(ctx, "r", toolAttemptStep("c1"), func(context.Context) (Record, error) {
+		tool := MustFunc("t", "", func(context.Context, struct{}) (string, error) { return "", nil })
+		if _, err := store.do(ctx, "r", toolAttemptStep("c1"), func(context.Context) (Record, error) {
 			return Record{Kind: StepAttempt, ToolUseID: "c1"}, nil
 		}); err != nil {
 			t.Fatal(err)
 		}
-		if _, err := store.Do(ctx, "r", "@llm/0", func(context.Context) (Record, error) {
+		if _, err := store.do(ctx, "r", "@llm/0", func(context.Context) (Record, error) {
 			msg := Message{Role: RoleAssistant, Parts: []Part{ToolUse{ID: "c1", Name: "t", Args: json.RawMessage(`{}`)}}}
 			return Record{Kind: StepModel, Message: &msg}, nil
 		}); err != nil {
 			t.Fatal(err)
 		}
-		if err := ResolveHalt(ctx, store, "r", "c1", "charged <id=7> & sent", false); err != nil {
+		if err := ResolveHalt(ctx, store, HaltRef{RunID: "r", Op: OpRef{Kind: OpTool, ID: "c1"}, Cause: HaltCrashed}, Outcome{Result: "charged <id=7> & sent", IsError: false}); err != nil {
 			t.Fatal(err)
 		}
-		if _, err := New(m, store, tool).Run(ctx, "r", "go"); err != nil {
+		if _, err := mustNew(m, store, WithTools(tool)).Run(ctx, "r", UserText("go")); err != nil {
 			t.Fatal(err)
 		}
 		if got := m.results(); len(got) != 1 || got[0] != `"charged <id=7> & sent"` {

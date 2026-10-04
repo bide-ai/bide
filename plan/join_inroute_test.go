@@ -35,20 +35,20 @@ func TestBuild_RefusesAnExtraRouteIntoAJoin(t *testing.T) {
 			var err error
 			switch n {
 			case "s":
-				err = RegisterStep(r, n, func(context.Context, int) (string, error) { return "", nil })
+				err = r.RegisterStep(n, func(context.Context, int) (string, error) { return "", nil })
 			case "t":
-				err = RegisterStep(r, n, func(context.Context, string) (int, error) { return 0, nil })
+				err = r.RegisterStep(n, func(context.Context, string) (int, error) { return 0, nil })
 			default:
-				err = RegisterStep(r, n, id)
+				err = r.RegisterStep(n, id)
 			}
 			if err != nil {
 				t.Fatal(err)
 			}
 		}
-		if err := RegisterJoin2(r, "sum", sum); err != nil {
+		if err := r.RegisterJoin2("sum", sum); err != nil {
 			t.Fatal(err)
 		}
-		if err := RegisterPredicate(r, "neg", func(n int) bool { return n < 0 }); err != nil {
+		if err := r.RegisterPredicate("neg", func(n int) bool { return n < 0 }); err != nil {
 			t.Fatal(err)
 		}
 		return r

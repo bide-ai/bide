@@ -12,8 +12,10 @@ import (
 	"testing"
 
 	"github.com/bide-ai/bide/agent"
+	"github.com/bide-ai/bide/agent/agenttest"
 	"github.com/bide-ai/bide/audit"
 	"github.com/bide-ai/bide/govern"
+	"github.com/bide-ai/bide/internal/journaltest"
 	gsm "github.com/blackwell-systems/gsm"
 )
 
@@ -40,7 +42,7 @@ func checkerVerbs(t *testing.T, dir string) map[string][]string {
 	policyBytes, _ := r.PolicyBytes()
 	certBytes, _ := govern.CertifyConvergence(rep, digest).Marshal()
 
-	store := agent.NewMemStore()
+	store := agenttest.MemJournal()
 	const runID = "run1"
 	if _, err := audit.RecordPolicy(ctx, store, runID, policyBytes, digest); err != nil {
 		t.Fatal(err)
@@ -48,7 +50,7 @@ func checkerVerbs(t *testing.T, dir string) map[string][]string {
 	if _, err := audit.RecordConvergence(ctx, store, runID, certBytes, digest); err != nil {
 		t.Fatal(err)
 	}
-	if _, err := store.Do(ctx, runID, "action", func(context.Context) (agent.Record, error) {
+	if _, err := journaltest.Do(ctx, store, runID, "action", func(context.Context) (agent.Record, error) {
 		return agent.Record{Kind: agent.StepToolResult, ToolUseID: "call_1",
 			Result: []byte(`{"event":"approve","applied":true,"policy_digest":"` + digest + `","state_digest":"abc"}`)}, nil
 	}); err != nil {

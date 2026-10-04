@@ -3,7 +3,7 @@
 // only under k-of-n agreement, and the whole vote is in the audit trail.
 //
 // The pieces are all seams the SDK already has:
-//   - fan-out: govern.Quorum runs the voters with agent.Parallel, so each vote is a durable Step;
+//   - fan-out: govern.Quorum runs the voters with agent.Journal.Parallel, so each vote is a durable Step;
 //   - tally: plain Go, counting agreement on the normalized decision;
 //   - govern: a gsm invariant makes the k-of-n gate provable (verified over every possible count);
 //   - commit: govern.EventTool with a PolicyDigest journals the commit, binding it to the policy and state;
@@ -25,9 +25,12 @@ import (
 	"crypto/ed25519"
 	"crypto/rand"
 	"encoding/json"
+	"errors"
 	"fmt"
+	"log"
 
 	"github.com/bide-ai/bide/agent"
+	"github.com/bide-ai/bide/agent/agenttest"
 	"github.com/bide-ai/bide/audit"
 	"github.com/bide-ai/bide/govern"
 	gsm "github.com/blackwell-systems/gsm"
@@ -102,7 +105,10 @@ func buildPolicy() (*gsm.Machine, gsm.Var, gsm.Var, string) {
 // runAgree: three voters, two agree on approve. Quorum is met, so the commit event fires under the
 // attested tool and the decision is committed. The vote, the tally, and the commit are all provable.
 func runAgree(ctx context.Context, m *gsm.Machine, votesFor, committed gsm.Var, policyDigest string) {
-	store := agent.NewMemStore()
+	store, err := agent.NewJournal(agent.NewMemStore())
+	if err != nil {
+		log.Fatal(err)
+	}
 	const runID = "quorum/agree"
 
 	voters := []govern.Voter{
@@ -120,17 +126,19 @@ func runAgree(ctx context.Context, m *gsm.Machine, votesFor, committed gsm.Var, 
 	// the outcome to what the policy admits: with votes_for >= k the guard lets commit through.
 	gov := govern.New(m, m.NewState().SetInt(votesFor, res.VotesFor))
 	commit := govern.EventTool(gov, govern.EventToolConfig{Name: "commit", Description: "commit the quorum decision", Event: "commit", PolicyDigest: policyDigest})
-	leaf, err := commit.Call(ctx, []byte(`{}`))
-	if err != nil {
-		panic(err)
-	}
 
-	// Journal the commit leaf as the run's provable action.
-	if _, err := store.Do(ctx, runID, "commit/leaf", func(context.Context) (agent.Record, error) {
-		return agent.Record{Kind: agent.StepToolResult, ToolUseID: "commit/leaf", Result: leaf}, nil
-	}); err != nil {
+	// The agent commits through the attested tool in the same run, so the commit leaf is journaled
+	// next to the votes as the run's provable action. Its model is scripted (no LLM): it calls
+	// commit, then answers.
+	model := agenttest.NewScriptedModel(agenttest.ToolTurn("commit/leaf", "commit", `{}`), agenttest.TextTurn("committed"))
+	a, err := agent.New(model, store, agent.WithTools(commit))
+	if err != nil {
+		log.Fatal(err)
+	}
+	if _, err := a.Run(ctx, runID, agent.UserText("commit the quorum decision")); err != nil {
 		panic(err)
 	}
+	leaf := toolResult(ctx, store, runID, "commit/leaf")
 	var m2 map[string]any
 	_ = json.Unmarshal(leaf, &m2)
 	fmt.Printf("committed=%v (quorum met); leaf binds policy=%v state=%v\n",
@@ -143,7 +151,10 @@ func runAgree(ctx context.Context, m *gsm.Machine, votesFor, committed gsm.Var, 
 // and the invariant forces the decision to escalate. The escalate path routes to human approval
 // (agent.WithApproval), which pauses the run durably; nothing commits.
 func runDisagree(ctx context.Context, m *gsm.Machine, votesFor, committed gsm.Var, policyDigest string) {
-	store := agent.NewMemStore()
+	store, err := agent.NewJournal(agent.NewMemStore())
+	if err != nil {
+		log.Fatal(err)
+	}
 	const runID = "quorum/disagree"
 
 	voters := []govern.Voter{
@@ -158,48 +169,44 @@ func runDisagree(ctx context.Context, m *gsm.Machine, votesFor, committed gsm.Va
 	printTally(res)
 
 	// No quorum: seed the (sub-k) count. The commit guard is false, so commit is a no-op, and the
-	// invariant forces the decision to escalate. The commit stays attested and journaled either
-	// way, so the audit trail records that the action was gated out, not silently dropped.
+	// invariant forces the decision to escalate.
 	gov := govern.New(m, m.NewState().SetInt(votesFor, res.VotesFor))
 	commit := govern.EventTool(gov, govern.EventToolConfig{Name: "commit", Description: "commit the quorum decision", Event: "commit", PolicyDigest: policyDigest})
-	if _, err := commit.Call(ctx, []byte(`{}`)); err != nil {
-		panic(err)
-	}
-	didCommit := gov.State().GetBool(committed)
-	fmt.Printf("committed=%v (quorum NOT met); the guard made commit a no-op\n", didCommit)
 
 	// The disagreement policy is explicit: escalate to a human under dual control. The escalate
 	// tool has an approval gate, so calling it through the agent loop pauses the run durably rather
-	// than acting. Here we show the pause directly: no recorded approval yet, so the run halts.
-	escalate := agent.Func("escalate", "route the ungoverned decision to a human",
-		agent.Safety{},
+	// than acting.
+	escalate := agent.MustFunc("escalate", "route the ungoverned decision to a human",
 		func(context.Context, struct{}) (map[string]any, error) {
 			return map[string]any{"escalated": true}, nil
 		}, agent.WithApproval(agent.SingleApproval()))
-	esc := runWithApprovalGate(ctx, store, runID, escalate)
-	fmt.Printf("escalate path: %s\n", esc)
+
+	// The agent's (scripted, LLM-free) model tries the commit, then escalates. The commit is
+	// attested and journaled either way, so the audit trail records that the action was gated out,
+	// not silently dropped; the escalate call has no recorded approval, so the run pauses.
+	model := agenttest.NewScriptedModel(
+		agenttest.ToolTurn("commit/1", "commit", `{}`),
+		agenttest.ToolTurn("escalate/1", "escalate", `{}`),
+		agenttest.TextTurn("escalated"),
+	)
+	a, err := agent.New(model, store, agent.WithTools(commit, escalate))
+	if err != nil {
+		log.Fatal(err)
+	}
+	_, runErr := a.Run(ctx, runID, agent.UserText("commit the quorum decision"))
+
+	didCommit := gov.State().GetBool(committed)
+	fmt.Printf("committed=%v (quorum NOT met); the guard made commit a no-op\n", didCommit)
+
+	// A paused run returns *agent.ApprovalPending; it resumes only after agent.Approve records a
+	// decision.
+	var pending *agent.ApprovalPending
+	if !errors.As(runErr, &pending) {
+		panic(fmt.Sprintf("expected the escalate call to pause for approval, got %v", runErr))
+	}
+	fmt.Printf("escalate path: paused for human approval under dual control: %s\n", pending.Error())
 
 	proveRun(ctx, store, runID, quorumSteps(voters), "")
-}
-
-// runWithApprovalGate models the HITL seam: a tool with an approval gate does not execute until a
-// human decision is recorded. With none recorded, the run is paused (PendingApproval), which is the
-// deterministic disagreement policy from the design note. Returns a one-line description.
-func runWithApprovalGate(ctx context.Context, store agent.Durable, runID string, escalate agent.Tool) string {
-	if agent.SpecOf(escalate).Approval != nil {
-		// A real agent loop surfaces *PendingApproval from Run; the run resumes only after
-		// agent.Approve records a decision. With none recorded, the run is paused durably.
-		pending := &agent.ApprovalPending{RunRef: agent.RunRef{RunID: runID, RootRunID: runID}, ToolUseID: "escalate/1", ToolName: escalate.Name()}
-		// Record the pause as a journaled fact so the audit trail shows the run halted for review.
-		if _, err := store.Do(ctx, runID, "escalate/pending", func(context.Context) (agent.Record, error) {
-			b, _ := json.Marshal(map[string]any{"awaiting_approval": true, "tool": escalate.Name()})
-			return agent.Record{Kind: agent.StepValue, Result: b}, nil
-		}); err != nil {
-			panic(err)
-		}
-		return "paused for human approval under dual control: " + pending.Error()
-	}
-	return "committed without approval"
 }
 
 // quorumSteps lists the steps to prove for the quorum: each voter's vote, then the tally.
@@ -228,7 +235,7 @@ func printTally(res govern.QuorumResult) {
 
 // proveRun signs a tree head and proves each step (and the optional commit leaf) offline, so a
 // third party confirms with the public key alone that these votes and this outcome are committed.
-func proveRun(ctx context.Context, store agent.Durable, runID string, steps []string, toolUseID string) {
+func proveRun(ctx context.Context, store *agent.Journal, runID string, steps []string, toolUseID string) {
 	pub, priv, _ := ed25519.GenerateKey(rand.Reader)
 	th, err := audit.NewTreeHead(ctx, store, runID, 1)
 	if err != nil {
@@ -260,4 +267,18 @@ func proveRun(ctx context.Context, store agent.Durable, runID string, steps []st
 		}
 		fmt.Printf("  %-30s inclusion proof verified: %v\n", toolUseID, true)
 	}
+}
+
+// toolResult reads the result the run journaled for the tool call toolUseID.
+func toolResult(ctx context.Context, store *agent.Journal, runID, toolUseID string) json.RawMessage {
+	for rec, err := range store.Records(ctx, runID) {
+		if err != nil {
+			log.Fatal(err)
+		}
+		if rec.Kind == agent.StepToolResult && rec.ToolUseID == toolUseID {
+			return rec.Result
+		}
+	}
+	log.Fatalf("run %s has no result for tool call %s", runID, toolUseID)
+	return nil
 }

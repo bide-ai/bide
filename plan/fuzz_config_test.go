@@ -7,7 +7,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/bide-ai/bide/agent"
+	"github.com/bide-ai/bide/agent/agenttest"
 )
 
 // loadAny loads data against registry sel with that registry's In/Out types and returns the
@@ -20,7 +20,7 @@ func loadAny(t *testing.T, sel int, data []byte) (string, func(context.Context) 
 			return "", nil, err
 		}
 		return f.Digest(), func(ctx context.Context) error {
-			_, err := f.Run(ctx, agent.NewMemStore(), "r", cfgOrder{ID: 1, Rush: true})
+			_, err := f.Run(ctx, agenttest.MemJournal(), "r", cfgOrder{ID: 1, Rush: true})
 			return err
 		}, nil
 	case 1:
@@ -29,7 +29,7 @@ func loadAny(t *testing.T, sel int, data []byte) (string, func(context.Context) 
 			return "", nil, err
 		}
 		return f.Digest(), func(ctx context.Context) error {
-			_, err := f.Run(ctx, agent.NewMemStore(), "r", 3)
+			_, err := f.Run(ctx, agenttest.MemJournal(), "r", 3)
 			return err
 		}, nil
 	default:
@@ -38,7 +38,7 @@ func loadAny(t *testing.T, sel int, data []byte) (string, func(context.Context) 
 			return "", nil, err
 		}
 		return f.Digest(), func(ctx context.Context) error {
-			_, err := f.Run(ctx, agent.NewMemStore(), "r", 3)
+			_, err := f.Run(ctx, agenttest.MemJournal(), "r", 3)
 			return err
 		}, nil
 	}

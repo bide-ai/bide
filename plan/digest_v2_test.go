@@ -9,6 +9,8 @@ import (
 	"testing"
 
 	"github.com/bide-ai/bide/agent"
+	"github.com/bide-ai/bide/agent/agenttest"
+	"github.com/bide-ai/bide/internal/journaltest"
 	amodel "github.com/bide-ai/bide/plan/internal/digesttypes/a/model"
 	bmodel "github.com/bide-ai/bide/plan/internal/digesttypes/b/model"
 )
@@ -48,8 +50,9 @@ func TestDigestV1_IsTheEarlierDigest(t *testing.T) {
 func v1RecordedRun(t *testing.T, runID, digest string) *agent.MemStore {
 	t.Helper()
 	store := agent.NewMemStore()
+	j := agenttest.MustJournal(store)
 	b, _ := json.Marshal(digest)
-	if _, err := store.Do(context.Background(), runID, flowDigestStep, func(context.Context) (agent.Record, error) {
+	if _, err := journaltest.Do(context.Background(), j, runID, flowDigestStep, func(context.Context) (agent.Record, error) {
 		return agent.Record{Kind: agent.StepValue, Result: b}, nil
 	}); err != nil {
 		t.Fatal(err)
@@ -62,7 +65,7 @@ func v1RecordedRun(t *testing.T, runID, digest string) *agent.MemStore {
 // The error names the version so an operator knows why.
 func TestRun_RefusesARunRecordedUnderV1(t *testing.T) {
 	f := loadNames(t, "rush", "approve")
-	store := v1RecordedRun(t, "old", f.DigestV1())
+	store := agenttest.MustJournal(v1RecordedRun(t, "old", f.DigestV1()))
 	_, err := f.Run(context.Background(), store, "old", cfgOrder{ID: 1, Rush: true})
 	if !errors.Is(err, agent.ErrConfig) || !strings.Contains(err.Error(), "v1") {
 		t.Fatalf("Run of a v1 run: err = %v, want ErrConfig naming v1", err)
@@ -75,7 +78,7 @@ func TestRun_RefusesARunRecordedUnderV1(t *testing.T) {
 		t.Errorf("Conform of a v1 run = %v %v, want one divergence naming v1", ok, diffs)
 	}
 	// A digest that is neither this flow's v2 nor its v1 is the other divergence.
-	other := v1RecordedRun(t, "other", strings.Repeat("0", 64))
+	other := agenttest.MustJournal(v1RecordedRun(t, "other", strings.Repeat("0", 64)))
 	if _, err := f.Run(context.Background(), other, "other", cfgOrder{ID: 1}); !errors.Is(err, agent.ErrConfig) || strings.Contains(err.Error(), "v1") {
 		t.Errorf("Run of a foreign digest: err = %v, want ErrConfig not naming v1", err)
 	}

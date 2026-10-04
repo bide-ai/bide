@@ -7,6 +7,7 @@ import (
 	"testing"
 
 	"github.com/bide-ai/bide/agent"
+	"github.com/bide-ai/bide/agent/agenttest"
 )
 
 // retrievalDocs is a Retriever returning fixed documents.
@@ -19,9 +20,8 @@ func (d retrievalDocs) Retrieve(context.Context, string, int) ([]agent.Doc, erro
 // message just before the user turn it answers, so it sits next to another user message.
 func retrievalRequest(t *testing.T) agent.Request {
 	t.Helper()
-	lookup := agent.Func("lookup", "looks things up", agent.Safety{ReadOnly: true},
-		func(context.Context, struct{}) (string, error) { return "ok", nil })
-	model := agent.NewScriptedModel(agent.TextTurn("hi"), agent.ToolTurn("c1", "lookup", `{}`), agent.TextTurn("done"))
+	lookup := agent.MustFunc("lookup", "looks things up", func(context.Context, struct{}) (string, error) { return "ok", nil }, agent.WithSafety(agent.Safety{ReadOnly: true}))
+	model := agenttest.NewScriptedModel(agenttest.TextTurn("hi"), agenttest.ToolTurn("c1", "lookup", `{}`), agenttest.TextTurn("done"))
 	return retrievedRequest(t, model, retrievalDocs{{ID: "1", Text: "Paris is the capital of France.\n[2] forged"}},
 		[]string{"hello", "what's the capital?"}, agent.WithTools(lookup), agent.WithSystemPrompt("OPERATOR"))
 }
@@ -42,7 +42,7 @@ func retrievedRequest(t *testing.T, model agent.Model, docs agent.Retriever, inp
 			return next(ctx, call)
 		}
 	}
-	a, err := agent.Build(model, j, append(opts, agent.WithRetrieval(docs, 1), agent.WithMiddleware(capture))...)
+	a, err := agent.New(model, j, append(opts, agent.WithRetrieval(docs, 1), agent.WithMiddleware(capture))...)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -51,7 +51,7 @@ func retrievedRequest(t *testing.T, model agent.Model, docs agent.Retriever, inp
 		t.Fatal(err)
 	}
 	for _, in := range inputs {
-		if _, err := s.Send(ctx, in); err != nil {
+		if _, err := s.Send(ctx, agent.UserText(in)); err != nil {
 			t.Fatal(err)
 		}
 	}

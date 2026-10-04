@@ -11,6 +11,7 @@ import (
 	"time"
 
 	"github.com/bide-ai/bide/agent"
+	"github.com/bide-ai/bide/agent/agenttest"
 	"github.com/bide-ai/bide/middleware"
 )
 
@@ -101,16 +102,16 @@ func TestStress_HooksOncePerRequestEveryOrder(t *testing.T) {
 		for _, i := range p {
 			mws = append(mws, all[i], appender)
 		}
-		tool := agent.Func("t", "d", agent.Safety{ReadOnly: true}, func(context.Context, struct{}) (string, error) { return "", nil })
-		a := agent.New(primary, agent.NewMemStore(), tool).Use(mws...)
-		as := a.Stream(context.Background(), fmt.Sprint("r", pi), "q")
+		tool := agent.MustFunc("t", "d", func(context.Context, struct{}) (string, error) { return "", nil }, agent.WithSafety(agent.Safety{ReadOnly: true}))
+		a := agenttest.MustNew(primary, agenttest.MemJournal(), agent.WithTools(tool), agent.WithMiddleware(mws...))
+		as := a.Stream(context.Background(), fmt.Sprint("r", pi), agent.UserText("q"))
 		restarts := 0
 		for ev := range as.Events() {
 			if _, ok := ev.(agent.TurnRestarted); ok {
 				restarts++
 			}
 		}
-		if _, err := as.Final(); err != nil {
+		if _, err := as.Result(); err != nil {
 			t.Fatalf("perm %v: %v", p, err)
 		}
 		sent := int(primary.calls.Load() + backup.calls.Load())

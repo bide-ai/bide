@@ -36,7 +36,7 @@ func (m *turnsModel) Stream(context.Context, Request) (*Stream, error) {
 // recorded, so after the human answers the run completes, with no halt and one send.
 func TestParallelTurn_PauseDoesNotCancelASibling(t *testing.T) {
 	var sent atomic.Int32
-	send := Func("send", "send the email", Safety{}, func(ctx context.Context, _ struct{}) (string, error) {
+	send := MustFunc("send", "send the email", func(ctx context.Context, _ struct{}) (string, error) {
 		select {
 		case <-time.After(50 * time.Millisecond): // the provider accepts the email
 			sent.Add(1)
@@ -46,21 +46,21 @@ func TestParallelTurn_PauseDoesNotCancelASibling(t *testing.T) {
 			return "", ctx.Err()
 		}
 	})
-	ask := Func("ask", "ask the user", Safety{ReadOnly: true}, func(ctx context.Context, _ struct{}) (string, error) {
+	ask := MustFunc("ask", "ask the user", func(ctx context.Context, _ struct{}) (string, error) {
 		return Interrupt[string](ctx, "confirm", "ok to proceed?")
-	})
-	store := NewMemStore()
+	}, WithSafety(Safety{ReadOnly: true}))
+	store := memJournal()
 	m := &turnsModel{turns: [][][2]string{{{"a1", "ask"}, {"s1", "send"}}}}
-	a := New(m, store, ask, send)
-	_, err := a.Run(context.Background(), "r1", "go")
-	var intr *Interrupted
+	a := mustNew(m, store, WithTools(ask, send))
+	_, err := a.Run(context.Background(), "r1", UserText("go"))
+	var intr *InterruptPending
 	if !errors.As(err, &intr) {
-		t.Fatalf("first run: %v, want *Interrupted", err)
+		t.Fatalf("first run: %v, want *InterruptPending", err)
 	}
-	if err := Resume(context.Background(), store, "r1", "confirm", "yes"); err != nil {
+	if err := store.AnswerInterrupt(context.Background(), "r1", "confirm", "yes"); err != nil {
 		t.Fatal(err)
 	}
-	if _, err := a.Run(context.Background(), "r1", "go"); err != nil {
+	if _, err := a.Run(context.Background(), "r1", UserText("go")); err != nil {
 		t.Fatalf("after the human answered: %v (the sibling's send was cut off by the pause)", err)
 	}
 	if n := sent.Load(); n != 1 {
@@ -71,15 +71,15 @@ func TestParallelTurn_PauseDoesNotCancelASibling(t *testing.T) {
 // In a saga, a failing tool aborts the transaction even if a sibling paused first: the run
 // rolls back now, rather than returning the pause and discarding the human's answer later.
 func TestParallelTurn_SagaFailureIsNotMaskedByAPause(t *testing.T) {
-	ask := Func("ask", "ask the user", Safety{ReadOnly: true}, func(ctx context.Context, _ struct{}) (string, error) {
+	ask := MustFunc("ask", "ask the user", func(ctx context.Context, _ struct{}) (string, error) {
 		return Interrupt[string](ctx, "confirm", "ok?")
-	})
-	fail := Func("book", "book the flight", Safety{}, func(context.Context, struct{}) (string, error) {
+	}, WithSafety(Safety{ReadOnly: true}))
+	fail := MustFunc("book", "book the flight", func(context.Context, struct{}) (string, error) {
 		time.Sleep(20 * time.Millisecond) // the pause is returned first
 		return "", errors.New("no seats")
 	})
 	m := &turnsModel{turns: [][][2]string{{{"a1", "ask"}, {"b1", "book"}}}}
-	_, err := New(m, NewMemStore(), ask, fail).RunSaga(context.Background(), "r1", "go")
+	_, err := mustNew(m, memJournal(), WithTools(ask, fail)).Run(context.Background(), "r1", UserText("go"), WithSaga())
 	var aborted *SagaAborted
 	if !errors.As(err, &aborted) {
 		t.Fatalf("err = %v, want *SagaAborted", err)

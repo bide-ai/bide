@@ -15,7 +15,7 @@ import (
 
 // runLoop runs RecoverLoop in the background and returns a function that stops it and reports
 // what it returned.
-func runLoop(t *testing.T, s Durable, resume Resumer, opts ...RecoverLoopOption) (stop func() error) {
+func runLoop(t *testing.T, s *Journal, resume Resumer, opts ...RecoverLoopOption) (stop func() error) {
 	t.Helper()
 	ctx, cancel := context.WithCancel(context.Background())
 	done := make(chan error, 1)
@@ -41,6 +41,7 @@ func TestRecoverLoop_TakesOverAfterTheHolderDies(t *testing.T) {
 func testRecoverLoopTakesOverAfterTheHolderDies(t *testing.T) {
 	ctx := context.Background()
 	s := NewMemStore()
+	j := mustJournal(s)
 	seedRun(t, s, "r")
 	const deadTTL = 150 * time.Millisecond
 	died := time.Now()
@@ -48,12 +49,12 @@ func testRecoverLoopTakesOverAfterTheHolderDies(t *testing.T) {
 		t.Fatal("setup: the dead worker should hold r")
 	}
 	drivenAt := make(chan time.Time, 1)
-	stop := runLoop(t, s, func(ctx context.Context, id string, _ RunStart) error {
+	stop := runLoop(t, j, func(ctx context.Context, id string, _ RunStart) error {
 		select {
 		case drivenAt <- time.Now():
 		default:
 		}
-		_, err := s.Do(ctx, id, runCompleteStep, func(context.Context) (Record, error) { return Record{Kind: StepValue}, nil })
+		_, err := j.do(ctx, id, runCompleteStep, func(context.Context) (Record, error) { return Record{Kind: StepValue}, nil })
 		return err
 	}, WithRecoverInterval(20*time.Millisecond))
 	defer stop()
@@ -77,6 +78,7 @@ func TestRecoverLoop_LongDriveDoesNotBlockOthers(t *testing.T) {
 func testRecoverLoopLongDriveDoesNotBlockOthers(t *testing.T) {
 	ctx := context.Background()
 	s := &countingStore{MemStore: NewMemStore()}
+	j := mustJournal(s)
 	seedRun(t, s.MemStore, "a")
 	seedRun(t, s.MemStore, "b")
 	if ok, _ := s.AcquireLease(ctx, "b", "dead-worker#0", 100*time.Millisecond); !ok {
@@ -84,7 +86,7 @@ func testRecoverLoopLongDriveDoesNotBlockOthers(t *testing.T) {
 	}
 	aStarted, bDriven := make(chan struct{}), make(chan struct{})
 	var once sync.Once
-	stop := runLoop(t, s, func(ctx context.Context, id string, _ RunStart) error {
+	stop := runLoop(t, j, func(ctx context.Context, id string, _ RunStart) error {
 		switch id {
 		case "a":
 			once.Do(func() { close(aStarted) })
@@ -92,7 +94,7 @@ func testRecoverLoopLongDriveDoesNotBlockOthers(t *testing.T) {
 			return ctx.Err()
 		default:
 			close(bDriven)
-			_, err := s.Do(ctx, id, runCompleteStep, func(context.Context) (Record, error) { return Record{Kind: StepValue}, nil })
+			_, err := j.do(ctx, id, runCompleteStep, func(context.Context) (Record, error) { return Record{Kind: StepValue}, nil })
 			return err
 		}
 	}, WithRecoverInterval(20*time.Millisecond))
@@ -154,7 +156,8 @@ func TestRecoverLoop_DefaultIntervalIsHalfTheTTL(t *testing.T) {
 
 func testRecoverLoopDefaultIntervalIsHalfTheTTL(t *testing.T) {
 	s := &countingStore{MemStore: NewMemStore()}
-	stop := runLoop(t, s, func(context.Context, string, RunStart) error { return nil }, WithLeaseTTL(100*time.Millisecond))
+	j := mustJournal(s)
+	stop := runLoop(t, j, func(context.Context, string, RunStart) error { return nil }, WithLeaseTTL(100*time.Millisecond))
 	time.Sleep(525 * time.Millisecond)
 	_ = stop()
 	s.mu.Lock()
@@ -172,12 +175,13 @@ func TestRecoverLoop_WaitsForItsDrivesOnShutdown(t *testing.T) {
 
 func testRecoverLoopWaitsForItsDrivesOnShutdown(t *testing.T) {
 	s := NewMemStore()
+	j := mustJournal(s)
 	seedRun(t, s, "r")
 	started := make(chan struct{})
 	var mu sync.Mutex
 	returned := false
 	var reported []error
-	stop := runLoop(t, s, func(ctx context.Context, _ string, _ RunStart) error {
+	stop := runLoop(t, j, func(ctx context.Context, _ string, _ RunStart) error {
 		close(started)
 		<-ctx.Done()
 		time.Sleep(20 * time.Millisecond) // wind down
@@ -204,7 +208,7 @@ func testRecoverLoopWaitsForItsDrivesOnShutdown(t *testing.T) {
 	}
 }
 
-// Genuine failures reach the error handler; pauses (a ResumeHalt), lost leases and runs held by
+// Genuine failures reach the error handler; pauses (a OutcomeUnknown), lost leases and runs held by
 // another holder do not, and a run that completes is not driven again.
 func TestRecoverLoop_ReportsOnlyGenuineFailures(t *testing.T) {
 	synctest.Test(t, testRecoverLoopReportsOnlyGenuineFailures)
@@ -213,6 +217,7 @@ func TestRecoverLoop_ReportsOnlyGenuineFailures(t *testing.T) {
 func testRecoverLoopReportsOnlyGenuineFailures(t *testing.T) {
 	ctx := context.Background()
 	s := NewMemStore()
+	j := mustJournal(s)
 	for _, id := range []string{"broken", "halted", "done", "held"} {
 		seedRun(t, s, id)
 	}
@@ -223,7 +228,7 @@ func testRecoverLoopReportsOnlyGenuineFailures(t *testing.T) {
 	var mu sync.Mutex
 	var reported []error
 	drives := map[string]int{}
-	stop := runLoop(t, s, func(ctx context.Context, id string, _ RunStart) error {
+	stop := runLoop(t, j, func(ctx context.Context, id string, _ RunStart) error {
 		mu.Lock()
 		drives[id]++
 		mu.Unlock()
@@ -233,7 +238,7 @@ func testRecoverLoopReportsOnlyGenuineFailures(t *testing.T) {
 		case "halted":
 			return &OutcomeUnknown{RunRef: RunRef{RunID: id}}
 		case "done":
-			_, err := s.Do(ctx, id, runCompleteStep, func(context.Context) (Record, error) { return Record{Kind: StepValue}, nil })
+			_, err := j.do(ctx, id, runCompleteStep, func(context.Context) (Record, error) { return Record{Kind: StepValue}, nil })
 			return err
 		}
 		return errors.New("drove a run another holder leases")
@@ -277,15 +282,15 @@ func testRecoverLoopRejectsBadConfig(t *testing.T) {
 	ctx := context.Background()
 	resume := func(context.Context, string, RunStart) error { return nil }
 	for name, tc := range map[string]struct {
-		s    Durable
+		s    *Journal
 		opts []RecoverLoopOption
 	}{
-		"no Lister":               {noListStore{}, nil},
-		"zero TTL":                {NewMemStore(), []RecoverLoopOption{WithLeaseTTL(0)}},
-		"zero interval":           {NewMemStore(), []RecoverLoopOption{WithRecoverInterval(0)}},
-		"zero concurrency":        {NewMemStore(), []RecoverLoopOption{WithRecoverConcurrency(0)}},
-		"zero lapsed concurrency": {NewMemStore(), []RecoverLoopOption{WithRecoverLapsedConcurrency(0)}},
-		"negative interval":       {NewMemStore(), []RecoverLoopOption{WithRecoverInterval(-time.Second)}},
+		"no Lister":               {mustJournal(noListStore{}), nil},
+		"zero TTL":                {memJournal(), []RecoverLoopOption{WithLeaseTTL(0)}},
+		"zero interval":           {memJournal(), []RecoverLoopOption{WithRecoverInterval(0)}},
+		"zero concurrency":        {memJournal(), []RecoverLoopOption{WithRecoverConcurrency(0)}},
+		"zero lapsed concurrency": {memJournal(), []RecoverLoopOption{WithRecoverLapsedConcurrency(0)}},
+		"negative interval":       {memJournal(), []RecoverLoopOption{WithRecoverInterval(-time.Second)}},
 	} {
 		done := make(chan error, 1)
 		go func() { done <- RecoverLoop(ctx, tc.s, resume, tc.opts...) }()
@@ -307,13 +312,14 @@ func TestRecoverLoop_EveryPassReachesEveryRun(t *testing.T) {
 }
 
 func testRecoverLoopEveryPassReachesEveryRun(t *testing.T) {
-	s := NewMemStore() // lists its runs in order, as the SQL stores do
+	s := NewMemStore()
+	j := mustJournal(s) // lists its runs in order, as the SQL stores do
 	for _, id := range []string{"a1", "a2", "a3", "a4", "z"} {
 		seedRun(t, s, id)
 	}
 	zDriven := make(chan struct{})
 	var once sync.Once
-	stop := runLoop(t, s, func(ctx context.Context, id string, _ RunStart) error {
+	stop := runLoop(t, j, func(ctx context.Context, id string, _ RunStart) error {
 		if id == "z" {
 			once.Do(func() { close(zDriven) })
 			return nil

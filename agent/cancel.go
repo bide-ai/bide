@@ -86,7 +86,7 @@ type cancelReason struct {
 // order is the run's end, and Cancel reports ErrRunEnded if it is not run:cancelled.
 //
 // Cancel accepts any run ID but the empty one: a sub-run's or a session turn's run is a run too
-// (see Session.SendMessage for what a cancelled turn does to its session).
+// (see Session.Send for what a cancelled turn does to its session).
 func Cancel(ctx context.Context, j *Journal, runID, reason string) error {
 	if j == nil {
 		return fmt.Errorf("Cancel: nil journal: %w", ErrConfig)

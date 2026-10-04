@@ -25,6 +25,7 @@ import (
 	"testing"
 
 	"github.com/bide-ai/bide/agent"
+	"github.com/bide-ai/bide/agent/agenttest"
 )
 
 type hOutcome int
@@ -259,7 +260,7 @@ func hSubjects() []hSubject {
 			if rs {
 				opts = append(opts, agent.WithSafety(agent.Safety{Idempotent: true}))
 			}
-			return agent.Step(ctx, j, runID, "pay", func(context.Context) (string, error) { return p.fire(drive) }, opts...)
+			return j.Step(ctx, runID, "pay", func(context.Context) (string, error) { return p.fire(drive) }, opts...)
 		}
 	}
 	tool := func(rs bool) func(ctx context.Context, p *hProc, runID string, drive int) (string, error) {
@@ -268,9 +269,13 @@ func hSubjects() []hSubject {
 			if err != nil {
 				return "", err
 			}
-			charge := agent.Func("charge", "", agent.Safety{Idempotent: rs}, func(context.Context, struct{}) (string, error) { return p.fire(drive) })
-			m := agent.NewScriptedModel(agent.ToolTurn("c1", "charge", `{}`), agent.TextTurn("done"))
-			msg, err := agent.New(m, j, charge).SetMaxConcurrency(1).Run(ctx, runID, "hi")
+			charge := agent.MustFunc("charge", "", func(context.Context, struct{}) (string, error) { return p.fire(drive) }, agent.WithSafety(agent.Safety{Idempotent: rs}))
+			m := agenttest.NewScriptedModel(agenttest.ToolTurn("c1", "charge", `{}`), agenttest.TextTurn("done"))
+			res, err := agenttest.MustNew(m, j, agent.WithTools(charge), agent.WithMaxConcurrency(1)).Run(ctx, runID, agent.UserText("hi"))
+			var msg agent.Message
+			if res != nil {
+				msg = res.Message
+			}
 			return msg.Text(), err
 		}
 	}
@@ -326,7 +331,7 @@ func hRun(sub hSubject, plan [2]bool, ex *hExplorer) (viol []hViolation, h *hHar
 		v, err := sub.runOnce(context.Background(), lastAlive, runID, 3)
 		h.log = append(h.log, fmt.Sprintf("verify same-proc -> %q, %v", v, err))
 		vres = append(vres, res{v, err})
-		var hl *agent.ResumeHalt
+		var hl *agent.OutcomeUnknown
 		sameHalted = errors.As(err, &hl)
 	}
 	np := &hProc{h: h}
@@ -403,7 +408,7 @@ func hRun(sub hSubject, plan [2]bool, ex *hExplorer) (viol []hViolation, h *hHar
 	// I4: liveness. The final new-process drive halts only if the effect may have run, or no
 	// durable proof that it did not was ever acknowledged.
 	final := vres[len(vres)-1]
-	var halt *agent.ResumeHalt
+	var halt *agent.OutcomeUnknown
 	if errors.As(final.err, &halt) {
 		if sub.retrySafe {
 			add("I4-retrysafe-halts", "retry-safe subject halts: %v", final.err)

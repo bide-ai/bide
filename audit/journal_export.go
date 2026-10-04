@@ -24,7 +24,7 @@ type JournalExport struct {
 func (JournalExport) artifactFormat() (string, string) { return "journal export", JournalExportFormat }
 
 // ExportJournal returns runID's journal as a JournalExport.
-func ExportJournal(ctx context.Context, store agent.Durable, runID string) (JournalExport, error) {
+func ExportJournal(ctx context.Context, store *agent.Journal, runID string) (JournalExport, error) {
 	recs, err := store.History(ctx, runID)
 	if err != nil {
 		return JournalExport{}, fmt.Errorf("audit: load journal %s: %w", runID, err)

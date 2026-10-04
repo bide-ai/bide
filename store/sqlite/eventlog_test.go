@@ -8,7 +8,9 @@ import (
 	"testing"
 
 	"github.com/bide-ai/bide/agent"
+	"github.com/bide-ai/bide/agent/agenttest"
 	"github.com/bide-ai/bide/audit"
+	"github.com/bide-ai/bide/internal/journaltest"
 )
 
 // The journal projection's event salts derive from the record salts this store persists, so an
@@ -21,19 +23,20 @@ func TestSQLite_EventLogSurvivesRestart(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
+	j := agenttest.MustJournal(s)
 	for _, id := range []string{"t1", "t2", "t3"} {
-		if _, err := s.Do(ctx, "run", id, func(context.Context) (agent.Record, error) {
+		if _, err := journaltest.Do(ctx, j, "run", id, func(context.Context) (agent.Record, error) {
 			return agent.Record{Kind: agent.StepToolResult, ToolUseID: id, Result: json.RawMessage(`{"ok":true}`)}, nil
 		}); err != nil {
 			t.Fatal(err)
 		}
 	}
-	before, err := audit.EventLogFromJournal(ctx, s, "run")
+	before, err := audit.EventLogFromJournal(ctx, j, "run")
 	if err != nil {
 		t.Fatal(err)
 	}
 	proof, _ := before.Prove(1)
-	evs, _ := agent.ReplayEvents(ctx, s, "run")
+	evs, _ := agent.ReplayEvents(ctx, j, "run")
 	s.Close()
 
 	s, err = Open(path)
@@ -41,7 +44,7 @@ func TestSQLite_EventLogSurvivesRestart(t *testing.T) {
 		t.Fatal(err)
 	}
 	defer s.Close()
-	after, err := audit.EventLogFromJournal(ctx, s, "run")
+	after, err := audit.EventLogFromJournal(ctx, agenttest.MustJournal(s), "run")
 	if err != nil {
 		t.Fatal(err)
 	}

@@ -118,7 +118,7 @@ func atMostOnceEffect(t *testing.T, open func(*testing.T) agent.Store) {
 		for g := range writers {
 			wg.Go(func() {
 				<-start
-				v, err := agent.Step(ctx, js[g%handles], id, "charge", func(context.Context) (int, error) {
+				v, err := js[g%handles].Step(ctx, id, "charge", func(context.Context) (int, error) {
 					fired.Add(1)
 					return 42, nil
 				})
@@ -146,7 +146,7 @@ func atMostOnceEffect(t *testing.T, open func(*testing.T) agent.Store) {
 			t.Fatalf("round %d: no caller got the effect's value", round)
 		}
 		// A resume reads the recorded value and runs nothing.
-		v, err := agent.Step(ctx, resume, id, "charge", func(context.Context) (int, error) {
+		v, err := resume.Step(ctx, id, "charge", func(context.Context) (int, error) {
 			fired.Add(1)
 			return 0, nil
 		})

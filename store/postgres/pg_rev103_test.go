@@ -15,6 +15,7 @@ import (
 	"time"
 
 	"github.com/bide-ai/bide/agent"
+	"github.com/bide-ai/bide/agent/agenttest"
 	"github.com/bide-ai/bide/plan"
 	"github.com/bide-ai/bide/store/postgres"
 )
@@ -46,6 +47,7 @@ func TestRev103PG_ConcurrentFlowDrivers(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
+	j2 := agenttest.MustJournal(s1)
 	defer s1.Close()
 	s2, err := postgres.Open(ctx, dsn)
 	if err != nil {
@@ -107,7 +109,7 @@ func TestRev103PG_ConcurrentFlowDrivers(t *testing.T) {
 	run := fmt.Sprintf("r103-%d-done", stamp)
 	var fired atomic.Int64
 	flow := pgFlow(t, &fired)
-	if _, err := flow.Run(ctx, s1, run, 1); err != nil {
+	if _, err := flow.Run(ctx, j2, run, 1); err != nil {
 		t.Fatal(err)
 	}
 	seen := false

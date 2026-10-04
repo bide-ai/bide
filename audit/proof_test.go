@@ -7,25 +7,26 @@ import (
 	"testing"
 
 	"github.com/bide-ai/bide/agent"
+	"github.com/bide-ai/bide/agent/agenttest"
 	"github.com/bide-ai/bide/audit"
 )
 
 // buildRun journals a small tool-using run and returns the store + a signed STH over it.
-func buildRun(t *testing.T) (agent.Durable, string, ed25519.PublicKey, audit.SignedTreeHead) {
+func buildRun(t *testing.T) (*agent.Journal, string, ed25519.PublicKey, audit.SignedTreeHead) {
 	t.Helper()
 	ctx := context.Background()
 	store := agent.NewMemStore()
-	tool := agent.Func("lookup", "", agent.Safety{ReadOnly: true},
-		func(_ context.Context, _ struct{}) (string, error) { return "ok", nil })
-	if _, err := agent.New(&twoTurnModel{}, store, tool).Run(ctx, "run", "hi"); err != nil {
+	j := agenttest.MustJournal(store)
+	tool := agent.MustFunc("lookup", "", func(_ context.Context, _ struct{}) (string, error) { return "ok", nil }, agent.WithSafety(agent.Safety{ReadOnly: true}))
+	if _, err := agenttest.MustNew(&twoTurnModel{}, j, agent.WithTools(tool)).Run(ctx, "run", agent.UserText("hi")); err != nil {
 		t.Fatalf("run: %v", err)
 	}
 	pub, priv, _ := ed25519.GenerateKey(nil)
-	th, err := audit.NewTreeHead(ctx, store, "run", 1000)
+	th, err := audit.NewTreeHead(ctx, j, "run", 1000)
 	if err != nil {
 		t.Fatalf("NewTreeHead: %v", err)
 	}
-	return store, "run", pub, signTH(t, th, priv)
+	return j, "run", pub, signTH(t, th, priv)
 }
 
 // TestProofBundle_RoundTrip: a bundle proving a record verifies under the right key, and is
@@ -116,14 +117,15 @@ func TestProveRecord_RejectsSTHFromDifferentRun(t *testing.T) {
 
 	// A signed STH over a journal with DIFFERENT content (so a different Merkle root).
 	otherStore := agent.NewMemStore()
+	j := agenttest.MustJournal(otherStore)
 	for _, v := range []string{"x", "y", "z"} {
 		vv := v
-		if _, err := agent.Step(ctx, otherStore, "other", vv, func(context.Context) (string, error) { return vv, nil }, agent.WithSafety(agent.Safety{ReadOnly: true})); err != nil {
+		if _, err := j.Step(ctx, "other", vv, func(context.Context) (string, error) { return vv, nil }, agent.WithSafety(agent.Safety{ReadOnly: true})); err != nil {
 			t.Fatalf("other journal: %v", err)
 		}
 	}
 	_, priv, _ := ed25519.GenerateKey(nil)
-	otherTH, _ := audit.NewTreeHead(ctx, otherStore, "other", 1000)
+	otherTH, _ := audit.NewTreeHead(ctx, j, "other", 1000)
 	otherSTH := signTH(t, otherTH, priv)
 
 	if _, err := audit.ProveRecord(ctx, store, runID, 0, otherSTH); err == nil {

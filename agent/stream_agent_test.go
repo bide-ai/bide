@@ -14,9 +14,9 @@ var errCrash = errors.New("crash")
 func ExampleAgent_Stream() {
 	// A model that answers directly (a real adapter streams token deltas the same way).
 	m := &scriptModel{turns: [][]Emit{textTurn("hello world")}}
-	a := New(m, NewMemStore())
+	a := mustNew(m, memJournal())
 
-	stream := a.Stream(context.Background(), "run-1", "hi")
+	stream := a.Stream(context.Background(), "run-1", UserText("hi"))
 	for ev := range stream.Events() {
 		switch e := ev.(type) {
 		case TurnStarted:
@@ -29,11 +29,12 @@ func ExampleAgent_Stream() {
 			fmt.Println("finished")
 		}
 	}
-	answer, err := stream.Final()
+	res, err := stream.Result()
 	if err != nil {
 		fmt.Println("error:", err)
 		return
 	}
+	answer := res.Message
 	fmt.Println("answer:", textOf(answer))
 	// Output:
 	// turn started
@@ -43,16 +44,20 @@ func ExampleAgent_Stream() {
 }
 
 // collect drains a stream's events and its final result together.
-func collect(as *AgentStream) ([]AgentEvent, Message, error) {
-	var evs []AgentEvent
+func collect(as *RunStream) ([]RunEvent, Message, error) {
+	var evs []RunEvent
 	for e := range as.Events() {
 		evs = append(evs, e)
 	}
-	msg, err := as.Final()
+	res, err := as.Result()
+	var msg Message
+	if res != nil {
+		msg = res.Message
+	}
 	return evs, msg, err
 }
 
-func kinds(evs []AgentEvent) []string {
+func kinds(evs []RunEvent) []string {
 	var out []string
 	for _, e := range evs {
 		switch ev := e.(type) {
@@ -85,9 +90,9 @@ func TestStream_EmitsLifecycle(t *testing.T) {
 	var calls int
 	tool := &countingTool{name: "lookup", safety: Safety{ReadOnly: true}, calls: &calls}
 	m := &scriptModel{turns: [][]Emit{toolTurn("c1", "lookup", `{"q":"x"}`), textTurn("final")}}
-	a := New(m, NewMemStore(), tool)
+	a := mustNew(m, memJournal(), WithTools(tool))
 
-	evs, out, err := collect(a.Stream(context.Background(), "run1", "hi"))
+	evs, out, err := collect(a.Stream(context.Background(), "run1", UserText("hi")))
 	if err != nil {
 		t.Fatalf("Stream: %v", err)
 	}
@@ -130,12 +135,13 @@ func TestStream_FinalOnlyMatchesRun(t *testing.T) {
 		return &countingTool{name: "lookup", safety: Safety{ReadOnly: true}, calls: &c}
 	}
 	m := &scriptModel{turns: [][]Emit{toolTurn("c1", "lookup", `{"q":"x"}`), textTurn("done")}}
-	a := New(m, NewMemStore(), tool())
+	a := mustNew(m, memJournal(), WithTools(tool()))
 
-	out, err := a.Stream(context.Background(), "r", "hi").Final()
+	res, err := a.Stream(context.Background(), "r", UserText("hi")).Result()
 	if err != nil {
 		t.Fatalf("Final: %v", err)
 	}
+	out := res.Message
 	if got := textOf(out); got != "done" {
 		t.Fatalf("answer = %q, want %q", got, "done")
 	}
@@ -144,19 +150,19 @@ func TestStream_FinalOnlyMatchesRun(t *testing.T) {
 // On resume, a fresh stream replays the journaled transcript (AssistantTurn{Replayed}
 // + ToolCompleted) before live progress, so a UI reconstructs the full story.
 func TestStream_ReplaysJournalOnResume(t *testing.T) {
-	store := NewMemStore()
+	store := memJournal()
 	var calls int
 	tool := &countingTool{name: "lookup", safety: Safety{ReadOnly: true}, calls: &calls}
 
 	// First attempt crashes after the tool result is journaled (model errors on turn 2).
 	crashy := &scriptModel{turns: [][]Emit{toolTurn("c1", "lookup", `{"q":"x"}`), errTurn(errCrash)}}
-	if _, err := New(crashy, store, tool).Run(context.Background(), "run1", "hi"); err == nil {
+	if _, err := mustNew(crashy, store, WithTools(tool)).Run(context.Background(), "run1", UserText("hi")); err == nil {
 		t.Fatal("expected crash on first attempt")
 	}
 
 	// Resume with a healthy model, streaming this time.
 	recovered := &scriptModel{turns: [][]Emit{textTurn("final")}}
-	evs, out, err := collect(New(recovered, store, tool).Stream(context.Background(), "run1", "hi"))
+	evs, out, err := collect(mustNew(recovered, store, WithTools(tool)).Stream(context.Background(), "run1", UserText("hi")))
 	if err != nil {
 		t.Fatalf("resume Stream: %v", err)
 	}

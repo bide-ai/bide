@@ -9,6 +9,8 @@ import (
 	"time"
 
 	"github.com/bide-ai/bide/agent"
+	"github.com/bide-ai/bide/agent/agenttest"
+	"github.com/bide-ai/bide/internal/journaltest"
 )
 
 // Leases on one file coordinate the handles (processes) that share it: a live lease excludes
@@ -73,6 +75,7 @@ func TestLease_RecoverUsesTheLeaser(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
+	j := agenttest.MustJournal(s)
 	defer s.Close()
 	if _, ok := agent.Capability[agent.Leaser](s); !ok {
 		t.Fatal("the SQLite store does not report a Leaser")
@@ -81,11 +84,11 @@ func TestLease_RecoverUsesTheLeaser(t *testing.T) {
 	if ok, _ := s.AcquireLease(ctx, "busy", "someone-else", time.Minute); !ok {
 		t.Fatal("could not lease the run")
 	}
-	if _, err := s.Do(ctx, "busy", "x", func(context.Context) (agent.Record, error) { return agent.Record{Kind: agent.StepValue}, nil }); err != nil {
+	if _, err := journaltest.Do(ctx, j, "busy", "x", func(context.Context) (agent.Record, error) { return agent.Record{Kind: agent.StepValue}, nil }); err != nil {
 		t.Fatal(err)
 	}
 	driven := false
-	if n, err := agent.Recover(ctx, s, func(context.Context, string, agent.RunStart) error { driven = true; return nil }); err != nil || n != 0 || driven {
+	if n, err := agent.Recover(ctx, j, func(context.Context, string, agent.RunStart) error { driven = true; return nil }); err != nil || n != 0 || driven {
 		t.Fatalf("Recover = %d, %v (drove: %v); want the leased run skipped", n, err, driven)
 	}
 }
@@ -103,6 +106,7 @@ func TestLease_SurvivesAFiveSecondWriterHold(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
+	j := agenttest.MustJournal(s)
 	defer s.Close()
 	other, err := sql.Open("sqlite", path+"?_pragma=busy_timeout(30000)")
 	if err != nil {
@@ -126,7 +130,7 @@ func TestLease_SurvivesAFiveSecondWriterHold(t *testing.T) {
 		return err
 	}
 	held := make(chan error, 1)
-	driven, err := agent.Lease(context.Background(), s, "run", func(ctx context.Context) error {
+	driven, err := agent.Lease(context.Background(), j, "run", func(ctx context.Context) error {
 		// The hold starts just before the first renewal and ends after it.
 		time.Sleep(ttl/2 - 500*time.Millisecond)
 		go func() { held <- hold() }()

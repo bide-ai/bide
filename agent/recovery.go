@@ -127,7 +127,7 @@ func defaultHolder() string { return fmt.Sprintf("%s-%d", hostPID(), rand.Uint64
 // completion marker the agent loop records at the end of a run (see runCompleteStep). A run whose
 // run:cancelled or run:aborted precedes its run:complete is not complete: that marker is its end,
 // as Status and every drive read it. A crash-recovery supervisor uses it to skip finished runs.
-func IsComplete(ctx context.Context, store Durable, runID string) (bool, error) {
+func IsComplete(ctx context.Context, store *Journal, runID string) (bool, error) {
 	recs, err := store.History(ctx, runID)
 	if err != nil {
 		return false, fmt.Errorf("load history %s: %w (%w)", runID, err, ErrStorage)
@@ -170,7 +170,7 @@ func completedAnswer(recs []Record) (Message, bool) {
 // failures (nil if none).
 //
 // The store must implement Lister; a store that cannot enumerate its runs (the base
-// Durable contract does not require it) yields an ErrConfig-wrapped error.
+// Store contract does not require it) yields an ErrConfig-wrapped error.
 //
 // If the store also implements Leaser, Recover coordinates across processes: it claims an
 // exclusive, renewed lease per run before driving it and skips a run another holder currently
@@ -211,13 +211,13 @@ func completedAnswer(recs []Record) (Message, bool) {
 // resumes it. It skips a session's journal and turn runs (IsSessionRun) too: a turn is seeded with
 // the transcript before its message, which only the session holds, and only the session records
 // its answer, so an unfinished turn resumes when its message is sent again (the same message
-// through Send or SendMessage, or the redelivered SendOnce or SendMessageOnce). Recover re-drives
+// through Send or Send, or the redelivered SendOnce or SendOnce). Recover re-drives
 // every other incomplete run it enumerates. A nil resume is ErrConfig.
-func Recover(ctx context.Context, store Durable, resume Resumer, opts ...RecoverOption) (int, error) {
+func Recover(ctx context.Context, store *Journal, resume Resumer, opts ...RecoverOption) (int, error) {
 	if resume == nil {
 		return 0, fmt.Errorf("Recover: nil Resumer: %w", ErrConfig)
 	}
-	lister, ok := capabilityOf[Lister](store)
+	lister, ok := Capability[Lister](store.store)
 	if !ok {
 		return 0, fmt.Errorf("Recover needs a store that implements Lister (itself or through Unwrap) to enumerate runs: %w", ErrConfig)
 	}
@@ -308,8 +308,8 @@ func recoverReportCount() int {
 // reportOnce reports whether this process has not yet made the report kind for store's run runID
 // (among the reports recoverReports still holds), and marks it made. A store with no identity to
 // key it by (see durableIdentity) is reported on every pass.
-func reportOnce(store Durable, runID string, kind error) bool {
-	id, ok := durableIdentity(store)
+func reportOnce(store *Journal, runID string, kind error) bool {
+	id, ok := store.identity()
 	if !ok {
 		return true
 	}
@@ -346,25 +346,13 @@ var lapsedFilter = RunFilter{ExcludeHolding: endOfRunMarkers, LeaseLapsed: true}
 // recoverFilter's test, applied to one run. Like the filter, it asks only whether the entry exists,
 // so it reads no header and decodes nothing: a run in a format this version cannot read that is
 // not over still reaches resume, which refuses it. Over a Journal it costs one point read (Store.Get)
-// per marker, stopping at the first it finds; over another Durable, one History.
-func runEnded(ctx context.Context, store Durable, runID string) (bool, error) {
-	if j := journalOf(store); j != nil {
-		for _, name := range endOfRunMarkers {
-			if _, ok, err := j.store.Get(ctx, runID, name); err != nil || ok {
-				if err != nil {
-					return false, storageErr(fmt.Sprintf("read step %q of run %s", name, runID), err)
-				}
-				return true, nil
+// per marker, stopping at the first it finds.
+func runEnded(ctx context.Context, j *Journal, runID string) (bool, error) {
+	for _, name := range endOfRunMarkers {
+		if _, ok, err := j.store.Get(ctx, runID, name); err != nil || ok {
+			if err != nil {
+				return false, storageErr(fmt.Sprintf("read step %q of run %s", name, runID), err)
 			}
-		}
-		return false, nil
-	}
-	recs, err := store.History(ctx, runID)
-	if err != nil {
-		return false, storageErr("load history "+runID, err) // a format refusal stays one
-	}
-	for _, r := range recs {
-		if slices.Contains(endOfRunMarkers, r.Name) {
 			return true, nil
 		}
 	}
@@ -375,12 +363,7 @@ func runEnded(ctx context.Context, store Durable, runID string) (bool, error) {
 // for a run that holds it, it is one point read (Store.Get) that, like runEnded, does not check the
 // run's header: a run in a format this version cannot read still reaches resume, which refuses it.
 // A run in another format whose run:start is missing or does not decode is a *JournalVersionError.
-// Over another Durable it is RecordedStart.
-func startUnderLease(ctx context.Context, store Durable, runID string) (RunStart, bool, error) {
-	j := journalOf(store)
-	if j == nil {
-		return RecordedStart(ctx, store, runID)
-	}
+func startUnderLease(ctx context.Context, j *Journal, runID string) (RunStart, bool, error) {
 	e, ok, err := j.store.Get(ctx, runID, runStartStep)
 	if err != nil {
 		return RunStart{}, false, storageErr(fmt.Sprintf("read step %q of run %s", runStartStep, runID), err)
@@ -675,8 +658,8 @@ func recoverable(runID string) bool { return !IsSubRun(runID) && !IsSessionRun(r
 // lease (a plain Agent.Run), and one by a lease holder that stalled past its TTL: a drive that
 // stalls past the TTL between the check and resume loses the lease, and another driver may finish
 // the run in that window. Either way at-most-once still holds: resume is handed a finished run,
-// which a resume that calls Run or RunSaga replays without firing anything again.
-func recoverRun(ctx context.Context, store Durable, runID string, resume Resumer, cfg recoverConfig) (bool, error) {
+// which a resume that calls Run replays without firing anything again.
+func recoverRun(ctx context.Context, store *Journal, runID string, resume Resumer, cfg recoverConfig) (bool, error) {
 	var (
 		resumed      bool
 		notStarted   bool
@@ -784,11 +767,11 @@ func cancelledEnd(err error) bool {
 // concurrency) is returned at once. Otherwise RecoverLoop returns ctx's error when ctx is done,
 // after both loops have stopped and the drives they started (whose contexts derive from ctx) have
 // returned.
-func RecoverLoop(ctx context.Context, store Durable, resume Resumer, opts ...RecoverLoopOption) error {
+func RecoverLoop(ctx context.Context, store *Journal, resume Resumer, opts ...RecoverLoopOption) error {
 	if resume == nil {
 		return fmt.Errorf("RecoverLoop: nil Resumer: %w", ErrConfig)
 	}
-	lister, ok := capabilityOf[Lister](store)
+	lister, ok := Capability[Lister](store.store)
 	if !ok {
 		return fmt.Errorf("RecoverLoop needs a store that implements Lister (itself or through Unwrap) to enumerate runs: %w", ErrConfig)
 	}
@@ -897,7 +880,7 @@ func RecoverLoop(ctx context.Context, store Durable, resume Resumer, opts ...Rec
 		}
 	}
 
-	if leaser, ok := capabilityOf[Leaser](store); ok {
+	if leaser, ok := Capability[Leaser](store.store); ok {
 		// Each lapsed pass first deletes the lapsed leases no pass would take over (a finished run's,
 		// or one on a run the store does not hold), so they do not accumulate in the listing.
 		reap := func() {

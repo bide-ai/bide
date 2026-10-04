@@ -13,7 +13,7 @@ reference adapters that ship with it.
 |---|---|---|---|
 | `Model` | root | the provider (LLM) primitive | `model/anthropic`, `model/openai`, `model/gemini` |
 | `Store` | root | the crash-safe journal substrate, under `Journal` | `MemStore`, `store/sqlite`, `store/postgres` |
-| `Tool` | root | an action the agent can take | `Func`, `CompensatedFunc`, `mcp` tools |
+| `Tool` | root | an action the agent can take | `Func`, `CompensatedFunc`, `mcptools` tools |
 | `Compensator` | root | how a tool undoes its side effect (sagas) | `CompensatedFunc` |
 | `Retriever` | root | bring-your-own RAG | your store; wired via `RetrievalTool` / `WithRetrieval` |
 | `Anchor` | `audit` | out-of-band anchoring of a commitment | `MemAnchorLog` |
@@ -142,25 +142,11 @@ implement `Unwrap() Store`. Only a wrapper that passes run IDs and names through
 implement `Unwrap`; one that rewrites keys (a tenant prefix, say) implements each capability
 itself. `storetest.CheckWrapper(t, wrap, ctxA, ctxB)` checks this, and that the wrapper's keys do
 not depend on the context; give it at least two contexts that differ in the values your wrapper
-reads from a context. A wrapper whose `Do` and `History` come from `MemStore` or a SQL store (it
-embeds one, directly or through another wrapper, or embeds an `agent.Durable`) while its `Insert`,
-`Get` or `Load` comes from elsewhere would have every write bypass those methods: the engine
-refuses it with `ErrConfig`, so use it through `agent.NewJournal(wrapper)`.
-
-**A `Durable` wrapper.** A `Durable` that wraps another (such as `audit.AuditedStore`) may implement
-`Unwrap() Durable`, so the engine reaches the store beneath it: its capabilities, and the identity
-under which the process keeps per-run state (claims it could not record as not started, spend it
-could not journal), shared by every Journal and wrapper over that store. As for `Unwrap() Store`,
-only a wrapper that passes run IDs and step names through unchanged may implement it; one that
-rewrites keys (a tenant prefix) must not, or two tenants' runs of one name would share that state.
-`storetest.CheckDurableWrapper(t, wrap, ctxA, ctxB)` checks this.
-
-**A custom `Durable`.** A `Durable` that is not a `Journal` (one that intercepts `Do`) must keep the
-Journal's guarantees, which the engine's accounting relies on as much as at-most-once does: it
-records a step's result at most once under one name, and `Do` returns the record the journal holds;
-it calls the step function at most once per record it writes, never again for a name already
-recorded; and it keeps each record's bytes, the salt among them, exactly as `agent.JournalEntry`
-built them.
+reads from a context. The engine also follows `Unwrap() Store` (as `audit.AuditedStore` implements it) to the
+store beneath for the identity under which the process keeps per-run state (claims it could not
+record as not started, spend it could not journal), shared by every Journal and wrapper over that
+store; this is a second reason a wrapper that rewrites keys must not implement `Unwrap`, or two
+tenants' runs of one name would share that state.
 
 **Reference adapters.** `agent.NewMemStore()` is the in-memory implementation for tests and local
 dev. `store/sqlite.Open(path)` (one machine; three connection pools: a writer, readers, and a lease
@@ -185,11 +171,6 @@ logs a warning, and a role that can create a schema earlier on the path (any rol
 on the database can create the `"$user"` schema) can redirect a restarting node. The store trusts
 the owner of its schema and every role that can create objects in it, as it trusts the tables'
 owner. After renaming the schema, drop `bide_next_seq_v1(text)` and `Open` again.
-
-**Transition.** The engine's functions still take the `Durable` interface (`Do` and `History`),
-which `*agent.Journal` implements; `MemStore` and the SQL stores also implement it, through a
-Journal over themselves, so existing code keeps working. `Durable` and those store methods are
-removed by the 1.0 rewrite.
 
 ### Implement your own store
 
@@ -271,7 +252,7 @@ func (s *Store) Load(ctx context.Context, runID string, after int64) iter.Seq2[a
 ```
 
 Use it through a Journal, which goes wherever a store goes (`agent.New(model, j)`,
-`agent.Step(ctx, j, ...)`, `agent.Recover(ctx, j, ...)`):
+`j.Step(ctx, ...)`, `agent.Recover(ctx, j, ...)`):
 
 <!-- docsnip: setup mystore struct{ New func() agent.Store }; returns error -->
 ```go
@@ -311,32 +292,26 @@ func TestMyStore(t *testing.T) {
 func New() agent.Store { return agent.NewMemStore() } // your store here
 ```
 
-`MemStore`, `store/sqlite`, and `store/postgres` all run it. (`agent/durabletest` is its former
-name, kept for the transition.)
+`MemStore`, `store/sqlite`, and `store/postgres` all run it.
 
 ## `Tool`: an action the agent can take
 
 <!-- docsnip: api agent -->
 ```go
 type Tool interface {
-	Name() string
-	Description() string
-	ArgsSchema() json.RawMessage // provider-neutral; the schema package dialectizes it
-	Safety() Safety              // how the tool may be retried on resume
+	Spec() ToolSpec // name, description, schema, safety, approval gate, timeout
 	Call(ctx context.Context, args json.RawMessage) (json.RawMessage, error)
 }
 ```
 
 The interface is untyped (`json.RawMessage`) so heterogeneous tools share one type,
-including runtime `mcp` tools whose schema is only known at connect time. Most native tools
-never implement this by hand: `agent.Func[In, Out](name, desc, safety, fn)` wraps a typed Go
-function and derives `ArgsSchema` from `In` at construction, so changing `In` is a
-compile-time change. `Safety` declares retry behavior on resume (`ReadOnly`, `Idempotent`) and
+including runtime `mcptools` tools whose schema is only known at connect time. Most native tools
+never implement this by hand: `agent.Func[In, Out](name, desc, fn, opts...)` (or `MustFunc`) wraps
+a typed Go function and derives the spec's `Input` schema from `In` at construction, so changing
+`In` is a compile-time change. `Safety` (the `WithSafety` option) declares retry behavior on resume (`ReadOnly`, `Idempotent`) and
 maps directly onto MCP annotations (see the [MCP guide](../guides/mcp.md)). Trailing tool options set
 the rest of the tool's `ToolSpec`: `WithApproval` (a human gate: `SingleApproval()`, or a signed
-m-of-n `ApprovalPolicy`), `WithTimeout`, `WithTitle`, `WithOutputSchema`, and `WithSafety`. A tool that
-also implements `Spec() ToolSpec` is described by it (`agent.SpecOf` reads either method set; the 1.0
-rewrite makes `Spec` the interface). For the m-of-n policy, approver signatures are checked through the `ApproverVerifier` hook (`Alg()`, `Verify` and `KeyIDs`), which the
+m-of-n `ApprovalPolicy`), `WithTimeout`, `WithTitle`, `WithOutputSchema`, and `WithSafety`. For the m-of-n policy, approver signatures are checked through the `ApproverVerifier` hook (`Alg()`, `Verify` and `KeyIDs`), which the
 `audit` package's Ed25519, ML-DSA, and hybrid verifiers implement; a decision counts only under the scheme
 journaled with it (`Decision.Alg`, recorded as `Record.ApproverAlg`), which must be its approver key's. Its `KeyIDs` method names the keys
 behind a verifier, derived from the public key's bytes, and the gate refuses a policy two of whose
@@ -362,13 +337,13 @@ result the tool returns after the deadline is recorded, and an error it returns 
 has an unknown outcome: a side effect records nothing and halts on resume, a retry-safe tool
 records the error. A tool that wraps another (as `audit.AttenuatingSubAgent` wraps a `SubAgent`)
 says so with an `Unwrap() Tool` method, which the agent follows to find a wrapped sub-agent for
-saga rollback and budget accounting; `SpecOf` of a wrapper with no `Spec` method takes the wrapped
-tool's approval gate and timeout through it. The contract: a wrapper adds no side effect of its own
+saga rollback and budget accounting. The contract: a wrapper adds no side effect of its own
 (it may change the context the wrapped tool runs in), is not a `Compensator`, and does not give a
 wrapped sub-agent a timeout or another `Safety`; `New` refuses the last three with `ErrConfig`. A
 rollback through a wrapper runs the wrapped sub-agent's compensations, never the wrapper's. A
-decorator that embeds a tool (`struct{ agent.Tool }`) and has neither `Spec` nor `Unwrap` would hide
-the embedded tool's approval gate and timeout: `New` refuses it with `ErrConfig` when it does.
+decorator that embeds a tool (`struct{ agent.Tool }`) inherits its `Spec`, approval gate and
+timeout included; one that declares a `Spec` of its own that drops an embedded tool's approval gate
+or timeout would let the gated tool run ungated, and `New` refuses it with `ErrConfig`.
 
 ## `Compensator`: how a tool undoes its side effect
 
@@ -383,9 +358,9 @@ type Compensator interface {
 ```
 
 An optional interface a `Tool` implements to declare how to roll back its write. In a saga
-run (`RunSaga`), if a step fails after earlier writes succeeded, the completed compensatable
+run (`WithSaga()`), if a step fails after earlier writes succeeded, the completed compensatable
 writes are rolled back in reverse order, automatically and recursively through sub-agent
-trees (a wrapped sub-agent included, through `Unwrap() Tool`). `agent.CompensatedFunc[In, Out](name, desc, safety, do, undo)` builds a typed tool
+trees (a wrapped sub-agent included, through `Unwrap() Tool`). `agent.CompensatedFunc[In, Out](name, desc, do, undo, opts...)` (or `MustCompensatedFunc`) builds a typed tool
 that declares both its forward action and its compensator.
 
 ## `Retriever`: bring-your-own RAG

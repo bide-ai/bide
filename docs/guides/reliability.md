@@ -2,22 +2,30 @@
 
 The agent loop is thin; the reliability it needs (timeouts, retries, rate limits, cost tracking,
 hedging) lives in composable middleware in [`middleware/`](../../middleware). Model middleware wraps
-the model call and is attached with `agent.Use`; tool middleware wraps tool execution. All of it is
+the model call and is attached with the `agent.WithMiddleware` option; tool middleware wraps tool
+execution and is attached with `agent.WithToolMiddleware`. All of it is
 optional and stdlib-only, and it rides the durable substrate, so a retried or hedged call is still
 journaled at most once and a crash still resumes safely.
 
-<!-- docsnip: setup model agent.Model; store agent.Durable; tools []agent.Tool; backupModel agent.Model -->
+<!-- docsnip: setup model agent.Model; store *agent.Journal; tools []agent.Tool; backupModel agent.Model -->
 ```go
-a := agent.New(model, store, tools...).
-    Use(
-        middleware.Hedge(800*time.Millisecond, backupModel),                 // race a backup on the tail
-        middleware.Retry(3, middleware.WithRetryIf(middleware.Retryable),    // then retry transient failures
-            middleware.WithTimeout(30*time.Second)),                         // each attempt bounded
-        middleware.RateLimit(middleware.NewRateLimiter(time.Second, 5)),     // cap model call rate
-    )
+a, err := agent.New(
+	model,
+	store,
+	agent.WithTools(tools...),
+	agent.WithMiddleware(
+		middleware.Hedge(800*time.Millisecond, backupModel), // race a slow primary against a backup
+		middleware.Retry(3, middleware.WithRetryIf(middleware.Retryable), // then retry transient failures
+			middleware.WithTimeout(30*time.Second)),
+		middleware.RateLimit(middleware.NewRateLimiter(time.Second, 5)),
+	),
+)
+if err != nil {
+	panic(err)
+}
 ```
 
-`Use` composes outermost-first: the first middleware listed sees the call first and the model last.
+`WithMiddleware` composes outermost-first: the first middleware listed sees the call first and the model last.
 Put `Hedge` outermost (it should race whole attempts) and `Retry` inside it (retry a target that
 failed): middleware inside `Hedge` wraps every target, backups included. Order is a real choice;
 this is the usual one. `RateLimit` and `Cost` count every request actually sent wherever they sit,
@@ -26,7 +34,7 @@ the call (`agent.ModelCall.AddHook`), and the agent's model handler runs every h
 request it sends, numbering the requests of a turn 1, 2, 3 across every attempt and target
 (`ModelCall.Attempt`).
 
-## Model middleware (`agent.Use`)
+## Model middleware (`agent.WithMiddleware`)
 
 ### Timeouts and retries: `Retry`
 
@@ -51,9 +59,10 @@ a negative `n`, `Retry` and `ToolRetry` fail every call with `agent.ErrConfig` a
   protocol, a fault of that one response), and a provider's mid-stream server error. See [error surfacing](models.md#error-surfacing-shared-across-all-three-adapters)
   for how adapters classify provider errors.
 
-<!-- docsnip: setup a *agent.Agent -->
+<!-- docsnip: setup model agent.Model; journal *agent.Journal -->
 ```go
-a.Use(middleware.Retry(3, middleware.WithRetryIf(middleware.Retryable), middleware.WithTimeout(30*time.Second)))
+a, err := agent.New(model, journal, agent.WithMiddleware(
+	middleware.Retry(3, middleware.WithRetryIf(middleware.Retryable), middleware.WithTimeout(30*time.Second))))
 ```
 
 ### Hedging: `Hedge`
@@ -62,10 +71,10 @@ a.Use(middleware.Retry(3, middleware.WithRetryIf(middleware.Retryable), middlewa
 first successful response, cancelling the rest. See [the hedge design and boundaries](#when-to-hedge-vs-retry)
 below; the running demo is [`examples/hedge`](../../examples/hedge/main.go).
 
-<!-- docsnip: setup a *agent.Agent; openaiModel agent.Model -->
+<!-- docsnip: setup anthropicModel, openaiModel agent.Model; journal *agent.Journal -->
 ```go
 // Primary is Anthropic; if it is quiet for 800ms, also try OpenAI and take the first good answer.
-a.Use(middleware.Hedge(800*time.Millisecond, openaiModel))
+a, err := agent.New(anthropicModel, journal, agent.WithMiddleware(middleware.Hedge(800*time.Millisecond, openaiModel)))
 ```
 
 - The primary fires immediately; backups fire after `delay` (so you pay for a backup only when the
@@ -98,10 +107,10 @@ every request the agent sends, wherever it sits in the chain: each attempt of a 
 target a `Hedge` launches waits for its own. An interval of 0 or less sets no limit. Waiters are not
 served in arrival order: a new call can take a freed token ahead of one already waiting.
 
-<!-- docsnip: setup a *agent.Agent -->
+<!-- docsnip: setup model agent.Model; journal *agent.Journal -->
 ```go
 rl := middleware.NewRateLimiter(time.Second, 5) // 5 calls/sec sustained, burst 5
-a.Use(middleware.RateLimit(rl))
+a, err := agent.New(model, journal, agent.WithMiddleware(middleware.RateLimit(rl)))
 ```
 
 ### Cost tracking: `Cost`
@@ -109,10 +118,11 @@ a.Use(middleware.RateLimit(rl))
 `Cost(meter, rates)` accumulates token usage into a `*CostMeter` at the per-token `Rates` you set,
 so you can read spend across a run without touching the loop.
 
-<!-- docsnip: setup a *agent.Agent -->
+<!-- docsnip: setup model agent.Model; journal *agent.Journal -->
 ```go
 meter := &middleware.CostMeter{}
-a.Use(middleware.Cost(meter, middleware.Rates{InputPer1M: 3.00, OutputPer1M: 15.00})) // USD per 1M tokens
+a, err := agent.New(model, journal,
+	agent.WithMiddleware(middleware.Cost(meter, middleware.Rates{InputPer1M: 3.00, OutputPer1M: 15.00}))) // USD per 1M tokens
 // ... after running ...
 s := meter.Snapshot()
 fmt.Printf("spent $%.4f, usage %+v\n", s.SpendUSD, s.Spend)
@@ -155,7 +165,7 @@ handler, hooks included.
 
 ## Tool middleware
 
-Tool execution has its own wrappers (attached with `agent.UseTool`):
+Tool execution has its own wrappers (attached with the `agent.WithToolMiddleware` option):
 
 - `ToolRetry(n, opts...)` retries a tool call with the same backoff/classification options as
   `Retry`, for tools that are retry-safe (`ReadOnly` or `Idempotent`). A tool that is not
@@ -210,8 +220,8 @@ running.
 error, or wraps it (`%w`), rather than an error of its own. The agent reads the chain: a saga
 rollback's re-run that the call guard refused (an `audit.AttenuatingSubAgent` delegation's grant
 expired) is listed in `SagaAborted.UnknownOutcome` and the rollback goes on, but behind a
-middleware that drops the chain the rollback stops at that step, and every later `RunSaga` meets
-the same refusal.
+middleware that drops the chain the rollback stops at that step, and every later drive of the saga
+meets the same refusal.
 
 ## When to hedge vs retry
 

@@ -10,25 +10,27 @@ func TestSession_MultiTurnCarriesHistory(t *testing.T) {
 	var got Request
 	inner := &scriptModel{turns: [][]Emit{textTurn("hello"), textTurn("as I said, hello")}}
 	m := &captureModel{inner: inner, got: &got}
-	a := New(m, NewMemStore())
+	a := mustNew(m, memJournal())
 
 	s, err := a.Session(context.Background(), "conv")
 	if err != nil {
 		t.Fatal(err)
 	}
 
-	a1, err := s.Send(context.Background(), "hi")
+	res, err := s.Send(context.Background(), UserText("hi"))
 	if err != nil {
 		t.Fatalf("turn 1: %v", err)
 	}
+	a1 := res.Message
 	if textOf(a1) != "hello" {
 		t.Fatalf("answer 1 = %q", textOf(a1))
 	}
 
-	a2, err := s.Send(context.Background(), "what did you say?")
+	res2, err := s.Send(context.Background(), UserText("what did you say?"))
 	if err != nil {
 		t.Fatalf("turn 2: %v", err)
 	}
+	a2 := res2.Message
 	if textOf(a2) != "as I said, hello" {
 		t.Fatalf("answer 2 = %q", textOf(a2))
 	}
@@ -55,18 +57,18 @@ func TestSession_MultiTurnCarriesHistory(t *testing.T) {
 
 // A session reloaded from the same store rebuilds the transcript and continues.
 func TestSession_DurableReloadContinues(t *testing.T) {
-	store := NewMemStore()
+	store := memJournal()
 	m := &scriptModel{turns: [][]Emit{textTurn("a1"), textTurn("a2"), textTurn("a3")}}
-	a := New(m, store)
+	a := mustNew(m, store)
 
 	s1, err := a.Session(context.Background(), "conv")
 	if err != nil {
 		t.Fatal(err)
 	}
-	if _, err := s1.Send(context.Background(), "q1"); err != nil {
+	if _, err := s1.Send(context.Background(), UserText("q1")); err != nil {
 		t.Fatal(err)
 	}
-	if _, err := s1.Send(context.Background(), "q2"); err != nil {
+	if _, err := s1.Send(context.Background(), UserText("q2")); err != nil {
 		t.Fatal(err)
 	}
 
@@ -84,10 +86,11 @@ func TestSession_DurableReloadContinues(t *testing.T) {
 			textOf(h[0]), textOf(h[1]), textOf(h[2]), textOf(h[3]))
 	}
 
-	a3, err := s2.Send(context.Background(), "q3")
+	res, err := s2.Send(context.Background(), UserText("q3"))
 	if err != nil {
 		t.Fatalf("turn 3 after reload: %v", err)
 	}
+	a3 := res.Message
 	if textOf(a3) != "a3" || s2.Turns() != 3 {
 		t.Fatalf("turn 3 answer=%q turns=%d", textOf(a3), s2.Turns())
 	}
@@ -103,13 +106,13 @@ func TestSession_ToolTurnThenPlainHistory(t *testing.T) {
 	m := &captureModel{inner: inner, got: &got}
 	var calls int
 	tool := &countingTool{name: "lookup", safety: Safety{ReadOnly: true}, calls: &calls}
-	a := New(m, NewMemStore(), tool)
+	a := mustNew(m, memJournal(), WithTools(tool))
 
 	s, _ := a.Session(context.Background(), "c")
-	if _, err := s.Send(context.Background(), "look"); err != nil {
+	if _, err := s.Send(context.Background(), UserText("look")); err != nil {
 		t.Fatal(err)
 	}
-	if _, err := s.Send(context.Background(), "again"); err != nil {
+	if _, err := s.Send(context.Background(), UserText("again")); err != nil {
 		t.Fatal(err)
 	}
 

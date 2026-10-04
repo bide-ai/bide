@@ -7,11 +7,10 @@ import (
 )
 
 // With no accepted final_answer call, the answer is the text of the run's final turn, the same
-// message Run returns and RunTypedNative decodes. RunTyped used to take the last text of ANY turn,
+// message Run returns and RunTyped (OutputNative) decodes. RunTyped used to take the last text of ANY turn,
 // so a draft the model wrote beside a tool call stood in for a final turn that carried no text.
 func TestRunTyped_TextFallbackIsTheFinalTurn(t *testing.T) {
-	work := Func("work", "does work", Safety{ReadOnly: true},
-		func(context.Context, struct{}) (string, error) { return "ok", nil })
+	work := MustFunc("work", "does work", func(context.Context, struct{}) (string, error) { return "ok", nil }, WithSafety(Safety{ReadOnly: true}))
 	draft := []Event{
 		TextDelta{Text: `{"name":"draft"}`},
 		ToolCallDelta{Index: 0, ID: "w1", Name: "work", ArgsFragment: []byte(`{}`)},
@@ -20,14 +19,14 @@ func TestRunTyped_TextFallbackIsTheFinalTurn(t *testing.T) {
 
 	// The final turn has no text: there is no answer, not the draft.
 	m := eventTurnsModel{draft, {Finish{Reason: "stop"}}}
-	got, err := RunTyped[typedAnswer](context.Background(), New(m, NewMemStore(), work), "r1", "go")
+	got, _, err := mustNew(m, memJournal(), WithTools(work)).RunTyped[typedAnswer](context.Background(), "r1", UserText("go"))
 	if !errors.Is(err, ErrProtocol) {
 		t.Fatalf("RunTyped = %+v, %v; want ErrProtocol (the final turn has no answer)", got, err)
 	}
 
 	// The final turn's text is the answer.
 	m = eventTurnsModel{draft, {TextDelta{Text: `{"name":"final"}`}, Finish{Reason: "stop"}}}
-	got, err = RunTyped[typedAnswer](context.Background(), New(m, NewMemStore(), work), "r2", "go")
+	got, _, err = mustNew(m, memJournal(), WithTools(work)).RunTyped[typedAnswer](context.Background(), "r2", UserText("go"))
 	if err != nil || got.Name != "final" {
 		t.Fatalf("RunTyped = %+v, %v; want the final turn's answer", got, err)
 	}
@@ -41,7 +40,7 @@ func TestRunTyped_NonObjectTypeIsAConfigError(t *testing.T) {
 	check := func(name string, run func(*Agent) error) {
 		t.Helper()
 		m := &countModel{inner: NewScriptedModel(TextTurn("{}"))}
-		if err := run(New(m, NewMemStore())); !errors.Is(err, ErrConfig) {
+		if err := run(mustNew(m, memJournal())); !errors.Is(err, ErrConfig) {
 			t.Errorf("RunTyped[%s] = %v, want ErrConfig", name, err)
 		}
 		if n := m.calls.Load(); n != 0 {
@@ -49,17 +48,17 @@ func TestRunTyped_NonObjectTypeIsAConfigError(t *testing.T) {
 		}
 	}
 	ctx := context.Background()
-	check("[]string", func(a *Agent) error { _, err := RunTyped[[]string](ctx, a, "r", "go"); return err })
-	check("string", func(a *Agent) error { _, err := RunTyped[string](ctx, a, "r", "go"); return err })
-	check("any", func(a *Agent) error { _, err := RunTyped[any](ctx, a, "r", "go"); return err })
+	check("[]string", func(a *Agent) error { _, _, err := a.RunTyped[[]string](ctx, "r", UserText("go")); return err })
+	check("string", func(a *Agent) error { _, _, err := a.RunTyped[string](ctx, "r", UserText("go")); return err })
+	check("any", func(a *Agent) error { _, _, err := a.RunTyped[any](ctx, "r", UserText("go")); return err })
 
 	// A pointer to a struct, or a map, is an object.
 	m := NewScriptedModel(ToolTurn("f1", finalAnswerTool, `{"name":"p"}`))
-	if got, err := RunTyped[*typedAnswer](ctx, New(m, NewMemStore()), "p", "go"); err != nil || got == nil || got.Name != "p" {
+	if got, _, err := mustNew(m, memJournal()).RunTyped[*typedAnswer](ctx, "p", UserText("go")); err != nil || got == nil || got.Name != "p" {
 		t.Errorf("RunTyped[*typedAnswer] = %+v, %v", got, err)
 	}
 	m = NewScriptedModel(ToolTurn("f1", finalAnswerTool, `{"k":1}`))
-	if got, err := RunTyped[map[string]int](ctx, New(m, NewMemStore()), "m", "go"); err != nil || got["k"] != 1 {
+	if got, _, err := mustNew(m, memJournal()).RunTyped[map[string]int](ctx, "m", UserText("go")); err != nil || got["k"] != 1 {
 		t.Errorf("RunTyped[map[string]int] = %v, %v", got, err)
 	}
 }

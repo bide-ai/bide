@@ -6,8 +6,8 @@ package agent_test
 //
 // For each scenario, the harness runs the real runtime against a MemStore wrapped to fail the
 // scheduled persists, and re-drives the run the way an operator would until it settles: a crash is
-// resumed, a PendingApproval gets the scenario's decision (Approve) and is resumed, and a
-// ResumeHalt is reconciled with the call's true outcome (ResolveHalt) and resumed. It then checks:
+// resumed, a ApprovalPending gets the scenario's decision (Approve) and is resumed, and a
+// OutcomeUnknown is reconciled with the call's true outcome (ResolveHalt) and resumed. It then checks:
 //
 //   - the settled outcome (answer, pause, or saga abort with its compensated and uncompensated
 //     lists) equals the reference's;
@@ -46,6 +46,7 @@ import (
 	"time"
 
 	"github.com/bide-ai/bide/agent"
+	"github.com/bide-ai/bide/agent/agenttest"
 )
 
 // errRMCrash is the injected storage failure. Like a real store's, it wraps ErrStorage.
@@ -182,18 +183,17 @@ type rmTool struct {
 	comp, gated bool
 }
 
-func (t *rmTool) Name() string                { return rmToolName(t.kind, t.comp, t.gated) }
-func (t *rmTool) Description() string         { return "" }
-func (t *rmTool) ArgsSchema() json.RawMessage { return nil }
+func (t *rmTool) name() string { return rmToolName(t.kind, t.comp, t.gated) }
+
 func (t *rmTool) Spec() agent.ToolSpec {
-	s := agent.ToolSpec{Name: t.Name(), Safety: t.Safety()}
+	s := agent.ToolSpec{Name: t.name(), Input: json.RawMessage(`{"type":"object"}`), Safety: t.safety()}
 	if t.gated {
 		s.Approval = agent.SingleApproval()
 	}
 	return s
 }
 
-func (t *rmTool) Safety() agent.Safety {
+func (t *rmTool) safety() agent.Safety {
 	var s agent.Safety
 	switch t.kind {
 	case rmRO:
@@ -205,7 +205,7 @@ func (t *rmTool) Safety() agent.Safety {
 }
 
 func (t *rmTool) Call(ctx context.Context, args json.RawMessage) (json.RawMessage, error) {
-	c := t.w.callFor(t.Name(), args)
+	c := t.w.callFor(t.name(), args)
 	if c == nil {
 		return nil, errors.New("unexpected call")
 	}
@@ -230,7 +230,7 @@ func (t *rmTool) Call(ctx context.Context, args json.RawMessage) (json.RawMessag
 type rmCompTool struct{ *rmTool }
 
 func (t rmCompTool) Compensate(_ context.Context, args, result json.RawMessage) error {
-	c := t.w.callFor(t.Name(), args)
+	c := t.w.callFor(t.name(), args)
 	if c == nil {
 		return errors.New("unexpected compensation")
 	}
@@ -271,14 +271,14 @@ func (w *rmWorld) tools() []agent.Tool {
 
 // agents builds a fresh process's agent tree over store: the root, a sub-agent it can call, and
 // one that sub-agent can call.
-func (w *rmWorld) agents(store agent.Durable, model agent.Model) *agent.Agent {
+func (w *rmWorld) agents(store *agent.Journal, model agent.Model) *agent.Agent {
 	var build func(depth int) *agent.Agent
 	build = func(depth int) *agent.Agent {
 		ts := w.tools()
 		if depth < 2 {
-			ts = append(ts, agent.SubAgent(fmt.Sprintf("sub%d", depth+1), "", build(depth+1)))
+			ts = append(ts, agent.MustSubAgent(fmt.Sprintf("sub%d", depth+1), "", build(depth+1)))
 		}
-		return agent.New(model, store, ts...).SetMaxConcurrency(w.sc.MaxConc)
+		return agenttest.MustNew(model, store, agent.WithTools(ts...), agent.WithMaxConcurrency(max(w.sc.MaxConc, 0)))
 	}
 	return build(0)
 }
@@ -378,7 +378,7 @@ func (w *rmWorld) observe(ctx context.Context, script string, turn int, conv []r
 // rmReplayModel serves each run of the tree its own journaled turns (agent.Replay), telling the
 // runs apart by RunScope, which a sub-run's model calls carry.
 type rmReplayModel struct {
-	src  agent.Durable
+	src  *agent.Journal
 	root string
 
 	mu     sync.Mutex
@@ -435,8 +435,8 @@ func (w *rmWorld) drive(mem *agent.MemStore, model agent.Model, crashes []int, d
 		if err != nil {
 			obs.lastErrMsg = err.Error()
 		}
-		var halt *agent.ResumeHalt
-		var pa *agent.PendingApproval
+		var halt *agent.OutcomeUnknown
+		var pa *agent.ApprovalPending
 		var sa *agent.SagaAborted
 		switch {
 		case err == nil:
@@ -459,7 +459,7 @@ func (w *rmWorld) drive(mem *agent.MemStore, model agent.Model, crashes []int, d
 				obs.out = rmOutcome{Kind: rmPaused, Paused: pa.ToolUseID}
 				return obs
 			}
-			if aerr := agent.Approve(ctx, mem, pa.RunID, pa.ToolUseID, c.Decision == rmApprove); aerr != nil {
+			if aerr := agent.Approve(ctx, agenttest.MustJournal(mem), pa.RunID, pa.ToolUseID, c.Decision == rmApprove); aerr != nil {
 				obs.out = rmOutcome{Kind: rmOther, Err: "approve: " + aerr.Error()}
 				return obs
 			}
@@ -501,25 +501,41 @@ func rmDriveOnce(ctx context.Context, root *agent.Agent, sc *rmScenario) (agent.
 	in := sc.Root.Name
 	switch {
 	case sc.API == 1 && sc.Saga:
-		res, err := root.RunSagaResult(ctx, rmRunID, in)
+		res, err := root.Run(ctx, rmRunID, agent.UserText(in), agent.WithSaga())
 		if err != nil {
 			return agent.Message{}, err
 		}
 		return res.Message, nil
 	case sc.API == 1:
-		res, err := root.RunResult(ctx, rmRunID, in)
+		res, err := root.Run(ctx, rmRunID, agent.UserText(in))
 		if err != nil {
 			return agent.Message{}, err
 		}
 		return res.Message, nil
 	case sc.API == 2 && sc.Saga:
-		return root.StreamSaga(ctx, rmRunID, in).Final()
+		res2, err := root.Stream(ctx, rmRunID, agent.UserText(in), agent.WithSaga()).Result()
+		if err != nil {
+			return agent.Message{}, err
+		}
+		return res2.Message, nil
 	case sc.API == 2:
-		return root.Stream(ctx, rmRunID, in).Final()
+		res3, err := root.Stream(ctx, rmRunID, agent.UserText(in)).Result()
+		if err != nil {
+			return agent.Message{}, err
+		}
+		return res3.Message, nil
 	case sc.Saga:
-		return root.RunSaga(ctx, rmRunID, in)
+		res4, err := root.Run(ctx, rmRunID, agent.UserText(in), agent.WithSaga())
+		if err != nil {
+			return agent.Message{}, err
+		}
+		return res4.Message, nil
 	default:
-		return root.Run(ctx, rmRunID, in)
+		res5, err := root.Run(ctx, rmRunID, agent.UserText(in))
+		if err != nil {
+			return agent.Message{}, err
+		}
+		return res5.Message, nil
 	}
 }
 
@@ -527,7 +543,7 @@ func rmDriveOnce(ctx context.Context, root *agent.Agent, sc *rmScenario) (agent.
 // call's true outcome. A call the provider never saw is, going forward, carried out by hand and
 // its outcome recorded (the run then continues as if it had run normally); during a rollback it
 // is recorded as not performed, so there is nothing to undo.
-func (w *rmWorld) reconcile(mem *agent.MemStore, h *agent.ResumeHalt, rollingBack bool) {
+func (w *rmWorld) reconcile(mem *agent.MemStore, h *agent.OutcomeUnknown, rollingBack bool) {
 	c := w.calls[h.Op.ID]
 	if c == nil {
 		w.problem("halt on an unknown call: %v", h)
@@ -543,7 +559,7 @@ func (w *rmWorld) reconcile(mem *agent.MemStore, h *agent.ResumeHalt, rollingBac
 		}
 	}
 	w.mu.Unlock()
-	if err := agent.ResolveHalt(context.Background(), mem, h.RunID, h.Op.ID, json.RawMessage(res.content), res.isError); err != nil {
+	if err := agent.ResolveHalt(context.Background(), agenttest.MustJournal(mem), agent.HaltRef{RunID: h.RunID, Op: agent.OpRef{Kind: agent.OpTool, ID: h.Op.ID}, Cause: agent.HaltCrashed}, agent.Outcome{Result: json.RawMessage(res.content), IsError: res.isError}); err != nil {
 		w.problem("ResolveHalt(%s, %s): %v", h.RunID, h.Op.ID, err)
 	}
 }
@@ -558,7 +574,7 @@ func (w *rmWorld) histLens(mem *agent.MemStore) map[string]int {
 	}
 	w.mu.Unlock()
 	for _, id := range ids {
-		recs, _ := mem.History(context.Background(), id)
+		recs, _ := agenttest.MustJournal(mem).History(context.Background(), id)
 		out[id] = len(recs)
 	}
 	return out
@@ -614,6 +630,7 @@ func rmCheckObs(sc *rmScenario) (ps []string, obs rmObserved) {
 
 	w := newRMWorld(sc, ref, true)
 	mem := agent.NewMemStore()
+	mj := agenttest.MustJournal(mem)
 	obs = w.drive(mem, &rmModel{w: w}, sc.Crashes, sc.Dead)
 	ps = append(ps, w.problems...)
 	if !obs.out.equal(want) {
@@ -628,7 +645,7 @@ func rmCheckObs(sc *rmScenario) (ps []string, obs rmObserved) {
 	}
 
 	// IsComplete agrees with the outcome, for the root and every sub-run that ran.
-	if done, err := agent.IsComplete(ctx, mem, rmRunID); err != nil || done != (obs.out.Kind == rmCompleted) {
+	if done, err := agent.IsComplete(ctx, mj, rmRunID); err != nil || done != (obs.out.Kind == rmCompleted) {
 		ps = append(ps, fmt.Sprintf("IsComplete(root) = %v, %v; outcome %v", done, err, obs.out.Kind))
 	}
 	w.mu.Lock()
@@ -640,7 +657,7 @@ func rmCheckObs(sc *rmScenario) (ps []string, obs rmObserved) {
 			ps = append(ps, fmt.Sprintf("sub-run %s (%s) ran, but never does in the reference", script, id))
 			continue
 		}
-		done, err := agent.IsComplete(ctx, mem, id)
+		done, err := agent.IsComplete(ctx, mj, id)
 		if err != nil || done != (r.outcome.Kind == rmCompleted) {
 			ps = append(ps, fmt.Sprintf("IsComplete(%s) = %v, %v; reference outcome %v", id, done, err, r.outcome.Kind))
 		}
@@ -663,7 +680,7 @@ func rmCheckObs(sc *rmScenario) (ps []string, obs rmObserved) {
 
 	// The journal replays to the same outcome, with the reference's effects.
 	rw := newRMWorld(sc, ref, false)
-	rep := rw.drive(agent.NewMemStore(), &rmReplayModel{src: mem, root: rmRunID, models: map[string]agent.Model{}}, nil, false)
+	rep := rw.drive(agent.NewMemStore(), &rmReplayModel{src: mj, root: rmRunID, models: map[string]agent.Model{}}, nil, false)
 	ps = append(ps, rw.problems...)
 	if !rep.out.equal(obs.out) {
 		ps = append(ps, fmt.Sprintf("replay: outcome %v, want %v", rep.out, obs.out))

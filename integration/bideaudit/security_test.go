@@ -9,7 +9,7 @@ import (
 	"path/filepath"
 	"testing"
 
-	"github.com/bide-ai/bide/agent"
+	"github.com/bide-ai/bide/agent/agenttest"
 	"github.com/bide-ai/bide/audit"
 	"github.com/bide-ai/bide/govern"
 )
@@ -43,7 +43,7 @@ func exitCode(t *testing.T, bin string, args ...string) (int, string) {
 func TestVerifyQuorumCLI_RejectsVoteFromAnotherRun(t *testing.T) {
 	ctx := context.Background()
 	dir := t.TempDir()
-	store := agent.NewMemStore()
+	store := agenttest.MemJournal()
 	decide := func(v string) func(context.Context) (string, error) {
 		return func(context.Context) (string, error) { return v, nil }
 	}

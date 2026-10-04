@@ -13,18 +13,17 @@ import (
 // outcome is unknown (#57), in a saga.
 func TestR117Base_SagaUnknownOutcomeOfARetrySafeWrite(t *testing.T) {
 	var committed, undone atomic.Int32
-	hold := CompensatedFunc("hold", "", Safety{Idempotent: true},
-		func(ctx context.Context, _ struct{}) (string, error) {
-			committed.Add(1)
-			return "", fmt.Errorf("connection reset: %w", ErrToolOutcomeUnknown)
-		},
-		func(context.Context, struct{}, string) error { undone.Add(1); return nil })
-	store := NewMemStore()
+	hold := MustCompensatedFunc("hold", "", func(ctx context.Context, _ struct{}) (string, error) {
+		committed.Add(1)
+		return "", fmt.Errorf("connection reset: %w", ErrToolOutcomeUnknown)
+	},
+		func(context.Context, struct{}, string) error { undone.Add(1); return nil }, WithSafety(Safety{Idempotent: true}))
+	store := memJournal()
 	m := NewScriptedModel(ToolTurn("c1", "hold", `{}`), TextTurn("done"))
-	_, err := New(m, store, hold).RunSaga(context.Background(), "s1", "book")
+	_, err := mustNew(m, store, WithTools(hold)).Run(context.Background(), "s1", UserText("book"), WithSaga())
 	var ab *SagaAborted
 	if !errors.As(err, &ab) {
-		t.Fatalf("RunSaga: err = %v, want *SagaAborted", err)
+		t.Fatalf("saga Run: err = %v, want *SagaAborted", err)
 	}
 	// Reported in the distinct UnknownOutcome list (it may have committed), not compensated blind.
 	if undone.Load() != 0 || len(ab.UnknownOutcome) != 1 || ab.UnknownOutcome[0] != "hold" || len(ab.Uncompensated) != 0 {
@@ -38,17 +37,20 @@ func TestR117Base_SagaUnknownOutcomeOfARetrySafeWrite(t *testing.T) {
 // A sub-agent's unknown-outcome step reaches the root's SagaAborted.UnknownOutcome: the tree's
 // lists are whole.
 func TestR117_UnknownOutcomeInASubAgentIsReportedAtTheRoot(t *testing.T) {
-	hold := CompensatedFunc("hold", "", Safety{Idempotent: true},
-		func(ctx context.Context, _ struct{}) (string, error) {
-			return "", fmt.Errorf("connection reset: %w", ErrToolOutcomeUnknown)
-		},
-		func(context.Context, struct{}, string) error { return nil })
-	store := NewMemStore()
-	sub := New(NewScriptedModel(ToolTurn("h1", "hold", `{}`), TextTurn("done")), store, hold)
-	parent := New(NewScriptedModel(ToolTurn("p1", "delegate", `{"task":"x"}`), TextTurn("done")), store, SubAgent("delegate", "", sub))
-	_, err := parent.RunSaga(context.Background(), "root", "go")
+	hold := MustCompensatedFunc("hold", "", func(ctx context.Context, _ struct{}) (string, error) {
+		return "", fmt.Errorf("connection reset: %w", ErrToolOutcomeUnknown)
+	},
+		func(context.Context, struct{}, string) error { return nil }, WithSafety(Safety{Idempotent: true}))
+	store := memJournal()
+	sub := mustNew(NewScriptedModel(ToolTurn("h1", "hold", `{}`), TextTurn("done")), store, WithTools(hold))
+	parent := mustNew(
+		NewScriptedModel(ToolTurn("p1", "delegate", `{"task":"x"}`), TextTurn("done")),
+		store,
+		WithTools(MustSubAgent("delegate", "", sub)),
+	)
+	_, err := parent.Run(context.Background(), "root", UserText("go"), WithSaga())
 	var ab *SagaAborted
 	if !errors.As(err, &ab) || len(ab.UnknownOutcome) != 1 || ab.UnknownOutcome[0] != "hold" {
-		t.Fatalf("RunSaga = %v; want *SagaAborted naming hold as unknown", err)
+		t.Fatalf("saga Run = %v; want *SagaAborted naming hold as unknown", err)
 	}
 }

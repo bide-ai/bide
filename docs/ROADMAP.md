@@ -23,9 +23,9 @@ Shipped earlier: v0.9.0 put the claim protocol under a model checker and rebuilt
 
 The pre-1.0 API redesign ([design proposal](https://github.com/bide-ai/bide/pull/64)) settles the shape bide will keep at 1.0:
 
-- Done in v0.9.0: a storage port (`Store`) separated from the journal semantics bide owns (`Journal`), with the store contract stated as numbered requirements and a conformance suite every store must pass (P6a); a sealed pause contract (P10); typed model calls (P9); flow nodes lowered onto `agent.Step` (P5b); and versioned journal and proof formats (P6a, P11).
+- Done in v0.9.0: a storage port (`Store`) separated from the journal semantics bide owns (`Journal`), with the store contract stated as numbered requirements and a conformance suite every store must pass (P6a); a sealed pause contract (P10); typed model calls (P9); flow nodes lowered onto `agent.Journal.Step` (P5b); and versioned journal and proof formats (P6a, P11).
 - Done in v0.10.0: tool internals on a tool specification, with approval split from safety and tool timeouts (P12); construction under `Build`, with option scopes and `RunInfo` (P13); and one run entry point with per-run options that survive recovery, `Cancel`, `Status` and recovery dispatch, under transitional names (P14).
-- Next (P15 and P16): the consolidated rewrite that renames the transitional API to its 1.0 names and removes the old one.
+- In progress (P15, unreleased): the consolidated rewrite that gives the transitional API its final names and removes the old one (the `Durable` interface, the string entry points, the builder methods, the old `Tool` method set). The CHANGELOG lists the changes name by name. P16 (docs and cleanup) follows.
 - Go 1.27 generic methods where a generic operation has a natural receiver.
 
 Changes that touch claims, the journal, leases, sagas or proofs are reviewed adversarially before they merge.
@@ -69,7 +69,7 @@ bide's governance tier (`govern`) builds its state machines with [gsm](https://g
 
 ### bide underneath other agent frameworks (Go)
 
-bide is a durability and accountability layer, not only a framework of its own. Go teams using other agent frameworks can keep them and put bide under the dangerous parts: wrapping a tool's side effect in `agent.Step` gives it bide's guarantees (claimed before it runs, recorded after, halted on an ambiguous outcome, provable afterwards) without changing the rest of the framework. The benchmark harness already drives Google's ADK for Go, trpc-agent-go, Eino and langchaingo this way.
+bide is a durability and accountability layer, not only a framework of its own. Go teams using other agent frameworks can keep them and put bide under the dangerous parts: wrapping a tool's side effect in `agent.Journal.Step` gives it bide's guarantees (claimed before it runs, recorded after, halted on an ambiguous outcome, provable afterwards) without changing the rest of the framework. The benchmark harness already drives Google's ADK for Go, trpc-agent-go, Eino and langchaingo this way.
 
 - Worked examples and a guide for using bide under ADK for Go, Eino, trpc-agent-go and langchaingo, stating exactly what bide guards (each wrapped side effect, approvals, proofs) and what it does not (the framework's own loop resumes as it always did).
 - Where a framework exposes a pluggable persistence hook (a session, checkpoint or memory service), a bide-backed implementation, so the framework's own state is journaled and its resume becomes exact.

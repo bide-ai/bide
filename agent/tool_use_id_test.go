@@ -18,7 +18,7 @@ func TestRun_ToolUseIDReusedAcrossTurnsIsAnError(t *testing.T) {
 		toolTurn("call_lookup0", "lookup", `{"q":"second"}`),
 		textTurn("done"),
 	}}
-	_, err := New(m, NewMemStore(), tool).Run(context.Background(), "r", "go")
+	_, err := mustNew(m, memJournal(), WithTools(tool)).Run(context.Background(), "r", UserText("go"))
 	if !errors.Is(err, ErrToolUseIDReused) || !errors.Is(err, ErrProtocol) || !errors.Is(err, ErrModel) {
 		t.Fatalf("err = %v (tool ran %d times), want ErrToolUseIDReused wrapping ErrProtocol and ErrModel", err, calls)
 	}
@@ -36,7 +36,7 @@ func TestRun_ToolUseIDTwiceInOneTurnIsAnError(t *testing.T) {
 		{Event: ToolCallDelta{Index: 1, ID: "c", Name: "lookup", ArgsFragment: json.RawMessage(`{}`)}},
 		{Event: Finish{Reason: "tool_use"}},
 	}, textTurn("done")}}
-	_, err := New(m, NewMemStore(), tool).Run(context.Background(), "r", "go")
+	_, err := mustNew(m, memJournal(), WithTools(tool)).Run(context.Background(), "r", UserText("go"))
 	if !errors.Is(err, ErrToolUseIDReused) {
 		t.Fatalf("err = %v (tool ran %d times), want ErrToolUseIDReused", err, calls)
 	}
@@ -50,7 +50,7 @@ func TestRun_EmptyToolUseIDIsAnError(t *testing.T) {
 	var calls int
 	tool := &countingTool{name: "lookup", safety: Safety{ReadOnly: true}, calls: &calls}
 	m := &scriptModel{turns: [][]Emit{toolTurn("", "lookup", `{}`), textTurn("done")}}
-	_, err := New(m, NewMemStore(), tool).Run(context.Background(), "r", "go")
+	_, err := mustNew(m, memJournal(), WithTools(tool)).Run(context.Background(), "r", UserText("go"))
 	if !errors.Is(err, ErrToolUseIDReused) {
 		t.Fatalf("err = %v (tool ran %d times), want ErrToolUseIDReused", err, calls)
 	}
@@ -77,11 +77,12 @@ func TestRun_ToolUseIDReusedIsRetriedByMiddleware(t *testing.T) {
 			return resp, err
 		}
 	}
-	store := NewMemStore()
-	out, err := New(m, store, tool).Use(retryOnce).Run(context.Background(), "r", "go")
+	store := memJournal()
+	res, err := mustNew(m, store, WithTools(tool), WithMiddleware(retryOnce)).Run(context.Background(), "r", UserText("go"))
 	if err != nil {
 		t.Fatal(err)
 	}
+	out := res.Message
 	if out.Text() != "done" || calls != 2 {
 		t.Fatalf("out = %q, tool ran %d times; want done and 2", out.Text(), calls)
 	}
@@ -101,7 +102,7 @@ func TestRun_ToolUseIDReusedIsRetriedByMiddleware(t *testing.T) {
 // first call's ID) still replays: recorded turns are not re-checked, only live ones.
 func TestRun_ReplaysJournalWithReusedToolUseID(t *testing.T) {
 	ctx := context.Background()
-	store := NewMemStore()
+	store := memJournal()
 	asst := func(id string) *Message {
 		return &Message{Role: RoleAssistant, Parts: []Part{ToolUse{ID: id, Name: "lookup", Args: json.RawMessage(`{}`)}}}
 	}
@@ -113,17 +114,18 @@ func TestRun_ReplaysJournalWithReusedToolUseID(t *testing.T) {
 		{"call_lookup0", Record{Kind: StepToolResult, ToolUseID: "call_lookup0", Result: json.RawMessage(`1`)}},
 		{"@llm/1", Record{Kind: StepModel, Message: asst("call_lookup0")}},
 	} {
-		if _, err := store.Do(ctx, "r", r.name, func(context.Context) (Record, error) { return r.rec, nil }); err != nil {
+		if _, err := store.do(ctx, "r", r.name, func(context.Context) (Record, error) { return r.rec, nil }); err != nil {
 			t.Fatal(err)
 		}
 	}
 	var calls int
 	tool := &countingTool{name: "lookup", safety: Safety{ReadOnly: true}, calls: &calls}
 	m := &scriptModel{turns: [][]Emit{textTurn("done")}}
-	out, err := New(m, store, tool).Run(ctx, "r", "go")
+	res, err := mustNew(m, store, WithTools(tool)).Run(ctx, "r", UserText("go"))
 	if err != nil {
 		t.Fatalf("replay of a recorded journal failed: %v", err)
 	}
+	out := res.Message
 	if out.Text() != "done" || calls != 0 {
 		t.Fatalf("out = %q, tool ran %d times; want done and 0", out.Text(), calls)
 	}
@@ -138,7 +140,7 @@ func TestRunTyped_ReusedFinalAnswerIDIsReported(t *testing.T) {
 		ToolTurn("call_final_answer0", finalAnswerTool, `{"name":"ok"}`),
 		TextTurn("done"),
 	)}
-	_, err := RunTyped[typedAnswer](context.Background(), New(m, NewMemStore()).WithMaxTurns(4), "r", "go")
+	_, _, err := mustNew(m, memJournal(), WithMaxTurns(4)).RunTyped[typedAnswer](context.Background(), "r", UserText("go"))
 	if !errors.Is(err, ErrToolUseIDReused) {
 		t.Fatalf("err = %v, want ErrToolUseIDReused", err)
 	}
@@ -161,7 +163,7 @@ func TestRun_ToolUseIDReusedBySubstitutedResponseIsAnError(t *testing.T) {
 			return next(ctx, call)
 		}
 	}
-	_, err := New(m, NewMemStore(), tool).Use(substitute).WithMaxTurns(4).Run(context.Background(), "r", "go")
+	_, err := must(mustNew(m, memJournal(), WithTools(tool), WithMiddleware(substitute)).With(WithMaxTurns(4))).Run(context.Background(), "r", UserText("go"))
 	if !errors.Is(err, ErrToolUseIDReused) {
 		t.Fatalf("err = %v (tool ran %d times), want ErrToolUseIDReused", err, calls)
 	}

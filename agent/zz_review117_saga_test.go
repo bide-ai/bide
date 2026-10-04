@@ -30,20 +30,19 @@ func TestR117_SagaLateErrorOfARetrySafeWriteIsNeitherUndoneNorReported(t *testin
 
 func testR117SagaLateErrorOfARetrySafeWrite(t *testing.T) {
 	var committed, undone atomic.Int32
-	hold := CompensatedFunc("hold", "", Safety{Idempotent: true},
-		func(ctx context.Context, _ struct{}) (string, error) {
-			committed.Add(1) // the provider commits the hold ...
-			<-ctx.Done()     // ... and its reply arrives after the deadline
-			return "", ctx.Err()
-		},
-		func(context.Context, struct{}, string) error { undone.Add(1); return nil },
+	hold := MustCompensatedFunc("hold", "", func(ctx context.Context, _ struct{}) (string, error) {
+		committed.Add(1) // the provider commits the hold ...
+		<-ctx.Done()     // ... and its reply arrives after the deadline
+		return "", ctx.Err()
+	},
+		func(context.Context, struct{}, string) error { undone.Add(1); return nil }, WithSafety(Safety{Idempotent: true}),
 		WithTimeout(time.Millisecond))
-	store := NewMemStore()
+	store := memJournal()
 	m := NewScriptedModel(ToolTurn("c1", "hold", `{}`), TextTurn("done"))
-	_, err := New(m, store, hold).RunSaga(context.Background(), "s1", "book")
+	_, err := mustNew(m, store, WithTools(hold)).Run(context.Background(), "s1", UserText("book"), WithSaga())
 	var ab *SagaAborted
 	if !errors.As(err, &ab) {
-		t.Fatalf("RunSaga: err = %v, want *SagaAborted", err)
+		t.Fatalf("saga Run: err = %v, want *SagaAborted", err)
 	}
 	if committed.Load() != 1 || undone.Load() != 0 || len(ab.UnknownOutcome) != 1 || ab.UnknownOutcome[0] != "hold" {
 		t.Fatalf("a write with an unknown outcome: committed %d, undone %d, compensated %q, uncompensated %q, unknown %q; want it committed once, reported as unknown, not compensated",
@@ -62,17 +61,17 @@ func TestR117_NextOnceKeyIsScopedToOneCall(t *testing.T) {
 func testR117NextOnceKeyIsScopedToOneCall(t *testing.T) {
 	var mu sync.Mutex
 	applied := map[string]bool{}
-	post := Func("post", "", Safety{Idempotent: true}, func(ctx context.Context, _ struct{}) (string, error) {
+	post := MustFunc("post", "", func(ctx context.Context, _ struct{}) (string, error) {
 		k := NextOnceKey(ctx)
 		mu.Lock()
 		applied[k] = true
 		mu.Unlock()
 		<-ctx.Done()
 		return "", ctx.Err()
-	}, WithTimeout(time.Millisecond))
-	store := NewMemStore()
+	}, WithSafety(Safety{Idempotent: true}), WithTimeout(time.Millisecond))
+	store := memJournal()
 	m := NewScriptedModel(ToolTurn("c1", "post", `{}`), ToolTurn("c2", "post", `{}`), TextTurn("done"))
-	if _, err := New(m, store, post).Run(context.Background(), "r1", "post it"); err != nil {
+	if _, err := mustNew(m, store, WithTools(post)).Run(context.Background(), "r1", UserText("post it")); err != nil {
 		t.Fatalf("Run: %v", err)
 	}
 	if len(applied) != 2 || !applied[SubRunID("r1", "c1")+"#0"] || !applied[SubRunID("r1", "c2")+"#0"] {

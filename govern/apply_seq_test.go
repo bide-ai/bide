@@ -6,25 +6,30 @@ import (
 	"testing"
 
 	"github.com/bide-ai/bide/agent"
+	"github.com/bide-ai/bide/agent/agenttest"
 	"github.com/bide-ai/bide/govern"
 )
 
 // composite is a retry-safe tool that calls each of tools once, in order, within its own call.
 func composite(name string, tools ...agent.Tool) agent.Tool {
-	return agent.Func(name, "", agent.Safety{Idempotent: true}, func(ctx context.Context, _ struct{}) (map[string]any, error) {
+	return agent.MustFunc(name, "", func(ctx context.Context, _ struct{}) (map[string]any, error) {
 		for _, tl := range tools {
 			if _, err := tl.Call(ctx, []byte(`{}`)); err != nil {
 				return nil, err
 			}
 		}
 		return map[string]any{"ok": true}, nil
-	})
+	}, agent.WithSafety(agent.Safety{Idempotent: true}))
 }
 
 func runOnce(t *testing.T, tool agent.Tool) {
 	t.Helper()
-	a := agent.New(agent.NewScriptedModel(agent.ToolTurn("c1", tool.Name(), `{}`), agent.TextTurn("done")), agent.NewMemStore(), tool)
-	if _, err := a.Run(context.Background(), "r", "go"); err != nil {
+	a := agenttest.MustNew(
+		agenttest.NewScriptedModel(agenttest.ToolTurn("c1", tool.Spec().Name, `{}`), agenttest.TextTurn("done")),
+		agenttest.MemJournal(),
+		agent.WithTools(tool),
+	)
+	if _, err := a.Run(context.Background(), "r", agent.UserText("go")); err != nil {
 		t.Fatal(err)
 	}
 }
@@ -105,7 +110,7 @@ func TestEventTool_ReRunOfATwoApplyCallRecordsEachOnce(t *testing.T) {
 	}
 }
 
-// A tool call that fans out with agent.Parallel, each task applying its own event, records every
+// A tool call that fans out with agent.Journal.Parallel, each task applying its own event, records every
 // event once, even when the tasks apply in a different order when the call runs again.
 func TestEventTool_ParallelFanOutInOneCall(t *testing.T) {
 	ctx := context.Background()
@@ -118,7 +123,7 @@ func TestEventTool_ParallelFanOutInOneCall(t *testing.T) {
 	incA := govern.EventTool(g, govern.EventToolConfig{Name: "a", Description: "", Event: "inc_a", Safety: agent.Safety{Idempotent: true}})
 	incB := govern.EventTool(g, govern.EventToolConfig{Name: "b", Description: "", Event: "inc_b", Safety: agent.Safety{Idempotent: true}})
 	bFirst := true // which task applies first; the re-run flips it
-	fan := agent.Func("fan", "", agent.Safety{Idempotent: true}, func(ctx context.Context, _ struct{}) (map[string]any, error) {
+	fan := agent.MustFunc("fan", "", func(ctx context.Context, _ struct{}) (map[string]any, error) {
 		first, second := incA, incB
 		if bFirst {
 			first, second = incB, incA
@@ -141,14 +146,14 @@ func TestEventTool_ParallelFanOutInOneCall(t *testing.T) {
 			second: task(second, firstDone, nil),
 		}
 		// A fresh journal each time the call runs, so the re-run runs both tasks again.
-		_, err := agent.Parallel(ctx, agent.NewMemStore(), "fan", []agent.Task[bool]{
+		_, err := agenttest.MemJournal().Parallel(ctx, "fan", []agent.Task[bool]{
 			{Name: "a", Fn: fnFor[incA], Safety: agent.Safety{Idempotent: true}},
 			{Name: "b", Fn: fnFor[incB], Safety: agent.Safety{Idempotent: true}}})
 		if err != nil {
 			return nil, err
 		}
 		return map[string]any{"ok": true}, nil
-	})
+	}, agent.WithSafety(agent.Safety{Idempotent: true}))
 	runToolTwice(t, fan, func() { bFirst = false })
 	evs := logEvents(t, log, "e")
 	if !slices.Equal(evs, []string{"inc_b", "inc_a"}) {

@@ -85,7 +85,7 @@ func New(apiKey string, opts ...Option) *Model {
 }
 
 // ToolNameRule implements agent.ToolRules: the tool names Anthropic accepts, `^[a-zA-Z0-9_-]{1,64}$`, so
-// agent.Build refuses any other name when the agent is built.
+// agent.New refuses any other name when the agent is built.
 func (m *Model) ToolNameRule() *regexp.Regexp { return toolcfg.AnthropicName }
 
 // RequiresToolsForRequired implements agent.ToolRules: Anthropic refuses tool choice "required"
@@ -139,7 +139,7 @@ func (m *Model) buildRequest(req agent.Request) ([]byte, error) {
 		return nil, err
 	}
 	// This adapter does not send a JSON-schema response format. Sending the request without it
-	// would drop the constraint silently: the model answers in free text, which RunTypedNative
+	// would drop the constraint silently: the model answers in free text, which a native typed run
 	// fails to decode only after the run completes, or decodes JSON no schema constrained.
 	if rf := req.ResponseFormat; rf != nil && len(rf.Schema) > 0 {
 		return nil, fmt.Errorf("anthropic: response format %q: the Anthropic adapter does not support a JSON-schema response format (use agent.RunTyped): %w", rf.Name, agent.ErrConfig)
@@ -498,5 +498,5 @@ func streamSSE(body io.ReadCloser, send func(agent.Emit) bool) {
 	}
 }
 
-// Model declares its tool rules to agent.Build.
+// Model declares its tool rules to agent.New.
 var _ agent.ToolRules = (*Model)(nil)

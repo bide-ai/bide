@@ -25,7 +25,7 @@ const approvalNodeConfig = `{
 func approvalRegistry(t *testing.T) *Registry {
 	t.Helper()
 	reg := NewRegistry()
-	if err := RegisterStep(reg, "refund", func(_ context.Context, n int) (int, error) { return n, nil }, Idempotent()); err != nil {
+	if err := reg.RegisterStep("refund", func(_ context.Context, n int) (int, error) { return n, nil }, Idempotent()); err != nil {
 		t.Fatalf("register: %v", err)
 	}
 	return reg
@@ -44,7 +44,7 @@ func TestLoadApprovalIsRefusedUntilEnforced(t *testing.T) {
 
 // A Tool node wrapping an agent tool that requires approval would run it with no approval.
 func TestBuildRefusesAnApprovalGatedTool(t *testing.T) {
-	gated := agent.Func("refund", "issue a refund", agent.Safety{}, func(context.Context, int) (int, error) { return 0, nil }, agent.WithApproval(agent.SingleApproval()))
+	gated := agent.MustFunc("refund", "issue a refund", func(context.Context, int) (int, error) { return 0, nil }, agent.WithApproval(agent.SingleApproval()))
 	b := New[int, int]("refunds")
 	b.Tool[int, int]("refund", gated)
 	if _, err := b.Build(); !errors.Is(err, agent.ErrConfig) {

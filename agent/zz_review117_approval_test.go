@@ -15,7 +15,7 @@ func TestR117_EmptyApproverListIsAnUnsignedSingleGate(t *testing.T) {
 	approvers := []string{} // e.g. strings.Fields(os.Getenv("APPROVERS")) with the variable unset
 	var calls atomic.Int32
 	err := panicsWith(func() {
-		Func("wire", "", Safety{}, func(context.Context, struct{}) (string, error) {
+		MustFunc("wire", "", func(context.Context, struct{}) (string, error) {
 			calls.Add(1)
 			return "sent", nil
 		}, WithApproval(&ApprovalPolicy{Need: 1, Approvers: approvers}))
@@ -25,7 +25,7 @@ func TestR117_EmptyApproverListIsAnUnsignedSingleGate(t *testing.T) {
 	}
 	// Only SingleApproval asks for the one-decision gate.
 	if err := panicsWith(func() {
-		Func("wire", "", Safety{}, func(context.Context, struct{}) (string, error) { return "", nil }, WithApproval(SingleApproval()))
+		MustFunc("wire", "", func(context.Context, struct{}) (string, error) { return "", nil }, WithApproval(SingleApproval()))
 	}); err != nil {
 		t.Fatalf("WithApproval(SingleApproval()): %v", err)
 	}

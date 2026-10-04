@@ -23,6 +23,7 @@ package main
 import (
 	"context"
 	"fmt"
+	"log"
 	"sync/atomic"
 
 	"github.com/bide-ai/bide/agent"
@@ -64,17 +65,20 @@ func (botModel) Stream(_ context.Context, req agent.Request) (*agent.Stream, err
 	return agent.NewStream(ch), nil
 }
 
-func newAgent(store agent.Durable) *agent.Agent {
+func newAgent(store *agent.Journal) *agent.Agent {
 	// create_ticket is a genuine side effect: NOT ReadOnly, so a naive re-run would open a
 	// second ticket. The durable journal is what prevents that on redelivery.
-	createTicket := agent.Func("create_ticket", "open a support ticket", agent.Safety{},
-		func(context.Context, struct {
-			Summary string `json:"summary"`
-		}) (string, error) {
-			atomic.AddInt64(&tickets, 1)
-			return "ticket-4711", nil
-		})
-	return agent.New(botModel{}, store, createTicket)
+	createTicket := agent.MustFunc("create_ticket", "open a support ticket", func(context.Context, struct {
+		Summary string `json:"summary"`
+	}) (string, error) {
+		atomic.AddInt64(&tickets, 1)
+		return "ticket-4711", nil
+	})
+	ag, err := agent.New(botModel{}, store, agent.WithTools(createTicket))
+	if err != nil {
+		log.Fatal(err)
+	}
+	return ag
 }
 
 // statelessCommand handles a command-style event with no conversation memory. The run is keyed
@@ -82,10 +86,11 @@ func newAgent(store agent.Durable) *agent.Agent {
 // re-running the agent. Returns the reply to post back to the channel.
 func statelessCommand(ctx context.Context, a *agent.Agent, channelID, eventID, text string) (string, error) {
 	runID := "msg/" + channelID + "/" + eventID // stable across redeliveries of the same event
-	msg, err := a.Run(ctx, runID, text)
+	res, err := a.Run(ctx, runID, agent.UserText(text))
 	if err != nil {
 		return "", err
 	}
+	msg := res.Message
 	return msg.Text(), nil
 }
 
@@ -99,7 +104,11 @@ func handleConversational(ctx context.Context, a *agent.Agent, conversationID, e
 	if err != nil {
 		return "", err
 	}
-	msg, err := sess.SendOnce(ctx, eventID, text)
+	res, err := sess.SendOnce(ctx, eventID, agent.UserText(text))
+	var msg agent.Message
+	if res != nil {
+		msg = res.Message
+	}
 	if p, ok := agent.AsPause(err); ok {
 		// A pause (an approval, an interrupt, a signal, a timer, a halt) is not a failure: the turn
 		// waits durably. Acknowledge the event rather than let the messenger redeliver it on a loop;
@@ -118,7 +127,10 @@ func handleConversational(ctx context.Context, a *agent.Agent, conversationID, e
 
 func main() {
 	ctx := context.Background()
-	store := agent.NewMemStore()
+	store, err := agent.NewJournal(agent.NewMemStore())
+	if err != nil {
+		log.Fatal(err)
+	}
 	a := newAgent(store)
 
 	fmt.Println("== stateless command bot ==")

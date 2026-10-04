@@ -55,7 +55,7 @@ type EventStore interface {
 // before the redaction keep the redacted record's content (a tool's arguments or result, a model
 // turn's text), so a deployment that redacts must delete or redact the run's event trail in
 // evStore as well.
-func PersistJournal(ctx context.Context, evStore EventStore, jStore agent.Durable, runID string) error {
+func PersistJournal(ctx context.Context, evStore EventStore, jStore *agent.Journal, runID string) error {
 	evs, salts, err := projectJournal(ctx, jStore, runID)
 	if err != nil {
 		return err
@@ -79,7 +79,7 @@ func PersistJournal(ctx context.Context, evStore EventStore, jStore agent.Durabl
 // retry of the same event is a no-op and a different event is still refused as a fork. Do not
 // mix it with PersistJournal on one run: the two salt the same event differently, so the second
 // reports a fork.
-func PersistEvent(ctx context.Context, evStore EventStore, runID string, seq int, e agent.AgentEvent) error {
+func PersistEvent(ctx context.Context, evStore EventStore, runID string, seq int, e agent.RunEvent) error {
 	stored, err := evStore.Load(ctx, runID)
 	if err != nil {
 		return fmt.Errorf("audit: load event trail %s: %w", runID, err)

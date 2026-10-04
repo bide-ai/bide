@@ -33,7 +33,7 @@ func buildT(t testing.TB, m Model, opts ...Option) *Agent {
 // buildOn builds an agent over m and store's journal, failing the test on an error.
 func buildOn(t testing.TB, m Model, store *MemStore, opts ...Option) *Agent {
 	t.Helper()
-	a, err := Build(m, store.Journal(), opts...)
+	a, err := New(m, mustJournal(store), opts...)
 	if err != nil {
 		t.Fatalf("Build: %v", err)
 	}
@@ -47,19 +47,19 @@ func TestRunInfoFrom(t *testing.T) {
 		t.Fatal("RunInfoFrom outside a tool call reported one")
 	}
 	var infos []RunInfo
-	probe := Func("probe", "", Safety{ReadOnly: true}, func(ctx context.Context, _ struct{}) (string, error) {
+	probe := MustFunc("probe", "", func(ctx context.Context, _ struct{}) (string, error) {
 		info, ok := RunInfoFrom(ctx)
 		if !ok {
 			t.Error("RunInfoFrom in a tool call reported none")
 		}
 		infos = append(infos, info)
 		return "ok", nil
-	})
+	}, WithSafety(Safety{ReadOnly: true}))
 	store := NewMemStore()
 	sub := buildOn(t, NewScriptedModel(ToolTurn("s1", "probe", `{}`), TextTurn("sub done")), store, WithTools(probe))
 	parent := buildOn(t, NewScriptedModel(ToolTurn("c1", "probe", `{}`), ToolTurn("c2", "helper", `{"task":"t"}`), TextTurn("done")),
-		store, WithTools(probe, SubAgent("helper", "", sub)))
-	if _, err := parent.RunSaga(context.Background(), "root", "go"); err != nil {
+		store, WithTools(probe, MustSubAgent("helper", "", sub)))
+	if _, err := parent.Run(context.Background(), "root", UserText("go"), WithSaga()); err != nil {
 		t.Fatal(err)
 	}
 	want := []RunInfo{
@@ -70,7 +70,7 @@ func TestRunInfoFrom(t *testing.T) {
 		t.Errorf("RunInfo = %+v, want %+v", infos, want)
 	}
 	infos = nil
-	if _, err := buildOn(t, NewScriptedModel(ToolTurn("c1", "probe", `{}`), TextTurn("done")), store, WithTools(probe)).Run(context.Background(), "plain", "go"); err != nil {
+	if _, err := buildOn(t, NewScriptedModel(ToolTurn("c1", "probe", `{}`), TextTurn("done")), store, WithTools(probe)).Run(context.Background(), "plain", UserText("go")); err != nil {
 		t.Fatal(err)
 	}
 	if len(infos) != 1 || infos[0] != (RunInfo{RunID: "plain", RootRunID: "plain", ToolUseID: "c1"}) {
@@ -102,32 +102,37 @@ func TestSubRunFor(t *testing.T) {
 
 	// A tool starts a sub-run of another agent under SubRunFor; the parent's resume re-enters it.
 	store := NewMemStore()
+	j := mustJournal(store)
 	var subCalls int
 	child := buildOn(t, modelFunc(func(ctx context.Context, req Request) (*Stream, error) {
 		subCalls++
 		return NewScriptedModel(TextTurn("child done")).Stream(ctx, req)
 	}), store)
 	var ids []string
-	starter := Func("starter", "", Safety{ReadOnly: true}, func(ctx context.Context, _ struct{}) (string, error) {
+	starter := MustFunc("starter", "", func(ctx context.Context, _ struct{}) (string, error) {
 		info, _ := RunInfoFrom(ctx)
 		id := info.SubRunFor("child")
 		ids = append(ids, id)
-		msg, err := child.Run(ctx, id, "work")
+		res, err := child.Run(ctx, id, UserText("work"))
+		var msg Message
+		if res != nil {
+			msg = res.Message
+		}
 		return msg.Text(), err
-	})
+	}, WithSafety(Safety{ReadOnly: true}))
 	parent := buildOn(t, NewScriptedModel(ToolTurn("c1", "starter", `{}`), TextTurn("done")), store, WithTools(starter))
-	if _, err := parent.Run(context.Background(), "p", "go"); err != nil {
+	if _, err := parent.Run(context.Background(), "p", UserText("go")); err != nil {
 		t.Fatal(err)
 	}
 	if want := (RunInfo{RunID: "p", ToolUseID: "c1"}).SubRunFor("child"); len(ids) != 1 || ids[0] != want {
 		t.Fatalf("sub-run IDs = %v, want [%s]", ids, want)
 	}
-	if done, err := IsComplete(context.Background(), store, ids[0]); err != nil || !done {
+	if done, err := IsComplete(context.Background(), j, ids[0]); err != nil || !done {
 		t.Errorf("the programmatic sub-run is not complete: %v, %v", done, err)
 	}
 	// Recover drives roots only: the finished parent and its sub-run are not driven again.
 	var resumed []string
-	if _, err := Recover(context.Background(), store, func(_ context.Context, id string, _ RunStart) error { resumed = append(resumed, id); return nil }); err != nil {
+	if _, err := Recover(context.Background(), j, func(_ context.Context, id string, _ RunStart) error { resumed = append(resumed, id); return nil }); err != nil {
 		t.Fatal(err)
 	}
 	if slices.Contains(resumed, ids[0]) {
@@ -161,7 +166,7 @@ func TestSubRunFor_OnlyTheCallsOwnIDs(t *testing.T) {
 			t.Errorf("checkRunID(%q) from the call = %v, want ErrConfig", id, err)
 		}
 	}
-	if _, err := a.Run(context.Background(), in.SubRunFor("x"), "go"); !errors.Is(err, ErrConfig) {
+	if _, err := a.Run(context.Background(), in.SubRunFor("x"), UserText("go")); !errors.Is(err, ErrConfig) {
 		t.Errorf("Run of a sub-run ID outside its call = %v, want ErrConfig", err)
 	}
 }

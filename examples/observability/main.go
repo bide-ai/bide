@@ -86,8 +86,7 @@ func main() {
 	defer func() { _ = tp.Shutdown(ctx) }()
 	tracer := tp.Tracer("observability-example")
 
-	weather := agent.Func("get_weather", "Get the weather", agent.Safety{ReadOnly: true},
-		func(_ context.Context, _ struct{}) (string, error) { return "sunny", nil })
+	weather := agent.MustFunc("get_weather", "Get the weather", func(_ context.Context, _ struct{}) (string, error) { return "sunny", nil }, agent.WithSafety(agent.Safety{ReadOnly: true}))
 
 	// Instrument wires the chat span (with cost) and the execute_tool span in one call.
 	// Rates turn token usage into a USD cost recorded as gen_ai.usage.cost on the chat span.
@@ -96,7 +95,7 @@ func main() {
 	if err != nil {
 		log.Fatal(err)
 	}
-	a, err := agent.Build(&scriptModel{}, j,
+	a, err := agent.New(&scriptModel{}, j,
 		agent.WithTools(weather),
 		trace.Instrument(tracer, trace.WithRates(rates)),
 	)
@@ -106,7 +105,11 @@ func main() {
 
 	// Invoke starts the top-level invoke_agent span around the run.
 	ctx, end := trace.Invoke(ctx, tracer, "weather-agent")
-	out, err := a.Run(ctx, "obs-1", "What's the weather?")
+	res, err := a.Run(ctx, "obs-1", agent.UserText("What's the weather?"))
+	var out agent.Message
+	if res != nil {
+		out = res.Message
+	}
 	end(err)
 	if err != nil {
 		log.Fatalf("run: %v", err)

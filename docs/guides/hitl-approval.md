@@ -18,15 +18,19 @@ For a typed value rather than a yes/no, use `Interrupt`/`AnswerInterrupt` instea
 
 ## 1-of-1
 
-<!-- docsnip: setup ctx context.Context; a *agent.Agent; store agent.Durable; runID string; input string; type RefundArgs struct{}; doRefund func(context.Context, RefundArgs) (string, error) -->
+<!-- docsnip: setup ctx context.Context; a *agent.Agent; store *agent.Journal; runID string; input string; type RefundArgs struct{}; doRefund func(context.Context, RefundArgs) (string, error) -->
 ```go
-refund := agent.Func("refund", "refund the order", agent.Safety{}, doRefund, agent.WithApproval(agent.SingleApproval()))
+refund := agent.MustFunc("refund", "refund the order", doRefund, agent.WithApproval(agent.SingleApproval()))
 
-_, err := a.Run(ctx, runID, input)
+_, err := a.Run(ctx, runID, agent.UserText(input))
 if pend, ok := errors.AsType[*agent.ApprovalPending](err); ok {
 	// ... get a human decision ...
 	agent.Approve(ctx, store, pend.RunID, pend.ToolUseID, true)
-	out, _ := a.Run(ctx, pend.RootRunID, input) // resumes past the pause
+	res, _ := a.Run(ctx, pend.RootRunID, agent.UserText(input))
+	var out agent.Message
+	if res != nil {
+		out = res.Message
+	} // resumes past the pause
 }
 ```
 
@@ -43,22 +47,29 @@ configured, the call's decision is taken under the gate's current policy, so a g
 Declare the policy on the tool, and tell the agent how to resolve an approver id to the key that
 verifies that approver's signature:
 
-<!-- docsnip: setup model agent.Model; store agent.Durable; type RefundArgs struct{}; doRefund func(context.Context, RefundArgs) (string, error); approverKeys map[string]ed25519.PublicKey -->
+<!-- docsnip: setup model agent.Model; store *agent.Journal; type RefundArgs struct{}; doRefund func(context.Context, RefundArgs) (string, error); approverKeys map[string]ed25519.PublicKey -->
 ```go
-refund := agent.Func("refund", "refund the order", agent.Safety{}, doRefund,
+refund := agent.MustFunc("refund", "refund the order", doRefund,
 	agent.WithApproval(&agent.ApprovalPolicy{
 		Need:      2,
 		Approvers: []string{"ops", "finance", "risk"}, // n = 3
 	}))
 
-a := agent.New(model, store, refund).
-	WithApproverVerifiers(func(id string) (agent.ApproverVerifier, bool) {
-		pub, ok := approverKeys[id] // your PKI: id -> public key
-		if !ok {
-			return nil, false
-		}
-		return audit.Ed25519Verifier{Pub: pub}, true
-	})
+a, err := agent.New(
+	model,
+	store,
+	agent.WithTools(refund),
+	agent.WithApproverVerifiers(func(id string) (agent.ApproverVerifier, bool) {
+			pub, ok := approverKeys[id] // your PKI: id -> public key
+			if !ok {
+				return nil, false
+			}
+			return audit.Ed25519Verifier{Pub: pub}, true
+		}),
+)
+if err != nil {
+	panic(err)
+}
 ```
 
 Each approver needs a key of their own. A seat is a key, not an id: if two approvers' verifiers
@@ -70,7 +81,7 @@ verifier of your own must implement it the same way (see [Key identity](#key-ide
 When the run pauses, each approver signs the paused call's subject with their own key and records
 the decision:
 
-<!-- docsnip: setup ctx context.Context; store agent.Durable; err error; financeSigner audit.Signer -->
+<!-- docsnip: setup ctx context.Context; store *agent.Journal; err error; financeSigner audit.Signer -->
 ```go
 if pend, ok := errors.AsType[*agent.ApprovalPending](err); ok {
 	// Show the approver pend.ToolName and pend.Args: that is exactly what they sign.
@@ -261,7 +272,7 @@ never count, and are not waited on: when too few seats remain to reach `Need`, t
 journal order: the model turn that requested the call (its tool and arguments), every decision
 record the gate read, valid or not, the gate's recorded tally, and the call's result.
 
-<!-- docsnip: setup ctx context.Context; store agent.Durable; runID string; toolUseID string; logSigner audit.Signer -->
+<!-- docsnip: setup ctx context.Context; store *agent.Journal; runID string; toolUseID string; logSigner audit.Signer -->
 ```go
 th, _ := audit.NewTreeHead(ctx, store, runID, time.Now().UnixNano())
 sth, _ := audit.SignTreeHead(th, logSigner)

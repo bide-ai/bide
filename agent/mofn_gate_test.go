@@ -20,7 +20,7 @@ func (fakeVerifier) Alg() Alg { return fakeAlg }
 func (v fakeVerifier) PublicKey() []byte { return []byte(v.id) }
 
 // decideAs records a decision signed under fakeAlg.
-func decideAs(ctx context.Context, store Durable, runID, toolUseID, approverID string, approved bool, sig []byte, opts ...ApproveOption) error {
+func decideAs(ctx context.Context, store *Journal, runID, toolUseID, approverID string, approved bool, sig []byte, opts ...ApproveOption) error {
 	return SubmitDecision(ctx, store, Decision{RunID: runID, ToolUseID: toolUseID, ApproverID: approverID, Approved: approved, Alg: fakeAlg, Signature: sig}, opts...)
 }
 
@@ -50,7 +50,7 @@ func fakeVerifiers(known ...string) ApproverVerifierFor {
 }
 
 // subjectOf reads the recorded call, the way an approver works from pend.Subject().
-func subjectOf(t *testing.T, store Durable, runID, toolUseID string) ApprovalSubject {
+func subjectOf(t *testing.T, store *Journal, runID, toolUseID string) ApprovalSubject {
 	t.Helper()
 	recs, err := store.History(context.Background(), runID)
 	if err != nil {
@@ -64,7 +64,7 @@ func subjectOf(t *testing.T, store Durable, runID, toolUseID string) ApprovalSub
 }
 
 // approveAs records a correctly signed decision for approverID on the recorded call.
-func approveAs(t *testing.T, store Durable, runID, toolUseID, approverID string, approved bool) {
+func approveAs(t *testing.T, store *Journal, runID, toolUseID, approverID string, approved bool) {
 	t.Helper()
 	sig := fakeSign(approverID, ApprovalDecisionBytes(subjectOf(t, store, runID, toolUseID), approverID, approved))
 	if err := decideAs(context.Background(), store, runID, toolUseID, approverID, approved, sig); err != nil {
@@ -74,9 +74,9 @@ func approveAs(t *testing.T, store Durable, runID, toolUseID, approverID string,
 
 // writeRaw appends a decision record directly, bypassing SubmitDecision, the way someone with
 // write access to the journal could.
-func writeRaw(t *testing.T, store Durable, runID, name string, rec Record) {
+func writeRaw(t *testing.T, store *Journal, runID, name string, rec Record) {
 	t.Helper()
-	if _, err := store.Do(context.Background(), runID, name, func(context.Context) (Record, error) { return rec, nil }); err != nil {
+	if _, err := store.do(context.Background(), runID, name, func(context.Context) (Record, error) { return rec, nil }); err != nil {
 		t.Fatal(err)
 	}
 }
@@ -94,27 +94,35 @@ func countsOf(t ApprovalTally) counts {
 
 // mofnRun drives one run of a fresh agent over store with a quorum-gated "charge" tool. The
 // first run needs the tool turn; resumes replay it from the journal and only need the answer.
-func mofnRun(store Durable, runID string, first bool, pol *ApprovalPolicy, verifiers ApproverVerifierFor, charged *int) (Message, error) {
+func mofnRun(store *Journal, runID string, first bool, pol *ApprovalPolicy, verifiers ApproverVerifierFor, charged *int) (Message, error) {
 	turns := [][]Emit{textTurn("done")}
 	if first {
 		turns = [][]Emit{toolTurn("c1", "charge", `{}`), textTurn("done")}
 	}
 	charge := &countingTool{name: "charge", approval: pol, calls: charged}
-	a := New(&scriptModel{turns: turns}, store, charge)
+	opts := []Option{WithTools(charge)}
 	if verifiers != nil {
-		a.WithApproverVerifiers(verifiers)
+		opts = append(opts, WithApproverVerifiers(verifiers))
 	}
-	return a.Run(context.Background(), runID, "pay")
+	a, err := New(&scriptModel{turns: turns}, store, opts...)
+	if err != nil {
+		return Message{}, err // an invalid policy is refused when the agent is built
+	}
+	res, err := a.Run(context.Background(), runID, UserText("pay"))
+	if err != nil {
+		return Message{}, err
+	}
+	return res.Message, nil
 }
 
 func wantPending(t *testing.T, err error, want counts) {
 	t.Helper()
-	var pend *PendingApproval
+	var pend *ApprovalPending
 	if !errors.As(err, &pend) {
-		t.Fatalf("err = %v, want *PendingApproval", err)
+		t.Fatalf("err = %v, want *ApprovalPending", err)
 	}
 	if pend.Quorum == nil {
-		t.Fatalf("PendingApproval.Quorum = nil, want %+v", want)
+		t.Fatalf("ApprovalPending.Quorum = nil, want %+v", want)
 	}
 	if got := countsOf(*pend.Quorum); !reflect.DeepEqual(got, want) {
 		t.Fatalf("Quorum = %+v, want %+v", got, want)
@@ -124,7 +132,7 @@ func wantPending(t *testing.T, err error, want counts) {
 	}
 }
 
-func hasStep(t *testing.T, store Durable, runID, name string) (Record, bool) {
+func hasStep(t *testing.T, store *Journal, runID, name string) (Record, bool) {
 	t.Helper()
 	recs, err := store.History(context.Background(), runID)
 	if err != nil {
@@ -142,7 +150,7 @@ var abc = []string{"alice", "bob", "carol"}
 
 // The gate pauses below Need with a running tally, and proceeds at exactly Need approvals.
 func TestMofn_ProceedsAtNeed(t *testing.T) {
-	store := NewMemStore()
+	store := memJournal()
 	pol := &ApprovalPolicy{Need: 2, Approvers: abc}
 	vf := fakeVerifiers(abc...)
 	var charged int
@@ -172,7 +180,7 @@ func TestMofn_ProceedsAtNeed(t *testing.T) {
 
 // The final tally is journaled as its own StepValue and reads back as an ApprovalTally.
 func TestMofn_TallyStepJournaled(t *testing.T) {
-	store := NewMemStore()
+	store := memJournal()
 	pol := &ApprovalPolicy{Need: 2, Approvers: abc}
 	vf := fakeVerifiers(abc...)
 	var charged int
@@ -208,7 +216,7 @@ func TestMofn_TallyStepJournaled(t *testing.T) {
 // Once n - denied < Need the gate can never pass: it auto-denies with the same denied tool
 // result a 1-of-1 denial produces, and the model reacts to it.
 func TestMofn_AutoDenyWhenUnreachable(t *testing.T) {
-	store := NewMemStore()
+	store := memJournal()
 	pol := &ApprovalPolicy{Need: 2, Approvers: abc}
 	vf := fakeVerifiers(abc...)
 	var charged int
@@ -235,14 +243,14 @@ func TestMofn_AutoDenyWhenUnreachable(t *testing.T) {
 	}
 
 	// The same call denied through the 1-of-1 path.
-	legacy := NewMemStore()
+	legacy := memJournal()
 	var n int
 	one := &countingTool{name: "charge", approval: SingleApproval(), calls: &n}
-	_, _ = New(&scriptModel{turns: [][]Emit{toolTurn("c1", "charge", `{}`)}}, legacy, one).Run(context.Background(), "r1", "pay")
+	_, _ = mustNew(&scriptModel{turns: [][]Emit{toolTurn("c1", "charge", `{}`)}}, legacy, WithTools(one)).Run(context.Background(), "r1", UserText("pay"))
 	if err := Approve(context.Background(), legacy, "r1", "c1", false); err != nil {
 		t.Fatal(err)
 	}
-	if _, err := New(&scriptModel{turns: [][]Emit{textTurn("done")}}, legacy, one).Run(context.Background(), "r1", "pay"); err != nil {
+	if _, err := mustNew(&scriptModel{turns: [][]Emit{textTurn("done")}}, legacy, WithTools(one)).Run(context.Background(), "r1", UserText("pay")); err != nil {
 		t.Fatal(err)
 	}
 	want, _ := hasStep(t, legacy, "r1", ToolResultStep("c1"))
@@ -253,7 +261,7 @@ func TestMofn_AutoDenyWhenUnreachable(t *testing.T) {
 
 // A decision from an approver outside the policy's set is ignored, even when well signed.
 func TestMofn_IneligibleApproverIgnored(t *testing.T) {
-	store := NewMemStore()
+	store := memJournal()
 	pol := &ApprovalPolicy{Need: 1, Approvers: []string{"alice", "bob"}}
 	vf := fakeVerifiers("alice", "bob", "mallory")
 	var charged int
@@ -269,7 +277,7 @@ func TestMofn_IneligibleApproverIgnored(t *testing.T) {
 
 // A decision whose signature does not verify is ignored.
 func TestMofn_BadSignatureIgnored(t *testing.T) {
-	store := NewMemStore()
+	store := memJournal()
 	pol := &ApprovalPolicy{Need: 1, Approvers: []string{"alice", "bob"}}
 	vf := fakeVerifiers("alice", "bob")
 	var charged int
@@ -290,7 +298,7 @@ func TestMofn_BadSignatureIgnored(t *testing.T) {
 // An approver's later valid decision is superseded: the first valid one counts, and an
 // identical resubmission is a no-op.
 func TestMofn_DuplicateApproverDeduped(t *testing.T) {
-	store := NewMemStore()
+	store := memJournal()
 	pol := &ApprovalPolicy{Need: 2, Approvers: abc}
 	vf := fakeVerifiers(abc...)
 	var charged int
@@ -310,26 +318,31 @@ func TestMofn_DuplicateApproverDeduped(t *testing.T) {
 }
 
 // A tool with a nil Approval keeps the 1-of-1 path: it pauses with no Quorum, a per-approver
-// ApproveAs decision does not satisfy it, and Approve resumes it.
+// SubmitDecision decision does not satisfy it, and Approve resumes it.
 func TestMofn_NilApprovalKeepsOneOfOne(t *testing.T) {
-	store := NewMemStore()
+	store := memJournal()
 	ctx := context.Background()
 	var charged int
 	charge := &countingTool{name: "charge", approval: SingleApproval(), calls: &charged}
 	run := func(turns ...[]Emit) error {
-		_, err := New(&scriptModel{turns: turns}, store, charge).WithApproverVerifiers(fakeVerifiers(abc...)).Run(ctx, "r1", "pay")
+		_, err := mustNew(
+			&scriptModel{turns: turns},
+			store,
+			WithTools(charge),
+			WithApproverVerifiers(fakeVerifiers(abc...)),
+		).Run(ctx, "r1", UserText("pay"))
 		return err
 	}
 
 	err := run(toolTurn("c1", "charge", `{}`), textTurn("done"))
-	var pend *PendingApproval
+	var pend *ApprovalPending
 	if !errors.As(err, &pend) || pend.Quorum != nil {
-		t.Fatalf("err = %v, want *PendingApproval with nil Quorum", err)
+		t.Fatalf("err = %v, want *ApprovalPending with nil Quorum", err)
 	}
 
 	approveAs(t, store, "r1", "c1", "alice", true)
 	if err := run(textTurn("done")); !errors.As(err, &pend) {
-		t.Fatalf("after ApproveAs err = %v, want still *PendingApproval on the 1-of-1 path", err)
+		t.Fatalf("after SubmitDecision err = %v, want still *ApprovalPending on the 1-of-1 path", err)
 	}
 
 	if err := Approve(ctx, store, "r1", "c1", true); err != nil {
@@ -366,7 +379,7 @@ func TestMofn_ConfigErrors(t *testing.T) {
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
 			var charged int
-			_, err := mofnRun(NewMemStore(), "r1", true, tc.pol, tc.vf, &charged)
+			_, err := mofnRun(memJournal(), "r1", true, tc.pol, tc.vf, &charged)
 			if !errors.Is(err, ErrConfig) {
 				t.Fatalf("err = %v, want ErrConfig", err)
 			}

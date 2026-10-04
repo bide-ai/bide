@@ -7,9 +7,9 @@ import (
 	"testing"
 )
 
-// ExampleRunTyped shows structured output: RunTyped returns a typed value, decoded from
+// ExampleAgent_RunTyped shows structured output: RunTyped returns a typed value, decoded from
 // a schema-guided final_answer tool call (a real adapter streams the call the same way).
-func ExampleRunTyped() {
+func ExampleAgent_RunTyped() {
 	type Weather struct {
 		City  string `json:"city"`
 		TempF int    `json:"temp_f"`
@@ -18,9 +18,9 @@ func ExampleRunTyped() {
 		toolTurn("c1", "final_answer", `{"city":"SF","temp_f":68}`),
 		textTurn("done"),
 	}}
-	a := New(m, NewMemStore())
+	a := mustNew(m, memJournal())
 
-	w, err := RunTyped[Weather](context.Background(), a, "run-1", "weather in SF?")
+	w, _, err := a.RunTyped[Weather](context.Background(), "run-1", UserText("weather in SF?"))
 	if err != nil {
 		fmt.Println("error:", err)
 		return
@@ -40,9 +40,9 @@ func TestRunTyped_ExtractsFromToolCall(t *testing.T) {
 		toolTurn("c1", "final_answer", `{"answer":"42","score":9}`),
 		textTurn("done"),
 	}}
-	a := New(m, NewMemStore())
+	a := mustNew(m, memJournal())
 
-	got, err := RunTyped[answer](context.Background(), a, "r", "what is the meaning?")
+	got, _, err := a.RunTyped[answer](context.Background(), "r", UserText("what is the meaning?"))
 	if err != nil {
 		t.Fatalf("RunTyped: %v", err)
 	}
@@ -55,9 +55,9 @@ func TestRunTyped_ExtractsFromToolCall(t *testing.T) {
 // back to parsing that text.
 func TestRunTyped_FallbackToText(t *testing.T) {
 	m := &scriptModel{turns: [][]Emit{textTurn(`{"answer":"7","score":5}`)}}
-	a := New(m, NewMemStore())
+	a := mustNew(m, memJournal())
 
-	got, err := RunTyped[answer](context.Background(), a, "r", "q")
+	got, _, err := a.RunTyped[answer](context.Background(), "r", UserText("q"))
 	if err != nil {
 		t.Fatalf("RunTyped: %v", err)
 	}
@@ -75,9 +75,9 @@ func TestRunTyped_WithWorkTool(t *testing.T) {
 		toolTurn("c2", "final_answer", `{"answer":"ok","score":1}`),
 		textTurn("done"),
 	}}
-	a := New(m, NewMemStore(), work)
+	a := mustNew(m, memJournal(), WithTools(work))
 
-	got, err := RunTyped[answer](context.Background(), a, "r", "q")
+	got, _, err := a.RunTyped[answer](context.Background(), "r", UserText("q"))
 	if err != nil {
 		t.Fatalf("RunTyped: %v", err)
 	}
@@ -93,17 +93,17 @@ func TestRunTyped_WithWorkTool(t *testing.T) {
 // final_answer call is recorded still yields the value.
 func TestRunTyped_ResumeSafe(t *testing.T) {
 	// The accepted final_answer ends the run, so the crash comes as the run is marked complete.
-	store := &failOnceStore{MemStore: NewMemStore(), name: runCompleteStep}
+	store := mustJournal(&failOnceStore{MemStore: NewMemStore(), name: runCompleteStep})
 
 	crashy := &scriptModel{turns: [][]Emit{
 		toolTurn("c1", "final_answer", `{"answer":"42","score":9}`),
 	}}
-	if _, err := RunTyped[answer](context.Background(), New(crashy, store), "r", "q"); err == nil {
+	if _, _, err := mustNew(crashy, store).RunTyped[answer](context.Background(), "r", UserText("q")); err == nil {
 		t.Fatal("expected crash on first attempt")
 	}
 
 	recovered := &scriptModel{turns: [][]Emit{textTurn("done")}}
-	got, err := RunTyped[answer](context.Background(), New(recovered, store), "r", "q")
+	got, _, err := mustNew(recovered, store).RunTyped[answer](context.Background(), "r", UserText("q"))
 	if err != nil {
 		t.Fatalf("resume RunTyped: %v", err)
 	}
@@ -112,14 +112,11 @@ func TestRunTyped_ResumeSafe(t *testing.T) {
 	}
 }
 
-// If the agent already has a tool named final_answer, RunTyped refuses (config error).
+// RunTyped reserves the tool name final_answer for its answer, so New refuses a tool of that name.
 func TestRunTyped_RejectsNameCollision(t *testing.T) {
 	var c int
 	clash := &countingTool{name: "final_answer", safety: Safety{ReadOnly: true}, calls: &c}
-	a := New(&scriptModel{turns: [][]Emit{textTurn("x")}}, NewMemStore(), clash)
-
-	_, err := RunTyped[answer](context.Background(), a, "r", "q")
-	if !errors.Is(err, ErrConfig) {
-		t.Fatalf("err = %v, want errors.Is ErrConfig", err)
+	if a, err := New(&scriptModel{turns: [][]Emit{textTurn("x")}}, memJournal(), WithTools(clash)); !errors.Is(err, ErrConfig) || a != nil {
+		t.Fatalf("New = %v, %v; want nil and ErrConfig for a tool named final_answer", a, err)
 	}
 }

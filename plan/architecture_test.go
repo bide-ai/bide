@@ -52,7 +52,7 @@ func TestPlanNoAdapterImports(t *testing.T) {
 
 // TestNoNewExecutor is the machine-checkable form of the substrate invariant
 // (see docs/guides/flows.md): plan introduces NO
-// new executor. plan is a surface over agent.Step control flow; Flow.Run walks
+// new executor. plan is a surface over agent.Journal.Step control flow; Flow.Run walks
 // the topology one node at a time and drives each as a durable step, inheriting
 // the core's at-most-once/halt/resume guarantees. A scheduler, goroutine pool,
 // channel-based fan-out, or errgroup IN plan would constitute a second execution

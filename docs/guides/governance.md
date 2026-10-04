@@ -120,7 +120,7 @@ uses it with an id made of the tool call's id and the apply's number within the 
 was appended but before the call's result was recorded) records its event once, and a composite
 tool that applies several events in one call records each of them. The numbering is stable when
 the call applies its events in the same order each time it runs; applies made concurrently must
-each run in their own step (`agent.Step`, or the tasks of `agent.Parallel`), which numbers its
+each run in their own step (`Journal.Step`, or the tasks of `Journal.Parallel`), which numbers its
 applies under the step's name.
 
 `EventLog` is a port with a precise contract: `Append(ctx, entity, id, event)` returns the event's
@@ -176,11 +176,11 @@ desk, err := a.With(agent.WithIdentity(id)) // a copy of a acting for this desk
 if err != nil {
 	return err
 }
-desk.Run(ctx, runID, input) // the identity propagates to governed tools and sub-agents
+desk.Run(ctx, runID, agent.UserText(input)) // the identity propagates to governed tools and sub-agents
 ```
 
-An identity bound to a run's context (`agent.ContextWithIdentity`, transitional until the run API
-takes options) takes precedence over the agent's. The same rule decides a sub-agent's identity: a
+An identity given to one run (`agent.WithIdentity` passed to `Run` as a run option) takes
+precedence over the agent's. The same rule decides a sub-agent's identity: a
 sub-run's context carries the identity of the run that started it, so a sub-agent (a `SubAgent`
 tool, or a programmatic sub-run) runs as its parent's identity whenever the parent has one, and
 its own `WithIdentity` applies only under a parent that has none. To act under narrower
@@ -214,7 +214,7 @@ The same pattern (an external fact seeded into governed state, gated by an invar
 **k-of-n model quorum** would be built: fan out a decision to N models, tally the votes, seed the
 count into state, and gate the commit on `votes_for >= k`, so a high-stakes action requires
 agreement or escalates. It is a composition of existing seams, not a new agent type, and it is
-implemented: `govern.Quorum` (k-of-n model agreement over `agent.Parallel`) plus the
+implemented: `govern.Quorum` (k-of-n model agreement over `Journal.Parallel`) plus the
 `bide-audit verify-quorum` verb and `examples/govern/quorum`. See [Quorum](quorum.md).
 
 ## Federation: constraints across agents

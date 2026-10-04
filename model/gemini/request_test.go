@@ -8,6 +8,7 @@ import (
 	"testing"
 
 	"github.com/bide-ai/bide/agent"
+	"github.com/bide-ai/bide/agent/agenttest"
 )
 
 // contentsOf builds req and returns its contents array.
@@ -106,8 +107,8 @@ func TestRun_ThoughtSignatureRoundTrips(t *testing.T) {
 		`{"candidates":[{"content":{"parts":[{"functionCall":{"name":"lookup","args":{}},"thoughtSignature":"sig-1"}]},"finishReason":"STOP"}]}`,
 		`{"candidates":[{"content":{"parts":[{"text":"done"}]},"finishReason":"STOP"}]}`,
 	)
-	tool := agent.Func("lookup", "l", agent.Safety{ReadOnly: true}, func(context.Context, struct{}) (string, error) { return "r", nil })
-	if _, err := agent.New(New("k", WithBaseURL(srv.URL)), agent.NewMemStore(), tool).Run(context.Background(), "r", "go"); err != nil {
+	tool := agent.MustFunc("lookup", "l", func(context.Context, struct{}) (string, error) { return "r", nil }, agent.WithSafety(agent.Safety{ReadOnly: true}))
+	if _, err := agenttest.MustNew(New("k", WithBaseURL(srv.URL)), agenttest.MemJournal(), agent.WithTools(tool)).Run(context.Background(), "r", agent.UserText("go")); err != nil {
 		t.Fatal(err)
 	}
 	var req struct {
@@ -171,7 +172,7 @@ func TestBuildRequest_FileDataMimeType(t *testing.T) {
 // A tool with no arguments declares no parameters: Gemini rejects an OBJECT with empty
 // properties.
 func TestBuildRequest_NoArgToolOmitsParameters(t *testing.T) {
-	body, err := New("k").buildRequest(agent.Request{Tools: []agent.ToolSpec{agent.SpecOf(simpleTool())}})
+	body, err := New("k").buildRequest(agent.Request{Tools: []agent.ToolSpec{simpleTool().Spec()}})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -190,19 +191,19 @@ func TestBuildRequest_NoArgToolOmitsParameters(t *testing.T) {
 // error naming the tool, not a 400 from Gemini.
 func TestBuildRequest_InexpressibleToolSchemaIsAConfigError(t *testing.T) {
 	for name, tool := range map[string]agent.Tool{
-		"map": agent.Func("m", "m", agent.Safety{}, func(_ context.Context, _ struct {
+		"map": agent.MustFunc("m", "m", func(_ context.Context, _ struct {
 			M map[string]int `json:"m"`
 		}) (int, error) {
 			return 0, nil
 		}),
-		"any": agent.Func("a", "a", agent.Safety{}, func(_ context.Context, _ struct {
+		"any": agent.MustFunc("a", "a", func(_ context.Context, _ struct {
 			A any `json:"a"`
 		}) (int, error) {
 			return 0, nil
 		}),
 	} {
-		_, err := New("k").buildRequest(agent.Request{Tools: []agent.ToolSpec{agent.SpecOf(tool)}})
-		if !errors.Is(err, agent.ErrConfig) || !strings.Contains(fmtErr(err), tool.Name()) {
+		_, err := New("k").buildRequest(agent.Request{Tools: []agent.ToolSpec{tool.Spec()}})
+		if !errors.Is(err, agent.ErrConfig) || !strings.Contains(fmtErr(err), tool.Spec().Name) {
 			t.Errorf("%s: err = %v, want ErrConfig naming the tool", name, err)
 		}
 	}
@@ -210,12 +211,12 @@ func TestBuildRequest_InexpressibleToolSchemaIsAConfigError(t *testing.T) {
 
 // Optional fields reach Gemini as nullable, not as a JSON Schema type list it cannot read.
 func TestBuildRequest_ToolSchemaIsTranslated(t *testing.T) {
-	tool := agent.Func("t", "t", agent.Safety{}, func(_ context.Context, _ struct {
+	tool := agent.MustFunc("t", "t", func(_ context.Context, _ struct {
 		N *int `json:"n"`
 	}) (int, error) {
 		return 0, nil
 	})
-	req := agent.Request{Tools: []agent.ToolSpec{agent.SpecOf(tool)}, ResponseFormat: &agent.ResponseFormat{Name: "r",
+	req := agent.Request{Tools: []agent.ToolSpec{tool.Spec()}, ResponseFormat: &agent.ResponseFormat{Name: "r",
 		Schema: json.RawMessage(`{"type":"object","properties":{"s":{"type":["string","null"]}},"additionalProperties":false}`)}}
 	body, err := New("k").buildRequest(req)
 	if err != nil {

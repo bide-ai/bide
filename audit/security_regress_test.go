@@ -6,27 +6,30 @@ import (
 	"crypto/ed25519"
 	"crypto/rand"
 	"encoding/json"
+	"iter"
 	"strings"
 	"testing"
 	"time"
 	"unicode/utf8"
 
 	"github.com/bide-ai/bide/agent"
+	"github.com/bide-ai/bide/agent/agenttest"
 	"github.com/bide-ai/bide/audit/verify"
+	"github.com/bide-ai/bide/internal/journaltest"
 )
 
 // Regression tests for the audit findings of 2026-09. Each test failed on the code before its fix.
 
 // secJournal records recs into a fresh MemStore under runID, naming unnamed records.
-func secJournal(t *testing.T, runID string, recs []agent.Record) agent.Durable {
+func secJournal(t *testing.T, runID string, recs []agent.Record) *agent.Journal {
 	t.Helper()
-	s := agent.NewMemStore()
+	s := agenttest.MemJournal()
 	for i, r := range recs {
 		r := r
 		if r.Name == "" {
 			r.Name = "s" + string(rune('a'+i))
 		}
-		if _, err := s.Do(context.Background(), runID, r.Name, func(context.Context) (agent.Record, error) { return r, nil }); err != nil {
+		if _, err := journaltest.Do(context.Background(), s, runID, r.Name, func(context.Context) (agent.Record, error) { return r, nil }); err != nil {
 			t.Fatal(err)
 		}
 	}
@@ -34,7 +37,7 @@ func secJournal(t *testing.T, runID string, recs []agent.Record) agent.Durable {
 }
 
 // secHead returns runID's journal records and its journal tree head.
-func secHead(t *testing.T, s agent.Durable, runID string) ([]agent.Record, TreeHead) {
+func secHead(t *testing.T, s *agent.Journal, runID string) ([]agent.Record, TreeHead) {
 	t.Helper()
 	recs, err := s.History(context.Background(), runID)
 	if err != nil {
@@ -155,7 +158,7 @@ func TestVerifyRun_RejectsSubstitutedAbsenceSTH(t *testing.T) {
 	}
 }
 
-func secThreeCalls(t *testing.T, runID string) agent.Durable {
+func secThreeCalls(t *testing.T, runID string) *agent.Journal {
 	return secJournal(t, runID, []agent.Record{
 		{Kind: agent.StepToolResult, ToolUseID: "a", Result: json.RawMessage(`"1"`)},
 		{Kind: agent.StepToolResult, ToolUseID: "b", Result: json.RawMessage(`"2"`)},
@@ -344,21 +347,22 @@ func TestEvidence_GrantChainMatchesAnchoredLeaves(t *testing.T) {
 	secReject(t, "a relabelled grant", pkg, pub, priv)
 }
 
-// growingStore appends a record the second time History is called, standing in for a journal
-// that grows while a package is assembled.
+// growingStore appends a record (through j, a Journal on the store it wraps) the second time a
+// run is loaded, standing in for a journal that grows while a package is assembled.
 type growingStore struct {
-	agent.Durable
+	agent.Store
+	j     *agent.Journal
 	calls int
 }
 
-func (g *growingStore) History(ctx context.Context, runID string) ([]agent.Record, error) {
+func (g *growingStore) Unwrap() agent.Store { return g.Store }
+
+func (g *growingStore) Load(ctx context.Context, runID string, after int64) iter.Seq2[agent.Entry, error] {
 	g.calls++
 	if g.calls == 2 {
-		_, _ = g.Durable.Do(ctx, runID, "late", func(context.Context) (agent.Record, error) {
-			return agent.Record{Kind: agent.StepToolResult, ToolUseID: "late", Result: json.RawMessage(`"x"`)}, nil
-		})
+		_, _ = journaltest.Put(ctx, g.j, runID, "late", agent.Record{Kind: agent.StepToolResult, ToolUseID: "late", Result: json.RawMessage(`"x"`)})
 	}
-	return g.Durable.History(ctx, runID)
+	return g.Store.Load(ctx, runID, after)
 }
 
 // The consistency proof a package carries must be a proof for the size it claims.
@@ -368,9 +372,13 @@ func TestEvidence_ConsistencyProofIsForItsClaimedSize(t *testing.T) {
 	inner := secThreeCalls(t, "A")
 	recs, _ := inner.History(ctx, "A")
 	early, _ := journalHead("A", recs[:2], 1)
-	pkg, err := Evidence(ctx, &growingStore{Durable: inner}, "A", edS(priv), 1, WithToolCall("a"), WithConsistencyFrom(signTH(t, early, priv)))
+	grow := &growingStore{Store: inner.Store(), j: inner}
+	pkg, err := Evidence(ctx, agenttest.MustJournal(grow), "A", edS(priv), 1, WithToolCall("a"), WithConsistencyFrom(signTH(t, early, priv)))
 	if err != nil {
 		t.Fatal(err)
+	}
+	if grow.calls < 2 {
+		t.Fatalf("the journal was loaded %d time(s) while the package was assembled; it never grew", grow.calls)
 	}
 	c := pkg.Consistency
 	if c.Proof.Size != pkg.STH.Size || VerifyConsistency(early.Root, pkg.STH.Root, c.Proof) != nil {
@@ -450,7 +458,7 @@ func TestEarnedAuthority_DemotionRevokesOldGrant(t *testing.T) {
 	iv := func(string) (Verifier, bool) { return Ed25519Verifier{Pub: pub}, true }
 	root, _ := SignGrant(Grant{ID: "root", Issuer: "corp", Subject: "ops", NotAfterUnix: 1000,
 		Scope: map[string]string{"limit": "100"}}, Ed25519Signer{Priv: priv})
-	ledger := agent.NewMemStore()
+	ledger := agenttest.MemJournal()
 	ea, err := NewEarnedAuthority(ctx, []int{10, 100}, 1, root, Ed25519Signer{Priv: priv}, "agent", ledger, "ledger")
 	if err != nil {
 		t.Fatal(err)
@@ -643,14 +651,18 @@ func TestGrant_InvalidUTF8DoesNotCollide(t *testing.T) {
 func narrowTo(g Grant) AttenuateFunc { return func(Grant, string) Grant { return g } }
 
 // secDelegate runs a parent agent in runID that delegates once (tool-use id c1) through tool.
-func secDelegate(t *testing.T, store agent.Durable, tool agent.Tool, ctx context.Context, runID string) error {
+func secDelegate(t *testing.T, store *agent.Journal, tool agent.Tool, ctx context.Context, runID string) error {
 	t.Helper()
-	parent := agent.New(agent.NewScriptedModel(agent.ToolTurn("c1", "exec", `{"task":"go"}`), agent.TextTurn("ok")), store, tool)
-	_, err := parent.Run(ctx, runID, "go")
+	parent := agenttest.MustNew(
+		agenttest.NewScriptedModel(agenttest.ToolTurn("c1", "exec", `{"task":"go"}`), agenttest.TextTurn("ok")),
+		store,
+		agent.WithTools(tool),
+	)
+	_, err := parent.Run(ctx, runID, agent.UserText("go"))
 	return err
 }
 
-func secGrantsIn(t *testing.T, store agent.Durable, runID string) []SignedGrant {
+func secGrantsIn(t *testing.T, store *agent.Journal, runID string) []SignedGrant {
 	t.Helper()
 	recs, _ := store.History(context.Background(), runID)
 	var out []SignedGrant
@@ -674,8 +686,8 @@ func TestAttenuatingSubAgent_RefusesWidening(t *testing.T) {
 		"a later expiry":     {ID: "late", NotAfterUnix: 2000, Scope: map[string]string{"limit": "3", "tool": "refund"}},
 		"a different issuer": {ID: "iss", Issuer: "mallory", Scope: map[string]string{"limit": "3", "tool": "refund"}},
 	} {
-		store := agent.NewMemStore()
-		tool := AttenuatingSubAgent("exec", "x", agent.New(answerModel{"done"}, store), AttenuationConfig{Store: store, Narrow: narrowTo(child), Rules: ScopeRules{"limit": NumericAtMost}})
+		store := agenttest.MemJournal()
+		tool := AttenuatingSubAgent("exec", "x", agenttest.MustNew(answerModel{"done"}, store), AttenuationConfig{Store: store, Narrow: narrowTo(child), Rules: ScopeRules{"limit": NumericAtMost}})
 		_, err := tool.Call(WithGrant(context.Background(), rootSG, signer), []byte(`{"task":"go"}`))
 		if err == nil || !strings.Contains(err.Error(), "grant") {
 			t.Fatalf("the tool delegated a child grant with %s (err %v)", name, err)
@@ -685,12 +697,12 @@ func TestAttenuatingSubAgent_RefusesWidening(t *testing.T) {
 
 // AttenuatingSubAgent must carry the parent's expiry to a child that sets none.
 func TestAttenuatingSubAgent_InheritsNotAfter(t *testing.T) {
-	store := agent.NewMemStore()
+	store := agenttest.MemJournal()
 	_, priv := secKey(t)
 	signer := Ed25519Signer{Priv: priv}
 	notAfter := time.Now().Add(time.Hour).Unix() // unexpired: an expired grant cannot be delegated
 	rootSG, _ := SignGrant(Grant{ID: "g0", Issuer: "corp", Subject: "desk", NotAfterUnix: notAfter, Scope: map[string]string{"limit": "7"}}, signer)
-	tool := AttenuatingSubAgent("exec", "x", agent.New(answerModel{"done"}, store), AttenuationConfig{Store: store, Narrow: narrowTo(Grant{ID: "narrow", Scope: map[string]string{"limit": "3"}}), Rules: ScopeRules{"limit": NumericAtMost}})
+	tool := AttenuatingSubAgent("exec", "x", agenttest.MustNew(answerModel{"done"}, store), AttenuationConfig{Store: store, Narrow: narrowTo(Grant{ID: "narrow", Scope: map[string]string{"limit": "3"}}), Rules: ScopeRules{"limit": NumericAtMost}})
 	if err := secDelegate(t, store, tool, WithGrant(context.Background(), rootSG, signer), "p1"); err != nil {
 		t.Fatal(err)
 	}
@@ -702,10 +714,10 @@ func TestAttenuatingSubAgent_InheritsNotAfter(t *testing.T) {
 
 // Two delegations from different parent runs must not share one sub-run journal.
 func TestAttenuatingSubAgent_DoesNotShareSubRunAcrossParents(t *testing.T) {
-	store := agent.NewMemStore()
+	store := agenttest.MemJournal()
 	_, priv := secKey(t)
 	signer := Ed25519Signer{Priv: priv}
-	tool := AttenuatingSubAgent("exec", "x", agent.New(answerModel{"done"}, store), AttenuationConfig{Store: store, Narrow: narrowTo(Grant{ID: "narrow", Scope: map[string]string{"limit": "3"}}), Rules: ScopeRules{"limit": NumericAtMost}})
+	tool := AttenuatingSubAgent("exec", "x", agenttest.MustNew(answerModel{"done"}, store), AttenuationConfig{Store: store, Narrow: narrowTo(Grant{ID: "narrow", Scope: map[string]string{"limit": "3"}}), Rules: ScopeRules{"limit": NumericAtMost}})
 	for _, desk := range []string{"desk-a", "desk-b"} {
 		sg, _ := SignGrant(Grant{ID: desk, Issuer: "corp", Subject: desk, Scope: map[string]string{"limit": "7"}}, signer)
 		ctx := WithGrant(context.Background(), sg, signer)
@@ -750,28 +762,35 @@ func TestEvidence_SealRefusesInvalidUTF8(t *testing.T) {
 	}
 }
 
-// interferingStore records a foreign leaf in the ledger just before each grant is recorded, as a
-// second writer racing the controller would.
+// interferingStore records a foreign leaf in the ledger (through j, a Journal on the store it
+// wraps) just before each grant is inserted, as a second writer racing the controller would.
 type interferingStore struct {
-	agent.Durable
+	agent.Store
+	j *agent.Journal
 	n int
 }
 
-func (s *interferingStore) Do(ctx context.Context, runID, name string, fn func(context.Context) (agent.Record, error)) (agent.Record, error) {
+func (s *interferingStore) Unwrap() agent.Store { return s.Store }
+
+func (s *interferingStore) Insert(ctx context.Context, runID, name string, data []byte) (agent.Entry, bool, error) {
 	if strings.HasPrefix(name, grantLeafPrefix) {
 		s.n++
-		_, _ = s.Durable.Do(ctx, runID, "foreign/"+string(rune('a'+s.n)), func(context.Context) (agent.Record, error) {
-			return agent.Record{Kind: agent.StepValue, Result: json.RawMessage(`1`)}, nil
-		})
+		_, _ = journaltest.Put(ctx, s.j, runID, "foreign/"+string(rune('a'+s.n)), agent.Record{Kind: agent.StepValue, Result: json.RawMessage(`1`)})
 	}
-	return s.Durable.Do(ctx, runID, name, fn)
+	return s.Store.Insert(ctx, runID, name, data)
+}
+
+// interfering returns a Journal over an interferingStore on a new MemStore.
+func interfering() *agent.Journal {
+	mem := agent.NewMemStore()
+	return agenttest.MustJournal(&interferingStore{Store: mem, j: agenttest.MustJournal(mem)})
 }
 
 // The controller refuses to hand out a grant that did not land where it expected in the ledger.
 func TestEarnedAuthority_DetectsAnotherLedgerWriter(t *testing.T) {
 	_, priv := secKey(t)
 	root, _ := SignGrant(Grant{ID: "root", Issuer: "corp", Subject: "ops", Scope: map[string]string{"limit": "100"}}, Ed25519Signer{Priv: priv})
-	if _, err := NewEarnedAuthority(context.Background(), []int{10}, 1, root, Ed25519Signer{Priv: priv}, "agent", &interferingStore{Durable: agent.NewMemStore()}, "ledger"); err == nil {
+	if _, err := NewEarnedAuthority(context.Background(), []int{10}, 1, root, Ed25519Signer{Priv: priv}, "agent", interfering(), "ledger"); err == nil {
 		t.Fatal("the controller issued a grant into a ledger another writer was appending to")
 	}
 }
@@ -948,7 +967,7 @@ func TestEarnedAuthority_OldLeafIsNotCurrent(t *testing.T) {
 	_, priv := secKey(t)
 	logPub, logPriv := secKey(t)
 	root, _ := SignGrant(Grant{ID: "root", Issuer: "corp", Subject: "ops", Scope: map[string]string{"limit": "100"}}, Ed25519Signer{Priv: priv})
-	ledger := agent.NewMemStore()
+	ledger := agenttest.MemJournal()
 	ea, err := NewEarnedAuthority(ctx, []int{10, 100}, 1, root, Ed25519Signer{Priv: priv}, "agent", ledger, "ledger")
 	if err != nil {
 		t.Fatal(err)

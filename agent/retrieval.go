@@ -51,24 +51,34 @@ func (f RetrieverFunc) Retrieve(ctx context.Context, query string, k int) ([]Doc
 // (retry-safe) unless WithSafety says otherwise, and takes the other tool options (WithApproval,
 // WithTimeout, WithTitle, WithOutputSchema) as Func does. name is what the model calls it by, so
 // an agent that searches several stores gives each RetrievalTool its own; description is what the
-// model reads to decide when to call it, such as what the store holds. It panics if name is
-// empty, r is nil, k is below 1, or an option is invalid.
-func RetrievalTool(name, description string, r Retriever, k int, opts ...ToolOption) Tool {
-	checkK("RetrievalTool", k)
-	if name == "" {
-		panic("agent: RetrievalTool requires a non-empty name")
-	}
-	if isNil(r) {
-		panic("agent: RetrievalTool requires a non-nil Retriever")
+// model reads to decide when to call it, such as what the store holds. An empty name, a nil r, a k
+// below 1 and an invalid option are each an error wrapping ErrConfig; MustRetrievalTool panics with
+// it instead.
+func RetrievalTool(name, description string, r Retriever, k int, opts ...ToolOption) (Tool, error) {
+	switch {
+	case k < 1:
+		return nil, fmt.Errorf("agent: RetrievalTool %q requires k >= 1, got %d: %w", name, k, ErrConfig)
+	case name == "":
+		return nil, fmt.Errorf("agent: RetrievalTool requires a non-empty name: %w", ErrConfig)
+	case isNil(r):
+		return nil, fmt.Errorf("agent: RetrievalTool %q requires a non-nil Retriever: %w", name, ErrConfig)
 	}
 	type args struct {
 		Query string `json:"query" desc:"what to search the knowledge base for"`
 	}
-	return Func(name, description, Safety{ReadOnly: true},
+	// read-only unless the caller's WithSafety, which comes later, says otherwise
+	opts = append([]ToolOption{WithSafety(Safety{ReadOnly: true})}, opts...)
+	return Func(name, description,
 		func(ctx context.Context, in args) ([]Doc, error) {
 			docs, err := r.Retrieve(ctx, in.Query, k)
 			return topK(docs, k), err
 		}, opts...)
+}
+
+// MustRetrievalTool is RetrievalTool for a tool built at init: it panics with RetrievalTool's
+// error.
+func MustRetrievalTool(name, description string, r Retriever, k int, opts ...ToolOption) Tool {
+	return must(RetrievalTool(name, description, r, k, opts...))
 }
 
 // retrievalLayer is one WithRetrieval: its Retriever, how many documents it returns, and how a
@@ -188,7 +198,7 @@ func (a *Agent) withRetrieved(ctx context.Context, runID string, msgs []Message,
 
 // retrieveOnce returns the top-k documents for query: the run's step "@retrieval/<layer>", which
 // the first call retrieves and records, and every later call reads back.
-func retrieveOnce(ctx context.Context, d Durable, runID string, l retrievalLayer, query string, layer int) ([]Doc, error) {
+func retrieveOnce(ctx context.Context, d *Journal, runID string, l retrievalLayer, query string, layer int) ([]Doc, error) {
 	rec, err := step(ctx, d, runID, retrievalStep(layer), func(ctx context.Context) (retrieval, error) {
 		docs, err := l.retrieve(ctx, query)
 		if err != nil {
@@ -197,15 +207,6 @@ func retrieveOnce(ctx context.Context, d Durable, runID string, l retrievalLayer
 		return retrieval{Query: query, Docs: topK(docs, l.k)}, nil
 	}, WithSafety(Safety{ReadOnly: true}))
 	return rec.Docs, err
-}
-
-// checkK panics unless k is at least 1: k is how many documents to return, and a k below 1
-// asks for none, which a Retriever would serve inconsistently (one store returns nothing,
-// another ignores the limit), so it is a construction-time programmer error.
-func checkK(fn string, k int) {
-	if k < 1 {
-		panic(fmt.Sprintf("agent: %s requires k >= 1, got %d", fn, k))
-	}
 }
 
 // topK returns the first k of docs, the top k in the order the Retriever ranked them, as a

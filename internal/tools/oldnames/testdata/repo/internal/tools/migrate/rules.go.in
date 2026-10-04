@@ -1,0 +1,3 @@
+package migrate
+
+var renames = map[string]string{"RunMessage": "Run", "ResolveHaltRef": "ResolveHalt"}

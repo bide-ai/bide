@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"iter"
 	"strings"
 	"sync"
 	"sync/atomic"
@@ -11,60 +12,40 @@ import (
 	"time"
 )
 
-// xprocStore gives Do the semantics of a store shared by separate processes: no in-process
-// singleflight, so two drivers can both run fn for the same name, and the insert is atomic, so a
-// later insert of an already-recorded name returns the earlier record (as SQLite and Postgres do
-// with a primary key). If meet is set, every Do on an attempt marker waits there first, forcing two
-// drivers into the same window.
+// xprocStore is a store shared by separate processes. Each process drives it through a Journal
+// of its own (proc), over a view of the store with an identity of its own, so two processes share
+// no in-process state (in-flight steps, remembered claims): two drivers can both run fn for the
+// same name, and the store's atomic insert decides which record stands (as SQLite and Postgres do
+// with a primary key). The store does not lease runs: it holds its MemStore as a field, so neither
+// it nor a view exposes the MemStore's Leaser or Lister. If meet is set, every Insert of an
+// attempt marker waits there first, forcing two drivers into the same window.
 type xprocStore struct {
-	mu    sync.Mutex
-	order map[string][]Record
-	index map[string]map[string]int
-	meet  *rendezvous
+	mem  *MemStore
+	meet *rendezvous
 }
 
-func newXprocStore() *xprocStore {
-	return &xprocStore{order: map[string][]Record{}, index: map[string]map[string]int{}}
+func newXprocStore() *xprocStore { return &xprocStore{mem: NewMemStore()} }
+
+// proc returns a new process's Journal over the store.
+func (s *xprocStore) proc() *Journal { return mustJournal(&xprocView{s}) }
+
+// xprocView is one process's view of an xprocStore. It does not implement Unwrap, so it is its
+// own identity.
+type xprocView struct{ s *xprocStore }
+
+func (v *xprocView) Insert(ctx context.Context, runID, name string, data []byte) (Entry, bool, error) {
+	if v.s.meet != nil && strings.HasPrefix(name, "attempt:") {
+		v.s.meet.arrive()
+	}
+	return v.s.mem.Insert(ctx, runID, name, data)
 }
 
-func (s *xprocStore) lookup(runID, name string) (Record, bool) {
-	s.mu.Lock()
-	defer s.mu.Unlock()
-	if i, ok := s.index[runID][name]; ok {
-		return s.order[runID][i], true
-	}
-	return Record{}, false
+func (v *xprocView) Get(ctx context.Context, runID, name string) (Entry, bool, error) {
+	return v.s.mem.Get(ctx, runID, name)
 }
 
-func (s *xprocStore) Do(ctx context.Context, runID, name string, fn func(context.Context) (Record, error)) (Record, error) {
-	if s.meet != nil && strings.HasPrefix(name, "attempt:") {
-		s.meet.arrive()
-	}
-	if r, ok := s.lookup(runID, name); ok {
-		return r, nil
-	}
-	rec, err := fn(ctx) // outside the lock, like a separate process doing its work
-	if err != nil {
-		return Record{}, err
-	}
-	rec.Name = name
-	s.mu.Lock()
-	defer s.mu.Unlock()
-	if i, ok := s.index[runID][name]; ok {
-		return s.order[runID][i], nil // the other process's insert landed first
-	}
-	if s.index[runID] == nil {
-		s.index[runID] = map[string]int{}
-	}
-	s.index[runID][name] = len(s.order[runID])
-	s.order[runID] = append(s.order[runID], rec)
-	return rec, nil
-}
-
-func (s *xprocStore) History(_ context.Context, runID string) ([]Record, error) {
-	s.mu.Lock()
-	defer s.mu.Unlock()
-	return append([]Record(nil), s.order[runID]...), nil
+func (v *xprocView) Load(ctx context.Context, runID string, after int64) iter.Seq2[Entry, error] {
+	return v.s.mem.Load(ctx, runID, after)
 }
 
 // rendezvous releases its callers once want of them have arrived (or after a safety timeout).
@@ -98,7 +79,7 @@ func TestOverlappingDrivers_SideEffectFiresOnce(t *testing.T) {
 	ctx := context.Background()
 	store := newXprocStore()
 	asst := Message{Role: RoleAssistant, Parts: []Part{ToolUse{ID: "c1", Name: "charge", Args: json.RawMessage(`{}`)}}}
-	if _, err := store.Do(ctx, "r1", "@llm/0", func(context.Context) (Record, error) {
+	if _, err := store.proc().do(ctx, "r1", "@llm/0", func(context.Context) (Record, error) {
 		return Record{Kind: StepModel, Message: &asst}, nil
 	}); err != nil {
 		t.Fatal(err)
@@ -106,7 +87,7 @@ func TestOverlappingDrivers_SideEffectFiresOnce(t *testing.T) {
 	store.meet = newRendezvous(2)
 
 	var fired atomic.Int32
-	charge := Func("charge", "charge the card", Safety{}, func(context.Context, struct{}) (string, error) {
+	charge := MustFunc("charge", "charge the card", func(context.Context, struct{}) (string, error) {
 		fired.Add(1)
 		deadline := time.Now().Add(300 * time.Millisecond)
 		for fired.Load() < 2 && time.Now().Before(deadline) {
@@ -115,7 +96,7 @@ func TestOverlappingDrivers_SideEffectFiresOnce(t *testing.T) {
 		return "ok", nil
 	})
 	drive := func() error {
-		_, err := New(&greedyModel{script: [][]Emit{textTurn("done")}}, store, charge).Run(ctx, "r1", "pay")
+		_, err := mustNew(&greedyModel{script: [][]Emit{textTurn("done")}}, store.proc(), WithTools(charge)).Run(ctx, "r1", UserText("pay"))
 		return err
 	}
 
@@ -132,7 +113,7 @@ func TestOverlappingDrivers_SideEffectFiresOnce(t *testing.T) {
 	}
 	var halts, oks int
 	for _, err := range errs {
-		var halt *ResumeHalt
+		var halt *OutcomeUnknown
 		switch {
 		case err == nil:
 			oks++
@@ -142,8 +123,8 @@ func TestOverlappingDrivers_SideEffectFiresOnce(t *testing.T) {
 				t.Fatalf("lost-claim halt = %+v, want an OpTool halt with Cause %q", halt, HaltContended)
 			}
 			// The winner may still be running the charge, so its halt cannot be resolved blind.
-			if rerr := ResolveHaltRef(ctx, store, halt.Ref(), Outcome{Result: "ok"}); !errors.Is(rerr, ErrConfig) {
-				t.Fatalf("ResolveHaltRef on a contended halt without WithMinHaltAge = %v, want ErrConfig", rerr)
+			if rerr := ResolveHalt(ctx, store.proc(), halt.Ref(), Outcome{Result: "ok"}); !errors.Is(rerr, ErrConfig) {
+				t.Fatalf("ResolveHalt on a contended halt without WithMinHaltAge = %v, want ErrConfig", rerr)
 			}
 			halts++
 		default:
@@ -169,7 +150,7 @@ func TestOverlappingDrivers_SideEffectFiresOnce(t *testing.T) {
 // attempt marker carries the claim.
 func TestClaimAttempt_SingleDriverWins(t *testing.T) {
 	ctx := context.Background()
-	store := NewMemStore()
+	store := memJournal()
 	won, got, err := ClaimAttempt(ctx, store, "r1", "attempt:c1", Record{Kind: StepAttempt, ToolUseID: "c1"})
 	if err != nil || !won || got.claim == "" {
 		t.Fatalf("first claim: won=%v claim=%q err=%v, want won with a claim id", won, got.claim, err)

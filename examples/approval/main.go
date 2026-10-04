@@ -42,6 +42,7 @@ import (
 	"errors"
 	"flag"
 	"fmt"
+	"log"
 	"os"
 	"path/filepath"
 	"strings"
@@ -138,9 +139,8 @@ type refundArgs struct {
 
 // newAgent builds the agent with the approval-gated refund tool. witness, if set, gets one
 // line appended per real refund, so a test can count side effects across processes.
-func newAgent(store agent.Durable, witness string) *agent.Agent {
-	refund := agent.Func("refund", "refund an order",
-		agent.Safety{},
+func newAgent(store *agent.Journal, witness string) *agent.Agent {
+	refund := agent.MustFunc("refund", "refund an order",
 		func(_ context.Context, in refundArgs) (string, error) {
 			if witness != "" {
 				f, err := os.OpenFile(witness, os.O_APPEND|os.O_CREATE|os.O_WRONLY, 0o644)
@@ -154,12 +154,25 @@ func newAgent(store agent.Durable, witness string) *agent.Agent {
 			}
 			return fmt.Sprintf("$%d to order %d", in.Amount, in.Order), nil
 		}, agent.WithApproval(&policy))
-	return agent.New(refundModel{}, store, refund).WithApproverVerifiers(approverVerifiers())
+	ag, err := agent.New(
+		refundModel{},
+		store,
+		agent.WithTools(refund),
+		agent.WithApproverVerifiers(approverVerifiers()),
+	)
+	if err != nil {
+		log.Fatal(err)
+	}
+	return ag
 }
 
 // cmdRun drives the agent once. It either pauses at the gate (printing the tally) or completes.
-func cmdRun(ctx context.Context, store agent.Durable, witness string) error {
-	out, err := newAgent(store, witness).Run(ctx, runID, "Refund order 42.")
+func cmdRun(ctx context.Context, store *agent.Journal, witness string) error {
+	res, err := newAgent(store, witness).Run(ctx, runID, agent.UserText("Refund order 42."))
+	var out agent.Message
+	if res != nil {
+		out = res.Message
+	}
 	pend, paused := errors.AsType[*agent.ApprovalPending](err)
 	switch {
 	case paused && pend.Quorum != nil:
@@ -185,7 +198,7 @@ func cmdRun(ctx context.Context, store agent.Durable, witness string) error {
 // exactly what they were shown: the paused call's Subject (run, call id, tool, arguments). forge
 // signs with a key that is not the approver's, to show the gate ignores it. check verifies the
 // decision before recording it, and refuses one that would not count.
-func cmdApprove(ctx context.Context, store agent.Durable, as string, approved, forge, check bool) error {
+func cmdApprove(ctx context.Context, store *agent.Journal, as string, approved, forge, check bool) error {
 	recs, err := store.History(ctx, runID)
 	if err != nil {
 		return err
@@ -227,7 +240,7 @@ func cmdApprove(ctx context.Context, store agent.Durable, as string, approved, f
 // cmdEvidence writes a portable evidence package (the request, every decision the gate read,
 // its tally, and the refund, all under one signed tree head) and the approvers' public keys an
 // auditor would hold, as a JSON object of approver id to ed25519 key hex.
-func cmdEvidence(ctx context.Context, store agent.Durable, outPath, keysPath string) error {
+func cmdEvidence(ctx context.Context, store *agent.Journal, outPath, keysPath string) error {
 	pkg, err := audit.Evidence(ctx, store, runID, logKey(), time.Now().UnixNano(), audit.WithToolCall(callID))
 	if err != nil {
 		return err
@@ -325,6 +338,10 @@ func demo(ctx context.Context) error {
 	if err != nil {
 		return err
 	}
+	j, err := agent.NewJournal(store)
+	if err != nil {
+		return err
+	}
 	defer store.Close()
 	witness := filepath.Join(dir, "refunds.txt")
 
@@ -336,18 +353,18 @@ func demo(ctx context.Context) error {
 		title string
 		f     func() error
 	}{
-		{"The agent asks to refund; the gate pauses it", func() error { return cmdRun(ctx, store, witness) }},
-		{"mallory approves (has a key, but is not an eligible approver)", func() error { return cmdApprove(ctx, store, "mallory", true, false, false) }},
-		{"An approval for risk arrives with a forged signature", func() error { return cmdApprove(ctx, store, "risk", true, true, false) }},
-		{"Resume: neither counts", func() error { return cmdRun(ctx, store, witness) }},
-		{"risk approves for real: the forgery did not lock risk out", func() error { return cmdApprove(ctx, store, "risk", true, false, false) }},
-		{"Resume: 1 of 2", func() error { return cmdRun(ctx, store, witness) }},
-		{"A forged approval for ops, submitted with -check, is refused on the spot", func() error { return cmdApprove(ctx, store, "ops", true, true, true) }},
-		{"ops approves, with -check", func() error { return cmdApprove(ctx, store, "ops", true, false, true) }},
-		{"Resume: 2 of 2, the refund runs", func() error { return cmdRun(ctx, store, witness) }},
-		{"Resume again: nothing runs twice", func() error { return cmdRun(ctx, store, witness) }},
+		{"The agent asks to refund; the gate pauses it", func() error { return cmdRun(ctx, j, witness) }},
+		{"mallory approves (has a key, but is not an eligible approver)", func() error { return cmdApprove(ctx, j, "mallory", true, false, false) }},
+		{"An approval for risk arrives with a forged signature", func() error { return cmdApprove(ctx, j, "risk", true, true, false) }},
+		{"Resume: neither counts", func() error { return cmdRun(ctx, j, witness) }},
+		{"risk approves for real: the forgery did not lock risk out", func() error { return cmdApprove(ctx, j, "risk", true, false, false) }},
+		{"Resume: 1 of 2", func() error { return cmdRun(ctx, j, witness) }},
+		{"A forged approval for ops, submitted with -check, is refused on the spot", func() error { return cmdApprove(ctx, j, "ops", true, true, true) }},
+		{"ops approves, with -check", func() error { return cmdApprove(ctx, j, "ops", true, false, true) }},
+		{"Resume: 2 of 2, the refund runs", func() error { return cmdRun(ctx, j, witness) }},
+		{"Resume again: nothing runs twice", func() error { return cmdRun(ctx, j, witness) }},
 		{"Export evidence", func() error {
-			return cmdEvidence(ctx, store, filepath.Join(dir, "evidence.json"), filepath.Join(dir, "approver-keys.json"))
+			return cmdEvidence(ctx, j, filepath.Join(dir, "evidence.json"), filepath.Join(dir, "approver-keys.json"))
 		}},
 		{"An auditor verifies offline", func() error { return cmdVerify(filepath.Join(dir, "evidence.json")) }},
 	}
@@ -403,20 +420,24 @@ func main() {
 		return
 	}
 	store, err := sqlite.Open(*db)
+	j, err := agent.NewJournal(store)
+	if err != nil {
+		log.Fatal(err)
+	}
 	if err != nil {
 		fatal(err)
 	}
 	defer store.Close()
 	switch cmd {
 	case "run":
-		err = cmdRun(ctx, store, *witness)
+		err = cmdRun(ctx, j, *witness)
 	case "approve":
 		if *as == "" {
 			fatal(errors.New("approve: -as is required"))
 		}
-		err = cmdApprove(ctx, store, *as, !*deny, *forge, *check)
+		err = cmdApprove(ctx, j, *as, !*deny, *forge, *check)
 	case "evidence":
-		err = cmdEvidence(ctx, store, *out, *keysOut)
+		err = cmdEvidence(ctx, j, *out, *keysOut)
 	default:
 		err = fmt.Errorf("unknown command %q (want run, approve, evidence, or verify)", cmd)
 	}

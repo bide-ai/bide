@@ -13,7 +13,7 @@ import (
 // does, and an error after the deadline has an unknown outcome.
 func TestR117_ToolNodeAppliesTheToolsTimeout(t *testing.T) {
 	var sawDeadline bool
-	slow := agent.Func("slow", "", agent.Safety{}, func(ctx context.Context, _ int) (int, error) {
+	slow := agent.MustFunc("slow", "", func(ctx context.Context, _ int) (int, error) {
 		dl, ok := ctx.Deadline()
 		sawDeadline = ok && time.Until(dl) < time.Second
 		<-ctx.Done()
@@ -27,7 +27,7 @@ func TestR117_ToolNodeAppliesTheToolsTimeout(t *testing.T) {
 		}(),
 		"RegisterTool": func() func(context.Context, any) (any, error) {
 			reg := NewRegistry()
-			if err := RegisterTool[int, int](reg, "slow", slow); err != nil {
+			if err := reg.RegisterTool[int, int]("slow", slow); err != nil {
 				t.Fatal(err)
 			}
 			return reg.blocks["slow"].run

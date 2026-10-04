@@ -9,6 +9,7 @@ import (
 	"testing"
 
 	"github.com/bide-ai/bide/agent"
+	"github.com/bide-ai/bide/agent/agenttest"
 	"github.com/bide-ai/bide/audit"
 )
 
@@ -24,7 +25,7 @@ type checkResult struct {
 // and (c) each check is independently provable against a signed tree head (auditable fan-in).
 func TestParallel_DurableAuditableFanIn(t *testing.T) {
 	ctx := context.Background()
-	store := agent.NewMemStore()
+	store := agenttest.MemJournal()
 	const runID = "kyc-123"
 
 	var sanctions, credit, fraud int64
@@ -43,7 +44,7 @@ func TestParallel_DurableAuditableFanIn(t *testing.T) {
 		}},
 	}
 
-	results, err := agent.Parallel(ctx, store, runID, checks)
+	results, err := store.Parallel(ctx, runID, checks)
 	if err != nil {
 		t.Fatalf("Parallel: %v", err)
 	}
@@ -56,7 +57,7 @@ func TestParallel_DurableAuditableFanIn(t *testing.T) {
 	}
 
 	// (b) resume: same runID + names, completed checks are memoized, not re-run.
-	results2, err := agent.Parallel(ctx, store, runID, checks)
+	results2, err := store.Parallel(ctx, runID, checks)
 	if err != nil {
 		t.Fatalf("Parallel (resume): %v", err)
 	}
@@ -96,7 +97,7 @@ func TestParallel_DurableAuditableFanIn(t *testing.T) {
 // not journaled and a check is ReadOnly) it re-runs on resume while the succeeded ones are memoized.
 func TestParallel_PartialFailure(t *testing.T) {
 	ctx := context.Background()
-	store := agent.NewMemStore()
+	store := agenttest.MemJournal()
 	const runID = "kyc-456"
 
 	boom := errors.New("credit bureau timeout")
@@ -111,7 +112,7 @@ func TestParallel_PartialFailure(t *testing.T) {
 		}},
 	}
 
-	results, err := agent.Parallel(ctx, store, runID, tasks)
+	results, err := store.Parallel(ctx, runID, tasks)
 	if !errors.Is(err, boom) {
 		t.Fatalf("expected the joined error to include the failing check, got %v", err)
 	}
@@ -120,7 +121,7 @@ func TestParallel_PartialFailure(t *testing.T) {
 	}
 
 	// The failed check was not journaled, so a resume re-runs it (correct: nothing completed).
-	_, _ = agent.Parallel(ctx, store, runID, tasks)
+	_, _ = store.Parallel(ctx, runID, tasks)
 	if creditAttempts != 2 {
 		t.Fatalf("expected the failed check to re-run on resume, attempts=%d", creditAttempts)
 	}
@@ -130,7 +131,7 @@ func TestParallel_PartialFailure(t *testing.T) {
 	}
 }
 
-func mustTH(t *testing.T, ctx context.Context, store agent.Durable, runID string) audit.TreeHead {
+func mustTH(t *testing.T, ctx context.Context, store *agent.Journal, runID string) audit.TreeHead {
 	t.Helper()
 	th, err := audit.NewTreeHead(ctx, store, runID, 1)
 	if err != nil {
@@ -161,19 +162,19 @@ func mustKey(t *testing.T) ed25519.PrivateKey {
 // (a gateway that timed out after charging), so resume halts on it instead of running it again.
 func TestParallel_FailedSideEffectHaltsOnResume(t *testing.T) {
 	ctx := context.Background()
-	store := agent.NewMemStore()
+	store := agenttest.MemJournal()
 	var charges int64
 	tasks := []agent.Task[string]{{Name: "charge", Fn: func(context.Context) (string, error) {
 		atomic.AddInt64(&charges, 1)
 		return "", errors.New("gateway timeout")
 	}}}
-	if _, err := agent.Parallel(ctx, store, "r1", tasks); err == nil {
+	if _, err := store.Parallel(ctx, "r1", tasks); err == nil {
 		t.Fatal("setup: want the charge's error")
 	}
-	_, err := agent.Parallel(ctx, store, "r1", tasks)
-	var halt *agent.ResumeHalt
+	_, err := store.Parallel(ctx, "r1", tasks)
+	var halt *agent.OutcomeUnknown
 	if !errors.As(err, &halt) || halt.Op.ID != "charge" || charges != 1 {
-		t.Fatalf("resume: err = %v after %d charges; want *ResumeHalt for charge after 1", err, charges)
+		t.Fatalf("resume: err = %v after %d charges; want *OutcomeUnknown for charge after 1", err, charges)
 	}
 }
 
@@ -181,7 +182,7 @@ func TestParallel_FailedSideEffectHaltsOnResume(t *testing.T) {
 func TestParallel_RejectsDuplicateNames(t *testing.T) {
 	var ran int64
 	fn := func(context.Context) (int, error) { atomic.AddInt64(&ran, 1); return 1, nil }
-	_, err := agent.Parallel(context.Background(), agent.NewMemStore(), "r1",
+	_, err := agenttest.MemJournal().Parallel(context.Background(), "r1",
 		[]agent.Task[int]{{Name: "check", Fn: fn}, {Name: "check", Fn: fn}})
 	if !errors.Is(err, agent.ErrConfig) || ran != 0 {
 		t.Fatalf("err = %v, ran = %d; want ErrConfig before any task runs", err, ran)

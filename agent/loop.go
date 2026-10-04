@@ -16,23 +16,7 @@ import (
 	"github.com/bide-ai/bide/internal/toolhook"
 )
 
-// Run drives the agent to completion for runID, resuming from the journal if steps
-// already exist. Completed steps are reused; retry-safe tools with no recorded result
-// are re-run; a non-retry-safe tool with no result triggers OutcomeUnknown; a tool that
-// requires approval with no recorded decision triggers ApprovalPending. A run that already
-// finished is final: Run returns its recorded answer without calling the model, whatever
-// input is passed, so retrying a completed run never repeats its side effects.
-//
-// The first drive of a run records its input, and a run that has not finished resumes only with
-// that input: another input is ErrConfig, as is resuming through RunSaga a run started through
-// Run, or the reverse (see RunStart; RecordedStart reads the recorded input back).
-func (a *Agent) Run(ctx context.Context, runID, input string) (Message, error) {
-	in := UserText(input)
-	msg, _, _, err := a.run(ctx, runID, &driveSpec{input: &in, strictSaga: true})
-	return msg, err
-}
-
-// run is the single loop shared by Run/RunSaga (emit == nil) and Stream/StreamSaga
+// run is the single loop shared by Run (emit == nil) and Stream
 // (emit receives lifecycle events). It drives one durable run seeded with `seed` — the
 // conversation to start from: a single user turn for Run, or the full transcript plus
 // the new user turn for a Session turn. The system prompt, if set, is prepended ahead of
@@ -46,7 +30,7 @@ func (a *Agent) run(ctx context.Context, runID string, d *driveSpec) (Message, u
 }
 
 // driveStackProbe is the stack a drive needs below Agent.run, less a margin: about 23 KiB at its
-// deepest (the journal header's insert under openRun), of which drive's own frame is about 12 KiB.
+// deepest (the journal header's insert under Journal.open), of which drive's own frame is about 12 KiB.
 // It stays below that need, so the probe never grows a stack the drive would not.
 // TestDriveStackHighWater (drive_stack_test.go) pins that need between 17 and 32 KiB and fails
 // when the drive changes enough that this size should be revisited.
@@ -59,7 +43,7 @@ const driveStackProbe = 16 << 10
 //
 // Why it exists: a run in a fresh goroutine (a server handler, a Recover worker, a parallel
 // sub-run) starts with an 8 KiB stack. Without the probe, the drive outgrows it twice, once deep
-// under openRun and once more further down, and each growth copies every frame above it,
+// under Journal.open and once more further down, and each growth copies every frame above it,
 // including drive's own large one, a cost the overhead benchmark (short runs) is sensitive to.
 // With the probe, the stack grows here once, while only run's small frame is above it, and the
 // drive then fits. When the stack is already large enough, the probe costs one call (its frame's
@@ -82,13 +66,10 @@ func (a *Agent) runLoop(ctx context.Context, runID string, d *driveSpec) (Messag
 	if err := checkRunID(ctx, runID); err != nil {
 		return Message{}, usageTotals{}, 0, err
 	}
-	if err := a.checkTools(); err != nil {
-		return Message{}, usageTotals{}, 0, err
-	}
 	if err := a.checkRequiredChoice(); err != nil {
 		return Message{}, usageTotals{}, 0, err
 	}
-	if err := checkDurable(a.store); err != nil {
+	if err := checkJournal(a.store); err != nil {
 		return Message{}, usageTotals{}, 0, err
 	}
 	// protocol:delegation begin SLink
@@ -97,7 +78,7 @@ func (a *Agent) runLoop(ctx context.Context, runID string, d *driveSpec) (Messag
 	}
 	// protocol:delegation end
 	ctx = a.runDefaults(ctx) // the agent's identity, Waker and clock, where the run was given none
-	fire := func(e AgentEvent) {
+	fire := func(e RunEvent) {
 		if emit != nil {
 			emit(e)
 		}
@@ -122,7 +103,7 @@ func (a *Agent) runLoop(ctx context.Context, runID string, d *driveSpec) (Messag
 			// protocol:spend begin Open
 			// protocol:toolcall begin DOpen
 			var err error
-			if recs, err = openRun(open, a.store, runID); err != nil {
+			if recs, err = a.store.open(open, runID); err != nil {
 				return Message{}, usageTotals{}, 0, err
 			}
 			// protocol:toolcall end
@@ -319,7 +300,7 @@ func (a *Agent) runLoop(ctx context.Context, runID string, d *driveSpec) (Messag
 		}
 		if seen {
 			if saga {
-				r, _, err := lookup(ctx, p.rootStore, p.root, runCancelRequestedStep)
+				r, _, err := p.rootStore.Get(ctx, p.root, runCancelRequestedStep)
 				if err != nil {
 					return Message{}, tot, 0, err
 				}
@@ -462,7 +443,7 @@ func (a *Agent) runLoop(ctx context.Context, runID string, d *driveSpec) (Messag
 				built  *Record       // the record the step built, if it ran
 				answer ModelResponse // the response it records
 			)
-			rec, err := a.store.Do(ctx, runID, modelStep(modelSeq),
+			rec, err := a.store.do(ctx, runID, modelStep(modelSeq),
 				func(ctx context.Context) (Record, error) {
 					ts.usedIDs = toolUseIDs(msgs)
 					sent := msgs
@@ -520,7 +501,7 @@ func (a *Agent) runLoop(ctx context.Context, runID string, d *driveSpec) (Messag
 				landed := false
 				var lerr error
 				if built != nil {
-					held, landed, lerr = lookup(context.WithoutCancel(ctx), a.store, runID, modelStep(seq))
+					held, landed, lerr = a.store.Get(context.WithoutCancel(ctx), runID, modelStep(seq))
 				}
 				switch {
 				case built != nil && lerr != nil:
@@ -660,7 +641,7 @@ func (a *Agent) runLoop(ctx context.Context, runID string, d *driveSpec) (Messag
 			}
 			if denied { // record a denial and let the model react
 				const deniedResult = `"tool call denied by human"`
-				if _, err := putRecord(ctx, a.store, runID, ToolResultStep(tu.ID), Record{Kind: StepToolResult, ToolUseID: tu.ID, IsError: true, Result: json.RawMessage(deniedResult), Safety: recordedSafety(*spec), Approval: spec.Approval.Clone()}); err != nil {
+				if _, err := a.store.put(ctx, runID, ToolResultStep(tu.ID), Record{Kind: StepToolResult, ToolUseID: tu.ID, IsError: true, Result: json.RawMessage(deniedResult), Safety: recordedSafety(*spec), Approval: spec.Approval.Clone()}); err != nil {
 					return leave(err)
 				}
 				done[tu.ID] = true
@@ -815,7 +796,7 @@ func (a *Agent) runLoop(ctx context.Context, runID string, d *driveSpec) (Messag
 				// side effect is left with no recorded outcome and resume would halt on it (or, worse,
 				// re-fire it). The attempt marker above stays on gctx: if we are cancelled before it
 				// commits, the tool has not started, so there is nothing to record.
-				rec, err := recordFresh(context.WithoutCancel(gctx), a.store, runID, ToolResultStep(c.tu.ID), func(context.Context) (Record, error) {
+				rec, err := a.store.doFresh(context.WithoutCancel(gctx), runID, ToolResultStep(c.tu.ID), func(context.Context) (Record, error) {
 					if claimed && ctxDone(sctx) {
 						// Cancelled after the claim and before the call: the tool is not called,
 						// and that is recorded below, so a resume calls it instead of halting.
@@ -1002,7 +983,7 @@ func (a *Agent) runLoop(ctx context.Context, runID string, d *driveSpec) (Messag
 		if err := werr; err != nil {
 			var trip *sagaTrip
 			if errors.As(err, &trip) {
-				return leave(trip) // RunSaga catches → compensates
+				return leave(trip) // the saga driver catches it and compensates
 			}
 			return leave(err)
 		}

@@ -37,7 +37,7 @@ const (
 // exactly. The disclosed record carries the approver id and signature, so a verifier holding
 // the approver's key can check it over agent.ApprovalDecisionBytes independently. ProveStep
 // matches only StepValue records, so it cannot reach a decision.
-func ProveApproval(ctx context.Context, store agent.Durable, runID, step string, sth SignedTreeHead) (ProofBundle, error) {
+func ProveApproval(ctx context.Context, store *agent.Journal, runID, step string, sth SignedTreeHead) (ProofBundle, error) {
 	recs, err := store.History(ctx, runID)
 	if err != nil {
 		return ProofBundle{}, fmt.Errorf("audit: load journal %s: %w", runID, err)
@@ -63,7 +63,7 @@ func ProveApproval(ctx context.Context, store agent.Durable, runID, step string,
 // m-of-n gated, or its gate has not reached an outcome), no recorded request, or no result, or
 // if a proof cannot be built against sth. The tally is read as VerifyApprovals reads it
 // (UnmarshalStrict), so a tally that reads two ways is ErrMalformed here too.
-func ApprovalEvidence(ctx context.Context, store agent.Durable, runID, toolUseID string, sth SignedTreeHead) ([]EvidenceAction, error) {
+func ApprovalEvidence(ctx context.Context, store *agent.Journal, runID, toolUseID string, sth SignedTreeHead) ([]EvidenceAction, error) {
 	recs, err := store.History(ctx, runID)
 	if err != nil {
 		return nil, fmt.Errorf("audit: load journal %s: %w", runID, err)

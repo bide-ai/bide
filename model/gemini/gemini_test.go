@@ -12,8 +12,7 @@ import (
 )
 
 func simpleTool() agent.Tool {
-	return agent.Func("get_weather", "weather", agent.Safety{ReadOnly: true},
-		func(_ context.Context, _ struct{}) (string, error) { return "", nil })
+	return agent.MustFunc("get_weather", "weather", func(_ context.Context, _ struct{}) (string, error) { return "", nil }, agent.WithSafety(agent.Safety{ReadOnly: true}))
 }
 
 // A system turn folds into systemInstruction; user/assistant/tool turns become
@@ -31,7 +30,7 @@ func TestBuildRequest_MessagesAndSystemInstruction(t *testing.T) {
 				agent.ToolResult{ToolUseID: "call_1", Result: json.RawMessage(`{"temp":68}`)},
 			}},
 		},
-		Tools: []agent.ToolSpec{agent.SpecOf(simpleTool())},
+		Tools: []agent.ToolSpec{simpleTool().Spec()},
 	})
 	if err != nil {
 		t.Fatal(err)
@@ -146,7 +145,7 @@ func TestBuildRequest_ToolChoice(t *testing.T) {
 			m := New("k")
 			body, err := m.buildRequest(agent.Request{
 				Messages:   []agent.Message{agent.UserText("hi")},
-				Tools:      []agent.ToolSpec{agent.SpecOf(simpleTool())},
+				Tools:      []agent.ToolSpec{simpleTool().Spec()},
 				ToolChoice: &agent.ToolChoice{Mode: c.mode, Name: c.name},
 			})
 			if err != nil {

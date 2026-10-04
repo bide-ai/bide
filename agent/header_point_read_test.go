@@ -18,7 +18,7 @@ func TestPointReadAcceptsANonFirstHeader(t *testing.T) {
 	m := agent.NewMemStore()
 	// A header this version writes, taken from another run.
 	jj, _ := agent.NewJournal(m)
-	if _, err := agent.Step(ctx, jj, "donor", "x", func(context.Context) (int, error) { return 1, nil }); err != nil {
+	if _, err := jj.Step(ctx, "donor", "x", func(context.Context) (int, error) { return 1, nil }); err != nil {
 		t.Fatal(err)
 	}
 	h, ok, err := m.Get(ctx, "donor", "@journal")
@@ -40,7 +40,7 @@ func TestPointReadAcceptsANonFirstHeader(t *testing.T) {
 	}
 	j, _ := agent.NewJournal(m)
 	fired := 0
-	_, stepErr := agent.Step(ctx, j, "r", "pay", func(context.Context) (string, error) { fired++; return "paid", nil })
+	_, stepErr := j.Step(ctx, "r", "pay", func(context.Context) (string, error) { fired++; return "paid", nil })
 	_, histErr := j.History(ctx, "r")
 	t.Logf("Step = %v (fired %d); History = %v", stepErr, fired, histErr)
 	if errors.As(histErr, &v) && fired > 0 {

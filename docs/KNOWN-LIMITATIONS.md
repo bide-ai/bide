@@ -127,7 +127,7 @@ leave a partial side effect behind when it returns an error. Make it atomic or i
 
 **An unknown outcome stops the saga instead of rolling back.** If a step that cannot be retried
 crashed after it started but before its result was recorded, bide cannot know whether it happened, so
-`RunSaga` returns `*OutcomeUnknown` for a person or a reconciler to resolve with `ResolveHaltRef`. See
+the saga's `Run` returns `*OutcomeUnknown` for a person or a reconciler to resolve with `ResolveHalt`. See
 [Sagas](guides/durable-steps.md#sagas-transactional-agents-with-reverse-order-compensation).
 
 **A cut-off retry-safe call keeps no record of its safety.** A call that was retry-safe when it
@@ -175,9 +175,9 @@ There is no native Bedrock adapter yet. See [Models](guides/models.md).
 images. Audio and video input are not supported, and models produce text, reasoning and tool calls,
 not images.
 
-**Structured output varies by provider.** `RunTypedNative[T]` uses the provider's JSON-schema mode,
+**Structured output varies by provider.** `RunTyped[T]` with `WithOutputMode(OutputNative)` uses the provider's JSON-schema mode,
 which the OpenAI-compatible and Gemini adapters support and the Anthropic adapter does not (it
-returns `ErrConfig` rather than run unconstrained). With Anthropic, use `RunTyped`, which works
+returns `ErrConfig` rather than run unconstrained). With Anthropic, use `RunTyped`'s default tool mode, which works
 with every provider.
 
 **Gemini schemas are a subset.** Gemini accepts only part of JSON Schema. A tool or typed output that
@@ -220,11 +220,9 @@ on replay.
 **MCP tools are untyped.** Tools discovered from an MCP server at runtime use raw JSON arguments,
 because Go cannot create a struct type from a schema at runtime.
 
-**Per-run settings come with the transitional Run API.** `WithSampling`, `WithSystemPrompt`,
+**A run's settings are fixed once journaled.** `WithSampling`, `WithSystemPrompt`,
 `WithMaxTurns`, `WithTokenBudget`, `WithToolChoice` and `WithToolFilter` apply to one run through
-`RunMessage`, `ResumeRun`, `StreamMessage`, `RunTypedMessage` and `Session.SendMessage`; the string
-entry points (`Run`, `RunSaga`, `Stream`, `Session.Send`) take none, and use the run's journaled
-settings or the agent's. A run's settings other than its limits cannot change once its first drive
+`Run`, `Resume`, `Stream`, `RunTyped` and `Session.Send`. A run's settings other than its limits cannot change once its first drive
 has journaled them: start a new run for different settings.
 
 **A cancelled run's in-flight calls finish.** `agent.Cancel` stops a run at its next check (a turn
@@ -235,8 +233,7 @@ the current turn may still run after `Cancel` returns, and the run stops at its 
 or claim. `Cancel` takes no lease: it can land while a
 recovery pass is about to resume the run, whose drive then reports the run cancelled. A cancelled
 run and its completion can both be journaled, since they are two keys; the first in journal order
-is the run's end. Over a store that is not a `Journal` (a transitional `Durable` shim), each
-cancellation check and end-marker read-back reads the run's `History`.
+is the run's end.
 
 ## Approval and quorum
 
@@ -259,10 +256,10 @@ together. A tie is never agreement. See [Quorum](guides/quorum.md#what-a-quorum-
 **Fan-in has fixed arity.** `Join2` and `Join3` combine two or three branches; there is no join over
 a variable number of branches.
 
-**Some wiring is rejected.** `Build` refuses wiring the runtime cannot run as declared, and names the
+**Some wiring is rejected.** A flow's `Build` refuses wiring the runtime cannot run as declared, and names the
 step: for example, a step fed by several producers without a join, or nested loops.
 
-**Only Steps inside a flow node are scoped to it.** An `agent.Step` or `Parallel` task a node's body
+**Only Steps inside a flow node are scoped to it.** A `Journal.Step` or `Parallel` task a node's body
 runs is recorded per node and per loop iteration; an `Interrupt`, `Await` or `Sleep` it takes is not,
 so give a pause inside a loop body a name unique per iteration. See [Flows](guides/flows.md).
 

@@ -7,6 +7,7 @@ import (
 	"testing"
 
 	"github.com/bide-ai/bide/agent"
+	"github.com/bide-ai/bide/agent/agenttest"
 )
 
 // A sub-agent's saga that aborts because its tool failed is the sub-agent's verdict, even when
@@ -15,18 +16,25 @@ import (
 // TestRefModel_SubAgentStorageFailureIsNotItsAnswer).
 func TestSubAgent_SagaAbortWrappingStorageIsAVerdict(t *testing.T) {
 	ctx := context.Background()
-	store := agent.NewMemStore()
-	save := agent.Func("save", "", agent.Safety{}, func(context.Context, struct{}) (struct{}, error) {
+	store := agenttest.MemJournal()
+	save := agent.MustFunc("save", "", func(context.Context, struct{}) (struct{}, error) {
 		return struct{}{}, fmt.Errorf("insert row: %w", agent.ErrStorage)
 	})
-	sub := agent.New(agent.NewScriptedModel(agent.ToolTurn("s1", "save", `{}`), agent.TextTurn("saved")), store, save)
-	root := agent.New(agent.NewScriptedModel(agent.ToolTurn("c1", "saver", `{"task":"save it"}`), agent.TextTurn("done")),
-		store, agent.SubAgent("saver", "", sub))
+	sub := agenttest.MustNew(
+		agenttest.NewScriptedModel(agenttest.ToolTurn("s1", "save", `{}`), agenttest.TextTurn("saved")),
+		store,
+		agent.WithTools(save),
+	)
+	root := agenttest.MustNew(
+		agenttest.NewScriptedModel(agenttest.ToolTurn("c1", "saver", `{"task":"save it"}`), agenttest.TextTurn("done")),
+		store,
+		agent.WithTools(agent.MustSubAgent("saver", "", sub)),
+	)
 	for attempt := range 3 {
-		_, err := root.RunSaga(ctx, "r", "go")
+		_, err := root.Run(ctx, "r", agent.UserText("go"), agent.WithSaga())
 		var sa *agent.SagaAborted
 		if !errors.As(err, &sa) || sa.RunID != "r" || sa.CompensateErr != nil {
-			t.Fatalf("attempt %d: RunSaga = %v; want the root saga aborted, rolled back", attempt, err)
+			t.Fatalf("attempt %d: saga Run = %v; want the root saga aborted, rolled back", attempt, err)
 		}
 	}
 }

@@ -8,6 +8,8 @@ import (
 	"time"
 
 	"github.com/bide-ai/bide/agent"
+	"github.com/bide-ai/bide/agent/agenttest"
+	"github.com/bide-ai/bide/internal/journaltest"
 )
 
 // Another process holds the write lock for longer than a few seconds. A step waits its turn
@@ -18,6 +20,7 @@ func TestDo_WaitsOutABusyWriter(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
+	j := agenttest.MustJournal(s)
 	defer s.Close()
 	other, err := sql.Open("sqlite", p)
 	if err != nil {
@@ -32,7 +35,7 @@ func TestDo_WaitsOutABusyWriter(t *testing.T) {
 		t.Fatal(err)
 	}
 	go func() { time.Sleep(6 * time.Second); tx.Commit() }()
-	if _, err := s.Do(context.Background(), "r", "step", func(context.Context) (agent.Record, error) {
+	if _, err := journaltest.Do(context.Background(), j, "r", "step", func(context.Context) (agent.Record, error) {
 		return agent.Record{Kind: agent.StepValue}, nil
 	}); err != nil {
 		t.Fatalf("step while another writer held the lock for 6s: %v", err)

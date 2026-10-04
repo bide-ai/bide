@@ -1,0 +1,89 @@
+package run
+
+import (
+	"context"
+	"testing"
+
+	"github.com/bide-ai/bide/agent"
+	"github.com/bide-ai/bide/audit"
+)
+
+type answer struct{ X int }
+
+func checkRun(t *testing.T, a *agent.Agent, s *agent.Session) {
+	ctx := context.Background()
+	res2, err := a.Run(ctx, "r1", agent.UserText("hi"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	out := res2.Message
+	_ = out.Text()
+
+	res3, err := a.Run(ctx, "r2", agent.UserText("book"), agent.WithSaga())
+	var msg agent.Message
+	if res3 != nil {
+		msg = res3.Message
+	}
+	if err == nil || msg.Text() != "" {
+		t.Fatal(msg)
+	}
+
+	if _, err := a.Run(ctx, "r3", agent.UserText("x")); err != nil {
+		t.Fatal(err)
+	}
+	res, err := a.Run(ctx, "r4", agent.UserText("y"), agent.WithSaga())
+	_, _ = res, err
+	_, _ = a.Resume(ctx, "r4")
+
+	st := a.Stream(ctx, "r5", agent.UserText("z"), agent.WithSaga())
+	var events []agent.RunEvent
+	for e := range st.Events() {
+		events = append(events, e)
+	}
+	res4, err := st.Result()
+	var final agent.Message
+	if res4 != nil {
+		final = res4.Message
+	}
+	_, _ = final, err
+
+	res5, err := s.Send(ctx, agent.UserText("hello"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	turn := res5.Message
+	_ = turn
+	_, _ = s.Send(ctx, agent.UserText("again"))
+
+	v, _, err := a.RunTyped[answer](ctx, "r6", agent.UserText("q"))
+	_, _ = v, err
+	w, _, err := a.RunTyped[*answer](ctx, "r7", agent.UserText("q"), agent.WithOutputMode(agent.OutputNative))
+	_, _ = w, err
+	x, _, err := a.RunTyped[answer](ctx, "r8", agent.UserText("q"))
+	_, _ = x, err
+
+	res6, err := audit.RecordStream(&audit.EventLog{}, a.Stream(ctx, "r9", agent.UserText("s")), nil)
+	var m agent.Message
+	if res6 != nil {
+		m = res6.Message
+	}
+	_, _ = m, err
+}
+
+func typed(ctx context.Context, a *agent.Agent) (answer, error) {
+	v, _, err := a.RunTyped[answer](ctx, "r", agent.UserText("q"))
+	return v, err
+}
+
+// The error check names the answer: the answer must be set before the check reads it.
+func checkAnswerInErrCheck(t *testing.T, a *agent.Agent) {
+	res, err := a.Run(context.Background(), "r", agent.UserText("x"))
+	var msg agent.Message
+	if res != nil {
+		msg = res.Message
+	}
+	if err != nil {
+		t.Fatal(msg.Text(), err)
+	}
+	_ = msg
+}

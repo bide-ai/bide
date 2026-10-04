@@ -31,20 +31,20 @@ type Retriever interface {
 
 type RetrieverFunc func(ctx context.Context, query string, k int) ([]Doc, error) // a function as a Retriever
 
-func RetrievalTool(name, description string, r Retriever, k int, opts ...ToolOption) Tool // agentic: the model searches on demand
+func RetrievalTool(name, description string, r Retriever, k int, opts ...ToolOption) (Tool, error) // agentic: the model searches on demand
 func WithRetrieval(r Retriever, k int, opts ...RetrievalOption) Option                   // classic: top-k auto-injected each run
 func WithRetrievalRetry(n int, base, max time.Duration) RetrievalOption                  // retry a failed Retrieve n more times
 ```
 
 Implement `Retriever` against your store (~20 lines), then wire it in one of two ways:
 
-- **Agentic RAG**: `agent.WithTools(agent.RetrievalTool("search_kb", "Search the knowledge base.", myStore, 5))`.
+- **Agentic RAG**: `agent.WithTools(agent.MustRetrievalTool("search_kb", "Search the knowledge base.", myStore, 5))`.
   The model decides when to search and with what query; results come back as a tool result. The
   name is what the model calls it by, and an agent's tools need distinct names, so to search
   several stores give each tool its own, and tell the model what each holds in its description.
   The tool is read-only, and takes the other tool options (`WithTimeout`, `WithApproval`,
   `WithTitle`) as `Func` does.
-- **Classic RAG**: `agent.Build(model, journal, agent.WithRetrieval(myStore, 5))`. The agent
+- **Classic RAG**: `agent.New(model, journal, agent.WithRetrieval(myStore, 5))`. The agent
   retrieves top-k for the run's user message, as a journaled step of the run, and adds them on
   every model call of the run, so the call that follows a tool result still has the context.
   Every model middleware sees the request with the documents in it. A retrieval error fails the
@@ -73,7 +73,7 @@ gated := agent.RetrieverFunc(func(ctx context.Context, query string, k int) ([]a
 	}
 	return myStore.Retrieve(ctx, query, k)
 })
-a, err := agent.Build(model, journal, agent.WithRetrieval(gated, 5))
+a, err := agent.New(model, journal, agent.WithRetrieval(gated, 5))
 ```
 
 The documents `WithRetrieval` adds are a **user** message placed just before the user turn they

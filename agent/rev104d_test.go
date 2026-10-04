@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"iter"
 	"sync/atomic"
 	"testing"
 )
@@ -15,7 +16,7 @@ import (
 func TestRev104d_OrderGrowsUnbounded(t *testing.T) {
 	defer func(n int) { maxPendingSpends = n }(maxPendingSpends)
 	maxPendingSpends = 4
-	a := New(&scriptModel{}, NewMemStore())
+	a := mustNew(&scriptModel{}, memJournal())
 	const cycles = 200
 	for range cycles {
 		a.keepSpend("r", pendingSpend{name: spendStep("x"), spent: billed})
@@ -31,32 +32,32 @@ func TestRev104d_OrderGrowsUnbounded(t *testing.T) {
 	}
 }
 
-// wrapDurable is a Durable wrapper that is not a Journal (the shape of audit.AuditedStore): it
-// forwards Do and History, and History fails while failHist is set.
-type wrapDurable struct {
-	Durable
-	failHist *atomic.Bool
+// wrapStore is a Store wrapper (the shape of audit.AuditedStore: it passes run IDs and names
+// through and implements Unwrap() Store) whose Load fails while failLoad is set, so reading a
+// run's history through it fails.
+type wrapStore struct {
+	Store
+	failLoad *atomic.Bool
 }
 
-// Unwrap returns the wrapped Durable, as audit.AuditedStore does.
-func (w *wrapDurable) Unwrap() Durable { return w.Durable }
+// Unwrap returns the wrapped Store, as audit.AuditedStore does.
+func (w *wrapStore) Unwrap() Store { return w.Store }
 
-func (w *wrapDurable) History(ctx context.Context, runID string) ([]Record, error) {
-	if w.failHist.Load() {
-		return nil, errors.New("injected: history read failed")
+func (w *wrapStore) Load(ctx context.Context, runID string, after int64) iter.Seq2[Entry, error] {
+	if w.failLoad.Load() {
+		return func(yield func(Entry, error) bool) { yield(Entry{}, errors.New("injected: history read failed")) }
 	}
-	return w.Durable.History(ctx, runID)
+	return w.Store.Load(ctx, runID, after)
 }
 
-// D2: kept spend through a Durable wrapper (audit.AuditedStore's shape) is keyed by the wrapper
-// pointer, not by the identity of the store under it. The run's next drive through another wrapper
-// over the same Journal (a wrapper per request) never sees it, so the failed turn's billed spend is
-// never journaled.
+// D2: kept spend through a store wrapper (audit.AuditedStore's shape) must be keyed by the
+// identity of the store under it, not by the wrapper pointer. Were it keyed by the wrapper, the
+// run's next drive through another wrapper over the same store (a wrapper and a Journal per
+// request) would never see it, and the failed turn's billed spend would never be journaled.
 func TestRev104d_KeptSpendOtherWrapperSameStore(t *testing.T) {
 	st := newFaultStore()
-	j, _ := NewJournal(st)
 	var fail atomic.Bool
-	w1 := &wrapDurable{Durable: j, failHist: &fail}
+	w1 := &wrapStore{Store: st, failLoad: &fail}
 	st.mu.Lock()
 	st.failNoCommit[modelStep(0)] = true
 	st.mu.Unlock()
@@ -68,13 +69,13 @@ func TestRev104d_KeptSpendOtherWrapperSameStore(t *testing.T) {
 		}
 	}
 	m := &scriptModel{turns: [][]Emit{textTurnWithUsage("done", billed)}}
-	if _, err := New(m, w1).Use(arm).RunResult(context.Background(), "r", "go"); err == nil {
+	if _, err := mustNew(m, mustJournal(w1), WithMiddleware(arm)).Run(context.Background(), "r", UserText("go")); err == nil {
 		t.Fatal("want the write failure")
 	}
 	fail.Store(false)
-	w2 := &wrapDurable{Durable: j, failHist: &fail}
+	w2 := &wrapStore{Store: st, failLoad: &fail}
 	m2 := &scriptModel{turns: [][]Emit{textTurnWithUsage("done", billed)}}
-	res, err := New(m2, w2).RunResult(context.Background(), "r", "go")
+	res, err := mustNew(m2, mustJournal(w2)).Run(context.Background(), "r", UserText("go"))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -130,9 +131,8 @@ func TestRev104d_OwnRecordFallbackTrickyContent(t *testing.T) {
 // Control for D2: the same wrapper on the next drive journals the kept spend.
 func TestRev104d_KeptSpendSameWrapperControl(t *testing.T) {
 	st := newFaultStore()
-	j, _ := NewJournal(st)
 	var fail atomic.Bool
-	w1 := &wrapDurable{Durable: j, failHist: &fail}
+	w1 := mustJournal(&wrapStore{Store: st, failLoad: &fail})
 	st.mu.Lock()
 	st.failNoCommit[modelStep(0)] = true
 	st.mu.Unlock()
@@ -144,12 +144,12 @@ func TestRev104d_KeptSpendSameWrapperControl(t *testing.T) {
 		}
 	}
 	m := &scriptModel{turns: [][]Emit{textTurnWithUsage("done", billed)}}
-	if _, err := New(m, w1).Use(arm).RunResult(context.Background(), "r", "go"); err == nil {
+	if _, err := mustNew(m, w1, WithMiddleware(arm)).Run(context.Background(), "r", UserText("go")); err == nil {
 		t.Fatal("want the write failure")
 	}
 	fail.Store(false)
 	m2 := &scriptModel{turns: [][]Emit{textTurnWithUsage("done", billed)}}
-	res, err := New(m2, w1).RunResult(context.Background(), "r", "go")
+	res, err := mustNew(m2, w1).Run(context.Background(), "r", UserText("go"))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -158,30 +158,29 @@ func TestRev104d_KeptSpendSameWrapperControl(t *testing.T) {
 	}
 }
 
-// D2, claims: behind a Durable wrapper (audit.AuditedStore's shape) a claim whose marker write
-// fails, and whose record that it did not start fails too, is remembered as through the Journal:
-// the next drive in the process records that the attempt did not start and re-attempts the
-// effect, rather than halting over an effect that never ran. The next drive goes through another
-// wrapper over the same Journal.
-func TestRev104d_ClaimBehindDurableWrapperIsRemembered(t *testing.T) {
+// D2, claims: behind a store wrapper (audit.AuditedStore's shape) a claim whose marker write
+// fails, and whose record that it did not start fails too, is remembered as through the store
+// itself: the next drive in the process records that the attempt did not start and re-attempts
+// the effect, rather than halting over an effect that never ran. The next drive goes through
+// another wrapper and Journal over the same store.
+func TestRev104d_ClaimBehindStoreWrapperIsRemembered(t *testing.T) {
 	ctx := context.Background()
 	st := newFaultStore()
-	j, _ := NewJournal(st)
 	var fail atomic.Bool
 	st.commitThenErrPrefix = "attempt:step:"
 	st.failNoCommitPrefix = "attempt:not-started:"
 	var runs int
 	pay := func(context.Context) (string, error) { runs++; return "paid", nil }
-	if _, err := Step(ctx, &wrapDurable{Durable: j, failHist: &fail}, "r", "pay", pay); err == nil {
+	if _, err := mustJournal(&wrapStore{Store: st, failLoad: &fail}).Step(ctx, "r", "pay", pay); err == nil {
 		t.Fatal("want the claim's write failure")
 	}
-	got, err := Step(ctx, &wrapDurable{Durable: j, failHist: &fail}, "r", "pay", pay)
+	got, err := mustJournal(&wrapStore{Store: st, failLoad: &fail}).Step(ctx, "r", "pay", pay)
 	if err != nil || got != "paid" || runs != 1 {
 		t.Fatalf("second drive = %q, %v, effect ran %d times; want paid, nil, once (the first claim never ran it)", got, err, runs)
 	}
 }
 
-// Control: the same through the Journal itself.
+// Control: the same through a Journal on the store itself.
 func TestRev104d_ClaimThroughJournalIsRemembered(t *testing.T) {
 	ctx := context.Background()
 	st := newFaultStore()
@@ -190,33 +189,37 @@ func TestRev104d_ClaimThroughJournalIsRemembered(t *testing.T) {
 	st.failNoCommitPrefix = "attempt:not-started:"
 	var runs int
 	pay := func(context.Context) (string, error) { runs++; return "paid", nil }
-	if _, err := Step(ctx, j, "r", "pay", pay); err == nil {
+	if _, err := j.Step(ctx, "r", "pay", pay); err == nil {
 		t.Fatal("want the claim's write failure")
 	}
-	got, err := Step(ctx, j, "r", "pay", pay)
+	got, err := j.Step(ctx, "r", "pay", pay)
 	if err != nil || got != "paid" || runs != 1 {
 		t.Fatalf("second drive = %q, %v, effect ran %d times; want paid, nil, once", got, err, runs)
 	}
 }
 
-// D2, claims on resume: a side-effect tool's claim behind a Durable wrapper whose marker and
-// not-started writes fail is remembered; the run's next drive, through another wrapper over the
-// same Journal, records that the attempt did not start and runs the tool, rather than halting.
+// D2, claims on resume: a side-effect tool's claim behind a store wrapper whose marker and
+// not-started writes fail is remembered; the run's next drive, through another wrapper and Journal
+// over the same store, records that the attempt did not start and runs the tool, rather than
+// halting.
 func TestRev104d_ToolClaimBehindWrapperResumes(t *testing.T) {
 	ctx := context.Background()
 	st := newFaultStore()
-	j, _ := NewJournal(st)
 	var fail atomic.Bool
 	st.commitThenErrPrefix = "attempt:tool:"
 	st.failNoCommitPrefix = "attempt:not-started:"
 	var charged int
 	charge := &countingTool{name: "charge", safety: Safety{}, calls: &charged}
 	m := &scriptModel{turns: [][]Emit{toolTurn("c1", "charge", `{}`)}}
-	if _, err := New(m, &wrapDurable{Durable: j, failHist: &fail}, charge).Run(ctx, "r", "go"); err == nil {
+	if _, err := mustNew(m, mustJournal(&wrapStore{Store: st, failLoad: &fail}), WithTools(charge)).Run(ctx, "r", UserText("go")); err == nil {
 		t.Fatal("want the claim's write failure")
 	}
 	m2 := &scriptModel{turns: [][]Emit{textTurn("done")}}
-	out, err := New(m2, &wrapDurable{Durable: j, failHist: &fail}, charge).Run(ctx, "r", "go")
+	res, err := mustNew(m2, mustJournal(&wrapStore{Store: st, failLoad: &fail}), WithTools(charge)).Run(ctx, "r", UserText("go"))
+	var out Message
+	if res != nil {
+		out = res.Message
+	}
 	if err != nil || out.Text() != "done" || charged != 1 {
 		t.Fatalf("second drive = %q, %v, tool ran %d times; want done, nil, once", out.Text(), err, charged)
 	}

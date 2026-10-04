@@ -1,6 +1,6 @@
 // Command interrupt shows human-in-the-loop as a durable pause: a retry-safe tool calls
 // agent.Interrupt to ask a human a typed question, Run returns *InterruptPending (the run
-// has paused at the interrupt point), the caller records an answer with agent.AnswerInterrupt,
+// has paused at the interrupt point), the caller records an answer with agent.Journal.AnswerInterrupt,
 // and re-invoking Run with the SAME runID resumes past the interrupt with that answer.
 //
 // It runs with NO API key: the model is a small inline scripted Model that calls the tool
@@ -45,7 +45,10 @@ type decision struct {
 
 func main() {
 	ctx := context.Background()
-	store := agent.NewMemStore()
+	store, err := agent.NewJournal(agent.NewMemStore())
+	if err != nil {
+		log.Fatal(err)
+	}
 	const runID = "interrupt-1"
 	const gate = "review-gate"
 
@@ -53,8 +56,7 @@ func main() {
 	// encounter Interrupt returns the zero value and an *InterruptPending error that
 	// propagates out of Run; after AnswerInterrupt records a decision and Run is re-invoked, it returns that
 	// decision and the tool proceeds.
-	reviewTool := agent.Func("publish_review", "Publish a review after a human approves it",
-		agent.Safety{ReadOnly: true},
+	reviewTool := agent.MustFunc("publish_review", "Publish a review after a human approves it",
 		func(ctx context.Context, _ struct{}) (string, error) {
 			d, err := agent.Interrupt[decision](ctx, gate, "Approve publishing this review?")
 			if err != nil {
@@ -64,12 +66,15 @@ func main() {
 				return "human declined; not published", nil
 			}
 			return "published (" + d.Note + ")", nil
-		})
+		}, agent.WithSafety(agent.Safety{ReadOnly: true}))
 
-	a := agent.New(&scriptModel{}, store, reviewTool)
+	a, err := agent.New(&scriptModel{}, store, agent.WithTools(reviewTool))
+	if err != nil {
+		log.Fatal(err)
+	}
 
 	// First Run: the tool interrupts, so Run returns *InterruptPending rather than a final answer.
-	_, err := a.Run(ctx, runID, "Review and publish the draft.")
+	_, err = a.Run(ctx, runID, agent.UserText("Review and publish the draft."))
 	itr, ok := errors.AsType[*agent.InterruptPending](err)
 	if !ok {
 		log.Fatalf("expected an *InterruptPending pause, got: %v", err)
@@ -78,16 +83,17 @@ func main() {
 
 	// The human answers. AnswerInterrupt records the typed decision durably (first value wins),
 	// against the journal the pause lives in (itr.RunID).
-	if err := agent.AnswerInterrupt(ctx, store, itr.RunID, itr.Name, decision{Approved: true, Note: "looks good"}); err != nil {
+	if err := store.AnswerInterrupt(ctx, itr.RunID, itr.Name, decision{Approved: true, Note: "looks good"}); err != nil {
 		log.Fatalf("answer: %v", err)
 	}
 	fmt.Println("recorded human decision; resuming the run")
 
 	// Re-invoke Run with the pause's RootRunID (the same run here): Interrupt now returns the
 	// decision, the tool completes, and the model produces its final answer.
-	out, err := a.Run(ctx, itr.RootRunID, "Review and publish the draft.")
+	res, err := a.Run(ctx, itr.RootRunID, agent.UserText("Review and publish the draft."))
 	if err != nil {
 		log.Fatalf("resume run: %v", err)
 	}
+	out := res.Message
 	fmt.Printf("resumed result: %s\n", out.Text())
 }

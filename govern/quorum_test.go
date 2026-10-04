@@ -9,6 +9,7 @@ import (
 	"testing"
 
 	"github.com/bide-ai/bide/agent"
+	"github.com/bide-ai/bide/agent/agenttest"
 	"github.com/bide-ai/bide/audit"
 	"github.com/bide-ai/bide/govern"
 )
@@ -28,7 +29,7 @@ func fixed(name, decision string, calls *int32) govern.Voter {
 // TestQuorumMet: enough voters agree, so Agreed is true and the plurality is the agreed value.
 func TestQuorumMet(t *testing.T) {
 	ctx := context.Background()
-	store := agent.NewMemStore()
+	store := agenttest.MemJournal()
 
 	res, err := govern.Quorum(ctx, store, "run/met", "q", 2,
 		govern.Voter{Name: "a", Decide: func(context.Context) (string, error) { return "approve", nil }},
@@ -52,7 +53,7 @@ func TestQuorumMet(t *testing.T) {
 // TestQuorumNotMet: no decision reaches k, so Agreed is false. A three-way split with k=2 fails.
 func TestQuorumNotMet(t *testing.T) {
 	ctx := context.Background()
-	store := agent.NewMemStore()
+	store := agenttest.MemJournal()
 
 	res, err := govern.Quorum(ctx, store, "run/split", "q", 2,
 		govern.Voter{Name: "a", Decide: func(context.Context) (string, error) { return "approve", nil }},
@@ -73,7 +74,7 @@ func TestQuorumNotMet(t *testing.T) {
 // TestQuorumPlurality: the winning value is the one the most voters chose, even without a majority.
 func TestQuorumPlurality(t *testing.T) {
 	ctx := context.Background()
-	store := agent.NewMemStore()
+	store := agenttest.MemJournal()
 
 	// deny gets 2, approve 1, escalate 1: deny is the plurality though it is not a majority of 4.
 	res, err := govern.Quorum(ctx, store, "run/plurality", "q", 2,
@@ -100,7 +101,7 @@ func TestQuorumPlurality(t *testing.T) {
 // and does NOT re-invoke any Voter.Decide. This is at-most-once fan-out, proven by a call counter.
 func TestQuorumDurable(t *testing.T) {
 	ctx := context.Background()
-	store := agent.NewMemStore()
+	store := agenttest.MemJournal()
 	var callsA, callsB, callsC int32
 
 	first, err := govern.Quorum(ctx, store, "run/dur", "q", 2,
@@ -136,9 +137,10 @@ func TestQuorumDurable(t *testing.T) {
 func TestQuorumProvenance(t *testing.T) {
 	ctx := context.Background()
 	store := agent.NewMemStore()
+	j := agenttest.MustJournal(store)
 	const runID = "run/prov"
 
-	res, err := govern.Quorum(ctx, store, runID, "q", 2,
+	res, err := govern.Quorum(ctx, j, runID, "q", 2,
 		govern.Voter{Name: "gpt", Decide: func(context.Context) (string, error) { return "approve", nil }},
 		govern.Voter{Name: "claude", Decide: func(context.Context) (string, error) { return "approve", nil }},
 		govern.Voter{Name: "gemini", Decide: func(context.Context) (string, error) { return "deny", nil }},
@@ -151,7 +153,7 @@ func TestQuorumProvenance(t *testing.T) {
 	}
 
 	pub, priv, _ := ed25519.GenerateKey(rand.Reader)
-	th, err := audit.NewTreeHead(ctx, store, runID, 1)
+	th, err := audit.NewTreeHead(ctx, j, runID, 1)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -162,7 +164,7 @@ func TestQuorumProvenance(t *testing.T) {
 
 	// Each named vote and the tally are provable on their own, without disclosing the others.
 	for _, name := range []string{govern.QuorumVoteStep("q", "gpt"), govern.QuorumVoteStep("q", "claude"), govern.QuorumVoteStep("q", "gemini"), govern.QuorumTallyStep("q")} {
-		pb, err := audit.ProveStep(ctx, store, runID, name, sth)
+		pb, err := audit.ProveStep(ctx, j, runID, name, sth)
 		if err != nil {
 			t.Fatalf("prove %q: %v", name, err)
 		}
@@ -176,7 +178,7 @@ func TestQuorumProvenance(t *testing.T) {
 // partial tally reflects only the votes that succeeded.
 func TestQuorumVoterError(t *testing.T) {
 	ctx := context.Background()
-	store := agent.NewMemStore()
+	store := agenttest.MemJournal()
 	boom := errors.New("model unavailable")
 
 	res, err := govern.Quorum(ctx, store, "run/err", "q", 2,

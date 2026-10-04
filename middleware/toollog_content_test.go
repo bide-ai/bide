@@ -10,6 +10,7 @@ import (
 	"testing"
 
 	"github.com/bide-ai/bide/agent"
+	"github.com/bide-ai/bide/agent/agenttest"
 )
 
 // logFailedCharge runs a failing tool call whose error embeds its arguments through ToolLog and
@@ -47,15 +48,18 @@ func TestToolLog_LogErrorText(t *testing.T) {
 // credential the journal keeps out.
 func TestToolLog_LogErrorTextIsTheJournaledText(t *testing.T) {
 	type in struct{}
-	tool := agent.Func("fetch", "fetch", agent.Safety{ReadOnly: true}, func(context.Context, in) (string, error) {
+	tool := agent.MustFunc("fetch", "fetch", func(context.Context, in) (string, error) {
 		return "", fmt.Errorf("account ACCT-998877: %w", &url.Error{Op: "Get", URL: "https://u:PASSWORD-1@h.test/x?key=SECRET-KEY-123", Err: errors.New("timeout")})
-	})
+	}, agent.WithSafety(agent.Safety{ReadOnly: true}))
 	var sb strings.Builder
-	st := agent.NewMemStore()
-	a := agent.New(agent.NewScriptedModel(agent.ToolTurn("c1", "fetch", `{}`), agent.TextTurn("done")), st, tool).
-		WithToolErrorRedactor(func(_ string, err error) string { return strings.ReplaceAll(err.Error(), "ACCT-998877", "ACCT") }).
-		UseTool(ToolLog(func(format string, args ...any) { fmt.Fprintf(&sb, format, args...) }, LogErrorText()))
-	if _, err := a.Run(context.Background(), "r", "go"); err != nil {
+	st := agenttest.MemJournal()
+	a := agenttest.Must(agenttest.MustNew(
+		agenttest.NewScriptedModel(agenttest.ToolTurn("c1", "fetch", `{}`), agenttest.TextTurn("done")),
+		st,
+		agent.WithTools(tool),
+		agent.WithToolErrorRedactor(func(_ string, err error) string { return strings.ReplaceAll(err.Error(), "ACCT-998877", "ACCT") }),
+	).With(agent.WithToolMiddleware(ToolLog(func(format string, args ...any) { fmt.Fprintf(&sb, format, args...) }, LogErrorText()))))
+	if _, err := a.Run(context.Background(), "r", agent.UserText("go")); err != nil {
 		t.Fatal(err)
 	}
 	var journaled string

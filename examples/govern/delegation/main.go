@@ -5,7 +5,8 @@
 // The sub-agent is then governed to the limit its grant seeded, and its action's leaf links to that
 // grant, whose chain proves, unbroken and never widened, back to the root.
 //
-// Offline, no LLM or network. The keyring stands in for a PKI/IdP.
+// Offline, no LLM or network: the sub-agent's model is scripted (agenttest.ScriptedModel) to call
+// the governed tool. The keyring stands in for a PKI/IdP.
 package main
 
 import (
@@ -14,9 +15,11 @@ import (
 	"crypto/rand"
 	"encoding/json"
 	"fmt"
+	"log"
 	"strconv"
 
 	"github.com/bide-ai/bide/agent"
+	"github.com/bide-ai/bide/agent/agenttest"
 	"github.com/bide-ai/bide/audit"
 	"github.com/bide-ai/bide/govern"
 	gsm "github.com/blackwell-systems/gsm"
@@ -81,30 +84,35 @@ func main() {
 	buy := govern.EventTool(gov, govern.EventToolConfig{Name: "buy", Description: "buy $1M", Event: "buy", PolicyDigest: policyDigest})
 	// The sub-agent's identity carries its attenuated grant as the authority reference.
 	subID := agent.Identity{Actor: g2.Subject, OnBehalfOf: g1.Subject, AuthorityRef: g2.Digest()}
-	runCtx := agent.ContextWithIdentity(ctx, subID)
 
-	var lastLeaf json.RawMessage
-	for i := 0; i < 6; i++ { // tries $6M, governed to its $3M delegated limit
-		lastLeaf, err = buy.Call(runCtx, []byte(`{}`))
-		if err != nil {
-			panic(err)
-		}
+	// Anchor the whole chain in the sub-agent's run, then run the sub-agent in it, so the grants
+	// and its action are committed in one journal and provable offline together.
+	store, err := agent.NewJournal(agent.NewMemStore())
+	if err != nil {
+		log.Fatal(err)
 	}
-	fmt.Printf("\nsub-agent tried to buy $6M, governed to $%dM by its delegated limit\n", gov.State().GetInt(exposure))
-
-	// Anchor the whole chain and the sub-agent's action in one run, then prove it offline.
-	store := agent.NewMemStore()
 	const runID = "run/subagent"
 	for _, sg := range grantChain {
 		if _, err := audit.RecordGrant(ctx, store, runID, sg); err != nil {
 			panic(err)
 		}
 	}
-	if _, err := store.Do(ctx, runID, "buy/last", func(context.Context) (agent.Record, error) {
-		return agent.Record{Kind: agent.StepToolResult, ToolUseID: "buy/last", Result: lastLeaf}, nil
-	}); err != nil {
+
+	// The sub-agent tries to buy $6M: its (scripted, LLM-free) model calls the governed buy tool six
+	// times, and the run journals each call as a tool-result leaf, the last under "buy/last".
+	turns := make([]agenttest.ScriptedTurn, 0, 7)
+	for i := 1; i < 6; i++ {
+		turns = append(turns, agenttest.ToolTurn(fmt.Sprintf("buy/%d", i), "buy", `{}`))
+	}
+	turns = append(turns, agenttest.ToolTurn("buy/last", "buy", `{}`), agenttest.TextTurn("done"))
+	sub, err := agent.New(agenttest.NewScriptedModel(turns...), store, agent.WithTools(buy), agent.WithIdentity(subID))
+	if err != nil {
+		log.Fatal(err)
+	}
+	if _, err := sub.Run(ctx, runID, agent.UserText("buy $6M")); err != nil {
 		panic(err)
 	}
+	fmt.Printf("\nsub-agent tried to buy $6M, governed to $%dM by its delegated limit\n", gov.State().GetInt(exposure))
 
 	logPub, logPriv, _ := ed25519.GenerateKey(rand.Reader) // the log operator's key, distinct from any issuer
 	th, _ := audit.NewTreeHead(ctx, store, runID, 1)

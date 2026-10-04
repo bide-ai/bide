@@ -60,7 +60,7 @@ func TestP14Rule08_FirstDriveRunsUnderStoredStart(t *testing.T) {
 	var c counter
 	model := &p14Model{turns: []p14Turn{{calls: []agent.ToolUse{call("c1", "lookup")}}, {text: "done"}}}
 	a := p14Build(t, model, j, agent.WithTools(c.tool("lookup", agent.Safety{ReadOnly: true})), agent.WithSystemPrompt("mine"))
-	_, err = a.RunMessage(ctx, "r", agent.UserText("go"))
+	_, err = a.Run(ctx, "r", agent.UserText("go"))
 	if !errors.Is(err, agent.ErrMaxTurns) {
 		t.Fatalf("run = %v, want ErrMaxTurns under the stored one-turn limit", err)
 	}
@@ -81,7 +81,7 @@ func approvalAgent(t *testing.T, j *agent.Journal, opts ...agent.Option) (*agent
 		{text: "done"},
 	}}
 	tools := agent.WithTools(c.tool("pay", agent.Safety{}, agent.WithApproval(agent.SingleApproval())),
-		agent.Func("lookup", "", agent.Safety{ReadOnly: true}, func(context.Context, struct{}) (string, error) { return "ok", nil }))
+		agent.MustFunc("lookup", "", func(context.Context, struct{}) (string, error) { return "ok", nil }, agent.WithSafety(agent.Safety{ReadOnly: true})))
 	return p14Build(t, model, j, append([]agent.Option{tools}, opts...)...), model, &c
 }
 
@@ -89,7 +89,7 @@ func approvalAgent(t *testing.T, j *agent.Journal, opts ...agent.Option) (*agent
 func pauseThenApprove(t *testing.T, a *agent.Agent, j *agent.Journal, opts ...agent.RunOption) {
 	t.Helper()
 	ctx := context.Background()
-	if _, err := a.RunMessage(ctx, "r", agent.UserText("go"), opts...); err == nil {
+	if _, err := a.Run(ctx, "r", agent.UserText("go"), opts...); err == nil {
 		t.Fatal("the first drive did not pause")
 	} else if _, ok := errors.AsType[*agent.ApprovalPending](err); !ok {
 		t.Fatalf("first drive = %v, want the approval pause", err)
@@ -102,17 +102,17 @@ func pauseThenApprove(t *testing.T, a *agent.Agent, j *agent.Journal, opts ...ag
 // Rule 9: every later drive runs under run:start's options, whatever the agent's defaults are and
 // whatever entry point resumes it.
 func TestP14Rule09_LaterDrivesRunUnderJournaledOptions(t *testing.T) {
-	for _, entry := range []string{"ResumeRun", "Run"} {
+	for _, entry := range []string{"Resume", "Run"} {
 		t.Run(entry, func(t *testing.T) {
 			ctx := context.Background()
 			j, _ := p14Journal(t)
 			a, model, _ := approvalAgent(t, j, agent.WithSystemPrompt("agent"), agent.WithMaxTurns(10), agent.WithSampling(agent.Temperature(0.9)))
 			pauseThenApprove(t, a, j, agent.WithSystemPrompt("per-run"), agent.WithMaxTurns(2), agent.WithSampling(agent.Temperature(0.3)))
 			var err error
-			if entry == "ResumeRun" {
-				_, err = a.ResumeRun(ctx, "r")
+			if entry == "Resume" {
+				_, err = a.Resume(ctx, "r")
 			} else {
-				_, err = a.Run(ctx, "r", "go")
+				_, err = a.Run(ctx, "r", agent.UserText("go"))
 			}
 			if !errors.Is(err, agent.ErrMaxTurns) {
 				t.Fatalf("resume = %v, want ErrMaxTurns under the journaled limit of 2", err)
@@ -128,14 +128,14 @@ func TestP14Rule09_LaterDrivesRunUnderJournaledOptions(t *testing.T) {
 	}
 }
 
-// ResumeRun of a run with no run:start is ErrNotStarted, and drives nothing.
+// Resume of a run with no run:start is ErrNotStarted, and drives nothing.
 func TestP14Rule09_ResumeOfUnstartedRun(t *testing.T) {
 	j, _ := p14Journal(t)
 	model := &p14Model{turns: []p14Turn{{text: "done"}}}
 	a := p14Build(t, model, j)
-	res, err := a.ResumeRun(context.Background(), "nope")
+	res, err := a.Resume(context.Background(), "nope")
 	if !errors.Is(err, agent.ErrNotStarted) || res == nil || model.calls.Load() != 0 {
-		t.Fatalf("ResumeRun = %v, %v (model calls %d); want ErrNotStarted with a Result", res, err, model.calls.Load())
+		t.Fatalf("Resume = %v, %v (model calls %d); want ErrNotStarted with a Result", res, err, model.calls.Load())
 	}
 }
 
@@ -152,23 +152,23 @@ func TestP14Rule10_LimitAmendment(t *testing.T) {
 	}}
 	var c counter
 	a := p14Build(t, model, j, agent.WithTools(c.tool("lookup", agent.Safety{ReadOnly: true})))
-	if _, err := a.RunMessage(ctx, "r", agent.UserText("go"), agent.WithMaxTurns(1)); !errors.Is(err, agent.ErrMaxTurns) {
+	if _, err := a.Run(ctx, "r", agent.UserText("go"), agent.WithMaxTurns(1)); !errors.Is(err, agent.ErrMaxTurns) {
 		t.Fatalf("first drive = %v, want ErrMaxTurns", err)
 	}
-	if _, err := a.ResumeRun(ctx, "r", agent.WithMaxTurns(2)); !errors.Is(err, agent.ErrMaxTurns) {
+	if _, err := a.Resume(ctx, "r", agent.WithMaxTurns(2)); !errors.Is(err, agent.ErrMaxTurns) {
 		t.Fatalf("raised to 2 = %v, want ErrMaxTurns at 2", err)
 	}
 	if !has(t, m, "r", "run:limits:0") {
 		t.Fatal("the raise was not journaled as run:limits:0")
 	}
 	// A drive that passes nothing runs under the amendment, not the agent's unbounded default.
-	if _, err := a.ResumeRun(ctx, "r"); !errors.Is(err, agent.ErrMaxTurns) {
+	if _, err := a.Resume(ctx, "r"); !errors.Is(err, agent.ErrMaxTurns) {
 		t.Fatalf("drive with no option = %v, want ErrMaxTurns under the amendment", err)
 	}
 	if n := model.calls.Load(); n != 2 {
 		t.Fatalf("model calls = %d, want 2", n)
 	}
-	res, err := a.ResumeRun(ctx, "r", agent.WithMaxTurns(4))
+	res, err := a.Resume(ctx, "r", agent.WithMaxTurns(4))
 	if err != nil || res.Message.Text() != "done" {
 		t.Fatalf("raised to 4 = %v, %v; want the answer", res, err)
 	}
@@ -176,7 +176,7 @@ func TestP14Rule10_LimitAmendment(t *testing.T) {
 		t.Fatal("the second raise was not journaled as run:limits:1")
 	}
 	// The same limit is no amendment.
-	if _, err := a.ResumeRun(ctx, "r", agent.WithMaxTurns(4)); err != nil || has(t, m, "r", "run:limits:2") {
+	if _, err := a.Resume(ctx, "r", agent.WithMaxTurns(4)); err != nil || has(t, m, "r", "run:limits:2") {
 		t.Fatalf("repeat of the limit = %v, or it wrote an amendment", err)
 	}
 }
@@ -191,13 +191,13 @@ func TestP14Rule10_TokenBudgetAmendment(t *testing.T) {
 	}}
 	var c counter
 	a := p14Build(t, model, j, agent.WithTools(c.tool("lookup", agent.Safety{ReadOnly: true})))
-	if _, err := a.RunMessage(ctx, "r", agent.UserText("go"), agent.WithTokenBudget(10)); !errors.Is(err, agent.ErrBudgetExceeded) {
+	if _, err := a.Run(ctx, "r", agent.UserText("go"), agent.WithTokenBudget(10)); !errors.Is(err, agent.ErrBudgetExceeded) {
 		t.Fatalf("first drive = %v, want ErrBudgetExceeded", err)
 	}
-	if _, err := a.ResumeRun(ctx, "r"); !errors.Is(err, agent.ErrBudgetExceeded) {
+	if _, err := a.Resume(ctx, "r"); !errors.Is(err, agent.ErrBudgetExceeded) {
 		t.Fatalf("drive with no option = %v, want the journaled budget", err)
 	}
-	res, err := a.ResumeRun(ctx, "r", agent.WithTokenBudget(1000))
+	res, err := a.Resume(ctx, "r", agent.WithTokenBudget(1000))
 	if err != nil || res.Message.Text() != "done" || !has(t, m, "r", "run:limits:0") {
 		t.Fatalf("raised budget = %v, %v; want the answer and run:limits:0", res, err)
 	}
@@ -260,7 +260,7 @@ func TestP14Rule11_OtherMismatchesAreErrConfig(t *testing.T) {
 			a, model, pay := approvalAgent(t, j)
 			pauseThenApprove(t, a, j, first...)
 			before := model.calls.Load()
-			res, err := a.RunMessage(ctx, "r", agent.UserText(tc.input), tc.opts...)
+			res, err := a.Run(ctx, "r", agent.UserText(tc.input), tc.opts...)
 			if !errors.Is(err, agent.ErrConfig) || res == nil {
 				t.Fatalf("drive = %v, %v; want ErrConfig with a Result", res, err)
 			}
@@ -274,7 +274,7 @@ func TestP14Rule11_OtherMismatchesAreErrConfig(t *testing.T) {
 	j, _ := p14Journal(t)
 	a, _, _ := approvalAgent(t, j)
 	pauseThenApprove(t, a, j, first...)
-	if _, err := a.RunMessage(ctx, "r", agent.UserText("go"), first...); err != nil {
+	if _, err := a.Run(ctx, "r", agent.UserText("go"), first...); err != nil {
 		t.Fatalf("drive with the journaled values = %v, want the answer", err)
 	}
 }
@@ -286,7 +286,7 @@ func TestP14Rule12_TurnLimitAtStart(t *testing.T) {
 	j, _ := p14Journal(t)
 	a, model, pay := approvalAgent(t, j, agent.WithMaxTurns(10))
 	pauseThenApprove(t, a, j, agent.WithMaxTurns(1))
-	_, err := a.ResumeRun(ctx, "r")
+	_, err := a.Resume(ctx, "r")
 	if !errors.Is(err, agent.ErrMaxTurns) {
 		t.Fatalf("resume = %v, want ErrMaxTurns", err)
 	}
@@ -303,7 +303,7 @@ func TestP14Rule13_FilterEnforcedAtDispatch(t *testing.T) {
 	var pay, look counter
 	model := &p14Model{turns: []p14Turn{{calls: []agent.ToolUse{call("c1", "pay")}}, {text: "done"}}}
 	a := p14Build(t, model, j, agent.WithTools(pay.tool("pay", agent.Safety{}), look.tool("lookup", agent.Safety{ReadOnly: true})))
-	res, err := a.RunMessage(ctx, "r", agent.UserText("go"), agent.WithToolFilter("lookup"))
+	res, err := a.Run(ctx, "r", agent.UserText("go"), agent.WithToolFilter("lookup"))
 	if err != nil || res.Message.Text() != "done" {
 		t.Fatalf("run = %v, %v", res, err)
 	}
@@ -327,16 +327,16 @@ func TestP14Rule13_FilterHoldsOnResume(t *testing.T) {
 	j, _ := p14Journal(t)
 	var pay counter
 	model := &p14Model{turns: []p14Turn{{calls: []agent.ToolUse{call("c1", "lookup"), call("c2", "pay")}}, {text: "done"}}}
-	gated := agent.Func("lookup", "", agent.Safety{ReadOnly: true}, func(context.Context, struct{}) (string, error) { return "ok", nil },
+	gated := agent.MustFunc("lookup", "", func(context.Context, struct{}) (string, error) { return "ok", nil }, agent.WithSafety(agent.Safety{ReadOnly: true}),
 		agent.WithApproval(agent.SingleApproval()))
 	a := p14Build(t, model, j, agent.WithTools(pay.tool("pay", agent.Safety{}), gated))
-	if _, err := a.RunMessage(ctx, "r", agent.UserText("go"), agent.WithToolFilter("lookup")); err == nil {
+	if _, err := a.Run(ctx, "r", agent.UserText("go"), agent.WithToolFilter("lookup")); err == nil {
 		t.Fatal("the first drive did not pause")
 	}
 	if err := agent.Approve(ctx, j, "r", "c1", true); err != nil {
 		t.Fatal(err)
 	}
-	if _, err := a.ResumeRun(ctx, "r"); err != nil {
+	if _, err := a.Resume(ctx, "r"); err != nil {
 		t.Fatalf("resume = %v", err)
 	}
 	if pay.n.Load() != 0 {
@@ -357,22 +357,22 @@ func TestP14_PrincipalRestoredActorLive(t *testing.T) {
 	ctx := context.Background()
 	j, _ := p14Journal(t)
 	var seen agent.Identity
-	who := agent.Func("who", "", agent.Safety{ReadOnly: true}, func(ctx context.Context, _ struct{}) (string, error) {
+	who := agent.MustFunc("who", "", func(ctx context.Context, _ struct{}) (string, error) {
 		seen, _ = agent.IdentityFrom(ctx)
 		return "ok", nil
-	}, agent.WithApproval(agent.SingleApproval()))
+	}, agent.WithSafety(agent.Safety{ReadOnly: true}), agent.WithApproval(agent.SingleApproval()))
 	model := &p14Model{turns: []p14Turn{{calls: []agent.ToolUse{call("c1", "who")}}, {text: "done"}}}
 	a := p14Build(t, model, j, agent.WithTools(who))
-	if _, err := a.RunMessage(ctx, "r", agent.UserText("go"), agent.WithIdentity(agent.Identity{Actor: "v1", OnBehalfOf: "desk", AuthorityRef: "grant-1"})); err == nil {
+	if _, err := a.Run(ctx, "r", agent.UserText("go"), agent.WithIdentity(agent.Identity{Actor: "v1", OnBehalfOf: "desk", AuthorityRef: "grant-1"})); err == nil {
 		t.Fatal("no pause")
 	}
 	if err := agent.Approve(ctx, j, "r", "c1", true); err != nil {
 		t.Fatal(err)
 	}
-	if _, err := a.ResumeRun(ctx, "r", agent.WithIdentity(agent.Identity{OnBehalfOf: "elsewhere"})); !errors.Is(err, agent.ErrConfig) {
+	if _, err := a.Resume(ctx, "r", agent.WithIdentity(agent.Identity{OnBehalfOf: "elsewhere"})); !errors.Is(err, agent.ErrConfig) {
 		t.Fatalf("another principal = %v, want ErrConfig", err)
 	}
-	if _, err := a.ResumeRun(ctx, "r", agent.WithIdentity(agent.Identity{Actor: "v2"})); err != nil {
+	if _, err := a.Resume(ctx, "r", agent.WithIdentity(agent.Identity{Actor: "v2"})); err != nil {
 		t.Fatal(err)
 	}
 	if seen != (agent.Identity{Actor: "v2", OnBehalfOf: "desk", AuthorityRef: "grant-1"}) {
@@ -399,7 +399,7 @@ func TestP14_TypedRunResumedByResumeTyped(t *testing.T) {
 		{calls: []agent.ToolUse{{ID: "f1", Name: "final_answer", Args: json.RawMessage(`{"v":7}`)}}},
 	}}
 	a := p14Build(t, model, j, agent.WithTools(pay.tool("pay", agent.Safety{}, agent.WithApproval(agent.SingleApproval()))))
-	if _, res, err := a.RunTypedMessage[answerV](ctx, "r", agent.UserText("go")); err == nil || res == nil {
+	if _, res, err := a.RunTyped[answerV](ctx, "r", agent.UserText("go")); err == nil || res == nil {
 		t.Fatalf("typed run = %v, %v; want the approval pause with a Result", res, err)
 	}
 	if err := agent.Approve(ctx, j, "r", "c1", true); err != nil {
@@ -410,10 +410,10 @@ func TestP14_TypedRunResumedByResumeTyped(t *testing.T) {
 		t.Fatalf("recorded start = %+v, %v, %v; want the typed start", start, ok, err)
 	}
 	before := model.calls.Load()
-	if _, err := a.RunMessage(ctx, "r", agent.UserText("go")); !errors.Is(err, agent.ErrConfig) {
+	if _, err := a.Run(ctx, "r", agent.UserText("go")); !errors.Is(err, agent.ErrConfig) {
 		t.Fatalf("untyped drive of a typed run = %v, want ErrConfig", err)
 	}
-	if _, _, err := a.RunTypedMessage[answerW](ctx, "r", agent.UserText("go")); !errors.Is(err, agent.ErrConfig) {
+	if _, _, err := a.RunTyped[answerW](ctx, "r", agent.UserText("go")); !errors.Is(err, agent.ErrConfig) {
 		t.Fatalf("another type = %v, want ErrConfig", err)
 	}
 	if err := agent.ResumeAgent(a)(ctx, "r", start); !errors.Is(err, agent.ErrNotResumable) {
@@ -428,7 +428,7 @@ func TestP14_TypedRunResumedByResumeTyped(t *testing.T) {
 	if err := agent.ResumeTyped[answerV](a)(ctx, "r", start); err != nil {
 		t.Fatalf("ResumeTyped = %v", err)
 	}
-	v, res, err := a.RunTypedMessage[answerV](ctx, "r", agent.UserText("go"))
+	v, res, err := a.RunTyped[answerV](ctx, "r", agent.UserText("go"))
 	if err != nil || v.V != 7 || !bytes.Contains(res.Output, []byte(`7`)) {
 		t.Fatalf("finished typed run = %+v, %+v, %v; want v=7 and the journaled output", v, res, err)
 	}
@@ -441,13 +441,13 @@ func TestP14_ImageInput(t *testing.T) {
 	a, model, _ := approvalAgent(t, j)
 	img := agent.ImageData("image/png", []byte{0x89, 'P', 'N', 'G'})
 	in := agent.UserParts(agent.Text{Text: "what is this?"}, img)
-	if _, err := a.RunMessage(ctx, "r", in); err == nil {
+	if _, err := a.Run(ctx, "r", in); err == nil {
 		t.Fatal("no pause")
 	}
 	if err := agent.Approve(ctx, j, "r", "c1", true); err != nil {
 		t.Fatal(err)
 	}
-	if _, err := a.ResumeRun(ctx, "r"); err != nil {
+	if _, err := a.Resume(ctx, "r"); err != nil {
 		t.Fatal(err)
 	}
 	req := model.lastReq(t)
@@ -468,7 +468,7 @@ func TestP14_ImageInput(t *testing.T) {
 	}
 	// Another image is another input.
 	other := agent.UserParts(agent.Text{Text: "what is this?"}, agent.ImageData("image/png", []byte{1}))
-	if _, err := a.RunMessage(ctx, "r", other); err != nil && !errors.Is(err, agent.ErrConfig) {
+	if _, err := a.Run(ctx, "r", other); err != nil && !errors.Is(err, agent.ErrConfig) {
 		t.Fatalf("another image = %v", err)
 	}
 }
@@ -497,10 +497,10 @@ func TestP14_ResultOnEveryErrorKind(t *testing.T) {
 			j, _ := p14Journal(t)
 			model := &p14Model{turns: tc.turns}
 			a := p14Build(t, model, j, agent.WithTools(
-				agent.Func("gated", "", agent.Safety{ReadOnly: true}, func(context.Context, struct{}) (string, error) { return "", nil }, agent.WithApproval(agent.SingleApproval())),
-				agent.Func("lookup", "", agent.Safety{ReadOnly: true}, func(context.Context, struct{}) (string, error) { return "", nil }),
-				agent.Func("fail", "", agent.Safety{}, func(context.Context, struct{}) (string, error) { return "", errors.New("declined") })))
-			res, err := a.RunMessage(ctx, "r", agent.UserText("go"), tc.opts...)
+				agent.MustFunc("gated", "", func(context.Context, struct{}) (string, error) { return "", nil }, agent.WithSafety(agent.Safety{ReadOnly: true}), agent.WithApproval(agent.SingleApproval())),
+				agent.MustFunc("lookup", "", func(context.Context, struct{}) (string, error) { return "", nil }, agent.WithSafety(agent.Safety{ReadOnly: true})),
+				agent.MustFunc("fail", "", func(context.Context, struct{}) (string, error) { return "", errors.New("declined") })))
+			res, err := a.Run(ctx, "r", agent.UserText("go"), tc.opts...)
 			if !tc.want(err) {
 				t.Fatalf("err = %v", err)
 			}
@@ -515,8 +515,8 @@ func TestP14_ResultOnEveryErrorKind(t *testing.T) {
 	j, _ := p14Journal(t)
 	a := p14Build(t, &p14Model{turns: []p14Turn{{text: "x"}}}, j)
 	for _, id := range []string{"", "a>b"} {
-		if res, err := a.RunMessage(ctx, id, agent.UserText("go")); res != nil || !errors.Is(err, agent.ErrConfig) {
-			t.Fatalf("RunMessage(%q) = %v, %v; want ErrConfig and no Result", id, res, err)
+		if res, err := a.Run(ctx, id, agent.UserText("go")); res != nil || !errors.Is(err, agent.ErrConfig) {
+			t.Fatalf("Run(%q) = %v, %v; want ErrConfig and no Result", id, res, err)
 		}
 	}
 	if err := agent.ValidateRunID("ok:run/1"); err != nil {

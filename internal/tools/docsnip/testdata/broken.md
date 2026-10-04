@@ -5,7 +5,7 @@ x := undefinedThing // want "undefined: undefinedThing"
 ```
 
 ```go
-a := agent.New(1) // want "not enough arguments in call to agent.New"
+a, _ := agent.New(1) // want "not enough arguments in call to agent.New"
 ```
 
 ```go

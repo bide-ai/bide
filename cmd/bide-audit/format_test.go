@@ -13,7 +13,9 @@ import (
 	"testing"
 
 	"github.com/bide-ai/bide/agent"
+	"github.com/bide-ai/bide/agent/agenttest"
 	"github.com/bide-ai/bide/audit"
+	"github.com/bide-ai/bide/internal/journaltest"
 )
 
 // A proof bundle in the layout before formats (no "format", "Index"/"Size"/"Path" in Go case) is
@@ -23,8 +25,8 @@ func TestVerifyCLI_RefusesAnOldFormatBundle(t *testing.T) {
 	ctx := context.Background()
 	dir := t.TempDir()
 	pub, priv, _ := ed25519.GenerateKey(rand.Reader)
-	store := agent.NewMemStore()
-	if _, err := store.Do(ctx, "r", "c1", func(context.Context) (agent.Record, error) {
+	store := agenttest.MemJournal()
+	if _, err := journaltest.Do(ctx, store, "r", "c1", func(context.Context) (agent.Record, error) {
 		return agent.Record{Kind: agent.StepToolResult, ToolUseID: "c1", Result: json.RawMessage(`{"ok":true}`)}, nil
 	}); err != nil {
 		t.Fatal(err)

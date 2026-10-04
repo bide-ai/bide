@@ -9,16 +9,18 @@ import (
 	"testing"
 
 	"github.com/bide-ai/bide/agent"
+	"github.com/bide-ai/bide/agent/agenttest"
 )
 
 // htmlTool echoes a result whose JSON carries HTML-significant characters and extra whitespace,
 // the bytes a journal encoder is most tempted to rewrite.
 type htmlTool struct{}
 
-func (htmlTool) Name() string                { return "html" }
-func (htmlTool) Description() string         { return "returns markup" }
-func (htmlTool) ArgsSchema() json.RawMessage { return json.RawMessage(`{"type":"object"}`) }
-func (htmlTool) Safety() agent.Safety        { return agent.Safety{ReadOnly: true} }
+// Spec describes the tool to the agent (see agent.Tool).
+func (t htmlTool) Spec() agent.ToolSpec {
+	return agent.ToolSpec{Name: "html", Description: "returns markup", Input: json.RawMessage(`{"type":"object"}`), Safety: agent.Safety{ReadOnly: true}}
+}
+
 func (htmlTool) Call(context.Context, json.RawMessage) (json.RawMessage, error) {
 	return json.RawMessage(`{ "html" : "<b>a & b</b>",  "cmp": "x > y" }`), nil
 }
@@ -28,7 +30,7 @@ func (htmlTool) Call(context.Context, json.RawMessage) (json.RawMessage, error) 
 // turn is journaled.
 type wireModel struct {
 	m      *Model
-	script *agent.ScriptedModel
+	script *agenttest.ScriptedModel
 	failOn int
 
 	mu    sync.Mutex
@@ -58,28 +60,28 @@ func (w *wireModel) Stream(ctx context.Context, req agent.Request) (*agent.Strea
 // read without one.
 func TestResumedTurnSendsLiveBytes(t *testing.T) {
 	ctx := context.Background()
-	script := func() *agent.ScriptedModel {
-		return agent.NewScriptedModel(
-			agent.ToolTurn("c1", "html", `{ "q" : "a<b && c>d" ,  "n": 1.50 }`),
-			agent.TextTurn("done"),
+	script := func() *agenttest.ScriptedModel {
+		return agenttest.NewScriptedModel(
+			agenttest.ToolTurn("c1", "html", `{ "q" : "a<b && c>d" ,  "n": 1.50 }`),
+			agenttest.TextTurn("done"),
 		)
 	}
 
 	live := &wireModel{m: New("k"), script: script()}
-	if _, err := agent.New(live, agent.NewMemStore(), htmlTool{}).Run(ctx, "r", "hi"); err != nil {
+	if _, err := agenttest.MustNew(live, agenttest.MemJournal(), agent.WithTools(htmlTool{})).Run(ctx, "r", agent.UserText("hi")); err != nil {
 		t.Fatalf("live run: %v", err)
 	}
 	if len(live.wire) != 2 {
 		t.Fatalf("live run made %d model calls, want 2", len(live.wire))
 	}
 
-	store := agent.NewMemStore()
+	store := agenttest.MemJournal()
 	crashed := &wireModel{m: New("k"), script: script(), failOn: 2}
-	if _, err := agent.New(crashed, store, htmlTool{}).Run(ctx, "r", "hi"); err == nil {
+	if _, err := agenttest.MustNew(crashed, store, agent.WithTools(htmlTool{})).Run(ctx, "r", agent.UserText("hi")); err == nil {
 		t.Fatal("the crashing run should fail on its second model call")
 	}
 	resumed := &wireModel{m: New("k"), script: script()}
-	if _, err := agent.New(resumed, store, htmlTool{}).Run(ctx, "r", "hi"); err != nil {
+	if _, err := agenttest.MustNew(resumed, store, agent.WithTools(htmlTool{})).Run(ctx, "r", agent.UserText("hi")); err != nil {
 		t.Fatalf("resumed run: %v", err)
 	}
 	if len(resumed.wire) != 1 {

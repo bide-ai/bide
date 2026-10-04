@@ -31,7 +31,7 @@ func (r *fakeRetriever) Retrieve(_ context.Context, query string, k int) ([]Doc,
 // RetrievalTool lets the model search on demand and returns the docs as its result.
 func TestRetrievalTool_SearchesOnDemand(t *testing.T) {
 	r := &fakeRetriever{docs: []Doc{{ID: "1", Text: "the sky is blue"}}}
-	tool := RetrievalTool("retrieve", "search", r, 3)
+	tool := MustRetrievalTool("retrieve", "search", r, 3)
 
 	res, err := tool.Call(context.Background(), json.RawMessage(`{"query":"sky color"}`))
 	if err != nil {
@@ -43,7 +43,7 @@ func TestRetrievalTool_SearchesOnDemand(t *testing.T) {
 	if !strings.Contains(string(res), "the sky is blue") {
 		t.Fatalf("tool result = %s, want the doc text", res)
 	}
-	if tool.Safety().ReadOnly != true {
+	if tool.Spec().Safety.ReadOnly != true {
 		t.Error("retrieval tool should be ReadOnly")
 	}
 }
@@ -94,7 +94,7 @@ func TestWithRetrieval_ErrorAborts(t *testing.T) {
 	r := &fakeRetriever{err: errors.New("vector store down")}
 	m := &countModel{inner: NewScriptedModel(TextTurn("done"))}
 	a := buildT(t, m, WithRetrieval(r, 2))
-	_, err := a.Run(context.Background(), "run-1", "q")
+	_, err := a.Run(context.Background(), "run-1", UserText("q"))
 	if err == nil || !strings.Contains(err.Error(), "vector store down") {
 		t.Fatalf("err = %v, want the retrieval error", err)
 	}
@@ -115,7 +115,7 @@ func ExampleRetrievalTool() {
 		return nil, nil
 	})
 
-	tool := RetrievalTool("retrieve", "Search the knowledge base.", r, 1)
+	tool := MustRetrievalTool("retrieve", "Search the knowledge base.", r, 1)
 	out, _ := tool.Call(context.Background(), json.RawMessage(`{"query":"france"}`))
 	fmt.Println(string(out))
 	// Output: [{"text":"Paris is the capital of France."}]
@@ -136,13 +136,17 @@ func ExampleRetrieverFunc() {
 		return store.Retrieve(ctx, query, k)
 	})
 
-	a, err := Build(NewScriptedModel(TextTurn("answered without the record")), NewMemStore().Journal(),
+	a, err := New(NewScriptedModel(TextTurn("answered without the record")), memJournal(),
 		WithRetrieval(gated, 3))
 	if err != nil {
 		fmt.Println(err)
 		return
 	}
-	msg, err := a.Run(context.Background(), "gated-1", "what does the record say?")
+	res, err := a.Run(context.Background(), "gated-1", UserText("what does the record say?"))
+	var msg Message
+	if res != nil {
+		msg = res.Message
+	}
 	fmt.Println(msg.Text(), err)
 	// Output: answered without the record <nil>
 }
@@ -159,9 +163,9 @@ func TestRetrieval_NonPositiveKRefused(t *testing.T) {
 					t.Errorf("RetrievalTool(k=%d) did not panic", k)
 				}
 			}()
-			RetrievalTool("retrieve", "search", &fakeRetriever{}, k)
+			MustRetrievalTool("retrieve", "search", &fakeRetriever{}, k)
 		}()
-		if _, err := Build(NewScriptedModel(), NewMemStore().Journal(), WithRetrieval(&fakeRetriever{}, k)); !errors.Is(err, ErrConfig) {
+		if _, err := New(NewScriptedModel(), memJournal(), WithRetrieval(&fakeRetriever{}, k)); !errors.Is(err, ErrConfig) {
 			t.Errorf("Build with WithRetrieval(k=%d) = %v, want ErrConfig", k, err)
 		}
 	}
@@ -173,7 +177,7 @@ func TestRetrieval_NonPositiveKRefused(t *testing.T) {
 func TestRetrieval_CapsAtK(t *testing.T) {
 	r := &fakeRetriever{docs: []Doc{{ID: "1", Text: "one"}, {ID: "2", Text: "two"}, {ID: "3", Text: "three"}}}
 
-	res, err := RetrievalTool("retrieve", "search", r, 2).Call(context.Background(), json.RawMessage(`{"query":"q"}`))
+	res, err := MustRetrievalTool("retrieve", "search", r, 2).Call(context.Background(), json.RawMessage(`{"query":"q"}`))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -207,7 +211,7 @@ func TestRetrievalTool_NonFiniteScoreDropped(t *testing.T) {
 	}
 	r := &fakeRetriever{docs: docs}
 
-	res, err := RetrievalTool("retrieve", "search", r, 4).Call(context.Background(), json.RawMessage(`{"query":"q"}`))
+	res, err := MustRetrievalTool("retrieve", "search", r, 4).Call(context.Background(), json.RawMessage(`{"query":"q"}`))
 	if err != nil {
 		t.Fatalf("RetrievalTool with a non-finite score: %v", err)
 	}
@@ -355,8 +359,7 @@ func captureRequests(got *[]string) Middleware {
 }
 
 // noopTool is a read-only tool for driving the loop through a tool-result turn.
-var noopTool = Func("noop", "does nothing", Safety{ReadOnly: true},
-	func(context.Context, struct{}) (string, error) { return "ok", nil })
+var noopTool = MustFunc("noop", "does nothing", func(context.Context, struct{}) (string, error) { return "ok", nil }, WithSafety(Safety{ReadOnly: true}))
 
 // Within a run, the model call that follows a tool result still sees the retrieved context:
 // the same documents the first call saw, recorded once in the journal, not retrieved again.
@@ -369,9 +372,9 @@ func TestWithRetrieval_ContextKeptAcrossTheRun(t *testing.T) {
 			a := buildT(t, m, WithTools(noopTool), WithSystemPrompt("OPERATOR"), WithRetrieval(r, 2), WithMiddleware(captureRequests(&got)))
 			var err error
 			if mode == "Run" {
-				_, err = a.Run(context.Background(), "run-1", "q")
+				_, err = a.Run(context.Background(), "run-1", UserText("q"))
 			} else {
-				_, err = a.Stream(context.Background(), "run-1", "q").Final()
+				_, err = a.Stream(context.Background(), "run-1", UserText("q")).Result()
 			}
 			if err != nil {
 				t.Fatal(err)
@@ -397,15 +400,16 @@ func TestWithRetrieval_ContextKeptAcrossTheRun(t *testing.T) {
 func TestWithRetrieval_ResumeInjectsRecordedDocs(t *testing.T) {
 	r := &seqRetriever{}
 	store := NewMemStore()
+	j := mustJournal(store)
 	crash := NewScriptedModel(ToolTurn("c1", "noop", `{}`), ErrorTurn(errors.New("process died")))
-	if _, err := buildOn(t, crash, store, WithTools(noopTool), WithRetrieval(r, 2)).Run(context.Background(), "run-1", "q"); err == nil {
+	if _, err := buildOn(t, crash, store, WithTools(noopTool), WithRetrieval(r, 2)).Run(context.Background(), "run-1", UserText("q")); err == nil {
 		t.Fatal("first run: want the scripted crash")
 	}
 
 	var got []string
 	m := NewScriptedModel(ToolTurn("c1", "noop", `{}`), TextTurn("done"))
 	a := buildOn(t, m, store, WithTools(noopTool), WithRetrieval(r, 2), WithMiddleware(captureRequests(&got)))
-	if _, err := a.Run(context.Background(), "run-1", "q"); err != nil {
+	if _, err := a.Run(context.Background(), "run-1", UserText("q")); err != nil {
 		t.Fatal(err)
 	}
 	if len(got) != 1 || !strings.Contains(got[0], "version-1") {
@@ -415,7 +419,7 @@ func TestWithRetrieval_ResumeInjectsRecordedDocs(t *testing.T) {
 		t.Errorf("retriever called %d times across a crash and resume, want 1", n)
 	}
 
-	recs, err := store.History(context.Background(), "run-1")
+	recs, err := j.History(context.Background(), "run-1")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -443,8 +447,8 @@ func TestWithRetrieval_SubAgentRetrievesForItself(t *testing.T) {
 	store := NewMemStore()
 	sub := buildOn(t, NewScriptedModel(TextTurn("sub answer")), store, WithRetrieval(subR, 1), WithMiddleware(captureRequests(&subGot)))
 	parent := buildOn(t, NewScriptedModel(ToolTurn("c1", "helper", `{"task":"sub question"}`), TextTurn("done")), store,
-		WithTools(SubAgent("helper", "a helper", sub)), WithRetrieval(parentR, 1), WithMiddleware(captureRequests(&parentGot)))
-	if _, err := parent.Run(context.Background(), "run-1", "q"); err != nil {
+		WithTools(MustSubAgent("helper", "a helper", sub)), WithRetrieval(parentR, 1), WithMiddleware(captureRequests(&parentGot)))
+	if _, err := parent.Run(context.Background(), "run-1", UserText("q")); err != nil {
 		t.Fatal(err)
 	}
 	if len(subGot) != 1 || !strings.Contains(subGot[0], "sub-doc") {
@@ -463,7 +467,7 @@ func TestWithRetrieval_SubAgentRetrievesForItself(t *testing.T) {
 // A Retriever with no hits gives the tool the same result as before the helpers normalized
 // documents: JSON null, not an error.
 func TestRetrievalTool_NoHits(t *testing.T) {
-	res, err := RetrievalTool("retrieve", "search", &fakeRetriever{}, 3).Call(context.Background(), json.RawMessage(`{"query":"q"}`))
+	res, err := MustRetrievalTool("retrieve", "search", &fakeRetriever{}, 3).Call(context.Background(), json.RawMessage(`{"query":"q"}`))
 	if err != nil || string(res) != "null" {
 		t.Fatalf("RetrievalTool with no hits = %s, %v; want null", res, err)
 	}
@@ -489,7 +493,7 @@ func TestWithRetrieval_TwoLayers(t *testing.T) {
 	}
 	m := NewScriptedModel(ToolTurn("c1", "noop", `{}`), TextTurn("done"))
 	a := buildT(t, m, WithTools(noopTool), WithRetrieval(docsR, 1), WithRetrieval(ticketsR, 1), WithMiddleware(capture))
-	if _, err := a.Run(context.Background(), "run-1", "q"); err != nil {
+	if _, err := a.Run(context.Background(), "run-1", UserText("q")); err != nil {
 		t.Fatal(err)
 	}
 	if len(got) != 2 {
@@ -511,12 +515,12 @@ func TestWithRetrieval_FailedRetrievalRetriesOnResume(t *testing.T) {
 	store := NewMemStore()
 	r := &fakeRetriever{err: errors.New("vector store down")}
 	m := NewScriptedModel(TextTurn("done"))
-	if _, err := buildOn(t, m, store, WithRetrieval(r, 1)).Run(context.Background(), "run-1", "q"); err == nil {
+	if _, err := buildOn(t, m, store, WithRetrieval(r, 1)).Run(context.Background(), "run-1", UserText("q")); err == nil {
 		t.Fatal("first run: want the retrieval error")
 	}
 	r.err, r.docs = nil, []Doc{{Text: "back up"}}
 	var got []string
-	if _, err := buildOn(t, m, store, WithRetrieval(r, 1), WithMiddleware(captureRequests(&got))).Run(context.Background(), "run-1", "q"); err != nil {
+	if _, err := buildOn(t, m, store, WithRetrieval(r, 1), WithMiddleware(captureRequests(&got))).Run(context.Background(), "run-1", UserText("q")); err != nil {
 		t.Fatalf("resume after a failed retrieval: %v", err)
 	}
 	if len(got) != 1 || !strings.Contains(got[0], "back up") {
@@ -541,10 +545,10 @@ func TestWithRetrieval_NoTextNoRetrieval(t *testing.T) {
 func TestRetrievalTool_Named(t *testing.T) {
 	docsR := &fakeRetriever{docs: []Doc{{Text: "from-docs"}}}
 	ticketsR := &fakeRetriever{docs: []Doc{{Text: "from-tickets"}}}
-	docs := RetrievalTool("search_docs", "Search the product docs.", docsR, 1)
-	tickets := RetrievalTool("search_tickets", "Search the tickets.", ticketsR, 1)
-	if docs.Name() != "search_docs" || docs.Description() != "Search the product docs." || tickets.Name() != "search_tickets" {
-		t.Fatalf("tools = %q (%q), %q; want the configured names and description", docs.Name(), docs.Description(), tickets.Name())
+	docs := MustRetrievalTool("search_docs", "Search the product docs.", docsR, 1)
+	tickets := MustRetrievalTool("search_tickets", "Search the tickets.", ticketsR, 1)
+	if docs.Spec().Name != "search_docs" || docs.Spec().Description != "Search the product docs." || tickets.Spec().Name != "search_tickets" {
+		t.Fatalf("tools = %q (%q), %q; want the configured names and description", docs.Spec().Name, docs.Spec().Description, tickets.Spec().Name)
 	}
 
 	m := NewScriptedModel(
@@ -552,7 +556,7 @@ func TestRetrievalTool_Named(t *testing.T) {
 		ToolTurn("c2", "search_tickets", `{"query":"outage"}`),
 		TextTurn("done"),
 	)
-	if _, err := New(m, NewMemStore(), docs, tickets).Run(context.Background(), "run-1", "q"); err != nil {
+	if _, err := mustNew(m, memJournal(), WithTools(docs, tickets)).Run(context.Background(), "run-1", UserText("q")); err != nil {
 		t.Fatal(err)
 	}
 	if docsR.lastQ != "install" || ticketsR.lastQ != "outage" {
@@ -564,7 +568,7 @@ func TestRetrievalTool_Named(t *testing.T) {
 			t.Error("RetrievalTool with an empty name did not panic")
 		}
 	}()
-	RetrievalTool("", "search", docsR, 1)
+	MustRetrievalTool("", "search", docsR, 1)
 }
 
 // Metadata with no JSON encoding cannot be written into the context message, so the model call
@@ -577,7 +581,7 @@ func TestWithRetrieval_UnencodableMetadataIsAnError(t *testing.T) {
 	// In a run the documents are journaled before they are formatted, and the record cannot be
 	// encoded either: the run fails before the model is called.
 	m := &countModel{inner: NewScriptedModel(TextTurn("done"))}
-	_, err := buildT(t, m, WithRetrieval(r, 2)).Run(context.Background(), "run-1", "q")
+	_, err := buildT(t, m, WithRetrieval(r, 2)).Run(context.Background(), "run-1", UserText("q"))
 	if err == nil || !strings.Contains(err.Error(), "chan int") {
 		t.Fatalf("err = %v, want the encoding error", err)
 	}
@@ -598,11 +602,11 @@ func retrieveInto(t *testing.T, r Retriever, k int, msgs []Message) ([]Message, 
 // RetrievalTool takes the tool options, as Func does: a timeout and a title land in its spec, and
 // it is read-only unless WithSafety says otherwise.
 func TestRetrievalTool_ToolOptions(t *testing.T) {
-	tool := RetrievalTool("search", "search", &fakeRetriever{}, 1, WithTimeout(time.Second), WithTitle("Search"))
-	if s := SpecOf(tool); s.Timeout != time.Second || s.Title != "Search" || s.Safety != (Safety{ReadOnly: true}) {
+	tool := MustRetrievalTool("search", "search", &fakeRetriever{}, 1, WithTimeout(time.Second), WithTitle("Search"))
+	if s := tool.Spec(); s.Timeout != time.Second || s.Title != "Search" || s.Safety != (Safety{ReadOnly: true}) {
 		t.Errorf("spec = %+v, want the timeout, the title and ReadOnly", s)
 	}
-	if s := SpecOf(RetrievalTool("search", "search", &fakeRetriever{}, 1, WithSafety(Safety{Idempotent: true}))); s.Safety != (Safety{Idempotent: true}) {
+	if s := MustRetrievalTool("search", "search", &fakeRetriever{}, 1, WithSafety(Safety{Idempotent: true})).Spec(); s.Safety != (Safety{Idempotent: true}) {
 		t.Errorf("safety = %+v, want WithSafety's", s.Safety)
 	}
 	defer func() {
@@ -610,5 +614,5 @@ func TestRetrievalTool_ToolOptions(t *testing.T) {
 			t.Error("RetrievalTool with a nil Retriever did not panic")
 		}
 	}()
-	RetrievalTool("search", "search", nil, 1)
+	MustRetrievalTool("search", "search", nil, 1)
 }

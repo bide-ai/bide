@@ -4,16 +4,17 @@
 
 ```go
 // Step runs fn as a named durable step.
-func Step[T any](ctx context.Context, d Durable, runID, name string,
+func (j *Journal) Step[T any](ctx context.Context, runID, name string,
 	fn func(context.Context) (T, error), opts ...StepOption) (T, error)
 
 func NewMemStore() *MemStore
 
-func (a *Agent) Run(ctx context.Context, runID, input string) (Message, error)
+func (a *Agent) Run(ctx context.Context, runID string, input Message, opts ...RunOption) (*Result, error)
 
-type Durable interface {
-	Do(ctx context.Context, runID, name string, fn func(context.Context) (Record, error)) (Record, error)
-	History(ctx context.Context, runID string) ([]Record, error)
+type Store interface {
+	Insert(ctx context.Context, runID, name string, data []byte) (Entry, bool, error)
+	Get(ctx context.Context, runID, name string) (Entry, bool, error)
+	Load(ctx context.Context, runID string, after int64) iter.Seq2[Entry, error]
 }
 
 // A struct may list a subset of its fields.
@@ -34,8 +35,8 @@ func (a *Agent) Fly() error // want "api drift: agent.Agent.Fly: no such method"
 
 func NoSuchThing() // want "api drift: agent.NoSuchThing: not in the package"
 
-type Durable interface { // want "api drift: agent.Durable"
-	History(ctx context.Context, runID string) ([]Record, error)
+type Store interface { // want "api drift: agent.Store"
+	Get(ctx context.Context, runID, name string) (Entry, bool, error)
 }
 
 type Safety struct { // want "field ReadOnly is int in the doc, bool in the code; field Wings is not in the code"

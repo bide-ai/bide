@@ -70,40 +70,21 @@ func TestCapability(t *testing.T) {
 	}
 }
 
-// durableWrapper is the transitional form of a wrapper: a Durable that exposes the Durable it
-// wraps through Unwrap.
-type durableWrapper struct{ inner Durable }
-
-func (u durableWrapper) Do(ctx context.Context, runID, name string, fn func(context.Context) (Record, error)) (Record, error) {
-	return u.inner.Do(ctx, runID, name, fn)
-}
-func (u durableWrapper) History(ctx context.Context, runID string) ([]Record, error) {
-	return u.inner.History(ctx, runID)
-}
-func (u durableWrapper) Unwrap() Durable { return u.inner }
-
-// The engine finds a capability behind a Durable: on the Durable itself, on the store a Journal
-// writes to, and through a Durable wrapper's Unwrap.
-func TestCapabilityOfDurable(t *testing.T) {
+// The engine finds a capability on the store a Journal writes to, directly and through a wrapper's
+// Unwrap.
+func TestCapabilityOfJournalStore(t *testing.T) {
 	mem := NewMemStore()
+	j2 := mustJournal(mem)
 	j, err := NewJournal(unwrapStore{mem})
 	if err != nil {
 		t.Fatal(err)
 	}
-	for name, d := range map[string]Durable{
-		"MemStore":                         mem,
-		"Journal over a wrapper":           j,
-		"Durable wrapper":                  durableWrapper{mem},
-		"Durable wrapper over the Journal": durableWrapper{j},
+	for name, d := range map[string]*Journal{
+		"MemStore":               j2,
+		"Journal over a wrapper": j,
 	} {
-		if l, ok := capabilityOf[Leaser](d); !ok || l != Leaser(mem) {
-			t.Errorf("%s: capabilityOf[Leaser] = %v, %v; want the MemStore", name, l, ok)
+		if l, ok := Capability[Leaser](d.Store()); !ok || l != Leaser(mem) {
+			t.Errorf("%s: Capability[Leaser] = %v, %v; want the MemStore", name, l, ok)
 		}
-	}
-	if _, ok := capabilityOf[Leaser](durableWrapper{nil}); ok {
-		t.Error("a Durable wrapper whose Unwrap returns nil reports a Leaser")
-	}
-	if _, ok := capabilityOf[Leaser](nil); ok {
-		t.Error("a nil Durable reports a Leaser")
 	}
 }

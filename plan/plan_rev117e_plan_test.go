@@ -9,15 +9,16 @@ import (
 	"time"
 
 	"github.com/bide-ai/bide/agent"
+	"github.com/bide-ai/bide/agent/agenttest"
 )
 
 // A RegisterTool the agent's wrapper check refuses is not recorded on the Registry, unlike a
 // duplicate registration, so Load (for a caller that did not check the return) reports an
 // unknown block rather than the refusal.
 func TestRev117e_RegisterToolRefusalSurfacesAtLoad(t *testing.T) {
-	sub := agent.New(agent.NewScriptedModel(agent.TextTurn("x")), agent.NewMemStore())
+	sub := agenttest.MustNew(agenttest.NewScriptedModel(agenttest.TextTurn("x")), agenttest.MemJournal())
 	reg := NewRegistry()
-	_ = RegisterTool[int, int](reg, "delegate", timedSubWrap{agent.SubAgent("delegate", "", sub)})
+	_ = reg.RegisterTool[int, int]("delegate", timedSubWrap{agent.MustSubAgent("delegate", "", sub)})
 	cfg := `{"version":1,"flow":"f","in":"int","out":"int","entry":"delegate",
 	  "nodes":[{"name":"delegate","block":"delegate"}],"wiring":[]}`
 	_, err := Load[int, int]([]byte(cfg), reg)
@@ -31,7 +32,7 @@ func TestRev117e_RegisterToolRefusalSurfacesAtLoad(t *testing.T) {
 // cancellation, not an unknown outcome; an error after the tool's own deadline is unknown.
 func TestRev117e_TimeoutRuleParity(t *testing.T) {
 	mk := func(f func(ctx context.Context) (int, error)) agent.Tool {
-		return agent.Func("t", "", agent.Safety{}, func(ctx context.Context, _ int) (int, error) { return f(ctx) }, agent.WithTimeout(20*time.Millisecond))
+		return agent.MustFunc("t", "", func(ctx context.Context, _ int) (int, error) { return f(ctx) }, agent.WithTimeout(20*time.Millisecond))
 	}
 	args, _ := json.Marshal(1)
 	// result after the tool's deadline

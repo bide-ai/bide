@@ -8,7 +8,9 @@ import (
 	"time"
 
 	"github.com/bide-ai/bide/agent"
+	"github.com/bide-ai/bide/agent/agenttest"
 	"github.com/bide-ai/bide/audit"
+	"github.com/bide-ai/bide/internal/journaltest"
 )
 
 // slowAnchor is a remote anchor with latency: the publish of tree size hold stays in flight until
@@ -44,9 +46,9 @@ func TestAuditedStore_AnchoredHeadsNeverShrink(t *testing.T) {
 	_, priv, _ := ed25519.GenerateKey(nil)
 	// The first step's head covers the journal header and the step: size 2.
 	anchor := &slowAnchor{inner: audit.NewMemAnchorLog(), hold: 2, inFlight: make(chan struct{}), release: make(chan struct{})}
-	store := mustAuditedStore(t, agent.NewMemStore(), priv, anchor)
+	store := agenttest.MustJournal(mustAuditedStore(t, agenttest.MemJournal(), priv, anchor))
 	step := func(name string) {
-		if _, err := store.Do(ctx, "r1", name, func(context.Context) (agent.Record, error) {
+		if _, err := journaltest.Do(ctx, store, "r1", name, func(context.Context) (agent.Record, error) {
 			return agent.Record{Kind: agent.StepValue}, nil
 		}); err != nil {
 			t.Error(err)
@@ -94,28 +96,33 @@ func (a *flakyAnchor) Publish(ctx context.Context, runID string, sth audit.Signe
 	return a.inner.Publish(ctx, runID, sth)
 }
 
-// A head whose publish failed is not treated as anchored: the run's next step retries it, even a
-// memoized replay that does not grow the journal, so every record ends up covered by an anchored
-// head.
+// A head whose publish failed is not treated as anchored: the run's next write retries it, so
+// every record ends up covered by an anchored head once the run writes again. A read (a memoized
+// replay of a recorded step) writes nothing and anchors nothing.
 func TestAuditedStore_RetriesAFailedPublish(t *testing.T) {
 	ctx := context.Background()
 	_, priv, _ := ed25519.GenerateKey(nil)
 	anchor := &flakyAnchor{inner: audit.NewMemAnchorLog()}
 	var failures int
-	store := mustAuditedStore(t, agent.NewMemStore(), priv, anchor).OnError(func(string, error) { failures++ })
-	step := func() {
-		if _, err := store.Do(ctx, "r1", "a", func(context.Context) (agent.Record, error) {
+	store := agenttest.MustJournal(mustAuditedStore(t, agenttest.MemJournal(), priv, anchor).OnError(func(string, error) { failures++ }))
+	step := func(name string) {
+		if _, err := journaltest.Do(ctx, store, "r1", name, func(context.Context) (agent.Record, error) {
 			return agent.Record{Kind: agent.StepValue}, nil
 		}); err != nil {
 			t.Fatal(err)
 		}
 	}
-	step() // records "a"; anchoring fails
+	step("a") // records "a"; anchoring fails
 	if failures != 1 || anchor.inner.Len() != 0 {
 		t.Fatalf("after the failed publish: %d failures, %d anchored heads; want 1 and 0", failures, anchor.inner.Len())
 	}
-	step() // a memoized replay of "a": nothing new to write, but the head is still unanchored
-	if n := anchor.inner.Len(); n != 1 {
-		t.Fatalf("after the replay, %d anchored heads, want 1 (the failed head retried)", n)
+	step("a") // a memoized replay of "a": nothing written, nothing anchored
+	if n := anchor.inner.Len(); n != 0 {
+		t.Fatalf("after the replay, %d anchored heads, want 0 (a read anchors nothing)", n)
+	}
+	step("b") // the next write anchors the head that covers "a" too
+	es := anchor.inner.Entries()
+	if len(es) != 1 || es[0].STH.Size != 3 {
+		t.Fatalf("after the next write, anchored %+v; want one head of size 3 (header, a, b)", es)
 	}
 }

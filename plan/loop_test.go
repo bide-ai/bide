@@ -8,6 +8,8 @@ import (
 	"testing"
 
 	"github.com/bide-ai/bide/agent"
+	"github.com/bide-ai/bide/agent/agenttest"
+	"github.com/bide-ai/bide/internal/journaltest"
 )
 
 // loopState is the single loop-carried value: a countdown a bounded loop decrements
@@ -67,7 +69,7 @@ func TestLoopIteratesThenExits(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Build: %v", err)
 	}
-	out, err := flow.Run(context.Background(), agent.NewMemStore(), "loop-run", 3)
+	out, err := flow.Run(context.Background(), agenttest.MemJournal(), "loop-run", 3)
 	if err != nil {
 		t.Fatalf("Run: %v", err)
 	}
@@ -92,7 +94,7 @@ func TestLoopRespectsMaxAndErrors(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Build: %v", err)
 	}
-	_, err = flow.Run(context.Background(), agent.NewMemStore(), "loop-runaway", 100)
+	_, err = flow.Run(context.Background(), agenttest.MemJournal(), "loop-runaway", 100)
 	if err == nil {
 		t.Fatal("Run accepted a loop that never exits within its bound")
 	}
@@ -177,7 +179,7 @@ func TestLoopConforms(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Build: %v", err)
 	}
-	mem := agent.NewMemStore()
+	mem := agenttest.MemJournal()
 	ctx := context.Background()
 	if _, err := flow.Run(ctx, mem, "loop-conform", 3); err != nil {
 		t.Fatalf("Run: %v", err)
@@ -200,13 +202,13 @@ func TestLoopConformFlagsUndeclaredStep(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Build: %v", err)
 	}
-	mem := agent.NewMemStore()
+	mem := agenttest.MemJournal()
 	ctx := context.Background()
 	if _, err := flow.Run(ctx, mem, "loop-diverge", 3); err != nil {
 		t.Fatalf("Run: %v", err)
 	}
 	// Inject an iteration-scoped record for a node that was never declared.
-	if _, err := mem.Do(ctx, "loop-diverge", "node:iter:0:ghost", func(context.Context) (agent.Record, error) {
+	if _, err := journaltest.Do(ctx, mem, "loop-diverge", "node:iter:0:ghost", func(context.Context) (agent.Record, error) {
 		return agent.Record{Kind: agent.StepValue, Result: []byte("null")}, nil
 	}); err != nil {
 		t.Fatalf("inject: %v", err)
@@ -282,7 +284,7 @@ func TestLoopDigestStableAndShapeSensitive(t *testing.T) {
 	before := a.Digest()
 	recorded := map[string]string{}
 	for _, n := range []int{1, 5} {
-		store := agent.NewMemStore()
+		store := agenttest.MemJournal()
 		runID := fmt.Sprintf("iter-%d", n)
 		if _, err := a.Run(context.Background(), store, runID, n); err != nil {
 			t.Fatalf("run with %d iterations: %v", n, err)
@@ -323,10 +325,10 @@ func TestLoopCrashSweepAtMostOncePerIteration(t *testing.T) {
 	haltSeen := false
 	for crashAt := 1; crashAt <= 64; crashAt++ {
 		var refineCalls int
-		mem := agent.NewMemStore()
+		mem := agenttest.MemJournal()
 
 		run := func(crashPoint int) error {
-			store := &crashFlowStore{inner: mem, crashAt: crashPoint}
+			store := agenttest.MustJournal(&crashFlowStore{inner: mem, crashAt: crashPoint})
 			flow, buildErr := crashCountdownLoop(&refineCalls)
 			if buildErr != nil {
 				return buildErr
@@ -383,7 +385,7 @@ func TestLoopCrashSweepAtMostOncePerIteration(t *testing.T) {
 // same output by replay. The iteration-scoped journal keys memoize each iteration.
 func TestLoopResumeReplaysCompletedIterations(t *testing.T) {
 	var refineCalls int
-	mem := agent.NewMemStore()
+	mem := agenttest.MemJournal()
 	flow, err := buildCountdownLoop(10, &refineCalls)
 	if err != nil {
 		t.Fatalf("Build: %v", err)

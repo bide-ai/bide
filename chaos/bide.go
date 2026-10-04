@@ -8,6 +8,7 @@ import (
 	"sync"
 
 	"github.com/bide-ai/bide/agent"
+	"github.com/bide-ai/bide/internal/journaltest"
 )
 
 // errCrash is the injected "process died here" signal.
@@ -16,10 +17,10 @@ var errCrash = errors.New("chaos: injected crash")
 // crashStore fails the crashAt-th persisting write (0 = never), simulating a crash at that
 // point: the record is not recorded and the run unwinds. A crash is the process dying, so after
 // it the store is dead: every later step fails with the crash without running or persisting. It
-// wraps a Durable, crashing after a step's fn has run and before its record is persisted; the
+// wraps a Journal, crashing after a step's fn has run and before its record is persisted; the
 // naive reference, which has no journal of its own, is built on it.
 type crashStore struct {
-	inner   agent.Durable
+	inner   *agent.Journal
 	mu      sync.Mutex
 	writes  int
 	crashAt int
@@ -36,7 +37,7 @@ func (c *crashStore) Do(ctx context.Context, runID, name string, fn func(context
 	if c.dead() {
 		return agent.Record{}, errCrash
 	}
-	return c.inner.Do(ctx, runID, name, func(ctx context.Context) (agent.Record, error) {
+	return journaltest.Do(ctx, c.inner, runID, name, func(ctx context.Context) (agent.Record, error) {
 		if c.dead() {
 			return agent.Record{}, errCrash
 		}
@@ -146,10 +147,11 @@ func (chargeModel) Stream(_ context.Context, req agent.Request) (*agent.Stream, 
 // chargeTool is a non-idempotent side effect (Safety{}): it must never run twice.
 type chargeTool struct{ count *int }
 
-func (chargeTool) Name() string                { return "charge" }
-func (chargeTool) Description() string         { return "" }
-func (chargeTool) Safety() agent.Safety        { return agent.Safety{} }
-func (chargeTool) ArgsSchema() json.RawMessage { return nil }
+// Spec describes the tool to the agent (see agent.Tool).
+func (t chargeTool) Spec() agent.ToolSpec {
+	return agent.ToolSpec{Name: "charge", Description: "", Input: json.RawMessage(`{"type":"object"}`), Safety: agent.Safety{}}
+}
+
 func (t chargeTool) Call(context.Context, json.RawMessage) (json.RawMessage, error) {
 	*t.count++ // the real-world side effect
 	return json.RawMessage(`{"charged":true}`), nil
@@ -179,8 +181,11 @@ func (r *bideRun) Step(crashAt int) bool {
 	if err != nil {
 		panic(err)
 	}
-	a := agent.New(chargeModel{}, j, chargeTool{count: r.fired}).SetMaxConcurrency(1)
-	_, err = a.Run(context.Background(), "chaos", "charge me")
+	a, err := agent.New(chargeModel{}, j, agent.WithTools(chargeTool{count: r.fired}), agent.WithMaxConcurrency(1))
+	if err != nil {
+		panic(err)
+	}
+	_, err = a.Run(context.Background(), "chaos", agent.UserText("charge me"))
 	return errors.Is(err, errCrash)
 }
 

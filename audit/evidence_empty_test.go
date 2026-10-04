@@ -8,7 +8,9 @@ import (
 	"testing"
 
 	"github.com/bide-ai/bide/agent"
+	"github.com/bide-ai/bide/agent/agenttest"
 	"github.com/bide-ai/bide/audit"
+	"github.com/bide-ai/bide/internal/journaltest"
 )
 
 // emptyEvidence seals a package for a run with no completed tool call, so it proves nothing: no
@@ -17,13 +19,14 @@ func emptyEvidence(t *testing.T) (audit.EvidencePackage, ed25519.PublicKey) {
 	t.Helper()
 	ctx := context.Background()
 	store := agent.NewMemStore()
-	if _, err := store.Do(ctx, "r", "note", func(context.Context) (agent.Record, error) {
+	j := agenttest.MustJournal(store)
+	if _, err := journaltest.Do(ctx, j, "r", "note", func(context.Context) (agent.Record, error) {
 		return agent.Record{Kind: agent.StepValue, Result: json.RawMessage(`1`)}, nil
 	}); err != nil {
 		t.Fatal(err)
 	}
 	pub, priv, _ := ed25519.GenerateKey(rand.Reader)
-	pkg, err := audit.Evidence(ctx, store, "r", edS(priv), 1700000000)
+	pkg, err := audit.Evidence(ctx, j, "r", edS(priv), 1700000000)
 	if err != nil {
 		t.Fatalf("Evidence: %v", err)
 	}
@@ -53,13 +56,14 @@ func TestEvidence_EmptyPackageDoesNotVerify(t *testing.T) {
 func TestEvidence_OneItemVerifies(t *testing.T) {
 	ctx := context.Background()
 	store := agent.NewMemStore()
-	if _, err := store.Do(ctx, "r", "charge", func(context.Context) (agent.Record, error) {
+	j := agenttest.MustJournal(store)
+	if _, err := journaltest.Do(ctx, j, "r", "charge", func(context.Context) (agent.Record, error) {
 		return agent.Record{Kind: agent.StepToolResult, ToolUseID: "c1", Result: json.RawMessage(`{"ok":true}`)}, nil
 	}); err != nil {
 		t.Fatal(err)
 	}
 	pub, priv, _ := ed25519.GenerateKey(rand.Reader)
-	pkg, err := audit.Evidence(ctx, store, "r", edS(priv), 1700000000)
+	pkg, err := audit.Evidence(ctx, j, "r", edS(priv), 1700000000)
 	if err != nil {
 		t.Fatalf("Evidence: %v", err)
 	}

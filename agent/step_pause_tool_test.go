@@ -6,6 +6,7 @@ import (
 	"testing"
 
 	"github.com/bide-ai/bide/agent"
+	"github.com/bide-ai/bide/agent/agenttest"
 )
 
 // A retry-safe tool whose body runs a side-effect Step per call, and the Step's fn fires its
@@ -15,29 +16,29 @@ import (
 // id, and the effect fires a second time.
 func TestStepPauseGuard_InsideAToolIsNotRecordedAsAToolFailure(t *testing.T) {
 	ctx := context.Background()
-	store := agent.NewMemStore()
+	store := agenttest.MemJournal()
 	fired := 0
 	type in struct {
 		ID string `json:"id"`
 	}
-	book := agent.Func("book", "", agent.Safety{Idempotent: true}, func(ctx context.Context, a in) (string, error) {
-		return agent.Step(ctx, store, "wf", "charge-"+a.ID, func(ctx context.Context) (string, error) {
+	book := agent.MustFunc("book", "", func(ctx context.Context, a in) (string, error) {
+		return store.Step(ctx, "wf", "charge-"+a.ID, func(ctx context.Context) (string, error) {
 			fired++ // the side effect
 			return agent.Interrupt[string](ctx, "confirm-"+a.ID, "confirm the charge?")
 		})
-	})
-	m := agent.NewScriptedModel(
-		agent.ToolTurn("c1", "book", `{"id":"c1"}`),
-		agent.ToolTurn("c2", "book", `{"id":"c2"}`), // the model retries a call it was told failed
-		agent.TextTurn("done"))
-	a := agent.New(m, store, book)
-	_, err := a.Run(ctx, "r", "book it")
+	}, agent.WithSafety(agent.Safety{Idempotent: true}))
+	m := agenttest.NewScriptedModel(
+		agenttest.ToolTurn("c1", "book", `{"id":"c1"}`),
+		agenttest.ToolTurn("c2", "book", `{"id":"c2"}`), // the model retries a call it was told failed
+		agenttest.TextTurn("done"))
+	a := agenttest.MustNew(m, store, agent.WithTools(book))
+	_, err := a.Run(ctx, "r", agent.UserText("book it"))
 	if !errors.Is(err, agent.ErrConfig) || errors.Is(err, agent.ErrTool) {
 		t.Errorf("Run = %v; want the guard's ErrConfig, not a tool failure", err)
 	}
 	// The call recorded nothing: a resume runs it again, and the step halts on its marker.
-	_, err = a.Run(ctx, "r", "book it")
-	var halt *agent.ResumeHalt
+	_, err = a.Run(ctx, "r", agent.UserText("book it"))
+	var halt *agent.OutcomeUnknown
 	if !errors.As(err, &halt) {
 		t.Errorf("resume = %v; want the step's halt", err)
 	}

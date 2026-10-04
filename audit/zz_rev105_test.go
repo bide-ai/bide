@@ -16,7 +16,9 @@ import (
 	"time"
 
 	"github.com/bide-ai/bide/agent"
+	"github.com/bide-ai/bide/agent/agenttest"
 	"github.com/bide-ai/bide/audit"
+	"github.com/bide-ai/bide/internal/journaltest"
 )
 
 // unredacted returns recs without the records a redaction replaced: the projection a key holder
@@ -62,13 +64,14 @@ func r105Copy(t *testing.T, src *agent.MemStore, run string, redact ...string) *
 // journal tree omits it, so a verifiable absence bundle "proves" the call never happened.
 func Test_R105_RedactedToolCallIsNotProvablyAbsent(t *testing.T) {
 	ctx := context.Background()
-	orig, _ := p11GovernedRun(t) // journals tool call "pay" as step "call:pay"
+	orig, _ := p11GovernedRun(t)
+	j := agenttest.MustJournal(orig) // journals tool call "pay" as step "call:pay"
 	signer := p11Signers(t)["ed25519"]
 	v := p11Verifier(t, signer)
 
 	// Sanity: before redaction, "pay" cannot be proven absent.
-	recs, _ := orig.History(ctx, "gov")
-	jth, _ := audit.NewTreeHead(ctx, orig, "gov", p11Now())
+	recs, _ := j.History(ctx, "gov")
+	jth, _ := audit.NewTreeHead(ctx, j, "gov", p11Now())
 	abs, err := audit.SignAbsenceRoot(recs, audit.ToolUseKeys, jth, signer, p11Now())
 	if err != nil {
 		t.Fatal(err)
@@ -78,8 +81,9 @@ func Test_R105_RedactedToolCallIsNotProvablyAbsent(t *testing.T) {
 	}
 
 	red := r105Copy(t, orig, "gov", "call:pay")
-	rrecs, _ := red.History(ctx, "gov")
-	rjth, _ := audit.NewTreeHead(ctx, red, "gov", p11Now())
+	j2 := agenttest.MustJournal(red)
+	rrecs, _ := j2.History(ctx, "gov")
+	rjth, _ := audit.NewTreeHead(ctx, j2, "gov", p11Now())
 	if !bytes.Equal(rjth.Root, jth.Root) {
 		t.Fatal("sanity: redaction changed the journal root")
 	}
@@ -102,8 +106,9 @@ func Test_R105_RedactedToolCallIsNotProvablyAbsent(t *testing.T) {
 // omits that policy, and verifies against an allowlist that does not contain it.
 func Test_R105_RedactedGovernedActionDropsOutOfRunCertificate(t *testing.T) {
 	ctx := context.Background()
-	s, _ := p11GovernedRun(t) // "pay" runs under D1 (approved, anchored and certified)
-	if _, err := s.Do(ctx, "gov", "call:rogue", func(context.Context) (agent.Record, error) {
+	s, _ := p11GovernedRun(t)
+	j := agenttest.MustJournal(s) // "pay" runs under D1 (approved, anchored and certified)
+	if _, err := journaltest.Do(ctx, j, "gov", "call:rogue", func(context.Context) (agent.Record, error) {
 		return agent.Record{Kind: agent.StepToolResult, ToolUseID: "rogue", Result: json.RawMessage(`{"policy_digest":"EVIL","ok":true}`)}, nil
 	}); err != nil {
 		t.Fatal(err)
@@ -112,13 +117,13 @@ func Test_R105_RedactedGovernedActionDropsOutOfRunCertificate(t *testing.T) {
 	v := p11Verifier(t, signer)
 	ts := p11Now()
 
-	jth, _ := audit.NewTreeHead(ctx, s, "gov", ts)
+	jth, _ := audit.NewTreeHead(ctx, j, "gov", ts)
 	sth, _ := audit.SignTreeHead(jth, signer)
-	if _, err := audit.CertifyRun(ctx, s, "gov", sth, audit.RunCertSpec{ApprovedPolicies: []string{"D1"}, Signer: signer, TimestampNanos: ts}); err == nil {
+	if _, err := audit.CertifyRun(ctx, j, "gov", sth, audit.RunCertSpec{ApprovedPolicies: []string{"D1"}, Signer: signer, TimestampNanos: ts}); err == nil {
 		t.Fatal("sanity: certified a run that used EVIL")
 	}
 
-	red := r105Copy(t, s, "gov", "call:rogue")
+	red := agenttest.MustJournal(r105Copy(t, s, "gov", "call:rogue"))
 	// The anchored head signed BEFORE the redaction still matches the redacted journal.
 	cert, err := audit.CertifyRun(ctx, red, "gov", sth, audit.RunCertSpec{ApprovedPolicies: []string{"D1"}, Signer: signer, TimestampNanos: ts})
 	if err != nil {
@@ -143,7 +148,8 @@ func Test_R105_RecordBytesWithCaseVariantOrDuplicateNamesAreRefused(t *testing.T
 	for name, rec := range cases {
 		t.Run(name, func(t *testing.T) {
 			s := agent.NewMemStore()
-			if _, err := s.Do(ctx, "r", "first", func(context.Context) (agent.Record, error) {
+			j := agenttest.MustJournal(s)
+			if _, err := journaltest.Do(ctx, j, "r", "first", func(context.Context) (agent.Record, error) {
 				return agent.Record{Kind: agent.StepValue, Result: json.RawMessage(`1`)}, nil
 			}); err != nil {
 				t.Fatal(err)
@@ -153,7 +159,7 @@ func Test_R105_RecordBytesWithCaseVariantOrDuplicateNamesAreRefused(t *testing.T
 			}
 			signer := p11Signers(t)["ed25519"]
 			v := p11Verifier(t, signer)
-			pkg, err := audit.Evidence(ctx, s, "r", signer, p11Now(), audit.WithToolCall("x"))
+			pkg, err := audit.Evidence(ctx, j, "r", signer, p11Now(), audit.WithToolCall("x"))
 			if err != nil {
 				t.Logf("producer refused: %v", err)
 				return
@@ -180,8 +186,8 @@ func Test_R105_RecordBytesWithCaseVariantOrDuplicateNamesAreRefused(t *testing.T
 func Test_R105_AttemptedToolCallIsNotProvablyAbsent(t *testing.T) {
 	ctx := context.Background()
 	for _, kind := range []agent.StepKind{agent.StepAttempt, agent.StepSagaFail} {
-		s := agent.NewMemStore()
-		if _, err := s.Do(ctx, "r", "marker", func(context.Context) (agent.Record, error) {
+		s := agenttest.MemJournal()
+		if _, err := journaltest.Do(ctx, s, "r", "marker", func(context.Context) (agent.Record, error) {
 			return agent.Record{Kind: kind, ToolUseID: "wire", AttemptedAt: 1, Result: json.RawMessage(`"x"`)}, nil
 		}); err != nil {
 			t.Fatal(err)
@@ -197,8 +203,9 @@ func Test_R105_AttemptedToolCallIsNotProvablyAbsent(t *testing.T) {
 func Test_R105_AnchorEntryNestedFormatIsChecked(t *testing.T) {
 	ctx := context.Background()
 	s, _ := p11GovernedRun(t)
+	j := agenttest.MustJournal(s)
 	signer := p11Signers(t)["ed25519"]
-	th, _ := audit.NewTreeHead(ctx, s, "gov", p11Now())
+	th, _ := audit.NewTreeHead(ctx, j, "gov", p11Now())
 	sth, _ := audit.SignTreeHead(th, signer)
 	sth.Format = "bide.audit.sth.v4"
 	log := audit.NewMemAnchorLog()
@@ -217,11 +224,12 @@ func Test_R105_AnchorEntryNestedFormatIsChecked(t *testing.T) {
 func Test_R105_RedactionKeepsTheEventTree(t *testing.T) {
 	ctx := context.Background()
 	orig, _ := p11GovernedRun(t)
-	a, err := audit.EventLogFromJournal(ctx, orig, "gov")
+	j := agenttest.MustJournal(orig)
+	a, err := audit.EventLogFromJournal(ctx, j, "gov")
 	if err != nil {
 		t.Fatal(err)
 	}
-	red := r105Copy(t, orig, "gov", "call:pay")
+	red := agenttest.MustJournal(r105Copy(t, orig, "gov", "call:pay"))
 	b, err := audit.EventLogFromJournal(ctx, red, "gov")
 	if err != nil {
 		t.Logf("refused: %v (acceptable)", err)
@@ -237,14 +245,15 @@ func Test_R105_RedactionKeepsTheEventTree(t *testing.T) {
 func Test_R105_ProofMutationsNeverVerify(t *testing.T) {
 	ctx := context.Background()
 	s, _ := p11GovernedRun(t)
+	j := agenttest.MustJournal(s)
 	for alg, signer := range p11Signers(t) {
 		v := p11Verifier(t, signer)
-		th, _ := audit.NewTreeHead(ctx, s, "gov", p11Now())
+		th, _ := audit.NewTreeHead(ctx, j, "gov", p11Now())
 		sth, _ := audit.SignTreeHead(th, signer)
-		recs, _ := s.History(ctx, "gov")
+		recs, _ := j.History(ctx, "gov")
 		r := rand.New(rand.NewPCG(1, 2))
 		for idx := range recs {
-			pb, err := audit.ProveRecord(ctx, s, "gov", idx, sth)
+			pb, err := audit.ProveRecord(ctx, j, "gov", idx, sth)
 			if err != nil {
 				t.Fatal(err)
 			}
@@ -324,11 +333,13 @@ func Test_R105_VerifyApprovalsRefusesASharedApproverKey(t *testing.T) {
 func Test_R105_EveryProjectionRefusesARedactedJournal(t *testing.T) {
 	ctx := context.Background()
 	orig, _ := p11GovernedRun(t)
+	j2 := agenttest.MustJournal(orig)
 	signer := p11Signers(t)["ed25519"]
-	jth, _ := audit.NewTreeHead(ctx, orig, "gov", p11Now())
+	jth, _ := audit.NewTreeHead(ctx, j2, "gov", p11Now())
 	sth, _ := audit.SignTreeHead(jth, signer)
 	red := r105Copy(t, orig, "gov", "call:pay")
-	recs, _ := red.History(ctx, "gov")
+	j := agenttest.MustJournal(red)
+	recs, _ := j.History(ctx, "gov")
 
 	if _, err := audit.NewAbsenceTreeHead(recs, audit.ToolUseKeys, jth, 1); !errors.Is(err, audit.ErrRedacted) {
 		t.Errorf("NewAbsenceTreeHead: err = %v, want ErrRedacted", err)
@@ -350,13 +361,13 @@ func Test_R105_EveryProjectionRefusesARedactedJournal(t *testing.T) {
 	if _, err := audit.ProveAbsentBundle(recs, audit.ToolUseKeys, audit.ToolUseKeyFor("pay"), abs); !errors.Is(err, audit.ErrRedacted) {
 		t.Errorf("ProveAbsentBundle: err = %v, want ErrRedacted", err)
 	}
-	if _, err := audit.CertifyRun(ctx, red, "gov", sth, audit.RunCertSpec{ApprovedPolicies: []string{"D1"}, Signer: signer, TimestampNanos: sth.TimestampNanos}); !errors.Is(err, audit.ErrRedacted) {
+	if _, err := audit.CertifyRun(ctx, j, "gov", sth, audit.RunCertSpec{ApprovedPolicies: []string{"D1"}, Signer: signer, TimestampNanos: sth.TimestampNanos}); !errors.Is(err, audit.ErrRedacted) {
 		t.Errorf("CertifyRun: err = %v, want ErrRedacted", err)
 	}
-	if _, err := audit.EventLogFromJournal(ctx, red, "gov"); !errors.Is(err, audit.ErrRedacted) {
+	if _, err := audit.EventLogFromJournal(ctx, j, "gov"); !errors.Is(err, audit.ErrRedacted) {
 		t.Errorf("EventLogFromJournal: err = %v, want ErrRedacted", err)
 	}
-	if err := audit.PersistJournal(ctx, audit.NewMemEventStore(), red, "gov"); !errors.Is(err, audit.ErrRedacted) {
+	if err := audit.PersistJournal(ctx, audit.NewMemEventStore(), j, "gov"); !errors.Is(err, audit.ErrRedacted) {
 		t.Errorf("PersistJournal: err = %v, want ErrRedacted", err)
 	}
 }

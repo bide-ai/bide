@@ -6,7 +6,7 @@ import (
 )
 
 // toolTurnWithUsage returns a scripted tool-call turn whose Finish event carries known
-// usage. Use this in RunResult tests to assert usage accumulation.
+// usage. Use this in Run tests to assert usage accumulation.
 func toolTurnWithUsage(id, name, args string, u Usage) []Emit {
 	return []Emit{
 		{Event: ToolCallDelta{Index: 0, ID: id, Name: name, ArgsFragment: []byte(args)}},
@@ -23,10 +23,10 @@ func textTurnWithUsage(s string, u Usage) []Emit {
 	}
 }
 
-// TestRunResult_TwoTurnAccumulatesUsage drives a two-turn run (tool call then final answer)
+// TestResult_TwoTurnAccumulatesUsage drives a two-turn run (tool call then final answer)
 // and verifies that Result.Usage is the sum of both turns' usages, Result.Turns == 2,
 // Result.Duration > 0, and Result.RunID is correct.
-func TestRunResult_TwoTurnAccumulatesUsage(t *testing.T) {
+func TestResult_TwoTurnAccumulatesUsage(t *testing.T) {
 	var calls int
 	tool := &countingTool{name: "lookup", safety: Safety{ReadOnly: true}, calls: &calls}
 
@@ -37,11 +37,11 @@ func TestRunResult_TwoTurnAccumulatesUsage(t *testing.T) {
 		toolTurnWithUsage("c1", "lookup", `{"q":"x"}`, u1),
 		textTurnWithUsage("final answer", u2),
 	}}
-	a := New(m, NewMemStore(), tool)
+	a := mustNew(m, memJournal(), WithTools(tool))
 
-	res, err := a.RunResult(context.Background(), "run-result-1", "hi")
+	res, err := a.Run(context.Background(), "run-result-1", UserText("hi"))
 	if err != nil {
-		t.Fatalf("RunResult: %v", err)
+		t.Fatalf("Run: %v", err)
 	}
 
 	// Message must equal the final text.
@@ -82,49 +82,15 @@ func TestRunResult_TwoTurnAccumulatesUsage(t *testing.T) {
 	}
 }
 
-// TestRunResult_MessageMatchesRun asserts that Run and RunResult return the same final
-// message for an identical run, confirming backward compatibility.
-func TestRunResult_MessageMatchesRun(t *testing.T) {
-	u := Usage{InputTokens: 5, OutputTokens: 3}
-	store1 := NewMemStore()
-	store2 := NewMemStore()
-	var calls1, calls2 int
-	tool1 := &countingTool{name: "lookup", safety: Safety{ReadOnly: true}, calls: &calls1}
-	tool2 := &countingTool{name: "lookup", safety: Safety{ReadOnly: true}, calls: &calls2}
-
-	turns := func() [][]Emit {
-		return [][]Emit{
-			toolTurnWithUsage("c1", "lookup", `{"q":"x"}`, u),
-			textTurnWithUsage("answer", u),
-		}
-	}
-
-	m1 := &scriptModel{turns: turns()}
-	plainMsg, err := New(m1, store1, tool1).Run(context.Background(), "r1", "hi")
-	if err != nil {
-		t.Fatalf("Run: %v", err)
-	}
-
-	m2 := &scriptModel{turns: turns()}
-	res, err := New(m2, store2, tool2).RunResult(context.Background(), "r2", "hi")
-	if err != nil {
-		t.Fatalf("RunResult: %v", err)
-	}
-
-	if textOf(plainMsg) != textOf(res.Message) {
-		t.Errorf("Run returned %q, RunResult.Message = %q — mismatch", textOf(plainMsg), textOf(res.Message))
-	}
-}
-
-// TestRunResult_SingleTurnNoTools verifies a simple one-turn (no tool calls) run.
-func TestRunResult_SingleTurnNoTools(t *testing.T) {
+// TestResult_SingleTurnNoTools verifies a simple one-turn (no tool calls) run.
+func TestResult_SingleTurnNoTools(t *testing.T) {
 	u := Usage{InputTokens: 7, OutputTokens: 4}
 	m := &scriptModel{turns: [][]Emit{textTurnWithUsage("hello", u)}}
-	a := New(m, NewMemStore())
+	a := mustNew(m, memJournal())
 
-	res, err := a.RunResult(context.Background(), "single", "hi")
+	res, err := a.Run(context.Background(), "single", UserText("hi"))
 	if err != nil {
-		t.Fatalf("RunResult: %v", err)
+		t.Fatalf("Run: %v", err)
 	}
 	if textOf(res.Message) != "hello" {
 		t.Errorf("Message = %q, want %q", textOf(res.Message), "hello")

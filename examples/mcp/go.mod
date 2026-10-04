@@ -7,7 +7,7 @@ go 1.27.0
 
 require (
 	github.com/bide-ai/bide v0.0.0
-	github.com/bide-ai/bide/mcp v0.0.0
+	github.com/bide-ai/bide/mcptools v0.0.0
 	github.com/modelcontextprotocol/go-sdk v1.8.0
 )
 
@@ -25,4 +25,4 @@ require (
 
 replace github.com/bide-ai/bide => ../../
 
-replace github.com/bide-ai/bide/mcp => ../../mcp
+replace github.com/bide-ai/bide/mcptools => ../../mcptools

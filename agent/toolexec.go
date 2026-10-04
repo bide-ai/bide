@@ -180,7 +180,7 @@ func recordedSafety(spec ToolSpec) *Safety {
 
 // sortSpecs sets specList to a.specs sorted by name, the list each model request is sent. The
 // specs are the snapshot New (or cloneWith) took of each tool's spec when it was registered (see
-// SpecOf): the agent decides every call from it, so a tool whose Spec or Safety method would
+// specOf): the agent decides every call from it, so a tool whose Spec method would
 // answer differently later cannot change a decision the agent makes for the run's calls.
 func (a *Agent) sortSpecs() {
 	a.specList = make([]ToolSpec, 0, len(a.specs))
@@ -477,7 +477,7 @@ func closeCall(st *atomic.Int32) int32 {
 // chain's entry point for a call of run runID, which also reports the call's final state (see
 // callOpen): reached, refused, or closed.
 func (a *Agent) toolHandler(runID string) func(context.Context, ToolUse) (json.RawMessage, int32, error) {
-	storeID, _ := durableIdentity(a.store) // keys the in-flight count (see inflightKey)
+	storeID, _ := a.store.identity() // keys the in-flight count (see inflightKey)
 	// A tool that is not retry-safe runs at most once per tool call, however often a middleware
 	// calls next: the call's began word, set by compare-and-swap here in the base handler, decides,
 	// so no middleware can get around it. (A resume builds a new chain, and the journal's attempt
@@ -657,7 +657,7 @@ func (a *Agent) unprovenFailure(ctx context.Context, name string) bool {
 // journalAcceptedArgs records, before the side effect fires, the arguments a compensable call in
 // a saga is about to run with, when a tool middleware changed them from the model's (see
 // sagaArgsStep): compensation then undoes what the tool did, even when the call's outcome is
-// later resolved by ResolveHaltRef. It is a memoized step, so a retry-safe call that runs again
+// later resolved by ResolveHalt. It is a memoized step, so a retry-safe call that runs again
 // keeps the first record; a middleware that rewrites arguments must rewrite them the same way
 // every time. Unchanged arguments, or a call outside a saga, journal nothing, so compensation
 // reads the model's arguments, as for a journal written before this record existed. A ToolCall
@@ -678,7 +678,7 @@ func journalAcceptedArgs(ctx context.Context, t Tool, call ToolCall, safety Safe
 		return nil
 	}
 	store, runID, _ := runContext(ctx) // the loop and the rollback both set it
-	if _, err := store.Do(ctx, runID, sagaArgsStep(tu.ID), func(context.Context) (Record, error) {
+	if _, err := store.do(ctx, runID, sagaArgsStep(tu.ID), func(context.Context) (Record, error) {
 		return Record{Kind: StepValue, Result: tu.Args}, nil
 	}); err != nil {
 		// The tool was not called. The loop records nothing for it (not a known failure, which

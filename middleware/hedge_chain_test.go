@@ -8,6 +8,7 @@ import (
 	"time"
 
 	"github.com/bide-ai/bide/agent"
+	"github.com/bide-ai/bide/agent/agenttest"
 	"github.com/bide-ai/bide/middleware"
 )
 
@@ -22,11 +23,12 @@ func TestHedge_InnerMiddlewareWrapsEveryTarget(t *testing.T) {
 			return next(ctx, call)
 		}
 	}
-	a := agent.New(primary, agent.NewMemStore()).Use(middleware.Hedge(0, backup), count)
-	out, err := a.Run(context.Background(), "r", "q")
+	a := agenttest.MustNew(primary, agenttest.MemJournal(), agent.WithMiddleware(middleware.Hedge(0, backup), count))
+	res, err := a.Run(context.Background(), "r", agent.UserText("q"))
 	if err != nil {
 		t.Fatal(err)
 	}
+	out := res.Message
 	if out.Text() != "backup" {
 		t.Fatalf("answer = %q, want the backup's", out.Text())
 	}
@@ -51,8 +53,12 @@ func TestRateLimit_CountsEveryRequestSent(t *testing.T) {
 		r := middleware.NewRateLimiter(time.Hour, 2)
 		primary := &stubModel{text: "primary", delay: 50 * time.Millisecond}
 		backup := &stubModel{text: "backup", delay: time.Millisecond}
-		a := agent.New(primary, agent.NewMemStore()).Use(middleware.RateLimit(r), middleware.Hedge(0, backup))
-		if _, err := a.Run(context.Background(), "r", "q"); err != nil {
+		a := agenttest.MustNew(
+			primary,
+			agenttest.MemJournal(),
+			agent.WithMiddleware(middleware.RateLimit(r), middleware.Hedge(0, backup)),
+		)
+		if _, err := a.Run(context.Background(), "r", agent.UserText("q")); err != nil {
 			t.Fatal(err)
 		}
 		if !exhausted(t, r) {
@@ -62,8 +68,12 @@ func TestRateLimit_CountsEveryRequestSent(t *testing.T) {
 	t.Run("retry", func(t *testing.T) {
 		r := middleware.NewRateLimiter(time.Hour, 2)
 		m := &billedModel{u: billed, bad: 1}
-		a := agent.New(m, agent.NewMemStore()).Use(middleware.RateLimit(r), middleware.Retry(1, middleware.WithBackoff(0, 0)))
-		if _, err := a.Run(context.Background(), "r", "q"); err != nil {
+		a := agenttest.MustNew(
+			m,
+			agenttest.MemJournal(),
+			agent.WithMiddleware(middleware.RateLimit(r), middleware.Retry(1, middleware.WithBackoff(0, 0))),
+		)
+		if _, err := a.Run(context.Background(), "r", agent.UserText("q")); err != nil {
 			t.Fatal(err)
 		}
 		if !exhausted(t, r) {

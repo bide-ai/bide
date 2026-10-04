@@ -100,7 +100,7 @@ type ToolHandler func(ctx context.Context, call ToolCall) (json.RawMessage, erro
 // re-run the agent's call guard refused (audit: the delegation's grant has expired), which the
 // rollback recognises by the error next returned. A middleware that returns its own error in place
 // of next's, rather than wrapping it (%w), hides that refusal: the rollback then stops at the step
-// with the middleware's error, and a later RunSaga meets the same refusal. Return next's error, or
+// with the middleware's error, and the saga's next drive meets the same refusal. Return next's error, or
 // wrap it, so the error chain (errors.Is, errors.As) still reaches it.
 //
 // The chain runs INSIDE the durable, memoized step, so a short-circuit result or a
@@ -108,15 +108,5 @@ type ToolHandler func(ctx context.Context, call ToolCall) (json.RawMessage, erro
 // middleware or the tool. A tool's Timeout bounds the whole chain. Batteries live in the
 // middleware/ package (ToolLog, ToolCache, ToolRetry).
 type ToolMiddleware func(ToolHandler) ToolHandler
-
-// UseTool appends tool middleware wrapping every tool call (first added = outermost).
-// Returns the agent for chaining. Composes with model middleware (Use) independently:
-// Use wraps the model call, UseTool wraps tool calls.
-//
-// Deprecated: transitional; the 1.0 rewrite removes it. Use the WithToolMiddleware option.
-func (a *Agent) UseTool(mw ...ToolMiddleware) *Agent {
-	a.toolMW = append(a.toolMW, mw...)
-	return a
-}
 
 // protocol:toolcall end

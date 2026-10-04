@@ -9,23 +9,18 @@ import (
 	"testing"
 
 	"github.com/bide-ai/bide/agent"
+	"github.com/bide-ai/bide/agent/agenttest"
 	"github.com/bide-ai/bide/agent/storetest"
+	"github.com/bide-ai/bide/internal/journaltest"
 )
 
-// The journal keeps what was written: the record Do returns on the live path is the record a
-// replay reads back, byte for byte, for any content a model or tool produces (HTML characters,
-// whitespace, NUL, U+2028, invalid UTF-8, key order, number spelling). So a resumed run rebuilds
-// the conversation the live run had, and an audit head computed over this store matches one over
-// any other store. Skips without PG_DSN.
-func TestPostgres_Fidelity(t *testing.T) {
-	storetest.RunDurable(t, func(t *testing.T) agent.Durable {
-		s, _ := openTestStore(t)
-		return s
-	})
-}
-
 // The store meets every store requirement, through several connection pools on one database, as
-// several nodes reach it. Skips without PG_DSN.
+// several nodes reach it. And the journal keeps what was written: the suite's Fidelity cases check
+// that the record a Journal on it returns on the live path is the record a replay reads back, byte
+// for byte, for any content a model or tool produces (HTML characters, whitespace, NUL, U+2028,
+// invalid UTF-8, key order, number spelling). So a resumed run rebuilds the conversation the live
+// run had, and an audit head computed over this store matches one over any other store. Skips
+// without PG_DSN.
 func TestPostgres_Store(t *testing.T) {
 	storetest.Run(t, func(t *testing.T) agent.Store {
 		s, _ := openTestStore(t)
@@ -37,9 +32,10 @@ func TestPostgres_Store(t *testing.T) {
 // leaf computed from a replayed record is the bytes in the database.
 func TestPostgres_PersistsCanonicalBytes(t *testing.T) {
 	s, ctx := openTestStore(t)
+	j := agenttest.MustJournal(s)
 	for i, c := range storetest.Cases() {
 		runID := uniqueID(t, fmt.Sprintf("pg-canon-%d-", i))
-		live, err := s.Do(ctx, runID, "step", func(context.Context) (agent.Record, error) { return c.Record, nil })
+		live, err := journaltest.Do(ctx, j, runID, "step", func(context.Context) (agent.Record, error) { return c.Record, nil })
 		if err != nil {
 			t.Fatalf("%s: Do: %v", c.Name, err)
 		}
@@ -61,13 +57,14 @@ func TestPostgres_PersistsCanonicalBytes(t *testing.T) {
 // position, so History returns one fixed order every time.
 func TestDo_ConcurrentStepsGetDistinctPositions(t *testing.T) {
 	s, ctx := openTestStore(t)
+	j := agenttest.MustJournal(s)
 	runID := uniqueID(t, "pg-seq-")
 	var wg sync.WaitGroup
 	for i := range 32 {
 		wg.Add(1)
 		go func() {
 			defer wg.Done()
-			if _, err := s.Do(ctx, runID, fmt.Sprintf("task-%d", i), func(context.Context) (agent.Record, error) {
+			if _, err := journaltest.Do(ctx, j, runID, fmt.Sprintf("task-%d", i), func(context.Context) (agent.Record, error) {
 				return agent.Record{Kind: agent.StepValue, Result: json.RawMessage(`1`)}, nil
 			}); err != nil {
 				t.Error(err)

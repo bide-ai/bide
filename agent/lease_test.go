@@ -12,12 +12,12 @@ import (
 func seedRun(t *testing.T, s *MemStore, id string) {
 	t.Helper()
 	// A run recovery drives has a run:start (a run with none is skipped and reported).
-	if _, err := s.Do(context.Background(), id, runStartStep, func(context.Context) (Record, error) {
+	if _, err := mustJournal(s).do(context.Background(), id, runStartStep, func(context.Context) (Record, error) {
 		return Record{Kind: StepValue, Result: []byte(`{"input":"go"}`)}, nil
 	}); err != nil {
 		t.Fatalf("seed %s: %v", id, err)
 	}
-	if _, err := s.Do(context.Background(), id, "seed", func(context.Context) (Record, error) {
+	if _, err := mustJournal(s).do(context.Background(), id, "seed", func(context.Context) (Record, error) {
 		return Record{Kind: StepValue}, nil
 	}); err != nil {
 		t.Fatalf("seed %s: %v", id, err)
@@ -69,6 +69,7 @@ func TestLease_ExclusiveAndExpiry(t *testing.T) {
 func TestRecover_SkipsLeasedByOther(t *testing.T) {
 	ctx := context.Background()
 	s := NewMemStore()
+	j := mustJournal(s)
 	seedRun(t, s, "r1")
 	seedRun(t, s, "r2")
 
@@ -85,7 +86,7 @@ func TestRecover_SkipsLeasedByOther(t *testing.T) {
 		return nil
 	}
 
-	n, err := Recover(ctx, s, resume, WithLeaseHolder("me"), WithLeaseTTL(time.Hour))
+	n, err := Recover(ctx, j, resume, WithLeaseHolder("me"), WithLeaseTTL(time.Hour))
 	if err != nil {
 		t.Fatalf("Recover: %v", err)
 	}
@@ -109,12 +110,13 @@ func TestRecover_SkipsLeasedByOther(t *testing.T) {
 func TestLease_PrimarySkipsWhenHeld(t *testing.T) {
 	ctx := context.Background()
 	s := NewMemStore()
+	j := mustJournal(s)
 	if ok, _ := s.AcquireLease(ctx, "x", "worker-2", time.Hour); !ok {
 		t.Fatal("setup: worker-2 should hold x")
 	}
 
 	ran := false
-	driven, err := Lease(ctx, s, "x", func(context.Context) error { ran = true; return nil }, WithLeaseHolder("worker-1"))
+	driven, err := Lease(ctx, j, "x", func(context.Context) error { ran = true; return nil }, WithLeaseHolder("worker-1"))
 	if err != nil {
 		t.Fatalf("Lease: %v", err)
 	}
@@ -122,7 +124,7 @@ func TestLease_PrimarySkipsWhenHeld(t *testing.T) {
 		t.Fatal("worker-1 must not drive a run worker-2 holds")
 	}
 
-	driven, err = Lease(ctx, s, "y", func(context.Context) error { ran = true; return nil }, WithLeaseHolder("worker-1"))
+	driven, err = Lease(ctx, j, "y", func(context.Context) error { ran = true; return nil }, WithLeaseHolder("worker-1"))
 	if err != nil || !driven || !ran {
 		t.Fatalf("worker-1 should drive the free run y (driven=%v ran=%v err=%v)", driven, ran, err)
 	}
@@ -132,10 +134,10 @@ func TestLease_PrimarySkipsWhenHeld(t *testing.T) {
 }
 
 // TestLease_NonLeaserStoreDrives confirms Lease drives unconditionally when the store does not
-// implement Leaser (noListStore is Durable only).
+// implement Leaser (noListStore is a plain Store).
 func TestLease_NonLeaserStoreDrives(t *testing.T) {
 	ran := false
-	driven, err := Lease(context.Background(), noListStore{}, "r", func(context.Context) error { ran = true; return nil })
+	driven, err := Lease(context.Background(), mustJournal(noListStore{}), "r", func(context.Context) error { ran = true; return nil })
 	if err != nil || !driven || !ran {
 		t.Fatalf("a non-Leaser store should drive unconditionally (driven=%v ran=%v err=%v)", driven, ran, err)
 	}

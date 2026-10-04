@@ -71,17 +71,17 @@ func TestPostgres_ClaimHeldThenCancelled_HaltsForever(t *testing.T) {
 
 	w := &pgR3{s: s, faults: []string{"attempt:step:pay", "attempt:not-started:"}}
 	j1, _ := agent.NewJournal(w)
-	_, err1 := agent.Step(ctx, j1, run, "pay", body)
+	_, err1 := j1.Step(ctx, run, "pay", body)
 
 	ctx2, cancel := context.WithCancel(ctx)
 	w.after = map[string]func(){"attempt:not-started:": cancel}
 	j2, _ := agent.NewJournal(w)
-	_, err2 := agent.Step(ctx2, j2, run, "pay", body)
+	_, err2 := j2.Step(ctx2, run, "pay", body)
 
 	j3, _ := agent.NewJournal(s) // another process
-	_, err3 := agent.Step(ctx, j3, run, "pay", body)
+	_, err3 := j3.Step(ctx, run, "pay", body)
 	t.Logf("drive 1: %v\ndrive 2: %v\ndrive 3: %v; fired %d", err1, err2, err3, fired)
-	var halt *agent.ResumeHalt
+	var halt *agent.OutcomeUnknown
 	if fired == 0 && errors.As(err3, &halt) {
 		t.Fatalf("the effect never started, but the run halts for ever")
 	}

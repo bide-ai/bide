@@ -12,7 +12,9 @@ import (
 	"time"
 
 	"github.com/bide-ai/bide/agent"
+	"github.com/bide-ai/bide/agent/agenttest"
 	"github.com/bide-ai/bide/audit"
+	"github.com/bide-ai/bide/internal/journaltest"
 )
 
 // tsBundle writes a ProofBundle whose signed head carries timestamp ts, and returns its path and
@@ -20,8 +22,8 @@ import (
 func tsBundle(t *testing.T, dir, name string, ts int64) (string, string) {
 	t.Helper()
 	ctx := context.Background()
-	store := agent.NewMemStore()
-	if _, err := store.Do(ctx, "r", "charge", func(context.Context) (agent.Record, error) {
+	store := agenttest.MemJournal()
+	if _, err := journaltest.Do(ctx, store, "r", "charge", func(context.Context) (agent.Record, error) {
 		return agent.Record{Kind: agent.StepToolResult, ToolUseID: "c1", Result: json.RawMessage(`{"ok":true}`)}, nil
 	}); err != nil {
 		t.Fatal(err)
@@ -86,8 +88,8 @@ func TestVerifyRunCLI_UsedPolicyHeadIsNotEarlier(t *testing.T) {
 	ctx := context.Background()
 	dir := t.TempDir()
 	bin := buildCLI(t, dir)
-	store := agent.NewMemStore()
-	if _, err := store.Do(ctx, "r", "charge", func(context.Context) (agent.Record, error) {
+	store := agenttest.MemJournal()
+	if _, err := journaltest.Do(ctx, store, "r", "charge", func(context.Context) (agent.Record, error) {
 		return agent.Record{Kind: agent.StepToolResult, ToolUseID: "c1", Result: json.RawMessage(`{"ok":true}`)}, nil
 	}); err != nil {
 		t.Fatal(err)

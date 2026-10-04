@@ -96,7 +96,7 @@ func New(apiKey string, opts ...Option) *Model {
 }
 
 // ToolNameRule implements agent.ToolRules: the tool names OpenAI accepts, `^[a-zA-Z0-9_-]{1,64}$`, so
-// agent.Build refuses any other name when the agent is built.
+// agent.New refuses any other name when the agent is built.
 func (m *Model) ToolNameRule() *regexp.Regexp { return toolcfg.OpenAIName }
 
 // RequiresToolsForRequired implements agent.ToolRules: OpenAI refuses tool choice "required"
@@ -511,5 +511,5 @@ func streamSSE(body io.ReadCloser, send func(agent.Emit) bool) {
 	}
 }
 
-// Model declares its tool rules to agent.Build.
+// Model declares its tool rules to agent.New.
 var _ agent.ToolRules = (*Model)(nil)

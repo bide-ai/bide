@@ -15,7 +15,7 @@ import (
 // next that comes after the chain returned.
 func TestAdv117c_RefusedThenLeakedNextReachesTool(t *testing.T) {
 	var calls atomic.Int32
-	charge := Func("charge", "", Safety{}, func(context.Context, struct{}) (string, error) { calls.Add(1); return "ok", nil })
+	charge := MustFunc("charge", "", func(context.Context, struct{}) (string, error) { calls.Add(1); return "ok", nil })
 	release := make(chan struct{})
 	leaked := make(chan error, 1)
 	mw := func(next ToolHandler) ToolHandler {
@@ -31,9 +31,9 @@ func TestAdv117c_RefusedThenLeakedNextReachesTool(t *testing.T) {
 			return nil, err
 		}
 	}
-	store := NewMemStore()
+	store := memJournal()
 	m := NewScriptedModel(ToolTurn("c1", "charge", `{}`), TextTurn("done"))
-	if _, err := New(m, store, charge).UseTool(mw).Run(context.Background(), "r1", "go"); err != nil {
+	if _, err := mustNew(m, store, WithTools(charge), WithToolMiddleware(mw)).Run(context.Background(), "r1", UserText("go")); err != nil {
 		t.Fatalf("Run: %v", err)
 	}
 	rec, ok := hasStep(t, store, "r1", ToolResultStep("c1"))
@@ -54,7 +54,7 @@ func TestAdv117c_RefusedThenLeakedNextReachesTool(t *testing.T) {
 // next fires the side effect, and a resume fires it again.
 func TestAdv117c_RefusedThenLeakedNextDoubleFiresAcrossResume(t *testing.T) {
 	var calls atomic.Int32
-	charge := Func("charge", "", Safety{}, func(context.Context, struct{}) (string, error) { calls.Add(1); return "ok", nil })
+	charge := MustFunc("charge", "", func(context.Context, struct{}) (string, error) { calls.Add(1); return "ok", nil })
 	release := make(chan struct{})
 	leaked := make(chan error, 1)
 	ctx, cancel := context.WithCancel(context.Background())
@@ -73,15 +73,15 @@ func TestAdv117c_RefusedThenLeakedNextDoubleFiresAcrossResume(t *testing.T) {
 			return nil, err
 		}
 	}
-	store := NewMemStore()
+	store := memJournal()
 	m := NewScriptedModel(ToolTurn("c1", "charge", `{}`), TextTurn("done"))
-	_, err1 := New(m, store, charge).UseTool(mw).Run(ctx, "r1", "go")
+	_, err1 := mustNew(m, store, WithTools(charge), WithToolMiddleware(mw)).Run(ctx, "r1", UserText("go"))
 	if _, recorded := hasStep(t, store, "r1", ToolResultStep("c1")); recorded || calls.Load() != 0 {
 		t.Fatalf("setup: first drive %v; want no result recorded and no call yet", err1)
 	}
 	close(release)
 	e := <-leaked
-	if _, err := New(m, store, charge).Run(context.Background(), "r1", "go"); err != nil {
+	if _, err := mustNew(m, store, WithTools(charge)).Run(context.Background(), "r1", UserText("go")); err != nil {
 		t.Fatalf("resume: %v", err)
 	}
 	if n := calls.Load(); n > 1 {

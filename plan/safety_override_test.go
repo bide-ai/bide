@@ -14,9 +14,9 @@ import (
 func gatedTools() map[string]agent.Tool {
 	fn := func(context.Context, int) (int, error) { return 0, nil }
 	return map[string]agent.Tool{
-		"requires approval": agent.Func("refund", "issue a refund", agent.Safety{ReadOnly: true}, fn, agent.WithApproval(agent.SingleApproval())),
-		"m-of-n approval": agent.Func("refund", "issue a refund",
-			agent.Safety{ReadOnly: true}, fn, agent.WithApproval(&agent.ApprovalPolicy{Need: 1, Approvers: []string{"ops"}})),
+		"requires approval": agent.MustFunc("refund", "issue a refund", fn, agent.WithSafety(agent.Safety{ReadOnly: true}), agent.WithApproval(agent.SingleApproval())),
+		"m-of-n approval": agent.MustFunc("refund", "issue a refund",
+			fn, agent.WithSafety(agent.Safety{ReadOnly: true}), agent.WithApproval(&agent.ApprovalPolicy{Need: 1, Approvers: []string{"ops"}})),
 	}
 }
 
@@ -27,7 +27,7 @@ func TestLoad_SafetyOverrideKeepsTheToolsApprovalGate(t *testing.T) {
 	for name, tool := range gatedTools() {
 		for _, s := range []string{"readonly", "idempotent"} {
 			reg := NewRegistry()
-			if err := RegisterTool[int, int](reg, "refund", tool); err != nil {
+			if err := reg.RegisterTool[int, int]("refund", tool); err != nil {
 				t.Fatalf("register: %v", err)
 			}
 			cfg := `{"version":1,"flow":"f","nodes":[{"name":"refund","block":"refund","safety":"` + s + `"}],"wiring":[]}`
@@ -50,7 +50,7 @@ func TestNodeOptions_KeepTheToolsApprovalGate(t *testing.T) {
 				t.Errorf("%s, Builder.Tool with %s: Build = %v; want ErrConfig", name, oname, err)
 			}
 			reg := NewRegistry()
-			if err := RegisterTool[int, int](reg, "refund", tool, opt); err != nil {
+			if err := reg.RegisterTool[int, int]("refund", tool, opt); err != nil {
 				t.Fatalf("register: %v", err)
 			}
 			cfg := `{"version":1,"flow":"f","nodes":[{"name":"refund","block":"refund"}],"wiring":[]}`
@@ -75,7 +75,7 @@ func TestSafetyOverride_ReplacesTheClassification(t *testing.T) {
 		{agent.Safety{Idempotent: true}, ReadOnly(), "", true, false},
 		{agent.Safety{ReadOnly: true}, Idempotent(), "idempotent", false, true},
 	} {
-		tool := agent.Func("t", "", tc.base, fn)
+		tool := agent.MustFunc("t", "", fn, agent.WithSafety(tc.base))
 		b := New[int, int]("f")
 		b.Tool[int, int]("t", tool, tc.opt)
 		if s := b.core.byName["t"].safety; s.ReadOnly != tc.wantRO || s.Idempotent != tc.wantIdemp {
@@ -85,7 +85,7 @@ func TestSafetyOverride_ReplacesTheClassification(t *testing.T) {
 			continue
 		}
 		reg := NewRegistry()
-		if err := RegisterTool[int, int](reg, "t", tool); err != nil {
+		if err := reg.RegisterTool[int, int]("t", tool); err != nil {
 			t.Fatalf("register: %v", err)
 		}
 		flow, err := Load[int, int]([]byte(`{"version":1,"flow":"f","nodes":[{"name":"t","block":"t","safety":"`+tc.cfg+`"}],"wiring":[]}`), reg)

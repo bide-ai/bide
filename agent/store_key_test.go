@@ -11,14 +11,14 @@ import (
 // (run2, name2), and returns the record each call got back and whether the second step ran. The
 // first step is held until the second call has had time to reach the store, so a store that
 // keyed the two steps alike would hand the second caller the first step's record.
-func overlappingDo(t *testing.T, d Durable, run1, name1, run2, name2 string) (first, second Record, secondRan bool) {
+func overlappingDo(t *testing.T, d *Journal, run1, name1, run2, name2 string) (first, second Record, secondRan bool) {
 	t.Helper()
 	ctx := context.Background()
 	release := make(chan struct{})
 	started := make(chan struct{})
 	done := make(chan Record, 1)
 	go func() {
-		rec, err := d.Do(ctx, run1, name1, func(context.Context) (Record, error) {
+		rec, err := d.do(ctx, run1, name1, func(context.Context) (Record, error) {
 			close(started)
 			<-release
 			return Record{Kind: StepValue, Result: json.RawMessage(`"first"`)}, nil
@@ -31,7 +31,7 @@ func overlappingDo(t *testing.T, d Durable, run1, name1, run2, name2 string) (fi
 	<-started
 	secondDone := make(chan Record, 1)
 	go func() {
-		rec, err := d.Do(ctx, run2, name2, func(context.Context) (Record, error) {
+		rec, err := d.do(ctx, run2, name2, func(context.Context) (Record, error) {
 			secondRan = true
 			return Record{Kind: StepValue, Result: json.RawMessage(`"second"`)}, nil
 		})
@@ -57,7 +57,7 @@ func overlappingDo(t *testing.T, d Durable, run1, name1, run2, name2 string) (fi
 // alike, a concurrent Do of the second would share the first's fn and get its record back.
 func TestMemStore_DistinctStepsWithNULDoNotShareADo(t *testing.T) {
 	for _, c := range [][4]string{{"a\x00b", "c", "a", "b\x00c"}, {"ab", "c", "a", "bc"}} {
-		first, second, ran := overlappingDo(t, NewMemStore(), c[0], c[1], c[2], c[3])
+		first, second, ran := overlappingDo(t, memJournal(), c[0], c[1], c[2], c[3])
 		if string(first.Result) != `"first"` {
 			t.Errorf("%q: first step's record = %s, want \"first\"", c, first.Result)
 		}

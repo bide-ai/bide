@@ -10,16 +10,18 @@ import (
 	"testing"
 
 	"github.com/bide-ai/bide/agent"
+	"github.com/bide-ai/bide/agent/agenttest"
+	"github.com/bide-ai/bide/internal/journaltest"
 )
 
 // F5: a terminal node resolved through Flow.ResolveHalt with an output holding '<', '>' or '&'.
-// agent.ResolveHaltRef records the Result unescaped (marshalJournal), Run replays those bytes as
+// agent.ResolveHalt records the Result unescaped (marshalJournal), Run replays those bytes as
 // the terminal's result, and json.Marshal(completion{...}) HTML-escapes them inside Output. The
 // completion is the terminal's output, but sameJSON compares bytes after json.Compact (which does
 // not undo escapes), so Conform reports a divergence on a run Run itself produced.
 func TestRev103c_F5_ResolvedTerminalWithHTMLCharsConforms(t *testing.T) {
 	ctx := context.Background()
-	mem := agent.NewMemStore()
+	mem := agenttest.MemJournal()
 	var fired int
 	b := New[int, string]("html")
 	b.Step("issue", func(_ context.Context, n int) (string, error) {
@@ -76,7 +78,7 @@ func TestRev103c_F5_CompletionSkippingAReachedTerminalConforms(t *testing.T) {
 		return f
 	}
 	flow := build()
-	src := agent.NewMemStore()
+	src := agenttest.MemJournal()
 	out, err := flow.Run(ctx, src, "r", 1)
 	if err != nil {
 		t.Fatal(err)
@@ -93,7 +95,7 @@ func TestRev103c_F5_CompletionSkippingAReachedTerminalConforms(t *testing.T) {
 	if out == "y" {
 		other = `"x"`
 	}
-	forged := agent.NewMemStore()
+	forged := agenttest.MemJournal()
 	for _, r := range recs {
 		switch r.Name {
 		case lastTerm:
@@ -102,7 +104,7 @@ func TestRev103c_F5_CompletionSkippingAReachedTerminalConforms(t *testing.T) {
 			done, _ := json.Marshal(completion{Flow: "fan", Output: json.RawMessage(other)})
 			r.Result = done
 		}
-		if _, err := forged.Do(ctx, "r", r.Name, func(context.Context) (agent.Record, error) { return r, nil }); err != nil {
+		if _, err := journaltest.Do(ctx, forged, "r", r.Name, func(context.Context) (agent.Record, error) { return r, nil }); err != nil {
 			t.Fatal(err)
 		}
 	}
@@ -123,17 +125,17 @@ func TestRev103c_F5_CompletedRunMissingAReachedNodeConforms(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	src := agent.NewMemStore()
+	src := agenttest.MemJournal()
 	if _, err := flow.Run(ctx, src, "r", 1); err != nil {
 		t.Fatal(err)
 	}
 	recs, _ := src.History(ctx, "r")
-	forged := agent.NewMemStore()
+	forged := agenttest.MemJournal()
 	for _, r := range recs {
 		if r.Name == "node:a" {
 			continue
 		}
-		if _, err := forged.Do(ctx, "r", r.Name, func(context.Context) (agent.Record, error) { return r, nil }); err != nil {
+		if _, err := journaltest.Do(ctx, forged, "r", r.Name, func(context.Context) (agent.Record, error) { return r, nil }); err != nil {
 			t.Fatal(err)
 		}
 	}
@@ -161,7 +163,7 @@ func TestRev103c_F5_TerminalFedFromInsideALoop(t *testing.T) {
 		t.Logf("Build refuses an edge out of a loop body: %v", err)
 		return
 	}
-	mem := agent.NewMemStore()
+	mem := agenttest.MemJournal()
 	out, err := flow.Run(ctx, mem, "r", 3)
 	t.Logf("Run = %q, %v", out, err)
 	if err == nil {
@@ -186,7 +188,7 @@ func TestRev103c_F5_SwitchOfTerminals(t *testing.T) {
 		t.Fatal(err)
 	}
 	for in, want := range map[int]string{1: "p", 2: "q", 3: "r"} {
-		mem := agent.NewMemStore()
+		mem := agenttest.MemJournal()
 		if out, err := flow.Run(ctx, mem, "r", in); err != nil || out != want {
 			t.Fatalf("Run(%d) = %q, %v", in, out, err)
 		}
@@ -209,15 +211,15 @@ func TestRev103c_F4_CorruptStartOrDigest(t *testing.T) {
 		"no digest":      {{"run:start", `{"input":"5","kind":"flow","flow":{"name":"charge-flow"}}`}},
 		"corrupt digest": {{"run:start", `{"input":"5","kind":"flow","flow":{"name":"charge-flow"}}`}, {flowDigestStep, `7`}},
 	} {
-		mem := agent.NewMemStore()
+		mem := agenttest.MemJournal()
 		for _, w := range recs {
-			if _, err := mem.Do(ctx, "r", w[0], func(context.Context) (agent.Record, error) {
+			if _, err := journaltest.Do(ctx, mem, "r", w[0], func(context.Context) (agent.Record, error) {
 				return agent.Record{Kind: agent.StepValue, Result: json.RawMessage(w[1])}, nil
 			}); err != nil {
 				t.Fatal(err)
 			}
 		}
-		if _, err := mem.Do(ctx, "r", "attempt:step:node:charge", func(context.Context) (agent.Record, error) {
+		if _, err := journaltest.Do(ctx, mem, "r", "attempt:step:node:charge", func(context.Context) (agent.Record, error) {
 			return agent.Record{Kind: agent.StepAttempt, ToolUseID: "node:charge", AttemptedAt: 1}, nil
 		}); err != nil {
 			t.Fatal(err)

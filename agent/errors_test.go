@@ -33,9 +33,9 @@ func TestErrors_ConditionsWrapCategories(t *testing.T) {
 // (and therefore ErrTool).
 func TestErrors_UnknownToolClassified(t *testing.T) {
 	m := &scriptModel{turns: [][]Emit{toolTurn("c1", "nope", `{}`)}}
-	a := New(m, NewMemStore())
+	a := mustNew(m, memJournal())
 
-	_, err := a.Run(context.Background(), "r", "hi")
+	_, err := a.Run(context.Background(), "r", UserText("hi"))
 	if !errors.Is(err, ErrUnknownTool) {
 		t.Fatalf("err = %v, want errors.Is ErrUnknownTool", err)
 	}
@@ -47,12 +47,11 @@ func TestErrors_UnknownToolClassified(t *testing.T) {
 // Bad tool arguments classify as ErrToolArgs (and ErrTool), while the underlying JSON
 // error stays inspectable in the chain.
 func TestErrors_ToolArgsClassified(t *testing.T) {
-	tool := Func("adder", "", Safety{ReadOnly: true},
-		func(_ context.Context, in struct {
-			A int `json:"a"`
-		}) (int, error) {
-			return in.A, nil
-		})
+	tool := MustFunc("adder", "", func(_ context.Context, in struct {
+		A int `json:"a"`
+	}) (int, error) {
+		return in.A, nil
+	}, WithSafety(Safety{ReadOnly: true}))
 
 	_, err := tool.Call(context.Background(), json.RawMessage(`{"a":"not-an-int"}`))
 	if !errors.Is(err, ErrToolArgs) {
@@ -86,12 +85,12 @@ func TestErrors_ControlFlowStillTyped(t *testing.T) {
 	var calls int
 	tool := &countingTool{name: "charge", approval: SingleApproval(), calls: &calls}
 	m := &scriptModel{turns: [][]Emit{toolTurn("c1", "charge", `{}`), textTurn("done")}}
-	a := New(m, NewMemStore(), tool)
+	a := mustNew(m, memJournal(), WithTools(tool))
 
-	_, err := a.Run(context.Background(), "r", "pay")
-	var pend *PendingApproval
+	_, err := a.Run(context.Background(), "r", UserText("pay"))
+	var pend *ApprovalPending
 	if !errors.As(err, &pend) {
-		t.Fatalf("err = %v, want *PendingApproval", err)
+		t.Fatalf("err = %v, want *ApprovalPending", err)
 	}
 	if errors.Is(err, ErrTool) {
 		t.Fatal("an approval pause is not a tool failure")

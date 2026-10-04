@@ -23,7 +23,6 @@ import (
 	"iter"
 	"regexp"
 	"strings"
-	"sync"
 	"time"
 
 	"github.com/bide-ai/bide/agent"
@@ -50,16 +49,12 @@ type Store struct {
 	w, r, l *sql.DB // writer (one connection), readers, leases (one connection)
 	own     bool    // Close closes the pools: Open opened them
 	t       tables
-
-	jOnce sync.Once
-	j     *agent.Journal
 }
 
 var (
-	_ agent.Store   = (*Store)(nil)
-	_ agent.Lister  = (*Store)(nil)
-	_ agent.Leaser  = (*Store)(nil)
-	_ agent.Durable = (*Store)(nil) // transitional: Do and History go through its Journal
+	_ agent.Store  = (*Store)(nil)
+	_ agent.Lister = (*Store)(nil)
+	_ agent.Leaser = (*Store)(nil)
 )
 
 // tables holds the table names, prefixed, and the statements built from them.
@@ -540,32 +535,4 @@ func (s *Store) ReapLeases(ctx context.Context, ended []string) (int, error) {
 		return 0, fmt.Errorf("reap leases: %w (%w)", err, agent.ErrStorage)
 	}
 	return int(n), nil
-}
-
-// Journal returns the Journal over s that its Do and History shims delegate to.
-//
-// Deprecated: transitional; removed by the 1.0 rewrite. Use agent.NewJournal(s).
-func (s *Store) Journal() *agent.Journal {
-	s.jOnce.Do(func() {
-		j, err := agent.NewJournal(s)
-		if err != nil {
-			panic(err) // s is not nil
-		}
-		s.j = j
-	})
-	return s.j
-}
-
-// Do runs a memoized step through s's Journal (see agent.Journal.Do).
-//
-// Deprecated: transitional; removed by the 1.0 rewrite. Use a Journal over the store.
-func (s *Store) Do(ctx context.Context, runID, name string, fn func(context.Context) (agent.Record, error)) (agent.Record, error) {
-	return s.Journal().Do(ctx, runID, name, fn)
-}
-
-// History reads a run back through s's Journal (see agent.Journal.History).
-//
-// Deprecated: transitional; removed by the 1.0 rewrite. Use a Journal over the store.
-func (s *Store) History(ctx context.Context, runID string) ([]agent.Record, error) {
-	return s.Journal().History(ctx, runID)
 }

@@ -1,4 +1,4 @@
-// fidelity.go holds the record-fidelity suite (RunDurable): the record a journal hands back on the
+// fidelity.go holds the record-fidelity suite (run by storetest.Run): the record a journal hands back on the
 // live path is exactly the record a replay reads back, for any content a model or tool can
 // produce.
 //
@@ -24,15 +24,18 @@ import (
 
 	"github.com/bide-ai/bide/agent"
 	"github.com/bide-ai/bide/internal/journalhook"
+	"github.com/bide-ai/bide/internal/journaltest"
 )
 
-// RunDurable runs the record-fidelity suite against a Durable (a Journal, or a store's transitional
-// Do and History). open returns a handle on the journal under test; run IDs are unique per call,
-// so the suite can run repeatedly against a persistent backend. Run includes it, over a Journal on
-// the store under test.
-func RunDurable(t *testing.T, open func(t *testing.T) agent.Durable) {
+// runFidelity runs the record-fidelity suite against a journal. open returns a handle on the
+// journal under test; run IDs are unique per call, so the suite can run repeatedly against a
+// persistent backend. Run runs it over a Journal on the store under test.
+func runFidelity(t *testing.T, open func(t *testing.T) *agent.Journal) {
 	for _, c := range Cases() {
-		t.Run(c.Name, func(t *testing.T) { fidelity(t, open(t), c) })
+		t.Run(c.Name, func(t *testing.T) { fidelity(t, open(t), c, journaltest.Do) })
+		// the live path of the engine's model turns and tool results, which writes without
+		// reading the step first
+		t.Run(c.Name+"/fresh", func(t *testing.T) { fidelity(t, open(t), c, journaltest.DoFresh) })
 	}
 	t.Run("ReturnedRecordIsACopy", func(t *testing.T) { returnedCopy(t, open(t)) })
 	t.Run("Salted", func(t *testing.T) { salted(t, open(t)) })
@@ -129,7 +132,7 @@ func runID(t *testing.T) string {
 
 // history returns runID's records after its journal header, failing the test if the journal does
 // not start with one.
-func history(t *testing.T, d agent.Durable, runID string) []agent.Record {
+func history(t *testing.T, d *agent.Journal, runID string) []agent.Record {
 	t.Helper()
 	hist, err := d.History(context.Background(), runID)
 	if err != nil {
@@ -144,14 +147,14 @@ func history(t *testing.T, d agent.Durable, runID string) []agent.Record {
 	return hist[1:]
 }
 
-func fidelity(t *testing.T, d agent.Durable, c Case) {
+func fidelity(t *testing.T, d *agent.Journal, c Case, write func(context.Context, *agent.Journal, string, string, func(context.Context) (agent.Record, error)) (agent.Record, error)) {
 	ctx := context.Background()
 	id := runID(t)
-	live, err := d.Do(ctx, id, "step", func(context.Context) (agent.Record, error) { return c.Record, nil })
+	live, err := write(ctx, d, id, "step", func(context.Context) (agent.Record, error) { return c.Record, nil })
 	if err != nil {
 		t.Fatalf("Do: %v", err)
 	}
-	memo, err := d.Do(ctx, id, "step", func(context.Context) (agent.Record, error) {
+	memo, err := journaltest.Do(ctx, d, id, "step", func(context.Context) (agent.Record, error) {
 		t.Fatal("a recorded step ran again")
 		return agent.Record{}, nil
 	})
@@ -198,10 +201,10 @@ func fidelity(t *testing.T, d agent.Durable, c Case) {
 
 // returnedCopy: a caller that modifies the record Do or History handed it cannot change the
 // journal or what another caller reads.
-func returnedCopy(t *testing.T, d agent.Durable) {
+func returnedCopy(t *testing.T, d *agent.Journal) {
 	ctx := context.Background()
 	id := runID(t)
-	live, err := d.Do(ctx, id, "step", func(context.Context) (agent.Record, error) {
+	live, err := journaltest.Do(ctx, d, id, "step", func(context.Context) (agent.Record, error) {
 		return agent.Record{Kind: agent.StepValue, Result: json.RawMessage(`"abc"`)}, nil
 	})
 	if err != nil {
@@ -225,12 +228,12 @@ func returnedCopy(t *testing.T, d agent.Durable) {
 // salted: every record a store journals carries a fresh agent.SaltSize salt (agent.JournalEntry),
 // distinct per record and never the one the step returned. The audit trail needs it so that an
 // inclusion proof does not let its holder confirm a guessed neighbouring record.
-func salted(t *testing.T, d agent.Durable) {
+func salted(t *testing.T, d *agent.Journal) {
 	ctx := context.Background()
 	id := runID(t)
 	chosen := bytes.Repeat([]byte{7}, agent.SaltSize)
 	for _, name := range []string{"a", "b"} {
-		if _, err := d.Do(ctx, id, name, func(context.Context) (agent.Record, error) {
+		if _, err := journaltest.Do(ctx, d, id, name, func(context.Context) (agent.Record, error) {
 			return withSalt(t, agent.Record{Kind: agent.StepValue, Result: json.RawMessage(`1`)}, chosen), nil
 		}); err != nil {
 			t.Fatal(err)
@@ -255,11 +258,11 @@ func salted(t *testing.T, d agent.Durable) {
 // the cancellation arrived, and a driver loses its context whenever its lease lapses or its
 // process shuts down; a store that dropped the record then would leave the effect with no
 // recorded outcome, so the resumed run halts for a human although the outcome was known.
-func recordsAfterCancel(t *testing.T, d agent.Durable) {
+func recordsAfterCancel(t *testing.T, d *agent.Journal) {
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
 	id := runID(t)
-	got, err := d.Do(ctx, id, "effect", func(context.Context) (agent.Record, error) {
+	got, err := journaltest.Do(ctx, d, id, "effect", func(context.Context) (agent.Record, error) {
 		cancel() // the driver's context is cancelled while the effect is in flight
 		return agent.Record{Kind: agent.StepValue, Result: json.RawMessage(`"fired"`)}, nil
 	})
@@ -274,14 +277,14 @@ func recordsAfterCancel(t *testing.T, d agent.Durable) {
 	}
 }
 
-// stepAttemptSafety: agent.Step goes by the safety a step was attempted under. A retry-safe step
+// stepAttemptSafety: agent.Journal.Step goes by the safety a step was attempted under. A retry-safe step
 // looks for an earlier attempt marker without recording one; and a step attempted as a side effect
 // halts on resume even when it is declared retry-safe by then.
-func stepAttemptSafety(t *testing.T, d agent.Durable) {
+func stepAttemptSafety(t *testing.T, d *agent.Journal) {
 	ctx := context.Background()
 	id := runID(t)
 	safe := agent.WithSafety(agent.Safety{ReadOnly: true})
-	if _, err := agent.Step(ctx, d, id, "read", func(context.Context) (int, error) { return 1, nil }, safe); err != nil {
+	if _, err := d.Step(ctx, id, "read", func(context.Context) (int, error) { return 1, nil }, safe); err != nil {
 		t.Fatal(err)
 	}
 	if hist := history(t, d, id); len(hist) != 1 || hist[0].Name != "read" {
@@ -290,10 +293,10 @@ func stepAttemptSafety(t *testing.T, d agent.Durable) {
 
 	ran := 0
 	write := func(context.Context) (int, error) { ran++; return 0, fmt.Errorf("lost the answer") }
-	if _, err := agent.Step(ctx, d, id, "write", write); err == nil {
+	if _, err := d.Step(ctx, id, "write", write); err == nil {
 		t.Fatal("the failing step succeeded")
 	}
-	_, err := agent.Step(ctx, d, id, "write", write, safe)
+	_, err := d.Step(ctx, id, "write", write, safe)
 	var halt *agent.OutcomeUnknown
 	if !errors.As(err, &halt) || halt.Op.ID != "write" || halt.AttemptedAt.IsZero() {
 		t.Fatalf("resume err = %v, want *OutcomeUnknown for write with its attempt time", err)

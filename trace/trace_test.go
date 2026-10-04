@@ -250,10 +250,11 @@ func (instrModel) Stream(_ context.Context, req agent.Request) (*agent.Stream, e
 
 type pingTool struct{}
 
-func (pingTool) Name() string                { return "ping" }
-func (pingTool) Description() string         { return "" }
-func (pingTool) Safety() agent.Safety        { return agent.Safety{ReadOnly: true} }
-func (pingTool) ArgsSchema() json.RawMessage { return json.RawMessage(`{"type":"object"}`) }
+// Spec describes the tool to the agent (see agent.Tool).
+func (t pingTool) Spec() agent.ToolSpec {
+	return agent.ToolSpec{Name: "ping", Description: "", Input: json.RawMessage(`{"type":"object"}`), Safety: agent.Safety{ReadOnly: true}}
+}
+
 func (pingTool) Call(context.Context, json.RawMessage) (json.RawMessage, error) {
 	return json.RawMessage(`{"pong":1}`), nil
 }
@@ -264,7 +265,7 @@ func TestInstrument_WiresChatAndToolSpans(t *testing.T) {
 	tracer := tp.Tracer("test")
 
 	a := buildAgent(t, agent.NewMemStore(), agent.WithTools(pingTool{}), Instrument(tracer))
-	if _, err := a.Run(context.Background(), "r", "hi"); err != nil {
+	if _, err := a.Run(context.Background(), "r", agent.UserText("hi")); err != nil {
 		t.Fatal(err)
 	}
 
@@ -326,7 +327,7 @@ func buildAgent(t *testing.T, store *agent.MemStore, opts ...agent.Option) *agen
 	if err != nil {
 		t.Fatal(err)
 	}
-	a, err := agent.Build(instrModel{}, j, opts...)
+	a, err := agent.New(instrModel{}, j, opts...)
 	if err != nil {
 		t.Fatal(err)
 	}

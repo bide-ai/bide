@@ -238,8 +238,11 @@ func (s *Session) reload(ctx context.Context) error {
 
 // protocol:sessions end
 
-// Send runs one conversation turn: the agent answers `input` with the full prior
-// transcript in context, and the turn is journaled. Returns the assistant's answer.
+// Send runs one conversation turn: the agent answers input (which may carry images) with the full
+// prior transcript in context, under opts, the turn run's options (journaled in its run:start, as
+// Run journals them), and the turn is journaled. It returns the turn's Result, whose Message is the
+// assistant's answer: non-nil whatever the error once the turn has its run (an invalid option, or a
+// refusal to start the turn, such as another message's open turn, has none).
 //
 // If the turn pauses (a tool needs approval or Interrupt) or fails, Send returns that error
 // (*ApprovalPending / *InterruptPending / ...) and does NOT advance the transcript; resolve it
@@ -255,25 +258,12 @@ func (s *Session) reload(ctx context.Context) error {
 // the turn, and while the rollback is in progress any other caller gets ErrTurnContended: another
 // worker, or a second caller on this same handle. Over a store with no Leaser the handle's mutex
 // is held across the rollback, and a second caller on the handle waits for it.
-//
-// Deprecated: transitional; renamed by the 1.0 rewrite. Use SendMessage, which becomes Send.
-func (s *Session) Send(ctx context.Context, input string) (Message, error) {
-	msg, _, err := s.send(ctx, UserText(input), nil)
-	return msg, err
-}
-
-// SendMessage runs one conversation turn as Send does, for input (which may carry images) under
-// opts, the turn run's options (journaled in its run:start, as RunMessage journals them), and
-// returns the turn's Result: non-nil whatever the error once the turn has its run (an invalid
-// option, or a refusal to start the turn, such as another message's open turn, has none).
-//
-// Deprecated: transitional; renamed by the 1.0 rewrite. SendMessage becomes Send.
-func (s *Session) SendMessage(ctx context.Context, input Message, opts ...RunOption) (*Result, error) {
+func (s *Session) Send(ctx context.Context, input Message, opts ...RunOption) (*Result, error) {
 	_, res, err := s.send(ctx, input, opts)
 	return res, err
 }
 
-// send is Send's and SendMessage's body.
+// send is Send's and Send's body.
 func (s *Session) send(ctx context.Context, input Message, opts []RunOption) (Message, *Result, error) {
 	t0 := time.Now()
 	var cfg runConfig
@@ -356,7 +346,7 @@ func (s *Session) startTurn(ctx context.Context, input Message) (turnStart, int,
 		if err != nil {
 			return turnStart{}, 0, fmt.Errorf("session %s: encode turn start: %w (%w)", s.id, err, ErrConfig)
 		}
-		got, err := s.agent.store.Do(ctx, sessionJournalID(s.id), sessionStartStep(n), func(context.Context) (Record, error) {
+		got, err := s.agent.store.do(ctx, sessionJournalID(s.id), sessionStartStep(n), func(context.Context) (Record, error) {
 			return Record{Kind: StepValue, Result: b}, nil
 		})
 		if err != nil {
@@ -395,7 +385,7 @@ func (s *Session) closeIfCancelled(ctx context.Context) (closed bool, requested 
 	if err != nil || !cancelled {
 		if err == nil {
 			var ok bool
-			if _, ok, err = lookup(ctx, s.agent.store, runID, runCancelRequestedStep); ok {
+			if _, ok, err = s.agent.store.Get(ctx, runID, runCancelRequestedStep); ok {
 				requested = runID
 			}
 		}
@@ -429,7 +419,7 @@ func (s *Session) closeIfCancelled(ctx context.Context) (closed bool, requested 
 // request returns nil, and the turn is not closed. The caller holds s.mu; over a store with a
 // Leaser it is released for the drive and held again when rollbackTurn returns.
 func (s *Session) rollbackTurn(ctx context.Context, runID string) error {
-	if _, leased := capabilityOf[Leaser](s.agent.store); leased {
+	if _, leased := Capability[Leaser](s.agent.store.store); leased {
 		s.mu.Unlock()
 		defer s.mu.Lock()
 	}
@@ -451,26 +441,14 @@ func (s *Session) rollbackTurn(ctx context.Context, runID string) error {
 // turn was interrupted resumes that same turn: it runs under its own journal,
 // "<session id>>@event/<key>" (the key encoded, so any key is allowed), so a different message
 // arriving in between gets its own turn.
-// Reusing a key with a different input is ErrConfig, whether the key's turn has finished or is
+// It returns the turn's Result, as Send does. Reusing a key with a different input is ErrConfig, whether the key's turn has finished or is
 // still open: the turn's run records the message it answers (see RunStart).
-//
-// Deprecated: transitional; renamed by the 1.0 rewrite. Use SendMessageOnce, which becomes
-// SendOnce.
-func (s *Session) SendOnce(ctx context.Context, key, input string) (Message, error) {
-	msg, _, err := s.sendOnce(ctx, key, UserText(input), nil)
-	return msg, err
-}
-
-// SendMessageOnce runs one conversation turn for the message key as SendOnce does, for input under
-// opts, and returns the turn's Result.
-//
-// Deprecated: transitional; renamed by the 1.0 rewrite. SendMessageOnce becomes SendOnce.
-func (s *Session) SendMessageOnce(ctx context.Context, key string, input Message, opts ...RunOption) (*Result, error) {
+func (s *Session) SendOnce(ctx context.Context, key string, input Message, opts ...RunOption) (*Result, error) {
 	_, res, err := s.sendOnce(ctx, key, input, opts)
 	return res, err
 }
 
-// sendOnce is SendOnce's and SendMessageOnce's body.
+// sendOnce is SendOnce's and SendOnce's body.
 func (s *Session) sendOnce(ctx context.Context, key string, input Message, opts []RunOption) (Message, *Result, error) {
 	t0 := time.Now()
 	if key == "" {
@@ -597,7 +575,7 @@ func (s *Session) turnSeed(ctx context.Context, runID string) ([]Message, error)
 		return nil, fmt.Errorf("session %s: encode turn start point: %w (%w)", s.id, err, ErrConfig)
 	}
 	name := sessionFromStep(runID)
-	got, err := s.agent.store.Do(ctx, sessionJournalID(s.id), name, func(context.Context) (Record, error) {
+	got, err := s.agent.store.do(ctx, sessionJournalID(s.id), name, func(context.Context) (Record, error) {
 		return Record{Kind: StepValue, Result: b}, nil
 	})
 	if err != nil {
@@ -639,7 +617,7 @@ func (s *Session) appendTurn(ctx context.Context, rec turnRecord) error {
 		return fmt.Errorf("session %s: encode turn: %w (%w)", s.id, err, ErrConfig)
 	}
 	for n := s.turns; ; n++ {
-		got, err := s.agent.store.Do(ctx, sessionJournalID(s.id), sessionTurnStep(n), func(context.Context) (Record, error) {
+		got, err := s.agent.store.do(ctx, sessionJournalID(s.id), sessionTurnStep(n), func(context.Context) (Record, error) {
 			return Record{Kind: StepValue, Result: b}, nil
 		})
 		if err != nil {

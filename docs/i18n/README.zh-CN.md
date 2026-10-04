@@ -42,7 +42,7 @@ eino           maxFired=64   ✗
 
 一个工具落在哪一层，取决于它声明的 `Safety`：把它标记为只读或幂等，未知结果就会自动重试；这些都不声明，它就会停机。可重试安全是需要主动选择的；在你没有主动选择时，暂停就是默认行为，因此一个以"绝不重复触发"为全部意义的库，默认偏向安全而非靠猜。
 
-大多数未知结果根本不会交到人手里：幂等键让提供商对一次安全的重试去重，而对于没有幂等键的系统（邮件、内部服务），一个对账器会根据该步骤留下的记录来解决它（`agent.ResolveHaltRef`）。人类是兜底，而不是默认。
+大多数未知结果根本不会交到人手里：幂等键让提供商对一次安全的重试去重，而对于没有幂等键的系统（邮件、内部服务），一个对账器会根据该步骤留下的记录来解决它（`agent.ResolveHalt`）。人类是兜底，而不是默认。
 
 > [!IMPORTANT]
 > **其下的规则：** 当一个动作经手资金、触及记录或在审计之下发生，而其结果真正无法得知时，停下来就是正确的结果。一次人类或对账器能解除的暂停，胜过一次无人能收回的重复扣款。
@@ -113,21 +113,21 @@ Temporal 拥有这些保证，但需要一个服务器加一支 worker 机群才
 
 同一个订单分拣流程，三种写法。纯 Go 是默认方式：写普通的控制流，并为日志必须保证崩溃安全的那些步骤命名。
 
-<!-- docsnip: setup ctx context.Context; store agent.Durable; order Order; type Order struct{}; type Receipt struct{}; type Assessment struct{ Rush bool }; type Reservation struct{}; func classify(Order) (Assessment, error); func reserve(Assessment) (Reservation, error); func finalize(Reservation) (Receipt, error); func decline(Assessment) (Receipt, error) -->
+<!-- docsnip: setup ctx context.Context; store *agent.Journal; order Order; type Order struct{}; type Receipt struct{}; type Assessment struct{ Rush bool }; type Reservation struct{}; func classify(Order) (Assessment, error); func reserve(Assessment) (Reservation, error); func finalize(Reservation) (Receipt, error); func decline(Assessment) (Receipt, error) -->
 ```go
 // classify, then branch: rush orders reserve-then-finalize, the rest decline.
-assess, _ := agent.Step(ctx, store, "order-42", "classify",
+assess, _ := store.Step(ctx, "order-42", "classify",
     func(ctx context.Context) (Assessment, error) { return classify(order) },
     agent.WithSafety(agent.Safety{ReadOnly: true})) // safe to re-run after a crash
 
 var receipt Receipt
 if assess.Rush {
-    res, _ := agent.Step(ctx, store, "order-42", "reserve", // a side effect: at most once
+    res, _ := store.Step(ctx, "order-42", "reserve", // a side effect: at most once
         func(ctx context.Context) (Reservation, error) { return reserve(assess) })
-    receipt, _ = agent.Step(ctx, store, "order-42", "finalize",
+    receipt, _ = store.Step(ctx, "order-42", "finalize",
         func(ctx context.Context) (Receipt, error) { return finalize(res) })
 } else {
-    receipt, _ = agent.Step(ctx, store, "order-42", "decline",
+    receipt, _ = store.Step(ctx, "order-42", "decline",
         func(ctx context.Context) (Receipt, error) { return decline(assess) })
 }
 ```
@@ -191,12 +191,11 @@ flow, err := plan.Load[Order, Receipt](configBytes, reg) // same topology, same 
 <!-- docsnip: setup ctx context.Context; a *agent.Agent; runID string; input string; type ChargeArgs struct{}; type Receipt struct{} -->
 ```go
 // A tool that moves money is a write: not ReadOnly, not Idempotent.
-charge := agent.Func("charge_card", "Charge the customer", agent.Safety{},
-	func(ctx context.Context, in ChargeArgs) (Receipt, error) { /* ... */ })
+charge := agent.MustFunc("charge_card", "Charge the customer", func(ctx context.Context, in ChargeArgs) (Receipt, error) { /* ... */ })
 
 // If the process crashes after the charge fires but before its result is journaled,
 // resume does NOT run it again: it returns *OutcomeUnknown so you confirm, not double-charge:
-_, err := a.Run(ctx, runID, input)
+_, err := a.Run(ctx, runID, agent.UserText(input))
 if halt, ok := errors.AsType[*agent.OutcomeUnknown](err); ok {
 	// halt.Op.ToolName == "charge_card": outcome unknown, a human decides, no double side effect.
 }
@@ -214,6 +213,7 @@ package main
 import (
 	"context"
 	"fmt"
+	"log"
 	"os"
 
 	"github.com/bide-ai/bide/agent"
@@ -236,46 +236,57 @@ func main() {
 		openai.WithModel("openai/gpt-4o-mini"))
 
 	// A tool is a typed Go function; its schema is derived automatically.
-	weather := agent.Func("get_weather", "Current weather for a city",
-		agent.Safety{ReadOnly: true},
+	weather := agent.MustFunc("get_weather", "Current weather for a city",
 		func(_ context.Context, in WeatherArgs) (Weather, error) {
 			return Weather{TempF: 68, Sky: "sunny"}, nil
-		})
+		}, agent.WithSafety(agent.Safety{ReadOnly: true}))
 
 	// Durable on-disk store: a crash mid-run resumes from here.
 	store, _ := sqlite.Open("agent.db")
+	j, err := agent.NewJournal(store)
+	if err != nil {
+		log.Fatal(err)
+	}
 	defer store.Close()
 
-	a := agent.New(model, store, weather).
-		WithSystemPrompt("You are a concise weather assistant.")
-	out, _ := a.Run(context.Background(), "run-1", "Weather in SF? Use the tool.")
-	for _, p := range out.Parts {
-		if t, ok := p.(agent.Text); ok {
-			fmt.Println(t.Text)
-		}
+	a, err := agent.New(
+		model,
+		j,
+		agent.WithTools(weather),
+		agent.WithSystemPrompt("You are a concise weather assistant."),
+	)
+	if err != nil {
+		log.Fatal(err)
 	}
+	out, err := a.Run(context.Background(), "run-1", agent.UserText("Weather in SF? Use the tool."))
+	if err != nil {
+		log.Fatal(err)
+	}
+	fmt.Println(out.Message.Text())
 }
 ```
 
 运行实地冒烟示例：`OPENROUTER_API_KEY=sk-... go run ./examples/smoke`
 
-`Run` 只返回最终消息。要获取一份运行摘要（整次运行的 token 用量，含缓存与子智能体；模型轮次计数；墙钟时长），请用 `RunResult`（以及 `RunSagaResult`）：
+`Run` 接受一个 `Message` 输入（文本，或文本加图像）和每次运行的选项，并返回一个 `Result`：最终消息、整次运行的 token 用量（含缓存与子智能体）、模型轮次计数和墙钟时长。只要运行 ID 有效，`Result` 在任何错误时都不为 nil：暂停、停机、失败、saga 中止、取消：
 
 <!-- docsnip: setup ctx context.Context; a *agent.Agent; runID string; input string -->
 ```go
-res, err := a.RunResult(ctx, runID, input)
+res, err := a.Run(ctx, runID, agent.UserText(input),
+	agent.WithTokenBudget(50_000), agent.WithSystemPrompt("You are terse."))
 // res.Message, res.Usage, res.Spend, res.Turns, res.Duration, res.RunID
+_ = err
 ```
 
-过渡名 `RunMessage(ctx, runID, input, opts...)`（1.0 中为 `Run`）接受一个 `Message` 输入（文本，或文本加图像）和每次运行的选项，并在任何错误时也返回一个 `Result`。运行的首次驱动把它的输入和选项记入 `run:start`，之后的每次驱动（包括恢复）都在其下运行：不同的限额（`WithMaxTurns`、`WithTokenBudget`）作为修订 `run:limits:<n>` 记入日志，其他任何不同的设置都是 `ErrConfig`。`agent.Cancel` 取消一次运行（saga 会先回滚），`agent.Status` 从日志读取它的状态。
+运行的首次驱动把它的输入和选项记入 `run:start`，之后的每次驱动（包括恢复）都在其下运行：不同的限额（`WithMaxTurns`、`WithTokenBudget`）作为修订 `run:limits:<n>` 记入日志，其他任何不同的设置都是 `ErrConfig`。`agent.Cancel` 取消一次运行（saga 会先回滚），`agent.Status` 从日志读取它的状态。
 
 ## 流式（Streaming）
 
-`Run` 会阻塞并返回最终答案。要观察智能体工作（token 增量、轮次边界、工具开始/结束），请用 `Stream`。它驱动的是**同一个循环**（`Run` 字面上就是 `Stream(...).Final()`），所以持久性、恢复和副作用安全性是完全一致的：
+`Run` 会阻塞并返回最终答案。要观察智能体工作（token 增量、轮次边界、工具开始/结束），请用 `Stream`。它驱动的是**同一个循环**（`Stream(...).Result()` 返回的就是 `Run` 返回的），所以持久性、恢复和副作用安全性是完全一致的：
 
 <!-- docsnip: setup ctx context.Context; a *agent.Agent; runID string; input string -->
 ```go
-stream := a.Stream(ctx, runID, input)
+stream := a.Stream(ctx, runID, agent.UserText(input))
 for ev := range stream.Events() {
 	switch e := ev.(type) {
 	case agent.ModelEvent: // live token/reasoning/tool-call deltas
@@ -288,16 +299,16 @@ for ev := range stream.Events() {
 		fmt.Printf("[%s done]\n", e.Name)
 	}
 }
-answer, err := stream.Final() // terminal message + error (incl. a Pause: *ApprovalPending, *OutcomeUnknown, ...)
+res, err := stream.Result() // what Run returns: the Result and an error (incl. a pause: *ApprovalPending, *OutcomeUnknown, ...)
 ```
 
-事件：`TurnStarted`、`ModelEvent`（token 流）、`AssistantTurn`、`ToolStarted` / `ToolCompleted`、`ApprovalRequired`、`Finished`。为 UI 而 range `Events()` 然后调用 `Final()`，或者单独调用 `Final()` 以表现得与 `Run` 完全一样（它会替你把事件排空）。
+事件：`TurnStarted`、`ModelEvent`（token 流）、`AssistantTurn`、`ToolStarted` / `ToolCompleted`、`ApprovalRequired`、`Finished`。为 UI 而 range `Events()` 然后调用 `Result()`，或者单独调用 `Result()` 以表现得与 `Run` 完全一样（它会替你把事件排空）。
 
 有两件事值得知道，两者都是持久性的后果：
 - **token 增量在中间件链之下抵达**（Retry / Cost 仍然看到整条组装好的消息），而且**只在一次全新的模型调用上**出现。
 - **恢复时，记入日志的记录（transcript）会被重新发出**，作为 `AssistantTurn{Replayed: true}` + `ToolCompleted`，在实时进度之前，因此一个全新的 UI 能在一次崩溃之后重建整个故事，而一个被重放的轮次不产生 token 增量（它已经被决定了）。
 
-`StreamSaga` 是 `RunSaga` 的流式对应物。
+`Stream` 接受与 `Run` 相同的选项（saga 用 `WithSaga()`），它的 `RunStream.Result()` 返回 `Run` 会返回的内容。
 
 ## 类型化输出
 
@@ -310,22 +321,29 @@ type Weather struct {
 	TempF int    `json:"temp_f"`
 }
 
-w, err := agent.RunTyped[Weather](ctx, a, runID, "weather in SF?")
+w, _, err := a.RunTyped[Weather](ctx, runID, agent.UserText("weather in SF?"))
 // w.City == "SF", w.TempF == 68
 ```
 
-它是一个包函数，而非一个方法（Go 的方法不能添加类型参数）。该值是从*记入日志的*工具调用中解码出来的，所以它是**恢复安全的**：一次运行中途的崩溃会在恢复时从日志中把类型化的答案找回来。该工具接受的第一次 `final_answer` 调用即结束本次运行。只有当模型从未发出这样的调用（而是以纯 JSON 文本回复）时，`RunTyped` 才会解析该运行最后一轮的文本。`T` 必须是一个 JSON 对象（结构体、指向结构体的指针或 map），因为提供商只接受对象形式的工具参数；其他任何 `T` 都是 `ErrConfig`。
+它是一个 Go 1.27 泛型方法；它也返回运行的 `Result`（其 `Output` 是记入日志的答案）。该值是从*记入日志的*工具调用中解码出来的，所以它是**恢复安全的**：一次运行中途的崩溃会在恢复时从日志中把类型化的答案找回来。该工具接受的第一次 `final_answer` 调用即结束本次运行。只有当模型从未发出这样的调用（而是以纯 JSON 文本回复）时，`RunTyped` 才会解析该运行最后一轮的文本。`T` 必须是一个 JSON 对象（结构体、指向结构体的指针或 map），因为提供商只接受对象形式的工具参数；其他任何 `T` 都是 `ErrConfig`。
 
-在支持严格结构化输出的 OpenAI 兼容提供商上，`RunTypedNative[T]` 使用提供商原生的 JSON-schema 响应格式而非工具（schema 在提供商侧强制执行，无需工具往返）；Anthropic 适配器不支持它并返回 `ErrConfig`，所以在那里请用 `RunTyped` 以获得与提供商无关的输出。
+在支持严格结构化输出的 OpenAI 兼容提供商上，带 `agent.WithOutputMode(agent.OutputNative)` 的 `RunTyped[T]` 使用提供商原生的 JSON-schema 响应格式而非工具（schema 在提供商侧强制执行，无需工具往返）；Anthropic 适配器不支持它并返回 `ErrConfig`，所以在那里请用默认的工具模式以获得与提供商无关的输出。
 
 ## 采样（Sampling）
 
 生成控制项是与提供商无关的，且一次性设定；每个适配器把它们映射到自己的传输格式（并丢弃它做不到的，例如 Anthropic 没有 `seed`）：
 
-<!-- docsnip: setup model agent.Model; store agent.Durable; tools []agent.Tool -->
+<!-- docsnip: setup model agent.Model; store *agent.Journal; tools []agent.Tool -->
 ```go
-a := agent.New(model, store, tools...).
-	WithSampling(agent.Temperature(0), agent.MaxTokens(500), agent.TopP(0.9), agent.Seed(42))
+a, err := agent.New(
+	model,
+	store,
+	agent.WithTools(tools...),
+	agent.WithSampling(agent.Temperature(0), agent.MaxTokens(500), agent.TopP(0.9), agent.Seed(42)),
+)
+if err != nil {
+	panic(err)
+}
 ```
 
 字段在设计上是可选的：一个未设置的字段使用提供商默认值，因此一个显式的 `Temperature(0)` 有别于"未指定"。请求级的 `MaxTokens` 会覆盖适配器构造时的默认值。
@@ -348,8 +366,15 @@ model := anthropic.New(key, anthropic.WithPromptCache())
 <!-- docsnip: setup ctx context.Context; a *agent.Agent -->
 ```go
 s, _ := a.Session(ctx, "user-42")   // reopens + rebuilds the transcript from the store
-a1, _ := s.Send(ctx, "what's the capital of France?")
-a2, _ := s.Send(ctx, "and its population?")   // sees turn 1 in context
+r1, err := s.Send(ctx, agent.UserText("what's the capital of France?"))
+if err != nil {
+	panic(err)
+}
+r2, err := s.Send(ctx, agent.UserText("and its population?")) // sees turn 1 in context
+if err != nil {
+	panic(err)
+}
+fmt.Println(r1.Message.Text(), r2.Message.Text())
 ```
 
 记录按会话 id 逐轮记入日志，因此一个重启的进程 `a.Session(ctx, "user-42")` 会把它重建出来并继续。第 N 轮在 `"<id>>@turn/N"` 之下运行（它自己的持久化日志处理该轮*之内*的崩溃恢复）；对话记忆是问答记录：一轮的中间工具调用留在那一轮里，不会泄漏进后面的轮次。如果一轮暂停了（批准 / `Interrupt`），`Send` 会返回那个错误；解决它，然后用相同的输入再次调用 `Send` 以恢复。在此之前，用一条不同的消息调用 `Send` 会返回 `ErrConfig`：那个未完成的轮次属于它自己的消息。对于可能被重投递的入站消息，`SendOnce(ctx, id, text)` 对每个消息 id 只回答一次。同一个会话上的多个句柄既不会丢失任何一轮，也不会把一轮记录两次，也不会用另一条消息的回复来回答某条消息。在支持租约的存储上（`MemStore`、SQLite、Postgres），一轮在其运行的租约下同一时间只由一个 worker 驱动，因此它的 token 预算在多个 worker 之间依然成立；在此期间收到同一条消息的第二个 worker 会得到 `ErrTurnContended`，稍后再发送一次即可。运行被取消的 Send 轮次会被记为关闭：该消息的 `Send` 返回 `ErrRunCancelled`，下一条消息的 `Send` 把该轮记为关闭（没有回答）并运行自己的轮次。
@@ -358,9 +383,9 @@ a2, _ := s.Send(ctx, "and its population?")   // sees turn 1 in context
 
 那条持久化日志已经记录了一次运行的每一步。`audit` 包用一条哈希链承诺那段历史，从而一次运行的执行是可验证的：
 
-<!-- docsnip: setup ctx context.Context; store agent.Durable; runID string; priv ed25519.PrivateKey -->
+<!-- docsnip: setup ctx context.Context; store *agent.Journal; runID string; priv ed25519.PrivateKey -->
 ```go
-head, _ := audit.Head(ctx, store, runID)     // SHA-256 chain over the journal (persisted order)
+head, _ := audit.Head(ctx, store, runID)                     // SHA-256 chain over the stored journal bytes
 sig, _ := audit.Sign(head, audit.Ed25519Signer{Priv: priv}) // anchor it: sign / publish out-of-band
 ```
 
@@ -386,11 +411,11 @@ type Retriever interface {
 <!-- docsnip: setup model agent.Model; journal *agent.Journal; myStore agent.Retriever -->
 ```go
 // Agentic RAG: the model searches on demand:
-a, err := agent.Build(model, journal,
-	agent.WithTools(agent.RetrievalTool("search_kb", "Search the knowledge base.", myStore, 5)))
+a, err := agent.New(model, journal,
+	agent.WithTools(agent.MustRetrievalTool("search_kb", "Search the knowledge base.", myStore, 5)))
 
 // Classic RAG: top-k auto-injected as context on each user turn:
-a, err = agent.Build(model, journal, agent.WithRetrieval(myStore, 5))
+a, err = agent.New(model, journal, agent.WithRetrieval(myStore, 5))
 ```
 
 对话记忆已经内建（`Session`）；动态上下文经由 `WithSystemPromptFunc`；这条接缝覆盖语义/长期记忆。具体的存储适配器（如果真有需要的话）会是独立的模块，绝不进入核心。见 [docs/guides/rag-memory.md](../../docs/guides/rag-memory.md)。
@@ -416,34 +441,41 @@ agent.WithApproval(agent.SingleApproval()) // not Safety: a tool option that pau
 
 三种风味。**批准/拒绝**：一个标记了 `WithApproval(SingleApproval())` 的工具在运行*之前*暂停；人类的决定是一个布尔：
 
-<!-- docsnip: setup ctx context.Context; a *agent.Agent; store agent.Durable; runID string; input string -->
+<!-- docsnip: setup ctx context.Context; a *agent.Agent; store *agent.Journal; runID string; input string -->
 ```go
-_, err := a.Run(ctx, runID, input)
+_, err := a.Run(ctx, runID, agent.UserText(input))
 if pend, ok := errors.AsType[*agent.ApprovalPending](err); ok {
 	// ... get a human decision ...
 	agent.Approve(ctx, store, pend.RunID, pend.ToolUseID, true)
-	out, _ := a.Run(ctx, pend.RootRunID, input) // resumes past the pause
+	res, _ := a.Run(ctx, pend.RootRunID, agent.UserText(input))
+	var out agent.Message
+	if res != nil {
+		out = res.Message
+	} // resumes past the pause
 }
 ```
 
 **中断/恢复**：一个工具在*任意点*暂停，并以一个*类型化的*值恢复（推广了那个布尔）。在一个可重试安全的工具内调用 `agent.Interrupt[T]`：
 
-<!-- docsnip: setup ctx context.Context; a *agent.Agent; store agent.Durable; runID string; input string; type Options struct{}; type Plan struct{}; chosenPlan Plan -->
+<!-- docsnip: setup ctx context.Context; a *agent.Agent; store *agent.Journal; runID string; input string; type Options struct{}; type Plan struct{}; chosenPlan Plan -->
 ```go
-tool := agent.Func("choose_plan", "pick a plan", agent.Safety{ReadOnly: true},
-	func(ctx context.Context, in Options) (Plan, error) {
+tool := agent.MustFunc("choose_plan", "pick a plan", func(ctx context.Context, in Options) (Plan, error) {
 		pick, err := agent.Interrupt[Plan](ctx, "plan", in) // pauses the run; in is shown to the human
 		if err != nil {
 			return Plan{}, err // *InterruptPending propagates out of Run
 		}
 		return pick, nil // on resume, pick is the human's typed answer
-	})
+	}, agent.WithSafety(agent.Safety{ReadOnly: true}))
 
-_, err := a.Run(ctx, runID, input)
+_, err := a.Run(ctx, runID, agent.UserText(input))
 if intr, ok := errors.AsType[*agent.InterruptPending](err); ok {
 	// ... show intr.Prompt, get a typed answer ...
-	agent.AnswerInterrupt(ctx, store, intr.RunID, intr.Name, chosenPlan)
-	out, _ := a.Run(ctx, intr.RootRunID, input) // resumes; Interrupt now returns chosenPlan
+	store.AnswerInterrupt(ctx, intr.RunID, intr.Name, chosenPlan)
+	res, _ := a.Run(ctx, intr.RootRunID, agent.UserText(input))
+	var out agent.Message
+	if res != nil {
+		out = res.Message
+	} // resumes; Interrupt now returns chosenPlan
 }
 ```
 
@@ -451,11 +483,14 @@ if intr, ok := errors.AsType[*agent.InterruptPending](err); ok {
 
 **m-of-n 批准**：当一次签核不够时，要求来自一个具名的 n 位批准人集合中的 k 份签名决定。每位批准人签署的是确切的那次调用（工具及其参数）；该门在达到 k 份批准时放行，一旦 k 不再可达就拒绝，否则带着当前计票暂停。一份伪造或出错的决定会被忽略，而不会把它的批准人锁在门外：
 
-<!-- docsnip: setup ctx context.Context; model agent.Model; store agent.Durable; pend *agent.ApprovalPending; type RefundArgs struct{}; doRefund func(context.Context, RefundArgs) (string, error); keysByApprover agent.ApproverVerifierFor; signer audit.Signer -->
+<!-- docsnip: setup ctx context.Context; model agent.Model; store *agent.Journal; pend *agent.ApprovalPending; type RefundArgs struct{}; doRefund func(context.Context, RefundArgs) (string, error); keysByApprover agent.ApproverVerifierFor; signer audit.Signer -->
 ```go
-refund := agent.Func("refund", "refund the order", agent.Safety{}, doRefund,
+refund := agent.MustFunc("refund", "refund the order", doRefund,
 	agent.WithApproval(&agent.ApprovalPolicy{Need: 2, Approvers: []string{"ops", "finance", "risk"}}))
-a := agent.New(model, store, refund).WithApproverVerifiers(keysByApprover)
+a, err := agent.New(model, store, agent.WithTools(refund), agent.WithApproverVerifiers(keysByApprover))
+if err != nil {
+	panic(err)
+}
 
 // each approver, out of band, signs the paused call they were shown:
 sig, _ := signer.Sign(agent.ApprovalDecisionBytes(pend.Subject(), "finance", true))
@@ -471,7 +506,7 @@ agent.SubmitDecision(ctx, store, agent.Decision{RunID: pend.RunID, ToolUseID: pe
 
 <!-- docsnip: setup ctx context.Context; a *agent.Agent; runID string; input string; func backOffAndRetry(); func fixToolWiring(); func alertOps() -->
 ```go
-_, err := a.Run(ctx, runID, input)
+_, err := a.Run(ctx, runID, agent.UserText(input))
 switch {
 case errors.Is(err, agent.ErrModel):       // any provider fault (HTTP status, decode, stream)
 	backOffAndRetry()
@@ -484,26 +519,33 @@ case errors.Is(err, agent.ErrStorage):      // durable-store I/O
 
 类别：`ErrConfig`、`ErrModel`、`ErrTool`、`ErrStorage`、`ErrProtocol`、`ErrBudget`。条件（每一个都包裹一个类别）：`ErrUnknownTool`、`ErrToolArgs`（包裹 `ErrTool`）；`ErrToolReinvoked`、`ErrInvalidApproval`、`ErrAlreadyDecided`（包裹 `ErrConfig`）；`ErrNoRecordedOutput`、`ErrIncompleteResponse`（包裹 `ErrModel`）；`ErrTruncatedToolArgs`（包裹 `ErrProtocol`）；`ErrBudgetExceeded`、`ErrMaxTurns`（包裹 `ErrBudget`）。`ErrToolNotCalled` 不包裹任何类别：它标记一次已知从未到达其工具的工具调用（工具中间件的拒绝会包裹它）。提供商适配器还会返回 `*RateLimited`（HTTP 429，附带一个 `RetryAfter` 提示）和 `*APIError`（其他非 2xx，附带 `StatusCode`），两者都包裹 `ErrModel`。该工具包返回的每一个错误（包括来自模型、MCP、存储和治理适配器的）都带有一个类别，所以 `errors.Is` 在整个表面上都是可靠的。
 
-而**控制流信号**比一个类别更丰富，所以它们保持为具体类型，由 `errors.As` 匹配：`*ApprovalPending`（需要批准）、`*InterruptPending`（等待人类输入）、`*TimerPending`（持久化定时器待触发）、`*SignalPending`（等待一个外部信号）、`*OutcomeUnknown`（恢复不安全）、`*SagaAborted`（已回滚），以及 `*HaltTooYoung`（来自 `ResolveHaltRef`，当 `WithMinHaltAge` 尚未到期时）。它们都实现了密封接口 `agent.Pause`；用 `agent.IsPause(err)` 判断，用 `agent.AsPause(err)` 读取。一个暂停或停机的运行不是一个"失败"类别；检视那个结构体以获取 `RunID` / `ToolUseID` / 补偿细节。取消以通常的 `context.Canceled` / `context.DeadlineExceeded` 浮现，而一次因其运行租约（`agent.Lease`）丢失而被取消的驱动则以 `ErrLeaseLost` 浮现；与取消一样，它不带任何类别。
+而**控制流信号**比一个类别更丰富，所以它们保持为具体类型，由 `errors.As` 匹配：`*ApprovalPending`（需要批准）、`*InterruptPending`（等待人类输入）、`*TimerPending`（持久化定时器待触发）、`*SignalPending`（等待一个外部信号）、`*OutcomeUnknown`（恢复不安全）、`*SagaAborted`（已回滚），以及 `*HaltTooYoung`（来自 `ResolveHalt`，当 `WithMinHaltAge` 尚未到期时）。它们都实现了密封接口 `agent.Pause`；用 `agent.IsPause(err)` 判断，用 `agent.AsPause(err)` 读取。一个暂停或停机的运行不是一个"失败"类别；检视那个结构体以获取 `RunID` / `ToolUseID` / 补偿细节。取消以通常的 `context.Canceled` / `context.DeadlineExceeded` 浮现，而一次因其运行租约（`agent.Lease`）丢失而被取消的驱动则以 `ErrLeaseLost` 浮现；与取消一样，它不带任何类别。
 
 ## 中间件与可观测性
 
-两条独立的 `func(Handler) Handler` 链，位于两个重要的边界上：模型调用（`Use`）和每一次工具调用（`UseTool`）。最先添加 = 最外层。两者都是*可变更且可短路的*：改写送进去的东西、变换出来的东西，或者不调用 `next` 就返回。
+两条独立的 `func(Handler) Handler` 链，位于两个重要的边界上：模型调用（`WithMiddleware`）和每一次工具调用（`WithToolMiddleware`）。最先添加 = 最外层。两者都是*可变更且可短路的*：改写送进去的东西、变换出来的东西，或者不调用 `next` 就返回。
 
-<!-- docsnip: setup model agent.Model; store agent.Durable; tools []agent.Tool; import oteltrace "go.opentelemetry.io/otel/trace"; tracer oteltrace.Tracer -->
+<!-- docsnip: setup model agent.Model; store *agent.Journal; tools []agent.Tool; import oteltrace "go.opentelemetry.io/otel/trace"; tracer oteltrace.Tracer -->
 ```go
 var cost middleware.CostMeter
-a := agent.New(model, store, tools...).
-	WithTokenBudget(100_000). // per run, rebuilt from the journal on resume
-	Use(
+a, err := agent.New(model, store,
+	agent.WithTools(tools...),
+	agent.WithTokenBudget(100_000), // per run, rebuilt from the journal on resume
+	agent.WithMiddleware(
 		middleware.Retry(3, middleware.WithBackoff(200*time.Millisecond, 10*time.Second)),
 		middleware.Cost(&cost, middleware.Rates{InputPer1M: 3, OutputPer1M: 15}),
-	).
-	UseTool(middleware.ToolLog(log.Printf), middleware.ToolCache(), middleware.ToolRetry(3))
+	),
+	agent.WithToolMiddleware(middleware.ToolLog(log.Printf), middleware.ToolCache(), middleware.ToolRetry(3)),
+)
+if err != nil {
+	panic(err)
+}
 
 // opt-in OTel gen_ai.* spans (provider and model from agent.ModelInfoOf); the core has no OTel dependency:
-a.Use(trace.Model(tracer))
-a.UseTool(trace.Tool(tracer)) // execute_tool span per call; nests across the sub-agent boundary
+a, err = a.With(
+	agent.WithMiddleware(trace.Model(tracer)),
+	agent.WithToolMiddleware(trace.Tool(tracer)), // execute_tool span per call; nests across the sub-agent boundary
+)
 // ... after the run: cost.Snapshot() (answer and spend, in tokens and USD)
 ```
 
@@ -532,7 +574,7 @@ func RequireTag(tag string) agent.ToolMiddleware {
 
 ## 模块
 
-Bide 是一个多模块仓库：一个依赖精简的**核心**（`github.com/bide-ai/bide`，即循环、schema、中间件、模型适配器、`plan` 流程构建器、`audit`；依赖仅有 `x/sync` + `x/text`），外加每个重型适配器一个模块（`mcp`、`trace`、`store/sqlite`、`store/postgres`、`govern/redislog`、`govern/sqlitelog`、`govern/postgreslog`、`codec/gcf`），以及承载 gsm 的 `govern` 模块（在 gsm 稳定之前保持 v0.x）。导入一个适配器，你就拉进它的依赖树；只导入核心，你就不会。一个仅用核心的消费者，其外部模块表面是 2，而不是 54。见 [docs/reference/module-structure.md](../../docs/reference/module-structure.md)。
+Bide 是一个多模块仓库：一个依赖精简的**核心**（`github.com/bide-ai/bide`，即循环、schema、中间件、模型适配器、`plan` 流程构建器、`audit`；依赖仅有 `x/sync` + `x/text`），外加每个重型适配器一个模块（`mcptools`、`trace`、`store/sqlite`、`store/postgres`、`govern/redislog`、`govern/sqlitelog`、`govern/postgreslog`、`codec/gcf`），以及承载 gsm 的 `govern` 模块（在 gsm 稳定之前保持 v0.x）。导入一个适配器，你就拉进它的依赖树；只导入核心，你就不会。一个仅用核心的消费者，其外部模块表面是 2，而不是 54。见 [docs/reference/module-structure.md](../../docs/reference/module-structure.md)。
 
 ## 架构
 
@@ -576,7 +618,7 @@ tool := govern.EventTool(gov, govern.EventToolConfig{Name: "pay", Description: "
 **手写与构建**
 
 - **[流程](../../docs/guides/flows.md)**：`plan` 类型化流程构建器。手写下沉到同一条日志的拓扑（`Step`/`Tool`/`Model`/`Switch`/`Join`/`LoopBack`），然后证明一次运行遵循了它（`Conform`）。可在 `examples/plan` 中运行。
-- **[持久化步骤](../../docs/guides/durable-steps.md)**：组合你自己的持久化工作：`Step`、`Parallel`/`Task` 扇入、saga（`RunSaga`）以及持久化定时器（`Sleep`/`WaitUntil`）。可在 `examples/parallel` 中运行。
+- **[持久化步骤](../../docs/guides/durable-steps.md)**：组合你自己的持久化工作：`Step`、`Parallel`/`Task` 扇入、saga（`WithSaga`）以及持久化定时器（`Sleep`/`WaitUntil`）。可在 `examples/parallel` 中运行。
 - **[可靠性](../../docs/guides/reliability.md)**：按尝试计的超时、分类的重试、对冲式模型调用、限流和成本跟踪，以及它们如何组合。可在 `examples/hedge` 中运行。
 - **[信号与环境运行](../../docs/guides/signals.md)**：把外部事件接收进一次运行：持久化定时器和 `Waker`、人在回路（`Interrupt`/`AnswerInterrupt`），以及持久化信号（传输进来是至少一次，应用出去是恰好一次）。可在 `examples/signals`、`examples/interrupt` 中运行。
 - **[模型](../../docs/guides/models.md)**：Anthropic、OpenAI 兼容和 Gemini 适配器：`WithBaseURL`、采样、提示缓存、类型化错误和多模态图像输入。

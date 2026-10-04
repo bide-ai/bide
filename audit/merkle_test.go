@@ -7,6 +7,7 @@ import (
 	"testing"
 
 	"github.com/bide-ai/bide/agent"
+	"github.com/bide-ai/bide/agent/agenttest"
 )
 
 // ctLeaves / ctRoots are the canonical RFC 6962 (Certificate Transparency) reference test
@@ -74,9 +75,9 @@ func TestMerkle_InclusionRoundTrip(t *testing.T) {
 // Selective disclosure over a real journal: prove one record is in the committed run using
 // only that record + its proof + the root — no other records revealed.
 func TestMerkle_JournalSelectiveDisclosure(t *testing.T) {
-	store := agent.NewMemStore()
+	store := agenttest.MemJournal()
 	for i, v := range []string{"open-case", "charge-500", "email-receipt", "close-case"} {
-		if _, err := agent.Step(context.Background(), store, "run", fmt.Sprintf("s%d", i),
+		if _, err := store.Step(context.Background(), "run", fmt.Sprintf("s%d", i),
 			func(context.Context) (string, error) { return v, nil }, agent.WithSafety(agent.Safety{ReadOnly: true})); err != nil {
 			t.Fatal(err)
 		}

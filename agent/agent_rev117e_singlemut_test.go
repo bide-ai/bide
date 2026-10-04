@@ -14,11 +14,7 @@ type specOnlyTool struct {
 	calls *atomic.Int32
 }
 
-func (t specOnlyTool) Name() string                { return t.spec.Name }
-func (t specOnlyTool) Description() string         { return t.spec.Description }
-func (t specOnlyTool) ArgsSchema() json.RawMessage { return json.RawMessage(`{"type":"object"}`) }
-func (t specOnlyTool) Safety() Safety              { return t.spec.Safety }
-func (t specOnlyTool) Spec() ToolSpec              { return t.spec }
+func (t specOnlyTool) Spec() ToolSpec { return t.spec }
 func (t specOnlyTool) Call(context.Context, json.RawMessage) (json.RawMessage, error) {
 	t.calls.Add(1)
 	return json.RawMessage(`"sent"`), nil
@@ -34,11 +30,17 @@ func TestRev117e_MutatedSingleApprovalFiresThenCannotRecord(t *testing.T) {
 	p.Need = 2
 	var calls atomic.Int32
 	tool := specOnlyTool{spec: ToolSpec{Name: "send", Approval: p}, calls: &calls}
-	store := NewMemStore()
+	store := memJournal()
 	m := NewScriptedModel(ToolTurn("c1", "send", `{}`), TextTurn("done"))
-	a := New(m, store, tool)
+	a, err := New(m, store, WithTools(tool))
+	if errors.Is(err, ErrConfig) && calls.Load() == 0 {
+		return // refused up front, when the agent is built: sound
+	}
+	if err != nil {
+		t.Fatal(err)
+	}
 	ctx := context.Background()
-	_, err := a.Run(ctx, "r", "go")
+	_, err = a.Run(ctx, "r", UserText("go"))
 	var ap *ApprovalPending
 	if !errors.As(err, &ap) {
 		if errors.Is(err, ErrConfig) && calls.Load() == 0 {
@@ -49,7 +51,7 @@ func TestRev117e_MutatedSingleApprovalFiresThenCannotRecord(t *testing.T) {
 	if err := Approve(ctx, store, "r", "c1", true); err != nil {
 		t.Fatal(err)
 	}
-	_, err = a.Run(ctx, "r", "go")
+	_, err = a.Run(ctx, "r", UserText("go"))
 	if calls.Load() > 0 && err != nil {
 		t.Fatalf("the tool ran %d time(s) and the run then failed with %v", calls.Load(), err)
 	}

@@ -197,7 +197,6 @@ func TestRV120c_StorePinned(t *testing.T) {
 		return s
 	}
 	storetest.Run(t, func(t *testing.T) agent.Store { return open(t) })
-	storetest.RunDurable(t, func(t *testing.T) agent.Durable { return open(t) })
 }
 
 // Reserved schema names: pg_temp names the session's temporary schema even quoted, so a store

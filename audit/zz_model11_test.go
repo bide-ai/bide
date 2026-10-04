@@ -14,6 +14,7 @@ import (
 	"time"
 
 	"github.com/bide-ai/bide/agent"
+	"github.com/bide-ai/bide/agent/agenttest"
 )
 
 func m11Root(t *testing.T, signer Signer, id string) SignedGrant {
@@ -33,39 +34,49 @@ func m11Root(t *testing.T, signer Signer, id string) SignedGrant {
 // match, whichever of the two is bound.
 func TestModel11_D1_RollbackAcrossRotatedGrants(t *testing.T) {
 	ctx := context.Background()
-	store := agent.NewMemStore()
+	store := agenttest.MemJournal()
 	signer := rev117eSigner(t)
 	p1, p2 := m11Root(t, signer, "p1"), m11Root(t, signer, "p2")
 	var refunds atomic.Int32
 	charge := func(name string) agent.Tool {
-		return agent.CompensatedFunc(name, "a write", agent.Safety{},
-			func(context.Context, struct{}) (string, error) { return "charged", nil },
+		return agent.MustCompensatedFunc(name, "a write", func(context.Context, struct{}) (string, error) { return "charged", nil },
 			func(context.Context, struct{}, string) error { refunds.Add(1); return nil })
 	}
-	boom := agent.Func("boom", "fails", agent.Safety{}, func(context.Context, struct{}) (string, error) {
+	boom := agent.MustFunc("boom", "fails", func(context.Context, struct{}) (string, error) {
 		return "", errors.New("sold out")
 	})
 	cfg := AttenuationConfig{Store: store, Narrow: narrowLimitBy(1), Rules: rev117eRules}
 	tools := func() []agent.Tool {
-		sub1 := agent.New(agent.NewScriptedModel(agent.ToolTurn("s1", "charge1", `{}`), agent.TextTurn("d1 done")), store, charge("charge1"))
-		sub2 := agent.New(agent.NewScriptedModel(agent.ToolTurn("s2", "charge2", `{}`), agent.ToolTurn("s3", "boom", `{}`), agent.TextTurn("x")),
-			store, charge("charge2"), boom)
+		sub1 := agenttest.MustNew(
+			agenttest.NewScriptedModel(agenttest.ToolTurn("s1", "charge1", `{}`), agenttest.TextTurn("d1 done")),
+			store,
+			agent.WithTools(charge("charge1")),
+		)
+		sub2 := agenttest.MustNew(
+			agenttest.NewScriptedModel(agenttest.ToolTurn("s2", "charge2", `{}`), agenttest.ToolTurn("s3", "boom", `{}`), agenttest.TextTurn("x")),
+			store,
+			agent.WithTools(charge("charge2"), boom),
+		)
 		return []agent.Tool{AttenuatingSubAgent("d1", "first", sub1, cfg), AttenuatingSubAgent("d2", "second", sub2, cfg)}
 	}
 	// Drive 1, under p1: d1 delegates and finishes; the next model turn fails (the run stops).
-	parent1 := agent.New(agent.NewScriptedModel(agent.ToolTurn("c1", "d1", `{"task":"a"}`), agent.ErrorTurn(errors.New("provider down"))), store, tools()...)
-	if _, err := parent1.RunSaga(WithGrant(ctx, p1, signer), "trip", "go"); err == nil {
+	parent1 := agenttest.MustNew(
+		agenttest.NewScriptedModel(agenttest.ToolTurn("c1", "d1", `{"task":"a"}`), agenttest.ErrorTurn(errors.New("provider down"))),
+		store,
+		agent.WithTools(tools()...),
+	)
+	if _, err := parent1.Run(WithGrant(ctx, p1, signer), "trip", agent.UserText("go"), agent.WithSaga()); err == nil {
 		t.Fatal("drive 1: want the provider error")
 	}
 	// Drive 2, under p2 (the rotated grant): d2 mints from p2, its sub-run fails, the saga rolls back.
 	script := func() agent.Model {
-		return agent.NewScriptedModel(agent.ToolTurn("c1", "d1", `{"task":"a"}`), agent.ToolTurn("c2", "d2", `{"task":"b"}`), agent.TextTurn("x"))
+		return agenttest.NewScriptedModel(agenttest.ToolTurn("c1", "d1", `{"task":"a"}`), agenttest.ToolTurn("c2", "d2", `{"task":"b"}`), agenttest.TextTurn("x"))
 	}
 	drive := func(ctx context.Context) *agent.SagaAborted {
-		_, err := agent.New(script(), store, tools()...).RunSaga(ctx, "trip", "go")
+		_, err := agenttest.MustNew(script(), store, agent.WithTools(tools()...)).Run(ctx, "trip", agent.UserText("go"), agent.WithSaga())
 		var ab *agent.SagaAborted
 		if !errors.As(err, &ab) {
-			t.Fatalf("RunSaga = %v, want *SagaAborted", err)
+			t.Fatalf("saga Run = %v, want *SagaAborted", err)
 		}
 		return ab
 	}
@@ -90,7 +101,7 @@ func TestModel11_D1_RollbackAcrossRotatedGrants(t *testing.T) {
 // under the delegated grant, is refused by CallGuard for the same call.
 func TestModel11_D2_RollbackRerunAfterGrantExpiry(t *testing.T) {
 	ctx := context.Background()
-	store := agent.NewMemStore()
+	store := agenttest.MemJournal()
 	signer := rev117eSigner(t)
 	notAfter := time.Now().Unix() + 1
 	narrow := func(parent Grant, sub string) Grant {
@@ -99,23 +110,27 @@ func TestModel11_D2_RollbackRerunAfterGrantExpiry(t *testing.T) {
 		return g
 	}
 	var calls, undone atomic.Int32
-	idem := agent.CompensatedFunc("idem", "a retry-safe write", agent.Safety{Idempotent: true},
-		func(context.Context, struct{}) (string, error) { calls.Add(1); return "set", nil },
-		func(context.Context, struct{}, string) error { undone.Add(1); return nil })
+	idem := agent.MustCompensatedFunc("idem", "a retry-safe write", func(context.Context, struct{}) (string, error) { calls.Add(1); return "set", nil },
+		func(context.Context, struct{}, string) error { undone.Add(1); return nil }, agent.WithSafety(agent.Safety{Idempotent: true}))
 	// boom fails once the grant has expired, so the sub-run's own saga rolls back after expiry.
-	boom := agent.Func("boom", "fails", agent.Safety{}, func(context.Context, struct{}) (string, error) {
+	boom := agent.MustFunc("boom", "fails", func(context.Context, struct{}) (string, error) {
 		for time.Now().Unix() <= notAfter {
 			time.Sleep(20 * time.Millisecond)
 		}
 		return "", errors.New("sold out")
 	})
-	sub := agent.New(rev117eMultiModel{calls: [][2]string{{"s1", "boom"}, {"s2", "idem"}}}, store, boom, idem).SetMaxConcurrency(1)
+	sub := agenttest.MustNew(
+		rev117eMultiModel{calls: [][2]string{{"s1", "boom"}, {"s2", "idem"}}},
+		store,
+		agent.WithTools(boom, idem),
+		agent.WithMaxConcurrency(1),
+	)
 	deleg := AttenuatingSubAgent("deleg", "d", sub, AttenuationConfig{Store: store, Narrow: narrow, Rules: rev117eRules})
-	parent := agent.New(rev117eMultiModel{calls: [][2]string{{"c1", "deleg"}}}, store, deleg)
-	_, err := parent.RunSaga(WithGrant(ctx, m11Root(t, signer, "p"), signer), "trip", "go")
+	parent := agenttest.MustNew(rev117eMultiModel{calls: [][2]string{{"c1", "deleg"}}}, store, agent.WithTools(deleg))
+	_, err := parent.Run(WithGrant(ctx, m11Root(t, signer, "p"), signer), "trip", agent.UserText("go"), agent.WithSaga())
 	var ab *agent.SagaAborted
 	if !errors.As(err, &ab) {
-		t.Fatalf("RunSaga = %v, want *SagaAborted", err)
+		t.Fatalf("saga Run = %v, want *SagaAborted", err)
 	}
 	t.Logf("compensated %v, unknown %v, err %v; idem called %d times, undone %d", ab.Compensated, ab.UnknownOutcome, ab.CompensateErr, calls.Load(), undone.Load())
 	if calls.Load() != 0 {
@@ -127,45 +142,48 @@ func TestModel11_D2_RollbackRerunAfterGrantExpiry(t *testing.T) {
 }
 
 // D3 (findings/d3-plain-deleg): a saga's call starts a plain programmatic sub-run (Run, not
-// RunSaga); in it, a sub-agent's run makes a compensable write and then fails, so the plain run
+// saga Run); in it, a sub-agent's run makes a compensable write and then fails, so the plain run
 // records the sub-agent call as an error result and goes on. The saga's rollback walks the
 // sub-run, but rollbackRun skips a call with an error result before its sub-agent recursion, so
 // the write is neither compensated nor listed.
 func TestModel11_D3_FailedSubAgentInPlainSubRunSkipped(t *testing.T) {
 	ctx := context.Background()
-	store := agent.NewMemStore()
+	store := agenttest.MemJournal()
 	var undone atomic.Int32
-	charge := agent.CompensatedFunc("charge", "a write", agent.Safety{},
-		func(context.Context, struct{}) (string, error) { return "charged", nil },
+	charge := agent.MustCompensatedFunc("charge", "a write", func(context.Context, struct{}) (string, error) { return "charged", nil },
 		func(context.Context, struct{}, string) error { undone.Add(1); return nil })
 	build := func(m agent.Model, tools ...agent.Tool) *agent.Agent {
-		a, err := agent.Build(m, store.Journal(), agent.WithTools(tools...))
+		a, err := agent.New(m, store, agent.WithTools(tools...))
 		if err != nil {
 			t.Fatal(err)
 		}
 		return a
 	}
-	grand := build(agent.NewScriptedModel(agent.ToolTurn("g1", "charge", `{}`), agent.ErrorTurn(errors.New("provider rejected the request"))), charge)
-	child := build(agent.NewScriptedModel(agent.ToolTurn("k1", "worker", `{"task":"w"}`), agent.TextTurn("child done")),
-		agent.SubAgent("worker", "w", grand))
-	starter := agent.Func("starter", "", agent.Safety{ReadOnly: true}, func(ctx context.Context, _ struct{}) (string, error) {
+	grand := build(agenttest.NewScriptedModel(agenttest.ToolTurn("g1", "charge", `{}`), agenttest.ErrorTurn(errors.New("provider rejected the request"))), charge)
+	child := build(agenttest.NewScriptedModel(agenttest.ToolTurn("k1", "worker", `{"task":"w"}`), agenttest.TextTurn("child done")),
+		agent.MustSubAgent("worker", "w", grand))
+	starter := agent.MustFunc("starter", "", func(ctx context.Context, _ struct{}) (string, error) {
 		info, _ := agent.RunInfoFrom(ctx)
-		msg, err := child.Run(ctx, info.SubRunFor("child"), "work")
+		res, err := child.Run(ctx, info.SubRunFor("child"), agent.UserText("work"))
+		var msg agent.Message
+		if res != nil {
+			msg = res.Message
+		}
 		return msg.Text(), err
-	}, agent.WithSubRuns(func(name string) *agent.Agent {
+	}, agent.WithSafety(agent.Safety{ReadOnly: true}), agent.WithSubRuns(func(name string) *agent.Agent {
 		if name == "child" {
 			return child
 		}
 		return nil
 	}))
-	boom := agent.Func("boom", "", agent.Safety{}, func(context.Context, struct{}) (string, error) {
+	boom := agent.MustFunc("boom", "", func(context.Context, struct{}) (string, error) {
 		return "", errors.New("boom")
 	})
-	parent := build(agent.NewScriptedModel(agent.ToolTurn("c1", "starter", `{}`), agent.ToolTurn("c2", "boom", `{}`), agent.TextTurn("x")), starter, boom)
-	_, err := parent.RunSaga(ctx, "p", "go")
+	parent := build(agenttest.NewScriptedModel(agenttest.ToolTurn("c1", "starter", `{}`), agenttest.ToolTurn("c2", "boom", `{}`), agenttest.TextTurn("x")), starter, boom)
+	_, err := parent.Run(ctx, "p", agent.UserText("go"), agent.WithSaga())
 	var ab *agent.SagaAborted
 	if !errors.As(err, &ab) {
-		t.Fatalf("RunSaga = %v, want *SagaAborted", err)
+		t.Fatalf("saga Run = %v, want *SagaAborted", err)
 	}
 	t.Logf("compensated %v, uncompensated %v, unknown %v, err %v", ab.Compensated, ab.Uncompensated, ab.UnknownOutcome, ab.CompensateErr)
 	listed := slices.Contains(ab.Uncompensated, "charge") || slices.Contains(ab.Uncompensated, "worker")
@@ -185,35 +203,45 @@ func TestModel11_D3_FailedSubAgentInPlainSubRunSkipped(t *testing.T) {
 // the wrong signer verifies nothing.
 func TestModel11_D1_RollbackAcrossRotatedKeys(t *testing.T) {
 	ctx := context.Background()
-	store := agent.NewMemStore()
+	store := agenttest.MemJournal()
 	oldSigner, newSigner := rev117eSigner(t), rev117eSigner(t)
 	p1, p2 := m11Root(t, oldSigner, "p1"), m11Root(t, newSigner, "p2")
 	var refunds atomic.Int32
 	charge := func(name string) agent.Tool {
-		return agent.CompensatedFunc(name, "a write", agent.Safety{},
-			func(context.Context, struct{}) (string, error) { return "charged", nil },
+		return agent.MustCompensatedFunc(name, "a write", func(context.Context, struct{}) (string, error) { return "charged", nil },
 			func(context.Context, struct{}, string) error { refunds.Add(1); return nil })
 	}
-	boom := agent.Func("boom", "fails", agent.Safety{}, func(context.Context, struct{}) (string, error) {
+	boom := agent.MustFunc("boom", "fails", func(context.Context, struct{}) (string, error) {
 		return "", errors.New("sold out")
 	})
 	cfg := AttenuationConfig{Store: store, Narrow: narrowLimitBy(1), Rules: rev117eRules}
 	tools := func() []agent.Tool {
-		sub1 := agent.New(agent.NewScriptedModel(agent.ToolTurn("s1", "charge1", `{}`), agent.TextTurn("d1 done")), store, charge("charge1"))
-		sub2 := agent.New(agent.NewScriptedModel(agent.ToolTurn("s2", "charge2", `{}`), agent.ToolTurn("s3", "boom", `{}`), agent.TextTurn("x")),
-			store, charge("charge2"), boom)
+		sub1 := agenttest.MustNew(
+			agenttest.NewScriptedModel(agenttest.ToolTurn("s1", "charge1", `{}`), agenttest.TextTurn("d1 done")),
+			store,
+			agent.WithTools(charge("charge1")),
+		)
+		sub2 := agenttest.MustNew(
+			agenttest.NewScriptedModel(agenttest.ToolTurn("s2", "charge2", `{}`), agenttest.ToolTurn("s3", "boom", `{}`), agenttest.TextTurn("x")),
+			store,
+			agent.WithTools(charge("charge2"), boom),
+		)
 		return []agent.Tool{AttenuatingSubAgent("d1", "first", sub1, cfg), AttenuatingSubAgent("d2", "second", sub2, cfg)}
 	}
-	parent1 := agent.New(agent.NewScriptedModel(agent.ToolTurn("c1", "d1", `{"task":"a"}`), agent.ErrorTurn(errors.New("provider down"))), store, tools()...)
-	if _, err := parent1.RunSaga(WithGrant(ctx, p1, oldSigner), "trip", "go"); err == nil {
+	parent1 := agenttest.MustNew(
+		agenttest.NewScriptedModel(agenttest.ToolTurn("c1", "d1", `{"task":"a"}`), agenttest.ErrorTurn(errors.New("provider down"))),
+		store,
+		agent.WithTools(tools()...),
+	)
+	if _, err := parent1.Run(WithGrant(ctx, p1, oldSigner), "trip", agent.UserText("go"), agent.WithSaga()); err == nil {
 		t.Fatal("drive 1: want the provider error")
 	}
 	drive := func(ctx context.Context) *agent.SagaAborted {
-		m := agent.NewScriptedModel(agent.ToolTurn("c1", "d1", `{"task":"a"}`), agent.ToolTurn("c2", "d2", `{"task":"b"}`), agent.TextTurn("x"))
-		_, err := agent.New(m, store, tools()...).RunSaga(ctx, "trip", "go")
+		m := agenttest.NewScriptedModel(agenttest.ToolTurn("c1", "d1", `{"task":"a"}`), agenttest.ToolTurn("c2", "d2", `{"task":"b"}`), agenttest.TextTurn("x"))
+		_, err := agenttest.MustNew(m, store, agent.WithTools(tools()...)).Run(ctx, "trip", agent.UserText("go"), agent.WithSaga())
 		var ab *agent.SagaAborted
 		if !errors.As(err, &ab) {
-			t.Fatalf("RunSaga = %v, want *SagaAborted", err)
+			t.Fatalf("saga Run = %v, want *SagaAborted", err)
 		}
 		return ab
 	}
@@ -234,7 +262,7 @@ func TestModel11_D1_RollbackAcrossRotatedKeys(t *testing.T) {
 // binds no rollback grants in the sub-run, so a grandchild verifies against the child alone.
 func TestModel11_BindRollbackScope(t *testing.T) {
 	ctx := context.Background()
-	store := agent.NewMemStore()
+	store := agenttest.MemJournal()
 	s1, s2 := rev117eSigner(t), rev117eSigner(t)
 	old, live := m11Root(t, s1, "old"), m11Root(t, s2, "live")
 	child, err := SignGrant(Grant{ID: "c", Issuer: "desk", Subject: "exec", Scope: map[string]string{"limit": "6"},
@@ -245,7 +273,7 @@ func TestModel11_BindRollbackScope(t *testing.T) {
 	if _, err := RecordGrant(ctx, store, "sub", child); err != nil {
 		t.Fatal(err)
 	}
-	sub := agent.New(agent.NewScriptedModel(agent.TextTurn("x")), store)
+	sub := agenttest.MustNew(agenttest.NewScriptedModel(agenttest.TextTurn("x")), store)
 	b := AttenuatingSubAgent("exec", "", sub, AttenuationConfig{Store: store, Narrow: narrowLimitBy(1), Rules: rev117eRules}).(interface {
 		BindRollback(context.Context, string) (context.Context, error)
 	})
@@ -284,7 +312,7 @@ func TestModel11_BindRollbackScope(t *testing.T) {
 // cannot prove the step never began; over-reporting is the safe side (see rollbackRun).
 func TestModel11_D2_UnknownEvenWithoutABeganRecord(t *testing.T) {
 	ctx := context.Background()
-	store := agent.NewMemStore()
+	store := agenttest.MemJournal()
 	signer := rev117eSigner(t)
 	notAfter := time.Now().Unix() + 1
 	narrow := func(parent Grant, sub string) Grant {
@@ -293,22 +321,26 @@ func TestModel11_D2_UnknownEvenWithoutABeganRecord(t *testing.T) {
 		return g
 	}
 	var calls atomic.Int32
-	idem := agent.CompensatedFunc("idem", "a retry-safe write", agent.Safety{Idempotent: true},
-		func(context.Context, struct{}) (string, error) { calls.Add(1); return "set", nil },
-		func(context.Context, struct{}, string) error { return nil })
-	boom := agent.Func("boom", "fails", agent.Safety{}, func(context.Context, struct{}) (string, error) {
+	idem := agent.MustCompensatedFunc("idem", "a retry-safe write", func(context.Context, struct{}) (string, error) { calls.Add(1); return "set", nil },
+		func(context.Context, struct{}, string) error { return nil }, agent.WithSafety(agent.Safety{Idempotent: true}))
+	boom := agent.MustFunc("boom", "fails", func(context.Context, struct{}) (string, error) {
 		for time.Now().Unix() <= notAfter {
 			time.Sleep(20 * time.Millisecond)
 		}
 		return "", errors.New("sold out")
 	})
-	sub := agent.New(rev117eMultiModel{calls: [][2]string{{"s1", "boom"}, {"s2", "idem"}}}, store, boom, idem).SetMaxConcurrency(1)
+	sub := agenttest.MustNew(
+		rev117eMultiModel{calls: [][2]string{{"s1", "boom"}, {"s2", "idem"}}},
+		store,
+		agent.WithTools(boom, idem),
+		agent.WithMaxConcurrency(1),
+	)
 	deleg := AttenuatingSubAgent("deleg", "d", sub, AttenuationConfig{Store: store, Narrow: narrow, Rules: rev117eRules})
-	parent := agent.New(rev117eMultiModel{calls: [][2]string{{"c1", "deleg"}}}, store, deleg)
-	_, err := parent.RunSaga(WithGrant(ctx, m11Root(t, signer, "p"), signer), "trip", "go")
+	parent := agenttest.MustNew(rev117eMultiModel{calls: [][2]string{{"c1", "deleg"}}}, store, agent.WithTools(deleg))
+	_, err := parent.Run(WithGrant(ctx, m11Root(t, signer, "p"), signer), "trip", agent.UserText("go"), agent.WithSaga())
 	var ab *agent.SagaAborted
 	if !errors.As(err, &ab) {
-		t.Fatalf("RunSaga = %v, want *SagaAborted", err)
+		t.Fatalf("saga Run = %v, want *SagaAborted", err)
 	}
 	recs, err := store.History(ctx, agent.SubRunID("trip", "c1"))
 	if err != nil {
@@ -332,7 +364,7 @@ type nilSigner struct{ Ed25519Signer }
 // WithRollbackGrants binds nothing. Neither panics.
 func TestModel11_TypedNilSignerRefused(t *testing.T) {
 	ctx := context.Background()
-	store := agent.NewMemStore()
+	store := agenttest.MemJournal()
 	signer := rev117eSigner(t)
 	root := m11Root(t, signer, "p")
 	var typedNil *nilSigner
@@ -342,10 +374,14 @@ func TestModel11_TypedNilSignerRefused(t *testing.T) {
 	if ps := rollbackParents(WithRollbackGrants(ctx, typedNil, root)); len(ps) != 0 {
 		t.Fatalf("WithRollbackGrants with a typed-nil signer bound %d grant(s)", len(ps))
 	}
-	sub := agent.New(agent.NewScriptedModel(agent.TextTurn("done")), store)
+	sub := agenttest.MustNew(agenttest.NewScriptedModel(agenttest.TextTurn("done")), store)
 	deleg := AttenuatingSubAgent("deleg", "d", sub, AttenuationConfig{Store: store, Narrow: narrowLimitBy(1), Rules: rev117eRules})
-	parent := agent.New(agent.NewScriptedModel(agent.ToolTurn("c1", "deleg", `{"task":"a"}`), agent.TextTurn("x")), store, deleg)
-	if _, err := parent.Run(WithGrant(ctx, root, typedNil), "r", "go"); !errors.Is(err, agent.ErrConfig) {
+	parent := agenttest.MustNew(
+		agenttest.NewScriptedModel(agenttest.ToolTurn("c1", "deleg", `{"task":"a"}`), agenttest.TextTurn("x")),
+		store,
+		agent.WithTools(deleg),
+	)
+	if _, err := parent.Run(WithGrant(ctx, root, typedNil), "r", agent.UserText("go")); !errors.Is(err, agent.ErrConfig) {
 		t.Fatalf("Run under a grant with a typed-nil signer = %v, want ErrConfig", err)
 	}
 	recs, err := store.History(ctx, agent.SubRunID("r", "c1"))

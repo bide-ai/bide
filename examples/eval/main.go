@@ -14,6 +14,7 @@ package main
 import (
 	"context"
 	"fmt"
+	"log"
 	"strings"
 	"sync/atomic"
 
@@ -54,9 +55,18 @@ func main() {
 	ctx := context.Background()
 
 	// 1) The agent under test. For a real evaluation, swap classifier{} for a provider adapter.
-	store := agent.NewMemStore()
-	a := agent.New(&classifier{}, store).
-		WithSystemPrompt("Classify the sentiment of the user's message as 'positive' or 'negative'.")
+	store, err := agent.NewJournal(agent.NewMemStore())
+	if err != nil {
+		log.Fatal(err)
+	}
+	a, err := agent.New(
+		&classifier{},
+		store,
+		agent.WithSystemPrompt("Classify the sentiment of the user's message as 'positive' or 'negative'."),
+	)
+	if err != nil {
+		log.Fatal(err)
+	}
 
 	// 2) Labeled cases. Want carries the expected label a metric checks.
 	cases := []eval.Case{

@@ -7,6 +7,7 @@ import (
 	"testing"
 
 	"github.com/bide-ai/bide/agent"
+	"github.com/bide-ai/bide/agent/agenttest"
 )
 
 // Run derives every journal key from node names with ':' ("node:<node>",
@@ -22,7 +23,7 @@ func TestBuild_NodeNamedAsAnotherNodesAttemptMarkerIsRejected(t *testing.T) {
 	b.Edge(x, y)
 	flow, err := b.Build()
 	if err == nil {
-		out, runErr := flow.Run(context.Background(), agent.NewMemStore(), "r", 1)
+		out, runErr := flow.Run(context.Background(), agenttest.MemJournal(), "r", 1)
 		t.Fatalf("Build accepted node %q; the run returned %d, %v with its body run %d times", "attempt:x", out, runErr, ran)
 	}
 	if !strings.Contains(err.Error(), "attempt:x") {
@@ -68,8 +69,8 @@ func TestValidate_JoinNameWithColonIsRejected(t *testing.T) {
 	}
 }
 
-// Every key Run writes is one agent reserves, so no agent.Step a node body runs can name it, and a
-// node's key is one the engine's step hook and ResolveHaltRef accept as a plan node's.
+// Every key Run writes is one agent reserves, so no agent.Journal.Step a node body runs can name it, and a
+// node's key is one the engine's step hook and ResolveHalt accept as a plan node's.
 func TestRunKeys_AreReserved(t *testing.T) {
 	for _, k := range []string{nodeKey("x"), iterNodeKey(3, "x"), iterNodeKey(0, "iter"), nodeKey("iter"),
 		"switch:x", iterSwitchKey(2, "x"), flowDigestStep, runStartStep} {
@@ -77,9 +78,9 @@ func TestRunKeys_AreReserved(t *testing.T) {
 			t.Errorf("key %q is not reserved by agent", k)
 		}
 	}
-	if _, err := agent.Step(context.Background(), agent.NewMemStore(), "r", nodeKey("x"),
+	if _, err := agenttest.MemJournal().Step(context.Background(), "r", nodeKey("x"),
 		func(context.Context) (int, error) { return 1, nil }); err == nil {
-		t.Fatalf("agent.Step accepted the node key %q", nodeKey("x"))
+		t.Fatalf("agent.Journal.Step accepted the node key %q", nodeKey("x"))
 	}
 }
 

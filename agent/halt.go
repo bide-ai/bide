@@ -17,11 +17,11 @@ import (
 // idempotent: the first decision for a (runID, toolUseID) wins. After approving, re-run
 // the agent with the pause's RootRunID and it resumes past the *ApprovalPending pause. The
 // decision survives a crash because it's a journaled step like any other.
-func Approve(ctx context.Context, d Durable, runID, toolUseID string, approved bool) error {
+func Approve(ctx context.Context, d *Journal, runID, toolUseID string, approved bool) error {
 	if runID == "" {
 		return fmt.Errorf("Approve: empty runID: %w", ErrConfig)
 	}
-	_, err := d.Do(ctx, runID, approvalStep(toolUseID), func(context.Context) (Record, error) {
+	_, err := d.do(ctx, runID, approvalStep(toolUseID), func(context.Context) (Record, error) {
 		return Record{Kind: StepApproval, ToolUseID: toolUseID, Approved: approved}, nil
 	})
 	return err
@@ -38,7 +38,7 @@ const (
 	// driver knows of no live claimant. That is what the halting driver saw, not proof: a
 	// driver of the same run may still be running the effect (a Step that lost its claim with no
 	// call of it in flight in this process, or a drive that read the journal after the claim,
-	// cannot tell). ResolveHaltRef therefore checks for a live driver itself, whatever the cause.
+	// cannot tell). ResolveHalt therefore checks for a live driver itself, whatever the cause.
 	HaltCrashed HaltCause = "crashed"
 	// HaltContended: another driver of the same run won the claim on the operation while this
 	// one was running: a tool call's claim lost after this drive read no marker for it, or a
@@ -65,11 +65,11 @@ type OpRef struct {
 	ToolName string
 }
 
-// HaltRef is what ResolveHaltRef needs to clear a halt: the run whose journal holds the
+// HaltRef is what ResolveHalt needs to clear a halt: the run whose journal holds the
 // operation, the operation, and why it halted. Take it from the halt with OutcomeUnknown.Ref.
 //
 // Cause matters: a HaltContended halt may still be running in another driver, and
-// ResolveHaltRef resolves it only once it is older than WithMinHaltAge. An operator building a
+// ResolveHalt resolves it only once it is older than WithMinHaltAge. An operator building a
 // HaltRef by hand from a journal listing must state the cause.
 type HaltRef struct {
 	RunID string
@@ -77,7 +77,7 @@ type HaltRef struct {
 	Cause HaltCause
 }
 
-// Outcome is the verified outcome of a halted operation, recorded by ResolveHaltRef as the
+// Outcome is the verified outcome of a halted operation, recorded by ResolveHalt as the
 // operation's result. Result is the value an actual call would have returned (JSON-marshalled);
 // IsError marks an outcome the model should read as a failure (in a saga, a failed step, which
 // rolls the saga back). A non-nil Evidence marks the resolution reconciled from evidence and
@@ -88,14 +88,14 @@ type Outcome struct {
 	Evidence any
 }
 
-// ResolveHaltRef is the sanctioned escape from an *OutcomeUnknown halt. After a non-retriable
+// ResolveHalt is the sanctioned escape from an *OutcomeUnknown halt. After a non-retriable
 // tool call or Step halted with an unknown outcome, an operator (or a reconciler) who has
 // verified the real side effect out of band records it as the operation's result, so a re-run
 // proceeds past the halt instead of halting again:
 //
 //	if halt, ok := errors.AsType[*agent.OutcomeUnknown](err); ok {
 //	    // confirm out of band that the charge did go through
-//	    err = agent.ResolveHaltRef(ctx, store, halt.Ref(), agent.Outcome{Result: "charged (operator-confirmed)"},
+//	    err = agent.ResolveHalt(ctx, store, halt.Ref(), agent.Outcome{Result: "charged (operator-confirmed)"},
 //	        agent.WithMinHaltAge(time.Minute))
 //	    msg, err = a.Run(ctx, halt.RootRunID, input) // resumes past the halt
 //	}
@@ -113,7 +113,7 @@ type Outcome struct {
 //     any driver holds it. Only
 //     drivers that lease the run (Lease, Recover, RecoverLoop, and a Session's turn) are seen; a
 //     plain Run holds no lease, which the claim below covers.
-//   - with a store that cannot (a custom store with no Leaser, or a Durable that exposes none), it
+//   - with a store that cannot (a custom store with no Leaser, or a wrapper that exposes none), it
 //     requires WithMinHaltAge, so the halt is resolved only once no driver can still be running it.
 //
 // On either path, it then claims the attempt after the live one, under a claim of its own, before
@@ -142,31 +142,8 @@ type Outcome struct {
 // is young could record an outcome that driver is about to contradict.
 //
 // Deciding the true outcome is a human (or reconciler) judgment the runtime cannot make for you.
-func ResolveHaltRef(ctx context.Context, store Durable, ref HaltRef, out Outcome, opts ...ResolveOption) error {
-	return resolveHalt(ctx, store, "ResolveHaltRef", ref, out, opts)
-}
-
-// ResolveHalt clears an *OutcomeUnknown halt on the tool call toolUseID of run runID, recording
-// result (and isError) as the call's outcome. It is ResolveHaltRef for a tool call, with the
-// cause taken as HaltCrashed, and the same live-driver check.
-//
-// Deprecated: transitional; replaced by ResolveHaltRef, which the 1.0 rewrite renames to
-// ResolveHalt.
-func ResolveHalt(ctx context.Context, store Durable, runID, toolUseID string, result any, isError bool, opts ...ResolveOption) error {
-	if toolUseID == "" {
-		return fmt.Errorf("ResolveHalt: empty toolUseID: %w", ErrConfig)
-	}
-	ref := HaltRef{RunID: runID, Op: OpRef{Kind: OpTool, ID: toolUseID}, Cause: HaltCrashed}
-	return resolveHalt(ctx, store, "ResolveHalt", ref, Outcome{Result: result, IsError: isError}, opts)
-}
-
-// ResolveStepHalt clears an *OutcomeUnknown halt on the Step named name, as ResolveHalt does for
-// a tool call, with the same live-driver check.
-//
-// Deprecated: transitional; use ResolveHaltRef with OpRef{Kind: OpStep}.
-func ResolveStepHalt(ctx context.Context, store Durable, runID, name string, result any, isError bool, opts ...ResolveOption) error {
-	ref := HaltRef{RunID: runID, Op: OpRef{Kind: OpStep, ID: name}, Cause: HaltCrashed}
-	return resolveHalt(ctx, store, "ResolveStepHalt", ref, Outcome{Result: result, IsError: isError}, opts)
+func ResolveHalt(ctx context.Context, store *Journal, ref HaltRef, out Outcome, opts ...ResolveOption) error {
+	return resolveHalt(ctx, store, "ResolveHalt", ref, out, opts)
 }
 
 // haltKeys names what a resolution reads and writes: the halted operation's attempt marker, the
@@ -180,7 +157,7 @@ type haltKeys struct {
 // protocol:lifecycle begin OPick OLease OWrite ORel
 // protocol:claims begin RCheck RClaim RWrite RRelease
 
-func resolveHalt(ctx context.Context, store Durable, op string, ref HaltRef, out Outcome, opts []ResolveOption) error {
+func resolveHalt(ctx context.Context, store *Journal, op string, ref HaltRef, out Outcome, opts []ResolveOption) error {
 	if ref.RunID == "" {
 		return fmt.Errorf("%s: empty runID: %w", op, ErrConfig)
 	}
@@ -291,7 +268,7 @@ func resolveHalt(ctx context.Context, store Durable, op string, ref HaltRef, out
 	if h.kind == StepToolResult {
 		rec.ToolUseID = id
 	}
-	got, err := store.Do(ctx, ref.RunID, h.result, func(context.Context) (Record, error) { return rec, nil })
+	got, err := store.do(ctx, ref.RunID, h.result, func(context.Context) (Record, error) { return rec, nil })
 	if err != nil {
 		// The verdict may have committed all the same, so the resolution's attempt stays live: a
 		// driver that lost it to this resolution must not find it voided and run the effect under
@@ -308,7 +285,7 @@ func resolveHalt(ctx context.Context, store Durable, op string, ref HaltRef, out
 	return nil
 }
 
-// resolveLeaseTTL is how long ResolveHaltRef holds the run's lease while it resolves: long enough
+// resolveLeaseTTL is how long ResolveHalt holds the run's lease while it resolves: long enough
 // for one read and one write, short enough that a resolver that dies leaves the run free soon.
 const resolveLeaseTTL = 30 * time.Second
 
@@ -318,13 +295,13 @@ const resolveLeaseTTL = 30 * time.Second
 // it) for the resolution, which fails (*HaltInFlight) while any driver holds it, and keeps it until release is called, so no
 // leased driver takes the run meanwhile. A store without Leaser cannot say whether a driver is
 // live, so the resolution needs WithMinHaltAge. WithoutLiveDriverCheck skips both.
-func checkNoLiveDriver(ctx context.Context, store Durable, op string, ref HaltRef, cfg resolveConfig) (func(), bool, error) {
+func checkNoLiveDriver(ctx context.Context, store *Journal, op string, ref HaltRef, cfg resolveConfig) (func(), bool, error) {
 	noop := func() {}
 	if cfg.noLiveCheck {
 		return noop, false, nil
 	}
 	root := treeRootID(ref.RunID)
-	l, ok := capabilityOf[Leaser](store)
+	l, ok := Capability[Leaser](store.store)
 	if !ok {
 		if cfg.minHaltAge <= 0 {
 			return nil, false, fmt.Errorf("%s: the store cannot say whether a driver of run %s is still running %q (it does not implement Leaser); pass WithMinHaltAge so the halt is resolved only once no driver can still be running it, or WithoutLiveDriverCheck to take that risk: %w", op, root, ref.Op.ID, ErrConfig)
@@ -349,9 +326,9 @@ func checkNoLiveDriver(ctx context.Context, store Durable, op string, ref HaltRe
 // protocol:claims end
 // protocol:lifecycle end
 
-// HaltInFlight is returned by ResolveHaltRef when a driver may be running the operation's effect
+// HaltInFlight is returned by ResolveHalt when a driver may be running the operation's effect
 // right now, and its own result must win over a resolution: a driver holds the lease on the halted
-// run's root (a session turn's run, for a turn and the sub-runs inside it), or (see ResolveHaltRef) a driver holds the claim on the
+// run's root (a session turn's run, for a turn and the sub-runs inside it), or (see ResolveHalt) a driver holds the claim on the
 // attempt after the live one, having found the live one recorded as never started. Retry once the
 // driver has finished (its lease released or expired, or its result recorded); a retry reads the
 // run again.
@@ -383,7 +360,7 @@ var ErrNoLiveAttempt = fmt.Errorf("operation has no live attempt to resolve: %w"
 // a different recorded outcome (see HaltAlreadyResolved). It wraps ErrConfig.
 var ErrAlreadyResolved = fmt.Errorf("halt already has a different recorded outcome: %w", ErrConfig)
 
-// HaltAlreadyResolved is returned by ResolveHaltRef when the operation already has a recorded
+// HaltAlreadyResolved is returned by ResolveHalt when the operation already has a recorded
 // outcome that differs from the one given: an earlier resolution, or the result the live driver
 // recorded. The recorded outcome stands; Result and IsError report it. Resolving again with the
 // same outcome is not an error. It wraps ErrAlreadyResolved.
@@ -432,12 +409,12 @@ type resolveConfig struct {
 // it must cover the tool's real worst-case run time, not its ToolSpec.Timeout: a result the tool
 // returns after its deadline is still recorded, and a tool that ignores cancellation can run past
 // the timeout, so a halt resolved at the timeout can race a call still running. On a store that
-// leases runs, the lease check that ResolveHaltRef makes first is not affected by this.
+// leases runs, the lease check that ResolveHalt makes first is not affected by this.
 func WithMinHaltAge(d time.Duration) ResolveOption {
 	return resolveOption(func(c *resolveConfig) error { c.minHaltAge = d; return nil })
 }
 
-// WithoutLiveDriverCheck skips ResolveHaltRef's check that no driver may still be running the
+// WithoutLiveDriverCheck skips ResolveHalt's check that no driver may still be running the
 // halted operation: the lease probe on a store that leases runs, and the WithMinHaltAge
 // requirement on one that does not. With it, a resolution can race a live driver's own result.
 // Pass it only when you know no driver of the run is running, for example with every worker
@@ -463,7 +440,7 @@ func WithEvidence(v any) ResolveOption {
 	})
 }
 
-// HaltTooYoung is returned by ResolveHaltRef when WithMinHaltAge is set and the halt has not
+// HaltTooYoung is returned by ResolveHalt when WithMinHaltAge is set and the halt has not
 // aged past the grace period yet. Wait and retry the resolution later.
 type HaltTooYoung struct {
 	RunID     string
@@ -497,11 +474,6 @@ func (e *ApprovalPending) Error() string {
 
 func (*ApprovalPending) pause() {}
 
-// PendingApproval is the former name of ApprovalPending.
-//
-// Deprecated: transitional; renamed by the 1.0 rewrite. Use ApprovalPending.
-type PendingApproval = ApprovalPending
-
 // OutcomeUnknown is returned when a run cannot safely proceed past an operation whose outcome
 // is unknown: a non-retriable tool call or Step was attempted (its marker is recorded) but no
 // result was. The run stops for confirmation rather than risk a double side effect (a double
@@ -511,7 +483,7 @@ type PendingApproval = ApprovalPending
 // this node's lease lapsed); that driver owns the effect, and once it records the result,
 // re-running proceeds normally.
 //
-// Clear it with ResolveHaltRef(ctx, store, halt.Ref(), outcome), then re-run RootRunID.
+// Clear it with ResolveHalt(ctx, store, halt.Ref(), outcome), then re-run RootRunID.
 type OutcomeUnknown struct {
 	RunRef
 	Op OpRef
@@ -540,13 +512,8 @@ func (e *OutcomeUnknown) Error() string {
 
 func (*OutcomeUnknown) pause() {}
 
-// Ref returns the reference ResolveHaltRef takes to clear this halt.
+// Ref returns the reference ResolveHalt takes to clear this halt.
 func (e *OutcomeUnknown) Ref() HaltRef { return HaltRef{RunID: e.RunID, Op: e.Op, Cause: e.Cause} }
-
-// ResumeHalt is the former name of OutcomeUnknown.
-//
-// Deprecated: transitional; renamed by the 1.0 rewrite. Use OutcomeUnknown.
-type ResumeHalt = OutcomeUnknown
 
 // toolHalt and stepHalt build the halts the engine returns.
 func toolHalt(runID, root, toolUseID, toolName string, attemptedAt time.Time, cause HaltCause) *OutcomeUnknown {

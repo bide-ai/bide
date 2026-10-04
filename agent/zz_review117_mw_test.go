@@ -18,7 +18,7 @@ import (
 // whether it reached t.Call.
 func TestR117_MiddlewareTimeoutBeforeTheToolRunsHaltsAsIfItMayHaveFired(t *testing.T) {
 	var calls atomic.Int32
-	charge := Func("charge", "", Safety{}, func(context.Context, struct{}) (string, error) {
+	charge := MustFunc("charge", "", func(context.Context, struct{}) (string, error) {
 		calls.Add(1)
 		return "charged", nil
 	}, WithTimeout(time.Millisecond))
@@ -28,11 +28,11 @@ func TestR117_MiddlewareTimeoutBeforeTheToolRunsHaltsAsIfItMayHaveFired(t *testi
 			return nil, fmt.Errorf("no slot: %w (%w)", ctx.Err(), ErrToolNotCalled) // next was never called
 		}
 	})
-	store := NewMemStore()
+	store := memJournal()
 	m := NewScriptedModel(ToolTurn("c1", "charge", `{}`), TextTurn("done"))
-	_, err := New(m, store, charge).UseTool(waitForSlot).Run(context.Background(), "r1", "pay")
+	_, err := mustNew(m, store, WithTools(charge), WithToolMiddleware(waitForSlot)).Run(context.Background(), "r1", UserText("pay"))
 	t.Logf("first drive: %v", err)
-	_, err = New(m, store, charge).Run(context.Background(), "r1", "pay") // resume, limiter gone
+	_, err = mustNew(m, store, WithTools(charge)).Run(context.Background(), "r1", UserText("pay")) // resume, limiter gone
 	var halt *OutcomeUnknown
 	if calls.Load() == 0 && errors.As(err, &halt) {
 		t.Fatalf("the tool was never called, yet the resume halts for its outcome: %v", err)

@@ -8,12 +8,13 @@ import (
 	"encoding/base64"
 	"encoding/binary"
 	"encoding/json"
-	"errors"
 	"testing"
 
 	"github.com/bide-ai/bide/agent"
+	"github.com/bide-ai/bide/agent/agenttest"
 	"github.com/bide-ai/bide/audit"
 	"github.com/bide-ai/bide/audit/verify"
+	"github.com/bide-ai/bide/internal/journaltest"
 )
 
 // The standalone verifier must agree, bit for bit, with the full audit package on the same
@@ -26,15 +27,16 @@ func journal(t *testing.T) (*agent.MemStore, string) {
 	t.Helper()
 	ctx := context.Background()
 	store := agent.NewMemStore()
+	j := agenttest.MustJournal(store)
 	for i, v := range []string{"a", "b", "c", "d", "e"} {
 		name := v
-		if _, err := agent.Step(ctx, store, "run", name, func(context.Context) (string, error) { return v, nil }, agent.WithSafety(agent.Safety{ReadOnly: true})); err != nil {
+		if _, err := j.Step(ctx, "run", name, func(context.Context) (string, error) { return v, nil }, agent.WithSafety(agent.Safety{ReadOnly: true})); err != nil {
 			t.Fatalf("step %d: %v", i, err)
 		}
 	}
 	// A tool result whose JSON carries HTML-significant characters: the leaf is the journal's
 	// bytes for it, which keep them as written.
-	if _, err := store.Do(ctx, "run", "c1", func(context.Context) (agent.Record, error) {
+	if _, err := journaltest.Do(ctx, j, "run", "c1", func(context.Context) (agent.Record, error) {
 		return agent.Record{Kind: agent.StepToolResult, ToolUseID: "c1", Result: json.RawMessage(`{"html":"<b>a & b</b>"}`)}, nil
 	}); err != nil {
 		t.Fatalf("tool result: %v", err)
@@ -57,11 +59,12 @@ func leafBytes(t *testing.T, rec agent.Record) []byte {
 func TestVerify_InclusionMatchesAudit(t *testing.T) {
 	ctx := context.Background()
 	store, runID := journal(t)
-	root, _ := audit.Root(ctx, store, runID)
-	recs, _ := store.History(ctx, runID)
+	j := agenttest.MustJournal(store)
+	root, _ := audit.Root(ctx, j, runID)
+	recs, _ := j.History(ctx, runID)
 
 	for i := range recs {
-		proof, err := audit.Prove(ctx, store, runID, i)
+		proof, err := audit.Prove(ctx, j, runID, i)
 		if err != nil {
 			t.Fatalf("Prove(%d): %v", i, err)
 		}
@@ -73,7 +76,7 @@ func TestVerify_InclusionMatchesAudit(t *testing.T) {
 	}
 
 	// A wrong leaf must fail the standalone verifier.
-	proof0, _ := audit.Prove(ctx, store, runID, 0)
+	proof0, _ := audit.Prove(ctx, j, runID, 0)
 	if verify.Inclusion(root, verify.JournalLeaf([]byte(`{"forged":true}`)), proof0.Index, proof0.Size, proof0.Path) {
 		t.Fatal("standalone verifier accepted a forged leaf")
 	}
@@ -84,16 +87,17 @@ func TestVerify_InclusionMatchesAudit(t *testing.T) {
 func TestVerify_ConsistencyMatchesAudit(t *testing.T) {
 	ctx := context.Background()
 	store, runID := journal(t)
-	rootFull, _ := audit.Root(ctx, store, runID)
+	j := agenttest.MustJournal(store)
+	rootFull, _ := audit.Root(ctx, j, runID)
 
-	proof, err := audit.ProveConsistency(ctx, store, runID, 2)
+	proof, err := audit.ProveConsistency(ctx, j, runID, 2)
 	if err != nil {
 		t.Fatalf("ProveConsistency: %v", err)
 	}
 
 	// The size-2 root, recomputed from just the first two records (salts included).
-	recs, _ := store.History(ctx, runID)
-	rootEarly, _ := audit.Root(ctx, fixedHistory(recs[:2]), runID)
+	recs, _ := j.History(ctx, runID)
+	rootEarly, _ := audit.Root(ctx, fixedJournal(t, runID, recs[:2]), runID)
 
 	viaAudit := audit.VerifyConsistency(rootEarly, rootFull, proof) == nil
 	viaStandalone := verify.Consistency(proof.First, proof.Size, proof.Path, rootEarly, rootFull)
@@ -159,8 +163,9 @@ func signers(t *testing.T) []audit.Signer {
 func TestVerify_TreeHeadEncodingIsVersioned(t *testing.T) {
 	ctx := context.Background()
 	store, runID := journal(t)
+	j := agenttest.MustJournal(store)
 	pub, priv, _ := ed25519.GenerateKey(nil)
-	th, _ := audit.NewTreeHead(ctx, store, runID, 1700000000)
+	th, _ := audit.NewTreeHead(ctx, j, runID, 1700000000)
 	msg := canonicalV5("ed25519", th)
 	sth, err := audit.SignTreeHead(th, audit.Ed25519Signer{Priv: priv})
 	if err != nil {
@@ -201,8 +206,9 @@ func TestVerify_TreeHeadRequiresTheVerifiersScheme(t *testing.T) {
 func TestVerify_TreeHeadMatchesAudit(t *testing.T) {
 	ctx := context.Background()
 	store, runID := journal(t)
-	th, _ := audit.NewTreeHead(ctx, store, runID, 1700000000)
-	recs, _ := store.History(ctx, runID)
+	j := agenttest.MustJournal(store)
+	th, _ := audit.NewTreeHead(ctx, j, runID, 1700000000)
+	recs, _ := j.History(ctx, runID)
 	for _, s := range signers(t) {
 		sth, err := audit.SignTreeHead(th, s)
 		if err != nil {
@@ -260,7 +266,8 @@ func TestVerify_TreeHeadMatchesAudit(t *testing.T) {
 func TestVerify_StrippedHybridHalfFails(t *testing.T) {
 	ctx := context.Background()
 	store, runID := journal(t)
-	th, _ := audit.NewTreeHead(ctx, store, runID, 1700000000)
+	j := agenttest.MustJournal(store)
+	th, _ := audit.NewTreeHead(ctx, j, runID, 1700000000)
 	all := signers(t)
 	hyb := all[2].(audit.HybridSigner)
 	sth, err := audit.SignTreeHead(th, hyb)
@@ -293,12 +300,13 @@ func TestVerify_StrippedHybridHalfFails(t *testing.T) {
 func TestVerify_RecordWithUnknownFieldVerifiesByItsBytes(t *testing.T) {
 	ctx := context.Background()
 	store, runID := journal(t)
+	j := agenttest.MustJournal(store)
 	salt := bytes.Repeat([]byte{7}, agent.SaltSize)
 	future := []byte(`{"name":"future","kind":"value","result":{"v":1},"added_in_1_1":{"x":[1,2]},"salt":"` + base64.StdEncoding.EncodeToString(salt) + `"}`)
 	if _, _, err := store.Insert(ctx, runID, "future", future); err != nil {
 		t.Fatal(err)
 	}
-	recs, err := store.History(ctx, runID)
+	recs, err := j.History(ctx, runID)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -307,9 +315,9 @@ func TestVerify_RecordWithUnknownFieldVerifiesByItsBytes(t *testing.T) {
 		t.Fatalf("the journal hands back %q, not the stored bytes", recs[last].Raw())
 	}
 	s := signers(t)[0]
-	th, _ := audit.NewTreeHead(ctx, store, runID, 1700000000)
+	th, _ := audit.NewTreeHead(ctx, j, runID, 1700000000)
 	sth, _ := audit.SignTreeHead(th, s)
-	pb, err := audit.ProveRecord(ctx, store, runID, last, sth)
+	pb, err := audit.ProveRecord(ctx, j, runID, last, sth)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -333,7 +341,8 @@ func TestVerify_RecordWithUnknownFieldVerifiesByItsBytes(t *testing.T) {
 func TestVerify_LeafKindsMatchAudit(t *testing.T) {
 	ctx := context.Background()
 	store, runID := journal(t)
-	recs, _ := store.History(ctx, runID)
+	j := agenttest.MustJournal(store)
+	recs, _ := j.History(ctx, runID)
 
 	keys := audit.ToolUseKeys
 	abs, err := audit.ProveAbsent(recs, keys, "tooluse:zzz")
@@ -363,7 +372,7 @@ func TestVerify_LeafKindsMatchAudit(t *testing.T) {
 
 	anchors := audit.NewMemAnchorLog()
 	_, priv, _ := ed25519.GenerateKey(nil)
-	th, _ := audit.NewTreeHead(ctx, store, runID, 1)
+	th, _ := audit.NewTreeHead(ctx, j, runID, 1)
 	sth, err := audit.SignTreeHead(th, audit.Ed25519Signer{Priv: priv})
 	if err != nil {
 		t.Fatal(err)
@@ -396,12 +405,16 @@ func TestVerify_LeafKindsMatchAudit(t *testing.T) {
 	}
 }
 
-// fixedHistory is a read-only Durable whose history is exactly the records it holds, salts
-// included, as a journal exported from a store is.
-type fixedHistory []agent.Record
-
-func (h fixedHistory) History(context.Context, string) ([]agent.Record, error) { return h, nil }
-
-func (fixedHistory) Do(context.Context, string, string, func(context.Context) (agent.Record, error)) (agent.Record, error) {
-	return agent.Record{}, errors.New("fixedHistory is read-only")
+// fixedJournal returns a Journal over a new store whose run runID holds exactly recs (read from a
+// journal, header first), each stored as its stored bytes, salts included, as a journal exported
+// from a store is.
+func fixedJournal(t *testing.T, runID string, recs []agent.Record) *agent.Journal {
+	t.Helper()
+	s := agent.NewMemStore()
+	for _, r := range recs {
+		if _, _, err := s.Insert(context.Background(), runID, r.Name, r.Raw()); err != nil {
+			t.Fatal(err)
+		}
+	}
+	return agenttest.MustJournal(s)
 }

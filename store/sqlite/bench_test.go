@@ -7,6 +7,8 @@ import (
 	"testing"
 
 	"github.com/bide-ai/bide/agent"
+	"github.com/bide-ai/bide/agent/agenttest"
+	"github.com/bide-ai/bide/internal/journaltest"
 )
 
 // BenchmarkSQLiteInsert records one new step per iteration in one run of an on-disk store, through
@@ -16,6 +18,7 @@ func BenchmarkSQLiteInsert(b *testing.B) {
 	if err != nil {
 		b.Fatal(err)
 	}
+	j := agenttest.MustJournal(s)
 	defer s.Close()
 	ctx := context.Background()
 	fn := func(context.Context) (agent.Record, error) {
@@ -25,7 +28,7 @@ func BenchmarkSQLiteInsert(b *testing.B) {
 	i := 0
 	for b.Loop() {
 		i++
-		if _, err := s.Do(ctx, "run", fmt.Sprintf("step-%d", i), fn); err != nil {
+		if _, err := journaltest.Do(ctx, j, "run", fmt.Sprintf("step-%d", i), fn); err != nil {
 			b.Fatal(err)
 		}
 	}

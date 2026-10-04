@@ -134,7 +134,7 @@ var runCertProperties = []string{"only-approved-policies", "policies-convergence
 // a second commitment over the SAME run, signed the same way, so a verifier checks both under one
 // out-of-band key. A signer of another key or scheme is refused, and so is a used-policy timestamp
 // earlier than sth's.
-func CertifyRun(ctx context.Context, store agent.Durable, runID string, sth SignedTreeHead, spec RunCertSpec) (RunCertificate, error) {
+func CertifyRun(ctx context.Context, store *agent.Journal, runID string, sth SignedTreeHead, spec RunCertSpec) (RunCertificate, error) {
 	if err := checkSigner(spec.Signer); err != nil {
 		return RunCertificate{}, fmt.Errorf("audit: certify run %s: %w", runID, err)
 	}
@@ -214,12 +214,12 @@ func runCertLeafName(runID string) string { return "audit:runcert:" + runID }
 // journal past that size. That is intended: the run STH inside the certificate is the tree the
 // policy/convergence bundles are proven against, and a fresh STH taken after RecordRunCertificate
 // commits the certificate leaf itself (ProveRunCertificate proves it against that later STH).
-func RecordRunCertificate(ctx context.Context, store agent.Durable, runID string, cert RunCertificate) (agent.Record, error) {
+func RecordRunCertificate(ctx context.Context, store *agent.Journal, runID string, cert RunCertificate) (agent.Record, error) {
 	content, err := json.Marshal(cert)
 	if err != nil {
 		return agent.Record{}, fmt.Errorf("audit: marshal run certificate: %w", err)
 	}
-	return store.Do(ctx, runID, runCertLeafName(runID), func(context.Context) (agent.Record, error) {
+	return doRecord(ctx, store, runID, runCertLeafName(runID), func(context.Context) (agent.Record, error) {
 		return agent.Record{Kind: agent.StepValue, Result: content}, nil
 	})
 }
@@ -227,7 +227,7 @@ func RecordRunCertificate(ctx context.Context, store agent.Durable, runID string
 // ProveRunCertificate builds a ProofBundle proving the run certificate leaf for runID was committed
 // in the tree sth signs. Because RecordRunCertificate grows the journal, sth here is a tree head
 // taken AFTER the certificate was anchored (later than the run STH embedded in the certificate).
-func ProveRunCertificate(ctx context.Context, store agent.Durable, runID string, sth SignedTreeHead) (ProofBundle, error) {
+func ProveRunCertificate(ctx context.Context, store *agent.Journal, runID string, sth SignedTreeHead) (ProofBundle, error) {
 	recs, err := store.History(ctx, runID)
 	if err != nil {
 		return ProofBundle{}, fmt.Errorf("audit: load journal %s: %w", runID, err)

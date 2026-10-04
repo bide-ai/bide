@@ -6,6 +6,7 @@ import (
 	"testing"
 
 	"github.com/bide-ai/bide/agent"
+	"github.com/bide-ai/bide/agent/agenttest"
 	"github.com/bide-ai/bide/eval"
 )
 
@@ -101,10 +102,9 @@ func (toolModel) Stream(_ context.Context, req agent.Request) (*agent.Stream, er
 // TestTrajectoryMetrics drives a real Agent with a tool and confirms the harness scores the agent's
 // behavior (tool called, step count) from the journal, not just the final text.
 func TestTrajectoryMetrics(t *testing.T) {
-	store := agent.NewMemStore()
-	lookup := agent.Func("lookup", "look something up", agent.Safety{ReadOnly: true},
-		func(context.Context, struct{}) (string, error) { return "ok", nil })
-	a := agent.New(toolModel{}, store, lookup)
+	store := agenttest.MemJournal()
+	lookup := agent.MustFunc("lookup", "look something up", func(context.Context, struct{}) (string, error) { return "ok", nil }, agent.WithSafety(agent.Safety{ReadOnly: true}))
+	a := agenttest.MustNew(toolModel{}, store, agent.WithTools(lookup))
 	run := mustRunner(t, a, store, "traj")
 	cases := []eval.Case{{Name: "with_tool", Input: "go"}}
 
@@ -144,7 +144,7 @@ func mustRun(t testing.TB, ctx context.Context, run eval.RunFunc, cases []eval.C
 }
 
 // mustRunner is eval.AgentRunner for a non-nil agent and store.
-func mustRunner(t testing.TB, a *agent.Agent, store agent.Durable, prefix string) eval.RunFunc {
+func mustRunner(t testing.TB, a *agent.Agent, store *agent.Journal, prefix string) eval.RunFunc {
 	t.Helper()
 	run, err := eval.AgentRunner(a, store, prefix)
 	if err != nil {

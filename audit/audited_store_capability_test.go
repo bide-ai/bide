@@ -10,10 +10,13 @@ import (
 	"time"
 
 	"github.com/bide-ai/bide/agent"
+	"github.com/bide-ai/bide/agent/agenttest"
 	"github.com/bide-ai/bide/audit"
+
+	"github.com/bide-ai/bide/internal/journaltest"
 )
 
-func newAudited(t *testing.T, inner agent.Durable) *audit.AuditedStore {
+func newAudited(t *testing.T, inner *agent.Journal) *audit.AuditedStore {
 	t.Helper()
 	_, priv, err := ed25519.GenerateKey(rand.Reader)
 	if err != nil {
@@ -27,10 +30,11 @@ func newAudited(t *testing.T, inner agent.Durable) *audit.AuditedStore {
 func TestAuditedStore_LeaseHonorsInnerLease(t *testing.T) {
 	ctx := context.Background()
 	inner := agent.NewMemStore()
+	j := agenttest.MustJournal(inner)
 	if got, err := inner.AcquireLease(ctx, "r", "other", time.Minute); err != nil || !got {
 		t.Fatalf("AcquireLease = %v, %v", got, err)
 	}
-	driven, err := agent.Lease(ctx, newAudited(t, inner), "r", func(context.Context) error {
+	driven, err := agent.Lease(ctx, agenttest.MustJournal(newAudited(t, j)), "r", func(context.Context) error {
 		t.Error("drive ran while another holder held the lease")
 		return nil
 	})
@@ -42,9 +46,9 @@ func TestAuditedStore_LeaseHonorsInnerLease(t *testing.T) {
 // Recover and RecoverLoop enumerate runs through the wrapper's inner Lister.
 func TestAuditedStore_RecoverListsInnerRuns(t *testing.T) {
 	ctx := context.Background()
-	inner := agent.NewMemStore()
-	store := newAudited(t, inner)
-	if _, err := store.Do(ctx, "r1", "run:start", func(context.Context) (agent.Record, error) { // a run recovery drives has a run:start
+	inner := agenttest.MemJournal()
+	store := agenttest.MustJournal(newAudited(t, inner))
+	if _, err := journaltest.Do(ctx, store, "r1", "run:start", func(context.Context) (agent.Record, error) { // a run recovery drives has a run:start
 		return agent.Record{Kind: agent.StepValue, Result: []byte(`{"input":"x"}`)}, nil
 	}); err != nil {
 		t.Fatal(err)
@@ -59,14 +63,14 @@ func TestAuditedStore_RecoverListsInnerRuns(t *testing.T) {
 	}
 }
 
-// bareStore implements Durable and nothing else.
-type bareStore struct{ agent.Durable }
+// bareStore implements agent.Store and nothing else: no Lister, no Leaser, no Unwrap.
+type bareStore struct{ agent.Store }
 
 // The wrapper adds no capability its inner store lacks: over a store with no Lister, Recover
 // still reports ErrConfig, and over a store with no Leaser, Lease drives unconditionally.
 func TestAuditedStore_AddsNoCapabilities(t *testing.T) {
 	ctx := context.Background()
-	store := newAudited(t, bareStore{agent.NewMemStore()})
+	store := agenttest.MustJournal(newAudited(t, agenttest.MustJournal(bareStore{agent.NewMemStore()})))
 	if _, err := agent.Recover(ctx, store, func(context.Context, string, agent.RunStart) error { return nil }); !errors.Is(err, agent.ErrConfig) {
 		t.Fatalf("Recover over a non-Lister = %v, want ErrConfig", err)
 	}
@@ -80,8 +84,8 @@ func TestAuditedStore_AddsNoCapabilities(t *testing.T) {
 func TestAuditedStore_RecoverLoopListsInnerRuns(t *testing.T) {
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
-	store := newAudited(t, agent.NewMemStore())
-	if _, err := store.Do(ctx, "r1", "run:start", func(context.Context) (agent.Record, error) { // a run recovery drives has a run:start
+	store := agenttest.MustJournal(newAudited(t, agenttest.MemJournal()))
+	if _, err := journaltest.Do(ctx, store, "r1", "run:start", func(context.Context) (agent.Record, error) { // a run recovery drives has a run:start
 		return agent.Record{Kind: agent.StepValue, Result: []byte(`{"input":"x"}`)}, nil
 	}); err != nil {
 		t.Fatal(err)

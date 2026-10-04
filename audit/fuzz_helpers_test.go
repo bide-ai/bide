@@ -9,6 +9,8 @@ import (
 	"testing"
 
 	"github.com/bide-ai/bide/agent"
+	"github.com/bide-ai/bide/agent/agenttest"
+	"github.com/bide-ai/bide/internal/journaltest"
 )
 
 // fuzzPriv is a fixed signing key so fuzz seeds signed with it stay valid across runs.
@@ -17,10 +19,10 @@ var fuzzPub = fuzzPriv.Public().(ed25519.PublicKey)
 
 // fuzzRun journals a small fixed run (a model turn with text and a tool call, its tool result, and
 // a final answer) and returns the store, its records, and a signed journal head over it.
-func fuzzRun(tb testing.TB) (agent.Durable, []agent.Record, SignedTreeHead) {
+func fuzzRun(tb testing.TB) (*agent.Journal, []agent.Record, SignedTreeHead) {
 	tb.Helper()
 	ctx := context.Background()
-	store := agent.NewMemStore()
+	store := agenttest.MemJournal()
 	recs := []agent.Record{
 		{Name: "@llm/0", Kind: agent.StepModel, Message: &agent.Message{Role: agent.RoleAssistant, Parts: []agent.Part{
 			agent.Text{Text: "refund $10"},
@@ -30,7 +32,7 @@ func fuzzRun(tb testing.TB) (agent.Durable, []agent.Record, SignedTreeHead) {
 		{Name: "@llm/1", Kind: agent.StepModel, Message: &agent.Message{Role: agent.RoleAssistant, Parts: []agent.Part{agent.Text{Text: "done"}}}},
 	}
 	for _, r := range recs {
-		if _, err := store.Do(ctx, "run", r.Name, func(context.Context) (agent.Record, error) { return r, nil }); err != nil {
+		if _, err := journaltest.Do(ctx, store, "run", r.Name, func(context.Context) (agent.Record, error) { return r, nil }); err != nil {
 			tb.Fatal(err)
 		}
 	}

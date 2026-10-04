@@ -16,8 +16,7 @@ type refundArgs struct {
 func compensateWith(t *testing.T, args string) (refundArgs, error) {
 	t.Helper()
 	var saw refundArgs
-	tool := CompensatedFunc("charge", "charge", Safety{},
-		func(context.Context, refundArgs) (string, error) { return "ok", nil },
+	tool := MustCompensatedFunc("charge", "charge", func(context.Context, refundArgs) (string, error) { return "ok", nil },
 		func(_ context.Context, in refundArgs, _ string) error { saw = in; return nil })
 	err := tool.(Compensator).Compensate(context.Background(), json.RawMessage(args), json.RawMessage(`"ok"`))
 	return saw, err

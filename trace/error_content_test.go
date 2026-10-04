@@ -13,6 +13,7 @@ import (
 	sdktrace "go.opentelemetry.io/otel/sdk/trace"
 
 	"github.com/bide-ai/bide/agent"
+	"github.com/bide-ai/bide/agent/agenttest"
 )
 
 // spanTexts returns every string a span carries: its status description and each event
@@ -173,15 +174,16 @@ func TestCaptureOnRecordsNoCredentials(t *testing.T) {
 	sr, tp := recorder()
 	tracer := tp.Tracer("t")
 	store := agent.NewMemStore()
+	j := agenttest.MustJournal(store)
 	a := buildAgent(t, store, agent.WithTools(failPing{}), Instrument(tracer),
 		agent.WithToolErrorRedactor(func(_ string, err error) string {
 			return strings.ReplaceAll(err.Error(), "ACCT-998877", "ACCT-XXXX")
 		}))
-	if _, err := a.Run(context.Background(), "r", "hi"); err != nil {
+	if _, err := a.Run(context.Background(), "r", agent.UserText("hi")); err != nil {
 		t.Fatal(err)
 	}
 	var journaled string
-	recs, _ := store.History(context.Background(), "r")
+	recs, _ := j.History(context.Background(), "r")
 	for _, r := range recs {
 		if r.Kind == agent.StepToolResult {
 			if err := json.Unmarshal(r.Result, &journaled); err != nil {

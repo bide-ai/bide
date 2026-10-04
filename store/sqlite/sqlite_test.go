@@ -8,6 +8,8 @@ import (
 	"testing"
 
 	"github.com/bide-ai/bide/agent"
+	"github.com/bide-ai/bide/agent/agenttest"
+	"github.com/bide-ai/bide/internal/journaltest"
 )
 
 // --- minimal test doubles (mirrors the ones in the agent package) ---
@@ -43,10 +45,11 @@ type countingTool struct {
 	calls *int
 }
 
-func (t *countingTool) Name() string                { return "lookup" }
-func (t *countingTool) Description() string         { return "" }
-func (t *countingTool) Safety() agent.Safety        { return agent.Safety{ReadOnly: true} }
-func (t *countingTool) ArgsSchema() json.RawMessage { return nil }
+// Spec describes the tool to the agent (see agent.Tool).
+func (t *countingTool) Spec() agent.ToolSpec {
+	return agent.ToolSpec{Name: "lookup", Description: "", Input: json.RawMessage(`{"type":"object"}`), Safety: agent.Safety{ReadOnly: true}}
+}
+
 func (t *countingTool) Call(context.Context, json.RawMessage) (json.RawMessage, error) {
 	*t.calls++
 	return json.RawMessage(`{"ok":true}`), nil
@@ -65,8 +68,9 @@ func TestSQLite_DurableResumeAcrossReopen(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
+	j := agenttest.MustJournal(store1)
 	crashy := &scriptModel{turns: [][]agent.Emit{toolTurn("c1", "lookup", `{"q":"x"}`), errTurn(errors.New("boom"))}}
-	if _, err := agent.New(crashy, store1, tool).Run(ctx, "r1", "hi"); err == nil {
+	if _, err := agenttest.MustNew(crashy, j, agent.WithTools(tool)).Run(ctx, "r1", agent.UserText("hi")); err == nil {
 		t.Fatal("expected crash on first attempt")
 	}
 	if calls != 1 {
@@ -79,12 +83,14 @@ func TestSQLite_DurableResumeAcrossReopen(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
+	j2 := agenttest.MustJournal(store2)
 	defer store2.Close()
 	recovered := &scriptModel{turns: [][]agent.Emit{textTurn("final")}}
-	out, err := agent.New(recovered, store2, tool).Run(ctx, "r1", "hi")
+	res, err := agenttest.MustNew(recovered, j2, agent.WithTools(tool)).Run(ctx, "r1", agent.UserText("hi"))
 	if err != nil {
 		t.Fatalf("resume: %v", err)
 	}
+	out := res.Message
 	if textOf(out) != "final" {
 		t.Fatalf("resumed answer = %q, want final", textOf(out))
 	}
@@ -99,6 +105,7 @@ func TestSQLite_DoMemoizesAndHistory(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
+	j := agenttest.MustJournal(store)
 	defer store.Close()
 	ctx := context.Background()
 
@@ -107,16 +114,16 @@ func TestSQLite_DoMemoizesAndHistory(t *testing.T) {
 		runs++
 		return agent.Record{Kind: agent.StepValue, Result: json.RawMessage(`1`)}, nil
 	}
-	if _, err := store.Do(ctx, "r1", "step", func(context.Context) (agent.Record, error) { return mk() }); err != nil {
+	if _, err := journaltest.Do(ctx, j, "r1", "step", func(context.Context) (agent.Record, error) { return mk() }); err != nil {
 		t.Fatal(err)
 	}
-	if _, err := store.Do(ctx, "r1", "step", func(context.Context) (agent.Record, error) { return mk() }); err != nil {
+	if _, err := journaltest.Do(ctx, j, "r1", "step", func(context.Context) (agent.Record, error) { return mk() }); err != nil {
 		t.Fatal(err)
 	}
 	if runs != 1 {
 		t.Fatalf("fn ran %d times, want 1 (not memoized)", runs)
 	}
-	h, err := store.History(ctx, "r1")
+	h, err := j.History(ctx, "r1")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -141,8 +148,9 @@ func TestSQLite_RecoverReDrivesInFlightRun(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
+	j := agenttest.MustJournal(store1)
 	crashy := &scriptModel{turns: [][]agent.Emit{toolTurn("c1", "lookup", `{"q":"x"}`), errTurn(errors.New("boom"))}}
-	if _, err := agent.New(crashy, store1, tool).Run(ctx, "r1", "hi"); err == nil {
+	if _, err := agenttest.MustNew(crashy, j, agent.WithTools(tool)).Run(ctx, "r1", agent.UserText("hi")); err == nil {
 		t.Fatal("expected crash on first attempt")
 	}
 	store1.Close() // process exits
@@ -153,16 +161,17 @@ func TestSQLite_RecoverReDrivesInFlightRun(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
+	j2 := agenttest.MustJournal(store2)
 	defer store2.Close()
 
 	var resumed []string
 	resume := func(ctx context.Context, runID string, _ agent.RunStart) error {
 		resumed = append(resumed, runID)
 		recovered := &scriptModel{turns: [][]agent.Emit{textTurn("final")}}
-		_, err := agent.New(recovered, store2, tool).Run(ctx, runID, "hi")
+		_, err := agenttest.MustNew(recovered, j2, agent.WithTools(tool)).Run(ctx, runID, agent.UserText("hi"))
 		return err
 	}
-	n, err := agent.Recover(ctx, store2, resume)
+	n, err := agent.Recover(ctx, j2, resume)
 	if err != nil {
 		t.Fatalf("Recover on sqlite store: %v", err)
 	}
@@ -177,7 +186,7 @@ func TestSQLite_RecoverReDrivesInFlightRun(t *testing.T) {
 	}
 
 	// The re-driven run is now complete: a second Recover finds nothing to do.
-	n2, err := agent.Recover(ctx, store2, resume)
+	n2, err := agent.Recover(ctx, j2, resume)
 	if err != nil {
 		t.Fatalf("second Recover: %v", err)
 	}

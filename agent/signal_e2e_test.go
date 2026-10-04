@@ -46,11 +46,16 @@ func (awaitThenChargeModel) Stream(_ context.Context, req Request) (*Stream, err
 	return NewStream(ch), nil
 }
 
-func runAwaitCharge(mem Durable, awaitCalls, chargeCount *int, crashAt int) error {
+func runAwaitCharge(mem *Journal, awaitCalls, chargeCount *int, crashAt int) error {
 	awaitT := &awaitTool{name: "await", safety: Safety{ReadOnly: true}, sig: "go", calls: awaitCalls}
 	chargeT := chargeTool{count: chargeCount}
-	a := New(awaitThenChargeModel{}, crashJournal(mem, crashAt), awaitT, chargeT).SetMaxConcurrency(1)
-	_, err := a.Run(context.Background(), "dst-sig", "start")
+	a := mustNew(
+		awaitThenChargeModel{},
+		crashJournal(mem, crashAt),
+		WithTools(awaitT, chargeT),
+		WithMaxConcurrency(1),
+	)
+	_, err := a.Run(context.Background(), "dst-sig", UserText("start"))
 	return err
 }
 
@@ -62,10 +67,10 @@ func TestDST_Signal_NoDoubleFire_CrashSweep(t *testing.T) {
 	haltSeen := false
 	for crashAt := 1; crashAt <= 40; crashAt++ {
 		var awaitCalls, count int
-		mem := NewMemStore()
+		mem := memJournal()
 		// The signal is delivered (persisted) up front, so the await resolves on the first run;
 		// the crash sweep then exercises the resume-and-charge path.
-		if err := Signal(context.Background(), mem, "dst-sig", "go", "payload"); err != nil {
+		if err := mem.Signal(context.Background(), "dst-sig", "go", "payload"); err != nil {
 			t.Fatalf("Signal: %v", err)
 		}
 
@@ -78,7 +83,7 @@ func TestDST_Signal_NoDoubleFire_CrashSweep(t *testing.T) {
 		if count > 1 {
 			t.Fatalf("crashAt=%d: charge fired %d times after signal-driven resume: DOUBLE FIRE", crashAt, count)
 		}
-		var halt *ResumeHalt
+		var halt *OutcomeUnknown
 		switch {
 		case err == nil:
 			if count != 1 {
@@ -95,7 +100,7 @@ func TestDST_Signal_NoDoubleFire_CrashSweep(t *testing.T) {
 		}
 	}
 	if !haltSeen {
-		t.Fatal("no crash point exercised ResumeHalt: the halt path was never tested")
+		t.Fatal("no crash point exercised OutcomeUnknown: the halt path was never tested")
 	}
 }
 
@@ -104,7 +109,7 @@ func TestDST_Signal_NoDoubleFire_CrashSweep(t *testing.T) {
 // which resolves the await and completes. This is the idiom stage 4 (a separate Notifier)
 // would have added, shown to already work with the existing Waker.
 func TestSignal_DeliverThenWake(t *testing.T) {
-	mem := NewMemStore()
+	mem := memJournal()
 	var got string
 	awaitT := &awaitTool{name: "await", safety: Safety{ReadOnly: true}, sig: "go", calls: new(int), got: &got}
 	m := &scriptModel{turns: [][]Emit{toolTurn("c1", "await", `{}`), textTurn("done")}}
@@ -112,8 +117,12 @@ func TestSignal_DeliverThenWake(t *testing.T) {
 	var a *Agent
 	var completed bool
 	waker := NewMemWaker(func(ctx context.Context, runID string) error {
-		out, err := a.Run(ctx, runID, "hi")
-		var awt *Awaiting
+		res, err := a.Run(ctx, runID, UserText("hi"))
+		var out Message
+		if res != nil {
+			out = res.Message
+		}
+		var awt *SignalPending
 		if errors.As(err, &awt) {
 			return nil // still waiting is not an error
 		}
@@ -125,18 +134,18 @@ func TestSignal_DeliverThenWake(t *testing.T) {
 		}
 		return nil
 	})
-	a = New(m, mem, awaitT)
-	ctx := ContextWithWaker(context.Background(), waker)
+	a = mustNew(m, mem, WithTools(awaitT))
+	ctx := contextWithWaker(context.Background(), waker)
 
 	// First run pauses on the await (plain Await does not self-schedule a wake).
-	_, err := a.Run(ctx, "r", "hi")
-	var awt *Awaiting
+	_, err := a.Run(ctx, "r", UserText("hi"))
+	var awt *SignalPending
 	if !errors.As(err, &awt) {
-		t.Fatalf("first run err = %v, want *Awaiting", err)
+		t.Fatalf("first run err = %v, want *SignalPending", err)
 	}
 
 	// The deliverer records the signal, then schedules a wake now (the deliver-then-wake idiom).
-	if err := Signal(context.Background(), mem, "r", "go", "payload"); err != nil {
+	if err := mem.Signal(context.Background(), "r", "go", "payload"); err != nil {
 		t.Fatalf("Signal: %v", err)
 	}
 	waker.Schedule(context.Background(), Wake{RunID: "r", Name: "signal:go", FireAt: time.Time{}}) // zero time is before now, so the wake is due

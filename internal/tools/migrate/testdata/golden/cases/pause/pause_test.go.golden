@@ -1,0 +1,37 @@
+package pause
+
+import (
+	"context"
+	"errors"
+	"testing"
+
+	"github.com/bide-ai/bide/agent"
+)
+
+type waker struct{}
+
+func (waker) Wake() {}
+
+func checkPause(t *testing.T, a *agent.Agent) {
+	ctx := context.Background()
+	j, _ := agent.NewJournal(agent.NewMemStore())
+	_, err := a.Run(ctx, "r", agent.UserText("go"), agent.WithWaker(waker{}))
+	_, _ = a.Run(ctx, "r2", agent.UserText("go"), agent.WithIdentity(agent.Identity{Actor: "ops"})) // never empty
+	var who agent.Identity
+	_, _ = a.Run(ctx, "r3", agent.UserText("go"), agent.WithIdentity(who)) // may be empty: reported
+	var p *agent.ApprovalPending
+	if errors.As(err, &p) {
+		t.Log(p)
+	}
+	if _, ok := errors.AsType[*agent.OutcomeUnknown](err); ok {
+		_ = agent.ResolveHalt(ctx, j, agent.HaltRef{RunID: "r", Op: agent.OpRef{Kind: agent.OpTool, ID: "c1"}, Cause: agent.HaltCrashed}, agent.Outcome{Result: "ok", IsError: false})
+		_ = agent.ResolveHalt(ctx, j, agent.HaltRef{RunID: "r", Op: agent.OpRef{Kind: agent.OpStep, ID: "charge"}, Cause: agent.HaltCrashed}, agent.Outcome{Result: nil, IsError: true})
+		_ = agent.ResolveHalt(ctx, j, agent.HaltRef{RunID: "r"}, agent.Outcome{})
+	}
+	_ = j.Signal(ctx, "r", "go", 1)
+	_ = j.Enqueue(ctx, "r", "ch", "k", "v")
+	_ = j.AnswerInterrupt(ctx, "r", "q", "a")
+	_ = j.AnswerInterrupt[string](ctx, "r", "q", "a")
+	n, err := j.Step(ctx, "r", "count", func(context.Context) (int, error) { return 1, nil })
+	_, _ = n, err
+}

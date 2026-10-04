@@ -1,4 +1,4 @@
-// Command parallel shows agent.Parallel: a durable, auditable fan-out/fan-in. Several
+// Command parallel shows agent.Journal.Parallel: a durable, auditable fan-out/fan-in. Several
 // independent checks run concurrently, each as a journaled named step, so a resumed run
 // returns a completed check's recorded result without re-running it. All tasks run even
 // if some fail; the returned error joins every task's error.
@@ -25,12 +25,15 @@ type Check struct {
 
 func main() {
 	ctx := context.Background()
-	store := agent.NewMemStore()
+	store, err := agent.NewJournal(agent.NewMemStore())
+	if err != nil {
+		log.Fatal(err)
+	}
 
 	// Each Task has a unique Name (its durable memoization key within the run) and a Fn
 	// returning a T. Here T is Check. Each task runs on a goroutine of its own; pass
 	// agent.WithMaxConcurrency(n) to cap how many run at once.
-	results, err := agent.Parallel(ctx, store, "screen-1", []agent.Task[Check]{
+	results, err := store.Parallel(ctx, "screen-1", []agent.Task[Check]{
 		{Name: "sanctions", Fn: func(_ context.Context) (Check, error) {
 			return Check{Name: "sanctions", Passed: true, Detail: "no OFAC match"}, nil
 		}},

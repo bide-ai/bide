@@ -46,7 +46,7 @@ type EarnedAuthority struct {
 	root    SignedGrant
 	signer  Signer
 	subject string
-	ledger  agent.Durable
+	ledger  *agent.Journal
 	ledgerR string
 
 	tier    int
@@ -66,7 +66,7 @@ var EarnedRules = ScopeRules{EarnedScopeLimit: NumericAtMost}
 // grant is recorded in ledgerRunID of ledger, which must hold only this controller's grants; a
 // restarted controller continues the ledger at baseline.
 // It issues the baseline grant immediately.
-func NewEarnedAuthority(ctx context.Context, ladder []int, promoteEvery int, root SignedGrant, signer Signer, subject string, ledger agent.Durable, ledgerRunID string) (*EarnedAuthority, error) {
+func NewEarnedAuthority(ctx context.Context, ladder []int, promoteEvery int, root SignedGrant, signer Signer, subject string, ledger *agent.Journal, ledgerRunID string) (*EarnedAuthority, error) {
 	if len(ladder) == 0 {
 		return nil, fmt.Errorf("audit: earned authority needs a non-empty ladder")
 	}
@@ -176,7 +176,7 @@ type CurrentGrantProof struct {
 // from lastSeenSize (the size of the ledger head the verifier saw last, 0 if none) to sth.Size.
 // Pass the latest anchored head of the ledger run. It fails if sth is not a head of ledgerRunID's
 // journal, or if lastSeenSize is outside [0, sth.Size].
-func ProveCurrentGrant(ctx context.Context, ledger agent.Durable, ledgerRunID string, sth SignedTreeHead, lastSeenSize int) (CurrentGrantProof, error) {
+func ProveCurrentGrant(ctx context.Context, ledger *agent.Journal, ledgerRunID string, sth SignedTreeHead, lastSeenSize int) (CurrentGrantProof, error) {
 	if sth.Size < 1 {
 		return CurrentGrantProof{}, fmt.Errorf("audit: ledger %s is empty at this head", ledgerRunID)
 	}

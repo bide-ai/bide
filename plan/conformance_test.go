@@ -7,6 +7,8 @@ import (
 	"testing"
 
 	"github.com/bide-ai/bide/agent"
+	"github.com/bide-ai/bide/agent/agenttest"
+	"github.com/bide-ai/bide/internal/journaltest"
 )
 
 // TestConformCleanRun builds a small switched flow, runs it against a MemStore to
@@ -29,7 +31,7 @@ func TestConformCleanRun(t *testing.T) {
 		t.Fatalf("Build: %v", err)
 	}
 
-	mem := agent.NewMemStore()
+	mem := agenttest.MemJournal()
 	ctx := context.Background()
 	if _, err := flow.Run(ctx, mem, "clean", 1); err != nil {
 		t.Fatalf("Run: %v", err)
@@ -66,7 +68,7 @@ func TestConformUnexpectedStep(t *testing.T) {
 		t.Fatalf("Build: %v", err)
 	}
 
-	mem := agent.NewMemStore()
+	mem := agenttest.MemJournal()
 	ctx := context.Background()
 	if _, err := flow.Run(ctx, mem, "intruder", 1); err != nil {
 		t.Fatalf("Run: %v", err)
@@ -74,7 +76,7 @@ func TestConformUnexpectedStep(t *testing.T) {
 
 	// Inject a step name that no declared node owns. store.Do memoizes it into the
 	// same run's journal, so History will surface it to Conform.
-	if _, err := mem.Do(ctx, "intruder", "ghost", func(context.Context) (agent.Record, error) {
+	if _, err := journaltest.Do(ctx, mem, "intruder", "ghost", func(context.Context) (agent.Record, error) {
 		return agent.Record{Kind: agent.StepValue, Result: json.RawMessage(`"boo"`)}, nil
 	}); err != nil {
 		t.Fatalf("inject ghost step: %v", err)
@@ -117,11 +119,11 @@ func TestConformUnreachableArm(t *testing.T) {
 		t.Fatalf("Build: %v", err)
 	}
 
-	mem := agent.NewMemStore()
+	mem := agenttest.MemJournal()
 	ctx := context.Background()
 
 	// A Switch choice record whose target is not a declared arm of the entry Switch.
-	if _, err := mem.Do(ctx, "arm", "switch:entry", func(context.Context) (agent.Record, error) {
+	if _, err := journaltest.Do(ctx, mem, "arm", "switch:entry", func(context.Context) (agent.Record, error) {
 		return agent.Record{Kind: agent.StepValue, Result: json.RawMessage(`"nowhere"`)}, nil
 	}); err != nil {
 		t.Fatalf("inject switch choice: %v", err)
@@ -165,7 +167,7 @@ func TestConformHaltedRunIsObservable(t *testing.T) {
 		t.Fatalf("Build: %v", err)
 	}
 
-	mem := agent.NewMemStore()
+	mem := agenttest.MemJournal()
 	ctx := context.Background()
 
 	// Simulate a run halted mid-node: the run's start and digest are recorded, and the attempt
@@ -178,7 +180,7 @@ func TestConformHaltedRunIsObservable(t *testing.T) {
 		{flowDigestStep, agent.Record{Kind: agent.StepValue, Result: json.RawMessage(strconv.Quote(flow.Digest()))}},
 		{"attempt:step:node:entry", agent.Record{Kind: agent.StepAttempt, ToolUseID: "node:entry"}},
 	} {
-		if _, err := mem.Do(ctx, "halt", w.name, func(context.Context) (agent.Record, error) { return w.rec, nil }); err != nil {
+		if _, err := journaltest.Do(ctx, mem, "halt", w.name, func(context.Context) (agent.Record, error) { return w.rec, nil }); err != nil {
 			t.Fatalf("inject %s: %v", w.name, err)
 		}
 	}

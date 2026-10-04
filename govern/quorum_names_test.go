@@ -6,6 +6,7 @@ import (
 	"testing"
 
 	"github.com/bide-ai/bide/agent"
+	"github.com/bide-ai/bide/agent/agenttest"
 	"github.com/bide-ai/bide/govern"
 )
 
@@ -18,11 +19,12 @@ func fixedVoter(name, decision string) govern.Voter {
 func TestQuorum_TwoQuorumsInOneRunAreIndependent(t *testing.T) {
 	ctx := context.Background()
 	store := agent.NewMemStore()
-	first, err := govern.Quorum(ctx, store, "run", "ship", 2, fixedVoter("a", "approve"), fixedVoter("b", "approve"))
+	j := agenttest.MustJournal(store)
+	first, err := govern.Quorum(ctx, j, "run", "ship", 2, fixedVoter("a", "approve"), fixedVoter("b", "approve"))
 	if err != nil {
 		t.Fatal(err)
 	}
-	second, err := govern.Quorum(ctx, store, "run", "refund", 2, fixedVoter("a", "reject"), fixedVoter("b", "reject"))
+	second, err := govern.Quorum(ctx, j, "run", "refund", 2, fixedVoter("a", "reject"), fixedVoter("b", "reject"))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -33,13 +35,13 @@ func TestQuorum_TwoQuorumsInOneRunAreIndependent(t *testing.T) {
 		govern.QuorumConfigStep("ship"), govern.QuorumVoteStep("ship", "a"), govern.QuorumTallyStep("ship"),
 		govern.QuorumConfigStep("refund"), govern.QuorumVoteStep("refund", "b"), govern.QuorumTallyStep("refund"),
 	} {
-		if !hasStep(t, store, "run", step) {
+		if !hasStep(t, j, "run", step) {
 			t.Errorf("no step %q recorded", step)
 		}
 	}
 }
 
-func hasStep(t *testing.T, store agent.Durable, runID, name string) bool {
+func hasStep(t *testing.T, store *agent.Journal, runID, name string) bool {
 	t.Helper()
 	recs, err := store.History(context.Background(), runID)
 	if err != nil {
@@ -57,7 +59,7 @@ func hasStep(t *testing.T, store agent.Durable, runID, name string) bool {
 // and it casts no vote: the recorded quorum never answers for another.
 func TestQuorum_ReusedNameMustMatch(t *testing.T) {
 	ctx := context.Background()
-	store := agent.NewMemStore()
+	store := agenttest.MemJournal()
 	if _, err := govern.Quorum(ctx, store, "run", "q", 2, fixedVoter("a", "approve"), fixedVoter("b", "approve")); err != nil {
 		t.Fatal(err)
 	}
@@ -94,25 +96,26 @@ func TestQuorum_ReusedNameMustMatch(t *testing.T) {
 func TestQuorum_RejectsAmbiguousNames(t *testing.T) {
 	ctx := context.Background()
 	store := agent.NewMemStore()
+	j := agenttest.MustJournal(store)
 	cases := map[string]func() error{
 		"empty quorum name": func() error {
-			_, err := govern.Quorum(ctx, store, "run", "", 1, fixedVoter("a", "x"))
+			_, err := govern.Quorum(ctx, j, "run", "", 1, fixedVoter("a", "x"))
 			return err
 		},
 		"quorum name with '/'": func() error {
-			_, err := govern.Quorum(ctx, store, "run", "q/vote/a", 1, fixedVoter("a", "x"))
+			_, err := govern.Quorum(ctx, j, "run", "q/vote/a", 1, fixedVoter("a", "x"))
 			return err
 		},
 		"no voters": func() error {
-			_, err := govern.Quorum(ctx, store, "run", "q", 1)
+			_, err := govern.Quorum(ctx, j, "run", "q", 1)
 			return err
 		},
 		"empty voter name": func() error {
-			_, err := govern.Quorum(ctx, store, "run", "q", 1, fixedVoter("", "x"))
+			_, err := govern.Quorum(ctx, j, "run", "q", 1, fixedVoter("", "x"))
 			return err
 		},
 		"duplicate voter": func() error {
-			_, err := govern.Quorum(ctx, store, "run", "q", 1, fixedVoter("a", "x"), fixedVoter("a", "y"))
+			_, err := govern.Quorum(ctx, j, "run", "q", 1, fixedVoter("a", "x"), fixedVoter("a", "y"))
 			return err
 		},
 	}
@@ -121,7 +124,7 @@ func TestQuorum_RejectsAmbiguousNames(t *testing.T) {
 			t.Errorf("%s: err = %v, want ErrConfig", what, err)
 		}
 	}
-	if recs, _ := store.History(ctx, "run"); len(recs) != 0 {
+	if recs, _ := j.History(ctx, "run"); len(recs) != 0 {
 		t.Fatalf("a rejected call recorded %d steps", len(recs))
 	}
 }

@@ -8,6 +8,7 @@ import (
 	"testing"
 
 	"github.com/bide-ai/bide/agent"
+	"github.com/bide-ai/bide/agent/agenttest"
 )
 
 // v070Journal is run "order-1" as v0.7.0 journaled it: finished, with one side-effect call. v0.7.0
@@ -45,6 +46,7 @@ func TestPostgres_V070JournalIsRefusedWithoutAWrite(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
+	j := agenttest.MustJournal(s)
 	defer s.Close()
 	names := func() (out []string) {
 		for e, err := range s.Load(ctx, "order-1", -1) {
@@ -57,9 +59,9 @@ func TestPostgres_V070JournalIsRefusedWithoutAWrite(t *testing.T) {
 	}
 	before := names()
 	fired := 0
-	charge := agent.Func("charge", "", agent.Safety{}, func(context.Context, struct{}) (string, error) { fired++; return "charged", nil })
-	m := agent.NewScriptedModel(agent.ToolTurn("c1", "charge", `{}`), agent.TextTurn("done"))
-	_, err = agent.New(m, s, charge).Run(ctx, "order-1", "charge me")
+	charge := agent.MustFunc("charge", "", func(context.Context, struct{}) (string, error) { fired++; return "charged", nil })
+	m := agenttest.NewScriptedModel(agenttest.ToolTurn("c1", "charge", `{}`), agenttest.TextTurn("done"))
+	_, err = agenttest.MustNew(m, j, agent.WithTools(charge)).Run(ctx, "order-1", agent.UserText("charge me"))
 	if fired != 0 || !errors.Is(err, agent.ErrJournalVersion) {
 		t.Fatalf("Run of a v0.7.0 run = %v, fired %d; want ErrJournalVersion and nothing fired", err, fired)
 	}

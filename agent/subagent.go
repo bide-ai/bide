@@ -14,7 +14,7 @@ import (
 // primitive, as a durable tree rather than a fragile handoff.
 //
 // The sub-run journals under a hierarchical, deterministic ID (SubRunID(parentRunID, toolUseID)),
-// so give `sub` the SAME Durable store as the parent for a unified journal. Then a crash
+// so give `sub` the SAME journal as the parent for a unified journal. Then a crash
 // ANYWHERE in the tree resumes the whole tree precisely: completed sub-agents are reused,
 // the in-flight one resumes from its own journal, and OutcomeUnknown / ApprovalPending from
 // deep in the tree propagate up (approve, re-run the root, and it resumes down the path).
@@ -26,30 +26,41 @@ import (
 // the sub-run off mid-call and record the delegation as failed while the outcome of the sub-run's
 // own call is unknown, so the model, told the delegation failed, could delegate again and repeat a
 // side effect that may already have happened. Bound the sub-agent's tools instead; each of them
-// then follows the timeout rule (see WithTimeout) inside the sub-run's own journal. It panics, with an error wrapping
-// ErrConfig, on a refused or invalid option, as Func does.
+// then follows the timeout rule (see WithTimeout) inside the sub-run's own journal. A nil sub, and a
+// refused or invalid option, is an error wrapping ErrConfig; MustSubAgent panics with it instead.
 //
 // This is what the incumbents can't do: ADK/agenticenv can't recover sub-agents across a
 // restart, and Eino doesn't unify nested state into the parent checkpoint.
-func SubAgent(name, description string, sub *Agent, opts ...ToolOption) Tool {
-	s, _ := schema.For[subAgentArgs]()
+func SubAgent(name, description string, sub *Agent, opts ...ToolOption) (Tool, error) {
+	if sub == nil {
+		return nil, fmt.Errorf("agent: SubAgent %q: nil agent: %w", name, ErrConfig)
+	}
+	s, err := schema.For[subAgentArgs]()
+	if err != nil {
+		return nil, fmt.Errorf("agent: SubAgent %q: %w (%w)", name, err, ErrConfig)
+	}
 	// Idempotent: re-running a sub-agent call on resume RESUMES the sub-run from its journal
 	// (it doesn't restart it), and a sub-run that already finished returns its recorded answer,
 	// so it's safe to retry. Any unsafe write inside the sub-run halts via the sub-run's own
 	// OutcomeUnknown, which propagates up here.
 	c := toolConfig{spec: ToolSpec{Name: name, Description: description, Input: s, Safety: Safety{Idempotent: true}}}
 	if err := applyToolOptions(&c, opts); err != nil {
-		panic(err)
+		return nil, err
 	}
 	switch {
 	case c.safetySet:
-		panic(fmt.Errorf("agent: SubAgent %q: WithSafety does not apply to a sub-agent, whose sub-run's calls carry their own safety: %w", name, ErrConfig))
+		return nil, fmt.Errorf("agent: SubAgent %q: WithSafety does not apply to a sub-agent, whose sub-run's calls carry their own safety: %w", name, ErrConfig)
 	case c.timeoutSet:
-		panic(fmt.Errorf("agent: SubAgent %q: WithTimeout does not apply to a sub-agent, whose sub-run it would cut off mid-call; give its tools timeouts: %w", name, ErrConfig))
+		return nil, fmt.Errorf("agent: SubAgent %q: WithTimeout does not apply to a sub-agent, whose sub-run it would cut off mid-call; give its tools timeouts: %w", name, ErrConfig)
 	case c.subRuns != nil:
-		panic(fmt.Errorf("agent: SubAgent %q: WithSubRuns does not apply to a sub-agent, whose sub-run is its own: %w", name, ErrConfig))
+		return nil, fmt.Errorf("agent: SubAgent %q: WithSubRuns does not apply to a sub-agent, whose sub-run is its own: %w", name, ErrConfig)
 	}
-	return &subAgentTool{spec: c.spec, sub: sub}
+	return &subAgentTool{spec: c.spec, sub: sub}, nil
+}
+
+// MustSubAgent is SubAgent for a tool built at init: it panics with SubAgent's error.
+func MustSubAgent(name, description string, sub *Agent, opts ...ToolOption) Tool {
+	return must(SubAgent(name, description, sub, opts...))
 }
 
 type subAgentArgs struct {
@@ -60,11 +71,6 @@ type subAgentTool struct {
 	spec ToolSpec
 	sub  *Agent
 }
-
-func (t *subAgentTool) Name() string                { return t.spec.Name }
-func (t *subAgentTool) Description() string         { return t.spec.Description }
-func (t *subAgentTool) ArgsSchema() json.RawMessage { return t.spec.Input }
-func (t *subAgentTool) Safety() Safety              { return t.spec.Safety }
 
 // Spec returns the tool's spec, with a copy of its approval policy.
 func (t *subAgentTool) Spec() ToolSpec {
@@ -88,7 +94,7 @@ func (t *subAgentTool) Call(ctx context.Context, args json.RawMessage) (json.Raw
 		// Fallback for a SubAgent tool invoked outside the agent loop (which always sets the run
 		// scope: see RunInfoFrom). This id is NOT unique per call: two calls to a same-named
 		// sub-agent would share one journal and the second would memoize to the first's result. Drive
-		// sub-agents through Agent.Run/RunSaga (the normal path) so each call gets a distinct scope.
+		// sub-agents through Agent.Run (the normal path) so each call gets a distinct scope.
 		subRunID = "sub/" + t.spec.Name
 	}
 	// Run the sub-agent on its OWN goroutine (fresh, small stack) rather than recursing on
@@ -169,14 +175,23 @@ func checkWrapper(t Tool, s ToolSpec) error {
 	return fmt.Errorf("agent: tool %q unwraps more than 64 times (a cycle?): %w", s.Name, ErrConfig)
 }
 
-// init shares checkWrapper with plan (see toolhook.CheckTool), so a flow refuses what New refuses.
+// init shares checkWrapper and checkOldMethods with plan (see toolhook.CheckTool), so a flow refuses
+// what New refuses,
+// and lets audit's delegation bind its sub-run's identity (toolhook.WithIdentity).
 func init() {
 	toolhook.CheckTool = func(t any) error {
 		tool, ok := t.(Tool)
 		if !ok {
 			return fmt.Errorf("agent: %T is not a Tool: %w", t, ErrConfig)
 		}
-		return checkWrapper(tool, SpecOf(tool))
+		s := specOf(tool)
+		if err := checkWrapper(tool, s); err != nil {
+			return err
+		}
+		return checkOldMethods(tool, s)
+	}
+	toolhook.WithIdentity = func(ctx context.Context, actor, onBehalfOf, authorityRef string) context.Context {
+		return contextWithIdentity(ctx, Identity{Actor: actor, OnBehalfOf: onBehalfOf, AuthorityRef: authorityRef})
 	}
 }
 

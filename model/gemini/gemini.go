@@ -93,7 +93,7 @@ func New(apiKey string, opts ...Option) *Model {
 }
 
 // ToolNameRule implements agent.ToolRules: the tool names Gemini accepts, `^[a-zA-Z_][a-zA-Z0-9_.:-]{0,63}$`, so
-// agent.Build refuses any other name when the agent is built.
+// agent.New refuses any other name when the agent is built.
 func (m *Model) ToolNameRule() *regexp.Regexp { return toolcfg.GeminiName }
 
 // RequiresToolsForRequired implements agent.ToolRules: Gemini refuses tool choice "required"
@@ -578,5 +578,5 @@ func streamSSE(body io.ReadCloser, send func(agent.Emit) bool) {
 	}})
 }
 
-// Model declares its tool rules to agent.Build.
+// Model declares its tool rules to agent.New.
 var _ agent.ToolRules = (*Model)(nil)

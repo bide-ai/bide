@@ -16,8 +16,9 @@ func TestResolveHalt_MinHaltAge(t *testing.T) {
 	base := time.Date(2026, 1, 1, 0, 0, 0, 0, time.UTC)
 	seed := func() *MemStore {
 		s := NewMemStore()
+		j := mustJournal(s)
 		// Attempt marker stamped at base, no result: an unknown-outcome halt.
-		_, _ = s.Do(ctx, "r", toolAttemptStep("c1"), func(context.Context) (Record, error) {
+		_, _ = j.do(ctx, "r", toolAttemptStep("c1"), func(context.Context) (Record, error) {
 			return Record{Kind: StepAttempt, ToolUseID: "c1", AttemptedAt: base.UnixMilli()}, nil
 		})
 		return s
@@ -25,29 +26,28 @@ func TestResolveHalt_MinHaltAge(t *testing.T) {
 
 	// Too soon: 30s after the attempt, 60s grace -> *HaltTooYoung, nothing recorded.
 	s := seed()
-	err := ResolveHalt(ctx, s, "r", "c1", "charged", false,
-		WithMinHaltAge(60*time.Second), WithClock(func() time.Time { return base.Add(30 * time.Second) }))
+	j := mustJournal(s)
+	err := ResolveHalt(ctx, j, HaltRef{RunID: "r", Op: OpRef{Kind: OpTool, ID: "c1"}, Cause: HaltCrashed}, Outcome{Result: "charged", IsError: false}, WithMinHaltAge(60*time.Second), WithClock(func() time.Time { return base.Add(30 * time.Second) }))
 	var young *HaltTooYoung
 	if !errors.As(err, &young) {
 		t.Fatalf("err = %v, want *HaltTooYoung", err)
 	}
-	if h, _ := s.History(ctx, "r"); hasResult(h, "c1") {
+	if h, _ := j.History(ctx, "r"); hasResult(h, "c1") {
 		t.Fatal("a too-young halt must not record a result")
 	}
 
 	// Past the grace: 90s after the attempt -> resolves and records the result.
 	s = seed()
-	if err := ResolveHalt(ctx, s, "r", "c1", "charged", false,
-		WithMinHaltAge(60*time.Second), WithClock(func() time.Time { return base.Add(90 * time.Second) })); err != nil {
+	if err := ResolveHalt(ctx, j, HaltRef{RunID: "r", Op: OpRef{Kind: OpTool, ID: "c1"}, Cause: HaltCrashed}, Outcome{Result: "charged", IsError: false}, WithMinHaltAge(60*time.Second), WithClock(func() time.Time { return base.Add(90 * time.Second) })); err != nil {
 		t.Fatalf("resolve after grace: %v", err)
 	}
-	if h, _ := s.History(ctx, "r"); !hasResult(h, "c1") {
+	if h, _ := j.History(ctx, "r"); !hasResult(h, "c1") {
 		t.Fatal("resolve after grace should record the result")
 	}
 
 	// No attempt timestamp to measure against: fail closed rather than resolve blind.
-	bare := NewMemStore()
-	if err := ResolveHalt(ctx, bare, "r", "c1", "x", false, WithMinHaltAge(time.Second)); err == nil {
+	bare := memJournal()
+	if err := ResolveHalt(ctx, bare, HaltRef{RunID: "r", Op: OpRef{Kind: OpTool, ID: "c1"}, Cause: HaltCrashed}, Outcome{Result: "x", IsError: false}, WithMinHaltAge(time.Second)); err == nil {
 		t.Fatal("min-halt-age with no attempt marker should error, not resolve")
 	}
 }
@@ -57,9 +57,9 @@ func TestResolveHalt_MinHaltAge(t *testing.T) {
 // what the reconciler read. A plain resolve carries no such annotation.
 func TestResolveHalt_Evidence(t *testing.T) {
 	ctx := context.Background()
-	s := NewMemStore()
+	s := memJournal()
 	for _, id := range []string{"c1", "c2"} { // both calls halted: their markers are recorded
-		if _, err := s.Do(ctx, "r", toolAttemptStep(id), func(context.Context) (Record, error) {
+		if _, err := s.do(ctx, "r", toolAttemptStep(id), func(context.Context) (Record, error) {
 			return Record{Kind: StepAttempt, ToolUseID: id, AttemptedAt: 1}, nil
 		}); err != nil {
 			t.Fatal(err)
@@ -67,7 +67,7 @@ func TestResolveHalt_Evidence(t *testing.T) {
 	}
 
 	ev := map[string]string{"message_id": "msg_123", "source": "provider log"}
-	if err := ResolveHalt(ctx, s, "r", "c1", "sent", false, WithEvidence(ev)); err != nil {
+	if err := ResolveHalt(ctx, s, HaltRef{RunID: "r", Op: OpRef{Kind: OpTool, ID: "c1"}, Cause: HaltCrashed}, Outcome{Result: "sent", IsError: false}, WithEvidence(ev)); err != nil {
 		t.Fatalf("reconciled resolve: %v", err)
 	}
 	rec := resultFor(t, s, "r", "c1")
@@ -80,7 +80,7 @@ func TestResolveHalt_Evidence(t *testing.T) {
 	}
 
 	// A plain resolve is a clean outcome: no reconciliation annotation.
-	if err := ResolveHalt(ctx, s, "r", "c2", "sent", false); err != nil {
+	if err := ResolveHalt(ctx, s, HaltRef{RunID: "r", Op: OpRef{Kind: OpTool, ID: "c2"}, Cause: HaltCrashed}, Outcome{Result: "sent", IsError: false}); err != nil {
 		t.Fatalf("plain resolve: %v", err)
 	}
 	rec2 := resultFor(t, s, "r", "c2")
@@ -90,25 +90,25 @@ func TestResolveHalt_Evidence(t *testing.T) {
 }
 
 // The halt surfaces when the effect was attempted, so a reconciler can honor a grace period.
-func TestResumeHalt_AttemptedAt(t *testing.T) {
+func TestOutcomeUnknown_AttemptedAt(t *testing.T) {
 	ctx := context.Background()
-	store := NewMemStore()
+	store := memJournal()
 	at := time.Date(2026, 2, 2, 3, 4, 5, 0, time.UTC)
 	asst := Message{Role: RoleAssistant, Parts: []Part{ToolUse{ID: "c1", Name: "charge", Args: json.RawMessage(`{}`)}}}
-	_, _ = store.Do(ctx, "r", "@llm/0", func(context.Context) (Record, error) {
+	_, _ = store.do(ctx, "r", "@llm/0", func(context.Context) (Record, error) {
 		return Record{Kind: StepModel, Message: &asst}, nil
 	})
-	_, _ = store.Do(ctx, "r", toolAttemptStep("c1"), func(context.Context) (Record, error) {
+	_, _ = store.do(ctx, "r", toolAttemptStep("c1"), func(context.Context) (Record, error) {
 		return Record{Kind: StepAttempt, ToolUseID: "c1", AttemptedAt: at.UnixMilli()}, nil
 	})
 
 	var calls int
 	write := &countingTool{name: "charge", safety: Safety{}, calls: &calls} // not retry-safe
-	_, err := New(&scriptModel{}, store, write).Run(ctx, "r", "hi")
+	_, err := mustNew(&scriptModel{}, store, WithTools(write)).Run(ctx, "r", UserText("hi"))
 
-	var halt *ResumeHalt
+	var halt *OutcomeUnknown
 	if !errors.As(err, &halt) {
-		t.Fatalf("err = %v, want *ResumeHalt", err)
+		t.Fatalf("err = %v, want *OutcomeUnknown", err)
 	}
 	if !halt.AttemptedAt.Equal(at) {
 		t.Fatalf("halt.AttemptedAt = %v, want %v", halt.AttemptedAt, at)
@@ -124,7 +124,7 @@ func hasResult(recs []Record, id string) bool {
 	return false
 }
 
-func resultFor(t *testing.T, s Durable, runID, id string) Record {
+func resultFor(t *testing.T, s *Journal, runID, id string) Record {
 	t.Helper()
 	recs, err := s.History(context.Background(), runID)
 	if err != nil {

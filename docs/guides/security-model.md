@@ -156,8 +156,8 @@ operator only once the signed tree head is anchored out-of-band**, meaning:
 
 The guarantee anchoring buys is: *"you committed the root elsewhere, so any later divergence is
 provable."* Anchoring is a real deployment requirement, not an optional extra. `AuditedStore`
-plus the `Anchor` port make it push-based and automatic: wrap any `Durable`, and every durable
-step is signed and published to the external log you configure. `Anchor` is bring-your-own; the
+plus the `Anchor` port make it push-based and automatic: wrap any `Store`, and every journal
+write is signed and published to the external log you configure. `Anchor` is bring-your-own; the
 in-memory `MemAnchorLog` is the reference implementation and keeps its own append-only tree over
 the published tree heads, so a monitor can prove a given tree head was anchored and that the
 anchor log itself only grew.

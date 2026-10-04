@@ -8,6 +8,7 @@ import (
 	"testing"
 
 	"github.com/bide-ai/bide/agent"
+	"github.com/bide-ai/bide/agent/agenttest"
 )
 
 // syncTool is a retry-safe tool that does not watch its context: it runs whatever state the run
@@ -17,10 +18,11 @@ type syncTool struct {
 	fn   func() (json.RawMessage, error)
 }
 
-func (t syncTool) Name() string                { return t.name }
-func (t syncTool) Description() string         { return "" }
-func (t syncTool) ArgsSchema() json.RawMessage { return nil }
-func (t syncTool) Safety() agent.Safety        { return agent.Safety{Idempotent: true} }
+// Spec describes the tool to the agent (see agent.Tool).
+func (t syncTool) Spec() agent.ToolSpec {
+	return agent.ToolSpec{Name: t.name, Description: "", Input: json.RawMessage(`{"type":"object"}`), Safety: agent.Safety{Idempotent: true}}
+}
+
 func (t syncTool) Call(context.Context, json.RawMessage) (json.RawMessage, error) {
 	return t.fn()
 }
@@ -38,11 +40,14 @@ func TestSaga_CallAfterTheFailureIsNotCalled(t *testing.T) {
 		{Event: agent.ToolCallDelta{Index: 1, ID: "n1", Name: "notify", ArgsFragment: json.RawMessage(`{}`)}},
 		{Event: agent.Finish{Reason: "tool_use"}},
 	}
-	a := agent.New(modelFunc(func() []agent.Emit { return turn }), agent.NewMemStore(), fail, notify).SetMaxConcurrency(1)
-	_, err := a.RunSaga(context.Background(), "r", "go")
+	a := agenttest.MustNew(
+		modelFunc(func() []agent.Emit { return turn }),
+		agenttest.MemJournal(),
+		agent.WithTools(fail, notify), agent.WithMaxConcurrency(1))
+	_, err := a.Run(context.Background(), "r", agent.UserText("go"), agent.WithSaga())
 	var aborted *agent.SagaAborted
 	if !errors.As(err, &aborted) {
-		t.Fatalf("RunSaga = %v, want *SagaAborted", err)
+		t.Fatalf("saga Run = %v, want *SagaAborted", err)
 	}
 	if fired.Load() != 0 {
 		t.Fatalf("notify ran %d times after the saga's step failed, want 0", fired.Load())

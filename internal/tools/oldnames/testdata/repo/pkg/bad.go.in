@@ -1,0 +1,48 @@
+package pkg
+
+// Each line below names a removed API and must yield one finding (want.txt says which).
+
+var _ = agent.Durable
+// Durable.Do records the step
+// a Durable interface
+var _ = a.RunSaga
+var _ = a.RunSagaResult
+var _ = a.StreamSaga
+var _ = a.RunResult
+var _ = a.RunMessage
+var _ = a.StreamMessage
+var _ = a.ResumeRun
+var _ = a.RunTypedMessage
+var _ = agent.RunTypedNative
+var _ = s.SendMessage
+var _ = s.SendMessageOnce
+var _ *agent.AgentStream
+var _ agent.AgentEvent
+var _ = agent.ResolveHaltRef
+var _ = agent.ResolveStepHalt
+var _ *agent.PendingApproval
+var _ *agent.ResumeHalt
+var _ *agent.Interrupted
+var _ = errors.As(err, *Awaiting)
+var _ *agent.Sleeping
+var _ = agent.ApproveAs
+var _ = agent.ContextWithIdentity
+var _ = agent.ContextWithWaker
+var _ = agent.ContextWithClock
+var _ = a.SetMaxConcurrency
+var _ = a.UseTool
+var _ = agent.SpecOf
+var _ = agent.Build
+var _ = agent.Send
+var _ = agent.ScriptedModel
+var _ = agent.NewScriptedModel
+var _, _ = s.Final()
+import _ "github.com/bide-ai/bide/mcp"
+var _ = durabletest.Run
+var _ = storetest.CheckDurableWrapper
+// the transitional names
+func TestResolveHaltRef_X(t *testing.T) {}
+func TestLowering_RunSagaClears(t *testing.T) {}
+var _ = agent.Step(ctx, j, "r", "s", fn)
+var _ = agent.ToolTurn("c", "t", "{}")
+var _ = storetest.RunDurable

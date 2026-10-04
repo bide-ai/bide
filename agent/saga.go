@@ -19,11 +19,11 @@ type sagaTrip struct {
 
 func (e *sagaTrip) Error() string { return fmt.Sprintf("saga step %q failed: %v", e.toolName, e.cause) }
 
-// SagaAborted is returned by RunSaga when a step failed and the transaction was rolled
+// SagaAborted is returned by a saga run (WithSaga) when a step failed and the transaction was rolled
 // back. Compensated lists tools whose side effects were undone (reverse of execution,
 // including sub-agent trees). Uncompensated lists the writes the rollback did not undo: a
 // completed write with no compensator, a call whose outcome is unknown (the rollback halted on it,
-// with a *ResumeHalt in CompensateErr, whether or not it has a compensator), or a call whose tool
+// with a *OutcomeUnknown in CompensateErr, whether or not it has a compensator), or a call whose tool
 // is no longer registered. They are side effects that may need manual cleanup. CompensateErr is
 // non-nil if the rollback stopped (a compensator failed, or an outcome is unknown), so writes
 // before it remain uncompensated. A programmatic sub-run whose declared agent (WithSubRuns) could
@@ -71,25 +71,6 @@ func unknownStepOutcome(err error) bool {
 	return errors.Is(err, ErrToolOutcomeUnknown)
 }
 
-// RunSaga runs the agent as a transaction: on success it behaves like Run; if a step
-// fails after earlier writes succeeded, it compensates the completed writes in reverse
-// order (recursing into sub-agent trees) and returns *SagaAborted.
-//
-// The abort is derived from the journal (a durable StepSagaFail record), so a crash at
-// any point resumes correctly: on re-entry a recorded failure sends us straight to
-// rollback, and each compensation is a durable memoized step: once recorded it never
-// runs again, and a crash mid-compensation re-runs it (so Compensate must be idempotent).
-//
-// Note: if a non-retriable step's outcome is genuinely unknown (crashed after its attempt
-// marker but before any result), resume returns *OutcomeUnknown instead: you can't safely
-// auto-roll-back a step that may have committed; a human decides. A failure a human then
-// records with ResolveHaltRef (Outcome.IsError) is a failed step: the next RunSaga rolls back.
-func (a *Agent) RunSaga(ctx context.Context, runID, input string) (Message, error) {
-	in := UserText(input)
-	out, _, _, err := a.drive(ctx, runID, &driveSpec{input: &in, cfg: runConfig{saga: true}})
-	return out, err
-}
-
 // protocol:delegation begin DOpen DRb DRbEnd RbOpen RbLoop RbSub RbSubRet RbBind RbRec RbBindRet RbComp RbRe RbReRun RbReRet RbReW
 
 // runSagaWithTelemetry is a saga's drive: the rollback of a saga whose failure is recorded, or the
@@ -98,9 +79,6 @@ func (a *Agent) RunSaga(ctx context.Context, runID, input string) (Message, erro
 func (a *Agent) runSagaWithTelemetry(ctx context.Context, runID string, d *driveSpec) (Message, usageTotals, int, error) {
 	if err := checkRunID(ctx, runID); err != nil {
 		return Message{}, usageTotals{}, 0, err
-	}
-	if err := a.checkTools(); err != nil {
-		return Message{}, usageTotals{}, 0, err // before a rollback, which looks compensators up by name
 	}
 	recs, err := a.store.History(ctx, runID)
 	if err != nil {
@@ -180,7 +158,7 @@ func (a *Agent) rollback(ctx context.Context, runID string, cause error, causeTe
 			// Cancel has asked for the rollback, the run's end is run:cancelled, whichever cause
 			// started the rollback (one Get, on a failure's rollback only). A sub-run's tree root's
 			// cancellation asks for it too (up to two Gets more, from the root's store).
-			r, ok, err := lookup(ctx, a.store, runID, runCancelRequestedStep)
+			r, ok, err := a.store.Get(ctx, runID, runCancelRequestedStep)
 			if root := treeRootID(runID); err == nil && !ok && root != runID {
 				r, ok, err = rootCancelRecord(ctx, rootStoreOf(ctx, root, a.store), root)
 			}
@@ -233,7 +211,7 @@ func mustJSONValue(v any) json.RawMessage {
 //
 //   - a call with no result but an attempt marker (a side effect that started) has an unknown
 //     outcome, so the rollback stops there with a *OutcomeUnknown: a human, or a reconciler via
-//     ResolveHaltRef, records what happened, and the next RunSaga resumes the rollback. The halt
+//     ResolveHalt, records what happened, and the run's next drive resumes the rollback. The halt
 //     names root, the top-level run to re-invoke, even when the call is in a sub-agent's run;
 //   - a side effect with neither result nor marker never started, and is skipped;
 //   - a retry-safe call with a compensator and no result is run again to learn its result
@@ -432,7 +410,7 @@ func (a *Agent) rollbackRun(ctx context.Context, runID, root string) (compensate
 				// saga context, so the arguments it accepts are journaled as the live call's were.
 				toolH := a.toolHandler(runID)
 				spec := a.specs[tu.Name]
-				rec, ce := a.store.Do(ctx, runID, ToolResultStep(tu.ID), func(ctx context.Context) (Record, error) {
+				rec, ce := a.store.do(ctx, runID, ToolResultStep(tu.ID), func(ctx context.Context) (Record, error) {
 					live := &callUsage{} // the re-run's own call, from which it may resume its programmatic sub-runs
 					out, state, _, e := callTool(withCallUsage(withRunContext(ctx, a.store, runID, tu.ID, true), live), spec.Timeout, func(ctx context.Context) (json.RawMessage, int32, error) { return toolH(ctx, tu) })
 					live.callReturned()
@@ -497,7 +475,7 @@ func (a *Agent) rollbackRun(ctx context.Context, runID, root string) (compensate
 			if !ok {
 				args, _ = argsFor(recs, tu.ID)
 			}
-			if _, ce := a.store.Do(ctx, runID, sagaCompensateStep(tu.ID), func(ctx context.Context) (Record, error) {
+			if _, ce := a.store.do(ctx, runID, sagaCompensateStep(tu.ID), func(ctx context.Context) (Record, error) {
 				if e := comp.Compensate(ctx, args, res.Result); e != nil {
 					return Record{}, e
 				}
@@ -593,7 +571,7 @@ func declaredSubRunAgent(t Tool, name string) (sub *Agent, why string) {
 //
 // A step's failure is normally recorded as a StepSagaFail. A crash can come between the failure
 // and that record: the step then has an attempt marker and no outcome, the run halts, and the
-// operator records the verified outcome with ResolveHaltRef. A failure recorded that way is a failed
+// operator records the verified outcome with ResolveHalt. A failure recorded that way is a failed
 // step too, and aborts the saga as the StepSagaFail would have. In a saga, the only other failed
 // result a call can have is a human's denial, which the model reacts to, as it does outside one.
 //

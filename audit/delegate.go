@@ -154,7 +154,7 @@ type AttenuateFunc func(parent Grant, subAgent string) Grant
 // sub-agent, OnBehalfOf = the parent's Subject, AuthorityRef = the child's digest), and propagates
 // the child grant so a deeper delegation narrows again. With no grant on ctx it is a plain
 // sub-agent (it inherits the identity), so it is safe to use either way. With a grant, it must be
-// called from an agent run (Agent.Run / RunSaga), whose run scope gives each call its own sub-run
+// called from an agent run (Agent.Run), whose run scope gives each call its own sub-run
 // (agent.SubRunID of the parent run and the tool-use id); called outside one it refuses rather
 // than fall back to a sub-run ID that every parent run would share.
 //
@@ -176,7 +176,7 @@ func AttenuatingSubAgent(name, description string, sub *agent.Agent, cfg Attenua
 		panic(fmt.Errorf("audit: AttenuatingSubAgent %q: AttenuationConfig.Narrow is nil: %w", name, agent.ErrConfig))
 	}
 	return &attenuatingSubAgent{
-		Tool:   agent.SubAgent(name, description, sub, opts...),
+		Tool:   agent.MustSubAgent(name, description, sub, opts...),
 		name:   name,
 		store:  cfg.Store,
 		narrow: cfg.Narrow,
@@ -186,10 +186,10 @@ func AttenuatingSubAgent(name, description string, sub *agent.Agent, cfg Attenua
 
 // AttenuationConfig configures AttenuatingSubAgent.
 type AttenuationConfig struct {
-	// Store is the Durable store the sub-runs journal to, where each child grant is recorded as
+	// Store is the journal the sub-runs journal to, where each child grant is recorded as
 	// a durable leaf of its sub-run. Give it the store the parent and the sub-agent use, for a
 	// unified, provable journal.
-	Store agent.Durable
+	Store *agent.Journal
 	// Narrow derives each child grant from the parent's (see AttenuateFunc).
 	Narrow AttenuateFunc
 	// Rules says how each scope key may narrow; CheckAttenuation enforces it before a child
@@ -202,13 +202,13 @@ type AttenuationConfig struct {
 type attenuatingSubAgent struct {
 	agent.Tool
 	name   string
-	store  agent.Durable
+	store  *agent.Journal
 	narrow AttenuateFunc
 	rules  ScopeRules
 }
 
 // Spec returns the spec of the SubAgent tool it wraps.
-func (t *attenuatingSubAgent) Spec() agent.ToolSpec { return agent.SpecOf(t.Tool) }
+func (t *attenuatingSubAgent) Spec() agent.ToolSpec { return t.Tool.Spec() }
 
 // Unwrap returns the SubAgent tool it wraps, so the agent recognises the call as a delegation:
 // a saga rollback recurses into its sub-run, and the tree's token budget counts it.
@@ -283,7 +283,7 @@ func (t *attenuatingSubAgent) journaledAuthority(ctx context.Context, subRunID s
 	if grant != nil && ungranted {
 		return nil, false, true, fmt.Errorf("audit: delegation %q (sub-run %s) journaled both a grant and running without one: %w", t.name, subRunID, agent.ErrProtocol)
 	}
-	return grant, ungranted, len(recs) > 0, nil
+	return grant, ungranted, slices.ContainsFunc(recs, func(r agent.Record) bool { return r.Kind != agent.StepHeader }), nil
 }
 
 // checkChild verifies a journaled child grant against the grant and signer bound to ctx: its
@@ -356,11 +356,8 @@ func (t *attenuatingSubAgent) BindRollback(ctx context.Context, subRunID string)
 	default:
 		return nil, fmt.Errorf("audit: delegation %q (sub-run %s): its journaled grant %q was minted from none of the %d grant(s) bound to the rollback; bind the grant it was minted from (WithGrant, or WithRollbackGrants beside the acting grant): %w", t.name, subRunID, child.Grant.ID, len(parents), ErrNotVerified)
 	}
-	ctx = agent.ContextWithIdentity(ctx, agent.Identity{
-		Actor:        t.name,
-		OnBehalfOf:   child.Grant.Issuer, // the parent's subject: CheckAttenuation required it
-		AuthorityRef: child.Grant.Digest(),
-	})
+	// on behalf of the parent's subject (the child grant's issuer, as CheckAttenuation required)
+	ctx = toolhook.WithIdentity(ctx, t.name, child.Grant.Issuer, child.Grant.Digest())
 	return bindDelegated(ctx, *child, signer), nil
 }
 
@@ -389,7 +386,7 @@ func (t *attenuatingSubAgent) Call(ctx context.Context, args json.RawMessage) (j
 			if existing != nil {
 				return nil, unrecorded(fmt.Errorf("audit: delegation %q (sub-run %s) began under a grant; resume it with the grant and signer bound (WithGrant): %w", t.name, subRunID, agent.ErrConfig))
 			}
-			if _, err := t.store.Do(ctx, subRunID, ungrantedLeafName, func(context.Context) (agent.Record, error) {
+			if _, err := doRecord(ctx, t.store, subRunID, ungrantedLeafName, func(context.Context) (agent.Record, error) {
 				return agent.Record{Kind: agent.StepValue, Result: json.RawMessage(`{"ungranted":true}`)}, nil
 			}); err != nil {
 				return nil, unrecorded(fmt.Errorf("audit: record that delegation %q ran without a grant: %w", t.name, err))
@@ -477,11 +474,7 @@ func (t *attenuatingSubAgent) Call(ctx context.Context, args json.RawMessage) (j
 
 	// Rebind the sub-run: it acts as this sub-agent, on behalf of the parent, under the child grant.
 	// Propagate the child grant so a deeper delegation attenuates from it in turn.
-	ctx = agent.ContextWithIdentity(ctx, agent.Identity{
-		Actor:        t.name,
-		OnBehalfOf:   parentSG.Grant.Subject,
-		AuthorityRef: childSG.Grant.Digest(),
-	})
+	ctx = toolhook.WithIdentity(ctx, t.name, parentSG.Grant.Subject, childSG.Grant.Digest())
 	ctx = bindDelegated(ctx, childSG, signer)
 
 	return t.Tool.Call(ctx, args)

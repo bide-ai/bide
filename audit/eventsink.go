@@ -12,7 +12,7 @@ import (
 )
 
 // This file is the event→audit sink: it turns Agent.Stream's ephemeral SEMANTIC lifecycle
-// events (AgentEvents — turn boundaries, tool start/finish, approvals, the final answer)
+// events (RunEvents — turn boundaries, tool start/finish, approvals, the final answer)
 // into a verifiable, tamper-evident log. Root/Head/Prove in this package commit over the
 // durable JOURNAL after a run; an EventLog commits over the live EVENT STREAM as it happens,
 // with the SAME RFC 6962 machinery (merkleRoot / auditPath / verifyPath) and the same
@@ -26,7 +26,7 @@ import (
 // eventDomain separates the event-log hash chain from the journal chain (audit.domain).
 var eventDomain = sha256.Sum256([]byte("bide.audit.events.v1"))
 
-// EventLog is an append-only, tamper-evident log of one run's AgentEvents. Build it by
+// EventLog is an append-only, tamper-evident log of one run's RunEvents. Build it by
 // Add-ing events in emission order (Agent.Stream emits them ordered from a single
 // goroutine); then Root/Head to commit, Prove for selective disclosure, and audit.Sign to
 // anchor. Not safe for concurrent Add — feed it from the one goroutine ranging Events.
@@ -42,7 +42,7 @@ func NewEventLog() *EventLog { return &EventLog{} }
 // (agent.SaltSize bytes from crypto/rand; see EventInclusion). It errors if the event cannot be
 // canonicalized (it holds a string that is not valid UTF-8, for one) or the system's random
 // source fails.
-func (l *EventLog) Add(e agent.AgentEvent) error {
+func (l *EventLog) Add(e agent.RunEvent) error {
 	salt, err := newEventSalt()
 	if err != nil {
 		return err
@@ -50,7 +50,7 @@ func (l *EventLog) Add(e agent.AgentEvent) error {
 	return l.add(e, salt)
 }
 
-func (l *EventLog) add(e agent.AgentEvent, salt []byte) error {
+func (l *EventLog) add(e agent.RunEvent, salt []byte) error {
 	b, err := canonicalEvent(e, salt)
 	if err != nil {
 		return err
@@ -134,7 +134,7 @@ func (l *EventLog) ProveConsistency(first int) (Consistency, error) {
 // does not hold is an error wrapping ErrNotVerified; one whose format is not EventInclusionFormat,
 // ErrFormat; an event that cannot be canonicalized or a salt that is not agent.SaltSize bytes,
 // ErrMalformed.
-func VerifyEventInclusion(root []byte, event agent.AgentEvent, proof EventInclusion) error {
+func VerifyEventInclusion(root []byte, event agent.RunEvent, proof EventInclusion) error {
 	if err := formatOf(proof, proof.Format); err != nil {
 		return err
 	}
@@ -162,7 +162,7 @@ func VerifyEventInclusion(root []byte, event agent.AgentEvent, proof EventInclus
 // It errors if a source record has no agent.SaltSize salt, and refuses a journal it cannot
 // project: one holding a redacted record (ErrRedacted) or a record whose stored bytes read two
 // ways to JSON readers (ErrMalformed).
-func EventLogFromJournal(ctx context.Context, store agent.Durable, runID string) (*EventLog, error) {
+func EventLogFromJournal(ctx context.Context, store *agent.Journal, runID string) (*EventLog, error) {
 	evs, salts, err := projectJournal(ctx, store, runID)
 	if err != nil {
 		return nil, err
@@ -192,7 +192,7 @@ func journalEventSalt(recordSalt []byte) []byte {
 
 // projectJournal returns the events agent.ReplayEvents returns for runID's journal and each
 // event's salt, derived from the record the event projects (journalEventSalt).
-func projectJournal(ctx context.Context, store agent.Durable, runID string) ([]agent.AgentEvent, [][]byte, error) {
+func projectJournal(ctx context.Context, store *agent.Journal, runID string) ([]agent.RunEvent, [][]byte, error) {
 	recs, err := store.History(ctx, runID)
 	if err != nil {
 		return nil, nil, fmt.Errorf("audit: load history %s: %w", runID, err)
@@ -218,12 +218,12 @@ func projectJournal(ctx context.Context, store agent.Durable, runID string) ([]a
 	return evs, salts, nil
 }
 
-// Record drains stream through log — committing every event — while forwarding each event
-// to onEvent (nil to skip), then returns the run's terminal Message and error (including
-// *ApprovalPending / *OutcomeUnknown, exactly as AgentStream.Final does). One pass gives you
-// both the live UI feed and a committed, provable audit trail. A canonicalization failure
-// is surfaced only if the run itself did not already fail.
-func Record(log *EventLog, stream *agent.AgentStream, onEvent func(agent.AgentEvent)) (agent.Message, error) {
+// RecordStream drains stream through log, committing every event, while forwarding each event to
+// onEvent (nil to skip), then returns the run's Result and error, as RunStream.Result does (the
+// Result is non-nil whenever the run ID is valid, whatever the error, including *ApprovalPending
+// and *OutcomeUnknown). One pass gives you both the live UI feed and a committed, provable audit
+// trail. A failure to commit an event is returned only if the run itself did not fail.
+func RecordStream(log *EventLog, stream *agent.RunStream, onEvent func(agent.RunEvent)) (*agent.Result, error) {
 	var addErr error
 	for e := range stream.Events() {
 		if err := log.Add(e); err != nil && addErr == nil {
@@ -234,14 +234,10 @@ func Record(log *EventLog, stream *agent.AgentStream, onEvent func(agent.AgentEv
 		}
 	}
 	res, err := stream.Result()
-	var msg agent.Message
-	if res != nil {
-		msg = res.Message
-	}
 	if err != nil {
-		return msg, err
+		return res, err
 	}
-	return msg, addErr
+	return res, addErr
 }
 
 // eventLeaf is the canonical wire form of one event: a kind tag, the event's JSON (every event
@@ -259,7 +255,7 @@ type eventLeaf struct {
 // is not agent.SaltSize bytes: the leaf would be guessable from the event's content. It refuses an
 // event holding a string that is not valid UTF-8 (see checkUTF8): the encoding would rewrite it,
 // so two different events would share one leaf and a proof of one would verify the other.
-func canonicalEvent(e agent.AgentEvent, salt []byte) ([]byte, error) {
+func canonicalEvent(e agent.RunEvent, salt []byte) ([]byte, error) {
 	if len(salt) != agent.SaltSize {
 		return nil, fmt.Errorf("audit: canonicalize event: %d-byte salt, want %d", len(salt), agent.SaltSize)
 	}
@@ -308,10 +304,10 @@ func newEventSalt() ([]byte, error) {
 	return salt, nil
 }
 
-// eventKind is a stable, snake_case discriminator for an AgentEvent. A model_event carries the
+// eventKind is a stable, snake_case discriminator for an RunEvent. A model_event carries the
 // inner model event's kind too, so token/reasoning/tool-call deltas stay distinct even when their
 // JSON coincides. An event of a type it does not name is refused: its leaf would not say what it is.
-func eventKind(e agent.AgentEvent) (string, error) {
+func eventKind(e agent.RunEvent) (string, error) {
 	switch ev := e.(type) {
 	case agent.TurnStarted:
 		return "turn_started", nil

@@ -26,7 +26,11 @@ func TestRev138_MainSendOnceRunStillDrives(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	msg, err := s.SendOnce(ctx, "k", "hi")
+	res, err := s.SendOnce(ctx, "k", agent.UserText("hi"))
+	var msg agent.Message
+	if res != nil {
+		msg = res.Message
+	}
 	if err != nil || msg.Text() != "hello" {
 		t.Fatalf("SendOnce of a key main started = %q, %v; want its answer", msg.Text(), err)
 	}
@@ -38,7 +42,7 @@ func TestRev138_MainStartStillHoldsTheInput(t *testing.T) {
 	j, _ := p14Journal(t)
 	a := p14Build(t, &p14Model{turns: []p14Turn{{text: "hello"}}}, j)
 	putMainStart(t, j, "r", "go")
-	if _, err := a.RunMessage(ctx, "r", agent.UserText("other")); !errors.Is(err, agent.ErrConfig) {
+	if _, err := a.Run(ctx, "r", agent.UserText("other")); !errors.Is(err, agent.ErrConfig) {
 		t.Fatalf("a drive of a legacy run with another input = %v, want ErrConfig", err)
 	}
 }
@@ -74,11 +78,11 @@ func TestRev138_RecheckAfterAmendment(t *testing.T) {
 	var c counter
 	model := &p14Model{turns: []p14Turn{{calls: []agent.ToolUse{call("c1", "pay")}}, {text: "done"}}}
 	a := p14Build(t, model, j, agent.WithTools(c.tool("pay", agent.Safety{}, agent.WithApproval(agent.SingleApproval()))))
-	if _, err := a.RunMessage(ctx, "r", agent.UserText("go")); err == nil {
+	if _, err := a.Run(ctx, "r", agent.UserText("go")); err == nil {
 		t.Fatal("want the approval pause")
 	}
 	calls := model.calls.Load()
-	_, err = a.RunMessage(ctx, "r", agent.UserText("go"), agent.WithMaxTurns(9))
+	_, err = a.Run(ctx, "r", agent.UserText("go"), agent.WithMaxTurns(9))
 	if !errors.Is(err, agent.ErrRunCancelled) {
 		t.Errorf("drive after its amendment and a Cancel = %v, want ErrRunCancelled", err)
 	}
@@ -93,16 +97,15 @@ func TestRev138_CancelAndFailureInOneTurnEndsCancelled(t *testing.T) {
 	ctx := context.Background()
 	j, m := p14Journal(t)
 	var undone counter
-	book := agent.CompensatedFunc("book", "", agent.Safety{},
-		func(context.Context, struct{}) (string, error) { return "booked", nil },
+	book := agent.MustCompensatedFunc("book", "", func(context.Context, struct{}) (string, error) { return "booked", nil },
 		func(context.Context, struct{}, string) error { undone.n.Add(1); return nil })
-	pay := agent.Func("pay", "", agent.Safety{}, func(context.Context, struct{}) (string, error) {
+	pay := agent.MustFunc("pay", "", func(context.Context, struct{}) (string, error) {
 		writeMarker(t, m, "r", "run:cancel-requested", reason{"stop"})
 		return "", errors.New("card declined")
 	})
 	model := &p14Model{turns: []p14Turn{{calls: []agent.ToolUse{call("c1", "book")}}, {calls: []agent.ToolUse{call("c2", "pay")}}, {text: "done"}}}
 	a := p14Build(t, model, j, agent.WithTools(book, pay))
-	_, err := a.RunMessage(ctx, "r", agent.UserText("go"), agent.WithSaga())
+	_, err := a.Run(ctx, "r", agent.UserText("go"), agent.WithSaga())
 	st, _ := agent.Status(ctx, j, "r")
 	if !errors.Is(err, agent.ErrRunCancelled) || st.State != agent.RunCancelled {
 		t.Fatalf("saga cancelled and failed in one turn = %v, Status %s; want ErrRunCancelled and cancelled", err, st.State)
@@ -119,8 +122,7 @@ func TestRev138_RequestBeforeRecordedFailureOnTheNextDrive(t *testing.T) {
 	ctx := context.Background()
 	j, m := p14Journal(t)
 	failed := false
-	book := agent.CompensatedFunc("book", "", agent.Safety{},
-		func(context.Context, struct{}) (string, error) { return "booked", nil },
+	book := agent.MustCompensatedFunc("book", "", func(context.Context, struct{}) (string, error) { return "booked", nil },
 		func(context.Context, struct{}, string) error {
 			if !failed {
 				failed = true
@@ -129,18 +131,18 @@ func TestRev138_RequestBeforeRecordedFailureOnTheNextDrive(t *testing.T) {
 			}
 			return nil
 		})
-	pay := agent.Func("pay", "", agent.Safety{}, func(context.Context, struct{}) (string, error) {
+	pay := agent.MustFunc("pay", "", func(context.Context, struct{}) (string, error) {
 		return "", errors.New("card declined")
 	})
 	model := &p14Model{turns: []p14Turn{{calls: []agent.ToolUse{call("c1", "book")}}, {calls: []agent.ToolUse{call("c2", "pay")}}, {text: "done"}}}
 	a := p14Build(t, model, j, agent.WithTools(book, pay))
-	if _, err := a.RunMessage(ctx, "r", agent.UserText("go"), agent.WithSaga()); err == nil {
+	if _, err := a.Run(ctx, "r", agent.UserText("go"), agent.WithSaga()); err == nil {
 		t.Fatal("want the first rollback to stop")
 	}
 	if has(t, m, "r", "run:aborted") || has(t, m, "r", "run:cancelled") {
 		t.Fatal("the stopped rollback wrote an end marker")
 	}
-	_, err := a.ResumeRun(ctx, "r")
+	_, err := a.Resume(ctx, "r")
 	st, _ := agent.Status(ctx, j, "r")
 	if !errors.Is(err, agent.ErrRunCancelled) || st.State != agent.RunCancelled {
 		t.Fatalf("next drive of a failed saga with a rollback request = %v, Status %s; want ErrRunCancelled and cancelled", err, st.State)
@@ -157,21 +159,21 @@ func TestRev138_RequestBeforeRecordedFailureOnTheNextDrive(t *testing.T) {
 func TestRev138_AbortedSagaResumedWithoutWithSaga(t *testing.T) {
 	ctx := context.Background()
 	j, _ := p14Journal(t)
-	pay := agent.Func("pay", "", agent.Safety{}, func(context.Context, struct{}) (string, error) {
+	pay := agent.MustFunc("pay", "", func(context.Context, struct{}) (string, error) {
 		return "", errors.New("card declined")
 	})
 	model := &p14Model{turns: []p14Turn{{calls: []agent.ToolUse{call("c1", "pay")}}, {text: "done"}}}
 	a := p14Build(t, model, j, agent.WithTools(pay))
-	if _, err := a.RunMessage(ctx, "r", agent.UserText("go"), agent.WithSaga()); err == nil {
+	if _, err := a.Run(ctx, "r", agent.UserText("go"), agent.WithSaga()); err == nil {
 		t.Fatal("want the saga to abort")
 	}
-	_, err := a.ResumeRun(ctx, "r")
+	_, err := a.Resume(ctx, "r")
 	if _, ok := errors.AsType[*agent.SagaAborted](err); !ok || errors.Is(err, agent.ErrConfig) {
-		t.Fatalf("ResumeRun of an aborted saga = %v; want *SagaAborted, not ErrConfig", err)
+		t.Fatalf("Resume of an aborted saga = %v; want *SagaAborted, not ErrConfig", err)
 	}
-	_, err = a.RunMessage(ctx, "r", agent.UserText("go"))
+	_, err = a.Run(ctx, "r", agent.UserText("go"))
 	if _, ok := errors.AsType[*agent.SagaAborted](err); !ok || errors.Is(err, agent.ErrConfig) {
-		t.Fatalf("RunMessage without WithSaga of an aborted saga = %v; want *SagaAborted, not ErrConfig", err)
+		t.Fatalf("Run without WithSaga of an aborted saga = %v; want *SagaAborted, not ErrConfig", err)
 	}
 }
 
@@ -193,7 +195,7 @@ func TestRev138_ToolChoiceNoneEnforcedAtDispatch(t *testing.T) {
 	var c counter
 	model := &p14Model{turns: []p14Turn{{calls: []agent.ToolUse{call("c1", "pay")}}, {text: "done"}}}
 	a := p14Build(t, model, j, agent.WithTools(c.tool("pay", agent.Safety{})))
-	res, err := a.RunMessage(ctx, "r", agent.UserText("go"), agent.WithToolChoice(agent.ToolChoice{Mode: "none"}))
+	res, err := a.Run(ctx, "r", agent.UserText("go"), agent.WithToolChoice(agent.ToolChoice{Mode: "none"}))
 	if err != nil || res.Message.Text() != "done" {
 		t.Fatalf("run = %v, %v", res, err)
 	}
@@ -207,13 +209,12 @@ func TestRev138_RecoverReportsACancelRollbackAsCancelled(t *testing.T) {
 	ctx := context.Background()
 	j, m := p14Journal(t)
 	var undone counter
-	book := agent.CompensatedFunc("book", "", agent.Safety{},
-		func(context.Context, struct{}) (string, error) { return "booked", nil },
+	book := agent.MustCompensatedFunc("book", "", func(context.Context, struct{}) (string, error) { return "booked", nil },
 		func(context.Context, struct{}, string) error { undone.n.Add(1); return nil })
 	model := &p14Model{turns: []p14Turn{{calls: []agent.ToolUse{call("c1", "book")}}, {calls: []agent.ToolUse{call("c2", "pay")}}, {text: "done"}}}
 	var c counter
 	a := p14Build(t, model, j, agent.WithTools(book, c.tool("pay", agent.Safety{}, agent.WithApproval(agent.SingleApproval()))))
-	if _, err := a.RunMessage(ctx, "r", agent.UserText("go"), agent.WithSaga()); err == nil {
+	if _, err := a.Run(ctx, "r", agent.UserText("go"), agent.WithSaga()); err == nil {
 		t.Fatal("want the approval pause")
 	}
 	writeMarker(t, m, "r", "run:cancel-requested", reason{"stop"})
@@ -242,12 +243,12 @@ func TestRev138_SubRunChecksTheRootAtEveryCheck(t *testing.T) {
 					t.Errorf("Cancel = %v", err)
 				}
 			}
-			mark := agent.Func("mark", "", agent.Safety{ReadOnly: true}, func(context.Context, struct{}) (string, error) {
+			mark := agent.MustFunc("mark", "", func(context.Context, struct{}) (string, error) {
 				if where == "turn boundary" {
 					cancelRoot()
 				}
 				return "ok", nil
-			})
+			}, agent.WithSafety(agent.Safety{ReadOnly: true}))
 			subModel := &p14Model{turns: []p14Turn{
 				{calls: []agent.ToolUse{call("s1", "mark")}},
 				{calls: []agent.ToolUse{call("s2", "pay")}, hook: func(agent.Request) {
@@ -262,12 +263,12 @@ func TestRev138_SubRunChecksTheRootAtEveryCheck(t *testing.T) {
 				{calls: []agent.ToolUse{{ID: "p1", Name: "helper", Args: []byte(`{"task":"pay"}`)}}},
 				{text: "done"},
 			}}
-			parent := p14Build(t, parentModel, j, agent.WithTools(agent.SubAgent("helper", "", sub)))
+			parent := p14Build(t, parentModel, j, agent.WithTools(agent.MustSubAgent("helper", "", sub)))
 			var opts []agent.RunOption
 			if c.saga {
 				opts = append(opts, agent.WithSaga())
 			}
-			_, err := parent.RunMessage(ctx, "r", agent.UserText("go"), opts...)
+			_, err := parent.Run(ctx, "r", agent.UserText("go"), opts...)
 			st, _ := agent.Status(ctx, j, "r")
 			if !errors.Is(err, agent.ErrRunCancelled) || st.State != agent.RunCancelled {
 				t.Errorf("parent run = %v, Status %s; want ErrRunCancelled and cancelled", err, st.State)
@@ -289,8 +290,7 @@ func TestRev138_SessionRollsBackACancelledSagaTurn(t *testing.T) {
 	ctx := context.Background()
 	j, _ := p14Journal(t)
 	var undone counter
-	book := agent.CompensatedFunc("book", "", agent.Safety{},
-		func(context.Context, struct{}) (string, error) { return "booked", nil },
+	book := agent.MustCompensatedFunc("book", "", func(context.Context, struct{}) (string, error) { return "booked", nil },
 		func(context.Context, struct{}, string) error { undone.n.Add(1); return nil })
 	var c counter
 	model := &p14Model{turns: []p14Turn{{calls: []agent.ToolUse{call("c1", "book")}}, {calls: []agent.ToolUse{call("c2", "pay")}}, {text: "done"}}}
@@ -299,7 +299,7 @@ func TestRev138_SessionRollsBackACancelledSagaTurn(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if _, err := s.SendMessage(ctx, agent.UserText("one"), agent.WithSaga()); err == nil {
+	if _, err := s.Send(ctx, agent.UserText("one"), agent.WithSaga()); err == nil {
 		t.Fatal("want the approval pause")
 	}
 	if err := agent.Cancel(ctx, j, "s>@turn/0", "stop"); err != nil {
@@ -308,7 +308,7 @@ func TestRev138_SessionRollsBackACancelledSagaTurn(t *testing.T) {
 	if st, _ := agent.Status(ctx, j, "s>@turn/0"); st.State != agent.RunStarted {
 		t.Fatalf("a saga turn's Cancel wrote its end: Status %s, want started until its rollback", st.State)
 	}
-	_, err = s.SendMessage(ctx, agent.UserText("two"))
+	_, err = s.Send(ctx, agent.UserText("two"))
 	if errors.Is(err, agent.ErrConfig) {
 		t.Fatalf("the next message was refused: %v", err)
 	}
@@ -338,8 +338,8 @@ func TestRev138_SubRunOpenChecksTheRoot(t *testing.T) {
 		}},
 		{text: "done"},
 	}}
-	parent := p14Build(t, parentModel, j, agent.WithTools(agent.SubAgent("helper", "", sub)))
-	if _, err := parent.RunMessage(ctx, "r", agent.UserText("go")); !errors.Is(err, agent.ErrRunCancelled) {
+	parent := p14Build(t, parentModel, j, agent.WithTools(agent.MustSubAgent("helper", "", sub)))
+	if _, err := parent.Run(ctx, "r", agent.UserText("go")); !errors.Is(err, agent.ErrRunCancelled) {
 		t.Fatalf("parent run = %v, want ErrRunCancelled", err)
 	}
 	if n := subModel.calls.Load(); n != 0 {
@@ -353,20 +353,19 @@ func TestRev138_SagaSubRunRecordsTheRootsReason(t *testing.T) {
 	ctx := context.Background()
 	j, m := p14Journal(t)
 	var undone counter
-	book := agent.CompensatedFunc("book", "", agent.Safety{},
-		func(context.Context, struct{}) (string, error) { return "booked", nil },
+	book := agent.MustCompensatedFunc("book", "", func(context.Context, struct{}) (string, error) { return "booked", nil },
 		func(context.Context, struct{}, string) error { undone.n.Add(1); return nil })
-	mark := agent.Func("mark", "", agent.Safety{ReadOnly: true}, func(context.Context, struct{}) (string, error) {
+	mark := agent.MustFunc("mark", "", func(context.Context, struct{}) (string, error) {
 		if err := agent.Cancel(ctx, j, "r", "the customer left"); err != nil {
 			t.Errorf("Cancel = %v", err)
 		}
 		return "ok", nil
-	})
+	}, agent.WithSafety(agent.Safety{ReadOnly: true}))
 	subModel := &p14Model{turns: []p14Turn{{calls: []agent.ToolUse{call("s1", "book")}}, {calls: []agent.ToolUse{call("s2", "mark")}}, {text: "sub"}}}
 	sub := p14Build(t, subModel, j, agent.WithTools(book, mark))
 	parentModel := &p14Model{turns: []p14Turn{{calls: []agent.ToolUse{{ID: "p1", Name: "helper", Args: []byte(`{"task":"x"}`)}}}, {text: "done"}}}
-	parent := p14Build(t, parentModel, j, agent.WithTools(agent.SubAgent("helper", "", sub)))
-	if _, err := parent.RunMessage(ctx, "r", agent.UserText("go"), agent.WithSaga()); !errors.Is(err, agent.ErrRunCancelled) {
+	parent := p14Build(t, parentModel, j, agent.WithTools(agent.MustSubAgent("helper", "", sub)))
+	if _, err := parent.Run(ctx, "r", agent.UserText("go"), agent.WithSaga()); !errors.Is(err, agent.ErrRunCancelled) {
 		t.Fatalf("parent saga = %v, want ErrRunCancelled", err)
 	}
 	if undone.n.Load() != 1 {
@@ -401,7 +400,7 @@ func TestRev138_CancelledTurnUnderAnotherLease(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if _, err := s.Send(ctx, "one"); err == nil {
+	if _, err := s.Send(ctx, agent.UserText("one")); err == nil {
 		t.Fatal("want the approval pause")
 	}
 	if err := agent.Cancel(ctx, j, "s>@turn/0", "stop"); err != nil {
@@ -410,7 +409,7 @@ func TestRev138_CancelledTurnUnderAnotherLease(t *testing.T) {
 	if ok, err := m.AcquireLease(ctx, "s>@turn/0", "another-worker", time.Hour); err != nil || !ok {
 		t.Fatalf("AcquireLease = %v, %v", ok, err)
 	}
-	if _, err := s.Send(ctx, "one"); !errors.Is(err, agent.ErrRunCancelled) {
+	if _, err := s.Send(ctx, agent.UserText("one")); !errors.Is(err, agent.ErrRunCancelled) {
 		t.Fatalf("Send of the cancelled message under another worker's lease = %v, want ErrRunCancelled", err)
 	}
 }

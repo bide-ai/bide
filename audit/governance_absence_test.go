@@ -8,14 +8,16 @@ import (
 	"testing"
 
 	"github.com/bide-ai/bide/agent"
+	"github.com/bide-ai/bide/agent/agenttest"
+	"github.com/bide-ai/bide/internal/journaltest"
 )
 
 // governedAction records a completed tool call whose result carries a policy digest, as
 // an attested govern.EventTool does in production.
-func governedAction(t *testing.T, ctx context.Context, store agent.Durable, runID, id, digest string) {
+func governedAction(t *testing.T, ctx context.Context, store *agent.Journal, runID, id, digest string) {
 	t.Helper()
 	res, _ := json.Marshal(map[string]any{"event": "e", "applied": true, "policy_digest": digest})
-	if _, err := store.Do(ctx, runID, id, func(context.Context) (agent.Record, error) {
+	if _, err := journaltest.Do(ctx, store, runID, id, func(context.Context) (agent.Record, error) {
 		return agent.Record{Kind: agent.StepToolResult, ToolUseID: id, Result: res}, nil
 	}); err != nil {
 		t.Fatalf("record action: %v", err)
@@ -29,7 +31,7 @@ func governedAction(t *testing.T, ctx context.Context, store agent.Durable, runI
 // the set of policies used confirms it is exactly the approved one.
 func TestGovernanceAbsence_NoActionUnderDisallowedPolicy(t *testing.T) {
 	ctx := context.Background()
-	store := agent.NewMemStore()
+	store := agenttest.MemJournal()
 	const runID = "run1"
 	const approved = "aaaa1111"
 	const disallowed = "dddd9999"

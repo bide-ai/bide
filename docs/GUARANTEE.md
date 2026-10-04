@@ -86,12 +86,13 @@ the journal holds, and so what a resume cannot be talked out of by a redeploy:
   and `WithRetrieval` documents;
 - the run's input (a message, images included) and whether it runs as a saga (`run:start`), and
   for a session turn the transcript it started from; an unfinished run resumed with another input,
-  or through the other entry point, is `ErrConfig`, and so is a completed run driven with another
-  input;
+  with `WithSaga()` when it is not a saga, or as typed when it is untyped (or the other way round), is
+  `ErrConfig`, and so is a completed run driven with another input; a saga's later drives run it as
+  a saga whether or not they pass `WithSaga()`;
 - the per-run options its first caller passed (`run:start`, see `agent.RunStart`): the turn limit
   and token budget, the system prompt, sampling, tool choice, the tool filter, a typed run's output
   mode and answer schema, and the principal (`OnBehalfOf`, `AuthorityRef`). Every later drive,
-  `ResumeRun` and a recovery drive included, runs under them; a later drive's different limit is
+  `Resume` and a recovery drive included, runs under them; a later drive's different limit is
   journaled as an amendment (`run:limits:<n>`) and binds the drives after it; any other different
   setting is `ErrConfig`, before any model call. The tool filter is enforced when a call is
   dispatched: a call outside it is refused with an error result recorded, and its tool never runs;
@@ -106,7 +107,7 @@ the journal holds, and so what a resume cannot be talked out of by a redeploy:
   `ReadOnly` since, and a call whose tool is no longer registered is reported uncompensated (or
   halts, if it was attempted with no result);
 - for a flow (`plan`), its flow name and input (`run:start`, kind `flow`), its topology digest,
-  each switch's choice, and each node's attempt marker (a node runs as an `agent.Step`, so a node
+  each switch's choice, and each node's attempt marker (a node runs as an `agent.Journal.Step`, so a node
   attempted as a side effect halts on resume even if it is relabelled retry-safe since); a flow run
   resumed with another input or flow, or driven by an `Agent`, is `ErrConfig`; a finished flow run
   records `run:complete` with its output, which a later drive returns.
@@ -114,7 +115,7 @@ the journal holds, and so what a resume cannot be talked out of by a redeploy:
 Configuration is live by design: it governs what a drive does next, not what the journal already
 says happened. A drive uses the configuration it is given for:
 
-- the agent's own system prompt (`WithSystemPrompt` given to `Build`, and `WithSystemPromptFunc`,
+- the agent's own system prompt (`WithSystemPrompt` given to `New`, and `WithSystemPromptFunc`,
   which is called once by each drive that sends the model a request, before its first one),
   sampling and tool choice, where the run journaled none of its own, and the response format, the
   model, and model middleware, for the turns

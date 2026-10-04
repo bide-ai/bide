@@ -1,6 +1,6 @@
 # Pre-1.0 API redesign (proposal, v2)
 
-Status: accepted, in progress. The maintainer approved this plan as the work to do; it is not a 1.0 freeze, and any part may still change before 1.0. Waves 1 to 3 (P1 to P11) are merged and ship in v0.9.0; P12 to P14 are merged and ship in v0.10.0; P15 and P16 follow (see the CHANGELOG). v2 folds in an independent adversarial critique.
+Status: accepted, in progress. The maintainer approved this plan as the work to do; it is not a 1.0 freeze, and any part may still change before 1.0. Waves 1 to 3 (P1 to P11) are merged and ship in v0.9.0; P12 to P14 are merged and ship in v0.10.0; P15 (the final names, the removal of the transitional API, and the migrate tool) is unreleased, and P16 follows (see the CHANGELOG). v2 folds in an independent adversarial critique.
 
 ## 0. Baseline, what is already done, and how v2 changes v1
 
@@ -129,7 +129,7 @@ Status: accepted, in progress. The maintainer approved this plan as the work to 
 ### 1.2 Option mechanics
 Options are interfaces with unexported methods. `apply` returns an error, so a bad value fails at construction.
 
-<!-- docsnip: skip design proposal: this API is not implemented yet -->
+<!-- docsnip: skip design proposal: the code is the reference now (the API as built may differ in details) -->
 ```go
 type Option interface{ applyAgent(*agentConfig) error }
 type RunOption interface{ applyRun(*runConfig) error }
@@ -171,7 +171,7 @@ type ResolveOption interface{ applyResolve(*resolveConfig) error }
 ## 2. Item 1: Run API
 
 ### New API
-<!-- docsnip: skip design proposal: this API is not implemented yet -->
+<!-- docsnip: skip design proposal: the code is the reference now (the API as built may differ in details) -->
 ```go
 func (a *Agent) Run(ctx context.Context, runID string, input Message, opts ...RunOption) (*Result, error)
 func (a *Agent) Resume(ctx context.Context, runID string, opts ...RunOption) (*Result, error)
@@ -206,7 +206,7 @@ func (s *Session) SendOnce(ctx context.Context, key string, input Message, opts 
 ```
 
 ### The run header: #70's `run:start`, extended (no second header)
-<!-- docsnip: skip design proposal: this API is not implemented yet -->
+<!-- docsnip: skip design proposal: the code is the reference now (the API as built may differ in details) -->
 ```go
 type RunStart struct {
 	Input     Message                    `json:"input"`               // #70 (string becomes Message)
@@ -255,7 +255,7 @@ The rule resolves critique B1 and #70's decisions 2 to 4, using #70's table.
 Model 10 checks rules 1 to 3 and the filter (`RunOptionsDurable`, `FilterHonoured`; `life-limits`, `life-filter`).
 
 ### Recovery dispatch (critique B6, B8)
-<!-- docsnip: skip design proposal: this API is not implemented yet -->
+<!-- docsnip: skip design proposal: the code is the reference now (the API as built may differ in details) -->
 ```go
 type Resumer func(ctx context.Context, runID string, start RunStart) error
 var ErrNotResumable = errors.New("run not resumable by this resumer") // no category, like ErrLeaseLost
@@ -364,7 +364,7 @@ P14 settled both (maintainer to confirm): recovery keeps skipping session runs, 
 
 Unchanged from v1 except where noted.
 
-<!-- docsnip: skip design proposal: this API is not implemented yet -->
+<!-- docsnip: skip design proposal: the code is the reference now (the API as built may differ in details) -->
 ```go
 func New(model Model, j *Journal, opts ...Option) (*Agent, error)
 func (a *Agent) With(opts ...Option) (*Agent, error)
@@ -427,7 +427,7 @@ func (a *Agent) Journal() *Journal
 ## 4. Item 3: Journal format versioning
 
 ### New API
-<!-- docsnip: skip design proposal: this API is not implemented yet -->
+<!-- docsnip: skip design proposal: the code is the reference now (the API as built may differ in details) -->
 ```go
 const JournalFormat = "bide.journal.v1-dev" // becomes "bide.journal.v1" at the 1.0 tag
 var ErrJournalVersion = fmt.Errorf("unsupported journal format: %w", ErrProtocol)
@@ -483,7 +483,7 @@ The format cannot live in `run:start`, because many journals have no engine head
 ## 5. Item 4: Durable redesign
 
 ### The port
-<!-- docsnip: skip design proposal: this API is not implemented yet -->
+<!-- docsnip: skip design proposal: the code is the reference now (the API as built may differ in details) -->
 ```go
 type Store interface {
 	// Insert stores data under (runID, name) if absent; returns the stored entry and whether
@@ -536,7 +536,7 @@ The critique's replacement for v1's dense A2 is adopted.
 This admits commit-ordered stores (FoundationDB versionstamps, Spanner commit timestamps) as well as counter-based ones.
 
 ### The journal the agent owns
-<!-- docsnip: skip design proposal: this API is not implemented yet -->
+<!-- docsnip: skip design proposal: the code is the reference now (the API as built may differ in details) -->
 ```go
 type Journal struct{ /* unexported */ }
 func NewJournal(s Store, opts ...JournalOption) (*Journal, error)
@@ -613,7 +613,7 @@ The tombstone format is reserved now.
   - adds `Store` and `Journal`;
   - moves every semantic duty into `Journal`;
   - gives MemStore, sqlite and postgres deprecated `Do` and `History` methods that delegate to an internal `Journal` over themselves. `*Journal` also satisfies `Durable`.
-- **Engine code** that needs `Get` calls the unexported `journalOf(d Durable)`:
+- **Engine code** that needs `Get` calls the unexported `journalOf(d Durable)` (P15 removed it with `Durable`: the engine holds a `*Journal`):
   - it returns the `*Journal` a shim exposes;
   - for a raw custom `Durable` (tests only), it falls back to a `History` scan.
 - **About 640 call sites compile unchanged.** P15 deletes `Durable` and the shims.
@@ -621,7 +621,7 @@ The tombstone format is reserved now.
   - `Open(ctx, ...)`, `New(ctx, *sql.DB)`;
   - `bide_` table names, a `bide_schema_version` row, `WithTablePrefix`;
   - paged `Load`: keyset on `seq`, 256 rows per page, no connection held across a yield.
-- **`audit.NewAnchoredStore(inner agent.Store, s Signer, anchor, opts...) (*AnchoredStore, error)`** replaces `AuditedStore`.
+- **`audit.NewAnchoredStore(inner agent.Store, s Signer, anchor, opts...) (*AnchoredStore, error)`** replaces `AuditedStore`. (Dropped from the plan by the maintainer, 2026-10-03: `AuditedStore` stays, a `Store` wrapper since P15.)
   - It hashes stored bytes incrementally, using a Merkle frontier keyed by position.
   - It does one `Load(after = last seq)` per insert. This is O(log n) per insert, down from O(n²) per run today.
 
@@ -638,7 +638,7 @@ The tombstone format is reserved now.
 
 ## 6. Item 5: Model call signature
 
-<!-- docsnip: skip design proposal: this API is not implemented yet -->
+<!-- docsnip: skip design proposal: the code is the reference now (the API as built may differ in details) -->
 ```go
 type ModelHandler func(ctx context.Context, call ModelCall) (ModelResponse, error)
 type Middleware func(next ModelHandler) ModelHandler
@@ -740,7 +740,7 @@ func CallModel(ctx context.Context, m Model, req Request, mw ...Middleware) (Mod
 
 ## 7. Item 6: Pause contract, halts, plan
 
-<!-- docsnip: skip design proposal: this API is not implemented yet -->
+<!-- docsnip: skip design proposal: the code is the reference now (the API as built may differ in details) -->
 ```go
 type Pause interface {
 	error
@@ -825,7 +825,7 @@ func ResolveHalt(ctx context.Context, j *Journal, ref HaltRef, out Outcome, opts
 
 ## 8. Item 7: Tool interface
 
-<!-- docsnip: skip design proposal: this API is not implemented yet -->
+<!-- docsnip: skip design proposal: the code is the reference now (the API as built may differ in details) -->
 ```go
 type Tool interface {
 	Spec() ToolSpec
@@ -953,7 +953,7 @@ What remains after #66:
 - `Func` and `CompensatedFunc`
 - `RetrievalTool` and `WithRetrieval`
 - `SubAgent`
-- `audit.NewAuditedStore`'s nil and key-length panic (added by #68), which becomes `NewAnchoredStore(...) (..., error)`
+- `audit.NewAuditedStore`'s nil and key-length panic (added by #68), which becomes `NewAnchoredStore(...) (..., error)` (with `AnchoredStore` dropped, `NewAuditedStore` returns the error)
 - `eval.Matches(*regexp.Regexp)`
 - the dead `crypto/rand` branches: since Go 1.24, `crypto/rand.Read` never returns an error
 
@@ -1133,7 +1133,7 @@ Within a wave, no two PRs edit the same file. Sizes:
 
 **P15: the consolidated mechanical rewrite and shim removal (XL).**
 - **Files:** every call site in every module, plus deletion of the shims and transitional names.
-- **Script:** `internal/tools/migrate` (go/ast, committed), which does all of the following:
+- **Script:** `internal/tools/migrate` (go/ast, committed; it migrated bide itself and is not offered to users, maintainer decision 2026-10-03: the CHANGELOG's list is the upgrade path), which does all of the following:
   - `Durable` becomes `*Journal`, and store construction becomes `NewJournal(...)`;
   - `Build` becomes `New`, and builder chains become options;
   - `RunMessage` becomes `Run`, the old `Run` and `RunSaga` calls become `Run(..., UserText(x))`/`WithSaga()`, and results are rewritten;
@@ -1184,7 +1184,7 @@ Within a wave, no two PRs edit the same file. Sizes:
    | `Status` | 1 `Load` |
    | resume of a run with n records | 1 `Load` of n entries, no point reads for markers |
    | `Recover` pass over R runs, D of them driven | ceil(R/500) `Runs` pages on SQL stores (MemStore the same), no `Load`, and 4 `Get` per driven run (the terminal markers, re-checked under its lease, and `run:start`: P14 rule 14): 4D in all, none for the finished runs the filter excludes; a run with no `run:start` costs one `Load` of its first entry more (its format is checked) and is not driven |
-   | anchored insert | 1 `Load` of the new entries only, O(log n) hashes |
+   | anchored insert | 1 `Load` of the new entries only, O(log n) hashes (`AnchoredStore`, dropped from the plan 2026-10-03; no budget) |
 
    The `Recover` row was raised after P6a, with the maintainer's approval: a pass read no run at all until it was found to call `resume` for a run another driver finished between the listing and the lease, and the three point reads close that gap.
 
@@ -1195,7 +1195,7 @@ Within a wave, no two PRs edit the same file. Sizes:
    - The bench workflow's A/B mode (bench.yml, standard runner) runs `BenchmarkRunTurns` and `BenchmarkToolCallSideEffect` with `-benchmem` ten times per ref, base and head interleaved in one job, and prints the benchstat table in the job summary (added with #117; before it the gate assumed a benchstat run the workflow did not make).
    - P6a, P9, P12, P14 and P15 must show no benchstat regression over 5% in time/op or allocs/op at p < 0.05 in that table, and no regression over 5% in the `cmd/bench` A/B's mean, p90 or p99, and must paste both into the PR.
    - For the `cmd/bench` A/B (bench.yml), "time" means the mean (wall-clock, and throughput as its inverse), p90 and p99 of run latency, never p50: under the closed-loop harness's contention the overhead scenario's p50 is bimodal, a scheduling artifact that shifts with changes that add no work (maintainer decision, recorded with #116, which moves bench reporting to mean, p90 and p99).
-   - `BenchmarkAnchoredInsert` must show the O(n) to O(log n) improvement.
+   - `BenchmarkAnchoredInsert` was to show the O(n) to O(log n) improvement of `AnchoredStore`, dropped from the plan (2026-10-03); it measures `AuditedStore`.
 
 ### 10.4 Order relative to the follow-ups
 - Follow-ups A, B and C are done by #65, #67 and #69.

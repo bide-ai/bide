@@ -33,18 +33,18 @@ func TestResume_DifferentInputIsRefused(t *testing.T) {
 	gate := &countingTool{name: "refund", approval: SingleApproval(), calls: &n}
 	var got Request
 	m := &captureModel{inner: NewScriptedModel(ToolTurn("c1", "refund", `{}`), TextTurn("refunded")), got: &got}
-	store := NewMemStore()
-	a := New(m, store, gate)
+	store := memJournal()
+	a := mustNew(m, store, WithTools(gate))
 
-	var pa *PendingApproval
-	if _, err := a.Run(ctx, "r", "refund order 17"); !errors.As(err, &pa) {
-		t.Fatalf("first drive: err = %v, want *PendingApproval", err)
+	var pa *ApprovalPending
+	if _, err := a.Run(ctx, "r", UserText("refund order 17")); !errors.As(err, &pa) {
+		t.Fatalf("first drive: err = %v, want *ApprovalPending", err)
 	}
 	if err := Approve(ctx, store, "r", "c1", true); err != nil {
 		t.Fatal(err)
 	}
 	got = Request{}
-	_, err := a.Run(ctx, "r", "refund order 99")
+	_, err := a.Run(ctx, "r", UserText("refund order 99"))
 	if !errors.Is(err, ErrConfig) {
 		t.Fatalf("resume with another input: err = %v, want ErrConfig; the model was sent user messages %q", err, userTexts(got.Messages))
 	}
@@ -53,7 +53,11 @@ func TestResume_DifferentInputIsRefused(t *testing.T) {
 	}
 
 	// The run's own input resumes it, and the model sees that input.
-	out, err := a.Run(ctx, "r", "refund order 17")
+	res, err := a.Run(ctx, "r", UserText("refund order 17"))
+	var out Message
+	if res != nil {
+		out = res.Message
+	}
 	if err != nil || textOf(out) != "refunded" {
 		t.Fatalf("resume with the recorded input: %q, %v", textOf(out), err)
 	}
@@ -73,27 +77,31 @@ func TestSession_SendOnceOpenTurnDifferentInputIsRefused(t *testing.T) {
 	ctx := context.Background()
 	var n int
 	gate := &countingTool{name: "refund", approval: SingleApproval(), calls: &n}
-	store := NewMemStore()
-	a := New(NewScriptedModel(ToolTurn("c1", "refund", `{}`), TextTurn("refunded")), store, gate)
+	store := memJournal()
+	a := mustNew(
+		NewScriptedModel(ToolTurn("c1", "refund", `{}`), TextTurn("refunded")),
+		store,
+		WithTools(gate),
+	)
 	s, err := a.Session(ctx, "s")
 	if err != nil {
 		t.Fatal(err)
 	}
-	var pa *PendingApproval
-	if _, err := s.SendOnce(ctx, "k1", "refund order 17"); !errors.As(err, &pa) {
-		t.Fatalf("first send: err = %v, want *PendingApproval", err)
+	var pa *ApprovalPending
+	if _, err := s.SendOnce(ctx, "k1", UserText("refund order 17")); !errors.As(err, &pa) {
+		t.Fatalf("first send: err = %v, want *ApprovalPending", err)
 	}
 	if err := Approve(ctx, store, pa.RunID, pa.ToolUseID, true); err != nil {
 		t.Fatal(err)
 	}
-	_, err = s.SendOnce(ctx, "k1", "refund order 99")
+	_, err = s.SendOnce(ctx, "k1", UserText("refund order 99"))
 	if !errors.Is(err, ErrConfig) {
 		t.Fatalf("SendOnce on an open key with another input: err = %v, want ErrConfig; transcript %q", err, userTexts(s.History()))
 	}
 	if n != 0 {
 		t.Fatalf("refused send ran the tool %d times", n)
 	}
-	if _, err := s.SendOnce(ctx, "k1", "refund order 17"); err != nil {
+	if _, err := s.SendOnce(ctx, "k1", UserText("refund order 17")); err != nil {
 		t.Fatalf("SendOnce with the key's own input: %v", err)
 	}
 	if u := userTexts(s.History()); !slices.Equal(u, []string{"refund order 17"}) {
@@ -103,36 +111,37 @@ func TestSession_SendOnceOpenTurnDifferentInputIsRefused(t *testing.T) {
 
 // A saga run resumed through Run (a recovery callback that always calls Run, say) lost its
 // saga semantics: a failing step was journaled as an ordinary tool error, the model carried
-// on, and the run finished with the earlier charge never compensated. The entry point is
-// journaled with the input, and a resume through the other one is refused.
-func TestResume_SagaRunThroughRunIsRefused(t *testing.T) {
+// on, and the run finished with the earlier charge never compensated. The saga flag is journaled
+// with the input (run:start), and every later drive runs under it: Run with no WithSaga drives a
+// saga run as a saga.
+func TestResume_SagaRunThroughRunKeepsItASaga(t *testing.T) {
 	ctx := context.Background()
 	var undone, gated int
-	charge := CompensatedFunc("charge", "", Safety{},
-		func(context.Context, struct{}) (string, error) { return "ch_1", nil },
+	charge := MustCompensatedFunc("charge", "", func(context.Context, struct{}) (string, error) { return "ch_1", nil },
 		func(context.Context, struct{}, string) error { undone++; return nil })
 	gate := &countingTool{name: "gate", safety: Safety{ReadOnly: true}, approval: SingleApproval(), calls: &gated}
-	book := Func("book", "", Safety{}, func(context.Context, struct{}) (string, error) {
+	book := MustFunc("book", "", func(context.Context, struct{}) (string, error) {
 		return "", errors.New("no rooms left")
 	})
-	store := NewMemStore()
+	store := memJournal()
 	m := NewScriptedModel(ToolTurn("c1", "charge", `{}`), ToolTurn("c2", "gate", `{}`), ToolTurn("c3", "book", `{}`), TextTurn("done"))
-	a := New(m, store, charge, gate, book)
+	a := mustNew(m, store, WithTools(charge, gate, book))
 
-	var pa *PendingApproval
-	if _, err := a.RunSaga(ctx, "r", "trip"); !errors.As(err, &pa) {
-		t.Fatalf("first drive: err = %v, want *PendingApproval", err)
+	var pa *ApprovalPending
+	if _, err := a.Run(ctx, "r", UserText("trip"), WithSaga()); !errors.As(err, &pa) {
+		t.Fatalf("first drive: err = %v, want *ApprovalPending", err)
 	}
 	if err := Approve(ctx, store, "r", "c2", true); err != nil {
 		t.Fatal(err)
 	}
-	out, err := a.Run(ctx, "r", "trip")
-	if !errors.Is(err, ErrConfig) {
-		t.Fatalf("saga resumed through Run: answer %q, err = %v, want ErrConfig (compensations run: %d)", textOf(out), err, undone)
-	}
+	// Run with no WithSaga drives a run journaled as a saga as the saga it is: the failure rolls
+	// it back, once.
 	var aborted *SagaAborted
-	if _, err := a.RunSaga(ctx, "r", "trip"); !errors.As(err, &aborted) || undone != 1 {
-		t.Fatalf("saga resumed through RunSaga: err = %v, compensations %d; want *SagaAborted and 1", err, undone)
+	if _, err := a.Run(ctx, "r", UserText("trip")); !errors.As(err, &aborted) || undone != 1 {
+		t.Fatalf("saga resumed through Run: err = %v, compensations %d; want *SagaAborted and 1", err, undone)
+	}
+	if _, err := a.Run(ctx, "r", UserText("trip"), WithSaga()); !errors.As(err, &aborted) || undone != 1 {
+		t.Fatalf("saga driven again with WithSaga: err = %v, compensations %d; want *SagaAborted and still 1", err, undone)
 	}
 	start, ok, err := RecordedStart(ctx, store, "r")
 	if err != nil || !ok || !start.Saga || start.Input.Text() != "trip" {
@@ -140,25 +149,25 @@ func TestResume_SagaRunThroughRunIsRefused(t *testing.T) {
 	}
 }
 
-// A run started through Run and resumed through RunSaga would apply rollback to writes made
+// A run started through Run and resumed through saga Run would apply rollback to writes made
 // under Run's rules; it is refused the same way.
-func TestResume_RunThroughRunSagaIsRefused(t *testing.T) {
+func TestResume_RunThroughWithSagaIsRefused(t *testing.T) {
 	ctx := context.Background()
 	var gated int
 	gate := &countingTool{name: "gate", safety: Safety{ReadOnly: true}, approval: SingleApproval(), calls: &gated}
-	store := NewMemStore()
-	a := New(NewScriptedModel(ToolTurn("c1", "gate", `{}`), TextTurn("done")), store, gate)
-	var pa *PendingApproval
-	if _, err := a.Run(ctx, "r", "go"); !errors.As(err, &pa) {
-		t.Fatalf("first drive: err = %v, want *PendingApproval", err)
+	store := memJournal()
+	a := mustNew(NewScriptedModel(ToolTurn("c1", "gate", `{}`), TextTurn("done")), store, WithTools(gate))
+	var pa *ApprovalPending
+	if _, err := a.Run(ctx, "r", UserText("go")); !errors.As(err, &pa) {
+		t.Fatalf("first drive: err = %v, want *ApprovalPending", err)
 	}
 	if err := Approve(ctx, store, "r", "c1", true); err != nil {
 		t.Fatal(err)
 	}
-	if _, err := a.RunSaga(ctx, "r", "go"); !errors.Is(err, ErrConfig) {
-		t.Fatalf("run resumed through RunSaga: err = %v, want ErrConfig", err)
+	if _, err := a.Run(ctx, "r", UserText("go"), WithSaga()); !errors.Is(err, ErrConfig) {
+		t.Fatalf("run resumed through saga Run: err = %v, want ErrConfig", err)
 	}
-	if _, err := a.Stream(ctx, "r", "go").Final(); err != nil {
+	if _, err := a.Stream(ctx, "r", UserText("go")).Result(); err != nil {
 		t.Fatalf("run resumed through Stream: %v", err)
 	}
 }
@@ -168,18 +177,18 @@ func TestResume_RunThroughRunSagaIsRefused(t *testing.T) {
 func TestResume_RecordedDenialHoldsAfterGateRemoved(t *testing.T) {
 	ctx := context.Background()
 	var n int
-	store := NewMemStore()
+	store := memJournal()
 	m := NewScriptedModel(ToolTurn("c1", "wire", `{"usd":5000}`), TextTurn("ok"))
 	gated := &countingTool{name: "wire", approval: SingleApproval(), calls: &n}
-	var pa *PendingApproval
-	if _, err := New(m, store, gated).Run(ctx, "r", "pay"); !errors.As(err, &pa) {
-		t.Fatalf("first drive: err = %v, want *PendingApproval", err)
+	var pa *ApprovalPending
+	if _, err := mustNew(m, store, WithTools(gated)).Run(ctx, "r", UserText("pay")); !errors.As(err, &pa) {
+		t.Fatalf("first drive: err = %v, want *ApprovalPending", err)
 	}
 	if err := Approve(ctx, store, "r", "c1", false); err != nil {
 		t.Fatal(err)
 	}
 	ungated := &countingTool{name: "wire", safety: Safety{}, calls: &n}
-	if _, err := New(m, store, ungated).Run(ctx, "r", "pay"); err != nil {
+	if _, err := mustNew(m, store, WithTools(ungated)).Run(ctx, "r", UserText("pay")); err != nil {
 		t.Fatalf("resume: %v", err)
 	}
 	if n != 0 {
@@ -197,20 +206,20 @@ func TestResume_RecordedDenialHoldsAfterGateRemoved(t *testing.T) {
 func TestResume_RecordedTallyDenialHoldsAfterGateRemoved(t *testing.T) {
 	ctx := context.Background()
 	var n int
-	store := &failOnceStore{MemStore: NewMemStore(), name: ToolResultStep("c1")} // the call's result: its denial
+	store := mustJournal(&failOnceStore{MemStore: NewMemStore(), name: ToolResultStep("c1")}) // the call's result: its denial
 	m := NewScriptedModel(ToolTurn("c1", "wire", `{}`), TextTurn("ok"))
 	gated := &countingTool{name: "wire", approval: &ApprovalPolicy{Need: 2, Approvers: []string{"a", "b"}}, calls: &n}
-	a := New(m, store, gated).WithApproverVerifiers(fakeVerifiers("a", "b"))
-	var pa *PendingApproval
-	if _, err := a.Run(ctx, "r", "pay"); !errors.As(err, &pa) {
-		t.Fatalf("first drive: err = %v, want *PendingApproval", err)
+	a := mustNew(m, store, WithTools(gated), WithApproverVerifiers(fakeVerifiers("a", "b")))
+	var pa *ApprovalPending
+	if _, err := a.Run(ctx, "r", UserText("pay")); !errors.As(err, &pa) {
+		t.Fatalf("first drive: err = %v, want *ApprovalPending", err)
 	}
 	approveAs(t, store, "r", "c1", "a", false) // 2 of 2 can no longer be reached
-	if _, err := a.Run(ctx, "r", "pay"); err == nil {
+	if _, err := a.Run(ctx, "r", UserText("pay")); err == nil {
 		t.Fatal("second drive: want the crash writing the denial")
 	}
 	ungated := &countingTool{name: "wire", safety: Safety{}, calls: &n}
-	if _, err := New(m, store, ungated).Run(ctx, "r", "pay"); err != nil {
+	if _, err := mustNew(m, store, WithTools(ungated)).Run(ctx, "r", UserText("pay")); err != nil {
 		t.Fatalf("resume: %v", err)
 	}
 	if n != 0 {
@@ -227,17 +236,17 @@ func TestResume_RecordedTallyDenialHoldsAfterGateRemoved(t *testing.T) {
 func TestResume_RecordedDenialHoldsAfterGateTightened(t *testing.T) {
 	ctx := context.Background()
 	var n int
-	store := NewMemStore()
+	store := memJournal()
 	m := NewScriptedModel(ToolTurn("c1", "wire", `{}`), TextTurn("ok"))
-	var pa *PendingApproval
-	if _, err := New(m, store, &countingTool{name: "wire", approval: SingleApproval(), calls: &n}).Run(ctx, "r", "pay"); !errors.As(err, &pa) {
-		t.Fatalf("first drive: err = %v, want *PendingApproval", err)
+	var pa *ApprovalPending
+	if _, err := mustNew(m, store, WithTools(&countingTool{name: "wire", approval: SingleApproval(), calls: &n})).Run(ctx, "r", UserText("pay")); !errors.As(err, &pa) {
+		t.Fatalf("first drive: err = %v, want *ApprovalPending", err)
 	}
 	if err := Approve(ctx, store, "r", "c1", false); err != nil {
 		t.Fatal(err)
 	}
 	quorum := &countingTool{name: "wire", approval: &ApprovalPolicy{Need: 2, Approvers: []string{"a", "b"}}, calls: &n}
-	if _, err := New(m, store, quorum).WithApproverVerifiers(fakeVerifiers("a", "b")).Run(ctx, "r", "pay"); err != nil {
+	if _, err := mustNew(m, store, WithTools(quorum), WithApproverVerifiers(fakeVerifiers("a", "b"))).Run(ctx, "r", UserText("pay")); err != nil {
 		t.Fatalf("resume: %v", err)
 	}
 	recs, _ := store.History(ctx, "r")
@@ -263,14 +272,14 @@ func TestSaga_UnregisteredWriteIsReportedUncompensated(t *testing.T) {
 	var reserved, gated int
 	reserve := &countingTool{name: "reserve", safety: Safety{}, calls: &reserved}
 	gate := &countingTool{name: "gate", safety: Safety{ReadOnly: true}, approval: SingleApproval(), calls: &gated}
-	book := Func("book", "", Safety{}, func(context.Context, struct{}) (string, error) {
+	book := MustFunc("book", "", func(context.Context, struct{}) (string, error) {
 		return "", errors.New("no rooms left")
 	})
-	store := NewMemStore()
+	store := memJournal()
 	m := NewScriptedModel(ToolTurn("c1", "reserve", `{}`), ToolTurn("c2", "gate", `{}`), ToolTurn("c3", "book", `{}`), TextTurn("done"))
-	var pa *PendingApproval
-	if _, err := New(m, store, reserve, gate, book).RunSaga(ctx, "r", "trip"); !errors.As(err, &pa) {
-		t.Fatalf("first drive: err = %v, want *PendingApproval", err)
+	var pa *ApprovalPending
+	if _, err := mustNew(m, store, WithTools(reserve, gate, book)).Run(ctx, "r", UserText("trip"), WithSaga()); !errors.As(err, &pa) {
+		t.Fatalf("first drive: err = %v, want *ApprovalPending", err)
 	}
 	if reserved != 1 {
 		t.Fatalf("reserve ran %d times, want 1", reserved)
@@ -278,7 +287,7 @@ func TestSaga_UnregisteredWriteIsReportedUncompensated(t *testing.T) {
 	if err := Approve(ctx, store, "r", "c2", true); err != nil {
 		t.Fatal(err)
 	}
-	_, err := New(m, store, gate, book).RunSaga(ctx, "r", "trip") // reserve is no longer registered
+	_, err := mustNew(m, store, WithTools(gate, book)).Run(ctx, "r", UserText("trip"), WithSaga()) // reserve is no longer registered
 	var aborted *SagaAborted
 	if !errors.As(err, &aborted) {
 		t.Fatalf("resume: err = %v, want *SagaAborted", err)
@@ -296,12 +305,12 @@ func TestSaga_UnregisteredAttemptedCallStillHalts(t *testing.T) {
 	// reserve and book run concurrently in one turn; once reserve has been called, book fails,
 	// the saga cancels reserve, and reserve's attempt marker stays without a result.
 	entered := make(chan struct{})
-	reserve := Func("reserve", "", Safety{}, func(ctx context.Context, _ struct{}) (string, error) {
+	reserve := MustFunc("reserve", "", func(ctx context.Context, _ struct{}) (string, error) {
 		close(entered)
 		<-ctx.Done()
 		return "", ctx.Err()
 	})
-	book := Func("book", "", Safety{}, func(context.Context, struct{}) (string, error) {
+	book := MustFunc("book", "", func(context.Context, struct{}) (string, error) {
 		<-entered
 		return "", errors.New("no rooms left")
 	})
@@ -311,19 +320,20 @@ func TestSaga_UnregisteredAttemptedCallStillHalts(t *testing.T) {
 		{Event: Finish{Reason: "tool_use"}},
 	}
 	store := NewMemStore()
+	j := mustJournal(store)
 	wantHalt := func(err error) {
 		t.Helper()
 		var aborted *SagaAborted
-		var halt *ResumeHalt
+		var halt *OutcomeUnknown
 		if !errors.As(err, &aborted) || !errors.As(aborted.CompensateErr, &halt) || halt.Op.ID != "c1" {
-			t.Fatalf("rollback: err = %v, want *SagaAborted stopped by a *ResumeHalt on c1", err)
+			t.Fatalf("rollback: err = %v, want *SagaAborted stopped by a *OutcomeUnknown on c1", err)
 		}
 	}
-	_, err := New(&scriptModel{turns: [][]Emit{turn}}, store, reserve, book).RunSaga(ctx, "r", "trip")
+	_, err := mustNew(&scriptModel{turns: [][]Emit{turn}}, j, WithTools(reserve, book)).Run(ctx, "r", UserText("trip"), WithSaga())
 	wantHalt(err)
-	_, err = New(&scriptModel{}, store, book).RunSaga(ctx, "r", "trip") // reserve is no longer registered
+	_, err = mustNew(&scriptModel{}, j, WithTools(book)).Run(ctx, "r", UserText("trip"), WithSaga()) // reserve is no longer registered
 	wantHalt(err)
-	if done, _ := hasValueStep(ctx, store, "r", runAbortedStep); done {
+	if done, _ := hasValueStep(ctx, j, "r", runAbortedStep); done {
 		t.Fatal("the run was marked aborted with a call of unknown outcome")
 	}
 }
@@ -332,11 +342,11 @@ func TestSaga_UnregisteredAttemptedCallStillHalts(t *testing.T) {
 // interrupt before the run's first drive comes first in its journal.
 func TestRecordedStart_AmongOtherValues(t *testing.T) {
 	ctx := context.Background()
-	store := NewMemStore()
-	if err := Resume(ctx, store, "r", "k", "early"); err != nil {
+	store := memJournal()
+	if err := store.AnswerInterrupt(ctx, "r", "k", "early"); err != nil {
 		t.Fatal(err)
 	}
-	if _, err := New(NewScriptedModel(TextTurn("ok")), store).Run(ctx, "r", "hello"); err != nil {
+	if _, err := mustNew(NewScriptedModel(TextTurn("ok")), store).Run(ctx, "r", UserText("hello")); err != nil {
 		t.Fatal(err)
 	}
 	start, ok, err := RecordedStart(ctx, store, "r")
@@ -356,19 +366,19 @@ func relabelSaga(t *testing.T, first Tool, then ...Tool) *SagaAborted {
 	ctx := context.Background()
 	var gated int
 	gate := &countingTool{name: "gate", safety: Safety{ReadOnly: true}, approval: SingleApproval(), calls: &gated}
-	book := Func("book", "", Safety{}, func(context.Context, struct{}) (string, error) {
+	book := MustFunc("book", "", func(context.Context, struct{}) (string, error) {
 		return "", errors.New("no rooms left")
 	})
-	store := NewMemStore()
-	m := NewScriptedModel(ToolTurn("c1", first.Name(), `{}`), ToolTurn("c2", "gate", `{}`), ToolTurn("c3", "book", `{}`), TextTurn("done"))
-	var pa *PendingApproval
-	if _, err := New(m, store, first, gate, book).RunSaga(ctx, "r", "trip"); !errors.As(err, &pa) {
-		t.Fatalf("first drive: err = %v, want *PendingApproval", err)
+	store := memJournal()
+	m := NewScriptedModel(ToolTurn("c1", first.Spec().Name, `{}`), ToolTurn("c2", "gate", `{}`), ToolTurn("c3", "book", `{}`), TextTurn("done"))
+	var pa *ApprovalPending
+	if _, err := mustNew(m, store, WithTools(first, gate, book)).Run(ctx, "r", UserText("trip"), WithSaga()); !errors.As(err, &pa) {
+		t.Fatalf("first drive: err = %v, want *ApprovalPending", err)
 	}
 	if err := Approve(ctx, store, "r", "c2", true); err != nil {
 		t.Fatal(err)
 	}
-	_, err := New(m, store, append([]Tool{gate, book}, then...)...).RunSaga(ctx, "r", "trip")
+	_, err := mustNew(m, store, WithTools(append([]Tool{gate, book}, then...)...)).Run(ctx, "r", UserText("trip"), WithSaga())
 	var aborted *SagaAborted
 	if !errors.As(err, &aborted) || aborted.CompensateErr != nil {
 		t.Fatalf("resume: err = %v, want a finished rollback", err)
@@ -390,7 +400,7 @@ func TestSaga_RelabelledReadOnlyWriteIsStillRolledBack(t *testing.T) {
 	var undone int
 	undo := func(context.Context, struct{}, string) error { undone++; return nil }
 	do := func(context.Context, struct{}) (string, error) { return "ok", nil }
-	got := relabelSaga(t, CompensatedFunc("hold", "", Safety{}, do, undo), CompensatedFunc("hold", "", Safety{ReadOnly: true}, do, undo))
+	got := relabelSaga(t, MustCompensatedFunc("hold", "", do, undo), MustCompensatedFunc("hold", "", do, undo, WithSafety(Safety{ReadOnly: true})))
 	if undone != 1 || !slices.Contains(got.Compensated, "hold") {
 		t.Fatalf("compensations %d, compensated %q; want the relabelled write compensated once", undone, got.Compensated)
 	}
@@ -416,12 +426,12 @@ func TestSaga_ReadOnlyCallStaysSkipped(t *testing.T) {
 // KNOWN-LIMITATIONS.)
 func TestSaga_CutOffReadOnlyCallIsSkipped(t *testing.T) {
 	entered := make(chan struct{})
-	lookup := Func("lookup", "", Safety{ReadOnly: true}, func(ctx context.Context, _ struct{}) (string, error) {
+	lookup := MustFunc("lookup", "", func(ctx context.Context, _ struct{}) (string, error) {
 		close(entered)
 		<-ctx.Done()
 		return "", ctx.Err()
-	})
-	book := Func("book", "", Safety{}, func(context.Context, struct{}) (string, error) {
+	}, WithSafety(Safety{ReadOnly: true}))
+	book := MustFunc("book", "", func(context.Context, struct{}) (string, error) {
 		<-entered // fail once the read is in flight, so the abort cuts it off
 		return "", errors.New("no rooms left")
 	})
@@ -430,7 +440,7 @@ func TestSaga_CutOffReadOnlyCallIsSkipped(t *testing.T) {
 		{Event: ToolCallDelta{Index: 1, ID: "c2", Name: "book", ArgsFragment: json.RawMessage(`{}`)}},
 		{Event: Finish{Reason: "tool_use"}},
 	}
-	_, err := New(&scriptModel{turns: [][]Emit{turn}}, NewMemStore(), lookup, book).RunSaga(context.Background(), "r", "trip")
+	_, err := mustNew(&scriptModel{turns: [][]Emit{turn}}, memJournal(), WithTools(lookup, book)).Run(context.Background(), "r", UserText("trip"), WithSaga())
 	var aborted *SagaAborted
 	if !errors.As(err, &aborted) || aborted.CompensateErr != nil || len(aborted.Uncompensated) != 0 {
 		t.Fatalf("rollback: err = %v; want a clean rollback with the cut-off read skipped", err)

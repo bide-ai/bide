@@ -10,11 +10,11 @@ func strictRegistry(t *testing.T) *Registry {
 	t.Helper()
 	reg := NewRegistry()
 	for _, name := range []string{"a", "b"} {
-		if err := RegisterStep(reg, name, func(_ context.Context, n int) (int, error) { return n, nil }, ReadOnly()); err != nil {
+		if err := reg.RegisterStep(name, func(_ context.Context, n int) (int, error) { return n, nil }, ReadOnly()); err != nil {
 			t.Fatalf("register %s: %v", name, err)
 		}
 	}
-	if err := RegisterPredicate(reg, "again", func(n int) bool { return n < 0 }); err != nil {
+	if err := reg.RegisterPredicate("again", func(n int) bool { return n < 0 }); err != nil {
 		t.Fatalf("register predicate: %v", err)
 	}
 	return reg

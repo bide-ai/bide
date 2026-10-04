@@ -25,8 +25,8 @@ import (
 //	if errors.Is(err, agent.ErrUnknownTool) { … }          // one specific condition
 //
 // The control-flow signals are richer than a category, so they stay concrete types
-// matched with errors.As, not sentinels: *PendingApproval (human approval needed),
-// *ResumeHalt (unsafe to resume), *SagaAborted (transaction rolled back). context
+// matched with errors.As, not sentinels: *ApprovalPending (human approval needed),
+// *OutcomeUnknown (unsafe to resume), *SagaAborted (transaction rolled back). context
 // cancellation surfaces as the usual context.Canceled / context.DeadlineExceeded.
 var (
 	// ErrConfig is a programmer-facing misuse or misconfiguration, not a runtime fault.
@@ -51,7 +51,7 @@ var (
 	// sent its request but lost the connection (or its deadline passed) before the answer
 	// came back. A tool returns an error wrapping it instead of an ordinary failure when it
 	// cannot tell. For a tool that is not retry-safe the agent records no result, as it does
-	// for a cancelled call: the run stops with this error, and a resume halts (*ResumeHalt)
+	// for a cancelled call: the run stops with this error, and a resume halts (*OutcomeUnknown)
 	// rather than run the side effect a second time. For a retry-safe tool the call is an
 	// ordinary failure the model sees, since running it again does no harm.
 	ErrToolOutcomeUnknown = fmt.Errorf("tool outcome unknown: %w", ErrTool)
@@ -130,7 +130,7 @@ var ErrRunCancelled = errors.New("run cancelled")
 var ErrRunEnded = errors.New("run already ended")
 
 // ErrNotStarted is a run with no run:start record: one never driven (a Signal sent to a mistyped
-// run ID, say), or one whose first drive has not written it yet. ResumeRun and Cancel refuse such
+// run ID, say), or one whose first drive has not written it yet. Resume and Cancel refuse such
 // a run, and Recover skips it and reports it once per process. It wraps no category: the run may
 // be a race with its first drive, which a later call does not lose, rather than a configuration
 // error.
@@ -141,7 +141,7 @@ var ErrNotStarted = errors.New("run has no run:start record")
 // run no Resumer drives once per process. Like ErrLeaseLost it wraps no category.
 var ErrNotResumable = errors.New("run not resumable by this resumer")
 
-// ErrTurnContended is returned by a Session's Send, SendOnce, SendMessage and SendMessageOnce when another driver holds
+// ErrTurnContended is returned by a Session's Send, SendOnce, Send and SendOnce when another driver holds
 // the lease on the turn's run (see Session): another worker, or, while a cancelled saga turn's
 // rollback is in progress, another caller on the same session handle (see Session.Send). The
 // turn's run was not driven and its answer was not recorded.

@@ -1,6 +1,6 @@
 # Deterministic replay and run visualization
 
-Every run journals its steps to a `Durable` store (see [extension points](../reference/extension-points.md)).
+Every run journals its steps through a `*Journal` over a `Store` (see [extension points](../reference/extension-points.md)).
 Because that journal is a complete, ordered history of what happened, three debugging and
 observability tools fall out of it directly, each a pure function of the recorded records:
 
@@ -16,7 +16,7 @@ journal and project it.
 
 <!-- docsnip: api agent -->
 ```go
-func Replay(ctx context.Context, source Durable, runID string) (Model, error)
+func Replay(ctx context.Context, source *Journal, runID string) (Model, error)
 ```
 
 `Replay` returns a `Model` that re-emits the model outputs recorded for `runID`, in order,
@@ -36,7 +36,7 @@ replay is exact. Use it for:
 Each replayed turn also reports the token usage recorded with it, and the usage its turn
 discarded (failed attempts, losing hedge targets) in its `Finish.Discarded`, and a model call
 that failed for good fails again at the same point with the same usage. So the replayed run's
-`RunResult` usage and spend and its journal match the original, a `middleware.Cost` on the
+`Result` usage and spend and its journal match the original, a `middleware.Cost` on the
 replaying agent counts the same spend, and a run that `WithTokenBudget` stopped stops at the same
 point on replay. Each replayed turn ends with the finish reason and the provider's raw reason its
 record journaled (`Record.Finish`, `Record.RawFinish`); a record written before they were
@@ -49,7 +49,7 @@ If the replay model is asked for more turns than were recorded, its `Stream` ret
 `agent.ErrNoRecordedOutput`; that is the signal that the replayed loop diverged from the
 original (it wanted a turn the recording never produced).
 
-<!-- docsnip: setup ctx context.Context; prod agent.Durable; runID string; tools []agent.Tool; originalInput string -->
+<!-- docsnip: setup ctx context.Context; prod *agent.Journal; runID string; tools []agent.Tool; originalInput string -->
 ```go
 // `prod` is the store that captured the original run; runID identifies it.
 replayModel, err := agent.Replay(ctx, prod, runID)
@@ -59,14 +59,20 @@ if err != nil {
 
 // Rebuild the agent with the SAME tools and a FRESH store, swapping the live
 // model for the replay model. Feed the same input the original run started with.
-fresh := agent.NewMemStore()
-replayed := agent.New(replayModel, fresh, tools...)
+fresh, err := agent.NewJournal(agent.NewMemStore())
+if err != nil {
+	panic(err)
+}
+replayed, err := agent.New(replayModel, fresh, agent.WithTools(tools...))
+if err != nil {
+	panic(err)
+}
 
-msg, err := replayed.Run(ctx, runID, originalInput)
+res, err := replayed.Run(ctx, runID, agent.UserText(originalInput))
 if err != nil {
 	log.Fatal(err)
 }
-log.Println(msg.Text()) // identical to the original terminal answer
+log.Println(res.Message.Text()) // identical to the original terminal answer
 ```
 
 The replay model supplies the model turns; your tools still execute (against whatever
@@ -77,7 +83,7 @@ is pinned to the recording, so any drift you see comes from your tool or loop ch
 
 <!-- docsnip: api agent -->
 ```go
-func ReplayEvents(ctx context.Context, store Durable, runID string) ([]AgentEvent, error)
+func ReplayEvents(ctx context.Context, store *Journal, runID string) ([]RunEvent, error)
 ```
 
 `ReplayEvents` returns the semantic lifecycle events implied by a run's **durable journal**:
@@ -99,7 +105,7 @@ after a crash, which is what makes it a resume-stable audit artifact. The `audit
 builds its event trail on exactly this projection (`audit.PersistJournal`,
 `audit.EventLogFromJournal`).
 
-<!-- docsnip: setup ctx context.Context; store agent.Durable; runID string -->
+<!-- docsnip: setup ctx context.Context; store *agent.Journal; runID string -->
 ```go
 events, err := agent.ReplayEvents(ctx, store, runID)
 if err != nil {
@@ -119,7 +125,7 @@ for _, e := range events {
 
 <!-- docsnip: api agent -->
 ```go
-func RenderMermaid(ctx context.Context, d Durable, runID string) (string, error)
+func RenderMermaid(ctx context.Context, d *Journal, runID string) (string, error)
 ```
 
 `RenderMermaid` returns a Mermaid `flowchart TD` of a run's journaled steps: the graph is
@@ -139,7 +145,7 @@ Each record maps to a node in run order:
 
 The chart opens with a `start([user])` node and closes with a `done([done])` node.
 
-<!-- docsnip: setup ctx context.Context; store agent.Durable; runID string -->
+<!-- docsnip: setup ctx context.Context; store *agent.Journal; runID string -->
 ```go
 diagram, err := agent.RenderMermaid(ctx, store, runID)
 if err != nil {
@@ -190,11 +196,11 @@ type RunFilter struct {
 	LeaseLapsed    bool     // only runs whose lease has lapsed (its holder died or stalled)
 }
 
-func IsComplete(ctx context.Context, store Durable, runID string) (bool, error)
+func IsComplete(ctx context.Context, store *Journal, runID string) (bool, error)
 type Resumer func(ctx context.Context, runID string, start RunStart) error
 
-func Recover(ctx context.Context, store Durable, resume Resumer, opts ...RecoverOption) (int, error)
-func RecoverLoop(ctx context.Context, store Durable, resume Resumer, opts ...RecoverLoopOption) error
+func Recover(ctx context.Context, store *Journal, resume Resumer, opts ...RecoverOption) (int, error)
+func RecoverLoop(ctx context.Context, store *Journal, resume Resumer, opts ...RecoverLoopOption) error
 func ResumeAgent(a *Agent, opts ...RunOption) Resumer         // runs of kind agent, not typed
 func ResumeTyped[T any](a *Agent, opts ...RunOption) Resumer  // typed runs whose answer type is T
 func ResumeAny(rs ...Resumer) Resumer                         // the first that does not return ErrNotResumable
@@ -210,8 +216,7 @@ alone) apply when the store also implements `Leaser`:
 and replay are the crash-safety core, and enumeration is a separate, backend-specific concern (a
 SQL store lists with a query; the base contract stays minimal). `MemStore`, `store/sqlite` and
 `store/postgres` implement it. A store opts in by implementing `Runs`; `Recover` finds it with
-`agent.Capability`, which also looks through wrappers that implement `Unwrap() Store` (and, for the
-transition, `Unwrap() Durable`, such as `audit.AuditedStore`), and returns an `ErrConfig`-wrapped
+`agent.Capability`, which also looks through wrappers that implement `Unwrap() Store` (such as `audit.AuditedStore`), and returns an `ErrConfig`-wrapped
 error if the store cannot enumerate.
 
 `Recover` asks the store for the runs that are not over: its filter excludes every run holding a
@@ -238,10 +243,9 @@ miss a finish by a driver that holds the run's lease (`Lease`, `Recover`, `Recov
 driver records the marker before it releases its lease. It can miss two others: a finish by a
 driver that holds no lease (a plain `Run`), and a finish in the lost-lease window, when the pass
 stalls past its lease TTL between the check and `resume` and another driver takes the run over and
-finishes it. In both cases `resume` is handed a finished run, which `Run` or `RunSaga` replays
+finishes it. In both cases `resume` is handed a finished run, which `Run` replays
 without firing anything again. The check and the `run:start` read cost four point reads
-(`Store.Get`) for each run the pass drives, and none for the finished runs the filter excluded;
-over a `Durable` that is not a `Journal`, `History` reads instead.
+(`Store.Get`) for each run the pass drives, and none for the finished runs the filter excluded.
 
 `ResumeAgent` is the usual `Resumer`: it drives each run under the options its `run:start`
 journaled (a saga as a saga), and takes only the deployment's own options (a Waker, a clock, a
@@ -251,7 +255,7 @@ flows and session turns with `ErrNotResumable`, and so a run whose `run:start` a
 wrote (no kind and no typed start: the record does not say whether the run is typed). Recover
 those with a `Resumer` of your own, placed after `ResumeAgent`; `ResumeAny` combines several:
 
-<!-- docsnip: setup ctx context.Context; store agent.Durable; a *agent.Agent; w agent.Waker -->
+<!-- docsnip: setup ctx context.Context; store *agent.Journal; a *agent.Agent; w agent.Waker -->
 ```go
 n, err := agent.Recover(ctx, store, agent.ResumeAgent(a, agent.WithWaker(w)))
 // n = runs re-driven; err = joined genuine failures (nil if the only "errors" were pauses)
@@ -293,7 +297,7 @@ halted runs the store holds, as long as the lapsed loop has a free slot. A run w
 lease (a plain `Run`) is left to the full pass, whose length still bounds its pickup, so resolve
 halted runs rather than leaving them for every full pass to visit:
 
-<!-- docsnip: setup ctx context.Context; store agent.Durable; resume agent.Resumer -->
+<!-- docsnip: setup ctx context.Context; store *agent.Journal; resume agent.Resumer -->
 ```go
 go func() {
 	err := agent.RecoverLoop(ctx, store, resume,
@@ -356,7 +360,7 @@ falls out of ordinary replay: no timer-specific recovery path exists or is neede
 shared store they all enumerate the same in-flight runs. If the store implements the optional
 `Leaser` (`AcquireLease` / `RenewLease` / `ReleaseLease` / `ReapLeases`), `Recover` claims an exclusive, renewed
 lease per run before driving it and skips a run another holder currently leases, so competing
-recoverers do not both re-drive one run (redundant, and a hazard when the store's `Do` is not
+recoverers do not both re-drive one run (redundant, and a hazard when the store's `Insert` is not
 cross-process atomic). A crash lets the lease expire (default 30s, `WithLeaseTTL`) and another
 process's `RecoverLoop` takes over; that expiry-and-takeover is the high-availability property. `MemStore`
 implements `Leaser` in-process (the reference and for tests); `store/sqlite` implements it for the
@@ -402,17 +406,17 @@ loses their state, so for durability across a real crash use the SQLite or Postg
 (and an external scheduler or durable waker) whose runs survive the restart `Recover` reads
 them back from.
 
-## The telemetry envelope: `RunResult` / `Result`
+## The telemetry envelope: `Result`
 
-Separate from the journal projections above, `Agent.RunResult` (and `RunSagaResult`) return
-a `*Result` envelope carrying telemetry accumulated over the whole run. `Run` and `RunSaga`
-are unchanged and remain the path for callers that only need the final message; the
-`*Result` variants are additive counterparts for callers that want observability data.
+Separate from the journal projections above, `Agent.Run` (and `Resume`, `RunTyped`,
+`RunStream.Result` and `Session.Send`) return a `*Result` envelope carrying the final answer and
+telemetry accumulated over the whole run. It is non-nil whenever the run ID is valid, whatever the
+error.
 
 <!-- docsnip: api agent -->
 ```go
 type Result struct {
-	Message  Message       // the final assistant answer, identical to what Run returns
+	Message  Message       // the final assistant answer, zero unless the run returned no error
 	Usage    Usage         // usage of the model responses the whole run recorded
 	Spend    Usage         // Usage plus discarded requests (retried attempts, hedge losers) and failed calls
 	Turns    int           // number of LIVE model turns in this invocation (replayed turns are not counted)
@@ -423,7 +427,7 @@ type Result struct {
 
 <!-- docsnip: setup ctx context.Context; a *agent.Agent -->
 ```go
-res, err := a.RunResult(ctx, "run-42", "summarize the ledger")
+res, err := a.Run(ctx, "run-42", agent.UserText("summarize the ledger"))
 if err != nil {
 	log.Fatal(err)
 }

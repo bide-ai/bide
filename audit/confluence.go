@@ -37,12 +37,12 @@ func ConvergenceLeafName(digest string) string { return convergenceLeafName(dige
 // (idempotent per (runID, digest)), so it is covered by the same STH and inclusion proofs as the
 // policy leaf with the same digest and the actions taken under it. Pass the certificate bytes from
 // govern.ConfluenceCertificate.Marshal and the same digest used for the policy leaf.
-func RecordConvergence(ctx context.Context, store agent.Durable, runID string, cert []byte, digest string) (agent.Record, error) {
+func RecordConvergence(ctx context.Context, store *agent.Journal, runID string, cert []byte, digest string) (agent.Record, error) {
 	content, err := json.Marshal(ConvergenceContent{Digest: digest, Certificate: json.RawMessage(cert)})
 	if err != nil {
 		return agent.Record{}, fmt.Errorf("audit: marshal convergence content: %w", err)
 	}
-	return store.Do(ctx, runID, convergenceLeafName(digest), func(context.Context) (agent.Record, error) {
+	return doRecord(ctx, store, runID, convergenceLeafName(digest), func(context.Context) (agent.Record, error) {
 		return agent.Record{Kind: agent.StepValue, Result: content}, nil
 	})
 }
@@ -50,7 +50,7 @@ func RecordConvergence(ctx context.Context, store agent.Durable, runID string, c
 // ProveConvergence builds a ProofBundle proving the convergence certificate for this digest was
 // committed in the tree sth signs. Pair it with the policy leaf's ProofBundle for the same digest
 // to show, in one committed tree, that the anchored policy was certified convergent.
-func ProveConvergence(ctx context.Context, store agent.Durable, runID, digest string, sth SignedTreeHead) (ProofBundle, error) {
+func ProveConvergence(ctx context.Context, store *agent.Journal, runID, digest string, sth SignedTreeHead) (ProofBundle, error) {
 	recs, err := store.History(ctx, runID)
 	if err != nil {
 		return ProofBundle{}, fmt.Errorf("audit: load journal %s: %w", runID, err)

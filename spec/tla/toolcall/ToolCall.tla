@@ -210,7 +210,7 @@ define
   Ok(c, e) == e = "ok" /\ ~RunOk(c)
   \* A result of the rollback's re-run: the tool was reached (a cache answer says nothing of it).
   RbOk(c, e) == Ok(c, e) /\ ReachedAt(c)
-  \* What recordFresh's function returns for the journal.
+  \* What the tool call's doFresh closure returns for the journal.
   RecOf(c, e) ==
     IF Ok(c, e) THEN "ok"
     ELSE IF SDone \/ Cls(c, e) = "unrec" THEN "none"

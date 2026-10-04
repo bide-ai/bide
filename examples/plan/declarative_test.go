@@ -11,7 +11,7 @@ import (
 	"context"
 	"testing"
 
-	"github.com/bide-ai/bide/agent"
+	"github.com/bide-ai/bide/agent/agenttest"
 	"github.com/bide-ai/bide/plan"
 )
 
@@ -35,7 +35,7 @@ func TestDeclarativeConfigMatchesCodeBuilt(t *testing.T) {
 	}
 
 	// The config-loaded flow runs to the expected typed Receipt.
-	store := agent.NewMemStore()
+	store := agenttest.MemJournal()
 	const runID = "declarative-run"
 	out, err := loaded.Run(ctx, store, runID, Order{ID: runID, Amount: 500})
 	if err != nil {
@@ -104,7 +104,7 @@ func TestDeclarativeJoinConfigMatchesCodeBuilt(t *testing.T) {
 		t.Fatalf("Load diamond config: %v", err)
 	}
 
-	store := agent.NewMemStore()
+	store := agenttest.MemJournal()
 	const runID = "join-run"
 	out, err := loaded.Run(ctx, store, runID, 3)
 	if err != nil {
@@ -146,7 +146,7 @@ func TestDeclarativeLoopConfigMatchesCodeBuilt(t *testing.T) {
 		t.Fatalf("Load loop config: %v", err)
 	}
 
-	store := agent.NewMemStore()
+	store := agenttest.MemJournal()
 	const runID = "loop-run"
 	out, err := loaded.Run(ctx, store, runID, 3)
 	if err != nil {

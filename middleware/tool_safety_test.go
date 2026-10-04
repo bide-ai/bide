@@ -7,14 +7,15 @@ import (
 	"testing"
 
 	"github.com/bide-ai/bide/agent"
+	"github.com/bide-ai/bide/agent/agenttest"
 )
 
 // twoCharges asks for two separate $5 charges (two tool calls with identical arguments), then answers.
-func twoCharges() *agent.ScriptedModel {
-	return agent.NewScriptedModel(
-		agent.ToolTurn("c1", "charge", `{"cents":500}`),
-		agent.ToolTurn("c2", "charge", `{"cents":500}`),
-		agent.TextTurn("done"),
+func twoCharges() *agenttest.ScriptedModel {
+	return agenttest.NewScriptedModel(
+		agenttest.ToolTurn("c1", "charge", `{"cents":500}`),
+		agenttest.ToolTurn("c2", "charge", `{"cents":500}`),
+		agenttest.TextTurn("done"),
 	)
 }
 
@@ -22,19 +23,24 @@ func twoCharges() *agent.ScriptedModel {
 // taking the payment. The charge must be attempted once: a retry would charge the card again.
 func TestToolRetry_DoesNotRetryANonIdempotentTool(t *testing.T) {
 	var charged int
-	charge := agent.Func("charge", "charge the card", agent.Safety{}, func(context.Context, struct {
+	charge := agent.MustFunc("charge", "charge the card", func(context.Context, struct {
 		Cents int `json:"cents"`
 	}) (string, error) {
 		charged++ // the payment went through
 		return "", errors.New("gateway timeout")
 	})
-	m := agent.NewScriptedModel(
-		agent.ToolTurn("c1", "charge", `{"cents":500}`),
-		agent.TextTurn("done"),
+	m := agenttest.NewScriptedModel(
+		agenttest.ToolTurn("c1", "charge", `{"cents":500}`),
+		agenttest.TextTurn("done"),
 	)
-	store := agent.NewMemStore()
-	a := agent.New(m, store, charge).UseTool(ToolCache(), ToolRetry(3, WithBackoff(0, 0)))
-	if _, err := a.Run(context.Background(), "r1", "charge $5"); err != nil {
+	store := agenttest.MemJournal()
+	a := agenttest.MustNew(
+		m,
+		store,
+		agent.WithTools(charge),
+		agent.WithToolMiddleware(ToolCache(), ToolRetry(3, WithBackoff(0, 0))),
+	)
+	if _, err := a.Run(context.Background(), "r1", agent.UserText("charge $5")); err != nil {
 		t.Fatal(err)
 	}
 	if charged != 1 {
@@ -53,14 +59,19 @@ func TestToolRetry_DoesNotRetryANonIdempotentTool(t *testing.T) {
 // second from the first: that skips a charge the model asked for and reports it as done.
 func TestToolCache_DoesNotCacheANonReadOnlyTool(t *testing.T) {
 	var charged int
-	charge := agent.Func("charge", "charge the card", agent.Safety{}, func(context.Context, struct {
+	charge := agent.MustFunc("charge", "charge the card", func(context.Context, struct {
 		Cents int `json:"cents"`
 	}) (string, error) {
 		charged++
 		return "ok", nil
 	})
-	a := agent.New(twoCharges(), agent.NewMemStore(), charge).UseTool(ToolCache(), ToolRetry(3))
-	if _, err := a.Run(context.Background(), "r1", "charge $5 twice"); err != nil {
+	a := agenttest.MustNew(
+		twoCharges(),
+		agenttest.MemJournal(),
+		agent.WithTools(charge),
+		agent.WithToolMiddleware(ToolCache(), ToolRetry(3)),
+	)
+	if _, err := a.Run(context.Background(), "r1", agent.UserText("charge $5 twice")); err != nil {
 		t.Fatal(err)
 	}
 	if charged != 2 {

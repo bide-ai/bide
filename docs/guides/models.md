@@ -33,7 +33,8 @@ Adapter-specific options:
 - **`openai.WithStrictSchema()`** turns on OpenAI structured-output strict mode for **tool argument**
   schemas (`"strict": true` on each function). Use it when the endpoint is genuine OpenAI, which
   many "OpenAI-compatible" endpoints do not fully implement. It is off by default for compatibility.
-  Note this flag governs only tool schemas: `RunTypedNative[T]` always emits a strict
+  Note this flag governs only tool schemas: a native typed run (`RunTyped` with
+  `agent.WithOutputMode(agent.OutputNative)`) always emits a strict
   `response_format` JSON schema regardless, so the native typed-output path does not need it.
   In strict mode an optional field (a pointer or `omitempty`) is required but nullable, so the
   model sends `null` for it. A type strict mode cannot express (a map, a recursive type, or an
@@ -41,7 +42,7 @@ Adapter-specific options:
   wrapping `schema.ErrStrictUnsupported`, rather than being sent as a schema that changes what the
   model may answer.
 
-The Gemini adapter translates tool argument schemas and the `RunTypedNative` response schema to
+The Gemini adapter translates tool argument schemas and a native typed run's response schema to
 the OpenAPI subset Gemini reads (`schema.Gemini`): an optional field becomes `nullable`, a closed
 object drops `additionalProperties: false`, and keywords Gemini lacks that only annotate or
 further constrain a value are dropped. A tool with no arguments declares no `parameters` (Gemini
@@ -56,7 +57,7 @@ not admit null), an unknown or case-variant name, a
 duplicate name, trailing data, invalid UTF-8, or an escaped lone surrogate is an `ErrToolArgs`
 tool error the model reads and corrects. This matters most where the provider does not enforce the
 schema (Anthropic, and OpenAI without strict mode). `RunTyped`'s `final_answer` and the JSON that
-`RunTypedNative` decodes are read the same way.
+a native typed run decodes are read the same way.
 
 `WithBaseURL` is how one adapter reaches many providers. For OpenAI-compatible endpoints, set the
 base URL and the model, e.g. `openai.New("", openai.WithBaseURL("http://localhost:11434/v1"),
@@ -225,7 +226,7 @@ wrong:
   reject one with no tools).
 
 Each adapter declares its rules through `agent.ToolRules` (`ToolNameRule`,
-`RequiresToolsForRequired`), so `agent.Build` and `Agent.With` refuse a tool name the agent's
+`RequiresToolsForRequired`), so `agent.New` and `Agent.With` refuse a tool name the agent's
 model cannot take when the agent is built, not on every run; a model that declares no rules is
 not checked. Two tools with one name, an unknown mode, and `tool` naming a tool the agent lacks
 are refused for any model. `required` on an agent with no tools of its own is checked at the run,

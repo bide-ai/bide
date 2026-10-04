@@ -8,6 +8,7 @@ import (
 	"testing"
 
 	"github.com/bide-ai/bide/agent"
+	"github.com/bide-ai/bide/agent/agenttest"
 )
 
 // The rung-2 test domain: a tiny triage flow. classify maps an Order to an
@@ -53,11 +54,11 @@ func triageRegistry(t *testing.T) *Registry {
 			t.Fatalf("register: %v", err)
 		}
 	}
-	must(RegisterStep(reg, "classify", cfgClassify))
-	must(RegisterStep(reg, "reserve", cfgReserve))
-	must(RegisterStep(reg, "finalize", cfgFinalize))
-	must(RegisterStep(reg, "decline", cfgDecline))
-	must(RegisterPredicate(reg, "rush", func(a cfgAssessment) bool { return a.Rush }))
+	must(reg.RegisterStep("classify", cfgClassify))
+	must(reg.RegisterStep("reserve", cfgReserve))
+	must(reg.RegisterStep("finalize", cfgFinalize))
+	must(reg.RegisterStep("decline", cfgDecline))
+	must(reg.RegisterPredicate("rush", func(a cfgAssessment) bool { return a.Rush }))
 	return reg
 }
 
@@ -119,7 +120,7 @@ func TestLoadValidConfigRunsAndConforms(t *testing.T) {
 
 	// Run a rush order: classify -> (rush) reserve -> finalize -> Receipt{reserved}.
 	ctx := context.Background()
-	store := agent.NewMemStore()
+	store := agenttest.MemJournal()
 	out, err := flow.Run(ctx, store, "run-rush", cfgOrder{ID: 7, Rush: true})
 	if err != nil {
 		t.Fatalf("Run rush: %v", err)
@@ -136,7 +137,7 @@ func TestLoadValidConfigRunsAndConforms(t *testing.T) {
 	}
 
 	// Run a non-rush order: classify -> (else) decline -> Receipt{declined}.
-	store2 := agent.NewMemStore()
+	store2 := agenttest.MemJournal()
 	out2, err := flow.Run(ctx, store2, "run-plain", cfgOrder{ID: 9, Rush: false})
 	if err != nil {
 		t.Fatalf("Run plain: %v", err)
@@ -174,9 +175,9 @@ func TestDigestStableAcrossLoads(t *testing.T) {
 func TestDriftUnknownBlockAndPredicate(t *testing.T) {
 	reg := NewRegistry()
 	// Deliberately omit "reserve" (unknown block) and "rush" (unknown predicate).
-	_ = RegisterStep(reg, "classify", cfgClassify)
-	_ = RegisterStep(reg, "finalize", cfgFinalize)
-	_ = RegisterStep(reg, "decline", cfgDecline)
+	_ = reg.RegisterStep("classify", cfgClassify)
+	_ = reg.RegisterStep("finalize", cfgFinalize)
+	_ = reg.RegisterStep("decline", cfgDecline)
 
 	_, err := Load[cfgOrder, cfgReceipt]([]byte(triageConfig), reg)
 	if err == nil {
@@ -212,7 +213,7 @@ func TestPredicateTypeMismatch(t *testing.T) {
 	reg := triageRegistry(t)
 	// Re-register the rush predicate over the WRONG type (cfgOrder, not cfgAssessment)
 	// under a distinct name, then point the switch at it.
-	if err := RegisterPredicate(reg, "wrongrush", func(o cfgOrder) bool { return o.Rush }); err != nil {
+	if err := reg.RegisterPredicate("wrongrush", func(o cfgOrder) bool { return o.Rush }); err != nil {
 		t.Fatalf("register: %v", err)
 	}
 	cfg := strings.Replace(triageConfig, `"pred": "rush"`, `"pred": "wrongrush"`, 1)
@@ -244,8 +245,8 @@ func TestEdgeTypeMismatch(t *testing.T) {
 	// finalize is used, reserve/decline are not; that would also be flagged, so use a
 	// registry with just the two blocks to isolate the type-mismatch error.
 	reg := NewRegistry()
-	_ = RegisterStep(reg, "classify", cfgClassify)
-	_ = RegisterStep(reg, "finalize", cfgFinalize)
+	_ = reg.RegisterStep("classify", cfgClassify)
+	_ = reg.RegisterStep("finalize", cfgFinalize)
 	_, err := Load[cfgOrder, cfgReceipt]([]byte(cfg), reg)
 	if err == nil {
 		t.Fatal("expected edge-type mismatch, got nil")
@@ -337,10 +338,10 @@ func TestValidateCatchesDrift(t *testing.T) {
 	}
 	// Drifted registry (missing reserve block) fails.
 	reg := NewRegistry()
-	_ = RegisterStep(reg, "classify", cfgClassify)
-	_ = RegisterStep(reg, "finalize", cfgFinalize)
-	_ = RegisterStep(reg, "decline", cfgDecline)
-	_ = RegisterPredicate(reg, "rush", func(a cfgAssessment) bool { return a.Rush })
+	_ = reg.RegisterStep("classify", cfgClassify)
+	_ = reg.RegisterStep("finalize", cfgFinalize)
+	_ = reg.RegisterStep("decline", cfgDecline)
+	_ = reg.RegisterPredicate("rush", func(a cfgAssessment) bool { return a.Rush })
 	if err := Validate([]byte(triageConfig), reg); err == nil {
 		t.Error("Validate expected drift error, got nil")
 	}
@@ -350,10 +351,10 @@ func TestValidateCatchesDrift(t *testing.T) {
 // register time and surfaces at Load rather than overwriting.
 func TestDuplicateRegistration(t *testing.T) {
 	reg := NewRegistry()
-	if err := RegisterStep(reg, "classify", cfgClassify); err != nil {
+	if err := reg.RegisterStep("classify", cfgClassify); err != nil {
 		t.Fatalf("first register: %v", err)
 	}
-	if err := RegisterStep(reg, "classify", cfgClassify); err == nil {
+	if err := reg.RegisterStep("classify", cfgClassify); err == nil {
 		t.Error("expected duplicate-registration error, got nil")
 	}
 	// The duplicate is also collected and surfaces at Load.
@@ -379,10 +380,10 @@ func diamondRegistry(t *testing.T) *Registry {
 			t.Fatalf("register: %v", err)
 		}
 	}
-	must(RegisterStep(reg, "split", func(_ context.Context, n int) (int, error) { return n * 2, nil }))
-	must(RegisterStep(reg, "y", func(_ context.Context, n int) (int, error) { return n + 1, nil }))
-	must(RegisterStep(reg, "z", func(_ context.Context, n int) (string, error) { return fmt.Sprintf("z%d", n), nil }))
-	must(RegisterJoin2(reg, "mergeBlock", func(_ context.Context, a int, s string) (string, error) {
+	must(reg.RegisterStep("split", func(_ context.Context, n int) (int, error) { return n * 2, nil }))
+	must(reg.RegisterStep("y", func(_ context.Context, n int) (int, error) { return n + 1, nil }))
+	must(reg.RegisterStep("z", func(_ context.Context, n int) (string, error) { return fmt.Sprintf("z%d", n), nil }))
+	must(reg.RegisterJoin2("mergeBlock", func(_ context.Context, a int, s string) (string, error) {
 		return fmt.Sprintf("%s+%d", s, a), nil
 	}))
 	return reg
@@ -431,7 +432,7 @@ func TestLoadJoinConfigRunsConformsAndMatchesHandBuilt(t *testing.T) {
 
 	// Runs to the merged output: split(3)=6; y=7; z="z6"; merge="z6+7".
 	ctx := context.Background()
-	store := agent.NewMemStore()
+	store := agenttest.MemJournal()
 	out, err := flow.Run(ctx, store, "diamond-cfg", 3)
 	if err != nil {
 		t.Fatalf("Run: %v", err)
@@ -494,17 +495,17 @@ func loopRegistry(t *testing.T) *Registry {
 			t.Fatalf("register: %v", err)
 		}
 	}
-	must(RegisterStep(reg, "seed", func(_ context.Context, n int) (loopState, error) {
+	must(reg.RegisterStep("seed", func(_ context.Context, n int) (loopState, error) {
 		return loopState{N: n, Trace: "seed"}, nil
 	}))
-	must(RegisterStep(reg, "refine", func(_ context.Context, s loopState) (loopState, error) {
+	must(reg.RegisterStep("refine", func(_ context.Context, s loopState) (loopState, error) {
 		return loopState{N: s.N - 1, Trace: s.Trace + "|refine"}, nil
 	}))
-	must(RegisterStep(reg, "check", func(_ context.Context, s loopState) (loopState, error) { return s, nil }))
-	must(RegisterStep(reg, "done", func(_ context.Context, s loopState) (string, error) {
+	must(reg.RegisterStep("check", func(_ context.Context, s loopState) (loopState, error) { return s, nil }))
+	must(reg.RegisterStep("done", func(_ context.Context, s loopState) (string, error) {
 		return fmt.Sprintf("done N=%d trace=%s", s.N, s.Trace), nil
 	}))
-	must(RegisterPredicate(reg, "again", func(s loopState) bool { return s.N > 0 }))
+	must(reg.RegisterPredicate("again", func(s loopState) bool { return s.N > 0 }))
 	return reg
 }
 
@@ -549,7 +550,7 @@ func TestLoadLoopConfigIteratesExitsConformsAndMatchesHandBuilt(t *testing.T) {
 	}
 
 	ctx := context.Background()
-	store := agent.NewMemStore()
+	store := agenttest.MemJournal()
 	out, err := flow.Run(ctx, store, "loop-cfg", 3)
 	if err != nil {
 		t.Fatalf("Run: %v", err)
@@ -629,7 +630,7 @@ const safetyNodeConfig = `{
 func loadReadFlow(t *testing.T, reads *int, value int, safety string) (*Flow[int, int], error) {
 	t.Helper()
 	reg := NewRegistry()
-	if err := RegisterStep(reg, "read", func(context.Context, int) (int, error) { *reads++; return value, nil }, ReadOnly()); err != nil {
+	if err := reg.RegisterStep("read", func(context.Context, int) (int, error) { *reads++; return value, nil }, ReadOnly()); err != nil {
 		t.Fatalf("register: %v", err)
 	}
 	cfg := safetyNodeConfig
@@ -654,12 +655,13 @@ func safetySuffix(safety string) string {
 // "side_effect" halts (TestLoadSafetyDefaultHalts). It reuses the crashFlowStore DST harness from flow_dst_test.go.
 func TestLoadSafetyConfigRerunsOnAmbiguousCrash(t *testing.T) {
 	// Find the crash landing on the read node's result write, with the readonly config.
-	var mem agent.Durable
+	var mem *agent.Journal
 	var readsAtCrash int
 	for crashAt := 1; crashAt <= 32; crashAt++ {
 		reads := 0
 		m := agent.NewMemStore()
-		store := &crashFlowStore{inner: m, crashAt: crashAt}
+		j := agenttest.MustJournal(m)
+		store := agenttest.MustJournal(&crashFlowStore{inner: j, crashAt: crashAt})
 		flow, err := loadReadFlow(t, &reads, 42, "readonly")
 		if err != nil {
 			t.Fatalf("Load: %v", err)
@@ -668,7 +670,7 @@ func TestLoadSafetyConfigRerunsOnAmbiguousCrash(t *testing.T) {
 		if !errors.Is(err, errCrash) {
 			continue
 		}
-		recs, hErr := m.History(context.Background(), "cfg-safety")
+		recs, hErr := j.History(context.Background(), "cfg-safety")
 		if hErr != nil {
 			t.Fatalf("History: %v", hErr)
 		}
@@ -681,7 +683,7 @@ func TestLoadSafetyConfigRerunsOnAmbiguousCrash(t *testing.T) {
 			}
 		}
 		if !haveResult && reads >= 1 {
-			mem = m
+			mem = j
 			readsAtCrash = reads
 			break
 		}
@@ -717,12 +719,13 @@ func TestLoadSafetyConfigRerunsOnAmbiguousCrash(t *testing.T) {
 // with config "safety": "side_effect" is lowered to the conservative halt and HALTS on
 // the ambiguous crash, proving the config safety is what changed the behavior.
 func TestLoadSafetyDefaultHalts(t *testing.T) {
-	var mem agent.Durable
+	var mem *agent.Journal
 	var readsAtCrash int
 	for crashAt := 1; crashAt <= 32; crashAt++ {
 		reads := 0
 		m := agent.NewMemStore()
-		store := &crashFlowStore{inner: m, crashAt: crashAt}
+		j := agenttest.MustJournal(m)
+		store := agenttest.MustJournal(&crashFlowStore{inner: j, crashAt: crashAt})
 		flow, err := loadReadFlow(t, &reads, 42, "side_effect")
 		if err != nil {
 			t.Fatalf("Load: %v", err)
@@ -731,7 +734,7 @@ func TestLoadSafetyDefaultHalts(t *testing.T) {
 		if !errors.Is(err, errCrash) {
 			continue
 		}
-		recs, _ := m.History(context.Background(), "cfg-default")
+		recs, _ := j.History(context.Background(), "cfg-default")
 		var haveAttempt, haveResult bool
 		for _, r := range recs {
 			switch r.Name {
@@ -742,7 +745,7 @@ func TestLoadSafetyDefaultHalts(t *testing.T) {
 			}
 		}
 		if haveAttempt && !haveResult && reads >= 1 {
-			mem = m
+			mem = j
 			readsAtCrash = reads
 			break
 		}
@@ -773,7 +776,7 @@ func TestLoadSafetyDefaultHalts(t *testing.T) {
 // load error naming the node and the bad value.
 func TestLoadUnknownSafetyStringIsError(t *testing.T) {
 	reg := NewRegistry()
-	if err := RegisterStep(reg, "read", func(_ context.Context, n int) (int, error) { return n, nil }); err != nil {
+	if err := reg.RegisterStep("read", func(_ context.Context, n int) (int, error) { return n, nil }); err != nil {
 		t.Fatalf("register: %v", err)
 	}
 	cfg := strings.Replace(safetyNodeConfig, `"safety": "readonly"`, `"safety": "sometimes"`, 1)

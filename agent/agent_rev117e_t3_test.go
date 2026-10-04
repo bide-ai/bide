@@ -12,16 +12,15 @@ import (
 
 // t3Charge is a compensable retry-safe write whose first call takes effect and cancels the drive.
 func t3Charge(cancel *context.CancelFunc, calls, charged *atomic.Int32, later func() (string, error)) Tool {
-	return CompensatedFunc("charge", "", Safety{Idempotent: true},
-		func(ctx context.Context, _ struct{}) (string, error) {
-			if calls.Add(1) == 1 {
-				charged.Add(1)
-				(*cancel)()
-				return "", ctx.Err()
-			}
-			return later()
-		},
-		func(context.Context, struct{}, string) error { return nil })
+	return MustCompensatedFunc("charge", "", func(ctx context.Context, _ struct{}) (string, error) {
+		if calls.Add(1) == 1 {
+			charged.Add(1)
+			(*cancel)()
+			return "", ctx.Err()
+		}
+		return later()
+	},
+		func(context.Context, struct{}, string) error { return nil }, WithSafety(Safety{Idempotent: true}))
 }
 
 // T3 with a middleware that denies the re-drive's call without calling next (ErrToolNotCalled):
@@ -40,13 +39,18 @@ func TestRev117e_T3_RedriveDenialAfterEarlierAttempt(t *testing.T) {
 			return next(ctx, call)
 		}
 	})
-	st := NewMemStore()
-	a := New(NewScriptedModel(ToolTurn("c1", "charge", `{}`), TextTurn("done")), st, charge).UseTool(mw)
-	if _, err := a.RunSaga(ctx1, "r", "go"); err == nil {
+	st := memJournal()
+	a := mustNew(
+		NewScriptedModel(ToolTurn("c1", "charge", `{}`), TextTurn("done")),
+		st,
+		WithTools(charge),
+		WithToolMiddleware(mw),
+	)
+	if _, err := a.Run(ctx1, "r", UserText("go"), WithSaga()); err == nil {
 		t.Fatal("first drive: want the cancellation")
 	}
 	deny.Store(true)
-	_, err := a.RunSaga(context.Background(), "r", "go")
+	_, err := a.Run(context.Background(), "r", UserText("go"), WithSaga())
 	var ab *SagaAborted
 	if !errors.As(err, &ab) || !slices.Contains(ab.UnknownOutcome, "charge") {
 		t.Fatalf("second drive = %v; want *SagaAborted listing charge as unknown", err)
@@ -58,14 +62,13 @@ func TestRev117e_T3_RedriveDenialAfterEarlierAttempt(t *testing.T) {
 // invocation's effect is in place, so the step's outcome is unknown.
 func TestRev117e_T3_InDriveRetryAfterSuccess(t *testing.T) {
 	var calls atomic.Int32
-	charge := CompensatedFunc("charge", "", Safety{Idempotent: true},
-		func(context.Context, struct{}) (string, error) {
-			if calls.Add(1) == 1 {
-				return "ok", nil
-			}
-			return "", errors.New("card declined")
-		},
-		func(context.Context, struct{}, string) error { return nil })
+	charge := MustCompensatedFunc("charge", "", func(context.Context, struct{}) (string, error) {
+		if calls.Add(1) == 1 {
+			return "ok", nil
+		}
+		return "", errors.New("card declined")
+	},
+		func(context.Context, struct{}, string) error { return nil }, WithSafety(Safety{Idempotent: true}))
 	retry := ToolMiddleware(func(next ToolHandler) ToolHandler {
 		return func(ctx context.Context, call ToolCall) (json.RawMessage, error) {
 			if _, err := next(ctx, call); err != nil {
@@ -74,20 +77,24 @@ func TestRev117e_T3_InDriveRetryAfterSuccess(t *testing.T) {
 			return next(ctx, call) // the result check wants a second look
 		}
 	})
-	a := New(NewScriptedModel(ToolTurn("c1", "charge", `{}`), TextTurn("done")), NewMemStore(), charge).UseTool(retry)
-	_, err := a.RunSaga(context.Background(), "r", "go")
+	a := mustNew(
+		NewScriptedModel(ToolTurn("c1", "charge", `{}`), TextTurn("done")),
+		memJournal(),
+		WithTools(charge),
+		WithToolMiddleware(retry),
+	)
+	_, err := a.Run(context.Background(), "r", UserText("go"), WithSaga())
 	var ab *SagaAborted
 	if !errors.As(err, &ab) || !slices.Contains(ab.UnknownOutcome, "charge") {
-		t.Fatalf("RunSaga = %v; want *SagaAborted listing charge as unknown", err)
+		t.Fatalf("saga Run = %v; want *SagaAborted listing charge as unknown", err)
 	}
 }
 
 // Precision: with no earlier attempt, the tool's own error is a known failure, and the rollback
 // reports nothing unknown.
 func TestRev117e_T3_FirstAttemptOwnFailureIsKnown(t *testing.T) {
-	charge := CompensatedFunc("charge", "", Safety{Idempotent: true},
-		func(context.Context, struct{}) (string, error) { return "", errors.New("card declined") },
-		func(context.Context, struct{}, string) error { return nil })
+	charge := MustCompensatedFunc("charge", "", func(context.Context, struct{}) (string, error) { return "", errors.New("card declined") },
+		func(context.Context, struct{}, string) error { return nil }, WithSafety(Safety{Idempotent: true}))
 	retry := ToolMiddleware(func(next ToolHandler) ToolHandler {
 		return func(ctx context.Context, call ToolCall) (json.RawMessage, error) {
 			if _, err := next(ctx, call); err == nil {
@@ -96,11 +103,16 @@ func TestRev117e_T3_FirstAttemptOwnFailureIsKnown(t *testing.T) {
 			return next(ctx, call) // a retry after the tool's own failure
 		}
 	})
-	a := New(NewScriptedModel(ToolTurn("c1", "charge", `{}`), TextTurn("done")), NewMemStore(), charge).UseTool(retry)
-	_, err := a.RunSaga(context.Background(), "r", "go")
+	a := mustNew(
+		NewScriptedModel(ToolTurn("c1", "charge", `{}`), TextTurn("done")),
+		memJournal(),
+		WithTools(charge),
+		WithToolMiddleware(retry),
+	)
+	_, err := a.Run(context.Background(), "r", UserText("go"), WithSaga())
 	var ab *SagaAborted
 	if !errors.As(err, &ab) || len(ab.UnknownOutcome) != 0 {
-		t.Fatalf("RunSaga = %v; want *SagaAborted with no unknown outcome", err)
+		t.Fatalf("saga Run = %v; want *SagaAborted with no unknown outcome", err)
 	}
 }
 
@@ -108,11 +120,10 @@ func TestRev117e_T3_FirstAttemptOwnFailureIsKnown(t *testing.T) {
 // journaled (its "may have begun" marker): the attempt may have taken effect.
 func TestRev117e_T3_RollbackReportsDeniedStepWithEarlierAttempt(t *testing.T) {
 	ctx := context.Background()
-	st := NewMemStore()
-	charge := CompensatedFunc("charge", "", Safety{Idempotent: true},
-		func(context.Context, struct{}) (string, error) { return "ok", nil },
-		func(context.Context, struct{}, string) error { return nil })
-	a := New(NewScriptedModel(TextTurn("x")), st, charge)
+	st := memJournal()
+	charge := MustCompensatedFunc("charge", "", func(context.Context, struct{}) (string, error) { return "ok", nil },
+		func(context.Context, struct{}, string) error { return nil }, WithSafety(Safety{Idempotent: true}))
+	a := mustNew(NewScriptedModel(TextTurn("x")), st, WithTools(charge))
 	asst := &Message{Role: RoleAssistant, Parts: []Part{ToolUse{ID: "c1", Name: "charge", Args: json.RawMessage(`{}`)}}}
 	safety := Safety{Idempotent: true}
 	for _, r := range []Record{
@@ -120,7 +131,7 @@ func TestRev117e_T3_RollbackReportsDeniedStepWithEarlierAttempt(t *testing.T) {
 		{Name: sagaArgsStep("c1"), Kind: StepValue, Result: json.RawMessage(`{}`)},
 		{Name: ToolResultStep("c1"), Kind: StepToolResult, ToolUseID: "c1", IsError: true, Result: json.RawMessage(`"tool call denied by human"`), Safety: &safety},
 	} {
-		if _, err := st.Do(ctx, "r", r.Name, func(context.Context) (Record, error) { return r, nil }); err != nil {
+		if _, err := st.do(ctx, "r", r.Name, func(context.Context) (Record, error) { return r, nil }); err != nil {
 			t.Fatal(err)
 		}
 	}
@@ -137,17 +148,16 @@ func TestRev117e_T3_RollbackReportsDeniedStepWithEarlierAttempt(t *testing.T) {
 func TestRev117e_T4_RollbackRerunRejectedSuccessIsUnknown(t *testing.T) {
 	var calls, refunded atomic.Int32
 	started := make(chan struct{})
-	charge := CompensatedFunc("charge", "", Safety{Idempotent: true},
-		func(ctx context.Context, _ struct{}) (string, error) {
-			if calls.Add(1) == 1 {
-				close(started)
-				<-ctx.Done() // cut off by the sibling's failure
-				return "", ctx.Err()
-			}
-			return "ok", nil
-		},
-		func(context.Context, struct{}, string) error { refunded.Add(1); return nil })
-	fail := Func("fail", "", Safety{}, func(context.Context, struct{}) (string, error) {
+	charge := MustCompensatedFunc("charge", "", func(ctx context.Context, _ struct{}) (string, error) {
+		if calls.Add(1) == 1 {
+			close(started)
+			<-ctx.Done() // cut off by the sibling's failure
+			return "", ctx.Err()
+		}
+		return "ok", nil
+	},
+		func(context.Context, struct{}, string) error { refunded.Add(1); return nil }, WithSafety(Safety{Idempotent: true}))
+	fail := MustFunc("fail", "", func(context.Context, struct{}) (string, error) {
 		<-started // charge is in flight
 		return "", errors.New("declined")
 	})
@@ -160,12 +170,12 @@ func TestRev117e_T4_RollbackRerunRejectedSuccessIsUnknown(t *testing.T) {
 			return res, err
 		}
 	})
-	a := New(t4TwoCalls{}, NewMemStore(), charge, fail).UseTool(check)
+	a := mustNew(t4TwoCalls{}, memJournal(), WithTools(charge, fail), WithToolMiddleware(check))
 	for drive := 1; drive <= 2; drive++ {
-		_, err := a.RunSaga(context.Background(), "r", "go")
+		_, err := a.Run(context.Background(), "r", UserText("go"), WithSaga())
 		var ab *SagaAborted
 		if !errors.As(err, &ab) || !slices.Contains(ab.UnknownOutcome, "charge") || refunded.Load() != 0 {
-			t.Fatalf("drive %d: RunSaga = %v (refunded %d); want *SagaAborted listing charge as unknown", drive, err, refunded.Load())
+			t.Fatalf("drive %d: saga Run = %v (refunded %d); want *SagaAborted listing charge as unknown", drive, err, refunded.Load())
 		}
 	}
 }

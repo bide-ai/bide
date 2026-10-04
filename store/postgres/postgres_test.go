@@ -11,6 +11,8 @@ import (
 	"time"
 
 	"github.com/bide-ai/bide/agent"
+	"github.com/bide-ai/bide/agent/agenttest"
+	"github.com/bide-ai/bide/internal/journaltest"
 )
 
 // uniqueID returns prefix plus the test name and a per-run suffix, so the test can run again
@@ -46,6 +48,7 @@ func TestPostgres_DoMemoizesAndHistory(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
+	j := agenttest.MustJournal(store)
 	defer store.Close()
 
 	runID := uniqueID(t, "pg-test-")
@@ -54,16 +57,16 @@ func TestPostgres_DoMemoizesAndHistory(t *testing.T) {
 		runs++
 		return agent.Record{Kind: agent.StepValue, Result: json.RawMessage(`1`)}, nil
 	}
-	if _, err := store.Do(ctx, runID, "step", mk); err != nil {
+	if _, err := journaltest.Do(ctx, j, runID, "step", mk); err != nil {
 		t.Fatal(err)
 	}
-	if _, err := store.Do(ctx, runID, "step", mk); err != nil { // memoized
+	if _, err := journaltest.Do(ctx, j, runID, "step", mk); err != nil { // memoized
 		t.Fatal(err)
 	}
 	if runs != 1 {
 		t.Fatalf("fn ran %d times, want 1 (not memoized)", runs)
 	}
-	h, err := store.History(ctx, runID)
+	h, err := j.History(ctx, runID)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -75,14 +78,15 @@ func TestPostgres_DoMemoizesAndHistory(t *testing.T) {
 // TestPostgres_ListerRuns checks Runs enumerates the runs the store holds (agent.Lister).
 func TestPostgres_ListerRuns(t *testing.T) {
 	store, ctx := openTestStore(t)
+	j := agenttest.MustJournal(store)
 	r1, r2 := uniqueID(t, "pg-list-1-"), uniqueID(t, "pg-list-2-")
 	mk := func(context.Context) (agent.Record, error) {
 		return agent.Record{Kind: agent.StepValue, Result: json.RawMessage(`1`)}, nil
 	}
-	if _, err := store.Do(ctx, r1, "s", mk); err != nil {
+	if _, err := journaltest.Do(ctx, j, r1, "s", mk); err != nil {
 		t.Fatal(err)
 	}
-	if _, err := store.Do(ctx, r2, "s", mk); err != nil {
+	if _, err := journaltest.Do(ctx, j, r2, "s", mk); err != nil {
 		t.Fatal(err)
 	}
 	var runs []string
@@ -162,6 +166,7 @@ func TestPostgres_HAAtMostOnceAcrossInstances(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
+	j := agenttest.MustJournal(s1)
 	defer s1.Close()
 	s2, err := Open(ctx, dsn)
 	if err != nil {
@@ -176,13 +181,13 @@ func TestPostgres_HAAtMostOnceAcrossInstances(t *testing.T) {
 	var charges int32
 	driveVia := func(s *Store) func(context.Context) error {
 		return func(ctx context.Context) error {
-			if _, err := s.Do(ctx, run, "charge", func(context.Context) (agent.Record, error) {
+			if _, err := journaltest.Do(ctx, agenttest.MustJournal(s), run, "charge", func(context.Context) (agent.Record, error) {
 				atomic.AddInt32(&charges, 1) // non-idempotent side effect
 				return agent.Record{Kind: agent.StepValue}, nil
 			}); err != nil {
 				return err
 			}
-			_, err := s.Do(ctx, run, "run:complete", func(context.Context) (agent.Record, error) {
+			_, err := journaltest.Do(ctx, agenttest.MustJournal(s), run, "run:complete", func(context.Context) (agent.Record, error) {
 				return agent.Record{Kind: agent.StepValue}, nil // the completion marker (agent.IsComplete)
 			})
 			return err
@@ -190,10 +195,10 @@ func TestPostgres_HAAtMostOnceAcrossInstances(t *testing.T) {
 	}
 	worker := func(s *Store, holder string) {
 		for iter := 0; iter < 2000; iter++ {
-			if done, _ := agent.IsComplete(ctx, s, run); done {
+			if done, _ := agent.IsComplete(ctx, agenttest.MustJournal(s), run); done {
 				return
 			}
-			_, _ = agent.Lease(ctx, s, run, driveVia(s), agent.WithLeaseHolder(holder), agent.WithLeaseTTL(time.Minute))
+			_, _ = agent.Lease(ctx, agenttest.MustJournal(s), run, driveVia(s), agent.WithLeaseHolder(holder), agent.WithLeaseTTL(time.Minute))
 		}
 	}
 
@@ -206,7 +211,7 @@ func TestPostgres_HAAtMostOnceAcrossInstances(t *testing.T) {
 	if c := atomic.LoadInt32(&charges); c != 1 {
 		t.Fatalf("charge fired %d times across two instances, want exactly 1 (the lease must serialize cross-process driving)", c)
 	}
-	if done, _ := agent.IsComplete(ctx, s1, run); !done {
+	if done, _ := agent.IsComplete(ctx, j, run); !done {
 		t.Fatal("run never completed")
 	}
 }

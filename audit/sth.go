@@ -139,7 +139,7 @@ type SignedTreeHead struct {
 }
 
 // NewTreeHead builds a TreeHead committing to runID's journal at the given timestamp.
-func NewTreeHead(ctx context.Context, store agent.Durable, runID string, timestamp int64) (TreeHead, error) {
+func NewTreeHead(ctx context.Context, store *agent.Journal, runID string, timestamp int64) (TreeHead, error) {
 	recs, err := store.History(ctx, runID)
 	if err != nil {
 		return TreeHead{}, fmt.Errorf("audit: load journal %s: %w", runID, err)

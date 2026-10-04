@@ -69,31 +69,31 @@ func main() {
 	if err != nil {
 		log.Fatal(err)
 	}
-	classic, err := agent.Build(model, j, agent.WithRetrieval(kb, 2))
+	classic, err := agent.New(model, j, agent.WithRetrieval(kb, 2))
 	if err != nil {
 		log.Fatal(err)
 	}
-	out, err := classic.Run(ctx, "rag-classic",
-		"What is the warranty on the widget? Answer in one sentence.")
+	res, err := classic.Run(ctx, "rag-classic", agent.UserText("What is the warranty on the widget? Answer in one sentence."))
 	if err != nil {
 		log.Fatalf("classic rag: %v", err)
 	}
+	out := res.Message
 	fmt.Println("=== classic RAG (auto-injected context) ===")
 	fmt.Println(out.Text())
 
 	// Agentic RAG: expose retrieval as a tool the model calls on demand. An agent searching
 	// several stores gives each tool its own name.
-	search := agent.RetrievalTool("search_support_kb",
+	search := agent.MustRetrievalTool("search_support_kb",
 		"Search the support knowledge base: shipping, warranty, returns, and hours.", kb, 2)
-	agentic, err := agent.Build(model, j, agent.WithTools(search))
+	agentic, err := agent.New(model, j, agent.WithTools(search))
 	if err != nil {
 		log.Fatal(err)
 	}
-	out2, err := agentic.Run(ctx, "rag-agentic",
-		"Use the search_support_kb tool to find the return policy, then answer in one sentence.")
+	res2, err := agentic.Run(ctx, "rag-agentic", agent.UserText("Use the search_support_kb tool to find the return policy, then answer in one sentence."))
 	if err != nil {
 		log.Fatalf("agentic rag: %v", err)
 	}
+	out2 := res2.Message
 	fmt.Println("\n=== agentic RAG (model-driven search) ===")
 	fmt.Println(out2.Text())
 }

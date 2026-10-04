@@ -8,9 +8,9 @@ import (
 )
 
 // streamFinishes runs a streamed run and returns the Finish events its model calls sent.
-func streamFinishes(t *testing.T, a *Agent, runID string) ([]Finish, *AgentStream) {
+func streamFinishes(t *testing.T, a *Agent, runID string) ([]Finish, *RunStream) {
 	t.Helper()
-	as := a.Stream(context.Background(), runID, "go")
+	as := a.Stream(context.Background(), runID, UserText("go"))
 	var out []Finish
 	for ev := range as.Events() {
 		if me, ok := ev.(ModelEvent); ok {
@@ -23,17 +23,17 @@ func streamFinishes(t *testing.T, a *Agent, runID string) ([]Finish, *AgentStrea
 }
 
 // A replayed run reports the same usage as the original, per turn in its journal and in total
-// in its RunResult.
+// in its Run.
 func TestReplay_ReportsRecordedUsage(t *testing.T) {
 	ctx := context.Background()
 	u1 := Usage{InputTokens: 10, OutputTokens: 5, CacheReadTokens: 2, CacheWriteTokens: 1}
 	u2 := Usage{InputTokens: 20, OutputTokens: 8, CacheWriteTokens: 3}
 
-	rec := NewMemStore()
+	rec := memJournal()
 	var calls1 int
 	tool1 := &countingTool{name: "lookup", safety: Safety{ReadOnly: true}, calls: &calls1}
 	m := &scriptModel{turns: [][]Emit{toolTurnWithUsage("c1", "lookup", `{"q":"x"}`, u1), textTurnWithUsage("final", u2)}}
-	orig, err := New(m, rec, tool1).RunResult(ctx, "run", "go")
+	orig, err := mustNew(m, rec, WithTools(tool1)).Run(ctx, "run", UserText("go"))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -42,10 +42,10 @@ func TestReplay_ReportsRecordedUsage(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	fresh := NewMemStore()
+	fresh := memJournal()
 	var calls2 int
 	tool2 := &countingTool{name: "lookup", safety: Safety{ReadOnly: true}, calls: &calls2}
-	replayed, err := New(rm, fresh, tool2).RunResult(ctx, "run", "go")
+	replayed, err := mustNew(rm, fresh, WithTools(tool2)).Run(ctx, "run", UserText("go"))
 	if err != nil {
 		t.Fatalf("replay run: %v", err)
 	}
@@ -59,8 +59,8 @@ func TestReplay_ReportsRecordedUsage(t *testing.T) {
 // the same journal, rather than asking the replay model for a turn that was never recorded.
 func TestReplay_TokenBudgetStopsAtSamePoint(t *testing.T) {
 	ctx := context.Background()
-	rec := NewMemStore()
-	_, origErr := New(&meteredModel{u: turnUsage}, rec, lookupTool(func() {})).WithTokenBudget(100).Run(ctx, "run", "q")
+	rec := memJournal()
+	_, origErr := mustNew(&meteredModel{u: turnUsage}, rec, WithTools(lookupTool(func() {})), WithTokenBudget(100)).Run(ctx, "run", UserText("q"))
 	if !errors.Is(origErr, ErrBudgetExceeded) {
 		t.Fatalf("setup: err = %v, want ErrBudgetExceeded", origErr)
 	}
@@ -69,8 +69,8 @@ func TestReplay_TokenBudgetStopsAtSamePoint(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	fresh := NewMemStore()
-	_, replayErr := New(rm, fresh, lookupTool(func() {})).WithTokenBudget(100).Run(ctx, "run", "q")
+	fresh := memJournal()
+	_, replayErr := mustNew(rm, fresh, WithTools(lookupTool(func() {})), WithTokenBudget(100)).Run(ctx, "run", UserText("q"))
 	if replayErr == nil || replayErr.Error() != origErr.Error() {
 		t.Fatalf("replay err = %v, want %v", replayErr, origErr)
 	}
@@ -84,12 +84,12 @@ func TestReplay_StreamedFinishMatchesLive(t *testing.T) {
 	u1 := Usage{InputTokens: 10, OutputTokens: 5}
 	u2 := Usage{InputTokens: 20, OutputTokens: 8, CacheReadTokens: 4}
 
-	rec := NewMemStore()
+	rec := memJournal()
 	var calls1 int
 	tool1 := &countingTool{name: "lookup", safety: Safety{ReadOnly: true}, calls: &calls1}
 	m := &scriptModel{turns: [][]Emit{toolTurnWithUsage("c1", "lookup", `{"q":"x"}`, u1), textTurnWithUsage("final", u2)}}
-	live, as := streamFinishes(t, New(m, rec, tool1), "run")
-	if _, err := as.Final(); err != nil {
+	live, as := streamFinishes(t, mustNew(m, rec, WithTools(tool1)), "run")
+	if _, err := as.Result(); err != nil {
 		t.Fatal(err)
 	}
 	want := []Finish{{Reason: "tool_use", Usage: u1}, {Reason: "stop", Usage: u2}}
@@ -103,8 +103,8 @@ func TestReplay_StreamedFinishMatchesLive(t *testing.T) {
 	}
 	var calls2 int
 	tool2 := &countingTool{name: "lookup", safety: Safety{ReadOnly: true}, calls: &calls2}
-	replayed, as := streamFinishes(t, New(rm, NewMemStore(), tool2), "run")
-	if _, err := as.Final(); err != nil {
+	replayed, as := streamFinishes(t, mustNew(rm, memJournal(), WithTools(tool2)), "run")
+	if _, err := as.Result(); err != nil {
 		t.Fatal(err)
 	}
 	if !reflect.DeepEqual(replayed, live) {
@@ -112,7 +112,7 @@ func TestReplay_StreamedFinishMatchesLive(t *testing.T) {
 	}
 }
 
-func journalsEqual(t *testing.T, a, b Durable, runID string) {
+func journalsEqual(t *testing.T, a, b *Journal, runID string) {
 	t.Helper()
 	ra, err := a.History(context.Background(), runID)
 	if err != nil {

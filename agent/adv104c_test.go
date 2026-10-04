@@ -31,7 +31,7 @@ func TestAdv104c_NonCompactArgsFailContentCheck(t *testing.T) {
 			return next(ctx, call)
 		}
 	}
-	res, err := New(m, NewMemStore(), tool).Use(count).RunResult(ctx, "r", "go")
+	res, err := mustNew(m, memJournal(), WithTools(tool), WithMiddleware(count)).Run(ctx, "r", UserText("go"))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -44,13 +44,13 @@ func TestAdv104c_NonCompactArgsFailContentCheck(t *testing.T) {
 
 // lookupErrDrive drives run "r" through d once: the @llm/0 write fails without landing and the
 // read that should settle it fails too, so the drive keeps the turn's spend for the next drive.
-func lookupErrDrive(t *testing.T, st *faultStore, d Durable) {
+func lookupErrDrive(t *testing.T, st *faultStore, d *Journal) {
 	t.Helper()
 	st.mu.Lock()
 	st.failNoCommit[modelStep(0)] = true
 	st.mu.Unlock()
 	m := &scriptModel{turns: [][]Emit{textTurnWithUsage("done", billed)}}
-	if _, err := New(m, d).Use(armGet(st)).RunResult(context.Background(), "r", "go"); err == nil {
+	if _, err := mustNew(m, d, WithMiddleware(armGet(st))).Run(context.Background(), "r", UserText("go")); err == nil {
 		t.Fatal("want the write failure")
 	}
 	st.mu.Lock()
@@ -64,7 +64,7 @@ func TestAdv104c_KeptSpendSameJournal(t *testing.T) {
 	j, _ := NewJournal(st)
 	lookupErrDrive(t, st, j)
 	m := &scriptModel{turns: [][]Emit{textTurnWithUsage("done", billed)}}
-	res, err := New(m, j).RunResult(context.Background(), "r", "go")
+	res, err := mustNew(m, j).Run(context.Background(), "r", UserText("go"))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -85,7 +85,7 @@ func TestAdv104c_KeptSpendOtherJournalSameStore(t *testing.T) {
 	lookupErrDrive(t, st, j1)
 	j2, _ := NewJournal(st)
 	m := &scriptModel{turns: [][]Emit{textTurnWithUsage("done", billed)}}
-	res, err := New(m, j2).RunResult(context.Background(), "r", "go")
+	res, err := mustNew(m, j2).Run(context.Background(), "r", UserText("go"))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -113,7 +113,7 @@ func TestAdv104c_KeptSpendIsUnbounded(t *testing.T) {
 		st.failNoCommit[modelStep(0)] = true
 		st.mu.Unlock()
 		m := &scriptModel{turns: [][]Emit{textTurnWithUsage("done", billed)}}
-		_, _ = New(m, j).Use(armGet(st)).RunResult(context.Background(), "run-"+string(rune('a'+i%26))+string(rune('a'+i/26)), "go")
+		_, _ = mustNew(m, j, WithMiddleware(armGet(st))).Run(context.Background(), "run-"+string(rune('a'+i%26))+string(rune('a'+i/26)), UserText("go"))
 		st.mu.Lock()
 		st.failGet = map[string]bool{}
 		st.mu.Unlock()
@@ -139,7 +139,7 @@ func TestAdv104c_KeptSpendIsUnbounded(t *testing.T) {
 	}
 	// Driving a kept run takes its entry, and the count of entries held stays exact.
 	m := &scriptModel{turns: [][]Emit{textTurnWithUsage("done", billed)}}
-	if _, err := New(m, j).RunResult(context.Background(), "run-"+string(rune('a'+(n-1)%26))+string(rune('a'+(n-1)/26)), "go"); err != nil {
+	if _, err := mustNew(m, j).Run(context.Background(), "run-"+string(rune('a'+(n-1)%26))+string(rune('a'+(n-1)/26)), UserText("go")); err != nil {
 		t.Fatal(err)
 	}
 	pendingSpends.Lock()
@@ -181,7 +181,7 @@ func TestAdv104c_InvalidUTF8TextIsTheTurnsOwnRecord(t *testing.T) {
 			return next(ctx, call)
 		}
 	}
-	res, err := New(m, NewMemStore()).Use(count).RunResult(ctx, "r", "go")
+	res, err := mustNew(m, memJournal(), WithMiddleware(count)).Run(ctx, "r", UserText("go"))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -215,14 +215,14 @@ func TestAdv104c_IdenticalRecordsOfTwoDrivers(t *testing.T) {
 		wg.Add(1)
 		go func() {
 			defer wg.Done()
-			if _, err := New(m, j).Use(count).RunResult(ctx, "r", "go"); err != nil {
+			if _, err := mustNew(m, j, WithMiddleware(count)).Run(ctx, "r", UserText("go")); err != nil {
 				t.Error(err)
 			}
 		}()
 	}
 	wg.Wait()
 	j, _ := NewJournal(procStore{mem})
-	res, err := New(&scriptModel{}, j).RunResult(ctx, "r", "go")
+	res, err := mustNew(&scriptModel{}, j).Run(ctx, "r", UserText("go"))
 	if err != nil {
 		t.Fatal(err)
 	}

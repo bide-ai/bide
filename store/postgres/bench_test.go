@@ -8,6 +8,8 @@ import (
 	"time"
 
 	"github.com/bide-ai/bide/agent"
+	"github.com/bide-ai/bide/agent/agenttest"
+	"github.com/bide-ai/bide/internal/journaltest"
 )
 
 // BenchmarkPostgresInsert records one new step per iteration in one run, through the step API
@@ -22,6 +24,7 @@ func BenchmarkPostgresInsert(b *testing.B) {
 	if err != nil {
 		b.Fatal(err)
 	}
+	j := agenttest.MustJournal(s)
 	defer s.Close()
 	run := fmt.Sprintf("bench-%d", time.Now().UnixNano())
 	fn := func(context.Context) (agent.Record, error) {
@@ -31,7 +34,7 @@ func BenchmarkPostgresInsert(b *testing.B) {
 	i := 0
 	for b.Loop() {
 		i++
-		if _, err := s.Do(ctx, run, fmt.Sprintf("step-%d", i), fn); err != nil {
+		if _, err := journaltest.Do(ctx, j, run, fmt.Sprintf("step-%d", i), fn); err != nil {
 			b.Fatal(err)
 		}
 	}

@@ -10,22 +10,10 @@ import (
 	"testing"
 )
 
-// passThrough is a Durable that is not a Journal's: the engine drives it through Do and History
-// only, the transitional path for a wrapper that intercepts Do.
-type passThrough struct{ inner Durable }
-
-func (p passThrough) Do(ctx context.Context, runID, name string, fn func(context.Context) (Record, error)) (Record, error) {
-	return p.inner.Do(ctx, runID, name, fn)
-}
-func (p passThrough) History(ctx context.Context, runID string) ([]Record, error) {
-	return p.inner.History(ctx, runID)
-}
-
-// Both paths the engine drives a step through: a Journal's own, and a Durable's Do.
-func stepPaths() map[string]func() Durable {
-	return map[string]func() Durable{
-		"journal": func() Durable { return NewMemStore() },
-		"durable": func() Durable { return passThrough{NewMemStore()} },
+// stepPaths are the paths the engine drives a step through: a Journal's own.
+func stepPaths() map[string]func() *Journal {
+	return map[string]func() *Journal{
+		"journal": func() *Journal { return memJournal() },
 	}
 }
 
@@ -42,7 +30,7 @@ func TestStep_PauseInASideEffectStepIsErrConfig(t *testing.T) {
 				ran++
 				return 0, &InterruptPending{RunRef: RunRef{RunID: "r"}, Name: "confirm"}
 			}
-			_, err := Step(ctx, d, "r", "charge", body)
+			_, err := d.Step(ctx, "r", "charge", body)
 			var intr *InterruptPending
 			if !errors.Is(err, ErrConfig) || errors.As(err, &intr) || IsPause(err) {
 				t.Fatalf("Step = %v; want ErrConfig that is not a pause", err)
@@ -50,7 +38,7 @@ func TestStep_PauseInASideEffectStepIsErrConfig(t *testing.T) {
 			if !strings.Contains(err.Error(), "retry-safe") {
 				t.Errorf("the error does not tell the developer what to do: %v", err)
 			}
-			_, err = Step(ctx, d, "r", "charge", body)
+			_, err = d.Step(ctx, "r", "charge", body)
 			var halt *OutcomeUnknown
 			if !errors.As(err, &halt) || halt.Op != (OpRef{Kind: OpStep, ID: "charge"}) {
 				t.Fatalf("the next attempt = %v; want *OutcomeUnknown on the step", err)
@@ -76,13 +64,13 @@ func TestStep_PauseInARetrySafeStepPropagates(t *testing.T) {
 				return "ok", nil
 			}
 			safe := WithSafety(Safety{Idempotent: true})
-			_, err := Step(ctx, d, "r", "ask", body, safe)
+			_, err := d.Step(ctx, "r", "ask", body, safe)
 			var intr *InterruptPending
 			if !errors.As(err, &intr) || errors.Is(err, ErrConfig) {
 				t.Fatalf("Step = %v; want the *InterruptPending itself", err)
 			}
 			answered = true
-			if v, err := Step(ctx, d, "r", "ask", body, safe); err != nil || v != "ok" {
+			if v, err := d.Step(ctx, "r", "ask", body, safe); err != nil || v != "ok" {
 				t.Fatalf("resumed Step = %q, %v", v, err)
 			}
 		})
@@ -163,7 +151,8 @@ func TestJournalVersionError(t *testing.T) {
 func TestJournal_RedactedRecord(t *testing.T) {
 	ctx := context.Background()
 	m := NewMemStore()
-	if _, err := m.Do(ctx, "r", "secret", func(context.Context) (Record, error) {
+	j := mustJournal(m)
+	if _, err := j.do(ctx, "r", "secret", func(context.Context) (Record, error) {
 		return Record{Kind: StepValue, Result: json.RawMessage(`"pii"`)}, nil
 	}); err != nil {
 		t.Fatal(err)
@@ -173,50 +162,17 @@ func TestJournal_RedactedRecord(t *testing.T) {
 	rn := m.runs["r"]
 	rn.entries[rn.byName["secret"]].Data = tomb
 	m.mu.Unlock()
-	rec, ok, err := m.Journal().Get(ctx, "r", "secret")
+	rec, ok, err := j.Get(ctx, "r", "secret")
 	if err != nil || !ok || !rec.Redacted || rec.Name != "secret" || rec.Result != nil || string(rec.Raw()) != string(tomb) {
 		t.Fatalf("Get of a tombstone = %+v, %v, %v", rec, ok, err)
 	}
-	if _, err := New(NewScriptedModel(), m).Run(ctx, "r", "hi"); !errors.Is(err, ErrConfig) || !strings.Contains(err.Error(), "redacted") {
+	if _, err := mustNew(NewScriptedModel(), j).Run(ctx, "r", UserText("hi")); !errors.Is(err, ErrConfig) || !strings.Contains(err.Error(), "redacted") {
 		t.Fatalf("Run over a redacted run = %v, want ErrConfig naming the redaction", err)
 	}
 	for _, b := range []string{`{"redacted":{"at_ms":1}}`, `{"redacted":{"leaf_hash":"ab"},"x":1}`, `{"name":"x","redacted":{"leaf_hash":"ab"}}`} {
 		if isTombstone([]byte(b)) {
 			t.Errorf("%s reads as a tombstone", b)
 		}
-	}
-}
-
-// embedsMemStore is a test wrapper that embeds a MemStore and intercepts Do, as the crash-injecting
-// stores in this package's tests do.
-type embedsMemStore struct {
-	*MemStore
-	dos int
-}
-
-func (e *embedsMemStore) Do(ctx context.Context, runID, name string, fn func(context.Context) (Record, error)) (Record, error) {
-	e.dos++
-	return e.MemStore.Do(ctx, runID, name, fn)
-}
-
-// The engine writes through a store's Journal only when the Durable is that store: a wrapper that
-// embeds a store gets the embedded store's Journal() method, but that Journal writes past the
-// wrapper, so the engine keeps using the wrapper's own Do.
-func TestJournalOf_KeepsAWrappersDo(t *testing.T) {
-	m := NewMemStore()
-	if journalOf(m) != m.Journal() {
-		t.Fatal("journalOf(MemStore) is not its Journal")
-	}
-	j, _ := NewJournal(m)
-	if journalOf(j) != j {
-		t.Fatal("journalOf(Journal) is not the Journal")
-	}
-	w := &embedsMemStore{MemStore: m}
-	if journalOf(w) != nil {
-		t.Fatal("journalOf found the embedded store's Journal for a wrapper that intercepts Do")
-	}
-	if _, _, err := ClaimAttempt(context.Background(), w, "r", "attempt:x", Record{Kind: StepAttempt}); err != nil || w.dos != 1 {
-		t.Fatalf("ClaimAttempt through the wrapper = %v, with %d calls to its Do; want it to go through Do", err, w.dos)
 	}
 }
 
@@ -359,20 +315,21 @@ func (c *capturingModel) Stream(ctx context.Context, req Request) (*Stream, erro
 func TestLiveToolResult_LosingInsertUsesTheStoredResult(t *testing.T) {
 	ctx := context.Background()
 	m := NewMemStore()
+	j2 := mustJournal(m)
 	theirs, err := JournalEntry(ToolResultStep("c1"), Record{Kind: StepToolResult, ToolUseID: "c1", Result: json.RawMessage(`"theirs"`)})
 	if err != nil {
 		t.Fatal(err)
 	}
 	j, _ := NewJournal(&racedStore{Store: m, name: ToolResultStep("c1"), them: theirs})
 	model := &capturingModel{Model: NewScriptedModel(ToolTurn("c1", "lookup", `{}`), TextTurn("done"))}
-	tool := Func("lookup", "", Safety{ReadOnly: true}, func(context.Context, struct{}) (string, error) { return "mine", nil })
-	if _, err := New(model, j, tool).Run(ctx, "r", "hi"); err != nil {
+	tool := MustFunc("lookup", "", func(context.Context, struct{}) (string, error) { return "mine", nil }, WithSafety(Safety{ReadOnly: true}))
+	if _, err := mustNew(model, j, WithTools(tool)).Run(ctx, "r", UserText("hi")); err != nil {
 		t.Fatal(err)
 	}
 	if len(model.seen) != 1 || model.seen[0] != `"theirs"` {
 		t.Fatalf("the model read tool results %q; want only the stored \"theirs\"", model.seen)
 	}
-	rec, ok, err := m.Journal().Get(ctx, "r", ToolResultStep("c1"))
+	rec, ok, err := j2.Get(ctx, "r", ToolResultStep("c1"))
 	if err != nil || !ok || string(rec.Result) != `"theirs"` {
 		t.Fatalf("the journal holds %s, %v, %v; want \"theirs\"", rec.Result, ok, err)
 	}
@@ -398,17 +355,18 @@ func TestRunSet_ForgetsTheLeastRecentlyUsed(t *testing.T) {
 func TestReaders_RefuseAnUnreadableRun(t *testing.T) {
 	ctx := context.Background()
 	m := NewMemStore()
+	j := mustJournal(m)
 	if _, _, err := m.Insert(ctx, "old", runCompleteStep, []byte(`{"name":"run:complete","kind":"value"}`)); err != nil {
 		t.Fatal(err)
 	}
 	var v *JournalVersionError
-	if _, ok, err := RecordedStart(ctx, m, "old"); !errors.As(err, &v) || ok {
+	if _, ok, err := RecordedStart(ctx, j, "old"); !errors.As(err, &v) || ok {
 		t.Errorf("RecordedStart = %v, %v; want a *JournalVersionError", ok, err)
 	}
-	if done, err := IsComplete(ctx, m, "old"); !errors.As(err, &v) || done {
+	if done, err := IsComplete(ctx, j, "old"); !errors.As(err, &v) || done {
 		t.Errorf("IsComplete = %v, %v; want a *JournalVersionError", done, err)
 	}
-	if held, err := hasValueStep(ctx, m, "old", runAbortedStep); !errors.As(err, &v) || held {
+	if held, err := hasValueStep(ctx, j, "old", runAbortedStep); !errors.As(err, &v) || held {
 		t.Errorf("hasValueStep = %v, %v; want a *JournalVersionError", held, err)
 	}
 }

@@ -1,6 +1,6 @@
 # Model Context Protocol integration
 
-The `mcp` package adapts a **Model Context Protocol** server's tools into `agent.Tool`.
+The `mcptools` package (`github.com/bide-ai/bide/mcptools`) adapts a **Model Context Protocol** server's tools into `agent.Tool`.
 Your agent is the MCP client/host; an MCP server is a *runtime* source of tools whose
 schemas are only known at connect time. `Tools()` lists a connected session's tools and
 wraps each one so the agent core can call it like any native tool. It is built on the
@@ -23,7 +23,7 @@ session into agent tools.
   pagination cursor in full so a server that splits its tools across several pages is never
   silently truncated, and wraps every one. Because an MCP tool's schema is only known at
   connect time, each wrapped tool follows the untyped `json.RawMessage` path rather than a Go
-  struct: `ArgsSchema()` returns the server's `InputSchema` as raw JSON for the `schema`
+  struct: its `Spec().Input` is the server's `InputSchema` as raw JSON for the `schema`
   package to dialectize per provider.
 - **Refuse a malformed tool list.** The server's tool list is untrusted input. `Tools` fails
   with an error wrapping `agent.ErrProtocol` if a tool's name is outside the MCP grammar (1 to
@@ -32,13 +32,11 @@ session into agent tools.
   not a JSON Schema object of type `"object"`. The MCP grammar is wider than the providers':
   Anthropic and OpenAI accept `^[a-zA-Z0-9_-]{1,64}$` (no dots or colons, at most 64
   characters), and Gemini accepts `^[a-zA-Z_][a-zA-Z0-9_.:-]{0,63}$`. Each bundled adapter
-  declares its rule (`agent.ToolRules`), so `agent.Build` and `Agent.With` refuse, with
+  declares its rule (`agent.ToolRules`), so `agent.New` and `Agent.With` refuse, with
   `agent.ErrConfig` naming the tool, a name the agent's model cannot take: a dotted name builds
-  for Gemini and is refused for OpenAI or Anthropic. With the transitional `agent.New`, such a
-  name fails the run with `agent.ErrConfig` naming the tool, before any request is sent. A server tool named like one of your own tools
-  (or like a tool from another server) does not replace it: `agent.New` records the clash and
-  every run of that agent fails with `agent.ErrConfig`, so the model's call never reaches the
-  wrong tool.
+  for Gemini and is refused for OpenAI or Anthropic. A server tool named like one of your own tools
+  (or like a tool from another server) does not replace it: `agent.New` refuses the clash with
+  `agent.ErrConfig`, so the model's call never reaches the wrong tool.
 - **Give each tool an `agent.Safety`.** Every MCP-sourced tool gets side-effect-safe
   durable resume. By default each is treated as a side effect; for a server you trust, its
   annotations decide.
@@ -55,10 +53,10 @@ For a server you trust to label its tools, pass `TrustAnnotations()`:
 
 <!-- docsnip: setup ctx context.Context; import mcpsdk "github.com/modelcontextprotocol/go-sdk/mcp"; session *mcpsdk.ClientSession -->
 ```go
-tools, err := mcp.Tools(ctx, session, mcp.TrustAnnotations())
+tools, err := mcptools.Tools(ctx, session, mcptools.TrustAnnotations())
 ```
 
-`Safety()` then derives `agent.Safety` from the MCP tool's `Annotations` block:
+Each tool's `Spec().Safety` is then derived from the MCP tool's `Annotations` block:
 
 | MCP annotation | Derived `agent.Safety` | Resume behavior |
 |---|---|---|
@@ -76,10 +74,10 @@ invalid policy fails `Tools` with `agent.ErrConfig`:
 
 <!-- docsnip: setup ctx context.Context; import mcpsdk "github.com/modelcontextprotocol/go-sdk/mcp"; session *mcpsdk.ClientSession -->
 ```go
-tools, err := mcp.Tools(ctx, session,
-	mcp.WithApproval("transfer", agent.SingleApproval()),
-	mcp.WithApproval("wire", &agent.ApprovalPolicy{Need: 2, Approvers: []string{"alice", "bob", "carol"}}),
-	mcp.WithSafety("search", agent.Safety{ReadOnly: true}), // retry-safe on your word, not the server's
+tools, err := mcptools.Tools(ctx, session,
+	mcptools.WithApproval("transfer", agent.SingleApproval()),
+	mcptools.WithApproval("wire", &agent.ApprovalPolicy{Need: 2, Approvers: []string{"alice", "bob", "carol"}}),
+	mcptools.WithSafety("search", agent.Safety{ReadOnly: true}), // retry-safe on your word, not the server's
 )
 ```
 
@@ -88,7 +86,7 @@ with `agent.Approve` (or `agent.SubmitDecision` for a quorum) and run it again. 
 `agent.ErrConfig` if the server does not list a tool you named (with either option), so a misspelt
 gate never leaves the real tool ungated.
 
-Each tool's `agent.ToolSpec` (see `agent.SpecOf`) carries the rest of what the server lists: `Title`
+Each tool's `agent.ToolSpec` (its `Spec()`) carries the rest of what the server lists: `Title`
 is the tool's `title`, or its annotations' title if that is empty; `Output` is its `outputSchema`
 (a declared output schema that is not an object schema fails `Tools` with `agent.ErrProtocol`, as
 an input schema does); `Timeout` is the `WithCallTimeout` value.
@@ -140,7 +138,7 @@ a JSON-RPC error from the server, and a call on a session already closed. Every 
 failure counts as an unknown outcome. That includes a streamable HTTP server that cannot be
 dialled at all: the SDK does not report a refused connection distinctly from one that dropped
 mid-request, so a side effect whose server is down halts the run for confirmation instead of
-failing outright. Confirm with `agent.ResolveHaltRef` once you know the call did not reach the
+failing outright. Confirm with `agent.ResolveHalt` once you know the call did not reach the
 server.
 
 ## Optional client capabilities
@@ -171,7 +169,7 @@ default `Connect(ctx, transport)` behaves exactly as before.
 
 ## Exported API
 
-<!-- docsnip: api github.com/bide-ai/bide/mcp; import mcp "github.com/modelcontextprotocol/go-sdk/mcp" -->
+<!-- docsnip: api github.com/bide-ai/bide/mcptools; import mcp "github.com/modelcontextprotocol/go-sdk/mcp" -->
 ```go
 // Connect builds a client and opens a session on the given transport. Options
 // wire optional client capabilities (elicitation, tools-list-changed, client info).
@@ -240,7 +238,7 @@ import (
 	sdkmcp "github.com/modelcontextprotocol/go-sdk/mcp"
 
 	"github.com/bide-ai/bide/agent"
-	"github.com/bide-ai/bide/mcp"
+	"github.com/bide-ai/bide/mcptools"
 	"github.com/bide-ai/bide/model/anthropic"
 )
 
@@ -269,26 +267,33 @@ func main() {
 	defer serverSession.Close()
 
 	// Connect as the MCP client and discover its tools at runtime.
-	session, err := mcp.Connect(ctx, clientT)
+	session, err := mcptools.Connect(ctx, clientT)
 	if err != nil {
 		log.Fatal(err)
 	}
 	defer session.Close()
 
-	tools, err := mcp.Tools(ctx, session, mcp.TrustAnnotations()) // our own in-memory server
+	tools, err := mcptools.Tools(ctx, session, mcptools.TrustAnnotations()) // our own in-memory server
 	if err != nil {
 		log.Fatal(err)
 	}
 
 	// The discovered MCP tools are plain agent.Tool values now. The echo tool's
 	// readOnlyHint became Safety{ReadOnly: true}, so it is retry-safe on resume.
-	a := agent.New(anthropic.New("sk-..."), agent.NewMemStore(), tools...)
-
-	msg, err := a.Run(ctx, "run-1", "Echo the word hello.")
+	j, err := agent.NewJournal(agent.NewMemStore())
 	if err != nil {
 		log.Fatal(err)
 	}
-	log.Println(msg.Text())
+	a, err := agent.New(anthropic.New("sk-..."), j, agent.WithTools(tools...))
+	if err != nil {
+		log.Fatal(err)
+	}
+
+	res, err := a.Run(ctx, "run-1", agent.UserText("Echo the word hello."))
+	if err != nil {
+		log.Fatal(err)
+	}
+	log.Println(res.Message.Text())
 }
 ```
 

@@ -18,6 +18,8 @@ import (
 	"slices"
 	"sort"
 	"strings"
+
+	"github.com/bide-ai/bide/internal/tools/docsnip/snip"
 )
 
 // Finding is one problem with the docs, reported as "file:line: message".
@@ -35,7 +37,7 @@ type Report struct {
 	Unique   int // distinct blocks (identical setup and code compile once)
 	Checked  int // distinct blocks compiled
 	Skipped  int // distinct blocks with a skip directive
-	Kinds    map[Kind]int
+	Kinds    map[snip.Kind]int
 	Status   map[string]string // "file:line" of each block -> how it was compiled, or its skip
 	Findings []Finding
 }
@@ -65,57 +67,11 @@ func NewChecker(root string) (*Checker, error) {
 		exports: map[string]string{},
 		loadErr: map[string]string{},
 	}
-	ver, err := c.goCmd("list", "-m", "-f", "{{.Path}} {{.GoVersion}}")
+	names, goVer, err := snip.PackageNames(root)
 	if err != nil {
 		return nil, err
 	}
-	var modules []string
-	for _, line := range strings.Split(strings.TrimSpace(string(ver)), "\n") {
-		path, gv, _ := strings.Cut(line, " ")
-		modules = append(modules, path+"/...")
-		if gv != "" && c.goVer == "" {
-			c.goVer = "go" + goMinor(gv)
-		}
-	}
-	out, err := c.goCmd(append([]string{"list", "-e", "-f", "{{.ImportPath}} {{.Name}} {{.Standard}}", "std"}, modules...)...)
-	if err != nil {
-		return nil, err
-	}
-	type cand struct {
-		path string
-		std  bool
-	}
-	byName := map[string][]cand{}
-	for _, line := range strings.Split(strings.TrimSpace(string(out)), "\n") {
-		f := strings.Fields(line)
-		if len(f) != 3 || f[1] == "main" || !importable(f[0]) {
-			continue
-		}
-		byName[f[1]] = append(byName[f[1]], cand{f[0], f[2] == "true"})
-	}
-	for name, cs := range byName {
-		var mod, std []string
-		for _, x := range cs {
-			if x.std {
-				std = append(std, x.path)
-			} else {
-				mod = append(mod, x.path)
-			}
-		}
-		switch {
-		case len(mod) == 1:
-			c.names[name] = mod[0]
-		case len(mod) > 1:
-			c.names[name] = ""
-		default:
-			sort.Slice(std, func(i, j int) bool { return strings.Count(std[i], "/") < strings.Count(std[j], "/") })
-			if len(std) > 1 && strings.Count(std[0], "/") == strings.Count(std[1], "/") {
-				c.names[name] = ""
-			} else {
-				c.names[name] = std[0]
-			}
-		}
-	}
+	c.names, c.goVer = names, goVer
 	c.imp = importer.ForCompiler(c.fset, "gc", func(path string) (io.ReadCloser, error) {
 		if f := c.exports[path]; f != "" {
 			return os.Open(f)
@@ -126,24 +82,6 @@ func NewChecker(root string) (*Checker, error) {
 		return nil, fmt.Errorf("package %s was not loaded", path)
 	})
 	return c, nil
-}
-
-// goMinor turns "1.27.0" into "1.27".
-func goMinor(v string) string {
-	parts := strings.Split(v, ".")
-	if len(parts) > 2 {
-		parts = parts[:2]
-	}
-	return strings.Join(parts, ".")
-}
-
-func importable(path string) bool {
-	for _, el := range strings.Split(path, "/") {
-		if el == "internal" || el == "vendor" || el == "testdata" || el == "cmd" || el == "examples" {
-			return false
-		}
-	}
-	return true
 }
 
 func (c *Checker) goCmd(args ...string) ([]byte, error) {
@@ -210,18 +148,18 @@ func (c *Checker) load(paths []string) error {
 }
 
 type entry struct {
-	blocks []Block // identical blocks; the first is reported
-	setup  Setup
+	blocks []snip.Block // identical blocks; the first is reported
+	setup  snip.Setup
 }
 
 // setupFor parses a block's setup or api directive.
-func (c *Checker) setupFor(b Block) (Setup, error) {
+func (c *Checker) setupFor(b snip.Block) (snip.Setup, error) {
 	if b.Dir == nil {
-		return Setup{}, nil
+		return snip.Setup{}, nil
 	}
 	switch b.Dir.Kind {
 	case "setup":
-		return ParseSetup(b.Dir.Arg)
+		return snip.ParseSetup(b.Dir.Arg)
 	case "api":
 		name, items, _ := strings.Cut(b.Dir.Arg, ";")
 		name = strings.TrimSpace(name)
@@ -230,23 +168,23 @@ func (c *Checker) setupFor(b Block) (Setup, error) {
 			path = c.names[path]
 		}
 		if path == "" {
-			return Setup{}, fmt.Errorf("api %s: not a known package name or import path", name)
+			return snip.Setup{}, fmt.Errorf("api %s: not a known package name or import path", name)
 		}
-		s, err := ParseSetup(items)
+		s, err := snip.ParseSetup(items)
 		if err != nil {
-			return Setup{}, err
+			return snip.Setup{}, err
 		}
 		s.API = path
 		s.Imports = append([]string{fmt.Sprintf(". %q", path)}, s.Imports...)
 		return s, nil
 	}
-	return Setup{}, nil
+	return snip.Setup{}, nil
 }
 
 // Check type-checks every block and reports what does not compile, and every skip directive
 // on a block that compiles.
-func (c *Checker) Check(blocks []Block) (*Report, error) {
-	r := &Report{Blocks: len(blocks), Kinds: map[Kind]int{}, Status: map[string]string{}}
+func (c *Checker) Check(blocks []snip.Block) (*Report, error) {
+	r := &Report{Blocks: len(blocks), Kinds: map[snip.Kind]int{}, Status: map[string]string{}}
 	var (
 		order   []string
 		entries = map[string]*entry{}
@@ -262,7 +200,7 @@ func (c *Checker) Check(blocks []Block) (*Report, error) {
 			e.blocks = append(e.blocks, b)
 			continue
 		}
-		e := &entry{blocks: []Block{b}}
+		e := &entry{blocks: []snip.Block{b}}
 		entries[key] = e
 		setup, err := c.setupFor(b)
 		if err != nil {
@@ -278,7 +216,7 @@ func (c *Checker) Check(blocks []Block) (*Report, error) {
 	var paths []string
 	for _, key := range order {
 		e := entries[key]
-		u, err := Synthesize(c.fset, e.blocks[0], e.setup, nil)
+		u, err := snip.Synthesize(c.fset, e.blocks[0], e.setup, nil)
 		if err != nil {
 			continue
 		}
@@ -334,7 +272,7 @@ func (c *Checker) Check(blocks []Block) (*Report, error) {
 	return r, nil
 }
 
-func also(blocks []Block) string {
+func also(blocks []snip.Block) string {
 	if len(blocks) < 2 {
 		return ""
 	}
@@ -390,10 +328,10 @@ func selectorOperands(f *ast.File) map[string]bool {
 // imported automatically (see NewChecker). Unused variables and imports are allowed in
 // declaration and statement blocks, which are excerpts, as is an expression statement whose
 // value is unused (a block listing values); complete files must compile as they are. A block that does not parse, or has a type error, yields findings.
-func (c *Checker) checkBlock(b Block, setup Setup) (Kind, []Finding, error) {
+func (c *Checker) checkBlock(b snip.Block, setup snip.Setup) (snip.Kind, []Finding, error) {
 	auto := map[string]string{}
 	for {
-		u, err := Synthesize(c.fset, b, setup, auto)
+		u, err := snip.Synthesize(c.fset, b, setup, auto)
 		if err != nil {
 			return "", parseFindings(b, err), nil
 		}
@@ -403,14 +341,14 @@ func (c *Checker) checkBlock(b Block, setup Setup) (Kind, []Finding, error) {
 			info     = &types.Info{Defs: map[*ast.Ident]types.Object{}}
 		)
 		if setup.API != "" {
-			if u.Kind != KindDecls {
+			if u.Kind != snip.KindDecls {
 				return u.Kind, []Finding{{b.File, b.Dir.Line, "an api block must hold declarations (functions without bodies, types, vars, consts)"}}, nil
 			}
 			if apiPkg, err = c.imp.Import(setup.API); err != nil {
 				return u.Kind, []Finding{{b.File, b.Dir.Line, fmt.Sprintf("api package %s: %v", setup.API, err)}}, nil
 			}
 			var bad []string
-			u.Kind = KindAPI
+			u.Kind = snip.KindAPI
 			apiDecls, bad = prepareAPI(u.File)
 			if len(bad) > 0 {
 				return u.Kind, []Finding{{b.File, b.Line, fmt.Sprintf("an api block lists declarations; func %s has a body", strings.Join(bad, ", "))}}, nil
@@ -425,7 +363,7 @@ func (c *Checker) checkBlock(b Block, setup Setup) (Kind, []Finding, error) {
 		conf.Check("docsnip", c.fset, []*ast.File{u.File}, info)
 
 		added := false
-		if u.Kind != KindProgram && u.Kind != KindFile {
+		if u.Kind != snip.KindProgram && u.Kind != snip.KindFile {
 			qualifiers := selectorOperands(u.File)
 			for _, te := range terrs {
 				m := undefinedName.FindStringSubmatch(te.Msg)
@@ -450,11 +388,11 @@ func (c *Checker) checkBlock(b Block, setup Setup) (Kind, []Finding, error) {
 		seen := map[string]bool{}
 		for _, te := range terrs {
 			pos := c.fset.Position(te.Pos)
-			if u.Kind != KindProgram && u.Kind != KindFile {
+			if u.Kind != snip.KindProgram && u.Kind != snip.KindFile {
 				if unusedRe.MatchString(te.Msg) {
 					continue
 				}
-				if pos.Filename == wrapperFile && strings.HasPrefix(te.Msg, "missing return") {
+				if pos.Filename == snip.WrapperFile && strings.HasPrefix(te.Msg, "missing return") {
 					continue // a statement block may end before its function does
 				}
 				if setup.API != "" && strings.HasSuffix(te.Msg, "missing function body") {
@@ -467,7 +405,7 @@ func (c *Checker) checkBlock(b Block, setup Setup) (Kind, []Finding, error) {
 					msg += fmt.Sprintf(" (the package name %s is ambiguous; import it in a setup directive)", m[1])
 				}
 			}
-			f := b.locate(pos, msg)
+			f := locate(b, pos, msg)
 			if k := f.String(); !seen[k] {
 				seen[k] = true
 				out = append(out, f)
@@ -486,25 +424,37 @@ func (c *Checker) checkBlock(b Block, setup Setup) (Kind, []Finding, error) {
 		}
 		if apiPkg != nil {
 			out = append(out, compareAPI(apiPkg, info, apiDecls, func(p token.Pos) Finding {
-				return b.locate(c.fset.Position(p), "")
+				return locate(b, c.fset.Position(p), "")
 			})...)
 		}
 		return u.Kind, out, nil
 	}
 }
 
-func parseFindings(b Block, err error) []Finding {
+func parseFindings(b snip.Block, err error) []Finding {
 	var list scanner.ErrorList
 	if errors.As(err, &list) {
 		var out []Finding
 		for _, e := range list {
-			out = append(out, b.locate(e.Pos, "syntax error: "+e.Msg))
+			out = append(out, locate(b, e.Pos, "syntax error: "+e.Msg))
 		}
 		return out
 	}
-	var be *BlockError
+	var be *snip.BlockError
 	if errors.As(err, &be) {
 		return []Finding{{b.File, be.Line, be.Msg}}
 	}
 	return []Finding{{b.File, b.Line, err.Error()}}
+}
+
+// locate maps a position in a synthesized file to the markdown: into the block, onto its
+// directive for code from a setup, and onto the block's first line for any other added code.
+func locate(b snip.Block, pos token.Position, msg string) Finding {
+	switch {
+	case pos.Filename == b.File:
+		return Finding{b.File, pos.Line, msg}
+	case pos.Filename == snip.SetupFile && b.Dir != nil:
+		return Finding{b.File, b.Dir.Line, "setup: " + msg}
+	}
+	return Finding{b.File, b.Line, msg}
 }

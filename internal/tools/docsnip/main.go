@@ -26,7 +26,7 @@
 // An HTML comment directly above a block (blank lines may separate them) annotates it; it does
 // not show when the markdown is rendered:
 //
-//	<!-- docsnip: setup a *agent.Agent; store agent.Durable -->
+//	<!-- docsnip: setup a *agent.Agent; journal *agent.Journal -->
 //	<!-- docsnip: api agent -->
 //	<!-- docsnip: skip illustrative pseudo-code -->
 //
@@ -60,6 +60,8 @@ import (
 	"path/filepath"
 	"sort"
 	"strings"
+
+	"github.com/bide-ai/bide/internal/tools/docsnip/snip"
 )
 
 func main() {
@@ -83,7 +85,7 @@ func run(args []string, stdout, stderr io.Writer) int {
 		fmt.Fprintf(stderr, "docsnip: %v\n", err)
 		return 2
 	}
-	var blocks []Block
+	var blocks []snip.Block
 	var findings []Finding
 	for _, f := range files {
 		data, err := os.ReadFile(filepath.Join(*root, f))
@@ -91,7 +93,7 @@ func run(args []string, stdout, stderr io.Writer) int {
 			fmt.Fprintf(stderr, "docsnip: %v\n", err)
 			return 2
 		}
-		bs, err := Extract(f, data)
+		bs, err := snip.Extract(f, data)
 		if err != nil {
 			findings = append(findings, Finding{Msg: err.Error()})
 			continue
@@ -121,7 +123,7 @@ func run(args []string, stdout, stderr io.Writer) int {
 		fmt.Fprintln(stdout, f)
 	}
 	var kinds []string
-	for _, k := range []Kind{KindProgram, KindFile, KindDecls, KindStmts, KindMixed, KindAPI} {
+	for _, k := range []snip.Kind{snip.KindProgram, snip.KindFile, snip.KindDecls, snip.KindStmts, snip.KindMixed, snip.KindAPI} {
 		if n := r.Kinds[k]; n > 0 {
 			kinds = append(kinds, fmt.Sprintf("%s %d", k, n))
 		}

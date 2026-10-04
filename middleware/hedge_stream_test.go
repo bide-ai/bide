@@ -7,6 +7,7 @@ import (
 	"time"
 
 	"github.com/bide-ai/bide/agent"
+	"github.com/bide-ai/bide/agent/agenttest"
 	"github.com/bide-ai/bide/middleware"
 )
 
@@ -32,7 +33,7 @@ func (lateStreamer) Stream(context.Context, agent.Request) (*agent.Stream, error
 
 // render ranges a stream as a UI does: it appends each text delta and clears the text on
 // agent.TurnRestarted, which retracts what the turn streamed so far.
-func render(as *agent.AgentStream) string {
+func render(as *agent.RunStream) string {
 	var b strings.Builder
 	for ev := range as.Events() {
 		switch e := ev.(type) {
@@ -52,14 +53,15 @@ func render(as *agent.AgentStream) string {
 // then keeps producing deltas after the run has finished and its event stream has closed.
 func TestHedge_StreamShowsOnlyTheWinner(t *testing.T) {
 	backup := &stubModel{text: "backup", delay: 5 * time.Millisecond}
-	a := agent.New(lateStreamer{}, agent.NewMemStore()).Use(middleware.Hedge(0, backup))
+	a := agenttest.MustNew(lateStreamer{}, agenttest.MemJournal(), agent.WithMiddleware(middleware.Hedge(0, backup)))
 
-	as := a.Stream(context.Background(), "r1", "hi")
+	as := a.Stream(context.Background(), "r1", agent.UserText("hi"))
 	streamed := render(as)
-	final, err := as.Final()
+	res, err := as.Result()
 	if err != nil {
 		t.Fatalf("Final: %v", err)
 	}
+	final := res.Message
 
 	// Give the losing primary time to produce its late deltas. Before the fix, its next delta
 	// was sent on the closed event channel, which panics and takes down the process.
@@ -101,14 +103,15 @@ func (earlyStreamer) Stream(ctx context.Context, _ agent.Request) (*agent.Stream
 // not be what the run recorded.
 func TestHedge_StreamMatchesRecordedAnswer(t *testing.T) {
 	backup := &stubModel{text: "backup", delay: 20 * time.Millisecond}
-	a := agent.New(earlyStreamer{}, agent.NewMemStore()).Use(middleware.Hedge(0, backup))
+	a := agenttest.MustNew(earlyStreamer{}, agenttest.MemJournal(), agent.WithMiddleware(middleware.Hedge(0, backup)))
 
-	as := a.Stream(context.Background(), "r1", "hi")
+	as := a.Stream(context.Background(), "r1", agent.UserText("hi"))
 	streamed := render(as)
-	final, err := as.Final()
+	res, err := as.Result()
 	if err != nil {
 		t.Fatalf("Final: %v", err)
 	}
+	final := res.Message
 	var recorded strings.Builder
 	for _, p := range final.Parts {
 		if tx, ok := p.(agent.Text); ok {
@@ -135,10 +138,10 @@ func (m meteredStub) Stream(context.Context, agent.Request) (*agent.Stream, erro
 // usage the run records for the call, as a live stream does.
 func TestHedge_StreamedFinishCarriesWinnerUsage(t *testing.T) {
 	u := agent.Usage{InputTokens: 30, OutputTokens: 7, CacheReadTokens: 5}
-	store := agent.NewMemStore()
-	a := agent.New(earlyStreamer{}, store).Use(middleware.Hedge(0, meteredStub{u: u}))
+	store := agenttest.MemJournal()
+	a := agenttest.MustNew(earlyStreamer{}, store, agent.WithMiddleware(middleware.Hedge(0, meteredStub{u: u})))
 
-	as := a.Stream(context.Background(), "r1", "hi")
+	as := a.Stream(context.Background(), "r1", agent.UserText("hi"))
 	var finishes []agent.Finish
 	for ev := range as.Events() {
 		if me, ok := ev.(agent.ModelEvent); ok {
@@ -147,7 +150,7 @@ func TestHedge_StreamedFinishCarriesWinnerUsage(t *testing.T) {
 			}
 		}
 	}
-	if _, err := as.Final(); err != nil {
+	if _, err := as.Result(); err != nil {
 		t.Fatalf("Final: %v", err)
 	}
 	recs, err := store.History(context.Background(), "r1")

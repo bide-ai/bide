@@ -21,6 +21,7 @@ import (
 	"time"
 
 	"github.com/bide-ai/bide/agent"
+	"github.com/bide-ai/bide/agent/agenttest"
 )
 
 type cDrvKey struct{}
@@ -546,7 +547,7 @@ func cSubjects() []cSubject {
 			if rs {
 				opts = append(opts, agent.WithSafety(agent.Safety{Idempotent: true}))
 			}
-			return agent.Step(ctx, j, runID, "pay", p.fire, opts...)
+			return j.Step(ctx, runID, "pay", p.fire, opts...)
 		}
 	}
 	tool := func(rs bool) func(ctx context.Context, p *cProc, runID string) (string, error) {
@@ -555,9 +556,13 @@ func cSubjects() []cSubject {
 			if err != nil {
 				return "", err
 			}
-			charge := agent.Func("charge", "", agent.Safety{Idempotent: rs}, func(ctx context.Context, _ struct{}) (string, error) { return p.fire(ctx) })
-			m := agent.NewScriptedModel(agent.ToolTurn("c1", "charge", `{}`), agent.TextTurn("done"))
-			msg, err := agent.New(m, j, charge).SetMaxConcurrency(1).Run(ctx, runID, "hi")
+			charge := agent.MustFunc("charge", "", func(ctx context.Context, _ struct{}) (string, error) { return p.fire(ctx) }, agent.WithSafety(agent.Safety{Idempotent: rs}))
+			m := agenttest.NewScriptedModel(agenttest.ToolTurn("c1", "charge", `{}`), agenttest.TextTurn("done"))
+			res, err := agenttest.MustNew(m, j, agent.WithTools(charge), agent.WithMaxConcurrency(1)).Run(ctx, runID, agent.UserText("hi"))
+			var msg agent.Message
+			if res != nil {
+				msg = res.Message
+			}
 			return msg.Text(), err
 		}
 	}
@@ -646,7 +651,7 @@ func cRun(sub cSubject, topo, p2 int, ex *hExplorer, maxPre int) (viol []hViolat
 	sameHalted := false
 	if !p3.crashed.Load() {
 		sc.run(map[int]func(){4: drive(4, p3)})
-		var hl *agent.ResumeHalt
+		var hl *agent.OutcomeUnknown
 		sameHalted = errors.As(out[4].err, &hl)
 	}
 	sc.run(map[int]func(){5: drive(5, &cProc{h: h})})
@@ -703,7 +708,7 @@ func cRun(sub cSubject, topo, p2 int, ex *hExplorer, maxPre int) (viol []hViolat
 		}
 	}
 	final := out[5]
-	var halt *agent.ResumeHalt
+	var halt *agent.OutcomeUnknown
 	if errors.As(final.err, &halt) {
 		if sub.retrySafe {
 			add("I4-retrysafe-halts", "%v", final.err)

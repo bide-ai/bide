@@ -46,13 +46,14 @@ func (l *blockingRenewLeaser) ReleaseLease(ctx context.Context, runID, holder st
 func TestLease_RenewerStopsBeforeRelease(t *testing.T) {
 	synctest.Test(t, func(t *testing.T) {
 		s := &blockingRenewLeaser{MemStore: NewMemStore(), entered: make(chan struct{})}
+		j := mustJournal(s)
 		const ttl = 400 * time.Millisecond
 		start := time.Now()
 		// The renewal starts at ttl/2 and hangs; the drive ends as soon as it has started, well
 		// before the renewal cutoff (3/4 of the TTL) would abandon it, so only stopping the
 		// renewer ends it. A renewer that nothing stops leaves the bubble deadlocked, which
 		// synctest reports as a failure.
-		driven, err := Lease(context.Background(), s, "r", func(context.Context) error {
+		driven, err := Lease(context.Background(), j, "r", func(context.Context) error {
 			<-s.entered
 			return nil
 		}, WithLeaseHolder("a"), WithLeaseTTL(ttl))

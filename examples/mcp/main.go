@@ -21,7 +21,7 @@ import (
 	sdkmcp "github.com/modelcontextprotocol/go-sdk/mcp"
 
 	"github.com/bide-ai/bide/agent"
-	"github.com/bide-ai/bide/mcp"
+	"github.com/bide-ai/bide/mcptools"
 )
 
 // scriptModel calls the discovered "echo" tool once, then answers in text on the next turn,
@@ -67,28 +67,36 @@ func main() {
 	defer serverSession.Close()
 
 	// Connect as the MCP client and discover its tools at runtime.
-	session, err := mcp.Connect(ctx, clientT)
+	session, err := mcptools.Connect(ctx, clientT)
 	if err != nil {
 		log.Fatal(err)
 	}
 	defer session.Close()
 
-	tools, err := mcp.Tools(ctx, session, mcp.TrustAnnotations()) // our own server: trust its labels
+	tools, err := mcptools.Tools(ctx, session, mcptools.TrustAnnotations()) // our own server: trust its labels
 	if err != nil {
 		log.Fatal(err)
 	}
 	fmt.Printf("discovered %d MCP tool(s):\n", len(tools))
 	for _, t := range tools {
 		// The echo tool's readOnlyHint became Safety{ReadOnly: true}, so it is retry-safe.
-		fmt.Printf("  %s: readOnly=%v\n", t.Name(), t.Safety().ReadOnly)
+		fmt.Printf("  %s: readOnly=%v\n", t.Spec().Name, t.Spec().Safety.ReadOnly)
 	}
 
 	// The discovered MCP tools are plain agent.Tool values now; the session must stay open
 	// for their lifetime because they call back through it.
-	a := agent.New(&scriptModel{}, agent.NewMemStore(), tools...)
-	out, err := a.Run(ctx, "mcp-1", "Echo the word hello.")
+	j, err := agent.NewJournal(agent.NewMemStore())
 	if err != nil {
 		log.Fatal(err)
 	}
+	a, err := agent.New(&scriptModel{}, j, agent.WithTools(tools...))
+	if err != nil {
+		log.Fatal(err)
+	}
+	res, err := a.Run(ctx, "mcp-1", agent.UserText("Echo the word hello."))
+	if err != nil {
+		log.Fatal(err)
+	}
+	out := res.Message
 	fmt.Printf("final answer: %s\n", out.Text())
 }

@@ -1,6 +1,6 @@
 // Command streaming shows Agent.Stream: range the lifecycle Events to render progress
 // (token deltas, turn boundaries, tool start/finish) while the durable loop runs
-// underneath, then call Final for the terminal answer. Run is literally Stream(...).Final().
+// underneath, then call Result for the terminal answer, which is what Run returns.
 //
 //	OPENROUTER_API_KEY=sk-... go run ./examples/streaming
 package main
@@ -36,19 +36,24 @@ func main() {
 		openai.WithMaxTokens(512),
 	)
 
-	weather := agent.Func("get_weather", "Get the current weather for a city",
-		agent.Safety{ReadOnly: true},
+	weather := agent.MustFunc("get_weather", "Get the current weather for a city",
 		func(_ context.Context, in WeatherArgs) (Weather, error) {
 			return Weather{TempF: 68, Sky: "sunny"}, nil
-		})
+		}, agent.WithSafety(agent.Safety{ReadOnly: true}))
 
-	a := agent.New(model, agent.NewMemStore(), weather)
+	j, err := agent.NewJournal(agent.NewMemStore())
+	if err != nil {
+		log.Fatal(err)
+	}
+	a, err := agent.New(model, j, agent.WithTools(weather))
+	if err != nil {
+		log.Fatal(err)
+	}
 
 	ctx, cancel := context.WithTimeout(context.Background(), 60*time.Second)
 	defer cancel()
 
-	stream := a.Stream(ctx, "stream-1",
-		"What's the weather in San Francisco? Use the get_weather tool, then answer in one sentence.")
+	stream := a.Stream(ctx, "stream-1", agent.UserText("What's the weather in San Francisco? Use the get_weather tool, then answer in one sentence."))
 
 	// Range the semantic lifecycle events. Text deltas arrive inside ModelEvent as the
 	// model generates; tool start/finish bracket each call.
@@ -67,11 +72,12 @@ func main() {
 		}
 	}
 
-	// Final drains anything left and returns the terminal answer (or error), exactly as Run would.
-	final, err := stream.Final()
+	// Result drains anything left and returns the terminal answer (or error), exactly as Run would.
+	res, err := stream.Result()
 	if err != nil {
 		log.Fatalf("stream: %v", err)
 	}
+	final := res.Message
 	fmt.Println("\n\n=== final answer ===")
 	fmt.Println(final.Text())
 }

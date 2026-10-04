@@ -29,16 +29,16 @@ func TestR117_LateErrorBeforeTheTimerFiresIsRecordedAsAFailure(t *testing.T) {
 	defer runtime.GOMAXPROCS(runtime.GOMAXPROCS(1))
 	for range 100 {
 		var calls atomic.Int32
-		charge := Func("charge", "", Safety{}, func(ctx context.Context, _ struct{}) (string, error) {
+		charge := MustFunc("charge", "", func(ctx context.Context, _ struct{}) (string, error) {
 			calls.Add(1)
 			dl, _ := ctx.Deadline()
 			for time.Now().Before(dl) { // the provider call is in flight until the deadline
 			}
 			return "", errors.New("gateway: client timeout awaiting response")
 		}, WithTimeout(2*time.Millisecond))
-		store := NewMemStore()
+		store := memJournal()
 		m := NewScriptedModel(ToolTurn("c1", "charge", `{}`), TextTurn("done"))
-		_, err := New(m, store, charge).Run(context.Background(), "r1", "pay")
+		_, err := mustNew(m, store, WithTools(charge)).Run(context.Background(), "r1", UserText("pay"))
 		rec, ok := hasStep(t, store, "r1", ToolResultStep("c1"))
 		if calls.Load() == 0 {
 			// Not reached: the deadline passed before dispatch. That is a known failure, recorded.

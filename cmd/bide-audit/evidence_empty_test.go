@@ -11,15 +11,17 @@ import (
 	"testing"
 
 	"github.com/bide-ai/bide/agent"
+	"github.com/bide-ai/bide/agent/agenttest"
 	"github.com/bide-ai/bide/audit"
+	"github.com/bide-ai/bide/internal/journaltest"
 )
 
 // verify-evidence on a package that proves nothing must exit 1, not print "PASS (0 items)".
 func TestVerifyEvidenceCLI_EmptyPackageFails(t *testing.T) {
 	ctx := context.Background()
 	dir := t.TempDir()
-	store := agent.NewMemStore()
-	if _, err := store.Do(ctx, "r", "note", func(context.Context) (agent.Record, error) {
+	store := agenttest.MemJournal()
+	if _, err := journaltest.Do(ctx, store, "r", "note", func(context.Context) (agent.Record, error) {
 		return agent.Record{Kind: agent.StepValue, Result: json.RawMessage(`1`)}, nil
 	}); err != nil {
 		t.Fatal(err)

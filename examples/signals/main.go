@@ -1,5 +1,5 @@
 // Command signals shows the externally-pushed durable pauses: Await for a single-shot
-// signal delivered from outside the run with agent.Signal, AwaitFor with a durable timeout
+// signal delivered from outside the run with agent.Journal.Signal, AwaitFor with a durable timeout
 // (the signal-vs-deadline race), and an ordered per-run channel consumed exactly-once with
 // Enqueue / Receive / Ack. All three ride the same durable journal, so a signal is applied at
 // most once and channel consumption is replay-safe.
@@ -55,21 +55,26 @@ func main() {
 func awaitScene() {
 	fmt.Println("== Await: wait for an external signal ==")
 	ctx := context.Background()
-	store := agent.NewMemStore()
+	store, err := agent.NewJournal(agent.NewMemStore())
+	if err != nil {
+		log.Fatal(err)
+	}
 	const runID, sig = "await-1", "approval"
 
-	tool := agent.Func("wait_for_approval", "Wait for an external approval signal",
-		agent.Safety{ReadOnly: true},
+	tool := agent.MustFunc("wait_for_approval", "Wait for an external approval signal",
 		func(ctx context.Context, _ struct{}) (string, error) {
 			who, err := agent.Await[string](ctx, sig)
 			if err != nil {
 				return "", err // *SignalPending on the first pass
 			}
 			return "approved by " + who, nil
-		})
-	a := agent.New(&oneTool{tool: "wait_for_approval"}, store, tool)
+		}, agent.WithSafety(agent.Safety{ReadOnly: true}))
+	a, err := agent.New(&oneTool{tool: "wait_for_approval"}, store, agent.WithTools(tool))
+	if err != nil {
+		log.Fatal(err)
+	}
 
-	_, err := a.Run(ctx, runID, "Wait for approval, then confirm.")
+	_, err = a.Run(ctx, runID, agent.UserText("Wait for approval, then confirm."))
 	awt, ok := errors.AsType[*agent.SignalPending](err)
 	if !ok {
 		log.Fatalf("expected *SignalPending, got %v", err)
@@ -77,13 +82,18 @@ func awaitScene() {
 	fmt.Printf("  paused awaiting signal %q\n", awt.Name)
 
 	// Delivered from outside the run (another process, a webhook). Journaled at-most-once.
-	if err := agent.Signal(ctx, store, runID, sig, "alice"); err != nil {
+	if err := store.Signal(ctx, runID, sig, "alice"); err != nil {
 		log.Fatalf("signal: %v", err)
 	}
-	out, err := agent.New(&oneTool{tool: "wait_for_approval"}, store, tool).Run(ctx, runID, "Wait for approval, then confirm.")
+	ag, err := agent.New(&oneTool{tool: "wait_for_approval"}, store, agent.WithTools(tool))
+	if err != nil {
+		log.Fatal(err)
+	}
+	res, err := ag.Run(ctx, runID, agent.UserText("Wait for approval, then confirm."))
 	if err != nil {
 		log.Fatalf("resume: %v", err)
 	}
+	out := res.Message
 	fmt.Printf("  resumed: tool observed the signal, final answer: %s\n\n", out.Text())
 }
 
@@ -92,11 +102,13 @@ func awaitScene() {
 func awaitForScene() {
 	fmt.Println("== AwaitFor: signal-or-timeout race ==")
 	ctx := context.Background()
-	store := agent.NewMemStore()
+	store, err := agent.NewJournal(agent.NewMemStore())
+	if err != nil {
+		log.Fatal(err)
+	}
 	const runID = "awaitfor-1"
 
-	tool := agent.Func("wait_briefly", "Wait for a signal but give up quickly",
-		agent.Safety{ReadOnly: true},
+	tool := agent.MustFunc("wait_briefly", "Wait for a signal but give up quickly",
 		func(ctx context.Context, _ struct{}) (string, error) {
 			payload, ok, err := agent.AwaitFor[string](ctx, "late-signal", time.Millisecond)
 			if err != nil {
@@ -106,18 +118,25 @@ func awaitForScene() {
 				return "got signal: " + payload, nil
 			}
 			return "timed out waiting for the signal", nil
-		})
-	a := agent.New(&oneTool{tool: "wait_briefly"}, store, tool)
+		}, agent.WithSafety(agent.Safety{ReadOnly: true}))
+	a, err := agent.New(&oneTool{tool: "wait_briefly"}, store, agent.WithTools(tool))
+	if err != nil {
+		log.Fatal(err)
+	}
 
 	// First Run journals the 1ms deadline and pauses; by the resume the deadline has passed
 	// and no signal arrived, so AwaitFor returns (zero, false, nil): the timeout wins.
-	if _, err := a.Run(ctx, runID, "Wait briefly."); err != nil {
+	if _, err := a.Run(ctx, runID, agent.UserText("Wait briefly.")); err != nil {
 		if !agent.IsPause(err) {
 			log.Fatalf("first run: %v", err)
 		}
 	}
 	time.Sleep(5 * time.Millisecond) // let the durable deadline elapse before resuming
-	if _, err := agent.New(&oneTool{tool: "wait_briefly"}, store, tool).Run(ctx, runID, "Wait briefly."); err != nil {
+	ag, err := agent.New(&oneTool{tool: "wait_briefly"}, store, agent.WithTools(tool))
+	if err != nil {
+		log.Fatal(err)
+	}
+	if _, err = ag.Run(ctx, runID, agent.UserText("Wait briefly.")); err != nil {
 		log.Fatalf("resume: %v", err)
 	}
 	recs, _ := store.History(ctx, runID)
@@ -133,18 +152,20 @@ func awaitForScene() {
 func channelScene() {
 	fmt.Println("== Channel: ordered Enqueue / Receive / Ack ==")
 	ctx := context.Background()
-	store := agent.NewMemStore()
+	store, err := agent.NewJournal(agent.NewMemStore())
+	if err != nil {
+		log.Fatal(err)
+	}
 	const runID, chName = "channel-1", "jobs"
 
 	// Deliver three ordered messages before the run consumes them. Enqueue dedups by key.
 	for _, m := range []struct{ key, body string }{{"k1", "first"}, {"k2", "second"}, {"k3", "third"}} {
-		if err := agent.Enqueue(ctx, store, runID, chName, m.key, m.body); err != nil {
+		if err := store.Enqueue(ctx, runID, chName, m.key, m.body); err != nil {
 			log.Fatalf("enqueue %s: %v", m.key, err)
 		}
 	}
 
-	tool := agent.Func("drain_channel", "Consume every queued message in order, exactly once",
-		agent.Safety{ReadOnly: true},
+	tool := agent.MustFunc("drain_channel", "Consume every queued message in order, exactly once",
 		func(ctx context.Context, _ struct{}) ([]string, error) {
 			var consumed []string
 			for {
@@ -162,10 +183,13 @@ func channelScene() {
 					return nil, err
 				}
 			}
-		})
+		}, agent.WithSafety(agent.Safety{ReadOnly: true}))
 
-	a := agent.New(&oneTool{tool: "drain_channel"}, store, tool)
-	if _, err := a.Run(ctx, runID, "Drain the channel."); err != nil {
+	a, err := agent.New(&oneTool{tool: "drain_channel"}, store, agent.WithTools(tool))
+	if err != nil {
+		log.Fatal(err)
+	}
+	if _, err := a.Run(ctx, runID, agent.UserText("Drain the channel.")); err != nil {
 		log.Fatalf("run: %v", err)
 	}
 	recs, _ := store.History(ctx, runID)

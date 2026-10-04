@@ -20,10 +20,16 @@ type naive struct{}
 
 func (naive) Writes() int { return 3 } // @llm/0, c1, @llm/1
 
-func (naive) NewRun() Run { return &naiveRun{store: agent.NewMemStore(), fired: new(int)} }
+func (naive) NewRun() Run {
+	j, err := agent.NewJournal(agent.NewMemStore())
+	if err != nil {
+		panic(err) // a MemStore is never nil
+	}
+	return &naiveRun{store: j, fired: new(int)}
+}
 
 type naiveRun struct {
-	store agent.Durable
+	store *agent.Journal
 	fired *int
 }
 

@@ -10,6 +10,7 @@ import (
 	"time"
 
 	"github.com/bide-ai/bide/agent"
+	"github.com/bide-ai/bide/agent/agenttest"
 	"github.com/bide-ai/bide/middleware"
 )
 
@@ -70,18 +71,18 @@ func TestF1_CostInsideHedge_AnswerCountsLoser(t *testing.T) {
 func TestF2_ReplayLosesModelInfo(t *testing.T) {
 	ctx := context.Background()
 	info := agent.ModelInfo{Provider: "acme", Model: "m-1"}
-	orig := agent.NewMemStore()
+	orig := agenttest.MemJournal()
 	m := describedModel{&gateModel{name: "p", u: billed}, info}
-	sys := agent.Func("noop", "d", agent.Safety{ReadOnly: true}, func(context.Context, struct{}) (string, error) { return "", nil })
-	if _, err := agent.New(m, orig, sys).Run(ctx, "r", "q"); err != nil {
+	sys := agent.MustFunc("noop", "d", func(context.Context, struct{}) (string, error) { return "", nil }, agent.WithSafety(agent.Safety{ReadOnly: true}))
+	if _, err := agenttest.MustNew(m, orig, agent.WithTools(sys)).Run(ctx, "r", agent.UserText("q")); err != nil {
 		t.Fatal(err)
 	}
 	rep, err := agent.Replay(ctx, orig, "r")
 	if err != nil {
 		t.Fatal(err)
 	}
-	dst := agent.NewMemStore()
-	if _, err := agent.New(rep, dst, sys).Run(ctx, "r", "q"); err != nil {
+	dst := agenttest.MemJournal()
+	if _, err := agenttest.MustNew(rep, dst, agent.WithTools(sys)).Run(ctx, "r", agent.UserText("q")); err != nil {
 		t.Fatal(err)
 	}
 	a, _ := orig.History(ctx, "r")
@@ -112,13 +113,17 @@ func TestF3_HedgeLoserSpendLostOnFinalTurn(t *testing.T) {
 	backup := &gateModel{name: "b", u: billed}
 	winnerDone := make(chan struct{})
 	go func() { <-winnerDone; close(gate) }() // the loser ends once the winner has been returned
-	a := agent.New(primary, agent.NewMemStore()).Use(middleware.Hedge(0, backup), signal(backup, winnerDone), holdUntil(backup, started))
-	res, err := a.RunResult(context.Background(), "r", "q")
+	a := agenttest.MustNew(
+		primary,
+		agenttest.MemJournal(),
+		agent.WithMiddleware(middleware.Hedge(0, backup), signal(backup, winnerDone), holdUntil(backup, started)),
+	)
+	res, err := a.Run(context.Background(), "r", agent.UserText("q"))
 	if err != nil {
 		t.Fatal(err)
 	}
 	// re-enter the finished run: Spend is read from the journal
-	res2, err := a.RunResult(context.Background(), "r", "q")
+	res2, err := a.Run(context.Background(), "r", agent.UserText("q"))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -154,11 +159,11 @@ func TestF4_ModelRecordWriteFailureLosesSpend(t *testing.T) {
 		t.Fatal(err)
 	}
 	m := &gateModel{name: "p", u: billed}
-	a := agent.New(m, j)
-	if _, err := a.RunResult(ctx, "r", "q"); err == nil {
+	a := agenttest.MustNew(m, j)
+	if _, err := a.Run(ctx, "r", agent.UserText("q")); err == nil {
 		t.Fatal("want storage error")
 	}
-	res, err := a.RunResult(ctx, "r", "q")
+	res, err := a.Run(ctx, "r", agent.UserText("q"))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -183,7 +188,7 @@ func TestF5_StoredCallSendsAfterRun(t *testing.T) {
 		}
 	}
 	m := &gateModel{name: "p", u: billed}
-	if _, err := agent.New(m, agent.NewMemStore()).Use(keep).Run(context.Background(), "r", "q"); err != nil {
+	if _, err := agenttest.MustNew(m, agenttest.MemJournal(), agent.WithMiddleware(keep)).Run(context.Background(), "r", agent.UserText("q")); err != nil {
 		t.Fatal(err)
 	}
 	_, err := next0(context.Background(), stored)
@@ -232,7 +237,7 @@ func TestF6_AttemptGapOnBeforeRefusal(t *testing.T) {
 
 // Stream consumer check: after the last TurnRestarted of a turn, the text the consumer assembled
 // equals the AssistantTurn's message; no model event after AssistantTurn of that turn.
-func streamCheck(t *testing.T, as *agent.AgentStream) (restarts int) {
+func streamCheck(t *testing.T, as *agent.RunStream) (restarts int) {
 	t.Helper()
 	var text strings.Builder
 	ended := false
@@ -255,7 +260,7 @@ func streamCheck(t *testing.T, as *agent.AgentStream) (restarts int) {
 			}
 		}
 	}
-	if _, err := as.Final(); err != nil {
+	if _, err := as.Result(); err != nil {
 		t.Fatal(err)
 	}
 	return restarts
@@ -276,8 +281,12 @@ func TestS1_HedgeStreamWinnerNotClaimer(t *testing.T) {
 		}
 	}
 	loserDone := make(chan struct{})
-	a := agent.New(primary, agent.NewMemStore()).Use(middleware.Hedge(0, backup), signal(primary, loserDone), wait)
-	if n := streamCheck(t, a.Stream(context.Background(), "r", "q")); n > 1 {
+	a := agenttest.MustNew(
+		primary,
+		agenttest.MemJournal(),
+		agent.WithMiddleware(middleware.Hedge(0, backup), signal(primary, loserDone), wait),
+	)
+	if n := streamCheck(t, a.Stream(context.Background(), "r", agent.UserText("q"))); n > 1 {
 		t.Fatalf("restarts %d", n)
 	}
 	close(gate)
@@ -294,12 +303,16 @@ func TestG1_CancelMidStreamNoLeak(t *testing.T) {
 		primary := &gateModel{name: "p", u: billed, gate: gate, honorCtx: true, started: started}
 		backup := &gateModel{name: "b", u: billed, gate: gate, honorCtx: true}
 		ctx, cancel := context.WithCancel(context.Background())
-		a := agent.New(primary, agent.NewMemStore()).Use(middleware.Hedge(0, backup), middleware.Retry(2, middleware.WithBackoff(0, 0)))
-		as := a.Stream(ctx, "r", "q")
+		a := agenttest.MustNew(
+			primary,
+			agenttest.MemJournal(),
+			agent.WithMiddleware(middleware.Hedge(0, backup), middleware.Retry(2, middleware.WithBackoff(0, 0))),
+		)
+		as := a.Stream(ctx, "r", agent.UserText("q"))
 		go func() { <-started; cancel() }()
 		for range as.Events() {
 		}
-		_, _ = as.Final()
+		_, _ = as.Result()
 		close(gate)
 	}
 	deadline := time.Now().Add(3 * time.Second)

@@ -8,7 +8,9 @@ import (
 	"testing"
 
 	"github.com/bide-ai/bide/agent"
+	"github.com/bide-ai/bide/agent/agenttest"
 	"github.com/bide-ai/bide/internal/journalhook"
+	"github.com/bide-ai/bide/internal/journaltest"
 )
 
 // chargeFlow is a one-node flow whose node counts its runs and fails the first one after its
@@ -36,7 +38,7 @@ func chargeFlow(t *testing.T, fired *int, opts ...NodeOption) *Flow[int, int] {
 // label halts on it rather than fire the effect a second time.
 func TestResume_NodeRelabelledRetrySafeStillHalts(t *testing.T) {
 	ctx := context.Background()
-	store := agent.NewMemStore()
+	store := agenttest.MemJournal()
 	var fired int
 	if _, err := chargeFlow(t, &fired).Run(ctx, store, "r", 5); err == nil {
 		t.Fatal("first drive: want the node's error")
@@ -52,11 +54,11 @@ func TestResume_NodeRelabelledRetrySafeStillHalts(t *testing.T) {
 }
 
 // The other direction: a node attempted as retry-safe writes no marker (its author declared it
-// safe to repeat when it ran), so a resume under a side-effect label runs it again, as agent.Step
+// safe to repeat when it ran), so a resume under a side-effect label runs it again, as agent.Journal.Step
 // does, and claims a marker for this attempt. Unchanged labels re-run a retry-safe node.
 func TestResume_NodeRelabelledSideEffectRunsUnderAClaim(t *testing.T) {
 	ctx := context.Background()
-	store := agent.NewMemStore()
+	store := agenttest.MemJournal()
 	var fired int
 	if _, err := chargeFlow(t, &fired, Idempotent()).Run(ctx, store, "r", 5); err == nil {
 		t.Fatal("first drive: want the node's error")
@@ -87,7 +89,7 @@ func TestClaimLost_DecidesByWinnersMarker(t *testing.T) {
 	}{{"side effect", nil}, {"relabelled retry-safe", []NodeOption{Idempotent()}}} {
 		t.Run(tc.name, func(t *testing.T) {
 			ctx := context.Background()
-			mem := agent.NewMemStore()
+			mem := agenttest.MemJournal()
 			var fired int
 			flow := chargeFlow(t, &fired, tc.opts...)
 			marker := journalhook.WithClaim(agent.Record{Kind: agent.StepAttempt, ToolUseID: "node:charge", AttemptedAt: 1}, "0ther0driver").(agent.Record)
@@ -98,7 +100,7 @@ func TestClaimLost_DecidesByWinnersMarker(t *testing.T) {
 				{flowDigestStep, agent.Record{Kind: agent.StepValue, Result: json.RawMessage(strconv.Quote(flow.Digest()))}},
 				{"attempt:step:node:charge", marker},
 			} {
-				if _, err := mem.Do(ctx, "r", w.name, func(context.Context) (agent.Record, error) { return w.rec, nil }); err != nil {
+				if _, err := journaltest.Do(ctx, mem, "r", w.name, func(context.Context) (agent.Record, error) { return w.rec, nil }); err != nil {
 					t.Fatal(err)
 				}
 			}

@@ -39,12 +39,16 @@ func (m *greedyModel) Stream(_ context.Context, _ Request) (*Stream, error) {
 
 // finishedCharge completes one run that charges once, and returns its store, answer, and
 // journal, plus a fresh greedy model for the re-entries.
-func finishedCharge(t *testing.T, charged *int) (Durable, Message, []Record) {
+func finishedCharge(t *testing.T, charged *int) (*Journal, Message, []Record) {
 	t.Helper()
-	store := NewMemStore()
+	store := memJournal()
 	charge := &countingTool{name: "charge", safety: Safety{}, calls: charged} // a non-idempotent write
 	m := &greedyModel{script: [][]Emit{toolTurn("c1", "charge", `{}`), textTurn("done")}}
-	out, err := New(m, store, charge).Run(context.Background(), "r1", "pay")
+	res, err := mustNew(m, store, WithTools(charge)).Run(context.Background(), "r1", UserText("pay"))
+	var out Message
+	if res != nil {
+		out = res.Message
+	}
 	if err != nil || *charged != 1 {
 		t.Fatalf("first run: err=%v charged=%d, want nil/1", err, *charged)
 	}
@@ -57,7 +61,7 @@ func finishedCharge(t *testing.T, charged *int) (Durable, Message, []Record) {
 
 // wantUntouched checks a re-entry changed nothing: no model call, no second charge, the
 // same answer, and not one journal record appended.
-func wantUntouched(t *testing.T, store Durable, m *greedyModel, charged int, before []Record, gotAnswer, wantAnswer Message) {
+func wantUntouched(t *testing.T, store *Journal, m *greedyModel, charged int, before []Record, gotAnswer, wantAnswer Message) {
 	t.Helper()
 	if m.calls != 0 {
 		t.Fatalf("re-entering a finished run called the model %d times, want 0", m.calls)
@@ -87,13 +91,18 @@ func TestFinishedRun_RunIsFinal(t *testing.T) {
 	charge := &countingTool{name: "charge", safety: Safety{}, calls: &charged}
 	for i := 0; i < 3; i++ {
 		m := &greedyModel{}
-		out, err := New(m, store, charge).Run(context.Background(), "r1", "pay")
+		res, err := mustNew(m, store, WithTools(charge)).Run(context.Background(), "r1", UserText("pay"))
 		if err != nil {
 			t.Fatalf("re-run %d: %v", i, err)
 		}
+		out := res.Message
 		wantUntouched(t, store, m, charged, before, out, first)
 		m = &greedyModel{}
-		out, err = New(m, store, charge).Run(context.Background(), "r1", "a different input")
+		var res2 *Result
+		res2, err = mustNew(m, store, WithTools(charge)).Run(context.Background(), "r1", UserText("a different input"))
+		if res2 != nil {
+			out = res2.Message
+		}
 		if !errors.Is(err, ErrConfig) {
 			t.Fatalf("re-run %d with a different input = %q, %v; want ErrConfig", i, textOf(out), err)
 		}
@@ -101,21 +110,27 @@ func TestFinishedRun_RunIsFinal(t *testing.T) {
 	}
 }
 
-// The same holds through RunResult (zero usage, zero live turns), RunSaga, Stream, and
-// StreamSaga, which all share the loop.
+// The same holds through Run (zero usage, zero live turns), saga Run, Stream, and
+// saga Stream, which all share the loop.
 func TestFinishedRun_EveryEntryPoint(t *testing.T) {
 	ctx := context.Background()
 	entries := map[string]func(a *Agent) (Message, error){
-		"RunResult": func(a *Agent) (Message, error) {
-			res, err := a.RunResult(ctx, "r1", "pay")
+		"Run Result": func(a *Agent) (Message, error) {
+			res, err := a.Run(ctx, "r1", UserText("pay"))
 			if err == nil && (res.Usage != (Usage{}) || res.Turns != 0) {
-				return Message{}, fmt.Errorf("RunResult usage=%+v turns=%d, want zero for a finished run", res.Usage, res.Turns)
+				return Message{}, fmt.Errorf("Run usage=%+v turns=%d, want zero for a finished run", res.Usage, res.Turns)
 			}
 			return res.Message, err
 		},
-		"RunSaga": func(a *Agent) (Message, error) { return a.RunSaga(ctx, "r1", "pay") },
+		"Run WithSaga": func(a *Agent) (Message, error) {
+			res, err := a.Run(ctx, "r1", UserText("pay"), WithSaga())
+			if err != nil {
+				return Message{}, err
+			}
+			return res.Message, nil
+		},
 		"Stream": func(a *Agent) (Message, error) {
-			as := a.Stream(ctx, "r1", "pay")
+			as := a.Stream(ctx, "r1", UserText("pay"))
 			var finished bool
 			for ev := range as.Events() {
 				switch e := ev.(type) {
@@ -130,16 +145,26 @@ func TestFinishedRun_EveryEntryPoint(t *testing.T) {
 			if !finished {
 				return Message{}, errors.New("no Finished event for a finished run")
 			}
-			return as.Final()
+			res, err := as.Result()
+			if err != nil {
+				return Message{}, err
+			}
+			return res.Message, nil
 		},
-		"StreamSaga": func(a *Agent) (Message, error) { return a.StreamSaga(ctx, "r1", "pay").Final() },
+		"Stream WithSaga": func(a *Agent) (Message, error) {
+			res, err := a.Stream(ctx, "r1", UserText("pay"), WithSaga()).Result()
+			if err != nil {
+				return Message{}, err
+			}
+			return res.Message, nil
+		},
 	}
 	for name, run := range entries {
 		t.Run(name, func(t *testing.T) {
 			var charged int
 			store, first, before := finishedCharge(t, &charged)
 			m := &greedyModel{}
-			out, err := run(New(m, store, &countingTool{name: "charge", safety: Safety{}, calls: &charged}))
+			out, err := run(mustNew(m, store, WithTools(&countingTool{name: "charge", safety: Safety{}, calls: &charged})))
 			if err != nil {
 				t.Fatal(err)
 			}
@@ -154,31 +179,36 @@ func TestFinishedRun_EveryEntryPoint(t *testing.T) {
 // model for another turn, so the charge inside it does not fire twice.
 func TestFinishedRun_SubAgentReentry(t *testing.T) {
 	ctx := context.Background()
-	store := NewMemStore()
+	store := memJournal()
 	var charged int
 	charge := &countingTool{name: "charge", safety: Safety{}, calls: &charged}
 	subModel := &greedyModel{script: [][]Emit{toolTurn("s1", "charge", `{}`), textTurn("sub-done")}}
-	sub := New(subModel, store, charge)
+	sub := mustNew(subModel, store, WithTools(charge))
 
 	// The sub-run completes (as it would have inside the first parent run).
 	subRunID := SubRunID("root", "c1")
-	if _, err := sub.Run(asToolCall(ctx, "root", "c1"), subRunID, "charge it"); err != nil || charged != 1 {
+	if _, err := sub.Run(asToolCall(ctx, "root", "c1"), subRunID, UserText("charge it")); err != nil || charged != 1 {
 		t.Fatalf("sub-run: err=%v charged=%d, want nil/1", err, charged)
 	}
 	// The parent's journal holds the turn that called the sub-agent, and no result for it.
 	asst := Message{Role: RoleAssistant, Parts: []Part{ToolUse{ID: "c1", Name: "worker", Args: json.RawMessage(`{"task":"charge it"}`)}}}
-	if _, err := store.Do(ctx, "root", "@llm/0", func(context.Context) (Record, error) {
+	if _, err := store.do(ctx, "root", "@llm/0", func(context.Context) (Record, error) {
 		return Record{Kind: StepModel, Message: &asst}, nil
 	}); err != nil {
 		t.Fatal(err)
 	}
 
 	subCalls := subModel.calls
-	parent := New(&greedyModel{script: [][]Emit{textTurn("parent-done")}}, store, SubAgent("worker", "does work", sub))
-	out, err := parent.Run(ctx, "root", "delegate")
+	parent := mustNew(
+		&greedyModel{script: [][]Emit{textTurn("parent-done")}},
+		store,
+		WithTools(MustSubAgent("worker", "does work", sub)),
+	)
+	res, err := parent.Run(ctx, "root", UserText("delegate"))
 	if err != nil {
 		t.Fatalf("parent resume: %v", err)
 	}
+	out := res.Message
 	if textOf(out) != "parent-done" || charged != 1 || subModel.calls != subCalls {
 		t.Fatalf("out=%q charged=%d new sub model calls=%d, want parent-done, 1 charge, 0 new sub calls", textOf(out), charged, subModel.calls-subCalls)
 	}
@@ -188,11 +218,11 @@ func TestFinishedRun_SubAgentReentry(t *testing.T) {
 // recording it: Send retries the same turn run, which must return the recorded answer.
 func TestFinishedRun_SessionTurnReentry(t *testing.T) {
 	ctx := context.Background()
-	store := NewMemStore()
+	store := memJournal()
 	var charged int
 	charge := &countingTool{name: "charge", safety: Safety{}, calls: &charged}
 	m := &greedyModel{script: [][]Emit{toolTurn("c1", "charge", `{}`), textTurn("done")}}
-	a := New(m, store, charge)
+	a := mustNew(m, store, WithTools(charge))
 
 	// Turn 0's run finishes, but the session-level record of the turn was never written.
 	turn := sessionTurnRunID("s", 0)
@@ -204,10 +234,11 @@ func TestFinishedRun_SessionTurnReentry(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	out, err := s.Send(ctx, "pay")
+	res, err := s.Send(ctx, UserText("pay"))
 	if err != nil {
 		t.Fatalf("Send: %v", err)
 	}
+	out := res.Message
 	if textOf(out) != "done" || charged != 1 || m.calls != calls || s.Turns() != 1 {
 		t.Fatalf("out=%q charged=%d new model calls=%d turns=%d, want done, 1, 0, 1", textOf(out), charged, m.calls-calls, s.Turns())
 	}

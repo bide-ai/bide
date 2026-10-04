@@ -20,8 +20,7 @@ import (
 // nor as an unknown outcome. (Model: findings/t1-saga-maperr, SagaAccounted.)
 func TestModel9_T1_SagaStepWhoseSuccessAMiddlewareRejectedIsNotAccounted(t *testing.T) {
 	var charged, refunded atomic.Int32
-	charge := CompensatedFunc("charge", "", Safety{},
-		func(context.Context, struct{}) (string, error) { charged.Add(1); return "ok", nil },
+	charge := MustCompensatedFunc("charge", "", func(context.Context, struct{}) (string, error) { charged.Add(1); return "ok", nil },
 		func(context.Context, struct{}, string) error { refunded.Add(1); return nil })
 	check := ToolMiddleware(func(next ToolHandler) ToolHandler {
 		return func(ctx context.Context, call ToolCall) (json.RawMessage, error) {
@@ -33,12 +32,12 @@ func TestModel9_T1_SagaStepWhoseSuccessAMiddlewareRejectedIsNotAccounted(t *test
 		}
 	})
 	m := NewScriptedModel(ToolTurn("c1", "charge", `{}`), TextTurn("done"))
-	_, err := New(m, NewMemStore(), charge).UseTool(check).RunSaga(context.Background(), "r", "go")
+	_, err := mustNew(m, memJournal(), WithTools(charge), WithToolMiddleware(check)).Run(context.Background(), "r", UserText("go"), WithSaga())
 	var ab *SagaAborted
 	if !errors.As(err, &ab) {
 		// The other sound answer: the run halts for the step's outcome, recording nothing.
 		if !errors.Is(err, ErrToolOutcomeUnknown) {
-			t.Fatalf("RunSaga = %v, want *SagaAborted or a halt on the step's outcome", err)
+			t.Fatalf("saga Run = %v, want *SagaAborted or a halt on the step's outcome", err)
 		}
 		return
 	}
@@ -56,7 +55,7 @@ func TestModel9_T1_SagaStepWhoseSuccessAMiddlewareRejectedIsNotAccounted(t *test
 // halted it. (Model: findings/t1-retry, NoDoubleFire.)
 func TestModel9_T1_RetryAfterAnUnknownOutcomeRecordsAKnownFailure(t *testing.T) {
 	var charged atomic.Int32
-	charge := Func("charge", "", Safety{}, func(context.Context, struct{}) (string, error) {
+	charge := MustFunc("charge", "", func(context.Context, struct{}) (string, error) {
 		charged.Add(1)
 		return "", fmt.Errorf("connection reset after the request went out: %w", ErrToolOutcomeUnknown)
 	})
@@ -70,9 +69,9 @@ func TestModel9_T1_RetryAfterAnUnknownOutcomeRecordsAKnownFailure(t *testing.T) 
 			return res, err
 		}
 	})
-	store := NewMemStore()
+	store := memJournal()
 	m := NewScriptedModel(ToolTurn("c1", "charge", `{}`), TextTurn("done"))
-	_, err := New(m, store, charge).UseTool(retry).Run(context.Background(), "r", "go")
+	_, err := mustNew(m, store, WithTools(charge), WithToolMiddleware(retry)).Run(context.Background(), "r", UserText("go"))
 	r, ok := hasStep(t, store, "r", ToolResultStep("c1"))
 	if charged.Load() == 1 && ok && r.IsError {
 		t.Fatalf("the effect fired, its outcome was unknown, and the journal records a known failure %s (run err %v)", r.Result, err)
@@ -85,11 +84,11 @@ type argsFailStore struct {
 	failed atomic.Bool
 }
 
-func (s *argsFailStore) Do(ctx context.Context, runID, name string, fn func(context.Context) (Record, error)) (Record, error) {
+func (s *argsFailStore) Insert(ctx context.Context, runID, name string, data []byte) (Entry, bool, error) {
 	if name == sagaArgsStep("c1") && s.failed.CompareAndSwap(false, true) {
-		return Record{}, errors.New("store unavailable")
+		return Entry{}, false, errors.New("store unavailable")
 	}
-	return s.MemStore.Do(ctx, runID, name, fn)
+	return s.MemStore.Insert(ctx, runID, name, data)
 }
 
 // T2: round 4's fix (c) marks a call as run only once it is reached, but the mark still comes
@@ -99,8 +98,7 @@ func (s *argsFailStore) Do(ctx context.Context, runID, name string, fn func(cont
 // TruthfulRecord.)
 func TestModel9_T2_FailedArgsWriteThenRetryRecordsAlreadyRan(t *testing.T) {
 	var charged atomic.Int32
-	charge := CompensatedFunc("charge", "", Safety{},
-		func(_ context.Context, in chargeArgs) (string, error) { charged.Add(1); return "ok", nil },
+	charge := MustCompensatedFunc("charge", "", func(_ context.Context, in chargeArgs) (string, error) { charged.Add(1); return "ok", nil },
 		func(context.Context, chargeArgs, string) error { return nil })
 	retry := ToolMiddleware(func(next ToolHandler) ToolHandler {
 		return func(ctx context.Context, call ToolCall) (res json.RawMessage, err error) {
@@ -112,9 +110,9 @@ func TestModel9_T2_FailedArgsWriteThenRetryRecordsAlreadyRan(t *testing.T) {
 			return res, err
 		}
 	})
-	store := &argsFailStore{MemStore: NewMemStore()}
+	store := mustJournal(&argsFailStore{MemStore: NewMemStore()})
 	m := NewScriptedModel(ToolTurn("c1", "charge", `{"amount":5}`), TextTurn("done"))
-	_, _ = New(m, store, charge).UseTool(retry, scaleCharge).RunSaga(context.Background(), "r", "go")
+	_, _ = mustNew(m, store, WithTools(charge), WithToolMiddleware(retry, scaleCharge)).Run(context.Background(), "r", UserText("go"), WithSaga())
 	recs, _ := store.History(context.Background(), "r")
 	for _, r := range recs {
 		if r.ToolUseID == "c1" && (r.Kind == StepSagaFail || r.Kind == StepToolResult) && strings.Contains(string(r.Result), "already ran") {
@@ -126,7 +124,7 @@ func TestModel9_T2_FailedArgsWriteThenRetryRecordsAlreadyRan(t *testing.T) {
 // A retry-safe tool is outside T1's rule: running it again is safe, so a middleware that turns its
 // success into an error leaves an ordinary recorded failure, not an unknown outcome.
 func TestModel9_RetrySafeRejectedSuccessIsAnOrdinaryFailure(t *testing.T) {
-	lookup := Func("lookup", "", Safety{Idempotent: true}, func(context.Context, struct{}) (string, error) { return "found", nil })
+	lookup := MustFunc("lookup", "", func(context.Context, struct{}) (string, error) { return "found", nil }, WithSafety(Safety{Idempotent: true}))
 	check := ToolMiddleware(func(next ToolHandler) ToolHandler {
 		return func(ctx context.Context, call ToolCall) (json.RawMessage, error) {
 			if _, err := next(ctx, call); err != nil {
@@ -135,9 +133,9 @@ func TestModel9_RetrySafeRejectedSuccessIsAnOrdinaryFailure(t *testing.T) {
 			return nil, errors.New("result failed validation")
 		}
 	})
-	store := NewMemStore()
+	store := memJournal()
 	m := NewScriptedModel(ToolTurn("c1", "lookup", `{}`), TextTurn("done"))
-	if _, err := New(m, store, lookup).UseTool(check).Run(context.Background(), "r", "go"); err != nil {
+	if _, err := mustNew(m, store, WithTools(lookup), WithToolMiddleware(check)).Run(context.Background(), "r", UserText("go")); err != nil {
 		t.Fatalf("Run: %v", err)
 	}
 	r, ok := hasStep(t, store, "r", ToolResultStep("c1"))

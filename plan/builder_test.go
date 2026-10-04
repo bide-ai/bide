@@ -16,10 +16,11 @@ type stubTool struct {
 	last   json.RawMessage
 }
 
-func (t *stubTool) Name() string                { return "stub" }
-func (t *stubTool) Description() string         { return "echo tool for tests" }
-func (t *stubTool) ArgsSchema() json.RawMessage { return nil }
-func (t *stubTool) Safety() agent.Safety        { return t.safety }
+// Spec describes the tool to the agent (see agent.Tool).
+func (t *stubTool) Spec() agent.ToolSpec {
+	return agent.ToolSpec{Name: "stub", Description: "echo tool for tests", Input: json.RawMessage(`{"type":"object"}`), Safety: t.safety}
+}
+
 func (t *stubTool) Call(_ context.Context, args json.RawMessage) (json.RawMessage, error) {
 	t.last = args
 	return args, nil

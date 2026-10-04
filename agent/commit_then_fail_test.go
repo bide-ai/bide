@@ -9,6 +9,7 @@ import (
 	"testing"
 
 	"github.com/bide-ai/bide/agent"
+	"github.com/bide-ai/bide/agent/agenttest"
 )
 
 var errCommittedThenLost = errors.New("connection lost after commit")
@@ -55,21 +56,21 @@ func TestCommitThenFailSweep(t *testing.T) {
 				ctx := context.Background()
 				m := agent.NewMemStore()
 				fired := 0
-				charge := agent.Func("charge", "", agent.Safety{}, func(context.Context, struct{}) (string, error) { fired++; return "ok", nil })
+				charge := agent.MustFunc("charge", "", func(context.Context, struct{}) (string, error) { fired++; return "ok", nil })
 				model := func() agent.Model {
-					return agent.NewScriptedModel(agent.ToolTurn("c1", "charge", `{}`), agent.TextTurn("done"))
+					return agenttest.NewScriptedModel(agenttest.ToolTurn("c1", "charge", `{}`), agenttest.TextTurn("done"))
 				}
 				s := &sweepStore{m: m, k: k}
 				j, _ := agent.NewJournal(s)
-				_, err1 := agent.New(model(), j, charge).SetMaxConcurrency(1).Run(ctx, "r", "hi")
+				_, err1 := agenttest.MustNew(model(), j, agent.WithTools(charge), agent.WithMaxConcurrency(1)).Run(ctx, "r", agent.UserText("hi"))
 				var j2 *agent.Journal
 				if sameProcess {
 					j2, _ = agent.NewJournal(s) // same store value: shares the process's memory
 				} else {
 					j2, _ = agent.NewJournal(&sweepStore{m: m}) // a new process
 				}
-				_, err2 := agent.New(model(), j2, charge).SetMaxConcurrency(1).Run(ctx, "r", "hi")
-				var halt *agent.ResumeHalt
+				_, err2 := agenttest.MustNew(model(), j2, agent.WithTools(charge), agent.WithMaxConcurrency(1)).Run(ctx, "r", agent.UserText("hi"))
+				var halt *agent.OutcomeUnknown
 				t.Logf("failed %q: first %v; second %v; fired %d", s.failed, err1, err2, fired)
 				if fired > 1 {
 					t.Fatalf("fired %d times", fired)

@@ -13,7 +13,7 @@
 //
 // The point it demonstrates is the substrate guarantee the plan surface inherits for
 // free: a non-idempotent side effect (reserving inventory, modelled as one appended
-// witness line) fires AT MOST ONCE across a crash. Run drives every node as an agent.Step,
+// witness line) fires AT MOST ONCE across a crash. Run drives every node as an agent.Journal.Step,
 // whose attempt claim guards its body, so a node whose attempt was recorded but whose
 // result was lost to a crash HALTS the resumed run (*agent.OutcomeUnknown) rather than
 // re-firing the body.
@@ -53,6 +53,7 @@ import (
 	"errors"
 	"flag"
 	"fmt"
+	"log"
 	"os"
 	"time"
 
@@ -122,6 +123,10 @@ func main() {
 	fmt.Println(flow.RenderMermaid())
 
 	store, err := sqlite.Open(dbPath)
+	j, err := agent.NewJournal(store)
+	if err != nil {
+		log.Fatal(err)
+	}
 	if err != nil {
 		fatal(fmt.Errorf("open sqlite store at %s: %w", dbPath, err))
 	}
@@ -130,7 +135,7 @@ func main() {
 	ctx := context.Background()
 	order := Order{ID: cfg.runID, Amount: cfg.amount}
 
-	out, runErr := flow.Run(ctx, store, cfg.runID, order)
+	out, runErr := flow.Run(ctx, j, cfg.runID, order)
 
 	// A resumed run may halt with an unknown outcome (an attempt recorded, its result
 	// lost to a crash). A node halts as the Step named by its node key ("node:<name>").
@@ -151,7 +156,7 @@ func main() {
 
 	fmt.Printf("Run output (typed Receipt): %+v\n", out)
 	reportConform(ctx, flow, store, cfg.runID)
-	proveTopologyConformance(ctx, flow, store, cfg.runID)
+	proveTopologyConformance(ctx, flow, j, cfg.runID)
 
 	// The declarative demonstration: the same triage flow authored as declarative config,
 	// loaded, run, conformed, and shown to share the code-built flow's topology Digest.
@@ -183,7 +188,7 @@ func main() {
 // under the signed root, and the proven digest equals the declared flow's Digest().
 // The signing key here is generated for the demo; a real deployment anchors the STH
 // and its key in a separate trust domain (see the audit package security model).
-func proveTopologyConformance(ctx context.Context, flow *plan.Flow[Order, Receipt], store agent.Durable, runID string) {
+func proveTopologyConformance(ctx context.Context, flow *plan.Flow[Order, Receipt], store *agent.Journal, runID string) {
 	// The declared topology digest: the fingerprint of the diagram the author wrote.
 	declared := flow.Digest()
 
@@ -243,7 +248,7 @@ func proveTopologyConformance(ctx context.Context, flow *plan.Flow[Order, Receip
 // digestRecordIndex returns the journal index of the reserved flow:digest record for
 // runID, so audit.ProveRecord can build an inclusion proof for it. It errors if no
 // such record exists (the run never started, or was journaled without Run).
-func digestRecordIndex(ctx context.Context, store agent.Durable, runID string) (int, error) {
+func digestRecordIndex(ctx context.Context, store *agent.Journal, runID string) (int, error) {
 	recs, err := store.History(ctx, runID)
 	if err != nil {
 		return 0, fmt.Errorf("load history for run %q: %w", runID, err)
@@ -350,7 +355,7 @@ func buildFlowFromConfig(cfg config) (*plan.Flow[Order, Receipt], error) {
 
 	// classify: Order -> Assessment, the entry step the Switch routes on. Side-effect-free,
 	// identical to the code-built classify body.
-	if err := plan.RegisterStep(reg, "classify", func(_ context.Context, o Order) (Assessment, error) {
+	if err := reg.RegisterStep("classify", func(_ context.Context, o Order) (Assessment, error) {
 		return Assessment{OrderID: o.ID, Amount: o.Amount, Rush: o.Amount > 100}, nil
 	}); err != nil {
 		return nil, fmt.Errorf("register classify: %w", err)
@@ -359,7 +364,7 @@ func buildFlowFromConfig(cfg config) (*plan.Flow[Order, Receipt], error) {
 	// reserve: Assessment -> Reservation, the one non-idempotent step. It appends the witness
 	// line then, under -crash during-reserve, exits BEFORE returning so Run records no result,
 	// exactly as buildFlow's reserve does. This is the effect the e2e proves fires at most once.
-	if err := plan.RegisterStep(reg, "reserve", func(_ context.Context, a Assessment) (Reservation, error) {
+	if err := reg.RegisterStep("reserve", func(_ context.Context, a Assessment) (Reservation, error) {
 		appendWitness(cfg.witness, "reserved "+a.OrderID)
 		if cfg.crash == "during-reserve" {
 			os.Exit(1)
@@ -372,7 +377,7 @@ func buildFlowFromConfig(cfg config) (*plan.Flow[Order, Receipt], error) {
 	// finalize: Reservation -> Receipt, the side-effect-free rush-arm terminal. Under -crash
 	// before-finalize it exits at the start (after reserve has committed), leaving finalize
 	// attempted-but-unfinished for the resume, exactly as buildFlow's finalize does.
-	if err := plan.RegisterStep(reg, "finalize", func(_ context.Context, r Reservation) (Receipt, error) {
+	if err := reg.RegisterStep("finalize", func(_ context.Context, r Reservation) (Receipt, error) {
 		if cfg.crash == "before-finalize" {
 			os.Exit(1)
 		}
@@ -382,14 +387,14 @@ func buildFlowFromConfig(cfg config) (*plan.Flow[Order, Receipt], error) {
 	}
 
 	// decline: Assessment -> Receipt, the Else-arm terminal, side-effect-free.
-	if err := plan.RegisterStep(reg, "decline", func(_ context.Context, a Assessment) (Receipt, error) {
+	if err := reg.RegisterStep("decline", func(_ context.Context, a Assessment) (Receipt, error) {
 		return Receipt{OrderID: a.OrderID, Outcome: "declined", Detail: "below rush threshold"}, nil
 	}); err != nil {
 		return nil, fmt.Errorf("register decline: %w", err)
 	}
 
 	// rush: the Switch predicate over Assessment, identical to the code-built When.
-	if err := plan.RegisterPredicate(reg, "rush", func(a Assessment) bool { return a.Rush }); err != nil {
+	if err := reg.RegisterPredicate("rush", func(a Assessment) bool { return a.Rush }); err != nil {
 		return nil, fmt.Errorf("register rush: %w", err)
 	}
 
@@ -407,16 +412,28 @@ func buildFlowFromConfig(cfg config) (*plan.Flow[Order, Receipt], error) {
 // effect, which already committed.
 func resolveFinalize(ctx context.Context, flow *plan.Flow[Order, Receipt], store *sqlite.Store, ref agent.HaltRef, order Order) (Receipt, error) {
 	receipt := Receipt{OrderID: order.ID, Outcome: "reserved", Detail: "hold-" + order.ID, Reserved: true}
-	if err := flow.ResolveHalt(ctx, store, ref, agent.Outcome{Result: receipt}); err != nil {
+	j, err := agent.NewJournal(store)
+	if err != nil {
+		return Receipt{}, err
+	}
+	if err = flow.ResolveHalt(ctx, j, ref, agent.Outcome{Result: receipt}); err != nil {
 		return Receipt{}, fmt.Errorf("resolve the finalize halt: %w", err)
 	}
 	fmt.Println("Resolved the finalize halt out of band; re-running to completion.")
-	return flow.Run(ctx, store, ref.RunID, order)
+	j2, err := agent.NewJournal(store)
+	if err != nil {
+		return Receipt{}, err
+	}
+	return flow.Run(ctx, j2, ref.RunID, order)
 }
 
 // reportConform prints whether the journaled run for runID followed the declared graph.
 func reportConform(ctx context.Context, flow *plan.Flow[Order, Receipt], store *sqlite.Store, runID string) {
-	ok, diffs, err := flow.Conform(ctx, store, runID)
+	j, err := agent.NewJournal(store)
+	if err != nil {
+		log.Fatal(err)
+	}
+	ok, diffs, err := flow.Conform(ctx, j, runID)
 	if err != nil {
 		fatal(fmt.Errorf("conform %q: %w", runID, err))
 	}

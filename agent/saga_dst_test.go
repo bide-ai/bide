@@ -22,10 +22,11 @@ import (
 // boomTool always errors — the step whose failure triggers the saga abort.
 type boomTool struct{}
 
-func (boomTool) Name() string                { return "failB" }
-func (boomTool) Description() string         { return "" }
-func (boomTool) Safety() Safety              { return Safety{ReadOnly: true} }
-func (boomTool) ArgsSchema() json.RawMessage { return nil }
+// Spec describes the tool to the agent (see Tool).
+func (t boomTool) Spec() ToolSpec {
+	return ToolSpec{Name: "failB", Description: "", Input: json.RawMessage(`{"type":"object"}`), Safety: Safety{ReadOnly: true}}
+}
+
 func (boomTool) Call(context.Context, json.RawMessage) (json.RawMessage, error) {
 	return nil, errors.New("failB always fails")
 }
@@ -52,9 +53,9 @@ func (sagaModel) Stream(_ context.Context, req Request) (*Stream, error) {
 	return NewStream(ch), nil
 }
 
-func runSagaOnce(mem Durable, tools []Tool, crashAt int) error {
-	a := New(sagaModel{}, crashJournal(mem, crashAt), tools...).SetMaxConcurrency(1)
-	_, err := a.RunSaga(context.Background(), "dst", "go")
+func runSagaOnce(mem *Journal, tools []Tool, crashAt int) error {
+	a := mustNew(sagaModel{}, crashJournal(mem, crashAt), WithTools(tools...), WithMaxConcurrency(1))
+	_, err := a.Run(context.Background(), "dst", UserText("go"), WithSaga())
 	return err
 }
 
@@ -66,8 +67,7 @@ func incompleteRollback(err error) bool {
 
 // chargeSaga builds the compensatable charge tool over fresh counters.
 func chargeSaga(charge, refund *int) Tool {
-	return CompensatedFunc("chargeA", "", Safety{}, // non-idempotent forward
-		func(context.Context, struct{}) (struct{}, error) { *charge++; return struct{}{}, nil },
+	return MustCompensatedFunc("chargeA", "", func(context.Context, struct{}) (struct{}, error) { *charge++; return struct{}{}, nil },
 		func(context.Context, struct{}, struct{}) error { *refund++; return nil })
 }
 
@@ -78,7 +78,7 @@ func TestDST_Saga_CrashSweep(t *testing.T) {
 	haltSeen, abortSeen := false, false
 	for crashAt := 1; crashAt <= 40; crashAt++ {
 		var charge, refund int
-		mem := NewMemStore()
+		mem := memJournal()
 		tools := []Tool{chargeSaga(&charge, &refund), boomTool{}}
 
 		err := runSagaOnce(mem, tools, crashAt)
@@ -90,7 +90,7 @@ func TestDST_Saga_CrashSweep(t *testing.T) {
 		if charge > 1 {
 			t.Fatalf("crashAt=%d: chargeA fired %d times — DOUBLE FORWARD FIRE", crashAt, charge)
 		}
-		var halt *ResumeHalt
+		var halt *OutcomeUnknown
 		var sa *SagaAborted
 		switch {
 		case errors.As(err, &halt):
@@ -125,7 +125,7 @@ func TestDST_Saga_Randomized(t *testing.T) {
 	for seed := uint64(1); seed <= 300; seed++ {
 		rng := rand.New(rand.NewPCG(seed, 0xD1B54A32D192ED03))
 		var charge, refund int
-		mem := NewMemStore()
+		mem := memJournal()
 		tools := []Tool{chargeSaga(&charge, &refund), boomTool{}}
 
 		var err error
@@ -138,7 +138,7 @@ func TestDST_Saga_Randomized(t *testing.T) {
 				break // settled
 			}
 		}
-		var halt *ResumeHalt
+		var halt *OutcomeUnknown
 		var sa *SagaAborted
 		switch {
 		case errors.As(err, &halt):

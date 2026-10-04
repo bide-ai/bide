@@ -11,6 +11,8 @@ import (
 	"time"
 
 	"github.com/bide-ai/bide/agent"
+	"github.com/bide-ai/bide/agent/agenttest"
+	"github.com/bide-ai/bide/internal/journaltest"
 )
 
 // A tool result whose JSON carries invalid UTF-8 inside a string is recorded, as MemStore and
@@ -19,15 +21,16 @@ import (
 // then halt on every resume. Skips without PG_DSN.
 func TestPostgres_RecordsInvalidUTF8AfterTheEffect(t *testing.T) {
 	s, ctx := openTestStore(t)
+	j := agenttest.MustJournal(s)
 	runID := uniqueID(t, "pg-utf8-")
 	result := json.RawMessage("{\"body\":\"caf\xe9 \xff\"}")
-	live, err := s.Do(ctx, runID, "charge", func(context.Context) (agent.Record, error) {
+	live, err := journaltest.Do(ctx, j, runID, "charge", func(context.Context) (agent.Record, error) {
 		return agent.Record{Kind: agent.StepToolResult, ToolUseID: "charge", Result: result}, nil
 	})
 	if err != nil {
 		t.Fatalf("Do after the effect: %v", err)
 	}
-	hist, err := s.History(ctx, runID)
+	hist, err := j.History(ctx, runID)
 	if err != nil || len(hist) != 2 { // the journal header, then the step
 		t.Fatalf("History = %d records, %v", len(hist), err)
 	}

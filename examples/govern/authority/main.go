@@ -5,9 +5,10 @@
 // every governed action's leaf commits to who acted, on whose behalf, under what authority, and the
 // resulting state.
 //
-// No LLM or network: the "agent" here just calls the governed buy tool in a loop, so the example
-// runs offline and exercises the governance + identity + audit machinery. Swap the loop for a real
-// agent and the guarantees are identical.
+// No LLM or network: the agent's model is scripted (agenttest.ScriptedModel) to call the governed
+// buy tool six times, so the example runs offline and exercises the governance + identity + audit
+// machinery through a real agent run. Swap the scripted model for a real one and the guarantees are
+// identical.
 package main
 
 import (
@@ -16,8 +17,10 @@ import (
 	"crypto/rand"
 	"encoding/json"
 	"fmt"
+	"log"
 
 	"github.com/bide-ai/bide/agent"
+	"github.com/bide-ai/bide/agent/agenttest"
 	"github.com/bide-ai/bide/audit"
 	"github.com/bide-ai/bide/govern"
 	gsm "github.com/blackwell-systems/gsm"
@@ -58,34 +61,39 @@ func main() {
 		{"exec-agent@1.4.2", "desk-RATES", "grant#c3d4", 7},
 	}
 
-	store := agent.NewMemStore()
+	store, err := agent.NewJournal(agent.NewMemStore())
+	if err != nil {
+		log.Fatal(err)
+	}
 	for _, d := range desks {
 		// The deployment seeds the delegated limit from the (verified) grant, and binds the acting
 		// identity to the run. The agent never sets its own limit.
 		gov := govern.New(m, m.NewState().SetInt(limit, d.limit))
 		buy := govern.EventTool(gov, govern.EventToolConfig{Name: "buy", Description: "buy $1M", Event: "buy", PolicyDigest: policyDigest})
 		id := agent.Identity{Actor: d.actor, OnBehalfOf: d.principal, AuthorityRef: d.grant}
-		runCtx := agent.ContextWithIdentity(ctx, id)
 
-		// The agent tries to buy $6M (six calls). Governance caps it at the desk's granted limit.
-		var lastLeaf json.RawMessage
-		for i := 0; i < 6; i++ {
-			leaf, err := buy.Call(runCtx, []byte(`{}`))
-			if err != nil {
-				panic(err)
-			}
-			lastLeaf = leaf
+		// The agent tries to buy $6M (six calls). Governance caps it at the desk's granted limit. The
+		// scripted model stands in for an LLM: it calls buy six times, then answers. The run journals
+		// every call as a tool-result leaf, the last one under the ID "buy/last".
+		turns := make([]agenttest.ScriptedTurn, 0, 7)
+		for i := 1; i < 6; i++ {
+			turns = append(turns, agenttest.ToolTurn(fmt.Sprintf("buy/%d", i), "buy", `{}`))
+		}
+		turns = append(turns, agenttest.ToolTurn("buy/last", "buy", `{}`), agenttest.TextTurn("done"))
+		a, err := agent.New(agenttest.NewScriptedModel(turns...), store, agent.WithTools(buy), agent.WithIdentity(id))
+		if err != nil {
+			log.Fatal(err)
+		}
+		runID := "run/" + d.principal
+		if _, err := a.Run(ctx, runID, agent.UserText("buy $6M")); err != nil {
+			panic(err)
 		}
 		final := gov.State().GetInt(exposure)
 		fmt.Printf("%s (limit $%dM): tried to buy $6M, governed to $%dM\n", d.principal, d.limit, final)
 
-		// The last governed action, journaled and shown: it binds identity, authority, policy, state.
-		runID := "run/" + d.principal
-		if _, err := store.Do(ctx, runID, "buy/last", func(context.Context) (agent.Record, error) {
-			return agent.Record{Kind: agent.StepToolResult, ToolUseID: "buy/last", Result: lastLeaf}, nil
-		}); err != nil {
-			panic(err)
-		}
+		// The last governed action, read back from the journal: it binds identity, authority, policy,
+		// state.
+		lastLeaf := toolResult(ctx, store, runID, "buy/last")
 		var leaf map[string]any
 		_ = json.Unmarshal(lastLeaf, &leaf)
 		fmt.Printf("  leaf: actor=%v on_behalf_of=%v authority=%v state=%v\n\n",
@@ -118,4 +126,18 @@ func main() {
 
 	fmt.Println("\nOne proven policy governed two desks to their own delegated limits, and every")
 	fmt.Println("action is provable to who acted, for whom, under what authority. Authority is state.")
+}
+
+// toolResult reads the result the run journaled for the tool call toolUseID.
+func toolResult(ctx context.Context, store *agent.Journal, runID, toolUseID string) json.RawMessage {
+	for rec, err := range store.Records(ctx, runID) {
+		if err != nil {
+			log.Fatal(err)
+		}
+		if rec.Kind == agent.StepToolResult && rec.ToolUseID == toolUseID {
+			return rec.Result
+		}
+	}
+	log.Fatalf("run %s has no result for tool call %s", runID, toolUseID)
+	return nil
 }

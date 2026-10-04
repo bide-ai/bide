@@ -25,7 +25,7 @@ Give each voter a name and a `Decide` function that asks one model and returns a
 `govern.Quorum` runs the voters in parallel, tallies their answers, and tells you whether at least
 `k` of them agreed. You also give the quorum itself a name, so one run can hold several quorums.
 
-<!-- docsnip: setup ctx context.Context; store agent.Durable; claudeAgent, gptAgent, geminiAgent *agent.Agent; ticket string; func apply(string) error; func escalate(govern.QuorumResult) error; returns error -->
+<!-- docsnip: setup ctx context.Context; store *agent.Journal; claudeAgent, gptAgent, geminiAgent *agent.Agent; ticket string; func apply(string) error; func escalate(govern.QuorumResult) error; returns error -->
 ```go
 // Each model answers with one label from a fixed set.
 type verdict struct {
@@ -36,8 +36,8 @@ func voter(name string, a *agent.Agent, ticket string) govern.Voter {
     return govern.Voter{
         Name: name,
         Decide: func(ctx context.Context) (string, error) {
-            // RunTyped works with every provider; RunTypedNative is ErrConfig on Anthropic.
-            v, err := agent.RunTyped[verdict](ctx, a, "refund-1234/vote/"+name, ticket)
+            // RunTyped works with every provider; WithOutputMode(OutputNative) is ErrConfig on Anthropic.
+            v, _, err := a.RunTyped[verdict](ctx, "refund-1234/vote/"+name, agent.UserText(ticket))
             return v.Decision, err
         },
     }
@@ -83,7 +83,7 @@ A tie for the most votes is never agreement. With four voters and `k = 2`, a 2-2
   less lets two different decisions both reach `k`; the tie rule above keeps that from counting as
   agreement.
 - **Keep the answers comparable.** Votes are compared as exact strings, so each model must answer
-  from a small fixed set of labels. Use structured output (`RunTyped`, or `RunTypedNative` on a
+  from a small fixed set of labels. Use structured output (`RunTyped`, natively with `WithOutputMode(OutputNative)` on a
   provider with a response format, or a forced tool choice), and normalize anything else before
   returning it. Open-ended text cannot be put to a quorum.
 
@@ -179,7 +179,7 @@ Commit through an attested `govern.EventTool` (`EventToolConfig.PolicyDigest` se
 Anyone holding the published proofs can check the decision without access to your systems. Export
 a proof for the tally and for every vote with `audit.ProveStep`, signed under the run's tree head:
 
-<!-- docsnip: setup ctx context.Context; store agent.Durable; sth audit.SignedTreeHead -->
+<!-- docsnip: setup ctx context.Context; store *agent.Journal; sth audit.SignedTreeHead -->
 ```go
 tally, err := audit.ProveStep(ctx, store, "refund-1234", govern.QuorumTallyStep("refund"), sth)
 vote, err := audit.ProveStep(ctx, store, "refund-1234", govern.QuorumVoteStep("refund", "claude"), sth)
@@ -219,7 +219,7 @@ It fails unless all of the following hold:
 ## How it works
 
 A quorum is not a special kind of agent; it is built from pieces bide already has. The voters run
-with `agent.Parallel`, so each vote is a durable step. The tally is plain Go, recorded as a step of
+with `Journal.Parallel`, so each vote is a durable step. The tally is plain Go, recorded as a step of
 its own. Escalation uses the approval gate, and enforcement uses governed state. Because each piece
 is durable and recorded, the quorum inherits crash safety and offline verification without any
 machinery of its own.

@@ -6,7 +6,6 @@
 package agent
 
 import (
-	"bytes"
 	"context"
 	"encoding/json"
 	"errors"
@@ -29,10 +28,10 @@ type runPlan struct {
 	filter     map[string]bool // the journaled tool filter; nil: none
 	reqTools   []ToolSpec      // the specs every request of the drive is sent
 	maxConc    int
-	cancelKey  string  // the key the drive's cancellation checks read
-	root       string  // a sub-run's tree root, whose cancellation the checks read too; "" for a root
-	rootStore  Durable // the store root journals to (see rootStoreOf)
-	checkTurn  bool    // a turn boundary has passed since the drive's Load
+	cancelKey  string   // the key the drive's cancellation checks read
+	root       string   // a sub-run's tree root, whose cancellation the checks read too; "" for a root
+	rootStore  *Journal // the store root journals to (see rootStoreOf)
+	checkTurn  bool     // a turn boundary has passed since the drive's Load
 }
 
 // errSagaRun is run's answer for a drive that passed no saga option of a run journaled as a saga:
@@ -131,7 +130,7 @@ func (a *Agent) openPlan(ctx context.Context, runID string, d *driveSpec, recs [
 		if err != nil {
 			return ctx, nil, nil, fmt.Errorf("encode %s (run %s): %w (%w)", runLimitsStep(n), runID, err, ErrConfig)
 		}
-		rec, err := putRecord(ctx, a.store, runID, runLimitsStep(n), Record{Kind: StepValue, Result: b})
+		rec, err := a.store.put(ctx, runID, runLimitsStep(n), Record{Kind: StepValue, Result: b})
 		if err != nil {
 			return ctx, nil, nil, fmt.Errorf("record %s (run %s): %w (%w)", runLimitsStep(n), runID, err, ErrStorage)
 		}
@@ -184,13 +183,13 @@ func (a *Agent) openPlan(ctx context.Context, runID string, d *driveSpec, recs [
 		if pr := start.Principal; pr != nil {
 			run.OnBehalfOf, run.AuthorityRef = pr.OnBehalfOf, pr.AuthorityRef
 		}
-		ctx = ContextWithIdentity(ctx, run)
+		ctx = contextWithIdentity(ctx, run)
 	}
 	if d.cfg.waker != nil {
-		ctx = ContextWithWaker(ctx, d.cfg.waker)
+		ctx = contextWithWaker(ctx, d.cfg.waker)
 	}
 	if d.cfg.clock != nil {
-		ctx = ContextWithClock(ctx, d.cfg.clock)
+		ctx = contextWithClock(ctx, d.cfg.clock)
 	}
 	return ctx, p, wrote, nil
 }
@@ -201,26 +200,14 @@ var startWritten = []string{runStartStep}
 
 // onlyWritten loads runID again after its open wrote the records wrote, and reports whether the
 // run holds nothing that before (the open's Load) did not but those records and the journal
-// header. Over a Journal it is one Load whose entries are not decoded (their names suffice); over
-// another Durable, one History.
+// header. It is one Load whose entries are not decoded (their names suffice).
 func (a *Agent) onlyWritten(ctx context.Context, runID string, before []Record, wrote []string) (bool, error) {
-	if j := journalOf(a.store); j != nil {
-		for e, err := range j.store.Load(ctx, runID, -1) {
-			if err != nil {
-				return false, storageErr("load "+runID, err)
-			}
-			if !knownToOpen(e.Name, before, wrote) {
-				return false, nil
-			}
+	j := a.store
+	for e, err := range j.store.Load(ctx, runID, -1) {
+		if err != nil {
+			return false, storageErr("load "+runID, err)
 		}
-		return true, nil
-	}
-	recs, err := a.store.History(ctx, runID)
-	if err != nil {
-		return false, storageErr("load history "+runID, err)
-	}
-	for _, r := range recs {
-		if !knownToOpen(r.Name, before, wrote) {
+		if !knownToOpen(e.Name, before, wrote) {
 			return false, nil
 		}
 	}
@@ -326,22 +313,22 @@ func (a *Agent) holdDrive(runID string, d *driveSpec, start RunStart, idn Identi
 		return mismatch("input")
 	case start.Saga && !d.cfg.saga:
 		if d.strictSaga {
-			return fmt.Errorf("run %s was started as a saga; resume it with RunSaga (or StreamSaga): %w", runID, ErrConfig)
+			return fmt.Errorf("run %s was started as a saga; drive it with WithSaga(): %w", runID, ErrConfig)
 		}
 		return errSagaRun
 	case !start.Saga && d.cfg.saga:
-		return fmt.Errorf("run %s was not started as a saga; resume it without WithSaga (Run, Stream, ResumeRun): %w", runID, ErrConfig)
+		return fmt.Errorf("run %s was not started as a saga; resume it without WithSaga (Run, Stream, Resume): %w", runID, ErrConfig)
 	case !start.legacy() && (start.Typed == nil) != (d.typed == nil):
 		if start.Typed != nil {
-			return fmt.Errorf("run %s is a typed run; resume it with RunTypedMessage or ResumeTyped and its answer type: %w", runID, ErrConfig)
+			return fmt.Errorf("run %s is a typed run; resume it with RunTyped or ResumeTyped and its answer type: %w", runID, ErrConfig)
 		}
-		return fmt.Errorf("run %s is not a typed run; resume it with RunMessage or ResumeRun: %w", runID, ErrConfig)
+		return fmt.Errorf("run %s is not a typed run; resume it with Run or Resume: %w", runID, ErrConfig)
 	case d.typed != nil && start.Typed != nil && d.typed.SchemaDigest != start.Typed.SchemaDigest:
 		return mismatch("answer type (its schema digest differs)")
 	case d.typed != nil && start.Typed != nil && d.typed.Mode != "" && d.typed.Mode != start.Typed.Mode:
 		return mismatch("output mode")
 	case d.typed == nil && d.cfg.outputMode != "":
-		return fmt.Errorf("WithOutputMode applies to a typed run (RunTypedMessage), and run %s is not one: %w", runID, ErrConfig)
+		return fmt.Errorf("WithOutputMode applies to a typed run (RunTyped), and run %s is not one: %w", runID, ErrConfig)
 	case d.cfg.tools != nil && !slices.Equal(d.cfg.tools, start.Tools):
 		return mismatch("tool filter")
 	case d.cfg.systemPrompt != nil && !sameSetting(d.cfg.systemPrompt, start.Settings.SystemPrompt):
@@ -427,7 +414,7 @@ func (a *Agent) refuseFiltered(ctx context.Context, runID string, tu ToolUse, wh
 	if err != nil {
 		return nil, fmt.Errorf("encode the refusal of call %s: %w (%w)", tu.ID, err, ErrStorage)
 	}
-	rec, err := putRecord(ctx, a.store, runID, ToolResultStep(tu.ID), Record{Kind: StepToolResult, ToolUseID: tu.ID, IsError: true, Result: text})
+	rec, err := a.store.put(ctx, runID, ToolResultStep(tu.ID), Record{Kind: StepToolResult, ToolUseID: tu.ID, IsError: true, Result: text})
 	if err != nil {
 		return nil, err
 	}
@@ -438,14 +425,7 @@ func (a *Agent) refuseFiltered(ctx context.Context, runID string, tu ToolUse, wh
 // journal holds and whether this call stored it.
 func (a *Agent) putStart(ctx context.Context, runID string, b json.RawMessage) (json.RawMessage, bool, error) {
 	rec := Record{Kind: StepValue, Result: b}
-	j := journalOf(a.store)
-	if j == nil {
-		got, err := putRecord(ctx, a.store, runID, runStartStep, rec)
-		if err != nil {
-			return nil, false, err
-		}
-		return got.Result, bytes.Equal(got.Result, b), nil
-	}
+	j := a.store
 	if err := j.ensureHeader(ctx, runID); err != nil {
 		return nil, false, err
 	}

@@ -37,11 +37,15 @@ func leakyFanOut(next ModelHandler) ModelHandler {
 // model call running past the end of the run: its late events are dropped, never sent on the
 // closed event channel (which panics and takes down the process).
 func TestStream_SurvivesEventsAfterTheRunEnds(t *testing.T) {
-	a := New(slowDeltas{}, NewMemStore()).Use(leakyFanOut)
-	as := a.Stream(context.Background(), "r1", "hi")
+	a := mustNew(slowDeltas{}, memJournal(), WithMiddleware(leakyFanOut))
+	as := a.Stream(context.Background(), "r1", UserText("hi"))
 	for range as.Events() {
 	}
-	out, err := as.Final()
+	res, err := as.Result()
+	var out Message
+	if res != nil {
+		out = res.Message
+	}
 	if err != nil || textOf(out) != "answer" {
 		t.Fatalf("Final = %q, %v; want the middleware's answer", textOf(out), err)
 	}
@@ -100,7 +104,7 @@ func TestStream_LeftoverRequestCannotStreamIntoTheNextTurn(t *testing.T) {
 			return ModelResponse{Message: Message{Role: RoleAssistant, Parts: []Part{ToolUse{ID: "c1", Name: "lookup", Args: json.RawMessage(`{}`)}}}}, nil
 		}
 	}
-	as := New(m, NewMemStore(), tool).Use(leave).Stream(context.Background(), "r", "go")
+	as := mustNew(m, memJournal(), WithTools(tool), WithMiddleware(leave)).Stream(context.Background(), "r", UserText("go"))
 	for ev := range as.Events() {
 		if me, ok := ev.(ModelEvent); ok {
 			if d, ok := me.Event.(TextDelta); ok && d.Text == "late" {
@@ -108,7 +112,7 @@ func TestStream_LeftoverRequestCannotStreamIntoTheNextTurn(t *testing.T) {
 			}
 		}
 	}
-	if out, err := as.Final(); err != nil || out.Text() != "done" {
+	if out, err := answerOf(as.Result()); err != nil || out.Text() != "done" {
 		t.Fatalf("Final = %q, %v; want done", out.Text(), err)
 	}
 }

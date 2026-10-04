@@ -80,7 +80,7 @@ type SessionRef struct {
 	Key  string `json:"key,omitempty"`
 }
 
-// TypedStart is how a typed run (RunTypedMessage) was started: its output mode and the JSON
+// TypedStart is how a typed run (RunTyped) was started: its output mode and the JSON
 // schema of its answer type, in full and as a digest. Resuming a typed run through an untyped
 // entry point, or with another answer type, is ErrConfig before any model call.
 type TypedStart struct {
@@ -191,7 +191,7 @@ func plainUserText(m Message) (string, bool) {
 type RunKind string
 
 const (
-	// RunKindAgent is a run an Agent drives (Run, RunSaga, Stream, a sub-agent, a session turn).
+	// RunKindAgent is a run an Agent drives (Run, Stream, a sub-agent, a session turn).
 	// A run:start journaled before P14 records no kind (an agent run's did not; a flow's always
 	// recorded its kind): any agent entry point may drive it (a plain run, a session turn, a typed
 	// run), as before, since the record does not say which started it. P14 writes the kind of
@@ -199,13 +199,13 @@ const (
 	RunKindAgent RunKind = "agent"
 	// RunKindFlow is a run a plan flow drives (plan.Flow.Run). RunStart.Flow names the flow.
 	RunKindFlow RunKind = "flow"
-	// RunKindSessionTurn is a Session turn's run (Session.SendMessage, Session.SendMessageOnce).
+	// RunKindSessionTurn is a Session turn's run (Session.Send, Session.SendOnce).
 	// RunStart.Session names the session. Only the session drives it: it is seeded with the
 	// session's transcript, and only the session records the turn (see Recover).
 	RunKindSessionTurn RunKind = "session_turn"
 )
 
-// OutputMode is how a typed run (RunTypedMessage) collects its answer: OutputTool (the default)
+// OutputMode is how a typed run (RunTyped) collects its answer: OutputTool (the default)
 // through a final_answer tool call whose arguments are the answer, or OutputNative through the
 // provider's native structured-output constraint (a JSON-schema response format).
 type OutputMode string
@@ -215,7 +215,7 @@ const (
 	// default; see RunTyped).
 	OutputTool OutputMode = "tool"
 	// OutputNative collects a typed run's answer through the provider's native structured output
-	// (see RunTypedNative).
+	// (WithOutputMode(OutputNative)).
 	OutputNative OutputMode = "native"
 )
 
@@ -263,13 +263,9 @@ func (s RunStart) admits(k RunKind) bool {
 //	if start.Kind == agent.RunKindFlow {
 //	    return driveFlow(ctx, start.Flow.Name, runID, start.Input) // the flow's Run, with the input decoded
 //	}
-//	if start.Saga {
-//	    _, err = a.RunSaga(ctx, runID, start.Input)
-//	} else {
-//	    _, err = a.Run(ctx, runID, start.Input)
-//	}
-func RecordedStart(ctx context.Context, d Durable, runID string) (RunStart, bool, error) {
-	r, ok, err := lookup(ctx, d, runID, runStartStep)
+//	_, err = a.Run(ctx, runID, start.Input) // a saga's later drives run as the saga
+func RecordedStart(ctx context.Context, d *Journal, runID string) (RunStart, bool, error) {
+	r, ok, err := d.Get(ctx, runID, runStartStep)
 	if err != nil || !ok || r.Kind != StepValue {
 		return RunStart{}, false, err
 	}
@@ -282,7 +278,7 @@ func RecordedStart(ctx context.Context, d Durable, runID string) (RunStart, bool
 
 // beginRun is journalhook.Begin: the completion of a finished run, or else want held as the run's
 // start (see holdToStart).
-func beginRun(ctx context.Context, d Durable, runID string, want RunStart) (json.RawMessage, bool, error) {
+func beginRun(ctx context.Context, d *Journal, runID string, want RunStart) (json.RawMessage, bool, error) {
 	if want.kind() == RunKindFlow {
 		// A flow's input is held by its canonical JSON (see equalJSON); one that has none (a
 		// repeated key, a lone surrogate) could not be told apart from another, so it is refused.
@@ -294,17 +290,14 @@ func beginRun(ctx context.Context, d Durable, runID string, want RunStart) (json
 	if err != nil {
 		return nil, false, fmt.Errorf("encode %s (run %s): %w (%w)", runStartStep, runID, err, ErrConfig)
 	}
-	var recs []Record
-	if j := journalOf(d); j != nil {
-		rec, inserted, err := j.putNew(ctx, runID, runStartStep, Record{Kind: StepValue, Result: b})
-		if err != nil {
-			return nil, false, fmt.Errorf("record %s (run %s): %w", runStartStep, runID, err)
-		}
-		if inserted {
-			return nil, false, nil // a new run: nothing to hold it to, and no completion
-		}
-		recs = []Record{rec}
+	rec, inserted, err := d.putNew(ctx, runID, runStartStep, Record{Kind: StepValue, Result: b})
+	if err != nil {
+		return nil, false, fmt.Errorf("record %s (run %s): %w", runStartStep, runID, err)
 	}
+	if inserted {
+		return nil, false, nil // a new run: nothing to hold it to, and no completion
+	}
+	recs := []Record{rec}
 	end, ok, err := firstEndOf(ctx, d, runID, runCompleteStep, runCancelledStep)
 	if err != nil {
 		return nil, false, err
@@ -350,7 +343,7 @@ func checkFinishedStart(runID string, recs []Record, want RunKind, input *Messag
 // against the recorded one: a drive that differs is ErrConfig, since the run's journal answers
 // the recorded input under the recorded entry point's rules. recs is the run's journal as the
 // drive read it; a start recorded there is checked without another read.
-func holdToStart(ctx context.Context, d Durable, runID string, recs []Record, want RunStart) error {
+func holdToStart(ctx context.Context, d *Journal, runID string, recs []Record, want RunStart) error {
 	var rec Record
 	found := false
 	for _, r := range recs {
@@ -364,7 +357,7 @@ func holdToStart(ctx context.Context, d Durable, runID string, recs []Record, wa
 		if err != nil {
 			return fmt.Errorf("encode %s (run %s): %w (%w)", runStartStep, runID, err, ErrConfig)
 		}
-		rec, err = putRecord(ctx, d, runID, runStartStep, Record{Kind: StepValue, Result: b})
+		rec, err = d.put(ctx, runID, runStartStep, Record{Kind: StepValue, Result: b})
 		if err != nil {
 			return fmt.Errorf("record %s (run %s): %w (%w)", runStartStep, runID, err, ErrStorage)
 		}
@@ -379,7 +372,7 @@ func holdToStart(ctx context.Context, d Durable, runID string, recs []Record, wa
 	case got.kind() == RunKindFlow && (got.Flow == nil || want.Flow == nil || got.Flow.Name != want.Flow.Name):
 		return fmt.Errorf("run %s was started by flow %s, not %s; resume it with the flow it started with: %w", runID, flowName(got.Flow), flowName(want.Flow), ErrConfig)
 	case got.Saga && !want.Saga:
-		return fmt.Errorf("run %s was started as a saga; resume it with RunSaga (or StreamSaga): %w", runID, ErrConfig)
+		return fmt.Errorf("run %s was started as a saga; drive it with WithSaga(): %w", runID, ErrConfig)
 	case !got.Saga && want.Saga:
 		return fmt.Errorf("run %s was not started as a saga; resume it with Run (or Stream): %w", runID, ErrConfig)
 	case got.kind() == RunKindFlow:

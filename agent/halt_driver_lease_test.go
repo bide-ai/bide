@@ -26,7 +26,7 @@ func TestHaltLiveCheck_LeasesTheRunItsDriverLeases(t *testing.T) {
 		ctx := context.Background()
 		ref := HaltRef{RunID: c.halted, Op: OpRef{Kind: OpTool, ID: "x"}, Cause: HaltCrashed}
 		check := func(store *MemStore) error {
-			release, _, err := checkNoLiveDriver(ctx, store, "ResolveHaltRef", ref, resolveConfig{now: time.Now})
+			release, _, err := checkNoLiveDriver(ctx, mustJournal(store), "ResolveHalt", ref, resolveConfig{now: time.Now})
 			if err == nil {
 				release()
 			}
@@ -61,25 +61,34 @@ func TestHaltLiveCheck_AgreesWithTheCallsRootRunID(t *testing.T) {
 	for _, viaSession := range []bool{false, true} {
 		ctx := context.Background()
 		store := NewMemStore()
+		j := mustJournal(store)
 		var info RunInfo
-		probe := Func("probe", "", Safety{ReadOnly: true}, func(ctx context.Context, _ struct{}) (string, error) {
+		probe := MustFunc("probe", "", func(ctx context.Context, _ struct{}) (string, error) {
 			info, _ = RunInfoFrom(ctx)
 			return "ok", nil
-		})
-		sub := New(&scriptModel{turns: [][]Emit{toolTurn("t2", "probe", `{}`), textTurn("sub done")}}, store, probe)
-		parent := New(&scriptModel{turns: [][]Emit{toolTurn("t1", "helper", `{"task":"x"}`), textTurn("done")}}, store, SubAgent("helper", "", sub))
+		}, WithSafety(Safety{ReadOnly: true}))
+		sub := mustNew(
+			&scriptModel{turns: [][]Emit{toolTurn("t2", "probe", `{}`), textTurn("sub done")}},
+			j,
+			WithTools(probe),
+		)
+		parent := mustNew(
+			&scriptModel{turns: [][]Emit{toolTurn("t1", "helper", `{"task":"x"}`), textTurn("done")}},
+			j,
+			WithTools(MustSubAgent("helper", "", sub)),
+		)
 		if viaSession {
-			if _, err := openSession(t, parent, "c1").Send(ctx, "go"); err != nil {
+			if _, err := openSession(t, parent, "c1").Send(ctx, UserText("go")); err != nil {
 				t.Fatal(err)
 			}
-		} else if _, err := parent.Run(ctx, "r1", "go"); err != nil {
+		} else if _, err := parent.Run(ctx, "r1", UserText("go")); err != nil {
 			t.Fatal(err)
 		}
 		if ok, err := store.AcquireLease(ctx, info.RootRunID, "driver", time.Hour); err != nil || !ok {
 			t.Fatal(ok, err)
 		}
 		ref := HaltRef{RunID: info.RunID, Op: OpRef{Kind: OpTool, ID: "t2"}, Cause: HaltCrashed}
-		release, _, err := checkNoLiveDriver(ctx, store, "ResolveHaltRef", ref, resolveConfig{now: time.Now})
+		release, _, err := checkNoLiveDriver(ctx, j, "ResolveHalt", ref, resolveConfig{now: time.Now})
 		if err == nil {
 			release()
 		}
@@ -96,14 +105,14 @@ func TestHaltLiveCheck_AgreesWithTheCallsRootRunID(t *testing.T) {
 func TestRun_FinishedRunRefusesAnotherInput(t *testing.T) {
 	ctx := context.Background()
 	model := &replyModel{}
-	a := New(model, NewMemStore())
-	if msg, err := a.Run(ctx, "r1", "A"); err != nil || msg.Text() != "re: A" {
+	a := mustNew(model, memJournal())
+	if msg, err := answerOf(a.Run(ctx, "r1", UserText("A"))); err != nil || msg.Text() != "re: A" {
 		t.Fatalf(`Run("A") = %q, %v`, msg.Text(), err)
 	}
-	if msg, err := a.Run(ctx, "r1", "B"); !errors.Is(err, ErrConfig) {
+	if msg, err := answerOf(a.Run(ctx, "r1", UserText("B"))); !errors.Is(err, ErrConfig) {
 		t.Fatalf(`Run("B") of the run that answered "A" = %q, %v; want ErrConfig`, msg.Text(), err)
 	}
-	if msg, err := a.Run(ctx, "r1", "A"); err != nil || msg.Text() != "re: A" {
+	if msg, err := answerOf(a.Run(ctx, "r1", UserText("A"))); err != nil || msg.Text() != "re: A" {
 		t.Fatalf(`Run("A") again = %q, %v; want the recorded answer`, msg.Text(), err)
 	}
 	if n := model.calls.Load(); n != 1 {

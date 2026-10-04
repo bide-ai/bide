@@ -14,7 +14,9 @@ import (
 	"testing"
 
 	"github.com/bide-ai/bide/agent"
+	"github.com/bide-ai/bide/agent/agenttest"
 	"github.com/bide-ai/bide/audit"
+	"github.com/bide-ai/bide/internal/journaltest"
 )
 
 // M1 follow-up. The fix holds record_bytes to "one reading for every JSON reader" in the proof
@@ -32,7 +34,8 @@ func Test_R105b_AbsenceOverRecordBytesThatReadTwoWays(t *testing.T) {
 	for name, rec := range cases {
 		t.Run(name, func(t *testing.T) {
 			s := agent.NewMemStore()
-			if _, err := s.Do(ctx, "r", "first", func(context.Context) (agent.Record, error) {
+			j := agenttest.MustJournal(s)
+			if _, err := journaltest.Do(ctx, j, "r", "first", func(context.Context) (agent.Record, error) {
 				return agent.Record{Kind: agent.StepValue, Result: json.RawMessage(`1`)}, nil
 			}); err != nil {
 				t.Fatal(err)
@@ -42,7 +45,7 @@ func Test_R105b_AbsenceOverRecordBytesThatReadTwoWays(t *testing.T) {
 			}
 			signer := p11Signers(t)["ed25519"]
 			v := p11Verifier(t, signer)
-			recs, err := s.History(ctx, "r")
+			recs, err := j.History(ctx, "r")
 			if err != nil {
 				t.Fatal(err)
 			}
@@ -55,7 +58,7 @@ func Test_R105b_AbsenceOverRecordBytesThatReadTwoWays(t *testing.T) {
 			t.Logf("Go journal reads kind=%q; the bytes spell \"kind\":\"tool_result\" first (%v)", recs[1].Kind, first)
 
 			// The proof path refuses these bytes (the M1 fix).
-			exp, err := audit.ExportJournal(ctx, s, "r")
+			exp, err := audit.ExportJournal(ctx, j, "r")
 			if err != nil {
 				t.Fatal(err)
 			}
@@ -63,7 +66,7 @@ func Test_R105b_AbsenceOverRecordBytesThatReadTwoWays(t *testing.T) {
 				t.Fatalf("sanity: the journal export path accepted the record: %v", err)
 			}
 
-			jth, err := audit.NewTreeHead(ctx, s, "r", p11Now())
+			jth, err := audit.NewTreeHead(ctx, j, "r", p11Now())
 			if err != nil {
 				t.Fatal(err)
 			}
@@ -128,13 +131,17 @@ func Test_R105b_StartedRetrySafeCallIsNotProvablyAbsent(t *testing.T) {
 			ctx := context.Background()
 			m := agent.NewMemStore()
 			fired := 0
-			charge := agent.Func("charge", "", safety.s, func(context.Context, struct{}) (string, error) { fired++; return "charged", nil })
+			charge := agent.MustFunc("charge", "", func(context.Context, struct{}) (string, error) { fired++; return "charged", nil }, agent.WithSafety(safety.s))
 			j, err := agent.NewJournal(&failResultStore{m: m})
 			if err != nil {
 				t.Fatal(err)
 			}
-			_, runErr := agent.New(agent.NewScriptedModel(agent.ToolTurn("c1", "charge", `{}`), agent.TextTurn("done")), j, charge).
-				SetMaxConcurrency(1).Run(ctx, "r", "hi")
+			_, runErr := agenttest.MustNew(
+				agenttest.NewScriptedModel(agenttest.ToolTurn("c1", "charge", `{}`), agenttest.TextTurn("done")),
+				j,
+				agent.WithTools(charge),
+				agent.WithMaxConcurrency(1),
+			).Run(ctx, "r", agent.UserText("hi"))
 			if runErr == nil || fired != 1 {
 				t.Fatalf("setup: run err %v, fired %d (want an error and one firing)", runErr, fired)
 			}
@@ -180,20 +187,22 @@ func Test_R105b_StartedRetrySafeCallIsNotProvablyAbsent(t *testing.T) {
 func Test_R105b_AuditorRecomputeOverRedactedJournalOmitsAPolicy(t *testing.T) {
 	ctx := context.Background()
 	s, _ := p11GovernedRun(t)
-	if _, err := s.Do(ctx, "gov", "call:rogue", func(context.Context) (agent.Record, error) {
+	j := agenttest.MustJournal(s)
+	if _, err := journaltest.Do(ctx, j, "gov", "call:rogue", func(context.Context) (agent.Record, error) {
 		return agent.Record{Kind: agent.StepToolResult, ToolUseID: "rogue", Result: json.RawMessage(`{"policy_digest":"EVIL","ok":true}`)}, nil
 	}); err != nil {
 		t.Fatal(err)
 	}
-	recs, _ := s.History(ctx, "gov")
+	recs, _ := j.History(ctx, "gov")
 	if used, err := audit.PoliciesUsed(recs); err != nil || !slices.Contains(used, "EVIL") {
 		t.Fatalf("sanity: EVIL not used before redaction (%v, %v)", used, err)
 	}
-	jth, _ := audit.NewTreeHead(ctx, s, "gov", p11Now())
+	jth, _ := audit.NewTreeHead(ctx, j, "gov", p11Now())
 
 	red := r105Copy(t, s, "gov", "call:rogue")
-	rrecs, _ := red.History(ctx, "gov")
-	rjth, _ := audit.NewTreeHead(ctx, red, "gov", p11Now())
+	j2 := agenttest.MustJournal(red)
+	rrecs, _ := j2.History(ctx, "gov")
+	rjth, _ := audit.NewTreeHead(ctx, j2, "gov", p11Now())
 	if !bytes.Equal(rjth.Root, jth.Root) {
 		t.Fatal("sanity: redaction changed the journal root")
 	}
@@ -221,8 +230,9 @@ func Test_R105b_ProvenTallyResultReadsTwoWays(t *testing.T) {
 	// The same journal, with the tally's result rewritten to read two ways.
 	tallyName := agent.ApprovalTallyStep("c1")
 	dst := agent.NewMemStore()
+	j := agenttest.MustJournal(dst)
 	found := false
-	for e, err := range g.store.(*agent.MemStore).Load(ctx, gateRun, -1) {
+	for e, err := range g.store.Store().(*agent.MemStore).Load(ctx, gateRun, -1) {
 		if err != nil {
 			t.Fatal(err)
 		}
@@ -241,19 +251,19 @@ func Test_R105b_ProvenTallyResultReadsTwoWays(t *testing.T) {
 	if !found {
 		t.Fatal("setup: no tally record")
 	}
-	th, err := audit.NewTreeHead(ctx, dst, gateRun, 1700000000)
+	th, err := audit.NewTreeHead(ctx, j, gateRun, 1700000000)
 	if err != nil {
 		t.Fatal(err)
 	}
 	sth := signTH(t, th, g.logPriv)
 	// The producer refuses to build evidence from such a tally.
-	if _, err := audit.ApprovalEvidence(ctx, dst, gateRun, "c1", sth); !errors.Is(err, audit.ErrMalformed) {
+	if _, err := audit.ApprovalEvidence(ctx, j, gateRun, "c1", sth); !errors.Is(err, audit.ErrMalformed) {
 		t.Errorf("ApprovalEvidence over the two-way tally: err %v, want ErrMalformed", err)
 	}
 	// Evidence assembled by hand, proof by proof, reaches VerifyApprovals.
 	acts := make([]audit.EvidenceAction, len(orig))
 	for i, a := range orig {
-		pb, err := audit.ProveRecord(ctx, dst, gateRun, a.Bundle.Inclusion.Index, sth)
+		pb, err := audit.ProveRecord(ctx, j, gateRun, a.Bundle.Inclusion.Index, sth)
 		if err != nil {
 			t.Logf("ProveRecord refused %s: %v (good)", a.Ref, err)
 			return
@@ -293,18 +303,19 @@ func Test_R105b_VerifyApprovalsRefusesAKeylessApprover(t *testing.T) {
 func Test_R105b_ProjectionsRefuseRecordBytesThatReadTwoWays(t *testing.T) {
 	ctx := context.Background()
 	s, _ := p11GovernedRun(t)
+	j := agenttest.MustJournal(s)
 	// A record an exact-name reader reads as the result of tool call "twoways" and bide reads as a
 	// value record ("Kind", a case variant, is read last by encoding/json).
 	rec := `{"name":"call:twoways","kind":"tool_result","tool_use_id":"twoways","result":"x","Kind":"value","salt":"` + r105Salt(9) + `"}`
 	if _, _, err := s.Insert(ctx, "gov", "call:twoways", []byte(rec)); err != nil {
 		t.Fatal(err)
 	}
-	recs, err := s.History(ctx, "gov")
+	recs, err := j.History(ctx, "gov")
 	if err != nil {
 		t.Fatal(err)
 	}
 	signer := p11Signers(t)["ed25519"]
-	jth, err := audit.NewTreeHead(ctx, s, "gov", p11Now())
+	jth, err := audit.NewTreeHead(ctx, j, "gov", p11Now())
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -320,7 +331,7 @@ func Test_R105b_ProjectionsRefuseRecordBytesThatReadTwoWays(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if _, err := audit.CertifyRun(ctx, s, "gov", sth, audit.RunCertSpec{ApprovedPolicies: []string{"D1"}, Signer: signer, TimestampNanos: p11Now()}); !errors.Is(err, audit.ErrMalformed) {
+	if _, err := audit.CertifyRun(ctx, j, "gov", sth, audit.RunCertSpec{ApprovedPolicies: []string{"D1"}, Signer: signer, TimestampNanos: p11Now()}); !errors.Is(err, audit.ErrMalformed) {
 		t.Errorf("CertifyRun: err %v, want ErrMalformed", err)
 	}
 }
@@ -331,10 +342,11 @@ func Test_R105b_ProjectionsRefuseRecordBytesThatReadTwoWays(t *testing.T) {
 func Test_R105b_EvidenceRunCertNestedHeadFormat(t *testing.T) {
 	ctx := context.Background()
 	s, _ := p11GovernedRun(t)
+	j := agenttest.MustJournal(s)
 	signer := p11Signers(t)["ed25519"]
 	v := p11Verifier(t, signer)
 	ts := p11Now()
-	pkg, err := audit.Evidence(ctx, s, "gov", signer, ts, audit.WithToolCall("pay"),
+	pkg, err := audit.Evidence(ctx, j, "gov", signer, ts, audit.WithToolCall("pay"),
 		audit.WithRunCertificate(audit.RunCertSpec{ApprovedPolicies: []string{"D1"}, Signer: signer, TimestampNanos: ts}))
 	if err != nil {
 		t.Fatal(err)
@@ -355,14 +367,15 @@ func Test_R105b_EvidenceRunCertNestedHeadFormat(t *testing.T) {
 func Test_R105b_EventProjectionRefusesRecordBytesThatReadTwoWays(t *testing.T) {
 	ctx := context.Background()
 	s, _ := p11GovernedRun(t)
+	j := agenttest.MustJournal(s)
 	rec := `{"name":"call:twoways","kind":"tool_result","tool_use_id":"twoways","result":"x","Kind":"value","salt":"` + r105Salt(9) + `"}`
 	if _, _, err := s.Insert(ctx, "gov", "call:twoways", []byte(rec)); err != nil {
 		t.Fatal(err)
 	}
-	if _, err := audit.EventLogFromJournal(ctx, s, "gov"); !errors.Is(err, audit.ErrMalformed) {
+	if _, err := audit.EventLogFromJournal(ctx, j, "gov"); !errors.Is(err, audit.ErrMalformed) {
 		t.Errorf("EventLogFromJournal: err %v, want ErrMalformed", err)
 	}
-	if err := audit.PersistJournal(ctx, audit.NewMemEventStore(), s, "gov"); !errors.Is(err, audit.ErrMalformed) {
+	if err := audit.PersistJournal(ctx, audit.NewMemEventStore(), j, "gov"); !errors.Is(err, audit.ErrMalformed) {
 		t.Errorf("PersistJournal: err %v, want ErrMalformed", err)
 	}
 }

@@ -9,6 +9,7 @@ import (
 	"testing"
 
 	"github.com/bide-ai/bide/agent"
+	"github.com/bide-ai/bide/agent/agenttest"
 )
 
 // answerModel is a stub model that returns a fixed final answer in one turn, so a wrapped sub-agent
@@ -36,7 +37,7 @@ func narrowLimitBy(delta int) AttenuateFunc {
 func isGrant(sg SignedGrant) bool { return len(sg.Sig) > 0 && sg.Grant.Subject != "" }
 
 // findGrant returns the single SignedGrant leaf recorded in a run, or fails.
-func findGrant(t *testing.T, store agent.Durable, runID string) SignedGrant {
+func findGrant(t *testing.T, store *agent.Journal, runID string) SignedGrant {
 	t.Helper()
 	recs, err := store.History(context.Background(), runID)
 	if err != nil {
@@ -57,7 +58,7 @@ func findGrant(t *testing.T, store agent.Durable, runID string) SignedGrant {
 // delegation chain that verifies and never widens, all without the caller wiring the grant per hop.
 func TestAttenuatingSubAgent_Default(t *testing.T) {
 	ctx := context.Background()
-	store := agent.NewMemStore()
+	store := agenttest.MemJournal()
 
 	// One operator key vouches for the whole chain; issuers name the logical delegators.
 	pub, priv, _ := ed25519.GenerateKey(rand.Reader)
@@ -72,14 +73,18 @@ func TestAttenuatingSubAgent_Default(t *testing.T) {
 	}
 
 	// The desk delegates to an execution sub-agent, narrowing the limit by 3 automatically.
-	sub := agent.New(answerModel{"done"}, store)
+	sub := agenttest.MustNew(answerModel{"done"}, store)
 	tool := AttenuatingSubAgent("exec", "execute within delegated authority", sub, AttenuationConfig{Store: store, Narrow: narrowLimitBy(3), Rules: ScopeRules{"limit": NumericAtMost}})
-	parent := agent.New(agent.NewScriptedModel(agent.ToolTurn("c1", "exec", `{"task":"do the thing"}`), agent.TextTurn("ok")), store, tool)
+	parent := agenttest.MustNew(
+		agenttest.NewScriptedModel(agenttest.ToolTurn("c1", "exec", `{"task":"do the thing"}`), agenttest.TextTurn("ok")),
+		store,
+		agent.WithTools(tool),
+	)
 
-	ctx = agent.ContextWithIdentity(ctx, agent.Identity{Actor: "desk-agent", OnBehalfOf: "desk", AuthorityRef: root.Digest()})
 	ctx = WithGrant(ctx, rootSG, signer)
 
-	if _, err := parent.Run(ctx, "p1", "go"); err != nil {
+	if _, err := parent.Run(ctx, "p1", agent.UserText("go"),
+		agent.WithIdentity(agent.Identity{Actor: "desk-agent", OnBehalfOf: "desk", AuthorityRef: root.Digest()})); err != nil {
 		t.Fatalf("delegating run: %v", err)
 	}
 
@@ -105,8 +110,8 @@ func TestAttenuatingSubAgent_Default(t *testing.T) {
 // TestAttenuatingSubAgent_NoGrant confirms that with no grant on ctx the tool is a plain sub-agent
 // (it runs and inherits identity), so it is safe to use without the grant context.
 func TestAttenuatingSubAgent_NoGrant(t *testing.T) {
-	store := agent.NewMemStore()
-	sub := agent.New(answerModel{"done"}, store)
+	store := agenttest.MemJournal()
+	sub := agenttest.MustNew(answerModel{"done"}, store)
 	tool := AttenuatingSubAgent("exec", "execute", sub, AttenuationConfig{Store: store, Narrow: narrowLimitBy(3), Rules: ScopeRules{"limit": NumericAtMost}})
 
 	if _, err := tool.Call(context.Background(), []byte(`{"task":"go"}`)); err != nil {

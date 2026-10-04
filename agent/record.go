@@ -32,7 +32,7 @@ const (
 
 // Record is one durably-recorded, named event. The ordered sequence of Records for a
 // run is its full, replayable history; resume rebuilds state by replaying them. Name
-// is the stable identity used for memoization (see Durable.Do).
+// is the stable identity used for memoization (see Journal.Get).
 type Record struct {
 	Name    string   `json:"name"`
 	Kind    StepKind `json:"kind"`
@@ -248,7 +248,7 @@ func (r Record) ClaimID() string { return r.claim }
 func (r Record) Salt() []byte { return bytes.Clone(r.salt) }
 
 // Raw returns the bytes the store holds for the record, verbatim, for a record read back from a
-// journal (Journal.Get, Journal.History, Journal.Records, or a Durable's Do and History). It is
+// journal (Journal.Get, Journal.History, or Journal.Records). It is
 // nil for a record built in memory. The returned slice is a copy.
 func (r Record) Raw() []byte { return bytes.Clone(r.raw) }
 
@@ -359,7 +359,7 @@ const SaltSize = 32
 // JournalEntry returns the bytes a store persists when it records rec as the step named name:
 // rec with Name set to name and a fresh random Salt (see Record.Salt; a salt the engine drew for
 // the record is kept), in its journal encoding
-// (EncodeRecord). Every Durable implementation must record a new step through it, so every
+// (EncodeRecord). The journal records every new step through it, so every
 // record carries a salt; the audit package refuses to commit a record without one. It errors
 // only if the system's random source fails or rec cannot be encoded.
 func JournalEntry(name string, rec Record) ([]byte, error) {
@@ -489,7 +489,7 @@ func decodeRecord(b []byte) (Record, error) {
 //
 // A redaction tombstone (see Record.Redacted) decodes as a record that carries only its name.
 //
-// Every Durable implementation must read a record back through it, in Do and in History.
+// The journal reads every record back through it.
 func DecodeStoredRecord(runID, name string, b []byte) (Record, error) {
 	return decodeStored(runID, name, bytes.Clone(b))
 }

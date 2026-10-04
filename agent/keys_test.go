@@ -149,22 +149,22 @@ func TestToolUseIDKeys_AreBoundedAndPrintable(t *testing.T) {
 // the other kind of operation attempted, rather than record a result nothing reads.
 func TestResolve_RefusesTheOtherKindsHalt(t *testing.T) {
 	ctx := context.Background()
-	store := NewMemStore()
+	store := memJournal()
 	seedStepAttempt(t, store, "r", "reserve", time.Now())
-	if err := ResolveHalt(ctx, store, "r", "reserve", "ok", false); !errors.Is(err, ErrConfig) {
+	if err := ResolveHalt(ctx, store, HaltRef{RunID: "r", Op: OpRef{Kind: OpTool, ID: "reserve"}, Cause: HaltCrashed}, Outcome{Result: "ok", IsError: false}); !errors.Is(err, ErrConfig) {
 		t.Fatalf("ResolveHalt on a step's halt = %v, want ErrConfig", err)
 	}
 	if _, _, err := ClaimAttempt(ctx, store, "r", toolAttemptStep("c1"), Record{Kind: StepAttempt, ToolUseID: "c1"}); err != nil {
 		t.Fatal(err)
 	}
-	if err := ResolveStepHalt(ctx, store, "r", "c1", "ok", false); !errors.Is(err, ErrConfig) {
-		t.Fatalf("ResolveStepHalt on a call's halt = %v, want ErrConfig", err)
+	if err := ResolveHalt(ctx, store, HaltRef{RunID: "r", Op: OpRef{Kind: OpStep, ID: "c1"}, Cause: HaltCrashed}, Outcome{Result: "ok", IsError: false}); !errors.Is(err, ErrConfig) {
+		t.Fatalf("ResolveHalt (OpStep) on a call's halt = %v, want ErrConfig", err)
 	}
 	// Each records its own kind of result: a step's is a step value (provable as a step).
-	if err := ResolveStepHalt(ctx, store, "r", "reserve", "ok", false); err != nil {
+	if err := ResolveHalt(ctx, store, HaltRef{RunID: "r", Op: OpRef{Kind: OpStep, ID: "reserve"}, Cause: HaltCrashed}, Outcome{Result: "ok", IsError: false}); err != nil {
 		t.Fatal(err)
 	}
-	if err := ResolveHalt(ctx, store, "r", "c1", "ok", false); err != nil {
+	if err := ResolveHalt(ctx, store, HaltRef{RunID: "r", Op: OpRef{Kind: OpTool, ID: "c1"}, Cause: HaltCrashed}, Outcome{Result: "ok", IsError: false}); err != nil {
 		t.Fatal(err)
 	}
 	if rec, ok := hasStep(t, store, "r", "reserve"); !ok || rec.Kind != StepValue || rec.ToolUseID != "" {
@@ -217,7 +217,7 @@ func TestEngineKeys_ConstructorsAreListed(t *testing.T) {
 	}
 }
 
-// Every key the engine writes comes from a constructor: the name passed to Durable.Do,
+// Every key the engine writes comes from a constructor: the name passed to a Journal's write method,
 // ClaimAttempt or step is a *Step call or constant, a local set from one, or a parameter of a
 // function that only forwards a name its own callers are held to (listed in forwarders).
 func TestEngineKeys_WritesUseConstructors(t *testing.T) {
@@ -229,6 +229,7 @@ func TestEngineKeys_WritesUseConstructors(t *testing.T) {
 		"resolveHalt:h.result":   true, // ToolResultStep, or a step name checkStepName allowed
 		"resolveHalt:heldKey":    true, // assigned from nextAttemptStep
 		"claimAttempt:name":      true, // its callers are checked here
+		"claimNextAttempt:base":  true, // its callers are checked here (it forwards to Journal.claimNext)
 		"probe:key":              true, // its callers are checked here
 		"doShared:key":           true, // its callers are checked here
 		"step:markerKey":         true, // returned by claimNextAttempt, which builds it with retryAttemptStep
@@ -266,7 +267,7 @@ func TestEngineKeys_WritesUseConstructors(t *testing.T) {
 				}
 				switch f := call.Fun.(type) {
 				case *ast.SelectorExpr:
-					if f.Sel.Name == "Do" && len(call.Args) == 4 {
+					if journalWriters[f.Sel.Name] && len(call.Args) == 4 {
 						name = call.Args[2]
 					}
 				case *ast.Ident:
@@ -289,6 +290,10 @@ func TestEngineKeys_WritesUseConstructors(t *testing.T) {
 		t.Fatalf("found only %d key writes; the scan is not seeing the engine's calls", writes)
 	}
 }
+
+// journalWriters are the Journal's methods that write the key in their third argument (ctx, run
+// ID, key, then the record or the function that makes it): every engine write goes through one.
+var journalWriters = map[string]bool{"do": true, "doFresh": true, "put": true, "putNew": true, "claim": true, "claimNext": true}
 
 // attemptWriters are the functions that write (or read by writing nothing) the key in their
 // fourth argument; a call to any of them is checked like a call to Do.
@@ -354,36 +359,37 @@ func parseAgentPackage(t *testing.T) map[string]*ast.File {
 	return files
 }
 
-// ResolveStepHalt names a step, so it refuses a reserved name as Step does.
-func TestResolveStepHalt_ReservedNameIsRefused(t *testing.T) {
-	store := NewMemStore()
-	err := ResolveStepHalt(context.Background(), store, "r", runCompleteStep, "ok", false)
+// ResolveHalt (OpStep) names a step, so it refuses a reserved name as Step does.
+func TestResolveHalt_StepReservedNameIsRefused(t *testing.T) {
+	store := memJournal()
+	err := ResolveHalt(context.Background(), store, HaltRef{RunID: "r", Op: OpRef{Kind: OpStep, ID: runCompleteStep}, Cause: HaltCrashed}, Outcome{Result: "ok", IsError: false})
 	if complete, _ := IsComplete(context.Background(), store, "r"); !errors.Is(err, ErrConfig) || complete {
 		t.Fatalf("err = %v, IsComplete = %v; want ErrConfig and no completion marker", err, complete)
 	}
 }
 
-// RunSaga refuses a sub-run ID before it reads the journal, so it never rolls back a sub-agent's
-// run on its own (a recorded saga failure sends RunSaga straight to rollback).
-func TestRunSaga_SubRunIDIsRefusedBeforeRollback(t *testing.T) {
+// saga Run refuses a sub-run ID before it reads the journal, so it never rolls back a sub-agent's
+// run on its own (a recorded saga failure sends saga Run straight to rollback).
+func TestSagaRun_SubRunIDIsRefusedBeforeRollback(t *testing.T) {
 	ctx := context.Background()
 	store := NewMemStore()
+	j := mustJournal(store)
 	sub := SubRunID("r", "c1")
-	if _, err := store.Do(ctx, sub, "failed", func(context.Context) (Record, error) {
+	if _, err := j.do(ctx, sub, "failed", func(context.Context) (Record, error) {
 		return Record{Kind: StepSagaFail, ToolUseID: "x", Result: mustJSON("boom")}, nil
 	}); err != nil {
 		t.Fatal(err)
 	}
-	a := New(NewScriptedModel(TextTurn("done")), store)
+	a := mustNew(NewScriptedModel(TextTurn("done")), j)
 	for _, run := range []func() error{
-		func() error { _, err := a.RunSaga(ctx, sub, "go"); return err },
-		func() error { _, err := a.RunSagaResult(ctx, sub, "go"); return err },
+		func() error { _, err := a.Run(ctx, sub, UserText("go"), WithSaga()); return err },
+		func() error { _, err := a.Run(ctx, sub, UserText("go"), WithSaga()); return err },
 	} {
 		if err := run(); !errors.Is(err, ErrConfig) {
 			t.Fatalf("err = %v, want ErrConfig", err)
 		}
 	}
-	if aborted, _ := hasValueStep(ctx, store, sub, runAbortedStep); aborted {
+	if aborted, _ := hasValueStep(ctx, j, sub, runAbortedStep); aborted {
 		t.Fatal("the sub-run was rolled back and marked aborted")
 	}
 }

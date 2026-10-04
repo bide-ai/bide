@@ -25,10 +25,14 @@ func openSession(t *testing.T, a *Agent, id string) *Session {
 // dies before the session records the turn. A different message sent next must not be answered
 // with the reply to "first": that turn is still open, so Send reports it.
 func TestSend_NewMessageDoesNotTakeAnOpenTurn(t *testing.T) {
-	a := New(&replyModel{}, &crashOnce{Durable: NewMemStore(), crashName: "turn/0"})
-	_, _ = openSession(t, a, "c1").Send(context.Background(), "first")
+	a := mustNew(&replyModel{}, mustJournal(&crashOnce{Store: NewMemStore(), crashName: "turn/0"}))
+	_, _ = openSession(t, a, "c1").Send(context.Background(), UserText("first"))
 
-	msg, err := openSession(t, a, "c1").Send(context.Background(), "second")
+	res, err := openSession(t, a, "c1").Send(context.Background(), UserText("second"))
+	var msg Message
+	if res != nil {
+		msg = res.Message
+	}
 	if err == nil && msg.Text() != "re: second" {
 		t.Fatalf(`Send("second") answered %q: the reply to another message`, msg.Text())
 	}
@@ -37,10 +41,10 @@ func TestSend_NewMessageDoesNotTakeAnOpenTurn(t *testing.T) {
 	}
 	// Finishing the open turn with its own message works, and then the new one goes through.
 	s := openSession(t, a, "c1")
-	if msg, err := s.Send(context.Background(), "first"); err != nil || msg.Text() != "re: first" {
+	if msg, err := answerOf(s.Send(context.Background(), UserText("first"))); err != nil || msg.Text() != "re: first" {
 		t.Fatalf(`resend "first" = %q, %v`, msg.Text(), err)
 	}
-	if msg, err := s.Send(context.Background(), "second"); err != nil || msg.Text() != "re: second" {
+	if msg, err := answerOf(s.Send(context.Background(), UserText("second"))); err != nil || msg.Text() != "re: second" {
 		t.Fatalf(`then "second" = %q, %v`, msg.Text(), err)
 	}
 }
@@ -50,13 +54,13 @@ func TestSend_NewMessageDoesNotTakeAnOpenTurn(t *testing.T) {
 // from the transcript.
 func TestSession_TwoWritersLoseNoTurn(t *testing.T) {
 	t.Run("SendOnce", func(t *testing.T) {
-		a := New(contextModel{}, NewMemStore())
+		a := mustNew(contextModel{}, memJournal())
 		s1, s2 := openSession(t, a, "c1"), openSession(t, a, "c1")
-		if _, err := s1.SendOnce(context.Background(), "k1", "a"); err != nil {
+		if _, err := s1.SendOnce(context.Background(), "k1", UserText("a")); err != nil {
 			t.Fatal(err)
 		}
 		// The stale handle answers with the conversation as it now stands, "a" included.
-		if msg, err := s2.SendOnce(context.Background(), "k2", "b"); err != nil || msg.Text() != "a+b" {
+		if msg, err := answerOf(s2.SendOnce(context.Background(), "k2", UserText("b"))); err != nil || msg.Text() != "a+b" {
 			t.Fatalf("k2 = %q, %v; want a+b", msg.Text(), err)
 		}
 		if n := openSession(t, a, "c1").Turns(); n != 2 {
@@ -64,13 +68,17 @@ func TestSession_TwoWritersLoseNoTurn(t *testing.T) {
 		}
 	})
 	t.Run("Send", func(t *testing.T) {
-		a := New(&replyModel{}, NewMemStore())
+		a := mustNew(&replyModel{}, memJournal())
 		s1, s2 := openSession(t, a, "c1"), openSession(t, a, "c1")
-		if _, err := s1.Send(context.Background(), "a"); err != nil {
+		if _, err := s1.Send(context.Background(), UserText("a")); err != nil {
 			t.Fatal(err)
 		}
 		// The stale handle catches up from the journal and answers its own message.
-		msg, err := s2.Send(context.Background(), "b")
+		res, err := s2.Send(context.Background(), UserText("b"))
+		var msg Message
+		if res != nil {
+			msg = res.Message
+		}
 		if err != nil || msg.Text() != "re: b" {
 			t.Fatalf(`stale handle's Send("b") = %q, %v; want its own answer`, msg.Text(), err)
 		}
@@ -85,7 +93,7 @@ func TestSession_TwoWritersLoseNoTurn(t *testing.T) {
 // ErrTurnContended, and their resend returns the recorded answer.
 func TestSendOnce_ConcurrentHandles(t *testing.T) {
 	for _, sameKey := range []bool{false, true} {
-		a := New(&replyModel{}, NewMemStore())
+		a := mustNew(&replyModel{}, memJournal())
 		var wg sync.WaitGroup
 		var mu sync.Mutex
 		var contended []*Session
@@ -102,7 +110,11 @@ func TestSendOnce_ConcurrentHandles(t *testing.T) {
 					t.Error(err)
 					return
 				}
-				msg, err := s.SendOnce(context.Background(), key, text)
+				res, err := s.SendOnce(context.Background(), key, UserText(text))
+				var msg Message
+				if res != nil {
+					msg = res.Message
+				}
 				if errors.Is(err, ErrTurnContended) {
 					// Another handle drives this key's turn now (S4's turn lease): send it again
 					// once the others are done.
@@ -124,7 +136,7 @@ func TestSendOnce_ConcurrentHandles(t *testing.T) {
 			t.Error("every handle got ErrTurnContended: none drove the turn")
 		}
 		for _, s := range contended { // the resend returns the turn another handle recorded
-			if msg, err := s.SendOnce(context.Background(), "k", "m"); err != nil || msg.Text() != "re: m" {
+			if msg, err := answerOf(s.SendOnce(context.Background(), "k", UserText("m"))); err != nil || msg.Text() != "re: m" {
 				t.Errorf("resend after ErrTurnContended = %q, %v", msg.Text(), err)
 			}
 		}
@@ -142,10 +154,10 @@ func TestSendOnce_ConcurrentHandles(t *testing.T) {
 // allowed, and keys that differ, even only in a character the encoding escapes, answer their own
 // messages. On main a key with '/' or '>' was refused, since it named another run's journal.
 func TestSendOnce_AnyKeyGetsItsOwnTurn(t *testing.T) {
-	s := openSession(t, New(&replyModel{}, NewMemStore()), "c1")
+	s := openSession(t, mustNew(&replyModel{}, memJournal()), "c1")
 	keys := []string{"a/b", "a>b", "a%2Fb", "a%3Eb", "a@b", "@turn/0", "session", strings.Repeat("k", 200), strings.Repeat("k", 201)}
 	for _, k := range keys {
-		if msg, err := s.SendOnce(context.Background(), k, "for "+k); err != nil || msg.Text() != "re: for "+k {
+		if msg, err := answerOf(s.SendOnce(context.Background(), k, UserText("for "+k))); err != nil || msg.Text() != "re: for "+k {
 			t.Fatalf("SendOnce(%q) = %q, %v", k, msg.Text(), err)
 		}
 	}
@@ -172,16 +184,17 @@ func (contextModel) Stream(_ context.Context, req Request) (*Stream, error) {
 	return NewStream(ch), nil
 }
 
-// appendRendezvous holds every turn append until two have arrived, so two handles that each
-// finished a turn write the transcript at the same moment, from the same view of it.
+// appendRendezvous holds every turn append (the Insert of a "turn/" record) until two have
+// arrived, so two handles that each finished a turn write the transcript at the same moment, from
+// the same view of it.
 type appendRendezvous struct {
-	Durable
+	Store
 	mu      sync.Mutex
 	arrived int
 	both    chan struct{}
 }
 
-func (r *appendRendezvous) Do(ctx context.Context, runID, name string, fn func(context.Context) (Record, error)) (Record, error) {
+func (r *appendRendezvous) Insert(ctx context.Context, runID, name string, data []byte) (Entry, bool, error) {
 	if strings.HasPrefix(name, "turn/") {
 		r.mu.Lock()
 		if r.arrived++; r.arrived == 2 {
@@ -193,15 +206,15 @@ func (r *appendRendezvous) Do(ctx context.Context, runID, name string, fn func(c
 		case <-time.After(2 * time.Second):
 		}
 	}
-	return r.Durable.Do(ctx, runID, name, fn)
+	return r.Store.Insert(ctx, runID, name, data)
 }
 
 // Two handles finish their turns and record them at the same moment. Two messages are two
 // turns (the second takes the next slot), and one message is one turn.
 func TestSendOnce_SimultaneousAppends(t *testing.T) {
 	for _, sameKey := range []bool{false, true} {
-		store := &appendRendezvous{Durable: NewMemStore(), both: make(chan struct{})}
-		a := New(&replyModel{}, store)
+		store := &appendRendezvous{Store: NewMemStore(), both: make(chan struct{})}
+		a := mustNew(&replyModel{}, mustJournal(store))
 		var wg sync.WaitGroup
 		for i := range 2 {
 			wg.Add(1)
@@ -216,7 +229,7 @@ func TestSendOnce_SimultaneousAppends(t *testing.T) {
 					t.Error(err)
 					return
 				}
-				if _, err := s.SendOnce(context.Background(), key, text); err != nil {
+				if _, err := s.SendOnce(context.Background(), key, UserText(text)); err != nil {
 					t.Error(err)
 				}
 			}()
@@ -240,18 +253,19 @@ func TestSendOnce_SimultaneousAppends(t *testing.T) {
 // '>' is its session's id.
 func TestSession_IDsCannotCollide(t *testing.T) {
 	m := &replyModel{}
-	a := New(m, NewMemStore())
+	a := mustNew(m, memJournal())
 	if s, err := a.Session(context.Background(), "c1/e"); err == nil {
-		if _, err := s.Send(context.Background(), "from c1/e"); err != nil {
+		if _, err := s.Send(context.Background(), UserText("from c1/e")); err != nil {
 			t.Fatal(err)
 		}
 	} else if !errors.Is(err, ErrConfig) {
 		t.Fatalf(`Session("c1/e") = %v, want ErrConfig or a session`, err)
 	}
-	msg, err := openSession(t, a, "c1").SendOnce(context.Background(), "t0", "from c1")
+	res, err := openSession(t, a, "c1").SendOnce(context.Background(), "t0", UserText("from c1"))
 	if err != nil {
 		t.Fatal(err)
 	}
+	msg := res.Message
 	if msg.Text() != "re: from c1" {
 		t.Fatalf(`session "c1" answered event "t0" with %q, another session's reply`, msg.Text())
 	}
@@ -263,7 +277,7 @@ func TestSession_IDsCannotCollide(t *testing.T) {
 // "concurrent map writes".
 func TestSession_OneHandleConcurrentCallers(t *testing.T) {
 	for range 20 {
-		a := New(&replyModel{}, NewMemStore())
+		a := mustNew(&replyModel{}, memJournal())
 		s := openSession(t, a, "c1")
 		var wg sync.WaitGroup
 		for i := range 8 {
@@ -271,7 +285,7 @@ func TestSession_OneHandleConcurrentCallers(t *testing.T) {
 			go func() {
 				defer wg.Done()
 				key := fmt.Sprintf("k%d", i)
-				if msg, err := s.SendOnce(context.Background(), key, "m"+key); err != nil || msg.Text() != "re: m"+key {
+				if msg, err := answerOf(s.SendOnce(context.Background(), key, UserText("m"+key))); err != nil || msg.Text() != "re: m"+key {
 					t.Errorf("%s = %q, %v", key, msg.Text(), err)
 				}
 				_, _ = s.History(), s.Turns()
@@ -280,7 +294,7 @@ func TestSession_OneHandleConcurrentCallers(t *testing.T) {
 		wg.Add(1)
 		go func() {
 			defer wg.Done()
-			if msg, err := s.Send(context.Background(), "plain"); err != nil || msg.Text() != "re: plain" {
+			if msg, err := answerOf(s.Send(context.Background(), UserText("plain"))); err != nil || msg.Text() != "re: plain" {
 				t.Errorf(`Send("plain") = %q, %v`, msg.Text(), err)
 			}
 		}()
@@ -318,25 +332,36 @@ func TestSession_ResumedTurnKeepsItsTranscript(t *testing.T) {
 		t.Run(send, func(t *testing.T) {
 			var cut atomic.Bool
 			ctx, cancel := context.WithCancel(context.Background())
-			a := New(toolThenContext{}, NewMemStore(), Func("lookup", "look up", Safety{ReadOnly: true},
-				func(ctx context.Context, _ struct{}) (string, error) {
+			a := mustNew(
+				toolThenContext{},
+				memJournal(),
+				WithTools(MustFunc("lookup", "look up", func(ctx context.Context, _ struct{}) (string, error) {
 					if !cut.Swap(true) {
 						cancel() // the process dies inside turn "a"'s tool call
 					}
 					return "found", ctx.Err()
-				}))
+				}, WithSafety(Safety{ReadOnly: true}))),
+			)
 			do := func(ctx context.Context, key, text string) (Message, error) {
 				s := openSession(t, a, "c1")
 				if send == "Send" {
-					return s.Send(ctx, text)
+					res, err := s.Send(ctx, UserText(text))
+					if err != nil {
+						return Message{}, err
+					}
+					return res.Message, nil
 				}
-				return s.SendOnce(ctx, key, text)
+				res2, err := s.SendOnce(ctx, key, UserText(text))
+				if err != nil {
+					return Message{}, err
+				}
+				return res2.Message, nil
 			}
 			if _, err := do(ctx, "ka", "a"); !errors.Is(err, context.Canceled) {
 				t.Fatalf(`turn "a": err = %v, want context.Canceled`, err)
 			}
 			// "b" is answered while "a" is unfinished (a Send turn is open, so "b" comes via SendOnce).
-			if msg, err := openSession(t, a, "c1").SendOnce(context.Background(), "kb", "b"); err != nil || msg.Text() != "b" {
+			if msg, err := answerOf(openSession(t, a, "c1").SendOnce(context.Background(), "kb", UserText("b"))); err != nil || msg.Text() != "b" {
 				t.Fatalf(`"b" = %q, %v; want "b"`, msg.Text(), err)
 			}
 			msg, err := do(context.Background(), "ka", "a")
@@ -354,18 +379,21 @@ func TestSession_ResumedTurnKeepsItsTranscript(t *testing.T) {
 // seeds the turn from that starting point. Here the first handle dies before journaling it,
 // "b" is answered, and a second handle runs turn "a" from the one-turn transcript.
 func TestSession_StaleHandleUsesJournaledStart(t *testing.T) {
-	a := New(contextModel{}, &crashOnce{Durable: NewMemStore(), crashName: sessionFromStep(sessionTurnRunID("c1", 0))})
+	a := mustNew(
+		contextModel{},
+		mustJournal(&crashOnce{Store: NewMemStore(), crashName: sessionFromStep(sessionTurnRunID("c1", 0))}),
+	)
 	stale := openSession(t, a, "c1")
-	if _, err := stale.Send(context.Background(), "a"); !errors.Is(err, errDied) {
+	if _, err := stale.Send(context.Background(), UserText("a")); !errors.Is(err, errDied) {
 		t.Fatalf(`first Send("a"): err = %v, want the crash`, err)
 	}
-	if msg, err := openSession(t, a, "c1").SendOnce(context.Background(), "kb", "b"); err != nil || msg.Text() != "b" {
+	if msg, err := answerOf(openSession(t, a, "c1").SendOnce(context.Background(), "kb", UserText("b"))); err != nil || msg.Text() != "b" {
 		t.Fatalf(`"b" = %q, %v`, msg.Text(), err)
 	}
-	if msg, err := openSession(t, a, "c1").Send(context.Background(), "a"); err != nil || msg.Text() != "b+a" {
+	if msg, err := answerOf(openSession(t, a, "c1").Send(context.Background(), UserText("a"))); err != nil || msg.Text() != "b+a" {
 		t.Fatalf(`Send("a") on a fresh handle = %q, %v; want "b+a"`, msg.Text(), err)
 	}
-	if msg, err := stale.Send(context.Background(), "a"); err != nil || msg.Text() != "b+a" {
+	if msg, err := answerOf(stale.Send(context.Background(), UserText("a"))); err != nil || msg.Text() != "b+a" {
 		t.Fatalf(`Send("a") on the stale handle = %q, %v; want the recorded "b+a"`, msg.Text(), err)
 	}
 }
@@ -373,18 +401,18 @@ func TestSession_StaleHandleUsesJournaledStart(t *testing.T) {
 // A journaled starting point that does not match the transcript is refused, not guessed at.
 func TestSession_BadJournaledStartIsProtocolError(t *testing.T) {
 	for _, from := range []turnFrom{{Turns: 0, Digest: "x"}, {Turns: -1}, {Turns: 5}, {Turns: 1, Digest: ""}} {
-		store := NewMemStore()
+		store := memJournal()
 		b, _ := json.Marshal(from)
-		if _, err := store.Do(context.Background(), sessionJournalID("c1"), sessionFromStep(sessionTurnRunID("c1", 0)), func(context.Context) (Record, error) {
+		if _, err := store.do(context.Background(), sessionJournalID("c1"), sessionFromStep(sessionTurnRunID("c1", 0)), func(context.Context) (Record, error) {
 			return Record{Kind: StepValue, Result: b}, nil
 		}); err != nil {
 			t.Fatal(err)
 		}
-		a := New(contextModel{}, store)
-		if _, err := openSession(t, a, "c1").SendOnce(context.Background(), "kb", "b"); err != nil {
+		a := mustNew(contextModel{}, store)
+		if _, err := openSession(t, a, "c1").SendOnce(context.Background(), "kb", UserText("b")); err != nil {
 			t.Fatal(err) // one recorded turn, so the transcript's digest after it is not empty
 		}
-		if _, err := openSession(t, a, "c1").Send(context.Background(), "a"); !errors.Is(err, ErrProtocol) {
+		if _, err := openSession(t, a, "c1").Send(context.Background(), UserText("a")); !errors.Is(err, ErrProtocol) {
 			t.Errorf("start point %+v: err = %v, want ErrProtocol", from, err)
 		}
 	}
@@ -416,10 +444,10 @@ func TestSession_ChainTurnDistinguishes(t *testing.T) {
 // The digest covers every earlier turn, not just the latest: a starting point whose digest
 // matches the last of two turns but not the first is refused.
 func TestSession_JournaledStartCoversEveryTurn(t *testing.T) {
-	store := NewMemStore()
-	a := New(contextModel{}, store)
+	store := memJournal()
+	a := mustNew(contextModel{}, store)
 	for _, k := range []string{"k0", "k1"} {
-		if _, err := openSession(t, a, "c1").SendOnce(context.Background(), k, k); err != nil {
+		if _, err := openSession(t, a, "c1").SendOnce(context.Background(), k, UserText(k)); err != nil {
 			t.Fatal(err)
 		}
 	}
@@ -436,12 +464,12 @@ func TestSession_JournaledStartCoversEveryTurn(t *testing.T) {
 		}
 	}
 	b, _ := json.Marshal(turnFrom{Turns: 2, Digest: chainTurn("", last)})
-	if _, err := store.Do(context.Background(), sessionJournalID("c1"), sessionFromStep(sessionTurnRunID("c1", 0)), func(context.Context) (Record, error) {
+	if _, err := store.do(context.Background(), sessionJournalID("c1"), sessionFromStep(sessionTurnRunID("c1", 0)), func(context.Context) (Record, error) {
 		return Record{Kind: StepValue, Result: b}, nil
 	}); err != nil {
 		t.Fatal(err)
 	}
-	if _, err := openSession(t, a, "c1").Send(context.Background(), "a"); !errors.Is(err, ErrProtocol) {
+	if _, err := openSession(t, a, "c1").Send(context.Background(), UserText("a")); !errors.Is(err, ErrProtocol) {
 		t.Fatalf("err = %v, want ErrProtocol", err)
 	}
 }

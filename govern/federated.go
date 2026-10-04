@@ -238,14 +238,13 @@ type FederatedEventToolConfig struct {
 // FederatedEventTool panics, as agent.Func does, on an invalid option.
 func FederatedEventTool(gov FederatedApplier, cfg FederatedEventToolConfig) agent.Tool {
 	registry, event := cfg.Registry, cfg.Event
-	return agent.Func(cfg.Name, cfg.Description, cfg.Safety,
-		func(ctx context.Context, _ struct{}) (map[string]any, error) {
-			a, err := applyFedForCall(ctx, gov, registry, event)
-			if err != nil {
-				return nil, err
-			}
-			return map[string]any{"registry": registry, "event": event, "applied": true, "position": a.Position}, nil
-		}, cfg.Options...)
+	return agent.MustFunc(cfg.Name, cfg.Description, func(ctx context.Context, _ struct{}) (map[string]any, error) {
+		a, err := applyFedForCall(ctx, gov, registry, event)
+		if err != nil {
+			return nil, err
+		}
+		return map[string]any{"registry": registry, "event": event, "applied": true, "position": a.Position}, nil
+	}, append([]agent.ToolOption{agent.WithSafety(cfg.Safety)}, cfg.Options...)...)
 }
 
 func applyFedForCall(ctx context.Context, gov FederatedApplier, registry, event string) (FedApplied, error) {

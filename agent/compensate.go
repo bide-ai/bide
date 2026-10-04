@@ -7,7 +7,7 @@ import (
 )
 
 // Compensator is an optional interface a Tool implements to declare how to UNDO its side
-// effect. In a saga run (RunSaga), if a step fails after earlier writes succeeded, the
+// effect. In a saga run (WithSaga), if a step fails after earlier writes succeeded, the
 // completed compensatable writes are rolled back in reverse order — automatically, and
 // recursively through sub-agent trees.
 //
@@ -41,15 +41,29 @@ type Compensator interface {
 // that rewrites a retry-safe compensable call's arguments must rewrite them the same way every
 // time: the first record is kept when the call runs again.
 //
-// opts set the rest of the tool's spec, as for Func.
+// opts set the rest of the tool's spec, as for Func, which also gives its errors.
 func CompensatedFunc[In, Out any](
 	name, description string,
-	safety Safety,
+	do func(context.Context, In) (Out, error),
+	undo func(context.Context, In, Out) error,
+	opts ...ToolOption,
+) (Tool, error) {
+	ft, err := newFuncTool(name, description, do, opts)
+	if err != nil {
+		return nil, err
+	}
+	return &compTool[In, Out]{funcTool: ft, undo: undo}, nil
+}
+
+// MustCompensatedFunc is CompensatedFunc for a tool built at init: it panics with
+// CompensatedFunc's error.
+func MustCompensatedFunc[In, Out any](
+	name, description string,
 	do func(context.Context, In) (Out, error),
 	undo func(context.Context, In, Out) error,
 	opts ...ToolOption,
 ) Tool {
-	return &compTool[In, Out]{funcTool: newFuncTool(name, description, safety, do, opts), undo: undo}
+	return must(CompensatedFunc(name, description, do, undo, opts...))
 }
 
 type compTool[In, Out any] struct {
@@ -60,12 +74,12 @@ type compTool[In, Out any] struct {
 func (t *compTool[In, Out]) Compensate(ctx context.Context, args, result json.RawMessage) error {
 	var in In
 	if err := decodeRecordedArgs(args, &in); err != nil {
-		return fmt.Errorf("saga compensate %q: decode recorded args: %w (%w)", t.Name(), err, ErrProtocol)
+		return fmt.Errorf("saga compensate %q: decode recorded args: %w (%w)", t.spec.Name, err, ErrProtocol)
 	}
 	var out Out
 	if len(result) > 0 {
 		if err := json.Unmarshal(result, &out); err != nil {
-			return fmt.Errorf("saga compensate %q: decode recorded result: %w (%w)", t.Name(), err, ErrProtocol)
+			return fmt.Errorf("saga compensate %q: decode recorded result: %w (%w)", t.spec.Name, err, ErrProtocol)
 		}
 	}
 	return t.undo(ctx, in, out)

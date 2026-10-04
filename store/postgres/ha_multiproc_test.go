@@ -27,6 +27,8 @@ import (
 	"time"
 
 	"github.com/bide-ai/bide/agent"
+	"github.com/bide-ai/bide/agent/agenttest"
+	"github.com/bide-ai/bide/internal/journaltest"
 )
 
 // Environment a worker process reads. haChildEnv holds the worker's name and marks the process as
@@ -110,11 +112,12 @@ func haWorker(name string) int {
 		fmt.Fprintln(os.Stderr, "worker:", err)
 		return haExitSetup
 	}
+	j := agenttest.MustJournal(s)
 	defer s.Close()
 	w := &haDriver{s: s, worker: name, prefix: prefix}
 
 	// One run at a time, so a killed worker leaves exactly one call in flight for the test to follow.
-	err = agent.RecoverLoop(ctx, s, w.resume, agent.WithLeaseHolder(holder), agent.WithLeaseTTL(ttl),
+	err = agent.RecoverLoop(ctx, j, w.resume, agent.WithLeaseHolder(holder), agent.WithLeaseTTL(ttl),
 		agent.WithRecoverInterval(haRecoverInterval), agent.WithRecoverConcurrency(1),
 		agent.WithRecoverErrors(func(err error) { fmt.Fprintf(os.Stderr, "worker %s: recover: %v\n", name, err) }))
 	if !errors.Is(err, context.Canceled) && !errors.Is(err, context.DeadlineExceeded) {
@@ -145,7 +148,7 @@ func (w *haDriver) resume(ctx context.Context, runID string, _ agent.RunStart) e
 	}
 	w.event(runID, "", "resume")
 	err := w.drive(ctx, runID)
-	var halt *agent.ResumeHalt
+	var halt *agent.OutcomeUnknown
 	switch {
 	case errors.Is(context.Cause(ctx), agent.ErrLeaseLost):
 		w.event(runID, "", "lost")
@@ -160,21 +163,20 @@ func (w *haDriver) resume(ctx context.Context, runID string, _ agent.RunStart) e
 }
 
 func (w *haDriver) drive(ctx context.Context, runID string) error {
-	if _, err := agent.Step(ctx, w.s, runID, "reserve", func(context.Context) (string, error) {
+	if _, err := agenttest.MustJournal(w.s).Step(ctx, runID, "reserve", func(context.Context) (string, error) {
 		return w.effect(runID, "reserve"), nil
 	}); err != nil {
 		return err
 	}
-	charge := agent.Func("charge", "charge the card", agent.Safety{},
-		func(_ context.Context, in struct{ Key string }) (string, error) {
-			return w.effect(runID, in.Key), nil
-		})
-	model := agent.NewScriptedModel(
-		agent.ToolTurn("c1", "charge", `{"Key":"c1"}`),
-		agent.ToolTurn("c2", "charge", `{"Key":"c2"}`),
-		agent.TextTurn("done"),
+	charge := agent.MustFunc("charge", "charge the card", func(_ context.Context, in struct{ Key string }) (string, error) {
+		return w.effect(runID, in.Key), nil
+	})
+	model := agenttest.NewScriptedModel(
+		agenttest.ToolTurn("c1", "charge", `{"Key":"c1"}`),
+		agenttest.ToolTurn("c2", "charge", `{"Key":"c2"}`),
+		agenttest.TextTurn("done"),
 	)
-	_, err := agent.New(model, w.s, charge).Run(ctx, runID, "go")
+	_, err := agenttest.MustNew(model, agenttest.MustJournal(w.s), agent.WithTools(charge)).Run(ctx, runID, agent.UserText("go"))
 	return err
 }
 
@@ -251,6 +253,7 @@ func newHACluster(t *testing.T, runs int, ttl time.Duration) *haCluster {
 	if err != nil {
 		t.Fatal(err)
 	}
+	j := agenttest.MustJournal(s)
 	t.Cleanup(func() { s.Close() })
 	if _, err := s.db.ExecContext(ctx, haSchema); err != nil {
 		t.Fatal(err)
@@ -260,7 +263,7 @@ func newHACluster(t *testing.T, runs int, ttl time.Duration) *haCluster {
 		id := fmt.Sprintf("%srun%d", c.prefix, i)
 		// A run:start makes the run exist and started (its input, the one every worker drives it
 		// with), so Recover finds and drives it; no primary ever drives it.
-		if _, err := s.Do(ctx, id, "run:start", func(context.Context) (agent.Record, error) {
+		if _, err := journaltest.Do(ctx, j, id, "run:start", func(context.Context) (agent.Record, error) {
 			return agent.Record{Kind: agent.StepValue, Result: []byte(`{"input":"go"}`)}, nil
 		}); err != nil {
 			t.Fatal(err)
@@ -408,7 +411,7 @@ func (c *haCluster) waitComplete(want []string, timeout time.Duration) {
 	for {
 		var pending []string
 		for _, id := range want {
-			done, err := agent.IsComplete(context.Background(), c.s, id)
+			done, err := agent.IsComplete(context.Background(), agenttest.MustJournal(c.s), id)
 			if err != nil {
 				c.t.Fatal(err)
 			}
@@ -498,7 +501,7 @@ func without(runs []string, drop string) []string {
 // Workers are SIGKILLed with a non-retriable tool call in flight, one before its effect fires and
 // one after the effect fired but before its result is journaled, and each is restarted under the
 // same holder name. The dead worker's lease expires and a survivor takes the run over, finds the
-// call's attempt marker with no result, and halts with ResumeHalt instead of firing the effect: its
+// call's attempt marker with no result, and halts with OutcomeUnknown instead of firing the effect: its
 // outcome is unknown to the journal, so a human must resolve it. Every other run completes with
 // each effect fired exactly once.
 func TestHA_MultiProcessKillAndRestart(t *testing.T) {
@@ -536,7 +539,7 @@ func TestHA_MultiProcessKillAndRestart(t *testing.T) {
 		if halt.effect != k.victim.effect {
 			t.Errorf("run %s halted on %q, want the call in flight when its worker died (%s)", k.victim.run, halt.effect, k.victim.effect)
 		}
-		if done, _ := agent.IsComplete(context.Background(), c.s, k.victim.run); done {
+		if done, _ := agent.IsComplete(context.Background(), agenttest.MustJournal(c.s), k.victim.run); done {
 			t.Errorf("run %s completed although its in-flight call has an unknown outcome", k.victim.run)
 		}
 		if n := len(c.effects()[k.victim.run][k.victim.effect]); n != k.fired {
@@ -552,7 +555,7 @@ func TestHA_MultiProcessKillAndRestart(t *testing.T) {
 // A worker is SIGSTOPped inside a non-retriable effect (a Step, or a tool call), before the
 // effect fires, for well past its lease TTL, while an orchestrator restarts it under the same
 // holder name. No other process may take the run while the stalled worker's lease is live. Once
-// it lapses, the drivers that take over find the stalled worker's claim and halt with ResumeHalt
+// it lapses, the drivers that take over find the stalled worker's claim and halt with OutcomeUnknown
 // rather than fire the effect. On SIGCONT the stalled worker, still inside the effect, fires the
 // effect it owns, loses its lease, and must still journal the outcome, so the run is driven to
 // completion afterwards with every effect fired exactly once.

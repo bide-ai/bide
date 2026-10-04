@@ -9,6 +9,7 @@ import (
 	"time"
 
 	"github.com/bide-ai/bide/agent"
+	"github.com/bide-ai/bide/agent/agenttest"
 	"github.com/bide-ai/bide/middleware"
 )
 
@@ -187,9 +188,9 @@ func (m *turnModel) Stream(ctx context.Context, req agent.Request) (*agent.Strea
 // skip as already done. It must count as that target failing, so the primary's valid answer
 // wins, rather than winning the race.
 func TestHedge_BackupReusingToolUseIDLoses(t *testing.T) {
-	lookup := agent.Func("lookup", "", agent.Safety{ReadOnly: true}, func(context.Context, struct{}) (string, error) {
+	lookup := agent.MustFunc("lookup", "", func(context.Context, struct{}) (string, error) {
 		return "ok", nil
-	})
+	}, agent.WithSafety(agent.Safety{ReadOnly: true}))
 	reuse := agent.Message{Role: agent.RoleAssistant, Parts: []agent.Part{agent.ToolUse{ID: "c1", Name: "lookup", Args: json.RawMessage(`{}`)}}}
 	primary := &turnModel{
 		delays: []time.Duration{0, 100 * time.Millisecond},
@@ -197,11 +198,16 @@ func TestHedge_BackupReusingToolUseIDLoses(t *testing.T) {
 	}
 	backup := &turnModel{delays: []time.Duration{time.Hour, 0}, msgs: []agent.Message{reuse, reuse}}
 
-	out, err := agent.New(primary, agent.NewMemStore(), lookup).Use(middleware.Hedge(0, backup)).WithMaxTurns(4).
-		Run(context.Background(), "r", "go")
+	res, err := agenttest.Must(agenttest.MustNew(
+		primary,
+		agenttest.MemJournal(),
+		agent.WithTools(lookup),
+		agent.WithMiddleware(middleware.Hedge(0, backup)),
+	).With(agent.WithMaxTurns(4))).Run(context.Background(), "r", agent.UserText("go"))
 	if err != nil {
 		t.Fatalf("Run: %v", err)
 	}
+	out := res.Message
 	if out.Text() != "done" {
 		t.Fatalf("answer = %q, want the primary's %q", out.Text(), "done")
 	}

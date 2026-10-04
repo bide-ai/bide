@@ -10,6 +10,7 @@ import (
 	"testing"
 
 	"github.com/bide-ai/bide/agent"
+	"github.com/bide-ai/bide/agent/agenttest"
 )
 
 func copyFile(t *testing.T, from, to string) {
@@ -39,10 +40,11 @@ func TestOpen_RefusesAV070File(t *testing.T) {
 	s, err := Open(path)
 	if err == nil {
 		defer s.Close()
+		j := agenttest.MustJournal(s)
 		fired := 0
-		charge := agent.Func("charge", "", agent.Safety{}, func(context.Context, struct{}) (string, error) { fired++; return "charged", nil })
-		m := agent.NewScriptedModel(agent.ToolTurn("c1", "charge", `{}`), agent.TextTurn("done"))
-		_, err = agent.New(m, s, charge).Run(context.Background(), "order-1", "charge me")
+		charge := agent.MustFunc("charge", "", func(context.Context, struct{}) (string, error) { fired++; return "charged", nil })
+		m := agenttest.NewScriptedModel(agenttest.ToolTurn("c1", "charge", `{}`), agenttest.TextTurn("done"))
+		_, err = agenttest.MustNew(m, j, agent.WithTools(charge)).Run(context.Background(), "order-1", agent.UserText("charge me"))
 		t.Fatalf("Open of a v0.7.0 file succeeded; a re-invoked finished run then returned %v and fired its effect %d time(s)", err, fired)
 	}
 	if !errors.Is(err, agent.ErrJournalVersion) {

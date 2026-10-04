@@ -19,7 +19,7 @@ import (
 // whenever next has not yet reached the base handler when the middleware gives up.
 func TestAdv117b_AbandoningMiddlewareDoubleFiresASideEffect(t *testing.T) {
 	var charges atomic.Int32
-	charge := Func("charge", "", Safety{}, func(context.Context, struct{}) (string, error) {
+	charge := MustFunc("charge", "", func(context.Context, struct{}) (string, error) {
 		charges.Add(1)
 		return "charged", nil
 	})
@@ -49,9 +49,9 @@ func TestAdv117b_AbandoningMiddlewareDoubleFiresASideEffect(t *testing.T) {
 			}
 		}
 	})
-	store := NewMemStore()
+	store := memJournal()
 	m := NewScriptedModel(ToolTurn("c1", "charge", `{}`), TextTurn("done"))
-	if _, err := New(m, store, charge).UseTool(abandon).Run(ctx, "r1", "pay"); !errors.Is(err, context.Canceled) {
+	if _, err := mustNew(m, store, WithTools(charge), WithToolMiddleware(abandon)).Run(ctx, "r1", UserText("pay")); !errors.Is(err, context.Canceled) {
 		t.Fatalf("first drive: %v, want context.Canceled", err)
 	}
 	close(gate) // the queued request goes out after the drive returned
@@ -59,7 +59,7 @@ func TestAdv117b_AbandoningMiddlewareDoubleFiresASideEffect(t *testing.T) {
 	// The chain had returned, so the call was closed: the late request is refused and never reaches
 	// the tool. The chain's error did not say ErrToolNotCalled, so the side effect's outcome is
 	// unknown to the loop, and the resume halts for it rather than fire it.
-	_, err := New(m, store, charge).Run(context.Background(), "r1", "pay")
+	_, err := mustNew(m, store, WithTools(charge)).Run(context.Background(), "r1", UserText("pay"))
 	var halt *OutcomeUnknown
 	if charges.Load() > 1 {
 		t.Fatalf("the side effect fired %d times (resume err %v); the claim was recorded as not started although the chain went on to call the tool", charges.Load(), err)
@@ -77,7 +77,7 @@ func TestAdv117b_AbandoningMiddlewareDoubleFiresASideEffect(t *testing.T) {
 func TestAdv117b_MiddlewareCallingTheToolDirectlyDoubleFires(t *testing.T) {
 	var charges atomic.Int32
 	ctx, cancel := context.WithCancel(context.Background())
-	charge := Func("charge", "", Safety{}, func(context.Context, struct{}) (string, error) {
+	charge := MustFunc("charge", "", func(context.Context, struct{}) (string, error) {
 		charges.Add(1)
 		cancel() // the run is cancelled while the request is in flight
 		return "", errors.New("connection reset")
@@ -90,10 +90,10 @@ func TestAdv117b_MiddlewareCallingTheToolDirectlyDoubleFires(t *testing.T) {
 			return next(ctx, call)
 		}
 	})
-	store := NewMemStore()
+	store := memJournal()
 	m := NewScriptedModel(ToolTurn("c1", "charge", `{}`), TextTurn("done"))
-	_, _ = New(m, store, charge).UseTool(direct).Run(ctx, "r1", "pay")
-	_, err := New(m, store, charge).Run(context.Background(), "r1", "pay")
+	_, _ = mustNew(m, store, WithTools(charge), WithToolMiddleware(direct)).Run(ctx, "r1", UserText("pay"))
+	_, err := mustNew(m, store, WithTools(charge)).Run(context.Background(), "r1", UserText("pay"))
 	if charges.Load() > 1 {
 		t.Fatalf("the side effect fired %d times (resume err %v)", charges.Load(), err)
 	}
@@ -106,17 +106,17 @@ func TestAdv117b_MiddlewareCallingTheToolDirectlyDoubleFires(t *testing.T) {
 // outerWrap is a plain wrapper with no Compensate of its own.
 type outerWrap struct{ Tool }
 
-func (w outerWrap) Spec() ToolSpec { return SpecOf(w.Tool) }
+func (w outerWrap) Spec() ToolSpec { return w.Tool.Spec() }
 func (w outerWrap) Unwrap() Tool   { return w.Tool }
 
-// ADV117b-3 ((d)). checkWrapper looks only at the outermost tool: a Compensator one level down
-// the Unwrap chain is accepted, and a rollback that recurses into the sub-run never calls it.
+// ADV117b-3 ((d)). checkWrapper looked only at the outermost tool: a Compensator one level down
+// the Unwrap chain was accepted, and a rollback that recurses into the sub-run never calls it.
+// New refuses it.
 func TestAdv117b_NestedCompensatorWrapperIsAccepted(t *testing.T) {
-	sub := New(NewScriptedModel(TextTurn("x")), NewMemStore())
-	tool := outerWrap{compWrap{SubAgent("delegate", "", sub)}}
+	sub := mustNew(NewScriptedModel(TextTurn("x")), memJournal())
+	tool := outerWrap{compWrap{MustSubAgent("delegate", "", sub)}}
 	var calls atomic.Int32
-	_, err := New(&countingModel{n: &calls}, NewMemStore(), tool).Run(context.Background(), "r1", "go")
-	if !errors.Is(err, ErrConfig) {
-		t.Fatalf("Run = %v; want ErrConfig for a Compensator inside the Unwrap chain", err)
+	if a, err := New(&countingModel{n: &calls}, memJournal(), WithTools(tool)); !errors.Is(err, ErrConfig) || a != nil {
+		t.Fatalf("New = %v, %v; want nil and ErrConfig for a Compensator inside the Unwrap chain", a, err)
 	}
 }

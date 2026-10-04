@@ -15,7 +15,9 @@ import (
 	"testing"
 
 	"github.com/bide-ai/bide/agent"
+	"github.com/bide-ai/bide/agent/agenttest"
 	"github.com/bide-ai/bide/audit"
+	"github.com/bide-ai/bide/internal/journaltest"
 )
 
 // The leaves these tests commit are written by hand, as a producer that controls its own journal
@@ -35,9 +37,9 @@ func testPolicy() (policy, digest string) {
 func leafFiles(t *testing.T, dir string, recs ...agent.Record) ([]string, string) {
 	t.Helper()
 	ctx := context.Background()
-	store := agent.NewMemStore()
+	store := agenttest.MemJournal()
 	for _, r := range recs {
-		if _, err := store.Do(ctx, "run1", r.Name, func(context.Context) (agent.Record, error) { return r, nil }); err != nil {
+		if _, err := journaltest.Do(ctx, store, "run1", r.Name, func(context.Context) (agent.Record, error) { return r, nil }); err != nil {
 			t.Fatal(err)
 		}
 	}
@@ -195,14 +197,14 @@ func TestVerifyRun_CheckerReadsCertificateAsWritten(t *testing.T) {
 	cert := testCert(t, digest)
 	run := func(cert string) (int, string) {
 		ctx := context.Background()
-		store := agent.NewMemStore()
+		store := agenttest.MemJournal()
 		if _, err := audit.RecordPolicy(ctx, store, "run1", []byte(policy), digest); err != nil {
 			t.Fatal(err)
 		}
 		if _, err := audit.RecordConvergence(ctx, store, "run1", []byte(cert), digest); err != nil {
 			t.Fatal(err)
 		}
-		if _, err := store.Do(ctx, "run1", "act", func(context.Context) (agent.Record, error) {
+		if _, err := journaltest.Do(ctx, store, "run1", "act", func(context.Context) (agent.Record, error) {
 			return toolLeaf("act", `{"event":"approve","applied":true,"policy_digest":"`+digest+`"}`), nil
 		}); err != nil {
 			t.Fatal(err)

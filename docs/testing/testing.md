@@ -29,7 +29,7 @@ Two module boundaries matter for running tests. The competitor benchmark adapter
 **separate module** (`benchmarks/`, its own `go.mod`) so their large dependency trees never
 touch the Bide core; `benchmarks` is not in the workspace, so run its tests with `GOWORK=off`. The
 workspace (`go.work`) stitches in the adapter modules `codec/gcf`, `govern`, `govern/postgreslog`,
-`govern/redislog`, `govern/sqlitelog`, `mcp`, `store/postgres`, `store/sqlite`, and `trace`, plus
+`govern/redislog`, `govern/sqlitelog`, `mcptools`, `store/postgres`, `store/sqlite`, and `trace`, plus
 the example modules `examples/approval`, `examples/govern`, `examples/mcp`, `examples/observability`,
 and `examples/plan`, and the test-only `integration` module. `govern` is its own module so the core
 does not depend on gsm; the core's tests that need govern or gsm (the convergence test below, the
@@ -338,7 +338,7 @@ For rigor it does more than a bare pass-count:
 
 Remaining bounds (stated so the harness is not oversold): there is no built-in persistent result
 store yet (you keep the JSON `Report`s, though `Compare` now does the cross-version diff with a
-significance test), and per-run token cost is not captured: `Agent.RunResult` returns the run's
+significance test), and per-run token cost is not captured: the `Result` of `Agent.Run` carries the run's
 `Usage`, but `eval.AgentRunner` drives `Run` and `eval.RunOutput` has no usage field, so a report
 carries no token counts. Dataset discipline (labels, held-out splits, adversarial coverage) is the user's to bring:
 the harness measures whatever cases it is given, so a weak case set yields a confident-looking but

@@ -18,7 +18,7 @@ func TestPlanPrefixesAreReserved(t *testing.T) {
 		if !IsReservedStepName(name) {
 			t.Errorf("%q is not reserved", name)
 		}
-		if _, err := Step(context.Background(), NewMemStore(), "r", name, func(context.Context) (int, error) { return 1, nil }); !errors.Is(err, ErrConfig) {
+		if _, err := memJournal().Step(context.Background(), "r", name, func(context.Context) (int, error) { return 1, nil }); !errors.Is(err, ErrConfig) {
 			t.Errorf("Step(%q): err = %v, want ErrConfig", name, err)
 		}
 	}
@@ -78,17 +78,17 @@ func TestJournalhookStepRefusesOtherNames(t *testing.T) {
 	ran := 0
 	fn := func(context.Context) (json.RawMessage, error) { ran++; return json.RawMessage(`1`), nil }
 	for _, name := range []string{"x", "switch:x", "flow:digest", "run:start", "attempt:step:node:x", "node:a:b", "node:a:step:x", "node:iter:01:a"} {
-		if _, err := journalhook.Step(context.Background(), NewMemStore(), "r", name, Safety{}, fn); !errors.Is(err, ErrConfig) {
+		if _, err := journalhook.Step(context.Background(), memJournal(), "r", name, Safety{}, fn); !errors.Is(err, ErrConfig) {
 			t.Errorf("journalhook.Step(%q): err = %v, want ErrConfig", name, err)
 		}
 	}
-	if _, err := journalhook.Step(context.Background(), NewMemStore(), "r", "node:x", "not a safety", fn); !errors.Is(err, ErrConfig) {
+	if _, err := journalhook.Step(context.Background(), memJournal(), "r", "node:x", "not a safety", fn); !errors.Is(err, ErrConfig) {
 		t.Errorf("journalhook.Step with a non-Safety: err = %v, want ErrConfig", err)
 	}
 	if ran != 0 {
 		t.Fatalf("a refused hook call ran its body %d times", ran)
 	}
-	got, err := journalhook.Step(context.Background(), NewMemStore(), "r", "node:x", Safety{}, fn)
+	got, err := journalhook.Step(context.Background(), memJournal(), "r", "node:x", Safety{}, fn)
 	if err != nil || string(got) != "1" || ran != 1 {
 		t.Fatalf("journalhook.Step(node:x) = %s, %v (ran %d); want 1, nil, 1", got, err, ran)
 	}
@@ -114,7 +114,7 @@ func TestRunStartHoldsKindAndFlow(t *testing.T) {
 		{"another input", flow, RunStart{Kind: RunKindFlow, Flow: &FlowRef{Name: "f"}, Input: UserText("2")}, false},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
-			m := NewMemStore()
+			m := memJournal()
 			if _, _, err := journalhook.Begin(ctx, m, "r", tc.first); err != nil {
 				t.Fatal(err)
 			}
@@ -146,12 +146,12 @@ func TestRunStartEncoding(t *testing.T) {
 	}
 }
 
-// ResolveHaltRef resolves only an operation that halted: one with a live attempt marker. A tool
+// ResolveHalt resolves only an operation that halted: one with a live attempt marker. A tool
 // call or Step never attempted, or whose only attempt is recorded as not started (the next drive
 // re-attempts it), is refused with ErrNoLiveAttempt, and nothing is recorded.
-func TestResolveHaltRef_RefusesAnOperationWithNoLiveAttempt(t *testing.T) {
+func TestResolveHalt_RefusesAnOperationWithNoLiveAttempt(t *testing.T) {
 	ctx := context.Background()
-	m := NewMemStore()
+	m := memJournal()
 	claim := "0123abcd0123abcd"
 	for _, w := range []struct {
 		name string
@@ -160,14 +160,14 @@ func TestResolveHaltRef_RefusesAnOperationWithNoLiveAttempt(t *testing.T) {
 		{stepAttemptStep("voided"), Record{Kind: StepAttempt, ToolUseID: "voided", AttemptedAt: 1, claim: claim}},
 		{notStartedStep(stepAttemptStep("voided"), claim), Record{Kind: StepNotStarted, ToolUseID: "voided", claim: claim}},
 	} {
-		if _, err := m.Do(ctx, "r", w.name, func(context.Context) (Record, error) { return w.rec, nil }); err != nil {
+		if _, err := m.do(ctx, "r", w.name, func(context.Context) (Record, error) { return w.rec, nil }); err != nil {
 			t.Fatal(err)
 		}
 	}
 	for _, op := range []OpRef{{Kind: OpTool, ID: "never"}, {Kind: OpStep, ID: "never"}, {Kind: OpStep, ID: "voided"}, {Kind: OpStep, ID: "node:a"}} {
-		err := ResolveHaltRef(ctx, m, HaltRef{RunID: "r", Op: op, Cause: HaltCrashed}, Outcome{Result: 1})
+		err := ResolveHalt(ctx, m, HaltRef{RunID: "r", Op: op, Cause: HaltCrashed}, Outcome{Result: 1})
 		if !errors.Is(err, ErrNoLiveAttempt) || !errors.Is(err, ErrConfig) {
-			t.Errorf("ResolveHaltRef(%+v): err = %v, want ErrNoLiveAttempt", op, err)
+			t.Errorf("ResolveHalt(%+v): err = %v, want ErrNoLiveAttempt", op, err)
 		}
 	}
 	recs, err := m.History(ctx, "r")
@@ -227,21 +227,21 @@ func TestSameCanonicalJSON(t *testing.T) {
 // node or not: it would record a step under a key no resolution or conformance check names.
 func TestEmptyStepNameIsRefused(t *testing.T) {
 	ctx := context.Background()
-	m := NewMemStore()
+	m := memJournal()
 	ran := 0
 	fn := func(context.Context) (int, error) { ran++; return 1, nil }
-	if _, err := Step(ctx, m, "r", "", fn); !errors.Is(err, ErrConfig) {
+	if _, err := m.Step(ctx, "r", "", fn); !errors.Is(err, ErrConfig) {
 		t.Errorf("Step(\"\"): %v, want ErrConfig", err)
 	}
 	inNode := context.WithValue(ctx, planScopeKey{}, planScope{runID: "r", node: "node:a"})
-	if _, err := Step(inNode, m, "r", "", fn); !errors.Is(err, ErrConfig) {
+	if _, err := m.Step(inNode, "r", "", fn); !errors.Is(err, ErrConfig) {
 		t.Errorf("Step(\"\") in a node: %v, want ErrConfig", err)
 	}
-	if _, err := Parallel(ctx, m, "r", []Task[int]{{Name: "", Fn: fn}}); !errors.Is(err, ErrConfig) {
+	if _, err := m.Parallel(ctx, "r", []Task[int]{{Name: "", Fn: fn}}); !errors.Is(err, ErrConfig) {
 		t.Errorf("Parallel with an empty task name: %v, want ErrConfig", err)
 	}
-	if err := ResolveHaltRef(ctx, m, HaltRef{RunID: "r", Op: OpRef{Kind: OpStep, ID: ""}, Cause: HaltCrashed}, Outcome{Result: 1}); !errors.Is(err, ErrConfig) {
-		t.Errorf("ResolveHaltRef of an empty step: %v, want ErrConfig", err)
+	if err := ResolveHalt(ctx, m, HaltRef{RunID: "r", Op: OpRef{Kind: OpStep, ID: ""}, Cause: HaltCrashed}, Outcome{Result: 1}); !errors.Is(err, ErrConfig) {
+		t.Errorf("ResolveHalt of an empty step: %v, want ErrConfig", err)
 	}
 	if ran != 0 {
 		t.Fatalf("a refused step ran %d times", ran)
@@ -257,17 +257,17 @@ func TestEmptyStepNameIsRefused(t *testing.T) {
 func TestFlowInputWithoutCanonicalJSONIsRefused(t *testing.T) {
 	ctx := context.Background()
 	for _, in := range []string{`{"a":1,"a":2}`, `"\ud800"`, `"\udc00x"`, `["\ud800A"]`, "\"\xff\""} {
-		m := NewMemStore()
+		j := memJournal()
 		start := RunStart{Kind: RunKindFlow, Flow: &FlowRef{Name: "f"}, Input: UserText(in)}
-		if _, _, err := journalhook.Begin(ctx, m, "r", start); !errors.Is(err, ErrConfig) {
+		if _, _, err := journalhook.Begin(ctx, j, "r", start); !errors.Is(err, ErrConfig) {
 			t.Errorf("Begin with input %q: %v, want ErrConfig", in, err)
 		}
-		if recs, _ := m.History(ctx, "r"); len(recs) != 0 {
+		if recs, _ := j.History(ctx, "r"); len(recs) != 0 {
 			t.Errorf("Begin with input %q recorded %d records", in, len(recs))
 		}
 	}
 	// A valid surrogate pair is a character, and compares with the character itself.
-	m := NewMemStore()
+	m := memJournal()
 	if _, _, err := journalhook.Begin(ctx, m, "r", RunStart{Kind: RunKindFlow, Flow: &FlowRef{Name: "f"}, Input: UserText(`"😀"`)}); err != nil {
 		t.Fatal(err)
 	}
@@ -280,11 +280,11 @@ func TestFlowInputWithoutCanonicalJSONIsRefused(t *testing.T) {
 // resolution of an outcome another writer recorded with them is the same outcome.
 func TestOneJSONRule_Escaping(t *testing.T) {
 	ctx := context.Background()
-	m := NewMemStore()
-	if _, err := Step(ctx, m, "r", "s", func(context.Context) (string, error) { return "a<b & c>d", nil }, WithSafety(Safety{ReadOnly: true})); err != nil {
+	m := memJournal()
+	if _, err := m.Step(ctx, "r", "s", func(context.Context) (string, error) { return "a<b & c>d", nil }, WithSafety(Safety{ReadOnly: true})); err != nil {
 		t.Fatal(err)
 	}
-	rec, ok, err := m.Journal().Get(ctx, "r", "s")
+	rec, ok, err := m.Get(ctx, "r", "s")
 	if err != nil || !ok || string(rec.Result) != `"a<b & c>d"` {
 		t.Fatalf("the Step's value is journaled as %s (%v, %v), want it unescaped", rec.Result, ok, err)
 	}
@@ -296,18 +296,18 @@ func TestOneJSONRule_Escaping(t *testing.T) {
 		{stepAttemptStep("t"), Record{Kind: StepAttempt, ToolUseID: "t", AttemptedAt: 1}},
 		{"t", Record{Kind: StepValue, Result: json.RawMessage(`"a` + ltEscape + `b"`)}},
 	} {
-		if _, err := m.Do(ctx, "r", w.name, func(context.Context) (Record, error) { return w.rec, nil }); err != nil {
+		if _, err := m.do(ctx, "r", w.name, func(context.Context) (Record, error) { return w.rec, nil }); err != nil {
 			t.Fatal(err)
 		}
 	}
-	if got, _, _ := m.Journal().Get(ctx, "r", "t"); !strings.Contains(string(got.Result), ltEscape) {
+	if got, _, _ := m.Get(ctx, "r", "t"); !strings.Contains(string(got.Result), ltEscape) {
 		t.Fatalf("the escaped outcome is stored as %s, want the escape kept", got.Result)
 	}
 	ref := HaltRef{RunID: "r", Op: OpRef{Kind: OpStep, ID: "t"}, Cause: HaltCrashed}
-	if err := ResolveHaltRef(ctx, m, ref, Outcome{Result: "a<b"}); err != nil {
+	if err := ResolveHalt(ctx, m, ref, Outcome{Result: "a<b"}); err != nil {
 		t.Fatalf("resolving the recorded outcome again: %v, want nil", err)
 	}
-	if err := ResolveHaltRef(ctx, m, ref, Outcome{Result: "a>b"}); !errors.Is(err, ErrAlreadyResolved) {
+	if err := ResolveHalt(ctx, m, ref, Outcome{Result: "a>b"}); !errors.Is(err, ErrAlreadyResolved) {
 		t.Fatalf("resolving another outcome: %v, want ErrAlreadyResolved", err)
 	}
 }
@@ -337,19 +337,19 @@ func TestAddExponent(t *testing.T) {
 // Every value the engine journals is written with the journal's one encoding: no HTML escapes.
 func TestOneJSONRule_EngineValuesUnescaped(t *testing.T) {
 	ctx := context.Background()
-	m := NewMemStore()
+	m := memJournal()
 	const v = "a<b & c>d"
-	if err := AnswerInterrupt(ctx, m, "r", "q", v); err != nil {
+	if err := m.AnswerInterrupt(ctx, "r", "q", v); err != nil {
 		t.Fatal(err)
 	}
-	if err := Signal(ctx, m, "r", "s", v); err != nil {
+	if err := m.Signal(ctx, "r", "s", v); err != nil {
 		t.Fatal(err)
 	}
-	if err := Enqueue(ctx, m, "r", "c", "k", v); err != nil {
+	if err := m.Enqueue(ctx, "r", "c", "k", v); err != nil {
 		t.Fatal(err)
 	}
 	for _, key := range []string{interruptStep("q"), signalStep("s"), chanStep("c", "k")} {
-		rec, ok, err := m.Journal().Get(ctx, "r", key)
+		rec, ok, err := m.Get(ctx, "r", key)
 		if err != nil || !ok || !strings.Contains(string(rec.Result), v) {
 			t.Errorf("%s is journaled as %s (%v, %v), want %q unescaped", key, rec.Result, ok, err, v)
 		}

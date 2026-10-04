@@ -14,6 +14,7 @@ import (
 	"time"
 
 	"github.com/bide-ai/bide/agent"
+	"github.com/bide-ai/bide/agent/agenttest"
 	"github.com/bide-ai/bide/audit"
 	"github.com/bide-ai/bide/govern"
 	gsm "github.com/blackwell-systems/gsm"
@@ -180,10 +181,10 @@ func runScale(t *testing.T, ctx context.Context, m *gsm.Machine, base []string, 
 			// Each agent gets its own store, dropped when this goroutine returns (the journal
 			// would go to a durable store in production). Memory stays bounded by the in-flight
 			// set, not total N, so this isolates runtime scaling from store capacity.
-			store := agent.NewMemStore()
-			ag := agent.New(seqModel{events: shuffled(base, i)}, store, tools...)
+			store := agenttest.MemJournal()
+			ag := agenttest.MustNew(seqModel{events: shuffled(base, i)}, store, agent.WithTools(tools...))
 			runID := "run"
-			if _, err := ag.Run(ctx, runID, "go"); err != nil {
+			if _, err := ag.Run(ctx, runID, agent.UserText("go")); err != nil {
 				atomic.AddInt64(&runErrs, 1)
 				return
 			}

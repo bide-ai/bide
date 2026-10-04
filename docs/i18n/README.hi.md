@@ -42,7 +42,7 @@ eino           maxFired=64   ✗
 
 कोई टूल किस स्तर पर आता है, यह उसकी घोषित `Safety` तय करती है: उसे read-only या idempotent चिह्नित करें, और एक अज्ञात परिणाम स्वतः पुनः-प्रयास होता है; इनमें से कुछ भी घोषित न करें और वह रुक जाता है। पुनः-प्रयास-सुरक्षा opt-in है; जब आपने opt-in नहीं किया तब विराम डिफ़ॉल्ट है, ताकि एक लाइब्रेरी जिसका पूरा उद्देश्य "कभी दो बार फ़ायर न करना" है, अनुमान लगाने के बजाय सुरक्षित पर डिफ़ॉल्ट करे।
 
-अधिकांश अज्ञात कभी किसी व्यक्ति तक नहीं पहुँचते: एक idempotency key प्रदाता को एक सुरक्षित पुनः-प्रयास का दोहराव हटाने देती है, और जिन सिस्टमों में वह नहीं होती (ईमेल, आंतरिक सेवाएँ) उनके लिए एक reconciler चरण को उस रिकॉर्ड से हल करता है जो वह छोड़ गया (`agent.ResolveHaltRef`)। इंसान न्यूनतम आधार है, डिफ़ॉल्ट नहीं।
+अधिकांश अज्ञात कभी किसी व्यक्ति तक नहीं पहुँचते: एक idempotency key प्रदाता को एक सुरक्षित पुनः-प्रयास का दोहराव हटाने देती है, और जिन सिस्टमों में वह नहीं होती (ईमेल, आंतरिक सेवाएँ) उनके लिए एक reconciler चरण को उस रिकॉर्ड से हल करता है जो वह छोड़ गया (`agent.ResolveHalt`)। इंसान न्यूनतम आधार है, डिफ़ॉल्ट नहीं।
 
 > [!IMPORTANT]
 > **इसके नीचे का नियम:** जब कोई क्रिया पैसा हिलाती है, किसी रिकॉर्ड को छूती है, या ऑडिट के तहत होती है, और परिणाम
@@ -115,21 +115,21 @@ Temporal के पास गारंटियाँ हैं पर चलन
 
 वही ऑर्डर-ट्राइएज फ़्लो, तीन तरीक़ों से। सादा Go डिफ़ॉल्ट है: सामान्य नियंत्रण-प्रवाह लिखें, और उन चरणों को नाम दें जिन्हें जर्नल को क्रैश-सुरक्षित बनाना है।
 
-<!-- docsnip: setup ctx context.Context; store agent.Durable; order Order; type Order struct{}; type Receipt struct{}; type Assessment struct{ Rush bool }; type Reservation struct{}; func classify(Order) (Assessment, error); func reserve(Assessment) (Reservation, error); func finalize(Reservation) (Receipt, error); func decline(Assessment) (Receipt, error) -->
+<!-- docsnip: setup ctx context.Context; store *agent.Journal; order Order; type Order struct{}; type Receipt struct{}; type Assessment struct{ Rush bool }; type Reservation struct{}; func classify(Order) (Assessment, error); func reserve(Assessment) (Reservation, error); func finalize(Reservation) (Receipt, error); func decline(Assessment) (Receipt, error) -->
 ```go
 // classify, then branch: rush orders reserve-then-finalize, the rest decline.
-assess, _ := agent.Step(ctx, store, "order-42", "classify",
+assess, _ := store.Step(ctx, "order-42", "classify",
     func(ctx context.Context) (Assessment, error) { return classify(order) },
     agent.WithSafety(agent.Safety{ReadOnly: true})) // safe to re-run after a crash
 
 var receipt Receipt
 if assess.Rush {
-    res, _ := agent.Step(ctx, store, "order-42", "reserve", // a side effect: at most once
+    res, _ := store.Step(ctx, "order-42", "reserve", // a side effect: at most once
         func(ctx context.Context) (Reservation, error) { return reserve(assess) })
-    receipt, _ = agent.Step(ctx, store, "order-42", "finalize",
+    receipt, _ = store.Step(ctx, "order-42", "finalize",
         func(ctx context.Context) (Receipt, error) { return finalize(res) })
 } else {
-    receipt, _ = agent.Step(ctx, store, "order-42", "decline",
+    receipt, _ = store.Step(ctx, "order-42", "decline",
         func(ctx context.Context) (Receipt, error) { return decline(assess) })
 }
 ```
@@ -193,12 +193,11 @@ flow, err := plan.Load[Order, Receipt](configBytes, reg) // same topology, same 
 <!-- docsnip: setup ctx context.Context; a *agent.Agent; runID string; input string; type ChargeArgs struct{}; type Receipt struct{} -->
 ```go
 // A tool that moves money is a write: not ReadOnly, not Idempotent.
-charge := agent.Func("charge_card", "Charge the customer", agent.Safety{},
-	func(ctx context.Context, in ChargeArgs) (Receipt, error) { /* ... */ })
+charge := agent.MustFunc("charge_card", "Charge the customer", func(ctx context.Context, in ChargeArgs) (Receipt, error) { /* ... */ })
 
 // If the process crashes after the charge fires but before its result is journaled,
 // resume does NOT run it again: it returns *OutcomeUnknown so you confirm, not double-charge:
-_, err := a.Run(ctx, runID, input)
+_, err := a.Run(ctx, runID, agent.UserText(input))
 if halt, ok := errors.AsType[*agent.OutcomeUnknown](err); ok {
 	// halt.Op.ToolName == "charge_card": outcome unknown, a human decides, no double side effect.
 }
@@ -216,6 +215,7 @@ package main
 import (
 	"context"
 	"fmt"
+	"log"
 	"os"
 
 	"github.com/bide-ai/bide/agent"
@@ -238,46 +238,57 @@ func main() {
 		openai.WithModel("openai/gpt-4o-mini"))
 
 	// A tool is a typed Go function; its schema is derived automatically.
-	weather := agent.Func("get_weather", "Current weather for a city",
-		agent.Safety{ReadOnly: true},
+	weather := agent.MustFunc("get_weather", "Current weather for a city",
 		func(_ context.Context, in WeatherArgs) (Weather, error) {
 			return Weather{TempF: 68, Sky: "sunny"}, nil
-		})
+		}, agent.WithSafety(agent.Safety{ReadOnly: true}))
 
 	// Durable on-disk store: a crash mid-run resumes from here.
 	store, _ := sqlite.Open("agent.db")
+	j, err := agent.NewJournal(store)
+	if err != nil {
+		log.Fatal(err)
+	}
 	defer store.Close()
 
-	a := agent.New(model, store, weather).
-		WithSystemPrompt("You are a concise weather assistant.")
-	out, _ := a.Run(context.Background(), "run-1", "Weather in SF? Use the tool.")
-	for _, p := range out.Parts {
-		if t, ok := p.(agent.Text); ok {
-			fmt.Println(t.Text)
-		}
+	a, err := agent.New(
+		model,
+		j,
+		agent.WithTools(weather),
+		agent.WithSystemPrompt("You are a concise weather assistant."),
+	)
+	if err != nil {
+		log.Fatal(err)
 	}
+	out, err := a.Run(context.Background(), "run-1", agent.UserText("Weather in SF? Use the tool."))
+	if err != nil {
+		log.Fatal(err)
+	}
+	fmt.Println(out.Message.Text())
 }
 ```
 
 लाइव स्मोक उदाहरण चलाएँ: `OPENROUTER_API_KEY=sk-... go run ./examples/smoke`
 
-`Run` केवल अंतिम संदेश लौटाता है। एक रन सारांश (पूरे रन का टोकन उपयोग, कैश और सब-एजेंटों सहित; मॉडल-ट्रन गिनती; वॉल-क्लॉक अवधि) के लिए `RunResult` (और `RunSagaResult`) इस्तेमाल करें:
+`Run` एक `Message` इनपुट (पाठ, या पाठ और चित्र) और प्रति-रन विकल्प लेता है, और एक `Result` लौटाता है: अंतिम संदेश, पूरे रन का टोकन उपयोग (कैश और सब-एजेंटों सहित), मॉडल-ट्रन गिनती, और वॉल-क्लॉक अवधि। रन ID मान्य होने पर `Result` हर त्रुटि पर भी nil नहीं होता: एक ठहराव, एक रुकावट, एक विफलता, एक सागा का निरस्तीकरण, एक रद्दीकरण:
 
 <!-- docsnip: setup ctx context.Context; a *agent.Agent; runID string; input string -->
 ```go
-res, err := a.RunResult(ctx, runID, input)
+res, err := a.Run(ctx, runID, agent.UserText(input),
+	agent.WithTokenBudget(50_000), agent.WithSystemPrompt("You are terse."))
 // res.Message, res.Usage, res.Spend, res.Turns, res.Duration, res.RunID
+_ = err
 ```
 
-संक्रमणकालीन नाम `RunMessage(ctx, runID, input, opts...)` (1.0 में `Run`) एक `Message` इनपुट (पाठ, या पाठ और चित्र) और प्रति-रन विकल्प लेता है, और हर त्रुटि पर भी एक `Result` लौटाता है। रन की पहली ड्राइव अपना इनपुट और विकल्प `run:start` में जर्नल करती है, और हर बाद की ड्राइव, रिकवरी सहित, उन्हीं के तहत चलती है: एक अलग सीमा (`WithMaxTurns`, `WithTokenBudget`) एक संशोधन `run:limits:<n>` के रूप में जर्नल होती है, और कोई अन्य अलग सेटिंग `ErrConfig` है। `agent.Cancel` एक रन रद्द करता है (एक सागा पहले वापस घुमाई जाती है), और `agent.Status` जर्नल से उसकी स्थिति पढ़ता है।
+रन की पहली ड्राइव अपना इनपुट और विकल्प `run:start` में जर्नल करती है, और हर बाद की ड्राइव, रिकवरी सहित, उन्हीं के तहत चलती है: एक अलग सीमा (`WithMaxTurns`, `WithTokenBudget`) एक संशोधन `run:limits:<n>` के रूप में जर्नल होती है, और कोई अन्य अलग सेटिंग `ErrConfig` है। `agent.Cancel` एक रन रद्द करता है (एक सागा पहले वापस घुमाई जाती है), और `agent.Status` जर्नल से उसकी स्थिति पढ़ता है।
 
 ## स्ट्रीमिंग
 
-`Run` ब्लॉक करता है और अंतिम उत्तर लौटाता है। एजेंट को काम करते देखने के लिए (टोकन डेल्टा, ट्रन सीमाएँ, टूल शुरू/समाप्त), `Stream` इस्तेमाल करें। यह **वही लूप** चलाता है (`Run` अक्षरशः `Stream(...).Final()` है), इसलिए टिकाऊपन, पुनरारंभ, और साइड-इफ़ेक्ट सुरक्षा समरूप हैं:
+`Run` ब्लॉक करता है और अंतिम उत्तर लौटाता है। एजेंट को काम करते देखने के लिए (टोकन डेल्टा, ट्रन सीमाएँ, टूल शुरू/समाप्त), `Stream` इस्तेमाल करें। यह **वही लूप** चलाता है (`Stream(...).Result()` वही लौटाता है जो `Run` लौटाता है), इसलिए टिकाऊपन, पुनरारंभ, और साइड-इफ़ेक्ट सुरक्षा समरूप हैं:
 
 <!-- docsnip: setup ctx context.Context; a *agent.Agent; runID string; input string -->
 ```go
-stream := a.Stream(ctx, runID, input)
+stream := a.Stream(ctx, runID, agent.UserText(input))
 for ev := range stream.Events() {
 	switch e := ev.(type) {
 	case agent.ModelEvent: // live token/reasoning/tool-call deltas
@@ -290,16 +301,16 @@ for ev := range stream.Events() {
 		fmt.Printf("[%s done]\n", e.Name)
 	}
 }
-answer, err := stream.Final() // terminal message + error (incl. a Pause: *ApprovalPending, *OutcomeUnknown, ...)
+res, err := stream.Result() // what Run returns: the Result and an error (incl. a pause: *ApprovalPending, *OutcomeUnknown, ...)
 ```
 
-घटनाएँ: `TurnStarted`, `ModelEvent` (टोकन फ़ीड), `AssistantTurn`, `ToolStarted` / `ToolCompleted`, `ApprovalRequired`, `Finished`। एक UI के लिए `Events()` पर रेंज करें फिर `Final()` को कॉल करें, या अकेले `Final()` कॉल करें ताकि यह ठीक `Run` की तरह व्यवहार करे (यह आपके लिए घटनाओं को निकाल देता है)।
+घटनाएँ: `TurnStarted`, `ModelEvent` (टोकन फ़ीड), `AssistantTurn`, `ToolStarted` / `ToolCompleted`, `ApprovalRequired`, `Finished`। एक UI के लिए `Events()` पर रेंज करें फिर `Result()` को कॉल करें, या अकेले `Result()` कॉल करें ताकि यह ठीक `Run` की तरह व्यवहार करे (यह आपके लिए घटनाओं को निकाल देता है)।
 
 दो बातें जानने योग्य, दोनों टिकाऊपन के परिणाम:
 - **टोकन डेल्टा middleware शृंखला के नीचे पहुँचते हैं** (Retry / Cost फिर भी पूरे संयोजित संदेश देखते हैं), और **केवल एक ताज़ा मॉडल कॉल पर**।
 - **पुनरारंभ पर, जर्नल-किया गया ट्रांसक्रिप्ट फिर से उत्सर्जित होता है** `AssistantTurn{Replayed: true}` + `ToolCompleted` के रूप में, लाइव प्रगति से पहले, ताकि एक ताज़ा UI क्रैश के बाद पूरी कहानी पुनर्निर्मित कर ले, और एक पुनर्खेल-किया गया ट्रन कोई टोकन डेल्टा उत्पन्न नहीं करता (वह पहले ही तय हो चुका था)।
 
-`StreamSaga` `RunSaga` का स्ट्रीमिंग समकक्ष है।
+`Stream` वही विकल्प लेता है जो `Run` (सागा के लिए `WithSaga()`), और उसका `RunStream.Result()` वही लौटाता है जो `Run` लौटाता।
 
 ## टाइप-किया गया आउटपुट
 
@@ -312,22 +323,29 @@ type Weather struct {
 	TempF int    `json:"temp_f"`
 }
 
-w, err := agent.RunTyped[Weather](ctx, a, runID, "weather in SF?")
+w, _, err := a.RunTyped[Weather](ctx, runID, agent.UserText("weather in SF?"))
 // w.City == "SF", w.TempF == 68
 ```
 
-यह एक पैकेज फ़ंक्शन है, मेथड नहीं (Go मेथड टाइप पैरामीटर नहीं जोड़ सकते)। मान *जर्नल-किए गए* टूल कॉल से डीकोड होता है, इसलिए यह **पुनरारंभ-सुरक्षित** है: एक रन के बीच का क्रैश पुनरारंभ पर लॉग से टाइप-किया गया उत्तर वापस पा लेता है। पहली `final_answer` कॉल जिसे टूल स्वीकार करता है, रन को समाप्त कर देती है। केवल यदि मॉडल ऐसी कोई कॉल कभी नहीं करता (वह इसके बजाय सादे JSON टेक्स्ट में उत्तर देता है), तभी `RunTyped` रन के अंतिम ट्रन के टेक्स्ट को पार्स करता है। `T` को एक JSON ऑब्जेक्ट होना चाहिए (एक struct, उसका पॉइंटर, या एक map), क्योंकि प्रदाता टूल आर्ग्युमेंट केवल ऑब्जेक्ट के रूप में लेते हैं; कोई भी अन्य `T` `ErrConfig` है।
+यह एक Go 1.27 जेनेरिक मेथड है; यह रन का `Result` भी लौटाता है (उसका `Output` उत्तर है, जैसा जर्नल किया गया)। मान *जर्नल-किए गए* टूल कॉल से डीकोड होता है, इसलिए यह **पुनरारंभ-सुरक्षित** है: एक रन के बीच का क्रैश पुनरारंभ पर लॉग से टाइप-किया गया उत्तर वापस पा लेता है। पहली `final_answer` कॉल जिसे टूल स्वीकार करता है, रन को समाप्त कर देती है। केवल यदि मॉडल ऐसी कोई कॉल कभी नहीं करता (वह इसके बजाय सादे JSON टेक्स्ट में उत्तर देता है), तभी `RunTyped` रन के अंतिम ट्रन के टेक्स्ट को पार्स करता है। `T` को एक JSON ऑब्जेक्ट होना चाहिए (एक struct, उसका पॉइंटर, या एक map), क्योंकि प्रदाता टूल आर्ग्युमेंट केवल ऑब्जेक्ट के रूप में लेते हैं; कोई भी अन्य `T` `ErrConfig` है।
 
-सख्त संरचित आउटपुट वाले OpenAI-संगत प्रदाताओं पर, `RunTypedNative[T]` टूल के बजाय प्रदाता के नेटिव JSON-स्कीमा प्रतिक्रिया प्रारूप का उपयोग करता है (स्कीमा प्रदाता-पक्ष पर प्रवर्तित, कोई टूल राउंड-ट्रिप नहीं); Anthropic अडैप्टर इसका समर्थन नहीं करता और `ErrConfig` लौटाता है, इसलिए वहाँ प्रदाता-अज्ञेय आउटपुट के लिए `RunTyped` इस्तेमाल करें।
+सख्त संरचित आउटपुट वाले OpenAI-संगत प्रदाताओं पर, `agent.WithOutputMode(agent.OutputNative)` के साथ `RunTyped[T]` टूल के बजाय प्रदाता के नेटिव JSON-स्कीमा प्रतिक्रिया प्रारूप का उपयोग करता है (स्कीमा प्रदाता-पक्ष पर प्रवर्तित, कोई टूल राउंड-ट्रिप नहीं); Anthropic अडैप्टर इसका समर्थन नहीं करता और `ErrConfig` लौटाता है, इसलिए वहाँ प्रदाता-अज्ञेय आउटपुट के लिए डिफ़ॉल्ट टूल मोड इस्तेमाल करें।
 
 ## सैंपलिंग
 
 जनन नियंत्रण प्रदाता-निरपेक्ष हैं और एक बार सेट होते हैं; हर अडैप्टर उन्हें अपने वायर प्रारूप पर मैप करता है (और जो वह नहीं कर सकता उसे गिरा देता है, जैसे Anthropic के पास `seed` नहीं है):
 
-<!-- docsnip: setup model agent.Model; store agent.Durable; tools []agent.Tool -->
+<!-- docsnip: setup model agent.Model; store *agent.Journal; tools []agent.Tool -->
 ```go
-a := agent.New(model, store, tools...).
-	WithSampling(agent.Temperature(0), agent.MaxTokens(500), agent.TopP(0.9), agent.Seed(42))
+a, err := agent.New(
+	model,
+	store,
+	agent.WithTools(tools...),
+	agent.WithSampling(agent.Temperature(0), agent.MaxTokens(500), agent.TopP(0.9), agent.Seed(42)),
+)
+if err != nil {
+	panic(err)
+}
 ```
 
 फ़ील्ड अभिकल्पना से वैकल्पिक हैं: एक अनसेट फ़ील्ड प्रदाता डिफ़ॉल्ट इस्तेमाल करता है, इसलिए एक स्पष्ट `Temperature(0)` "निर्दिष्ट नहीं" से भिन्न है। अनुरोध-स्तरीय `MaxTokens` एक अडैप्टर के निर्माण-समय डिफ़ॉल्ट को ओवरराइड करता है।
@@ -350,8 +368,15 @@ model := anthropic.New(key, anthropic.WithPromptCache())
 <!-- docsnip: setup ctx context.Context; a *agent.Agent -->
 ```go
 s, _ := a.Session(ctx, "user-42")   // reopens + rebuilds the transcript from the store
-a1, _ := s.Send(ctx, "what's the capital of France?")
-a2, _ := s.Send(ctx, "and its population?")   // sees turn 1 in context
+r1, err := s.Send(ctx, agent.UserText("what's the capital of France?"))
+if err != nil {
+	panic(err)
+}
+r2, err := s.Send(ctx, agent.UserText("and its population?")) // sees turn 1 in context
+if err != nil {
+	panic(err)
+}
+fmt.Println(r1.Message.Text(), r2.Message.Text())
 ```
 
 ट्रांसक्रिप्ट सत्र id के तहत ट्रन-दर-ट्रन जर्नल होता है, ताकि एक पुनरारंभ हुआ प्रोसेस `a.Session(ctx, "user-42")` इसे पुनर्निर्मित करके जारी रखे। ट्रन N `"<id>>@turn/N"` के तहत चलता है (उसका अपना टिकाऊ जर्नल एक ट्रन के *भीतर* क्रैश-पुनरारंभ संभालता है); वार्तालाप स्मृति प्रश्न/उत्तर ट्रांसक्रिप्ट है: एक ट्रन के मध्यवर्ती टूल कॉल उस ट्रन में ही रहते हैं और बाद के ट्रनों में नहीं रिसते। यदि एक ट्रन रुकता है (अनुमोदन / `Interrupt`), तो `Send` वह त्रुटि लौटाता है; उसे हल करें और पुनरारंभ के लिए उसी इनपुट के साथ `Send` फिर कॉल करें। तब तक, किसी भिन्न संदेश के साथ `Send` `ErrConfig` लौटाता है: खुला ट्रन अपने संदेश का है। उन इनबाउंड संदेशों के लिए जो दोबारा पहुँचाए जा सकते हैं, `SendOnce(ctx, id, text)` हर संदेश id का उत्तर एक बार देता है। एक सत्र पर कई हैंडल कभी कोई ट्रन नहीं खोते, किसी ट्रन को दो बार दर्ज नहीं करते, न ही एक संदेश का उत्तर किसी दूसरे के जवाब से देते हैं। लीज़ वाले स्टोर (`MemStore`, SQLite, Postgres) पर एक ट्रन अपने रन की लीज़ के तहत एक समय में एक ही वर्कर द्वारा चलाया जाता है, इसलिए उसका टोकन बजट कई वर्करों में भी बना रहता है; इस बीच वही संदेश पाने वाले दूसरे वर्कर को `ErrTurnContended` मिलता है और वह उसे बाद में फिर भेजता है। रद्द किए गए रन वाला Send ट्रन बंद दर्ज होता है: उस संदेश का `Send` `ErrRunCancelled` लौटाता है, और अगले संदेश का `Send` उस ट्रन को बिना उत्तर के बंद दर्ज करके अपना ट्रन चलाता है।
@@ -360,9 +385,9 @@ a2, _ := s.Send(ctx, "and its population?")   // sees turn 1 in context
 
 टिकाऊ जर्नल पहले से एक रन के हर चरण को रिकॉर्ड करता है। `audit` पैकेज उस इतिहास से एक हैश शृंखला के साथ प्रतिबद्ध होता है, ताकि एक रन का निष्पादन सत्यापनीय हो:
 
-<!-- docsnip: setup ctx context.Context; store agent.Durable; runID string; priv ed25519.PrivateKey -->
+<!-- docsnip: setup ctx context.Context; store *agent.Journal; runID string; priv ed25519.PrivateKey -->
 ```go
-head, _ := audit.Head(ctx, store, runID)     // SHA-256 chain over the journal (persisted order)
+head, _ := audit.Head(ctx, store, runID)                     // SHA-256 chain over the stored journal bytes
 sig, _ := audit.Sign(head, audit.Ed25519Signer{Priv: priv}) // anchor it: sign / publish out-of-band
 ```
 
@@ -388,11 +413,11 @@ type Retriever interface {
 <!-- docsnip: setup model agent.Model; journal *agent.Journal; myStore agent.Retriever -->
 ```go
 // Agentic RAG: the model searches on demand:
-a, err := agent.Build(model, journal,
-	agent.WithTools(agent.RetrievalTool("search_kb", "Search the knowledge base.", myStore, 5)))
+a, err := agent.New(model, journal,
+	agent.WithTools(agent.MustRetrievalTool("search_kb", "Search the knowledge base.", myStore, 5)))
 
 // Classic RAG: top-k auto-injected as context on each user turn:
-a, err = agent.Build(model, journal, agent.WithRetrieval(myStore, 5))
+a, err = agent.New(model, journal, agent.WithRetrieval(myStore, 5))
 ```
 
 वार्तालाप स्मृति पहले से अंतर्निहित है (`Session`); गतिशील संदर्भ `WithSystemPromptFunc` से गुज़रता है; यह सीवन शब्दार्थ / दीर्घकालिक स्मृति को समेटता है। मूर्त स्टोर अडैप्टर (यदि कभी आवश्यक हों) अलग मॉड्यूल होंगे, कभी कोर में नहीं। देखें [docs/guides/rag-memory.md](../../docs/guides/rag-memory.md)।
@@ -418,34 +443,41 @@ agent.WithApproval(agent.SingleApproval()) // not Safety: a tool option that pau
 
 तीन स्वाद। **अनुमोदन/अस्वीकृति**: `WithApproval(SingleApproval())` से चिह्नित एक टूल चलने से *पहले* रुकता है; इंसान का निर्णय एक bool है:
 
-<!-- docsnip: setup ctx context.Context; a *agent.Agent; store agent.Durable; runID string; input string -->
+<!-- docsnip: setup ctx context.Context; a *agent.Agent; store *agent.Journal; runID string; input string -->
 ```go
-_, err := a.Run(ctx, runID, input)
+_, err := a.Run(ctx, runID, agent.UserText(input))
 if pend, ok := errors.AsType[*agent.ApprovalPending](err); ok {
 	// ... get a human decision ...
 	agent.Approve(ctx, store, pend.RunID, pend.ToolUseID, true)
-	out, _ := a.Run(ctx, pend.RootRunID, input) // resumes past the pause
+	res, _ := a.Run(ctx, pend.RootRunID, agent.UserText(input))
+	var out agent.Message
+	if res != nil {
+		out = res.Message
+	} // resumes past the pause
 }
 ```
 
 **अंतरायण/पुनरारंभ**: एक टूल *एक मनमाने बिंदु पर* रुकता है और एक *टाइप-किए गए* मान के साथ पुनरारंभ होता है (bool का सामान्यीकरण)। एक पुनः-प्रयास-सुरक्षित टूल के भीतर `agent.Interrupt[T]` कॉल करें:
 
-<!-- docsnip: setup ctx context.Context; a *agent.Agent; store agent.Durable; runID string; input string; type Options struct{}; type Plan struct{}; chosenPlan Plan -->
+<!-- docsnip: setup ctx context.Context; a *agent.Agent; store *agent.Journal; runID string; input string; type Options struct{}; type Plan struct{}; chosenPlan Plan -->
 ```go
-tool := agent.Func("choose_plan", "pick a plan", agent.Safety{ReadOnly: true},
-	func(ctx context.Context, in Options) (Plan, error) {
+tool := agent.MustFunc("choose_plan", "pick a plan", func(ctx context.Context, in Options) (Plan, error) {
 		pick, err := agent.Interrupt[Plan](ctx, "plan", in) // pauses the run; in is shown to the human
 		if err != nil {
 			return Plan{}, err // *InterruptPending propagates out of Run
 		}
 		return pick, nil // on resume, pick is the human's typed answer
-	})
+	}, agent.WithSafety(agent.Safety{ReadOnly: true}))
 
-_, err := a.Run(ctx, runID, input)
+_, err := a.Run(ctx, runID, agent.UserText(input))
 if intr, ok := errors.AsType[*agent.InterruptPending](err); ok {
 	// ... show intr.Prompt, get a typed answer ...
-	agent.AnswerInterrupt(ctx, store, intr.RunID, intr.Name, chosenPlan)
-	out, _ := a.Run(ctx, intr.RootRunID, input) // resumes; Interrupt now returns chosenPlan
+	store.AnswerInterrupt(ctx, intr.RunID, intr.Name, chosenPlan)
+	res, _ := a.Run(ctx, intr.RootRunID, agent.UserText(input))
+	var out agent.Message
+	if res != nil {
+		out = res.Message
+	} // resumes; Interrupt now returns chosenPlan
 }
 ```
 
@@ -453,11 +485,14 @@ if intr, ok := errors.AsType[*agent.InterruptPending](err); ok {
 
 **m-of-n अनुमोदन**: जब एक हस्ताक्षर-स्वीकृति पर्याप्त नहीं, तो n अनुमोदकों के एक नामित समूह से k हस्ताक्षरित निर्णय आवश्यक करें। हर अनुमोदक ठीक उसी कॉल (टूल और तर्कों) पर हस्ताक्षर करता है; गेट k अनुमोदनों पर आगे बढ़ता है, k अप्राप्य होते ही अस्वीकार करता है, और अन्यथा चालू गणना के साथ रुकता है। एक जाली या ग़लत निर्णय अनदेखा किया जाता है, उसके अनुमोदक को बाहर किए बिना:
 
-<!-- docsnip: setup ctx context.Context; model agent.Model; store agent.Durable; pend *agent.ApprovalPending; type RefundArgs struct{}; doRefund func(context.Context, RefundArgs) (string, error); keysByApprover agent.ApproverVerifierFor; signer audit.Signer -->
+<!-- docsnip: setup ctx context.Context; model agent.Model; store *agent.Journal; pend *agent.ApprovalPending; type RefundArgs struct{}; doRefund func(context.Context, RefundArgs) (string, error); keysByApprover agent.ApproverVerifierFor; signer audit.Signer -->
 ```go
-refund := agent.Func("refund", "refund the order", agent.Safety{}, doRefund,
+refund := agent.MustFunc("refund", "refund the order", doRefund,
 	agent.WithApproval(&agent.ApprovalPolicy{Need: 2, Approvers: []string{"ops", "finance", "risk"}}))
-a := agent.New(model, store, refund).WithApproverVerifiers(keysByApprover)
+a, err := agent.New(model, store, agent.WithTools(refund), agent.WithApproverVerifiers(keysByApprover))
+if err != nil {
+	panic(err)
+}
 
 // each approver, out of band, signs the paused call they were shown:
 sig, _ := signer.Sign(agent.ApprovalDecisionBytes(pend.Subject(), "finance", true))
@@ -473,7 +508,7 @@ agent.SubmitDecision(ctx, store, agent.Decision{RunID: pend.RunID, ToolUseID: pe
 
 <!-- docsnip: setup ctx context.Context; a *agent.Agent; runID string; input string; func backOffAndRetry(); func fixToolWiring(); func alertOps() -->
 ```go
-_, err := a.Run(ctx, runID, input)
+_, err := a.Run(ctx, runID, agent.UserText(input))
 switch {
 case errors.Is(err, agent.ErrModel):       // any provider fault (HTTP status, decode, stream)
 	backOffAndRetry()
@@ -486,26 +521,33 @@ case errors.Is(err, agent.ErrStorage):      // durable-store I/O
 
 श्रेणियाँ: `ErrConfig`, `ErrModel`, `ErrTool`, `ErrStorage`, `ErrProtocol`, `ErrBudget`। स्थितियाँ (हर एक एक श्रेणी को लपेटती है): `ErrUnknownTool`, `ErrToolArgs` (`ErrTool` को लपेटती हैं), `ErrToolReinvoked`, `ErrInvalidApproval`, `ErrAlreadyDecided` (`ErrConfig` को लपेटती हैं), `ErrNoRecordedOutput`, `ErrIncompleteResponse` (`ErrModel` को लपेटती हैं), `ErrTruncatedToolArgs` (`ErrProtocol` को लपेटती है), `ErrBudgetExceeded`, `ErrMaxTurns` (`ErrBudget` को लपेटती हैं)। `ErrToolNotCalled` किसी श्रेणी को नहीं लपेटती: यह एक ऐसी टूल कॉल को चिह्नित करती है जिसके बारे में ज्ञात है कि वह अपने टूल तक कभी नहीं पहुँची (एक टूल middleware की अस्वीकृति इसे लपेटती है)। प्रदाता अडैप्टर `*RateLimited` (HTTP 429, एक `RetryAfter` संकेत के साथ) और `*APIError` (अन्य non-2xx, `StatusCode` के साथ) भी लौटाते हैं, दोनों `ErrModel` को लपेटते हैं। टूलकिट जो भी त्रुटि लौटाता है (मॉडल, MCP, स्टोर, और शासन अडैप्टरों से सहित) एक श्रेणी वहन करती है, इसलिए `errors.Is` पूरी सतह पर विश्वसनीय है।
 
-और **नियंत्रण-प्रवाह संकेत** एक श्रेणी से समृद्धतर हैं, इसलिए वे ठोस प्रकार बने रहते हैं जिन्हें `errors.As` मिलाता है: `*ApprovalPending` (अनुमोदन आवश्यक), `*InterruptPending` (इंसानी इनपुट की प्रतीक्षा), `*TimerPending` (टिकाऊ टाइमर लंबित), `*SignalPending` (एक बाहरी सिग्नल की प्रतीक्षा), `*OutcomeUnknown` (पुनरारंभ असुरक्षित), `*SagaAborted` (वापस लुढ़काया गया), और `*HaltTooYoung` (`ResolveHaltRef` से, जब `WithMinHaltAge` अभी बीता नहीं है)। ये सभी सील किए गए इंटरफ़ेस `agent.Pause` को संतुष्ट करते हैं; `agent.IsPause(err)` से जाँचें और `agent.AsPause(err)` से पढ़ें। एक रुका या ठहरा हुआ रन एक "विफलता" श्रेणी नहीं है; `RunID` / `ToolUseID` / क्षतिपूर्ति विवरण के लिए struct का निरीक्षण करें। रद्दीकरण सामान्य `context.Canceled` / `context.DeadlineExceeded` के रूप में उभरता है, और जो ड्राइव अपने रन की लीज़ (`agent.Lease`) खो जाने के कारण रद्द हुई, वह `ErrLeaseLost` के रूप में; रद्दीकरण की तरह, यह कोई श्रेणी वहन नहीं करती।
+और **नियंत्रण-प्रवाह संकेत** एक श्रेणी से समृद्धतर हैं, इसलिए वे ठोस प्रकार बने रहते हैं जिन्हें `errors.As` मिलाता है: `*ApprovalPending` (अनुमोदन आवश्यक), `*InterruptPending` (इंसानी इनपुट की प्रतीक्षा), `*TimerPending` (टिकाऊ टाइमर लंबित), `*SignalPending` (एक बाहरी सिग्नल की प्रतीक्षा), `*OutcomeUnknown` (पुनरारंभ असुरक्षित), `*SagaAborted` (वापस लुढ़काया गया), और `*HaltTooYoung` (`ResolveHalt` से, जब `WithMinHaltAge` अभी बीता नहीं है)। ये सभी सील किए गए इंटरफ़ेस `agent.Pause` को संतुष्ट करते हैं; `agent.IsPause(err)` से जाँचें और `agent.AsPause(err)` से पढ़ें। एक रुका या ठहरा हुआ रन एक "विफलता" श्रेणी नहीं है; `RunID` / `ToolUseID` / क्षतिपूर्ति विवरण के लिए struct का निरीक्षण करें। रद्दीकरण सामान्य `context.Canceled` / `context.DeadlineExceeded` के रूप में उभरता है, और जो ड्राइव अपने रन की लीज़ (`agent.Lease`) खो जाने के कारण रद्द हुई, वह `ErrLeaseLost` के रूप में; रद्दीकरण की तरह, यह कोई श्रेणी वहन नहीं करती।
 
 ## Middleware और अवलोकनीयता
 
-दो स्वतंत्र `func(Handler) Handler` शृंखलाएँ उन दो सीमाओं पर जो मायने रखती हैं: मॉडल कॉल (`Use`) और हर टूल कॉल (`UseTool`)। पहले जोड़ा = सबसे बाहरी। दोनों *उत्परिवर्तनकारी और लघु-परिपथी* हैं: जो अंदर जाता है उसे दोबारा लिखें, जो बाहर आता है उसे रूपांतरित करें, या `next` को कॉल किए बिना लौटें।
+दो स्वतंत्र `func(Handler) Handler` शृंखलाएँ उन दो सीमाओं पर जो मायने रखती हैं: मॉडल कॉल (`WithMiddleware`) और हर टूल कॉल (`WithToolMiddleware`)। पहले जोड़ा = सबसे बाहरी। दोनों *उत्परिवर्तनकारी और लघु-परिपथी* हैं: जो अंदर जाता है उसे दोबारा लिखें, जो बाहर आता है उसे रूपांतरित करें, या `next` को कॉल किए बिना लौटें।
 
-<!-- docsnip: setup model agent.Model; store agent.Durable; tools []agent.Tool; import oteltrace "go.opentelemetry.io/otel/trace"; tracer oteltrace.Tracer -->
+<!-- docsnip: setup model agent.Model; store *agent.Journal; tools []agent.Tool; import oteltrace "go.opentelemetry.io/otel/trace"; tracer oteltrace.Tracer -->
 ```go
 var cost middleware.CostMeter
-a := agent.New(model, store, tools...).
-	WithTokenBudget(100_000). // per run, rebuilt from the journal on resume
-	Use(
+a, err := agent.New(model, store,
+	agent.WithTools(tools...),
+	agent.WithTokenBudget(100_000), // per run, rebuilt from the journal on resume
+	agent.WithMiddleware(
 		middleware.Retry(3, middleware.WithBackoff(200*time.Millisecond, 10*time.Second)),
 		middleware.Cost(&cost, middleware.Rates{InputPer1M: 3, OutputPer1M: 15}),
-	).
-	UseTool(middleware.ToolLog(log.Printf), middleware.ToolCache(), middleware.ToolRetry(3))
+	),
+	agent.WithToolMiddleware(middleware.ToolLog(log.Printf), middleware.ToolCache(), middleware.ToolRetry(3)),
+)
+if err != nil {
+	panic(err)
+}
 
 // opt-in OTel gen_ai.* spans (provider and model from agent.ModelInfoOf); the core has no OTel dependency:
-a.Use(trace.Model(tracer))
-a.UseTool(trace.Tool(tracer)) // execute_tool span per call; nests across the sub-agent boundary
+a, err = a.With(
+	agent.WithMiddleware(trace.Model(tracer)),
+	agent.WithToolMiddleware(trace.Tool(tracer)), // execute_tool span per call; nests across the sub-agent boundary
+)
 // ... after the run: cost.Snapshot() (answer and spend, in tokens and USD)
 ```
 
@@ -534,7 +576,7 @@ func RequireTag(tag string) agent.ToolMiddleware {
 
 ## मॉड्यूल
 
-Bide एक बहु-मॉड्यूल रेपो है: एक निर्भरता-हल्का **कोर** (`github.com/bide-ai/bide`, यानी लूप, schema, middleware, मॉडल अडैप्टर, `plan` फ़्लो बिल्डर, `audit`; निर्भरताएँ केवल `x/sync` + `x/text` हैं) साथ ही प्रति भारी अडैप्टर एक मॉड्यूल (`mcp`, `trace`, `store/sqlite`, `store/postgres`, `govern/redislog`, `govern/sqlitelog`, `govern/postgreslog`, `codec/gcf`), और `govern` मॉड्यूल, जो gsm को वहन करता है और gsm के स्थिर होने तक v0.x पर रहता है। एक अडैप्टर import करें और आप उसका निर्भरता वृक्ष खींच लेते हैं; केवल कोर import करें और आप नहीं खींचते। एक केवल-कोर उपभोक्ता की बाह्य-मॉड्यूल सतह 2 है, 54 नहीं। देखें [docs/reference/module-structure.md](../../docs/reference/module-structure.md)।
+Bide एक बहु-मॉड्यूल रेपो है: एक निर्भरता-हल्का **कोर** (`github.com/bide-ai/bide`, यानी लूप, schema, middleware, मॉडल अडैप्टर, `plan` फ़्लो बिल्डर, `audit`; निर्भरताएँ केवल `x/sync` + `x/text` हैं) साथ ही प्रति भारी अडैप्टर एक मॉड्यूल (`mcptools`, `trace`, `store/sqlite`, `store/postgres`, `govern/redislog`, `govern/sqlitelog`, `govern/postgreslog`, `codec/gcf`), और `govern` मॉड्यूल, जो gsm को वहन करता है और gsm के स्थिर होने तक v0.x पर रहता है। एक अडैप्टर import करें और आप उसका निर्भरता वृक्ष खींच लेते हैं; केवल कोर import करें और आप नहीं खींचते। एक केवल-कोर उपभोक्ता की बाह्य-मॉड्यूल सतह 2 है, 54 नहीं। देखें [docs/reference/module-structure.md](../../docs/reference/module-structure.md)।
 
 ## आर्किटेक्चर
 
@@ -578,7 +620,7 @@ tool := govern.EventTool(gov, govern.EventToolConfig{Name: "pay", Description: "
 **लेखन**
 
 - **[फ़्लो](../../docs/guides/flows.md)**: `plan` टाइप-किया गया फ़्लो बिल्डर। टोपोलॉजी (`Step`/`Tool`/`Model`/`Switch`/`Join`/`LoopBack`) लिखें जो उसी जर्नल पर उतरती है, फिर सिद्ध करें कि एक रन ने उसका पालन किया (`Conform`)। चलाने योग्य: `examples/plan`।
-- **[टिकाऊ चरण](../../docs/guides/durable-steps.md)**: अपना खुद का टिकाऊ काम संघटित करें: `Step`, `Parallel`/`Task` फ़ैन-इन, सागा (`RunSaga`), और टिकाऊ टाइमर (`Sleep`/`WaitUntil`)। चलाने योग्य: `examples/parallel`।
+- **[टिकाऊ चरण](../../docs/guides/durable-steps.md)**: अपना खुद का टिकाऊ काम संघटित करें: `Step`, `Parallel`/`Task` फ़ैन-इन, सागा (`WithSaga`), और टिकाऊ टाइमर (`Sleep`/`WaitUntil`)। चलाने योग्य: `examples/parallel`।
 - **[विश्वसनीयता](../../docs/guides/reliability.md)**: प्रति-प्रयास टाइमआउट, वर्गीकृत पुनः-प्रयास, हेज्ड मॉडल कॉल, रेट लिमिटिंग, और लागत ट्रैकिंग, और वे कैसे संघटित होते हैं। चलाने योग्य: `examples/hedge`।
 - **[सिग्नल और एंबिएंट](../../docs/guides/signals.md)**: बाहरी घटनाएँ एक रन में: टिकाऊ टाइमर और `Waker`, human-in-the-loop (`Interrupt`/`AnswerInterrupt`), और टिकाऊ सिग्नल (अंदर कम-से-कम-एक-बार, लागू ठीक-एक-बार)। चलाने योग्य: `examples/signals`, `examples/interrupt`।
 - **[मॉडल](../../docs/guides/models.md)**: Anthropic, OpenAI-संगत, और Gemini अडैप्टर: `WithBaseURL`, सैंपलिंग, प्रॉम्प्ट कैशिंग, टाइप-की गई त्रुटियाँ, और बहुविध छवि इनपुट।

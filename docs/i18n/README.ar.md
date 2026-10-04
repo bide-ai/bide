@@ -70,7 +70,7 @@ eino           maxFired=64   ✗
 
 معظم النتائج المجهولة لا تبلغ إنسانًا أبدًا: مفتاح عدم التكرار يتيح للمورّد إزالة تكرار إعادة محاولة آمنة،
 وللأنظمة التي لا تملكه (البريد، الخدمات الداخلية) يحسم مُسوٍّ الخطوةَ من السجل الذي تركته
-(`agent.ResolveHaltRef`). الإنسان هو الحدّ الأدنى، لا الافتراض.
+(`agent.ResolveHalt`). الإنسان هو الحدّ الأدنى، لا الافتراض.
 
 > [!IMPORTANT]
 > **القاعدة تحت ذلك:** حين يُحرّك فعلٌ أموالًا، أو يمسّ سجلًّا، أو يقع تحت التدقيق، وتكون النتيجة مجهولة
@@ -237,21 +237,21 @@ gsm machine gate في bide مُتحقِّقات البرهان على كل آل�
 تدفّق فرز الطلبات نفسه، بثلاث طرق. Go الخالصة هي الافتراض: اكتب تحكّمًا عاديًّا في التدفّق، وسمِّ الخطوات
 التي يجب أن يجعلها السجل آمنة عند الانهيار.
 
-<!-- docsnip: setup ctx context.Context; store agent.Durable; order Order; type Order struct{}; type Receipt struct{}; type Assessment struct{ Rush bool }; type Reservation struct{}; func classify(Order) (Assessment, error); func reserve(Assessment) (Reservation, error); func finalize(Reservation) (Receipt, error); func decline(Assessment) (Receipt, error) -->
+<!-- docsnip: setup ctx context.Context; store *agent.Journal; order Order; type Order struct{}; type Receipt struct{}; type Assessment struct{ Rush bool }; type Reservation struct{}; func classify(Order) (Assessment, error); func reserve(Assessment) (Reservation, error); func finalize(Reservation) (Receipt, error); func decline(Assessment) (Receipt, error) -->
 ```go
 // classify, then branch: rush orders reserve-then-finalize, the rest decline.
-assess, _ := agent.Step(ctx, store, "order-42", "classify",
+assess, _ := store.Step(ctx, "order-42", "classify",
     func(ctx context.Context) (Assessment, error) { return classify(order) },
     agent.WithSafety(agent.Safety{ReadOnly: true})) // safe to re-run after a crash
 
 var receipt Receipt
 if assess.Rush {
-    res, _ := agent.Step(ctx, store, "order-42", "reserve", // a side effect: at most once
+    res, _ := store.Step(ctx, "order-42", "reserve", // a side effect: at most once
         func(ctx context.Context) (Reservation, error) { return reserve(assess) })
-    receipt, _ = agent.Step(ctx, store, "order-42", "finalize",
+    receipt, _ = store.Step(ctx, "order-42", "finalize",
         func(ctx context.Context) (Receipt, error) { return finalize(res) })
 } else {
-    receipt, _ = agent.Step(ctx, store, "order-42", "decline",
+    receipt, _ = store.Step(ctx, "order-42", "decline",
         func(ctx context.Context) (Receipt, error) { return decline(assess) })
 }
 ```
@@ -326,12 +326,11 @@ flow, err := plan.Load[Order, Receipt](configBytes, reg) // same topology, same 
 <!-- docsnip: setup ctx context.Context; a *agent.Agent; runID string; input string; type ChargeArgs struct{}; type Receipt struct{} -->
 ```go
 // A tool that moves money is a write: not ReadOnly, not Idempotent.
-charge := agent.Func("charge_card", "Charge the customer", agent.Safety{},
-	func(ctx context.Context, in ChargeArgs) (Receipt, error) { /* ... */ })
+charge := agent.MustFunc("charge_card", "Charge the customer", func(ctx context.Context, in ChargeArgs) (Receipt, error) { /* ... */ })
 
 // If the process crashes after the charge fires but before its result is journaled,
 // resume does NOT run it again: it returns *OutcomeUnknown so you confirm, not double-charge:
-_, err := a.Run(ctx, runID, input)
+_, err := a.Run(ctx, runID, agent.UserText(input))
 if halt, ok := errors.AsType[*agent.OutcomeUnknown](err); ok {
 	// halt.Op.ToolName == "charge_card": outcome unknown, a human decides, no double side effect.
 }
@@ -351,6 +350,7 @@ package main
 import (
 	"context"
 	"fmt"
+	"log"
 	"os"
 
 	"github.com/bide-ai/bide/agent"
@@ -373,49 +373,61 @@ func main() {
 		openai.WithModel("openai/gpt-4o-mini"))
 
 	// A tool is a typed Go function; its schema is derived automatically.
-	weather := agent.Func("get_weather", "Current weather for a city",
-		agent.Safety{ReadOnly: true},
+	weather := agent.MustFunc("get_weather", "Current weather for a city",
 		func(_ context.Context, in WeatherArgs) (Weather, error) {
 			return Weather{TempF: 68, Sky: "sunny"}, nil
-		})
+		}, agent.WithSafety(agent.Safety{ReadOnly: true}))
 
 	// Durable on-disk store: a crash mid-run resumes from here.
 	store, _ := sqlite.Open("agent.db")
+	j, err := agent.NewJournal(store)
+	if err != nil {
+		log.Fatal(err)
+	}
 	defer store.Close()
 
-	a := agent.New(model, store, weather).
-		WithSystemPrompt("You are a concise weather assistant.")
-	out, _ := a.Run(context.Background(), "run-1", "Weather in SF? Use the tool.")
-	for _, p := range out.Parts {
-		if t, ok := p.(agent.Text); ok {
-			fmt.Println(t.Text)
-		}
+	a, err := agent.New(
+		model,
+		j,
+		agent.WithTools(weather),
+		agent.WithSystemPrompt("You are a concise weather assistant."),
+	)
+	if err != nil {
+		log.Fatal(err)
 	}
+	out, err := a.Run(context.Background(), "run-1", agent.UserText("Weather in SF? Use the tool."))
+	if err != nil {
+		log.Fatal(err)
+	}
+	fmt.Println(out.Message.Text())
 }
 ```
 
 شغّل مثال الاختبار الحيّ: `OPENROUTER_API_KEY=sk-... go run ./examples/smoke`
 
-تُرجِع `Run` الرسالة النهائية فقط. للحصول على ملخّص تشغيلة (استهلاك الرموز للتشغيلة كلها، شاملًا
-التخزين المؤقت والوكلاء الفرعيين؛ وعدد أدوار النموذج؛ ومدّة الزمن الجداري) استخدم `RunResult` (و`RunSagaResult`):
+تأخذ `Run` مدخلًا من نوع `Message` (نص، أو نص وصور) وخيارات لكل تشغيل، وتُرجِع `Result`: الرسالة النهائية،
+واستهلاك الرموز للتشغيلة كلها (شاملًا التخزين المؤقت والوكلاء الفرعيين)، وعدد أدوار النموذج، ومدّة الزمن الجداري.
+ولا يكون `Result` فارغًا (nil) مع أي خطأ متى كان معرّف التشغيلة صالحًا: توقّف مؤقت، أو توقّف، أو إخفاق، أو إلغاء saga، أو إلغاء:
 
 <!-- docsnip: setup ctx context.Context; a *agent.Agent; runID string; input string -->
 ```go
-res, err := a.RunResult(ctx, runID, input)
+res, err := a.Run(ctx, runID, agent.UserText(input),
+	agent.WithTokenBudget(50_000), agent.WithSystemPrompt("You are terse."))
 // res.Message, res.Usage, res.Spend, res.Turns, res.Duration, res.RunID
+_ = err
 ```
 
-يأخذ الاسم الانتقالي `RunMessage(ctx, runID, input, opts...)` (في 1.0 هو `Run`) مدخلًا من نوع `Message` (نص، أو نص وصور) وخيارات لكل تشغيل، ويُعيد `Result` مع كل خطأ. يسجّل أول تشغيل مدخله وخياراته في `run:start`، وكل تشغيل لاحق، بما فيه الاستعادة، يعمل بها: الحدّ المختلف (`WithMaxTurns`، `WithTokenBudget`) يُسجَّل تعديلًا `run:limits:<n>`، وأي إعداد مختلف آخر هو `ErrConfig`. تُلغي `agent.Cancel` تشغيلًا (وتُرجَع الـ saga أولًا)، وتقرأ `agent.Status` حالته من السجل.
+يسجّل أول تشغيل مدخله وخياراته في `run:start`، وكل تشغيل لاحق، بما فيه الاستعادة، يعمل بها: الحدّ المختلف (`WithMaxTurns`، `WithTokenBudget`) يُسجَّل تعديلًا `run:limits:<n>`، وأي إعداد مختلف آخر هو `ErrConfig`. تُلغي `agent.Cancel` تشغيلًا (وتُرجَع الـ saga أولًا)، وتقرأ `agent.Status` حالته من السجل.
 
 ## البثّ (Streaming)
 
 تحجب `Run` وتُرجِع الجواب النهائي. لمراقبة الوكيل وهو يعمل (فروق الرموز، حدود الأدوار، بدء/انتهاء الأداة)،
-استخدم `Stream`. تقود **الحلقة نفسها** (`Run` حرفيًّا هي `Stream(...).Final()`)، فالمعمورية والاستئناف
+استخدم `Stream`. تقود **الحلقة نفسها** (تُرجِع `Stream(...).Result()` ما تُرجِعه `Run`)، فالمعمورية والاستئناف
 وأمان الأثر الجانبي متطابقة:
 
 <!-- docsnip: setup ctx context.Context; a *agent.Agent; runID string; input string -->
 ```go
-stream := a.Stream(ctx, runID, input)
+stream := a.Stream(ctx, runID, agent.UserText(input))
 for ev := range stream.Events() {
 	switch e := ev.(type) {
 	case agent.ModelEvent: // live token/reasoning/tool-call deltas
@@ -428,11 +440,11 @@ for ev := range stream.Events() {
 		fmt.Printf("[%s done]\n", e.Name)
 	}
 }
-answer, err := stream.Final() // terminal message + error (incl. a Pause: *ApprovalPending, *OutcomeUnknown, ...)
+res, err := stream.Result() // what Run returns: the Result and an error (incl. a pause: *ApprovalPending, *OutcomeUnknown, ...)
 ```
 
 الأحداث: `TurnStarted`، `ModelEvent` (تغذية الرموز)، `AssistantTurn`، `ToolStarted` / `ToolCompleted`،
-`ApprovalRequired`، `Finished`. مرِّر على `Events()` لأجل واجهة ثم استدعِ `Final()`، أو استدعِ `Final()`
+`ApprovalRequired`، `Finished`. مرِّر على `Events()` لأجل واجهة ثم استدعِ `Result()`، أو استدعِ `Result()`
 وحدها لتتصرّف تمامًا كـ `Run` (تستنزف الأحداث نيابةً عنك).
 
 شيئان جديران بالمعرفة، وكلاهما نتيجة للمعمورية:
@@ -442,7 +454,7 @@ answer, err := stream.Final() // terminal message + error (incl. a Pause: *Appro
   قبل التقدّم الحيّ، فتعيد واجهةٌ جديدة بناء القصة كاملة بعد انهيار، والدور المُعاد لا يُنتج فروق رموز (كان
   قد حُسم بالفعل).
 
-`StreamSaga` هو نظير البثّ لـ `RunSaga`.
+تأخذ `Stream` خيارات `Run` نفسها (`WithSaga()` للـ saga)، وتُرجِع `RunStream.Result()` الخاصة بها ما كانت `Run` ستُرجِعه.
 
 ## الخرج المُصنَّف
 
@@ -458,29 +470,36 @@ type Weather struct {
 	TempF int    `json:"temp_f"`
 }
 
-w, err := agent.RunTyped[Weather](ctx, a, runID, "weather in SF?")
+w, _, err := a.RunTyped[Weather](ctx, runID, agent.UserText("weather in SF?"))
 // w.City == "SF", w.TempF == 68
 ```
 
-إنها دالة حزمة، لا تابع (توابع Go لا تستطيع إضافة معاملات نوع). القيمة تُفكَّك من نداء الأداة *المُسجَّل*،
+إنها تابع عامّ (generic method) في Go 1.27؛ وتُرجِع `Result` التشغيلة أيضًا (حقله `Output` هو الجواب كما سُجِّل). القيمة تُفكَّك من نداء الأداة *المُسجَّل*،
 فهي **آمنة عند الاستئناف**: انهيار في منتصف التشغيلة يستعيد الجواب المُصنَّف من السجل عند الاستئناف. وأول
 نداء `final_answer` تقبله الأداة يُنهي التشغيلة. وفقط إن لم يُجرِ النموذج نداءً كهذا قط (فردّ بنصّ JSON عادي
 بدلًا منه) تُحلّل `RunTyped` نصّ الدور الأخير في التشغيلة. يجب أن يكون `T` كائن JSON (بنية struct، أو مؤشّرًا
 إليها، أو map)، لأن المورّدين لا يقبلون وسائط الأدوات إلا ككائن؛ وأي `T` آخر يُعطي `ErrConfig`.
 
-على المورّدين المتوافقين مع OpenAI ذوي المخرجات المُبنيَنة الصارمة، تستخدم `RunTypedNative[T]` صيغة استجابة
+على المورّدين المتوافقين مع OpenAI ذوي المخرجات المُبنيَنة الصارمة، تستخدم `RunTyped[T]` مع `agent.WithOutputMode(agent.OutputNative)` صيغة استجابة
 مخطط JSON الأصلية للمورّد بدل الأداة (المخطط مفروض من جهة المورّد، بلا رحلة أداة ذهابًا وإيابًا)؛ ومُحوّل Anthropic
-لا يدعمها ويُرجِع `ErrConfig`، فاستخدم `RunTyped` هناك لخرج محايد للمورّد.
+لا يدعمها ويُرجِع `ErrConfig`، فاستخدم وضع الأداة الافتراضي هناك لخرج محايد للمورّد.
 
 ## المعاينة (Sampling)
 
 ضوابط التوليد محايدة للمورّد وتُضبَط مرة واحدة؛ ويربطها كل مُحوّل على صيغة سلكه (ويُسقِط ما لا يستطيعه، مثل
 عدم امتلاك Anthropic لـ `seed`):
 
-<!-- docsnip: setup model agent.Model; store agent.Durable; tools []agent.Tool -->
+<!-- docsnip: setup model agent.Model; store *agent.Journal; tools []agent.Tool -->
 ```go
-a := agent.New(model, store, tools...).
-	WithSampling(agent.Temperature(0), agent.MaxTokens(500), agent.TopP(0.9), agent.Seed(42))
+a, err := agent.New(
+	model,
+	store,
+	agent.WithTools(tools...),
+	agent.WithSampling(agent.Temperature(0), agent.MaxTokens(500), agent.TopP(0.9), agent.Seed(42)),
+)
+if err != nil {
+	panic(err)
+}
 ```
 
 الحقول اختيارية بالتصميم: الحقل غير المضبوط يستخدم افتراض المورّد، فـ `Temperature(0)` الصريحة مميَّزة عن
@@ -509,8 +528,15 @@ model := anthropic.New(key, anthropic.WithPromptCache())
 <!-- docsnip: setup ctx context.Context; a *agent.Agent -->
 ```go
 s, _ := a.Session(ctx, "user-42")   // reopens + rebuilds the transcript from the store
-a1, _ := s.Send(ctx, "what's the capital of France?")
-a2, _ := s.Send(ctx, "and its population?")   // sees turn 1 in context
+r1, err := s.Send(ctx, agent.UserText("what's the capital of France?"))
+if err != nil {
+	panic(err)
+}
+r2, err := s.Send(ctx, agent.UserText("and its population?")) // sees turn 1 in context
+if err != nil {
+	panic(err)
+}
+fmt.Println(r1.Message.Text(), r2.Message.Text())
 ```
 
 يُسجَّل النصّ دورًا-بدور تحت مُعرّف الجلسة، فتعيد عملية أُعيد تشغيلها `a.Session(ctx, "user-42")` بناءه
@@ -529,9 +555,9 @@ a2, _ := s.Send(ctx, "and its population?")   // sees turn 1 in context
 السجل المُعمَّر يسجّل بالفعل كل خطوة من تشغيلة. تلتزم حزمة `audit` بذلك التاريخ عبر سلسلة تجزئة (hash chain)،
 فيصبح تنفيذ التشغيلة قابلًا للتحقق:
 
-<!-- docsnip: setup ctx context.Context; store agent.Durable; runID string; priv ed25519.PrivateKey -->
+<!-- docsnip: setup ctx context.Context; store *agent.Journal; runID string; priv ed25519.PrivateKey -->
 ```go
-head, _ := audit.Head(ctx, store, runID)     // SHA-256 chain over the journal (persisted order)
+head, _ := audit.Head(ctx, store, runID)                     // SHA-256 chain over the stored journal bytes
 sig, _ := audit.Sign(head, audit.Ed25519Signer{Priv: priv}) // anchor it: sign / publish out-of-band
 ```
 
@@ -569,11 +595,11 @@ type Retriever interface {
 <!-- docsnip: setup model agent.Model; journal *agent.Journal; myStore agent.Retriever -->
 ```go
 // Agentic RAG: the model searches on demand:
-a, err := agent.Build(model, journal,
-	agent.WithTools(agent.RetrievalTool("search_kb", "Search the knowledge base.", myStore, 5)))
+a, err := agent.New(model, journal,
+	agent.WithTools(agent.MustRetrievalTool("search_kb", "Search the knowledge base.", myStore, 5)))
 
 // Classic RAG: top-k auto-injected as context on each user turn:
-a, err = agent.Build(model, journal, agent.WithRetrieval(myStore, 5))
+a, err = agent.New(model, journal, agent.WithRetrieval(myStore, 5))
 ```
 
 الذاكرة المحادثية مبنيّة داخليًّا بالفعل (`Session`)؛ والسياق الديناميكي يمرّ عبر `WithSystemPromptFunc`؛
@@ -612,35 +638,42 @@ LangGraph الموثّقة «يجب أن تكون العُقَد عديمة ال
 
 ثلاث نكهات. **موافقة/رفض**: أداة موسومة بـ `WithApproval(SingleApproval())` تتوقف *قبل* التشغيل؛ وقرار الإنسان قيمة بوليانية:
 
-<!-- docsnip: setup ctx context.Context; a *agent.Agent; store agent.Durable; runID string; input string -->
+<!-- docsnip: setup ctx context.Context; a *agent.Agent; store *agent.Journal; runID string; input string -->
 ```go
-_, err := a.Run(ctx, runID, input)
+_, err := a.Run(ctx, runID, agent.UserText(input))
 if pend, ok := errors.AsType[*agent.ApprovalPending](err); ok {
 	// ... get a human decision ...
 	agent.Approve(ctx, store, pend.RunID, pend.ToolUseID, true)
-	out, _ := a.Run(ctx, pend.RootRunID, input) // resumes past the pause
+	res, _ := a.Run(ctx, pend.RootRunID, agent.UserText(input))
+	var out agent.Message
+	if res != nil {
+		out = res.Message
+	} // resumes past the pause
 }
 ```
 
 **مقاطعة/استئناف**: أداة تتوقف *عند نقطة اعتباطية* وتستأنف بقيمة *مُصنَّفة* (تعمّم البوليان). استدعِ
 `agent.Interrupt[T]` داخل أداة آمنة عند إعادة المحاولة:
 
-<!-- docsnip: setup ctx context.Context; a *agent.Agent; store agent.Durable; runID string; input string; type Options struct{}; type Plan struct{}; chosenPlan Plan -->
+<!-- docsnip: setup ctx context.Context; a *agent.Agent; store *agent.Journal; runID string; input string; type Options struct{}; type Plan struct{}; chosenPlan Plan -->
 ```go
-tool := agent.Func("choose_plan", "pick a plan", agent.Safety{ReadOnly: true},
-	func(ctx context.Context, in Options) (Plan, error) {
+tool := agent.MustFunc("choose_plan", "pick a plan", func(ctx context.Context, in Options) (Plan, error) {
 		pick, err := agent.Interrupt[Plan](ctx, "plan", in) // pauses the run; in is shown to the human
 		if err != nil {
 			return Plan{}, err // *InterruptPending propagates out of Run
 		}
 		return pick, nil // on resume, pick is the human's typed answer
-	})
+	}, agent.WithSafety(agent.Safety{ReadOnly: true}))
 
-_, err := a.Run(ctx, runID, input)
+_, err := a.Run(ctx, runID, agent.UserText(input))
 if intr, ok := errors.AsType[*agent.InterruptPending](err); ok {
 	// ... show intr.Prompt, get a typed answer ...
-	agent.AnswerInterrupt(ctx, store, intr.RunID, intr.Name, chosenPlan)
-	out, _ := a.Run(ctx, intr.RootRunID, input) // resumes; Interrupt now returns chosenPlan
+	store.AnswerInterrupt(ctx, intr.RunID, intr.Name, chosenPlan)
+	res, _ := a.Run(ctx, intr.RootRunID, agent.UserText(input))
+	var out agent.Message
+	if res != nil {
+		out = res.Message
+	} // resumes; Interrupt now returns chosenPlan
 }
 ```
 
@@ -652,11 +685,14 @@ if intr, ok := errors.AsType[*agent.InterruptPending](err); ok {
 مُوافِق النداءَ بعينه (الأداة ووسائطها)؛ وتمضي البوّابة عند k موافقات، وترفض متى صار بلوغ k مستحيلًا، وإلا
 تتوقف مع الحصيلة الجارية. ويُتجاهَل القرار المُزوَّر أو الخاطئ دون أن يُقفَل مُوافِقه خارجًا:
 
-<!-- docsnip: setup ctx context.Context; model agent.Model; store agent.Durable; pend *agent.ApprovalPending; type RefundArgs struct{}; doRefund func(context.Context, RefundArgs) (string, error); keysByApprover agent.ApproverVerifierFor; signer audit.Signer -->
+<!-- docsnip: setup ctx context.Context; model agent.Model; store *agent.Journal; pend *agent.ApprovalPending; type RefundArgs struct{}; doRefund func(context.Context, RefundArgs) (string, error); keysByApprover agent.ApproverVerifierFor; signer audit.Signer -->
 ```go
-refund := agent.Func("refund", "refund the order", agent.Safety{}, doRefund,
+refund := agent.MustFunc("refund", "refund the order", doRefund,
 	agent.WithApproval(&agent.ApprovalPolicy{Need: 2, Approvers: []string{"ops", "finance", "risk"}}))
-a := agent.New(model, store, refund).WithApproverVerifiers(keysByApprover)
+a, err := agent.New(model, store, agent.WithTools(refund), agent.WithApproverVerifiers(keysByApprover))
+if err != nil {
+	panic(err)
+}
 
 // each approver, out of band, signs the paused call they were shown:
 sig, _ := signer.Sign(agent.ApprovalDecisionBytes(pend.Subject(), "finance", true))
@@ -678,7 +714,7 @@ k مُوافِقين مُسمَّين وقّعوا على هذا النداء ب
 
 <!-- docsnip: setup ctx context.Context; a *agent.Agent; runID string; input string; func backOffAndRetry(); func fixToolWiring(); func alertOps() -->
 ```go
-_, err := a.Run(ctx, runID, input)
+_, err := a.Run(ctx, runID, agent.UserText(input))
 switch {
 case errors.Is(err, agent.ErrModel):       // any provider fault (HTTP status, decode, stream)
 	backOffAndRetry()
@@ -702,31 +738,38 @@ case errors.Is(err, agent.ErrStorage):      // durable-store I/O
 **إشارات التحكّم في التدفّق** أغنى من صنف، فتبقى أنواعًا ملموسة تُطابَق بـ `errors.As`: `*ApprovalPending`
 (الموافقة مطلوبة)، `*InterruptPending` (بانتظار مُدخَل بشري)، `*TimerPending` (مؤقّت مُعمَّر مُعلَّق)، `*SignalPending`
 (بانتظار إشارة خارجية)، `*OutcomeUnknown` (غير آمن للاستئناف)، `*SagaAborted` (تراجَع)، و`*HaltTooYoung` (من
-`ResolveHaltRef`، حين لم تنقضِ مدّة `WithMinHaltAge` بعد). جميعها تحقّق الواجهة المختومة `agent.Pause`؛ اختبرها بـ `agent.IsPause(err)` واقرأها بـ `agent.AsPause(err)`. التشغيلة المتوقّفة أو
+`ResolveHalt`، حين لم تنقضِ مدّة `WithMinHaltAge` بعد). جميعها تحقّق الواجهة المختومة `agent.Pause`؛ اختبرها بـ `agent.IsPause(err)` واقرأها بـ `agent.AsPause(err)`. التشغيلة المتوقّفة أو
 المُتوقِّفة ليست صنف «إخفاق»؛ افحص البنية للحصول على `RunID` / `ToolUseID` / تفاصيل التعويض. ويظهر الإلغاء
 كـ `context.Canceled` / `context.DeadlineExceeded` المعتادَين، وتظهر القيادة التي أُلغيت لأن حجز تشغيلتها
 (`agent.Lease`) قد فُقِد كـ `ErrLeaseLost`؛ ومثل الإلغاء، لا يحمل صنفًا.
 
 ## Middleware والملاحظة (Observability)
 
-سلسلتان مستقلّتان من نوع `func(Handler) Handler` عند الحدَّين المهمَّين: نداء النموذج (`Use`) وكل نداء أداة
-(`UseTool`). أول مُضاف = الأخرج. وكلتاهما *مُغيِّرتان وقاطعتان للدائرة (short-circuiting)*: أعِد كتابة ما
+سلسلتان مستقلّتان من نوع `func(Handler) Handler` عند الحدَّين المهمَّين: نداء النموذج (`WithMiddleware`) وكل نداء أداة
+(`WithToolMiddleware`). أول مُضاف = الأخرج. وكلتاهما *مُغيِّرتان وقاطعتان للدائرة (short-circuiting)*: أعِد كتابة ما
 يدخل، وحوّل ما يخرج، أو ارجِع دون استدعاء `next`.
 
-<!-- docsnip: setup model agent.Model; store agent.Durable; tools []agent.Tool; import oteltrace "go.opentelemetry.io/otel/trace"; tracer oteltrace.Tracer -->
+<!-- docsnip: setup model agent.Model; store *agent.Journal; tools []agent.Tool; import oteltrace "go.opentelemetry.io/otel/trace"; tracer oteltrace.Tracer -->
 ```go
 var cost middleware.CostMeter
-a := agent.New(model, store, tools...).
-	WithTokenBudget(100_000). // per run, rebuilt from the journal on resume
-	Use(
+a, err := agent.New(model, store,
+	agent.WithTools(tools...),
+	agent.WithTokenBudget(100_000), // per run, rebuilt from the journal on resume
+	agent.WithMiddleware(
 		middleware.Retry(3, middleware.WithBackoff(200*time.Millisecond, 10*time.Second)),
 		middleware.Cost(&cost, middleware.Rates{InputPer1M: 3, OutputPer1M: 15}),
-	).
-	UseTool(middleware.ToolLog(log.Printf), middleware.ToolCache(), middleware.ToolRetry(3))
+	),
+	agent.WithToolMiddleware(middleware.ToolLog(log.Printf), middleware.ToolCache(), middleware.ToolRetry(3)),
+)
+if err != nil {
+	panic(err)
+}
 
 // opt-in OTel gen_ai.* spans (provider and model from agent.ModelInfoOf); the core has no OTel dependency:
-a.Use(trace.Model(tracer))
-a.UseTool(trace.Tool(tracer)) // execute_tool span per call; nests across the sub-agent boundary
+a, err = a.With(
+	agent.WithMiddleware(trace.Model(tracer)),
+	agent.WithToolMiddleware(trace.Tool(tracer)), // execute_tool span per call; nests across the sub-agent boundary
+)
 // ... after the run: cost.Snapshot() (answer and spend, in tokens and USD)
 ```
 
@@ -767,7 +810,7 @@ func RequireTag(tag string) agent.ToolMiddleware {
 
 Bide مستودع متعدّد الوحدات: **نواة** خفيفة التبعيات (`github.com/bide-ai/bide`، الحلقة، schema،
 middleware، مُحوّلات النموذج، باني تدفّق `plan`، `audit`؛ تبعياتها مجرّد `x/sync` + `x/text`) مع وحدة
-واحدة لكل مُحوّل ثقيل (`mcp`، `trace`، `store/sqlite`، `store/postgres`، `govern/redislog`،
+واحدة لكل مُحوّل ثقيل (`mcptools`، `trace`، `store/sqlite`، `store/postgres`، `govern/redislog`،
 `govern/sqlitelog`، `govern/postgreslog`، `codec/gcf`)، ووحدة `govern` التي تحمل gsm
 وتبقى على v0.x حتى يستقرّ gsm. استورد مُحوّلًا فتسحب شجرة تبعياته؛ واستورد النواة فقط فلا
 تسحبها. سطح الوحدات الخارجية لمُستهلِك النواة-فقط هو 2، لا 54. انظر
@@ -839,7 +882,7 @@ gsm، ProofBundle). ويُذكَر ضمان المعمورية الدقيق في
   (`Step`/`Tool`/`Model`/`Switch`/`Join`/`LoopBack`) تُنزَّل إلى السجل نفسه، ثم أثبِت أن تشغيلة اتّبعتها
   (`Conform`). قابل للتشغيل: `examples/plan`.
 - **[الخطوات المُعمَّرة](../../docs/guides/durable-steps.md)**: ألِّف عملك المُعمَّر الخاص: `Step`، وتجميع
-  `Parallel`/`Task`، والملاحم (`RunSaga`)، والمؤقّتات المُعمَّرة (`Sleep`/`WaitUntil`). قابل للتشغيل:
+  `Parallel`/`Task`، والملاحم (`WithSaga`)، والمؤقّتات المُعمَّرة (`Sleep`/`WaitUntil`). قابل للتشغيل:
   `examples/parallel`.
 - **[الموثوقية](../../docs/guides/reliability.md)**: مهلات لكل محاولة، وإعادة محاولة مُصنَّفة، ونداءات نموذج
   مُتحوَّطة، وتحديد المعدّل، وتتبّع التكلفة، وكيف تتألّف. قابل للتشغيل: `examples/hedge`.

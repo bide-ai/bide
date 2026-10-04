@@ -19,7 +19,7 @@ import (
 // re-calling it after a crash returns the same turn — exactly how a replayable model
 // behaves). The store can be told to "crash" (fail to persist) at the Kth write, and the
 // driver resumes by re-running the same runID against the same store. The invariant:
-// charge() executes at most once, and the run always ends completed or in *ResumeHalt.
+// charge() executes at most once, and the run always ends completed or in *OutcomeUnknown.
 
 // crashStore fails the crashAt-th Insert that would store a new entry (0 = never), simulating a
 // process crash at that point: the entry is not stored, and the process is dead from then on, so
@@ -77,8 +77,8 @@ func (c *crashStore) Load(ctx context.Context, runID string, after int64) iter.S
 
 // crashJournal returns a Journal, a new process, over mem's store behind a crashStore that crashes
 // at its crashAt-th write.
-func crashJournal(mem Durable, crashAt int) Durable {
-	return newJournal(&crashStore{inner: mem.(Store), crashAt: crashAt})
+func crashJournal(mem *Journal, crashAt int) *Journal {
+	return newJournal(&crashStore{inner: mem.Store(), crashAt: crashAt})
 }
 
 // dstModel: call charge until there's a tool result in the conversation, then answer.
@@ -115,18 +115,28 @@ func (m dstModel) Stream(_ context.Context, req Request) (*Stream, error) {
 // chargeTool is a NON-idempotent side effect (Safety{}): it must never run twice.
 type chargeTool struct{ count *int }
 
-func (chargeTool) Name() string                { return "charge" }
-func (chargeTool) Description() string         { return "" }
-func (chargeTool) Safety() Safety              { return Safety{} }
-func (chargeTool) ArgsSchema() json.RawMessage { return nil }
+// Spec describes the tool to the agent (see Tool).
+func (t chargeTool) Spec() ToolSpec {
+	return ToolSpec{Name: "charge", Description: "", Input: json.RawMessage(`{"type":"object"}`), Safety: Safety{}}
+}
+
 func (t chargeTool) Call(context.Context, json.RawMessage) (json.RawMessage, error) {
 	*t.count++ // the real-world side effect (the "charge")
 	return json.RawMessage(`{"charged":true}`), nil
 }
 
-func runOnce(mem Durable, tool chargeTool, afterAnswer *int, crashAt int) error {
-	a := New(dstModel{afterAnswer: afterAnswer}, crashJournal(mem, crashAt), tool).SetMaxConcurrency(1)
-	out, err := a.Run(context.Background(), "dst", "charge me")
+func runOnce(mem *Journal, tool chargeTool, afterAnswer *int, crashAt int) error {
+	a := mustNew(
+		dstModel{afterAnswer: afterAnswer},
+		crashJournal(mem, crashAt),
+		WithTools(tool),
+		WithMaxConcurrency(1),
+	)
+	res, err := a.Run(context.Background(), "dst", UserText("charge me"))
+	var out Message
+	if res != nil {
+		out = res.Message
+	}
 	if err == nil && textOf(out) != "done" {
 		return fmt.Errorf("completed run answered %q, want done", textOf(out))
 	}
@@ -135,7 +145,7 @@ func runOnce(mem Durable, tool chargeTool, afterAnswer *int, crashAt int) error 
 
 // wantFinished checks the invariants of a run that ended: no model call after its final
 // answer was recorded, and a completed run is marked complete.
-func wantFinished(t *testing.T, mem Durable, err error, afterAnswer int, schedule string) {
+func wantFinished(t *testing.T, mem *Journal, err error, afterAnswer int, schedule string) {
 	t.Helper()
 	if afterAnswer != 0 {
 		t.Fatalf("%s: the model was called %d times after the final answer was recorded", schedule, afterAnswer)
@@ -148,13 +158,13 @@ func wantFinished(t *testing.T, mem Durable, err error, afterAnswer int, schedul
 }
 
 // Sweep a crash at every write point; the charge must fire at most once each time, and
-// the run must end completed or in ResumeHalt. At least one point must exercise the halt
+// the run must end completed or in OutcomeUnknown. At least one point must exercise the halt
 // path (crash while persisting the tool result), or the test would be vacuous.
 func TestDST_NoDoubleFire_CrashSweep(t *testing.T) {
 	haltSeen := false
 	for crashAt := 1; crashAt <= 32; crashAt++ {
 		var count, afterAnswer int
-		mem := NewMemStore()
+		mem := memJournal()
 		tool := chargeTool{count: &count}
 
 		err := runOnce(mem, tool, &afterAnswer, crashAt)
@@ -167,7 +177,7 @@ func TestDST_NoDoubleFire_CrashSweep(t *testing.T) {
 		if count > 1 {
 			t.Fatalf("crashAt=%d: charge fired %d times — DOUBLE FIRE", crashAt, count)
 		}
-		var halt *ResumeHalt
+		var halt *OutcomeUnknown
 		switch {
 		case err == nil:
 			if count != 1 {
@@ -184,7 +194,7 @@ func TestDST_NoDoubleFire_CrashSweep(t *testing.T) {
 		}
 	}
 	if !haltSeen {
-		t.Fatal("no crash point exercised ResumeHalt — the halt path was never tested")
+		t.Fatal("no crash point exercised OutcomeUnknown — the halt path was never tested")
 	}
 }
 
@@ -194,7 +204,7 @@ func TestDST_NoDoubleFire_Randomized(t *testing.T) {
 	for seed := uint64(1); seed <= 500; seed++ {
 		rng := rand.New(rand.NewPCG(seed, 0x9E3779B97F4A7C15))
 		var count, afterAnswer int
-		mem := NewMemStore()
+		mem := memJournal()
 		tool := chargeTool{count: &count}
 
 		var err error
@@ -207,7 +217,7 @@ func TestDST_NoDoubleFire_Randomized(t *testing.T) {
 				break // terminal
 			}
 		}
-		var halt *ResumeHalt
+		var halt *OutcomeUnknown
 		if !errors.Is(err, errCrash) && err != nil && !errors.As(err, &halt) {
 			t.Fatalf("seed=%d: unexpected terminal error: %v", seed, err)
 		}

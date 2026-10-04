@@ -22,8 +22,12 @@ func (cutModel) Stream(context.Context, Request) (*Stream, error) {
 // ErrIncompleteResponse, stay incomplete, and journal nothing for the turn, so a retry asks
 // the model again instead of the truncated text becoming the run's recorded answer.
 func TestIncompleteResponse_IsNotTheAnswer(t *testing.T) {
-	store := NewMemStore()
-	msg, err := New(cutModel{}, store).Run(context.Background(), "r1", "status of my refund?")
+	store := memJournal()
+	res, err := mustNew(cutModel{}, store).Run(context.Background(), "r1", UserText("status of my refund?"))
+	var msg Message
+	if res != nil {
+		msg = res.Message
+	}
 	if !errors.Is(err, ErrIncompleteResponse) || !errors.Is(err, ErrModel) {
 		t.Errorf("run = %q, %v; want ErrIncompleteResponse (an ErrModel)", msg.Text(), err)
 	}

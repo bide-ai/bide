@@ -10,6 +10,7 @@ import (
 	"time"
 
 	"github.com/bide-ai/bide/agent"
+	"github.com/bide-ai/bide/agent/agenttest"
 	"github.com/bide-ai/bide/middleware"
 )
 
@@ -25,14 +26,14 @@ func TestToolRateLimit_GivingUpRecordsNotCalled(t *testing.T) {
 func testToolRateLimitGivingUpRecordsNotCalled(t *testing.T) {
 	r := middleware.NewRateLimiter(time.Hour, 1) // one slot an hour
 	var calls atomic.Int32
-	charge := agent.Func("charge", "", agent.Safety{}, func(context.Context, struct{}) (string, error) {
+	charge := agent.MustFunc("charge", "", func(context.Context, struct{}) (string, error) {
 		calls.Add(1)
 		return "charged", nil
 	}, agent.WithTimeout(20*time.Millisecond))
-	store := agent.NewMemStore()
-	m := agent.NewScriptedModel(agent.ToolTurn("c1", "charge", `{}`), agent.ToolTurn("c2", "charge", `{}`), agent.TextTurn("done"))
-	a := agent.New(m, store, charge).UseTool(middleware.ToolRateLimit(r))
-	if _, err := a.Run(context.Background(), "r1", "pay"); err != nil {
+	store := agenttest.MemJournal()
+	m := agenttest.NewScriptedModel(agenttest.ToolTurn("c1", "charge", `{}`), agenttest.ToolTurn("c2", "charge", `{}`), agenttest.TextTurn("done"))
+	a := agenttest.MustNew(m, store, agent.WithTools(charge), agent.WithToolMiddleware(middleware.ToolRateLimit(r)))
+	if _, err := a.Run(context.Background(), "r1", agent.UserText("pay")); err != nil {
 		t.Fatalf("Run: %v", err)
 	}
 	if calls.Load() != 1 {

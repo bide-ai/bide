@@ -19,18 +19,17 @@ func TestT6_CacheAnswerWhileEarlierDriveInvocationRuns(t *testing.T) {
 	release, ran := make(chan struct{}), make(chan struct{})
 	var charged, refunded, drives atomic.Int32
 	var chargedAfterRefund atomic.Bool
-	charge := CompensatedFunc("charge", "", Safety{Idempotent: true},
-		func(ctx context.Context, _ struct{}) (string, error) {
-			<-release
-			if refunded.Load() > 0 {
-				chargedAfterRefund.Store(true)
-			}
-			charged.Add(1)
-			close(ran)
-			return "ok", nil
-		},
-		func(context.Context, struct{}, string) error { refunded.Add(1); return nil })
-	fail := Func("fail", "", Safety{}, func(context.Context, struct{}) (string, error) { return "", errors.New("declined") })
+	charge := MustCompensatedFunc("charge", "", func(ctx context.Context, _ struct{}) (string, error) {
+		<-release
+		if refunded.Load() > 0 {
+			chargedAfterRefund.Store(true)
+		}
+		charged.Add(1)
+		close(ran)
+		return "ok", nil
+	},
+		func(context.Context, struct{}, string) error { refunded.Add(1); return nil }, WithSafety(Safety{Idempotent: true}))
+	fail := MustFunc("fail", "", func(context.Context, struct{}) (string, error) { return "", errors.New("declined") })
 	ctx1, cancel1 := context.WithCancel(context.Background())
 	leak := ToolMiddleware(func(next ToolHandler) ToolHandler {
 		return func(ctx context.Context, call ToolCall) (json.RawMessage, error) {
@@ -47,13 +46,13 @@ func TestT6_CacheAnswerWhileEarlierDriveInvocationRuns(t *testing.T) {
 			return json.RawMessage(`"ok"`), nil // a cache hit, without next
 		}
 	})
-	st := NewMemStore()
+	st := memJournal()
 	m := NewScriptedModel(ToolTurn("c1", "charge", `{}`), ToolTurn("c2", "fail", `{}`), TextTurn("done"))
-	a := New(m, st, charge, fail).UseTool(leak)
-	if _, err := a.RunSaga(ctx1, "r", "go"); err == nil {
+	a := mustNew(m, st, WithTools(charge, fail), WithToolMiddleware(leak))
+	if _, err := a.Run(ctx1, "r", UserText("go"), WithSaga()); err == nil {
 		t.Fatal("first drive: want the cancellation")
 	}
-	_, err := a.RunSaga(context.Background(), "r", "go")
+	_, err := a.Run(context.Background(), "r", UserText("go"), WithSaga())
 	close(release)
 	<-ran
 	var ab *SagaAborted

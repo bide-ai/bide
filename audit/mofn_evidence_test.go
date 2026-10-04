@@ -12,6 +12,7 @@ import (
 	"testing"
 
 	"github.com/bide-ai/bide/agent"
+	"github.com/bide-ai/bide/agent/agenttest"
 	"github.com/bide-ai/bide/audit"
 )
 
@@ -49,7 +50,7 @@ const gateRun = "run-kofn"
 // gate is a real agent run through an m-of-n gate on the "charge" tool, plus the keys an
 // offline auditor holds: each registered approver's key and the log operator's key.
 type gate struct {
-	store   agent.Durable
+	store   *agent.Journal
 	policy  agent.ApprovalPolicy
 	pubs    map[string]ed25519.PublicKey
 	privs   map[string]ed25519.PrivateKey
@@ -61,7 +62,7 @@ type gate struct {
 // newGate registers a key for every id in registered (eligible or not).
 func newGate(need int, approvers, registered []string) *gate {
 	g := &gate{
-		store:  agent.NewMemStore(),
+		store:  agenttest.MemJournal(),
 		policy: agent.ApprovalPolicy{Need: need, Approvers: approvers},
 		pubs:   map[string]ed25519.PublicKey{},
 		privs:  map[string]ed25519.PrivateKey{},
@@ -86,14 +87,13 @@ func (g *gate) resolver() agent.ApproverVerifierFor {
 
 // run drives the agent once and returns its error (nil when the run completes).
 func (g *gate) run() error {
-	charge := agent.Func("charge", "charge the card", agent.Safety{},
-		func(context.Context, struct {
-			Amount int `json:"amount"`
-		}) (string, error) {
-			g.charged++
-			return "ok", nil
-		}, agent.WithApproval(&g.policy))
-	_, err := agent.New(chargeModel{}, g.store, charge).WithApproverVerifiers(g.resolver()).Run(context.Background(), gateRun, "pay")
+	charge := agent.MustFunc("charge", "charge the card", func(context.Context, struct {
+		Amount int `json:"amount"`
+	}) (string, error) {
+		g.charged++
+		return "ok", nil
+	}, agent.WithApproval(&g.policy))
+	_, err := agenttest.MustNew(chargeModel{}, g.store, agent.WithTools(charge), agent.WithApproverVerifiers(g.resolver())).Run(context.Background(), gateRun, agent.UserText("pay"))
 	return err
 }
 
@@ -136,7 +136,7 @@ func (g *gate) sth(t *testing.T, ts int64) audit.SignedTreeHead {
 
 func wantPaused(t *testing.T, err error, approved int) {
 	t.Helper()
-	var pend *agent.PendingApproval
+	var pend *agent.ApprovalPending
 	if !errors.As(err, &pend) || pend.Quorum == nil || pend.Quorum.Approved != approved {
 		t.Fatalf("err = %v, want an m-of-n pause at %d approved", err, approved)
 	}

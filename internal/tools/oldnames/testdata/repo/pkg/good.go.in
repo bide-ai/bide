@@ -1,0 +1,19 @@
+package pkg
+
+// None of these is a removed name.
+
+// Durable timers survive a crash; a durable step; Build a plan with plan.Build.
+var _ = flow.Build
+var _ = agenttest.NewScriptedModel
+var _ = NewScriptedModel // package agent's own test copy
+var _ = "github.com/bide-ai/bide/mcptools"
+var _ = s.Send
+var _ = agent.Interrupt
+var _ = journal.Signal
+var _ = a.RunTyped
+var _ = agent.WithMaxConcurrency
+var _ = agent.WithToolMiddleware
+var _ = agent.OutcomeUnknown
+var _ = sending.SendMessages
+var _ = runResultOf
+func TestResolveHalt_X(t *testing.T) {}

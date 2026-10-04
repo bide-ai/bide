@@ -13,8 +13,8 @@ import (
 func safetyRegistry(t *testing.T, s agent.Safety) *Registry {
 	t.Helper()
 	reg := NewRegistry()
-	tool := agent.Func("t", "", s, func(context.Context, int) (int, error) { return 0, nil })
-	if err := RegisterTool[int, int](reg, "t", tool); err != nil {
+	tool := agent.MustFunc("t", "", func(context.Context, int) (int, error) { return 0, nil }, agent.WithSafety(s))
+	if err := reg.RegisterTool[int, int]("t", tool); err != nil {
 		t.Fatalf("register: %v", err)
 	}
 	return reg
@@ -97,10 +97,10 @@ func TestRegisterJoin_CarriesGoSafety(t *testing.T) {
 	} {
 		reg := NewRegistry()
 		for _, err := range []error{
-			RegisterStep(reg, "split", func(_ context.Context, n int) (int, error) { return n, nil }),
-			RegisterStep(reg, "y", func(_ context.Context, n int) (int, error) { return n, nil }),
-			RegisterStep(reg, "z", func(_ context.Context, n int) (string, error) { return "", nil }),
-			RegisterJoin2(reg, "mergeBlock", merge2, tc.opts...),
+			reg.RegisterStep("split", func(_ context.Context, n int) (int, error) { return n, nil }),
+			reg.RegisterStep("y", func(_ context.Context, n int) (int, error) { return n, nil }),
+			reg.RegisterStep("z", func(_ context.Context, n int) (string, error) { return "", nil }),
+			reg.RegisterJoin2("mergeBlock", merge2, tc.opts...),
 		} {
 			if err != nil {
 				t.Fatal(err)
@@ -126,7 +126,7 @@ func TestRegisterJoin_CarriesGoSafety(t *testing.T) {
 		}
 	}
 	reg := NewRegistry()
-	if err := RegisterJoin3(reg, "m3", func(_ context.Context, a, b, c int) (int, error) { return a, nil }, ReadOnly()); err != nil {
+	if err := reg.RegisterJoin3("m3", func(_ context.Context, a, b, c int) (int, error) { return a, nil }, ReadOnly()); err != nil {
 		t.Fatal(err)
 	}
 	if !reg.merges["m3"].safety.ReadOnly {

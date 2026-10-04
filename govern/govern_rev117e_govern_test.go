@@ -7,6 +7,7 @@ import (
 	"testing"
 
 	"github.com/bide-ai/bide/agent"
+	"github.com/bide-ai/bide/agent/agenttest"
 	"github.com/bide-ai/bide/govern"
 )
 
@@ -14,7 +15,7 @@ import (
 func TestRev117e_EventToolSpecMatchesOld(t *testing.T) {
 	gov, digest := buildCreditGov(t)
 	for _, pd := range []string{"", digest} {
-		s := agent.SpecOf(govern.EventTool(gov, govern.EventToolConfig{Name: "credit", Description: "d", Event: "credit", PolicyDigest: pd, Safety: agent.Safety{Idempotent: true}}))
+		s := govern.EventTool(gov, govern.EventToolConfig{Name: "credit", Description: "d", Event: "credit", PolicyDigest: pd, Safety: agent.Safety{Idempotent: true}}).Spec()
 		if s.Name != "credit" || s.Description != "d" || s.Safety != (agent.Safety{Idempotent: true}) || s.Approval != nil || s.Timeout != 0 {
 			t.Fatalf("pd %q: spec = %+v", pd, s)
 		}
@@ -37,7 +38,7 @@ func TestRev117e_EmptyDigestAttestedFormLost(t *testing.T) {
 		}()
 		govern.EventTool(gov, govern.EventToolConfig{Name: "credit", Event: "credit", Attested: true})
 	}()
-	ctx := agent.ContextWithIdentity(context.Background(), agent.Identity{Actor: "a"})
+	ctx := agenttest.IdentityContext(context.Background(), agent.Identity{Actor: "a"})
 	for _, tc := range []struct {
 		cfg      govern.EventToolConfig
 		attested bool

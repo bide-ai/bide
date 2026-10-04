@@ -42,7 +42,7 @@ eino           maxFired=64   ✗
 
 На какую ступень попадает инструмент, определяется его объявленным `Safety`: пометьте его как только-для-чтения или идемпотентный, и неизвестный исход повторится автоматически; не объявите ничего из этого, и прогон остановится. Безопасность повтора включается явно; пока вы её не включили, по умолчанию действует пауза, так что библиотека, весь смысл которой в том, чтобы «никогда не срабатывать дважды», по умолчанию выбирает безопасность, а не догадку.
 
-Большинство неизвестных исходов до человека не доходят: ключ идемпотентности позволяет поставщику устранить дубликат безопасного повтора, а для систем без такого ключа (почта, внутренние сервисы) реконсилятор разрешает шаг по оставленной им записи (`agent.ResolveHaltRef`). Человек здесь нижняя ступень, а не вариант по умолчанию.
+Большинство неизвестных исходов до человека не доходят: ключ идемпотентности позволяет поставщику устранить дубликат безопасного повтора, а для систем без такого ключа (почта, внутренние сервисы) реконсилятор разрешает шаг по оставленной им записи (`agent.ResolveHalt`). Человек здесь нижняя ступень, а не вариант по умолчанию.
 
 > [!IMPORTANT]
 > **Правило, лежащее в основе:** когда действие двигает деньги, трогает запись или происходит под аудитом,
@@ -115,21 +115,21 @@ eino           maxFired=64   ✗
 
 Один и тот же поток сортировки заказов, тремя способами. Обычный Go используется по умолчанию: пишите обычный поток управления и называйте шаги, которые журнал должен сделать безопасными при сбое.
 
-<!-- docsnip: setup ctx context.Context; store agent.Durable; order Order; type Order struct{}; type Receipt struct{}; type Assessment struct{ Rush bool }; type Reservation struct{}; func classify(Order) (Assessment, error); func reserve(Assessment) (Reservation, error); func finalize(Reservation) (Receipt, error); func decline(Assessment) (Receipt, error) -->
+<!-- docsnip: setup ctx context.Context; store *agent.Journal; order Order; type Order struct{}; type Receipt struct{}; type Assessment struct{ Rush bool }; type Reservation struct{}; func classify(Order) (Assessment, error); func reserve(Assessment) (Reservation, error); func finalize(Reservation) (Receipt, error); func decline(Assessment) (Receipt, error) -->
 ```go
 // classify, then branch: rush orders reserve-then-finalize, the rest decline.
-assess, _ := agent.Step(ctx, store, "order-42", "classify",
+assess, _ := store.Step(ctx, "order-42", "classify",
     func(ctx context.Context) (Assessment, error) { return classify(order) },
     agent.WithSafety(agent.Safety{ReadOnly: true})) // safe to re-run after a crash
 
 var receipt Receipt
 if assess.Rush {
-    res, _ := agent.Step(ctx, store, "order-42", "reserve", // a side effect: at most once
+    res, _ := store.Step(ctx, "order-42", "reserve", // a side effect: at most once
         func(ctx context.Context) (Reservation, error) { return reserve(assess) })
-    receipt, _ = agent.Step(ctx, store, "order-42", "finalize",
+    receipt, _ = store.Step(ctx, "order-42", "finalize",
         func(ctx context.Context) (Receipt, error) { return finalize(res) })
 } else {
-    receipt, _ = agent.Step(ctx, store, "order-42", "decline",
+    receipt, _ = store.Step(ctx, "order-42", "decline",
         func(ctx context.Context) (Receipt, error) { return decline(assess) })
 }
 ```
@@ -193,12 +193,11 @@ flow, err := plan.Load[Order, Receipt](configBytes, reg) // same topology, same 
 <!-- docsnip: setup ctx context.Context; a *agent.Agent; runID string; input string; type ChargeArgs struct{}; type Receipt struct{} -->
 ```go
 // A tool that moves money is a write: not ReadOnly, not Idempotent.
-charge := agent.Func("charge_card", "Charge the customer", agent.Safety{},
-	func(ctx context.Context, in ChargeArgs) (Receipt, error) { /* ... */ })
+charge := agent.MustFunc("charge_card", "Charge the customer", func(ctx context.Context, in ChargeArgs) (Receipt, error) { /* ... */ })
 
 // If the process crashes after the charge fires but before its result is journaled,
 // resume does NOT run it again: it returns *OutcomeUnknown so you confirm, not double-charge:
-_, err := a.Run(ctx, runID, input)
+_, err := a.Run(ctx, runID, agent.UserText(input))
 if halt, ok := errors.AsType[*agent.OutcomeUnknown](err); ok {
 	// halt.Op.ToolName == "charge_card": outcome unknown, a human decides, no double side effect.
 }
@@ -216,6 +215,7 @@ package main
 import (
 	"context"
 	"fmt"
+	"log"
 	"os"
 
 	"github.com/bide-ai/bide/agent"
@@ -238,46 +238,57 @@ func main() {
 		openai.WithModel("openai/gpt-4o-mini"))
 
 	// A tool is a typed Go function; its schema is derived automatically.
-	weather := agent.Func("get_weather", "Current weather for a city",
-		agent.Safety{ReadOnly: true},
+	weather := agent.MustFunc("get_weather", "Current weather for a city",
 		func(_ context.Context, in WeatherArgs) (Weather, error) {
 			return Weather{TempF: 68, Sky: "sunny"}, nil
-		})
+		}, agent.WithSafety(agent.Safety{ReadOnly: true}))
 
 	// Durable on-disk store: a crash mid-run resumes from here.
 	store, _ := sqlite.Open("agent.db")
+	j, err := agent.NewJournal(store)
+	if err != nil {
+		log.Fatal(err)
+	}
 	defer store.Close()
 
-	a := agent.New(model, store, weather).
-		WithSystemPrompt("You are a concise weather assistant.")
-	out, _ := a.Run(context.Background(), "run-1", "Weather in SF? Use the tool.")
-	for _, p := range out.Parts {
-		if t, ok := p.(agent.Text); ok {
-			fmt.Println(t.Text)
-		}
+	a, err := agent.New(
+		model,
+		j,
+		agent.WithTools(weather),
+		agent.WithSystemPrompt("You are a concise weather assistant."),
+	)
+	if err != nil {
+		log.Fatal(err)
 	}
+	out, err := a.Run(context.Background(), "run-1", agent.UserText("Weather in SF? Use the tool."))
+	if err != nil {
+		log.Fatal(err)
+	}
+	fmt.Println(out.Message.Text())
 }
 ```
 
 Запустите живой пример-дымоход: `OPENROUTER_API_KEY=sk-... go run ./examples/smoke`
 
-`Run` возвращает только финальное сообщение. Для сводки прогона (использование токенов за весь прогон, включая кэш и суб-агентов; счётчик ходов модели; длительность по настенным часам) используйте `RunResult` (и `RunSagaResult`):
+`Run` принимает вход `Message` (текст, или текст и изображения) и опции прогона, и возвращает `Result`: финальное сообщение, использование токенов за весь прогон (включая кэш и суб-агентов), счётчик ходов модели и длительность по настенным часам. `Result` не равен nil при любой ошибке, если ID прогона корректен: пауза, остановка, сбой, откат саги, отмена:
 
 <!-- docsnip: setup ctx context.Context; a *agent.Agent; runID string; input string -->
 ```go
-res, err := a.RunResult(ctx, runID, input)
+res, err := a.Run(ctx, runID, agent.UserText(input),
+	agent.WithTokenBudget(50_000), agent.WithSystemPrompt("You are terse."))
 // res.Message, res.Usage, res.Spend, res.Turns, res.Duration, res.RunID
+_ = err
 ```
 
-Переходное имя `RunMessage(ctx, runID, input, opts...)` (в 1.0 `Run`) принимает вход `Message` (текст, или текст и изображения) и опции прогона, и возвращает `Result` при любой ошибке. Первый запуск прогона записывает свой вход и опции в `run:start`, и каждый следующий запуск, включая восстановление, идёт под ними: другой лимит (`WithMaxTurns`, `WithTokenBudget`) записывается как поправка `run:limits:<n>`, а любая другая отличающаяся настройка даёт `ErrConfig`. `agent.Cancel` отменяет прогон (сага сначала откатывается), а `agent.Status` читает его состояние из журнала.
+Первый запуск прогона записывает свой вход и опции в `run:start`, и каждый следующий запуск, включая восстановление, идёт под ними: другой лимит (`WithMaxTurns`, `WithTokenBudget`) записывается как поправка `run:limits:<n>`, а любая другая отличающаяся настройка даёт `ErrConfig`. `agent.Cancel` отменяет прогон (сага сначала откатывается), а `agent.Status` читает его состояние из журнала.
 
 ## Стриминг
 
-`Run` блокируется и возвращает финальный ответ. Чтобы наблюдать работу агента (дельты токенов, границы ходов, старт/финиш инструментов), используйте `Stream`. Он ведёт **тот же цикл** (`Run` – это буквально `Stream(...).Final()`), поэтому надёжность, возобновление и безопасность побочных эффектов идентичны:
+`Run` блокируется и возвращает финальный ответ. Чтобы наблюдать работу агента (дельты токенов, границы ходов, старт/финиш инструментов), используйте `Stream`. Он ведёт **тот же цикл** (`Stream(...).Result()` возвращает то же, что `Run`), поэтому надёжность, возобновление и безопасность побочных эффектов идентичны:
 
 <!-- docsnip: setup ctx context.Context; a *agent.Agent; runID string; input string -->
 ```go
-stream := a.Stream(ctx, runID, input)
+stream := a.Stream(ctx, runID, agent.UserText(input))
 for ev := range stream.Events() {
 	switch e := ev.(type) {
 	case agent.ModelEvent: // live token/reasoning/tool-call deltas
@@ -290,16 +301,16 @@ for ev := range stream.Events() {
 		fmt.Printf("[%s done]\n", e.Name)
 	}
 }
-answer, err := stream.Final() // terminal message + error (incl. a Pause: *ApprovalPending, *OutcomeUnknown, ...)
+res, err := stream.Result() // what Run returns: the Result and an error (incl. a pause: *ApprovalPending, *OutcomeUnknown, ...)
 ```
 
-События: `TurnStarted`, `ModelEvent` (поток токенов), `AssistantTurn`, `ToolStarted` / `ToolCompleted`, `ApprovalRequired`, `Finished`. Пройдитесь по `Events()` ради UI, затем вызовите `Final()`, или вызовите `Final()` в одиночку, чтобы вести себя точно как `Run` (он осушит события за вас).
+События: `TurnStarted`, `ModelEvent` (поток токенов), `AssistantTurn`, `ToolStarted` / `ToolCompleted`, `ApprovalRequired`, `Finished`. Пройдитесь по `Events()` ради UI, затем вызовите `Result()`, или вызовите `Result()` в одиночку, чтобы вести себя точно как `Run` (он осушит события за вас).
 
 Две вещи, которые стоит знать, обе – следствия надёжности:
 - **Дельты токенов приходят ниже цепочки middleware** (Retry / Cost всё равно видят целые собранные сообщения) и **только при свежем вызове модели**.
 - **При возобновлении записанный в журнал транскрипт переиздаётся** как `AssistantTurn{Replayed: true}` + `ToolCompleted` перед живым прогрессом, так что свежий UI реконструирует всю историю после сбоя, а переигранный ход не производит дельт токенов (он уже был решён).
 
-`StreamSaga` – это стриминговый аналог `RunSaga`.
+`Stream` принимает те же опции, что и `Run` (`WithSaga()` для саги), а его `RunStream.Result()` возвращает то же, что вернул бы `Run`.
 
 ## Типизированный вывод
 
@@ -312,22 +323,29 @@ type Weather struct {
 	TempF int    `json:"temp_f"`
 }
 
-w, err := agent.RunTyped[Weather](ctx, a, runID, "weather in SF?")
+w, _, err := a.RunTyped[Weather](ctx, runID, agent.UserText("weather in SF?"))
 // w.City == "SF", w.TempF == 68
 ```
 
-Это функция пакета, а не метод (методы Go не могут добавлять параметры типа). Значение декодируется из *записанного в журнал* вызова инструмента, поэтому оно **безопасно при возобновлении**: сбой посреди прогона восстанавливает типизированный ответ из лога при возобновлении. Первый вызов `final_answer`, который инструмент принимает, завершает прогон. Только если модель так и не делает такого вызова (а вместо этого отвечает обычным JSON-текстом), `RunTyped` разбирает текст последнего хода прогона. `T` должен быть JSON-объектом (структурой, указателем на неё или map), поскольку поставщики принимают аргументы инструментов только как объект; любой другой `T` даёт `ErrConfig`.
+Это обобщённый метод Go 1.27; он также возвращает `Result` прогона (его `Output` содержит ответ в том виде, в каком он записан в журнал). Значение декодируется из *записанного в журнал* вызова инструмента, поэтому оно **безопасно при возобновлении**: сбой посреди прогона восстанавливает типизированный ответ из лога при возобновлении. Первый вызов `final_answer`, который инструмент принимает, завершает прогон. Только если модель так и не делает такого вызова (а вместо этого отвечает обычным JSON-текстом), `RunTyped` разбирает текст последнего хода прогона. `T` должен быть JSON-объектом (структурой, указателем на неё или map), поскольку поставщики принимают аргументы инструментов только как объект; любой другой `T` даёт `ErrConfig`.
 
-На OpenAI-совместимых поставщиках со строгими структурированными выводами `RunTypedNative[T]` использует нативный формат ответа JSON-схемы поставщика вместо инструмента (схема обеспечивается на стороне поставщика, без обхода через инструмент); адаптер Anthropic его не поддерживает и возвращает `ErrConfig`, поэтому там используйте `RunTyped` ради независимого от поставщика вывода.
+На OpenAI-совместимых поставщиках со строгими структурированными выводами `RunTyped[T]` с `agent.WithOutputMode(agent.OutputNative)` использует нативный формат ответа JSON-схемы поставщика вместо инструмента (схема обеспечивается на стороне поставщика, без обхода через инструмент); адаптер Anthropic его не поддерживает и возвращает `ErrConfig`, поэтому там используйте режим инструмента по умолчанию ради независимого от поставщика вывода.
 
 ## Сэмплирование
 
 Контролы генерации нейтральны к поставщику и задаются один раз; каждый адаптер отображает их на свой проводной формат (и отбрасывает то, что не может, например у Anthropic нет `seed`):
 
-<!-- docsnip: setup model agent.Model; store agent.Durable; tools []agent.Tool -->
+<!-- docsnip: setup model agent.Model; store *agent.Journal; tools []agent.Tool -->
 ```go
-a := agent.New(model, store, tools...).
-	WithSampling(agent.Temperature(0), agent.MaxTokens(500), agent.TopP(0.9), agent.Seed(42))
+a, err := agent.New(
+	model,
+	store,
+	agent.WithTools(tools...),
+	agent.WithSampling(agent.Temperature(0), agent.MaxTokens(500), agent.TopP(0.9), agent.Seed(42)),
+)
+if err != nil {
+	panic(err)
+}
 ```
 
 Поля опциональны по замыслу: незаданное поле использует умолчание поставщика, поэтому явный `Temperature(0)` отличается от «не указано». `MaxTokens` уровня запроса переопределяет умолчание адаптера, заданное при конструировании.
@@ -350,8 +368,15 @@ model := anthropic.New(key, anthropic.WithPromptCache())
 <!-- docsnip: setup ctx context.Context; a *agent.Agent -->
 ```go
 s, _ := a.Session(ctx, "user-42")   // reopens + rebuilds the transcript from the store
-a1, _ := s.Send(ctx, "what's the capital of France?")
-a2, _ := s.Send(ctx, "and its population?")   // sees turn 1 in context
+r1, err := s.Send(ctx, agent.UserText("what's the capital of France?"))
+if err != nil {
+	panic(err)
+}
+r2, err := s.Send(ctx, agent.UserText("and its population?")) // sees turn 1 in context
+if err != nil {
+	panic(err)
+}
+fmt.Println(r1.Message.Text(), r2.Message.Text())
 ```
 
 Транскрипт записывается в журнал ход за ходом под id сессии, так что перезапущенный процесс `a.Session(ctx, "user-42")` перестраивает его и продолжает. Ход N выполняется под `"<id>>@turn/N"` (со своим собственным надёжным журналом, обрабатывающим восстановление после сбоя *внутри* хода); разговорная память представляет собой транскрипт вопрос/ответ: промежуточные вызовы инструментов хода остаются в этом ходе и не протекают в последующие. Если ход приостанавливается (одобрение / `Interrupt`), `Send` возвращает эту ошибку; разрешите её и вызовите `Send` снова с тем же вводом, чтобы возобновить. До тех пор `Send` с другим сообщением возвращает `ErrConfig`: открытый ход принадлежит своему сообщению. Для входящих сообщений, которые могут быть доставлены повторно, `SendOnce(ctx, id, text)` отвечает на каждый id сообщения один раз. Несколько дескрипторов одной сессии никогда не теряют ход, не записывают его дважды и не отвечают на одно сообщение ответом на другое. В хранилище с арендами (`MemStore`, SQLite, Postgres) ход ведёт один воркер за раз под арендой своего запуска, так что бюджет токенов хода соблюдается для всех воркеров; второй воркер, получивший то же сообщение в это время, получает `ErrTurnContended` и отправляет его позже ещё раз. Ход Send, чей прогон отменён, записывается закрытым: `Send` этого сообщения возвращает `ErrRunCancelled`, а `Send` следующего сообщения записывает ход закрытым, без ответа, и выполняет свой ход.
@@ -360,9 +385,9 @@ a2, _ := s.Send(ctx, "and its population?")   // sees turn 1 in context
 
 Надёжный журнал уже записывает каждый шаг прогона. Пакет `audit` фиксирует эту историю цепочкой хешей, так что выполнение прогона проверяемо:
 
-<!-- docsnip: setup ctx context.Context; store agent.Durable; runID string; priv ed25519.PrivateKey -->
+<!-- docsnip: setup ctx context.Context; store *agent.Journal; runID string; priv ed25519.PrivateKey -->
 ```go
-head, _ := audit.Head(ctx, store, runID)     // SHA-256 chain over the journal (persisted order)
+head, _ := audit.Head(ctx, store, runID)                     // SHA-256 chain over the stored journal bytes
 sig, _ := audit.Sign(head, audit.Ed25519Signer{Priv: priv}) // anchor it: sign / publish out-of-band
 ```
 
@@ -388,11 +413,11 @@ type Retriever interface {
 <!-- docsnip: setup model agent.Model; journal *agent.Journal; myStore agent.Retriever -->
 ```go
 // Agentic RAG: the model searches on demand:
-a, err := agent.Build(model, journal,
-	agent.WithTools(agent.RetrievalTool("search_kb", "Search the knowledge base.", myStore, 5)))
+a, err := agent.New(model, journal,
+	agent.WithTools(agent.MustRetrievalTool("search_kb", "Search the knowledge base.", myStore, 5)))
 
 // Classic RAG: top-k auto-injected as context on each user turn:
-a, err = agent.Build(model, journal, agent.WithRetrieval(myStore, 5))
+a, err = agent.New(model, journal, agent.WithRetrieval(myStore, 5))
 ```
 
 Разговорная память уже встроена (`Session`); динамический контекст идёт через `WithSystemPromptFunc`; этот шов покрывает семантическую / долговременную память. Конкретные адаптеры хранилищ (если вообще понадобятся) были бы отдельными модулями, никогда в ядре. См. [docs/guides/rag-memory.md](../../docs/guides/rag-memory.md).
@@ -418,34 +443,41 @@ agent.WithApproval(agent.SingleApproval()) // not Safety: a tool option that pau
 
 Три вкуса. **Одобрить/отклонить**: инструмент, помеченный `WithApproval(SingleApproval())`, приостанавливается *перед* запуском; решение человека булево:
 
-<!-- docsnip: setup ctx context.Context; a *agent.Agent; store agent.Durable; runID string; input string -->
+<!-- docsnip: setup ctx context.Context; a *agent.Agent; store *agent.Journal; runID string; input string -->
 ```go
-_, err := a.Run(ctx, runID, input)
+_, err := a.Run(ctx, runID, agent.UserText(input))
 if pend, ok := errors.AsType[*agent.ApprovalPending](err); ok {
 	// ... get a human decision ...
 	agent.Approve(ctx, store, pend.RunID, pend.ToolUseID, true)
-	out, _ := a.Run(ctx, pend.RootRunID, input) // resumes past the pause
+	res, _ := a.Run(ctx, pend.RootRunID, agent.UserText(input))
+	var out agent.Message
+	if res != nil {
+		out = res.Message
+	} // resumes past the pause
 }
 ```
 
 **Прерывание/возобновление**: инструмент приостанавливается *в произвольной точке* и возобновляется с *типизированным* значением (обобщая булево). Вызовите `agent.Interrupt[T]` внутри безопасного при повторе инструмента:
 
-<!-- docsnip: setup ctx context.Context; a *agent.Agent; store agent.Durable; runID string; input string; type Options struct{}; type Plan struct{}; chosenPlan Plan -->
+<!-- docsnip: setup ctx context.Context; a *agent.Agent; store *agent.Journal; runID string; input string; type Options struct{}; type Plan struct{}; chosenPlan Plan -->
 ```go
-tool := agent.Func("choose_plan", "pick a plan", agent.Safety{ReadOnly: true},
-	func(ctx context.Context, in Options) (Plan, error) {
+tool := agent.MustFunc("choose_plan", "pick a plan", func(ctx context.Context, in Options) (Plan, error) {
 		pick, err := agent.Interrupt[Plan](ctx, "plan", in) // pauses the run; in is shown to the human
 		if err != nil {
 			return Plan{}, err // *InterruptPending propagates out of Run
 		}
 		return pick, nil // on resume, pick is the human's typed answer
-	})
+	}, agent.WithSafety(agent.Safety{ReadOnly: true}))
 
-_, err := a.Run(ctx, runID, input)
+_, err := a.Run(ctx, runID, agent.UserText(input))
 if intr, ok := errors.AsType[*agent.InterruptPending](err); ok {
 	// ... show intr.Prompt, get a typed answer ...
-	agent.AnswerInterrupt(ctx, store, intr.RunID, intr.Name, chosenPlan)
-	out, _ := a.Run(ctx, intr.RootRunID, input) // resumes; Interrupt now returns chosenPlan
+	store.AnswerInterrupt(ctx, intr.RunID, intr.Name, chosenPlan)
+	res, _ := a.Run(ctx, intr.RootRunID, agent.UserText(input))
+	var out agent.Message
+	if res != nil {
+		out = res.Message
+	} // resumes; Interrupt now returns chosenPlan
 }
 ```
 
@@ -453,11 +485,14 @@ if intr, ok := errors.AsType[*agent.InterruptPending](err); ok {
 
 **Одобрение m-из-n**: когда одной подписи недостаточно, требуйте k подписанных решений от именованного набора из n одобряющих. Каждый одобряющий подписывает конкретный вызов (инструмент и аргументы); шлюз пропускает при k одобрениях, отклоняет, как только k становится недостижимым, а иначе приостанавливается с текущим подсчётом. Подделанное или ошибочное решение игнорируется, не блокируя его одобряющего:
 
-<!-- docsnip: setup ctx context.Context; model agent.Model; store agent.Durable; pend *agent.ApprovalPending; type RefundArgs struct{}; doRefund func(context.Context, RefundArgs) (string, error); keysByApprover agent.ApproverVerifierFor; signer audit.Signer -->
+<!-- docsnip: setup ctx context.Context; model agent.Model; store *agent.Journal; pend *agent.ApprovalPending; type RefundArgs struct{}; doRefund func(context.Context, RefundArgs) (string, error); keysByApprover agent.ApproverVerifierFor; signer audit.Signer -->
 ```go
-refund := agent.Func("refund", "refund the order", agent.Safety{}, doRefund,
+refund := agent.MustFunc("refund", "refund the order", doRefund,
 	agent.WithApproval(&agent.ApprovalPolicy{Need: 2, Approvers: []string{"ops", "finance", "risk"}}))
-a := agent.New(model, store, refund).WithApproverVerifiers(keysByApprover)
+a, err := agent.New(model, store, agent.WithTools(refund), agent.WithApproverVerifiers(keysByApprover))
+if err != nil {
+	panic(err)
+}
 
 // each approver, out of band, signs the paused call they were shown:
 sig, _ := signer.Sign(agent.ApprovalDecisionBytes(pend.Subject(), "finance", true))
@@ -473,7 +508,7 @@ agent.SubmitDecision(ctx, store, agent.Decision{RunID: pend.RunID, ToolUseID: pe
 
 <!-- docsnip: setup ctx context.Context; a *agent.Agent; runID string; input string; func backOffAndRetry(); func fixToolWiring(); func alertOps() -->
 ```go
-_, err := a.Run(ctx, runID, input)
+_, err := a.Run(ctx, runID, agent.UserText(input))
 switch {
 case errors.Is(err, agent.ErrModel):       // any provider fault (HTTP status, decode, stream)
 	backOffAndRetry()
@@ -486,26 +521,33 @@ case errors.Is(err, agent.ErrStorage):      // durable-store I/O
 
 Категории: `ErrConfig`, `ErrModel`, `ErrTool`, `ErrStorage`, `ErrProtocol`, `ErrBudget`. Условия (каждое оборачивает категорию): `ErrUnknownTool`, `ErrToolArgs` (оборачивают `ErrTool`), `ErrToolReinvoked`, `ErrInvalidApproval`, `ErrAlreadyDecided` (оборачивают `ErrConfig`), `ErrNoRecordedOutput`, `ErrIncompleteResponse` (оборачивают `ErrModel`), `ErrTruncatedToolArgs` (оборачивает `ErrProtocol`), `ErrBudgetExceeded`, `ErrMaxTurns` (оборачивают `ErrBudget`). `ErrToolNotCalled` не оборачивает никакую категорию: он помечает вызов инструмента, о котором известно, что он так и не дошёл до инструмента (его оборачивает отказ middleware инструментов). Адаптеры поставщиков также возвращают `*RateLimited` (HTTP 429, с подсказкой `RetryAfter`) и `*APIError` (прочие не-2xx, с `StatusCode`), оба оборачивают `ErrModel`. Каждая ошибка, которую возвращает набор инструментов (включая из модели, MCP, хранилища и адаптеров управления), несёт категорию, так что `errors.Is` надёжен по всей поверхности.
 
-А **сигналы потока управления** богаче, чем категория, поэтому они остаются конкретными типами, сопоставляемыми через `errors.As`: `*ApprovalPending` (нужно одобрение), `*InterruptPending` (ожидание ввода человека), `*TimerPending` (ожидает надёжный таймер), `*SignalPending` (ожидание внешнего сигнала), `*OutcomeUnknown` (небезопасно возобновлять), `*SagaAborted` (откачено) и `*HaltTooYoung` (из `ResolveHaltRef`, когда `WithMinHaltAge` ещё не истёк). Все они реализуют запечатанный интерфейс `agent.Pause`; проверяйте его через `agent.IsPause(err)` и читайте через `agent.AsPause(err)`. Приостановленный или остановленный прогон не относится к категории «сбоя»; инспектируйте структуру ради `RunID` / `ToolUseID` / деталей компенсации. Отмена всплывает как обычные `context.Canceled` / `context.DeadlineExceeded`, а ведение прогона, отменённое из-за потери его аренды (`agent.Lease`), всплывает как `ErrLeaseLost`; как и отмена, эта ошибка не несёт категории.
+А **сигналы потока управления** богаче, чем категория, поэтому они остаются конкретными типами, сопоставляемыми через `errors.As`: `*ApprovalPending` (нужно одобрение), `*InterruptPending` (ожидание ввода человека), `*TimerPending` (ожидает надёжный таймер), `*SignalPending` (ожидание внешнего сигнала), `*OutcomeUnknown` (небезопасно возобновлять), `*SagaAborted` (откачено) и `*HaltTooYoung` (из `ResolveHalt`, когда `WithMinHaltAge` ещё не истёк). Все они реализуют запечатанный интерфейс `agent.Pause`; проверяйте его через `agent.IsPause(err)` и читайте через `agent.AsPause(err)`. Приостановленный или остановленный прогон не относится к категории «сбоя»; инспектируйте структуру ради `RunID` / `ToolUseID` / деталей компенсации. Отмена всплывает как обычные `context.Canceled` / `context.DeadlineExceeded`, а ведение прогона, отменённое из-за потери его аренды (`agent.Lease`), всплывает как `ErrLeaseLost`; как и отмена, эта ошибка не несёт категории.
 
 ## Middleware и наблюдаемость
 
-Две независимые цепочки `func(Handler) Handler` на двух важных границах: вызов модели (`Use`) и каждый вызов инструмента (`UseTool`). Добавленное первым = самое внешнее. Обе *мутирующие и коротко-замыкающие*: перепишите то, что входит, преобразуйте то, что выходит, или вернитесь, не вызывая `next`.
+Две независимые цепочки `func(Handler) Handler` на двух важных границах: вызов модели (`WithMiddleware`) и каждый вызов инструмента (`WithToolMiddleware`). Добавленное первым = самое внешнее. Обе *мутирующие и коротко-замыкающие*: перепишите то, что входит, преобразуйте то, что выходит, или вернитесь, не вызывая `next`.
 
-<!-- docsnip: setup model agent.Model; store agent.Durable; tools []agent.Tool; import oteltrace "go.opentelemetry.io/otel/trace"; tracer oteltrace.Tracer -->
+<!-- docsnip: setup model agent.Model; store *agent.Journal; tools []agent.Tool; import oteltrace "go.opentelemetry.io/otel/trace"; tracer oteltrace.Tracer -->
 ```go
 var cost middleware.CostMeter
-a := agent.New(model, store, tools...).
-	WithTokenBudget(100_000). // per run, rebuilt from the journal on resume
-	Use(
+a, err := agent.New(model, store,
+	agent.WithTools(tools...),
+	agent.WithTokenBudget(100_000), // per run, rebuilt from the journal on resume
+	agent.WithMiddleware(
 		middleware.Retry(3, middleware.WithBackoff(200*time.Millisecond, 10*time.Second)),
 		middleware.Cost(&cost, middleware.Rates{InputPer1M: 3, OutputPer1M: 15}),
-	).
-	UseTool(middleware.ToolLog(log.Printf), middleware.ToolCache(), middleware.ToolRetry(3))
+	),
+	agent.WithToolMiddleware(middleware.ToolLog(log.Printf), middleware.ToolCache(), middleware.ToolRetry(3)),
+)
+if err != nil {
+	panic(err)
+}
 
 // opt-in OTel gen_ai.* spans (provider and model from agent.ModelInfoOf); the core has no OTel dependency:
-a.Use(trace.Model(tracer))
-a.UseTool(trace.Tool(tracer)) // execute_tool span per call; nests across the sub-agent boundary
+a, err = a.With(
+	agent.WithMiddleware(trace.Model(tracer)),
+	agent.WithToolMiddleware(trace.Tool(tracer)), // execute_tool span per call; nests across the sub-agent boundary
+)
 // ... after the run: cost.Snapshot() (answer and spend, in tokens and USD)
 ```
 
@@ -534,7 +576,7 @@ func RequireTag(tag string) agent.ToolMiddleware {
 
 ## Модули
 
-Bide представляет собой репозиторий с несколькими модулями: лёгкое по зависимостям **ядро** (`github.com/bide-ai/bide`: цикл, schema, middleware, адаптеры моделей, конструктор потоков `plan`, `audit`; зависимости только `x/sync` + `x/text`) плюс по одному модулю на каждый тяжёлый адаптер (`mcp`, `trace`, `store/sqlite`, `store/postgres`, `govern/redislog`, `govern/sqlitelog`, `govern/postgreslog`, `codec/gcf`) и модуль `govern`, который несёт gsm и остаётся на v0.x, пока gsm не стабилен. Импортируйте адаптер, и вы тянете его дерево зависимостей; импортируйте только ядро, и не тянете. У потребителя, использующего только ядро, поверхность внешних модулей равна 2, а не 54. См. [docs/reference/module-structure.md](../../docs/reference/module-structure.md).
+Bide представляет собой репозиторий с несколькими модулями: лёгкое по зависимостям **ядро** (`github.com/bide-ai/bide`: цикл, schema, middleware, адаптеры моделей, конструктор потоков `plan`, `audit`; зависимости только `x/sync` + `x/text`) плюс по одному модулю на каждый тяжёлый адаптер (`mcptools`, `trace`, `store/sqlite`, `store/postgres`, `govern/redislog`, `govern/sqlitelog`, `govern/postgreslog`, `codec/gcf`) и модуль `govern`, который несёт gsm и остаётся на v0.x, пока gsm не стабилен. Импортируйте адаптер, и вы тянете его дерево зависимостей; импортируйте только ядро, и не тянете. У потребителя, использующего только ядро, поверхность внешних модулей равна 2, а не 54. См. [docs/reference/module-structure.md](../../docs/reference/module-structure.md).
 
 ## Архитектура
 
@@ -578,7 +620,7 @@ tool := govern.EventTool(gov, govern.EventToolConfig{Name: "pay", Description: "
 **Написание**
 
 - **[Потоки](../../docs/guides/flows.md)**: типизированный конструктор потоков `plan`. Пишите топологию (`Step`/`Tool`/`Model`/`Switch`/`Join`/`LoopBack`), которая опускается на тот же журнал, а затем доказывайте, что прогон ей последовал (`Conform`). Запускается в `examples/plan`.
-- **[Надёжные шаги](../../docs/guides/durable-steps.md)**: компонуйте собственную надёжную работу: `Step`, сходящийся веер `Parallel`/`Task`, саги (`RunSaga`) и надёжные таймеры (`Sleep`/`WaitUntil`). Запускается в `examples/parallel`.
+- **[Надёжные шаги](../../docs/guides/durable-steps.md)**: компонуйте собственную надёжную работу: `Step`, сходящийся веер `Parallel`/`Task`, саги (`WithSaga`) и надёжные таймеры (`Sleep`/`WaitUntil`). Запускается в `examples/parallel`.
 - **[Устойчивость](../../docs/guides/reliability.md)**: тайм-ауты на попытку, классифицированный повтор, хеджированные вызовы модели, ограничение частоты и учёт стоимости, а также то, как они компонуются. Запускается в `examples/hedge`.
 - **[Сигналы и фоновые прогоны](../../docs/guides/signals.md)**: внешние события в прогоне: надёжные таймеры и `Waker`, участие человека в цикле (`Interrupt`/`AnswerInterrupt`) и надёжные сигналы (доставка хотя бы один раз, применение ровно один раз). Запускается в `examples/signals`, `examples/interrupt`.
 - **[Модели](../../docs/guides/models.md)**: адаптеры Anthropic, OpenAI-совместимый и Gemini: `WithBaseURL`, сэмплирование, кэширование промпта, типизированные ошибки и мультимодальный ввод изображений.

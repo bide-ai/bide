@@ -20,8 +20,9 @@ func (l ctxLeaser) ReleaseLease(ctx context.Context, runID, holder string) error
 // take the run at once instead of waiting out the TTL.
 func TestLease_ReleasedWhenTheDriveIsCancelled(t *testing.T) {
 	store := ctxLeaser{NewMemStore()}
+	j := mustJournal(store)
 	ctx, cancel := context.WithCancel(context.Background())
-	_, _ = Lease(ctx, store, "r1", func(context.Context) error {
+	_, _ = Lease(ctx, j, "r1", func(context.Context) error {
 		cancel() // shutdown arrives mid-drive
 		return context.Canceled
 	}, WithLeaseHolder("node-a"), WithLeaseTTL(time.Hour))

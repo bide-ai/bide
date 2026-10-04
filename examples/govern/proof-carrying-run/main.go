@@ -4,9 +4,10 @@
 // convergence leaves, the policy-used absence commitment, RFC 6962 inclusion proofs, a signed tree
 // head) into one per-run certificate plus a verifier; there is no new cryptography.
 //
-// The example is offline: no LLM, no network. The "agent" applies governed actions through
-// an attested govern.EventTool (each journaled with the policy digest that admitted it), exactly as a
-// real agent loop would; the governed guarantees are identical. It:
+// The example is offline: no LLM, no network. An agent with a scripted model
+// (agenttest.ScriptedModel) applies governed actions through attested govern.EventTools, each
+// journaled by the run with the policy digest that admitted it; with a real model the governed
+// guarantees are identical. It:
 //
 //  1. anchors a convergent policy and its convergence certificate, runs governed actions under it;
 //  2. emits a RunCertificate asserting only-approved-policies and policies-convergence-certified;
@@ -32,8 +33,10 @@ import (
 	"encoding/hex"
 	"errors"
 	"fmt"
+	"log"
 
 	"github.com/bide-ai/bide/agent"
+	"github.com/bide-ai/bide/agent/agenttest"
 	"github.com/bide-ai/bide/audit"
 	"github.com/bide-ai/bide/govern"
 	gsm "github.com/blackwell-systems/gsm"
@@ -41,7 +44,10 @@ import (
 
 func main() {
 	ctx := context.Background()
-	store := agent.NewMemStore()
+	store, err := agent.NewJournal(agent.NewMemStore())
+	if err != nil {
+		log.Fatal(err)
+	}
 	const runID = "kyc-applicant-42"
 
 	// A convergent compliance policy: an approval is reverted when the case is flagged, so applying
@@ -82,9 +88,25 @@ func main() {
 	approveTool := govern.EventTool(gov, govern.EventToolConfig{Name: "approve", Description: "approve the case", Event: "approve", PolicyDigest: policyDigest})
 	flagTool := govern.EventTool(gov, govern.EventToolConfig{Name: "flag", Description: "flag the case", Event: "flag", PolicyDigest: policyDigest})
 
+	//
+	// The agent's model is scripted (no LLM): it calls approve, then flag, then answers. The run
+	// journals each call as a tool-result leaf, the way it records every tool call.
+	model := agenttest.NewScriptedModel(
+		agenttest.ToolTurn("call_approve", "approve", `{}`),
+		agenttest.ToolTurn("call_flag", "flag", `{}`),
+		agenttest.TextTurn("case decided"),
+	)
+	a, err := agent.New(model, store, agent.WithTools(approveTool, flagTool))
+	if err != nil {
+		log.Fatal(err)
+	}
+	if _, err := a.Run(ctx, runID, agent.UserText("decide the KYC case")); err != nil {
+		panic(err)
+	}
 	fmt.Println("governed actions (each journaled with the policy that admitted it):")
-	callGoverned(ctx, store, runID, "call_approve", approveTool)
-	callGoverned(ctx, store, runID, "call_flag", flagTool)
+	for _, toolUseID := range []string{"call_approve", "call_flag"} {
+		fmt.Printf("  %-12s applied\n", toolUseID)
+	}
 	st := gov.State()
 	fmt.Printf("  final governed state: approved=%v flagged=%v (the invariant held by compensation)\n\n",
 		st.GetBool(approved), st.GetBool(flag))
@@ -189,21 +211,6 @@ func main() {
 
 	fmt.Println("The run carries its own proof: which governed policies ran, that each is approved and")
 	fmt.Println("has an anchored convergence certificate, checkable offline against one signed tree head.")
-}
-
-// callGoverned invokes a governed tool as a durable, journaled tool-result leaf, the way an agent
-// loop records a tool call, so the action's policy digest lands in the run's committed history.
-func callGoverned(ctx context.Context, store agent.Durable, runID, toolUseID string, tool agent.Tool) {
-	out, err := tool.Call(ctx, nil)
-	if err != nil {
-		panic(err)
-	}
-	if _, err := store.Do(ctx, runID, toolUseID, func(context.Context) (agent.Record, error) {
-		return agent.Record{Kind: agent.StepToolResult, ToolUseID: toolUseID, Result: out}, nil
-	}); err != nil {
-		panic(err)
-	}
-	fmt.Printf("  %-12s applied\n", toolUseID)
 }
 
 // fingerprint is the hex SHA-256 of a public key, a short name for it.

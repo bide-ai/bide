@@ -15,7 +15,9 @@ import (
 	"time"
 
 	"github.com/bide-ai/bide/agent"
+	"github.com/bide-ai/bide/agent/agenttest"
 	"github.com/bide-ai/bide/audit"
+	"github.com/bide-ai/bide/internal/journaltest"
 )
 
 // p11Signers returns one log signer of each scheme, by scheme name.
@@ -53,18 +55,19 @@ func p11GovernedRun(t *testing.T) (*agent.MemStore, []byte) {
 	t.Helper()
 	ctx := context.Background()
 	s := agent.NewMemStore()
-	if _, err := audit.RecordPolicy(ctx, s, "gov", []byte("policy bytes"), "D1"); err != nil {
+	j := agenttest.MustJournal(s)
+	if _, err := audit.RecordPolicy(ctx, j, "gov", []byte("policy bytes"), "D1"); err != nil {
 		t.Fatal(err)
 	}
-	if _, err := audit.RecordConvergence(ctx, s, "gov", []byte(`{"converges":true}`), "D1"); err != nil {
+	if _, err := audit.RecordConvergence(ctx, j, "gov", []byte(`{"converges":true}`), "D1"); err != nil {
 		t.Fatal(err)
 	}
-	if _, err := s.Do(ctx, "gov", "call:pay", func(context.Context) (agent.Record, error) {
+	if _, err := journaltest.Do(ctx, j, "gov", "call:pay", func(context.Context) (agent.Record, error) {
 		return agent.Record{Kind: agent.StepToolResult, ToolUseID: "pay", Result: json.RawMessage(`{"policy_digest":"D1","ok":true}`)}, nil
 	}); err != nil {
 		t.Fatal(err)
 	}
-	if _, err := s.Do(ctx, "gov", "note", func(context.Context) (agent.Record, error) {
+	if _, err := journaltest.Do(ctx, j, "gov", "note", func(context.Context) (agent.Record, error) {
 		return agent.Record{Kind: agent.StepValue, Result: json.RawMessage(`"n"`)}, nil
 	}); err != nil {
 		t.Fatal(err)
@@ -84,15 +87,16 @@ func p11GovernedRun(t *testing.T) (*agent.MemStore, []byte) {
 func TestP11_RecordWithUnknownFieldVerifiesByRecordBytes(t *testing.T) {
 	ctx := context.Background()
 	store, future := p11GovernedRun(t)
+	j := agenttest.MustJournal(store)
 	signer := p11Signers(t)["ed25519"]
 	v := p11Verifier(t, signer)
 
-	recs, err := store.History(ctx, "gov")
+	recs, err := j.History(ctx, "gov")
 	if err != nil {
 		t.Fatal(err)
 	}
 	idx := len(recs) - 1
-	th, err := audit.NewTreeHead(ctx, store, "gov", p11Now())
+	th, err := audit.NewTreeHead(ctx, j, "gov", p11Now())
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -100,7 +104,7 @@ func TestP11_RecordWithUnknownFieldVerifiesByRecordBytes(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	pb, err := audit.ProveRecord(ctx, store, "gov", idx, sth)
+	pb, err := audit.ProveRecord(ctx, j, "gov", idx, sth)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -142,7 +146,7 @@ func TestP11_RecordWithUnknownFieldVerifiesByRecordBytes(t *testing.T) {
 		t.Fatalf("a change inside the unknown field: err = %v, want ErrNotVerified", err)
 	}
 
-	pkg, err := audit.Evidence(ctx, store, "gov", signer, p11Now(), audit.WithStep("future"))
+	pkg, err := audit.Evidence(ctx, j, "gov", signer, p11Now(), audit.WithStep("future"))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -165,8 +169,9 @@ func TestP11_RecordWithUnknownFieldVerifiesByRecordBytes(t *testing.T) {
 func TestP11_StrippedHybridHalfFails(t *testing.T) {
 	ctx := context.Background()
 	store, _ := p11GovernedRun(t)
+	j := agenttest.MustJournal(store)
 	hyb := p11Signers(t)["hybrid"].(audit.HybridSigner)
-	th, err := audit.NewTreeHead(ctx, store, "gov", p11Now())
+	th, err := audit.NewTreeHead(ctx, j, "gov", p11Now())
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -288,16 +293,18 @@ func TestP11_EverySchemeEndToEnd(t *testing.T) {
 
 			// The store: every write anchors a head signed under the scheme.
 			inner, _ := p11GovernedRun(t)
+			j := agenttest.MustJournal(inner)
 			anchors := audit.NewMemAnchorLog()
 			as, err := audit.NewAuditedStore(inner, signer, anchors)
 			if err != nil {
 				t.Fatal(err)
 			}
+			j2 := agenttest.MustJournal(as)
 			anchoredAt := p11Now() - int64(time.Minute)
 			as.WithClock(func() int64 { return anchoredAt })
 			var anchorErr error
 			as.OnError(func(_ string, err error) { anchorErr = err })
-			if _, err := as.Do(ctx, "gov", "after", func(context.Context) (agent.Record, error) {
+			if _, err := journaltest.Do(ctx, j2, "gov", "after", func(context.Context) (agent.Record, error) {
 				return agent.Record{Kind: agent.StepValue, Result: json.RawMessage(`1`)}, nil
 			}); err != nil {
 				t.Fatal(err)
@@ -321,7 +328,7 @@ func TestP11_EverySchemeEndToEnd(t *testing.T) {
 			if err := audit.VerifyAnchorInclusion(root, last, proof); err != nil {
 				t.Fatalf("anchor inclusion: %v", err)
 			}
-			pb, err := audit.ProveToolCall(ctx, as, "gov", "pay", last.STH)
+			pb, err := audit.ProveToolCall(ctx, j2, "gov", "pay", last.STH)
 			if err != nil {
 				t.Fatal(err)
 			}
@@ -333,7 +340,7 @@ func TestP11_EverySchemeEndToEnd(t *testing.T) {
 			}
 
 			// A write the anchor has not seen yet, so the consistency proof below spans a growth.
-			if _, err := inner.Do(ctx, "gov", "late", func(context.Context) (agent.Record, error) {
+			if _, err := journaltest.Do(ctx, j, "gov", "late", func(context.Context) (agent.Record, error) {
 				return agent.Record{Kind: agent.StepValue, Result: json.RawMessage(`2`)}, nil
 			}); err != nil {
 				t.Fatal(err)
@@ -341,7 +348,7 @@ func TestP11_EverySchemeEndToEnd(t *testing.T) {
 
 			// CertifyRun and VerifyRun.
 			ts := p11Now()
-			th, err := audit.NewTreeHead(ctx, as, "gov", ts)
+			th, err := audit.NewTreeHead(ctx, j2, "gov", ts)
 			if err != nil {
 				t.Fatal(err)
 			}
@@ -349,7 +356,7 @@ func TestP11_EverySchemeEndToEnd(t *testing.T) {
 			if err != nil {
 				t.Fatal(err)
 			}
-			cert, err := audit.CertifyRun(ctx, as, "gov", sth, audit.RunCertSpec{ApprovedPolicies: []string{"D1"}, Signer: signer, TimestampNanos: ts})
+			cert, err := audit.CertifyRun(ctx, j2, "gov", sth, audit.RunCertSpec{ApprovedPolicies: []string{"D1"}, Signer: signer, TimestampNanos: ts})
 			if err != nil {
 				t.Fatal(err)
 			}
@@ -362,13 +369,13 @@ func TestP11_EverySchemeEndToEnd(t *testing.T) {
 			if _, err := audit.VerifyRun(cert, []string{"D2"}, v); !errors.Is(err, audit.ErrNotVerified) {
 				t.Fatalf("VerifyRun against an allowlist without D1: err = %v, want ErrNotVerified", err)
 			}
-			if _, err := audit.CertifyRun(ctx, as, "gov", sth, audit.RunCertSpec{ApprovedPolicies: []string{"D1"}, Signer: other, TimestampNanos: ts}); err == nil {
+			if _, err := audit.CertifyRun(ctx, j2, "gov", sth, audit.RunCertSpec{ApprovedPolicies: []string{"D1"}, Signer: other, TimestampNanos: ts}); err == nil {
 				t.Fatal("CertifyRun signed the used-policy head with a key that did not sign the journal head")
 			}
 
 			// Evidence, with the run certificate, a grant and a consistency proof.
 			earlier := last.STH
-			pkg, err := audit.Evidence(ctx, as, "gov", signer, ts, audit.WithAllToolCalls(), audit.WithStep("note"),
+			pkg, err := audit.Evidence(ctx, j2, "gov", signer, ts, audit.WithAllToolCalls(), audit.WithStep("note"),
 				audit.WithRunCertificate(audit.RunCertSpec{ApprovedPolicies: []string{"D1"}}), audit.WithConsistencyFrom(earlier))
 			if err != nil {
 				t.Fatal(err)
@@ -390,7 +397,7 @@ func TestP11_EverySchemeEndToEnd(t *testing.T) {
 			}
 
 			// An absence proof under the scheme.
-			recs, _ := as.History(ctx, "gov")
+			recs, _ := j2.History(ctx, "gov")
 			abs, err := audit.SignAbsenceRoot(recs, audit.ToolUseKeys, th, signer, ts)
 			if err != nil {
 				t.Fatal(err)
@@ -411,7 +418,7 @@ func TestP11_EverySchemeEndToEnd(t *testing.T) {
 			if err := sg.Verify(v); err != nil {
 				t.Fatalf("grant: %v", err)
 			}
-			head, err := audit.Head(ctx, as, "gov")
+			head, err := audit.Head(ctx, j2, "gov")
 			if err != nil {
 				t.Fatal(err)
 			}
@@ -432,9 +439,10 @@ func TestP11_EverySchemeEndToEnd(t *testing.T) {
 func TestP11_EvidenceRefusesAVerifierWhoseKeyDiffers(t *testing.T) {
 	ctx := context.Background()
 	store, _ := p11GovernedRun(t)
+	j := agenttest.MustJournal(store)
 	signers := p11Signers(t)
 	a, b := signers["ed25519"], signers["hybrid"]
-	pkg, err := audit.Evidence(ctx, store, "gov", a, p11Now())
+	pkg, err := audit.Evidence(ctx, j, "gov", a, p11Now())
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -493,11 +501,12 @@ func resealAs(t *testing.T, p audit.EvidencePackage, s audit.Signer) []byte {
 func TestP11_VerifiersReturnTheSentinels(t *testing.T) {
 	ctx := context.Background()
 	store, _ := p11GovernedRun(t)
+	j := agenttest.MustJournal(store)
 	signer := p11Signers(t)["ed25519"]
 	v := p11Verifier(t, signer)
-	th, _ := audit.NewTreeHead(ctx, store, "gov", p11Now())
+	th, _ := audit.NewTreeHead(ctx, j, "gov", p11Now())
 	sth, _ := audit.SignTreeHead(th, signer)
-	pb, err := audit.ProveToolCall(ctx, store, "gov", "pay", sth)
+	pb, err := audit.ProveToolCall(ctx, j, "gov", "pay", sth)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -565,11 +574,13 @@ func TestP11_RedactionTombstoneKeepsTheTree(t *testing.T) {
 		return dst
 	}
 	plain, redacted := copyRun(false), copyRun(true)
-	rootPlain, err := audit.Root(ctx, plain, "gov")
+	j2 := agenttest.MustJournal(plain)
+	j := agenttest.MustJournal(redacted)
+	rootPlain, err := audit.Root(ctx, j2, "gov")
 	if err != nil {
 		t.Fatal(err)
 	}
-	rootRedacted, err := audit.Root(ctx, redacted, "gov")
+	rootRedacted, err := audit.Root(ctx, j, "gov")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -577,28 +588,29 @@ func TestP11_RedactionTombstoneKeepsTheTree(t *testing.T) {
 		t.Fatal("redacting a record changed the journal root")
 	}
 	signer := p11Signers(t)["ed25519"]
-	th, _ := audit.NewTreeHead(ctx, plain, "gov", p11Now())
+	th, _ := audit.NewTreeHead(ctx, j2, "gov", p11Now())
 	sth, _ := audit.SignTreeHead(th, signer)
-	pb, err := audit.ProveToolCall(ctx, redacted, "gov", "pay", sth)
+	pb, err := audit.ProveToolCall(ctx, j, "gov", "pay", sth)
 	if err != nil {
 		t.Fatalf("proving another record of the redacted journal against the head signed before: %v", err)
 	}
 	if err := pb.Verify(p11Verifier(t, signer)); err != nil {
 		t.Fatal(err)
 	}
-	recs, _ := redacted.History(ctx, "gov")
+	recs, _ := j.History(ctx, "gov")
 	for i, r := range recs {
 		if r.Name == redact {
 			if !r.Redacted {
 				t.Fatal("the tombstone did not read as a redacted record")
 			}
-			if _, err := audit.ProveRecord(ctx, redacted, "gov", i, sth); err == nil {
+			if _, err := audit.ProveRecord(ctx, j, "gov", i, sth); err == nil {
 				t.Fatal("a redacted record was proven")
 			}
 		}
 	}
 	// A tombstone whose leaf hash is not 32 bytes of hex is not a leaf.
 	bad := agent.NewMemStore()
+	j3 := agenttest.MustJournal(bad)
 	for e, err := range orig.Load(ctx, "gov", -1) {
 		if err != nil {
 			t.Fatal(err)
@@ -609,7 +621,7 @@ func TestP11_RedactionTombstoneKeepsTheTree(t *testing.T) {
 		}
 		bad.Insert(ctx, "gov", e.Name, data)
 	}
-	if _, err := audit.Root(ctx, bad, "gov"); !errors.Is(err, audit.ErrMalformed) {
+	if _, err := audit.Root(ctx, j3, "gov"); !errors.Is(err, audit.ErrMalformed) {
 		t.Fatalf("a tombstone with a short leaf hash: err = %v, want ErrMalformed", err)
 	}
 }
@@ -619,7 +631,7 @@ func TestP11_RedactionTombstoneKeepsTheTree(t *testing.T) {
 // the leaf.
 func TestP11_EventLeavesAreSnakeCase(t *testing.T) {
 	log := audit.NewEventLog()
-	events := []agent.AgentEvent{
+	events := []agent.RunEvent{
 		agent.TurnStarted{Seq: 1},
 		agent.TurnRestarted{Seq: 1},
 		agent.ModelEvent{Event: agent.TextDelta{Text: "hi"}},
@@ -704,17 +716,22 @@ func TestP11_ApprovalsUnderPostQuantumKeys(t *testing.T) {
 		}
 	}
 	store := agent.NewMemStore()
+	j := agenttest.MustJournal(store)
 	charged := 0
-	charge := agent.Func("charge", "charge the card", agent.Safety{},
-		func(context.Context, struct {
-			Amount int `json:"amount"`
-		}) (string, error) {
-			charged++
-			return "ok", nil
-		}, agent.WithApproval(&policy))
-	a := agent.New(p11ChargeModel{}, store, charge).WithApproverVerifiers(resolver(approvers))
-	_, err := a.Run(ctx, "gate", "pay")
-	var pend *agent.PendingApproval
+	charge := agent.MustFunc("charge", "charge the card", func(context.Context, struct {
+		Amount int `json:"amount"`
+	}) (string, error) {
+		charged++
+		return "ok", nil
+	}, agent.WithApproval(&policy))
+	a := agenttest.MustNew(
+		p11ChargeModel{},
+		j,
+		agent.WithTools(charge),
+		agent.WithApproverVerifiers(resolver(approvers)),
+	)
+	_, err := a.Run(ctx, "gate", agent.UserText("pay"))
+	var pend *agent.ApprovalPending
 	if !errors.As(err, &pend) {
 		t.Fatalf("err = %v, want a pause", err)
 	}
@@ -724,15 +741,15 @@ func TestP11_ApprovalsUnderPostQuantumKeys(t *testing.T) {
 		if err != nil {
 			t.Fatal(err)
 		}
-		if err := agent.SubmitDecision(ctx, store, agent.Decision{RunID: "gate", ToolUseID: "c1", ApproverID: id, Approved: true, Alg: s.Alg(), Signature: sig},
+		if err := agent.SubmitDecision(ctx, j, agent.Decision{RunID: "gate", ToolUseID: "c1", ApproverID: id, Approved: true, Alg: s.Alg(), Signature: sig},
 			agent.WithDecisionCheck(resolver(approvers))); err != nil {
 			t.Fatalf("%s: %v", id, err)
 		}
 	}
-	if _, err := a.Run(ctx, "gate", "pay"); err != nil || charged != 1 {
+	if _, err := a.Run(ctx, "gate", agent.UserText("pay")); err != nil || charged != 1 {
 		t.Fatalf("after two decisions: charged %d, err %v", charged, err)
 	}
-	recs, _ := store.History(ctx, "gate")
+	recs, _ := j.History(ctx, "gate")
 	for _, r := range recs {
 		if agent.IsApprovalDecision(r, "c1") && r.ApproverAlg() != approvers[r.Approver()].Alg() {
 			t.Fatalf("decision by %s journaled under %q, want %q", r.Approver(), r.ApproverAlg(), approvers[r.Approver()].Alg())
@@ -740,12 +757,12 @@ func TestP11_ApprovalsUnderPostQuantumKeys(t *testing.T) {
 	}
 
 	logSigner := signers["ml-dsa-65"]
-	th, _ := audit.NewTreeHead(ctx, store, "gate", p11Now())
+	th, _ := audit.NewTreeHead(ctx, j, "gate", p11Now())
 	sth, err := audit.SignTreeHead(th, logSigner)
 	if err != nil {
 		t.Fatal(err)
 	}
-	actions, err := audit.ApprovalEvidence(ctx, store, "gate", "c1", sth)
+	actions, err := audit.ApprovalEvidence(ctx, j, "gate", "c1", sth)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -772,7 +789,8 @@ func TestP11_ApprovalsUnderPostQuantumKeys(t *testing.T) {
 func TestP11_JournalExportProvesTheStoredBytes(t *testing.T) {
 	ctx := context.Background()
 	store, future := p11GovernedRun(t)
-	x, err := audit.ExportJournal(ctx, store, "gov")
+	j := agenttest.MustJournal(store)
+	x, err := audit.ExportJournal(ctx, j, "gov")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -786,14 +804,14 @@ func TestP11_JournalExportProvesTheStoredBytes(t *testing.T) {
 		t.Fatal(err)
 	}
 	signer := p11Signers(t)["ed25519"]
-	th, _ := audit.NewTreeHead(ctx, store, "gov", p11Now())
+	th, _ := audit.NewTreeHead(ctx, j, "gov", p11Now())
 	sth, _ := audit.SignTreeHead(th, signer)
 	last := len(recs) - 1
-	fromStore, err := audit.ProveRecord(ctx, store, "gov", last, sth)
+	fromStore, err := audit.ProveRecord(ctx, j, "gov", last, sth)
 	if err != nil {
 		t.Fatal(err)
 	}
-	fromExport, err := audit.ProveRecord(ctx, p11Fixed(recs), "gov", last, sth)
+	fromExport, err := audit.ProveRecord(ctx, fixedHistory(recs).journal(), "gov", last, sth)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -812,14 +830,6 @@ func TestP11_JournalExportProvesTheStoredBytes(t *testing.T) {
 	}
 }
 
-// p11Fixed is a read-only Durable over records read back from a journal.
-type p11Fixed []agent.Record
-
-func (h p11Fixed) History(context.Context, string) ([]agent.Record, error) { return h, nil }
-func (p11Fixed) Do(context.Context, string, string, func(context.Context) (agent.Record, error)) (agent.Record, error) {
-	return agent.Record{}, errors.New("read-only")
-}
-
 // A producer refuses to prove a record whose stored bytes read differently to different JSON
 // readers, and Record() of such bytes is ErrMalformed; an unknown field alone is fine.
 func TestP11_RecordBytesMustReadOneWay(t *testing.T) {
@@ -831,7 +841,8 @@ func TestP11_RecordBytesMustReadOneWay(t *testing.T) {
 		"surrogate":    `{"name":"x","kind":"value","result":"a","note":"\ud800","salt":"` + salt + `"}`,
 	} {
 		s := agent.NewMemStore()
-		if _, err := s.Do(ctx, "r", "first", func(context.Context) (agent.Record, error) {
+		j := agenttest.MustJournal(s)
+		if _, err := journaltest.Do(ctx, j, "r", "first", func(context.Context) (agent.Record, error) {
 			return agent.Record{Kind: agent.StepValue, Result: json.RawMessage(`1`)}, nil
 		}); err != nil {
 			t.Fatal(err)
@@ -840,10 +851,10 @@ func TestP11_RecordBytesMustReadOneWay(t *testing.T) {
 			t.Fatal(err)
 		}
 		signer := p11Signers(t)["ed25519"]
-		th, _ := audit.NewTreeHead(ctx, s, "r", p11Now())
+		th, _ := audit.NewTreeHead(ctx, j, "r", p11Now())
 		sth, _ := audit.SignTreeHead(th, signer)
-		recs, _ := s.History(ctx, "r")
-		if _, err := audit.ProveRecord(ctx, s, "r", len(recs)-1, sth); !errors.Is(err, audit.ErrMalformed) {
+		recs, _ := j.History(ctx, "r")
+		if _, err := audit.ProveRecord(ctx, j, "r", len(recs)-1, sth); !errors.Is(err, audit.ErrMalformed) {
 			t.Fatalf("%s: ProveRecord err = %v, want ErrMalformed", name, err)
 		}
 		if _, err := (audit.ProofBundle{RecordBytes: []byte(rec)}).Record(); !errors.Is(err, audit.ErrMalformed) {
@@ -857,9 +868,10 @@ func TestP11_RecordBytesMustReadOneWay(t *testing.T) {
 func TestP11_EvidenceChecksItsCertificateFormat(t *testing.T) {
 	ctx := context.Background()
 	store, _ := p11GovernedRun(t)
+	j := agenttest.MustJournal(store)
 	signer := p11Signers(t)["ed25519"]
 	ts := p11Now()
-	pkg, err := audit.Evidence(ctx, store, "gov", signer, ts, audit.WithRunCertificate(audit.RunCertSpec{ApprovedPolicies: []string{"D1"}}))
+	pkg, err := audit.Evidence(ctx, j, "gov", signer, ts, audit.WithRunCertificate(audit.RunCertSpec{ApprovedPolicies: []string{"D1"}}))
 	if err != nil {
 		t.Fatal(err)
 	}

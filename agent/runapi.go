@@ -1,6 +1,4 @@
-// runapi.go holds the Run API (docs/design/api-v1.md, item 1) under its transitional names:
-// RunMessage, ResumeRun, StreamMessage and RunTypedMessage. The 1.0 rewrite renames them Run,
-// Resume, Stream and RunTyped, and removes the string entry points they replace.
+// runapi.go holds the Run API (docs/design/api-v1.md, item 1): Run, Resume, Stream and RunTyped.
 
 package agent
 
@@ -11,8 +9,8 @@ import (
 	"time"
 )
 
-// ValidateRunID reports whether id may name a root run (RunMessage, ResumeRun, StreamMessage,
-// RunTypedMessage): it is not empty and holds no '>', which the engine reserves for the run IDs of
+// ValidateRunID reports whether id may name a root run (Run, Resume, Stream,
+// RunTyped): it is not empty and holds no '>', which the engine reserves for the run IDs of
 // sub-agents and session turns. Any other string is a valid run ID: the journal's keys encode
 // whatever they are given. A run ID that fails is ErrConfig, and the run entry points return it
 // with a nil Result. (From a tool call's own context they also accept the programmatic sub-run IDs
@@ -37,11 +35,12 @@ type driveSpec struct {
 	session *SessionRef
 	typed   *TypedStart
 	cfg     runConfig
-	resume  bool // ResumeRun or a recovery drive: a run with no run:start is ErrNotStarted
-	// strictSaga is set by the transitional string entry points (Run, Stream, RunResult): a run
-	// journaled as a saga is ErrConfig through them, as it always was, rather than driven as one.
+	resume  bool // Resume or a recovery drive: a run with no run:start is ErrNotStarted
+	// strictSaga is set by a session turn's and a sub-agent's drive that is not a saga's: a run
+	// journaled as a saga is ErrConfig through them rather than driven as one (a root run's drive
+	// with no WithSaga drives a saga run as the saga it is).
 	strictSaga bool
-	emit       func(AgentEvent)
+	emit       func(RunEvent)
 }
 
 // runKind is what drives the run d drives.
@@ -52,32 +51,27 @@ func (d *driveSpec) runKind() RunKind {
 	return d.kind
 }
 
-// RunMessage drives the agent to the end of runID's run, answering input under opts, and returns
+// Run drives the agent to the end of runID's run, answering input under opts, and returns
 // the run's Result. The first drive of a run journals input and opts in run:start, and every later
-// drive runs under them (see RunStart): resume an unfinished run with RunMessage and the same
-// input (or ResumeRun, which needs neither), and a finished run returns its recorded end,
+// drive runs under them (see RunStart): resume an unfinished run with Run and the same
+// input (or Resume, which needs neither), and a finished run returns its recorded end,
 // whatever it is passed.
 //
 // The Result is non-nil whenever runID is valid (see ValidateRunID), whatever the error: a pause
 // (*ApprovalPending, *InterruptPending, ...), a halt (*OutcomeUnknown), a failure, a saga's
 // *SagaAborted, or ErrRunCancelled. Its Usage and Spend are the whole run's, sub-agents included;
 // Turns and Duration are this call's. Message is the final answer, zero unless err is nil.
-//
-// Deprecated: transitional; renamed by the 1.0 rewrite. RunMessage becomes Run, and the current
-// Run(ctx, runID, input string) is removed.
-func (a *Agent) RunMessage(ctx context.Context, runID string, input Message, opts ...RunOption) (*Result, error) {
+func (a *Agent) Run(ctx context.Context, runID string, input Message, opts ...RunOption) (*Result, error) {
 	return a.runEntry(ctx, runID, &driveSpec{input: &input}, opts)
 }
 
-// ResumeRun drives runID's run on from its journal: the input, saga flag and options its first
+// Resume drives runID's run on from its journal: the input, saga flag and options its first
 // drive journaled (see RunStart), and the last limit amendment. opts may raise or lower its limits
 // (WithMaxTurns, WithTokenBudget: journaled as an amendment) and set the deployment's values
 // (WithWaker, WithClock, WithMaxConcurrency, the identity's Actor); any other setting that
 // differs from the journaled one is ErrConfig. A run with no run:start is ErrNotStarted. A typed
-// run is resumed with RunTypedMessage or ResumeTyped, and a session turn by its session.
-//
-// Deprecated: transitional; renamed by the 1.0 rewrite. ResumeRun becomes Resume.
-func (a *Agent) ResumeRun(ctx context.Context, runID string, opts ...RunOption) (*Result, error) {
+// run is resumed with RunTyped or ResumeTyped, and a session turn by its session.
+func (a *Agent) Resume(ctx context.Context, runID string, opts ...RunOption) (*Result, error) {
 	return a.runEntry(ctx, runID, &driveSpec{resume: true}, opts)
 }
 
@@ -114,19 +108,16 @@ func (a *Agent) drive(ctx context.Context, runID string, d *driveSpec) (Message,
 	return a.runSagaWithTelemetry(ctx, runID, d)
 }
 
-// StreamMessage drives the agent like RunMessage but returns a live AgentStream: token deltas,
+// Stream drives the agent like Run but returns a live RunStream: token deltas,
 // turn boundaries and tool start and finish arrive as events while the durable loop runs, and
-// AgentStream.Result returns what RunMessage would.
-//
-// Deprecated: transitional; renamed by the 1.0 rewrite. StreamMessage becomes Stream, and the
-// current Stream(ctx, runID, input string) is removed.
-func (a *Agent) StreamMessage(ctx context.Context, runID string, input Message, opts ...RunOption) *AgentStream {
+// RunStream.Result returns what Run would.
+func (a *Agent) Stream(ctx context.Context, runID string, input Message, opts ...RunOption) *RunStream {
 	return a.streamEntry(ctx, runID, &driveSpec{input: &input}, opts)
 }
 
 // ResumeAgent returns the Resumer that drives a's runs: those of kind agent that are not typed,
 // sagas included (the run's journal says which). It drives each under the options its run:start
-// journaled (ResumeRun's semantics), with opts setting only the deployment's values: WithWaker,
+// journaled (Resume's semantics), with opts setting only the deployment's values: WithWaker,
 // WithClock, WithMaxConcurrency and an identity's Actor. A journaled setting in opts (a limit, the
 // system prompt, sampling, tool choice, a tool filter, saga, an output mode, a principal) is
 // ErrConfig on every call, since a recovery drive must not change a run's options. Any other run

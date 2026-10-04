@@ -20,15 +20,13 @@ func (m *captureModel) Stream(ctx context.Context, req Request) (*Stream, error)
 func TestSampling_FlowsIntoRequest(t *testing.T) {
 	var got Request
 	m := &captureModel{inner: &scriptModel{turns: [][]Emit{textTurn("ok")}}, got: &got}
-	a := New(m, NewMemStore()).WithSampling(
-		Temperature(0),
-		MaxTokens(500),
-		TopP(0.9),
-		Stop("END"),
-		Seed(42),
+	a := mustNew(
+		m,
+		memJournal(),
+		WithSampling(Temperature(0), MaxTokens(500), TopP(0.9), Stop("END"), Seed(42)),
 	)
 
-	if _, err := a.Run(context.Background(), "r", "hi"); err != nil {
+	if _, err := a.Run(context.Background(), "r", UserText("hi")); err != nil {
 		t.Fatalf("Run: %v", err)
 	}
 
@@ -54,9 +52,9 @@ func TestSampling_FlowsIntoRequest(t *testing.T) {
 func TestSampling_UnsetIsNil(t *testing.T) {
 	var got Request
 	m := &captureModel{inner: &scriptModel{turns: [][]Emit{textTurn("ok")}}, got: &got}
-	a := New(m, NewMemStore())
+	a := mustNew(m, memJournal())
 
-	if _, err := a.Run(context.Background(), "r", "hi"); err != nil {
+	if _, err := a.Run(context.Background(), "r", UserText("hi")); err != nil {
 		t.Fatalf("Run: %v", err)
 	}
 	if got.Sampling.Temperature != nil || got.Sampling.MaxTokens != nil {

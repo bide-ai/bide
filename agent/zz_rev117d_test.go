@@ -9,19 +9,21 @@ import (
 )
 
 // slowArgsStore holds the write of c1's accepted arguments until its context is cancelled (a
-// slow store under a saga sibling's failure), and reports when that write has begun.
+// slow store under a saga sibling's failure), and reports when that write has begun. The write
+// begins with its read of the record (the journal reads a step before it runs it), so the hook is
+// on that Get, which then fails with the context's error: nothing is written.
 type slowArgsStore struct {
 	*MemStore
 	writing chan struct{}
 }
 
-func (s slowArgsStore) Do(ctx context.Context, runID, name string, fn func(context.Context) (Record, error)) (Record, error) {
+func (s slowArgsStore) Get(ctx context.Context, runID, name string) (Entry, bool, error) {
 	if name == sagaArgsStep("c1") {
 		close(s.writing)
 		<-ctx.Done()
-		return Record{}, ctx.Err()
+		return Entry{}, false, ctx.Err()
 	}
-	return s.MemStore.Do(ctx, runID, name, fn)
+	return s.MemStore.Get(ctx, runID, name)
 }
 
 // F4. The accepted-arguments write now comes after enterTool, so its failure counts as reached.
@@ -31,19 +33,19 @@ func (s slowArgsStore) Do(ctx context.Context, runID, name string, fn func(conte
 // started and the saga aborted cleanly.
 func TestRev117d_CancelledArgsWriteLeavesRollbackOnUnknownOutcome(t *testing.T) {
 	var charges atomic.Int32
-	charge := CompensatedFunc("charge", "charge the card", Safety{},
-		func(context.Context, chargeArgs) (string, error) { charges.Add(1); return "ok", nil },
+	charge := MustCompensatedFunc("charge", "charge the card", func(context.Context, chargeArgs) (string, error) { charges.Add(1); return "ok", nil },
 		func(context.Context, chargeArgs, string) error { return nil })
 	store := slowArgsStore{NewMemStore(), make(chan struct{})}
-	book := Func("book", "book the flight", Safety{}, func(context.Context, struct{}) (string, error) {
+	j := mustJournal(store)
+	book := MustFunc("book", "book the flight", func(context.Context, struct{}) (string, error) {
 		<-store.writing // fails while charge's accepted arguments are being written
 		return "", errors.New("no seats")
 	})
 	m := &sagaTurns{turns: [][][3]string{{{"c1", "charge", `{"amount":5}`}, {"b1", "book", `{}`}}}}
-	_, err := New(m, store, charge, book).UseTool(scaleCharge).RunSaga(context.Background(), "r", "trip")
+	_, err := mustNew(m, j, WithTools(charge, book), WithToolMiddleware(scaleCharge)).Run(context.Background(), "r", UserText("trip"), WithSaga())
 	var aborted *SagaAborted
 	if !errors.As(err, &aborted) {
-		t.Fatalf("RunSaga = %v, want *SagaAborted", err)
+		t.Fatalf("saga Run = %v, want *SagaAborted", err)
 	}
 	if charges.Load() != 0 {
 		t.Fatalf("setup: the charge ran %d times", charges.Load())
@@ -85,33 +87,37 @@ func TestRev117d_CallStateRace(t *testing.T) {
 // safetyWrap is a wrapper that overrides the Safety of the sub-agent it wraps.
 type safetyWrap struct{ Tool }
 
-func (w safetyWrap) Spec() ToolSpec { s := SpecOf(w.Tool); s.Safety = Safety{}; return s }
+func (w safetyWrap) Spec() ToolSpec { s := w.Tool.Spec(); s.Safety = Safety{}; return s }
 func (w safetyWrap) Unwrap() Tool   { return w.Tool }
 
 // (c) New refuses a wrapper that overrides the Safety of a sub-agent it wraps, as SubAgent refuses
 // WithSafety: the sub-run's own calls carry their safety.
 func TestRev117d_NewRefusesSafetyOverrideOverASubAgent(t *testing.T) {
-	sub := New(NewScriptedModel(TextTurn("x")), NewMemStore())
+	sub := mustNew(NewScriptedModel(TextTurn("x")), memJournal())
 	var calls atomic.Int32
-	_, err := New(&countingModel{n: &calls}, NewMemStore(), safetyWrap{SubAgent("delegate", "", sub)}).Run(context.Background(), "r1", "go")
-	if !errors.Is(err, ErrConfig) || calls.Load() != 0 {
-		t.Fatalf("Run = %v after %d model calls; want ErrConfig before any", err, calls.Load())
+	a, err := New(
+		&countingModel{n: &calls},
+		memJournal(),
+		WithTools(safetyWrap{MustSubAgent("delegate", "", sub)}),
+	)
+	if !errors.Is(err, ErrConfig) || a != nil || calls.Load() != 0 {
+		t.Fatalf("New = %v, %v after %d model calls; want nil and ErrConfig before any", a, err, calls.Load())
 	}
 }
 
 // gatedArgsStore holds the write of c1's accepted arguments until release is closed, and reports
-// when that write has begun.
+// when that write has begun (at its read of the record, which the journal makes first).
 type gatedArgsStore struct {
 	*MemStore
 	writing, release chan struct{}
 }
 
-func (s gatedArgsStore) Do(ctx context.Context, runID, name string, fn func(context.Context) (Record, error)) (Record, error) {
+func (s gatedArgsStore) Get(ctx context.Context, runID, name string) (Entry, bool, error) {
 	if name == sagaArgsStep("c1") {
 		close(s.writing)
 		<-s.release
 	}
-	return s.MemStore.Do(ctx, runID, name, fn)
+	return s.MemStore.Get(ctx, runID, name)
 }
 
 // F4, the other half: an invocation that reached the call but had not begun the tool when the chain
@@ -119,10 +125,10 @@ func (s gatedArgsStore) Do(ctx context.Context, runID, name string, fn func(cont
 // called, and it stays so.
 func TestRev117d_SealedCallIsNeverBegun(t *testing.T) {
 	var charges atomic.Int32
-	charge := CompensatedFunc("charge", "", Safety{},
-		func(context.Context, chargeArgs) (string, error) { charges.Add(1); return "ok", nil },
+	charge := MustCompensatedFunc("charge", "", func(context.Context, chargeArgs) (string, error) { charges.Add(1); return "ok", nil },
 		func(context.Context, chargeArgs, string) error { return nil })
 	store := gatedArgsStore{NewMemStore(), make(chan struct{}), make(chan struct{})}
+	j := mustJournal(store)
 	leaked := make(chan error, 1)
 	leak := func(next ToolHandler) ToolHandler {
 		return func(ctx context.Context, call ToolCall) (json.RawMessage, error) {
@@ -136,7 +142,7 @@ func TestRev117d_SealedCallIsNeverBegun(t *testing.T) {
 		}
 	}
 	m := &sagaTurns{turns: [][][3]string{{{"c1", "charge", `{"amount":5}`}}}}
-	_, _ = New(m, store, charge).UseTool(leak).RunSaga(context.Background(), "r", "trip")
+	_, _ = mustNew(m, j, WithTools(charge), WithToolMiddleware(leak)).Run(context.Background(), "r", UserText("trip"), WithSaga())
 	close(store.release)
 	if err := <-leaked; !errors.Is(err, ErrToolNotCalled) || charges.Load() != 0 {
 		t.Fatalf("the invocation that outlived the chain: %v, charges %d; want it refused, the tool never called", err, charges.Load())

@@ -153,7 +153,7 @@ func (r *Registry) registerMerge(name string, m *regMerge) error {
 // opts set the merge block's Safety, as for RegisterStep: with none, a loaded join is a side
 // effect and halts on an ambiguous crash, like a hand-built Join. Only Go code can mark a merge
 // retry-safe (ReadOnly, Idempotent); a config join's "safety" may only lower what opts declare.
-func RegisterJoin2[A, B, O any](r *Registry, name string, fn func(context.Context, A, B) (O, error), opts ...NodeOption) error {
+func (r *Registry) RegisterJoin2[A, B, O any](name string, fn func(context.Context, A, B) (O, error), opts ...NodeOption) error {
 	return r.registerMerge(name, &regMerge{
 		safety:  safetyFromOptions(agent.Safety{}, opts),
 		arity:   2,
@@ -187,7 +187,7 @@ func RegisterJoin2[A, B, O any](r *Registry, name string, fn func(context.Contex
 // types are A, B, C and whose erased merge closure asserts each boxed input before
 // calling fn. A duplicate name is an error, surfaced at Load and returned here for
 // inline checking. opts set the merge block's Safety, as for RegisterJoin2.
-func RegisterJoin3[A, B, C, O any](r *Registry, name string, fn func(context.Context, A, B, C) (O, error), opts ...NodeOption) error {
+func (r *Registry) RegisterJoin3[A, B, C, O any](name string, fn func(context.Context, A, B, C) (O, error), opts ...NodeOption) error {
 	return r.registerMerge(name, &regMerge{
 		safety:  safetyFromOptions(agent.Safety{}, opts),
 		arity:   3,
@@ -227,7 +227,7 @@ func RegisterJoin3[A, B, C, O any](r *Registry, name string, fn func(context.Con
 // Pass plan.ReadOnly()/plan.Idempotent() to record the block's retry-on-resume
 // Safety in Go (the config JSON carries no Safety); a loaded node then resumes
 // identically to one built with Builder.Step and the same option.
-func RegisterStep[I, O any](r *Registry, name string, fn func(context.Context, I) (O, error), opts ...NodeOption) error {
+func (r *Registry) RegisterStep[I, O any](name string, fn func(context.Context, I) (O, error), opts ...NodeOption) error {
 	return r.registerBlock(name, &regBlock{
 		kind:    kindStep,
 		inType:  reflect.TypeFor[I](),
@@ -254,11 +254,11 @@ func RegisterStep[I, O any](r *Registry, name string, fn func(context.Context, I
 // wrapper check refuses (as agent.New would), is an error, surfaced at Load and
 // returned here for inline checking.
 //
-// Safety AUTO-DERIVES from the tool's spec (agent.SpecOf), mirroring Builder.Tool; an explicit
+// Safety AUTO-DERIVES from the tool's spec (agent.Tool.Spec), mirroring Builder.Tool; an explicit
 // plan.ReadOnly()/plan.Idempotent() option overrides the derived Safety. Safety is
 // recorded in Go here, not in the config JSON.
-func RegisterTool[I, O any](r *Registry, name string, t agent.Tool, opts ...NodeOption) error {
-	spec := agent.SpecOf(t) // read once, as the agent reads it
+func (r *Registry) RegisterTool[I, O any](name string, t agent.Tool, opts ...NodeOption) error {
+	spec := t.Spec() // read once, as the agent reads it
 	if err := checkTool(t); err != nil {
 		// Recorded on the Registry, as a duplicate is, so Load reports it to a caller that did
 		// not check this return.
@@ -311,7 +311,7 @@ func RegisterTool[I, O any](r *Registry, name string, t agent.Tool, opts ...Node
 // Pass plan.ReadOnly()/plan.Idempotent() to record the block's retry-on-resume Safety
 // in Go (the config JSON carries no Safety), mirroring Builder.Model; the default
 // keeps the conservative halt-on-ambiguous-crash for a non-idempotent model call.
-func RegisterModel[I, O any](r *Registry, name, prompt string, opts ...NodeOption) error {
+func (r *Registry) RegisterModel[I, O any](name, prompt string, opts ...NodeOption) error {
 	return r.registerBlock(name, &regBlock{
 		kind:    kindModel,
 		inType:  reflect.TypeFor[I](),
@@ -329,7 +329,7 @@ func RegisterModel[I, O any](r *Registry, name, prompt string, opts ...NodeOptio
 // exactly like wiring.go's Switch: a wrong dynamic type means the arm did not
 // match. A duplicate name is an error, surfaced at Load and returned here for
 // inline checking.
-func RegisterPredicate[M any](r *Registry, name string, pred func(M) bool) error {
+func (r *Registry) RegisterPredicate[M any](name string, pred func(M) bool) error {
 	return r.registerPred(name, &regPred{
 		mType: reflect.TypeFor[M](),
 		pred: func(v any) bool {

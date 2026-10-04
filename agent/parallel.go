@@ -39,7 +39,7 @@ type Task[T any] struct {
 //
 // As with Step, each task result is journaled as JSON, so T must be JSON-serializable;
 // a struct's unexported fields silently round-trip to their zero values.
-func Parallel[T any](ctx context.Context, d Durable, runID string, tasks []Task[T], opts ...ParallelOption) ([]T, error) {
+func (j *Journal) Parallel[T any](ctx context.Context, runID string, tasks []Task[T], opts ...ParallelOption) ([]T, error) {
 	var cfg parallelConfig
 	if err := applyOptions("Parallel", &cfg, opts, ParallelOption.applyParallel); err != nil {
 		return nil, err
@@ -73,7 +73,7 @@ func Parallel[T any](ctx context.Context, d Durable, runID string, tasks []Task[
 			if sem != nil {
 				defer func() { <-sem }()
 			}
-			results[i], errs[i] = Step(ctx, d, runID, tasks[i].Name, tasks[i].Fn, WithSafety(tasks[i].Safety))
+			results[i], errs[i] = j.Step(ctx, runID, tasks[i].Name, tasks[i].Fn, WithSafety(tasks[i].Safety))
 		}(i)
 	}
 	wg.Wait()

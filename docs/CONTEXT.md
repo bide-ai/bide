@@ -6,7 +6,7 @@ durable runs in a single process, a cryptographically verifiable audit trail,
 and provably convergent shared state.
 
 The core module lives at the repository root; adapters and backends (`trace`,
-`mcp`, `codec/gcf`, the `store/*` backends, `govern` and its `govern/*` event-log
+`mcptools`, `codec/gcf`, the `store/*` backends, `govern` and its `govern/*` event-log
 backends), the example modules that import them, and the test-only `integration`
 module are separate modules stitched together by a `go.work` for local
 development. See

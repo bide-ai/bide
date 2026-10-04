@@ -47,7 +47,7 @@ func TestTruncatedToolArgs_ErrorBoundsTheName(t *testing.T) {
 // but not all of a name of any length.
 func TestUnknownTool_ErrorIsBounded(t *testing.T) {
 	m := NewScriptedModel(ToolTurn("c1", strings.Repeat("x", 1<<20), `{}`), TextTurn("done"))
-	_, err := New(m, NewMemStore()).Run(context.Background(), "run", "go")
+	_, err := mustNew(m, memJournal()).Run(context.Background(), "run", UserText("go"))
 	if !errors.Is(err, ErrUnknownTool) {
 		t.Fatalf("err = %v, want ErrUnknownTool", err)
 	}
@@ -59,7 +59,7 @@ func TestUnknownTool_ErrorIsBounded(t *testing.T) {
 // A tool middleware can hand the base handler a name no tool has; that error is journaled as the
 // call's result, so it is bounded too.
 func TestToolHandler_UnknownToolErrorIsBounded(t *testing.T) {
-	a := New(NewScriptedModel(TextTurn("x")), NewMemStore())
+	a := mustNew(NewScriptedModel(TextTurn("x")), memJournal())
 	_, _, err := a.toolHandler("r")(context.Background(), ToolUse{ID: "c1", Name: strings.Repeat("y", 1<<20)})
 	if !errors.Is(err, ErrUnknownTool) {
 		t.Fatalf("err = %v, want ErrUnknownTool", err)

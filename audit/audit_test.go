@@ -11,21 +11,24 @@ import (
 	"testing"
 
 	"github.com/bide-ai/bide/agent"
+	"github.com/bide-ai/bide/agent/agenttest"
 	"github.com/bide-ai/bide/audit"
+
+	"github.com/bide-ai/bide/internal/journaltest"
 )
 
 // record writes a sequence of durable value-steps into a run's journal.
-func record(t *testing.T, store agent.Durable, runID string, vals ...string) {
+func record(t *testing.T, store *agent.Journal, runID string, vals ...string) {
 	t.Helper()
 	for i, v := range vals {
-		if _, err := agent.Step(context.Background(), store, runID, fmt.Sprintf("s%d", i),
+		if _, err := store.Step(context.Background(), runID, fmt.Sprintf("s%d", i),
 			func(context.Context) (string, error) { return v, nil }, agent.WithSafety(agent.Safety{ReadOnly: true})); err != nil {
 			t.Fatal(err)
 		}
 	}
 }
 
-func head(t *testing.T, store agent.Durable, runID string) []byte {
+func head(t *testing.T, store *agent.Journal, runID string) []byte {
 	t.Helper()
 	h, err := audit.Head(context.Background(), store, runID)
 	if err != nil {
@@ -36,13 +39,13 @@ func head(t *testing.T, store agent.Durable, runID string) []byte {
 
 // Byte-identical journals commit to the same head; a single differing record diverges.
 func TestHead_DeterministicAndTamperEvident(t *testing.T) {
-	s1 := agent.NewMemStore()
+	s1 := agenttest.MemJournal()
 	record(t, s1, "r", "alpha", "beta", "gamma")
 	recs, err := s1.History(context.Background(), "r")
 	if err != nil {
 		t.Fatal(err)
 	}
-	s2 := fixedHistory(recs) // the same records, salts included, held elsewhere
+	s2 := fixedHistory(recs).journal() // the same records, salts included, held elsewhere
 	if !bytes.Equal(head(t, s1, "r"), head(t, s2, "r")) {
 		t.Fatal("identical journals must have the same head")
 	}
@@ -51,14 +54,14 @@ func TestHead_DeterministicAndTamperEvident(t *testing.T) {
 	}
 
 	// Tamper: one record differs -> head diverges.
-	s3 := agent.NewMemStore()
+	s3 := agenttest.MemJournal()
 	record(t, s3, "r", "alpha", "TAMPERED", "gamma")
 	if bytes.Equal(head(t, s1, "r"), head(t, s3, "r")) {
 		t.Fatal("a modified record must change the head (tamper-evidence)")
 	}
 
 	// Order matters: same records, different order -> different head.
-	s4 := fixedHistory{recs[1], recs[0], recs[2]}
+	s4 := fixedHistory{recs[0], recs[2], recs[1], recs[3]}.journal() // the header stays first
 	if bytes.Equal(head(t, s1, "r"), head(t, s4, "r")) {
 		t.Fatal("reordering records must change the head")
 	}
@@ -66,7 +69,7 @@ func TestHead_DeterministicAndTamperEvident(t *testing.T) {
 	// The head commits to each record's salt: the same content under another salt diverges.
 	resalted := append(fixedHistory(nil), recs...)
 	resalted[1] = stored(withSalt(resalted[1], bytes.Repeat([]byte{1}, agent.SaltSize)))
-	if bytes.Equal(head(t, s1, "r"), head(t, resalted, "r")) {
+	if bytes.Equal(head(t, s1, "r"), head(t, resalted.journal(), "r")) {
 		t.Fatal("a record's salt must be part of the head")
 	}
 }
@@ -74,7 +77,9 @@ func TestHead_DeterministicAndTamperEvident(t *testing.T) {
 // The empty journal has a stable, non-zero head (the domain seed chain).
 func TestHead_EmptyJournalStable(t *testing.T) {
 	s1, s2 := agent.NewMemStore(), agent.NewMemStore()
-	if !bytes.Equal(head(t, s1, "none"), head(t, s2, "none")) {
+	j2 := agenttest.MustJournal(s2)
+	j := agenttest.MustJournal(s1)
+	if !bytes.Equal(head(t, j, "none"), head(t, j2, "none")) {
 		t.Fatal("empty journals must share a head")
 	}
 }
@@ -86,8 +91,8 @@ func TestHead_EmptyJournalStable(t *testing.T) {
 // for a fork of a head over the newer one.
 func TestHead_ChainsTheJournalEncoding(t *testing.T) {
 	ctx := context.Background()
-	store := agent.NewMemStore()
-	rec, err := store.Do(ctx, "run", "c1", func(context.Context) (agent.Record, error) {
+	store := agenttest.MemJournal()
+	rec, err := journaltest.Do(ctx, store, "run", "c1", func(context.Context) (agent.Record, error) {
 		return agent.Record{Kind: agent.StepToolResult, ToolUseID: "c1", Result: []byte(`{"html":"<b>a & b</b>"}`)}, nil
 	})
 	if err != nil {
@@ -116,7 +121,7 @@ func TestSign_Roundtrip(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	store := agent.NewMemStore()
+	store := agenttest.MemJournal()
 	record(t, store, "r", "a", "b")
 	h := head(t, store, "r")
 
@@ -148,9 +153,9 @@ func signTH(tb testing.TB, th audit.TreeHead, priv ed25519.PrivateKey) audit.Sig
 }
 
 // mustAuditedStore wraps inner in an AuditedStore signing with priv, failing the test on error.
-func mustAuditedStore(tb testing.TB, inner agent.Durable, priv ed25519.PrivateKey, anchor audit.Anchor) *audit.AuditedStore {
+func mustAuditedStore(tb testing.TB, inner *agent.Journal, priv ed25519.PrivateKey, anchor audit.Anchor) *audit.AuditedStore {
 	tb.Helper()
-	s, err := audit.NewAuditedStore(inner, edS(priv), anchor)
+	s, err := audit.NewAuditedStore(inner.Store(), edS(priv), anchor)
 	if err != nil {
 		tb.Fatal(err)
 	}

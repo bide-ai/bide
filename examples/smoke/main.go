@@ -35,22 +35,29 @@ func main() {
 		openai.WithMaxTokens(512),
 	)
 
-	weather := agent.Func("get_weather", "Get the current weather for a city",
-		agent.Safety{ReadOnly: true},
+	weather := agent.MustFunc("get_weather", "Get the current weather for a city",
 		func(_ context.Context, in WeatherArgs) (Weather, error) {
 			log.Printf("[tool] get_weather(%q) called", in.City)
 			return Weather{TempF: 68, Sky: "sunny"}, nil
-		})
+		}, agent.WithSafety(agent.Safety{ReadOnly: true}))
 
-	a := agent.New(model, agent.NewMemStore(), weather)
+	j, err := agent.NewJournal(agent.NewMemStore())
+	if err != nil {
+		log.Fatal(err)
+	}
+	a, err := agent.New(model, j, agent.WithTools(weather))
+	if err != nil {
+		log.Fatal(err)
+	}
 
 	ctx, cancel := context.WithTimeout(context.Background(), 60*time.Second)
 	defer cancel()
 
-	out, err := a.Run(ctx, "smoke-1", "What's the weather in San Francisco? Use the get_weather tool, then answer in one sentence.")
+	res, err := a.Run(ctx, "smoke-1", agent.UserText("What's the weather in San Francisco? Use the get_weather tool, then answer in one sentence."))
 	if err != nil {
 		log.Fatalf("run: %v", err)
 	}
+	out := res.Message
 
 	for _, p := range out.Parts {
 		if t, ok := p.(agent.Text); ok {

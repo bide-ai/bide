@@ -9,7 +9,7 @@ answer): an outside system pushes an event, and the run resumes with its payload
 The headline property, and the reason this lives in the runtime rather than a message bus:
 **at-least-once transport in, exactly-once application to the run.** Transports redeliver;
 a signal is applied to its run at most once. Everything below is built on one substrate: a
-named durable step (`Durable.Do`, at-most-once by name) plus `History` replay, and a typed
+named durable journal record (at-most-once by name) plus journal replay, and a typed
 pause error that `Run` propagates. There is no new persistence model.
 
 ## Retry-safe tools (read this first)
@@ -23,7 +23,7 @@ then awaits, that side effect runs again on every resume attempt.
 ## Single-shot: Signal / Await
 
 `Await[T]` blocks the run until a single-shot signal named `name` is delivered, then returns
-its payload. `Signal[T]` delivers that payload from any process.
+its payload. `Journal.Signal[T]` delivers that payload from any process.
 
 <!-- docsnip: setup ctx context.Context; type PaymentConfirmed struct{}; returns (any, error) -->
 ```go
@@ -35,10 +35,10 @@ if err != nil {
 // ... continue with confirmed ...
 ```
 
-<!-- docsnip: setup ctx context.Context; store agent.Durable; runID string; type PaymentConfirmed struct{} -->
+<!-- docsnip: setup ctx context.Context; store *agent.Journal; runID string; type PaymentConfirmed struct{} -->
 ```go
 // Deliver-side, from a webhook handler in any process:
-err := agent.Signal(ctx, store, runID, "payment-confirmed", PaymentConfirmed{...})
+err := store.Signal(ctx, runID, "payment-confirmed", PaymentConfirmed{...})
 ```
 
 On first encounter with no signal recorded, `Await` returns the zero `T` and a `*SignalPending`
@@ -84,16 +84,16 @@ scheduled for the top-level run, which re-enters the sub-agent on resume.
 ## Ordered channels: Enqueue / Receive / Ack
 
 A channel is the multi-message form of a signal: an ordered, per-run stream you consume
-exactly once. `Enqueue[T]` (formerly `Send`) appends a message deduped by key; `Receive[T]`
+exactly once. `Journal.Enqueue[T]` (formerly `Send`) appends a message deduped by key; `Receive[T]`
 returns the oldest not-yet-acked message in delivery order; `Ack` marks a message consumed so `Receive` advances.
 
-<!-- docsnip: setup ctx context.Context; store agent.Durable; runID string; eventID string; type MyEvent struct{} -->
+<!-- docsnip: setup ctx context.Context; store *agent.Journal; runID string; eventID string; type MyEvent struct{} -->
 ```go
 // Deliver-side: append a message, deduped by key.
-err := agent.Enqueue(ctx, store, runID, "events", eventID, MyEvent{...})
+err := store.Enqueue(ctx, runID, "events", eventID, MyEvent{...})
 ```
 
-<!-- docsnip: setup ctx context.Context; store agent.Durable; runID string; type MyEvent struct{}; returns (any, error) -->
+<!-- docsnip: setup ctx context.Context; store *agent.Journal; runID string; type MyEvent struct{}; returns (any, error) -->
 ```go
 // Run-side, inside a retry-safe tool: consume the stream exactly once.
 for {
@@ -152,12 +152,12 @@ in the top-level run, so re-invoking `RootRunID` is always correct. With the Wak
 the wake for `RootRunID` as well (`Sleep` in a sub-agent already schedules its wake for the root
 run).
 
-<!-- docsnip: setup ctx context.Context; store agent.Durable; err error; payload any; rootAgent *agent.Agent; savedInput string -->
+<!-- docsnip: setup ctx context.Context; store *agent.Journal; err error; payload any; rootAgent *agent.Agent; savedInput string -->
 ```go
 if aw, ok := errors.AsType[*agent.SignalPending](err); ok {
     // later, when the event arrives:
-    _ = agent.Signal(ctx, store, aw.RunID, aw.Name, payload)
-    _, err = rootAgent.Run(ctx, aw.RootRunID, savedInput)
+    _ = store.Signal(ctx, aw.RunID, aw.Name, payload)
+    _, err = rootAgent.Run(ctx, aw.RootRunID, agent.UserText(savedInput))
 }
 ```
 

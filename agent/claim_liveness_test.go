@@ -14,6 +14,7 @@ import (
 	"testing"
 
 	"github.com/bide-ai/bide/agent"
+	"github.com/bide-ai/bide/agent/agenttest"
 )
 
 var errR3 = errors.New("connection lost")
@@ -95,7 +96,7 @@ func TestClaimHeldThenCancelled_StepHaltsForever(t *testing.T) {
 		{"attempt:not-started:", "nc"}, // drive 1: its not-started record fails too: id remembered
 	}}
 	j1, _ := agent.NewJournal(s)
-	_, err1 := agent.Step(ctx, j1, "r", "pay", body)
+	_, err1 := j1.Step(ctx, "r", "pay", body)
 	t.Logf("drive 1: %v", err1)
 
 	// Drive 2, same process: takes the id back, wins the marker, pins claim_held; its caller is
@@ -103,14 +104,14 @@ func TestClaimHeldThenCancelled_StepHaltsForever(t *testing.T) {
 	ctx2, cancel := context.WithCancel(ctx)
 	s.after = map[string]func(){"attempt:not-started:": cancel}
 	j2, _ := agent.NewJournal(s)
-	_, err2 := agent.Step(ctx2, j2, "r", "pay", body)
+	_, err2 := j2.Step(ctx2, "r", "pay", body)
 	t.Logf("drive 2: %v (no error about the not-started record: it 'succeeded')", err2)
 
 	j3, _ := agent.NewJournal(&r3Store{m: m}) // a new process, no faults
-	_, err3 := agent.Step(ctx, j3, "r", "pay", body)
+	_, err3 := j3.Step(ctx, "r", "pay", body)
 	t.Logf("drive 3: %v; fired %d", err3, fired)
 	r3Dump(t, m, "r")
-	var halt *agent.ResumeHalt
+	var halt *agent.OutcomeUnknown
 	if fired == 0 && errors.As(err3, &halt) {
 		t.Fatalf("the effect provably never started (drive 2 recorded it as not started without error), but the run halts for ever")
 	}
@@ -121,26 +122,26 @@ func TestClaimHeldThenCancelled_ToolHaltsForever(t *testing.T) {
 	ctx := context.Background()
 	m := agent.NewMemStore()
 	fired := 0
-	charge := agent.Func("charge", "", agent.Safety{}, func(context.Context, struct{}) (string, error) { fired++; return "ok", nil })
+	charge := agent.MustFunc("charge", "", func(context.Context, struct{}) (string, error) { fired++; return "ok", nil })
 	model := func() agent.Model {
-		return agent.NewScriptedModel(agent.ToolTurn("c1", "charge", `{}`), agent.TextTurn("done"))
+		return agenttest.NewScriptedModel(agenttest.ToolTurn("c1", "charge", `{}`), agenttest.TextTurn("done"))
 	}
 	s := &r3Store{m: m, faults: []r3Fault{{"attempt:tool:c1", "nc"}, {"attempt:not-started:", "nc"}}}
 	j1, _ := agent.NewJournal(s)
-	_, err1 := agent.New(model(), j1, charge).SetMaxConcurrency(1).Run(ctx, "r", "hi")
+	_, err1 := agenttest.MustNew(model(), j1, agent.WithTools(charge), agent.WithMaxConcurrency(1)).Run(ctx, "r", agent.UserText("hi"))
 	t.Logf("drive 1: %v", err1)
 
 	ctx2, cancel := context.WithCancel(ctx)
 	s.after = map[string]func(){"attempt:not-started:": cancel}
 	j2, _ := agent.NewJournal(s)
-	_, err2 := agent.New(model(), j2, charge).SetMaxConcurrency(1).Run(ctx2, "r", "hi")
+	_, err2 := agenttest.MustNew(model(), j2, agent.WithTools(charge), agent.WithMaxConcurrency(1)).Run(ctx2, "r", agent.UserText("hi"))
 	t.Logf("drive 2: %v", err2)
 
 	j3, _ := agent.NewJournal(&r3Store{m: m})
-	_, err3 := agent.New(model(), j3, charge).SetMaxConcurrency(1).Run(ctx, "r", "hi")
+	_, err3 := agenttest.MustNew(model(), j3, agent.WithTools(charge), agent.WithMaxConcurrency(1)).Run(ctx, "r", agent.UserText("hi"))
 	t.Logf("drive 3: %v; fired %d", err3, fired)
 	r3Dump(t, m, "r")
-	var halt *agent.ResumeHalt
+	var halt *agent.OutcomeUnknown
 	if fired == 0 && errors.As(err3, &halt) {
 		t.Fatalf("the call provably never started, but the run halts for ever")
 	}
@@ -158,16 +159,16 @@ func TestClaimHeldThenClaimError_StepHaltsForever(t *testing.T) {
 		{"attempt:step:pay", "nc"}, {"attempt:not-started:", "nc"}, // drive 1: id remembered
 	}}
 	j, _ := agent.NewJournal(s)
-	_, err1 := agent.Step(ctx, j, "r", "pay", body)
+	_, err1 := j.Step(ctx, "r", "pay", body)
 	s.faults = []r3Fault{{"attempt:not-started:", "c"}} // drive 2: claim_held commits, errors: re-remembered
-	_, err2 := agent.Step(ctx, j, "r", "pay", body)
+	_, err2 := j.Step(ctx, "r", "pay", body)
 	s.faults = []r3Fault{{"attempt:step:pay", "c"}} // drive 3: the marker Insert errors
-	_, err3 := agent.Step(ctx, j, "r", "pay", body)
+	_, err3 := j.Step(ctx, "r", "pay", body)
 	j4, _ := agent.NewJournal(&r3Store{m: m})
-	_, err4 := agent.Step(ctx, j4, "r", "pay", body)
+	_, err4 := j4.Step(ctx, "r", "pay", body)
 	t.Logf("drives: %v | %v | %v | %v; fired %d; faults %v", err1, err2, err3, err4, fired, s.log)
 	r3Dump(t, m, "r")
-	var halt *agent.ResumeHalt
+	var halt *agent.OutcomeUnknown
 	if fired == 0 && errors.As(err4, &halt) {
 		t.Fatalf("the effect never started and every not-started write was acknowledged, but the run halts for ever")
 	}
@@ -179,16 +180,16 @@ func TestToolGateIgnoresRememberedClaim(t *testing.T) {
 	ctx := context.Background()
 	m := agent.NewMemStore()
 	fired := 0
-	charge := agent.Func("charge", "", agent.Safety{}, func(context.Context, struct{}) (string, error) { fired++; return "ok", nil })
+	charge := agent.MustFunc("charge", "", func(context.Context, struct{}) (string, error) { fired++; return "ok", nil })
 	model := func() agent.Model {
-		return agent.NewScriptedModel(agent.ToolTurn("c1", "charge", `{}`), agent.TextTurn("done"))
+		return agenttest.NewScriptedModel(agenttest.ToolTurn("c1", "charge", `{}`), agenttest.TextTurn("done"))
 	}
 	s := &r3Store{m: m, faults: []r3Fault{{"attempt:tool:c1", "c"}, {"attempt:not-started:", "nc"}}}
 	j, _ := agent.NewJournal(s)
-	_, err1 := agent.New(model(), j, charge).SetMaxConcurrency(1).Run(ctx, "r", "hi")
-	_, err2 := agent.New(model(), j, charge).SetMaxConcurrency(1).Run(ctx, "r", "hi") // same process
+	_, err1 := agenttest.MustNew(model(), j, agent.WithTools(charge), agent.WithMaxConcurrency(1)).Run(ctx, "r", agent.UserText("hi"))
+	_, err2 := agenttest.MustNew(model(), j, agent.WithTools(charge), agent.WithMaxConcurrency(1)).Run(ctx, "r", agent.UserText("hi")) // same process
 	t.Logf("drive 1: %v\ndrive 2: %v; fired %d", err1, err2, fired)
-	var halt *agent.ResumeHalt
+	var halt *agent.OutcomeUnknown
 	if fired == 0 && errors.As(err2, &halt) {
 		t.Fatalf("same process remembers the claim of the committed marker, yet the tool call halts")
 	}
@@ -202,8 +203,8 @@ func TestStepTakesRememberedClaim(t *testing.T) {
 	body := func(context.Context) (string, error) { fired++; return "ok", nil }
 	s := &r3Store{m: m, faults: []r3Fault{{"attempt:step:pay", "c"}, {"attempt:not-started:", "nc"}}}
 	j, _ := agent.NewJournal(s)
-	_, err1 := agent.Step(ctx, j, "r", "pay", body)
-	v, err2 := agent.Step(ctx, j, "r", "pay", body)
+	_, err1 := j.Step(ctx, "r", "pay", body)
+	v, err2 := j.Step(ctx, "r", "pay", body)
 	t.Logf("drive 1: %v; drive 2: %q %v; fired %d", err1, v, err2, fired)
 	if fired != 1 || err2 != nil {
 		t.Fatalf("want one fire")
@@ -221,10 +222,10 @@ func TestPostClaimNotStartedFailureNotRemembered(t *testing.T) {
 	s := &r3Store{m: m, faults: []r3Fault{{"attempt:not-started:", "nc"}},
 		after: map[string]func(){"attempt:step:pay": cancel}}
 	j, _ := agent.NewJournal(s)
-	_, err1 := agent.Step(ctx1, j, "r", "pay", body)
-	_, err2 := agent.Step(ctx, j, "r", "pay", body) // same process
+	_, err1 := j.Step(ctx1, "r", "pay", body)
+	_, err2 := j.Step(ctx, "r", "pay", body) // same process
 	t.Logf("drive 1: %v\ndrive 2: %v; fired %d", err1, err2, fired)
-	var halt *agent.ResumeHalt
+	var halt *agent.OutcomeUnknown
 	if fired == 0 && errors.As(err2, &halt) {
 		t.Fatalf("the process knows its claim never started, yet halts on it")
 	}
@@ -239,21 +240,21 @@ func TestRememberedClaimDoesNotVoidAnotherDriversAttempt(t *testing.T) {
 	ctx := context.Background()
 	m := agent.NewMemStore()
 	fired := 0
-	charge := agent.Func("charge", "", agent.Safety{}, func(context.Context, struct{}) (string, error) { fired++; return "ok", nil })
+	charge := agent.MustFunc("charge", "", func(context.Context, struct{}) (string, error) { fired++; return "ok", nil })
 	model := func() agent.Model {
-		return agent.NewScriptedModel(agent.ToolTurn("c1", "charge", `{}`), agent.TextTurn("done"))
+		return agenttest.NewScriptedModel(agenttest.ToolTurn("c1", "charge", `{}`), agenttest.TextTurn("done"))
 	}
 	a := &r3Store{m: m, faults: []r3Fault{{"attempt:tool:c1", "nc"}, {"attempt:not-started:", "nc"}}}
 	ja, _ := agent.NewJournal(a)
-	_, errA1 := agent.New(model(), ja, charge).SetMaxConcurrency(1).Run(ctx, "r", "hi")
+	_, errA1 := agenttest.MustNew(model(), ja, agent.WithTools(charge), agent.WithMaxConcurrency(1)).Run(ctx, "r", agent.UserText("hi"))
 
 	b := &r3Store{m: m, faults: []r3Fault{{"tool:c1", "nc"}}} // B fires, then loses its result
 	jb, _ := agent.NewJournal(b)
-	_, errB := agent.New(model(), jb, charge).SetMaxConcurrency(1).Run(ctx, "r", "hi")
+	_, errB := agenttest.MustNew(model(), jb, agent.WithTools(charge), agent.WithMaxConcurrency(1)).Run(ctx, "r", agent.UserText("hi"))
 
-	_, errA2 := agent.New(model(), ja, charge).SetMaxConcurrency(1).Run(ctx, "r", "hi")
+	_, errA2 := agenttest.MustNew(model(), ja, agent.WithTools(charge), agent.WithMaxConcurrency(1)).Run(ctx, "r", agent.UserText("hi"))
 	t.Logf("A: %v\nB: %v (fired %d)\nA again: %v", errA1, errB, fired, errA2)
-	var halt *agent.ResumeHalt
+	var halt *agent.OutcomeUnknown
 	if fired != 1 || !errors.As(errA2, &halt) {
 		t.Fatalf("A's resume = %v with the call fired %d times; want a halt and once", errA2, fired)
 	}

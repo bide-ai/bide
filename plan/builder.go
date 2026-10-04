@@ -134,12 +134,12 @@ func checkStepName(name string) error {
 // must be unique across the flow; a duplicate is recorded as a deferred error
 // surfaced at Build. Step infers I and O from fn.
 //
-// The func body is the escape hatch: arbitrary Go. Run runs every node as an agent.Step
+// The func body is the escape hatch: arbitrary Go. Run runs every node as an agent.Journal.Step
 // under its node key "node:<name>" (an attempt claim written before the body, the result
 // after), so a crash whose outcome was never recorded HALTS the run (*agent.OutcomeUnknown,
-// cleared with agent.ResolveHaltRef) rather than re-firing the body. A non-idempotent side
+// cleared with agent.ResolveHalt) rather than re-firing the body. A non-idempotent side
 // effect is therefore safe by default, with no per-step opt-in. A Step that is not
-// retry-safe must not pause (its body's pause is ErrConfig, as for agent.Step). See
+// retry-safe must not pause (its body's pause is ErrConfig, as for agent.Journal.Step). See
 // docs/guides/flows.md.
 //
 // Pass plan.ReadOnly() or plan.Idempotent() to opt
@@ -182,14 +182,14 @@ func (b *Builder[In, Out]) Step[I, O any](name string, fn func(context.Context, 
 // tool's JSON result is decoded into O.
 //
 // Safety AUTO-DERIVES from the wrapped agent.Tool: Tool records its spec's Safety
-// (agent.SpecOf) on the node, so a tool the core classifies as retry-safe (ReadOnly
+// (agent.Tool.Spec) on the node, so a tool the core classifies as retry-safe (ReadOnly
 // or Idempotent) RE-RUNS on an ambiguous mid-node crash while a
 // non-idempotent tool HALTS, matching the core loop's own resume decision. An
 // explicit plan.ReadOnly()/plan.Idempotent() option OVERRIDES the derived Safety
 // (options apply after the literal), for the rare case the author knows better
 // than the tool's own declaration.
 func (b *Builder[In, Out]) Tool[I, O any](name string, t agent.Tool, opts ...NodeOption) Handle[I, O] {
-	spec := agent.SpecOf(t) // read once, as the agent reads it
+	spec := t.Spec() // read once, as the agent reads it
 	if err := checkTool(t); err != nil {
 		b.core.errs = append(b.core.errs, fmt.Errorf("plan: tool step %q: %w", name, err)) // surfaced at Build
 	}
@@ -382,7 +382,7 @@ func (b *Builder[In, Out]) Model[I, O any](name, prompt string, opts ...NodeOpti
 func callTool(ctx context.Context, t agent.Tool, timeout time.Duration, args json.RawMessage) (json.RawMessage, error) {
 	if guard := toolhook.CallGuard; guard != nil {
 		if err := guard(ctx); err != nil {
-			return nil, fmt.Errorf("plan: tool %q was not called: %w (%w)", agent.SpecOf(t).Name, err, agent.ErrToolNotCalled)
+			return nil, fmt.Errorf("plan: tool %q was not called: %w (%w)", t.Spec().Name, err, agent.ErrToolNotCalled)
 		}
 	}
 	// A deadline that has already passed leaves the tool uncalled, as the agent's base handler
@@ -392,7 +392,7 @@ func callTool(ctx context.Context, t agent.Tool, timeout time.Duration, args jso
 		if cause == nil {
 			cause = context.DeadlineExceeded // the deadline passed and its timer has not run yet
 		}
-		return nil, fmt.Errorf("plan: tool %q was not called: its context was done: %w (%w)", agent.SpecOf(t).Name, cause, agent.ErrToolNotCalled)
+		return nil, fmt.Errorf("plan: tool %q was not called: its context was done: %w (%w)", t.Spec().Name, cause, agent.ErrToolNotCalled)
 	}
 	if timeout <= 0 {
 		return t.Call(ctx, args)
@@ -401,13 +401,14 @@ func callTool(ctx context.Context, t agent.Tool, timeout time.Duration, args jso
 	defer cancel()
 	raw, err := t.Call(tctx, args)
 	if err != nil && pastDeadline(tctx) && !pastDeadline(ctx) {
-		return nil, fmt.Errorf("plan: tool %q returned an error after its %s timeout: %w (%w)", agent.SpecOf(t).Name, timeout, err, agent.ErrToolOutcomeUnknown)
+		return nil, fmt.Errorf("plan: tool %q returned an error after its %s timeout: %w (%w)", t.Spec().Name, timeout, err, agent.ErrToolOutcomeUnknown)
 	}
 	return raw, err
 }
 
-// checkTool refuses a tool agent.New would refuse for how it wraps another: a Compensator on its
-// Unwrap chain, or a timeout over a sub-agent (the agent's own check, shared through toolhook).
+// checkTool refuses a tool agent.New would refuse for how it wraps another (a Compensator on its
+// Unwrap chain, a timeout over a sub-agent) or for an old Tool method that disagrees with its spec
+// (the agent's own checks, shared through toolhook).
 func checkTool(t agent.Tool) error {
 	if toolhook.CheckTool == nil { // set by the agent package's init, which plan imports
 		return nil

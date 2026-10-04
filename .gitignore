@@ -43,6 +43,7 @@ examples/approval/approver-keys.json
 !/internal/tools/
 !/internal/journalhook/
 !/internal/toolhook/
+!/internal/journaltest/
 
 # a journal file written by v0.7.0, the fixture of store/sqlite's legacy-file test
 !/store/sqlite/testdata/v070.db

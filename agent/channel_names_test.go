@@ -7,11 +7,11 @@ import (
 )
 
 // receiveOnce runs one retry-safe tool that calls Receive on channel and reports what it got.
-func receiveOnce(t *testing.T, store Durable, runID, channel string) (Received[string], error) {
+func receiveOnce(t *testing.T, store *Journal, runID, channel string) (Received[string], error) {
 	t.Helper()
 	var got Received[string]
 	var recvErr error
-	recv := Func("recv", "", Safety{ReadOnly: true}, func(ctx context.Context, _ struct{}) (string, error) {
+	recv := MustFunc("recv", "", func(ctx context.Context, _ struct{}) (string, error) {
 		m, err := Receive[string](ctx, channel)
 		if err != nil {
 			recvErr = err
@@ -19,26 +19,26 @@ func receiveOnce(t *testing.T, store Durable, runID, channel string) (Received[s
 		}
 		got = m
 		return m.Payload, nil
-	})
-	a := New(NewScriptedModel(ToolTurn("c1", "recv", `{}`), TextTurn("done")), store, recv)
-	_, _ = a.Run(context.Background(), runID, "go")
+	}, WithSafety(Safety{ReadOnly: true}))
+	a := mustNew(NewScriptedModel(ToolTurn("c1", "recv", `{}`), TextTurn("done")), store, WithTools(recv))
+	_, _ = a.Run(context.Background(), runID, UserText("go"))
 	return got, recvErr
 }
 
 // A channel whose name extends another's with ':' is a different channel: Receive on
 // "orders" does not see a message sent to "orders:vip".
 func TestChannel_NameWithColonIsItsOwnChannel(t *testing.T) {
-	store := NewMemStore()
-	if err := Send(context.Background(), store, "r", "orders:vip", "k1", "vip-order"); err != nil {
+	store := memJournal()
+	if err := store.Enqueue(context.Background(), "r", "orders:vip", "k1", "vip-order"); err != nil {
 		t.Fatal(err)
 	}
 	got, err := receiveOnce(t, store, "r", "orders")
-	var aw *Awaiting
+	var aw *SignalPending
 	if !errors.As(err, &aw) {
-		t.Fatalf("Receive(\"orders\") = %+v, %v; want *Awaiting (the message is on \"orders:vip\")", got, err)
+		t.Fatalf("Receive(\"orders\") = %+v, %v; want *SignalPending (the message is on \"orders:vip\")", got, err)
 	}
-	store2 := NewMemStore()
-	if err := Send(context.Background(), store2, "r", "orders:vip", "k1", "vip-order"); err != nil {
+	store2 := memJournal()
+	if err := store2.Enqueue(context.Background(), "r", "orders:vip", "k1", "vip-order"); err != nil {
 		t.Fatal(err)
 	}
 	if got, err := receiveOnce(t, store2, "r", "orders:vip"); err != nil || got.Key != "k1" || got.Payload != "vip-order" {
@@ -50,11 +50,11 @@ func TestChannel_NameWithColonIsItsOwnChannel(t *testing.T) {
 // "b:c" on channel "a" does not ack key "c" on channel "a:b", and the two sends are distinct.
 func TestChannel_ColonsNeverCollide(t *testing.T) {
 	ctx := context.Background()
-	store := NewMemStore()
-	if err := Send(ctx, store, "r", "a:b", "c", "on a:b"); err != nil {
+	store := memJournal()
+	if err := store.Enqueue(ctx, "r", "a:b", "c", "on a:b"); err != nil {
 		t.Fatal(err)
 	}
-	if err := Send(ctx, store, "r", "a", "b:c", "on a"); err != nil {
+	if err := store.Enqueue(ctx, "r", "a", "b:c", "on a"); err != nil {
 		t.Fatal(err)
 	}
 	if err := Ack(ctx, store, "r", "a", "b:c"); err != nil {

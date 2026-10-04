@@ -45,24 +45,29 @@ func main() {
 		openai.WithMaxTokens(512),
 	)
 
-	lookup := agent.Func("get_population", "Get the population of a city",
-		agent.Safety{ReadOnly: true},
+	lookup := agent.MustFunc("get_population", "Get the population of a city",
 		func(_ context.Context, in CityArgs) (Population, error) {
 			log.Printf("[tool] get_population(%q) called", in.City)
 			return Population{Count: 8_336_000}, nil
-		})
+		}, agent.WithSafety(agent.Safety{ReadOnly: true}))
 
-	a := agent.New(model, agent.NewMemStore(), lookup)
+	j, err := agent.NewJournal(agent.NewMemStore())
+	if err != nil {
+		log.Fatal(err)
+	}
+	a, err := agent.New(model, j, agent.WithTools(lookup))
+	if err != nil {
+		log.Fatal(err)
+	}
 
 	ctx, cancel := context.WithTimeout(context.Background(), 60*time.Second)
 	defer cancel()
 
 	// RunTyped drives the loop to completion and decodes the answer into CityReport.
 	// (On an OpenAI-compatible provider with strict structured outputs, prefer
-	// agent.RunTypedNative[CityReport] instead: the schema is enforced provider-side
+	// agent.WithOutputMode(agent.OutputNative) instead: the schema is enforced provider-side
 	// with no final_answer tool round-trip.)
-	report, err := agent.RunTyped[CityReport](ctx, a, "typed-1",
-		"Look up the population of New York City with the get_population tool, then produce the report.")
+	report, _, err := a.RunTyped[CityReport](ctx, "typed-1", agent.UserText("Look up the population of New York City with the get_population tool, then produce the report."))
 	if err != nil {
 		log.Fatalf("run typed: %v", err)
 	}

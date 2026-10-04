@@ -10,7 +10,7 @@ func TestP14_RecoverReportsAreBounded(t *testing.T) {
 	old := maxRecoverReports
 	maxRecoverReports = 2
 	t.Cleanup(func() { maxRecoverReports = old })
-	store := NewMemStore()
+	store := memJournal()
 	for _, id := range []string{"bound-a", "bound-b", "bound-c"} {
 		if !reportOnce(store, id, ErrNotStarted) {
 			t.Fatalf("the first report of %s was suppressed", id)

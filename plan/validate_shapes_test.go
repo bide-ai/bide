@@ -7,6 +7,7 @@ import (
 	"testing"
 
 	"github.com/bide-ai/bide/agent"
+	"github.com/bide-ai/bide/agent/agenttest"
 )
 
 // Build rejects wiring the runtime cannot execute as declared; before, each of these built and
@@ -87,7 +88,7 @@ func TestBuild_RejectsShapesRunCannotExecute(t *testing.T) {
 // A run started under one flow is not resumed under a changed one: its journal only means what
 // it meant under the flow it started with.
 func TestRun_RefusesToResumeUnderAChangedFlow(t *testing.T) {
-	mem := agent.NewMemStore()
+	mem := agenttest.MemJournal()
 	b1 := New[int, int]("d")
 	x1 := b1.Step("x", func(_ context.Context, n int) (int, error) { return n, nil }, ReadOnly())
 	p1 := b1.Step("p", func(context.Context, int) (int, error) { return 0, errors.New("stopped") })

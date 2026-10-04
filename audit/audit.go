@@ -23,6 +23,7 @@ import (
 	"fmt"
 
 	"github.com/bide-ai/bide/agent"
+	"github.com/bide-ai/bide/internal/journalhook"
 )
 
 // domain separates this hash use from any other, seeding the chain. It names the version of the
@@ -39,7 +40,7 @@ const headSigTag = "bide.audit.head.v1\x00"
 // the bytes the journal stores for the record (agent.Record.Raw), verbatim. Two runs produce the
 // same head iff their journals are byte-identical in the same order, so the head is a
 // deterministic fingerprint of the entire execution history.
-func Head(ctx context.Context, store agent.Durable, runID string) ([]byte, error) {
+func Head(ctx context.Context, store *agent.Journal, runID string) ([]byte, error) {
 	recs, err := store.History(ctx, runID)
 	if err != nil {
 		return nil, fmt.Errorf("audit: load journal %s: %w", runID, err)
@@ -75,4 +76,13 @@ func VerifySignature(head, sig []byte, v Verifier) error {
 		return notVerified("audit: the head signature does not verify under this %s key", v.Alg())
 	}
 	return nil
+}
+
+// doRecord runs fn as the step name of runID in j, at most once, through the journal's internal
+// hook (the journal's raw write is not exported), and returns the record the journal holds. The
+// audit leaves (policy, grant, confluence, run certificate) are written this way.
+func doRecord(ctx context.Context, j *agent.Journal, runID, name string, fn func(context.Context) (agent.Record, error)) (agent.Record, error) {
+	v, err := journalhook.Do(ctx, j, runID, name, func(ctx context.Context) (any, error) { return fn(ctx) })
+	rec, _ := v.(agent.Record)
+	return rec, err
 }

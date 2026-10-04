@@ -20,7 +20,7 @@ import (
 //
 // This is the accountability property of a declared flow (docs/guides/flows.md):
 // prove the run followed the declared graph, or point at where it diverged.
-// Conform reads history via agent.Durable.History and compares it to the frozen
+// Conform reads history via agent.Journal.History and compares it to the frozen
 // spec; it runs nothing, adds no executor, and never mutates the store.
 //
 // Conform is DECLARATION-vs-JOURNAL, not value verification. Its blind spot: it
@@ -31,7 +31,7 @@ import (
 //
 // Conform forwards to the internal (*builderCore).conform so a single method owns
 // the logic against the frozen spec; the exported method only unwraps the Flow.
-func (f *Flow[In, Out]) Conform(ctx context.Context, store agent.Durable, runID string) (ok bool, diffs []string, err error) {
+func (f *Flow[In, Out]) Conform(ctx context.Context, store *agent.Journal, runID string) (ok bool, diffs []string, err error) {
 	return f.core.conform(ctx, store, runID)
 }
 
@@ -71,7 +71,7 @@ func (f *Flow[In, Out]) Conform(ctx context.Context, store agent.Durable, runID 
 // not a divergence: conform reports what is observable and does not require every
 // attempted node to have completed. conform never panics on a partial, halted, or
 // empty journal.
-func (c *builderCore) conform(ctx context.Context, store agent.Durable, runID string) (bool, []string, error) {
+func (c *builderCore) conform(ctx context.Context, store *agent.Journal, runID string) (bool, []string, error) {
 	recs, err := store.History(ctx, runID)
 	if err != nil {
 		return false, nil, fmt.Errorf("plan: conform run %q: load history: %w", runID, err)
@@ -418,7 +418,7 @@ func splitIter(name string) (string, int) {
 
 // attemptedStep returns the step key an attempt marker guards: name without
 // "attempt:step:" for a first attempt, or without "attempt:retry:<g>:step:" for a
-// numbered re-attempt (see agent.Step). ok is false for any other key, a tool
+// numbered re-attempt (see agent.Journal.Step). ok is false for any other key, a tool
 // call's marker among them.
 func attemptedStep(name string) (string, bool) {
 	if key, ok := strings.CutPrefix(name, "attempt:step:"); ok {

@@ -50,7 +50,7 @@ type QuorumResult struct {
 
 // Quorum fans the voters out concurrently and durably, tallies their normalized decisions, and
 // returns the plurality decision with its count. It is a composition helper over existing seams,
-// not a new agent type: the fan-out is agent.Parallel (each vote is a journaled Step, so it is
+// not a new agent type: the fan-out is agent.Journal.Parallel (each vote is a journaled Step, so it is
 // at-most-once and replayable), each vote and the final tally are recorded as durable Step values
 // (provable one by one via audit.ProveStep), and the k-of-n gate itself is left to the caller to
 // express as a gsm invariant over VotesFor (see examples/govern/quorum). Keeping the model call inside
@@ -83,7 +83,7 @@ type QuorumResult struct {
 // The boundary, stated plainly: this returns a tally. The tally makes the k-of-n gate provable
 // once a caller wires VotesFor into an invariant; the agreement itself is statistical and never a
 // guarantee of correctness. Do not blur the two.
-func Quorum(ctx context.Context, store agent.Durable, runID, name string, k int, voters ...Voter) (QuorumResult, error) {
+func Quorum(ctx context.Context, store *agent.Journal, runID, name string, k int, voters ...Voter) (QuorumResult, error) {
 	cfg := quorumConfig{K: k, Voters: make([]string, len(voters))}
 	if name == "" || strings.Contains(name, "/") {
 		return QuorumResult{}, fmt.Errorf("govern: quorum name %q must be non-empty and contain no '/': %w", name, agent.ErrConfig)
@@ -106,7 +106,7 @@ func Quorum(ctx context.Context, store agent.Durable, runID, name string, k int,
 	// Record this quorum's k and voters before any vote, and hold every later call under the same
 	// name to them: a reused name with another voter set would otherwise mix two quorums' votes, and
 	// a changed k would be answered by a tally computed against the old one.
-	recorded, err := agent.Step(ctx, store, runID, QuorumConfigStep(name), func(context.Context) (quorumConfig, error) {
+	recorded, err := store.Step(ctx, runID, QuorumConfigStep(name), func(context.Context) (quorumConfig, error) {
 		return cfg, nil
 	}, agent.WithSafety(agent.Safety{ReadOnly: true}))
 	if err != nil {
@@ -133,7 +133,7 @@ func Quorum(ctx context.Context, store agent.Durable, runID, name string, k int,
 	}
 
 	// Fan out durably: each vote is a Step (recorded once, replayable, independently provable).
-	votes, err := agent.Parallel(ctx, store, runID, tasks)
+	votes, err := store.Parallel(ctx, runID, tasks)
 	if verr := checkVoters(name, votes, cfg.Voters, err == nil); verr != nil {
 		return QuorumResult{}, verr
 	}
@@ -148,7 +148,7 @@ func Quorum(ctx context.Context, store agent.Durable, runID, name string, k int,
 	// Record the tally as its own durable step so the tally itself is provable, not just the
 	// individual votes, and so a resumed run returns the same tally without recomputing it.
 	want := tally(votes, k)
-	result, err := agent.Step(ctx, store, runID, QuorumTallyStep(name), func(context.Context) (QuorumResult, error) {
+	result, err := store.Step(ctx, runID, QuorumTallyStep(name), func(context.Context) (QuorumResult, error) {
 		return want, nil
 	}, agent.WithSafety(agent.Safety{ReadOnly: true}))
 	if err != nil {

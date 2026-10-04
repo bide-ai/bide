@@ -18,9 +18,16 @@ type RollbackBinder interface {
 
 // CheckTool refuses a tool the agent's New would refuse for how it wraps another (see
 // agent.checkWrapper): a Compensator on its Unwrap chain, a timeout or another Safety over a
-// sub-agent, or an embedded tool whose approval gate or timeout its own spec hides. The agent
+// sub-agent, an embedded tool whose approval gate or timeout its own spec hides, or a method of
+// the old Tool method set that disagrees with the tool's spec (agent.checkOldMethods). The agent
 // package sets it in init; plan calls it so a flow refuses what an agent refuses.
 var CheckTool func(t any) error
+
+// WithIdentity binds the acting identity (actor, on behalf of whom, under what authority) to ctx
+// for the sub-run a tool wrapper starts, as a run's WithIdentity option binds a run's: the
+// delegation's sub-run acts as the delegate, on behalf of the parent, under the child grant. The
+// agent package sets it in init.
+var WithIdentity func(ctx context.Context, actor, onBehalfOf, authorityRef string) context.Context
 
 // protocol:toolcall begin WrongAuth
 

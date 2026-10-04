@@ -15,6 +15,7 @@ import (
 	"context"
 	"flag"
 	"fmt"
+	"log"
 	"os"
 	"runtime"
 	"sort"
@@ -61,10 +62,15 @@ func main() {
 		}
 	}
 
-	tool := agent.Func("noop", "no-op", agent.Safety{ReadOnly: true},
-		func(_ context.Context, _ struct{}) (string, error) { return "ok", nil })
-	store := agent.NewMemStore()
-	a := agent.New(stubModel{latency: *latency}, store, tool)
+	tool := agent.MustFunc("noop", "no-op", func(_ context.Context, _ struct{}) (string, error) { return "ok", nil }, agent.WithSafety(agent.Safety{ReadOnly: true}))
+	store, err := agent.NewJournal(agent.NewMemStore())
+	if err != nil {
+		log.Fatal(err)
+	}
+	a, err := agent.New(stubModel{latency: *latency}, store, agent.WithTools(tool))
+	if err != nil {
+		log.Fatal(err)
+	}
 
 	// Peak-goroutine sampler.
 	var peak int64
@@ -99,7 +105,7 @@ func main() {
 			defer wg.Done()
 			defer func() { <-sem }()
 			t0 := time.Now()
-			if _, err := a.Run(context.Background(), fmt.Sprintf("run-%d", i), "go"); err != nil {
+			if _, err := a.Run(context.Background(), fmt.Sprintf("run-%d", i), agent.UserText("go")); err != nil {
 				atomic.AddInt64(&errs, 1)
 			}
 			lat[i] = time.Since(t0)

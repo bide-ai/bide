@@ -8,6 +8,7 @@ import (
 	"testing"
 
 	"github.com/bide-ai/bide/agent"
+	"github.com/bide-ai/bide/agent/agenttest"
 	"github.com/bide-ai/bide/audit"
 	"github.com/bide-ai/bide/govern"
 	gsm "github.com/blackwell-systems/gsm"
@@ -92,7 +93,7 @@ func TestCertifyConvergence_Classifies(t *testing.T) {
 // auditor verifies that the anchored policy was certified convergent in the same committed tree.
 func TestConvergenceCertificate_AnchorsAndProves(t *testing.T) {
 	ctx := context.Background()
-	store := agent.NewMemStore()
+	store := agenttest.MemJournal()
 	const runID = "run1"
 
 	rep, digest := buildGoverned(t)
@@ -147,7 +148,7 @@ func TestConvergenceCertificate_AnchorsAndProves(t *testing.T) {
 // TestRecordConvergence_Idempotent confirms recording the same certificate twice yields one leaf.
 func TestRecordConvergence_Idempotent(t *testing.T) {
 	ctx := context.Background()
-	store := agent.NewMemStore()
+	store := agenttest.MemJournal()
 	const runID = "run1"
 	rep, digest := buildCRDT(t)
 	certBytes, err := govern.CertifyConvergence(rep, digest).Marshal()

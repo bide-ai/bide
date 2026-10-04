@@ -1,4 +1,4 @@
-// Self-contained example module: it imports store/sqlite (an on-disk agent.Durable that
+// Self-contained example module: it imports store/sqlite (an on-disk agent.Store that
 // carries the modernc.org/sqlite dependency, which the root module does not), so, like the
 // other example modules, it is its own module. Build and run it from this directory:
 // GOWORK=off go run .

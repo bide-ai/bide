@@ -7,7 +7,7 @@ import (
 	"encoding/json"
 	"testing"
 
-	"github.com/bide-ai/bide/agent"
+	"github.com/bide-ai/bide/agent/agenttest"
 )
 
 // keyring issues a signer/verifier per issuer name, standing in for a PKI/IdP.
@@ -64,7 +64,7 @@ func TestSignedGrant_VerifyAndTamper(t *testing.T) {
 // verifies and recovers the grant, so an action's AuthorityRef can link to an in-log authority.
 func TestGrant_AnchorAndProve(t *testing.T) {
 	ctx := context.Background()
-	store := agent.NewMemStore()
+	store := agenttest.MemJournal()
 	const runID = "run1"
 	kr := newKeyring("desk-EQ-US")
 	g := Grant{ID: "grant#a1b2", Issuer: "desk-EQ-US", Subject: "exec-agent@1.4.2",

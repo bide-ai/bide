@@ -9,6 +9,7 @@ import (
 	"testing"
 
 	"github.com/bide-ai/bide/agent"
+	"github.com/bide-ai/bide/agent/agenttest"
 )
 
 // buildDiamond builds the canonical fan-out-then-fan-in diamond: an entry split
@@ -45,7 +46,7 @@ func TestJoinDiamondRunsSequentially(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Build: %v", err)
 	}
-	mem := agent.NewMemStore()
+	mem := agenttest.MemJournal()
 	out, err := flow.Run(context.Background(), mem, "diamond-run", 3)
 	if err != nil {
 		t.Fatalf("Run: %v", err)
@@ -79,7 +80,7 @@ func TestJoinDiamondConforms(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Build: %v", err)
 	}
-	mem := agent.NewMemStore()
+	mem := agenttest.MemJournal()
 	ctx := context.Background()
 	if _, err := flow.Run(ctx, mem, "conform-run", 3); err != nil {
 		t.Fatalf("Run: %v", err)
@@ -149,7 +150,7 @@ func TestJoin3RunsSequentially(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Build: %v", err)
 	}
-	out, err := flow.Run(context.Background(), agent.NewMemStore(), "d3", 5)
+	out, err := flow.Run(context.Background(), agenttest.MemJournal(), "d3", 5)
 	if err != nil {
 		t.Fatalf("Run: %v", err)
 	}
@@ -237,10 +238,10 @@ func TestJoinDiamondCrashSweep(t *testing.T) {
 	crashed := false
 	for crashAt := 1; crashAt <= 64; crashAt++ {
 		var splitCalls, yCalls, zCalls, mergeCalls int
-		mem := agent.NewMemStore()
+		mem := agenttest.MemJournal()
 
 		run := func(crashPoint int) error {
-			store := &crashFlowStore{inner: mem, crashAt: crashPoint}
+			store := agenttest.MustJournal(&crashFlowStore{inner: mem, crashAt: crashPoint})
 			bb := New[int, string]("diamond")
 			split := bb.Step("split", func(_ context.Context, n int) (int, error) { splitCalls++; return n * 2, nil })
 			y := bb.Step("y", func(_ context.Context, n int) (int, error) { yCalls++; return n + 1, nil })

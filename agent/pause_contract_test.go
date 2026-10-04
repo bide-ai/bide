@@ -38,12 +38,12 @@ func (w *failingWaker) scheduled() []Wake {
 
 // napTool sleeps for an hour under the name "nap", from a retry-safe tool.
 func napTool() Tool {
-	return Func("nap", "sleep for an hour", Safety{ReadOnly: true}, func(ctx context.Context, _ struct{}) (string, error) {
+	return MustFunc("nap", "sleep for an hour", func(ctx context.Context, _ struct{}) (string, error) {
 		if err := Sleep(ctx, "nap", time.Hour); err != nil {
 			return "", err
 		}
 		return "rested", nil
-	})
+	}, WithSafety(Safety{ReadOnly: true}))
 }
 
 // A Waker that cannot schedule the wake must not let the run pause (nothing might ever wake it)
@@ -53,16 +53,20 @@ func napTool() Tool {
 func TestWaker_ScheduleFailureFailsTheRunAndRecordsNothing(t *testing.T) {
 	for _, saga := range []bool{false, true} {
 		t.Run(fmt.Sprintf("saga=%v", saga), func(t *testing.T) {
-			store := NewMemStore()
+			store := memJournal()
 			w := &failingWaker{fail: 1}
-			ctx := ContextWithWaker(context.Background(), w)
+			ctx := contextWithWaker(context.Background(), w)
 			drive := func() error {
-				a := New(&greedyModel{script: [][]Emit{toolTurn("c1", "nap", `{}`), textTurn("done")}}, store, napTool())
+				a := mustNew(
+					&greedyModel{script: [][]Emit{toolTurn("c1", "nap", `{}`), textTurn("done")}},
+					store,
+					WithTools(napTool()),
+				)
 				var err error
 				if saga {
-					_, err = a.RunSaga(ctx, "r1", "rest")
+					_, err = a.Run(ctx, "r1", UserText("rest"), WithSaga())
 				} else {
-					_, err = a.Run(ctx, "r1", "rest")
+					_, err = a.Run(ctx, "r1", UserText("rest"))
 				}
 				return err
 			}
@@ -98,13 +102,17 @@ func TestWaker_ScheduleFailureFailsTheRunAndRecordsNothing(t *testing.T) {
 // RecoverLoop retries a run whose wake could not be scheduled: the failure is reported (it wraps
 // ErrStorage), and a later pass drives the run again, which schedules the wake and pauses.
 func TestRecoverLoop_RetriesAFailedWakeSchedule(t *testing.T) {
-	store := NewMemStore()
+	store := memJournal()
 	newAgent := func() *Agent {
-		return New(&greedyModel{script: [][]Emit{toolTurn("c1", "nap", `{}`), textTurn("done")}}, store, napTool())
+		return mustNew(
+			&greedyModel{script: [][]Emit{toolTurn("c1", "nap", `{}`), textTurn("done")}},
+			store,
+			WithTools(napTool()),
+		)
 	}
 	// The first drive has no Waker: it pauses at the timer with nothing scheduled, as a run does
 	// whose process died before its wake was registered anywhere.
-	if _, err := newAgent().Run(context.Background(), "r1", "rest"); !IsPause(err) {
+	if _, err := newAgent().Run(context.Background(), "r1", UserText("rest")); !IsPause(err) {
 		t.Fatalf("first drive = %v; want a pause", err)
 	}
 
@@ -114,7 +122,7 @@ func TestRecoverLoop_RetriesAFailedWakeSchedule(t *testing.T) {
 	var mu sync.Mutex
 	var reported []error
 	resume := func(ctx context.Context, runID string, _ RunStart) error {
-		_, err := newAgent().Run(ContextWithWaker(ctx, w), runID, "rest")
+		_, err := newAgent().Run(ctx, runID, UserText("rest"), WithWaker(w))
 		return err
 	}
 	done := make(chan error, 1)
@@ -210,20 +218,24 @@ func TestMemWaker_SubRunTimersAreDistinct(t *testing.T) {
 	}
 }
 
-// ResolveHaltRef clears a tool call's halt from the halt's own Ref, and records the evidence given
+// ResolveHalt clears a tool call's halt from the halt's own Ref, and records the evidence given
 // in the Outcome: the resumed run proceeds past the call without running it again.
-func TestResolveHaltRef_ToolHalt(t *testing.T) {
+func TestResolveHalt_ToolHalt(t *testing.T) {
 	ctx := context.Background()
-	store := NewMemStore()
+	store := memJournal()
 	var charged int
-	charge := Func("charge", "charge the card", Safety{}, func(context.Context, struct{}) (string, error) {
+	charge := MustFunc("charge", "charge the card", func(context.Context, struct{}) (string, error) {
 		charged++
 		return "", fmt.Errorf("gateway connection reset (%w)", ErrToolOutcomeUnknown)
 	})
-	if _, err := New(&greedyModel{script: [][]Emit{toolTurn("c1", "charge", `{}`), textTurn("done")}}, store, charge).Run(ctx, "r1", "pay"); !errors.Is(err, ErrToolOutcomeUnknown) {
+	if _, err := mustNew(
+		&greedyModel{script: [][]Emit{toolTurn("c1", "charge", `{}`), textTurn("done")}},
+		store,
+		WithTools(charge),
+	).Run(ctx, "r1", UserText("pay")); !errors.Is(err, ErrToolOutcomeUnknown) {
 		t.Fatalf("first drive = %v; want ErrToolOutcomeUnknown", err)
 	}
-	_, err := New(&greedyModel{script: [][]Emit{textTurn("done")}}, store, charge).Run(ctx, "r1", "pay")
+	_, err := mustNew(&greedyModel{script: [][]Emit{textTurn("done")}}, store, WithTools(charge)).Run(ctx, "r1", UserText("pay"))
 	halt, ok := errors.AsType[*OutcomeUnknown](err)
 	if !ok {
 		t.Fatalf("resume = %v; want *OutcomeUnknown", err)
@@ -232,14 +244,18 @@ func TestResolveHaltRef_ToolHalt(t *testing.T) {
 	if halt.Ref() != want {
 		t.Fatalf("Ref = %+v; want %+v", halt.Ref(), want)
 	}
-	if err := ResolveHaltRef(ctx, store, halt.Ref(), Outcome{Result: "charged", Evidence: map[string]string{"charge": "ch_1"}}); err != nil {
+	if err := ResolveHalt(ctx, store, halt.Ref(), Outcome{Result: "charged", Evidence: map[string]string{"charge": "ch_1"}}); err != nil {
 		t.Fatal(err)
 	}
 	rec, ok := hasStep(t, store, "r1", ToolResultStep("c1"))
 	if !ok || rec.Kind != StepToolResult || rec.IsError || string(rec.Result) != `"charged"` || !rec.Reconciled || string(rec.Evidence) != `{"charge":"ch_1"}` {
 		t.Fatalf("resolved record = %+v; want the reconciled result with its evidence", rec)
 	}
-	msg, err := New(&greedyModel{script: [][]Emit{textTurn("done")}}, store, charge).Run(ctx, "r1", "pay")
+	res, err := mustNew(&greedyModel{script: [][]Emit{textTurn("done")}}, store, WithTools(charge)).Run(ctx, "r1", UserText("pay"))
+	var msg Message
+	if res != nil {
+		msg = res.Message
+	}
 	if err != nil || msg.Text() != "done" {
 		t.Fatalf("run after resolution = %q, %v; want it to finish", msg.Text(), err)
 	}
@@ -248,18 +264,18 @@ func TestResolveHaltRef_ToolHalt(t *testing.T) {
 	}
 }
 
-// ResolveHaltRef clears a Step's halt too, as a value or as a failure, and refuses a ref whose
+// ResolveHalt clears a Step's halt too, as a value or as a failure, and refuses a ref whose
 // kind is not the kind of operation that halted.
-func TestResolveHaltRef_StepHalt(t *testing.T) {
+func TestResolveHalt_StepHalt(t *testing.T) {
 	ctx := context.Background()
-	store := NewMemStore()
+	store := memJournal()
 	lost := func(context.Context) (string, error) { return "", errors.New("connection dropped") }
 	halted := func(name string) *OutcomeUnknown {
 		t.Helper()
-		if _, err := Step(ctx, store, "r1", name, lost); err == nil {
+		if _, err := store.Step(ctx, "r1", name, lost); err == nil {
 			t.Fatal("the failing step succeeded")
 		}
-		_, err := Step(ctx, store, "r1", name, lost)
+		_, err := store.Step(ctx, "r1", name, lost)
 		halt, ok := errors.AsType[*OutcomeUnknown](err)
 		if !ok {
 			t.Fatalf("resumed step = %v; want *OutcomeUnknown", err)
@@ -273,30 +289,30 @@ func TestResolveHaltRef_StepHalt(t *testing.T) {
 	ok := halted("reserve")
 	asTool := ok.Ref()
 	asTool.Op.Kind = OpTool
-	if err := ResolveHaltRef(ctx, store, asTool, Outcome{Result: "x"}); !errors.Is(err, ErrConfig) {
+	if err := ResolveHalt(ctx, store, asTool, Outcome{Result: "x"}); !errors.Is(err, ErrConfig) {
 		t.Fatalf("resolving a step's halt as a tool call = %v; want ErrConfig", err)
 	}
-	if err := ResolveHaltRef(ctx, store, ok.Ref(), Outcome{Result: "R-9"}); err != nil {
+	if err := ResolveHalt(ctx, store, ok.Ref(), Outcome{Result: "R-9"}); err != nil {
 		t.Fatal(err)
 	}
-	if got, err := Step(ctx, store, "r1", "reserve", lost); err != nil || got != "R-9" {
+	if got, err := store.Step(ctx, "r1", "reserve", lost); err != nil || got != "R-9" {
 		t.Fatalf("step after resolution = %q, %v; want the recorded value", got, err)
 	}
 
 	failed := halted("pay")
-	if err := ResolveHaltRef(ctx, store, failed.Ref(), Outcome{Result: "declined", IsError: true}); err != nil {
+	if err := ResolveHalt(ctx, store, failed.Ref(), Outcome{Result: "declined", IsError: true}); err != nil {
 		t.Fatal(err)
 	}
-	if _, err := Step(ctx, store, "r1", "pay", lost); !errors.Is(err, ErrTool) {
+	if _, err := store.Step(ctx, "r1", "pay", lost); !errors.Is(err, ErrTool) {
 		t.Fatalf("step resolved as failed = %v; want ErrTool", err)
 	}
 }
 
 // A ref that does not say why the run halted, or what kind of operation halted, is refused, as is
 // evidence given twice; none of them records anything.
-func TestResolveHaltRef_RefusesAnIncompleteRef(t *testing.T) {
+func TestResolveHalt_RefusesAnIncompleteRef(t *testing.T) {
 	ctx := context.Background()
-	store := NewMemStore()
+	store := memJournal()
 	good := HaltRef{RunID: "r1", Op: OpRef{Kind: OpTool, ID: "c1"}, Cause: HaltCrashed}
 	for name, c := range map[string]struct {
 		ref  HaltRef
@@ -311,8 +327,8 @@ func TestResolveHaltRef_RefusesAnIncompleteRef(t *testing.T) {
 		"reserved step":  {ref: HaltRef{RunID: "r1", Op: OpRef{Kind: OpStep, ID: "run:complete"}, Cause: HaltCrashed}},
 		"evidence twice": {ref: good, out: Outcome{Evidence: 1}, opts: []ResolveOption{WithEvidence(2)}},
 	} {
-		if err := ResolveHaltRef(ctx, store, c.ref, c.out, c.opts...); !errors.Is(err, ErrConfig) {
-			t.Errorf("%s: ResolveHaltRef = %v; want ErrConfig", name, err)
+		if err := ResolveHalt(ctx, store, c.ref, c.out, c.opts...); !errors.Is(err, ErrConfig) {
+			t.Errorf("%s: ResolveHalt = %v; want ErrConfig", name, err)
 		}
 	}
 	if recs, _ := store.History(ctx, "r1"); len(recs) != 0 {
@@ -324,9 +340,9 @@ func TestResolveHaltRef_RefusesAnIncompleteRef(t *testing.T) {
 // while it is young: without WithMinHaltAge it is refused outright, and with it the age is
 // measured from the live attempt (an older attempt recorded as never started does not count). A
 // crashed halt of the same age is resolved without a minimum, as before.
-func TestResolveHaltRef_ContendedHaltIsNotResolvedWhileYoung(t *testing.T) {
+func TestResolveHalt_ContendedHaltIsNotResolvedWhileYoung(t *testing.T) {
 	ctx := context.Background()
-	store := NewMemStore()
+	store := memJournal()
 	t0 := time.Unix(1_000_000, 0)
 	// c1's first attempt, claimed an hour ago, never started; its live re-attempt is at t0.
 	base := toolAttemptStep("c1")
@@ -349,12 +365,12 @@ func TestResolveHaltRef_ContendedHaltIsNotResolvedWhileYoung(t *testing.T) {
 		}
 	}
 
-	if err := ResolveHaltRef(ctx, store, contended, out); !errors.Is(err, ErrConfig) {
+	if err := ResolveHalt(ctx, store, contended, out); !errors.Is(err, ErrConfig) {
 		t.Fatalf("contended halt without WithMinHaltAge = %v; want ErrConfig", err)
 	}
 	unresolved("without a minimum age")
 	young := t0.Add(10 * time.Second)
-	err = ResolveHaltRef(ctx, store, contended, out, WithMinHaltAge(time.Minute), WithClock(func() time.Time { return young }))
+	err = ResolveHalt(ctx, store, contended, out, WithMinHaltAge(time.Minute), WithClock(func() time.Time { return young }))
 	if tooYoung, ok := errors.AsType[*HaltTooYoung](err); !ok || tooYoung.Age != 10*time.Second {
 		t.Fatalf("young contended halt = %v; want *HaltTooYoung aged 10s (from the live attempt, not the voided one)", err)
 	}
@@ -364,12 +380,12 @@ func TestResolveHaltRef_ContendedHaltIsNotResolvedWhileYoung(t *testing.T) {
 	if won, _, err := ClaimAttempt(ctx, store, "r1", toolAttemptStep("c2"), Record{Kind: StepAttempt, ToolUseID: "c2", AttemptedAt: t0.UnixMilli()}); err != nil || !won {
 		t.Fatal(won, err)
 	}
-	if err := ResolveHaltRef(ctx, store, HaltRef{RunID: "r1", Op: OpRef{Kind: OpTool, ID: "c2"}, Cause: HaltCrashed}, out); err != nil {
+	if err := ResolveHalt(ctx, store, HaltRef{RunID: "r1", Op: OpRef{Kind: OpTool, ID: "c2"}, Cause: HaltCrashed}, out); err != nil {
 		t.Fatalf("crashed halt = %v; want it resolved", err)
 	}
 
 	old := t0.Add(2 * time.Minute)
-	if err := ResolveHaltRef(ctx, store, contended, out, WithMinHaltAge(time.Minute), WithClock(func() time.Time { return old })); err != nil {
+	if err := ResolveHalt(ctx, store, contended, out, WithMinHaltAge(time.Minute), WithClock(func() time.Time { return old })); err != nil {
 		t.Fatalf("aged contended halt = %v; want it resolved", err)
 	}
 	if rec, ok := hasStep(t, store, "r1", ToolResultStep("c1")); !ok || string(rec.Result) != `"charged"` {
@@ -381,22 +397,24 @@ func TestResolveHaltRef_ContendedHaltIsNotResolvedWhileYoung(t *testing.T) {
 // whichever a caller used, and they check their arguments under their own names.
 func TestVerbs_WrappersWriteTheSameRecords(t *testing.T) {
 	ctx := context.Background()
-	type verb struct{ newer, older func(Durable) error }
+	type verb struct{ newer, older func(*Journal) error }
 	for name, v := range map[string]verb{
 		"AnswerInterrupt/Resume": {
-			func(d Durable) error { return AnswerInterrupt(ctx, d, "r1", "q", 42) },
-			func(d Durable) error { return Resume(ctx, d, "r1", "q", 42) },
+			func(d *Journal) error { return d.AnswerInterrupt(ctx, "r1", "q", 42) },
+			func(d *Journal) error { return d.AnswerInterrupt(ctx, "r1", "q", 42) },
 		},
 		"Enqueue/Send": {
-			func(d Durable) error { return Enqueue(ctx, d, "r1", "jobs", "k1", "body") },
-			func(d Durable) error { return Send(ctx, d, "r1", "jobs", "k1", "body") },
+			func(d *Journal) error { return d.Enqueue(ctx, "r1", "jobs", "k1", "body") },
+			func(d *Journal) error { return d.Enqueue(ctx, "r1", "jobs", "k1", "body") },
 		},
 	} {
 		a, b := NewMemStore(), NewMemStore()
-		if err := v.newer(a); err != nil {
+		j := mustJournal(a)
+		j2 := mustJournal(b)
+		if err := v.newer(j); err != nil {
 			t.Fatalf("%s: %v", name, err)
 		}
-		if err := v.older(b); err != nil {
+		if err := v.older(j2); err != nil {
 			t.Fatalf("%s: %v", name, err)
 		}
 		// The salt is random per record, so compare what the verb chose to write.
@@ -407,7 +425,7 @@ func TestVerbs_WrappersWriteTheSameRecords(t *testing.T) {
 			Approved                  bool
 			Signature                 []byte
 		}
-		project := func(d Durable) []written {
+		project := func(d *Journal) []written {
 			recs, _ := d.History(ctx, "r1")
 			var out []written
 			for _, r := range recs {
@@ -415,7 +433,7 @@ func TestVerbs_WrappersWriteTheSameRecords(t *testing.T) {
 			}
 			return out
 		}
-		ra, rb := project(a), project(b)
+		ra, rb := project(j), project(j2)
 		ja, _ := json.Marshal(ra)
 		jb, _ := json.Marshal(rb)
 		if len(ra) != 2 || string(ja) != string(jb) { // the @journal header, then the verb's record
@@ -423,9 +441,9 @@ func TestVerbs_WrappersWriteTheSameRecords(t *testing.T) {
 		}
 	}
 	for name, err := range map[string]error{
-		"SubmitDecision":  SubmitDecision(ctx, NewMemStore(), Decision{ToolUseID: "c1", ApproverID: "a", Signature: []byte("s")}),
-		"AnswerInterrupt": AnswerInterrupt(ctx, NewMemStore(), "", "q", 1),
-		"Enqueue":         Enqueue(ctx, NewMemStore(), "", "jobs", "k", 1),
+		"SubmitDecision":  SubmitDecision(ctx, memJournal(), Decision{ToolUseID: "c1", ApproverID: "a", Signature: []byte("s")}),
+		"AnswerInterrupt": memJournal().AnswerInterrupt(ctx, "", "q", 1),
+		"Enqueue":         memJournal().Enqueue(ctx, "", "jobs", "k", 1),
 	} {
 		if !errors.Is(err, ErrConfig) || err.Error()[:len(name)] != name {
 			t.Errorf("%s with no runID = %v; want ErrConfig naming %s", name, err, name)
@@ -436,23 +454,27 @@ func TestVerbs_WrappersWriteTheSameRecords(t *testing.T) {
 // An interrupt is answered against the pause's own RunID and Name.
 func TestAnswerInterrupt_ResumesThePause(t *testing.T) {
 	ctx := context.Background()
-	store := NewMemStore()
-	ask := Func("ask", "ask a human", Safety{ReadOnly: true}, func(ctx context.Context, _ struct{}) (string, error) {
+	store := memJournal()
+	ask := MustFunc("ask", "ask a human", func(ctx context.Context, _ struct{}) (string, error) {
 		n, err := Interrupt[int](ctx, "how-many", "how many?")
 		if err != nil {
 			return "", err
 		}
 		return fmt.Sprint(n), nil
-	})
-	_, err := New(&greedyModel{script: [][]Emit{toolTurn("c1", "ask", `{}`), textTurn("done")}}, store, ask).Run(ctx, "r1", "go")
+	}, WithSafety(Safety{ReadOnly: true}))
+	_, err := mustNew(
+		&greedyModel{script: [][]Emit{toolTurn("c1", "ask", `{}`), textTurn("done")}},
+		store,
+		WithTools(ask),
+	).Run(ctx, "r1", UserText("go"))
 	p, ok := errors.AsType[*InterruptPending](err)
 	if !ok || p.Name != "how-many" || p.Prompt != "how many?" || p.Paused() != (RunRef{RunID: "r1", RootRunID: "r1"}) {
 		t.Fatalf("run = %v; want *InterruptPending at how-many for r1", err)
 	}
-	if err := AnswerInterrupt(ctx, store, p.RunID, p.Name, 3); err != nil {
+	if err := store.AnswerInterrupt(ctx, p.RunID, p.Name, 3); err != nil {
 		t.Fatal(err)
 	}
-	if _, err := New(&greedyModel{script: [][]Emit{textTurn("done")}}, store, ask).Run(ctx, p.RootRunID, "go"); err != nil {
+	if _, err := mustNew(&greedyModel{script: [][]Emit{textTurn("done")}}, store, WithTools(ask)).Run(ctx, p.RootRunID, UserText("go")); err != nil {
 		t.Fatal(err)
 	}
 	if rec, ok := hasStep(t, store, "r1", ToolResultStep("c1")); !ok || string(rec.Result) != `"3"` {
@@ -470,10 +492,14 @@ func TestLoop_SubTreePausePropagatesFromAnyTool(t *testing.T) {
 		&ApprovalPending{RunRef: ref, ToolUseID: "inner", ToolName: "gated"},
 		&OutcomeUnknown{RunRef: ref, Op: OpRef{Kind: OpTool, ID: "inner", ToolName: "charge"}, Cause: HaltCrashed},
 	} {
-		delegate := Func("delegate", "a side-effecting call that ran a sub-run", Safety{}, func(context.Context, struct{}) (string, error) {
+		delegate := MustFunc("delegate", "a side-effecting call that ran a sub-run", func(context.Context, struct{}) (string, error) {
 			return "", fmt.Errorf("sub-run: %w", p)
 		})
-		_, err := New(&greedyModel{script: [][]Emit{toolTurn("c1", "delegate", `{}`), textTurn("done")}}, NewMemStore(), delegate).Run(context.Background(), "r1", "go")
+		_, err := mustNew(
+			&greedyModel{script: [][]Emit{toolTurn("c1", "delegate", `{}`), textTurn("done")}},
+			memJournal(),
+			WithTools(delegate),
+		).Run(context.Background(), "r1", UserText("go"))
 		if got, ok := AsPause(err); !ok || got != p {
 			t.Errorf("%T from a side-effecting tool: Run = %v; want the pause propagated", p, err)
 		}

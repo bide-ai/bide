@@ -34,9 +34,9 @@ func TestMemStoreDo_DecodesAWriteOnce(t *testing.T) {
 	ctx := context.Background()
 	const run = "decode-once-run"
 	decodes := countDecodes(t, run)
-	s := NewMemStore()
+	s := memJournal()
 	msg := Message{Role: RoleAssistant, Parts: []Part{Text{Text: "hi <b>"}, ToolUse{ID: "c1", Name: "t", Args: json.RawMessage(`{ "a" : 1.50 }`)}}}
-	got, err := s.Do(ctx, run, "@llm/0", func(context.Context) (Record, error) {
+	got, err := s.do(ctx, run, "@llm/0", func(context.Context) (Record, error) {
 		return Record{Kind: StepModel, Message: &msg, Usage: &Usage{InputTokens: 3}, Result: json.RawMessage(`"` + run + `"`)}, nil
 	})
 	if err != nil {
@@ -86,8 +86,8 @@ func TestMemStoreDo_UnstableEncodingDecodesStoredBytes(t *testing.T) {
 		want = 2 // the round trip's decode, then the stored bytes'
 	}
 	decodes := countDecodes(t, run)
-	s := NewMemStore()
-	got, err := s.Do(ctx, run, "v", func(context.Context) (Record, error) {
+	s := memJournal()
+	got, err := s.do(ctx, run, "v", func(context.Context) (Record, error) {
 		rec.Name = ""
 		return rec, nil
 	})
@@ -106,8 +106,8 @@ func TestMemStoreDo_UnstableEncodingDecodesStoredBytes(t *testing.T) {
 // A step name the encoding does not keep (invalid UTF-8 becomes U+FFFD) is refused as the stored
 // record naming another step, whichever way Do comes by the decoding.
 func TestMemStoreDo_NameNotKeptIsStorageError(t *testing.T) {
-	s := NewMemStore()
-	_, err := s.Do(context.Background(), "r", "bad\xffname", func(context.Context) (Record, error) {
+	s := memJournal()
+	_, err := s.do(context.Background(), "r", "bad\xffname", func(context.Context) (Record, error) {
 		return Record{Kind: StepValue}, nil
 	})
 	if err == nil {
@@ -119,7 +119,7 @@ func TestMemStoreDo_NameNotKeptIsStorageError(t *testing.T) {
 // their own copy of the stored record.
 func TestMemStoreDo_SharedWriteCopies(t *testing.T) {
 	ctx := context.Background()
-	s := NewMemStore()
+	s := memJournal()
 	started, release := make(chan struct{}), make(chan struct{})
 	fn := func(context.Context) (Record, error) {
 		close(started)
@@ -131,14 +131,14 @@ func TestMemStoreDo_SharedWriteCopies(t *testing.T) {
 	wg.Add(1)
 	go func() {
 		defer wg.Done()
-		out[0], _ = s.Do(ctx, "r", "v", fn)
+		out[0], _ = s.do(ctx, "r", "v", fn)
 	}()
 	<-started
 	for i := 1; i < 3; i++ {
 		wg.Add(1)
 		go func() {
 			defer wg.Done()
-			out[i], _ = s.Do(ctx, "r", "v", func(context.Context) (Record, error) {
+			out[i], _ = s.do(ctx, "r", "v", func(context.Context) (Record, error) {
 				t.Error("a second fn ran for a step already being recorded")
 				return Record{}, nil
 			})
@@ -159,59 +159,26 @@ func TestMemStoreDo_SharedWriteCopies(t *testing.T) {
 	}
 }
 
-// journalOps counts the journal operations a run makes.
-type journalOps struct {
-	*MemStore
-	mu                   sync.Mutex
-	dos, histories, read int
-}
-
-func (j *journalOps) Do(ctx context.Context, runID, name string, fn func(context.Context) (Record, error)) (Record, error) {
-	j.mu.Lock()
-	j.dos++
-	j.mu.Unlock()
-	return j.MemStore.Do(ctx, runID, name, fn)
-}
-
-func (j *journalOps) History(ctx context.Context, runID string) ([]Record, error) {
-	h, err := j.MemStore.History(ctx, runID)
-	j.mu.Lock()
-	j.histories++
-	j.read += len(h)
-	j.mu.Unlock()
-	return h, err
-}
-
-func (j *journalOps) Unwrap() Durable { return j.MemStore }
-
-// A live run reads its journal once, at the start, and records each step once: its budget and
-// token totals are kept up to date from the records it writes, not by reading the journal again
-// each turn. Each record it writes is decoded once. Over a Durable with no Journal (this shim), the
-// P14 point reads (run:cancelled at the turn boundary, the end markers read back after
-// run:complete) are each a History: two more here.
-func TestLiveRun_JournalOperations(t *testing.T) {
+// A live run decodes each record it writes once: its budget and token totals are kept up to date
+// from the records it writes, not by decoding them again or reading the journal back each turn.
+// Its reads decode nothing: the Load once run:start is written (model 10's DStart returns to
+// DOpen) needs only the entries' names, and the point reads of the end markers (at the turn
+// boundary, and after run:complete) find none but run:complete, which carries no marker.
+// TestBudget_FirstDriveAndCompletion and its neighbours hold the store round trips themselves.
+func TestLiveRun_DecodesEachWriteOnce(t *testing.T) {
 	const marker = "journal-ops-marker"
 	decodes := countDecodes(t, marker)
-	store := &journalOps{MemStore: NewMemStore()}
-	tool := Func("noop", "no-op", Safety{ReadOnly: true}, func(context.Context, struct{}) (string, error) { return "ok", nil })
-	a := New(NewScriptedModel(ToolTurn("c1-"+marker, "noop", `{}`), TextTurn("done "+marker)), store, tool).
-		WithTokenBudget(1_000_000)
-	if _, err := a.Run(context.Background(), "r", "go "+marker); err != nil {
+	tool := MustFunc("noop", "no-op", func(context.Context, struct{}) (string, error) { return "ok", nil }, WithSafety(Safety{ReadOnly: true}))
+	a := mustNew(NewScriptedModel(ToolTurn("c1-"+marker, "noop", `{}`), TextTurn("done "+marker)), memJournal(),
+		WithTools(tool), WithTokenBudget(1_000_000))
+	if _, err := a.Run(context.Background(), "r", UserText("go "+marker)); err != nil {
 		t.Fatal(err)
 	}
-	// run:start, @llm/0, the tool's result, @llm/1, run:complete; the Load, the Load again once
-	// run:start is written (the header and run:start: model 10's DStart returns to DOpen), the turn
-	// boundary's run:cancelled check (the header, run:start, @llm/0 and the result) and the
-	// read-back after run:complete (those, @llm/1 and run:complete).
-	if store.histories != 4 || store.read != 12 || store.dos != 5 {
-		t.Fatalf("a fresh run with one tool call read History %d times (%d records) and made %d Do calls; want 4 (12 records) and 5",
-			store.histories, store.read, store.dos)
-	}
-	// Every record but run:complete carries the marker (the input, the call's ID, the answer). The
-	// records the run writes are decoded once each (4); the three reads above decode what they
-	// read again (1 after run:start, 3 at the turn boundary, 4 after run:complete).
-	if n := decodes.Load(); n != 12 {
-		t.Fatalf("the run decoded the records that carry the marker %d times, want 4 written and 8 read back", n)
+	// run:start, @llm/0, the tool's result and @llm/1 carry the marker (the input, the call's ID,
+	// the answer). The three steps are decoded once each, as they are recorded; run:start is
+	// written from its encoding and never decoded on the live path.
+	if n := decodes.Load(); n != 3 {
+		t.Fatalf("the run decoded the records that carry the marker %d times, want 3 (each step once)", n)
 	}
 }
 

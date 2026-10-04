@@ -6,30 +6,25 @@ import (
 	"testing"
 )
 
-func TestNew_PanicsOnNilModelOrStore(t *testing.T) {
-	mustPanicNew := func(name string, fn func()) {
-		t.Helper()
-		defer func() {
-			if recover() == nil {
-				t.Errorf("%s: expected panic, got none", name)
-			}
-		}()
-		fn()
+func TestNew_RefusesNilModelOrJournal(t *testing.T) {
+	if a, err := New(nil, memJournal()); !errors.Is(err, ErrConfig) || a != nil {
+		t.Errorf("New(nil model) = %v, %v; want nil and ErrConfig", a, err)
 	}
-	mustPanicNew("nil model", func() { New(nil, NewMemStore()) })
-	mustPanicNew("nil store", func() { New(stubModel{}, nil) })
+	if a, err := New(stubModel{}, nil); !errors.Is(err, ErrConfig) || a != nil {
+		t.Errorf("New(nil journal) = %v, %v; want nil and ErrConfig", a, err)
+	}
 }
 
 func TestEntryPoints_RejectEmptyRunID(t *testing.T) {
 	ctx := context.Background()
-	s := NewMemStore()
-	a := New(stubModel{}, s)
+	s := memJournal()
+	a := mustNew(stubModel{}, s)
 
-	if _, err := a.Run(ctx, "", "hi"); !errors.Is(err, ErrConfig) {
+	if _, err := a.Run(ctx, "", UserText("hi")); !errors.Is(err, ErrConfig) {
 		t.Errorf("Run(empty) err = %v, want ErrConfig", err)
 	}
-	if _, err := a.RunSaga(ctx, "", "hi"); !errors.Is(err, ErrConfig) {
-		t.Errorf("RunSaga(empty) err = %v, want ErrConfig", err)
+	if _, err := a.Run(ctx, "", UserText("hi"), WithSaga()); !errors.Is(err, ErrConfig) {
+		t.Errorf("saga Run(empty) err = %v, want ErrConfig", err)
 	}
 	if _, err := a.Session(ctx, ""); !errors.Is(err, ErrConfig) {
 		t.Errorf("Session(empty) err = %v, want ErrConfig", err)
@@ -37,7 +32,7 @@ func TestEntryPoints_RejectEmptyRunID(t *testing.T) {
 	if err := Approve(ctx, s, "", "tu", true); !errors.Is(err, ErrConfig) {
 		t.Errorf("Approve(empty) err = %v, want ErrConfig", err)
 	}
-	if err := Resume(ctx, s, "", "k", 1); !errors.Is(err, ErrConfig) {
+	if err := s.AnswerInterrupt(ctx, "", "k", 1); !errors.Is(err, ErrConfig) {
 		t.Errorf("Resume(empty) err = %v, want ErrConfig", err)
 	}
 }

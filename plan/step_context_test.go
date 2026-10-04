@@ -6,7 +6,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/bide-ai/bide/agent"
+	"github.com/bide-ai/bide/agent/agenttest"
 )
 
 type stepCtxKey struct{}
@@ -66,7 +66,7 @@ func TestStepBodiesReceiveRunContext(t *testing.T) {
 			t.Fatal(err)
 		}
 		expectCancelled(t, started, func(ctx context.Context) error {
-			_, err := flow.Run(ctx, agent.NewMemStore(), "r", 1)
+			_, err := flow.Run(ctx, agenttest.MemJournal(), "r", 1)
 			return err
 		})
 	})
@@ -83,7 +83,7 @@ func TestStepBodiesReceiveRunContext(t *testing.T) {
 			t.Fatal(err)
 		}
 		expectCancelled(t, started, func(ctx context.Context) error {
-			_, err := flow.Run(ctx, agent.NewMemStore(), "r", 1)
+			_, err := flow.Run(ctx, agenttest.MemJournal(), "r", 1)
 			return err
 		})
 	})
@@ -101,7 +101,7 @@ func TestStepBodiesReceiveRunContext(t *testing.T) {
 			t.Fatal(err)
 		}
 		expectCancelled(t, started, func(ctx context.Context) error {
-			_, err := flow.Run(ctx, agent.NewMemStore(), "r", 1)
+			_, err := flow.Run(ctx, agenttest.MemJournal(), "r", 1)
 			return err
 		})
 	})
@@ -121,14 +121,14 @@ func TestRegisteredBodiesReceiveRunContext(t *testing.T) {
 	}
 	run := func(flow *Flow[int, int]) func(ctx context.Context) error {
 		return func(ctx context.Context) error {
-			_, err := flow.Run(ctx, agent.NewMemStore(), "r", 1)
+			_, err := flow.Run(ctx, agenttest.MemJournal(), "r", 1)
 			return err
 		}
 	}
 	t.Run("RegisterStep", func(t *testing.T) {
 		started := make(chan struct{})
 		reg := NewRegistry()
-		if err := RegisterStep(reg, "s", func(ctx context.Context, n int) (int, error) { return n, blockUntilDone(t, ctx, started) }); err != nil {
+		if err := reg.RegisterStep("s", func(ctx context.Context, n int) (int, error) { return n, blockUntilDone(t, ctx, started) }); err != nil {
 			t.Fatal(err)
 		}
 		flow := load(t, reg, `{"version":1,"flow":"reg-step-ctx","in":"int","out":"int","entry":"s","nodes":[{"name":"s","block":"s"}],"wiring":[]}`)
@@ -138,11 +138,11 @@ func TestRegisteredBodiesReceiveRunContext(t *testing.T) {
 		started := make(chan struct{})
 		reg := NewRegistry()
 		for _, n := range []string{"s", "x", "y"} {
-			if err := RegisterStep(reg, n, id); err != nil {
+			if err := reg.RegisterStep(n, id); err != nil {
 				t.Fatal(err)
 			}
 		}
-		if err := RegisterJoin2(reg, "m", func(ctx context.Context, a, c int) (int, error) { return a + c, blockUntilDone(t, ctx, started) }); err != nil {
+		if err := reg.RegisterJoin2("m", func(ctx context.Context, a, c int) (int, error) { return a + c, blockUntilDone(t, ctx, started) }); err != nil {
 			t.Fatal(err)
 		}
 		flow := load(t, reg, `{"version":1,"flow":"reg-join2-ctx","in":"int","out":"int","entry":"s",
@@ -154,11 +154,11 @@ func TestRegisteredBodiesReceiveRunContext(t *testing.T) {
 		started := make(chan struct{})
 		reg := NewRegistry()
 		for _, n := range []string{"s", "x", "y", "z"} {
-			if err := RegisterStep(reg, n, id); err != nil {
+			if err := reg.RegisterStep(n, id); err != nil {
 				t.Fatal(err)
 			}
 		}
-		if err := RegisterJoin3(reg, "m", func(ctx context.Context, a, c, d int) (int, error) { return a + c + d, blockUntilDone(t, ctx, started) }); err != nil {
+		if err := reg.RegisterJoin3("m", func(ctx context.Context, a, c, d int) (int, error) { return a + c + d, blockUntilDone(t, ctx, started) }); err != nil {
 			t.Fatal(err)
 		}
 		flow := load(t, reg, `{"version":1,"flow":"reg-join3-ctx","in":"int","out":"int","entry":"s",

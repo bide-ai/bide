@@ -30,16 +30,16 @@ func TestFunc_UndescribableArgsPanics(t *testing.T) {
 			t.Fatalf("Func panicked with %v; want an error wrapping schema.ErrUnsupportedType naming the field", r)
 		}
 	}()
-	Func("t", "", Safety{ReadOnly: true}, func(context.Context, undecodableArgs) (string, error) { return "", nil })
+	MustFunc("t", "", func(context.Context, undecodableArgs) (string, error) { return "", nil }, WithSafety(Safety{ReadOnly: true}))
 }
 
 // RunTyped reports such a result type as a configuration error before running anything.
 func TestRunTyped_UndescribableTypeIsConfigError(t *testing.T) {
-	a := New(NewScriptedModel(TextTurn(`{}`)), NewMemStore())
-	if _, err := RunTyped[undecodableArgs](context.Background(), a, "r", "go"); !errors.Is(err, ErrConfig) || !errors.Is(err, schema.ErrUnsupportedType) {
+	a := mustNew(NewScriptedModel(TextTurn(`{}`)), memJournal())
+	if _, _, err := a.RunTyped[undecodableArgs](context.Background(), "r", UserText("go")); !errors.Is(err, ErrConfig) || !errors.Is(err, schema.ErrUnsupportedType) {
 		t.Fatalf("RunTyped = %v; want ErrConfig wrapping schema.ErrUnsupportedType", err)
 	}
-	if _, err := RunTypedNative[undecodableArgs](context.Background(), a, "r2", "go"); !errors.Is(err, ErrConfig) || !errors.Is(err, schema.ErrUnsupportedType) {
-		t.Fatalf("RunTypedNative = %v; want ErrConfig wrapping schema.ErrUnsupportedType", err)
+	if _, _, err := a.RunTyped[undecodableArgs](context.Background(), "r2", UserText("go"), WithOutputMode(OutputNative)); !errors.Is(err, ErrConfig) || !errors.Is(err, schema.ErrUnsupportedType) {
+		t.Fatalf("RunTyped (OutputNative) = %v; want ErrConfig wrapping schema.ErrUnsupportedType", err)
 	}
 }

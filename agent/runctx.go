@@ -18,7 +18,7 @@ const (
 // the other durable waits can journal and read their values without the tool holding the store,
 // and so RunInfoFrom can describe the call.
 type runCtx struct {
-	store     Durable
+	store     *Journal
 	runID     string
 	root      string // the top-level run; a sub-agent's runs inherit it
 	toolUseID string // the call being executed; "" outside one
@@ -30,7 +30,7 @@ type runCtx struct {
 
 // withRunContext returns ctx carrying run runID of store, and the call toolUseID of it being
 // executed ("" for none), in a saga run or not.
-func withRunContext(ctx context.Context, store Durable, runID, toolUseID string, saga bool) context.Context {
+func withRunContext(ctx context.Context, store *Journal, runID, toolUseID string, saga bool) context.Context {
 	parent, _ := ctx.Value(runContextKey).(runCtx) // the call that started this run, if any
 	return context.WithValue(ctx, runContextKey, runCtx{store: store, runID: runID, root: rootRunID(ctx, runID), toolUseID: toolUseID,
 		saga: saga, sagaTree: saga || parent.sagaTree})
@@ -44,13 +44,13 @@ type rootStoreKey struct{}
 
 type rootStore struct {
 	root  string
-	store Durable
+	store *Journal
 }
 
 // rootStoreOf is the store the tree root root journals to, for a run whose drive runs under ctx: the
 // one a sub-run on another store above it recorded (rootStoreKey); else the enclosing run's store,
 // if that run belongs to root's tree (it is root itself, or a sub-run on root's store); else own.
-func rootStoreOf(ctx context.Context, root string, own Durable) Durable {
+func rootStoreOf(ctx context.Context, root string, own *Journal) *Journal {
 	if v, ok := ctx.Value(rootStoreKey{}).(rootStore); ok && v.root == root {
 		return v.store
 	}
@@ -62,7 +62,7 @@ func rootStoreOf(ctx context.Context, root string, own Durable) Durable {
 
 // withRootStore returns ctx recording store as the store of the tree root root, for the drive of a
 // sub-run whose own store is own: only when they are not provably one store (see rootStoreOf).
-func withRootStore(ctx context.Context, root string, store, own Durable) context.Context {
+func withRootStore(ctx context.Context, root string, store, own *Journal) context.Context {
 	if sameStore(store, own) {
 		return ctx
 	}
@@ -81,7 +81,7 @@ func rootRunID(ctx context.Context, runID string) string {
 	return treeRootID(runID)
 }
 
-func runContext(ctx context.Context) (Durable, string, bool) {
+func runContext(ctx context.Context) (*Journal, string, bool) {
 	rc, ok := ctx.Value(runContextKey).(runCtx)
 	return rc.store, rc.runID, ok
 }
@@ -144,7 +144,7 @@ func (r RunInfo) callScope() string {
 // refuses the ID (ErrConfig) for an empty name, once the tool call has returned (start the
 // sub-run within the call, not from a goroutine that outlives it), and, in a saga, for a name
 // longer than 96 bytes once escaped or for an agent that journals to another store than the run
-// (a saga's tree shares one store). Start it with RunSaga to keep it a saga: whether a call is in
+// (a saga's tree shares one store). Start it with WithSaga to keep it a saga: whether a call is in
 // one is its own run's flag; a plain run started from a saga's call still links its own
 // programmatic sub-runs, since the saga's rollback walks it.
 func (r RunInfo) SubRunFor(name string) string {
@@ -192,7 +192,7 @@ func stepRunName(ctx context.Context, runID string) (name string, ok bool) {
 // records anything, so the saga's rollback walks it (see WithSubRuns); such a sub-run must journal
 // to the parent's store (ErrConfig otherwise), where the rollback reads it. The link is written
 // while the call is held open, so a call that has returned has recorded every link it will have.
-func linkSubRun(ctx context.Context, runID string, sub Durable) error {
+func linkSubRun(ctx context.Context, runID string, sub *Journal) error {
 	name, ok := stepRunName(ctx, runID)
 	if !ok {
 		return nil
@@ -219,7 +219,7 @@ func linkSubRun(ctx context.Context, runID string, sub Durable) error {
 		return fmt.Errorf("run: programmatic sub-run %q of a saga: its name is too long for the saga's link to it (at most %d bytes once escaped): %w",
 			runID, maxEncodedID, ErrConfig)
 	}
-	if _, err := rc.store.Do(ctx, rc.runID, subRunLinkStep(rc.toolUseID, name), func(context.Context) (Record, error) {
+	if _, err := rc.store.do(ctx, rc.runID, subRunLinkStep(rc.toolUseID, name), func(context.Context) (Record, error) {
 		return Record{Kind: StepValue, Result: mustJSON(name)}, nil
 	}); err != nil {
 		return fmt.Errorf("run: record the programmatic sub-run %q in run %s: %w (%w)", runID, rc.runID, err, ErrStorage)
@@ -229,9 +229,9 @@ func linkSubRun(ctx context.Context, runID string, sub Durable) error {
 
 // sameStore reports whether a and b are provably one store: both have an identity
 // (durableIdentity) and it is the same.
-func sameStore(a, b Durable) bool {
-	ia, oka := durableIdentity(a)
-	ib, okb := durableIdentity(b)
+func sameStore(a, b *Journal) bool {
+	ia, oka := a.identity()
+	ib, okb := b.identity()
 	return oka && okb && ia == ib
 }
 

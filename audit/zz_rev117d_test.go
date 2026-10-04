@@ -11,6 +11,7 @@ import (
 	"time"
 
 	"github.com/bide-ai/bide/agent"
+	"github.com/bide-ai/bide/agent/agenttest"
 )
 
 // multiTurns is a replay-safe scripted model whose turns may call several tools at once: it picks
@@ -45,10 +46,10 @@ func (m multiTurns) Stream(_ context.Context, req agent.Request) (*agent.Stream,
 // Before round 4 the refusal was recorded as the delegation's failure and the sibling finished.
 func TestRev117d_UnrecordedRefusalCutsOffSiblingSideEffect(t *testing.T) {
 	ctx := context.Background()
-	store := agent.NewMemStore()
+	store := agenttest.MemJournal()
 	var fired atomic.Int32
 	started := make(chan struct{})
-	charge := agent.Func("charge", "", agent.Safety{}, func(ctx context.Context, _ struct{}) (string, error) {
+	charge := agent.MustFunc("charge", "", func(ctx context.Context, _ struct{}) (string, error) {
 		if fired.Add(1) == 1 {
 			close(started) // the charge request has gone out
 		}
@@ -59,7 +60,7 @@ func TestRev117d_UnrecordedRefusalCutsOffSiblingSideEffect(t *testing.T) {
 			return "charged", nil
 		}
 	})
-	sub := agent.New(agent.NewScriptedModel(agent.TextTurn("sub done")), store)
+	sub := agenttest.MustNew(agenttest.NewScriptedModel(agenttest.TextTurn("sub done")), store)
 	exec := AttenuatingSubAgent("exec", "", sub, AttenuationConfig{Store: store, Narrow: narrowLimitBy(3), Rules: ScopeRules{"limit": NumericAtMost}})
 	waitForCharge := func(next agent.ToolHandler) agent.ToolHandler {
 		return func(ctx context.Context, call agent.ToolCall) (json.RawMessage, error) {
@@ -73,13 +74,13 @@ func TestRev117d_UnrecordedRefusalCutsOffSiblingSideEffect(t *testing.T) {
 	_, priv, _ := ed25519.GenerateKey(rand.Reader)
 	signer := Ed25519Signer{Priv: priv}
 	expired, _ := SignGrant(Grant{ID: "g0", Issuer: "corp", Subject: "desk", Scope: map[string]string{"limit": "7"}, NotAfterUnix: time.Now().Add(-time.Hour).Unix()}, signer)
-	_, err1 := agent.New(model, store, exec, charge).UseTool(waitForCharge).Run(WithGrant(ctx, expired, signer), "r", "go")
+	_, err1 := agenttest.MustNew(model, store, agent.WithTools(exec, charge), agent.WithToolMiddleware(waitForCharge)).Run(WithGrant(ctx, expired, signer), "r", agent.UserText("go"))
 	if !errors.Is(err1, agent.ErrConfig) {
 		t.Fatalf("first drive: %v, want the delegation's unrecorded ErrConfig", err1)
 	}
 	// The operator binds a live grant and drives again, as the delegation guide says to.
 	live, _ := SignGrant(Grant{ID: "g1", Issuer: "corp", Subject: "desk", Scope: map[string]string{"limit": "7"}, NotAfterUnix: time.Now().Add(time.Hour).Unix()}, signer)
-	_, err2 := agent.New(model, store, exec, charge).Run(WithGrant(ctx, live, signer), "r", "go")
+	_, err2 := agenttest.MustNew(model, store, agent.WithTools(exec, charge)).Run(WithGrant(ctx, live, signer), "r", agent.UserText("go"))
 	var halt *agent.OutcomeUnknown
 	if errors.As(err2, &halt) {
 		t.Fatalf("the unrecorded refusal of c1 cancelled sibling c2 (charge) after its request went out (fired %d); the re-drive under a live grant halts on c2 instead of continuing: %v (first drive: %v)", fired.Load(), err2, err1)
@@ -96,26 +97,32 @@ func TestRev117d_UnrecordedRefusalCutsOffSiblingSideEffect(t *testing.T) {
 // delegation"; for an expired journaled grant no such grant exists.
 func TestRev117d_ExpiredJournaledGrantWedgesTheSagaForever(t *testing.T) {
 	ctx := context.Background()
-	store := agent.NewMemStore()
+	store := agenttest.MemJournal()
 	var charged, undone atomic.Int32
-	charge := agent.CompensatedFunc("charge", "", agent.Safety{},
-		func(context.Context, struct{}) (string, error) { charged.Add(1); return "charged", nil },
+	charge := agent.MustCompensatedFunc("charge", "", func(context.Context, struct{}) (string, error) { charged.Add(1); return "charged", nil },
 		func(context.Context, struct{}, string) error { undone.Add(1); return nil })
-	confirm := agent.Func("confirm", "", agent.Safety{ReadOnly: true},
-		func(context.Context, struct{}) (string, error) { return "ok", nil }, agent.WithApproval(agent.SingleApproval()))
-	sub := agent.New(agent.NewScriptedModel(agent.ToolTurn("s1", "charge", `{}`), agent.ToolTurn("s2", "confirm", `{}`), agent.TextTurn("done")), store, charge, confirm)
+	confirm := agent.MustFunc("confirm", "", func(context.Context, struct{}) (string, error) { return "ok", nil }, agent.WithSafety(agent.Safety{ReadOnly: true}), agent.WithApproval(agent.SingleApproval()))
+	sub := agenttest.MustNew(
+		agenttest.NewScriptedModel(agenttest.ToolTurn("s1", "charge", `{}`), agenttest.ToolTurn("s2", "confirm", `{}`), agenttest.TextTurn("done")),
+		store,
+		agent.WithTools(charge, confirm),
+	)
 	childNotAfter := time.Now().Unix() + 1
 	narrow := func(parent Grant, subAgent string) Grant {
 		return Grant{ID: "grant/" + subAgent, Scope: map[string]string{"limit": "4"}, NotAfterUnix: childNotAfter}
 	}
 	exec := AttenuatingSubAgent("exec", "", sub, AttenuationConfig{Store: store, Narrow: narrow, Rules: ScopeRules{"limit": NumericAtMost}})
-	boom := agent.Func("boom", "", agent.Safety{}, func(context.Context, struct{}) (string, error) { return "", errors.New("sold out") })
-	parent := agent.New(agent.NewScriptedModel(agent.ToolTurn("c1", "exec", `{"task":"x"}`), agent.ToolTurn("c2", "boom", `{}`), agent.TextTurn("done")), store, exec, boom)
+	boom := agent.MustFunc("boom", "", func(context.Context, struct{}) (string, error) { return "", errors.New("sold out") })
+	parent := agenttest.MustNew(
+		agenttest.NewScriptedModel(agenttest.ToolTurn("c1", "exec", `{"task":"x"}`), agenttest.ToolTurn("c2", "boom", `{}`), agenttest.TextTurn("done")),
+		store,
+		agent.WithTools(exec, boom),
+	)
 
 	_, priv, _ := ed25519.GenerateKey(rand.Reader)
 	signer := Ed25519Signer{Priv: priv}
 	root, _ := SignGrant(Grant{ID: "g0", Issuer: "corp", Subject: "desk", Scope: map[string]string{"limit": "7"}, NotAfterUnix: time.Now().Add(time.Hour).Unix()}, signer)
-	_, err := parent.RunSaga(WithGrant(ctx, root, signer), "trip", "go")
+	_, err := parent.Run(WithGrant(ctx, root, signer), "trip", agent.UserText("go"), agent.WithSaga())
 	var pend *agent.ApprovalPending
 	if !errors.As(err, &pend) || charged.Load() != 1 {
 		t.Fatalf("first drive: %v (charged %d), want the sub-run's pause after the charge", err, charged.Load())
@@ -129,10 +136,10 @@ func TestRev117d_ExpiredJournaledGrantWedgesTheSagaForever(t *testing.T) {
 	renewed, _ := SignGrant(Grant{ID: "g0", Issuer: "corp", Subject: "desk", Scope: map[string]string{"limit": "7"}, NotAfterUnix: time.Now().Add(2 * time.Hour).Unix()}, signer)
 	var errs []error
 	for _, g := range []SignedGrant{root, renewed, root} {
-		_, err := parent.RunSaga(WithGrant(ctx, g, signer), "trip", "go")
+		_, err := parent.Run(WithGrant(ctx, g, signer), "trip", agent.UserText("go"), agent.WithSaga())
 		errs = append(errs, err)
 	}
-	_, errNone := parent.RunSaga(ctx, "trip", "go")
+	_, errNone := parent.Run(ctx, "trip", agent.UserText("go"), agent.WithSaga())
 	errs = append(errs, errNone)
 	stuck := true
 	for _, e := range errs {
@@ -150,29 +157,37 @@ func TestRev117d_ExpiredJournaledGrantWedgesTheSagaForever(t *testing.T) {
 // running its side effects after that grant expired, in the same drive.
 func TestRev117d_SubRunFiresEffectsAfterItsGrantExpired(t *testing.T) {
 	ctx := context.Background()
-	store := agent.NewMemStore()
+	store := agenttest.MemJournal()
 	childNotAfter := time.Now().Unix() + 1
 	var firedAt atomic.Int64
-	slow := agent.Func("slow", "", agent.Safety{ReadOnly: true}, func(context.Context, struct{}) (string, error) {
+	slow := agent.MustFunc("slow", "", func(context.Context, struct{}) (string, error) {
 		for time.Now().Unix() <= childNotAfter { // a long read outlives the grant
 			time.Sleep(50 * time.Millisecond)
 		}
 		return "ok", nil
-	})
-	charge := agent.Func("charge", "", agent.Safety{}, func(context.Context, struct{}) (string, error) {
+	}, agent.WithSafety(agent.Safety{ReadOnly: true}))
+	charge := agent.MustFunc("charge", "", func(context.Context, struct{}) (string, error) {
 		firedAt.Store(time.Now().Unix())
 		return "charged", nil
 	})
-	sub := agent.New(agent.NewScriptedModel(agent.ToolTurn("s1", "slow", `{}`), agent.ToolTurn("s2", "charge", `{}`), agent.TextTurn("done")), store, slow, charge)
+	sub := agenttest.MustNew(
+		agenttest.NewScriptedModel(agenttest.ToolTurn("s1", "slow", `{}`), agenttest.ToolTurn("s2", "charge", `{}`), agenttest.TextTurn("done")),
+		store,
+		agent.WithTools(slow, charge),
+	)
 	narrow := func(parent Grant, subAgent string) Grant {
 		return Grant{ID: "grant/" + subAgent, Scope: map[string]string{"limit": "4"}, NotAfterUnix: childNotAfter}
 	}
 	exec := AttenuatingSubAgent("exec", "", sub, AttenuationConfig{Store: store, Narrow: narrow, Rules: ScopeRules{"limit": NumericAtMost}})
-	parent := agent.New(agent.NewScriptedModel(agent.ToolTurn("c1", "exec", `{"task":"x"}`), agent.TextTurn("done")), store, exec)
+	parent := agenttest.MustNew(
+		agenttest.NewScriptedModel(agenttest.ToolTurn("c1", "exec", `{"task":"x"}`), agenttest.TextTurn("done")),
+		store,
+		agent.WithTools(exec),
+	)
 	_, priv, _ := ed25519.GenerateKey(rand.Reader)
 	signer := Ed25519Signer{Priv: priv}
 	root, _ := SignGrant(Grant{ID: "g0", Issuer: "corp", Subject: "desk", Scope: map[string]string{"limit": "7"}, NotAfterUnix: time.Now().Add(time.Hour).Unix()}, signer)
-	if _, err := parent.Run(WithGrant(ctx, root, signer), "r", "go"); err != nil {
+	if _, err := parent.Run(WithGrant(ctx, root, signer), "r", agent.UserText("go")); err != nil {
 		t.Fatalf("Run: %v", err)
 	}
 	if at := firedAt.Load(); at > childNotAfter {
@@ -184,17 +199,17 @@ func TestRev117d_SubRunFiresEffectsAfterItsGrantExpired(t *testing.T) {
 // hidden (errors.Join): the caller sees the ErrConfig to fix and the pause to answer.
 func TestRev117d_UnrecordedAndSiblingPauseBothSurface(t *testing.T) {
 	ctx := context.Background()
-	store := agent.NewMemStore()
-	sub := agent.New(agent.NewScriptedModel(agent.TextTurn("sub done")), store)
+	store := agenttest.MemJournal()
+	sub := agenttest.MustNew(agenttest.NewScriptedModel(agenttest.TextTurn("sub done")), store)
 	exec := AttenuatingSubAgent("exec", "", sub, AttenuationConfig{Store: store, Narrow: narrowLimitBy(3), Rules: ScopeRules{"limit": NumericAtMost}})
-	gated := agent.Func("gated", "", agent.Safety{ReadOnly: true}, func(ctx context.Context, _ struct{}) (string, error) {
+	gated := agent.MustFunc("gated", "", func(ctx context.Context, _ struct{}) (string, error) {
 		return agent.Interrupt[string](ctx, "confirm", "go ahead?") // a pause while the call runs
-	})
+	}, agent.WithSafety(agent.Safety{ReadOnly: true}))
 	model := multiTurns{{{"c1", "exec", `{"task":"x"}`}, {"c2", "gated", `{}`}}}
 	_, priv, _ := ed25519.GenerateKey(rand.Reader)
 	signer := Ed25519Signer{Priv: priv}
 	expired, _ := SignGrant(Grant{ID: "g0", Issuer: "corp", Subject: "desk", Scope: map[string]string{"limit": "7"}, NotAfterUnix: time.Now().Add(-time.Hour).Unix()}, signer)
-	_, err := agent.New(model, store, exec, gated).Run(WithGrant(ctx, expired, signer), "r", "go")
+	_, err := agenttest.MustNew(model, store, agent.WithTools(exec, gated)).Run(WithGrant(ctx, expired, signer), "r", agent.UserText("go"))
 	if _, pause := agent.AsPause(err); !errors.Is(err, agent.ErrConfig) || !pause {
 		t.Fatalf("Run = %v; want both the delegation's ErrConfig and the sibling's pause", err)
 	}

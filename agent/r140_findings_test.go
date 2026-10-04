@@ -34,9 +34,9 @@ func TestR140_DecodedEmptySubStruct(t *testing.T) {
 // each other, so a caller replacing nothing but writing through the pointer cannot alter the journal.
 func TestR140_StoreCopiesSubStructs(t *testing.T) {
 	ctx := context.Background()
-	m := NewMemStore()
+	m := memJournal()
 	built := Record{Kind: StepModel, ModelTurn: &ModelTurn{Finish: "stop"}}
-	live, err := m.Do(ctx, "r", "s", func(context.Context) (Record, error) { return built, nil })
+	live, err := m.do(ctx, "r", "s", func(context.Context) (Record, error) { return built, nil })
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -50,7 +50,7 @@ func TestR140_StoreCopiesSubStructs(t *testing.T) {
 	}
 	h[len(h)-1].ModelTurn.Finish = "Y"
 	h2, _ := m.History(ctx, "r")
-	memo, _ := m.Do(ctx, "r", "s", func(context.Context) (Record, error) { t.Fatal("ran"); return Record{}, nil })
+	memo, _ := m.do(ctx, "r", "s", func(context.Context) (Record, error) { t.Fatal("ran"); return Record{}, nil })
 	if h2[len(h2)-1].Finish() != "stop" || memo.Finish() != "stop" || built.Finish() != "stop" {
 		t.Fatalf("aliasing: history %q memo %q built %q", h2[len(h2)-1].Finish(), memo.Finish(), built.Finish())
 	}

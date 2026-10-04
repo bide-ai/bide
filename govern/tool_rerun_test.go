@@ -8,24 +8,26 @@ import (
 	"time"
 
 	"github.com/bide-ai/bide/agent"
+	"github.com/bide-ai/bide/agent/agenttest"
 	"github.com/bide-ai/bide/govern"
 )
 
-// crashAfterStep stands in for a process that dies after a step's work ran but before its
-// record was written: the first Do for step name runs fn, then fails without recording.
+// crashAfterStep is a store wrapper standing in for a process that dies after a step's work ran
+// but before its record was written: the first Insert of step name (which comes after the step's
+// work ran) fails without storing. It does not Unwrap: the dying process shares nothing in-process
+// with the one that re-runs the run.
 type crashAfterStep struct {
-	agent.Durable
+	agent.Store
 	name    string
 	crashed bool
 }
 
-func (s *crashAfterStep) Do(ctx context.Context, runID, name string, fn func(context.Context) (agent.Record, error)) (agent.Record, error) {
+func (s *crashAfterStep) Insert(ctx context.Context, runID, name string, data []byte) (agent.Entry, bool, error) {
 	if name == s.name && !s.crashed {
 		s.crashed = true
-		_, _ = fn(ctx)
-		return agent.Record{}, errors.New("process died before the tool result was recorded")
+		return agent.Entry{}, false, errors.New("process died before the tool result was recorded")
 	}
-	return s.Durable.Do(ctx, runID, name, fn)
+	return s.Store.Insert(ctx, runID, name, data)
 }
 
 // runToolTwice drives one retry-safe tool call (c1) through a run that crashes before the
@@ -35,19 +37,28 @@ func runToolTwice(t *testing.T, tool agent.Tool, between func()) map[string]any 
 	t.Helper()
 	ctx := context.Background()
 	store := agent.NewMemStore()
-	crashing := &crashAfterStep{Durable: store, name: agent.ToolResultStep("c1")}
-	first := agent.New(agent.NewScriptedModel(agent.ToolTurn("c1", tool.Name(), `{}`), agent.TextTurn("done")), crashing, tool)
-	if _, err := first.Run(ctx, "r", "go"); err == nil {
+	j := agenttest.MustJournal(store)
+	crashing := agenttest.MustJournal(&crashAfterStep{Store: store, name: agent.ToolResultStep("c1")})
+	first := agenttest.MustNew(
+		agenttest.NewScriptedModel(agenttest.ToolTurn("c1", tool.Spec().Name, `{}`), agenttest.TextTurn("done")),
+		crashing,
+		agent.WithTools(tool),
+	)
+	if _, err := first.Run(ctx, "r", agent.UserText("go")); err == nil {
 		t.Fatal("the first run did not crash")
 	}
 	if between != nil {
 		between()
 	}
-	second := agent.New(agent.NewScriptedModel(agent.ToolTurn("c1", tool.Name(), `{}`), agent.TextTurn("done")), store, tool)
-	if _, err := second.Run(ctx, "r", "go"); err != nil {
+	second := agenttest.MustNew(
+		agenttest.NewScriptedModel(agenttest.ToolTurn("c1", tool.Spec().Name, `{}`), agenttest.TextTurn("done")),
+		j,
+		agent.WithTools(tool),
+	)
+	if _, err := second.Run(ctx, "r", agent.UserText("go")); err != nil {
 		t.Fatalf("re-run: %v", err)
 	}
-	recs, err := store.History(ctx, "r")
+	recs, err := j.History(ctx, "r")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -153,7 +164,7 @@ func TestEventToolConfig_SpecCarriesSafetyAndOptions(t *testing.T) {
 		"plain":    govern.EventTool(g, govern.EventToolConfig{Name: "bump", Event: "inc_a", Safety: agent.Safety{Idempotent: true}, Options: opts}),
 		"attested": govern.EventTool(g, govern.EventToolConfig{Name: "bump", Event: "inc_a", PolicyDigest: "p", Safety: agent.Safety{Idempotent: true}, Options: opts}),
 	} {
-		s := agent.SpecOf(tool)
+		s := tool.Spec()
 		if s.Name != "bump" || !s.Safety.Idempotent || s.Approval == nil || s.Timeout != time.Minute || s.Title != "Bump" {
 			t.Errorf("%s: spec %+v; want the config's name, safety and options", name, s)
 		}
@@ -163,7 +174,7 @@ func TestEventToolConfig_SpecCarriesSafetyAndOptions(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	s := agent.SpecOf(govern.FederatedEventTool(fg, govern.FederatedEventToolConfig{Name: "publish", Registry: "manufacturer", Event: "epub", Safety: agent.Safety{Idempotent: true}, Options: opts}))
+	s := govern.FederatedEventTool(fg, govern.FederatedEventToolConfig{Name: "publish", Registry: "manufacturer", Event: "epub", Safety: agent.Safety{Idempotent: true}, Options: opts}).Spec()
 	if s.Name != "publish" || !s.Safety.Idempotent || s.Approval == nil || s.Timeout != time.Minute {
 		t.Errorf("federated: spec %+v; want the config's name, safety and options", s)
 	}

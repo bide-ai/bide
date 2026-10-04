@@ -18,11 +18,7 @@ import (
 // objTool is a tool with a Spec method whose spec the test chooses.
 type objTool struct{ spec ToolSpec }
 
-func (t objTool) Spec() ToolSpec              { return t.spec }
-func (t objTool) Name() string                { return t.spec.Name }
-func (t objTool) Description() string         { return t.spec.Description }
-func (t objTool) ArgsSchema() json.RawMessage { return t.spec.Input }
-func (t objTool) Safety() Safety              { return t.spec.Safety }
+func (t objTool) Spec() ToolSpec { return t.spec }
 func (objTool) Call(context.Context, json.RawMessage) (json.RawMessage, error) {
 	return json.RawMessage(`"ok"`), nil
 }
@@ -36,7 +32,7 @@ func namedTool(name string) objTool {
 // built: nothing is returned that a run would only then refuse.
 func TestBuild_EveryValidationError(t *testing.T) {
 	m := NewScriptedModel()
-	j := NewMemStore().Journal()
+	j := memJournal()
 	mofn := &ApprovalPolicy{Need: 1, Approvers: []string{"alice", "bob"}}
 	gated := namedTool("pay")
 	gated.spec.Approval = mofn
@@ -52,7 +48,7 @@ func TestBuild_EveryValidationError(t *testing.T) {
 	stringType.spec.Input = json.RawMessage(`{"type":"string"}`)
 	notJSON.spec.Input = json.RawMessage(`{`)
 	sub := buildT(t, NewScriptedModel())
-	subTimeout := wrapTool{Tool: SubAgent("helper", "", sub), spec: SpecOf(SubAgent("helper", "", sub))}
+	subTimeout := wrapTool{Tool: MustSubAgent("helper", "", sub), spec: MustSubAgent("helper", "", sub).Spec()}
 	subTimeout.spec.Timeout = time.Second
 
 	cases := map[string][]Option{
@@ -93,7 +89,7 @@ func TestBuild_EveryValidationError(t *testing.T) {
 	}
 	for name, opts := range cases {
 		t.Run(name, func(t *testing.T) {
-			a, err := Build(m, j, opts...)
+			a, err := New(m, j, opts...)
 			if !errors.Is(err, ErrConfig) || a != nil {
 				t.Fatalf("Build = %v, %v; want nil, ErrConfig", a, err)
 			}
@@ -106,13 +102,13 @@ func TestBuild_EveryValidationError(t *testing.T) {
 	}
 
 	// Build itself.
-	if _, err := Build(nil, j); !errors.Is(err, ErrConfig) {
+	if _, err := New(nil, j); !errors.Is(err, ErrConfig) {
 		t.Errorf("Build(nil model) = %v, want ErrConfig", err)
 	}
-	if _, err := Build((*ScriptedModel)(nil), j); !errors.Is(err, ErrConfig) {
+	if _, err := New((*ScriptedModel)(nil), j); !errors.Is(err, ErrConfig) {
 		t.Errorf("Build(typed nil model) = %v, want ErrConfig", err)
 	}
-	if _, err := Build(m, nil); !errors.Is(err, ErrConfig) {
+	if _, err := New(m, nil); !errors.Is(err, ErrConfig) {
 		t.Errorf("Build(nil journal) = %v, want ErrConfig", err)
 	}
 	// A tool With adds may not take a name the agent already has.
@@ -120,19 +116,19 @@ func TestBuild_EveryValidationError(t *testing.T) {
 		t.Errorf("With adding a second tool named a = %v, want ErrConfig", err)
 	}
 	// The forced tool is checked against the tools once every option is applied, in any order.
-	if _, err := Build(m, j, WithToolChoice(ToolChoice{Mode: "tool", Name: "a"}), WithTools(namedTool("a"))); err != nil {
+	if _, err := New(m, j, WithToolChoice(ToolChoice{Mode: "tool", Name: "a"}), WithTools(namedTool("a"))); err != nil {
 		t.Errorf("forcing a tool given after the choice: %v", err)
 	}
 	// The error for an m-of-n policy with no resolver says what is missing.
-	if _, err := Build(m, j, WithTools(gated)); err == nil || !strings.Contains(err.Error(), "WithApproverVerifiers") {
+	if _, err := New(m, j, WithTools(gated)); err == nil || !strings.Contains(err.Error(), "WithApproverVerifiers") {
 		t.Errorf("m-of-n without verifiers = %v, want an error naming WithApproverVerifiers", err)
 	}
 	// An m-of-n policy with distinct keys and verifiers given after the tool builds.
-	if _, err := Build(m, j, WithTools(gated), WithApproverVerifiers(distinct)); err != nil {
+	if _, err := New(m, j, WithTools(gated), WithApproverVerifiers(distinct)); err != nil {
 		t.Errorf("m-of-n policy with verifiers: %v", err)
 	}
 	// An agent New was given a bad tool set cannot be configured further: With returns its error.
-	if _, err := New(m, NewMemStore(), namedTool("a"), namedTool("a")).With(); !errors.Is(err, ErrConfig) {
+	if _, err := New(m, memJournal(), WithTools(namedTool("a"), namedTool("a"))); !errors.Is(err, ErrConfig) {
 		t.Errorf("With on an agent New refused tools for = %v, want ErrConfig", err)
 	}
 }
@@ -149,21 +145,21 @@ func (w wrapTool) Unwrap() Tool   { return w.Tool }
 // The options of the other scopes refuse a nil option and a bad value with ErrConfig too.
 func TestOptions_OtherScopesValidate(t *testing.T) {
 	ctx := context.Background()
-	store := NewMemStore()
+	store := memJournal()
 	task := []Task[int]{{Name: "t", Fn: func(context.Context) (int, error) { return 1, nil }}}
-	if _, err := Parallel(ctx, store, "r", task, nil); !errors.Is(err, ErrConfig) {
+	if _, err := store.Parallel(ctx, "r", task, nil); !errors.Is(err, ErrConfig) {
 		t.Errorf("Parallel(nil option) = %v, want ErrConfig", err)
 	}
-	if _, err := Parallel(ctx, store, "r", task, WithMaxConcurrency(-1)); !errors.Is(err, ErrConfig) {
+	if _, err := store.Parallel(ctx, "r", task, WithMaxConcurrency(-1)); !errors.Is(err, ErrConfig) {
 		t.Errorf("Parallel(WithMaxConcurrency(-1)) = %v, want ErrConfig", err)
 	}
-	if _, err := Step(ctx, store, "r", "s", func(context.Context) (int, error) { return 1, nil }, nil); !errors.Is(err, ErrConfig) {
+	if _, err := store.Step(ctx, "r", "s", func(context.Context) (int, error) { return 1, nil }, nil); !errors.Is(err, ErrConfig) {
 		t.Errorf("Step(nil option) = %v, want ErrConfig", err)
 	}
 	ref := HaltRef{RunID: "r", Op: OpRef{Kind: OpTool, ID: "c1", ToolName: "t"}}
 	for name, opt := range map[string]ResolveOption{"nil": nil, "nil clock": WithClock(nil)} {
-		if err := ResolveHaltRef(ctx, store, ref, Outcome{Result: "x"}, opt); !errors.Is(err, ErrConfig) {
-			t.Errorf("ResolveHaltRef(%s) = %v, want ErrConfig", name, err)
+		if err := ResolveHalt(ctx, store, ref, Outcome{Result: "x"}, opt); !errors.Is(err, ErrConfig) {
+			t.Errorf("ResolveHalt(%s) = %v, want ErrConfig", name, err)
 		}
 	}
 	drive := func(context.Context) error { return nil }
@@ -246,7 +242,7 @@ func (f modelFunc) Stream(ctx context.Context, req Request) (*Stream, error) { r
 // turnsTaken runs a to its turn cap and returns how many turns it took.
 func turnsTaken(t *testing.T, a *Agent, runID string) int {
 	t.Helper()
-	_, err := a.Run(context.Background(), runID, "go")
+	_, err := a.Run(context.Background(), runID, UserText("go"))
 	m := turnsRE.FindStringSubmatch(fmt.Sprint(err))
 	if !errors.Is(err, ErrMaxTurns) || m == nil {
 		t.Fatalf("run %s: %v, want ErrMaxTurns", runID, err)
@@ -299,14 +295,14 @@ func systemOf(t *testing.T, a *Agent) string {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if _, err := c.Run(context.Background(), fmt.Sprintf("r%d", runSeq.Add(1)), "hi"); err != nil {
+	if _, err := c.Run(context.Background(), fmt.Sprintf("r%d", runSeq.Add(1)), UserText("hi")); err != nil {
 		t.Fatal(err)
 	}
 	return strings.Join(got, "|")
 }
 
-// WithSystemPrompt and WithSystemPromptFunc fill one slot: the later of the two wins, as options
-// and as the transitional builder methods.
+// WithSystemPrompt and WithSystemPromptFunc fill one slot: the later of the two wins, in New and
+// in With.
 func TestPrecedence_SystemPromptSlot(t *testing.T) {
 	fn := func(context.Context, RunInfo) (string, error) { return "FUNC", nil }
 	model := func() Model {
@@ -331,13 +327,12 @@ func TestPrecedence_SystemPromptSlot(t *testing.T) {
 	if got := systemOf(t, a); got != "FUNC" {
 		t.Errorf("the agent With copied: system %q, want its own FUNC", got)
 	}
-	old := New(model(), NewMemStore()).WithSystemPromptFunc(func(context.Context) string { return "FUNC" }).WithSystemPrompt("TEXT")
-	if got := systemOf(t, old); got != "TEXT" {
-		t.Errorf("builder methods, func then text: system %q, want TEXT", got)
+	c, err := buildT(t, model(), WithSystemPrompt("TEXT")).With(WithSystemPromptFunc(fn))
+	if err != nil {
+		t.Fatal(err)
 	}
-	old = New(model(), NewMemStore()).WithSystemPrompt("TEXT").WithSystemPromptFunc(func(context.Context) string { return "FUNC" })
-	if got := systemOf(t, old); got != "FUNC" {
-		t.Errorf("builder methods, text then func: system %q, want FUNC", got)
+	if got := systemOf(t, c); got != "FUNC" {
+		t.Errorf("With(WithSystemPromptFunc) over a text: system %q, want FUNC", got)
 	}
 }
 
@@ -347,7 +342,7 @@ func TestSystemPromptFunc_RunInfoAndError(t *testing.T) {
 	var got RunInfo
 	fn := func(_ context.Context, info RunInfo) (string, error) { got = info; return "", nil }
 	a := buildT(t, NewScriptedModel(TextTurn("ok")), WithSystemPromptFunc(fn))
-	if _, err := a.RunSaga(context.Background(), "r1", "hi"); err != nil {
+	if _, err := a.Run(context.Background(), "r1", UserText("hi"), WithSaga()); err != nil {
 		t.Fatal(err)
 	}
 	if got != (RunInfo{RunID: "r1", RootRunID: "r1", Saga: true}) {
@@ -356,7 +351,7 @@ func TestSystemPromptFunc_RunInfoAndError(t *testing.T) {
 	boom := errors.New("tenant lookup failed")
 	m := &countModel{inner: NewScriptedModel(TextTurn("ok"))}
 	b := buildT(t, m, WithSystemPromptFunc(func(context.Context, RunInfo) (string, error) { return "", boom }))
-	if _, err := b.Run(context.Background(), "r2", "hi"); !errors.Is(err, boom) || !strings.Contains(err.Error(), "r2") {
+	if _, err := b.Run(context.Background(), "r2", UserText("hi")); !errors.Is(err, boom) || !strings.Contains(err.Error(), "r2") {
 		t.Errorf("Run = %v, want the function's error, naming the run", err)
 	}
 	if m.calls.Load() != 0 {
@@ -384,12 +379,12 @@ func TestPrecedence_RunBeatsAgentBeatsDefault(t *testing.T) {
 		now   time.Time
 	}
 	var got seen
-	probe := Func("probe", "", Safety{ReadOnly: true}, func(ctx context.Context, _ struct{}) (string, error) {
+	probe := MustFunc("probe", "", func(ctx context.Context, _ struct{}) (string, error) {
 		got.id, got.idSet = IdentityFrom(ctx)
 		got.waker = wakerFrom(ctx)
 		got.now = clockFrom(ctx)()
 		return "ok", nil
-	})
+	}, WithSafety(Safety{ReadOnly: true}))
 	run := func(a *Agent, ctx context.Context) seen {
 		t.Helper()
 		got = seen{}
@@ -397,7 +392,7 @@ func TestPrecedence_RunBeatsAgentBeatsDefault(t *testing.T) {
 		if err != nil {
 			t.Fatal(err)
 		}
-		if _, err := c.Run(ctx, fmt.Sprintf("r%d", runSeq.Add(1)), "go"); err != nil {
+		if _, err := c.Run(ctx, fmt.Sprintf("r%d", runSeq.Add(1)), UserText("go")); err != nil {
 			t.Fatal(err)
 		}
 		return got
@@ -412,7 +407,7 @@ func TestPrecedence_RunBeatsAgentBeatsDefault(t *testing.T) {
 	}
 
 	// The run's own values win.
-	ctx := ContextWithClock(ContextWithWaker(ContextWithIdentity(context.Background(), runID), runW), func() time.Time { return runT })
+	ctx := contextWithClock(contextWithWaker(contextWithIdentity(context.Background(), runID), runW), func() time.Time { return runT })
 	if s := run(configured(), ctx); s.id != runID || s.waker != runW || !s.now.Equal(runT) {
 		t.Errorf("run values over agent values: %+v, want the run's", s)
 	}
@@ -428,7 +423,7 @@ func TestPrecedence_RunBeatsAgentBeatsDefault(t *testing.T) {
 }
 
 // With returns a copy that shares nothing mutable with the agent: under -race, many goroutines
-// derive, configure (with options and with the transitional builder methods) and run copies of
+// derive, configure (with options) and run copies of
 // one agent while it runs, and each sees exactly its own configuration. The agent's middleware,
 // tool middleware and retrieval lists have spare capacity, so a copy that shared their arrays
 // would write its additions into a sibling's.
@@ -486,9 +481,12 @@ func TestWith_IsolationUnderRace(t *testing.T) {
 				errs <- err
 				return
 			}
-			// The transitional builders mutate the copy, never the agent or a sibling.
-			child.Use(noMW).UseTool(noToolMW).WithSystemPrompt(mark)
-			if _, err := child.Run(context.Background(), fmt.Sprintf("c%d", i), "go"); err != nil {
+			// With on the copy configures another copy, never the agent or a sibling.
+			if child, err = child.With(WithMiddleware(noMW), WithToolMiddleware(noToolMW), WithSystemPrompt(mark)); err != nil {
+				errs <- err
+				return
+			}
+			if _, err := child.Run(context.Background(), fmt.Sprintf("c%d", i), UserText("go")); err != nil {
 				errs <- err
 				return
 			}
@@ -512,7 +510,7 @@ func TestWith_IsolationUnderRace(t *testing.T) {
 				errs <- err
 				return
 			}
-			if _, err := c.Run(context.Background(), fmt.Sprintf("p%d", i), "go"); err != nil {
+			if _, err := c.Run(context.Background(), fmt.Sprintf("p%d", i), UserText("go")); err != nil {
 				errs <- err
 			}
 		}()
@@ -545,21 +543,21 @@ func TestWith_FailureLeavesAgentUnchanged(t *testing.T) {
 	}
 }
 
-// Journal returns the journal Build was given, and for New the journal of its store.
+// Journal returns the journal New was given.
 func TestAgent_Journal(t *testing.T) {
 	store := NewMemStore()
 	j, err := NewJournal(store)
 	if err != nil {
 		t.Fatal(err)
 	}
-	a, err := Build(NewScriptedModel(), j)
+	a, err := New(NewScriptedModel(), j)
 	if err != nil {
 		t.Fatal(err)
 	}
 	if a.Journal() != j {
-		t.Error("Journal() is not the journal Build was given")
+		t.Error("Journal() is not the journal New was given")
 	}
-	if New(NewScriptedModel(), store).Journal() != store.Journal() {
+	if mustNew(NewScriptedModel(), j).Journal() != j {
 		t.Error("Journal() of New over a MemStore is not the store's journal")
 	}
 }
@@ -570,7 +568,7 @@ func TestWithRetrieval_EveryMiddlewareSeesTheDocuments(t *testing.T) {
 	var got []string
 	r := &fakeRetriever{docs: []Doc{{Text: "doc"}}}
 	a := buildT(t, NewScriptedModel(TextTurn("ok")), WithMiddleware(captureRequests(&got)), WithRetrieval(r, 1))
-	if _, err := a.Run(context.Background(), "r", "q"); err != nil {
+	if _, err := a.Run(context.Background(), "r", UserText("q")); err != nil {
 		t.Fatal(err)
 	}
 	if len(got) != 1 || !strings.Contains(got[0], "doc") {

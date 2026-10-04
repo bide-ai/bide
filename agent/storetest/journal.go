@@ -13,6 +13,8 @@ import (
 	"time"
 
 	"github.com/bide-ai/bide/agent"
+	"github.com/bide-ai/bide/agent/agenttest"
+	"github.com/bide-ai/bide/internal/journaltest"
 )
 
 // value returns a step fn that records v.
@@ -53,7 +55,7 @@ func headerFirst(t *testing.T, s agent.Store) {
 	if f, err := j.Format(ctx, id); err != nil || f != "" {
 		t.Fatalf("Format of an empty run = %q, %v; want \"\"", f, err)
 	}
-	if _, err := j.Do(ctx, id, "a", value(`1`)); err != nil {
+	if _, err := journaltest.Do(ctx, j, id, "a", value(`1`)); err != nil {
 		t.Fatal(err)
 	}
 	es := entries(t, s, id)
@@ -91,7 +93,7 @@ func concurrentFirstWriters(t *testing.T, open func(*testing.T) agent.Store) {
 		for g := range 16 {
 			wg.Go(func() {
 				<-start
-				if _, err := js[g%2].Do(ctx, id, fmt.Sprintf("s%d", g), value(`1`)); err != nil {
+				if _, err := journaltest.Do(ctx, js[g%2], id, fmt.Sprintf("s%d", g), value(`1`)); err != nil {
 					errs <- err
 				}
 			})
@@ -155,12 +157,12 @@ func refused(t *testing.T, s agent.Store, id, found string) {
 	_, _, err = journal(t, s).Get(ctx, id, "no-such-step")
 	check("Get of a missing name", err)
 	ran := false
-	_, err = j.Do(ctx, id, "b", func(context.Context) (agent.Record, error) {
+	_, err = journaltest.Do(ctx, j, id, "b", func(context.Context) (agent.Record, error) {
 		ran = true
 		return agent.Record{Kind: agent.StepValue}, nil
 	})
 	check("Do", err)
-	_, err = agent.Step(ctx, j, id, "effect", func(context.Context) (int, error) { ran = true; return 1, nil })
+	_, err = j.Step(ctx, id, "effect", func(context.Context) (int, error) { ran = true; return 1, nil })
 	check("Step", err)
 	if ran {
 		t.Fatal("a step ran for a run the journal refuses")
@@ -169,7 +171,11 @@ func refused(t *testing.T, s agent.Store, id, found string) {
 		t.Fatalf("the journal wrote to a run it refuses: %v, then %v", before, after)
 	}
 	// A drive of the run refuses it without writing too.
-	_, err = agent.New(agent.NewScriptedModel(agent.TextTurn("done")), journal(t, s)).Run(ctx, id, "hi")
+	ag, err := agent.New(agenttest.NewScriptedModel(agenttest.TextTurn("done")), journal(t, s))
+	if err != nil {
+		t.Fatal(err)
+	}
+	_, err = ag.Run(ctx, id, agent.UserText("hi"))
 	check("Run", err)
 	if after := names(entries(t, s, id)); !slices.Equal(after, before) {
 		t.Fatalf("a drive wrote to a run the journal refuses: %v, then %v", before, after)
@@ -223,7 +229,7 @@ func readRacingFirstWrite(t *testing.T, open func(*testing.T) agent.Store) {
 		id := runID(t)
 		done := make(chan error, 1)
 		go func() {
-			_, err := journal(t, w).Do(ctx, id, "a", value(`1`))
+			_, err := journaltest.Do(ctx, journal(t, w), id, "a", value(`1`))
 			done <- err
 		}()
 		deadline := time.Now().Add(30 * time.Second)
@@ -259,7 +265,7 @@ func sharedFlights(t *testing.T, s agent.Store) {
 	started, release := make(chan struct{}), make(chan struct{})
 	first := make(chan error, 1)
 	go func() {
-		_, err := j1.Do(ctx, id, "slow", func(context.Context) (agent.Record, error) {
+		_, err := journaltest.Do(ctx, j1, id, "slow", func(context.Context) (agent.Record, error) {
 			calls.Add(1)
 			close(started)
 			<-release
@@ -270,7 +276,7 @@ func sharedFlights(t *testing.T, s agent.Store) {
 	<-started
 	second := make(chan error, 1)
 	go func() {
-		rec, err := j2.Do(ctx, id, "slow", func(context.Context) (agent.Record, error) {
+		rec, err := journaltest.Do(ctx, j2, id, "slow", func(context.Context) (agent.Record, error) {
 			calls.Add(1)
 			return agent.Record{Kind: agent.StepValue, Result: json.RawMessage(`2`)}, nil
 		})
@@ -334,7 +340,7 @@ func ambiguousClaim(t *testing.T, s agent.Store) {
 		var paid atomic.Int64
 		for range n {
 			wg.Go(func() {
-				v, err := agent.Step(ctx, journal(t, w), id, "pay", pay)
+				v, err := journal(t, w).Step(ctx, id, "pay", pay)
 				var halt *agent.OutcomeUnknown
 				switch {
 				case err == nil && v == "paid":
@@ -355,7 +361,7 @@ func ambiguousClaim(t *testing.T, s agent.Store) {
 	// process) re-attempts.
 	id := runID(t)
 	w := &commitThenFail{Store: s, fail: marker}
-	if _, err := agent.Step(ctx, journal(t, w), id, "pay", pay); err == nil || fired.Load() != 0 {
+	if _, err := journal(t, w).Step(ctx, id, "pay", pay); err == nil || fired.Load() != 0 {
 		t.Fatalf("Step whose claim failed = %v (effect ran %d times); want the error, and no effect", err, fired.Load())
 	}
 	redrive(t, id, &commitThenFail{Store: s}, 2)
@@ -365,7 +371,7 @@ func ambiguousClaim(t *testing.T, s agent.Store) {
 	fired.Store(0)
 	id = runID(t)
 	w = &commitThenFail{Store: s, fail: marker, refuse: "attempt:not-started:"}
-	if _, err := agent.Step(ctx, journal(t, w), id, "pay", pay); err == nil || fired.Load() != 0 {
+	if _, err := journal(t, w).Step(ctx, id, "pay", pay); err == nil || fired.Load() != 0 {
 		t.Fatalf("Step whose claim failed = %v (effect ran %d times); want the error, and no effect", err, fired.Load())
 	}
 	w.refuse = ""
@@ -377,7 +383,7 @@ func ambiguousClaim(t *testing.T, s agent.Store) {
 	fired.Store(0)
 	id = runID(t)
 	w = &commitThenFail{Store: s, fail: marker, lose: "attempt:not-started:"}
-	if _, err := agent.Step(ctx, journal(t, w), id, "pay", pay); err == nil || fired.Load() != 0 {
+	if _, err := journal(t, w).Step(ctx, id, "pay", pay); err == nil || fired.Load() != 0 {
 		t.Fatalf("Step whose claim failed = %v (effect ran %d times); want the error, and no effect", err, fired.Load())
 	}
 	redrive(t, id, w, 2)
@@ -693,52 +699,6 @@ func CheckWrapper(t testing.TB, wrap func(agent.Store) agent.Store, ctxs ...cont
 	checkWrapper(t, wrap, ctxs...)
 }
 
-// CheckDurableWrapper checks a Durable wrapper (one the engine drives through its Do and History,
-// such as audit.AuditedStore) against the same rules (see agent.Durable): its mapping of run IDs
-// and names to recorded steps does not depend on the context, and it implements Unwrap() Durable
-// only if it passes run IDs and names through unchanged. A wrapper that rewrites keys (a tenant
-// prefix) and unwraps would share with other wrappers over the same store what the process keeps
-// per run (remembered claims, kept spend), under the rewritten run's name; it must not unwrap.
-// wrap wraps the Durable it is given; CheckDurableWrapper wraps a MemStore. ctxs are as for
-// CheckWrapper: at least two contexts that differ in the values the wrapper reads.
-func CheckDurableWrapper(t testing.TB, wrap func(agent.Durable) agent.Durable, ctxs ...context.Context) {
-	t.Helper()
-	checkDurableWrapper(t, wrap, ctxs...)
-}
-
-func checkDurableWrapper(t reporter, wrap func(agent.Durable) agent.Durable, ctxs ...context.Context) {
-	t.Helper()
-	if len(ctxs) < 2 {
-		t.Fatalf("CheckDurableWrapper needs at least two contexts that differ in the values the wrapper reads, got %d", len(ctxs))
-	}
-	inner := agent.NewMemStore()
-	w := wrap(inner)
-	id := fmt.Sprintf("checkdurablewrapper-%d-%d", time.Now().UnixNano(), runIDs.Add(1))
-	want := agent.Record{Kind: agent.StepValue, Result: []byte(`"v"`)}
-	if _, err := w.Do(ctxs[0], id, "k", func(context.Context) (agent.Record, error) { return want, nil }); err != nil {
-		t.Fatalf("Do through the wrapper: %v", err)
-	}
-	for i, c := range ctxs[1:] {
-		rec, err := w.Do(c, id, "k", func(context.Context) (agent.Record, error) {
-			return agent.Record{}, fmt.Errorf("the step ran again")
-		})
-		if err != nil || string(rec.Result) != `"v"` {
-			t.Errorf("a step recorded through %T under one context reads back as %q, %v under context %d: a Durable's mapping of run IDs and names must not depend on the context", w, rec.Result, err, i+1)
-		}
-	}
-	recs, err := inner.History(context.Background(), id)
-	if err != nil {
-		t.Fatalf("%v", err)
-	}
-	same := false
-	for _, r := range recs {
-		same = same || (r.Name == "k" && string(r.Result) == `"v"`)
-	}
-	if _, unwraps := w.(interface{ Unwrap() agent.Durable }); unwraps && !same {
-		t.Errorf("%T rewrites run IDs or names but implements Unwrap() Durable, so the engine keeps what it keeps per run (remembered claims, kept spend) under the store beneath it with the run ID it was given, shared with every other wrapper over that store; a key-rewriting wrapper must not implement Unwrap", w)
-	}
-}
-
 // reporter is the part of testing.TB CheckWrapper uses.
 type reporter interface {
 	Helper()
@@ -780,7 +740,7 @@ func checkWrapper(t reporter, wrap func(agent.Store) agent.Store, ctxs ...contex
 	}
 	same = same && string(e.Data) == "v"
 	if _, unwraps := w.(interface{ Unwrap() agent.Store }); unwraps && !same {
-		t.Errorf("%T rewrites run IDs or names but implements Unwrap, so Capability exposes the wrapped store's Lister and Leaser under the wrong keys; implement each capability on the wrapper instead", w)
+		t.Errorf("%T rewrites run IDs or names but implements Unwrap: Capability would expose the wrapped store's Lister and Leaser under the wrong keys, and Journals over it would share remembered claims and kept spend with the store beneath (the store identity follows Unwrap); do not implement Unwrap, and implement each capability on the wrapper instead", w)
 	}
 	if l, ok := agent.Capability[agent.Lister](w); ok {
 		found := false

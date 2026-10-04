@@ -16,7 +16,7 @@ import (
 type endMarker struct {
 	name string
 	rec  Record
-	seq  int64 // its Seq (a Journal read), or its index in a History (any other Durable)
+	seq  int64 // its Seq (a Journal read), or its index in a History (any other *Journal)
 }
 
 // firstEnd returns the first end marker in recs, which are in journal order.
@@ -51,21 +51,8 @@ func (j *Journal) putEntry(ctx context.Context, runID, name string, rec Record) 
 // the writer must report it: the first end marker in journal order, read back after the write.
 // others are the end markers that can precede this one in the run (an end marker the run cannot
 // hold is not read). Over a Journal the read-back is one Get per name in others: the writer's own
-// marker is visible, so by A2 every marker before it is too, and the lowest Seq is the first. Over
-// another Durable it is one History.
-func writeEnd(ctx context.Context, d Durable, runID, name string, rec Record, others []string) (endMarker, error) {
-	j := journalOf(d)
-	if j == nil {
-		if _, err := putRecord(ctx, d, runID, name, rec); err != nil {
-			return endMarker{}, err
-		}
-		recs, err := d.History(ctx, runID)
-		if err != nil {
-			return endMarker{}, fmt.Errorf("load history %s: %w (%w)", runID, err, ErrStorage)
-		}
-		first, _ := firstEnd(recs)
-		return first, nil
-	}
+// marker is visible, so by A2 every marker before it is too, and the lowest Seq is the first.
+func writeEnd(ctx context.Context, j *Journal, runID, name string, rec Record, others []string) (endMarker, error) {
 	got, seq, err := j.putEntry(ctx, runID, name, rec)
 	if err != nil {
 		return endMarker{}, err
@@ -89,21 +76,8 @@ func writeEnd(ctx context.Context, d Durable, runID, name string, rec Record, ot
 }
 
 // firstEndOf returns the first of runID's end markers names in journal order, read with one Get
-// each over a Journal (the lowest Seq is the first), or one History over another Durable.
-func firstEndOf(ctx context.Context, d Durable, runID string, names ...string) (endMarker, bool, error) {
-	j := journalOf(d)
-	if j == nil {
-		recs, err := d.History(ctx, runID)
-		if err != nil {
-			return endMarker{}, false, fmt.Errorf("load history %s: %w (%w)", runID, err, ErrStorage)
-		}
-		for i, r := range recs {
-			if r.Kind == StepValue && slices.Contains(names, r.Name) {
-				return endMarker{name: r.Name, rec: r, seq: int64(i)}, true, nil
-			}
-		}
-		return endMarker{}, false, nil
-	}
+// each (the lowest Seq is the first).
+func firstEndOf(ctx context.Context, j *Journal, runID string, names ...string) (endMarker, bool, error) {
 	var first endMarker
 	found := false
 	for _, name := range names {
@@ -146,7 +120,7 @@ func endedErr(runID string, end endMarker) error {
 	if end.name == runCancelledStep {
 		return fmt.Errorf("run %s: %w", runID, ErrRunCancelled)
 	}
-	return fmt.Errorf("run %s was aborted: it is a saga whose rollback finished; drive it as a saga (RunSaga, WithSaga): %w", runID, ErrConfig)
+	return fmt.Errorf("run %s was aborted: it is a saga whose rollback finished; drive it as a saga (WithSaga): %w", runID, ErrConfig)
 }
 
 // endVerdict reads runID's journal and returns its end as a drive reports it: the recorded answer
@@ -185,15 +159,12 @@ func (e *cancelTrip) Error() string { return "saga cancelled: " + e.reason }
 func (a *Agent) cancelSeen(ctx context.Context, runID string, p *runPlan) (bool, error) {
 	var ok bool
 	var err error
-	if j := journalOf(a.store); j != nil {
-		var e Entry
-		e, ok, err = j.getOpened(ctx, runID, p.cancelKey) // the drive opened the run: its format is checked
-		if ok {
-			_, err = decodeStored(runID, p.cancelKey, e.Data) // as lookup reads it
-			ok = err == nil
-		}
-	} else {
-		_, ok, err = lookup(ctx, a.store, runID, p.cancelKey)
+	j := a.store
+	var e Entry
+	e, ok, err = j.getOpened(ctx, runID, p.cancelKey) // the drive opened the run: its format is checked
+	if ok {
+		_, err = decodeStored(runID, p.cancelKey, e.Data) // as lookup reads it
+		ok = err == nil
 	}
 	if err != nil || ok || p.root == "" {
 		return ok, err
@@ -205,10 +176,10 @@ func (a *Agent) cancelSeen(ctx context.Context, runID string, p *runPlan) (bool,
 // rollback request. Both are read from the root's own store (p.rootStore), which is not the
 // sub-run's when its agent journals elsewhere.
 func (p *runPlan) rootCancelled(ctx context.Context) (bool, error) {
-	if _, ok, err := lookup(ctx, p.rootStore, p.root, runCancelledStep); err != nil || ok {
+	if _, ok, err := p.rootStore.Get(ctx, p.root, runCancelledStep); err != nil || ok {
 		return ok, err
 	}
-	_, ok, err := lookup(ctx, p.rootStore, p.root, runCancelRequestedStep)
+	_, ok, err := p.rootStore.Get(ctx, p.root, runCancelRequestedStep)
 	return ok, err
 }
 
@@ -216,11 +187,11 @@ func (p *runPlan) rootCancelled(ctx context.Context) (bool, error) {
 
 // rootCancelRecord returns the tree root root's cancellation as store holds it: its rollback
 // request, else its run:cancelled (a root that is not a saga), and whether it has one.
-func rootCancelRecord(ctx context.Context, store Durable, root string) (Record, bool, error) {
-	if r, ok, err := lookup(ctx, store, root, runCancelRequestedStep); err != nil || ok {
+func rootCancelRecord(ctx context.Context, store *Journal, root string) (Record, bool, error) {
+	if r, ok, err := store.Get(ctx, root, runCancelRequestedStep); err != nil || ok {
 		return r, ok, err
 	}
-	return lookup(ctx, store, root, runCancelledStep)
+	return store.Get(ctx, root, runCancelledStep)
 }
 
 // postClaim is a won claim's check before its call (rule 3, L2): if the run was cancelled, the
@@ -247,9 +218,9 @@ func (a *Agent) postClaim(ctx context.Context, runID string, p *runPlan, markerK
 //go:noinline
 func (a *Agent) leaveCancelled(ctx context.Context, runID string, p *runPlan, leave func(error) (Message, usageTotals, int, error), tot *usageTotals, turns int) (Message, usageTotals, int, error) {
 	if p.saga {
-		r, ok, err := lookup(ctx, a.store, runID, runCancelRequestedStep)
+		r, ok, err := a.store.Get(ctx, runID, runCancelRequestedStep)
 		if err == nil && !ok && p.root != "" {
-			r, _, err = lookup(ctx, p.rootStore, p.root, runCancelRequestedStep) // the tree root's request
+			r, _, err = p.rootStore.Get(ctx, p.root, runCancelRequestedStep) // the tree root's request
 		}
 		if err != nil {
 			return leave(err)
@@ -292,16 +263,7 @@ func answerRecorded(msgs []Message, terminal string) bool {
 // cancelledFirst reports whether runID's first end marker is run:cancelled. Over a Journal it Gets
 // run:cancelled, and, when it is there, each end marker that could precede it: by A2 every marker
 // before a visible one is visible too, so the lowest Seq is the first.
-func cancelledFirst(ctx context.Context, d Durable, runID string) (bool, error) {
-	j := journalOf(d)
-	if j == nil {
-		recs, err := d.History(ctx, runID)
-		if err != nil {
-			return false, fmt.Errorf("load history %s: %w (%w)", runID, err, ErrStorage)
-		}
-		first, ok := firstEnd(recs)
-		return ok && first.name == runCancelledStep, nil
-	}
+func cancelledFirst(ctx context.Context, j *Journal, runID string) (bool, error) {
 	c, ok, err := j.getEntry(ctx, runID, runCancelledStep)
 	if err != nil || !ok {
 		return false, err

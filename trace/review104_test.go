@@ -6,6 +6,7 @@ import (
 	"testing"
 
 	"github.com/bide-ai/bide/agent"
+	"github.com/bide-ai/bide/agent/agenttest"
 	btrace "github.com/bide-ai/bide/trace"
 	sdktrace "go.opentelemetry.io/otel/sdk/trace"
 	"go.opentelemetry.io/otel/sdk/trace/tracetest"
@@ -31,9 +32,9 @@ func TestT1_TraceFinishOfBuiltResponse(t *testing.T) {
 			return agent.ModelResponse{Message: agent.Message{Role: agent.RoleAssistant, Parts: []agent.Part{agent.Text{Text: "cached"}}}}, nil
 		}
 	}
-	store := agent.NewMemStore()
-	a := agent.New(okModel{}, store).Use(btrace.Model(tp.Tracer("t")), built)
-	if _, err := a.Run(context.Background(), "r", "q"); err != nil {
+	store := agenttest.MemJournal()
+	a := agenttest.MustNew(okModel{}, store, agent.WithMiddleware(btrace.Model(tp.Tracer("t")), built))
+	if _, err := a.Run(context.Background(), "r", agent.UserText("q")); err != nil {
 		t.Fatal(err)
 	}
 	recs, _ := store.History(context.Background(), "r")

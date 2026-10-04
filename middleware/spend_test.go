@@ -8,6 +8,7 @@ import (
 	"time"
 
 	"github.com/bide-ai/bide/agent"
+	"github.com/bide-ai/bide/agent/agenttest"
 	"github.com/bide-ai/bide/middleware"
 )
 
@@ -60,11 +61,14 @@ func (m *billedModel) Stream(ctx context.Context, req agent.Request) (*agent.Str
 func TestRetry_SpendCountsEveryAttempt(t *testing.T) {
 	m := &billedModel{u: billed, bad: 1, toolFirst: true} // the tool call leaves a next turn to stop
 	var meter middleware.CostMeter
-	lookup := agent.Func("lookup", "", agent.Safety{ReadOnly: true}, func(context.Context, struct{}) (string, error) { return "x", nil })
-	a := agent.New(m, agent.NewMemStore(), lookup).
-		Use(middleware.Cost(&meter, perInput), middleware.Retry(1, middleware.WithBackoff(0, 0))).
-		WithTokenBudget(200)
-	_, err := a.Run(context.Background(), "r", "q")
+	lookup := agent.MustFunc("lookup", "", func(context.Context, struct{}) (string, error) { return "x", nil }, agent.WithSafety(agent.Safety{ReadOnly: true}))
+	a := agenttest.Must(agenttest.MustNew(
+		m,
+		agenttest.MemJournal(),
+		agent.WithTools(lookup),
+		agent.WithMiddleware(middleware.Cost(&meter, perInput), middleware.Retry(1, middleware.WithBackoff(0, 0))),
+	).With(agent.WithTokenBudget(200)))
+	_, err := a.Run(context.Background(), "r", agent.UserText("q"))
 	if !errors.Is(err, agent.ErrBudgetExceeded) {
 		t.Fatalf("err = %v, want ErrBudgetExceeded (the first turn used 240 tokens)", err)
 	}
@@ -89,8 +93,12 @@ func TestHedge_SpendCountsFailedTargets(t *testing.T) {
 	backup := &billedModel{u: billed}
 	var meter middleware.CostMeter
 	// A long delay: the backup fires as soon as the primary fails, so the order is fixed.
-	a := agent.New(primary, agent.NewMemStore()).Use(middleware.Cost(&meter, perInput), middleware.Hedge(time.Hour, backup))
-	res, err := a.RunResult(context.Background(), "r", "q")
+	a := agenttest.MustNew(
+		primary,
+		agenttest.MemJournal(),
+		agent.WithMiddleware(middleware.Cost(&meter, perInput), middleware.Hedge(time.Hour, backup)),
+	)
+	res, err := a.Run(context.Background(), "r", agent.UserText("q"))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -109,9 +117,13 @@ func TestRetry_SpendWhenCancelledMidAttempt(t *testing.T) {
 	defer cancel()
 	m := &billedModel{u: billed, bad: 1, block: cancel}
 	var meter middleware.CostMeter
-	store := agent.NewMemStore()
-	a := agent.New(m, store).Use(middleware.Cost(&meter, perInput), middleware.Retry(3, middleware.WithBackoff(0, 0)))
-	if _, err := a.Run(ctx, "r", "q"); !errors.Is(err, context.Canceled) {
+	store := agenttest.MemJournal()
+	a := agenttest.MustNew(
+		m,
+		store,
+		agent.WithMiddleware(middleware.Cost(&meter, perInput), middleware.Retry(3, middleware.WithBackoff(0, 0))),
+	)
+	if _, err := a.Run(ctx, "r", agent.UserText("q")); !errors.Is(err, context.Canceled) {
 		t.Fatalf("err = %v, want context.Canceled", err)
 	}
 	if meter.Snapshot().Spend != billed || meter.Snapshot().Answer != (agent.Usage{}) {

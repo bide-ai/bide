@@ -8,23 +8,25 @@ import (
 	"testing"
 
 	"github.com/bide-ai/bide/agent"
+	"github.com/bide-ai/bide/agent/agenttest"
+	"github.com/bide-ai/bide/internal/journaltest"
 )
 
 // A completed run whose nodes ran Parallel tasks and nested Steps conforms.
 func TestRev103d_ConformParallelAndNestedSteps(t *testing.T) {
 	ctx := context.Background()
-	mem := agent.NewMemStore()
+	mem := agenttest.MemJournal()
 	b := New[string, string]("par")
 	a := b.Step("a", func(ctx context.Context, in string) (string, error) {
-		res, err := agent.Parallel(ctx, mem, "r", []agent.Task[string]{
+		res, err := mem.Parallel(ctx, "r", []agent.Task[string]{
 			{Name: "x", Fn: func(context.Context) (string, error) { return "<x>", nil }},
 			{Name: "y:z", Fn: func(context.Context) (string, error) { return "&y", nil }},
 		}, agent.WithMaxConcurrency(2))
 		if err != nil {
 			return "", err
 		}
-		outer, err := agent.Step(ctx, mem, "r", "outer", func(ctx context.Context) (string, error) {
-			return agent.Step(ctx, mem, "r", "inner", func(context.Context) (string, error) { return "in", nil })
+		outer, err := mem.Step(ctx, "r", "outer", func(ctx context.Context) (string, error) {
+			return mem.Step(ctx, "r", "inner", func(context.Context) (string, error) { return "in", nil })
 		})
 		return in + res[0] + res[1] + outer, err
 	})
@@ -50,11 +52,11 @@ func TestRev103d_ConformParallelAndNestedSteps(t *testing.T) {
 // A run that halted mid-node (the terminal, and a Step inside a node), resolved and resumed, conforms.
 func TestRev103d_ConformAfterHaltResolved(t *testing.T) {
 	ctx := context.Background()
-	mem := agent.NewMemStore()
+	mem := agenttest.MemJournal()
 	var fails = map[string]bool{"inside": true, "last": true}
 	b := New[int, string]("halts")
 	a := b.Step("a", func(ctx context.Context, n int) (int, error) {
-		return agent.Step(ctx, mem, "r", "inside", func(context.Context) (int, error) {
+		return mem.Step(ctx, "r", "inside", func(context.Context) (int, error) {
 			if fails["inside"] {
 				return 0, errors.New("crash inside")
 			}
@@ -118,13 +120,13 @@ func TestRev103d_ResumeAcrossTheEscapingChange(t *testing.T) {
 		t.Fatal(err)
 	}
 	in := map[string]string{"k": "<in>", "z<": "&"}
-	src := agent.NewMemStore()
+	src := agenttest.MemJournal()
 	want, err := flow.Run(ctx, src, "r", in)
 	if err != nil {
 		t.Fatal(err)
 	}
 	recs, _ := src.History(ctx, "r")
-	old := agent.NewMemStore()
+	old := agenttest.MemJournal()
 	for _, r := range recs {
 		if r.Kind == agent.StepHeader || r.Name == "node:c" || r.Name == "attempt:step:node:c" || r.Name == "run:complete" {
 			continue
@@ -141,7 +143,7 @@ func TestRev103d_ResumeAcrossTheEscapingChange(t *testing.T) {
 			_ = json.Unmarshal(r.Result, &s)
 			r.Result, _ = json.Marshal(s)
 		}
-		if _, err := old.Do(ctx, "r", r.Name, func(context.Context) (agent.Record, error) { return r, nil }); err != nil {
+		if _, err := journaltest.Do(ctx, old, "r", r.Name, func(context.Context) (agent.Record, error) { return r, nil }); err != nil {
 			t.Fatal(err)
 		}
 	}

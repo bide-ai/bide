@@ -12,17 +12,17 @@ import (
 
 type tenantKey struct{}
 
-// AuditedStore implements Unwrap() Durable, so it must pass run IDs and names through unchanged,
-// whatever the context (see agent.Durable).
-func TestAuditedStore_KeepsTheDurableWrapperContract(t *testing.T) {
+// AuditedStore implements Unwrap() Store, so it must pass run IDs and names through unchanged,
+// whatever the context (see agent.Store).
+func TestAuditedStore_KeepsTheStoreWrapperContract(t *testing.T) {
 	_, priv, err := ed25519.GenerateKey(nil)
 	if err != nil {
 		t.Fatal(err)
 	}
 	a := context.WithValue(context.Background(), tenantKey{}, "A")
 	b := context.WithValue(context.Background(), tenantKey{}, "B")
-	storetest.CheckDurableWrapper(t, func(d agent.Durable) agent.Durable {
-		s, err := audit.NewAuditedStore(d, audit.Ed25519Signer{Priv: priv}, audit.NewMemAnchorLog())
+	storetest.CheckWrapper(t, func(inner agent.Store) agent.Store {
+		s, err := audit.NewAuditedStore(inner, audit.Ed25519Signer{Priv: priv}, audit.NewMemAnchorLog())
 		if err != nil {
 			t.Fatal(err)
 		}

@@ -25,17 +25,17 @@ func TestBuildRequest_NoToolConfigWithoutTools(t *testing.T) {
 // Gemini's own name rule: dots and colons allowed, a leading digit or dash not.
 func TestBuildRequest_GeminiToolNames(t *testing.T) {
 	stub := func(n string) agent.Tool {
-		return agent.Func(n, "t", agent.Safety{}, func(context.Context, struct {
+		return agent.MustFunc(n, "t", func(context.Context, struct {
 			Q string `json:"q"`
 		}) (int, error) {
 			return 0, nil
 		})
 	}
-	if _, err := New("k").buildRequest(agent.Request{Tools: []agent.ToolSpec{agent.SpecOf(stub("ns.tool:v1")), agent.SpecOf(stub("_x"))}}); err != nil {
+	if _, err := New("k").buildRequest(agent.Request{Tools: []agent.ToolSpec{stub("ns.tool:v1").Spec(), stub("_x").Spec()}}); err != nil {
 		t.Errorf("dotted name refused: %v", err)
 	}
 	for _, n := range []string{"1abc", "-x"} {
-		if _, err := New("k").buildRequest(agent.Request{Tools: []agent.ToolSpec{agent.SpecOf(stub(n))}}); !errors.Is(err, agent.ErrConfig) {
+		if _, err := New("k").buildRequest(agent.Request{Tools: []agent.ToolSpec{stub(n).Spec()}}); !errors.Is(err, agent.ErrConfig) {
 			t.Errorf("%q: err = %v, want ErrConfig", n, err)
 		}
 	}

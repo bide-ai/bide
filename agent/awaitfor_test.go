@@ -22,10 +22,11 @@ type awaitForTool struct {
 	arrived *bool
 }
 
-func (t *awaitForTool) Name() string                { return t.name }
-func (t *awaitForTool) Description() string         { return "" }
-func (t *awaitForTool) Safety() Safety              { return t.safety }
-func (t *awaitForTool) ArgsSchema() json.RawMessage { return nil }
+// Spec describes the tool to the agent (see Tool).
+func (t *awaitForTool) Spec() ToolSpec {
+	return ToolSpec{Name: t.name, Description: "", Input: json.RawMessage(`{"type":"object"}`), Safety: t.safety}
+}
+
 func (t *awaitForTool) Call(ctx context.Context, _ json.RawMessage) (json.RawMessage, error) {
 	*t.calls++
 	v, ok, err := AwaitFor[string](ctx, t.sig, t.d)
@@ -44,22 +45,22 @@ func (t *awaitForTool) Call(ctx context.Context, _ json.RawMessage) (json.RawMes
 // Signal-first: a tool pauses on AwaitFor; Signal delivers the event before the deadline;
 // re-running the same run resolves the await with (payload, true) and completes.
 func TestAwaitFor_SignalFirst(t *testing.T) {
-	store := NewMemStore()
+	store := memJournal()
 	var clk int64 = 1000
 	now := func() time.Time { return time.Unix(atomic.LoadInt64(&clk), 0) }
-	ctx := ContextWithClock(context.Background(), now)
+	ctx := contextWithClock(context.Background(), now)
 
 	var calls int
 	var got string
 	var arrived bool
 	tool := &awaitForTool{name: "watch", safety: Safety{ReadOnly: true}, sig: "webhook", d: time.Hour, calls: &calls, got: &got, arrived: &arrived}
 	m := &scriptModel{turns: [][]Emit{toolTurn("c1", "watch", `{}`), textTurn("done")}}
-	a := New(m, store, tool)
+	a := mustNew(m, store, WithTools(tool))
 
-	_, err := a.Run(ctx, "r", "hi")
-	var awt *Awaiting
+	_, err := a.Run(ctx, "r", UserText("hi"))
+	var awt *SignalPending
 	if !errors.As(err, &awt) {
-		t.Fatalf("err = %v, want *Awaiting", err)
+		t.Fatalf("err = %v, want *SignalPending", err)
 	}
 	if awt.Name != "webhook" {
 		t.Fatalf("awaiting = %+v", awt)
@@ -69,14 +70,15 @@ func TestAwaitFor_SignalFirst(t *testing.T) {
 	}
 
 	// Deliver the signal before the deadline (clock has not advanced).
-	if err := Signal(context.Background(), store, "r", "webhook", "payload-1"); err != nil {
+	if err := store.Signal(context.Background(), "r", "webhook", "payload-1"); err != nil {
 		t.Fatalf("Signal: %v", err)
 	}
 
-	out, err := a.Run(ctx, "r", "hi") // same agent, resumes
+	res, err := a.Run(ctx, "r", UserText("hi")) // same agent, resumes
 	if err != nil {
 		t.Fatalf("resume Run: %v", err)
 	}
+	out := res.Message
 	if textOf(out) != "done" {
 		t.Fatalf("answer = %q", textOf(out))
 	}
@@ -95,23 +97,23 @@ func TestAwaitFor_SignalFirst(t *testing.T) {
 // resume run resolves the await with (zero, false) and the run completes on the timeout
 // branch.
 func TestAwaitFor_TimeoutFirst(t *testing.T) {
-	store := NewMemStore()
+	store := memJournal()
 	var clk int64 = 1000
 	now := func() time.Time { return time.Unix(atomic.LoadInt64(&clk), 0) }
-	ctx := ContextWithClock(context.Background(), now)
+	ctx := contextWithClock(context.Background(), now)
 
 	var calls int
 	var got string = "sentinel"
 	var arrived bool = true
 	tool := &awaitForTool{name: "watch", safety: Safety{ReadOnly: true}, sig: "webhook", d: time.Hour, calls: &calls, got: &got, arrived: &arrived}
 	m := &scriptModel{turns: [][]Emit{toolTurn("c1", "watch", `{}`), textTurn("done")}}
-	a := New(m, store, tool)
+	a := mustNew(m, store, WithTools(tool))
 
 	// First run: no signal, before the deadline, so the run pauses durably.
-	_, err := a.Run(ctx, "r", "hi")
-	var awt *Awaiting
+	_, err := a.Run(ctx, "r", UserText("hi"))
+	var awt *SignalPending
 	if !errors.As(err, &awt) {
-		t.Fatalf("err = %v, want *Awaiting", err)
+		t.Fatalf("err = %v, want *SignalPending", err)
 	}
 	if calls != 1 {
 		t.Fatalf("tool ran %d times before timeout, want 1", calls)
@@ -119,10 +121,11 @@ func TestAwaitFor_TimeoutFirst(t *testing.T) {
 
 	// Advance past the deadline (now+1h) and resume: the timeout wins.
 	atomic.StoreInt64(&clk, 1000+3600)
-	out, err := a.Run(ctx, "r", "hi")
+	res, err := a.Run(ctx, "r", UserText("hi"))
 	if err != nil {
 		t.Fatalf("resume Run: %v", err)
 	}
+	out := res.Message
 	if textOf(out) != "done" {
 		t.Fatalf("answer = %q", textOf(out))
 	}
@@ -142,26 +145,26 @@ func TestAwaitFor_TimeoutFirst(t *testing.T) {
 // deadline expires. This proves the wake time is fixed on the first encounter (at-most
 // once), not recomputed as now()+d on each resume.
 func TestAwaitFor_DeadlineStable(t *testing.T) {
-	store := NewMemStore()
+	store := memJournal()
 	var clk int64 = 1000
 	now := func() time.Time { return time.Unix(atomic.LoadInt64(&clk), 0) }
-	ctx := ContextWithClock(context.Background(), now)
+	ctx := contextWithClock(context.Background(), now)
 
 	var calls int
 	var arrived bool = true
 	tool := &awaitForTool{name: "watch", safety: Safety{ReadOnly: true}, sig: "webhook", d: time.Hour, calls: &calls, arrived: &arrived}
 	m := &scriptModel{turns: [][]Emit{toolTurn("c1", "watch", `{}`), textTurn("done")}}
-	a := New(m, store, tool)
+	a := mustNew(m, store, WithTools(tool))
 
 	// First run at t=1000: deadline is journaled as 1000+3600.
-	if _, err := a.Run(ctx, "r", "hi"); !errorsIsAwaiting(err) {
-		t.Fatalf("first run should pause with *Awaiting, got %v", err)
+	if _, err := a.Run(ctx, "r", UserText("hi")); !errorsIsAwaiting(err) {
+		t.Fatalf("first run should pause with *SignalPending, got %v", err)
 	}
 
 	// Resume at +30m: still before the original deadline. If the deadline had drifted to
 	// now()+1h it would push out, but it must stay fixed, so the run pauses again.
 	atomic.StoreInt64(&clk, 1000+1800)
-	if _, err := a.Run(ctx, "r", "hi"); !errorsIsAwaiting(err) {
+	if _, err := a.Run(ctx, "r", UserText("hi")); !errorsIsAwaiting(err) {
 		t.Fatalf("resume before the fixed deadline should still pause, got %v", err)
 	}
 
@@ -189,10 +192,11 @@ func TestAwaitFor_DeadlineStable(t *testing.T) {
 
 	// Resume at the original deadline: now the timeout wins and the run completes.
 	atomic.StoreInt64(&clk, 1000+3600)
-	out, err := a.Run(ctx, "r", "hi")
+	res, err := a.Run(ctx, "r", UserText("hi"))
 	if err != nil {
 		t.Fatalf("resume at the deadline should complete, got %v", err)
 	}
+	out := res.Message
 	if textOf(out) != "done" {
 		t.Fatalf("answer = %q", textOf(out))
 	}
@@ -202,6 +206,6 @@ func TestAwaitFor_DeadlineStable(t *testing.T) {
 }
 
 func errorsIsAwaiting(err error) bool {
-	var awt *Awaiting
+	var awt *SignalPending
 	return errors.As(err, &awt)
 }

@@ -74,7 +74,7 @@ func (b ProofBundle) Verify(v Verifier) error {
 // the STH signed), so the bundle binds to an anchored STH rather than a freshly minted one.
 // It fails if index is outside that tree, if the record is redacted, or if sth.Root does not
 // match runID's journal at that size (wrong STH, or the history diverged from what was signed).
-func ProveRecord(ctx context.Context, store agent.Durable, runID string, index int, sth SignedTreeHead) (ProofBundle, error) {
+func ProveRecord(ctx context.Context, store *agent.Journal, runID string, index int, sth SignedTreeHead) (ProofBundle, error) {
 	recs, err := store.History(ctx, runID)
 	if err != nil {
 		return ProofBundle{}, fmt.Errorf("audit: load journal %s: %w", runID, err)
@@ -114,7 +114,7 @@ func proveIn(runID string, recs []agent.Record, index int, sth SignedTreeHead) (
 // by its ToolUseID, without the caller needing to know its journal index. It resolves the
 // completed tool-result record for toolUseID and proves it against sth. This is the ergonomic
 // entry point ("prove the charge on run X"), not "prove record index 7".
-func ProveToolCall(ctx context.Context, store agent.Durable, runID, toolUseID string, sth SignedTreeHead) (ProofBundle, error) {
+func ProveToolCall(ctx context.Context, store *agent.Journal, runID, toolUseID string, sth SignedTreeHead) (ProofBundle, error) {
 	recs, err := store.History(ctx, runID)
 	if err != nil {
 		return ProofBundle{}, fmt.Errorf("audit: load journal %s: %w", runID, err)

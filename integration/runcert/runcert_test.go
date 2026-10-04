@@ -8,8 +8,10 @@ import (
 	"testing"
 
 	"github.com/bide-ai/bide/agent"
+	"github.com/bide-ai/bide/agent/agenttest"
 	"github.com/bide-ai/bide/audit"
 	"github.com/bide-ai/bide/govern"
+	"github.com/bide-ai/bide/internal/journaltest"
 	gsm "github.com/blackwell-systems/gsm"
 )
 
@@ -47,7 +49,7 @@ func buildKYC(t *testing.T, name string, extra bool) (digest string, policyBytes
 // anchorGovernedRun anchors a policy + its convergence certificate and records one governed action
 // leaf under that policy (a StepToolResult whose result carries policy_digest, as
 // an attested govern.EventTool journals), so PolicyUsedKey picks it up as an exercised policy.
-func anchorGovernedRun(t *testing.T, ctx context.Context, store agent.Durable, runID, digest string, policyBytes, certBytes []byte) {
+func anchorGovernedRun(t *testing.T, ctx context.Context, store *agent.Journal, runID, digest string, policyBytes, certBytes []byte) {
 	t.Helper()
 	if _, err := audit.RecordPolicy(ctx, store, runID, policyBytes, digest); err != nil {
 		t.Fatalf("RecordPolicy: %v", err)
@@ -56,7 +58,7 @@ func anchorGovernedRun(t *testing.T, ctx context.Context, store agent.Durable, r
 		t.Fatalf("RecordConvergence: %v", err)
 	}
 	// A governed-action leaf: a completed tool call whose result embeds the policy digest.
-	_, err := store.Do(ctx, runID, "action:"+digest, func(context.Context) (agent.Record, error) {
+	_, err := journaltest.Do(ctx, store, runID, "action:"+digest, func(context.Context) (agent.Record, error) {
 		return agent.Record{
 			Kind:      agent.StepToolResult,
 			ToolUseID: "call_" + digest[:8],
@@ -72,7 +74,7 @@ func anchorGovernedRun(t *testing.T, ctx context.Context, store agent.Durable, r
 // convergence-certified policy produces a certificate that verifies offline under the public key.
 func TestCertifyAndVerifyRun(t *testing.T) {
 	ctx := context.Background()
-	store := agent.NewMemStore()
+	store := agenttest.MemJournal()
 	const runID = "run-ok"
 
 	digest, policyBytes, certBytes := buildKYC(t, "kyc-decision", false)
@@ -124,7 +126,7 @@ func TestCertifyAndVerifyRun(t *testing.T) {
 // verifier's allowlist fails VerifyRun.
 func TestCertifyRunRejectsDisallowedPolicy(t *testing.T) {
 	ctx := context.Background()
-	store := agent.NewMemStore()
+	store := agenttest.MemJournal()
 	const runID = "run-bad"
 
 	digest, policyBytes, certBytes := buildKYC(t, "kyc-decision", false)
@@ -163,7 +165,7 @@ func TestCertifyRunRejectsDisallowedPolicy(t *testing.T) {
 // signed root, so VerifyRun fails only-approved-policies.
 func TestVerifyRunDetectsHiddenPolicy(t *testing.T) {
 	ctx := context.Background()
-	store := agent.NewMemStore()
+	store := agenttest.MemJournal()
 	const runID = "run-two"
 
 	dA, pbA, cbA := buildKYC(t, "kyc-A", false)

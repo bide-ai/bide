@@ -21,7 +21,7 @@ import (
 // several processes recovering against a shared store all re-drive the same in-flight runs. That is
 // safe but wasteful: side effects stay at-most-once because each non-idempotent call is guarded by
 // an exclusive attempt claim (ClaimAttempt), but the drivers duplicate model calls and a loser of a
-// claim halts with ResumeHalt. A store that implements Leaser lets a driver take a time-bounded lease
+// claim halts with OutcomeUnknown. A store that implements Leaser lets a driver take a time-bounded lease
 // on a run so normally only the holder drives it; a dead holder's lease expires and another process
 // takes over, which is the high-availability property. Recover uses it automatically when the store
 // provides it. A lease is an efficiency and liveness mechanism, not the safety one: no lease can
@@ -155,7 +155,7 @@ func (m *MemStore) ReleaseLease(_ context.Context, runID, holder string) error {
 //	    _, err := ag.Run(ctx, runID, input)
 //	    return err
 //	}, agent.WithLeaseHolder("worker-1"))
-func Lease(ctx context.Context, store Durable, runID string, drive func(context.Context) error, opts ...LeaseOption) (bool, error) {
+func Lease(ctx context.Context, store *Journal, runID string, drive func(context.Context) error, opts ...LeaseOption) (bool, error) {
 	cfg, err := leaseConfig("Lease", opts, LeaseOption.applyLease)
 	if err != nil {
 		return false, err
@@ -165,8 +165,8 @@ func Lease(ctx context.Context, store Durable, runID string, drive func(context.
 
 // leaseRun is Lease under a configuration leaseConfig validated: a recovery pass calls it for
 // each run with its own, so it builds no options per run.
-func leaseRun(ctx context.Context, store Durable, runID string, drive func(context.Context) error, cfg recoverConfig) (bool, error) {
-	leaser, ok := capabilityOf[Leaser](store)
+func leaseRun(ctx context.Context, store *Journal, runID string, drive func(context.Context) error, cfg recoverConfig) (bool, error) {
+	leaser, ok := Capability[Leaser](store.store)
 	if !ok {
 		return true, drive(ctx) // no leasing available: drive unconditionally
 	}
