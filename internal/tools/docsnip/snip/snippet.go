@@ -1,5 +1,5 @@
 // Package snip reads the Go code blocks of bide's markdown documentation and makes each a Go
-// file: docsnip type-checks them, and the migrate tool rewrites them.
+// file, which docsnip type-checks.
 package snip
 
 import (

@@ -4,9 +4,9 @@
 // RunResult, ...), the pause aliases, the Durable interface and its shims, the old Tool method
 // set's SpecOf, the context decorators, the mcp package's old path, and agent.ScriptedModel.
 //
-// It scans every .go, go.mod and .md file below the root, except the migrate tool (which rewrites
-// these names and so must name them), this command, CHANGELOG.md, the release notes
-// (docs/releases) and the dated design records (docs/design), which describe the API as it was.
+// It scans every .go, go.mod and .md file below the root, except this command (which must name
+// them), CHANGELOG.md, the release notes (docs/releases) and the dated design records
+// (docs/design), which describe the API as it was.
 // With -godoc, it also runs `go doc -all` on every public package of every module and checks its
 // output, the API as a user reads it, for the same names and for the word "transitional".
 //
