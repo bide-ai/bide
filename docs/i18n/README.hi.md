@@ -207,7 +207,7 @@ if halt, ok := errors.AsType[*agent.OutcomeUnknown](err); ok {
 
 Go 1.27 की आवश्यकता है (कोर जेनेरिक मेथड इस्तेमाल करता है)। यदि `go version` पुराना है, तो अपग्रेड करें या `GOTOOLCHAIN=go1.27.0` सेट करें।
 
-कोर पैकेज `agent` है, जो `github.com/bide-ai/bide/agent` से import होता है (जैसा नीचे का ब्लॉक दिखाता है)।
+कोर पैकेज `agent` है, जो `github.com/bide-ai/bide/agent` से import होता है (जैसा नीचे का ब्लॉक दिखाता है)। अपने मॉड्यूल में इसे और SQLite स्टोर को `go get github.com/bide-ai/bide/agent@latest github.com/bide-ai/bide/store/sqlite@latest` से इंस्टॉल करें (या कोड लिखकर `go mod tidy` चलाएँ)। API key नहीं है? [शुरुआती गाइड](../getting-started.md#no-api-key-use-agenttest) वही agent एक scripted model के साथ offline चलाती है।
 
 ```go
 package main
@@ -244,12 +244,15 @@ func main() {
 		}, agent.WithSafety(agent.Safety{ReadOnly: true}))
 
 	// Durable on-disk store: a crash mid-run resumes from here.
-	store, _ := sqlite.Open("agent.db")
-	j, err := agent.NewJournal(store)
+	store, err := sqlite.Open("agent.db")
 	if err != nil {
 		log.Fatal(err)
 	}
 	defer store.Close()
+	j, err := agent.NewJournal(store)
+	if err != nil {
+		log.Fatal(err)
+	}
 
 	a, err := agent.New(
 		model,
@@ -268,9 +271,9 @@ func main() {
 }
 ```
 
-लाइव स्मोक उदाहरण चलाएँ: `OPENROUTER_API_KEY=sk-... go run ./examples/smoke`
+लाइव स्मोक उदाहरण चलाएँ: `OPENROUTER_API_KEY=sk-... go run github.com/bide-ai/bide/examples/smoke@latest`
 
-`Run` एक `Message` इनपुट (पाठ, या पाठ और चित्र) और प्रति-रन विकल्प लेता है, और एक `Result` लौटाता है: अंतिम संदेश, पूरे रन का टोकन उपयोग (कैश और सब-एजेंटों सहित), मॉडल-ट्रन गिनती, और वॉल-क्लॉक अवधि। रन ID मान्य होने पर `Result` हर त्रुटि पर भी nil नहीं होता: एक ठहराव, एक रुकावट, एक विफलता, एक सागा का निरस्तीकरण, एक रद्दीकरण:
+`Run` एक `Message` इनपुट (पाठ, या पाठ और चित्र) और प्रति-रन विकल्प लेता है, और एक `Result` लौटाता है: अंतिम संदेश, पूरे रन का टोकन उपयोग (कैश और सब-एजेंटों सहित), मॉडल-ट्रन गिनती, और वॉल-क्लॉक अवधि। `Turns` केवल इस invocation के मॉडल टर्न गिनता है, इसलिए फिर से शुरू किया गया रन, या फिर से चलाया गया पूरा हो चुका रन, पूरे रन से कम टर्न दिखा सकता है (`Usage` और `Spend` पूरे रन के होते हैं)। रन ID मान्य होने पर `Result` हर त्रुटि पर भी nil नहीं होता: एक ठहराव, एक रुकावट, एक विफलता, एक सागा का निरस्तीकरण, एक रद्दीकरण:
 
 <!-- docsnip: setup ctx context.Context; a *agent.Agent; runID string; input string -->
 ```go

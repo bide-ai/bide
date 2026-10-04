@@ -377,7 +377,10 @@ Requires Go 1.27 (the core uses generic methods). If `go version` is older, upgr
 `GOTOOLCHAIN=go1.27.0`.
 
 The core package is `agent`, imported from `github.com/bide-ai/bide/agent`
-(as the block below shows).
+(as the block below shows). In a module of your own, install it and the SQLite store with
+`go get github.com/bide-ai/bide/agent@latest github.com/bide-ai/bide/store/sqlite@latest` (or write the code and run `go mod tidy`).
+No API key? The [getting started guide](docs/getting-started.md#no-api-key-use-agenttest) runs the
+same agent offline with a scripted model.
 
 ```go
 package main
@@ -414,12 +417,15 @@ func main() {
 		}, agent.WithSafety(agent.Safety{ReadOnly: true}))
 
 	// Durable on-disk store: a crash mid-run resumes from here.
-	store, _ := sqlite.Open("agent.db")
-	j, err := agent.NewJournal(store)
+	store, err := sqlite.Open("agent.db")
 	if err != nil {
 		log.Fatal(err)
 	}
 	defer store.Close()
+	j, err := agent.NewJournal(store)
+	if err != nil {
+		log.Fatal(err)
+	}
 
 	a, err := agent.New(
 		model,
@@ -438,7 +444,7 @@ func main() {
 }
 ```
 
-Run the live smoke example: `OPENROUTER_API_KEY=sk-... go run ./examples/smoke`
+Run the live smoke example: `OPENROUTER_API_KEY=sk-... go run github.com/bide-ai/bide/examples/smoke@latest`
 
 A `Func` tool decodes its arguments **strictly**, so the tool reads exactly what the model sent.
 A call that is missing a required field (one the schema lists as required: not a pointer, and no
@@ -452,7 +458,9 @@ argument field the json tag the model sees in the schema.
 
 `Run` takes a `Message` input (text, or text and images) and per-run options, and returns a
 `Result`: the final message, token usage for the whole run (including cache and sub-agents), the
-model-turn count, and the wall-clock duration. The `Result` is non-nil on every error once the run
+model-turn count, and the wall-clock duration. `Turns` counts only the model turns this invocation
+made, so a resumed run, or a finished one driven again, can show fewer turns than the run made
+overall (`Usage` and `Spend` are the whole run's). The `Result` is non-nil on every error once the run
 ID is valid: a pause, a halt, a failure, a saga's abort, a cancellation:
 
 <!-- docsnip: setup ctx context.Context; a *agent.Agent; runID string; input string -->

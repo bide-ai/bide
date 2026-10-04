@@ -342,7 +342,10 @@ if halt, ok := errors.AsType[*agent.OutcomeUnknown](err); ok {
 `GOTOOLCHAIN=go1.27.0`.
 
 حزمة النواة هي `agent`، تُستورَد من `github.com/bide-ai/bide/agent`
-(كما تُظهِر الكتلة أدناه).
+(كما تُظهِر الكتلة أدناه). في وحدة خاصة بك، ثبّتها مع مخزن SQLite بالأمر
+`go get github.com/bide-ai/bide/agent@latest github.com/bide-ai/bide/store/sqlite@latest` (أو اكتب الشيفرة ثم شغّل `go mod tidy`).
+لا تملك مفتاح API؟ [دليل البدء](../getting-started.md#no-api-key-use-agenttest) يشغّل الوكيل نفسه
+دون اتصال بنموذج مُبرمَج سلفاً.
 
 ```go
 package main
@@ -379,12 +382,15 @@ func main() {
 		}, agent.WithSafety(agent.Safety{ReadOnly: true}))
 
 	// Durable on-disk store: a crash mid-run resumes from here.
-	store, _ := sqlite.Open("agent.db")
-	j, err := agent.NewJournal(store)
+	store, err := sqlite.Open("agent.db")
 	if err != nil {
 		log.Fatal(err)
 	}
 	defer store.Close()
+	j, err := agent.NewJournal(store)
+	if err != nil {
+		log.Fatal(err)
+	}
 
 	a, err := agent.New(
 		model,
@@ -403,10 +409,10 @@ func main() {
 }
 ```
 
-شغّل مثال الاختبار الحيّ: `OPENROUTER_API_KEY=sk-... go run ./examples/smoke`
+شغّل مثال الاختبار الحيّ: `OPENROUTER_API_KEY=sk-... go run github.com/bide-ai/bide/examples/smoke@latest`
 
 تأخذ `Run` مدخلًا من نوع `Message` (نص، أو نص وصور) وخيارات لكل تشغيل، وتُرجِع `Result`: الرسالة النهائية،
-واستهلاك الرموز للتشغيلة كلها (شاملًا التخزين المؤقت والوكلاء الفرعيين)، وعدد أدوار النموذج، ومدّة الزمن الجداري.
+واستهلاك الرموز للتشغيلة كلها (شاملًا التخزين المؤقت والوكلاء الفرعيين)، وعدد أدوار النموذج، ومدّة الزمن الجداري. لا يعدّ `Turns` إلا أدوار النموذج في هذا الاستدعاء، فقد تُظهِر تشغيلة مُستأنَفة، أو منتهية تُشغَّل مجددًا، أدوارًا أقل مما أجرته التشغيلة كلها (أما `Usage` و`Spend` فللتشغيلة كلها).
 ولا يكون `Result` فارغًا (nil) مع أي خطأ متى كان معرّف التشغيلة صالحًا: توقّف مؤقت، أو توقّف، أو إخفاق، أو إلغاء saga، أو إلغاء:
 
 <!-- docsnip: setup ctx context.Context; a *agent.Agent; runID string; input string -->
