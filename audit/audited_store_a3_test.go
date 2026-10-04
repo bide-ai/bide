@@ -178,26 +178,84 @@ func TestAuditedStore_FailedFirstRecordAnchorsNoHeaderOnlyHead(t *testing.T) {
 	}
 }
 
-// An insert under a context that is done anchors nothing and reports nothing to OnError (the
-// anchoring would fail with the context); the next write covers what it stored.
-func TestAuditedStore_DoneContextDoesNotAnchor(t *testing.T) {
-	_, priv, _ := ed25519.GenerateKey(nil)
-	log := audit.NewMemAnchorLog()
-	var errs int
-	as, err := audit.NewAuditedStore(agent.NewMemStore(), edS(priv), log)
-	if err != nil {
-		t.Fatal(err)
+// cancelAfterCommit commits an Insert of name, then cancels the caller's context: the cancellation
+// lands between the commit and Insert's return (a drive cancelled while it writes run:complete).
+type cancelAfterCommit struct {
+	agent.Store
+	name   string
+	cancel context.CancelFunc
+	fail   bool // report an error after the commit
+}
+
+func (s *cancelAfterCommit) Insert(ctx context.Context, runID, name string, data []byte) (agent.Entry, bool, error) {
+	e, ins, err := s.Store.Insert(ctx, runID, name, data)
+	if name == s.name && s.cancel != nil {
+		s.cancel()
+		if s.fail {
+			return agent.Entry{}, false, errors.New("connection lost after commit")
+		}
 	}
-	as.OnError(func(string, error) { errs++ })
-	j := agenttest.MustJournal(as)
-	ctx, cancel := context.WithCancel(context.Background())
-	if _, err := journaltest.Put(context.Background(), j, "r", "a", agent.Record{Kind: agent.StepValue}); err != nil {
-		t.Fatal(err)
-	}
-	n := len(log.Entries())
-	cancel()
-	_, _, _ = as.Insert(ctx, "r", "b", nil)
-	if errs != 0 || len(log.Entries()) != n {
-		t.Fatalf("a done context: %d OnError calls, %d heads (was %d); want none and none", errs, len(log.Entries()), n)
+	return e, ins, err
+}
+
+// A write that committed under a context done before Insert anchors cannot be anchored then (the
+// read and the publish would fail with the context), but it must not go unreported: OnError gets
+// an error wrapping the context's, the signal to Reanchor. So does one whose insert errored (it
+// may have committed). An insert that stored nothing (the entry was already there) stays silent.
+func TestAuditedStore_DoneContextSignalsWhatItCannotAnchor(t *testing.T) {
+	for _, c := range []struct {
+		name        string
+		fail, again bool
+		wantErrs    int
+	}{
+		{"committed", false, false, 1},
+		{"errored", true, false, 1},
+		{"stored nothing", false, true, 0},
+	} {
+		t.Run(c.name, func(t *testing.T) {
+			_, priv, _ := ed25519.GenerateKey(nil)
+			log := audit.NewMemAnchorLog()
+			inner := &cancelAfterCommit{Store: agent.NewMemStore(), name: "last", fail: c.fail}
+			as, err := audit.NewAuditedStore(inner, edS(priv), log)
+			if err != nil {
+				t.Fatal(err)
+			}
+			var errs []error
+			as.OnError(func(_ string, err error) { errs = append(errs, err) })
+			j := agenttest.MustJournal(as)
+			if _, err := journaltest.Put(context.Background(), j, "r", "first", agent.Record{Kind: agent.StepValue}); err != nil {
+				t.Fatal(err)
+			}
+			data, err := agent.JournalEntry("last", agent.Record{Kind: agent.StepValue})
+			if err != nil {
+				t.Fatal(err)
+			}
+			if c.again {
+				if _, _, err := as.Insert(context.Background(), "r", "last", data); err != nil {
+					t.Fatal(err)
+				}
+			}
+			heads := log.Len()
+			ctx, cancel := context.WithCancel(context.Background())
+			inner.cancel = cancel
+			_, _, _ = as.Insert(ctx, "r", "last", data)
+			if log.Len() != heads || len(errs) != c.wantErrs {
+				t.Fatalf("%d heads published (was %d), OnError %v; want none published and %d OnError calls", log.Len(), heads, errs, c.wantErrs)
+			}
+			for _, e := range errs {
+				if !errors.Is(e, context.Canceled) {
+					t.Fatalf("OnError got %v, want an error wrapping the context's", e)
+				}
+			}
+			if c.wantErrs > 0 {
+				if err := as.Reanchor(context.Background(), "r"); err != nil {
+					t.Fatal(err)
+				}
+				hist, _ := j.History(context.Background(), "r")
+				if last := log.Entries()[log.Len()-1].STH.Size; last != len(hist) {
+					t.Fatalf("after Reanchor the largest head covers %d of %d entries", last, len(hist))
+				}
+			}
+		})
 	}
 }

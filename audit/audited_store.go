@@ -82,22 +82,35 @@ const journalHeader = "@journal"
 // anchored heads never stop at its header): also after an insert that found the entry stored
 // (another writer's, or this writer's retry of a write whose first attempt committed but
 // reported an error, A3), and after one that failed, which may have committed all the same. The
-// anchoring never changes what Insert returns. Under a context that is done it does not anchor
-// (the read and the publish would fail with the context, and OnError would report only that): the
-// run's next write, or Reanchor, covers what the call stored.
+// anchoring never changes what Insert returns.
+//
+// Under a context that is done it cannot anchor (the read and the publish would fail with the
+// context), and anchoring without the caller's context could block with no deadline. If the call
+// stored the entry, or failed (it may have committed all the same), it reports an error wrapping
+// the context's to OnError, the signal to Reanchor the run: a run's last write, run:complete
+// included, may be written by a drive whose context is cancelled meanwhile. An insert that stored
+// nothing (the entry was already there) has nothing to anchor and reports nothing.
 func (a *AuditedStore) Insert(ctx context.Context, runID, name string, data []byte) (agent.Entry, bool, error) {
 	e, inserted, err := a.inner.Insert(ctx, runID, name, data)
-	if name != journalHeader && ctx.Err() == nil {
-		if aerr := a.anchorIfGrown(ctx, runID); aerr != nil && a.onErr != nil {
-			a.onErr(runID, aerr)
+	if name == journalHeader {
+		return e, inserted, err
+	}
+	if cerr := ctx.Err(); cerr != nil {
+		if (inserted || err != nil) && a.onErr != nil {
+			a.onErr(runID, fmt.Errorf("audit: run %s: %q not anchored: context done: %w", runID, name, cerr))
 		}
+		return e, inserted, err
+	}
+	if aerr := a.anchorIfGrown(ctx, runID); aerr != nil && a.onErr != nil {
+		a.onErr(runID, aerr)
 	}
 	return e, inserted, err
 }
 
 // Reanchor anchors runID's journal now, if it holds records no published head covers. A failed
-// publish is covered by the run's next write, but a run's last write has none: OnError is the
-// signal to call Reanchor for that run (once the anchor is reachable again), out of band. It
+// publish is covered by the run's next write, but a run's last write has none, and a write under
+// a context that is done is not anchored at all (see Insert): OnError is the signal to call
+// Reanchor for that run (once the anchor is reachable again), out of band. It
 // returns the anchoring error, and publishes nothing when the anchored head is current as far as
 // this AuditedStore knows: it remembers the heads it published, so another AuditedStore over the
 // same store (another process, or after a restart) publishes the current head again, which a

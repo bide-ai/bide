@@ -135,7 +135,8 @@ even when parallel tool calls land at once. Anchoring is a **side channel**: a `
 fails the durable step (the write already succeeded; failing it could wrongly retry a
 non-idempotent step), so publish errors go to an optional `OnError` hook instead, and the run's next
 write anchors a head covering the unanchored entries (a replay that writes nothing does not). A
-run's last write has no next write: on `OnError`, call `Reanchor(ctx, runID)` once the anchor is
+run's last write has no next write, and a write under a context that is done is not anchored (it
+is reported to `OnError` with the context's error): on `OnError`, call `Reanchor(ctx, runID)` once the anchor is
 reachable, which publishes a head over the whole journal if no published head covers it. When two processes anchor the same run (around a lease handoff),
 a smaller head can reach the anchor after a larger one; both are valid, so monitors compare a run's
 heads by size, not by arrival.

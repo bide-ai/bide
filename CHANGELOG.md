@@ -29,7 +29,7 @@ minor version (0.x.0) may include breaking API or journal-format changes; each o
 
 ### Added
 
-- `audit.AuditedStore.Reanchor(ctx, runID)`: anchors a run's journal now if no published head covers it, the recovery for a run whose last write's publish failed (`OnError` is the signal).
+- `audit.AuditedStore.Reanchor(ctx, runID)`: anchors a run's journal now if no published head covers it, the recovery for a run whose last write's publish failed, or whose write landed under a context that was done, which `Insert` cannot anchor and reports to `OnError` with the context's error (`OnError` is the signal).
 - CI checks that no removed name appears in Go code, godoc or docs (`internal/tools/oldnames`).
 
 ## [0.10.0] - 2026-10-03
