@@ -93,8 +93,9 @@ Bide closes to hold `maxFired=1`.
 ## LangGraph (Python)
 
 Not part of the result table above, and not run in CI. The SQLite result passed an
-independent fairness review ([#166](https://github.com/bide-ai/bide/pull/166)). The Postgres
-rows (`langgraph-pg`) are pending a review of their own.
+independent fairness review ([#166](https://github.com/bide-ai/bide/pull/166)), and the
+Postgres rows (`langgraph-pg`) passed their own
+([#167](https://github.com/bide-ai/bide/pull/167)).
 
 `python/langgraph/` is a Python harness, isolated from the Go modules, pinned with `uv`
 (`pyproject.toml` + `uv.lock`): langgraph 1.2.12, langgraph-checkpoint-sqlite 3.1.1,
@@ -181,7 +182,7 @@ persisted, so a task whose side effect ran but whose `put_writes` did not commit
 section describes `"sync"` as: "LangGraph persists changes synchronously before the next
 step starts."
 
-**Postgres (pending review).** The second row is the same configuration on `PostgresSaver` (one autocommit
+**Postgres.** The second row is the same configuration on `PostgresSaver` (one autocommit
 connection, as `PostgresSaver.from_conn_string` opens it), with the same crash model and
 lock. The outcome is the same: every configuration re-fires, and a crash at the first write
 after the charge re-fires in every variant and mode. In three runs node/sync gave
