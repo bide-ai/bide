@@ -7,11 +7,11 @@ execution and is attached with `agent.WithToolMiddleware`. All of it is
 optional and stdlib-only, and it rides the durable substrate, so a retried or hedged call is still
 journaled at most once and a crash still resumes safely.
 
-<!-- docsnip: setup model agent.Model; store *agent.Journal; tools []agent.Tool; backupModel agent.Model -->
+<!-- docsnip: setup model agent.Model; journal *agent.Journal; tools []agent.Tool; backupModel agent.Model -->
 ```go
 a, err := agent.New(
 	model,
-	store,
+	journal,
 	agent.WithTools(tools...),
 	agent.WithMiddleware(
 		middleware.Hedge(800*time.Millisecond, backupModel), // race a slow primary against a backup

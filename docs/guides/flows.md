@@ -18,7 +18,7 @@ is simpler and wins on every other axis.
 
 ## A flow, end to end
 
-<!-- docsnip: setup ctx context.Context; store *agent.Journal; runID string; order Order; type Order struct{}; type Receipt struct{}; type Assessment struct{ Rush bool }; type Reservation struct{}; func classifyOrder(context.Context, Order) (Assessment, error); func reserveInventory(context.Context, Assessment) (Reservation, error); func finalizeReceipt(context.Context, Reservation) (Receipt, error); func declineReceipt(context.Context, Assessment) (Receipt, error); returns error -->
+<!-- docsnip: setup ctx context.Context; journal *agent.Journal; runID string; order Order; type Order struct{}; type Receipt struct{}; type Assessment struct{ Rush bool }; type Reservation struct{}; func classifyOrder(context.Context, Order) (Assessment, error); func reserveInventory(context.Context, Assessment) (Reservation, error); func finalizeReceipt(context.Context, Reservation) (Receipt, error); func declineReceipt(context.Context, Assessment) (Receipt, error); returns error -->
 ```go
 import (
     "github.com/bide-ai/bide/agent"
@@ -43,10 +43,10 @@ if err != nil {
     return err
 }
 
-out, err := flow.Run(ctx, store, runID, order)           // Order in, Receipt out
+out, err := flow.Run(ctx, journal, runID, order)           // Order in, Receipt out
 ```
 
-`store` is an `*agent.Journal` over any store (an in-memory store for tests; `store/sqlite` or
+`journal` is an `*agent.Journal` over any store (an in-memory store for tests; `store/sqlite` or
 `store/postgres` for production). `runID` is the durable identity: re-running the same `runID` resumes from the journal.
 
 ## The pieces

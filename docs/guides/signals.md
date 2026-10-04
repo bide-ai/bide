@@ -35,10 +35,10 @@ if err != nil {
 // ... continue with confirmed ...
 ```
 
-<!-- docsnip: setup ctx context.Context; store *agent.Journal; runID string; type PaymentConfirmed struct{} -->
+<!-- docsnip: setup ctx context.Context; journal *agent.Journal; runID string; type PaymentConfirmed struct{} -->
 ```go
 // Deliver-side, from a webhook handler in any process:
-err := store.Signal(ctx, runID, "payment-confirmed", PaymentConfirmed{...})
+err := journal.Signal(ctx, runID, "payment-confirmed", PaymentConfirmed{...})
 ```
 
 On first encounter with no signal recorded, `Await` returns the zero `T` and a `*SignalPending`
@@ -87,13 +87,13 @@ A channel is the multi-message form of a signal: an ordered, per-run stream you 
 exactly once. `Journal.Enqueue[T]` (formerly `Send`) appends a message deduped by key; `Receive[T]`
 returns the oldest not-yet-acked message in delivery order; `Ack` marks a message consumed so `Receive` advances.
 
-<!-- docsnip: setup ctx context.Context; store *agent.Journal; runID string; eventID string; type MyEvent struct{} -->
+<!-- docsnip: setup ctx context.Context; journal *agent.Journal; runID string; eventID string; type MyEvent struct{} -->
 ```go
 // Deliver-side: append a message, deduped by key.
-err := store.Enqueue(ctx, runID, "events", eventID, MyEvent{...})
+err := journal.Enqueue(ctx, runID, "events", eventID, MyEvent{...})
 ```
 
-<!-- docsnip: setup ctx context.Context; store *agent.Journal; runID string; type MyEvent struct{}; returns (any, error) -->
+<!-- docsnip: setup ctx context.Context; journal *agent.Journal; runID string; type MyEvent struct{}; returns (any, error) -->
 ```go
 // Run-side, inside a retry-safe tool: consume the stream exactly once.
 for {
@@ -102,7 +102,7 @@ for {
         return nil, err // *SignalPending when the channel is drained: the run pauses here
     }
     // ... durably handle msg.Payload ...
-    if err := agent.Ack(ctx, store, runID, "events", msg.Key); err != nil {
+    if err := agent.Ack(ctx, journal, runID, "events", msg.Key); err != nil {
         return nil, err
     }
 }
@@ -152,11 +152,11 @@ in the top-level run, so re-invoking `RootRunID` is always correct. With the Wak
 the wake for `RootRunID` as well (`Sleep` in a sub-agent already schedules its wake for the root
 run).
 
-<!-- docsnip: setup ctx context.Context; store *agent.Journal; err error; payload any; rootAgent *agent.Agent; savedInput string -->
+<!-- docsnip: setup ctx context.Context; journal *agent.Journal; err error; payload any; rootAgent *agent.Agent; savedInput string -->
 ```go
 if aw, ok := errors.AsType[*agent.SignalPending](err); ok {
     // later, when the event arrives:
-    _ = store.Signal(ctx, aw.RunID, aw.Name, payload)
+    _ = journal.Signal(ctx, aw.RunID, aw.Name, payload)
     _, err = rootAgent.Run(ctx, aw.RootRunID, agent.UserText(savedInput))
 }
 ```

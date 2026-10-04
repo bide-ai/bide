@@ -54,7 +54,7 @@ func run(label string, a *agent.Agent) {
 }
 
 func main() {
-	store, err := agent.NewJournal(agent.NewMemStore())
+	journal, err := agent.NewJournal(agent.NewMemStore())
 	if err != nil {
 		log.Fatal(err)
 	}
@@ -64,14 +64,14 @@ func main() {
 	slowPrimary := stub{name: "primary", delay: 400 * time.Millisecond}
 	fastBackup := stub{name: "backup", delay: 30 * time.Millisecond}
 	fmt.Println("== tail latency ==")
-	ag, err := agent.New(slowPrimary, store)
+	ag, err := agent.New(slowPrimary, journal)
 	if err != nil {
 		log.Fatal(err)
 	}
 	run("no hedge (slow primary)", ag)
 	ag2, err := agent.New(
 		slowPrimary,
-		store,
+		journal,
 		agent.WithMiddleware(middleware.Hedge(50*time.Millisecond, fastBackup)),
 	)
 	if err != nil {
@@ -83,14 +83,14 @@ func main() {
 	// target brings the backup forward immediately, so the run does not wait out the delay.
 	downPrimary := stub{name: "primary", delay: 20 * time.Millisecond, down: true}
 	fmt.Println("\n== provider outage ==")
-	ag3, err := agent.New(downPrimary, store)
+	ag3, err := agent.New(downPrimary, journal)
 	if err != nil {
 		log.Fatal(err)
 	}
 	run("no hedge (primary down)", ag3)
 	ag4, err := agent.New(
 		downPrimary,
-		store,
+		journal,
 		agent.WithMiddleware(middleware.Hedge(500*time.Millisecond, fastBackup)),
 	)
 	if err != nil {
