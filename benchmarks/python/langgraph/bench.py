@@ -4,39 +4,53 @@
 
 Prints one row per configuration, in the Go harness's row format. The "langgraph" row is
 the trpc.go shape (start -> charge, side effect in the node) under durability="sync",
-LangGraph's most durable mode.
+LangGraph's most durable mode, on SqliteSaver; "langgraph-pg" is the same on PostgresSaver
+in a throwaway database (skipped when no Postgres is reachable, see lg_adapter.PG_ADMIN_DSN).
 """
 
 import argparse
 import importlib.metadata as md
+import signal
+import sys
 
 from chaos import verify
-from lg_adapter import DURABILITY, VARIANTS, WRITES, LangGraph
+from lg_adapter import DURABILITY, VARIANTS, WRITES, LangGraph, LangGraphPostgres, postgres_unavailable
 
 
 def main() -> None:
     ap = argparse.ArgumentParser()
     ap.add_argument("--seeds", type=int, default=200)
     args = ap.parse_args()
+    # Exit through the finally blocks on SIGTERM too, so the Postgres database is dropped.
+    signal.signal(signal.SIGTERM, lambda *_: sys.exit(1))
     print(
         f"langgraph=={md.version('langgraph')} "
         f"langgraph-checkpoint-sqlite=={md.version('langgraph-checkpoint-sqlite')} "
-        f"langgraph-checkpoint=={md.version('langgraph-checkpoint')}"
+        f"langgraph-checkpoint=={md.version('langgraph-checkpoint')} "
+        f"langgraph-checkpoint-postgres=={md.version('langgraph-checkpoint-postgres')}"
     )
-    print(f"  {run('langgraph', 'node', 'sync', args.seeds)}")
-    print("all configurations (variant/durability):")
-    for variant in VARIANTS:
-        for durability in DURABILITY:
-            rep = run(f"lg/{variant}/{durability}", variant, durability, args.seeds)
-            print(f"  {rep}  writes={WRITES[(variant, durability)]}", flush=True)
+    no_pg = postgres_unavailable()
+    print(f"  {run('langgraph', LangGraph, 'node', 'sync', args.seeds)}")
+    if no_pg:
+        print(f"  langgraph-pg     skipped: {no_pg}")
+    else:
+        print(f"  {run('langgraph-pg', LangGraphPostgres, 'node', 'sync', args.seeds)}")
+    for backend, cls in (("sqlite", LangGraph), ("postgres", LangGraphPostgres)):
+        if backend == "postgres" and no_pg:
+            continue
+        print(f"all configurations on {backend} (variant/durability):")
+        for variant in VARIANTS:
+            for durability in DURABILITY:
+                rep = run(f"lg/{variant}/{durability}", cls, variant, durability, args.seeds)
+                print(f"  {rep}  writes={WRITES[(variant, durability)]}", flush=True)
 
 
-def run(name: str, variant: str, durability: str, seeds: int):
-    sys = LangGraph(variant, durability)
+def run(name: str, cls, variant: str, durability: str, seeds: int):
+    system = cls(variant, durability)
     try:
-        return verify(name, sys, seeds)
+        return verify(name, system, seeds)
     finally:
-        sys.close()
+        system.close()
 
 
 if __name__ == "__main__":
