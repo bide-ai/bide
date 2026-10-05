@@ -9,6 +9,8 @@ journal format can change between pre-releases without a version bump. Curated h
 
 ## [Unreleased]
 
+## [0.12.0] - 2026-10-05
+
 ### Fixed
 
 - Correction: the godoc of `govern.FederatedGovernor` and `govern.FederatedEventTool` said cross-registry conflicts resolve without coordination by the authority argument. That is false (normalization-confluence `FederationGRS.v`, `fed_thm_fed_convergence_refuted`). The authority argument makes the federated repair terminate in a unique valid normal form; event order across registries is safe because gsm v0.13.0's `Federation.Build` checks cross-registry CC (C1) and repaired CC (C2) and rejects a federation that fails either. Under gsm v0.12.0, which bide required, a federation could build whose agreed state depended on which event was appended first. The godoc, README, governance guide, concepts and known limitations now say so ([#172]).
@@ -802,7 +804,8 @@ First public release.
 - `bide-audit` standalone verifier, prebuilt for Linux, macOS and Windows on amd64 and arm64.
 - `eval` statistical evaluation harness, `chaos` crash-injection harness, and `cmd/bench`.
 
-[Unreleased]: https://github.com/bide-ai/bide/compare/v0.11.1...HEAD
+[Unreleased]: https://github.com/bide-ai/bide/compare/v0.12.0...HEAD
+[0.12.0]: https://github.com/bide-ai/bide/compare/v0.11.1...v0.12.0
 [0.11.1]: https://github.com/bide-ai/bide/compare/v0.11.0...v0.11.1
 [0.11.0]: https://github.com/bide-ai/bide/compare/v0.10.0...v0.11.0
 [0.10.0]: https://github.com/bide-ai/bide/compare/v0.9.0...v0.10.0
