@@ -356,6 +356,15 @@ one command). Mechanized: Newman's Lemma, the single-registry Convergence Theore
 unique normal forms), the soundness of gsm's WFC/CC certification (footprint-disjointness =>
 commutation, for events that read only their own footprint; potential-decrease => termination), and the federated monotone-cycles result: both
 the least fixed point (Kleene) and asynchronous (chaotic) order-independent convergence to it.
+Also mechanized: convergence under causal delivery, where only *concurrent* events need to commute
+after compensation and causally ordered ones never do; standard op-based CRDTs converge as an
+instance, and the compensation-free fragment is exactly the op-based CRDTs
+([SUBSUMPTION.md](https://github.com/blackwell-systems/normalization-confluence/blob/main/SUBSUMPTION.md)).
+In bide a governor replays one durable log in one total order that respects causality (a writer
+only observes events already in the log), so this covers concurrent writers whose appends to one
+registry's log race, provided every pair that can be concurrent is checked (all pairs, or each such
+pair declared with `Independent`); bide does not track causality, so declaring those pairs is the
+caller's job.
 Proof directory:
 [normalization-confluence/coq](https://github.com/blackwell-systems/normalization-confluence/tree/main/coq).
 The theorem is correct; gsm v0.11.0's `Build` used the commutation lemma without checking its
@@ -364,8 +373,13 @@ read-footprint precondition, which gsm v0.12.0 fixed (see [Limits](#limits)).
 re-certifies that gsm's emitted step tables converge, and a *rules oracle* that recomputes
 convergence straight from the combinator declarations (trusting neither gsm's enumeration nor its
 normalization). Since gsm v0.12.0, `Build` runs the table oracle (and, within its fragment and
-cap, the rules oracle), generated from the proof, in-process before it returns a machine; their
-scope is in [known limitations](../KNOWN-LIMITATIONS.md#governed-state-gsm). bide's required `gsm machine gate`
+cap, the rules oracle), generated from the proof, in-process before it returns a machine, and fails
+closed with no machine if an oracle does not certify it. The table oracle gates `SynthesizeWith`,
+`BuildOrSynthesize` and each `BuildCompositional` component the same way. For a federation
+(`govern.NewFederated`), each component is rebuilt with `Build` and so is oracle-gated, but the
+federation-level checks (the morphism and resolver conditions, acyclicity, and the fixed-point
+iteration of monotone cycles) are gsm's Go code and are not oracle-certified. The
+oracles' scope is in [known limitations](../KNOWN-LIMITATIONS.md#governed-state-gsm). bide's required `gsm machine gate`
 CI check also runs the two extracted checkers on every machine the governance examples build. An auditor can run the rules oracle on a disclosed
 policy with `bide-audit`'s `-checker` flag (see [Audit](audit.md)). The rules are built from a fixed combinator vocabulary rather than arbitrary Go closures,
 which is what makes them inspectable and serializable to those checkers in the first place; and
