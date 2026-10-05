@@ -148,6 +148,14 @@ earned from a clean audit trail, and governed k-of-n quorum. → [docs/guides/au
 
 ### 4 · Provably convergent shared state (gsm)
 
+The theory is [normalization confluence](https://github.com/blackwell-systems/normalization-confluence):
+an exact regime map of governed concurrent state: in every regime, a machine-checked exact condition, a hardness result showing no efficient one exists, or a gap stated in the open, with a checker for the practical ones. Its idea is **convergence by compensation**:
+events may conflict and break invariants, and replicas still converge because repair is
+well-founded and commutes with events. For federations it separates two properties: repair
+composes freely on acyclic networks and monotone cycles (a unique federated normal form), and event order across registries costs two
+local checks per edge (C1 and C2), which gsm runs at build time. Scope: discrete, deterministic
+state. The exact conditions quantify over reachable states; gsm checks the cheap sufficient ones.
+
 The governed-state tier: multiple processes replaying the same durable log **converge on
 identical state**. The theory underneath is a **machine-checked proof**: the **gsm** convergence
 engine's normalization rewrite system is confluent, so for a machine whose compensation always
