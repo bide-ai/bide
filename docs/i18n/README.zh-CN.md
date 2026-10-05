@@ -22,13 +22,7 @@
 
 Temporal、DBOS、trpc-agent-go、ADK、eino 全都通过**重新运行**来恢复：活动/步骤必须是幂等的，因此一个非幂等的副作用（一笔扣款、一封邮件、一次发货）可能在崩溃后触发两次。我们构建了一个**公平的**崩溃注入基准测试（[`chaos/`](../../chaos)，跨 SDK 结果见 [`benchmarks/`](../../benchmarks/README.md)），它驱动一笔非幂等的 `charge`（扣款）穿过每一个崩溃点。这个数字*就是*产品本身：
 
-```
-Bide      maxFired=1    ✓ at-most-once held
-trpc-agent-go  maxFired=6    ✗ double-charged
-adk-go         maxFired=4    ✗
-langchaingo    maxFired=64   ✗
-eino           maxFired=64   ✗
-```
+<p align="center"><img src="../../assets/chaos-results.png" width="600" alt="Crash-injection benchmark: bide never repeated the charge; LangGraph (SQLite and Postgres), adk-go, trpc-agent-go, langchaingo and eino each charged again after a crash."></p>
 
 `maxFired` 是同一个副作用实际执行的最多次数。**1 是正确的；更高就是一次重复扣款。** 这些竞品适配器都经过验证*不是*稻草人（每个都带有一个公平性测试，证明其恢复机制确实有效）。它们全都没有的那一块：在非幂等写入之前写下的持久化**尝试标记（attempt marker）**，以及恢复时的**结果未知即停机（halt-on-unknown-outcome）**：如果一次写入的结果从未被记入日志，运行就会停下来交由人类决定，而不是靠猜。
 

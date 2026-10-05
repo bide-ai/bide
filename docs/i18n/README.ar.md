@@ -39,13 +39,7 @@
 مجموعات SDK في [`benchmarks/`](../../benchmarks/README.md)) يقود عملية `charge` غير متكرّرة بأمان عبر كل نقطة
 انهيار. والرقم **هو** المنتج:
 
-```
-Bide      maxFired=1    ✓ at-most-once held
-trpc-agent-go  maxFired=6    ✗ double-charged
-adk-go         maxFired=4    ✗
-langchaingo    maxFired=64   ✗
-eino           maxFired=64   ✗
-```
+<p align="center"><img src="../../assets/chaos-results.png" width="600" alt="Crash-injection benchmark: bide never repeated the charge; LangGraph (SQLite and Postgres), adk-go, trpc-agent-go, langchaingo and eino each charged again after a crash."></p>
 
 `maxFired` هو أكبر عدد مرات نُفِّذ فيها أثر جانبي واحد فعلًا. **1 صحيح؛ وأي رقم أعلى هو شحنٌ مزدوج.**
 مُحوّلات المنافسين مُتحقَّق من أنها ليست خصومًا وهميين (لكلٍّ اختبار عدالة يُثبت أن استئنافه يعمل حقًّا).
