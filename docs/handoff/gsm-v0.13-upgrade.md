@@ -77,7 +77,15 @@ the two orders diverge.
    - Open PR #170 (causal and oracle-scope docs) touches the same pages; rebase it after this, or
      fold its changes in.
    - Regenerate `docs/i18n` with the repository's usual process after the English text settles.
-5. **Optional: surface the new federation report.** `FedReport.Checks`, `FedReport.Assurance` and
+5. **Framing.** Where Bide's README and guides describe the guarantee, use the canonical claim
+   for the theory: "a complete, mechanized map of when governed concurrent state converges, with
+   exact conditions in every regime and a checker for the practical ones", and the concept name
+   **convergence by compensation**. For federations, state the split the corrected theory makes:
+   repair composes freely (unique federated normal form), and event order across registries costs
+   two local checks per edge (C1, C2) that gsm runs at build time. Do not inflate beyond that:
+   scope is discrete, deterministic state; the exact conditions quantify over reachable states;
+   gsm checks the cheap sufficient ones.
+6. **Optional: surface the new federation report.** `FedReport.Checks`, `FedReport.Assurance` and
    `FedReport.Runtime` state which federation-level checks ran and whether certified subs execute
    verified tables. `bide-audit` could print them next to the registry certificate.
 
