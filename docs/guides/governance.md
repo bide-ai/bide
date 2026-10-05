@@ -371,6 +371,15 @@ go run ./quorum     # governed model quorum: k-of-n agreement gates the commit, 
 
 ## Under the hood
 
+The theory is [normalization confluence](https://github.com/blackwell-systems/normalization-confluence):
+a complete, mechanized map of when governed concurrent state converges, with exact conditions in
+every regime and a checker for the practical ones. Its idea is **convergence by compensation**:
+events may conflict and break invariants, and replicas still converge because repair is
+well-founded and commutes with events. For federations it separates two properties: repair
+composes freely on acyclic networks and monotone cycles (a unique federated normal form), and event order across registries costs two
+local checks per edge (C1 and C2), which gsm runs at build time. Scope: discrete, deterministic
+state. The exact conditions quantify over reachable states; gsm checks the cheap sufficient ones.
+
 `govern` never leaks into the durable core (the architecture guard enforces it). All of the
 above is `gsm`, the convergence engine and the founder's published research
 ([Normalization Confluence](https://doi.org/10.5281/zenodo.18677400)). The federation ladder,
