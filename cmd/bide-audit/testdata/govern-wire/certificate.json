@@ -1,1 +1,1 @@
-{"machine":"m","policy_digest":"d","converges":true,"wfc":true,"cc":true,"max_repair_len":1,"pairs_total":2,"pairs_disjoint":3,"pairs_brute":4,"states":5,"compensation_free":true}
+{"machine":"m","policy_digest":"d","converges":true,"wfc":true,"cc":true,"max_repair_len":1,"pairs_total":2,"pairs_disjoint":3,"pairs_brute":4,"pairs_undeclared":6,"causal_order_required":[{"first":"a","second":"b"}],"not_idempotent":["c"],"saturations":[{"rule":"r","var":"v","states":7}],"states":5,"compensation_free":true}

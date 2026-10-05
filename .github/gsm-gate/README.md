@@ -56,8 +56,9 @@ are closures cannot be exported as rules, so only the table checker runs on it
 gsm's combinators, so both checkers verify each one (`certified`); a
 federation's morphism maps are still closures, which no checker reads.
 
-What it does not check: federation-level checks (morphisms, resolvers,
-acyclicity, the monotone-cycle check), which gsm's `Build` does and no extracted
+What it does not check: federation-level checks (morphisms, resolvers, the
+event-order checks C1 and C2, acyclicity, the monotone-cycle check), which gsm's
+`Build` does and no extracted
 checker covers; and the runtime: the examples run against gsm at `GSM_COMMIT` in
 this job, while bide's modules require the gsm version in their `go.mod`, so the
 result applies to the examples as bide builds them once that version is at or

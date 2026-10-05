@@ -17,7 +17,9 @@ import (
 // CLI's TestWireMirrorsMatchGovern proves each mirror reads and writes the same files.
 func TestGovernWireMatchesCLIGoldens(t *testing.T) {
 	cert, err := govern.ConfluenceCertificate{Machine: "m", PolicyDigest: "d", Converges: true, WFC: true, CC: true,
-		MaxRepairLen: 1, PairsTotal: 2, PairsDisjoint: 3, PairsBrute: 4, States: 5, CompensationFree: true}.Marshal()
+		MaxRepairLen: 1, PairsTotal: 2, PairsDisjoint: 3, PairsBrute: 4, PairsUndeclared: 6,
+		CausalOrderRequired: []govern.EventPair{{First: "a", Second: "b"}}, NotIdempotent: []string{"c"},
+		Saturations: []govern.Saturation{{Rule: "r", Var: "v", States: 7}}, States: 5, CompensationFree: true}.Marshal()
 	if err != nil {
 		t.Fatal(err)
 	}

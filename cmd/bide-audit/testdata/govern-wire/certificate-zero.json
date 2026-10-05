@@ -1,1 +1,1 @@
-{"machine":"","policy_digest":"","converges":false,"wfc":false,"cc":false,"max_repair_len":0,"pairs_total":0,"pairs_disjoint":0,"pairs_brute":0,"states":0,"compensation_free":false}
+{"machine":"","policy_digest":"","converges":false,"wfc":false,"cc":false,"max_repair_len":0,"pairs_total":0,"pairs_disjoint":0,"pairs_brute":0,"pairs_undeclared":0,"causal_order_required":null,"not_idempotent":null,"saturations":null,"states":0,"compensation_free":false}

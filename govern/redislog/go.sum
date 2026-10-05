@@ -1,5 +1,5 @@
-github.com/blackwell-systems/gsm v0.12.0 h1:rvePUBcKTKN2NJIUX51Nczl+uhx0QjDprNWCNI29mEE=
-github.com/blackwell-systems/gsm v0.12.0/go.mod h1:16Y8Evoyne2mqkkPxrh738bIMnyD3t13mhJAQgNXPeM=
+github.com/blackwell-systems/gsm v0.13.0 h1:wEiKnT3qLamfWsPRoEweJKdRxA5t8p2pfsTUsarLS4g=
+github.com/blackwell-systems/gsm v0.13.0/go.mod h1:16Y8Evoyne2mqkkPxrh738bIMnyD3t13mhJAQgNXPeM=
 github.com/bsm/ginkgo/v2 v2.12.0 h1:Ny8MWAHyOepLGlLKYmXG4IEkioBysk6GpaRTLC8zwWs=
 github.com/bsm/ginkgo/v2 v2.12.0/go.mod h1:SwYbGRRDovPVboqFv0tPTcG1sN61LM1Z4ARdbAV9g4c=
 github.com/bsm/gomega v1.27.10 h1:yeMWxP2pV2fG3FgAODIY8EiRE3dy0aeFYt4l7wh6yKA=

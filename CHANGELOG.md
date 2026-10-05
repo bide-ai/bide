@@ -11,7 +11,19 @@ journal format can change between pre-releases without a version bump. Curated h
 
 ### Fixed
 
+- Correction: the godoc of `govern.FederatedGovernor` and `govern.FederatedEventTool` said cross-registry conflicts resolve without coordination by the authority argument. That is false (normalization-confluence `FederationGRS.v`, `fed_thm_fed_convergence_refuted`). The authority argument makes the federated repair terminate in a unique valid normal form; event order across registries is safe because gsm v0.13.0's `Federation.Build` checks cross-registry CC (C1) and repaired CC (C2) and rejects a federation that fails either. Under gsm v0.12.0, which bide required, a federation could build whose agreed state depended on which event was appended first. The godoc, README, governance guide, concepts and known limitations now say so ([#172]).
+- Documentation: the governance guide called `Federation.CoordinationPlan` minimal. It is a correct plan of size at most the number of independent cycles, not necessarily the minimum, and each point names the registry its cycles are driven from (`CoordinationPoint.Authority`) ([#172]).
+
 - Documentation: the formal verification overview said the TLA+ models caught 29 bugs, all before release. They found 28 and confirmed one more found in review, and four (L1, S1, S2, S4) shipped in releases up to v0.9.0 and were fixed in v0.10.0. The overview, the README and the docs index now say so.
+
+### Changed
+
+- `govern`, its log adapters, `integration` and `examples/govern` require gsm v0.13.0 (was v0.12.0), which checks event order across federated registries (C1, C2) and reports delivery obligations; no federation in bide's examples fails the new checks. gsm behavior changes that reach bide's API: `Machine.Apply` normalizes an invalid input before applying the event, and `Embed` no longer copies `AllowMonotoneCycles` to the parent ([gsm v0.13.0 release notes](https://github.com/blackwell-systems/gsm/releases/tag/v0.13.0)). The gsm machine gate is pinned to the v0.13.0 release commit ([#172]).
+- The README and governance guide state convergence under causal delivery and the exact scope of gsm's in-process oracle gate (a federation is oracle-gated per component only) ([#172], folding in [#170]).
+
+### Added
+
+- `govern.ConfluenceCertificate` records gsm's delivery obligations: `PairsUndeclared`, `CausalOrderRequired` (undeclared pairs that do not commute, so need causal order), `NotIdempotent` (events a duplicate delivery would change) and `Saturations`, with the new types `govern.EventPair` and `govern.Saturation`; `String()` reports them. `bide-audit verify-convergence` and `verify-run` print them without changing the verdict. A certificate written by an earlier version still verifies, with a note that it records no obligations; a certificate this version writes has keys an earlier `bide-audit` rejects, so verify it with this release's `bide-audit` or later ([#172]).
 
 ## [0.11.1] - 2026-10-04
 
@@ -937,6 +949,8 @@ First public release.
 [#159]: https://github.com/bide-ai/bide/pull/159
 [#160]: https://github.com/bide-ai/bide/pull/160
 [#161]: https://github.com/bide-ai/bide/pull/161
+[#170]: https://github.com/bide-ai/bide/pull/170
+[#172]: https://github.com/bide-ai/bide/pull/172
 
 [78f8db6]: https://github.com/bide-ai/bide/commit/78f8db6
 [994721b]: https://github.com/bide-ai/bide/commit/994721b

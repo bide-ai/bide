@@ -3,6 +3,7 @@ package govern
 import (
 	"encoding/json"
 	"fmt"
+	"strings"
 
 	gsm "github.com/blackwell-systems/gsm"
 )
@@ -25,8 +26,11 @@ type ConfluenceCertificate struct {
 	PolicyDigest string `json:"policy_digest"` // stable identifier of the policy this certificate certifies
 
 	// Converges is the headline: gsm's Build returned a machine (WFC && CC, and the verified
-	// table oracle gsm runs in-process certified its tables). True means every interleaving of
-	// events reaches the same normal form, checked exhaustively at build time.
+	// table oracle gsm runs in-process certified its tables). True means every order of a set of
+	// events, each delivered once, reaches the same normal form, checked exhaustively at build
+	// time, under the obligations below: CausalOrderRequired and NotIdempotent name what the
+	// delivery of events must guarantee. Every pair CC checked commutes; with pairs declared
+	// (PairsUndeclared > 0), the undeclared pairs that do not commute are in CausalOrderRequired.
 	Converges bool `json:"converges"`
 
 	// WFC (well-founded compensation): every repair chain terminates; MaxRepairLen is the longest
@@ -36,11 +40,37 @@ type ConfluenceCertificate struct {
 	MaxRepairLen int  `json:"max_repair_len"`
 
 	// The CC evidence: how many independent pairs were checked, split into those discharged by
-	// footprint-disjointness (BuildCompositional only; always 0 for Build since gsm v0.12.0) and
-	// those checked by brute force over all valid states.
+	// footprint-disjointness and those checked by brute force over all valid states.
+	// PairsDisjoint is nonzero only in a BuildCompositional report; it is always 0 for Build
+	// since gsm v0.12.0, and kept so certificates keep one format.
 	PairsTotal    int `json:"pairs_total"`
 	PairsDisjoint int `json:"pairs_disjoint"`
 	PairsBrute    int `json:"pairs_brute"`
+
+	// PairsUndeclared is how many event pairs outside the pairs declared with Independent Build
+	// also checked, without failing on them (gsm v0.13.0 and later); 0 when every pair is
+	// certified, the default.
+	PairsUndeclared int `json:"pairs_undeclared"`
+
+	// CausalOrderRequired lists the undeclared pairs that do not commute. Convergence holds only
+	// if the two events of each listed pair are causally ordered (one is issued after the other is
+	// observed) and applied in that order, never concurrently. A log-backed governor
+	// replays one shared EventLog in one total order, and a writer acts on a state folded from the
+	// log before its append, so that order respects every causal dependency that runs through the
+	// log. Declaring the pairs is the claim that the events of every other pair are never
+	// concurrent; bide does not track causality, so that claim is the caller's.
+	CausalOrderRequired []EventPair `json:"causal_order_required"`
+
+	// NotIdempotent lists the events whose second application changes the state, so a duplicate
+	// delivery changes the result. ApplyOnce applies an event at most once per id across every
+	// process sharing the log, and inside a run EventTool and FederatedEventTool key it by the tool
+	// call. Apply takes no id, so a caller that retries Apply itself applies the event again.
+	NotIdempotent []string `json:"not_idempotent"`
+
+	// Saturations lists the rules whose write was clamped into a variable's range on some state
+	// Build checked. Clamping is part of the verified semantics, so convergence is unaffected,
+	// but an invariant meant to catch the overflow never sees it.
+	Saturations []Saturation `json:"saturations"`
 
 	// States is the size of the state space the check ran over exhaustively.
 	States int `json:"states"`
@@ -64,19 +94,45 @@ type ConfluenceCertificate struct {
 // machine that passed gsm's WFC and CC checks but that gsm's in-process oracle gate refused
 // (Report.OracleDisagreement): Build returned no machine, so its Assurance is none.
 func CertifyConvergence(rep *gsm.Report, policyDigest string) ConfluenceCertificate {
-	return ConfluenceCertificate{
-		Machine:          rep.Name,
-		PolicyDigest:     policyDigest,
-		Converges:        rep.WFC && rep.CC && rep.Assurance != gsm.AssuranceNone,
-		WFC:              rep.WFC,
-		CC:               rep.CC,
-		MaxRepairLen:     rep.MaxRepairLen,
-		PairsTotal:       rep.PairsTotal,
-		PairsDisjoint:    rep.PairsDisjoint,
-		PairsBrute:       rep.PairsBrute,
-		States:           rep.StateCount,
-		CompensationFree: rep.WFC && rep.MaxRepairLen == 0,
+	causal := make([]EventPair, 0, len(rep.CausalOrderRequired))
+	for _, f := range rep.CausalOrderRequired {
+		causal = append(causal, EventPair{First: f.Event1, Second: f.Event2})
 	}
+	sat := make([]Saturation, 0, len(rep.Saturations))
+	for _, s := range rep.Saturations {
+		sat = append(sat, Saturation{Rule: s.Rule, Var: s.Var, States: s.States})
+	}
+	return ConfluenceCertificate{
+		Machine:             rep.Name,
+		PolicyDigest:        policyDigest,
+		Converges:           rep.WFC && rep.CC && rep.Assurance != gsm.AssuranceNone,
+		WFC:                 rep.WFC,
+		CC:                  rep.CC,
+		MaxRepairLen:        rep.MaxRepairLen,
+		PairsTotal:          rep.PairsTotal,
+		PairsDisjoint:       rep.PairsDisjoint,
+		PairsBrute:          rep.PairsBrute,
+		PairsUndeclared:     rep.PairsUndeclared,
+		CausalOrderRequired: causal,
+		NotIdempotent:       append(make([]string, 0, len(rep.NotIdempotent)), rep.NotIdempotent...),
+		Saturations:         sat,
+		States:              rep.StateCount,
+		CompensationFree:    rep.WFC && rep.MaxRepairLen == 0,
+	}
+}
+
+// EventPair names two events, as gsm reports a pair that does not commute.
+type EventPair struct {
+	First  string `json:"first"`
+	Second string `json:"second"`
+}
+
+// Saturation is a rule whose write was clamped into a variable's range (gsm.Saturation): the
+// rule, the variable written, and on how many of the states Build checked.
+type Saturation struct {
+	Rule   string `json:"rule"`
+	Var    string `json:"var"`
+	States int    `json:"states"`
 }
 
 // Classification names the fragment the machine lives in, for a human-facing report.
@@ -101,11 +157,30 @@ func (c ConfluenceCertificate) String() string {
 	verdict := "NOT GUARANTEED"
 	if c.Converges {
 		verdict = "GUARANTEED"
+		if n := len(c.CausalOrderRequired); n > 0 {
+			verdict = fmt.Sprintf("GUARANTEED under causal delivery of the %d undeclared pair(s) below", n)
+		}
 	}
-	return fmt.Sprintf(
+	var b strings.Builder
+	fmt.Fprintf(&b,
 		"Convergence: %s  [%s]\n  machine: %s  policy: %s\n  WFC: %v (max repair depth %d)  CC: %v (%d pairs: %d disjoint, %d brute)\n  checked exhaustively over %d states",
 		verdict, c.Classification(), c.Machine, short(c.PolicyDigest),
 		c.WFC, c.MaxRepairLen, c.CC, c.PairsTotal, c.PairsDisjoint, c.PairsBrute, c.States)
+	if len(c.CausalOrderRequired) > 0 {
+		pairs := make([]string, len(c.CausalOrderRequired))
+		for i, p := range c.CausalOrderRequired {
+			pairs[i] = p.First + "/" + p.Second
+		}
+		fmt.Fprintf(&b, "\n  causal order required for %d undeclared pair(s): %s (a shared EventLog replays one causally consistent order; that these pairs are never concurrent is the caller's claim)",
+			len(pairs), strings.Join(pairs, ", "))
+	}
+	if len(c.NotIdempotent) > 0 {
+		fmt.Fprintf(&b, "\n  delivery: exactly once: %s (ApplyOnce deduplicates by id)", strings.Join(c.NotIdempotent, ", "))
+	}
+	for _, s := range c.Saturations {
+		fmt.Fprintf(&b, "\n  saturation: %s clamps its write to %s on %d state(s)", s.Rule, s.Var, s.States)
+	}
+	return b.String()
 }
 
 func short(digest string) string {

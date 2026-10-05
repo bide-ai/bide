@@ -1,5 +1,5 @@
-github.com/blackwell-systems/gsm v0.12.0 h1:rvePUBcKTKN2NJIUX51Nczl+uhx0QjDprNWCNI29mEE=
-github.com/blackwell-systems/gsm v0.12.0/go.mod h1:16Y8Evoyne2mqkkPxrh738bIMnyD3t13mhJAQgNXPeM=
+github.com/blackwell-systems/gsm v0.13.0 h1:wEiKnT3qLamfWsPRoEweJKdRxA5t8p2pfsTUsarLS4g=
+github.com/blackwell-systems/gsm v0.13.0/go.mod h1:16Y8Evoyne2mqkkPxrh738bIMnyD3t13mhJAQgNXPeM=
 github.com/dustin/go-humanize v1.0.1 h1:GzkhY7T5VNhEkwH0PVJgjz+fX1rhBrR7pRT3mDkpeCY=
 github.com/dustin/go-humanize v1.0.1/go.mod h1:Mu1zIs6XwVuF/gI1OepvI0qD18qycQx+mFykh5fBlto=
 github.com/google/pprof v0.0.0-20260802141513-ef3492d7dac3 h1:LMLX+LgTNWpfvCBdFebv6EsYotImrt/Ppc5cXIriCSo=

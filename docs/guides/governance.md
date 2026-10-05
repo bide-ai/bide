@@ -8,7 +8,8 @@ build time* that every interleaving of agent actions (every order of the event p
 of a machine-checked convergence theorem. `Build` returns a machine only after the table oracle, Go
 generated from gsm's machine-checked Rocq proof, re-checks it in-process, and for combinator rules
 inside its fragment and within a cost cap, the rules oracle re-checks it from the rules as well. A
-federation's own conditions are checked by gsm's Go code. In CI, bide's required gsm machine gate
+federation's own conditions, including the event-order checks C1 and C2 (see
+[Federation](#federation-constraints-across-agents)), are checked by gsm's Go code. In CI, bide's required gsm machine gate
 runs the proof's checkers on every machine the governance examples build. The exact scope,
 including which event pairs CC covers (every event pair, or only those declared with
 `Independent`), is in [known limitations](../KNOWN-LIMITATIONS.md#governed-state-gsm); see also
@@ -224,8 +225,8 @@ constrains another's), connect them with **morphisms** into a `Federation`, and 
 a `FederatedGovernor`. The capability ladder:
 
 - **Tree**: each target has one source; the source is *authoritative* over the target's
-  shared component (a manufacturer's status fixes a supplier's listing). Coordination-free
-  conflict resolution: the source wins, deterministically.
+  shared component (a manufacturer's status fixes a supplier's listing). A conflicting write to
+  that component is repaired from the source: the source wins, deterministically.
 - **Multi-source (DAG)**: a target with several sources declares a **`Resolver`** that
   merges them (priority / AND-OR / most-restrictive):
   <!-- docsnip: skip the Map arguments are elided; the example shows the Resolve call -->
@@ -247,7 +248,25 @@ a `FederatedGovernor`. The capability ladder:
   federation. See `examples/govern/compose`.
 
 `Build()` rejects the structures it cannot certify convergent: cycles without monotonicity,
-multi-source without a resolver, morphisms that don't preserve validity.
+multi-source without a resolver, morphisms that don't preserve validity, and (since gsm v0.13.0)
+event orders that can diverge across registries.
+
+**Event order across registries.** The authority argument makes the federated repair terminate in
+a unique valid normal form, but it does not make the order of events across registries irrelevant
+on its own: a target event whose guard or effect reads a shared component can end differently
+before and after a change its source drives, and two target events can commute on their own
+registry but not with the repair between them. The claim that cross-registry conflicts resolve
+without coordination by the authority argument alone is false (normalization-confluence
+`FederationGRS.v`, `fed_thm_fed_convergence_refuted`). Event order across registries is safe
+because `Federation.Build` checks both cases, cross-registry CC (C1) and repaired CC (C2), and
+rejects a federation that fails either with a `*gsm.CrossOrderError` or `*gsm.SameTargetOrderError`
+naming the events, the target and a witness state where the two orders give different results
+(`fed_thm_fed_convergence_guarded`). C2 checks the target event pairs the target's own CC covers
+(every pair, or only those declared with `Independent`). The same checks certify event order on
+monotone cycles (`cyc_check_gc_lfp`) and on `BuildCoordinated`'s residual network. Both are static,
+over every valid source state, so the witness may be a state a given run never reaches; to fix a
+rejection, record the fact locally and let an invariant derive the outcome, or move the dependency
+into the morphism.
 
 ## Synthesis: generate the compensation, or prove it's impossible
 
@@ -295,20 +314,25 @@ resulting machine is then handed to `govern`. Two capabilities are worth reachin
   gov := govern.New(m, initial)
   ```
 - **Coordinate a cyclic, non-monotone federation**: when a federation has morphism cycles that are
-  not monotone, `Build` rejects it. `Federation.CoordinationPlan()` returns the minimal set of
-  morphism edges (a feedback edge set) to coordinate so the residual network is acyclic and
-  therefore converges; `Federation.BuildCoordinated(plan)` then builds the federation given that
-  those edges are externally coordinated (their targets become external inputs). The plan is a
-  correct, polynomial coordination of size at most the number of independent cycles (the exact
-  minimum is NP-hard); an empty plan is exactly `Build`.
+  not monotone, `Build` rejects it. `Federation.CoordinationPlan()` returns a set of morphism edges
+  (a feedback edge set) to coordinate so the residual network is acyclic and therefore converges;
+  `Federation.BuildCoordinated(plan)` then builds the federation given that those edges are
+  externally coordinated (their shared variables become external inputs that the coordination
+  mechanism, a single writer, a lock or a consensus round, must serialize; gsm does not check
+  that coordination). The plan is a correct coordination of size at most the number of independent
+  cycles, not necessarily the minimum (the exact minimum is NP-hard); an empty plan is exactly
+  `Build`. Each `CoordinationPoint` names its `Authority`, the registry the cycles it breaks are
+  driven from: the normal form is unique given the plan, but cutting a different edge of a cycle
+  picks a different root and a different normal form.
   <!-- docsnip: setup import "github.com/blackwell-systems/gsm"; fed *gsm.Federation -->
   ```go
   plan := fed.CoordinationPlan()           // where to coordinate; nil if already acyclic
   fm, _, err := fed.BuildCoordinated(plan) // build given that coordination
   // hand the *gsm.FedMachine to govern.NewFederated(ctx, fm, log, entity, initial)
   ```
-  This is the minimal-coordination route: coordinate only the obstructing cycles, run the rest
-  coordination-free. See `examples/govern/coordination`.
+  This coordinates only the edges the plan names; the rest of the network runs without
+  coordination, under the same `Federation.Build` checks (C1 and C2 included) on the residual
+  network. See `examples/govern/coordination`.
 
 ## Runnable demos
 
@@ -327,12 +351,16 @@ go run ./quorum     # governed model quorum: k-of-n agreement gates the commit, 
 
 - **Verdicts recorded under gsm v0.11.0.** bide required gsm v0.11.0 before; its `Build` skipped
   the CC check for event pairs it judged independent from what they write, without checking what
-  their guards and effects read, so it could certify a machine that does not converge. gsm v0.12.0,
-  which bide requires now, checks every pair it checks for CC (every event pair, or only the pairs
+  their guards and effects read, so it could certify a machine that does not converge. gsm v0.12.0
+  checks every pair it checks for CC (every event pair, or only the pairs
   declared with `Independent`) exactly, with no footprint shortcut; a verdict or certificate
   recorded under v0.11.0 is not covered by that fix. See
   [known limitations](../KNOWN-LIMITATIONS.md#governed-state-gsm), which also gives what the
   proof-derived checks cover.
+- **Federations built under gsm v0.12.0.** gsm v0.12.0 did not check event order across
+  registries (C1, C2), so a federation it built could reach a state that depends on which event
+  was appended first; gsm v0.13.0, which bide requires now, checks both. A claim about a federation
+  built under v0.12.0 holds only once it builds under v0.13.0.
 - **Finite state spaces.** The semantic state must be finite (bounded enums/ints). Unbounded
   numeric state is a theory extension, not shipped.
 - **Convergent ≠ correct.** Convergence is order-independence, not business correctness.
@@ -347,7 +375,9 @@ go run ./quorum     # governed model quorum: k-of-n agreement gates the commit, 
 above is `gsm`, the convergence engine and the founder's published research
 ([Normalization Confluence](https://doi.org/10.5281/zenodo.18677400)). The federation ladder,
 monotone cycles, compositionality, and synthesis are all theorems in that work; gsm checks
-their preconditions at build time by enumeration.
+their preconditions at build time by enumeration. The federated convergence theorem holds in its
+corrected form, with C1 and C2 as conditions; as first published, without them, it is false
+(both are mechanized in `FederationGRS.v`).
 
 The convergence theorem is a **machine-checked, axiom-free Coq/Rocq proof**,
 CI-verified on Coq 8.18, 8.20, and Rocq 9.3 (`Print Assumptions` reports "Closed under the global context"
@@ -356,6 +386,21 @@ one command). Mechanized: Newman's Lemma, the single-registry Convergence Theore
 unique normal forms), the soundness of gsm's WFC/CC certification (footprint-disjointness =>
 commutation, for events that read only their own footprint; potential-decrease => termination), and the federated monotone-cycles result: both
 the least fixed point (Kleene) and asynchronous (chaotic) order-independent convergence to it.
+Also mechanized: federated convergence under C1 and C2 (`fed_thm_fed_convergence_guarded`; that
+gsm's static checks suffice, `static_c1_c2_gc`; on monotone cycles, `cyc_check_gc_lfp`), and the
+counterexample to the version without them (`fed_thm_fed_convergence_refuted`). Also mechanized: convergence under causal delivery, where only *concurrent* events need to commute
+after compensation and causally ordered ones never do; standard op-based CRDTs converge as an
+instance, and the compensation-free fragment is exactly the op-based CRDTs
+([SUBSUMPTION.md](https://github.com/blackwell-systems/normalization-confluence/blob/main/SUBSUMPTION.md)).
+In bide a governor replays one durable log in one total order that respects every causal
+dependency running through the log (a writer only observes events already in the log), so this covers concurrent writers whose appends to one
+registry's log race, provided every pair that can be concurrent is checked (all pairs, or each such
+pair declared with `Independent`); bide does not track causality, so declaring those pairs is the
+caller's job. With pairs declared, gsm v0.13.0 also checks the undeclared pairs and lists each one
+that does not commute; `govern.CertifyConvergence` records them (`CausalOrderRequired`), and those
+events must never be concurrent. It records the events a duplicate delivery would change
+(`NotIdempotent`) as well: a governed tool applies its event at most once per tool call
+(`ApplyOnce`).
 Proof directory:
 [normalization-confluence/coq](https://github.com/blackwell-systems/normalization-confluence/tree/main/coq).
 The theorem is correct; gsm v0.11.0's `Build` used the commutation lemma without checking its
@@ -364,8 +409,14 @@ read-footprint precondition, which gsm v0.12.0 fixed (see [Limits](#limits)).
 re-certifies that gsm's emitted step tables converge, and a *rules oracle* that recomputes
 convergence straight from the combinator declarations (trusting neither gsm's enumeration nor its
 normalization). Since gsm v0.12.0, `Build` runs the table oracle (and, within its fragment and
-cap, the rules oracle), generated from the proof, in-process before it returns a machine; their
-scope is in [known limitations](../KNOWN-LIMITATIONS.md#governed-state-gsm). bide's required `gsm machine gate`
+cap, the rules oracle), generated from the proof, in-process before it returns a machine, and fails
+closed with no machine if an oracle does not certify it. The table oracle gates `SynthesizeWith`,
+`BuildOrSynthesize` and each `BuildCompositional` component the same way. For a federation
+(`govern.NewFederated`), each component is rebuilt with `Build` and so is oracle-gated, but the
+federation-level checks (the morphism and resolver conditions, the event-order checks C1 and C2,
+acyclicity, and the fixed-point iteration of monotone cycles) are gsm's Go code and are not
+oracle-certified. The
+oracles' scope is in [known limitations](../KNOWN-LIMITATIONS.md#governed-state-gsm). bide's required `gsm machine gate`
 CI check also runs the two extracted checkers on every machine the governance examples build. An auditor can run the rules oracle on a disclosed
 policy with `bide-audit`'s `-checker` flag (see [Audit](audit.md)). The rules are built from a fixed combinator vocabulary rather than arbitrary Go closures,
 which is what makes them inspectable and serializable to those checkers in the first place; and

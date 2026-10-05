@@ -646,7 +646,11 @@ over every independent event pair, on the valid states (and the zero state); see
 [known limitations](../KNOWN-LIMITATIONS.md#governed-state-gsm)) and returns a `Report`.
 `govern.CertifyConvergence(report, digest)` carries that result across as a portable
 `ConfluenceCertificate`: the WFC and CC verdicts, the longest compensation chain, the number of
-pairs checked, the state count, and a `CompensationFree` flag. That flag is the CRDT.v subsumption
+pairs checked, the state count, a `CompensationFree` flag, and the delivery obligations gsm v0.13.0
+reports: the undeclared event pairs that do not commute and so need causal order
+(`causal_order_required`), the events a duplicate delivery would change (`not_idempotent`), and the
+rules whose writes were clamped into range (`saturations`); see
+[known limitations](../KNOWN-LIMITATIONS.md#governed-state-gsm). That flag is the CRDT.v subsumption
 result made visible: CRDTs are exactly the compensation-free fragment, so `MaxRepairLen == 0` marks
 a machine that needs no coordinator, while a positive value marks a compensation-bearing policy that
 is strictly more expressive than any CRDT. `audit.RecordConvergence` anchors the certificate as a
@@ -665,6 +669,10 @@ and compares. So a certificate that overstates convergence is always caught, and
 the CRDT classification is caught when the oracle emits that line. An oracle that does not emit it
 leaves the classification producer-reported: the CLI prints a note saying so rather than passing
 it silently. `compensationFree_step_no_repair` is in the axiom-free gate alongside `check_sound_converges`.
+`verify-convergence` and `verify-run` print each delivery obligation a certificate records; they are
+conditions of the convergence claim, so they do not change the verdict, and they are
+producer-reported (the oracle does not re-derive them). A certificate written before bide recorded
+them has none of their keys: it still verifies, and the CLI notes that it records no obligations.
 
 ```
 # both bundles authentic and in the same signed tree, the certificate certifies the anchored
