@@ -63,8 +63,8 @@ type ConfluenceCertificate struct {
 
 	// NotIdempotent lists the events whose second application changes the state, so a duplicate
 	// delivery changes the result. ApplyOnce applies an event at most once per id across every
-	// process sharing the log, and EventTool and FederatedEventTool key it by the tool call. Apply
-	// mints a fresh id per call, so a caller that retries Apply itself applies the event again.
+	// process sharing the log, and inside a run EventTool and FederatedEventTool key it by the tool
+	// call. Apply takes no id, so a caller that retries Apply itself applies the event again.
 	NotIdempotent []string `json:"not_idempotent"`
 
 	// Saturations lists the rules whose write was clamped into a variable's range on some state

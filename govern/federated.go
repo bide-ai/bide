@@ -46,9 +46,17 @@ const fedSep = "\x1f"
 // its own, in log order, including other processes' events. So any number of processes sharing the
 // log act on the same federated state, and a recorded state matches an auditor's replay of the log.
 //
-// Cross-registry conflicts resolve WITHOUT coordination via the authority argument (paper §8.3): a
-// source registry deterministically fixes its targets' shared components, so a target-side event
-// that collides with its source is overwritten on the next ρ_Fed. This is the "distributed
+// A source registry is authoritative over its targets' shared components: the federated repair
+// (ρ_Fed) sets each target's shared component from its sources, so a target-side write that collides
+// with its source is overwritten, and the authority argument makes the repair terminate in a unique
+// valid normal form. That alone does not make the order of events across registries irrelevant: a
+// target event that reads a shared component, or two target events with the repair between them,
+// can end in different states in different orders (normalization-confluence FederationGRS.v,
+// fed_thm_fed_convergence_refuted). Event order across registries is safe because gsm's
+// Federation.Build checks cross-registry CC (C1) and repaired CC (C2) since gsm v0.13.0, also on
+// monotone cycles and on BuildCoordinated's residual network, and rejects a federation that fails
+// either (fed_thm_fed_convergence_guarded). C2 covers the target event pairs the target's own CC
+// covers: every pair, or only those declared with Independent. This is the "distributed
 // compensating agents across ownership boundaries" tier: each component registry is an organization
 // or agent subtree, and morphisms are the cross-org constraints.
 type FederatedGovernor struct {
@@ -229,10 +237,12 @@ type FederatedEventToolConfig struct {
 
 // FederatedEventTool gives an agent a GOVERNED federated action: when the agent's LLM calls
 // it, cfg.Event is applied to component cfg.Registry of the shared federation. Multiple agents
-// (each owning a different registry) converge regardless of interleaving, with cross-registry
-// conflicts resolved by the authority argument, with no locking. This is the federated twin of
-// EventTool: the point where an agent tool call becomes a verified event on shared,
-// cross-organizational governed state.
+// (each owning a different registry) reach the same federated state whatever order their events
+// are appended in, for the event pairs gsm's checks cover, with no locking: the federated repair
+// resolves a cross-registry conflict in favor of the source, and Federation.Build's C1 and C2
+// checks make the order of events across registries irrelevant (see FederatedGovernor). This is
+// the federated twin of EventTool: the point where an agent tool call becomes a verified event on
+// shared, cross-organizational governed state.
 //
 // Inside a run, the event is applied with ApplyOnce keyed by the tool call, as for EventTool.
 // FederatedEventTool panics, as agent.Func does, on an invalid option.
