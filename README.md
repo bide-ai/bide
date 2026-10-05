@@ -41,23 +41,19 @@ one mechanism instead of integrating four systems.
 
 ### 1 · At most once, not at least once (measured, not claimed)
 
-Temporal, DBOS, trpc-agent-go, ADK, eino all resume by **re-running**: activities/steps must be
+Temporal, DBOS, LangGraph, trpc-agent-go, ADK, eino all resume by **re-running**: activities/steps must be
 idempotent, so a non-idempotent side effect (a charge, an email, a shipment) can fire twice
 across a crash. We built a **fair** crash-injection benchmark ([`chaos/`](chaos), cross-SDK
 results in [`benchmarks/`](benchmarks/README.md)) that drives a non-idempotent `charge` through
-every crash point. The number *is* the product:
+every crash point. The result:
 
-```
-Bide      maxFired=1    ✓ at-most-once held
-trpc-agent-go  maxFired=6    ✗ double-charged
-adk-go         maxFired=4    ✗
-langchaingo    maxFired=64   ✗
-eino           maxFired=64   ✗
-```
+<p align="center"><img src="assets/chaos-results.png" width="600" alt="Crash-injection benchmark: bide never repeated the charge; LangGraph (SQLite and Postgres), adk-go, trpc-agent-go, langchaingo and eino each charged again after a crash."></p>
 
-`maxFired` is the most times one side effect actually executed. **1 is correct; higher is a
-double-charge.** The competitor adapters are verified *not* to be strawmen (each has a fairness
-test proving its resume genuinely works). The piece none of them have: a durable **attempt
+Each framework either never repeated the charge or charged again; the worst-case count depends on
+how often a framework saves state, so it is not a ranking. The competitor adapters are verified
+*not* to be strawmen: each passes a fairness test (a run with no crash charges exactly once, and
+where the framework has a resume, it genuinely works), and LangGraph runs in its most durable
+documented mode. The piece none of them have: a durable **attempt
 marker** written before a non-idempotent write, and **halt-on-unknown-outcome** on resume: if a
 write's result was never journaled, the run stops for a human decision instead of guessing.
 

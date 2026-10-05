@@ -22,13 +22,7 @@
 
 Temporal, DBOS, trpc-agent-go, ADK, eino सभी **दोबारा चलाकर** पुनरारंभ होते हैं: गतिविधियों/चरणों का idempotent होना ज़रूरी है, इसलिए एक non-idempotent साइड इफ़ेक्ट (एक चार्ज, एक ईमेल, एक शिपमेंट) एक क्रैश के आर-पार दो बार चल सकता है। हमने एक **निष्पक्ष** क्रैश-इंजेक्शन बेंचमार्क बनाया ([`chaos/`](../../chaos), क्रॉस-SDK परिणाम [`benchmarks/`](../../benchmarks/README.md) में) जो एक non-idempotent `charge` को हर क्रैश-बिंदु से गुज़ारता है। यह संख्या *ही* उत्पाद है:
 
-```
-Bide      maxFired=1    ✓ at-most-once held
-trpc-agent-go  maxFired=6    ✗ double-charged
-adk-go         maxFired=4    ✗
-langchaingo    maxFired=64   ✗
-eino           maxFired=64   ✗
-```
+<p align="center"><img src="../../assets/chaos-results.png" width="600" alt="Crash-injection benchmark: bide never repeated the charge; LangGraph (SQLite and Postgres), adk-go, trpc-agent-go, langchaingo and eino each charged again after a crash."></p>
 
 `maxFired` वह अधिकतम बार है जितनी बार एक साइड इफ़ेक्ट वास्तव में निष्पादित हुआ। **1 सही है; इससे ज़्यादा एक डबल-चार्ज है।** प्रतिस्पर्धी अडैप्टर सत्यापित रूप से स्ट्रॉमैन *नहीं* हैं (हर एक के पास एक निष्पक्षता परीक्षण है जो साबित करता है कि उसका पुनरारंभ सचमुच काम करता है)। जो चीज़ उनमें से किसी के पास नहीं: एक non-idempotent राइट से पहले लिखा गया एक टिकाऊ **प्रयास चिह्न (attempt marker)**, और पुनरारंभ पर **अज्ञात-परिणाम-पर-रुक जाना (halt-on-unknown-outcome)**: यदि किसी राइट का परिणाम कभी जर्नल नहीं हुआ, तो रन अनुमान लगाने के बजाय किसी इंसान के निर्णय के लिए रुक जाता है।
 
