@@ -281,21 +281,49 @@ be public.
 
 ## Governed state (gsm)
 
+**A federation built under gsm v0.12.0 was not checked for event order across registries.** bide
+requires gsm v0.13.0, whose `Federation.Build` checks cross-registry CC (C1: a target event commutes
+with every change of its shared component its sources can cause) and repaired CC (C2: two target
+events its own CC covers still commute with the morphism repair between them), and rejects a
+federation that fails either. gsm v0.12.0 checked neither, so a federation it built could reach a
+state that depends on which event was appended first; every governor replaying the shared log
+agreed on that state, but the state was timing-dependent. bide's earlier docs said cross-registry
+conflicts resolve without coordination by the authority argument; that claim is false
+(normalization-confluence `FederationGRS.v`, `fed_thm_fed_convergence_refuted`). The authority
+argument makes the federated repair terminate in a unique valid normal form, and event order is
+safe because of the C1 and C2 checks (`fed_thm_fed_convergence_guarded`). Both checks are static,
+over every valid source state, so a rejection's witness may be a state a given run never reaches.
+
 **A convergence verdict recorded under gsm v0.11.0 is not covered by v0.12.0's fix.** bide's
 `govern` module required gsm v0.11.0 before this release. Its `Build` skipped the
 compensation-commutativity (CC) check for an event pair it judged independent from what the two
 events write, and did not look at what their guards and effects read, so a machine where one
 event's guard or effect reads a variable another event writes could pass `Build` although two
 orders of its events end in different states (the order machine with `pay` and a `ship` event
-guarded on `paid` is the standard case). bide now requires gsm v0.12.0, whose `Build` checks every
+guarded on `paid` is the standard case). gsm v0.12.0's `Build`, and every later one, checks every
 pair it checks for CC (every event pair, or only the pairs declared with `Independent`) exactly,
 with no footprint shortcut. A `govern.CertifyConvergence` certificate, or any other verdict,
 produced under v0.11.0 and anchored in a trail is still what v0.11.0 said: rebuild the machine
-under v0.12.0 and record a new certificate before relying on it.
+under v0.13.0 and record a new certificate before relying on it.
 
-**Declared pairs narrow the guarantee.** With pairs declared, CC checks only those pairs, so the
-guarantee covers runs whose events are reordered only across declared pairs; other events must
-arrive in a fixed order.
+**Declared pairs narrow the guarantee.** With pairs declared, CC certifies only those pairs, so the
+guarantee covers runs whose events are reordered only across declared pairs; the events of every
+other pair must never be concurrent. Since gsm v0.13.0, `Build` also checks the undeclared pairs
+without failing on them and lists each one that does not commute (`Report.CausalOrderRequired`,
+recorded as `causal_order_required` in `govern.ConfluenceCertificate`). A log-backed governor
+replays one shared log in one order that respects every causal dependency running through the log,
+so a listed pair whose second event is issued after its first is observed is applied in that order;
+bide does not track causality, so that the listed pairs are never concurrent is the caller's claim.
+
+**Delivery obligations.** The convergence guarantee is about each event delivered once. gsm v0.13.0
+lists the events a duplicate delivery would change (`Report.NotIdempotent`, recorded as
+`not_idempotent`). `ApplyOnce` applies an event at most once per id across every process sharing
+the log, and inside a run `EventTool` and `FederatedEventTool` key it by the tool call; `Apply`
+takes no id, so a caller that retries `Apply` itself applies the event again. gsm also lists the
+rules whose writes it clamped into a variable's range (`saturations`): convergence is unaffected,
+but an invariant meant to catch the overflow never sees it. A certificate recorded before bide
+carried these lists has none of their keys, and `bide-audit` says so rather than reading it as
+"none".
 
 **What the proof-derived checks cover.** Since gsm v0.12.0, `Build` returns a machine only after
 the table oracle (and, within its fragment and cap, the rules oracle), generated from gsm's Coq/Rocq
@@ -308,11 +336,12 @@ proof, re-checks it in-process:
   the rules are combinator declarations (not Go closures), inside the oracle's arithmetic fragment,
   and within a work cap of 2^29 units; otherwise `Build` certifies with the table oracle alone and
   says why in `Report.RulesOracleSkipped`.
-- A federation's own conditions (morphisms, resolvers, acyclicity, the monotone-cycle check) are
-  checked by gsm's Go code, not by an oracle. Each component registry is a machine `Build` checks
+- A federation's own conditions (morphisms, resolvers, the event-order checks C1 and C2,
+  acyclicity, the monotone-cycle check) are checked by gsm's Go code, not by an oracle. Each component registry is a machine `Build` checks
   as above.
-- `govern.ConfluenceCertificate` records the WFC and CC verdicts and `Converges`, which needs a
-  machine `Build` returned, but not which oracles certified it (`Report.Assurance`).
+- `govern.ConfluenceCertificate` records the WFC and CC verdicts, `Converges`, which needs a
+  machine `Build` returned, and the delivery obligations above, but not which oracles certified it
+  (`Report.Assurance`).
 
 bide's required `gsm machine gate` CI check runs the two checkers extracted from the proof on every
 machine the governance examples build (see `.github/gsm-gate`); it covers those examples, not the

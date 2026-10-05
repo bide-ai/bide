@@ -168,10 +168,15 @@ never causally ordered ones, so standard op-based CRDTs (concurrent operations c
 compensation) converge as an instance, and the compensation-free fragment is exactly the op-based
 CRDTs ([SUBSUMPTION.md](https://github.com/blackwell-systems/normalization-confluence/blob/main/SUBSUMPTION.md)).
 In bide, a governor's events replay from one durable log in one total order, and a writer only
-observes events already in that log, so that order respects causality. The causal result therefore
-covers concurrent writers whose appends to one registry's log race, provided every pair of events
-that can be concurrent is checked (all pairs, or each such pair declared with `Independent`); bide
-does not track causality, so declaring those pairs is the caller's job. `Build` returns a
+observes events already in that log, so that order respects every causal dependency that runs
+through the log. The causal result therefore covers concurrent writers whose appends to one
+registry's log race, provided every pair of events that can be concurrent is checked (all pairs, or
+each such pair declared with `Independent`); bide does not track causality, so declaring those
+pairs is the caller's job. With pairs declared, gsm v0.13.0 also checks the undeclared pairs and
+lists each one that does not commute, and bide's convergence certificate records them
+(`causal_order_required`): those events must never be concurrent. It records, too, the events a
+duplicate delivery would change (`not_idempotent`); a governed tool applies its event at most once
+per tool call (`ApplyOnce`, deduplicated by id in the shared log). `Build` returns a
 machine only after the table oracle, Go generated from gsm's machine-checked Rocq proof, re-checks
 it in-process, and for combinator rules inside its fragment and within a cost cap, the rules oracle
 re-checks it from the rules as well; if an oracle does not certify the machine, the build fails
@@ -179,8 +184,8 @@ closed and returns no machine. The table oracle gates `SynthesizeWith` and `Buil
 same way, and each `BuildCompositional` component (commutation across components rests on gsm's
 footprint check). A federation (`govern.NewFederated`) is oracle-gated per component only:
 `Federation.Build` rebuilds each component with `Build`, while the federation-level checks (the
-morphism and resolver conditions, acyclicity, and the fixed-point iteration of monotone cycles) are
-gsm's Go code and are not oracle-certified. In CI, bide's
+morphism and resolver conditions, the event-order checks C1 and C2, acyclicity, and the fixed-point
+iteration of monotone cycles) are gsm's Go code and are not oracle-certified. In CI, bide's
 required gsm machine gate runs the proof's checkers on every machine the governance examples build.
 The exact scope, including which event pairs CC covers (every event pair, or only those declared
 with `Independent`), is in [known limitations](docs/KNOWN-LIMITATIONS.md#governed-state-gsm). Rules are
@@ -192,15 +197,23 @@ agents share state without a single writer. The claim is precise: *order-indepen
 of the replay* for a machine that meets the theorem's conditions, not "agents always agree." The
 federated convergence results are mechanized: the acyclic structural core (limit, retraction,
 compositionality) and the monotone-cycle case, including asynchronous (chaotic)
-order-independence for finite-height lattices. The cohomological layer is mechanized as well:
-in the invertible fragment, a federation has a convergent global state iff every fundamental cycle
+order-independence for finite-height lattices. Across registries, the authority argument makes the
+federated repair terminate in a unique valid normal form; it does not by itself make event order
+across registries safe (`fed_thm_fed_convergence_refuted`). Event order is safe because
+`Federation.Build` checks cross-registry CC (C1) and repaired CC (C2) and rejects a federation that
+fails either; under those two conditions federated convergence is mechanized
+(`fed_thm_fed_convergence_guarded`, and `cyc_check_gc_lfp` for monotone cycles). The
+cohomological layer is mechanized as well: in the invertible fragment, a federation has a convergent global state iff every fundamental cycle
 has trivial holonomy, and H¹ is mechanized as the quotient of fundamental-cycle holonomies modulo
 simultaneous conjugation, with rank |E| − |V| + 1. The rank on the nerve as a 2-complex and the
 non-invertible case are paper-proven.
 
-**bide requires gsm v0.12.0.** gsm v0.11.0, which bide required before, had a `Build` gap: it
-skipped the commute check for event pairs it judged independent from what they write, without
-checking what their guards and effects read, so a machine where one event's guard or effect reads a
+**bide requires gsm v0.13.0.** It checks event order across federated registries (C1 and C2), which
+gsm v0.12.0 did not: under v0.12.0 a federation whose target event races a change from its source
+built, and although every governor replaying bide's shared log agreed, the agreed state could
+depend on which event was appended first. Rebuild a federation under v0.13.0 before relying on it.
+gsm v0.12.0 had closed an earlier gap: gsm v0.11.0 skipped the commute check for event pairs it
+judged independent from what they write, without checking what their guards and effects read, so a machine where one event's guard or effect reads a
 variable another event writes (a `ship` event guarded on `paid`, which `pay` sets) could be
 certified convergent when it is not. The theorem is correct; the implementation applied it without
 checking that precondition. gsm v0.12.0's `Build` checks every pair it checks for CC (every event
@@ -225,7 +238,7 @@ governance and audit machinery at scale, not a live LLM or a production database
 | Tamper-evident audit | **RFC 6962 Merkle spine (same journal)** | Not built in | None |
 | Convergent shared state | **Provable (gsm)**[^gsm] | N/A | None |
 
-[^gsm]: The convergence theorem is machine-checked. gsm's `Build` checks each machine against its conditions and returns it only after the table oracle, Go generated from the proof, re-checks it in-process; for combinator rules inside its fragment and within a cost cap, the rules oracle re-checks it from the rules as well. A federation's own conditions are checked by gsm's Go code. bide requires gsm v0.12.0, which fixes the `Build` gap of v0.11.0 for guards and effects that read variables another event writes. Exact scope: [known limitations](https://github.com/bide-ai/bide/blob/main/docs/KNOWN-LIMITATIONS.md#governed-state-gsm).
+[^gsm]: The convergence theorem is machine-checked. gsm's `Build` checks each machine against its conditions and returns it only after the table oracle, Go generated from the proof, re-checks it in-process; for combinator rules inside its fragment and within a cost cap, the rules oracle re-checks it from the rules as well. A federation's own conditions, including the event-order checks C1 and C2, are checked by gsm's Go code. bide requires gsm v0.13.0, which checks C1 and C2 (v0.12.0 did not) and keeps v0.12.0's fix of the `Build` gap of v0.11.0 for guards and effects that read variables another event writes. Exact scope: [known limitations](https://github.com/bide-ai/bide/blob/main/docs/KNOWN-LIMITATIONS.md#governed-state-gsm).
 
 ### The craft underneath
 
