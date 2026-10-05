@@ -3,7 +3,7 @@ module github.com/bide-ai/bide/mcptools
 go 1.27.0
 
 require (
-	github.com/bide-ai/bide v0.0.0
+	github.com/bide-ai/bide v0.12.0
 	github.com/modelcontextprotocol/go-sdk v1.8.0
 )
 
@@ -18,5 +18,3 @@ require (
 	golang.org/x/text v0.42.0 // indirect
 	golang.org/x/time v0.15.0 // indirect
 )
-
-replace github.com/bide-ai/bide => ../
