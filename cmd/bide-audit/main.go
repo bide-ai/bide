@@ -546,6 +546,9 @@ func (c *cli) verifyConvergence(args []string) {
 		}
 		c.printf("certificate: machine %q claims converges=%v, %s, checked over %d states (max repair depth %d)\n",
 			cert.Machine, cert.Converges, fragment, cert.States, cert.MaxRepairLen)
+		for _, l := range cert.obligations() {
+			c.println(l)
+		}
 		c.printf("OK: certificate anchored for policy %s in a signed tree of size %d\n", pc.Digest, certBundle.STH.Size)
 	}
 
@@ -933,6 +936,9 @@ func (c *cli) verifyRun(args []string) {
 			continue
 		}
 
+		for _, l := range claim.obligations() {
+			c.printf("policy %s: %s\n", polC.Digest, l)
+		}
 		oracle, ok := c.checkPolicy(*checker, polC.Policy, "oracle ("+polC.Digest+")")
 		if !ok {
 			continue
@@ -1340,19 +1346,61 @@ func trimSpace(s string) string {
 
 // confluenceCert is the wire form of govern.ConfluenceCertificate, mirrored so the CLI imports
 // neither gsm nor govern. It has every field govern writes, so a certificate decodes strictly
-// (TestWireMirrorsMatchGovern keeps the two in step).
+// (TestWireMirrorsMatchGovern keeps the two in step). A certificate written before govern carried
+// gsm v0.13.0's delivery obligations has none of their keys; it reads with those fields nil.
 type confluenceCert struct {
-	Machine          string `json:"machine"`
-	PolicyDigest     string `json:"policy_digest"`
-	Converges        bool   `json:"converges"`
-	WFC              bool   `json:"wfc"`
-	CC               bool   `json:"cc"`
-	MaxRepairLen     int    `json:"max_repair_len"`
-	PairsTotal       int    `json:"pairs_total"`
-	PairsDisjoint    int    `json:"pairs_disjoint"`
-	PairsBrute       int    `json:"pairs_brute"`
-	States           int    `json:"states"`
-	CompensationFree bool   `json:"compensation_free"`
+	Machine             string       `json:"machine"`
+	PolicyDigest        string       `json:"policy_digest"`
+	Converges           bool         `json:"converges"`
+	WFC                 bool         `json:"wfc"`
+	CC                  bool         `json:"cc"`
+	MaxRepairLen        int          `json:"max_repair_len"`
+	PairsTotal          int          `json:"pairs_total"`
+	PairsDisjoint       int          `json:"pairs_disjoint"`
+	PairsBrute          int          `json:"pairs_brute"`
+	PairsUndeclared     int          `json:"pairs_undeclared"`
+	CausalOrderRequired []eventPair  `json:"causal_order_required"`
+	NotIdempotent       []string     `json:"not_idempotent"`
+	Saturations         []saturation `json:"saturations"`
+	States              int          `json:"states"`
+	CompensationFree    bool         `json:"compensation_free"`
+}
+
+// eventPair and saturation are the wire forms of govern.EventPair and govern.Saturation.
+type eventPair struct {
+	First  string `json:"first"`
+	Second string `json:"second"`
+}
+
+type saturation struct {
+	Rule   string `json:"rule"`
+	Var    string `json:"var"`
+	States int    `json:"states"`
+}
+
+// obligations returns the report lines for the delivery obligations a certificate records. They
+// are conditions of the convergence claim, not failures of it, so they do not change the verdict.
+// A certificate that has none of the obligation lists was written before they existed: it records
+// none, which does not mean there are none.
+func (cert confluenceCert) obligations() []string {
+	if cert.CausalOrderRequired == nil && cert.NotIdempotent == nil && cert.Saturations == nil {
+		return []string{"note: this certificate records no delivery obligations (it predates gsm v0.13.0's causal-order, duplicate-delivery and saturation reports); rebuild the policy to record them"}
+	}
+	var lines []string
+	if n := len(cert.CausalOrderRequired); n > 0 {
+		pairs := make([]string, n)
+		for i, p := range cert.CausalOrderRequired {
+			pairs[i] = p.First + "/" + p.Second
+		}
+		lines = append(lines, fmt.Sprintf("obligation: causal order required for %d undeclared pair(s): %s (convergence holds only if the two events of each pair are never concurrent)", n, strings.Join(pairs, ", ")))
+	}
+	if len(cert.NotIdempotent) > 0 {
+		lines = append(lines, fmt.Sprintf("obligation: delivery exactly once: %s (a duplicate changes the result)", strings.Join(cert.NotIdempotent, ", ")))
+	}
+	for _, s := range cert.Saturations {
+		lines = append(lines, fmt.Sprintf("note: saturation: %s clamps its write to %s on %d state(s)", s.Rule, s.Var, s.States))
+	}
+	return lines
 }
 
 // quorumVote and quorumTally are the wire forms of govern.Vote and govern.QuorumResult, mirrored
