@@ -3,8 +3,8 @@ module github.com/bide-ai/bide/govern/sqlitelog
 go 1.27.0
 
 require (
-	github.com/bide-ai/bide v0.0.0
-	github.com/bide-ai/bide/govern v0.0.0
+	github.com/bide-ai/bide v0.12.0
+	github.com/bide-ai/bide/govern v0.12.0
 	github.com/blackwell-systems/gsm v0.13.0
 	modernc.org/sqlite v1.59.0
 )
@@ -22,7 +22,3 @@ require (
 	modernc.org/mathutil v1.7.1 // indirect
 	modernc.org/memory v1.12.1 // indirect
 )
-
-replace github.com/bide-ai/bide => ../../
-
-replace github.com/bide-ai/bide/govern => ../
