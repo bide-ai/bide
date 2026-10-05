@@ -282,7 +282,7 @@ be public.
 ## Governed state (gsm)
 
 **A federation built under gsm v0.12.0 was not checked for event order across registries.** bide
-requires gsm v0.13.0, whose `Federation.Build` checks cross-registry CC (C1: a target event commutes
+requires gsm v0.14.0, whose `Federation.Build` checks cross-registry CC (C1: a target event commutes
 with every change of its shared component its sources can cause) and repaired CC (C2: two target
 events its own CC covers still commute with the morphism repair between them), and rejects a
 federation that fails either. gsm v0.12.0 checked neither, so a federation it built could reach a

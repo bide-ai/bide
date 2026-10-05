@@ -5,7 +5,7 @@ go 1.27.0
 require (
 	github.com/bide-ai/bide v0.0.0
 	github.com/bide-ai/bide/govern v0.0.0
-	github.com/blackwell-systems/gsm v0.13.0
+	github.com/blackwell-systems/gsm v0.14.0
 	github.com/redis/go-redis/v9 v9.22.0
 )
 

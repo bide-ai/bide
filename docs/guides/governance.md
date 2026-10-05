@@ -359,7 +359,7 @@ go run ./quorum     # governed model quorum: k-of-n agreement gates the commit, 
   proof-derived checks cover.
 - **Federations built under gsm v0.12.0.** gsm v0.12.0 did not check event order across
   registries (C1, C2), so a federation it built could reach a state that depends on which event
-  was appended first; gsm v0.13.0, which bide requires now, checks both. A claim about a federation
+  was appended first; gsm v0.13.0 and later check both (bide requires v0.14.0). A claim about a federation
   built under v0.12.0 holds only once it builds under v0.13.0.
 - **Finite state spaces.** The semantic state must be finite (bounded enums/ints). Unbounded
   numeric state is a theory extension, not shipped.

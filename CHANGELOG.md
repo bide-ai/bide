@@ -9,6 +9,10 @@ journal format can change between pre-releases without a version bump. Curated h
 
 ## [Unreleased]
 
+### Changed
+
+- `govern`, its log adapters, `integration` and `examples/govern` require gsm v0.14.0 (was v0.13.0), and the gsm machine gate pins its release commit. gsm v0.14.0 adds the XU check for deployments that merge component projections; bide replays one shared event log (gsm's `FedMachine` model), so it does not rely on XU. Nothing that built on v0.13.0 fails to build, and every governance example runs unchanged.
+
 ## [0.12.0] - 2026-10-05
 
 ### Fixed
