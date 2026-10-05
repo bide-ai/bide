@@ -1006,7 +1006,7 @@ govern           Tier-2: federated governed state + quorum for agents that must 
 
 The durable core keeps *one* agent's work crash-safe. The `govern` tier handles the other hard
 case: **many independently-run agents that have to agree**, across process, team, or organizational
-boundaries, with no central coordinator and no single writer. It gives two verifiable forms of
+boundaries, with no coordinator beyond the shared, totally ordered event log, and no single writer. It gives two verifiable forms of
 agreement, and in both the point is *verify, don't trust*: a party checks the outcome from public
 artifacts without trusting anyone else's agent.
 
