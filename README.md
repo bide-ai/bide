@@ -212,7 +212,7 @@ has trivial holonomy, and H¹ is mechanized as the quotient of fundamental-cycle
 simultaneous conjugation, with rank |E| − |V| + 1. The rank on the nerve as a 2-complex and the
 non-invertible case are paper-proven.
 
-**bide requires gsm v0.13.0.** It checks event order across federated registries (C1 and C2), which
+**bide requires gsm v0.14.0.** It checks event order across federated registries (C1 and C2), which
 gsm v0.12.0 did not: under v0.12.0 a federation whose target event races a change from its source
 built, and although every governor replaying bide's shared log agreed, the agreed state could
 depend on which event was appended first. Rebuild a federation under v0.13.0 before relying on it.

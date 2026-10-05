@@ -175,7 +175,7 @@ generated from the Rocq proof re-checks it in-process. `CertifyConvergence` emit
 can re-check offline. The claim is order-independent convergence of the replay for a machine that
 meets the theorem's conditions; with event pairs declared `Independent`, it covers only reorderings
 across those pairs, and a federation's own conditions are checked by gsm's Go code, not an oracle.
-bide requires gsm v0.13.0, which also checks event order across registries (C1, C2); see
+bide requires gsm v0.14.0, which also checks event order across registries (C1, C2); see
 [Known limitations](../KNOWN-LIMITATIONS.md#governed-state-gsm) for what earlier versions did not check. See
 [Governance](../guides/governance.md).
 
