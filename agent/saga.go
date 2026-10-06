@@ -44,6 +44,8 @@ type SagaAborted struct {
 	CompensateErr  error
 }
 
+// Error describes the abort: the cause, the compensated steps, and any uncompensated writes,
+// unknown outcomes and rollback error.
 func (e *SagaAborted) Error() string {
 	msg := fmt.Sprintf("saga %s aborted (%v); compensated %v", e.RunID, e.Cause, e.Compensated)
 	if len(e.Uncompensated) > 0 {
@@ -58,6 +60,7 @@ func (e *SagaAborted) Error() string {
 	return msg
 }
 
+// Unwrap returns Cause, the failure that aborted the saga.
 func (e *SagaAborted) Unwrap() error { return e.Cause }
 
 // unknownStepOutcome reports whether a saga step's failure err leaves its outcome unknown: it

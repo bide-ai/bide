@@ -43,6 +43,7 @@ var (
 	_ agent.Describer = (*Model)(nil)
 )
 
+// Option configures a Model in New.
 type Option func(*Model)
 
 // WithMaxResponseBytes caps how many bytes of one streamed reply the adapter reads: a reply that
@@ -51,9 +52,18 @@ type Option func(*Model)
 // that legitimately run longer, such as large inline images.
 func WithMaxResponseBytes(n int64) Option { return func(m *Model) { m.maxResponse = n } }
 
-func WithModel(id string) Option           { return func(m *Model) { m.model = id } }
-func WithMaxTokens(n int) Option           { return func(m *Model) { m.maxTokens = n } }
-func WithBaseURL(u string) Option          { return func(m *Model) { m.baseURL = u } }
+// WithModel sets the model ID sent with every request. The default is "claude-sonnet-4-6".
+func WithModel(id string) Option { return func(m *Model) { m.model = id } }
+
+// WithMaxTokens sets the default limit on tokens in a reply; a request's Sampling.MaxTokens
+// overrides it. The default is 4096 (Anthropic requires a limit on every request).
+func WithMaxTokens(n int) Option { return func(m *Model) { m.maxTokens = n } }
+
+// WithBaseURL sets the API host, for a proxy or a compatible endpoint; /v1/messages is
+// appended to it. The default is "https://api.anthropic.com".
+func WithBaseURL(u string) Option { return func(m *Model) { m.baseURL = u } }
+
+// WithHTTPClient sets the HTTP client requests are sent with. The default is http.DefaultClient.
 func WithHTTPClient(c *http.Client) Option { return func(m *Model) { m.http = c } }
 
 // WithPromptCache turns on Anthropic prompt caching: cache_control breakpoints are

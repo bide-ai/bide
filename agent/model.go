@@ -179,6 +179,7 @@ func (u Usage) TotalTokens() int { return u.TotalInputTokens() + u.OutputTokens 
 // binary) onto these.
 type Event interface{ event() }
 
+// TextDelta is a fragment of the model's text answer.
 type TextDelta struct {
 	Text string `json:"text"`
 }

@@ -82,7 +82,7 @@ type turnRecord struct {
 	Input   string   `json:"input"`
 	Message *Message `json:"message,omitempty"` // the input, when it is not a user message of one text part
 	Answer  Message  `json:"answer"`
-	// Cancelled records a turn closed because its run was cancelled (P14 rule 16): it has no
+	// Cancelled records a turn closed because its run was cancelled: it has no
 	// answer, and it is not part of the transcript later turns are seeded with.
 	Cancelled bool   `json:"cancelled,omitempty"`
 	Key       string `json:"key,omitempty"`    // SendOnce's key; empty for Send
@@ -293,7 +293,7 @@ func (s *Session) turnResult(t0 time.Time, runID string, msg Message, tot usageT
 // to another handle reloads the journal and tries once more. An open turn of another message is
 // refused only once the journal has been read again (this handle's view of it may be stale: its own
 // Send of that message failed or paused, and another handle has since finished the turn), and only
-// if its run was not cancelled: a cancelled turn is recorded closed first (P14 rule 16).
+// if its run was not cancelled: a cancelled turn is recorded closed first (see closeIfCancelled).
 func (s *Session) startTurn(ctx context.Context, input Message) (turnStart, int, error) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
@@ -373,7 +373,7 @@ func (s *Session) startTurn(ctx context.Context, input Message) (turnStart, int,
 }
 
 // closeIfCancelled records the open Send turn closed if its run was cancelled (its first end
-// marker is run:cancelled), and reloads: rule 16 of the P14 contract (model 12's S3). A saga turn's
+// marker is run:cancelled), and reloads (rule 16 of the run contract in docs/design/api-v1.md; model 12's S3). A saga turn's
 // Cancel writes only a rollback request, which the turn's next drive acts on: the session owns its
 // turns, so it drives that rollback itself, and closes the turn once the rollback has written
 // run:cancelled. closeIfCancelled does not drive it: it returns the turn run's ID as requested,

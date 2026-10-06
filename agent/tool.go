@@ -299,8 +299,7 @@ func (s safetyOption) applyStep(c *stepConfig) error {
 }
 
 // WithSafety declares how safe a tool's calls, or a step, are to re-run. For a tool built by Func
-// or CompensatedFunc it replaces the Safety argument (which the 1.0 rewrite removes in its
-// favour); SubAgent refuses it, since a sub-agent call re-enters its sub-run, whose own calls
+// or CompensatedFunc it sets the tool's Safety (the default is a side effect); SubAgent refuses it, since a sub-agent call re-enters its sub-run, whose own calls
 // carry their safety. For a Step, a step that is RetrySafe (ReadOnly or Idempotent) re-runs after
 // a crash, and any other step halts (the default is a side effect).
 func WithSafety(s Safety) SafetyOption { return safetyOption(s) }

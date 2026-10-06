@@ -54,6 +54,7 @@ var (
 	_ agent.Describer = (*Model)(nil)
 )
 
+// Option configures a Model in New.
 type Option func(*Model)
 
 // WithMaxResponseBytes caps how many bytes of one streamed reply the adapter reads: a reply that
@@ -62,9 +63,18 @@ type Option func(*Model)
 // that legitimately run longer, such as large inline images.
 func WithMaxResponseBytes(n int64) Option { return func(m *Model) { m.maxResponse = n } }
 
-func WithModel(id string) Option           { return func(m *Model) { m.model = id } }
-func WithMaxTokens(n int) Option           { return func(m *Model) { m.maxTokens = n } }
-func WithBaseURL(u string) Option          { return func(m *Model) { m.baseURL = strings.TrimRight(u, "/") } }
+// WithModel sets the model ID sent with every request. The default is "gemini-2.0-flash".
+func WithModel(id string) Option { return func(m *Model) { m.model = id } }
+
+// WithMaxTokens sets the default limit on tokens in a reply; a request's Sampling.MaxTokens
+// overrides it. The default is 0, which leaves the limit to the provider.
+func WithMaxTokens(n int) Option { return func(m *Model) { m.maxTokens = n } }
+
+// WithBaseURL sets the API host, for a proxy or a compatible endpoint; /v1beta/models/{model}:streamGenerateContent is
+// appended to it. The default is "https://generativelanguage.googleapis.com".
+func WithBaseURL(u string) Option { return func(m *Model) { m.baseURL = strings.TrimRight(u, "/") } }
+
+// WithHTTPClient sets the HTTP client requests are sent with. The default is http.DefaultClient.
 func WithHTTPClient(c *http.Client) Option { return func(m *Model) { m.http = c } }
 
 // WithToolResultCodec encodes tool results sent to the model with c instead of

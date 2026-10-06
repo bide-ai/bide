@@ -1,48 +1,4 @@
 # Documentation gaps tolerated by internal/tools/doccheck, one "dir name" key per line, sorted.
 # This list only shrinks: document an identifier and delete its line (the check fails on a line
 # whose identifier is documented or gone). New code never gets an entry, and CI rejects a pull
-# request that adds one. It must be empty from the 1.0 release on.
-agent APIError.Error
-agent APIError.Unwrap
-agent HaltTooYoung.Error
-agent Message.MarshalJSON
-agent Message.UnmarshalJSON
-agent RateLimited.Error
-agent RateLimited.Unwrap
-agent RoleAssistant
-agent RoleSystem
-agent RoleTool
-agent RoleUser
-agent SagaAborted.Error
-agent SagaAborted.Unwrap
-agent StepApproval
-agent StepAttempt
-agent StepModel
-agent StepSagaFail
-agent StepSignal
-agent StepToolResult
-agent StepValue
-agent SystemText
-agent TextDelta
-audit MemEventStore.Append
-audit MemEventStore.Load
-chaos Report.String
-internal/jsonfields TagNameError.Error
-model/anthropic Option
-model/anthropic WithBaseURL
-model/anthropic WithHTTPClient
-model/anthropic WithMaxTokens
-model/anthropic WithModel
-model/gemini Option
-model/gemini WithBaseURL
-model/gemini WithHTTPClient
-model/gemini WithMaxTokens
-model/gemini WithModel
-model/openai Model
-model/openai Model.Stream
-model/openai Option
-model/openai WithBaseURL
-model/openai WithHTTPClient
-model/openai WithMaxTokens
-model/openai WithModel
-model/openai WithStrictSchema
+# request that adds one. It is empty, and stays empty.

@@ -47,6 +47,8 @@ type Report struct {
 // every run that reached a terminal state.
 func (r Report) OK() bool { return r.Violations == 0 && r.MaxFired <= 1 && r.Missed == 0 }
 
+// String formats the report as one line: the name, the sweep and schedule counts, the worst
+// fire count, and a PASS or FAIL verdict.
 func (r Report) String() string {
 	verdict := "PASS ✓ (at-most-once held)"
 	if !r.OK() {

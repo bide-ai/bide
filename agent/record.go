@@ -13,13 +13,22 @@ import (
 type StepKind string
 
 const (
-	StepModel      StepKind = "model"       // an assistant message from the model
-	StepToolResult StepKind = "tool_result" // a completed tool call + its result
-	StepValue      StepKind = "value"       // a user-authored durable step (see Step[T])
-	StepSignal     StepKind = "signal"      // an external event delivered into a run (see Signal/Await)
-	StepApproval   StepKind = "approval"    // a durable human approve/deny decision (HITL)
-	StepAttempt    StepKind = "attempt"     // "about to run a non-retriable side effect" marker
-	StepSagaFail   StepKind = "saga_fail"   // a saga step failed → durable abort trigger
+	// StepModel records an assistant message from the model.
+	StepModel StepKind = "model"
+	// StepToolResult records a completed tool call and its result.
+	StepToolResult StepKind = "tool_result"
+	// StepValue records the result of a user-authored durable step (see Journal.Step).
+	StepValue StepKind = "value"
+	// StepSignal records an external event delivered into a run (see Journal.Signal and Await).
+	StepSignal StepKind = "signal"
+	// StepApproval records a durable human decision to approve or deny a tool call.
+	StepApproval StepKind = "approval"
+	// StepAttempt is the marker a driver claims exclusively before a non-retriable side effect.
+	// It says the effect may have fired: a resume halts on a marker with no result (see
+	// attempt.go).
+	StepAttempt StepKind = "attempt"
+	// StepSagaFail records that a saga step failed, which durably triggers the saga's rollback.
+	StepSagaFail StepKind = "saga_fail"
 	// StepNotStarted records that the attempt whose marker it names never called its side
 	// effect, written by the driver that claimed it (see attempt.go). That attempt then no
 	// longer halts a resume, and the effect is re-attempted under a new marker.

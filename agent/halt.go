@@ -449,6 +449,7 @@ type HaltTooYoung struct {
 	Min       time.Duration // the required minimum
 }
 
+// Error names the run and operation, the halt's age and the minimum it must reach.
 func (e *HaltTooYoung) Error() string {
 	return fmt.Sprintf("resolve-halt for call %s (run %s) too soon: attempted %s ago, need %s before resolving",
 		e.ToolUseID, e.RunID, e.Age, e.Min)
