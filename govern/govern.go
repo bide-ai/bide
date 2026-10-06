@@ -447,8 +447,7 @@ type EventToolConfig struct {
 	// Attested asks for the attested form explicitly: the result records the state digest and
 	// the acting identity as well as the policy digest. A non-empty PolicyDigest makes the tool
 	// attested without it; with an empty PolicyDigest, Attested is refused (EventTool panics with
-	// ErrConfig), since an attestation needs the policy it attests to. It is what a call of the
-	// removed AttestedEventTool, which accepted an empty digest, migrates to.
+	// ErrConfig), since an attestation needs the policy it attests to.
 	Attested bool
 	// Safety is the tool's retry classification (see agent.Safety). The zero value is a side
 	// effect.

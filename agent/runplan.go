@@ -1,5 +1,5 @@
-// runplan.go holds the journaling rule (docs/design/api-v1.md, item 1; rules 8 to 12 of the P14
-// contract): a drive's first step after its Load journals run:start (the first drive) or holds
+// runplan.go holds the journaling rule (docs/design/api-v1.md, item 1, and rules 8 to 12
+// of its run contract): a drive's first step after its Load journals run:start (the first drive) or holds
 // the drive to it (every later drive), writes a limit amendment for a later drive's different
 // limit, and settles the values the drive runs under.
 

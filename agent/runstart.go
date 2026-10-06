@@ -192,10 +192,10 @@ type RunKind string
 
 const (
 	// RunKindAgent is a run an Agent drives (Run, Stream, a sub-agent, a session turn).
-	// A run:start journaled before P14 records no kind (an agent run's did not; a flow's always
-	// recorded its kind): any agent entry point may drive it (a plain run, a session turn, a typed
-	// run), as before, since the record does not say which started it. P14 writes the kind of
-	// every run it starts.
+	// A run:start journaled before v0.10.0 may record no kind (an agent run's did not; a flow's
+	// always recorded its kind): any agent entry point may drive it (a plain run, a session turn,
+	// a typed run), since the record does not say which started it. Every run started now records
+	// its kind.
 	RunKindAgent RunKind = "agent"
 	// RunKindFlow is a run a plan flow drives (plan.Flow.Run). RunStart.Flow names the flow.
 	RunKindFlow RunKind = "flow"
@@ -232,7 +232,8 @@ func (s RunStart) kind() RunKind {
 	return s.Kind
 }
 
-// legacy reports whether s was journaled before P14: it records no kind (P14 always writes one)
+// legacy reports whether s was journaled before v0.10.0: it records no kind (every later version
+// writes one)
 // and no typed start. Such a run was started by an agent entry point (a flow's start has always
 // recorded its kind) that the record does not name: a plain run, a session turn, a SendOnce turn
 // or a typed run.

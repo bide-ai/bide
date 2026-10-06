@@ -29,6 +29,8 @@ import (
 	"github.com/bide-ai/bide/schema"
 )
 
+// Model is an OpenAI Chat Completions API adapter implementing agent.Model. It also serves
+// OpenAI-compatible endpoints, such as Ollama and vLLM, through WithBaseURL.
 type Model struct {
 	maxResponse int64 // the streamed reply cap; see WithMaxResponseBytes
 	apiKey      string
@@ -48,6 +50,7 @@ var (
 	_ agent.Describer = (*Model)(nil)
 )
 
+// Option configures a Model in New.
 type Option func(*Model)
 
 // WithMaxResponseBytes caps how many bytes of one streamed reply the adapter reads: a reply that
@@ -56,11 +59,24 @@ type Option func(*Model)
 // that legitimately run longer, such as large inline images.
 func WithMaxResponseBytes(n int64) Option { return func(m *Model) { m.maxResponse = n } }
 
-func WithModel(id string) Option           { return func(m *Model) { m.model = id } }
-func WithMaxTokens(n int) Option           { return func(m *Model) { m.maxTokens = n } }
-func WithBaseURL(u string) Option          { return func(m *Model) { m.baseURL = strings.TrimRight(u, "/") } }
+// WithModel sets the model ID sent with every request. The default is "gpt-4o".
+func WithModel(id string) Option { return func(m *Model) { m.model = id } }
+
+// WithMaxTokens sets the default limit on tokens in a reply; a request's Sampling.MaxTokens
+// overrides it. The default is 0, which leaves the limit to the provider.
+func WithMaxTokens(n int) Option { return func(m *Model) { m.maxTokens = n } }
+
+// WithBaseURL sets the API host, for a proxy or a compatible endpoint; /chat/completions is
+// appended to it. The default is "https://api.openai.com/v1".
+func WithBaseURL(u string) Option { return func(m *Model) { m.baseURL = strings.TrimRight(u, "/") } }
+
+// WithHTTPClient sets the HTTP client requests are sent with. The default is http.DefaultClient.
 func WithHTTPClient(c *http.Client) Option { return func(m *Model) { m.http = c } }
-func WithStrictSchema() Option             { return func(m *Model) { m.strict = true } }
+
+// WithStrictSchema sends every tool's input schema in OpenAI strict mode, rewritten by
+// schema.OpenAIStrict. A request with a tool schema strict mode cannot express fails with
+// agent.ErrConfig rather than being sent without strict mode.
+func WithStrictSchema() Option { return func(m *Model) { m.strict = true } }
 
 // WithMaxCompletionTokens chooses the request field that carries the token limit
 // (WithMaxTokens, or Sampling.MaxTokens): max_completion_tokens when use is true, max_tokens
@@ -111,6 +127,7 @@ func (m *Model) Describe() agent.ModelInfo {
 	return agent.ModelInfo{Provider: "openai", Model: m.model, ResponseFormat: true}
 }
 
+// Stream implements agent.Model.
 func (m *Model) Stream(ctx context.Context, req agent.Request) (*agent.Stream, error) {
 	body, err := m.buildRequest(req)
 	if err != nil {

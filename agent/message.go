@@ -23,6 +23,7 @@ func (m Message) Text() string {
 // Role identifies the author of a Message.
 type Role string
 
+// The roles of a Message: the system prompt, the user, the model, and a tool result.
 const (
 	RoleSystem    Role = "system"
 	RoleUser      Role = "user"
@@ -101,8 +102,10 @@ type Image struct {
 
 func (Image) part() {}
 
-// UserText and SystemText are convenience constructors.
-func UserText(s string) Message   { return Message{Role: RoleUser, Parts: []Part{Text{s}}} }
+// UserText returns a user message holding the text s.
+func UserText(s string) Message { return Message{Role: RoleUser, Parts: []Part{Text{s}}} }
+
+// SystemText returns a system message holding the text s.
 func SystemText(s string) Message { return Message{Role: RoleSystem, Parts: []Part{Text{s}}} }
 
 // UserParts builds a user message from mixed parts, e.g. a prompt and one or more
@@ -132,14 +135,15 @@ func (m Message) toolUses() []ToolUse {
 //
 // Part is an interface, so encoding/json can marshal it but cannot unmarshal back into
 // it. Any durable Store (SQLite, Postgres, file) needs Parts to round-trip, so Message
-// carries a "type"-tagged wire form. (Eino solves the same problem with
-// RegisterSerializableType; we bake the tag in so there's nothing to register.)
+// carries a "type"-tagged wire form, with the tag built in so there is nothing to register.
 
 type messageWire struct {
 	Role  Role              `json:"role"`
 	Parts []json.RawMessage `json:"parts,omitempty"`
 }
 
+// MarshalJSON encodes the message with each part tagged by its type, so UnmarshalJSON can
+// restore the concrete Part types.
 func (m Message) MarshalJSON() ([]byte, error) {
 	w := messageWire{Role: m.Role}
 	for _, p := range m.Parts {
@@ -152,6 +156,8 @@ func (m Message) MarshalJSON() ([]byte, error) {
 	return marshalJournal(w)
 }
 
+// UnmarshalJSON decodes a message written by MarshalJSON, restoring each part's concrete type.
+// It fails on a part whose type tag it does not know.
 func (m *Message) UnmarshalJSON(b []byte) error {
 	var w messageWire
 	if err := json.Unmarshal(b, &w); err != nil {

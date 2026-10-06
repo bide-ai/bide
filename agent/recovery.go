@@ -445,7 +445,7 @@ func decodeStartEntry(b []byte) (RunStart, bool) {
 
 // plainStartPrefix, plainStartKind and plainStartLegacy frame the record written for the run:start
 // of an agent run with a plain text input and no other setting: name, kind, a result of the input
-// and the run's kind (none before P14), and the salt, in that order.
+// and the run's kind (none in a journal written before v0.10.0), and the salt, in that order.
 const (
 	plainStartPrefix = `{"name":"` + runStartStep + `","kind":"` + string(StepValue) + `","result":{"input":"`
 	plainStartKind   = `","kind":"` + string(RunKindAgent) + `"},"salt":"`

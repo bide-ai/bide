@@ -42,6 +42,7 @@ type TagNameError struct {
 	Name   string // the tag name
 }
 
+// Error names the struct, the field and the rejected tag name.
 func (e *TagNameError) Error() string {
 	return fmt.Sprintf("%s: field %s has the json tag name %q, which encoding/json does not accept as a name", e.Struct, e.Field, e.Name)
 }

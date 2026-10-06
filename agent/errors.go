@@ -160,6 +160,7 @@ type RateLimited struct {
 	Err        error
 }
 
+// Error describes the rate limit: the retry hint and the provider's message when present, then Err.
 func (e *RateLimited) Error() string {
 	s := "rate limited"
 	if e.RetryAfter > 0 {
@@ -171,6 +172,7 @@ func (e *RateLimited) Error() string {
 	return fmt.Sprintf("%s: %v", s, e.Err)
 }
 
+// Unwrap returns Err, so errors.Is(err, ErrModel) holds when Err wraps ErrModel.
 func (e *RateLimited) Unwrap() error { return e.Err }
 
 // APIError is returned by a provider adapter for a non-2xx HTTP response that is not a rate
@@ -189,6 +191,8 @@ type APIError struct {
 	Err        error
 }
 
+// Error describes the failure: the status, the provider's message and error code or type (or the
+// Body when the provider sent no message), then Err.
 func (e *APIError) Error() string {
 	detail := truncate(e.Body)
 	if e.Message != "" {
@@ -200,6 +204,7 @@ func (e *APIError) Error() string {
 	return fmt.Sprintf("api error: status %d: %s: %v", e.StatusCode, detail, e.Err)
 }
 
+// Unwrap returns Err, so errors.Is(err, ErrModel) holds when Err wraps ErrModel.
 func (e *APIError) Unwrap() error { return e.Err }
 
 // ErrJournalVersion is a run whose journal this version cannot read or write: its header names a

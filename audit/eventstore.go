@@ -131,6 +131,8 @@ func NewMemEventStore() *MemEventStore { return &MemEventStore{runs: map[string]
 
 var _ EventStore = (*MemEventStore)(nil) // port/adapter contract
 
+// Append stores leaf at position seq of runID's trail. Re-appending identical bytes at a stored
+// position is a no-op; different bytes there, or a seq past the end of the trail, is an error.
 func (s *MemEventStore) Append(_ context.Context, runID string, seq int, leaf []byte) error {
 	s.mu.Lock()
 	defer s.mu.Unlock()
@@ -149,6 +151,7 @@ func (s *MemEventStore) Append(_ context.Context, runID string, seq int, leaf []
 	}
 }
 
+// Load returns copies of runID's stored leaves in order, or nil for a run with none.
 func (s *MemEventStore) Load(_ context.Context, runID string) ([][]byte, error) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
