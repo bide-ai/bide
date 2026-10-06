@@ -4,12 +4,14 @@ Where bide is going, in order. The priority is to harden what exists before addi
 
 This page describes intent, not promises of dates. Shipped work is recorded in the [changelog](../CHANGELOG.md).
 
-## Now: v0.11.1, stabilizing
+## Now: v0.12.0, stabilizing
 
-The current release is v0.11.1, and the work now is stabilizing what exists: bug fixes, documentation, tests, soak and chaos runs, and fresh-eyes passes over the code and the docs. No new features are planned for now, and releases stay on 0.x.
+The current release is v0.12.0 (2026-10-05), and the work now is stabilizing what exists: bug fixes, documentation, tests, soak and chaos runs, and fresh-eyes passes over the code and the docs. No new features are planned for now, and releases stay on 0.x.
 
 - The [launch post](blog/introducing-bide.md): what bide is, a first agent, and one crash resumed from the journal.
 - The [crash-injection benchmark](../benchmarks/README.md) now includes LangGraph (Python) on SQLite and Postgres ([#166](https://github.com/bide-ai/bide/pull/166), [#167](https://github.com/bide-ai/bide/pull/167)); every framework except bide re-fired the charge.
+
+v0.12.0 moved to gsm v0.13.0, which checks event order across federated registries and reports the delivery obligations a confluence certificate now records; main has since moved to gsm v0.14.0 ([#177](https://github.com/bide-ai/bide/pull/177)).
 
 Shipped earlier: v0.11.1 says when a model call has no API key and makes getting started work offline; v0.11.0 gave the redesigned API its final names (P15) and removed the transitional API; v0.10.0 added the Run API (P14), tool specifications (P12), construction under `Build` (P13), four TLA+ models (9 to 12), an Apalache inductive invariant for the claim protocol, the gsm machine gate, and gsm v0.12.0; v0.9.0 put the claim protocol under a model checker and rebuilt the engine around a storage port and a journal with its own format; v0.8.0 made runs recover themselves (`RecoverLoop`) and put one token budget across an agent tree.
 
@@ -22,7 +24,8 @@ The API redesign ([design proposal](https://github.com/bide-ai/bide/pull/64)):
 - Done in v0.9.0: a storage port (`Store`) separated from the journal semantics bide owns (`Journal`), with the store contract stated as numbered requirements and a conformance suite every store must pass (P6a); a sealed pause contract (P10); typed model calls (P9); flow nodes lowered onto `agent.Journal.Step` (P5b); and versioned journal and proof formats (P6a, P11).
 - Done in v0.10.0: tool internals on a tool specification, with approval split from safety and tool timeouts (P12); construction under `Build`, with option scopes and `RunInfo` (P13); and one run entry point with per-run options that survive recovery, `Cancel`, `Status` and recovery dispatch, under transitional names (P14).
 - Done in v0.11.0 (P15): the final names, and the transitional API removed (the `Durable` interface, the string entry points, the builder methods, the old `Tool` method set); the journal verbs are Go 1.27 generic methods (`j.Step`, `j.Parallel`, ...). The CHANGELOG lists the changes name by name.
-- Next: P16, docs and cleanup: emptying the doccheck allowlist, `Example` tests, and stale text moved out of godoc. Its last step, moving the journal format tag from `v1-dev` to its final value, waits for 1.0.
+- Done after v0.12.0 (P16, docs and cleanup): the doccheck allowlist is empty ([#178](https://github.com/bide-ai/bide/pull/178)), the main public API has runnable `Example` tests ([#179](https://github.com/bide-ai/bide/pull/179)), and stale text (P-numbers, migration notes) is out of godoc ([#178](https://github.com/bide-ai/bide/pull/178)).
+- Next: P16's last step, moving the journal format tag from `v1-dev` to its final value, waits for 1.0.
 
 Changes that touch claims, the journal, leases, sagas or proofs are reviewed adversarially before they merge.
 
