@@ -41,7 +41,7 @@ Accountability and governance:
 
 ## Design notes
 
-- **[Design](design/design.md)**, **[Durable signals](design/design-durable-signals.md)**, **[m-of-n approval](design/design-mofn-approval.md)**, **[Compaction](design/compaction.md)**, **[Chaos benchmark](design/chaos-benchmark.md)**, **[Formal models](design/formal-models.md)** (accepted, in progress), **[The bide protocol](design/protocol.md)** (accepted; not implemented).
+- **[Design](design/design.md)**, **[Durable signals](design/design-durable-signals.md)**, **[m-of-n approval](design/design-mofn-approval.md)**, **[Compaction](design/compaction.md)**, **[Chaos benchmark](design/chaos-benchmark.md)**, **[Formal models](design/formal-models.md)** (accepted, in progress), **[The bide protocol](design/protocol.md)** (accepted; not implemented), **[Probes](design/probes.md)** (draft; not implemented).
 
 ## Testing and evidence
 
