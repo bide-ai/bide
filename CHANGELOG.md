@@ -12,6 +12,9 @@ journal format can change between pre-releases without a version bump. Curated h
 ### Changed
 
 - `govern`, its log adapters, `integration` and `examples/govern` require gsm v0.14.0 (was v0.13.0), and the gsm machine gate pins its release commit. gsm v0.14.0 adds the XU check for deployments that merge component projections; bide replays one shared event log (gsm's `FedMachine` model), so it does not rely on XU. Nothing that built on v0.13.0 fails to build, and every governance example runs unchanged.
+- The doccheck allowlist is empty (it held 44 entries): every exported identifier the check covers has a doc comment, and CI keeps the list empty ([#178]).
+- Runnable `Example` tests for the main API: an agent with a tool, resuming a run, `ReadOnly` and side-effect tools after a lost result, an approval gate, `ResolveHalt`, and `audit.NewAuditedStore` ([#179]).
+- Godoc describes current behavior only: P-numbers, "the 1.0 rewrite" and a migration note are removed, and the godoc of `WithSafety` no longer mentions a Safety argument of `Func` ([#178]).
 
 ## [0.12.0] - 2026-10-05
 
@@ -958,6 +961,8 @@ First public release.
 [#161]: https://github.com/bide-ai/bide/pull/161
 [#170]: https://github.com/bide-ai/bide/pull/170
 [#172]: https://github.com/bide-ai/bide/pull/172
+[#178]: https://github.com/bide-ai/bide/pull/178
+[#179]: https://github.com/bide-ai/bide/pull/179
 
 [78f8db6]: https://github.com/bide-ai/bide/commit/78f8db6
 [994721b]: https://github.com/bide-ai/bide/commit/994721b
