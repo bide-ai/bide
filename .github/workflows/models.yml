@@ -36,7 +36,7 @@ permissions:
 env:
   MODEL_SHARDS: |
     claims: claims
-    claims-regress: claims/regress claims/limits spend spend/regress
+    claims-regress: claims/regress claims/limits spend spend/regress probes probes/regress
     lifecycle: lifecycle lifecycle/regress lifecycle/findings lifecycle/limits
     delegation: delegation delegation/regress delegation/limits
     toolcall-flows: toolcall toolcall/regress toolcall/limits flows flows/regress
