@@ -172,8 +172,8 @@ func (j *Journal) claim(ctx context.Context, runID, key string, rec Record) (boo
 
 A marker above a declaration is followed by a blank line, so it is not part of the doc comment.
 Regions of one model do not nest; regions of different models may overlap (the run's Load is
-`Open` in both model 1 and model 8). Model 10 (`lifecycle/`) marks the lease, recovery, drive and resolution code, and P14's Run API: the drive's `run:start` and limit amendments, its cancellation checks and end-marker read-back, `Cancel` and `Status`. Model 11 (`delegation/`) marks `audit`'s `AttenuatingSubAgent`, the sub-agent tool, the programmatic sub-run admission and links, the loop's hold and halt rules, and the saga's rollback walk. Model 12 (`sessions/`) marks `agent/session.go`'s handle load, turn start, `SendOnce` lookup, seed, drive and append, the session run IDs in `agent/keys.go`, and P14's `Cancel`. Model 2 (`protocol/`) is a design model with no Go code yet,
-so it has no map and no markers.
+`Open` in both model 1 and model 8). Model 10 (`lifecycle/`) marks the lease, recovery, drive and resolution code, and P14's Run API: the drive's `run:start` and limit amendments, its cancellation checks and end-marker read-back, `Cancel` and `Status`. Model 11 (`delegation/`) marks `audit`'s `AttenuatingSubAgent`, the sub-agent tool, the programmatic sub-run admission and links, the loop's hold and halt rules, and the saga's rollback walk. Model 12 (`sessions/`) marks `agent/session.go`'s handle load, turn start, `SendOnce` lookup, seed, drive and append, the session run IDs in `agent/keys.go`, and P14's `Cancel`. Model 2 (`protocol/`) and model 13 (`probes/`) are design models with no Go code yet,
+so they have no map and no markers.
 
 **The checks.** `go run ./internal/tools/modelsync` (the Lint job, on every pull request, in the
 merge queue and on main) fails when:
@@ -242,8 +242,8 @@ spec/tla/
     regress/         historical rules, each of which must still produce its counterexample
     findings/        open findings, which fail until they are fixed (none open at present)
     limits/          accepted behavior, stated as an expected violation
-  flows/, protocol/, spend/, toolcall/, lifecycle/, delegation/, sessions/
-                     models 7, 2, 8, 9, 10, 11 and 12, laid out the same way (toolcall/ also
+  flows/, protocol/, spend/, toolcall/, lifecycle/, delegation/, sessions/, probes/
+                     models 7, 2, 8, 9, 10, 11, 12 and 13, laid out the same way (toolcall/ also
                      holds ToolCallApalache.tla, model 9's typed wrapper, not yet checked)
 ```
 
@@ -2180,7 +2180,97 @@ after the turn is recorded and before the reply, the redelivered message opens a
 - **Not built yet** (M3): trace validation. The hooks would be `startTurn`'s claim,
   `turnSeed`'s `from/`, `appendTurn`'s slots and `reload`.
 
+## Model 13: probes for unknown outcomes
+
+`probes/Probes.tla` checks the probe design of [docs/design/probes.md](../../docs/design/probes.md):
+on resume, a tool call whose latest attempt has a marker and no result is probed ("did this
+call's effect happen?") instead of halting, and the drive acts on the verdict. It is a model of
+its own, in plain TLA+ rather than PlusCal, so model 1's cost and its Apalache proof are
+unchanged; it restates the claim rules it needs (numbered attempts, first writer wins, an attempt
+marker that records whether the call's requests carry the fence). It has no Go code yet, so no
+map and no markers. Its vocabulary block names the record kinds for the vocabulary test to read
+once the code lands.
+
+### What is modelled
+
+- **A provider.** A sent request stays in flight (`wire`) until the provider applies it (`Land`),
+  whatever becomes of the driver that sent it, so a stalled or dead driver's request can land
+  after a probe. Under `void`, the provider keeps a watermark: a fenced request of an attempt
+  below it is rejected. Under `dedup`, it applies one fenced request per call key and answers
+  later ones with the applied outcome. A request of an attempt in `UnfencedAttempts` (a tool
+  version that sent no fence) is applied whatever the fence.
+- **Leases are not fenced.** A drive starts under the run's lease; `Lapse` ends a lease at any
+  time and its holder keeps running. `Tick` marks an attempt older than its minimum age.
+- **The probe.** Any driver at the resume gate may make the pure lookup (`Probe`), which needs no
+  claim: Happened if the effect landed, absent otherwise, or Unknown at any time. Unknown is
+  recorded and counted; past `Cap` the gate halts until a person grants fresh probes (`Grant`).
+  Acting (`ActClaim`, `Act`) needs the claim on the next attempt, the run's lease and the
+  attempt's minimum age, and, with `CheckStamp`, that every attempt's marker records Fenced.
+  Happened records the result under the next attempt; under `void` the act is an atomic
+  check-and-void (Happened if the effect landed, else raise the watermark), then NotHappened and
+  a re-run; under `dedup` it is a replay under the call key; under `lookup` it is NotHappened from
+  the lookup alone (the counterexample).
+- **Attempt-scoped results** (`PerAttempt`). The call's outcome is the result recorded for its
+  latest attempt; with `PerAttempt = FALSE` there is one result key per call, first write wins.
+  A driver whose request was rejected records a failure.
+- **Crashes**: a driver forgets everything; its request stays in flight.
+
+| Property | Kind | Statement |
+|---|---|---|
+| `AtMostOnce` | invariant | the effect lands at most once |
+| `OutcomeTrue` | invariant | the call's outcome reads "ok" only if the effect landed, and "failed" only if it never did |
+| `VerdictTrue` | invariant | a recorded Happened follows a landing; a recorded NotHappened for an attempt means no attempt up to it has landed, in every later state |
+| `RerunNotReachable` | reachability | expected violated: a probe voids an attempt and the call then runs once, its outcome recorded |
+| `HappenedNotReachable` | reachability | expected violated: a probe records Happened as the call's outcome |
+
+### Configurations
+
+Two drivers. Pull requests: attempts 0..2, one crash, `Cap = 1`, one grant. Nightly: attempts
+0..3, two crashes. A third driver, at attempts 0..3, did not finish within ten minutes.
+
+| Config | Group | What | States | Time |
+|---|---|---|---|---|
+| `probe-off` | ci | no probe (today): a live attempt with no result halts | 477 | 1 s |
+| `probe-observe` | ci | a Happened-only probe | 11,947 | 1 s |
+| `probe-void` | ci | F-void: lookup, then an atomic, monotonic check-and-void | 68,919 | 1 s |
+| `probe-dedup` | ci | F-dedup: replay under the call key | 66,327 | 1 s |
+| `probe-void-unstamped` | ci | F-void, attempt 0 made without the fence: its marker lacks Fenced, so the call halts | 11,947 | 1 s |
+| `probe-void-reach` | ci | reachability: a void and a re-run (`RerunNotReachable` violated) | 2,378 | 1 s |
+| `probe-observe-reach` | ci | reachability: a recorded Happened (`HappenedNotReachable` violated) | 1,283 | 1 s |
+| `deep-probe-void` | nightly | F-void, attempts 0..3, two crashes | 1,071,150 | 11 s |
+| `deep-probe-dedup` | nightly | F-dedup, attempts 0..3, two crashes | 798,856 | 8 s |
+
+### Counterexample configurations
+
+Each is in `probes/regress/` and must fail with its named property:
+
+- `lease-as-fence` (`AtMostOnce`): NotHappened from a lookup, with the original driver's lease
+  lapsed and the attempt past its minimum age as the only fence. The trace: a driver claims
+  attempt 0 and sends; its lease lapses; a second driver probes (absent), claims attempt 1,
+  records NotHappened and sends; both requests land.
+- `stale-result-one-key` (`OutcomeTrue`): F-void with one result key per call. The original
+  driver's request is rejected by the void, and it records a failure before the re-run records
+  its success: the call reads "failed" although the effect landed once. Attempt-scoped results
+  remove it.
+- `not-happened-unstamped` (`AtMostOnce`): NotHappened acted on for an attempt whose marker does
+  not record Fenced. The void cannot reject its request, which lands after the re-run.
+- `void-not-monotone` (`VerdictTrue`): found by this model while it was written. A void that sets
+  the watermark instead of only raising it: a prober stalled before its check-and-void applies it
+  after a newer prober voided a later attempt, lowering the watermark and re-opening that attempt,
+  whose request then lands. The design therefore requires the provider's void to be monotonic (a
+  watermark that only rises, or one tombstone per attempt that is never removed).
+
+### Not modelled yet
+
+The expiry fence (F-expiry), the saga rollback walk with a probe (model 9's next step), and
+liveness (`ExactlyOnce`: every call is eventually recorded with one landing under fair landings,
+ticks and re-drives).
+
 ## What the bounds do not cover
+
+Model 13: one call, two drivers, attempts 0..2 (0..3 nightly), one crash (two nightly), one
+provider, and one grant of fresh probes. A bug that needs three drivers, or two calls sharing a
+provider key, is outside the check.
 
 Model 12: one or two sessions, two handles in one or two processes, two or three callers (one
 message each, with redeliveries), turns of one to four model calls, one of each fault on pull
