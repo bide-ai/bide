@@ -396,7 +396,12 @@ commutation, for events that read only their own footprint; potential-decrease =
 the least fixed point (Kleene) and asynchronous (chaotic) order-independent convergence to it.
 Also mechanized: federated convergence under C1 and C2 (`fed_thm_fed_convergence_guarded`; that
 gsm's static checks suffice, `static_c1_c2_gc`; on monotone cycles, `cyc_check_gc_lfp`), and the
-counterexample to the version without them (`fed_thm_fed_convergence_refuted`). Also mechanized: convergence under causal delivery, where only *concurrent* events need to commute
+counterexample to the version without them (`fed_thm_fed_convergence_refuted`). Also mechanized,
+for federations: the acyclic structural core (limit, retraction, compositionality), and the
+cohomological layer: in the invertible fragment, a federation has a convergent global state iff
+every fundamental cycle has trivial holonomy, and H¹ is the quotient of fundamental-cycle
+holonomies modulo simultaneous conjugation, with rank |E| − |V| + 1. The rank on the nerve as a
+2-complex and the non-invertible case are paper-proven. Also mechanized: convergence under causal delivery, where only *concurrent* events need to commute
 after compensation and causally ordered ones never do; standard op-based CRDTs converge as an
 instance, and the compensation-free fragment is exactly the op-based CRDTs
 ([SUBSUMPTION.md](https://github.com/blackwell-systems/normalization-confluence/blob/main/SUBSUMPTION.md)).
