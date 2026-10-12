@@ -1,4 +1,4 @@
-package main
+package auditcli
 
 import (
 	"bytes"
@@ -651,7 +651,7 @@ func TestVersionStamp(t *testing.T) {
 		if tc.ldflags != "" {
 			args = append(args, "-ldflags", tc.ldflags)
 		}
-		if out, err := exec.Command("go", append(args, ".")...).CombinedOutput(); err != nil {
+		if out, err := exec.Command("go", append(args, "./auditmain")...).CombinedOutput(); err != nil {
 			t.Fatalf("build %q: %v\n%s", tc.ldflags, err, out)
 		}
 		out, err := exec.Command(bin, "-version").Output()

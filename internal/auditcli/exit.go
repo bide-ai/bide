@@ -1,4 +1,4 @@
-package main
+package auditcli
 
 import (
 	"bytes"
@@ -311,9 +311,10 @@ func (c *cli) writeReport(code int, errs []string) {
 	fmt.Fprintln(c.stdout, string(b))
 }
 
-// version is the release version. A release build sets it with -ldflags "-X main.version=v1.2.3"
-// (.goreleaser.yaml does, from the tag); otherwise it is read from the build's module information,
-// which the go command stamps from the VCS tag.
+// version is the release version the program was stamped with (see Main): a release build sets
+// the program's main.version with -ldflags "-X main.version=v1.2.3" (.goreleaser.yaml does, from
+// the tag). When it is empty the version is read from the build's module information, which the go
+// command stamps from the VCS tag.
 var version = ""
 
 func toolVersion() string {

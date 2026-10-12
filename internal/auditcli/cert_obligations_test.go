@@ -1,4 +1,4 @@
-package main
+package auditcli
 
 import (
 	"encoding/json"

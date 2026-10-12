@@ -451,7 +451,8 @@ command line. `audit.ProveApproval` proves a single decision by its record name.
 
 ## CLI reference: `bide-audit`
 
-The `bide-audit` command ([`cmd/bide-audit`](../../cmd/bide-audit)) is the auditor-facing
+The `bide-audit` command ([`cmd/bide-audit`](../../cmd/bide-audit), its code in
+[`internal/auditcli`](../../internal/auditcli)) is the auditor-facing
 front end for the whole proof surface. It is dependency-light: it imports only the core and `audit`
 packages and no store backend, so every produce verb operates on an **exported journal** (an
 `audit.JournalExport`, format `bide.audit.journal-export.v1`: each record's stored bytes, verbatim,
