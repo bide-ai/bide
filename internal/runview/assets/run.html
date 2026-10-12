@@ -1,9 +1,9 @@
 {{define "run.html"}}{{template "head" .RunID}}
-<h1>{{.RunID}} <span class="pill kind">{{.Kind}}{{if .Flow}}: {{.Flow}}{{end}}</span> <span class="pill state-{{.State}}">{{.State}}</span>{{if .Halts}} <span class="pill state-halted">halted</span>{{end}}</h1>
+<h1>{{.RunID}} <span class="pill kind">{{.Kind}}{{if .Flow}}: {{.Flow}}{{end}}</span> <span class="pill state-{{.State}}">{{.StateText}}</span></h1>
 {{if .Input}}<p class="input">{{.Input}}</p>{{end}}
 
 <section class="cards">
-  <div class="card"><h3>End state</h3><p><b>{{.State}}</b>{{if .Terminal}}: {{.Terminal}}{{end}}</p><p class="muted">{{.Records}} journal records{{if .LastNode}}; last node <code>{{.LastNode}}</code>{{end}}</p>
+  <div class="card"><h3>End state</h3><p><b>{{.StateText}}</b>{{if .Terminal}}: {{.Terminal}}{{end}}</p><p class="muted">{{.Records}} journal records{{if .LastNode}}; last node <code>{{.LastNode}}</code>{{end}}</p>
   {{if .FinalText}}<p class="muted">Last model text: {{.FinalText}}</p>{{end}}</div>
   <div class="card"><h3>Audit proof</h3>{{with .Proof}}
     <p class="{{if .OK}}good{{else}}bad{{end}}"><b>{{if .OK}}Verified{{else}}Not verified{{end}}</b> ({{.Source}}): {{.Summary}}</p>

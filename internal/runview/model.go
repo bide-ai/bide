@@ -19,14 +19,17 @@ import (
 
 // View is everything the run page shows, built from the run's records alone (see Build).
 type View struct {
-	RunID    string `json:"run_id"`
-	Kind     string `json:"kind"` // agent.RunKind, or "" when the run has no run:start
-	Input    string `json:"input,omitempty"`
-	Flow     string `json:"flow,omitempty"`   // the flow name run:start records
-	Digest   string `json:"digest,omitempty"` // the topology digest flow:digest records
-	State    string `json:"state"`            // agent.RunState
-	Terminal string `json:"terminal,omitempty"`
-	Records  int    `json:"records"`
+	RunID  string `json:"run_id"`
+	Kind   string `json:"kind"` // agent.RunKind, or "" when the run has no run:start
+	Input  string `json:"input,omitempty"`
+	Flow   string `json:"flow,omitempty"`   // the flow name run:start records
+	Digest string `json:"digest,omitempty"` // the topology digest flow:digest records
+	// State is the agent.RunState, except "halted" for a started run with a live attempt marker
+	// and no result (see Halts): a resume returns *agent.OutcomeUnknown, so it is not in progress.
+	State     string `json:"state"`
+	StateText string `json:"state_text"` // State as the page shows it ("halted: outcome unknown")
+	Terminal  string `json:"terminal,omitempty"`
+	Records   int    `json:"records"`
 
 	Events    []Event      `json:"events"`
 	Halts     []Halt       `json:"halts,omitempty"`
@@ -224,6 +227,10 @@ func Build(ctx context.Context, runID string, recs []agent.Record, flow *Flow) *
 	}
 
 	v.Halts = halts(runID, recs, calls)
+	v.StateText = v.State
+	if v.State == string(agent.RunStarted) && len(v.Halts) > 0 {
+		v.State, v.StateText = "halted", "halted: outcome unknown"
+	}
 	v.Gates = gates(recs, calls, callOrder)
 	if v.Kind == string(agent.RunKindFlow) || v.Flow != "" {
 		v.Graph, v.Conform, v.LastNode = flowGraph(ctx, runID, recs, flow, v)
@@ -364,21 +371,42 @@ func gates(recs []agent.Record, calls map[string]agent.ToolUse, order []string) 
 				}
 			}
 		}
-		switch {
-		case g.Single && len(g.Decisions) > 0 && g.Decisions[0].Approved:
-			g.Status = "approved (single decision)"
-		case g.Single:
-			g.Status = "denied (single decision)"
-		case g.Tallied && g.Need > 0 && len(g.ApprovedBy) >= g.Need:
-			g.Status = fmt.Sprintf("approved: %d of %d needed (tally journaled)", len(g.ApprovedBy), g.Need)
-		case g.Tallied:
-			g.Status = fmt.Sprintf("closed: %d of %d needed (tally journaled)", len(g.ApprovedBy), g.Need)
-		default:
-			g.Status = fmt.Sprintf("open: %d signed approval(s) recorded; the gate counts them, with signature checks, when the run resumes", len(g.ApprovedBy))
-		}
+		g.Status = gateStatus(g)
 		out = append(out, g)
 	}
 	return out
+}
+
+// gateStatus says where a gate stands, as "<state> (<approved> of <n> approvers; <k> needed)":
+// approved once k approved, denied once enough denied that k can no longer approve, and pending
+// otherwise. Without the gate's tally the counts are of signed decisions, whose signatures the gate
+// checks when the run resumes.
+func gateStatus(g Gate) string {
+	if g.Single {
+		if g.Decisions[0].Approved {
+			return "approved (single decision)"
+		}
+		return "denied (single decision)"
+	}
+	n, a, d := len(g.Approvers), len(g.ApprovedBy), len(g.DeniedBy)
+	if g.Need == 0 || n == 0 {
+		return fmt.Sprintf("pending (%d approved, %d denied so far; the policy is journaled with the call's result or the gate's tally)", a, d)
+	}
+	counts := fmt.Sprintf("%d of %d approvers", a, n)
+	if d > 0 {
+		counts += fmt.Sprintf(", %d denied", d)
+	}
+	counts += fmt.Sprintf("; %d needed", g.Need)
+	switch {
+	case a >= g.Need:
+		return "approved (" + counts + ")"
+	case n-d < g.Need:
+		return "denied (" + counts + ")"
+	case g.Tallied:
+		return "closed, not approved (" + counts + ")"
+	default:
+		return "pending (" + counts + "; signatures are checked when the run resumes)"
+	}
 }
 
 // safetyLabel names the Safety a tool result records.

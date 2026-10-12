@@ -116,7 +116,7 @@ func TestFlowRunHaltThenResolve(t *testing.T) {
 
 	h := Handler(Options{Source: JournalSource{J: j}, Flows: map[string]*Flow{"refund": {Topology: flow.Topology(), Digest: flow.Digest(), Conform: flow.Conform}}})
 	v := viewOf(t, h, "r1")
-	if v.Kind != "flow" || v.Flow != "refund" || v.State != "started" {
+	if v.Kind != "flow" || v.Flow != "refund" || v.State != "halted" || v.StateText != "halted: outcome unknown" {
 		t.Fatalf("kind/flow/state = %q/%q/%q", v.Kind, v.Flow, v.State)
 	}
 	if len(v.Halts) != 1 || v.Halts[0].ID != "node:charge" || v.Halts[0].Op != "step" || !strings.Contains(v.Halts[0].Ref, `ID: "node:charge"`) {
@@ -243,7 +243,7 @@ func TestAgentRunTimeline(t *testing.T) {
 	logPub := audit.Ed25519Verifier{Pub: key("log").Public().(ed25519.PublicKey)}
 	h := Handler(Options{Source: JournalSource{J: j}, Provers: []Prover{HeadProver(latest(), logPub)}})
 	v := viewOf(t, h, "a1")
-	if v.Kind != "agent" || v.State != "started" {
+	if v.Kind != "agent" || v.State != "halted" || v.StateText != "halted: outcome unknown" {
 		t.Fatalf("kind/state = %q/%q", v.Kind, v.State)
 	}
 	if len(v.Halts) != 1 || v.Halts[0].Op != "tool" || v.Halts[0].ID != "c1" || v.Halts[0].ToolName != "refund" {
@@ -251,6 +251,9 @@ func TestAgentRunTimeline(t *testing.T) {
 	}
 	if len(v.Gates) != 1 || v.Gates[0].Need != 2 || strings.Join(v.Gates[0].ApprovedBy, ",") != "ops,finance" || !v.Gates[0].Tallied {
 		t.Fatalf("gates = %+v", v.Gates)
+	}
+	if got, want := v.Gates[0].Status, "approved (2 of 3 approvers; 2 needed)"; got != want {
+		t.Fatalf("gate status = %q, want %q", got, want)
 	}
 	var sawReadOnly, sawAttempt bool
 	for _, e := range v.Events {
@@ -333,5 +336,24 @@ func TestHandlerRefusesOtherHosts(t *testing.T) {
 	h.ServeHTTP(rec, req)
 	if rec.Code != http.StatusMethodNotAllowed {
 		t.Fatalf("POST = %d, want 405", rec.Code)
+	}
+}
+
+// TestGateStatus: each gate state names its counts, the approver set and k.
+func TestGateStatus(t *testing.T) {
+	three := []string{"ops", "finance", "risk"}
+	for _, c := range []struct {
+		g    Gate
+		want string
+	}{
+		{Gate{Need: 2, Approvers: three, ApprovedBy: []string{"ops", "finance"}, Tallied: true}, "approved (2 of 3 approvers; 2 needed)"},
+		{Gate{Need: 2, Approvers: three, ApprovedBy: []string{"ops"}}, "pending (1 of 3 approvers; 2 needed; signatures are checked when the run resumes)"},
+		{Gate{Need: 2, Approvers: three, ApprovedBy: []string{"ops"}, DeniedBy: []string{"finance", "risk"}, Tallied: true}, "denied (1 of 3 approvers, 2 denied; 2 needed)"},
+		{Gate{Single: true, Decisions: []Decision{{Approved: false}}}, "denied (single decision)"},
+		{Gate{ApprovedBy: []string{"ops"}}, "pending (1 approved, 0 denied so far; the policy is journaled with the call's result or the gate's tally)"},
+	} {
+		if got := gateStatus(c.g); got != c.want {
+			t.Errorf("gateStatus(%+v) = %q, want %q", c.g, got, c.want)
+		}
 	}
 }
