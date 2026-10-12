@@ -15,6 +15,14 @@ journal format can change between pre-releases without a version bump. Curated h
 - The doccheck allowlist is empty (it held 44 entries): every exported identifier the check covers has a doc comment, and CI keeps the list empty ([#178]).
 - Runnable `Example` tests for the main API: an agent with a tool, resuming a run, `ReadOnly` and side-effect tools after a lost result, an approval gate, `ResolveHalt`, and `audit.NewAuditedStore` ([#179]).
 - Godoc describes current behavior only: P-numbers, "the 1.0 rewrite" and a migration note are removed, and the godoc of `WithSafety` no longer mentions a Safety argument of `Func` ([#178]).
+- The README shows the chaos results as the benchmark card: bide never repeated the charge, while LangGraph (SQLite and Postgres), adk-go, trpc-agent-go, langchaingo and eino each charged again ([#175]).
+- README section 4 and the governance guide frame gsm's theory as convergence by compensation, with the exact-regime-map line from normalization-confluence ([#176]).
+- README section 4 is shortened to the guarantee and its scope; the details are in the governance guide and known limitations ([#183]).
+
+### Added
+
+- A LangGraph crash-injection harness for the chaos benchmark, on SQLite and on Postgres (`PostgresSaver`) ([#166], [#167]).
+- Design only, nothing implemented: a design note on probes for unknown outcomes and TLA+ model 13 (`spec/tla/probes`), which found that a provider's void must be monotonic: a void that sets rather than raises the watermark lets a stalled prober re-open an attempt a newer prober voided ([#181], [#182]).
 
 ## [0.12.0] - 2026-10-05
 
@@ -959,10 +967,17 @@ First public release.
 [#159]: https://github.com/bide-ai/bide/pull/159
 [#160]: https://github.com/bide-ai/bide/pull/160
 [#161]: https://github.com/bide-ai/bide/pull/161
+[#166]: https://github.com/bide-ai/bide/pull/166
+[#167]: https://github.com/bide-ai/bide/pull/167
 [#170]: https://github.com/bide-ai/bide/pull/170
 [#172]: https://github.com/bide-ai/bide/pull/172
+[#175]: https://github.com/bide-ai/bide/pull/175
+[#176]: https://github.com/bide-ai/bide/pull/176
 [#178]: https://github.com/bide-ai/bide/pull/178
 [#179]: https://github.com/bide-ai/bide/pull/179
+[#181]: https://github.com/bide-ai/bide/pull/181
+[#182]: https://github.com/bide-ai/bide/pull/182
+[#183]: https://github.com/bide-ai/bide/pull/183
 
 [78f8db6]: https://github.com/bide-ai/bide/commit/78f8db6
 [994721b]: https://github.com/bide-ai/bide/commit/994721b
