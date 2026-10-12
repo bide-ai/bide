@@ -4,26 +4,27 @@
   <img src="assets/bide-banner.png" alt="Bide">
 </p>
 
+<p align="center">
+  <strong>Durable AI agents in Go, for agents that move money, change records, or act under audit.</strong>
+  <br>
+  Side effects fire at most once, even across a crash. Every action is provable afterwards.
+</p>
+
 <p align="center"><img src="assets/crash-demo.gif" width="100%" alt="bide-demo: an agent is killed mid-charge, the restart halts with outcome unknown instead of charging again, the charge is resolved from the provider's record, and bide-view shows the run with its audit proof and 2-of-3 approval signatures verified"></p>
+<p align="center">
+  <img src="assets/quote-rule-left.png" width="72" alt="">&nbsp;&nbsp;<em>A pause you can clear beats a double-fire you can't.</em>&nbsp;&nbsp;<img src="assets/quote-rule-right.png" width="72" alt="">
+</p>
 
 ```sh
 go run github.com/bide-ai/bide/cmd/bide-demo@latest   # kill an agent mid-payment; it does not charge twice (no API key)
 ```
 
-<p align="center">
-  <strong>Build durable AI agents in Go. Side effects that fire at most once.</strong>
-  <br>
-  <img src="assets/quote-rule-left.png" width="72" alt="">&nbsp;&nbsp;<em>A pause you can clear beats a double-fire you can't.</em>&nbsp;&nbsp;<img src="assets/quote-rule-right.png" width="72" alt="">
-</p>
-
-One append-only journal gives four guarantees:
+One append-only journal, in a plain-Go library, gives four guarantees:
 
 - Side effects fire at most once, even across a crash, so they need not be idempotent.
 - Thousands of concurrent durable runs in one process. It is a library; there is no cluster to run.
 - A cryptographically verifiable audit trail: RFC 6962 Merkle proofs, checkable offline without trusting the vendor.
 - Provably convergent shared state: the convergence conditions are machine-checked.
-
-All four come from the same journal, in a plain-Go library, for agents that move money, change records, or act under audit.
 
 **Ambient agents.** An ambient agent runs unattended: it sleeps until a trigger (a schedule or an
 event) wakes it, works over hours or days, and pauses to ask a human only when it needs judgment,
