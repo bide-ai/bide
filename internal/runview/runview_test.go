@@ -242,7 +242,7 @@ func TestAgentRunTimeline(t *testing.T) {
 		return e[len(e)-1].STH
 	}
 	logPub := audit.Ed25519Verifier{Pub: key("log").Public().(ed25519.PublicKey)}
-	h := Handler(Options{Source: JournalSource{J: j}, Provers: []Prover{HeadProver(latest(), logPub, nil)}})
+	h := Handler(Options{Source: JournalSource{J: j}, Provers: []Prover{HeadProver(latest(), logPub, Approvals{})}})
 	v := viewOf(t, h, "a1")
 	if v.Kind != "agent" || v.State != "halted" || v.StateText != "halted: outcome unknown" {
 		t.Fatalf("kind/state = %q/%q", v.Kind, v.State)
@@ -275,7 +275,7 @@ func TestAgentRunTimeline(t *testing.T) {
 	if _, err := newAgent().Run(ctx, "a1", agent.UserText("Refund order 42.")); err != nil {
 		t.Fatalf("Run after resolve: %v", err)
 	}
-	h = Handler(Options{Source: JournalSource{J: j}, Provers: []Prover{HeadProver(latest(), logPub, nil)}})
+	h = Handler(Options{Source: JournalSource{J: j}, Provers: []Prover{HeadProver(latest(), logPub, Approvals{})}})
 	v = viewOf(t, h, "a1")
 	if v.State != "completed" || len(v.Halts) != 0 || v.Proof == nil || !v.Proof.OK || v.FinalText != "Refunded order 42." {
 		t.Fatalf("after resolve: state %q, halts %v, proof %+v, text %q", v.State, v.Halts, v.Proof, v.FinalText)
@@ -286,7 +286,7 @@ func TestAgentRunTimeline(t *testing.T) {
 
 	// A head signed by another key does not verify.
 	wrong := audit.Ed25519Verifier{Pub: key("someone else").Public().(ed25519.PublicKey)}
-	if p := viewOf(t, Handler(Options{Source: JournalSource{J: j}, Provers: []Prover{HeadProver(latest(), wrong, nil)}}), "a1").Proof; p == nil || p.OK {
+	if p := viewOf(t, Handler(Options{Source: JournalSource{J: j}, Provers: []Prover{HeadProver(latest(), wrong, Approvals{})}}), "a1").Proof; p == nil || p.OK {
 		t.Fatalf("proof under the wrong key = %+v", p)
 	}
 	if code, body := get(t, h, "/"); code != 200 || !strings.Contains(body, "a1") {
@@ -426,16 +426,19 @@ func TestWaitingSingleGate(t *testing.T) {
 // usage error (2) and serves nothing.
 func TestMainUsage(t *testing.T) {
 	var out, errb strings.Builder
-	if code := Main([]string{"-h"}, &out, &errb, nil); code != 0 {
+	if code := Main([]string{"-h"}, &out, &errb, Stores{}); code != 0 {
 		t.Fatalf("-h exit = %d", code)
 	}
-	for _, want := range []string{"bide-view -db <file>", "loopback", "-db", "-journal", "-run", "-topology", "-digest", "-sth", "-evidence", "-pubkey", "-approver-keys", "-addr"} {
+	for _, want := range []string{"bide-view -db <file>", "loopback", "-db", "-journal", "-run", "-topology", "-digest", "-sth", "-evidence", "-pubkey", "-approver-keys", "-need", "-approvers", "-postgres", "-addr"} {
 		if !strings.Contains(errb.String(), want) {
 			t.Errorf("-h output lacks %q", want)
 		}
 	}
-	for _, args := range [][]string{{}, {"-db", "x", "-journal", "y"}, {"-journal", "y", "-sth", "s"}, {"-journal", "y", "-digest", "d"}, {"-journal", "y", "-approver-keys", "k"}} {
-		if code := Main(args, io.Discard, io.Discard, nil); code != 2 {
+	for _, args := range [][]string{{}, {"-db", "x", "-journal", "y"}, {"-journal", "y", "-sth", "s"}, {"-journal", "y", "-digest", "d"}, {"-journal", "y", "-approver-keys", "k"}, {"-db", "x", "-postgres", "p"}, {"-postgres", "p", "-journal", "y"},
+		{"-journal", "y", "-sth", "s", "-pubkey", "k", "-approver-keys", "a", "-need", "2"},
+		{"-journal", "y", "-sth", "s", "-pubkey", "k", "-need", "2", "-approvers", "a,b"},
+		{"-journal", "y", "-sth", "s", "-pubkey", "k", "-approver-keys", "a", "-need", "3", "-approvers", "a,b"}} {
+		if code := Main(args, io.Discard, io.Discard, Stores{}); code != 2 {
 			t.Errorf("Main(%q) = %d, want 2", args, code)
 		}
 	}
@@ -513,8 +516,8 @@ func TestApprovalSignatures(t *testing.T) {
 	}
 
 	j, sth := gatedRun(t, map[string]bool{"ops": true, "finance": true})
-	g, p := gate(HeadProver(sth, logPub, approverKeys(nil)), j)
-	if want := "2 of 3: signatures verified (ops, finance)"; !g.SignaturesOK || g.Signatures != want || !p.Approvals["c1"].OK {
+	g, p := gate(HeadProver(sth, logPub, Approvals{Keys: approverKeys(nil)}), j)
+	if want := "2 of 3: signatures verified (ops, finance) (against the recorded policy)"; !g.SignaturesOK || g.Signatures != want || !p.Approvals["c1"].OK {
 		t.Fatalf("verified gate: %q (ok %v), proof %+v; want %q", g.Signatures, g.SignaturesOK, p.Approvals, want)
 	}
 
@@ -530,22 +533,35 @@ func TestApprovalSignatures(t *testing.T) {
 	if err := pkg.Seal(audit.Ed25519Signer{Priv: key("log")}); err != nil {
 		t.Fatal(err)
 	}
-	if g, _ := gate(EvidenceProver(pkg, logPub, approverKeys(nil)), j); !g.SignaturesOK {
+	if g, _ := gate(EvidenceProver(pkg, logPub, Approvals{Keys: approverKeys(nil)}), j); !g.SignaturesOK {
 		t.Fatalf("evidence package: %q, want verified", g.Signatures)
 	}
 
-	g, _ = gate(HeadProver(sth, logPub, approverKeys(map[string]string{"finance": "mallory"})), j)
+	g, _ = gate(HeadProver(sth, logPub, Approvals{Keys: approverKeys(map[string]string{"finance": "mallory"})}), j)
 	if g.SignaturesOK || !strings.HasPrefix(g.Signatures, "signatures NOT verified") || !strings.Contains(g.Signatures, "finance") {
 		t.Fatalf("wrong key for finance: %q, want a failure naming finance", g.Signatures)
 	}
 
 	jd, sthd := gatedRun(t, map[string]bool{"ops": true, "finance": false, "risk": false})
-	g, _ = gate(HeadProver(sthd, logPub, approverKeys(nil)), jd)
+	g, _ = gate(HeadProver(sthd, logPub, Approvals{Keys: approverKeys(nil)}), jd)
 	if g.SignaturesOK || !strings.Contains(g.Signatures, "only 1 of the 2 needed approvals verified") {
 		t.Fatalf("count below k: %q", g.Signatures)
 	}
 
-	g, _ = gate(HeadProver(sth, logPub, nil), j)
+	all3 := []string{"ops", "finance", "risk"}
+	g, _ = gate(HeadProver(sth, logPub, Approvals{Keys: approverKeys(nil), Expected: &agent.ApprovalPolicy{Need: 2, Approvers: all3}}), j)
+	if want := "2 of 3: signatures verified (ops, finance) (against the expected policy)"; !g.SignaturesOK || g.Signatures != want {
+		t.Fatalf("expected policy that matches: %q, want %q", g.Signatures, want)
+	}
+	g, _ = gate(HeadProver(sth, logPub, Approvals{Keys: approverKeys(nil), Expected: &agent.ApprovalPolicy{Need: 1, Approvers: all3}}), j)
+	if want := "recorded policy 2 of 3 (ops, finance, risk) differs from expected 1 of 3 (ops, finance, risk)"; g.SignaturesOK || !strings.Contains(g.Signatures, want) || !strings.HasSuffix(g.Signatures, "(against the expected policy)") {
+		t.Fatalf("expected policy that differs: %q, want a failure saying %q", g.Signatures, want)
+	}
+	if strings.Contains(g.Signatures, "the gate enforced need") {
+		t.Fatalf("the mismatch is reported twice: %q", g.Signatures)
+	}
+
+	g, _ = gate(HeadProver(sth, logPub, Approvals{}), j)
 	if g.SignaturesOK || g.Signatures != "included in the signed log; signatures not checked (pass -approver-keys)" {
 		t.Fatalf("no keys: %q", g.Signatures)
 	}

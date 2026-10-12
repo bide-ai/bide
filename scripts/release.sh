@@ -21,7 +21,7 @@
 #      module is tagged <dir>/vX.Y.Z at it, the tags are pushed at most three per push (GitHub
 #      runs no workflow for the tags of a larger push), and the script waits for the proxy.
 #      The first stage holds the modules that need only the root; the governed-event logs, which
-#      also need govern, come in the second.
+#      also need govern, and the bide-view command, which needs both stores, come in the second.
 #   3. Every published module is resolved with `go list -m <module>@vX.Y.Z`, and a scratch consumer
 #      module that `go get`s all of them at vX.Y.Z builds with a fresh module cache.
 #
@@ -47,7 +47,10 @@ GITHUB_REPO=${BIDE_GITHUB_REPO:-bide-ai/bide}
 PROXY=https://proxy.golang.org
 
 # Libraries users import. Each is tagged <dir>/vX.Y.Z at every release.
-PUBLISHED="govern store/sqlite store/postgres mcptools trace codec/gcf govern/sqlitelog govern/redislog govern/postgreslog"
+PUBLISHED="govern store/sqlite store/postgres mcptools trace codec/gcf govern/sqlitelog govern/redislog govern/postgreslog cmd/bide-view"
+# Published modules whose root package is a command (package main), installed with go install. The
+# consumer check builds them instead of importing them, since a program cannot be imported.
+COMMANDS="cmd/bide-view"
 # Modules that exist only to keep their dependencies out of the core. They keep their replace
 # directives and are never tagged.
 REPO_ONLY="examples/approval examples/govern examples/mcp examples/observability examples/plan integration benchmarks"
@@ -87,6 +90,12 @@ bide_requires() {
     '.Require // [] | .[] | select(.Path == $r or (.Path | startswith($r + "/"))) | .Path'
 }
 
+# libraries: the published modules a consumer imports (every published module but the commands).
+libraries() {
+  local m
+  for m in $PUBLISHED; do in_list "$m" $COMMANDS || echo "$m"; done
+}
+
 # check_classification root: every module in the tree is either published or repo-only, not both,
 # and a published module requires no repo-only module.
 check_classification() {
@@ -101,6 +110,9 @@ check_classification() {
   done
   for m in $PUBLISHED $REPO_ONLY; do
     [ -f "$root/$m/go.mod" ] || { echo "release: $m is classified but $m/go.mod does not exist" >&2; ok=false; }
+  done
+  for m in $COMMANDS; do
+    in_list "$m" $PUBLISHED || { echo "release: command $m is not published" >&2; ok=false; }
   done
   for m in $PUBLISHED; do
     [ -f "$root/$m/go.mod" ] || continue
@@ -258,6 +270,11 @@ self_test() {
   # GitHub creates no push event, so runs no workflow, for the tags of a push that carries more
   # than three. The scratch target's pre-receive hook refuses such a push and logs each push's
   # size; every tag must still arrive.
+  # A command is published but not imported: the consumer imports every other published module.
+  local libs
+  libs=$(PUBLISHED="a cmd/x b" COMMANDS="cmd/x" libraries | tr '\n' ' ')
+  [ "$libs" = "a b " ] || { echo "self-test: the consumer would import [$libs], want [a b ]"; fail=true; }
+  in_list cmd/bide-view $(libraries) && { echo "self-test: the consumer would import the bide-view command"; fail=true; }
   self_test_push || fail=true
   $fail && return 1
   echo "self-test: ok"
@@ -458,15 +475,18 @@ mkdir -p "$C"
     echo
     echo "import ("
     echo "	_ \"$ROOT_MODULE/agent\""
-    for m in $PUBLISHED; do echo "	_ \"$(module_path "$m")\""; done
+    for m in $(libraries); do echo "	_ \"$(module_path "$m")\""; done
     echo ")"
     echo
     echo "func main() {}"
   } > main.go
   # shellcheck disable=SC2046
-  gorun get "$ROOT_MODULE@$VERSION" $(for m in $PUBLISHED; do echo "$(module_path "$m")@$VERSION"; done) 2>"$WORK/get.log" || { cat "$WORK/get.log"; die "go get failed"; }
+  gorun get "$ROOT_MODULE@$VERSION" $(for m in $(libraries); do echo "$(module_path "$m")@$VERSION"; done) 2>"$WORK/get.log" || { cat "$WORK/get.log"; die "go get failed"; }
+  # A command is a tool of the consumer (go get -tool), so tidy keeps it, and it is built as one.
+  for m in $COMMANDS; do gorun get -tool "$(module_path "$m")@$VERSION" 2>>"$WORK/get.log" || { cat "$WORK/get.log"; die "go get -tool $m failed"; }; done
   gorun mod tidy 2>/dev/null
   gorun build ./...
+  for m in $COMMANDS; do gorun build -o /dev/null "$(module_path "$m")"; done
   got=$(gorun list -m -f '{{.Path}} {{.Version}}' all | grep "^$ROOT_MODULE[ /]")
   echo "$got" | sed 's/^/    consumer selects: /'
   wrong=$(echo "$got" | awk -v v="$VERSION" '$2 != v')

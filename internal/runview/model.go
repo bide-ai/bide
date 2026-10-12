@@ -2,7 +2,7 @@
 // topology with the run's path drawn over it, or an agent run's timeline of model turns, tool
 // calls, attempts, approvals and halts, with the audit verdict when a signed head or evidence
 // package is given. It never writes to the store it reads, and it serves on a loopback address
-// only (see Listen). The bide-view command (store/sqlite/cmd/bide-view) is its front end.
+// only (see Listen). The bide-view command (cmd/bide-view, its own module) is its front end.
 package runview
 
 import (

@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"slices"
 	"strings"
 	"time"
 
@@ -41,19 +42,19 @@ type Prover func(ctx context.Context, runID string, recs []agent.Record) *Proof
 // shown, by building and verifying an inclusion proof of the last of them (audit.ProveRecord,
 // ProofBundle.Verify), as bide-audit prove and verify do.
 //
-// With approver keys (keys non-nil), it also checks each m-of-n gate's signatures: it builds the
+// With approver keys (ap.Keys non-nil), it also checks each m-of-n gate's signatures: it builds the
 // gate's evidence from the journal under sth (audit.ApprovalEvidence) and verifies it with
 // audit.VerifyApprovals, as bide-audit verify-approvals does.
-func HeadProver(sth audit.SignedTreeHead, v audit.Verifier, keys agent.ApproverVerifierFor) Prover {
+func HeadProver(sth audit.SignedTreeHead, v audit.Verifier, ap Approvals) Prover {
 	return func(ctx context.Context, runID string, recs []agent.Record) *Proof {
 		if sth.RunID != runID {
 			return nil
 		}
 		p := &Proof{Source: "signed tree head", Covers: sth.Size}
 		check(p, verifyHead(ctx, runID, recs, sth, v))
-		if keys != nil {
+		if ap.Keys != nil {
 			j, err := agent.NewJournal(staticStore{recs: recs[:min(sth.Size, len(recs))]})
-			p.Approvals = checkApprovals(recs, keys, v, func(id string) ([]audit.EvidenceAction, error) {
+			p.Approvals = checkApprovals(recs, ap, v, func(id string) ([]audit.EvidenceAction, error) {
 				if err != nil {
 					return nil, err
 				}
@@ -68,9 +69,9 @@ func HeadProver(sth audit.SignedTreeHead, v audit.Verifier, keys agent.ApproverV
 // EvidenceProver checks an evidence package (audit.EvidencePackage.Verify, as bide-audit
 // verify-evidence does) and that its signed head commits to the journal shown.
 //
-// With approver keys (keys non-nil), it also checks each m-of-n gate's signatures with
+// With approver keys (ap.Keys non-nil), it also checks each m-of-n gate's signatures with
 // audit.VerifyApprovals over the package's actions, as bide-audit verify-approvals does.
-func EvidenceProver(pkg audit.EvidencePackage, v audit.Verifier, keys agent.ApproverVerifierFor, opts ...audit.EvidenceVerifyOption) Prover {
+func EvidenceProver(pkg audit.EvidencePackage, v audit.Verifier, ap Approvals, opts ...audit.EvidenceVerifyOption) Prover {
 	return func(ctx context.Context, runID string, recs []agent.Record) *Proof {
 		if pkg.RunID != runID {
 			return nil
@@ -92,8 +93,8 @@ func EvidenceProver(pkg audit.EvidencePackage, v audit.Verifier, keys agent.Appr
 			p.Problems = append(p.Problems, "the package did not verify under this key")
 		}
 		check(p, verifyHead(ctx, runID, recs, pkg.STH, v))
-		if keys != nil {
-			p.Approvals = checkApprovals(recs, keys, v, func(string) ([]audit.EvidenceAction, error) { return pkg.Actions, nil })
+		if ap.Keys != nil {
+			p.Approvals = checkApprovals(recs, ap, v, func(string) ([]audit.EvidenceAction, error) { return pkg.Actions, nil })
 		}
 		finish(p, len(recs))
 		return p
@@ -101,9 +102,10 @@ func EvidenceProver(pkg audit.EvidencePackage, v audit.Verifier, keys agent.Appr
 }
 
 // checkApprovals runs audit.VerifyApprovals on every m-of-n gate of recs that journaled its tally,
-// against the policy that tally records (the policy the gate enforced), over the evidence
+// against ap.Expected when set and otherwise the policy that tally records (the policy the gate
+// enforced), over the evidence
 // actionsFor returns for the call.
-func checkApprovals(recs []agent.Record, keys agent.ApproverVerifierFor, logV audit.Verifier, actionsFor func(id string) ([]audit.EvidenceAction, error)) map[string]ApprovalCheck {
+func checkApprovals(recs []agent.Record, ap Approvals, logV audit.Verifier, actionsFor func(id string) ([]audit.EvidenceAction, error)) map[string]ApprovalCheck {
 	byName := map[string]agent.Record{}
 	for _, r := range recs {
 		byName[r.Name] = r
@@ -127,28 +129,59 @@ func checkApprovals(recs []agent.Record, keys agent.ApproverVerifierFor, logV au
 				out[tu.ID] = ApprovalCheck{Text: "signatures not verified: the journaled tally does not read: " + err.Error()}
 				continue
 			}
-			policy := agent.ApprovalPolicy{Need: tally.Need, Approvers: tally.Approvers}
+			recorded := agent.ApprovalPolicy{Need: tally.Need, Approvers: tally.Approvers}
+			policy, against := recorded, "against the recorded policy"
+			var mismatch string
+			if ap.Expected != nil {
+				policy, against = *ap.Expected, "against the expected policy"
+				if recorded.Need != policy.Need || !slices.Equal(recorded.Approvers, policy.Approvers) {
+					mismatch = fmt.Sprintf("recorded policy %s differs from expected %s", policyText(recorded), policyText(policy))
+				}
+			}
 			actions, err := actionsFor(tu.ID)
 			if err != nil {
 				out[tu.ID] = ApprovalCheck{Text: "signatures not verified: no evidence for this gate under the signed head: " + err.Error()}
 				continue
 			}
-			v, err := audit.VerifyApprovals(actions, tu.ID, policy, keys, logV)
-			out[tu.ID] = approvalText(v, err, len(policy.Approvers))
+			v, err := audit.VerifyApprovals(actions, tu.ID, policy, ap.Keys, logV)
+			c := approvalText(v, err, len(policy.Approvers), mismatch)
+			c.Text += " (" + against + ")"
+			out[tu.ID] = c
 		}
 	}
 	return out
 }
 
+// Approvals configures the approval-signature check a Prover runs: Keys resolves each approver's
+// public key (nil: no check), and Expected, when set, is the policy the auditor expects, which the
+// check runs against instead of the policy the gate's tally records.
+type Approvals struct {
+	Keys     agent.ApproverVerifierFor
+	Expected *agent.ApprovalPolicy
+}
+
+// policyText renders a policy as "k of n (a, b, c)".
+func policyText(p agent.ApprovalPolicy) string {
+	return fmt.Sprintf("%d of %d (%s)", p.Need, len(p.Approvers), strings.Join(p.Approvers, ", "))
+}
+
 // approvalText phrases a VerifyApprovals verdict: the count and who counted when it holds, and
 // otherwise every reason it does not (a problem, a decision that did not count and why, the count
 // below k, or the verifier's error).
-func approvalText(v audit.ApprovalVerdict, err error, n int) ApprovalCheck {
-	if err == nil && v.OK {
+func approvalText(v audit.ApprovalVerdict, err error, n int, mismatch string) ApprovalCheck {
+	if err == nil && v.OK && mismatch == "" {
 		return ApprovalCheck{OK: true, Text: fmt.Sprintf("%d of %d: signatures verified (%s)", len(v.Counted), n, strings.Join(v.Counted, ", "))}
 	}
 	var why []string
-	why = append(why, v.Problems...)
+	if mismatch != "" {
+		why = append(why, mismatch)
+	}
+	for _, p := range v.Problems {
+		if mismatch != "" && strings.HasPrefix(p, "the gate enforced need") {
+			continue // the same mismatch, in VerifyApprovals' words
+		}
+		why = append(why, p)
+	}
 	for _, d := range v.Ignored {
 		why = append(why, fmt.Sprintf("%s's decision did not count: %s", d.Approver, d.Reason))
 	}

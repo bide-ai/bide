@@ -5,7 +5,8 @@ recorded: an agent run's model turns, tool calls, attempts, approvals and halts;
 declared topology with the path the run took; and, when you give it a signed tree head or an
 evidence package, whether the journal verifies.
 
-It never writes to the store: it opens a SQLite file read-only (`sqlite.OpenReadOnly`) or reads
+It never writes to the store: it opens a SQLite file read-only (`sqlite.OpenReadOnly`), reads a
+Postgres journal in sessions the server holds read-only (`postgres.OpenReadOnly`), or reads
 exported journals. It listens on a loopback address only (`127.0.0.1` or `::1`) and answers only
 requests addressed to one, so the page is not reachable from another machine. The page needs no
 network: the binary serves its HTML, CSS and graph, with no CDN and no JavaScript.
@@ -14,10 +15,11 @@ network: the binary serves its HTML, CSS and graph, with no CDN and no JavaScrip
 
 ## Install
 
-`bide-view` lives in the `store/sqlite` module, since it reads SQLite files:
+`bide-view` is its own module, `github.com/bide-ai/bide/cmd/bide-view`, which carries the SQLite
+and Postgres drivers the core module does not:
 
 ```sh
-go install github.com/bide-ai/bide/store/sqlite/cmd/bide-view@v0.13.0
+go install github.com/bide-ai/bide/cmd/bide-view@v0.13.0
 ```
 
 ## Run it
@@ -28,6 +30,14 @@ On a SQLite journal (the file `sqlite.Open` writes):
 bide-view -db run.db                  # the run list
 bide-view -db run.db -run refund-42   # prints the URL of that run's page
 ```
+
+On a Postgres journal (the database `postgres.Open` writes), given as a pgx DSN:
+
+```sh
+bide-view -postgres 'postgres://user:pass@host:5432/db' -run refund-42
+```
+
+Every session it opens has `default_transaction_read_only` on, so the server refuses any write.
 
 On exported journals (`audit.ExportJournal(ctx, journal, runID)`, marshaled to JSON, the input
 `bide-audit prove` reads), one file per run:
@@ -43,7 +53,8 @@ page is at `/run?id=<run>`, and the same view as JSON at `/run.json?id=<run>`.
 
 | Flag | Meaning |
 |---|---|
-| `-db <file>` | SQLite journal to read, opened read-only. Give `-db` or `-journal`, not both. |
+| `-db <file>` | SQLite journal to read, opened read-only. Give one of `-db`, `-postgres` and `-journal`. |
+| `-postgres <dsn>` | Postgres journal to read, a pgx DSN; read in read-only sessions. |
 | `-journal <file>` | An exported journal (`audit.JournalExport` JSON). Repeat it for several runs. |
 | `-run <id>` | The run whose URL to print. Without it, the printed URL is the run list. |
 | `-topology <file>` | The declared topology of a plan flow, as JSON of `flow.Topology()`, to draw a flow run against. |
@@ -52,6 +63,7 @@ page is at `/run?id=<run>`, and the same view as JSON at `/run.json?id=<run>`.
 | `-evidence <file>` | An evidence package (`audit.EvidencePackage` JSON, as `audit.Evidence` writes it) to verify. Needs `-pubkey`. |
 | `-pubkey <key>` | The log's public key: `<scheme>:<hex>` (`ed25519`, `ml-dsa-65`, `ed25519+ml-dsa-65`), bare ed25519 hex, or a file holding either. |
 | `-approver-keys <file>` | The approvers' public keys, the file `bide-audit verify-approvals` reads: a JSON object of approver id to key text, such as `{"ops":"ed25519:ab12..."}`. With it, each m-of-n gate's signatures are verified. Needs `-sth` or `-evidence`. |
+| `-need <k>`, `-approvers <a,b,c>` | The policy you expect (k of these approvers, in policy order). With them the signatures are verified against this policy, as `bide-audit verify-approvals -need -approvers` does, and a gate whose recorded policy differs fails. Need `-approver-keys`. |
 | `-addr <host:port>` | Where to listen: a loopback IP or `localhost`, with a port. Default `127.0.0.1:8484`. Any other host is refused. |
 
 Input files are read strictly, as `bide-audit` reads them (`audit.UnmarshalStrict`): a duplicate or
@@ -93,9 +105,11 @@ journaled: whether its approvals verify, from `audit.VerifyApprovals`, the check
 read, the tally and the result under the log key; checks each decision's signature with the
 approver's key against the exact call; recounts with the gate's rule; and requires at least k. With
 `-evidence` it checks the package's actions; with `-sth` it builds the same evidence from the journal
-under that head (`audit.ApprovalEvidence`). The policy it checks against is the one the gate
-journaled in its tally; to check a gate against a policy you expect, run `bide-audit verify-approvals`
-with `-need` and `-approvers`.
+under that head (`audit.ApprovalEvidence`). Without `-need` and `-approvers` it checks against the
+policy the gate journaled in its tally, and says `(against the recorded policy)`. With them it
+checks against the policy you expect, says `(against the expected policy)`, and a gate that
+recorded another policy fails with, for example,
+`recorded policy 1 of 3 (ops, finance, risk) differs from expected 2 of 3 (ops, finance, risk)`.
 
 **CONFORMANCE** (plan flows given `-topology`). Whether the run followed the declared topology:
 the run is of the topology's flow, every node it recorded is declared, every Switch choice is a
@@ -126,7 +140,8 @@ decisions recorded so far, whose signatures the gate checks when the run resumes
 
 The **Signatures** column says whether the approvals were verified (see AUDIT PROOF):
 
-- `2 of 3: signatures verified (ops, finance)`: `audit.VerifyApprovals` held with the keys given.
+- `2 of 3: signatures verified (ops, finance) (against the recorded policy)`: `audit.VerifyApprovals`
+  held with the keys given.
 - `signatures NOT verified: ...`: it did not, with every reason: a decision that did not count and
   why (a signature that does not verify under the approver's key, an approver with no key), the
   count below k, or evidence that is inconsistent (a decision the gate read and the evidence omits, a
@@ -181,8 +196,6 @@ bide-view -db f.db -run triage-demo -topology topo.json -digest <flow digest>
   digest, not the topology, so you pass the topology with `-topology`. The digest commits to more
   than `Topology` holds (block and predicate names, package paths), so it cannot be recomputed from
   the topology file; pass `-digest` to compare it.
-- **Postgres is not supported yet.** `bide-view` reads SQLite files and exported journals. To view a
-  run in Postgres, export it with `audit.ExportJournal` and pass `-journal`.
 - **Proof needs `-sth` or `-evidence`.** An `audit.AuditedStore` publishes its signed heads to an
   external anchor, not to the store, so the viewer verifies only a head or package you give it.
 - **Plan flows have no approval gates.** The `plan` runtime refuses a gated node at `Build`, so a
