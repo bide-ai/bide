@@ -6,14 +6,14 @@ actually import.
 
 ## Why
 
-The core module requires only `golang.org/x/sync` and `golang.org/x/text`. The adapters, however, pull
+The core module requires only `golang.org/x/text`. The adapters, however, pull
 large dependency trees: modernc pure-Go SQLite alone is 34 modules. As a single module, a
 consumer who imported *only* the core still inherited the whole set in their `go.sum` /
 `go mod graph` / SCA audit surface (Go's module-graph pruning keeps them from *compiling*
 unused adapters, but they still appear to dependency scanners).
 
 Measured before the split: a core-only consumer inherited **54 external modules**; they now
-inherit **2** (`x/sync` and `x/text`). gsm is not among them: it belongs to the `govern` module.
+inherit **1** (`x/text`). gsm is not among them: it belongs to the `govern` module.
 Each heavy tree lives behind its own module and is pulled in
 only when that adapter is imported.
 
@@ -21,7 +21,7 @@ only when that adapter is imported.
 
 | Module | Path | Extra deps beyond core |
 |---|---|---|
-| **core** | `github.com/bide-ai/bide` | `x/sync`, `x/text` |
+| **core** | `github.com/bide-ai/bide` | `x/text` |
 | govern | `…/govern` | blackwell-systems/gsm |
 | mcptools | `…/mcptools` | modelcontextprotocol/go-sdk (+ jsonschema, segmentio, …) |
 | trace | `…/trace` | go.opentelemetry.io/otel |

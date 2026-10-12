@@ -604,7 +604,7 @@ func RequireTag(tag string) agent.ToolMiddleware {
 
 ## मॉड्यूल
 
-Bide एक बहु-मॉड्यूल रेपो है: एक निर्भरता-हल्का **कोर** (`github.com/bide-ai/bide`, यानी लूप, schema, middleware, मॉडल अडैप्टर, `plan` फ़्लो बिल्डर, `audit`; निर्भरताएँ केवल `x/sync` + `x/text` हैं) साथ ही प्रति भारी अडैप्टर एक मॉड्यूल (`mcptools`, `trace`, `store/sqlite`, `store/postgres`, `govern/redislog`, `govern/sqlitelog`, `govern/postgreslog`, `codec/gcf`), और `govern` मॉड्यूल, जो gsm को वहन करता है और gsm के स्थिर होने तक v0.x पर रहता है। एक अडैप्टर import करें और आप उसका निर्भरता वृक्ष खींच लेते हैं; केवल कोर import करें और आप नहीं खींचते। एक केवल-कोर उपभोक्ता की बाह्य-मॉड्यूल सतह 2 है, 54 नहीं। देखें [docs/reference/module-structure.md](../../docs/reference/module-structure.md)।
+Bide एक बहु-मॉड्यूल रेपो है: एक निर्भरता-हल्का **कोर** (`github.com/bide-ai/bide`, यानी लूप, schema, middleware, मॉडल अडैप्टर, `plan` फ़्लो बिल्डर, `audit`; एकमात्र निर्भरता `x/text` है) साथ ही प्रति भारी अडैप्टर एक मॉड्यूल (`mcptools`, `trace`, `store/sqlite`, `store/postgres`, `govern/redislog`, `govern/sqlitelog`, `govern/postgreslog`, `codec/gcf`), और `govern` मॉड्यूल, जो gsm को वहन करता है और gsm के स्थिर होने तक v0.x पर रहता है। एक अडैप्टर import करें और आप उसका निर्भरता वृक्ष खींच लेते हैं; केवल कोर import करें और आप नहीं खींचते। एक केवल-कोर उपभोक्ता की बाह्य-मॉड्यूल सतह 1 है, 54 नहीं। देखें [docs/reference/module-structure.md](../../docs/reference/module-structure.md)।
 
 ## आर्किटेक्चर
 
