@@ -1,9 +1,27 @@
 # Design: one `bide` CLI and the onboarding path
 
-Status: draft, for review. No code changes in this note. Target: everything ships in v0.14.0.
+Status: accepted (2026-10-12); being implemented as the PRs in section 7. Target: v0.14.0.
 
 bide has no users yet, so this note asks how the tooling and onboarding should have looked from
 the start, and plans the move there in one release without compatibility shims.
+
+## Decisions
+
+The maintainer decided, after review of this note:
+
+1. **The core becomes stdlib-only.** The core module drops `golang.org/x/sync` (its one use, an
+   errgroup, is replaced by a small stdlib equivalent) and `golang.org/x/text`, and the
+   architecture guard becomes an allowlist: the standard library and bide's own packages only.
+   Removing `x/text` needs a further decision, because the standard library has no Unicode
+   normalization or full case folding to replace `approverFoldKey`; it is pending, and the claim
+   and the guard change only once it is settled.
+2. **The CLI is built on the standard library `flag` package**, not cobra (section 2, "CLI
+   framework").
+3. **The `bide_audit_only` build tag and its guard test** are in the plan (section 3).
+4. **The reproducible-release fixes** are in the plan: `-trimpath`, `mod_timestamp`, a pinned Go
+   toolchain, and the rebuild-and-compare check (section 3).
+5. **Every open-question recommendation in section 8 is accepted**, including keeping the YAML
+   dependency (question 9).
 
 ## The problem
 
@@ -33,8 +51,8 @@ one that cannot show them a run.
 **Correction to principle 4 as stated in the brief.** The core is not stdlib-only: the root
 `go.mod` requires `golang.org/x/sync` (`agent/loop.go`, errgroup) and `golang.org/x/text`
 (`agent/approval.go`, approver-id normalization), and `docs/reference/module-structure.md` says so.
-The accurate principle is "the core module requires only the standard library, `x/sync` and
-`x/text`". The guard enforcing it is also weaker than "enforced" suggests:
+The accurate principle today is "the core module requires only the standard library, `x/sync`
+and `x/text`"; decision 1 removes both so that the stdlib-only claim becomes true. The guard enforcing it is also weaker than "enforced" suggests:
 `agent/architecture_test.go` and `plan/architecture_test.go` are **denylists** (no
 `bide-ai/bide/store/`, no `modernc.org/sqlite`, no `jackc/pgx`, ...), and
 `TestCoreModuleHasNoGSM` checks one name. A new dependency that is not on a list passes. This note
@@ -525,7 +543,7 @@ Published tags cannot be deleted from the module proxy, and none should be.
   directory, its `PUBLISHED`/`COMMANDS` entries, `go.work` and CI lines are deleted in the first
   PR after v0.14.0. See open question 3.
 
-## 8. Open questions
+## 8. Open questions (all decided: each recommendation was accepted)
 
 1. **Assertions before or after v0.14.0?** `bide check` "plus assertions" and the template's
    `assert:` block need a plan feature that does not exist yet. *Recommendation:* do not hold the
