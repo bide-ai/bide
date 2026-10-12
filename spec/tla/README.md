@@ -912,15 +912,19 @@ every journal the drivers and the resolver can produce is a declared path, which
 
 | Config | Group | What | States | Time |
 |---|---|---|---|---|
-| `flow-two-a0` | ci | two drivers; `E`, `H`, `T` side effects; 1 crash, no error reply (`flow-resolve` and `flow-all-side-resolve` have one) | 424,389 | 5 s |
-| `flow-resolve` | ci | one driver and the resolver (this flow, or another); 1 error reply, 1 crash | 150,726 | 1 s |
-| `flow-all-side-resolve` | ci | every node a side effect, one driver, the resolver | 253,402 | 2 s |
-| `flow-live` | ci | `Completes`, one driver; 1 error reply, 1 crash | 6,886 | <1 s |
-| `flow-two` | nightly | two drivers; `E`, `H`, `T` side effects; 1 error reply, 1 crash | 1,690,704 | 11 s |
-| `deep-flow-all-side` | nightly | every node a side effect, two drivers | 5,592,438 | 34 s |
-| `deep-flow-resolve` | nightly | two drivers and the resolver, 1 crash | 15,882,920 | 1 min 42 s |
-| `deep-flow-live` | nightly | `Completes`, two drivers | 3,381,384 | 2 min |
-| `deep-flow-iter3` | nightly | three loop iterations, two drivers | 10,758,528 | 1 min |
+| `flow-two-a0` | ci | two drivers; `E`, `H`, `T` side effects; 1 crash, no error reply (`flow-resolve` and `flow-all-side-resolve` have one) | 550,613 | 5 s |
+| `flow-resolve` | ci | one driver and the resolver (this flow, or another); 1 error reply, 1 crash | 171,696 | 1 s |
+| `flow-all-side-resolve` | ci | every node a side effect, one driver, the resolver | 289,192 | 2 s |
+| `flow-live` | ci | `Completes`, one driver; 1 error reply, 1 crash | 7,820 | <1 s |
+| `flow-gate` | ci | gates on `H` (per iteration) and `T`, 2 of 2; one driver, the resolver; 1 crash | 1,495,973 | 16 s |
+| `flow-gate-live` | ci | `Completes` with gates on `H` and `T`, 2 of 2; one driver; 1 error reply, 1 crash | 572,783 | 42 s |
+| `flow-two` | nightly | two drivers; `E`, `H`, `T` side effects; 1 error reply, 1 crash | 2,125,920 | 23 s |
+| `deep-flow-all-side` | nightly | every node a side effect, two drivers | 7,165,894 | 8 min (2 workers, beside other runs) |
+| `deep-flow-resolve` | nightly | two drivers and the resolver, 1 crash | 20,510,386 | 22 min (2 workers, beside other runs) |
+| `deep-flow-live` | nightly | `Completes`, two drivers | 4,251,812 | 17 min (2 workers, beside other runs) |
+| `deep-flow-iter3` | nightly | three loop iterations, two drivers | being re-measured | |
+| `deep-flow-gate` | nightly | gates on `H` and `T`, 1 of 2; two drivers, 1 crash | being measured | |
+| `deep-flow-gate-faults` | nightly | `flow-gate` with 1 error reply | 5,903,374 | 1 min |
 
 Regressions (each must fail with its property): `flows/regress/gate-missing` (a gated node run
 with no gate check, as the runtime would have before flows enforced gates had `Build` not refused
