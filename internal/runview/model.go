@@ -64,7 +64,8 @@ type Halt struct {
 	Ref         string    `json:"ref"` // the agent.HaltRef to resolve it with, as Go
 }
 
-// Gate is a tool call's approval gate, from the decisions and tally the journal holds.
+// Gate is a tool call's or a plan flow node's approval gate, from the decisions and tally the
+// journal holds. A flow node's ToolUseID is its key ("node:<name>", "node:iter:<n>:<name>").
 type Gate struct {
 	ToolUseID  string     `json:"tool_use_id"`
 	ToolName   string     `json:"tool_name,omitempty"`
@@ -106,6 +107,15 @@ func Build(ctx context.Context, runID string, recs []agent.Record, flow *Flow) *
 	calls := map[string]agent.ToolUse{} // tool-use ID -> the call a model turn requested
 	var callOrder []string
 	for _, r := range recs {
+		// A gated plan flow node's request (agent.ApprovalRequest) is its call: its ID is the
+		// node's key, its name the node's.
+		if q, ok := flowRequest(r); ok {
+			if _, seen := calls[q.ID]; !seen {
+				callOrder = append(callOrder, q.ID)
+			}
+			calls[q.ID] = q
+			continue
+		}
 		if r.Kind == agent.StepModel && r.Message != nil {
 			for _, p := range r.Message.Parts {
 				if tu, ok := p.(agent.ToolUse); ok {
@@ -228,6 +238,9 @@ func Build(ctx context.Context, runID string, recs []agent.Record, flow *Flow) *
 			} else {
 				e.Detail = fmt.Sprintf("%d of %d: %s", w.Need, len(w.Approvers), strings.Join(w.Approvers, ", "))
 			}
+		case strings.HasPrefix(r.Name, "approval-request:"):
+			q, _ := flowRequest(r)
+			e.Class, e.Title, e.Detail = "approval", "approval requested: "+q.Name+" ("+q.ID+")", "input "+compact(q.Args)
 		case strings.HasPrefix(r.Name, "approval-tally:"):
 			e.Class, e.Title, e.Detail = "approval", "approval tally", short(r.Result)
 		case r.Kind == agent.StepSignal:
@@ -253,9 +266,6 @@ func Build(ctx context.Context, runID string, recs []agent.Record, flow *Flow) *
 	}
 	if v.Kind == string(agent.RunKindFlow) || v.Flow != "" {
 		v.Graph, v.Conform, v.LastNode = flowGraph(ctx, runID, recs, flow, v)
-	}
-	if v.Kind == string(agent.RunKindFlow) && slices.ContainsFunc(recs, func(r agent.Record) bool { return r.Kind == agent.StepApproval }) {
-		v.Notes = append(v.Notes, "plan flows do not enforce approval gates yet, so a flow's approvals are those of agent tools its nodes call")
 	}
 	for _, h := range v.Halts {
 		if h.Op == "tool" {
@@ -351,7 +361,22 @@ func halts(runID string, recs []agent.Record, calls map[string]agent.ToolUse) []
 	return out
 }
 
-// gates reads each tool call's approval decisions and tally.
+// flowRequest reads r as a gated plan flow node's request (agent.ApprovalRequest), as the node's
+// call: its ID is the node's key, its Name the node's name, its Args the node's input.
+func flowRequest(r agent.Record) (agent.ToolUse, bool) {
+	if !strings.HasPrefix(r.Name, "approval-request:") {
+		return agent.ToolUse{}, false
+	}
+	var q agent.ApprovalRequest
+	if json.Unmarshal(r.Result, &q) != nil {
+		return agent.ToolUse{}, false
+	}
+	_, call, ok := agent.FindToolCall([]agent.Record{r}, q.ToolUseID)
+	return call, ok
+}
+
+// gates reads each gated call's approval decisions and tally: a tool call's, or a plan flow
+// node's (its ID the node's key, and its result the node's record).
 func gates(recs []agent.Record, calls map[string]agent.ToolUse, order []string) []Gate {
 	byName := map[string]agent.Record{}
 	for _, r := range recs {
@@ -368,7 +393,7 @@ func gates(recs []agent.Record, calls map[string]agent.ToolUse, order []string) 
 		}
 		resulted := false
 		for _, r := range recs {
-			if (r.Kind == agent.StepToolResult || r.Kind == agent.StepSagaFail) && r.ToolUseID == id {
+			if (r.Kind == agent.StepToolResult || r.Kind == agent.StepSagaFail) && r.ToolUseID == id || r.Kind == agent.StepValue && r.Name == id && strings.HasPrefix(id, "node:") {
 				resulted = true
 			}
 			if r.Kind == agent.StepApproval && r.ToolUseID == id {

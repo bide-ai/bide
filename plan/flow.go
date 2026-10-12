@@ -81,6 +81,16 @@ type Flow[In, Out any] struct {
 //     Result is the JSON-encoded chosen target step name);
 //     "switch:iter:<i>:"+over for a loop Switch's iteration i.
 //   - "run:complete" -- the run's completion: the flow's name and its output.
+//
+// A node with an approval gate (Approval, a wrapped tool's own gate, or a config "approval" block)
+// is held at its gate before its Step, exactly as an agent's gated tool call is: Run returns
+// *agent.ApprovalPending until the gate passes, and an error wrapping ErrApprovalDenied once it
+// denies, without running the node. The gate's ToolUseID is the node's key, its ToolName the node's
+// name, and its Args the node's input as JSON; it writes the agent's approval records under that key:
+// "approval-request:<key>" (agent.ApprovalRequest, before the first pause), "approval-pending:<key>",
+// the decisions agent.Approve and agent.SubmitDecision record, and "approval-tally:<key>" (an
+// m-of-n gate's terminal tally, before the node runs). In a loop body the key is the iteration's,
+// so each iteration is approved on its own.
 func (f *Flow[In, Out]) Run(ctx context.Context, store *agent.Journal, runID string, in In) (Out, error) {
 	var out Out
 	c := f.core
@@ -262,6 +272,10 @@ func (f *Flow[In, Out]) Run(ctx context.Context, store *agent.Journal, runID str
 		// then records its result. This holds for a Join
 		// exactly as for any node: it is a plain sequential step, so a non-idempotent
 		// merge halts on the ambiguous crash unless marked retry-safe.
+		// A gated node waits at its gate before it runs (see runGate).
+		if gateErr := runGate(ctx, store, runID, c, node, nodeKey(name), input); gateErr != nil {
+			return out, gateErr
+		}
 		result, runErr := runNode(ctx, store, runID, c.model, node, nodeKey(name), input)
 		if runErr != nil {
 			return out, runErr
@@ -401,6 +415,11 @@ func (f *Flow[In, Out]) runLoop(ctx context.Context, store *agent.Journal, runID
 				input = resolved
 			}
 
+			// A gated body node waits at its gate in each iteration, under the iteration's key:
+			// each iteration's input is its own subject, approved on its own.
+			if gateErr := runGate(ctx, store, runID, c, node, iterNodeKey(iter, name), input); gateErr != nil {
+				return "", nil, gateErr
+			}
 			result, runErr := runNode(ctx, store, runID, c.model, node, iterNodeKey(iter, name), input)
 			if runErr != nil {
 				return "", nil, runErr

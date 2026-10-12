@@ -873,6 +873,13 @@ predicates are pure over the recorded value. Two drivers, crashes, ambiguous rep
 operator resolving node halts through `Flow.ResolveHalt` (of this flow, or of another flow or
 digest) run around it.
 
+Nodes in `Gated` carry an approval gate (`Need` of `Approvers`), held before the node's Step under
+the node's key, per iteration in the loop: a recorded terminal tally decides, or the drive counts the
+approvers' decisions and records a terminal tally (first writer wins), or pauses and is driven again.
+Approvers decide at any time, whether a driver runs, is paused or is down. Each approver's decision
+here is their first valid one; model 1b checks the counting rule over signed, possibly invalid
+records.
+
 <!-- modelsync: map flows -->
 | Label | Go |
 |---|---|
@@ -882,6 +889,10 @@ digest) run around it.
 | `LoopH`, `AfterH`, `RunS`, `AfterS`, `ChooseS`, `AfterChooseS` | `runLoop`, with its `lp.max` bound (a runaway-loop error) |
 | `Complete` | `journalhook.Complete`: `run:complete` with the terminal's output |
 | `RPick`, `RWrite` | `Flow.ResolveHalt`: a node of this flow with a live attempt and no result, in a run of this flow and digest (`checkRunOfFlow`), then `agent.ResolveHalt` |
+| `GRead` | `runGate` through `journalhook.Gate` to `flowGate`: the gate's recorded outcome (`approval-tally:<node key>`, or `Approve`'s record), one point read; else the request (`approval-request:<node key>`) |
+| `GCount` | `flowGate`'s count (`tallyGate`, `TallyApprovals`): a terminal tally is recorded before the node runs, else the drive pauses (`*agent.ApprovalPending`) |
+| `GPause` | `runGate`: a denying tally stops the run (`ErrApprovalDenied`); a passing one lets the node's Step run |
+| `ADecide` | `agent.SubmitDecision` (or `agent.Approve`): an approver's decision on a gate, recorded whether a driver runs or not |
 
 | Property | Kind | Statement |
 |---|---|---|
@@ -890,7 +901,10 @@ digest) run around it.
 | `Conform` | invariant | the journal holds a declared path: every recorded result and choice is on the path the recorded choices take, each choice follows its predicate over the recorded value, and `run:complete` holds the reached terminal's output |
 | `RoutesFollowDeclared` | invariant | every route a driver took followed the predicate over its own iteration's recorded value |
 | `ResultsTyped` | invariant | every recorded node output is one this flow's node types read |
-| `Completes` | liveness | a run whose drives do not halt completes, or stops on the loop bound |
+| `GateHeld` | invariant | a gated node's body never runs with fewer than `Need` approvals recorded for its key (its iteration's, in the loop) |
+| `GatedResults` | invariant | a gated node's result is recorded, by a driver or by the resolver, only for a key with `Need` approvals |
+| `TallySound` | invariant | a recorded pass has `Need` approvals; a recorded deny can never reach them |
+| `Completes` | liveness | a run whose drives do not halt completes, is denied at a gate, or stops on the loop bound |
 
 `Conform` here is the property the journal must have, not `plan.Conform` itself: the model shows
 every journal the drivers and the resolver can produce is a declared path, which is what
@@ -898,17 +912,25 @@ every journal the drivers and the resolver can produce is a declared path, which
 
 | Config | Group | What | States | Time |
 |---|---|---|---|---|
-| `flow-two-a0` | ci | two drivers; `E`, `H`, `T` side effects; 1 crash, no error reply (`flow-resolve` and `flow-all-side-resolve` have one) | 424,389 | 5 s |
-| `flow-resolve` | ci | one driver and the resolver (this flow, or another); 1 error reply, 1 crash | 150,726 | 1 s |
-| `flow-all-side-resolve` | ci | every node a side effect, one driver, the resolver | 253,402 | 2 s |
-| `flow-live` | ci | `Completes`, one driver; 1 error reply, 1 crash | 6,886 | <1 s |
-| `flow-two` | nightly | two drivers; `E`, `H`, `T` side effects; 1 error reply, 1 crash | 1,690,704 | 11 s |
-| `deep-flow-all-side` | nightly | every node a side effect, two drivers | 5,592,438 | 34 s |
-| `deep-flow-resolve` | nightly | two drivers and the resolver, 1 crash | 15,882,920 | 1 min 42 s |
-| `deep-flow-live` | nightly | `Completes`, two drivers | 3,381,384 | 2 min |
-| `deep-flow-iter3` | nightly | three loop iterations, two drivers | 10,758,528 | 1 min |
+| `flow-two-a0` | ci | two drivers; `E`, `H`, `T` side effects; 1 crash, no error reply (`flow-resolve` and `flow-all-side-resolve` have one) | 550,613 | 5 s |
+| `flow-resolve` | ci | one driver and the resolver (this flow, or another); 1 error reply, 1 crash | 171,696 | 1 s |
+| `flow-all-side-resolve` | ci | every node a side effect, one driver, the resolver | 289,192 | 2 s |
+| `flow-live` | ci | `Completes`, one driver; 1 error reply, 1 crash | 7,820 | <1 s |
+| `flow-gate` | ci | gates on `H` (per iteration) and `T`, 2 of 2; one driver, the resolver; 1 crash | 1,495,973 | 16 s |
+| `flow-gate-live` | ci | `Completes` with gates on `H` and `T`, 2 of 2; one driver; 1 error reply, 1 crash | 572,783 | 42 s |
+| `flow-two` | nightly | two drivers; `E`, `H`, `T` side effects; 1 error reply, 1 crash | 2,125,920 | 23 s |
+| `deep-flow-all-side` | nightly | every node a side effect, two drivers | 7,165,894 | 8 min (2 workers, beside other runs) |
+| `deep-flow-resolve` | nightly | two drivers and the resolver, 1 crash | 20,510,386 | 22 min (2 workers, beside other runs) |
+| `deep-flow-live` | nightly | `Completes`, two drivers | 4,251,812 | 17 min (2 workers, beside other runs) |
+| `deep-flow-iter3` | nightly | three loop iterations, two drivers | being re-measured | |
+| `deep-flow-gate` | nightly | gates on `H` and `T`, 1 of 2; two drivers, 1 crash | being measured | |
+| `deep-flow-gate-faults` | nightly | `flow-gate` with 1 error reply | 5,903,374 | 1 min |
 
-Regressions (each must fail with its property): `flows/regress/nested-unscoped` (#103 review F7:
+Regressions (each must fail with its property): `flows/regress/gate-missing` (a gated node run
+with no gate check, as the runtime would have before flows enforced gates had `Build` not refused
+them; `GateHeld`), `flows/regress/gate-unscoped` (a gate in a loop keyed per node, not per
+iteration, so the first iteration's tally lets the second run unapproved; `GateHeld`),
+`flows/regress/nested-unscoped` (#103 review F7:
 a Step a loop body ran had one key for every iteration, so later iterations replayed the first;
 `NestedOncePerIteration`, 38 states), `flows/regress/loop-switch-unscoped` (a guard: the loop
 Switch's choice journaled once for all iterations; `RoutesFollowDeclared`, 46 states),

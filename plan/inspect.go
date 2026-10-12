@@ -65,9 +65,10 @@ func (r ConfigReport) Errors() bool {
 // type and Out as the terminal nodes' output type, which are the only In and Out Load accepts.
 // The digest it reports is then the digest Load's flow would journal.
 //
-// Each problem is attached to the node, edge or arm its message names. A valid approval block is
-// an error, since Load refuses it (plan flows do not enforce approval gates yet), and is still
-// listed in Approvals. One warning is not a load error: a Switch with no else, since a value no arm
+// Each problem is attached to the node, edge or arm its message names. Every approval block is
+// listed in Approvals and on its node in Topology; one that is not a valid policy is an error. An
+// m-of-n gate is checked as Load checks it with approver verifiers bound
+// (WithLoadedApproverVerifiers): the keys are not the config's. One warning is not a load error: a Switch with no else, since a value no arm
 // matches fails the run.
 func InspectConfig(data []byte, reg *Registry) ConfigReport {
 	r := ConfigReport{Typed: reg != nil, Approvals: map[string]agent.ApprovalPolicy{}}
@@ -100,6 +101,11 @@ func InspectConfig(data []byte, reg *Registry) ConfigReport {
 			core.outType = n.outType
 		}
 	}
+	// The check is of the policy, not of approvers' keys, which a config does not carry: a
+	// resolver that knows no approver lets Build check an m-of-n gate as Load would with keys.
+	if core.approverVerifiers == nil {
+		core.approverVerifiers = func(string) (agent.ApproverVerifier, bool) { return nil, false }
+	}
 	f, err := (&Builder[struct{}, struct{}]{core: core}).Build()
 	if err != nil {
 		r.attribute(&cfg, err)
@@ -117,15 +123,21 @@ func configTopology(cfg *config) Topology {
 	if t.Entry == "" && len(cfg.Nodes) > 0 {
 		t.Entry = cfg.Nodes[0].Name
 	}
+	gateOf := func(ca *configApproval) *TopologyGate {
+		if ca == nil {
+			return nil
+		}
+		return &TopologyGate{Need: ca.Need, Approvers: append([]string(nil), ca.Approvers...)}
+	}
 	for _, n := range cfg.Nodes {
-		t.Nodes = append(t.Nodes, TopologyNode{Name: n.Name, Block: n.Block})
+		t.Nodes = append(t.Nodes, TopologyNode{Name: n.Name, Block: n.Block, Gate: gateOf(n.Approval)})
 	}
 	for _, w := range cfg.Wiring {
 		switch {
 		case w.isEdge() && len(w.Edge) == 2:
 			t.Edges = append(t.Edges, TopologyEdge{From: w.Edge[0], To: w.Edge[1]})
 		case w.isJoin() && !w.isEdge() && !w.isSwitch():
-			t.Nodes = append(t.Nodes, TopologyNode{Name: w.Join, Kind: NodeKindJoin, Block: w.Merge})
+			t.Nodes = append(t.Nodes, TopologyNode{Name: w.Join, Kind: NodeKindJoin, Block: w.Merge, Gate: gateOf(w.Approval)})
 			for _, in := range w.Inputs {
 				t.Edges = append(t.Edges, TopologyEdge{From: in, To: w.Join})
 			}
@@ -168,13 +180,10 @@ func structural(cfg *config, r *ConfigReport) {
 			errAt(ConfigProblem{Node: n.Name, Message: fmt.Sprintf("node %q has unknown safety %q (want readonly, idempotent or side_effect)", n.Name, n.Safety)})
 		}
 		if n.Approval != nil {
-			p := agent.ApprovalPolicy{Need: n.Approval.Need, Approvers: n.Approval.Approvers}
-			r.Approvals[n.Name] = p
-			if err := p.Validate(); err != nil {
-				errAt(ConfigProblem{Node: n.Name, Message: fmt.Sprintf("node %q approval: %s", n.Name, strings.TrimSuffix(err.Error(), ": "+agent.ErrConfig.Error()))})
-			} else {
-				errAt(ConfigProblem{Node: n.Name,
-					Message: fmt.Sprintf("node %q declares an approval gate, which plan flows do not enforce yet, so Load refuses it; gate the agent tool the node calls instead (docs/guides/hitl-approval.md)", n.Name)})
+			p, why := configGate(nil, n.Approval)
+			r.Approvals[n.Name] = *p
+			for _, w := range why {
+				errAt(ConfigProblem{Node: n.Name, Message: fmt.Sprintf("node %q %s", n.Name, w)})
 			}
 		}
 	}

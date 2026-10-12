@@ -139,12 +139,18 @@ func (b *Builder[In, Out]) Build() (*Flow[In, Out], error) {
 		return nil, err
 	}
 
-	// 5d. Approval gates. The plan runtime does not enforce a human approval gate yet, so a
-	// node that declares one (a wrapped agent tool's ToolSpec.Approval, or a config "approval"
-	// block) would run with no approval at all. Refuse it.
+	// 5d. Approval gates. Run enforces each node's gate (see runGate); refuse one it could not:
+	// an ill-formed policy, or an m-of-n gate in a flow with no approver verifiers, which no
+	// decision could then pass.
 	for _, n := range c.nodes {
-		if n.approval != nil {
-			return nil, fmt.Errorf("plan: build %q: step %q requires approval, which plan flows do not enforce yet; gate it in an agent tool instead (see docs/guides/hitl-approval.md): %w", c.flowName, n.name, agent.ErrConfig)
+		if n.approval == nil {
+			continue
+		}
+		if err := n.approval.Validate(); err != nil {
+			return nil, fmt.Errorf("plan: build %q: step %q approval gate: %w", c.flowName, n.name, err)
+		}
+		if g := topologyGate(n.approval); !g.Single && c.approverVerifiers == nil {
+			return nil, fmt.Errorf("plan: build %q: step %q has an m-of-n approval gate (%s) but the flow has no approver verifiers; bind them with WithApproverVerifiers (or WithLoadedApproverVerifiers): %w", c.flowName, n.name, gateText(n.approval), agent.ErrConfig)
 		}
 	}
 
@@ -621,7 +627,9 @@ func (c *builderCore) seal() *builderCore {
 		edges:    make([]edge, len(c.edges)),
 		branches: make([]branch, len(c.branches)),
 		model:    c.model, // carry the bound model onto the frozen flow so Run can call it
-		loops:    make([]loopSpec, len(c.loops)),
+		// and the approver verifiers, so Run can count an m-of-n gate's decisions
+		approverVerifiers: c.approverVerifiers,
+		loops:             make([]loopSpec, len(c.loops)),
 	}
 	copy(sealed.nodes, c.nodes)
 	for _, n := range sealed.nodes {

@@ -45,6 +45,10 @@
 // the config loader (Load) carries the back-edge as a Switch "when" arm with a positive
 // "loop_max" ({"pred":p,"to":head,"loop_max":n}), which Build lowers exactly as LoopBack.
 //
+// A node may carry a human approval gate (Approval, or a config "approval" block): Run pauses
+// before the node until the gate passes, with the agent package's own gate, records and counting
+// rule, so a gated node's decisions verify offline as a gated tool call's do.
+//
 // Because the topology is declared as a value, plan can render the authored
 // graph (Flow.RenderMermaid) and compare it against the journal-derived path of
 // a run (Flow.Conform), distinguishing the declared diagram from the diagram

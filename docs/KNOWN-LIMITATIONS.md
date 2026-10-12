@@ -244,8 +244,9 @@ person is your identity provider's job. It refuses two approvers whose verifiers
 but it cannot see that one person holds two different keys. Keep old public keys after a rotation so old evidence still
 verifies. See [Human approval](guides/hitl-approval.md#scope).
 
-**Flows cannot hold an approval gate yet.** A `plan` flow with an approval node fails to build with
-`ErrConfig` rather than running the node unapproved. Put the gate on an agent tool instead.
+**A denied flow gate compensates nothing.** A plan flow node whose approval gate is denied never
+runs, but plan flows have no saga mode, so the nodes before it keep their effects and the run stays
+unfinished until it is cancelled. See [Flows](guides/flows.md#approval-gates-on-nodes).
 
 **A quorum needs short, fixed answers.** Voters must pick from a set of labels, so a quorum does not
 apply to free-form output. Agreement lowers the risk of one model's mistake, but models can be wrong

@@ -1,6 +1,11 @@
 package plan
 
-import "reflect"
+import (
+	"encoding/json"
+	"reflect"
+
+	"github.com/bide-ai/bide/agent"
+)
 
 // typeStringOrEmpty renders a captured reflect.Type as its String() name for the
 // data view, mapping a nil (unpinned) type to "" rather than the "?" placeholder
@@ -90,6 +95,31 @@ type TopologyNode struct {
 	Block        string           `json:"block"`
 	InCanonical  string           `json:"in_canonical"`
 	OutCanonical string           `json:"out_canonical"`
+	// Gate is the node's approval gate, nil for an ungated node. The Digest commits to it, so a
+	// paused run cannot be resumed under a flow whose gate was removed or changed.
+	Gate *TopologyGate `json:"gate,omitempty"`
+}
+
+// TopologyGate is a node's approval gate: Single for agent.SingleApproval (one decision, recorded
+// with agent.Approve), otherwise Need signed decisions of the Approvers, in policy order (an
+// m-of-n gate).
+type TopologyGate struct {
+	Single    bool     `json:"single,omitempty"`
+	Need      int      `json:"need,omitempty"`
+	Approvers []string `json:"approvers,omitempty"`
+}
+
+// topologyGate is p as a TopologyGate, nil for no gate.
+func topologyGate(p *agent.ApprovalPolicy) *TopologyGate {
+	if p == nil {
+		return nil
+	}
+	var g TopologyGate
+	b, err := json.Marshal(p)
+	if err != nil || json.Unmarshal(b, &g) != nil {
+		return &TopologyGate{Need: p.Need, Approvers: append([]string(nil), p.Approvers...)}
+	}
+	return &g
 }
 
 // TopologyEdge is one declared connection producer.Out -> consumer.In, by node
@@ -225,6 +255,7 @@ func (c *builderCore) topology() Topology {
 		if n.kind != kindJoin {
 			tn.In = typeStringOrEmpty(n.inType)
 		}
+		tn.Gate = topologyGate(n.approval)
 		t.Nodes = append(t.Nodes, tn)
 
 		// A join contributes its ordered inputs and their port types. The type of each

@@ -57,7 +57,6 @@ func TestInspectConfig_ProblemsWhereTheyBelong(t *testing.T) {
 		{"arm to nowhere", edit(`"to": "reserve"`, `"to": "reserv"`), false, "", "classify", "reserv", "error", "routes to unknown node"},
 		{"missing else", edit(`, "else": "decline"`, ``), false, "classify", "", "", "warning", "has no else"},
 		{"invalid approval", edit(`{"name": "reserve",  "block": "reserve"}`, `{"name": "reserve",  "block": "reserve", "approval": {"need": 3, "approvers": ["ops", "finance"]}}`), false, "reserve", "", "", "error", "approval"},
-		{"valid approval", edit(`{"name": "reserve",  "block": "reserve"}`, `{"name": "reserve",  "block": "reserve", "approval": {"need": 2, "approvers": ["ops", "finance", "risk"]}}`), false, "reserve", "", "", "error", "which plan flows do not enforce yet"},
 		{"unknown safety", edit(`{"name": "decline",  "block": "decline"}`, `{"name": "decline",  "block": "decline", "safety": "maybe"}`), false, "decline", "", "", "error", "unknown safety"},
 		{"unregistered block", edit(`{"name": "finalize", "block": "finalize"}`, `{"name": "finalize", "block": "finalise"}`), true, "finalize", "", "", "error", `unknown block "finalise"`},
 		{"unregistered predicate", edit(`"pred": "rush"`, `"pred": "rusht"`), true, "", "classify", "reserve", "error", `unknown predicate "rusht"`},
@@ -97,5 +96,33 @@ func TestInspectConfig_Unparseable(t *testing.T) {
 	r := InspectConfig([]byte(`{"version": 1, "flow": "x", "nodes": [], "wiring": [], "aproval": 1}`), nil)
 	if !r.Errors() || r.Problems[0].Node != "" || !strings.Contains(r.Problems[0].Message, "aproval") {
 		t.Fatalf("problems = %+v", r.Problems)
+	}
+}
+
+// A valid approval block is no problem: plan flows enforce it. It is listed in Approvals and on its
+// node in Topology, structurally and with the Registry (whose digest commits to it).
+func TestInspectConfig_ApprovalGate(t *testing.T) {
+	data := []byte(strings.Replace(triageConfig, `{"name": "reserve",  "block": "reserve"}`, `{"name": "reserve",  "block": "reserve", "approval": {"need": 2, "approvers": ["ops", "finance", "risk"]}}`, 1))
+	plain := InspectConfig([]byte(triageConfig), triageRegistry(t))
+	for _, reg := range []*Registry{nil, triageRegistry(t)} {
+		r := InspectConfig(data, reg)
+		if r.Errors() {
+			t.Fatalf("typed=%v: problems %+v; want none", reg != nil, r.Problems)
+		}
+		if p := r.Approvals["reserve"]; p.Need != 2 || len(p.Approvers) != 3 {
+			t.Fatalf("typed=%v: Approvals = %+v", reg != nil, r.Approvals)
+		}
+		var gate *TopologyGate
+		for _, n := range r.Topology.Nodes {
+			if n.Name == "reserve" {
+				gate = n.Gate
+			}
+		}
+		if gate == nil || gate.Need != 2 {
+			t.Fatalf("typed=%v: reserve's topology gate = %+v", reg != nil, gate)
+		}
+		if reg != nil && (r.Digest == "" || r.Digest == plain.Digest) {
+			t.Fatalf("the gated config's digest %q does not differ from the ungated %q", r.Digest, plain.Digest)
+		}
 	}
 }

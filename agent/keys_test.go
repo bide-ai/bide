@@ -21,6 +21,7 @@ import (
 // the map complete, so a new key constructor is checked by the tests below.
 var keyConstructors = map[string]func(string) string{
 	"ApprovalPendingStep":    ApprovalPendingStep,
+	"ApprovalRequestStep":    ApprovalRequestStep,
 	"runCompleteStep":        func(string) string { return runCompleteStep },
 	"runAbortedStep":         func(string) string { return runAbortedStep },
 	"runStartStep":           func(string) string { return runStartStep },

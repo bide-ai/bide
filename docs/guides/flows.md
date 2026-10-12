@@ -171,6 +171,9 @@ guarantees:
   instead of replaying the first iteration's, and a Step name need be unique only within its node (and must not be empty: an empty name is `ErrConfig`, for every `Journal.Step`). A
   halt of such a Step names that key; resolve it with the halt's `Ref()`. Other pauses a body takes
   (`Interrupt`, `Await`, `Sleep`) are not scoped: give them names unique per iteration.
+- **A node can wait for human approval.** A node gated with `plan.Approval(policy)` (or by the
+  agent tool it wraps, or a config `approval` block) pauses before it runs, exactly as a gated agent
+  tool call does: see [Approval gates on nodes](#approval-gates-on-nodes).
 - **Reserved keys.** `node:`, `switch:` and `flow:` are reserved prefixes, like `run:` and `attempt:`,
   so a `Journal.Step` a node's body runs cannot name one of the flow's records.
 - **Conformance.** Because the flow is authored and the actual path is derived from the journal, a run
@@ -184,6 +187,65 @@ guarantees:
   compared under the one rule above, so an output recorded with or without HTML escapes (`\u003c` or
   `<`) is the same output. The blind spot: conformance sees *that* a node ran, not what its Go body did
   inside, so a node whose interior must be checked should be split into smaller nodes.
+
+## Approval gates on nodes
+
+A node can require human approval before it runs, with the same gate an agent's tool call uses
+([Human approval](hitl-approval.md)): `agent.SingleApproval()` for one decision, or an m-of-n policy
+of named approvers who sign their decisions. Gate a node with `plan.Approval`, and give the flow the
+approvers' verifiers:
+
+<!-- docsnip: setup approvers agent.ApproverVerifierFor; type Order struct{}; type Refund struct{}; type Receipt struct{}; func lookupRefund(context.Context, Order) (Refund, error); func issueRefund(context.Context, Refund) (Receipt, error) -->
+```go
+b := plan.New[Order, Receipt]("refunds").WithApproverVerifiers(approvers)
+lookup := b.Step("lookup", lookupRefund, plan.ReadOnly())
+refund := b.Step("refund", issueRefund,
+	plan.Approval(&agent.ApprovalPolicy{Need: 2, Approvers: []string{"ops", "finance", "risk"}}))
+b.Edge(lookup, refund)
+```
+
+`Run` returns `*agent.ApprovalPending` before the node runs. Its `ToolUseID` is the node's key
+(`node:refund`, or `node:iter:<n>:refund` in a loop body), its `ToolName` the node's name, and its
+`Args` the node's input as JSON: what approvers sign. Record decisions as for a tool call, then run
+again with the same input:
+
+<!-- docsnip: setup ctx context.Context; j *agent.Journal; flow *plan.Flow[int, int]; runID string; in int; err error; sig []byte; returns error -->
+```go
+var pend *agent.ApprovalPending
+if errors.As(err, &pend) {
+	// each approver signs agent.ApprovalDecisionBytes(pend.Subject(), id, approved)
+	if err := agent.SubmitDecision(ctx, j, agent.Decision{RunID: pend.RunID, ToolUseID: pend.ToolUseID,
+		ApproverID: "ops", Approved: true, Alg: audit.AlgEd25519, Signature: sig}); err != nil {
+		return err
+	}
+}
+out, err := flow.Run(ctx, j, runID, in) // runs the node once 2 of 3 have approved
+```
+
+- **The same records and rule.** The gate records the request (`approval-request:<node key>`, the
+  node and its input) the first time it is reached, counts decisions with `agent.TallyApprovals`,
+  and records its terminal tally (`approval-tally:<node key>`) before the node runs. A
+  `SingleApproval` gate is decided with `agent.Approve(ctx, j, pend.RunID, pend.ToolUseID, ok)`.
+- **A denial stops the run.** A gate whose quorum can no longer be reached (or an `Approve(false)`)
+  never runs the node: `Run` returns an error wrapping `plan.ErrApprovalDenied`, and so does every
+  later drive. Nothing is compensated (flows have no saga); `agent.Cancel` ends the run.
+- **A pause survives a crash.** Every fact the gate uses is in the journal; decisions recorded while
+  no process runs the flow are counted by the next `Run`, and a gate that passed is never asked again.
+- **In a loop, the gate is per iteration.** Each iteration's run of a gated node pauses for its own
+  decisions on its own input. To approve a whole loop once, gate a node before it.
+- **A gate on an arm not taken never pauses.**
+- **The digest commits to the gate**, so a paused run cannot be resumed under a flow whose gate was
+  removed or changed. A node carries one gate: `plan.Approval` on a `Tool` whose agent tool declares
+  another gate is a `Build` error. `Build` refuses an m-of-n gate in a flow with no
+  `WithApproverVerifiers` (`WithLoadedApproverVerifiers` for `Load`).
+- **Evidence.** `audit.ApprovalEvidence(ctx, j, runID, "node:refund", sth)` and
+  `audit.VerifyApprovals` (or `bide-audit verify-approvals -call node:refund`) prove offline that the
+  approvers signed this node's input before it ran. `bide-view` shows the gate on the node.
+
+`examples/approval/flow` runs the whole story from a config: the pause, two approvals, one refund,
+and the offline check.
+
+<picture><source media="(prefers-color-scheme: dark)" srcset="./img/flow-gate-approved-dark.png"><img src="./img/flow-gate-approved-light.png" alt="bide-view on a gated refund flow: the refund node approved 2 of 3, signatures verified"></picture>
 
 ## Cryptographic conformance
 
@@ -394,8 +456,7 @@ effect. A config `safety` may keep a block's level or name a lower one (mark a r
 and a value above what Go declares (`readonly` or `idempotent` on a side effect, `readonly` on an
 idempotent block) is a load error (`ErrConfig`) naming the node. A config `safety` changes only the
 retry level: the approval gate the wrapped agent tool declares (its `ToolSpec.Approval`) is not
-part of `Safety` and is kept (so a gated tool is still refused, see
-[Node approval](#node-approval)). The Go options `ReadOnly()` and `Idempotent()` on a
+part of `Safety` and is kept (see [Node approval](#node-approval)). The Go options `ReadOnly()` and `Idempotent()` on a
 `Builder` node are Go code and may raise a node's level; they too keep an approval gate.
 
 ```yaml
@@ -422,10 +483,12 @@ nodes:
 ```
 
 `Load` and `Validate` reject a block with no approvers, a `need` outside `1..len(approvers)`, or a
-duplicate approver id, naming the node. The `plan` runtime does not enforce an approval gate yet, so a
-well-formed block is refused too (`ErrConfig`, naming the node), as is a `Tool` node wrapping an agent
-tool that requires approval: a gate that loaded but never stopped anything would let the node run
-unapproved. Until the runtime enforces it, put the gate on an agent tool (see [approval](hitl-approval.md)).
+duplicate approver id (or two that differ only by case or Unicode normalization), naming the node.
+The gate is enforced as in Go (see [Approval gates on nodes](#approval-gates-on-nodes)): load the flow
+with `plan.WithLoadedApproverVerifiers(approvers)`, or `Load` refuses an m-of-n block (`ErrConfig`,
+naming the node). A join wiring element takes the same `approval` block. A block may restate the gate
+its registered block declares (a tool's own `ToolSpec.Approval`, or `plan.Approval` given at
+registration) but not replace it: a config cannot loosen a tool's gate.
 
 ### Load-time validation
 

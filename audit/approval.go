@@ -54,7 +54,9 @@ func ProveApproval(ctx context.Context, store *agent.Journal, runID, step string
 // this order: the model turn that requested the call (Kind "call"), every decision record the
 // gate read (Kind "approval", from the journaled tally's Records, in journal order), the
 // gate's terminal tally (Kind "approval-tally"), and the call's result (Kind "tool", labelled
-// by its tool-use id as every tool action is). The result appends to EvidencePackage.Actions,
+// by its tool-use id as every tool action is). For a gated plan flow node, toolUseID is the
+// node's key ("node:<name>", "node:iter:<n>:<name>"): the request is the gate's recorded
+// agent.ApprovalRequest and the result is the node's own record (Kind "step"). The result appends to EvidencePackage.Actions,
 // where each entry verifies as a package action; drop the trailing "tool" entry if the package
 // already carries the call.
 //
@@ -87,7 +89,16 @@ func ApprovalEvidence(ctx context.Context, store *agent.Journal, runID, toolUseI
 	if !ok {
 		return nil, fmt.Errorf("audit: no recorded request for call %q in run %s", toolUseID, runID)
 	}
-	action, err := ProveToolCall(ctx, store, runID, toolUseID, sth)
+	// A gated plan flow node's request is its ApprovalRequest, and its result is the node's own
+	// record (a step named by the node's key); an agent tool call's result is its tool result.
+	flowNode := recs[callIdx].Name == agent.ApprovalRequestStep(toolUseID)
+	result := EvidenceAction{Label: toolUseID, Kind: KindTool, Ref: toolUseID}
+	if flowNode {
+		result.Kind = KindStep
+		result.Bundle, err = ProveStep(ctx, store, runID, toolUseID, sth)
+	} else {
+		result.Bundle, err = ProveToolCall(ctx, store, runID, toolUseID, sth)
+	}
 	if err != nil {
 		return nil, err
 	}
@@ -115,7 +126,7 @@ func ApprovalEvidence(ctx context.Context, store *agent.Journal, runID, toolUseI
 	}
 	out = append(out,
 		EvidenceAction{Label: "approval tally", Kind: KindApprovalTally, Ref: tallyName, Bundle: tallyPB},
-		EvidenceAction{Label: toolUseID, Kind: KindTool, Ref: toolUseID, Bundle: action})
+		result)
 	return out, nil
 }
 
@@ -161,7 +172,9 @@ var (
 // at run time), and logV (the log operator's key, obtained out of band).
 //
 // It verifies the proofs of the request, the gate's journaled tally, and the call's result,
-// all under one signed tree head and in that journal order, then recounts the disclosed
+// all under one signed tree head and in that journal order (for a gated plan flow node, the
+// request is its agent.ApprovalRequest and the result its node record, as ApprovalEvidence
+// emits them), then recounts the disclosed
 // decisions with agent.TallyApprovals, the exact rule the gate ran, against the proven call's
 // name and arguments. It reports a Problem if the evidence omits a decision the gate read, if
 // the recount disagrees with the journaled tally, or if the gate enforced a different policy
@@ -210,12 +223,13 @@ func VerifyApprovals(actions []EvidenceAction, toolUseID string, policy agent.Ap
 		return -1, notVerified("audit: the evidence has no %s for call %q", what, toolUseID)
 	}
 	var call agent.ToolUse
+	var flowNode bool
 	reqI, err := find(func(a EvidenceAction, r agent.Record) bool {
 		if a.Kind != KindCall {
 			return false
 		}
 		_, tu, ok := agent.FindToolCall([]agent.Record{r}, toolUseID)
-		call = tu
+		call, flowNode = tu, ok && r.Name == agent.ApprovalRequestStep(toolUseID)
 		return ok
 	}, "request")
 	if err != nil {
@@ -228,7 +242,11 @@ func VerifyApprovals(actions []EvidenceAction, toolUseID string, policy agent.Ap
 	if err != nil {
 		return v, err
 	}
+	// The result of a gated plan flow node is the node's record, named by its key.
 	resultI, err := find(func(a EvidenceAction, r agent.Record) bool {
+		if flowNode {
+			return a.Kind == KindStep && r.Kind == agent.StepValue && r.Name == toolUseID
+		}
 		return a.Kind == KindTool && r.Kind == agent.StepToolResult && r.ToolUseID == toolUseID
 	}, "result")
 	if err != nil {

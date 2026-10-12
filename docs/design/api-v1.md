@@ -1184,7 +1184,12 @@ Within a wave, no two PRs edit the same file. Sizes:
    | `Status` | 1 `Load` |
    | resume of a run with n records | 1 `Load` of n entries, no point reads for markers |
    | `Recover` pass over R runs, D of them driven | ceil(R/500) `Runs` pages on SQL stores (MemStore the same), no `Load`, and 4 `Get` per driven run (the terminal markers, re-checked under its lease, and `run:start`: P14 rule 14): 4D in all, none for the finished runs the filter excludes; a run with no `run:start` costs one `Load` of its first entry more (its format is checked) and is not driven |
+   | plan flow node with no approval gate | nothing beyond its Step (the gate reads nothing) |
+   | plan flow node's approval gate, decided | 1 `Get` (`approval-tally:<node key>`, or `Approve`'s record) |
+   | plan flow node's m-of-n gate, undecided | 1 `Get` (the tally), 1 `Insert` (`approval-request:<node key>`), 1 `Load` (the decisions, as an agent's m-of-n gate reads them); +1 `Insert` (`approval-pending:`) on the first pause; +2 `Get` and 1 `Insert` (the tally's retry-safe Step) when it reaches the outcome |
    | anchored insert | 1 `Load` of the new entries only, O(log n) hashes (`AnchoredStore`, dropped from the plan 2026-10-03; no budget) |
+
+   The plan flow gate rows were added with flow approval gates (`plan.TestGate_StoreBudget`); they add nothing to a flow without gates.
 
    The `Recover` row was raised after P6a, with the maintainer's approval: a pass read no run at all until it was found to call `resume` for a run another driver finished between the listing and the lease, and the three point reads close that gap.
 

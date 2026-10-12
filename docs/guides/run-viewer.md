@@ -101,6 +101,10 @@ unknown field is an error. `bide-view -h` prints the same list. Exit status: 0 a
 
 The card also gives the record count, the last plan node the run reached, and the model's last text.
 
+**APPROVAL GATE** (when the run has one). Each gate in a line: the gated call or flow node and where
+it stands (`refund: approved 2 of 3`), the policy, who approved or denied, who is pending, and
+whether the signatures verified (see the Approval gates table below for the full detail).
+
 **AUDIT PROOF.** Given `-sth` or `-evidence` and `-pubkey`, whether the journal verifies, checked
 with the audit package's own verifiers, as `bide-audit` does:
 
@@ -140,8 +144,10 @@ From the command line this check is structural. `plan.Conform` also replays rout
 that embeds the viewer with the `*plan.Flow` gets that check instead.
 
 **Flow** (plan flows). The declared topology, with each node marked ran, halted,
-attempted or not reached, the last node outlined, and the edges and Switch arms the run took drawn
-solid. The Mermaid text of the same graph is below it.
+attempted, waiting for approval or not reached, the last node outlined, and the edges and Switch arms
+the run took drawn solid. A gated node shows its gate in its box, in large type: `waiting, 1 of 2
+approvals` and who is pending, or `approved 2 of 3` and `signatures verified` (or `signatures NOT
+verified`), and its tooltip the full status. The Mermaid text of the same graph is below it.
 
 **Halts.** Each operation whose attempt marker is live with no result: the tool call or step, its
 marker, when it was attempted, and the `agent.ResolveHalt` call that records its outcome once you
@@ -154,7 +160,8 @@ agent.ResolveHalt(ctx, journal,
 	agent.Outcome{Result: "$120 to order 42", Evidence: map[string]string{"provider_refund": "re_42"}})
 ```
 
-**Approval gates.** One row per gated tool call: the gate (k of n and the approvers, or one
+**Approval gates.** One row per gated tool call or plan flow node (named by its key, such as
+`node:refund`, with its input in the timeline's `approval requested` row): the gate (k of n and the approvers, or one
 decision), who approved, who denied, who is pending, and a status such as
 `approved (2 of 3 approvers; 2 needed)`, `denied (...)` or `pending (0 of 3 approvers; 2 needed; ...)`.
 Once the gate decides, the counts are the tally it journaled; before that they are the signed
@@ -202,6 +209,25 @@ bide-view -db a.db -run refund-42 -evidence ev.json -pubkey <log public key> -ap
 
 ![bide-view on the same run after ResolveHalt: completed, with the evidence package verifying](img/run-viewer-agent-verified.png)
 
+For a gated plan flow node, `examples/approval/flow` loads a refund flow whose `refund` node needs 2
+of 3 approvers:
+
+```sh
+cd examples/approval
+go run ./flow run -db f.db                  # the flow pauses before refund
+go run ./flow approve -db f.db -as ops
+go run ./flow run -db f.db                  # still paused: 1 of 2 approvals
+bide-view -db f.db -run refund-flow-42      # refund waiting at its 2 of 3 gate
+go run ./flow approve -db f.db -as risk
+go run ./flow run -db f.db                  # the refund runs once; the flow finishes
+go run ./flow evidence -db f.db -out fev.json   # prints the log public key; writes approver-keys.json
+bide-view -db f.db -run refund-flow-42 -evidence fev.json -pubkey <log public key> -approver-keys approver-keys.json
+```
+
+<picture><source media="(prefers-color-scheme: dark)" srcset="./img/flow-gate-waiting-dark.png"><img src="./img/flow-gate-waiting-light.png" alt="bide-view on a plan flow paused at its refund node's 2 of 3 approval gate: 1 of 2 approvals, pending finance and risk"></picture>
+
+<picture><source media="(prefers-color-scheme: dark)" srcset="./img/flow-gate-approved-dark.png"><img src="./img/flow-gate-approved-light.png" alt="bide-view on the same flow after a second approval: completed, the refund node approved 2 of 3 with its signatures verified, and the evidence package verifying"></picture>
+
 For a plan flow, `examples/plan` crashes in its reserve step. The run journals its topology, so no
 flag is needed to draw it:
 
@@ -239,8 +265,7 @@ edge's or an arm's, and `file: message` for the config as a whole, and exits 1 i
 so it checks what needs no Go code: the config reads as `plan.Load` reads it (strictly, version 1);
 node names are unique; each wiring element is one edge, switch or join; every edge, arm, `else`,
 join input and the entry name a declared node; every `safety` is known; and every approval block is
-a valid policy. An approval block is still reported as an error, since `plan.Load` refuses it: plan
-flows do not enforce approval gates yet. A switch with no `else` is a warning: a value no arm
+a valid policy (a valid one is drawn on its node). A switch with no `else` is a warning: a value no arm
 matches fails the run. The page says "structural check", and shows no digest, which commits to the
 blocks' types.
 
@@ -266,8 +291,6 @@ log.Fatal(http.Serve(ln, planview.Handler("refund.json", config, reg)))
   to draw it.
 - **Proof needs `-sth` or `-evidence`.** An `audit.AuditedStore` publishes its signed heads to an
   external anchor, not to the store, so the viewer verifies only a head or package you give it.
-- **Plan flows have no approval gates.** The `plan` runtime refuses a gated node at `Build`, so a
-  flow run has none to show; gate the agent tool a node calls instead.
 - **A halted call's `Safety` is not journaled.** Only a result records it. A halted call has an
   attempt marker, which the engine writes only for a side effect, so the page shows it as one.
 - **A paused run journaled by an earlier release** has no `approval-pending:` record, so its gate is

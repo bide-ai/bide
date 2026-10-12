@@ -271,6 +271,19 @@ same way, and so is a key a verifier cannot use (it reports no identity). If `Ta
 handed such a resolver directly, the approvers it cannot seat are listed in the tally's `Excluded`,
 never count, and are not waited on: when too few seats remain to reach `Need`, the gate denies.
 
+### On a plan flow node
+
+A [plan flow](flows.md#approval-gates-on-nodes) node takes the same gate: `plan.Approval(policy)` in
+Go, a config `approval: {need, approvers}` block, or the gate of the agent tool the node wraps, with
+the approvers' verifiers bound by `Builder.WithApproverVerifiers` (or `plan.WithLoadedApproverVerifiers`).
+The flow pauses before the node with the same `*agent.ApprovalPending`; its `ToolUseID` is the node's
+key (`node:<name>`, or `node:iter:<n>:<name>` in a loop body, where each iteration is approved on its
+own) and its `Args` the node's input, so approvers sign `pend.Subject()` and record decisions with
+`SubmitDecision` (or `Approve` for `SingleApproval`) exactly as above. The gate records the node and
+its input under `approval-request:<node key>` before the first pause, in place of the model turn
+that requests a tool call, and its terminal tally before the node runs. A denial stops the flow with
+`plan.ErrApprovalDenied`. Evidence and `bide-audit verify-approvals` take the node's key as the call.
+
 ## Proving the gate held
 
 `audit.ApprovalEvidence` builds the complete evidence for a gated call under one signed tree head, in
@@ -357,10 +370,6 @@ object keys inside a recorded message breaks that record's proof.
 - The tally does not record which key verified each approver (each decision does record its scheme,
   `Record.ApproverAlg`). An auditor needs the keys that were
   valid when the gate decided; after a rotation, keep the old public keys to verify old evidence.
-- A declarative `plan` config can carry an `approval` block (see [Flows](flows.md#node-approval)),
-  but the `plan` runtime does not enforce an approval gate yet, so building such a flow fails with
-  `ErrConfig` naming the node (as does a `Tool` node wrapping an agent tool that requires approval)
-  rather than letting the node run unapproved. Put the gate on an agent tool.
 
 ## Runnable example
 
@@ -370,6 +379,7 @@ forged signature are ignored without locking anyone out, `-check` refuses a bad 
 submission, the refund runs exactly once at 2 of 3, and an auditor verifies the exported evidence
 with public keys only (`cd examples/approval && go run .`). Its test drives every actor as a separate
 process and checks the evidence with `bide-audit verify-evidence` and `verify-approvals`, including a
-tampered file and one with a decision left out.
+tampered file and one with a decision left out. `examples/approval/flow` does the same for a gated
+plan flow node loaded from a config (`go run ./flow`).
 
 The design and its tradeoffs are in [docs/design/design-mofn-approval.md](../design/design-mofn-approval.md).

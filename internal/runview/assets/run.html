@@ -5,17 +5,23 @@
 <section class="cards">
   <div class="card"><h3>End state</h3><p><b>{{.StateText}}</b>{{if .Terminal}}: {{.Terminal}}{{end}}</p><p class="muted">{{.Records}} journal records{{if .LastNode}}; last node <code>{{.LastNode}}</code>{{end}}</p>
   {{if .FinalText}}<p class="muted">Last model text: {{.FinalText}}</p>{{end}}</div>
+  {{if .Gates}}<div class="card"><h3>Approval {{if gt (len .Gates) 1}}gates{{else}}gate{{end}}</h3>{{range .Gates}}
+    <p class="gatehead {{.Class}}"><b>{{.ToolName}}</b>: {{.Headline}}</p>
+    <p class="small">{{if .Single}}one decision{{else}}needs {{.Need}} of {{join .Approvers ", "}}{{end}}</p>
+    {{if .ApprovedBy}}<p class="small">approved by {{join .ApprovedBy ", "}}{{if .DeniedBy}}; denied by {{join .DeniedBy ", "}}{{end}}</p>{{else if .DeniedBy}}<p class="small">denied by {{join .DeniedBy ", "}}</p>{{end}}
+    {{if and .Waiting .Pending}}<p class="small">waiting on {{join .Pending ", "}}</p>{{end}}
+    {{if not .Waiting}}{{with .SigLine}}<p class="gatesig {{if eq . "signatures verified"}}good{{else if . | hasPrefix "signatures NOT"}}bad{{else}}muted{{end}}">{{.}}</p>{{end}}{{end}}{{end}}</div>{{end}}
   <div class="card"><h3>Audit proof</h3>{{with .Proof}}
     <p class="{{if .OK}}good{{else}}bad{{end}}"><b>{{if .OK}}Verified{{else}}Not verified{{end}}</b> ({{.Source}}): {{.Summary}}</p>
     {{range .Problems}}<p class="bad small">{{.}}</p>{{end}}
-    {{if .Items}}<ul class="small">{{range .Items}}<li>{{.}}</li>{{end}}</ul>{{end}}
+    {{if .Items}}<details class="small"><summary>{{len .Items}} proofs</summary><ul>{{range .Items}}<li>{{.}}</li>{{end}}</ul></details>{{end}}
     {{range $id, $c := .Approvals}}<p class="small {{if $c.OK}}good{{else}}bad{{end}}">Approval gate <code>{{$id}}</code>: {{$c.Text}}</p>{{end}}
   {{else}}<p class="muted">No signed head or evidence package given for this run (-sth or -evidence, with -pubkey).</p>{{end}}</div>
   {{if .Conform}}<div class="card"><h3>Conformance</h3>{{with .Conform}}
     <p class="{{if .OK}}good{{else}}bad{{end}}"><b>{{if .OK}}Conforms{{else}}Diverges{{end}}</b> ({{.Method}}; digest {{.Digest}})</p>
     {{if .Source}}<p class="muted small">Topology {{.Source}}</p>{{end}}
     {{range .Diffs}}<p class="bad small"><code>{{.}}</code></p>{{end}}
-    {{if eq .Method "structural"}}<p class="muted small">Structural: node names, Switch arms and the digest. plan.Conform also replays routing and loops; embed the viewer with the Flow for it.</p>{{end}}
+    {{if eq .Method "structural"}}<details class="muted small"><summary>what a structural check covers</summary>Node names, Switch arms and the digest. plan.Conform also replays routing and loops; embed the viewer with the Flow for it.</details>{{end}}
   {{end}}</div>{{end}}
 </section>
 
@@ -27,7 +33,7 @@
 </section>{{end}}
 
 {{if .Graph}}<section><h2>Flow</h2>
-<div class="legend"><span class="lg done">ran</span><span class="lg halted">halted</span><span class="lg attempted">attempted</span><span class="lg not-reached">not reached</span><span class="lg lastk">last node</span><span class="lg taken">path taken</span></div>
+<div class="legend"><span class="lg done">ran</span><span class="lg halted">halted</span><span class="lg attempted">attempted</span><span class="lg waiting">waiting for approval</span><span class="lg not-reached">not reached</span><span class="lg lastk">last node</span><span class="lg taken">path taken</span></div>
 <div class="graphwrap">{{svg .Graph.SVG}}</div>
 <details><summary>Mermaid text</summary><pre>{{.Graph.Mermaid}}</pre></details>
 </section>{{end}}
