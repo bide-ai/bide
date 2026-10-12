@@ -35,7 +35,8 @@ const usageText = `bide-view: a read-only local web page for one run of a bide j
 
 It shows an agent run's timeline (model turns, tool calls with their Safety, attempts, approvals,
 halts, end state) or a plan flow's declared topology with the run's path, and whether the journal
-verifies against a signed tree head or an evidence package. It never writes to the store, and it
+verifies against a signed tree head or an evidence package; with -approver-keys, whether each
+m-of-n approval gate's signatures verify (audit.VerifyApprovals). It never writes to the store, and it
 serves on a loopback address only. With no -run it lists the runs. Stop it with Ctrl-C.
 
 Exit status: 0 after a clean stop (or -h), 1 if an input cannot be read or the server fails,
@@ -62,6 +63,7 @@ func Main(args []string, stdout, stderr io.Writer, open OpenStore) int {
 	sth := fs.String("sth", "", "signed tree head (audit.SignedTreeHead JSON) to verify the journal against; needs -pubkey")
 	evidence := fs.String("evidence", "", "evidence package (audit.EvidencePackage JSON) to verify; needs -pubkey")
 	pubkey := fs.String("pubkey", "", "log public key as <scheme>:<hex>, or bare ed25519 hex, or a file holding it")
+	approverKeys := fs.String("approver-keys", "", `approver public keys, a JSON object of approver id to key text, e.g. {"ops":"ed25519:ab12..."}, to verify each m-of-n gate's signatures (audit.VerifyApprovals); needs -sth or -evidence`)
 	addr := fs.String("addr", "127.0.0.1:8484", "address to serve on: a loopback IP (127.0.0.1 or ::1) or localhost, with a port")
 	if err := fs.Parse(args); err != nil {
 		if errors.Is(err, flag.ErrHelp) {
@@ -80,10 +82,13 @@ func Main(args []string, stdout, stderr io.Writer, open OpenStore) int {
 	if (*sth != "" || *evidence != "") && *pubkey == "" {
 		return usage("-sth and -evidence need -pubkey")
 	}
+	if *approverKeys != "" && *sth == "" && *evidence == "" {
+		return usage("-approver-keys needs -sth or -evidence (and -pubkey)")
+	}
 	if *digest != "" && *topo == "" {
 		return usage("-digest needs -topology")
 	}
-	o, closer, err := options(*db, journals, *topo, *digest, *sth, *evidence, *pubkey, open)
+	o, closer, err := options(*db, journals, *topo, *digest, *sth, *evidence, *pubkey, *approverKeys, open)
 	if err != nil {
 		fmt.Fprintln(stderr, "bide-view:", err)
 		return 1
@@ -119,7 +124,7 @@ func Main(args []string, stdout, stderr io.Writer, open OpenStore) int {
 
 // options reads every input the flags name, strictly (audit.UnmarshalStrict, as bide-audit reads
 // its inputs), into Options.
-func options(db string, journals []string, topo, digest, sth, evidence, pubkey string, open OpenStore) (Options, io.Closer, error) {
+func options(db string, journals []string, topo, digest, sth, evidence, pubkey, approverKeys string, open OpenStore) (Options, io.Closer, error) {
 	var o Options
 	var closer io.Closer
 	if db != "" {
@@ -163,22 +168,50 @@ func options(db string, journals []string, topo, digest, sth, evidence, pubkey s
 		if err != nil {
 			return o, closer, err
 		}
+		var keys agent.ApproverVerifierFor
+		if approverKeys != "" {
+			if keys, err = readApproverKeys(approverKeys); err != nil {
+				return o, closer, err
+			}
+		}
 		if sth != "" {
 			var h audit.SignedTreeHead
 			if err := readStrict(sth, &h); err != nil {
 				return o, closer, err
 			}
-			o.Provers = append(o.Provers, HeadProver(h, v))
+			o.Provers = append(o.Provers, HeadProver(h, v, keys))
 		}
 		if evidence != "" {
 			var pkg audit.EvidencePackage
 			if err := readStrict(evidence, &pkg); err != nil {
 				return o, closer, err
 			}
-			o.Provers = append(o.Provers, EvidenceProver(pkg, v))
+			o.Provers = append(o.Provers, EvidenceProver(pkg, v, keys))
 		}
 	}
 	return o, closer, nil
+}
+
+// readApproverKeys reads the approver key file bide-audit verify-approvals reads: a JSON object of
+// approver id to public key text. audit.VerifyApprovals checks the keys against each gate's policy
+// (agent.ApprovalPolicy.ValidateKeys: no two approvers on one key).
+func readApproverKeys(path string) (agent.ApproverVerifierFor, error) {
+	var text map[string]string
+	if err := readStrict(path, &text); err != nil {
+		return nil, err
+	}
+	keys := make(map[string]audit.Verifier, len(text))
+	for id, k := range text {
+		v, err := audit.ParsePublicKey(k)
+		if err != nil {
+			return nil, fmt.Errorf("%s: approver %q key: %w", path, id, err)
+		}
+		keys[id] = v
+	}
+	return func(id string) (agent.ApproverVerifier, bool) {
+		v, ok := keys[id]
+		return v, ok
+	}, nil
 }
 
 // maxInput caps an input file, as bide-audit's default -max-input-bytes does.

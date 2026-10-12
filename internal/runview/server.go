@@ -22,6 +22,7 @@ var assets embed.FS
 var pages = template.Must(template.New("").Funcs(template.FuncMap{
 	"svg":  func(s string) template.HTML { return template.HTML(s) }, // built by svg, every label escaped
 	"join": strings.Join,
+	"hasPrefix": func(prefix, s string) bool { return strings.HasPrefix(s, prefix) },
 }).ParseFS(assets, "assets/*.html"))
 
 // Source is what the viewer reads: the runs it lists and each run's records. Both are reads.
@@ -155,7 +156,36 @@ func (o Options) view(ctx context.Context, runID string) (*View, error) {
 			break
 		}
 	}
+	for i := range v.Gates {
+		signatures(&v.Gates[i], v.Proof)
+	}
 	return v, nil
+}
+
+// signatures sets g's signature verdict from the proof's approval checks, or says why its
+// signatures were not checked.
+func signatures(g *Gate, p *Proof) {
+	switch c, ok := p.approval(g.ToolUseID); {
+	case g.Single:
+		g.Signatures = "one decision (agent.Approve), which is not signed"
+	case ok:
+		g.Signatures, g.SignaturesOK = c.Text, c.OK
+	case p != nil && p.Approvals != nil:
+		g.Signatures = "signatures not checked: the gate has not journaled its tally yet"
+	case p != nil && p.OK:
+		g.Signatures = "included in the signed log; signatures not checked (pass -approver-keys)"
+	default:
+		g.Signatures = "signatures not checked (pass -approver-keys, with -sth or -evidence)"
+	}
+}
+
+// approval is the signature check of the gate on toolUseID, if the proof made one.
+func (p *Proof) approval(toolUseID string) (ApprovalCheck, bool) {
+	if p == nil {
+		return ApprovalCheck{}, false
+	}
+	c, ok := p.Approvals[toolUseID]
+	return c, ok
 }
 
 func render(w http.ResponseWriter, name string, data any) {
