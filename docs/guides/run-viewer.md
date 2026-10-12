@@ -64,6 +64,9 @@ page is at `/run?id=<run>`, and the same view as JSON at `/run.json?id=<run>`.
 | `-pubkey <key>` | The log's public key: `<scheme>:<hex>` (`ed25519`, `ml-dsa-65`, `ed25519+ml-dsa-65`), bare ed25519 hex, or a file holding either. |
 | `-approver-keys <file>` | The approvers' public keys, the file `bide-audit verify-approvals` reads: a JSON object of approver id to key text, such as `{"ops":"ed25519:ab12..."}`. With it, each m-of-n gate's signatures are verified. Needs `-sth` or `-evidence`. |
 | `-need <k>`, `-approvers <a,b,c>` | The policy you expect (k of these approvers, in policy order). With them the signatures are verified against this policy, as `bide-audit verify-approvals -need -approvers` does, and a gate whose recorded policy differs fails. Need `-approver-keys`. |
+| `-config <file>` | A flow config (`.json`, or `.yaml`/`.yml`) to show instead of runs; see [Check a flow config](#check-a-flow-config). Takes none of the run flags. |
+| `-check` | With `-config`: serve nothing, print each problem as `file:node: message`, and exit 1 if any is an error. |
+| `-strict` | With `-check`: exit 1 on a warning too. |
 | `-addr <host:port>` | Where to listen: a loopback IP or `localhost`, with a port. Default `127.0.0.1:8484`. Any other host is refused. |
 
 Input files are read strictly, as `bide-audit` reads them (`audit.UnmarshalStrict`): a duplicate or
@@ -196,6 +199,53 @@ cd examples/plan
 go run . -db f.db -crash during-reserve
 go run . -db f.db                                                 # the resume halts at reserve
 bide-view -db f.db -run triage-demo
+```
+
+## Check a flow config
+
+`bide-view -config` shows a flow definition (a `plan` config, `.json` or `.yaml`) without running
+anything: the declared graph, its Switch arms and loops, each node's approval gate written as
+`2 of 3: ops, finance, risk`, and every problem `plan.InspectConfig` finds, marked on the node, edge
+or arm it belongs to, with the full message in the Problems table and in each mark's tooltip. An
+edge to a name no node declares draws that name as a dashed "not declared" node.
+
+```sh
+cd examples/plan
+bide-view -config flows/refund.yaml                 # the page; no problems
+bide-view -config flows/refund-typo.yaml -check     # for CI: no server, one line per problem
+```
+
+The screenshot below is `examples/plan/flows/refund-typo.yaml`, whose last edge names `reciept`.
+
+<picture><source media="(prefers-color-scheme: dark)" srcset="img/run-viewer-config-problem-dark.png"><img src="img/run-viewer-config-problem-light.png" alt="bide-view -config on a refund flow whose edge names an undeclared node, marked on the edge"></picture>
+
+With `-check` it prints `file:node: message` for a node's problem, `file:from->to: message` for an
+edge's or an arm's, and `file: message` for the config as a whole, and exits 1 if any is an error
+(0 otherwise; a warning is printed as `warning:` and does not fail the check unless you add
+`-strict`; an unreadable file exits 1, a usage error 2).
+
+**Structural, from the command line.** The command cannot import your Go types, blocks or tools,
+so it checks what needs no Go code: the config reads as `plan.Load` reads it (strictly, version 1);
+node names are unique; each wiring element is one edge, switch or join; every edge, arm, `else`,
+join input and the entry name a declared node; every `safety` is known; and every approval block is
+a valid policy. An approval block is still reported as an error, since `plan.Load` refuses it: plan
+flows do not enforce approval gates yet. A switch with no `else` is a warning: a value no arm
+matches fails the run. The page says "structural check", and shows no digest, which commits to the
+blocks' types.
+
+**Full, from your program.** Package `plan/planview` serves the same page with your
+`*plan.Registry`, so the check is `plan.Load`'s own: unregistered blocks, predicates and merges (with
+near-miss suggestions), edge and arm types, and the whole-graph checks, with In and Out taken from
+the entry and terminal nodes. The page then shows the digest a run of the flow journals.
+
+<!-- docsnip: skip illustrative: config and reg are the program's config bytes and plan.Registry -->
+```go
+ln, err := planview.Listen("127.0.0.1:8485")
+if err != nil {
+	log.Fatal(err)
+}
+log.Fatal(http.Serve(ln, planview.Handler("refund.json", config, reg)))
+// or, in CI: if planview.Check(os.Stdout, "refund.json", config, reg) { os.Exit(1) }
 ```
 
 ## What it cannot show

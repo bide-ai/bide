@@ -76,6 +76,17 @@ bide is a durability and accountability layer, not only a framework of its own. 
 - Worked examples and a guide for using bide under ADK for Go, Eino, trpc-agent-go and langchaingo, stating exactly what bide guards (each wrapped side effect, approvals, proofs) and what it does not (the framework's own loop resumes as it always did).
 - Where a framework exposes a pluggable persistence hook (a session, checkpoint or memory service), a bide-backed implementation, so the framework's own state is journaled and its resume becomes exact.
 
+### The visual builder
+
+A visual builder for `plan` flows, built up from read-only tools that use the journal and the config format as they are:
+
+- Done: `bide-view`, a read-only local page for one run ([run viewer guide](guides/run-viewer.md)): an agent run's timeline, halts, approval gates with signature checks, and a flow's path over its topology.
+- Done: the journaled topology, `flow:topology`, so a flow run is drawn from its journal alone, its digest checked ([#192](https://github.com/bide-ai/bide/pull/192)).
+- Done: the config viewer, `bide-view -config`, which draws a flow definition and marks its problems, with `-check` for CI and `plan/planview` for a program's own Registry ([#193](https://github.com/bide-ai/bide/pull/193)).
+- Next: a risk map (each node colored by what it can do and how it behaves on a crash) and policy assertions in the config (`assert:`), decided on the graph and shown as counterexample paths.
+- Next: a visual diff of two versions of a config, with the digest change.
+- Later: an editor that writes the config.
+
 ## Later: bide beyond Go
 
 ### The bide protocol

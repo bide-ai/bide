@@ -82,6 +82,9 @@ type Options struct {
 	Flows map[string]*Flow
 	// Provers check runs against audit artifacts; the first to return a verdict for a run wins.
 	Provers []Prover
+	// Config, when set, makes the handler show this flow definition instead of runs: the page at /
+	// and its view as JSON at /config.json. Source is then not read.
+	Config *Config
 }
 
 // Handler serves the run list at / and a run at /run?id=<run> (its View as JSON at /run.json?id=<run>).
@@ -90,6 +93,11 @@ type Options struct {
 func Handler(o Options) http.Handler {
 	mux := http.NewServeMux()
 	mux.Handle("GET /assets/", http.FileServerFS(assets))
+	if o.Config != nil {
+		mux.HandleFunc("GET /{$}", func(w http.ResponseWriter, r *http.Request) { render(w, "config.html", BuildConfig(*o.Config)) })
+		mux.HandleFunc("GET /config.json", func(w http.ResponseWriter, r *http.Request) { writeJSON(w, BuildConfig(*o.Config)) })
+		return guard(mux)
+	}
 	mux.HandleFunc("GET /{$}", func(w http.ResponseWriter, r *http.Request) {
 		ids, err := o.Source.Runs(r.Context())
 		data := struct {
@@ -110,10 +118,7 @@ func Handler(o Options) http.Handler {
 			case v == nil:
 				http.NotFound(w, r)
 			case asJSON:
-				w.Header().Set("Content-Type", "application/json")
-				enc := json.NewEncoder(w)
-				enc.SetIndent("", "  ")
-				_ = enc.Encode(v)
+				writeJSON(w, v)
 			default:
 				render(w, "run.html", v)
 			}
@@ -121,6 +126,11 @@ func Handler(o Options) http.Handler {
 	}
 	mux.HandleFunc("GET /run", serveRun(false))
 	mux.HandleFunc("GET /run.json", serveRun(true))
+	return guard(mux)
+}
+
+// guard answers only requests addressed to a loopback host, with a strict content policy.
+func guard(h http.Handler) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		if !loopbackHost(r.Host) {
 			http.Error(w, "bide-view answers only requests to a loopback address", http.StatusForbidden)
@@ -128,8 +138,15 @@ func Handler(o Options) http.Handler {
 		}
 		w.Header().Set("Content-Security-Policy", "default-src 'self'; style-src 'self'; img-src 'self' data:")
 		w.Header().Set("X-Content-Type-Options", "nosniff")
-		mux.ServeHTTP(w, r)
+		h.ServeHTTP(w, r)
 	})
+}
+
+func writeJSON(w http.ResponseWriter, v any) {
+	w.Header().Set("Content-Type", "application/json")
+	enc := json.NewEncoder(w)
+	enc.SetIndent("", "  ")
+	_ = enc.Encode(v)
 }
 
 // view builds the run's View, or nil for a run with no records.

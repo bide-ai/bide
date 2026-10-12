@@ -276,6 +276,8 @@ Or author that same topology as declarative config a higher layer (a visual buil
 flow, err := plan.Load[Order, Receipt](configBytes, reg) // same topology, same Digest()
 ```
 
+`bide-view -config` draws a config and marks its problems before you load it (see [Check a flow config](docs/guides/run-viewer.md#check-a-flow-config)).
+
 All three lower to the one journal-backed runtime, so at-most-once, HA resume and the verifiable trail apply whichever you pick.
 
 ## Ambient runs: durable sleep, wake, and interrupt
@@ -618,7 +620,9 @@ journal or an exported one. It shows the run's timeline (model turns, tool calls
 attempts, approvals), a halted operation with the `ResolveHalt` call that records its outcome, each
 approval gate's k-of-n status and whether its signatures verify, a plan flow's path over its declared
 topology, and whether the journal verifies against a signed tree head or an evidence package. It
-never writes to the store. Install it with `go install github.com/bide-ai/bide/cmd/bide-view@v0.13.0`; see the
+never writes to the store. `bide-view -config flow.yaml` shows a flow definition the same way, with
+its problems marked on the graph, and `-check` runs that check in CI. Install it with
+`go install github.com/bide-ai/bide/cmd/bide-view@v0.13.0`; see the
 [run viewer guide](docs/guides/run-viewer.md).
 
 <table>

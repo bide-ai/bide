@@ -53,16 +53,19 @@ type GraphNode struct {
 	Status string `json:"status"` // done, halted, attempted, not-reached
 	Iters  int    `json:"iters,omitempty"`
 	Last   bool   `json:"last,omitempty"`
+	Note   string `json:"note,omitempty"`  // a line under the box (a config's approval gate)
+	Title  string `json:"title,omitempty"` // the tooltip, when not "name: status"
 	x, y   int
 }
 
 // GraphEdge is one declared edge or Switch arm, and whether the run took it.
 type GraphEdge struct {
-	From  string `json:"from"`
-	To    string `json:"to"`
-	Label string `json:"label,omitempty"`
-	Taken bool   `json:"taken"`
-	Back  bool   `json:"back,omitempty"`
+	From    string `json:"from"`
+	To      string `json:"to"`
+	Label   string `json:"label,omitempty"`
+	Taken   bool   `json:"taken"`
+	Back    bool   `json:"back,omitempty"`
+	Problem string `json:"problem,omitempty"` // a config problem at this edge or arm
 }
 
 // flowGraph overlays the run's journal on flow's topology. With no flow it returns no graph, and
@@ -295,7 +298,8 @@ func svg(g *Graph, idx map[string]int) string {
 	var b strings.Builder
 	fmt.Fprintf(&b, `<svg class="graph" viewBox="0 0 %d %d" width="%d" height="%d" role="img" aria-label="flow topology with the run's path">`, g.Width, g.Height, g.Width, g.Height)
 	b.WriteString(`<defs><marker id="arrow" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse"><path d="M0,0 L10,5 L0,10 z" class="arrowhead"/></marker>` +
-		`<marker id="arrow-taken" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse"><path d="M0,0 L10,5 L0,10 z" class="arrowhead taken"/></marker></defs>`)
+		`<marker id="arrow-taken" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse"><path d="M0,0 L10,5 L0,10 z" class="arrowhead taken"/></marker>` +
+		`<marker id="arrow-problem" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse"><path d="M0,0 L10,5 L0,10 z" class="arrowhead problem"/></marker></defs>`)
 	for _, e := range g.Edges {
 		f, okf := idx[e.From]
 		t, okt := idx[e.To]
@@ -306,6 +310,9 @@ func svg(g *Graph, idx map[string]int) string {
 		cls, mk := "edge", "arrow"
 		if e.Taken {
 			cls, mk = "edge taken", "arrow-taken"
+		}
+		if e.Problem != "" {
+			cls, mk = "edge problem", "arrow-problem"
 		}
 		var lx, ly int
 		anchor := "start"
@@ -328,6 +335,9 @@ func svg(g *Graph, idx map[string]int) string {
 		if e.Label != "" {
 			fmt.Fprintf(&b, `<text class="elabel" x="%d" y="%d" text-anchor="%s">%s</text>`, lx, ly, anchor, html.EscapeString(e.Label))
 		}
+		if e.Problem != "" {
+			fmt.Fprintf(&b, `<g class="edge-mark"><circle cx="%d" cy="%d" r="7"/><text x="%d" y="%d">!</text><title>%s</title></g>`, lx-14, ly-4, lx-14, ly, html.EscapeString(e.Problem))
+		}
 	}
 	for _, n := range g.Nodes {
 		cls := "node " + n.Status
@@ -341,7 +351,14 @@ func svg(g *Graph, idx map[string]int) string {
 		}
 		fmt.Fprintf(&b, `<text x="%d" y="%d" class="nlabel">%s</text>`, n.x+nodeW/2, n.y+17, html.EscapeString(label))
 		fmt.Fprintf(&b, `<text x="%d" y="%d" class="nkind">%s</text>`, n.x+nodeW/2, n.y+32, html.EscapeString(n.Kind+" · "+n.Status))
-		fmt.Fprintf(&b, `<title>%s</title></g>`, html.EscapeString(n.Name+": "+n.Status))
+		if n.Note != "" {
+			fmt.Fprintf(&b, `<text x="%d" y="%d" class="nnote">%s</text>`, n.x+nodeW/2, n.y+nodeH+13, html.EscapeString(n.Note))
+		}
+		title := n.Title
+		if title == "" {
+			title = n.Name + ": " + n.Status
+		}
+		fmt.Fprintf(&b, `<title>%s</title></g>`, html.EscapeString(title))
 	}
 	b.WriteString(`</svg>`)
 	return b.String()
