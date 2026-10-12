@@ -626,3 +626,92 @@ func TestFlowFromJournal(t *testing.T) {
 		t.Fatalf("a mismatched topology record: graph %v, notes %v", v.Graph != nil, v.Notes)
 	}
 }
+
+const refundConfig = `{"version": 1, "flow": "refund",
+  "nodes": [{"name": "validate", "block": "validate"}, {"name": "charge", "block": "charge"}, {"name": "skip", "block": "skip"}, {"name": "receipt", "block": "receipt"}],
+  "wiring": [
+    {"switch": "validate", "when": [{"pred": "large", "to": "charge"}], "else": "skip"},
+    {"edge": ["charge", "receipt"]}]}`
+
+func refundRegistry(t *testing.T) *plan.Registry {
+	t.Helper()
+	reg := plan.NewRegistry()
+	for _, err := range []error{
+		reg.RegisterStep("validate", func(_ context.Context, o order) (order, error) { return o, nil }),
+		reg.RegisterStep("charge", func(_ context.Context, o order) (order, error) { return o, nil }),
+		reg.RegisterStep("receipt", func(_ context.Context, o order) (string, error) { return o.ID, nil }),
+		reg.RegisterStep("skip", func(_ context.Context, o order) (string, error) { return "", nil }),
+		reg.RegisterPredicate("large", func(o order) bool { return o.Amount > 100 }),
+	} {
+		if err != nil {
+			t.Fatal(err)
+		}
+	}
+	return reg
+}
+
+func configView(t *testing.T, c Config) ConfigView {
+	t.Helper()
+	h := Handler(Options{Config: &c})
+	if code, body := get(t, h, "/"); code != 200 || !strings.Contains(body, "<svg") {
+		t.Fatalf("GET / = %d, no graph", code)
+	}
+	code, body := get(t, h, "/config.json")
+	if code != 200 {
+		t.Fatalf("GET /config.json = %d", code)
+	}
+	var v ConfigView
+	if err := json.Unmarshal([]byte(body), &v); err != nil {
+		t.Fatal(err)
+	}
+	return v
+}
+
+// TestConfigPage: a valid config with the Registry shows the digest its flow journals; problems
+// are marked on the node or edge they belong to, a dangling end drawn as an undeclared node; the
+// structural page says what it does not check.
+func TestConfigPage(t *testing.T) {
+	reg := refundRegistry(t)
+	f, err := plan.Load[order, string]([]byte(refundConfig), reg)
+	if err != nil {
+		t.Fatal(err)
+	}
+	v := configView(t, Config{Name: "refund.json", Data: []byte(refundConfig), Registry: reg})
+	if v.Errors != 0 || v.Digest != f.Digest() || !v.Typed {
+		t.Fatalf("valid config: errors %d, digest %s, want %s", v.Errors, v.Digest, f.Digest())
+	}
+
+	bad := strings.Replace(strings.Replace(refundConfig, `["charge", "receipt"]`, `["charge", "reciept"]`, 1),
+		`{"name": "charge", "block": "charge"}`, `{"name": "charge", "block": "charge", "approval": {"need": 4, "approvers": ["ops", "finance", "risk"]}}`, 1)
+	v = configView(t, Config{Name: "refund.json", Data: []byte(bad)})
+	if v.Typed || v.Digest != "" || !strings.Contains(v.CheckLabel, "structural check") || v.Errors != 2 {
+		t.Fatalf("structural page: typed %v, digest %q, label %q, errors %d (%+v)", v.Typed, v.Digest, v.CheckLabel, v.Errors, v.Problems)
+	}
+	var charge GraphNode
+	var reciept GraphNode
+	var dangling GraphEdge
+	for _, n := range v.Graph.Nodes {
+		switch n.Name {
+		case "charge":
+			charge = n
+		case "reciept":
+			reciept = n
+		}
+	}
+	for _, e := range v.Graph.Edges {
+		if e.From == "charge" && e.To == "reciept" {
+			dangling = e
+		}
+	}
+	if charge.Status != "problem" || !strings.Contains(charge.Title, "approval") || charge.Note != "approval 4 of 3: ops, finance, risk" {
+		t.Fatalf("charge node = %+v", charge)
+	}
+	if reciept.Status != "undeclared" || !strings.Contains(dangling.Problem, "not a declared node") {
+		t.Fatalf("dangling edge: node %+v, edge %+v", reciept, dangling)
+	}
+	for _, n := range v.Graph.Nodes {
+		if n.Name != "charge" && n.Name != "reciept" && n.Status != "declared" {
+			t.Errorf("node %s = %q, want declared", n.Name, n.Status)
+		}
+	}
+}

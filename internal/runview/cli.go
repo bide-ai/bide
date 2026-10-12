@@ -11,6 +11,7 @@ import (
 	"net/url"
 	"os"
 	"os/signal"
+	"path/filepath"
 	"strings"
 	"time"
 
@@ -25,6 +26,9 @@ import (
 type Stores struct {
 	SQLite   func(path string) (agent.Store, io.Closer, error)
 	Postgres func(dsn string) (agent.Store, io.Closer, error)
+	// YAML converts a YAML flow config to the JSON plan reads; nil means this build reads JSON
+	// configs only.
+	YAML func(data []byte) ([]byte, error)
 }
 
 type multi []string
@@ -38,6 +42,7 @@ const usageText = `bide-view: a read-only local web page for one run of a bide j
   bide-view -db <file> [-run <id>] [flags]
   bide-view -postgres <dsn> [-run <id>] [flags]
   bide-view -journal <export.json> [-journal ...] [-run <id>] [flags]
+  bide-view -config <flow.yaml|flow.json> [-check]
 
 It shows an agent run's timeline (model turns, tool calls with their Safety, attempts, approvals,
 halts, end state) or a plan flow's declared topology with the run's path (drawn from the topology
@@ -48,8 +53,15 @@ recorded or, with -need and -approvers, against the policy you expect. It never 
 store, and it serves on a loopback address only. With no -run it lists the runs. Stop it with
 Ctrl-C.
 
-Exit status: 0 after a clean stop (or -h), 1 if an input cannot be read or the server fails,
-2 for a usage error.
+With -config it shows a flow definition instead, without running anything: the declared graph,
+its approval gates, and every problem plan.InspectConfig finds, marked on the node, edge or arm it
+belongs to. The check is structural (types and registered blocks are checked when a program embeds
+the viewer with its plan.Registry, see package plan/planview). With -check it serves nothing and
+prints one "file:node: message" line per problem ("file:from->to: message" for an edge or arm).
+
+Exit status: 0 after a clean stop (or -h, or a -check that found no errors; warnings do not
+count), 1 if an input cannot be read, the server fails, or -check found errors, 2 for a usage
+error.
 
 Flags:
 `
@@ -57,6 +69,8 @@ Flags:
 // flags are bide-view's inputs, as parsed.
 type flags struct {
 	db, postgres          string
+	config                string
+	check                 bool
 	journals              multi
 	topo, digest          string
 	sth, evidence, pubkey string
@@ -78,6 +92,8 @@ func Main(args []string, stdout, stderr io.Writer, stores Stores) int {
 	fs.StringVar(&f.db, "db", "", "SQLite journal file to read, opened read-only (sqlite.OpenReadOnly)")
 	fs.StringVar(&f.postgres, "postgres", "", "Postgres journal to read, a pgx DSN such as postgres://user:pass@host:5432/db, read in sessions the server holds read-only (postgres.OpenReadOnly)")
 	fs.Var(&f.journals, "journal", "exported journal (audit.ExportJournal as JSON) to read; repeatable")
+	fs.StringVar(&f.config, "config", "", "a flow config (.json, or .yaml/.yml) to show instead of runs: its declared graph and its problems; nothing runs")
+	fs.BoolVar(&f.check, "check", false, "with -config: serve nothing, print each problem as file:node: message, and exit 1 if any is an error")
 	run := fs.String("run", "", "run to open (default: the run list)")
 	fs.StringVar(&f.topo, "topology", "", "declared flow topology, JSON of flow.Topology(), to draw a flow run against instead of the topology the run journaled (flow:topology); for a run journaled before that record existed, or to check a run against another flow")
 	fs.StringVar(&f.digest, "digest", "", "flow.Digest() of the -topology flow, compared with the digest the run journaled (default: computed from -topology when it carries the digest's inputs)")
@@ -98,6 +114,26 @@ func Main(args []string, stdout, stderr io.Writer, stores Stores) int {
 		fmt.Fprintln(stderr, "bide-view:", msg)
 		fs.Usage()
 		return 2
+	}
+	if f.check && f.config == "" {
+		return usage("-check needs -config")
+	}
+	if f.config != "" {
+		if f.db != "" || f.postgres != "" || len(f.journals) > 0 || *run != "" || f.sth != "" || f.evidence != "" || f.topo != "" {
+			return usage("-config shows a flow definition; it takes none of the run flags")
+		}
+		c, err := readConfig(f.config, stores.YAML)
+		if err != nil {
+			fmt.Fprintf(stderr, "%s: %v\n", f.config, err)
+			return 1
+		}
+		if f.check {
+			if Check(stdout, c) {
+				return 1
+			}
+			return 0
+		}
+		return serve(*addr, "", Options{Config: &c}, nil, stdout, stderr)
 	}
 	inputs := 0
 	for _, set := range []bool{f.db != "", f.postgres != "", len(f.journals) > 0} {
@@ -133,17 +169,22 @@ func Main(args []string, stdout, stderr io.Writer, stores Stores) int {
 		fmt.Fprintln(stderr, "bide-view:", err)
 		return 1
 	}
+	return serve(*addr, *run, o, closer, stdout, stderr)
+}
+
+// serve listens on addr (a loopback address) and serves o until interrupted.
+func serve(addr, run string, o Options, closer io.Closer, stdout, stderr io.Writer) int {
 	if closer != nil {
 		defer closer.Close()
 	}
-	ln, err := Listen(*addr)
+	ln, err := Listen(addr)
 	if err != nil {
 		fmt.Fprintln(stderr, "bide-view:", err)
 		return 2
 	}
 	link := "http://" + ln.Addr().String() + "/"
-	if *run != "" {
-		link += "run?id=" + url.QueryEscape(*run)
+	if run != "" {
+		link += "run?id=" + url.QueryEscape(run)
 	}
 	fmt.Fprintln(stdout, "bide-view: serving", link, "(read-only; Ctrl-C to stop)")
 	srv := &http.Server{Handler: Handler(o), ReadHeaderTimeout: 5 * time.Second}
@@ -244,6 +285,31 @@ func options(f flags, stores Stores) (Options, io.Closer, error) {
 		}
 	}
 	return o, closer, nil
+}
+
+// readConfig reads a flow config file, converting a .yaml or .yml file to JSON with toJSON.
+func readConfig(path string, toJSON func([]byte) ([]byte, error)) (Config, error) {
+	f, err := os.Open(path)
+	if err != nil {
+		return Config{}, err
+	}
+	defer f.Close()
+	b, err := io.ReadAll(io.LimitReader(f, maxInput+1))
+	if err != nil {
+		return Config{}, err
+	}
+	if len(b) > maxInput {
+		return Config{}, fmt.Errorf("larger than %d bytes", maxInput)
+	}
+	if ext := strings.ToLower(filepath.Ext(path)); ext == ".yaml" || ext == ".yml" {
+		if toJSON == nil {
+			return Config{}, errors.New("this build reads JSON configs only")
+		}
+		if b, err = toJSON(b); err != nil {
+			return Config{}, fmt.Errorf("YAML: %w", err)
+		}
+	}
+	return Config{Name: path, Data: b}, nil
 }
 
 // readApproverKeys reads the approver key file bide-audit verify-approvals reads: a JSON object of

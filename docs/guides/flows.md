@@ -429,6 +429,11 @@ unapproved. Until the runtime enforces it, put the gate on an agent tool (see [a
 
 ### Load-time validation
 
+To see a config's graph and its problems before loading it, run `bide-view -config flow.yaml`
+(`-check` for CI), or embed the same page with your Registry through package `plan/planview`; see
+the [run viewer guide](run-viewer.md#check-a-flow-config). Both use `plan.InspectConfig`, which reports
+the checks below as problems attached to the node, edge or arm they name.
+
 Moving topology from Go to data trades compile-time type checking for load-time validation: a
 miswired config does not fail at `go build`, it fails at `Load`, with a worded error that names the
 offending nodes and types. The JSON is read as written: a name that is not a config field (a

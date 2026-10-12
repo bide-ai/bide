@@ -74,3 +74,18 @@ svg.graph { display: block; margin: 0 auto; max-width: 100%; height: auto; }
 .badge { font-size: 11px; font-weight: 400; padding: 1px 7px; border-radius: 9px; background: var(--bg); border: 1px solid var(--line); color: var(--muted); }
 details { margin-top: 8px; } summary { cursor: pointer; color: var(--muted); font-size: 13px; }
 @media (max-width: 600px) { th:nth-child(4), td:nth-child(4) { display: none; } }
+.warn { color: var(--warn); }
+code.wrap { word-break: break-all; }
+.node.declared rect { fill: var(--card); stroke: var(--fg); stroke-dasharray: none; stroke-width: 1.2; }
+.node.problem rect { fill: var(--bad-bg); stroke: var(--bad); stroke-dasharray: none; stroke-width: 2.5; }
+.node.warning rect { fill: var(--warn-bg); stroke: var(--warn); stroke-dasharray: none; stroke-width: 2; }
+.node.undeclared rect { fill: none; stroke: var(--bad); stroke-dasharray: 3 3; }
+.nnote { text-anchor: middle; font-size: 10.5px; fill: #8a5cc2; }
+.edge.problem { stroke: var(--bad); stroke-width: 2.5; stroke-dasharray: 5 3; }
+.arrowhead.problem { fill: var(--bad); }
+.edge-mark circle { fill: var(--bad); }
+.edge-mark text { fill: #fff; font-size: 11px; font-weight: 700; text-anchor: middle; }
+.lg.declared::before { border-color: var(--fg); }
+.lg.problem::before { background: var(--bad-bg); border-color: var(--bad); }
+.lg.warning::before { background: var(--warn-bg); border-color: var(--warn); }
+.lg.undeclared::before { border-color: var(--bad); border-style: dashed; }

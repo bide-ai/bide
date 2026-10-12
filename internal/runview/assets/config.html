@@ -1,0 +1,25 @@
+{{define "config.html"}}{{template "head" .Flow}}
+<h1>{{.Flow}} <span class="pill kind">flow config</span> {{if .Errors}}<span class="pill state-halted">{{.Errors}} error{{if gt .Errors 1}}s{{end}}</span>{{else}}<span class="pill state-completed">no errors</span>{{end}}{{if .Warnings}} <span class="pill state-started">{{.Warnings}} warning{{if gt .Warnings 1}}s{{end}}</span>{{end}}</h1>
+<p class="input">{{.Name}}</p>
+
+<section class="cards">
+  <div class="card"><h3>Check</h3><p>{{.CheckLabel}}</p><p class="muted small">Nothing runs: the page shows the flow as declared.</p></div>
+  <div class="card"><h3>Digest</h3>{{if .Digest}}<p><code class="wrap">{{.Digest}}</code></p><p class="muted small">The flow:digest a run of this flow journals (plan.TopologyDigest).</p>
+  {{else if .Typed}}<p class="muted">Not computed: the config has errors.</p>
+  {{else}}<p class="muted">Needs the plan.Registry: the digest commits to the blocks' Go types.</p>{{end}}</div>
+  {{if .Approvals}}<div class="card"><h3>Approval gates</h3>{{range .Approvals}}<p>{{.}}</p>{{end}}</div>{{end}}
+</section>
+
+{{if .Graph}}<section><h2>Flow</h2>
+<div class="legend"><span class="lg declared">declared</span><span class="lg problem">error</span><span class="lg warning">warning</span><span class="lg undeclared">not declared</span></div>
+<div class="graphwrap">{{svg .Graph.SVG}}</div>
+<details><summary>Mermaid text</summary><pre>{{.Graph.Mermaid}}</pre></details>
+</section>{{end}}
+
+<section><h2>Problems</h2>
+{{if .Problems}}<table><thead><tr><th>Where</th><th>Problem</th></tr></thead><tbody>
+{{range .Problems}}<tr><td>{{if .Node}}<code>{{.Node}}</code>{{else if or .From .To}}<code>{{.From}} → {{.To}}</code>{{else}}config{{end}}</td><td class="{{if eq .Severity "error"}}bad{{else}}warn{{end}}">{{.Severity}}: {{.Message}}</td></tr>{{end}}
+</tbody></table>{{else}}<p class="good">None found.</p>{{end}}
+</section>
+<p class="muted small"><a href="/config.json">This view as JSON</a></p>
+{{template "foot"}}{{end}}

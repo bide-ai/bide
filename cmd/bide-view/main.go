@@ -11,7 +11,8 @@
 //	bide-view -postgres postgres://user:pass@host:5432/db -run refund-42
 //	bide-view -journal run.json                # an exported journal (audit.ExportJournal)
 //	bide-view -db run.db -evidence evidence.json -pubkey ed25519:<hex> -approver-keys keys.json
-//	bide-view -db flow.db -topology topology.json -digest <flow.Digest()>
+//	bide-view -config flow.yaml                # a flow definition: its graph and problems
+//	bide-view -config flow.yaml -check         # for CI: file:node: message lines, exit 1 on errors
 //
 // It opens a SQLite file read-only (sqlite.OpenReadOnly) and a Postgres journal in sessions the
 // server holds read-only (postgres.OpenReadOnly), and serves on a loopback address only (-addr,
@@ -21,6 +22,8 @@ package main
 
 import (
 	"context"
+	"encoding/json"
+	"errors"
 	"io"
 	"os"
 
@@ -28,6 +31,7 @@ import (
 	"github.com/bide-ai/bide/internal/runview"
 	"github.com/bide-ai/bide/store/postgres"
 	"github.com/bide-ai/bide/store/sqlite"
+	"go.yaml.in/yaml/v3"
 )
 
 func main() {
@@ -50,4 +54,47 @@ var stores = runview.Stores{
 		}
 		return s, s, nil
 	},
+	YAML: yamlToJSON,
+}
+
+// yamlToJSON converts a YAML flow config to the JSON plan reads. A YAML document is decoded into
+// plain values (a duplicate key is an error, as plan's strict JSON reading refuses one), and every
+// mapping key must be a string.
+func yamlToJSON(data []byte) ([]byte, error) {
+	var v any
+	if err := yaml.Unmarshal(data, &v); err != nil {
+		return nil, err
+	}
+	v, err := jsonValue(v)
+	if err != nil {
+		return nil, err
+	}
+	return json.Marshal(v)
+}
+
+// jsonValue checks that every mapping in v has string keys, which JSON requires.
+func jsonValue(v any) (any, error) {
+	switch x := v.(type) {
+	case map[string]any:
+		for k, e := range x {
+			c, err := jsonValue(e)
+			if err != nil {
+				return nil, err
+			}
+			x[k] = c
+		}
+		return x, nil
+	case map[any]any:
+		return nil, errors.New("a mapping key is not a string")
+	case []any:
+		for i, e := range x {
+			c, err := jsonValue(e)
+			if err != nil {
+				return nil, err
+			}
+			x[i] = c
+		}
+		return x, nil
+	}
+	return v, nil
 }
