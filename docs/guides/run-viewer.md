@@ -13,6 +13,17 @@ network: the binary serves its HTML, CSS and graph, with no CDN and no JavaScrip
 
 ![bide-view on a plan flow halted mid-node: END STATE "halted: outcome unknown", the halt with its ResolveHalt snippet, and the topology with the path taken](img/run-viewer-flow-halted.png)
 
+The quickest way to see the page is the crash demo, which needs no API key and no journal of your
+own. It kills an agent mid-charge, resolves the halt, and opens this page on the run, with an
+evidence package and the approvers' keys, so the audit proof and the gate's signatures show as
+verified:
+
+```sh
+go run github.com/bide-ai/bide/cmd/bide-demo@latest            # -no-browser prints the URL instead; -keep keeps the journal
+```
+
+With `-keep` it keeps its temp directory and prints the `bide-view` command that reopens the run.
+
 ## Install
 
 `bide-view` is its own module, `github.com/bide-ai/bide/cmd/bide-view`, which carries the SQLite

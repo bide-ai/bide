@@ -21,7 +21,8 @@
 #      module is tagged <dir>/vX.Y.Z at it, the tags are pushed at most three per push (GitHub
 #      runs no workflow for the tags of a larger push), and the script waits for the proxy.
 #      The first stage holds the modules that need only the root; the governed-event logs, which
-#      also need govern, and the bide-view command, which needs both stores, come in the second.
+#      also need govern, and the bide-view and bide-demo commands, which need the stores, come in
+#      the second.
 #   3. Every published module is resolved with `go list -m <module>@vX.Y.Z`, and a scratch consumer
 #      module that `go get`s all of them at vX.Y.Z builds with a fresh module cache.
 #
@@ -47,10 +48,10 @@ GITHUB_REPO=${BIDE_GITHUB_REPO:-bide-ai/bide}
 PROXY=https://proxy.golang.org
 
 # Libraries users import. Each is tagged <dir>/vX.Y.Z at every release.
-PUBLISHED="govern store/sqlite store/postgres mcptools trace codec/gcf govern/sqlitelog govern/redislog govern/postgreslog cmd/bide-view"
+PUBLISHED="govern store/sqlite store/postgres mcptools trace codec/gcf govern/sqlitelog govern/redislog govern/postgreslog cmd/bide-view cmd/bide-demo"
 # Published modules whose root package is a command (package main), installed with go install. The
 # consumer check builds them instead of importing them, since a program cannot be imported.
-COMMANDS="cmd/bide-view"
+COMMANDS="cmd/bide-view cmd/bide-demo"
 # Modules that exist only to keep their dependencies out of the core. They keep their replace
 # directives and are never tagged.
 REPO_ONLY="examples/approval examples/govern examples/mcp examples/observability examples/plan integration benchmarks"
@@ -275,6 +276,7 @@ self_test() {
   libs=$(PUBLISHED="a cmd/x b" COMMANDS="cmd/x" libraries | tr '\n' ' ')
   [ "$libs" = "a b " ] || { echo "self-test: the consumer would import [$libs], want [a b ]"; fail=true; }
   in_list cmd/bide-view $(libraries) && { echo "self-test: the consumer would import the bide-view command"; fail=true; }
+  in_list cmd/bide-demo $(libraries) && { echo "self-test: the consumer would import the bide-demo command"; fail=true; }
   self_test_push || fail=true
   $fail && return 1
   echo "self-test: ok"

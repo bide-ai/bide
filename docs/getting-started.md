@@ -5,6 +5,14 @@
 - Go 1.27 or newer (the core uses generic methods). If `go version` is older, upgrade or set `GOTOOLCHAIN=go1.27.0`.
 - For examples that call a live model, an API key (any OpenAI-compatible endpoint works via `WithBaseURL`). Several examples run with no key at all (see below).
 
+## See it in 20 seconds
+
+```
+go run github.com/bide-ai/bide/cmd/bide-demo@latest
+```
+
+No API key, no clone, no setup. It runs a payment agent in a child process, kills the process after the charge reaches a fake payment provider but before bide journals the result, and restarts the run: bide halts with "outcome unknown" instead of charging again. The demo then confirms the charge with the provider, records it (`agent.ResolveHalt`), finishes the run, verifies the signed audit trail and the 2-of-3 approval signatures, and opens the run in the [run viewer](guides/run-viewer.md). Pass `-no-browser` to print the viewer's address instead.
+
 ## Install
 
 In a module of your own (`go mod init example.com/hello` in a new directory):
