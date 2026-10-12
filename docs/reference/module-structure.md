@@ -6,14 +6,14 @@ actually import.
 
 ## Why
 
-The core module requires only `golang.org/x/text`. The adapters, however, pull
+The core module requires nothing outside the standard library (`TestCoreModuleRequiresNothing` holds its go.mod to no requirement). The adapters, however, pull
 large dependency trees: modernc pure-Go SQLite alone is 34 modules. As a single module, a
 consumer who imported *only* the core still inherited the whole set in their `go.sum` /
 `go mod graph` / SCA audit surface (Go's module-graph pruning keeps them from *compiling*
 unused adapters, but they still appear to dependency scanners).
 
 Measured before the split: a core-only consumer inherited **54 external modules**; they now
-inherit **1** (`x/text`). gsm is not among them: it belongs to the `govern` module.
+inherit **none**. gsm is not among them: it belongs to the `govern` module.
 Each heavy tree lives behind its own module and is pulled in
 only when that adapter is imported.
 
@@ -21,7 +21,7 @@ only when that adapter is imported.
 
 | Module | Path | Extra deps beyond core |
 |---|---|---|
-| **core** | `github.com/bide-ai/bide` | `x/text` |
+| **core** | `github.com/bide-ai/bide` | none (standard library only) |
 | govern | `…/govern` | blackwell-systems/gsm |
 | mcptools | `…/mcptools` | modelcontextprotocol/go-sdk (+ jsonschema, segmentio, …) |
 | trace | `…/trace` | go.opentelemetry.io/otel |
@@ -37,9 +37,11 @@ The core module keeps everything with no heavy deps: `agent` (loop), `schema`, `
 `model/anthropic`, `model/openai`, `model/gemini`, `plan`, `audit`, `eval`, `chaos`, `cmd/bench`,
 the code of `bide view` and `bide audit` (`internal/runview`, `internal/auditcli`), and most of
 `examples`. The `bide` command (`cmd/bide`) is its own module because `bide view` and `bide demo`
-need the store drivers; built with `-tags bide_audit_only` it links nothing outside the core module. The `architecture_test.go` guard
-(core must not import an adapter) still holds, now enforced at the module boundary too, and
-`TestCoreModuleHasNoGSM` checks that the core module's graph never names gsm.
+need the store drivers; built with `-tags bide_audit_only` it links nothing outside the core module.
+The `architecture_test.go` guards are allowlists: the `agent` and `plan` packages' import graphs
+hold only the standard library and the core module's own packages (and not its model adapters or
+middleware), and `TestCoreModuleRequiresNothing` holds the core module's go.mod to no requirement
+and its go.sum to empty, so gsm, or any other module, cannot enter the core unnoticed.
 
 `govern` is its own module so the core does not depend on gsm. It stays v0.x until gsm is stable,
 while the core moves on its own schedule. It uses only the core's exported API (never a package
