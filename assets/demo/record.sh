@@ -25,9 +25,9 @@ for c in "${CHROME:-}" \
 done
 [ -n "${CHROME:-}" ] || { echo "record.sh: no Chromium-based browser found; set CHROME" >&2; exit 1; }
 
-# The panes: the terminal is the tape's size, the page 600x900 (450 CSS pixels wide at 4/3 scale,
+# The panes: the terminal is the tape's size, the page 600x900 (520 CSS pixels wide, scaled by 600/520,
 # so its text stays legible when the README shows the GIF about 800 pixels wide).
-TW=720 H=900 VW=600
+TW=790 H=900 VW=600
 ENTER=2.6 # seconds into the recording at which the tape presses Enter
 
 (cd "$root/cmd/bide-demo" && go build -o "$work/bin/bide-demo" .)
@@ -35,8 +35,8 @@ ENTER=2.6 # seconds into the recording at which the tape presses Enter
 mkdir -p "$work/rec"
 
 shot() { # url out: a screenshot of the page's top, the pane's size
-  "$CHROME" --headless=new --disable-gpu --hide-scrollbars --force-dark-mode --force-device-scale-factor=1.3333 \
-    --window-size=450,675 --screenshot="$2" "$1" > /dev/null 2>&1
+  "$CHROME" --headless=new --disable-gpu --hide-scrollbars --force-dark-mode --force-device-scale-factor=1.1538 \
+    --window-size=520,780 --screenshot="$2" "$1" > /dev/null 2>&1
   ffmpeg -loglevel error -y -i "$2" -vf "scale=$VW:-1,crop=$VW:$H:0:0" "$2.tmp.png" && mv "$2.tmp.png" "$2"
 }
 serve() { # log command...: start a server in the background and wait for its address
