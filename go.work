@@ -2,6 +2,7 @@ go 1.27.0
 
 use (
 	.
+	./cmd/bide-demo
 	./cmd/bide-view
 	./codec/gcf
 	./examples/approval
