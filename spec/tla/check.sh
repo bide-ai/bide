@@ -171,9 +171,12 @@ mc_of() { (cd "$1" && ls ./*MC.tla 2>/dev/null | head -1 | sed 's|^\./||'); }
 # reaches the trap at once, which stops it (tlc_pid) before removing its metadir.
 tlc_pid=
 tlc() {
-  local cfg=$1 out=$2 dir=$3 module=${4:-} meta_dir
+  local cfg=$1 out=$2 dir=$3 module=${4:-} meta_dir jtmp
   meta_dir=$(tmpdir)
-  (cd "$dir" && exec "$java" -XX:+UseParallelGC ${TLC_JAVA_OPTS:-} -cp "$jar" tlc2.TLC \
+  # Its own java.io.tmpdir too (TLC's parser writes the standard modules there), so two check.sh
+  # processes run side by side never race on one directory; TLC_JAVA_OPTS may still override it.
+  jtmp=$(tmpdir)
+  (cd "$dir" && exec "$java" -XX:+UseParallelGC -Djava.io.tmpdir="$jtmp" ${TLC_JAVA_OPTS:-} -cp "$jar" tlc2.TLC \
       -workers "$workers" -metadir "$meta_dir" -config "$cfg" "${module:-$(mc_of "$dir")}") >"$out" 2>&1 &
   tlc_pid=$!
   tlc_status=0
