@@ -51,6 +51,7 @@ page is at `/run?id=<run>`, and the same view as JSON at `/run.json?id=<run>`.
 | `-sth <file>` | A signed tree head (`audit.SignedTreeHead` JSON) to verify the journal against. Needs `-pubkey`. |
 | `-evidence <file>` | An evidence package (`audit.EvidencePackage` JSON, as `audit.Evidence` writes it) to verify. Needs `-pubkey`. |
 | `-pubkey <key>` | The log's public key: `<scheme>:<hex>` (`ed25519`, `ml-dsa-65`, `ed25519+ml-dsa-65`), bare ed25519 hex, or a file holding either. |
+| `-approver-keys <file>` | The approvers' public keys, the file `bide-audit verify-approvals` reads: a JSON object of approver id to key text, such as `{"ops":"ed25519:ab12..."}`. With it, each m-of-n gate's signatures are verified. Needs `-sth` or `-evidence`. |
 | `-addr <host:port>` | Where to listen: a loopback IP or `localhost`, with a port. Default `127.0.0.1:8484`. Any other host is refused. |
 
 Input files are read strictly, as `bide-audit` reads them (`audit.UnmarshalStrict`): a duplicate or
@@ -86,6 +87,16 @@ with the audit package's own verifiers, as `bide-audit` does:
 The card says how many records the head covers: records written after it are listed as not yet
 covered. Without `-sth` or `-evidence` the card says so.
 
+With `-approver-keys` as well, the card gives a line per m-of-n approval gate whose tally is
+journaled: whether its approvals verify, from `audit.VerifyApprovals`, the check
+`bide-audit verify-approvals` runs. It verifies the proofs of the request, every decision the gate
+read, the tally and the result under the log key; checks each decision's signature with the
+approver's key against the exact call; recounts with the gate's rule; and requires at least k. With
+`-evidence` it checks the package's actions; with `-sth` it builds the same evidence from the journal
+under that head (`audit.ApprovalEvidence`). The policy it checks against is the one the gate
+journaled in its tally; to check a gate against a policy you expect, run `bide-audit verify-approvals`
+with `-need` and `-approvers`.
+
 **CONFORMANCE** (plan flows given `-topology`). Whether the run followed the declared topology:
 the run is of the topology's flow, every node it recorded is declared, every Switch choice is a
 declared arm, and, with `-digest`, the journaled digest equals `flow.Digest()`. From the command line
@@ -113,6 +124,20 @@ decision), who approved, who denied, who is pending, and a status such as
 Once the gate decides, the counts are the tally it journaled; before that they are the signed
 decisions recorded so far, whose signatures the gate checks when the run resumes.
 
+The **Signatures** column says whether the approvals were verified (see AUDIT PROOF):
+
+- `2 of 3: signatures verified (ops, finance)`: `audit.VerifyApprovals` held with the keys given.
+- `signatures NOT verified: ...`: it did not, with every reason: a decision that did not count and
+  why (a signature that does not verify under the approver's key, an approver with no key), the
+  count below k, or evidence that is inconsistent (a decision the gate read and the evidence omits, a
+  recount that disagrees with the tally).
+- `included in the signed log; signatures not checked (pass -approver-keys)`: the journal verifies
+  under `-sth` or `-evidence`, but no approver keys were given.
+- `signatures not checked (pass -approver-keys, with -sth or -evidence)`: no proof was given.
+- `signatures not checked: the gate has not journaled its tally yet`: the gate is still open.
+- A one-decision gate (`agent.SingleApproval`, recorded with `agent.Approve`) is not signed, so
+  there is nothing to verify.
+
 **Timeline.** Every record in journal order: the header, `run:start` (kind, input, tools), model
 turns (text, tool calls with arguments, finish reason, model), attempt markers and re-attempts, tool
 results with the `Safety` they ran under (read-only, idempotent, side effect) and whether
@@ -134,8 +159,8 @@ go run . run -db a.db -crash                # the refund fires; the process dies
 go run . run -db a.db                       # the resume halts: outcome unknown
 bide-view -db a.db -run refund-42           # the halt, its HaltRef, and the gate approved 2 of 3
 go run . resolve -db a.db                   # ResolveHalt from the provider's record, then the run finishes
-go run . evidence -db a.db -out ev.json     # prints the log public key
-bide-view -db a.db -run refund-42 -evidence ev.json -pubkey <log public key>
+go run . evidence -db a.db -out ev.json     # prints the log public key; writes approver-keys.json
+bide-view -db a.db -run refund-42 -evidence ev.json -pubkey <log public key> -approver-keys approver-keys.json
 ```
 
 ![bide-view on the same run after ResolveHalt: completed, with the evidence package verifying](img/run-viewer-agent-verified.png)

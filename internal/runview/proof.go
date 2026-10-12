@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"strings"
 	"time"
 
 	"github.com/bide-ai/bide/agent"
@@ -19,6 +20,16 @@ type Proof struct {
 	Covers   int      `json:"covers"` // journal records the signed head commits to
 	Problems []string `json:"problems,omitempty"`
 	Items    []string `json:"items,omitempty"`
+	// Approvals is the signature verdict on each m-of-n gate that journaled its tally, by
+	// tool-use ID: audit.VerifyApprovals over the gate's evidence, with the approver keys given.
+	// Nil without approver keys.
+	Approvals map[string]ApprovalCheck `json:"approvals,omitempty"`
+}
+
+// ApprovalCheck is audit.VerifyApprovals' verdict on one gate, in words.
+type ApprovalCheck struct {
+	OK   bool   `json:"ok"`
+	Text string `json:"text"`
 }
 
 // Prover checks a run's records against an audit artifact. It returns nil for a run the artifact
@@ -29,13 +40,26 @@ type Prover func(ctx context.Context, runID string, recs []agent.Record) *Proof
 // (audit.CheckTimestamp), and that its root commits to the first sth.Size records of the journal
 // shown, by building and verifying an inclusion proof of the last of them (audit.ProveRecord,
 // ProofBundle.Verify), as bide-audit prove and verify do.
-func HeadProver(sth audit.SignedTreeHead, v audit.Verifier) Prover {
+//
+// With approver keys (keys non-nil), it also checks each m-of-n gate's signatures: it builds the
+// gate's evidence from the journal under sth (audit.ApprovalEvidence) and verifies it with
+// audit.VerifyApprovals, as bide-audit verify-approvals does.
+func HeadProver(sth audit.SignedTreeHead, v audit.Verifier, keys agent.ApproverVerifierFor) Prover {
 	return func(ctx context.Context, runID string, recs []agent.Record) *Proof {
 		if sth.RunID != runID {
 			return nil
 		}
 		p := &Proof{Source: "signed tree head", Covers: sth.Size}
 		check(p, verifyHead(ctx, runID, recs, sth, v))
+		if keys != nil {
+			j, err := agent.NewJournal(staticStore{recs: recs[:min(sth.Size, len(recs))]})
+			p.Approvals = checkApprovals(recs, keys, v, func(id string) ([]audit.EvidenceAction, error) {
+				if err != nil {
+					return nil, err
+				}
+				return audit.ApprovalEvidence(ctx, j, runID, id, sth)
+			})
+		}
 		finish(p, len(recs))
 		return p
 	}
@@ -43,7 +67,10 @@ func HeadProver(sth audit.SignedTreeHead, v audit.Verifier) Prover {
 
 // EvidenceProver checks an evidence package (audit.EvidencePackage.Verify, as bide-audit
 // verify-evidence does) and that its signed head commits to the journal shown.
-func EvidenceProver(pkg audit.EvidencePackage, v audit.Verifier, opts ...audit.EvidenceVerifyOption) Prover {
+//
+// With approver keys (keys non-nil), it also checks each m-of-n gate's signatures with
+// audit.VerifyApprovals over the package's actions, as bide-audit verify-approvals does.
+func EvidenceProver(pkg audit.EvidencePackage, v audit.Verifier, keys agent.ApproverVerifierFor, opts ...audit.EvidenceVerifyOption) Prover {
 	return func(ctx context.Context, runID string, recs []agent.Record) *Proof {
 		if pkg.RunID != runID {
 			return nil
@@ -65,9 +92,73 @@ func EvidenceProver(pkg audit.EvidencePackage, v audit.Verifier, opts ...audit.E
 			p.Problems = append(p.Problems, "the package did not verify under this key")
 		}
 		check(p, verifyHead(ctx, runID, recs, pkg.STH, v))
+		if keys != nil {
+			p.Approvals = checkApprovals(recs, keys, v, func(string) ([]audit.EvidenceAction, error) { return pkg.Actions, nil })
+		}
 		finish(p, len(recs))
 		return p
 	}
+}
+
+// checkApprovals runs audit.VerifyApprovals on every m-of-n gate of recs that journaled its tally,
+// against the policy that tally records (the policy the gate enforced), over the evidence
+// actionsFor returns for the call.
+func checkApprovals(recs []agent.Record, keys agent.ApproverVerifierFor, logV audit.Verifier, actionsFor func(id string) ([]audit.EvidenceAction, error)) map[string]ApprovalCheck {
+	byName := map[string]agent.Record{}
+	for _, r := range recs {
+		byName[r.Name] = r
+	}
+	out := map[string]ApprovalCheck{}
+	for _, r := range recs {
+		if r.Kind != agent.StepModel || r.Message == nil {
+			continue
+		}
+		for _, part := range r.Message.Parts {
+			tu, ok := part.(agent.ToolUse)
+			if !ok {
+				continue
+			}
+			t, ok := byName[agent.ApprovalTallyStep(tu.ID)]
+			if !ok {
+				continue
+			}
+			var tally agent.ApprovalTally
+			if err := audit.UnmarshalStrict(t.Result, &tally); err != nil {
+				out[tu.ID] = ApprovalCheck{Text: "signatures not verified: the journaled tally does not read: " + err.Error()}
+				continue
+			}
+			policy := agent.ApprovalPolicy{Need: tally.Need, Approvers: tally.Approvers}
+			actions, err := actionsFor(tu.ID)
+			if err != nil {
+				out[tu.ID] = ApprovalCheck{Text: "signatures not verified: no evidence for this gate under the signed head: " + err.Error()}
+				continue
+			}
+			v, err := audit.VerifyApprovals(actions, tu.ID, policy, keys, logV)
+			out[tu.ID] = approvalText(v, err, len(policy.Approvers))
+		}
+	}
+	return out
+}
+
+// approvalText phrases a VerifyApprovals verdict: the count and who counted when it holds, and
+// otherwise every reason it does not (a problem, a decision that did not count and why, the count
+// below k, or the verifier's error).
+func approvalText(v audit.ApprovalVerdict, err error, n int) ApprovalCheck {
+	if err == nil && v.OK {
+		return ApprovalCheck{OK: true, Text: fmt.Sprintf("%d of %d: signatures verified (%s)", len(v.Counted), n, strings.Join(v.Counted, ", "))}
+	}
+	var why []string
+	why = append(why, v.Problems...)
+	for _, d := range v.Ignored {
+		why = append(why, fmt.Sprintf("%s's decision did not count: %s", d.Approver, d.Reason))
+	}
+	if len(v.Counted) < v.Need {
+		why = append(why, fmt.Sprintf("only %d of the %d needed approvals verified", len(v.Counted), v.Need))
+	}
+	if err != nil && len(why) == 0 {
+		why = append(why, err.Error())
+	}
+	return ApprovalCheck{Text: "signatures NOT verified: " + strings.Join(why, "; ")}
 }
 
 // verifyHead checks sth against recs: the timestamp rule, then an inclusion proof of the last

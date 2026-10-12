@@ -78,8 +78,12 @@ type Gate struct {
 	Tallied    bool       `json:"tallied"` // the gate journaled its terminal tally
 	// Waiting: the run paused at this gate (its approval-pending record, agent.ApprovalWait) and
 	// the call has no result, no terminal tally, and (for a one-decision gate) no decision yet.
-	Waiting bool   `json:"waiting"`
-	Status  string `json:"status"`
+	Waiting bool `json:"waiting"`
+	// Signatures is whether the gate's approver signatures were verified (audit.VerifyApprovals,
+	// with -approver-keys), or why they were not checked; SignaturesOK reports a verified gate.
+	Signatures   string `json:"signatures"`
+	SignaturesOK bool   `json:"signatures_ok"`
+	Status       string `json:"status"`
 }
 
 // Decision is one recorded approval decision.

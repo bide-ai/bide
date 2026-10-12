@@ -9,6 +9,7 @@
     <p class="{{if .OK}}good{{else}}bad{{end}}"><b>{{if .OK}}Verified{{else}}Not verified{{end}}</b> ({{.Source}}): {{.Summary}}</p>
     {{range .Problems}}<p class="bad small">{{.}}</p>{{end}}
     {{if .Items}}<ul class="small">{{range .Items}}<li>{{.}}</li>{{end}}</ul>{{end}}
+    {{range $id, $c := .Approvals}}<p class="small {{if $c.OK}}good{{else}}bad{{end}}">Approval gate <code>{{$id}}</code>: {{$c.Text}}</p>{{end}}
   {{else}}<p class="muted">No signed head or evidence package given for this run (-sth or -evidence, with -pubkey).</p>{{end}}</div>
   {{if .Conform}}<div class="card"><h3>Conformance</h3>{{with .Conform}}
     <p class="{{if .OK}}good{{else}}bad{{end}}"><b>{{if .OK}}Conforms{{else}}Diverges{{end}}</b> ({{.Method}}; digest {{.Digest}})</p>
@@ -31,9 +32,9 @@
 </section>{{end}}
 
 {{if .Gates}}<section><h2>Approval gates</h2>
-<table><thead><tr><th>Call</th><th>Gate</th><th>Approved by</th><th>Denied by</th><th>Pending</th><th>Status</th></tr></thead><tbody>
+<table><thead><tr><th>Call</th><th>Gate</th><th>Approved by</th><th>Denied by</th><th>Pending</th><th>Status</th><th>Signatures</th></tr></thead><tbody>
 {{range .Gates}}<tr><td><code>{{.ToolUseID}}</code> {{.ToolName}}</td><td>{{if .Single}}one decision{{else}}{{.Need}} of {{len .Approvers}}{{if .Approvers}} ({{join .Approvers ", "}}){{end}}{{end}}</td>
-<td>{{join .ApprovedBy ", "}}</td><td>{{join .DeniedBy ", "}}</td><td>{{join .Pending ", "}}</td><td>{{.Status}}</td></tr>{{end}}
+<td>{{join .ApprovedBy ", "}}</td><td>{{join .DeniedBy ", "}}</td><td>{{join .Pending ", "}}</td><td>{{.Status}}</td><td class="{{if .SignaturesOK}}good{{else if .Signatures | hasPrefix "signatures NOT"}}bad{{else}}muted{{end}}">{{.Signatures}}</td></tr>{{end}}
 </tbody></table></section>{{end}}
 
 {{if .Notes}}<section><h2>Not in the journal</h2><ul>{{range .Notes}}<li class="muted">{{.}}</li>{{end}}</ul></section>{{end}}

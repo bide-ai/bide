@@ -13,6 +13,7 @@ import (
 	"net/http/httptest"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/bide-ai/bide/agent"
 	"github.com/bide-ai/bide/agent/agenttest"
@@ -241,7 +242,7 @@ func TestAgentRunTimeline(t *testing.T) {
 		return e[len(e)-1].STH
 	}
 	logPub := audit.Ed25519Verifier{Pub: key("log").Public().(ed25519.PublicKey)}
-	h := Handler(Options{Source: JournalSource{J: j}, Provers: []Prover{HeadProver(latest(), logPub)}})
+	h := Handler(Options{Source: JournalSource{J: j}, Provers: []Prover{HeadProver(latest(), logPub, nil)}})
 	v := viewOf(t, h, "a1")
 	if v.Kind != "agent" || v.State != "halted" || v.StateText != "halted: outcome unknown" {
 		t.Fatalf("kind/state = %q/%q", v.Kind, v.State)
@@ -274,7 +275,7 @@ func TestAgentRunTimeline(t *testing.T) {
 	if _, err := newAgent().Run(ctx, "a1", agent.UserText("Refund order 42.")); err != nil {
 		t.Fatalf("Run after resolve: %v", err)
 	}
-	h = Handler(Options{Source: JournalSource{J: j}, Provers: []Prover{HeadProver(latest(), logPub)}})
+	h = Handler(Options{Source: JournalSource{J: j}, Provers: []Prover{HeadProver(latest(), logPub, nil)}})
 	v = viewOf(t, h, "a1")
 	if v.State != "completed" || len(v.Halts) != 0 || v.Proof == nil || !v.Proof.OK || v.FinalText != "Refunded order 42." {
 		t.Fatalf("after resolve: state %q, halts %v, proof %+v, text %q", v.State, v.Halts, v.Proof, v.FinalText)
@@ -285,7 +286,7 @@ func TestAgentRunTimeline(t *testing.T) {
 
 	// A head signed by another key does not verify.
 	wrong := audit.Ed25519Verifier{Pub: key("someone else").Public().(ed25519.PublicKey)}
-	if p := viewOf(t, Handler(Options{Source: JournalSource{J: j}, Provers: []Prover{HeadProver(latest(), wrong)}}), "a1").Proof; p == nil || p.OK {
+	if p := viewOf(t, Handler(Options{Source: JournalSource{J: j}, Provers: []Prover{HeadProver(latest(), wrong, nil)}}), "a1").Proof; p == nil || p.OK {
 		t.Fatalf("proof under the wrong key = %+v", p)
 	}
 	if code, body := get(t, h, "/"); code != 200 || !strings.Contains(body, "a1") {
@@ -428,14 +429,128 @@ func TestMainUsage(t *testing.T) {
 	if code := Main([]string{"-h"}, &out, &errb, nil); code != 0 {
 		t.Fatalf("-h exit = %d", code)
 	}
-	for _, want := range []string{"bide-view -db <file>", "loopback", "-db", "-journal", "-run", "-topology", "-digest", "-sth", "-evidence", "-pubkey", "-addr"} {
+	for _, want := range []string{"bide-view -db <file>", "loopback", "-db", "-journal", "-run", "-topology", "-digest", "-sth", "-evidence", "-pubkey", "-approver-keys", "-addr"} {
 		if !strings.Contains(errb.String(), want) {
 			t.Errorf("-h output lacks %q", want)
 		}
 	}
-	for _, args := range [][]string{{}, {"-db", "x", "-journal", "y"}, {"-journal", "y", "-sth", "s"}, {"-journal", "y", "-digest", "d"}} {
+	for _, args := range [][]string{{}, {"-db", "x", "-journal", "y"}, {"-journal", "y", "-sth", "s"}, {"-journal", "y", "-digest", "d"}, {"-journal", "y", "-approver-keys", "k"}} {
 		if code := Main(args, io.Discard, io.Discard, nil); code != 2 {
 			t.Errorf("Main(%q) = %d, want 2", args, code)
 		}
+	}
+}
+
+// gatedRun drives a run through a 2-of-3 gate with the given decisions (approver -> approved),
+// to its end, and returns its journal and a head over all of it signed by the log key.
+func gatedRun(t *testing.T, decisions map[string]bool) (*agent.Journal, audit.SignedTreeHead) {
+	t.Helper()
+	ctx := context.Background()
+	j := agenttest.MemJournal()
+	policy := agent.ApprovalPolicy{Need: 2, Approvers: []string{"ops", "finance", "risk"}}
+	refund := agent.MustFunc("refund", "refund", func(context.Context, struct{ Order int }) (string, error) { return "refunded", nil }, agent.WithApproval(&policy))
+	verifiers := func(id string) (agent.ApproverVerifier, bool) {
+		return audit.Ed25519Verifier{Pub: key(id).Public().(ed25519.PublicKey)}, true
+	}
+	run := func() error {
+		m := agenttest.NewScriptedModel(agenttest.ToolTurn("c1", "refund", `{"Order":42}`), agenttest.TextTurn("done"))
+		_, err := agenttest.MustNew(m, j, agent.WithTools(refund), agent.WithApproverVerifiers(verifiers)).Run(ctx, "g1", agent.UserText("go"))
+		return err
+	}
+	if err := run(); !isPending(err) {
+		t.Fatalf("Run = %v, want approval pending", err)
+	}
+	recs, _ := j.History(ctx, "g1")
+	_, call, _ := agent.FindToolCall(recs, "c1")
+	for _, who := range []string{"ops", "finance", "risk"} {
+		approved, ok := decisions[who]
+		if !ok {
+			continue
+		}
+		subj := agent.ApprovalSubject{RunID: "g1", ToolUseID: "c1", ToolName: call.Name, Args: call.Args}
+		sig := ed25519.Sign(key(who), agent.ApprovalDecisionBytes(subj, who, approved))
+		if err := agent.SubmitDecision(ctx, j, agent.Decision{RunID: "g1", ToolUseID: "c1", ApproverID: who, Approved: approved, Alg: audit.AlgEd25519, Signature: sig}); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if err := run(); err != nil {
+		t.Fatalf("Run after the decisions: %v", err)
+	}
+	th, err := audit.NewTreeHead(ctx, j, "g1", time.Now().UnixNano())
+	if err != nil {
+		t.Fatal(err)
+	}
+	sth, err := audit.SignTreeHead(th, audit.Ed25519Signer{Priv: key("log")})
+	if err != nil {
+		t.Fatal(err)
+	}
+	return j, sth
+}
+
+// approverKeys resolves each approver to a key: its own, unless swap names another key's seed.
+func approverKeys(swap map[string]string) agent.ApproverVerifierFor {
+	return func(id string) (agent.ApproverVerifier, bool) {
+		seed := id
+		if s, ok := swap[id]; ok {
+			seed = s
+		}
+		return audit.Ed25519Verifier{Pub: key(seed).Public().(ed25519.PublicKey)}, true
+	}
+}
+
+// TestApprovalSignatures: with approver keys the viewer runs audit.VerifyApprovals on each m-of-n
+// gate, from a signed head or an evidence package; a wrong key or a count below k fails, naming
+// why; without keys the gate says its signatures were not checked.
+func TestApprovalSignatures(t *testing.T) {
+	ctx := context.Background()
+	logPub := audit.Ed25519Verifier{Pub: key("log").Public().(ed25519.PublicKey)}
+	gate := func(p Prover, j *agent.Journal) (Gate, *Proof) {
+		v := viewOf(t, Handler(Options{Source: JournalSource{J: j}, Provers: []Prover{p}}), "g1")
+		if len(v.Gates) != 1 {
+			t.Fatalf("gates = %+v", v.Gates)
+		}
+		return v.Gates[0], v.Proof
+	}
+
+	j, sth := gatedRun(t, map[string]bool{"ops": true, "finance": true})
+	g, p := gate(HeadProver(sth, logPub, approverKeys(nil)), j)
+	if want := "2 of 3: signatures verified (ops, finance)"; !g.SignaturesOK || g.Signatures != want || !p.Approvals["c1"].OK {
+		t.Fatalf("verified gate: %q (ok %v), proof %+v; want %q", g.Signatures, g.SignaturesOK, p.Approvals, want)
+	}
+
+	pkg, err := audit.Evidence(ctx, j, "g1", audit.Ed25519Signer{Priv: key("log")}, time.Now().UnixNano(), audit.WithToolCall("c1"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	decisions, err := audit.ApprovalEvidence(ctx, j, "g1", "c1", pkg.STH)
+	if err != nil {
+		t.Fatal(err)
+	}
+	pkg.Actions = append(pkg.Actions, decisions[:len(decisions)-1]...)
+	if err := pkg.Seal(audit.Ed25519Signer{Priv: key("log")}); err != nil {
+		t.Fatal(err)
+	}
+	if g, _ := gate(EvidenceProver(pkg, logPub, approverKeys(nil)), j); !g.SignaturesOK {
+		t.Fatalf("evidence package: %q, want verified", g.Signatures)
+	}
+
+	g, _ = gate(HeadProver(sth, logPub, approverKeys(map[string]string{"finance": "mallory"})), j)
+	if g.SignaturesOK || !strings.HasPrefix(g.Signatures, "signatures NOT verified") || !strings.Contains(g.Signatures, "finance") {
+		t.Fatalf("wrong key for finance: %q, want a failure naming finance", g.Signatures)
+	}
+
+	jd, sthd := gatedRun(t, map[string]bool{"ops": true, "finance": false, "risk": false})
+	g, _ = gate(HeadProver(sthd, logPub, approverKeys(nil)), jd)
+	if g.SignaturesOK || !strings.Contains(g.Signatures, "only 1 of the 2 needed approvals verified") {
+		t.Fatalf("count below k: %q", g.Signatures)
+	}
+
+	g, _ = gate(HeadProver(sth, logPub, nil), j)
+	if g.SignaturesOK || g.Signatures != "included in the signed log; signatures not checked (pass -approver-keys)" {
+		t.Fatalf("no keys: %q", g.Signatures)
+	}
+	g, _ = gate(func(context.Context, string, []agent.Record) *Proof { return nil }, j)
+	if g.Signatures != "signatures not checked (pass -approver-keys, with -sth or -evidence)" {
+		t.Fatalf("no proof: %q", g.Signatures)
 	}
 }
