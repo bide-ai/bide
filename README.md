@@ -645,6 +645,17 @@ a record written by a newer release with fields this one does not know still ver
 inclusion proof an auditor checks against the signed root, and prove append-only growth between two STHs.
 See [docs/guides/audit.md](docs/guides/audit.md) for the model, the API, and the end-to-end compliance flow.
 
+### Run viewer
+
+`bide-view` opens a read-only page for one run, served on `127.0.0.1` from a SQLite journal or an
+exported one. It shows the run's timeline (model turns, tool calls and their `Safety`, attempts,
+approvals), a halted operation with the `ResolveHalt` call that records its outcome, each approval
+gate's k-of-n status, a plan flow's path over its declared topology, and whether the journal verifies
+against a signed tree head or an evidence package. It never writes to the store. See the
+[run viewer guide](docs/guides/run-viewer.md).
+
+<p align="center"><img src="docs/guides/img/run-viewer-agent-halted.png" width="720" alt="bide-view showing an agent run halted after a crash mid-refund: the end state, the halt with its ResolveHalt call, and the 2-of-3 approval gate."></p>
+
 ## RAG & memory (bring your own)
 
 Bide ships **no vector store, embedder, or memory backend**: it gives you the *seam* and
@@ -1003,6 +1014,7 @@ New here? Start with **[Getting started](docs/getting-started.md)**, use the **[
 - **[MCP](docs/guides/mcp.md)**: connect an MCP server as a runtime tool source, with side-effect-safe resume; a trusted server's tool annotations can mark tools safe to re-run.
 - **[Observability](docs/guides/observability.md)**: OTel gen_ai spans in one line (`trace.Instrument`): span taxonomy, sub-agent nesting, token-to-cost, and the content-capture privacy default. Runnable: `examples/observability`.
 - **[Messaging](docs/guides/messaging.md)**: drive an agent from an inbound webhook (Slack, Telegram, SMS, Discord), redelivery-safe: a retried webhook replays instead of double-firing. Runnable: `examples/webhook`.
+- **[Run viewer](docs/guides/run-viewer.md)**: `bide-view`, a read-only local page for one run's journal: the timeline, a flow's path over its declared topology, halts, approval gates, and the audit verdict.
 - **[Debugging and recovery](docs/guides/debugging.md)**: deterministic replay (`Replay`), event reconstruction (`ReplayEvents`), Mermaid run diagrams, and crash recovery (`Recover`) that re-drives interrupted runs.
 
 **Accountability and governance**

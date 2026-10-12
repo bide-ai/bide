@@ -75,3 +75,41 @@ func TestOpenReadOnlyRefusesMissing(t *testing.T) {
 		t.Fatalf("OpenReadOnly created %s: %v", path, err)
 	}
 }
+
+// TestOpenReadOnlyWhileWritten reads a journal a writer still has open, and sees its later writes.
+func TestOpenReadOnlyWhileWritten(t *testing.T) {
+	ctx := context.Background()
+	path := filepath.Join(t.TempDir(), "j.db")
+	w, err := Open(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer w.Close()
+	if _, _, err := w.Insert(ctx, "r1", "a", []byte(`{}`)); err != nil {
+		t.Fatal(err)
+	}
+	s, err := OpenReadOnly(path)
+	if err != nil {
+		t.Fatalf("OpenReadOnly beside a writer: %v", err)
+	}
+	defer s.Close()
+	count := func() int {
+		n := 0
+		for _, err := range s.Load(ctx, "r1", 0) {
+			if err != nil {
+				t.Fatal(err)
+			}
+			n++
+		}
+		return n
+	}
+	if n := count(); n != 1 {
+		t.Fatalf("read %d entries, want 1", n)
+	}
+	if _, _, err := w.Insert(ctx, "r1", "b", []byte(`{}`)); err != nil {
+		t.Fatalf("the writer's insert beside a reader: %v", err)
+	}
+	if n := count(); n != 2 {
+		t.Fatalf("read %d entries after the writer's second insert, want 2", n)
+	}
+}

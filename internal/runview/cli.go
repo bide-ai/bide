@@ -27,12 +27,33 @@ type multi []string
 func (m *multi) String() string     { return strings.Join(*m, ",") }
 func (m *multi) Set(v string) error { *m = append(*m, v); return nil }
 
+// usageText heads bide-view's -h output; the flags follow it.
+const usageText = `bide-view: a read-only local web page for one run of a bide journal
+
+  bide-view -db <file> [-run <id>] [flags]
+  bide-view -journal <export.json> [-journal ...] [-run <id>] [flags]
+
+It shows an agent run's timeline (model turns, tool calls with their Safety, attempts, approvals,
+halts, end state) or a plan flow's declared topology with the run's path, and whether the journal
+verifies against a signed tree head or an evidence package. It never writes to the store, and it
+serves on a loopback address only. With no -run it lists the runs. Stop it with Ctrl-C.
+
+Exit status: 0 after a clean stop (or -h), 1 if an input cannot be read or the server fails,
+2 for a usage error.
+
+Flags:
+`
+
 // Main is the bide-view command: it parses args, opens the input, and serves until interrupted.
 // It returns the exit status: 0 after a clean shutdown, 2 for a usage error, 1 otherwise.
 func Main(args []string, stdout, stderr io.Writer, open OpenStore) int {
 	fs := flag.NewFlagSet("bide-view", flag.ContinueOnError)
 	fs.SetOutput(stderr)
-	db := fs.String("db", "", "store to read, opened read-only")
+	fs.Usage = func() {
+		fmt.Fprint(stderr, usageText)
+		fs.PrintDefaults()
+	}
+	db := fs.String("db", "", "SQLite journal file to read, opened read-only (sqlite.OpenReadOnly)")
 	var journals multi
 	fs.Var(&journals, "journal", "exported journal (audit.ExportJournal as JSON) to read instead of -db; repeatable")
 	run := fs.String("run", "", "run to open (default: the run list)")
@@ -41,8 +62,11 @@ func Main(args []string, stdout, stderr io.Writer, open OpenStore) int {
 	sth := fs.String("sth", "", "signed tree head (audit.SignedTreeHead JSON) to verify the journal against; needs -pubkey")
 	evidence := fs.String("evidence", "", "evidence package (audit.EvidencePackage JSON) to verify; needs -pubkey")
 	pubkey := fs.String("pubkey", "", "log public key as <scheme>:<hex>, or bare ed25519 hex, or a file holding it")
-	addr := fs.String("addr", "127.0.0.1:8484", "loopback address to serve on")
+	addr := fs.String("addr", "127.0.0.1:8484", "address to serve on: a loopback IP (127.0.0.1 or ::1) or localhost, with a port")
 	if err := fs.Parse(args); err != nil {
+		if errors.Is(err, flag.ErrHelp) {
+			return 0
+		}
 		return 2
 	}
 	usage := func(msg string) int {

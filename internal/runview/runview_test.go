@@ -420,3 +420,22 @@ func TestWaitingSingleGate(t *testing.T) {
 		t.Fatalf("after approval: state %q, gates %+v", v.State, v.Gates)
 	}
 }
+
+// TestMainUsage: -h prints the synopsis and every flag and exits 0; a bad flag combination is a
+// usage error (2) and serves nothing.
+func TestMainUsage(t *testing.T) {
+	var out, errb strings.Builder
+	if code := Main([]string{"-h"}, &out, &errb, nil); code != 0 {
+		t.Fatalf("-h exit = %d", code)
+	}
+	for _, want := range []string{"bide-view -db <file>", "loopback", "-db", "-journal", "-run", "-topology", "-digest", "-sth", "-evidence", "-pubkey", "-addr"} {
+		if !strings.Contains(errb.String(), want) {
+			t.Errorf("-h output lacks %q", want)
+		}
+	}
+	for _, args := range [][]string{{}, {"-db", "x", "-journal", "y"}, {"-journal", "y", "-sth", "s"}, {"-journal", "y", "-digest", "d"}} {
+		if code := Main(args, io.Discard, io.Discard, nil); code != 2 {
+			t.Errorf("Main(%q) = %d, want 2", args, code)
+		}
+	}
+}

@@ -59,6 +59,7 @@ export default defineConfig({
           { text: 'Messaging', link: '/guides/messaging' },
           { text: 'RAG and memory', link: '/guides/rag-memory' },
           { text: 'Debugging and recovery', link: '/guides/debugging' },
+          { text: 'Run viewer', link: '/guides/run-viewer' },
         ],
       },
       {

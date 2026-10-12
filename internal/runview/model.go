@@ -215,6 +215,15 @@ func Build(ctx context.Context, runID string, recs []agent.Record, flow *Flow) *
 			if who != "approver" {
 				e.Badges = append(e.Badges, "signed")
 			}
+		case strings.HasPrefix(r.Name, "approval-pending:"):
+			var w agent.ApprovalWait
+			_ = json.Unmarshal(r.Result, &w)
+			e.Class, e.Title = "approval", "waiting for approval: "+w.ToolName+" ("+w.ToolUseID+")"
+			if w.Single {
+				e.Detail = "one decision"
+			} else {
+				e.Detail = fmt.Sprintf("%d of %d: %s", w.Need, len(w.Approvers), strings.Join(w.Approvers, ", "))
+			}
 		case strings.HasPrefix(r.Name, "approval-tally:"):
 			e.Class, e.Title, e.Detail = "approval", "approval tally", short(r.Result)
 		case r.Kind == agent.StepSignal:
