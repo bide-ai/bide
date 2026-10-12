@@ -25,8 +25,9 @@ Where the implementation refined this design:
   `ToolSpec.Approval`, set with `agent.WithApproval` (`agent.SingleApproval()` is the 1-of-1 gate
   that `RequiresApproval` was; any other policy is m-of-n), and `Safety` only says how a call may be
   retried. The API block below is the design as first shipped.
-- **Declarative config.** The `approval` block loads onto the node's approval gate, but the `plan` runtime
-  does not enforce the gate yet, so `plan` Build refuses a flow that declares one (`ErrConfig`).
+- **Declarative config and plan flows.** The `approval` block loads onto the node's approval gate,
+  and a plan flow enforces it with the same records and counting rule as an agent's tool call (see
+  [Gates on plan flow nodes](#gates-on-plan-flow-nodes) below).
 - **v2 decisions and evidence** (below). The first implementation followed this document's "first
   decision per approver wins" literally, and an end-to-end test found that it let a bad record lock
   an approver out. v2 closes that and three related gaps.
@@ -90,6 +91,83 @@ wrong key, a UI showing stale arguments). The first implementation had four gaps
 - **Byte-exact evidence.** Proofs commit to the exact recorded bytes; a tool that re-orders JSON keys
   inside a recorded message breaks that record's proof. The approval signature itself is robust to
   reformatting (canonical arguments); the Merkle leaf encoding is not.
+
+## Gates on plan flow nodes
+
+A plan flow node may carry a gate: `plan.Approval(policy)` in Go, a wrapped agent tool's own
+`ToolSpec.Approval`, or a config `approval: {need, approvers}` block. There is one implementation of
+the gate: the flow reaches the agent package's gate through `internal/journalhook.Gate`, which runs
+the same policy checks (`Validate`, one seat per key), the same `Approve` and `SubmitDecision`
+records, `TallyApprovals`, and the same terminal tally as a gated tool call.
+
+**The subject.** A gated node is "a call" whose `ToolUseID` is the node's key (`node:<name>`, or
+`node:iter:<n>:<name>` in a loop body), whose `ToolName` is the node's name, and whose `Args` are the
+node's input as JSON (a join's is the array of its ordered inputs). Approvers sign
+`ApprovalDecisionBytes` over exactly that, so a signature approves this node, in this run and
+iteration, with this input.
+
+**Records, in journal order, all keyed by run and node key.**
+
+1. `approval-request:<node key>`: the subject (`agent.ApprovalRequest`), recorded once, the first
+   time a drive reaches the gate with no outcome recorded. It plays the part the model turn plays for
+   a tool call: `FindToolCall` returns it (only for a plan node key), so `WithDecisionCheck`, the
+   evidence and the recount all read the subject from the journal. A later drive whose node or input
+   differs from the recorded request is `ErrConfig`; the digest check already refuses a resume under
+   another flow, so this guards the input encoding.
+2. `approval-pending:<node key>`: `ApprovalWait`, written by the drive that recorded the request.
+   Informational, as for an agent.
+3. The decisions: `approval:<node key>` (`Approve`, for `SingleApproval`), or one
+   `approval:<node key>:<approver>:<digest>` record per `SubmitDecision`.
+4. `approval-tally:<node key>`: the terminal tally, recorded before the node runs, never on a pause.
+5. The node's own Step records (`attempt:step:node:...`, `node:...`).
+
+**Evaluation.** Before the node's Step, Run evaluates the gate: the policy and its seats are checked,
+then a recorded outcome decides (one point read: the tally, or `Approve`'s record); with none, the
+request is recorded and an m-of-n gate counts the journal. A passing gate lets the Step run; a gate
+with no outcome returns `*agent.ApprovalPending` (its `RootRunID` is the flow's run ID); a denying
+gate returns an error wrapping `plan.ErrApprovalDenied` and the node never runs. Replaying a node
+whose gate passed costs one `Get` (the tally) beside the Step's own read.
+
+**Crash and resume.** Every fact the gate uses is in the journal, so a pause survives a crash: no
+process holds it. Decisions recorded while no driver runs are counted by the next drive. A crash
+after the passing tally and before the node's result leaves the Step's own claim to decide (the node
+halts as any side-effect node does, or re-runs if retry-safe); the gate is not asked again, because
+its tally is recorded. `ResolveHalt` needs a live attempt marker, which only a passed gate's Step
+writes, so a resolution cannot run a node past a gate that did not pass.
+
+**Loops: per iteration.** A gate inside a bounded loop body is evaluated in every iteration, under
+that iteration's key. Each iteration runs the node again with a new input, possibly with another
+effect (a second refund), and a signature binds one input, so a per-node approval could only approve
+an input nobody has seen yet. Per iteration is the only reading under which "these approvers
+approved this action" stays true; a flow that wants one approval for the whole loop gates a node
+before the loop. The TLA+ regression `flows/regress/gate-unscoped` shows a per-node key lets the
+second iteration run unapproved.
+
+**Switch arms.** A gate is evaluated only on a node the run reaches: a gated node on an arm the
+Switch did not take never pauses. A gated switched node pauses before it runs; its arm is chosen
+after, from its output.
+
+**Denial and rollback.** Plan flows have no saga mode, so a denial compensates nothing: the nodes
+that ran before the gate keep their effects, the run stays unfinished (every later drive returns
+`ErrApprovalDenied` from the recorded tally), and `agent.Cancel` ends it. A late approval never
+reopens a denied gate. A gated agent tool inside a saga keeps its existing behavior.
+
+**Digest and topology.** `Topology` reports each node's gate (`TopologyNode.Gate`) and the digest
+commits to it, written only for gated nodes, so every ungated flow keeps its digest and a paused run
+cannot be resumed under a flow whose gate was removed, loosened or changed. A node carries one gate:
+`plan.Approval` or a config block on a tool that declares another gate is refused.
+
+**Evidence.** `audit.ApprovalEvidence(store, runID, "<node key>", sth)` emits the request (Kind
+`call`), every decision the gate read, the tally, and the node's record (Kind `step`), and
+`audit.VerifyApprovals` (and `bide-audit verify-approvals -call <node key>`) recounts it against the
+policy the auditor expects, as for a tool call. A denied gate has no node record, so its evidence
+does not verify, as a denied tool call's does not.
+
+**Model.** `spec/tla/flows` (model 7) adds the gate before each gated node's Step and approvers who
+decide at any time: `GateHeld` (a gated body never runs with fewer than Need approvals for its key,
+across crashes, error replies, two drivers and the resolver), `GatedResults` and `TallySound`. The
+regressions `gate-missing` (no gate check) and `gate-unscoped` (a per-node key in a loop) fail
+`GateHeld`. The counting rule over signed records is model 1b's.
 
 ## Original design
 

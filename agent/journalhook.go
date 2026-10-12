@@ -44,6 +44,25 @@ func init() {
 		return step(ctx, d, runID, name, body, WithSafety(s), cancelled)
 	}
 	// protocol:flows end
+	// protocol:flows begin GRead
+	journalhook.Gate = func(ctx context.Context, j any, runID, key, node string, args json.RawMessage, policy any, verifiers any) (bool, error) {
+		d, ok := j.(*Journal)
+		if !ok {
+			return false, fmt.Errorf("journalhook.Gate: %T is not a journal: %w", j, ErrConfig)
+		}
+		pol, ok := policy.(*ApprovalPolicy)
+		if !ok {
+			return false, fmt.Errorf("journalhook.Gate: policy is %T, not an *agent.ApprovalPolicy: %w", policy, ErrConfig)
+		}
+		var vf ApproverVerifierFor
+		if verifiers != nil {
+			if vf, ok = verifiers.(ApproverVerifierFor); !ok {
+				return false, fmt.Errorf("journalhook.Gate: verifiers is %T, not an agent.ApproverVerifierFor: %w", verifiers, ErrConfig)
+			}
+		}
+		return flowGate(ctx, d, runID, key, node, args, pol, vf)
+	}
+	// protocol:flows end
 	journalhook.CheckRunID = checkRunID
 	journalhook.Marshal = marshalJournal
 	journalhook.SameJSON = sameJSON

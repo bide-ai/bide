@@ -55,8 +55,9 @@ type regBlock struct {
 	// keep or lower its retry classification, never raise it, and keeps the approval
 	// gate recorded here (see safetyFromConfig).
 	safety agent.Safety
-	// approval is the approval gate of a wrapped agent tool (its ToolSpec.Approval),
-	// carried onto the loaded node so Build refuses it, as for a hand-built node.
+	// approval is the block's approval gate: a wrapped agent tool's ToolSpec.Approval, or the
+	// Approval option given at registration. It is carried onto the loaded node, as for a
+	// hand-built node; a config "approval" block may restate it but not replace it.
 	approval *agent.ApprovalPolicy
 }
 
@@ -81,6 +82,8 @@ type regPred struct {
 // conflict, because a merge lowers to a node's merge closure rather than to a
 // block's run or a predicate's arm test.
 type regMerge struct {
+	// approval is the merge block's approval gate, set in Go by the Approval option.
+	approval *agent.ApprovalPolicy
 	// safety is the merge block's retry-on-resume classification, set in Go by the
 	// NodeOptions given to RegisterJoin2/RegisterJoin3 (none: a side effect, which halts on
 	// an ambiguous crash). A config join's "safety" may only lower it.
@@ -89,6 +92,17 @@ type regMerge struct {
 	inTypes []reflect.Type
 	outType reflect.Type
 	merge   func(ctx context.Context, inputs []any) (any, error)
+}
+
+// gateFromOptions resolves the approval gate opts set on the block name, from base (a wrapped
+// tool's own gate, or nil). An option's error (Approval(nil), or a gate other than the tool's) is
+// recorded on the Registry, as a duplicate is, so Load reports it, and returned.
+func (r *Registry) gateFromOptions(name string, base *agent.ApprovalPolicy, opts []NodeOption) (*agent.ApprovalPolicy, error) {
+	gate, err := gateFromOptions(name, base, opts)
+	if err != nil {
+		r.errs = append(r.errs, err)
+	}
+	return gate, err
 }
 
 // NewRegistry returns a fresh, empty Registry. Every Load takes an explicit
@@ -154,11 +168,16 @@ func (r *Registry) registerMerge(name string, m *regMerge) error {
 // effect and halts on an ambiguous crash, like a hand-built Join. Only Go code can mark a merge
 // retry-safe (ReadOnly, Idempotent); a config join's "safety" may only lower what opts declare.
 func (r *Registry) RegisterJoin2[A, B, O any](name string, fn func(context.Context, A, B) (O, error), opts ...NodeOption) error {
+	gate, err := r.gateFromOptions(name, nil, opts)
+	if err != nil {
+		return err
+	}
 	return r.registerMerge(name, &regMerge{
-		safety:  safetyFromOptions(agent.Safety{}, opts),
-		arity:   2,
-		inTypes: []reflect.Type{reflect.TypeFor[A](), reflect.TypeFor[B]()},
-		outType: reflect.TypeFor[O](),
+		approval: gate,
+		safety:   safetyFromOptions(agent.Safety{}, opts),
+		arity:    2,
+		inTypes:  []reflect.Type{reflect.TypeFor[A](), reflect.TypeFor[B]()},
+		outType:  reflect.TypeFor[O](),
 		merge: func(ctx context.Context, inputs []any) (any, error) {
 			if len(inputs) != 2 {
 				return nil, fmt.Errorf("plan: join %q expected 2 inputs, got %d", name, len(inputs))
@@ -188,11 +207,16 @@ func (r *Registry) RegisterJoin2[A, B, O any](name string, fn func(context.Conte
 // calling fn. A duplicate name is an error, surfaced at Load and returned here for
 // inline checking. opts set the merge block's Safety, as for RegisterJoin2.
 func (r *Registry) RegisterJoin3[A, B, C, O any](name string, fn func(context.Context, A, B, C) (O, error), opts ...NodeOption) error {
+	gate, err := r.gateFromOptions(name, nil, opts)
+	if err != nil {
+		return err
+	}
 	return r.registerMerge(name, &regMerge{
-		safety:  safetyFromOptions(agent.Safety{}, opts),
-		arity:   3,
-		inTypes: []reflect.Type{reflect.TypeFor[A](), reflect.TypeFor[B](), reflect.TypeFor[C]()},
-		outType: reflect.TypeFor[O](),
+		approval: gate,
+		safety:   safetyFromOptions(agent.Safety{}, opts),
+		arity:    3,
+		inTypes:  []reflect.Type{reflect.TypeFor[A](), reflect.TypeFor[B](), reflect.TypeFor[C]()},
+		outType:  reflect.TypeFor[O](),
 		merge: func(ctx context.Context, inputs []any) (any, error) {
 			if len(inputs) != 3 {
 				return nil, fmt.Errorf("plan: join %q expected 3 inputs, got %d", name, len(inputs))
@@ -228,11 +252,16 @@ func (r *Registry) RegisterJoin3[A, B, C, O any](name string, fn func(context.Co
 // Safety in Go (the config JSON carries no Safety); a loaded node then resumes
 // identically to one built with Builder.Step and the same option.
 func (r *Registry) RegisterStep[I, O any](name string, fn func(context.Context, I) (O, error), opts ...NodeOption) error {
+	gate, err := r.gateFromOptions(name, nil, opts)
+	if err != nil {
+		return err
+	}
 	return r.registerBlock(name, &regBlock{
-		kind:    kindStep,
-		inType:  reflect.TypeFor[I](),
-		outType: reflect.TypeFor[O](),
-		safety:  safetyFromOptions(agent.Safety{}, opts),
+		approval: gate,
+		kind:     kindStep,
+		inType:   reflect.TypeFor[I](),
+		outType:  reflect.TypeFor[O](),
+		safety:   safetyFromOptions(agent.Safety{}, opts),
 		run: func(ctx context.Context, in any) (any, error) {
 			typed, ok := in.(I)
 			if !ok {
@@ -266,12 +295,16 @@ func (r *Registry) RegisterTool[I, O any](name string, t agent.Tool, opts ...Nod
 		r.errs = append(r.errs, err)
 		return err
 	}
+	gate, err := r.gateFromOptions(name, spec.Approval.Clone(), opts)
+	if err != nil {
+		return err
+	}
 	return r.registerBlock(name, &regBlock{
 		kind:     kindTool,
 		inType:   reflect.TypeFor[I](),
 		outType:  reflect.TypeFor[O](),
 		safety:   safetyFromOptions(spec.Safety, opts),
-		approval: spec.Approval,
+		approval: gate,
 		run: func(ctx context.Context, in any) (any, error) {
 			typed, ok := in.(I)
 			if !ok {
@@ -312,12 +345,17 @@ func (r *Registry) RegisterTool[I, O any](name string, t agent.Tool, opts ...Nod
 // in Go (the config JSON carries no Safety), mirroring Builder.Model; the default
 // keeps the conservative halt-on-ambiguous-crash for a non-idempotent model call.
 func (r *Registry) RegisterModel[I, O any](name, prompt string, opts ...NodeOption) error {
+	gate, err := r.gateFromOptions(name, nil, opts)
+	if err != nil {
+		return err
+	}
 	return r.registerBlock(name, &regBlock{
-		kind:    kindModel,
-		inType:  reflect.TypeFor[I](),
-		outType: reflect.TypeFor[O](),
-		safety:  safetyFromOptions(agent.Safety{}, opts),
-		prompt:  prompt,
+		approval: gate,
+		kind:     kindModel,
+		inType:   reflect.TypeFor[I](),
+		outType:  reflect.TypeFor[O](),
+		safety:   safetyFromOptions(agent.Safety{}, opts),
+		prompt:   prompt,
 		// run is nil for a Model block: runNode dispatches a kindModel node to runModel,
 		// which reads the flow's bound model at run time (see Builder.Model / WithModel).
 	})

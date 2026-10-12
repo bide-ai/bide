@@ -28,7 +28,7 @@ pre { white-space: pre-wrap; word-break: break-word; margin: 4px 0; }
 .state-started, .state-waiting { background: var(--warn-bg); color: var(--warn); }
 .state-halted, .state-aborted, .state-cancelled { background: var(--bad-bg); color: var(--bad); }
 .input { color: var(--muted); margin-top: 0; }
-.cards { display: grid; grid-template-columns: repeat(auto-fit, minmax(260px, 1fr)); gap: 12px; }
+.cards { display: grid; grid-template-columns: repeat(auto-fit, minmax(220px, 1fr)); gap: 12px; }
 .card { background: var(--card); border: 1px solid var(--line); border-radius: 10px; padding: 12px 14px; }
 .card p { margin: 4px 0; }
 .halt { background: var(--bad-bg); border-left: 4px solid var(--bad); border-radius: 6px; padding: 8px 12px; margin-bottom: 8px; }
@@ -41,6 +41,7 @@ th, td { text-align: left; padding: 6px 8px; border-bottom: 1px solid var(--line
 .lg.done::before { background: var(--good-bg); border-color: var(--good); }
 .lg.halted::before { background: var(--bad-bg); border-color: var(--bad); }
 .lg.attempted::before { background: var(--warn-bg); border-color: var(--warn); }
+.lg.waiting::before { background: var(--card); border-color: var(--accent); border-width: 2.5px; }
 .lg.not-reached::before { border-style: dashed; }
 .lg.lastk::before { border: 3px solid var(--accent); }
 .lg.taken::before { height: 3px; border: 0; background: var(--accent); vertical-align: 3px; }
@@ -50,9 +51,15 @@ svg.graph { display: block; margin: 0 auto; max-width: 100%; height: auto; }
 .node.done rect { fill: var(--good-bg); stroke: var(--good); stroke-dasharray: none; }
 .node.halted rect { fill: var(--bad-bg); stroke: var(--bad); stroke-dasharray: none; stroke-width: 2.5; }
 .node.attempted rect { fill: var(--warn-bg); stroke: var(--warn); stroke-dasharray: none; }
+.node.waiting rect { fill: var(--card); stroke: var(--accent); stroke-dasharray: none; stroke-width: 2.5; }
 .node.last rect { stroke: var(--accent); stroke-width: 3; }
 .nlabel { text-anchor: middle; font-size: 13px; font-weight: 600; fill: var(--fg); }
-.nkind { text-anchor: middle; font-size: 10.5px; fill: var(--muted); }
+.nkind { text-anchor: middle; font-size: 11.5px; fill: var(--muted); }
+.ngate { text-anchor: middle; font-size: 13px; font-weight: 650; fill: var(--warn); }
+.ngate.good { fill: var(--good); } .ngate.bad { fill: var(--bad); }
+.gatehead { font-size: 17px; margin: 4px 0; color: var(--warn); }
+.gatehead.good { color: var(--good); } .gatehead.bad { color: var(--bad); }
+.gatesig { font-weight: 600; }
 .edge { fill: none; stroke: var(--idle); stroke-width: 1.5; stroke-dasharray: 4 3; }
 .edge.taken { stroke: var(--accent); stroke-width: 2.5; stroke-dasharray: none; }
 .arrowhead { fill: var(--idle); } .arrowhead.taken { fill: var(--accent); }

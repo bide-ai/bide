@@ -31,6 +31,14 @@ var DoFresh func(ctx context.Context, j any, runID, name string, fn func(context
 // each loop iteration of one, records its own.
 var Step func(ctx context.Context, j any, runID, name string, safety any, fn func(context.Context) (json.RawMessage, error)) (json.RawMessage, error)
 
+// Gate evaluates the approval gate policy (an *agent.ApprovalPolicy) of the plan flow node named
+// node, under its node key key, in run runID of j (an *agent.Journal), for the node's input args
+// (JSON). verifiers is the flow's agent.ApproverVerifierFor (nil when it has none). It reports
+// approved=true when the node may run and false when its gate denied it; a gate still waiting
+// returns an *agent.ApprovalPending. It counts with the records and the rule an agent's gated tool
+// call does.
+var Gate func(ctx context.Context, j any, runID, key, node string, args json.RawMessage, policy any, verifiers any) (approved bool, err error)
+
 // Begin is a flow drive's first step. It holds the run to start, an agent.RunStart: start is
 // recorded as the run's run:start if it has none, and a drive whose kind, flow, saga flag or input
 // differs from the recorded one is ErrConfig (see agent.RunStart). A run whose completion marker

@@ -128,7 +128,7 @@ const usageText = `bide-audit: produce and verify audit proof bundles
          grant), plus the run certificate (checked against the given allowlist, required when
          the package carries one) and consistency proof if present
 
-  verify-approvals -evidence <file> -pubkey <hex|file> -call <tool-use-id> -need <k>
+  verify-approvals -evidence <file> -pubkey <hex|file> -call <tool-use-id|node-key> -need <k>
                    -approvers <id,id,...> -approver-keys <file> [-approved <digest>...] [-approved-file <file>]
          verify an m-of-n human approval gate from an evidence package: the request, every
          decision the gate read, its recorded tally, and the call's result all verify under the
@@ -1029,7 +1029,7 @@ func (c *cli) verifyApprovals(args []string) {
 	fs := c.flagSet("verify-approvals")
 	evidencePath := fs.String("evidence", "", "path to the EvidencePackage JSON carrying the approval evidence")
 	pubkey := fs.String("pubkey", "", "the log's "+pubkeyHelp)
-	call := fs.String("call", "", "the gated call's tool-use id")
+	call := fs.String("call", "", `the gated call's tool-use id, or a gated plan flow node's key ("node:<name>", "node:iter:<n>:<name>")`)
 	need := fs.Int("need", 0, "approvals the policy requires (k)")
 	approvers := fs.String("approvers", "", "the policy's eligible approver ids, comma-separated, in policy order")
 	keysPath := fs.String("approver-keys", "", `JSON object of approver id to public key text (<scheme>:<hex>, or bare ed25519 hex), e.g. {"ops":"ed25519:ab12..."}`)

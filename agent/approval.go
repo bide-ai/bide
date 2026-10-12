@@ -448,10 +448,16 @@ type ApprovalWait struct {
 	Approvers []string `json:"approvers,omitempty"` // the m-of-n gate's eligible approvers, in policy order
 }
 
-// FindToolCall returns the journal index of the model turn that requested toolUseID, and the
-// call itself (its name and arguments), or ok=false if no recorded turn requested it.
+// FindToolCall returns the journal index of the record that requested toolUseID, and the call
+// itself (its name and arguments), or ok=false if no record requested it. The request of an
+// agent's tool call is the model turn that made it; the request of a gated plan flow node (whose
+// toolUseID is the node's key) is its ApprovalRequest, and the call's name and arguments are the
+// node's name and input. The first request in journal order is returned.
 func FindToolCall(recs []Record, toolUseID string) (idx int, call ToolUse, ok bool) {
 	for i, r := range recs {
+		if q, ok := decodeApprovalRequest(r, toolUseID); ok {
+			return i, ToolUse{ID: q.ToolUseID, Name: q.ToolName, Args: q.Args}, true
+		}
 		if r.Kind != StepModel || r.Message == nil {
 			continue
 		}
@@ -517,6 +523,7 @@ type Decision struct {
 }
 
 // protocol:claims begin Submit
+// protocol:flows begin ADecide
 
 // SubmitDecision records d, one approver's signed decision on an m-of-n gated call. After
 // enough decisions land, re-run the pause's RootRunID. (A single-approver gate uses Approve.)
@@ -529,6 +536,7 @@ func SubmitDecision(ctx context.Context, store *Journal, d Decision, opts ...App
 	return submitDecision(ctx, store, "SubmitDecision", d, opts)
 }
 
+// protocol:flows end
 // protocol:claims end
 
 func submitDecision(ctx context.Context, store *Journal, op string, d Decision, opts []ApproveOption) error {

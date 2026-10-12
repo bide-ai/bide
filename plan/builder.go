@@ -75,6 +75,54 @@ func Idempotent() NodeOption {
 	return func(n *node) { n.safety.ReadOnly, n.safety.Idempotent = false, true }
 }
 
+// Approval gates the node on p, a human approval policy, exactly as agent.WithApproval gates a
+// tool: Run pauses before the node runs, returning *agent.ApprovalPending, until the gate passes,
+// and a denied gate stops the run with ErrApprovalDenied (see Flow.Run). agent.SingleApproval() is
+// the one-decision gate, decided with agent.Approve; any other policy is m-of-n, decided with
+// agent.SubmitDecision and verified with the flow's approver verifiers (WithApproverVerifiers).
+// The pause's ToolUseID is the node's key ("node:<name>", "node:iter:<n>:<name>" in a loop body)
+// and its ToolName the node's name.
+//
+// A node carries one gate: Approval on a Tool whose agent tool declares another gate is an error
+// at Build, as is a nil p, so an option can neither loosen nor remove a tool's own gate.
+func Approval(p *agent.ApprovalPolicy) NodeOption {
+	return func(n *node) {
+		switch {
+		case p == nil:
+			n.optErr = fmt.Errorf("plan: step %q: Approval(nil): pass a policy", n.name)
+		case n.approval != nil && !sameGate(n.approval, p):
+			n.optErr = fmt.Errorf("plan: step %q: Approval sets a gate on a node whose tool declares another (%s); a node carries one gate", n.name, gateText(n.approval))
+		default:
+			n.approval = p.Clone()
+		}
+	}
+}
+
+// sameGate reports whether a and b are the same approval policy (both SingleApproval, or the
+// same Need and approvers in the same order).
+func sameGate(a, b *agent.ApprovalPolicy) bool {
+	ja, errA := json.Marshal(a)
+	jb, errB := json.Marshal(b)
+	return errA == nil && errB == nil && string(ja) == string(jb)
+}
+
+// gateText renders a gate for an error message: "single approval" or "2 of [ops finance]".
+func gateText(p *agent.ApprovalPolicy) string {
+	if g := topologyGate(p); g != nil && !g.Single {
+		return fmt.Sprintf("%d of %v", g.Need, g.Approvers)
+	}
+	return "single approval"
+}
+
+// WithApproverVerifiers binds the resolver of each approver's signature verifier for the flow's
+// m-of-n approval gates, as agent.Agent.WithApproverVerifiers does for an agent's: a decision
+// counts only if it verifies under the verifier this returns for its approver. Build refuses a
+// flow with an m-of-n gate and no resolver. A later call overrides an earlier one.
+func (b *Builder[In, Out]) WithApproverVerifiers(f agent.ApproverVerifierFor) *Builder[In, Out] {
+	b.core.approverVerifiers = f
+	return b
+}
+
 // applyNodeOptions applies opts to n in order (a later option wins), then returns
 // n so a constructor can inline it into register. It is the single place both the
 // builder constructors and the registry share, so their Safety handling is identical.
@@ -95,6 +143,13 @@ func safetyFromOptions(base agent.Safety, opts []NodeOption) agent.Safety {
 	return applyNodeOptions(&node{safety: base}, opts).safety
 }
 
+// gateFromOptions resolves opts to the approval gate they set, starting from base (a Tool's own
+// gate, or none), with the error an option recorded, for a Registry block.
+func gateFromOptions(name string, base *agent.ApprovalPolicy, opts []NodeOption) (*agent.ApprovalPolicy, error) {
+	n := applyNodeOptions(&node{name: name, approval: base}, opts)
+	return n.approval, n.optErr
+}
+
 // register appends n to the core, enforcing name uniqueness.
 // A bad name is recorded as a deferred error on core.errs (surfaced at Build) rather
 // than panicking, so authoring never aborts mid-construction. The first registered
@@ -102,6 +157,10 @@ func safetyFromOptions(base agent.Safety, opts []NodeOption) agent.Safety {
 //
 // A name checkStepName refuses is recorded the same way.
 func (c *builderCore) register(n *node) {
+	if n.optErr != nil {
+		c.errs = append(c.errs, n.optErr)
+		return
+	}
 	if err := checkStepName(n.name); err != nil {
 		c.errs = append(c.errs, fmt.Errorf("plan: %w", err))
 		return
@@ -199,7 +258,7 @@ func (b *Builder[In, Out]) Tool[I, O any](name string, t agent.Tool, opts ...Nod
 		inType:   typeOf[I](),
 		outType:  typeOf[O](),
 		safety:   spec.Safety, // auto-derived; an explicit option below overrides it
-		approval: spec.Approval,
+		approval: spec.Approval.Clone(),
 		run: func(ctx context.Context, in any) (any, error) {
 			typed, ok := in.(I)
 			if !ok {

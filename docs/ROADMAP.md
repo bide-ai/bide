@@ -25,6 +25,7 @@ The API redesign ([design proposal](https://github.com/bide-ai/bide/pull/64)):
 - Done in v0.10.0: tool internals on a tool specification, with approval split from safety and tool timeouts (P12); construction under `Build`, with option scopes and `RunInfo` (P13); and one run entry point with per-run options that survive recovery, `Cancel`, `Status` and recovery dispatch, under transitional names (P14).
 - Done in v0.11.0 (P15): the final names, and the transitional API removed (the `Durable` interface, the string entry points, the builder methods, the old `Tool` method set); the journal verbs are Go 1.27 generic methods (`j.Step`, `j.Parallel`, ...). The CHANGELOG lists the changes name by name.
 - Done after v0.12.0 (P16, docs and cleanup): the doccheck allowlist is empty ([#178](https://github.com/bide-ai/bide/pull/178)), the main public API has runnable `Example` tests ([#179](https://github.com/bide-ai/bide/pull/179)), and stale text (P-numbers, migration notes) is out of godoc ([#178](https://github.com/bide-ai/bide/pull/178)).
+- Done after v0.13.0: approval gates on plan flow nodes, enforced by the agent's own gate (the same records, counting rule and evidence), with the flows TLA+ model extended to check that a gated node never runs before k approvals ([flows guide](guides/flows.md#approval-gates-on-nodes)).
 - Next: P16's last step, moving the journal format tag from `v1-dev` to its final value, waits for 1.0.
 
 Changes that touch claims, the journal, leases, sagas or proofs are reviewed adversarially before they merge.

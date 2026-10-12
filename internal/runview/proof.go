@@ -101,7 +101,8 @@ func EvidenceProver(pkg audit.EvidencePackage, v audit.Verifier, ap Approvals, o
 	}
 }
 
-// checkApprovals runs audit.VerifyApprovals on every m-of-n gate of recs that journaled its tally,
+// checkApprovals runs audit.VerifyApprovals on every m-of-n gate of recs (a tool call's, or a plan
+// flow node's) that journaled its tally,
 // against ap.Expected when set and otherwise the policy that tally records (the policy the gate
 // enforced), over the evidence
 // actionsFor returns for the call.
@@ -111,43 +112,50 @@ func checkApprovals(recs []agent.Record, ap Approvals, logV audit.Verifier, acti
 		byName[r.Name] = r
 	}
 	out := map[string]ApprovalCheck{}
+	// The gated calls: each model turn's tool calls, and each gated plan flow node's request.
+	var calls []agent.ToolUse
 	for _, r := range recs {
+		if q, ok := flowRequest(r); ok {
+			calls = append(calls, q)
+			continue
+		}
 		if r.Kind != agent.StepModel || r.Message == nil {
 			continue
 		}
 		for _, part := range r.Message.Parts {
-			tu, ok := part.(agent.ToolUse)
-			if !ok {
-				continue
+			if tu, ok := part.(agent.ToolUse); ok {
+				calls = append(calls, tu)
 			}
-			t, ok := byName[agent.ApprovalTallyStep(tu.ID)]
-			if !ok {
-				continue
-			}
-			var tally agent.ApprovalTally
-			if err := audit.UnmarshalStrict(t.Result, &tally); err != nil {
-				out[tu.ID] = ApprovalCheck{Text: "signatures not verified: the journaled tally does not read: " + err.Error()}
-				continue
-			}
-			recorded := agent.ApprovalPolicy{Need: tally.Need, Approvers: tally.Approvers}
-			policy, against := recorded, "against the recorded policy"
-			var mismatch string
-			if ap.Expected != nil {
-				policy, against = *ap.Expected, "against the expected policy"
-				if recorded.Need != policy.Need || !slices.Equal(recorded.Approvers, policy.Approvers) {
-					mismatch = fmt.Sprintf("recorded policy %s differs from expected %s", policyText(recorded), policyText(policy))
-				}
-			}
-			actions, err := actionsFor(tu.ID)
-			if err != nil {
-				out[tu.ID] = ApprovalCheck{Text: "signatures not verified: no evidence for this gate under the signed head: " + err.Error()}
-				continue
-			}
-			v, err := audit.VerifyApprovals(actions, tu.ID, policy, ap.Keys, logV)
-			c := approvalText(v, err, len(policy.Approvers), mismatch)
-			c.Text += " (" + against + ")"
-			out[tu.ID] = c
 		}
+	}
+	for _, tu := range calls {
+		t, ok := byName[agent.ApprovalTallyStep(tu.ID)]
+		if !ok {
+			continue
+		}
+		var tally agent.ApprovalTally
+		if err := audit.UnmarshalStrict(t.Result, &tally); err != nil {
+			out[tu.ID] = ApprovalCheck{Text: "signatures not verified: the journaled tally does not read: " + err.Error()}
+			continue
+		}
+		recorded := agent.ApprovalPolicy{Need: tally.Need, Approvers: tally.Approvers}
+		policy, against := recorded, "against the recorded policy"
+		var mismatch string
+		if ap.Expected != nil {
+			policy, against = *ap.Expected, "against the expected policy"
+			if recorded.Need != policy.Need || !slices.Equal(recorded.Approvers, policy.Approvers) {
+				mismatch = fmt.Sprintf("recorded policy %s differs from expected %s", policyText(recorded), policyText(policy))
+			}
+		}
+		actions, err := actionsFor(tu.ID)
+		if err != nil {
+			out[tu.ID] = ApprovalCheck{Text: "signatures not verified: no evidence for this gate under the signed head: " + err.Error()}
+			continue
+		}
+		v, err := audit.VerifyApprovals(actions, tu.ID, policy, ap.Keys, logV)
+		c := approvalText(v, err, len(policy.Approvers), mismatch)
+		c.Text += " (" + against + ")"
+		out[tu.ID] = c
 	}
 	return out
 }

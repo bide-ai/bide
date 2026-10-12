@@ -57,15 +57,16 @@ type configNode struct {
 	// step is safe to run twice, so a value above it is a load error naming the node, as is
 	// an unknown string (see safetyFromConfig). An approval gate the block declares is kept.
 	Safety string `json:"safety,omitempty"`
-	// Approval, when present, declares an m-of-n human approval gate
-	// that lowers to the built node's approval gate. Absent
-	// keeps the node's existing (1-of-1 or none) approval behavior.
+	// Approval, when present, declares an m-of-n human approval gate that lowers to the built
+	// node's approval gate: Run pauses before the node until Need of the Approvers have signed
+	// approvals (see Approval). Absent keeps the gate the registered block declares (a tool's own,
+	// or none); a block that declares another gate is a load error.
 	Approval *configApproval `json:"approval,omitempty"`
 }
 
 // configApproval is a node's m-of-n approval block: Need decisions required from the
-// bounded Approvers set. It lowers to agent.ApprovalPolicy; Load rejects Need outside
-// [1, len(Approvers)], an empty approver set, and duplicate approver ids.
+// bounded Approvers set. It lowers to agent.ApprovalPolicy; Load rejects a policy
+// agent.ApprovalPolicy.Validate refuses (see configGate).
 type configApproval struct {
 	Need      int      `json:"need"`
 	Approvers []string `json:"approvers"`
@@ -99,6 +100,44 @@ type configWire struct {
 	// hand-built Join). A join created from wiring is not a declared node, so its Safety
 	// is set here. A raise or an unknown string is a load error naming the join.
 	Safety string `json:"safety,omitempty"`
+	// Approval optionally gates the join node, as configNode.Approval gates a node.
+	Approval *configApproval `json:"approval,omitempty"`
+}
+
+// configGate lowers a config "approval" block onto a node whose registered block declares the
+// gate base (nil for none), and returns the gate with the problems that make it a load error: a
+// policy agent.ApprovalPolicy.Validate refuses (no approvers, an empty, repeated or ambiguous id,
+// need outside [1, approvers]), or a block that already declares another gate (a node carries
+// one gate, so a config can neither loosen nor replace a tool's own).
+func configGate(base *agent.ApprovalPolicy, ca *configApproval) (*agent.ApprovalPolicy, []string) {
+	p := &agent.ApprovalPolicy{Need: ca.Need, Approvers: append([]string(nil), ca.Approvers...)}
+	var why []string
+	n := len(ca.Approvers)
+	if n == 0 {
+		why = append(why, "approval.approvers must be non-empty")
+	} else if ca.Need < 1 || ca.Need > n {
+		why = append(why, fmt.Sprintf("approval.need %d must be between 1 and %d (the approver count)", ca.Need, n))
+	}
+	seen := make(map[string]bool, n)
+	for _, id := range ca.Approvers {
+		if id == "" {
+			why = append(why, "approval.approvers has an empty id")
+			continue
+		}
+		if seen[id] {
+			why = append(why, fmt.Sprintf("approval.approvers lists %q more than once", id))
+		}
+		seen[id] = true
+	}
+	// The rest of what the gate refuses (ids that differ only by case or Unicode normalization,
+	// invalid UTF-8), in its words.
+	if err := p.Validate(); len(why) == 0 && err != nil {
+		why = append(why, "approval: "+strings.TrimSuffix(err.Error(), ": "+agent.ErrConfig.Error()))
+	}
+	if base != nil && !sameGate(base, p) {
+		why = append(why, fmt.Sprintf("approval sets a gate on a block that declares another (%s); a node carries one gate", gateText(base)))
+	}
+	return p, why
 }
 
 // configArm is one When arm of a switch: a registered predicate name and the
@@ -196,6 +235,13 @@ type LoadOption func(*builderCore)
 // a bound model fails Build, naming the node.
 func WithLoadedModel(m agent.Model) LoadOption {
 	return func(c *builderCore) { c.model = m }
+}
+
+// WithLoadedApproverVerifiers binds the resolver of each approver's signature verifier for a
+// loaded flow's m-of-n approval gates: the loader's equivalent of Builder.WithApproverVerifiers.
+// A config with an m-of-n "approval" block loaded without it fails Build, naming the node.
+func WithLoadedApproverVerifiers(f agent.ApproverVerifierFor) LoadOption {
+	return func(c *builderCore) { c.approverVerifiers = f }
 }
 
 // LoadReader is Load reading the config from r (for example an *os.File or an HTTP
@@ -428,24 +474,11 @@ func assemble(cfg *config, reg *Registry) (*builderCore, error) {
 		// safety string so an explicit "safety" does not discard it. Invalid blocks are load errors
 		// naming the node, collected with the rest of the drift.
 		if cn.Approval != nil {
-			n := len(cn.Approval.Approvers)
-			if n == 0 {
-				problems = append(problems, fmt.Sprintf("node %q approval.approvers must be non-empty", cn.Name))
-			} else if cn.Approval.Need < 1 || cn.Approval.Need > n {
-				problems = append(problems, fmt.Sprintf("node %q approval.need %d must be between 1 and %d (the approver count)", cn.Name, cn.Approval.Need, n))
+			p, why := configGate(b.approval, cn.Approval)
+			for _, w := range why {
+				problems = append(problems, fmt.Sprintf("node %q %s", cn.Name, w))
 			}
-			seenApprover := make(map[string]bool, n)
-			for _, id := range cn.Approval.Approvers {
-				if id == "" {
-					problems = append(problems, fmt.Sprintf("node %q approval.approvers has an empty id", cn.Name))
-					continue
-				}
-				if seenApprover[id] {
-					problems = append(problems, fmt.Sprintf("node %q approval.approvers lists %q more than once", cn.Name, id))
-				}
-				seenApprover[id] = true
-			}
-			approval = &agent.ApprovalPolicy{Need: cn.Approval.Need, Approvers: cn.Approval.Approvers}
+			approval = p
 		}
 		resolvedNodes = append(resolvedNodes, &node{
 			name:    cn.Name,
@@ -579,8 +612,17 @@ func assemble(cfg *config, reg *Registry) (*builderCore, error) {
 				}
 				jsafety = s
 			}
+			jgate := m.approval
+			if w.Approval != nil {
+				p, why := configGate(jgate, w.Approval)
+				if len(why) > 0 {
+					return nil, fmt.Errorf("plan: load %q: wiring[%d] join %q %s: %w", cfg.Flow, i, w.Join, strings.Join(why, "; "), agent.ErrConfig)
+				}
+				jgate = p
+			}
 			core.register(&node{
 				name:        w.Join,
+				approval:    jgate,
 				block:       w.Merge,
 				kind:        kindJoin,
 				joinInputs:  append([]string(nil), w.Inputs...),

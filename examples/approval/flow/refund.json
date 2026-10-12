@@ -1,0 +1,16 @@
+{
+  "version": 1,
+  "flow": "refund-flow",
+  "in": "main.Order",
+  "out": "main.Receipt",
+  "entry": "lookup",
+  "nodes": [
+    {"name": "lookup", "block": "lookup"},
+    {"name": "refund", "block": "refund", "approval": {"need": 2, "approvers": ["ops", "finance", "risk"]}},
+    {"name": "notify", "block": "notify"}
+  ],
+  "wiring": [
+    {"edge": ["lookup", "refund"]},
+    {"edge": ["refund", "notify"]}
+  ]
+}

@@ -190,6 +190,7 @@ func (o Options) view(ctx context.Context, runID string) (*View, error) {
 	for i := range v.Gates {
 		signatures(&v.Gates[i], v.Proof)
 	}
+	markGates(v.Graph, v.Gates) // the graph's gated nodes say whether their signatures verified
 	return v, nil
 }
 

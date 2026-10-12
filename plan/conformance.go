@@ -59,6 +59,9 @@ func (f *Flow[In, Out]) Conform(ctx context.Context, store *agent.Journal, runID
 //     Result is the JSON-encoded chosen target step name), or "switch:iter:<i>:<over>"
 //     for a loop Switch's iteration i. The chosen target must be a declared arm.
 //   - "run:complete"   -- the run's completion, recording this flow's name and its output.
+//   - a gated node's approval records ("approval-request:", "approval-pending:" and
+//     "approval-tally:" under its key, which must be a reached gated node's, and decisions,
+//     which must name a declared gated node).
 //
 // conform replays the run's routing from its recorded choices, as Run walks it: a
 // record of a node the walk did not reach (a node on an arm its Switch did not take),
@@ -114,6 +117,16 @@ func (c *builderCore) conform(ctx context.Context, store *agent.Journal, runID s
 	}
 	live, iters := c.replayRouting(choices)
 
+	// The node keys of the approval gates the run reached, by the encoded key their records are
+	// named with, from each gate's request (agent.ApprovalRequest).
+	gateKeys := make(map[string]string)
+	for _, r := range recs {
+		var q agent.ApprovalRequest
+		if strings.HasPrefix(r.Name, "approval-request:") && json.Unmarshal(r.Result, &q) == nil && r.Name == agent.ApprovalRequestStep(q.ToolUseID) {
+			gateKeys[strings.TrimPrefix(r.Name, "approval-request:")] = q.ToolUseID
+		}
+	}
+
 	// The current flow's topology digest, so a journaled flow:digest record can be
 	// checked for equality: a mismatch means the run executed against a DIFFERENT
 	// declared topology than the flow now describes.
@@ -137,8 +150,42 @@ func (c *builderCore) conform(ctx context.Context, store *agent.Journal, runID s
 			diffs = append(diffs, name+" (a node on a path the run did not take)")
 		}
 	}
+	// gate reports the divergence, if any, of a record of the approval gate of the node key key: the
+	// node must be declared, gated, and reached.
+	gate := func(name, key string) {
+		n, iter, isNode := parseNodeKey(key)
+		if !isNode || c.byName[n] == nil || c.byName[n].approval == nil {
+			diffs = append(diffs, name+" (approval gate of an undeclared or ungated step)")
+			return
+		}
+		reached(name, n, iter)
+	}
 	for _, r := range recs {
 		switch {
+		case strings.HasPrefix(r.Name, "approval-request:"):
+			key, ok := gateKeys[strings.TrimPrefix(r.Name, "approval-request:")]
+			if !ok {
+				diffs = append(diffs, r.Name+" (unreadable approval request)")
+				continue
+			}
+			gate(r.Name, key)
+
+		case strings.HasPrefix(r.Name, "approval-pending:"), strings.HasPrefix(r.Name, "approval-tally:"):
+			_, enc, _ := strings.Cut(r.Name, ":")
+			key, ok := gateKeys[enc]
+			if !ok {
+				diffs = append(diffs, r.Name+" (approval record of a gate the run never reached)")
+				continue
+			}
+			gate(r.Name, key)
+
+		case r.Kind == agent.StepApproval && strings.HasPrefix(r.Name, "approval:"):
+			// A decision is recorded from outside the run, possibly before the run reaches the
+			// gate, so it need only name a declared gated node.
+			if n, _, isNode := parseNodeKey(r.ToolUseID); !isNode || c.byName[n] == nil || c.byName[n].approval == nil {
+				diffs = append(diffs, r.Name+" (decision on an undeclared or ungated step)")
+			}
+
 		case r.Name == runStartStep:
 			haveStart = true
 			var st agent.RunStart

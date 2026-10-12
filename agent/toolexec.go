@@ -55,11 +55,19 @@ func (a *Agent) quorumTally(ctx context.Context, runID string, tu ToolUse, pol *
 	if _, _, err := approverSeats(*pol, a.approverVerifiers); err != nil {
 		return ApprovalTally{}, false, fmt.Errorf("agent: tool %q: %w", tu.Name, err)
 	}
-	recs, err := a.store.History(ctx, runID)
+	return tallyGate(ctx, a.store, runID, ApprovalSubject{RunID: runID, ToolUseID: tu.ID, ToolName: tu.Name, Args: tu.Args}, pol, a.approverVerifiers)
+}
+
+// tallyGate is the m-of-n count over runID's journal for the gated call s, after the caller has
+// validated pol and its seats: the recorded terminal tally if there is one, else TallyApprovals
+// over the journal, recorded under ApprovalTallyStep(s.ToolUseID) once it is terminal. An agent's
+// tool call (quorumTally) and a plan flow node (flowGate) both count through it.
+func tallyGate(ctx context.Context, store *Journal, runID string, s ApprovalSubject, pol *ApprovalPolicy, verifierFor ApproverVerifierFor) (ApprovalTally, bool, error) {
+	recs, err := store.History(ctx, runID)
 	if err != nil {
 		return ApprovalTally{}, false, fmt.Errorf("load history %s: %w (%w)", runID, err, ErrStorage)
 	}
-	name := ApprovalTallyStep(tu.ID)
+	name := ApprovalTallyStep(s.ToolUseID)
 	for _, r := range recs {
 		if r.Name == name && r.Kind == StepValue {
 			t, err := decodeTally(runID, r)
@@ -69,12 +77,11 @@ func (a *Agent) quorumTally(ctx context.Context, runID string, tu ToolUse, pol *
 			return t, true, nil
 		}
 	}
-	subject := ApprovalSubject{RunID: runID, ToolUseID: tu.ID, ToolName: tu.Name, Args: tu.Args}
-	tally, _ := TallyApprovals(recs, subject, *pol, a.approverVerifiers)
+	tally, _ := TallyApprovals(recs, s, *pol, verifierFor)
 	if !tally.Passed() && !tally.Unreachable() {
 		return tally, false, nil
 	}
-	tally, err = step(ctx, a.store, runID, name, func(context.Context) (ApprovalTally, error) { return tally, nil }, WithSafety(Safety{ReadOnly: true}))
+	tally, err = step(ctx, store, runID, name, func(context.Context) (ApprovalTally, error) { return tally, nil }, WithSafety(Safety{ReadOnly: true}))
 	if err != nil {
 		return ApprovalTally{}, false, fmt.Errorf("record %s (run %s): %w (%w)", name, runID, err, ErrStorage)
 	}

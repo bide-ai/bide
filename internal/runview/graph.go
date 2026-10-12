@@ -44,18 +44,30 @@ type Graph struct {
 	Mermaid string      `json:"mermaid"`
 	Width   int         `json:"-"`
 	Height  int         `json:"-"`
+	nw, nh  int         // node size: larger when a node carries a gate, for its gate lines
+	gy      int         // the gap between rows: smaller in a gated graph, so its taller nodes fit a screen
 }
 
 // GraphNode is one declared node and what the run did with it.
 type GraphNode struct {
 	Name   string `json:"name"`
 	Kind   string `json:"kind"`
-	Status string `json:"status"` // done, halted, attempted, not-reached
-	Iters  int    `json:"iters,omitempty"`
-	Last   bool   `json:"last,omitempty"`
-	Note   string `json:"note,omitempty"`  // a line under the box (a config's approval gate)
-	Title  string `json:"title,omitempty"` // the tooltip, when not "name: status"
-	x, y   int
+	Status string `json:"status"` // done, halted, attempted, waiting (at its approval gate), not-reached
+	// Gate is the node's declared approval gate ("2 of 3", "one decision"), empty for none, and
+	// GateStatus where its latest evaluation stands (see Gate.Status).
+	Gate       string `json:"gate,omitempty"`
+	GateStatus string `json:"gate_status,omitempty"`
+	// GateLine and SigLine are what the node's box says about its gate, short enough to read in
+	// a screenshot: "approved 2 of 3" or "waiting, 1 of 2 approvals", and "signatures verified" (or
+	// not, and why in short). GateClass styles them: good, wait or bad.
+	GateLine  string `json:"gate_line,omitempty"`
+	SigLine   string `json:"sig_line,omitempty"`
+	GateClass string `json:"gate_class,omitempty"`
+	Iters     int    `json:"iters,omitempty"`
+	Last      bool   `json:"last,omitempty"`
+	Note      string `json:"note,omitempty"`  // a line under the box (a config's approval gate)
+	Title     string `json:"title,omitempty"` // the tooltip, when not "name: status"
+	x, y      int
 }
 
 // GraphEdge is one declared edge or Switch arm, and whether the run took it.
@@ -116,17 +128,43 @@ func flowGraph(ctx context.Context, runID string, recs []agent.Record, flow *Flo
 		return nil, nil, last
 	}
 	t := flow.Topology
+	// Each gated node's latest gate (the last iteration's, in a loop).
+	gateOf := map[string]Gate{}
+	for _, gt := range v.Gates {
+		if n, _, ok := nodeOf(gt.ToolUseID); ok {
+			gateOf[n] = gt
+		}
+	}
 	g := &Graph{}
 	for _, n := range t.Nodes {
 		st := status[n.Name]
+		gn := GraphNode{Name: n.Name, Kind: string(n.Kind), Iters: iters[n.Name], Last: n.Name == last}
+		if gd := n.Gate; gd != nil {
+			gn.Gate = "one decision"
+			if !gd.Single {
+				gn.Gate = fmt.Sprintf("%d of %d", gd.Need, len(gd.Approvers))
+			}
+			if gt, ok := gateOf[n.Name]; ok && gt.Waiting && st == "" {
+				st, last = "waiting", n.Name // the run stopped here, at the gate
+			}
+		}
 		if st == "" {
 			st = "not-reached"
 		}
-		g.Nodes = append(g.Nodes, GraphNode{Name: n.Name, Kind: string(n.Kind), Status: st, Iters: iters[n.Name], Last: n.Name == last})
+		gn.Status = st
+		g.Nodes = append(g.Nodes, gn)
+	}
+	for i := range g.Nodes {
+		g.Nodes[i].Last = g.Nodes[i].Name == last
+	}
+	waiting := map[string]bool{}
+	for _, n := range g.Nodes {
+		waiting[n.Name] = n.Status == "waiting"
 	}
 	ran := func(n string) bool { s := status[n]; return s == "done" || s == "halted" || s == "attempted" }
+	reached := func(n string) bool { return ran(n) || waiting[n] } // the path into a node paused at its gate was taken
 	for _, e := range t.Edges {
-		g.Edges = append(g.Edges, GraphEdge{From: e.From, To: e.To, Taken: ran(e.From) && ran(e.To)})
+		g.Edges = append(g.Edges, GraphEdge{From: e.From, To: e.To, Taken: ran(e.From) && reached(e.To)})
 	}
 	for _, b := range t.Branches {
 		for _, a := range b.Arms {
@@ -137,11 +175,12 @@ func flowGraph(ctx context.Context, runID string, recs []agent.Record, flow *Flo
 			case a.Else:
 				label = "else"
 			}
-			taken := ran(b.Over) && ran(a.Target) && (chosen[b.Over] == a.Target || a.LoopBack && iters[a.Target] > 1)
+			taken := ran(b.Over) && reached(a.Target) && (chosen[b.Over] == a.Target || a.LoopBack && iters[a.Target] > 1)
 			g.Edges = append(g.Edges, GraphEdge{From: b.Over, To: a.Target, Label: label, Taken: taken, Back: a.LoopBack})
 		}
 	}
 	layout(g, t.Entry)
+	markGates(g, v.Gates)
 	g.Mermaid = mermaid(g)
 
 	c := &Conformance{Digest: "not compared", Source: flow.Source}
@@ -243,6 +282,9 @@ func splitIter(s string) (string, int) {
 
 const (
 	nodeW, nodeH = 168, 40
+	// A graph with a gated node draws every node this size, so the gate's two lines fit in the
+	// box and stay legible in a scaled-down screenshot.
+	gateW, gateH = 236, 68
 	gapX, gapY   = 36, 56
 	pad          = 24
 )
@@ -250,6 +292,11 @@ const (
 // layout ranks the nodes by their longest forward path from entry (loop-back arms excluded) and
 // places each rank on a row, centered.
 func layout(g *Graph, entry string) {
+	g.nw, g.nh, g.gy = nodeW, nodeH, gapY
+	if slices.ContainsFunc(g.Nodes, func(n GraphNode) bool { return n.Gate != "" }) {
+		g.nw, g.nh, g.gy = gateW, gateH, gapY-16
+	}
+	nodeW, nodeH, gapY := g.nw, g.nh, g.gy
 	idx := map[string]int{}
 	for i, n := range g.Nodes {
 		idx[n.Name] = i
@@ -293,8 +340,84 @@ func layout(g *Graph, entry string) {
 	g.SVG = svg(g, idx)
 }
 
+// markGates sets each gated node's gate lines from gates (after their signatures are checked, when
+// they are) and draws the graph again.
+func markGates(g *Graph, gates []Gate) {
+	if g == nil {
+		return
+	}
+	gateOf := map[string]Gate{}
+	for _, gt := range gates {
+		if n, _, ok := nodeOf(gt.ToolUseID); ok {
+			gateOf[n] = gt
+		}
+	}
+	idx := map[string]int{}
+	for i := range g.Nodes {
+		n := &g.Nodes[i]
+		idx[n.Name] = i
+		if n.Gate == "" {
+			continue
+		}
+		gt, ok := gateOf[n.Name]
+		if !ok {
+			n.GateLine, n.GateClass = "approval "+n.Gate, "wait"
+			continue
+		}
+		n.GateStatus = gt.Status
+		n.GateLine, n.GateClass, n.SigLine = gateLines(gt)
+	}
+	g.SVG = svg(g, idx)
+}
+
+// gateLines phrases a gate for its node's box: where it stands, its style, and its signatures.
+func gateLines(gt Gate) (line, class, sig string) {
+	state, _, _ := strings.Cut(gt.Status, " (")
+	switch {
+	case gt.Single:
+		line = "approval: " + state
+	case state == "approved":
+		line = fmt.Sprintf("approved %d of %d", len(gt.ApprovedBy), len(gt.Approvers))
+	default:
+		line = fmt.Sprintf("%s, %d of %d approvals", state, len(gt.ApprovedBy), gt.Need)
+	}
+	if gt.Waiting {
+		line = fmt.Sprintf("waiting, %d of %d approvals", len(gt.ApprovedBy), gt.Need)
+	}
+	class = "wait"
+	switch state {
+	case "approved":
+		class = "good"
+	case "denied", "closed, not approved":
+		class = "bad"
+	}
+	switch {
+	case gt.Single:
+		sig = "one unsigned decision"
+	case gt.SignaturesOK:
+		sig = "signatures verified"
+	case strings.HasPrefix(gt.Signatures, "signatures NOT"):
+		sig, class = "signatures NOT verified", "bad"
+	case gt.Tallied:
+		sig = "signatures not checked"
+	case gt.Waiting && len(gt.Pending) > 0:
+		sig = "pending: " + strings.Join(gt.Pending, ", ")
+	}
+	return line, class, sig
+}
+
+// Headline is the gate's state in a few words, as the page's gate card and the node's box show it.
+func (gt Gate) Headline() string { l, _, _ := gateLines(gt); return l }
+
+// Class is the gate's style: good, wait or bad.
+func (gt Gate) Class() string { _, c, _ := gateLines(gt); return c }
+
+// SigLine is the gate's signature verdict in a few words.
+func (gt Gate) SigLine() string { _, _, s := gateLines(gt); return s }
+
 // svg draws the graph. Every label is escaped.
 func svg(g *Graph, idx map[string]int) string {
+	nodeW, nodeH, gapY := g.nw, g.nh, g.gy
 	var b strings.Builder
 	fmt.Fprintf(&b, `<svg class="graph" viewBox="0 0 %d %d" width="%d" height="%d" role="img" aria-label="flow topology with the run's path">`, g.Width, g.Height, g.Width, g.Height)
 	b.WriteString(`<defs><marker id="arrow" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse"><path d="M0,0 L10,5 L0,10 z" class="arrowhead"/></marker>` +
@@ -350,13 +473,23 @@ func svg(g *Graph, idx map[string]int) string {
 			label += " x" + strconv.Itoa(n.Iters)
 		}
 		fmt.Fprintf(&b, `<text x="%d" y="%d" class="nlabel">%s</text>`, n.x+nodeW/2, n.y+17, html.EscapeString(label))
+		title := n.Name + ": " + n.Status
 		fmt.Fprintf(&b, `<text x="%d" y="%d" class="nkind">%s</text>`, n.x+nodeW/2, n.y+32, html.EscapeString(n.Kind+" · "+n.Status))
 		if n.Note != "" {
 			fmt.Fprintf(&b, `<text x="%d" y="%d" class="nnote">%s</text>`, n.x+nodeW/2, n.y+nodeH+13, html.EscapeString(n.Note))
 		}
-		title := n.Title
-		if title == "" {
-			title = n.Name + ": " + n.Status
+		if n.Title != "" {
+			title = n.Title
+		}
+		if n.Gate != "" {
+			title += "\napproval gate " + n.Gate
+			if n.GateStatus != "" {
+				title += ": " + n.GateStatus
+			}
+			fmt.Fprintf(&b, `<text x="%d" y="%d" class="ngate %s">%s</text>`, n.x+nodeW/2, n.y+49, n.GateClass, html.EscapeString(n.GateLine))
+			if n.SigLine != "" {
+				fmt.Fprintf(&b, `<text x="%d" y="%d" class="ngate %s">%s</text>`, n.x+nodeW/2, n.y+64, n.GateClass, html.EscapeString(n.SigLine))
+			}
 		}
 		fmt.Fprintf(&b, `<title>%s</title></g>`, html.EscapeString(title))
 	}
@@ -385,6 +518,6 @@ func mermaid(g *Graph) string {
 			fmt.Fprintf(&b, "  %s %s %s\n", id(e.From), arrow, id(e.To))
 		}
 	}
-	b.WriteString("  classDef done fill:#d8f0dd,stroke:#2f7d43\n  classDef halted fill:#fbe0dc,stroke:#b3261e\n  classDef attempted fill:#fff2cc,stroke:#9a6b00\n  classDef notreached fill:#eee,stroke:#999,stroke-dasharray:4\n")
+	b.WriteString("  classDef done fill:#d8f0dd,stroke:#2f7d43\n  classDef halted fill:#fbe0dc,stroke:#b3261e\n  classDef attempted fill:#fff2cc,stroke:#9a6b00\n  classDef waiting fill:#e3ecfb,stroke:#2b5fb4\n  classDef notreached fill:#eee,stroke:#999,stroke-dasharray:4\n")
 	return b.String()
 }

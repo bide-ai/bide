@@ -45,9 +45,13 @@ type node struct {
 	// runtime resume property, not part of the wired topology, so it deliberately
 	// does NOT participate in Digest (a flow's identity is its shape).
 	safety agent.Safety
-	// approval is the approval gate a wrapped agent tool (its ToolSpec.Approval) or a config
-	// "approval" block declares. Build refuses a flow with one, since flows do not enforce it.
+	// approval is the node's approval gate: a wrapped agent tool's ToolSpec.Approval, the
+	// Approval option, or a config "approval" block. Run pauses before the node until the gate
+	// passes (see Flow.Run). Digest and Topology commit to it.
 	approval *agent.ApprovalPolicy
+	// optErr is an error an option recorded (Approval on a node that carries another gate), which
+	// register surfaces at Build.
+	optErr error
 	// prompt is the raw prompt template of a kindModel node, recorded at
 	// construction. It is a Go text/template rendered with the decoded input I as
 	// data at run time, so {{.Field}} references the input's fields. It is empty
@@ -132,6 +136,10 @@ type builderCore struct {
 	// bound model, naming the node. It is a runtime binding, not part of the wired
 	// topology, so it is NOT part of Digest.
 	model agent.Model
+	// approverVerifiers resolves each approver's signature verifier for the flow's m-of-n gates
+	// (WithApproverVerifiers, WithLoadedApproverVerifiers). Build refuses a flow with an m-of-n
+	// gate and none. Like model it is a runtime binding, not part of Digest.
+	approverVerifiers agent.ApproverVerifierFor
 	// loops are the bounded loops Build derived from the LoopBack arms (see
 	// loopSpec). They are populated by Build (deriveLoops) and carried onto the
 	// sealed flow so Run can drive each loop region, and digest/render/conform can

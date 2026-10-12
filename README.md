@@ -202,7 +202,10 @@ trail) come from the journal. The graph exists as a derived view:
 To author a graph, use the `plan` package: a constrained, type-checked flow builder that compiles
 to this runtime and inherits at-most-once and the audit trail. You wire typed nodes (`Step`, `Tool`, `Model`, `Switch`, fan-in `Join`, bounded
 `LoopBack`) into a `Flow`, or author the same topology as declarative config (`plan.Load`) that a
-higher layer such as a visual builder can emit.
+higher layer such as a visual builder can emit. A node can carry an m-of-n approval gate
+(`plan.Approval`, or `approval: {need, approvers}` in config): the flow pauses before the node until
+k approvers have signed its exact input, with the same journaled gate and offline evidence as an
+agent's tool call.
 
 An authored graph is a diagram; a derived graph is reconstructed from the journal, so it is
 exactly what ran. The `plan` layer ties
@@ -618,11 +621,11 @@ See [docs/guides/audit.md](docs/guides/audit.md) for the model, the API, and the
 `bide-view` opens a read-only page for one run, served on `127.0.0.1` from a SQLite or Postgres
 journal or an exported one. It shows the run's timeline (model turns, tool calls and their `Safety`,
 attempts, approvals), a halted operation with the `ResolveHalt` call that records its outcome, each
-approval gate's k-of-n status and whether its signatures verify, a plan flow's path over its declared
-topology, and whether the journal verifies against a signed tree head or an evidence package. It
-never writes to the store. `bide-view -config flow.yaml` shows a flow definition the same way, with
-its problems marked on the graph, and `-check` runs that check in CI. Install it with
-`go install github.com/bide-ai/bide/cmd/bide-view@v0.13.0`; see the
+approval gate's k-of-n status (a tool call's or a flow node's) and whether its signatures verify, a
+plan flow's path over its declared topology, and whether the journal verifies against a signed tree
+head or an evidence package. It never writes to the store. `bide-view -config flow.yaml` shows a flow
+definition the same way, with its problems marked on the graph, and `-check` runs that check in CI.
+Install it with `go install github.com/bide-ai/bide/cmd/bide-view@v0.13.0`; see the
 [run viewer guide](docs/guides/run-viewer.md).
 
 <table>
@@ -768,8 +771,9 @@ offline that k named approvers signed off on this exact call *before* it ran (ea
 only under the signature scheme journaled with it, which must be its approver key's), under the expected
 policy, from evidence that cannot leave a decision out unnoticed. Each approver needs a key of their
 own: a policy two of whose approvers resolve to one key is refused with `ErrConfig`, since whoever
-holds that key could sign as both. See the [approval guide](docs/guides/hitl-approval.md); runnable across
-separate processes in `examples/approval`.
+holds that key could sign as both. A [plan flow node](docs/guides/flows.md#approval-gates-on-nodes)
+takes the same gate. See the [approval guide](docs/guides/hitl-approval.md); runnable across
+separate processes in `examples/approval` (and `examples/approval/flow` for a gated flow node).
 
 ## Errors
 
@@ -984,7 +988,7 @@ New here? Start with **[Getting started](docs/getting-started.md)**, use the **[
 
 **Authoring**
 
-- **[Flows](docs/guides/flows.md)**: the `plan` typed flow builder. Author topology (`Step`/`Tool`/`Model`/`Switch`/`Join`/`LoopBack`) that lowers to the same journal, then prove a run followed it (`Conform`). Runnable: `examples/plan`.
+- **[Flows](docs/guides/flows.md)**: the `plan` typed flow builder. Author topology (`Step`/`Tool`/`Model`/`Switch`/`Join`/`LoopBack`) that lowers to the same journal, gate a node on m-of-n human approval, then prove a run followed it (`Conform`). Runnable: `examples/plan`.
 - **[Durable steps](docs/guides/durable-steps.md)**: compose your own durable work: `Step`, `Parallel`/`Task` fan-in, sagas (`WithSaga`), and durable timers (`Sleep`/`WaitUntil`). Runnable: `examples/parallel`.
 - **[Reliability](docs/guides/reliability.md)**: per-attempt timeouts, classified retry, hedged model calls, rate limiting, and cost tracking, and how they compose. Runnable: `examples/hedge`.
 - **[Signals and ambient](docs/guides/signals.md)**: external events into a run: durable timers and the `Waker`, human-in-the-loop (`Interrupt`/`AnswerInterrupt`), and durable signals (at-least-once in, exactly-once applied). Runnable: `examples/signals`, `examples/interrupt`.

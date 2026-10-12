@@ -64,7 +64,8 @@ func JournaledTopology(recs []agent.Record) (t Topology, digest string, ok bool,
 // Digest returns a deterministic SHA-256 hash (hex-encoded) of this frozen flow's
 // DECLARED topology: the flow name, every node's name, block, kind, input type and output
 // type (each type with its full package path), every edge, and every Switch and its ordered
-// arms with their predicate names. This is the v2 digest (domain tag
+// arms with their predicate names, and every node's approval gate (written only for a gated node, so
+// an ungated flow's digest does not depend on it). This is the v2 digest (domain tag
 // "bide.plan.topology.v2"); DigestV1 is the earlier one. It is a stable fingerprint of
 // the diagram, computed by canonicalizing the spec in insertion order (never by map
 // iteration), so two builds of the same topology produce the same digest and any
@@ -146,6 +147,15 @@ func TopologyDigest(t Topology) (string, error) {
 		writeField(&b, "n.kind", strconv.Itoa(int(k)))
 		writeField(&b, "n.in", n.InCanonical)
 		writeField(&b, "n.out", n.OutCanonical)
+		// A gate is written only for a gated node, so the digest of every ungated flow is the
+		// one it had before flows enforced gates.
+		if g := n.Gate; g != nil {
+			writeField(&b, "n.gate.single", strconv.FormatBool(g.Single))
+			writeField(&b, "n.gate.need", strconv.Itoa(g.Need))
+			for _, id := range g.Approvers {
+				writeField(&b, "n.gate.approver", id)
+			}
+		}
 		if k == kindJoin {
 			j, ok := joins[n.Name]
 			if !ok || len(j.InCanonical) != len(j.Inputs) {
