@@ -919,15 +919,15 @@ every journal the drivers and the resolver can produce is a declared path, which
 | `flow-resolve` | ci | one driver and the resolver (this flow, or another); 1 error reply, 1 crash | 171,696 | 1 s |
 | `flow-all-side-resolve` | ci | every node a side effect, one driver, the resolver | 289,192 | 2 s |
 | `flow-live` | ci | `Completes`, one driver; 1 error reply, 1 crash | 7,820 | <1 s |
-| `flow-gate` | ci | gates on `H` (per iteration) and `T`, 2 of 2; one driver, the resolver; 1 crash | 1,495,973 | 16 s |
-| `flow-gate-live` | ci | `Completes` with gates on `H` and `T`, 2 of 2; one driver; 1 error reply, 1 crash | 572,783 | 42 s |
+| `flow-gate` | ci | gates on `H` (per iteration) and `T`, 2 of 2; one driver, the resolver; 1 crash | 2,575,445 | 7 min (1 worker, beside other runs) |
+| `flow-gate-live` | ci | `Completes` with gates on `H` and `T`, 2 of 2; one driver; 1 error reply, 1 crash | 846,474 | 11 min (1 worker, beside other runs) |
 | `flow-two` | nightly | two drivers; `E`, `H`, `T` side effects; 1 error reply, 1 crash | 2,125,920 | 23 s |
 | `deep-flow-all-side` | nightly | every node a side effect, two drivers | 7,165,894 | 8 min (2 workers, beside other runs) |
 | `deep-flow-resolve` | nightly | two drivers and the resolver, 1 crash | 20,510,386 | 22 min (2 workers, beside other runs) |
 | `deep-flow-live` | nightly | `Completes`, two drivers | 4,251,812 | 17 min (2 workers, beside other runs) |
-| `deep-flow-iter3` | nightly | three loop iterations, two drivers | being re-measured | |
-| `deep-flow-gate` | nightly | gates on `H` and `T`, 1 of 2; two drivers, 1 crash | being measured | |
-| `deep-flow-gate-faults` | nightly | `flow-gate` with 1 error reply | 5,903,374 | 1 min |
+| `deep-flow-iter3` | nightly | three loop iterations, two drivers | 13,797,768 | 15 min (2 workers, beside other runs) |
+| `deep-flow-gate` | nightly | a gate on `T`, 1 of 2; two drivers, 1 crash | 15,558,240 | 13 min (4 workers, beside other runs) |
+| `deep-flow-gate-faults` | nightly | `flow-gate` with 1 error reply | 9,573,096 | 14 min (2 workers, beside other runs) |
 
 Regressions (each must fail with its property): `flows/regress/gate-missing` (a gated node run
 with no gate check, as the runtime would have before flows enforced gates had `Build` not refused

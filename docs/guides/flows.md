@@ -250,7 +250,7 @@ out, err := flow.Run(ctx, j, runID, in) // runs the node once 2 of 3 have approv
 `examples/approval/flow` runs the whole story from a config: the pause, two approvals, one refund,
 and the offline check.
 
-<picture><source media="(prefers-color-scheme: dark)" srcset="./img/flow-gate-approved-dark.png"><img src="./img/flow-gate-approved-light.png" alt="bide-view on a gated refund flow: the refund node approved 2 of 3, signatures verified"></picture>
+![bide-view on a gated refund flow: the refund node approved 2 of 3, signatures verified](./img/flow-gate-approved-dark.png)
 
 ## Cryptographic conformance
 
