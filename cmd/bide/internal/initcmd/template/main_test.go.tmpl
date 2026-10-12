@@ -4,13 +4,25 @@ import (
 	"context"
 	"crypto/ed25519"
 	"encoding/json"
+	"errors"
 	"os"
+	"os/exec"
 	"path/filepath"
+	"strings"
 	"testing"
 
 	"github.com/bide-ai/bide/agent"
 	"github.com/bide-ai/bide/audit"
 )
+
+// TestMain lets the test binary run the program itself, for TestCrashAndRecover.
+func TestMain(m *testing.M) {
+	if os.Getenv("SCAFFOLD_RUN_MAIN") == "1" {
+		main()
+		os.Exit(0)
+	}
+	os.Exit(m.Run())
+}
 
 // TestStory: the run pauses at the gate, two approvers sign, the refund runs once, a second run
 // repeats nothing, and the evidence verifies: 2 of 3 approvers signed this exact refund.
@@ -41,5 +53,39 @@ func TestStory(t *testing.T) {
 	v, err := audit.VerifyApprovals(pkg.Actions, gateKey, policy, k.verifiers(), audit.Ed25519Verifier{Pub: k["log"].Public().(ed25519.PublicKey)})
 	if err != nil || !v.OK {
 		t.Fatalf("the approvals do not verify: %v %v", err, v.Problems)
+	}
+}
+
+// TestCrashAndRecover: the process dies inside notify, after the refund's result is journaled (exit
+// status 3). The next start recovers the interrupted run: it completes, and the provider holds
+// exactly one refund. This is BIDE_CRASH=notify go run . followed by go run .
+func TestCrashAndRecover(t *testing.T) {
+	dir := t.TempDir()
+	run := func(env ...string) (int, string) {
+		cmd := exec.Command(os.Args[0], "-test.run=^$")
+		cmd.Dir = dir
+		cmd.Env = append(append(os.Environ(), "SCAFFOLD_RUN_MAIN=1"), env...)
+		out, err := cmd.CombinedOutput()
+		var exit *exec.ExitError
+		if errors.As(err, &exit) {
+			return exit.ExitCode(), string(out)
+		}
+		if err != nil {
+			t.Fatal(err)
+		}
+		return 0, string(out)
+	}
+	if code, out := run("BIDE_CRASH=notify"); code != 3 || !strings.Contains(out, "crash:") {
+		t.Fatalf("the crashing run exited %d, want 3:\n%s", code, out)
+	}
+	if n := (provider{dir: dir}).refunds(); n != 1 {
+		t.Fatalf("after the crash the provider holds %d refunds, want 1 (the refund ran before notify)", n)
+	}
+	code, out := run()
+	if code != 0 || !strings.Contains(out, "recovered 1 interrupted run") || !strings.Contains(out, "done:") {
+		t.Fatalf("the restart exited %d, want 0 having recovered the run and finished:\n%s", code, out)
+	}
+	if n := (provider{dir: dir}).refunds(); n != 1 {
+		t.Fatalf("after recovery the provider holds %d refunds, want exactly 1", n)
 	}
 }
