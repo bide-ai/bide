@@ -11,7 +11,7 @@ import (
 	"time"
 	"unicode/utf8"
 
-	"golang.org/x/sync/errgroup"
+	"github.com/bide-ai/bide/internal/errgroup"
 
 	"github.com/bide-ai/bide/internal/toolhook"
 )

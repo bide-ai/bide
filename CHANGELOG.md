@@ -19,6 +19,7 @@ journal format can change between pre-releases without a version bump. Curated h
 ### Changed
 
 - The `bide-audit` command's code moved from `cmd/bide-audit` to `internal/auditcli` (`auditcli.Main`); `cmd/bide-audit` is a three-line program over it, so the command, its flags, output and exit statuses are unchanged. A new allowlist test, `TestDepsAreCore`, fails if the audit command's import graph reaches past the standard library and the core module. This prepares the single `bide` command ([design note](docs/design/tooling-and-onboarding.md)).
+- The core module no longer requires `golang.org/x/sync`: the agent loop's parallel tool calls run on `internal/errgroup`, a standard-library equivalent of the errgroup subset it used (`WithContext`, `SetLimit`, `Go`, `Wait`, with the same semantics). The core's one remaining dependency is `golang.org/x/text`. Nested modules that required `x/sync` only through the core no longer list it.
 
 ## [0.13.0] - 2026-10-12
 
