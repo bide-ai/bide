@@ -12,9 +12,11 @@ The maintainer decided, after review of this note:
 1. **The core becomes stdlib-only.** The core module drops `golang.org/x/sync` (its one use, an
    errgroup, is replaced by a small stdlib equivalent) and `golang.org/x/text`, and the
    architecture guard becomes an allowlist: the standard library and bide's own packages only.
-   Removing `x/text` needs a further decision, because the standard library has no Unicode
-   normalization or full case folding to replace `approverFoldKey`; it is pending, and the claim
-   and the guard change only once it is settled.
+   The standard library has no Unicode normalization or full case folding to replace
+   `approverFoldKey`, so `x/text` goes by a change of rule: approver ids are printable ASCII only
+   (0x21 to 0x7E), duplicates are found by ASCII case folding, and any other id is refused with
+   `ErrConfig`. This also refuses homoglyphs (a Cyrillic "о" for a Latin "o"), which NFKC case
+   folding did not catch. A breaking change, made while bide has no users.
 2. **The CLI is built on the standard library `flag` package**, not cobra (section 2, "CLI
    framework").
 3. **The `bide_audit_only` build tag and its guard test** are in the plan (section 3).
@@ -72,14 +74,20 @@ core module's tests and guards cover it and the command module is a thin dispatc
 ```
 internal/auditcli   today's cmd/bide-audit package, moved and exported as Main(args, stdout, stderr) int
 internal/runview    unchanged: Main(args, stdout, stderr, Stores) int
-internal/democli    today's cmd/bide-demo logic; the journal store is injected (like runview.Stores)
-internal/initcli    the scaffolder and its embedded template (embed.FS), no new dependencies
+cmd/bide/internal/demo   today's cmd/bide-demo logic, in the bide module (see below)
+cmd/bide/internal/initcmd the scaffolder and its embedded template (embed.FS)
 cmd/bide/main.go    dispatch on os.Args[1]; wires store/sqlite, store/postgres and the YAML decoder
 ```
 
 Go allows `github.com/bide-ai/bide/cmd/bide` to import `github.com/bide-ai/bide/internal/...`
 (the importer is inside the tree rooted at the parent of `internal`), which is how
 `cmd/bide-view` imports `internal/runview` today.
+
+Amended during implementation: the demo and the scaffolder live in the `cmd/bide` module, not in
+the root's `internal/`. The demo's tests run the crash across two processes, which needs a
+file-backed journal (SQLite), and the root module cannot import a store; the scaffolder's test
+builds a project that requires `store/sqlite` too. The audit code stays in the root module, where
+the core's guards cover it.
 
 ### Command and flag map
 
@@ -184,7 +192,7 @@ the union of today's `cmd/bide-view` and `cmd/bide-demo` `go.mod` files:
 
 | Requirement | Why |
 |---|---|
-| `github.com/bide-ai/bide` | the core; `internal/auditcli`, `internal/runview`, `internal/democli`, `internal/initcli` |
+| `github.com/bide-ai/bide` | the core; `internal/auditcli`, `internal/runview` |
 | `github.com/bide-ai/bide/store/sqlite` | `bide view -db`, `bide demo` |
 | `github.com/bide-ai/bide/store/postgres` | `bide view -postgres` |
 | `go.yaml.in/yaml/v3` | `bide view -config` and `bide check` on `.yaml`/`.yml` flow configs |
@@ -248,7 +256,7 @@ otherwise refuses with a message, so a scaffold never names a version that does 
 
 **How the template stays tested.**
 
-1. `internal/initcli` test (core module, every CI run): scaffold into `t.TempDir()`, `go mod edit
+1. `cmd/bide/internal/initcmd` test (every CI run): scaffold into `t.TempDir()`, `go mod edit
    -replace` both bide modules to the checkout, `GOFLAGS=-mod=mod go vet ./... && go test ./...`
    in the scaffold. The scaffold's own `main_test.go` runs the agent, kills nothing (the crash path
    is the demo's job) and asserts the gate paused, two approvals resumed it, the tool ran once and
@@ -285,6 +293,7 @@ shows nothing else beyond `x/sync` and `x/text` (checked on main at `8dde59ad`).
 `internal/auditcli` in the root module, it cannot gain a driver without the root `go.mod`
 gaining one. The guard turns that into a test. Sketch:
 
+<!-- docsnip: skip a sketch; moduleOf is elided -->
 ```go
 // TestAuditCLIDepsAreCore: the audit command's import graph is the standard library, packages of
 // the core module, and the core module's two requirements. An allowlist, not a denylist.
@@ -477,7 +486,7 @@ Ordered PRs, all merged before the v0.14.0 release PR. Each keeps main green.
 1. **Guards first.** The allowlist dependency tests for the core module, `agent` and `plan`
    (section 3); no behaviour change. Lands alone so a later move that breaks it fails loudly.
 2. **Move the logic into the root `internal/` tree.** `cmd/bide-audit` to `internal/auditcli`
-   (exported `Main`), `cmd/bide-demo` logic to `internal/democli` with the store injected. The old
+   (exported `Main`). The old
    `main` packages become three-line wrappers for one PR so CI proves the move changed nothing.
 3. **Add `cmd/bide`.** New module: `go.mod` (requires root, `store/sqlite`, `store/postgres`,
    `go.yaml.in/yaml/v3`; `replace` directives; `toolchain go1.27.0`), dispatcher, the
@@ -487,7 +496,7 @@ Ordered PRs, all merged before the v0.14.0 release PR. Each keeps main green.
    - `.github/workflows/ci.yml`: `MODULES` and the `rest` shard add `cmd/bide`; the Postgres loop
      at line 360 adds `cmd/bide`. `.github/scripts/check-modules.sh` and `shards.sh check-modules`
      fail until both are updated, which is the point.
-4. **`bide init`.** `internal/initcli`, the template, its test (section 2), the scaffold step in
+4. **`bide init`.** `cmd/bide/internal/initcmd`, the template, its test (section 2), the scaffold step in
    `scripts/release.sh` stage 3.
 5. **Remove the old commands.** Delete `cmd/bide-audit`, `cmd/bide-demo`; reduce `cmd/bide-view`
    to the deprecation stub below. Update:
