@@ -154,7 +154,7 @@ func demo(ctx context.Context, dir string, cfg config, p *printer, fast bool) (*
 		}
 	}
 	p.line(p.bold("bide crash demo") + p.dim("  kill an agent mid-payment; it must not charge twice"))
-	pause(800 * time.Millisecond)
+	pause(500 * time.Millisecond)
 
 	// Keys: the log operator signs every tree head and the evidence; each approver signs their
 	// decision. All are generated for this run and live only in dir.
@@ -206,14 +206,14 @@ func demo(ctx context.Context, dir string, cfg config, p *printer, fast bool) (*
 		p.more(fmt.Sprintf("%-8s %s", id, p.green("approved, signed")))
 	}
 	closeJ()
-	pause(900 * time.Millisecond)
+	pause(600 * time.Millisecond)
 
 	// 2. The agent runs in a child process; the parent kills it after the charge, before the
 	// charge's result is journaled.
 	if err := crash(ctx, dir, p, pause); err != nil {
 		return nil, err
 	}
-	pause(1200 * time.Millisecond)
+	pause(1000 * time.Millisecond)
 
 	// 3. The run resumes from its journal and halts: the charge's outcome is unknown.
 	p.step(3, "Restart", "the run resumes from its journal")
@@ -238,7 +238,7 @@ func demo(ctx context.Context, dir string, cfg config, p *printer, fast bool) (*
 	}
 	p.more(p.yellow("outcome unknown: not charging again"))
 	p.more(fmt.Sprintf("provider charges: %d", len(charges)))
-	pause(1500 * time.Millisecond)
+	pause(1300 * time.Millisecond)
 
 	// 4. Look the charge up at the provider, record it, and finish the run.
 	p.step(4, "Resolve", fmt.Sprintf("looking up order %d at the provider ...", order))
@@ -303,7 +303,7 @@ func demo(ctx context.Context, dir string, cfg config, p *printer, fast bool) (*
 	pause(500 * time.Millisecond)
 	p.more("evidence       " + verdict(p, res.proof.OK, res.proof.Summary))
 	pause(500 * time.Millisecond)
-	p.more("approvals      " + verdict(p, res.approvals.OK, res.approvals.Text))
+	p.more("approvals      " + verdict(p, res.approvals.OK, strings.TrimSuffix(res.approvals.Text, " (against the recorded policy)")))
 
 	charges, err = providerCharges(dir)
 	if err != nil {
@@ -331,7 +331,7 @@ func demo(ctx context.Context, dir string, cfg config, p *printer, fast bool) (*
 		res.close()
 		return nil, errors.New(strings.Join(problems, "; "))
 	}
-	pause(800 * time.Millisecond)
+	pause(500 * time.Millisecond)
 	p.line("")
 	p.line(p.green(p.bold("charged exactly once.")) + p.dim(fmt.Sprintf("  provider charges: %d", res.charges)))
 	return res, nil
@@ -370,7 +370,7 @@ func crash(ctx context.Context, dir string, p *printer, pause func(time.Duration
 	}
 	_ = cmd.Wait()
 	pause(400 * time.Millisecond)
-	p.more(p.red("process killed mid-charge") + p.dim(", before bide journaled the result"))
+	p.more(p.red(p.bold("process killed mid-charge")) + p.dim(", before bide journaled the result"))
 	return nil
 }
 

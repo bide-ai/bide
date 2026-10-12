@@ -8,6 +8,7 @@ This page describes intent, not promises of dates. Shipped work is recorded in t
 
 The current release is v0.12.0 (2026-10-05), and the work now is stabilizing what exists: bug fixes, documentation, tests, soak and chaos runs, and fresh-eyes passes over the code and the docs. No new features are planned for now, and releases stay on 0.x.
 
+- A one-command crash demo, `go run github.com/bide-ai/bide/cmd/bide-demo@latest` (from the next release): kill an agent mid-payment and watch it not charge twice, then see the run, its audit proof and its approval signatures in the run viewer.
 - The [launch post](blog/introducing-bide.md): what bide is, a first agent, and one crash resumed from the journal.
 - The [crash-injection benchmark](../benchmarks/README.md) now includes LangGraph (Python) on SQLite and Postgres ([#166](https://github.com/bide-ai/bide/pull/166), [#167](https://github.com/bide-ai/bide/pull/167)); every framework except bide re-fired the charge.
 
