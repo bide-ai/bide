@@ -397,7 +397,16 @@ sig, _ := audit.Sign(head, audit.Ed25519Signer{Priv: priv}) // anchor it: sign /
 
 `bide-view` 为单次运行打开一个只读页面，在 `127.0.0.1` 上提供，数据来自 SQLite 日志或导出的日志。它展示运行的时间线（模型轮次、工具调用及其 `Safety`、尝试、审批），被暂停的操作及记录其结果的 `ResolveHalt` 调用，每个审批关卡的 k-of-n 状态，`plan` 流程在其声明拓扑上走过的路径，以及日志能否通过签名树头或证据包验证。它从不写入存储。参见[运行查看器指南](../../docs/guides/run-viewer.md)（英文）。
 
-<p align="center"><img src="../../docs/guides/img/run-viewer-agent-halted.png" width="720" alt="bide-view"></p>
+<table>
+<tr>
+<td width="50%"><picture><source media="(prefers-color-scheme: dark)" srcset="../../docs/guides/img/refund-before-dark.png"><img src="../../docs/guides/img/refund-before-light.png" width="100%" alt="bide-view: refund-42, before"></picture></td>
+<td width="50%"><picture><source media="(prefers-color-scheme: dark)" srcset="../../docs/guides/img/refund-after-dark.png"><img src="../../docs/guides/img/refund-after-light.png" width="100%" alt="bide-view: refund-42, after"></picture></td>
+</tr>
+<tr>
+<td>之前：退款在执行后崩溃，因此运行已暂停、结果未知，页面给出了 <code>ResolveHalt</code> 调用。</td>
+<td>之后：<code>ResolveHalt</code> 记录了结果，运行已完成；审批关卡显示 3 位审批人中 2 位已批准，证据包验证通过。</td>
+</tr>
+</table>
 
 ## RAG 与记忆（自带）
 

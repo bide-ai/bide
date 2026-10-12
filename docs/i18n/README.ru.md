@@ -404,7 +404,16 @@ sig, _ := audit.Sign(head, audit.Ed25519Signer{Priv: priv}) // anchor it: sign /
 проверяется ли журнал по подписанной вершине дерева или пакету доказательств. В хранилище она никогда
 не пишет. См. [руководство по просмотрщику](../../docs/guides/run-viewer.md) (на английском).
 
-<p align="center"><img src="../../docs/guides/img/run-viewer-agent-halted.png" width="720" alt="bide-view"></p>
+<table>
+<tr>
+<td width="50%"><picture><source media="(prefers-color-scheme: dark)" srcset="../../docs/guides/img/refund-before-dark.png"><img src="../../docs/guides/img/refund-before-light.png" width="100%" alt="bide-view: refund-42, before"></picture></td>
+<td width="50%"><picture><source media="(prefers-color-scheme: dark)" srcset="../../docs/guides/img/refund-after-dark.png"><img src="../../docs/guides/img/refund-after-light.png" width="100%" alt="bide-view: refund-42, after"></picture></td>
+</tr>
+<tr>
+<td>До: возврат упал после того, как сработал, поэтому запуск остановлен с неизвестным исходом, и страница даёт вызов <code>ResolveHalt</code>.</td>
+<td>После: <code>ResolveHalt</code> записал исход, и запуск завершился; шлюз показывает 2 из 3 одобривших, а пакет доказательств проверяется.</td>
+</tr>
+</table>
 
 ## RAG и память (приносите свои)
 
