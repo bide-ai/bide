@@ -559,7 +559,16 @@ RFC 6962 المنشورة.
 موافقة، ومسار تدفّق `plan` على طوبولوجيته المُعلَنة، وما إذا كان السجلّ يتحقّق مقابل رأس شجرة موقَّع
 أو حزمة أدلّة. ولا يكتب في المخزن أبدًا. راجع [دليل عارض التشغيل](../../docs/guides/run-viewer.md) (بالإنجليزية).
 
-<p align="center"><img src="../../docs/guides/img/run-viewer-agent-halted.png" width="720" alt="bide-view"></p>
+<table>
+<tr>
+<td width="50%"><picture><source media="(prefers-color-scheme: dark)" srcset="../../docs/guides/img/refund-before-dark.png"><img src="../../docs/guides/img/refund-before-light.png" width="100%" alt="bide-view: refund-42, before"></picture></td>
+<td width="50%"><picture><source media="(prefers-color-scheme: dark)" srcset="../../docs/guides/img/refund-after-dark.png"><img src="../../docs/guides/img/refund-after-light.png" width="100%" alt="bide-view: refund-42, after"></picture></td>
+</tr>
+<tr>
+<td>قبل: تعطّل الاسترداد بعد تنفيذه، فتوقّف التشغيل ونتيجته غير معروفة، وتعرض الصفحة استدعاء <code>ResolveHalt</code>.</td>
+<td>بعد: سجّل <code>ResolveHalt</code> النتيجة واكتمل التشغيل؛ تُظهر البوابة موافقة 2 من 3، وتتحقّق حزمة الأدلّة.</td>
+</tr>
+</table>
 
 ## RAG والذاكرة (أحضِر خاصّتك)
 

@@ -620,7 +620,16 @@ gate's k-of-n status, a plan flow's path over its declared topology, and whether
 against a signed tree head or an evidence package. It never writes to the store. See the
 [run viewer guide](docs/guides/run-viewer.md).
 
-<p align="center"><img src="docs/guides/img/run-viewer-agent-halted.png" width="720" alt="bide-view showing an agent run halted after a crash mid-refund: the end state, the halt with its ResolveHalt call, and the 2-of-3 approval gate."></p>
+<table>
+<tr>
+<td width="50%"><picture><source media="(prefers-color-scheme: dark)" srcset="docs/guides/img/refund-before-dark.png"><img src="docs/guides/img/refund-before-light.png" width="100%" alt="bide-view: run refund-42 halted, outcome unknown, with its ResolveHalt call"></picture></td>
+<td width="50%"><picture><source media="(prefers-color-scheme: dark)" srcset="docs/guides/img/refund-after-dark.png"><img src="docs/guides/img/refund-after-light.png" width="100%" alt="bide-view: run refund-42 completed, approved 2 of 3, audit proof verified"></picture></td>
+</tr>
+<tr>
+<td>Before: the refund crashed after it fired, so the run is halted with its outcome unknown, and the page gives the <code>ResolveHalt</code> call.</td>
+<td>After: <code>ResolveHalt</code> recorded the outcome and the run completed; the gate shows 2 of 3 approvers, and the evidence package verifies.</td>
+</tr>
+</table>
 
 ## RAG & memory (bring your own)
 

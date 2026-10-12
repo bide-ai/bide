@@ -403,7 +403,16 @@ sig, _ := audit.Sign(head, audit.Ed25519Signer{Priv: priv}) // anchor it: sign /
 `plan` फ़्लो का पथ, और यह दिखाता है कि जर्नल हस्ताक्षरित ट्री हेड या साक्ष्य पैकेज के विरुद्ध सत्यापित
 होता है या नहीं। यह स्टोर में कभी नहीं लिखता। देखें [रन व्यूअर गाइड](../../docs/guides/run-viewer.md) (अंग्रेज़ी में)।
 
-<p align="center"><img src="../../docs/guides/img/run-viewer-agent-halted.png" width="720" alt="bide-view"></p>
+<table>
+<tr>
+<td width="50%"><picture><source media="(prefers-color-scheme: dark)" srcset="../../docs/guides/img/refund-before-dark.png"><img src="../../docs/guides/img/refund-before-light.png" width="100%" alt="bide-view: refund-42, before"></picture></td>
+<td width="50%"><picture><source media="(prefers-color-scheme: dark)" srcset="../../docs/guides/img/refund-after-dark.png"><img src="../../docs/guides/img/refund-after-light.png" width="100%" alt="bide-view: refund-42, after"></picture></td>
+</tr>
+<tr>
+<td>पहले: रिफ़ंड चलने के बाद क्रैश हुआ, इसलिए रन रुका है और परिणाम अज्ञात है; पेज <code>ResolveHalt</code> कॉल देता है।</td>
+<td>बाद में: <code>ResolveHalt</code> ने परिणाम दर्ज किया और रन पूरा हुआ; गेट 3 में से 2 अनुमोदक दिखाता है, और साक्ष्य पैकेज सत्यापित होता है।</td>
+</tr>
+</table>
 
 ## RAG और स्मृति (अपनी लाएँ)
 
