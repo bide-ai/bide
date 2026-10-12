@@ -20,6 +20,12 @@
 //	go run . evidence -db approval.db -out evidence.json
 //	go run . verify   -in evidence.json             # the auditor: public keys only
 //
+// A crash mid-refund, viewed with bide-view (store/sqlite/cmd/bide-view):
+//
+//	go run . run -db approval.db -crash             # the refund fires, then the process dies before its result is journaled
+//	go run . run -db approval.db                    # the resume halts: the refund's outcome is unknown
+//	go run . resolve -db approval.db                # record the outcome the provider confirms (ResolveHalt), then finish
+//
 // The standalone CLI verifies the same files, for an auditor who does not write Go:
 //
 //	bide-audit verify-evidence  -evidence evidence.json -pubkey <log key hex printed by "evidence">
@@ -57,6 +63,10 @@ const (
 	runID  = "refund-42"
 	callID = "refund-1" // the tool-use id the scripted model gives its refund call
 )
+
+// crashAfterRefund makes the refund tool exit the process after its side effect, before its result
+// is journaled (run -crash): the crash a resume must not repeat the refund over.
+var crashAfterRefund bool
 
 // policy is the gate: 2 of these 3 approvers must sign off.
 var policy = agent.ApprovalPolicy{Need: 2, Approvers: []string{"ops", "finance", "risk"}}
@@ -152,6 +162,10 @@ func newAgent(store *agent.Journal, witness string) *agent.Agent {
 					return "", err
 				}
 			}
+			if crashAfterRefund {
+				fmt.Println("refund issued; crashing before its result is journaled")
+				os.Exit(3)
+			}
 			return fmt.Sprintf("$%d to order %d", in.Amount, in.Order), nil
 		}, agent.WithApproval(&policy))
 	ag, err := agent.New(
@@ -174,7 +188,12 @@ func cmdRun(ctx context.Context, store *agent.Journal, witness string) error {
 		out = res.Message
 	}
 	pend, paused := errors.AsType[*agent.ApprovalPending](err)
+	halt, halted := errors.AsType[*agent.OutcomeUnknown](err)
 	switch {
+	case halted:
+		fmt.Println("status: halted")
+		fmt.Printf("outcome unknown: %s %s (%s); confirm it with the provider, then run: go run . resolve\n", halt.Op.Kind, halt.Op.ID, halt.Op.ToolName)
+		return nil
 	case paused && pend.Quorum != nil:
 		q := pend.Quorum
 		fmt.Println("status: paused")
@@ -235,6 +254,19 @@ func cmdApprove(ctx context.Context, store *agent.Journal, as string, approved, 
 	}
 	fmt.Printf("recorded: %s %s (%s)\n", as, verb, how)
 	return nil
+}
+
+// cmdResolve records the halted refund's outcome, as an operator does once the payment provider
+// confirms the refund went through (agent.ResolveHalt), then resumes the run to completion. The
+// refund is not called again: the run reads the recorded outcome.
+func cmdResolve(ctx context.Context, store *agent.Journal, witness string) error {
+	ref := agent.HaltRef{RunID: runID, Op: agent.OpRef{Kind: agent.OpTool, ID: callID, ToolName: "refund"}, Cause: agent.HaltCrashed}
+	out := agent.Outcome{Result: "$120 to order 42", Evidence: map[string]string{"provider_refund": "re_42", "status": "succeeded"}}
+	if err := agent.ResolveHalt(ctx, store, ref, out); err != nil {
+		return err
+	}
+	fmt.Println("resolved: refund-1 recorded as refunded (from the provider's record)")
+	return cmdRun(ctx, store, witness)
 }
 
 // cmdEvidence writes a portable evidence package (the request, every decision the gate read,
@@ -411,6 +443,7 @@ func main() {
 	out := fs.String("out", "evidence.json", "evidence file to write (evidence)")
 	keysOut := fs.String("keys-out", "approver-keys.json", "approver public keys file to write (evidence)")
 	in := fs.String("in", "evidence.json", "evidence file to verify (verify)")
+	fs.BoolVar(&crashAfterRefund, "crash", false, "exit after the refund fires, before its result is journaled (run)")
 	_ = fs.Parse(args)
 
 	if cmd == "verify" {
@@ -436,10 +469,12 @@ func main() {
 			fatal(errors.New("approve: -as is required"))
 		}
 		err = cmdApprove(ctx, j, *as, !*deny, *forge, *check)
+	case "resolve":
+		err = cmdResolve(ctx, j, *witness)
 	case "evidence":
 		err = cmdEvidence(ctx, j, *out, *keysOut)
 	default:
-		err = fmt.Errorf("unknown command %q (want run, approve, evidence, or verify)", cmd)
+		err = fmt.Errorf("unknown command %q (want run, approve, resolve, evidence, or verify)", cmd)
 	}
 	if err != nil {
 		fatal(err)
