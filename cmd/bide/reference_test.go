@@ -35,7 +35,8 @@ func TestCLIReference(t *testing.T) {
 	if err != nil {
 		t.Fatalf("%v (generate it with go test . -run TestCLIReference -update in cmd/bide)", err)
 	}
-	if string(want) != got {
+	// A Windows checkout may hold the page with CRLF line endings (core.autocrlf); compare the text.
+	if strings.ReplaceAll(string(want), "\r\n", "\n") != got {
 		t.Fatalf("%s is out of date: run go test . -run TestCLIReference -update in cmd/bide and commit the result", referencePath)
 	}
 }
