@@ -11,7 +11,7 @@ exported journals. It listens on a loopback address only (`127.0.0.1` or `::1`) 
 requests addressed to one, so the page is not reachable from another machine. The page needs no
 network: the binary serves its HTML, CSS and graph, with no CDN and no JavaScript.
 
-![bide-view on a plan flow halted mid-node: END STATE "halted: outcome unknown", the halt with its ResolveHalt snippet, and the topology with the path taken](img/run-viewer-flow-halted.png)
+![bide-view on a plan flow halted mid-node: END STATE "halted: outcome unknown", the halt with its ResolveHalt snippet, and the topology with the path taken](img/run-viewer-flow-halted-dark.png)
 
 The quickest way to see the page is the crash demo, which needs no API key and no journal of your
 own. It kills an agent mid-charge, resolves the halt, and opens this page on the run, with an
@@ -86,7 +86,7 @@ unknown field is an error. `bide-view -h` prints the same list. Exit status: 0 a
 
 ## The page
 
-![bide-view on an agent run halted after a crash mid-refund, with its 2-of-3 approval gate](img/run-viewer-agent-halted.png)
+![bide-view on an agent run halted after a crash mid-refund, with its 2-of-3 approval gate](img/run-viewer-agent-halted-dark.png)
 
 **END STATE.** The run's state as `agent.Status` reads it from the journal, with two refinements:
 
@@ -207,7 +207,7 @@ go run . evidence -db a.db -out ev.json     # prints the log public key; writes 
 bide-view -db a.db -run refund-42 -evidence ev.json -pubkey <log public key> -approver-keys approver-keys.json
 ```
 
-![bide-view on the same run after ResolveHalt: completed, with the evidence package verifying](img/run-viewer-agent-verified.png)
+![bide-view on the same run after ResolveHalt: completed, with the evidence package verifying](img/run-viewer-agent-verified-dark.png)
 
 For a gated plan flow node, `examples/approval/flow` loads a refund flow whose `refund` node needs 2
 of 3 approvers:
@@ -224,9 +224,9 @@ go run ./flow evidence -db f.db -out fev.json   # prints the log public key; wri
 bide-view -db f.db -run refund-flow-42 -evidence fev.json -pubkey <log public key> -approver-keys approver-keys.json
 ```
 
-<picture><source media="(prefers-color-scheme: dark)" srcset="./img/flow-gate-waiting-dark.png"><img src="./img/flow-gate-waiting-light.png" alt="bide-view on a plan flow paused at its refund node's 2 of 3 approval gate: 1 of 2 approvals, pending finance and risk"></picture>
+<img src="./img/flow-gate-waiting-dark.png" alt="bide-view on a plan flow paused at its refund node's 2 of 3 approval gate: 1 of 2 approvals, pending finance and risk">
 
-<picture><source media="(prefers-color-scheme: dark)" srcset="./img/flow-gate-approved-dark.png"><img src="./img/flow-gate-approved-light.png" alt="bide-view on the same flow after a second approval: completed, the refund node approved 2 of 3 with its signatures verified, and the evidence package verifying"></picture>
+<img src="./img/flow-gate-approved-dark.png" alt="bide-view on the same flow after a second approval: completed, the refund node approved 2 of 3 with its signatures verified, and the evidence package verifying">
 
 For a plan flow, `examples/plan` crashes in its reserve step. The run journals its topology, so no
 flag is needed to draw it:
@@ -254,7 +254,7 @@ bide-view -config flows/refund-typo.yaml -check     # for CI: no server, one lin
 
 The screenshot below is `examples/plan/flows/refund-typo.yaml`, whose last edge names `reciept`.
 
-<picture><source media="(prefers-color-scheme: dark)" srcset="img/run-viewer-config-problem-dark.png"><img src="img/run-viewer-config-problem-light.png" alt="bide-view -config on a refund flow whose edge names an undeclared node, marked on the edge"></picture>
+<img src="./img/run-viewer-config-problem-dark.png" alt="bide-view -config on a refund flow whose edge names an undeclared node, marked on the edge">
 
 With `-check` it prints `file:node: message` for a node's problem, `file:from->to: message` for an
 edge's or an arm's, and `file: message` for the config as a whole, and exits 1 if any is an error
