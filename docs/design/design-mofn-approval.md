@@ -119,9 +119,15 @@ iteration, with this input.
    order: an m-of-n gate counts the records after it, and a `SingleApproval` gate honors
    `Approve`'s record only if it follows it), and each counted signature verifies over the
    request's input. `Approve` and `SubmitDecision` refuse a plan node key with no request yet
-   (`ErrConfig`). A decision written into the journal before the request by other means is never
-   counted; for a `SingleApproval` gate it also occupies the one decision name, so that gate cannot
-   pass (it fails closed) and the run is cancelled. Found by the adversarial review of #195;
+   (`ErrConfig`), in a flow's run only: the run's recorded start decides, not the ID's shape, so an
+   agent's model-chosen tool-use ID that looks like `node:x` keeps the agent's rules. A decision
+   written into the journal before the request by other means is never counted, and keeps its
+   name: decision names are first-writer-wins and ed25519 signatures are deterministic, so the
+   approver's identical decision afterwards is not recorded, and `Approve` and `SubmitDecision`
+   report that (`ErrConfig`) instead of returning nil. For a `SingleApproval` gate the name is the
+   gate's one decision, so the gate cannot pass (it fails closed) and the run is cancelled; for an
+   m-of-n gate that approver's seat is lost for the gate, which passes with the others if `need` is
+   still reachable and is otherwise cancelled. `flows/limits/gate-early-stuck` states this limit. Found by the adversarial review of #195;
    `flows/regress/gate-request-order` keeps it from coming back.
 2. `approval-pending:<node key>`: `ApprovalWait`, written on a pause that finds it missing (so a
    crash between the request and the note does not hide the wait). Informational, as for an agent.

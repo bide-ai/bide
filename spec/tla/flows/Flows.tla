@@ -42,6 +42,8 @@ CONSTANTS
   Gated,       \* names of the nodes that carry an approval gate, a subset of Names \ {"N"}
   Approvers,   \* the gates' approvers (one policy for every gate in the model)
   Need,        \* approvals a gate needs
+  Early,       \* whether a decision can be recorded before its gate's request (a record written
+               \* directly, which Approve and SubmitDecision refuse)
   Bug          \* "none" or a reverted rule, see regress/
 
 None == "none"
@@ -68,6 +70,7 @@ ASSUME MaxIter \in Nat \ {0} /\ MaxAmbig \in Nat /\ MaxCrash \in Nat
 ASSUME RFlows \subseteq {"F", "G"}
 ASSUME Gated \subseteq {"E", "Q", "T", "H", "S"}
 ASSUME Need \in 1..Cardinality(Approvers) \/ Gated = {}
+ASSUME Early \in BOOLEAN
 ASSUME Bug \in {"none", "NestedUnscoped", "LoopSwitchUnscoped", "ResolveAnyNode", "ResolveAnyFlow",
                 "NoCompletion", "NoGate", "GateUnscoped", "NoRequestOrder"}
 
@@ -318,12 +321,14 @@ ADecide:
   \* SubmitDecision: the approver's decision on a gate (its first valid one counts), whether a
   \* driver is running, paused or down.
   \* Before the gate's request a decision is an early one (refused by SubmitDecision; possible only
-  \* as a record written directly); an approver with only an early one may still decide after it.
-  with k \in {k \in GateKeys : dec[k][self] = None \/ (dec[k][self] \in {"eyes", "eno"} /\ req[k])},
+  \* as a record written directly, with Early). It is final for that approver: their same decision
+  \* after the request has its name, so it is not recorded (SubmitDecision reports it), and their
+  \* seat is lost for the gate.
+  with k \in {k \in GateKeys : dec[k][self] = None /\ (req[k] \/ Early)},
        v \in IF req[k] THEN {"yes", "no"} ELSE {"eyes", "eno"} do
     dec[k][self] := v;
   end with;
-  if \E k \in GateKeys : dec[k][self] \in {None, "eyes", "eno"} then goto ADecide; end if;
+  if \E k \in GateKeys : dec[k][self] = None then goto ADecide; end if;
 end process;
 end algorithm; *)
 \* BEGIN TRANSLATION
@@ -957,10 +962,10 @@ RWrite(self) == /\ pc[self] = "RWrite"
 resolver(self) == RPick(self) \/ RWrite(self)
 
 ADecide(self) == /\ pc[self] = "ADecide"
-                 /\ \E k \in {k \in GateKeys : dec[k][self] = None \/ (dec[k][self] \in {"eyes", "eno"} /\ req[k])}:
+                 /\ \E k \in {k \in GateKeys : dec[k][self] = None /\ (req[k] \/ Early)}:
                       \E v \in IF req[k] THEN {"yes", "no"} ELSE {"eyes", "eno"}:
                         dec' = [dec EXCEPT ![k][self] = v]
-                 /\ IF \E k \in GateKeys : dec'[k][self] \in {None, "eyes", "eno"}
+                 /\ IF \E k \in GateKeys : dec'[k][self] = None
                        THEN /\ pc' = [pc EXCEPT ![self] = "ADecide"]
                        ELSE /\ pc' = [pc EXCEPT ![self] = "Done"]
                  /\ UNCHANGED << started, res, mk, sw, done, tally, req, nval, 

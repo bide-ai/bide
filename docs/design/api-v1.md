@@ -1187,7 +1187,7 @@ Within a wave, no two PRs edit the same file. Sizes:
    | plan flow node with no approval gate | nothing beyond its Step (the gate reads nothing) |
    | plan flow node's approval gate, decided | 1 `Get` (`approval-tally:<node key>`); a `SingleApproval` gate 2 `Get` (`Approve`'s record and the request it must follow) |
    | plan flow node's m-of-n gate, undecided | 1 `Get` (the tally), 2 `Insert` (`approval-request:<node key>`, and `approval-pending:` if it is missing), 1 `Load` (the decisions, as an agent's m-of-n gate reads them); +2 `Get` and 1 `Insert` (the tally's retry-safe Step) when it reaches the outcome |
-   | `Approve` or `SubmitDecision` on a plan node key | +1 `Get` (the gate's request, which must be recorded) |
+   | `Approve` or `SubmitDecision` on an ID shaped like a plan node key | +1 `Get` (`run:start`: is it a flow's run); in a flow's run +2 `Get` more (the gate's request, which must be recorded, and the decision's record read back, to report one recorded before the request) |
    | anchored insert | 1 `Load` of the new entries only, O(log n) hashes (`AnchoredStore`, dropped from the plan 2026-10-03; no budget) |
 
    The plan flow gate rows were added with flow approval gates (`plan.TestGate_StoreBudget`); they add nothing to a flow without gates.

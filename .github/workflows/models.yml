@@ -39,7 +39,7 @@ env:
     claims-regress: claims/regress claims/limits spend spend/regress probes probes/regress
     lifecycle: lifecycle lifecycle/regress lifecycle/findings lifecycle/limits
     delegation: delegation delegation/regress delegation/limits
-    toolcall-flows: toolcall toolcall/regress toolcall/limits flows flows/regress
+    toolcall-flows: toolcall toolcall/regress toolcall/limits flows flows/regress flows/limits
     protocol-sessions: protocol protocol/regress protocol/limits sessions sessions/regress sessions/limits
 
 jobs:

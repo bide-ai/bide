@@ -229,7 +229,13 @@ out, err := flow.Run(ctx, j, runID, in) // runs the node once 2 of 3 have approv
   recorded after the gate's request, and its signature must verify over the input the request
   records: an approver decides on the node's actual input. `agent.Approve` and
   `agent.SubmitDecision` refuse (`ErrConfig`) a decision on a node key whose gate has recorded no
-  request yet; in a loop, each iteration's key gets its request when that iteration reaches the gate. A
+  request yet; in a loop, each iteration's key gets its request when that iteration reaches the gate.
+  (This applies to a flow's runs; an agent's tool call keeps its rules whatever its ID looks like.)
+  A decision written into the journal before the request by other means never counts and keeps its
+  name: the approver's identical decision afterwards is not recorded, and `Approve` or
+  `SubmitDecision` returns `ErrConfig` saying so. For a `SingleApproval` gate that blocks the gate
+  (cancel the run with `agent.Cancel`); for an m-of-n gate that approver's seat is lost for the gate,
+  which can still pass with the others if `need` is reachable, and otherwise must be cancelled. A
   `SingleApproval` gate is decided with `agent.Approve(ctx, j, pend.RunID, pend.ToolUseID, ok)`.
 - **A denial stops the run.** A gate whose quorum can no longer be reached (or an `Approve(false)`)
   never runs the node: `Run` returns an error wrapping `plan.ErrApprovalDenied`, and so does every

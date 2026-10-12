@@ -47,21 +47,50 @@ func decodeApprovalRequest(r Record, toolUseID string) (ApprovalRequest, bool) {
 	return q, true
 }
 
-// requireFlowRequest refuses (ErrConfig) a decision on a plan node key whose gate has recorded no
-// request yet: the node's input is not fixed until then, so nothing an approver signs can be bound
-// to it. A decision on any other call is not checked here.
-func requireFlowRequest(ctx context.Context, d *Journal, op, runID, toolUseID string) error {
+// flowDecision checks a decision on toolUseID before it is recorded. It applies only to the gate of
+// a plan flow node: toolUseID is a node key and the run is a flow's (its recorded start is a flow's,
+// or it has none yet, as before a flow's first drive); an agent's tool call, whatever its ID looks
+// like, is not checked, and flow is false. For a flow node it refuses (ErrConfig) a decision when
+// the gate has recorded no request yet, since the node's input is not fixed until then, and
+// returns the request's journal position for staleDecision.
+func flowDecision(ctx context.Context, d *Journal, op, runID, toolUseID string) (reqSeq int64, flow bool, err error) {
 	if !planNodeKey(toolUseID) {
-		return nil
+		return 0, false, nil
 	}
-	_, ok, err := d.Get(ctx, runID, ApprovalRequestStep(toolUseID))
+	start, ok, err := RecordedStart(ctx, d, runID)
 	if err != nil {
-		return fmt.Errorf("%s: read %s (run %s): %w (%w)", op, ApprovalRequestStep(toolUseID), runID, err, ErrStorage)
+		return 0, false, fmt.Errorf("%s: %w", op, err)
+	}
+	if ok && start.kind() != RunKindFlow {
+		return 0, false, nil
+	}
+	q, ok, err := d.getEntry(ctx, runID, ApprovalRequestStep(toolUseID))
+	if err != nil {
+		return 0, false, fmt.Errorf("%s: read %s (run %s): %w (%w)", op, ApprovalRequestStep(toolUseID), runID, err, ErrStorage)
 	}
 	if !ok {
-		return fmt.Errorf("%s: run %s has not reached the approval gate of %s, so it records no request to decide on yet: %w", op, runID, toolUseID, ErrConfig)
+		return 0, false, fmt.Errorf("%s: run %s has not reached the approval gate of %s, so it records no request to decide on yet: %w", op, runID, toolUseID, ErrConfig)
 	}
-	return nil
+	return q.Seq, true, nil
+}
+
+// staleDecision reports (ErrConfig) a decision whose journal name was already taken by a record
+// written before the gate's request, at reqSeq: that record cannot count, and this decision, having
+// the same name, was not recorded. For a SingleApproval gate the name is the gate's one decision, so
+// the gate cannot pass; for an m-of-n gate it is this approver's identical decision, so their seat
+// is lost for this gate.
+func staleDecision(ctx context.Context, d *Journal, op, runID, toolUseID, name string, reqSeq int64, single bool) error {
+	e, ok, err := d.getEntry(ctx, runID, name)
+	if err != nil {
+		return fmt.Errorf("%s: read %s (run %s): %w (%w)", op, name, runID, err, ErrStorage)
+	}
+	if !ok || e.Seq > reqSeq {
+		return nil
+	}
+	if single {
+		return fmt.Errorf("%s: a decision on %s was recorded before the gate's request, so it cannot count, and it holds the gate's one decision: the gate cannot pass; cancel the run (agent.Cancel): %w", op, toolUseID, ErrConfig)
+	}
+	return fmt.Errorf("%s: this approver's identical decision on %s was recorded before the gate's request, so it cannot count and this one was not recorded: their seat is lost for this gate; it can still pass with the other approvers if Need is reachable, otherwise cancel the run (agent.Cancel): %w", op, toolUseID, ErrConfig)
 }
 
 // protocol:flows begin GRead GCount

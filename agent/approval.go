@@ -532,8 +532,10 @@ type Decision struct {
 // no-op. The gate counts each approver's first valid decision and ignores the rest, so an
 // invalid record never blocks a valid one. Without WithDecisionCheck, SubmitDecision does not
 // verify: a decision that will not count is recorded and reported by the gate as ignored. For a
-// plan flow node's gate (ToolUseID a node key) the run must have recorded the gate's request:
-// SubmitDecision refuses one with none (ErrConfig), and the gate counts only decisions after it.
+// plan flow node's gate (ToolUseID a node key, in a flow's run) the run must have recorded the
+// gate's request: SubmitDecision refuses one with none (ErrConfig), and the gate counts only
+// decisions after it. An identical decision recorded before the request (same name) is reported
+// (ErrConfig): it cannot count, and this approver's seat is lost for the gate.
 func SubmitDecision(ctx context.Context, store *Journal, d Decision, opts ...ApproveOption) error {
 	return submitDecision(ctx, store, "SubmitDecision", d, opts)
 }
@@ -557,7 +559,8 @@ func submitDecision(ctx context.Context, store *Journal, op string, d Decision, 
 	if len(d.Signature) == 0 {
 		return fmt.Errorf("%s: empty signature: %w", op, ErrConfig)
 	}
-	if err := requireFlowRequest(ctx, store, op, d.RunID, d.ToolUseID); err != nil {
+	reqSeq, flow, err := flowDecision(ctx, store, op, d.RunID, d.ToolUseID)
+	if err != nil {
 		return err
 	}
 	var o approveOptions
@@ -570,10 +573,15 @@ func submitDecision(ctx context.Context, store *Journal, op string, d Decision, 
 			return err
 		}
 	}
-	_, err := store.do(ctx, d.RunID, name, func(context.Context) (Record, error) {
+	if _, err := store.do(ctx, d.RunID, name, func(context.Context) (Record, error) {
 		return Record{Kind: StepApproval, ToolUseID: d.ToolUseID, Approved: d.Approved, ApproverSignature: &ApproverSignature{Approver: d.ApproverID, ApproverAlg: d.Alg, Signature: d.Signature}}, nil
-	})
-	return err
+	}); err != nil {
+		return err
+	}
+	if flow {
+		return staleDecision(ctx, store, op, d.RunID, d.ToolUseID, name, reqSeq, false)
+	}
+	return nil
 }
 
 // checkDecision is WithDecisionCheck's pre-flight: the decision verifies for the recorded

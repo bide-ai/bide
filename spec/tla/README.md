@@ -878,7 +878,8 @@ the node's key, per iteration in the loop: a recorded terminal tally decides, or
 approvers' decisions and records a terminal tally (first writer wins), or pauses and is driven again.
 Approvers decide at any time, whether a driver runs, is paused or is down; the gate records its
 request before it counts, and a decision recorded before that request (possible only as a record
-written directly, since `Approve` and `SubmitDecision` refuse it) is never counted. Each approver's
+written directly, since `Approve` and `SubmitDecision` refuse it; modelled with `Early`) is never
+counted and is final for that approver, whose identical decision afterwards has its name. Each approver's
 decision here is their first valid one; model 1b checks the counting rule over signed, possibly
 invalid records, and that a counted signature binds the request's input is checked by Go tests
 (`plan/rev_gate_test.go`, `plan/gate_test.go`), not by this model.
@@ -895,7 +896,7 @@ invalid records, and that a counted signature binds the request's input is check
 | `GRead` | `runGate` through `journalhook.Gate` to `flowGate`: the gate's recorded outcome (`approval-tally:<node key>`, or `Approve`'s record if it follows the request); else the request (`approval-request:<node key>`) |
 | `GCount` | `flowGate`'s count (`tallyGate` over the records after the request, `TallyApprovals`): a terminal tally is recorded before the node runs, else the drive pauses (`*agent.ApprovalPending`) |
 | `GPause` | `runGate`: a denying tally stops the run (`ErrApprovalDenied`); a passing one lets the node's Step run |
-| `ADecide` | `agent.SubmitDecision` (or `agent.Approve`, both refusing a node key with no request, `requireFlowRequest`): an approver's decision on a gate, recorded whether a driver runs or not; an early one stands for a record written directly |
+| `ADecide` | `agent.SubmitDecision` (or `agent.Approve`; in a flow's run both refuse a node key with no request, `flowDecision`, and report one whose name an earlier record holds, `staleDecision`): an approver's decision on a gate, recorded whether a driver runs or not; an early one (with `Early`) stands for a record written directly, and is final for that approver |
 
 | Property | Kind | Statement |
 |---|---|---|
