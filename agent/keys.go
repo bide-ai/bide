@@ -39,7 +39,7 @@ var reservedPrefixes = []string{
 	"audit:",            // the audit package's leaves
 	"node:",             // a plan flow's nodes, run as Steps: node:<name>, node:iter:<n>:<name> (see planNodeStep)
 	"switch:",           // a plan flow's branch choices: switch:<over>, switch:iter:<n>:<over>
-	"flow:",             // a plan flow's topology digest: flow:digest
+	"flow:",             // a plan flow's topology digest and topology: flow:digest, flow:topology
 }
 
 // planNodePrefix starts the key of every plan flow node, which package plan runs as a Step through

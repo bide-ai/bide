@@ -57,8 +57,8 @@ page is at `/run?id=<run>`, and the same view as JSON at `/run.json?id=<run>`.
 | `-postgres <dsn>` | Postgres journal to read, a pgx DSN; read in read-only sessions. |
 | `-journal <file>` | An exported journal (`audit.JournalExport` JSON). Repeat it for several runs. |
 | `-run <id>` | The run whose URL to print. Without it, the printed URL is the run list. |
-| `-topology <file>` | The declared topology of a plan flow, as JSON of `flow.Topology()`, to draw a flow run against. |
-| `-digest <hex>` | `flow.Digest()` of that flow, compared with the digest the run journaled. Needs `-topology`. |
+| `-topology <file>` | A declared topology, as JSON of `flow.Topology()`, to draw a flow run against instead of the topology the run journaled: for a run started before `flow:topology` was journaled, or to check a run against another flow. |
+| `-digest <hex>` | `flow.Digest()` of the `-topology` flow, compared with the digest the run journaled. Needs `-topology`. By default it is computed from the `-topology` file when the file carries the digest's inputs (a topology exported by this version does). |
 | `-sth <file>` | A signed tree head (`audit.SignedTreeHead` JSON) to verify the journal against. Needs `-pubkey`. |
 | `-evidence <file>` | An evidence package (`audit.EvidencePackage` JSON, as `audit.Evidence` writes it) to verify. Needs `-pubkey`. |
 | `-pubkey <key>` | The log's public key: `<scheme>:<hex>` (`ed25519`, `ml-dsa-65`, `ed25519+ml-dsa-65`), bare ed25519 hex, or a file holding either. |
@@ -111,13 +111,21 @@ checks against the policy you expect, says `(against the expected policy)`, and 
 recorded another policy fails with, for example,
 `recorded policy 1 of 3 (ops, finance, risk) differs from expected 2 of 3 (ops, finance, risk)`.
 
-**CONFORMANCE** (plan flows given `-topology`). Whether the run followed the declared topology:
-the run is of the topology's flow, every node it recorded is declared, every Switch choice is a
-declared arm, and, with `-digest`, the journaled digest equals `flow.Digest()`. From the command line
-this check is structural. `plan.Conform` also replays routing, loops and completion; a Go program
+**CONFORMANCE** (plan flows). Whether the run followed the declared topology: the run is of the
+topology's flow, every node it recorded is declared, every Switch choice is a declared arm, and the
+journaled digest equals the topology's. The card says where the topology came from:
+
+- `Topology from journal (digest verified)`: the topology the run's first drive journaled under
+  `flow:topology`, drawn only once `plan.JournaledTopology` has checked that its digest
+  (`plan.TopologyDigest`) is the run's `flow:digest`. A record whose digest differs is not drawn,
+  and the page says why.
+- `Topology from -topology`: the file you gave, which overrides the journaled one; `(digest computed from it)`
+  when no `-digest` was given and the file carries the digest's inputs.
+
+From the command line this check is structural. `plan.Conform` also replays routing, loops and completion; a Go program
 that embeds the viewer with the `*plan.Flow` gets that check instead.
 
-**Flow** (plan flows given `-topology`). The declared topology, with each node marked ran, halted,
+**Flow** (plan flows). The declared topology, with each node marked ran, halted,
 attempted or not reached, the last node outlined, and the edges and Switch arms the run took drawn
 solid. The Mermaid text of the same graph is below it.
 
@@ -180,22 +188,21 @@ bide-view -db a.db -run refund-42 -evidence ev.json -pubkey <log public key> -ap
 
 ![bide-view on the same run after ResolveHalt: completed, with the evidence package verifying](img/run-viewer-agent-verified.png)
 
-For a plan flow, `examples/plan` crashes in its reserve step and writes its topology with
-`-topology-out`:
+For a plan flow, `examples/plan` crashes in its reserve step. The run journals its topology, so no
+flag is needed to draw it:
 
 ```sh
 cd examples/plan
-go run . -db f.db -crash during-reserve -topology-out topo.json   # prints the flow digest
+go run . -db f.db -crash during-reserve
 go run . -db f.db                                                 # the resume halts at reserve
-bide-view -db f.db -run triage-demo -topology topo.json -digest <flow digest>
+bide-view -db f.db -run triage-demo
 ```
 
 ## What it cannot show
 
-- **A flow's topology is not in the journal.** A flow run journals its flow's name and topology
-  digest, not the topology, so you pass the topology with `-topology`. The digest commits to more
-  than `Topology` holds (block and predicate names, package paths), so it cannot be recomputed from
-  the topology file; pass `-digest` to compare it.
+- **A flow run started before `flow:topology` was journaled** has only its digest, so pass its
+  topology with `-topology` (JSON of `flow.Topology()`, which `examples/plan -topology-out` writes)
+  to draw it.
 - **Proof needs `-sth` or `-evidence`.** An `audit.AuditedStore` publishes its signed heads to an
   external anchor, not to the store, so the viewer verifies only a head or package you give it.
 - **Plan flows have no approval gates.** The `plan` runtime refuses a gated node at `Build`, so a

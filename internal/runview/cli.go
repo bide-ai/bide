@@ -40,7 +40,8 @@ const usageText = `bide-view: a read-only local web page for one run of a bide j
   bide-view -journal <export.json> [-journal ...] [-run <id>] [flags]
 
 It shows an agent run's timeline (model turns, tool calls with their Safety, attempts, approvals,
-halts, end state) or a plan flow's declared topology with the run's path, and whether the journal
+halts, end state) or a plan flow's declared topology with the run's path (drawn from the topology
+the run journaled, its digest checked, unless -topology overrides it), and whether the journal
 verifies against a signed tree head or an evidence package; with -approver-keys, whether each
 m-of-n approval gate's signatures verify (audit.VerifyApprovals), against the policy the gate
 recorded or, with -need and -approvers, against the policy you expect. It never writes to the
@@ -78,8 +79,8 @@ func Main(args []string, stdout, stderr io.Writer, stores Stores) int {
 	fs.StringVar(&f.postgres, "postgres", "", "Postgres journal to read, a pgx DSN such as postgres://user:pass@host:5432/db, read in sessions the server holds read-only (postgres.OpenReadOnly)")
 	fs.Var(&f.journals, "journal", "exported journal (audit.ExportJournal as JSON) to read; repeatable")
 	run := fs.String("run", "", "run to open (default: the run list)")
-	fs.StringVar(&f.topo, "topology", "", "declared flow topology: JSON of flow.Topology(), to draw a flow run against")
-	fs.StringVar(&f.digest, "digest", "", "flow.Digest() of the declared flow, compared with the digest the run journaled")
+	fs.StringVar(&f.topo, "topology", "", "declared flow topology, JSON of flow.Topology(), to draw a flow run against instead of the topology the run journaled (flow:topology); for a run journaled before that record existed, or to check a run against another flow")
+	fs.StringVar(&f.digest, "digest", "", "flow.Digest() of the -topology flow, compared with the digest the run journaled (default: computed from -topology when it carries the digest's inputs)")
 	fs.StringVar(&f.sth, "sth", "", "signed tree head (audit.SignedTreeHead JSON) to verify the journal against; needs -pubkey")
 	fs.StringVar(&f.evidence, "evidence", "", "evidence package (audit.EvidencePackage JSON) to verify; needs -pubkey")
 	fs.StringVar(&f.pubkey, "pubkey", "", "log public key as <scheme>:<hex>, or bare ed25519 hex, or a file holding it")
@@ -204,7 +205,14 @@ func options(f flags, stores Stores) (Options, io.Closer, error) {
 		if err := readStrict(f.topo, &t); err != nil {
 			return o, closer, err
 		}
-		o.Flows = map[string]*Flow{t.Flow: {Topology: t, Digest: f.digest}}
+		fl := &Flow{Topology: t, Digest: f.digest, Source: "from -topology"}
+		if fl.Digest == "" && t.InCanonical != "" {
+			// A topology exported by a version that writes the digest's inputs gives its own digest.
+			if d, err := plan.TopologyDigest(t); err == nil {
+				fl.Digest, fl.Source = d, "from -topology (digest computed from it)"
+			}
+		}
+		o.Flows = map[string]*Flow{t.Flow: fl}
 	}
 	if f.pubkey != "" {
 		v, err := readKey(f.pubkey)

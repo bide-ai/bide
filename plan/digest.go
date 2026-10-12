@@ -3,9 +3,13 @@ package plan
 import (
 	"crypto/sha256"
 	"encoding/hex"
+	"encoding/json"
+	"fmt"
 	"reflect"
 	"strconv"
 	"strings"
+
+	"github.com/bide-ai/bide/agent"
 )
 
 // flowDigestStep is the reserved journal name under which Run records the frozen
@@ -14,6 +18,48 @@ import (
 // verifies the journaled digest equals the current flow's Digest() rather than
 // treating it as a divergence.
 const flowDigestStep = "flow:digest"
+
+// TopologyStep is the reserved journal name under which a flow run's first drive records the
+// flow's declared Topology, as JSON (the encoding Flow.Topology's json tags define), as a StepValue
+// just before flow:digest. TopologyDigest of the recorded Topology is the recorded digest, so a
+// reader can draw the flow a run ran and check it is the one the run journaled (see
+// JournaledTopology). It is informational: Run, resume, routing and recovery never read it; they
+// use flow:digest and the nodes' own records, as before. A run started before this record existed
+// has none.
+const TopologyStep = "flow:topology"
+
+// JournaledTopology reads the topology a flow run journaled (TopologyStep) from recs, the run's
+// journal, and checks it against the run's flow:digest record: ok is false when the run has no
+// topology record, and err is non-nil when one does not decode, or when the digest computed from it
+// (TopologyDigest) is not the journaled digest, or the run journaled no digest.
+func JournaledTopology(recs []agent.Record) (t Topology, digest string, ok bool, err error) {
+	var topo, dig *agent.Record
+	for i := range recs {
+		switch recs[i].Name {
+		case TopologyStep:
+			topo = &recs[i]
+		case flowDigestStep:
+			dig = &recs[i]
+		}
+	}
+	if topo == nil {
+		return Topology{}, "", false, nil
+	}
+	if err := json.Unmarshal(topo.Result, &t); err != nil {
+		return Topology{}, "", true, fmt.Errorf("plan: decode %s: %w", TopologyStep, err)
+	}
+	if dig == nil || json.Unmarshal(dig.Result, &digest) != nil {
+		return t, "", true, fmt.Errorf("plan: the run journals %s but no readable %s", TopologyStep, flowDigestStep)
+	}
+	got, err := TopologyDigest(t)
+	if err != nil {
+		return t, digest, true, err
+	}
+	if got != digest {
+		return t, digest, true, fmt.Errorf("plan: the journaled topology's digest is %s, not the journaled %s %s", got, flowDigestStep, digest)
+	}
+	return t, digest, true, nil
+}
 
 // Digest returns a deterministic SHA-256 hash (hex-encoded) of this frozen flow's
 // DECLARED topology: the flow name, every node's name, block, kind, input type and output
@@ -60,61 +106,98 @@ func (f *Flow[In, Out]) DigestV1() string { return f.core.digestV1() }
 // another predicate, or takes a type of the same name from another package is a different
 // flow.
 func (c *builderCore) digest() string {
+	d, err := TopologyDigest(c.topology())
+	if err != nil {
+		panic("plan: the digest of a built flow's own topology: " + err.Error()) // topology() writes every field TopologyDigest reads
+	}
+	return d
+}
+
+// TopologyDigest returns the v2 topology digest of t, the value Flow.Digest returns for a flow
+// whose Topology is t: the same canonical, insertion-ordered serialization of the flow name, the
+// boundary and node types with their package paths (the Canonical fields), every node's name,
+// block and kind, every edge, every Switch arm with its predicate name, and every loop. Flow.Digest
+// is computed through it, so the digest a run journals under flow:digest is the digest of the
+// Topology it journals under flow:topology, and a reader can check that what it draws is what ran.
+//
+// It errors on a Topology no flow produces: a node of an unknown kind, or a join node with no
+// TopologyJoin, or one whose InCanonical does not align with its Inputs.
+func TopologyDigest(t Topology) (string, error) {
+	joins := make(map[string]TopologyJoin, len(t.Joins))
+	for _, j := range t.Joins {
+		joins[j.Name] = j
+	}
 	var b strings.Builder
 	b.WriteString(topologyDigestV2 + "\n")
 
-	writeField(&b, "flow", c.flowName)
-	writeField(&b, "in", canonicalType(c.inType))
-	writeField(&b, "out", canonicalType(c.outType))
-	writeField(&b, "entry", c.entry)
+	writeField(&b, "flow", t.Flow)
+	writeField(&b, "in", t.InCanonical)
+	writeField(&b, "out", t.OutCanonical)
+	writeField(&b, "entry", t.Entry)
 
 	b.WriteString("nodes\n")
-	for _, n := range c.nodes {
-		writeField(&b, "n.name", n.name)
-		writeField(&b, "n.block", n.block)
-		writeField(&b, "n.kind", strconv.Itoa(int(n.kind)))
-		writeField(&b, "n.in", canonicalType(n.inType))
-		writeField(&b, "n.out", canonicalType(n.outType))
-		for i, src := range n.joinInputs {
-			writeField(&b, "n.join.in", src)
-			var portType reflect.Type
-			if i < len(n.joinInTypes) {
-				portType = n.joinInTypes[i]
+	for _, n := range t.Nodes {
+		k, ok := kindOfName(n.Kind)
+		if !ok {
+			return "", fmt.Errorf("plan: topology node %q has unknown kind %q", n.Name, n.Kind)
+		}
+		writeField(&b, "n.name", n.Name)
+		writeField(&b, "n.block", n.Block)
+		writeField(&b, "n.kind", strconv.Itoa(int(k)))
+		writeField(&b, "n.in", n.InCanonical)
+		writeField(&b, "n.out", n.OutCanonical)
+		if k == kindJoin {
+			j, ok := joins[n.Name]
+			if !ok || len(j.InCanonical) != len(j.Inputs) {
+				return "", fmt.Errorf("plan: topology join %q has no input list aligned with its port types", n.Name)
 			}
-			writeField(&b, "n.join.intype", canonicalType(portType))
+			for i, src := range j.Inputs {
+				writeField(&b, "n.join.in", src)
+				writeField(&b, "n.join.intype", j.InCanonical[i])
+			}
 		}
 	}
 
 	b.WriteString("edges\n")
-	for _, e := range c.edges {
-		writeField(&b, "e.from", e.from)
-		writeField(&b, "e.to", e.to)
+	for _, e := range t.Edges {
+		writeField(&b, "e.from", e.From)
+		writeField(&b, "e.to", e.To)
 	}
 
 	b.WriteString("branches\n")
-	for _, br := range c.branches {
-		writeField(&b, "b.over", br.over)
-		for _, a := range br.arms {
-			writeField(&b, "a.else", strconv.FormatBool(a.isElse))
-			writeField(&b, "a.pred", a.predName)
-			writeField(&b, "a.target", a.target)
-			writeField(&b, "a.loopback", strconv.FormatBool(a.loopBack))
-			writeField(&b, "a.loopmax", strconv.Itoa(a.loopMax))
+	for _, br := range t.Branches {
+		writeField(&b, "b.over", br.Over)
+		for _, a := range br.Arms {
+			writeField(&b, "a.else", strconv.FormatBool(a.Else))
+			writeField(&b, "a.pred", a.Pred)
+			writeField(&b, "a.target", a.Target)
+			writeField(&b, "a.loopback", strconv.FormatBool(a.LoopBack))
+			writeField(&b, "a.loopmax", strconv.Itoa(a.LoopMax))
 		}
 	}
 
 	b.WriteString("loops\n")
-	for _, lp := range c.loops {
-		writeField(&b, "l.head", lp.head)
-		writeField(&b, "l.over", lp.over)
-		writeField(&b, "l.max", strconv.Itoa(lp.max))
-		for _, name := range lp.body {
+	for _, lp := range t.Loops {
+		writeField(&b, "l.head", lp.Head)
+		writeField(&b, "l.over", lp.Over)
+		writeField(&b, "l.max", strconv.Itoa(lp.Max))
+		for _, name := range lp.Body {
 			writeField(&b, "l.body", name)
 		}
 	}
 
 	sum := sha256.Sum256([]byte(b.String()))
-	return hex.EncodeToString(sum[:])
+	return hex.EncodeToString(sum[:]), nil
+}
+
+// kindOfName is the internal kind a TopologyNodeKind names: the inverse of nodeKindName.
+func kindOfName(k TopologyNodeKind) (nodeKind, bool) {
+	for _, n := range []nodeKind{kindStep, kindTool, kindModel, kindSwitch, kindJoin} {
+		if nodeKindName(n) == k {
+			return n, true
+		}
+	}
+	return 0, false
 }
 
 // Domain tags of the two digest versions. The tag is the first line hashed, so a v1 and a

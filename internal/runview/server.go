@@ -14,6 +14,7 @@ import (
 	"strings"
 
 	"github.com/bide-ai/bide/agent"
+	"github.com/bide-ai/bide/plan"
 )
 
 //go:embed assets
@@ -150,7 +151,20 @@ func (o Options) view(ctx context.Context, runID string) (*View, error) {
 			break
 		}
 	}
+	// Without an override (-topology), a flow run is drawn from the topology it journaled, once its
+	// digest is checked against the journaled flow:digest (plan.JournaledTopology).
+	var topoErr error
+	if flow == nil {
+		if t, d, ok, err := plan.JournaledTopology(recs); ok && err == nil {
+			flow = &Flow{Topology: t, Digest: d, Source: "from journal (digest verified)"}
+		} else if ok {
+			topoErr = err
+		}
+	}
 	v := Build(ctx, runID, recs, flow)
+	if topoErr != nil {
+		v.Notes = append(v.Notes, "the journaled topology is not drawn: "+topoErr.Error())
+	}
 	for _, p := range o.Provers {
 		if v.Proof = p(ctx, runID, recs); v.Proof != nil {
 			break

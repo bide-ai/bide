@@ -16,7 +16,9 @@ import (
 var Do func(ctx context.Context, j any, runID, name string, fn func(context.Context) (any, error)) (any, error)
 
 // DoFresh is Do for a step the caller knows is not recorded (the journal's doFresh: the engine's
-// live model turns and tool results), for tests that hold that path to the journal's rules.
+// live model turns and tool results): one Insert and no read, which keeps the record another
+// writer stored first. Tests use it to hold that path to the journal's rules, and plan to record a
+// flow's topology (flow:topology), a pure value, without a read.
 var DoFresh func(ctx context.Context, j any, runID, name string, fn func(context.Context) (any, error)) (any, error)
 
 // Step runs fn as the Step named name of runID in j, an *agent.Journal, with

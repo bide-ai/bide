@@ -59,8 +59,8 @@ func TestCryptographicConformance(t *testing.T) {
 			break
 		}
 	}
-	if idx != 2 {
-		t.Fatalf("flow:digest record index = %d, want 2 (Run records it after the journal header and the run's start)", idx)
+	if idx != 3 || recs[2].Name != "flow:topology" {
+		t.Fatalf("flow:digest record index = %d, want 3 (Run records it after the journal header, the run's start and flow:topology)", idx)
 	}
 
 	bundle, err := audit.ProveRecord(ctx, store, runID, idx, sth)

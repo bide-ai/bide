@@ -130,11 +130,11 @@ func TestRunJournalsDigest(t *testing.T) {
 	if len(recs) > 0 && recs[0].Kind == agent.StepHeader {
 		recs = recs[1:] // the journal header comes first in every journal
 	}
-	if len(recs) < 2 || recs[0].Name != runStartStep || recs[1].Name != flowDigestStep {
-		t.Fatalf("the journal records after the header are not %q then %q: %+v", runStartStep, flowDigestStep, recs)
+	if len(recs) < 3 || recs[0].Name != runStartStep || recs[1].Name != TopologyStep || recs[2].Name != flowDigestStep {
+		t.Fatalf("the journal records after the header are not %q, %q then %q: %+v", runStartStep, TopologyStep, flowDigestStep, recs)
 	}
 	var got string
-	if err := json.Unmarshal(recs[1].Result, &got); err != nil {
+	if err := json.Unmarshal(recs[2].Result, &got); err != nil {
 		t.Fatalf("decode journaled digest: %v", err)
 	}
 	if got != flow.Digest() {

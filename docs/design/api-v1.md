@@ -553,7 +553,7 @@ func (r Record) ClaimID() string  // read-only
 - Only the engine writes raw records.
 - Two same-module packages need raw writes:
   - audit writes its `audit:` leaves;
-  - plan writes `flow:digest`, `switch:*` and its node steps.
+  - plan writes `flow:digest`, `flow:topology` (the declared topology, informational), `switch:*` and its node steps.
 - They get them through `internal/journalhook`:
   - `agent` assigns function variables there in `init()`;
   - the functions use only `any`, `string` and `json.RawMessage`, so there is no import cycle.
@@ -806,7 +806,7 @@ func ResolveHalt(ctx context.Context, j *Journal, ref HaltRef, out Outcome, opts
 - Each node runs through the engine step hook as `agent.Step` semantics, under reserved plan prefixes:
   - node keys `node:<name>` and `node:iter:<n>:<name>`;
   - branch choices `switch:*`;
-  - topology `flow:digest`.
+  - topology `flow:digest`, and the declared topology `flow:topology` beside it (informational: what a viewer draws; nothing in the engine reads it).
 - `node:`, `switch:` and `flow:` are added to `reservedPrefixes` in P5b, so user `Step` names inside a flow body can never collide with them.
 - Node markers become Step markers. After #57 and #65, a Step marker is itself the recorded safety, so #70's `{"retry_safe": bool}` is no longer needed. #65's not-started records now cover flow nodes.
 - `HaltAmbiguous` is deleted. Flow halts are `*OutcomeUnknown{Op: OpRef{Kind: OpStep}}`, and `ResolveHalt` clears them.

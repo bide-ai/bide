@@ -13,6 +13,7 @@
   {{else}}<p class="muted">No signed head or evidence package given for this run (-sth or -evidence, with -pubkey).</p>{{end}}</div>
   {{if .Conform}}<div class="card"><h3>Conformance</h3>{{with .Conform}}
     <p class="{{if .OK}}good{{else}}bad{{end}}"><b>{{if .OK}}Conforms{{else}}Diverges{{end}}</b> ({{.Method}}; digest {{.Digest}})</p>
+    {{if .Source}}<p class="muted small">Topology {{.Source}}</p>{{end}}
     {{range .Diffs}}<p class="bad small"><code>{{.}}</code></p>{{end}}
     {{if eq .Method "structural"}}<p class="muted small">Structural: node names, Switch arms and the digest. plan.Conform also replays routing and loops; embed the viewer with the Flow for it.</p>{{end}}
   {{end}}</div>{{end}}

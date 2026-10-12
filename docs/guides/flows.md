@@ -216,6 +216,15 @@ Two pieces make it work:
   records the digest, as a durable step under the reserved name `flow:digest` (memoized on resume). Because it lives in the
   journal, the [`audit`](../../audit) package's Merkle tree and signed tree head commit to it like any
   other record.
+- **The topology itself, journaled beside it.** Just before `flow:digest`, a run's first drive records
+  the declared `Topology` as JSON under `flow:topology` (`plan.TopologyStep`), one Insert, and a
+  resume writes neither record again. `plan.TopologyDigest` of that `Topology` is the digest:
+  `Flow.Digest` is computed through it, and the `Topology` carries what the digest commits to beyond
+  the drawing (each node's block, each arm's predicate name, and every type with its package path in
+  the `*_canonical` fields). `plan.JournaledTopology(records)` reads the record and checks its digest
+  against `flow:digest`, so a reader (such as `bide-view`) can draw the flow a run ran from its
+  journal alone and know the drawing is what ran. The record is informational: `Run`, resume,
+  routing and recovery do not read it. A run started before this record existed has none.
 
 The flow, end to end:
 
@@ -231,7 +240,7 @@ The flow, end to end:
    committed to this signed diagram.**
 
 `Conform` closes the loop on the *path*: it recognizes `run:start` (which must name this flow),
-`flow:digest`, a node's attempt markers and the not-started records of its claims as internal records
+`flow:digest`, `flow:topology` (whose digest must be this flow's), a node's attempt markers and the not-started records of its claims as internal records
 (never a divergence) and verifies the journaled digest **equals** the current flow's `Digest()`. A mismatch is
 reported as a divergence, "ran against a different topology": the run executed under a different
 declared graph than the flow now describes. So `Conform` covers node-visitation and branch choices,
