@@ -43,6 +43,10 @@ type config struct {
 	// discriminated union of exactly one of edge or switch; Load rejects an element
 	// that sets both or neither, which encoding/json cannot validate.
 	Wiring []configWire `json:"wiring"`
+	// Assert are policy assertions about the graph (see InspectConfig for the grammar), checked by
+	// InspectConfig and bide-view -config. Load ignores them: they are not part of the flow or its
+	// Digest.
+	Assert []string `json:"assert,omitempty"`
 }
 
 // configNode declares one node by its journal name and the registered block it
