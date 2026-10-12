@@ -155,11 +155,17 @@ tree between releases.
       against the proxy, builds, vets and tests each one with `GOWORK=off`, commits (signed off),
       tags each `<dir>/vX.Y.Z` at that commit, pushes the tags at most three per push and waits
       for the proxy;
-   3. does the same for the governed-event logs, which also require `govern` at `vX.Y.Z`;
+   3. does the same for the governed-event logs, which also require `govern` at `vX.Y.Z`, and for
+      the `bide` command, which requires the stores;
    4. checks each module with `go list -m <module>@vX.Y.Z` against the proxy, and builds a scratch
-      consumer module that `go get`s every published module at `vX.Y.Z` with an empty module cache.
-4. The core tag runs the Release workflow (the `bide` binaries and the GitHub Release, with
-   `docs/releases/vX.Y.Z.md` as its notes); each nested tag runs the Release modules workflow,
+      consumer module that `go get`s every published module at `vX.Y.Z` with an empty module cache,
+      then installs the released `bide` and checks that the project `bide init` writes builds and
+      passes its test.
+4. The core tag runs the Release workflow: the `bide` binaries and the GitHub Release (with
+   `docs/releases/vX.Y.Z.md` as its notes), the Homebrew formula (`bide.rb`, attached to the
+   release, and pushed to bide-ai/homebrew-tap when the `HOMEBREW_TAP_TOKEN` secret is set; see
+   [The Homebrew tap by hand](#the-homebrew-tap-by-hand)), and the `repro` job, which rebuilds every binary
+   from the tag on macOS and fails unless the bytes match (`scripts/repro.sh`); each nested tag runs the Release modules workflow,
    which fails if the tagged `go.mod` still requires `v0.0.0` or replaces a bide module, or does
    not build with `GOWORK=off`. Check both, the release assets and the Homebrew formula: every
    nested tag has its own Release modules run.
@@ -173,6 +179,24 @@ tree between releases.
    ```
    gh workflow run release-modules.yml -R bide-ai/bide --ref main -f tag=govern/vX.Y.Z
    ```
+
+### The Homebrew tap by hand
+
+Without `HOMEBREW_TAP_TOKEN`, the Release run attaches the formula to the release and leaves the
+tap alone (its log ends with a notice saying so). Update the tap from a clone of
+bide-ai/homebrew-tap:
+
+```
+gh release download vX.Y.Z -R bide-ai/bide -p bide.rb -O Formula/bide.rb
+git rm -q --ignore-unmatch Formula/bide-audit.rb          # the first time only: bide replaces it
+printf '{\n  "bide-audit": "bide"\n}\n' > formula_renames.json   # brew upgrade moves bide-audit users
+git add Formula/bide.rb formula_renames.json
+git commit -s -m "bide vX.Y.Z" && git push
+brew update && brew install bide-ai/tap/bide && brew test bide   # check it
+```
+
+The formula pins each archive's sha256 from the release's `checksums.txt`
+(`scripts/brew-formula.sh`), so it needs no edits.
 
 If a `--push` run stops partway, re-run the same command: the core tag and any nested tags already
 on the remote are reused (each is only checked against the proxy) and the rest are made. Never move
