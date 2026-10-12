@@ -37,14 +37,14 @@ func TestCheckYAML(t *testing.T) {
 	}
 	for _, want := range []string{
 		bad + `:charge->receipt: wiring[1] edge "charge" -> "receipt": "receipt" is not a declared node`,
-		bad + `:charge: node "charge" declares an approval gate`,
 	} {
 		if !strings.Contains(out.String(), want) {
 			t.Errorf("-check output lacks %q:\n%s", want, out.String())
 		}
 	}
 	good := filepath.Join(dir, "ok.yaml")
-	clean := strings.Replace(strings.Replace(flowYAML, ", approval: {need: 2, approvers: [ops, finance, risk]}", "", 1), "[charge, receipt]", "[charge, done]", 1)
+	// A valid approval gate is no problem: plan flows enforce it.
+	clean := strings.Replace(flowYAML, "[charge, receipt]", "[charge, done]", 1)
 	if err := os.WriteFile(good, []byte(clean), 0o644); err != nil {
 		t.Fatal(err)
 	}
