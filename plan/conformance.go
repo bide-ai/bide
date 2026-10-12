@@ -42,6 +42,9 @@ func (f *Flow[In, Out]) Conform(ctx context.Context, store *agent.Journal, runID
 //
 //   - "run:start"      -- how the run started (see agent.RunStart). It must record a
 //     flow run of this flow's name.
+//   - "flow:topology"  -- the declared Topology the run's first drive journaled (TopologyStep).
+//     conform verifies its digest (TopologyDigest) EQUALS the current flow's Digest(). A run
+//     started before this record existed has none, which is not a divergence.
 //   - "flow:digest"    -- the frozen topology digest Run records (StepValue whose
 //     Result is the JSON-encoded hex digest). conform verifies it EQUALS the current
 //     flow's Digest() and reports a mismatch as a divergence ("ran against a different
@@ -160,6 +163,18 @@ func (c *builderCore) conform(ctx context.Context, store *agent.Journal, runID s
 				diffs = append(diffs, r.Name+" (recorded under topology digest v1, which cannot show the run followed this flow)")
 			default:
 				diffs = append(diffs, r.Name+" (ran against a different topology)")
+			}
+
+		case r.Name == TopologyStep:
+			// The declared topology the run's first drive journaled (informational): it must be this
+			// flow's, digest for digest.
+			var t Topology
+			if json.Unmarshal(r.Result, &t) != nil {
+				diffs = append(diffs, r.Name+" (unreadable topology)")
+				continue
+			}
+			if got, err := TopologyDigest(t); err != nil || got != want {
+				diffs = append(diffs, r.Name+" (not this flow's topology)")
 			}
 
 		case r.Name == runCompleteStep:

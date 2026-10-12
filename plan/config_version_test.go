@@ -208,13 +208,16 @@ func TestTopology_JSONKeys(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	const want = `{"flow":"generate","entry":"parse","in":"string","out":"string",` +
-		`"nodes":[{"name":"parse","kind":"step","in":"string","out":"int"},{"name":"gen","kind":"model","in":"int","out":"int"},` +
-		`{"name":"gate","kind":"switch","in":"int","out":"int"},{"name":"reject","kind":"tool","in":"int","out":"string"},` +
-		`{"name":"aux","kind":"step","in":"int","out":"bool"},{"name":"merge","kind":"join","in":"","out":"string"}],` +
+	const want = `{"flow":"generate","entry":"parse","in":"string","out":"string","in_canonical":"string","out_canonical":"string",` +
+		`"nodes":[{"name":"parse","kind":"step","in":"string","out":"int","block":"","in_canonical":"string","out_canonical":"int"},` +
+		`{"name":"gen","kind":"model","in":"int","out":"int","block":"","in_canonical":"int","out_canonical":"int"},` +
+		`{"name":"gate","kind":"switch","in":"int","out":"int","block":"","in_canonical":"int","out_canonical":"int"},` +
+		`{"name":"reject","kind":"tool","in":"int","out":"string","block":"","in_canonical":"int","out_canonical":"string"},` +
+		`{"name":"aux","kind":"step","in":"int","out":"bool","block":"","in_canonical":"int","out_canonical":"bool"},` +
+		`{"name":"merge","kind":"join","in":"","out":"string","block":"","in_canonical":"?","out_canonical":"string"}],` +
 		`"edges":[{"from":"parse","to":"gen"},{"from":"gen","to":"gate"},{"from":"gen","to":"merge","type":"int"},{"from":"aux","to":"merge","type":"bool"}],` +
 		`"branches":[{"over":"gate","arms":[{"target":"gen","loop_back":true,"loop_max":3},{"target":"reject","else":true}],"else":"reject"}],` +
-		`"joins":[{"name":"merge","inputs":["gen","aux"],"in_types":["int","bool"],"out":"string"}],` +
+		`"joins":[{"name":"merge","inputs":["gen","aux"],"in_types":["int","bool"],"in_canonical":["int","bool"],"out":"string"}],` +
 		`"loops":[{"head":"gen","over":"gate","body":["gen","gate"],"max":3}]}`
 	if string(data) != want {
 		t.Errorf("Topology JSON:\n got %s\nwant %s", data, want)

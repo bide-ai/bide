@@ -37,6 +37,10 @@ type Topology struct {
 	// renders them (for example "int" or "main.Report"). Empty if a side is unpinned.
 	In  string `json:"in"`
 	Out string `json:"out"`
+	// InCanonical and OutCanonical are the same types written with every named type qualified
+	// by its full package path, as the Digest commits to them ("?" for an unpinned side).
+	InCanonical  string `json:"in_canonical"`
+	OutCanonical string `json:"out_canonical"`
 	// Nodes are the declared nodes in insertion order.
 	Nodes []TopologyNode `json:"nodes"`
 	// Edges are the declared producer -> consumer connections in insertion order,
@@ -74,11 +78,18 @@ const (
 // names as reflect.Type.String renders them. A join node has no single input
 // type (it fans in several producers), so In is empty for a join; its per-port
 // input types live in the matching TopologyJoin. An unpinned side is empty.
+//
+// Block, InCanonical and OutCanonical are what the Digest commits to beyond the names: the
+// registered block the node runs, and its input and output types with full package paths ("?"
+// for an unpinned side; a join's InCanonical is "?", as it has no single input).
 type TopologyNode struct {
-	Name string           `json:"name"`
-	Kind TopologyNodeKind `json:"kind"`
-	In   string           `json:"in"`
-	Out  string           `json:"out"`
+	Name         string           `json:"name"`
+	Kind         TopologyNodeKind `json:"kind"`
+	In           string           `json:"in"`
+	Out          string           `json:"out"`
+	Block        string           `json:"block"`
+	InCanonical  string           `json:"in_canonical"`
+	OutCanonical string           `json:"out_canonical"`
 }
 
 // TopologyEdge is one declared connection producer.Out -> consumer.In, by node
@@ -105,8 +116,12 @@ type TopologyBranch struct {
 // for a loop-back arm, 0 otherwise). A forward When arm has Else and LoopBack both
 // false and LoopMax 0. The arm predicate itself is a Go closure and is not part of
 // this data view (it is not serializable and not part of the topology's identity).
+//
+// Pred is the name of the arm's predicate, which the Digest commits to (Arm.Named, or the
+// registered predicate a config arm references); empty for an Else arm and an unnamed predicate.
 type TopologyBranchArm struct {
 	Target   string `json:"target"`
+	Pred     string `json:"pred,omitempty"`
 	Else     bool   `json:"else,omitempty"`
 	LoopBack bool   `json:"loop_back,omitempty"`
 	LoopMax  int    `json:"loop_max,omitempty"`
@@ -117,11 +132,14 @@ type TopologyBranchArm struct {
 // positionally-aligned input port type names, and the join's output type name. A
 // join also appears in Topology.Nodes with kind "join"; this records the fan-in
 // detail Nodes cannot (the ordered inputs and their per-port types).
+//
+// InCanonical is InTypes with full package paths, as the Digest commits to them.
 type TopologyJoin struct {
-	Name    string   `json:"name"`
-	Inputs  []string `json:"inputs"`
-	InTypes []string `json:"in_types"`
-	Out     string   `json:"out"`
+	Name        string   `json:"name"`
+	Inputs      []string `json:"inputs"`
+	InTypes     []string `json:"in_types"`
+	InCanonical []string `json:"in_canonical"`
+	Out         string   `json:"out"`
 }
 
 // TopologyLoop is one bounded loop Build derived from a LoopBack arm: the loop
@@ -184,10 +202,12 @@ func nodeKindName(k nodeKind) TopologyNodeKind {
 // but "" here, see below) so no reflect.Type escapes into the public API.
 func (c *builderCore) topology() Topology {
 	t := Topology{
-		Flow:  c.flowName,
-		Entry: c.entry,
-		In:    typeStringOrEmpty(c.inType),
-		Out:   typeStringOrEmpty(c.outType),
+		Flow:         c.flowName,
+		Entry:        c.entry,
+		In:           typeStringOrEmpty(c.inType),
+		Out:          typeStringOrEmpty(c.outType),
+		InCanonical:  canonicalType(c.inType),
+		OutCanonical: canonicalType(c.outType),
 	}
 
 	// Nodes in insertion order. A join has no single inType, so In stays empty for
@@ -195,9 +215,12 @@ func (c *builderCore) topology() Topology {
 	t.Nodes = make([]TopologyNode, 0, len(c.nodes))
 	for _, n := range c.nodes {
 		tn := TopologyNode{
-			Name: n.name,
-			Kind: nodeKindName(n.kind),
-			Out:  typeStringOrEmpty(n.outType),
+			Name:         n.name,
+			Kind:         nodeKindName(n.kind),
+			Out:          typeStringOrEmpty(n.outType),
+			Block:        n.block,
+			InCanonical:  canonicalType(n.inType),
+			OutCanonical: canonicalType(n.outType),
 		}
 		if n.kind != kindJoin {
 			tn.In = typeStringOrEmpty(n.inType)
@@ -208,15 +231,19 @@ func (c *builderCore) topology() Topology {
 		// port is joinInTypes positionally aligned with joinInputs.
 		if n.kind == kindJoin {
 			tj := TopologyJoin{
-				Name:    n.name,
-				Inputs:  append([]string(nil), n.joinInputs...),
-				InTypes: make([]string, len(n.joinInputs)),
-				Out:     typeStringOrEmpty(n.outType),
+				Name:        n.name,
+				Inputs:      append([]string(nil), n.joinInputs...),
+				InTypes:     make([]string, len(n.joinInputs)),
+				InCanonical: make([]string, len(n.joinInputs)),
+				Out:         typeStringOrEmpty(n.outType),
 			}
 			for i := range n.joinInputs {
+				var portType reflect.Type
 				if i < len(n.joinInTypes) {
-					tj.InTypes[i] = typeStringOrEmpty(n.joinInTypes[i])
+					portType = n.joinInTypes[i]
 				}
+				tj.InTypes[i] = typeStringOrEmpty(portType)
+				tj.InCanonical[i] = canonicalType(portType)
 			}
 			t.Joins = append(t.Joins, tj)
 		}
@@ -240,6 +267,7 @@ func (c *builderCore) topology() Topology {
 		for _, a := range br.arms {
 			tb.Arms = append(tb.Arms, TopologyBranchArm{
 				Target:   a.target,
+				Pred:     a.predName,
 				Else:     a.isElse,
 				LoopBack: a.loopBack,
 				LoopMax:  a.loopMax,

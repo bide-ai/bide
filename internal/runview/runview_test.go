@@ -11,6 +11,7 @@ import (
 	"net"
 	"net/http"
 	"net/http/httptest"
+	"slices"
 	"strings"
 	"testing"
 	"time"
@@ -568,5 +569,60 @@ func TestApprovalSignatures(t *testing.T) {
 	g, _ = gate(func(context.Context, string, []agent.Record) *Proof { return nil }, j)
 	if g.Signatures != "signatures not checked (pass -approver-keys, with -sth or -evidence)" {
 		t.Fatalf("no proof: %q", g.Signatures)
+	}
+}
+
+// TestFlowFromJournal: a flow run is drawn with no flags, from the topology it journaled, its
+// digest checked; a run journaled without one says so and draws nothing; -topology overrides.
+func TestFlowFromJournal(t *testing.T) {
+	ctx := context.Background()
+	charges := 0
+	flow := refundFlow(t, &charges)
+	j := agenttest.MemJournal()
+	if _, err := flow.Run(ctx, j, "f1", order{ID: "o-1", Amount: 250}); err != nil {
+		t.Fatal(err)
+	}
+	v := viewOf(t, Handler(Options{Source: JournalSource{J: j}}), "f1")
+	if v.Graph == nil || v.Conform == nil {
+		t.Fatalf("no graph or conformance from the journaled topology: notes %v", v.Notes)
+	}
+	if c := v.Conform; !c.OK || c.Digest != "match" || c.Source != "from journal (digest verified)" {
+		t.Fatalf("conformance = %+v", c)
+	}
+	if node(v, "charge").Status != "done" || node(v, "skip").Status != "not-reached" {
+		t.Fatalf("nodes: charge %q, skip %q", node(v, "charge").Status, node(v, "skip").Status)
+	}
+	if v := viewOf(t, Handler(Options{Source: JournalSource{J: j}, Flows: map[string]*Flow{"refund": {Topology: flow.Topology(), Source: "from -topology"}}}), "f1"); v.Conform == nil || v.Conform.Source != "from -topology" {
+		t.Fatalf("an override was not used: %+v", v.Conform)
+	}
+
+	// A run journaled before flow:topology existed: its records but that one.
+	recs, err := j.History(ctx, "f1")
+	if err != nil {
+		t.Fatal(err)
+	}
+	old := Exports{"f1": slices.DeleteFunc(slices.Clone(recs), func(r agent.Record) bool { return r.Name == plan.TopologyStep })}
+	v = viewOf(t, Handler(Options{Source: old}), "f1")
+	if v.Graph != nil || !slices.ContainsFunc(v.Notes, func(n string) bool { return strings.Contains(n, "journaled no topology") }) {
+		t.Fatalf("an old run: graph %v, notes %v", v.Graph != nil, v.Notes)
+	}
+
+	// A topology record another flow's: not drawn, and said so.
+	other := plan.New[order, string]("refund")
+	other.Step("validate", func(_ context.Context, o order) (string, error) { return o.ID, nil })
+	of, err := other.Build()
+	if err != nil {
+		t.Fatal(err)
+	}
+	tb, _ := json.Marshal(of.Topology())
+	forged := slices.Clone(old["f1"])
+	r, err := agent.DecodeStoredRecord("f1", plan.TopologyStep, []byte(`{"name":"`+plan.TopologyStep+`","kind":"value","result":`+string(tb)+`}`))
+	if err != nil {
+		t.Fatal(err)
+	}
+	forged = append(forged, r)
+	v = viewOf(t, Handler(Options{Source: Exports{"f1": forged}}), "f1")
+	if v.Graph != nil || !slices.ContainsFunc(v.Notes, func(n string) bool { return strings.Contains(n, "journaled topology is not drawn") }) {
+		t.Fatalf("a mismatched topology record: graph %v, notes %v", v.Graph != nil, v.Notes)
 	}
 }

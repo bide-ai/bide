@@ -22,13 +22,16 @@ type Flow struct {
 	// Digest is flow.Digest(), compared with the digest the run journaled. Empty: not compared.
 	Digest string
 	// Conform is flow.Conform. Nil: the viewer runs only its structural check (see Conformance).
+	// Source says where the topology came from, as the page shows it.
 	Conform func(ctx context.Context, j *agent.Journal, runID string) (bool, []string, error)
+	Source  string
 }
 
 // Conformance is the verdict on whether the run followed the declared topology.
 type Conformance struct {
 	OK     bool     `json:"ok"`
 	Method string   `json:"method"` // "plan.Conform", or "structural" (see structural)
+	Source string   `json:"source"` // where the topology came from
 	Diffs  []string `json:"diffs,omitempty"`
 	Digest string   `json:"digest"` // "match", "mismatch", or "not compared"
 }
@@ -106,7 +109,7 @@ func flowGraph(ctx context.Context, runID string, recs []agent.Record, flow *Flo
 	}
 
 	if flow == nil {
-		v.Notes = append(v.Notes, "the journal records this flow's name and topology digest, not its topology: pass -topology (a JSON export of flow.Topology()) to draw it")
+		v.Notes = append(v.Notes, "this run journaled no topology (it was started before flow:topology was journaled): pass -topology (a JSON export of flow.Topology()) to draw it")
 		return nil, nil, last
 	}
 	t := flow.Topology
@@ -138,7 +141,7 @@ func flowGraph(ctx context.Context, runID string, recs []agent.Record, flow *Flo
 	layout(g, t.Entry)
 	g.Mermaid = mermaid(g)
 
-	c := &Conformance{Digest: "not compared"}
+	c := &Conformance{Digest: "not compared", Source: flow.Source}
 	if flow.Digest != "" {
 		c.Digest = "mismatch"
 		if v.Digest == flow.Digest {

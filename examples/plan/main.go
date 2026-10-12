@@ -216,8 +216,8 @@ func proveTopologyConformance(ctx context.Context, flow *plan.Flow[Order, Receip
 		fatal(fmt.Errorf("sign tree head: %w", err))
 	}
 
-	// Locate the flow:digest record's index in the journal (Run writes it after the
-	// journal header and the run's start, so it is index 2, but resolve it by name to stay
+	// Locate the flow:digest record's index in the journal (Run writes it after the journal
+	// header, the run's start and flow:topology, so it is index 3, but resolve it by name to stay
 	// robust), then prove its inclusion under the signed tree head.
 	idx, err := digestRecordIndex(ctx, store, runID)
 	if err != nil {

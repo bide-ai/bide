@@ -115,7 +115,24 @@ func (f *Flow[In, Out]) Run(ctx context.Context, store *agent.Journal, runID str
 	if encErr != nil {
 		return out, fmt.Errorf("plan: run %q: encode topology digest: %w", c.flowName, encErr)
 	}
-	rec, err := doRecord(ctx, store, runID, flowDigestStep, func(context.Context) (agent.Record, error) {
+	//
+	// A run's first drive, the one that records flow:digest, records the declared topology under
+	// flow:topology just before it (see TopologyStep), and only then: a resume finds flow:digest and
+	// writes neither, and a run started by an earlier version, which has flow:digest and no
+	// flow:topology, is not given one. The topology record is informational: no part of Run,
+	// Conform's routing replay or recovery reads it to decide anything.
+	rec, err := doRecord(ctx, store, runID, flowDigestStep, func(ctx context.Context) (agent.Record, error) {
+		topo, err := journalhook.Marshal(c.topology())
+		if err != nil {
+			return agent.Record{}, fmt.Errorf("encode topology: %w", err)
+		}
+		// One Insert and no read: the record is a pure value, and if it is there already (a first
+		// drive that crashed before recording flow:digest) the Insert finds it and keeps it.
+		if _, err := journalhook.DoFresh(ctx, store, runID, TopologyStep, func(context.Context) (any, error) {
+			return agent.Record{Kind: agent.StepValue, Result: topo}, nil
+		}); err != nil {
+			return agent.Record{}, fmt.Errorf("record topology: %w", err)
+		}
 		return agent.Record{Kind: agent.StepValue, Result: want}, nil
 	})
 	if err != nil {

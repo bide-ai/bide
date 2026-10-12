@@ -9,6 +9,10 @@ journal format can change between pre-releases without a version bump. Curated h
 
 ## [Unreleased]
 
+### Added
+
+- A plan flow run's first drive journals its declared topology under `flow:topology` (`plan.TopologyStep`), as `Topology` JSON, one Insert just before `flow:digest`; a resume writes neither again, and a run started earlier is not given one. `Topology` gains the digest's inputs (each node's `block`, each arm's `pred`, and `*_canonical` types with package paths), and `Flow.Digest` is computed through the new `plan.TopologyDigest`, so the journaled digest recomputes from the journaled topology; `plan.JournaledTopology` reads the record and checks it. The record is informational: `Run`, resume, routing and recovery do not read it, and `Conform` checks its digest. `bide-view` draws a flow run from it with no flags ("Topology from journal (digest verified)"); `-topology` stays as an override and for older runs, and its digest is computed from the file when `-digest` is not given. Journal format: one new record name, with no format version change before 1.0.
+
 ## [0.13.0] - 2026-10-12
 
 ### Changed
