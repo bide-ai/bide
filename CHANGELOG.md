@@ -9,6 +9,8 @@ journal format can change between pre-releases without a version bump. Curated h
 
 ## [Unreleased]
 
+## [0.13.0] - 2026-10-12
+
 ### Changed
 
 - `govern`, its log adapters, `integration` and `examples/govern` require gsm v0.14.0 (was v0.13.0), and the gsm machine gate pins its release commit. gsm v0.14.0 adds the XU check for deployments that merge component projections; bide replays one shared event log (gsm's `FedMachine` model), so it does not rely on XU. Nothing that built on v0.13.0 fails to build, and every governance example runs unchanged.
@@ -823,7 +825,8 @@ First public release.
 - `bide-audit` standalone verifier, prebuilt for Linux, macOS and Windows on amd64 and arm64.
 - `eval` statistical evaluation harness, `chaos` crash-injection harness, and `cmd/bench`.
 
-[Unreleased]: https://github.com/bide-ai/bide/compare/v0.12.0...HEAD
+[Unreleased]: https://github.com/bide-ai/bide/compare/v0.13.0...HEAD
+[0.13.0]: https://github.com/bide-ai/bide/compare/v0.12.0...v0.13.0
 [0.12.0]: https://github.com/bide-ai/bide/compare/v0.11.1...v0.12.0
 [0.11.1]: https://github.com/bide-ai/bide/compare/v0.11.0...v0.11.1
 [0.11.0]: https://github.com/bide-ai/bide/compare/v0.10.0...v0.11.0
