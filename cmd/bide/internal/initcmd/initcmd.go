@@ -131,7 +131,9 @@ func write(dir, name, gomod string) error {
 		if err != nil {
 			return err
 		}
-		out := strings.ReplaceAll(string(b), "__NAME__", name)
+		// The template is written with LF line endings on every OS: a Windows checkout of bide may
+		// hold the embedded files with CRLF (core.autocrlf).
+		out := strings.ReplaceAll(strings.ReplaceAll(string(b), "\r\n", "\n"), "__NAME__", name)
 		if err := os.WriteFile(filepath.Join(dir, dst), []byte(out), 0o644); err != nil {
 			return err
 		}

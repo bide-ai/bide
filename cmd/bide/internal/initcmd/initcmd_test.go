@@ -97,6 +97,9 @@ func TestFiles(t *testing.T) {
 		if strings.Contains(string(b), "__NAME__") {
 			t.Errorf("%s still holds the __NAME__ placeholder", f)
 		}
+		if strings.Contains(string(b), "\r") {
+			t.Errorf("%s has a CR: the project is written with LF line endings", f)
+		}
 	}
 	if b, _ := os.ReadFile(filepath.Join(dir, "README.md")); !strings.HasPrefix(string(b), "# refund\n") {
 		t.Errorf("README.md does not start with the project's name:\n%.80s", b)
