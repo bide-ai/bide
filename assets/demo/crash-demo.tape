@@ -5,7 +5,7 @@ Output "terminal.mp4"
 
 Set Shell "bash"
 Set FontSize 20
-Set Width 720
+Set Width 790
 Set Height 900
 Set Padding 22
 Set Theme "Dracula"
