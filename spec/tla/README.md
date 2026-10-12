@@ -921,21 +921,25 @@ every journal the drivers and the resolver can produce is a declared path, which
 | `flow-all-side-resolve` | ci | every node a side effect, one driver, the resolver | 289,192 | 2 s |
 | `flow-live` | ci | `Completes`, one driver; 1 error reply, 1 crash | 7,820 | <1 s |
 | `flow-gate` | ci | gates on `H` (per iteration) and `T`, 2 of 2; one driver, the resolver; 1 crash | 2,575,445 | 7 min (1 worker, beside other runs) |
-| `flow-gate-live` | ci | `Completes` with gates on `H` and `T`, 2 of 2; one driver; 1 error reply, 1 crash | 846,474 | 11 min (1 worker, beside other runs) |
+| `flow-gate-live` | ci | `Completes` with gates on `H` and `T`, 2 of 2, no early decisions; one driver; 1 error reply, 1 crash | 25,806 | 6 s |
 | `flow-two` | nightly | two drivers; `E`, `H`, `T` side effects; 1 error reply, 1 crash | 2,125,920 | 23 s |
 | `deep-flow-all-side` | nightly | every node a side effect, two drivers | 7,165,894 | 8 min (2 workers, beside other runs) |
 | `deep-flow-resolve` | nightly | two drivers and the resolver, 1 crash | 20,510,386 | 22 min (2 workers, beside other runs) |
 | `deep-flow-live` | nightly | `Completes`, two drivers | 4,251,812 | 17 min (2 workers, beside other runs) |
 | `deep-flow-iter3` | nightly | three loop iterations, two drivers | 13,797,768 | 15 min (2 workers, beside other runs) |
 | `deep-flow-gate` | nightly | a gate on `T`, 1 of 2; two drivers, 1 crash | 15,558,240 | 13 min (4 workers, beside other runs) |
-| `deep-flow-gate-faults` | nightly | `flow-gate` with 1 error reply | 9,573,096 | 14 min (2 workers, beside other runs) |
+| `deep-flow-gate-loop` | nightly | a gate on the loop head `H`, 1 of 2, per iteration; two drivers, 1 crash | 30,611,040 | 16 min (3 workers, beside other runs) |
+| `deep-flow-gate-faults` | nightly | `flow-gate` with 1 error reply | 9,573,096 | 7 min (2 workers, beside other runs) |
 
 Regressions (each must fail with its property): `flows/regress/gate-missing` (a gated node run
 with no gate check, as the runtime would have before flows enforced gates had `Build` not refused
 them; `GateHeld`), `flows/regress/gate-unscoped` (a gate in a loop keyed per node, not per
 iteration, so the first iteration's tally lets the second run unapproved; `GateHeld`),
 `flows/regress/gate-request-order` (#195 review: a decision recorded before the gate's request was
-counted, so a node ran on an approval never made on its input; `GateHeld`),
+counted, so a node ran on an approval never made on its input; `GateHeld`). Limit (an accepted
+behavior, expected to fail): `flows/limits/gate-early-stuck` (a decision written directly before
+the request is final for its approver and never counts, so a 2 of 2 gate can never pass and the run
+waits until it is cancelled; `Completes`, 7,218 states). Further regressions:
 `flows/regress/nested-unscoped` (#103 review F7:
 a Step a loop body ran had one key for every iteration, so later iterations replayed the first;
 `NestedOncePerIteration`, 38 states), `flows/regress/loop-switch-unscoped` (a guard: the loop
