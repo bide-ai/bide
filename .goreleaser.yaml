@@ -20,6 +20,14 @@ builds:
     env:
       - CGO_ENABLED=0
       - GOWORK=off
+    # Reproducible: no build paths (-trimpath), no VCS stamp that an untracked dist/ would mark
+    # modified (-buildvcs=false), and file times from the commit. scripts/repro.sh rebuilds each
+    # binary from the tag with these flags and compares the bytes; its --self-test holds this file
+    # to the same flags.
+    flags:
+      - -trimpath
+      - -buildvcs=false
+    mod_timestamp: "{{ .CommitTimestamp }}"
     goos:
       - linux
       - darwin
@@ -37,6 +45,18 @@ archives:
     ids:
       - bide
     name_template: "bide_{{ .Version }}_{{ .Os }}_{{ .Arch }}"
+    builds_info:
+      mtime: "{{ .CommitDate }}"
+    files:
+      - src: LICENSE
+        info:
+          mtime: "{{ .CommitDate }}"
+      - src: NOTICE
+        info:
+          mtime: "{{ .CommitDate }}"
+      - src: README.md
+        info:
+          mtime: "{{ .CommitDate }}"
 
 checksum:
   name_template: checksums.txt

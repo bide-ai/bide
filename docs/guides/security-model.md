@@ -238,6 +238,22 @@ Verification never requires trusting the producer or importing the producer's ru
   3 = no verdict, 4 = an input is unreadable or unusable; only 0 means verified), which is
   the CI-gate contract. The `-pubkey` flag (`<alg>:<hex>`, or bare ed25519 hex) must come from the anchor operator out-of-band, never
   from the bundle: that is what makes it a proof you verify rather than a log you trust.
+
+  The `bide` program also holds `bide view` and `bide demo`, so the default binary links the
+  SQLite and Postgres drivers and a YAML library, and every linked package's initialization code
+  runs in every command, `bide audit` included. A verifier who wants none of that builds the
+  audit-only program, whose import graph is the standard library and the core module
+  (`TestAuditOnlyBuildIsCore` checks it):
+
+  ```sh
+  go install -tags bide_audit_only github.com/bide-ai/bide/cmd/bide@latest
+  ```
+
+  The release binaries are reproducible: `scripts/repro.sh vX.Y.Z` checks a release's archives
+  against its `checksums.txt`, rebuilds each binary from the tag with the Go version the binary
+  records, and compares the bytes; the release workflow runs it on another OS for every release.
+  Trusting a downloaded `bide` then comes down to trusting the source at the tag and the Go
+  toolchain, not the machine that built it.
 - The **`audit/verify` package** is stdlib-only (no `agent` dependency) and checks inclusion,
   consistency, and tree-head signatures under all three schemes (`verify.TreeHead` with a
   `verify.NewVerifier`) from raw leaf bytes (`verify.JournalLeaf` builds a record's from the bytes a
