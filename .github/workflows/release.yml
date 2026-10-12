@@ -23,7 +23,12 @@ jobs:
           fetch-depth: 0
       - uses: actions/setup-go@v5
         with:
-          go-version: '1.27'
+          # The exact Go release the binaries are built with (bump it on purpose): it is recorded in
+          # each binary, and scripts/repro.sh rebuilds with the version it reads there.
+          # GOTOOLCHAIN=local keeps the go command from switching to another toolchain.
+          go-version: '1.27.2'
+      - name: Pin the toolchain
+        run: echo "GOTOOLCHAIN=local" >> "$GITHUB_ENV"
       - name: Validate config
         uses: goreleaser/goreleaser-action@v6
         with:
@@ -49,3 +54,21 @@ jobs:
           # Cross-repo push to bide-ai/homebrew-tap. If unset, the formula is
           # generated but not pushed (see skip_upload in .goreleaser.yaml).
           HOMEBREW_TAP_TOKEN: ${{ secrets.HOMEBREW_TAP_TOKEN }}
+
+  # Rebuild every published binary from the tag on another OS and compare the bytes, so the claim
+  # that anyone can reproduce the release is checked on every release (scripts/repro.sh).
+  repro:
+    if: github.event_name == 'push'
+    needs: goreleaser
+    runs-on: macos-latest
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v5
+        with:
+          go-version: '1.27.2'
+      - name: Rebuild and compare
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: scripts/repro.sh "${GITHUB_REF_NAME}"

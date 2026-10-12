@@ -185,6 +185,11 @@ jobs:
           # pass its own tests; TestAuditOnlyBuildIsCore checks its import graph in every build.
           echo "== vet and test cmd/bide -tags bide_audit_only =="
           ( cd cmd/bide && go vet -tags bide_audit_only ./... && go test -tags bide_audit_only -count=1 . )
+      - name: Reproducible bide builds
+        if: needs.changes.outputs.code != 'false'
+        # Two builds of cmd/bide from copies of the tree at different paths are byte-identical, and
+        # .goreleaser.yaml builds with the flags scripts/repro.sh rebuilds a release with.
+        run: scripts/repro.sh --self-test
       - name: doccheck (all modules)
         if: needs.changes.outputs.code != 'false'
         # Every exported identifier has a doc comment that starts with its name, and every package
