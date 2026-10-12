@@ -20,8 +20,8 @@ import (
 var assets embed.FS
 
 var pages = template.Must(template.New("").Funcs(template.FuncMap{
-	"svg":  func(s string) template.HTML { return template.HTML(s) }, // built by svg, every label escaped
-	"join": strings.Join,
+	"svg":       func(s string) template.HTML { return template.HTML(s) }, // built by svg, every label escaped
+	"join":      strings.Join,
 	"hasPrefix": func(prefix, s string) bool { return strings.HasPrefix(s, prefix) },
 }).ParseFS(assets, "assets/*.html"))
 
