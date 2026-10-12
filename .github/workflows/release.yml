@@ -54,16 +54,20 @@ jobs:
       # The bide formula in bide-ai/homebrew-tap, generated from this release's checksums
       # (scripts/brew-formula.sh): a formula, not a cask, so Linux keeps Homebrew. It replaces the
       # bide-audit formula and records the rename, so brew upgrade moves bide-audit users to bide.
-      # Without HOMEBREW_TAP_TOKEN (a token that can push to the tap) it prints the formula only.
+      # The formula is always attached to the GitHub Release as bide.rb. With HOMEBREW_TAP_TOKEN (a
+      # token that can push to the tap) it is also pushed; without one the maintainer copies bide.rb
+      # into the tap by hand (CONTRIBUTING.md, "Releasing").
       - name: Homebrew formula
         if: github.event_name == 'push'
         env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           HOMEBREW_TAP_TOKEN: ${{ secrets.HOMEBREW_TAP_TOKEN }}
         run: |
           scripts/brew-formula.sh "$GITHUB_REF_NAME" dist/checksums.txt > bide.rb
           cat bide.rb
+          gh release upload "$GITHUB_REF_NAME" bide.rb --clobber
           if [ -z "$HOMEBREW_TAP_TOKEN" ]; then
-            echo "::warning::HOMEBREW_TAP_TOKEN is not set; the formula was not pushed to bide-ai/homebrew-tap"
+            echo "::notice::bide.rb is attached to the $GITHUB_REF_NAME release; HOMEBREW_TAP_TOKEN is not set, so update bide-ai/homebrew-tap by hand (CONTRIBUTING.md)"
             exit 0
           fi
           git clone --quiet "https://x-access-token:${HOMEBREW_TAP_TOKEN}@github.com/bide-ai/homebrew-tap" tap
