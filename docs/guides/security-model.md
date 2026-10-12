@@ -231,7 +231,8 @@ takes ML-DSA or hybrid.
 Verification never requires trusting the producer or importing the producer's runtime. Two paths:
 
 - The **`bide-audit` CLI** (`cmd/bide-audit`) is the auditor-facing front end. It imports
-  only the core and `audit` packages and no store backend, so it operates on an exported journal
+  only the core and `audit` packages and no store backend (a test, `TestDepsAreCore` in
+  `internal/auditcli`, fails if its import graph reaches past the standard library and the core module), so it operates on an exported journal
   (an `audit.JournalExport` of each record's stored bytes) plus a signed tree head. `verify` and the other verify verbs print a
   one-line verdict and set the exit code (**0 = verified, 1 = not verified**, 2 = usage error,
   3 = no verdict, 4 = an input is unreadable or unusable; only 0 means verified), which is
@@ -255,4 +256,4 @@ reference test vectors, not a homegrown look-alike.
   runs, event logs). This page consolidates the caveats that walkthrough scatters.
 - `docs/guides/delegation.md`: signed grants, the delegation chain, and capability attenuation.
 - `audit/`: the package. `audit/verify/`: the stdlib-only standalone verifier.
-- `cmd/bide-audit`: the offline CLI.
+- `cmd/bide-audit`: the offline CLI (its code is `internal/auditcli`).

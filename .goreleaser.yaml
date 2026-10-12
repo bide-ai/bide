@@ -26,7 +26,7 @@ builds:
       - arm64
     ldflags:
       # -X main.version stamps the exact release tag into `bide-audit -version`; without it the CLI
-      # falls back to the module version the go command records (see cmd/bide-audit/exit.go).
+      # falls back to the module version the go command records (see internal/auditcli/exit.go).
       - -s -w -X main.version={{ .Tag }}
 
 archives:

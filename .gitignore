@@ -45,6 +45,7 @@ examples/approval/approver-keys.json
 !/internal/toolhook/
 !/internal/journaltest/
 !/internal/runview/
+!/internal/auditcli/
 
 # a journal file written by v0.7.0, the fixture of store/sqlite's legacy-file test
 !/store/sqlite/testdata/v070.db

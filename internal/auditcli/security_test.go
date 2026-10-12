@@ -1,4 +1,4 @@
-package main
+package auditcli
 
 import (
 	"bytes"
@@ -22,7 +22,7 @@ import (
 func buildCLI(t *testing.T, dir string) string {
 	t.Helper()
 	bin := auditBin(dir)
-	if out, err := exec.Command("go", "build", "-o", bin, ".").CombinedOutput(); err != nil {
+	if out, err := exec.Command("go", "build", "-o", bin, "./auditmain").CombinedOutput(); err != nil {
 		t.Fatalf("build binary: %v\n%s", err, out)
 	}
 	return bin

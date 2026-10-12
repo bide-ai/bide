@@ -12,7 +12,7 @@ import (
 
 // The bide-audit CLI mirrors govern's wire types so it imports neither gsm nor govern. govern is a
 // separate module, so the check that each mirror matches govern is split at the golden files in
-// cmd/bide-audit/testdata/govern-wire. This half proves each golden file is govern's encoding of
+// internal/auditcli/testdata/govern-wire. This half proves each golden file is govern's encoding of
 // the value below (fully populated, and zero) and that each govern type has one field per key; the
 // CLI's TestWireMirrorsMatchGovern proves each mirror reads and writes the same files.
 func TestGovernWireMatchesCLIGoldens(t *testing.T) {
@@ -61,7 +61,7 @@ func TestGovernWireMatchesCLIGoldens(t *testing.T) {
 // readGolden reads a file of govern's wire encoding from the CLI's testdata.
 func readGolden(t *testing.T, name string) []byte {
 	t.Helper()
-	b, err := os.ReadFile(filepath.Join("..", "..", "cmd", "bide-audit", "testdata", "govern-wire", name))
+	b, err := os.ReadFile(filepath.Join("..", "..", "internal", "auditcli", "testdata", "govern-wire", name))
 	if err != nil {
 		t.Fatal(err)
 	}
