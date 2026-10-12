@@ -155,11 +155,16 @@ tree between releases.
       against the proxy, builds, vets and tests each one with `GOWORK=off`, commits (signed off),
       tags each `<dir>/vX.Y.Z` at that commit, pushes the tags at most three per push and waits
       for the proxy;
-   3. does the same for the governed-event logs, which also require `govern` at `vX.Y.Z`;
+   3. does the same for the governed-event logs, which also require `govern` at `vX.Y.Z`, and for
+      the `bide` command, which requires the stores;
    4. checks each module with `go list -m <module>@vX.Y.Z` against the proxy, and builds a scratch
-      consumer module that `go get`s every published module at `vX.Y.Z` with an empty module cache.
-4. The core tag runs the Release workflow (the `bide` binaries and the GitHub Release, with
-   `docs/releases/vX.Y.Z.md` as its notes); each nested tag runs the Release modules workflow,
+      consumer module that `go get`s every published module at `vX.Y.Z` with an empty module cache,
+      then installs the released `bide` and checks that the project `bide init` writes builds and
+      passes its test.
+4. The core tag runs the Release workflow: the `bide` binaries and the GitHub Release (with
+   `docs/releases/vX.Y.Z.md` as its notes), the Homebrew formula pushed to bide-ai/homebrew-tap
+   (it needs the `HOMEBREW_TAP_TOKEN` secret), and the `repro` job, which rebuilds every binary
+   from the tag on macOS and fails unless the bytes match (`scripts/repro.sh`); each nested tag runs the Release modules workflow,
    which fails if the tagged `go.mod` still requires `v0.0.0` or replaces a bide module, or does
    not build with `GOWORK=off`. Check both, the release assets and the Homebrew formula: every
    nested tag has its own Release modules run.

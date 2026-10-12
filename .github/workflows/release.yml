@@ -51,9 +51,29 @@ jobs:
           args: release --clean ${{ github.event_name == 'workflow_dispatch' && '--snapshot' || '' }} ${{ steps.notes.outputs.arg }}
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-          # Cross-repo push to bide-ai/homebrew-tap. If unset, the formula is
-          # generated but not pushed (see skip_upload in .goreleaser.yaml).
+      # The bide formula in bide-ai/homebrew-tap, generated from this release's checksums
+      # (scripts/brew-formula.sh): a formula, not a cask, so Linux keeps Homebrew. It replaces the
+      # bide-audit formula and records the rename, so brew upgrade moves bide-audit users to bide.
+      # Without HOMEBREW_TAP_TOKEN (a token that can push to the tap) it prints the formula only.
+      - name: Homebrew formula
+        if: github.event_name == 'push'
+        env:
           HOMEBREW_TAP_TOKEN: ${{ secrets.HOMEBREW_TAP_TOKEN }}
+        run: |
+          scripts/brew-formula.sh "$GITHUB_REF_NAME" dist/checksums.txt > bide.rb
+          cat bide.rb
+          if [ -z "$HOMEBREW_TAP_TOKEN" ]; then
+            echo "::warning::HOMEBREW_TAP_TOKEN is not set; the formula was not pushed to bide-ai/homebrew-tap"
+            exit 0
+          fi
+          git clone --quiet "https://x-access-token:${HOMEBREW_TAP_TOKEN}@github.com/bide-ai/homebrew-tap" tap
+          cp bide.rb tap/Formula/bide.rb
+          git -C tap rm --quiet --ignore-unmatch Formula/bide-audit.rb
+          printf '{\n  "bide-audit": "bide"\n}\n' > tap/formula_renames.json
+          git -C tap add Formula/bide.rb formula_renames.json
+          git -C tap -c user.name="github-actions[bot]" -c user.email="41898282+github-actions[bot]@users.noreply.github.com" \
+            commit --quiet -s -m "bide ${GITHUB_REF_NAME}"
+          git -C tap push --quiet
 
   # Rebuild every published binary from the tag on another OS and compare the bytes, so the claim
   # that anyone can reproduce the release is checked on every release (scripts/repro.sh).

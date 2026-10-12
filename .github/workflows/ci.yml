@@ -158,6 +158,9 @@ jobs:
           # nested tag (release-modules.yml).
           scripts/release.sh --self-test
           scripts/release.sh --check-classification
+          # The Homebrew formula the release workflow writes pins a sha256 per archive and refuses
+          # a checksums file that lacks one.
+          scripts/brew-formula.sh --self-test
       - name: Benchmark summary script
         if: needs.changes.outputs.code != 'false'
         run: |
