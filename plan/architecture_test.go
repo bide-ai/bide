@@ -13,40 +13,39 @@ import (
 // TestPlanNoAdapterImports locks the ports-and-adapters boundary for the plan
 // surface: plan lowers onto the CORE runtime and may import the core
 // (github.com/bide-ai/bide), but it must never drag a concrete adapter into
-// its runtime import graph. Dependencies point INWARD. If this fails, an adapter
-// import crept into plan transitively and the hexagon is rotting.
+// its runtime import graph. Dependencies point INWARD.
 //
-// This mirrors the core's TestCoreHasNoAdapterImports (see
-// /Users/dayna/code/go-agents/architecture_test.go): go list -deps reports the
-// non-test dependency graph, so this checks what plan actually pulls at runtime.
+// Like the core's TestCoreHasNoAdapterImports, it is an allowlist: every package plan pulls at
+// runtime (go list -deps) is in the standard library or in the core module, and none of the core
+// module's adapters (the model adapters, middleware) is among them.
 func TestPlanNoAdapterImports(t *testing.T) {
-	out, err := exec.Command("go", "list", "-deps", "github.com/bide-ai/bide/plan").Output()
+	if _, err := exec.LookPath("go"); err != nil {
+		t.Skipf("go unavailable: %v", err)
+	}
+	cmd := exec.Command("go", "list", "-deps", "-f", "{{if not .Standard}}{{.ImportPath}} {{with .Module}}{{.Path}}{{end}}{{end}}", "github.com/bide-ai/bide/plan")
+	cmd.Env = append(os.Environ(), "GOWORK=off")
+	out, err := cmd.Output()
 	if err != nil {
-		t.Skipf("go list unavailable: %v", err)
+		t.Fatalf("go list: %v", err)
 	}
-	deps := string(out)
-
-	// Adapter packages: plan may depend on the core's ports, never on a concrete
-	// adapter. Importing the core root (github.com/bide-ai/bide) is allowed and
-	// is intentionally NOT in this list; only its adapter subtrees are forbidden.
-	forbidden := []string{
-		"bide-ai/bide/model/", // provider adapters
-		"bide-ai/bide/store/", // persistence adapters
-		"bide-ai/bide/trace",  // OTel adapter
-		"bide-ai/bide/middleware",
-		"bide-ai/bide/govern", // gsm-backed governor (Tier-2 edge), its own module
-	}
-	for _, bad := range forbidden {
-		if strings.Contains(deps, bad) {
-			t.Errorf("plan imports adapter %q -- plan must lower onto the core's ports, not pull adapters", bad)
+	n := 0
+	for _, line := range strings.Split(strings.TrimSpace(string(out)), "\n") {
+		f := strings.Fields(line)
+		if len(f) == 0 {
+			continue
+		}
+		n++
+		if len(f) < 2 || f[1] != "github.com/bide-ai/bide" {
+			t.Errorf("plan depends on %s, outside the standard library and the core module", line)
+		}
+		for _, bad := range []string{"bide-ai/bide/model/", "bide-ai/bide/middleware"} {
+			if strings.Contains(f[0], bad) {
+				t.Errorf("plan imports adapter %s; plan must lower onto the core's ports, not pull adapters", f[0])
+			}
 		}
 	}
-
-	// Also assert plan pulls no heavy infrastructure transitively.
-	for _, infra := range []string{"opentelemetry", "modernc.org/sqlite", "jackc/pgx", "temporal", "weaviate", "blackwell-systems/gsm"} {
-		if strings.Contains(deps, infra) {
-			t.Errorf("plan transitively depends on infrastructure %q -- the plan surface must stay dependency-light", infra)
-		}
+	if n == 0 {
+		t.Fatal("go list reported no packages outside the standard library; plan should list itself")
 	}
 }
 

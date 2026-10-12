@@ -129,8 +129,8 @@ func configGate(base *agent.ApprovalPolicy, ca *configApproval) (*agent.Approval
 		}
 		seen[id] = true
 	}
-	// The rest of what the gate refuses (ids that differ only by case or Unicode normalization,
-	// invalid UTF-8), in its words.
+	// The rest of what the gate refuses (an id that is not printable ASCII, ids that differ only by
+	// case), in its words.
 	if err := p.Validate(); len(why) == 0 && err != nil {
 		why = append(why, "approval: "+strings.TrimSuffix(err.Error(), ": "+agent.ErrConfig.Error()))
 	}

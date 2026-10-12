@@ -494,7 +494,7 @@ nodes:
 ```
 
 `Load` and `Validate` reject a block with no approvers, a `need` outside `1..len(approvers)`, or a
-duplicate approver id (or two that differ only by case or Unicode normalization), naming the node.
+duplicate approver id (or two that differ only by case), or an id that is not printable ASCII, naming the node.
 The gate is enforced as in Go (see [Approval gates on nodes](#approval-gates-on-nodes)): load the flow
 with `plan.WithLoadedApproverVerifiers(approvers)`, or `Load` refuses an m-of-n block (`ErrConfig`,
 naming the node). A join wiring element takes the same `approval` block. A block may restate the gate

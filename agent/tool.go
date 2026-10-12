@@ -178,7 +178,7 @@ type Safety struct {
 // signed decisions SubmitDecision records; Validate checks it, and refuses one with no approvers.
 type ApprovalPolicy struct {
 	Need      int      `json:"need"`                // decisions required to proceed (k), 1 <= Need <= len(Approvers)
-	Approvers []string `json:"approvers,omitempty"` // eligible approver ids; the bounded set (n)
+	Approvers []string `json:"approvers,omitempty"` // eligible approver ids, printable ASCII (see Validate); the bounded set (n)
 
 	// one marks the policy SingleApproval returned (and its copies): the one-decision gate. It is
 	// unexported so no literal can set it; MarshalJSON journals it as {"single":true}. The gate a

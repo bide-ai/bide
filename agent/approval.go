@@ -10,10 +10,7 @@ import (
 	"fmt"
 	"reflect"
 	"slices"
-	"unicode/utf8"
-
-	"golang.org/x/text/cases"
-	"golang.org/x/text/unicode/norm"
+	"strings"
 )
 
 // This file holds the m-of-n approval gate's data model: the policy check, what an approver
@@ -22,15 +19,17 @@ import (
 // the same function; see audit.VerifyApprovals.
 
 // Validate reports whether the policy is well formed: at least one approver, every approver id
-// non-empty valid UTF-8, no two ids the same approver, and 1 <= Need <= len(Approvers). A policy
-// that fails is a configuration error; the gate refuses it with ErrConfig rather than guessing.
+// non-empty printable ASCII, no two ids the same approver, and 1 <= Need <= len(Approvers). A
+// policy that fails is a configuration error; the gate refuses it with ErrConfig rather than
+// guessing.
 //
-// Approver ids are compared as exact bytes everywhere else (eligibility, the signed decision
-// bytes, the verifier lookup). A policy may still not list two ids that differ only by case or by
-// Unicode normalization ("alice" and "Alice", an NFC and an NFD "café", a fullwidth and an ASCII
-// spelling): a person reading the policy, or a key lookup that folds case, takes them for one
-// approver, who could then fill two seats. Two ids are the same approver when their
-// approverFoldKey is equal, and such a policy is refused as ambiguous.
+// An approver id is printable ASCII, bytes 0x21 to 0x7E: letters, digits and punctuation, so an
+// email address or a URI is a valid id, and a space, a control character or anything outside
+// ASCII is not. An id outside that set could look like another (a Cyrillic "о" for a Latin "o", a
+// fullwidth or accented spelling) and let one approver fill two seats. Ids are compared as exact
+// bytes everywhere else (eligibility, the signed decision bytes, the verifier lookup), but a
+// policy may not list two ids that differ only by ASCII case ("alice" and "Alice"): a person
+// reading the policy, or a key lookup that folds case, takes them for one approver.
 func (p ApprovalPolicy) Validate() error {
 	if p.one { // SingleApproval, unless its fields were changed since
 		if p.Need != 1 || len(p.Approvers) != 0 {
@@ -46,15 +45,15 @@ func (p ApprovalPolicy) Validate() error {
 		if id == "" {
 			return fmt.Errorf("approval policy has an empty approver id: %w", ErrConfig)
 		}
-		if !utf8.ValidString(id) {
-			return fmt.Errorf("approval policy approver id %q is not valid UTF-8: %w", id, ErrConfig)
+		if !printableASCII(id) {
+			return fmt.Errorf("approval policy approver id %q is not printable ASCII (bytes 0x21 to 0x7E, no space): %w", id, ErrConfig)
 		}
-		key := approverFoldKey(id)
+		key := strings.ToLower(id)
 		if first, dup := seen[key]; dup {
 			if first == id {
 				return fmt.Errorf("approval policy lists approver %q twice: %w", id, ErrConfig)
 			}
-			return fmt.Errorf("approval policy lists approvers %q and %q, which differ only by case or Unicode normalization: %w", first, id, ErrConfig)
+			return fmt.Errorf("approval policy lists approvers %q and %q, which differ only by case: %w", first, id, ErrConfig)
 		}
 		seen[key] = id
 	}
@@ -64,12 +63,15 @@ func (p ApprovalPolicy) Validate() error {
 	return nil
 }
 
-// approverFoldKey is id under NFKC case folding (Unicode's toNFKC_Casefold, without its removal
-// of default-ignorable code points): decomposed, case folded with full folding, then NFKC
-// normalized. Two ids with the same key differ only by case, by canonical or compatibility
-// normalization, or both.
-func approverFoldKey(id string) string {
-	return norm.NFKC.String(cases.Fold().String(norm.NFD.String(id)))
+// printableASCII reports whether every byte of id is printable ASCII other than space (0x21 to
+// 0x7E). For such an id, strings.ToLower is ASCII case folding.
+func printableASCII(id string) bool {
+	for i := 0; i < len(id); i++ {
+		if id[i] < 0x21 || id[i] > 0x7e {
+			return false
+		}
+	}
+	return true
 }
 
 // ApprovalSubject is exactly what an approver decides on: one tool call, with its name and
@@ -516,7 +518,7 @@ func WithDecisionCheck(verifierFor ApproverVerifierFor) ApproveOption {
 type Decision struct {
 	RunID      string // the run whose journal holds the call: the pause's RunID
 	ToolUseID  string
-	ApproverID string
+	ApproverID string // one of the policy's Approvers, exactly (printable ASCII; see ApprovalPolicy.Validate)
 	Approved   bool
 	Alg        Alg // the signature scheme, e.g. audit.AlgEd25519
 	Signature  []byte
