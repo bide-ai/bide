@@ -69,3 +69,17 @@ func TestOpenReadOnly(t *testing.T) {
 		t.Fatal("OpenReadOnly opened a database with no journal tables under that prefix")
 	}
 }
+
+// TestReadOnlyDSN sets default_transaction_read_only in both DSN forms, over any value given.
+func TestReadOnlyDSN(t *testing.T) {
+	for in, want := range map[string]string{
+		"postgres://u@h:5432/db?sslmode=disable":              "postgres://u@h:5432/db?default_transaction_read_only=on&sslmode=disable",
+		"postgres://u@h/db?default_transaction_read_only=off": "postgres://u@h/db?default_transaction_read_only=on",
+		"host=h dbname=db": "host=h dbname=db default_transaction_read_only=on",
+		"host=h dbname=db default_transaction_read_only=off": "host=h dbname=db default_transaction_read_only=off default_transaction_read_only=on",
+	} {
+		if got, err := readOnlyDSN(in); err != nil || got != want {
+			t.Errorf("readOnlyDSN(%q) = %q, %v; want %q", in, got, err, want)
+		}
+	}
+}

@@ -186,6 +186,7 @@ type tables struct {
 	insert, acquire, renew, release     writeSQL
 	reap                                writeSQL
 	get, load                           selectSQL
+	readVersion                         selectSQL // the schema version, as OpenReadOnly reads it
 }
 
 // nextSeqVersion names the next_seq function's definition. The migration creates the function
@@ -293,6 +294,9 @@ func newTables(prefix, schema string) (tables, error) {
 		return tables{}, err
 	}
 	if t.load, err = newSelect(`SELECT seq, name, data FROM `+t.qSteps+` WHERE run_id OPERATOR(pg_catalog.=) $1 AND seq OPERATOR(pg_catalog.>) $2 ORDER BY seq LIMIT $3`, steps); err != nil {
+		return tables{}, err
+	}
+	if t.readVersion, err = newSelect(versionQuery(t.qVersion), [][]sqlTok{names[3]}); err != nil {
 		return tables{}, err
 	}
 	return t, nil
@@ -488,7 +492,7 @@ func newStore(ctx context.Context, db *sql.DB, readOnly bool, opts []Option) (*S
 	s := &Store{db: db, t: t, schema: schema}
 	if readOnly {
 		var v int
-		if err := retryScan(ctx, func() error { return db.QueryRowContext(ctx, versionQuery(t.qVersion)).Scan(&v) }); err != nil {
+		if err := retryScan(ctx, func() error { return db.QueryRowContext(ctx, string(t.readVersion)).Scan(&v) }); err != nil {
 			return nil, fmt.Errorf("postgres: read schema version (is it a bide journal?): %w (%w)", err, agent.ErrStorage)
 		}
 		if v > schemaVersion {

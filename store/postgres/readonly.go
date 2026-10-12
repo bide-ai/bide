@@ -2,11 +2,12 @@ package postgres
 
 import (
 	"context"
+	"database/sql"
 	"fmt"
+	"net/url"
+	"strings"
 
 	"github.com/bide-ai/bide/agent"
-	"github.com/jackc/pgx/v5"
-	"github.com/jackc/pgx/v5/stdlib"
 )
 
 // OpenReadOnly connects to the Postgres journal at dsn (a pgx DSN, as Open takes) for reading
@@ -21,15 +22,14 @@ import (
 // version's (ErrConfig). Close closes the pool. It is for tools that inspect a journal, such as
 // bide-view, never for driving a run.
 func OpenReadOnly(ctx context.Context, dsn string, opts ...Option) (*Store, error) {
-	cfg, err := pgx.ParseConfig(dsn)
+	ro, err := readOnlyDSN(dsn)
 	if err != nil {
 		return nil, fmt.Errorf("postgres: OpenReadOnly: %w (%w)", err, agent.ErrConfig)
 	}
-	if cfg.RuntimeParams == nil {
-		cfg.RuntimeParams = map[string]string{}
+	db, err := sql.Open("pgx", ro)
+	if err != nil {
+		return nil, err
 	}
-	cfg.RuntimeParams["default_transaction_read_only"] = "on"
-	db := stdlib.OpenDB(*cfg)
 	if err := db.PingContext(ctx); err != nil {
 		db.Close()
 		return nil, err
@@ -41,4 +41,21 @@ func OpenReadOnly(ctx context.Context, dsn string, opts ...Option) (*Store, erro
 	}
 	s.own = true
 	return s, nil
+}
+
+// readOnlyDSN is dsn with the run-time parameter default_transaction_read_only set to on, which
+// pgx sends when it connects: as a query parameter of a URL DSN (replacing any value the DSN
+// gives), or appended to a keyword/value DSN, where the last value of a keyword wins.
+func readOnlyDSN(dsn string) (string, error) {
+	if !strings.Contains(dsn, "://") {
+		return dsn + " default_transaction_read_only=on", nil
+	}
+	u, err := url.Parse(dsn)
+	if err != nil {
+		return "", err
+	}
+	q := u.Query()
+	q.Set("default_transaction_read_only", "on")
+	u.RawQuery = q.Encode()
+	return u.String(), nil
 }
