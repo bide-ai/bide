@@ -86,14 +86,103 @@ Every existing flag and verb has a place; none is dropped and none changes meani
 | (none) | `bide init <dir>` | New, below |
 | (none) | `bide help [command]`, `bide <command> -h` | |
 
-**Exit statuses stay per command.** `bide audit` keeps its five statuses (0 verified, 1 not
-verified, 2 usage, 3 no verdict, 4 unusable input); `bide view` and `bide check` keep the viewer's
-(0, 1, 2). Unifying them would change `audit`'s published contract or the viewer's for no gain. The
-reference page states each table under its command. The usage error for an unknown subcommand is
-2, matching both.
+### CLI framework: the standard library `flag` package (decided)
 
-**Error prefixes.** Messages change from `bide-audit:` / `bide-view:` to `bide audit:` /
-`bide view:`. The ten mentions of `bide-audit` in `cmd/bide-audit/*_test.go` move with it.
+Maintainer decision: the CLI is built on the standard library `flag` package, one `FlagSet` per
+command and a small dispatch table, not cobra or another framework. The reasons:
+
+- **No framework dependency.** Parsing, help and dispatch add nothing to the module graph, which
+  keeps the audit trust argument (section 3) about bide's code and the store drivers, not a CLI
+  library as well. Auditors run `bide audit verify`; every package in that binary is one more
+  thing to trust.
+- **The command set is small.** Six commands (`init`, `demo`, `view`, `check`, `audit`,
+  `version`) plus `help`, and `audit`'s eleven verbs, which already dispatch through a map
+  (`verbs` in `cmd/bide-audit/exit.go`). A framework's nesting, aliases and plugins buy nothing here.
+- **Flag syntax stays the same.** `bide-audit` and `bide-view` already use single-dash Go flags
+  (`-db`, `-run`, `-evidence`, `-pubkey`), so every command line in the docs keeps its flags and
+  only the program name changes. cobra's POSIX-style flags would have changed all of them.
+
+The dispatcher, in outline:
+
+```go
+// command is one bide subcommand: its name, one-line summary, and the function that parses its
+// own FlagSet and returns the exit status.
+type command struct {
+	name, summary string
+	flags         func() *flag.FlagSet // the command's flags, for help and the reference generator
+	run           func(args []string, stdout, stderr io.Writer) int
+}
+
+var commands = []command{ /* init, demo, view, check, audit, version */ }
+```
+
+`audit` keeps its own second-level table: `bide audit [-json] <verb> [flags]` is today's
+`bide-audit` command line with the program name changed, parsed by the moved code unchanged.
+
+**Help and usage errors, the same everywhere.**
+
+- `bide`, `bide help` and `bide -h` print the command list (name and summary) and exit 0.
+- `bide help <command>` and `bide <command> -h` print that command's usage line, summary and
+  flags (`FlagSet.PrintDefaults`), exit 0; `bide help audit <verb>` does the same for a verb.
+- A usage error (an unknown command, an unknown flag, a missing required flag, a stray argument)
+  prints `bide <command>: <message>` and the command's usage line to stderr and exits 2. Every
+  message starts with `bide <command>:` (`bide audit:` and `bide view:` replace `bide-audit:` and
+  `bide-view:`; the ten mentions of `bide-audit` in `cmd/bide-audit/*_test.go` move with it).
+- One deliberate exception stays: `bide audit <verb> -h` exits 2, as `bide-audit <verb> -h` does
+  today, because `audit` reserves 0 for "verified" and a help request verifies nothing (see `parse`
+  in `cmd/bide-audit/exit.go`). `bide help audit <verb>` is the help path that exits 0.
+
+**Exit-status conventions.**
+
+| Status | Meaning for every command | `bide audit` (unchanged) |
+|---|---|---|
+| 0 | success | verified (for `prove`, `prove-absent`: the artifact was written) |
+| 1 | failure: an input cannot be read, the server fails, or `check` found an error | read and understood, and not verified |
+| 2 | usage error; nothing was read | usage error; nothing was read |
+| 3 | (not used) | no verdict: the `-checker` gave none, or an internal error |
+| 4 | (not used) | an input is unreadable or unusable |
+
+`bide view`, `bide check`, `bide init` and `bide demo` use 0, 1 and 2 (the viewer's statuses
+today). `bide audit` keeps its five-status contract, which `docs/guides/audit.md` publishes and
+scripts depend on; folding it into 0/1/2 would turn "not verified" and "unreadable" into one
+status. The reference page states each command's table.
+
+**A generated reference page.** `docs/reference/cli.md` is generated, not written: a small
+generator (`go run ./cmd/bide/internal/gendoc` or a `bide` test helper) walks `commands`, calls
+each `flags()` and, for `audit`, each verb's `FlagSet`, and writes every command, verb, flag
+(name, type, default, usage string) and exit table. CI regenerates it and fails on a diff (the same
+pattern as the module and shard checks), so a new flag cannot ship undocumented and a removed one
+cannot linger. The long prose in today's usage texts (`cmd/bide-audit/main.go`,
+`internal/runview/cli.go`) moves into each command's summary and the page's hand-written intro,
+which the generator includes verbatim.
+
+**Shell completion is deferred.** cobra would have generated it; `flag` does not. It is not needed
+for v0.14.0 and can be written by hand later (a short bash/zsh script over the command and flag
+names, or generated by the same walker) if users ask.
+
+**The CLI module's dependencies.** `cmd/bide`'s `go.mod` requires bide's own modules and the
+libraries `bide view` and `bide demo` need, and nothing for the CLI itself. The full list, which is
+the union of today's `cmd/bide-view` and `cmd/bide-demo` `go.mod` files:
+
+| Requirement | Why |
+|---|---|
+| `github.com/bide-ai/bide` | the core; `internal/auditcli`, `internal/runview`, `internal/democli`, `internal/initcli` |
+| `github.com/bide-ai/bide/store/sqlite` | `bide view -db`, `bide demo` |
+| `github.com/bide-ai/bide/store/postgres` | `bide view -postgres` |
+| `go.yaml.in/yaml/v3` | `bide view -config` and `bide check` on `.yaml`/`.yml` flow configs |
+| indirect, via the core: `golang.org/x/sync`, `golang.org/x/text` | |
+| indirect, via `store/sqlite`: `modernc.org/sqlite`, `modernc.org/libc`, `modernc.org/mathutil`, `modernc.org/memory`, `github.com/dustin/go-humanize`, `github.com/google/uuid`, `github.com/mattn/go-isatty`, `github.com/ncruces/go-strftime`, `github.com/remyoudompheng/bigfft`, `golang.org/x/sys` | |
+| indirect, via `store/postgres`: `github.com/jackc/pgx/v5`, `github.com/jackc/pgpassfile`, `github.com/jackc/pgservicefile`, `github.com/jackc/puddle/v2` | |
+
+**This does not match "only bide's modules plus the store drivers" in one place:** YAML. The
+viewer decodes YAML flow configs with `go.yaml.in/yaml/v3`, injected from `cmd/bide-view` because
+`plan` reads JSON only. Keeping YAML support keeps this one requirement; dropping it means
+`bide view -config` and `bide check` read JSON only, which loses a capability every flow config in
+the docs and `examples/plan/flows` uses. See open question 9.
+
+A test in `cmd/bide` pins the direct requirement set (`go mod edit -json`, `.Require` without
+`// indirect`) to exactly the four rows above, so a framework or other library cannot creep in
+unreviewed. That `bide audit` compiles from core-only packages is shown in section 3.
 
 ### `bide init <dir>`
 
@@ -360,9 +449,8 @@ The new map, with every existing page placed:
 `guides/approval.md` and `guides/hitl-approval.md` overlap by title; check whether one should
 fold into the other while moving them (open question 6).
 
-The usage texts in `cmd/bide-audit/main.go` and `internal/runview/cli.go` become the source for
-`reference/cli.md`; a test compares the flags each `FlagSet` defines with the flags the page lists,
-so the reference cannot drift.
+`reference/cli.md` is generated from the commands' `FlagSet`s and checked in CI (section 2, "CLI
+framework"), so the reference cannot drift.
 
 ## 7. Migration plan
 
@@ -375,7 +463,8 @@ Ordered PRs, all merged before the v0.14.0 release PR. Each keeps main green.
    `main` packages become three-line wrappers for one PR so CI proves the move changed nothing.
 3. **Add `cmd/bide`.** New module: `go.mod` (requires root, `store/sqlite`, `store/postgres`,
    `go.yaml.in/yaml/v3`; `replace` directives; `toolchain go1.27.0`), dispatcher, the
-   `bide_audit_only` build tag and its guard test, `bide version`, `bide check`. Then:
+   `bide_audit_only` build tag and its guard test, the requirement-set test, `bide version`,
+   `bide help`, `bide check`, and the `docs/reference/cli.md` generator with its CI diff check. Then:
    - `go.work`: add `./cmd/bide`.
    - `.github/workflows/ci.yml`: `MODULES` and the `rest` shard add `cmd/bide`; the Postgres loop
      at line 360 adds `cmd/bide`. `.github/scripts/check-modules.sh` and `shards.sh check-modules`
@@ -462,3 +551,7 @@ Published tags cannot be deleted from the module proxy, and none should be.
 8. **`bide demo` without installing?** `go run github.com/bide-ai/bide/cmd/bide@latest demo`
    works for Go users once `cmd/bide` is tagged. *Recommendation:* the README leads with the
    install line and `bide demo`; getting-started mentions the `go run` form as the no-install path.
+9. **Keep YAML in `bide view` and `bide check`?** It is the one CLI requirement that is neither a
+   bide module nor a store driver (`go.yaml.in/yaml/v3`, no further dependencies). *Recommendation:*
+   keep it. Every flow config in the docs and examples is YAML, and the package is not linked into
+   the `bide_audit_only` build, so it does not touch the audit trust base.
