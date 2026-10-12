@@ -1,0 +1,228 @@
+package runview
+
+import (
+	"context"
+	"embed"
+	"encoding/json"
+	"errors"
+	"fmt"
+	"html/template"
+	"iter"
+	"net"
+	"net/http"
+	"slices"
+	"strings"
+
+	"github.com/bide-ai/bide/agent"
+)
+
+//go:embed assets
+var assets embed.FS
+
+var pages = template.Must(template.New("").Funcs(template.FuncMap{
+	"svg":  func(s string) template.HTML { return template.HTML(s) }, // built by svg, every label escaped
+	"join": strings.Join,
+}).ParseFS(assets, "assets/*.html"))
+
+// Source is what the viewer reads: the runs it lists and each run's records. Both are reads.
+type Source interface {
+	Runs(ctx context.Context) ([]string, error)
+	History(ctx context.Context, runID string) ([]agent.Record, error)
+}
+
+// JournalSource reads a store through a Journal. Runs lists through the store's agent.Lister,
+// when it has one.
+type JournalSource struct{ J *agent.Journal }
+
+// Runs lists the store's runs, or none when the store cannot list them.
+func (s JournalSource) Runs(ctx context.Context) ([]string, error) {
+	l, ok := agent.Capability[agent.Lister](s.J.Store())
+	if !ok {
+		return nil, nil
+	}
+	var ids []string
+	for id, err := range l.Runs(ctx, agent.RunFilter{}) {
+		if err != nil {
+			return ids, err
+		}
+		ids = append(ids, id)
+	}
+	return ids, nil
+}
+
+// History reads the run's records.
+func (s JournalSource) History(ctx context.Context, runID string) ([]agent.Record, error) {
+	return s.J.History(ctx, runID)
+}
+
+// Exports is a Source over exported journals (audit.JournalExport), by run ID.
+type Exports map[string][]agent.Record
+
+// Runs lists the exported runs.
+func (x Exports) Runs(context.Context) ([]string, error) {
+	ids := make([]string, 0, len(x))
+	for id := range x {
+		ids = append(ids, id)
+	}
+	slices.Sort(ids)
+	return ids, nil
+}
+
+// History returns the exported run's records.
+func (x Exports) History(_ context.Context, runID string) ([]agent.Record, error) {
+	return x[runID], nil
+}
+
+// Options configure Handler.
+type Options struct {
+	Source Source
+	// Flows are the declared flows runs are drawn against, by flow name.
+	Flows map[string]*Flow
+	// Provers check runs against audit artifacts; the first to return a verdict for a run wins.
+	Provers []Prover
+}
+
+// Handler serves the run list at / and a run at /run?id=<run> (its View as JSON at /run.json?id=<run>).
+// It answers only GET and HEAD, and only requests addressed to a loopback host, so a page on
+// another site cannot read it through a rebound DNS name.
+func Handler(o Options) http.Handler {
+	mux := http.NewServeMux()
+	mux.Handle("GET /assets/", http.FileServerFS(assets))
+	mux.HandleFunc("GET /{$}", func(w http.ResponseWriter, r *http.Request) {
+		ids, err := o.Source.Runs(r.Context())
+		data := struct {
+			Runs []string
+			Err  string
+		}{Runs: ids}
+		if err != nil {
+			data.Err = err.Error()
+		}
+		render(w, "index.html", data)
+	})
+	serveRun := func(asJSON bool) http.HandlerFunc {
+		return func(w http.ResponseWriter, r *http.Request) {
+			v, err := o.view(r.Context(), r.URL.Query().Get("id"))
+			switch {
+			case err != nil:
+				http.Error(w, err.Error(), http.StatusInternalServerError)
+			case v == nil:
+				http.NotFound(w, r)
+			case asJSON:
+				w.Header().Set("Content-Type", "application/json")
+				enc := json.NewEncoder(w)
+				enc.SetIndent("", "  ")
+				_ = enc.Encode(v)
+			default:
+				render(w, "run.html", v)
+			}
+		}
+	}
+	mux.HandleFunc("GET /run", serveRun(false))
+	mux.HandleFunc("GET /run.json", serveRun(true))
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if !loopbackHost(r.Host) {
+			http.Error(w, "bide-view answers only requests to a loopback address", http.StatusForbidden)
+			return
+		}
+		w.Header().Set("Content-Security-Policy", "default-src 'self'; style-src 'self'; img-src 'self' data:")
+		w.Header().Set("X-Content-Type-Options", "nosniff")
+		mux.ServeHTTP(w, r)
+	})
+}
+
+// view builds the run's View, or nil for a run with no records.
+func (o Options) view(ctx context.Context, runID string) (*View, error) {
+	recs, err := o.Source.History(ctx, runID)
+	if err != nil {
+		return nil, err
+	}
+	if len(recs) == 0 {
+		return nil, nil
+	}
+	var flow *Flow
+	for _, r := range recs {
+		if r.Name == "run:start" {
+			var st agent.RunStart
+			if json.Unmarshal(r.Result, &st) == nil && st.Flow != nil {
+				flow = o.Flows[st.Flow.Name]
+			}
+			break
+		}
+	}
+	v := Build(ctx, runID, recs, flow)
+	for _, p := range o.Provers {
+		if v.Proof = p(ctx, runID, recs); v.Proof != nil {
+			break
+		}
+	}
+	return v, nil
+}
+
+func render(w http.ResponseWriter, name string, data any) {
+	w.Header().Set("Content-Type", "text/html; charset=utf-8")
+	if err := pages.ExecuteTemplate(w, name, data); err != nil {
+		http.Error(w, err.Error(), http.StatusInternalServerError)
+	}
+}
+
+// Listen listens on addr, which must name a loopback IP (127.0.0.1 or ::1) or "localhost"
+// (listened on as 127.0.0.1). Any other host, an empty one included, is refused: the viewer shows
+// a journal's contents and must not be reachable from another machine.
+func Listen(addr string) (net.Listener, error) {
+	host, port, err := net.SplitHostPort(addr)
+	if err != nil {
+		return nil, err
+	}
+	if host == "localhost" {
+		host = "127.0.0.1"
+	}
+	ip := net.ParseIP(host)
+	if ip == nil || !ip.IsLoopback() {
+		return nil, fmt.Errorf("runview: %q is not a loopback address; the viewer listens on 127.0.0.1 or ::1 only", addr)
+	}
+	return net.Listen("tcp", net.JoinHostPort(host, port))
+}
+
+// loopbackHost reports whether an HTTP Host names a loopback address or localhost.
+func loopbackHost(hostport string) bool {
+	host := hostport
+	if h, _, err := net.SplitHostPort(hostport); err == nil {
+		host = h
+	}
+	host = strings.Trim(host, "[]")
+	if host == "localhost" {
+		return true
+	}
+	ip := net.ParseIP(host)
+	return ip != nil && ip.IsLoopback()
+}
+
+// staticStore is a read-only agent.Store over one run's records, so the agent and audit readers
+// (Status, Conform, ProveRecord) run over records already read.
+type staticStore struct{ recs []agent.Record }
+
+var errReadOnly = errors.New("runview: the viewer is read-only")
+
+func (staticStore) Insert(context.Context, string, string, []byte) (agent.Entry, bool, error) {
+	return agent.Entry{}, false, errReadOnly
+}
+
+func (s staticStore) Get(_ context.Context, _, name string) (agent.Entry, bool, error) {
+	for i, r := range s.recs {
+		if r.Name == name {
+			return agent.Entry{Seq: int64(i + 1), Name: name, Data: r.Raw()}, true, nil
+		}
+	}
+	return agent.Entry{}, false, nil
+}
+
+func (s staticStore) Load(_ context.Context, _ string, after int64) iter.Seq2[agent.Entry, error] {
+	return func(yield func(agent.Entry, error) bool) {
+		for i, r := range s.recs {
+			e := agent.Entry{Seq: int64(i + 1), Name: r.Name, Data: r.Raw()}
+			if e.Seq > after && !yield(e, nil) {
+				return
+			}
+		}
+	}
+}
