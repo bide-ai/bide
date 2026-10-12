@@ -531,7 +531,9 @@ type Decision struct {
 // Each distinct decision is its own journal record; resubmitting the identical decision is a
 // no-op. The gate counts each approver's first valid decision and ignores the rest, so an
 // invalid record never blocks a valid one. Without WithDecisionCheck, SubmitDecision does not
-// verify: a decision that will not count is recorded and reported by the gate as ignored.
+// verify: a decision that will not count is recorded and reported by the gate as ignored. For a
+// plan flow node's gate (ToolUseID a node key) the run must have recorded the gate's request:
+// SubmitDecision refuses one with none (ErrConfig), and the gate counts only decisions after it.
 func SubmitDecision(ctx context.Context, store *Journal, d Decision, opts ...ApproveOption) error {
 	return submitDecision(ctx, store, "SubmitDecision", d, opts)
 }
@@ -554,6 +556,9 @@ func submitDecision(ctx context.Context, store *Journal, op string, d Decision, 
 	}
 	if len(d.Signature) == 0 {
 		return fmt.Errorf("%s: empty signature: %w", op, ErrConfig)
+	}
+	if err := requireFlowRequest(ctx, store, op, d.RunID, d.ToolUseID); err != nil {
+		return err
 	}
 	var o approveOptions
 	for _, opt := range opts {

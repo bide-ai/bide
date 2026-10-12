@@ -69,7 +69,7 @@ ASSUME RFlows \subseteq {"F", "G"}
 ASSUME Gated \subseteq {"E", "Q", "T", "H", "S"}
 ASSUME Need \in 1..Cardinality(Approvers) \/ Gated = {}
 ASSUME Bug \in {"none", "NestedUnscoped", "LoopSwitchUnscoped", "ResolveAnyNode", "ResolveAnyFlow",
-                "NoCompletion", "NoGate", "GateUnscoped"}
+                "NoCompletion", "NoGate", "GateUnscoped", "NoRequestOrder"}
 
 (* --algorithm flows
 variables
@@ -80,7 +80,10 @@ variables
   sw      = [k \in ChoiceKeys |-> None],   \* switch:... choices
   done    = [rec |-> FALSE, v |-> 0, term |-> None],  \* run:complete
   tally   = [k \in GateKeys |-> None],      \* approval-tally:<node key>: "pass" or "deny"
-  dec     = [k \in GateKeys |-> [a \in Approvers |-> None]],  \* each approver's decision
+  req     = [k \in GateKeys |-> FALSE],     \* approval-request:<node key>: the gate's request
+  \* Each approver's decision: "yes"/"no" recorded after the gate's request, or "eyes"/"eno"
+  \* recorded before it (a record written directly, before the run reached the gate).
+  dec     = [k \in GateKeys |-> [a \in Approvers |-> None]],
   \* Per-driver results of the Node and Choose procedures.
   nval    = [d \in Drivers |-> 0],
   choice  = [d \in Drivers |-> None],
@@ -102,9 +105,12 @@ define
   NKey(i) == IF Bug = "NestedUnscoped" THEN <<"N", 0>> ELSE <<"N", i>>
   \* The gate's key for a node key (per iteration; GateUnscoped keys every iteration as the first).
   GKey(k) == IF Bug = "GateUnscoped" THEN <<k[1], 0>> ELSE k
-  \* Approvals and denials recorded for a gate key.
+  \* Approvals and denials recorded for a gate key after its request (the ones that count).
   Yes(k) == Cardinality({a \in Approvers : dec[k][a] = "yes"})
   No(k)  == Cardinality({a \in Approvers : dec[k][a] = "no"})
+  \* What the gate counts: only decisions after the request (NoRequestOrder: any decision).
+  GYes(k) == IF Bug = "NoRequestOrder" THEN Cardinality({a \in Approvers : dec[k][a] \in {"yes", "eyes"}}) ELSE Yes(k)
+  GNo(k)  == IF Bug = "NoRequestOrder" THEN Cardinality({a \in Approvers : dec[k][a] \in {"no", "eno"}}) ELSE No(k)
 
   \* Conform: the journal holds a declared path. Which node keys the recorded choices reach:
   LoopOn == sw[<<"E", 0>>] = "loop"
@@ -136,11 +142,12 @@ GRead:
   \* runGate, then flowGate: a node with no gate goes to its Step; a recorded tally decides.
   if key[1] \notin Gated \/ Bug = "NoGate" then goto NGet;
   elsif tally[GKey(key)] # None then goto GPause;
+  else req[GKey(key)] := TRUE;    \* the request, recorded once, before any count
   end if;
 GCount:
   \* tallyGate: count the decisions; a terminal count is recorded (first writer wins), else the
   \* drive pauses (an ApprovalPending) and is driven again later.
-  with y = Yes(GKey(key)), n = No(GKey(key)) do
+  with y = GYes(GKey(key)), n = GNo(GKey(key)) do
     if y >= Need \/ Cardinality(Approvers) - n < Need then
       Reply(reply[self]);
       if reply[self] # "err_nc" /\ tally[GKey(key)] = None then
@@ -310,16 +317,19 @@ begin
 ADecide:
   \* SubmitDecision: the approver's decision on a gate (its first valid one counts), whether a
   \* driver is running, paused or down.
-  with k \in {k \in GateKeys : dec[k][self] = None}, v \in {"yes", "no"} do
+  \* Before the gate's request a decision is an early one (refused by SubmitDecision; possible only
+  \* as a record written directly); an approver with only an early one may still decide after it.
+  with k \in {k \in GateKeys : dec[k][self] = None \/ (dec[k][self] \in {"eyes", "eno"} /\ req[k])},
+       v \in IF req[k] THEN {"yes", "no"} ELSE {"eyes", "eno"} do
     dec[k][self] := v;
   end with;
-  if \E k \in GateKeys : dec[k][self] = None then goto ADecide; end if;
+  if \E k \in GateKeys : dec[k][self] \in {None, "eyes", "eno"} then goto ADecide; end if;
 end process;
 end algorithm; *)
 \* BEGIN TRANSLATION
 CONSTANT defaultInitValue
-VARIABLES started, res, mk, sw, done, tally, dec, nval, choice, failed, reply, 
-          ambig, crashes, fired, firedN, badRoute, badFire, pc, stack
+VARIABLES started, res, mk, sw, done, tally, req, dec, nval, choice, failed, 
+          reply, ambig, crashes, fired, firedN, badRoute, badFire, pc, stack
 
 (* define statement *)
 SKey(i) == IF Bug = "LoopSwitchUnscoped" THEN <<"S", 0>> ELSE <<"S", i>>
@@ -330,6 +340,9 @@ GKey(k) == IF Bug = "GateUnscoped" THEN <<k[1], 0>> ELSE k
 
 Yes(k) == Cardinality({a \in Approvers : dec[k][a] = "yes"})
 No(k)  == Cardinality({a \in Approvers : dec[k][a] = "no"})
+
+GYes(k) == IF Bug = "NoRequestOrder" THEN Cardinality({a \in Approvers : dec[k][a] \in {"yes", "eyes"}}) ELSE Yes(k)
+GNo(k)  == IF Bug = "NoRequestOrder" THEN Cardinality({a \in Approvers : dec[k][a] \in {"no", "eno"}}) ELSE No(k)
 
 
 LoopOn == sw[<<"E", 0>>] = "loop"
@@ -346,7 +359,7 @@ Reached == IF sw[<<"E", 0>>] = "Q" THEN <<"Q", 0>>
 
 VARIABLES key, bodyVal, ckey, val, name, it, out, term, rk, rv, rf
 
-vars == << started, res, mk, sw, done, tally, dec, nval, choice, failed, 
+vars == << started, res, mk, sw, done, tally, req, dec, nval, choice, failed, 
            reply, ambig, crashes, fired, firedN, badRoute, badFire, pc, stack, 
            key, bodyVal, ckey, val, name, it, out, term, rk, rv, rf >>
 
@@ -359,6 +372,7 @@ Init == (* Global variables *)
         /\ sw = [k \in ChoiceKeys |-> None]
         /\ done = [rec |-> FALSE, v |-> 0, term |-> None]
         /\ tally = [k \in GateKeys |-> None]
+        /\ req = [k \in GateKeys |-> FALSE]
         /\ dec = [k \in GateKeys |-> [a \in Approvers |-> None]]
         /\ nval = [d \in Drivers |-> 0]
         /\ choice = [d \in Drivers |-> None]
@@ -393,17 +407,20 @@ Init == (* Global variables *)
 GRead(self) == /\ pc[self] = "GRead"
                /\ IF key[self][1] \notin Gated \/ Bug = "NoGate"
                      THEN /\ pc' = [pc EXCEPT ![self] = "NGet"]
+                          /\ req' = req
                      ELSE /\ IF tally[GKey(key[self])] # None
                                 THEN /\ pc' = [pc EXCEPT ![self] = "GPause"]
-                                ELSE /\ pc' = [pc EXCEPT ![self] = "GCount"]
+                                     /\ req' = req
+                                ELSE /\ req' = [req EXCEPT ![GKey(key[self])] = TRUE]
+                                     /\ pc' = [pc EXCEPT ![self] = "GCount"]
                /\ UNCHANGED << started, res, mk, sw, done, tally, dec, nval, 
                                choice, failed, reply, ambig, crashes, fired, 
                                firedN, badRoute, badFire, stack, key, bodyVal, 
                                ckey, val, name, it, out, term, rk, rv, rf >>
 
 GCount(self) == /\ pc[self] = "GCount"
-                /\ LET y == Yes(GKey(key[self])) IN
-                     LET n == No(GKey(key[self])) IN
+                /\ LET y == GYes(GKey(key[self])) IN
+                     LET n == GNo(GKey(key[self])) IN
                        IF y >= Need \/ Cardinality(Approvers) - n < Need
                           THEN /\ \/ /\ reply' = [reply EXCEPT ![self] = "ok"]
                                      /\ ambig' = ambig
@@ -432,9 +449,10 @@ GCount(self) == /\ pc[self] = "GCount"
                                /\ key' = [key EXCEPT ![self] = Head(stack[self]).key]
                                /\ stack' = [stack EXCEPT ![self] = Tail(stack[self])]
                                /\ UNCHANGED << tally, reply, ambig >>
-                /\ UNCHANGED << started, res, mk, sw, done, dec, nval, choice, 
-                                crashes, fired, firedN, badRoute, badFire, 
-                                ckey, val, name, it, out, term, rk, rv, rf >>
+                /\ UNCHANGED << started, res, mk, sw, done, req, dec, nval, 
+                                choice, crashes, fired, firedN, badRoute, 
+                                badFire, ckey, val, name, it, out, term, rk, 
+                                rv, rf >>
 
 GPause(self) == /\ pc[self] = "GPause"
                 /\ IF tally[GKey(key[self])] = "deny"
@@ -445,10 +463,10 @@ GPause(self) == /\ pc[self] = "GPause"
                            /\ stack' = [stack EXCEPT ![self] = Tail(stack[self])]
                       ELSE /\ pc' = [pc EXCEPT ![self] = "NGet"]
                            /\ UNCHANGED << failed, stack, key, bodyVal >>
-                /\ UNCHANGED << started, res, mk, sw, done, tally, dec, nval, 
-                                choice, reply, ambig, crashes, fired, firedN, 
-                                badRoute, badFire, ckey, val, name, it, out, 
-                                term, rk, rv, rf >>
+                /\ UNCHANGED << started, res, mk, sw, done, tally, req, dec, 
+                                nval, choice, reply, ambig, crashes, fired, 
+                                firedN, badRoute, badFire, ckey, val, name, it, 
+                                out, term, rk, rv, rf >>
 
 NGet(self) == /\ pc[self] = "NGet"
               /\ IF res[key[self]].rec
@@ -461,10 +479,10 @@ NGet(self) == /\ pc[self] = "NGet"
                                THEN /\ pc' = [pc EXCEPT ![self] = "NBody"]
                                ELSE /\ pc' = [pc EXCEPT ![self] = "NClaim"]
                          /\ UNCHANGED << nval, stack, key, bodyVal >>
-              /\ UNCHANGED << started, res, mk, sw, done, tally, dec, choice, 
-                              failed, reply, ambig, crashes, fired, firedN, 
-                              badRoute, badFire, ckey, val, name, it, out, 
-                              term, rk, rv, rf >>
+              /\ UNCHANGED << started, res, mk, sw, done, tally, req, dec, 
+                              choice, failed, reply, ambig, crashes, fired, 
+                              firedN, badRoute, badFire, ckey, val, name, it, 
+                              out, term, rk, rv, rf >>
 
 NClaim(self) == /\ pc[self] = "NClaim"
                 /\ LET was == mk[key[self]] IN
@@ -500,9 +518,10 @@ NClaim(self) == /\ pc[self] = "NClaim"
                                       ELSE /\ pc' = [pc EXCEPT ![self] = "NBody"]
                                            /\ UNCHANGED << nval, failed, stack, 
                                                            key, bodyVal >>
-                /\ UNCHANGED << started, res, sw, done, tally, dec, choice, 
-                                crashes, fired, firedN, badRoute, badFire, 
-                                ckey, val, name, it, out, term, rk, rv, rf >>
+                /\ UNCHANGED << started, res, sw, done, tally, req, dec, 
+                                choice, crashes, fired, firedN, badRoute, 
+                                badFire, ckey, val, name, it, out, term, rk, 
+                                rv, rf >>
 
 NBody(self) == /\ pc[self] = "NBody"
                /\ \E x \in {0, 1}:
@@ -518,10 +537,10 @@ NBody(self) == /\ pc[self] = "NBody"
                /\ IF key[self][1] = "H"
                      THEN /\ pc' = [pc EXCEPT ![self] = "NNested"]
                      ELSE /\ pc' = [pc EXCEPT ![self] = "NRecord"]
-               /\ UNCHANGED << started, res, mk, sw, done, tally, dec, nval, 
-                               choice, failed, reply, ambig, crashes, firedN, 
-                               badRoute, stack, key, ckey, val, name, it, out, 
-                               term, rk, rv, rf >>
+               /\ UNCHANGED << started, res, mk, sw, done, tally, req, dec, 
+                               nval, choice, failed, reply, ambig, crashes, 
+                               firedN, badRoute, stack, key, ckey, val, name, 
+                               it, out, term, rk, rv, rf >>
 
 NNested(self) == /\ pc[self] = "NNested"
                  /\ IF ~res[NKey(key[self][2])].rec
@@ -530,7 +549,7 @@ NNested(self) == /\ pc[self] = "NNested"
                        ELSE /\ TRUE
                             /\ UNCHANGED << res, firedN >>
                  /\ pc' = [pc EXCEPT ![self] = "NRecord"]
-                 /\ UNCHANGED << started, mk, sw, done, tally, dec, nval, 
+                 /\ UNCHANGED << started, mk, sw, done, tally, req, dec, nval, 
                                  choice, failed, reply, ambig, crashes, fired, 
                                  badRoute, badFire, stack, key, bodyVal, ckey, 
                                  val, name, it, out, term, rk, rv, rf >>
@@ -557,9 +576,10 @@ NRecord(self) == /\ pc[self] = "NRecord"
                  /\ bodyVal' = [bodyVal EXCEPT ![self] = Head(stack[self]).bodyVal]
                  /\ key' = [key EXCEPT ![self] = Head(stack[self]).key]
                  /\ stack' = [stack EXCEPT ![self] = Tail(stack[self])]
-                 /\ UNCHANGED << started, mk, sw, done, tally, dec, choice, 
-                                 crashes, fired, firedN, badRoute, badFire, 
-                                 ckey, val, name, it, out, term, rk, rv, rf >>
+                 /\ UNCHANGED << started, mk, sw, done, tally, req, dec, 
+                                 choice, crashes, fired, firedN, badRoute, 
+                                 badFire, ckey, val, name, it, out, term, rk, 
+                                 rv, rf >>
 
 Node(self) == GRead(self) \/ GCount(self) \/ GPause(self) \/ NGet(self)
                  \/ NClaim(self) \/ NBody(self) \/ NNested(self)
@@ -592,9 +612,9 @@ CDo(self) == /\ pc[self] = "CDo"
                    ELSE /\ pc' = [pc EXCEPT ![self] = "CRoute"]
                         /\ UNCHANGED << sw, failed, reply, ambig, stack, ckey, 
                                         val, name >>
-             /\ UNCHANGED << started, res, mk, done, tally, dec, nval, choice, 
-                             crashes, fired, firedN, badRoute, badFire, key, 
-                             bodyVal, it, out, term, rk, rv, rf >>
+             /\ UNCHANGED << started, res, mk, done, tally, req, dec, nval, 
+                             choice, crashes, fired, firedN, badRoute, badFire, 
+                             key, bodyVal, it, out, term, rk, rv, rf >>
 
 CRoute(self) == /\ pc[self] = "CRoute"
                 /\ choice' = [choice EXCEPT ![self] = sw[ckey[self]]]
@@ -607,10 +627,10 @@ CRoute(self) == /\ pc[self] = "CRoute"
                 /\ val' = [val EXCEPT ![self] = Head(stack[self]).val]
                 /\ name' = [name EXCEPT ![self] = Head(stack[self]).name]
                 /\ stack' = [stack EXCEPT ![self] = Tail(stack[self])]
-                /\ UNCHANGED << started, res, mk, sw, done, tally, dec, nval, 
-                                failed, reply, ambig, crashes, fired, firedN, 
-                                badFire, key, bodyVal, it, out, term, rk, rv, 
-                                rf >>
+                /\ UNCHANGED << started, res, mk, sw, done, tally, req, dec, 
+                                nval, failed, reply, ambig, crashes, fired, 
+                                firedN, badFire, key, bodyVal, it, out, term, 
+                                rk, rv, rf >>
 
 Choose(self) == CDo(self) \/ CRoute(self)
 
@@ -625,10 +645,10 @@ Begin(self) == /\ pc[self] = "Begin"
                /\ IF done.rec
                      THEN /\ pc' = [pc EXCEPT ![self] = "Finish"]
                      ELSE /\ pc' = [pc EXCEPT ![self] = "BeginStart"]
-               /\ UNCHANGED << started, res, mk, sw, done, tally, dec, ambig, 
-                               crashes, fired, firedN, badRoute, badFire, 
-                               stack, key, bodyVal, ckey, val, name, rk, rv, 
-                               rf >>
+               /\ UNCHANGED << started, res, mk, sw, done, tally, req, dec, 
+                               ambig, crashes, fired, firedN, badRoute, 
+                               badFire, stack, key, bodyVal, ckey, val, name, 
+                               rk, rv, rf >>
 
 BeginStart(self) == /\ pc[self] = "BeginStart"
                     /\ \/ /\ reply' = [reply EXCEPT ![self] = "ok"]
@@ -648,7 +668,7 @@ BeginStart(self) == /\ pc[self] = "BeginStart"
                                /\ pc' = [pc EXCEPT ![self] = "Finish"]
                           ELSE /\ pc' = [pc EXCEPT ![self] = "RunE"]
                                /\ UNCHANGED failed
-                    /\ UNCHANGED << res, mk, sw, done, tally, dec, nval, 
+                    /\ UNCHANGED << res, mk, sw, done, tally, req, dec, nval, 
                                     choice, crashes, fired, firedN, badRoute, 
                                     badFire, stack, key, bodyVal, ckey, val, 
                                     name, it, out, term, rk, rv, rf >>
@@ -662,19 +682,20 @@ RunE(self) == /\ pc[self] = "RunE"
                                                       \o stack[self]]
               /\ bodyVal' = [bodyVal EXCEPT ![self] = 0]
               /\ pc' = [pc EXCEPT ![self] = "GRead"]
-              /\ UNCHANGED << started, res, mk, sw, done, tally, dec, nval, 
-                              choice, failed, reply, ambig, crashes, fired, 
-                              firedN, badRoute, badFire, ckey, val, name, it, 
-                              out, term, rk, rv, rf >>
+              /\ UNCHANGED << started, res, mk, sw, done, tally, req, dec, 
+                              nval, choice, failed, reply, ambig, crashes, 
+                              fired, firedN, badRoute, badFire, ckey, val, 
+                              name, it, out, term, rk, rv, rf >>
 
 AfterE(self) == /\ pc[self] = "AfterE"
                 /\ IF failed[self] # None
                       THEN /\ pc' = [pc EXCEPT ![self] = "Finish"]
                       ELSE /\ pc' = [pc EXCEPT ![self] = "ChooseE"]
-                /\ UNCHANGED << started, res, mk, sw, done, tally, dec, nval, 
-                                choice, failed, reply, ambig, crashes, fired, 
-                                firedN, badRoute, badFire, stack, key, bodyVal, 
-                                ckey, val, name, it, out, term, rk, rv, rf >>
+                /\ UNCHANGED << started, res, mk, sw, done, tally, req, dec, 
+                                nval, choice, failed, reply, ambig, crashes, 
+                                fired, firedN, badRoute, badFire, stack, key, 
+                                bodyVal, ckey, val, name, it, out, term, rk, 
+                                rv, rf >>
 
 ChooseE(self) == /\ pc[self] = "ChooseE"
                  /\ /\ ckey' = [ckey EXCEPT ![self] = <<"E", 0>>]
@@ -687,10 +708,10 @@ ChooseE(self) == /\ pc[self] = "ChooseE"
                                                          \o stack[self]]
                     /\ val' = [val EXCEPT ![self] = nval[self]]
                  /\ pc' = [pc EXCEPT ![self] = "CDo"]
-                 /\ UNCHANGED << started, res, mk, sw, done, tally, dec, nval, 
-                                 choice, failed, reply, ambig, crashes, fired, 
-                                 firedN, badRoute, badFire, key, bodyVal, it, 
-                                 out, term, rk, rv, rf >>
+                 /\ UNCHANGED << started, res, mk, sw, done, tally, req, dec, 
+                                 nval, choice, failed, reply, ambig, crashes, 
+                                 fired, firedN, badRoute, badFire, key, 
+                                 bodyVal, it, out, term, rk, rv, rf >>
 
 AfterChooseE(self) == /\ pc[self] = "AfterChooseE"
                       /\ IF failed[self] # None
@@ -698,8 +719,8 @@ AfterChooseE(self) == /\ pc[self] = "AfterChooseE"
                             ELSE /\ IF choice[self] = "Q"
                                        THEN /\ pc' = [pc EXCEPT ![self] = "RunQ"]
                                        ELSE /\ pc' = [pc EXCEPT ![self] = "LoopH"]
-                      /\ UNCHANGED << started, res, mk, sw, done, tally, dec, 
-                                      nval, choice, failed, reply, ambig, 
+                      /\ UNCHANGED << started, res, mk, sw, done, tally, req, 
+                                      dec, nval, choice, failed, reply, ambig, 
                                       crashes, fired, firedN, badRoute, 
                                       badFire, stack, key, bodyVal, ckey, val, 
                                       name, it, out, term, rk, rv, rf >>
@@ -713,19 +734,20 @@ LoopH(self) == /\ pc[self] = "LoopH"
                                                        \o stack[self]]
                /\ bodyVal' = [bodyVal EXCEPT ![self] = 0]
                /\ pc' = [pc EXCEPT ![self] = "GRead"]
-               /\ UNCHANGED << started, res, mk, sw, done, tally, dec, nval, 
-                               choice, failed, reply, ambig, crashes, fired, 
-                               firedN, badRoute, badFire, ckey, val, name, it, 
-                               out, term, rk, rv, rf >>
+               /\ UNCHANGED << started, res, mk, sw, done, tally, req, dec, 
+                               nval, choice, failed, reply, ambig, crashes, 
+                               fired, firedN, badRoute, badFire, ckey, val, 
+                               name, it, out, term, rk, rv, rf >>
 
 AfterH(self) == /\ pc[self] = "AfterH"
                 /\ IF failed[self] # None
                       THEN /\ pc' = [pc EXCEPT ![self] = "Finish"]
                       ELSE /\ pc' = [pc EXCEPT ![self] = "RunS"]
-                /\ UNCHANGED << started, res, mk, sw, done, tally, dec, nval, 
-                                choice, failed, reply, ambig, crashes, fired, 
-                                firedN, badRoute, badFire, stack, key, bodyVal, 
-                                ckey, val, name, it, out, term, rk, rv, rf >>
+                /\ UNCHANGED << started, res, mk, sw, done, tally, req, dec, 
+                                nval, choice, failed, reply, ambig, crashes, 
+                                fired, firedN, badRoute, badFire, stack, key, 
+                                bodyVal, ckey, val, name, it, out, term, rk, 
+                                rv, rf >>
 
 RunS(self) == /\ pc[self] = "RunS"
               /\ /\ key' = [key EXCEPT ![self] = <<"S", it[self]>>]
@@ -736,19 +758,20 @@ RunS(self) == /\ pc[self] = "RunS"
                                                       \o stack[self]]
               /\ bodyVal' = [bodyVal EXCEPT ![self] = 0]
               /\ pc' = [pc EXCEPT ![self] = "GRead"]
-              /\ UNCHANGED << started, res, mk, sw, done, tally, dec, nval, 
-                              choice, failed, reply, ambig, crashes, fired, 
-                              firedN, badRoute, badFire, ckey, val, name, it, 
-                              out, term, rk, rv, rf >>
+              /\ UNCHANGED << started, res, mk, sw, done, tally, req, dec, 
+                              nval, choice, failed, reply, ambig, crashes, 
+                              fired, firedN, badRoute, badFire, ckey, val, 
+                              name, it, out, term, rk, rv, rf >>
 
 AfterS(self) == /\ pc[self] = "AfterS"
                 /\ IF failed[self] # None
                       THEN /\ pc' = [pc EXCEPT ![self] = "Finish"]
                       ELSE /\ pc' = [pc EXCEPT ![self] = "ChooseS"]
-                /\ UNCHANGED << started, res, mk, sw, done, tally, dec, nval, 
-                                choice, failed, reply, ambig, crashes, fired, 
-                                firedN, badRoute, badFire, stack, key, bodyVal, 
-                                ckey, val, name, it, out, term, rk, rv, rf >>
+                /\ UNCHANGED << started, res, mk, sw, done, tally, req, dec, 
+                                nval, choice, failed, reply, ambig, crashes, 
+                                fired, firedN, badRoute, badFire, stack, key, 
+                                bodyVal, ckey, val, name, it, out, term, rk, 
+                                rv, rf >>
 
 ChooseS(self) == /\ pc[self] = "ChooseS"
                  /\ /\ ckey' = [ckey EXCEPT ![self] = SKey(it[self])]
@@ -761,10 +784,10 @@ ChooseS(self) == /\ pc[self] = "ChooseS"
                                                          \o stack[self]]
                     /\ val' = [val EXCEPT ![self] = nval[self]]
                  /\ pc' = [pc EXCEPT ![self] = "CDo"]
-                 /\ UNCHANGED << started, res, mk, sw, done, tally, dec, nval, 
-                                 choice, failed, reply, ambig, crashes, fired, 
-                                 firedN, badRoute, badFire, key, bodyVal, it, 
-                                 out, term, rk, rv, rf >>
+                 /\ UNCHANGED << started, res, mk, sw, done, tally, req, dec, 
+                                 nval, choice, failed, reply, ambig, crashes, 
+                                 fired, firedN, badRoute, badFire, key, 
+                                 bodyVal, it, out, term, rk, rv, rf >>
 
 AfterChooseS(self) == /\ pc[self] = "AfterChooseS"
                       /\ IF failed[self] # None
@@ -780,8 +803,8 @@ AfterChooseS(self) == /\ pc[self] = "AfterChooseS"
                                                        /\ UNCHANGED failed
                                        ELSE /\ pc' = [pc EXCEPT ![self] = "RunT"]
                                             /\ UNCHANGED << failed, it >>
-                      /\ UNCHANGED << started, res, mk, sw, done, tally, dec, 
-                                      nval, choice, reply, ambig, crashes, 
+                      /\ UNCHANGED << started, res, mk, sw, done, tally, req, 
+                                      dec, nval, choice, reply, ambig, crashes, 
                                       fired, firedN, badRoute, badFire, stack, 
                                       key, bodyVal, ckey, val, name, out, term, 
                                       rk, rv, rf >>
@@ -795,28 +818,29 @@ RunT(self) == /\ pc[self] = "RunT"
                                                       \o stack[self]]
               /\ bodyVal' = [bodyVal EXCEPT ![self] = 0]
               /\ pc' = [pc EXCEPT ![self] = "GRead"]
-              /\ UNCHANGED << started, res, mk, sw, done, tally, dec, nval, 
-                              choice, failed, reply, ambig, crashes, fired, 
-                              firedN, badRoute, badFire, ckey, val, name, it, 
-                              out, term, rk, rv, rf >>
+              /\ UNCHANGED << started, res, mk, sw, done, tally, req, dec, 
+                              nval, choice, failed, reply, ambig, crashes, 
+                              fired, firedN, badRoute, badFire, ckey, val, 
+                              name, it, out, term, rk, rv, rf >>
 
 AfterT(self) == /\ pc[self] = "AfterT"
                 /\ IF failed[self] # None
                       THEN /\ pc' = [pc EXCEPT ![self] = "Finish"]
                       ELSE /\ pc' = [pc EXCEPT ![self] = "SetT"]
-                /\ UNCHANGED << started, res, mk, sw, done, tally, dec, nval, 
-                                choice, failed, reply, ambig, crashes, fired, 
-                                firedN, badRoute, badFire, stack, key, bodyVal, 
-                                ckey, val, name, it, out, term, rk, rv, rf >>
+                /\ UNCHANGED << started, res, mk, sw, done, tally, req, dec, 
+                                nval, choice, failed, reply, ambig, crashes, 
+                                fired, firedN, badRoute, badFire, stack, key, 
+                                bodyVal, ckey, val, name, it, out, term, rk, 
+                                rv, rf >>
 
 SetT(self) == /\ pc[self] = "SetT"
               /\ term' = [term EXCEPT ![self] = "T"]
               /\ out' = [out EXCEPT ![self] = nval[self]]
               /\ pc' = [pc EXCEPT ![self] = "Complete"]
-              /\ UNCHANGED << started, res, mk, sw, done, tally, dec, nval, 
-                              choice, failed, reply, ambig, crashes, fired, 
-                              firedN, badRoute, badFire, stack, key, bodyVal, 
-                              ckey, val, name, it, rk, rv, rf >>
+              /\ UNCHANGED << started, res, mk, sw, done, tally, req, dec, 
+                              nval, choice, failed, reply, ambig, crashes, 
+                              fired, firedN, badRoute, badFire, stack, key, 
+                              bodyVal, ckey, val, name, it, rk, rv, rf >>
 
 RunQ(self) == /\ pc[self] = "RunQ"
               /\ /\ key' = [key EXCEPT ![self] = <<"Q", 0>>]
@@ -827,28 +851,29 @@ RunQ(self) == /\ pc[self] = "RunQ"
                                                       \o stack[self]]
               /\ bodyVal' = [bodyVal EXCEPT ![self] = 0]
               /\ pc' = [pc EXCEPT ![self] = "GRead"]
-              /\ UNCHANGED << started, res, mk, sw, done, tally, dec, nval, 
-                              choice, failed, reply, ambig, crashes, fired, 
-                              firedN, badRoute, badFire, ckey, val, name, it, 
-                              out, term, rk, rv, rf >>
+              /\ UNCHANGED << started, res, mk, sw, done, tally, req, dec, 
+                              nval, choice, failed, reply, ambig, crashes, 
+                              fired, firedN, badRoute, badFire, ckey, val, 
+                              name, it, out, term, rk, rv, rf >>
 
 AfterQ(self) == /\ pc[self] = "AfterQ"
                 /\ IF failed[self] # None
                       THEN /\ pc' = [pc EXCEPT ![self] = "Finish"]
                       ELSE /\ pc' = [pc EXCEPT ![self] = "SetQ"]
-                /\ UNCHANGED << started, res, mk, sw, done, tally, dec, nval, 
-                                choice, failed, reply, ambig, crashes, fired, 
-                                firedN, badRoute, badFire, stack, key, bodyVal, 
-                                ckey, val, name, it, out, term, rk, rv, rf >>
+                /\ UNCHANGED << started, res, mk, sw, done, tally, req, dec, 
+                                nval, choice, failed, reply, ambig, crashes, 
+                                fired, firedN, badRoute, badFire, stack, key, 
+                                bodyVal, ckey, val, name, it, out, term, rk, 
+                                rv, rf >>
 
 SetQ(self) == /\ pc[self] = "SetQ"
               /\ term' = [term EXCEPT ![self] = "Q"]
               /\ out' = [out EXCEPT ![self] = nval[self]]
               /\ pc' = [pc EXCEPT ![self] = "Complete"]
-              /\ UNCHANGED << started, res, mk, sw, done, tally, dec, nval, 
-                              choice, failed, reply, ambig, crashes, fired, 
-                              firedN, badRoute, badFire, stack, key, bodyVal, 
-                              ckey, val, name, it, rk, rv, rf >>
+              /\ UNCHANGED << started, res, mk, sw, done, tally, req, dec, 
+                              nval, choice, failed, reply, ambig, crashes, 
+                              fired, firedN, badRoute, badFire, stack, key, 
+                              bodyVal, ckey, val, name, it, rk, rv, rf >>
 
 Complete(self) == /\ pc[self] = "Complete"
                   /\ IF Bug # "NoCompletion"
@@ -871,7 +896,7 @@ Complete(self) == /\ pc[self] = "Complete"
                         ELSE /\ TRUE
                              /\ UNCHANGED << done, failed, reply, ambig >>
                   /\ pc' = [pc EXCEPT ![self] = "Finish"]
-                  /\ UNCHANGED << started, res, mk, sw, tally, dec, nval, 
+                  /\ UNCHANGED << started, res, mk, sw, tally, req, dec, nval, 
                                   choice, crashes, fired, firedN, badRoute, 
                                   badFire, stack, key, bodyVal, ckey, val, 
                                   name, it, out, term, rk, rv, rf >>
@@ -880,10 +905,11 @@ Finish(self) == /\ pc[self] = "Finish"
                 /\ IF failed[self] \notin {None, "runaway", "denied"}
                       THEN /\ pc' = [pc EXCEPT ![self] = "Begin"]
                       ELSE /\ pc' = [pc EXCEPT ![self] = "Done"]
-                /\ UNCHANGED << started, res, mk, sw, done, tally, dec, nval, 
-                                choice, failed, reply, ambig, crashes, fired, 
-                                firedN, badRoute, badFire, stack, key, bodyVal, 
-                                ckey, val, name, it, out, term, rk, rv, rf >>
+                /\ UNCHANGED << started, res, mk, sw, done, tally, req, dec, 
+                                nval, choice, failed, reply, ambig, crashes, 
+                                fired, firedN, badRoute, badFire, stack, key, 
+                                bodyVal, ckey, val, name, it, out, term, rk, 
+                                rv, rf >>
 
 driver(self) == Begin(self) \/ BeginStart(self) \/ RunE(self)
                    \/ AfterE(self) \/ ChooseE(self) \/ AfterChooseE(self)
@@ -904,10 +930,10 @@ RPick(self) == /\ pc[self] = "RPick"
                         /\ rv' = [rv EXCEPT ![self] = v]
                         /\ rf' = [rf EXCEPT ![self] = fl]
                /\ pc' = [pc EXCEPT ![self] = "RWrite"]
-               /\ UNCHANGED << started, res, mk, sw, done, tally, dec, nval, 
-                               choice, failed, reply, ambig, crashes, fired, 
-                               firedN, badRoute, badFire, stack, key, bodyVal, 
-                               ckey, val, name, it, out, term >>
+               /\ UNCHANGED << started, res, mk, sw, done, tally, req, dec, 
+                               nval, choice, failed, reply, ambig, crashes, 
+                               fired, firedN, badRoute, badFire, stack, key, 
+                               bodyVal, ckey, val, name, it, out, term >>
 
 RWrite(self) == /\ pc[self] = "RWrite"
                 /\ \/ /\ reply' = [reply EXCEPT ![self] = "ok"]
@@ -923,7 +949,7 @@ RWrite(self) == /\ pc[self] = "RWrite"
                       ELSE /\ TRUE
                            /\ res' = res
                 /\ pc' = [pc EXCEPT ![self] = "Done"]
-                /\ UNCHANGED << started, mk, sw, done, tally, dec, nval, 
+                /\ UNCHANGED << started, mk, sw, done, tally, req, dec, nval, 
                                 choice, failed, crashes, fired, firedN, 
                                 badRoute, badFire, stack, key, bodyVal, ckey, 
                                 val, name, it, out, term, rk, rv, rf >>
@@ -931,13 +957,13 @@ RWrite(self) == /\ pc[self] = "RWrite"
 resolver(self) == RPick(self) \/ RWrite(self)
 
 ADecide(self) == /\ pc[self] = "ADecide"
-                 /\ \E k \in {k \in GateKeys : dec[k][self] = None}:
-                      \E v \in {"yes", "no"}:
+                 /\ \E k \in {k \in GateKeys : dec[k][self] = None \/ (dec[k][self] \in {"eyes", "eno"} /\ req[k])}:
+                      \E v \in IF req[k] THEN {"yes", "no"} ELSE {"eyes", "eno"}:
                         dec' = [dec EXCEPT ![k][self] = v]
-                 /\ IF \E k \in GateKeys : dec'[k][self] = None
+                 /\ IF \E k \in GateKeys : dec'[k][self] \in {None, "eyes", "eno"}
                        THEN /\ pc' = [pc EXCEPT ![self] = "ADecide"]
                        ELSE /\ pc' = [pc EXCEPT ![self] = "Done"]
-                 /\ UNCHANGED << started, res, mk, sw, done, tally, nval, 
+                 /\ UNCHANGED << started, res, mk, sw, done, tally, req, nval, 
                                  choice, failed, reply, ambig, crashes, fired, 
                                  firedN, badRoute, badFire, stack, key, 
                                  bodyVal, ckey, val, name, it, out, term, rk, 
@@ -984,7 +1010,7 @@ Crash(d) ==
   /\ ckey' = [ckey EXCEPT ![d] = defaultInitValue]
   /\ val' = [val EXCEPT ![d] = defaultInitValue]
   /\ name' = [name EXCEPT ![d] = defaultInitValue]
-  /\ UNCHANGED <<started, res, mk, sw, done, tally, dec, ambig, fired, firedN, badRoute, badFire, rk, rv, rf>>
+  /\ UNCHANGED <<started, res, mk, sw, done, tally, req, dec, ambig, fired, firedN, badRoute, badFire, rk, rv, rf>>
 
 FullNext == Next \/ \E d \in Drivers : Crash(d)
 

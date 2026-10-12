@@ -11,8 +11,8 @@ import (
 
 // The gate's store budget (docs/design/api-v1.md, the counting-store table): a node with no gate
 // costs nothing; a gate's first pause costs 1 Get (the tally), 2 Inserts (the request and the
-// pause note) and 1 Load (the decisions); a pause again 1 Get, 1 Insert (the request, found) and 1
-// Load; the evaluation that reaches the outcome adds the tally's Step (2 Get: the tally and its
+// pause note) and 1 Load (the decisions); a pause again the same (both Inserts find their record,
+// and the note is written if a crash lost it); the evaluation that reaches the outcome adds the tally's Step (2 Get: the tally and its
 // marker key, as a retry-safe Step reads them; 1 Insert); and a decided gate 1 Get.
 func TestGate_StoreBudget(t *testing.T) {
 	ctx := context.Background()
@@ -43,7 +43,7 @@ func TestGate_StoreBudget(t *testing.T) {
 	want("an ungated node", cs.Counts(), 0, 0, 0)
 
 	c, _ := eval()
-	want("a pause again", c, 1, 1, 1)
+	want("a pause again", c, 1, 2, 1)
 	as["ops"].decide(t, j, &agent.ApprovalPending{RunRef: agent.RunRef{RunID: "r1"}, ToolUseID: "node:refund", ToolName: "refund", Args: []byte(`{"order":"order-42","amount":120}`)}, true)
 	as["finance"].decide(t, j, &agent.ApprovalPending{RunRef: agent.RunRef{RunID: "r1"}, ToolUseID: "node:refund", ToolName: "refund", Args: []byte(`{"order":"order-42","amount":120}`)}, true)
 	c, err := eval()
@@ -64,4 +64,16 @@ func TestGate_StoreBudget(t *testing.T) {
 		return cs.Counts(), err
 	}()
 	want("a first pause", c, 1, 2, 1)
+
+	// A decided SingleApproval gate: Approve's record and the request it must follow.
+	single := refundFlow(t, agent.SingleApproval(), nil, &refunds)
+	pend := asPending(t, func() error { _, err := single.Run(ctx, j, "r5", "order-42"); return err }())
+	if err := agent.Approve(ctx, j, pend.RunID, pend.ToolUseID, true); err != nil {
+		t.Fatal(err)
+	}
+	cs.Reset()
+	if err := runGate(ctx, j, "r5", single.core, single.core.byName["refund"], "node:refund", in); err != nil {
+		t.Fatal(err)
+	}
+	want("a decided single gate", cs.Counts(), 2, 0, 0)
 }

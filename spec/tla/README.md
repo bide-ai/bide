@@ -876,9 +876,12 @@ digest) run around it.
 Nodes in `Gated` carry an approval gate (`Need` of `Approvers`), held before the node's Step under
 the node's key, per iteration in the loop: a recorded terminal tally decides, or the drive counts the
 approvers' decisions and records a terminal tally (first writer wins), or pauses and is driven again.
-Approvers decide at any time, whether a driver runs, is paused or is down. Each approver's decision
-here is their first valid one; model 1b checks the counting rule over signed, possibly invalid
-records.
+Approvers decide at any time, whether a driver runs, is paused or is down; the gate records its
+request before it counts, and a decision recorded before that request (possible only as a record
+written directly, since `Approve` and `SubmitDecision` refuse it) is never counted. Each approver's
+decision here is their first valid one; model 1b checks the counting rule over signed, possibly
+invalid records, and that a counted signature binds the request's input is checked by Go tests
+(`plan/rev_gate_test.go`, `plan/gate_test.go`), not by this model.
 
 <!-- modelsync: map flows -->
 | Label | Go |
@@ -889,10 +892,10 @@ records.
 | `LoopH`, `AfterH`, `RunS`, `AfterS`, `ChooseS`, `AfterChooseS` | `runLoop`, with its `lp.max` bound (a runaway-loop error) |
 | `Complete` | `journalhook.Complete`: `run:complete` with the terminal's output |
 | `RPick`, `RWrite` | `Flow.ResolveHalt`: a node of this flow with a live attempt and no result, in a run of this flow and digest (`checkRunOfFlow`), then `agent.ResolveHalt` |
-| `GRead` | `runGate` through `journalhook.Gate` to `flowGate`: the gate's recorded outcome (`approval-tally:<node key>`, or `Approve`'s record), one point read; else the request (`approval-request:<node key>`) |
-| `GCount` | `flowGate`'s count (`tallyGate`, `TallyApprovals`): a terminal tally is recorded before the node runs, else the drive pauses (`*agent.ApprovalPending`) |
+| `GRead` | `runGate` through `journalhook.Gate` to `flowGate`: the gate's recorded outcome (`approval-tally:<node key>`, or `Approve`'s record if it follows the request); else the request (`approval-request:<node key>`) |
+| `GCount` | `flowGate`'s count (`tallyGate` over the records after the request, `TallyApprovals`): a terminal tally is recorded before the node runs, else the drive pauses (`*agent.ApprovalPending`) |
 | `GPause` | `runGate`: a denying tally stops the run (`ErrApprovalDenied`); a passing one lets the node's Step run |
-| `ADecide` | `agent.SubmitDecision` (or `agent.Approve`): an approver's decision on a gate, recorded whether a driver runs or not |
+| `ADecide` | `agent.SubmitDecision` (or `agent.Approve`, both refusing a node key with no request, `requireFlowRequest`): an approver's decision on a gate, recorded whether a driver runs or not; an early one stands for a record written directly |
 
 | Property | Kind | Statement |
 |---|---|---|
@@ -930,6 +933,8 @@ Regressions (each must fail with its property): `flows/regress/gate-missing` (a 
 with no gate check, as the runtime would have before flows enforced gates had `Build` not refused
 them; `GateHeld`), `flows/regress/gate-unscoped` (a gate in a loop keyed per node, not per
 iteration, so the first iteration's tally lets the second run unapproved; `GateHeld`),
+`flows/regress/gate-request-order` (#195 review: a decision recorded before the gate's request was
+counted, so a node ran on an approval never made on its input; `GateHeld`),
 `flows/regress/nested-unscoped` (#103 review F7:
 a Step a loop body ran had one key for every iteration, so later iterations replayed the first;
 `NestedOncePerIteration`, 38 states), `flows/regress/loop-switch-unscoped` (a guard: the loop
