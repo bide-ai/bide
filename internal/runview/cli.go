@@ -42,7 +42,7 @@ const usageText = `bide-view: a read-only local web page for one run of a bide j
   bide-view -db <file> [-run <id>] [flags]
   bide-view -postgres <dsn> [-run <id>] [flags]
   bide-view -journal <export.json> [-journal ...] [-run <id>] [flags]
-  bide-view -config <flow.yaml|flow.json> [-check]
+  bide-view -config <flow.yaml|flow.json> [-check [-strict]]
 
 It shows an agent run's timeline (model turns, tool calls with their Safety, attempts, approvals,
 halts, end state) or a plan flow's declared topology with the run's path (drawn from the topology
@@ -60,8 +60,8 @@ the viewer with its plan.Registry, see package plan/planview). With -check it se
 prints one "file:node: message" line per problem ("file:from->to: message" for an edge or arm).
 
 Exit status: 0 after a clean stop (or -h, or a -check that found no errors; warnings do not
-count), 1 if an input cannot be read, the server fails, or -check found errors, 2 for a usage
-error.
+count unless -strict), 1 if an input cannot be read, the server fails, or -check found errors (or,
+with -strict, any problem), 2 for a usage error.
 
 Flags:
 `
@@ -71,6 +71,7 @@ type flags struct {
 	db, postgres          string
 	config                string
 	check                 bool
+	strict                bool
 	journals              multi
 	topo, digest          string
 	sth, evidence, pubkey string
@@ -94,6 +95,7 @@ func Main(args []string, stdout, stderr io.Writer, stores Stores) int {
 	fs.Var(&f.journals, "journal", "exported journal (audit.ExportJournal as JSON) to read; repeatable")
 	fs.StringVar(&f.config, "config", "", "a flow config (.json, or .yaml/.yml) to show instead of runs: its declared graph and its problems; nothing runs")
 	fs.BoolVar(&f.check, "check", false, "with -config: serve nothing, print each problem as file:node: message, and exit 1 if any is an error")
+	fs.BoolVar(&f.strict, "strict", false, "with -check: exit 1 on a warning too")
 	run := fs.String("run", "", "run to open (default: the run list)")
 	fs.StringVar(&f.topo, "topology", "", "declared flow topology, JSON of flow.Topology(), to draw a flow run against instead of the topology the run journaled (flow:topology); for a run journaled before that record existed, or to check a run against another flow")
 	fs.StringVar(&f.digest, "digest", "", "flow.Digest() of the -topology flow, compared with the digest the run journaled (default: computed from -topology when it carries the digest's inputs)")
@@ -118,6 +120,9 @@ func Main(args []string, stdout, stderr io.Writer, stores Stores) int {
 	if f.check && f.config == "" {
 		return usage("-check needs -config")
 	}
+	if f.strict && !f.check {
+		return usage("-strict needs -check")
+	}
 	if f.config != "" {
 		if f.db != "" || f.postgres != "" || len(f.journals) > 0 || *run != "" || f.sth != "" || f.evidence != "" || f.topo != "" {
 			return usage("-config shows a flow definition; it takes none of the run flags")
@@ -128,6 +133,7 @@ func Main(args []string, stdout, stderr io.Writer, stores Stores) int {
 			return 1
 		}
 		if f.check {
+			c.Strict = f.strict
 			if Check(stdout, c) {
 				return 1
 			}

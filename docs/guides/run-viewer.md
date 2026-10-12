@@ -66,6 +66,7 @@ page is at `/run?id=<run>`, and the same view as JSON at `/run.json?id=<run>`.
 | `-need <k>`, `-approvers <a,b,c>` | The policy you expect (k of these approvers, in policy order). With them the signatures are verified against this policy, as `bide-audit verify-approvals -need -approvers` does, and a gate whose recorded policy differs fails. Need `-approver-keys`. |
 | `-config <file>` | A flow config (`.json`, or `.yaml`/`.yml`) to show instead of runs; see [Check a flow config](#check-a-flow-config). Takes none of the run flags. |
 | `-check` | With `-config`: serve nothing, print each problem as `file:node: message`, and exit 1 if any is an error. |
+| `-strict` | With `-check`: exit 1 on a warning too. |
 | `-addr <host:port>` | Where to listen: a loopback IP or `localhost`, with a port. Default `127.0.0.1:8484`. Any other host is refused. |
 
 Input files are read strictly, as `bide-audit` reads them (`audit.UnmarshalStrict`): a duplicate or
@@ -209,16 +210,19 @@ or arm it belongs to, with the full message in the Problems table and in each ma
 edge to a name no node declares draws that name as a dashed "not declared" node.
 
 ```sh
-bide-view -config flows/refund.yaml           # the page
-bide-view -config flows/refund.yaml -check    # for CI: no server, one line per problem
+cd examples/plan
+bide-view -config flows/refund.yaml                 # the page; no problems
+bide-view -config flows/refund-typo.yaml -check     # for CI: no server, one line per problem
 ```
+
+The screenshot below is `examples/plan/flows/refund-typo.yaml`, whose last edge names `reciept`.
 
 <picture><source media="(prefers-color-scheme: dark)" srcset="img/run-viewer-config-problem-dark.png"><img src="img/run-viewer-config-problem-light.png" alt="bide-view -config on a refund flow whose edge names an undeclared node, marked on the edge"></picture>
 
 With `-check` it prints `file:node: message` for a node's problem, `file:from->to: message` for an
 edge's or an arm's, and `file: message` for the config as a whole, and exits 1 if any is an error
-(0 otherwise; a warning is printed as `warning:` and does not fail the check, and an unreadable file
-exits 1, a usage error 2).
+(0 otherwise; a warning is printed as `warning:` and does not fail the check unless you add
+`-strict`; an unreadable file exits 1, a usage error 2).
 
 **Structural, from the command line.** The command cannot import your Go types, blocks or tools,
 so it checks what needs no Go code: the config reads as `plan.Load` reads it (strictly, version 1);

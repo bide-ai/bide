@@ -52,6 +52,21 @@ func TestCheckYAML(t *testing.T) {
 	if code := runview.Main([]string{"-config", good, "-check"}, &out, &errb, stores); code != 0 || out.Len() != 0 {
 		t.Fatalf("-check of a clean config = %d, output %q", code, out.String())
 	}
+	// A switch with no else is a warning: lenient -check passes it, -strict fails it.
+	warn := filepath.Join(dir, "warn.yaml")
+	if err := os.WriteFile(warn, []byte(strings.Replace(clean, "    else: done\n", "", 1)), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	out.Reset()
+	if code := runview.Main([]string{"-config", warn, "-check"}, &out, &errb, stores); code != 0 || !strings.Contains(out.String(), "warning: switch over") {
+		t.Fatalf("-check of a config with a warning = %d, output %q; want 0 and the warning", code, out.String())
+	}
+	if code := runview.Main([]string{"-config", warn, "-check", "-strict"}, &out, &errb, stores); code != 1 {
+		t.Fatalf("-check -strict of a config with a warning = %d, want 1", code)
+	}
+	if code := runview.Main([]string{"-config", warn, "-strict"}, &out, &errb, stores); code != 2 {
+		t.Fatalf("-strict without -check = %d, want 2", code)
+	}
 	if code := runview.Main([]string{"-config", good, "-db", "x"}, &out, &errb, stores); code != 2 {
 		t.Fatalf("-config with a run flag = %d, want 2", code)
 	}

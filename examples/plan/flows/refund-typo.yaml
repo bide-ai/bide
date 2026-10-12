@@ -1,0 +1,13 @@
+version: 1
+flow: refund
+entry: validate
+nodes:
+  - {name: validate, block: validate, safety: readonly}
+  - {name: charge, block: charge}
+  - {name: skip, block: skip}
+  - {name: receipt, block: receipt}
+wiring:
+  - switch: validate
+    when: [{pred: large, to: charge}]
+    else: skip
+  - edge: [charge, reciept]

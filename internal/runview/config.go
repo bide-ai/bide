@@ -17,6 +17,8 @@ type Config struct {
 	Name     string
 	Data     []byte
 	Registry *plan.Registry
+	// Strict makes Check fail on a warning as well as on an error (bide-view -check -strict).
+	Strict bool
 }
 
 // ConfigView is what the config page shows.
@@ -140,7 +142,7 @@ func configGraph(r plan.ConfigReport) *Graph {
 
 // Check writes c's problems as "file:node: message" lines (the node, "from->to" for an edge or
 // arm, or nothing for the config as a whole), warnings marked as such, and reports whether any
-// is an error.
+// is an error (or, with c.Strict, any problem at all).
 func Check(w io.Writer, c Config) bool {
 	r := plan.InspectConfig(c.Data, c.Registry)
 	for _, p := range r.Problems {
@@ -158,5 +160,5 @@ func Check(w io.Writer, c Config) bool {
 			fmt.Fprintf(w, "%s:%s: %s\n", c.Name, where, msg)
 		}
 	}
-	return r.Errors()
+	return r.Errors() || c.Strict && len(r.Problems) > 0
 }
