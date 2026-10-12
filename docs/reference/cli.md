@@ -18,11 +18,34 @@ and `help`, and its import graph is the standard library and the core module (se
 
 | Command | What it does |
 |---|---|
+| [`bide init`](#bide-init) | scaffold a project: a gated plan flow on SQLite, with evidence for bide audit |
 | [`bide demo`](#bide-demo) | kill an agent mid-payment and watch it not charge twice (no API key) |
 | [`bide view`](#bide-view) | a read-only local page for one run of a journal, or a flow config's graph |
 | [`bide check`](#bide-check) | check plan flow configs, for CI: one file:node: message line per problem |
 | [`bide audit`](#bide-audit) | produce and verify audit proofs offline |
 | [`bide version`](#bide-version) | print the version and the artifact formats bide audit reads (-json for JSON) |
+
+## bide init
+
+Scaffold a project: a gated plan flow on SQLite, with evidence for bide audit.
+
+```text
+usage: bide init [-module <path>] [-dev <bide checkout>] <dir>
+
+Writes a new project into dir, which must not exist or must be empty: main.go, main_test.go,
+flow.yaml, README.md, .gitignore and go.mod. Then: cd <dir> && go mod tidy && go run .
+
+  -dev string
+    	a bide checkout to build against (replace directives), for a bide built from source
+  -module string
+    	the module path (default: the directory's name)
+
+Exit status:
+  0  success
+  1  failure: an input cannot be read or the command failed; for check, an error was found
+     (with -strict, any problem)
+  2  usage error: a bad flag or argument; nothing was read
+```
 
 ## bide demo
 

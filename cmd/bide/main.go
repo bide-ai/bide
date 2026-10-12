@@ -1,5 +1,6 @@
 // Command bide is the bide command line: one program for everyone who does not import the library.
 //
+//	bide init refund               scaffold a project: a gated plan flow, ready for go run .
 //	bide demo                      kill an agent mid-payment and watch it not charge twice
 //	bide view -db run.db           a read-only local page for one run of a journal
 //	bide check flow.yaml           check a plan flow config, for CI
@@ -22,6 +23,7 @@ import (
 	"fmt"
 	"io"
 	"os"
+	"runtime/debug"
 	"strings"
 
 	"github.com/bide-ai/bide/internal/auditcli"
@@ -29,6 +31,18 @@ import (
 
 // version is the release version, set by a release build with -ldflags "-X main.version=v1.2.3".
 var version = ""
+
+// releaseVersion is the release this program was built from: the stamped version, or the module
+// version the go command records (go install ...@v0.14.0); "" for a build from source.
+func releaseVersion() string {
+	if version != "" {
+		return version
+	}
+	if bi, ok := debug.ReadBuildInfo(); ok && bi.Main.Version != "(devel)" {
+		return bi.Main.Version
+	}
+	return ""
+}
 
 // command is one bide subcommand.
 type command struct {

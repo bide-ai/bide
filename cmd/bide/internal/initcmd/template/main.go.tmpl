@@ -1,0 +1,302 @@
+// Command __NAME__ is a bide plan flow, scaffolded by bide init. It refunds an order:
+//
+//	assess (a model call) -> refund (a side effect, gated 2 of 3) -> notify
+//
+// flow.yaml declares the flow; this file registers a block for each node. go run . drives the run
+// in run.db: it pauses at the refund until two approvers sign, records two signed approvals,
+// resumes, refunds once, and writes evidence.json and approver-keys.json for an auditor. Run it
+// again and nothing runs twice. See README.md for what to try next.
+package main
+
+import (
+	"context"
+	"crypto/ed25519"
+	"crypto/rand"
+	_ "embed"
+	"encoding/hex"
+	"encoding/json"
+	"errors"
+	"fmt"
+	"os"
+	"path/filepath"
+	"strings"
+	"time"
+
+	"github.com/bide-ai/bide/agent"
+	"github.com/bide-ai/bide/agent/agenttest"
+	"github.com/bide-ai/bide/audit"
+	"github.com/bide-ai/bide/plan"
+	"github.com/bide-ai/bide/store/sqlite"
+	"go.yaml.in/yaml/v3"
+)
+
+//go:embed flow.yaml
+var flowYAML []byte
+
+const (
+	runID   = "refund-order-42"
+	gateKey = "node:refund" // the gated node's key: what approvers sign, and the call bide audit checks
+)
+
+// approvers are the gate's approvers, as flow.yaml declares them.
+var approvers = []string{"ops", "finance", "risk"}
+
+// Order is the flow's input, Refund the model's proposal (and what approvers sign), Receipt the
+// flow's output.
+type Order struct {
+	ID     string `json:"id"`
+	Amount int    `json:"amount"`
+	Note   string `json:"note"`
+}
+
+type Refund struct {
+	Order  string `json:"order"`
+	Amount int    `json:"amount"`
+	Reason string `json:"reason"`
+}
+
+type Receipt struct {
+	Order  string `json:"order"`
+	Amount int    `json:"amount"`
+	Note   string `json:"note"`
+}
+
+// model is the model the assess node calls. It is scripted, so the flow runs with no API key and
+// no network. To use a real model, return an adapter instead, for example:
+//
+//	import "github.com/bide-ai/bide/model/anthropic"
+//	return anthropic.New(os.Getenv("ANTHROPIC_API_KEY"))
+//
+// (or model/openai for any OpenAI-compatible endpoint). The prompt in register asks for the JSON
+// the Refund type reads.
+func model() agent.Model {
+	return agenttest.NewScriptedModel(agenttest.TextTurn(`{"order": "order-42", "amount": 120, "reason": "arrived damaged"}`))
+}
+
+// provider stands in for a payment provider: each refund is a line in refunds.log.
+type provider struct{ dir string }
+
+func (p provider) refund(r Refund) error {
+	f, err := os.OpenFile(filepath.Join(p.dir, "refunds.log"), os.O_APPEND|os.O_CREATE|os.O_WRONLY, 0o644)
+	if err != nil {
+		return err
+	}
+	defer f.Close()
+	_, err = fmt.Fprintf(f, "refunded %d on %s (%s)\n", r.Amount, r.Order, r.Reason)
+	return err
+}
+
+// refunds counts the refunds the provider holds.
+func (p provider) refunds() int {
+	b, err := os.ReadFile(filepath.Join(p.dir, "refunds.log"))
+	if err != nil {
+		return 0
+	}
+	return strings.Count(string(b), "\n")
+}
+
+// register registers a block for each node flow.yaml declares.
+func register(p provider) (*plan.Registry, error) {
+	reg := plan.NewRegistry()
+	return reg, errors.Join(
+		reg.RegisterModel[Order, Refund]("assess",
+			`Order {{.ID}} for {{.Amount}} dollars: {{.Note}}. Propose a refund as JSON: {"order": ..., "amount": ..., "reason": ...}.`),
+		// The default Safety: a side effect. bide runs it at most once, and if the process dies
+		// after it starts and before its result is journaled, the run halts instead of refunding
+		// again (resolve it with agent.ResolveHalt).
+		reg.RegisterStep("refund", func(_ context.Context, r Refund) (Refund, error) {
+			return r, p.refund(r)
+		}),
+		reg.RegisterStep("notify", func(_ context.Context, r Refund) (Receipt, error) {
+			return Receipt{Order: r.Order, Amount: r.Amount, Note: "refunded: " + r.Reason}, nil
+		}, plan.ReadOnly()), // no side effect: safe to run again on resume
+	)
+}
+
+// load loads flow.yaml against the registry, with the model and the approvers' keys bound.
+func load(p provider, k keys) (*plan.Flow[Order, Receipt], error) {
+	reg, err := register(p)
+	if err != nil {
+		return nil, err
+	}
+	config, err := yamlToJSON(flowYAML)
+	if err != nil {
+		return nil, err
+	}
+	return plan.Load[Order, Receipt](config, reg, plan.WithLoadedModel(model()), plan.WithLoadedApproverVerifiers(k.verifiers()))
+}
+
+func main() {
+	if err := story(context.Background(), "."); err != nil {
+		fmt.Fprintln(os.Stderr, "error:", err)
+		os.Exit(1)
+	}
+}
+
+// story drives the run in dir from wherever it is: it pauses at the gate, two approvers sign,
+// the run resumes and refunds once, and the evidence is written. A run that already finished is
+// read back from the journal, and nothing runs twice.
+func story(ctx context.Context, dir string) error {
+	k, err := loadKeys(dir)
+	if err != nil {
+		return err
+	}
+	p := provider{dir: dir}
+	flow, err := load(p, k)
+	if err != nil {
+		return err
+	}
+	store, err := sqlite.Open(filepath.Join(dir, "run.db"))
+	if err != nil {
+		return err
+	}
+	defer store.Close()
+	j, err := agent.NewJournal(store)
+	if err != nil {
+		return err
+	}
+	in := Order{ID: "order-42", Amount: 120, Note: "the parcel arrived damaged"}
+	for range 3 {
+		out, err := flow.Run(ctx, j, runID, in)
+		var pend *agent.ApprovalPending
+		switch {
+		case errors.As(err, &pend):
+			q := pend.Quorum
+			fmt.Printf("paused before %s: %d of %d approvals (pending %s)\n", pend.ToolUseID, q.Approved, q.Need, strings.Join(q.Pending, ", "))
+			if err := approve(ctx, j, k, q.Pending[0]); err != nil {
+				return err
+			}
+			continue
+		case err != nil:
+			return err
+		}
+		fmt.Printf("done: %s (%d)\nrefunds the provider holds: %d\n", out.Note, out.Amount, p.refunds())
+		return writeEvidence(ctx, j, k, dir)
+	}
+	return errors.New("the run did not finish")
+}
+
+// approve signs the recorded request (the node and its input) as approver id and records it.
+func approve(ctx context.Context, j *agent.Journal, k keys, id string) error {
+	recs, err := j.History(ctx, runID)
+	if err != nil {
+		return err
+	}
+	_, call, ok := agent.FindToolCall(recs, gateKey)
+	if !ok {
+		return errors.New("the run has not reached the gate")
+	}
+	subject := agent.ApprovalSubject{RunID: runID, ToolUseID: gateKey, ToolName: call.Name, Args: call.Args}
+	sig := ed25519.Sign(k[id], agent.ApprovalDecisionBytes(subject, id, true))
+	d := agent.Decision{RunID: runID, ToolUseID: gateKey, ApproverID: id, Approved: true, Alg: audit.AlgEd25519, Signature: sig}
+	if err := agent.SubmitDecision(ctx, j, d, agent.WithDecisionCheck(k.verifiers())); err != nil {
+		return err
+	}
+	fmt.Printf("%s approved %s\n", id, call.Args)
+	return nil
+}
+
+// writeEvidence writes evidence.json (the run's proofs and the gate's decisions, sealed with the log
+// key) and approver-keys.json (each approver's public key), the inputs of bide audit and bide view.
+func writeEvidence(ctx context.Context, j *agent.Journal, k keys, dir string) error {
+	logKey := audit.Ed25519Signer{Priv: k["log"]}
+	pkg, err := audit.Evidence(ctx, j, runID, logKey, time.Now().UnixNano())
+	if err != nil {
+		return err
+	}
+	acts, err := audit.ApprovalEvidence(ctx, j, runID, gateKey, pkg.STH)
+	if err != nil {
+		return err
+	}
+	pkg.Actions = append(pkg.Actions, acts...)
+	if err := pkg.Seal(logKey); err != nil {
+		return err
+	}
+	pub := map[string]string{}
+	for _, id := range approvers {
+		pub[id] = k.public(id)
+	}
+	if err := writeJSON(filepath.Join(dir, "evidence.json"), pkg); err != nil {
+		return err
+	}
+	if err := writeJSON(filepath.Join(dir, "approver-keys.json"), pub); err != nil {
+		return err
+	}
+	if err := os.WriteFile(filepath.Join(dir, "keys", "log.pub"), []byte(k.public("log")+"\n"), 0o644); err != nil {
+		return err
+	}
+	fmt.Println("wrote evidence.json, approver-keys.json and keys/log.pub")
+	return nil
+}
+
+// keys are the private keys of the log operator ("log") and each approver, generated on the first
+// run into keys/keys.json. Real approvers each hold their own key; one file is for the scaffold.
+type keys map[string]ed25519.PrivateKey
+
+func loadKeys(dir string) (keys, error) {
+	path := filepath.Join(dir, "keys", "keys.json")
+	seeds := map[string]string{}
+	b, err := os.ReadFile(path)
+	switch {
+	case errors.Is(err, os.ErrNotExist):
+		for _, id := range append([]string{"log"}, approvers...) {
+			seed := make([]byte, ed25519.SeedSize)
+			if _, err := rand.Read(seed); err != nil {
+				return nil, err
+			}
+			seeds[id] = hex.EncodeToString(seed)
+		}
+		if err := os.MkdirAll(filepath.Dir(path), 0o700); err != nil {
+			return nil, err
+		}
+		if err := writeJSON(path, seeds); err != nil {
+			return nil, err
+		}
+	case err != nil:
+		return nil, err
+	default:
+		if err := json.Unmarshal(b, &seeds); err != nil {
+			return nil, err
+		}
+	}
+	k := keys{}
+	for id, s := range seeds {
+		seed, err := hex.DecodeString(s)
+		if err != nil || len(seed) != ed25519.SeedSize {
+			return nil, fmt.Errorf("%s: key %q is not a hex ed25519 seed", path, id)
+		}
+		k[id] = ed25519.NewKeyFromSeed(seed)
+	}
+	return k, nil
+}
+
+func (k keys) public(id string) string {
+	return "ed25519:" + hex.EncodeToString(k[id].Public().(ed25519.PublicKey))
+}
+
+// verifiers resolves an approver id to its public key, for the gate and the decision check.
+func (k keys) verifiers() agent.ApproverVerifierFor {
+	return func(id string) (agent.ApproverVerifier, bool) {
+		if id == "log" || k[id] == nil {
+			return nil, false
+		}
+		return audit.Ed25519Verifier{Pub: k[id].Public().(ed25519.PublicKey)}, true
+	}
+}
+
+func writeJSON(path string, v any) error {
+	b, err := json.MarshalIndent(v, "", "  ")
+	if err != nil {
+		return err
+	}
+	return os.WriteFile(path, append(b, '\n'), 0o600)
+}
+
+// yamlToJSON converts flow.yaml to the JSON plan.Load reads.
+func yamlToJSON(data []byte) ([]byte, error) {
+	var v any
+	if err := yaml.Unmarshal(data, &v); err != nil {
+		return nil, err
+	}
+	return json.Marshal(v)
+}
