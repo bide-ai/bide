@@ -47,6 +47,52 @@ func decodeApprovalRequest(r Record, toolUseID string) (ApprovalRequest, bool) {
 	return q, true
 }
 
+// flowDecision checks a decision on toolUseID before it is recorded. It applies only to the gate of
+// a plan flow node: toolUseID is a node key and the run is a flow's (its recorded start is a flow's,
+// or it has none yet, as before a flow's first drive); an agent's tool call, whatever its ID looks
+// like, is not checked, and flow is false. For a flow node it refuses (ErrConfig) a decision when
+// the gate has recorded no request yet, since the node's input is not fixed until then, and
+// returns the request's journal position for staleDecision.
+func flowDecision(ctx context.Context, d *Journal, op, runID, toolUseID string) (reqSeq int64, flow bool, err error) {
+	if !planNodeKey(toolUseID) {
+		return 0, false, nil
+	}
+	start, ok, err := RecordedStart(ctx, d, runID)
+	if err != nil {
+		return 0, false, fmt.Errorf("%s: %w", op, err)
+	}
+	if ok && start.kind() != RunKindFlow {
+		return 0, false, nil
+	}
+	q, ok, err := d.getEntry(ctx, runID, ApprovalRequestStep(toolUseID))
+	if err != nil {
+		return 0, false, fmt.Errorf("%s: read %s (run %s): %w (%w)", op, ApprovalRequestStep(toolUseID), runID, err, ErrStorage)
+	}
+	if !ok {
+		return 0, false, fmt.Errorf("%s: run %s has not reached the approval gate of %s, so it records no request to decide on yet: %w", op, runID, toolUseID, ErrConfig)
+	}
+	return q.Seq, true, nil
+}
+
+// staleDecision reports (ErrConfig) a decision whose journal name was already taken by a record
+// written before the gate's request, at reqSeq: that record cannot count, and this decision, having
+// the same name, was not recorded. For a SingleApproval gate the name is the gate's one decision, so
+// the gate cannot pass; for an m-of-n gate it is this approver's identical decision, so their seat
+// is lost for this gate.
+func staleDecision(ctx context.Context, d *Journal, op, runID, toolUseID, name string, reqSeq int64, single bool) error {
+	e, ok, err := d.getEntry(ctx, runID, name)
+	if err != nil {
+		return fmt.Errorf("%s: read %s (run %s): %w (%w)", op, name, runID, err, ErrStorage)
+	}
+	if !ok || e.Seq > reqSeq {
+		return nil
+	}
+	if single {
+		return fmt.Errorf("%s: a decision on %s was recorded before the gate's request, so it cannot count, and it holds the gate's one decision: the gate cannot pass; cancel the run (agent.Cancel): %w", op, toolUseID, ErrConfig)
+	}
+	return fmt.Errorf("%s: this approver's identical decision on %s was recorded before the gate's request, so it cannot count and this one was not recorded: their seat is lost for this gate; it can still pass with the other approvers if Need is reachable, otherwise cancel the run (agent.Cancel): %w", op, toolUseID, ErrConfig)
+}
+
 // protocol:flows begin GRead GCount
 
 // flowGate evaluates the approval gate pol of the plan flow node named node, under its key key, in
@@ -58,8 +104,9 @@ func decodeApprovalRequest(r Record, toolUseID string) (ApprovalRequest, bool) {
 // m-of-n gate, one point read each), so a node whose gate passed costs one read on replay. With no
 // outcome recorded, the request is recorded (once; a recorded request whose node or input differs
 // from this drive's is ErrConfig), an m-of-n gate counts the journal (tallyGate, which records a
-// terminal tally before the node runs), and a gate with no outcome pauses. The drive that records
-// the request also records ApprovalWait, which no part of the engine reads.
+// terminal tally before the node runs), and a gate with no outcome pauses. Only decisions recorded
+// after the request count. A pause records ApprovalWait if it is missing; no part of the engine
+// reads it.
 func flowGate(ctx context.Context, d *Journal, runID, key, node string, args json.RawMessage, pol *ApprovalPolicy, verifierFor ApproverVerifierFor) (bool, error) {
 	if !planNodeKey(key) {
 		return false, fmt.Errorf("plan node %q: gate key %q is not a plan node key: %w", node, key, ErrConfig)
@@ -80,14 +127,26 @@ func flowGate(ctx context.Context, d *Journal, runID, key, node string, args jso
 		}
 	}
 
-	// GRead: a recorded outcome is final.
+	// GRead: a recorded outcome is final. A single decision counts only if it follows the gate's
+	// request in the journal: one recorded before it (node keys are predictable) was not made on
+	// the node's input.
 	if single {
-		r, ok, err := d.Get(ctx, runID, approvalStep(key))
+		e, ok, err := d.getEntry(ctx, runID, approvalStep(key))
 		if err != nil {
 			return false, fmt.Errorf("read %s (run %s): %w (%w)", approvalStep(key), runID, err, ErrStorage)
 		}
-		if ok && r.Kind == StepApproval && r.Approver() == "" {
-			return r.Approved, nil
+		if ok {
+			q, qok, err := d.getEntry(ctx, runID, ApprovalRequestStep(key))
+			if err != nil {
+				return false, fmt.Errorf("read %s (run %s): %w (%w)", ApprovalRequestStep(key), runID, err, ErrStorage)
+			}
+			r, derr := decodeStored(runID, approvalStep(key), e.Data)
+			if derr != nil {
+				return false, derr
+			}
+			if qok && q.Seq < e.Seq && r.Kind == StepApproval && r.Approver() == "" {
+				return r.Approved, nil
+			}
 		}
 	} else {
 		r, ok, err := d.Get(ctx, runID, ApprovalTallyStep(key))
@@ -106,7 +165,7 @@ func flowGate(ctx context.Context, d *Journal, runID, key, node string, args jso
 	if err != nil {
 		return false, fmt.Errorf("plan node %q: encode the approval request: %w (%w)", node, err, ErrConfig)
 	}
-	got, fresh, err := d.putNew(ctx, runID, ApprovalRequestStep(key), Record{Kind: StepValue, Result: b})
+	got, _, err := d.putNew(ctx, runID, ApprovalRequestStep(key), Record{Kind: StepValue, Result: b})
 	if err != nil {
 		return false, err
 	}
@@ -122,7 +181,7 @@ func flowGate(ctx context.Context, d *Journal, runID, key, node string, args jso
 	var quorum *ApprovalTally
 	if !single {
 		s := ApprovalSubject{RunID: runID, ToolUseID: key, ToolName: node, Args: req.Args}
-		t, final, err := tallyGate(ctx, d, runID, s, pol, verifierFor)
+		t, final, err := tallyGate(ctx, d, runID, s, pol, verifierFor, ApprovalRequestStep(key))
 		if err != nil {
 			return false, err
 		}
@@ -131,14 +190,14 @@ func flowGate(ctx context.Context, d *Journal, runID, key, node string, args jso
 		}
 		quorum = &t
 	}
-	if fresh {
-		w := ApprovalWait{ToolUseID: key, ToolName: node, Single: single}
-		if !single {
-			w.Need, w.Approvers = pol.Need, slices.Clone(pol.Approvers)
-		}
-		if b, err := json.Marshal(w); err == nil {
-			_, _ = d.put(ctx, runID, ApprovalPendingStep(key), Record{Kind: StepValue, Result: b})
-		}
+	// The pause note, if it is missing (one Insert that keeps a recorded one), so a crash between
+	// the request and the note does not hide the wait from a viewer.
+	w := ApprovalWait{ToolUseID: key, ToolName: node, Single: single}
+	if !single {
+		w.Need, w.Approvers = pol.Need, slices.Clone(pol.Approvers)
+	}
+	if b, err := json.Marshal(w); err == nil {
+		_, _ = d.put(ctx, runID, ApprovalPendingStep(key), Record{Kind: StepValue, Result: b})
 	}
 	return false, &ApprovalPending{RunRef: RunRef{RunID: runID, RootRunID: runID}, ToolUseID: key, ToolName: node, Args: req.Args, Quorum: quorum}
 }

@@ -114,8 +114,23 @@ iteration, with this input.
    evidence and the recount all read the subject from the journal. A later drive whose node or input
    differs from the recorded request is `ErrConfig`; the digest check already refuses a resume under
    another flow, so this guards the input encoding.
-2. `approval-pending:<node key>`: `ApprovalWait`, written by the drive that recorded the request.
-   Informational, as for an agent.
+   **Input binding.** Unlike a model's tool-use ID, a node key can be known before the run reaches
+   the gate. The gate therefore counts only decisions recorded after the request (by journal
+   order: an m-of-n gate counts the records after it, and a `SingleApproval` gate honors
+   `Approve`'s record only if it follows it), and each counted signature verifies over the
+   request's input. `Approve` and `SubmitDecision` refuse a plan node key with no request yet
+   (`ErrConfig`), in a flow's run only: the run's recorded start decides, not the ID's shape, so an
+   agent's model-chosen tool-use ID that looks like `node:x` keeps the agent's rules. A decision
+   written into the journal before the request by other means is never counted, and keeps its
+   name: decision names are first-writer-wins and ed25519 signatures are deterministic, so the
+   approver's identical decision afterwards is not recorded, and `Approve` and `SubmitDecision`
+   report that (`ErrConfig`) instead of returning nil. For a `SingleApproval` gate the name is the
+   gate's one decision, so the gate cannot pass (it fails closed) and the run is cancelled; for an
+   m-of-n gate that approver's seat is lost for the gate, which passes with the others if `need` is
+   still reachable and is otherwise cancelled. `flows/limits/gate-early-stuck` states this limit. Found by the adversarial review of #195;
+   `flows/regress/gate-request-order` keeps it from coming back.
+2. `approval-pending:<node key>`: `ApprovalWait`, written on a pause that finds it missing (so a
+   crash between the request and the note does not hide the wait). Informational, as for an agent.
 3. The decisions: `approval:<node key>` (`Approve`, for `SingleApproval`), or one
    `approval:<node key>:<approver>:<digest>` record per `SubmitDecision`.
 4. `approval-tally:<node key>`: the terminal tally, recorded before the node runs, never on a pause.
@@ -166,8 +181,10 @@ does not verify, as a denied tool call's does not.
 **Model.** `spec/tla/flows` (model 7) adds the gate before each gated node's Step and approvers who
 decide at any time: `GateHeld` (a gated body never runs with fewer than Need approvals for its key,
 across crashes, error replies, two drivers and the resolver), `GatedResults` and `TallySound`. The
-regressions `gate-missing` (no gate check) and `gate-unscoped` (a per-node key in a loop) fail
-`GateHeld`. The counting rule over signed records is model 1b's.
+regressions `gate-missing` (no gate check), `gate-unscoped` (a per-node key in a loop) and
+`gate-request-order` (a decision recorded before the request counted) fail `GateHeld`. The counting
+rule over signed records, and that a counted signature binds the request's input, are model 1b's
+and the Go tests' (`plan/rev_gate_test.go`, `plan/gate_test.go`), not model 7's.
 
 ## Original design
 

@@ -12,21 +12,36 @@ import (
 
 // protocol:lifecycle begin OWrite
 // protocol:claims begin Approve1
+// protocol:flows begin ADecide
 
 // Approve durably records a human approve/deny decision for a tool call (HITL). It is
 // idempotent: the first decision for a (runID, toolUseID) wins. After approving, re-run
 // the agent with the pause's RootRunID and it resumes past the *ApprovalPending pause. The
-// decision survives a crash because it's a journaled step like any other.
+// decision survives a crash because it's a journaled step like any other. For a plan flow node's
+// gate (toolUseID a node key, in a flow's run) the run must have recorded the gate's request (it
+// paused there): Approve refuses one with none (ErrConfig), and the gate honors only a decision that
+// follows it; a decision recorded before the request under the same name is reported (ErrConfig),
+// since it holds the gate's one decision and the gate cannot pass.
 func Approve(ctx context.Context, d *Journal, runID, toolUseID string, approved bool) error {
 	if runID == "" {
 		return fmt.Errorf("Approve: empty runID: %w", ErrConfig)
 	}
-	_, err := d.do(ctx, runID, approvalStep(toolUseID), func(context.Context) (Record, error) {
+	reqSeq, flow, err := flowDecision(ctx, d, "Approve", runID, toolUseID)
+	if err != nil {
+		return err
+	}
+	if _, err := d.do(ctx, runID, approvalStep(toolUseID), func(context.Context) (Record, error) {
 		return Record{Kind: StepApproval, ToolUseID: toolUseID, Approved: approved}, nil
-	})
-	return err
+	}); err != nil {
+		return err
+	}
+	if flow {
+		return staleDecision(ctx, d, "Approve", runID, toolUseID, approvalStep(toolUseID), reqSeq, true)
+	}
+	return nil
 }
 
+// protocol:flows end
 // protocol:claims end
 // protocol:lifecycle end
 

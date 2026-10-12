@@ -55,14 +55,15 @@ func (a *Agent) quorumTally(ctx context.Context, runID string, tu ToolUse, pol *
 	if _, _, err := approverSeats(*pol, a.approverVerifiers); err != nil {
 		return ApprovalTally{}, false, fmt.Errorf("agent: tool %q: %w", tu.Name, err)
 	}
-	return tallyGate(ctx, a.store, runID, ApprovalSubject{RunID: runID, ToolUseID: tu.ID, ToolName: tu.Name, Args: tu.Args}, pol, a.approverVerifiers)
+	return tallyGate(ctx, a.store, runID, ApprovalSubject{RunID: runID, ToolUseID: tu.ID, ToolName: tu.Name, Args: tu.Args}, pol, a.approverVerifiers, "")
 }
 
 // tallyGate is the m-of-n count over runID's journal for the gated call s, after the caller has
 // validated pol and its seats: the recorded terminal tally if there is one, else TallyApprovals
 // over the journal, recorded under ApprovalTallyStep(s.ToolUseID) once it is terminal. An agent's
-// tool call (quorumTally) and a plan flow node (flowGate) both count through it.
-func tallyGate(ctx context.Context, store *Journal, runID string, s ApprovalSubject, pol *ApprovalPolicy, verifierFor ApproverVerifierFor) (ApprovalTally, bool, error) {
+// tool call (quorumTally) and a plan flow node (flowGate) both count through it. With since set
+// (a flow node's request), only the records after the one named since are counted.
+func tallyGate(ctx context.Context, store *Journal, runID string, s ApprovalSubject, pol *ApprovalPolicy, verifierFor ApproverVerifierFor, since string) (ApprovalTally, bool, error) {
 	recs, err := store.History(ctx, runID)
 	if err != nil {
 		return ApprovalTally{}, false, fmt.Errorf("load history %s: %w (%w)", runID, err, ErrStorage)
@@ -75,6 +76,13 @@ func tallyGate(ctx context.Context, store *Journal, runID string, s ApprovalSubj
 				return ApprovalTally{}, false, err
 			}
 			return t, true, nil
+		}
+	}
+	if since != "" {
+		if i := slices.IndexFunc(recs, func(r Record) bool { return r.Name == since }); i >= 0 {
+			recs = recs[i+1:]
+		} else {
+			recs = nil
 		}
 	}
 	tally, _ := TallyApprovals(recs, s, *pol, verifierFor)

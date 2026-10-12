@@ -224,7 +224,18 @@ out, err := flow.Run(ctx, j, runID, in) // runs the node once 2 of 3 have approv
 
 - **The same records and rule.** The gate records the request (`approval-request:<node key>`, the
   node and its input) the first time it is reached, counts decisions with `agent.TallyApprovals`,
-  and records its terminal tally (`approval-tally:<node key>`) before the node runs. A
+  and records its terminal tally (`approval-tally:<node key>`) before the node runs.
+- **Decisions follow the request.** Node keys are predictable, so a decision counts only if it is
+  recorded after the gate's request, and its signature must verify over the input the request
+  records: an approver decides on the node's actual input. `agent.Approve` and
+  `agent.SubmitDecision` refuse (`ErrConfig`) a decision on a node key whose gate has recorded no
+  request yet; in a loop, each iteration's key gets its request when that iteration reaches the gate.
+  (This applies to a flow's runs; an agent's tool call keeps its rules whatever its ID looks like.)
+  A decision written into the journal before the request by other means never counts and keeps its
+  name: the approver's identical decision afterwards is not recorded, and `Approve` or
+  `SubmitDecision` returns `ErrConfig` saying so. For a `SingleApproval` gate that blocks the gate
+  (cancel the run with `agent.Cancel`); for an m-of-n gate that approver's seat is lost for the gate,
+  which can still pass with the others if `need` is reachable, and otherwise must be cancelled. A
   `SingleApproval` gate is decided with `agent.Approve(ctx, j, pend.RunID, pend.ToolUseID, ok)`.
 - **A denial stops the run.** A gate whose quorum can no longer be reached (or an `Approve(false)`)
   never runs the node: `Run` returns an error wrapping `plan.ErrApprovalDenied`, and so does every
@@ -245,7 +256,7 @@ out, err := flow.Run(ctx, j, runID, in) // runs the node once 2 of 3 have approv
 `examples/approval/flow` runs the whole story from a config: the pause, two approvals, one refund,
 and the offline check.
 
-<picture><source media="(prefers-color-scheme: dark)" srcset="./img/flow-gate-approved-dark.png"><img src="./img/flow-gate-approved-light.png" alt="bide-view on a gated refund flow: the refund node approved 2 of 3, signatures verified"></picture>
+![bide-view on a gated refund flow: the refund node approved 2 of 3, signatures verified](./img/flow-gate-approved-dark.png)
 
 ## Cryptographic conformance
 

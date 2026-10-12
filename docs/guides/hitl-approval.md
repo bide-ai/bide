@@ -281,7 +281,12 @@ key (`node:<name>`, or `node:iter:<n>:<name>` in a loop body, where each iterati
 own) and its `Args` the node's input, so approvers sign `pend.Subject()` and record decisions with
 `SubmitDecision` (or `Approve` for `SingleApproval`) exactly as above. The gate records the node and
 its input under `approval-request:<node key>` before the first pause, in place of the model turn
-that requests a tool call, and its terminal tally before the node runs. A denial stops the flow with
+that requests a tool call, and its terminal tally before the node runs. Only decisions recorded
+after that request count, and `Approve` and `SubmitDecision` refuse a node key that has none yet
+(`ErrConfig`), since node keys, unlike tool-use IDs, can be guessed before the run gets there. A
+decision recorded before the request anyway (written directly) never counts, and the approver's
+identical decision afterwards returns `ErrConfig`: see [Flows](flows.md#approval-gates-on-nodes) for
+what that means for the gate. A denial stops the flow with
 `plan.ErrApprovalDenied`. Evidence and `bide-audit verify-approvals` take the node's key as the call.
 
 ## Proving the gate held
