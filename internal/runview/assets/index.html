@@ -1,0 +1,11 @@
+{{define "head"}}<!doctype html>
+<html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1">
+<title>{{.}}</title><link rel="stylesheet" href="/assets/style.css"></head>
+<body><header class="top"><a class="brand" href="/">bide-view</a><span class="ro">read-only</span></header><main>{{end}}
+{{define "foot"}}</main></body></html>{{end}}
+{{define "index.html"}}{{template "head" "Runs"}}
+<h1>Runs</h1>
+{{if .Err}}<p class="bad">Listing failed: {{.Err}}</p>{{end}}
+{{if .Runs}}<ul class="runs">{{range .Runs}}<li><a href="/run?id={{.}}">{{.}}</a></li>{{end}}</ul>
+{{else}}<p class="muted">No runs to list. This store may not list its runs; open one with -run.</p>{{end}}
+{{template "foot"}}{{end}}

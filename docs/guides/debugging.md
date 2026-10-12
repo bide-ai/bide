@@ -172,6 +172,53 @@ flowchart TD
   n4 --> done([done])
 ```
 
+## View a run in the browser: `bide-view`
+
+`bide-view` (in the `store/sqlite` module) serves a read-only page for one run, on a loopback
+address only (default `127.0.0.1:8484`). It opens the SQLite file read-only
+(`sqlite.OpenReadOnly`) or reads exported journals (`-journal`, from `audit.ExportJournal`), and
+lists the runs when no `-run` is given. The page needs no network: the binary serves its HTML, CSS
+and graph.
+
+- **Agent run:** a timeline of model turns, tool calls with the `Safety` their result records
+  (read-only, idempotent, side effect), attempt markers, approval decisions with each gate's k-of-n
+  tally, halts (with the `agent.HaltRef` to resolve each), and the end state.
+- **Plan flow:** the declared topology with the run's path drawn over it: nodes that ran, the last
+  node, a halted node, the Switch arm taken, and conformance. The journal records a flow's name and
+  topology digest, not its topology, so pass the topology as JSON of `flow.Topology()` (`-topology`)
+  and, to compare digests, `flow.Digest()` (`-digest`). From the command line the conformance check
+  is structural (node names, Switch arms, the digest); `plan.Conform` also replays routing and loops.
+- **Audit proof:** with `-sth` (a signed tree head) or `-evidence` (an evidence package) and the
+  log's `-pubkey`, the page shows whether the journal verifies, using the audit package's verifiers
+  (`audit.ProveRecord` and `ProofBundle.Verify`, `EvidencePackage.Verify`), as `bide-audit` does.
+
+The refund demo in `examples/approval` crashes mid-refund, shows the halt, resolves it, and shows
+the run again with its evidence verifying:
+
+```sh
+go install github.com/bide-ai/bide/store/sqlite/cmd/bide-view@latest
+cd examples/approval
+go run . run -db a.db                       # the refund gate pauses for 2 of 3 approvers
+go run . approve -db a.db -as ops
+go run . approve -db a.db -as finance
+go run . run -db a.db -crash                # the refund fires; the process dies before its result is journaled
+go run . run -db a.db                       # the resume halts: outcome unknown
+bide-view -db a.db -run refund-42           # the halt, its HaltRef, and the 2-of-3 gate
+go run . resolve -db a.db                   # ResolveHalt from the provider's record, then finish
+go run . evidence -db a.db -out ev.json     # prints the log public key
+bide-view -db a.db -run refund-42 -evidence ev.json -pubkey <log public key>
+```
+
+For a plan flow, `examples/plan` writes its topology with `-topology-out`:
+
+```sh
+cd examples/plan
+go run . -db f.db -crash during-reserve -topology-out topo.json   # prints the flow digest
+bide-view -db f.db -run triage-demo -topology topo.json -digest <flow digest>
+```
+
+The page's data is also served as JSON at `/run.json?id=<run>`.
+
 ## 4 · Crash recovery: `Lister` and `Recover`
 
 Replay (section 1) re-drives one run you already have the ID for. After a real crash the

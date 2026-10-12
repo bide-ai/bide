@@ -37,6 +37,7 @@
 //	-resolve       on resume: if Run halts at the side-effect-free finalize step, record
 //	               finalize's result with flow.ResolveHalt (the documented resolution of a
 //	               node's halt) and re-run to completion
+//	-topology-out PATH  write flow.Topology() as JSON to PATH, for bide-view -topology
 //	-config        build the flow by plan.Load-ing the declarative config (declarativeConfig) instead
 //	               of the code builder. The config-loaded flow uses the SAME node names and
 //	               topology as the code-built flow, so it produces the SAME journal keys and
@@ -102,6 +103,7 @@ type config struct {
 	crash    string
 	resolve  bool
 	loadFlow bool
+	topoOut  string
 }
 
 func main() {
@@ -116,6 +118,12 @@ func main() {
 	flow, err := selectFlow(cfg)
 	if err != nil {
 		fatal(err)
+	}
+
+	if cfg.topoOut != "" {
+		if err := writeTopology(cfg.topoOut, flow.Topology(), flow.Digest()); err != nil {
+			fatal(err)
+		}
 	}
 
 	// The declared topology, before any run: the diagram the flow author wrote.
@@ -461,6 +469,20 @@ func appendWitness(path, line string) {
 	}
 }
 
+// writeTopology writes the declared topology as JSON, the input bide-view draws a flow run
+// against, and prints the flow's digest, which bide-view -digest compares with the journaled one.
+func writeTopology(path string, t plan.Topology, digest string) error {
+	b, err := json.MarshalIndent(t, "", "  ")
+	if err != nil {
+		return err
+	}
+	if err := os.WriteFile(path, b, 0o644); err != nil {
+		return err
+	}
+	fmt.Printf("wrote %s (flow digest %s)\n", path, digest)
+	return nil
+}
+
 // parseFlags reads the run parameters. Defaults make `go run .` a clean demo.
 func parseFlags() config {
 	var cfg config
@@ -470,6 +492,7 @@ func parseFlags() config {
 	flag.IntVar(&cfg.amount, "amount", 500, "order amount; over 100 routes to the reserving rush arm")
 	flag.StringVar(&cfg.crash, "crash", "", `inject a crash: "during-reserve" or "before-finalize"`)
 	flag.BoolVar(&cfg.resolve, "resolve", false, "on resume, resolve a finalize halt out of band and complete")
+	flag.StringVar(&cfg.topoOut, "topology-out", "", "write the declared flow.Topology() as JSON here, for bide-view -topology (the digest is printed)")
 	flag.BoolVar(&cfg.loadFlow, "config", false, "build the flow by plan.Load-ing the declarative config instead of the code builder (same topology, same journal keys, same Digest)")
 	flag.Parse()
 	return cfg

@@ -21,6 +21,7 @@ journal format can change between pre-releases without a version bump. Curated h
 
 ### Added
 
+- `bide-view` (`store/sqlite/cmd/bide-view`): a read-only local page for one run, served on a loopback address only: an agent run's timeline (model turns, tool calls with their Safety, attempts, approvals with k-of-n status, halts with their `HaltRef`, end state), a plan flow's declared topology with the run's path and conformance, and whether the journal verifies against a signed tree head or evidence package. `sqlite.OpenReadOnly` opens a journal without writing to it. `examples/approval` gains `run -crash` and `resolve`, and `examples/plan` gains `-topology-out`, for the demo in the debugging guide.
 - A LangGraph crash-injection harness for the chaos benchmark, on SQLite and on Postgres (`PostgresSaver`) ([#166], [#167]).
 - Design only, nothing implemented: a design note on probes for unknown outcomes and TLA+ model 13 (`spec/tla/probes`), which found that a provider's void must be monotonic: a void that sets rather than raises the watermark lets a stalled prober re-open an attempt a newer prober voided ([#181], [#182]).
 

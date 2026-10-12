@@ -1,0 +1,46 @@
+{{define "run.html"}}{{template "head" .RunID}}
+<h1>{{.RunID}} <span class="pill kind">{{.Kind}}{{if .Flow}}: {{.Flow}}{{end}}</span> <span class="pill state-{{.State}}">{{.StateText}}</span></h1>
+{{if .Input}}<p class="input">{{.Input}}</p>{{end}}
+
+<section class="cards">
+  <div class="card"><h3>End state</h3><p><b>{{.StateText}}</b>{{if .Terminal}}: {{.Terminal}}{{end}}</p><p class="muted">{{.Records}} journal records{{if .LastNode}}; last node <code>{{.LastNode}}</code>{{end}}</p>
+  {{if .FinalText}}<p class="muted">Last model text: {{.FinalText}}</p>{{end}}</div>
+  <div class="card"><h3>Audit proof</h3>{{with .Proof}}
+    <p class="{{if .OK}}good{{else}}bad{{end}}"><b>{{if .OK}}Verified{{else}}Not verified{{end}}</b> ({{.Source}}): {{.Summary}}</p>
+    {{range .Problems}}<p class="bad small">{{.}}</p>{{end}}
+    {{if .Items}}<ul class="small">{{range .Items}}<li>{{.}}</li>{{end}}</ul>{{end}}
+  {{else}}<p class="muted">No signed head or evidence package given for this run (-sth or -evidence, with -pubkey).</p>{{end}}</div>
+  {{if .Conform}}<div class="card"><h3>Conformance</h3>{{with .Conform}}
+    <p class="{{if .OK}}good{{else}}bad{{end}}"><b>{{if .OK}}Conforms{{else}}Diverges{{end}}</b> ({{.Method}}; digest {{.Digest}})</p>
+    {{range .Diffs}}<p class="bad small"><code>{{.}}</code></p>{{end}}
+    {{if eq .Method "structural"}}<p class="muted small">Structural: node names, Switch arms and the digest. plan.Conform also replays routing and loops; embed the viewer with the Flow for it.</p>{{end}}
+  {{end}}</div>{{end}}
+</section>
+
+{{if .Halts}}<section><h2>Halts</h2>
+{{range .Halts}}<div class="halt"><p><b>Outcome unknown:</b> {{.Op}} <code>{{.ID}}</code>{{if .ToolName}} ({{.ToolName}}){{end}}. Its attempt marker <code>{{.Marker}}</code> is live with no result{{if not .AttemptedAt.IsZero}}, attempted {{.AttemptedAt.Format "2006-01-02 15:04:05 UTC"}}{{end}}. A resume returns <code>*agent.OutcomeUnknown</code> until the outcome is recorded:</p>
+<pre>agent.ResolveHalt(ctx, journal,
+  {{.Ref}},
+  agent.Outcome{Result: ...})</pre></div>{{end}}
+</section>{{end}}
+
+{{if .Graph}}<section><h2>Flow</h2>
+<div class="legend"><span class="lg done">ran</span><span class="lg halted">halted</span><span class="lg attempted">attempted</span><span class="lg not-reached">not reached</span><span class="lg lastk">last node</span><span class="lg taken">path taken</span></div>
+<div class="graphwrap">{{svg .Graph.SVG}}</div>
+<details><summary>Mermaid text</summary><pre>{{.Graph.Mermaid}}</pre></details>
+</section>{{end}}
+
+{{if .Gates}}<section><h2>Approval gates</h2>
+<table><thead><tr><th>Call</th><th>Gate</th><th>Approved by</th><th>Denied by</th><th>Pending</th><th>Status</th></tr></thead><tbody>
+{{range .Gates}}<tr><td><code>{{.ToolUseID}}</code> {{.ToolName}}</td><td>{{if .Single}}one decision{{else}}{{.Need}} of {{len .Approvers}}{{if .Approvers}} ({{join .Approvers ", "}}){{end}}{{end}}</td>
+<td>{{join .ApprovedBy ", "}}</td><td>{{join .DeniedBy ", "}}</td><td>{{join .Pending ", "}}</td><td>{{.Status}}</td></tr>{{end}}
+</tbody></table></section>{{end}}
+
+{{if .Notes}}<section><h2>Not in the journal</h2><ul>{{range .Notes}}<li class="muted">{{.}}</li>{{end}}</ul></section>{{end}}
+
+<section><h2>Timeline</h2>
+<ol class="timeline">{{range .Events}}<li class="ev {{.Class}}"><span class="seq">{{.Seq}}</span><div><p class="title">{{.Title}}{{range .Badges}} <span class="badge">{{.}}</span>{{end}}</p>
+{{if .Detail}}<pre class="detail">{{.Detail}}</pre>{{end}}<p class="name"><code>{{.Name}}</code> · {{.Kind}}</p></div></li>{{end}}</ol>
+</section>
+<p class="muted small"><a href="/run.json?id={{.RunID}}">This view as JSON</a></p>
+{{template "foot"}}{{end}}
