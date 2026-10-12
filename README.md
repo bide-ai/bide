@@ -10,118 +10,107 @@
   <img src="assets/quote-rule-left.png" width="72" alt="">&nbsp;&nbsp;<em>A pause you can clear beats a double-fire you can't.</em>&nbsp;&nbsp;<img src="assets/quote-rule-right.png" width="72" alt="">
 </p>
 
-One append-only journal, four guarantees no other agent framework pairs in a single library:
+One append-only journal gives four guarantees:
 
-- **Side effects fire at most once**, even across a crash. Not at-least-once you have to make idempotent.
-- **Thousands of concurrent durable runs in one process.** A library you import, not a cluster you operate.
-- **A cryptographically verifiable audit trail.** RFC 6962 Merkle proofs, checkable offline without trusting the vendor.
-- **Provably convergent shared state.** Machine-checked, not eventual-consistency hope.
+- Side effects fire at most once, even across a crash, so they need not be idempotent.
+- Thousands of concurrent durable runs in one process. It is a library; there is no cluster to run.
+- A cryptographically verifiable audit trail: RFC 6962 Merkle proofs, checkable offline without trusting the vendor.
+- Provably convergent shared state: the convergence conditions are machine-checked.
 
-You get all four from one mechanism, not four integrated systems, as a plain-Go library. Built for agents that move money, touch records, or act under audit.
+All four come from the same journal, in a plain-Go library, for agents that move money, change records, or act under audit.
 
-**Built for ambient agents.** An ambient agent runs unattended: it sleeps until a trigger (a
-schedule or an event) wakes it, works over hours or days, and pauses to ask a human only when it
-needs judgment, with nobody watching each step. That is exactly when at-most-once, HA resume, and a
-verifiable trail stop being nice-to-haves; a background agent that acts unobserved has to be safe to
-crash, safe to re-trigger, and provable after the fact. Bide ships the durable lifecycle for
-this: durable `Sleep`/`WaitUntil` timers, a pluggable `Waker` for time- or event-driven wakeups, and
+**Ambient agents.** An ambient agent runs unattended: it sleeps until a trigger (a schedule or an
+event) wakes it, works over hours or days, and pauses to ask a human only when it needs judgment,
+with nobody watching each step. Such an agent has to be safe to crash, safe to re-trigger, and
+provable afterwards. Bide provides the durable lifecycle for this: durable `Sleep`/`WaitUntil` timers, a pluggable `Waker` for time- or event-driven wakeups, and
 durable `Interrupt`/`AnswerInterrupt` for typed human-in-the-loop, all on the same journal. You bring the
-trigger source and the oversight UI; the runtime keeps every run correct across sleeps, crashes, and
+trigger source and the oversight UI; the runtime keeps each run correct across sleeps, crashes and
 node handoffs.
 
-Status: **working v0**, live-verified end-to-end. Requires **Go 1.27**.
+Status: working v0, live-verified end to end. Requires Go 1.27.
 
 <p align="center"><img src="assets/divider-wave-2.png" width="100%" alt=""></p>
 
 ## One journal, four guarantees
 
-Everyone ships an agent loop; ours is ~40 lines. What matters is the substrate underneath it: a
-durable, append-only journal that all four guarantees are *derived from*, so you get them from
-one mechanism instead of integrating four systems.
+The agent loop is about 40 lines. The four guarantees come from the durable, append-only journal
+underneath it.
 
-### 1 · At most once, not at least once (measured, not claimed)
+### 1 · At most once (measured)
 
-Temporal, DBOS, LangGraph, trpc-agent-go, ADK, eino all resume by **re-running**: activities/steps must be
-idempotent, so a non-idempotent side effect (a charge, an email, a shipment) can fire twice
-across a crash. We built a **fair** crash-injection benchmark ([`chaos/`](chaos), cross-SDK
-results in [`benchmarks/`](benchmarks/README.md)) that drives a non-idempotent `charge` through
-every crash point. The result:
+Temporal, DBOS, LangGraph, trpc-agent-go, ADK and eino resume by re-running: activities or steps
+must be idempotent, so a non-idempotent side effect (a charge, an email, a shipment) can fire twice
+across a crash. A crash-injection benchmark ([`chaos/`](chaos), cross-SDK results in
+[`benchmarks/`](benchmarks/README.md)) drives a non-idempotent `charge` through every crash point:
 
 <p align="center"><img src="assets/chaos-results.png" width="600" alt="Crash-injection benchmark: bide never repeated the charge; LangGraph (SQLite and Postgres), adk-go, trpc-agent-go, langchaingo and eino each charged again after a crash."></p>
 
 Each framework either never repeated the charge or charged again; the worst-case count depends on
-how often a framework saves state, so it is not a ranking. The competitor adapters are verified
-*not* to be strawmen: each passes a fairness test (a run with no crash charges exactly once, and
-where the framework has a resume, it genuinely works), and LangGraph runs in its most durable
-documented mode. The piece none of them have: a durable **attempt
-marker** written before a non-idempotent write, and **halt-on-unknown-outcome** on resume: if a
-write's result was never journaled, the run stops for a human decision instead of guessing.
+how often a framework saves state, so it is not a ranking. Each competitor adapter passes a fairness test (a run with no crash charges exactly once, and where
+the framework has a resume, it works), and LangGraph runs in its most durable documented mode. What
+none of the benchmarked frameworks has: a durable attempt marker written before a non-idempotent
+write, and halt-on-unknown-outcome on resume: if a write's result was never journaled, the run
+stops for a human decision.
 
 ### When the outcome is unknown, it stops
 
-The hard case in at-most-once is not the crash you can see, it is the one you cannot: a side
-effect whose call left the process but whose result never reached the journal. The attempt marker
-lets a resumed run tell "never started" from "started, outcome unknown," and it resolves the
-unknown case by a fixed hierarchy, never a guess:
+The hard case is a side effect whose call left the process but whose result never reached the
+journal. The attempt marker lets a resumed run tell "never started" from "started, outcome
+unknown", and the unknown case is resolved in a fixed order:
 
 <p align="center">
-  <img src="assets/resolution-ladder.png" width="820" alt="Unknown-outcome resolution ladder: a retry-safe effect auto-retries and the provider dedupes; an effect that left a queryable record is resolved automatically by a reconciler; a genuinely unknowable outcome halts and waits for a human. Under ultimate ambiguity, it stops.">
+  <img src="assets/resolution-ladder.png" width="820" alt="Unknown-outcome resolution ladder: a retry-safe effect auto-retries and the provider dedupes; an effect that left a queryable record is resolved automatically by a reconciler; an outcome that cannot be known halts and waits for a human. Under ultimate ambiguity, it stops.">
 </p>
 
 Which tier a tool lands in is set by its declared `Safety`: mark it read-only or idempotent and
 an unknown outcome auto-retries; declare none of those and it
-halts. Retry-safety is opt-in; the pause is the default when you have not opted in, so a library
-whose whole point is "never double-fire" defaults to safe rather than to guessing.
+halts. Retry-safety is opt-in; without it, the default is to pause.
 
 Most unknowns never reach a person: an idempotency key lets the provider dedupe a safe retry, and
 for systems without one (email, internal services) a reconciler resolves the step from the record
-it left (`agent.ResolveHalt`). The human is the floor, not the default.
+it left (`agent.ResolveHalt`). A person is asked only when neither applies.
 
 > [!IMPORTANT]
-> **The rule underneath it:** when an action moves money, touches a record, or happens under audit
-> and the outcome is genuinely unknowable, stopping is the correct result. A pause a human or a
-> reconciler can clear beats a double-charge no one can take back.
+> When an action moves money, changes a record, or happens under audit and its outcome cannot be
+> known, the run stops. A human or a reconciler can clear a pause; a double charge cannot be taken
+> back.
 
-### 2 · Durable execution as a library, not a cluster
+### 2 · Durable execution as a library
 
-Temporal has the guarantees but needs a server + a worker fleet to operate. Here they come from
-a **store adapter you already run** (SQLite locally, Postgres in prod). A hello-world imports the
-**standard library only**: no Temporal, no gRPC, no vector DB dragged into your binary (enforced
-by `architecture_test.go`). Import it; don't operate it.
+Temporal provides durable execution with a server and a worker fleet. Here it comes from a store
+adapter you already run (SQLite locally, Postgres in production). A hello-world imports only the
+standard library: no Temporal, gRPC or vector database dependency (enforced by
+`architecture_test.go`).
 
-And because it is a Go library, one process keeps a very large number of these durable runs in
-flight at once. Agent work is I/O-bound (waiting on model and tool calls), which goroutines absorb
+One process can keep many durable runs in flight at once. Agent work is I/O-bound (waiting on model and tool calls), which goroutines absorb
 without a cluster. The [`cmd/bench`](cmd/bench/README.md) harness measures it: 20,000 runs, 5,000 in
-flight at a time, each blocking ~100ms on the model, finish in **about half a second (~470ms) of
-wall-clock on a 10-core Apple silicon Mac (measured at v0.7.0), and about one second on a standard 4-vCPU CI runner**,
+flight at a time, each blocking ~100ms on the model, finish in about half a second (~470ms) of
+wall-clock on a 10-core Apple silicon Mac (measured at v0.7.0), and about one second on a standard 4-vCPU CI runner,
 on a few thousand goroutines and tens of MB (`go run ./cmd/bench -runs 20000 -concurrency 5000
--latency 50ms`; reproducible with the [Benchmark workflow](.github/workflows/bench.yml)). The win is throughput and operational simplicity, not lower latency than the model
-(the provider owns per-call latency); at high fan-out the durable store's write throughput is the
-ceiling, not goroutines. Every concurrent run keeps all four guarantees. Reliability under that
-load is built in: per-attempt **timeouts**, retry with backoff that **classifies** transient vs
-terminal errors, **hedged** model calls (race a backup, take the first, for tail latency and
-provider failover), and a **rate limiter** for model and tool calls
+-latency 50ms`; reproducible with the [Benchmark workflow](.github/workflows/bench.yml)). This measures throughput; per-call latency is the provider's. At high fan-out the limit is the
+durable store's write throughput. Every concurrent run keeps all four guarantees. For reliability
+under load there are per-attempt timeouts, retry with backoff that classifies transient and
+terminal errors, hedged model calls (race a backup, take the first, for tail latency and provider
+failover), and a rate limiter for model and tool calls
 ([middleware](middleware), [docs/guides/reliability.md](docs/guides/reliability.md)).
 
 For high availability, any node resumes any run from the shared store, and competing drivers
-coordinate through a per-run **lease** (`agent.Lease`): normally one process drives a run at a time,
+coordinate through a per-run lease (`agent.Lease`): normally one process drives a run at a time,
 and a crashed holder's lease expires so another node's `agent.RecoverLoop` takes it over. A holder
 that stalls past its lease can wake still driving, but it cannot fire a side effect a second time:
-at-most-once rests on the attempt claim, not on the lease. Like guarantee 1, this is verified, not
-asserted: concurrent-worker mutual exclusion, crash-and-takeover, and at-most-once under concurrent
+at-most-once rests on the attempt claim, not on the lease. Tests cover concurrent-worker mutual exclusion, crash-and-takeover, and at-most-once under concurrent
 drivers on the in-memory store (`agent/ha_e2e_test.go`), and on Postgres across real processes that
 the tests kill, stall past their lease and restart (`store/postgres/ha_multiproc_test.go`; the
 Postgres backend implements the lease with a DB-clock upsert).
 
-### 3 · A cryptographically verifiable audit spine, from the same journal
+### 3 · A verifiable audit trail from the same journal
 
 <p align="center"><img src="assets/merkle.png" width="820" alt="Merkle inclusion proof: a journal record (charge) hashes up its sibling path to the signed root, proving the record is in the committed history while the other records stay hidden."></p>
 
-The journal that makes resume safe *is* the audit record, and it is committed with the **same
-cryptography Certificate Transparency uses** ([RFC 6962](https://datatracker.ietf.org/doc/html/rfc6962),
-checked against the published reference vectors). The distinction that matters for a regulated
-buyer: this is **verifiable, not merely logged**. A third party checks a proof *without trusting
-you, your database, or your logs*:
+The journal that makes resume safe is also the audit record, committed with the cryptography
+Certificate Transparency uses ([RFC 6962](https://datatracker.ietf.org/doc/html/rfc6962), checked
+against the published reference vectors). A third party checks a proof without trusting you, your
+database or your logs:
 
 - **Inclusion proof**: prove one specific action happened (this charge, this approval) in
   O(log n), revealing no other record (only its position and the run's size). Selective
@@ -129,27 +118,24 @@ you, your database, or your logs*:
 - **Consistency proof**: prove the history was only ever appended to, never rewritten or
   reordered.
 - **Signed tree head + continuous anchoring**: `AuditedStore` signs a commitment per step and
-  publishes it out-of-band to an external transparency log; tampering becomes provable, not just
-  suspected.
+  publishes it out-of-band to an external transparency log, so tampering can be proven.
 - **Who acted, under what authority**: the same leaf can commit to the acting identity (actor, on
   whose behalf, under which signed grant) and enforce delegated authority as a governed invariant,
-  so a proof shows not just what happened but who was authorized for it. Bring your own IdP; this
+  so a proof shows who was authorized for what happened. Bring your own IdP; this
   makes the authorized action provable, it does not replace authentication.
 
-**Proofs you verify, not logs you trust.** Everyone else offers *observability* (logs you
-trust because the vendor is SOC2); this is a *cryptographic proof you check yourself*. Produce a
-portable `ProofBundle` for one action (`audit.ProveToolCall`), or a whole-run `EvidencePackage`
+Produce a portable `ProofBundle` for one action (`audit.ProveToolCall`), or a whole-run `EvidencePackage`
 (`audit.Evidence`) bundling every material action's proof into one file, and hand it to an auditor
 who verifies it offline with `bide-audit verify` / `verify-evidence` or a stdlib-only verifier that
-never imports the SDK. **No other agent framework has this at all.** The same spine carries the rest of the
-accountability layer, all verifiable offline: proof-carrying runs (one `RunCertificate` attesting a
+never imports the SDK. The same spine carries the rest of the accountability layer, all
+verifiable offline: proof-carrying runs (one `RunCertificate` attesting a
 whole run's policy compliance), signed capability grants with attenuating delegation, authority
 earned from a clean audit trail, and governed k-of-n quorum. → [docs/guides/audit.md](docs/guides/audit.md)
 
 ### 4 · Provably convergent shared state (gsm)
 
 Many agents can change shared state concurrently, even with events that conflict and break
-invariants, and every replica still converges to the same valid state. The idea is **convergence
+invariants, and every replica converges to the same valid state. The idea is **convergence
 by compensation**: repair always terminates and commutes with events, so the order events replay in
 cannot change the result. The theory, [normalization
 confluence](https://github.com/blackwell-systems/normalization-confluence), is an exact regime map
@@ -188,61 +174,44 @@ is in [known limitations](docs/KNOWN-LIMITATIONS.md#governed-state-gsm).
 
 [^gsm]: The convergence theorem is machine-checked. gsm's `Build` checks each machine against its conditions and returns it only after the table oracle, Go generated from the proof, re-checks it in-process; for combinator rules inside its fragment and within a cost cap, the rules oracle re-checks it from the rules as well. A federation's own conditions, including the event-order checks C1 and C2, are checked by gsm's Go code. bide requires gsm v0.14.0; v0.13.0 added the C1 and C2 checks (v0.12.0 had neither), and v0.12.0 fixed the `Build` gap of v0.11.0 for guards and effects that read variables another event writes. Exact scope: [known limitations](https://github.com/bide-ai/bide/blob/main/docs/KNOWN-LIMITATIONS.md#governed-state-gsm).
 
-### The craft underneath
+### Other details
 
-Beyond the four guarantees, the details that make it pleasant to build on:
-
-- **Plain Go by default, with an optional typed flow builder.** You write `if`/`for`/functions and
-  the graph is a *derived* view (`RenderMermaid`, `Topology`), not something you are forced to author.
-  When you do want authored topology, the `plan` builder gives it to you and lowers to the same
-  runtime. See [Graphs](#graphs).
-- **Claude reasoning survives round-trips.** Extended-thinking signatures are preserved; most
-  SDKs drop them, silently breaking thinking + tool use.
-- **Provider-aware tool schemas.** One reflected schema, emitted per dialect (OpenAI strict
-  mode, etc.), not one generic schema that strict mode and Gemini reject.
-- **Any model, one adapter.** Native Claude, native Gemini, and any OpenAI-compatible endpoint
-  (OpenAI, Ollama, DeepSeek, Groq, OpenRouter, vLLM, Azure, xAI…) via `WithBaseURL`.
-- **Multi-node failover, coordinated.** Any node resumes any run (Postgres, no single-writer lock);
-  a per-run lease keeps competing recoverers and live workers from double-driving, and
-  `agent.RecoverLoop` takes a crashed holder's runs over on lease expiry.
+- **The graph is optional.** Write plain Go (`if`, `for`, functions); `RenderMermaid` and `Topology` derive the graph. If you prefer authoring topology, the `plan` builder does that and runs on the same runtime. See [Graphs](#graphs).
+- **Claude's extended thinking works with tools.** Thinking signatures are kept across turns, which the API requires when thinking and tool use are combined.
+- **Tool schemas per provider.** A tool's schema is generated once from its Go type and emitted in each provider's dialect, including OpenAI strict mode and Gemini's subset.
+- **Model adapters.** Native Claude and Gemini, plus any OpenAI-compatible endpoint (OpenAI, Ollama, DeepSeek, Groq, OpenRouter, vLLM, Azure, xAI) via `WithBaseURL`.
+- **Failover across nodes.** With Postgres, any node can resume any run. A per-run lease stops two nodes driving the same run, and `agent.RecoverLoop` picks up a crashed node's runs when its lease expires.
 
 ## Graphs
 
-Most agent frameworks make a graph the *foundation*: the thing you must author and the thing that
-executes, with nodes, edges, a state object, and sometimes a visual builder on top. Bide inverts
-that. The same authoring surfaces are available, up to and including a visual builder, but as layers
-you choose over a plain-Go journal substrate, never as the base. The reason is precise rather than
-ideological.
+In a graph-first framework the graph is what you author and what executes, with nodes, edges, a
+state object, and sometimes a visual builder on top. In bide the same authoring surfaces exist, up
+to a visual builder, as optional layers over a plain-Go journal.
 
 A graph adds no expressive power. Anything a graph computes, ordinary control flow computes: a
 computation graph is a control-flow graph, and sequence, selection, and iteration suffice to express
 any of them. There is no agent behavior you can build as a node-and-edge graph that you cannot write
-with `if`, `for`, and functions. What a graph adds is not capability but *reification*: a first-class
-representation of the flow you can inspect, visualize, statically validate, and author outside the
-code. That is genuinely useful, but it is a tooling layer, not a foundation, and it is not required
-to build agents.
+with `if`, `for`, and functions. What a graph adds is a first-class representation of the flow
+that you can inspect, visualize, validate statically, and author outside the code. That is a
+tooling layer, and it is not required to build agents.
 
 So the substrate here is plain Go, and the guarantees (durability, at-most-once, the verifiable
-trail) come from the journal, not from a graph. The graph still exists as a *derived* view:
+trail) come from the journal. The graph exists as a derived view:
 `RenderMermaid` reconstructs it from what actually ran.
 
-If you want a graph to author, that layer already exists: the **`plan`** package is a constrained,
-type-checked flow builder that compiles down to this runtime and inherits at-most-once and the audit
-trail for free. You wire typed nodes (`Step`, `Tool`, `Model`, `Switch`, fan-in `Join`, bounded
+To author a graph, use the `plan` package: a constrained, type-checked flow builder that compiles
+to this runtime and inherits at-most-once and the audit trail. You wire typed nodes (`Step`, `Tool`, `Model`, `Switch`, fan-in `Join`, bounded
 `LoopBack`) into a `Flow`, or author the same topology as declarative config (`plan.Load`) that a
-higher layer such as a visual builder can emit. It stays a layer you choose, not the base: a
-graph-first framework cannot offer the reverse, because for it the graph is the foundation rather
-than an option.
+higher layer such as a visual builder can emit.
 
-For an accountability runtime the direction also matters. An authored graph is a diagram you trust;
-a derived graph is reconstructed from the journal, so it is exactly what ran. The `plan` layer ties
+An authored graph is a diagram; a derived graph is reconstructed from the journal, so it is
+exactly what ran. The `plan` layer ties
 the two together: `Topology()` and `RenderMermaid()` expose the declared shape, and `Conform()`
-cryptographically checks that a run followed the topology it declared, the same verify, do not trust
-stance as the rest of the system. The rule that keeps any such layer from forking the runtime is
+cryptographically checks that a run followed the topology it declared. The rule that keeps any such layer from forking the runtime is
 that a new surface may add a way to author, never a way to execute: every layer lowers to the one
 journal-backed runtime. See [docs/guides/flows.md](docs/guides/flows.md).
 
-### Three ways to author, one runtime
+### Three ways to author the same flow
 
 The same order-triage flow, three ways. Plain Go is the default: write ordinary control flow, and name the steps the journal must make crash-safe.
 
@@ -265,7 +234,7 @@ if assess.Rush {
 }
 ```
 
-When you want that same flow as a first-class, inspectable artifact, the `plan` builder wires typed nodes into a `Flow` that lowers to the same runtime:
+To make that flow an inspectable artifact, the `plan` builder wires typed nodes into a `Flow` that lowers to the same runtime:
 
 <!-- docsnip: setup type Order struct{}; type Receipt struct{}; type Assessment struct{ Rush bool }; type Reservation struct{} -->
 ```go
@@ -307,12 +276,11 @@ Or author that same topology as declarative config a higher layer (a visual buil
 flow, err := plan.Load[Order, Receipt](configBytes, reg) // same topology, same Digest()
 ```
 
-All three lower to the one journal-backed runtime, so at-most-once, HA resume, and the verifiable trail come for free whichever surface you pick.
+All three lower to the one journal-backed runtime, so at-most-once, HA resume and the verifiable trail apply whichever you pick.
 
 ## Ambient runs: durable sleep, wake, and interrupt
 
-The four guarantees above are the substrate; this is the lifecycle they enable. An ambient run does
-not sit in a synchronous chat loop. It sleeps, wakes on a trigger, and pauses for a human, and every
+An ambient run does not sit in a synchronous chat loop. It sleeps, wakes on a trigger, and pauses for a human, and every
 one of those transitions is a durable, at-most-once step on the journal, so the run survives crashes
 and node handoffs between them.
 
@@ -332,7 +300,7 @@ every sleep, wake, interrupt, crash, and handoff. Runnable in `examples/signals`
 into a waiting run), `examples/interrupt` (human-in-the-loop pause/resume), and `examples/recover`
 (durable resume). See the [signals and ambient guide](docs/guides/signals.md).
 
-## Guarantee 1, in code: it won't double-charge
+## At most once, in code
 
 <!-- docsnip: setup ctx context.Context; a *agent.Agent; runID string; input string; type ChargeArgs struct{}; type Receipt struct{} -->
 ```go
@@ -506,8 +474,8 @@ returns what `Run` would.
 
 `RunTyped[T]` returns a typed `T` instead of a free-form message. It injects a synthetic
 `final_answer` tool whose JSON schema is derived from `T` (via the `schema` package) and steers
-the model to call it once its work is done, so a tool-using agent can do real work and *then*
-answer typed. Provider-agnostic (built on native tool calling, not a provider's JSON mode).
+the model to call it once its work is done, so a tool-using agent can do its work and then
+answer typed. It is provider-agnostic: it uses native tool calling, not a provider's JSON mode.
 
 <!-- docsnip: setup ctx context.Context; a *agent.Agent; runID string -->
 ```go
@@ -556,7 +524,7 @@ if err != nil {
 }
 ```
 
-Fields are optional by design: an unset field uses the provider default, so an explicit
+Fields are optional: an unset field uses the provider default, so an explicit
 `Temperature(0)` is distinct from "not specified." Request-level `MaxTokens` overrides an
 adapter's construction-time default.
 
@@ -625,13 +593,11 @@ sig, _ := audit.Sign(head, audit.Ed25519Signer{Priv: priv}) // anchor it: sign /
 
 Any modify / insert / delete / reorder of a record changes the head. **Security model:** this
 gives integrity unconditionally, and tamper-evidence *when you anchor the head out-of-band* (a chain
-in the same DB an attacker controls can be rewritten and rehashed); see the package doc. It's the
-compliance/enterprise seam: provable at-most-once side effects *plus* a verifiable record of exactly
-what the agent did.
+in the same DB an attacker controls can be rewritten and rehashed); see the package doc.
 
 For **selective disclosure**, `audit.Root` / `Prove` / `VerifyInclusion` build an **RFC 6962**
 (Certificate Transparency) Merkle tree, so you can prove one record is part of a committed run
-via an O(log n) inclusion proof, *without revealing the other records* (e.g. show an auditor a
+via an O(log n) inclusion proof, without revealing the other records (e.g. show an auditor a
 single charge happened, exposing no other customers or prompts). And `ProveConsistency` /
 `VerifyConsistency` prove an earlier root is an **append-only prefix** of a later one: that history
 was only appended, never rewritten or reordered (the transparency-log guarantee). The implementation
@@ -647,8 +613,8 @@ See [docs/guides/audit.md](docs/guides/audit.md) for the model, the API, and the
 
 ## RAG & memory (bring your own)
 
-Bide ships **no vector store, embedder, or memory backend**: it gives you the *seam* and
-you plug in the store you already run. Implement one interface against your infra:
+Bide ships no vector store, embedder or memory backend: it gives you the interface, and you plug in
+the store you already run. Implement one interface against your infra:
 
 <!-- docsnip: api agent -->
 ```go
@@ -684,19 +650,18 @@ agent.WithApproval(agent.SingleApproval()) // not Safety: a tool option that pau
 ```
 
 Before a non-idempotent side effect the loop records a durable *attempt marker*, so
-resume can tell "never ran" (safe to run) from "ran and crashed" (halt): precisely, not
-conservatively.
+resume can tell "never ran" (safe to run) from "ran and crashed" (halt).
 
-This is **proven, not asserted.** `dst_test.go` is a deterministic simulation test: a
+`dst_test.go` is a deterministic simulation test: a
 fault-injecting store crashes at *every* write point (and across hundreds of randomized
 multi-crash schedules), and the harness asserts a non-idempotent side effect fires **at most
 once** every time, with the run always ending completed or halted, never double-firing.
 
 The harness is exported (`chaos/`) and pointed at other SDKs in `benchmarks/`. The measured result:
 **Bide `maxFired=1` (PASS); trpc-agent-go `maxFired=6`; langchaingo `maxFired=64` (both FAIL).**
-trpc's checkpoint/resume genuinely works (verified: resuming a completed run is a no-op); its
-double-fire is the documented LangGraph "nodes must be idempotent" window. langchaingo has no
-durability at all, so retries re-run everything. Bide's attempt-marker closes the window entirely.
+trpc's checkpoint/resume works (resuming a completed run is a no-op); its double-fire is the
+documented LangGraph "nodes must be idempotent" window. langchaingo has no durability, so retries
+re-run everything. Bide's attempt marker closes that window.
 
 `WithMaxTurns(n)` caps model turns per run so a model that keeps calling tools can't loop forever:
 hitting it returns `ErrMaxTurns` (which is `errors.Is` `ErrBudget`). `WithTokenBudget(n)` caps the
@@ -707,7 +672,7 @@ so both limits are rebuilt from the journal and hold across a crash and resume.
 
 ## Human-in-the-loop
 
-Three flavors. **Approve/deny**: a tool marked `WithApproval(SingleApproval())` pauses *before* running; the
+Three forms. **Approve/deny**: a tool marked `WithApproval(SingleApproval())` pauses *before* running; the
 human decision is a bool:
 
 <!-- docsnip: setup ctx context.Context; a *agent.Agent; journal *agent.Journal; runID string; input string -->
@@ -783,8 +748,7 @@ separate processes in `examples/approval`.
 
 ## Errors
 
-Failures are classified with sentinel errors matched by `errors.Is`, the standard-library
-idiom, no custom error framework. Two tiers: a **category** (the coarse class) and a
+Failures are classified with sentinel errors matched by `errors.Is`. Two tiers: a **category** (the coarse class) and a
 **condition** (a specific cause) that wraps its category, so a match works at whichever level
 you need:
 
@@ -832,7 +796,7 @@ surfaces as the usual `context.Canceled` /
 
 ## Middleware & observability
 
-Two independent `func(Handler) Handler` chains at the two boundaries that matter: the model
+Two independent `func(Handler) Handler` chains: one around the model
 call (`WithMiddleware`) and each tool call (`WithToolMiddleware`). First added = outermost. Both are *mutating and
 short-circuiting*: rewrite what goes in, transform what comes out, or return without calling
 `next`.
@@ -892,7 +856,7 @@ req, mw...)` sends one call through the same chain.
 
 Because `trace.Tool` runs inside the loop, its span sits in the context handed to the tool, so
 when a tool is itself a sub-agent, the sub-agent's run and its own spans nest as children. The
-trace crosses the sub-agent boundary automatically (a gap in ADK / AgenticGoKit / trpc-agent-go).
+trace crosses the sub-agent boundary.
 
 Tool middleware runs *inside* the durable step, so a short-circuit result (a `ToolCache` hit) is
 journaled like any tool result, and so is a policy denial that wraps `agent.ErrToolNotCalled`; resume
@@ -932,7 +896,7 @@ and you don't. A core-only consumer's external-module surface is 2, not 54. See
 
 ## Architecture
 
-Hexagonal by construction: the core defines the ports (`Model`, `Store`, `Tool`,
+Hexagonal: the core defines the ports (`Model`, `Store`, `Tool`,
 `Middleware`); adapters plug in at the edges. Dependencies point inward; the core imports
 no adapter and no infrastructure, guarded by `architecture_test.go`.
 
@@ -950,13 +914,13 @@ store/postgres   HA durable resume (any node resumes any run)
 govern           Tier-2: federated governed state + quorum for agents that must agree (gsm-backed; own module)
 ```
 
-## Federated governance: agents that agree, provably (Tier-2)
+## Federated governance (Tier-2)
 
-The durable core keeps *one* agent's work crash-safe. The `govern` tier handles the other hard
-case: **many independently-run agents that have to agree**, across process, team, or organizational
+The durable core keeps one agent's work crash-safe. The `govern` tier is for many independently
+run agents that have to agree, across process, team, or organizational
 boundaries, with no coordinator beyond the shared, totally ordered event log, and no single writer. It gives two verifiable forms of
-agreement, and in both the point is *verify, don't trust*: a party checks the outcome from public
-artifacts without trusting anyone else's agent.
+agreement; in both, a party checks the outcome from public artifacts without trusting anyone else's
+agent.
 
 **Agreement on shared state (convergence).** Describe the shared state as a registry (variables +
 invariants + events); gsm checks *at build time* that every interleaving of agent actions reaches
@@ -964,7 +928,7 @@ the same valid state, or refuses to build and shows you a counterexample (see
 [known limitations](docs/KNOWN-LIMITATIONS.md#governed-state-gsm) for its scope). Runtime is O(1) table
 lookups; state is event-sourced and crash-recoverable. It scales from a single shared registry up
 through **federations** (cross-boundary constraints: trees, multi-source DAGs with resolvers,
-monotone cyclic *meshes*), composes via `Embed`, and can even **synthesize** the compensation for
+monotone cyclic *meshes*), composes via `Embed`, and can synthesize the compensation for
 you (declare the rules, get a convergent governor, or a proof that none exists). Agents plug in
 through `FederatedEventTool`, so an LLM tool call becomes a governed event.
 

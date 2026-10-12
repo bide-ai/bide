@@ -18,6 +18,7 @@ journal format can change between pre-releases without a version bump. Curated h
 - The README shows the chaos results as the benchmark card: bide never repeated the charge, while LangGraph (SQLite and Postgres), adk-go, trpc-agent-go, langchaingo and eino each charged again ([#175]).
 - README section 4 and the governance guide frame gsm's theory as convergence by compensation, with the exact-regime-map line from normalization-confluence ([#176]).
 - README section 4 is shortened to the guarantee and its scope; the details are in the governance guide and known limitations ([#183]).
+- README: plainer wording; no claims changed. "The craft underneath" is now "Other details", and unverified comparisons with other projects are removed; the translations match.
 
 ### Added
 

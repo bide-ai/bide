@@ -8,63 +8,63 @@
 
 *一次你能解除的暂停，胜过一次你无法撤销的重复触发。*
 
-一条仅追加（append-only）的日志，带来其他任何智能体框架都无法在单个库中同时提供的四项保证：副作用**至多触发一次**；在**单个进程内、无需集群**即可承载成千上万个并发的持久化运行；一条**可加密验证的审计轨迹**（RFC 6962 Merkle 证明，无需信任厂商即可核验）；以及**可证明收敛**的共享状态。这四项都出自同一套机制，而非四套集成起来的系统，作为一个纯 Go 库交付。专为经手资金、触及记录或在审计之下运行的智能体而生。
+一条仅追加（append-only）的日志带来四项保证：副作用至多触发一次，即使跨越崩溃也是如此，因此它们无需是幂等的；在单个进程内承载成千上万个并发的持久化运行，它是一个库，无需运行集群；一条可加密验证的审计轨迹（RFC 6962 Merkle 证明，无需信任厂商即可核验）；以及可证明收敛的共享状态，其收敛条件经过机器核验。这四项都出自同一条日志，作为一个纯 Go 库，面向经手资金、修改记录或在审计之下运行的智能体。
 
-**为环境智能体（ambient agent）而生。** 环境智能体在无人值守下运行：它休眠，直到某个触发条件（一个计划任务或一个事件）将其唤醒，随后工作数小时乃至数天，仅在需要判断时才暂停以询问人类，全程无人盯着每一步。恰恰在这种场景下，至多一次、高可用恢复以及可验证的轨迹才从"锦上添花"变成刚需；一个不被观察、独自行动的后台智能体，必须做到崩溃安全、重复触发安全、事后可证明。Bide 为此提供了持久化的生命周期：持久化的 `Sleep`/`WaitUntil` 定时器、用于按时间或事件驱动唤醒的可插拔 `Waker`，以及用于类型化人在回路（human-in-the-loop）的持久化 `Interrupt`/`AnswerInterrupt`，全都建立在同一条日志之上。你负责提供触发源和监督 UI；运行时则保证每一次运行在休眠、崩溃和节点交接之间始终正确。
+**环境智能体（ambient agent）。** 环境智能体在无人值守下运行：它休眠，直到某个触发条件（一个计划任务或一个事件）将其唤醒，随后工作数小时乃至数天，仅在需要判断时才暂停以询问人类，全程无人盯着每一步。这样的智能体必须做到崩溃安全、重复触发安全、事后可证明。Bide 为此提供了持久化的生命周期：持久化的 `Sleep`/`WaitUntil` 定时器、用于按时间或事件驱动唤醒的可插拔 `Waker`，以及用于类型化人在回路（human-in-the-loop）的持久化 `Interrupt`/`AnswerInterrupt`，全都建立在同一条日志之上。你负责提供触发源和监督 UI；运行时则保证每次运行在休眠、崩溃和节点交接之间始终正确。
 
-状态：**可用的 v0**，已完成端到端实地验证。需要 **Go 1.27**。
+状态：可用的 v0，已完成端到端实地验证。需要 Go 1.27。
 
 ## 一条日志，四项保证
 
-人人都提供一个智能体循环；我们的循环约 40 行。真正重要的是其下的底座：一条持久化、仅追加的日志，四项保证全都*从中推导而来*，因此你从同一套机制获得它们，而不是集成四套系统。
+智能体循环约 40 行。四项保证来自其下那条持久化、仅追加的日志。
 
-### 1 · 至多一次，而非至少一次（是实测出来的，不是宣称的）
+### 1 · 至多一次（实测）
 
-Temporal、DBOS、trpc-agent-go、ADK、eino 全都通过**重新运行**来恢复：活动/步骤必须是幂等的，因此一个非幂等的副作用（一笔扣款、一封邮件、一次发货）可能在崩溃后触发两次。我们构建了一个**公平的**崩溃注入基准测试（[`chaos/`](../../chaos)，跨 SDK 结果见 [`benchmarks/`](../../benchmarks/README.md)），它驱动一笔非幂等的 `charge`（扣款）穿过每一个崩溃点。这个数字*就是*产品本身：
+Temporal、DBOS、trpc-agent-go、ADK 和 eino 通过重新运行来恢复：活动或步骤必须是幂等的，因此一个非幂等的副作用（一笔扣款、一封邮件、一次发货）可能在崩溃后触发两次。一个崩溃注入基准测试（[`chaos/`](../../chaos)，跨 SDK 结果见 [`benchmarks/`](../../benchmarks/README.md)）驱动一笔非幂等的 `charge`（扣款）穿过每一个崩溃点：
 
 <p align="center"><img src="../../assets/chaos-results.png" width="600" alt="Crash-injection benchmark: bide never repeated the charge; LangGraph (SQLite and Postgres), adk-go, trpc-agent-go, langchaingo and eino each charged again after a crash."></p>
 
-`maxFired` 是同一个副作用实际执行的最多次数。**1 是正确的；更高就是一次重复扣款。** 这些竞品适配器都经过验证*不是*稻草人（每个都带有一个公平性测试，证明其恢复机制确实有效）。它们全都没有的那一块：在非幂等写入之前写下的持久化**尝试标记（attempt marker）**，以及恢复时的**结果未知即停机（halt-on-unknown-outcome）**：如果一次写入的结果从未被记入日志，运行就会停下来交由人类决定，而不是靠猜。
+`maxFired` 是同一个副作用实际执行的最多次数。**1 是正确的；更高就是一次重复扣款。** 每个竞品适配器都通过一项公平性测试（证明其恢复机制有效）。所有被测框架都没有的是：在非幂等写入之前写下的持久化尝试标记（attempt marker），以及恢复时的结果未知即停机（halt-on-unknown-outcome）：如果一次写入的结果从未被记入日志，运行就会停下来交由人类决定。
 
 ### 结果未知时，它就停下
 
-至多一次的难点不在于你看得见的崩溃，而在于你看不见的那种：一个副作用的调用已经离开了进程，但它的结果从未抵达日志。尝试标记让一次恢复的运行能区分"从未开始"与"已开始、结果未知"，并按一个固定的层级来解决未知的情形，从不靠猜：
+难点在于这样一个副作用：它的调用已经离开了进程，但它的结果从未抵达日志。尝试标记让一次恢复的运行能区分"从未开始"与"已开始、结果未知"，而未知的情形按一个固定的顺序来解决：
 
 <p align="center">
-  <img src="../../assets/resolution-ladder.png" width="820" alt="结果未知的解决阶梯：可安全重试的副作用会自动重试，由提供商去重；留下了可查询记录的副作用由一个对账器（reconciler）自动解决；真正无法得知的结果则停机并等待人类。在终极的不确定之下，它停下来。">
+  <img src="../../assets/resolution-ladder.png" width="820" alt="结果未知的解决阶梯：可安全重试的副作用会自动重试，由提供商去重；留下了可查询记录的副作用由一个对账器（reconciler）自动解决；无法得知的结果则停机并等待人类。在终极的不确定之下，它停下来。">
 </p>
 
-一个工具落在哪一层，取决于它声明的 `Safety`：把它标记为只读或幂等，未知结果就会自动重试；这些都不声明，它就会停机。可重试安全是需要主动选择的；在你没有主动选择时，暂停就是默认行为，因此一个以"绝不重复触发"为全部意义的库，默认偏向安全而非靠猜。
+一个工具落在哪一层，取决于它声明的 `Safety`：把它标记为只读或幂等，未知结果就会自动重试；这些都不声明，它就会停机。可重试安全是需要主动选择的；没有选择时，默认就是暂停。
 
-大多数未知结果根本不会交到人手里：幂等键让提供商对一次安全的重试去重，而对于没有幂等键的系统（邮件、内部服务），一个对账器会根据该步骤留下的记录来解决它（`agent.ResolveHalt`）。人类是兜底，而不是默认。
+大多数未知结果根本不会交到人手里：幂等键让提供商对一次安全的重试去重，而对于没有幂等键的系统（邮件、内部服务），一个对账器会根据该步骤留下的记录来解决它（`agent.ResolveHalt`）。只有两者都不适用时，才会询问人。
 
 > [!IMPORTANT]
-> **其下的规则：** 当一个动作经手资金、触及记录或在审计之下发生，而其结果真正无法得知时，停下来就是正确的结果。一次人类或对账器能解除的暂停，胜过一次无人能收回的重复扣款。
+> 当一个动作经手资金、修改记录或在审计之下发生，而其结果无法得知时，运行就会停下。人类或对账器能解除一次暂停；一次重复扣款却无法收回。
 
-### 2 · 作为库、而非集群的持久化执行
+### 2 · 作为库的持久化执行
 
-Temporal 拥有这些保证，但需要一个服务器加一支 worker 机群才能运转。而这里，它们来自一个**你本就在运行的存储适配器**（本地用 SQLite，生产用 Postgres）。一个 hello-world 只导入**标准库**：不把 Temporal、gRPC、向量数据库拖进你的二进制文件（由 `architecture_test.go` 强制保证）。导入它，而不是运维它。
+Temporal 借助一个服务器和一支 worker 机群提供持久化执行。而这里，它来自一个你本就在运行的存储适配器（本地用 SQLite，生产用 Postgres）。一个 hello-world 只导入标准库：没有 Temporal、gRPC 或向量数据库依赖（由 `architecture_test.go` 强制保证）。
 
-而且，因为它是一个 Go 库，单个进程可以同时让数量极其庞大的这类持久化运行处于进行中。智能体的工作是 I/O 密集型的（在等待模型和工具调用），而 goroutine 无需集群即可吸收这类等待。[`cmd/bench`](../../cmd/bench/README.md) 测试工具对此做了测量：20,000 次运行，每次同时有 5,000 次处于进行中，每次运行在模型上阻塞约 100ms，在**10 核 Apple silicon Mac 上约半秒（约 470ms，于 v0.7.0 测得）、标准 4 vCPU CI 运行器上约一秒的墙钟时间**内完成，跑在几千个 goroutine 和数十 MB 之上（`go run ./cmd/bench -runs 20000 -concurrency 5000 -latency 50ms`）。它的优势在于吞吐量和运维简洁性，而不是比模型更低的延迟（每次调用的延迟由提供商决定）；在高扇出下，持久化存储的写入吞吐量才是上限，而非 goroutine。每一个并发运行都保有全部四项保证。这种负载下的可靠性是内建的：按尝试计的**超时**、带退避（backoff）且能**区分**瞬时错误与终结性错误的重试、**对冲式（hedged）**模型调用（同时发起一个备份调用，取先到者，用于降低尾延迟并实现提供商故障切换），以及用于模型和工具调用的**限流器（rate limiter）**（[middleware](../../middleware)、[docs/guides/reliability.md](../../docs/guides/reliability.md)）。
+单个进程可以同时让许多持久化运行处于进行中。智能体的工作是 I/O 密集型的（在等待模型和工具调用），而 goroutine 无需集群即可吸收这类等待。[`cmd/bench`](../../cmd/bench/README.md) 测试工具对此做了测量：20,000 次运行，每次同时有 5,000 次处于进行中，每次运行在模型上阻塞约 100ms，在 10 核 Apple silicon Mac 上约半秒（约 470ms，于 v0.7.0 测得）、标准 4 vCPU CI 运行器上约一秒的墙钟时间内完成，跑在几千个 goroutine 和数十 MB 之上（`go run ./cmd/bench -runs 20000 -concurrency 5000 -latency 50ms`）。这测量的是吞吐量；每次调用的延迟由提供商决定。在高扇出下，上限是持久化存储的写入吞吐量。每一个并发运行都保有全部四项保证。为了负载下的可靠性，提供了按尝试计的超时、带退避（backoff）且能区分瞬时错误与终结性错误的重试、对冲式（hedged）模型调用（同时发起一个备份调用，取先到者，用于降低尾延迟并实现提供商故障切换），以及用于模型和工具调用的限流器（rate limiter）（[middleware](../../middleware)、[docs/guides/reliability.md](../../docs/guides/reliability.md)）。
 
-为实现高可用，任意节点都能从共享存储恢复任意运行，而相互竞争的驱动方通过一个按运行计的**租约（lease）**（`agent.Lease`）来协调：通常同一时刻只有一个进程驱动某个运行，崩溃持有者的租约会过期，从而由另一个节点的 `agent.RecoverLoop` 接管。停顿超过租约期限的持有者可能醒来时仍在驱动该运行，但它无法再次触发副作用：至多一次依靠的是尝试声明（attempt claim），而不是租约。与保证 1 一样，这是经过验证的，而非断言的：内存存储上的并发 worker 互斥、崩溃接管，以及并发驱动方下的至多一次（`agent/ha_e2e_test.go`），还有 Postgres 上的跨进程至多一次，即两个存储实例共享同一个数据库（`store/postgres/postgres_test.go` 中的 `TestPostgres_HAAtMostOnceAcrossInstances`；Postgres 后端用一次 DB 时钟 upsert 实现该租约）。
+为实现高可用，任意节点都能从共享存储恢复任意运行，而相互竞争的驱动方通过一个按运行计的租约（lease）（`agent.Lease`）来协调：通常同一时刻只有一个进程驱动某个运行，崩溃持有者的租约会过期，从而由另一个节点的 `agent.RecoverLoop` 接管。停顿超过租约期限的持有者可能醒来时仍在驱动该运行，但它无法再次触发副作用：至多一次依靠的是尝试声明（attempt claim），而不是租约。测试覆盖了内存存储上的并发 worker 互斥、崩溃接管，以及并发驱动方下的至多一次（`agent/ha_e2e_test.go`），还有 Postgres 上的跨进程至多一次，即两个存储实例共享同一个数据库（`store/postgres/postgres_test.go` 中的 `TestPostgres_HAAtMostOnceAcrossInstances`；Postgres 后端用一次 DB 时钟 upsert 实现该租约）。
 
-### 3 · 一条可加密验证的审计脊柱，出自同一条日志
+### 3 · 一条可验证的审计轨迹，出自同一条日志
 
 <p align="center"><img src="../../assets/merkle.png" width="820" alt="Merkle 包含性证明：一条日志记录（charge）沿其兄弟路径逐级哈希到签名的根，证明该记录处于已承诺的历史之中，而其他记录保持隐藏。"></p>
 
-那条让恢复变得安全的日志*就是*审计记录，并且它以**与证书透明度（Certificate Transparency）所用相同的密码学**加以承诺（[RFC 6962](https://datatracker.ietf.org/doc/html/rfc6962)，已对照发布的参考向量核验）。对受监管买家而言真正重要的区别：这是**可验证的，而非仅仅被记录下来的**。第三方核验一个证明，*无需信任你、你的数据库或你的日志*：
+那条让恢复变得安全的日志同时也是审计记录，以证书透明度（Certificate Transparency）所用的密码学加以承诺（[RFC 6962](https://datatracker.ietf.org/doc/html/rfc6962)，已对照发布的参考向量核验）。第三方核验一个证明，无需信任你、你的数据库或你的日志：
 
 - **包含性证明（inclusion proof）**：以 O(log n) 证明某一具体动作发生过（这笔扣款、这次批准），且不泄露任何其他记录（只泄露它的位置和该运行的大小）。为审计员提供选择性披露。
 - **一致性证明（consistency proof）**：证明历史只被追加，从未被重写或重排。
-- **签名的树头（signed tree head）＋ 持续锚定**：`AuditedStore` 为每一步签署一份承诺并将其带外发布到一个外部透明度日志；篡改由此变得可证明，而不只是被怀疑。
-- **谁在行动，依据什么授权**：同一片叶子可以承诺到行动者身份（谁行动、代表谁、依据哪一份签名授权），并将委派授权作为一项受治理的不变量来强制执行，从而一个证明不仅显示发生了什么，还显示谁为此被授权。自带你自己的 IdP；这让被授权的动作变得可证明，它并不替代身份认证。
+- **签名的树头（signed tree head）＋ 持续锚定**：`AuditedStore` 为每一步签署一份承诺并将其带外发布到一个外部透明度日志，从而篡改可以被证明。
+- **谁在行动，依据什么授权**：同一片叶子可以承诺到行动者身份（谁行动、代表谁、依据哪一份签名授权），并将委派授权作为一项受治理的不变量来强制执行，从而一个证明显示谁为所发生之事被授权。自带你自己的 IdP；这让被授权的动作变得可证明，它并不替代身份认证。
 
-**是你自己核验的证明，而非你信任的日志。** 别人提供的都是*可观测性*（你之所以信任那些日志是因为厂商通过了 SOC2）；这里提供的是*一个你亲自核验的密码学证明*。为单个动作生成一份可移植的 `ProofBundle`（`audit.ProveToolCall`），或生成整次运行的 `EvidencePackage`（`audit.Evidence`），将每一个实质性动作的证明打包进一个文件，交给一位审计员，他用 `bide-audit verify` / `verify-evidence`，或用一个从不导入该 SDK 的纯标准库验证器，离线核验它。**其他任何智能体框架都完全没有这个能力。** 同一条脊柱还承载着问责层的其余部分，全部可离线验证：带证明的运行（一份 `RunCertificate` 证明整次运行的策略合规性）、带衰减式委派的签名能力授权、从一份干净审计轨迹中赢得的权限，以及受治理的 k-of-n 法定人数（quorum）。→ [docs/guides/audit.md](../../docs/guides/audit.md)
+为单个动作生成一份可移植的 `ProofBundle`（`audit.ProveToolCall`），或生成整次运行的 `EvidencePackage`（`audit.Evidence`），将每一个实质性动作的证明打包进一个文件，交给一位审计员，他用 `bide-audit verify` / `verify-evidence`，或用一个从不导入该 SDK 的纯标准库验证器，离线核验它。同一条脊柱还承载着问责层的其余部分，全部可离线验证：带证明的运行（一份 `RunCertificate` 证明整次运行的策略合规性）、带衰减式委派的签名能力授权、从一份干净审计轨迹中赢得的权限，以及受治理的 k-of-n 法定人数（quorum）。→ [docs/guides/audit.md](../../docs/guides/audit.md)
 
 ### 4 · 可证明收敛的共享状态（gsm）
 
-多个智能体可以并发修改共享状态，即使事件相互冲突并破坏不变量，每个副本仍会收敛到同一个有效状态。其思想是**通过补偿实现收敛（convergence by compensation）**：修复总会终止并与事件可交换，因此事件重放的顺序无法改变结果。其理论 [normalization confluence](https://github.com/blackwell-systems/normalization-confluence) 是一份受治理并发状态的精确情形图：每种情形都有经机器核验的精确条件、表明不存在高效条件的困难性结果，或公开声明的缺口。这些证明是无公理的，并在 Coq 8.18、8.20 与 Rocq 9.3 上经 CI 核验（[![verify](https://github.com/blackwell-systems/normalization-confluence/actions/workflows/verify.yml/badge.svg)](https://github.com/blackwell-systems/normalization-confluence/actions/workflows/verify.yml)）。
+多个智能体可以并发修改共享状态，即使事件相互冲突并破坏不变量，每个副本都会收敛到同一个有效状态。其思想是**通过补偿实现收敛（convergence by compensation）**：修复总会终止并与事件可交换，因此事件重放的顺序无法改变结果。其理论 [normalization confluence](https://github.com/blackwell-systems/normalization-confluence) 是一份受治理并发状态的精确情形图：每种情形都有经机器核验的精确条件、表明不存在高效条件的困难性结果，或公开声明的缺口。这些证明是无公理的，并在 Coq 8.18、8.20 与 Rocq 9.3 上经 CI 核验（[![verify](https://github.com/blackwell-systems/normalization-confluence/actions/workflows/verify.yml/badge.svg)](https://github.com/blackwell-systems/normalization-confluence/actions/workflows/verify.yml)）。
 
 - **在构建时检查。** 把共享状态描述为由变量、不变量和事件组成的注册表；gsm 的 `Build` 检查收敛条件，否则拒绝构建并给出一个具体反例。
 - **由证明本身重新核验。** gsm 返回的每台注册表机器都会在进程内由一个从 Rocq 证明生成的检查器重新认证；不能通过认证，就没有机器。
@@ -84,29 +84,27 @@ Temporal 拥有这些保证，但需要一个服务器加一支 worker 机群才
 
 [^gsm]: 收敛定理经过机器核验。gsm 的 `Build` 依据其条件检查每台机器，并且只有在由该证明生成的 Go 表预言机在进程内重新核验之后才返回它；对于处在其片段之内且在成本上限之内的组合子规则，规则预言机还会直接从规则重新核验它。联邦自身的条件，包括事件顺序检查 C1 与 C2，由 gsm 的 Go 代码检查。bide 依赖 gsm v0.14.0；v0.13.0 加入了 C1 与 C2 检查（v0.12.0 两者都没有），而 v0.12.0 修复了 v0.11.0 中 `Build` 的缺口（读取另一个事件所写变量的守卫和效果）。确切范围：[已知限制](https://github.com/bide-ai/bide/blob/main/docs/KNOWN-LIMITATIONS.md#governed-state-gsm)。
 
-### 底层的匠心
+### 其他细节
 
-在四项保证之外，还有那些让在它之上构建变得愉快的细节：
-
-- **默认纯 Go，附带一个可选的类型化流程构建器。** 你写 `if`/`for`/函数，而图是一个*派生出来*的视图（`RenderMermaid`、`Topology`），不是被迫要去手写的东西。当你确实想要手写拓扑时，`plan` 构建器把它交给你，并下沉到同一个运行时。见 [Graphs（图）](#graphs图)。
-- **Claude 的推理在往返之间得以保留。** 扩展思考（extended-thinking）签名被保留；大多数 SDK 会丢弃它们，从而悄无声息地破坏"思考 + 工具使用"。
-- **感知提供商的工具 schema。** 一份反射得到的 schema，按方言分别发出（OpenAI 严格模式等），而不是一份被严格模式和 Gemini 拒绝的通用 schema。
-- **任意模型，一个适配器。** 原生 Claude、原生 Gemini，以及任意 OpenAI 兼容端点（OpenAI、Ollama、DeepSeek、Groq、OpenRouter、vLLM、Azure、xAI……）经由 `WithBaseURL`。
-- **多节点故障切换，协调有序。** 任意节点恢复任意运行（Postgres，无单一写者锁）；按运行计的租约让相互竞争的恢复方与在线 worker 不至于双重驱动，而崩溃持有者的运行会在租约过期时被接管。
+- **图是可选的。** 写纯 Go（`if`、`for`、函数）；`RenderMermaid` 和 `Topology` 派生出图。如果你更喜欢手写拓扑，`plan` 构建器负责这件事，并运行在同一个运行时之上。见 [Graphs（图）](#graphs图)。
+- **Claude 的扩展思考可与工具配合使用。** 思考签名在各轮之间得以保留；当扩展思考与工具使用结合时，API 要求这样做。
+- **按提供商生成的工具 schema。** 一个工具的 schema 从其 Go 类型生成一次，并以每个提供商的方言发出，包括 OpenAI 严格模式和 Gemini 的子集。
+- **模型适配器。** 原生 Claude 与 Gemini，以及经由 `WithBaseURL` 的任意 OpenAI 兼容端点（OpenAI、Ollama、DeepSeek、Groq、OpenRouter、vLLM、Azure、xAI）。
+- **跨节点故障切换。** 使用 Postgres 时，任意节点都能恢复任意运行。按运行计的租约阻止两个节点驱动同一个运行，而 `agent.RecoverLoop` 会在崩溃节点的租约过期时接手它的运行。
 
 ## Graphs（图）
 
-大多数智能体框架把图当作*基础*：既是你必须手写的东西，也是被执行的东西，带有节点、边、一个状态对象，有时上面还有一个可视化构建器。Bide 把这一点倒了过来。同样的手写表面都可用，直至并包括一个可视化构建器，但它们是你在一个纯 Go 日志底座之上选择的层，而从来不是基座。其理由是精确的，而非意识形态的。
+在图优先的框架中，图既是你手写的东西，也是被执行的东西，带有节点、边、一个状态对象，有时上面还有一个可视化构建器。在 bide 中，同样的手写表面都存在，直至一个可视化构建器，它们是一条纯 Go 日志之上的可选层。
 
-图不增添任何表达力。图能计算的任何东西，普通控制流都能计算：一个计算图就是一个控制流图，而顺序、选择和迭代足以表达其中任意一个。不存在哪种智能体行为你能用节点-边的图搭出来、却不能用 `if`、`for` 和函数写出来。图增添的不是能力，而是*具象化（reification）*：一份对流程的一等表示，你可以检视它、可视化它、静态校验它，并在代码之外去手写它。那确实有用，但它是一个工具层，而非一个基础，且构建智能体并不需要它。
+图不增添任何表达力。图能计算的任何东西，普通控制流都能计算：一个计算图就是一个控制流图，而顺序、选择和迭代足以表达其中任意一个。不存在哪种智能体行为你能用节点-边的图搭出来、却不能用 `if`、`for` 和函数写出来。图增添的是一份对流程的一等表示，你可以检视它、可视化它、静态校验它，并在代码之外去手写它。那是一个工具层，且构建智能体并不需要它。
 
-所以这里的底座是纯 Go，而各项保证（持久性、至多一次、可验证的轨迹）来自日志，而非来自图。图仍然作为一个*派生*视图存在：`RenderMermaid` 从实际运行过的内容中把它重建出来。
+所以这里的底座是纯 Go，而各项保证（持久性、至多一次、可验证的轨迹）来自日志。图作为一个派生视图存在：`RenderMermaid` 从实际运行过的内容中把它重建出来。
 
-如果你想要一个可手写的图，那一层已经存在：**`plan`** 包是一个受约束、经类型检查的流程构建器，它编译下沉到这个运行时，并免费继承至多一次和审计轨迹。你把类型化的节点（`Step`、`Tool`、`Model`、`Switch`、扇入的 `Join`、有界的 `LoopBack`）接入一个 `Flow`，或者把同一份拓扑写成声明式配置（`plan.Load`），供更高的一层（例如一个可视化构建器）来发出。它始终是你选择的一层，而非基座：一个图优先的框架无法提供反向的能力，因为对它来说图是基础而非一个选项。
+要手写一个图，就用 `plan` 包：一个受约束、经类型检查的流程构建器，它编译到这个运行时，并继承至多一次和审计轨迹。你把类型化的节点（`Step`、`Tool`、`Model`、`Switch`、扇入的 `Join`、有界的 `LoopBack`）接入一个 `Flow`，或者把同一份拓扑写成声明式配置（`plan.Load`），供更高的一层（例如一个可视化构建器）来发出。
 
-对一个问责型运行时来说，方向同样重要。一份手写的图是一张你信任的示意图；一份派生的图是从日志中重建的，因此它恰恰是运行过的东西。`plan` 层把两者系在一起：`Topology()` 和 `RenderMermaid()` 暴露所声明的形状，而 `Conform()` 以密码学方式核验一次运行是否遵循了它所声明的拓扑，这与系统其余部分是同一种"核验、不信任"的立场。让任何这样的层都无法分叉运行时的规则是：一个新表面可以增添一种手写方式，绝不增添一种执行方式；每一层都下沉到那一个由日志支撑的运行时。见 [docs/guides/flows.md](../../docs/guides/flows.md)。
+一份手写的图是一张示意图；一份派生的图是从日志中重建的，因此它恰恰是运行过的东西。`plan` 层把两者系在一起：`Topology()` 和 `RenderMermaid()` 暴露所声明的形状，而 `Conform()` 以密码学方式核验一次运行是否遵循了它所声明的拓扑。让任何这样的层都无法分叉运行时的规则是：一个新表面可以增添一种手写方式，绝不增添一种执行方式；每一层都下沉到那一个由日志支撑的运行时。见 [docs/guides/flows.md](../../docs/guides/flows.md)。
 
-### 三种手写方式，一个运行时
+### 三种方式手写同一个流程
 
 同一个订单分拣流程，三种写法。纯 Go 是默认方式：写普通的控制流，并为日志必须保证崩溃安全的那些步骤命名。
 
@@ -129,7 +127,7 @@ if assess.Rush {
 }
 ```
 
-当你想把同一个流程作为一件一等的、可检视的工件时，`plan` 构建器把类型化的节点接入一个下沉到同一运行时的 `Flow`：
+要把那个流程变成一件可检视的工件，`plan` 构建器把类型化的节点接入一个下沉到同一运行时的 `Flow`：
 
 <!-- docsnip: setup type Order struct{}; type Receipt struct{}; type Assessment struct{ Rush bool }; type Reservation struct{} -->
 ```go
@@ -171,11 +169,11 @@ flow, err := b.Build() // inherits at-most-once and the audit trail
 flow, err := plan.Load[Order, Receipt](configBytes, reg) // same topology, same Digest()
 ```
 
-三者都下沉到那一个由日志支撑的运行时，因此无论你选哪个表面，至多一次、高可用恢复和可验证的轨迹都免费获得。
+三者都下沉到那一个由日志支撑的运行时，因此无论你选哪一种，至多一次、高可用恢复和可验证的轨迹都适用。
 
 ## 环境运行：持久化的休眠、唤醒与中断
 
-上文的四项保证是底座；这是它们所使能的生命周期。一次环境运行并不待在一个同步的聊天循环里。它休眠，在某个触发下唤醒，为一个人类暂停，而其中每一次转换都是日志上一个持久化、至多一次的步骤，因此运行能在它们之间幸免于崩溃和节点交接。
+一次环境运行并不待在一个同步的聊天循环里。它休眠，在某个触发下唤醒，为一个人类暂停，而其中每一次转换都是日志上一个持久化、至多一次的步骤，因此运行能在它们之间幸免于崩溃和节点交接。
 
 - **休眠至某个截止时刻。** `Sleep`/`WaitUntil` 暂停一次运行并把它的唤醒时间记入日志，从而暂停能挺过一次重启。在唤醒时刻重新调用会恰好一次地恢复。
 - **按时间或事件唤醒。** 一个可插拔的 `Waker`（默认是进程内的 `MemWaker`）重新调用一个到期的运行；触发源是你的（一个进程内循环、一个 cron、一个队列、一个入站 webhook），因此同一底座既驱动计划型、也驱动事件驱动型的智能体。
@@ -183,7 +181,7 @@ flow, err := plan.Load[Order, Receipt](configBytes, reg) // same topology, same 
 
 你提供触发源和监督表面；运行时保证运行在每一次休眠、唤醒、中断、崩溃和交接之间始终正确。可在 `examples/signals`（把一个事件投递进一个等待中的运行）、`examples/interrupt`（人在回路的暂停/恢复）和 `examples/recover`（持久化恢复）中运行。见[信号与环境指南](../../docs/guides/signals.md)。
 
-## 保证 1，在代码里：它不会重复扣款
+## 至多一次，在代码里
 
 <!-- docsnip: setup ctx context.Context; a *agent.Agent; runID string; input string; type ChargeArgs struct{}; type Receipt struct{} -->
 ```go
@@ -312,7 +310,7 @@ res, err := stream.Result() // what Run returns: the Result and an error (incl. 
 
 ## 类型化输出
 
-`RunTyped[T]` 返回一个类型化的 `T`，而非一条自由格式的消息。它注入一个合成的 `final_answer` 工具，其 JSON schema 由 `T` 派生而来（经由 `schema` 包），并引导模型在其工作完成后调用它一次，从而一个使用工具的智能体可以先做真正的工作、*然后*给出类型化的回答。与提供商无关（构建在原生工具调用之上，而非某个提供商的 JSON 模式）。
+`RunTyped[T]` 返回一个类型化的 `T`，而非一条自由格式的消息。它注入一个合成的 `final_answer` 工具，其 JSON schema 由 `T` 派生而来（经由 `schema` 包），并引导模型在其工作完成后调用它一次，从而一个使用工具的智能体可以先做它的工作、然后给出类型化的回答。它与提供商无关：它使用原生工具调用，而非某个提供商的 JSON 模式。
 
 <!-- docsnip: setup ctx context.Context; a *agent.Agent; runID string -->
 ```go
@@ -346,7 +344,7 @@ if err != nil {
 }
 ```
 
-字段在设计上是可选的：一个未设置的字段使用提供商默认值，因此一个显式的 `Temperature(0)` 有别于"未指定"。请求级的 `MaxTokens` 会覆盖适配器构造时的默认值。
+字段是可选的：一个未设置的字段使用提供商默认值，因此一个显式的 `Temperature(0)` 有别于"未指定"。请求级的 `MaxTokens` 会覆盖适配器构造时的默认值。
 
 ## 提示缓存（Prompt caching）
 
@@ -389,15 +387,15 @@ head, _ := audit.Head(ctx, journal, runID)                     // SHA-256 chain 
 sig, _ := audit.Sign(head, audit.Ed25519Signer{Priv: priv}) // anchor it: sign / publish out-of-band
 ```
 
-对一条记录的任何修改 / 插入 / 删除 / 重排都会改变链头。**安全模型：** 这无条件地给出完整性，并在*你把链头带外锚定时*给出防篡改性（一条与攻击者所控制的数据库处于同一数据库中的链，可以被重写并重新哈希）；见包文档。它是合规/企业级的接缝：可证明的至多一次副作用*外加*一份关于智能体究竟做了什么的可验证记录。
+对一条记录的任何修改 / 插入 / 删除 / 重排都会改变链头。**安全模型：** 这无条件地给出完整性，并在*你把链头带外锚定时*给出防篡改性（一条与攻击者所控制的数据库处于同一数据库中的链，可以被重写并重新哈希）；见包文档。
 
-对于**选择性披露**，`audit.Root` / `Prove` / `VerifyInclusion` 构建一棵 **RFC 6962**（证书透明度）Merkle 树，因此你能经由一个 O(log n) 的包含性证明证明某条记录是一次已承诺运行的一部分，*而不泄露其他记录*（例如向审计员表明发生过某一笔扣款，却不暴露任何其他客户或提示）。而 `ProveConsistency` / `VerifyConsistency` 证明一个较早的根是一个较晚的根的**仅追加前缀**：历史只被追加，从未被重写或重排（透明度日志的保证）。该实现已对照发布的 RFC 6962 测试向量核验。
+对于**选择性披露**，`audit.Root` / `Prove` / `VerifyInclusion` 构建一棵 **RFC 6962**（证书透明度）Merkle 树，因此你能经由一个 O(log n) 的包含性证明证明某条记录是一次已承诺运行的一部分，而不泄露其他记录（例如向审计员表明发生过某一笔扣款，却不暴露任何其他客户或提示）。而 `ProveConsistency` / `VerifyConsistency` 证明一个较早的根是一个较晚的根的**仅追加前缀**：历史只被追加，从未被重写或重排（透明度日志的保证）。该实现已对照发布的 RFC 6962 测试向量核验。
 
 `SignTreeHead` 产出 CT 风格的**签名树头（Signed Tree Head）**，即 `{Kind, RunID, Size, Root, TimestampNanos}` 连同其签名方案一起，由任意 `audit.Signer`（Ed25519、ML-DSA-65 或二者混合）签名，就是你要发布的那件工件。完整流程：签署一个 STH，稍后用一个包含性证明披露单条记录，审计员对照签名过的根来核验它，并证明两个 STH 之间的仅追加式增长。关于该模型、API 以及端到端的合规流程，见 [docs/guides/audit.md](../../docs/guides/audit.md)。
 
 ## RAG 与记忆（自带）
 
-Bide **不附带任何向量存储、嵌入器或记忆后端**：它给你*接缝*，你插入你本就在运行的存储。针对你自己的基础设施实现一个接口：
+Bide 不附带任何向量存储、嵌入器或记忆后端：它给你接口，你插入你本就在运行的存储。针对你自己的基础设施实现一个接口：
 
 <!-- docsnip: api agent -->
 ```go
@@ -429,17 +427,17 @@ agent.Safety{}                        // a write → HALT on unknown outcome, do
 agent.WithApproval(agent.SingleApproval()) // not Safety: a tool option that pauses for human approval before executing
 ```
 
-在一个非幂等副作用之前，循环记录一个持久化的*尝试标记*，从而恢复能区分"从未运行"（可安全运行）与"运行过并崩溃了"（停机）：是精确地，而非保守地。
+在一个非幂等副作用之前，循环记录一个持久化的*尝试标记*，从而恢复能区分"从未运行"（可安全运行）与"运行过并崩溃了"（停机）。
 
-这是**被证明的，而非被断言的。** `dst_test.go` 是一个确定性模拟测试：一个故障注入的存储在*每一个*写入点崩溃（并跨越数百个随机化的多次崩溃调度），而该测试工具断言一个非幂等副作用每一次都**至多触发一次**，且运行总是以完成或停机告终，从不双重触发。
+`dst_test.go` 是一个确定性模拟测试：一个故障注入的存储在*每一个*写入点崩溃（并跨越数百个随机化的多次崩溃调度），而该测试工具断言一个非幂等副作用每一次都**至多触发一次**，且运行总是以完成或停机告终，从不双重触发。
 
-该测试工具是导出的（`chaos/`），并在 `benchmarks/` 中被指向其他 SDK。实测结果：**Bide `maxFired=1`（通过）；trpc-agent-go `maxFired=6`；langchaingo `maxFired=64`（两者均失败）。** trpc 的检查点/恢复确实有效（已验证：恢复一次已完成的运行是一个空操作）；它的双重触发是那个有文档记载的 LangGraph"节点必须幂等"窗口。langchaingo 完全没有持久性，所以重试会把一切重新运行。Bide 的尝试标记把那个窗口彻底关闭。
+该测试工具是导出的（`chaos/`），并在 `benchmarks/` 中被指向其他 SDK。实测结果：**Bide `maxFired=1`（通过）；trpc-agent-go `maxFired=6`；langchaingo `maxFired=64`（两者均失败）。** trpc 的检查点/恢复有效（恢复一次已完成的运行是一个空操作）；它的双重触发是那个有文档记载的 LangGraph"节点必须幂等"窗口。langchaingo 没有持久性，所以重试会把一切重新运行。Bide 的尝试标记关闭了那个窗口。
 
 `WithMaxTurns(n)` 为每次运行的模型轮次设上限，使一个不停调用工具的模型无法永远循环下去：触及它会返回 `ErrMaxTurns`（它是 `errors.Is` `ErrBudget` 的）。`WithTokenBudget(n)` 为一次运行可使用的 token 设上限，缓存的输入也计算在内：一旦运行已用掉 `n`，它就不再发起任何模型调用，并返回 `ErrBudgetExceeded`。每次调用的用量都随其轮次记入日志，因此两项限制都从日志中重建，并在崩溃与恢复之后依然成立。
 
 ## 人在回路（Human-in-the-loop）
 
-三种风味。**批准/拒绝**：一个标记了 `WithApproval(SingleApproval())` 的工具在运行*之前*暂停；人类的决定是一个布尔：
+三种形式。**批准/拒绝**：一个标记了 `WithApproval(SingleApproval())` 的工具在运行*之前*暂停；人类的决定是一个布尔：
 
 <!-- docsnip: setup ctx context.Context; a *agent.Agent; journal *agent.Journal; runID string; input string -->
 ```go
@@ -502,7 +500,7 @@ agent.SubmitDecision(ctx, journal, agent.Decision{RunID: pend.RunID, ToolUseID: 
 
 ## 错误
 
-失败以哨兵错误（sentinel error）来分类，由 `errors.Is` 匹配，这是标准库的惯用法，没有自定义的错误框架。两层：一个**类别（category）**（粗粒度的类）和一个**条件（condition）**（一个具体的成因），后者包裹其类别，因此匹配可以在你需要的任一层级上工作：
+失败以哨兵错误（sentinel error）来分类，由 `errors.Is` 匹配。两层：一个**类别（category）**（粗粒度的类）和一个**条件（condition）**（一个具体的成因），后者包裹其类别，因此匹配可以在你需要的任一层级上工作：
 
 <!-- docsnip: setup ctx context.Context; a *agent.Agent; runID string; input string; func backOffAndRetry(); func fixToolWiring(); func alertOps() -->
 ```go
@@ -523,7 +521,7 @@ case errors.Is(err, agent.ErrStorage):      // durable-store I/O
 
 ## 中间件与可观测性
 
-两条独立的 `func(Handler) Handler` 链，位于两个重要的边界上：模型调用（`WithMiddleware`）和每一次工具调用（`WithToolMiddleware`）。最先添加 = 最外层。两者都是*可变更且可短路的*：改写送进去的东西、变换出来的东西，或者不调用 `next` 就返回。
+两条独立的 `func(Handler) Handler` 链：一条围绕模型调用（`WithMiddleware`），一条围绕每一次工具调用（`WithToolMiddleware`）。最先添加 = 最外层。两者都是*可变更且可短路的*：改写送进去的东西、变换出来的东西，或者不调用 `next` 就返回。
 
 <!-- docsnip: setup model agent.Model; journal *agent.Journal; tools []agent.Tool; import oteltrace "go.opentelemetry.io/otel/trace"; tracer oteltrace.Tracer -->
 ```go
@@ -551,7 +549,7 @@ a, err = a.With(
 
 `Retry` 做带抖动的指数退避，并在一个提供商 429 上尊重 `Retry-After`（适配器返回一个类型化的 `*agent.RateLimited`）；`Cost` 把来自 token 用量（含缓存读/写）的 USD 累加进一个你在运行后读取的 `CostMeter`。
 
-因为 `trace.Tool` 在循环内部运行，它的 span 处于交给工具的上下文中，所以当一个工具本身就是一个子智能体时，该子智能体的运行及其自己的 span 会作为子级嵌套。该 trace 自动跨越子智能体边界（这是 ADK / AgenticGoKit / trpc-agent-go 的一个缺口）。
+因为 `trace.Tool` 在循环内部运行，它的 span 处于交给工具的上下文中，所以当一个工具本身就是一个子智能体时，该子智能体的运行及其自己的 span 会作为子级嵌套。该 trace 跨越子智能体边界。
 
 工具中间件在持久化步骤*内部*运行，所以一次短路的结果（一次 `ToolCache` 命中）会像任何工具结果一样被记入日志，包裹了 `agent.ErrToolNotCalled` 的策略拒绝也一样；拒绝必须包裹 `agent.ErrToolNotCalled`：不包裹它的拒绝会让副作用的结果未知，什么都不记录，运行随之停止；恢复会重放它，绝不重新运行中间件或工具。`ToolRetry` 和 `ToolCache` 只作用于 `Safety` 允许的工具（分别是可重试安全的和 `ReadOnly` 的），而无论中间件做什么，智能体对一个不可重试安全的工具每次调用至多运行一次。用 `agent.ToolMiddleware` 签名写你自己的：
 
@@ -578,7 +576,7 @@ Bide 是一个多模块仓库：一个依赖精简的**核心**（`github.com/bi
 
 ## 架构
 
-由构造即为六边形（hexagonal）：核心定义端口（`Model`、`Store`、`Tool`、`Middleware`）；适配器在边缘处插入。依赖向内指；核心不导入任何适配器、任何基础设施，由 `architecture_test.go` 守护。
+六边形（hexagonal）：核心定义端口（`Model`、`Store`、`Tool`、`Middleware`）；适配器在边缘处插入。依赖向内指；核心不导入任何适配器、任何基础设施，由 `architecture_test.go` 守护。
 
 ```
 agent (root)     durable loop · Journal/Store · Message/Part · Tool/Safety · middleware types · RenderMermaid
@@ -594,11 +592,11 @@ store/postgres   HA durable resume (any node resumes any run)
 govern           Tier-2: federated governed state + quorum for agents that must agree (gsm-backed; own module)
 ```
 
-## 联邦化治理：可证明地达成一致的智能体（Tier-2）
+## 联邦化治理（Tier-2）
 
-持久化核心让*一个*智能体的工作免于崩溃。`govern` 层处理另一个难题：**许多独立运行、却必须达成一致的智能体**，跨进程、跨团队或跨组织边界，除共享的、全序的事件日志之外没有协调者，也没有单一写者。它给出两种可验证的一致形式，而在两者中要点都是*核验，不信任*：一方从公开工件核验结果，无需信任任何其他人的智能体。
+持久化核心让一个智能体的工作免于崩溃。`govern` 层面向许多独立运行、却必须达成一致的智能体，跨进程、跨团队或跨组织边界，除共享的、全序的事件日志之外没有协调者，也没有单一写者。它给出两种可验证的一致形式；在两者中，一方都从公开工件核验结果，无需信任任何其他人的智能体。
 
-**在共享状态上达成一致（收敛）。** 把共享状态描述为一个注册表（变量 + 不变量 + 事件）；gsm 在*构建时*检查智能体动作的每一种交错都到达同一个有效状态，否则就拒绝构建并向你展示一个反例（其范围参见[已知限制](../../docs/KNOWN-LIMITATIONS.md#governed-state-gsm)）。运行时是 O(1) 的表查找；状态是事件溯源的、崩溃可恢复的。它从单个共享注册表向上扩展、穿过**联邦（federations）**（跨边界约束：树、带解析器的多源 DAG、单调循环的*网格 mesh*），经由 `Embed` 组合，甚至能替你**合成**补偿（声明规则，得到一个收敛的治理者，或一份证明其不存在的证据）。智能体经由 `FederatedEventTool` 插入，因此一次 LLM 工具调用就成为一个受治理的事件。
+**在共享状态上达成一致（收敛）。** 把共享状态描述为一个注册表（变量 + 不变量 + 事件）；gsm 在*构建时*检查智能体动作的每一种交错都到达同一个有效状态，否则就拒绝构建并向你展示一个反例（其范围参见[已知限制](../../docs/KNOWN-LIMITATIONS.md#governed-state-gsm)）。运行时是 O(1) 的表查找；状态是事件溯源的、崩溃可恢复的。它从单个共享注册表向上扩展、穿过**联邦（federations）**（跨边界约束：树、带解析器的多源 DAG、单调循环的*网格 mesh*），经由 `Embed` 组合，能替你合成补偿（声明规则，得到一个收敛的治理者，或一份证明其不存在的证据）。智能体经由 `FederatedEventTool` 插入，因此一次 LLM 工具调用就成为一个受治理的事件。
 
 **在一个决定上达成一致（法定人数 quorum）。** k-of-n 个具名投票者（每一个是一个模型、提供商或主体）投出一个规范化的决定；每一票都是一个记入日志、至多一次的步骤，记录了谁怎么投的，而 k-of-n 的门是投票计数上的一个 gsm 不变量，因此"k 个达成一致"在每一种可能的计票上都被机器核验。`bide-audit verify-quorum` 从公开工件重新核对计票和每一票，在不信任生产者的情况下复现多数决规则。这个论断是精确的：一个法定人数证明的是*k 个投票者达成了一致*，并降低单模型风险；它并不认证那个决定是正确的（相关的错误不是独立性），且只有规范化的决定才能被法定人数化，自由格式的散文不能。
 
