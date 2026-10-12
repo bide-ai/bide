@@ -10,11 +10,17 @@ import (
 	"github.com/bide-ai/bide/agent"
 )
 
-// OpenReadOnly opens the SQLite journal at path for reading only: the file is opened read-only
-// (mode=ro, query_only), nothing is created or migrated, and every write (Insert, and a lease
-// statement) fails with an error wrapping agent.ErrStorage. A missing file, or one with no journal
-// tables or a schema version newer than this version's, is an error. It is for tools that inspect
-// a journal (bide-view), never for driving a run.
+// OpenReadOnly opens the SQLite journal at path for reading only. The file is opened read-only
+// (mode=ro and query_only) on one pool of up to four connections; nothing is created, migrated or
+// checkpointed. Get, Load and Runs (agent.Lister) read as they do on a Store from Open. Every write
+// fails: Insert with an error wrapping agent.ErrStorage, and the agent.Leaser methods with an
+// error. opts are Open's (WithTablePrefix names the tables to read).
+//
+// It refuses ":memory:" (ErrConfig), a missing file (which it does not create), a file with no
+// journal tables, and one whose schema version is newer than this version's (ErrConfig). A journal
+// another process is writing in WAL mode can be read while it runs; each read sees the journal as
+// of that read. Close closes the pool. It is for tools that inspect a journal, such as bide-view,
+// never for driving a run.
 func OpenReadOnly(path string, opts ...Option) (*Store, error) {
 	cfg, err := newConfig(opts)
 	if err != nil {

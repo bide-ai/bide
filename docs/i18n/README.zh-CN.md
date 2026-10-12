@@ -393,6 +393,12 @@ sig, _ := audit.Sign(head, audit.Ed25519Signer{Priv: priv}) // anchor it: sign /
 
 `SignTreeHead` 产出 CT 风格的**签名树头（Signed Tree Head）**，即 `{Kind, RunID, Size, Root, TimestampNanos}` 连同其签名方案一起，由任意 `audit.Signer`（Ed25519、ML-DSA-65 或二者混合）签名，就是你要发布的那件工件。完整流程：签署一个 STH，稍后用一个包含性证明披露单条记录，审计员对照签名过的根来核验它，并证明两个 STH 之间的仅追加式增长。关于该模型、API 以及端到端的合规流程，见 [docs/guides/audit.md](../../docs/guides/audit.md)。
 
+### 运行查看器
+
+`bide-view` 为单次运行打开一个只读页面，在 `127.0.0.1` 上提供，数据来自 SQLite 日志或导出的日志。它展示运行的时间线（模型轮次、工具调用及其 `Safety`、尝试、审批），被暂停的操作及记录其结果的 `ResolveHalt` 调用，每个审批关卡的 k-of-n 状态，`plan` 流程在其声明拓扑上走过的路径，以及日志能否通过签名树头或证据包验证。它从不写入存储。参见[运行查看器指南](../../docs/guides/run-viewer.md)（英文）。
+
+<p align="center"><img src="../../docs/guides/img/run-viewer-agent-halted.png" width="720" alt="bide-view"></p>
+
 ## RAG 与记忆（自带）
 
 Bide 不附带任何向量存储、嵌入器或记忆后端：它给你接口，你插入你本就在运行的存储。针对你自己的基础设施实现一个接口：

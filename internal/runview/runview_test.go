@@ -357,3 +357,85 @@ func TestGateStatus(t *testing.T) {
 		}
 	}
 }
+
+// TestWaitingForApproval: a run paused at a gate with no decision shows "waiting for approval",
+// and lists the gate with 0 decided and every approver pending.
+func TestWaitingForApproval(t *testing.T) {
+	ctx := context.Background()
+	j := agenttest.MemJournal()
+	policy := agent.ApprovalPolicy{Need: 2, Approvers: []string{"ops", "finance", "risk"}}
+	refund := agent.MustFunc("refund", "refund an order", func(context.Context, struct{ Order int }) (string, error) {
+		return "refunded", nil
+	}, agent.WithApproval(&policy))
+	verifiers := func(id string) (agent.ApproverVerifier, bool) {
+		return audit.Ed25519Verifier{Pub: key(id).Public().(ed25519.PublicKey)}, true
+	}
+	model := agenttest.NewScriptedModel(agenttest.ToolTurn("c1", "refund", `{"Order":42}`), agenttest.TextTurn("done"))
+	a := agenttest.MustNew(model, j, agent.WithTools(refund), agent.WithApproverVerifiers(verifiers))
+	if _, err := a.Run(ctx, "w1", agent.UserText("Refund order 42.")); !isPending(err) {
+		t.Fatalf("Run = %v, want approval pending", err)
+	}
+	h := Handler(Options{Source: JournalSource{J: j}})
+	v := viewOf(t, h, "w1")
+	if v.State != "waiting" || v.StateText != "waiting for approval" {
+		t.Fatalf("state = %q (%q), want waiting for approval", v.State, v.StateText)
+	}
+	if len(v.Gates) != 1 {
+		t.Fatalf("gates = %+v, want the refund's gate listed before any decision", v.Gates)
+	}
+	g := v.Gates[0]
+	if !g.Waiting || g.Need != 2 || len(g.Approvers) != 3 || len(g.Decisions) != 0 || strings.Join(g.Pending, ",") != "ops,finance,risk" {
+		t.Fatalf("gate = %+v", g)
+	}
+	if want := "pending (0 of 3 approvers; 2 needed; signatures are checked when the run resumes)"; g.Status != want {
+		t.Fatalf("gate status = %q, want %q", g.Status, want)
+	}
+	if code, body := get(t, h, "/run?id=w1"); code != 200 || !strings.Contains(body, "waiting for approval") {
+		t.Fatalf("GET /run = %d, page does not say waiting for approval", code)
+	}
+}
+
+// TestWaitingSingleGate: a one-decision gate shows waiting until its decision is recorded.
+func TestWaitingSingleGate(t *testing.T) {
+	ctx := context.Background()
+	j := agenttest.MemJournal()
+	refund := agent.MustFunc("refund", "refund", func(context.Context, struct{}) (string, error) { return "ok", nil }, agent.WithApproval(agent.SingleApproval()))
+	newAgent := func() *agent.Agent {
+		return agenttest.MustNew(agenttest.NewScriptedModel(agenttest.ToolTurn("c1", "refund", `{}`), agenttest.TextTurn("done")), j, agent.WithTools(refund))
+	}
+	if _, err := newAgent().Run(ctx, "s1", agent.UserText("go")); !isPending(err) {
+		t.Fatalf("Run = %v, want approval pending", err)
+	}
+	h := Handler(Options{Source: JournalSource{J: j}})
+	if v := viewOf(t, h, "s1"); v.StateText != "waiting for approval" || len(v.Gates) != 1 || !v.Gates[0].Single || v.Gates[0].Status != "pending (one decision; none recorded yet)" {
+		t.Fatalf("view = %q, gates %+v", v.StateText, v.Gates)
+	}
+	if err := agent.Approve(ctx, j, "s1", "c1", true); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := newAgent().Run(ctx, "s1", agent.UserText("go")); err != nil {
+		t.Fatal(err)
+	}
+	if v := viewOf(t, h, "s1"); v.State != "completed" || v.Gates[0].Waiting || v.Gates[0].Status != "approved (single decision)" {
+		t.Fatalf("after approval: state %q, gates %+v", v.State, v.Gates)
+	}
+}
+
+// TestMainUsage: -h prints the synopsis and every flag and exits 0; a bad flag combination is a
+// usage error (2) and serves nothing.
+func TestMainUsage(t *testing.T) {
+	var out, errb strings.Builder
+	if code := Main([]string{"-h"}, &out, &errb, nil); code != 0 {
+		t.Fatalf("-h exit = %d", code)
+	}
+	for _, want := range []string{"bide-view -db <file>", "loopback", "-db", "-journal", "-run", "-topology", "-digest", "-sth", "-evidence", "-pubkey", "-addr"} {
+		if !strings.Contains(errb.String(), want) {
+			t.Errorf("-h output lacks %q", want)
+		}
+	}
+	for _, args := range [][]string{{}, {"-db", "x", "-journal", "y"}, {"-journal", "y", "-sth", "s"}, {"-journal", "y", "-digest", "d"}} {
+		if code := Main(args, io.Discard, io.Discard, nil); code != 2 {
+			t.Errorf("Main(%q) = %d, want 2", args, code)
+		}
+	}
+}

@@ -305,20 +305,25 @@ func svg(g *Graph, idx map[string]int) string {
 			cls, mk = "edge taken", "arrow-taken"
 		}
 		var lx, ly int
+		anchor := "start"
 		if e.Back {
 			x1, y1 := a.x+nodeW, a.y+nodeH/2
 			x2, y2 := z.x+nodeW, z.y+nodeH/2
 			cx := max(x1, x2) + 60
 			fmt.Fprintf(&b, `<path class="%s back" d="M%d,%d C%d,%d %d,%d %d,%d" marker-end="url(#%s)"/>`, cls, x1, y1, cx, y1, cx, y2, x2+2, y2, mk)
-			lx, ly = cx-8, (y1+y2)/2
+			lx, ly, anchor = cx-6, (y1+y2)/2, "end"
 		} else {
 			x1, y1 := a.x+nodeW/2, a.y+nodeH
 			x2, y2 := z.x+nodeW/2, z.y-2
 			fmt.Fprintf(&b, `<path class="%s" d="M%d,%d C%d,%d %d,%d %d,%d" marker-end="url(#%s)"/>`, cls, x1, y1, x1, y1+gapY/2, x2, y2-gapY/2, x2, y2, mk)
-			lx, ly = x2+6, y2-10
+			// Beside the curve's midpoint, on its outer side, clear of the arrowhead.
+			lx, ly = (x1+x2)/2+8, (y1+y2)/2+4
+			if x2 < x1 {
+				lx, anchor = (x1+x2)/2-8, "end"
+			}
 		}
 		if e.Label != "" {
-			fmt.Fprintf(&b, `<text class="elabel" x="%d" y="%d">%s</text>`, lx, ly, html.EscapeString(e.Label))
+			fmt.Fprintf(&b, `<text class="elabel" x="%d" y="%d" text-anchor="%s">%s</text>`, lx, ly, anchor, html.EscapeString(e.Label))
 		}
 	}
 	for _, n := range g.Nodes {

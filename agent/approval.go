@@ -426,6 +426,28 @@ func IsApprovalDecision(r Record, toolUseID string) bool {
 // ApprovalTallyStep is the journal name of the gate's terminal tally for toolUseID.
 func ApprovalTallyStep(toolUseID string) string { return "approval-tally:" + encodeID(toolUseID) }
 
+// ApprovalPendingStep is the journal name of the record that a run paused at the approval gate of
+// the call toolUseID (see ApprovalWait).
+func ApprovalPendingStep(toolUseID string) string { return "approval-pending:" + encodeID(toolUseID) }
+
+// ApprovalWait is what the record named ApprovalPendingStep holds: that a run paused at a call's
+// approval gate, and the gate it waits on. The run writes it, as a StepValue and only if it is
+// absent, when it first pauses at the gate, in the drive whose model turn made the call; a resume
+// that pauses again writes nothing, and a record lost to a crash is not written later.
+//
+// It is informational only, for a reader such as a run viewer, which can then show a gate before
+// any decision on it is recorded. No part of the engine reads it to decide anything: not the gate
+// (which counts decisions, see TallyApprovals), not a resume, not recovery. A failed write of it is
+// not reported, since the pause is the same without it. Gate fields are the policy the run paused
+// under; the call's result, or the gate's tally, records the policy the gate enforced.
+type ApprovalWait struct {
+	ToolUseID string   `json:"tool_use_id"`
+	ToolName  string   `json:"tool_name"`
+	Single    bool     `json:"single,omitempty"`    // a one-decision gate (SingleApproval): Need and Approvers are empty
+	Need      int      `json:"need,omitempty"`      // the m-of-n gate's k
+	Approvers []string `json:"approvers,omitempty"` // the m-of-n gate's eligible approvers, in policy order
+}
+
 // FindToolCall returns the journal index of the model turn that requested toolUseID, and the
 // call itself (its name and arguments), or ok=false if no recorded turn requested it.
 func FindToolCall(recs []Record, toolUseID string) (idx int, call ToolUse, ok bool) {
@@ -575,4 +597,20 @@ func checkDecision(ctx context.Context, store *Journal, op string, d Decision, n
 		}
 	}
 	return nil
+}
+
+// notePending records, unless it is recorded already, that the run paused at tu's gate pol (see
+// ApprovalWait). The loop calls it only for a call of a turn this drive asked the model for, so a
+// resume, which replays the turn, writes nothing: re-driving a paused run leaves its journal as it
+// is. Nothing reads the record to decide, so a failed write is dropped.
+func (a *Agent) notePending(ctx context.Context, runID string, tu ToolUse, pol *ApprovalPolicy) {
+	w := ApprovalWait{ToolUseID: tu.ID, ToolName: tu.Name, Single: pol.single()}
+	if !w.Single {
+		w.Need, w.Approvers = pol.Need, slices.Clone(pol.Approvers)
+	}
+	b, err := json.Marshal(w)
+	if err != nil {
+		return
+	}
+	_, _ = a.store.put(ctx, runID, ApprovalPendingStep(tu.ID), Record{Kind: StepValue, Result: b})
 }

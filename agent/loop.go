@@ -383,6 +383,7 @@ func (a *Agent) runLoop(ctx context.Context, runID string, d *driveSpec) (Messag
 		// assistant turn is pending as long as any of its calls is, even though the results
 		// already recorded follow it in the conversation.
 		var asst Message
+		live := false     // this drive asked the model for the turn (it was not replayed)
 		terminal := false // the latest turn's terminal-tool call succeeded, which ends the run
 		if i := lastAssistant(msgs); i >= 0 && pending(msgs[i], done) {
 			asst = msgs[i]
@@ -535,6 +536,7 @@ func (a *Agent) runLoop(ctx context.Context, runID string, d *driveSpec) (Messag
 			tot.add(rec) // the recorded turn, which another driver of the run may have written
 			node.add(journalTotals([]Record{rec}).spend)
 			liveTurns++
+			live = true
 			asst = *rec.Message
 			modelSeq++
 			msgs = append(msgs, asst)
@@ -628,6 +630,9 @@ func (a *Agent) runLoop(ctx context.Context, runID string, d *driveSpec) (Messag
 						return leave(err)
 					}
 					if !final {
+						if live {
+							a.notePending(ctx, runID, tu, pol)
+						}
 						evTally := tally // the event gets its own copy; ApprovalPending keeps tally
 						evTally.Pending = append([]string(nil), tally.Pending...)
 						fire(ApprovalRequired{ToolUseID: tu.ID, Name: tu.Name, Args: tu.Args, Quorum: &evTally})
@@ -636,6 +641,9 @@ func (a *Agent) runLoop(ctx context.Context, runID string, d *driveSpec) (Messag
 					approved = tally.Passed()
 				} else {
 					if !decided[tu.ID] {
+						if live {
+							a.notePending(ctx, runID, tu, pol)
+						}
 						fire(ApprovalRequired{ToolUseID: tu.ID, Name: tu.Name, Args: tu.Args})
 						return leave(&ApprovalPending{RunRef: RunRef{RunID: runID, RootRunID: rootRunID(ctx, runID)}, ToolUseID: tu.ID, ToolName: tu.Name, Args: tu.Args})
 					}

@@ -25,7 +25,7 @@ pre { white-space: pre-wrap; word-break: break-word; margin: 4px 0; }
 .good { color: var(--good); } .bad { color: var(--bad); }
 .pill { font-size: 12px; font-weight: 500; padding: 2px 9px; border-radius: 10px; background: var(--line); vertical-align: middle; }
 .state-completed { background: var(--good-bg); color: var(--good); }
-.state-started { background: var(--warn-bg); color: var(--warn); }
+.state-started, .state-waiting { background: var(--warn-bg); color: var(--warn); }
 .state-halted, .state-aborted, .state-cancelled { background: var(--bad-bg); color: var(--bad); }
 .input { color: var(--muted); margin-top: 0; }
 .cards { display: grid; grid-template-columns: repeat(auto-fit, minmax(260px, 1fr)); gap: 12px; }
