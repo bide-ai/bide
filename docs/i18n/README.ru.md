@@ -1,14 +1,14 @@
 [English](../../README.md) · [简体中文](README.zh-CN.md) · **Русский** · [हिन्दी](README.hi.md) · [العربية](README.ar.md)
 
+<p align="center">
+  <img src="../../assets/bide-banner.png" alt="Bide">
+</p>
+
 <p align="center"><img src="../../assets/crash-demo.gif" width="100%" alt="bide-demo: агента убивают посреди списания, после перезапуска он останавливается с outcome unknown вместо повторного списания, списание подтверждается по записи платёжного провайдера, а bide-view показывает проверенное аудиторское доказательство и подписи 2 из 3"></p>
 
 ```sh
 go run github.com/bide-ai/bide/cmd/bide-demo@latest   # убейте агента посреди платежа: второго списания не будет (без API-ключа)
 ```
-
-<p align="center">
-  <img src="../../assets/bide-banner.png" alt="Bide">
-</p>
 
 **Создавайте надёжные AI-агенты на Go. Побочные эффекты срабатывают не более одного раза.**
 

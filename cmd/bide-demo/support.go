@@ -16,6 +16,7 @@ import (
 	"runtime"
 	"strings"
 	"sync"
+	"time"
 
 	"github.com/bide-ai/bide/agent"
 	"github.com/bide-ai/bide/audit"
@@ -215,12 +216,23 @@ func view(ctx context.Context, dir string, logPub ed25519.PublicKey) (*result, e
 	return res, nil
 }
 
-// verdict colors a check's text by whether it holds.
-func verdict(p *printer, ok bool, text string) string {
-	if ok {
+// proofText is a proof's verdict in a few words: what it covers when it verifies, and its summary
+// (in red) when it does not.
+func proofText(p *printer, pr *runview.Proof) string {
+	if pr.OK {
+		return p.green(fmt.Sprintf("verified (%d records)", pr.Covers))
+	}
+	return p.red(pr.Summary)
+}
+
+// approvalText is the gate's signature check: "2 of 3: signatures verified" when it holds, and the
+// page's full text (in red) when it does not.
+func approvalText(p *printer, a runview.ApprovalCheck) string {
+	if a.OK {
+		text, _, _ := strings.Cut(a.Text, " (")
 		return p.green(text)
 	}
-	return p.red(text)
+	return p.red(a.Text)
 }
 
 func writeJSON(path string, v any) error {
@@ -285,11 +297,11 @@ func (p *printer) line(s string) { fmt.Fprintln(p.out, s) }
 // step prints a numbered step's first line: the number, a short label, and what happens.
 func (p *printer) step(n int, label, what string) {
 	p.line("")
-	p.line(fmt.Sprintf(" %s  %s %s", p.cyan(fmt.Sprint(n)), p.bold(fmt.Sprintf("%-8s", label)), what))
+	p.line(fmt.Sprintf("%s %s %s", p.cyan(fmt.Sprint(n)), p.bold(fmt.Sprintf("%-7s", label)), what))
 }
 
 // more prints a line under the current step, aligned with its text.
-func (p *printer) more(s string) { p.line(strings.Repeat(" ", 13) + s) }
+func (p *printer) more(s string) { p.line(strings.Repeat(" ", 10) + s) }
 
 func (p *printer) fatal(err error) {
 	p.line("")
@@ -310,3 +322,39 @@ func (p *printer) red(s string) string    { return p.sgr("31", s) }
 func (p *printer) green(s string) string  { return p.sgr("32", s) }
 func (p *printer) yellow(s string) string { return p.sgr("33", s) }
 func (p *printer) cyan(s string) string   { return p.sgr("36", s) }
+
+// recorder serves assets/demo/record.sh (see recordEnv); it does nothing when recordEnv is unset.
+type recorder struct {
+	dir   string
+	start time.Time
+}
+
+func newRecorder() recorder { return recorder{dir: os.Getenv(recordEnv), start: time.Now()} }
+
+func (r recorder) on() bool { return r.dir != "" }
+
+// mark appends the event and the seconds since the demo started to marks.txt.
+func (r recorder) mark(event string) error {
+	if !r.on() {
+		return nil
+	}
+	f, err := os.OpenFile(filepath.Join(r.dir, "marks.txt"), os.O_APPEND|os.O_CREATE|os.O_WRONLY, 0o644)
+	if err != nil {
+		return err
+	}
+	fmt.Fprintf(f, "%s %.2f\n", event, time.Since(r.start).Seconds())
+	return f.Close()
+}
+
+// snapshot copies the closed journal in dir to <name>.db in the recorder's directory, and marks
+// the event.
+func (r recorder) snapshot(dir, name string) error {
+	if err := r.mark(name); err != nil {
+		return err
+	}
+	b, err := os.ReadFile(filepath.Join(dir, journalFile))
+	if err != nil {
+		return err
+	}
+	return os.WriteFile(filepath.Join(r.dir, name+".db"), b, 0o644)
+}

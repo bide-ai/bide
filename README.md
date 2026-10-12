@@ -1,14 +1,14 @@
 **English** · [简体中文](docs/i18n/README.zh-CN.md) · [Русский](docs/i18n/README.ru.md) · [हिन्दी](docs/i18n/README.hi.md) · [العربية](docs/i18n/README.ar.md)
 
+<p align="center">
+  <img src="assets/bide-banner.png" alt="Bide">
+</p>
+
 <p align="center"><img src="assets/crash-demo.gif" width="100%" alt="bide-demo: an agent is killed mid-charge, the restart halts with outcome unknown instead of charging again, the charge is resolved from the provider's record, and bide-view shows the run with its audit proof and 2-of-3 approval signatures verified"></p>
 
 ```sh
 go run github.com/bide-ai/bide/cmd/bide-demo@latest   # kill an agent mid-payment; it does not charge twice (no API key)
 ```
-
-<p align="center">
-  <img src="assets/bide-banner.png" alt="Bide">
-</p>
 
 <p align="center">
   <strong>Build durable AI agents in Go. Side effects that fire at most once.</strong>

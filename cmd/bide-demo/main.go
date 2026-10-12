@@ -56,6 +56,11 @@ const (
 	// childEnv names the demo's directory in the environment of the child process that drives
 	// the agent until it is killed.
 	childEnv = "BIDE_DEMO_CHILD"
+
+	// recordEnv names a directory for assets/demo/record.sh, which composes the README's
+	// recording: the demo copies the halted journal there (halted.db) and appends the seconds since
+	// it started at which the halt and the verified proof were printed (marks.txt).
+	recordEnv = "BIDE_DEMO_RECORD"
 )
 
 // policy is the gate on the charge: 2 of these 3 approvers must sign off.
@@ -111,7 +116,8 @@ func main() {
 	}
 	link := "http://" + ln.Addr().String() + "/run?id=" + runID
 	p.line("")
-	p.line(p.bold("viewer") + "  " + p.cyan(link) + p.dim("   (Ctrl-C to quit)"))
+	p.line(p.bold("viewer") + "  " + p.cyan(link))
+	p.line(p.dim("        (Ctrl-C to quit)"))
 	if *keep {
 		p.line(p.dim(fmt.Sprintf("kept    %s\n        bide-view -db %s -run %s -evidence %s -pubkey %s -approver-keys %s",
 			dir, filepath.Join(dir, journalFile), runID, filepath.Join(dir, evidenceFile), res.logPub, filepath.Join(dir, keysFile))))
@@ -153,7 +159,8 @@ func demo(ctx context.Context, dir string, cfg config, p *printer, fast bool) (*
 			time.Sleep(d)
 		}
 	}
-	p.line(p.bold("bide crash demo") + p.dim("  kill an agent mid-payment; it must not charge twice"))
+	rec := newRecorder()
+	p.line(p.bold("bide crash demo") + p.dim("  no double charges"))
 	pause(500 * time.Millisecond)
 
 	// Keys: the log operator signs every tree head and the evidence; each approver signs their
@@ -182,7 +189,7 @@ func demo(ctx context.Context, dir string, cfg config, p *printer, fast bool) (*
 	}
 
 	// 1. The agent asks to charge; the gate pauses it; two approvers sign.
-	p.step(1, "Approve", fmt.Sprintf("the agent asks to charge $%d for order %d", amount, order))
+	p.step(1, "Approve", fmt.Sprintf("the agent asks to charge $%d", amount))
 	j, closeJ, err := openJournal(dir)
 	if err != nil {
 		return nil, err
@@ -193,7 +200,7 @@ func demo(ctx context.Context, dir string, cfg config, p *printer, fast bool) (*
 		closeJ()
 		return nil, fmt.Errorf("the first run did not pause at the approval gate: %v", err)
 	}
-	p.more(fmt.Sprintf("gate     %d of %d (%s)", policy.Need, len(policy.Approvers), strings.Join(policy.Approvers, ", ")))
+	p.more(fmt.Sprintf("gate %d of %d (%s)", policy.Need, len(policy.Approvers), strings.Join(policy.Approvers, ", ")))
 	subject := agent.ApprovalSubject{RunID: runID, ToolUseID: pend.ToolUseID, ToolName: pend.ToolName, Args: pend.Args}
 	for _, id := range []string{"ops", "finance"} {
 		pause(500 * time.Millisecond)
@@ -238,10 +245,19 @@ func demo(ctx context.Context, dir string, cfg config, p *printer, fast bool) (*
 	}
 	p.more(p.yellow("outcome unknown: not charging again"))
 	p.more(fmt.Sprintf("provider charges: %d", len(charges)))
+	if rec.on() {
+		closeJ()
+		if err := rec.snapshot(dir, "halted"); err != nil {
+			return nil, err
+		}
+		if j, closeJ, err = openJournal(dir); err != nil {
+			return nil, err
+		}
+	}
 	pause(1300 * time.Millisecond)
 
 	// 4. Look the charge up at the provider, record it, and finish the run.
-	p.step(4, "Resolve", fmt.Sprintf("looking up order %d at the provider ...", order))
+	p.step(4, "Resolve", fmt.Sprintf("look up order %d at the provider", order))
 	pause(900 * time.Millisecond)
 	var found *charge
 	for i := range charges {
@@ -261,7 +277,7 @@ func demo(ctx context.Context, dir string, cfg config, p *printer, fast bool) (*
 		return nil, err
 	}
 	pause(600 * time.Millisecond)
-	p.more("recorded with ResolveHalt, with the provider's evidence")
+	p.more("recorded with ResolveHalt + evidence")
 	if _, err := newAgent(j, dir, cfg, nil).Run(ctx, runID, agent.UserText(input)); err != nil {
 		return nil, err
 	}
@@ -273,7 +289,7 @@ func demo(ctx context.Context, dir string, cfg config, p *printer, fast bool) (*
 	pause(1200 * time.Millisecond)
 
 	// 5. Export the evidence and the approvers' public keys, and verify them as bide-view does.
-	p.step(5, "Prove", "evidence exported and signed by the log key")
+	p.step(5, "Prove", "evidence exported, signed")
 	signer := audit.Ed25519Signer{Priv: logPriv}
 	pkg, err := audit.Evidence(ctx, j, runID, signer, time.Now().UnixNano(), audit.WithToolCall(callID))
 	if err != nil {
@@ -299,11 +315,15 @@ func demo(ctx context.Context, dir string, cfg config, p *printer, fast bool) (*
 		return nil, err
 	}
 	pause(700 * time.Millisecond)
-	p.more("anchored head  " + verdict(p, res.anchored.OK, res.anchored.Summary))
+	p.more("anchored  " + proofText(p, res.anchored))
 	pause(500 * time.Millisecond)
-	p.more("evidence       " + verdict(p, res.proof.OK, res.proof.Summary))
+	p.more("evidence  " + proofText(p, res.proof))
 	pause(500 * time.Millisecond)
-	p.more("approvals      " + verdict(p, res.approvals.OK, strings.TrimSuffix(res.approvals.Text, " (against the recorded policy)")))
+	p.more("approvals " + approvalText(p, res.approvals))
+	if err := rec.mark("verified"); err != nil {
+		res.close()
+		return nil, err
+	}
 
 	charges, err = providerCharges(dir)
 	if err != nil {
@@ -354,7 +374,7 @@ func crash(ctx context.Context, dir string, p *printer, pause func(time.Duration
 	if err := cmd.Start(); err != nil {
 		return err
 	}
-	p.step(2, "Crash", fmt.Sprintf("the agent runs in a child process (pid %d)", cmd.Process.Pid))
+	p.step(2, "Crash", fmt.Sprintf("agent runs in child process %d", cmd.Process.Pid))
 	pause(700 * time.Millisecond)
 	p.more(fmt.Sprintf("charging $%d ...", amount))
 	line, err := bufio.NewReader(stdout).ReadString('\n')
@@ -370,7 +390,8 @@ func crash(ctx context.Context, dir string, p *printer, pause func(time.Duration
 	}
 	_ = cmd.Wait()
 	pause(400 * time.Millisecond)
-	p.more(p.red(p.bold("process killed mid-charge")) + p.dim(", before bide journaled the result"))
+	p.more(p.red(p.bold("process killed mid-charge")))
+	p.more(p.dim("(before bide journaled the result)"))
 	return nil
 }
 

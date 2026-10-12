@@ -1,14 +1,14 @@
 [English](../../README.md) · [简体中文](README.zh-CN.md) · [Русский](README.ru.md) · [हिन्दी](README.hi.md) · **العربية**
 
+<p align="center">
+  <img src="../../assets/bide-banner.png" alt="Bide">
+</p>
+
 <p align="center"><img src="../../assets/crash-demo.gif" width="100%" alt="bide-demo: يُقتل الوكيل في منتصف الخصم، وعند إعادة التشغيل يتوقف بحالة outcome unknown بدل الخصم مرة أخرى، ثم يُحسم الخصم من سجل مزوّد الدفع، ويعرض bide-view إثبات التدقيق وتواقيع الموافقة 2 من 3 وقد تحققت"></p>
 
 ```sh
 go run github.com/bide-ai/bide/cmd/bide-demo@latest   # اقتل الوكيل في منتصف الدفع؛ لن يخصم مرتين (دون مفتاح API)
 ```
-
-<p align="center">
-  <img src="../../assets/bide-banner.png" alt="Bide">
-</p>
 
 **بناء وكلاء ذكاء اصطناعي مُعمَّرين بلغة Go. آثار جانبية تُنفَّذ مرة واحدة على الأكثر.**
 

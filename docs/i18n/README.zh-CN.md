@@ -1,14 +1,14 @@
 [English](../../README.md) · **简体中文** · [Русский](README.ru.md) · [हिन्दी](README.hi.md) · [العربية](README.ar.md)
 
+<p align="center">
+  <img src="../../assets/bide-banner.png" alt="Bide">
+</p>
+
 <p align="center"><img src="../../assets/crash-demo.gif" width="100%" alt="bide-demo：智能体在扣款中途被杀死，重启后以 outcome unknown 停下而不是再次扣款，随后根据支付服务商的记录解决，bide-view 显示审计证明与 2/3 审批签名均已验证"></p>
 
 ```sh
 go run github.com/bide-ai/bide/cmd/bide-demo@latest   # 在支付中途杀死智能体；它不会重复扣款（无需 API key）
 ```
-
-<p align="center">
-  <img src="../../assets/bide-banner.png" alt="Bide">
-</p>
 
 **用 Go 构建持久化 AI 智能体。副作用至多触发一次。**
 
