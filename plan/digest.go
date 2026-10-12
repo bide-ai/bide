@@ -76,7 +76,7 @@ func JournaledTopology(recs []agent.Record) (t Topology, digest string, ok bool,
 // layer's Merkle tree and signed tree head cover it. That makes it offline-verifiable
 // that a run followed THIS declared topology: an auditor proves the flow:digest
 // record is included under a signed tree head and checks the proven digest equals
-// the declared flow's Digest(). See docs/guides/flows.md, "Cryptographic conformance".
+// the declared flow's Digest(). See docs/guides/plan-flows.md, "Cryptographic conformance".
 //
 // The digest commits to topology and to the NAMES of the behaviour it wires, not to node
 // bodies: it hashes which registered block a node runs and which registered predicate an

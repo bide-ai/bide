@@ -11,7 +11,7 @@ Each section says what the limit is, whether it affects you, and what to do abou
 - [Sub-agent depth](#sub-agent-depth)
 - [Models and providers](#models-and-providers)
 - [Approval and quorum](#approval-and-quorum)
-- [Flows](#flows)
+- [Plan flows](#flows)
 - [Audit and proofs](#audit-and-proofs)
 - [Governed state (gsm)](#governed-state-gsm)
 - [Stores](#stores)
@@ -246,7 +246,7 @@ verifies. See [Human approval](guides/hitl-approval.md#scope).
 
 **A denied flow gate compensates nothing.** A plan flow node whose approval gate is denied never
 runs, but plan flows have no saga mode, so the nodes before it keep their effects and the run stays
-unfinished until it is cancelled. See [Flows](guides/flows.md#approval-gates-on-nodes).
+unfinished until it is cancelled. See [Plan flows](guides/plan-flows.md#approval-gates-on-nodes).
 
 **A quorum needs short, fixed answers.** Voters must pick from a set of labels, so a quorum does not
 apply to free-form output. Agreement lowers the risk of one model's mistake, but models can be wrong
@@ -262,10 +262,10 @@ step: for example, a step fed by several producers without a join, or nested loo
 
 **Only Steps inside a flow node are scoped to it.** A `Journal.Step` or `Parallel` task a node's body
 runs is recorded per node and per loop iteration; an `Interrupt`, `Await` or `Sleep` it takes is not,
-so give a pause inside a loop body a name unique per iteration. See [Flows](guides/flows.md).
+so give a pause inside a loop body a name unique per iteration. See [Plan flows](guides/plan-flows.md).
 
 **`Model` nodes expect JSON.** A `Model` node decodes the reply as JSON into its output type, so
-prompt the model for JSON. See [Flows](guides/flows.md#limits).
+prompt the model for JSON. See [Plan flows](guides/plan-flows.md#limits).
 
 ## Audit and proofs
 

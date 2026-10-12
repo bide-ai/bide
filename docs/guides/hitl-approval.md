@@ -14,7 +14,7 @@ a call may be retried. A `SubAgent` takes `WithApproval` too, so a parent can re
 it delegates. Each call's result journals the policy it ran under (`Record.Approval`).
 
 For a typed value rather than a yes/no, use `Interrupt`/`AnswerInterrupt` instead (see the
-[README](../../README.md#human-in-the-loop)).
+[tour](../tour.md#human-in-the-loop)).
 
 ## 1-of-1
 
@@ -273,7 +273,7 @@ never count, and are not waited on: when too few seats remain to reach `Need`, t
 
 ### On a plan flow node
 
-A [plan flow](flows.md#approval-gates-on-nodes) node takes the same gate: `plan.Approval(policy)` in
+A [plan flow](plan-flows.md#approval-gates-on-nodes) node takes the same gate: `plan.Approval(policy)` in
 Go, a config `approval: {need, approvers}` block, or the gate of the agent tool the node wraps, with
 the approvers' verifiers bound by `Builder.WithApproverVerifiers` (or `plan.WithLoadedApproverVerifiers`).
 The flow pauses before the node with the same `*agent.ApprovalPending`; its `ToolUseID` is the node's

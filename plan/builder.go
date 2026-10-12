@@ -199,7 +199,7 @@ func checkStepName(name string) error {
 // cleared with agent.ResolveHalt) rather than re-firing the body. A non-idempotent side
 // effect is therefore safe by default, with no per-step opt-in. A Step that is not
 // retry-safe must not pause (its body's pause is ErrConfig, as for agent.Journal.Step). See
-// docs/guides/flows.md.
+// docs/guides/plan-flows.md.
 //
 // Pass plan.ReadOnly() or plan.Idempotent() to opt
 // a node OUT of that halt: a retry-safe node RE-RUNS its body from the top on an

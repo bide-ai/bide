@@ -5,7 +5,7 @@ package main
 // arm with a loop_max back-edge), and per-node safety. Each is authored as data that
 // references registered Go blocks by name, loaded into the Go builder, run, conformed,
 // and asserted to share the code-built flow's topology Digest (config == code). See
-// ../../docs/guides/flows.md ("Declarative config").
+// ../../docs/guides/plan-flows.md ("Declarative config").
 //
 // As with demoDeclarative, these run only on the clean demo path against their own in-memory
 // stores, so they never perturb the crash/resume e2e that drives the sqlite journal.

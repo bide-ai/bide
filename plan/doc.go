@@ -54,6 +54,6 @@
 // a run (Flow.Conform), distinguishing the declared diagram from the diagram
 // agent.RenderMermaid recovers from the journal.
 //
-// See docs/guides/flows.md for the guide, including the limits this package carries
+// See docs/guides/plan-flows.md for the guide, including the limits this package carries
 // (Switch arms do not reconverge; plan adds no executor of its own).
 package plan
