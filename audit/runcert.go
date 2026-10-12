@@ -31,7 +31,7 @@ import (
 //   - policies-convergence-certified: for each used policy digest, an anchored convergence
 //     certificate leaf exists in the same signed tree as the policy leaf and links to its digest.
 //     The certificate is a producer claim; a rigorous verifier cross-checks it against the external
-//     oracle (bide-audit verify-run -checker), exactly as verify-convergence does, so a
+//     oracle (bide audit verify-run -checker), exactly as verify-convergence does, so a
 //     certificate that overstates convergence is caught outside this package.
 //
 // Binding. The used-policy head is bound to this run and to this journal, not merely signed by
@@ -298,7 +298,7 @@ type VerifiedPolicy struct {
 // ErrNotVerified when a property failed (Reasons says which). Any other error means the certificate
 // could not be checked: it, or a bundle it carries, is not of the format this version reads
 // (ErrFormat), or a bundle's record or a leaf could not be read (ErrMalformed). It does not check
-// the heads' timestamps; EvidencePackage.Verify and bide-audit verify-run do (see CheckTimestamp).
+// the heads' timestamps; EvidencePackage.Verify and bide audit verify-run do (see CheckTimestamp).
 func VerifyRun(cert RunCertificate, approved []string, v Verifier) (RunVerification, error) {
 	res := RunVerification{}
 	if err := checkVerifier(v); err != nil {

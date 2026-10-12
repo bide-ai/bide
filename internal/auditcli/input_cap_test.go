@@ -41,7 +41,7 @@ func capBundle(t *testing.T, dir string) (bundlePath, pubHex string) {
 	return bundlePath, hex.EncodeToString(pub)
 }
 
-// Every file bide-audit reads is capped, 256 MiB by default: a larger input is refused before it is
+// Every file bide audit reads is capped, 256 MiB by default: a larger input is refused before it is
 // read into memory, naming the limit and the flag that raises it.
 func TestCLI_InputOverTheDefaultCapIsRefused(t *testing.T) {
 	dir := t.TempDir()

@@ -11,7 +11,7 @@ import (
 const JournalExportFormat = "bide.audit.journal-export.v1"
 
 // A JournalExport is a run's journal as the bytes the journal stores for each record, in persisted
-// order: the input a prover that holds no store (bide-audit prove and prove-absent) builds proofs
+// order: the input a prover that holds no store (bide audit prove and prove-absent) builds proofs
 // from. Each record is carried verbatim (base64 in JSON), never re-encoded, so a proof built from an
 // export commits to exactly the leaves a proof built from the store does, including the fields of
 // a record this version does not know.

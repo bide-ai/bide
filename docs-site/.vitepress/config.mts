@@ -29,16 +29,20 @@ export default defineConfig({
     siteTitle: 'bide',
     nav: [
       { text: 'Get started', link: '/getting-started' },
+      { text: 'Tour', link: '/tour' },
       { text: 'Concepts', link: '/CONCEPTS' },
-      { text: 'Guides', link: '/guides/flows' },
-      { text: 'Reference', link: '/reference/module-structure' },
+      { text: 'Guides', link: '/guides/plan-flows' },
+      { text: 'Reference', link: '/reference/cli' },
+      { text: 'Proofs', link: '/formal-verification' },
       { text: 'Blog', link: '/blog/' },
     ],
+    // The order of the product: start, build, inspect, prove; then the reference and the proofs.
     sidebar: [
       {
         text: 'Start here',
         items: [
           { text: 'Getting started', link: '/getting-started' },
+          { text: 'A tour of bide', link: '/tour' },
           { text: 'Concepts', link: '/CONCEPTS' },
           { text: 'The guarantee', link: '/GUARANTEE' },
           { text: 'Known limitations', link: '/KNOWN-LIMITATIONS' },
@@ -46,39 +50,53 @@ export default defineConfig({
         ],
       },
       {
-        text: 'Guides / Authoring',
+        text: 'Guides / Build',
         collapsed: false,
         items: [
-          { text: 'Reliability', link: '/guides/reliability' },
+          { text: 'Plan flows', link: '/guides/plan-flows' },
           { text: 'Durable steps', link: '/guides/durable-steps' },
-          { text: 'Flows', link: '/guides/flows' },
+          { text: 'Reliability', link: '/guides/reliability' },
           { text: 'Signals and ambient', link: '/guides/signals' },
-          { text: 'Observability', link: '/guides/observability' },
           { text: 'Models', link: '/guides/models' },
           { text: 'MCP', link: '/guides/mcp' },
           { text: 'Messaging', link: '/guides/messaging' },
           { text: 'RAG and memory', link: '/guides/rag-memory' },
-          { text: 'Debugging and recovery', link: '/guides/debugging' },
-          { text: 'Run viewer', link: '/guides/run-viewer' },
+          { text: 'Observability', link: '/guides/observability' },
         ],
       },
       {
-        text: 'Guides / Accountability',
+        text: 'Guides / Inspect',
+        collapsed: false,
+        items: [
+          { text: 'Run viewer', link: '/guides/run-viewer' },
+          { text: 'Debugging and recovery', link: '/guides/debugging' },
+        ],
+      },
+      {
+        text: 'Guides / Prove and govern',
         collapsed: false,
         items: [
           { text: 'Audit', link: '/guides/audit' },
-          { text: 'Delegation', link: '/guides/delegation' },
+          { text: 'Human approval (HITL)', link: '/guides/hitl-approval' },
           { text: 'Security model', link: '/guides/security-model' },
+          { text: 'Delegation', link: '/guides/delegation' },
           { text: 'Governance', link: '/guides/governance' },
           { text: 'Quorum', link: '/guides/quorum' },
-          { text: 'Human approval (HITL)', link: '/guides/hitl-approval' },
         ],
       },
       {
         text: 'Reference',
         items: [
+          { text: 'CLI reference', link: '/reference/cli' },
           { text: 'Extension points', link: '/reference/extension-points' },
           { text: 'Module structure', link: '/reference/module-structure' },
+          { text: 'API (pkg.go.dev)', link: 'https://pkg.go.dev/github.com/bide-ai/bide/agent' },
+        ],
+      },
+      {
+        text: 'Proofs',
+        items: [
+          { text: 'Formal verification', link: '/formal-verification' },
           { text: 'How bide is verified', link: '/testing/verification' },
           { text: 'Testing', link: '/testing/testing' },
         ],

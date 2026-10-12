@@ -1,0 +1,19 @@
+# A plan flow: assess -> refund -> notify. main.go registers a block for each node; bide check
+# flow.yaml checks this file without running it, and bide view -config flow.yaml draws it.
+version: 1
+flow: refund
+in: main.Order
+out: main.Receipt
+entry: assess
+nodes:
+  # A model call: the model reads the order and proposes a refund (main.go's model()).
+  - {name: assess, block: assess}
+  # A side effect, gated: it runs only after 2 of the 3 named approvers sign this exact refund,
+  # at most once, and a crash mid-refund halts the run instead of refunding twice.
+  - name: refund
+    block: refund
+    approval: {need: 2, approvers: [ops, finance, risk]}
+  - {name: notify, block: notify}
+wiring:
+  - edge: [assess, refund]
+  - edge: [refund, notify]

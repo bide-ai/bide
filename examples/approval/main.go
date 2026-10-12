@@ -20,7 +20,7 @@
 //	go run . evidence -db approval.db -out evidence.json
 //	go run . verify   -in evidence.json             # the auditor: public keys only
 //
-// A crash mid-refund, viewed with bide-view (go install github.com/bide-ai/bide/cmd/bide-view@latest):
+// A crash mid-refund, viewed with bide view (go install github.com/bide-ai/bide/cmd/bide@latest):
 //
 //	go run . run -db approval.db -crash             # the refund fires, then the process dies before its result is journaled
 //	go run . run -db approval.db                    # the resume halts: the refund's outcome is unknown
@@ -28,8 +28,8 @@
 //
 // The standalone CLI verifies the same files, for an auditor who does not write Go:
 //
-//	bide-audit verify-evidence  -evidence evidence.json -pubkey <log key hex printed by "evidence">
-//	bide-audit verify-approvals -evidence evidence.json -pubkey <log key hex> -call refund-1 \
+//	bide audit verify-evidence  -evidence evidence.json -pubkey <log key hex printed by "evidence">
+//	bide audit verify-approvals -evidence evidence.json -pubkey <log key hex> -call refund-1 \
 //	    -need 2 -approvers ops,finance,risk -approver-keys approver-keys.json
 //
 // The keys are derived from fixed seeds so separate processes agree on them. That is for the

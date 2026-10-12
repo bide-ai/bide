@@ -1,0 +1,45 @@
+package main
+
+import (
+	"context"
+	"crypto/ed25519"
+	"encoding/json"
+	"os"
+	"path/filepath"
+	"testing"
+
+	"github.com/bide-ai/bide/agent"
+	"github.com/bide-ai/bide/audit"
+)
+
+// TestStory: the run pauses at the gate, two approvers sign, the refund runs once, a second run
+// repeats nothing, and the evidence verifies: 2 of 3 approvers signed this exact refund.
+func TestStory(t *testing.T) {
+	dir := t.TempDir()
+	ctx := context.Background()
+	for range 2 {
+		if err := story(ctx, dir); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if n := (provider{dir: dir}).refunds(); n != 1 {
+		t.Fatalf("the provider holds %d refunds, want exactly 1", n)
+	}
+	k, err := loadKeys(dir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	b, err := os.ReadFile(filepath.Join(dir, "evidence.json"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	var pkg audit.EvidencePackage
+	if err := json.Unmarshal(b, &pkg); err != nil {
+		t.Fatal(err)
+	}
+	policy := agent.ApprovalPolicy{Need: 2, Approvers: approvers}
+	v, err := audit.VerifyApprovals(pkg.Actions, gateKey, policy, k.verifiers(), audit.Ed25519Verifier{Pub: k["log"].Public().(ed25519.PublicKey)})
+	if err != nil || !v.OK {
+		t.Fatalf("the approvals do not verify: %v %v", err, v.Problems)
+	}
+}

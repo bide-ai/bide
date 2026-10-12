@@ -81,7 +81,7 @@ type Record struct {
 	// other kind; a reconciler uses it to honor a grace period before resolving a halt.
 	AttemptedAt int64 `json:"attempted_at,omitempty"`
 	// Reconciled marks a StepToolResult that ResolveHalt injected from verified evidence
-	// rather than one the tool produced by running. It lets a later reader (and bide-audit)
+	// rather than one the tool produced by running. It lets a later reader (and bide audit)
 	// tell a reconciled outcome from a clean one at a glance.
 	Reconciled bool `json:"reconciled,omitempty"`
 	// OutcomeUnknown marks a StepSagaFail record for a step whose outcome is unknown: a

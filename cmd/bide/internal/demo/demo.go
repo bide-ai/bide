@@ -1,7 +1,7 @@
-// Command bide-demo kills an agent mid-payment and shows that bide does not charge twice. It
-// needs no API key, no network and no setup:
+// Package demo is bide demo: it kills an agent mid-payment and shows that bide does not charge
+// twice. It needs no API key, no network and no setup:
 //
-//	go run github.com/bide-ai/bide/cmd/bide-demo@latest
+//	bide demo
 //
 // A payment agent on a scripted model (agenttest) wants to charge $120 for order 42. Its charge
 // tool has the default Safety (a side effect) and a 2-of-3 approval gate (ops, finance, risk); the
@@ -15,13 +15,13 @@
 //  3. The demo looks the charge up at the provider, records it with agent.ResolveHalt and its
 //     evidence, and the run completes. The provider holds exactly one charge.
 //  4. It exports an evidence package and the approvers' public keys, verifies them, and serves the
-//     run on a loopback address in the bide-view page (the timeline, the crashed attempt, the
+//     run on a loopback address in the bide view page (the timeline, the crashed attempt, the
 //     resolution, the gate's signatures and the audit proof), and opens a browser on it.
 //
 // Flags: -no-browser prints the page's address without opening a browser, -fast drops the pauses
 // (for CI), -addr sets the loopback address to serve on, and -keep keeps the temp directory and
-// prints it, with the bide-view command that reopens the run.
-package main
+// prints it, with the bide view command that reopens the run.
+package demo
 
 import (
 	"bufio"
@@ -32,6 +32,7 @@ import (
 	"errors"
 	"flag"
 	"fmt"
+	"io"
 	"net/http"
 	"os"
 	"os/exec"
@@ -85,18 +86,51 @@ type config struct {
 	RetrySafe bool `json:"retry_safe,omitempty"`
 }
 
-func main() {
-	if dir := os.Getenv(childEnv); dir != "" {
-		os.Exit(child(dir))
-	}
-	fs := flag.NewFlagSet("bide-demo", flag.ExitOnError)
-	noBrowser := fs.Bool("no-browser", false, "print the viewer's address instead of opening a browser")
-	fast := fs.Bool("fast", false, "no pauses between steps (for CI)")
-	addr := fs.String("addr", "127.0.0.1:0", "loopback address to serve the viewer on (port 0 picks a free one)")
-	keep := fs.Bool("keep", false, "keep the demo's directory (the journal, evidence and keys) and print it")
-	_ = fs.Parse(os.Args[1:])
+// reexec is the command line (without the program) that runs the demo again, in the child process.
+var reexec []string
 
-	p := newPrinter(os.Stdout)
+// demoFlags are the demo's inputs, as parsed.
+type demoFlags struct {
+	noBrowser, fast, keep *bool
+	addr                  *string
+}
+
+func newFlags() (*flag.FlagSet, demoFlags) {
+	fs := flag.NewFlagSet("bide demo", flag.ContinueOnError)
+	var f demoFlags
+	f.noBrowser = fs.Bool("no-browser", false, "print the viewer's address instead of opening a browser")
+	f.fast = fs.Bool("fast", false, "no pauses between steps (for CI)")
+	f.addr = fs.String("addr", "127.0.0.1:0", "loopback address to serve the viewer on (port 0 picks a free one)")
+	f.keep = fs.Bool("keep", false, "keep the demo's directory (the journal, evidence and keys) and print it")
+	return fs, f
+}
+
+// Main runs the demo with the command line args (without the program and the subcommand) and
+// returns the exit status: 0 after a clean stop or -h, 1 if the demo fails, 2 for a usage error.
+// self is the command line that runs the demo again ("demo" for the bide program): the demo
+// re-executes the program with it, and with the child's environment variable set, to drive the
+// agent in a child process it can kill. Main is that child when the variable is set.
+func Main(args, self []string, stdout, stderr io.Writer) int {
+	if dir := os.Getenv(childEnv); dir != "" {
+		return child(dir)
+	}
+	reexec = self
+	fs, f := newFlags()
+	fs.SetOutput(stderr)
+	if err := fs.Parse(args); err != nil {
+		if errors.Is(err, flag.ErrHelp) {
+			return 0
+		}
+		return 2
+	}
+	if fs.NArg() > 0 {
+		fmt.Fprintf(stderr, "bide demo: unexpected argument %q\n", fs.Arg(0))
+		fs.Usage()
+		return 2
+	}
+	noBrowser, fast, addr, keep := f.noBrowser, f.fast, f.addr, f.keep
+
+	p := newPrinter(stdout)
 	dir, err := os.MkdirTemp("", "bide-demo-*")
 	if err != nil {
 		p.fatal(err)
@@ -119,7 +153,7 @@ func main() {
 	p.line(p.bold("viewer") + "  " + p.cyan(link))
 	p.line(p.dim("        (Ctrl-C to quit)"))
 	if *keep {
-		p.line(p.dim(fmt.Sprintf("kept    %s\n        bide-view -db %s -run %s -evidence %s -pubkey %s -approver-keys %s",
+		p.line(p.dim(fmt.Sprintf("kept    %s\n        bide view -db %s -run %s -evidence %s -pubkey %s -approver-keys %s",
 			dir, filepath.Join(dir, journalFile), runID, filepath.Join(dir, evidenceFile), res.logPub, filepath.Join(dir, keysFile))))
 	}
 	if !*noBrowser {
@@ -136,18 +170,19 @@ func main() {
 		p.fatal(err)
 	}
 	res.close()
+	return 0
 }
 
 // result is what a finished demo leaves for main to serve and for the test to check.
 type result struct {
-	handler   http.Handler   // the bide-view page over the run, read-only
+	handler   http.Handler   // the bide view page over the run, read-only
 	close     func()         // closes the read-only journal the handler reads
 	charges   int            // charges the provider holds
 	state     string         // the run's end state
-	proof     *runview.Proof // the exported evidence, checked as bide-view -evidence does
-	anchored  *runview.Proof // the last head the audited store anchored, as bide-view -sth does
+	proof     *runview.Proof // the exported evidence, checked as bide view -evidence does
+	anchored  *runview.Proof // the last head the audited store anchored, as bide view -sth does
 	approvals runview.ApprovalCheck
-	logPub    string // the log public key, as bide-view -pubkey takes it
+	logPub    string // the log public key, as bide view -pubkey takes it
 }
 
 // demo runs the whole story in dir and returns the viewer over the finished run. It fails unless
@@ -288,7 +323,7 @@ func demo(ctx context.Context, dir string, cfg config, p *printer, fast bool) (*
 	p.more(p.green("run " + string(st.State)))
 	pause(1200 * time.Millisecond)
 
-	// 5. Export the evidence and the approvers' public keys, and verify them as bide-view does.
+	// 5. Export the evidence and the approvers' public keys, and verify them as bide view does.
 	p.step(5, "Prove", "evidence exported, signed")
 	signer := audit.Ed25519Signer{Priv: logPriv}
 	pkg, err := audit.Evidence(ctx, j, runID, signer, time.Now().UnixNano(), audit.WithToolCall(callID))
@@ -364,7 +399,7 @@ func crash(ctx context.Context, dir string, p *printer, pause func(time.Duration
 	if err != nil {
 		return err
 	}
-	cmd := exec.CommandContext(ctx, exe)
+	cmd := exec.CommandContext(ctx, exe, reexec...)
 	cmd.Env = append(os.Environ(), childEnv+"="+dir)
 	cmd.Stderr = os.Stderr
 	stdout, err := cmd.StdoutPipe()
@@ -400,12 +435,12 @@ func crash(ctx context.Context, dir string, p *printer, pause func(time.Duration
 func child(dir string) int {
 	var cfg config
 	if err := readJSON(filepath.Join(dir, configFile), &cfg); err != nil {
-		fmt.Fprintln(os.Stderr, "bide-demo child:", err)
+		fmt.Fprintln(os.Stderr, "bide demo child:", err)
 		return 1
 	}
 	j, closeJ, err := openJournal(dir)
 	if err != nil {
-		fmt.Fprintln(os.Stderr, "bide-demo child:", err)
+		fmt.Fprintln(os.Stderr, "bide demo child:", err)
 		return 1
 	}
 	defer closeJ()
@@ -414,7 +449,7 @@ func child(dir string) int {
 		time.Sleep(time.Hour) // the parent kills the process here
 	}
 	_, err = newAgent(j, dir, cfg, charged).Run(context.Background(), runID, agent.UserText(input))
-	fmt.Fprintln(os.Stderr, "bide-demo child: the run returned before the parent killed it:", err)
+	fmt.Fprintln(os.Stderr, "bide demo child: the run returned before the parent killed it:", err)
 	return 1
 }
 

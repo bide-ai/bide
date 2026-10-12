@@ -201,7 +201,7 @@ func SignTreeHead(th TreeHead, s Signer) (SignedTreeHead, error) {
 // (scheme included) verifies. Any change to any field invalidates it. It checks authenticity
 // only: a caller that needs a particular tree also checks Kind and RunID (the bundle verifiers in
 // this package do), and a caller that relies on when the head was signed applies CheckTimestamp
-// (EvidencePackage.Verify and bide-audit do). The error wraps ErrFormat, ErrMalformed, or
+// (EvidencePackage.Verify and bide audit do). The error wraps ErrFormat, ErrMalformed, or
 // ErrNotVerified.
 func (sth SignedTreeHead) Verify(v Verifier) error {
 	if err := checkVerifier(v); err != nil {

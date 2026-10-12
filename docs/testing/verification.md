@@ -57,7 +57,7 @@ processes through `agent.RecoverLoop` against one database while the test kills,
 restarts them, and the database counts how often each side effect fired.
 
 **Cross-process end to end.** `examples/approval` and `examples/plan` build real binaries, kill
-and resume them across processes, and verify the resulting evidence with the `bide-audit` CLI,
+and resume them across processes, and verify the resulting evidence with the `bide audit` CLI,
 including tampered and incomplete evidence that must be rejected.
 
 **Model checking.** The claim protocol is also modelled in TLA+ ([spec/tla](../../spec/tla/README.md))

@@ -1,3 +1,5 @@
+//go:build !bide_audit_only
+
 package main
 
 import (
@@ -27,7 +29,7 @@ func drive(t *testing.T, j *agent.Journal, runID string) {
 	}
 }
 
-// page serves the run through the store opener bide-view uses and returns the run page.
+// page serves the run through the store opener bide view uses and returns the run page.
 func page(t *testing.T, open func(string) (agent.Store, io.Closer, error), where, runID string) string {
 	t.Helper()
 	s, c, err := open(where)
@@ -44,12 +46,12 @@ func page(t *testing.T, open func(string) (agent.Store, io.Closer, error), where
 		t.Fatalf("GET /run = %d: %s", rec.Code, rec.Body)
 	}
 	if _, _, err := s.Insert(context.Background(), runID, "x", []byte(`{}`)); err == nil {
-		t.Fatal("the store bide-view opened accepted a write")
+		t.Fatal("the store bide view opened accepted a write")
 	}
 	return rec.Body.String()
 }
 
-// TestSQLite: bide-view's SQLite opener reads a journal read-only.
+// TestSQLite: bide view's SQLite opener reads a journal read-only.
 func TestSQLite(t *testing.T) {
 	path := filepath.Join(t.TempDir(), "j.db")
 	w, err := sqlite.Open(path)
@@ -63,7 +65,7 @@ func TestSQLite(t *testing.T) {
 	}
 }
 
-// TestPostgres: bide-view's Postgres opener reads a journal in a read-only session. It runs
+// TestPostgres: bide view's Postgres opener reads a journal in a read-only session. It runs
 // against the CI Postgres (PG_DSN).
 func TestPostgres(t *testing.T) {
 	dsn := os.Getenv("PG_DSN")

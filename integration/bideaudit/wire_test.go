@@ -10,7 +10,7 @@ import (
 	"github.com/bide-ai/bide/govern"
 )
 
-// The bide-audit CLI mirrors govern's wire types so it imports neither gsm nor govern. govern is a
+// The bide audit CLI mirrors govern's wire types so it imports neither gsm nor govern. govern is a
 // separate module, so the check that each mirror matches govern is split at the golden files in
 // internal/auditcli/testdata/govern-wire. This half proves each golden file is govern's encoding of
 // the value below (fully populated, and zero) and that each govern type has one field per key; the

@@ -5,7 +5,7 @@ package main
 // stays as registered Go blocks referenced by name. A config loads into the same Go
 // builder and produces the same *plan.Flow, so it inherits RenderMermaid, Conform, and
 // the topology Digest unchanged. See
-// ../../docs/guides/flows.md ("Declarative config").
+// ../../docs/guides/plan-flows.md ("Declarative config").
 //
 // The headline this demonstration proves is CONFIG-CONFORMANCE: the config below and the
 // code-built triage flow in buildFlow describe the same topology, so their Digest() values

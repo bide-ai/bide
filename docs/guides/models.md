@@ -178,7 +178,7 @@ adds the output.
 ## Error surfacing (shared across all three adapters)
 
 Every adapter maps HTTP failures onto the framework's typed errors so a retry middleware can
-classify them ([retry docs in the README](../../README.md#middleware--observability)):
+classify them ([retry, in the tour](../tour.md#middleware--observability)):
 
 The provider's error object (`{"error":{...}}`, the same envelope on all three) is parsed, so the
 error carries the provider's own message.

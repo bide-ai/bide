@@ -9,7 +9,7 @@ import (
 	"github.com/bide-ai/bide/agent"
 )
 
-// The used-policy set reads a governed action's policy digest by the same rule bide-audit
+// The used-policy set reads a governed action's policy digest by the same rule bide audit
 // verify-governed-action does: the exact name "policy_digest" in a result that decodes strictly.
 // With a looser reading, one action would be said to run under one policy by the CLI and under
 // another by the used set, a run certificate and an absence proof.

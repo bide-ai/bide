@@ -19,7 +19,7 @@ import (
 // It refuses ":memory:" (ErrConfig), a missing file (which it does not create), a file with no
 // journal tables, and one whose schema version is newer than this version's (ErrConfig). A journal
 // another process is writing in WAL mode can be read while it runs; each read sees the journal as
-// of that read. Close closes the pool. It is for tools that inspect a journal, such as bide-view,
+// of that read. Close closes the pool. It is for tools that inspect a journal, such as bide view,
 // never for driving a run.
 func OpenReadOnly(path string, opts ...Option) (*Store, error) {
 	cfg, err := newConfig(opts)

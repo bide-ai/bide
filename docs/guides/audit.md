@@ -31,7 +31,7 @@ what the agent did*. Stdlib-only (`crypto/sha256`, `crypto/ed25519`, `crypto/mld
   which is injective only over valid UTF-8 (encoding/json rewrites invalid bytes to U+FFFD). A
   grant, event, or anchor entry with invalid UTF-8 in any string is refused rather than committed
   or verified.
-  `bide-audit` reads every artifact with `audit.UnmarshalStrict`, which rejects duplicate keys,
+  `bide audit` reads every artifact with `audit.UnmarshalStrict`, which rejects duplicate keys,
   keys that differ from a field only in case, unknown fields, invalid UTF-8, escaped lone
   surrogates, and base64 that is not the standard encoding of its bytes (line breaks, stray bits),
   and checks a message part against the fields of its type, so the file a person reads is exactly
@@ -311,7 +311,7 @@ version does not know, so a record a newer release wrote verifies and displays h
 case-variant names, invalid UTF-8, escaped lone surrogates. The public key must come from the anchor operator, not the bundle: that is what makes it
 **proofs you verify, not logs you trust.**
 
-For the auditor who does not write Go, the `bide-audit` CLI wraps this (`prove` over an
+For the auditor who does not write Go, the `bide audit` CLI wraps this (`prove` over an
 exported journal + STH, `verify` over a bundle + key; only exit 0 means verified). And for a third
 party who will not import the SDK at all, [`audit/verify`](../../audit/verify) is a **stdlib-only**
 package (no `agent`, no gsm) that checks inclusion, consistency, and STH signatures under all three
@@ -398,7 +398,7 @@ package is verified or derived from verified data:
 
 One check needs inputs the package deliberately does not carry: grant issuer signatures (they need
 the issuers' keys, checked with `VerifyDelegationChain` against your own PKI). For the auditor who
-does not write Go, `bide-audit verify-evidence` verifies the same file and prints a plain-English
+does not write Go, `bide audit verify-evidence` verifies the same file and prints a plain-English
 PASS/FAIL.
 
 ### Timestamps
@@ -409,13 +409,13 @@ shown to one rule (`audit.CheckTimestamp`, `audit.CheckTimestampOrder`):
 
 - the timestamp is positive;
 - it is not later than the verifier's clock plus an allowed skew (`audit.DefaultClockSkew`, five
-  minutes; `WithClockSkew` and `bide-audit -max-clock-skew` change it, and `WithVerifyTime` checks
+  minutes; `WithClockSkew` and `bide audit -max-clock-skew` change it, and `WithVerifyTime` checks
   as of another moment);
 - where one head extends another it is not earlier: a consistency proof's earlier head is not
   later than the head it proves grown, and a run certificate's used-policy head is not earlier than
   the journal head it was projected from.
 
-`EvidencePackage.Verify` applies the rule to every head a package carries, and bide-audit applies it
+`EvidencePackage.Verify` applies the rule to every head a package carries, and bide audit applies it
 to every signed head in every file it reads. The rule does not limit how old a head may be (an audit
 reads old heads), and it does not order heads of different runs or anchor-log entries, which are
 independent. `ProofBundle.Verify`, `SignedTreeHead.Verify`, and `VerifyRun` check signatures and
@@ -445,13 +445,13 @@ keys and the expected policy), so `audit.VerifyApprovals` checks it from the pac
 it refuses keys that put two of the policy's approvers on one key, recounts the decisions with the
 gate's own rule against the proven call, and reports a problem if the evidence omits a decision the
 gate read, if the recount disagrees with the recorded tally, or if
-the gate enforced a different policy. `bide-audit verify-approvals` runs the same check from the
+the gate enforced a different policy. `bide audit verify-approvals` runs the same check from the
 command line. `audit.ProveApproval` proves a single decision by its record name. See the
 [approval guide](hitl-approval.md#proving-the-gate-held) and `examples/approval`.
 
-## CLI reference: `bide-audit`
+## CLI reference: `bide audit`
 
-The `bide-audit` command ([`cmd/bide-audit`](../../cmd/bide-audit), its code in
+The `bide audit` command ([`cmd/bide`](../../cmd/bide), its code in
 [`internal/auditcli`](../../internal/auditcli)) is the auditor-facing
 front end for the whole proof surface. It is dependency-light: it imports only the core and `audit`
 packages and no store backend, so every produce verb operates on an **exported journal** (an
@@ -459,7 +459,8 @@ packages and no store backend, so every produce verb operates on an **exported j
 obtained with `audit.ExportJournal(ctx, store, runID)` and written as JSON; its first record is the
 journal header) plus a signed tree head,
 and every verify verb needs only a bundle and an out-of-band public key. Build it with
-`go build ./cmd/bide-audit`.
+`go build ./cmd/bide` (or install it: `brew install bide-ai/tap/bide`). Every verb and flag is in the
+[CLI reference](../reference/cli.md).
 
 Conventions shared across verbs:
 
@@ -474,7 +475,7 @@ Conventions shared across verbs:
   key must come from the anchor operator out-of-band, never from the bundle: that is what makes it a
   proof you verify rather than a log you trust.
 - Every artifact must carry the format this version reads (see [Artifact formats](#artifact-formats));
-  one made by an older release exits 4 with a message naming the format (`bide-audit -version` lists
+  one made by an older release exits 4 with a message naming the format (`bide audit -version` lists
   the formats this version reads).
 - Every JSON input is read strictly (`audit.UnmarshalStrict`): a duplicate key, a key that matches a
   field only case-insensitively, an unknown field, invalid UTF-8, an escaped lone surrogate, or
@@ -493,14 +494,14 @@ Conventions shared across verbs:
 - Every verb takes `-max-clock-skew <duration>` (default `5m`): every signed tree head in every file
   it reads must follow the timestamp rule (see Timestamps above) against this machine's clock, or
   the verb fails (exit 1). A negative skew is a usage error.
-- Every verb takes `-json`, before or after the verb (`bide-audit -json verify ...` or
-  `bide-audit verify ... -json`): stdout is then one JSON object instead of the text report, with
+- Every verb takes `-json`, before or after the verb (`bide audit -json verify ...` or
+  `bide audit verify ... -json`): stdout is then one JSON object instead of the text report, with
   `tool`, `version`, `verb`, `exit_code`, `result` (`verified`, `produced`, `not_verified`,
   `usage_error`, `no_verdict` or `unusable_input`), `verified` (true only when `exit_code` is 0 and
   the verb is a verify verb), `output` (the text report's lines), `errors`, and, for a produce verb
   without `-out`, `artifact` (the bundle). Error messages still go to stderr as well.
-- `bide-audit -version` prints the version and every artifact format this version reads, and which
-  verbs read it; `bide-audit -version -json` prints the same as JSON.
+- `bide audit -version` prints the version and every artifact format this version reads, and which
+  verbs read it; `bide audit -version -json` prints the same as JSON.
 
 | Verb | Required flags | Optional flags | Proves / checks |
 |---|---|---|---|
@@ -614,7 +615,7 @@ The verifier then closes a second, independent root of trust:
 ```
 # recompute the policy digest from the published bytes and, with the external verified
 # oracle (astchecker, extracted from the axiom-free Coq proof), certify the policy converges:
-bide-audit verify-governance -policy policy.machine -digest <hex-from-bundle> -checker ./astchecker
+bide audit verify-governance -policy policy.machine -digest <hex-from-bundle> -checker ./astchecker
 ```
 
 `verify-governance` recomputes the digest from the published format without importing the policy
@@ -637,7 +638,7 @@ The CLI does this whole cross-link in one command:
 ```
 # both bundles authentic and in the same signed tree, the action's policy digest links to the
 # anchored policy leaf, the leaf's bytes hash to that digest, and (with -checker) the policy converges:
-bide-audit verify-governed-action -action action.json -policy-bundle policy.json -pubkey <key> -checker ./astchecker
+bide audit verify-governed-action -action action.json -policy-bundle policy.json -pubkey <key> -checker ./astchecker
 ```
 
 ### Anchoring the convergence proof itself
@@ -679,7 +680,7 @@ them has none of their keys: it still verifies, and the CLI notes that it record
 # both bundles authentic and in the same signed tree, the certificate certifies the anchored
 # policy's digest, the leaf's bytes hash to it, and the oracle's convergence AND compensation-free
 # verdicts agree with the certificate:
-bide-audit verify-convergence -cert-bundle cert.json -policy-bundle policy.json -pubkey <key> -checker ./astchecker
+bide audit verify-convergence -cert-bundle cert.json -policy-bundle policy.json -pubkey <key> -checker ./astchecker
 ```
 
 ### Binding the resulting state, and checking it by replay
@@ -746,8 +747,8 @@ journal `journalHead` commits to); keys are built with `audit.ToolUseKeyFor(id)`
 
 ```
 # prove no tool call with this ID, or no governed action under this policy digest, ever happened:
-bide-audit prove-absent -journal run.json -sth used-policy-sth.json -key policy:<digest> -out absent.json
-bide-audit verify-absent -bundle absent.json -pubkey <key>   # exit 0 = authentically absent
+bide audit prove-absent -journal run.json -sth used-policy-sth.json -key policy:<digest> -out absent.json
+bide audit verify-absent -bundle absent.json -pubkey <key>   # exit 0 = authentically absent
 ```
 
 Scope, stated precisely: this proves the action ran under a policy that is anchored in the log and
@@ -823,7 +824,7 @@ as its own input (the certificate carries none, so a producer cannot pass by wid
 # only-approved-policies (used set bound to the run's signed used-policy head and a subset of the allowlist)
 # and policies-convergence-certified (each used policy anchored and digest-linked); with -checker the
 # oracle's verdict on each policy must agree with its certificate:
-bide-audit verify-run -cert runcert.json -pubkey <key> -approved <digest> -checker ./astchecker
+bide audit verify-run -cert runcert.json -pubkey <key> -approved <digest> -checker ./astchecker
 ```
 
 Scope, stated precisely: the certificate proves properties of the **governed, committed boundary**
@@ -934,7 +935,7 @@ and on a separate lifecycle via the BYO `EventStore` port / `PersistJournal`), a
 verification surface. Continuous anchoring is done: `AuditedStore` auto-signs an STH per durable
 step and publishes it through the `Anchor` port to a reference external transparency log
 (`MemAnchorLog`) that is itself append-only and verifiable. Proof ergonomics are done too: a
-portable `ProofBundle` (`ProveToolCall` / `ProveRecord` / `Verify`), the `bide-audit` CLI,
+portable `ProofBundle` (`ProveToolCall` / `ProveRecord` / `Verify`), the `bide audit` CLI,
 and a stdlib-only standalone verifier (`audit/verify`).
 
 Candidate extensions if a use case needs them, in rough priority:

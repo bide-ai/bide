@@ -14,7 +14,7 @@ import (
 
 // fixedHistory is a read-only agent.Store whose every run holds exactly the records it holds,
 // each as its stored bytes (its Raw, or its journal encoding when it has none), salts included,
-// standing in for a journal exported from a store (as bide-audit reads one). Copying records into
+// standing in for a journal exported from a store (as bide audit reads one). Copying records into
 // another store through a Journal would give each a fresh salt, and so a different leaf. Records
 // that do not begin with a journal header (built by hand, not read from a journal) are preceded by
 // one, since a Journal refuses a run without it.

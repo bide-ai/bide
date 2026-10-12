@@ -74,7 +74,7 @@ for the post-quantum options below), with no external dependencies.
 - **Canonical encodings.** A journal record is hashed over its stored bytes, never re-encoded.
   Grants, events, anchor entries, and evidence seals are hashed or signed over their JSON encoding, which is one-to-one only over valid UTF-8 (JSON rewrites invalid bytes
   to U+FFFD). A value with invalid UTF-8 in any string is refused, never committed, signed, or
-  verified, so two different values never share a leaf or a signature. `bide-audit` reads every
+  verified, so two different values never share a leaf or a signature. `bide audit` reads every
   artifact with `audit.UnmarshalStrict`, which rejects duplicate keys, keys that match a field only
   case-insensitively, unknown fields, invalid UTF-8, escaped lone surrogates, and non-standard
   base64, so a file cannot show a reader one value while the verifier checks another. A proof's
@@ -230,7 +230,7 @@ takes ML-DSA or hybrid.
 
 Verification never requires trusting the producer or importing the producer's runtime. Two paths:
 
-- The **`bide-audit` CLI** (`cmd/bide-audit`) is the auditor-facing front end. It imports
+- The **`bide audit` CLI** (`cmd/bide`) is the auditor-facing front end. It imports
   only the core and `audit` packages and no store backend (a test, `TestDepsAreCore` in
   `internal/auditcli`, fails if its import graph reaches past the standard library and the core module), so it operates on an exported journal
   (an `audit.JournalExport` of each record's stored bytes) plus a signed tree head. `verify` and the other verify verbs print a
@@ -238,6 +238,22 @@ Verification never requires trusting the producer or importing the producer's ru
   3 = no verdict, 4 = an input is unreadable or unusable; only 0 means verified), which is
   the CI-gate contract. The `-pubkey` flag (`<alg>:<hex>`, or bare ed25519 hex) must come from the anchor operator out-of-band, never
   from the bundle: that is what makes it a proof you verify rather than a log you trust.
+
+  The `bide` program also holds `bide view` and `bide demo`, so the default binary links the
+  SQLite and Postgres drivers and a YAML library, and every linked package's initialization code
+  runs in every command, `bide audit` included. A verifier who wants none of that builds the
+  audit-only program, whose import graph is the standard library and the core module
+  (`TestAuditOnlyBuildIsCore` checks it):
+
+  ```sh
+  go install -tags bide_audit_only github.com/bide-ai/bide/cmd/bide@latest
+  ```
+
+  The release binaries are reproducible: `scripts/repro.sh vX.Y.Z` checks a release's archives
+  against its `checksums.txt`, rebuilds each binary from the tag with the Go version the binary
+  records, and compares the bytes; the release workflow runs it on another OS for every release.
+  Trusting a downloaded `bide` then comes down to trusting the source at the tag and the Go
+  toolchain, not the machine that built it.
 - The **`audit/verify` package** is stdlib-only (no `agent` dependency) and checks inclusion,
   consistency, and tree-head signatures under all three schemes (`verify.TreeHead` with a
   `verify.NewVerifier`) from raw leaf bytes (`verify.JournalLeaf` builds a record's from the bytes a
@@ -256,4 +272,4 @@ reference test vectors, not a homegrown look-alike.
   runs, event logs). This page consolidates the caveats that walkthrough scatters.
 - `docs/guides/delegation.md`: signed grants, the delegation chain, and capability attenuation.
 - `audit/`: the package. `audit/verify/`: the stdlib-only standalone verifier.
-- `cmd/bide-audit`: the offline CLI (its code is `internal/auditcli`).
+- `cmd/bide`: the offline CLI (its code is `internal/auditcli`).
