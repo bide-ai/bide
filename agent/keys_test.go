@@ -20,6 +20,7 @@ import (
 // function that builds one from a sample string. TestEngineKeys_ConstructorsAreListed keeps
 // the map complete, so a new key constructor is checked by the tests below.
 var keyConstructors = map[string]func(string) string{
+	"ApprovalPendingStep":    ApprovalPendingStep,
 	"runCompleteStep":        func(string) string { return runCompleteStep },
 	"runAbortedStep":         func(string) string { return runAbortedStep },
 	"runStartStep":           func(string) string { return runStartStep },

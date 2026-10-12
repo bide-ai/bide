@@ -174,8 +174,13 @@ time. When the gate reaches a terminal outcome (proceed or deny), it journals th
 step, `approval-tally:<encoded toolUseID>` (`agent.ApprovalTallyStep`), **before the tool runs**. That record carries the policy it
 enforced (`Need`, `Approvers`), who approved and denied, and the name of every decision record it read
 (`Records`). A resumed run reads that record instead of recounting, so the outcome is fixed once
-decided even if keys rotate or the policy changes later. A pause writes nothing, so it stays open for
-more decisions.
+decided even if keys rotate or the policy changes later. A pause records no decision and no tally, so
+it stays open for more decisions. It does record that the run waits:
+`approval-pending:<encoded toolUseID>` (`agent.ApprovalPendingStep`), an `agent.ApprovalWait` with the
+call's ID and tool and the gate's `Need` and `Approvers` (or `Single`), so a reader such as `bide-view`
+can list the gate before anyone decides. The run writes it once, in the drive whose model turn made
+the call, and a resume writes nothing. It is informational only: the gate, a resume and recovery never
+read it, and a failed write of it is dropped.
 
 ### Inside a sub-agent
 

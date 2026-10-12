@@ -182,7 +182,9 @@ and graph.
 
 - **Agent run:** a timeline of model turns, tool calls with the `Safety` their result records
   (read-only, idempotent, side effect), attempt markers, approval decisions with each gate's k-of-n
-  tally, halts (with the `agent.HaltRef` to resolve each), and the end state.
+  tally, halts (with the `agent.HaltRef` to resolve each), and the end state: "halted: outcome
+  unknown" for a run with a live attempt marker and no result, and "waiting for approval" for a run
+  paused at a gate, whose gate is listed (from its `approval-pending:` record) before any decision.
 - **Plan flow:** the declared topology with the run's path drawn over it: nodes that ran, the last
   node, a halted node, the Switch arm taken, and conformance. The journal records a flow's name and
   topology digest, not its topology, so pass the topology as JSON of `flow.Topology()` (`-topology`)

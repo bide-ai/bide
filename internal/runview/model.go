@@ -76,7 +76,10 @@ type Gate struct {
 	Pending    []string   `json:"pending,omitempty"`
 	Decisions  []Decision `json:"decisions,omitempty"`
 	Tallied    bool       `json:"tallied"` // the gate journaled its terminal tally
-	Status     string     `json:"status"`
+	// Waiting: the run paused at this gate (its approval-pending record, agent.ApprovalWait) and
+	// the call has no result, no terminal tally, and (for a one-decision gate) no decision yet.
+	Waiting bool   `json:"waiting"`
+	Status  string `json:"status"`
 }
 
 // Decision is one recorded approval decision.
@@ -232,6 +235,9 @@ func Build(ctx context.Context, runID string, recs []agent.Record, flow *Flow) *
 		v.State, v.StateText = "halted", "halted: outcome unknown"
 	}
 	v.Gates = gates(recs, calls, callOrder)
+	if v.State == string(agent.RunStarted) && slices.ContainsFunc(v.Gates, func(g Gate) bool { return g.Waiting }) {
+		v.State, v.StateText = "waiting", "waiting for approval"
+	}
 	if v.Kind == string(agent.RunKindFlow) || v.Flow != "" {
 		v.Graph, v.Conform, v.LastNode = flowGraph(ctx, runID, recs, flow, v)
 	}
@@ -341,7 +347,17 @@ func gates(recs []agent.Record, calls map[string]agent.ToolUse, order []string) 
 	var out []Gate
 	for _, id := range order {
 		g := Gate{ToolUseID: id, ToolName: calls[id].Name}
+		var wait agent.ApprovalWait
+		paused := false
+		if r, ok := byName[agent.ApprovalPendingStep(id)]; ok && json.Unmarshal(r.Result, &wait) == nil {
+			paused = true
+			g.Single, g.Need, g.Approvers = wait.Single, wait.Need, wait.Approvers
+		}
+		resulted := false
 		for _, r := range recs {
+			if (r.Kind == agent.StepToolResult || r.Kind == agent.StepSagaFail) && r.ToolUseID == id {
+				resulted = true
+			}
 			if r.Kind == agent.StepApproval && r.ToolUseID == id {
 				g.Decisions = append(g.Decisions, Decision{Approver: r.Approver(), Approved: r.Approved, Signed: r.Approver() != ""})
 			}
@@ -357,11 +373,11 @@ func gates(recs []agent.Record, calls map[string]agent.ToolUse, order []string) 
 				g.ApprovedBy, g.DeniedBy, g.Pending = tally.ApprovedBy, tally.DeniedBy, tally.Pending
 			}
 		}
-		if len(g.Decisions) == 0 && !g.Tallied && g.Need == 0 {
+		if len(g.Decisions) == 0 && !g.Tallied && g.Need == 0 && !paused {
 			continue // an ungated call
 		}
 		if !g.Tallied {
-			g.Single = len(g.Decisions) > 0 && !g.Decisions[0].Signed
+			g.Single = g.Single || len(g.Decisions) > 0 && !g.Decisions[0].Signed
 			for _, d := range g.Decisions {
 				switch {
 				case d.Signed && d.Approved && !slices.Contains(g.ApprovedBy, d.Approver):
@@ -370,7 +386,13 @@ func gates(recs []agent.Record, calls map[string]agent.ToolUse, order []string) 
 					g.DeniedBy = append(g.DeniedBy, d.Approver)
 				}
 			}
+			for _, id := range g.Approvers {
+				if !slices.Contains(g.ApprovedBy, id) && !slices.Contains(g.DeniedBy, id) {
+					g.Pending = append(g.Pending, id)
+				}
+			}
 		}
+		g.Waiting = paused && !resulted && !g.Tallied && !(g.Single && len(g.Decisions) > 0)
 		g.Status = gateStatus(g)
 		out = append(out, g)
 	}
@@ -383,6 +405,9 @@ func gates(recs []agent.Record, calls map[string]agent.ToolUse, order []string) 
 // checks when the run resumes.
 func gateStatus(g Gate) string {
 	if g.Single {
+		if len(g.Decisions) == 0 {
+			return "pending (one decision; none recorded yet)"
+		}
 		if g.Decisions[0].Approved {
 			return "approved (single decision)"
 		}
