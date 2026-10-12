@@ -20,7 +20,7 @@
 //	go run . evidence -db approval.db -out evidence.json
 //	go run . verify   -in evidence.json             # the auditor: public keys only
 //
-// A crash mid-refund, viewed with bide-view (store/sqlite/cmd/bide-view):
+// A crash mid-refund, viewed with bide-view (go install github.com/bide-ai/bide/cmd/bide-view@latest):
 //
 //	go run . run -db approval.db -crash             # the refund fires, then the process dies before its result is journaled
 //	go run . run -db approval.db                    # the resume halts: the refund's outcome is unknown

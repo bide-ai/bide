@@ -613,11 +613,12 @@ See [docs/guides/audit.md](docs/guides/audit.md) for the model, the API, and the
 
 ### Run viewer
 
-`bide-view` opens a read-only page for one run, served on `127.0.0.1` from a SQLite journal or an
-exported one. It shows the run's timeline (model turns, tool calls and their `Safety`, attempts,
-approvals), a halted operation with the `ResolveHalt` call that records its outcome, each approval
-gate's k-of-n status, a plan flow's path over its declared topology, and whether the journal verifies
-against a signed tree head or an evidence package. It never writes to the store. See the
+`bide-view` opens a read-only page for one run, served on `127.0.0.1` from a SQLite or Postgres
+journal or an exported one. It shows the run's timeline (model turns, tool calls and their `Safety`,
+attempts, approvals), a halted operation with the `ResolveHalt` call that records its outcome, each
+approval gate's k-of-n status and whether its signatures verify, a plan flow's path over its declared
+topology, and whether the journal verifies against a signed tree head or an evidence package. It
+never writes to the store. Install it with `go install github.com/bide-ai/bide/cmd/bide-view@v0.13.0`; see the
 [run viewer guide](docs/guides/run-viewer.md).
 
 <table>

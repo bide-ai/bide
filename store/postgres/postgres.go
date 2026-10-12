@@ -186,6 +186,7 @@ type tables struct {
 	insert, acquire, renew, release     writeSQL
 	reap                                writeSQL
 	get, load                           selectSQL
+	readVersion                         selectSQL // the schema version, as OpenReadOnly reads it
 }
 
 // nextSeqVersion names the next_seq function's definition. The migration creates the function
@@ -293,6 +294,9 @@ func newTables(prefix, schema string) (tables, error) {
 		return tables{}, err
 	}
 	if t.load, err = newSelect(`SELECT seq, name, data FROM `+t.qSteps+` WHERE run_id OPERATOR(pg_catalog.=) $1 AND seq OPERATOR(pg_catalog.>) $2 ORDER BY seq LIMIT $3`, steps); err != nil {
+		return tables{}, err
+	}
+	if t.readVersion, err = newSelect(versionQuery(t.qVersion), [][]sqlTok{names[3]}); err != nil {
 		return tables{}, err
 	}
 	return t, nil
@@ -451,6 +455,12 @@ func Open(ctx context.Context, dsn string, opts ...Option) (*Store, error) {
 // New returns a Store over db, which the caller opened (with the pgx driver) and closes, and
 // ensures the schema exists.
 func New(ctx context.Context, db *sql.DB, opts ...Option) (*Store, error) {
+	return newStore(ctx, db, false, opts)
+}
+
+// newStore is New, and OpenReadOnly when readOnly is set: a read-only store does not migrate, it
+// reads the schema version and checks the tables as they are.
+func newStore(ctx context.Context, db *sql.DB, readOnly bool, opts []Option) (*Store, error) {
 	if db == nil {
 		return nil, fmt.Errorf("postgres: New: nil db: %w", agent.ErrConfig)
 	}
@@ -480,7 +490,15 @@ func New(ctx context.Context, db *sql.DB, opts ...Option) (*Store, error) {
 		return nil, err
 	}
 	s := &Store{db: db, t: t, schema: schema}
-	if err := s.migrate(ctx); err != nil {
+	if readOnly {
+		var v int
+		if err := retryScan(ctx, func() error { return db.QueryRowContext(ctx, string(t.readVersion)).Scan(&v) }); err != nil {
+			return nil, fmt.Errorf("postgres: read schema version (is it a bide journal?): %w (%w)", err, agent.ErrStorage)
+		}
+		if v > schemaVersion {
+			return nil, fmt.Errorf("postgres: the database's schema version is %d, newer than this version's %d: %w", v, schemaVersion, agent.ErrConfig)
+		}
+	} else if err := s.migrate(ctx); err != nil {
 		return nil, err
 	}
 	if err := s.checkSchema(ctx); err != nil {
