@@ -28,7 +28,7 @@ type Flow[In, Out any] struct {
 //
 // Run is STRICTLY SEQUENTIAL and adds no executor: it walks the declared
 // topology one node at a time and runs each node as an agent.Journal.Step, exactly as
-// plain Go control flow over agent.Journal.Step would (see docs/guides/flows.md). It
+// plain Go control flow over agent.Journal.Step would (see docs/guides/plan-flows.md). It
 // therefore inherits the Step's guarantees unchanged: a completed node returns
 // its recorded value without re-running (at-most-once by name), and a resumed
 // run replays recorded nodes rather than re-executing them.

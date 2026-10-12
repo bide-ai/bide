@@ -171,6 +171,6 @@ See [module structure](reference/module-structure.md) for the layout and [CONTRI
 ## Where next
 
 - The vocabulary: [Concepts](CONCEPTS.md).
-- Authoring flows as typed topology instead of plain Go: the [Flows guide](guides/flows.md) (the optional `plan` builder and declarative config).
+- Authoring flows as typed topology instead of plain Go: the [plan flows guide](guides/plan-flows.md) (the optional `plan` builder and declarative config).
 - The precise guarantee and its bounds: [Guarantee](GUARANTEE.md), [Known limitations](KNOWN-LIMITATIONS.md).
 - The full map: the [docs index](README.md).

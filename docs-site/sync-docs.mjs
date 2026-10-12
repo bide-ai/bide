@@ -9,6 +9,8 @@ const items = [
   'CONCEPTS.md',
   'GUARANTEE.md',
   'KNOWN-LIMITATIONS.md',
+  'tour.md',
+  'formal-verification.md',
   'guides',
   'reference',
   'testing',
