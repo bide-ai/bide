@@ -12,16 +12,18 @@ import (
 
 type rv struct{ pub ed25519.PublicKey }
 
-func (rv) Alg() agent.Alg                { return "ed25519" }
-func (v rv) Verify(m, s []byte) bool     { return ed25519.Verify(v.pub, m, s) }
-func (v rv) KeyIDs() []string            { return []string{"k:" + string(v.pub[:4])} }
+func (rv) Alg() agent.Alg            { return "ed25519" }
+func (v rv) Verify(m, s []byte) bool { return ed25519.Verify(v.pub, m, s) }
+func (v rv) KeyIDs() []string        { return []string{"k:" + string(v.pub[:4])} }
 
 // An m-of-n agent call whose model-chosen ID is node:iter:2:x is decidable via SubmitDecision.
 func TestRev201b_AgentIterShapedIDMofN(t *testing.T) {
 	ctx := context.Background()
 	j := agenttest.MemJournal()
 	priv := ed25519.NewKeyFromSeed(make([]byte, 32))
-	vf := func(id string) (agent.ApproverVerifier, bool) { return rv{priv.Public().(ed25519.PublicKey)}, id == "ops" }
+	vf := func(id string) (agent.ApproverVerifier, bool) {
+		return rv{priv.Public().(ed25519.PublicKey)}, id == "ops"
+	}
 	ran := 0
 	tool := agent.MustFunc("refund", "refund", func(context.Context, struct{}) (string, error) { ran++; return "ok", nil },
 		agent.WithApproval(&agent.ApprovalPolicy{Need: 1, Approvers: []string{"ops"}}))
