@@ -9,6 +9,7 @@ import (
 	"io"
 
 	"github.com/bide-ai/bide/cmd/bide/internal/demo"
+	"github.com/bide-ai/bide/cmd/bide/internal/initcmd"
 	"github.com/bide-ai/bide/internal/runview"
 )
 
@@ -16,6 +17,14 @@ import (
 // build leaves them out (auditonly.go).
 func fullCommands() []command {
 	return []command{
+		{
+			name:    "init",
+			summary: "scaffold a project: a gated plan flow on SQLite, with evidence for bide audit",
+			run: func(args []string, stdout, stderr io.Writer) int {
+				return initcmd.Main(releaseVersion(), args, stdout, stderr)
+			},
+			exits: commonExits,
+		},
 		{
 			name:    "demo",
 			summary: "kill an agent mid-payment and watch it not charge twice (no API key)",

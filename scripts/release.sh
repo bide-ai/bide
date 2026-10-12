@@ -23,7 +23,9 @@
 #      The first stage holds the modules that need only the root; the governed-event logs, which
 #      also need govern, and the bide command, which needs the stores, come in the second.
 #   3. Every published module is resolved with `go list -m <module>@vX.Y.Z`, and a scratch consumer
-#      module that `go get`s all of them at vX.Y.Z builds with a fresh module cache.
+#      module that `go get`s all of them at vX.Y.Z builds with a fresh module cache. The released
+#      bide command (go install cmd/bide@vX.Y.Z) runs bide init, and the project it writes builds
+#      and passes its test against the released modules.
 #
 # The release commits are reachable from their tags only; main keeps its replace directives, so
 # development is unchanged. Repo-only modules (examples, integration, benchmarks) are never tagged.
@@ -495,6 +497,16 @@ mkdir -p "$C"
   [ -z "$wrong" ] || die "the consumer selected other versions: $wrong"
 )
 note "a consumer module requiring every published module at $VERSION builds"
+
+# The released bide command scaffolds a project (bide init) that builds, vets and passes its own test
+# against the released modules: the template a user gets resolves against what was published.
+say "verify: bide init with the released command"
+mkdir -p "$WORK/bin"
+GOBIN="$WORK/bin" gorun install "$(module_path cmd/bide)@$VERSION" 2>"$WORK/install.log" || { cat "$WORK/install.log"; die "go install cmd/bide@$VERSION failed"; }
+"$WORK/bin/bide" init -module example.com/bide-init-check "$WORK/scaffold" >/dev/null || die "bide init failed"
+(cd "$WORK/scaffold" && gorun mod tidy && gorun vet ./... && gorun test -count=1 ./... >"$WORK/scaffold.log" 2>&1) || { cat "$WORK/scaffold.log"; die "the bide init project does not build and pass its test against $VERSION"; }
+(cd "$WORK/scaffold" && "$WORK/bin/bide" check -strict flow.yaml) || die "bide check fails on the bide init project"
+note "bide init writes a project that requires $VERSION, builds, and passes its test"
 
 if $PUSH; then
   git -C "$REPO" fetch --quiet "$REMOTE" --tags

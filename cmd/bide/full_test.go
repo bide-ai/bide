@@ -25,3 +25,14 @@ func TestCheck(t *testing.T) {
 		t.Errorf("bide check -strict with no file: exit %d, want 2", code)
 	}
 }
+
+// TestInitThenCheck: the flow config bide init writes passes bide check.
+func TestInitThenCheck(t *testing.T) {
+	dir := t.TempDir() + "/refund"
+	if code, stdout, stderr := runBide("init", "-dev", "../..", dir); code != 0 {
+		t.Fatalf("bide init: exit %d\n%s%s", code, stdout, stderr)
+	}
+	if code, stdout, stderr := runBide("check", "-strict", dir+"/flow.yaml"); code != 0 {
+		t.Fatalf("bide check -strict on the scaffold: exit %d\n%s%s", code, stdout, stderr)
+	}
+}
