@@ -189,7 +189,7 @@ vote, err := audit.ProveStep(ctx, journal, "refund-1234", govern.QuorumVoteStep(
 Then run:
 
 ```bash
-bide-audit verify-quorum \
+bide audit verify-quorum \
   -name refund \
   -tally tally.json \
   -vote claude.json -vote gpt.json -vote gemini.json \

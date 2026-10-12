@@ -157,10 +157,10 @@ func TestApprovalAcrossProcesses(t *testing.T) {
 
 	// The standalone CLI verifies the same files, for an auditor who does not write Go:
 	// every proof, then the full m-of-n check against the expected policy and approver keys.
-	auditCLI := build(t, dir, "bide-audit", "github.com/bide-ai/bide/cmd/bide-audit")
+	auditCLI := build(t, dir, "bide audit", "github.com/bide-ai/bide/internal/auditcli/auditmain")
 	out = mustRun(t, auditCLI, "verify-evidence", "-evidence", evidence, "-pubkey", logPub)
 	if !strings.Contains(out, "PASS") {
-		t.Fatalf("bide-audit verify-evidence did not pass:\n%s", out)
+		t.Fatalf("bide audit verify-evidence did not pass:\n%s", out)
 	}
 	approvals := func(file, need string) []string {
 		return []string{"verify-approvals", "-evidence", file, "-pubkey", logPub, "-call", "refund-1",
@@ -197,10 +197,10 @@ func TestApprovalAcrossProcesses(t *testing.T) {
 		t.Fatalf("verify accepted tampered evidence:\n%s", out)
 	}
 	if out, code := run(t, auditCLI, "verify-evidence", "-evidence", tampered, "-pubkey", logPub); code == 0 {
-		t.Fatalf("bide-audit accepted tampered evidence:\n%s", out)
+		t.Fatalf("bide audit accepted tampered evidence:\n%s", out)
 	}
 	if out, code := run(t, auditCLI, approvals(tampered, "2")...); code == 0 {
-		t.Fatalf("bide-audit verify-approvals accepted tampered evidence:\n%s", out)
+		t.Fatalf("bide audit verify-approvals accepted tampered evidence:\n%s", out)
 	}
 
 	// Leaving a decision out of the file breaks the package seal, so verify-evidence rejects it.

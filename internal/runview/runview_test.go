@@ -430,7 +430,7 @@ func TestMainUsage(t *testing.T) {
 	if code := Main([]string{"-h"}, &out, &errb, Stores{}); code != 0 {
 		t.Fatalf("-h exit = %d", code)
 	}
-	for _, want := range []string{"bide-view -db <file>", "loopback", "-db", "-journal", "-run", "-topology", "-digest", "-sth", "-evidence", "-pubkey", "-approver-keys", "-need", "-approvers", "-postgres", "-addr"} {
+	for _, want := range []string{"bide view -db <file>", "loopback", "-db", "-journal", "-run", "-topology", "-digest", "-sth", "-evidence", "-pubkey", "-approver-keys", "-need", "-approvers", "-postgres", "-addr"} {
 		if !strings.Contains(errb.String(), want) {
 			t.Errorf("-h output lacks %q", want)
 		}

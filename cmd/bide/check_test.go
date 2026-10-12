@@ -1,3 +1,5 @@
+//go:build !bide_audit_only
+
 package main
 
 import (

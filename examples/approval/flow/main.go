@@ -17,13 +17,13 @@
 //	go run ./flow evidence -db flow.db -out flow-evidence.json
 //	go run ./flow verify   -in flow-evidence.json
 //
-// The paused run and its gate, in the run viewer (go install github.com/bide-ai/bide/cmd/bide-view@latest):
+// The paused run and its gate, in the run viewer (go install github.com/bide-ai/bide/cmd/bide@latest):
 //
-//	bide-view -db flow.db
+//	bide view -db flow.db
 //
 // The standalone CLI verifies the evidence file; -call is the node's key:
 //
-//	bide-audit verify-approvals -evidence flow-evidence.json -pubkey <log key hex> -call node:refund \
+//	bide audit verify-approvals -evidence flow-evidence.json -pubkey <log key hex> -call node:refund \
 //	    -need 2 -approvers ops,finance,risk -approver-keys approver-keys.json
 package main
 

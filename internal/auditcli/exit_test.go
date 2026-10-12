@@ -546,7 +546,7 @@ func TestJSONReport(t *testing.T) {
 		if err := dec.Decode(&rep); err != nil || dec.More() {
 			t.Fatalf("%v: stdout is not one JSON report (%v):\n%s", args, err, stdout)
 		}
-		if code != 0 || !rep.Verified || rep.Tool != "bide-audit" || len(rep.Output) != 1 || !strings.HasPrefix(rep.Output[0], "OK: ") || stderr != "" {
+		if code != 0 || !rep.Verified || rep.Tool != "bide audit" || len(rep.Output) != 1 || !strings.HasPrefix(rep.Output[0], "OK: ") || stderr != "" {
 			t.Fatalf("%v: exit %d, report %+v, stderr %q", args, code, rep, stderr)
 		}
 	}
@@ -568,7 +568,7 @@ func TestJSONReport(t *testing.T) {
 // -version prints the version and every artifact format this version reads, as text or JSON.
 func TestVersion(t *testing.T) {
 	code, stdout, _ := runCLI("-version")
-	if code != 0 || !strings.HasPrefix(stdout, "bide-audit ") {
+	if code != 0 || !strings.HasPrefix(stdout, "bide ") {
 		t.Fatalf("-version: exit %d:\n%s", code, stdout)
 	}
 	formats := []string{audit.ProofFormat, audit.AbsenceFormat, audit.RunCertificateFormat, audit.EvidenceFormat, audit.STHFormat, audit.JournalExportFormat}
@@ -582,7 +582,7 @@ func TestVersion(t *testing.T) {
 		Tool, Version, Go string
 		Formats           []artifactFormat
 	}
-	if err := json.Unmarshal([]byte(stdout), &v); err != nil || code != 0 || v.Tool != "bide-audit" || v.Version == "" {
+	if err := json.Unmarshal([]byte(stdout), &v); err != nil || code != 0 || v.Tool != "bide" || v.Version == "" {
 		t.Fatalf("-version -json: exit %d, err %v:\n%s", code, err, stdout)
 	}
 	var got []string
@@ -643,8 +643,8 @@ func TestVersionStamp(t *testing.T) {
 	}
 	dir := t.TempDir()
 	for _, tc := range []struct{ ldflags, want string }{
-		{"-X main.version=v9.8.7", "bide-audit v9.8.7 "},
-		{"", "bide-audit "},
+		{"-X main.version=v9.8.7", "bide v9.8.7 "},
+		{"", "bide "},
 	} {
 		bin := auditBin(dir)
 		args := []string{"build", "-o", bin}
@@ -655,7 +655,7 @@ func TestVersionStamp(t *testing.T) {
 			t.Fatalf("build %q: %v\n%s", tc.ldflags, err, out)
 		}
 		out, err := exec.Command(bin, "-version").Output()
-		if err != nil || !strings.HasPrefix(string(out), tc.want) || strings.HasPrefix(string(out), "bide-audit  ") {
+		if err != nil || !strings.HasPrefix(string(out), tc.want) || strings.HasPrefix(string(out), "bide  ") {
 			t.Errorf("ldflags %q: -version printed %q (err %v), want prefix %q and a version", tc.ldflags, out, err, tc.want)
 		}
 	}

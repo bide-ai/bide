@@ -24,8 +24,11 @@ coverage.*
 # compiled cmd/bench binary
 /bench
 
-# compiled cmd/bide-audit binary
-/bide-audit
+# compiled bide binary (go build ./cmd/bide from the root)
+/bide
+# a command built in its own directory (go build . in cmd/<name>), as cmd/bide-demo/bide-demo once was
+/cmd/*/bide
+/cmd/*/bide-*
 
 # compiled example binaries (from `go build .` in an example dir)
 examples/mcp/mcp

@@ -158,7 +158,7 @@ tree between releases.
    3. does the same for the governed-event logs, which also require `govern` at `vX.Y.Z`;
    4. checks each module with `go list -m <module>@vX.Y.Z` against the proxy, and builds a scratch
       consumer module that `go get`s every published module at `vX.Y.Z` with an empty module cache.
-4. The core tag runs the Release workflow (the `bide-audit` binaries and the GitHub Release, with
+4. The core tag runs the Release workflow (the `bide` binaries and the GitHub Release, with
    `docs/releases/vX.Y.Z.md` as its notes); each nested tag runs the Release modules workflow,
    which fails if the tagged `go.mod` still requires `v0.0.0` or replaces a bide module, or does
    not build with `GOWORK=off`. Check both, the release assets and the Homebrew formula: every

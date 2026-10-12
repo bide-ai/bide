@@ -18,7 +18,7 @@ import (
 	"github.com/bide-ai/bide/internal/journaltest"
 )
 
-// buildCLI builds the bide-audit binary into dir and returns its path.
+// buildCLI builds the bide audit binary into dir and returns its path.
 func buildCLI(t *testing.T, dir string) string {
 	t.Helper()
 	bin := auditBin(dir)

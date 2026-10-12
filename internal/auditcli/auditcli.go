@@ -1,4 +1,4 @@
-// Package auditcli is the bide-audit command: it produces and verifies audit ProofBundles from the
+// Package auditcli is the bide audit command: it produces and verifies audit ProofBundles from the
 // command line, for
 // the auditor/compliance persona who does not write Go. It is deliberately dependency-light:
 // it imports only the core + audit packages (stdlib under the hood), no store backend, so it
@@ -6,10 +6,10 @@
 // signed tree head. `verify` needs neither: just the bundle and a public key.
 //
 //	# Produce a proof that one tool call happened, against an anchored STH:
-//	bide-audit prove -journal run.json -sth sth.json -tool call_abc -out proof.json
+//	bide audit prove -journal run.json -sth sth.json -tool call_abc -out proof.json
 //
 //	# Verify it offline, trusting only an out-of-band public key:
-//	bide-audit verify -bundle proof.json -pubkey ed25519:1a2b...   # only exit 0 means verified
+//	bide audit verify -bundle proof.json -pubkey ed25519:1a2b...   # only exit 0 means verified
 //
 // Exit status: 0 verified, 1 not verified, 2 usage error, 3 no verdict, 4 input unreadable or
 // unusable (see exitFor). Only 0 means verified.
@@ -86,10 +86,10 @@ func Main(stamped string, args []string, stdout, stderr io.Writer) int {
 	return run(args, stdout, stderr)
 }
 
-const usageText = `bide-audit: produce and verify audit proof bundles
+const usageText = `bide audit: produce and verify audit proof bundles
 
-  bide-audit [-json] <verb> [flags]
-  bide-audit -version [-json]
+  bide audit [-json] <verb> [flags]
+  bide audit -version [-json]
 
   prove  -journal <file> -sth <file> (-tool <id> | -index <n>) [-out <file>]
          build a ProofBundle for one record against a signed tree head
@@ -188,7 +188,7 @@ func (s staticStore) entry(i int) agent.Entry {
 }
 
 func (staticStore) Insert(context.Context, string, string, []byte) (agent.Entry, bool, error) {
-	return agent.Entry{}, false, errors.New("bide-audit: journal is read-only")
+	return agent.Entry{}, false, errors.New("bide audit: journal is read-only")
 }
 
 func (s staticStore) Get(_ context.Context, _, name string) (agent.Entry, bool, error) {

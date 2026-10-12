@@ -323,7 +323,7 @@ the log, and inside a run `EventTool` and `FederatedEventTool` key it by the too
 takes no id, so a caller that retries `Apply` itself applies the event again. gsm also lists the
 rules whose writes it clamped into a variable's range (`saturations`): convergence is unaffected,
 but an invariant meant to catch the overflow never sees it. A certificate recorded before bide
-carried these lists has none of their keys, and `bide-audit` says so rather than reading it as
+carried these lists has none of their keys, and `bide audit` says so rather than reading it as
 "none".
 
 **What the proof-derived checks cover.** Since gsm v0.12.0, `Build` returns a machine only after

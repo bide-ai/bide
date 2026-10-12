@@ -1,4 +1,4 @@
-package main
+package demo
 
 import (
 	"bytes"
@@ -21,7 +21,7 @@ func TestMain(m *testing.M) {
 // TestDemo runs the demo headless (as -fast -no-browser does): the child is killed after the
 // charge, the resume halts instead of charging again, the resolution completes the run, the
 // provider holds exactly one charge, and the evidence, the anchored head and the gate's signatures
-// verify. The page bide-view serves shows the crashed attempt, the resolution and the proofs.
+// verify. The page bide view serves shows the crashed attempt, the resolution and the proofs.
 func TestDemo(t *testing.T) {
 	dir := t.TempDir()
 	var out bytes.Buffer

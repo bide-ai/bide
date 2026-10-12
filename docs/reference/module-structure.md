@@ -31,10 +31,13 @@ only when that adapter is imported.
 | sqlite log | `…/govern/sqlitelog` | modernc.org/sqlite |
 | postgres log | `…/govern/postgreslog` | jackc/pgx |
 | gcf codec | `…/codec/gcf` | blackwell-systems/gcf-go |
+| bide command | `…/cmd/bide` | the two store modules, go.yaml.in/yaml/v3 (a program, installed with `go install`, not imported) |
 
 The core module keeps everything with no heavy deps: `agent` (loop), `schema`, `middleware`,
-`model/anthropic`, `model/openai`, `model/gemini`, `plan`, `audit`, `eval`, `chaos`, the
-`cmd` tools, and most of `examples`. The `architecture_test.go` guard
+`model/anthropic`, `model/openai`, `model/gemini`, `plan`, `audit`, `eval`, `chaos`, `cmd/bench`,
+the code of `bide view` and `bide audit` (`internal/runview`, `internal/auditcli`), and most of
+`examples`. The `bide` command (`cmd/bide`) is its own module because `bide view` and `bide demo`
+need the store drivers; built with `-tags bide_audit_only` it links nothing outside the core module. The `architecture_test.go` guard
 (core must not import an adapter) still holds, now enforced at the module boundary too, and
 `TestCoreModuleHasNoGSM` checks that the core module's graph never names gsm.
 
@@ -53,7 +56,7 @@ core:
 | mcp example | `…/examples/mcp` | imports `mcptools` and the MCP go-sdk |
 | observability example | `…/examples/observability` | imports `trace` and the OpenTelemetry SDK |
 | governance examples | `…/examples/govern` | nine programs (`authority`, `compliance`, `compose`, `coordination`, `delegation`, `earned-authority`, `mesh`, `proof-carrying-run`, `quorum`) that import `govern` and gsm |
-| integration tests | `…/integration` | test-only: the core's tests that need `govern` and gsm (the many-agent convergence test, the run-certificate tests over real gsm policies, and the `bide-audit` CLI tests fed by quorum runs and convergence certificates) |
+| integration tests | `…/integration` | test-only: the core's tests that need `govern` and gsm (the many-agent convergence test, the run-certificate tests over real gsm policies, and the `bide audit` CLI tests fed by quorum runs and convergence certificates) |
 | benchmarks | `…/benchmarks` | the cross-SDK chaos comparison: eino, langchaingo, adk-go, trpc-agent-go |
 
 The example and integration modules are in `go.work`; `benchmarks` is not, so run it with `GOWORK=off` from its

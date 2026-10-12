@@ -8,7 +8,7 @@ This page describes intent, not promises of dates. Shipped work is recorded in t
 
 The current release is v0.12.0 (2026-10-05), and the work now is stabilizing what exists: bug fixes, documentation, tests, soak and chaos runs, and fresh-eyes passes over the code and the docs. No new features are planned for now, and releases stay on 0.x.
 
-- A one-command crash demo, `go run github.com/bide-ai/bide/cmd/bide-demo@latest` (from the next release): kill an agent mid-payment and watch it not charge twice, then see the run, its audit proof and its approval signatures in the run viewer.
+- A one-command crash demo, `bide demo` (from the next release, in the single `bide` command): kill an agent mid-payment and watch it not charge twice, then see the run, its audit proof and its approval signatures in the run viewer.
 - The [launch post](blog/introducing-bide.md): what bide is, a first agent, and one crash resumed from the journal.
 - The [crash-injection benchmark](../benchmarks/README.md) now includes LangGraph (Python) on SQLite and Postgres ([#166](https://github.com/bide-ai/bide/pull/166), [#167](https://github.com/bide-ai/bide/pull/167)); every framework except bide re-fired the charge.
 
@@ -69,7 +69,7 @@ bide's governance tier (`govern`) builds its state machines with [gsm](https://g
 - Done in gsm, required by bide: event order across federated registries is checked. As of gsm v0.13.0, `Federation.Build` checks cross-registry CC (C1) and repaired CC (C2) and rejects a federation that fails either, and the same checks certify event order on monotone cycles (`cyc_check_gc_lfp`). Like the other federation-level conditions, they are gsm's Go code; the oracle-certified federation item below stays open. bide requires v0.13.0, and the gsm machine gate is pinned to its release commit.
 - Done in the proof: the rules oracle restructured to work from tables, then into a compact form that keeps its memory near the original's for small event counts, both proved to give the original checker's verdicts ([normalization-confluence#14](https://github.com/blackwell-systems/normalization-confluence/pull/14), [#15](https://github.com/blackwell-systems/normalization-confluence/pull/15)); gsm adopting them, with its cost cap re-derived, comes later.
 - Next: oracle-certified federations. Today `Federation.Build` and `Certificate.Verify` run every component through the in-process gate, but the federation's own conditions (acyclicity, M1, the resolvers' R1/R2 and the monotone-cycle iteration) are checked by gsm's Go code, not by a checker generated from the proof. The plan: mechanize the federation theorems those checks rely on (the operator core, order-independence and the monotone fixed point are mechanized; the federated and resolved convergence theorems in their corrected form, under C1 and C2, and the authority lemma are mechanized in `FederationGRS.v`, with C1 and C2 exact at reachable witnesses in `FederationEventsConverse.v`; the necessity of acyclicity and M1, and R1/R2 as the gluing axiom with the sheaf assembly over the full cover, remain paper-level), prove a federation checker sound against them, extract it to Go like the table oracle, and make `Federation.Build` and `Certificate.Verify` fail closed unless it certifies the federation. Then every machine and every federation gsm returns is certified by a checker generated from the proof.
-- Next: before 1.0, a change to gsm's policy format that puts names in the policy bytes, with `bide-audit` still verifying records written under the old format (adding variable kinds to the policy bytes is under consideration).
+- Next: before 1.0, a change to gsm's policy format that puts names in the policy bytes, with `bide audit` still verifying records written under the old format (adding variable kinds to the policy bytes is under consideration).
 
 ### bide underneath other agent frameworks (Go)
 
@@ -82,9 +82,9 @@ bide is a durability and accountability layer, not only a framework of its own. 
 
 A visual builder for `plan` flows, built up from read-only tools that use the journal and the config format as they are:
 
-- Done: `bide-view`, a read-only local page for one run ([run viewer guide](guides/run-viewer.md)): an agent run's timeline, halts, approval gates with signature checks, and a flow's path over its topology.
+- Done: `bide view`, a read-only local page for one run ([run viewer guide](guides/run-viewer.md)): an agent run's timeline, halts, approval gates with signature checks, and a flow's path over its topology.
 - Done: the journaled topology, `flow:topology`, so a flow run is drawn from its journal alone, its digest checked ([#192](https://github.com/bide-ai/bide/pull/192)).
-- Done: the config viewer, `bide-view -config`, which draws a flow definition and marks its problems, with `-check` for CI and `plan/planview` for a program's own Registry ([#193](https://github.com/bide-ai/bide/pull/193)).
+- Done: the config viewer, `bide view -config`, which draws a flow definition and marks its problems, with `-check` for CI and `plan/planview` for a program's own Registry ([#193](https://github.com/bide-ai/bide/pull/193)).
 - Next: a risk map (each node colored by what it can do and how it behaves on a crash) and policy assertions in the config (`assert:`), decided on the graph and shown as counterexample paths.
 - Next: a visual diff of two versions of a config, with the digest change.
 - Later: an editor that writes the config.
@@ -97,7 +97,7 @@ A versioned wire protocol ([design](design/protocol.md), accepted; not implement
 
 ### Python and TypeScript SDKs
 
-Thin SDKs over the bide protocol, so agents written in Python and TypeScript get the same guarantees the Go engine enforces, plus a pip-installable `bide-audit` so Python teams can verify bide proofs directly. They follow the engine hardening and the protocol's implementation.
+Thin SDKs over the bide protocol, so agents written in Python and TypeScript get the same guarantees the Go engine enforces, plus a pip-installable verifier (the counterpart of `bide audit`) so Python teams can verify bide proofs directly. They follow the engine hardening and the protocol's implementation.
 
 ### Adapters for Python and TypeScript agent frameworks
 

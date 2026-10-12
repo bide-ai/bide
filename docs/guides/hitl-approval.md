@@ -96,7 +96,7 @@ if pend, ok := errors.AsType[*agent.ApprovalPending](err); ok {
 empty one with `agent.ErrConfig`). It is journaled with the decision as `Record.ApproverAlg`, and the
 gate counts the decision only if it equals the `Alg()` of the verifier your resolver returns for
 that approver: a valid signature journaled under another scheme name, or none, is ignored with
-`agent.ReasonAlg`. One key fills one seat (see [Key identity](#key-identity)), and `bide-audit
+`agent.ReasonAlg`. One key fills one seat (see [Key identity](#key-identity)), and `bide audit
 verify-approvals` also refuses an approver-key file that gives two ids one key, compared by key
 identity, whether or not both ids are in the policy (exit 4).
 
@@ -177,7 +177,7 @@ enforced (`Need`, `Approvers`), who approved and denied, and the name of every d
 decided even if keys rotate or the policy changes later. A pause records no decision and no tally, so
 it stays open for more decisions. It does record that the run waits:
 `approval-pending:<encoded toolUseID>` (`agent.ApprovalPendingStep`), an `agent.ApprovalWait` with the
-call's ID and tool and the gate's `Need` and `Approvers` (or `Single`), so a reader such as `bide-view`
+call's ID and tool and the gate's `Need` and `Approvers` (or `Single`), so a reader such as `bide view`
 can list the gate before anyone decides. The run writes it once, in the drive whose model turn made
 the call, and a resume writes nothing. It is informational only: the gate, a resume and recovery never
 read it, and a failed write of it is dropped.
@@ -282,7 +282,7 @@ own) and its `Args` the node's input, so approvers sign `pend.Subject()` and rec
 `SubmitDecision` (or `Approve` for `SingleApproval`) exactly as above. The gate records the node and
 its input under `approval-request:<node key>` before the first pause, in place of the model turn
 that requests a tool call, and its terminal tally before the node runs. A denial stops the flow with
-`plan.ErrApprovalDenied`. Evidence and `bide-audit verify-approvals` take the node's key as the call.
+`plan.ErrApprovalDenied`. Evidence and `bide audit verify-approvals` take the node's key as the call.
 
 ## Proving the gate held
 
@@ -339,19 +339,19 @@ record name.
 
 ### From the command line
 
-For an auditor who does not write Go, `bide-audit verify-approvals` runs the same check from the files
+For an auditor who does not write Go, `bide audit verify-approvals` runs the same check from the files
 alone, with approver keys as a JSON object of id to key text (`<alg>:<hex>`, as
 `audit.FormatPublicKey` writes it, or bare ed25519 hex):
 
 ```
-bide-audit verify-approvals -evidence evidence.json -pubkey <log key> -call refund-1 \
+bide audit verify-approvals -evidence evidence.json -pubkey <log key> -call refund-1 \
     -need 2 -approvers ops,finance,risk -approver-keys approver-keys.json
 ```
 
 It prints the approved call, each approver who counted, every ignored decision with its reason, and
 every problem. It exits 0 only when the gate held: 1 when it did not, 4 when an input cannot be read
 or used (including a key file that gives two of the policy's approvers one key), and 2 on a usage error (see the audit guide's
-[exit status](audit.md#exit-status); only 0 means verified). `bide-audit verify-evidence` checks the proofs only,
+[exit status](audit.md#exit-status); only 0 means verified). `bide audit verify-evidence` checks the proofs only,
 so it cannot detect an omitted decision; use `verify-approvals` for the approval claim. Every proof in the package must verify for `verify-approvals` to pass as well, so a package that carries
 a run certificate needs its allowlist: `-approved <digest>` (repeatable) or `-approved-file <file>`, as for
 `verify-evidence`.
@@ -378,7 +378,7 @@ and exits, approvers record signed decisions from their own processes, an inelig
 forged signature are ignored without locking anyone out, `-check` refuses a bad decision at
 submission, the refund runs exactly once at 2 of 3, and an auditor verifies the exported evidence
 with public keys only (`cd examples/approval && go run .`). Its test drives every actor as a separate
-process and checks the evidence with `bide-audit verify-evidence` and `verify-approvals`, including a
+process and checks the evidence with `bide audit verify-evidence` and `verify-approvals`, including a
 tampered file and one with a decision left out. `examples/approval/flow` does the same for a gated
 plan flow node loaded from a config (`go run ./flow`).
 

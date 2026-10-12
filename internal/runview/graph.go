@@ -15,7 +15,7 @@ import (
 
 // Flow is a declared flow the viewer draws a run against. The journal records a flow run's name
 // and topology digest, not its topology, so the topology comes from the caller: a program that
-// holds the *plan.Flow passes its Topology, Digest and Conform; the bide-view command reads a
+// holds the *plan.Flow passes its Topology, Digest and Conform; the bide view command reads a
 // Topology exported as JSON (json.Marshal(flow.Topology())) and, optionally, the digest.
 type Flow struct {
 	Topology plan.Topology

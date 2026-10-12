@@ -7,7 +7,7 @@ import (
 )
 
 // TestNoStoreAdapters: the viewer is in the core module, which carries no store driver. The
-// bide-view command (its own module, cmd/bide-view) plugs the stores in through Stores.
+// bide command (its own module, cmd/bide) plugs the stores in through Stores.
 func TestNoStoreAdapters(t *testing.T) {
 	out, err := exec.Command("go", "list", "-deps", "github.com/bide-ai/bide/internal/runview").Output()
 	if err != nil {

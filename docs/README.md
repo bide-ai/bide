@@ -25,7 +25,7 @@ Authoring:
 - **[Messaging](guides/messaging.md)**: driving an agent from an inbound webhook, redelivery-safe.
 - **[RAG and memory](guides/rag-memory.md)**: bring-your-own retrieval.
 - **[Debugging and recovery](guides/debugging.md)**: replay, event reconstruction, Mermaid diagrams, and crash recovery.
-- **[Run viewer](guides/run-viewer.md)**: `bide-view`, a read-only local page for one run: timeline, flow path, halts, approval gates, and the audit verdict.
+- **[Run viewer](guides/run-viewer.md)**: `bide view`, a read-only local page for one run: timeline, flow path, halts, approval gates, and the audit verdict.
 
 Accountability and governance:
 - **[Audit](guides/audit.md)**: the tamper-evident trail and proof-carrying runs.
@@ -37,6 +37,7 @@ Accountability and governance:
 
 ## Reference
 
+- **[CLI reference](reference/cli.md)**: every `bide` command (`demo`, `view`, `check`, `audit`, `version`), its flags and its exit statuses, generated from the flag sets.
 - **[Extension points](reference/extension-points.md)**: the ports and adapters (`Model`, `Store`, `Tool`, ...) and an "implement your own store" walkthrough.
 - **[Module structure](reference/module-structure.md)**: the multi-module repo layout.
 

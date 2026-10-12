@@ -34,7 +34,7 @@ func PolicyLeafName(digest string) string { return policyLeafName(digest) }
 // taken under it. The digest is the policy owner's stable identifier (e.g.
 // gsm.Registry.PolicyDigest); audit treats it as opaque and does not recompute it from the bytes.
 // A verifier recomputes the digest from the disclosed bytes and runs the external oracle
-// (bide-audit verify-governance), so a leaf that lies about its digest is caught there.
+// (bide audit verify-governance), so a leaf that lies about its digest is caught there.
 func RecordPolicy(ctx context.Context, store *agent.Journal, runID string, policy []byte, digest string) (agent.Record, error) {
 	content, err := json.Marshal(PolicyContent{Digest: digest, Policy: string(policy)})
 	if err != nil {
@@ -96,7 +96,7 @@ func PolicyUsedKey(r agent.Record) []string {
 }
 
 // GovernedPolicyDigest returns the policy digest a governed-action payload (a tool result, as
-// an attested govern.EventTool journals it) carries. It is the one reading PolicyUsedKey and bide-audit
+// an attested govern.EventTool journals it) carries. It is the one reading PolicyUsedKey and bide audit
 // share, so an action cannot be said to run under one policy by the used-policy set and under
 // another by the CLI. The payload is open (it may hold other fields, such as the acting identity),
 // so its names are not checked against a type, but it must decode strictly as an object (see

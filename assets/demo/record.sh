@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 # record.sh: regenerate assets/crash-demo.gif, the README's hero. The terminal (crash-demo.tape,
-# recorded with charmbracelet/vhs) is on the left and the run's bide-view page on the right: a
+# recorded with charmbracelet/vhs) is on the left and the run's bide view page on the right: a
 # placeholder while the agent runs, the halted run once the restart halts, and the completed,
 # verified run once the demo has checked the proofs. The page is captured with a headless
 # Chromium; the demo reports when each state is reached (BIDE_DEMO_RECORD).
@@ -28,10 +28,9 @@ done
 # The panes: the terminal is the tape's size, the page 600x900 (520 CSS pixels wide, scaled by 600/520,
 # so its text stays legible when the README shows the GIF about 800 pixels wide).
 TW=790 H=900 VW=600
-ENTER=2.6 # seconds into the recording at which the tape presses Enter
+ENTER=1.1 # seconds into the recording at which the tape presses Enter
 
-(cd "$root/cmd/bide-demo" && go build -o "$work/bin/bide-demo" .)
-(cd "$root/cmd/bide-view" && go build -o "$work/bin/bide-view" .)
+(cd "$root/cmd/bide" && go build -o "$work/bin/bide" .)
 mkdir -p "$work/rec"
 
 shot() { # url out: a screenshot of the page's top, the pane's size
@@ -57,12 +56,12 @@ cat > "$work/waiting.html" <<'HTML'
 body{margin:0;height:100vh;display:flex;flex-direction:column;align-items:center;justify-content:center;
 background:#1b1b1f;color:#8b8b93;font:16px -apple-system,BlinkMacSystemFont,"Segoe UI",sans-serif}
 b{color:#e6e6ea;font-size:20px;margin-bottom:8px}</style>
-<b>bide-view</b><span>the run is in progress ...</span>
+<b>bide view</b><span>the run is in progress ...</span>
 HTML
 shot "file://$work/waiting.html" "$work/waiting.png"
-serve "$work/halted.log" "$work/bin/bide-view" -db "$work/rec/halted.db" -run order-42 -addr 127.0.0.1:18487
+serve "$work/halted.log" "$work/bin/bide" view -db "$work/rec/halted.db" -run order-42 -addr 127.0.0.1:18487
 shot "http://127.0.0.1:18487/run?id=order-42" "$work/halted.png"
-serve "$work/final.log" "$work/bin/bide-demo" -fast -no-browser -addr 127.0.0.1:18488
+serve "$work/final.log" "$work/bin/bide" demo -fast -no-browser -addr 127.0.0.1:18488
 shot "http://127.0.0.1:18488/run?id=order-42" "$work/final.png"
 
 # 3. Side by side, the page switching state as the terminal reaches it; then a GIF.
