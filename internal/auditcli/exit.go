@@ -10,6 +10,7 @@ import (
 	"io/fs"
 	"runtime"
 	"runtime/debug"
+	"sort"
 	"strings"
 
 	"github.com/bide-ai/bide/audit"
@@ -159,7 +160,7 @@ func (c *cli) call(verb func([]string), args []string) (err error) {
 // flagSet returns a verb's flag set, with the -max-input-bytes, -max-clock-skew and -json flags
 // every verb shares.
 func (c *cli) flagSet(name string) *flag.FlagSet {
-	fs := flag.NewFlagSet(name, flag.ContinueOnError)
+	fs := flag.NewFlagSet("bide audit "+name, flag.ContinueOnError)
 	fs.SetOutput(c.stderr)
 	fs.Int64Var(&maxInputBytes, "max-input-bytes", defaultMaxInputBytes, "the largest input file, in bytes, the verb reads; a larger one is an error")
 	fs.DurationVar(&maxClockSkew, "max-clock-skew", audit.DefaultClockSkew, "how far past this machine's clock a signed head's timestamp may be")
@@ -206,6 +207,16 @@ var verbs = map[string]func(*cli, []string){
 	"verify-absent":          (*cli).verifyAbsent,
 }
 
+// Verbs returns the name of every verb, sorted.
+func Verbs() []string {
+	names := make([]string, 0, len(verbs))
+	for name := range verbs {
+		names = append(names, name)
+	}
+	sort.Strings(names)
+	return names
+}
+
 // produceVerbs are the verbs whose exit 0 means "the artifact was written", not "verified".
 var produceVerbs = map[string]bool{"prove": true, "prove-absent": true}
 
@@ -213,7 +224,7 @@ var produceVerbs = map[string]bool{"prove": true, "prove-absent": true}
 // the CLI exits with is chosen here, by exitFor.
 func run(args []string, stdout, stderr io.Writer) int {
 	c := &cli{stdout: stdout, stderr: stderr, out: stdout}
-	top := flag.NewFlagSet("bide-audit", flag.ContinueOnError)
+	top := flag.NewFlagSet("bide audit", flag.ContinueOnError)
 	top.SetOutput(stderr)
 	top.Usage = func() { fmt.Fprint(stderr, usageText) }
 	showVersion := top.Bool("version", false, "print the version and the artifact formats this version reads")
@@ -223,7 +234,7 @@ func run(args []string, stdout, stderr io.Writer) int {
 	}
 	if *showVersion {
 		if top.NArg() > 0 {
-			fmt.Fprintf(stderr, "bide-audit: -version takes no verb or argument, got %q\n", top.Arg(0))
+			fmt.Fprintf(stderr, "bide audit: -version takes no verb or argument, got %q\n", top.Arg(0))
 			return exitFor(errUsage)
 		}
 		printVersion(stdout, c.json)
@@ -236,7 +247,7 @@ func run(args []string, stdout, stderr io.Writer) int {
 	c.verb = top.Arg(0)
 	verb, ok := verbs[c.verb]
 	if !ok {
-		fmt.Fprintf(stderr, "bide-audit: unknown verb %q\n", c.verb)
+		fmt.Fprintf(stderr, "bide audit: unknown verb %q\n", c.verb)
 		fmt.Fprint(stderr, usageText)
 		return exitFor(errUsage)
 	}
@@ -300,7 +311,7 @@ func (c *cli) writeReport(code int, errs []string) {
 		errs = []string{}
 	}
 	rep := report{
-		Tool: "bide-audit", Version: toolVersion(), Verb: c.verb, ExitCode: code,
+		Tool: "bide audit", Version: toolVersion(), Verb: c.verb, ExitCode: code,
 		Result: resultName(c.verb, code), Verified: code == exitVerified && !produceVerbs[c.verb],
 		Output: out, Errors: errs, Artifact: c.artifact,
 	}
@@ -359,14 +370,14 @@ func printVersion(w io.Writer, asJSON bool) {
 			Version string           `json:"version"`
 			Go      string           `json:"go"`
 			Formats []artifactFormat `json:"formats"`
-		}{"bide-audit", toolVersion(), runtime.Version(), readFormats}, "", "  ")
+		}{"bide", toolVersion(), runtime.Version(), readFormats}, "", "  ")
 		if err != nil {
 			panic(err)
 		}
 		fmt.Fprintln(w, string(b))
 		return
 	}
-	fmt.Fprintf(w, "bide-audit %s (%s)\nartifact formats read:\n", toolVersion(), runtime.Version())
+	fmt.Fprintf(w, "bide %s (%s)\nartifact formats read:\n", toolVersion(), runtime.Version())
 	for _, f := range readFormats {
 		fmt.Fprintf(w, "  %-17s %s  (%s)\n", f.Artifact+":", f.Format, f.Verbs)
 	}

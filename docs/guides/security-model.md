@@ -74,7 +74,7 @@ for the post-quantum options below), with no external dependencies.
 - **Canonical encodings.** A journal record is hashed over its stored bytes, never re-encoded.
   Grants, events, anchor entries, and evidence seals are hashed or signed over their JSON encoding, which is one-to-one only over valid UTF-8 (JSON rewrites invalid bytes
   to U+FFFD). A value with invalid UTF-8 in any string is refused, never committed, signed, or
-  verified, so two different values never share a leaf or a signature. `bide-audit` reads every
+  verified, so two different values never share a leaf or a signature. `bide audit` reads every
   artifact with `audit.UnmarshalStrict`, which rejects duplicate keys, keys that match a field only
   case-insensitively, unknown fields, invalid UTF-8, escaped lone surrogates, and non-standard
   base64, so a file cannot show a reader one value while the verifier checks another. A proof's
@@ -230,7 +230,7 @@ takes ML-DSA or hybrid.
 
 Verification never requires trusting the producer or importing the producer's runtime. Two paths:
 
-- The **`bide-audit` CLI** (`cmd/bide-audit`) is the auditor-facing front end. It imports
+- The **`bide audit` CLI** (`cmd/bide`) is the auditor-facing front end. It imports
   only the core and `audit` packages and no store backend (a test, `TestDepsAreCore` in
   `internal/auditcli`, fails if its import graph reaches past the standard library and the core module), so it operates on an exported journal
   (an `audit.JournalExport` of each record's stored bytes) plus a signed tree head. `verify` and the other verify verbs print a
@@ -256,4 +256,4 @@ reference test vectors, not a homegrown look-alike.
   runs, event logs). This page consolidates the caveats that walkthrough scatters.
 - `docs/guides/delegation.md`: signed grants, the delegation chain, and capability attenuation.
 - `audit/`: the package. `audit/verify/`: the stdlib-only standalone verifier.
-- `cmd/bide-audit`: the offline CLI (its code is `internal/auditcli`).
+- `cmd/bide`: the offline CLI (its code is `internal/auditcli`).

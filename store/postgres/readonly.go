@@ -20,7 +20,7 @@ import (
 //
 // It refuses a database with no journal tables, and one whose schema version is newer than this
 // version's (ErrConfig). Close closes the pool. It is for tools that inspect a journal, such as
-// bide-view, never for driving a run.
+// bide view, never for driving a run.
 func OpenReadOnly(ctx context.Context, dsn string, opts ...Option) (*Store, error) {
 	ro, err := readOnlyDSN(dsn)
 	if err != nil {

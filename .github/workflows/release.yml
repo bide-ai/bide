@@ -1,6 +1,6 @@
 name: Release
 
-# Pushing a v* tag builds the bide-audit binaries and publishes a GitHub
+# Pushing a v* tag builds the bide binaries and publishes a GitHub
 # Release with generated notes. Run manually (workflow_dispatch) to dry-run the
 # whole pipeline in snapshot mode without tagging or publishing anything.
 on:

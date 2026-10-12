@@ -141,6 +141,10 @@ bundle and a public key, with no access to your database:
 brew install bide-ai/tap/bide-audit
 ```
 
+> Update for v0.14.0: the verifier is now `bide audit`, one command of the single `bide` program
+> (`brew install bide-ai/tap/bide`; `bide-audit verify ...` becomes `bide audit verify ...`). See
+> the [CLI reference](../reference/cli.md).
+
 Verifying the hashes detects accidental corruption, but it detects
 deliberate tampering only when the root is also committed somewhere the operator cannot
 rewrite (signed with a key the application cannot use freely, or published to a separate system).

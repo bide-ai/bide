@@ -13,10 +13,10 @@ import (
 	"github.com/bide-ai/bide/audit"
 )
 
-// auditBin is the path to build the bide-audit test binary to. On Windows, go
+// auditBin is the path to build the bide audit test binary to. On Windows, go
 // build writes (and exec expects) a .exe suffix, so add it there.
 func auditBin(dir string) string {
-	bin := filepath.Join(dir, "bide-audit")
+	bin := filepath.Join(dir, "bide")
 	if runtime.GOOS == "windows" {
 		bin += ".exe"
 	}

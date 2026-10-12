@@ -477,7 +477,7 @@ type EventToolConfig struct {
 // the journal (a signed tree head, or a ProofBundle from ProveToolCall) then commits
 // cryptographically to the policy the action ran under, not merely that the action happened. An
 // auditor recomputes the digest from the published policy bytes and runs the external verified
-// oracle on them (see `bide-audit verify-governance`), tying the cryptographic root (the log) to
+// oracle on them (see `bide audit verify-governance`), tying the cryptographic root (the log) to
 // the mathematical root (the proof) over one artifact.
 //
 // EventTool panics, as agent.Func does, on an invalid option, and with ErrConfig on a config that

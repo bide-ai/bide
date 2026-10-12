@@ -12,7 +12,7 @@ type Order struct{ Amount int }
 type Receipt struct{ Status string }
 
 // A program checks a flow config against its own Registry: the type mismatch on the edge from
-// classify to done is found only with the Registry (bide-view -config checks structure only).
+// classify to done is found only with the Registry (bide view -config checks structure only).
 // planview.Handler serves the same check as the config page.
 func Example() {
 	reg := plan.NewRegistry()

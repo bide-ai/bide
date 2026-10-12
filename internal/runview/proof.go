@@ -13,7 +13,7 @@ import (
 )
 
 // Proof is the audit verdict on the run's journal, from the audit package's own verifiers (the
-// code bide-audit verify and verify-evidence run), never a reimplementation.
+// code bide audit verify and verify-evidence run), never a reimplementation.
 type Proof struct {
 	Source   string   `json:"source"` // "signed tree head" or "evidence package"
 	OK       bool     `json:"ok"`
@@ -40,11 +40,11 @@ type Prover func(ctx context.Context, runID string, recs []agent.Record) *Proof
 // HeadProver checks a signed tree head: its signature under v and the timestamp rule
 // (audit.CheckTimestamp), and that its root commits to the first sth.Size records of the journal
 // shown, by building and verifying an inclusion proof of the last of them (audit.ProveRecord,
-// ProofBundle.Verify), as bide-audit prove and verify do.
+// ProofBundle.Verify), as bide audit prove and verify do.
 //
 // With approver keys (ap.Keys non-nil), it also checks each m-of-n gate's signatures: it builds the
 // gate's evidence from the journal under sth (audit.ApprovalEvidence) and verifies it with
-// audit.VerifyApprovals, as bide-audit verify-approvals does.
+// audit.VerifyApprovals, as bide audit verify-approvals does.
 func HeadProver(sth audit.SignedTreeHead, v audit.Verifier, ap Approvals) Prover {
 	return func(ctx context.Context, runID string, recs []agent.Record) *Proof {
 		if sth.RunID != runID {
@@ -66,11 +66,11 @@ func HeadProver(sth audit.SignedTreeHead, v audit.Verifier, ap Approvals) Prover
 	}
 }
 
-// EvidenceProver checks an evidence package (audit.EvidencePackage.Verify, as bide-audit
+// EvidenceProver checks an evidence package (audit.EvidencePackage.Verify, as bide audit
 // verify-evidence does) and that its signed head commits to the journal shown.
 //
 // With approver keys (ap.Keys non-nil), it also checks each m-of-n gate's signatures with
-// audit.VerifyApprovals over the package's actions, as bide-audit verify-approvals does.
+// audit.VerifyApprovals over the package's actions, as bide audit verify-approvals does.
 func EvidenceProver(pkg audit.EvidencePackage, v audit.Verifier, ap Approvals, opts ...audit.EvidenceVerifyOption) Prover {
 	return func(ctx context.Context, runID string, recs []agent.Record) *Proof {
 		if pkg.RunID != runID {

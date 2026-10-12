@@ -17,7 +17,7 @@ type Config struct {
 	Name     string
 	Data     []byte
 	Registry *plan.Registry
-	// Strict makes Check fail on a warning as well as on an error (bide-view -check -strict).
+	// Strict makes Check fail on a warning as well as on an error (bide view -check -strict).
 	Strict bool
 }
 

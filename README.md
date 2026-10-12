@@ -10,13 +10,14 @@
   Side effects fire at most once, even across a crash. Every action is provable afterwards.
 </p>
 
-<p align="center"><img src="assets/crash-demo.gif" width="100%" alt="bide-demo: an agent is killed mid-charge, the restart halts with outcome unknown instead of charging again, the charge is resolved from the provider's record, and bide-view shows the run with its audit proof and 2-of-3 approval signatures verified"></p>
+<p align="center"><img src="assets/crash-demo.gif" width="100%" alt="bide demo: an agent is killed mid-charge, the restart halts with outcome unknown instead of charging again, the charge is resolved from the provider's record, and bide view shows the run with its audit proof and 2-of-3 approval signatures verified"></p>
 <p align="center">
   <img src="assets/quote-rule-left.png" width="72" alt="">&nbsp;&nbsp;<em>A pause you can clear beats a double-fire you can't.</em>&nbsp;&nbsp;<img src="assets/quote-rule-right.png" width="72" alt="">
 </p>
 
 ```sh
-go run github.com/bide-ai/bide/cmd/bide-demo@latest   # kill an agent mid-payment; it does not charge twice (no API key)
+brew install bide-ai/tap/bide   # or: go install github.com/bide-ai/bide/cmd/bide@latest
+bide demo                       # kill an agent mid-payment; it does not charge twice (no API key)
 ```
 
 One append-only journal, in a plain-Go library, gives four guarantees:
@@ -133,7 +134,7 @@ database or your logs:
 
 Produce a portable `ProofBundle` for one action (`audit.ProveToolCall`), or a whole-run `EvidencePackage`
 (`audit.Evidence`) bundling every material action's proof into one file, and hand it to an auditor
-who verifies it offline with `bide-audit verify` / `verify-evidence` or a stdlib-only verifier that
+who verifies it offline with `bide audit verify` / `verify-evidence` or a stdlib-only verifier that
 never imports the SDK. The same spine carries the rest of the accountability layer, all
 verifiable offline: proof-carrying runs (one `RunCertificate` attesting a
 whole run's policy compliance), signed capability grants with attenuating delegation, authority
@@ -286,7 +287,7 @@ Or author that same topology as declarative config a higher layer (a visual buil
 flow, err := plan.Load[Order, Receipt](configBytes, reg) // same topology, same Digest()
 ```
 
-`bide-view -config` draws a config and marks its problems before you load it (see [Check a flow config](docs/guides/run-viewer.md#check-a-flow-config)).
+`bide view -config` draws a config and marks its problems before you load it (see [Check a flow config](docs/guides/run-viewer.md#check-a-flow-config)).
 
 All three lower to the one journal-backed runtime, so at-most-once, HA resume and the verifiable trail apply whichever you pick.
 
@@ -625,20 +626,20 @@ See [docs/guides/audit.md](docs/guides/audit.md) for the model, the API, and the
 
 ### Run viewer
 
-`bide-view` opens a read-only page for one run, served on `127.0.0.1` from a SQLite or Postgres
+`bide view` opens a read-only page for one run, served on `127.0.0.1` from a SQLite or Postgres
 journal or an exported one. It shows the run's timeline (model turns, tool calls and their `Safety`,
 attempts, approvals), a halted operation with the `ResolveHalt` call that records its outcome, each
 approval gate's k-of-n status (a tool call's or a flow node's) and whether its signatures verify, a
 plan flow's path over its declared topology, and whether the journal verifies against a signed tree
-head or an evidence package. It never writes to the store. `bide-view -config flow.yaml` shows a flow
-definition the same way, with its problems marked on the graph, and `-check` runs that check in CI.
-Install it with `go install github.com/bide-ai/bide/cmd/bide-view@v0.13.0`; see the
+head or an evidence package. It never writes to the store. `bide view -config flow.yaml` shows a flow
+definition the same way, with its problems marked on the graph, and `bide check flow.yaml` runs that check in CI.
+Install it with `go install github.com/bide-ai/bide/cmd/bide@latest` (or `brew install bide-ai/tap/bide`); see the
 [run viewer guide](docs/guides/run-viewer.md).
 
 <table>
 <tr>
-<td width="50%"><picture><source media="(prefers-color-scheme: dark)" srcset="docs/guides/img/refund-before-dark.png"><img src="docs/guides/img/refund-before-light.png" width="100%" alt="bide-view: run refund-42 halted, outcome unknown, with its ResolveHalt call"></picture></td>
-<td width="50%"><picture><source media="(prefers-color-scheme: dark)" srcset="docs/guides/img/refund-after-dark.png"><img src="docs/guides/img/refund-after-light.png" width="100%" alt="bide-view: run refund-42 completed, approved 2 of 3, audit proof verified"></picture></td>
+<td width="50%"><picture><source media="(prefers-color-scheme: dark)" srcset="docs/guides/img/refund-before-dark.png"><img src="docs/guides/img/refund-before-light.png" width="100%" alt="bide view: run refund-42 halted, outcome unknown, with its ResolveHalt call"></picture></td>
+<td width="50%"><picture><source media="(prefers-color-scheme: dark)" srcset="docs/guides/img/refund-after-dark.png"><img src="docs/guides/img/refund-after-light.png" width="100%" alt="bide view: run refund-42 completed, approved 2 of 3, audit proof verified"></picture></td>
 </tr>
 <tr>
 <td>Before: the refund crashed after it fired, so the run is halted with its outcome unknown, and the page gives the <code>ResolveHalt</code> call.</td>
@@ -773,7 +774,7 @@ agent.SubmitDecision(ctx, journal, agent.Decision{RunID: pend.RunID, ToolUseID: 
 	ApproverID: "finance", Approved: true, Alg: signer.Alg(), Signature: sig})
 ```
 
-`audit.ApprovalEvidence` and `audit.VerifyApprovals` (or `bide-audit verify-approvals`) then prove
+`audit.ApprovalEvidence` and `audit.VerifyApprovals` (or `bide audit verify-approvals`) then prove
 offline that k named approvers signed off on this exact call *before* it ran (each decision counts
 only under the signature scheme journaled with it, which must be its approver key's), under the expected
 policy, from evidence that cannot leave a decision out unnoticed. Each approver needs a key of their
@@ -971,7 +972,7 @@ through `FederatedEventTool`, so an LLM tool call becomes a governed event.
 **Agreement on a decision (quorum).** k-of-n named voters (each a model, provider, or principal)
 cast a normalized decision; every vote is a journaled, at-most-once step that records who voted how,
 and the k-of-n gate is a gsm invariant over the vote count, so "k agreed" is machine-checked over
-every possible tally. `bide-audit verify-quorum` re-checks the tally and every vote from public
+every possible tally. `bide audit verify-quorum` re-checks the tally and every vote from public
 artifacts, reproducing the plurality rule without trusting the producer. The claim is precise: a
 quorum proves *that k voters agreed* and lowers single-model risk; it does not certify the decision
 is correct (correlated errors are not independence), and only normalized decisions can be quorumed,
@@ -1003,17 +1004,17 @@ New here? Start with **[Getting started](docs/getting-started.md)**, use the **[
 - **[MCP](docs/guides/mcp.md)**: connect an MCP server as a runtime tool source, with side-effect-safe resume; a trusted server's tool annotations can mark tools safe to re-run.
 - **[Observability](docs/guides/observability.md)**: OTel gen_ai spans in one line (`trace.Instrument`): span taxonomy, sub-agent nesting, token-to-cost, and the content-capture privacy default. Runnable: `examples/observability`.
 - **[Messaging](docs/guides/messaging.md)**: drive an agent from an inbound webhook (Slack, Telegram, SMS, Discord), redelivery-safe: a retried webhook replays instead of double-firing. Runnable: `examples/webhook`.
-- **[Run viewer](docs/guides/run-viewer.md)**: `bide-view`, a read-only local page for one run's journal: the timeline, a flow's path over its declared topology, halts, approval gates, and the audit verdict.
+- **[Run viewer](docs/guides/run-viewer.md)**: `bide view`, a read-only local page for one run's journal: the timeline, a flow's path over its declared topology, halts, approval gates, and the audit verdict.
 - **[Debugging and recovery](docs/guides/debugging.md)**: deterministic replay (`Replay`), event reconstruction (`ReplayEvents`), Mermaid run diagrams, and crash recovery (`Recover`) that re-drives interrupted runs.
 
 **Accountability and governance**
 
-- **[Audit](docs/guides/audit.md)**: proof-carrying runs. A run ships one portable `RunCertificate`, checkable offline with `bide-audit verify-run`. Runnable: `examples/govern/proof-carrying-run`.
+- **[Audit](docs/guides/audit.md)**: proof-carrying runs. A run ships one portable `RunCertificate`, checkable offline with `bide audit verify-run`. Runnable: `examples/govern/proof-carrying-run`.
 - **[Delegation](docs/guides/delegation.md)**: signed capability grants a sub-agent can only narrow (`Grant`/`SignGrant`), verified offline (`VerifyDelegationChain`), plus authority earned from a clean trail. Runnable: `examples/govern/delegation`, `examples/govern/authority`.
 - **[Security model](docs/guides/security-model.md)**: the exact scope of the cryptographic guarantees (integrity, authenticity, tamper-evidence, non-repudiation, selective disclosure) and what is out of scope (confidentiality). Read before relying on the trail.
 - **[Governance](docs/guides/governance.md)**: the Tier-2 governed-state substrate (gsm). Describe shared state as a registry, and `Build()` checks that every interleaving converges or returns a counterexample. Runnable: `examples/govern/mesh`, `examples/govern/compose`.
 - **[Human approval (human-in-the-loop)](docs/guides/hitl-approval.md)**: durable human sign-off before a tool runs, from 1-of-1 to signed m-of-n (`ApprovalPolicy`, `SubmitDecision`), with offline proof that k named approvers approved before the action (`audit.ApprovalEvidence`, `audit.VerifyApprovals`). Runnable: `examples/approval`.
-- **[Quorum](docs/guides/quorum.md)**: governed k-of-n model agreement (`govern.Quorum`), the tally anchored in the journal and re-checkable offline (`bide-audit verify-quorum`). Runnable: `examples/govern/quorum`.
+- **[Quorum](docs/guides/quorum.md)**: governed k-of-n model agreement (`govern.Quorum`), the tally anchored in the journal and re-checkable offline (`bide audit verify-quorum`). Runnable: `examples/govern/quorum`.
 
 **Reference and internals**
 

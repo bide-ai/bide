@@ -1,6 +1,6 @@
-# Run viewer: `bide-view`
+# Run viewer: `bide view`
 
-`bide-view` serves a read-only web page for one run of a bide journal. It shows what the journal
+`bide view` serves a read-only web page for one run of a bide journal. It shows what the journal
 recorded: an agent run's model turns, tool calls, attempts, approvals and halts; a plan flow's
 declared topology with the path the run took; and, when you give it a signed tree head or an
 evidence package, whether the journal verifies.
@@ -11,7 +11,7 @@ exported journals. It listens on a loopback address only (`127.0.0.1` or `::1`) 
 requests addressed to one, so the page is not reachable from another machine. The page needs no
 network: the binary serves its HTML, CSS and graph, with no CDN and no JavaScript.
 
-![bide-view on a plan flow halted mid-node: END STATE "halted: outcome unknown", the halt with its ResolveHalt snippet, and the topology with the path taken](img/run-viewer-flow-halted-dark.png)
+![bide view on a plan flow halted mid-node: END STATE "halted: outcome unknown", the halt with its ResolveHalt snippet, and the topology with the path taken](img/run-viewer-flow-halted-dark.png)
 
 The quickest way to see the page is the crash demo, which needs no API key and no journal of your
 own. It kills an agent mid-charge, resolves the halt, and opens this page on the run, with an
@@ -19,42 +19,45 @@ evidence package and the approvers' keys, so the audit proof and the gate's sign
 verified:
 
 ```sh
-go run github.com/bide-ai/bide/cmd/bide-demo@latest            # -no-browser prints the URL instead; -keep keeps the journal
+bide demo            # -no-browser prints the URL instead; -keep keeps the journal
 ```
 
-With `-keep` it keeps its temp directory and prints the `bide-view` command that reopens the run.
+With `-keep` it keeps its temp directory and prints the `bide view` command that reopens the run.
 
 ## Install
 
-`bide-view` is its own module, `github.com/bide-ai/bide/cmd/bide-view`, which carries the SQLite
-and Postgres drivers the core module does not:
+`bide view` is a command of `bide`, whose module (`github.com/bide-ai/bide/cmd/bide`) carries the
+SQLite and Postgres drivers the core module does not:
 
 ```sh
-go install github.com/bide-ai/bide/cmd/bide-view@v0.13.0
+brew install bide-ai/tap/bide                         # or:
+go install github.com/bide-ai/bide/cmd/bide@latest
 ```
+
+Every flag of `bide view` and `bide check` is listed in the [CLI reference](../reference/cli.md).
 
 ## Run it
 
 On a SQLite journal (the file `sqlite.Open` writes):
 
 ```sh
-bide-view -db run.db                  # the run list
-bide-view -db run.db -run refund-42   # prints the URL of that run's page
+bide view -db run.db                  # the run list
+bide view -db run.db -run refund-42   # prints the URL of that run's page
 ```
 
 On a Postgres journal (the database `postgres.Open` writes), given as a pgx DSN:
 
 ```sh
-bide-view -postgres 'postgres://user:pass@host:5432/db' -run refund-42
+bide view -postgres 'postgres://user:pass@host:5432/db' -run refund-42
 ```
 
 Every session it opens has `default_transaction_read_only` on, so the server refuses any write.
 
 On exported journals (`audit.ExportJournal(ctx, journal, runID)`, marshaled to JSON, the input
-`bide-audit prove` reads), one file per run:
+`bide audit prove` reads), one file per run:
 
 ```sh
-bide-view -journal refund-42.json -journal refund-43.json
+bide view -journal refund-42.json -journal refund-43.json
 ```
 
 It prints the URL it serves (by default `http://127.0.0.1:8484/`) and runs until Ctrl-C. A run's
@@ -73,20 +76,20 @@ page is at `/run?id=<run>`, and the same view as JSON at `/run.json?id=<run>`.
 | `-sth <file>` | A signed tree head (`audit.SignedTreeHead` JSON) to verify the journal against. Needs `-pubkey`. |
 | `-evidence <file>` | An evidence package (`audit.EvidencePackage` JSON, as `audit.Evidence` writes it) to verify. Needs `-pubkey`. |
 | `-pubkey <key>` | The log's public key: `<scheme>:<hex>` (`ed25519`, `ml-dsa-65`, `ed25519+ml-dsa-65`), bare ed25519 hex, or a file holding either. |
-| `-approver-keys <file>` | The approvers' public keys, the file `bide-audit verify-approvals` reads: a JSON object of approver id to key text, such as `{"ops":"ed25519:ab12..."}`. With it, each m-of-n gate's signatures are verified. Needs `-sth` or `-evidence`. |
-| `-need <k>`, `-approvers <a,b,c>` | The policy you expect (k of these approvers, in policy order). With them the signatures are verified against this policy, as `bide-audit verify-approvals -need -approvers` does, and a gate whose recorded policy differs fails. Need `-approver-keys`. |
+| `-approver-keys <file>` | The approvers' public keys, the file `bide audit verify-approvals` reads: a JSON object of approver id to key text, such as `{"ops":"ed25519:ab12..."}`. With it, each m-of-n gate's signatures are verified. Needs `-sth` or `-evidence`. |
+| `-need <k>`, `-approvers <a,b,c>` | The policy you expect (k of these approvers, in policy order). With them the signatures are verified against this policy, as `bide audit verify-approvals -need -approvers` does, and a gate whose recorded policy differs fails. Need `-approver-keys`. |
 | `-config <file>` | A flow config (`.json`, or `.yaml`/`.yml`) to show instead of runs; see [Check a flow config](#check-a-flow-config). Takes none of the run flags. |
-| `-check` | With `-config`: serve nothing, print each problem as `file:node: message`, and exit 1 if any is an error. |
-| `-strict` | With `-check`: exit 1 on a warning too. |
+| `-check` | With `-config`: serve nothing, print each problem as `file:node: message`, and exit 1 if any is an error. `bide check <file>...` is the same check, for several files. |
+| `-strict` | With `-check`: exit 1 on a warning too (`bide check -strict`). |
 | `-addr <host:port>` | Where to listen: a loopback IP or `localhost`, with a port. Default `127.0.0.1:8484`. Any other host is refused. |
 
-Input files are read strictly, as `bide-audit` reads them (`audit.UnmarshalStrict`): a duplicate or
-unknown field is an error. `bide-view -h` prints the same list. Exit status: 0 after a clean stop or
+Input files are read strictly, as `bide audit` reads them (`audit.UnmarshalStrict`): a duplicate or
+unknown field is an error. `bide view -h` prints the same list. Exit status: 0 after a clean stop or
 `-h`, 1 if an input cannot be read or the server fails, 2 for a usage error.
 
 ## The page
 
-![bide-view on an agent run halted after a crash mid-refund, with its 2-of-3 approval gate](img/run-viewer-agent-halted-dark.png)
+![bide view on an agent run halted after a crash mid-refund, with its 2-of-3 approval gate](img/run-viewer-agent-halted-dark.png)
 
 **END STATE.** The run's state as `agent.Status` reads it from the journal, with two refinements:
 
@@ -106,7 +109,7 @@ it stands (`refund: approved 2 of 3`), the policy, who approved or denied, who i
 whether the signatures verified (see the Approval gates table below for the full detail).
 
 **AUDIT PROOF.** Given `-sth` or `-evidence` and `-pubkey`, whether the journal verifies, checked
-with the audit package's own verifiers, as `bide-audit` does:
+with the audit package's own verifiers, as `bide audit` does:
 
 - with `-sth`: the head's signature and timestamp, and an inclusion proof of the last record it
   covers, built from the journal shown (`audit.ProveRecord`, `ProofBundle.Verify`). A head that does
@@ -119,7 +122,7 @@ covered. Without `-sth` or `-evidence` the card says so.
 
 With `-approver-keys` as well, the card gives a line per m-of-n approval gate whose tally is
 journaled: whether its approvals verify, from `audit.VerifyApprovals`, the check
-`bide-audit verify-approvals` runs. It verifies the proofs of the request, every decision the gate
+`bide audit verify-approvals` runs. It verifies the proofs of the request, every decision the gate
 read, the tally and the result under the log key; checks each decision's signature with the
 approver's key against the exact call; recounts with the gate's rule; and requires at least k. With
 `-evidence` it checks the package's actions; with `-sth` it builds the same evidence from the journal
@@ -196,18 +199,18 @@ it mid-refund, view the halt, resolve it, and view it again with its evidence ve
 ```sh
 cd examples/approval
 go run . run -db a.db                       # the gate pauses: waiting for approval
-bide-view -db a.db -run refund-42           # the gate listed, 0 of 3 decided
+bide view -db a.db -run refund-42           # the gate listed, 0 of 3 decided
 go run . approve -db a.db -as ops
 go run . approve -db a.db -as finance
 go run . run -db a.db -crash                # the refund fires; the process dies before its result is journaled
 go run . run -db a.db                       # the resume halts: outcome unknown
-bide-view -db a.db -run refund-42           # the halt, its HaltRef, and the gate approved 2 of 3
+bide view -db a.db -run refund-42           # the halt, its HaltRef, and the gate approved 2 of 3
 go run . resolve -db a.db                   # ResolveHalt from the provider's record, then the run finishes
 go run . evidence -db a.db -out ev.json     # prints the log public key; writes approver-keys.json
-bide-view -db a.db -run refund-42 -evidence ev.json -pubkey <log public key> -approver-keys approver-keys.json
+bide view -db a.db -run refund-42 -evidence ev.json -pubkey <log public key> -approver-keys approver-keys.json
 ```
 
-![bide-view on the same run after ResolveHalt: completed, with the evidence package verifying](img/run-viewer-agent-verified-dark.png)
+![bide view on the same run after ResolveHalt: completed, with the evidence package verifying](img/run-viewer-agent-verified-dark.png)
 
 For a gated plan flow node, `examples/approval/flow` loads a refund flow whose `refund` node needs 2
 of 3 approvers:
@@ -217,16 +220,16 @@ cd examples/approval
 go run ./flow run -db f.db                  # the flow pauses before refund
 go run ./flow approve -db f.db -as ops
 go run ./flow run -db f.db                  # still paused: 1 of 2 approvals
-bide-view -db f.db -run refund-flow-42      # refund waiting at its 2 of 3 gate
+bide view -db f.db -run refund-flow-42      # refund waiting at its 2 of 3 gate
 go run ./flow approve -db f.db -as risk
 go run ./flow run -db f.db                  # the refund runs once; the flow finishes
 go run ./flow evidence -db f.db -out fev.json   # prints the log public key; writes approver-keys.json
-bide-view -db f.db -run refund-flow-42 -evidence fev.json -pubkey <log public key> -approver-keys approver-keys.json
+bide view -db f.db -run refund-flow-42 -evidence fev.json -pubkey <log public key> -approver-keys approver-keys.json
 ```
 
-<img src="./img/flow-gate-waiting-dark.png" alt="bide-view on a plan flow paused at its refund node's 2 of 3 approval gate: 1 of 2 approvals, pending finance and risk">
+<img src="./img/flow-gate-waiting-dark.png" alt="bide view on a plan flow paused at its refund node's 2 of 3 approval gate: 1 of 2 approvals, pending finance and risk">
 
-<img src="./img/flow-gate-approved-dark.png" alt="bide-view on the same flow after a second approval: completed, the refund node approved 2 of 3 with its signatures verified, and the evidence package verifying">
+<img src="./img/flow-gate-approved-dark.png" alt="bide view on the same flow after a second approval: completed, the refund node approved 2 of 3 with its signatures verified, and the evidence package verifying">
 
 For a plan flow, `examples/plan` crashes in its reserve step. The run journals its topology, so no
 flag is needed to draw it:
@@ -235,12 +238,12 @@ flag is needed to draw it:
 cd examples/plan
 go run . -db f.db -crash during-reserve
 go run . -db f.db                                                 # the resume halts at reserve
-bide-view -db f.db -run triage-demo
+bide view -db f.db -run triage-demo
 ```
 
 ## Check a flow config
 
-`bide-view -config` shows a flow definition (a `plan` config, `.json` or `.yaml`) without running
+`bide view -config` shows a flow definition (a `plan` config, `.json` or `.yaml`) without running
 anything: the declared graph, its Switch arms and loops, each node's approval gate written as
 `2 of 3: ops, finance, risk`, and every problem `plan.InspectConfig` finds, marked on the node, edge
 or arm it belongs to, with the full message in the Problems table and in each mark's tooltip. An
@@ -248,18 +251,19 @@ edge to a name no node declares draws that name as a dashed "not declared" node.
 
 ```sh
 cd examples/plan
-bide-view -config flows/refund.yaml                 # the page; no problems
-bide-view -config flows/refund-typo.yaml -check     # for CI: no server, one line per problem
+bide view -config flows/refund.yaml                 # the page; no problems
+bide check flows/refund-typo.yaml                   # for CI: no server, one line per problem
 ```
 
 The screenshot below is `examples/plan/flows/refund-typo.yaml`, whose last edge names `reciept`.
 
-<img src="./img/run-viewer-config-problem-dark.png" alt="bide-view -config on a refund flow whose edge names an undeclared node, marked on the edge">
+<img src="./img/run-viewer-config-problem-dark.png" alt="bide view -config on a refund flow whose edge names an undeclared node, marked on the edge">
 
-With `-check` it prints `file:node: message` for a node's problem, `file:from->to: message` for an
+`bide check` (or `bide view -config <file> -check`) prints `file:node: message` for a node's problem, `file:from->to: message` for an
 edge's or an arm's, and `file: message` for the config as a whole, and exits 1 if any is an error
 (0 otherwise; a warning is printed as `warning:` and does not fail the check unless you add
-`-strict`; an unreadable file exits 1, a usage error 2).
+`-strict`; an unreadable file exits 1, a usage error 2). `bide check` takes several files and
+exits 1 if any of them fails.
 
 **Structural, from the command line.** The command cannot import your Go types, blocks or tools,
 so it checks what needs no Go code: the config reads as `plan.Load` reads it (strictly, version 1);

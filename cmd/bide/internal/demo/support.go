@@ -1,4 +1,4 @@
-package main
+package demo
 
 import (
 	"bufio"
@@ -44,7 +44,7 @@ func openJournal(dir string) (*agent.Journal, func(), error) {
 		s.Close()
 		return nil, nil, err
 	}
-	as.OnError(func(runID string, err error) { fmt.Fprintf(os.Stderr, "bide-demo: anchoring %s: %v\n", runID, err) })
+	as.OnError(func(runID string, err error) { fmt.Fprintf(os.Stderr, "bide demo: anchoring %s: %v\n", runID, err) })
 	j, err := agent.NewJournal(as)
 	if err != nil {
 		s.Close()
@@ -171,7 +171,7 @@ func verifiers(keys map[string]string) agent.ApproverVerifierFor {
 	}
 }
 
-// view opens dir's journal read-only, as bide-view does, and checks the run against the exported
+// view opens dir's journal read-only, as bide view does, and checks the run against the exported
 // evidence, the approvers' public keys and the last head the audited store anchored.
 func view(ctx context.Context, dir string, logPub ed25519.PublicKey) (*result, error) {
 	var pkg audit.EvidencePackage
@@ -251,7 +251,7 @@ func readJSON(path string, v any) error {
 	return json.Unmarshal(b, v)
 }
 
-// readStrict reads an audit artifact as bide-view and bide-audit do (audit.UnmarshalStrict).
+// readStrict reads an audit artifact as bide view and bide audit do (audit.UnmarshalStrict).
 func readStrict(path string, v any) error {
 	b, err := os.ReadFile(path)
 	if err != nil {

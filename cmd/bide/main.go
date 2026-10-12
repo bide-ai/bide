@@ -1,0 +1,180 @@
+// Command bide is the bide command line: one program for everyone who does not import the library.
+//
+//	bide demo                      kill an agent mid-payment and watch it not charge twice
+//	bide view -db run.db           a read-only local page for one run of a journal
+//	bide check flow.yaml           check a plan flow config, for CI
+//	bide audit verify-evidence ... produce and verify audit proofs offline
+//	bide version                   the version and the artifact formats bide audit reads
+//	bide help [command]            the commands, or one command's flags
+//
+// Each command parses its own flags with the standard library flag package (single-dash flags,
+// such as -db and -evidence). Exit status: 0 success, 1 failure, 2 usage error, for every command;
+// bide audit keeps its own statuses, where only 0 means verified (see bide help audit).
+//
+// Built with -tags bide_audit_only, the program holds only audit, version and help, and its import
+// graph is the standard library and the core module: no store driver, no YAML library. That is the
+// build for a verifier who wants nothing else in the binary (see docs/guides/security-model.md).
+package main
+
+import (
+	"errors"
+	"flag"
+	"fmt"
+	"io"
+	"os"
+	"strings"
+
+	"github.com/bide-ai/bide/internal/auditcli"
+)
+
+// version is the release version, set by a release build with -ldflags "-X main.version=v1.2.3".
+var version = ""
+
+// command is one bide subcommand.
+type command struct {
+	name    string
+	summary string
+	// run runs the command with its arguments (after the command's name) and returns the exit
+	// status.
+	run func(args []string, stdout, stderr io.Writer) int
+	// exits documents the command's exit statuses, for help and the CLI reference.
+	exits string
+}
+
+// commonExits are the exit statuses of every command but audit.
+const commonExits = `0  success
+1  failure: an input cannot be read or the command failed; for check, an error was found
+   (with -strict, any problem)
+2  usage error: a bad flag or argument; nothing was read`
+
+// auditExits are bide audit's exit statuses (internal/auditcli).
+const auditExits = `0  verified (for prove and prove-absent: the artifact was written)
+1  read and understood, and not verified
+2  usage error: a bad flag or argument; nothing was read
+3  no verdict: the -checker gave none, or an internal error
+4  an input is unreadable or unusable`
+
+// coreCommands are in every build, bide_audit_only included.
+var coreCommands = []command{
+	{
+		name:    "audit",
+		summary: "produce and verify audit proofs offline",
+		run: func(args []string, stdout, stderr io.Writer) int {
+			return auditcli.Main(version, args, stdout, stderr)
+		},
+		exits: auditExits,
+	},
+	{
+		name:    "version",
+		summary: "print the version and the artifact formats bide audit reads (-json for JSON)",
+		run:     runVersion,
+		exits:   commonExits,
+	},
+}
+
+// commands lists every command of this build, in the order help shows them.
+var commands = append(fullCommands(), coreCommands...)
+
+func main() {
+	os.Exit(run(os.Args[1:], os.Stdout, os.Stderr))
+}
+
+// run runs one command line (without the program name) and returns its exit status.
+func run(args []string, stdout, stderr io.Writer) int {
+	if len(args) == 0 {
+		usage(stdout)
+		return 0
+	}
+	name, rest := args[0], args[1:]
+	switch name {
+	case "help", "-h", "-help", "--help":
+		return help(rest, stdout, stderr)
+	}
+	c, ok := find(name)
+	if !ok {
+		fmt.Fprintf(stderr, "bide: unknown command %q\n\n", name)
+		usage(stderr)
+		return 2
+	}
+	if len(rest) == 1 && isHelp(rest[0]) {
+		return help([]string{name}, stdout, stderr)
+	}
+	return c.run(rest, stdout, stderr)
+}
+
+func isHelp(arg string) bool { return arg == "-h" || arg == "-help" || arg == "--help" }
+
+func find(name string) (command, bool) {
+	for _, c := range commands {
+		if c.name == name {
+			return c, true
+		}
+	}
+	return command{}, false
+}
+
+// usage prints the command list.
+func usage(w io.Writer) {
+	fmt.Fprintln(w, "bide: durable, provable agents. Usage:\n\n  bide <command> [flags]\n\nCommands:")
+	for _, c := range commands {
+		fmt.Fprintf(w, "  %-8s %s\n", c.name, c.summary)
+	}
+	fmt.Fprintln(w, "\nRun bide help <command> for a command's flags and exit statuses.")
+}
+
+// help prints help for the command (and, for audit, the verb) args name, or the command list, and
+// exits 0; an unknown command is a usage error.
+func help(args []string, stdout, stderr io.Writer) int {
+	if len(args) == 0 {
+		usage(stdout)
+		return 0
+	}
+	c, ok := find(args[0])
+	if !ok || len(args) > 2 || (len(args) == 2 && c.name != "audit") {
+		fmt.Fprintf(stderr, "bide help: unknown command %q\n\n", strings.Join(args, " "))
+		usage(stderr)
+		return 2
+	}
+	fmt.Fprint(stdout, commandHelp(c, args[1:]))
+	return 0
+}
+
+// commandHelp is the help text of c (with verb, of one audit verb): the command's own -h output
+// and its exit statuses. Each command prints its usage and flags (FlagSet.PrintDefaults) for -h,
+// so this is generated from the flag sets the command parses.
+func commandHelp(c command, verb []string) string {
+	var out strings.Builder
+	_ = c.run(append(verb, "-h"), &out, &out) // -h exits 0 or 2 by the command's own rules; help is 0
+	if len(verb) == 0 {
+		fmt.Fprintf(&out, "\nExit status:\n%s\n", indent(c.exits))
+	}
+	return out.String()
+}
+
+func indent(s string) string { return "  " + strings.ReplaceAll(s, "\n", "\n  ") }
+
+func runVersion(args []string, stdout, stderr io.Writer) int {
+	fs := flag.NewFlagSet("bide version", flag.ContinueOnError)
+	fs.SetOutput(stderr)
+	fs.Usage = func() {
+		fmt.Fprintln(fs.Output(), "usage: bide version [-json]")
+		fs.PrintDefaults()
+	}
+	asJSON := fs.Bool("json", false, "print the version and the artifact formats as JSON")
+	if err := fs.Parse(args); err != nil {
+		if errors.Is(err, flag.ErrHelp) {
+			return 0
+		}
+		return 2
+	}
+	if fs.NArg() > 0 {
+		fmt.Fprintf(stderr, "bide version: unexpected argument %q\n", fs.Arg(0))
+		fs.Usage()
+		return 2
+	}
+	a := []string{"-version"}
+	if *asJSON {
+		a = append(a, "-json")
+	}
+	return auditcli.Main(version, a, stdout, stderr)
+}

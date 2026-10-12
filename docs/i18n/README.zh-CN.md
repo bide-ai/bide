@@ -10,13 +10,14 @@
   副作用至多触发一次，即使跨越崩溃也是如此。每个动作事后均可证明。
 </p>
 
-<p align="center"><img src="../../assets/crash-demo.gif" width="100%" alt="bide-demo：智能体在扣款中途被杀死，重启后以 outcome unknown 停下而不是再次扣款，随后根据支付服务商的记录解决，bide-view 显示审计证明与 2/3 审批签名均已验证"></p>
+<p align="center"><img src="../../assets/crash-demo.gif" width="100%" alt="bide demo：智能体在扣款中途被杀死，重启后以 outcome unknown 停下而不是再次扣款，随后根据支付服务商的记录解决，bide view 显示审计证明与 2/3 审批签名均已验证"></p>
 <p align="center">
   <img src="../../assets/quote-rule-left.png" width="72" alt="">&nbsp;&nbsp;<em>一次你能解除的暂停，胜过一次你无法撤销的重复触发。</em>&nbsp;&nbsp;<img src="../../assets/quote-rule-right.png" width="72" alt="">
 </p>
 
 ```sh
-go run github.com/bide-ai/bide/cmd/bide-demo@latest   # 在支付中途杀死智能体；它不会重复扣款（无需 API key）
+brew install bide-ai/tap/bide   # 或: go install github.com/bide-ai/bide/cmd/bide@latest
+bide demo                       # 在支付中途杀死智能体；它不会重复扣款（无需 API key）
 ```
 
 一条仅追加（append-only）的日志，作为一个纯 Go 库，带来四项保证：副作用至多触发一次，即使跨越崩溃也是如此，因此它们无需是幂等的；在单个进程内承载成千上万个并发的持久化运行，它是一个库，无需运行集群；一条可加密验证的审计轨迹（RFC 6962 Merkle 证明，无需信任厂商即可核验）；以及可证明收敛的共享状态，其收敛条件经过机器核验。
@@ -71,7 +72,7 @@ Temporal 借助一个服务器和一支 worker 机群提供持久化执行。而
 - **签名的树头（signed tree head）＋ 持续锚定**：`AuditedStore` 为每一步签署一份承诺并将其带外发布到一个外部透明度日志，从而篡改可以被证明。
 - **谁在行动，依据什么授权**：同一片叶子可以承诺到行动者身份（谁行动、代表谁、依据哪一份签名授权），并将委派授权作为一项受治理的不变量来强制执行，从而一个证明显示谁为所发生之事被授权。自带你自己的 IdP；这让被授权的动作变得可证明，它并不替代身份认证。
 
-为单个动作生成一份可移植的 `ProofBundle`（`audit.ProveToolCall`），或生成整次运行的 `EvidencePackage`（`audit.Evidence`），将每一个实质性动作的证明打包进一个文件，交给一位审计员，他用 `bide-audit verify` / `verify-evidence`，或用一个从不导入该 SDK 的纯标准库验证器，离线核验它。同一条脊柱还承载着问责层的其余部分，全部可离线验证：带证明的运行（一份 `RunCertificate` 证明整次运行的策略合规性）、带衰减式委派的签名能力授权、从一份干净审计轨迹中赢得的权限，以及受治理的 k-of-n 法定人数（quorum）。→ [docs/guides/audit.md](../../docs/guides/audit.md)
+为单个动作生成一份可移植的 `ProofBundle`（`audit.ProveToolCall`），或生成整次运行的 `EvidencePackage`（`audit.Evidence`），将每一个实质性动作的证明打包进一个文件，交给一位审计员，他用 `bide audit verify` / `verify-evidence`，或用一个从不导入该 SDK 的纯标准库验证器，离线核验它。同一条脊柱还承载着问责层的其余部分，全部可离线验证：带证明的运行（一份 `RunCertificate` 证明整次运行的策略合规性）、带衰减式委派的签名能力授权、从一份干净审计轨迹中赢得的权限，以及受治理的 k-of-n 法定人数（quorum）。→ [docs/guides/audit.md](../../docs/guides/audit.md)
 
 ### 4 · 可证明收敛的共享状态（gsm）
 
@@ -406,12 +407,12 @@ sig, _ := audit.Sign(head, audit.Ed25519Signer{Priv: priv}) // anchor it: sign /
 
 ### 运行查看器
 
-`bide-view` 为单次运行打开一个只读页面，在 `127.0.0.1` 上提供，数据来自 SQLite 或 Postgres 日志或导出的日志。安装：`go install github.com/bide-ai/bide/cmd/bide-view@v0.13.0`。`bide-view -config flow.yaml` 以同样方式展示流程定义，并在图上标出问题；`-check` 在 CI 中运行同一检查。它展示运行的时间线（模型轮次、工具调用及其 `Safety`、尝试、审批），被暂停的操作及记录其结果的 `ResolveHalt` 调用，每个审批关卡的 k-of-n 状态，`plan` 流程在其声明拓扑上走过的路径，以及日志能否通过签名树头或证据包验证。它从不写入存储。参见[运行查看器指南](../../docs/guides/run-viewer.md)（英文）。
+`bide view` 为单次运行打开一个只读页面，在 `127.0.0.1` 上提供，数据来自 SQLite 或 Postgres 日志或导出的日志。安装：`go install github.com/bide-ai/bide/cmd/bide@latest`。`bide view -config flow.yaml` 以同样方式展示流程定义，并在图上标出问题；`-check` 在 CI 中运行同一检查。它展示运行的时间线（模型轮次、工具调用及其 `Safety`、尝试、审批），被暂停的操作及记录其结果的 `ResolveHalt` 调用，每个审批关卡的 k-of-n 状态，`plan` 流程在其声明拓扑上走过的路径，以及日志能否通过签名树头或证据包验证。它从不写入存储。参见[运行查看器指南](../../docs/guides/run-viewer.md)（英文）。
 
 <table>
 <tr>
-<td width="50%"><picture><source media="(prefers-color-scheme: dark)" srcset="../../docs/guides/img/refund-before-dark.png"><img src="../../docs/guides/img/refund-before-light.png" width="100%" alt="bide-view: refund-42, before"></picture></td>
-<td width="50%"><picture><source media="(prefers-color-scheme: dark)" srcset="../../docs/guides/img/refund-after-dark.png"><img src="../../docs/guides/img/refund-after-light.png" width="100%" alt="bide-view: refund-42, after"></picture></td>
+<td width="50%"><picture><source media="(prefers-color-scheme: dark)" srcset="../../docs/guides/img/refund-before-dark.png"><img src="../../docs/guides/img/refund-before-light.png" width="100%" alt="bide view: refund-42, before"></picture></td>
+<td width="50%"><picture><source media="(prefers-color-scheme: dark)" srcset="../../docs/guides/img/refund-after-dark.png"><img src="../../docs/guides/img/refund-after-light.png" width="100%" alt="bide view: refund-42, after"></picture></td>
 </tr>
 <tr>
 <td>之前：退款在执行后崩溃，因此运行已暂停、结果未知，页面给出了 <code>ResolveHalt</code> 调用。</td>
@@ -522,7 +523,7 @@ agent.SubmitDecision(ctx, journal, agent.Decision{RunID: pend.RunID, ToolUseID: 
 	ApproverID: "finance", Approved: true, Alg: signer.Alg(), Signature: sig})
 ```
 
-然后，`audit.ApprovalEvidence` 与 `audit.VerifyApprovals`（或 `bide-audit verify-approvals`）离线证明：k 位具名批准人在这次确切的调用运行*之前*、依照预期的策略签核了它，所依据的证据不可能在不被察觉的情况下漏掉任何一份决定。每位批准人都需要自己的密钥：若策略中有两位批准人解析到同一个密钥，该策略会以 `ErrConfig` 被拒绝，因为持有该密钥的人可以替两人签名。见[批准指南](../../docs/guides/hitl-approval.md)；可跨独立进程在 `examples/approval` 中运行。
+然后，`audit.ApprovalEvidence` 与 `audit.VerifyApprovals`（或 `bide audit verify-approvals`）离线证明：k 位具名批准人在这次确切的调用运行*之前*、依照预期的策略签核了它，所依据的证据不可能在不被察觉的情况下漏掉任何一份决定。每位批准人都需要自己的密钥：若策略中有两位批准人解析到同一个密钥，该策略会以 `ErrConfig` 被拒绝，因为持有该密钥的人可以替两人签名。见[批准指南](../../docs/guides/hitl-approval.md)；可跨独立进程在 `examples/approval` 中运行。
 
 ## 错误
 
@@ -624,7 +625,7 @@ govern           Tier-2: federated governed state + quorum for agents that must 
 
 **在共享状态上达成一致（收敛）。** 把共享状态描述为一个注册表（变量 + 不变量 + 事件）；gsm 在*构建时*检查智能体动作的每一种交错都到达同一个有效状态，否则就拒绝构建并向你展示一个反例（其范围参见[已知限制](../../docs/KNOWN-LIMITATIONS.md#governed-state-gsm)）。运行时是 O(1) 的表查找；状态是事件溯源的、崩溃可恢复的。它从单个共享注册表向上扩展、穿过**联邦（federations）**（跨边界约束：树、带解析器的多源 DAG、单调循环的*网格 mesh*），经由 `Embed` 组合，能替你合成补偿（声明规则，得到一个收敛的治理者，或一份证明其不存在的证据）。智能体经由 `FederatedEventTool` 插入，因此一次 LLM 工具调用就成为一个受治理的事件。
 
-**在一个决定上达成一致（法定人数 quorum）。** k-of-n 个具名投票者（每一个是一个模型、提供商或主体）投出一个规范化的决定；每一票都是一个记入日志、至多一次的步骤，记录了谁怎么投的，而 k-of-n 的门是投票计数上的一个 gsm 不变量，因此"k 个达成一致"在每一种可能的计票上都被机器核验。`bide-audit verify-quorum` 从公开工件重新核对计票和每一票，在不信任生产者的情况下复现多数决规则。这个论断是精确的：一个法定人数证明的是*k 个投票者达成了一致*，并降低单模型风险；它并不认证那个决定是正确的（相关的错误不是独立性），且只有规范化的决定才能被法定人数化，自由格式的散文不能。
+**在一个决定上达成一致（法定人数 quorum）。** k-of-n 个具名投票者（每一个是一个模型、提供商或主体）投出一个规范化的决定；每一票都是一个记入日志、至多一次的步骤，记录了谁怎么投的，而 k-of-n 的门是投票计数上的一个 gsm 不变量，因此"k 个达成一致"在每一种可能的计票上都被机器核验。`bide audit verify-quorum` 从公开工件重新核对计票和每一票，在不信任生产者的情况下复现多数决规则。这个论断是精确的：一个法定人数证明的是*k 个投票者达成了一致*，并降低单模型风险；它并不认证那个决定是正确的（相关的错误不是独立性），且只有规范化的决定才能被法定人数化，自由格式的散文不能。
 
 <!-- docsnip: setup ctx context.Context; machine *gsm.Machine; import "github.com/blackwell-systems/gsm"; log govern.EventLog -->
 ```go
@@ -653,12 +654,12 @@ tool := govern.EventTool(gov, govern.EventToolConfig{Name: "pay", Description: "
 
 **问责与治理**
 
-- **[审计](../../docs/guides/audit.md)**：带证明的运行。一次运行随附一份可移植的 `RunCertificate`，可用 `bide-audit verify-run` 离线核验。可在 `examples/govern/proof-carrying-run` 中运行。
+- **[审计](../../docs/guides/audit.md)**：带证明的运行。一次运行随附一份可移植的 `RunCertificate`，可用 `bide audit verify-run` 离线核验。可在 `examples/govern/proof-carrying-run` 中运行。
 - **[委派](../../docs/guides/delegation.md)**：子智能体只能收窄的签名能力授权（`Grant`/`SignGrant`），离线核验（`VerifyDelegationChain`），外加从一份干净轨迹中赢得的权限。可在 `examples/govern/delegation`、`examples/govern/authority` 中运行。
 - **[安全模型](../../docs/guides/security-model.md)**：密码学保证的确切范围（完整性、真实性、防篡改性、不可否认性、选择性披露）以及范围之外的内容（机密性）。在依赖审计轨迹之前请读这个。
 - **[治理](../../docs/guides/governance.md)**：Tier-2 受治理状态底座（gsm）。把共享状态描述为一个注册表，而 `Build()` 检查每一种交错都收敛，否则返回一个反例。可在 `examples/govern/mesh`、`examples/govern/compose` 中运行。
 - **[批准](../../docs/guides/hitl-approval.md)**：工具运行之前的持久化人类签核，从 1-of-1 到签名的 m-of-n（`ApprovalPolicy`、`SubmitDecision`），并离线证明 k 位具名批准人在动作之前批准了它（`audit.ApprovalEvidence`、`audit.VerifyApprovals`）。可在 `examples/approval` 中运行。
-- **[法定人数](../../docs/guides/quorum.md)**：受治理的 k-of-n 模型一致（`govern.Quorum`），计票锚定在日志中并可离线重新核对（`bide-audit verify-quorum`）。可在 `examples/govern/quorum` 中运行。
+- **[法定人数](../../docs/guides/quorum.md)**：受治理的 k-of-n 模型一致（`govern.Quorum`），计票锚定在日志中并可离线重新核对（`bide audit verify-quorum`）。可在 `examples/govern/quorum` 中运行。
 
 **参考与内部机制**
 

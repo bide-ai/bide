@@ -21,13 +21,13 @@ import (
 	gsm "github.com/blackwell-systems/gsm"
 )
 
-// cliPkg is the CLI these tests build and run: the core module's bide-audit, unchanged.
-const cliPkg = "github.com/bide-ai/bide/cmd/bide-audit"
+// cliPkg is the CLI these tests build and run: the core module's bide audit, unchanged.
+const cliPkg = "github.com/bide-ai/bide/internal/auditcli/auditmain"
 
-// auditBin is the path to build the bide-audit test binary to. On Windows, go
+// auditBin is the path to build the bide audit test binary to. On Windows, go
 // build writes (and exec expects) a .exe suffix, so add it there.
 func auditBin(dir string) string {
-	bin := filepath.Join(dir, "bide-audit")
+	bin := filepath.Join(dir, "bide audit")
 	if runtime.GOOS == "windows" {
 		bin += ".exe"
 	}

@@ -17,7 +17,7 @@ import (
 )
 
 // quorumBundles signs a tree head over runID and writes a ProofBundle for each named step, and
-// runs a bide-audit binary built for the test.
+// runs a bide audit binary built for the test.
 type quorumBundles struct {
 	t      *testing.T
 	store  *agent.Journal

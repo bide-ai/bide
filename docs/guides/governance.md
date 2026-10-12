@@ -216,7 +216,7 @@ The same pattern (an external fact seeded into governed state, gated by an invar
 count into state, and gate the commit on `votes_for >= k`, so a high-stakes action requires
 agreement or escalates. It is a composition of existing seams, not a new agent type, and it is
 implemented: `govern.Quorum` (k-of-n model agreement over `Journal.Parallel`) plus the
-`bide-audit verify-quorum` verb and `examples/govern/quorum`. See [Quorum](quorum.md).
+`bide audit verify-quorum` verb and `examples/govern/quorum`. See [Quorum](quorum.md).
 
 ## Federation: constraints across agents
 
@@ -431,7 +431,7 @@ acyclicity, and the fixed-point iteration of monotone cycles) are gsm's Go code 
 oracle-certified. The
 oracles' scope is in [known limitations](../KNOWN-LIMITATIONS.md#governed-state-gsm). bide's required `gsm machine gate`
 CI check also runs the two extracted checkers on every machine the governance examples build. An auditor can run the rules oracle on a disclosed
-policy with `bide-audit`'s `-checker` flag (see [Audit](audit.md)). The rules are built from a fixed combinator vocabulary rather than arbitrary Go closures,
+policy with `bide audit`'s `-checker` flag (see [Audit](audit.md)). The rules are built from a fixed combinator vocabulary rather than arbitrary Go closures,
 which is what makes them inspectable and serializable to those checkers in the first place; and
 for machines whose global state space is too large to enumerate, gsm verifies **footprint-local**
 (`BuildCompositional`), certifying each independent component over its own small subspace. For
@@ -441,4 +441,4 @@ for machines whose global state space is too large to enumerate, gsm verifies **
 Because the policy is inspectable, serializable data, it also becomes an audit artifact:
 An attested `govern.EventTool` (`EventToolConfig.PolicyDigest` set) records which policy admitted each governed action, and the policy is
 anchored as a log leaf an auditor cross-links to the action and re-checks with the external oracle.
-See [Audit](audit.md) for the attestation and `bide-audit verify-governed-action`.
+See [Audit](audit.md) for the attestation and `bide audit verify-governed-action`.

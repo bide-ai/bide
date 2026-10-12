@@ -189,7 +189,7 @@ func FuzzConsistencyRaw(f *testing.F) {
 	})
 }
 
-// FuzzArtifactVerify drives the path bide-audit uses (UnmarshalStrict, then the artifact's own
+// FuzzArtifactVerify drives the path bide audit uses (UnmarshalStrict, then the artifact's own
 // verifier under the out-of-band key) on arbitrary files. Seeds are genuine artifacts; a file may
 // verify only if it decodes to exactly the genuine artifact (fail closed on everything else).
 func FuzzArtifactVerify(f *testing.F) {

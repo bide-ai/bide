@@ -20,7 +20,7 @@ import (
 	"github.com/bide-ai/bide/plan"
 )
 
-// Stores opens the stores bide-view reads, read-only. It is how the command plugs in store backends
+// Stores opens the stores bide view reads, read-only. It is how the command plugs in store backends
 // (store/sqlite's and store/postgres's OpenReadOnly) without the core module importing one. A nil
 // opener means this build cannot read that kind of store.
 type Stores struct {
@@ -36,13 +36,13 @@ type multi []string
 func (m *multi) String() string     { return strings.Join(*m, ",") }
 func (m *multi) Set(v string) error { *m = append(*m, v); return nil }
 
-// usageText heads bide-view's -h output; the flags follow it.
-const usageText = `bide-view: a read-only local web page for one run of a bide journal
+// usageText heads bide view's -h output; the flags follow it.
+const usageText = `bide view: a read-only local web page for one run of a bide journal
 
-  bide-view -db <file> [-run <id>] [flags]
-  bide-view -postgres <dsn> [-run <id>] [flags]
-  bide-view -journal <export.json> [-journal ...] [-run <id>] [flags]
-  bide-view -config <flow.yaml|flow.json> [-check [-strict]]
+  bide view -db <file> [-run <id>] [flags]
+  bide view -postgres <dsn> [-run <id>] [flags]
+  bide view -journal <export.json> [-journal ...] [-run <id>] [flags]
+  bide view -config <flow.yaml|flow.json> [-check [-strict]]
 
 It shows an agent run's timeline (model turns, tool calls with their Safety, attempts, approvals,
 halts, end state) or a plan flow's declared topology with the run's path (drawn from the topology
@@ -66,7 +66,7 @@ with -strict, any problem), 2 for a usage error.
 Flags:
 `
 
-// flags are bide-view's inputs, as parsed.
+// flags are bide view's inputs, as parsed.
 type flags struct {
 	db, postgres          string
 	config                string
@@ -80,11 +80,11 @@ type flags struct {
 	approvers             string
 }
 
-// Main is the bide-view command: it parses args, opens the input, and serves until interrupted.
+// Main is the bide view command: it parses args, opens the input, and serves until interrupted.
 // It returns the exit status: 0 after a clean shutdown, 2 for a usage error, 1 otherwise.
 func Main(args []string, stdout, stderr io.Writer, stores Stores) int {
 	var f flags
-	fs := flag.NewFlagSet("bide-view", flag.ContinueOnError)
+	fs := flag.NewFlagSet("bide view", flag.ContinueOnError)
 	fs.SetOutput(stderr)
 	fs.Usage = func() {
 		fmt.Fprint(stderr, usageText)
@@ -113,7 +113,7 @@ func Main(args []string, stdout, stderr io.Writer, stores Stores) int {
 		return 2
 	}
 	usage := func(msg string) int {
-		fmt.Fprintln(stderr, "bide-view:", msg)
+		fmt.Fprintln(stderr, "bide view:", msg)
 		fs.Usage()
 		return 2
 	}
@@ -172,7 +172,7 @@ func Main(args []string, stdout, stderr io.Writer, stores Stores) int {
 	}
 	o, closer, err := options(f, stores)
 	if err != nil {
-		fmt.Fprintln(stderr, "bide-view:", err)
+		fmt.Fprintln(stderr, "bide view:", err)
 		return 1
 	}
 	return serve(*addr, *run, o, closer, stdout, stderr)
@@ -185,14 +185,14 @@ func serve(addr, run string, o Options, closer io.Closer, stdout, stderr io.Writ
 	}
 	ln, err := Listen(addr)
 	if err != nil {
-		fmt.Fprintln(stderr, "bide-view:", err)
+		fmt.Fprintln(stderr, "bide view:", err)
 		return 2
 	}
 	link := "http://" + ln.Addr().String() + "/"
 	if run != "" {
 		link += "run?id=" + url.QueryEscape(run)
 	}
-	fmt.Fprintln(stdout, "bide-view: serving", link, "(read-only; Ctrl-C to stop)")
+	fmt.Fprintln(stdout, "bide view: serving", link, "(read-only; Ctrl-C to stop)")
 	srv := &http.Server{Handler: Handler(o), ReadHeaderTimeout: 5 * time.Second}
 	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt)
 	defer stop()
@@ -203,13 +203,13 @@ func serve(addr, run string, o Options, closer io.Closer, stdout, stderr io.Writ
 		_ = srv.Shutdown(sctx)
 	}()
 	if err := srv.Serve(ln); err != nil && !errors.Is(err, http.ErrServerClosed) {
-		fmt.Fprintln(stderr, "bide-view:", err)
+		fmt.Fprintln(stderr, "bide view:", err)
 		return 1
 	}
 	return 0
 }
 
-// options reads every input the flags name, strictly (audit.UnmarshalStrict, as bide-audit reads
+// options reads every input the flags name, strictly (audit.UnmarshalStrict, as bide audit reads
 // its inputs), into Options.
 func options(f flags, stores Stores) (Options, io.Closer, error) {
 	var o Options
@@ -318,7 +318,7 @@ func readConfig(path string, toJSON func([]byte) ([]byte, error)) (Config, error
 	return Config{Name: path, Data: b}, nil
 }
 
-// readApproverKeys reads the approver key file bide-audit verify-approvals reads: a JSON object of
+// readApproverKeys reads the approver key file bide audit verify-approvals reads: a JSON object of
 // approver id to public key text. audit.VerifyApprovals checks the keys against each gate's policy
 // (agent.ApprovalPolicy.ValidateKeys: no two approvers on one key).
 func readApproverKeys(path string) (agent.ApproverVerifierFor, error) {
@@ -340,7 +340,7 @@ func readApproverKeys(path string) (agent.ApproverVerifierFor, error) {
 	}, nil
 }
 
-// maxInput caps an input file, as bide-audit's default -max-input-bytes does.
+// maxInput caps an input file, as bide audit's default -max-input-bytes does.
 const maxInput = 256 << 20
 
 func readStrict(path string, v any) error {
@@ -362,7 +362,7 @@ func readStrict(path string, v any) error {
 	return nil
 }
 
-// readKey parses a public key given inline or in a file, as bide-audit's -pubkey does.
+// readKey parses a public key given inline or in a file, as bide audit's -pubkey does.
 func readKey(s string) (audit.Verifier, error) {
 	if v, err := audit.ParsePublicKey(s); err == nil {
 		return v, nil

@@ -10,13 +10,14 @@
   آثار جانبية تُنفَّذ مرة واحدة على الأكثر، حتى عبر انهيار. كل إجراء قابل للإثبات لاحقًا.
 </p>
 
-<p align="center"><img src="../../assets/crash-demo.gif" width="100%" alt="bide-demo: يُقتل الوكيل في منتصف الخصم، وعند إعادة التشغيل يتوقف بحالة outcome unknown بدل الخصم مرة أخرى، ثم يُحسم الخصم من سجل مزوّد الدفع، ويعرض bide-view إثبات التدقيق وتواقيع الموافقة 2 من 3 وقد تحققت"></p>
+<p align="center"><img src="../../assets/crash-demo.gif" width="100%" alt="bide demo: يُقتل الوكيل في منتصف الخصم، وعند إعادة التشغيل يتوقف بحالة outcome unknown بدل الخصم مرة أخرى، ثم يُحسم الخصم من سجل مزوّد الدفع، ويعرض bide view إثبات التدقيق وتواقيع الموافقة 2 من 3 وقد تحققت"></p>
 <p align="center">
   <img src="../../assets/quote-rule-left.png" width="72" alt="">&nbsp;&nbsp;<em>توقّفٌ يمكنك رفعه خيرٌ من تنفيذٍ مزدوج لا يمكنك التراجع عنه.</em>&nbsp;&nbsp;<img src="../../assets/quote-rule-right.png" width="72" alt="">
 </p>
 
 ```sh
-go run github.com/bide-ai/bide/cmd/bide-demo@latest   # اقتل الوكيل في منتصف الدفع؛ لن يخصم مرتين (دون مفتاح API)
+brew install bide-ai/tap/bide   # أو: go install github.com/bide-ai/bide/cmd/bide@latest
+bide demo                       # اقتل الوكيل في منتصف الدفع؛ لن يخصم مرتين (دون مفتاح API)
 ```
 
 سجلٌّ واحد لا يقبل إلا الإلحاق (append-only journal)، في مكتبة Go خالصة، يمنح أربع ضمانات: آثار جانبية تُنفَّذ مرة واحدة على
@@ -123,7 +124,7 @@ Transparency ([RFC 6962](https://datatracker.ietf.org/doc/html/rfc6962)، مفح
 
 أنتِج `ProofBundle` قابلًا للنقل لفعل واحد
 (`audit.ProveToolCall`)، أو `EvidencePackage` لتشغيلة كاملة (`audit.Evidence`) يجمع برهان كل فعل جوهري في
-ملف واحد، وسلّمه إلى مُدقِّق يتحقق منه دون اتصال بـ `bide-audit verify` / `verify-evidence` أو بمُتحقِّق
+ملف واحد، وسلّمه إلى مُدقِّق يتحقق منه دون اتصال بـ `bide audit verify` / `verify-evidence` أو بمُتحقِّق
 يعتمد المكتبة القياسية فقط ولا يستورد الـ SDK أبدًا. يحمل العمود
 الفقري نفسه بقية طبقة المساءلة، وكلها قابلة للتحقق دون اتصال: تشغيلات حاملة للبرهان (شهادة `RunCertificate`
 واحدة تُثبت التزام تشغيلة كاملة بالسياسة)، ومِنَح قدرات موقَّعة مع تفويض مُضيِّق، وسُلطة مكتسَبة من سجل تدقيق
@@ -563,7 +564,7 @@ RFC 6962 المنشورة.
 
 ### عارض التشغيل
 
-يفتح `bide-view` صفحة للقراءة فقط لتشغيل واحد، على `127.0.0.1`، من سجلّ SQLite أو Postgres أو سجلّ مُصدَّر. للتثبيت: `go install github.com/bide-ai/bide/cmd/bide-view@v0.13.0`. ويعرض `bide-view -config flow.yaml` تعريف التدفق بالطريقة نفسها مع تعليم المشكلات على الرسم، ويُجري `-check` هذا الفحص في CI. تعرض
+يفتح `bide view` صفحة للقراءة فقط لتشغيل واحد، على `127.0.0.1`، من سجلّ SQLite أو Postgres أو سجلّ مُصدَّر. للتثبيت: `go install github.com/bide-ai/bide/cmd/bide@latest`. ويعرض `bide view -config flow.yaml` تعريف التدفق بالطريقة نفسها مع تعليم المشكلات على الرسم، ويُجري `-check` هذا الفحص في CI. تعرض
 الصفحة الخطّ الزمني للتشغيل (أدوار النموذج، واستدعاءات الأدوات وقيمة `Safety` لكل منها، والمحاولات،
 والموافقات)، والعملية المتوقّفة مع استدعاء `ResolveHalt` الذي يسجّل نتيجتها، وحالة k-of-n لكل بوابة
 موافقة، ومسار تدفّق `plan` على طوبولوجيته المُعلَنة، وما إذا كان السجلّ يتحقّق مقابل رأس شجرة موقَّع
@@ -571,8 +572,8 @@ RFC 6962 المنشورة.
 
 <table>
 <tr>
-<td width="50%"><picture><source media="(prefers-color-scheme: dark)" srcset="../../docs/guides/img/refund-before-dark.png"><img src="../../docs/guides/img/refund-before-light.png" width="100%" alt="bide-view: refund-42, before"></picture></td>
-<td width="50%"><picture><source media="(prefers-color-scheme: dark)" srcset="../../docs/guides/img/refund-after-dark.png"><img src="../../docs/guides/img/refund-after-light.png" width="100%" alt="bide-view: refund-42, after"></picture></td>
+<td width="50%"><picture><source media="(prefers-color-scheme: dark)" srcset="../../docs/guides/img/refund-before-dark.png"><img src="../../docs/guides/img/refund-before-light.png" width="100%" alt="bide view: refund-42, before"></picture></td>
+<td width="50%"><picture><source media="(prefers-color-scheme: dark)" srcset="../../docs/guides/img/refund-after-dark.png"><img src="../../docs/guides/img/refund-after-light.png" width="100%" alt="bide view: refund-42, after"></picture></td>
 </tr>
 <tr>
 <td>قبل: تعطّل الاسترداد بعد تنفيذه، فتوقّف التشغيل ونتيجته غير معروفة، وتعرض الصفحة استدعاء <code>ResolveHalt</code>.</td>
@@ -702,7 +703,7 @@ agent.SubmitDecision(ctx, journal, agent.Decision{RunID: pend.RunID, ToolUseID: 
 	ApproverID: "finance", Approved: true, Alg: signer.Alg(), Signature: sig})
 ```
 
-ثم يُثبِت `audit.ApprovalEvidence` و`audit.VerifyApprovals` (أو `bide-audit verify-approvals`) دون اتصال أن
+ثم يُثبِت `audit.ApprovalEvidence` و`audit.VerifyApprovals` (أو `bide audit verify-approvals`) دون اتصال أن
 k مُوافِقين مُسمَّين وقّعوا على هذا النداء بعينه *قبل* تنفيذه، تحت السياسة المتوقَّعة، من أدلّة لا يمكن أن تُسقِط
 قرارًا دون أن يُلاحَظ. ويحتاج كل مُوافِق إلى مفتاح خاص به: تُرفَض بـ`ErrConfig` السياسةُ التي يؤول فيها
 مُوافِقان إلى مفتاح واحد، لأن حامل ذلك المفتاح يستطيع التوقيع عنهما معًا. انظر [دليل الموافقة](../../docs/guides/hitl-approval.md)؛ قابل للتشغيل عبر عمليات منفصلة في
@@ -854,7 +855,7 @@ DAG متعدّدة المصادر بمُحلِّلات، وشِباك (meshes) �
 
 **الاتّفاق على قرار (نِصاب / quorum).** k-من-n من الناخبين المُسمَّين (كلٌّ نموذج، أو مورّد، أو أصيل)
 يُدلي بقرار مُطبَّع؛ وكل صوت خطوة مُسجَّلة «مرة واحدة على الأكثر» تُسجّل من صوّت وكيف، وبوّابة k-من-n حُكمُ
-gsm فوق عدّ الأصوات، فـ «اتّفق k» مفحوص آليًّا فوق كل تعداد ممكن. يعيد `bide-audit verify-quorum` فحص
+gsm فوق عدّ الأصوات، فـ «اتّفق k» مفحوص آليًّا فوق كل تعداد ممكن. يعيد `bide audit verify-quorum` فحص
 التعداد وكل صوت من آثار عامّة، مُعيدًا إنتاج قاعدة الأغلبية دون الوثوق بالمُنتِج. والادّعاء دقيق: النِّصاب
 يُثبت *أن k ناخبين اتّفقوا* ويخفّض خطر النموذج الواحد؛ ولا يشهد بأن القرار صحيح (الأخطاء المترابطة ليست
 استقلالًا)، وفقط القرارات المُطبَّعة يمكن أن تُنَصَّب، لا النثر الحرّ.
@@ -906,7 +907,7 @@ gsm، ProofBundle). ويُذكَر ضمان المعمورية الدقيق في
 **المساءلة والحوكمة**
 
 - **[التدقيق](../../docs/guides/audit.md)**: تشغيلات حاملة للبرهان. تشحن تشغيلة `RunCertificate` واحدة قابلة
-  للنقل، تُفحَص دون اتصال بـ `bide-audit verify-run`. قابل للتشغيل: `examples/govern/proof-carrying-run`.
+  للنقل، تُفحَص دون اتصال بـ `bide audit verify-run`. قابل للتشغيل: `examples/govern/proof-carrying-run`.
 - **[التفويض](../../docs/guides/delegation.md)**: مِنَح قدرات موقَّعة لا يستطيع الوكيل الفرعي إلا تضييقها
   (`Grant`/`SignGrant`)، مُتحقَّق منها دون اتصال (`VerifyDelegationChain`)، مع سُلطة مكتسَبة من أثر نظيف. قابل
   للتشغيل: `examples/govern/delegation`، `examples/govern/authority`.
@@ -920,7 +921,7 @@ gsm، ProofBundle). ويُذكَر ضمان المعمورية الدقيق في
   الموقَّعة (`ApprovalPolicy`، `SubmitDecision`)، مع برهان دون اتصال على أن k مُوافِقين مُسمَّين وافقوا قبل الفعل
   (`audit.ApprovalEvidence`، `audit.VerifyApprovals`). قابل للتشغيل: `examples/approval`.
 - **[النِّصاب](../../docs/guides/quorum.md)**: اتّفاق نماذج محكوم k-من-n (`govern.Quorum`)، مع تثبيت التعداد
-  في السجل وقابليته لإعادة الفحص دون اتصال (`bide-audit verify-quorum`). قابل للتشغيل: `examples/govern/quorum`.
+  في السجل وقابليته لإعادة الفحص دون اتصال (`bide audit verify-quorum`). قابل للتشغيل: `examples/govern/quorum`.
 
 **المرجع والبنية الداخلية**
 

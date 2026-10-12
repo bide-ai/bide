@@ -250,13 +250,13 @@ out, err := flow.Run(ctx, j, runID, in) // runs the node once 2 of 3 have approv
   another gate is a `Build` error. `Build` refuses an m-of-n gate in a flow with no
   `WithApproverVerifiers` (`WithLoadedApproverVerifiers` for `Load`).
 - **Evidence.** `audit.ApprovalEvidence(ctx, j, runID, "node:refund", sth)` and
-  `audit.VerifyApprovals` (or `bide-audit verify-approvals -call node:refund`) prove offline that the
-  approvers signed this node's input before it ran. `bide-view` shows the gate on the node.
+  `audit.VerifyApprovals` (or `bide audit verify-approvals -call node:refund`) prove offline that the
+  approvers signed this node's input before it ran. `bide view` shows the gate on the node.
 
 `examples/approval/flow` runs the whole story from a config: the pause, two approvals, one refund,
 and the offline check.
 
-![bide-view on a gated refund flow: the refund node approved 2 of 3, signatures verified](./img/flow-gate-approved-dark.png)
+![bide view on a gated refund flow: the refund node approved 2 of 3, signatures verified](./img/flow-gate-approved-dark.png)
 
 ## Cryptographic conformance
 
@@ -295,7 +295,7 @@ Two pieces make it work:
   `Flow.Digest` is computed through it, and the `Topology` carries what the digest commits to beyond
   the drawing (each node's block, each arm's predicate name, and every type with its package path in
   the `*_canonical` fields). `plan.JournaledTopology(records)` reads the record and checks its digest
-  against `flow:digest`, so a reader (such as `bide-view`) can draw the flow a run ran from its
+  against `flow:digest`, so a reader (such as `bide view`) can draw the flow a run ran from its
   journal alone and know the drawing is what ran. The record is informational: `Run`, resume,
   routing and recovery do not read it. A run started before this record existed has none.
 
@@ -503,7 +503,7 @@ registration) but not replace it: a config cannot loosen a tool's gate.
 
 ### Load-time validation
 
-To see a config's graph and its problems before loading it, run `bide-view -config flow.yaml`
+To see a config's graph and its problems before loading it, run `bide view -config flow.yaml`
 (`-check` for CI), or embed the same page with your Registry through package `plan/planview`; see
 the [run viewer guide](run-viewer.md#check-a-flow-config). Both use `plan.InspectConfig`, which reports
 the checks below as problems attached to the node, edge or arm they name.

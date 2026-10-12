@@ -133,7 +133,7 @@ func Handler(o Options) http.Handler {
 func guard(h http.Handler) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		if !loopbackHost(r.Host) {
-			http.Error(w, "bide-view answers only requests to a loopback address", http.StatusForbidden)
+			http.Error(w, "bide view answers only requests to a loopback address", http.StatusForbidden)
 			return
 		}
 		w.Header().Set("Content-Security-Policy", "default-src 'self'; style-src 'self'; img-src 'self' data:")
