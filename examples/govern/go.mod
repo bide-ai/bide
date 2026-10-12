@@ -11,8 +11,6 @@ require (
 	github.com/blackwell-systems/gsm v0.14.0
 )
 
-require golang.org/x/text v0.42.0 // indirect
-
 replace github.com/bide-ai/bide => ../../
 
 replace github.com/bide-ai/bide/govern => ../../govern
