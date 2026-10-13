@@ -3,6 +3,7 @@ package agent
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"testing"
 	"time"
 )
@@ -133,5 +134,26 @@ func TestNotifyPending_AbortedRunsAreDatedByTheAbortThenByTheNewestRecord(t *tes
 	}
 	if len(got) != 2 || !got["long-recent"] || !got["legacy-busy"] {
 		t.Fatalf("caught up %v; want long-recent and legacy-busy only", got)
+	}
+}
+
+func TestNotifyClock_DatesTheSweepAndRefusesNil(t *testing.T) {
+	ctx := context.Background()
+	j := memJournal()
+	// The run aborted at 2020-01-01 by the drive's clock.
+	if _, _, err := j.putEntry(ctx, "r", runAbortedStep, Record{Kind: StepValue, Result: mustJSONValue(abortValue{Reason: "x", AbortedAt: "2020-01-01T00:00:00.000Z"})}); err != nil {
+		t.Fatal(err)
+	}
+	wall := &fakeSink{}
+	if err := NotifyPending(ctx, j, wall, NewMemNotifyTrail()); err != nil || wall.count() != 0 {
+		t.Fatalf("wall time: %v, %d notifications; a 2020 abort is long past", err, wall.count())
+	}
+	same := &fakeSink{}
+	clk := func() time.Time { return time.Date(2020, 1, 1, 0, 5, 0, 0, time.UTC) }
+	if err := NotifyPending(ctx, j, same, NewMemNotifyTrail(), WithNotifyClock(clk)); err != nil || same.count() != 1 {
+		t.Fatalf("the drive's clock: %v, %d notifications; want the abort caught up", err, same.count())
+	}
+	if err := NotifyPending(ctx, j, same, NewMemNotifyTrail(), WithNotifyClock(nil)); !errors.Is(err, ErrConfig) {
+		t.Fatalf("nil clock: %v", err)
 	}
 }

@@ -211,6 +211,21 @@ func WithNotifyAbortedWithin(d time.Duration) NotifyOption {
 	})
 }
 
+// WithNotifyClock sets the clock the notifier reads: for claim and deadline times, backoff, and
+// the age of an aborted run or a halt in a sweep. Default time.Now. A deployment whose runs are
+// driven with WithClock (a test, a simulation) should give the notifier the same clock, because
+// the journal's times (started_at, aborted_at, attempt markers) come from the drive's clock and the
+// sweep compares them with the notifier's. A nil clock is ErrConfig.
+func WithNotifyClock(now func() time.Time) NotifyOption {
+	return notifyOption(func(c *notifyConfig) error {
+		if now == nil {
+			return fmt.Errorf("WithNotifyClock: nil clock: %w", ErrConfig)
+		}
+		c.now = now
+		return nil
+	})
+}
+
 // WithNotifyHolder names this process in the claims it writes (default host, pid and a random
 // number). Two processes must not share a name.
 func WithNotifyHolder(id string) NotifyOption {

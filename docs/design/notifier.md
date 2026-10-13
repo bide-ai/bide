@@ -325,9 +325,13 @@ An independent review of the first implementation found these, and each is now a
   records `aborted_at` (informational, like `started_at`: no drive, resume or recovery pass reads it,
   and a run:aborted without it loads and behaves the same; it is stamped by the drive's clock, so a
   run driven with `WithClock` carries that clock's time, and the sweep compares it with the
-  notifier's own). For a run an earlier version aborted the
+  notifier's own: a deployment that drives runs with a clock other than wall time gives the notifier
+  the same one with `WithNotifyClock`). For a run an earlier version aborted the
   sweep uses the newest time the journal records for the run (an attempt marker's, else the start),
-  which is no later than the abort; a run whose journal records no time is not raised. It costs one
+  which is no later than the abort; a run whose journal records no time is not raised. A known limit
+  for journals written before `aborted_at`: model turns carry no time, so a run whose last activity
+  was model turns only is dated by its last attempt marker or its start, and a long-running one may
+  be dated too early to be caught up. It costs one
   point read for each aborted run, every sweep, and a History read for each legacy one.
 - **Recovery episodes close on any pause**, a halt, a gate, a timer or a signal, which a pass counts
   as success. A run no Resumer can drive (`ErrNotResumable`) is a recovery failure and alerts after
