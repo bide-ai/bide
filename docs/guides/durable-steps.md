@@ -365,6 +365,11 @@ if halt, ok := errors.AsType[*agent.OutcomeUnknown](err); ok {
 
 The human stays the fallback for the genuinely unknowable case, not the default.
 
+See it against Stripe test mode: [`examples/stripe-refund`](../../examples/stripe-refund/README.md) kills a
+refund agent after its request is sent, halts on restart, and reconciles by listing the payment
+intent's refunds and matching the step's key in their metadata. It resolves with the refund as evidence,
+and exactly one refund exists. It leaves the step halted when Stripe has no such refund.
+
 ## Durable timers: `Sleep` / `WaitUntil` and the `Waker`
 
 An agent often has to wait: for a deadline, a cool-off, a scheduled follow-up. `Sleep(ctx, name, d)`

@@ -223,6 +223,16 @@ expired) is listed in `SagaAborted.UnknownOutcome` and the rollback goes on, but
 middleware that drops the chain the rollback stops at that step, and every later drive of the saga
 meets the same refusal.
 
+## When the outcome of a side effect is unknown
+
+Retry and hedging are for model calls. A tool call that moves money is different: if the process
+dies after the request is sent and before the answer is journaled, the call is not retried, it
+halts with `*OutcomeUnknown`, and a person or a reconciler resolves it from the provider's record
+(see [Resolving without a human: reconcilers](durable-steps.md#resolving-without-a-human-reconcilers)).
+To see it against Stripe test mode, run [`examples/stripe-refund`](../../examples/stripe-refund/README.md):
+it kills a refund agent mid-refund and shows the restart finding the refund at Stripe instead of
+sending a second one.
+
 ## When to hedge vs retry
 
 Retry is reactive and sequential: it waits for a failure, then tries again. Hedge is proactive and

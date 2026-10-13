@@ -8,8 +8,8 @@ API key from the environment; set `OPENROUTER_API_KEY` before running them. Exam
 marked "offline" need no key and no network.
 
 Most examples are packages of the root module: run them from the repository root with
-`go run ./examples/<name>`. Five are their own modules because they import an adapter module with
-its own dependencies (`approval`, `plan`, `mcp`, `observability`, and the `govern` examples); `cd` into the directory and run
+`go run ./examples/<name>`. Six are their own modules because they import an adapter module with
+its own dependencies (`approval`, `plan`, `mcp`, `observability`, `stripe-refund`, and the `govern` examples); `cd` into the directory and run
 `go run .`, or `go run ./<name>` for a `govern` example (the `go.work` at the root resolves the local modules; with `GOWORK=off` each module's
 `replace` directives do the same).
 
@@ -48,6 +48,7 @@ evaluation, and integration seams.
 | `recover` | Crash recovery: a supervisor resumes an interrupted run from its journal without re-firing side effects, then a lost outcome halts and is resolved with `ResolveHalt` (offline). | `go run ./examples/recover` |
 | `interrupt` | Human-in-the-loop: a tool pauses the run for a durable approval decision, then resumes (offline). | `go run ./examples/interrupt` |
 | `approval` | m-of-n human approval across separate processes on a SQLite journal: 2 of 3 approvals, each signed over the exact call, gate a refund; a forged signature and an ineligible approver are ignored without locking anyone out; and an auditor verifies the evidence offline with public keys only, in Go or with `bide audit verify-approvals` (offline). `go run ./flow` puts the same gate on a plan flow node loaded from config. Its own module. **Its keys are predictable demo keys** (each is SHA-256 of a public name), so anyone can sign as any approver; never reuse them. | `cd examples/approval && go run .` |
+| `stripe-refund` | A refund agent against Stripe's TEST mode API, killed mid-refund: the restart halts (outcome unknown) instead of refunding twice, a reconciler finds the refund in Stripe's own record by its metadata and resolves the halted step, and exactly one refund exists. A 2-of-3 approval gate covers large refunds. `net/http` only, no Stripe SDK. Needs a Stripe test key (`sk_test_`; anything else is refused); its tests run against a fake Stripe (offline). Its own module. | `cd examples/stripe-refund && ./demo.sh pi_...` |
 | `signals` | Durable timers and external signals: a run sleeps or waits for an event and resumes on delivery (offline). | `go run ./examples/signals` |
 | `hedge` | The hedged-model middleware: race a primary against a backup and take the first good answer (offline). | `go run ./examples/hedge` |
 | `eval` | The statistical evaluation harness: labeled cases, metrics, repeated runs, a pass-rate report (offline). | `go run ./examples/eval` |
