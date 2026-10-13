@@ -14,15 +14,15 @@
 <button type="submit">Filter</button>{{if or .Filter.Q .Filter.Kind .Filter.State}} <a class="small" href="/">Clear</a>{{end}}
 </form>
 {{if .Rows}}<div class="tablewrap"><table class="runlist">
-<thead><tr><th>Run</th><th>Kind</th><th>State</th><th title="the time of the run's last attempt marker, written before a side effect">Last stamped</th><th class="num">Records</th></tr></thead>
+<thead><tr><th>Run</th><th>Kind</th><th>State</th><th>Started</th><th class="num">Records</th></tr></thead>
 <tbody>{{range .Rows}}<tr>
 <td class="rid"><a href="{{.Link}}">{{.ID}}</a></td>
 <td>{{.KindText}}{{if .Flow}}<div class="muted small">{{.Flow}}</div>{{end}}</td>
 <td><span class="pill state-{{.State}}">{{.StateText}}</span></td>
-<td class="when">{{with .Stamped}}{{.}}{{else}}<span class="muted">none</span>{{end}}</td>
+<td class="when">{{with .StartedText}}{{.}}{{else}}<span class="muted" title="journaled by a version that recorded no start time">none</span>{{end}}</td>
 <td class="num">{{.Records}}</td>
 </tr>{{end}}</tbody></table></div>
 {{if .More}}<p class="more"><a href="{{.More}}">Show more ({{len .Rows}} of {{.Matched}} shown)</a></p>{{end}}
 {{else if not .Err}}<p class="muted">{{if .Listed}}No run matches the filter.{{else}}No runs to list. This store may not list its runs; open one with -run.{{end}}</p>{{end}}
-<p class="muted small legendnote">Most recently stamped first, then by run ID. A journal records no start time: <em>last stamped</em> is the time of the run's last attempt marker, written just before a side effect, and a run that made none has no time.</p>
+<p class="muted small legendnote">Newest first, by the start time each run's <code>run:start</code> records. A run journaled by an earlier version records none: it shows <em>none</em> and is listed after the others, by run ID.</p>
 {{template "foot"}}{{end}}

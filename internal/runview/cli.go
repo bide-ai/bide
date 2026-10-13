@@ -54,8 +54,9 @@ recorded or, with -need and -approvers, against the policy you expect. It never 
 store, and it serves on a loopback address only. Stop it with Ctrl-C.
 
 With no -run the page opens on the run list: each run's kind, state (completed, halted: outcome
-unknown, waiting for approval, in progress, aborted or cancelled), the time of its last attempt
-marker (a journal records no other time) and its record count, filtered by state, kind and run ID.
+unknown, waiting for approval, in progress, aborted or cancelled), when it started (as its
+run:start records it; none for a run an earlier version journaled) and its record count, newest
+first, filtered by state, kind and run ID.
 
 From -db or -postgres, the page of a run in progress follows it (live mode): it polls the store
 about once a second for records after the last one it shows, and updates in place until the run

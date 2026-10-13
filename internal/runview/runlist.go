@@ -3,6 +3,7 @@ package runview
 import (
 	"cmp"
 	"context"
+	"encoding/json"
 	"net/url"
 	"slices"
 	"strconv"
@@ -76,21 +77,20 @@ type RunRow struct {
 	Group     string `json:"group"` // the state filter group
 	Flow      string `json:"flow,omitempty"`
 	Records   int    `json:"records"`
-	// LastStamped is the latest time the run's journal records: the AttemptedAt of its last
-	// attempt marker, written before a side effect. Zero when the run journaled none (a journal
-	// records no other wall-clock time).
-	LastStamped time.Time `json:"last_stamped,omitzero"`
+	// Started is when the run's first drive started, as its run:start records it
+	// (agent.RunStart.Started). Zero for a run journaled by a version that recorded none.
+	Started time.Time `json:"started,omitzero"`
 }
 
 // Link is the run's page.
 func (r RunRow) Link() string { return "/run?id=" + url.QueryEscape(r.ID) }
 
-// Stamped is LastStamped as the list shows it, or "" when the run has no stamp.
-func (r RunRow) Stamped() string {
-	if r.LastStamped.IsZero() {
+// StartedText is Started as the list shows it, or "" when the run records no start time.
+func (r RunRow) StartedText() string {
+	if r.Started.IsZero() {
 		return ""
 	}
-	return r.LastStamped.Format("2006-01-02 15:04:05 UTC")
+	return r.Started.UTC().Format("2006-01-02 15:04:05 UTC")
 }
 
 // KindText is the run's kind as the list shows it.
@@ -103,8 +103,8 @@ func kindText(k string) string {
 	return strings.ReplaceAll(k, "_", " ")
 }
 
-// RunList is the run list page: the runs the filter admits, ordered most recently stamped first,
-// then unstamped runs by run ID.
+// RunList is the run list page: the runs the filter admits, newest first by start time, then the
+// runs that record none by run ID.
 type RunList struct {
 	Filter ListFilter `json:"filter"`
 	Rows   []RunRow   `json:"runs"`
@@ -218,7 +218,7 @@ func (o Options) runList(ctx context.Context, f ListFilter) RunList {
 	}
 	slices.Sort(l.Kinds)
 	slices.SortStableFunc(rows, func(a, b RunRow) int {
-		if c := b.LastStamped.Compare(a.LastStamped); c != 0 {
+		if c := b.Started.Compare(a.Started); c != 0 {
 			return c
 		}
 		return strings.Compare(a.ID, b.ID)
@@ -240,10 +240,12 @@ func summarize(ctx context.Context, runID string, recs []agent.Record) RunRow {
 		r.StateText = strings.ReplaceAll(r.Group, "-", " ")
 	}
 	for _, rec := range recs {
-		if rec.Kind == agent.StepAttempt && rec.AttemptedAt > 0 {
-			if t := time.UnixMilli(rec.AttemptedAt).UTC(); t.After(r.LastStamped) {
-				r.LastStamped = t
+		if rec.Kind == agent.StepValue && rec.Name == "run:start" {
+			var st agent.RunStart
+			if json.Unmarshal(rec.Result, &st) == nil {
+				r.Started, _ = st.Started()
 			}
+			break
 		}
 	}
 	return r

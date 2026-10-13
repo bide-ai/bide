@@ -73,10 +73,10 @@ polls (see [Follow a run in progress](#follow-a-run-in-progress)).
 With no `-run`, the page opens on the journal's runs, so you can find the one that halted or is
 waiting without knowing its ID:
 
-![bide view's run list over a journal of nine runs: completed, halted, waiting for approval, in progress, aborted and cancelled agent and flow runs, with state counts and filters](img/run-viewer-run-list-dark.png)
+![bide view's run list over a journal of ten runs: completed, halted, waiting for approval, in progress, aborted and cancelled agent and flow runs, newest first, with state counts and filters](img/run-viewer-run-list-dark.png)
 
 Each row is a run: its ID (a link to its page), its kind (`agent`, `flow` with the flow's name, or
-`session turn`), its state, the time it was last stamped, and its record count. The state is the
+`session turn`), its state, when it started, and its record count. The state is the
 one the run's page shows (see END STATE below), so the list and the page never disagree. The state
 filters above the table count the runs in each state: completed, **halted: outcome unknown**,
 **waiting for approval**, **in progress** (started, not ended, not halted and not waiting), and
@@ -86,12 +86,10 @@ run ID filter (a case-insensitive substring) narrow the list further; the filter
 (`/?state=halted&kind=flow&q=refund`), so a filtered list can be bookmarked. The same list is JSON
 at `/runs.json`, with the same query.
 
-The journal records no wall-clock time for a run today: no start time and no end time. The one time
-it holds is on an attempt marker, which a run writes just before a side effect (a tool call that is
-not retry-safe on resume, or a `Step`). So **last stamped** is the time of the run's last
-side-effect attempt, and the list is ordered by it: the most recently stamped runs first, then the
-runs with no side effect (no time) by run ID. Recording a start time in the journal is a separate,
-later change.
+**Started** is the time the run's `run:start` records (`RunStart.StartedAt`): when its first drive
+began, by that drive's clock, shown in UTC. The list is ordered by it, newest first. A run journaled
+by an earlier version, which recorded no start time, shows **none** and is listed after the others,
+by run ID. The journal records no end time, so the list shows none.
 
 The list shows 50 runs and a **Show more** link for the next 50. To classify a run the viewer reads
 its journal, so one load reads at most 5,000 runs (the first by run ID among those the run ID filter
@@ -99,7 +97,8 @@ admits) and says so when there are more; narrow the run ID filter to reach the o
 journal holds one run, so `-journal` lists as many runs as files it is given, and the page says so
 when it is one.
 
-To make the journal in the screenshot (nine runs, every state, no API key), run the test that
+To make the journal in the screenshot (ten runs, every state, one journaled with no start time, no
+API key), run the test that
 writes it and open it:
 
 ```sh
