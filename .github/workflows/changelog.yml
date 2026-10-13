@@ -1,0 +1,36 @@
+name: Changelog
+
+# A pull request that changes code a published module ships adds a changelog fragment
+# (changes/unreleased/<slug>.md, see CONTRIBUTING.md), or carries the no-changelog label. What counts
+# as code is defined in internal/tools/changelog (documentation, tests, CI, examples, scripts and
+# the repository's tools do not). The check runs again when a label is added or removed. In the
+# merge queue it passes: the pull request was checked before it was queued.
+
+on:
+  pull_request:
+    types: [opened, synchronize, reopened, labeled, unlabeled]
+  merge_group:
+
+permissions:
+  contents: read
+
+jobs:
+  changelog:
+    name: Changelog fragment
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - uses: actions/setup-go@v5
+        with:
+          go-version: '1.27'
+      - name: Fragments are well formed
+        run: go run ./internal/tools/changelog lint
+      - name: A change to published code adds a fragment
+        if: ${{ github.event_name == 'pull_request' }}
+        env:
+          BASE: ${{ github.event.pull_request.base.sha }}
+          HEAD: ${{ github.event.pull_request.head.sha }}
+          LABELS: ${{ join(github.event.pull_request.labels.*.name, ',') }}
+        run: go run ./internal/tools/changelog check -base "$BASE" -head "$HEAD" -labels "$LABELS"

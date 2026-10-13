@@ -79,6 +79,7 @@ var transitional = pattern{regexp.MustCompile(`(?i)\btransitional\b`), "remove t
 var excluded = []string{
 	"internal/tools/oldnames/",
 	"CHANGELOG.md",
+	"changes/unreleased/",
 	"docs/releases/",
 	"docs/design/",
 }
