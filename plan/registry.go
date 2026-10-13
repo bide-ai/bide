@@ -341,9 +341,9 @@ func (r *Registry) RegisterTool[I, O any](name string, t agent.Tool, opts ...Nod
 // carries no model); a config that declares a Model block loaded without a bound
 // model fails Build, naming the node. O must be a JSON-shaped type.
 //
-// Pass plan.ReadOnly()/plan.Idempotent() to record the block's retry-on-resume Safety
-// in Go (the config JSON carries no Safety), mirroring Builder.Model; the default
-// keeps the conservative halt-on-ambiguous-crash for a non-idempotent model call.
+// The block's Safety defaults to ReadOnly, as Builder.Model's does: a call whose outcome
+// is unknown is made again on the next drive. A config node's "safety" lowers it
+// ("side_effect" halts instead).
 func (r *Registry) RegisterModel[I, O any](name, prompt string, opts ...NodeOption) error {
 	gate, err := r.gateFromOptions(name, nil, opts)
 	if err != nil {
@@ -354,7 +354,7 @@ func (r *Registry) RegisterModel[I, O any](name, prompt string, opts ...NodeOpti
 		kind:     kindModel,
 		inType:   reflect.TypeFor[I](),
 		outType:  reflect.TypeFor[O](),
-		safety:   safetyFromOptions(agent.Safety{}, opts),
+		safety:   safetyFromOptions(modelSafety, opts),
 		prompt:   prompt,
 		// run is nil for a Model block: runNode dispatches a kindModel node to runModel,
 		// which reads the flow's bound model at run time (see Builder.Model / WithModel).

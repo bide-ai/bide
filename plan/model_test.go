@@ -161,73 +161,163 @@ func buildModelFlow(fake agent.Model) (*Flow[int, review], error) {
 	return b.Build()
 }
 
-// TestModel_DefaultHaltsOnAmbiguousCrash proves a Model node keeps the conservative
-// halt-on-ambiguous-crash default (Safety default preserved): a model call is
-// non-idempotent, so on a crash that persists the attempt marker but loses the result
-// Run returns *agent.OutcomeUnknown and does NOT re-call the model. This mirrors the DST
-// crash-sweep in flow_dst_test.go (crashFlowStore, errCrash, per-write sweep).
-func TestModel_DefaultHaltsOnAmbiguousCrash(t *testing.T) {
+// TestModel_DefaultRetriesOnAmbiguousCrash proves a Model node is retry-safe by
+// default: a model call has no external side effect, so on a crash that loses its
+// result Run re-calls the model on resume and completes, rather than halting with
+// *agent.OutcomeUnknown. A retry-safe node writes no attempt marker, so the ambiguous
+// window is "the model was called, the journal holds no node:assess result". This
+// mirrors the DST crash-sweep in flow_dst_test.go (crashFlowStore, errCrash, per-write
+// sweep).
+func TestModel_DefaultRetriesOnAmbiguousCrash(t *testing.T) {
 	var mem *agent.Journal
-	var haltCalls int // how many times the model was called at the halt point
-	found := false
-	for crashAt := 1; crashAt <= 32; crashAt++ {
+	var crashCalls int // how many times the model was called before the crash
+	for crashAt := 1; crashAt <= 32 && mem == nil; crashAt++ {
 		calls := 0
-		m := agent.NewMemStore()
-		j := agenttest.MustJournal(m)
+		j := agenttest.MustJournal(agent.NewMemStore())
 		store := agenttest.MustJournal(&crashFlowStore{inner: j, crashAt: crashAt})
-		fake := &countingModel{reply: `{"verdict":"ok","score":1}`, calls: &calls}
-		flow, err := buildModelFlow(fake)
+		flow, err := buildModelFlow(&countingModel{reply: `{"verdict":"ok","score":1}`, calls: &calls})
 		if err != nil {
 			t.Fatalf("Build: %v", err)
 		}
-		_, err = flow.Run(context.Background(), store, "model-crash", 0)
-		if !errors.Is(err, errCrash) {
+		if _, err := flow.Run(context.Background(), store, "model-crash", 0); !errors.Is(err, errCrash) {
 			continue
 		}
-		// The ambiguous window is the "assess" result write: attempt marker persisted,
-		// result missing.
 		recs, hErr := j.History(context.Background(), "model-crash")
 		if hErr != nil {
 			t.Fatalf("History: %v", hErr)
 		}
-		var haveAttempt, haveResult bool
-		for _, r := range recs {
-			switch r.Name {
-			case "attempt:step:node:assess":
-				haveAttempt = true
-			case "node:assess":
-				haveResult = true
-			}
+		if hasRecord(recs, "attempt:step:node:assess") {
+			t.Fatalf("a default Model node wrote an attempt marker; want it retry-safe (no marker)")
 		}
-		if haveAttempt && !haveResult {
-			mem = j
-			haltCalls = calls
-			found = true
-			break
+		if calls >= 1 && !hasRecord(recs, "node:assess") {
+			mem, crashCalls = j, calls
 		}
 	}
-	if !found {
+	if mem == nil {
 		t.Fatal("no crash point produced the model-result ambiguous window")
 	}
 
-	// Resume with no further crash: the default (non-idempotent) Model node must HALT
-	// rather than re-call the model.
-	calls := haltCalls
-	fake := &countingModel{reply: `{"verdict":"ok","score":1}`, calls: &calls}
-	flow, err := buildModelFlow(fake)
+	calls := crashCalls
+	flow, err := buildModelFlow(&countingModel{reply: `{"verdict":"ok","score":1}`, calls: &calls})
 	if err != nil {
 		t.Fatalf("Build: %v", err)
 	}
-	_, err = flow.Run(context.Background(), mem, "model-crash", 0)
-	var halt *agent.OutcomeUnknown
-	if !errors.As(err, &halt) {
-		t.Fatalf("default Model node did not halt: err = %v; want *agent.OutcomeUnknown", err)
+	out, err := flow.Run(context.Background(), mem, "model-crash", 0)
+	if err != nil {
+		t.Fatalf("resume after the crash: %v; want the Model node re-called", err)
 	}
-	if halt.Op.ID != "node:assess" || halt.Op.Kind != agent.OpStep {
-		t.Fatalf("halt named %v, want step %q", halt.Op, "node:assess")
+	if calls != crashCalls+1 {
+		t.Fatalf("model calls %d -> %d on resume; want exactly one re-call", crashCalls, calls)
 	}
-	if calls != haltCalls {
-		t.Fatalf("Model node re-called the model on resume (calls %d -> %d); a non-idempotent model call must halt", haltCalls, calls)
+	if out.Verdict != "ok" || out.Score != 1 {
+		t.Fatalf("resumed output = %+v, want {ok 1}", out)
+	}
+}
+
+// scriptedModel replies with replies[i] on its i-th call (the last reply repeats), so a
+// test can make a first call return what a real model sometimes does (fenced JSON, a
+// number in a string field) and a later call return a valid document.
+type scriptedModel struct {
+	replies []string
+	calls   int
+}
+
+func (m *scriptedModel) Stream(_ context.Context, _ agent.Request) (*agent.Stream, error) {
+	reply := m.replies[min(m.calls, len(m.replies)-1)]
+	m.calls++
+	ch := make(chan agent.Emit, 2)
+	ch <- agent.Emit{Event: agent.TextDelta{Text: reply}}
+	ch <- agent.Emit{Event: agent.Finish{Reason: "stop"}}
+	close(ch)
+	return agent.NewStream(ch), nil
+}
+
+// A Model node whose call fails (the provider errors, or the reply does not decode into
+// O) records nothing, and the next drive of the run calls the model again rather than
+// halting with "unknown outcome and is not retry-safe". This is the run a fresh user hit
+// with a real model: a fenced reply, then a number in a string field, then a halted
+// resume. Each case runs the Builder flow and the Load flow (RegisterModel), whose
+// defaults must agree.
+func TestModel_FailedCallRetriesOnTheNextDrive(t *testing.T) {
+	good := `{"verdict":"ok","score":1}`
+	for name, first := range map[string]string{
+		"fenced JSON": "```json\n" + good + "\n```",
+		"wrong type":  `{"verdict":7,"score":1}`,
+	} {
+		builds := map[string]func(agent.Model) (*Flow[int, review], error){
+			"builder": buildModelFlow,
+			"loaded": func(m agent.Model) (*Flow[int, review], error) {
+				reg := NewRegistry()
+				if err := reg.RegisterModel[int, review]("assess", "score {{.}}"); err != nil {
+					return nil, err
+				}
+				cfg := `{"version":1,"flow":"model-flow","nodes":[{"name":"assess","block":"assess"}],"wiring":[]}`
+				return Load[int, review]([]byte(cfg), reg, WithLoadedModel(m))
+			},
+		}
+		for bname, build := range builds {
+			m := &scriptedModel{replies: []string{first, good}}
+			flow, err := build(m)
+			if err != nil {
+				t.Fatalf("%s/%s: build: %v", name, bname, err)
+			}
+			j := agenttest.MemJournal()
+			if _, err := flow.Run(context.Background(), j, "r", 0); err == nil {
+				t.Fatalf("%s/%s: first drive succeeded on a bad reply; want a decode error", name, bname)
+			}
+			out, err := flow.Run(context.Background(), j, "r", 0)
+			if err != nil {
+				t.Fatalf("%s/%s: second drive: %v; want the model called again", name, bname, err)
+			}
+			if m.calls != 2 || out.Verdict != "ok" {
+				t.Fatalf("%s/%s: calls = %d, out = %+v; want 2 calls and {ok 1}", name, bname, m.calls, out)
+			}
+		}
+	}
+}
+
+// The default is an override point, not a rule: a config "safety": "side_effect" lowers a
+// Model node back to halt-on-unknown-outcome, and a side-effect Step still halts after a
+// failed body. Both keep the marker, so the next drive halts and does not run the body again.
+func TestModel_SideEffectStillHaltsAfterAFailedCall(t *testing.T) {
+	bad := "```json\n{}\n```"
+	m := &scriptedModel{replies: []string{bad, `{"verdict":"ok","score":1}`}}
+	reg := NewRegistry()
+	if err := reg.RegisterModel[int, review]("assess", "score {{.}}"); err != nil {
+		t.Fatalf("RegisterModel: %v", err)
+	}
+	cfg := `{"version":1,"flow":"model-flow","nodes":[{"name":"assess","block":"assess","safety":"side_effect"}],"wiring":[]}`
+	modelFlow, err := Load[int, review]([]byte(cfg), reg, WithLoadedModel(m))
+	if err != nil {
+		t.Fatalf("Load: %v", err)
+	}
+
+	runs := 0
+	b := New[int, int]("tool-flow")
+	b.Step("charge", func(context.Context, int) (int, error) {
+		runs++
+		return 0, errors.New("connection reset after the charge was sent")
+	})
+	stepFlow, err := b.Build()
+	if err != nil {
+		t.Fatalf("Build: %v", err)
+	}
+
+	for name, drive := range map[string]func(*agent.Journal) error{
+		"model marked side_effect": func(j *agent.Journal) error { _, err := modelFlow.Run(context.Background(), j, "r", 0); return err },
+		"side-effect step":         func(j *agent.Journal) error { _, err := stepFlow.Run(context.Background(), j, "r", 0); return err },
+	} {
+		j := agenttest.MemJournal()
+		if err := drive(j); err == nil {
+			t.Fatalf("%s: first drive succeeded; want the body's error", name)
+		}
+		var halt *agent.OutcomeUnknown
+		if err := drive(j); !errors.As(err, &halt) {
+			t.Fatalf("%s: second drive err = %v; want *agent.OutcomeUnknown", name, err)
+		}
+	}
+	if m.calls != 1 || runs != 1 {
+		t.Fatalf("model calls = %d, step runs = %d; want each body run once, then a halt", m.calls, runs)
 	}
 }
 

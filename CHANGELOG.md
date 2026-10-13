@@ -9,6 +9,10 @@ journal format can change between pre-releases without a version bump. Curated h
 
 ## [Unreleased]
 
+### Changed
+
+- A plan flow `Model` node (`Builder.Model`, `Registry.RegisterModel`) is `ReadOnly` by default, so a model call whose outcome is unknown (a crash lost its result, or the call failed: the provider errored or the reply did not decode) is made again on the next drive instead of halting with "unknown outcome and is not retry-safe". A model node calls no tool and changes nothing outside the run; a re-call costs tokens and may answer differently, and nothing saw the lost answer. A config `safety: side_effect` keeps the old halt. A node a v0.14 process already attempted keeps its attempt marker and still halts; resolve it with `ResolveHalt` or start a new run. Found by a fresh-eyes run of the `bide init` project on a real model.
+
 ## [0.14.0] - 2026-10-13
 
 ### Fixed

@@ -135,8 +135,12 @@ func applyNodeOptions(n *node, opts []NodeOption) *node {
 	return n
 }
 
+// modelSafety is a Model node's default Safety: ReadOnly, since a model call has no
+// external side effect (see Builder.Model).
+var modelSafety = agent.Safety{ReadOnly: true}
+
 // safetyFromOptions resolves opts to the agent.Safety they set, starting from base
-// (a Tool's auto-derived Safety, or the zero value for a Step/Model). It applies
+// (a Tool's auto-derived Safety, modelSafety for a Model, or the zero value for a Step). It applies
 // opts to a scratch node so the registry gets exactly the same Safety a builder
 // constructor would, keeping the two paths in lockstep.
 func safetyFromOptions(base agent.Safety, opts []NodeOption) agent.Safety {
@@ -303,7 +307,7 @@ func (b *Builder[In, Out]) Tool[I, O any](name string, t agent.Tool, opts ...Nod
 // its arguments rather than through a single Edge, so nothing consumes the handle's
 // Consumer side.
 //
-// SAFETY: like a Step or Model, a Join defaults to the conservative
+// SAFETY: like a Step, a Join defaults to the conservative
 // halt-on-ambiguous-crash (its merge fn may have a side effect). Because a join
 // runs only AFTER all its inputs are journaled (Run executes the reachable DAG in
 // topological order), the merge is a plain sequential step under the same
@@ -409,12 +413,14 @@ func (b *Builder[In, Out]) WithModel(m agent.Model) *Builder[In, Out] {
 // node. O must be a JSON-shaped type (a struct is the usual structured-output shape),
 // because the model's response is decoded as JSON into O.
 //
-// SAFETY: a model call is non-idempotent by default (it may cost tokens and its
-// output can vary between calls), so a Model node keeps the conservative
-// halt-on-ambiguous-crash default: on a mid-node crash whose result was lost, Run
-// HALTS rather than re-call the model. Pass plan.ReadOnly() or plan.Idempotent()
-// only if you know a re-call is safe; that opts the node
-// into re-run on the ambiguous crash instead of halting.
+// SAFETY: a Model node is ReadOnly by default. The node sends one prompt and decodes
+// the reply; it calls no tool and changes nothing outside the run, and the run sees
+// only the output the journal records. So when a call's outcome is unknown (a crash
+// lost its result, or the call failed: the provider errored or the reply did not
+// decode into O), the next drive calls the model again rather than halting. A re-call
+// costs tokens and may return a different answer; nothing saw the lost one. To halt
+// instead, lower the node's safety in a config ("safety": "side_effect") or wrap the
+// call in a Step.
 func (b *Builder[In, Out]) Model[I, O any](name, prompt string, opts ...NodeOption) Handle[I, O] {
 	b.core.register(applyNodeOptions(&node{
 		name:    name,
@@ -422,6 +428,7 @@ func (b *Builder[In, Out]) Model[I, O any](name, prompt string, opts ...NodeOpti
 		inType:  typeOf[I](),
 		outType: typeOf[O](),
 		prompt:  prompt,
+		safety:  modelSafety, // the default; an option below overrides it
 		// run is nil for a kindModel node: runNode dispatches to runModel, which reads
 		// the flow's bound model at run time (it is not known here at construction).
 	}, opts))

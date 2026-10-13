@@ -77,7 +77,11 @@ out, err := flow.Run(ctx, journal, runID, order)           // Order in, Receipt 
     declarative config, `Load`'s `WithLoadedModel`). The node renders `prompt` as a `text/template` over the
     typed input `I`, calls the bound model, and decodes the structured response into `O` (so `O` must
     be JSON-shaped and the prompt should ask for matching JSON). Build errors if a `Model` node has no
-    bound model, naming it.
+    bound model, naming it. A `Model` node is `ReadOnly` by default: it calls no tool and changes
+    nothing outside the run, so a call whose outcome is unknown (a crash lost its result, or the call
+    failed: the provider errored or the reply did not decode into `O`) is made again on the next drive
+    instead of halting. A re-call costs tokens and may answer differently; nothing saw the lost answer.
+    A config `safety: side_effect` on the node halts instead.
   - The string `name` names the node's **durable journal key**, `node:<name>`: it must be non-empty,
     unique, and contain no `:` (Build enforces all three; Run derives its keys, such as `node:<name>`
     and `switch:<name>`, with `:`), and stable across code edits, because resume finds a node by this
@@ -136,6 +140,7 @@ guarantees:
   default (no classification) never double-fires, but completing after a mid-node crash then requires
   resolving the halt. A node may instead declare a `Safety` (read-only or idempotent, via
   `ReadOnly()`/`Idempotent()` in Go) so it writes no marker and re-runs on resume instead of halting.
+  A `Model` node is read-only unless a config lowers it.
   A declarative config's `safety` may only lower that (see "Node and join safety"). `Safety` is not
   part of the digest, so a node may be relabelled between a crash and its resume: the marker is the
   attempt's recorded safety, so a node attempted as a side effect halts even if it is retry-safe now,
@@ -460,7 +465,9 @@ than halting, because its body is safe to repeat; a side effect halts.
 
 **A config may only lower retry safety.** Whether a step is safe to run twice is a property of its Go
 code, so only Go declares it: `RegisterStep`, `RegisterTool` (from the `Safety` in the tool's spec),
-`RegisterModel`, `RegisterJoin2` and `RegisterJoin3` take `ReadOnly()`/`Idempotent()` options. The
+`RegisterModel`, `RegisterJoin2` and `RegisterJoin3` take `ReadOnly()`/`Idempotent()` options (a
+`Model` block is read-only unless an option says otherwise; a `Step`, a `Join` and a `Tool` without
+a declared `Safety` are side effects). The
 levels, highest first, are read-only, idempotent (`Idempotent`), and side
 effect. A config `safety` may keep a block's level or name a lower one (mark a read-only block
 `idempotent`, or any block `side_effect` so a crash with no recorded outcome halts for confirmation),
