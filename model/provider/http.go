@@ -221,7 +221,19 @@ func classifyProviderError(provider string, status int, retryAfter time.Duration
 		}
 	}
 	return &agent.APIError{StatusCode: status, Body: truncate(body), Message: pe.Message, Type: pe.Type, Code: pe.Code,
-		Err: fmt.Errorf("%s (%w)", provider, agent.ErrModel)}
+		Err: fmt.Errorf("%s%s (%w)", provider, statusHint(status), agent.ErrModel)}
+}
+
+// statusHint says what to check for the statuses a newcomer meets first: a rejected key and an
+// unknown model name. It is empty for any other status.
+func statusHint(status int) string {
+	switch status {
+	case http.StatusUnauthorized, http.StatusForbidden:
+		return ": the key was rejected; check that the API key is set, is current, and belongs to this provider"
+	case http.StatusNotFound:
+		return ": not found; check the model name and the base URL"
+	}
+	return ""
 }
 
 // MaxSSELine is the longest SSE line NewSSEScanner reads. It is sized for the largest single

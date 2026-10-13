@@ -179,7 +179,12 @@ guarantees:
   `node:iter:<n>:<name>:step:<step>` in a loop body), so each loop iteration runs its own Steps
   instead of replaying the first iteration's, and a Step name need be unique only within its node (and must not be empty: an empty name is `ErrConfig`, for every `Journal.Step`). A
   halt of such a Step names that key; resolve it with the halt's `Ref()`. Other pauses a body takes
-  (`Interrupt`, `Await`, `Sleep`) are not scoped: give them names unique per iteration.
+  (`Interrupt`, `Await`) are not scoped: give them names unique per iteration.
+- **Durable timers are not available in a node.** `agent.Sleep` and `agent.WaitUntil` need the run
+  context an agent gives its tools, which a flow does not bind: called from a `Step` or `Tool` node
+  they fail with `ErrConfig` ("agent: Sleep called outside a running agent"). A run that must sleep
+  and wake needs an agent run today: see the [ambient agent recipe](../recipes/ambient-agent.md) and
+  [durable timers](durable-steps.md#durable-timers-sleep--waituntil-and-the-waker).
 - **A node can wait for human approval.** A node gated with `plan.Approval(policy)` (or by the
   agent tool it wraps, or a config `approval` block) pauses before it runs, exactly as a gated agent
   tool call does: see [Approval gates on nodes](#approval-gates-on-nodes).

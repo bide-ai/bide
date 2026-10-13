@@ -40,11 +40,25 @@ func OpenReadOnly(path string, opts ...Option) (*Store, error) {
 	var v int
 	if err := db.QueryRowContext(context.Background(), `SELECT version FROM `+s.t.version+` WHERE id = 1`).Scan(&v); err != nil {
 		db.Close()
-		return nil, fmt.Errorf("sqlite: OpenReadOnly %s: read schema version (is it a bide journal?): %w (%w)", path, err, agent.ErrStorage)
+		return nil, fmt.Errorf("sqlite: OpenReadOnly %s: read schema version (is it a bide journal?): %w%s (%w)", path, err, readHint(err), agent.ErrStorage)
 	}
 	if v > schemaVersion {
 		db.Close()
 		return nil, fmt.Errorf("sqlite: the database's schema version is %d, newer than this version's %d: %w", v, schemaVersion, agent.ErrConfig)
 	}
 	return s, nil
+}
+
+// readHint says what to check when a path will not open read-only: it names the file a read-only
+// open needs to exist, or the file that is not a journal. It is empty for any other error.
+func readHint(err error) string {
+	switch msg := err.Error(); {
+	case strings.Contains(msg, "unable to open database file"):
+		return "; check that the file exists (a read-only open never creates it) and that the path is a file, not a directory"
+	case strings.Contains(msg, "file is not a database"):
+		return "; the file is not a SQLite database, so point at a journal a bide run wrote"
+	case strings.Contains(msg, "no such table"):
+		return "; the file is a SQLite database with no bide journal in it, so point at a journal a bide run wrote"
+	}
+	return ""
 }

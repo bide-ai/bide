@@ -24,7 +24,7 @@ The vocabulary, defined once. Terms are grouped by the layer they belong to. See
 
 ## Ambient and pauses
 
-- **Sleep / WaitUntil**: durable timers. A run pauses until a wall-clock deadline, journaled so the pause survives a restart.
+- **Sleep / WaitUntil**: durable timers. A run pauses until a wall-clock deadline, journaled so the pause survives a restart. They run inside an agent's tools; a plan flow node cannot call them yet ([known limitations](KNOWN-LIMITATIONS.md)).
 - **Waker**: the pluggable trigger that re-invokes a sleeping run when its timer is due (or when an event is delivered). `Schedule(ctx, Wake)` returns an error; a failed schedule fails the run with an error wrapping `ErrStorage` and records nothing, so a re-drive (`RecoverLoop`) schedules again. `MemWaker` is the in-process reference.
 - **Interrupt / Resume**: durable human-in-the-loop. A tool pauses the run to request a typed decision; recording the answer and re-running continues.
 - **Approval**: a durable pre-execution gate. A tool built with `WithApproval(SingleApproval())` (or an m-of-n `ApprovalPolicy`) halts the run as `*ApprovalPending` before it executes; recording `agent.Approve` and re-running lets it proceed or skips it. Distinct from `Interrupt`, which pauses inside a running tool to collect a typed value. See the [approval guide](guides/hitl-approval.md).

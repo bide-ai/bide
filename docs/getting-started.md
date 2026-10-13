@@ -33,7 +33,7 @@ with one refund. The project's README is the place to read next: the next steps 
 `bide check`, `bide audit`), the crash demo, its "Start over" command, and the marked block in
 `model()` that swaps in a real model when `OPENROUTER_API_KEY` or `OPENAI_API_KEY` is set (start
 over first: a finished run is read back from the journal, so the new model would not be called).
-The real model is sent the refund type's JSON schema as structured output.
+The real model is sent the refund type's JSON schema as structured output. To gate only refunds over a threshold, see the [refund recipe](recipes/refund-approval.md).
 
 ## Install
 
@@ -175,6 +175,7 @@ See [module structure](reference/module-structure.md) for the layout and [CONTRI
 
 ## Where next
 
+- Complete flows to copy and run (a refund with a 2-of-3 approval, invoice approval, ticket triage, a safe record update, an ambient agent): the [recipes](recipes/index.md).
 - The vocabulary: [Concepts](CONCEPTS.md).
 - Authoring flows as typed topology instead of plain Go: the [plan flows guide](guides/plan-flows.md) (the optional `plan` builder and declarative config).
 - The precise guarantee and its bounds: [Guarantee](GUARANTEE.md), [Known limitations](KNOWN-LIMITATIONS.md).

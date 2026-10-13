@@ -372,7 +372,7 @@ and exactly one refund exists. It leaves the step halted when Stripe has no such
 
 ## Durable timers: `Sleep` / `WaitUntil` and the `Waker`
 
-An agent often has to wait: for a deadline, a cool-off, a scheduled follow-up. `Sleep(ctx, name, d)`
+An agent often has to wait: for a deadline, a cool-off, a scheduled follow-up. (Timers need an agent run: a [plan flow](plan-flows.md) node cannot call `Sleep` or `WaitUntil` today.) `Sleep(ctx, name, d)`
 and `WaitUntil(ctx, name, until)` make that wait durable. Called from inside a retry-safe tool, they
 journal the wake time once (at-most-once by name) and pause the run with `*TimerPending`, the same durable
 pause as `Interrupt`. Because the wake time is journaled on the first call and memoized, a resumed or

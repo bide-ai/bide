@@ -5,6 +5,7 @@ import (
 	"errors"
 	"iter"
 	"sync"
+	"sync/atomic"
 	"testing"
 	"testing/synctest"
 	"time"
@@ -332,5 +333,88 @@ func testRecoverLoopEveryPassReachesEveryRun(t *testing.T) {
 	case <-zDriven:
 	case <-time.After(3 * time.Second):
 		t.Fatal("run z was never driven: the halted runs listed before it took the only slot on every pass")
+	}
+}
+
+// No drive and no pass starts after the loop's context is cancelled. A select picks at random
+// among ready cases, so a check of ctx before a select whose other case is ready (a free slot, a
+// tick) does not stop the work that case starts if the cancellation lands between the check and
+// the select. lateCancelStore lands it there on every iteration, so before the fix about half of
+// them started a drive, and half of the rest started another pass.
+//
+// Unlike the other RecoverLoop tests, this one runs outside a synctest bubble: its 1ns tick must
+// be ready when the pass returns, as it is on a loop that outlasts its interval, and in a bubble
+// the clock stands still until every goroutine blocks.
+func TestRecoverLoop_NothingStartsAfterCancel(t *testing.T) {
+	for iter := range 200 {
+		parent, cancel := context.WithCancel(context.Background())
+		ctx := &lateCancelCtx{Context: parent, cancel: cancel}
+		s := &lateCancelStore{m: NewMemStore(), ctx: ctx}
+		seedRun(t, s.m, "r")
+		var resumes atomic.Int32
+		err := RecoverLoop(ctx, mustJournal(s), func(context.Context, string, RunStart) error {
+			resumes.Add(1)
+			return nil
+		}, WithRecoverInterval(time.Nanosecond))
+		if !errors.Is(err, context.Canceled) {
+			t.Fatalf("iteration %d: RecoverLoop returned %v, want context.Canceled", iter, err)
+		}
+		if n := resumes.Load(); n != 0 {
+			t.Fatalf("iteration %d: %d drives started after the cancellation, want none", iter, n)
+		}
+		if n := s.lateLists.Load(); n != 0 {
+			t.Fatalf("iteration %d: %d passes started after the cancellation, want none", iter, n)
+		}
+		cancel()
+	}
+}
+
+// lateCancelCtx is a context whose first Err call after arm is set reports nil and cancels it, so
+// the cancellation lands right after the caller's check.
+type lateCancelCtx struct {
+	context.Context
+	cancel context.CancelFunc
+	arm    atomic.Bool
+}
+
+func (c *lateCancelCtx) Err() error {
+	if c.arm.CompareAndSwap(true, false) {
+		c.cancel()
+		return nil
+	}
+	return c.Context.Err()
+}
+
+// lateCancelStore is a Store that implements Lister and not Leaser. Its first listing yields run r
+// with ctx armed, so the pass's check of ctx before it waits for a slot cancels ctx; it counts the
+// listings started after that. It reads without ctx, as a store that does not check ctx would (the
+// MemStore fails a read on a done ctx), so a drive started after the cancellation reaches resume.
+type lateCancelStore struct {
+	m         *MemStore
+	ctx       *lateCancelCtx
+	listed    atomic.Bool
+	lateLists atomic.Int32
+}
+
+func (l *lateCancelStore) Insert(ctx context.Context, runID, name string, data []byte) (Entry, bool, error) {
+	return l.m.Insert(ctx, runID, name, data)
+}
+
+func (l *lateCancelStore) Get(_ context.Context, runID, name string) (Entry, bool, error) {
+	return l.m.Get(context.Background(), runID, name)
+}
+
+func (l *lateCancelStore) Load(_ context.Context, runID string, after int64) iter.Seq2[Entry, error] {
+	return l.m.Load(context.Background(), runID, after)
+}
+
+func (l *lateCancelStore) Runs(ctx context.Context, f RunFilter) iter.Seq2[string, error] {
+	if l.listed.Swap(true) {
+		l.lateLists.Add(1) // only the first listing comes before the cancellation
+		return func(func(string, error) bool) {}
+	}
+	return func(yield func(string, error) bool) {
+		l.ctx.arm.Store(true)
+		yield("r", nil)
 	}
 }

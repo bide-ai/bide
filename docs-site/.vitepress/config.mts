@@ -31,6 +31,7 @@ export default defineConfig({
       { text: 'Get started', link: '/getting-started' },
       { text: 'Tour', link: '/tour' },
       { text: 'Concepts', link: '/CONCEPTS' },
+      { text: 'Recipes', link: '/recipes/' },
       { text: 'Guides', link: '/guides/plan-flows' },
       { text: 'Reference', link: '/reference/cli' },
       { text: 'Proofs', link: '/formal-verification' },
@@ -47,6 +48,18 @@ export default defineConfig({
           { text: 'The guarantee', link: '/GUARANTEE' },
           { text: 'Known limitations', link: '/KNOWN-LIMITATIONS' },
           { text: 'Changelog', link: '/CHANGELOG' },
+        ],
+      },
+      {
+        text: 'Recipes',
+        collapsed: false,
+        items: [
+          { text: 'All recipes', link: '/recipes/' },
+          { text: 'Refund with 2-of-3 approval', link: '/recipes/refund-approval' },
+          { text: 'Invoice approval', link: '/recipes/invoice-approval' },
+          { text: 'Support ticket triage', link: '/recipes/ticket-triage' },
+          { text: 'Update a record safely', link: '/recipes/customer-record' },
+          { text: 'Ambient agent', link: '/recipes/ambient-agent' },
         ],
       },
       {

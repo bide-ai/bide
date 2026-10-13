@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"io"
 	"reflect"
+	"slices"
 	"sort"
 	"strconv"
 	"strings"
@@ -449,7 +450,7 @@ func assemble(cfg *config, reg *Registry) (*builderCore, error) {
 	seenNodeName := make(map[string]bool, len(cfg.Nodes))
 	for _, cn := range cfg.Nodes {
 		if seenNodeName[cn.Name] {
-			problems = append(problems, fmt.Sprintf("node %q is declared more than once", cn.Name))
+			problems = append(problems, fmt.Sprintf("node %q is declared more than once, so give each node a unique name", cn.Name))
 		}
 		seenNodeName[cn.Name] = true
 		if err := checkStepName(cn.Name); err != nil {
@@ -458,7 +459,7 @@ func assemble(cfg *config, reg *Registry) (*builderCore, error) {
 
 		b, ok := reg.blocks[cn.Block]
 		if !ok {
-			problems = append(problems, fmt.Sprintf("node %q references unknown block %q%s", cn.Name, cn.Block, suggest(cn.Block, blockNames(reg))))
+			problems = append(problems, fmt.Sprintf("node %q references unknown block %q%s, register it before Load (Registry.RegisterStep, RegisterModel or RegisterTool) or fix the block name in the config%s", cn.Name, cn.Block, suggest(cn.Block, blockNames(reg)), registeredList(blockNames(reg))))
 			continue
 		}
 		usedBlocks[cn.Block] = true
@@ -533,7 +534,7 @@ func assemble(cfg *config, reg *Registry) (*builderCore, error) {
 	}
 	sort.Strings(unused)
 	for _, name := range unused {
-		problems = append(problems, fmt.Sprintf("block %q is registered but never used by the config", name))
+		problems = append(problems, fmt.Sprintf("block %q is registered but never used by the config, so add a node that uses it or remove the registration", name))
 	}
 
 	if len(problems) > 0 {
@@ -849,6 +850,15 @@ func safetyFromConfig(base agent.Safety, s string) (agent.Safety, error) {
 // close near-miss of name by Levenshtein distance, else "". It is a small
 // no-dependency aid for the common typo; it never guesses when several candidates
 // tie, so the message stays trustworthy.
+// registeredList lists the registered names for an unknown-name error, so the author can see what
+// the registry holds; it is empty when nothing is registered.
+func registeredList(names []string) string {
+	if len(names) == 0 {
+		return " (nothing is registered)"
+	}
+	return " (registered: " + strings.Join(slices.Sorted(slices.Values(names)), ", ") + ")"
+}
+
 func suggest(name string, candidates []string) string {
 	best := ""
 	bestDist := 1 << 30

@@ -60,7 +60,7 @@ func drive(ctx context.Context, j *agent.Journal, api *stripe, cfg config) error
 		if pend, ok := errors.AsType[*agent.ApprovalPending](err); ok && pend.Quorum != nil {
 			q := pend.Quorum
 			say("step 2  approval %s is over the threshold: paused. approved %d of %d, waiting on %s", pend.ToolName, q.Approved, q.Need, strings.Join(q.Pending, ", "))
-			say("status: paused. Approve with: go run . approve -as %s", q.Pending[0])
+			say("status: paused. Approve with: go run . approve -db <db> -run %s -as %s", cfg.runID, q.Pending[0])
 			return nil
 		}
 		if err != nil {

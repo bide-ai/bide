@@ -358,10 +358,10 @@ func checkFinishedStart(runID string, recs []Record, want RunKind, input *Messag
 			return fmt.Errorf("decode %s (run %s): %w (%w)", runStartStep, runID, err, ErrStorage)
 		}
 		if !got.admits(want) {
-			return fmt.Errorf("run %s was started as a run of kind %q, not %q; drive it the way it was started (see RecordedStart): %w", runID, got.kind(), want, ErrConfig)
+			return fmt.Errorf("run %s was started as a run of kind %q, not %q; drive it the way it was started (see RecordedStart), or start a new run with a new run ID: %w", runID, got.kind(), want, ErrConfig)
 		}
 		if input != nil && !sameMessage(got.Input, *input) {
-			return fmt.Errorf("run %s finished answering a different input (see RecordedStart); its answer is not this input's: %w", runID, ErrConfig)
+			return fmt.Errorf("run %s finished answering a different input (see RecordedStart); its answer is not this input's; read it back with that input, or start a new run with a new run ID: %w", runID, ErrConfig)
 		}
 		return nil
 	}
@@ -400,9 +400,9 @@ func holdToStart(ctx context.Context, d *Journal, runID string, recs []Record, w
 	}
 	switch {
 	case got.kind() != want.kind():
-		return fmt.Errorf("run %s was started as a run of kind %q, not %q; drive it the way it was started (see RecordedStart): %w", runID, got.kind(), want.kind(), ErrConfig)
+		return fmt.Errorf("run %s was started as a run of kind %q, not %q; drive it the way it was started (see RecordedStart), or start a new run with a new run ID: %w", runID, got.kind(), want.kind(), ErrConfig)
 	case got.kind() == RunKindFlow && (got.Flow == nil || want.Flow == nil || got.Flow.Name != want.Flow.Name):
-		return fmt.Errorf("run %s was started by flow %s, not %s; resume it with the flow it started with: %w", runID, flowName(got.Flow), flowName(want.Flow), ErrConfig)
+		return fmt.Errorf("run %s was started by flow %s, not %s; resume it with the flow it started with, or start a new run with a new run ID: %w", runID, flowName(got.Flow), flowName(want.Flow), ErrConfig)
 	case got.Saga && !want.Saga:
 		return fmt.Errorf("run %s was started as a saga; drive it with WithSaga(): %w", runID, ErrConfig)
 	case !got.Saga && want.Saga:
@@ -413,10 +413,10 @@ func holdToStart(ctx context.Context, d *Journal, runID string, recs []Record, w
 			return fmt.Errorf("run %s: compare its input with the recorded one: %w (%w)", runID, err, ErrConfig)
 		}
 		if !same {
-			return fmt.Errorf("run %s was started with a different input (see RecordedStart); resume it with that input: %w", runID, ErrConfig)
+			return fmt.Errorf("run %s was started with a different input (see RecordedStart); resume it with that input, or start a new run with a new run ID: %w", runID, ErrConfig)
 		}
 	case got.kind() != RunKindFlow && !sameMessage(got.Input, want.Input):
-		return fmt.Errorf("run %s was started with a different input (see RecordedStart); resume it with that input: %w", runID, ErrConfig)
+		return fmt.Errorf("run %s was started with a different input (see RecordedStart); resume it with that input, or start a new run with a new run ID: %w", runID, ErrConfig)
 	}
 	return nil
 }

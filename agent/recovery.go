@@ -854,6 +854,12 @@ func RecoverLoop(ctx context.Context, store *Journal, resume Resumer, opts ...Re
 			case <-ctx.Done():
 				return
 			}
+			// A select picks at random among ready cases, so a free slot can win over a done
+			// context: check it again, so no drive starts after a cancellation.
+			if ctx.Err() != nil {
+				<-slots
+				return
+			}
 			// The other loop may have started the run while this one waited for a slot: check again
 			// and mark it under one lock, so only one drive owns the entry it deletes.
 			mu.Lock()
@@ -895,6 +901,11 @@ func RecoverLoop(ctx context.Context, store *Journal, resume Resumer, opts ...Re
 			case <-ctx.Done():
 				return
 			case <-t.C:
+			}
+			// A tick can win over a done context too: check it again, so no pass starts after a
+			// cancellation.
+			if ctx.Err() != nil {
+				return
 			}
 		}
 	}

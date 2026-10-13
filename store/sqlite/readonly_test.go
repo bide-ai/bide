@@ -6,6 +6,7 @@ import (
 	"errors"
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 
 	"github.com/bide-ai/bide/agent"
@@ -111,5 +112,26 @@ func TestOpenReadOnlyWhileWritten(t *testing.T) {
 	}
 	if n := count(); n != 2 {
 		t.Fatalf("read %d entries after the writer's second insert, want 2", n)
+	}
+}
+
+// A path that is not a journal, or not there, fails with what to check, and keeps its category.
+func TestOpenErrorsSayWhatToCheck(t *testing.T) {
+	dir := t.TempDir()
+	notDB := filepath.Join(dir, "plain.db")
+	if err := os.WriteFile(notDB, []byte("this is not a database, it is just text, padded to be long enough for sqlite to look at"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	_, err := OpenReadOnly(notDB)
+	if !errors.Is(err, agent.ErrStorage) || !strings.Contains(err.Error(), "not a SQLite database") {
+		t.Errorf("OpenReadOnly(text file) = %v; want ErrStorage saying it is not a SQLite database", err)
+	}
+	_, err = OpenReadOnly(filepath.Join(dir, "missing.db"))
+	if !errors.Is(err, agent.ErrStorage) || !strings.Contains(err.Error(), "file exists") {
+		t.Errorf("OpenReadOnly(missing) = %v; want ErrStorage saying to check the file exists", err)
+	}
+	_, err = Open(filepath.Join(dir, "no", "such", "dir", "j.db"))
+	if err == nil || !strings.Contains(err.Error(), "directory exists and is writable") {
+		t.Errorf("Open(missing directory) = %v; want it to say to check the directory", err)
 	}
 }
