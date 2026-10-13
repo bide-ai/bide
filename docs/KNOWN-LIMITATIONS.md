@@ -260,8 +260,14 @@ a variable number of branches.
 **Some wiring is rejected.** A flow's `Build` refuses wiring the runtime cannot run as declared, and names the
 step: for example, a step fed by several producers without a join, or nested loops.
 
+**`agent.Sleep` and `agent.WaitUntil` are not available inside plan flow nodes.** They need the run
+context an agent supplies to its tools, and a flow does not bind one. Called from a `Step` or `Tool`
+node, they return an error wrapping `ErrConfig`: `agent: Sleep called outside a running agent`
+(`TestTimerInNodeBodyIsNotAvailable` pins it). A durable timer needs an agent run today; see the
+[ambient agent recipe](recipes/ambient-agent.md).
+
 **Only Steps inside a flow node are scoped to it.** A `Journal.Step` or `Parallel` task a node's body
-runs is recorded per node and per loop iteration; an `Interrupt`, `Await` or `Sleep` it takes is not,
+runs is recorded per node and per loop iteration; an `Interrupt` or `Await` it takes is not,
 so give a pause inside a loop body a name unique per iteration. See [Plan flows](guides/plan-flows.md).
 
 **`Model` nodes expect JSON.** A `Model` node decodes the reply as JSON into its output type. A

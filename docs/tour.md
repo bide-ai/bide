@@ -109,7 +109,7 @@ An ambient run does not sit in a synchronous chat loop. It sleeps, wakes on a tr
 one of those transitions is a durable, at-most-once step on the journal, so the run survives crashes
 and node handoffs between them.
 
-- **Sleep until a deadline.** `Sleep`/`WaitUntil` pause a run and journal its wake time, so the pause
+- **Sleep until a deadline.** `Sleep`/`WaitUntil` pause an agent run (from one of its tools; not from a plan flow node) and journal its wake time, so the pause
   outlives a restart. Re-invoking at the wake time resumes exactly once.
 - **Wake on time or event.** A pluggable `Waker` (in-process `MemWaker` by default) re-invokes a due
   run; the trigger source is yours (an in-process loop, a cron, a queue, an inbound webhook), so the
