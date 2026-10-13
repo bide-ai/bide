@@ -2,6 +2,8 @@
 // every exported type, func, method, package-level const and var has a doc comment that starts
 // with its name, and every package has a package comment ("Package name ..." outside package
 // main). Exported identifiers in package main, test files and generated files are not checked.
+// It also checks the release notes in docs/releases: each becomes a GitHub Release body, so every
+// link and image there must be absolute (see CheckReleaseNotes).
 //
 // Findings listed in the allowlist (.doccheck-allow by default) are tolerated. The list may only
 // shrink: an entry whose identifier is now documented, or no longer exists, fails the check
@@ -62,8 +64,16 @@ func run(args []string, stdout, stderr io.Writer) int {
 	for _, k := range stale {
 		fmt.Fprintf(stdout, "%s: stale allowlist entry %q: the identifier is documented or gone; delete the line\n", *allow, k)
 	}
-	if len(unlisted) > 0 || len(stale) > 0 {
-		fmt.Fprintf(stderr, "doccheck: %d undocumented, %d stale allowlist entries\n", len(unlisted), len(stale))
+	notes, err := CheckReleaseNotes(*root)
+	if err != nil {
+		fmt.Fprintf(stderr, "doccheck: %v\n", err)
+		return 2
+	}
+	for _, f := range notes {
+		fmt.Fprintln(stdout, f)
+	}
+	if len(unlisted) > 0 || len(stale) > 0 || len(notes) > 0 {
+		fmt.Fprintf(stderr, "doccheck: %d undocumented, %d stale allowlist entries, %d relative links in release notes\n", len(unlisted), len(stale), len(notes))
 		return 1
 	}
 	return 0
