@@ -436,6 +436,21 @@ func TestGate_PreV3PassedTallyReapproval(t *testing.T) {
 		t.Fatalf("a later drive = %v, charged %d; want the recorded outcome reused", err, charged)
 	}
 
+	// A re-approval that ended in a denial is final, even after a redeploy drops the gate and
+	// before the denial's result is journaled (a crash in between): the recorded outcome is the
+	// re-approval tally, not the pre-v3 tally that passed.
+	store3 := memJournal()
+	charged = 0
+	if _, err := mofnRun(store3, "r3", true, pol, vf, &charged); !isPause(err) {
+		t.Fatalf("first drive = %v", err)
+	}
+	writeRaw(t, store3, "r3", ApprovalTallyStep("c1"), Record{Kind: StepValue, Result: old})
+	deniedAgain, _ := json.Marshal(ApprovalTally{Need: 2, Approvers: pol.Approvers, Denied: 1, DeniedBy: []string{"ops"}, DecisionFormat: DecisionFormat, Supersedes: ApprovalTallyStep("c1")})
+	writeRaw(t, store3, "r3", ApprovalRetallyStep("c1"), Record{Kind: StepValue, Result: deniedAgain})
+	if _, err := mofnRun(store3, "r3", false, nil, vf, &charged); err != nil || charged != 0 {
+		t.Fatalf("drive with the gate removed = %v, charged %d; want the recorded re-approval denial final", err, charged)
+	}
+
 	// A pre-v3 denial is final: the call is denied without asking again.
 	store2 := memJournal()
 	charged = 0
