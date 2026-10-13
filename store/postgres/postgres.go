@@ -4,12 +4,13 @@
 //
 // The tables are named with a prefix, "bide_" by default (see WithTablePrefix): bide_steps holds
 // the journal (run_id, seq, name, data), where data is bytea, each entry's bytes verbatim;
-// bide_leases holds the leases; bide_schema_version the schema version; and the function
+// bide_leases holds the leases; bide_events the durable event trail (see EventStore), whose leaf
+// column is bytea and whose primary key is (run_id, seq); bide_schema_version the schema version; and the function
 // bide_next_seq_v1 gives an insert its position. Open and New create the tables and the function
 // if they do not exist and refuse a database whose schema version is newer than this version
 // knows. They never alter an existing table or replace a function, so they refuse a table that
 // lacks a uniqueness the store's statements depend on (unique (run_id, seq) and (run_id, name) on
-// bide_steps, and run_id on bide_leases) and a next_seq function with another definition. Run IDs
+// bide_steps, (run_id, seq) on bide_events, and run_id on bide_leases) and a next_seq function with another definition. Run IDs
 // are compared and ordered by their bytes (collation "C"), so a Lister's order does not depend on
 // the database's locale.
 //
@@ -179,13 +180,16 @@ var (
 // cannot take over a table or the next_seq function in this process. Which schema an unpinned Open
 // uses is another matter (see storeSchema and WithSchema).
 type tables struct {
-	steps, leases, version              string     // bare names, as in the catalog
+	steps, leases, version, events      string     // bare names, as in the catalog
 	nextSeq                             string     // the next_seq function's bare name
 	qSteps, qLeases, qVersion, qNextSeq string     // schema-qualified, as SQL
+	qEvents                             string     // the events table, schema-qualified
 	rels                                [][]sqlTok // the qualified tables, as the statement check names them
 	insert, acquire, renew, release     writeSQL
 	reap                                writeSQL
 	get, load                           selectSQL
+	appendEvent                         writeSQL // see EventStore.Append
+	getEvent, loadEvents                selectSQL
 	readVersion                         selectSQL // the schema version, as OpenReadOnly reads it
 }
 
@@ -235,12 +239,13 @@ func (t tables) nextSeqBody(schema string) string {
 }
 
 func newTables(prefix, schema string) (tables, error) {
-	t := tables{steps: prefix + "steps", leases: prefix + "leases", version: prefix + "schema_version",
+	t := tables{steps: prefix + "steps", leases: prefix + "leases", version: prefix + "schema_version", events: prefix + "events",
 		nextSeq: prefix + "next_seq_" + nextSeqVersion}
 	q := quoteIdent(schema) + "."
 	t.qSteps, t.qLeases, t.qVersion, t.qNextSeq = q+t.steps, q+t.leases, q+t.version, q+t.nextSeq
-	var names [4][]sqlTok
-	for i, n := range []string{t.qNextSeq, t.qSteps, t.qLeases, t.qVersion} {
+	t.qEvents = q + t.events
+	var names [5][]sqlTok
+	for i, n := range []string{t.qNextSeq, t.qSteps, t.qLeases, t.qVersion, t.qEvents} {
 		var err error
 		if names[i], err = parseName(n); err != nil {
 			return tables{}, fmt.Errorf("postgres: schema %q: %w (%w)", schema, err, agent.ErrConfig)
@@ -294,6 +299,22 @@ func newTables(prefix, schema string) (tables, error) {
 		return tables{}, err
 	}
 	if t.load, err = newSelect(`SELECT seq, name, data FROM `+t.qSteps+` WHERE run_id OPERATOR(pg_catalog.=) $1 AND seq OPERATOR(pg_catalog.>) $2 ORDER BY seq LIMIT $3`, steps); err != nil {
+		return tables{}, err
+	}
+	// The event trail's insert-if-absent (see EventStore.Append): the leaf goes in only at the run's
+	// next position, and a taken position does nothing, whichever statement took it, since ON
+	// CONFLICT waits for a writer still in progress on the position.
+	events := [][]sqlTok{names[4]}
+	if t.appendEvent, err = newWrite(`INSERT INTO `+t.qEvents+` (run_id, seq, leaf)
+		SELECT $1::pg_catalog.text, $2::pg_catalog.int8, $3
+		WHERE $2::pg_catalog.int8 OPERATOR(pg_catalog.=) (SELECT COALESCE(pg_catalog.max(seq) OPERATOR(pg_catalog.+) 1, 0) FROM `+t.qEvents+` WHERE run_id OPERATOR(pg_catalog.=) $1::pg_catalog.text)
+		ON CONFLICT (run_id, seq) DO NOTHING`, nil, events); err != nil {
+		return tables{}, err
+	}
+	if t.getEvent, err = newSelect(`SELECT leaf FROM `+t.qEvents+` WHERE run_id OPERATOR(pg_catalog.=) $1 AND seq OPERATOR(pg_catalog.=) $2`, events); err != nil {
+		return tables{}, err
+	}
+	if t.loadEvents, err = newSelect(`SELECT seq, leaf FROM `+t.qEvents+` WHERE run_id OPERATOR(pg_catalog.=) $1 AND seq OPERATOR(pg_catalog.>=) $2 ORDER BY seq LIMIT $3`, events); err != nil {
 		return tables{}, err
 	}
 	if t.readVersion, err = newSelect(versionQuery(t.qVersion), [][]sqlTok{names[3]}); err != nil {
@@ -372,7 +393,7 @@ func (f optionFunc) apply(c *config) error { return f(c) }
 var prefixPattern = regexp.MustCompile(`^[a-z_][a-z0-9_]*$`)
 
 // WithTablePrefix names the tables with prefix instead of "bide_": prefix+"steps",
-// prefix+"leases" and prefix+"schema_version". It must be a lower-case SQL identifier (letters,
+// prefix+"leases", prefix+"events" and prefix+"schema_version". It must be a lower-case SQL identifier (letters,
 // digits and underscores, not starting with a digit), or Open and New return an ErrConfig error.
 func WithTablePrefix(prefix string) Option {
 	return optionFunc(func(c *config) error {
@@ -504,6 +525,11 @@ func newStore(ctx context.Context, db *sql.DB, readOnly bool, opts []Option) (*S
 	if err := s.checkSchema(ctx); err != nil {
 		return nil, err
 	}
+	if !readOnly { // a journal from before the event trail has no events table, and a read-only open does not create one
+		if err := s.checkEvents(ctx); err != nil {
+			return nil, err
+		}
+	}
 	return s, nil
 }
 
@@ -616,8 +642,14 @@ func (s *Store) migrate(ctx context.Context) error {
 			id      pg_catalog.int4 PRIMARY KEY CHECK (id OPERATOR(pg_catalog.=) 1),
 			version pg_catalog.int4 NOT NULL
 		);
-		INSERT INTO %[3]s (id, version) VALUES (1, %[4]d) ON CONFLICT (id) DO NOTHING;`,
-		s.t.qSteps, s.t.qLeases, s.t.qVersion, schemaVersion)); err != nil {
+		INSERT INTO %[3]s (id, version) VALUES (1, %[4]d) ON CONFLICT (id) DO NOTHING;
+		CREATE TABLE IF NOT EXISTS %[5]s (
+			run_id pg_catalog.text COLLATE pg_catalog."C" NOT NULL,
+			seq    pg_catalog.int8  NOT NULL CHECK (seq OPERATOR(pg_catalog.>=) 0),
+			leaf   pg_catalog.bytea NOT NULL,
+			PRIMARY KEY (run_id, seq)
+		);`,
+		s.t.qSteps, s.t.qLeases, s.t.qVersion, schemaVersion, s.t.qEvents)); err != nil {
 		return fmt.Errorf("postgres: create tables: %w (%w)", err, agent.ErrStorage)
 	}
 	// The lapsed listing's indexes (see runsPage): expiry finds the few lapsed leases among many
@@ -697,6 +729,28 @@ func (s *Store) checkSchema(ctx context.Context) error {
 	if !sameOwner.Bool {
 		return fmt.Errorf("postgres: function %s.%s(text) has another owner than table %s: its owner could replace it after Open checked it, and every insert would run that role's code; drop it, or have the tables' owner create it: %w",
 			quoteIdent(s.schema), s.t.nextSeq, s.t.steps, agent.ErrConfig)
+	}
+	return nil
+}
+
+// checkEvents checks, after the migration, that the events table is a table with the unique
+// (run_id, seq) the event trail's insert-if-absent arbitrates on. Like checkSchema, it never
+// repairs: the migration does not alter an existing table.
+func (s *Store) checkEvents(ctx context.Context) error {
+	var isTable sql.NullBool
+	if err := s.db.QueryRowContext(ctx, relationIsTable, s.t.events, s.schema).Scan(&isTable); err != nil && !errors.Is(err, sql.ErrNoRows) {
+		return fmt.Errorf("postgres: check %s: %w (%w)", s.t.events, err, agent.ErrStorage)
+	}
+	if !isTable.Bool {
+		return fmt.Errorf("postgres: %s.%s is not an ordinary or partitioned table: %w", quoteIdent(s.schema), s.t.events, agent.ErrConfig)
+	}
+	var ok bool
+	if err := s.db.QueryRowContext(ctx, requiredUnique, s.t.events, s.schema, []string{"run_id", "seq"}).Scan(&ok); err != nil {
+		return fmt.Errorf("postgres: check the uniqueness of %s: %w (%w)", s.t.events, err, agent.ErrStorage)
+	}
+	if !ok {
+		return fmt.Errorf("postgres: table %s has no unique index on exactly (run_id, seq) that is checked at once and covers every row; the event trail's insert-if-absent arbitrates on it and the store never alters an existing table: %w",
+			s.t.events, agent.ErrConfig)
 	}
 	return nil
 }

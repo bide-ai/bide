@@ -242,9 +242,21 @@ proof, _ := log.Prove(i) // + audit.VerifyEventInclusion(sth.Root, event, proof)
 `PersistJournal` is fed from the journal projection, not the live stream, on purpose: the
 projection is deterministic and resume-stable, so re-mirroring after a crash appends the same
 leaves at the same positions (idempotent, never forks). The store contract is append-only and
-idempotent on `(runID, seq)`: a different leaf at an existing position is rejected as a fork.
-`MemEventStore` is the in-memory default; a real backend is a Postgres table with
-`UNIQUE(run_id, seq)` and insert-only grants, or object storage with object-lock/WORM.
+idempotent on `(runID, seq)`: a different leaf at an existing position is rejected as a fork, with
+an error that wraps `audit.ErrSeqTaken` (so a writer that lost a race for a position can tell it
+from a real failure with `errors.Is`). `MemEventStore` is the in-memory default; a real backend is a
+Postgres table with `UNIQUE(run_id, seq)` and insert-only grants, or object storage with
+object-lock/WORM.
+
+**Durable stores.** `store/sqlite` and `store/postgres` ship one: `store.EventStore()` returns an
+`audit.EventStore` that keeps the trail in the same database as the journal, in a `bide_events`
+table (`WithTablePrefix` applies) keyed by `(run_id, seq)`. Each `Append` is a single
+insert-if-absent statement committed before it returns, so a crash leaves the trail as of the last
+committed leaf and a re-run of `PersistJournal` appends the rest, and writers racing for one
+position, from any connection or node, have exactly one winner. Point it at a database with its own
+retention and grants if the trail has to outlive the journal's. The conformance suite
+`audit/eventstoretest.Run` checks any `EventStore` against the contract: append and load, byte
+fidelity, the same-leaf no-op, `ErrSeqTaken` for a different leaf, gaps, and racing writers.
 
 Each leaf is a kind-tagged canonical encoding, so event types never collide, and `ModelEvent`
 carries the inner delta's kind. Kinds and event fields are snake_case (`turn_started`,
