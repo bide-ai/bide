@@ -583,6 +583,40 @@ Fairness ==
 LiveSpec == Spec /\ Fairness
 
 (***************************************************************************)
+(* Budgets. Durations are abstract above; the claim that a round, and a    *)
+(* peer's notice, end inside the claim they hold is the core's arithmetic, *)
+(* checked here for every claim TTL from 30 s (the floor) to 2 h, in ms,   *)
+(* at the core's defaults (3 requests a round, 1 s then 2 s between them). *)
+(* A round makes up to four calls (the notice is one) of an eighth of the  *)
+(* claim each, sleeps between requests, and retries the notice's and the   *)
+(* event's acknowledgement for up to an eighth each (WorstRound); it       *)
+(* starts only with more than RoundBudget of its claim left, and a fresh   *)
+(* claim has that much. A peer's notice claim lasts FixedNotice, which     *)
+(* covers the notice's call and its acknowledgement. Before core 958cfd4c  *)
+(* the budget left out one acknowledgement (N3) and the notice claim was   *)
+(* min(TTL, 2 min) (N2); see OldBudgetsFail.                               *)
+(***************************************************************************)
+Eighth(t) == t \div 8
+Sleeps == 1000 + 2000
+WorstRound(t) == 4 * Eighth(t) + Sleeps + 2 * Eighth(t)
+RoundBudget(t) == 4 * Eighth(t) + Sleeps + 2 * Eighth(t)
+Min2(a, b) == IF a <= b THEN a ELSE b
+Max2(a, b) == IF a >= b THEN a ELSE b
+TTLs == {s * 1000 : s \in 30..7200}
+BudgetsHold(budget(_), notice(_)) ==
+  \A t \in TTLs :
+    /\ budget(t) < t                                  \* a fresh claim can start a round
+    /\ WorstRound(t) <= budget(t)                     \* a round started ends inside its claim
+    /\ 2 * Eighth(t) <= notice(t)                     \* a peer's notice call and ack fit its claim
+FixedNotice(t) == Min2(t, Max2(120000, 2 * Eighth(t) + 30000))
+OldBudget(t) == 4 * Eighth(t) + Sleeps + Eighth(t)
+OldNotice(t) == Min2(t, 120000)
+ASSUME BudgetsHold(RoundBudget, FixedNotice)
+\* The budgets before 958cfd4c fail (N2, N3): checked so the assumption above is not vacuous.
+OldBudgetsFail == ~BudgetsHold(OldBudget, OldNotice)
+ASSUME OldBudgetsFail
+
+(***************************************************************************)
 (* Properties                                                               *)
 (***************************************************************************)
 
