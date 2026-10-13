@@ -47,6 +47,9 @@ type View struct {
 	// no end marker. Cursor is the store sequence (agent.Entry.Seq) of its last record.
 	Live   bool  `json:"live,omitempty"`
 	Cursor int64 `json:"cursor,omitempty"`
+
+	// Verdict is the answer the page opens with (see runVerdict); it is not in the JSON view.
+	Verdict Verdict `json:"-"`
 }
 
 // Event is one journal record, as a timeline row.
@@ -58,6 +61,36 @@ type Event struct {
 	Title  string   `json:"title"`
 	Detail string   `json:"detail,omitempty"`
 	Badges []string `json:"badges,omitempty"`
+
+	// What the page adds to the row; none of it is in the JSON view.
+	At      time.Time `json:"-"` // when the journal says the record happened (a start or an attempt marker), else zero
+	Payload string    `json:"-"` // the record as indented JSON, cut to a readable size (see prettyJSON)
+	Rel     string    `json:"-"` // At as an offset from the run's start ("+3.2s")
+	Abs     string    `json:"-"` // At in UTC, for the hover
+	Bar     *TimeBar  `json:"-"` // the span from At to the next timestamped record
+}
+
+// TimeBar is a timeline row's span on the run's clock, in percent of the whole: from the row's own
+// time to the next timestamped record's. The journal timestamps only the run's start and its
+// attempt markers, so this is how long the attempt had been open when the next one was written, an
+// upper bound on the operation, not its duration.
+type TimeBar struct {
+	X, W  float64
+	Label string
+}
+
+// IconName is the row's glyph.
+func (e Event) IconName() string {
+	switch {
+	case e.Kind == string(agent.StepSignal):
+		return "signal"
+	case e.Class == "attempt":
+		return "clock"
+	}
+	if _, ok := icons[e.Class]; ok {
+		return e.Class
+	}
+	return "value"
 }
 
 // Halt is an operation whose attempt marker is live with no result: a resume of the run returns
@@ -135,8 +168,9 @@ func Build(ctx context.Context, runID string, recs []agent.Record, flow *Flow) *
 		}
 	}
 
+	var started time.Time
 	for i, r := range recs {
-		e := Event{Seq: i + 1, Name: r.Name, Kind: string(r.Kind), Class: "value", Title: r.Name}
+		e := Event{Seq: i + 1, Name: r.Name, Kind: string(r.Kind), Class: "value", Title: r.Name, Payload: payloadOf(r)}
 		switch {
 		case r.Kind == agent.StepHeader:
 			e.Class, e.Title, e.Detail = "meta", "journal header", r.Format
@@ -152,6 +186,9 @@ func Build(ctx context.Context, runID string, recs []agent.Record, flow *Flow) *
 					v.Flow = st.Flow.Name
 				}
 				e.Detail = v.Input
+				if t, ok := st.Started(); ok {
+					started, e.At = t, t
+				}
 				if len(st.Tools) > 0 {
 					e.Badges = append(e.Badges, "tools: "+strings.Join(st.Tools, ", "))
 				}
@@ -195,7 +232,8 @@ func Build(ctx context.Context, runID string, recs []agent.Record, flow *Flow) *
 				e.Title += " (" + tu.Name + ")"
 			}
 			if r.AttemptedAt > 0 {
-				e.Detail = "at " + time.UnixMilli(r.AttemptedAt).UTC().Format(time.RFC3339)
+				e.At = time.UnixMilli(r.AttemptedAt).UTC()
+				e.Detail = "at " + e.At.Format(time.RFC3339)
 			}
 			e.Badges = append(e.Badges, "side effect")
 		case r.Kind == agent.StepNotStarted || strings.HasPrefix(r.Name, "attempt:not-started:"):
@@ -262,6 +300,7 @@ func Build(ctx context.Context, runID string, recs []agent.Record, flow *Flow) *
 		v.Events = append(v.Events, e)
 	}
 
+	timeline(v.Events, started)
 	v.Halts = halts(runID, recs, calls)
 	v.StateText = v.State
 	if v.State == string(agent.RunStarted) && len(v.Halts) > 0 {
@@ -516,4 +555,75 @@ func short(b json.RawMessage) string {
 		s = s[:400] + "..."
 	}
 	return s
+}
+
+// payloadOf is the record as indented JSON: the bytes the store holds, or its encoding for a record
+// built in memory.
+func payloadOf(r agent.Record) string {
+	raw := r.Raw()
+	if len(raw) == 0 {
+		raw, _ = json.Marshal(r)
+	}
+	return prettyJSON(raw)
+}
+
+// timeline sets the time of each row the journal timestamps: its offset from start (or, with no
+// start time, from the first timestamped row), the UTC time, and its bar on the run's clock.
+func timeline(evs []Event, start time.Time) {
+	var at []int
+	for i, e := range evs {
+		if !e.At.IsZero() {
+			at = append(at, i)
+		}
+	}
+	if len(at) == 0 {
+		return
+	}
+	origin := start
+	if origin.IsZero() {
+		origin = evs[at[0]].At
+	}
+	last := evs[at[len(at)-1]].At
+	for _, i := range at {
+		e := &evs[i]
+		e.Abs = e.At.UTC().Format("2006-01-02 15:04:05.000 UTC")
+		e.Rel = "+" + durText(e.At.Sub(origin))
+		if e.At.Equal(start) {
+			e.Rel = "start"
+		}
+	}
+	span := last.Sub(origin)
+	if span <= 0 || len(at) < 2 {
+		return
+	}
+	for k, i := range at {
+		e := &evs[i]
+		from := e.At.Sub(origin)
+		to := from
+		label := "last timestamped record"
+		if k+1 < len(at) {
+			to = evs[at[k+1]].At.Sub(origin)
+			label = durText(to-from) + " until the next timestamped record"
+		}
+		bar := &TimeBar{X: 100 * float64(from) / float64(span), W: 100 * float64(to-from) / float64(span), Label: label}
+		bar.W = max(bar.W, 1.2)
+		bar.X = min(bar.X, 100-bar.W)
+		e.Bar = bar
+	}
+}
+
+// durText phrases a duration in two units at most: 850ms, 3.2s, 4m 05s, 2h 10m, 3d 4h.
+func durText(d time.Duration) string {
+	d = max(d, 0)
+	switch {
+	case d < time.Second:
+		return fmt.Sprintf("%dms", d.Milliseconds())
+	case d < time.Minute:
+		return fmt.Sprintf("%.1fs", d.Seconds())
+	case d < time.Hour:
+		return fmt.Sprintf("%dm %02ds", int(d.Minutes()), int(d.Seconds())%60)
+	case d < 24*time.Hour:
+		return fmt.Sprintf("%dh %02dm", int(d.Hours()), int(d.Minutes())%60)
+	}
+	return fmt.Sprintf("%dd %dh", int(d.Hours())/24, int(d.Hours())%24)
 }

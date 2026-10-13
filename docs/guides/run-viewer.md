@@ -10,8 +10,10 @@ Postgres journal in sessions the server holds read-only (`postgres.OpenReadOnly`
 exported journals. It listens on a loopback address only (`127.0.0.1` or `::1`) and answers only
 requests addressed to one, so the page is not reachable from another machine. The page needs no
 network: the binary serves its HTML, CSS and graph, with no CDN. The page is complete without
-JavaScript; the one script it has, embedded in the binary, updates the page of a run in progress
-(see [Follow a run in progress](#follow-a-run-in-progress)).
+JavaScript: the two small scripts embedded in the binary only add interaction (hover and click on the
+graph, pan and zoom, copy buttons) and, on the page of a run in progress, the live updates (see
+[Follow a run in progress](#follow-a-run-in-progress)). The fonts are the system's and there is no
+request to any other host.
 
 ![bide view on a plan flow halted mid-node: END STATE "halted: outcome unknown", the halt with its ResolveHalt snippet, and the topology with the path taken](img/run-viewer-flow-halted-dark.png)
 
@@ -135,6 +137,28 @@ unknown field is an error. `bide view -h` prints the same list. Exit status: 0 a
 
 ## The page
 
+Every page opens with a **verdict**: one state in large type, with a glyph and a line of why (so the
+state is never carried by color alone), and three or four key numbers under it. On a run page:
+
+| Verdict | When |
+|---|---|
+| `VERIFIED` | the run completed, and the audit proof verifies (`-sth` or `-evidence`) with no approval gate's signatures failing |
+| `COMPLETED` | the run completed and no proof was given, so nothing is verified |
+| `HALTED` | an operation's outcome is unknown: it needs `agent.ResolveHalt` |
+| `WAITING FOR APPROVAL` | the run is paused at an approval gate |
+| `FAILED` | the run aborted or was cancelled, or it completed but its proof or an approval gate's signatures do not verify |
+| `IN PROGRESS` | the run has started and has no end marker yet |
+
+The numbers are the journal records, how many of them the signed head covers, the first approval
+gate's approvals (`2/3` with its signature verdict), the operations whose outcome is unknown, the
+flow nodes reached, and the tool results. A config page opens with `N POLICY VIOLATIONS` (the
+violated assertions), `N CONFIG ERRORS`, `N ASSERTIONS UNDECIDED`, `ALL ASSERTIONS HOLD` or `NO
+ASSERTIONS`, in that order. A diff page opens with `APPROVAL GATE WEAKENED`, with each weakened gate
+under it, whenever one was weakened, and otherwise with the number of changes. The run list opens
+with what needs a person: `N HALTED`, `N WAITING FOR APPROVAL`, `N FAILED OR CANCELLED` or `ALL
+CLEAR`. The cards below the verdict are short: a label, a value and a line, with the detail in a
+`details` element. The JSON views do not carry the verdict.
+
 ![bide view on an agent run halted after a crash mid-refund, with its 2-of-3 approval gate](img/run-viewer-agent-halted-dark.png)
 
 **END STATE.** The run's state as `agent.Status` reads it from the journal, with two refinements:
@@ -148,7 +172,8 @@ unknown field is an error. `bide view -h` prints the same list. Exit status: 0 a
 - **completed**, **aborted**, **cancelled**: the run's first end marker, with the reason a
   cancellation or abort recorded.
 
-The card also gives the record count, the last plan node the run reached, and the model's last text.
+The card also gives the record count and the last plan node the run reached; the run's terminal reason
+and the model's last text are under `details`.
 
 **APPROVAL GATE** (when the run has one). Each gate in a line: the gated call or flow node and where
 it stands (`refund: approved 2 of 3`), the policy, who approved or denied, who is pending, and
@@ -192,11 +217,16 @@ journaled digest equals the topology's. The card says where the topology came fr
 From the command line this check is structural. `plan.Conform` also replays routing, loops and completion; a Go program
 that embeds the viewer with the `*plan.Flow` gets that check instead.
 
-**Flow** (plan flows). The declared topology, with each node marked ran, halted,
-attempted, waiting for approval or not reached, the last node outlined, and the edges and Switch arms
-the run took drawn solid. A gated node shows its gate in its box, in large type: `waiting, 1 of 2
-approvals` and who is pending, or `approved 2 of 3` and `signatures verified` (or `signatures NOT
-verified`), and its tooltip the full status. The Mermaid text of the same graph is below it.
+**Flow** (plan flows). The declared topology, drawn on the server as a layered SVG (the layout is
+the viewer's own, with no library): each node a rounded box with a glyph for its state (ran, halted,
+attempted, waiting for approval, not reached), the last node outlined, and the path the run took
+drawn as a flowing dash, which stops under `prefers-reduced-motion`. A gated node wears a badge on its
+corner (`2/3`) and shows its gate in its box: `waiting, 1 of 2 approvals` and who is pending, or
+`approved 2 of 3` and `signatures verified` (or `signatures NOT verified`), and its tooltip the full
+status. The graph is complete without JavaScript. With it, hovering or focusing a node highlights
+every path through it, clicking a node (or pressing Enter on it) shows its details under the graph,
+and the buttons at the graph's corner zoom and reset it (ctrl or cmd and the wheel zoom too; drag
+pans a zoomed graph). The Mermaid text of the same graph is below it.
 
 **Halts.** Each operation whose attempt marker is live with no result: the tool call or step, its
 marker, when it was attempted, and the `agent.ResolveHalt` call that records its outcome once you
@@ -231,11 +261,20 @@ The **Signatures** column says whether the approvals were verified (see AUDIT PR
 - A one-decision gate (`agent.SingleApproval`, recorded with `agent.Approve`) is not signed, so
   there is nothing to verify.
 
-**Timeline.** Every record in journal order: the header, `run:start` (kind, input, tools), model
-turns (text, tool calls with arguments, finish reason, model), attempt markers and re-attempts, tool
-results with the `Safety` they ran under (read-only, idempotent, side effect) and whether
-`ResolveHalt` reconciled them (with the evidence), approval decisions, the approval-pending record and
-tally, plan nodes and Switch choices, and the end marker.
+**Timeline.** Every record in journal order, each with a glyph for its type: the header, `run:start`
+(kind, input, tools), model turns (text, tool calls with arguments, finish reason, model), attempt
+markers and re-attempts, tool results with the `Safety` they ran under (read-only, idempotent, side
+effect) and whether `ResolveHalt` reconciled them (with the evidence), approval decisions, the
+approval-pending record and tally, plan nodes and Switch choices, and the end marker.
+
+- Each row has an anchor, `#record-N`, with a link glyph on hover, so a record can be linked.
+- Each row's **payload** is the record as the journal holds it, indented, in a collapsed `details`
+  with its JSON highlighted (a payload over 8 KiB is cut, and says how much); with JavaScript a
+  **Copy** button copies it.
+- The journal timestamps only the run's start and its attempt markers, so only those rows show a
+  time: an offset from the start (`+3.2s`) with the absolute UTC time on hover, and a bar spanning
+  from that time to the next timestamped record's (an upper bound on how long the attempt had been
+  open, not the operation's duration: the journal records no end time).
 
 ## Follow a run in progress
 
@@ -259,7 +298,7 @@ How it works, and what it costs the store:
   the run has ended). The page then fetches itself and swaps in its content.
 - It reads only, as the rest of the viewer does, from SQLite and Postgres alike: the store is opened
   read-only, and the endpoint answers only GET and HEAD on a loopback address.
-- An exported journal (`-journal`) does not grow, so its page has no live mark and no script, and
+- An exported journal (`-journal`) does not grow, so its page has no live mark and no live script, and
   `/run/live` is not found.
 - Without JavaScript the page is the same, complete as of its load, with a link to reload it while
   the run is in progress. A browser tab in the background does not poll.
@@ -358,7 +397,7 @@ safe:
 | blue | idempotent: safe to repeat | the resume re-runs it |
 | dashed | safety unknown | not known |
 
-A node with an approval gate has a purple border and a `gated: 2 of 3` line. Each node's tooltip
+Each class has its own glyph as well as its color (a bolt, an eye, a loop, a question mark). A node with an approval gate has a purple border, a `2/3` badge on its corner and a `gated: 2 of 3` line. Each node's tooltip
 says its class, what a crash does, and, for a side effect, whether every path to it passes an
 approval gate. The Side effects card sums it up: "1 side-effect step, 1 gated, 0 ungated", where a
 gated side effect is one every path from the entry to which passes a gate (its own or an earlier
@@ -437,8 +476,8 @@ before a change ships. It serves a read-only page (as `bide view` does, on `-add
 new flow with added nodes and edges in green, removed ones as dashed red ghosts where they were,
 and changed nodes in amber with what changed: the block, the `safety`, or the approval gate
 (`approval 1 of 3 -> 2 of 3`, strengthened or weakened). A summary card counts the changes and
-gives the digest before and after, and a weakened approval policy is called out above everything
-else. `bide view -config <file> -diff <old>` is the same page.
+gives the digest before and after, and a weakened approval policy is the verdict, `APPROVAL GATE
+WEAKENED`, above everything else. `bide view -config <file> -diff <old>` is the same page.
 
 ```sh
 cd examples/plan

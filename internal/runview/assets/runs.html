@@ -1,5 +1,6 @@
 {{define "runs.html"}}{{template "head" "Runs"}}
 <link rel="stylesheet" href="/assets/runs.css">
+{{template "verdict" .Verdict}}
 <div class="listhead">
 <h1>Runs</h1>
 <p class="muted small">{{if or .Filter.State .Filter.Kind .Filter.Q}}{{.Matched}} of {{.Listed}} runs match{{else}}{{.Listed}} run{{if ne .Listed 1}}s{{end}}{{end}}</p>

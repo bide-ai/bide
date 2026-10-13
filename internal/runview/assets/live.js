@@ -25,12 +25,15 @@
     const next = doc.querySelector("main");
     if (!next) throw new Error("no page content");
     next.querySelectorAll("script, link").forEach((n) => n.remove());
-    const open = new Set([...main.querySelectorAll("details[open] > summary")].map((s) => s.textContent));
+    // An open <details> is found again by its id (a payload) or else its summary's text.
+    const keyOf = (d) => d.id || d.querySelector("summary").textContent;
+    const open = new Set([...main.querySelectorAll("details[open]")].map(keyOf));
     const x = window.scrollX, y = window.scrollY;
     main.replaceChildren(...next.childNodes);
-    main.querySelectorAll("details > summary").forEach((s) => {
-      if (open.has(s.textContent)) s.parentElement.open = true;
+    main.querySelectorAll("details").forEach((d) => {
+      if (open.has(keyOf(d))) d.open = true;
     });
+    if (window.bideEnhance) window.bideEnhance();
     const rows = main.querySelectorAll(".timeline > li");
     for (let i = seen; i < rows.length; i++) rows[i].classList.add("fresh");
     seen = rows.length;

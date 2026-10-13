@@ -1,27 +1,38 @@
 {{define "run.html"}}{{template "head" .RunID}}
-<h1>{{.RunID}} <span class="pill kind">{{.Kind}}{{if .Flow}}: {{.Flow}}{{end}}</span> <span class="pill state-{{.State}}">{{.StateText}}</span>{{if .Live}} <span class="pill live" id="live" data-run="{{.RunID}}" data-cursor="{{.Cursor}}" title="the page follows the run as records land">live</span>{{end}}</h1>
+<div class="crumb"><h1 class="rid">{{.RunID}}</h1> <span class="pill kind">{{.Kind}}{{if .Flow}}: {{.Flow}}{{end}}</span> <span class="pill state-{{.State}}">{{.StateText}}</span>{{if .Live}} <span class="pill live" id="live" data-run="{{.RunID}}" data-cursor="{{.Cursor}}" title="the page follows the run as records land">live</span>{{end}}</div>
 {{if .Input}}<p class="input">{{.Input}}</p>{{end}}
+{{template "verdict" .Verdict}}
+
+{{if .Graph}}<section><h2>Flow</h2>
+<div class="legend"><span class="lg done">ran</span><span class="lg halted">halted</span><span class="lg attempted">attempted</span><span class="lg waiting">waiting for approval</span><span class="lg not-reached">not reached</span><span class="lg lastk">last node</span><span class="lg taken">path taken</span></div>
+<div class="graphwrap">{{svg .Graph.SVG}}</div>
+<details><summary>Mermaid text</summary><pre>{{.Graph.Mermaid}}</pre></details>
+</section>{{end}}
 
 <section class="cards">
-  <div class="card"><h3>End state</h3><p><b>{{.StateText}}</b>{{if .Terminal}}: {{.Terminal}}{{end}}</p><p class="muted">{{.Records}} journal records{{if .LastNode}}; last node <code>{{.LastNode}}</code>{{end}}</p>
-  {{if .FinalText}}<p class="muted">Last model text: {{.FinalText}}</p>{{end}}</div>
+  <div class="card"><h3>End state</h3><p class="cval">{{.StateText}}</p><p class="cline">{{.Records}} journal records{{if .LastNode}}; last node <code>{{.LastNode}}</code>{{end}}</p>
+  {{if or .Terminal .FinalText}}<details><summary>details</summary>{{if .Terminal}}<p class="small">Terminal: {{.Terminal}}</p>{{end}}{{if .FinalText}}<p class="small">Last model text: {{.FinalText}}</p>{{end}}</details>{{end}}</div>
   {{if .Gates}}<div class="card"><h3>Approval {{if gt (len .Gates) 1}}gates{{else}}gate{{end}}</h3>{{range .Gates}}
     <p class="gatehead {{.Class}}"><b>{{.ToolName}}</b>: {{.Headline}}</p>
-    <p class="small">{{if .Single}}one decision{{else}}needs {{.Need}} of {{join .Approvers ", "}}{{end}}</p>
+    <p class="cline">{{if .Single}}one decision{{else}}needs {{.Need}} of {{len .Approvers}}{{end}}{{if not .Waiting}}{{with .SigLine}}; <span class="gatesig {{if eq . "signatures verified"}}good{{else if . | hasPrefix "signatures NOT"}}bad{{else}}muted{{end}}">{{.}}</span>{{end}}{{end}}</p>
+    <details><summary>who decided</summary>
+    {{if .Single}}<p class="small">one decision</p>{{else}}<p class="small">approvers: {{join .Approvers ", "}}</p>{{end}}
     {{if .ApprovedBy}}<p class="small">approved by {{join .ApprovedBy ", "}}{{if .DeniedBy}}; denied by {{join .DeniedBy ", "}}{{end}}</p>{{else if .DeniedBy}}<p class="small">denied by {{join .DeniedBy ", "}}</p>{{end}}
-    {{if and .Waiting .Pending}}<p class="small">waiting on {{join .Pending ", "}}</p>{{end}}
-    {{if not .Waiting}}{{with .SigLine}}<p class="gatesig {{if eq . "signatures verified"}}good{{else if . | hasPrefix "signatures NOT"}}bad{{else}}muted{{end}}">{{.}}</p>{{end}}{{end}}{{end}}</div>{{end}}
+    {{if and .Waiting .Pending}}<p class="small">waiting on {{join .Pending ", "}}</p>{{end}}</details>{{end}}</div>{{end}}
   <div class="card"><h3>Audit proof</h3>{{with .Proof}}
-    <p class="{{if .OK}}good{{else}}bad{{end}}"><b>{{if .OK}}Verified{{else}}Not verified{{end}}</b> ({{.Source}}): {{.Summary}}</p>
+    <p class="cval {{if .OK}}good{{else}}bad{{end}}">{{if .OK}}{{icon "ok"}} Verified{{else}}{{icon "x"}} Not verified{{end}}</p>
+    <p class="cline">{{.Summary}}</p>
     {{range .Problems}}<p class="bad small">{{.}}</p>{{end}}
-    {{if .Items}}<details class="small"><summary>{{len .Items}} proofs</summary><ul>{{range .Items}}<li>{{.}}</li>{{end}}</ul></details>{{end}}
-    {{range $id, $c := .Approvals}}<p class="small {{if $c.OK}}good{{else}}bad{{end}}">Approval gate <code>{{$id}}</code>: {{$c.Text}}</p>{{end}}
-  {{else}}<p class="muted">No signed head or evidence package given for this run (-sth or -evidence, with -pubkey).</p>{{end}}</div>
+    <details><summary>{{.Source}}{{if .Items}}, {{len .Items}} proofs{{end}}</summary>
+    {{if .Items}}<ul class="small">{{range .Items}}<li>{{.}}</li>{{end}}</ul>{{end}}
+    {{range $id, $c := .Approvals}}<p class="small {{if $c.OK}}good{{else}}bad{{end}}">Approval gate <code>{{$id}}</code>: {{$c.Text}}</p>{{end}}</details>
+  {{else}}<p class="cval muted">None given</p><p class="cline">No signed head or evidence package for this run (-sth or -evidence, with -pubkey).</p>{{end}}</div>
   {{if .Conform}}<div class="card"><h3>Conformance</h3>{{with .Conform}}
-    <p class="{{if .OK}}good{{else}}bad{{end}}"><b>{{if .OK}}Conforms{{else}}Diverges{{end}}</b> ({{.Method}}; digest {{.Digest}})</p>
-    {{if .Source}}<p class="muted small">Topology {{.Source}}</p>{{end}}
+    <p class="cval {{if .OK}}good{{else}}bad{{end}}">{{if .OK}}{{icon "ok"}} Conforms{{else}}{{icon "x"}} Diverges{{end}}</p>
+    <p class="cline">{{.Method}}; digest {{.Digest}}</p>
     {{range .Diffs}}<p class="bad small"><code>{{.}}</code></p>{{end}}
-    {{if eq .Method "structural"}}<details class="muted small"><summary>what a structural check covers</summary>Node names, Switch arms and the digest. plan.Conform also replays routing and loops; embed the viewer with the Flow for it.</details>{{end}}
+    <details><summary>details</summary>{{if .Source}}<p class="small">Topology {{.Source}}</p>{{end}}
+    {{if eq .Method "structural"}}<p class="muted small">A structural check covers node names, Switch arms and the digest. plan.Conform also replays routing and loops; embed the viewer with the Flow for it.</p>{{end}}</details>
   {{end}}</div>{{end}}
 </section>
 
@@ -32,23 +43,23 @@
   agent.Outcome{Result: ...})</pre></div>{{end}}
 </section>{{end}}
 
-{{if .Graph}}<section><h2>Flow</h2>
-<div class="legend"><span class="lg done">ran</span><span class="lg halted">halted</span><span class="lg attempted">attempted</span><span class="lg waiting">waiting for approval</span><span class="lg not-reached">not reached</span><span class="lg lastk">last node</span><span class="lg taken">path taken</span></div>
-<div class="graphwrap">{{svg .Graph.SVG}}</div>
-<details><summary>Mermaid text</summary><pre>{{.Graph.Mermaid}}</pre></details>
-</section>{{end}}
-
 {{if .Gates}}<section><h2>Approval gates</h2>
-<table><thead><tr><th>Call</th><th>Gate</th><th>Approved by</th><th>Denied by</th><th>Pending</th><th>Status</th><th>Signatures</th></tr></thead><tbody>
+<div class="tablewrap"><table><thead><tr><th>Call</th><th>Gate</th><th>Approved by</th><th>Denied by</th><th>Pending</th><th>Status</th><th>Signatures</th></tr></thead><tbody>
 {{range .Gates}}<tr><td><code>{{.ToolUseID}}</code> {{.ToolName}}</td><td>{{if .Single}}one decision{{else}}{{.Need}} of {{len .Approvers}}{{if .Approvers}} ({{join .Approvers ", "}}){{end}}{{end}}</td>
 <td>{{join .ApprovedBy ", "}}</td><td>{{join .DeniedBy ", "}}</td><td>{{join .Pending ", "}}</td><td>{{.Status}}</td><td class="{{if .SignaturesOK}}good{{else if .Signatures | hasPrefix "signatures NOT"}}bad{{else}}muted{{end}}">{{.Signatures}}</td></tr>{{end}}
-</tbody></table></section>{{end}}
+</tbody></table></div></section>{{end}}
 
 {{if .Notes}}<section><h2>Not in the journal</h2><ul>{{range .Notes}}<li class="muted">{{.}}</li>{{end}}</ul></section>{{end}}
 
-<section><h2>Timeline</h2>
-<ol class="timeline">{{range .Events}}<li class="ev {{.Class}}"><span class="seq">{{.Seq}}</span><div><p class="title">{{.Title}}{{range .Badges}} <span class="badge">{{.}}</span>{{end}}</p>
-{{if .Detail}}<pre class="detail">{{.Detail}}</pre>{{end}}<p class="name"><code>{{.Name}}</code> · {{.Kind}}</p></div></li>{{end}}</ol>
+<section><h2>Timeline <span class="count">{{len .Events}} records</span></h2>
+<ol class="timeline">{{range .Events}}<li class="ev {{.Class}}" id="record-{{.Seq}}">
+<span class="ev-ic">{{icon .IconName}}</span>
+<div class="ev-main">
+<div class="ev-head"><span class="seq">{{.Seq}}</span><p class="title">{{.Title}}{{range .Badges}} <span class="badge">{{.}}</span>{{end}}</p>{{if .Rel}}<span class="when" title="{{.Abs}}">{{.Rel}}</span>{{end}}<a class="anchor" href="#record-{{.Seq}}" aria-label="Link to record {{.Seq}}">{{icon "link"}}</a></div>
+{{if .Bar}}<svg class="tbar" viewBox="0 0 100 6" preserveAspectRatio="none" role="img" aria-label="{{.Bar.Label}}"><title>{{.Bar.Label}}</title><rect class="track" width="100" height="6" rx="3"/><rect class="span" x="{{printf "%.2f" .Bar.X}}" width="{{printf "%.2f" .Bar.W}}" height="6" rx="3"/></svg>{{end}}
+{{if .Detail}}<pre class="detail">{{.Detail}}</pre>{{end}}
+{{if .Payload}}<details class="payload" id="payload-{{.Seq}}"><summary>payload</summary><div class="pwrap"><button type="button" class="copy" aria-label="Copy the record's JSON">{{icon "copy"}} Copy</button><pre class="json"><code>{{json .Payload}}</code></pre></div></details>{{end}}
+<p class="name"><code>{{.Name}}</code> · {{.Kind}}</p></div></li>{{end}}</ol>
 </section>
 <p class="muted small"><a href="/run.json?id={{.RunID}}">This view as JSON</a></p>
 {{if .Live}}<link rel="stylesheet" href="/assets/live.css"><script src="/assets/live.js"></script>

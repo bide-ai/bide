@@ -4,7 +4,6 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
-	"html"
 	"slices"
 	"strconv"
 	"strings"
@@ -44,8 +43,10 @@ type Graph struct {
 	Mermaid string      `json:"mermaid"`
 	Width   int         `json:"-"`
 	Height  int         `json:"-"`
-	nw, nh  int         // node size: larger when a node carries a gate, for its gate lines
+	nw, nh  int         // node size: taller when a node carries a gate or a crash line
 	gy      int         // the gap between rows: smaller in a gated graph, so its taller nodes fit a screen
+	// ranks is the number of rows, and backs how far right the loop-back arcs reach.
+	ranks int
 }
 
 // GraphNode is one declared node and what the run did with it.
@@ -74,6 +75,7 @@ type GraphNode struct {
 	Crash string `json:"crash,omitempty"`
 	Cex   bool   `json:"cex,omitempty"`
 	x, y  int
+	rank  int
 }
 
 // GraphEdge is one declared edge or Switch arm, and whether the run took it.
@@ -88,6 +90,11 @@ type GraphEdge struct {
 	// Change is how a flow diff changed this edge or arm (added, removed or changed), which
 	// styles it; empty outside a diff.
 	Change string `json:"change,omitempty"`
+
+	d      string // the path, set by layout
+	lx, ly int    // the label's center, set by layout
+	arc    bool   // drawn as a loop-back arc down the right side, at x ax
+	ax     int
 }
 
 // flowGraph overlays the run's journal on flow's topology. With no flow it returns no graph, and
@@ -290,66 +297,6 @@ func splitIter(s string) (string, int) {
 	return node, n
 }
 
-const (
-	nodeW, nodeH = 168, 40
-	// A graph with a gated node draws every node this size, so the gate's two lines fit in the
-	// box and stay legible in a scaled-down screenshot.
-	gateW, gateH = 236, 68
-	gapX, gapY   = 36, 56
-	pad          = 24
-)
-
-// layout ranks the nodes by their longest forward path from entry (loop-back arms excluded) and
-// places each rank on a row, centered.
-func layout(g *Graph, entry string) {
-	g.nw, g.nh, g.gy = nodeW, nodeH, gapY
-	if slices.ContainsFunc(g.Nodes, func(n GraphNode) bool { return n.Gate != "" || n.Risk != "" }) {
-		g.nw, g.nh, g.gy = gateW, gateH, gapY-16
-	}
-	nodeW, nodeH, gapY := g.nw, g.nh, g.gy
-	idx := map[string]int{}
-	for i, n := range g.Nodes {
-		idx[n.Name] = i
-	}
-	rank := make([]int, len(g.Nodes))
-	// Relax forward edges until stable: a DAG of n nodes settles in n passes.
-	for range g.Nodes {
-		changed := false
-		for _, e := range g.Edges {
-			f, okf := idx[e.From]
-			t, okt := idx[e.To]
-			if e.Back || !okf || !okt || e.To == entry {
-				continue
-			}
-			if rank[t] < rank[f]+1 {
-				rank[t], changed = rank[f]+1, true
-			}
-		}
-		if !changed {
-			break
-		}
-	}
-	rows := map[int][]int{}
-	maxRank, widest := 0, 0
-	for i := range g.Nodes {
-		rows[rank[i]] = append(rows[rank[i]], i)
-		maxRank = max(maxRank, rank[i])
-		widest = max(widest, len(rows[rank[i]]))
-	}
-	g.Width = pad*2 + widest*nodeW + (widest-1)*gapX + 80 // room on the right for loop-back arcs
-	g.Height = pad*2 + (maxRank+1)*nodeH + maxRank*gapY
-	for r := 0; r <= maxRank; r++ {
-		row := rows[r]
-		rowW := len(row)*nodeW + (len(row)-1)*gapX
-		x0 := (g.Width-80-rowW)/2 + 0
-		for k, i := range row {
-			g.Nodes[i].x = x0 + k*(nodeW+gapX)
-			g.Nodes[i].y = pad + r*(nodeH+gapY)
-		}
-	}
-	g.SVG = svg(g, idx)
-}
-
 // markGates sets each gated node's gate lines from gates (after their signatures are checked, when
 // they are) and draws the graph again.
 func markGates(g *Graph, gates []Gate) {
@@ -362,10 +309,8 @@ func markGates(g *Graph, gates []Gate) {
 			gateOf[n] = gt
 		}
 	}
-	idx := map[string]int{}
 	for i := range g.Nodes {
 		n := &g.Nodes[i]
-		idx[n.Name] = i
 		if n.Gate == "" {
 			continue
 		}
@@ -377,7 +322,7 @@ func markGates(g *Graph, gates []Gate) {
 		n.GateStatus = gt.Status
 		n.GateLine, n.GateClass, n.SigLine = gateLines(gt)
 	}
-	g.SVG = svg(g, idx)
+	g.SVG = svg(g)
 }
 
 // gateLines phrases a gate for its node's box: where it stands, its style, and its signatures.
@@ -424,131 +369,6 @@ func (gt Gate) Class() string { _, c, _ := gateLines(gt); return c }
 
 // SigLine is the gate's signature verdict in a few words.
 func (gt Gate) SigLine() string { _, _, s := gateLines(gt); return s }
-
-// riskCSS is each safety class's style on a config node.
-var riskCSS = map[string]string{"side effect": "risk-side", "read-only": "risk-read", "idempotent": "risk-idem", "safety unknown": "risk-unknown"}
-
-// svg draws the graph. Every label is escaped.
-func svg(g *Graph, idx map[string]int) string {
-	nodeW, nodeH, gapY := g.nw, g.nh, g.gy
-	var b strings.Builder
-	fmt.Fprintf(&b, `<svg class="graph" viewBox="0 0 %d %d" width="%d" height="%d" role="img" aria-label="flow topology with the run's path">`, g.Width, g.Height, g.Width, g.Height)
-	b.WriteString(`<defs><marker id="arrow" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse"><path d="M0,0 L10,5 L0,10 z" class="arrowhead"/></marker>` +
-		`<marker id="arrow-taken" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse"><path d="M0,0 L10,5 L0,10 z" class="arrowhead taken"/></marker>` +
-		`<marker id="arrow-problem" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse"><path d="M0,0 L10,5 L0,10 z" class="arrowhead problem"/></marker>`)
-	for _, c := range []string{"added", "removed", "changed"} {
-		if slices.ContainsFunc(g.Edges, func(e GraphEdge) bool { return e.Change == c }) {
-			fmt.Fprintf(&b, `<marker id="arrow-%s" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse"><path d="M0,0 L10,5 L0,10 z" class="arrowhead %s"/></marker>`, c, c)
-		}
-	}
-	b.WriteString(`</defs>`)
-	for _, e := range g.Edges {
-		f, okf := idx[e.From]
-		t, okt := idx[e.To]
-		if !okf || !okt {
-			continue
-		}
-		a, z := g.Nodes[f], g.Nodes[t]
-		cls, mk := "edge", "arrow"
-		if e.Taken {
-			cls, mk = "edge taken", "arrow-taken"
-		}
-		if e.Problem != "" {
-			cls, mk = "edge problem", "arrow-problem"
-		}
-		if e.Cex {
-			cls, mk = "edge cex", "arrow-problem"
-		}
-		if e.Change != "" {
-			cls, mk = "edge "+e.Change, "arrow-"+e.Change
-		}
-		var lx, ly int
-		anchor := "start"
-		if e.Back {
-			x1, y1 := a.x+nodeW, a.y+nodeH/2
-			x2, y2 := z.x+nodeW, z.y+nodeH/2
-			cx := max(x1, x2) + 60
-			fmt.Fprintf(&b, `<path class="%s back" d="M%d,%d C%d,%d %d,%d %d,%d" marker-end="url(#%s)"/>`, cls, x1, y1, cx, y1, cx, y2, x2+2, y2, mk)
-			lx, ly, anchor = cx-6, (y1+y2)/2, "end"
-		} else {
-			x1, y1 := a.x+nodeW/2, a.y+nodeH
-			x2, y2 := z.x+nodeW/2, z.y-2
-			fmt.Fprintf(&b, `<path class="%s" d="M%d,%d C%d,%d %d,%d %d,%d" marker-end="url(#%s)"/>`, cls, x1, y1, x1, y1+gapY/2, x2, y2-gapY/2, x2, y2, mk)
-			// Beside the curve's midpoint, on its outer side, clear of the arrowhead.
-			lx, ly = (x1+x2)/2+8, (y1+y2)/2+4
-			if x2 < x1 {
-				lx, anchor = (x1+x2)/2-8, "end"
-			}
-			if y2-y1 > gapY+nodeH/2 {
-				// An edge that skips a row: its midpoint is beside a node of that row, so the
-				// label goes in the gap under its source.
-				lx, ly, anchor = x1+8, y1+gapY/2+4, "start"
-				if x2 < x1 {
-					lx, anchor = x1-8, "end"
-				}
-			}
-		}
-		if e.Label != "" {
-			fmt.Fprintf(&b, `<text class="elabel" x="%d" y="%d" text-anchor="%s">%s</text>`, lx, ly, anchor, html.EscapeString(e.Label))
-		}
-		if e.Problem != "" {
-			fmt.Fprintf(&b, `<g class="edge-mark"><circle cx="%d" cy="%d" r="7"/><text x="%d" y="%d">!</text><title>%s</title></g>`, lx-14, ly-4, lx-14, ly, html.EscapeString(e.Problem))
-		}
-	}
-	for _, n := range g.Nodes {
-		cls := "node " + n.Status
-		if n.Last {
-			cls += " last"
-		}
-		if n.Risk != "" {
-			cls += " " + riskCSS[n.Risk]
-		}
-		if n.Gate != "" && n.Risk != "" {
-			cls += " gated"
-		}
-		if n.Cex {
-			cls += " cex"
-		}
-		fmt.Fprintf(&b, `<g class="%s"><rect x="%d" y="%d" width="%d" height="%d" rx="8"/>`, cls, n.x, n.y, nodeW, nodeH)
-		label := n.Name
-		if n.Iters > 1 {
-			label += " x" + strconv.Itoa(n.Iters)
-		}
-		fmt.Fprintf(&b, `<text x="%d" y="%d" class="nlabel">%s</text>`, n.x+nodeW/2, n.y+17, html.EscapeString(label))
-		title := n.Name + ": " + n.Status
-		kindLine := n.Kind + " · " + n.Status
-		if n.Risk != "" {
-			kindLine = n.Kind + " · " + n.Risk
-		}
-		fmt.Fprintf(&b, `<text x="%d" y="%d" class="nkind">%s</text>`, n.x+nodeW/2, n.y+32, html.EscapeString(kindLine))
-		if n.Note != "" {
-			fmt.Fprintf(&b, `<text x="%d" y="%d" class="nnote">%s</text>`, n.x+nodeW/2, n.y+nodeH+13, html.EscapeString(n.Note))
-		}
-		if n.Title != "" {
-			title = n.Title
-		}
-		if n.Crash != "" {
-			// A config node: its crash behavior, then its gate.
-			fmt.Fprintf(&b, `<text x="%d" y="%d" class="ncrash">%s</text>`, n.x+nodeW/2, n.y+49, html.EscapeString(n.Crash))
-			if n.Gate != "" {
-				title += "\napproval gate " + n.Gate
-				fmt.Fprintf(&b, `<text x="%d" y="%d" class="ngate %s">%s</text>`, n.x+nodeW/2, n.y+64, n.GateClass, html.EscapeString(n.GateLine))
-			}
-		} else if n.Gate != "" {
-			title += "\napproval gate " + n.Gate
-			if n.GateStatus != "" {
-				title += ": " + n.GateStatus
-			}
-			fmt.Fprintf(&b, `<text x="%d" y="%d" class="ngate %s">%s</text>`, n.x+nodeW/2, n.y+49, n.GateClass, html.EscapeString(n.GateLine))
-			if n.SigLine != "" {
-				fmt.Fprintf(&b, `<text x="%d" y="%d" class="ngate %s">%s</text>`, n.x+nodeW/2, n.y+64, n.GateClass, html.EscapeString(n.SigLine))
-			}
-		}
-		fmt.Fprintf(&b, `<title>%s</title></g>`, html.EscapeString(title))
-	}
-	b.WriteString(`</svg>`)
-	return b.String()
-}
 
 // mermaid renders the overlaid graph as Mermaid text, a fallback for any viewer that renders it.
 func mermaid(g *Graph) string {

@@ -1,0 +1,101 @@
+/* the flow graph (svg.go): drawn server side, complete without script. graph.js adds the hover,
+   click, pan and zoom. */
+.legend { display: flex; flex-wrap: wrap; gap: var(--s2) var(--s4); font-size: var(--t-sm); margin-bottom: var(--s2); }
+.lg::before { content: ""; display: inline-block; width: 14px; height: 14px; border-radius: 4px; margin-right: 6px; vertical-align: -2px; border: 2px solid var(--idle); }
+.lg.done::before { background: var(--good-bg); border-color: var(--good); }
+.lg.halted::before { background: var(--bad-bg); border-color: var(--bad); }
+.lg.attempted::before { background: var(--warn-bg); border-color: var(--warn); }
+.lg.waiting::before { background: var(--card); border-color: var(--accent); border-width: 3px; }
+.lg.not-reached::before { border-style: dashed; }
+.lg.lastk::before { border: 3px solid var(--accent); box-shadow: 0 0 0 2px var(--accent-bg); }
+.lg.taken::before { height: 4px; border: 0; border-radius: 2px; background: var(--accent); vertical-align: 3px; }
+.graphwrap { position: relative; overflow-x: auto; background: var(--card); border: 1px solid var(--line); border-radius: var(--r-md); padding: var(--s3); }
+svg.graph { display: block; margin: 0 auto; max-width: 100%; height: auto; font-family: var(--font); touch-action: pan-y; }
+.graphwrap.pannable svg.graph { cursor: grab; } .graphwrap.panning svg.graph { cursor: grabbing; }
+
+/* edges: dotted when not taken; the path taken (or a counterexample) is a thick dash flowing along it */
+.edge { fill: none; stroke: var(--idle); stroke-width: 1.6; stroke-dasharray: 1 5; stroke-linecap: round; }
+.edge.taken { stroke: var(--accent); stroke-width: 3; stroke-dasharray: 10 6; stroke-linecap: butt; animation: flow 1s linear infinite; }
+.edge.cex { stroke: var(--bad); stroke-width: 3.5; stroke-dasharray: 10 6; stroke-linecap: butt; animation: flow 1s linear infinite; }
+.edge.problem { stroke: var(--bad); stroke-width: 2.5; stroke-dasharray: 6 4; stroke-linecap: butt; }
+.edge.added { stroke: var(--good); stroke-width: 2.8; stroke-dasharray: none; }
+.edge.removed { stroke: var(--bad); stroke-width: 2.2; stroke-dasharray: 6 5; stroke-linecap: butt; }
+.edge.changed { stroke: var(--warn); stroke-width: 2.8; stroke-dasharray: none; }
+@keyframes flow { to { stroke-dashoffset: -16; } }
+@media (prefers-reduced-motion: reduce) { .edge.taken, .edge.cex { animation: none; } }
+.arrowhead { fill: var(--idle); } .arrowhead.taken { fill: var(--accent); } .arrowhead.problem { fill: var(--bad); }
+.arrowhead.added { fill: var(--good); } .arrowhead.removed { fill: var(--bad); } .arrowhead.changed { fill: var(--warn); }
+.elabel-g rect { fill: var(--card); stroke: var(--line); }
+.elabel { font-size: 12.5px; fill: var(--muted); text-anchor: middle; }
+.edge-mark circle { fill: var(--bad); }
+.edge-mark text { fill: #fff; font-size: 12px; font-weight: 700; text-anchor: middle; }
+
+/* nodes */
+.node { cursor: default; outline: none; }
+.node .box { fill: var(--card); stroke: var(--idle); stroke-width: 1.8; stroke-dasharray: 5 4; }
+.node .disc { fill: var(--card-2); stroke: none; }
+.node .nicon { color: var(--muted); }
+.nlabel { font-size: 15px; font-weight: 700; fill: var(--fg); }
+.nkind { font-size: 12.5px; fill: var(--muted); }
+.ncrash { font-size: 12.5px; font-weight: 600; fill: var(--fg); }
+.ngate { font-size: 12.5px; font-weight: 650; fill: var(--warn); }
+.ngate.good { fill: var(--good); } .ngate.bad { fill: var(--bad); } .ngate.gated { fill: var(--gate); }
+.nnote { text-anchor: middle; font-size: 12px; fill: var(--gate); }
+.node.done .box { fill: var(--good-bg); stroke: var(--good); stroke-dasharray: none; }
+.node.done .disc { fill: var(--good); } .node.done .nicon { color: var(--card); }
+.node.halted .box { fill: var(--bad-bg); stroke: var(--bad); stroke-dasharray: none; stroke-width: 2.8; }
+.node.halted .disc { fill: var(--bad); } .node.halted .nicon { color: var(--card); }
+.node.attempted .box { fill: var(--warn-bg); stroke: var(--warn); stroke-dasharray: none; }
+.node.attempted .disc { fill: var(--warn); } .node.attempted .nicon { color: var(--card); }
+.node.waiting .box { fill: var(--accent-bg); stroke: var(--accent); stroke-dasharray: none; stroke-width: 2.8; }
+.node.waiting .disc { fill: var(--accent); } .node.waiting .nicon { color: var(--card); }
+.node.last .box { stroke: var(--accent); stroke-width: 3.4; }
+.node.last { filter: drop-shadow(0 0 5px var(--accent)); }
+.node.declared .box { stroke: var(--muted); stroke-dasharray: none; stroke-width: 1.4; }
+.node.problem .box { fill: var(--bad-bg); stroke: var(--bad); stroke-dasharray: none; stroke-width: 2.8; }
+.node.warning .box { fill: var(--warn-bg); stroke: var(--warn); stroke-dasharray: none; stroke-width: 2.2; }
+.node.undeclared .box { fill: none; stroke: var(--bad); stroke-dasharray: 3 3; }
+.node.declared.risk-side .box { fill: var(--side-bg); stroke: var(--side); stroke-width: 2.2; }
+.node.declared.risk-side .disc { fill: var(--side); } .node.declared.risk-side .nicon { color: var(--card); }
+.node.declared.risk-read .box { fill: var(--good-bg); stroke: var(--good); }
+.node.declared.risk-read .disc { fill: var(--good); } .node.declared.risk-read .nicon { color: var(--card); }
+.node.declared.risk-idem .box { fill: var(--idem-bg); stroke: var(--idem); }
+.node.declared.risk-idem .disc { fill: var(--idem); } .node.declared.risk-idem .nicon { color: var(--card); }
+.node.declared.risk-unknown .box { fill: var(--card); stroke: var(--idle); stroke-dasharray: 5 4; stroke-width: 1.8; }
+.node.declared.gated .box { stroke: var(--gate); stroke-width: 3.6; }
+.node.cex .box { stroke: var(--bad); stroke-width: 3.8; stroke-dasharray: none; }
+.node.problem .disc, .node.warning .disc { fill: var(--card-2); }
+.gbadge rect { fill: var(--gate-bg); stroke: var(--gate); stroke-width: 1.6; }
+.gbadge text { font-size: 12.5px; font-weight: 750; fill: var(--gate); }
+.gbadge use { color: var(--gate); }
+.gbadge.good rect { fill: var(--good-bg); stroke: var(--good); } .gbadge.good text, .gbadge.good use { fill: var(--good); color: var(--good); }
+.gbadge.bad rect { fill: var(--bad-bg); stroke: var(--bad); } .gbadge.bad text, .gbadge.bad use { fill: var(--bad); color: var(--bad); }
+.gbadge.wait rect { fill: var(--warn-bg); stroke: var(--warn); } .gbadge.wait text, .gbadge.wait use { fill: var(--warn); color: var(--warn); }
+
+/* the diff's change glyphs ride on the node colors diff.css sets */
+.lg.risk-side::before { background: var(--side-bg); border-color: var(--side); }
+.lg.risk-read::before { background: var(--good-bg); border-color: var(--good); }
+.lg.risk-idem::before { background: var(--idem-bg); border-color: var(--idem); }
+.lg.risk-unknown::before { border-style: dashed; }
+.lg.gated::before { border: 3px solid var(--gate); }
+.lg.cex::before { height: 4px; border: 0; border-radius: 2px; background: var(--bad); vertical-align: 3px; }
+.lg.declared::before { border-color: var(--fg); }
+.lg.problem::before { background: var(--bad-bg); border-color: var(--bad); }
+.lg.warning::before { background: var(--warn-bg); border-color: var(--warn); }
+.lg.undeclared::before { border-color: var(--bad); border-style: dashed; }
+
+/* interaction (graph.js) */
+.graph.focus .node:not(.hl), .graph.focus .edge-g:not(.hl) { opacity: .22; }
+.graph.focus .edge-g.hl .edge { stroke-width: 4; }
+.node.sel .box { stroke-width: 4; }
+.gtools { position: absolute; top: var(--s2); right: var(--s2); display: none; gap: var(--s1); opacity: .35; transition: opacity .15s; }
+.has-js .gtools { display: flex; }
+.graphwrap:hover .gtools, .gtools:focus-within { opacity: 1; }
+.gtools button { font: 600 var(--t-md)/1 var(--font); width: 30px; height: 30px; border-radius: var(--r-sm); border: 1px solid var(--line); background: var(--card); color: var(--fg); cursor: pointer; }
+.gtools button:hover { border-color: var(--accent); }
+.gdetail { margin-top: var(--s2); padding: var(--s3) var(--s4); background: var(--card); border: 1px solid var(--accent); border-radius: var(--r-md); }
+.gdetail p { margin: 0; white-space: pre-line; }
+.gdetail .gname { font: 700 var(--t-md) var(--mono); margin-bottom: var(--s1); }
+.nmark circle { fill: var(--bad); stroke: var(--card); stroke-width: 2; }
+.nmark.warning circle { fill: var(--warn); }
+.nmark text { fill: var(--card); font-size: 13px; font-weight: 800; text-anchor: middle; }
