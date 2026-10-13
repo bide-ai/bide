@@ -97,7 +97,7 @@ if pend, ok := errors.AsType[*agent.ApprovalPending](err); ok {
 same time to `ApprovalDecisionBytes` and to `Decision`, since the signature covers it (see [When a
 decision was made](#when-a-decision-was-made)). `Decision.Alg` names the scheme the signature is
 under and is required too (`SubmitDecision` refuses an empty one, or a zero `DecidedAt`, with
-`agent.ErrConfig`). It is journaled with the decision as `Record.ApproverAlg`, and the
+`agent.ErrConfig`, and so an `ApproverID` that is not printable ASCII, which no policy can name). It is journaled with the decision as `Record.ApproverAlg`, and the
 gate counts the decision only if it equals the `Alg()` of the verifier your resolver returns for
 that approver: a valid signature journaled under another scheme name, or none, is ignored with
 `agent.ReasonAlg`. One key fills one seat (see [Key identity](#key-identity)), and `bide audit

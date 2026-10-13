@@ -659,7 +659,8 @@ type Decision struct {
 //
 // The record carries d.DecidedAt, signed, and the time it was recorded (Record.RecordedAt), read
 // from WithClock's clock, else the clock ctx carries (a run's), else the wall clock. Neither time
-// affects the gate. A zero DecidedAt, or one with no canonical form, is ErrConfig.
+// affects the gate. A zero DecidedAt, or one with no canonical form, is ErrConfig, and so is an
+// ApproverID that is not printable ASCII (see ApprovalPolicy.Validate), which no policy can name.
 //
 // Each distinct decision is its own journal record; resubmitting the identical decision is a
 // no-op. The gate counts each approver's first valid decision and ignores the rest, so an
