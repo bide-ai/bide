@@ -1,3 +1,6 @@
 # Go sources the tools rewrite or scan, kept with LF line endings on every platform, so a
 # golden file compares byte for byte with what the tool writes (gofmt writes LF).
 internal/tools/oldnames/testdata/** text eol=lf
+
+# Golden files compare byte for byte with what a test writes (LF) on every platform.
+**/testdata/*.golden text eol=lf

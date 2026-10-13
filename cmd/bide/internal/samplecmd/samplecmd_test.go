@@ -80,7 +80,8 @@ func TestRunSet(t *testing.T) {
 	if err != nil {
 		t.Fatalf("%v (go test -update writes it)", err)
 	}
-	if got != string(want) {
+	// A Windows checkout may hold the golden with CRLF line endings.
+	if got != strings.ReplaceAll(string(want), "\r\n", "\n") {
 		t.Fatalf("the sample's runs changed (go test -update rewrites the golden if that is intended):\n%s\nwant:\n%s", got, want)
 	}
 }
