@@ -27,6 +27,7 @@ import (
 	"net/url"
 	"os"
 	"strconv"
+	"strings"
 	"time"
 
 	"github.com/bide-ai/bide/agent"
@@ -49,6 +50,7 @@ type Webhook struct {
 	requests int // requests per Notify call; the notifier core retries across calls
 	fields   fieldSet
 	viewURL  string
+	viewDB   string
 	onError  func(error)
 	now      func() time.Time
 	sleep    func(context.Context, time.Duration) error
@@ -208,6 +210,21 @@ func WithViewURL(base string) Option {
 			return configErr("WithViewURL needs an https URL")
 		}
 		w.viewURL = base
+		return nil
+	}
+}
+
+// WithViewDB names the SQLite journal file the deployment's runs are in, so the payload's
+// view.command is a command that runs: `bide view -db <path> -run <id>`. Without it the command
+// carries the marked template `-db <journal.db>`, which the reader fills in; bide view needs a
+// store and the webhook cannot guess one. For a Postgres journal the DSN is a credential and never
+// goes in a payload: an adapter swaps `-db <journal.db>` for `-postgres "$DSN"` itself.
+func WithViewDB(path string) Option {
+	return func(w *Webhook) error {
+		if path == "" || strings.ContainsAny(path, "\x00\r\n") {
+			return configErr("WithViewDB needs a file path")
+		}
+		w.viewDB = path
 		return nil
 	}
 }

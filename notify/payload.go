@@ -122,6 +122,20 @@ type View struct {
 	URL     *string `json:"url"`
 }
 
+// viewPlaceholder stands for the journal path when the webhook was not told it. It is angle
+// bracketed so it cannot be mistaken for a real file and fails loudly if pasted as it is.
+const viewPlaceholder = "<journal.db>"
+
+// viewCommand is the bide view command for a run: with the store flag when WithViewDB set it, and
+// with a marked template otherwise, since bide view needs one of -db, -postgres and -journal.
+func (w *Webhook) viewCommand(runID string) string {
+	db := viewPlaceholder
+	if w.viewDB != "" {
+		db = shellWord(w.viewDB)
+	}
+	return "bide view -db " + db + " -run " + shellWord(runID)
+}
+
 func tp(t time.Time) *time.Time {
 	if t.IsZero() {
 		return nil
@@ -141,7 +155,7 @@ func (w *Webhook) payload(n agent.Notification) Payload {
 		ObservedAt: tp(n.Observed),
 		DeadlineAt: tp(n.Deadline),
 		Attempt:    n.Attempt,
-		View:       View{Command: "bide view -run " + shellWord(n.RunID)},
+		View:       View{Command: w.viewCommand(n.RunID)},
 	}
 	if w.viewURL != "" {
 		u := strings.TrimRight(w.viewURL, "/") + "/" + url.PathEscape(n.RunID)
