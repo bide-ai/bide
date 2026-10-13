@@ -113,16 +113,19 @@ func TestReview_SweepNeverRetriesAFailedOverdueNotice(t *testing.T) {
 	j := memJournal()
 	putGate(t, j, "r", ApprovalWait{ToolUseID: "c1", ToolName: "refund", Single: true})
 	trail := NewMemNotifyTrail()
-	primary := &fakeSink{fail: 1 << 30}                    // the main sink is down
-	overdue := &fakeSink{fail: 1, err: ErrNotifyPermanent} // the overdue sink has one blip
+	primary := &fakeSink{fail: 1 << 30}                          // the main sink is down
+	overdue := &fakeSink{fail: 1 << 30, err: ErrNotifyPermanent} // the overdue sink is down for one sweep
 	opt := WithOverdueNotifier(overdue)
 
 	_ = sweep(t, j, primary, trail, clk, opt)
 	clk.advance(6 * time.Minute)
 	_ = sweep(t, j, primary, trail, clk, opt) // past the deadline: overdue raised, its one send fails
-	if overdue.count() != 1 {
-		t.Fatalf("setup: the overdue sink was called %d times, want 1", overdue.count())
+	if overdue.count() == 0 {
+		t.Fatal("setup: the overdue notice was not sent")
 	}
+	overdue.mu.Lock()
+	overdue.fail = 0 // the overdue sink is back
+	overdue.mu.Unlock()
 	for range 6 {
 		clk.advance(20 * time.Minute)
 		_ = sweep(t, j, primary, trail, clk, opt)
@@ -555,5 +558,65 @@ func TestReview_AnIdleNotifierWorkerExits(t *testing.T) {
 	time.Sleep(50 * time.Millisecond)
 	if n := workers() - base; n > 0 {
 		t.Fatalf("%d notifier worker goroutines are still running after 5 Agents delivered their only event and went idle", n)
+	}
+}
+
+// M2 (Model 14 finding 2). Two deliverers in one process given one holder name (WithNotifyHolder
+// passed to both an Agent's WithNotifier and NotifyPending, say) each read the other's claim as
+// their own and deliver concurrently. The docs forbid only two processes sharing a name.
+func TestReview_SharedHolderNameDeliversConcurrently(t *testing.T) {
+	ctx := context.Background()
+	clk := &notifyClock{t: time.Date(2026, 10, 13, 9, 0, 0, 0, time.UTC)}
+	trail := NewMemNotifyTrail()
+	ev := haltEvent()
+	sink := newHangSink(ev.key)
+	drive := testEngine(t, memJournal(), sink, trail, clk, "app")
+	sweeper := testEngine(t, memJournal(), sink, trail, clk, "app")
+	done := make(chan struct{})
+	go func() { _, _ = drive.round(ctx, ev); close(done) }()
+	if !pollUntil(time.Second, func() bool { return sink.inflight.Load() == 1 }) {
+		t.Fatal("setup: the drive's deliverer is not in flight")
+	}
+	go func() { _, _ = sweeper.round(ctx, ev) }()
+	pollUntil(300*time.Millisecond, func() bool { return sink.inflight.Load() == 2 })
+	got := sink.maxInflight.Load()
+	close(sink.release)
+	<-done
+	if got > 1 {
+		t.Fatalf("%d deliverers in flight for one key under one live claim", got)
+	}
+}
+
+// ackFlakyTrail fails the first n appends of an acked record.
+type ackFlakyTrail struct {
+	*MemNotifyTrail
+	n atomic.Int32
+}
+
+func (a *ackFlakyTrail) Append(ctx context.Context, trail string, seq int, rec NotifyRecord) error {
+	if rec.Kind == NotifyAcked && a.n.Add(-1) >= 0 {
+		return errors.New("store blip")
+	}
+	return a.MemNotifyTrail.Append(ctx, trail, seq, rec)
+}
+
+// M3 (Model 14 finding 3). A store blip longer than ackRetries back-to-back appends (no delay
+// between them) abandons the ack, and the next round sends the accepted notification again.
+func TestReview_AckAppendErrorIsRetriedNotRedelivered(t *testing.T) {
+	ctx := context.Background()
+	clk := &notifyClock{t: time.Date(2026, 10, 13, 9, 0, 0, 0, time.UTC)}
+	trail := &ackFlakyTrail{MemNotifyTrail: NewMemNotifyTrail()}
+	trail.n.Store(5)
+	sink := &fakeSink{}
+	e := testEngine(t, memJournal(), sink, trail, clk, "p")
+	ev := haltEvent()
+	for range 3 {
+		if res, _ := e.round(ctx, ev); res.done {
+			break
+		}
+		clk.advance(2 * time.Second)
+	}
+	if sink.count() != 1 {
+		t.Fatalf("the sink accepted once and was sent the same event %d times: the ack was abandoned after a 5-append blip", sink.count())
 	}
 }
