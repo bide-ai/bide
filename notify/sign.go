@@ -5,6 +5,7 @@ import (
 	"crypto/hmac"
 	"crypto/sha256"
 	"encoding/hex"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"io"
@@ -29,6 +30,10 @@ const DefaultTolerance = 5 * time.Minute
 // unbounded body before the signature is checked.
 const maxVerifyBody = 1 << 20
 
+// maxSignatureEntries bounds how many v1 entries of Bide-Signature are looked at; a sender never
+// sends more than two (current and previous), so the rest is noise or an attack.
+const maxSignatureEntries = 8
+
 // Verification errors. A receiver can tell them apart, but should answer all of them with the same
 // 4xx so a sender learns nothing about which check failed.
 var (
@@ -38,6 +43,7 @@ var (
 	ErrBadSignature  = errors.New("notify: no signature matches")
 	ErrNoSecrets     = errors.New("notify: no secrets to verify with")
 	ErrBodyTooLarge  = errors.New("notify: request body too large to verify")
+	ErrDeliveryID    = errors.New("notify: Bide-Delivery does not match the signed id")
 	errSignatureRead = errors.New("notify: reading the request body")
 )
 
@@ -82,14 +88,31 @@ func verifyAt(r *http.Request, secrets []string, tolerance time.Duration, now ti
 		tolerance = DefaultTolerance
 	}
 	body, err := io.ReadAll(io.LimitReader(r.Body, maxVerifyBody+1))
+	// Whatever happens next, the handler (or an error page) still sees the bytes that were read.
+	r.Body = struct {
+		io.Reader
+		io.Closer
+	}{io.MultiReader(bytes.NewReader(body), r.Body), r.Body}
 	if err != nil {
 		return fmt.Errorf("%w: %v", errSignatureRead, err)
 	}
 	if len(body) > maxVerifyBody {
 		return ErrBodyTooLarge
 	}
-	r.Body = io.NopCloser(bytes.NewReader(body))
-	return VerifyBody(r.Header.Get(HeaderTimestamp), r.Header.Get(HeaderSignature), body, secrets, tolerance, now)
+	if err := VerifyBody(r.Header.Get(HeaderTimestamp), r.Header.Get(HeaderSignature), body, secrets, tolerance, now); err != nil {
+		return err
+	}
+	// The signature covers the body, not the headers, so the delivery ID a receiver dedupes on must
+	// be the signed one: otherwise a captured request replayed with a fresh header passes dedupe.
+	if h := r.Header.Get(HeaderDelivery); h != "" {
+		var p struct {
+			ID string `json:"id"`
+		}
+		if json.Unmarshal(body, &p) != nil || p.ID != h {
+			return ErrDeliveryID
+		}
+	}
+	return nil
 }
 
 // VerifyBody is Verify over parts the caller already holds, such as a stored body and its headers
@@ -115,10 +138,16 @@ func VerifyBody(timestamp, signature string, body []byte, secrets []string, tole
 	if err != nil {
 		return ErrBadTimestamp
 	}
-	// Signature first, then age: both always run, so the answer does not leak which one failed
-	// through timing, and a forged-but-fresh request is not told it was merely stale.
+	// One MAC per secret, however many entries the header holds; entries are compared to those.
+	macs := make([][]byte, len(live))
+	for i, sec := range live {
+		macs[i] = mac(sec, ts, body)
+	}
 	matched := false
-	for _, entry := range strings.Fields(signature) {
+	for n, entry := range strings.Fields(signature) {
+		if n >= maxSignatureEntries {
+			break
+		}
 		val, ok := strings.CutPrefix(entry, "v1=")
 		if !ok {
 			continue // an unknown scheme: ignore, so a later v2 can ride alongside
@@ -127,20 +156,23 @@ func VerifyBody(timestamp, signature string, body []byte, secrets []string, tole
 		if err != nil {
 			continue
 		}
-		for _, s := range live {
-			if hmac.Equal(got, mac(s, ts, body)) {
+		for _, m := range macs {
+			if hmac.Equal(got, m) {
 				matched = true
 			}
 		}
 	}
-	age := now.Sub(time.Unix(ts, 0))
-	if age < 0 {
-		age = -age
+	// Compare the instants themselves: a subtraction saturates for a far-future timestamp.
+	tolSec := int64(tolerance / time.Second)
+	if tolerance%time.Second != 0 {
+		tolSec++
 	}
+	nowSec := now.Unix()
+	stale := ts > nowSec+tolSec || ts < nowSec-tolSec
 	switch {
 	case !matched:
 		return ErrBadSignature
-	case age > tolerance:
+	case stale:
 		return ErrStale
 	}
 	return nil

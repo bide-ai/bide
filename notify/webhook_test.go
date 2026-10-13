@@ -6,6 +6,7 @@ import (
 	"errors"
 	"net/http"
 	"net/http/httptest"
+	"net/url"
 	"reflect"
 	"strconv"
 	"strings"
@@ -32,6 +33,8 @@ func TestNewWebhookHTTPSOnly(t *testing.T) {
 	bad := []string{
 		"http://example.com/hook",
 		"http://localhost.evil.com/hook",
+		"http://notlocalhost/hook",
+		"http://evillocalhost:8080/hook",
 		"http://127.0.0.1.evil.com/hook",
 		"http://evil.com/?h=localhost",
 		"http://10.0.0.1/hook",
@@ -613,5 +616,18 @@ func TestPayloadHasViewPointerNeverAnActionLink(t *testing.T) {
 	}
 	if shellWord("-rf") != "'-rf'" || shellWord("a'b") != `'a'\''b'` || shellWord("ok-1.2:x") != "ok-1.2:x" || shellWord("") != "''" {
 		t.Fatal("shellWord")
+	}
+}
+
+func TestProxyDefaults(t *testing.T) {
+	proxyOf := func(w *Webhook) bool { return w.client.Transport.(*http.Transport).Proxy != nil }
+	ca := newCA(t, "p")
+	plain, _ := NewWebhook("https://example.com/", WithSecrets("s", ""))
+	pinned, _ := NewWebhook("https://example.com/", WithSecrets("s", ""), WithServerPin(strings.Repeat("a", 64)))
+	rooted, _ := NewWebhook("https://example.com/", WithSecrets("s", ""), WithServerCAPEM(ca.pem))
+	explicit, _ := NewWebhook("https://example.com/", WithSecrets("s", ""), WithServerPin(strings.Repeat("a", 64)),
+		WithProxy(func(*http.Request) (*url.URL, error) { return nil, nil }))
+	if !proxyOf(plain) || proxyOf(pinned) || proxyOf(rooted) || !proxyOf(explicit) {
+		t.Fatalf("proxy: plain %v pinned %v rooted %v explicit %v", proxyOf(plain), proxyOf(pinned), proxyOf(rooted), proxyOf(explicit))
 	}
 }

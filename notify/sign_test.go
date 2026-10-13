@@ -181,3 +181,57 @@ func TestVerifyBodyStoredEvidence(t *testing.T) {
 		t.Fatal(err)
 	}
 }
+
+func TestVerifyBindsDeliveryHeaderToSignedID(t *testing.T) {
+	now := time.Now()
+	body := `{"schema":"bide.notification.v1","id":"abc123","key":"k"}`
+	mk := func(delivery string) *http.Request {
+		r := signedRequest([]string{"s"}, now, body)
+		if delivery != "" {
+			r.Header.Set(HeaderDelivery, delivery)
+		}
+		return r
+	}
+	if err := Verify(mk("abc123"), []string{"s"}, 0); err != nil {
+		t.Fatalf("matching header: %v", err)
+	}
+	if err := Verify(mk(""), []string{"s"}, 0); err != nil {
+		t.Fatalf("no header: %v", err)
+	}
+	if err := Verify(mk("other"), []string{"s"}, 0); !errors.Is(err, ErrDeliveryID) {
+		t.Fatalf("replay with a fresh header: %v", err)
+	}
+	// A body that is not a payload cannot vouch for any header.
+	r := signedRequest([]string{"s"}, now, "not json")
+	r.Header.Set(HeaderDelivery, "x")
+	if err := Verify(r, []string{"s"}, 0); !errors.Is(err, ErrDeliveryID) {
+		t.Fatalf("got %v", err)
+	}
+}
+
+func TestVerifyOnlyLooksAtTheFirstEntries(t *testing.T) {
+	now := time.Now()
+	body := []byte("b")
+	good := Sign([]string{"s"}, now.Unix(), body)
+	fake := strings.TrimSpace(strings.Repeat("v1="+strings.Repeat("ab", 32)+" ", maxSignatureEntries))
+	if err := VerifyBody(strconv.FormatInt(now.Unix(), 10), fake+" "+good, body, []string{"s"}, 0, now); !errors.Is(err, ErrBadSignature) {
+		t.Fatalf("an entry past the cap was honored: %v", err)
+	}
+	if err := VerifyBody(strconv.FormatInt(now.Unix(), 10), good+" "+fake, body, []string{"s"}, 0, now); err != nil {
+		t.Fatal(err)
+	}
+}
+
+func TestVerifyTooLargeLeavesBodyReadable(t *testing.T) {
+	big := bytes.Repeat([]byte("x"), maxVerifyBody+100)
+	r := httptest.NewRequest("POST", "/", bytes.NewReader(big))
+	r.Header.Set(HeaderTimestamp, "1")
+	r.Header.Set(HeaderSignature, "v1=00")
+	if err := Verify(r, []string{"s"}, 0); !errors.Is(err, ErrBodyTooLarge) {
+		t.Fatal(err)
+	}
+	got, _ := io.ReadAll(r.Body)
+	if len(got) != len(big) {
+		t.Fatalf("body after ErrBodyTooLarge: %d of %d bytes", len(got), len(big))
+	}
+}

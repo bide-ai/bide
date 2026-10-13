@@ -42,7 +42,7 @@ the first record of it.
 
 | Header | Value |
 |---|---|
-| `Bide-Delivery` | The notification ID, the same on every attempt of an event. Your dedupe key. |
+| `Bide-Delivery` | The notification ID, the same on every attempt of an event, and equal to the payload's `id`. Your dedupe key. The signature covers the body, so `Verify` checks that this header equals the signed `id`; dedupe on the body's `id` if you do not use `Verify`. |
 | `Bide-Timestamp` | Unix seconds when this request was sent. |
 | `Bide-Signature` | `v1=<hex>`, where hex is HMAC-SHA256 of `Bide-Timestamp + "." + body` under a secret. One `v1=` entry per secret, separated by spaces. |
 
@@ -62,6 +62,11 @@ work after replying.
 
 TLS is 1.2 at the minimum and 1.3 when the receiver offers it. Each delivery opens its own connection,
 so a rotated client certificate is used by the next delivery.
+
+The environment's proxy settings (`HTTPS_PROXY`, `NO_PROXY`) apply, except when `WithServerCA` or
+`WithServerPin` is set: then the webhook connects directly unless you give `notify.WithProxy`. A proxy
+only tunnels the TLS session; certificates, pins and the client certificate are still checked against
+the receiver, but the proxy sees the receiver's address and timing.
 
 ## Verify in your receiver
 
@@ -85,9 +90,9 @@ http.HandleFunc("/bide", func(w http.ResponseWriter, r *http.Request) {
 ```
 
 `Verify` reads the body (up to 1 MiB), recomputes the signature over the raw bytes, compares in
-constant time, and rejects a timestamp more than the tolerance from your clock, in either direction.
-It returns one of `ErrNoSignature`, `ErrBadTimestamp`, `ErrStale`, `ErrBadSignature`, `ErrNoSecrets`
-or `ErrBodyTooLarge`; answer all of them with the same 4xx so a sender learns nothing about which check
+constant time, and rejects a timestamp more than the tolerance from your clock, in either direction, and a `Bide-Delivery` header that is not the signed body's `id` (`ErrDeliveryID`). It computes one MAC per secret and looks at no more than 8 entries of the signature header, so a forged request costs the same however many entries it carries. If the body is larger than the limit it returns `ErrBodyTooLarge`, and `r.Body` still yields every byte.
+It returns one of `ErrNoSignature`, `ErrBadTimestamp`, `ErrStale`, `ErrBadSignature`, `ErrDeliveryID`,
+`ErrNoSecrets` or `ErrBodyTooLarge`; answer all of them with the same 4xx so a sender learns nothing about which check
 failed. A receiver in another language needs only the construction in the table above.
 
 To check a stored delivery later, as evidence, use `notify.VerifyBody` with the stored headers and body
@@ -184,8 +189,8 @@ hook, err := notify.NewWebhook("https://approvals.internal.example/bide",
 )
 ```
 
-- **Client certificate.** Re-read when the files change: the modification time is checked at most once
-  a minute, and again after a failed request and before a retry, so a rotated or short-lived
+- **Client certificate.** Re-read when the files change: the files' modification time, size and a hash
+  of their contents are checked at most once a minute, and again after a failed request and before a retry, so a rotated or short-lived
   certificate (cert-manager, SPIFFE) is picked up without a restart. A read that fails keeps the last
   good pair and reports the error to `WithOnError`; give it the function you pass to
   `agent.WithNotifyErrors`.
