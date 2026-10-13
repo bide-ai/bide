@@ -9,6 +9,8 @@ journal format can change between pre-releases without a version bump. Curated h
 
 ## [Unreleased]
 
+## [0.15.0] - 2026-10-13
+
 ### Added
 
 - `bide view` with no `-run` opens on a run list: each run's ID (linking to its page), kind, state (completed, halted: outcome unknown, waiting for approval, in progress, aborted, cancelled; the state the run page shows), when it started (`RunStart.StartedAt`; "none" for a run journaled by an earlier version, which recorded no start time) and its record count, newest first. It filters by state (with counts), kind and run ID substring, shows 50 rows with a "show more" link, and serves the same list as JSON at `/runs.json`. It reads SQLite, Postgres and exported journals, read-only, on loopback only, with no JavaScript. One load classifies at most 5,000 runs and says when it stops short. The guide's screenshot is of a demo journal any checkout can write (`BIDE_RUNLIST_DEMO=$PWD/runs.db go test ./cmd/bide -run TestRunListDemo`).
@@ -870,7 +872,8 @@ First public release.
 - `bide-audit` standalone verifier, prebuilt for Linux, macOS and Windows on amd64 and arm64.
 - `eval` statistical evaluation harness, `chaos` crash-injection harness, and `cmd/bench`.
 
-[Unreleased]: https://github.com/bide-ai/bide/compare/v0.14.1...HEAD
+[Unreleased]: https://github.com/bide-ai/bide/compare/v0.15.0...HEAD
+[0.15.0]: https://github.com/bide-ai/bide/compare/v0.14.1...v0.15.0
 [0.14.1]: https://github.com/bide-ai/bide/compare/v0.14.0...v0.14.1
 [0.14.0]: https://github.com/bide-ai/bide/compare/v0.13.0...v0.14.0
 [0.13.0]: https://github.com/bide-ai/bide/compare/v0.12.0...v0.13.0
