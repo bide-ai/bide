@@ -44,10 +44,10 @@ shot() { # name height dir command...: one screenshot of the command's output
   cat > "$work/$name.tape" <<TAPE
 Output "$work/$name.gif"
 Set Shell "bash"
-Set FontSize 20
+Set FontSize 16
 Set Width 1200
 Set Height $height
-Set Padding 28
+Set Padding 20
 Set Theme "Dracula"
 Set TypingSpeed 5ms
 Hide
@@ -67,7 +67,7 @@ TAPE
   echo "$img/$name.png"
 }
 
-shot cli-check-violation-dark 300 "$work" "bide check flows/refund-policy-bypass.yaml flows/refund-policy.yaml"
-shot cli-diff-weakened-dark 360 "$work" "bide check flows/refund-v1.yaml -diff flows/refund-v2.yaml -check"
-shot cli-audit-verified-dark 470 "$work/run" "bide audit verify-evidence -evidence evidence.json -pubkey log.pub"
-shot cli-audit-failed-dark 490 "$work/run" "bide audit verify-evidence -evidence evidence-edited.json -pubkey log.pub"
+shot cli-check-violation-dark 250 "$work" "bide check flows/refund-policy-bypass.yaml flows/refund-policy.yaml"
+shot cli-diff-weakened-dark 300 "$work" "bide check flows/refund-v1.yaml -diff flows/refund-v2.yaml -check"
+shot cli-audit-verified-dark 330 "$work/run" "bide audit verify-evidence -evidence evidence.json -pubkey log.pub"
+shot cli-audit-failed-dark 350 "$work/run" "bide audit verify-evidence -evidence evidence-edited.json -pubkey log.pub"

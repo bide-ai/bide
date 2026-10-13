@@ -504,7 +504,9 @@ Conventions shared across verbs:
   verbs read it; `bide audit -version -json` prints the same as JSON.
 - On a terminal the text report is colored: each `PASS`/`OK` line gains a green ✓, each `FAIL` line
   a red ✗, and a verify verb ends with a banner, `VERIFIED` in green (with the signed tree's size
-  and Merkle root, dimmed) or `FAILED` in red. The words are the same, so a reader who cannot tell
+  and Merkle root, dimmed) or `FAILED` in red. The note `verify-evidence` puts on every approver
+  decision line ("check the signatures and the count with VerifyApprovals") is said once, before
+  the banner, so each line fits the terminal. The words are otherwise the same, so a reader who cannot tell
   the colors apart loses nothing. Written to a file or a pipe, and under `-json`, the report is the
   plain text it always was. Every verb takes `-color=auto|always|never` (default `auto`), before or
   after the verb; `NO_COLOR` set to any value, or `TERM=dumb`, turns `auto` off.

@@ -194,9 +194,13 @@ func CheckDiffStyled(w io.Writer, d Diff, st term.Style) (weakened bool, err err
 		if len(v.Changes) == 1 {
 			changes = "change"
 		}
-		fmt.Fprintf(w, "%s: %s from %s %s; %s\n", name, st.Bold(fmt.Sprintf("%d %s", len(v.Changes), changes)), v.OldName,
-			st.Dim(fmt.Sprintf("(nodes: %d added, %d removed, %d changed; edges: %d added, %d removed, %d changed)", c.NodesAdded, c.NodesRemoved, c.NodesChanged, c.EdgesAdded, c.EdgesRemoved, c.EdgesChanged)),
-			st.Dim(v.DigestLine()))
+		counts := fmt.Sprintf("nodes: %d added, %d removed, %d changed; edges: %d added, %d removed, %d changed", c.NodesAdded, c.NodesRemoved, c.NodesChanged, c.EdgesAdded, c.EdgesRemoved, c.EdgesChanged)
+		if st.On() { // on a terminal the counts and the digest go on lines of their own, to fit its width
+			fmt.Fprintf(w, "%s: %s from %s\n%s%s\n%s%s\n", name, st.Bold(fmt.Sprintf("%d %s", len(v.Changes), changes)), v.OldName,
+				indent, st.Dim(counts), indent, st.Dim(v.DigestLine()))
+		} else {
+			fmt.Fprintf(w, "%s: %d %s from %s (%s); %s\n", name, len(v.Changes), changes, v.OldName, counts, v.DigestLine())
+		}
 	}
 	return len(v.Weakened) > 0, nil
 }

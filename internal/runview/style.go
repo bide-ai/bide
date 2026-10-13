@@ -1,6 +1,7 @@
 package runview
 
 import (
+	"fmt"
 	"regexp"
 	"strings"
 
@@ -28,6 +29,45 @@ func colorRisk(st term.Style, s string) string {
 		}
 		return st.OK(w)
 	})
+}
+
+// indent starts a line that continues the one above it, on a terminal.
+const indent = "    "
+
+// assertionMessage is plan's message for an assertion that is violated or cannot be decided:
+// assert[i] "<text>" is violated: <why> (counterexample: a -> b -> c).
+var assertionMessage = regexp.MustCompile(`^(assert\[\d+\]) ("(?:[^"\\]|\\.)*") (is violated|cannot be decided): (.*?)(?: \(counterexample: (.*)\))?$`)
+
+// assertionLines is a violated or undecided assertion on a terminal, over lines that fit its
+// width: the verdict and the assertion, then the reason, then the counterexample path in red with
+// the node it reaches in bold. ok is false when color is off or p is not such an assertion; the
+// plain output keeps plan's one line.
+func assertionLines(st term.Style, file string, p plan.ConfigProblem) (string, bool) {
+	m := assertionMessage.FindStringSubmatch(p.Message)
+	if !st.On() || m == nil {
+		return "", false
+	}
+	verdict := st.Fail("violated")
+	if m[3] == "cannot be decided" {
+		verdict = st.Warn("cannot be decided")
+	}
+	where := st.Dim(file)
+	if p.Node != "" {
+		where += ":" + st.Bold(p.Node)
+	}
+	s := fmt.Sprintf("%s%s: %s %s: %s\n%s%s\n", st.Cross(), where, m[1], verdict, m[2], indent, st.Dim(m[4]))
+	if m[5] != "" {
+		nodes := strings.Split(m[5], " -> ")
+		for i, n := range nodes {
+			if n == p.Node {
+				nodes[i] = st.BoldFail(n)
+			} else {
+				nodes[i] = st.Fail(n)
+			}
+		}
+		s += indent + st.Fail("counterexample:") + " " + strings.Join(nodes, st.Fail(" -> ")) + "\n"
+	}
+	return s, true
 }
 
 // cexMark opens the counterexample path plan appends to a violated assertion's message.

@@ -6,7 +6,6 @@ import (
 	"io"
 	"os"
 	"path/filepath"
-	"slices"
 	"strings"
 	"testing"
 
@@ -70,24 +69,25 @@ func TestCheckPlainGolden(t *testing.T) {
 }
 
 // TestCheckColorGolden: with -color=always the same lines carry color and marks, and a weakened
-// gate is called out first, in bold red. Without its escapes and marks, the colored output is the
-// plain output's lines.
+// gate is called out first, in bold red. A line too long for a terminal is split over indented
+// lines, so the colored output is checked to keep every word of the plain output.
 func TestCheckColorGolden(t *testing.T) {
 	for _, c := range colorCases {
 		_, out, _ := runBide(append(c.args, "-color=always")...)
 		golden(t, c.golden+".color", out)
 		_, plain := runBideOut(c.args...)
-		if got, want := sortedLines(unmark(stripANSI(out))), sortedLines(plain); got != want {
-			t.Errorf("%s: the colored output's words differ from the plain output's:\n%s\nwant:\n%s", c.golden, got, want)
+		if missing := missingWords(plain, stripANSI(out)); len(missing) > 0 {
+			t.Errorf("%s: the colored output lacks %q of the plain output's words:\n%s", c.golden, missing, stripANSI(out))
 		}
 	}
 	_, out, _ := runBide("check", flowBypass, "-color=always")
 	for _, want := range []string{
-		"\x1b[31m✗\x1b[0m ",                 // a cross on the error
-		"\x1b[31mis violated\x1b[0m",        // the verdict in red
-		"\x1b[1;31mcharge\x1b[0m)",          // the node the counterexample reaches, in bold red
-		"\x1b[31mvalidate\x1b[0m",           // the rest of the path in red
-		"\x1b[33mapproval >= 2 of 3\x1b[0m", // a gate in amber
+		"\x1b[31m✗\x1b[0m ",         // a cross on the error
+		"\x1b[31mviolated\x1b[0m: ", // the verdict in red
+		// the assertion in one color, then the reason and the path on lines of their own
+		`: "every path to charge passes approval >= 2 of 3"` + "\n    ",
+		"    \x1b[31mcounterexample:\x1b[0m \x1b[31mvalidate\x1b[0m", // the path in red
+		"\x1b[1;31mcharge\x1b[0m\n",                                  // the node it reaches, in bold red
 		"\x1b[31m1 violated\x1b[0m",
 		"\x1b[32m3 hold\x1b[0m",
 	} {
@@ -158,22 +158,28 @@ func runBideOut(args ...string) (int, string) {
 	return code, out
 }
 
-// unmark drops the marks a colored line starts with.
-func unmark(s string) string {
-	lines := strings.Split(s, "\n")
-	for i, l := range lines {
-		for _, m := range []string{"✓ ", "✗ ", "! ", "+ ", "- ", "~ "} {
-			l = strings.TrimPrefix(l, m)
-		}
-		lines[i] = l
+// missingWords lists the words of plain (split on spaces and punctuation) that colored lacks,
+// but "is": a violated assertion reads "violated" on a terminal and "is violated" in plain text.
+func missingWords(plain, colored string) []string {
+	split := func(s string) []string {
+		return strings.FieldsFunc(s, func(r rune) bool { return strings.ContainsRune(" \n\t\"(),;:", r) })
 	}
-	return strings.Join(lines, "\n")
-}
-
-func sortedLines(s string) string {
-	lines := strings.Split(s, "\n")
-	slices.Sort(lines)
-	return strings.Join(lines, "\n")
+	have := map[string]int{}
+	for _, w := range split(colored) {
+		have[w]++
+	}
+	var missing []string
+	for _, w := range split(plain) {
+		if w == "is" {
+			continue
+		}
+		if have[w] == 0 {
+			missing = append(missing, w)
+			continue
+		}
+		have[w]--
+	}
+	return missing
 }
 
 // stripANSI drops the SGR escapes from s.

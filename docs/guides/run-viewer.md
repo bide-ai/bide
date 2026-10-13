@@ -390,9 +390,10 @@ flows/refund-policy-bypass.yaml:charge: assert[0] "every path to charge passes a
 flows/refund-policy-bypass.yaml: 4 assertions: 3 hold, 1 violated, 0 undecided or invalid
 ```
 
-On a terminal the same lines are colored: a red ✗ on the error, the counterexample path in red with
-the node it reaches in bold, the gate in amber, and a green ✓ on a file whose assertions all hold
-(see [Color](#color)):
+On a terminal the violation is split over lines that fit the terminal: a red ✗ and the assertion,
+then the reason, dimmed, then the counterexample path in red with the node it reaches in bold; a
+file whose assertions all hold gets a green ✓ (see [Color](#color)). Piped or redirected, it is the
+one line above:
 
 <img src="./img/cli-check-violation-dark.png" alt="bide check on a terminal: the violated assertion marked with a red cross, its counterexample validate -> lookup -> charge in red with charge in bold, and the holding file marked with a green check">
 
@@ -476,8 +477,9 @@ flows/refund-v1.yaml: approval policy weakened: charge: approval 2 of 3 -> 1 of 
 flows/refund-v1.yaml: 5 changes from flows/refund-v2.yaml (nodes: 1 added, 1 removed, 1 changed; edges: 1 added, 1 removed, 0 changed); digest not computed: the check is structural (the digest commits to the blocks' Go types; see plan/planview)
 ```
 
-On a terminal the lines are colored as the page is (added green, removed red, changed amber), and
-the weakened gate moves to the top, in bold red:
+On a terminal the lines are colored as the page is (added green, removed red, changed amber), the
+weakened gate moves to the top, in bold red, and the summary's counts and digest go on lines of
+their own:
 
 <img src="./img/cli-diff-weakened-dark.png" alt="bide check -diff -check on a terminal: approval policy weakened called out first in bold red, then the changes with added in green, removed in red and changed in amber">
 

@@ -103,6 +103,7 @@ type cli struct {
 	color          term.Mode       // -color
 	st             term.Style      // the report's colors: off under -json and off a terminal
 	head           *audit.TreeHead // the signed tree a verify verb checked, for the banner
+	approverNote   bool            // a styled line dropped approverNote, which the banner says once
 }
 
 func (c *cli) printf(format string, args ...any) { c.write(fmt.Sprintf(format, args...)) }

@@ -278,6 +278,10 @@ func CheckStyled(w io.Writer, c Config, st term.Style) bool {
 		if where == "" && (p.From != "" || p.To != "") {
 			where = p.From + "->" + p.To
 		}
+		if lines, ok := assertionLines(st, c.Name, p); ok {
+			fmt.Fprint(w, lines)
+			continue
+		}
 		mark, msg := st.Cross(), problemText(st, p)
 		if p.Severity == "warning" {
 			mark, msg = st.Bang(), st.Warn("warning:")+" "+colorRisk(st, p.Message)

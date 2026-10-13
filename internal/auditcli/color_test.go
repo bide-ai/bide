@@ -141,3 +141,25 @@ func treeSize(t *testing.T, path string) string {
 	readFixture(t, path, &b)
 	return strings.TrimSpace(string(must(json.Marshal(b.STH.Size))))
 }
+
+// TestApproverNoteOnce: on a terminal, the parenthetical audit puts on every approver decision line
+// is dropped from each line and said once, dimmed, before the banner; plain lines keep it.
+func TestApproverNoteOnce(t *testing.T) {
+	line := "PASS  ops: approver decision included in the signed log" + approverNote
+	c := &cli{st: term.New(true)}
+	if got := c.styleLine(line); strings.Contains(got, "VerifyApprovals") || !strings.HasSuffix(got, "included in the signed log") {
+		t.Errorf("styled approver line: %q", got)
+	}
+	if b := c.banner(exitVerified); !strings.Contains(b, "\x1b[2mnote: an approver line proves the decision is logged; verify-approvals checks the signatures and the count\x1b[0m") {
+		t.Errorf("banner without the note: %q", b)
+	}
+	if b := (&cli{st: term.New(true)}).banner(exitVerified); strings.Contains(b, "note:") {
+		t.Errorf("banner with a note no line dropped: %q", b)
+	}
+	var out strings.Builder
+	plain := &cli{out: &out}
+	plain.println(line)
+	if out.String() != line+"\n" {
+		t.Errorf("plain line changed: %q", out.String())
+	}
+}

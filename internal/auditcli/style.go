@@ -16,9 +16,16 @@ import (
 // dimmed are the details a reader can skim: a signed tree's size, and hex digests and roots.
 var dimmed = regexp.MustCompile(`signed tree of size \d+|\b[0-9a-f]{32,}\b`)
 
+// approverNote is the parenthetical audit puts on every approver decision line of an evidence
+// report. On a terminal it is said once, at the end, so each line fits the terminal's width.
+const approverNote = " (check the signatures and the count with VerifyApprovals)"
+
 // styleLine is one report line in c's colors.
 func (c *cli) styleLine(line string) string {
 	st := c.st
+	if l, ok := strings.CutSuffix(line, approverNote); ok {
+		line, c.approverNote = l, true
+	}
 	for _, p := range []struct {
 		prefix string
 		style  func(string) string
@@ -82,11 +89,15 @@ func (c *cli) banner(code int) string {
 	default:
 		head = st.Cross() + st.BoldFail("NO VERDICT")
 	}
+	var note string
+	if c.approverNote {
+		note = "\n" + st.Dim("note: an approver line proves the decision is logged; verify-approvals checks the signatures and the count")
+	}
 	detail := fmt.Sprintf("exit %d", code)
 	if c.head != nil {
 		detail = fmt.Sprintf("tree size %d · merkle root %s · %s", c.head.Size, hex.EncodeToString(c.head.Root), detail)
 	}
-	return "\n" + head + "  " + st.Dim(detail) + "\n"
+	return note + "\n" + head + "  " + st.Dim(detail) + "\n"
 }
 
 // checked records the signed tree head a verb checked, for the banner.
