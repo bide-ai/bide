@@ -208,7 +208,7 @@ func TestRetriesAndBackoff(t *testing.T) {
 	t.Run("4xx is permanent for the round", func(t *testing.T) {
 		for _, code := range []int{400, 401, 403, 404, 410} {
 			stamps, codes = nil, []int{code, 200}
-			w, sleeps := fastWebhook(t, srv.URL)
+			w, sleeps := fastWebhook(t, srv.URL, WithRequestsPerCall(3))
 			err := w.Notify(context.Background(), sampleApproval())
 			var pe *PermanentError
 			if !errors.As(err, &pe) || pe.Status != code || !errors.Is(err, agent.ErrNotifyPermanent) {
@@ -329,7 +329,7 @@ func TestTimeoutIsRetried(t *testing.T) {
 
 func TestCancelledDuringBackoff(t *testing.T) {
 	srv := newPlainServer(t, func(w http.ResponseWriter, r *http.Request) { w.WriteHeader(500) })
-	w, _ := fastWebhook(t, srv.URL)
+	w, _ := fastWebhook(t, srv.URL, WithRequestsPerCall(3))
 	ctx, cancel := context.WithCancel(context.Background())
 	w.sleep = func(ctx context.Context, d time.Duration) error { cancel(); return ctx.Err() }
 	err := w.Notify(ctx, sampleApproval())

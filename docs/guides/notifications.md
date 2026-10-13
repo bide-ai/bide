@@ -49,12 +49,16 @@ the first record of it.
 The signature covers the timestamp, so a captured request cannot be replayed with a fresh one. It is
 always on, over every transport.
 
-Delivery is at least once. A round makes up to 3 requests with a 1 s then 2 s backoff (plus jitter),
-honors `Retry-After` on a 429 (capped at 60 s), and retries network errors, timeouts, 429 and 5xx. Any
-other 4xx ends the round with `agent.ErrNotifyPermanent`; the notifier still tries again in a later
-round, since a receiver's configuration can change. Redirects are never followed: a signed body does
-not go anywhere you did not name. A response is accepted only when it is 2xx, so answer quickly and do
-the work after replying.
+Delivery is at least once. The notifier core runs up to 3 calls per round with its own backoff, and each
+`Notify` call makes one request with a per-request timeout (10 s by default) that also honors the
+deadline the core gives the call. A 429 or 5xx with `Retry-After` is waited out (capped at 60 s, never
+past that deadline) before the call returns, so the next call does not arrive early. A caller that uses
+the webhook without the core can set `notify.WithRequestsPerCall(3)` for 1 s then 2 s of backoff between
+requests in one call. Network errors, timeouts, 429 and 5xx are retried; any other 4xx is an error
+wrapping `agent.ErrNotifyPermanent`, which ends the round (the core still tries again in a later round,
+since a receiver's configuration can change). Redirects are never followed: a signed body does not go
+anywhere you did not name. A response is accepted only when it is 2xx, so answer quickly and do the
+work after replying.
 
 TLS is 1.2 at the minimum and 1.3 when the receiver offers it. Each delivery opens its own connection,
 so a rotated client certificate is used by the next delivery.
