@@ -6,6 +6,7 @@ package agent
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"runtime"
@@ -447,11 +448,18 @@ func TestReview_ADecidedGateIsNotReported(t *testing.T) {
 func TestReview_AnAbortedRunHasACatchUpPath(t *testing.T) {
 	ctx := context.Background()
 	j := memJournal()
+	clk := sweepClock()
+	// An aborted run has a run:start, which records when it started: that is the time the sweep
+	// bounds a run_aborted catch-up by (the abort itself records none).
+	started := RunStart{StartedAt: clk.now().Add(-time.Hour).UTC().Format(time.RFC3339Nano)}
+	startJSON, _ := json.Marshal(started)
+	if _, _, err := j.putEntry(ctx, "r", runStartStep, Record{Kind: StepValue, Result: startJSON}); err != nil {
+		t.Fatal(err)
+	}
 	if _, _, err := j.putEntry(ctx, "r", runAbortedStep, Record{Kind: StepValue, Result: mustJSON("refund failed; rolled back")}); err != nil {
 		t.Fatal(err)
 	}
 	trail, sink := NewMemNotifyTrail(), &fakeSink{}
-	clk := sweepClock()
 	_, _ = Recover(ctx, j, func(context.Context, string, RunStart) error { return nil }, WithNotifier(sink, trail, fixedNotifyClock(clk)))
 	_ = sweep(t, j, sink, trail, clk)
 	if sink.count() == 0 {

@@ -6,6 +6,7 @@ import (
 	"errors"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"testing"
 	"time"
 )
@@ -246,5 +247,78 @@ func TestNotifyPending_AndADriveInOneProcessAreTwoHolders(t *testing.T) {
 	close(block)
 	if err := a.FlushNotifications(ctx); err != nil {
 		t.Fatal(err)
+	}
+}
+
+func putStart(t *testing.T, j *Journal, run string, at time.Time) {
+	t.Helper()
+	b, _ := json.Marshal(RunStart{StartedAt: at.UTC().Format(time.RFC3339Nano)})
+	if _, _, err := j.putEntry(context.Background(), run, runStartStep, Record{Kind: StepValue, Result: b}); err != nil {
+		t.Fatal(err)
+	}
+}
+
+func putAbort(t *testing.T, j *Journal, run string) {
+	t.Helper()
+	if _, _, err := j.putEntry(context.Background(), run, runAbortedStep, Record{Kind: StepValue, Result: []byte(`"rolled back"`)}); err != nil {
+		t.Fatal(err)
+	}
+}
+
+// The sweep raises run_aborted only for a recent abort, by the run's start (the abort records no
+// time), so enabling it does not page for every run that ever aborted.
+func TestNotifyPending_AbortedRunsAreBoundedByAge(t *testing.T) {
+	clk := sweepClock()
+	j := memJournal()
+	putStart(t, j, "recent", clk.now().Add(-2*time.Hour))
+	putAbort(t, j, "recent")
+	putStart(t, j, "old", clk.now().Add(-48*time.Hour))
+	putAbort(t, j, "old")
+	putAbort(t, j, "untimed") // no run:start: its age is unknown
+	sink := &fakeSink{}
+	if err := sweep(t, j, sink, NewMemNotifyTrail(), clk); err != nil {
+		t.Fatal(err)
+	}
+	if sink.count() != 1 || sink.calls[0].RunID != "recent" || sink.calls[0].Kind != NotificationRunAborted {
+		t.Fatalf("default window: %+v", sink.calls)
+	}
+	wide := &fakeSink{}
+	if err := sweep(t, j, wide, NewMemNotifyTrail(), clk, WithNotifyAbortedWithin(72*time.Hour)); err != nil || wide.count() != 2 {
+		t.Fatalf("a 72 hour window: %v, %d notifications, want recent and old", err, wide.count())
+	}
+	if err := sweep(t, j, &fakeSink{}, NewMemNotifyTrail(), clk, WithNotifyAbortedWithin(0)); !errors.Is(err, ErrConfig) {
+		t.Fatalf("a zero window: %v", err)
+	}
+}
+
+// failGetStore fails Get while armed.
+type failGetStore struct {
+	Store
+	armed atomic.Bool
+}
+
+func (f *failGetStore) Unwrap() Store { return f.Store }
+func (f *failGetStore) Get(ctx context.Context, runID, name string) (Entry, bool, error) {
+	if f.armed.Load() {
+		return Entry{}, false, errors.New("store blip")
+	}
+	return f.Store.Get(ctx, runID, name)
+}
+
+// If the attempt marker of an untimed halt cannot be read, the event is not queued under a guessed
+// key (which could be the previous attempt's, and so dropped as already acknowledged); the next
+// drive or sweep raises it.
+func TestNotifier_AHaltWhoseMarkerCannotBeReadIsNotQueuedUnderAGuess(t *testing.T) {
+	st := &failGetStore{Store: markerAt(t, 0)}
+	j := mustJournal(st)
+	e := testEngine(t, j, &fakeSink{}, NewMemNotifyTrail(), &notifyClock{t: time.Now()}, "p")
+	halt := &OutcomeUnknown{RunRef: RunRef{RunID: "r", RootRunID: "r"}, Op: OpRef{Kind: OpTool, ID: "c1"}, Cause: HaltCrashed}
+	st.armed.Store(true)
+	if ev, ok := e.eventFromErr("r", halt); ok {
+		t.Fatalf("queued %q although the marker could not be read", ev.key)
+	}
+	st.armed.Store(false)
+	if ev, ok := e.eventFromErr("r", halt); !ok || ev.key == "" {
+		t.Fatal("the halt was not queued once the marker could be read")
 	}
 }

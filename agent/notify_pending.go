@@ -64,7 +64,14 @@ func NotifyPending(ctx context.Context, j *Journal, n Notifier, trail NotifyTrai
 				continue
 			} else if aborted {
 				// An aborted run is over, so no recovery pass lists it: the sweep is the only catch-up
-				// for an abort whose drive died before it recorded the event.
+				// for an abort whose drive died before it recorded the event. Only a recent one: the
+				// journal records no time for the abort, so the run's start stands for it.
+				if start, ok, serr := RecordedStart(ctx, j, runID); serr != nil {
+					errs = append(errs, fmt.Errorf("notification sweep: read run %s: %w", runID, serr))
+					continue
+				} else if t, has := start.Started(); !ok || !has || e.cfg.now().Sub(t) > e.cfg.abortedWithin {
+					continue
+				}
 				ev := notifyEvent{key: AbortedKey(runID), kind: NotificationRunAborted, runID: runID, reason: "saga_aborted"}
 				if _, err := e.round(ctx, ev); err != nil {
 					errs = append(errs, fmt.Errorf("notification sweep: run %s: %w", runID, err))

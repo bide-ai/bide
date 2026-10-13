@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"time"
 )
 
 // eventFromErr maps the error a drive of runID ended with to the event it raises, if it raises one.
@@ -12,8 +13,13 @@ func (e *notifyEngine) eventFromErr(runID string, err error) (notifyEvent, bool)
 		return notifyEvent{}, false
 	}
 	if h, ok := errors.AsType[*OutcomeUnknown](err); ok {
+		attempt, aerr := e.haltAttempt(h)
+		if aerr != nil {
+			e.report(fmt.Errorf("notify: halt of %s not queued, its attempt marker could not be read (a later drive or sweep raises it): %w", h.Op.ID, aerr))
+			return notifyEvent{}, false
+		}
 		return notifyEvent{
-			key: HaltedKey(h.RunID, h.Op.Kind, h.Op.ID, e.haltAttempt(h)), kind: NotificationOutcomeUnknown, runID: rootOr(runID, h.RunRef), opRun: h.RunID,
+			key: HaltedKey(h.RunID, h.Op.Kind, h.Op.ID, attempt), kind: NotificationOutcomeUnknown, runID: rootOr(runID, h.RunRef), opRun: h.RunID,
 			eventAt: h.AttemptedAt, halt: &NotifyHalt{Op: h.Op, Cause: h.Cause, AttemptedAt: h.AttemptedAt}, err: err,
 		}, true
 	}
@@ -39,33 +45,42 @@ func (e *notifyEngine) eventFromErr(runID string, err error) (notifyEvent, bool)
 // negative of one more than its generation, so the first attempt of an untimed marker, and each
 // numbered re-attempt after a not-started record, are different events. A marker whose generation
 // cannot be read counts as -1.
-func (e *notifyEngine) haltAttempt(h *OutcomeUnknown) int64 {
+func (e *notifyEngine) haltAttempt(h *OutcomeUnknown) (int64, error) {
 	if !h.AttemptedAt.IsZero() {
-		return h.AttemptedAt.UnixMilli()
+		return h.AttemptedAt.UnixMilli(), nil
 	}
 	if e.j == nil {
-		return -1
+		return -1, nil
 	}
 	base := toolAttemptStep(h.Op.ID)
 	if h.Op.Kind == OpStep {
 		base = stepAttemptStep(h.Op.ID)
 	}
-	return -int64(e.liveGeneration(context.Background(), h.RunID, base)) - 1
+	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
+	defer cancel()
+	gen, err := e.liveGeneration(ctx, h.RunID, base)
+	if err != nil {
+		return 0, err
+	}
+	return -int64(gen) - 1, nil
 }
 
 // liveGeneration is the generation of the live attempt of the effect whose first marker key is
 // base: 0 for the first attempt, n for the n-th re-attempt (see journal.liveAttempt).
-func (e *notifyEngine) liveGeneration(ctx context.Context, runID, base string) int {
+func (e *notifyEngine) liveGeneration(ctx context.Context, runID, base string) (int, error) {
 	for gen := 0; ; gen++ {
 		key := retryAttemptStep(base, gen)
 		marker, ok, err := e.j.Get(ctx, runID, key)
-		if err != nil || !ok {
-			return max(gen-1, 0)
+		if err != nil {
+			return 0, err
+		}
+		if !ok {
+			return max(gen-1, 0), nil
 		}
 		if v, err := e.j.voided(ctx, runID, key, marker); err != nil {
-			return gen
+			return 0, err
 		} else if !v {
-			return gen
+			return gen, nil
 		}
 	}
 }

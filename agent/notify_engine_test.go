@@ -295,7 +295,7 @@ func TestNotifyRound_AnUnrecordedAckIsNotSentAgainByTheSameProcess(t *testing.T)
 	e1 := testEngine(t, memJournal(), sink2, ft2, clk, "p1")
 	_, _ = e1.round(ctx, haltEvent())
 	ft2.set(0)
-	clk.advance(3 * time.Minute) // the claim has lapsed; the event is not yet overdue
+	clk.advance(4*time.Minute + 10*time.Second) // the claim and its skew margin have lapsed; the event is not yet overdue
 	e2 := testEngine(t, memJournal(), sink2, ft2, clk, "p1")
 	if res, err := e2.round(ctx, haltEvent()); err != nil || !res.done {
 		t.Fatalf("after restart = %+v, %v", res, err)
