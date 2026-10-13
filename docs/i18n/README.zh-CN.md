@@ -22,7 +22,7 @@ brew install bide-ai/tap/bide
 bide demo
 # 2. 构建：一个带 2/3 审批门的 plan 流程，基于 SQLite，无需 API key
 bide init refund && cd refund && go mod tidy && go run .
-# 3. 检查：在本地只读页面中查看这次运行
+# 3. 检查：在本地只读页面中查看这次运行（会打印要打开的地址）
 bide view -db run.db
 # 4. 证明：离线验证这次运行的证据
 bide audit verify-evidence -evidence evidence.json -pubkey keys/log.pub

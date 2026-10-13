@@ -47,6 +47,9 @@ type regBlock struct {
 	// renders identically to a hand-built one. Empty for a Step or Tool block, whose
 	// behavior lives in run instead.
 	prompt string
+	// outSchema is the JSON schema of a kindModel block's output type, recorded by
+	// RegisterModel and threaded onto the assembled node (see node.outSchema).
+	outSchema json.RawMessage
 	// safety is the retry-on-resume classification the loaded node carries, mirroring
 	// Builder-side node.safety. RegisterTool auto-derives it from the wrapped
 	// agent.Tool; RegisterStep/RegisterModel take it from a NodeOption at
@@ -350,12 +353,13 @@ func (r *Registry) RegisterModel[I, O any](name, prompt string, opts ...NodeOpti
 		return err
 	}
 	return r.registerBlock(name, &regBlock{
-		approval: gate,
-		kind:     kindModel,
-		inType:   reflect.TypeFor[I](),
-		outType:  reflect.TypeFor[O](),
-		safety:   safetyFromOptions(modelSafety, opts),
-		prompt:   prompt,
+		approval:  gate,
+		kind:      kindModel,
+		inType:    reflect.TypeFor[I](),
+		outType:   reflect.TypeFor[O](),
+		safety:    safetyFromOptions(modelSafety, opts),
+		prompt:    prompt,
+		outSchema: outputSchema[O](),
 		// run is nil for a Model block: runNode dispatches a kindModel node to runModel,
 		// which reads the flow's bound model at run time (see Builder.Model / WithModel).
 	})

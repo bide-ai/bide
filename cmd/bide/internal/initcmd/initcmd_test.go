@@ -105,3 +105,63 @@ func TestFiles(t *testing.T) {
 		t.Errorf("README.md does not start with the project's name:\n%.80s", b)
 	}
 }
+
+// TestResetCommandIsShellSafe: the README's "Start over" command runs in sh and in zsh, each when it is
+// installed (zsh refuses a glob that matches nothing, so the command names its files), both on a
+// directory holding every file a run writes and on one holding none, and leaves only the keys.
+func TestResetCommandIsShellSafe(t *testing.T) {
+	b, err := tmpl.ReadFile("template/README.md.tmpl")
+	if err != nil {
+		t.Fatal(err)
+	}
+	// A Windows checkout may hold the embedded template with CRLF (core.autocrlf); bide init
+	// writes it with LF.
+	_, after, _ := strings.Cut(strings.ReplaceAll(string(b), "\r\n", "\n"), "## Start over")
+	_, block, _ := strings.Cut(after, "```sh\n")
+	reset, _, _ := strings.Cut(block, "\n```")
+	if !strings.HasPrefix(reset, "rm ") || strings.Contains(reset, "\n") {
+		t.Fatalf("the Start over block is not one rm command:\n%s", reset)
+	}
+	runFiles := []string{"run.db", "run.db-wal", "run.db-shm", "refunds.log", "evidence.json", "approver-keys.json", ".crashed-notify"}
+	var shells []string
+	for _, sh := range []string{"sh", "zsh"} {
+		if _, err := exec.LookPath(sh); err == nil {
+			shells = append(shells, sh)
+		}
+	}
+	if len(shells) == 0 {
+		t.Skip("no sh or zsh on this system")
+	}
+	for _, sh := range shells {
+		for _, present := range []bool{true, false} {
+			dir := t.TempDir()
+			if err := os.MkdirAll(filepath.Join(dir, "keys"), 0o700); err != nil {
+				t.Fatal(err)
+			}
+			keep := filepath.Join(dir, "keys", "keys.json")
+			if err := os.WriteFile(keep, nil, 0o600); err != nil {
+				t.Fatal(err)
+			}
+			if present {
+				for _, f := range runFiles {
+					if err := os.WriteFile(filepath.Join(dir, f), nil, 0o644); err != nil {
+						t.Fatal(err)
+					}
+				}
+			}
+			cmd := exec.Command(sh, "-c", reset)
+			cmd.Dir = dir
+			if out, err := cmd.CombinedOutput(); err != nil {
+				t.Fatalf("%s, run files present %v: %v\n%s", sh, present, err, out)
+			}
+			for _, f := range runFiles {
+				if _, err := os.Stat(filepath.Join(dir, f)); err == nil {
+					t.Errorf("%s: %s survived the reset", sh, f)
+				}
+			}
+			if _, err := os.Stat(keep); err != nil {
+				t.Errorf("%s: the reset removed keys/keys.json: %v", sh, err)
+			}
+		}
+	}
+}

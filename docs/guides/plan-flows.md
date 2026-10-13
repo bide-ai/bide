@@ -76,7 +76,11 @@ out, err := flow.Run(ctx, journal, runID, order)           // Order in, Receipt 
   - `Model[I, O](name, prompt)` is a model turn: bind a model with `Builder.WithModel(m)` (or, in a
     declarative config, `Load`'s `WithLoadedModel`). The node renders `prompt` as a `text/template` over the
     typed input `I`, calls the bound model, and decodes the structured response into `O` (so `O` must
-    be JSON-shaped and the prompt should ask for matching JSON). Build errors if a `Model` node has no
+    be JSON-shaped). A model that honours a response format (`agent.ModelInfoOf` reports
+    `ResponseFormat`: `model/openai`, `model/gemini`) is sent `O`'s JSON schema as the provider's
+    structured output, so it answers with `O`'s JSON, each field of its schema type, with no prose
+    or code fence. Any other model (`model/anthropic`, or one that does not describe itself) is sent
+    no schema, so the prompt should still name the fields and their types. Build errors if a `Model` node has no
     bound model, naming it. A `Model` node is `ReadOnly` by default: it calls no tool and changes
     nothing outside the run, so a call whose outcome is unknown (a crash lost its result, or the call
     failed: the provider errored or the reply did not decode into `O`) is made again on the next drive
@@ -572,8 +576,9 @@ core dependency, so the two formats are just front-ends to one loader.
   than one producer without a Join, more than one Switch over a step, a Switch and an Edge from the
   same step, a Switch inside a loop body other than the loop's own (so no nested loops), and an Edge
   that leaves a loop body or enters it past its head.
-- `Model` decodes the response as JSON into `O` (no derived response schema yet), so `O` must be
-  JSON-shaped and the prompt should instruct JSON output.
+- `Model` decodes the response as JSON into `O`, so `O` must be JSON-shaped. Only a model that
+  honours a response format is sent `O`'s schema (structured output); for any other model the
+  prompt should instruct JSON output, naming each field's type.
 - Requires Go 1.27.
 
 ## A runnable example

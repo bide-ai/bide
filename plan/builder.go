@@ -10,6 +10,7 @@ import (
 
 	"github.com/bide-ai/bide/agent"
 	"github.com/bide-ai/bide/internal/toolhook"
+	"github.com/bide-ai/bide/schema"
 )
 
 // New constructs a flow builder whose input is In and output is Out, both pinned
@@ -406,9 +407,13 @@ func (b *Builder[In, Out]) WithModel(m agent.Model) *Builder[In, Out] {
 //
 // At run time the node (see runModel): renders prompt as a Go text/template with the
 // decoded input I as its data (so {{.Field}} references the input's fields), sends
-// the rendered text as a single user message to the model bound with WithModel under
-// a JSON-schema response format derived from O, then decodes the model's text
-// response into O. The model must therefore be bound with Builder.WithModel before
+// the rendered text as a single user message to the model bound with WithModel, then
+// decodes the model's text response into O. To a model that honours
+// Request.ResponseFormat (agent.ModelInfoOf reports it: model/openai, model/gemini) the
+// request carries O's JSON schema (schema.For[O]) as the response format, so the
+// provider's structured output constrains the reply to O's JSON; to any other model
+// (model/anthropic, or a model that does not describe itself) it carries none, and the
+// prompt must ask for the JSON. The model must therefore be bound with Builder.WithModel before
 // Build; a flow declaring a Model step with no bound model fails Build, naming the
 // node. O must be a JSON-shaped type (a struct is the usual structured-output shape),
 // because the model's response is decoded as JSON into O.
@@ -423,16 +428,28 @@ func (b *Builder[In, Out]) WithModel(m agent.Model) *Builder[In, Out] {
 // call in a Step.
 func (b *Builder[In, Out]) Model[I, O any](name, prompt string, opts ...NodeOption) Handle[I, O] {
 	b.core.register(applyNodeOptions(&node{
-		name:    name,
-		kind:    kindModel,
-		inType:  typeOf[I](),
-		outType: typeOf[O](),
-		prompt:  prompt,
-		safety:  modelSafety, // the default; an option below overrides it
+		name:      name,
+		kind:      kindModel,
+		inType:    typeOf[I](),
+		outType:   typeOf[O](),
+		prompt:    prompt,
+		outSchema: outputSchema[O](),
+		safety:    modelSafety, // the default; an option below overrides it
 		// run is nil for a kindModel node: runNode dispatches to runModel, which reads
 		// the flow's bound model at run time (it is not known here at construction).
 	}, opts))
 	return Handle[I, O]{name: name, b: b.core}
+}
+
+// outputSchema is O's JSON schema for a Model node's response format, or nil when the
+// schema package cannot describe O (the node then asks for free-form text and decodes it,
+// as it does for a model that honours no response format).
+func outputSchema[O any]() json.RawMessage {
+	s, err := schema.For[O]()
+	if err != nil {
+		return nil
+	}
+	return s
 }
 
 // callTool calls a wrapped agent tool as the agent does: under its ToolSpec.Timeout when that is

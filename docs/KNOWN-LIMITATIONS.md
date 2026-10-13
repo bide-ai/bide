@@ -264,8 +264,9 @@ step: for example, a step fed by several producers without a join, or nested loo
 runs is recorded per node and per loop iteration; an `Interrupt`, `Await` or `Sleep` it takes is not,
 so give a pause inside a loop body a name unique per iteration. See [Plan flows](guides/plan-flows.md).
 
-**`Model` nodes expect JSON.** A `Model` node decodes the reply as JSON into its output type, so
-prompt the model for JSON. See [Plan flows](guides/plan-flows.md#limits).
+**`Model` nodes expect JSON.** A `Model` node decodes the reply as JSON into its output type. A
+model with structured output (`model/openai`, `model/gemini`) is sent the type's JSON schema; for
+any other (`model/anthropic`), prompt the model for JSON. See [Plan flows](guides/plan-flows.md#limits).
 
 ## Audit and proofs
 

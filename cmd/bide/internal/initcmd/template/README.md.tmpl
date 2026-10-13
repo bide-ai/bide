@@ -24,10 +24,19 @@ the first run), the run resumes and refunds once, and it writes `evidence.json` 
 `approver-keys.json`. Run it again: it reads the finished run back from the journal and refunds
 nothing. `go test` runs the same story and checks it.
 
+## Start over
+
+The journal in `run.db` keeps the finished run, so `go run .` reads it back and calls nothing. To
+run the story again from the start, delete the run's files (the keys in `keys/` stay):
+
+```sh
+rm -f run.db run.db-wal run.db-shm refunds.log evidence.json approver-keys.json .crashed-notify
+```
+
 ## Watch it recover from a crash
 
 ```sh
-rm -rf run.db* refunds.log .crashed-*   # start over
+# first start over (above), then:
 BIDE_CRASH=notify go run .              # the process dies inside notify, after the refund ran
 go run .                                # "recovered 1 interrupted run(s)": it finishes, refunding nothing again
 cat refunds.log                         # one refund
@@ -62,8 +71,11 @@ bide audit verify-approvals -evidence evidence.json -pubkey keys/log.pub -call n
 
 Then:
 
-- Use a real model: set `OPENROUTER_API_KEY` (or `OPENAI_API_KEY`) and uncomment the marked block
-  in `model()` and the `model/openai` import. The scripted model stays the default with no key.
+- Use a real model: set `OPENROUTER_API_KEY` (or `OPENAI_API_KEY`), uncomment the marked block in
+  `model()` and the `model/openai` import, and [start over](#start-over) first: a finished run is
+  read back from the journal, so the new model would not be called. The model is sent the `Refund`
+  type's JSON schema (structured output), so it answers with that JSON. The scripted model stays
+  the default with no key.
 - Add a node: a block in `main.go`, a line in `flow.yaml`, and `bide check flow.yaml`.
 - Read the guides: plan flows, human approval and audit, at https://bide-ai.com.
 

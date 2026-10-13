@@ -30,8 +30,10 @@ journal. `go run .` pauses at the gate, records two signed approvals, refunds on
 evidence. It starts with a recovery pass (`agent.Recover`), so a run a crash interrupted resumes on
 the next start: `BIDE_CRASH=notify go run .` kills it mid-run, and the next `go run .` finishes it
 with one refund. The project's README is the place to read next: the next steps (`bide view`,
-`bide check`, `bide audit`), the crash demo, and the marked block in `model()` that swaps in a real
-model when `OPENROUTER_API_KEY` or `OPENAI_API_KEY` is set.
+`bide check`, `bide audit`), the crash demo, its "Start over" command, and the marked block in
+`model()` that swaps in a real model when `OPENROUTER_API_KEY` or `OPENAI_API_KEY` is set (start
+over first: a finished run is read back from the journal, so the new model would not be called).
+The real model is sent the refund type's JSON schema as structured output.
 
 ## Install
 

@@ -64,11 +64,14 @@ type Receipt struct {
 }
 
 // model is the model the assess node calls. By default it is scripted, so the flow runs with no
-// API key and no network; the prompt in register asks for the JSON the Refund type reads.
+// API key and no network. A real model that supports structured output (model/openai,
+// model/gemini) is sent the Refund type's JSON schema, so it answers with that JSON and nothing
+// else; the prompt in register also spells the fields out, for a model that does not.
 func model() agent.Model {
 	// ---- To use a real model -------------------------------------------------------------------
 	// Set OPENROUTER_API_KEY (or OPENAI_API_KEY) and uncomment these lines and the openai import
-	// above. Any OpenAI-compatible endpoint works through WithBaseURL (Ollama, vLLM, Groq, ...);
+	// above, then start over (see README.md: the journal holds the scripted model's answer). Any
+	// OpenAI-compatible endpoint works through WithBaseURL (Ollama, vLLM, Groq, ...);
 	// model/anthropic and model/gemini are the native adapters.
 	//
 	// if key := os.Getenv("OPENROUTER_API_KEY"); key != "" {
@@ -108,7 +111,7 @@ func register(p provider) (*plan.Registry, error) {
 	reg := plan.NewRegistry()
 	return reg, errors.Join(
 		reg.RegisterModel[Order, Refund]("assess",
-			`Order {{.ID}} for {{.Amount}} dollars: {{.Note}}. Propose a refund as JSON: {"order": ..., "amount": ..., "reason": ...}.`),
+			`Order {{.ID}} for {{.Amount}} dollars: {{.Note}}. Propose a refund as a JSON object with "order" (the string "{{.ID}}"), "amount" (an integer number of dollars) and "reason" (a short string). Answer with the JSON object only.`),
 		// The default Safety: a side effect. bide runs it at most once, and if the process dies
 		// after it starts and before its result is journaled, the run halts instead of refunding
 		// again (resolve it with agent.ResolveHalt).
@@ -122,8 +125,8 @@ func register(p provider) (*plan.Registry, error) {
 	)
 }
 
-// load loads flow.yaml against the registry, with the model and the approvers' keys bound.
-func load(p provider, k keys) (*plan.Flow[Order, Receipt], error) {
+// load loads flow.yaml against the registry, with model m and the approvers' keys bound.
+func load(p provider, k keys, m agent.Model) (*plan.Flow[Order, Receipt], error) {
 	reg, err := register(p)
 	if err != nil {
 		return nil, err
@@ -132,26 +135,26 @@ func load(p provider, k keys) (*plan.Flow[Order, Receipt], error) {
 	if err != nil {
 		return nil, err
 	}
-	return plan.Load[Order, Receipt](config, reg, plan.WithLoadedModel(model()), plan.WithLoadedApproverVerifiers(k.verifiers()))
+	return plan.Load[Order, Receipt](config, reg, plan.WithLoadedModel(m), plan.WithLoadedApproverVerifiers(k.verifiers()))
 }
 
 func main() {
-	if err := story(context.Background(), "."); err != nil {
+	if err := story(context.Background(), ".", model()); err != nil {
 		fmt.Fprintln(os.Stderr, "error:", err)
 		os.Exit(1)
 	}
 }
 
-// story drives the run in dir from wherever it is: it pauses at the gate, two approvers sign,
-// the run resumes and refunds once, and the evidence is written. A run that already finished is
-// read back from the journal, and nothing runs twice.
-func story(ctx context.Context, dir string) error {
+// story drives the run in dir from wherever it is, with model m: it pauses at the gate, two
+// approvers sign, the run resumes and refunds once, and the evidence is written. A run that
+// already finished is read back from the journal, and nothing runs twice.
+func story(ctx context.Context, dir string, m agent.Model) error {
 	k, err := loadKeys(dir)
 	if err != nil {
 		return err
 	}
 	p := provider{dir: dir}
-	flow, err := load(p, k)
+	flow, err := load(p, k, m)
 	if err != nil {
 		return err
 	}
