@@ -147,6 +147,11 @@ type builderCore struct {
 	// (WithApproverVerifiers, WithLoadedApproverVerifiers). Build refuses a flow with an m-of-n
 	// gate and none. Like model it is a runtime binding, not part of Digest.
 	approverVerifiers agent.ApproverVerifierFor
+	// notifier tells a notifier when a run needs a person (WithNotifier, WithLoadedNotifier). Like
+	// model it is a runtime binding, not part of Digest.
+	notifier agent.NotifierOption
+	// notify holds the per-journal notifiers of a built flow; Build makes it.
+	notify *flowNotify
 	// loops are the bounded loops Build derived from the LoopBack arms (see
 	// loopSpec). They are populated by Build (deriveLoops) and carried onto the
 	// sealed flow so Run can drive each loop region, and digest/render/conform can

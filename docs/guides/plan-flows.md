@@ -267,6 +267,15 @@ out, err := flow.Run(ctx, j, runID, in) // runs the node once 2 of 3 have approv
   `audit.VerifyApprovals` (or `bide audit verify-approvals -call node:refund`) prove offline that the
   approvers signed this node's input before it ran. `bide view` shows the gate on the node.
 
+- **Tell a person.** A paused gate, or a node that halts on an unknown outcome, stops the run until
+  someone acts, and nothing tells them. `plan.New(...).WithNotifier(notifier, trail)` (for a loaded
+  flow, `plan.WithLoadedNotifier`) tells a `agent.Notifier` once per event, at least once across
+  crashes, with its delivery state on a `NotifyTrail` and not in the run's journal. It is a runtime
+  binding, not part of the digest, and it takes the options of `agent.WithNotifier`. Call
+  `flow.FlushNotifications(ctx)` before the process exits to let deliveries in flight finish; a flow
+  that `agent.Recover` or `agent.RecoverLoop` drive is covered by the option given to them as well.
+  See [extension points](../reference/extension-points.md#notifier-tell-a-person-a-run-needs-them).
+
 `examples/approval/flow` runs the whole story from a config: the pause, two approvals, one refund,
 and the offline check.
 
