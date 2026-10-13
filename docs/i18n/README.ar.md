@@ -252,6 +252,7 @@ gsm، ProofBundle). ويُذكَر ضمان المعمورية الدقيق في
 - **[الموافقة](../../docs/guides/hitl-approval.md)**: توقيع بشري مُعمَّر قبل تشغيل أداة، من 1-من-1 إلى m-من-n
   الموقَّعة (`ApprovalPolicy`، `SubmitDecision`)، مع برهان دون اتصال على أن k مُوافِقين مُسمَّين وافقوا قبل الفعل
   (`audit.ApprovalEvidence`، `audit.VerifyApprovals`). قابل للتشغيل: `examples/approval`.
+- **[استرداد عبر وضع الاختبار في Stripe](../../examples/stripe-refund/README.md)**: أوقف وكيل استرداد في منتصف الاسترداد؛ تتوقف إعادة التشغيل بدل أن يُسترد المبلغ مرتين، ثم يحسم المُسوِّي الخطوة من سجل Stripe نفسه. قابل للتشغيل: `examples/stripe-refund`.
 - **[النِّصاب](../../docs/guides/quorum.md)**: اتّفاق نماذج محكوم k-من-n (`govern.Quorum`)، مع تثبيت التعداد
   في السجل وقابليته لإعادة الفحص دون اتصال (`bide audit verify-quorum`). قابل للتشغيل: `examples/govern/quorum`.
 
