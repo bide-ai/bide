@@ -1,0 +1,62 @@
+/* the header's tools, the approver cards, the proof path, the timeline filter, the shortcut help,
+   empty and loading states, and the share button */
+.grow { flex: 1; }
+.hbtn { display: none; align-items: center; justify-content: center; min-width: 32px; height: 32px; padding: 0 var(--s2); border: 1px solid var(--line); border-radius: var(--r-sm); background: var(--card); color: var(--fg); cursor: pointer; font: 600 var(--t-md) var(--font); }
+.has-js .hbtn { display: inline-flex; }
+.hbtn:hover { border-color: var(--accent); }
+.hbtn .ic { font-size: 17px; }
+
+.acards { list-style: none; padding: 0; margin: 0; display: grid; grid-template-columns: repeat(auto-fit, minmax(270px, 1fr)); gap: var(--s3); }
+.acard { display: flex; gap: var(--s3); background: var(--card); border: 1px solid var(--line); border-radius: var(--r-md); padding: var(--s3) var(--s4); }
+.acard p { margin: 2px 0; }
+.avatar { flex: none; width: 46px; height: 46px; border-radius: 50%; display: grid; place-items: center; font-weight: 800; letter-spacing: .02em; background: var(--card-2); color: var(--muted); border: 2px dashed var(--idle); }
+.a-approved .avatar { background: var(--good-bg); color: var(--good); border: 2px solid var(--good); }
+.a-denied .avatar { background: var(--bad-bg); color: var(--bad); border: 2px solid var(--bad); }
+.abody { min-width: 0; }
+.aname b { font: 700 var(--t-md) var(--mono); }
+.astate { font-size: var(--t-sm); color: var(--muted); margin-left: var(--s1); }
+.averify { font-weight: 600; font-size: var(--t-sm); }
+.averify .ic { margin-right: 2px; }
+
+.merklewrap { padding: var(--s4); }
+svg.merkle { display: block; margin: 0 auto; max-width: 100%; height: auto; font-family: var(--font); }
+.mk .box { fill: var(--card-2); stroke: var(--line); stroke-width: 1.5; }
+.mk.leaf .box { fill: var(--accent-bg); stroke: var(--accent); stroke-width: 2.2; }
+.mk.node .box { fill: var(--card); stroke: var(--idle); }
+.mk.sib .box { stroke-dasharray: 4 3; }
+.mk.root .box { fill: var(--good-bg); stroke: var(--good); stroke-width: 3; }
+.mkcap { font-size: 12.5px; fill: var(--muted); text-anchor: middle; }
+.mkhash { font: 700 15px var(--mono); fill: var(--fg); text-anchor: middle; }
+.mk.root .mkcap, .mk.root .mkhash { fill: var(--good); }
+.mksub { font-size: 12.5px; fill: var(--muted); }
+.mk.root .nicon { color: var(--good); }
+svg.merkle .edge.taken { animation: none; }
+
+.tfilter { display: none; align-items: center; gap: var(--s2); margin: 0 0 var(--s3); font-size: var(--t-sm); color: var(--muted); }
+.has-js .tfilter { display: flex; }
+.tfilter input { font: inherit; color: var(--fg); background: var(--card); border: 1px solid var(--line); border-radius: var(--r-sm); padding: 5px var(--s2); width: 280px; max-width: 60vw; }
+.ev[hidden] { display: none; }
+.ev.cur { box-shadow: inset 0 0 0 2px var(--accent); }
+.empty { text-align: center; padding: var(--s6) var(--s4); border: 1px dashed var(--line); border-radius: var(--r-md); color: var(--muted); }
+.empty .ic { font-size: 40px; color: var(--idle); }
+.empty p { margin: var(--s1) 0; }
+.etitle { font-size: var(--t-lg); color: var(--fg); font-weight: 650; }
+table.runlist tbody tr.cur { background: var(--accent-bg); }
+
+.helpback { position: fixed; inset: 0; background: rgb(0 0 0 / .55); display: grid; place-items: center; z-index: 50; }
+.help { background: var(--card); color: var(--fg); border: 1px solid var(--line); border-radius: var(--r-lg); padding: var(--s5); max-width: 440px; width: calc(100% - 32px); box-shadow: var(--shadow); }
+.help h2 { margin: 0 0 var(--s3); }
+.help dl { display: grid; grid-template-columns: auto 1fr; gap: var(--s2) var(--s4); margin: 0; font-size: var(--t-md); }
+.help dt { white-space: nowrap; }
+.help dd { margin: 0; color: var(--muted); }
+kbd { font: 600 var(--t-sm) var(--mono); background: var(--card-2); border: 1px solid var(--line); border-bottom-width: 2px; border-radius: var(--r-sm); padding: 1px 7px; }
+
+body.loading::before { content: ""; position: fixed; top: 0; left: 0; width: 100%; height: 3px; background: linear-gradient(90deg, transparent, var(--accent), transparent); animation: loadbar 1s linear infinite; z-index: 60; }
+@keyframes loadbar { from { transform: translateX(-100%); } to { transform: translateX(100%); } }
+@media (prefers-reduced-motion: reduce) { body.loading::before { animation: none; background: var(--accent); opacity: .6; } }
+
+.verdict .share { display: none; margin-left: auto; align-self: flex-start; flex: none; align-items: center; gap: var(--s2); font: 600 var(--t-sm) var(--font); padding: 6px var(--s3); border-radius: var(--r-sm); border: 1px solid var(--vc); background: var(--card); color: var(--fg); cursor: pointer; }
+.has-js .verdict .share { display: inline-flex; }
+.verdict .share:hover { background: var(--card-2); }
+.verdict .share[aria-busy="true"] { opacity: .6; cursor: progress; }
+@media (max-width: 720px) { .verdict { flex-wrap: wrap; } .verdict .share { margin-left: 0; } }

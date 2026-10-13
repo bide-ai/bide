@@ -38,6 +38,8 @@
     for (let i = seen; i < rows.length; i++) rows[i].classList.add("fresh");
     seen = rows.length;
     document.title = doc.title;
+    const icon = doc.querySelector('link[rel="icon"]'), here = document.querySelector('link[rel="icon"]');
+    if (icon && here) here.href = icon.href;
     window.scrollTo(x, y);
     pill = document.getElementById("live");
     if (pill) cursor = pill.dataset.cursor;
@@ -49,6 +51,7 @@
       try {
         const u = await (await get("/run/live?id=" + run + "&after=" + encodeURIComponent(cursor))).json();
         if (u.changed) {
+          document.body.classList.add("loading");
           const html = await (await get("/run?id=" + run)).text();
           swap(new DOMParser().parseFromString(html, "text/html"));
         }
@@ -63,6 +66,7 @@
         }
         wait = retry;
       }
+      document.body.classList.remove("loading");
     }
     if (pill) setTimeout(tick, wait);
   };

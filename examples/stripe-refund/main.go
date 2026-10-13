@@ -30,7 +30,7 @@ import (
 	"github.com/bide-ai/bide/store/sqlite"
 )
 
-func say(format string, a ...any) { fmt.Printf(format+"\n", a...) }
+func say(format string, a ...any) { fmt.Println(style(colorOut, fmt.Sprintf(format, a...))) }
 
 // drive runs the agent until it finishes, pauses for approval, or halts for good. A halt on the
 // refund is reconciled against Stripe (unless -reconcile=false) and the run resumed.
@@ -136,6 +136,6 @@ func main() {
 }
 
 func fatal(err error) {
-	fmt.Fprintln(os.Stderr, "error:", err)
+	fmt.Fprintln(os.Stderr, errorLabel(), err)
 	os.Exit(1)
 }

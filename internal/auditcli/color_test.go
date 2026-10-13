@@ -56,7 +56,7 @@ func TestVerifyColor(t *testing.T) {
 		t.Errorf("tampered: exit %d, stdout %q, stderr %q", code, stdout, stderr)
 	}
 	code, stdout, stderr = runCLI("verify", "-color=always", "-bundle", f.missing, "-pubkey", f.pub)
-	if code != 4 || !strings.Contains(stdout, "\x1b[1;31mFAILED\x1b[0m  \x1b[31man input is unreadable or unusable\x1b[0m") || !strings.HasPrefix(stderr, "\x1b[31merror:\x1b[0m ") {
+	if code != 4 || !strings.Contains(stdout, "\x1b[1;31mFAILED\x1b[0m  \x1b[31man input is unreadable or unusable\x1b[0m") || !strings.HasPrefix(stderr, "\x1b[1;31merror:\x1b[0m ") {
 		t.Errorf("missing: exit %d, stdout %q, stderr %q", code, stdout, stderr)
 	}
 	code, stdout, _ = runCLI("verify", "-json", "-color=always", "-bundle", f.bundle, "-pubkey", f.pub)

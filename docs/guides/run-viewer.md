@@ -83,7 +83,14 @@ one the run's page shows (see END STATE below), so the list and the page never d
 filters above the table count the runs in each state: completed, **halted: outcome unknown**,
 **waiting for approval**, **in progress** (started, not ended, not halted and not waiting), and
 **failed or cancelled** (`aborted`, a saga that rolled back, or `cancelled`), and **not started**
-for a run whose journal holds records but no `run:start`. The kind filter and a
+for a run whose journal holds nothing but its header. A run made of `Journal.Step` calls alone has no
+`run:start`, so the journal does not say what it is: it is listed as **steps only (no run:start)**,
+with a state read from what the journal shows. It is **halted: outcome unknown** while a step's
+attempt marker is live with no result, **resolved** once `agent.ResolveHalt` has recorded the
+outcome of one, and otherwise **steps done**: every step shown has its result. It has no end marker,
+so the journal cannot say whether more steps will follow; the done and resolved runs are counted
+with the completed ones. Its page has the same Halts panel and ResolveHalt snippet as any run's.
+The kind filter and a
 run ID filter (a case-insensitive substring) narrow the list further; the filters are in the URL
 (`/?state=halted&kind=flow&q=refund`), so a filtered list can be bookmarked. The same list is JSON
 at `/runs.json`, with the same query.
@@ -261,6 +268,23 @@ The **Signatures** column says whether the approvals were verified (see AUDIT PR
 - A one-decision gate (`agent.SingleApproval`, recorded with `agent.Approve`) is not signed, so
   there is nothing to verify.
 
+**Approvers.** For a gate with several approvers, one card each: initials, the approver's id,
+whether they approved, denied or have not decided, and, for a decision, whether its signature
+verified (`signature verified`; `signature NOT verified` with the reason; `in the signed log,
+signature not checked` when a proof was given without approver keys; `signature not checked`
+otherwise), the fingerprint of their key (`ed25519:3b6a27bc`, the first 8 hex digits of the SHA-256
+of the public key, with `-approver-keys`) and when the head that covers the decision was signed. The
+journal records no time for a decision, so the card gives the time of the signed head it is under,
+which is a bound: the decision was journaled no later. A one-decision gate is not signed and has no
+cards.
+
+**Proof path.** With a signed head (`-sth`) or an evidence package (`-evidence`), a small diagram
+of the proof the audit package verified for the last record the head covers: the record's leaf
+hash at the foot, the sibling hash at each level of the RFC 6962 audit path with the node it makes,
+and the signed root at the top, with its algorithm and signing time. Hashes are shown as their
+first 8 hex digits, and the full ones are in each box's tooltip. The page recomputes the climb to
+draw the intermediate nodes, and draws nothing if it does not end at the root.
+
 **Timeline.** Every record in journal order, each with a glyph for its type: the header, `run:start`
 (kind, input, tools), model turns (text, tool calls with arguments, finish reason, model), attempt
 markers and re-attempts, tool results with the `Safety` they ran under (read-only, idempotent, side
@@ -275,6 +299,30 @@ approval-pending record and tally, plan nodes and Switch choices, and the end ma
   time: an offset from the start (`+3.2s`) with the absolute UTC time on hover, and a bar spanning
   from that time to the next timestamped record's (an upper bound on how long the attempt had been
   open, not the operation's duration: the journal records no end time).
+
+## Theme, keyboard and sharing
+
+- **Light or dark.** The pages follow `prefers-color-scheme`. The sun button in the header (or `t`)
+  switches, and the choice is remembered in the browser's local storage; where storage is blocked it
+  applies to the page only.
+- **Keyboard.** `j` and `k` move to the next and previous record (or run, on the list), `Enter`
+  opens the highlighted run, `/` goes to the filter (the timeline's, which narrows the rows as you
+  type, or the list's run ID), `t` switches the theme, `s` shares, `?` shows this list and `Esc`
+  closes it. The shortcuts are off while you type in a field.
+- **Tab icon and title.** Each page's title is its verdict and what it is about (`VERIFIED ·
+  refund-42 · bide view`), and its tab icon is a square in the verdict's color holding its glyph, so
+  a strip of tabs shows which runs need a person.
+- **Share this run.** On a run page, the button in the verdict (or `s`) saves a 1200 by 630 PNG of
+  the verdict, the key numbers, and the flow graph (or the proof path, with the approvers; a run with
+  neither gets its audit proof line instead). The card ends with the project's address. It is drawn in your browser: the page becomes an SVG with its styles written in, the SVG is
+  drawn on a canvas, and the canvas is saved. Nothing is sent anywhere, and the server is not asked
+  for anything.
+
+  ![The image Share this run saves for a verified run: the VERIFIED verdict, four key numbers, the proof path from the last record to the signed root and the three approvers, at 1200 by 630](img/run-viewer-share-dark.png)
+
+- **Empty and loading states.** A list with no run, a filter that matches nothing and a timeline
+  filter with no match each say so. While a live page fetches new records a thin bar runs along the
+  top of the window.
 
 ## Follow a run in progress
 
@@ -570,6 +618,17 @@ when `NO_COLOR` is set to any value or `TERM` is `dumb`; on Windows it colors on
 to read ANSI escapes (Windows Terminal, ConEmu, ANSICON, VS Code, or a `TERM` such as
 `xterm-256color`). `-color=always` colors even a pipe (for a log viewer that renders ANSI), and
 overrides `NO_COLOR`. Help (`-h`) is plain.
+
+An error on stderr opens with a bold red `error:` on a terminal (`bide: unknown command "x"` reads
+`error: bide: unknown command "x"`), and a "what to do next" hint the message carries after a
+semicolon is dim; piped, the line is the one it always was. The command list (`bide`, `bide help`) has
+bold headings and command names and dim summaries, and `bide version` is lightly styled; the flag
+help of a command (`bide <command> -h`) stays plain.
+
+The project `bide init` writes colors its own output the same way, from a small `color.go` it holds
+(a terminal only, off with `NO_COLOR` or `TERM=dumb`; delete it and make `tag` return its word if you
+want none), and so do the `examples/approval` and `examples/stripe-refund` programs, each with a copy
+of that helper, since an example is its own module and cannot import bide's.
 
 ## What it cannot show
 

@@ -18,6 +18,7 @@
 ```sh
 # التثبيت (أو: go install github.com/bide-ai/bide/cmd/bide@latest)
 brew install bide-ai/tap/bide
+# هناك خلل؟ يفحص bide doctor ‏Go وSQLite وذاكرة الوحدات ومشروعك ويقترح الحل لكل مشكلة
 # 1. شاهِد: اقتل الوكيل في منتصف الدفع؛ لن يخصم مرتين (دون مفتاح API)
 bide demo
 # 2. ابنِ: تدفّق plan ببوابة موافقة 2 من 3، على SQLite، دون مفتاح API

@@ -26,6 +26,7 @@ var tmpl embed.FS
 var files = map[string]string{
 	"main.go.tmpl":      "main.go",
 	"main_test.go.tmpl": "main_test.go",
+	"color.go.tmpl":     "color.go",
 	"flow.yaml":         "flow.yaml",
 	"README.md.tmpl":    "README.md",
 	"gitignore.tmpl":    ".gitignore",
@@ -43,7 +44,7 @@ func Main(version string, args []string, stdout, stderr io.Writer) int {
 	fs.Usage = func() {
 		fmt.Fprint(fs.Output(), `usage: bide init [-module <path>] [-dev <bide checkout>] <dir>
 
-Writes a new project into dir, which must not exist or must be empty: main.go, main_test.go,
+Writes a new project into dir, which must not exist or must be empty: main.go, color.go, main_test.go,
 flow.yaml, README.md, .gitignore and go.mod. Then: cd <dir> && go mod tidy && go run .
 
 `)
@@ -58,8 +59,9 @@ flow.yaml, README.md, .gitignore and go.mod. Then: cd <dir> && go mod tidy && go
 		}
 		return 2
 	}
+	es := term.For(stderr, *color) // error lines on stderr
 	if fs.NArg() != 1 {
-		fmt.Fprintln(stderr, "bide init: give exactly one directory")
+		fmt.Fprintln(stderr, es.ErrorPrefix()+"bide init: give exactly one directory")
 		fs.Usage()
 		return 2
 	}
@@ -68,22 +70,22 @@ flow.yaml, README.md, .gitignore and go.mod. Then: cd <dir> && go mod tidy && go
 	if name == "" {
 		abs, err := filepath.Abs(dir)
 		if err != nil {
-			fmt.Fprintln(stderr, "bide init:", err)
+			fmt.Fprintln(stderr, es.ErrorPrefix()+"bide init:", err)
 			return 1
 		}
 		name = filepath.Base(abs)
 	}
 	if !modName.MatchString(name) {
-		fmt.Fprintf(stderr, "bide init: %q is not a module path; name one with -module\n", name)
+		fmt.Fprintf(stderr, "%sbide init: %s\n", es.ErrorPrefix(), es.Hint(fmt.Sprintf("%q is not a module path; name one with -module", name), "; "))
 		return 2
 	}
 	gomod, err := goMod(name, version, *dev)
 	if err != nil {
-		fmt.Fprintln(stderr, "bide init:", err)
+		fmt.Fprintln(stderr, es.ErrorPrefix()+"bide init:", es.Hint(err.Error(), "; "))
 		return 2
 	}
 	if err := write(dir, name, gomod); err != nil {
-		fmt.Fprintln(stderr, "bide init:", err)
+		fmt.Fprintln(stderr, es.ErrorPrefix()+"bide init:", err)
 		return 1
 	}
 	st := term.For(stdout, *color)

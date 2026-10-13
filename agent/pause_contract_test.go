@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"slices"
 	"sync"
+	"sync/atomic"
 	"testing"
 	"time"
 )
@@ -503,5 +504,36 @@ func TestLoop_SubTreePausePropagatesFromAnyTool(t *testing.T) {
 		if got, ok := AsPause(err); !ok || got != p {
 			t.Errorf("%T from a side-effecting tool: Run = %v; want the pause propagated", p, err)
 		}
+	}
+}
+
+// No Fire starts after Start's context is cancelled. A select picks at random among ready cases,
+// so a tick that is ready when the context is done can win, and the loop would resume runs with a
+// cancelled context before its stopped channel closes. The first resume cancels the context and
+// schedules the run again, with a 1ns tick, so on the next iteration both cases are ready; before
+// the fix about half of the iterations ran another Fire.
+//
+// It runs outside a synctest bubble, where the clock does not stand still and the tick is ready as
+// soon as the Fire returns.
+func TestMemWaker_StartNothingFiresAfterCancel(t *testing.T) {
+	for i := range 200 {
+		ctx, cancel := context.WithCancel(context.Background())
+		var w *MemWaker
+		var resumes atomic.Int32
+		w = NewMemWaker(func(context.Context, string) error {
+			n := resumes.Add(1)
+			if n == 1 {
+				cancel()
+			}
+			return w.Schedule(context.Background(), Wake{RunID: "r", Name: "n"})
+		})
+		if err := w.Schedule(ctx, Wake{RunID: "r", Name: "n"}); err != nil {
+			t.Fatal(err)
+		}
+		<-w.Start(ctx, time.Nanosecond, nil)
+		if n := resumes.Load(); n != 1 {
+			t.Fatalf("iteration %d: %d resumes, want 1 (none after the cancellation)", i, n)
+		}
+		cancel()
 	}
 }

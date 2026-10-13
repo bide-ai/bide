@@ -171,7 +171,7 @@ func newAgent(store *agent.Journal, witness string) *agent.Agent {
 				}
 			}
 			if crashAfterRefund {
-				fmt.Println("refund issued; crashing before its result is journaled")
+				say("refund issued; crashing before its result is journaled")
 				os.Exit(3)
 			}
 			return fmt.Sprintf("$%d to order %d", in.Amount, in.Order), nil
@@ -199,23 +199,23 @@ func cmdRun(ctx context.Context, store *agent.Journal, witness string) error {
 	halt, halted := errors.AsType[*agent.OutcomeUnknown](err)
 	switch {
 	case halted:
-		fmt.Println("status: halted")
-		fmt.Printf("outcome unknown: %s %s (%s); confirm it with the provider, then run: go run . resolve\n", halt.Op.Kind, halt.Op.ID, halt.Op.ToolName)
+		say("status: halted")
+		say("outcome unknown: %s %s (%s); confirm it with the provider, then run: go run . resolve", halt.Op.Kind, halt.Op.ID, halt.Op.ToolName)
 		return nil
 	case paused && pend.Quorum != nil:
 		q := pend.Quorum
-		fmt.Println("status: paused")
-		fmt.Printf("approved: %d of %d\n", q.Approved, q.Need)
-		fmt.Printf("waiting on: %s\n", strings.Join(q.Pending, ", "))
-		fmt.Printf("tool call: %s (%s)\n", pend.ToolUseID, pend.ToolName)
+		say("status: paused")
+		say("approved: %d of %d", q.Approved, q.Need)
+		say("waiting on: %s", strings.Join(q.Pending, ", "))
+		say("tool call: %s (%s)", pend.ToolUseID, pend.ToolName)
 		return nil
 	case err != nil:
 		return err
 	}
-	fmt.Println("status: done")
+	say("status: done")
 	for _, p := range out.Parts {
 		if t, ok := p.(agent.Text); ok {
-			fmt.Printf("answer: %s\n", t.Text)
+			say("answer: %s", t.Text)
 		}
 	}
 	return nil
@@ -247,7 +247,7 @@ func cmdApprove(ctx context.Context, store *agent.Journal, as string, approved, 
 	d := agent.Decision{RunID: runID, ToolUseID: callID, ApproverID: as, Approved: approved, Alg: audit.AlgEd25519, Signature: sig}
 	if err := agent.SubmitDecision(ctx, store, d, opts...); err != nil {
 		if errors.Is(err, agent.ErrInvalidApproval) || errors.Is(err, agent.ErrAlreadyDecided) {
-			fmt.Printf("refused: %v\n", err)
+			say("refused: %v", err)
 			return nil
 		}
 		return err
@@ -260,7 +260,7 @@ func cmdApprove(ctx context.Context, store *agent.Journal, as string, approved, 
 	if forge {
 		how = "FORGED signature"
 	}
-	fmt.Printf("recorded: %s %s (%s)\n", as, verb, how)
+	say("recorded: %s %s (%s)", as, verb, how)
 	return nil
 }
 
@@ -273,7 +273,7 @@ func cmdResolve(ctx context.Context, store *agent.Journal, witness string) error
 	if err := agent.ResolveHalt(ctx, store, ref, out); err != nil {
 		return err
 	}
-	fmt.Println("resolved: refund-1 recorded as refunded (from the provider's record)")
+	say("resolved: refund-1 recorded as refunded (from the provider's record)")
 	return cmdRun(ctx, store, witness)
 }
 
@@ -301,7 +301,7 @@ func cmdEvidence(ctx context.Context, store *agent.Journal, outPath, keysPath st
 	if err := os.WriteFile(outPath, b, 0o644); err != nil {
 		return err
 	}
-	fmt.Printf("wrote: %s (%d proofs)\n", outPath, len(pkg.Actions))
+	say("wrote: %s (%d proofs)", outPath, len(pkg.Actions))
 	keys := map[string]string{}
 	for _, id := range registered {
 		keys[id] = hex.EncodeToString(demoKey("approver " + id).Public().(ed25519.PublicKey))
@@ -313,8 +313,8 @@ func cmdEvidence(ctx context.Context, store *agent.Journal, outPath, keysPath st
 	if err := os.WriteFile(keysPath, kb, 0o644); err != nil {
 		return err
 	}
-	fmt.Printf("wrote: %s (approver public keys)\n", keysPath)
-	fmt.Printf("log public key: %s\n", hex.EncodeToString(logKey().PublicKey()))
+	say("wrote: %s (approver public keys)", keysPath)
+	say("log public key: %s", hex.EncodeToString(logKey().PublicKey()))
 	return nil
 }
 
@@ -336,7 +336,7 @@ func cmdVerify(inPath string) error {
 	if err != nil && !errors.Is(err, audit.ErrNotVerified) {
 		return err
 	}
-	fmt.Printf("proofs: %s\n", passFail(rep.OK))
+	say("proofs: %s", passFail(rep.OK))
 	v, err := audit.VerifyApprovals(pkg.Actions, callID, policy, approverVerifiers(), logVerifier())
 	if err != nil && !errors.Is(err, audit.ErrNotVerified) {
 		return err
@@ -345,15 +345,15 @@ func cmdVerify(inPath string) error {
 	if json.Compact(&args, v.Args) != nil {
 		args.Write(v.Args)
 	}
-	fmt.Printf("call: %s %s\n", v.ToolName, args.String())
-	fmt.Printf("counted: %s\n", strings.Join(v.Counted, ", "))
+	say("call: %s %s", v.ToolName, args.String())
+	say("counted: %s", strings.Join(v.Counted, ", "))
 	for _, d := range v.Ignored {
-		fmt.Printf("ignored: %s (%s)\n", d.Approver, d.Reason)
+		say("ignored: %s (%s)", d.Approver, d.Reason)
 	}
 	for _, p := range v.Problems {
-		fmt.Printf("problem: %s\n", p)
+		say("problem: %s", p)
 	}
-	fmt.Printf("k-of-n: %s (%d of %d)\n", passFail(v.OK), len(v.Counted), v.Need)
+	say("k-of-n: %s (%d of %d)", passFail(v.OK), len(v.Counted), v.Need)
 	if !rep.OK || !v.OK {
 		return errors.New("verification failed")
 	}
@@ -386,7 +386,8 @@ func demo(ctx context.Context) error {
 	witness := filepath.Join(dir, "refunds.txt")
 
 	step := func(title string, f func() error) error {
-		fmt.Printf("\n== %s\n", title)
+		fmt.Println()
+		say("== %s", title)
 		return f()
 	}
 	steps := []struct {
@@ -417,7 +418,7 @@ func demo(ctx context.Context) error {
 	if err != nil {
 		return err
 	}
-	fmt.Printf("\nrefunds actually issued: %d\n", n)
+	say("\nrefunds actually issued: %d", n)
 	return nil
 }
 
@@ -491,6 +492,6 @@ func main() {
 }
 
 func fatal(err error) {
-	fmt.Fprintln(os.Stderr, "error:", err)
+	fmt.Fprintln(os.Stderr, errorLabel(), err)
 	os.Exit(1)
 }
