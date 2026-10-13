@@ -85,6 +85,9 @@ type Options struct {
 	// Config, when set, makes the handler show this flow definition instead of runs: the page at /
 	// and its view as JSON at /config.json. Source is then not read.
 	Config *Config
+	// Diff, when set, makes the handler show a flow definition compared with an earlier one
+	// instead of runs: the page at / and its view as JSON at /diff.json (see BuildDiff).
+	Diff *Diff
 }
 
 // Handler serves the run list at / (as JSON at /runs.json; see RunList) and a run at /run?id=<run>
@@ -98,6 +101,10 @@ func Handler(o Options) http.Handler {
 	if o.Config != nil {
 		mux.HandleFunc("GET /{$}", func(w http.ResponseWriter, r *http.Request) { render(w, "config.html", BuildConfig(*o.Config)) })
 		mux.HandleFunc("GET /config.json", func(w http.ResponseWriter, r *http.Request) { writeJSON(w, BuildConfig(*o.Config)) })
+		return guard(mux)
+	}
+	if o.Diff != nil {
+		diffRoutes(mux, *o.Diff)
 		return guard(mux)
 	}
 	mux.HandleFunc("GET /{$}", func(w http.ResponseWriter, r *http.Request) {

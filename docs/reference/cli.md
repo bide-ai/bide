@@ -80,6 +80,7 @@ bide view: a read-only local web page for one run of a bide journal
   bide view -postgres <dsn> [-run <id>] [flags]
   bide view -journal <export.json> [-journal ...] [-run <id>] [flags]
   bide view -config <flow.yaml|flow.json> [-check [-strict]]
+  bide view -config <flow.yaml|flow.json> -diff <old config|git revision> [-check [-fail-on-weaken]]
 
 It shows an agent run's timeline (model turns, tool calls with their Safety, attempts, approvals,
 halts, end state) or a plan flow's declared topology with the run's path (drawn from the topology
@@ -106,9 +107,17 @@ assert lines are decided on the graph, a violated one's counterexample path draw
 -check it serves nothing and prints one "file:node: message" line per problem ("file:from->to:
 message" for an edge or arm), a violated assertion among them.
 
+With -diff it compares the -config flow with an earlier version of it: the page draws the new flow
+with added nodes and edges in green, removed ones as dashed red ghosts and changed nodes in amber,
+and calls out an approval gate whose policy was weakened (removed, its need lowered, or an approver
+added without raising the need). -diff takes a file, or, when no file has that name, a git
+revision read with git show: <rev>:<path>, or a bare <rev> for the -config file's path at that
+revision. With -check it serves nothing and prints one line per change and a summary line.
+
 Exit status: 0 after a clean stop (or -h, or a -check that found no errors; warnings do not
-count unless -strict), 1 if an input cannot be read, the server fails, or -check found errors (or,
-with -strict, any problem), 2 for a usage error.
+count unless -strict; for -diff -check, a diff is not a failure), 1 if an input cannot be read,
+the server fails, -check found errors (or, with -strict, any problem), or -diff -check
+-fail-on-weaken found a weakened approval policy, 2 for a usage error.
 
 Flags:
   -addr string
@@ -118,15 +127,19 @@ Flags:
   -approvers string
     	the expected policy's approver ids, comma-separated, in policy order; needs -need
   -check
-    	with -config: serve nothing, print each problem as file:node: message, and exit 1 if any is an error
+    	with -config: serve nothing, print each problem as file:node: message, and exit 1 if any is an error; with -diff, print each change instead
   -config string
     	a flow config (.json, or .yaml/.yml) to show instead of runs: its declared graph and its problems; nothing runs
   -db string
     	SQLite journal file to read, opened read-only (sqlite.OpenReadOnly)
+  -diff string
+    	with -config: compare it with this earlier version, a file or else a git revision (<rev>:<path>, or <rev> for the -config path at rev); -check prints the changes instead of serving the page
   -digest string
     	flow.Digest() of the -topology flow, compared with the digest the run journaled (default: computed from -topology when it carries the digest's inputs)
   -evidence string
     	evidence package (audit.EvidencePackage JSON) to verify; needs -pubkey
+  -fail-on-weaken
+    	with -diff -check: exit 1 if an approval gate was removed or weakened
   -journal value
     	exported journal (audit.ExportJournal as JSON) to read; repeatable
   -need int
@@ -157,6 +170,7 @@ Check plan flow configs, for CI: one file:node: message line per problem.
 
 ```text
 usage: bide check [-strict] <flow.yaml|flow.json>...
+       bide check <flow.yaml|flow.json> -diff <old config|git revision> [-check [-fail-on-weaken]]
 
 Checks each plan flow config without running it, and prints one "file:node: message" line per
 problem ("file:from->to: message" for an edge or arm). The check is structural: types and
@@ -176,6 +190,23 @@ A violated assertion is an error, printed with a shortest counterexample path ("
 a -> b -> c"); so is an assertion that is not in this grammar, names an undeclared node, or cannot
 be decided. A file with assertions ends with a line counting their verdicts.
 
+With -diff it compares the config with an earlier version of it instead, and serves a read-only
+local page (like bide view) that draws the new flow with added nodes and edges in green, removed
+ones as dashed red ghosts and changed nodes in amber, and calls out a weakened approval policy.
+-diff takes a file; when no file has that name, a git revision read with git show: <rev>:<path>
+(git's own form), or a bare <rev> for the config's own path at that revision (bide check
+flows/refund.yaml -diff main). With -check it serves nothing, prints one line per change and a
+summary line, and exits 0: a diff is not a failure, unless -fail-on-weaken finds an approval gate
+removed or weakened. Flags may follow the file names.
+
+  -addr string
+    	with -diff: address to serve the page on, a loopback IP (127.0.0.1 or ::1) or localhost, with a port (default "127.0.0.1:8484")
+  -check
+    	with -diff: serve nothing and print each change, then a summary line
+  -diff string
+    	compare the one config given with this earlier version: a file, or else a git revision (<rev>:<path>, or <rev> for the config's path at rev)
+  -fail-on-weaken
+    	with -diff -check: exit 1 if an approval gate was removed or weakened (its need lowered, or an approver added without raising the need)
   -strict
     	exit 1 on a warning too
 

@@ -1,0 +1,34 @@
+{{define "diff.html"}}<!doctype html>
+<html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1">
+<title>{{.Flow}}: diff</title><link rel="stylesheet" href="/assets/style.css"><link rel="stylesheet" href="/assets/diff.css"></head>
+<body><header class="top"><a class="brand" href="/">bide view</a><span class="ro">read-only</span></header><main>
+<h1>{{.Flow}} <span class="pill kind">flow diff</span> {{if .Weakened}}<span class="pill state-halted">approval policy weakened</span>{{else if .Changes}}<span class="pill state-started">{{len .Changes}} change{{if gt (len .Changes) 1}}s{{end}}</span>{{else}}<span class="pill state-completed">no changes</span>{{end}}</h1>
+<p class="input"><code>{{.OldName}}</code> → <code>{{.Name}}</code></p>
+
+{{if .Weakened}}<div class="weakened"><h2>Approval policy weakened</h2>
+{{range .Weakened}}<p class="wline">{{.}}</p>{{end}}
+<p class="small">A set of approvals the new gate accepts would not have passed the old one (a removed gate, a lower need, or an approver added without raising the need).</p></div>{{end}}
+
+<section class="cards">
+  <div class="card"><h3>Changes</h3>
+    <p><span class="dadd">+{{.Counts.NodesAdded}}</span> <span class="drem">−{{.Counts.NodesRemoved}}</span> <span class="dchg">~{{.Counts.NodesChanged}}</span> nodes</p>
+    <p><span class="dadd">+{{.Counts.EdgesAdded}}</span> <span class="drem">−{{.Counts.EdgesRemoved}}</span> <span class="dchg">~{{.Counts.EdgesChanged}}</span> edges and arms</p></div>
+  <div class="card"><h3>Digest</h3>{{if and .OldDigest .NewDigest}}{{if eq .OldDigest .NewDigest}}<p>unchanged</p><p><code class="wrap">{{.NewDigest}}</code></p>{{else}}<p><code class="wrap">{{.OldDigest}}</code></p><p class="muted">→</p><p><code class="wrap">{{.NewDigest}}</code></p><p class="muted small">A run paused under the old flow cannot resume under the new one.</p>{{end}}
+  {{else if .Typed}}<p class="muted">Not computed: a side has errors.</p>
+  {{else}}<p class="muted">Needs the plan.Registry: the digest commits to the blocks' Go types (see plan/planview).</p>{{end}}</div>
+  <div class="card"><h3>Approval gates</h3>{{if or .Weakened .Strengthened}}{{range .Weakened}}<p class="bad">weakened: {{.}}</p>{{end}}{{range .Strengthened}}<p class="good">strengthened: {{.}}</p>{{end}}{{else}}<p class="muted">No gate weakened or strengthened.</p>{{end}}</div>
+</section>
+{{if or .OldErrors .NewErrors}}<p class="warn small">{{if .OldErrors}}The old config has {{.OldErrors}} error(s). {{end}}{{if .NewErrors}}The new config has {{.NewErrors}} error(s). {{end}}Each side is compared as far as it reads; bide check lists the errors.</p>{{end}}
+
+{{if .Graph}}<section><h2>Flow</h2>
+<div class="legend"><span class="lg dadded">added</span><span class="lg dremoved">removed</span><span class="lg dchanged">changed</span><span class="lg dunchanged">unchanged</span></div>
+<div class="graphwrap">{{svg .Graph.SVG}}</div>
+</section>{{end}}
+
+<section><h2>Changes</h2>
+{{if .Changes}}<table><thead><tr><th>Change</th><th>Where</th><th>What</th></tr></thead><tbody>
+{{range .Changes}}<tr><td class="c-{{.Change}}">{{.Change}}</td><td>{{if eq .What "node"}}node <code>{{.Node}}</code>{{else if eq .What "edge"}}<code>{{.From}} → {{.To}}</code>{{else}}{{.What}}{{end}}</td><td>{{join .Details "; "}}</td></tr>{{end}}
+</tbody></table>{{else}}<p class="good">The two configs declare the same flow.</p>{{end}}
+</section>
+<p class="muted small"><a href="/diff.json">This view as JSON</a></p>
+{{template "foot"}}{{end}}

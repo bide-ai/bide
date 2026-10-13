@@ -1,0 +1,15 @@
+# The refund flow before a change: bide check flows/refund-v2.yaml -diff flows/refund-v1.yaml
+# compares the two (see docs/guides/run-viewer.md, "Compare two versions of a flow").
+version: 1
+flow: refund
+entry: validate
+nodes:
+  - {name: validate, block: validate, safety: readonly}
+  - {name: charge, block: charge, approval: {need: 1, approvers: [ops, finance, risk]}}
+  - {name: skip, block: skip}
+  - {name: receipt, block: receipt}
+wiring:
+  - switch: validate
+    when: [{pred: large, to: charge}]
+    else: skip
+  - edge: [charge, receipt]

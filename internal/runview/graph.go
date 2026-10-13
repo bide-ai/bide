@@ -85,6 +85,9 @@ type GraphEdge struct {
 	Back    bool   `json:"back,omitempty"`
 	Problem string `json:"problem,omitempty"` // a config problem at this edge or arm
 	Cex     bool   `json:"cex,omitempty"`     // on a violated assertion's counterexample path
+	// Change is how a flow diff changed this edge or arm (added, removed or changed), which
+	// styles it; empty outside a diff.
+	Change string `json:"change,omitempty"`
 }
 
 // flowGraph overlays the run's journal on flow's topology. With no flow it returns no graph, and
@@ -432,7 +435,13 @@ func svg(g *Graph, idx map[string]int) string {
 	fmt.Fprintf(&b, `<svg class="graph" viewBox="0 0 %d %d" width="%d" height="%d" role="img" aria-label="flow topology with the run's path">`, g.Width, g.Height, g.Width, g.Height)
 	b.WriteString(`<defs><marker id="arrow" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse"><path d="M0,0 L10,5 L0,10 z" class="arrowhead"/></marker>` +
 		`<marker id="arrow-taken" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse"><path d="M0,0 L10,5 L0,10 z" class="arrowhead taken"/></marker>` +
-		`<marker id="arrow-problem" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse"><path d="M0,0 L10,5 L0,10 z" class="arrowhead problem"/></marker></defs>`)
+		`<marker id="arrow-problem" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse"><path d="M0,0 L10,5 L0,10 z" class="arrowhead problem"/></marker>`)
+	for _, c := range []string{"added", "removed", "changed"} {
+		if slices.ContainsFunc(g.Edges, func(e GraphEdge) bool { return e.Change == c }) {
+			fmt.Fprintf(&b, `<marker id="arrow-%s" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse"><path d="M0,0 L10,5 L0,10 z" class="arrowhead %s"/></marker>`, c, c)
+		}
+	}
+	b.WriteString(`</defs>`)
 	for _, e := range g.Edges {
 		f, okf := idx[e.From]
 		t, okt := idx[e.To]
@@ -449,6 +458,9 @@ func svg(g *Graph, idx map[string]int) string {
 		}
 		if e.Cex {
 			cls, mk = "edge cex", "arrow-problem"
+		}
+		if e.Change != "" {
+			cls, mk = "edge "+e.Change, "arrow-"+e.Change
 		}
 		var lx, ly int
 		anchor := "start"
