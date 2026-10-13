@@ -440,7 +440,8 @@ while [ -n "$remaining" ]; do
       edits="$edits -require=$dep@$VERSION -dropreplace=$dep"
     done
     # shellcheck disable=SC2086
-    (cd "$CLONE/$m" && go mod edit $edits && gorun mod tidy 2>"$WORK/tidy.log") || { cat "$WORK/tidy.log"; die "$m: go mod tidy failed"; }
+    # A module with no bide requirements (a deprecated signpost) has nothing to pin.
+    (cd "$CLONE/$m" && { [ -z "$edits" ] || go mod edit $edits; } && gorun mod tidy 2>"$WORK/tidy.log") || { cat "$WORK/tidy.log"; die "$m: go mod tidy failed"; }
     check_gomod "$CLONE/$m"
     (cd "$CLONE/$m" && gorun build ./... && gorun vet ./...)
     if $TEST; then (cd "$CLONE/$m" && gorun test -count=1 ./... >"$WORK/test.log" 2>&1) || { cat "$WORK/test.log"; die "$m: tests failed"; }; fi
