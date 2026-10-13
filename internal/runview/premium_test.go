@@ -1,13 +1,20 @@
 package runview
 
 import (
+	"context"
+	"crypto/ed25519"
+	"errors"
 	"fmt"
+	"html/template"
+	"net/url"
 	"regexp"
 	"strings"
 	"testing"
 	"time"
 
 	"github.com/bide-ai/bide/agent"
+	"github.com/bide-ai/bide/agent/agenttest"
+	"github.com/bide-ai/bide/audit"
 	"github.com/bide-ai/bide/plan"
 )
 
@@ -340,6 +347,277 @@ func TestEventIcons(t *testing.T) {
 	for _, e := range []Event{{Class: "model"}, {Class: "tool"}, {Class: "attempt"}, {Class: "approval"}, {Class: "end"}, {Class: "start"}, {Class: "meta"}, {Class: "node"}, {Class: "value"}, {Class: "value", Kind: string(agent.StepSignal)}, {Class: "unheard-of"}} {
 		if _, ok := icons[e.IconName()]; !ok {
 			t.Errorf("%+v: icon %q is not drawn", e, e.IconName())
+		}
+	}
+}
+
+// TestStepsOnlyRuns: a run made of Journal.Step calls alone has no run:start. It is labeled
+// "steps only (no run:start)", and its state is read from what the journal shows: done, halted
+// (a live attempt marker with no result), then resolved once ResolveHalt records the outcome.
+func TestStepsOnlyRuns(t *testing.T) {
+	ctx := context.Background()
+	mem := agent.NewMemStore()
+	cs := &crashStore{Store: mem, lose: "charge", armed: false}
+	j := agenttest.MustJournal(cs)
+	h := Handler(Options{Source: JournalSource{J: j}})
+	one := func(_ context.Context) (string, error) { return "ok", nil }
+
+	if _, err := j.Step(ctx, "s-done", "lookup", one); err != nil {
+		t.Fatal(err)
+	}
+	v := viewOf(t, h, "s-done")
+	if v.Kind != KindSteps || v.State != "done" || v.StateText != "steps done" || v.KindText() != "steps only (no run:start)" {
+		t.Fatalf("done run = %q/%q/%q", v.Kind, v.State, v.StateText)
+	}
+	if d := runVerdict(&View{State: "done", Records: 2}); d.Word != "STEPS DONE" {
+		t.Errorf("verdict = %q", d.Word)
+	}
+
+	cs.armed = true
+	if _, err := j.Step(ctx, "s-halt", "charge", func(context.Context) (string, error) { return "ch_1", nil }); !errors.Is(err, errCrash) {
+		t.Fatalf("crashing Step = %v", err)
+	}
+	cs.armed = false
+	if _, err := j.Step(ctx, "s-halt", "charge", one); !errorsAsHalt(err) {
+		t.Fatalf("resumed Step = %v, want *agent.OutcomeUnknown", err)
+	}
+	v = viewOf(t, h, "s-halt")
+	if v.Kind != KindSteps || v.State != "halted" || v.StateText != "halted: outcome unknown" || len(v.Halts) != 1 || v.Halts[0].ID != "charge" {
+		t.Fatalf("halted run = %q/%q, halts %+v", v.Kind, v.State, v.Halts)
+	}
+	if d := runVerdict(&v); d.Word != "HALTED" {
+		t.Errorf("halted verdict = %q", d.Word)
+	}
+
+	if err := agent.ResolveHalt(ctx, j, agent.HaltRef{RunID: "s-halt", Op: agent.OpRef{Kind: agent.OpStep, ID: "charge"}, Cause: agent.HaltCrashed}, agent.Outcome{Result: "ch_1"}); err != nil {
+		t.Fatal(err)
+	}
+	v = viewOf(t, h, "s-halt")
+	if v.State != "resolved" || v.StateText != "resolved" || len(v.Halts) != 1 && len(v.Halts) != 0 {
+		t.Fatalf("resolved run = %q/%q, halts %+v", v.State, v.StateText, v.Halts)
+	}
+	if len(v.Halts) != 0 {
+		t.Errorf("a resolved run still lists halts: %+v", v.Halts)
+	}
+	if d := runVerdict(&v); d.Word != "RESOLVED" {
+		t.Errorf("resolved verdict = %q", d.Word)
+	}
+
+	// The list labels them, and groups halted ones for attention.
+	l := listOf(t, h, "")
+	byID := map[string]RunRow{}
+	for _, r := range l.Rows {
+		byID[r.ID] = r
+	}
+	if r := byID["s-done"]; r.KindText() != "steps only (no run:start)" || r.Group != "completed" {
+		t.Errorf("s-done row = %+v", r)
+	}
+	if r := byID["s-halt"]; r.KindText() != "steps only (no run:start)" || r.Group != "completed" || r.StateText != "resolved" {
+		t.Errorf("s-halt row = %+v", r)
+	}
+	_, page := get(t, h, "/")
+	if !strings.Contains(page, "steps only (no run:start)") {
+		t.Error("the run list does not say steps only")
+	}
+	_, page = get(t, h, "/run?id=s-halt")
+	if !strings.Contains(page, "steps only (no run:start)") || !strings.Contains(page, "RESOLVED") {
+		t.Error("the run page does not say steps only and resolved")
+	}
+}
+
+func TestInitials(t *testing.T) {
+	for id, want := range map[string]string{"ops": "OP", "finance": "FI", "risk-lead": "RL", "a": "A", "jane.doe@corp": "JD", "": "?", "---": "?", "élan": "ÉL"} {
+		if got := initials(id); got != want {
+			t.Errorf("initials(%q) = %q, want %q", id, got, want)
+		}
+	}
+}
+
+// TestApproverCards: each approver of a gate is a card: what they decided, whether their signature
+// verified (and why not), the fingerprint of their key and the head that covers it. Without keys no
+// fingerprint and no claim of verification is made.
+func TestApproverCards(t *testing.T) {
+	logPub := audit.Ed25519Verifier{Pub: key("log").Public().(ed25519.PublicKey)}
+	j, sth := gatedRun(t, map[string]bool{"ops": true, "finance": true})
+	cardsOf := func(p Prover) map[string]ApproverCard {
+		v := gatedView(t, j, p) // in memory: the JSON view does not carry the cards
+		out := map[string]ApproverCard{}
+		for _, c := range v.Gates[0].Cards {
+			out[c.Name] = c
+		}
+		if len(out) != 3 {
+			t.Fatalf("cards = %+v", v.Gates[0].Cards)
+		}
+		return out
+	}
+	cs := cardsOf(HeadProver(sth, logPub, Approvals{Keys: approverKeys(nil)}))
+	for _, who := range []string{"ops", "finance"} {
+		c := cs[who]
+		if c.State != "approved" || !c.VerifyOK || c.Verify != "signature verified" || !regexp.MustCompile(`^ed25519:[0-9a-f]{8}$`).MatchString(c.Fingerprint) || !c.SignedBy.Equal(time.Unix(0, sth.TimestampNanos)) {
+			t.Errorf("%s card = %+v", who, c)
+		}
+	}
+	if c := cs["risk"]; c.State != "pending" || c.Verify != "" || c.Initials != "RI" || c.Fingerprint == "" {
+		t.Errorf("risk card = %+v", c)
+	}
+	if cs["ops"].Fingerprint == cs["finance"].Fingerprint {
+		t.Error("two approvers share a fingerprint")
+	}
+
+	cs = cardsOf(HeadProver(sth, logPub, Approvals{Keys: approverKeys(map[string]string{"finance": "mallory"})}))
+	if c := cs["finance"]; c.VerifyOK || c.Verify != "signature NOT verified" || c.Why == "" {
+		t.Errorf("finance with the wrong key = %+v", c)
+	}
+	if c := cs["ops"]; !c.VerifyOK {
+		t.Errorf("ops = %+v, want verified", c)
+	}
+
+	cs = cardsOf(HeadProver(sth, logPub, Approvals{}))
+	if c := cs["ops"]; c.VerifyOK || c.Verify != "in the signed log, signature not checked" || c.Fingerprint != "" {
+		t.Errorf("no keys: ops = %+v", c)
+	}
+	cs = cardsOf(func(context.Context, string, []agent.Record) *Proof { return nil })
+	if c := cs["ops"]; c.VerifyOK || c.Verify != "signature not checked" || !c.SignedBy.IsZero() {
+		t.Errorf("no proof: ops = %+v", c)
+	}
+
+	h := Handler(Options{Source: JournalSource{J: j}, Provers: []Prover{HeadProver(sth, logPub, Approvals{Keys: approverKeys(nil)})}})
+	_, page := get(t, h, "/run?id=g1")
+	for _, want := range []string{`class="acard a-approved"`, `class="avatar" aria-hidden="true">OP<`, "signature verified", "key ed25519:", "Proof path"} {
+		if !strings.Contains(page, want) {
+			t.Errorf("the page lacks %s", want)
+		}
+	}
+}
+
+// TestMerklePathClimbs: for journals of every small size and every record in them, the path the
+// page draws climbs from the record's leaf hash to the signed root, with each sibling on the side
+// RFC 6962 puts it, so the diagram is a path that holds.
+func TestMerklePathClimbs(t *testing.T) {
+	ctx := context.Background()
+	for n := 1; n <= 9; n++ {
+		j := agenttest.MemJournal()
+		for i := range n {
+			if _, err := j.Step(ctx, "m", fmt.Sprintf("s%d", i), func(context.Context) (int, error) { return i, nil }); err != nil {
+				t.Fatal(err)
+			}
+		}
+		th, err := audit.NewTreeHead(ctx, j, "m", time.Now().UnixNano())
+		if err != nil {
+			t.Fatal(err)
+		}
+		sth, err := audit.SignTreeHead(th, audit.Ed25519Signer{Priv: key("log")})
+		if err != nil {
+			t.Fatal(err)
+		}
+		for idx := 0; idx < sth.Size; idx++ {
+			b, err := audit.ProveRecord(ctx, j, "m", idx, sth)
+			if err != nil {
+				t.Fatal(err)
+			}
+			m := merklePath(b, "r")
+			if !m.Climbed || m.Seq != idx+1 || m.Size != sth.Size || len(m.Steps) != len(b.Inclusion.Path) {
+				t.Fatalf("size %d, record %d: %+v", sth.Size, idx, m)
+			}
+			if len(m.Steps) > 0 && m.Steps[len(m.Steps)-1].Node != m.Root {
+				t.Fatalf("size %d, record %d: the last node is not the root", sth.Size, idx)
+			}
+			if d := m.Diagram(); !strings.Contains(string(d), `role="group"`) || !strings.Contains(string(d), short8(m.Leaf)) {
+				t.Fatalf("size %d, record %d: no diagram", sth.Size, idx)
+			}
+			// A path that does not climb to the root draws nothing.
+			bad := b
+			bad.STH.Root = append([]byte{}, b.STH.Root...)
+			bad.STH.Root[0] ^= 1
+			if bm := merklePath(bad, "r"); bm.Climbed || bm.Diagram() != "" {
+				t.Fatalf("size %d, record %d: a wrong root still draws", sth.Size, idx)
+			}
+		}
+	}
+}
+
+// TestProofCarriesThePath: a verified head gives the proof the path of the last record it covers,
+// and an unverified one gives none.
+func TestProofCarriesThePath(t *testing.T) {
+	logPub := audit.Ed25519Verifier{Pub: key("log").Public().(ed25519.PublicKey)}
+	j, sth := gatedRun(t, map[string]bool{"ops": true, "finance": true})
+	m := gatedView(t, j, HeadProver(sth, logPub, Approvals{})).Proof.Merkle
+	if m == nil || m.Seq != sth.Size || !m.Climbed || m.Root != fmt.Sprintf("%x", sth.Root) || m.SignedAt.IsZero() {
+		t.Fatalf("merkle = %+v", m)
+	}
+	wrong := audit.Ed25519Verifier{Pub: key("someone-else").Public().(ed25519.PublicKey)}
+	if p := gatedView(t, j, HeadProver(sth, wrong, Approvals{})).Proof; p.OK || p.Merkle != nil {
+		t.Fatalf("a head that does not verify carries a path: %+v", p)
+	}
+}
+
+// gatedView builds g1's View in memory, with one Prover.
+func gatedView(t *testing.T, j *agent.Journal, p Prover) *View {
+	t.Helper()
+	o := Options{Source: JournalSource{J: j}, Provers: []Prover{p}}
+	v, err := o.view(context.Background(), "g1")
+	if err != nil || v == nil {
+		t.Fatalf("view = %v, %v", v, err)
+	}
+	return v
+}
+
+func TestHeadAndFavicon(t *testing.T) {
+	h := head("VERIFIED · r1 · bide view", "good", "approval")
+	icon, err := url.PathUnescape(strings.TrimPrefix(string(h.Icon), "data:image/svg+xml,"))
+	if err != nil || !strings.Contains(icon, "#2f9e4f") || !strings.Contains(icon, "<path") || h.Title != "VERIFIED · r1 · bide view" {
+		t.Errorf("head = %+v, icon %q", h, icon)
+	}
+	if h := head("t", "no-such-class", "no-such-icon"); !strings.Contains(string(h.Icon), "6b6b66") {
+		t.Errorf("an unknown class has no fallback color: %s", h.Icon)
+	}
+	// Each verdict class has its own color, so a tab strip tells runs apart.
+	seen := map[template.URL]string{}
+	for class := range faviconColors {
+		i := head("t", class, "ok").Icon
+		if other, dup := seen[i]; dup {
+			t.Errorf("classes %s and %s share an icon", class, other)
+		}
+		seen[i] = class
+	}
+	hc := Handler(Options{Config: &Config{Name: "policy.json", Data: []byte(policyConfig)}})
+	_, page := get(t, hc, "/")
+	if !regexp.MustCompile(`<title>[^<]*POLICY VIOLATION[^<]* · refund · bide view</title>`).MatchString(page) || !strings.Contains(page, `rel="icon" type="image/svg+xml" href="data:image/svg&#43;xml,`) {
+		t.Errorf("the config page's title or icon: %.400s", page)
+	}
+	if strings.Contains(page, `href="#ZgotmplZ"`) {
+		t.Error("the favicon URL was filtered out")
+	}
+}
+
+// TestPagesAskForNothingElsewhere: every page and asset the viewer serves refers only to this
+// server (or a data: URL), and no script is inline, which the content policy would refuse.
+func TestPagesAskForNothingElsewhere(t *testing.T) {
+	logPub := audit.Ed25519Verifier{Pub: key("log").Public().(ed25519.PublicKey)}
+	j, sth := gatedRun(t, map[string]bool{"ops": true, "finance": true})
+	h := Handler(Options{Source: JournalSource{J: j}, Provers: []Prover{HeadProver(sth, logPub, Approvals{Keys: approverKeys(nil)})}})
+	ext := regexp.MustCompile(`(?:src|href)="(https?:)?//[^"]*"|url\(\s*['"]?https?:`)
+	for _, target := range []string{"/", "/run?id=g1"} {
+		_, page := get(t, h, target)
+		if m := ext.FindString(page); m != "" {
+			t.Errorf("%s refers off the server: %s", target, m)
+		}
+		for _, tag := range regexp.MustCompile(`<script[^>]*>`).FindAllString(page, -1) {
+			if !strings.Contains(tag, ` src="/assets/`) {
+				t.Errorf("%s has an inline script: %s", target, tag)
+			}
+		}
+		if strings.Contains(page, ` style="`) {
+			t.Errorf("%s has an inline style", target)
+		}
+	}
+	for _, f := range []string{"theme.js", "view.js", "share.js", "live.js", "style.css", "graph.css", "timeline.css", "extras.css", "diff.css", "runs.css", "live.css"} {
+		code, body := get(t, h, "/assets/"+f)
+		if code != 200 || ext.MatchString(body) || strings.Contains(body, "@import") {
+			t.Errorf("asset %s: %d, refers off the server", f, code)
+		}
+		if strings.HasSuffix(f, ".js") && (strings.Contains(body, "XMLHttpRequest") || strings.Contains(body, "sendBeacon") || strings.Contains(body, "WebSocket")) {
+			t.Errorf("asset %s makes a request it should not", f)
 		}
 	}
 }

@@ -185,3 +185,23 @@ func (s Style) Bang() string {
 	}
 	return s.Warn("!") + " "
 }
+
+// ErrorPrefix is a bold red "error:" and a space when color is on, and nothing when it is off: an
+// error line on a terminal opens with it, and a piped one stays as it was.
+func (s Style) ErrorPrefix() string {
+	if !s.on {
+		return ""
+	}
+	return s.BoldFail("error:") + " "
+}
+
+// Hint dims what follows the first sep in msg, a "what to do next" the message carries after a
+// colon or a semicolon, and leaves msg as it is when color is off or msg has no sep. sep stays
+// with the plain part.
+func (s Style) Hint(msg, sep string) string {
+	head, hint, ok := strings.Cut(msg, sep)
+	if !s.on || !ok || hint == "" {
+		return msg
+	}
+	return head + sep + s.Dim(hint)
+}

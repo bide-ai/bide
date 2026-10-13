@@ -1,4 +1,4 @@
-{{define "config.html"}}{{template "head" .Flow}}
+{{define "config.html"}}{{template "head" (head (printf "%s · %s · bide view" .Verdict.Word .Flow) .Verdict.Class .Verdict.Icon)}}
 <div class="crumb"><h1 class="rid">{{.Flow}}</h1> <span class="pill kind">flow config</span>{{if .Warnings}} <span class="pill state-started">{{.Warnings}} warning{{if gt .Warnings 1}}s{{end}}</span>{{end}}</div>
 <p class="input">{{.Name}}</p>
 {{template "verdict" .Verdict}}

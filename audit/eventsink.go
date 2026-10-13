@@ -329,6 +329,8 @@ func eventKind(e agent.RunEvent) (string, error) {
 		return "approval_required", nil
 	case agent.Finished:
 		return "finished", nil
+	case agent.NotifyRecord:
+		return "notify_" + string(ev.Kind), nil
 	default:
 		return "", fmt.Errorf("audit: canonicalize event: unknown event type %T", e)
 	}

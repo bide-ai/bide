@@ -8,6 +8,8 @@ assess (a model call) -> refund (a side effect, gated: 2 of ops, finance, risk) 
 
 - `flow.yaml` declares the flow: its nodes, its wiring and the refund's approval gate.
 - `main.go` registers a block for each node and drives the run in `run.db` (SQLite).
+- `color.go` colors what the program prints on a terminal (not when piped, with `NO_COLOR` set or
+  with `TERM=dumb`). Delete it and make `tag` return its word if you want none.
 - The model is scripted, so it runs with no API key and no network. `model()` in `main.go` has a
   marked block that swaps in a real one.
 - At startup it resumes any run a crash interrupted (`agent.Recover`), as a production service would.

@@ -1,0 +1,38 @@
+package main
+
+import (
+	"os"
+	"runtime"
+)
+
+// Color for what this program prints. It is on only when the output is a terminal, NO_COLOR is
+// unset and TERM is not "dumb" (on Windows, only in a terminal known to read ANSI escapes), so a
+// pipe, a CI log and go test read plain text. A colored line adds a mark (✓ ! ✗) beside its words;
+// it never says anything color alone would. To drop color, delete this file and make tag return word.
+
+var (
+	colorOut = isTerminal(os.Stdout) && colorOK(os.Getenv, runtime.GOOS)
+	colorErr = isTerminal(os.Stderr) && colorOK(os.Getenv, runtime.GOOS)
+)
+
+func isTerminal(f *os.File) bool {
+	fi, err := f.Stat()
+	return err == nil && fi.Mode()&os.ModeCharDevice != 0
+}
+
+// colorOK reports whether a terminal should get color, given its environment.
+func colorOK(getenv func(string) string, goos string) bool {
+	if getenv("NO_COLOR") != "" || getenv("TERM") == "dumb" {
+		return false
+	}
+	return goos != "windows" || getenv("WT_SESSION") != "" || getenv("TERM_PROGRAM") == "vscode"
+}
+
+// tag is word painted with the SGR code, after mark, when on; plain word when off. Codes: 32 green
+// (done, approved), 33 amber (paused at the gate), 34 blue (recovered), 1;31 bold red (error, crash).
+func tag(on bool, code, mark, word string) string {
+	if !on {
+		return word
+	}
+	return "\x1b[" + code + "m" + mark + " " + word + "\x1b[0m"
+}

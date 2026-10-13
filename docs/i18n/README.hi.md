@@ -18,6 +18,7 @@
 ```sh
 # इंस्टॉल करें (या: go install github.com/bide-ai/bide/cmd/bide@latest)
 brew install bide-ai/tap/bide
+# कुछ गड़बड़ है? bide doctor Go, SQLite, मॉड्यूल कैश और आपके प्रोजेक्ट को जाँचता है और हर एक का उपाय बताता है
 # 1. देखें: भुगतान के बीच एजेंट को मारें; वह दोबारा चार्ज नहीं करता (API key की ज़रूरत नहीं)
 bide demo
 # 2. बनाएँ: 2-में-से-3 अनुमोदन गेट वाला plan फ़्लो, SQLite पर, बिना API key

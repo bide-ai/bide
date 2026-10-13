@@ -139,8 +139,9 @@ func Main(args []string, stdout, stderr io.Writer, stores Stores) int {
 		return 2
 	}
 	st := term.For(stdout, *color)
+	es := term.For(stderr, *color) // error lines on stderr
 	usage := func(msg string) int {
-		fmt.Fprintln(stderr, "bide view:", msg)
+		fmt.Fprintln(stderr, es.ErrorPrefix()+"bide view:", msg)
 		fs.Usage()
 		return 2
 	}
@@ -165,22 +166,22 @@ func Main(args []string, stdout, stderr io.Writer, stores Stores) int {
 		}
 		c, err := readConfig(f.config, stores.YAML)
 		if err != nil {
-			fmt.Fprintf(stderr, "%s: %v\n", f.config, err)
+			fmt.Fprintf(stderr, "%s%s: %v\n", es.ErrorPrefix(), f.config, err)
 			return 1
 		}
 		if f.diff != "" {
 			old, err := readOld(f.diff, f.config, stores.YAML)
 			if err != nil {
-				fmt.Fprintln(stderr, "bide view:", err)
+				fmt.Fprintln(stderr, es.ErrorPrefix()+"bide view:", err)
 				return 1
 			}
 			d := Diff{Old: old, New: c}
 			if _, err := BuildDiff(d); err != nil {
-				fmt.Fprintln(stderr, "bide view:", err)
+				fmt.Fprintln(stderr, es.ErrorPrefix()+"bide view:", err)
 				return 1
 			}
 			if !f.check {
-				return serve(*addr, "", Options{Diff: &d}, nil, st, stdout, stderr)
+				return serve(*addr, "", Options{Diff: &d}, nil, st, es, stdout, stderr)
 			}
 			weakened, _ := CheckDiffStyled(stdout, d, st)
 			if weakened && f.failOnWeaken {
@@ -195,7 +196,7 @@ func Main(args []string, stdout, stderr io.Writer, stores Stores) int {
 			}
 			return 0
 		}
-		return serve(*addr, "", Options{Config: &c}, nil, st, stdout, stderr)
+		return serve(*addr, "", Options{Config: &c}, nil, st, es, stdout, stderr)
 	}
 	inputs := 0
 	for _, set := range []bool{f.db != "", f.postgres != "", len(f.journals) > 0} {
@@ -228,21 +229,21 @@ func Main(args []string, stdout, stderr io.Writer, stores Stores) int {
 	}
 	o, closer, err := options(f, stores)
 	if err != nil {
-		fmt.Fprintln(stderr, "bide view:", err)
+		fmt.Fprintln(stderr, es.ErrorPrefix()+"bide view:", err)
 		return 1
 	}
-	return serve(*addr, *run, o, closer, st, stdout, stderr)
+	return serve(*addr, *run, o, closer, st, es, stdout, stderr)
 }
 
 // serve listens on addr (a loopback address) and serves o until interrupted. It prints the page's
 // address in st's colors.
-func serve(addr, run string, o Options, closer io.Closer, st term.Style, stdout, stderr io.Writer) int {
+func serve(addr, run string, o Options, closer io.Closer, st, es term.Style, stdout, stderr io.Writer) int {
 	if closer != nil {
 		defer closer.Close()
 	}
 	ln, err := Listen(addr)
 	if err != nil {
-		fmt.Fprintln(stderr, "bide view:", err)
+		fmt.Fprintln(stderr, es.ErrorPrefix()+"bide view:", err)
 		return 2
 	}
 	link := "http://" + ln.Addr().String() + "/"
@@ -260,7 +261,7 @@ func serve(addr, run string, o Options, closer io.Closer, st term.Style, stdout,
 		_ = srv.Shutdown(sctx)
 	}()
 	if err := srv.Serve(ln); err != nil && !errors.Is(err, http.ErrServerClosed) {
-		fmt.Fprintln(stderr, "bide view:", err)
+		fmt.Fprintln(stderr, es.ErrorPrefix()+"bide view:", err)
 		return 1
 	}
 	return 0

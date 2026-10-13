@@ -25,12 +25,23 @@ type Proof struct {
 	// tool-use ID: audit.VerifyApprovals over the gate's evidence, with the approver keys given.
 	// Nil without approver keys.
 	Approvals map[string]ApprovalCheck `json:"approvals,omitempty"`
+
+	// What the page draws from the proof; none of it is in the JSON view.
+	Merkle   *MerklePath `json:"-"` // the proven record's path to the signed root
+	SignedAt time.Time   `json:"-"` // when the signed head was signed
 }
 
 // ApprovalCheck is audit.VerifyApprovals' verdict on one gate, in words.
 type ApprovalCheck struct {
 	OK   bool   `json:"ok"`
 	Text string `json:"text"`
+
+	// What the approver cards show; not in the JSON view. Counted and Denied are the approvers
+	// whose decision counted in the recount, Ignored the reason each other decision did not, and
+	// Keys each approver's key fingerprint (from the approver keys given).
+	Counted, Denied []string          `json:"-"`
+	Ignored         map[string]string `json:"-"`
+	Keys            map[string]string `json:"-"`
 }
 
 // Prover checks a run's records against an audit artifact. It returns nil for a run the artifact
@@ -50,8 +61,10 @@ func HeadProver(sth audit.SignedTreeHead, v audit.Verifier, ap Approvals) Prover
 		if sth.RunID != runID {
 			return nil
 		}
-		p := &Proof{Source: "signed tree head", Covers: sth.Size}
-		check(p, verifyHead(ctx, runID, recs, sth, v))
+		p := &Proof{Source: "signed tree head", Covers: sth.Size, SignedAt: headTime(sth)}
+		m, err := verifyHead(ctx, runID, recs, sth, v)
+		check(p, err)
+		p.Merkle = m
 		if ap.Keys != nil {
 			j, err := agent.NewJournal(staticStore{recs: recs[:min(sth.Size, len(recs))]})
 			p.Approvals = checkApprovals(recs, ap, v, func(id string) ([]audit.EvidenceAction, error) {
@@ -92,7 +105,10 @@ func EvidenceProver(pkg audit.EvidencePackage, v audit.Verifier, ap Approvals, o
 		if !rep.OK {
 			p.Problems = append(p.Problems, "the package did not verify under this key")
 		}
-		check(p, verifyHead(ctx, runID, recs, pkg.STH, v))
+		p.SignedAt = headTime(pkg.STH)
+		m, herr := verifyHead(ctx, runID, recs, pkg.STH, v)
+		check(p, herr)
+		p.Merkle = m
 		if ap.Keys != nil {
 			p.Approvals = checkApprovals(recs, ap, v, func(string) ([]audit.EvidenceAction, error) { return pkg.Actions, nil })
 		}
@@ -155,6 +171,13 @@ func checkApprovals(recs []agent.Record, ap Approvals, logV audit.Verifier, acti
 		v, err := audit.VerifyApprovals(actions, tu.ID, policy, ap.Keys, logV)
 		c := approvalText(v, err, len(policy.Approvers), mismatch)
 		c.Text += " (" + against + ")"
+		c.Counted, c.Denied, c.Keys = v.Counted, v.DeniedBy, fingerprints(policy.Approvers, ap.Keys)
+		if len(v.Ignored) > 0 {
+			c.Ignored = map[string]string{}
+			for _, d := range v.Ignored {
+				c.Ignored[d.Approver] = d.Reason
+			}
+		}
 		out[tu.ID] = c
 	}
 	return out
@@ -203,23 +226,39 @@ func approvalText(v audit.ApprovalVerdict, err error, n int, mismatch string) Ap
 }
 
 // verifyHead checks sth against recs: the timestamp rule, then an inclusion proof of the last
-// record the head covers, built from recs and verified under v.
-func verifyHead(ctx context.Context, runID string, recs []agent.Record, sth audit.SignedTreeHead, v audit.Verifier) error {
+// record the head covers, built from recs and verified under v. It returns that record's path to
+// the root, for the page to draw, when the proof verified.
+func verifyHead(ctx context.Context, runID string, recs []agent.Record, sth audit.SignedTreeHead, v audit.Verifier) (*MerklePath, error) {
 	if err := audit.CheckTimestamp(sth.TreeHead, time.Now(), audit.DefaultClockSkew); err != nil {
-		return err
+		return nil, err
 	}
 	if sth.Size < 1 {
-		return fmt.Errorf("the signed head covers no records")
+		return nil, fmt.Errorf("the signed head covers no records")
 	}
 	j, err := agent.NewJournal(staticStore{recs: recs})
 	if err != nil {
-		return err
+		return nil, err
 	}
 	b, err := audit.ProveRecord(ctx, j, runID, sth.Size-1, sth)
 	if err != nil {
-		return fmt.Errorf("the signed head does not commit to this journal: %w", err)
+		return nil, fmt.Errorf("the signed head does not commit to this journal: %w", err)
 	}
-	return b.Verify(v)
+	if err := b.Verify(v); err != nil {
+		return nil, err
+	}
+	name := ""
+	if sth.Size-1 < len(recs) {
+		name = recs[sth.Size-1].Name
+	}
+	return merklePath(b, name), nil
+}
+
+// headTime is when sth was signed.
+func headTime(sth audit.SignedTreeHead) time.Time {
+	if sth.TimestampNanos == 0 {
+		return time.Time{}
+	}
+	return time.Unix(0, sth.TimestampNanos).UTC()
 }
 
 func check(p *Proof, err error) {

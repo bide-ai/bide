@@ -196,7 +196,7 @@ func doLookup(ctx context.Context, api *stripe, in lookupArgs) (lookupResult, er
 	}
 	l := lookupResult{PaymentIntent: pi.ID, Currency: pi.Currency, Received: pi.AmountReceived, Refunded: ch.AmountRefunded,
 		Refundable: pi.AmountReceived - ch.AmountRefunded}
-	fmt.Printf("step 1  lookup   %s: received %d, already refunded %d, refundable %d (%s, minor units)\n", l.PaymentIntent, l.Received, l.Refunded, l.Refundable, l.Currency)
+	say("step 1  lookup   %s: received %d, already refunded %d, refundable %d (%s, minor units)", l.PaymentIntent, l.Received, l.Refunded, l.Refundable, l.Currency)
 	return l, nil
 }
 
@@ -206,10 +206,10 @@ func doLookup(ctx context.Context, api *stripe, in lookupArgs) (lookupResult, er
 // outcome this example exists to resolve.
 func doRefund(ctx context.Context, api *stripe, cfg config, in refundArgs) (refundResult, error) {
 	meta := map[string]string{"bide_run": cfg.runID, "bide_call": refundID, "bide_key": in.IdempotencyKey}
-	fmt.Printf("step 3  refund   POST /v1/refunds %s amount %d, Idempotency-Key %s\n", in.PaymentIntent, in.Amount, in.IdempotencyKey)
+	say("step 3  refund   POST /v1/refunds %s amount %d, Idempotency-Key %s", in.PaymentIntent, in.Amount, in.IdempotencyKey)
 	r, err := api.createRefund(ctx, in.PaymentIntent, in.Amount, in.IdempotencyKey, meta)
 	if cfg.crashAfterSend {
-		fmt.Println("        -crash-after-send: the refund request was sent; the process dies before its result is journaled")
+		say("        -crash-after-send: the refund request was sent; the process dies before its result is journaled")
 		os.Exit(3)
 	}
 	if err != nil {
@@ -221,7 +221,7 @@ func doRefund(ctx context.Context, api *stripe, cfg config, in refundArgs) (refu
 		}
 		return refundResult{}, fmt.Errorf("refund request to Stripe: %w: %w", err, agent.ErrToolOutcomeUnknown)
 	}
-	fmt.Printf("        Stripe answered: %s %s\n", r.ID, r.Status)
+	say("        Stripe answered: %s %s", r.ID, r.Status)
 	return refundResult{Refund: r.ID, Status: r.Status, Amount: r.Amount, Currency: r.Currency}, nil
 }
 
@@ -308,11 +308,11 @@ func approve(ctx context.Context, j *agent.Journal, runID, as string) error {
 	d := agent.Decision{RunID: runID, ToolUseID: refundID, ApproverID: as, Approved: true, Alg: audit.AlgEd25519, Signature: sig}
 	if err := agent.SubmitDecision(ctx, j, d, agent.WithDecisionCheck(approverVerifiers())); err != nil {
 		if errors.Is(err, agent.ErrInvalidApproval) || errors.Is(err, agent.ErrAlreadyDecided) {
-			fmt.Printf("refused: %v\n", err)
+			say("refused: %v", err)
 			return nil
 		}
 		return err
 	}
-	fmt.Printf("recorded: %s approved %s %s\n", as, call.Name, strings.TrimSpace(string(call.Args)))
+	say("recorded: %s approved %s %s", as, call.Name, strings.TrimSpace(string(call.Args)))
 	return nil
 }

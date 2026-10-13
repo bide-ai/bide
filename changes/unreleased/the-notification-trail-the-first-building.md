@@ -1,0 +1,3 @@
+Section: Added
+
+The notification trail, the first building block of the planned built-in notifier ([design](docs/design/notifier.md)): `agent.NotifyRecord` and its kinds, the key builders (`HaltedKey`, `ApprovalKey`, `AbortedKey`, `RecoveryKey`, `NotifyID`), `agent.FoldNotify` (a pure fold of a trail to the state of each event and of the run's recovery failure episode), the `agent.NotifyTrail` port with `agent.MemNotifyTrail`, and `audit.NewNotifyTrail`, which stores a trail as salted, Merkle-committed event leaves on any `audit.EventStore` and turns a lost append race into `agent.ErrTrailConflict`. `agenttest.NotifyTrailContract` is the contract test for a trail. Nothing sends a notification yet.

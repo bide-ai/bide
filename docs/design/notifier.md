@@ -1,6 +1,7 @@
 # Design: tell a human when a run needs them
 
-Status: proposal (draft, not implemented). It adds a small `Notifier` seam, a signed webhook
+Status: approved, in progress (build plan item 3, the trail port, records, fold and `EventStore`
+adapter, is in review). It adds a small `Notifier` seam, a signed webhook
 implementation, and an audited delivery trail that gives notify-once across crashes and makes the
 notification itself evidence. Until it ships, the recipe "Get notified when a run needs a human"
 wires the existing hooks to a webhook with an in-process dedupe; this note is the crash-safe,

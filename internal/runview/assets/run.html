@@ -1,5 +1,5 @@
-{{define "run.html"}}{{template "head" .RunID}}
-<div class="crumb"><h1 class="rid">{{.RunID}}</h1> <span class="pill kind">{{.Kind}}{{if .Flow}}: {{.Flow}}{{end}}</span> <span class="pill state-{{.State}}">{{.StateText}}</span>{{if .Live}} <span class="pill live" id="live" data-run="{{.RunID}}" data-cursor="{{.Cursor}}" title="the page follows the run as records land">live</span>{{end}}</div>
+{{define "run.html"}}{{template "head" (head (printf "%s · %s · bide view" .Verdict.Word .RunID) .Verdict.Class .Verdict.Icon)}}
+<div class="crumb"><h1 class="rid">{{.RunID}}</h1> <span class="pill kind">{{.KindText}}{{if .Flow}}: {{.Flow}}{{end}}</span> <span class="pill state-{{.State}}">{{.StateText}}</span>{{if .Live}} <span class="pill live" id="live" data-run="{{.RunID}}" data-cursor="{{.Cursor}}" title="the page follows the run as records land">live</span>{{end}}</div>
 {{if .Input}}<p class="input">{{.Input}}</p>{{end}}
 {{template "verdict" .Verdict}}
 
@@ -35,6 +35,18 @@
     {{if eq .Method "structural"}}<p class="muted small">A structural check covers node names, Switch arms and the digest. plan.Conform also replays routing and loops; embed the viewer with the Flow for it.</p>{{end}}</details>
   {{end}}</div>{{end}}
 </section>
+
+{{range .Gates}}{{if .Cards}}<section class="approvals"><h2>Approvers{{if gt (len $.Gates) 1}}: {{.ToolName}}{{end}} <span class="count">{{.Headline}}</span></h2>
+<ul class="acards">{{range .Cards}}<li class="acard a-{{.State}}">
+<span class="avatar" aria-hidden="true">{{.Initials}}</span>
+<div class="abody"><p class="aname"><b>{{.Name}}</b> <span class="astate">{{if eq .State "approved"}}{{icon "ok"}} approved{{else if eq .State "denied"}}{{icon "x"}} denied{{else}}{{icon "wait"}} pending{{end}}</span></p>
+{{if .Verify}}<p class="averify {{if .VerifyOK}}good{{else if eq .Verify "signature NOT verified"}}bad{{else}}muted{{end}}">{{if .VerifyOK}}{{icon "approval"}} {{else if eq .Verify "signature NOT verified"}}{{icon "x"}} {{end}}{{.Verify}}</p>{{end}}
+{{with .Why}}<p class="small bad">{{.}}</p>{{end}}
+{{with .Fingerprint}}<p class="small mono" title="the first 8 hex digits of the SHA-256 of the approver's public key">key {{.}}</p>{{end}}
+{{if not .SignedBy.IsZero}}<p class="small muted" title="the journal records no time for a decision; the head that covers it was signed then">in a head signed {{.SignedBy.Format "2006-01-02 15:04:05"}} UTC</p>{{end}}</div></li>{{end}}</ul></section>{{end}}{{end}}
+
+{{with .Proof}}{{with .Merkle}}{{with .Diagram}}<section class="proofpath"><h2>Proof path</h2>
+<div class="graphwrap merklewrap">{{.}}</div><p class="small muted">{{$.Proof.Merkle.Caption}}</p></section>{{end}}{{end}}{{end}}
 
 {{if .Halts}}<section><h2>Halts</h2>
 {{range .Halts}}<div class="halt"><p><b>Outcome unknown:</b> {{.Op}} <code>{{.ID}}</code>{{if .ToolName}} ({{.ToolName}}){{end}}. Its attempt marker <code>{{.Marker}}</code> is live with no result{{if not .AttemptedAt.IsZero}}, attempted {{.AttemptedAt.Format "2006-01-02 15:04:05 UTC"}}{{end}}. A resume returns <code>*agent.OutcomeUnknown</code> until the outcome is recorded:</p>

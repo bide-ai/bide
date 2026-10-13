@@ -65,6 +65,9 @@ var maxClockSkew = audit.DefaultClockSkew
 func readInput(path string) ([]byte, error) {
 	f, err := os.Open(path)
 	if err != nil {
+		if errors.Is(err, os.ErrNotExist) {
+			err = fmt.Errorf("%w (check the path; evidence.json comes from the program that ran the flow, or from bide audit prove)", err)
+		}
 		return nil, unusable(err)
 	}
 	defer f.Close()
@@ -1022,7 +1025,7 @@ func (c *cli) verifyEvidence(args []string) {
 	}
 
 	if err != nil || !rep.OK {
-		c.fail("evidence package did not verify under this key")
+		c.fail("evidence package did not verify under this key (is -pubkey the key of the log operator who signed it, taken from out of band, and is the evidence file unmodified?)")
 	}
 	if !c.clean() {
 		return
@@ -1340,7 +1343,7 @@ func readPubKey(s string) (audit.Verifier, error) {
 	}
 	v, err = audit.ParsePublicKey(raw)
 	if err != nil {
-		return nil, unusable(fmt.Errorf("public key: %w", err))
+		return nil, unusable(fmt.Errorf("public key: %w; -pubkey takes the log operator's public key (ed25519:<hex>, or 64 hex digits) or a file holding it, such as keys/log.pub", err))
 	}
 	return v, nil
 }
@@ -1490,7 +1493,7 @@ func (c *cli) readJSON(path string, v any) error {
 	// Strict: a duplicate or case-variant key, an unknown field, or invalid UTF-8 is an error, so the
 	// file a person reads is exactly the data the verifier checks.
 	if err := audit.UnmarshalStrict(b, v); err != nil {
-		return unusable(fmt.Errorf("parse %s: %w", path, err))
+		return unusable(fmt.Errorf("parse %s: %w; bide audit reads the JSON files a flow or bide audit writes (evidence.json), not the journal database", path, err))
 	}
 	// Every signed head in the input, however deeply it is carried, is held to the timestamp rule.
 	if err := checkHeadTimes(reflect.ValueOf(v), time.Now()); err != nil {

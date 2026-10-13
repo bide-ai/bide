@@ -89,7 +89,7 @@ func TestFiles(t *testing.T) {
 	if code, out := initCmd("v0.14.0", dir); code != 0 {
 		t.Fatalf("exit %d\n%s", code, out)
 	}
-	for _, f := range []string{"main.go", "main_test.go", "flow.yaml", "README.md", ".gitignore", "go.mod"} {
+	for _, f := range []string{"main.go", "color.go", "main_test.go", "flow.yaml", "README.md", ".gitignore", "go.mod"} {
 		b, err := os.ReadFile(filepath.Join(dir, f))
 		if err != nil {
 			t.Fatal(err)

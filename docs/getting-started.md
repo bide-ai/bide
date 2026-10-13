@@ -16,6 +16,14 @@ With Go installed you can skip the install: `go run github.com/bide-ai/bide/cmd/
 
 No API key, no clone, no setup. It runs a payment agent in a child process, kills the process after the charge reaches a fake payment provider but before bide journals the result, and restarts the run: bide halts with "outcome unknown" instead of charging again. The demo then confirms the charge with the provider, records it (`agent.ResolveHalt`), finishes the run, verifies the signed audit trail and the 2-of-3 approval signatures, and opens the run in the [run viewer](guides/run-viewer.md). Pass `-no-browser` to print the viewer's address instead.
 
+## If something fails: `bide doctor`
+
+```
+bide doctor
+```
+
+`bide doctor` checks what a first run depends on and prints one line per check, with a fix for a failure: the Go version (1.27 or later), `bide` against the latest release (skipped offline), that SQLite works in a temporary directory, a Postgres DSN if `BIDE_POSTGRES_DSN` is set (`-postgres-env` names another variable), which model API key variables are set (names only, never values), that `GOPATH` and the module cache are writable, and, run inside a `bide init` project, that the project builds. It exits 1 if a check failed, 0 otherwise; a warning or a skipped check does not fail it. See the [CLI reference](reference/cli.md#bide-doctor).
+
 ## Start a project
 
 ```
@@ -29,7 +37,11 @@ proposes a refund on a scripted model, a refund node behind a 2-of-3 approval ga
 journal. `go run .` pauses at the gate, records two signed approvals, refunds once, and writes the
 evidence. It starts with a recovery pass (`agent.Recover`), so a run a crash interrupted resumes on
 the next start: `BIDE_CRASH=notify go run .` kills it mid-run, and the next `go run .` finishes it
-with one refund. The project's README is the place to read next: the next steps (`bide view`,
+with one refund. On a terminal the story is colored (paused at the gate in amber, each approval and the finished run in green; piped or with `NO_COLOR` set it is plain text):
+
+<img src="./guides/img/cli-init-run-dark.png" alt="go run . in the project bide init wrote, on a terminal: paused before the refund in amber, ops and finance approved in green, done in green, and the evidence written">
+
+The project's README is the place to read next: the next steps (`bide view`,
 `bide check`, `bide audit`), the crash demo, its "Start over" command, and the marked block in
 `model()` that swaps in a real model when `OPENROUTER_API_KEY` or `OPENAI_API_KEY` is set (start
 over first: a finished run is read back from the journal, so the new model would not be called).

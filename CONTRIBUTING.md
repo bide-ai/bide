@@ -105,11 +105,42 @@ it with the version it describes instead of rewriting history.
 
 ## Changelog
 
-Every user-facing change adds an entry to [CHANGELOG.md](CHANGELOG.md) under `## [Unreleased]`, in
-the same pull request. Put it under Added, Changed, Deprecated, Removed, Fixed or Security; keep it
-to one line that names the public identifiers affected and links the PR. Mark breaking changes
-with a leading **Breaking:** under Changed or Removed. Describe a fix by the corrected behavior,
-plainly. Internal-only changes (CI, tests, refactors with no API or behavior change) need no entry.
+Every user-facing change adds a changelog fragment in the same pull request: one small file,
+`changes/unreleased/<slug>.md`, instead of an edit to [CHANGELOG.md](CHANGELOG.md). Pull requests
+therefore do not conflict on the changelog. Do not edit CHANGELOG.md in a pull request; the release
+pull request assembles the fragments into it.
+
+A fragment is a `Section:` line, a blank line, and the entry as one paragraph (no blank lines, no
+leading `- `):
+
+```
+Section: Fixed
+
+`Store.Resolve` no longer returns `ErrNotFound` for a run whose first record is still being written ([#240]).
+```
+
+- The section is one of `Added`, `Changed`, `Fixed`, `Removed` or `Security`. A release lists them
+  in that order.
+- The entry names the public identifiers affected. Mark breaking changes with a leading
+  **Breaking:** under Changed or Removed. Describe a fix by the corrected behavior, plainly.
+- Name the file for the change (`resolve-not-found.md`); entries of one section are listed in file
+  name order. One fragment holds one entry: a change with several entries adds several files.
+- A reference like `[#240]` needs no link definition: assembling adds `[#240]: .../pull/240` to the
+  end of the changelog when it is missing.
+- Internal-only changes (CI, tests, docs, examples, refactors with no API or behavior change) need
+  no fragment.
+
+The Changelog workflow fails a pull request that changes code a published module ships (anything
+outside documentation, tests, `testdata`, CI, `examples/`, `integration/`, `benchmarks/`,
+`scripts/`, `internal/tools/` and the `go.mod` and `go.sum` files) and adds no fragment. A
+maintainer can give the pull request the `no-changelog` label when the change has no user-facing
+effect; the check runs again when a label changes. It also parses every fragment, so a malformed
+one fails. Run the same checks locally:
+
+```
+go run ./internal/tools/changelog lint
+go run ./internal/tools/changelog check -base origin/main -head HEAD
+```
 
 ## Releasing
 
@@ -128,9 +159,12 @@ version, the `replace` directives dropped, and `go.sum` resolved through the mod
 keeps its `replace` directives, so the workspace and `GOWORK=off` builds keep using the code in the
 tree between releases.
 
-1. Open a release pull request: move the `## [Unreleased]` entries of `CHANGELOG.md` under
-   `## [X.Y.Z] - <date>` and add `docs/releases/vX.Y.Z.md`. Merge it and wait for CI on main to
-   pass for that commit.
+1. Open a release pull request: assemble the fragments into `CHANGELOG.md` with
+   `scripts/release.sh --assemble-changelog vX.Y.Z <date>` (it adds the `## [X.Y.Z] - <date>`
+   section, grouped Added, Changed, Fixed, Removed, Security, moves the `[Unreleased]` compare link,
+   adds the `[X.Y.Z]` one, and deletes the fragments), review the result, and add
+   `docs/releases/vX.Y.Z.md`. Merge it and wait for CI on main to pass for that commit. The
+   release script refuses a commit that still has fragments.
 2. From a clean checkout of main, dry-run the release. Nothing leaves the machine: the script
    works in a scratch clone and pushes to a scratch repository that stands in for GitHub, and the
    go command resolves the bide modules from it.
@@ -268,5 +302,5 @@ and call states, the tool call in `agent/loop.go`, `agent/tool_middleware.go`, `
 - New exported symbols have doc comments that start with their name, and every package has a package comment; CI checks this with `go run ./internal/tools/doccheck -root . -allow .doccheck-allow` from the root, and a pull request may not add entries to `.doccheck-allow`.
 - `go run ./internal/tools/docsnip` is clean: the Go blocks of the docs compile (see [Go code in the docs](#go-code-in-the-docs)).
 - `spec/tla/check.sh` passes when the change touches a modelled protocol (the claim protocol, the tool-call state machine, delegation and sub-runs, sessions), and `go run ./internal/tools/modelsync -base origin/main` passes (see [Formal models](#formal-models)).
-- `CHANGELOG.md` has an entry under Unreleased, or the change is not user-facing.
+- A changelog fragment is in `changes/unreleased/`, or the change is not user-facing (see [Changelog](#changelog)).
 - New docs are linked from the [docs index](docs/README.md) and honor the style above.

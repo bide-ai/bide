@@ -5,6 +5,7 @@
 #   scripts/release.sh --check-tag TAG     (CI: the module a nested tag names is releasable)
 #   scripts/release.sh --check-classification
 #   scripts/release.sh --list-published
+#   scripts/release.sh --assemble-changelog vX.Y.Z YYYY-MM-DD   (release PR: fragments into CHANGELOG.md)
 #   scripts/release.sh --self-test
 #
 # On main, every nested module requires github.com/bide-ai/bide v0.0.0 (and govern v0.0.0 for the
@@ -65,7 +66,7 @@ die() { echo "release: error: $*" >&2; exit 1; }
 say() { echo "==> $*"; }
 note() { echo "    $*"; }
 
-usage() { sed -n '2,8p' "$0" | sed 's/^# \{0,1\}//'; exit 2; }
+usage() { sed -n '2,9p' "$0" | sed 's/^# \{0,1\}//'; exit 2; }
 
 is_version() { [[ "$1" =~ ^v(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)(-[0-9A-Za-z.-]+)?$ ]]; }
 
@@ -170,6 +171,15 @@ changelog_has() {
   return 1
 }
 
+# assemble_changelog version date: fold the fragments in changes/unreleased into CHANGELOG.md as the
+# section for the version, update its compare links, and delete the fragments (see
+# internal/tools/changelog). Run it in the release pull request, which then shows the assembled
+# section for review.
+assemble_changelog() {
+  is_version "$1" || die "$1 is not a version like v0.8.0"
+  (cd "$(git rev-parse --show-toplevel)" && go run ./internal/tools/changelog assemble -version "${1#v}" -date "$2")
+}
+
 # remote_has_tag lsremote ref: the `git ls-remote --tags` output lists ref exactly.
 # awk reads all of its input and compares the ref literally.
 remote_has_tag() { awk -v t="$2" '$2 == t {found = 1} END {exit !found}' <<<"$1"; }
@@ -238,6 +248,29 @@ HOOK
   $ok
 }
 
+# self_test_changelog: the changelog tool folds two fragments into a scratch repository's
+# CHANGELOG.md as a new section, moves the compare links, and deletes the fragments.
+self_test_changelog() {
+  local tmp top ok=true; tmp=$(mktemp -d); top=$(git rev-parse --show-toplevel)
+  mkdir -p "$tmp/internal/tools" "$tmp/changes/unreleased"
+  cp -R "$top/internal/tools/changelog" "$tmp/internal/tools/"
+  printf 'module example.com/s\n\ngo 1.27\n' >"$tmp/go.mod"
+  printf '# Changelog\n\n## [Unreleased]\n\nUnreleased changes are in `changes/unreleased/`.\n\n## [0.8.0] - 2026-09-30\n\n### Added\n\n- old\n\n[Unreleased]: https://example.com/r/compare/v0.8.0...HEAD\n[0.8.0]: https://example.com/r/compare/v0.7.0...v0.8.0\n' >"$tmp/CHANGELOG.md"
+  printf 'Section: Fixed\n\nfix one\n' >"$tmp/changes/unreleased/b.md"
+  printf 'Section: Added\n\nadd one\n' >"$tmp/changes/unreleased/a.md"
+  if ! (cd "$tmp" && GOWORK=off go run ./internal/tools/changelog assemble -version 0.9.0 -date 2026-10-01 >/dev/null 2>"$tmp/err"); then
+    echo "self-test: assembling the changelog failed:"; sed 's/^/    /' "$tmp/err"; ok=false
+  else
+    grep -q '^## \[0.9.0\] - 2026-10-01$' "$tmp/CHANGELOG.md" || { echo "self-test: the assembled changelog has no [0.9.0] section"; ok=false; }
+    [ "$(grep -e '^### Added$' -e '^### Fixed$' "$tmp/CHANGELOG.md" | head -2 | tr '\n' ' ')" = "### Added ### Fixed " ] || { echo "self-test: the assembled sections are not in Added, Fixed order"; ok=false; }
+    grep -q '^\[Unreleased\]: https://example.com/r/compare/v0.9.0...HEAD$' "$tmp/CHANGELOG.md" || { echo "self-test: the [Unreleased] link did not move to v0.9.0"; ok=false; }
+    grep -q '^\[0.9.0\]: https://example.com/r/compare/v0.8.0...v0.9.0$' "$tmp/CHANGELOG.md" || { echo "self-test: the [0.9.0] compare link is missing"; ok=false; }
+    [ -z "$(ls "$tmp/changes/unreleased" 2>/dev/null)" ] || { echo "self-test: fragments are left after assembling"; ok=false; }
+  fi
+  rm -rf "$tmp"
+  $ok
+}
+
 self_test() {
   local tmp fail=false; tmp=$(mktemp -d)
   printf 'module %s/x\n\ngo 1.27\n\nrequire %s v0.0.0\n\nreplace %s => ../\n' "$ROOT_MODULE" "$ROOT_MODULE" "$ROOT_MODULE" > "$tmp/go.mod"
@@ -280,6 +313,7 @@ self_test() {
   in_list cmd/bide $(libraries) && { echo "self-test: the consumer would import the bide command"; fail=true; }
   in_list cmd/bide-view $(libraries) && { echo "self-test: the consumer would import the bide-view signpost"; fail=true; }
   self_test_push || fail=true
+  self_test_changelog || fail=true
   $fail && return 1
   echo "self-test: ok"
 }
@@ -289,6 +323,7 @@ case "${1:-}" in
   --check-classification) check_classification "$(git rev-parse --show-toplevel)" && echo "release: every module is classified"; exit ;;
   --list-published) for m in $PUBLISHED; do echo "$m"; done; exit ;;
   --self-test) self_test; exit ;;
+  --assemble-changelog) [ $# -eq 3 ] || usage; assemble_changelog "$2" "$3"; exit ;;
   ""|-h|--help) usage ;;
 esac
 
@@ -349,6 +384,8 @@ fi
 git -C "$REPO" show "$SHA:docs/releases/$VERSION.md" >/dev/null 2>&1 || problem "docs/releases/$VERSION.md does not exist at $SHA"
 changelog=$(git -C "$REPO" show "$SHA:CHANGELOG.md" 2>/dev/null || true)
 changelog_has "$changelog" "${VERSION#v}" || problem "CHANGELOG.md has no [${VERSION#v}] section at $SHA"
+left=$(git -C "$REPO" ls-tree -r --name-only "$SHA" -- changes/unreleased 2>/dev/null | awk '/\.md$/' || true)
+[ -z "$left" ] || problem "changelog fragments are left at $SHA (run scripts/release.sh --assemble-changelog $VERSION DATE in the release PR): $(echo $left)"
 ROOT_TAGGED=false
 if [ -n "$root_remote" ]; then
   [ "$root_remote" = "$SHA" ] || die "$VERSION is already tagged on $REMOTE at $root_remote, not $SHA"

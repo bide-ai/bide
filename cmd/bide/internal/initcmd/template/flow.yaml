@@ -1,3 +1,4 @@
+# yaml-language-server: $schema=https://raw.githubusercontent.com/bide-ai/bide/main/plan/schema/flow.schema.json
 # A plan flow: assess -> refund -> notify. main.go registers a block for each node; bide check
 # flow.yaml checks this file without running it, and bide view -config flow.yaml draws it.
 version: 1

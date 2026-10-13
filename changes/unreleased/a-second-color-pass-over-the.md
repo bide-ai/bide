@@ -1,0 +1,3 @@
+Section: Changed
+
+A second color pass over the CLI, on a terminal only (piped output is byte for byte what it was). Every error `bide` prints to stderr opens with a bold red `error:` (a hint after a semicolon is dim, in `bide init`'s messages), `bide` and `bide help` show bold headings and command names over dim summaries, and `bide version` is lightly styled. `bide version` takes `-color` like the other commands. The project `bide init` writes gets a `color.go` that colors its story (paused at the gate, approvals, done) with the same rules (a terminal, not `NO_COLOR`, not `TERM=dumb`), with a test of them; `examples/approval` and `examples/stripe-refund` color their narration the same way.
