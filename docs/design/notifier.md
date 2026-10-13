@@ -514,7 +514,7 @@ webhook is a wider audience than the journal.
     "approved": 0
   },
   "abort": null,
-  "view": { "command": "bide view -run orders-1042", "url": null }
+  "view": { "command": "bide view -db /var/lib/orders/run.db -run orders-1042", "url": null }
 }
 ```
 

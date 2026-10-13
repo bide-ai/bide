@@ -19,7 +19,8 @@
 //     resolution, the gate's signatures and the audit proof), and opens a browser on it.
 //
 // Flags: -no-browser prints the page's address without opening a browser, -fast drops the pauses
-// (for CI), -addr sets the loopback address to serve on, -keep keeps the temp directory and prints
+// and exits when the demo is done instead of serving the page (for CI; it opens no browser and
+// listens on no address), -addr sets the loopback address to serve on, -keep keeps the temp directory and prints
 // it, with the bide view command that reopens the run, and -color colors the narration (by default
 // on a terminal only).
 package demo
@@ -102,7 +103,7 @@ func newFlags() (*flag.FlagSet, demoFlags) {
 	fs := flag.NewFlagSet("bide demo", flag.ContinueOnError)
 	var f demoFlags
 	f.noBrowser = fs.Bool("no-browser", false, "print the viewer's address instead of opening a browser")
-	f.fast = fs.Bool("fast", false, "no pauses between steps (for CI)")
+	f.fast = fs.Bool("fast", false, "no pauses between steps, and exit 0 when the demo is done instead of serving the viewer (for CI; with -keep, bide view reopens the run)")
 	f.addr = fs.String("addr", "127.0.0.1:0", "loopback address to serve the viewer on (port 0 picks a free one)")
 	f.keep = fs.Bool("keep", false, "keep the demo's directory (the journal, evidence and keys) and print it")
 	f.color = term.Flag(fs)
@@ -148,6 +149,16 @@ func Main(args, self []string, stdout, stderr io.Writer) int {
 	if err != nil {
 		p.fatal(err)
 	}
+	if *fast {
+		// For CI: the demo has run and verified itself, so the command is done. -keep leaves the
+		// run to open later with bide view.
+		if *keep {
+			p.line("")
+			p.line(p.dim(keptLines(dir, res)))
+		}
+		res.close()
+		return 0
+	}
 	ln, err := runview.Listen(*addr)
 	if err != nil {
 		p.fatal(err)
@@ -157,8 +168,7 @@ func Main(args, self []string, stdout, stderr io.Writer) int {
 	p.line(p.bold("viewer") + "  " + p.st.Path(link))
 	p.line(p.dim("        (Ctrl-C to quit)"))
 	if *keep {
-		p.line(p.dim(fmt.Sprintf("kept    %s\n        bide view -db %s -run %s -evidence %s -pubkey %s -approver-keys %s",
-			dir, filepath.Join(dir, journalFile), runID, filepath.Join(dir, evidenceFile), res.logPub, filepath.Join(dir, keysFile))))
+		p.line(p.dim(keptLines(dir, res)))
 	}
 	if !*noBrowser {
 		openBrowser(link)
@@ -175,6 +185,12 @@ func Main(args, self []string, stdout, stderr io.Writer) int {
 	}
 	res.close()
 	return 0
+}
+
+// keptLines names the kept directory and the bide view command that reopens the run in it.
+func keptLines(dir string, res *result) string {
+	return fmt.Sprintf("kept    %s\n        bide view -db %s -run %s -evidence %s -pubkey %s -approver-keys %s",
+		dir, filepath.Join(dir, journalFile), runID, filepath.Join(dir, evidenceFile), res.logPub, filepath.Join(dir, keysFile))
 }
 
 // result is what a finished demo leaves for main to serve and for the test to check.

@@ -19,6 +19,7 @@ import (
 	"strconv"
 	"strings"
 	"time"
+	"unicode/utf8"
 
 	"github.com/bide-ai/bide/internal/term"
 	"github.com/bide-ai/bide/store/postgres"
@@ -78,7 +79,8 @@ func Main(version string, args []string, stdout, stderr io.Writer) int {
 Checks that a first run of bide can work, and prints one line per check with a hint to fix a
 failure:
 
-  Go            the toolchain is installed and is Go 1.27 or later
+  Go            the toolchain is installed and is Go 1.27 or later (older is a warning where
+                GOTOOLCHAIN=auto lets go fetch 1.27 itself, and a failure where it does not)
   bide          this bide against the latest release (skipped offline or on a build from source)
   SQLite        a journal can be created and written in a temporary directory
   Postgres      with the variable named by -postgres-env set, its DSN connects (the value is never printed)
@@ -128,9 +130,20 @@ func Check(ctx context.Context, env Env) []Result {
 	}
 }
 
-// Report prints results and a summary line, and returns the exit status: 1 if any failed.
+// width is the widest a report line gets, so it fits a 1200px terminal without wrapping.
+const width = 120
+
+// Report prints results and a summary line, and returns the exit status: 1 if any failed. Long
+// details and fixes wrap under their own column, and the columns line up by visible width: a
+// colored mark is two columns wide, so a row without one is padded by two.
 func Report(w io.Writer, st term.Style, results []Result) int {
 	var ok, warn, fail, skip int
+	pad := ""
+	if st.On() {
+		pad = "  "
+	}
+	const nameCol = 4 + 2 // the label and the gap before the name
+	const detailCol = nameCol + 13 + 1
 	for _, r := range results {
 		var mark, label string
 		switch r.Status {
@@ -145,11 +158,12 @@ func Report(w io.Writer, st term.Style, results []Result) int {
 			mark, label = st.Cross(), st.Fail("FAIL")
 		case Skip:
 			skip++
-			mark, label = "", st.Dim("skip")
+			mark, label = pad, st.Dim("skip")
 		}
-		fmt.Fprintf(w, "%s%s  %-13s %s\n", mark, label, r.Name, r.Detail)
+		indent := len(pad)
+		fmt.Fprintf(w, "%s%s  %-13s %s\n", mark, label, r.Name, wrap(r.Detail, indent+detailCol, width))
 		if r.Fix != "" {
-			fmt.Fprintf(w, "      %s %s\n", st.Dim("fix:"), r.Fix)
+			fmt.Fprintf(w, "%s      %s %s\n", pad, st.Dim("fix:"), wrap(r.Fix, indent+nameCol+len("fix: "), width))
 		}
 	}
 	summary := fmt.Sprintf("%d ok, %d warning(s), %d failed, %d skipped", ok, warn, fail, skip)
@@ -159,6 +173,29 @@ func Report(w io.Writer, st term.Style, results []Result) int {
 	}
 	fmt.Fprintf(w, "\n%s%s  %s\n", st.Pass(), st.BoldOK("READY"), summary)
 	return 0
+}
+
+// wrap breaks text at spaces so that, printed after col columns, no line passes max. The next
+// lines are indented to col. A word longer than the room stays whole.
+func wrap(text string, col, max int) string {
+	room := max - col
+	var b strings.Builder
+	n := 0
+	for i, word := range strings.Fields(text) {
+		wl := utf8.RuneCountInString(word)
+		switch {
+		case i == 0:
+		case n+1+wl > room:
+			b.WriteString("\n" + strings.Repeat(" ", col))
+			n = 0
+		default:
+			b.WriteByte(' ')
+			n++
+		}
+		b.WriteString(word)
+		n += wl
+	}
+	return b.String()
 }
 
 var goVersionRE = regexp.MustCompile(`go(\d+)\.(\d+)(?:\.(\d+))?`)
@@ -198,13 +235,28 @@ func checkGo(ctx context.Context, env Env) Result {
 	case !ok:
 		r.Status, r.Detail = Warn, "could not read the version from: "+firstLine(string(out), nil)
 		r.Fix = "check that go version prints go1.27 or later"
+	case less(v, minGo) && canFetchToolchain(ctx, env):
+		r.Status = Warn
+		r.Detail = fmt.Sprintf("Go %d.%d.%d is older than 1.27: GOTOOLCHAIN=auto fetches 1.27 in a bide project", v[0], v[1], v[2])
+		r.Fix = "to use 1.27 everywhere, install it from https://go.dev/dl/ or set GOTOOLCHAIN=go1.27.0"
 	case less(v, minGo):
-		r.Status, r.Detail = Fail, fmt.Sprintf("Go %d.%d.%d is older than Go 1.27", v[0], v[1], v[2])
-		r.Fix = "install Go 1.27 or later from https://go.dev/dl/ (bide's flow builder uses generic methods, which older Go does not have)"
+		r.Status, r.Detail = Fail, fmt.Sprintf("Go %d.%d.%d is older than Go 1.27, and GOTOOLCHAIN does not let go fetch a newer one", v[0], v[1], v[2])
+		r.Fix = "install Go 1.27 or later from https://go.dev/dl/, or set GOTOOLCHAIN=go1.27.0 (bide's flow builder uses generic methods, which older Go does not have)"
 	default:
 		r.Status, r.Detail = OK, fmt.Sprintf("Go %d.%d.%d", v[0], v[1], v[2])
 	}
 	return r
+}
+
+// canFetchToolchain reports whether go may download a newer toolchain when a go.mod asks for one:
+// GOTOOLCHAIN is auto, or ends in +auto. A pinned or local value, or one go cannot report, may not.
+func canFetchToolchain(ctx context.Context, env Env) bool {
+	out, err := env.Run(ctx, "", "go", "env", "GOTOOLCHAIN")
+	if err != nil {
+		return false
+	}
+	tc := strings.TrimSpace(string(out))
+	return tc == "auto" || strings.HasSuffix(tc, "+auto")
 }
 
 func checkVersion(ctx context.Context, env Env) Result {

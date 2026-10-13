@@ -61,7 +61,10 @@ HTML
 shot "file://$work/waiting.html" "$work/waiting.png"
 serve "$work/halted.log" "$work/bin/bide" view -db "$work/rec/halted.db" -run order-42 -addr 127.0.0.1:18487
 shot "http://127.0.0.1:18487/run?id=order-42" "$work/halted.png"
-serve "$work/final.log" "$work/bin/bide" demo -fast -no-browser -addr 127.0.0.1:18488
+# demo -fast exits when it is done; -keep prints the bide view command that reopens the finished run.
+"$work/bin/bide" demo -fast -no-browser -keep > "$work/final-demo.log" 2>&1
+view=$(sed -n 's/^ *bide view //p' "$work/final-demo.log")
+serve "$work/final.log" "$work/bin/bide" view $view -addr 127.0.0.1:18488
 shot "http://127.0.0.1:18488/run?id=order-42" "$work/final.png"
 
 # 3. Side by side, the page switching state as the terminal reaches it; then a GIF.

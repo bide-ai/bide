@@ -463,7 +463,7 @@ func TestPayloadShape(t *testing.T) {
 	if pr := m["principal"].(map[string]any); pr["on_behalf_of"] != "desk-7" {
 		t.Fatalf("principal: %v", pr)
 	}
-	if v := m["view"].(map[string]any); v["command"] != "bide view -run orders-1042" || v["url"] != nil {
+	if v := m["view"].(map[string]any); v["command"] != "bide view -db <journal.db> -run orders-1042" || v["url"] != nil {
 		t.Fatalf("view: %v", v)
 	}
 	if m["halt"] != nil || m["abort"] != nil || m["failing"] != nil {
@@ -597,7 +597,7 @@ func TestPayloadHasViewPointerNeverAnActionLink(t *testing.T) {
 	if v["url"] != "https://viewer.example.com/runs/orders%201042%2F..%2Fx" {
 		t.Fatalf("url %v", v["url"])
 	}
-	if v["command"] != `bide view -run 'orders 1042/../x'` {
+	if v["command"] != `bide view -db <journal.db> -run 'orders 1042/../x'` {
 		t.Fatalf("command %v", v["command"])
 	}
 	// The only URL in the payload is the view pointer; nothing decides on a click.
@@ -629,5 +629,25 @@ func TestProxyDefaults(t *testing.T) {
 		WithProxy(func(*http.Request) (*url.URL, error) { return nil, nil }))
 	if !proxyOf(plain) || proxyOf(pinned) || proxyOf(rooted) || !proxyOf(explicit) {
 		t.Fatalf("proxy: plain %v pinned %v rooted %v explicit %v", proxyOf(plain), proxyOf(pinned), proxyOf(rooted), proxyOf(explicit))
+	}
+}
+
+func TestViewCommandNamesTheStore(t *testing.T) {
+	for _, tc := range []struct{ db, want string }{
+		{"", "bide view -db <journal.db> -run orders-1042"},
+		{"/var/lib/bide/run.db", "bide view -db /var/lib/bide/run.db -run orders-1042"},
+		{"/var/lib/my bide/run.db", "bide view -db '/var/lib/my bide/run.db' -run orders-1042"},
+	} {
+		var opts []Option
+		if tc.db != "" {
+			opts = append(opts, WithViewDB(tc.db))
+		}
+		m, _ := notifyJSON(t, plainWebhook(t, opts...), approvalWithSecrets())
+		if got := m["view"].(map[string]any)["command"]; got != tc.want {
+			t.Errorf("WithViewDB(%q): command %q, want %q", tc.db, got, tc.want)
+		}
+	}
+	if _, err := NewWebhook("https://example.com/hook", WithSecrets(testSecret, ""), WithViewDB("")); !errors.Is(err, agent.ErrConfig) {
+		t.Fatalf("empty WithViewDB: %v", err)
 	}
 }

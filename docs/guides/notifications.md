@@ -20,6 +20,7 @@ hook, err := notify.NewWebhook(os.Getenv("BIDE_WEBHOOK_URL"),
 	notify.WithSecrets(os.Getenv("BIDE_WEBHOOK_SECRET"), os.Getenv("BIDE_WEBHOOK_SECRET_PREVIOUS")),
 	notify.WithTimeout(10*time.Second), // per request; this is the default
 	notify.WithViewURL("https://bide.example.com/runs"), // optional: puts a view link in the payload
+	notify.WithViewDB("/var/lib/orders/run.db"),         // optional: the journal the view command opens
 )
 if err != nil {
 	return err
@@ -134,7 +135,7 @@ Schema `bide.notification.v1`:
   },
   "abort": null,
   "failing": null,
-  "view": { "command": "bide view -run orders-1042", "url": null }
+  "view": { "command": "bide view -db /var/lib/orders/run.db -run orders-1042", "url": null }
 }
 ```
 
@@ -144,6 +145,13 @@ says. `summary` is generated from the structured fields, so a chat message can p
 `notification_overdue` also carries a `reason`. New fields are additive within `v1`; ignore the ones
 you do not know.
 
+`view.command` is a `bide view` command, and `bide view` needs a store. With `WithViewDB` the command
+names your SQLite journal file, as above, and runs where that path is readable. Without it the webhook
+cannot know the store, so the command is a marked template, `bide view -db <journal.db> -run
+orders-1042`, to fill in; it fails with a usage error if pasted as it is. A Postgres DSN is a
+credential and never goes in a payload: an adapter that reads from Postgres replaces the `-db
+<journal.db>` part with `-postgres "$DSN"` itself.
+
 **In it:** kind, run ID, the step and tool name, the gate's approver IDs and its policy (k of n), the
 run's principal, the times, and a view pointer.
 
@@ -151,7 +159,7 @@ run's principal, the times, and a view pointer.
 
 - Error text, tool arguments, tool results and model output. Error text can embed arguments, card or
   account numbers and personal data, and a webhook reaches a wider audience than the journal.
-- An approve or resolve link. The notification carries a view pointer only (the `bide view` command,
+- An approve or resolve link. The notification carries a view pointer only (a `bide view` command,
   and a URL when you set `WithViewURL`). A link that decides on a click is a phishing target, and it
   would bypass the point of the gate, where a decision is signed with the approver's key. Acting from
   a notification is a non-goal.
@@ -226,7 +234,7 @@ http.HandleFunc("/bide-to-slack", func(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, "bad request", http.StatusBadRequest)
 		return
 	}
-	msg, _ := json.Marshal(map[string]string{"text": p.Summary + " Run `" + p.View.Command + "`."})
+	msg, _ := json.Marshal(map[string]string{"text": p.Summary + " To look: `" + p.View.Command + "`"})
 	resp, err := http.Post(slackURL, "application/json", bytes.NewReader(msg))
 	if err != nil || resp.StatusCode/100 != 2 {
 		http.Error(w, "upstream", http.StatusBadGateway) // bide retries the round

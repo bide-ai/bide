@@ -154,6 +154,37 @@ func (c *cli) usageError(msg string) {
 	panic(abort{})
 }
 
+// required is one flag a verb requires, and whether it was left out.
+type required struct {
+	flag    string
+	missing bool
+}
+
+// absent is required for a string flag, missing when empty.
+func absent(flag, value string) required { return required{flag, value == ""} }
+
+// require ends the verb with a one-line usage error naming each missing flag and where its usage
+// is, not the full usage text of every verb. It does nothing when all are present.
+func (c *cli) require(fs *flag.FlagSet, reqs ...required) {
+	var miss []string
+	for _, r := range reqs {
+		if r.missing {
+			miss = append(miss, r.flag)
+		}
+	}
+	if len(miss) == 0 {
+		return
+	}
+	c.usageLine(fmt.Sprintf("%s: missing %s; run `%s -h` for usage", fs.Name(), strings.Join(miss, ", "), fs.Name()))
+}
+
+// usageLine is usageError for a mistake the one line explains: it prints msg alone and exits 2.
+func (c *cli) usageLine(msg string) {
+	fmt.Fprintln(c.stderr, c.errStyle().ErrorPrefix()+msg)
+	c.errs = append(c.errs, &cliError{class: errUsage, err: errors.New("usage error"), shown: true})
+	panic(abort{})
+}
+
 // call runs a verb and returns every error it met, joined. A panic other than abort is a bug in the
 // CLI: it is reported as an internal error, no verdict, never as a status a script could read as a
 // verdict (Go's own exit status for a panic is 2, the usage status).

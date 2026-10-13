@@ -7,6 +7,7 @@ import (
 	"os"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/bide-ai/bide/internal/term"
 )
@@ -134,5 +135,30 @@ func TestDemoColorFlag(t *testing.T) {
 	var out bytes.Buffer
 	if code := Main([]string{"-color=sometimes"}, []string{"demo"}, &out, &out); code != 2 || !strings.Contains(out.String(), "-color") {
 		t.Fatalf("-color=sometimes: exit %d\n%s", code, out.String())
+	}
+}
+
+// TestDemoFastExits: -fast is for CI, so after the demo completes the command exits 0 on its own,
+// where without it the command serves the viewer until interrupted. It says nothing about Ctrl-C,
+// and with -keep it still prints the bide view command that reopens the run.
+func TestDemoFastExits(t *testing.T) {
+	var out bytes.Buffer
+	done := make(chan int, 1)
+	go func() { done <- Main([]string{"-fast", "-no-browser", "-keep"}, []string{"demo"}, &out, &out) }()
+	select {
+	case code := <-done:
+		if code != 0 {
+			t.Fatalf("-fast exited %d\n%s", code, out.String())
+		}
+	case <-time.After(2 * time.Minute):
+		t.Fatalf("-fast did not exit; it is serving the viewer\n%s", out.String())
+	}
+	text := out.String()
+	if strings.Contains(text, "Ctrl-C") || !strings.Contains(text, "bide view -db ") {
+		t.Errorf("-fast output:\n%s", text)
+	}
+	if i := strings.Index(text, "kept    "); i >= 0 {
+		dir := strings.Fields(text[i:])[1]
+		t.Cleanup(func() { os.RemoveAll(dir) })
 	}
 }
