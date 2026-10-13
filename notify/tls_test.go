@@ -5,6 +5,7 @@ import (
 	"crypto/tls"
 	"errors"
 	"net/http"
+	"os"
 	"strings"
 	"sync"
 	"testing"
@@ -390,5 +391,40 @@ func TestAuthSecretSlot(t *testing.T) {
 	// Whatever is recorded, the secrets themselves never are.
 	if strings.Contains(a.Signature+a.SecretSlot+a.ClientSPKI, "new") && a.SecretSlot != "current+previous" {
 		t.Fatal("secret in auth")
+	}
+}
+
+func TestClientCertReloadSeesASameSizeRewriteWithTheSameMtime(t *testing.T) {
+	ca := newCA(t, "clients")
+	one := ca.issue(t, "c1", false)
+	two := ca.issue(t, "c2", false)
+	for i := 0; i < 200 && (len(one.certPEM) != len(two.certPEM) || len(one.keyPEM) != len(two.keyPEM)); i++ {
+		two = ca.issue(t, "c2", false) // ECDSA signatures vary by a byte; draw until the sizes match
+	}
+	if len(one.certPEM) != len(two.certPEM) || len(one.keyPEM) != len(two.keyPEM) {
+		t.Fatal("could not build a same-size pair")
+	}
+	dir := t.TempDir()
+	cf, kf := one.write(t, dir)
+	ci, _ := os.Stat(cf)
+	ki, _ := os.Stat(kf)
+	clock := time.Now()
+	w, _ := fastWebhook(t, "https://example.com/", WithClientCert(cf, kf))
+	w.now = func() time.Time { return clock }
+	if err := os.WriteFile(cf, two.certPEM, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(kf, two.keyPEM, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	_ = os.Chtimes(cf, ci.ModTime(), ci.ModTime())
+	_ = os.Chtimes(kf, ki.ModTime(), ki.ModTime())
+	clock = clock.Add(2 * time.Minute)
+	w.cert.mu.Lock()
+	w.cert.refresh(false)
+	got := w.cert.cur
+	w.cert.mu.Unlock()
+	if SPKIHash(got.Leaf) != SPKIHash(two.x509) {
+		t.Fatal("a same-size, same-mtime rewrite was not picked up")
 	}
 }

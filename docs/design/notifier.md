@@ -437,9 +437,15 @@ n, err := notify.NewWebhook(os.Getenv("BIDE_WEBHOOK_URL"),
     nothing to check afterwards.
 
   mTLS answers "who may connect" and the signature answers "who sent this body". They compose.
-- **Retries within a round.** Up to 3 requests with backoff (1 s, 2 s; jitter), `Retry-After`
-  honored on 429. Network errors, timeouts, 429 and 5xx retry; any other 4xx is a permanent error for
-  the round (the outer backoff still tries again later, since a receiver's configuration can change).
+- **Retries within a round.** The notifier core runs the round (up to 3 calls with its own backoff),
+  so `Webhook.Notify` makes one request per call by default; `WithRequestsPerCall(n)` (up to 3) adds
+  in-call retries with backoff (1 s, 2 s; jitter) for a caller without the core. `Retry-After` on a
+  429 or 5xx is waited out before the call returns, capped at 60 s and never past the call's context
+  deadline. Network errors, timeouts, 429 and 5xx are retried; any other 4xx is a permanent error for
+  the round (`agent.ErrNotifyPermanent`; the outer backoff still tries again later, since a
+  receiver's configuration can change).
+- **Proxy.** The environment's proxy applies unless `WithServerCA` or `WithServerPin` is set (then
+  direct, unless `WithProxy` is given). A proxy only tunnels the TLS session.
 
 ### Request
 
@@ -448,7 +454,7 @@ n, err := notify.NewWebhook(os.Getenv("BIDE_WEBHOOK_URL"),
 | Header | Value |
 |---|---|
 | `Content-Type` | `application/json` |
-| `Bide-Delivery` | `Notification.ID`, identical on every attempt of an event |
+| `Bide-Delivery` | `Notification.ID`, identical on every attempt of an event and equal to the payload `id`; `notify.Verify` requires it to equal the signed `id`, since the signature covers the body, not headers |
 | `Bide-Timestamp` | Unix seconds when this request was sent |
 | `Bide-Signature` | `v1=<hex HMAC-SHA256(secret, Bide-Timestamp + "." + body)>`, one per secret, space separated |
 
