@@ -1,0 +1,28 @@
+{{define "runs.html"}}{{template "head" "Runs"}}
+<link rel="stylesheet" href="/assets/runs.css">
+<div class="listhead">
+<h1>Runs</h1>
+<p class="muted small">{{if or .Filter.State .Filter.Kind .Filter.Q}}{{.Matched}} of {{.Listed}} runs match{{else}}{{.Listed}} run{{if ne .Listed 1}}s{{end}}{{end}}</p>
+</div>
+{{if .Err}}<p class="bad">Listing failed: {{.Err}}</p>{{end}}
+{{range .Notes}}<p class="note">{{.}}</p>{{end}}
+<nav class="chips" aria-label="State">{{range .States}}<a class="chip{{if .On}} on{{end}} chip-{{if .Value}}{{.Value}}{{else}}all{{end}}" href="{{.Link}}"{{if .On}} aria-current="page"{{end}}>{{.Label}} <span class="count">{{.Count}}</span></a>{{end}}</nav>
+<form class="filters" method="get" action="/">
+{{if .Filter.State}}<input type="hidden" name="state" value="{{.Filter.State}}">{{end}}
+<label>Run ID <input type="search" name="q" value="{{.Filter.Q}}" placeholder="contains" autocomplete="off"></label>
+<label>Kind <select name="kind"><option value="">any</option>{{range .KindOptions}}<option value="{{.Value}}"{{if .On}} selected{{end}}>{{.Label}}</option>{{end}}</select></label>
+<button type="submit">Filter</button>{{if or .Filter.Q .Filter.Kind .Filter.State}} <a class="small" href="/">Clear</a>{{end}}
+</form>
+{{if .Rows}}<div class="tablewrap"><table class="runlist">
+<thead><tr><th>Run</th><th>Kind</th><th>State</th><th title="the time of the run's last attempt marker, written before a side effect">Last stamped</th><th class="num">Records</th></tr></thead>
+<tbody>{{range .Rows}}<tr>
+<td class="rid"><a href="{{.Link}}">{{.ID}}</a></td>
+<td>{{.KindText}}{{if .Flow}}<div class="muted small">{{.Flow}}</div>{{end}}</td>
+<td><span class="pill state-{{.State}}">{{.StateText}}</span></td>
+<td class="when">{{with .Stamped}}{{.}}{{else}}<span class="muted">none</span>{{end}}</td>
+<td class="num">{{.Records}}</td>
+</tr>{{end}}</tbody></table></div>
+{{if .More}}<p class="more"><a href="{{.More}}">Show more ({{len .Rows}} of {{.Matched}} shown)</a></p>{{end}}
+{{else if not .Err}}<p class="muted">{{if .Listed}}No run matches the filter.{{else}}No runs to list. This store may not list its runs; open one with -run.{{end}}</p>{{end}}
+<p class="muted small legendnote">Most recently stamped first, then by run ID. A journal records no start time: <em>last stamped</em> is the time of the run's last attempt marker, written just before a side effect, and a run that made none has no time.</p>
+{{template "foot"}}{{end}}
