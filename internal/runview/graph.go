@@ -65,9 +65,15 @@ type GraphNode struct {
 	GateClass string `json:"gate_class,omitempty"`
 	Iters     int    `json:"iters,omitempty"`
 	Last      bool   `json:"last,omitempty"`
-	Note      string `json:"note,omitempty"`  // a line under the box (a config's approval gate)
+	Note      string `json:"note,omitempty"`  // a line under the box
 	Title     string `json:"title,omitempty"` // the tooltip, when not "name: status"
-	x, y      int
+	// Risk is a config node's safety class ("side effect", "read-only", "idempotent", "safety
+	// unknown") and Crash its crash behavior in a few words; empty on a run's graph. Cex marks a
+	// node on a violated assertion's counterexample path.
+	Risk  string `json:"risk,omitempty"`
+	Crash string `json:"crash,omitempty"`
+	Cex   bool   `json:"cex,omitempty"`
+	x, y  int
 }
 
 // GraphEdge is one declared edge or Switch arm, and whether the run took it.
@@ -78,6 +84,10 @@ type GraphEdge struct {
 	Taken   bool   `json:"taken"`
 	Back    bool   `json:"back,omitempty"`
 	Problem string `json:"problem,omitempty"` // a config problem at this edge or arm
+	Cex     bool   `json:"cex,omitempty"`     // on a violated assertion's counterexample path
+	// Change is how a flow diff changed this edge or arm (added, removed or changed), which
+	// styles it; empty outside a diff.
+	Change string `json:"change,omitempty"`
 }
 
 // flowGraph overlays the run's journal on flow's topology. With no flow it returns no graph, and
@@ -293,7 +303,7 @@ const (
 // places each rank on a row, centered.
 func layout(g *Graph, entry string) {
 	g.nw, g.nh, g.gy = nodeW, nodeH, gapY
-	if slices.ContainsFunc(g.Nodes, func(n GraphNode) bool { return n.Gate != "" }) {
+	if slices.ContainsFunc(g.Nodes, func(n GraphNode) bool { return n.Gate != "" || n.Risk != "" }) {
 		g.nw, g.nh, g.gy = gateW, gateH, gapY-16
 	}
 	nodeW, nodeH, gapY := g.nw, g.nh, g.gy
@@ -415,6 +425,9 @@ func (gt Gate) Class() string { _, c, _ := gateLines(gt); return c }
 // SigLine is the gate's signature verdict in a few words.
 func (gt Gate) SigLine() string { _, _, s := gateLines(gt); return s }
 
+// riskCSS is each safety class's style on a config node.
+var riskCSS = map[string]string{"side effect": "risk-side", "read-only": "risk-read", "idempotent": "risk-idem", "safety unknown": "risk-unknown"}
+
 // svg draws the graph. Every label is escaped.
 func svg(g *Graph, idx map[string]int) string {
 	nodeW, nodeH, gapY := g.nw, g.nh, g.gy
@@ -422,7 +435,13 @@ func svg(g *Graph, idx map[string]int) string {
 	fmt.Fprintf(&b, `<svg class="graph" viewBox="0 0 %d %d" width="%d" height="%d" role="img" aria-label="flow topology with the run's path">`, g.Width, g.Height, g.Width, g.Height)
 	b.WriteString(`<defs><marker id="arrow" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse"><path d="M0,0 L10,5 L0,10 z" class="arrowhead"/></marker>` +
 		`<marker id="arrow-taken" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse"><path d="M0,0 L10,5 L0,10 z" class="arrowhead taken"/></marker>` +
-		`<marker id="arrow-problem" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse"><path d="M0,0 L10,5 L0,10 z" class="arrowhead problem"/></marker></defs>`)
+		`<marker id="arrow-problem" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse"><path d="M0,0 L10,5 L0,10 z" class="arrowhead problem"/></marker>`)
+	for _, c := range []string{"added", "removed", "changed"} {
+		if slices.ContainsFunc(g.Edges, func(e GraphEdge) bool { return e.Change == c }) {
+			fmt.Fprintf(&b, `<marker id="arrow-%s" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse"><path d="M0,0 L10,5 L0,10 z" class="arrowhead %s"/></marker>`, c, c)
+		}
+	}
+	b.WriteString(`</defs>`)
 	for _, e := range g.Edges {
 		f, okf := idx[e.From]
 		t, okt := idx[e.To]
@@ -436,6 +455,12 @@ func svg(g *Graph, idx map[string]int) string {
 		}
 		if e.Problem != "" {
 			cls, mk = "edge problem", "arrow-problem"
+		}
+		if e.Cex {
+			cls, mk = "edge cex", "arrow-problem"
+		}
+		if e.Change != "" {
+			cls, mk = "edge "+e.Change, "arrow-"+e.Change
 		}
 		var lx, ly int
 		anchor := "start"
@@ -454,6 +479,14 @@ func svg(g *Graph, idx map[string]int) string {
 			if x2 < x1 {
 				lx, anchor = (x1+x2)/2-8, "end"
 			}
+			if y2-y1 > gapY+nodeH/2 {
+				// An edge that skips a row: its midpoint is beside a node of that row, so the
+				// label goes in the gap under its source.
+				lx, ly, anchor = x1+8, y1+gapY/2+4, "start"
+				if x2 < x1 {
+					lx, anchor = x1-8, "end"
+				}
+			}
 		}
 		if e.Label != "" {
 			fmt.Fprintf(&b, `<text class="elabel" x="%d" y="%d" text-anchor="%s">%s</text>`, lx, ly, anchor, html.EscapeString(e.Label))
@@ -467,6 +500,15 @@ func svg(g *Graph, idx map[string]int) string {
 		if n.Last {
 			cls += " last"
 		}
+		if n.Risk != "" {
+			cls += " " + riskCSS[n.Risk]
+		}
+		if n.Gate != "" && n.Risk != "" {
+			cls += " gated"
+		}
+		if n.Cex {
+			cls += " cex"
+		}
 		fmt.Fprintf(&b, `<g class="%s"><rect x="%d" y="%d" width="%d" height="%d" rx="8"/>`, cls, n.x, n.y, nodeW, nodeH)
 		label := n.Name
 		if n.Iters > 1 {
@@ -474,14 +516,25 @@ func svg(g *Graph, idx map[string]int) string {
 		}
 		fmt.Fprintf(&b, `<text x="%d" y="%d" class="nlabel">%s</text>`, n.x+nodeW/2, n.y+17, html.EscapeString(label))
 		title := n.Name + ": " + n.Status
-		fmt.Fprintf(&b, `<text x="%d" y="%d" class="nkind">%s</text>`, n.x+nodeW/2, n.y+32, html.EscapeString(n.Kind+" · "+n.Status))
+		kindLine := n.Kind + " · " + n.Status
+		if n.Risk != "" {
+			kindLine = n.Kind + " · " + n.Risk
+		}
+		fmt.Fprintf(&b, `<text x="%d" y="%d" class="nkind">%s</text>`, n.x+nodeW/2, n.y+32, html.EscapeString(kindLine))
 		if n.Note != "" {
 			fmt.Fprintf(&b, `<text x="%d" y="%d" class="nnote">%s</text>`, n.x+nodeW/2, n.y+nodeH+13, html.EscapeString(n.Note))
 		}
 		if n.Title != "" {
 			title = n.Title
 		}
-		if n.Gate != "" {
+		if n.Crash != "" {
+			// A config node: its crash behavior, then its gate.
+			fmt.Fprintf(&b, `<text x="%d" y="%d" class="ncrash">%s</text>`, n.x+nodeW/2, n.y+49, html.EscapeString(n.Crash))
+			if n.Gate != "" {
+				title += "\napproval gate " + n.Gate
+				fmt.Fprintf(&b, `<text x="%d" y="%d" class="ngate %s">%s</text>`, n.x+nodeW/2, n.y+64, n.GateClass, html.EscapeString(n.GateLine))
+			}
+		} else if n.Gate != "" {
 			title += "\napproval gate " + n.Gate
 			if n.GateStatus != "" {
 				title += ": " + n.GateStatus

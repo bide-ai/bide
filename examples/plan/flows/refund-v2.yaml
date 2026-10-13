@@ -1,0 +1,16 @@
+# The refund flow after a change: small refunds go to a review step instead of being skipped, and a
+# large refund needs two of its three approvers instead of one. Compare it with refund-v1.yaml:
+# bide check flows/refund-v2.yaml -diff flows/refund-v1.yaml
+version: 1
+flow: refund
+entry: validate
+nodes:
+  - {name: validate, block: validate, safety: readonly}
+  - {name: charge, block: charge, approval: {need: 2, approvers: [ops, finance, risk]}}
+  - {name: review, block: review}
+  - {name: receipt, block: receipt}
+wiring:
+  - switch: validate
+    when: [{pred: large, to: charge}]
+    else: review
+  - edge: [charge, receipt]

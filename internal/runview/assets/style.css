@@ -96,3 +96,24 @@ code.wrap { word-break: break-all; }
 .lg.problem::before { background: var(--bad-bg); border-color: var(--bad); }
 .lg.warning::before { background: var(--warn-bg); border-color: var(--warn); }
 .lg.undeclared::before { border-color: var(--bad); border-style: dashed; }
+.ncrash { text-anchor: middle; font-size: 12px; font-weight: 600; fill: var(--fg); }
+.ngate.gated { fill: var(--gate); }
+:root { --side: #b4530f; --side-bg: #fde8d6; --idem: #2b6cb0; --idem-bg: #e1edfa; --gate: #7a4bb8; }
+@media (prefers-color-scheme: dark) {
+  :root { --side: #f2a46a; --side-bg: #3d2a1b; --idem: #8fb8ef; --idem-bg: #1c2a3d; --gate: #c4a2f0; }
+}
+.node.declared.risk-side rect { fill: var(--side-bg); stroke: var(--side); stroke-width: 2; }
+.node.declared.risk-read rect { fill: var(--good-bg); stroke: var(--good); }
+.node.declared.risk-idem rect { fill: var(--idem-bg); stroke: var(--idem); }
+.node.declared.risk-unknown rect { fill: var(--card); stroke: var(--idle); stroke-dasharray: 4 3; stroke-width: 1.5; }
+.node.declared.gated rect { stroke: var(--gate); stroke-width: 3.5; }
+.node.cex rect { stroke: var(--bad); stroke-width: 3.5; stroke-dasharray: none; }
+.edge.cex { stroke: var(--bad); stroke-width: 3.5; stroke-dasharray: none; }
+.lg.risk-side::before { background: var(--side-bg); border-color: var(--side); }
+.lg.risk-read::before { background: var(--good-bg); border-color: var(--good); }
+.lg.risk-idem::before { background: var(--idem-bg); border-color: var(--idem); }
+.lg.risk-unknown::before { border-style: dashed; }
+.lg.gated::before { border: 3px solid var(--gate); }
+.lg.cex::before { height: 3px; border: 0; background: var(--bad); vertical-align: 3px; }
+.card.wide { grid-column: 1 / -1; }
+.assert { margin: 8px 0 2px; }

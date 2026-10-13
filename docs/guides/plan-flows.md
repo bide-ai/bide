@@ -381,7 +381,8 @@ A config is pure topology plus block references: a required `version` (`1`, the 
 release reads, exported as `plan.ConfigVersion`), a top-level `flow` name, optional `in`/`out`
 documentation, an explicit `entry` (else `nodes[0]`), the `nodes`, and an ordered `wiring` list. Each
 wiring element is EITHER an edge `{"edge": [from, to]}` OR a switch
-`{"switch": over, "when": [{"pred": p, "to": t}], "else": t}`. Every key is snake_case. Illustrative
+`{"switch": over, "when": [{"pred": p, "to": t}], "else": t}`. An optional `assert` list states
+policy about the graph, which `Load` ignores (see [Policy assertions](#policy-assertions)). Every key is snake_case. Illustrative
 YAML:
 
 ```yaml
@@ -511,6 +512,43 @@ with `plan.WithLoadedApproverVerifiers(approvers)`, or `Load` refuses an m-of-n 
 naming the node). A join wiring element takes the same `approval` block. A block may restate the gate
 its registered block declares (a tool's own `ToolSpec.Approval`, or `plan.Approval` given at
 registration) but not replace it: a config cannot loosen a tool's gate.
+
+<a id="policy-assertions"></a>
+#### Policy assertions: the `assert` list
+
+A config may state policy about its own graph in an `assert` list, one assertion per line. `Load`
+ignores the list (it is not part of the flow or its digest); `bide check`, `bide view -config` and
+`plan.InspectConfig` decide each line and report a violated one as an error, with a shortest
+counterexample path:
+
+```yaml
+assert:
+  - every path to charge passes approval >= 2 of 3
+  - no side effect after charge
+  - every path to a terminal passes validate
+  - credit reachable
+```
+
+| Assertion | Holds when |
+|---|---|
+| `every path to <node> passes approval >= K [of N]` | every path from the entry to the node passes a node whose approval gate needs at least K decisions (and, with `of N`, from at most N named approvers). The node's own gate counts. A one-decision gate (`agent.SingleApproval`) counts only for `approval >= 1`. |
+| `every path to <node> passes <node>` | every path from the entry to the first node passes the second. |
+| `every path to a terminal passes <node>` | every path from the entry to a terminal node (one with no outgoing edge or arm) passes the node. |
+| `no side effect after <node>` | no node a path from the node reaches is a side effect (a node that is in a loop with itself counts as after itself). |
+| `<node> reachable` | a path from the entry reaches the node. |
+| `<node> unreachable` | no path from the entry reaches the node. |
+
+A node is named bare (no spaces) or in double quotes, and the words are separated by spaces. Every
+assertion is decided by reachability over the declared graph (every edge, a join's inputs, and every
+Switch arm, loop-back arms included), never by listing paths, so a loop is visited once. The graph is
+what the config declares: a Switch arm counts as taken whatever its predicate.
+
+Gates and safety come from the same place the check does. With your Registry (`plan/planview`), a
+gate or a `Safety` a block declares in Go counts. From the command line, only the gates and `safety`
+values the config states count, so a gate declared only in Go reads as missing (the assertion fails,
+it never passes wrongly), and `no side effect after X` with a node of unknown safety after X (and no
+known side effect) is undecided, which is also an error. An assertion outside the grammar, or one
+that names a node the config does not declare, is an error too.
 
 ### Load-time validation
 

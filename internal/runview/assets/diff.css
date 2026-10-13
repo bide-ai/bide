@@ -1,0 +1,25 @@
+/* The flow diff page (bide check -diff): added green, removed a dashed red ghost, changed amber. */
+.node.added rect { fill: var(--good-bg); stroke: var(--good); stroke-dasharray: none; stroke-width: 2.5; }
+.node.removed rect { fill: none; stroke: var(--bad); stroke-dasharray: 6 4; stroke-width: 2; }
+.node.removed .nlabel { fill: var(--bad); text-decoration: line-through; }
+.node.removed .nkind { fill: var(--bad); }
+.node.changed rect { fill: var(--warn-bg); stroke: var(--warn); stroke-dasharray: none; stroke-width: 2.5; }
+.node.unchanged rect { fill: var(--card); stroke: var(--muted); stroke-dasharray: none; stroke-width: 1.2; }
+.node.undeclared rect { fill: none; stroke: var(--bad); stroke-dasharray: 3 3; }
+.nnote { fill: var(--warn); font-size: 11.5px; font-weight: 600; }
+.edge { stroke: var(--muted); stroke-dasharray: none; }
+.arrowhead { fill: var(--muted); }
+.edge.added { stroke: var(--good); stroke-width: 2.5; }
+.edge.removed { stroke: var(--bad); stroke-width: 2; stroke-dasharray: 6 4; }
+.edge.changed { stroke: var(--warn); stroke-width: 2.5; }
+.arrowhead.added { fill: var(--good); } .arrowhead.removed { fill: var(--bad); } .arrowhead.changed { fill: var(--warn); }
+.elabel { font-size: 12px; }
+.weakened { background: var(--bad-bg); border: 2px solid var(--bad); border-radius: 10px; padding: 10px 14px; margin: 12px 0; }
+.weakened h2 { margin: 0 0 6px; color: var(--bad); font-size: 18px; }
+.weakened .wline { font: 600 15px/1.5 ui-monospace, SFMono-Regular, Menlo, monospace; margin: 2px 0; }
+.dadd { color: var(--good); font-weight: 650; } .drem { color: var(--bad); font-weight: 650; } .dchg { color: var(--warn); font-weight: 650; }
+.c-added { color: var(--good); } .c-removed { color: var(--bad); } .c-changed { color: var(--warn); }
+.lg.dadded::before { background: var(--good-bg); border-color: var(--good); }
+.lg.dremoved::before { border-color: var(--bad); border-style: dashed; }
+.lg.dchanged::before { background: var(--warn-bg); border-color: var(--warn); }
+.lg.dunchanged::before { border-color: var(--muted); }

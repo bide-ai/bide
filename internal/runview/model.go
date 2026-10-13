@@ -1,8 +1,10 @@
 // Package runview is a read-only, local web viewer for a journal's runs: a run list (RunList) with
-// each run's kind and state, and one run's page: a plan flow's declared topology with the run's path
-// drawn over it, or an agent run's timeline of model turns, tool calls, attempts, approvals and
-// halts, with the audit verdict when a signed head or evidence package is given. It never writes to the store it reads, and it serves on a loopback address
-// only (see Listen). The bide view command (cmd/bide, its own module) is its front end.
+// each run's kind and state, and one run's page: a plan flow's declared topology with the run's
+// path drawn over it, or an agent run's timeline of model turns, tool calls, attempts, approvals
+// and halts, with the audit verdict when a signed head or evidence package is given. The page of a
+// run in progress, read from a store, follows the run as records land (see Follower). It never
+// writes to the store it reads, and it serves on a loopback address only (see Listen). The bide
+// view command (cmd/bide, its own module) is its front end.
 package runview
 
 import (
@@ -40,6 +42,11 @@ type View struct {
 	Notes     []string     `json:"notes,omitempty"` // what the page cannot show for this run, and why
 	LastNode  string       `json:"last_node,omitempty"`
 	FinalText string       `json:"final_text,omitempty"`
+
+	// Live: the page follows the run (live mode): it was read from a store, not an export, and has
+	// no end marker. Cursor is the store sequence (agent.Entry.Seq) of its last record.
+	Live   bool  `json:"live,omitempty"`
+	Cursor int64 `json:"cursor,omitempty"`
 }
 
 // Event is one journal record, as a timeline row.

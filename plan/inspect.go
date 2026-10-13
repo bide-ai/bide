@@ -28,6 +28,15 @@ type ConfigReport struct {
 	// Typed reports a Registry was given, so blocks, predicates, merges and types were checked as
 	// Load checks them. Without one, the check is structural.
 	Typed bool
+	// Safety is each node's crash behavior: exact with a Registry (the Safety the block registers,
+	// lowered by the config's safety), and without one known only where the config states it.
+	Safety map[string]NodeSafety
+	// Assertions are the verdicts on the config's assert lines, one per line, in order.
+	Assertions []AssertionResult
+	// Gated reports, by node, that every path from the entry to it passes an approval gate (its
+	// own included): the run cannot reach it without a human decision (vacuously so for a node the
+	// entry cannot reach). Without a Registry only the gates the config declares count.
+	Gated map[string]bool
 }
 
 // ConfigProblem is one problem in a flow config. Node names the node, switched node or join it
@@ -70,15 +79,33 @@ func (r ConfigReport) Errors() bool {
 // m-of-n gate is checked as Load checks it with approver verifiers bound
 // (WithLoadedApproverVerifiers): the keys are not the config's. One warning is not a load error: a Switch with no else, since a value no arm
 // matches fails the run.
-func InspectConfig(data []byte, reg *Registry) ConfigReport {
-	r := ConfigReport{Typed: reg != nil, Approvals: map[string]agent.ApprovalPolicy{}}
+//
+// Safety reports each node's crash behavior, and Assertions the verdict on each line of the
+// config's "assert" list (which Load ignores), decided by reachability on the declared graph:
+//
+//	every path to <node> passes approval >= K [of N]
+//	every path to <node> passes <node>
+//	every path to a terminal passes <node>
+//	no side effect after <node>
+//	<node> reachable
+//	<node> unreachable
+//
+// A node is named bare or in double quotes. A gate counts toward "approval >= K of N" when it
+// needs at least K decisions from at most N named approvers (a one-decision gate counts only for
+// "approval >= 1"); without a Registry only the gates the config declares count. A violated,
+// undecided or ill-formed assertion is an error, a violated one with a shortest counterexample
+// path.
+func InspectConfig(data []byte, reg *Registry) (r ConfigReport) {
+	r = ConfigReport{Typed: reg != nil, Approvals: map[string]agent.ApprovalPolicy{}}
 	var cfg config
 	if err := parseConfig(data, &cfg); err != nil {
 		r.Problems = append(r.Problems, ConfigProblem{Message: strings.TrimSuffix(err.Error(), ": "+agent.ErrConfig.Error()), Severity: "error"})
 		return r
 	}
 	r.Topology = configTopology(&cfg)
+	r.Safety = configSafety(&cfg)
 	structural(&cfg, &r)
+	defer func() { r.gated(); r.assertions(cfg.Assert) }()
 	if reg == nil || r.Errors() {
 		return r
 	}
@@ -86,6 +113,9 @@ func InspectConfig(data []byte, reg *Registry) ConfigReport {
 	if err != nil {
 		r.attribute(&cfg, err)
 		return r
+	}
+	for _, n := range core.nodes {
+		r.Safety[n.name] = safetyClass(n.safety.ReadOnly, n.safety.Idempotent)
 	}
 	// Load's boundary types: the entry's input, and the output every terminal must share.
 	core.inType = core.byName[core.entry].inType
@@ -114,6 +144,50 @@ func InspectConfig(data []byte, reg *Registry) ConfigReport {
 	r.Topology = f.Topology()
 	r.Digest = f.Digest()
 	return r
+}
+
+// configSafety is each node's safety as the config alone states it. A config "safety" sets the
+// node's level (it may keep or lower what Go registers, and a raise is a load error), so a stated
+// safety is exact; a node that states none is unknown without the Registry.
+func configSafety(cfg *config) map[string]NodeSafety {
+	s := map[string]NodeSafety{}
+	for _, n := range cfg.Nodes {
+		switch n.Safety {
+		case "readonly":
+			s[n.Name] = SafetyReadOnly
+		case "idempotent":
+			s[n.Name] = SafetyIdempotent
+		case "side_effect":
+			s[n.Name] = SafetySideEffect
+		default:
+			s[n.Name] = SafetyUnknown
+		}
+	}
+	for _, w := range cfg.Wiring {
+		if w.Join != "" {
+			switch w.Safety {
+			case "readonly":
+				s[w.Join] = SafetyReadOnly
+			case "idempotent":
+				s[w.Join] = SafetyIdempotent
+			case "side_effect":
+				s[w.Join] = SafetySideEffect
+			default:
+				s[w.Join] = SafetyUnknown
+			}
+		}
+	}
+	return s
+}
+
+func safetyClass(readOnly, idempotent bool) NodeSafety {
+	switch {
+	case readOnly:
+		return SafetyReadOnly
+	case idempotent:
+		return SafetyIdempotent
+	}
+	return SafetySideEffect
 }
 
 // configTopology reads the declared graph from the config alone: nodes (a join's kind is join;
