@@ -446,7 +446,7 @@ plan flow's path over its declared topology, and whether the journal verifies ag
 head or an evidence package. It never writes to the store. While a run is in progress, its page
 follows it as records land, until the run ends. Without `-run` it opens on a run list,
 filtered by state, kind and run ID. `bide view -config flow.yaml` shows a flow
-definition the same way, with its problems marked on the graph, and `bide check flow.yaml` runs that check in CI. The page colors each node by what a crash does to it (a side effect halts, a read-only or idempotent node re-runs), and decides the config's `assert` lines, such as `every path to charge passes approval >= 2 of 3`, drawing a violation's counterexample path in red.
+definition the same way, with its problems marked on the graph, and `bide check flow.yaml` runs that check in CI. `bide check flow.yaml -diff main` draws two versions of a flow on one graph (added in green, removed as dashed red ghosts, changed in amber) and calls out a weakened approval policy. The page colors each node by what a crash does to it (a side effect halts, a read-only or idempotent node re-runs), and decides the config's `assert` lines, such as `every path to charge passes approval >= 2 of 3`, drawing a violation's counterexample path in red.
 Install it with `go install github.com/bide-ai/bide/cmd/bide@latest` (or `brew install bide-ai/tap/bide`); see the
 [run viewer guide](guides/run-viewer.md).
 
