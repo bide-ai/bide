@@ -158,8 +158,8 @@ That comment is the bug. Consider this schedule, found by TLC in the configurati
    attempt 1, wins, and calls the effect, under a verdict that says it was not charged.
 
 If the caller then reads "not charged" and asks again, the effect fires twice. Two error replies. No
-crash. The counterexample is 22 states and TLC finds it after exploring 9,299 distinct states
-(re-run, under a second).
+crash. The counterexample is 22 states and TLC finds it after exploring about 9,000 to 10,000
+distinct states (re-run twice, under a second; the count at the violation varies with TLC's worker threads).
 
 ```text
 \* Finding F2 (fixed in #92): WithMinHaltAge without the resolver's claim of the next attempt
@@ -281,7 +281,7 @@ runtime promises and under which conditions.
 - AtMostOnce, ClaimNS, Excused, Progress, TallySound, BoundedPickup snippets: spec/tla/claims/Claims.tla lines 443-450, 2028, 2069, 2111, 2086-2088; spec/tla/lifecycle/Lifecycle.tla line 1781.
 - F5: spec/tla/README.md "Model 1b, Findings"; regress/ap-shared-key 9 states ("Regressions" paragraph in Model 1b); fixed in #109.
 - L1 table 4/5/10/15 vs 3/3/4/4: spec/tla/README.md "Recovery cost: the pickup bound". Shipped in v0.9.0, fixed in v0.10.0 (#126): docs/formal-verification.md "Bugs the models caught". Confirmed PR #126 title "RecoverLoop takes over lapsed leases in a loop of its own (model 10 L1)".
-- F2 story and trace: spec/tla/README.md "Model 1, Findings" F2; PR #100 body "Findings"; re-run of claims/regress/minage-revoid.cfg on 2026-10-13: "NoLiveOverride violated, 9299 states, depth 23" and a trace of 22 states (states 1 to 22 in the TLC output), config text from spec/tla/claims/regress/minage-revoid.cfg. The README says "20 to 26" states for F2 across configurations; the #100 body said 20.
+- F2 story and trace: spec/tla/README.md "Model 1, Findings" F2; PR #100 body "Findings"; re-run of claims/regress/minage-revoid.cfg on 2026-10-13: "NoLiveOverride violated" with 9299 and 9894 states in two runs (parallel workers), and a trace of 22 states both times (states 1 to 22 in the TLC output), config text from spec/tla/claims/regress/minage-revoid.cfg. The README says "20 to 26" states for F2 across configurations; the #100 body said 20.
 - Fixed-rule config: claims/resolve-minage-claim.cfg re-run 2026-10-13: 531,951 distinct states, depth 75 (the README table lists 320,662; the README figure is stale or measured differently).
 - "Caught before any release": docs/formal-verification.md says only L1, S1, S2 and S4 shipped.
 - "Three of the four were double fires", "three review rounds", "28 bugs": docs/formal-verification.md ("Why bide model-checks", "At a glance").
