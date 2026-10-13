@@ -4,15 +4,16 @@ Where bide is going, in order. The priority is to harden what exists before addi
 
 This page describes intent, not promises of dates. Shipped work is recorded in the [changelog](../CHANGELOG.md).
 
-## Now: v0.14.0, stabilizing
+## Now: v0.15.0, stabilizing
 
-The current release is v0.14.0 (2026-10-13), and the work now is stabilizing what exists: bug fixes, documentation, tests, soak and chaos runs, and fresh-eyes passes over the code and the docs. No new features are planned for now, and releases stay on 0.x.
+The current release is v0.15.0 (2026-10-13), and the work now is stabilizing what exists: bug fixes, documentation, tests, soak and chaos runs, and fresh-eyes passes over the code and the docs. No new features are planned for now, and releases stay on 0.x.
 
+- In v0.15.0, the run viewer covers a whole journal and a flow config's policy: a run list, live mode, a risk map with policy assertions, and a visual diff of two versions of a flow ([run viewer guide](guides/run-viewer.md)).
 - One command, `bide` ([CLI reference](reference/cli.md)), in v0.14.0: `bide init` scaffolds a project with a gated plan flow, `bide check` checks flow configs in CI, and `bide demo` is a one-command crash demo: kill an agent mid-payment and watch it not charge twice, then see the run, its audit proof and its approval signatures in the run viewer.
 - The [launch post](blog/introducing-bide.md): what bide is, a first agent, and one crash resumed from the journal.
 - The [crash-injection benchmark](../benchmarks/README.md) now includes LangGraph (Python) on SQLite and Postgres ([#166](https://github.com/bide-ai/bide/pull/166), [#167](https://github.com/bide-ai/bide/pull/167)); every framework except bide re-fired the charge.
 
-Shipped earlier: v0.13.0 added the run viewer (`bide-view`, now `bide view`; [run viewer guide](guides/run-viewer.md)) and moved to gsm v0.14.0 ([#177](https://github.com/bide-ai/bide/pull/177)); v0.12.0 moved to gsm v0.13.0, which checks event order across federated registries and reports the delivery obligations a confluence certificate now records; v0.11.1 says when a model call has no API key and makes getting started work offline; v0.11.0 gave the redesigned API its final names (P15) and removed the transitional API; v0.10.0 added the Run API (P14), tool specifications (P12), construction under `Build` (P13), four TLA+ models (9 to 12), an Apalache inductive invariant for the claim protocol, the gsm machine gate, and gsm v0.12.0; v0.9.0 put the claim protocol under a model checker and rebuilt the engine around a storage port and a journal with its own format; v0.8.0 made runs recover themselves (`RecoverLoop`) and put one token budget across an agent tree.
+Shipped earlier: v0.14.1 made a plan flow's `Model` node retry-safe (`ReadOnly`) by default and has it send its output type's schema as the response format; v0.13.0 added the run viewer (`bide-view`, now `bide view`; [run viewer guide](guides/run-viewer.md)) and moved to gsm v0.14.0 ([#177](https://github.com/bide-ai/bide/pull/177)); v0.12.0 moved to gsm v0.13.0, which checks event order across federated registries and reports the delivery obligations a confluence certificate now records; v0.11.1 says when a model call has no API key and makes getting started work offline; v0.11.0 gave the redesigned API its final names (P15) and removed the transitional API; v0.10.0 added the Run API (P14), tool specifications (P12), construction under `Build` (P13), four TLA+ models (9 to 12), an Apalache inductive invariant for the claim protocol, the gsm machine gate, and gsm v0.12.0; v0.9.0 put the claim protocol under a model checker and rebuilt the engine around a storage port and a journal with its own format; v0.8.0 made runs recover themselves (`RecoverLoop`) and put one token budget across an agent tree.
 
 ## Next
 
@@ -84,8 +85,11 @@ A visual builder for `plan` flows, built up from read-only tools that use the jo
 - Done: `bide view`, a read-only local page for one run ([run viewer guide](guides/run-viewer.md)): an agent run's timeline, halts, approval gates with signature checks, and a flow's path over its topology.
 - Done: the journaled topology, `flow:topology`, so a flow run is drawn from its journal alone, its digest checked ([#192](https://github.com/bide-ai/bide/pull/192)).
 - Done: the config viewer, `bide view -config`, which draws a flow definition and marks its problems, with `-check` for CI and `plan/planview` for a program's own Registry ([#193](https://github.com/bide-ai/bide/pull/193)).
-- Next: a risk map (each node colored by what it can do and how it behaves on a crash) and policy assertions in the config (`assert:`), decided on the graph and shown as counterexample paths.
-- Next: a visual diff of two versions of a config, with the digest change.
+- Done in v0.15.0: the run list, `bide view` with no `-run`: every run in a journal with its kind, state and start time, filtered by state, kind and run ID ([#216](https://github.com/bide-ai/bide/pull/216), [#223](https://github.com/bide-ai/bide/pull/223)).
+- Done in v0.15.0: live mode, where the page of a run in progress, read from SQLite or Postgres, follows the run as records land ([#222](https://github.com/bide-ai/bide/pull/222)).
+- Done in v0.15.0: a risk map on `bide view -config` (each node colored by how it behaves on a crash, with its approval gate) and policy assertions in the config (`assert`), decided on the graph, a violation shown as a counterexample path and reported by `bide check` ([#222](https://github.com/bide-ai/bide/pull/222)).
+- Done in v0.15.0: a visual diff of two versions of a config, `bide check -diff`, with the digest change and a weakened approval gate called out (`-fail-on-weaken` for CI) ([#222](https://github.com/bide-ai/bide/pull/222)).
+- Next: a GitHub Action that posts a config diff on a pull request, and an HTML export of a page.
 - Later: an editor that writes the config.
 
 ## Later: bide beyond Go
