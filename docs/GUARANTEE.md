@@ -116,8 +116,15 @@ the journal holds, and so what a resume cannot be talked out of by a redeploy:
 UTC, RFC 3339 with milliseconds, by the drive's clock). It is informational, for listing runs: no
 drive, resume, recovery pass or at-most-once check reads it, a drive is never held to it, and a
 run whose `run:start` holds none (written by an earlier version) or another value resumes the same
-way. The journal's other wall-clock times are each attempt marker's and the deadlines a run sets
-itself (a timer's wake time, an `AwaitFor` deadline).
+way. The journal's other wall-clock times are each attempt marker's, the deadlines a run sets
+itself (a timer's wake time, an `AwaitFor` deadline), and an approval gate's display times: when
+the run paused at the gate (`ApprovalWait.RecordedAt`) or recorded a flow gate's request
+(`ApprovalRequest.RecordedAt`) and, on each signed m-of-n decision, when
+the approver decided (`decided_at`, by the approver's clock, inside the signature) and when it
+was journaled (`recorded_at`, by the submitting process's clock: its claim, not signed, anchored
+by the Merkle trail once a signed head covers it). The gate never reads those: it checks `decided_at`
+only as signed bytes, orders decisions by journal position, and counts the same whatever the times
+say.
 
 Configuration is live by design: it governs what a drive does next, not what the journal already
 says happened. A drive uses the configuration it is given for:

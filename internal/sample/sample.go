@@ -16,10 +16,12 @@
 // The output is deterministic except for salts: the same runs, IDs, states, kinds, start times and
 // record sequence on every call, and the same keys and decisions' signatures. The runs take their
 // times from a fixed clock (agent.WithClock), and the keys come from fixed, public seeds (sample
-// keys: never use them for anything real). Two things the runtime stamps from the wall clock are
+// keys: never use them for anything real). Three things the runtime stamps from the wall clock are
 // fixed at the store the runs write to: an attempt marker's attempted_at, and a plan flow's
-// started_at (plan has no clock option). Every record carries a random salt (and an attempt
-// marker a random claim ID), which the sample leaves random, as the runtime draws them; so the digests over salted records (the Merkle roots of
+// started_at and its gates' approval-request and approval-pending recorded_at (plan has no clock
+// option). Every record carries a
+// random salt (and an attempt marker a random claim ID), which the sample leaves random, as the
+// runtime draws them; so the digests over salted records (the Merkle roots of
 // the signed tree heads, and the evidence packages that hold them) differ between calls. Compare
 // two calls with Unsalted. Only the live run (Live) uses real time.
 package sample
@@ -162,11 +164,16 @@ type env struct {
 
 func (e *env) clock() agent.ClockOption { return agent.WithClock(func() time.Time { return e.at }) }
 
-// decide records approver id's signed approval of the gate p pauses at.
+// decide records approver id's signed approval of the gate p pauses at, decided and recorded at
+// the fixed clock's time (the wall clock's, for the live run, which has none).
 func (e *env) decide(ctx context.Context, p *agent.ApprovalPending, id string) error {
+	at, opts := e.at, []agent.ApproveOption{e.clock()}
+	if at.IsZero() {
+		at, opts = time.Now(), nil
+	}
 	subject := agent.ApprovalSubject{RunID: p.RunID, ToolUseID: p.ToolUseID, ToolName: p.ToolName, Args: p.Args}
-	sig := ed25519.Sign(e.approvers[id], agent.ApprovalDecisionBytes(subject, id, true))
-	return agent.SubmitDecision(ctx, e.j, agent.Decision{RunID: p.RunID, ToolUseID: p.ToolUseID, ApproverID: id, Approved: true, Alg: audit.AlgEd25519, Signature: sig})
+	sig := ed25519.Sign(e.approvers[id], agent.ApprovalDecisionBytes(subject, id, true, at))
+	return agent.SubmitDecision(ctx, e.j, agent.Decision{RunID: p.RunID, ToolUseID: p.ToolUseID, ApproverID: id, Approved: true, DecidedAt: at, Alg: audit.AlgEd25519, Signature: sig}, opts...)
 }
 
 var demos = []struct {
@@ -444,8 +451,9 @@ func (e *env) refundFlow() *plan.Flow[order, string] {
 var errCrash = errors.New("simulated crash")
 
 // sampleStore is the store the sample's runs write to. It fixes what the runtime stamps from the
-// wall clock: an attempt marker's attempted_at, and run:start's started_at (a plan flow takes the
-// wall clock, as plan has no clock option; an agent run's is already its clock's). It also fails
+// wall clock: an attempt marker's attempted_at, run:start's started_at and an approval-request or
+// approval-pending record's recorded_at (a plan flow takes the wall clock, as plan has no clock option; an agent
+// run's are already its clock's). It also fails
 // the insert of the record named lose, when set: the write a crash loses. With noStartTime it
 // writes run:start without its start time, as an earlier version wrote it.
 type sampleStore struct {
@@ -459,6 +467,7 @@ var (
 	startTime   = regexp.MustCompile(`,"started_at":"[^"]*"`)
 	startedAt   = regexp.MustCompile(`"started_at":"[^"]*"`)
 	attemptedAt = regexp.MustCompile(`"attempted_at":[0-9]+`)
+	recordedAt  = regexp.MustCompile(`"recorded_at":"[^"]*"`)
 )
 
 func (s *sampleStore) Insert(ctx context.Context, runID, name string, data []byte) (agent.Entry, bool, error) {
@@ -471,6 +480,9 @@ func (s *sampleStore) Insert(ctx context.Context, runID, name string, data []byt
 		} else {
 			data = startedAt.ReplaceAll(data, []byte(`"started_at":"`+s.at.UTC().Format("2006-01-02T15:04:05.000Z")+`"`))
 		}
+	}
+	if strings.HasPrefix(name, "approval-pending:") || strings.HasPrefix(name, "approval-request:") {
+		data = recordedAt.ReplaceAll(data, []byte(`"recorded_at":"`+agent.FormatTimestamp(s.at)+`"`))
 	}
 	data = attemptedAt.ReplaceAll(data, []byte(`"attempted_at":`+strconv.FormatInt(s.at.UnixMilli(), 10)))
 	return s.Store.Insert(ctx, runID, name, data)

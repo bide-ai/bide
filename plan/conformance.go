@@ -172,6 +172,11 @@ func (c *builderCore) conform(ctx context.Context, store *agent.Journal, runID s
 
 		case strings.HasPrefix(r.Name, "approval-pending:"), strings.HasPrefix(r.Name, "approval-tally:"):
 			_, enc, _ := strings.Cut(r.Name, ":")
+			if strings.HasPrefix(r.Name, "approval-tally:") {
+				// A re-approval tally (agent.ApprovalRetallyStep) is the gate's tally name with a
+				// suffix; an encoded key holds no ':', so the suffix is never part of it.
+				enc = strings.TrimSuffix(enc, strings.TrimPrefix(agent.ApprovalRetallyStep(""), agent.ApprovalTallyStep("")))
+			}
 			key, ok := gateKeys[enc]
 			if !ok {
 				diffs = append(diffs, r.Name+" (approval record of a gate the run never reached)")

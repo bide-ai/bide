@@ -85,15 +85,19 @@ the decision:
 ```go
 if pend, ok := errors.AsType[*agent.ApprovalPending](err); ok {
 	// Show the approver pend.ToolName and pend.Args: that is exactly what they sign.
-	msg := agent.ApprovalDecisionBytes(pend.Subject(), "finance", true)
+	decidedAt := time.Now() // when the approver decided, by their clock; signed with the decision
+	msg := agent.ApprovalDecisionBytes(pend.Subject(), "finance", true, decidedAt)
 	sig, _ := financeSigner.Sign(msg) // any audit.Signer: Ed25519, ML-DSA, or hybrid
 	agent.SubmitDecision(ctx, journal, agent.Decision{RunID: pend.RunID, ToolUseID: pend.ToolUseID,
-		ApproverID: "finance", Approved: true, Alg: financeSigner.Alg(), Signature: sig})
+		ApproverID: "finance", Approved: true, DecidedAt: decidedAt, Alg: financeSigner.Alg(), Signature: sig})
 }
 ```
 
-`Decision.Alg` names the scheme the signature is under and is required (`SubmitDecision` refuses an
-empty one with `agent.ErrConfig`). It is journaled with the decision as `Record.ApproverAlg`, and the
+`Decision.DecidedAt` is when the approver decided, by their own clock, and is required: pass the
+same time to `ApprovalDecisionBytes` and to `Decision`, since the signature covers it (see [When a
+decision was made](#when-a-decision-was-made)). `Decision.Alg` names the scheme the signature is
+under and is required too (`SubmitDecision` refuses an empty one, or a zero `DecidedAt`, with
+`agent.ErrConfig`, and so an `ApproverID` that is not printable ASCII, which no policy can name). It is journaled with the decision as `Record.ApproverAlg`, and the
 gate counts the decision only if it equals the `Alg()` of the verifier your resolver returns for
 that approver: a valid signature journaled under another scheme name, or none, is ignored with
 `agent.ReasonAlg`. One key fills one seat (see [Key identity](#key-identity)), and `bide audit
@@ -122,7 +126,8 @@ UI can show progress as the run pauses, before `Final` returns. It is nil for a 
 ### What an approver signs
 
 `ApprovalDecisionBytes` binds the run id, the call id, the tool name, a SHA-256 of the call's
-arguments, the approver id, and the decision, under a version tag, with every field length-prefixed.
+arguments, the approver id, the decision, and the time the approver decided, under a version tag
+(`bide.approval.v3`), with every field length-prefixed.
 A signature therefore approves one exact call: it does not verify for another run, another call, the
 same call id with different arguments, or another approver. If a UI showed an approver stale
 arguments, their signature does not count for the real call.
@@ -130,14 +135,85 @@ arguments, their signature does not count for the real call.
 The arguments are hashed in a canonical form (keys sorted, no insignificant whitespace, no HTML
 escaping, number literals kept verbatim, empty arguments as `{}`), so the same call signs the same
 whether its arguments came from a live model stream, the journal, or a re-indented evidence file.
-The full layout is documented on `ApprovalDecisionBytes`, so a non-Go verifier can reproduce it.
+The full layout is documented on `ApprovalDecisionBytes`, so a non-Go verifier can reproduce it:
+
+```
+"bide.approval.v3\n"
+len32(run id)       run id
+len32(call id)      call id
+len32(tool name)    tool name
+SHA-256(canonical arguments), 32 bytes
+len32(approver id)  approver id
+1 byte              1 approved, 0 denied
+len32(decided_at)   decided_at, 24 bytes, e.g. "2026-10-13T12:14:03.123Z"
+```
+
+`len32` is a 4-byte big-endian length. The version tag is part of the signed bytes, so a decision
+signed under an earlier version (`bide.approval.v2`, which had no decision time) does not verify:
+the gate and `VerifyApprovals` ignore it with `agent.ReasonNoDecidedAt`. Re-sign such a decision.
+
+The decision time is signed in one form only: RFC 3339 in UTC, to the millisecond, always ending in
+`Z` (`agent.FormatTimestamp`, the same form as a run's `started_at`). A verifier parses the
+recorded text, formats it again, and refuses the decision (`agent.ReasonDecidedAt`) unless the two
+are byte for byte the same, so `+00:00`, another offset, one or nine fractional digits, no fraction,
+a lowercase `t` or `z`, and a leap second (`23:59:60`) are all refused. One instant therefore has one
+signed spelling. An approver who sends a decision over the wire sends this text, and
+`agent.ParseTimestamp` reads it back.
+
+### When a decision was made
+
+Every decision carries two times, kept apart on purpose:
+
+| Time | Whose clock | How it is protected |
+|---|---|---|
+| `decided_at` (`Record.DecidedAt`) | the approver's, when they signed | inside the signature: it cannot be changed after signing, but it is the approver's claim, and their clock may be wrong |
+| `recorded_at` (`Record.RecordedAt`) | the submitter's: the process that called `SubmitDecision`, when it journaled the decision (its `agent.WithClock`, else the run's clock on its context, else its wall clock); an identical resubmission keeps the first time | not signed: it is the submitter's claim. Anchored by the journal's Merkle trail, with the record, once a signed tree head covers it; the audit flags one later than that head (`audit.FlagRecordedAfterHead`) or out of journal order (`audit.FlagRecordedOutOfOrder`) |
+
+Both are for people and auditors. **Neither affects the gate**: `TallyApprovals` checks
+`decided_at` only as signed bytes (present, canonical, covered by the signature), never reads its
+value or `recorded_at`, and orders decisions by their place in the journal alone. The same
+decisions count the same way whatever their times say.
+
+`audit.VerifyApprovals` reports both times for every counted decision (`ApprovalVerdict.Times`),
+and when the run asked for approval (`AskedAt`: on a plan flow node, the `recorded_at` of the
+gate's request, which the ordering rule counts from; otherwise, or when the request has none, that
+of the gate's `approval-pending` record). It flags, without failing the verdict or uncounting
+anything:
+
+- `decided_at` more than a tolerance after `recorded_at` (`audit.FlagDecidedAfterRecorded`; 5
+  minutes by default, `audit.DefaultDecisionTimeTolerance`, or any other with
+  `audit.CheckDecisionTimes`): a decision cannot be recorded before it is made, so the approver's
+  clock runs ahead;
+- `decided_at` before the run asked (`audit.FlagDecidedBeforeAsked`): the approver's clock runs
+  behind, or the decision was signed in advance. The gate never counts a decision by its time: it
+  reads only decisions on this exact call, and on a plan flow node only those recorded after the
+  gate's request (`SubmitDecision` refuses one recorded before it). So a flagged decision was still
+  recorded after the request; the flag says its signed time disagrees;
+- no ask time in the evidence (`audit.FlagAskedUnknown`: a run an earlier version recorded, or a
+  pause record lost to a crash), so the check above was not made;
+- `recorded_at` missing or not a canonical time (`audit.FlagRecordedAtInvalid`): every report
+  prints it quoted, as text;
+- `recorded_at` more than the tolerance before an earlier decision's, or before the run asked
+  (`audit.FlagRecordedOutOfOrder`), or after the signed tree head that covers the record
+  (`ApprovalVerdict.HeadAt`, `audit.FlagRecordedAfterHead`): the journal's order, or the head,
+  says the submitter's time is wrong.
+
+Times run from the year 0001 to 9999; a decision time outside them has no canonical form.
+
+The gap between the two times is shown, not judged. `bide audit verify-approvals` prints all of it,
+with `-decision-time-tolerance` to change the tolerance, and `bide view` shows it on each approver's
+card.
+
+A later version may add an RFC 3161 trusted timestamp to each decision, a third time vouched for by
+a timestamp authority rather than by the approver or by the submitter. It is not part of this
+version.
 
 ### What counts
 
 Each distinct decision is its own journal record. Over those records, in journal order, an
 approver's decision is their **first valid** one: the approver is in the policy's `Approvers`, the
-resolver returns their key, no other approver's verifier reports that key, and the signature verifies
-for this call. So:
+resolver returns their key, no other approver's verifier reports that key, the record carries a
+signed decision time in canonical form, and the signature verifies for this call. So:
 
 - **A bad record never locks an approver out.** A forged signature, a signature with the wrong key,
   or a record written straight into the journal is ignored, and the approver's real decision still
@@ -177,10 +253,25 @@ enforced (`Need`, `Approvers`), who approved and denied, and the name of every d
 decided even if keys rotate or the policy changes later. A pause records no decision and no tally, so
 it stays open for more decisions. It does record that the run waits:
 `approval-pending:<encoded toolUseID>` (`agent.ApprovalPendingStep`), an `agent.ApprovalWait` with the
-call's ID and tool and the gate's `Need` and `Approvers` (or `Single`), so a reader such as `bide view`
-can list the gate before anyone decides. The run writes it once, in the drive whose model turn made
+call's ID and tool, the gate's `Need` and `Approvers` (or `Single`), and when the run paused
+(`RecordedAt`, by the run's clock), so a reader such as `bide view` can list the gate before anyone
+decides, and an auditor can see when approvers were asked. The run writes it once, in the drive whose model turn made
 the call, and a resume writes nothing. It is informational only: the gate, a resume and recovery never
 read it, and a failed write of it is dropped.
+
+### A run approved under an earlier decision format
+
+A run that an earlier version paused at an m-of-n gate, approved under `bide.approval.v2` (decisions
+with no signed time), and stopped before the call ran, journaled a tally that passed on decisions
+this version does not accept. Resumed now, the gate does not run the call on that tally: it asks
+again. `Run` returns `*ApprovalPending` with `Reason` set to `agent.PendingReapproval` and a fresh
+count (`Quorum`, whose `Supersedes` names the old tally), and `bide view` shows the gate as waiting
+for approval again. Approvers sign again under `bide.approval.v3` with `SubmitDecision`; once the
+gate passes it records the new outcome under `approval-tally:<encoded toolUseID>:v3`
+(`agent.ApprovalRetallyStep`), which every later drive, `audit.ApprovalEvidence` and
+`audit.VerifyApprovals` read in place of the old tally, and the call runs. A tally an earlier
+version recorded as a denial stays final, since it runs nothing, and a call that already ran under
+the earlier version is not asked again.
 
 ### Inside a sub-agent
 
@@ -295,8 +386,10 @@ what that means for the gate. A denial stops the flow with
 ## Proving the gate held
 
 `audit.ApprovalEvidence` builds the complete evidence for a gated call under one signed tree head, in
-journal order: the model turn that requested the call (its tool and arguments), every decision
-record the gate read, valid or not, the gate's recorded tally, and the call's result.
+journal order: the model turn that requested the call (its tool and arguments), the gate's
+`approval-pending` record when the journal holds one (a `step` item: it says when approvers were
+asked), every decision record the gate read, valid or not, the gate's recorded tally, and the
+call's result.
 
 <!-- docsnip: setup ctx context.Context; journal *agent.Journal; runID string; toolUseID string; logSigner audit.Signer -->
 ```go
@@ -318,6 +411,7 @@ v, err := audit.VerifyApprovals(pkg.Actions, toolUseID, policy, approverVerifier
 // errors.Is(err, audit.ErrNotVerified): the gate did not hold, or the evidence does not.
 // v.ToolName, v.Args: the exact call that was approved.
 // v.Counted, v.DeniedBy: who. v.Ignored: every other decision, with the reason.
+// v.Times, v.AskedAt: when each counted decision was made and recorded, and sanity flags.
 // v.Problems: every inconsistency found (any problem fails the verdict).
 ```
 
@@ -356,8 +450,9 @@ bide audit verify-approvals -evidence evidence.json -pubkey <log key> -call refu
     -need 2 -approvers ops,finance,risk -approver-keys approver-keys.json
 ```
 
-It prints the approved call, each approver who counted, every ignored decision with its reason, and
-every problem. It exits 0 only when the gate held: 1 when it did not, 4 when an input cannot be read
+It prints the approved call, each approver who counted, every ignored decision with its reason, when
+approval was asked and each counted decision's `decided_at` and `recorded_at` with the gap (and a
+`note:` line for each flag, which never changes the exit status), and every problem. It exits 0 only when the gate held: 1 when it did not, 4 when an input cannot be read
 or used (including a key file that gives two of the policy's approvers one key), and 2 on a usage error (see the audit guide's
 [exit status](audit.md#exit-status); only 0 means verified). `bide audit verify-evidence` checks the proofs only,
 so it cannot detect an omitted decision; use `verify-approvals` for the approval claim. Every proof in the package must verify for `verify-approvals` to pass as well, so a package that carries

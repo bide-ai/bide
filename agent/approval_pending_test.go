@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"errors"
 	"testing"
+	"time"
 
 	"github.com/bide-ai/bide/agent"
 	"github.com/bide-ai/bide/agent/agenttest"
@@ -114,4 +115,37 @@ func TestApprovalPendingIsInformational(t *testing.T) {
 func isApprovalPending(err error) bool {
 	_, ok := errors.AsType[*agent.ApprovalPending](err)
 	return ok
+}
+
+// TestApprovalPendingRecord_RecordedAt: the record of a pause carries when the run paused, by the
+// run's clock (WithClock), in canonical form; a resume that pauses again keeps the first time.
+func TestApprovalPendingRecord_RecordedAt(t *testing.T) {
+	ctx := context.Background()
+	j := agenttest.MemJournal()
+	now := time.Date(2026, 10, 13, 12, 0, 0, 7_654_321, time.UTC)
+	clock := func() time.Time { return now }
+	tool := agent.MustFunc("refund", "refund", func(context.Context, struct{}) (string, error) { return "ok", nil },
+		agent.WithApproval(&agent.ApprovalPolicy{Need: 1, Approvers: []string{"ops"}}))
+	newAgent := func() *agent.Agent {
+		m := agenttest.NewScriptedModel(agenttest.ToolTurn("c1", "refund", `{}`), agenttest.TextTurn("done"))
+		return agenttest.MustNew(m, j, agent.WithTools(tool), agent.WithClock(clock),
+			agent.WithApproverVerifiers(func(string) (agent.ApproverVerifier, bool) { return nil, false }))
+	}
+	for range 2 {
+		if _, err := newAgent().Run(ctx, "r", agent.UserText("go")); !isApprovalPending(err) {
+			t.Fatalf("Run = %v, want ApprovalPending", err)
+		}
+		recs := pendingRecords(t, j, "r")
+		if len(recs) != 1 {
+			t.Fatalf("approval-pending records = %d, want 1", len(recs))
+		}
+		var w agent.ApprovalWait
+		if err := json.Unmarshal(recs[0].Result, &w); err != nil {
+			t.Fatal(err)
+		}
+		if w.RecordedAt != "2026-10-13T12:00:00.007Z" {
+			t.Fatalf("ApprovalWait.RecordedAt = %q, want the run clock's first reading", w.RecordedAt)
+		}
+		now = now.Add(time.Hour)
+	}
 }

@@ -737,11 +737,11 @@ func TestP11_ApprovalsUnderPostQuantumKeys(t *testing.T) {
 	}
 	for _, id := range policy.Approvers {
 		s := approvers[id]
-		sig, err := s.Sign(agent.ApprovalDecisionBytes(pend.Subject(), id, true))
+		sig, err := s.Sign(agent.ApprovalDecisionBytes(pend.Subject(), id, true, testDecidedAt))
 		if err != nil {
 			t.Fatal(err)
 		}
-		if err := agent.SubmitDecision(ctx, j, agent.Decision{RunID: "gate", ToolUseID: "c1", ApproverID: id, Approved: true, Alg: s.Alg(), Signature: sig},
+		if err := agent.SubmitDecision(ctx, j, agent.Decision{RunID: "gate", ToolUseID: "c1", ApproverID: id, Approved: true, DecidedAt: testDecidedAt, Alg: s.Alg(), Signature: sig},
 			agent.WithDecisionCheck(resolver(approvers))); err != nil {
 			t.Fatalf("%s: %v", id, err)
 		}

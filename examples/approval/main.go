@@ -239,12 +239,13 @@ func cmdApprove(ctx context.Context, store *agent.Journal, as string, approved, 
 	if forge {
 		key = demoKey("forger")
 	}
-	sig := ed25519.Sign(key, agent.ApprovalDecisionBytes(subject, as, approved))
+	decidedAt := time.Now() // when the approver decided, by their clock: signed with the decision
+	sig := ed25519.Sign(key, agent.ApprovalDecisionBytes(subject, as, approved, decidedAt))
 	var opts []agent.ApproveOption
 	if check {
 		opts = append(opts, agent.WithDecisionCheck(approverVerifiers()))
 	}
-	d := agent.Decision{RunID: runID, ToolUseID: callID, ApproverID: as, Approved: approved, Alg: audit.AlgEd25519, Signature: sig}
+	d := agent.Decision{RunID: runID, ToolUseID: callID, ApproverID: as, Approved: approved, DecidedAt: decidedAt, Alg: audit.AlgEd25519, Signature: sig}
 	if err := agent.SubmitDecision(ctx, store, d, opts...); err != nil {
 		if errors.Is(err, agent.ErrInvalidApproval) || errors.Is(err, agent.ErrAlreadyDecided) {
 			say("refused: %v", err)

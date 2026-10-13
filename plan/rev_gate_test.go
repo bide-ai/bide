@@ -66,9 +66,9 @@ func TestRev_ResumeGateRemoved(t *testing.T) {
 // signedDecision is a's decision on the subject (runID, key, name, args) as SubmitDecision records it.
 func signedDecision(a edApprover, runID, key, name, args string, approved bool) (agent.Decision, agent.Record) {
 	s := agent.ApprovalSubject{RunID: runID, ToolUseID: key, ToolName: name, Args: []byte(args)}
-	sig := ed25519.Sign(a.priv, agent.ApprovalDecisionBytes(s, a.id, approved))
-	d := agent.Decision{RunID: runID, ToolUseID: key, ApproverID: a.id, Approved: approved, Alg: "ed25519", Signature: sig}
-	return d, agent.Record{Kind: agent.StepApproval, ToolUseID: key, Approved: approved, ApproverSignature: &agent.ApproverSignature{Approver: a.id, ApproverAlg: "ed25519", Signature: sig}}
+	sig := ed25519.Sign(a.priv, agent.ApprovalDecisionBytes(s, a.id, approved, testDecidedAt))
+	d := agent.Decision{RunID: runID, ToolUseID: key, ApproverID: a.id, Approved: approved, DecidedAt: testDecidedAt, Alg: "ed25519", Signature: sig}
+	return d, agent.Record{Kind: agent.StepApproval, ToolUseID: key, Approved: approved, ApproverSignature: &agent.ApproverSignature{Approver: a.id, ApproverAlg: "ed25519", DecidedAt: agent.FormatTimestamp(testDecidedAt), Signature: sig}}
 }
 
 // An m-of-n decision signed for the right input but recorded before the gate's request does not

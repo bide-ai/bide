@@ -55,11 +55,11 @@ func TestCLI_VerifyApprovalsOfAFlowNode(t *testing.T) {
 		t.Fatalf("Run = %v; want a pause at the gate", err)
 	}
 	for id, s := range signers {
-		sig, err := s.Sign(agent.ApprovalDecisionBytes(pend.Subject(), id, true))
+		sig, err := s.Sign(agent.ApprovalDecisionBytes(pend.Subject(), id, true, testDecidedAt))
 		if err != nil {
 			t.Fatal(err)
 		}
-		if err := agent.SubmitDecision(ctx, store, agent.Decision{RunID: runID, ToolUseID: pend.ToolUseID, ApproverID: id, Approved: true, Alg: s.Alg(), Signature: sig}); err != nil {
+		if err := agent.SubmitDecision(ctx, store, agent.Decision{RunID: runID, ToolUseID: pend.ToolUseID, ApproverID: id, Approved: true, DecidedAt: testDecidedAt, Alg: s.Alg(), Signature: sig}); err != nil {
 			t.Fatal(err)
 		}
 	}

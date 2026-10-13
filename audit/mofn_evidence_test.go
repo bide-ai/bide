@@ -10,6 +10,7 @@ import (
 	"slices"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/bide-ai/bide/agent"
 	"github.com/bide-ai/bide/agent/agenttest"
@@ -57,6 +58,7 @@ type gate struct {
 	logPub  ed25519.PublicKey
 	logPriv ed25519.PrivateKey
 	charged int
+	clock   func() time.Time // the run's clock (agent.WithClock), when set
 }
 
 // newGate registers a key for every id in registered (eligible or not).
@@ -93,7 +95,11 @@ func (g *gate) run() error {
 		g.charged++
 		return "ok", nil
 	}, agent.WithApproval(&g.policy))
-	_, err := agenttest.MustNew(chargeModel{}, g.store, agent.WithTools(charge), agent.WithApproverVerifiers(g.resolver())).Run(context.Background(), gateRun, agent.UserText("pay"))
+	opts := []agent.Option{agent.WithTools(charge), agent.WithApproverVerifiers(g.resolver())}
+	if g.clock != nil {
+		opts = append(opts, agent.WithClock(g.clock))
+	}
+	_, err := agenttest.MustNew(chargeModel{}, g.store, opts...).Run(context.Background(), gateRun, agent.UserText("pay"))
 	return err
 }
 
@@ -114,11 +120,11 @@ func (g *gate) subject(t *testing.T) agent.ApprovalSubject {
 // decide records id's signed decision; tamper corrupts the signature.
 func (g *gate) decide(t *testing.T, id string, approved, tamper bool) {
 	t.Helper()
-	sig := ed25519.Sign(g.privs[id], agent.ApprovalDecisionBytes(g.subject(t), id, approved))
+	sig := ed25519.Sign(g.privs[id], agent.ApprovalDecisionBytes(g.subject(t), id, approved, testDecidedAt))
 	if tamper {
 		sig[0] ^= 0xff
 	}
-	d := agent.Decision{RunID: gateRun, ToolUseID: "c1", ApproverID: id, Approved: approved, Alg: audit.AlgEd25519, Signature: sig}
+	d := agent.Decision{RunID: gateRun, ToolUseID: "c1", ApproverID: id, Approved: approved, DecidedAt: testDecidedAt, Alg: audit.AlgEd25519, Signature: sig}
 	if err := agent.SubmitDecision(context.Background(), g.store, d); err != nil {
 		t.Fatalf("SubmitDecision %s: %v", id, err)
 	}
@@ -201,7 +207,7 @@ func TestMofnEvidence_KofNVerifiesOffline(t *testing.T) {
 			t.Fatalf("evidence %d (%s) is not after evidence %d in the journal", i, a.Kind, i-1)
 		}
 	}
-	want := []audit.EvidenceKind{audit.KindCall, audit.KindApproval, audit.KindApproval, audit.KindApproval, audit.KindApproval, audit.KindApprovalTally, audit.KindTool}
+	want := []audit.EvidenceKind{audit.KindCall, audit.KindStep, audit.KindApproval, audit.KindApproval, audit.KindApproval, audit.KindApproval, audit.KindApprovalTally, audit.KindTool}
 	if !slices.Equal(kinds, want) {
 		t.Fatalf("evidence kinds = %v, want %v", kinds, want)
 	}

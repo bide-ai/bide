@@ -154,8 +154,9 @@ func cmdApprove(ctx context.Context, j *agent.Journal, as string, approved bool)
 		return errors.New("the run has not reached the gate yet: run it first")
 	}
 	subject := agent.ApprovalSubject{RunID: runID, ToolUseID: gateKey, ToolName: call.Name, Args: call.Args}
-	sig := ed25519.Sign(demoKey("approver "+as), agent.ApprovalDecisionBytes(subject, as, approved))
-	d := agent.Decision{RunID: runID, ToolUseID: gateKey, ApproverID: as, Approved: approved, Alg: audit.AlgEd25519, Signature: sig}
+	decidedAt := time.Now() // when the approver decided, by their clock: signed with the decision
+	sig := ed25519.Sign(demoKey("approver "+as), agent.ApprovalDecisionBytes(subject, as, approved, decidedAt))
+	d := agent.Decision{RunID: runID, ToolUseID: gateKey, ApproverID: as, Approved: approved, DecidedAt: decidedAt, Alg: audit.AlgEd25519, Signature: sig}
 	if err := agent.SubmitDecision(ctx, j, d, agent.WithDecisionCheck(approverVerifiers())); err != nil {
 		return err
 	}

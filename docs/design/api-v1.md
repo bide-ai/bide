@@ -783,7 +783,7 @@ func ResolveHalt(ctx context.Context, j *Journal, ref HaltRef, out Outcome, opts
 
 **Verbs:**
 - `Approve`
-- `SubmitDecision(ctx, j, Decision{RunID, ToolUseID, ApproverID, Approved, Alg, Signature})`
+- `SubmitDecision(ctx, j, Decision{RunID, ToolUseID, ApproverID, Approved, DecidedAt, Alg, Signature})`
 - `AnswerInterrupt[T]`
 - `Signal[T]`
 - `Enqueue[T]`

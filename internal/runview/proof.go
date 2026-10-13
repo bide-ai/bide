@@ -37,11 +37,13 @@ type ApprovalCheck struct {
 	Text string `json:"text"`
 
 	// What the approver cards show; not in the JSON view. Counted and Denied are the approvers
-	// whose decision counted in the recount, Ignored the reason each other decision did not, and
-	// Keys each approver's key fingerprint (from the approver keys given).
-	Counted, Denied []string          `json:"-"`
-	Ignored         map[string]string `json:"-"`
-	Keys            map[string]string `json:"-"`
+	// whose decision counted in the recount, Ignored the reason each other decision did not, Keys
+	// each approver's key fingerprint (from the approver keys given), and Times the two times of
+	// each counted approver's decision, with their sanity flags (audit.ApprovalVerdict.Times).
+	Counted, Denied []string                      `json:"-"`
+	Ignored         map[string]string             `json:"-"`
+	Keys            map[string]string             `json:"-"`
+	Times           map[string]audit.DecisionTime `json:"-"`
 }
 
 // Prover checks a run's records against an audit artifact. It returns nil for a run the artifact
@@ -145,7 +147,7 @@ func checkApprovals(recs []agent.Record, ap Approvals, logV audit.Verifier, acti
 		}
 	}
 	for _, tu := range calls {
-		t, ok := byName[agent.ApprovalTallyStep(tu.ID)]
+		t, ok := agent.RecordedTally(byName, tu.ID)
 		if !ok {
 			continue
 		}
@@ -176,6 +178,12 @@ func checkApprovals(recs []agent.Record, ap Approvals, logV audit.Verifier, acti
 			c.Ignored = map[string]string{}
 			for _, d := range v.Ignored {
 				c.Ignored[d.Approver] = d.Reason
+			}
+		}
+		if len(v.Times) > 0 {
+			c.Times = map[string]audit.DecisionTime{}
+			for _, d := range v.Times {
+				c.Times[d.Approver] = d
 			}
 		}
 		out[tu.ID] = c

@@ -481,10 +481,21 @@ type ApprovalPending struct {
 	// Quorum is non-nil for an m-of-n gate: the running tally at the pause. Record
 	// decisions with SubmitDecision, then re-run.
 	Quorum *ApprovalTally
+	// Reason says why the call waits when it is not its first ask: PendingReapproval when the gate
+	// had passed on decisions that predate DecisionFormat and asks again. Empty otherwise.
+	Reason string
 }
+
+// PendingReapproval is ApprovalPending.Reason for a gate that passed under decisions signed
+// before DecisionFormat (a run journaled by an earlier version): its call did not run, and it
+// runs once approvers decide again under DecisionFormat with SubmitDecision.
+const PendingReapproval = "approval re-required: the recorded approvals predate " + DecisionFormat + "; approvers sign again, then re-run"
 
 // Error names the run and the call awaiting approval.
 func (e *ApprovalPending) Error() string {
+	if e.Reason != "" {
+		return fmt.Sprintf("run %s awaiting human approval for tool %q (call %s): %s", e.RunID, e.ToolName, e.ToolUseID, e.Reason)
+	}
 	return fmt.Sprintf("run %s awaiting human approval for tool %q (call %s); approvers record decisions with SubmitDecision, then re-run the run to continue", e.RunID, e.ToolName, e.ToolUseID)
 }
 

@@ -92,8 +92,8 @@ func TestWithApproval_Quorum(t *testing.T) {
 	for i, approver := range []string{"", "alice", "bob"} {
 		if approver != "" {
 			sig := []byte(approver + "|")
-			sig = append(sig, agent.ApprovalDecisionBytes(pend.Subject(), approver, true)...)
-			if err := agent.SubmitDecision(context.Background(), store, agent.Decision{RunID: "r1", ToolUseID: "c1", ApproverID: approver, Approved: true, Alg: "test", Signature: sig}); err != nil {
+			sig = append(sig, agent.ApprovalDecisionBytes(pend.Subject(), approver, true, testDecidedAt)...)
+			if err := agent.SubmitDecision(context.Background(), store, agent.Decision{RunID: "r1", ToolUseID: "c1", ApproverID: approver, Approved: true, DecidedAt: testDecidedAt, Alg: "test", Signature: sig}); err != nil {
 				t.Fatal(err)
 			}
 		}

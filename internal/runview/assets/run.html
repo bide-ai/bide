@@ -37,13 +37,17 @@
 </section>
 
 {{range .Gates}}{{if .Cards}}<section class="approvals"><h2>Approvers{{if gt (len $.Gates) 1}}: {{.ToolName}}{{end}} <span class="count">{{.Headline}}</span></h2>
+{{if .HasTimes}}<p class="small muted atimesnote"><b>decided</b>: when the approver says they decided, by their clock, inside their signature. <b>recorded</b>: when the decision was journaled, by the clock of whoever submitted it, not signed, anchored in the journal. Times are UTC; neither changes the count.</p>{{end}}
 <ul class="acards">{{range .Cards}}<li class="acard a-{{.State}}">
 <span class="avatar" aria-hidden="true">{{.Initials}}</span>
 <div class="abody"><p class="aname"><b>{{.Name}}</b> <span class="astate">{{if eq .State "approved"}}{{icon "ok"}} approved{{else if eq .State "denied"}}{{icon "x"}} denied{{else}}{{icon "wait"}} pending{{end}}</span></p>
 {{if .Verify}}<p class="averify {{if .VerifyOK}}good{{else if eq .Verify "signature NOT verified"}}bad{{else}}muted{{end}}">{{if .VerifyOK}}{{icon "approval"}} {{else if eq .Verify "signature NOT verified"}}{{icon "x"}} {{end}}{{.Verify}}</p>{{end}}
 {{with .Why}}<p class="small bad">{{.}}</p>{{end}}
 {{with .Fingerprint}}<p class="small mono" title="the first 8 hex digits of the SHA-256 of the approver's public key">key {{.}}</p>{{end}}
-{{if not .SignedBy.IsZero}}<p class="small muted" title="the journal records no time for a decision; the head that covers it was signed then">in a head signed {{.SignedBy.Format "2006-01-02 15:04:05"}} UTC</p>{{end}}</div></li>{{end}}</ul></section>{{end}}{{end}}
+{{if or .DecidedAt .RecordedAt}}<dl class="atimes">{{with .DecidedAt}}<div><dt title="the approver's clock when they signed; inside the signature, so it cannot change after signing">decided</dt><dd>{{.}}</dd></div>{{end}}{{with .RecordedAt}}<div><dt title="the submitter's clock when the decision was journaled: not signed; anchored by the journal's Merkle trail once a signed head covers it">recorded</dt><dd>{{.}}</dd></div>{{end}}</dl>{{end}}
+{{with .Gap}}<p class="small muted">{{.}}</p>{{end}}
+{{with .TimesNote}}<p class="small muted">{{.}}</p>{{end}}
+{{range .Flags}}<p class="small aflag">{{icon "clock"}} {{.}}</p>{{end}}</div></li>{{end}}</ul></section>{{end}}{{end}}
 
 {{with .Proof}}{{with .Merkle}}{{with .Diagram}}<section class="proofpath"><h2>Proof path</h2>
 <div class="graphwrap merklewrap">{{.}}</div><p class="small muted">{{$.Proof.Merkle.Caption}}</p></section>{{end}}{{end}}{{end}}

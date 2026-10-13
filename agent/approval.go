@@ -11,6 +11,7 @@ import (
 	"reflect"
 	"slices"
 	"strings"
+	"time"
 )
 
 // This file holds the m-of-n approval gate's data model: the policy check, what an approver
@@ -87,7 +88,7 @@ type ApprovalSubject struct {
 
 // Subject returns the approval subject of the paused call, which is what approvers sign:
 //
-//	sig := signer.Sign(agent.ApprovalDecisionBytes(pend.Subject(), "finance", true))
+//	sig, err := signer.Sign(agent.ApprovalDecisionBytes(pend.Subject(), "finance", true, decidedAt))
 //
 // For a gate inside a sub-agent, RunID is the sub-run's id.
 func (e *ApprovalPending) Subject() ApprovalSubject {
@@ -95,30 +96,50 @@ func (e *ApprovalPending) Subject() ApprovalSubject {
 }
 
 // approvalDomain tags the bytes an approver signs so a signature over a decision can never
-// be replayed as a signature over any other message the same key signs. v2 binds the call's
-// tool name and arguments; v1 bound only the call id.
-const approvalDomain = "bide.approval.v2\n"
+// be replayed as a signature over any other message the same key signs. It is also the
+// encoding's version, covered by the signature: v3 binds the approver's decision time; v2 bound
+// the call's tool name and arguments; v1 bound only the call id. A decision signed under an
+// earlier version does not verify under this one.
+const approvalDomain = DecisionFormat + "\n"
+
+// DecisionFormat names the signed decision format this version writes and accepts: the domain tag
+// of ApprovalDecisionBytes without its newline. A gate's journaled tally records it.
+const DecisionFormat = "bide.approval.v3"
 
 // ApprovalDecisionBytes returns the canonical bytes an approver signs and every verifier
-// checks. The layout, stable and reproducible outside Go:
+// checks. decidedAt is when the approver decided, by their own clock; it is signed in
+// FormatTimestamp's form, so pass the same time as Decision.DecidedAt. The layout, stable and
+// reproducible outside Go:
 //
-//	"bide.approval.v2\n"
+//	"bide.approval.v3\n"
 //	len32(RunID) RunID
 //	len32(ToolUseID) ToolUseID
 //	len32(ToolName) ToolName
 //	SHA-256(canonical args), 32 bytes
 //	len32(approverID) approverID
 //	1 byte: 1 approved, 0 denied
+//	len32(decidedAt) decidedAt
 //
 // len32 is a 4-byte big-endian length, so no two distinct decisions encode to the same bytes.
 // The canonical args are the arguments parsed as JSON and re-serialized with object keys
 // sorted, no insignificant whitespace, no HTML escaping, and number literals kept verbatim;
 // empty arguments are "{}", and bytes that are not a single JSON value are used as-is. The
 // canonical form makes the signature independent of how the arguments were formatted in
-// transit (a live model stream, the journal, an evidence file).
-func ApprovalDecisionBytes(s ApprovalSubject, approverID string, approved bool) []byte {
+// transit (a live model stream, the journal, an evidence file). decidedAt is RFC 3339 in UTC to
+// the millisecond, 24 bytes, e.g. "2026-10-13T12:14:03.123Z" (FormatTimestamp); a verifier
+// refuses a decision whose recorded time is in any other form (ParseTimestamp), so an instant
+// has one signed spelling. A time outside the years 0001 to 9999 has no such form, and a
+// decision signed with one never counts. docs/design/design-mofn-approval.md works one decision
+// through to its exact bytes, for a verifier written in another language.
+func ApprovalDecisionBytes(s ApprovalSubject, approverID string, approved bool, decidedAt time.Time) []byte {
+	return decisionBytes(s, approverID, approved, FormatTimestamp(decidedAt))
+}
+
+// decisionBytes is ApprovalDecisionBytes over decidedAt as text: a verifier rebuilds the signed
+// bytes from the recorded text itself, after checking its form.
+func decisionBytes(s ApprovalSubject, approverID string, approved bool, decidedAt string) []byte {
 	args := sha256.Sum256(canonicalArgs(s.Args))
-	b := make([]byte, 0, len(approvalDomain)+4*4+len(s.RunID)+len(s.ToolUseID)+len(s.ToolName)+len(args)+len(approverID)+1)
+	b := make([]byte, 0, len(approvalDomain)+5*4+len(s.RunID)+len(s.ToolUseID)+len(s.ToolName)+len(args)+len(approverID)+1+len(decidedAt))
 	b = append(b, approvalDomain...)
 	for _, str := range []string{s.RunID, s.ToolUseID, s.ToolName} {
 		b = binary.BigEndian.AppendUint32(b, uint32(len(str)))
@@ -128,9 +149,12 @@ func ApprovalDecisionBytes(s ApprovalSubject, approverID string, approved bool) 
 	b = binary.BigEndian.AppendUint32(b, uint32(len(approverID)))
 	b = append(b, approverID...)
 	if approved {
-		return append(b, 1)
+		b = append(b, 1)
+	} else {
+		b = append(b, 0)
 	}
-	return append(b, 0)
+	b = binary.BigEndian.AppendUint32(b, uint32(len(decidedAt)))
+	return append(b, decidedAt...)
 }
 
 // canonicalArgs is the canonical form ApprovalDecisionBytes hashes (see its comment).
@@ -310,6 +334,15 @@ type ApprovalTally struct {
 	// Records names every decision record on this call the gate read, valid or not, in
 	// journal order. Evidence must disclose all of them, so an omitted decision is detectable.
 	Records []string `json:"records,omitempty"`
+	// DecisionFormat is the signed decision format the gate counted under (DecisionFormat), set on
+	// the terminal tally it journals. A tally recorded by an earlier version has none; a gate
+	// refuses to run a call on such a tally that passed (ErrConfig), since its approvals do not
+	// verify under this format.
+	DecisionFormat string `json:"decision_format,omitempty"`
+	// Supersedes names the tally this count replaces: set when the gate re-asks for approval
+	// because the tally recorded under ApprovalTallyStep passed on decisions that predate
+	// DecisionFormat. The re-count is recorded under ApprovalRetallyStep once terminal.
+	Supersedes string `json:"supersedes,omitempty"`
 }
 
 // Passed reports whether Need approvals are in.
@@ -340,6 +373,8 @@ const (
 	ReasonSharedKey   = "the approver's signing key also serves another approver"
 	ReasonNoKeyID     = "the approver's verifier reports no key identity"
 	ReasonAlg         = "signed under another scheme than the approver's key"
+	ReasonNoDecidedAt = "no signed decision time: signed under an earlier decision format than bide.approval.v3, which this version does not accept"
+	ReasonDecidedAt   = "the signed decision time is not in canonical form (2006-01-02T15:04:05.000Z)"
 )
 
 // protocol:claims begin QCount
@@ -347,8 +382,9 @@ const (
 // TallyApprovals is the m-of-n counting rule, shared by the gate and offline verification so
 // the two cannot drift. Over recs, in journal order, it considers every decision record on
 // s.ToolUseID (IsApprovalDecision). An approver's decision is their FIRST record that is
-// valid: the approver is in p.Approvers, verifierFor resolves their key, and the signature
-// verifies over ApprovalDecisionBytes(s, approver, approved) under the scheme the record names
+// valid: the approver is in p.Approvers, verifierFor resolves their key, the record carries a
+// decision time in canonical form (ParseTimestamp), and the signature verifies over
+// ApprovalDecisionBytes(s, approver, approved, decidedAt) under the scheme the record names
 // (ApproverAlg), which must be the scheme of the approver's key. Records that are not valid never
 // occupy an approver's place, so a forged or mistaken decision cannot block the approver's
 // real one; later valid records from an approver who already decided are superseded.
@@ -357,6 +393,10 @@ const (
 // every record is checked with that one resolution. An approver whose verifier reports a key
 // identity (ApproverVerifier.KeyIDs) that another approver's verifier also reports, or that
 // reports none, never counts (ReasonSharedKey, ReasonNoKeyID), whichever of them signed first.
+//
+// The decision time is checked only as signed bytes: its value never affects what counts, in
+// what order, or the outcome, and the time a decision was journaled (RecordedAt) is not read.
+// Journal order alone orders decisions.
 //
 // It returns the tally and a classification of every record it considered. It does not
 // validate p (see ApprovalPolicy.ValidateKeys, which the gate runs first and which refuses a
@@ -387,11 +427,10 @@ func TallyApprovals(recs []Record, s ApprovalSubject, p ApprovalPolicy, verifier
 			c.Reason = reason
 		case !ok:
 			c.Reason = ReasonNoKey
-		case r.ApproverAlg() == "" || r.ApproverAlg() != v.Alg():
-			c.Reason = ReasonAlg
-		case !v.Verify(ApprovalDecisionBytes(s, r.Approver(), r.Approved), r.Signature()):
-			c.Reason = ReasonBadSig
 		default:
+			if c.Reason = decisionReason(r, s, v); c.Reason != "" {
+				break
+			}
 			c.Counted = true
 			decided[r.Approver()] = true
 			if r.Approved {
@@ -417,6 +456,30 @@ func TallyApprovals(recs []Record, s ApprovalSubject, p ApprovalPolicy, verifier
 	return t, checks
 }
 
+// decisionReason returns why r, a decision record whose approver's verifier is v, does not verify
+// for s, or "" when it does: it is signed under v's scheme, carries a decision time in canonical
+// form, and its signature verifies over the decision bytes rebuilt from the record, its decision
+// time included as recorded.
+func decisionReason(r Record, s ApprovalSubject, v ApproverVerifier) string {
+	switch {
+	case r.ApproverAlg() == "" || r.ApproverAlg() != v.Alg():
+		return ReasonAlg
+	case r.DecidedAt() == "":
+		return ReasonNoDecidedAt
+	case !canonicalTimestamp(r.DecidedAt()):
+		return ReasonDecidedAt
+	case !v.Verify(decisionBytes(s, r.Approver(), r.Approved, r.DecidedAt()), r.Signature()):
+		return ReasonBadSig
+	}
+	return ""
+}
+
+// canonicalTimestamp reports whether s is in exactly FormatTimestamp's form.
+func canonicalTimestamp(s string) bool {
+	_, err := ParseTimestamp(s)
+	return err == nil
+}
+
 // protocol:claims end
 
 // IsApprovalDecision reports whether r is an m-of-n approver decision (written by SubmitDecision)
@@ -428,26 +491,61 @@ func IsApprovalDecision(r Record, toolUseID string) bool {
 // ApprovalTallyStep is the journal name of the gate's terminal tally for toolUseID.
 func ApprovalTallyStep(toolUseID string) string { return "approval-tally:" + encodeID(toolUseID) }
 
+// ApprovalRetallyStep is the journal name of the terminal tally a gate records when it re-asks for
+// approval because the tally under ApprovalTallyStep passed on decisions that predate
+// DecisionFormat (see ApprovalTally.Supersedes). When both are recorded, this one is the gate's
+// outcome. The encoded ID has no ':', so the name never collides with another call's tally.
+func ApprovalRetallyStep(toolUseID string) string { return ApprovalTallyStep(toolUseID) + ":v3" }
+
+// RecordedTally returns the record of the gate's outcome on toolUseID among records keyed by
+// name: the re-approval tally (ApprovalRetallyStep) when one is recorded over a tally that passed
+// on decisions predating DecisionFormat, which is the only case a gate writes one, else the tally
+// (ApprovalTallyStep). A re-approval tally beside any other tally is not the gate's outcome, as
+// tallyGate never reads it, so it is ignored. ok is false when there is no tally.
+func RecordedTally(byName map[string]Record, toolUseID string) (r Record, ok bool) {
+	r, ok = byName[ApprovalTallyStep(toolUseID)]
+	if !ok {
+		return r, false
+	}
+	var t ApprovalTally
+	if json.Unmarshal(r.Result, &t) == nil && predatesFormat(t) {
+		if re, ok := byName[ApprovalRetallyStep(toolUseID)]; ok {
+			return re, true
+		}
+	}
+	return r, true
+}
+
+// predatesFormat reports whether t is a tally that passed on decisions signed before
+// DecisionFormat: a terminal tally journaled by an earlier version, which carries no format. Its
+// approvals do not verify under this format, so a gate does not run the call on it; it asks again
+// (PendingReapproval). A denial is final whatever its format, since it runs nothing.
+func predatesFormat(t ApprovalTally) bool { return t.Passed() && t.DecisionFormat != DecisionFormat }
+
 // ApprovalPendingStep is the journal name of the record that a run paused at the approval gate of
 // the call toolUseID (see ApprovalWait).
 func ApprovalPendingStep(toolUseID string) string { return "approval-pending:" + encodeID(toolUseID) }
 
 // ApprovalWait is what the record named ApprovalPendingStep holds: that a run paused at a call's
-// approval gate, and the gate it waits on. The run writes it, as a StepValue and only if it is
-// absent, when it first pauses at the gate, in the drive whose model turn made the call; a resume
-// that pauses again writes nothing, and a record lost to a crash is not written later.
+// approval gate, the gate it waits on, and when (RecordedAt), which is when approvers are asked.
+// The run writes it, as a StepValue and only if it is absent, when it first pauses at the gate, in
+// the drive whose model turn made the call; a resume that pauses again writes nothing, and a
+// record lost to a crash is not written later.
 //
 // It is informational only, for a reader such as a run viewer, which can then show a gate before
 // any decision on it is recorded. No part of the engine reads it to decide anything: not the gate
 // (which counts decisions, see TallyApprovals), not a resume, not recovery. A failed write of it is
 // not reported, since the pause is the same without it. Gate fields are the policy the run paused
-// under; the call's result, or the gate's tally, records the policy the gate enforced.
+// under; the call's result, or the gate's tally, records the policy the gate enforced. RecordedAt
+// is when the record was written, by the drive's clock (WithClock, or the wall clock), in
+// FormatTimestamp's form; empty on a record an earlier version wrote.
 type ApprovalWait struct {
-	ToolUseID string   `json:"tool_use_id"`
-	ToolName  string   `json:"tool_name"`
-	Single    bool     `json:"single,omitempty"`    // a one-decision gate (SingleApproval): Need and Approvers are empty
-	Need      int      `json:"need,omitempty"`      // the m-of-n gate's k
-	Approvers []string `json:"approvers,omitempty"` // the m-of-n gate's eligible approvers, in policy order
+	ToolUseID  string   `json:"tool_use_id"`
+	ToolName   string   `json:"tool_name"`
+	Single     bool     `json:"single,omitempty"`      // a one-decision gate (SingleApproval): Need and Approvers are empty
+	Need       int      `json:"need,omitempty"`        // the m-of-n gate's k
+	Approvers  []string `json:"approvers,omitempty"`   // the m-of-n gate's eligible approvers, in policy order
+	RecordedAt string   `json:"recorded_at,omitempty"` // when the run paused here, by the drive's clock
 }
 
 // FindToolCall returns the journal index of the record that requested toolUseID, and the call
@@ -473,12 +571,12 @@ func FindToolCall(recs []Record, toolUseID string) (idx int, call ToolUse, ok bo
 }
 
 // approvalDecisionStep is the journal name of one decision. It is distinct per decision (the
-// approved flag, the scheme and the signature are hashed into it), so an approver's records never
-// collide: a bad record cannot take the name a later valid one needs, and an identical
-// resubmission maps to the same name and stays a no-op. Deterministic signatures (ed25519, and
-// audit's ML-DSA signer) resubmit to the same name; randomized ones add a record the counting rule
-// supersedes.
-func approvalDecisionStep(toolUseID, approverID string, approved bool, alg Alg, sig []byte) string {
+// approved flag, the scheme, the signed decision time and the signature are hashed into it), so an
+// approver's records never collide: a bad record cannot take the name a later valid one needs (a
+// copy of a valid signature under another decision time, say), and an identical resubmission maps
+// to the same name and stays a no-op. Deterministic signatures (ed25519, and audit's ML-DSA
+// signer) resubmit to the same name; randomized ones add a record the counting rule supersedes.
+func approvalDecisionStep(toolUseID, approverID string, approved bool, alg Alg, decidedAt string, sig []byte) string {
 	h := sha256.New()
 	if approved {
 		h.Write([]byte{1})
@@ -487,15 +585,37 @@ func approvalDecisionStep(toolUseID, approverID string, approved bool, alg Alg, 
 	}
 	h.Write(binary.BigEndian.AppendUint32(nil, uint32(len(alg))))
 	h.Write([]byte(alg))
+	h.Write(binary.BigEndian.AppendUint32(nil, uint32(len(decidedAt))))
+	h.Write([]byte(decidedAt))
 	h.Write(sig)
 	return approvalStep(toolUseID) + ":" + approverID + ":" + hex.EncodeToString(h.Sum(nil))
 }
 
-// ApproveOption configures SubmitDecision.
-type ApproveOption func(*approveOptions)
+// ApproveOption configures SubmitDecision: WithDecisionCheck, or WithClock for the clock that
+// stamps the decision's RecordedAt.
+type ApproveOption interface {
+	applyApprove(*approveOptions) error
+}
 
 type approveOptions struct {
 	verifierFor ApproverVerifierFor
+	now         func() time.Time
+}
+
+// decisionCheck implements ApproveOption.
+type decisionCheck ApproverVerifierFor
+
+func (f decisionCheck) applyApprove(o *approveOptions) error {
+	o.verifierFor = ApproverVerifierFor(f)
+	return nil
+}
+
+func (f clockOption) applyApprove(o *approveOptions) error {
+	if err := f.check(); err != nil {
+		return err
+	}
+	o.now = f
+	return nil
 }
 
 // WithDecisionCheck makes SubmitDecision check the decision before recording it, so an approver
@@ -506,21 +626,28 @@ type approveOptions struct {
 // nothing. The check is for feedback; the gate re-verifies every record itself, so
 // correctness never depends on it. Eligibility is the policy's, which SubmitDecision does not see.
 func WithDecisionCheck(verifierFor ApproverVerifierFor) ApproveOption {
-	return func(o *approveOptions) { o.verifierFor = verifierFor }
+	return decisionCheck(verifierFor)
 }
 
 // Decision is one named approver's signed decision on a tool call gated by an m-of-n Approval
 // policy. Signature is the approver's signature over
-// ApprovalDecisionBytes(pend.Subject(), ApproverID, Approved), where pend is the run's
+// ApprovalDecisionBytes(pend.Subject(), ApproverID, Approved, DecidedAt), where pend is the run's
 // *ApprovalPending, under the scheme Alg names (the signer's Alg). Alg is journaled with the
 // decision as Record.ApproverAlg, and the gate counts the decision only under a verifier of that
 // scheme.
+//
+// DecidedAt is when the approver decided, by the approver's clock, and is required. It is
+// journaled in FormatTimestamp's form (to the millisecond, in UTC) as the record's DecidedAt, and
+// the signature covers it, so it cannot be changed after signing. It is a claim by the approver,
+// for people and auditors: the gate never reads its value (see TallyApprovals). An approver who
+// sends a decision over the wire sends the time as text; ParseTimestamp reads it back.
 type Decision struct {
 	RunID      string // the run whose journal holds the call: the pause's RunID
 	ToolUseID  string
 	ApproverID string // one of the policy's Approvers, exactly (printable ASCII; see ApprovalPolicy.Validate)
 	Approved   bool
-	Alg        Alg // the signature scheme, e.g. audit.AlgEd25519
+	DecidedAt  time.Time // when the approver decided, by their clock; signed
+	Alg        Alg       // the signature scheme, e.g. audit.AlgEd25519
 	Signature  []byte
 }
 
@@ -530,6 +657,11 @@ type Decision struct {
 // SubmitDecision records d, one approver's signed decision on an m-of-n gated call. After
 // enough decisions land, re-run the pause's RootRunID. (A single-approver gate uses Approve.)
 //
+// The record carries d.DecidedAt, signed, and the time it was recorded (Record.RecordedAt), read
+// from WithClock's clock, else the clock ctx carries (a run's), else the wall clock. Neither time
+// affects the gate. A zero DecidedAt, or one with no canonical form, is ErrConfig, and so is an
+// ApproverID that is not printable ASCII (see ApprovalPolicy.Validate), which no policy can name.
+//
 // Each distinct decision is its own journal record; resubmitting the identical decision is a
 // no-op. The gate counts each approver's first valid decision and ignores the rest, so an
 // invalid record never blocks a valid one. Without WithDecisionCheck, SubmitDecision does not
@@ -537,7 +669,8 @@ type Decision struct {
 // plan flow node's gate (ToolUseID a node key, in a flow's run) the run must have recorded the
 // gate's request: SubmitDecision refuses one with none (ErrConfig), and the gate counts only
 // decisions after it. An identical decision recorded before the request (same name) is reported
-// (ErrConfig): it cannot count, and this approver's seat is lost for the gate.
+// (ErrConfig): it cannot count; the approver re-signs at a new decided_at, which is a new decision
+// that counts.
 func SubmitDecision(ctx context.Context, store *Journal, d Decision, opts ...ApproveOption) error {
 	return submitDecision(ctx, store, "SubmitDecision", d, opts)
 }
@@ -555,28 +688,55 @@ func submitDecision(ctx context.Context, store *Journal, op string, d Decision, 
 	if d.ApproverID == "" {
 		return fmt.Errorf("%s: empty approverID: %w", op, ErrConfig)
 	}
+	if !printableASCII(d.ApproverID) {
+		// No policy can name such an id (ApprovalPolicy.Validate), so the decision could never
+		// count; refusing it also keeps a line break or an escape out of every report that names
+		// the decisions a gate read.
+		return fmt.Errorf("%s: approverID %q is not printable ASCII (bytes 0x21 to 0x7E, no space), as every policy's approver ids are: %w", op, d.ApproverID, ErrConfig)
+	}
 	if d.Alg == "" {
 		return fmt.Errorf("%s: empty signature scheme (Decision.Alg): %w", op, ErrConfig)
 	}
 	if len(d.Signature) == 0 {
 		return fmt.Errorf("%s: empty signature: %w", op, ErrConfig)
 	}
+	if d.DecidedAt.IsZero() {
+		return fmt.Errorf("%s: no decision time (Decision.DecidedAt): every signed decision carries the time the approver decided: %w", op, ErrConfig)
+	}
+	decidedAt := FormatTimestamp(d.DecidedAt)
+	if !canonicalTimestamp(decidedAt) {
+		return fmt.Errorf("%s: decision time %s has no canonical form (years 0001 to 9999): %w", op, d.DecidedAt, ErrConfig)
+	}
+	o := approveOptions{now: clockFrom(ctx)}
+	for _, opt := range opts {
+		if opt == nil {
+			continue
+		}
+		if err := opt.applyApprove(&o); err != nil {
+			return fmt.Errorf("%s: %w", op, err)
+		}
+	}
 	reqSeq, flow, err := flowDecision(ctx, store, op, d.RunID, d.ToolUseID)
 	if err != nil {
 		return err
 	}
-	var o approveOptions
-	for _, opt := range opts {
-		opt(&o)
-	}
-	name := approvalDecisionStep(d.ToolUseID, d.ApproverID, d.Approved, d.Alg, d.Signature)
+	name := approvalDecisionStep(d.ToolUseID, d.ApproverID, d.Approved, d.Alg, decidedAt, d.Signature)
 	if o.verifierFor != nil {
-		if err := checkDecision(ctx, store, op, d, name, o.verifierFor); err != nil {
+		if err := checkDecision(ctx, store, op, d, name, flow, o.verifierFor); err != nil {
 			return err
 		}
 	}
 	if _, err := store.do(ctx, d.RunID, name, func(context.Context) (Record, error) {
-		return Record{Kind: StepApproval, ToolUseID: d.ToolUseID, Approved: d.Approved, ApproverSignature: &ApproverSignature{Approver: d.ApproverID, ApproverAlg: d.Alg, Signature: d.Signature}}, nil
+		// RecordedAt is read here, when the record is first written: an identical resubmission
+		// keeps the first record, and its time. It is held to the one form decided_at is, so a
+		// clock outside the years 0001 to 9999 records nothing rather than a time no reader accepts.
+		recordedAt := FormatTimestamp(o.now())
+		if !canonicalTimestamp(recordedAt) {
+			return Record{}, fmt.Errorf("%s: the clock reads %s, which has no canonical form (years 0001 to 9999), so the decision's recorded_at cannot be written: %w", op, o.now(), ErrConfig)
+		}
+		return Record{Kind: StepApproval, ToolUseID: d.ToolUseID, Approved: d.Approved, ApproverSignature: &ApproverSignature{
+			Approver: d.ApproverID, ApproverAlg: d.Alg, Signature: d.Signature, DecidedAt: decidedAt, RecordedAt: recordedAt,
+		}}, nil
 	}); err != nil {
 		return err
 	}
@@ -587,8 +747,10 @@ func submitDecision(ctx context.Context, store *Journal, op string, d Decision, 
 }
 
 // checkDecision is WithDecisionCheck's pre-flight: the decision verifies for the recorded
-// call, and the approver has no other valid decision on it (an identical one is fine).
-func checkDecision(ctx context.Context, store *Journal, op string, d Decision, name string, verifierFor ApproverVerifierFor) error {
+// call, and the approver has no other valid decision on it (an identical one is fine). For a plan
+// flow node's gate (flow) it reads, as the gate does, only the decisions after the gate's request:
+// one recorded before it never counts, so it does not make this one "already decided".
+func checkDecision(ctx context.Context, store *Journal, op string, d Decision, name string, flow bool, verifierFor ApproverVerifierFor) error {
 	recs, err := store.History(ctx, d.RunID)
 	if err != nil {
 		return fmt.Errorf("%s: load history %s: %w (%w)", op, d.RunID, err, ErrStorage)
@@ -608,14 +770,18 @@ func checkDecision(ctx context.Context, store *Journal, op string, d Decision, n
 		return fmt.Errorf("%s: approver %q: decision signed under %q, key is %q: %w", op, d.ApproverID, d.Alg, v.Alg(), ErrInvalidApproval)
 	}
 	s := ApprovalSubject{RunID: d.RunID, ToolUseID: d.ToolUseID, ToolName: call.Name, Args: call.Args}
-	if !v.Verify(ApprovalDecisionBytes(s, d.ApproverID, d.Approved), d.Signature) {
+	if !v.Verify(ApprovalDecisionBytes(s, d.ApproverID, d.Approved, d.DecidedAt), d.Signature) {
 		return fmt.Errorf("%s: approver %q: %s: %w", op, d.ApproverID, ReasonBadSig, ErrInvalidApproval)
+	}
+	if flow {
+		i := slices.IndexFunc(recs, func(r Record) bool { return r.Name == ApprovalRequestStep(d.ToolUseID) })
+		recs = recs[i+1:] // flowDecision found the request, so i >= 0
 	}
 	for _, r := range recs {
 		if !IsApprovalDecision(r, d.ToolUseID) || r.Approver() != d.ApproverID || r.Name == name {
 			continue
 		}
-		if r.ApproverAlg() == v.Alg() && v.Verify(ApprovalDecisionBytes(s, d.ApproverID, r.Approved), r.Signature()) {
+		if decisionReason(r, s, v) == "" {
 			return fmt.Errorf("%s: approver %q already decided on call %q: %w", op, d.ApproverID, d.ToolUseID, ErrAlreadyDecided)
 		}
 	}
@@ -627,7 +793,7 @@ func checkDecision(ctx context.Context, store *Journal, op string, d Decision, n
 // resume, which replays the turn, writes nothing: re-driving a paused run leaves its journal as it
 // is. Nothing reads the record to decide, so a failed write is dropped.
 func (a *Agent) notePending(ctx context.Context, runID string, tu ToolUse, pol *ApprovalPolicy) {
-	w := ApprovalWait{ToolUseID: tu.ID, ToolName: tu.Name, Single: pol.single()}
+	w := ApprovalWait{ToolUseID: tu.ID, ToolName: tu.Name, Single: pol.single(), RecordedAt: noteStamp(clockFrom(ctx))}
 	if !w.Single {
 		w.Need, w.Approvers = pol.Need, slices.Clone(pol.Approvers)
 	}

@@ -68,15 +68,23 @@ func tallyGate(ctx context.Context, store *Journal, runID string, s ApprovalSubj
 	if err != nil {
 		return ApprovalTally{}, false, fmt.Errorf("load history %s: %w (%w)", runID, err, ErrStorage)
 	}
-	name := ApprovalTallyStep(s.ToolUseID)
+	name, supersedes := ApprovalTallyStep(s.ToolUseID), ""
 	for _, r := range recs {
-		if r.Name == name && r.Kind == StepValue {
-			t, err := decodeTally(runID, r)
-			if err != nil {
-				return ApprovalTally{}, false, err
-			}
-			return t, true, nil
+		if r.Kind != StepValue || r.Name != name && r.Name != ApprovalRetallyStep(s.ToolUseID) {
+			continue
 		}
+		t, err := decodeTally(runID, r)
+		if err != nil {
+			return ApprovalTally{}, false, err
+		}
+		if r.Name == name && predatesFormat(t) {
+			// A tally an earlier version journaled passed on decisions this format does not accept:
+			// the call does not run on it. The gate asks again, and records its new outcome under
+			// ApprovalRetallyStep, which a later evaluation reads instead.
+			supersedes, name = name, ApprovalRetallyStep(s.ToolUseID)
+			continue
+		}
+		return t, true, nil
 	}
 	if since != "" {
 		if i := slices.IndexFunc(recs, func(r Record) bool { return r.Name == since }); i >= 0 {
@@ -86,9 +94,11 @@ func tallyGate(ctx context.Context, store *Journal, runID string, s ApprovalSubj
 		}
 	}
 	tally, _ := TallyApprovals(recs, s, *pol, verifierFor)
+	tally.Supersedes = supersedes
 	if !tally.Passed() && !tally.Unreachable() {
 		return tally, false, nil
 	}
+	tally.DecisionFormat = DecisionFormat
 	tally, err = step(ctx, store, runID, name, func(context.Context) (ApprovalTally, error) { return tally, nil }, WithSafety(Safety{ReadOnly: true}))
 	if err != nil {
 		return ApprovalTally{}, false, fmt.Errorf("record %s (run %s): %w (%w)", name, runID, err, ErrStorage)

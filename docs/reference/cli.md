@@ -374,13 +374,20 @@ bide audit: produce and verify audit proof bundles
 
   verify-approvals -evidence <file> -pubkey <hex|file> -call <tool-use-id|node-key> -need <k>
                    -approvers <id,id,...> -approver-keys <file> [-approved <digest>...] [-approved-file <file>]
+                   [-decision-time-tolerance <duration>]
          verify an m-of-n human approval gate from an evidence package: the request, every
          decision the gate read, its recorded tally, and the call's result all verify under the
          log key in one signed tree; recounting the decisions with each approver's key (a JSON
          object of approver id to public key text, <scheme>:<hex>) against the exact call reproduces the
          recorded tally; the gate enforced the expected policy; and at least k approved. Every
          proof in the package must verify too, so a package carrying a run certificate needs the
-         allowlist it is checked against (-approved / -approved-file, as for verify-evidence)
+         allowlist it is checked against (-approved / -approved-file, as for verify-evidence).
+         It also prints each counted decision's two times: decided_at, signed by the approver
+         (their clock), and recorded_at, when it was journaled (the submitter's clock, not
+         signed), with the gap, and notes a decision signed more than the tolerance (default
+         5m) after it was recorded or before the run asked for approval, a recorded_at out of
+         journal order or after the signed head, and a time that is not canonical (printed
+         quoted); these notes never change the verdict
 
   prove-absent -journal <file> -sth <file> -key (tool:<id>|policy:<digest>) [-out <file>]
          prove a thing did NOT happen (no such tool call / no action under that policy)
@@ -524,6 +531,8 @@ Usage of bide audit verify-approvals:
     	the gated call's tool-use id, or a gated plan flow node's key ("node:<name>", "node:iter:<n>:<name>")
   -color when
     	when to color the output: auto (the default: on a terminal, unless NO_COLOR is set or TERM is dumb), always or never; -json is never colored
+  -decision-time-tolerance duration
+    	how far a decision's signed time may be after the time bide recorded it before it is noted (a note, never a failure) (default 5m0s)
   -evidence string
     	path to the EvidencePackage JSON carrying the approval evidence
   -json

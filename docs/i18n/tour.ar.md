@@ -515,9 +515,10 @@ if err != nil {
 }
 
 // each approver, out of band, signs the paused call they were shown:
-sig, _ := signer.Sign(agent.ApprovalDecisionBytes(pend.Subject(), "finance", true))
+decidedAt := time.Now() // the approver's clock, signed with the decision
+sig, _ := signer.Sign(agent.ApprovalDecisionBytes(pend.Subject(), "finance", true, decidedAt))
 agent.SubmitDecision(ctx, journal, agent.Decision{RunID: pend.RunID, ToolUseID: pend.ToolUseID,
-	ApproverID: "finance", Approved: true, Alg: signer.Alg(), Signature: sig})
+	ApproverID: "finance", Approved: true, DecidedAt: decidedAt, Alg: signer.Alg(), Signature: sig})
 ```
 
 ثم يُثبِت `audit.ApprovalEvidence` و`audit.VerifyApprovals` (أو `bide audit verify-approvals`) دون اتصال أن

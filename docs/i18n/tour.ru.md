@@ -421,9 +421,10 @@ if err != nil {
 }
 
 // each approver, out of band, signs the paused call they were shown:
-sig, _ := signer.Sign(agent.ApprovalDecisionBytes(pend.Subject(), "finance", true))
+decidedAt := time.Now() // the approver's clock, signed with the decision
+sig, _ := signer.Sign(agent.ApprovalDecisionBytes(pend.Subject(), "finance", true, decidedAt))
 agent.SubmitDecision(ctx, journal, agent.Decision{RunID: pend.RunID, ToolUseID: pend.ToolUseID,
-	ApproverID: "finance", Approved: true, Alg: signer.Alg(), Signature: sig})
+	ApproverID: "finance", Approved: true, DecidedAt: decidedAt, Alg: signer.Alg(), Signature: sig})
 ```
 
 Затем `audit.ApprovalEvidence` и `audit.VerifyApprovals` (или `bide audit verify-approvals`) доказывают офлайн, что k именованных одобряющих подписали именно этот вызов *до* его выполнения, по ожидаемой политике, на основе свидетельств, из которых нельзя незаметно выбросить решение. Каждому одобряющему нужен собственный ключ: политика, в которой два одобряющих сводятся к одному ключу, отклоняется с `ErrConfig`, ведь владелец этого ключа мог бы подписать за обоих. См. [руководство по одобрению](../../docs/guides/hitl-approval.md); запускается в разных процессах в `examples/approval`.

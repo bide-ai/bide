@@ -17,6 +17,13 @@
 .astate { font-size: var(--t-sm); color: var(--muted); margin-left: var(--s1); }
 .averify { font-weight: 600; font-size: var(--t-sm); }
 .averify .ic { margin-right: 2px; }
+.aflag { color: var(--warn); font-weight: 600; }
+.atimes { margin: 4px 0 2px; font-size: var(--t-sm); font-variant-numeric: tabular-nums; }
+.atimes div { display: flex; flex-wrap: wrap; column-gap: var(--s2); }
+.atimes dt { color: var(--muted); min-width: 4.6em; }
+.atimes dd { margin: 0; white-space: nowrap; }
+.atimesnote { margin: 0 0 var(--s2); }
+.aflag .ic { margin-right: 2px; }
 
 .merklewrap { padding: var(--s4); }
 svg.merkle { display: block; margin: 0 auto; max-width: 100%; height: auto; font-family: var(--font); }

@@ -31,8 +31,10 @@ import (
 	"os/exec"
 	"reflect"
 	"sort"
+	"strconv"
 	"strings"
 	"time"
+	"unicode"
 
 	"github.com/bide-ai/bide/agent"
 	"github.com/bide-ai/bide/audit"
@@ -138,13 +140,20 @@ const usageText = `bide audit: produce and verify audit proof bundles
 
   verify-approvals -evidence <file> -pubkey <hex|file> -call <tool-use-id|node-key> -need <k>
                    -approvers <id,id,...> -approver-keys <file> [-approved <digest>...] [-approved-file <file>]
+                   [-decision-time-tolerance <duration>]
          verify an m-of-n human approval gate from an evidence package: the request, every
          decision the gate read, its recorded tally, and the call's result all verify under the
          log key in one signed tree; recounting the decisions with each approver's key (a JSON
          object of approver id to public key text, <scheme>:<hex>) against the exact call reproduces the
          recorded tally; the gate enforced the expected policy; and at least k approved. Every
          proof in the package must verify too, so a package carrying a run certificate needs the
-         allowlist it is checked against (-approved / -approved-file, as for verify-evidence)
+         allowlist it is checked against (-approved / -approved-file, as for verify-evidence).
+         It also prints each counted decision's two times: decided_at, signed by the approver
+         (their clock), and recorded_at, when it was journaled (the submitter's clock, not
+         signed), with the gap, and notes a decision signed more than the tolerance (default
+         5m) after it was recorded or before the run asked for approval, a recorded_at out of
+         journal order or after the signed head, and a time that is not canonical (printed
+         quoted); these notes never change the verdict
 
   prove-absent -journal <file> -sth <file> -key (tool:<id>|policy:<digest>) [-out <file>]
          prove a thing did NOT happen (no such tool call / no action under that policy)
@@ -1004,7 +1013,7 @@ func (c *cli) verifyEvidence(args []string) {
 	}
 
 	if pkg.Label != "" {
-		c.printf("evidence for run %q: %s\n", rep.RunID, pkg.Label)
+		c.printf("evidence for run %q: %s\n", rep.RunID, cleanText(pkg.Label))
 	} else {
 		c.printf("evidence for run %q\n", rep.RunID)
 	}
@@ -1014,7 +1023,7 @@ func (c *cli) verifyEvidence(args []string) {
 		c.println("FAIL  signed tree head is NOT authentic under this key")
 	}
 	for _, p := range rep.Problems {
-		c.printf("FAIL  %s\n", p)
+		c.printf("FAIL  %s\n", cleanText(p))
 	}
 	for _, it := range rep.Items {
 		status := "FAIL"
@@ -1048,10 +1057,14 @@ func (c *cli) verifyApprovals(args []string) {
 	var approved stringList
 	fs.Var(&approved, "approved", "an approved policy digest for the package's run certificate; repeat once per allowed policy")
 	approvedFile := fs.String("approved-file", "", "path to a file of approved policy digests, one per line")
+	tolerance := fs.Duration("decision-time-tolerance", audit.DefaultDecisionTimeTolerance, "how far a decision's signed time may be after the time bide recorded it before it is noted (a note, never a failure)")
 	c.parse(fs, args)
 
 	if *evidencePath == "" || *pubkey == "" || *call == "" || *need == 0 || *approvers == "" || *keysPath == "" {
 		c.usageError("")
+	}
+	if *tolerance < 0 {
+		c.usageError("verify-approvals: -decision-time-tolerance must not be negative")
 	}
 	// The expected policy comes from the command line, so an invalid one is a usage error, found
 	// before any file is read.
@@ -1141,7 +1154,7 @@ func (c *cli) verifyApprovals(args []string) {
 		callArgs.Reset()
 		callArgs.Write(v.Args)
 	}
-	c.printf("approval gate on call %q: %s %s\n", *call, v.ToolName, callArgs.String())
+	c.printf("approval gate on call %q: %s %s\n", *call, cleanText(v.ToolName), cleanText(callArgs.String()))
 	if okRep {
 		proofs := "FAIL"
 		if rep.OK {
@@ -1150,16 +1163,17 @@ func (c *cli) verifyApprovals(args []string) {
 		c.printf("%s  every proof in the package verifies under the log key\n", proofs)
 	}
 	for _, id := range v.Counted {
-		c.printf("PASS  %s approved (signature verifies for this exact call)\n", id)
+		c.printf("PASS  %s approved (signature verifies for this exact call)\n", cleanText(id))
 	}
 	for _, id := range v.DeniedBy {
-		c.printf("INFO  %s denied\n", id)
+		c.printf("INFO  %s denied\n", cleanText(id))
 	}
 	for _, d := range v.Ignored {
-		c.printf("INFO  ignored %s: %s\n", d.Approver, d.Reason)
+		c.printf("INFO  ignored %s: %s\n", cleanText(d.Approver), cleanText(d.Reason))
 	}
+	c.decisionTimes(v, *tolerance)
 	for _, p := range v.Problems {
-		c.printf("FAIL  %s\n", p)
+		c.printf("FAIL  %s\n", cleanText(p))
 	}
 	if (okRep && !rep.OK) || !v.OK {
 		line := fmt.Sprintf("FAIL: %d of %d required approvals verified", len(v.Counted), v.Need)
@@ -1174,10 +1188,78 @@ func (c *cli) verifyApprovals(args []string) {
 	}
 }
 
+// decisionTimes prints when the run asked for approval and each counted decision's two times, kept
+// apart: decided_at, signed by the approver by their clock, and recorded_at, by the clock of the
+// process that submitted the decision, not signed, anchored with the record; then the sanity
+// notes under tolerance (audit.CheckDecisionTimes). The notes are for the reader; they never
+// change the verdict. Every time from the evidence is printed through timeText.
+func (c *cli) decisionTimes(v audit.ApprovalVerdict, tolerance time.Duration) {
+	if len(v.Times) == 0 {
+		return
+	}
+	if v.AskedAt != "" {
+		c.printf("INFO  approval asked at %s (the run's clock)\n", timeText(v.AskedAt))
+	} else {
+		c.printf("INFO  the evidence does not say when approval was asked (no approval-pending record with a time)\n")
+	}
+	for _, d := range audit.CheckDecisionTimes(v.Times, audit.TimeCheck{AskedAt: v.AskedAt, HeadAt: v.HeadAt, Tolerance: tolerance}) {
+		recorded := "not recorded"
+		if d.RecordedAt != "" {
+			recorded = timeText(d.RecordedAt) + " (the submitter's clock, not signed)"
+		}
+		c.printf("INFO  %s decided at %s (signed, the approver's clock), recorded at %s, %s\n", cleanText(d.Approver), timeText(d.DecidedAt), recorded, gapText(d))
+		for _, f := range d.Flags {
+			c.printf("note: %s: %s\n", cleanText(d.Approver), f)
+		}
+	}
+}
+
+// cleanText is text from an input file (a journal record's approver id, a package's label, a
+// problem that quotes one) as the report prints it: as it is when every character is printable,
+// and otherwise quoted (Go syntax), so a line break or a terminal escape in an input never reads as
+// the verifier's own output.
+func cleanText(s string) string {
+	for _, r := range s {
+		if !unicode.IsPrint(r) {
+			return strconv.Quote(s)
+		}
+	}
+	return s
+}
+
+// timeText is a recorded time as the report prints it: as it is when it is in the one canonical
+// form, and otherwise quoted (Go syntax), so text in an unsigned field never reads as the
+// verifier's own output, a line break included.
+func timeText(s string) string {
+	if _, err := agent.ParseTimestamp(s); err == nil {
+		return s
+	}
+	return strconv.Quote(s)
+}
+
+// gapText phrases a decision's gap between its two times, without judging it.
+func gapText(d audit.DecisionTime) string {
+	gap, ok := d.Gap()
+	_, errD := agent.ParseTimestamp(d.DecidedAt)
+	_, errR := agent.ParseTimestamp(d.RecordedAt)
+	switch {
+	case !ok && errD == nil && errR == nil:
+		return "more than 290 years apart"
+	case !ok:
+		return "gap unknown"
+	case gap == 0:
+		return "in the same millisecond as the signed time"
+	case gap > 0:
+		return fmt.Sprintf("%s after the signed time", gap)
+	default:
+		return fmt.Sprintf("%s before the signed time", -gap)
+	}
+}
+
 // evidenceItemLine phrases one report line in plain English, e.g.
 // `tool "call-charge": tool call included in the signed log`.
 func evidenceItemLine(it audit.EvidenceItem) string {
-	subject := it.Label
+	subject := cleanText(it.Label)
 	switch it.Kind {
 	case "tool":
 		if it.Ref != "" {
@@ -1188,13 +1270,13 @@ func evidenceItemLine(it audit.EvidenceItem) string {
 	case "step":
 		subject = fmt.Sprintf("step %q", it.Label)
 	case "grant":
-		subject = fmt.Sprintf("grant %s", it.Label)
+		subject = fmt.Sprintf("grant %s", cleanText(it.Label))
 	case "run-certificate":
 		subject = "run certificate"
 	case "consistency":
-		subject = it.Label
+		subject = cleanText(it.Label)
 	}
-	return fmt.Sprintf("%s: %s", subject, it.Note)
+	return fmt.Sprintf("%s: %s", subject, cleanText(it.Note))
 }
 
 // allowlist returns the evidence verify options for the auditor's approved-policy allowlist, the

@@ -85,7 +85,9 @@ variables
   tally   = [k \in GateKeys |-> None],      \* approval-tally:<node key>: "pass" or "deny"
   req     = [k \in GateKeys |-> FALSE],     \* approval-request:<node key>: the gate's request
   \* Each approver's decision: "yes"/"no" recorded after the gate's request, or "eyes"/"eno"
-  \* recorded before it (a record written directly, before the run reached the gate).
+  \* recorded before it (a record written directly, before the run reached the gate). An early
+  \* decision is replaced by the approver's decision after the request, re-signed at a new time:
+  \* the early record never counts, so the model keeps only the one that can.
   dec     = [k \in GateKeys |-> [a \in Approvers |-> None]],
   \* Per-driver results of the Node and Choose procedures.
   nval    = [d \in Drivers |-> 0],
@@ -321,14 +323,15 @@ ADecide:
   \* SubmitDecision: the approver's decision on a gate (its first valid one counts), whether a
   \* driver is running, paused or down.
   \* Before the gate's request a decision is an early one (refused by SubmitDecision; possible only
-  \* as a record written directly, with Early). It is final for that approver: their same decision
-  \* after the request has its name, so it is not recorded (SubmitDecision reports it), and their
-  \* seat is lost for the gate.
-  with k \in {k \in GateKeys : dec[k][self] = None /\ (req[k] \/ Early)},
+  \* as a record written directly, with Early), and it never counts. Since bide.approval.v3 it does
+  \* not take the approver's seat: their identical decision after the request has its name and is
+  \* not recorded, but a decision signed again at a new decided_at is a new record, so after the
+  \* request an approver with only an early decision decides again, and that decision counts.
+  with k \in {k \in GateKeys : (dec[k][self] = None /\ (req[k] \/ Early)) \/ (dec[k][self] \in {"eyes", "eno"} /\ req[k])},
        v \in IF req[k] THEN {"yes", "no"} ELSE {"eyes", "eno"} do
     dec[k][self] := v;
   end with;
-  if \E k \in GateKeys : dec[k][self] = None then goto ADecide; end if;
+  if \E k \in GateKeys : dec[k][self] \in {None, "eyes", "eno"} then goto ADecide; end if;
 end process;
 end algorithm; *)
 \* BEGIN TRANSLATION
@@ -962,10 +965,10 @@ RWrite(self) == /\ pc[self] = "RWrite"
 resolver(self) == RPick(self) \/ RWrite(self)
 
 ADecide(self) == /\ pc[self] = "ADecide"
-                 /\ \E k \in {k \in GateKeys : dec[k][self] = None /\ (req[k] \/ Early)}:
+                 /\ \E k \in {k \in GateKeys : (dec[k][self] = None /\ (req[k] \/ Early)) \/ (dec[k][self] \in {"eyes", "eno"} /\ req[k])}:
                       \E v \in IF req[k] THEN {"yes", "no"} ELSE {"eyes", "eno"}:
                         dec' = [dec EXCEPT ![k][self] = v]
-                 /\ IF \E k \in GateKeys : dec'[k][self] = None
+                 /\ IF \E k \in GateKeys : dec'[k][self] \in {None, "eyes", "eno"}
                        THEN /\ pc' = [pc EXCEPT ![self] = "ADecide"]
                        ELSE /\ pc' = [pc EXCEPT ![self] = "Done"]
                  /\ UNCHANGED << started, res, mk, sw, done, tally, req, nval, 

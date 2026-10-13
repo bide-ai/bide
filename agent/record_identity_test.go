@@ -38,6 +38,8 @@ type legacyRecord struct {
 	Approver       string          `json:"approver,omitempty"`
 	ApproverAlg    Alg             `json:"approver_alg,omitempty"`
 	Signature      []byte          `json:"signature,omitempty"`
+	DecidedAt      string          `json:"decided_at,omitempty"`
+	RecordedAt     string          `json:"recorded_at,omitempty"`
 	AttemptedAt    int64           `json:"attempted_at,omitempty"`
 	Reconciled     bool            `json:"reconciled,omitempty"`
 	OutcomeUnknown bool            `json:"outcome_unknown,omitempty"`
@@ -102,7 +104,7 @@ func legacyView(r Record) legacyRecord {
 		Name: r.Name, Kind: r.Kind, Message: r.Message, Usage: r.Usage, DiscardedUsage: r.DiscardedUsage,
 		Finish: r.Finish(), RawFinish: r.RawFinish(), Model: r.Model(), PromptDigest: r.PromptDigest(), ToolsDigest: r.ToolsDigest(),
 		ToolUseID: r.ToolUseID, Result: r.Result, IsError: r.IsError, Approved: r.Approved,
-		Approver: r.Approver(), ApproverAlg: r.ApproverAlg(), Signature: r.Signature(),
+		Approver: r.Approver(), ApproverAlg: r.ApproverAlg(), Signature: r.Signature(), DecidedAt: r.DecidedAt(), RecordedAt: r.RecordedAt(),
 		AttemptedAt: r.AttemptedAt, Reconciled: r.Reconciled, OutcomeUnknown: r.OutcomeUnknown, Redacted: r.Redacted, stamped: r.stamped,
 		Safety: r.Safety, Approval: r.Approval, Evidence: r.Evidence, Format: r.Format, claim: r.claim, salt: r.salt, raw: r.raw,
 	}
@@ -139,10 +141,15 @@ const (
 	idFormat
 	idClaim
 	idSalt
+	// A signed decision's times come last, after the fields the legacy corpus was generated with,
+	// so the corpus's masks keep their meaning.
+	idDecidedAt
+	idRecordedAt
 	idFields    // the number of fields
 	idForceTurn = idFields
 	idForceSig  = idFields + 1
 	idBits      = idFields + 2
+	idAll       = ^uint32(0) >> (32 - idBits) // every bit of a mask
 )
 
 // idVals is the content a mask's set fields take.
@@ -176,8 +183,8 @@ func idPair(mask uint32, v idVals) (Record, legacyRecord) {
 	if t := (ModelTurn{Finish: l.Finish, RawFinish: l.RawFinish, Model: l.Model, PromptDigest: l.PromptDigest, ToolsDigest: l.ToolsDigest}); t != (ModelTurn{}) || mask&(1<<idForceTurn) != 0 {
 		r.ModelTurn = &t
 	}
-	if l.Approver != "" || l.ApproverAlg != "" || l.Signature != nil || mask&(1<<idForceSig) != 0 {
-		r.ApproverSignature = &ApproverSignature{Approver: l.Approver, ApproverAlg: l.ApproverAlg, Signature: l.Signature}
+	if l.Approver != "" || l.ApproverAlg != "" || l.Signature != nil || l.DecidedAt != "" || l.RecordedAt != "" || mask&(1<<idForceSig) != 0 {
+		r.ApproverSignature = &ApproverSignature{Approver: l.Approver, ApproverAlg: l.ApproverAlg, Signature: l.Signature, DecidedAt: l.DecidedAt, RecordedAt: l.RecordedAt}
 	}
 	return r, l
 }
@@ -215,6 +222,7 @@ func idLegacy(mask uint32, v idVals) legacyRecord {
 	if on(idSignature) {
 		l.Signature = v.bin
 	}
+	l.DecidedAt, l.RecordedAt = str(idDecidedAt), str(idRecordedAt)
 	if on(idAttemptedAt) {
 		l.AttemptedAt = v.n
 	}
@@ -281,7 +289,7 @@ func checkDecode(b []byte) error {
 	if (got.ModelTurn != nil) != (want.Finish != "" || want.RawFinish != "" || want.Model != nil || want.PromptDigest != "" || want.ToolsDigest != "") {
 		return fmt.Errorf("decode %q: ModelTurn %+v for a record whose journal encoding holds none (or the reverse)", b, got.ModelTurn)
 	}
-	if (got.ApproverSignature != nil) != (want.Approver != "" || want.ApproverAlg != "" || len(want.Signature) != 0) {
+	if (got.ApproverSignature != nil) != (want.Approver != "" || want.ApproverAlg != "" || len(want.Signature) != 0 || want.DecidedAt != "" || want.RecordedAt != "") {
 		return fmt.Errorf("decode %q: ApproverSignature %+v for a record whose journal encoding holds none (or the reverse)", b, got.ApproverSignature)
 	}
 	again, err := EncodeRecord(got)
@@ -340,7 +348,7 @@ func TestRecordIdentity_Exhaustive(t *testing.T) {
 	for _, b := range core {
 		coreMask |= 1 << b
 	}
-	rest := (uint32(1)<<idBits - 1) &^ coreMask
+	rest := idAll &^ coreMask
 	rng := rand.New(rand.NewPCG(1, 2))
 	n := 0
 	for vi, v := range trickyVals {
@@ -372,7 +380,7 @@ func TestRecordIdentity_Random(t *testing.T) {
 		n = 2000
 	}
 	for i := range n {
-		m := rng.Uint32() & (1<<idBits - 1)
+		m := rng.Uint32() & idAll
 		v := trickyVals[i%len(trickyVals)]
 		r, l := idPair(m, v)
 		if err := checkIdentity(r, l, true); err != nil {
@@ -381,13 +389,13 @@ func TestRecordIdentity_Random(t *testing.T) {
 	}
 }
 
-// TestRecordIdentity_AllFields checks every one of the 2^30 masks (every field combination, with
+// TestRecordIdentity_AllFields checks every one of the 2^32 masks (every field combination, with
 // and without empty sub-structs), each under one of the sets of tricky values in turn, decoding one
 // in 4096. At about 20 microseconds a mask that is hours of CPU on every core, so it runs only
 // with BIDE_RECORD_IDENTITY_ALL=1, and reports its progress every 2^26 masks.
 func TestRecordIdentity_AllFields(t *testing.T) {
 	if os.Getenv("BIDE_RECORD_IDENTITY_ALL") != "1" {
-		t.Skip("set BIDE_RECORD_IDENTITY_ALL=1 to check all 2^30 field combinations")
+		t.Skip("set BIDE_RECORD_IDENTITY_ALL=1 to check all 2^32 field combinations")
 	}
 	total := uint64(1) << idBits
 	var next, done atomic.Uint64
@@ -432,7 +440,7 @@ func FuzzRecordIdentity(f *testing.F) {
 		if !json.Valid(raw) {
 			v.raw, _ = json.Marshal(string(raw))
 		}
-		r, l := idPair(mask&(1<<idBits-1), v)
+		r, l := idPair(mask&idAll, v)
 		if err := checkIdentity(r, l, true); err != nil {
 			t.Fatal(err)
 		}
@@ -455,7 +463,7 @@ func FuzzRecordIdentity_Decode(f *testing.F) {
 		if err != nil {
 			return
 		}
-		if len(want.Signature) == 0 && want.Approver == "" && want.ApproverAlg == "" {
+		if len(want.Signature) == 0 && want.Approver == "" && want.ApproverAlg == "" && want.DecidedAt == "" && want.RecordedAt == "" {
 			// "signature":"" decodes to an empty, non-nil slice in the legacy layout; the record
 			// carries no ApproverSignature then, so it reads nil. Both encode alike (omitempty).
 			want.Signature = nil
@@ -468,7 +476,7 @@ func FuzzRecordIdentity_Decode(f *testing.F) {
 		if (got.ModelTurn != nil) != (want.Finish != "" || want.RawFinish != "" || want.Model != nil || want.PromptDigest != "" || want.ToolsDigest != "") {
 			t.Fatalf("decode %q: ModelTurn %+v, though the record holds no model-turn metadata (or the reverse)", b, got.ModelTurn)
 		}
-		if (got.ApproverSignature != nil) != (want.Approver != "" || want.ApproverAlg != "" || len(want.Signature) != 0) {
+		if (got.ApproverSignature != nil) != (want.Approver != "" || want.ApproverAlg != "" || len(want.Signature) != 0 || want.DecidedAt != "" || want.RecordedAt != "") {
 			t.Fatalf("decode %q: ApproverSignature %+v, though the record holds no signed decision (or the reverse)", b, got.ApproverSignature)
 		}
 		enc, err := EncodeRecord(got)
@@ -551,7 +559,7 @@ func legacyCorpusMasks() []corpusMask {
 			out = append(out, corpusMask{m, vi})
 		}
 		for range 64 {
-			out = append(out, corpusMask{rng.Uint32() & (1<<idFields - 1), vi})
+			out = append(out, corpusMask{rng.Uint32() & (1<<idDecidedAt - 1), vi})
 		}
 	}
 	return out

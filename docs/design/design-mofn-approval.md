@@ -31,6 +31,8 @@ Where the implementation refined this design:
 - **v2 decisions and evidence** (below). The first implementation followed this document's "first
   decision per approver wins" literally, and an end-to-end test found that it let a bad record lock
   an approver out. v2 closes that and three related gaps.
+- **v3: decision times** (below). Each decision carries the time the approver decided, signed, and
+  the time bide recorded it, anchored; the gate reads neither.
 
 ## v2: decisions and evidence
 
@@ -92,6 +94,84 @@ wrong key, a UI showing stale arguments). The first implementation had four gaps
   inside a recorded message breaks that record's proof. The approval signature itself is robust to
   reformatting (canonical arguments); the Merkle leaf encoding is not.
 
+## v3: decision times
+
+Before v3 the journal held no time for a decision, so a reader could only bound it by the signed
+tree head that first covered it. v3 records two times per decision and keeps them apart, because
+they are vouched for by different parties:
+
+- **`decided_at`, signed.** `ApprovalDecisionBytes` v3 (`bide.approval.v3`) appends
+  `len32(decided_at) decided_at` after the decision byte. It is the approver's clock at signing, in
+  one canonical form: RFC 3339 in UTC to the millisecond, 24 bytes, ending in `Z`
+  (`agent.FormatTimestamp`, the form of `RunStart.StartedAt`). The verifier parses the recorded
+  text, formats it again, and refuses the decision unless the two are byte-identical, so one
+  instant has one signed spelling. The domain tag is the encoding's version and is covered by the
+  signature; a v2 decision (no time) does not verify under v3 and is refused with
+  `ReasonNoDecidedAt`. There is no fallback: decisions signed before v3 must be re-signed.
+- **`recorded_at`, anchored.** `SubmitDecision` stamps the record with the clock of the process
+  that calls it (`WithClock`, else the run clock on the context, else the wall clock) when it
+  first writes it, and an identical resubmission keeps the first time. It is that submitter's
+  claim, not a time bide vouches for: it is not signed, and whoever writes the journal chooses it.
+  The journal's Merkle trail anchors it with the record once a signed tree head covers it, and
+  the audit flags one later than that head, or out of journal order, beyond the tolerance. `ApprovalWait`
+  (`approval-pending`) gains the same field, the time the run paused, and so does a flow gate's
+  `ApprovalRequest`, the record the ordering rule counts from. The request's time is when a flow
+  node's approvers are asked, else the pause's.
+- **Display only for the protocol.** `TallyApprovals` checks `decided_at` only as signed bytes (it
+  is present, canonical, and inside the signature), never reads its value, and never reads
+  `recorded_at`; journal order alone orders decisions. Validity stays one predicate per record, so
+  Model 1b's modelled behavior is unchanged. A decision's journal name hashes `decided_at` with the
+  signature, so a copy of a valid signature journaled first under another time cannot take the name
+  the real decision needs.
+- **Sanity flags, not verdicts.** `audit.VerifyApprovals` reports both times for each counted
+  decision and flags a `decided_at` more than a tolerance (5 minutes by default) after `recorded_at`
+  (a clock running ahead) and a `decided_at` before the `approval-pending` time (a clock running
+  behind, or a decision signed in advance; the gate's ordering rule is by journal position, so such
+  a decision was still recorded after the request), and notes when neither ask time is in the
+  evidence. The flags never change the verdict, and a flagged decision still counts.
+
+The full signed bytes, for a verifier outside Go:
+
+```
+"bide.approval.v3\n"                 17 bytes, the version tag
+len32(run_id)       run_id
+len32(tool_use_id)  tool_use_id
+len32(tool_name)    tool_name
+SHA-256(canonical args)              32 bytes
+len32(approver_id)  approver_id
+approved                             1 byte: 1 approved, 0 denied
+len32(decided_at)   decided_at       24 bytes, "YYYY-MM-DDThh:mm:ss.mmmZ"
+```
+
+`len32` is a 4-byte big-endian length. The canonical args are the arguments parsed as JSON and
+written again with object keys sorted, no insignificant whitespace, no HTML escaping and number
+literals kept verbatim (empty arguments are `{}`). A verifier refuses a decision whose recorded
+`decided_at` does not format back to the same 24 bytes, and checks the signature over the bytes
+built from the recorded text.
+
+Worked example: run `refund-42`, call `refund-1`, tool `refund` with arguments
+`{"order": 42, "amount": 120}` (canonical form `{"amount":120,"order":42}`), approver `finance`,
+approved, decided at `2026-10-13T12:14:03.123Z`. The 124 signed bytes, in hex, one field per line
+(`TestApprovalDecisionBytes_Vector` pins them):
+
+```
+626964652e617070726f76616c2e76330a                                    "bide.approval.v3\n"
+00000009 726566756e642d3432                                           "refund-42"
+00000008 726566756e642d31                                             "refund-1"
+00000006 726566756e64                                                 "refund"
+984c3a3505d933239fe461f7082f36e3c3a6caf30dac23c34d6c4caf03c96af7      SHA-256 of the canonical args
+00000007 66696e616e6365                                               "finance"
+01                                                                    approved
+00000018 323032362d31302d31335431323a31343a30332e3132335a             "2026-10-13T12:14:03.123Z"
+```
+
+An approver signs these bytes with their key (Ed25519, ML-DSA-65 or the hybrid), and the decision
+journals the scheme, the signature, `decided_at` as the text above, and bide's `recorded_at`.
+
+Future work: an RFC 3161 trusted timestamp per decision, a third time vouched for by a timestamp
+authority, would bound `decided_at` independently of both the approver and bide. It is not part of
+v3.
+
 ## Gates on plan flow nodes
 
 A plan flow node may carry a gate: `plan.Approval(policy)` in Go, a wrapped agent tool's own
@@ -125,9 +205,11 @@ iteration, with this input.
    name: decision names are first-writer-wins and ed25519 signatures are deterministic, so the
    approver's identical decision afterwards is not recorded, and `Approve` and `SubmitDecision`
    report that (`ErrConfig`) instead of returning nil. For a `SingleApproval` gate the name is the
-   gate's one decision, so the gate cannot pass (it fails closed) and the run is cancelled; for an
-   m-of-n gate that approver's seat is lost for the gate, which passes with the others if `need` is
-   still reachable and is otherwise cancelled. `flows/limits/gate-early-stuck` states this limit. Found by the adversarial review of #195;
+   gate's one decision, so the gate cannot pass (it fails closed) and the run is cancelled. For an
+   m-of-n gate the approver signs again: since v3 a decision's name hashes its signed `decided_at`,
+   so a decision re-signed at a new time is a new record, written after the request, and counts.
+   The seat is not lost. (`flows/limits/gate-early-stuck` stated the v2 limit, where it was;
+   `Flows.tla` now lets an approver decide after an early decision.) Found by the adversarial review of #195;
    `flows/regress/gate-request-order` keeps it from coming back.
 2. `approval-pending:<node key>`: `ApprovalWait`, written on a pause that finds it missing (so a
    crash between the request and the note does not hide the wait). Informational, as for an agent.

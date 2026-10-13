@@ -244,6 +244,20 @@ person is your identity provider's job. It refuses two approvers whose verifiers
 but it cannot see that one person holds two different keys. Keep old public keys after a rotation so old evidence still
 verifies. See [Human approval](guides/hitl-approval.md#scope).
 
+**A decision's time is the approver's claim.** Each signed decision carries when the approver
+decided (`decided_at`, by their clock, inside the signature) and when it was journaled
+(`recorded_at`, by the clock of the process that submitted it, not signed). The signature stops
+anyone changing `decided_at` later, and the journal's Merkle trail stops anyone changing
+`recorded_at` once a signed head covers it, but nothing vouches for either clock: bide flags a
+`decided_at` far after `recorded_at` or before the run asked, and a `recorded_at` out of journal
+order or after the signed head, and never counts by them. No trusted timestamp authority (RFC 3161) stamps decisions yet. See
+[When a decision was made](guides/hitl-approval.md#when-a-decision-was-made).
+
+**Decisions signed before `bide.approval.v3` must be signed again.** They no longer verify. A run
+whose gate passed on them before the upgrade, and whose call has not run, pauses to ask again
+(`agent.PendingReapproval`) rather than run on approvals an audit would fail. See
+[A run approved under an earlier decision format](guides/hitl-approval.md#a-run-approved-under-an-earlier-decision-format).
+
 **A denied flow gate compensates nothing.** A plan flow node whose approval gate is denied never
 runs, but plan flows have no saga mode, so the nodes before it keep their effects and the run stays
 unfinished until it is cancelled. See [Plan flows](guides/plan-flows.md#approval-gates-on-nodes).

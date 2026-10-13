@@ -19,7 +19,7 @@ func TestMofn_ForgedThenRealCounts(t *testing.T) {
 
 	_, _ = mofnRun(store, "r1", true, pol, vf, &charged)
 	subj := subjectOf(t, store, "r1", "c1")
-	forged := fakeSign("bob", ApprovalDecisionBytes(subj, "alice", true)) // bob signs as alice
+	forged := fakeSign("bob", ApprovalDecisionBytes(subj, "alice", true, testDecidedAt)) // bob signs as alice
 	if err := decideAs(context.Background(), store, "r1", "c1", "alice", true, forged); err != nil {
 		t.Fatal(err)
 	}
@@ -61,7 +61,7 @@ func TestMofn_SignatureBindsTheCall(t *testing.T) {
 	for name, mutate := range variants {
 		s := real
 		mutate(&s)
-		sig := fakeSign("alice", ApprovalDecisionBytes(s, "alice", true))
+		sig := fakeSign("alice", ApprovalDecisionBytes(s, "alice", true, testDecidedAt))
 		if err := decideAs(context.Background(), store, "r1", "c1", "alice", true, sig); err != nil {
 			t.Fatal(err)
 		}
@@ -87,7 +87,7 @@ func TestMofn_JunkCannotBlockOrDeny(t *testing.T) {
 
 	_, _ = mofnRun(store, "r1", true, pol, vf, &charged)
 	for _, id := range abc {
-		writeRaw(t, store, "r1", approvalStep("c1")+":"+id+":junk", Record{Kind: StepApproval, ToolUseID: "c1", Approved: false, ApproverSignature: &ApproverSignature{Approver: id, Signature: []byte("junk")}})
+		writeRaw(t, store, "r1", approvalStep("c1")+":"+id+":junk", Record{Kind: StepApproval, ToolUseID: "c1", Approved: false, ApproverSignature: &ApproverSignature{Approver: id, DecidedAt: FormatTimestamp(testDecidedAt), Signature: []byte("junk")}})
 	}
 	_, err := mofnRun(store, "r1", false, pol, vf, &charged)
 	wantPending(t, err, counts{Need: 2, Pending: abc})
@@ -108,7 +108,7 @@ func TestMofn_JunkCannotBlockOrDeny(t *testing.T) {
 func TestApprovalDecisionBytes_Canonical(t *testing.T) {
 	base := ApprovalSubject{RunID: "r1", ToolUseID: "c1", ToolName: "refund", Args: json.RawMessage(`{"a":[1,2],"b":"<x>"}`)}
 	b := func(s ApprovalSubject, approver string, approved bool) []byte {
-		return ApprovalDecisionBytes(s, approver, approved)
+		return ApprovalDecisionBytes(s, approver, approved, testDecidedAt)
 	}
 	want := b(base, "alice", true)
 	for _, args := range []string{
@@ -184,7 +184,7 @@ func TestWithDecisionCheck_RejectsAtSubmission(t *testing.T) {
 	subj := subjectOf(t, store, "r1", "c1")
 	check := WithDecisionCheck(vf)
 	sign := func(s ApprovalSubject, signer, as string, approved bool) []byte {
-		return fakeSign(signer, ApprovalDecisionBytes(s, as, approved))
+		return fakeSign(signer, ApprovalDecisionBytes(s, as, approved, testDecidedAt))
 	}
 	records := func() int { return countDecisions(t, store, "r1", "c1", "alice") }
 
@@ -261,17 +261,17 @@ func TestMofn_DecisionCountsOnlyUnderItsScheme(t *testing.T) {
 	var charged int
 	_, _ = mofnRun(store, "r1", true, pol, vf, &charged)
 	subj := subjectOf(t, store, "r1", "c1")
-	sig := fakeSign("alice", ApprovalDecisionBytes(subj, "alice", true))
+	sig := fakeSign("alice", ApprovalDecisionBytes(subj, "alice", true, testDecidedAt))
 
 	if err := SubmitDecision(ctx, store, Decision{RunID: "r1", ToolUseID: "c1", ApproverID: "alice", Approved: true, Signature: sig}); !errors.Is(err, ErrConfig) {
 		t.Fatalf("no scheme: err = %v, want ErrConfig", err)
 	}
-	err := SubmitDecision(ctx, store, Decision{RunID: "r1", ToolUseID: "c1", ApproverID: "alice", Approved: true, Alg: "ml-dsa-65", Signature: sig}, WithDecisionCheck(vf))
+	err := SubmitDecision(ctx, store, Decision{RunID: "r1", ToolUseID: "c1", ApproverID: "alice", Approved: true, DecidedAt: testDecidedAt, Alg: "ml-dsa-65", Signature: sig}, WithDecisionCheck(vf))
 	if !errors.Is(err, ErrInvalidApproval) {
 		t.Fatalf("another scheme under WithDecisionCheck: err = %v, want ErrInvalidApproval", err)
 	}
-	writeRaw(t, store, "r1", approvalStep("c1")+":alice:noalg", Record{Kind: StepApproval, ToolUseID: "c1", Approved: true, ApproverSignature: &ApproverSignature{Approver: "alice", Signature: sig}})
-	writeRaw(t, store, "r1", approvalStep("c1")+":alice:otheralg", Record{Kind: StepApproval, ToolUseID: "c1", Approved: true, ApproverSignature: &ApproverSignature{Approver: "alice", ApproverAlg: "ml-dsa-65", Signature: sig}})
+	writeRaw(t, store, "r1", approvalStep("c1")+":alice:noalg", Record{Kind: StepApproval, ToolUseID: "c1", Approved: true, ApproverSignature: &ApproverSignature{Approver: "alice", DecidedAt: FormatTimestamp(testDecidedAt), Signature: sig}})
+	writeRaw(t, store, "r1", approvalStep("c1")+":alice:otheralg", Record{Kind: StepApproval, ToolUseID: "c1", Approved: true, ApproverSignature: &ApproverSignature{Approver: "alice", ApproverAlg: "ml-dsa-65", DecidedAt: FormatTimestamp(testDecidedAt), Signature: sig}})
 	_, err = mofnRun(store, "r1", false, pol, vf, &charged)
 	wantPending(t, err, counts{Need: 1, Pending: []string{"alice", "bob", "carol"}})
 	_, checks := TallyApprovals(mofnHistory(t, store, "r1"), subj, *pol, vf)
@@ -303,7 +303,7 @@ func TestMofn_OneKeyUnderTwoApproverIdsCountsOnce(t *testing.T) {
 	s := ApprovalSubject{RunID: "r", ToolUseID: "c", ToolName: "wire", Args: json.RawMessage(`{}`)}
 	var recs []Record
 	for _, id := range []string{"alice", "bob"} {
-		recs = append(recs, Record{Name: "approval:c:" + id, Kind: StepApproval, ToolUseID: "c", Approved: true, ApproverSignature: &ApproverSignature{Approver: id, ApproverAlg: fakeAlg, Signature: fakeSign("shared", ApprovalDecisionBytes(s, id, true))}})
+		recs = append(recs, Record{Name: "approval:c:" + id, Kind: StepApproval, ToolUseID: "c", Approved: true, ApproverSignature: &ApproverSignature{Approver: id, ApproverAlg: fakeAlg, DecidedAt: FormatTimestamp(testDecidedAt), Signature: fakeSign("shared", ApprovalDecisionBytes(s, id, true, testDecidedAt))}})
 	}
 	p := ApprovalPolicy{Need: 2, Approvers: []string{"alice", "bob"}}
 	got, checks := TallyApprovals(recs, s, p, func(string) (ApproverVerifier, bool) { return sharedKeyVerifier{}, true })

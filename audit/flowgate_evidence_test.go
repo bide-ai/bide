@@ -34,8 +34,8 @@ func flowGate(t *testing.T, g *gate, approve ...string) {
 		t.Fatalf("first drive = %v; want a pause at the gate", err)
 	}
 	for _, id := range approve {
-		sig := ed25519.Sign(g.privs[id], agent.ApprovalDecisionBytes(pend.Subject(), id, true))
-		if err := agent.SubmitDecision(ctx, g.store, agent.Decision{RunID: flowRun, ToolUseID: pend.ToolUseID, ApproverID: id, Approved: true, Alg: audit.AlgEd25519, Signature: sig},
+		sig := ed25519.Sign(g.privs[id], agent.ApprovalDecisionBytes(pend.Subject(), id, true, testDecidedAt))
+		if err := agent.SubmitDecision(ctx, g.store, agent.Decision{RunID: flowRun, ToolUseID: pend.ToolUseID, ApproverID: id, Approved: true, DecidedAt: testDecidedAt, Alg: audit.AlgEd25519, Signature: sig},
 			agent.WithDecisionCheck(g.resolver())); err != nil {
 			t.Fatalf("SubmitDecision %s: %v", id, err)
 		}
@@ -67,7 +67,7 @@ func TestFlowGateEvidence_VerifiesOffline(t *testing.T) {
 	for _, a := range acts {
 		kinds = append(kinds, a.Kind)
 	}
-	want := []audit.EvidenceKind{audit.KindCall, audit.KindApproval, audit.KindApproval, audit.KindApprovalTally, audit.KindStep}
+	want := []audit.EvidenceKind{audit.KindCall, audit.KindStep, audit.KindApproval, audit.KindApproval, audit.KindApprovalTally, audit.KindStep}
 	if len(kinds) != len(want) {
 		t.Fatalf("evidence kinds %v; want %v", kinds, want)
 	}
@@ -90,7 +90,7 @@ func TestFlowGateEvidence_VerifiesOffline(t *testing.T) {
 	}
 
 	// An omitted decision, or another expected policy, fails the verdict.
-	if _, err := audit.VerifyApprovals(append(acts[:1:1], acts[2:]...), "node:pay", g.policy, g.resolver(), edV(g.logPub)); !errors.Is(err, audit.ErrNotVerified) {
+	if _, err := audit.VerifyApprovals(append(acts[:2:2], acts[3:]...), "node:pay", g.policy, g.resolver(), edV(g.logPub)); !errors.Is(err, audit.ErrNotVerified) {
 		t.Fatalf("evidence without a decision: VerifyApprovals = %v; want ErrNotVerified", err)
 	}
 	strict := agent.ApprovalPolicy{Need: 3, Approvers: g.policy.Approvers}
