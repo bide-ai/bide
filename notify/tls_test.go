@@ -305,8 +305,8 @@ func TestClientCertReloadedAfterHandshakeFailure(t *testing.T) {
 	dir := t.TempDir()
 	cf, kf := stale.write(t, dir)
 
-	clock := time.Unix(1_900_000_000, 0) // never advances: only the failure can trigger the reload
-	w, sleeps := fastWebhook(t, srv.URL, WithServerCAPEM(ca.pem), WithClientCert(cf, kf))
+	clock := time.Now() // never advances: only the failure can trigger the reload
+	w, sleeps := fastWebhook(t, srv.URL, WithServerCAPEM(ca.pem), WithClientCert(cf, kf), WithRequestsPerCall(2))
 	w.now = func() time.Time { return clock }
 	// The operator's rotation lands while the round backs off.
 	w.sleep = func(ctx context.Context, d time.Duration) error { fresh.write(t, dir); return nil }
@@ -318,6 +318,27 @@ func TestClientCertReloadedAfterHandshakeFailure(t *testing.T) {
 	}
 	if res.Requests != 2 || !res.Auth.MTLS || res.Auth.ClientSPKI != SPKIHash(fresh.x509) {
 		t.Fatalf("%+v %+v", res, res.Auth)
+	}
+}
+
+func TestClientCertReloadedByTheFailureItself(t *testing.T) {
+	ca := newCA(t, "private")
+	oldCA := newCA(t, "old-clients")
+	newCA2 := newCA(t, "new-clients")
+	srv := newTLSServer(t, ca.issue(t, "receiver", true).tls, requireClientCert(newCA2))
+	stale := oldCA.issue(t, "old", false)
+	fresh := newCA2.issue(t, "new", false)
+	dir := t.TempDir()
+	cf, kf := stale.write(t, dir)
+	clock := time.Now()
+	w, _ := fastWebhook(t, srv.URL, WithServerCAPEM(ca.pem), WithClientCert(cf, kf))
+	w.now = func() time.Time { return clock }
+	fresh.write(t, dir) // rotated on disk; the minute has not passed, so only a failure can notice
+	if _, err := deliverAuth(t, w); err == nil {
+		t.Fatal("the stale pair was accepted")
+	}
+	if a, err := deliverAuth(t, w); err != nil || a.ClientSPKI != SPKIHash(fresh.x509) {
+		t.Fatalf("the failure did not trigger a reload: %v %+v", err, a)
 	}
 }
 
