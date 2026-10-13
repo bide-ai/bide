@@ -106,7 +106,7 @@ func TestFiles(t *testing.T) {
 	}
 }
 
-// TestResetCommandIsShellSafe: the README's "Start over" command runs in sh, and in zsh when it is
+// TestResetCommandIsShellSafe: the README's "Start over" command runs in sh and in zsh, each when it is
 // installed (zsh refuses a glob that matches nothing, so the command names its files), both on a
 // directory holding every file a run writes and on one holding none, and leaves only the keys.
 func TestResetCommandIsShellSafe(t *testing.T) {
@@ -114,16 +114,23 @@ func TestResetCommandIsShellSafe(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	_, after, _ := strings.Cut(string(b), "## Start over")
+	// A Windows checkout may hold the embedded template with CRLF (core.autocrlf); bide init
+	// writes it with LF.
+	_, after, _ := strings.Cut(strings.ReplaceAll(string(b), "\r\n", "\n"), "## Start over")
 	_, block, _ := strings.Cut(after, "```sh\n")
 	reset, _, _ := strings.Cut(block, "\n```")
 	if !strings.HasPrefix(reset, "rm ") || strings.Contains(reset, "\n") {
 		t.Fatalf("the Start over block is not one rm command:\n%s", reset)
 	}
 	runFiles := []string{"run.db", "run.db-wal", "run.db-shm", "refunds.log", "evidence.json", "approver-keys.json", ".crashed-notify"}
-	shells := []string{"sh"}
-	if _, err := exec.LookPath("zsh"); err == nil {
-		shells = append(shells, "zsh")
+	var shells []string
+	for _, sh := range []string{"sh", "zsh"} {
+		if _, err := exec.LookPath(sh); err == nil {
+			shells = append(shells, sh)
+		}
+	}
+	if len(shells) == 0 {
+		t.Skip("no sh or zsh on this system")
 	}
 	for _, sh := range shells {
 		for _, present := range []bool{true, false} {
