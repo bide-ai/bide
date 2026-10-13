@@ -6,9 +6,9 @@ module github.com/bide-ai/bide/cmd/bide
 go 1.27.0
 
 require (
-	github.com/bide-ai/bide v0.0.0
-	github.com/bide-ai/bide/store/postgres v0.0.0
-	github.com/bide-ai/bide/store/sqlite v0.0.0
+	github.com/bide-ai/bide v0.14.0
+	github.com/bide-ai/bide/store/postgres v0.14.0
+	github.com/bide-ai/bide/store/sqlite v0.14.0
 	go.yaml.in/yaml/v3 v3.0.5
 )
 
@@ -30,9 +30,3 @@ require (
 	modernc.org/memory v1.12.1 // indirect
 	modernc.org/sqlite v1.59.0 // indirect
 )
-
-replace github.com/bide-ai/bide => ../../
-
-replace github.com/bide-ai/bide/store/sqlite => ../../store/sqlite
-
-replace github.com/bide-ai/bide/store/postgres => ../../store/postgres
