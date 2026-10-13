@@ -1,7 +1,8 @@
 # Design: tell a human when a run needs them
 
-Status: approved, in progress (build plan item 3, the trail port, records, fold and `EventStore`
-adapter, is in review). It adds a small `Notifier` seam, a signed webhook
+Status: approved, in progress. Build plan item 3 (the trail port, records, fold and `EventStore`
+adapter) has shipped, and item 4 (the notifier core: events at the end of a drive, claim and
+delivery, overdue, `recovery_failing`) is in review. It adds a small `Notifier` seam, a signed webhook
 implementation, and an audited delivery trail that gives notify-once across crashes and makes the
 notification itself evidence. Until it ships, the recipe "Get notified when a run needs a human"
 wires the existing hooks to a webhook with an in-process dedupe; this note is the crash-safe,
@@ -15,11 +16,14 @@ with `ResolveHalt`) and pauses at approval gates (`*ApprovalPending`, answered w
 signals exist but are scattered:
 
 - `Run` (and the typed and plan-flow equivalents) returns the typed error to its caller.
-- `RecoverLoop` hands errors to `WithRecoverErrors`, and a halted run re-driven on every pass
-  reports again each pass.
-- `MemWaker.Start(ctx, every, onError)` reports resume errors from timer wakeups.
+- `RecoverLoop` re-drives a halted or waiting run on every pass. It does not pass the halt or the gate
+  to `WithRecoverErrors`: both are pauses, which a pass counts as success, so that handler sees only
+  genuine failures. The error is visible to the `Resumer` the loop calls, before the loop classifies it.
+- `MemWaker.Start(ctx, every, onError)` reports failures of timer wakeups, and likewise not a pause;
+  the error is visible to the resume callback given to `NewMemWaker`.
 
-A caller can build an alert from these, and the recipe shows how. It cannot make the alert
+A caller can build an alert from these (the Resumer and the callback included), and the recipe shows
+how. It cannot make the alert
 crash-safe, because the facts "this halt was already reported" and "this report is in flight" live
 in the caller's memory. It also cannot answer the question an auditor asks of an agent that moves
 money: *when were the approvers told, and was it within the time the policy allows?* The failure a
@@ -70,7 +74,7 @@ Step that crashes mid-POST would halt that run on the notifier, a halt about a h
 
 | Kind | Fires when | Event key |
 |---|---|---|
-| `outcome_unknown` | a drive ends with `*OutcomeUnknown` | `halted:<run>:<op kind>:<op id>:<attempt n>` |
+| `outcome_unknown` | a drive ends with `*OutcomeUnknown` | `halted:<run>:<op kind>:<op id>:<attempt marker time, Unix ms>` |
 | `approval_pending` | a drive ends with `*ApprovalPending` | `approval:<run>:<call id>:<r>` |
 | `run_aborted` | the run reaches the `run:aborted` end marker | `aborted:<run>` |
 | `recovery_failing` | a run has kept failing recovery for longer than `D` (default 15 minutes): a Resumer error, not resumable, or store errors | `recovery:<run>:<k>` |
@@ -79,8 +83,9 @@ Step that crashes mid-POST would halt that run on the notifier, a halt about a h
 
 Ids are encoded as attempt keys encode them.
 
-- A re-halt after `ResolveHalt` runs the call again and reaches a new attempt number `n`, so it is
-  a new event.
+- The attempt marker's time (`OutcomeUnknown.AttemptedAt`) is the same on every drive that reports
+  one halt, and differs for a later attempt of the same call after a resolution, so a re-halt is a
+  new event. It is 0 when the marker carries no time.
 - `r` in an approval key is the reminder index, always `0` in v1. One notification per gate, and
   an m-of-n gate gaining a decision is the same wait, not a new event. A later "still waiting after
   X" reminder is `r = 1, 2, ...` with the same record kinds and the same fold, so it needs no
@@ -141,8 +146,9 @@ of this API.
 Emission is at the end of a drive, where the engine has just decided a run stopped for a typed
 reason. That single point is shared by a caller's `Run`, `Recover`, a `MemWaker` wakeup and
 `RecoverLoop`, so no path needs its own wiring. The drive hands the event to a delivery goroutine
-the agent owns (flushed on `Close`, bounded wait), so a slow sink never delays `Run` returning the
-typed error.
+the notifier owns (`Agent.FlushNotifications` waits for it, bounded by a context), so a slow sink
+never delays `Run` returning the typed error. A `Resumer` that drives no agent with the option is
+covered by `WithNotifier` on `Recover` and `RecoverLoop`, which sees the pass's result.
 
 **The at-least-once guarantee needs one of two catch-up paths.** A process can die between the
 event and the first record in the trail, and then nothing remembers the event but the run's own
@@ -444,7 +450,7 @@ webhook is a wider audience than the journal.
 
 - **Typed errors.** Unchanged. `Run` still returns `*OutcomeUnknown` and `*ApprovalPending`; the
   notifier is an additional consumer.
-- **`WithRecoverErrors`.** Still receives genuine failures, and now also "notification failing".
+- **`WithRecoverErrors`.** Still receives genuine failures only (halts and gates never went to it), and now also "notification failing" through `WithNotifyErrors`.
 - **`MemWaker`.** A timer wakeup that resumes into a halt or a gate ends in the same drive, so it
   notifies without a separate `onError` wiring.
 - **Leases and multiple processes.** The process holding the run's lease when it observes the event

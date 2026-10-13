@@ -46,6 +46,8 @@ type recoverConfig struct {
 	concurrency int           // RecoverLoop only
 	lapsedConc  int           // RecoverLoop only: the lapsed loop's concurrency
 	onError     func(error)   // RecoverLoop only
+	notifier    *notifierOption
+	notify      *notifyEngine // built from notifier with the store, by Recover and RecoverLoop
 	intervalSet bool
 }
 
@@ -224,6 +226,12 @@ func Recover(ctx context.Context, store *Journal, resume Resumer, opts ...Recove
 	cfg, err := leaseConfig("Recover", opts, RecoverOption.applyRecover)
 	if err != nil {
 		return 0, err
+	}
+	if cfg.notifier != nil {
+		if cfg.notify, err = cfg.notifier.engine(store); err != nil {
+			return 0, err
+		}
+		defer cfg.notify.flush(ctx)
 	}
 
 	var recovered int
@@ -706,6 +714,9 @@ func recoverRun(ctx context.Context, store *Journal, runID string, resume Resume
 		resumed = true
 		return err
 	}, cfg)
+	if cfg.notify != nil {
+		cfg.notify.afterRecover(ctx, runID, driven, resumed, err)
+	}
 	switch {
 	case err != nil && (!driven || !IsPause(err) && !errors.Is(err, ErrLeaseLost) && !cancelledEnd(err)):
 		return resumed, fmt.Errorf("recover run %s: %w", runID, err)
@@ -797,6 +808,12 @@ func RecoverLoop(ctx context.Context, store *Journal, resume Resumer, opts ...Re
 	cfg, err := leaseConfig("RecoverLoop", opts, RecoverLoopOption.applyRecoverLoop)
 	if err != nil {
 		return err
+	}
+	if cfg.notifier != nil {
+		if cfg.notify, err = cfg.notifier.engine(store); err != nil {
+			return err
+		}
+		defer cfg.notify.flush(context.WithoutCancel(ctx))
 	}
 	if !cfg.intervalSet {
 		cfg.interval = max(cfg.ttl/2, 1)
