@@ -88,7 +88,7 @@ pre { white-space: pre-wrap; word-break: break-word; margin: var(--s1) 0; }
 .s-good .num { color: var(--good); } .s-bad .num { color: var(--bad); } .s-warn .num { color: var(--warn); }
 
 .pill { font-size: var(--t-xs); font-weight: 600; padding: 2px var(--s2); border-radius: 10px; background: var(--card-2); color: var(--muted); border: 1px solid var(--line); vertical-align: middle; white-space: nowrap; display: inline-flex; align-items: center; gap: 4px; }
-.state-completed { background: var(--good-bg); color: var(--good); border-color: transparent; }
+.state-completed, .state-resolved, .state-done { background: var(--good-bg); color: var(--good); border-color: transparent; }
 .state-started, .state-waiting { background: var(--warn-bg); color: var(--warn); border-color: transparent; }
 .state-halted, .state-aborted, .state-cancelled { background: var(--bad-bg); color: var(--bad); border-color: transparent; }
 

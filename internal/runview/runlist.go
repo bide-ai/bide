@@ -27,7 +27,7 @@ var stateGroups = []struct{ Value, Label string }{
 // group is the state filter group of a View state.
 func group(state string) string {
 	switch state {
-	case string(agent.RunCompleted):
+	case string(agent.RunCompleted), "resolved", "done":
 		return "completed"
 	case "halted":
 		return "halted"
@@ -97,8 +97,11 @@ func (r RunRow) StartedText() string {
 func (r RunRow) KindText() string { return kindText(r.Kind) }
 
 func kindText(k string) string {
-	if k == "" {
+	switch k {
+	case "":
 		return "unknown"
+	case KindSteps:
+		return "steps only (no run:start)"
 	}
 	return strings.ReplaceAll(k, "_", " ")
 }

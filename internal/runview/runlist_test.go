@@ -178,8 +178,8 @@ func TestRunListOrder(t *testing.T) {
 			t.Fatalf("%s: started %v", r.ID, r.Started)
 		}
 	}
-	// A journal with records and no run:start is a run not started.
-	if r := l.Rows[3]; r.Group != "not-started" || r.StateText != "not started" || r.Kind != "" || r.KindText() != "unknown" {
+	// A journal of steps with no run:start is a run of steps only (see TestStepsOnlyRuns).
+	if r := l.Rows[3]; r.Group != "completed" || r.StateText != "steps done" || r.Kind != KindSteps || r.KindText() != "steps only (no run:start)" {
 		t.Fatalf("a-none = %+v", r)
 	}
 	if code, body := get(t, Handler(Options{Source: x}), "/"); code != 200 || !strings.Contains(body, "2026-10-12 23:59:59 UTC") || strings.Count(body, `title="journaled by a version that recorded no start time">none<`) != 3 {

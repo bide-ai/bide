@@ -175,7 +175,125 @@
     svg.addEventListener("pointercancel", end);
   };
 
-  const enhanceAll = () => document.querySelectorAll(".graphwrap svg.graph").forEach(enhance);
+  // --- the timeline's filter
+  const rowsOf = () => [...document.querySelectorAll(".timeline > li")];
+  const filterBox = () => {
+    const tl = document.querySelector(".timeline");
+    if (!tl || document.querySelector(".tfilter")) return;
+    const box = document.createElement("div");
+    box.className = "tfilter";
+    const input = document.createElement("input");
+    input.type = "search";
+    input.placeholder = "Filter records (press /)";
+    input.setAttribute("aria-label", "Filter the timeline's records");
+    const count = document.createElement("span");
+    count.setAttribute("aria-live", "polite");
+    const empty = document.createElement("div");
+    empty.className = "empty";
+    empty.hidden = true;
+    empty.innerHTML = '<p class="etitle">No record matches</p><p>Clear the filter to see all of them.</p>';
+    input.addEventListener("input", () => {
+      const q = input.value.trim().toLowerCase();
+      let shown = 0;
+      const rows = rowsOf();
+      for (const r of rows) {
+        const hit = !q || r.textContent.toLowerCase().includes(q);
+        r.hidden = !hit;
+        if (hit) shown++;
+      }
+      count.textContent = q ? shown + " of " + rows.length : "";
+      empty.hidden = shown > 0;
+    });
+    input.addEventListener("keydown", (ev) => { if (ev.key === "Escape") { input.value = ""; input.dispatchEvent(new Event("input")); input.blur(); } });
+    box.append(input, count);
+    tl.before(box);
+    tl.after(empty);
+  };
+
+  // --- the theme toggle: light or dark, remembered (storage may be blocked, so every access is guarded)
+  const root = document.documentElement;
+  const dark = () => {
+    const t = root.getAttribute("data-theme");
+    return t ? t === "dark" : window.matchMedia && window.matchMedia("(prefers-color-scheme: dark)").matches;
+  };
+  const toggleTheme = () => {
+    const next = dark() ? "light" : "dark";
+    root.setAttribute("data-theme", next);
+    try { localStorage.setItem("bide-theme", next); } catch (e) { /* not remembered; this page still switched */ }
+  };
+  document.addEventListener("click", (ev) => { if (ev.target.closest && ev.target.closest("#theme")) toggleTheme(); });
+
+  // --- keyboard: j and k step through the records (or the runs of the list), / filters, ? helps
+  const items = () => {
+    const rows = rowsOf().filter((r) => !r.hidden);
+    return rows.length ? rows : [...document.querySelectorAll("table.runlist tbody tr")];
+  };
+  const step = (dir) => {
+    const list = items();
+    if (!list.length) return;
+    let i = list.findIndex((r) => r.classList.contains("cur"));
+    list.forEach((r) => r.classList.remove("cur"));
+    i = i < 0 ? (dir > 0 ? 0 : list.length - 1) : Math.min(Math.max(i + dir, 0), list.length - 1);
+    const r = list[i];
+    r.classList.add("cur");
+    const calm = window.matchMedia && window.matchMedia("(prefers-reduced-motion: reduce)").matches;
+    r.scrollIntoView({ block: "center", behavior: calm ? "auto" : "smooth" });
+    if (r.id) { try { history.replaceState(null, "", "#" + r.id); } catch (e) { /* the address stays */ } }
+  };
+  const helpRows = [["j / k", "next / previous record (or run)"], ["Enter", "open the highlighted run"], ["/", "filter"], ["t", "light or dark"], ["s", "share this run as an image"], ["?", "this help"], ["Esc", "close"]];
+  const help = (on) => {
+    let back = document.querySelector(".helpback");
+    if (on === false || (on === undefined && back)) { if (back) back.remove(); return; }
+    if (back) return;
+    back = document.createElement("div");
+    back.className = "helpback";
+    const d = document.createElement("div");
+    d.className = "help";
+    d.setAttribute("role", "dialog");
+    d.setAttribute("aria-modal", "true");
+    d.setAttribute("aria-label", "Keyboard shortcuts");
+    const h = document.createElement("h2");
+    h.textContent = "Keyboard shortcuts";
+    const dl = document.createElement("dl");
+    for (const [k, v] of helpRows) {
+      const dt = document.createElement("dt");
+      for (const part of k.split(" / ")) { const kb = document.createElement("kbd"); kb.textContent = part; if (dt.childNodes.length) dt.append(" "); dt.append(kb); }
+      const dd = document.createElement("dd");
+      dd.textContent = v;
+      dl.append(dt, dd);
+    }
+    d.append(h, dl);
+    back.append(d);
+    back.addEventListener("click", (ev) => { if (ev.target === back) back.remove(); });
+    document.body.append(back);
+  };
+  document.addEventListener("click", (ev) => { if (ev.target.closest && ev.target.closest("#helpbtn")) help(); });
+  document.addEventListener("keydown", (ev) => {
+    if (ev.ctrlKey || ev.metaKey || ev.altKey) return;
+    const t = ev.target;
+    const typing = t && (t.isContentEditable || /^(INPUT|TEXTAREA|SELECT)$/.test(t.tagName));
+    if (ev.key === "Escape") { help(false); return; }
+    if (typing) return;
+    switch (ev.key) {
+      case "j": step(1); break;
+      case "k": step(-1); break;
+      case "/": {
+        const f = document.querySelector(".tfilter input") || document.querySelector('.filters input[name="q"]');
+        if (f) { ev.preventDefault(); f.focus(); f.select(); }
+        break;
+      }
+      case "?": help(); break;
+      case "t": toggleTheme(); break;
+      case "s": { const b = document.querySelector(".verdict .share"); if (b) b.click(); break; }
+      case "Enter": {
+        const r = document.querySelector("table.runlist tbody tr.cur a");
+        if (r) r.click();
+        break;
+      }
+    }
+  });
+
+  const enhanceAll = () => { document.querySelectorAll(".graphwrap svg.graph").forEach(enhance); filterBox(); if (window.bideShareInit) window.bideShareInit(); };
   window.bideEnhance = enhanceAll; // live.js calls it after it swaps the page's content
   if (document.readyState === "loading") document.addEventListener("DOMContentLoaded", enhanceAll);
   else enhanceAll();

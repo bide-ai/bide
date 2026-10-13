@@ -52,6 +52,7 @@ func runVerdict(v *View) Verdict {
 			badSigs = true
 		}
 	}
+	finished := v.State == string(agent.RunCompleted) || v.State == "resolved" || v.State == "done"
 	switch {
 	case v.State == "halted":
 		ops := make([]string, len(v.Halts))
@@ -76,12 +77,16 @@ func runVerdict(v *View) Verdict {
 		if v.Terminal == "" {
 			d.Line = "The run " + v.State + "."
 		}
-	case v.State == string(agent.RunCompleted) && v.Proof != nil && !v.Proof.OK:
-		d = Verdict{Class: "bad", Word: "FAILED", Icon: "x", Line: "The run completed, but its audit proof does not verify: " + v.Proof.Summary + "."}
-	case v.State == string(agent.RunCompleted) && badSigs:
-		d = Verdict{Class: "bad", Word: "FAILED", Icon: "x", Line: "The run completed, but an approval gate's signatures did not verify."}
-	case v.State == string(agent.RunCompleted) && v.Proof != nil:
+	case finished && v.Proof != nil && !v.Proof.OK:
+		d = Verdict{Class: "bad", Word: "FAILED", Icon: "x", Line: "The run finished, but its audit proof does not verify: " + v.Proof.Summary + "."}
+	case finished && badSigs:
+		d = Verdict{Class: "bad", Word: "FAILED", Icon: "x", Line: "The run finished, but an approval gate's signatures did not verify."}
+	case finished && v.Proof != nil:
 		d = Verdict{Class: "good", Word: "VERIFIED", Icon: "approval", Line: "Signatures and audit proof check out: " + strings.TrimPrefix(v.Proof.Summary, "verifies: ") + "."}
+	case v.State == "resolved":
+		d = Verdict{Class: "info", Word: "RESOLVED", Icon: "ok", Line: "A halted step was resolved with agent.ResolveHalt. A run of steps alone has no run:start and no end marker, so the journal does not say whether more will follow."}
+	case v.State == "done":
+		d = Verdict{Class: "info", Word: "STEPS DONE", Icon: "ok", Line: "Every step the journal shows has its result. A run of steps alone has no run:start and no end marker, so the journal does not say whether more will follow."}
 	case v.State == string(agent.RunCompleted):
 		d = Verdict{Class: "info", Word: "COMPLETED", Icon: "ok", Line: "The run finished. No signed head or evidence package was given, so nothing is verified (-sth or -evidence, with -pubkey)."}
 	case v.State == string(agent.RunStarted):

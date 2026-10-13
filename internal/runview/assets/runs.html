@@ -1,4 +1,4 @@
-{{define "runs.html"}}{{template "head" "Runs"}}
+{{define "runs.html"}}{{template "head" (head (printf "%s · Runs · bide view" .Verdict.Word) .Verdict.Class .Verdict.Icon)}}
 <link rel="stylesheet" href="/assets/runs.css">
 {{template "verdict" .Verdict}}
 <div class="listhead">
@@ -24,6 +24,6 @@
 <td class="num">{{.Records}}</td>
 </tr>{{end}}</tbody></table></div>
 {{if .More}}<p class="more"><a href="{{.More}}">Show more ({{len .Rows}} of {{.Matched}} shown)</a></p>{{end}}
-{{else if not .Err}}<p class="muted">{{if .Listed}}No run matches the filter.{{else}}No runs to list. This store may not list its runs; open one with -run.{{end}}</p>{{end}}
+{{else if not .Err}}<div class="empty">{{icon "idle"}}<p class="etitle">{{if .Listed}}No run matches the filter.{{else}}No runs to list.{{end}}</p><p class="muted">{{if .Listed}}Clear the filters to see every run.{{else}}This store may not list its runs; open one with -run.{{end}}</p></div>{{end}}
 <p class="muted small legendnote">Newest first, by the start time each run's <code>run:start</code> records. A run journaled by an earlier version records none: it shows <em>none</em> and is listed after the others, by run ID.</p>
 {{template "foot"}}{{end}}

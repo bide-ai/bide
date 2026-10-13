@@ -1,4 +1,4 @@
-{{define "diff.html"}}{{template "head" (printf "%s: diff" .Flow)}}<link rel="stylesheet" href="/assets/diff.css">
+{{define "diff.html"}}{{template "head" (head (printf "%s · %s diff · bide view" .Verdict.Word .Flow) .Verdict.Class .Verdict.Icon)}}<link rel="stylesheet" href="/assets/diff.css">
 <div class="crumb"><h1 class="rid">{{.Flow}}</h1> <span class="pill kind">flow diff</span></div>
 <p class="input"><code>{{.OldName}}</code> → <code>{{.Name}}</code></p>
 {{template "verdict" .Verdict}}

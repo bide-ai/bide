@@ -79,6 +79,9 @@ type TimeBar struct {
 	Label string
 }
 
+// KindText is the run's kind as the page shows it.
+func (v *View) KindText() string { return kindText(v.Kind) }
+
 // IconName is the row's glyph.
 func (e Event) IconName() string {
 	switch {
@@ -125,6 +128,8 @@ type Gate struct {
 	Signatures   string `json:"signatures"`
 	SignaturesOK bool   `json:"signatures_ok"`
 	Status       string `json:"status"`
+	// Cards is each approver as the page shows them (see ApproverCard); not in the JSON view.
+	Cards []ApproverCard `json:"-"`
 }
 
 // Decision is one recorded approval decision.
@@ -306,6 +311,17 @@ func Build(ctx context.Context, runID string, recs []agent.Record, flow *Flow) *
 	if v.State == string(agent.RunStarted) && len(v.Halts) > 0 {
 		v.State, v.StateText = "halted", "halted: outcome unknown"
 	}
+	if v.State == string(agent.RunNotStarted) && stepsOnly(recs) {
+		v.Kind = KindSteps
+		switch {
+		case len(v.Halts) > 0:
+			v.State, v.StateText = "halted", "halted: outcome unknown"
+		case stepsResolved(recs):
+			v.State, v.StateText = "resolved", "resolved"
+		default:
+			v.State, v.StateText = "done", "steps done"
+		}
+	}
 	v.Gates = gates(recs, calls, callOrder)
 	if v.State == string(agent.RunStarted) && slices.ContainsFunc(v.Gates, func(g Gate) bool { return g.Waiting }) {
 		v.State, v.StateText = "waiting", "waiting for approval"
@@ -320,6 +336,53 @@ func Build(ctx context.Context, runID string, recs []agent.Record, flow *Flow) *
 		}
 	}
 	return v
+}
+
+// KindSteps is the kind of a run journaled by Journal.Step calls alone: it has no run:start, so
+// the journal does not say what kind of run it is.
+const KindSteps = "steps"
+
+// stepsOnly reports whether recs are a run with no run:start but with records beyond the header:
+// durable steps run straight on a Journal.
+func stepsOnly(recs []agent.Record) bool {
+	n := 0
+	for _, r := range recs {
+		if r.Name == "run:start" {
+			return false
+		}
+		if r.Kind != agent.StepHeader {
+			n++
+		}
+	}
+	return n > 0
+}
+
+// stepsResolved reports whether a halted operation of recs was resolved: a record that
+// agent.ResolveHalt reconciled with evidence, or an operation that has a re-attempt marker (which a
+// resolution claims, and a resume after a not-started record writes) and a result, with that
+// re-attempt not recorded as never started.
+func stepsResolved(recs []agent.Record) bool {
+	voided := map[string]bool{}
+	results := map[string]bool{}
+	for _, r := range recs {
+		switch {
+		case r.Reconciled:
+			return true
+		case strings.HasPrefix(r.Name, "attempt:not-started:"):
+			voided[notStartedMarker(r.Name)] = true
+		case r.Kind != agent.StepAttempt:
+			results["step:"+r.Name] = true
+		}
+	}
+	for _, r := range recs {
+		if r.Kind != agent.StepAttempt || !strings.HasPrefix(r.Name, "attempt:retry:") || voided[r.Name] {
+			continue
+		}
+		if op, id := attemptOp(r); results[op+":"+id] {
+			return true
+		}
+	}
+	return false
 }
 
 // attemptOp is the kind and ID of the operation an attempt marker guards.
