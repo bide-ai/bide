@@ -54,7 +54,7 @@ var Flows embed.FS
 type Run struct {
 	ID    string
 	Note  string // what the run is, for the README
-	Kind  string // "agent" or "flow"; "" for a run that recorded no start
+	Kind  string // "agent", "flow", or "steps" for a run with no run:start
 	Group string // the run list's state filter group
 }
 
@@ -264,9 +264,9 @@ var demos = []struct {
 		_, err = a.Run(ctx, id, agent.UserText("Ship order 2001."), agent.WithSaga(), e.clock())
 		return want[*agent.SagaAborted](err)
 	}},
-	{"reconcile-4001", "durable steps only (Journal.Step), no run:start: not started", "", "not-started", func(ctx context.Context, e *env, id string) error {
-		// Durable steps only: Journal.Step calls, no agent loop and no run:start. The run list has no
-		// kind or state for it but "not started".
+	{"reconcile-4001", "durable steps only (Journal.Step), no run:start: steps, done", "steps", "completed", func(ctx context.Context, e *env, id string) error {
+		// Durable steps only: Journal.Step calls, no agent loop and no run:start. The run list calls it
+		// "steps" and reads its state from the journal.
 		ledger, err := e.j.Step[string](ctx, id, "fetch-ledger", func(context.Context) (string, error) { return "412 entries", nil }, agent.WithSafety(agent.Safety{ReadOnly: true}))
 		if err != nil {
 			return err

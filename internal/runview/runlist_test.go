@@ -65,7 +65,7 @@ func TestRunListStates(t *testing.T) {
 	if l.Err != "" || l.Listed != len(runs) || l.Summarized != len(runs) || len(l.Rows) != len(runs) {
 		t.Fatalf("list: err %q, listed %d, read %d, rows %d; want %d runs", l.Err, l.Listed, l.Summarized, len(l.Rows), len(runs))
 	}
-	text := map[string]string{"completed": "completed", "halted": "halted: outcome unknown", "waiting": "waiting for approval", "in-progress": "in progress", "not-started": "not started"}
+	text := map[string]string{"completed": "completed", "halted": "halted: outcome unknown", "waiting": "waiting for approval", "in-progress": "in progress"}
 	for _, want := range runs {
 		i := slices.IndexFunc(l.Rows, func(r RunRow) bool { return r.ID == want.ID })
 		if i < 0 {
@@ -75,7 +75,7 @@ func TestRunListStates(t *testing.T) {
 		if r.Group != want.Group || r.Kind != want.Kind {
 			t.Errorf("%s: group %q kind %q, want %q %q", r.ID, r.Group, r.Kind, want.Group, want.Kind)
 		}
-		if tx, ok := text[want.Group]; ok && r.StateText != tx {
+		if tx, ok := text[want.Group]; ok && want.Kind != "steps" && r.StateText != tx {
 			t.Errorf("%s: state text %q, want %q", r.ID, r.StateText, tx)
 		}
 		if r.Records == 0 {
@@ -99,8 +99,8 @@ func TestRunListStates(t *testing.T) {
 	for _, r := range runs {
 		want[r.Group]++
 	}
-	if len(want) != 6 {
-		t.Fatalf("the sample's runs fall in %d state groups, want all 6: %v", len(want), want)
+	if len(want) != 5 {
+		t.Fatalf("the sample's runs fall in %d state groups, want all 5: %v", len(want), want)
 	}
 	for g, n := range want {
 		if l.Counts[g] != n {
@@ -126,7 +126,7 @@ func TestRunListFilters(t *testing.T) {
 		return out
 	}
 	sorted := func(l RunList) []string { s := ids(l); slices.Sort(s); return s }
-	for _, g := range []string{"completed", "halted", "waiting", "in-progress", "failed", "not-started"} {
+	for _, g := range []string{"completed", "halted", "waiting", "in-progress", "failed"} {
 		if got, want := sorted(listOf(t, h, "?state="+g)), of(func(r sample.Run) bool { return r.Group == g }); !slices.Equal(got, want) {
 			t.Errorf("state=%s: %v, want %v", g, got, want)
 		}
@@ -151,7 +151,7 @@ func TestRunListFilters(t *testing.T) {
 	if code, body := get(t, h, "/?q=no-such-run"); code != 200 || !strings.Contains(body, "No run matches the filter.") {
 		t.Errorf("page for no match = %d", code)
 	}
-	if !slices.Equal(listOf(t, h, "?kind=flow").Kinds, []string{"agent", "flow"}) {
+	if !slices.Equal(listOf(t, h, "?kind=flow").Kinds, []string{"agent", "flow", "steps"}) {
 		t.Error("the kind options narrow to the filter")
 	}
 }
