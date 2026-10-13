@@ -12,6 +12,7 @@ const items = [
   'tour.md',
   'formal-verification.md',
   'guides',
+  'recipes',
   'reference',
   'testing',
   'blog',

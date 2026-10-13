@@ -7,6 +7,7 @@ proofs. Each entry notes who it is for.
 
 - **[Getting started](getting-started.md)** (everyone): prerequisites, installing `bide`, `bide demo` and `bide init`, your first agent, and how to run an example.
 - **[A tour of bide](tour.md)** (builders): the API section by section, from graphs and the agent loop to sessions, the audit trail, human approval, errors, middleware and governance.
+- **[Recipes](recipes/index.md)** (builders): five complete, copy-paste-runnable flows (a refund with a 2-of-3 approval, invoice approval, ticket triage, a safe customer-record update, an ambient agent), each runnable with no API key.
 - **[Guarantee](GUARANTEE.md)** (evaluator): the precise durability guarantee, stated exactly.
 - **[Known limitations](KNOWN-LIMITATIONS.md)** (evaluator): the bounds and edges of the guarantees. Read alongside the guarantee.
 
