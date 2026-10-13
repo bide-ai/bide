@@ -2331,12 +2331,15 @@ kinds. The note called it model 13, a number model 13 (probes) already has.
   the note, `agent.ErrTrailConflict` in the code), and the
   writer reloads and folds again; otherwise the append succeeds, or errors whether or not it
   committed (`MaxAmbig`). The fold reads only what the writer loaded.
-- **Deliverers.** `Slots` per process (the drive's delivery goroutine and the sweep); each runs
-  the note's five steps for one event key: load and fold (stop at `acked` or `cleared`), append
-  `observed`, check the event is still current (else append `cleared`), append `overdue` once
-  past the deadline, append `failing` when due, stop if another holder's claim is live, else
-  append `claimed`, then a round of `Reqs` requests. An acceptance is appended as `acked`, retried
-  in place on an error with the round's claim kept; a failed round ends, and the next starts at
+- **Deliverers.** `Slots` per process (the drive's delivery goroutine and the sweep); each runs the
+  note's five steps for one event key: load and fold (stop at `acked` or `cleared`), append
+  `observed`, check the event is still current (else append `cleared`), append `overdue` once past
+  the deadline, append `failing` when due, stop if another holder's claim is live, else append
+  `claimed`, then a round of `Reqs` requests. An acceptance is appended as `acked`, retried in place
+  on an error with the round's claim kept (the core retries for an eighth of the claim, then keeps
+  the acceptance in memory and records it on its next round without sending again; time being
+  abstract, the model keeps retrying, with the same outcomes: recorded, or lost to a crash, and a
+  claim that lapses meanwhile is the mid-round fault); a failed round ends, and the next starts at
   step 1. A deliverer starts on a key the journal shows (a `RecoverLoop` pass, `NotifyPending`, the
   drive-end handoff) or one the trail holds open, under the run's lease when `UseLease` is set.
 - **Claims.** A claim names a holder token per process incarnation and deliverer (`Holder =
@@ -2346,7 +2349,7 @@ kinds. The note called it model 13, a number model 13 (probes) already has.
   claim lapses for its peers only after its holder is done, under the assumptions the model states:
   clocks within the margin, and a store round trip short beside the claim. What remains is a
   fault with a budget (`MaxSlow`): a claim that lapses while its holder is still in its round
-  (a call abandoned at its timeout that succeeds later, skew past the margin, or N2 and N3 below).
+  (a call abandoned at its timeout that succeeds later, or skew past the margin).
   The run's lease lapses at any time and its holder keeps running.
 - **The overdue notice** (`Notice`, as in the core at 728a046b). It has a key of its own
   (`overdue:<key>`). The holder of an overdue event sends it first in its round, under the
@@ -2493,15 +2496,21 @@ they are the mutation check of every property above.
   A crash loop never raises it. The core counts failed rounds from the trail's `claimed` records
   (`ceil(8 / 3)` rounds claimed with no ack, crashed rounds included), which the model checks in
   every other configuration; `live-sink-down-loop` shows it raised under a crash loop.
-- **N2 and N3: budgets at a long claim TTL** (core 728a046b, by arithmetic, reported; open). A
-  peer's notice claim lasts at most 2 minutes, but its call may take an eighth of the claim TTL
-  and its acknowledgement's retries another eighth, so above a 16-minute TTL the call outlives
-  the notice claim and another peer can send the notice again (N2). `roundBudget` counts the
-  notice's call but not its acknowledgement's retries, so a round that starts under its holder's
-  own live claim with just over the budget left can run an eighth of the TTL past `until`, past
-  the 2-minute skew margin above a 16-minute TTL, and a peer can take the event over mid-round
-  with no fault (N3). In the model each is the mid-round lapse fault (`MaxSlow`), which the
-  duplicate bounds count; at the default 2-minute TTL neither occurs.
+- **N2 and N3: budgets at a long claim TTL** (core 728a046b, by arithmetic; fixed in 958cfd4c). A
+  peer's notice claim lasted at most 2 minutes, but its call may take an eighth of the claim TTL and
+  its acknowledgement's retries another eighth, so above an 8-minute TTL another peer could send the
+  notice again (N2); the core now claims min(TTL, max(2 min, TTL/4 + 30 s)). `roundBudget` counted
+  the notice's call but not its acknowledgement's retries, so a round under its holder's own live
+  claim could run an eighth of the TTL past `until`, past the 2-minute skew margin above a 16-minute
+  TTL, and a peer could take the event over with no fault (N3); the budget now counts both
+  acknowledgements, six eighths of the claim and the backoff. Durations are abstract in the model,
+  so `Notify.tla` checks this arithmetic as an `ASSUME` for every claim TTL from 30 s to 2 h: a
+  round's worst case fits its budget, a fresh claim covers the budget, and a peer's notice claim
+  covers the notice's call and acknowledgement. A second `ASSUME` checks that the budgets before
+  958cfd4c fail, and replacing either fixed formula with its old one makes TLC report the assumption
+  false. With these budgets, a mid-round lapse needs skew past the margin or a call abandoned at its
+  timeout that succeeds later; the configurations without `MaxSlow` (`live-notice-long` among them,
+  with `NoticeDupBound` under long claims) have none.
 
 Two rules the model needed, which the note implies but does not state: the claim's holder is
 unique per process incarnation and per deliverer (`holder-process`), and an `acked` append that
