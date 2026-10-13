@@ -380,3 +380,22 @@ func TestApprovalDecisionBytes_Vector(t *testing.T) {
 		t.Fatalf("ApprovalDecisionBytes =\n%s\nwant\n%s", got, want)
 	}
 }
+
+// TestTally_PreV3PassedTallyRefused: a gate that finds a terminal tally which passed but carries
+// no decision format (journaled by a version before bide.approval.v3) refuses to run the call
+// (ErrConfig): its approvals do not verify under this format, so an audit would fail what the
+// gate ran. A pre-v3 denial is still final, and a tally of this format is reused as before.
+func TestTally_PreV3PassedTallyRefused(t *testing.T) {
+	passed := ApprovalTally{Need: 1, Approvers: []string{"ops"}, Approved: 1, ApprovedBy: []string{"ops"}}
+	if err := admitTally("r", "c1", passed); !errors.Is(err, ErrConfig) {
+		t.Fatalf("admitTally(pre-v3 passed) = %v, want ErrConfig", err)
+	}
+	denied := ApprovalTally{Need: 1, Approvers: []string{"ops"}, Denied: 1, DeniedBy: []string{"ops"}}
+	if err := admitTally("r", "c1", denied); err != nil {
+		t.Fatalf("admitTally(pre-v3 denied) = %v, want it final", err)
+	}
+	passed.DecisionFormat = DecisionFormat
+	if err := admitTally("r", "c1", passed); err != nil {
+		t.Fatalf("admitTally(v3 passed) = %v", err)
+	}
+}

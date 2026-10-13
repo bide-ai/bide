@@ -100,7 +100,11 @@ func (e *ApprovalPending) Subject() ApprovalSubject {
 // encoding's version, covered by the signature: v3 binds the approver's decision time; v2 bound
 // the call's tool name and arguments; v1 bound only the call id. A decision signed under an
 // earlier version does not verify under this one.
-const approvalDomain = "bide.approval.v3\n"
+const approvalDomain = DecisionFormat + "\n"
+
+// DecisionFormat names the signed decision format this version writes and accepts: the domain tag
+// of ApprovalDecisionBytes without its newline. A gate's journaled tally records it.
+const DecisionFormat = "bide.approval.v3"
 
 // ApprovalDecisionBytes returns the canonical bytes an approver signs and every verifier
 // checks. decidedAt is when the approver decided, by their own clock; it is signed in
@@ -330,6 +334,11 @@ type ApprovalTally struct {
 	// Records names every decision record on this call the gate read, valid or not, in
 	// journal order. Evidence must disclose all of them, so an omitted decision is detectable.
 	Records []string `json:"records,omitempty"`
+	// DecisionFormat is the signed decision format the gate counted under (DecisionFormat), set on
+	// the terminal tally it journals. A tally recorded by an earlier version has none; a gate
+	// refuses to run a call on such a tally that passed (ErrConfig), since its approvals do not
+	// verify under this format.
+	DecisionFormat string `json:"decision_format,omitempty"`
 }
 
 // Passed reports whether Need approvals are in.
@@ -670,15 +679,20 @@ func submitDecision(ctx context.Context, store *Journal, op string, d Decision, 
 	}
 	name := approvalDecisionStep(d.ToolUseID, d.ApproverID, d.Approved, d.Alg, decidedAt, d.Signature)
 	if o.verifierFor != nil {
-		if err := checkDecision(ctx, store, op, d, name, o.verifierFor); err != nil {
+		if err := checkDecision(ctx, store, op, d, name, flow, o.verifierFor); err != nil {
 			return err
 		}
 	}
 	if _, err := store.do(ctx, d.RunID, name, func(context.Context) (Record, error) {
 		// RecordedAt is read here, when the record is first written: an identical resubmission
-		// keeps the first record, and its time.
+		// keeps the first record, and its time. It is held to the one form decided_at is, so a
+		// clock outside the years 0000 to 9999 records nothing rather than a time no reader accepts.
+		recordedAt := FormatTimestamp(o.now())
+		if !canonicalTimestamp(recordedAt) {
+			return Record{}, fmt.Errorf("%s: the clock reads %s, which has no canonical form (years 0000 to 9999), so the decision's recorded_at cannot be written: %w", op, o.now(), ErrConfig)
+		}
 		return Record{Kind: StepApproval, ToolUseID: d.ToolUseID, Approved: d.Approved, ApproverSignature: &ApproverSignature{
-			Approver: d.ApproverID, ApproverAlg: d.Alg, Signature: d.Signature, DecidedAt: decidedAt, RecordedAt: FormatTimestamp(o.now()),
+			Approver: d.ApproverID, ApproverAlg: d.Alg, Signature: d.Signature, DecidedAt: decidedAt, RecordedAt: recordedAt,
 		}}, nil
 	}); err != nil {
 		return err
@@ -690,8 +704,10 @@ func submitDecision(ctx context.Context, store *Journal, op string, d Decision, 
 }
 
 // checkDecision is WithDecisionCheck's pre-flight: the decision verifies for the recorded
-// call, and the approver has no other valid decision on it (an identical one is fine).
-func checkDecision(ctx context.Context, store *Journal, op string, d Decision, name string, verifierFor ApproverVerifierFor) error {
+// call, and the approver has no other valid decision on it (an identical one is fine). For a plan
+// flow node's gate (flow) it reads, as the gate does, only the decisions after the gate's request:
+// one recorded before it never counts, so it does not make this one "already decided".
+func checkDecision(ctx context.Context, store *Journal, op string, d Decision, name string, flow bool, verifierFor ApproverVerifierFor) error {
 	recs, err := store.History(ctx, d.RunID)
 	if err != nil {
 		return fmt.Errorf("%s: load history %s: %w (%w)", op, d.RunID, err, ErrStorage)
@@ -714,6 +730,10 @@ func checkDecision(ctx context.Context, store *Journal, op string, d Decision, n
 	if !v.Verify(ApprovalDecisionBytes(s, d.ApproverID, d.Approved, d.DecidedAt), d.Signature) {
 		return fmt.Errorf("%s: approver %q: %s: %w", op, d.ApproverID, ReasonBadSig, ErrInvalidApproval)
 	}
+	if flow {
+		i := slices.IndexFunc(recs, func(r Record) bool { return r.Name == ApprovalRequestStep(d.ToolUseID) })
+		recs = recs[i+1:] // flowDecision found the request, so i >= 0
+	}
 	for _, r := range recs {
 		if !IsApprovalDecision(r, d.ToolUseID) || r.Approver() != d.ApproverID || r.Name == name {
 			continue
@@ -730,7 +750,7 @@ func checkDecision(ctx context.Context, store *Journal, op string, d Decision, n
 // resume, which replays the turn, writes nothing: re-driving a paused run leaves its journal as it
 // is. Nothing reads the record to decide, so a failed write is dropped.
 func (a *Agent) notePending(ctx context.Context, runID string, tu ToolUse, pol *ApprovalPolicy) {
-	w := ApprovalWait{ToolUseID: tu.ID, ToolName: tu.Name, Single: pol.single(), RecordedAt: FormatTimestamp(clockFrom(ctx)())}
+	w := ApprovalWait{ToolUseID: tu.ID, ToolName: tu.Name, Single: pol.single(), RecordedAt: noteStamp(clockFrom(ctx))}
 	if !w.Single {
 		w.Need, w.Approvers = pol.Need, slices.Clone(pol.Approvers)
 	}

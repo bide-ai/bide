@@ -46,6 +46,7 @@
 {{with .Fingerprint}}<p class="small mono" title="the first 8 hex digits of the SHA-256 of the approver's public key">key {{.}}</p>{{end}}
 {{if or .DecidedAt .RecordedAt}}<dl class="atimes">{{with .DecidedAt}}<div><dt title="the approver's clock when they signed; inside the signature, so it cannot change after signing">decided</dt><dd>{{.}}</dd></div>{{end}}{{with .RecordedAt}}<div><dt title="bide's clock when it journaled the decision; anchored by the journal's Merkle trail, not signed by the approver">recorded</dt><dd>{{.}}</dd></div>{{end}}</dl>{{end}}
 {{with .Gap}}<p class="small muted">{{.}}</p>{{end}}
+{{with .TimesNote}}<p class="small muted">{{.}}</p>{{end}}
 {{range .Flags}}<p class="small aflag">{{icon "clock"}} {{.}}</p>{{end}}</div></li>{{end}}</ul></section>{{end}}{{end}}
 
 {{with .Proof}}{{with .Merkle}}{{with .Diagram}}<section class="proofpath"><h2>Proof path</h2>

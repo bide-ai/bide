@@ -2,6 +2,7 @@ package runview
 
 import (
 	"slices"
+	"strings"
 	"testing"
 
 	"github.com/bide-ai/bide/audit"
@@ -59,5 +60,25 @@ func TestCards_DecisionTimes(t *testing.T) {
 	}
 	if c := cs["risk"]; c.State != "denied" || c.DecidedAt != "" {
 		t.Errorf("risk with no decision record = %+v", c)
+	}
+}
+
+// TestCards_SeveralDecisionsNoTimes: without a signature check, an approver with several signed
+// decisions of the card's outcome shows no time (which one counted is not known) and says why;
+// with the check, the counted one's times are shown.
+func TestCards_SeveralDecisionsNoTimes(t *testing.T) {
+	g := Gate{ToolUseID: "c1", Need: 1, Approvers: []string{"ops"}, ApprovedBy: []string{"ops"}, AskedAt: "2026-10-13T12:00:00.000Z",
+		Decisions: []Decision{
+			{Approver: "ops", Approved: true, Signed: true, DecidedAt: "2026-10-13T12:00:30.000Z", RecordedAt: "2026-10-13T12:00:31.000Z"},
+			{Approver: "ops", Approved: true, Signed: true, DecidedAt: "2026-10-13T12:00:35.000Z", RecordedAt: "2026-10-13T12:00:40.000Z"},
+		}}
+	c := cards(g, nil)[0]
+	if c.DecidedAt != "" || c.RecordedAt != "" || len(c.Flags) != 0 || !strings.Contains(c.TimesNote, "2 signed decisions") {
+		t.Fatalf("card = %+v", c)
+	}
+	p := &Proof{Approvals: map[string]ApprovalCheck{"c1": {Counted: []string{"ops"}, Times: map[string]audit.DecisionTime{
+		"ops": {Approver: "ops", DecidedAt: "2026-10-13T12:00:35.000Z", RecordedAt: "2026-10-13T12:00:40.000Z"}}}}}
+	if c := cards(g, p)[0]; c.DecidedAt != "2026-10-13 12:00:35.000" || c.TimesNote != "" {
+		t.Fatalf("checked card = %+v", c)
 	}
 }

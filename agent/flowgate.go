@@ -161,10 +161,13 @@ func flowGate(ctx context.Context, d *Journal, runID, key, node string, args jso
 			if err != nil {
 				return false, err
 			}
+			if err := admitTally(runID, key, t); err != nil {
+				return false, err
+			}
 			return t.Passed(), nil
 		}
 	}
-	b, err := marshalJournal(ApprovalRequest{ToolUseID: key, ToolName: node, Args: args, RecordedAt: FormatTimestamp(clockFrom(ctx)())})
+	b, err := marshalJournal(ApprovalRequest{ToolUseID: key, ToolName: node, Args: args, RecordedAt: noteStamp(clockFrom(ctx))})
 	if err != nil {
 		return false, fmt.Errorf("plan node %q: encode the approval request: %w (%w)", node, err, ErrConfig)
 	}
@@ -195,7 +198,7 @@ func flowGate(ctx context.Context, d *Journal, runID, key, node string, args jso
 	}
 	// The pause note, if it is missing (one Insert that keeps a recorded one), so a crash between
 	// the request and the note does not hide the wait from a viewer.
-	w := ApprovalWait{ToolUseID: key, ToolName: node, Single: single, RecordedAt: FormatTimestamp(clockFrom(ctx)())}
+	w := ApprovalWait{ToolUseID: key, ToolName: node, Single: single, RecordedAt: noteStamp(clockFrom(ctx))}
 	if !single {
 		w.Need, w.Approvers = pol.Need, slices.Clone(pol.Approvers)
 	}

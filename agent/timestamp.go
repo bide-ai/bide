@@ -36,3 +36,14 @@ func ParseTimestamp(s string) (time.Time, error) {
 	}
 	return t, nil
 }
+
+// noteStamp is an informational recorded_at for the time now returns (an approval request's or a
+// pause's): FormatTimestamp's form, or "" when the time has none, since such a note never fails
+// the drive that writes it and a reader treats "" as not recorded.
+func noteStamp(now func() time.Time) string {
+	s := FormatTimestamp(now())
+	if _, err := ParseTimestamp(s); err != nil {
+		return ""
+	}
+	return s
+}

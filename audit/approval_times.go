@@ -1,6 +1,7 @@
 package audit
 
 import (
+	"math"
 	"time"
 
 	"github.com/bide-ai/bide/agent"
@@ -30,14 +31,19 @@ type DecisionTime struct {
 
 // Gap returns RecordedAt minus DecidedAt: how long after the approver's signed time bide recorded
 // the decision (negative when the signed time is later). ok is false when either time is missing
-// or not in canonical form. It is shown, not judged.
+// or not in canonical form, or when the two are too far apart for a time.Duration (about 292
+// years; Sub would saturate). It is shown, not judged; the flags compare the times themselves.
 func (d DecisionTime) Gap() (gap time.Duration, ok bool) {
 	decided, err1 := agent.ParseTimestamp(d.DecidedAt)
 	recorded, err2 := agent.ParseTimestamp(d.RecordedAt)
 	if err1 != nil || err2 != nil {
 		return 0, false
 	}
-	return recorded.Sub(decided), true
+	gap = recorded.Sub(decided)
+	if gap == math.MinInt64 || gap == math.MaxInt64 {
+		return 0, false
+	}
+	return gap, true
 }
 
 // Sanity flags on a decision's times (DecisionTime.Flags). Each is a note for a person, not a
@@ -58,10 +64,15 @@ const (
 	// pause record with a time, as from an earlier version, or a pause record lost to a crash), so
 	// FlagDecidedBeforeAsked could not be checked. It is a note, not a problem.
 	FlagAskedUnknown = "when the run asked for approval is not available, so decided-before-asked was not checked"
+	// FlagRecordedAtInvalid: the decision's recorded_at is missing or not a canonical time. bide
+	// writes one with every decision, and it is not signed, so whoever wrote the journal changed
+	// or dropped it; readers show it quoted, as text, and FlagDecidedAfterRecorded is not checked.
+	FlagRecordedAtInvalid = "recorded_at is missing or not a canonical time (bide writes one with every decision; it is not signed), so it is shown only as quoted text"
 )
 
 // FlagDecisionTimes returns times with Flags recomputed under tolerance: FlagDecidedAfterRecorded
-// when a decision's DecidedAt is more than tolerance after its RecordedAt, and
+// when a decision's DecidedAt is more than tolerance after its RecordedAt (FlagRecordedAtInvalid
+// in its place when RecordedAt is missing or not a canonical time), and
 // FlagDecidedBeforeAsked when its DecidedAt is before askedAt, the time the run asked for approval
 // (ApprovalVerdict.AskedAt), and FlagAskedUnknown in its place when askedAt is "" or not a
 // canonical time. A negative tolerance is treated as zero. The input is not modified. No flag
@@ -72,10 +83,15 @@ func FlagDecisionTimes(times []DecisionTime, askedAt string, tolerance time.Dura
 	out := make([]DecisionTime, len(times))
 	for i, d := range times {
 		d.Flags = nil
-		if gap, ok := d.Gap(); ok && -gap > tolerance {
+		decided, err := agent.ParseTimestamp(d.DecidedAt)
+		recorded, rerr := agent.ParseTimestamp(d.RecordedAt)
+		switch {
+		case rerr != nil:
+			d.Flags = append(d.Flags, FlagRecordedAtInvalid)
+		case err == nil && decided.After(recorded.Add(tolerance)):
 			d.Flags = append(d.Flags, FlagDecidedAfterRecorded)
 		}
-		switch decided, err := agent.ParseTimestamp(d.DecidedAt); {
+		switch {
 		case askedErr != nil:
 			d.Flags = append(d.Flags, FlagAskedUnknown)
 		case err == nil && decided.Before(asked):

@@ -37,6 +37,10 @@ type ApproverCard struct {
 	DecidedAt, RecordedAt string
 	Gap                   string
 	Flags                 []string
+	// TimesNote says why no times are shown when the approver has several signed decisions with
+	// the card's outcome and their signatures were not checked: which one counted, and so which
+	// decided_at is signed, is not known.
+	TimesNote string
 }
 
 // initials is up to two letters standing for an approver id: the first letters of its words
@@ -115,9 +119,13 @@ func cards(g Gate, p *Proof) []ApproverCard {
 			c.State = "pending"
 		}
 		if c.State != "pending" {
-			if t, ok := decisionTime(g, chk, n, c.State == "approved"); ok {
+			t, ok, many := decisionTime(g, chk, n, c.State == "approved")
+			switch {
+			case ok:
 				c.DecidedAt, c.RecordedAt = displayTime(t.DecidedAt), displayTime(t.RecordedAt)
 				c.Gap, c.Flags = gapWords(t), t.Flags
+			case many > 1:
+				c.TimesNote = fmt.Sprintf("%d signed decisions with this outcome on record, and only the one that counted carries a time its signature covers: pass -approver-keys to show it", many)
 			}
 			switch {
 			case checked && (slices.Contains(chk.Counted, n) || slices.Contains(chk.Denied, n)):
@@ -142,19 +150,26 @@ func (g Gate) HasTimes() bool {
 
 // decisionTime is the two times of approver n's decision on g, with their sanity flags: from the
 // signature check's verdict when it counted the decision (the exact decision the recount
-// counted), else from the journal, the approver's first signed decision with that outcome, the
-// one the counting rule would count if its signature verifies.
-func decisionTime(g Gate, chk ApprovalCheck, n string, approved bool) (audit.DecisionTime, bool) {
+// counted), else from the journal when the approver has exactly one signed decision with that
+// outcome. With several and no check, the one that counted is not known (a copy of a valid
+// signature under another decided_at never counts, but would read the same here), so none is
+// shown: ok is false and many is how many there are.
+func decisionTime(g Gate, chk ApprovalCheck, n string, approved bool) (t audit.DecisionTime, ok bool, many int) {
 	if t, ok := chk.Times[n]; ok {
-		return t, true
+		return t, true, 1
 	}
+	var only Decision
 	for _, d := range g.Decisions {
 		if d.Signed && d.Approver == n && d.Approved == approved {
-			t := audit.DecisionTime{Approver: n, DecidedAt: d.DecidedAt, RecordedAt: d.RecordedAt}
-			return audit.FlagDecisionTimes([]audit.DecisionTime{t}, g.AskedAt, audit.DefaultDecisionTimeTolerance)[0], true
+			only = d
+			many++
 		}
 	}
-	return audit.DecisionTime{}, false
+	if many != 1 || only.DecidedAt == "" && only.RecordedAt == "" {
+		return audit.DecisionTime{}, false, many // none, several, or one an earlier version wrote
+	}
+	t = audit.DecisionTime{Approver: n, DecidedAt: only.DecidedAt, RecordedAt: only.RecordedAt}
+	return audit.FlagDecisionTimes([]audit.DecisionTime{t}, g.AskedAt, audit.DefaultDecisionTimeTolerance)[0], true, 1
 }
 
 // displayTime renders a recorded time ("2026-10-13T12:14:03.123Z") as "2026-10-13 12:14:03.123"
@@ -175,7 +190,11 @@ func displayTime(s string) string {
 // "recorded 2.5s after the signed time"; empty when either time is missing.
 func gapWords(t audit.DecisionTime) string {
 	gap, ok := t.Gap()
+	_, errD := agent.ParseTimestamp(t.DecidedAt)
+	_, errR := agent.ParseTimestamp(t.RecordedAt)
 	switch {
+	case !ok && errD == nil && errR == nil:
+		return "more than 290 years apart"
 	case !ok:
 		return ""
 	case gap == 0:

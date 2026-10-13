@@ -31,6 +31,7 @@ import (
 	"os/exec"
 	"reflect"
 	"sort"
+	"strconv"
 	"strings"
 	"time"
 
@@ -1193,26 +1194,40 @@ func (c *cli) decisionTimes(v audit.ApprovalVerdict, tolerance time.Duration) {
 		return
 	}
 	if v.AskedAt != "" {
-		c.printf("INFO  approval asked at %s (bide's clock)\n", v.AskedAt)
+		c.printf("INFO  approval asked at %s (bide's clock)\n", timeText(v.AskedAt))
 	} else {
 		c.printf("INFO  the evidence does not say when approval was asked (no approval-pending record with a time)\n")
 	}
 	for _, d := range audit.FlagDecisionTimes(v.Times, v.AskedAt, tolerance) {
 		recorded := "not recorded"
 		if d.RecordedAt != "" {
-			recorded = d.RecordedAt + " (bide's clock)"
+			recorded = timeText(d.RecordedAt) + " (bide's clock)"
 		}
-		c.printf("INFO  %s decided at %s (signed, the approver's clock), recorded at %s, %s\n", d.Approver, d.DecidedAt, recorded, gapText(d))
+		c.printf("INFO  %s decided at %s (signed, the approver's clock), recorded at %s, %s\n", d.Approver, timeText(d.DecidedAt), recorded, gapText(d))
 		for _, f := range d.Flags {
 			c.printf("note: %s: %s\n", d.Approver, f)
 		}
 	}
 }
 
+// timeText is a recorded time as the report prints it: as it is when it is in the one canonical
+// form, and otherwise quoted (Go syntax), so text in an unsigned field never reads as the
+// verifier's own output, a line break included.
+func timeText(s string) string {
+	if _, err := agent.ParseTimestamp(s); err == nil {
+		return s
+	}
+	return strconv.Quote(s)
+}
+
 // gapText phrases a decision's gap between its two times, without judging it.
 func gapText(d audit.DecisionTime) string {
 	gap, ok := d.Gap()
+	_, errD := agent.ParseTimestamp(d.DecidedAt)
+	_, errR := agent.ParseTimestamp(d.RecordedAt)
 	switch {
+	case !ok && errD == nil && errR == nil:
+		return "more than 290 years apart"
 	case !ok:
 		return "gap unknown"
 	case gap == 0:

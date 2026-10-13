@@ -341,6 +341,7 @@ func TestMofn_RecordedTallyIsReusedNotRecounted(t *testing.T) {
 	if !oldTally.Passed() {
 		t.Fatalf("setup: old tally %+v did not pass", oldTally)
 	}
+	oldTally.DecisionFormat = DecisionFormat // an earlier gate of this decision format
 	if _, err := step(ctx, store, "r1", ApprovalTallyStep("c1"), func(context.Context) (ApprovalTally, error) { return oldTally, nil }, WithSafety(Safety{ReadOnly: true})); err != nil {
 		t.Fatal(err)
 	}
