@@ -9,6 +9,8 @@ journal format can change between pre-releases without a version bump. Curated h
 
 ## [Unreleased]
 
+## [0.14.0] - 2026-10-13
+
 ### Fixed
 
 - `eval.Run` could start executions after its context was cancelled: the launcher's select between a free concurrency slot and the done context picked at random when both were ready. It now checks the context again after taking a slot. Found as a CI flake in `TestRun_CancelledEvalIsAnError`; `TestRun_NoExecutionStartsAfterCancel` reproduces it.
@@ -848,7 +850,8 @@ First public release.
 - `bide-audit` standalone verifier, prebuilt for Linux, macOS and Windows on amd64 and arm64.
 - `eval` statistical evaluation harness, `chaos` crash-injection harness, and `cmd/bench`.
 
-[Unreleased]: https://github.com/bide-ai/bide/compare/v0.13.0...HEAD
+[Unreleased]: https://github.com/bide-ai/bide/compare/v0.14.0...HEAD
+[0.14.0]: https://github.com/bide-ai/bide/compare/v0.13.0...v0.14.0
 [0.13.0]: https://github.com/bide-ai/bide/compare/v0.12.0...v0.13.0
 [0.12.0]: https://github.com/bide-ai/bide/compare/v0.11.1...v0.12.0
 [0.11.1]: https://github.com/bide-ai/bide/compare/v0.11.0...v0.11.1
