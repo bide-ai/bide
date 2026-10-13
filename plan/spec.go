@@ -2,6 +2,7 @@ package plan
 
 import (
 	"context"
+	"encoding/json"
 	"reflect"
 
 	"github.com/bide-ai/bide/agent"
@@ -59,6 +60,12 @@ type node struct {
 	// supplies the call. It is not part of Digest (the digest commits to topology,
 	// not to a node's prompt text, mirroring how a Step's body is not hashed).
 	prompt string
+	// outSchema is the JSON schema of a kindModel node's output type O (schema.For[O]),
+	// recorded at construction, where O is a type parameter. runModel sends it as the
+	// request's ResponseFormat to a model that honours one. It is nil for every other
+	// kind, and for an O the schema package cannot describe. Like prompt, it is not
+	// part of Digest.
+	outSchema json.RawMessage
 	// joinInputs are the ORDERED source node names a kindJoin node fans in, one per
 	// merge-function parameter (Join2 records two, Join3 three). They are the join's
 	// input ports in declared order, so the merge closure receives its arguments in

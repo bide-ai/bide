@@ -60,7 +60,8 @@ On exported journals (`audit.ExportJournal(ctx, journal, runID)`, marshaled to J
 bide view -journal refund-42.json -journal refund-43.json
 ```
 
-It prints the URL it serves (by default `http://127.0.0.1:8484/`) and runs until Ctrl-C. A run's
+It prints the URL it serves (by default `http://127.0.0.1:8484/`) and runs until Ctrl-C; it does not
+open a browser (unlike `bide demo`, it has no `-no-browser` flag). A run's
 page is at `/run?id=<run>`, and the same view as JSON at `/run.json?id=<run>`.
 
 ## Flags

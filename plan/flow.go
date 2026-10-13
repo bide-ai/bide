@@ -601,11 +601,12 @@ func runNode(ctx context.Context, store *agent.Journal, runID string, model agen
 // text/template with the decoded input as data, calls the flow's bound model, and
 // decodes the model's text response as JSON into a fresh value of the node's output
 // type (returned boxed as any, mirroring a Step's run closure). This mirrors the
-// core's typed-output decode path (a native typed run json.Unmarshal-s the assistant's
-// text into the typed result): because the plan surface imports only stdlib and the
-// core agent (not the schema helper, which is generic over a type parameter and
-// cannot be reached from a reflect.Type here), the output type O must be JSON-shaped
-// and the prompt must instruct the model to answer with matching JSON.
+// core's native typed-output path (OutputNative): to a model that honours
+// Request.ResponseFormat (agent.ModelInfoOf reports it), the request carries O's JSON
+// schema, so the provider constrains the reply to O's JSON (no prose, no code fence,
+// each field of its schema type). A model that does not honour it, or does not say,
+// gets no format (it would fail the request), so there the prompt must ask for
+// matching JSON.
 func runModel(ctx context.Context, model agent.Model, node *node, input any) (any, error) {
 	if model == nil {
 		// Defensive: Build rejects a Model node with no bound model, so this should be
@@ -626,9 +627,11 @@ func runModel(ctx context.Context, model agent.Model, node *node, input any) (an
 	}
 
 	// Send the rendered prompt as a single user message and drain the model's turn.
-	msg, _, err := agent.Generate(ctx, model, agent.Request{
-		Messages: []agent.Message{agent.UserText(rendered.String())},
-	})
+	req := agent.Request{Messages: []agent.Message{agent.UserText(rendered.String())}}
+	if info, ok := agent.ModelInfoOf(model); ok && info.ResponseFormat && node.outSchema != nil {
+		req.ResponseFormat = &agent.ResponseFormat{Name: "response", Schema: node.outSchema}
+	}
+	msg, _, err := agent.Generate(ctx, model, req)
 	if err != nil {
 		return nil, fmt.Errorf("plan: model step %q generate: %w", node.name, err)
 	}

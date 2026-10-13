@@ -5,6 +5,10 @@ import (
 	"crypto/ed25519"
 	"encoding/json"
 	"errors"
+	"fmt"
+	"io"
+	"net/http"
+	"net/http/httptest"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -13,6 +17,7 @@ import (
 
 	"github.com/bide-ai/bide/agent"
 	"github.com/bide-ai/bide/audit"
+	"github.com/bide-ai/bide/model/openai"
 )
 
 // TestMain lets the test binary run the program itself, for TestCrashAndRecover.
@@ -30,7 +35,7 @@ func TestStory(t *testing.T) {
 	dir := t.TempDir()
 	ctx := context.Background()
 	for range 2 {
-		if err := story(ctx, dir); err != nil {
+		if err := story(ctx, dir, model()); err != nil {
 			t.Fatal(err)
 		}
 	}
@@ -87,5 +92,53 @@ func TestCrashAndRecover(t *testing.T) {
 	}
 	if n := (provider{dir: dir}).refunds(); n != 1 {
 		t.Fatalf("after recovery the provider holds %d refunds, want exactly 1", n)
+	}
+}
+
+// TestRealModelShapedReplies runs the story on model/openai against a fake OpenAI-compatible
+// provider that answers as a real model did when asked for JSON in the prompt only: in a code
+// fence, with the order id as a number. Unless the request carries a strict json_schema
+// response format for Refund, the provider answers that way. The run finishes on the first try,
+// with one model call and one refund.
+func TestRealModelShapedReplies(t *testing.T) {
+	calls := 0
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		calls++
+		body, _ := io.ReadAll(r.Body)
+		var req struct {
+			ResponseFormat struct {
+				Type       string `json:"type"`
+				JSONSchema struct {
+					Strict bool `json:"strict"`
+					Schema struct {
+						Properties map[string]struct {
+							Type string `json:"type"`
+						} `json:"properties"`
+					} `json:"schema"`
+				} `json:"json_schema"`
+			} `json:"response_format"`
+		}
+		_ = json.Unmarshal(body, &req)
+		rf, props := req.ResponseFormat, req.ResponseFormat.JSONSchema.Schema.Properties
+		reply := "```json\n{\"order\": 42, \"amount\": 120, \"reason\": \"arrived damaged\"}\n```"
+		if rf.Type == "json_schema" && rf.JSONSchema.Strict && props["order"].Type == "string" && props["amount"].Type == "integer" {
+			reply = `{"order": "order-42", "amount": 120, "reason": "arrived damaged"}`
+		}
+		chunk, _ := json.Marshal(map[string]any{"choices": []any{map[string]any{"delta": map[string]string{"content": reply}, "finish_reason": "stop"}}})
+		w.Header().Set("Content-Type", "text/event-stream")
+		fmt.Fprintf(w, "data: %s\n\ndata: [DONE]\n\n", chunk)
+	}))
+	defer srv.Close()
+
+	dir := t.TempDir()
+	m := openai.New("test-key", openai.WithBaseURL(srv.URL), openai.WithModel("gpt-4o-mini"))
+	if err := story(context.Background(), dir, m); err != nil {
+		t.Fatalf("the run on a real-model-shaped provider: %v", err)
+	}
+	if calls != 1 {
+		t.Fatalf("the provider was called %d times, want 1", calls)
+	}
+	if n := (provider{dir: dir}).refunds(); n != 1 {
+		t.Fatalf("the provider holds %d refunds, want exactly 1", n)
 	}
 }

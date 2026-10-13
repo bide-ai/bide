@@ -13,6 +13,11 @@ journal format can change between pre-releases without a version bump. Curated h
 
 - A plan flow `Model` node (`Builder.Model`, `Registry.RegisterModel`) is `ReadOnly` by default, so a model call whose outcome is unknown (a crash lost its result, or the call failed: the provider errored or the reply did not decode) is made again on the next drive instead of halting with "unknown outcome and is not retry-safe". A model node calls no tool and changes nothing outside the run; a re-call costs tokens and may answer differently, and nothing saw the lost answer. A config `safety: side_effect` keeps the old halt. A node a v0.14 process already attempted keeps its attempt marker and still halts; resolve it with `ResolveHalt` or start a new run. Found by a fresh-eyes run of the `bide init` project on a real model.
 
+### Fixed
+
+- A plan flow `Model` node now sends its output type's JSON schema as the request's response format to a model that honours one (`agent.ModelInfoOf` reports `ResponseFormat`: `model/openai`, `model/gemini`), as `Builder.Model` documented, so the provider's structured output returns the type's JSON. It sent none, and a real model (gpt-4o-mini) wrapped its JSON in a code fence and put a number in a string field, failing the `bide init` project's model step. A model that does not honour a response format (`model/anthropic`, or one that does not describe itself) is still sent none.
+- The `bide init` project: its prompt names each field's type; its README has a "Start over" command that runs in zsh (it named globs that zsh refuses when nothing matches) and removes `evidence.json` too, and says to start over after switching to a real model (a finished run is read back, so the new model was never called); its test runs the story on `model/openai` against a fake provider that answers as a real model did (a fenced reply, a number in a string field) unless sent the schema, and runs the reset command in sh and zsh. The root README says `bide view` prints the address to open (it opens no browser and takes no `-no-browser` flag). Found by a fresh-eyes run on a real model.
+
 ## [0.14.0] - 2026-10-13
 
 ### Fixed

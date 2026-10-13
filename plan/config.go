@@ -495,7 +495,8 @@ func assemble(cfg *config, reg *Registry) (*builderCore, error) {
 			approval: approval,
 			// Carry the model prompt template for a Model block, so a loaded Model node
 			// renders identically to a hand-built one (see RegisterModel / runModel).
-			prompt: b.prompt,
+			prompt:    b.prompt,
+			outSchema: b.outSchema,
 		})
 	}
 

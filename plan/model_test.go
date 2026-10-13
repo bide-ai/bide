@@ -8,6 +8,7 @@ import (
 
 	"github.com/bide-ai/bide/agent"
 	"github.com/bide-ai/bide/agent/agenttest"
+	"github.com/bide-ai/bide/schema"
 )
 
 // A Model node binds a real model to the flow: it renders the node's prompt from the
@@ -353,5 +354,77 @@ func TestModel_GenerateErrorPropagates(t *testing.T) {
 	}
 	if !strings.Contains(err.Error(), "assess") || !strings.Contains(err.Error(), "provider down") {
 		t.Errorf("Run error = %v; want it to name the node and wrap the provider error", err)
+	}
+}
+
+// formatModel is a fake agent.Model that describes itself (agent.Describer) as honouring
+// Request.ResponseFormat or not, and records the response format it was sent.
+type formatModel struct {
+	honours bool
+	sent    *agent.ResponseFormat
+	calls   int
+}
+
+func (m *formatModel) Describe() agent.ModelInfo {
+	return agent.ModelInfo{Provider: "fake", ResponseFormat: m.honours}
+}
+
+func (m *formatModel) Stream(_ context.Context, req agent.Request) (*agent.Stream, error) {
+	m.calls++
+	m.sent = req.ResponseFormat
+	ch := make(chan agent.Emit, 2)
+	ch <- agent.Emit{Event: agent.TextDelta{Text: `{"verdict":"ok","score":1}`}}
+	ch <- agent.Emit{Event: agent.Finish{Reason: "stop"}}
+	close(ch)
+	return agent.NewStream(ch), nil
+}
+
+// A Model node asks a model that honours Request.ResponseFormat for O's JSON schema (the
+// provider's structured output: OpenAI strict json_schema, Gemini's response schema), so the
+// reply is O's JSON, with no prose or code fence and each field of its schema type. A model
+// that does not honour it (Anthropic), or does not say, is sent no format, since it would
+// fail the request: the prompt asks for the JSON there. Builder and loaded flows agree.
+func TestModel_SendsTheOutputSchemaToAModelThatHonoursIt(t *testing.T) {
+	want, err := schema.For[review]()
+	if err != nil {
+		t.Fatalf("schema: %v", err)
+	}
+	builds := map[string]func(agent.Model) (*Flow[int, review], error){
+		"builder": buildModelFlow,
+		"loaded": func(m agent.Model) (*Flow[int, review], error) {
+			reg := NewRegistry()
+			if err := reg.RegisterModel[int, review]("assess", "score {{.}}"); err != nil {
+				return nil, err
+			}
+			cfg := `{"version":1,"flow":"model-flow","nodes":[{"name":"assess","block":"assess"}],"wiring":[]}`
+			return Load[int, review]([]byte(cfg), reg, WithLoadedModel(m))
+		},
+	}
+	for bname, build := range builds {
+		for _, honours := range []bool{true, false} {
+			m := &formatModel{honours: honours}
+			flow, err := build(m)
+			if err != nil {
+				t.Fatalf("%s: build: %v", bname, err)
+			}
+			if _, err := flow.Run(context.Background(), agenttest.MemJournal(), "r", 0); err != nil {
+				t.Fatalf("%s: Run: %v", bname, err)
+			}
+			switch {
+			case honours && (m.sent == nil || string(m.sent.Schema) != string(want)):
+				t.Errorf("%s: a model honouring ResponseFormat was sent %+v; want O's schema %s", bname, m.sent, want)
+			case !honours && m.sent != nil:
+				t.Errorf("%s: a model not honouring ResponseFormat was sent %+v; want none", bname, m.sent)
+			}
+		}
+		// A model that does not describe itself is sent no format either.
+		var seen string
+		flow, err := build(&fakeModel{reply: `{"verdict":"ok","score":1}`, lastSeen: &seen})
+		if err != nil {
+			t.Fatalf("%s: build: %v", bname, err)
+		}
+		if _, err := flow.Run(context.Background(), agenttest.MemJournal(), "r", 0); err != nil {
+			t.Fatalf("%s: Run with an undescribed model: %v", bname, err)
+		}
 	}
 }
