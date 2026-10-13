@@ -17,6 +17,7 @@ type notifyConfig struct {
 	backoffMax    time.Duration
 	failingAfter  int
 	recoveryAfter time.Duration
+	haltAge       time.Duration
 	holder        string
 	overdue       Notifier
 	onError       func(error)
@@ -38,6 +39,7 @@ func defaultNotifyConfig() notifyConfig {
 		backoffMax:     15 * time.Minute,
 		failingAfter:   8,
 		recoveryAfter:  15 * time.Minute,
+		haltAge:        5 * time.Minute,
 		holder:         defaultHolder(),
 		roundAttempts:  3,
 		attemptBackoff: time.Second,
