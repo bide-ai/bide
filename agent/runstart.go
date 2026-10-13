@@ -5,6 +5,7 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"time"
 )
 
 // runCompleteStep is the journal name of the terminal completion marker. The agent loop
@@ -49,6 +50,12 @@ const runStartStep = "run:start"
 //
 // Input is journaled as a JSON string when it is a user message of one text part (as earlier
 // versions wrote it), and as a message otherwise (an image input, say).
+//
+// StartedAt is when the run's first drive wrote the record, by the drive's clock (WithClock, or
+// the wall clock): UTC, RFC 3339 with milliseconds ("2026-10-13T01:11:47.123Z"). It is
+// informational, for people and tools that list runs (bide view): no drive, resume, recovery
+// pass or at-most-once check reads it, and a drive is never held to it. A run:start written
+// by an earlier version has none, and a value that is not RFC 3339 is kept as it is; Started reads it.
 type RunStart struct {
 	Input     Message                    `json:"input"`
 	Saga      bool                       `json:"saga,omitempty"`
@@ -60,6 +67,22 @@ type RunStart struct {
 	Principal *Principal                 `json:"principal,omitempty"`
 	Tools     []string                   `json:"tools,omitempty"`
 	Ext       map[string]json.RawMessage `json:"ext,omitempty"`
+	StartedAt string                     `json:"started_at,omitempty"`
+}
+
+// Started is StartedAt as a time, and false when the record holds none or one that is not RFC
+// 3339 (see RunStart).
+func (s RunStart) Started() (time.Time, bool) {
+	if s.StartedAt == "" {
+		return time.Time{}, false
+	}
+	t, err := time.Parse(time.RFC3339Nano, s.StartedAt)
+	return t, err == nil
+}
+
+// startStamp is a StartedAt for the time now returns: UTC, RFC 3339, to the millisecond.
+func startStamp(now func() time.Time) string {
+	return now().UTC().Truncate(time.Millisecond).Format("2006-01-02T15:04:05.000Z07:00")
 }
 
 // RunSettings are the per-run values a run's first caller chose (RunOptions), as run:start
@@ -109,6 +132,7 @@ type runStartWire struct {
 	Principal *Principal                 `json:"principal,omitempty"`
 	Tools     []string                   `json:"tools,omitempty"`
 	Ext       map[string]json.RawMessage `json:"ext,omitempty"`
+	StartedAt string                     `json:"started_at,omitempty"`
 }
 
 // MarshalJSON writes s's journal form: the input as a JSON string when it is a user message of
@@ -124,7 +148,7 @@ func (s RunStart) out() runStartOut {
 		in = t
 	}
 	return runStartOut{Input: in, Saga: s.Saga, Kind: s.Kind, Session: s.Session, Flow: s.Flow,
-		Typed: s.Typed, Settings: s.Settings, Principal: s.Principal, Tools: s.Tools, Ext: s.Ext}
+		Typed: s.Typed, Settings: s.Settings, Principal: s.Principal, Tools: s.Tools, Ext: s.Ext, StartedAt: s.StartedAt}
 }
 
 // runStartOut is runStartWire as MarshalJSON writes it: the input a string or a Message, encoded in
@@ -140,6 +164,7 @@ type runStartOut struct {
 	Principal *Principal                 `json:"principal,omitempty"`
 	Tools     []string                   `json:"tools,omitempty"`
 	Ext       map[string]json.RawMessage `json:"ext,omitempty"`
+	StartedAt string                     `json:"started_at,omitempty"`
 }
 
 // UnmarshalJSON reads s's journal form (see MarshalJSON).
@@ -160,7 +185,7 @@ func (s *RunStart) UnmarshalJSON(b []byte) error {
 // w holds it.
 func (w *runStartWire) start() (RunStart, error) {
 	s := RunStart{Saga: w.Saga, Kind: w.Kind, Session: w.Session, Flow: w.Flow, Typed: w.Typed,
-		Settings: w.Settings, Principal: w.Principal, Tools: w.Tools, Ext: w.Ext}
+		Settings: w.Settings, Principal: w.Principal, Tools: w.Tools, Ext: w.Ext, StartedAt: w.StartedAt}
 	in := bytes.TrimSpace(w.Input)
 	switch {
 	case len(in) == 0 || bytes.Equal(in, []byte("null")):
@@ -287,6 +312,9 @@ func beginRun(ctx context.Context, d *Journal, runID string, want RunStart) (jso
 			return nil, false, fmt.Errorf("run %s: the flow input: %w (%w)", runID, err, ErrConfig)
 		}
 	}
+	if want.StartedAt == "" {
+		want.StartedAt = startStamp(clockFrom(ctx)) // informational: nothing reads it (see RunStart)
+	}
 	b, err := marshalJournal(want.out())
 	if err != nil {
 		return nil, false, fmt.Errorf("encode %s (run %s): %w (%w)", runStartStep, runID, err, ErrConfig)
@@ -354,6 +382,9 @@ func holdToStart(ctx context.Context, d *Journal, runID string, recs []Record, w
 		}
 	}
 	if !found {
+		if want.StartedAt == "" {
+			want.StartedAt = startStamp(clockFrom(ctx)) // informational: nothing reads it (see RunStart)
+		}
 		b, err := marshalJournal(want.out())
 		if err != nil {
 			return fmt.Errorf("encode %s (run %s): %w (%w)", runStartStep, runID, err, ErrConfig)

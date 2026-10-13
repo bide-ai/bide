@@ -112,6 +112,12 @@ the journal holds, and so what a resume cannot be talked out of by a redeploy:
   resumed with another input or flow, or driven by an `Agent`, is `ErrConfig`; a finished flow run
   records `run:complete` with its output, which a later drive returns.
 
+`run:start` also records when the run's first drive started (`started_at`, `RunStart.StartedAt`:
+UTC, RFC 3339 with milliseconds, by the drive's clock). It is informational, for listing runs: no
+drive, resume, recovery pass or at-most-once check reads it, a drive is never held to it, and a
+run whose `run:start` holds none (written by an earlier version) or another value resumes the same
+way. The journal records no other wall-clock time for a run but each attempt marker's.
+
 Configuration is live by design: it governs what a drive does next, not what the journal already
 says happened. A drive uses the configuration it is given for:
 

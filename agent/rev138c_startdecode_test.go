@@ -4,6 +4,7 @@ import (
 	"encoding/base64"
 	"encoding/json"
 	"reflect"
+	"slices"
 	"strings"
 	"testing"
 )
@@ -61,18 +62,33 @@ var rev138cStartSeeds = []string{
 	` {"name" : "run:start" , "kind":"value","result":{"input":"hi"},"salt":"` + "`" + ` + rev138cSalt + ` + "`" + `"} `,
 }
 
+// The start time (StartedAt): the fast path reads it where it decodes the start, and leaves
+// any other form to the full decoding.
+var startTimeSeeds = []string{
+	`{"name":"run:start","kind":"value","result":{"input":"hi","kind":"agent","started_at":"2026-10-13T01:02:03.456Z"},"salt":"` + rev138cSalt + `"}`,
+	`{"name":"run:start","kind":"value","result":{"input":"hi","kind":"agent","started_at":"not a time"},"salt":"` + rev138cSalt + `"}`,
+	`{"name":"run:start","kind":"value","result":{"input":"hi","kind":"agent","started_at":""},"salt":"` + rev138cSalt + `"}`,
+	`{"name":"run:start","kind":"value","result":{"input":"hi","kind":"agent","started_at":"a\"b"},"salt":"` + rev138cSalt + `"}`,
+	`{"name":"run:start","kind":"value","result":{"input":"hi","kind":"agent","started_at":"a\u0041"},"salt":"` + rev138cSalt + `"}`,
+	`{"name":"run:start","kind":"value","result":{"input":"hi","kind":"agent","started_at":5},"salt":"` + rev138cSalt + `"}`,
+	`{"name":"run:start","kind":"value","result":{"input":"hi","kind":"agent","started_at":"x","started_at":"y"},"salt":"` + rev138cSalt + `"}`,
+	`{"name":"run:start","kind":"value","result":{"input":"hi","started_at":"2026-10-13T01:02:03.456Z"},"salt":"` + rev138cSalt + `"}`,
+	`{"name":"run:start","kind":"value","result":{"input":"hi","kind":"agent","started_at":"2026-10-13T01:02:03.456Z"},"salt":"A"}`,
+	`{"name":"run:start","kind":"value","result":{"input":"hi","kind":"agent","started_at":"2026-10-13T01:02:03.456Z}`,
+}
+
 // rev138cSalt is a salt as the journal writes one: SaltSize bytes, base64.
 const rev138cSalt = "AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA="
 
 // Wherever the recovery decoder reports a start, the full decoding succeeds with the same start.
 func TestRev138c_StartDecodeAgreesWithFull(t *testing.T) {
-	for _, s := range rev138cStartSeeds {
+	for _, s := range append(slices.Clone(rev138cStartSeeds), startTimeSeeds...) {
 		checkStartAgree(t, []byte(s))
 	}
 }
 
 func FuzzRev138c_StartDecode(f *testing.F) {
-	for _, s := range rev138cStartSeeds {
+	for _, s := range append(slices.Clone(rev138cStartSeeds), startTimeSeeds...) {
 		f.Add([]byte(s))
 	}
 	f.Fuzz(func(t *testing.T, b []byte) { checkStartAgree(t, b) })
@@ -98,7 +114,8 @@ func checkStartAgree(t *testing.T, b []byte) {
 func TestRev138c_StartDecodeTakesJournaledStarts(t *testing.T) {
 	for _, st := range []RunStart{
 		{Input: UserText("go"), Kind: RunKindAgent},
-		{Input: UserText(`say "hi`), Saga: true},
+		{Input: UserText("go"), Kind: RunKindAgent, StartedAt: "2026-10-13T01:02:03.456Z"},
+		{Input: UserText(`say "hi`), Saga: true, StartedAt: "2026-10-13T01:02:03.456Z"},
 		{Input: UserText(`a\b "c" {d} [e], f`), Kind: RunKindAgent, Tools: []string{`x"`, `]`}},
 		{Input: UserText("hi"), Ext: map[string]json.RawMessage{"k": json.RawMessage(`{"a":"}\""}`)}},
 	} {
