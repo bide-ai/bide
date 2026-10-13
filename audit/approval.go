@@ -156,8 +156,10 @@ type ApprovalVerdict struct {
 	// order, with sanity flags under DefaultDecisionTimeTolerance (see FlagDecisionTimes). They are
 	// for a person reading the verdict: no time, and no flag, affects the count or OK.
 	Times []DecisionTime `json:"times,omitempty"`
-	// AskedAt is when the run recorded that it paused at the gate (agent.ApprovalWait.RecordedAt),
-	// from the proven approval-pending record, or "" when the evidence holds none with a time.
+	// AskedAt is when the run asked for approval, by bide's clock: for a gated plan flow node the
+	// recorded_at of its proven request (agent.ApprovalRequest), else that of the proven
+	// approval-pending record (agent.ApprovalWait); "" when the evidence holds neither with a time
+	// (each decision is then flagged FlagAskedUnknown).
 	AskedAt string `json:"asked_at,omitempty"`
 	// Problems lists every way the evidence is inconsistent with itself or with the expected
 	// policy: an omitted decision the gate read, a recount that disagrees with the gate's
@@ -372,7 +374,7 @@ func VerifyApprovals(actions []EvidenceAction, toolUseID string, policy agent.Ap
 		r := proven[c.Step].rec
 		v.Times = append(v.Times, DecisionTime{Approver: c.Approver, Step: c.Step, DecidedAt: r.DecidedAt(), RecordedAt: r.RecordedAt()})
 	}
-	v.AskedAt = askedAt(actions, recs, toolUseID, sth, runID, logV)
+	v.AskedAt = askedAt(actions, recs, recs[reqI], flowNode, toolUseID, sth, runID, logV)
 	v.Times = FlagDecisionTimes(v.Times, v.AskedAt, DefaultDecisionTimeTolerance)
 	v.Counted, v.DeniedBy = got.ApprovedBy, got.DeniedBy
 	if !slices.Equal(got.ApprovedBy, tally.ApprovedBy) || !slices.Equal(got.DeniedBy, tally.DeniedBy) {

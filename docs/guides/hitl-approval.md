@@ -175,8 +175,10 @@ value or `recorded_at`, and orders decisions by their place in the journal alone
 decisions count the same way whatever their times say.
 
 `audit.VerifyApprovals` reports both times for every counted decision (`ApprovalVerdict.Times`),
-and when the run asked for approval (`AskedAt`, the `recorded_at` of the gate's
-`approval-pending` record). It flags, without failing the verdict:
+and when the run asked for approval (`AskedAt`: on a plan flow node, the `recorded_at` of the
+gate's request, which the ordering rule counts from; otherwise, or when the request has none, that
+of the gate's `approval-pending` record). It flags, without failing the verdict or uncounting
+anything:
 
 - `decided_at` more than a tolerance after `recorded_at` (`audit.FlagDecidedAfterRecorded`; 5
   minutes by default, `audit.DefaultDecisionTimeTolerance`, or any other with
@@ -186,7 +188,9 @@ and when the run asked for approval (`AskedAt`, the `recorded_at` of the gate's
   behind, or the decision was signed in advance. The gate never counts a decision by its time: it
   reads only decisions on this exact call, and on a plan flow node only those recorded after the
   gate's request (`SubmitDecision` refuses one recorded before it). So a flagged decision was still
-  recorded after the request; the flag says its signed time disagrees.
+  recorded after the request; the flag says its signed time disagrees;
+- no ask time in the evidence (`audit.FlagAskedUnknown`: a run an earlier version recorded, or a
+  pause record lost to a crash), so the check above was not made.
 
 The gap between the two times is shown, not judged. `bide audit verify-approvals` prints all of it,
 with `-decision-time-tolerance` to change the tolerance, and `bide view` shows it on each approver's

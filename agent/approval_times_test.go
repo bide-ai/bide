@@ -4,6 +4,7 @@ import (
 	"context"
 	"crypto/sha256"
 	"encoding/binary"
+	"encoding/hex"
 	"errors"
 	"math/rand/v2"
 	"reflect"
@@ -358,5 +359,24 @@ func TestSubmitDecision_TimeInName(t *testing.T) {
 	tally, checks := TallyApprovals(recs, timesSubject, ApprovalPolicy{Need: 1, Approvers: []string{"ops"}}, fakeVerifiers("ops"))
 	if !tally.Passed() || len(checks) != 2 || checks[0].Reason != ReasonBadSig || !checks[1].Counted {
 		t.Fatalf("tally %+v, checks %+v; want the copy refused and the real decision counted", tally, checks)
+	}
+}
+
+// TestApprovalDecisionBytes_Vector pins the exact signed bytes of one fixed decision, the worked
+// example in docs/design/design-mofn-approval.md (computed there independently of Go). A change
+// to the signed encoding fails it: change the vector, the example and the version tag together.
+func TestApprovalDecisionBytes_Vector(t *testing.T) {
+	s := ApprovalSubject{RunID: "refund-42", ToolUseID: "refund-1", ToolName: "refund", Args: []byte(`{"order": 42, "amount": 120}`)}
+	got := hex.EncodeToString(ApprovalDecisionBytes(s, "finance", true, time.Date(2026, 10, 13, 12, 14, 3, 123_000_000, time.UTC)))
+	const want = "626964652e617070726f76616c2e76330a" + // "bide.approval.v3\n"
+		"00000009" + "726566756e642d3432" + // "refund-42"
+		"00000008" + "726566756e642d31" + // "refund-1"
+		"00000006" + "726566756e64" + // "refund"
+		"984c3a3505d933239fe461f7082f36e3c3a6caf30dac23c34d6c4caf03c96af7" + // SHA-256(`{"amount":120,"order":42}`)
+		"00000007" + "66696e616e6365" + // "finance"
+		"01" + // approved
+		"00000018" + "323032362d31302d31335431323a31343a30332e3132335a" // "2026-10-13T12:14:03.123Z"
+	if got != want {
+		t.Fatalf("ApprovalDecisionBytes =\n%s\nwant\n%s", got, want)
 	}
 }

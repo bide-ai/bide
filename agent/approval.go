@@ -125,7 +125,8 @@ const approvalDomain = "bide.approval.v3\n"
 // the millisecond, 24 bytes, e.g. "2026-10-13T12:14:03.123Z" (FormatTimestamp); a verifier
 // refuses a decision whose recorded time is in any other form (ParseTimestamp), so an instant
 // has one signed spelling. A time outside the years 0000 to 9999 has no such form, and a
-// decision signed with one never counts.
+// decision signed with one never counts. docs/design/design-mofn-approval.md works one decision
+// through to its exact bytes, for a verifier written in another language.
 func ApprovalDecisionBytes(s ApprovalSubject, approverID string, approved bool, decidedAt time.Time) []byte {
 	return decisionBytes(s, approverID, approved, FormatTimestamp(decidedAt))
 }

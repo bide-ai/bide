@@ -111,8 +111,9 @@ they are vouched for by different parties:
 - **`recorded_at`, anchored.** `SubmitDecision` stamps the record with bide's clock (`WithClock`,
   else the run clock on the context, else the wall clock) when it first writes it. It is not
   signed by the approver; the journal's Merkle trail anchors it with the record. `ApprovalWait`
-  (`approval-pending`) gains the same field, the time the run paused, which is when approvers are
-  asked.
+  (`approval-pending`) gains the same field, the time the run paused, and so does a flow gate's
+  `ApprovalRequest`, the record the ordering rule counts from. The request's time is when a flow
+  node's approvers are asked, else the pause's.
 - **Display only for the protocol.** `TallyApprovals` checks `decided_at` only as signed bytes (it
   is present, canonical, and inside the signature), never reads its value, and never reads
   `recorded_at`; journal order alone orders decisions. Validity stays one predicate per record, so
@@ -123,7 +124,46 @@ they are vouched for by different parties:
   decision and flags a `decided_at` more than a tolerance (5 minutes by default) after `recorded_at`
   (a clock running ahead) and a `decided_at` before the `approval-pending` time (a clock running
   behind, or a decision signed in advance; the gate's ordering rule is by journal position, so such
-  a decision was still recorded after the request). The flags never change the verdict.
+  a decision was still recorded after the request), and notes when neither ask time is in the
+  evidence. The flags never change the verdict, and a flagged decision still counts.
+
+The full signed bytes, for a verifier outside Go:
+
+```
+"bide.approval.v3\n"                 17 bytes, the version tag
+len32(run_id)       run_id
+len32(tool_use_id)  tool_use_id
+len32(tool_name)    tool_name
+SHA-256(canonical args)              32 bytes
+len32(approver_id)  approver_id
+approved                             1 byte: 1 approved, 0 denied
+len32(decided_at)   decided_at       24 bytes, "YYYY-MM-DDThh:mm:ss.mmmZ"
+```
+
+`len32` is a 4-byte big-endian length. The canonical args are the arguments parsed as JSON and
+written again with object keys sorted, no insignificant whitespace, no HTML escaping and number
+literals kept verbatim (empty arguments are `{}`). A verifier refuses a decision whose recorded
+`decided_at` does not format back to the same 24 bytes, and checks the signature over the bytes
+built from the recorded text.
+
+Worked example: run `refund-42`, call `refund-1`, tool `refund` with arguments
+`{"order": 42, "amount": 120}` (canonical form `{"amount":120,"order":42}`), approver `finance`,
+approved, decided at `2026-10-13T12:14:03.123Z`. The 124 signed bytes, in hex, one field per line
+(`TestApprovalDecisionBytes_Vector` pins them):
+
+```
+626964652e617070726f76616c2e76330a                                    "bide.approval.v3\n"
+00000009 726566756e642d3432                                           "refund-42"
+00000008 726566756e642d31                                             "refund-1"
+00000006 726566756e64                                                 "refund"
+984c3a3505d933239fe461f7082f36e3c3a6caf30dac23c34d6c4caf03c96af7      SHA-256 of the canonical args
+00000007 66696e616e6365                                               "finance"
+01                                                                    approved
+00000018 323032362d31302d31335431323a31343a30332e3132335a             "2026-10-13T12:14:03.123Z"
+```
+
+An approver signs these bytes with their key (Ed25519, ML-DSA-65 or the hybrid), and the decision
+journals the scheme, the signature, `decided_at` as the text above, and bide's `recorded_at`.
 
 Future work: an RFC 3161 trusted timestamp per decision, a third time vouched for by a timestamp
 authority, would bound `decided_at` independently of both the approver and bide. It is not part of

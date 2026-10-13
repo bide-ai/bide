@@ -120,8 +120,9 @@ type Gate struct {
 	Pending    []string   `json:"pending,omitempty"`
 	Decisions  []Decision `json:"decisions,omitempty"`
 	Tallied    bool       `json:"tallied"` // the gate journaled its terminal tally
-	// AskedAt is when the run paused at the gate (agent.ApprovalWait.RecordedAt, by bide's clock),
-	// empty when the journal does not say.
+	// AskedAt is when the run asked for approval, by bide's clock: a flow node's request time
+	// (agent.ApprovalRequest.RecordedAt), else the pause's (agent.ApprovalWait.RecordedAt); empty
+	// when the journal does not say.
 	AskedAt string `json:"asked_at,omitempty"`
 	// Waiting: the run paused at this gate (its approval-pending record, agent.ApprovalWait) and
 	// the call has no result, no terminal tally, and (for a one-decision gate) no decision yet.
@@ -505,6 +506,13 @@ func gates(recs []agent.Record, calls map[string]agent.ToolUse, order []string) 
 		if r, ok := byName[agent.ApprovalPendingStep(id)]; ok && json.Unmarshal(r.Result, &wait) == nil {
 			paused = true
 			g.Single, g.Need, g.Approvers, g.AskedAt = wait.Single, wait.Need, wait.Approvers, wait.RecordedAt
+		}
+		// A flow node's request is when approvers were asked, and what the ordering rule counts from.
+		if r, ok := byName[agent.ApprovalRequestStep(id)]; ok {
+			var q agent.ApprovalRequest
+			if json.Unmarshal(r.Result, &q) == nil && q.RecordedAt != "" {
+				g.AskedAt = q.RecordedAt
+			}
 		}
 		resulted := false
 		for _, r := range recs {

@@ -18,7 +18,8 @@
 // times from a fixed clock (agent.WithClock), and the keys come from fixed, public seeds (sample
 // keys: never use them for anything real). Three things the runtime stamps from the wall clock are
 // fixed at the store the runs write to: an attempt marker's attempted_at, and a plan flow's
-// started_at and approval-pending recorded_at (plan has no clock option). Every record carries a
+// started_at and its gates' approval-request and approval-pending recorded_at (plan has no clock
+// option). Every record carries a
 // random salt (and an attempt marker a random claim ID), which the sample leaves random, as the
 // runtime draws them; so the digests over salted records (the Merkle roots of
 // the signed tree heads, and the evidence packages that hold them) differ between calls. Compare
@@ -450,8 +451,8 @@ func (e *env) refundFlow() *plan.Flow[order, string] {
 var errCrash = errors.New("simulated crash")
 
 // sampleStore is the store the sample's runs write to. It fixes what the runtime stamps from the
-// wall clock: an attempt marker's attempted_at, run:start's started_at and an approval-pending
-// record's recorded_at (a plan flow takes the wall clock, as plan has no clock option; an agent
+// wall clock: an attempt marker's attempted_at, run:start's started_at and an approval-request or
+// approval-pending record's recorded_at (a plan flow takes the wall clock, as plan has no clock option; an agent
 // run's are already its clock's). It also fails
 // the insert of the record named lose, when set: the write a crash loses. With noStartTime it
 // writes run:start without its start time, as an earlier version wrote it.
@@ -480,7 +481,7 @@ func (s *sampleStore) Insert(ctx context.Context, runID, name string, data []byt
 			data = startedAt.ReplaceAll(data, []byte(`"started_at":"`+s.at.UTC().Format("2006-01-02T15:04:05.000Z")+`"`))
 		}
 	}
-	if strings.HasPrefix(name, "approval-pending:") {
+	if strings.HasPrefix(name, "approval-pending:") || strings.HasPrefix(name, "approval-request:") {
 		data = recordedAt.ReplaceAll(data, []byte(`"recorded_at":"`+agent.FormatTimestamp(s.at)+`"`))
 	}
 	data = attemptedAt.ReplaceAll(data, []byte(`"attempted_at":`+strconv.FormatInt(s.at.UnixMilli(), 10)))

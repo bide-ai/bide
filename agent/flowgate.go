@@ -26,11 +26,14 @@ func ApprovalRequestStep(toolUseID string) string { return "approval-request:" +
 // call, and it is what FindToolCall finds for the node's key: ToolUseID is the node's key, ToolName
 // its name, and Args its input as JSON. It is recorded once, before the first pause, and a later
 // drive whose input differs from it is refused (ErrConfig), so every decision is checked against
-// the input the node then runs with.
+// the input the node then runs with. RecordedAt is when the request was recorded, by the drive's
+// clock, in FormatTimestamp's form: when approvers are asked. It is informational (the gate orders
+// decisions by journal position, never by it), and empty on a request an earlier version wrote.
 type ApprovalRequest struct {
-	ToolUseID string          `json:"tool_use_id"`
-	ToolName  string          `json:"tool_name"`
-	Args      json.RawMessage `json:"args"`
+	ToolUseID  string          `json:"tool_use_id"`
+	ToolName   string          `json:"tool_name"`
+	Args       json.RawMessage `json:"args"`
+	RecordedAt string          `json:"recorded_at,omitempty"`
 }
 
 // decodeApprovalRequest reads r as the request of the gate on toolUseID: a StepValue named
@@ -161,7 +164,7 @@ func flowGate(ctx context.Context, d *Journal, runID, key, node string, args jso
 			return t.Passed(), nil
 		}
 	}
-	b, err := marshalJournal(ApprovalRequest{ToolUseID: key, ToolName: node, Args: args})
+	b, err := marshalJournal(ApprovalRequest{ToolUseID: key, ToolName: node, Args: args, RecordedAt: FormatTimestamp(clockFrom(ctx)())})
 	if err != nil {
 		return false, fmt.Errorf("plan node %q: encode the approval request: %w (%w)", node, err, ErrConfig)
 	}

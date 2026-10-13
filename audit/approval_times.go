@@ -53,14 +53,19 @@ const (
 	// the gate's request (SubmitDecision refuses one recorded before it). So a decision with this
 	// flag was recorded after the request; its signed time says it was made before the approver
 	// was asked, which points at a clock that runs behind, or a decision signed in advance.
-	FlagDecidedBeforeAsked = "decided_at is before the run asked for approval (its approval-pending recorded_at): the approver's clock appears to run behind, or the decision was signed in advance; the gate orders decisions by journal position, so this did not change the count"
+	FlagDecidedBeforeAsked = "decided_at is before the run asked for approval: the approver's clock appears to run behind, or the decision was signed in advance; the gate orders decisions by journal position, so this did not change the count"
+	// FlagAskedUnknown: the evidence does not say when the run asked for approval (no request or
+	// pause record with a time, as from an earlier version, or a pause record lost to a crash), so
+	// FlagDecidedBeforeAsked could not be checked. It is a note, not a problem.
+	FlagAskedUnknown = "when the run asked for approval is not available, so decided-before-asked was not checked"
 )
 
 // FlagDecisionTimes returns times with Flags recomputed under tolerance: FlagDecidedAfterRecorded
 // when a decision's DecidedAt is more than tolerance after its RecordedAt, and
-// FlagDecidedBeforeAsked when its DecidedAt is before askedAt, the time the run recorded that it
-// paused at the gate (agent.ApprovalWait.RecordedAt; "" when the evidence holds none, and then
-// that check is skipped). A negative tolerance is treated as zero. The input is not modified.
+// FlagDecidedBeforeAsked when its DecidedAt is before askedAt, the time the run asked for approval
+// (ApprovalVerdict.AskedAt), and FlagAskedUnknown in its place when askedAt is "" or not a
+// canonical time. A negative tolerance is treated as zero. The input is not modified. No flag
+// affects the count or the verdict.
 func FlagDecisionTimes(times []DecisionTime, askedAt string, tolerance time.Duration) []DecisionTime {
 	tolerance = max(tolerance, 0)
 	asked, askedErr := agent.ParseTimestamp(askedAt)
@@ -70,7 +75,10 @@ func FlagDecisionTimes(times []DecisionTime, askedAt string, tolerance time.Dura
 		if gap, ok := d.Gap(); ok && -gap > tolerance {
 			d.Flags = append(d.Flags, FlagDecidedAfterRecorded)
 		}
-		if decided, err := agent.ParseTimestamp(d.DecidedAt); err == nil && askedErr == nil && decided.Before(asked) {
+		switch decided, err := agent.ParseTimestamp(d.DecidedAt); {
+		case askedErr != nil:
+			d.Flags = append(d.Flags, FlagAskedUnknown)
+		case err == nil && decided.Before(asked):
 			d.Flags = append(d.Flags, FlagDecidedBeforeAsked)
 		}
 		out[i] = d
@@ -78,10 +86,20 @@ func FlagDecisionTimes(times []DecisionTime, askedAt string, tolerance time.Dura
 	return out
 }
 
-// askedAt returns the time the run recorded that it paused at toolUseID's gate, from the proven
-// approval-pending record among actions (a KindStep action under sth and runID), or "" when the
-// evidence holds none that verifies, or one an earlier version wrote with no time.
-func askedAt(actions []EvidenceAction, recs []agent.Record, toolUseID string, sth SignedTreeHead, runID string, logV Verifier) string {
+// askedAt returns when the run asked for approval on toolUseID's gate: for a gated plan flow node,
+// the recorded_at of its request (request, already proven by the caller), which the ordering rule
+// is anchored to; otherwise, or when the request has none, the recorded_at of the proven
+// approval-pending record among actions (a KindStep action under sth and runID). It returns ""
+// when the evidence holds neither with a time.
+func askedAt(actions []EvidenceAction, recs []agent.Record, request agent.Record, flowNode bool, toolUseID string, sth SignedTreeHead, runID string, logV Verifier) string {
+	if flowNode {
+		var q agent.ApprovalRequest
+		if UnmarshalStrict(request.Result, &q) == nil && q.ToolUseID == toolUseID {
+			if _, err := agent.ParseTimestamp(q.RecordedAt); err == nil {
+				return q.RecordedAt
+			}
+		}
+	}
 	name := agent.ApprovalPendingStep(toolUseID)
 	for i, a := range actions {
 		r := recs[i]

@@ -87,11 +87,11 @@ func TestApprovalTimes_Verdict(t *testing.T) {
 	}
 	// The tolerance is exclusive: a signed time exactly the tolerance ahead is not flagged.
 	edge := []audit.DecisionTime{{DecidedAt: "2026-10-13T12:05:00.000Z", RecordedAt: "2026-10-13T12:00:00.000Z"}}
-	if f := audit.FlagDecisionTimes(edge, "", audit.DefaultDecisionTimeTolerance); len(f[0].Flags) != 0 {
+	if f := audit.FlagDecisionTimes(edge, v.AskedAt, audit.DefaultDecisionTimeTolerance); len(f[0].Flags) != 0 {
 		t.Fatalf("exactly 5m ahead flagged: %+v", f)
 	}
 	edge[0].DecidedAt = "2026-10-13T12:05:00.001Z"
-	if f := audit.FlagDecisionTimes(edge, "", audit.DefaultDecisionTimeTolerance); !slices.Equal(f[0].Flags, []string{audit.FlagDecidedAfterRecorded}) {
+	if f := audit.FlagDecisionTimes(edge, v.AskedAt, audit.DefaultDecisionTimeTolerance); !slices.Equal(f[0].Flags, []string{audit.FlagDecidedAfterRecorded}) {
 		t.Fatalf("5m and 1ms ahead not flagged: %+v", f)
 	}
 	// Without the pause record the decided-before-asked check has nothing to compare with.
@@ -102,7 +102,7 @@ func TestApprovalTimes_Verdict(t *testing.T) {
 		}
 	}
 	v2, err := audit.VerifyApprovals(noPending, "c1", g.policy, g.resolver(), edV(g.logPub))
-	if err != nil || !v2.OK || v2.AskedAt != "" || len(v2.Times[1].Flags) != 0 {
+	if err != nil || !v2.OK || v2.AskedAt != "" || !slices.Equal(v2.Times[0].Flags, []string{audit.FlagAskedUnknown}) || !slices.Equal(v2.Times[1].Flags, []string{audit.FlagAskedUnknown}) {
 		t.Fatalf("without the pause record: %+v, %v", v2, err)
 	}
 }
@@ -175,6 +175,80 @@ func TestApprovalTimes_TamperedInJournal(t *testing.T) {
 	for _, dt := range v.Times {
 		if dt.Approver == "carol" {
 			t.Fatalf("an uncounted decision's time is reported: %+v", dt)
+		}
+	}
+}
+
+// TestApprovalTimes_FlagsNeverUncount: a decision signed a day after bide recorded it, and one
+// signed a day before the run asked, both count toward the quorum and pass the gate; they are only
+// flagged.
+func TestApprovalTimes_FlagsNeverUncount(t *testing.T) {
+	g := newGate(2, []string{"alice", "bob"}, []string{"alice", "bob"})
+	g.clock = func() time.Time { return asked }
+	wantPaused(t, g.run(), 0)
+	g.decideAt(t, "alice", asked.Add(24*time.Hour), asked.Add(time.Second))
+	g.decideAt(t, "bob", asked.Add(-24*time.Hour), asked.Add(2*time.Second))
+	if err := g.run(); err != nil || g.charged != 1 {
+		t.Fatalf("the gate with flagged times: %v (charged %d); want it passed", err, g.charged)
+	}
+	acts, err := audit.ApprovalEvidence(context.Background(), g.store, gateRun, "c1", g.sth(t, 1700000000))
+	if err != nil {
+		t.Fatal(err)
+	}
+	v, err := audit.VerifyApprovals(acts, "c1", g.policy, g.resolver(), edV(g.logPub))
+	if err != nil || !v.OK || !slices.Equal(v.Counted, []string{"alice", "bob"}) || len(v.Problems) != 0 {
+		t.Fatalf("VerifyApprovals = %+v, %v; want OK, both counted", v, err)
+	}
+	if !slices.Equal(v.Times[0].Flags, []string{audit.FlagDecidedAfterRecorded}) || !slices.Equal(v.Times[1].Flags, []string{audit.FlagDecidedBeforeAsked}) {
+		t.Fatalf("flags = %+v", v.Times)
+	}
+}
+
+// TestApprovalTimes_FlowAskedAtIsTheRequest: for a gated plan flow node, when the run asked is the
+// recorded_at of the gate's request, the record the ordering rule counts decisions from; the pause
+// record is not needed for it.
+func TestApprovalTimes_FlowAskedAtIsTheRequest(t *testing.T) {
+	g := newGate(2, []string{"alice", "bob", "carol"}, []string{"alice", "bob", "carol"})
+	flowGate(t, g, "alice", "carol")
+	th, err := audit.NewTreeHead(context.Background(), g.store, flowRun, 1700000000)
+	if err != nil {
+		t.Fatal(err)
+	}
+	acts, err := audit.ApprovalEvidence(context.Background(), g.store, flowRun, "node:pay", signTH(t, th, g.logPriv))
+	if err != nil {
+		t.Fatal(err)
+	}
+	var reqAt string
+	var noPending []audit.EvidenceAction
+	for _, a := range acts {
+		r, err := a.Bundle.Record()
+		if err != nil {
+			t.Fatal(err)
+		}
+		if a.Kind == audit.KindCall {
+			var q agent.ApprovalRequest
+			if err := audit.UnmarshalStrict(r.Result, &q); err != nil {
+				t.Fatal(err)
+			}
+			reqAt = q.RecordedAt
+		}
+		if r.Name != agent.ApprovalPendingStep("node:pay") {
+			noPending = append(noPending, a)
+		}
+	}
+	if _, err := agent.ParseTimestamp(reqAt); err != nil {
+		t.Fatalf("the flow gate's request records no time: %q", reqAt)
+	}
+	if len(noPending) != len(acts)-1 {
+		t.Fatalf("the evidence holds no pause record to drop: %d of %d", len(noPending), len(acts))
+	}
+	v, err := audit.VerifyApprovals(noPending, "node:pay", g.policy, g.resolver(), edV(g.logPub))
+	if err != nil || !v.OK || v.AskedAt != reqAt {
+		t.Fatalf("VerifyApprovals = %+v, %v; want AskedAt %q from the request", v, err, reqAt)
+	}
+	for _, d := range v.Times {
+		if slices.Contains(d.Flags, audit.FlagAskedUnknown) {
+			t.Fatalf("%s flagged unknown though the request has a time", d.Approver)
 		}
 	}
 }
