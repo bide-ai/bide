@@ -302,7 +302,7 @@ An independent review of the first implementation found these, and each is now a
 - **A peer sends the overdue notice when the holder is gone.** The holder sends the notice inside its
   own rounds, so a holder that claimed before the event was overdue, and may be dead for the whole
   claim, would delay it by the claim (an hour at `WithNotifyClaimTTL(time.Hour)`). Such a peer sends
-  it under a short claim (at most 2 minutes) of its own on the notice's key, so peers do not send it
+  it under a short claim of its own on the notice's key (long enough for the notice's call and its acknowledgement: a quarter of the event's claim and half a minute, at least two minutes, at most the event's claim), so peers do not send it
   together; a holder that is only slow may send it too, one duplicate the notice's stable ID lets the
   sink drop. A holder that claimed after the event was overdue is left to send it, so the common case
   writes no extra claims.

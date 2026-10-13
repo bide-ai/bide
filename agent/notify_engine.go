@@ -223,20 +223,29 @@ type keyLock struct {
 
 // callTimeout bounds one call of a Notifier. A round makes at most roundAttempts+1 calls (the
 // overdue notice is one more), so with an eighth of the claim for each, the calls take at most half
-// of it; the backoff between them and the acknowledgement's retries (another eighth) bring a round to
-// five eighths of a claim and a few seconds, and a round starts only when more than three quarters of
-// its claim remain (see roundLocked), so it ends inside the claim it holds.
+// of it; the backoff between them and the acknowledgements' retries (an eighth for the event's, an
+// eighth for the notice's) bring a round to six eighths of a claim and a few seconds, and a round
+// starts only when more than that remains (see roundBudget), so it ends inside the claim it holds.
 func (e *notifyEngine) callTimeout() time.Duration { return e.cfg.claimTTL / 8 }
 
 // roundBudget is the claim a round must have left to start under it: the worst a round can take.
 // A round makes roundAttempts+1 calls (the overdue notice is one) of callTimeout each, sleeps
 // attemptBackoff, then twice that, between its attempts, and spends an eighth of the claim on the
-// acknowledgement. With the call limit an eighth of the claim, that is five eighths of it and the
-// backoff.
+// acknowledgement, and another eighth on the overdue notice's acknowledgement. With the call limit
+// an eighth of the claim, that is six eighths of it and the backoff, still inside a fresh claim.
 func (e *notifyEngine) roundBudget() time.Duration {
 	calls := time.Duration(e.cfg.roundAttempts+1) * e.callTimeout()
 	sleeps := e.cfg.attemptBackoff * time.Duration(1<<(e.cfg.roundAttempts-1)-1)
-	return calls + sleeps + e.cfg.claimTTL/8
+	return calls + sleeps + 2*(e.cfg.claimTTL/8)
+}
+
+// noticeClaimTTL is how long a peer's claim on an overdue notice's own key lasts: long enough for
+// the notice's one call and its acknowledgement's retries (an eighth of the event's claim each),
+// with half a minute to spare, and at least two minutes, but never longer than the event's claim.
+// A shorter notice claim could lapse while its call is still running and let another peer send the
+// notice again.
+func (e *notifyEngine) noticeClaimTTL() time.Duration {
+	return min(e.cfg.claimTTL, max(2*time.Minute, 2*(e.cfg.claimTTL/8)+30*time.Second))
 }
 
 // callNotify makes one call of n, bounded by callTimeout whether or not n honors its context: the
@@ -526,7 +535,7 @@ func (e *notifyEngine) deliverOverdueNotice(ctx context.Context, ev notifyEvent,
 				return
 			}
 			rec := NotifyRecord{Kind: NotifyClaimed, Key: key, RunID: ev.runID, At: now, Holder: e.holder,
-				Until: now.Add(min(e.cfg.claimTTL, 2*time.Minute))}
+				Until: now.Add(e.noticeClaimTTL())}
 			conflict, aerr := e.appendRec(ctx, name, len(recs), rec)
 			if aerr != nil {
 				e.report(aerr)
