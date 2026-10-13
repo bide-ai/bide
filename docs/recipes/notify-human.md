@@ -294,9 +294,7 @@ The `sent` map is in memory, so this recipe is a notifier, not a guarantee:
   so a failure is retried on the next pass, but a run that is reported once (the error from `Run`) is not.
 - **There is no deadline or escalation.** A message nobody reads is not noticed.
 
-A built-in notifier that closes these gaps is planned, with delivery state kept in an audited log so it
-survives restarts and crashes, retries without end, and is itself evidence of when the approvers were
-told. See the [design note](../design/notifier.md). Until it ships, treat this recipe as best effort.
+The built-in notifier closes these gaps: its delivery state is kept in an audited log, so it survives restarts and crashes, retries without end, and is itself evidence of when the approvers were told. See the [notifications guide](../guides/notifications.md) and the [design note](../design/notifier.md). This recipe stays as the smallest notifier you can write by hand.
 
 ## What the viewer shows
 

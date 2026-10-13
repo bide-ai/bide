@@ -1,10 +1,8 @@
 # Design: tell a human when a run needs them
 
-Status: approved, in progress. Build plan item 3 (the trail port, records, fold and `EventStore`
-adapter) has shipped, item 4 (the notifier core: events at the end of a drive, claim and delivery,
-overdue, `recovery_failing`) is in review, and item 6 (`NotifyPending`) is built on it. It adds a
+Status: shipped in v0.16.0 (`agent.WithNotifier`, `agent.NotifyPending`, `plan.Builder.WithNotifier`, the `notify` package, TLA+ Model 14), except the `audit.VerifyNotifications` verifier and the viewer's "Needs attention" view (build plan items 7 and 8), which are not built. It adds a
 small `Notifier` seam, a signed webhook implementation, and an audited delivery trail that gives
-notify-once across crashes and makes the notification itself evidence. Until it ships, the recipe "Get notified when a run needs a human"
+notify-once across crashes and makes the notification itself evidence. The recipe "Get notified when a run needs a human"
 wires the existing hooks to a webhook with an in-process dedupe; this note is the crash-safe,
 auditable version of that recipe.
 

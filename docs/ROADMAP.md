@@ -4,10 +4,11 @@ Where bide is going, in order. The priority is to harden what exists before addi
 
 This page describes intent, not promises of dates. Shipped work is recorded in the [changelog](../CHANGELOG.md).
 
-## Now: v0.15.0, stabilizing
+## Now: v0.16.0, stabilizing
 
-The current release is v0.15.0 (2026-10-13), and the work now is stabilizing what exists: bug fixes, documentation, tests, soak and chaos runs, and fresh-eyes passes over the code and the docs. No new features are planned for now, and releases stay on 0.x.
+The current release is v0.16.0 (2026-10-13), and the work now is stabilizing what exists: bug fixes, documentation, tests, soak and chaos runs, and fresh-eyes passes over the code and the docs. No new features are planned for now, and releases stay on 0.x.
 
+- In v0.16.0, bide tells a human when a run needs them (a built-in notifier and a signed webhook, [notifications guide](guides/notifications.md)), approval decisions carry a signed time, the run viewer has a new look, and the SQLite and Postgres stores keep the event trail ([changelog](../CHANGELOG.md)).
 - In v0.15.0, the run viewer covers a whole journal and a flow config's policy: a run list, live mode, a risk map with policy assertions, and a visual diff of two versions of a flow ([run viewer guide](guides/run-viewer.md)).
 - One command, `bide` ([CLI reference](reference/cli.md)), in v0.14.0: `bide init` scaffolds a project with a gated plan flow, `bide check` checks flow configs in CI, and `bide demo` is a one-command crash demo: kill an agent mid-payment and watch it not charge twice, then see the run, its audit proof and its approval signatures in the run viewer.
 - The [launch post](blog/introducing-bide.md): what bide is, a first agent, and one crash resumed from the journal.
