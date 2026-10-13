@@ -22,7 +22,7 @@ brew install bide-ai/tap/bide
 bide demo
 # 2. ابنِ: تدفّق plan ببوابة موافقة 2 من 3، على SQLite، دون مفتاح API
 bide init refund && cd refund && go mod tidy && go run .
-# 3. افحص: التشغيل في صفحة محلية للقراءة فقط (يطبع العنوان الذي تفتحه)
+# 3. افحص: التشغيلات في صفحة محلية للقراءة فقط (قائمة بالتشغيلات، ثم كل تشغيل؛ يطبع العنوان الذي تفتحه)
 bide view -db run.db
 # 4. أثبِت: تحقّق من أدلة التشغيل دون اتصال
 bide audit verify-evidence -evidence evidence.json -pubkey keys/log.pub

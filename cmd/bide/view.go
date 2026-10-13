@@ -1,10 +1,11 @@
 //go:build !bide_audit_only
 
-// bide view opens a local, read-only web page that shows a run from a bide journal: a plan flow's
-// declared topology with the run's path drawn over it, or an agent run's timeline of model turns,
-// tool calls (with their Safety), attempts, approvals, halts and its end state, and whether the
-// journal verifies against a signed tree head or an evidence package (with approver keys, whether
-// each m-of-n approval gate's signatures verify). The command is package internal/runview; this
+// bide view opens a local, read-only web page over a bide journal: a run list (each run's kind and
+// state, filtered by state, kind and run ID), and for each run a plan flow's declared topology
+// with the run's path drawn over it, or an agent run's timeline of model turns, tool calls (with
+// their Safety), attempts, approvals, halts and its end state, and whether the journal verifies
+// against a signed tree head or an evidence package (with approver keys, whether each m-of-n
+// approval gate's signatures verify). The command is package internal/runview; this
 // file plugs in the stores and the YAML decoder, which the core module does not carry.
 //
 //	bide view -db run.db                       # the run list of a SQLite journal

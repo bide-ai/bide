@@ -87,7 +87,8 @@ type Options struct {
 	Config *Config
 }
 
-// Handler serves the run list at / and a run at /run?id=<run> (its View as JSON at /run.json?id=<run>).
+// Handler serves the run list at / (as JSON at /runs.json; see RunList) and a run at /run?id=<run>
+// (its View as JSON at /run.json?id=<run>).
 // It answers only GET and HEAD, and only requests addressed to a loopback host, so a page on
 // another site cannot read it through a rebound DNS name.
 func Handler(o Options) http.Handler {
@@ -99,15 +100,10 @@ func Handler(o Options) http.Handler {
 		return guard(mux)
 	}
 	mux.HandleFunc("GET /{$}", func(w http.ResponseWriter, r *http.Request) {
-		ids, err := o.Source.Runs(r.Context())
-		data := struct {
-			Runs []string
-			Err  string
-		}{Runs: ids}
-		if err != nil {
-			data.Err = err.Error()
-		}
-		render(w, "index.html", data)
+		render(w, "runs.html", o.runList(r.Context(), listFilter(r.URL.Query())))
+	})
+	mux.HandleFunc("GET /runs.json", func(w http.ResponseWriter, r *http.Request) {
+		writeJSON(w, o.runList(r.Context(), listFilter(r.URL.Query())))
 	})
 	serveRun := func(asJSON bool) http.HandlerFunc {
 		return func(w http.ResponseWriter, r *http.Request) {

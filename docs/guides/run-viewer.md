@@ -64,6 +64,45 @@ It prints the URL it serves (by default `http://127.0.0.1:8484/`) and runs until
 open a browser (unlike `bide demo`, it has no `-no-browser` flag). A run's
 page is at `/run?id=<run>`, and the same view as JSON at `/run.json?id=<run>`.
 
+## The run list
+
+With no `-run`, the page opens on the journal's runs, so you can find the one that halted or is
+waiting without knowing its ID:
+
+![bide view's run list over a journal of nine runs: completed, halted, waiting for approval, in progress, aborted and cancelled agent and flow runs, with state counts and filters](img/run-viewer-run-list-dark.png)
+
+Each row is a run: its ID (a link to its page), its kind (`agent`, `flow` with the flow's name, or
+`session turn`), its state, the time it was last stamped, and its record count. The state is the
+one the run's page shows (see END STATE below), so the list and the page never disagree. The state
+filters above the table count the runs in each state: completed, **halted: outcome unknown**,
+**waiting for approval**, **in progress** (started, not ended, not halted and not waiting), and
+**failed or cancelled** (`aborted`, a saga that rolled back, or `cancelled`), and **not started**
+for a run whose journal holds records but no `run:start`. The kind filter and a
+run ID filter (a case-insensitive substring) narrow the list further; the filters are in the URL
+(`/?state=halted&kind=flow&q=refund`), so a filtered list can be bookmarked. The same list is JSON
+at `/runs.json`, with the same query.
+
+The journal records no wall-clock time for a run today: no start time and no end time. The one time
+it holds is on an attempt marker, which a run writes just before a side effect (a tool call that is
+not retry-safe on resume, or a `Step`). So **last stamped** is the time of the run's last
+side-effect attempt, and the list is ordered by it: the most recently stamped runs first, then the
+runs with no side effect (no time) by run ID. Recording a start time in the journal is a separate,
+later change.
+
+The list shows 50 runs and a **Show more** link for the next 50. To classify a run the viewer reads
+its journal, so one load reads at most 5,000 runs (the first by run ID among those the run ID filter
+admits) and says so when there are more; narrow the run ID filter to reach the others. An exported
+journal holds one run, so `-journal` lists as many runs as files it is given, and the page says so
+when it is one.
+
+To make the journal in the screenshot (nine runs, every state, no API key), run the test that
+writes it and open it:
+
+```sh
+BIDE_RUNLIST_DEMO=$PWD/runs.db go test ./cmd/bide -run TestRunListDemo
+bide view -db runs.db
+```
+
 ## Flags
 
 | Flag | Meaning |
@@ -71,7 +110,7 @@ page is at `/run?id=<run>`, and the same view as JSON at `/run.json?id=<run>`.
 | `-db <file>` | SQLite journal to read, opened read-only. Give one of `-db`, `-postgres` and `-journal`. |
 | `-postgres <dsn>` | Postgres journal to read, a pgx DSN; read in read-only sessions. |
 | `-journal <file>` | An exported journal (`audit.JournalExport` JSON). Repeat it for several runs. |
-| `-run <id>` | The run whose URL to print. Without it, the printed URL is the run list. |
+| `-run <id>` | The run whose URL to print. Without it, the printed URL is the [run list](#the-run-list). |
 | `-topology <file>` | A declared topology, as JSON of `flow.Topology()`, to draw a flow run against instead of the topology the run journaled: for a run started before `flow:topology` was journaled, or to check a run against another flow. |
 | `-digest <hex>` | `flow.Digest()` of the `-topology` flow, compared with the digest the run journaled. Needs `-topology`. By default it is computed from the `-topology` file when the file carries the digest's inputs (a topology exported by this version does). |
 | `-sth <file>` | A signed tree head (`audit.SignedTreeHead` JSON) to verify the journal against. Needs `-pubkey`. |

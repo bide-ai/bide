@@ -9,6 +9,10 @@ journal format can change between pre-releases without a version bump. Curated h
 
 ## [Unreleased]
 
+### Added
+
+- `bide view` with no `-run` opens on a run list: each run's ID (linking to its page), kind, state (completed, halted: outcome unknown, waiting for approval, in progress, aborted, cancelled; the state the run page shows), the time of its last attempt marker (a journal records no other wall-clock time) and its record count, most recently stamped first. It filters by state (with counts), kind and run ID substring, shows 50 rows with a "show more" link, and serves the same list as JSON at `/runs.json`. It reads SQLite, Postgres and exported journals, read-only, on loopback only, with no JavaScript. One load classifies at most 5,000 runs and says when it stops short. The guide's screenshot is of a demo journal any checkout can write (`BIDE_RUNLIST_DEMO=$PWD/runs.db go test ./cmd/bide -run TestRunListDemo`).
+
 ## [0.14.1] - 2026-10-13
 
 ### Changed

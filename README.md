@@ -22,7 +22,7 @@ brew install bide-ai/tap/bide
 bide demo
 # 2. Build: a plan flow with a 2-of-3 approval gate, on SQLite, no API key
 bide init refund && cd refund && go mod tidy && go run .
-# 3. Inspect: the run in a local, read-only page (it prints the address to open)
+# 3. Inspect: the runs in a local, read-only page (a run list, then each run; it prints the address to open)
 bide view -db run.db
 # 4. Prove: verify the run's evidence offline
 bide audit verify-evidence -evidence evidence.json -pubkey keys/log.pub
@@ -224,7 +224,7 @@ is in [known limitations](docs/KNOWN-LIMITATIONS.md#governed-state-gsm).
 
 **Guides: inspect**
 
-- **[Run viewer](docs/guides/run-viewer.md)**: `bide view`, a read-only local page for one run (the timeline, a flow's path, halts, approval gates and the audit verdict), and `bide check` for flow configs in CI.
+- **[Run viewer](docs/guides/run-viewer.md)**: `bide view`, a read-only local page for a journal's runs (a run list filtered by state, kind and ID) and for one run (the timeline, a flow's path, halts, approval gates and the audit verdict), and `bide check` for flow configs in CI.
 - **[Debugging and recovery](docs/guides/debugging.md)**: `Replay`, `ReplayEvents`, Mermaid run diagrams, and `Recover`.
 
 **Guides: prove and govern**

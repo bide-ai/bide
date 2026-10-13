@@ -1,0 +1,35 @@
+/* The run list (runs.html). The colour tokens are style.css's. */
+.listhead { display: flex; flex-wrap: wrap; align-items: baseline; gap: 4px 14px; }
+.listhead p { margin: 0; }
+.note { background: var(--card); border: 1px solid var(--line); border-left: 4px solid var(--accent); border-radius: 6px; padding: 8px 12px; }
+.chips { display: flex; flex-wrap: wrap; gap: 8px; margin: 14px 0 10px; }
+.chip { display: inline-flex; align-items: center; gap: 7px; padding: 4px 12px; border-radius: 16px; border: 1px solid var(--line); background: var(--card); color: var(--fg); text-decoration: none; font-size: 13.5px; }
+.chip:hover { border-color: var(--accent); }
+.chip .count { font-size: 12px; font-weight: 600; color: var(--muted); font-variant-numeric: tabular-nums; }
+.chip.on { border-color: var(--accent); box-shadow: inset 0 0 0 1px var(--accent); font-weight: 600; }
+.chip-completed .count { color: var(--good); }
+.chip-halted .count, .chip-failed .count { color: var(--bad); }
+.chip-in-progress .count { color: var(--warn); }
+.chip-waiting .count { color: var(--accent); }
+.filters { display: flex; flex-wrap: wrap; align-items: center; gap: 10px 16px; margin: 0 0 14px; font-size: 13.5px; color: var(--muted); }
+.filters label { display: inline-flex; align-items: center; gap: 6px; }
+.filters input, .filters select, .filters button { font: inherit; color: var(--fg); background: var(--card); border: 1px solid var(--line); border-radius: 6px; padding: 4px 8px; }
+.filters input { width: 220px; max-width: 60vw; }
+.filters button { cursor: pointer; }
+.filters button:hover { border-color: var(--accent); }
+.tablewrap { background: var(--card); border: 1px solid var(--line); border-radius: 10px; overflow-x: auto; }
+table.runlist { font-size: 14px; }
+table.runlist th { font-size: 12px; text-transform: uppercase; letter-spacing: .04em; color: var(--muted); font-weight: 600; padding: 10px 12px; white-space: nowrap; }
+table.runlist td { padding: 9px 12px; vertical-align: middle; }
+table.runlist tbody tr:last-child td { border-bottom: 0; }
+table.runlist tbody tr:hover { background: var(--bg); }
+table.runlist .rid a { font: 13.5px/1.4 ui-monospace, SFMono-Regular, Menlo, monospace; text-decoration: none; overflow-wrap: anywhere; }
+table.runlist .rid a:hover { text-decoration: underline; }
+table.runlist .when { font-variant-numeric: tabular-nums; white-space: nowrap; }
+table.runlist .num { text-align: right; font-variant-numeric: tabular-nums; }
+.pill { white-space: nowrap; }
+/* The run page draws a waiting gate in the accent colour; the list does too, apart from in progress. */
+table.runlist .pill.state-waiting { background: transparent; color: var(--accent); box-shadow: inset 0 0 0 1px var(--accent); }
+.more { margin: 12px 0; }
+.legendnote { margin-top: 18px; }
+@media (max-width: 600px) { table.runlist th:nth-child(2), table.runlist td:nth-child(2) { display: none; } table.runlist .pill { white-space: normal; } table.runlist th, table.runlist td { padding: 8px; } }

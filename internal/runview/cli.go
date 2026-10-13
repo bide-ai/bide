@@ -50,8 +50,11 @@ the run journaled, its digest checked, unless -topology overrides it), and wheth
 verifies against a signed tree head or an evidence package; with -approver-keys, whether each
 m-of-n approval gate's signatures verify (audit.VerifyApprovals), against the policy the gate
 recorded or, with -need and -approvers, against the policy you expect. It never writes to the
-store, and it serves on a loopback address only. With no -run it lists the runs. Stop it with
-Ctrl-C.
+store, and it serves on a loopback address only. Stop it with Ctrl-C.
+
+With no -run the page opens on the run list: each run's kind, state (completed, halted: outcome
+unknown, waiting for approval, in progress, aborted or cancelled), the time of its last attempt
+marker (a journal records no other time) and its record count, filtered by state, kind and run ID.
 
 With -config it shows a flow definition instead, without running anything: the declared graph,
 its approval gates, and every problem plan.InspectConfig finds, marked on the node, edge or arm it

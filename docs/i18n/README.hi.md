@@ -22,7 +22,7 @@ brew install bide-ai/tap/bide
 bide demo
 # 2. बनाएँ: 2-में-से-3 अनुमोदन गेट वाला plan फ़्लो, SQLite पर, बिना API key
 bide init refund && cd refund && go mod tidy && go run .
-# 3. जाँचें: स्थानीय, केवल-पढ़ने वाले पेज में रन देखें (यह खोलने के लिए पता प्रिंट करता है)
+# 3. जाँचें: स्थानीय, केवल-पढ़ने वाले पेज में रन देखें (पहले रनों की सूची, फिर हर रन; यह खोलने के लिए पता प्रिंट करता है)
 bide view -db run.db
 # 4. सिद्ध करें: रन के साक्ष्य को ऑफ़लाइन सत्यापित करें
 bide audit verify-evidence -evidence evidence.json -pubkey keys/log.pub
