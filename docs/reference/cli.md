@@ -93,8 +93,11 @@ Ctrl-C.
 With -config it shows a flow definition instead, without running anything: the declared graph,
 its approval gates, and every problem plan.InspectConfig finds, marked on the node, edge or arm it
 belongs to. The check is structural (types and registered blocks are checked when a program embeds
-the viewer with its plan.Registry, see package plan/planview). With -check it serves nothing and
-prints one "file:node: message" line per problem ("file:from->to: message" for an edge or arm).
+the viewer with its plan.Registry, see package plan/planview). Each node is colored by its crash
+behavior (side effect, read-only, idempotent, or unknown without the Registry), and the config's
+assert lines are decided on the graph, a violated one's counterexample path drawn in red. With
+-check it serves nothing and prints one "file:node: message" line per problem ("file:from->to:
+message" for an edge or arm), a violated assertion among them.
 
 Exit status: 0 after a clean stop (or -h, or a -check that found no errors; warnings do not
 count unless -strict), 1 if an input cannot be read, the server fails, or -check found errors (or,
@@ -152,6 +155,19 @@ Checks each plan flow config without running it, and prints one "file:node: mess
 problem ("file:from->to: message" for an edge or arm). The check is structural: types and
 registered blocks are checked when a program serves the page with its plan.Registry (package
 plan/planview). It is the check bide view -config shows on the graph.
+
+A config's assert lines are checked too, by reachability on the declared graph:
+
+  every path to <node> passes approval >= K [of N]
+  every path to <node> passes <node>
+  every path to a terminal passes <node>
+  no side effect after <node>
+  <node> reachable
+  <node> unreachable
+
+A violated assertion is an error, printed with a shortest counterexample path ("counterexample:
+a -> b -> c"); so is an assertion that is not in this grammar, names an undeclared node, or cannot
+be decided. A file with assertions ends with a line counting their verdicts.
 
   -strict
     	exit 1 on a warning too

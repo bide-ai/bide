@@ -703,7 +703,7 @@ func TestConfigPage(t *testing.T) {
 			dangling = e
 		}
 	}
-	if charge.Status != "problem" || !strings.Contains(charge.Title, "approval") || charge.Note != "approval 4 of 3: ops, finance, risk" {
+	if charge.Status != "problem" || !strings.Contains(charge.Title, "approval") || charge.Gate != "4 of 3: ops, finance, risk" || charge.GateLine != "gated: 4 of 3" {
 		t.Fatalf("charge node = %+v", charge)
 	}
 	if reciept.Status != "undeclared" || !strings.Contains(dangling.Problem, "not a declared node") {
@@ -713,5 +713,103 @@ func TestConfigPage(t *testing.T) {
 		if n.Name != "charge" && n.Name != "reciept" && n.Status != "declared" {
 			t.Errorf("node %s = %q, want declared", n.Name, n.Status)
 		}
+	}
+}
+
+// policyConfig is examples/plan/flows/refund-policy-bypass.yaml as JSON: a vip arm reaches charge
+// without passing review, the 2-of-3 gate; lookup states no safety.
+const policyConfig = `{"version": 1, "flow": "refund", "entry": "validate",
+  "nodes": [
+    {"name": "validate", "block": "validate", "safety": "readonly"},
+    {"name": "lookup", "block": "lookup"},
+    {"name": "review", "block": "review", "safety": "readonly", "approval": {"need": 2, "approvers": ["ops", "finance", "risk"]}},
+    {"name": "charge", "block": "charge", "safety": "side_effect"},
+    {"name": "credit", "block": "credit", "safety": "idempotent"},
+    {"name": "receipt", "block": "receipt", "safety": "idempotent"}],
+  "wiring": [
+    {"edge": ["validate", "lookup"]},
+    {"switch": "lookup", "when": [{"pred": "large", "to": "review"}, {"pred": "vip", "to": "charge"}], "else": "credit"},
+    {"edge": ["review", "charge"]},
+    {"edge": ["charge", "receipt"]}],
+  "assert": ["every path to charge passes approval >= 2 of 3", "no side effect after charge", "credit reachable"]}`
+
+// TestConfigRiskMap: each node is drawn with its safety class and crash behavior, the summary
+// counts side effects behind a gate and not, and a violated assertion's counterexample is marked
+// on exactly its nodes and edges.
+func TestConfigRiskMap(t *testing.T) {
+	v := configView(t, Config{Name: "policy.json", Data: []byte(policyConfig)})
+	want := RiskSummary{SideEffects: 1, Ungated: 1, ReadOnly: 2, Idempotent: 2, Unknown: 1,
+		Line: "1 side-effect step known, 0 gated, 1 ungated", UnknownLine: "1 node: safety unknown without the Registry (the config states none)"}
+	if v.Risk != want {
+		t.Fatalf("risk = %+v\nwant %+v", v.Risk, want)
+	}
+	nodes := map[string]GraphNode{}
+	for _, n := range v.Graph.Nodes {
+		nodes[n.Name] = n
+	}
+	for name, risk := range map[string][2]string{
+		"validate": {"read-only", "crash: re-runs"}, "lookup": {"safety unknown", "crash: unknown"},
+		"charge": {"side effect", "crash: halts, asks"}, "credit": {"idempotent", "crash: re-runs"},
+	} {
+		if n := nodes[name]; n.Risk != risk[0] || n.Crash != risk[1] {
+			t.Errorf("%s: risk %q crash %q, want %v", name, n.Risk, n.Crash, risk)
+		}
+	}
+	if n := nodes["review"]; n.GateLine != "gated: 2 of 3" || n.Cex {
+		t.Errorf("review = %+v", n)
+	}
+	if !strings.Contains(nodes["charge"].Title, "Ungated") {
+		t.Errorf("charge title %q", nodes["charge"].Title)
+	}
+	for _, n := range v.Graph.Nodes {
+		if onPath := n.Name == "validate" || n.Name == "lookup" || n.Name == "charge"; n.Cex != onPath {
+			t.Errorf("node %s: cex %v", n.Name, n.Cex)
+		}
+	}
+	for _, e := range v.Graph.Edges {
+		onPath := e.From == "validate" && e.To == "lookup" || e.From == "lookup" && e.To == "charge"
+		if e.Cex != onPath {
+			t.Errorf("edge %s->%s: cex %v", e.From, e.To, e.Cex)
+		}
+	}
+	if len(v.Assertions) != 3 || !v.Assertions[0].Violated() || !v.Assertions[1].Holds || !v.Assertions[2].Holds || v.Errors != 1 {
+		t.Fatalf("assertions %+v, errors %d", v.Assertions, v.Errors)
+	}
+	_, page := get(t, Handler(Options{Config: &Config{Name: "policy.json", Data: []byte(policyConfig)}}), "/")
+	for _, s := range []string{`class="edge cex"`, "node problem risk-side cex", "node declared risk-read cex", "risk-read", "risk-idem", "node declared risk-unknown", " gated", "violated</span>", "counterexample: <code>validate → lookup → charge</code>"} {
+		if !strings.Contains(page, s) {
+			t.Errorf("the page lacks %q", s)
+		}
+	}
+
+	// The gated config: the side effect is behind the gate, and nothing is marked.
+	gated := strings.Replace(policyConfig, `, {"pred": "vip", "to": "charge"}`, "", 1)
+	v = configView(t, Config{Name: "policy.json", Data: []byte(gated)})
+	if v.Risk.Gated != 1 || v.Risk.Ungated != 0 || v.Errors != 0 || slices.ContainsFunc(v.Graph.Edges, func(e GraphEdge) bool { return e.Cex }) {
+		t.Fatalf("gated: risk %+v, errors %d, edges %+v", v.Risk, v.Errors, v.Graph.Edges)
+	}
+}
+
+// TestCheckAssertions: Check fails on a violated assertion, printing it with its counterexample
+// and a count of verdicts, and passes when every assertion holds; an ill-formed one fails.
+func TestCheckAssertions(t *testing.T) {
+	var out strings.Builder
+	if !Check(&out, Config{Name: "p.json", Data: []byte(policyConfig)}) {
+		t.Fatal("a violated assertion passed the check")
+	}
+	for _, s := range []string{`p.json:charge: assert[0] "every path to charge passes approval >= 2 of 3" is violated`, "(counterexample: validate -> lookup -> charge)", "p.json: 3 assertions: 2 hold, 1 violated, 0 undecided or invalid"} {
+		if !strings.Contains(out.String(), s) {
+			t.Errorf("output lacks %q:\n%s", s, out.String())
+		}
+	}
+	out.Reset()
+	gated := strings.Replace(policyConfig, `, {"pred": "vip", "to": "charge"}`, "", 1)
+	if Check(&out, Config{Name: "p.json", Data: []byte(gated)}) || out.String() != "p.json: 3 assertions: 3 hold, 0 violated, 0 undecided or invalid\n" {
+		t.Fatalf("holding assertions: %q", out.String())
+	}
+	out.Reset()
+	bad := strings.Replace(gated, `"credit reachable"`, `"credit is fine"`, 1)
+	if !Check(&out, Config{Name: "p.json", Data: []byte(bad)}) || !strings.Contains(out.String(), "not an assertion this version reads") || !strings.Contains(out.String(), "2 hold, 0 violated, 1 undecided or invalid") {
+		t.Fatalf("an ill-formed assertion: %q", out.String())
 	}
 }

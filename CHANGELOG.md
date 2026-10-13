@@ -9,6 +9,10 @@ journal format can change between pre-releases without a version bump. Curated h
 
 ## [Unreleased]
 
+### Added
+
+- Risk map and policy assertions for flow configs. `bide view -config` colors each node by its crash behavior (side effect: the resume halts and asks; read-only or idempotent: it re-runs; unknown without the Registry), marks its approval gate, and sums up side effects behind a gate and not ("1 side-effect step, 1 gated, 0 ungated"). A config's new `assert` list, which `plan.Load` ignores, states policy about the graph: `every path to <node> passes approval >= K [of N]`, `every path to <node> passes <node>`, `every path to a terminal passes <node>`, `no side effect after <node>`, `<node> reachable` and `<node> unreachable`, each decided by reachability over the declared graph (loops included). A violated assertion is an error with a shortest counterexample path, drawn in red on the page and printed by `bide check`, which exits 1; an ill-formed, unknown-node or undecided assertion is an error too. `plan.InspectConfig` reports them in `ConfigReport.Safety`, `.Gated` and `.Assertions` (`plan.NodeSafety`, `plan.AssertionResult`). `examples/plan/flows/refund-policy.yaml` and `refund-policy-bypass.yaml` show a holding and a violated policy.
+
 ## [0.14.1] - 2026-10-13
 
 ### Changed

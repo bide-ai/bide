@@ -7,11 +7,17 @@
   <div class="card"><h3>Digest</h3>{{if .Digest}}<p><code class="wrap">{{.Digest}}</code></p><p class="muted small">The flow:digest a run of this flow journals (plan.TopologyDigest).</p>
   {{else if .Typed}}<p class="muted">Not computed: the config has errors.</p>
   {{else}}<p class="muted">Needs the plan.Registry: the digest commits to the blocks' Go types.</p>{{end}}</div>
+  {{if .Graph}}<div class="card"><h3>Side effects</h3>{{with .Risk}}<p class="{{if or .Ungated .Unknown}}warn{{else}}good{{end}}"><b>{{.Line}}</b></p>
+    <p class="small">{{.ReadOnly}} read-only, {{.Idempotent}} idempotent: a resume after a crash re-runs them. A side effect halts and asks for its outcome.</p>
+    {{if .UnknownLine}}<p class="small warn">{{.UnknownLine}}</p>{{end}}{{end}}</div>{{end}}
   {{if .Approvals}}<div class="card"><h3>Approval gates</h3>{{range .Approvals}}<p>{{.}}</p>{{end}}</div>{{end}}
+  {{if .Assertions}}<div class="card wide"><h3>Assertions</h3>{{range .Assertions}}
+    <p class="assert"><span class="pill {{if .Holds}}state-completed{{else if .Invalid}}state-started{{else if .Undecided}}state-started{{else}}state-halted{{end}}">{{if .Holds}}holds{{else if .Invalid}}invalid{{else if .Undecided}}undecided{{else}}violated{{end}}</span> <code>{{.Text}}</code></p>
+    {{if not .Holds}}<p class="small {{if .Invalid}}warn{{else if .Undecided}}warn{{else}}bad{{end}}">{{.Message}}{{if .Path}}<br>counterexample: <code>{{join .Path " → "}}</code>{{end}}</p>{{end}}{{end}}</div>{{end}}
 </section>
 
 {{if .Graph}}<section><h2>Flow</h2>
-<div class="legend"><span class="lg declared">declared</span><span class="lg problem">error</span><span class="lg warning">warning</span><span class="lg undeclared">not declared</span></div>
+<div class="legend"><span class="lg risk-side">side effect: halts on a crash</span><span class="lg risk-read">read-only: re-runs</span><span class="lg risk-idem">idempotent: re-runs</span><span class="lg risk-unknown">safety unknown</span><span class="lg gated">approval gate</span><span class="lg cex">counterexample</span><span class="lg problem">error</span><span class="lg warning">warning</span><span class="lg undeclared">not declared</span></div>
 <div class="graphwrap">{{svg .Graph.SVG}}</div>
 <details><summary>Mermaid text</summary><pre>{{.Graph.Mermaid}}</pre></details>
 </section>{{end}}
