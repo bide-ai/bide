@@ -303,8 +303,9 @@ func approve(ctx context.Context, j *agent.Journal, runID, as string) error {
 		return fmt.Errorf("no pending call %s in run %s (run the agent first, with an amount over the threshold)", refundID, runID)
 	}
 	subject := agent.ApprovalSubject{RunID: runID, ToolUseID: refundID, ToolName: call.Name, Args: call.Args}
-	sig := ed25519.Sign(demoKey("approver "+as), agent.ApprovalDecisionBytes(subject, as, true))
-	d := agent.Decision{RunID: runID, ToolUseID: refundID, ApproverID: as, Approved: true, Alg: audit.AlgEd25519, Signature: sig}
+	decidedAt := time.Now() // when the approver decided, by their clock: signed with the decision
+	sig := ed25519.Sign(demoKey("approver "+as), agent.ApprovalDecisionBytes(subject, as, true, decidedAt))
+	d := agent.Decision{RunID: runID, ToolUseID: refundID, ApproverID: as, Approved: true, DecidedAt: decidedAt, Alg: audit.AlgEd25519, Signature: sig}
 	if err := agent.SubmitDecision(ctx, j, d, agent.WithDecisionCheck(approverVerifiers())); err != nil {
 		if errors.Is(err, agent.ErrInvalidApproval) || errors.Is(err, agent.ErrAlreadyDecided) {
 			say("refused: %v", err)

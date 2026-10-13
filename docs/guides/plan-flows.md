@@ -223,13 +223,13 @@ b.Edge(lookup, refund)
 `Args` the node's input as JSON: what approvers sign. Record decisions as for a tool call, then run
 again with the same input:
 
-<!-- docsnip: setup ctx context.Context; j *agent.Journal; flow *plan.Flow[int, int]; runID string; in int; err error; sig []byte; returns error -->
+<!-- docsnip: setup ctx context.Context; j *agent.Journal; flow *plan.Flow[int, int]; runID string; in int; err error; sig []byte; decidedAt time.Time; returns error -->
 ```go
 var pend *agent.ApprovalPending
 if errors.As(err, &pend) {
-	// each approver signs agent.ApprovalDecisionBytes(pend.Subject(), id, approved)
+	// each approver signs agent.ApprovalDecisionBytes(pend.Subject(), id, approved, decidedAt)
 	if err := agent.SubmitDecision(ctx, j, agent.Decision{RunID: pend.RunID, ToolUseID: pend.ToolUseID,
-		ApproverID: "ops", Approved: true, Alg: audit.AlgEd25519, Signature: sig}); err != nil {
+		ApproverID: "ops", Approved: true, DecidedAt: decidedAt, Alg: audit.AlgEd25519, Signature: sig}); err != nil {
 		return err
 	}
 }

@@ -243,8 +243,9 @@ func demo(ctx context.Context, dir string, cfg config, p *printer, fast bool) (*
 	subject := agent.ApprovalSubject{RunID: runID, ToolUseID: pend.ToolUseID, ToolName: pend.ToolName, Args: pend.Args}
 	for _, id := range []string{"ops", "finance"} {
 		pause(500 * time.Millisecond)
-		sig := ed25519.Sign(approverKeys[id], agent.ApprovalDecisionBytes(subject, id, true))
-		d := agent.Decision{RunID: runID, ToolUseID: pend.ToolUseID, ApproverID: id, Approved: true, Alg: audit.AlgEd25519, Signature: sig}
+		decidedAt := time.Now() // when the approver decided, by their clock: signed with the decision
+		sig := ed25519.Sign(approverKeys[id], agent.ApprovalDecisionBytes(subject, id, true, decidedAt))
+		d := agent.Decision{RunID: runID, ToolUseID: pend.ToolUseID, ApproverID: id, Approved: true, DecidedAt: decidedAt, Alg: audit.AlgEd25519, Signature: sig}
 		if err := agent.SubmitDecision(ctx, j, d); err != nil {
 			closeJ()
 			return nil, err

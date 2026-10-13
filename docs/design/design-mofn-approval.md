@@ -31,6 +31,8 @@ Where the implementation refined this design:
 - **v2 decisions and evidence** (below). The first implementation followed this document's "first
   decision per approver wins" literally, and an end-to-end test found that it let a bad record lock
   an approver out. v2 closes that and three related gaps.
+- **v3: decision times** (below). Each decision carries the time the approver decided, signed, and
+  the time bide recorded it, anchored; the gate reads neither.
 
 ## v2: decisions and evidence
 
@@ -91,6 +93,41 @@ wrong key, a UI showing stale arguments). The first implementation had four gaps
 - **Byte-exact evidence.** Proofs commit to the exact recorded bytes; a tool that re-orders JSON keys
   inside a recorded message breaks that record's proof. The approval signature itself is robust to
   reformatting (canonical arguments); the Merkle leaf encoding is not.
+
+## v3: decision times
+
+Before v3 the journal held no time for a decision, so a reader could only bound it by the signed
+tree head that first covered it. v3 records two times per decision and keeps them apart, because
+they are vouched for by different parties:
+
+- **`decided_at`, signed.** `ApprovalDecisionBytes` v3 (`bide.approval.v3`) appends
+  `len32(decided_at) decided_at` after the decision byte. It is the approver's clock at signing, in
+  one canonical form: RFC 3339 in UTC to the millisecond, 24 bytes, ending in `Z`
+  (`agent.FormatTimestamp`, the form of `RunStart.StartedAt`). The verifier parses the recorded
+  text, formats it again, and refuses the decision unless the two are byte-identical, so one
+  instant has one signed spelling. The domain tag is the encoding's version and is covered by the
+  signature; a v2 decision (no time) does not verify under v3 and is refused with
+  `ReasonNoDecidedAt`. There is no fallback: decisions signed before v3 must be re-signed.
+- **`recorded_at`, anchored.** `SubmitDecision` stamps the record with bide's clock (`WithClock`,
+  else the run clock on the context, else the wall clock) when it first writes it. It is not
+  signed by the approver; the journal's Merkle trail anchors it with the record. `ApprovalWait`
+  (`approval-pending`) gains the same field, the time the run paused, which is when approvers are
+  asked.
+- **Display only for the protocol.** `TallyApprovals` checks `decided_at` only as signed bytes (it
+  is present, canonical, and inside the signature), never reads its value, and never reads
+  `recorded_at`; journal order alone orders decisions. Validity stays one predicate per record, so
+  Model 1b's modelled behavior is unchanged. A decision's journal name hashes `decided_at` with the
+  signature, so a copy of a valid signature journaled first under another time cannot take the name
+  the real decision needs.
+- **Sanity flags, not verdicts.** `audit.VerifyApprovals` reports both times for each counted
+  decision and flags a `decided_at` more than a tolerance (5 minutes by default) after `recorded_at`
+  (a clock running ahead) and a `decided_at` before the `approval-pending` time (a clock running
+  behind, or a decision signed in advance; the gate's ordering rule is by journal position, so such
+  a decision was still recorded after the request). The flags never change the verdict.
+
+Future work: an RFC 3161 trusted timestamp per decision, a third time vouched for by a timestamp
+authority, would bound `decided_at` independently of both the approver and bide. It is not part of
+v3.
 
 ## Gates on plan flow nodes
 

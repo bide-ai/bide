@@ -245,8 +245,9 @@ func approve(ctx context.Context, j *agent.Journal, k keys, id string) error {
 		return errors.New("the run has not reached the gate")
 	}
 	subject := agent.ApprovalSubject{RunID: runID, ToolUseID: gateKey, ToolName: call.Name, Args: call.Args}
-	sig := ed25519.Sign(k[id], agent.ApprovalDecisionBytes(subject, id, true))
-	d := agent.Decision{RunID: runID, ToolUseID: gateKey, ApproverID: id, Approved: true, Alg: audit.AlgEd25519, Signature: sig}
+	decidedAt := time.Now() // when the approver decided, by their clock: signed with the decision
+	sig := ed25519.Sign(k[id], agent.ApprovalDecisionBytes(subject, id, true, decidedAt))
+	d := agent.Decision{RunID: runID, ToolUseID: gateKey, ApproverID: id, Approved: true, DecidedAt: decidedAt, Alg: audit.AlgEd25519, Signature: sig}
 	if err := agent.SubmitDecision(ctx, j, d, agent.WithDecisionCheck(k.verifiers())); err != nil {
 		return err
 	}

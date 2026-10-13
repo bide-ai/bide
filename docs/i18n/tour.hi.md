@@ -420,9 +420,10 @@ if err != nil {
 }
 
 // each approver, out of band, signs the paused call they were shown:
-sig, _ := signer.Sign(agent.ApprovalDecisionBytes(pend.Subject(), "finance", true))
+decidedAt := time.Now() // the approver's clock, signed with the decision
+sig, _ := signer.Sign(agent.ApprovalDecisionBytes(pend.Subject(), "finance", true, decidedAt))
 agent.SubmitDecision(ctx, journal, agent.Decision{RunID: pend.RunID, ToolUseID: pend.ToolUseID,
-	ApproverID: "finance", Approved: true, Alg: signer.Alg(), Signature: sig})
+	ApproverID: "finance", Approved: true, DecidedAt: decidedAt, Alg: signer.Alg(), Signature: sig})
 ```
 
 फिर `audit.ApprovalEvidence` और `audit.VerifyApprovals` (या `bide audit verify-approvals`) ऑफ़लाइन सिद्ध करते हैं कि k नामित अनुमोदकों ने ठीक इसी कॉल पर उसके चलने से *पहले*, अपेक्षित नीति के तहत, हस्ताक्षर-स्वीकृति दी, ऐसे साक्ष्य से जो किसी निर्णय को बिना पकड़े छोड़ नहीं सकता। हर अनुमोदक की अपनी कुंजी होनी चाहिए: जिस नीति के दो अनुमोदक एक ही कुंजी पर पहुँचते हैं, उसे `ErrConfig` के साथ अस्वीकार किया जाता है, क्योंकि उस कुंजी का धारक दोनों की ओर से हस्ताक्षर कर सकता है। देखें [अनुमोदन गाइड](../../docs/guides/hitl-approval.md); अलग-अलग प्रोसेसों के आर-पार `examples/approval` में चलाने योग्य।
