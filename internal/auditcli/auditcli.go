@@ -233,8 +233,9 @@ func (c *cli) prove(args []string) {
 	out := fs.String("out", "", "write the bundle here (default: stdout)")
 	c.parse(fs, args)
 
-	if *journal == "" || *sthPath == "" || (*tool == "") == (*index < 0) {
-		c.usageError("")
+	c.require(fs, absent("-journal", *journal), absent("-sth", *sthPath))
+	if (*tool == "") == (*index < 0) {
+		c.usageLine(fs.Name() + ": give exactly one of -tool and -index; run `" + fs.Name() + " -h` for usage")
 	}
 
 	recs, err := c.readJournal(*journal)
@@ -306,9 +307,7 @@ func (c *cli) verify(args []string) {
 	pubkey := fs.String("pubkey", "", pubkeyHelp)
 	c.parse(fs, args)
 
-	if *bundlePath == "" || *pubkey == "" {
-		c.usageError("")
-	}
+	c.require(fs, absent("-bundle", *bundlePath), absent("-pubkey", *pubkey))
 
 	var bundle audit.ProofBundle
 	c.note(c.readJSON(*bundlePath, &bundle))
@@ -364,9 +363,7 @@ func (c *cli) verifyGovernance(args []string) {
 	checker := fs.String("checker", "", "path to the external verified oracle (astchecker); if set, it is run on the policy")
 	c.parse(fs, args)
 
-	if *policyPath == "" {
-		c.usageError("")
-	}
+	c.require(fs, absent("-policy", *policyPath))
 	policy, err := readInput(*policyPath)
 	if !c.note(err) {
 		return
@@ -442,9 +439,7 @@ func (c *cli) verifyGovernedAction(args []string) {
 	checker := fs.String("checker", "", "path to the external verified oracle (astchecker); if set, it certifies the policy converges")
 	c.parse(fs, args)
 
-	if *actionPath == "" || *policyPath == "" || *pubkey == "" {
-		c.usageError("")
-	}
+	c.require(fs, absent("-action", *actionPath), absent("-policy-bundle", *policyPath), absent("-pubkey", *pubkey))
 	var action, policy audit.ProofBundle
 	okAction := c.note(c.readJSON(*actionPath, &action))
 	okPolicy := c.note(c.readJSON(*policyPath, &policy))
@@ -519,9 +514,7 @@ func (c *cli) verifyConvergence(args []string) {
 	checker := fs.String("checker", "", "path to the external verified oracle (astchecker); if set, its verdict must agree with the certificate")
 	c.parse(fs, args)
 
-	if *certPath == "" || *policyPath == "" || *pubkey == "" {
-		c.usageError("")
-	}
+	c.require(fs, absent("-cert-bundle", *certPath), absent("-policy-bundle", *policyPath), absent("-pubkey", *pubkey))
 	var certBundle, policy audit.ProofBundle
 	okCert := c.note(c.readJSON(*certPath, &certBundle))
 	okPolicy := c.note(c.readJSON(*policyPath, &policy))
@@ -728,9 +721,7 @@ func (c *cli) verifyQuorum(args []string) {
 	k := fs.Int("k", 0, "the quorum threshold to assert: votes_for must be >= k")
 	c.parse(fs, args)
 
-	if *name == "" || *tallyPath == "" || len(votePaths) == 0 || *pubkey == "" || *k <= 0 {
-		c.usageError("")
-	}
+	c.require(fs, absent("-name", *name), absent("-tally", *tallyPath), required{"-vote", len(votePaths) == 0}, absent("-pubkey", *pubkey), required{"-k", *k <= 0})
 	pub, err := readPubKey(*pubkey)
 	okKey := c.note(err)
 
@@ -887,9 +878,7 @@ func (c *cli) verifyRun(args []string) {
 	checker := fs.String("checker", "", "path to the external verified oracle (astchecker); if set, its verdict must agree with each policy's certificate")
 	c.parse(fs, args)
 
-	if *certPath == "" || *pubkey == "" || (len(approved) == 0 && *approvedFile == "") {
-		c.usageError("")
-	}
+	c.require(fs, absent("-cert", *certPath), absent("-pubkey", *pubkey), required{"-approved or -approved-file", len(approved) == 0 && *approvedFile == ""})
 
 	var cert audit.RunCertificate
 	okCert := c.note(c.readJSON(*certPath, &cert))
@@ -994,9 +983,7 @@ func (c *cli) verifyEvidence(args []string) {
 	approvedFile := fs.String("approved-file", "", "path to a file of approved policy digests, one per line")
 	c.parse(fs, args)
 
-	if *evidencePath == "" || *pubkey == "" {
-		c.usageError("")
-	}
+	c.require(fs, absent("-evidence", *evidencePath), absent("-pubkey", *pubkey))
 
 	var pkg audit.EvidencePackage
 	okPkg := c.note(c.readJSON(*evidencePath, &pkg))
@@ -1060,9 +1047,7 @@ func (c *cli) verifyApprovals(args []string) {
 	tolerance := fs.Duration("decision-time-tolerance", audit.DefaultDecisionTimeTolerance, "how far a decision's signed time may be after the time bide recorded it before it is noted (a note, never a failure)")
 	c.parse(fs, args)
 
-	if *evidencePath == "" || *pubkey == "" || *call == "" || *need == 0 || *approvers == "" || *keysPath == "" {
-		c.usageError("")
-	}
+	c.require(fs, absent("-evidence", *evidencePath), absent("-pubkey", *pubkey), absent("-call", *call), required{"-need", *need == 0}, absent("-approvers", *approvers), absent("-approver-keys", *keysPath))
 	if *tolerance < 0 {
 		c.usageError("verify-approvals: -decision-time-tolerance must not be negative")
 	}
@@ -1342,9 +1327,7 @@ func (c *cli) proveAbsent(args []string) {
 	out := fs.String("out", "", "write the absence bundle here (default: stdout)")
 	c.parse(fs, args)
 
-	if *journal == "" || *sthPath == "" || *key == "" {
-		c.usageError("")
-	}
+	c.require(fs, absent("-journal", *journal), absent("-sth", *sthPath), absent("-key", *key))
 	set, absKey, err := absenceSelector(*key)
 	if err != nil {
 		c.usageError("prove-absent: -key: " + err.Error())
@@ -1371,9 +1354,7 @@ func (c *cli) verifyAbsent(args []string) {
 	pubkey := fs.String("pubkey", "", pubkeyHelp)
 	c.parse(fs, args)
 
-	if *bundlePath == "" || *pubkey == "" {
-		c.usageError("")
-	}
+	c.require(fs, absent("-bundle", *bundlePath), absent("-pubkey", *pubkey))
 	var bundle audit.AbsenceBundle
 	okBundle := c.note(c.readJSON(*bundlePath, &bundle))
 	pub, err := readPubKey(*pubkey)
