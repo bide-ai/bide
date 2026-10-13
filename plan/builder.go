@@ -124,6 +124,16 @@ func (b *Builder[In, Out]) WithApproverVerifiers(f agent.ApproverVerifierFor) *B
 	return b
 }
 
+// WithNotifier tells n, at least once and with a stable ID, when a run of the flow that Run drives
+// halts on an unknown outcome, waits at an approval gate, or is aborted: see agent.WithNotifier,
+// whose semantics, trail requirements and options this takes. It is a runtime binding, not part
+// of the flow's Digest. A flow that Recover or RecoverLoop drive is also covered by the option
+// given to them. A nil notifier or trail is ErrConfig, reported by Build.
+func (b *Builder[In, Out]) WithNotifier(n agent.Notifier, trail agent.NotifyTrail, opts ...agent.NotifyOption) *Builder[In, Out] {
+	b.core.notifier = agent.WithNotifier(n, trail, opts...)
+	return b
+}
+
 // applyNodeOptions applies opts to n in order (a later option wins), then returns
 // n so a constructor can inline it into register. It is the single place both the
 // builder constructors and the registry share, so their Safety handling is identical.

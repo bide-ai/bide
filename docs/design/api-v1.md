@@ -151,6 +151,7 @@ type ResolveOption interface{ applyResolve(*resolveConfig) error }
 | `ClockOption` | Option, RunOption, ResolveOption | `WithClock` |
 | `SafetyOption` | ToolOption, StepOption | `WithSafety` |
 | `LeaseControl` | LeaseOption, RecoverOption, RecoverLoopOption | `WithLeaseHolder`, `WithLeaseTTL`, `WithoutLease` |
+| `NotifierOption` | Option, RecoverOption, RecoverLoopOption | `WithNotifier` |
 
 **Evolution.** A constructor's return type may widen to a larger combination in a minor release. This is additive, and documented as such.
 

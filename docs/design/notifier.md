@@ -1,9 +1,10 @@
 # Design: tell a human when a run needs them
 
-Status: approved, in progress (build plan item 3, the trail port, records, fold and `EventStore`
-adapter, is in review). It adds a small `Notifier` seam, a signed webhook
-implementation, and an audited delivery trail that gives notify-once across crashes and makes the
-notification itself evidence. Until it ships, the recipe "Get notified when a run needs a human"
+Status: approved, in progress. Build plan item 3 (the trail port, records, fold and `EventStore`
+adapter) has shipped, item 4 (the notifier core: events at the end of a drive, claim and delivery,
+overdue, `recovery_failing`) is in review, and item 6 (`NotifyPending`) is built on it. It adds a
+small `Notifier` seam, a signed webhook implementation, and an audited delivery trail that gives
+notify-once across crashes and makes the notification itself evidence. Until it ships, the recipe "Get notified when a run needs a human"
 wires the existing hooks to a webhook with an in-process dedupe; this note is the crash-safe,
 auditable version of that recipe.
 
@@ -15,11 +16,14 @@ with `ResolveHalt`) and pauses at approval gates (`*ApprovalPending`, answered w
 signals exist but are scattered:
 
 - `Run` (and the typed and plan-flow equivalents) returns the typed error to its caller.
-- `RecoverLoop` hands errors to `WithRecoverErrors`, and a halted run re-driven on every pass
-  reports again each pass.
-- `MemWaker.Start(ctx, every, onError)` reports resume errors from timer wakeups.
+- `RecoverLoop` re-drives a halted or waiting run on every pass. It does not pass the halt or the gate
+  to `WithRecoverErrors`: both are pauses, which a pass counts as success, so that handler sees only
+  genuine failures. The error is visible to the `Resumer` the loop calls, before the loop classifies it.
+- `MemWaker.Start(ctx, every, onError)` reports failures of timer wakeups, and likewise not a pause;
+  the error is visible to the resume callback given to `NewMemWaker`.
 
-A caller can build an alert from these, and the recipe shows how. It cannot make the alert
+A caller can build an alert from these (the Resumer and the callback included), and the recipe shows
+how. It cannot make the alert
 crash-safe, because the facts "this halt was already reported" and "this report is in flight" live
 in the caller's memory. It also cannot answer the question an auditor asks of an agent that moves
 money: *when were the approvers told, and was it within the time the policy allows?* The failure a
@@ -70,7 +74,7 @@ Step that crashes mid-POST would halt that run on the notifier, a halt about a h
 
 | Kind | Fires when | Event key |
 |---|---|---|
-| `outcome_unknown` | a drive ends with `*OutcomeUnknown` | `halted:<run>:<op kind>:<op id>:<attempt n>` |
+| `outcome_unknown` | a drive ends with `*OutcomeUnknown` | `halted:<run>:<op kind>:<op id>:<attempt marker time, Unix ms>` |
 | `approval_pending` | a drive ends with `*ApprovalPending` | `approval:<run>:<call id>:<r>` |
 | `run_aborted` | the run reaches the `run:aborted` end marker | `aborted:<run>` |
 | `recovery_failing` | a run has kept failing recovery for longer than `D` (default 15 minutes): a Resumer error, not resumable, or store errors | `recovery:<run>:<k>` |
@@ -79,8 +83,9 @@ Step that crashes mid-POST would halt that run on the notifier, a halt about a h
 
 Ids are encoded as attempt keys encode them.
 
-- A re-halt after `ResolveHalt` runs the call again and reaches a new attempt number `n`, so it is
-  a new event.
+- The attempt marker's time (`OutcomeUnknown.AttemptedAt`) is the same on every drive that reports
+  one halt, and differs for a later attempt of the same call after a resolution, so a re-halt is a
+  new event. It is 0 when the marker carries no time.
 - `r` in an approval key is the reminder index, always `0` in v1. One notification per gate, and
   an m-of-n gate gaining a decision is the same wait, not a new event. A later "still waiting after
   X" reminder is `r = 1, 2, ...` with the same record kinds and the same fold, so it needs no
@@ -126,10 +131,10 @@ type NotifyTrail interface { /* Append at the next position, Load; see "Notify o
 func WithNotifier(n Notifier, trail NotifyTrail) Option // Agent (Build) and plan Flow
 func WithNotifier(n Notifier, trail NotifyTrail) RecoverLoopOption
 
-// NotifyPending runs one catch-up sweep: for every run the store lists as halted or paused (and
-// aborted or failing, where known) it observes the event, claims it, delivers it, and raises
-// overdue. Call it at startup and on a timer.
-func NotifyPending(ctx context.Context, j *Journal, n Notifier, trail NotifyTrail) error
+// NotifyPending runs one catch-up sweep: for every unfinished run it finds a gate waiting for
+// approval and an effect with no result older than WithNotifyHaltAge, and delivers those events
+// as a drive would, under the same keys. Call it at startup and on a timer.
+func NotifyPending(ctx context.Context, j *Journal, n Notifier, trail NotifyTrail, opts ...NotifyOption) error
 ```
 
 `WithNotifier` takes the trail: the crash-safe guarantee needs it, so a nil trail is `ErrConfig`.
@@ -141,8 +146,9 @@ of this API.
 Emission is at the end of a drive, where the engine has just decided a run stopped for a typed
 reason. That single point is shared by a caller's `Run`, `Recover`, a `MemWaker` wakeup and
 `RecoverLoop`, so no path needs its own wiring. The drive hands the event to a delivery goroutine
-the agent owns (flushed on `Close`, bounded wait), so a slow sink never delays `Run` returning the
-typed error.
+the notifier owns (`Agent.FlushNotifications` waits for it, bounded by a context), so a slow sink
+never delays `Run` returning the typed error. A `Resumer` that drives no agent with the option is
+covered by `WithNotifier` on `Recover` and `RecoverLoop`, which sees the pass's result.
 
 **The at-least-once guarantee needs one of two catch-up paths.** A process can die between the
 event and the first record in the trail, and then nothing remembers the event but the run's own
@@ -207,7 +213,7 @@ source of truth.
 | `observed` | once per event, first process to see it | `key`, `kind`, `event_at`, `observed_at`, `deadline_at` |
 | `claimed` | at the start of each delivery round | `key`, `holder`, `at`, `until` |
 | `acked` | after the sink acknowledged | `key`, `first_sent_at`, `acked_at`, `attempts`, `status`, `auth` |
-| `failing` | once, after 8 failed attempts | `key`, `failures`, `at` |
+| `failing` | once, when 3 rounds (8 attempts) have claimed the event without acknowledging it | `key`, `failures` (rounds), `at` |
 | `overdue` | once, when the deadline passes unacked | `key`, `at`, `latency` |
 | `failing_since` | a recovery pass failed and no episode is open for the run | `run`, `at`, `cause` (a class, not text) |
 | `recovered` | a recovery pass succeeded while an episode is open | `run`, `at` |
@@ -227,10 +233,16 @@ For event `key`, a process with the notifier configured, usually the one holding
    ended). If not, append `cleared` and stop.
 4. If another holder's `claimed.until` is in the future: stop (it will deliver). Otherwise append
    `claimed{holder, until = now + 2 min}`. `ErrSeqTaken` means another process won this round:
-   reload, fold, and stop if its claim is live.
+   reload, fold, and stop if its claim is live. The `holder` is unique to the deliverer: the
+   configured name, the kind of deliverer (drive, recover, sweep, flow) and a random nonce per
+   engine, so a drive's notifier and a sweep in one process, or a process that restarted under
+   the same name, never read each other's live claim as their own; and one engine runs one round
+   at a time per key.
 5. Deliver (one round: up to 3 requests with backoff, below). On success append `acked`. On
-   failure, count it; after the 8th total failure append `failing` once; wait out the backoff and
-   begin a new round at step 1.
+   failure wait out the backoff and begin a new round at step 1. Before a round starts, and when
+   one fails, count from the trail the rounds that claimed the event and never acknowledged it,
+   crashed ones included; at 3 (ceil(8/3)) append `failing` once. The count is not process
+   memory, so a deliverer that dies in every round still raises it.
 
 **One claim record per round, not per attempt.** A round's budget (about 45 s) fits inside the
 claim, so a live holder never renews mid-round; between rounds the claim lapses and the next round
@@ -246,8 +258,9 @@ durable; a claim that lapses while a slow POST is still in flight; and a lost re
 
 **Lost acknowledgement.** The sink accepted and the reply was lost, or the trail append failed
 after the sink accepted. Both look like a failed attempt, so the next one resends with the same
-`ID`. An append failure after a success is retried in place before the attempt is abandoned,
-because that window is cheap to narrow and the duplicate it avoids is real.
+`ID`. An append failure after a success is retried in place, under the round's claim, and if the
+store stays down the process remembers that it delivered and records the acknowledgement on its
+next round without sending again; only a process that dies first repeats the delivery.
 
 **The stale-alert race.** Step 3 checks "still current" before step 5 sends, and the two are not
 atomic. A halt resolved or a decision submitted in between can produce one alert for a state that
@@ -261,6 +274,97 @@ doubling, cap about 15 minutes, with jitter. After 8 failures the engine reports
 failing" (to `WithRecoverErrors`, as a `failing` record, and in the viewer) and keeps trying. Stop
 conditions are `acked` and `cleared` only. Giving up silently on the event whose purpose is to end
 silence is the wrong default.
+
+### Behavior fixed by the adversarial review
+
+An independent review of the first implementation found these, and each is now a test:
+
+- **The overdue notice is derived from the trail.** It is delivered inside the round that holds the
+  original event's claim, as part of it (no claim of its own, so an undelivered event writes one claim
+  per round however many notices it owes). Every round of an open, overdue event sends the notice
+  unless the trail holds an acknowledged one, so a death after the `overdue` record, a failed first
+  delivery, a sweep and a restart all re-send it. A delivered but unrecorded notice is recorded
+  without sending again.
+- **Every `Notify` call is bounded** by an eighth of the claim (so `WithNotifyClaimTTL` must be at
+  least 30 seconds, and at least eight times the longest a sink takes; a call that outlives its limit
+  says so and names the option), and abandoned when the time is up
+  even if the Notifier ignores its context (it counts as failed, and an abandoned call that later
+  succeeds is a duplicate within the stated bound). A round makes at most four calls (the overdue
+  notice is the fourth), so its calls take half the claim, its backoff and acknowledgement retries
+  a little more, and it starts only when more than three quarters of its claim remain: it ends inside
+  the claim it holds (the budget counts the backoff between attempts and the acknowledgement's
+  retries, whose sleeps are capped at what remains of their limit). Rounds of different events run concurrently (up to 8), so a hung sink holds
+  neither the others nor, for long, its own slot. An abandoned call that has not returned is not
+  repeated: its event makes no new call until it does, and an engine has at most 256 calls running,
+  so a Notifier that never returns cannot gather goroutines; the refusal is reported to
+  `WithNotifyErrors`. `RecoverLoop` bounds its flush on the way out (500 ms)
+  and cancels the calls still in flight.
+- **A peer sends the overdue notice when the holder is gone.** The holder sends the notice inside its
+  own rounds, so a holder that claimed before the event was overdue, and may be dead for the whole
+  claim, would delay it by the claim (an hour at `WithNotifyClaimTTL(time.Hour)`). Such a peer sends
+  it under a short claim (at most 2 minutes) of its own on the notice's key, so peers do not send it
+  together; a holder that is only slow may send it too, one duplicate the notice's stable ID lets the
+  sink drop. A holder that claimed after the event was overdue is left to send it, so the common case
+  writes no extra claims.
+- **Claim liveness does not trust synchronized clocks.** `claimed.until` is written by one clock and
+  read by another. Another holder's claim counts as live until `until` plus a skew margin (default
+  2 minutes, `claimTTL`). A peer whose clock is ahead takes a live claim over only if it is ahead by
+  more than the claim's remaining time plus the margin: at the defaults, about 2.5 minutes at the
+  moment a round starts, less as the round runs. Run NTP-class synchronization on every deliverer.
+  The cost is a takeover after a crash that is up to the margin later.
+- **Pacing comes from the trail.** A new round starts no earlier than the last claim's time plus the
+  backoff for the rounds the trail records (no jitter, so every deliverer agrees). However many
+  sweeps or processes look at an undelivered event, it writes about four claims an hour at the cap.
+- **A decided gate is not reported.** "Current" reads what the gate itself reads: the single
+  approver's decision (`approval:<call>`), an m-of-n gate's terminal tally, the tool's result, and,
+  for a plan flow's gate, the node's own result (`node:<name>`). The sweep applies the same test.
+- **A run that was aborted has a catch-up path.** `NotifyPending` also reads runs holding
+  `run:aborted` (completed and cancelled runs are excluded from the listing) and raises
+  `run_aborted` for any whose trail has no event, if the abort was within `WithNotifyAbortedWithin`
+  (24 hours), so enabling the sweep does not page for every run that ever aborted. `run:aborted`
+  records `aborted_at` (informational, like `started_at`: no drive, resume or recovery pass reads it,
+  and a run:aborted without it loads and behaves the same; it is stamped by the drive's clock, so a
+  run driven with `WithClock` carries that clock's time, and the sweep compares it with the
+  notifier's own: a deployment that drives runs with a clock other than wall time gives the notifier
+  the same one with `WithNotifyClock`). For a run an earlier version aborted the
+  sweep uses the newest time the journal records for the run (an attempt marker's, else the start),
+  which is no later than the abort; a run whose journal records no time is not raised. A known limit
+  for journals written before `aborted_at`: model turns carry no time, so a run whose last activity
+  was model turns only is dated by its last attempt marker or its start, and a long-running one may
+  be dated too early to be caught up. It costs one
+  point read for each aborted run, every sweep, and a History read for each legacy one.
+- **Recovery episodes close on any pause**, a halt, a gate, a timer or a signal, which a pass counts
+  as success. A run no Resumer can drive (`ErrNotResumable`) is a recovery failure and alerts after
+  the duration. A pass ended by the shutdown's cancellation is not a failure.
+- **`recovery_failing` carries a class, never the Resumer's text.** `Notification.Err` is the matching
+  sentinel (`ErrStorage`, `ErrNotResumable`) or nil.
+- **Halt keys for an untimed marker** use the live attempt's generation (the negative of one more than
+  it), not 0, so a re-attempt after a not-started record is a new event. If the marker cannot be
+  read, the worker tries again: the halt is queued at once under a provisional key and its real key
+  is computed in the worker, so a drive (`Run`) never waits on the journal for it, and a failed read
+  never produces a guessed key.
+- **An idle notifier holds no goroutine.** The dispatcher exits when nothing is queued and starts on
+  the next event; an event queued while it leaves starts another.
+- **`FlushNotifications` returns what was not delivered**: the last error of each event still queued
+  when the worker stops, and, for an event whose round deferred to another deliverer's live claim or
+  to its pace, that deferral (checked against the trail first, under the flush's own deadline and
+  at most two seconds, so a hung trail does not hold a shutdown; if the check fails the deferral stays, so an event the other deliverer has
+  since acknowledged is not reported), so a caller that exits after it knows. Key locks are removed when no
+  round holds or waits for them. A plan flow keeps one notifier per
+  store, not per `Journal` value.
+- **A trail with a record kind a newer version wrote loads**, in its position, and the fold skips it,
+  so a rolling upgrade does not stop the older processes.
+- **`RecoverLoop` reports its undelivered events** at exit to `WithRecoverErrors` (the flush error),
+  which is not discarded.
+- **A late success after an abandon is a duplicate within the bound.** A call abandoned at its timeout
+  that later succeeds means the sink has the notification, and the next attempt repeats it with the
+  same ID: a duplicate the receiver can drop, like any lost-reply duplicate.
+- **`VerifyNotifications` must read the trail strictly.** The engine's `Load` keeps a record kind it does
+  not know in its position so an older process keeps delivering; the verifier (build plan item 7) must
+  refuse a kind it cannot read, or an older verifier would pass a trail it did not check.
+- **Known cost:** a recovery pass does a trail read for each run it drives that pauses or succeeds, to
+  close an open episode. It is one point read of a short trail; a deployment with very many paused
+  runs may want a longer recovery interval.
 
 ## Notification as evidence
 
@@ -354,9 +458,16 @@ n, err := notify.NewWebhook(os.Getenv("BIDE_WEBHOOK_URL"),
     nothing to check afterwards.
 
   mTLS answers "who may connect" and the signature answers "who sent this body". They compose.
-- **Retries within a round.** Up to 3 requests with backoff (1 s, 2 s; jitter), `Retry-After`
-  honored on 429. Network errors, timeouts, 429 and 5xx retry; any other 4xx is a permanent error for
-  the round (the outer backoff still tries again later, since a receiver's configuration can change).
+- **Retries within a round.** The notifier core runs the round (up to 3 calls with its own backoff),
+  so `Webhook.Notify` makes one request per call by default; `WithRequestsPerCall(n)` (up to 3) adds
+  in-call retries with backoff (1 s, 2 s; jitter) for a caller without the core. `Retry-After` on a
+  429 or 5xx is waited out before the call returns, capped at 60 s and never past the call's context
+  deadline. Network errors, timeouts, 429 and 5xx are retried; any other 4xx is a permanent error for
+  the round (`agent.ErrNotifyPermanent`; the outer backoff still tries again later, since a
+  receiver's configuration can change).
+- **Auth record.** `auth.secret_slot` is `current` (one secret), `current+previous` (signed with both during a rotation) or empty (unsigned, which the webhook never sends).
+- **Proxy.** The environment's proxy applies unless `WithServerCA` or `WithServerPin` is set (then
+  direct, unless `WithProxy` is given). A proxy only tunnels the TLS session.
 
 ### Request
 
@@ -365,7 +476,7 @@ n, err := notify.NewWebhook(os.Getenv("BIDE_WEBHOOK_URL"),
 | Header | Value |
 |---|---|
 | `Content-Type` | `application/json` |
-| `Bide-Delivery` | `Notification.ID`, identical on every attempt of an event |
+| `Bide-Delivery` | `Notification.ID`, identical on every attempt of an event and equal to the payload `id`; `notify.Verify` requires it to be present and equal to the signed `id`, since the signature covers the body, not headers |
 | `Bide-Timestamp` | Unix seconds when this request was sent |
 | `Bide-Signature` | `v1=<hex HMAC-SHA256(secret, Bide-Timestamp + "." + body)>`, one per secret, space separated |
 
@@ -444,7 +555,7 @@ webhook is a wider audience than the journal.
 
 - **Typed errors.** Unchanged. `Run` still returns `*OutcomeUnknown` and `*ApprovalPending`; the
   notifier is an additional consumer.
-- **`WithRecoverErrors`.** Still receives genuine failures, and now also "notification failing".
+- **`WithRecoverErrors`.** Still receives genuine failures only (halts and gates never went to it), and now also "notification failing" through `WithNotifyErrors`.
 - **`MemWaker`.** A timer wakeup that resumes into a halt or a gate ends in the same drive, so it
   notifies without a separate `onError` wiring.
 - **Leases and multiple processes.** The process holding the run's lease when it observes the event
@@ -476,7 +587,7 @@ webhook is a wider audience than the journal.
 ### Does the TLA+ lifecycle model need an update?
 
 No. Model 10 (`spec/tla/lifecycle`) is unchanged, because the notify trail is a separate stream
-that no lifecycle action reads or writes. A new small model, "13: notifications", composes the
+that no lifecycle action reads or writes. A new small model, "14: notifications" (`spec/tla/notify`; 13 is the probes model), composes the
 lifecycle's halt, pause and end states as an input with the trail protocol. It is TLC-only (a
 claim-and-append protocol over one trail; no need for Apalache) and checks, within stated bounds
 (processes, rounds, crash and ambiguous-append placements, claim lapse, a sink that may fail):
@@ -594,9 +705,9 @@ No durable `EventStore` exists today. `audit` defines the interface and ships on
 | 4 | Notifier core: events at drive end, observe, claim, backoff, `failing`, `overdue`, `recovery_failing`, delivery goroutine | L | 3 | the crash sweep and DST cases from the existing harnesses |
 | 5 | Webhook with HMAC, rotation, HTTPS-only, mTLS and reload | M | the `Notifier` interface only | can start at once |
 | 6 | `NotifyPending` sweep | S | 4 | |
-| 7 | `audit.VerifyNotifications` and the `bide audit` verb | M | 3 | verifier in `audit` can start early; the verb is a `cmd/bide` change |
+| 7 | `audit.VerifyNotifications` and the `bide audit` verb | M | 3 | verifier in `audit` can start early; it reads the trail strictly (refuses a record kind it cannot read, unlike the engine's `Load`); the verb is a `cmd/bide` change |
 | 8 | Viewer "Needs attention": notified, acknowledged, overdue | M | 3 | reads the trail; `internal/runview` change |
-| 9 | Model 13 (TLC) and its CI shard | M | design approved | starts at once; must land before 4 merges, like the other models |
+| 9 | Model 14 (TLC) and its CI shard | M | design approved | starts at once; must land before 4 merges, like the other models |
 | 10 | Guide, recipe update, CHANGELOG, i18n, snippets | S | 4, 5 | docs current with the code |
 | 11 | Principal exclusion (open question 12) | M | none | independent of the notifier; includes Model 1b |
 

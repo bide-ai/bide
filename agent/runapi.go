@@ -98,6 +98,14 @@ func (a *Agent) runEntry(ctx context.Context, runID string, d *driveSpec, opts [
 // drive runs one drive of runID for d: a saga's (d.cfg.saga, or a run journaled as one) through
 // the saga path, any other through run.
 func (a *Agent) drive(ctx context.Context, runID string, d *driveSpec) (Message, usageTotals, int, error) {
+	msg, tot, turns, err := a.driveRun(ctx, runID, d)
+	if a.notify != nil {
+		a.notify.driveEnd(runID, err)
+	}
+	return msg, tot, turns, err
+}
+
+func (a *Agent) driveRun(ctx context.Context, runID string, d *driveSpec) (Message, usageTotals, int, error) {
 	if !d.cfg.saga {
 		msg, tot, turns, err := a.run(ctx, runID, d)
 		if err != errSagaRun {
