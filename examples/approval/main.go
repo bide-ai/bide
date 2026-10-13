@@ -68,6 +68,9 @@ const (
 // is journaled (run -crash): the crash a resume must not repeat the refund over.
 var crashAfterRefund bool
 
+// turnDelay holds each model turn this long, so bide view's live mode can be watched following a run.
+var turnDelay time.Duration
+
 // policy is the gate: 2 of these 3 approvers must sign off.
 var policy = agent.ApprovalPolicy{Need: 2, Approvers: []string{"ops", "finance", "risk"}}
 
@@ -114,7 +117,12 @@ func approverVerifiers() agent.ApproverVerifierFor {
 // in the conversation, then answers. Stateless, so a resumed run needs no per-run script.
 type refundModel struct{}
 
-func (refundModel) Stream(_ context.Context, req agent.Request) (*agent.Stream, error) {
+func (refundModel) Stream(ctx context.Context, req agent.Request) (*agent.Stream, error) {
+	select {
+	case <-time.After(turnDelay):
+	case <-ctx.Done():
+		return nil, ctx.Err()
+	}
 	ch := make(chan agent.Emit, 2)
 	if result, ok := toolResult(req.Messages); ok {
 		ch <- agent.Emit{Event: agent.TextDelta{Text: "Refund complete: " + result}}
@@ -444,6 +452,7 @@ func main() {
 	keysOut := fs.String("keys-out", "approver-keys.json", "approver public keys file to write (evidence)")
 	in := fs.String("in", "evidence.json", "evidence file to verify (verify)")
 	fs.BoolVar(&crashAfterRefund, "crash", false, "exit after the refund fires, before its result is journaled (run)")
+	fs.DurationVar(&turnDelay, "turn-delay", 0, "hold each model turn this long, to watch the run in bide view's live mode (run, resolve)")
 	_ = fs.Parse(args)
 
 	if cmd == "verify" {

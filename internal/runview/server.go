@@ -87,7 +87,8 @@ type Options struct {
 	Config *Config
 }
 
-// Handler serves the run list at / and a run at /run?id=<run> (its View as JSON at /run.json?id=<run>).
+// Handler serves the run list at / and a run at /run?id=<run> (its View as JSON at /run.json?id=<run>,
+// and, for a run in progress in a store, its live updates at /run/live?id=<run>&after=<cursor>).
 // It answers only GET and HEAD, and only requests addressed to a loopback host, so a page on
 // another site cannot read it through a rebound DNS name.
 func Handler(o Options) http.Handler {
@@ -126,6 +127,7 @@ func Handler(o Options) http.Handler {
 	}
 	mux.HandleFunc("GET /run", serveRun(false))
 	mux.HandleFunc("GET /run.json", serveRun(true))
+	mux.HandleFunc("GET /run/live", o.serveLive)
 	return guard(mux)
 }
 
@@ -151,12 +153,18 @@ func writeJSON(w http.ResponseWriter, v any) {
 
 // view builds the run's View, or nil for a run with no records.
 func (o Options) view(ctx context.Context, runID string) (*View, error) {
-	recs, err := o.Source.History(ctx, runID)
+	recs, seqs, err := o.history(ctx, runID)
 	if err != nil {
 		return nil, err
 	}
+	return o.viewOf(ctx, runID, recs, seqs), nil
+}
+
+// viewOf builds the View of the run's records, or nil for none. seqs, when given, are the records'
+// store sequences: the page of a run with no end marker then follows the run (see follow).
+func (o Options) viewOf(ctx context.Context, runID string, recs []agent.Record, seqs []int64) *View {
 	if len(recs) == 0 {
-		return nil, nil
+		return nil
 	}
 	var flow *Flow
 	for _, r := range recs {
@@ -191,7 +199,8 @@ func (o Options) view(ctx context.Context, runID string) (*View, error) {
 		signatures(&v.Gates[i], v.Proof)
 	}
 	markGates(v.Graph, v.Gates) // the graph's gated nodes say whether their signatures verified
-	return v, nil
+	follow(v, seqs)
+	return v
 }
 
 // signatures sets g's signature verdict from the proof's approval checks, or says why its

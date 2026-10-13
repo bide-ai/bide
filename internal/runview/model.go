@@ -40,6 +40,11 @@ type View struct {
 	Notes     []string     `json:"notes,omitempty"` // what the page cannot show for this run, and why
 	LastNode  string       `json:"last_node,omitempty"`
 	FinalText string       `json:"final_text,omitempty"`
+
+	// Live: the page follows the run (live mode): it was read from a store, not an export, and has
+	// no end marker. Cursor is the store sequence (agent.Entry.Seq) of its last record.
+	Live   bool  `json:"live,omitempty"`
+	Cursor int64 `json:"cursor,omitempty"`
 }
 
 // Event is one journal record, as a timeline row.

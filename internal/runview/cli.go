@@ -53,6 +53,10 @@ recorded or, with -need and -approvers, against the policy you expect. It never 
 store, and it serves on a loopback address only. With no -run it lists the runs. Stop it with
 Ctrl-C.
 
+From -db or -postgres, the page of a run in progress follows it (live mode): it polls the store
+about once a second for records after the last one it shows, and updates in place until the run
+journals its end marker. An exported journal (-journal) is shown as it is.
+
 With -config it shows a flow definition instead, without running anything: the declared graph,
 its approval gates, and every problem plan.InspectConfig finds, marked on the node, edge or arm it
 belongs to. The check is structural (types and registered blocks are checked when a program embeds

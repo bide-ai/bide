@@ -9,7 +9,9 @@ It never writes to the store: it opens a SQLite file read-only (`sqlite.OpenRead
 Postgres journal in sessions the server holds read-only (`postgres.OpenReadOnly`), or reads
 exported journals. It listens on a loopback address only (`127.0.0.1` or `::1`) and answers only
 requests addressed to one, so the page is not reachable from another machine. The page needs no
-network: the binary serves its HTML, CSS and graph, with no CDN and no JavaScript.
+network: the binary serves its HTML, CSS and graph, with no CDN. The page is complete without
+JavaScript; the one script it has, embedded in the binary, updates the page of a run in progress
+(see [Follow a run in progress](#follow-a-run-in-progress)).
 
 ![bide view on a plan flow halted mid-node: END STATE "halted: outcome unknown", the halt with its ResolveHalt snippet, and the topology with the path taken](img/run-viewer-flow-halted-dark.png)
 
@@ -63,6 +65,8 @@ bide view -journal refund-42.json -journal refund-43.json
 It prints the URL it serves (by default `http://127.0.0.1:8484/`) and runs until Ctrl-C; it does not
 open a browser (unlike `bide demo`, it has no `-no-browser` flag). A run's
 page is at `/run?id=<run>`, and the same view as JSON at `/run.json?id=<run>`.
+A run in progress read from a store also has `/run/live?id=<run>&after=<cursor>`, which its page
+polls (see [Follow a run in progress](#follow-a-run-in-progress)).
 
 ## Flags
 
@@ -191,6 +195,47 @@ turns (text, tool calls with arguments, finish reason, model), attempt markers a
 results with the `Safety` they ran under (read-only, idempotent, side effect) and whether
 `ResolveHalt` reconciled them (with the evidence), approval decisions, the approval-pending record and
 tally, plan nodes and Switch choices, and the end marker.
+
+## Follow a run in progress
+
+Open the page of a run that is still going and it follows the run: the timeline rows appear as the
+records land, and END STATE, the approval gate and its table, and the flow graph change with them
+(`started`, then `waiting for approval`, then `completed`), with no reload, so the scroll position
+and any open details stay. A **live** mark next to the state says the page is following the run, and
+the rows the last update added are highlighted. Once the run journals its end marker
+(`run:complete`, `run:aborted` or `run:cancelled`) the page updates a last time and stops: the mark
+goes away. A halted or waiting run is still followed, since a resume or `ResolveHalt` adds to it.
+
+![bide view following a gated refund run: started, waiting for approval with none and then one of the two approvals it needs, started again once the refund ran, and completed](img/run-viewer-live-dark.gif)
+
+How it works, and what it costs the store:
+
+- The page's script asks `/run/live?id=<run>&after=<cursor>` about once a second, where the cursor is
+  the store sequence (`agent.Entry.Seq`) of the last record the page shows. The viewer answers with
+  one `Load` of the run's entries after the cursor, stopped at the first: no entry, no other read.
+  Only when there is one does it read the run again and answer with the timeline rows of the new
+  records only, the run's state, the next cursor and whether to keep polling (`"live": false` once
+  the run has ended). The page then fetches itself and swaps in its content.
+- It reads only, as the rest of the viewer does, from SQLite and Postgres alike: the store is opened
+  read-only, and the endpoint answers only GET and HEAD on a loopback address.
+- An exported journal (`-journal`) does not grow, so its page has no live mark and no script, and
+  `/run/live` is not found.
+- Without JavaScript the page is the same, complete as of its load, with a link to reload it while
+  the run is in progress. A browser tab in the background does not poll.
+
+To watch one, hold each model turn of the approval example for a few seconds (`-turn-delay`) and
+open the page while it runs:
+
+```sh
+cd examples/approval
+go run . run -db a.db -turn-delay 6s &      # in progress for 6 s, then waiting for approval
+bide view -db a.db -run refund-42           # open the URL it prints; the page follows the run
+go run . approve -db a.db -as ops           # the gate: 1 of 2 approvals
+go run . approve -db a.db -as finance
+go run . run -db a.db -turn-delay 6s        # the refund runs; 6 s later the run completes
+```
+
+`assets/demo/live.sh` drives these steps and records the GIF above.
 
 ## Demo: crash, resolve, verify
 

@@ -9,6 +9,10 @@ journal format can change between pre-releases without a version bump. Curated h
 
 ## [Unreleased]
 
+### Added
+
+- `bide view` live mode: the page of a run in progress, read from a SQLite or Postgres journal, follows the run. Its timeline rows appear as records land, and END STATE, the approval gates and the flow graph update in place (scroll position kept), with a "live" mark, until the run journals its end marker. The page's one embedded script polls the new `/run/live?id=<run>&after=<cursor>` about once a second; the viewer answers from one `Load` of the entries after the cursor (the store sequence of the last record shown) and returns only the new records' rows. Read-only and loopback-only like the rest of the viewer; an exported journal stays static, and the page is complete without JavaScript. `examples/approval run -turn-delay` holds each model turn so it can be watched; `assets/demo/live.sh` records the guide's GIF.
+
 ## [0.14.1] - 2026-10-13
 
 ### Changed
