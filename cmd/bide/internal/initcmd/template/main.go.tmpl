@@ -2,10 +2,11 @@
 //
 //	assess (a model call) -> refund (a side effect, gated 2 of 3) -> notify
 //
-// flow.yaml declares the flow; this file registers a block for each node. go run . drives the run
-// in run.db: it pauses at the refund until two approvers sign, records two signed approvals,
-// resumes, refunds once, and writes evidence.json and approver-keys.json for an auditor. Run it
-// again and nothing runs twice. See README.md for what to try next.
+// flow.yaml declares the flow; this file registers a block for each node. go run . first resumes
+// any run a crash interrupted (agent.Recover), then drives the run in run.db: it pauses at the
+// refund until two approvers sign, records two signed approvals, resumes, refunds once, and writes
+// evidence.json and approver-keys.json for an auditor. Run it again and nothing runs twice.
+// BIDE_CRASH=notify go run . kills the process mid-run, to try the recovery. See README.md.
 package main
 
 import (
@@ -25,6 +26,7 @@ import (
 	"github.com/bide-ai/bide/agent"
 	"github.com/bide-ai/bide/agent/agenttest"
 	"github.com/bide-ai/bide/audit"
+	// "github.com/bide-ai/bide/model/openai" // uncomment with the real model in model()
 	"github.com/bide-ai/bide/plan"
 	"github.com/bide-ai/bide/store/sqlite"
 	"go.yaml.in/yaml/v3"
@@ -61,15 +63,21 @@ type Receipt struct {
 	Note   string `json:"note"`
 }
 
-// model is the model the assess node calls. It is scripted, so the flow runs with no API key and
-// no network. To use a real model, return an adapter instead, for example:
-//
-//	import "github.com/bide-ai/bide/model/anthropic"
-//	return anthropic.New(os.Getenv("ANTHROPIC_API_KEY"))
-//
-// (or model/openai for any OpenAI-compatible endpoint). The prompt in register asks for the JSON
-// the Refund type reads.
+// model is the model the assess node calls. By default it is scripted, so the flow runs with no
+// API key and no network; the prompt in register asks for the JSON the Refund type reads.
 func model() agent.Model {
+	// ---- To use a real model -------------------------------------------------------------------
+	// Set OPENROUTER_API_KEY (or OPENAI_API_KEY) and uncomment these lines and the openai import
+	// above. Any OpenAI-compatible endpoint works through WithBaseURL (Ollama, vLLM, Groq, ...);
+	// model/anthropic and model/gemini are the native adapters.
+	//
+	// if key := os.Getenv("OPENROUTER_API_KEY"); key != "" {
+	// 	return openai.New(key, openai.WithBaseURL("https://openrouter.ai/api/v1"), openai.WithModel("openai/gpt-4o-mini"))
+	// }
+	// if key := os.Getenv("OPENAI_API_KEY"); key != "" {
+	// 	return openai.New(key, openai.WithModel("gpt-4o-mini"))
+	// }
+	// ---------------------------------------------------------------------------------------------
 	return agenttest.NewScriptedModel(agenttest.TextTurn(`{"order": "order-42", "amount": 120, "reason": "arrived damaged"}`))
 }
 
@@ -108,6 +116,7 @@ func register(p provider) (*plan.Registry, error) {
 			return r, p.refund(r)
 		}),
 		reg.RegisterStep("notify", func(_ context.Context, r Refund) (Receipt, error) {
+			crashIf("notify") // after the refund's result is journaled: try recovery with BIDE_CRASH=notify
 			return Receipt{Order: r.Order, Amount: r.Amount, Note: "refunded: " + r.Reason}, nil
 		}, plan.ReadOnly()), // no side effect: safe to run again on resume
 	)
@@ -155,6 +164,19 @@ func story(ctx context.Context, dir string) error {
 	if err != nil {
 		return err
 	}
+	// Recovery. A process can die mid-run: a deploy, an OOM kill, a crash. agent.Recover finds every
+	// run in the journal that started and did not finish, and drives it again from its journal:
+	// steps already recorded are not repeated, so the refund, a side effect, still happens at most
+	// once, and a refund cut off mid-call halts with agent.OutcomeUnknown instead of running twice.
+	// A run waiting at its gate stays paused. One pass at startup suits a program that runs and
+	// exits; a long-running service runs agent.RecoverLoop instead, which also picks up runs whose
+	// process died elsewhere (a per-run lease keeps two processes from driving one run).
+	if n, err := agent.Recover(ctx, j, resumeFlow(flow, j)); err != nil {
+		return err
+	} else if n > 0 {
+		fmt.Printf("recovered %d interrupted run(s)\n", n)
+	}
+
 	in := Order{ID: "order-42", Amount: 120, Note: "the parcel arrived damaged"}
 	for range 3 {
 		out, err := flow.Run(ctx, j, runID, in)
@@ -174,6 +196,39 @@ func story(ctx context.Context, dir string) error {
 		return writeEvidence(ctx, j, k, dir)
 	}
 	return errors.New("the run did not finish")
+}
+
+// resumeFlow is the agent.Resumer for this program's runs: given a run Recover found unfinished,
+// it reads the run's input from its journaled start and drives the flow again. A run of another
+// kind is not this program's (agent.ErrNotResumable), and Recover leaves it alone.
+func resumeFlow(flow *plan.Flow[Order, Receipt], j *agent.Journal) agent.Resumer {
+	return func(ctx context.Context, runID string, start agent.RunStart) error {
+		if start.Kind != agent.RunKindFlow || start.Flow == nil || start.Flow.Name != "refund" {
+			return fmt.Errorf("run %s is not a refund flow: %w", runID, agent.ErrNotResumable)
+		}
+		var in Order
+		if err := json.Unmarshal([]byte(start.Input.Text()), &in); err != nil {
+			return fmt.Errorf("run %s: its input: %w", runID, err)
+		}
+		_, err := flow.Run(ctx, j, runID, in)
+		return err
+	}
+}
+
+// crashIf kills the process inside step when BIDE_CRASH names it, the first time only (a marker
+// file records that it crashed), so you can watch the next run recover: BIDE_CRASH=notify go run .
+// then go run . again.
+func crashIf(step string) {
+	if os.Getenv("BIDE_CRASH") != step {
+		return
+	}
+	marker := ".crashed-" + step
+	if _, err := os.Stat(marker); err == nil {
+		return
+	}
+	_ = os.WriteFile(marker, nil, 0o644)
+	fmt.Printf("crash: the process dies inside %s (BIDE_CRASH=%s)\n", step, step)
+	os.Exit(3)
 }
 
 // approve signs the recorded request (the node and its input) as approver id and records it.

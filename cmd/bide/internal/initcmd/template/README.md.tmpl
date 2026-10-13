@@ -8,8 +8,9 @@ assess (a model call) -> refund (a side effect, gated: 2 of ops, finance, risk) 
 
 - `flow.yaml` declares the flow: its nodes, its wiring and the refund's approval gate.
 - `main.go` registers a block for each node and drives the run in `run.db` (SQLite).
-- The model is scripted, so it runs with no API key and no network. `model()` in `main.go` shows the
-  two lines that swap in a real one.
+- The model is scripted, so it runs with no API key and no network. `model()` in `main.go` has a
+  marked block that swaps in a real one.
+- At startup it resumes any run a crash interrupted (`agent.Recover`), as a production service would.
 
 ## Run it
 
@@ -22,6 +23,20 @@ The run pauses before the refund, two approvers sign it (their keys are generate
 the first run), the run resumes and refunds once, and it writes `evidence.json` and
 `approver-keys.json`. Run it again: it reads the finished run back from the journal and refunds
 nothing. `go test` runs the same story and checks it.
+
+## Watch it recover from a crash
+
+```sh
+rm -rf run.db* refunds.log .crashed-*   # start over
+BIDE_CRASH=notify go run .              # the process dies inside notify, after the refund ran
+go run .                                # "recovered 1 interrupted run(s)": it finishes, refunding nothing again
+cat refunds.log                         # one refund
+```
+
+Recovery reads the journal: steps already recorded (the approvals, the refund) are not repeated,
+and the interrupted step runs again. A refund cut off mid-call would not be repeated either: the run
+halts with "outcome unknown" until you resolve it (`agent.ResolveHalt`). A long-running service
+calls `agent.RecoverLoop` instead of one `agent.Recover` pass at startup.
 
 ## Next steps
 
@@ -47,7 +62,8 @@ bide audit verify-approvals -evidence evidence.json -pubkey keys/log.pub -call n
 
 Then:
 
-- Swap in a real model in `model()`.
+- Use a real model: set `OPENROUTER_API_KEY` (or `OPENAI_API_KEY`) and uncomment the marked block
+  in `model()` and the `model/openai` import. The scripted model stays the default with no key.
 - Add a node: a block in `main.go`, a line in `flow.yaml`, and `bide check flow.yaml`.
 - Read the guides: plan flows, human approval and audit, at https://bide-ai.com.
 
