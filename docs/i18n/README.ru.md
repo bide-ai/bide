@@ -22,7 +22,7 @@ brew install bide-ai/tap/bide
 bide demo
 # 2. собрать: plan-поток со шлюзом одобрения 2 из 3, на SQLite, без API-ключа
 bide init refund && cd refund && go mod tidy && go run .
-# 3. изучить: запуск на локальной странице только для чтения (печатает адрес, который нужно открыть)
+# 3. изучить: запуски на локальной странице только для чтения (список запусков, затем каждый запуск; печатает адрес, который нужно открыть)
 bide view -db run.db
 # 4. доказать: проверить доказательства запуска офлайн
 bide audit verify-evidence -evidence evidence.json -pubkey keys/log.pub

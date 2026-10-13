@@ -29,7 +29,7 @@ proofs. Each entry notes who it is for.
 
 ## Guides: inspect
 
-- **[Run viewer](guides/run-viewer.md)**: `bide view`, a read-only local page for one run: timeline, flow path, halts, approval gates, and the audit verdict.
+- **[Run viewer](guides/run-viewer.md)**: `bide view`, a read-only local page for a journal's runs (a run list filtered by state, kind and run ID) and for one run: timeline, flow path, halts, approval gates, and the audit verdict.
 - **[Debugging and recovery](guides/debugging.md)**: replay, event reconstruction, Mermaid diagrams, and crash recovery.
 
 ## Guides: prove and govern

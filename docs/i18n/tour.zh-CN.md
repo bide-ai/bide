@@ -305,7 +305,7 @@ sig, _ := audit.Sign(head, audit.Ed25519Signer{Priv: priv}) // anchor it: sign /
 
 ### 运行查看器
 
-`bide view` 为单次运行打开一个只读页面，在 `127.0.0.1` 上提供，数据来自 SQLite 或 Postgres 日志或导出的日志。安装：`go install github.com/bide-ai/bide/cmd/bide@latest`。`bide view -config flow.yaml` 以同样方式展示流程定义，并在图上标出问题；`-check` 在 CI 中运行同一检查。它展示运行的时间线（模型轮次、工具调用及其 `Safety`、尝试、审批），被暂停的操作及记录其结果的 `ResolveHalt` 调用，每个审批关卡的 k-of-n 状态，`plan` 流程在其声明拓扑上走过的路径，以及日志能否通过签名树头或证据包验证。它从不写入存储。参见[运行查看器指南](../../docs/guides/run-viewer.md)（英文）。
+`bide view` 为单次运行打开一个只读页面，在 `127.0.0.1` 上提供，数据来自 SQLite 或 Postgres 日志或导出的日志。安装：`go install github.com/bide-ai/bide/cmd/bide@latest`。`bide view -config flow.yaml` 以同样方式展示流程定义，并在图上标出问题；`-check` 在 CI 中运行同一检查。它展示运行的时间线（模型轮次、工具调用及其 `Safety`、尝试、审批），被暂停的操作及记录其结果的 `ResolveHalt` 调用，每个审批关卡的 k-of-n 状态，`plan` 流程在其声明拓扑上走过的路径，以及日志能否通过签名树头或证据包验证。它从不写入存储。不带 `-run` 时，它打开运行列表，可按状态、类型和运行 ID 过滤。参见[运行查看器指南](../../docs/guides/run-viewer.md)（英文）。
 
 <table>
 <tr>
