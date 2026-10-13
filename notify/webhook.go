@@ -58,6 +58,8 @@ type Webhook struct {
 	cert     *clientCert
 	pins     [][sha256.Size]byte
 	customCA bool
+	proxy    func(*http.Request) (*url.URL, error)
+	proxySet bool
 }
 
 // An Option configures NewWebhook.
@@ -210,6 +212,17 @@ func WithViewURL(base string) Option {
 	}
 }
 
+// WithProxy sets how the webhook reaches the receiver through a proxy (nil means directly). Without
+// it the environment's proxy settings (HTTPS_PROXY, NO_PROXY) apply, except when WithServerCA or
+// WithServerPin is set: a deployment that pins or privately roots its receiver is assumed to mean
+// to reach it directly, so it never silently goes through an environment proxy. Either way the
+// proxy only tunnels the TLS session (CONNECT); certificate verification, pins and the client
+// certificate are still checked end to end against the receiver, but the proxy sees the receiver's
+// address and the timing.
+func WithProxy(f func(*http.Request) (*url.URL, error)) Option {
+	return func(w *Webhook) error { w.proxy, w.proxySet = f, true; return nil }
+}
+
 // WithOnError sets where non-fatal problems are reported, such as a client certificate that failed
 // to reload (the last good pair stays in use). Pass the function given to agent.WithRecoverErrors.
 func WithOnError(f func(error)) Option {
@@ -267,11 +280,18 @@ func NewWebhook(rawURL string, opts ...Option) (*Webhook, error) {
 	if len(w.pins) > 0 {
 		w.tlsCfg.VerifyConnection = pinVerifier(w.pins)
 	}
+	proxy := http.ProxyFromEnvironment
+	switch {
+	case w.proxySet:
+		proxy = w.proxy
+	case w.customCA || len(w.pins) > 0:
+		proxy = nil
+	}
 	w.client = &http.Client{
 		// A signed body must not go somewhere the operator did not name.
 		CheckRedirect: func(*http.Request, []*http.Request) error { return http.ErrUseLastResponse },
 		Transport: &http.Transport{
-			Proxy:           http.ProxyFromEnvironment,
+			Proxy:           proxy,
 			TLSClientConfig: w.tlsCfg,
 			// One handshake per delivery: deliveries are rare, a rotated client certificate is
 			// then used by the next one, and the audit record's "client certificate presented"
@@ -328,6 +348,7 @@ type deliveryResult struct {
 // receiver's configuration can change.
 type PermanentError struct{ Status int }
 
+// Error names the status only: no URL, no body.
 func (e *PermanentError) Error() string {
 	return "notify: receiver refused the delivery: HTTP " + strconv.Itoa(e.Status)
 }
@@ -460,15 +481,28 @@ func (w *Webhook) sanitize(err error) error {
 	return fmt.Errorf("notify: POST to %s failed: %w", w.host, err)
 }
 
+func allDigits(s string) bool {
+	for _, r := range s {
+		if r < '0' || r > '9' {
+			return false
+		}
+	}
+	return s != ""
+}
+
 func parseRetryAfter(v string, now time.Time) time.Duration {
 	if v == "" {
 		return 0
 	}
-	if n, err := strconv.Atoi(v); err == nil {
+	if n, err := strconv.ParseInt(v, 10, 64); err == nil {
 		if n < 0 {
 			return 0
 		}
-		return time.Duration(n) * time.Second
+		// Clamp before multiplying: a huge value would overflow Duration.
+		return time.Duration(min(n, int64(maxRetryAfter/time.Second))) * time.Second
+	}
+	if allDigits(v) {
+		return maxRetryAfter // a number too large for int64 is still "a very long time"
 	}
 	if t, err := http.ParseTime(v); err == nil {
 		if d := t.Sub(now); d > 0 {

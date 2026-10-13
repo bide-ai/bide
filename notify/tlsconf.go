@@ -76,9 +76,12 @@ type clientCert struct {
 	stamp     fileStamp
 }
 
+// fileStamp identifies the files' state: modification times and sizes for a cheap look, and a hash
+// of the contents so a same-size rewrite that keeps its modification time is still seen.
 type fileStamp struct {
 	certMod, keyMod   time.Time
 	certSize, keySize int64
+	sum               [sha256.Size]byte
 }
 
 func newClientCertFiles(certFile, keyFile string, now func() time.Time, onError func(error)) (*clientCert, error) {
@@ -114,15 +117,26 @@ func (c *clientCert) set(cert *tls.Certificate) {
 
 func (c *clientCert) stampNow() (fileStamp, error) {
 	var s fileStamp
-	ci, err := os.Stat(c.certFile)
-	if err != nil {
-		return s, err
+	h := sha256.New()
+	for i, f := range []string{c.certFile, c.keyFile} {
+		info, err := os.Stat(f)
+		if err != nil {
+			return s, err
+		}
+		b, err := os.ReadFile(f)
+		if err != nil {
+			return s, err
+		}
+		h.Write(b)
+		h.Write([]byte{0})
+		if i == 0 {
+			s.certMod, s.certSize = info.ModTime(), info.Size()
+		} else {
+			s.keyMod, s.keySize = info.ModTime(), info.Size()
+		}
 	}
-	ki, err := os.Stat(c.keyFile)
-	if err != nil {
-		return s, err
-	}
-	return fileStamp{ci.ModTime(), ki.ModTime(), ci.Size(), ki.Size()}, nil
+	copy(s.sum[:], h.Sum(nil))
+	return s, nil
 }
 
 // load reads the pair from its files; on failure it leaves the current pair in place. Callers hold
