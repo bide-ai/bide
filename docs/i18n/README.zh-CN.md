@@ -130,7 +130,7 @@ Temporal 借助一个服务器和一支 worker 机群提供持久化执行。而
 
 **手写与构建**
 
-- **[配方](../../docs/recipes/index.md)**：五个可复制即用、无需 API 密钥即可运行的完整流程：3 选 2 审批的退款、发票审批、工单分流、安全更新客户记录，以及会休眠并唤醒的环境智能体。
+- **[配方](../../docs/recipes/index.md)**：六个可复制即用、无需 API 密钥即可运行的完整流程：3 选 2 审批的退款、发票审批、工单分流、安全更新客户记录、会休眠并唤醒的环境智能体，以及在运行需要人工介入时通知相关人员的 webhook。
 - **[流程](../../docs/guides/plan-flows.md)**：`plan` 类型化流程构建器。手写下沉到同一条日志的拓扑（`Step`/`Tool`/`Model`/`Switch`/`Join`/`LoopBack`），然后证明一次运行遵循了它（`Conform`）。可在 `examples/plan` 中运行。
 - **[持久化步骤](../../docs/guides/durable-steps.md)**：组合你自己的持久化工作：`Step`、`Parallel`/`Task` 扇入、saga（`WithSaga`）以及持久化定时器（`Sleep`/`WaitUntil`）。可在 `examples/parallel` 中运行。
 - **[可靠性](../../docs/guides/reliability.md)**：按尝试计的超时、分类的重试、对冲式模型调用、限流和成本跟踪，以及它们如何组合。可在 `examples/hedge` 中运行。
