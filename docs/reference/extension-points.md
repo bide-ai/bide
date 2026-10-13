@@ -18,6 +18,8 @@ reference adapters that ship with it.
 | `Retriever` | root | bring-your-own RAG | your store; wired via `RetrievalTool` / `WithRetrieval` |
 | `Anchor` | `audit` | out-of-band anchoring of a commitment | `MemAnchorLog` |
 | `EventStore` | `audit` | durable event-trail persistence | `MemEventStore` |
+| `Notifier` | root | telling a person a run needs them | your webhook, chat or pager adapter |
+| `NotifyTrail` | root | the audited delivery state behind `Notifier` | `audit.NewNotifyTrail` (over an `EventStore`), `MemNotifyTrail` |
 
 ## `Model`: the provider primitive
 
@@ -445,3 +447,44 @@ connections as the journal, in a `bide_events` table (the table prefix applies) 
 writers racing for a position, across connections or nodes, have exactly one winner and the
 rest get `ErrSeqTaken` (or a no-op for the same bytes). `audit/eventstoretest.Run` is the
 conformance suite every one of them passes; run it against your own backend.
+
+
+## `Notifier`: tell a person a run needs them
+
+<!-- docsnip: api agent -->
+```go
+type Notifier interface {
+	Notify(ctx context.Context, n Notification) error
+}
+```
+
+The port behind `agent.WithNotifier`. `Notify` is called when a run halts on an unknown outcome,
+waits for approval, is aborted, or cannot be recovered, and again after an error, a crash or a lost
+reply: return nil only once the sink has accepted the notification, and use `Notification.ID`, which
+is the same on every attempt, to drop duplicates at the sink. A `Notification` holds structured
+fields only, and `Err` is for an in-process notifier: a notifier that sends elsewhere should not
+forward error text or tool arguments, which can hold card numbers or personal data. Wrap
+`agent.ErrNotifyPermanent` for a failure a retry in the same round cannot fix, and call
+`agent.ReportNotifyAck` to record how a delivery was authenticated. A plan flow takes the same notifier with `plan.Builder.WithNotifier` (or `plan.WithLoadedNotifier`
+for a loaded config), and code that drives its own runs binds it with `agent.NewRunNotifier`. The
+design is in [docs/design/notifier.md](../design/notifier.md); the webhook notifier that implements
+the port follows.
+
+## `NotifyTrail`: delivery state, audited
+
+<!-- docsnip: api agent -->
+```go
+type NotifyTrail interface {
+	Load(ctx context.Context, trail string) ([]NotifyRecord, error)
+	Append(ctx context.Context, trail string, seq int, rec NotifyRecord) error
+}
+```
+
+Where a notifier records that it observed an event, claimed it, and saw the sink acknowledge it, so
+a restart does not repeat an acknowledged event and two processes do not both deliver while a claim
+is live. `Append` is insert-if-absent at a position: a different record at a taken position is
+`agent.ErrTrailConflict`, and the same record again is a no-op. The state is never written to the
+run's journal. `audit.NewNotifyTrail(store)` stores a trail as salted, Merkle-committed event leaves
+on any `audit.EventStore`, so it is verifiable like any event trail; across processes it needs an
+`EventStore` that is durable and enforces `UNIQUE(run_id, seq)`. `agent.NewMemNotifyTrail` is the
+in-process implementation, and `agenttest.NotifyTrailContract` is the contract test for your own.

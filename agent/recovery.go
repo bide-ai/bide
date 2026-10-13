@@ -46,6 +46,8 @@ type recoverConfig struct {
 	concurrency int           // RecoverLoop only
 	lapsedConc  int           // RecoverLoop only: the lapsed loop's concurrency
 	onError     func(error)   // RecoverLoop only
+	notifier    *notifierOption
+	notify      *notifyEngine // built from notifier with the store, by Recover and RecoverLoop
 	intervalSet bool
 }
 
@@ -224,6 +226,12 @@ func Recover(ctx context.Context, store *Journal, resume Resumer, opts ...Recove
 	cfg, err := leaseConfig("Recover", opts, RecoverOption.applyRecover)
 	if err != nil {
 		return 0, err
+	}
+	if cfg.notifier != nil {
+		if cfg.notify, err = cfg.notifier.engine(store, "recover"); err != nil {
+			return 0, err
+		}
+		defer cfg.notify.flush(ctx)
 	}
 
 	var recovered int
@@ -706,6 +714,13 @@ func recoverRun(ctx context.Context, store *Journal, runID string, resume Resume
 		resumed = true
 		return err
 	}, cfg)
+	if cfg.notify != nil {
+		failure := err
+		if failure == nil && notResumable != nil {
+			failure = notResumable // no Resumer drives this run: recovery is failing for it
+		}
+		cfg.notify.afterRecover(ctx, runID, driven, resumed, failure)
+	}
 	switch {
 	case err != nil && (!driven || !IsPause(err) && !errors.Is(err, ErrLeaseLost) && !cancelledEnd(err)):
 		return resumed, fmt.Errorf("recover run %s: %w", runID, err)
@@ -797,6 +812,19 @@ func RecoverLoop(ctx context.Context, store *Journal, resume Resumer, opts ...Re
 	cfg, err := leaseConfig("RecoverLoop", opts, RecoverLoopOption.applyRecoverLoop)
 	if err != nil {
 		return err
+	}
+	if cfg.notifier != nil {
+		if cfg.notify, err = cfg.notifier.engine(store, "recover"); err != nil {
+			return err
+		}
+		defer func() {
+			// Bounded: a sink that ignores its context must not keep RecoverLoop from returning.
+			fctx, cancel := context.WithTimeout(context.WithoutCancel(ctx), 500*time.Millisecond)
+			defer cancel()
+			if err := cfg.notify.flush(fctx); err != nil && cfg.onError != nil {
+				cfg.onError(err) // not ctx-guarded: the loop is ending, and these are its undelivered events
+			}
+		}()
 	}
 	if !cfg.intervalSet {
 		cfg.interval = max(cfg.ttl/2, 1)

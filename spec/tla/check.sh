@@ -19,8 +19,12 @@
 #
 # Each .cfg names its group and its expected result in comment lines:
 #   \* GROUP: ci | nightly | regress | finding | limit
-#   \* EXPECT: pass | invariant <Name> | liveness
+#   \* EXPECT: pass | invariant <Name> | liveness | action <Name>
 #   \* VACUITY: skip <reason>   (optional: a passing config in which the effect must never fire)
+#   \* SPEC: <module>.tla       (optional: the module in the model's directory TLC checks, in place
+#                              of its MC module)
+#   \* LIBRARY: <model>...      (optional: other model directories whose modules it extends or
+#                              instantiates; TLC finds them through TLA-Library)
 # "pass" configs are also run once with the vacuity invariant EffectNotReachable, which TLC must
 # report violated: a model in which the effect never fires satisfies every safety property.
 #
@@ -166,17 +170,23 @@ meta() { sed -n "s/^\\\\\\* $1: *//p" "$2" | head -1; }
 # mc_of DIR: the model's MC module in DIR (the one *MC.tla file), or nothing.
 mc_of() { (cd "$1" && ls ./*MC.tla 2>/dev/null | head -1 | sed 's|^\./||'); }
 
-# tlc CFG OUT DIR: run TLC on CFG (a copy may live elsewhere) against the MC module in DIR; set
-# tlc_status to TLC's exit status. TLC runs in the background and is waited for, so an interrupt
-# reaches the trap at once, which stops it (tlc_pid) before removing its metadir.
+# tlc CFG OUT DIR [MODULE [LIBRARY]]: run TLC on CFG (a copy may live elsewhere) against MODULE,
+# or the MC module in DIR, with the model directories LIBRARY names (spec/tla/<model>, separated
+# by spaces) on TLA-Library; set tlc_status to TLC's exit status. TLC runs in the background and is
+# waited for, so an interrupt reaches the trap at once, which stops it (tlc_pid) before removing its
+# metadir.
 tlc_pid=
 tlc() {
-  local cfg=$1 out=$2 dir=$3 module=${4:-} meta_dir jtmp
+  local cfg=$1 out=$2 dir=$3 module=${4:-} lib=${5:-} meta_dir jtmp libpath= l
+  for l in $lib; do
+    [ -n "$(mc_of "$here/$l" 2>/dev/null)" ] || die "$cfg: LIBRARY $l is not a model directory under spec/tla"
+    libpath=${libpath:+$libpath:}$here/$l
+  done
   meta_dir=$(tmpdir)
   # Its own java.io.tmpdir too (TLC's parser writes the standard modules there), so two check.sh
   # processes run side by side never race on one directory; TLC_JAVA_OPTS may still override it.
   jtmp=$(tmpdir)
-  (cd "$dir" && exec "$java" -XX:+UseParallelGC -Djava.io.tmpdir="$jtmp" ${TLC_JAVA_OPTS:-} -cp "$jar" tlc2.TLC \
+  (cd "$dir" && exec "$java" -XX:+UseParallelGC -Djava.io.tmpdir="$jtmp" ${libpath:+-DTLA-Library="$libpath"} ${TLC_JAVA_OPTS:-} -cp "$jar" tlc2.TLC \
       -workers "$workers" -metadir "$meta_dir" -config "$cfg" "${module:-$(mc_of "$dir")}") >"$out" 2>&1 &
   tlc_pid=$!
   tlc_status=0
@@ -202,7 +212,7 @@ record() { # record NAME RESULT DETAIL
 
 # run_cfg CFG: run one configuration and check its expected result.
 run_cfg() {
-  local cfg=$1 name dir expect kind want out status tmp
+  local cfg=$1 name dir expect kind want out status tmp module lib
   [ -f "$cfg" ] || die "no config $cfg"
   cfg=$(cd "$(dirname "$cfg")" && pwd)/$(basename "$cfg")
   name=${cfg#"$here"/}
@@ -211,9 +221,12 @@ run_cfg() {
   expect=$(meta EXPECT "$cfg")
   kind=${expect%% *}
   want=${expect#* }
+  module=$(meta SPEC "$cfg")
+  [ -z "$module" ] || [ -f "$dir/$module" ] || die "$name: SPEC must name a module in $dir"
+  lib=$(meta LIBRARY "$cfg")
   out=$(mktemp "$work/out.XXXXXX")
   echo "== $name (expect: $expect)"
-  tlc "$cfg" "$out" "$dir"; status=$tlc_status
+  tlc "$cfg" "$out" "$dir" "$module" "$lib"; status=$tlc_status
   case "$kind" in
     pass)
       if [ "$status" = 0 ] && grep -q 'No error has been found' "$out"; then
@@ -230,7 +243,7 @@ run_cfg() {
       tmp="$(dirname "$cfg")/.vacuity-$$.cfg"
       grep -vE '^(INVARIANTS?|PROPERTY|PROPERTIES)( |$)' "$cfg" >"$tmp"
       echo "INVARIANT EffectNotReachable" >>"$tmp"
-      tlc "$tmp" "$out.v" "$dir"; status=$tlc_status
+      tlc "$tmp" "$out.v" "$dir" "$module" "$lib"; status=$tlc_status
       rm -f "$tmp"
       if [ "$status" = 12 ] && grep -q 'Invariant EffectNotReachable is violated' "$out.v"; then
         record "$name (vacuity)" ok "effect reachable at depth $(stats "$out.v" | sed 's/.*depth \([0-9?]*\).*/\1/')"
@@ -254,7 +267,14 @@ run_cfg() {
         tail -60 "$out"; record "$name" FAIL "exit $status, expected a liveness violation"
       fi
       ;;
-    *) die "$name: EXPECT must be pass, invariant <Name> or liveness" ;;
+    action)
+      if [ "$status" = 13 ] && grep -q "Action property $want is violated" "$out"; then
+        record "$name" ok "$want violated, $(stats "$out")"
+      else
+        tail -60 "$out"; record "$name" FAIL "exit $status, expected action property $want violated"
+      fi
+      ;;
+    *) die "$name: EXPECT must be pass, invariant <Name>, liveness or action <Name>" ;;
   esac
   if [ -n "${TLC_KEEP_OUTPUT:-}" ]; then
     mkdir -p "$TLC_KEEP_OUTPUT"; cp "$out" "$TLC_KEEP_OUTPUT/$(echo "$name" | tr / -).out"

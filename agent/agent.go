@@ -67,6 +67,8 @@ type Agent struct {
 	// toolErrRedact, if set, chooses the text journaled and sent to the model for a failed tool
 	// call (see WithToolErrorRedactor).
 	toolErrRedact func(tool string, err error) string
+	// notify, if set, is told when a drive ends with a run that needs a person (see WithNotifier).
+	notify *notifyEngine
 }
 
 // systemMessage returns the system prompt for this drive of run: the dynamic function's if one

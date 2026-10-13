@@ -117,9 +117,12 @@ func NotifyID(key string) string {
 	return hex.EncodeToString(sum[:])
 }
 
-// HaltedKey is the event key of an unknown-outcome halt of op on runID at attempt n.
-func HaltedKey(runID string, kind OpKind, opID string, n int) string {
-	return "halted:" + encodeID(runID) + ":" + encodeID(string(kind)) + ":" + encodeID(opID) + ":" + strconv.Itoa(n)
+// HaltedKey is the event key of an unknown-outcome halt of the operation opID of kind on runID.
+// attemptedMS is the live attempt marker's time in Unix milliseconds (OutcomeUnknown.AttemptedAt;
+// 0 if unknown), the same on every drive that reports the halt and different for an attempt made
+// after the first was resolved.
+func HaltedKey(runID string, kind OpKind, opID string, attemptedMS int64) string {
+	return "halted:" + encodeID(runID) + ":" + encodeID(string(kind)) + ":" + encodeID(opID) + ":" + strconv.FormatInt(attemptedMS, 10)
 }
 
 // ApprovalKey is the event key of the approval gate for call on runID. reminder is 0 for the first

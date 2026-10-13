@@ -242,6 +242,7 @@ is in [known limitations](docs/KNOWN-LIMITATIONS.md#governed-state-gsm).
 **Guides: prove and govern**
 
 - **[Audit](docs/guides/audit.md)**: the tamper-evident trail and proof-carrying runs, checkable offline with `bide audit`. Runnable: `examples/govern/proof-carrying-run`.
+- **[Notifications](docs/guides/notifications.md)**: tell a person when a run halts or waits for approval: a signed HTTPS webhook (`notify.NewWebhook`), a one-call receiver check (`notify.Verify`), optional mutual TLS and key pinning, and what the payload leaves out. Slack and PagerDuty adapters.
 - **[Human approval](docs/guides/hitl-approval.md)**: sign-off before a tool runs, 1-of-1 to signed m-of-n, with offline proof that k named approvers approved first. Runnable: `examples/approval`.
 - **[A refund against Stripe test mode](examples/stripe-refund/README.md)**: kill a refund agent mid-refund; the restart halts instead of refunding twice, then a reconciler resolves the step from Stripe's own record. Runnable: `examples/stripe-refund`.
 - **[Security model](docs/guides/security-model.md)**: the exact scope of the cryptographic guarantees, and the audit-only build of `bide`. Read before relying on the trail.

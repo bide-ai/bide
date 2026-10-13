@@ -3,8 +3,8 @@ name: Models
 # TLA+ models of the coordination protocols (spec/tla/README.md). In the merge queue and on main: the
 # PlusCal translation check, the checker self-test, and every "ci", "regress", "finding" and "limit"
 # configuration of every model. On a pull request: the same, for the models whose directory under
-# spec/tla the pull request changes (all of them when it changes check.sh, tools.lock, shards.sh or
-# this file).
+# spec/tla the pull request changes, and the models whose configurations name a changed one in a
+# LIBRARY line (all of them when it changes check.sh, tools.lock, shards.sh or this file).
 # Nightly (and on demand): the "nightly" configurations, with larger bounds and the liveness checks
 # at the larger fault budget; and, in a job of its own beside it, the Apalache checks (symbolic and
 # inductive, spec/tla/README.md "Apalache"), which no pull request runs.
@@ -41,6 +41,7 @@ env:
     delegation: delegation delegation/regress delegation/limits
     toolcall-flows: toolcall toolcall/regress toolcall/limits flows flows/regress
     protocol-sessions: protocol protocol/regress protocol/limits sessions sessions/regress sessions/limits
+    notify: notify notify/regress notify/limits
 
 jobs:
   plan:
@@ -76,6 +77,17 @@ jobs:
             if ! echo "$files" | grep -qE '^(spec/tla/check\.sh|spec/tla/tools\.lock|\.github/workflows/models\.yml|\.github/scripts/shards\.sh)$'; then
               models=$(echo "$files" | sed -n 's|^spec/tla/\([^/]*\)/.*|\1|p' | sort -u | while read -r m; do
                 [ -d "spec/tla/$m" ] && echo "$m"; done | tr '\n' ' ' | sed 's/ $//')
+              # A model whose configurations name a changed model in a LIBRARY line (model 14's
+              # composition with model 10) reads that model's modules, so it is checked too.
+              for d in spec/tla/*/; do
+                d=$(basename "$d")
+                for m in $models; do
+                  if grep -qsE "^.. LIBRARY:( [^ ]+)* $m( |\$)" spec/tla/"$d"/*.cfg spec/tla/"$d"/*/*.cfg; then
+                    models="$models $d"
+                  fi
+                done
+              done
+              models=$(echo $models | tr ' ' '\n' | sort -u | tr '\n' ' ' | sed 's/ $//')
               if [ -z "$models" ]; then
                 run=false
                 echo "No model changed (spec/tla/<model>/, check.sh, tools.lock, shards.sh, models.yml): the models are not re-checked."

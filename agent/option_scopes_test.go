@@ -127,7 +127,7 @@ func TestOptionScopes_TypeChecked(t *testing.T) {
 		}
 	}
 	slices.Sort(combos)
-	if want := []string{"AgentRunOption", "ClockOption", "ConcurrencyOption", "LeaseControl", "SafetyOption"}; !slices.Equal(combos, want) {
+	if want := []string{"AgentRunOption", "ClockOption", "ConcurrencyOption", "LeaseControl", "NotifierOption", "SafetyOption"}; !slices.Equal(combos, want) {
 		t.Errorf("combination types = %v, want the closed list %v", combos, want)
 	}
 
@@ -139,6 +139,7 @@ func TestOptionScopes_TypeChecked(t *testing.T) {
 		"WithMaxConcurrency": "ConcurrencyOption",
 		"WithSaga":           "RunOption", "WithToolFilter": "RunOption", "WithOutputMode": "RunOption",
 		"WithClock":       "ClockOption",
+		"WithNotifier":    "NotifierOption",
 		"WithSafety":      "SafetyOption",
 		"WithLeaseHolder": "LeaseControl", "WithLeaseTTL": "LeaseControl",
 		"WithTools": "Option", "WithMiddleware": "Option", "WithToolMiddleware": "Option", "WithApproverVerifiers": "Option",
@@ -148,7 +149,7 @@ func TestOptionScopes_TypeChecked(t *testing.T) {
 		"WithRetrievalRetry": "RetrievalOption",
 		"WithApproval":       "ToolOption", "WithTimeout": "ToolOption", "WithTitle": "ToolOption", "WithOutputSchema": "ToolOption", "WithSubRuns": "ToolOption",
 	}
-	optionTypes := append(slices.Clone(scopes), "AgentRunOption", "ConcurrencyOption", "ClockOption", "SafetyOption", "LeaseControl")
+	optionTypes := append(slices.Clone(scopes), "AgentRunOption", "ConcurrencyOption", "ClockOption", "SafetyOption", "LeaseControl", "NotifierOption")
 	for _, name := range pkg.Scope().Names() {
 		fn, ok := pkg.Scope().Lookup(name).(*types.Func)
 		if !ok || !fn.Exported() {
