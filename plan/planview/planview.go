@@ -26,9 +26,10 @@ func Handler(name string, data []byte, reg *plan.Registry) http.Handler {
 func Listen(addr string) (net.Listener, error) { return runview.Listen(addr) }
 
 // Check writes the config's problems to w as "name:node: message" lines ("name:from->to: message"
-// for an edge or arm, "name: message" for the config as a whole), warnings marked "warning:", and
-// reports whether any is an error: the bide view -check output, with reg's checks added. See
-// plan.InspectConfig for the problems themselves.
+// for an edge or arm, "name: message" for the config as a whole), warnings marked "warning:", then
+// a line counting the verdicts on the config's assert lines when it has any, and reports whether
+// any problem is an error (a violated, undecided or invalid assertion is one): the bide view -check
+// output, with reg's checks added. See plan.InspectConfig for the problems and the assertions.
 func Check(w io.Writer, name string, data []byte, reg *plan.Registry) bool {
 	return runview.Check(w, runview.Config{Name: name, Data: data, Registry: reg})
 }
