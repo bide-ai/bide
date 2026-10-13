@@ -1,20 +1,12 @@
 {{define "config.html"}}{{template "head" .Flow}}
-<h1>{{.Flow}} <span class="pill kind">flow config</span> {{if .Errors}}<span class="pill state-halted">{{.Errors}} error{{if gt .Errors 1}}s{{end}}</span>{{else}}<span class="pill state-completed">no errors</span>{{end}}{{if .Warnings}} <span class="pill state-started">{{.Warnings}} warning{{if gt .Warnings 1}}s{{end}}</span>{{end}}</h1>
+<div class="crumb"><h1 class="rid">{{.Flow}}</h1> <span class="pill kind">flow config</span>{{if .Warnings}} <span class="pill state-started">{{.Warnings}} warning{{if gt .Warnings 1}}s{{end}}</span>{{end}}</div>
 <p class="input">{{.Name}}</p>
+{{template "verdict" .Verdict}}
+{{if .Assertions}}<section class="assertions card wide"><h3>Assertions</h3>{{range .Assertions}}
+    <p class="assert"><span class="pill {{if .Holds}}state-completed{{else if .Invalid}}state-started{{else if .Undecided}}state-started{{else}}state-halted{{end}}">{{if .Holds}}{{icon "ok"}} holds{{else if .Invalid}}{{icon "unknown"}} invalid{{else if .Undecided}}{{icon "unknown"}} undecided{{else}}{{icon "x"}} violated{{end}}</span> <code>{{.Text}}</code></p>
+    {{if not .Holds}}<p class="small {{if .Invalid}}warn{{else if .Undecided}}warn{{else}}bad{{end}}">{{.Message}}{{if .Path}}<br>counterexample: <code>{{join .Path " → "}}</code>{{end}}</p>{{end}}{{end}}</section>{{end}}
 
-<section class="cards">
-  <div class="card"><h3>Check</h3><p>{{.CheckLabel}}</p><p class="muted small">Nothing runs: the page shows the flow as declared.</p></div>
-  <div class="card"><h3>Digest</h3>{{if .Digest}}<p><code class="wrap">{{.Digest}}</code></p><p class="muted small">The flow:digest a run of this flow journals (plan.TopologyDigest).</p>
-  {{else if .Typed}}<p class="muted">Not computed: the config has errors.</p>
-  {{else}}<p class="muted">Needs the plan.Registry: the digest commits to the blocks' Go types.</p>{{end}}</div>
-  {{if .Graph}}<div class="card"><h3>Side effects</h3>{{with .Risk}}<p class="{{if or .Ungated .Unknown}}warn{{else}}good{{end}}"><b>{{.Line}}</b></p>
-    <p class="small">{{.ReadOnly}} read-only, {{.Idempotent}} idempotent: a resume after a crash re-runs them. A side effect halts and asks for its outcome.</p>
-    {{if .UnknownLine}}<p class="small warn">{{.UnknownLine}}</p>{{end}}{{end}}</div>{{end}}
-  {{if .Approvals}}<div class="card"><h3>Approval gates</h3>{{range .Approvals}}<p>{{.}}</p>{{end}}</div>{{end}}
-  {{if .Assertions}}<div class="card wide"><h3>Assertions</h3>{{range .Assertions}}
-    <p class="assert"><span class="pill {{if .Holds}}state-completed{{else if .Invalid}}state-started{{else if .Undecided}}state-started{{else}}state-halted{{end}}">{{if .Holds}}holds{{else if .Invalid}}invalid{{else if .Undecided}}undecided{{else}}violated{{end}}</span> <code>{{.Text}}</code></p>
-    {{if not .Holds}}<p class="small {{if .Invalid}}warn{{else if .Undecided}}warn{{else}}bad{{end}}">{{.Message}}{{if .Path}}<br>counterexample: <code>{{join .Path " → "}}</code>{{end}}</p>{{end}}{{end}}</div>{{end}}
-</section>
+
 
 {{if .Graph}}<section><h2>Flow</h2>
 <div class="legend"><span class="lg risk-side">side effect: halts on a crash</span><span class="lg risk-read">read-only: re-runs</span><span class="lg risk-idem">idempotent: re-runs</span><span class="lg risk-unknown">safety unknown</span><span class="lg gated">approval gate</span><span class="lg cex">counterexample</span><span class="lg problem">error</span><span class="lg warning">warning</span><span class="lg undeclared">not declared</span></div>
@@ -22,10 +14,24 @@
 <details><summary>Mermaid text</summary><pre>{{.Graph.Mermaid}}</pre></details>
 </section>{{end}}
 
+<section class="cards">
+  <div class="card"><h3>Check</h3><p class="cval">{{if .Typed}}Full{{else}}Structural{{end}}</p><p class="cline">{{if .Typed}}Blocks and types checked against your plan.Registry.{{else}}Types and blocks need your plan.Registry.{{end}}</p>
+  <details><summary>details</summary><p class="small">{{.CheckLabel}}</p><p class="muted small">Nothing runs: the page shows the flow as declared.</p></details></div>
+  <div class="card"><h3>Digest</h3>{{if .Digest}}<p class="cval mono">{{slice .Digest 0 (min 12 (len .Digest))}}</p><p class="cline">The flow:digest a run of this flow journals.</p>
+  <details><summary>full digest</summary><p><code class="wrap">{{.Digest}}</code></p><p class="muted small">plan.TopologyDigest</p></details>
+  {{else if .Typed}}<p class="cval muted">None</p><p class="cline">Not computed: the config has errors.</p>
+  {{else}}<p class="cval muted">None</p><p class="cline">Needs the plan.Registry: the digest commits to the blocks' Go types.</p>{{end}}</div>
+  {{if .Graph}}<div class="card"><h3>Side effects</h3>{{with .Risk}}<p class="cval {{if or .Ungated .Unknown}}warn{{else}}good{{end}}">{{.SideEffects}} side-effect step{{if ne .SideEffects 1}}s{{end}}</p>
+    <p class="cline">{{.Gated}} gated, {{.Ungated}} ungated{{if .UnknownLine}}; {{.Unknown}} unknown{{end}}</p>
+    <details><summary>details</summary><p class="small">{{.ReadOnly}} read-only, {{.Idempotent}} idempotent: a resume after a crash re-runs them. A side effect halts and asks for its outcome.</p>
+    {{if .UnknownLine}}<p class="small warn">{{.UnknownLine}}</p>{{end}}</details>{{end}}</div>{{end}}
+  {{if .Approvals}}<div class="card"><h3>Approval gates</h3><p class="cval">{{len .Approvals}} declared</p><p class="cline">{{range $i, $a := .Approvals}}{{if $i}}; {{end}}{{$a}}{{end}}</p></div>{{end}}
+</section>
+
 <section><h2>Problems</h2>
-{{if .Problems}}<table><thead><tr><th>Where</th><th>Problem</th></tr></thead><tbody>
+{{if .Problems}}<div class="tablewrap"><table><thead><tr><th>Where</th><th>Problem</th></tr></thead><tbody>
 {{range .Problems}}<tr><td>{{if .Node}}<code>{{.Node}}</code>{{else if or .From .To}}<code>{{.From}} → {{.To}}</code>{{else}}config{{end}}</td><td class="{{if eq .Severity "error"}}bad{{else}}warn{{end}}">{{.Severity}}: {{.Message}}</td></tr>{{end}}
-</tbody></table>{{else}}<p class="good">None found.</p>{{end}}
+</tbody></table></div>{{else}}<p class="good">None found.</p>{{end}}
 </section>
 <p class="muted small"><a href="/config.json">This view as JSON</a></p>
 {{template "foot"}}{{end}}

@@ -67,7 +67,7 @@ func TestDemo(t *testing.T) {
 		t.Fatalf("GET /run = %d: %s", rec.Code, rec.Body)
 	}
 	page := rec.Body.String()
-	for _, want := range []string{"attempt claimed: tool charge-1", "reconciled by ResolveHalt", "ch_1", "2 of 3: signatures verified", "<b>Verified</b> (evidence package)", "completed"} {
+	for _, want := range []string{"attempt claimed: tool charge-1", "reconciled by ResolveHalt", "ch_1", "2 of 3: signatures verified", "VERIFIED", "evidence package", "completed"} {
 		if !strings.Contains(page, want) {
 			t.Errorf("the page lacks %q", want)
 		}

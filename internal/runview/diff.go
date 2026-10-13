@@ -81,6 +81,8 @@ type DiffView struct {
 	OldErrors int    `json:"old_errors"`
 	NewErrors int    `json:"new_errors"`
 	Graph     *Graph `json:"graph,omitempty"`
+	// Verdict is the answer the page opens with (see diffVerdict); it is not in the JSON view.
+	Verdict Verdict `json:"-"`
 }
 
 // Counts are a diff's changes by kind.
@@ -145,6 +147,7 @@ func BuildDiff(d Diff) (*DiffView, error) {
 		}
 	}
 	v.Graph = diffGraph(o.Topology, n.Topology, v.Changes)
+	v.Verdict = diffVerdict(v)
 	return v, nil
 }
 

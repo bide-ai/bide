@@ -22,6 +22,10 @@ var assets embed.FS
 
 var pages = template.Must(template.New("").Funcs(template.FuncMap{
 	"svg":       func(s string) template.HTML { return template.HTML(s) }, // built by svg, every label escaped
+	"icon":      icon,
+	"sprite":    sprite,
+	"json":      highlightJSON,
+	"min":       func(a, b int) int { return min(a, b) },
 	"join":      strings.Join,
 	"hasPrefix": func(prefix, s string) bool { return strings.HasPrefix(s, prefix) },
 }).ParseFS(assets, "assets/*.html"))
@@ -203,6 +207,7 @@ func (o Options) viewOf(ctx context.Context, runID string, recs []agent.Record, 
 	}
 	markGates(v.Graph, v.Gates) // the graph's gated nodes say whether their signatures verified
 	follow(v, seqs)
+	v.Verdict = runVerdict(v)
 	return v
 }
 

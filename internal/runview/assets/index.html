@@ -1,5 +1,11 @@
 {{define "head"}}<!doctype html>
 <html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1">
-<title>{{.}}</title><link rel="stylesheet" href="/assets/style.css"></head>
-<body><header class="top"><a class="brand" href="/">bide view</a><span class="ro">read-only</span></header><main>{{end}}
+<title>{{.}}</title><link rel="stylesheet" href="/assets/style.css"><link rel="stylesheet" href="/assets/graph.css"><link rel="stylesheet" href="/assets/timeline.css"><script src="/assets/view.js" defer></script></head>
+<body>{{sprite}}<header class="top"><a class="brand" href="/">bide view</a><span class="ro">read-only</span></header><main>{{end}}
 {{define "foot"}}</main></body></html>{{end}}
+
+{{define "verdict"}}<section class="verdict v-{{.Class}}" aria-labelledby="vword">
+<div class="vicon">{{icon .Icon}}</div>
+<div class="vtext"><p class="vword" id="vword">{{.Word}}</p><p class="vline">{{.Line}}</p>{{range .Details}}<p class="vdetail">{{.}}</p>{{end}}</div>
+</section>
+{{if .Stats}}<ul class="stats">{{range .Stats}}<li class="stat{{with .Class}} s-{{.}}{{end}}"><span class="num">{{.Value}}</span><span class="lbl">{{.Label}}</span>{{if .Sub}}<span class="sub">{{.Sub}}</span>{{end}}</li>{{end}}</ul>{{end}}{{end}}

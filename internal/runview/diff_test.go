@@ -223,7 +223,7 @@ func TestDiffPage(t *testing.T) {
 		t.Fatalf("GET / = %d: %s", code, body)
 	}
 	for _, want := range []string{
-		`<g class="node added">`, `<g class="node removed">`, `<g class="node changed">`, `<g class="node unchanged">`,
+		`<g class="node added"`, `<g class="node removed"`, `<g class="node changed"`, `<g class="node unchanged"`,
 		`class="edge added"`, `class="edge removed"`, `marker-end="url(#arrow-removed)"`, `<marker id="arrow-added"`,
 		`Approval policy weakened`, `charge: approval 2 of 3 -&gt; 1 of 3`, `>WEAKENED<`, `/assets/diff.css`,
 	} {

@@ -38,6 +38,8 @@ type ConfigView struct {
 	Risk RiskSummary `json:"risk"`
 	// Assertions are the verdicts on the config's assert lines, in order.
 	Assertions []plan.AssertionResult `json:"assertions,omitempty"`
+	// Verdict is the answer the page opens with (see configVerdict); it is not in the JSON view.
+	Verdict Verdict `json:"-"`
 }
 
 // RiskSummary counts a config's nodes by safety class: side effects (gated, when every path to one
@@ -85,6 +87,7 @@ func BuildConfig(c Config) *ConfigView {
 	if len(r.Topology.Nodes) > 0 {
 		v.Graph = configGraph(r)
 	}
+	v.Verdict = configVerdict(v)
 	return v
 }
 
