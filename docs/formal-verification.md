@@ -204,7 +204,7 @@ same for bugs found by review and testing before the models existed, back to #31
 
 | Where | What | Time |
 |---|---|---|
-| Every pull request, the merge queue and main (**Models**, required) | The checker self-test, the PlusCal translation check, and every `ci`, `regress`, `finding` and `limit` configuration (232: 96 `ci`, 116 `regress`, 1 `finding`, 19 `limit`), each passing one also run for vacuity, four at a time; on a pull request, of the models it changes | 3.5 to 4.1 minutes for every model on the CI runner, in six parallel shard jobs that the **Models** job stands for (each shard's timeout 30 minutes) |
+| Every pull request, the merge queue and main (**Models**, required) | The checker self-test, the PlusCal translation check, and every `ci`, `regress`, `finding` and `limit` configuration (232: 96 `ci`, 116 `regress`, 1 `finding`, 19 `limit`), each passing one also run for vacuity, four at a time; on a pull request, of the models it changes | 3.1 to 12.7 minutes (median 4.9) for every model on the CI runner, start to finish over the last 40 pushes to main, in six parallel shard jobs that the **Models** job stands for (each shard's timeout 30 minutes) |
 | Nightly and on demand (**Models (nightly)**) | The 81 `nightly` configurations: more faults, more drivers, liveness at two error replies, weak A3 (late commits) | About 1 hour 50 minutes on the CI runner (1 hour 40 minutes measured before this split, plus about 7 minutes moved from pull requests, and model 10's four P14 configurations, about 6 minutes on the development machine; job timeout 4 hours) |
 | Nightly and on demand (**Explore (full bound)**) | The Go fault-schedule explorations of the claim protocol and of flow lowering at their full bound (`BIDE_EXPLORE=1`); every pull request runs them at a smaller bound under `-race` in the Test job | About 15 to 22 minutes |
 | Nightly and on demand (**Apalache (nightly)**) | `spec/tla/check.sh apalache`: model 1's inductive invariant (the one-step checks of each scope, the resolver scope's step split in four, and a vacuity check), a bounded symbolic regression that must fail, TLC checks that the invariant holds in every reachable state of three configurations, and a type check of model 9's wrapper ([Apalache](../spec/tla/README.md#apalache)) | One job per configuration (eleven), in parallel with each other and with the TLC nightly job; the time on the runner is given in [Apalache results](../spec/tla/README.md#apalache-results) (job timeout 350 minutes) |
@@ -223,7 +223,7 @@ temporal property) and the shortest sequence of states that reaches it: each sta
 step, such as one store round trip, a crash or a cancellation, with every variable's value.
 `spec/tla/check.sh` compares the result with the configuration's declared expectation and prints a
 summary line per configuration; `TLC_KEEP_OUTPUT=<dir>` keeps the full trace. Traces are short:
-F1's is 37 states, F2's 20 to 26, T6's 55, L2's 10. A counterexample in the current rules is a
+F1's is 37 states, F2's 22 to 29, T6's 55, L2's 10. A counterexample in the current rules is a
 bug. It gets a deterministic Go test that fails before the fix, then the fix, then a regression
 configuration that keeps the old rule failing.
 

@@ -405,8 +405,9 @@ distinct states; times are TLC's own, measured on a development machine (Apple M
 the `-a1` rows on an Apple Silicon machine, 4 workers). The whole pull-request set of every model,
 vacuity runs and JVM starts included, took 7.6 to 10.7 minutes in one job on the CI runner (GitHub
 `ubuntu-latest`, 4 vCPUs, four configurations at a time; runner speed varies); in six parallel
-shards the Models workflow takes 3.5 to 4.1 minutes from start to finish, the largest shard (model
-1) about 3. It took 9 to 15.5 minutes before the largest configurations of models 1, 2, 7 and 8
+shards the Models workflow took 3.1 to 12.7 minutes from start to finish (median 4.9, middle half
+4.5 to 6.1) over the last 40 successful pushes to main, 2026-10-12 and 13, the largest shard (model
+1) about 3 to 3.5. It took 9 to 15.5 minutes before the largest configurations of models 1, 2, 7 and 8
 moved to nightly (#132).
 
 | Config | Path | Drivers, processes | Faults (error replies, crashes, cancels) | Attempts | Property | States | Time |
@@ -416,7 +417,7 @@ moved to nightly (#132).
 | `tool-same-a1` | tool | 2 in 1 | 1, 1, 1 | 0..2 | safety | 69,179 | 1 s |
 | `tool-cross-a1` | tool | 2 in 2 | 1, 1, 1 | 0..2 | safety | 155,019 | 2 s |
 | `resolve-lease` | tool, resolver (lease) | 2 leased in 2 | 2, 1, 1 | 0..3 | safety | 80,919 | 1 s |
-| `resolve-minage-claim` | tool, resolver (min age, the F2 fix) | 2 in 2 | 2, 1, 0 | 0..4 | safety | 320,662 | 3 s |
+| `resolve-minage-claim` | tool, resolver (min age, the F2 fix) | 2 in 2 | 2, 1, 0 | 0..4 | safety | 531,951 | 11 s |
 | `intent` | two Steps that pause, the caller, resolver (lease) | 2 leased in 1 | 1, 1, 0 | 0..2 | safety, per intent | 1,370 | <1 s |
 | `intent-minage-claim` | two tool calls, the caller, resolver (min age, the F2 fix) | 2 in 2 | 2, 0, 0 | 0..3 | safety, per intent | 662 | <1 s |
 | `live-step-same` | Step | 2 in 1 | 1, 1, 1 | 0..2 | `Progress` | 291,262 | 9 s |
