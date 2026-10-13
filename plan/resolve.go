@@ -109,10 +109,10 @@ func (c *builderCore) checkRunOfFlow(ctx context.Context, store *agent.Journal, 
 		}
 	}
 	if start == nil || start.Kind != agent.RunKindFlow || start.Flow == nil || start.Flow.Name != c.flowName {
-		return fmt.Errorf("plan: flow %q: run %s is not a run of this flow (see agent.RecordedStart): %w", c.flowName, runID, agent.ErrConfig)
+		return fmt.Errorf("plan: flow %q: run %s is not a run of this flow (see agent.RecordedStart); use the flow that started it, or a new run ID: %w", c.flowName, runID, agent.ErrConfig)
 	}
 	if digest != c.digest() {
-		return fmt.Errorf("plan: flow %q: run %s was recorded under topology digest %q, not this flow's %s: %w", c.flowName, runID, digest, c.digest(), agent.ErrConfig)
+		return fmt.Errorf("plan: flow %q: run %s was recorded under topology digest %q, not this flow's %s; the flow's nodes or wiring changed since the run began, so resume it with the flow it started with, or start a new run ID: %w", c.flowName, runID, digest, c.digest(), agent.ErrConfig)
 	}
 	return nil
 }

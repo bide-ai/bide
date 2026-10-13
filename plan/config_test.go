@@ -192,6 +192,23 @@ func TestDriftUnknownBlockAndPredicate(t *testing.T) {
 	}
 }
 
+// TestDriftSaysWhatToDo asserts an unknown block names the fix and lists what is registered, and an
+// unused block says to use or remove it.
+func TestDriftSaysWhatToDo(t *testing.T) {
+	reg := NewRegistry()
+	_ = reg.RegisterStep("classify", cfgClassify)
+	_ = reg.RegisterStep("zzextra", cfgDecline)
+	_, err := Load[cfgOrder, cfgReceipt]([]byte(triageConfig), reg)
+	if err == nil || !errors.Is(err, agent.ErrConfig) {
+		t.Fatalf("Load = %v; want ErrConfig", err)
+	}
+	for _, want := range []string{"register it before Load", "(registered: classify, zzextra)", "or remove the registration"} {
+		if !strings.Contains(err.Error(), want) {
+			t.Errorf("error lacks %q: %s", want, err)
+		}
+	}
+}
+
 // TestDriftSuggestsNearMiss asserts a typo'd block name gets a near-miss suggestion.
 func TestDriftSuggestsNearMiss(t *testing.T) {
 	reg := triageRegistry(t)

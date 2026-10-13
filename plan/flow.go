@@ -156,7 +156,7 @@ func (f *Flow[In, Out]) Run(ctx context.Context, store *agent.Journal, runID str
 		return out, fmt.Errorf("plan: run %q: run %s was started under topology digest v1 (%s), which does not commit to block or predicate names, so it cannot show the run started under this flow; this version resumes only runs recorded under v2: %w", c.flowName, runID, got, agent.ErrConfig)
 	}
 	if err != nil || got != c.digest() {
-		return out, fmt.Errorf("plan: run %q: run %s was started under flow digest %s, not this flow's %s; resume it with the flow it started with: %w", c.flowName, runID, rec.Result, c.digest(), agent.ErrConfig)
+		return out, fmt.Errorf("plan: run %q: run %s was started under flow digest %s, not this flow's %s; the flow changed since the run began, so resume it with the flow it started with, or start a new run ID: %w", c.flowName, runID, rec.Result, c.digest(), agent.ErrConfig)
 	}
 
 	if c.byName[c.entry] == nil {
@@ -350,10 +350,10 @@ func decodeCompletion[Out any](flowName, runID string, raw json.RawMessage) (Out
 	var out Out
 	var c completion
 	if err := json.Unmarshal(raw, &c); err != nil {
-		return out, fmt.Errorf("plan: run %q: run %s was completed, but not by a flow: %w", flowName, runID, agent.ErrConfig)
+		return out, fmt.Errorf("plan: run %q: run %s was completed, but not by a flow; use a new run ID for this flow: %w", flowName, runID, agent.ErrConfig)
 	}
 	if c.Flow != flowName {
-		return out, fmt.Errorf("plan: run %q: run %s was completed by flow %q: %w", flowName, runID, c.Flow, agent.ErrConfig)
+		return out, fmt.Errorf("plan: run %q: run %s was completed by flow %q; use that flow to read it back, or a new run ID for this one: %w", flowName, runID, c.Flow, agent.ErrConfig)
 	}
 	if len(c.Output) > 0 {
 		if err := json.Unmarshal(c.Output, &out); err != nil {

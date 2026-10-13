@@ -61,21 +61,21 @@ call is.
 
 ```sh
 export STRIPE_SECRET_KEY=sk_test_...
-F="-payment-intent pi_... -run r1 -amount 2500 -approval-threshold 1000"
+F=(-payment-intent pi_... -run r1 -amount 2500 -approval-threshold 1000)   # an array, so it works in bash and zsh
 
 # 1. Start the refund: over the threshold, so it pauses for 2 of 3 approvers.
-go run . run $F
+go run . run "${F[@]}"
 go run . approve -run r1 -as ops
 go run . approve -run r1 -as finance
 
 # 2. Resume and kill the process right after the request is sent (exit status 3).
-go run . run $F -crash-after-send
+go run . run "${F[@]}" -crash-after-send
 
 # 3. Restart without the reconciler: it halts and sends nothing.
-go run . run $F -reconcile=false
+go run . run "${F[@]}" -reconcile=false
 
 # 4. Restart with it (the default): it asks Stripe, resolves the halt, finishes.
-go run . run $F
+go run . run "${F[@]}"
 ```
 
 ### What to look for

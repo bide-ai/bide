@@ -134,7 +134,7 @@ func Open(path string, opts ...Option) (*Store, error) {
 	s := &Store{w: w, own: true, t: cfg.tables()}
 	if err := s.migrate(ctx); err != nil { // creates the file in WAL mode before the other pools open it
 		w.Close()
-		return nil, err
+		return nil, fmt.Errorf("sqlite: Open %s: %w%s", path, err, openHint(err))
 	}
 	if s.r, err = sql.Open("sqlite", withQuery(path, busy+"&_pragma=query_only(1)")); err != nil {
 		w.Close()
@@ -148,6 +148,19 @@ func Open(path string, opts ...Option) (*Store, error) {
 	}
 	s.l.SetMaxOpenConns(1)
 	return s, nil
+}
+
+// openHint says what to check when the file at a path will not open as a journal: the two ways a
+// newcomer meets it are a directory that does not exist (or is not writable) and a file that is
+// not a SQLite database at all. It is empty for any other error.
+func openHint(err error) string {
+	switch msg := err.Error(); {
+	case strings.Contains(msg, "unable to open database file"):
+		return "; check that the directory exists and is writable, and that the path is a file, not a directory"
+	case strings.Contains(msg, "file is not a database"):
+		return "; the file is not a SQLite database, so give a path to a journal bide created, or a new file name"
+	}
+	return ""
 }
 
 // withQuery appends the DSN query parameters q to path.
