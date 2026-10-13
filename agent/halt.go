@@ -485,7 +485,7 @@ type ApprovalPending struct {
 
 // Error names the run and the call awaiting approval.
 func (e *ApprovalPending) Error() string {
-	return fmt.Sprintf("run %s awaiting human approval for tool %q (call %s)", e.RunID, e.ToolName, e.ToolUseID)
+	return fmt.Sprintf("run %s awaiting human approval for tool %q (call %s); approvers record decisions with SubmitDecision, then re-run the run to continue", e.RunID, e.ToolName, e.ToolUseID)
 }
 
 func (*ApprovalPending) pause() {}
@@ -515,13 +515,13 @@ type OutcomeUnknown struct {
 func (e *OutcomeUnknown) Error() string {
 	var s string
 	if e.Op.Kind == OpStep {
-		s = fmt.Sprintf("resume halted: step %q has unknown outcome and is not retry-safe; confirm before continuing", e.Op.ID)
+		s = fmt.Sprintf("resume halted: step %q has unknown outcome and is not retry-safe; check whether it took effect, record that with agent.ResolveHalt, then re-run the run (or start a new run)", e.Op.ID)
 	} else {
-		s = fmt.Sprintf("resume halted: tool %q (call %s) has unknown outcome and is not retry-safe; confirm before continuing",
+		s = fmt.Sprintf("resume halted: tool %q (call %s) has unknown outcome and is not retry-safe; check whether it took effect, record that with agent.ResolveHalt, then re-run the run (or start a new run)",
 			e.Op.ToolName, e.Op.ID)
 	}
 	if e.Cause == HaltContended {
-		s += " (another driver holds its claim)"
+		s += " (another driver holds its claim; wait for it to record the result, then re-run)"
 	}
 	return s
 }

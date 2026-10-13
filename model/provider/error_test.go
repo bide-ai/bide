@@ -214,3 +214,17 @@ func TestSSEReadError_LineTooLong(t *testing.T) {
 		t.Fatalf("read error = %v, want agent.ErrModel wrapping the cause", err)
 	}
 }
+
+// A rejected key and an unknown model are the first two failures a newcomer meets: the error says
+// what to check, and still wraps ErrModel.
+func TestClassifyHTTPError_StatusHints(t *testing.T) {
+	for status, want := range map[int]string{401: "API key", 403: "API key", 404: "model name"} {
+		err := ClassifyHTTPError("openai", errResp(status, "", `{"error":{"message":"nope"}}`))
+		if !errors.Is(err, agent.ErrModel) || !strings.Contains(err.Error(), want) {
+			t.Errorf("status %d: %v; want ErrModel mentioning %q", status, err, want)
+		}
+	}
+	if err := ClassifyHTTPError("openai", errResp(500, "", "boom")); strings.Contains(err.Error(), "check") {
+		t.Errorf("status 500 carries a hint: %v", err)
+	}
+}

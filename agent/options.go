@@ -236,10 +236,10 @@ func applyOptions[O comparable, C any](what string, cfg *C, opts []O, apply func
 // The agent is immutable once built: With returns a configured copy and leaves the agent alone.
 func New(model Model, j *Journal, opts ...Option) (*Agent, error) {
 	if isNil(model) {
-		return nil, fmt.Errorf("agent: New: nil model: %w", ErrConfig)
+		return nil, fmt.Errorf("agent: New: nil model; pass a model such as openai.New(key), or agenttest.NewScriptedModel for no API key: %w", ErrConfig)
 	}
 	if j == nil {
-		return nil, fmt.Errorf("agent: New: nil journal: %w", ErrConfig)
+		return nil, fmt.Errorf("agent: New: nil journal; open one with agent.NewJournal(sqlite.New(db)) or the in-memory store: %w", ErrConfig)
 	}
 	a := newAgent(model, j)
 	if err := configure(a, opts); err != nil {

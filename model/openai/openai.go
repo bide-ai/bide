@@ -152,7 +152,7 @@ func (m *Model) Stream(ctx context.Context, req agent.Request) (*agent.Stream, e
 		// provider's 401 does not read as a bad key. A server that needs none never gets here.
 		var api *agent.APIError
 		if m.apiKey == "" && (resp.StatusCode == http.StatusUnauthorized || resp.StatusCode == http.StatusForbidden) && errors.As(err, &api) {
-			api.Err = fmt.Errorf("no API key: openai.New was given an empty key: %w", api.Err)
+			api.Err = fmt.Errorf("no API key: openai.New was given an empty key; set the provider's API key (for example OPENAI_API_KEY) and pass it to openai.New: %w", api.Err)
 		}
 		return nil, err
 	}

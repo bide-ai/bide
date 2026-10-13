@@ -437,11 +437,11 @@ func newConfig(opts []Option) (config, error) {
 func Open(ctx context.Context, dsn string, opts ...Option) (*Store, error) {
 	db, err := sql.Open("pgx", dsn)
 	if err != nil {
-		return nil, err
+		return nil, fmt.Errorf("postgres: Open: cannot use the DSN: %w; it should look like postgres://user:pass@host:5432/db: %w", err, agent.ErrConfig)
 	}
 	if err := db.PingContext(ctx); err != nil {
 		db.Close()
-		return nil, err
+		return nil, fmt.Errorf("postgres: Open: cannot reach the database: %w; check the DSN (host, port, user, password, database), that the server is running, and sslmode: %w", err, agent.ErrStorage)
 	}
 	s, err := New(ctx, db, opts...)
 	if err != nil {
