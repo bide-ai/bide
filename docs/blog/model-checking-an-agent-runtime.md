@@ -219,8 +219,8 @@ None of this checks that a Go function does what its model step says. Review doe
 
 Counts, from the repo on 2026-10-13:
 
-- 10 models. 232 configurations run in the merge queue and on every push to main (96 `ci`, 116
-  regression, 1 finding, 19 limit). 93 must pass, each also run for vacuity; 139 must fail with
+- 10 models. 232 configurations run in the merge queue and on every push to main (97 `ci`, 116
+  regression, 1 finding, 18 limit). 94 must pass, each also run for vacuity; 138 must fail with
   their named property. 81 larger configurations run nightly.
 - A small safety configuration, `step-same-a1` (two drivers in one process, one error reply, one
   crash, one cancellation), visits 146,864 distinct states in a few seconds (re-run). Its nightly
@@ -285,7 +285,7 @@ runtime promises and under which conditions.
 - "Three of the four were double fires", "three review rounds", "28 bugs": docs/formal-verification.md ("Why bide model-checks", "At a glance").
 - modelsync, markers, path rule, Protocol-Impact, TestProtocolVocabulary: docs/formal-verification.md "How the models and the code stay in step"; spec/tla/README.md "Keeping the code and the models in step"; marker text from agent/journal.go line 675; `go run ./internal/tools/modelsync` prints "modelsync: ok" on origin/main 21c5f604.
 - 116 regressions: `spec/tla/check.sh list regress | wc -l` = 116.
-- 232 = 96 + 116 + 1 + 19 (`check.sh list ci|regress|finding|limit`); 81 nightly (`check.sh list nightly`). "10 models": docs/formal-verification.md "At a glance".
+- 232 = 97 + 116 + 1 + 18 (`check.sh list ci|regress|finding|limit`); 81 nightly (`check.sh list nightly`). "10 models": docs/formal-verification.md "At a glance".
 - step-same-a1 146,864 states, 3 s: re-run 2026-10-13 and spec/tla/README.md table. step-same 2,282,585 / 12 s, deep-faults 31,402,708 / 2 min: spec/tla/README.md nightly table (development machine, Apple M1 Pro).
 - CI shard times: GitHub Actions run 38443313721 (push to main, 2026-10-13): Models (toolcall-flows) 18:01:53 to 18:06:03 = 4 min 10 s; whole workflow 18:00:53 to 18:06:11 = 5 min 18 s.
 - Nightly durations: scheduled Models runs 37765386131, 37919276985, 38043275489, 38130867661, 38240171387, 38385624156 (2026-10-08 to 2026-10-13): 3 h 40, 2 h 54, 2 h 20, 3 h 43, 2 h 49, 2 h 58. The workflow includes the Apalache jobs.
