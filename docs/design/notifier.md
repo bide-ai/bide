@@ -291,7 +291,10 @@ An independent review of the first implementation found these, and each is now a
   notice is the fourth), so its calls take half the claim, its backoff and acknowledgement retries
   a little more, and it starts only when more than three quarters of its claim remain: it ends inside
   the claim it holds. Rounds of different events run concurrently (up to 8), so a hung sink holds
-  neither the others nor, for long, its own slot. `RecoverLoop` bounds its flush on the way out (500 ms)
+  neither the others nor, for long, its own slot. An abandoned call that has not returned is not
+  repeated: its event makes no new call until it does, and an engine has at most 256 calls running,
+  so a Notifier that never returns cannot gather goroutines; the refusal is reported to
+  `WithNotifyErrors`. `RecoverLoop` bounds its flush on the way out (500 ms)
   and cancels the calls still in flight.
 - **Claim liveness does not trust synchronized clocks.** `claimed.until` is written by one clock and
   read by another. Another holder's claim counts as live until `until` plus a skew margin (default
@@ -318,7 +321,9 @@ An independent review of the first implementation found these, and each is now a
   sentinel (`ErrStorage`, `ErrNotResumable`) or nil.
 - **Halt keys for an untimed marker** use the live attempt's generation (the negative of one more than
   it), not 0, so a re-attempt after a not-started record is a new event. If the marker cannot be
-  read the halt is not queued under a guess; the next drive or sweep raises it.
+  read, the worker tries again: the halt is queued at once under a provisional key and its real key
+  is computed in the worker, so a drive (`Run`) never waits on the journal for it, and a failed read
+  never produces a guessed key.
 - **An idle notifier holds no goroutine.** The dispatcher exits when nothing is queued and starts on
   the next event; an event queued while it leaves starts another.
 - **`FlushNotifications` returns what was not delivered**: the last error of each event still queued
@@ -328,6 +333,14 @@ An independent review of the first implementation found these, and each is now a
   store, not per `Journal` value.
 - **A trail with a record kind a newer version wrote loads**, in its position, and the fold skips it,
   so a rolling upgrade does not stop the older processes.
+- **`RecoverLoop` reports its undelivered events** at exit to `WithRecoverErrors` (the flush error),
+  which is not discarded.
+- **A late success after an abandon is a duplicate within the bound.** A call abandoned at its timeout
+  that later succeeds means the sink has the notification, and the next attempt repeats it with the
+  same ID: a duplicate the receiver can drop, like any lost-reply duplicate.
+- **`VerifyNotifications` must read the trail strictly.** The engine's `Load` keeps a record kind it does
+  not know in its position so an older process keeps delivering; the verifier (build plan item 7) must
+  refuse a kind it cannot read, or an older verifier would pass a trail it did not check.
 - **Known cost:** a recovery pass does a trail read for each run it drives that pauses or succeeds, to
   close an open episode. It is one point read of a short trail; a deployment with very many paused
   runs may want a longer recovery interval.
@@ -664,7 +677,7 @@ No durable `EventStore` exists today. `audit` defines the interface and ships on
 | 4 | Notifier core: events at drive end, observe, claim, backoff, `failing`, `overdue`, `recovery_failing`, delivery goroutine | L | 3 | the crash sweep and DST cases from the existing harnesses |
 | 5 | Webhook with HMAC, rotation, HTTPS-only, mTLS and reload | M | the `Notifier` interface only | can start at once |
 | 6 | `NotifyPending` sweep | S | 4 | |
-| 7 | `audit.VerifyNotifications` and the `bide audit` verb | M | 3 | verifier in `audit` can start early; the verb is a `cmd/bide` change |
+| 7 | `audit.VerifyNotifications` and the `bide audit` verb | M | 3 | verifier in `audit` can start early; it reads the trail strictly (refuses a record kind it cannot read, unlike the engine's `Load`); the verb is a `cmd/bide` change |
 | 8 | Viewer "Needs attention": notified, acknowledged, overdue | M | 3 | reads the trail; `internal/runview` change |
 | 9 | Model 14 (TLC) and its CI shard | M | design approved | starts at once; must land before 4 merges, like the other models |
 | 10 | Guide, recipe update, CHANGELOG, i18n, snippets | S | 4, 5 | docs current with the code |

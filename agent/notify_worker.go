@@ -3,6 +3,7 @@ package agent
 import (
 	"context"
 	"errors"
+	"fmt"
 	"sync"
 	"time"
 )
@@ -153,7 +154,21 @@ func (w *notifyWorker) exited() {
 
 // runRound runs one round of p's event and records its outcome.
 func (w *notifyWorker) runRound(ctx context.Context, p *pendingNotify) {
-	res, err := w.e.round(ctx, p.ev)
+	ev := p.ev
+	var res roundResult
+	var err error
+	if ev.keyFn != nil {
+		var k string
+		if k, err = ev.keyFn(ctx); err == nil {
+			ev.key, ev.keyFn = k, nil
+		} else {
+			err = fmt.Errorf("notify: %s: its key could not be computed (tried again later): %w", p.ev.key, err)
+			res.next = w.e.cfg.now().Add(w.e.backoff(1))
+		}
+	}
+	if err == nil {
+		res, err = w.e.round(ctx, ev)
+	}
 	if err != nil && ctx.Err() == nil {
 		w.e.report(err)
 	}

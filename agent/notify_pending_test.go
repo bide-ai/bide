@@ -308,17 +308,21 @@ func (f *failGetStore) Get(ctx context.Context, runID, name string) (Entry, bool
 // If the attempt marker of an untimed halt cannot be read, the event is not queued under a guessed
 // key (which could be the previous attempt's, and so dropped as already acknowledged); the next
 // drive or sweep raises it.
-func TestNotifier_AHaltWhoseMarkerCannotBeReadIsNotQueuedUnderAGuess(t *testing.T) {
+func TestNotifier_AHaltWhoseMarkerCannotBeReadHasNoKeyUntilItCan(t *testing.T) {
 	st := &failGetStore{Store: markerAt(t, 0)}
 	j := mustJournal(st)
 	e := testEngine(t, j, &fakeSink{}, NewMemNotifyTrail(), &notifyClock{t: time.Now()}, "p")
 	halt := &OutcomeUnknown{RunRef: RunRef{RunID: "r", RootRunID: "r"}, Op: OpRef{Kind: OpTool, ID: "c1"}, Cause: HaltCrashed}
+	ev, ok := e.eventFromErr("r", halt) // no read of the journal here: a drive never waits on the store
+	if !ok || ev.keyFn == nil {
+		t.Fatalf("the halt was not queued with a lazy key: %+v", ev)
+	}
 	st.armed.Store(true)
-	if ev, ok := e.eventFromErr("r", halt); ok {
-		t.Fatalf("queued %q although the marker could not be read", ev.key)
+	if k, err := ev.keyFn(context.Background()); err == nil {
+		t.Fatalf("a key %q was made from a marker that could not be read", k)
 	}
 	st.armed.Store(false)
-	if ev, ok := e.eventFromErr("r", halt); !ok || ev.key == "" {
-		t.Fatal("the halt was not queued once the marker could be read")
+	if k, err := ev.keyFn(context.Background()); err != nil || k == "" {
+		t.Fatalf("key = %q, %v once the marker could be read", k, err)
 	}
 }

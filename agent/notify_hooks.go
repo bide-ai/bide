@@ -4,7 +4,6 @@ import (
 	"context"
 	"errors"
 	"fmt"
-	"time"
 )
 
 // eventFromErr maps the error a drive of runID ended with to the event it raises, if it raises one.
@@ -13,15 +12,21 @@ func (e *notifyEngine) eventFromErr(runID string, err error) (notifyEvent, bool)
 		return notifyEvent{}, false
 	}
 	if h, ok := errors.AsType[*OutcomeUnknown](err); ok {
-		attempt, aerr := e.haltAttempt(h)
-		if aerr != nil {
-			e.report(fmt.Errorf("notify: halt of %s not queued, its attempt marker could not be read (a later drive or sweep raises it): %w", h.Op.ID, aerr))
-			return notifyEvent{}, false
-		}
-		return notifyEvent{
-			key: HaltedKey(h.RunID, h.Op.Kind, h.Op.ID, attempt), kind: NotificationOutcomeUnknown, runID: rootOr(runID, h.RunRef), opRun: h.RunID,
+		ev := notifyEvent{
+			key: HaltedKey(h.RunID, h.Op.Kind, h.Op.ID, -1), kind: NotificationOutcomeUnknown, runID: rootOr(runID, h.RunRef), opRun: h.RunID,
 			eventAt: h.AttemptedAt, halt: &NotifyHalt{Op: h.Op, Cause: h.Cause, AttemptedAt: h.AttemptedAt}, err: err,
-		}, true
+		}
+		if h.AttemptedAt.IsZero() && e.j != nil {
+			// An untimed marker is told apart by its generation, which takes a read of the journal:
+			// the worker does it, so a drive never waits on the store.
+			ev.keyFn = func(ctx context.Context) (string, error) {
+				attempt, aerr := e.haltAttempt(ctx, h)
+				return HaltedKey(h.RunID, h.Op.Kind, h.Op.ID, attempt), aerr
+			}
+		} else if !h.AttemptedAt.IsZero() {
+			ev.key = HaltedKey(h.RunID, h.Op.Kind, h.Op.ID, h.AttemptedAt.UnixMilli())
+		}
+		return ev, true
 	}
 	if p, ok := errors.AsType[*ApprovalPending](err); ok {
 		ap := &NotifyApproval{ToolUseID: p.ToolUseID, ToolName: p.ToolName}
@@ -45,19 +50,14 @@ func (e *notifyEngine) eventFromErr(runID string, err error) (notifyEvent, bool)
 // negative of one more than its generation, so the first attempt of an untimed marker, and each
 // numbered re-attempt after a not-started record, are different events. A marker whose generation
 // cannot be read counts as -1.
-func (e *notifyEngine) haltAttempt(h *OutcomeUnknown) (int64, error) {
+func (e *notifyEngine) haltAttempt(ctx context.Context, h *OutcomeUnknown) (int64, error) {
 	if !h.AttemptedAt.IsZero() {
 		return h.AttemptedAt.UnixMilli(), nil
-	}
-	if e.j == nil {
-		return -1, nil
 	}
 	base := toolAttemptStep(h.Op.ID)
 	if h.Op.Kind == OpStep {
 		base = stepAttemptStep(h.Op.ID)
 	}
-	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
-	defer cancel()
 	gen, err := e.liveGeneration(ctx, h.RunID, base)
 	if err != nil {
 		return 0, err
