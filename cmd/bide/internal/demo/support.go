@@ -21,6 +21,7 @@ import (
 	"github.com/bide-ai/bide/agent"
 	"github.com/bide-ai/bide/audit"
 	"github.com/bide-ai/bide/internal/runview"
+	"github.com/bide-ai/bide/internal/term"
 	"github.com/bide-ai/bide/store/sqlite"
 )
 
@@ -220,7 +221,7 @@ func view(ctx context.Context, dir string, logPub ed25519.PublicKey) (*result, e
 // (in red) when it does not.
 func proofText(p *printer, pr *runview.Proof) string {
 	if pr.OK {
-		return p.green(fmt.Sprintf("verified (%d records)", pr.Covers))
+		return p.st.Pass() + p.green(fmt.Sprintf("verified (%d records)", pr.Covers))
 	}
 	return p.red(pr.Summary)
 }
@@ -230,7 +231,7 @@ func proofText(p *printer, pr *runview.Proof) string {
 func approvalText(p *printer, a runview.ApprovalCheck) string {
 	if a.OK {
 		text, _, _ := strings.Cut(a.Text, " (")
-		return p.green(text)
+		return p.st.Pass() + p.green(text)
 	}
 	return p.red(a.Text)
 }
@@ -276,28 +277,22 @@ func openBrowser(url string) {
 	}
 }
 
-// printer writes the demo's narration, colored when out is a terminal and NO_COLOR is unset.
+// printer writes the demo's narration, colored as term.For decides (a terminal, NO_COLOR, -color).
+// Each step has its color: the crash red, the halt amber, the resolution blue, the proof green.
 type printer struct {
-	out   io.Writer
-	color bool
+	out io.Writer
+	st  term.Style
 }
 
-func newPrinter(out io.Writer) *printer {
-	p := &printer{out: out}
-	if f, ok := out.(*os.File); ok && os.Getenv("NO_COLOR") == "" && os.Getenv("TERM") != "dumb" {
-		if fi, err := f.Stat(); err == nil && fi.Mode()&os.ModeCharDevice != 0 {
-			p.color = true
-		}
-	}
-	return p
-}
+func newPrinter(out io.Writer, m term.Mode) *printer { return &printer{out: out, st: term.For(out, m)} }
 
 func (p *printer) line(s string) { fmt.Fprintln(p.out, s) }
 
-// step prints a numbered step's first line: the number, a short label, and what happens.
-func (p *printer) step(n int, label, what string) {
+// step prints a numbered step's first line: the number and a short label in the step's color, and
+// what happens.
+func (p *printer) step(n int, label string, color func(string) string, what string) {
 	p.line("")
-	p.line(fmt.Sprintf("%s %s %s", p.cyan(fmt.Sprint(n)), p.bold(fmt.Sprintf("%-7s", label)), what))
+	p.line(fmt.Sprintf("%s %s %s", color(fmt.Sprint(n)), p.bold(color(fmt.Sprintf("%-7s", label))), what))
 }
 
 // more prints a line under the current step, aligned with its text.
@@ -305,23 +300,17 @@ func (p *printer) more(s string) { p.line(strings.Repeat(" ", 10) + s) }
 
 func (p *printer) fatal(err error) {
 	p.line("")
-	p.line(p.red(p.bold("demo failed: ")) + err.Error())
+	p.line(p.st.Cross() + p.red(p.bold("demo failed: ")) + err.Error())
 	os.Exit(1)
 }
 
-func (p *printer) sgr(code, s string) string {
-	if !p.color {
-		return s
-	}
-	return "\x1b[" + code + "m" + s + "\x1b[0m"
-}
-
-func (p *printer) bold(s string) string   { return p.sgr("1", s) }
-func (p *printer) dim(s string) string    { return p.sgr("2", s) }
-func (p *printer) red(s string) string    { return p.sgr("31", s) }
-func (p *printer) green(s string) string  { return p.sgr("32", s) }
-func (p *printer) yellow(s string) string { return p.sgr("33", s) }
-func (p *printer) cyan(s string) string   { return p.sgr("36", s) }
+func (p *printer) bold(s string) string   { return p.st.Bold(s) }
+func (p *printer) dim(s string) string    { return p.st.Dim(s) }
+func (p *printer) red(s string) string    { return p.st.Fail(s) }
+func (p *printer) green(s string) string  { return p.st.OK(s) }
+func (p *printer) yellow(s string) string { return p.st.Warn(s) }
+func (p *printer) blue(s string) string   { return p.st.Blue(s) }
+func (p *printer) cyan(s string) string   { return p.st.Cyan(s) }
 
 // recorder serves assets/demo/record.sh (see recordEnv); it does nothing when recordEnv is unset.
 type recorder struct {

@@ -15,6 +15,8 @@ import (
 	"path/filepath"
 	"regexp"
 	"strings"
+
+	"github.com/bide-ai/bide/internal/term"
 )
 
 //go:embed template
@@ -49,6 +51,7 @@ flow.yaml, README.md, .gitignore and go.mod. Then: cd <dir> && go mod tidy && go
 	}
 	module := fs.String("module", "", "the module path (default: the directory's name)")
 	dev := fs.String("dev", "", "a bide checkout to build against (replace directives), for a bide built from source")
+	color := term.Flag(fs)
 	if err := fs.Parse(args); err != nil {
 		if errors.Is(err, flag.ErrHelp) {
 			return 0
@@ -83,7 +86,9 @@ flow.yaml, README.md, .gitignore and go.mod. Then: cd <dir> && go mod tidy && go
 		fmt.Fprintln(stderr, "bide init:", err)
 		return 1
 	}
-	fmt.Fprintf(stdout, "wrote %s (module %s). Next:\n\n  cd %s\n  go mod tidy\n  go run .\n\nthen see README.md.\n", dir, name, dir)
+	st := term.For(stdout, *color)
+	fmt.Fprintf(stdout, "%swrote %s (module %s). Next:\n\n  %s\n  %s\n  %s\n\nthen see %s.\n",
+		st.Pass(), st.Bold(dir), name, st.Path("cd "+dir), st.Path("go mod tidy"), st.Path("go run ."), st.Path("README.md"))
 	return 0
 }
 

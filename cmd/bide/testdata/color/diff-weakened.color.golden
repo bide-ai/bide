@@ -1,0 +1,9 @@
+[31m✗[0m [2m../../examples/plan/flows/refund-v1.yaml[0m: [1;31mapproval policy weakened: charge: approval 2 of 3 -> 1 of 3[0m
+[31m✗[0m [2m../../examples/plan/flows/refund-v1.yaml[0m: [33mchanged[0m node [1mcharge[0m: [33mapproval 2 of 3[0m -> 1 of 3 [1;31m(weakened)[0m
+[32m+[0m [2m../../examples/plan/flows/refund-v1.yaml[0m: [32madded[0m node [1mskip[0m: block skip
+[31m-[0m [2m../../examples/plan/flows/refund-v1.yaml[0m: [31mremoved[0m node [1mreview[0m: block review
+[32m+[0m [2m../../examples/plan/flows/refund-v1.yaml[0m: [32madded[0m edge [1mvalidate[0m -> [1mskip[0m: else
+[31m-[0m [2m../../examples/plan/flows/refund-v1.yaml[0m: [31mremoved[0m edge [1mvalidate[0m -> [1mreview[0m: else
+[2m../../examples/plan/flows/refund-v1.yaml[0m: [1m5 changes[0m from ../../examples/plan/flows/refund-v2.yaml
+    [2mnodes: 1 added, 1 removed, 1 changed; edges: 1 added, 1 removed, 0 changed[0m
+    [2mdigest not computed: the check is structural (the digest commits to the blocks' Go types; see plan/planview)[0m

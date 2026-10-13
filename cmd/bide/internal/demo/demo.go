@@ -19,8 +19,9 @@
 //     resolution, the gate's signatures and the audit proof), and opens a browser on it.
 //
 // Flags: -no-browser prints the page's address without opening a browser, -fast drops the pauses
-// (for CI), -addr sets the loopback address to serve on, and -keep keeps the temp directory and
-// prints it, with the bide view command that reopens the run.
+// (for CI), -addr sets the loopback address to serve on, -keep keeps the temp directory and prints
+// it, with the bide view command that reopens the run, and -color colors the narration (by default
+// on a terminal only).
 package demo
 
 import (
@@ -45,6 +46,7 @@ import (
 	"github.com/bide-ai/bide/agent/agenttest"
 	"github.com/bide-ai/bide/audit"
 	"github.com/bide-ai/bide/internal/runview"
+	"github.com/bide-ai/bide/internal/term"
 )
 
 const (
@@ -93,6 +95,7 @@ var reexec []string
 type demoFlags struct {
 	noBrowser, fast, keep *bool
 	addr                  *string
+	color                 *term.Mode
 }
 
 func newFlags() (*flag.FlagSet, demoFlags) {
@@ -102,6 +105,7 @@ func newFlags() (*flag.FlagSet, demoFlags) {
 	f.fast = fs.Bool("fast", false, "no pauses between steps (for CI)")
 	f.addr = fs.String("addr", "127.0.0.1:0", "loopback address to serve the viewer on (port 0 picks a free one)")
 	f.keep = fs.Bool("keep", false, "keep the demo's directory (the journal, evidence and keys) and print it")
+	f.color = term.Flag(fs)
 	return fs, f
 }
 
@@ -130,7 +134,7 @@ func Main(args, self []string, stdout, stderr io.Writer) int {
 	}
 	noBrowser, fast, addr, keep := f.noBrowser, f.fast, f.addr, f.keep
 
-	p := newPrinter(stdout)
+	p := newPrinter(stdout, *f.color)
 	dir, err := os.MkdirTemp("", "bide-demo-*")
 	if err != nil {
 		p.fatal(err)
@@ -150,7 +154,7 @@ func Main(args, self []string, stdout, stderr io.Writer) int {
 	}
 	link := "http://" + ln.Addr().String() + "/run?id=" + runID
 	p.line("")
-	p.line(p.bold("viewer") + "  " + p.cyan(link))
+	p.line(p.bold("viewer") + "  " + p.st.Path(link))
 	p.line(p.dim("        (Ctrl-C to quit)"))
 	if *keep {
 		p.line(p.dim(fmt.Sprintf("kept    %s\n        bide view -db %s -run %s -evidence %s -pubkey %s -approver-keys %s",
@@ -224,7 +228,7 @@ func demo(ctx context.Context, dir string, cfg config, p *printer, fast bool) (*
 	}
 
 	// 1. The agent asks to charge; the gate pauses it; two approvers sign.
-	p.step(1, "Approve", fmt.Sprintf("the agent asks to charge $%d", amount))
+	p.step(1, "Approve", p.cyan, fmt.Sprintf("the agent asks to charge $%d", amount))
 	j, closeJ, err := openJournal(dir)
 	if err != nil {
 		return nil, err
@@ -258,7 +262,7 @@ func demo(ctx context.Context, dir string, cfg config, p *printer, fast bool) (*
 	pause(1000 * time.Millisecond)
 
 	// 3. The run resumes from its journal and halts: the charge's outcome is unknown.
-	p.step(3, "Restart", "the run resumes from its journal")
+	p.step(3, "Restart", p.yellow, "the run resumes from its journal")
 	pause(700 * time.Millisecond)
 	j, closeJ, err = openJournal(dir)
 	if err != nil {
@@ -278,7 +282,7 @@ func demo(ctx context.Context, dir string, cfg config, p *printer, fast bool) (*
 	if !halted {
 		return nil, fmt.Errorf("the resumed run did not halt with an unknown outcome (err: %v); the provider holds %d charges", err, len(charges))
 	}
-	p.more(p.yellow("outcome unknown: not charging again"))
+	p.more(p.yellow(p.bold("halted")) + p.yellow(": outcome unknown: not charging again"))
 	p.more(fmt.Sprintf("provider charges: %d", len(charges)))
 	if rec.on() {
 		closeJ()
@@ -292,7 +296,7 @@ func demo(ctx context.Context, dir string, cfg config, p *printer, fast bool) (*
 	pause(1300 * time.Millisecond)
 
 	// 4. Look the charge up at the provider, record it, and finish the run.
-	p.step(4, "Resolve", fmt.Sprintf("look up order %d at the provider", order))
+	p.step(4, "Resolve", p.blue, fmt.Sprintf("look up order %d at the provider", order))
 	pause(900 * time.Millisecond)
 	var found *charge
 	for i := range charges {
@@ -312,7 +316,7 @@ func demo(ctx context.Context, dir string, cfg config, p *printer, fast bool) (*
 		return nil, err
 	}
 	pause(600 * time.Millisecond)
-	p.more("recorded with ResolveHalt + evidence")
+	p.more(p.blue(p.bold("resolved")) + " with ResolveHalt + evidence")
 	if _, err := newAgent(j, dir, cfg, nil).Run(ctx, runID, agent.UserText(input)); err != nil {
 		return nil, err
 	}
@@ -320,11 +324,11 @@ func demo(ctx context.Context, dir string, cfg config, p *printer, fast bool) (*
 	if err != nil {
 		return nil, err
 	}
-	p.more(p.green("run " + string(st.State)))
+	p.more(p.blue("run " + string(st.State)))
 	pause(1200 * time.Millisecond)
 
 	// 5. Export the evidence and the approvers' public keys, and verify them as bide view does.
-	p.step(5, "Prove", "evidence exported, signed")
+	p.step(5, "Prove", p.green, "evidence exported, signed")
 	signer := audit.Ed25519Signer{Priv: logPriv}
 	pkg, err := audit.Evidence(ctx, j, runID, signer, time.Now().UnixNano(), audit.WithToolCall(callID))
 	if err != nil {
@@ -388,7 +392,7 @@ func demo(ctx context.Context, dir string, cfg config, p *printer, fast bool) (*
 	}
 	pause(500 * time.Millisecond)
 	p.line("")
-	p.line(p.green(p.bold("charged exactly once.")) + p.dim(fmt.Sprintf("  provider charges: %d", res.charges)))
+	p.line(p.st.Pass() + p.green(p.bold("charged exactly once.")) + p.dim(fmt.Sprintf("  provider charges: %d", res.charges)))
 	return res, nil
 }
 
@@ -409,7 +413,7 @@ func crash(ctx context.Context, dir string, p *printer, pause func(time.Duration
 	if err := cmd.Start(); err != nil {
 		return err
 	}
-	p.step(2, "Crash", fmt.Sprintf("agent runs in child process %d", cmd.Process.Pid))
+	p.step(2, "Crash", p.red, fmt.Sprintf("agent runs in child process %d", cmd.Process.Pid))
 	pause(700 * time.Millisecond)
 	p.more(fmt.Sprintf("charging $%d ...", amount))
 	line, err := bufio.NewReader(stdout).ReadString('\n')

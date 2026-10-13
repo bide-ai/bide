@@ -11,6 +11,7 @@ import (
 	"github.com/bide-ai/bide/cmd/bide/internal/demo"
 	"github.com/bide-ai/bide/cmd/bide/internal/initcmd"
 	"github.com/bide-ai/bide/internal/runview"
+	"github.com/bide-ai/bide/internal/term"
 )
 
 // fullCommands are the commands that need a store driver or the YAML decoder. A bide_audit_only
@@ -88,6 +89,10 @@ flows/refund.yaml -diff main). With -check it serves nothing, prints one line pe
 summary line, and exits 0: a diff is not a failure, unless -fail-on-weaken finds an approval gate
 removed or weakened. Flags may follow the file names.
 
+On a terminal the output is colored (a red cross on each error and its counterexample path in red,
+a green check on assertions that all hold); piped or redirected it is plain text. -color=never, or
+NO_COLOR set to any value, turns color off; -color=always keeps it on.
+
 `)
 		fs.PrintDefaults()
 	}
@@ -96,6 +101,7 @@ removed or weakened. Flags may follow the file names.
 	check := fs.Bool("check", false, "with -diff: serve nothing and print each change, then a summary line")
 	failOnWeaken := fs.Bool("fail-on-weaken", false, "with -diff -check: exit 1 if an approval gate was removed or weakened (its need lowered, or an approver added without raising the need)")
 	addr := fs.String("addr", "127.0.0.1:8484", "with -diff: address to serve the page on, a loopback IP (127.0.0.1 or ::1) or localhost, with a port")
+	color := term.Flag(fs)
 	files, err := parseInterspersed(fs, args)
 	if err != nil {
 		if errors.Is(err, flag.ErrHelp) {
@@ -118,7 +124,7 @@ removed or weakened. Flags may follow the file names.
 		if len(files) != 1 {
 			return usage("-diff compares one flow config")
 		}
-		a := []string{"-config", files[0], "-diff", *diff, "-addr", *addr}
+		a := []string{"-config", files[0], "-diff", *diff, "-addr", *addr, "-color", color.String()}
 		if *check {
 			a = append(a, "-check")
 		}
@@ -132,7 +138,7 @@ removed or weakened. Flags may follow the file names.
 	}
 	code := 0
 	for _, file := range files {
-		a := []string{"-config", file, "-check"}
+		a := []string{"-config", file, "-check", "-color", color.String()}
 		if *strict {
 			a = append(a, "-strict")
 		}

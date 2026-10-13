@@ -7,6 +7,8 @@ import (
 	"os"
 	"strings"
 	"testing"
+
+	"github.com/bide-ai/bide/internal/term"
 )
 
 // TestMain lets the test binary stand in for the demo's child process: demo re-executes
@@ -25,7 +27,7 @@ func TestMain(m *testing.M) {
 func TestDemo(t *testing.T) {
 	dir := t.TempDir()
 	var out bytes.Buffer
-	res, err := demo(context.Background(), dir, config{}, newPrinter(&out), true)
+	res, err := demo(context.Background(), dir, config{}, newPrinter(&out, term.Auto), true)
 	if err != nil {
 		t.Fatalf("demo: %v\n%s", err, out.String())
 	}
@@ -78,7 +80,7 @@ func TestDemo(t *testing.T) {
 func TestDemoCatchesDoubleCharge(t *testing.T) {
 	dir := t.TempDir()
 	var out bytes.Buffer
-	res, err := demo(context.Background(), dir, config{RetrySafe: true}, newPrinter(&out), true)
+	res, err := demo(context.Background(), dir, config{RetrySafe: true}, newPrinter(&out, term.Auto), true)
 	if err == nil {
 		res.close()
 		t.Fatalf("the demo passed with a retry-safe charge:\n%s", out.String())
@@ -95,5 +97,42 @@ func TestDemoCatchesDoubleCharge(t *testing.T) {
 	}
 	if strings.Contains(out.String(), "charged exactly once") {
 		t.Fatal("the demo claimed a single charge")
+	}
+}
+
+// TestDemoColor: with -color=always each step's header is in its color, and the crash (red), the
+// halt (amber), the resolution (blue) and the verified proofs (green) are each colored apart, each
+// with its word.
+func TestDemoColor(t *testing.T) {
+	var out bytes.Buffer
+	res, err := demo(context.Background(), t.TempDir(), config{}, newPrinter(&out, term.Always), true)
+	if err != nil {
+		t.Fatalf("demo: %v\n%s", err, out.String())
+	}
+	t.Cleanup(res.close)
+	text := out.String()
+	for _, want := range []string{
+		"\x1b[31m2\x1b[0m \x1b[1m\x1b[31mCrash  \x1b[0m\x1b[0m",
+		"\x1b[1m\x1b[33mRestart\x1b[0m\x1b[0m",
+		"\x1b[1m\x1b[34mResolve\x1b[0m\x1b[0m",
+		"\x1b[1m\x1b[32mProve  \x1b[0m\x1b[0m",
+		"\x1b[31m\x1b[1mprocess killed mid-charge\x1b[0m\x1b[0m",
+		"\x1b[33m\x1b[1mhalted\x1b[0m\x1b[0m\x1b[33m: outcome unknown: not charging again\x1b[0m",
+		"\x1b[34m\x1b[1mresolved\x1b[0m\x1b[0m with ResolveHalt + evidence",
+		"\x1b[32m✓\x1b[0m \x1b[32mverified (",
+		"\x1b[32m✓\x1b[0m \x1b[32m\x1b[1mcharged exactly once.\x1b[0m\x1b[0m",
+	} {
+		if !strings.Contains(text, want) {
+			t.Errorf("the colored narration lacks %q:\n%q", want, text)
+		}
+	}
+}
+
+// TestDemoColorFlag: -color takes auto, always or never; anything else is a usage error, before
+// the demo runs.
+func TestDemoColorFlag(t *testing.T) {
+	var out bytes.Buffer
+	if code := Main([]string{"-color=sometimes"}, []string{"demo"}, &out, &out); code != 2 || !strings.Contains(out.String(), "-color") {
+		t.Fatalf("-color=sometimes: exit %d\n%s", code, out.String())
 	}
 }

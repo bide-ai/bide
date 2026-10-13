@@ -14,6 +14,7 @@ import (
 	"strings"
 
 	"github.com/bide-ai/bide/audit"
+	"github.com/bide-ai/bide/internal/term"
 )
 
 // The exit statuses. Only exitVerified means verified; a script must treat every other status as a
@@ -99,10 +100,14 @@ type cli struct {
 	verb           string
 	errs           []error
 	artifact       json.RawMessage // a produce verb's artifact, embedded in the -json report
+	color          term.Mode       // -color
+	st             term.Style      // the report's colors: off under -json and off a terminal
+	head           *audit.TreeHead // the signed tree a verify verb checked, for the banner
+	approverNote   bool            // a styled line dropped approverNote, which the banner says once
 }
 
-func (c *cli) printf(format string, args ...any) { fmt.Fprintf(c.out, format, args...) }
-func (c *cli) println(args ...any)               { fmt.Fprintln(c.out, args...) }
+func (c *cli) printf(format string, args ...any) { c.write(fmt.Sprintf(format, args...)) }
+func (c *cli) println(args ...any)               { c.write(fmt.Sprintln(args...)) }
 
 // note records err, if any, and reports whether it was nil. A not-verified err decides the
 // outcome, so note unwinds the verb.
@@ -157,14 +162,15 @@ func (c *cli) call(verb func([]string), args []string) (err error) {
 	return nil
 }
 
-// flagSet returns a verb's flag set, with the -max-input-bytes, -max-clock-skew and -json flags
-// every verb shares.
+// flagSet returns a verb's flag set, with the -max-input-bytes, -max-clock-skew, -json and -color
+// flags every verb shares.
 func (c *cli) flagSet(name string) *flag.FlagSet {
 	fs := flag.NewFlagSet("bide audit "+name, flag.ContinueOnError)
 	fs.SetOutput(c.stderr)
 	fs.Int64Var(&maxInputBytes, "max-input-bytes", defaultMaxInputBytes, "the largest input file, in bytes, the verb reads; a larger one is an error")
 	fs.DurationVar(&maxClockSkew, "max-clock-skew", audit.DefaultClockSkew, "how far past this machine's clock a signed head's timestamp may be")
 	fs.BoolVar(&c.json, "json", c.json, "print one JSON report on stdout instead of the text report")
+	fs.Var(&c.color, "color", term.FlagUsage+"; -json is never colored")
 	return fs
 }
 
@@ -180,6 +186,8 @@ func (c *cli) parse(fs *flag.FlagSet, args []string) {
 	}
 	if c.json {
 		c.out = &c.buf // the report lines go into the JSON report, not onto stdout
+	} else {
+		c.st = term.For(c.stdout, c.color)
 	}
 	if fs.NArg() > 0 {
 		c.usageError(fmt.Sprintf("%s: unexpected argument %q: every input is a flag, and no flag after an argument is read", fs.Name(), fs.Arg(0)))
@@ -229,6 +237,7 @@ func run(args []string, stdout, stderr io.Writer) int {
 	top.Usage = func() { fmt.Fprint(stderr, usageText) }
 	showVersion := top.Bool("version", false, "print the version and the artifact formats this version reads")
 	top.BoolVar(&c.json, "json", false, "print one JSON report on stdout instead of the text report")
+	top.Var(&c.color, "color", term.FlagUsage+"; -json is never colored")
 	if err := top.Parse(args); err != nil {
 		return exitFor(errUsage)
 	}
@@ -254,16 +263,22 @@ func run(args []string, stdout, stderr io.Writer) int {
 	err := c.call(func(a []string) { verb(c, a) }, top.Args()[1:])
 	code := exitFor(err)
 	var msgs []string
+	errLabel := "error:"
+	if !c.json {
+		errLabel = term.For(stderr, c.color).Fail(errLabel)
+	}
 	for _, e := range c.errs {
 		msgs = append(msgs, e.Error())
 		var ce *cliError
 		if errors.As(e, &ce) && ce.shown {
 			continue
 		}
-		fmt.Fprintln(stderr, "error:", e)
+		fmt.Fprintln(stderr, errLabel, e)
 	}
 	if c.json {
 		c.writeReport(code, msgs)
+	} else if c.st.On() && code != exitUsage && !produceVerbs[c.verb] {
+		fmt.Fprint(c.stdout, c.banner(code))
 	}
 	return code
 }

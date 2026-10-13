@@ -502,6 +502,18 @@ Conventions shared across verbs:
   without `-out`, `artifact` (the bundle). Error messages still go to stderr as well.
 - `bide audit -version` prints the version and every artifact format this version reads, and which
   verbs read it; `bide audit -version -json` prints the same as JSON.
+- On a terminal the text report is colored: each `PASS`/`OK` line gains a green ✓, each `FAIL` line
+  a red ✗, and a verify verb ends with a banner, `VERIFIED` in green (with the signed tree's size
+  and Merkle root, dimmed) or `FAILED` in red. The note `verify-evidence` puts on every approver
+  decision line ("check the signatures and the count with VerifyApprovals") is said once, before
+  the banner, so each line fits the terminal. The words are otherwise the same, so a reader who cannot tell
+  the colors apart loses nothing. Written to a file or a pipe, and under `-json`, the report is the
+  plain text it always was. Every verb takes `-color=auto|always|never` (default `auto`), before or
+  after the verb; `NO_COLOR` set to any value, or `TERM=dumb`, turns `auto` off.
+
+<img src="./img/cli-audit-verified-dark.png" alt="bide audit verify-evidence on a terminal: PASS lines with green check marks and a green VERIFIED banner with the tree size and Merkle root dimmed">
+
+<img src="./img/cli-audit-failed-dark.png" alt="bide audit verify-evidence on an evidence package with one record edited: the seal and the edited tool call FAIL with red crosses, and a red FAILED banner">
 
 | Verb | Required flags | Optional flags | Proves / checks |
 |---|---|---|---|
@@ -527,7 +539,8 @@ killed by a signal, or whose output has a `compensation_free` line that reads as
 so a broken checker is never reported as a policy that does not converge, nor as agreement with a
 certificate. The digest is recomputed here from a hardcoded
 `gsm-policy-v1` domain-separation tag rather than taken from gsm, so neither root of trust depends
-on the producer. The CLI reads no environment variables.
+on the producer. The CLI reads no environment variables but `NO_COLOR` and `TERM`, which decide
+only whether the text report is colored (see below), never a verdict.
 
 ### Exit status
 

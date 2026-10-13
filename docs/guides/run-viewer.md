@@ -127,6 +127,7 @@ bide view -db runs.db
 | `-diff <old>` | With `-config`: compare it with an earlier version, a file or a git revision; see [Compare two versions of a flow](#compare-two-versions-of-a-flow). With `-check`, print the changes instead of serving the page. |
 | `-fail-on-weaken` | With `-diff -check`: exit 1 if an approval gate was removed or weakened. |
 | `-addr <host:port>` | Where to listen: a loopback IP or `localhost`, with a port. Default `127.0.0.1:8484`. Any other host is refused. |
+| `-color <when>` | `auto` (the default), `always` or `never`: whether the text output (the address to open, and `-check`'s lines) is colored. `auto` colors a terminal only, unless `NO_COLOR` is set to any value or `TERM` is `dumb`; see [Color](#color). |
 
 Input files are read strictly, as `bide audit` reads them (`audit.UnmarshalStrict`): a duplicate or
 unknown field is an error. `bide view -h` prints the same list. Exit status: 0 after a clean stop or
@@ -389,6 +390,13 @@ flows/refund-policy-bypass.yaml:charge: assert[0] "every path to charge passes a
 flows/refund-policy-bypass.yaml: 4 assertions: 3 hold, 1 violated, 0 undecided or invalid
 ```
 
+On a terminal the violation is split over lines that fit the terminal: a red ✗ and the assertion,
+then the reason, dimmed, then the counterexample path in red with the node it reaches in bold; a
+file whose assertions all hold gets a green ✓ (see [Color](#color)). Piped or redirected, it is the
+one line above:
+
+<img src="./img/cli-check-violation-dark.png" alt="bide check on a terminal: the violated assertion marked with a red cross, its counterexample validate -> lookup -> charge in red with charge in bold, and the holding file marked with a green check">
+
 An undecided assertion (a node of unknown safety after X, in `no side effect after X`), an
 assertion outside the grammar, and one naming an undeclared node are errors as well.
 
@@ -469,6 +477,12 @@ flows/refund-v1.yaml: approval policy weakened: charge: approval 2 of 3 -> 1 of 
 flows/refund-v1.yaml: 5 changes from flows/refund-v2.yaml (nodes: 1 added, 1 removed, 1 changed; edges: 1 added, 1 removed, 0 changed); digest not computed: the check is structural (the digest commits to the blocks' Go types; see plan/planview)
 ```
 
+On a terminal the lines are colored as the page is (added green, removed red, changed amber), the
+weakened gate moves to the top, in bold red, and the summary's counts and digest go on lines of
+their own:
+
+<img src="./img/cli-diff-weakened-dark.png" alt="bide check -diff -check on a terminal: approval policy weakened called out first in bold red, then the changes with added in green, removed in red and changed in amber">
+
 A diff is not a failure: it exits 0, unless `-fail-on-weaken` finds a weakened gate (exit 1). An
 old or new version that cannot be read as a flow config exits 1; a version with config errors is
 compared as far as it reads, with a note (`bide check <file>` lists the errors). `-diff` compares;
@@ -503,6 +517,20 @@ if err != nil || weakened {
 
 A GitHub Action that posts the `-check` text as a pull request comment is a planned follow-up; until
 then, a workflow step can run the command and post its output.
+
+## Color
+
+`bide check`, `bide view`, `bide demo`, `bide init` and `bide audit` color their text output when it
+goes to a terminal: green and a ✓ for what passed, red and a ✗ for what failed, amber for a warning,
+a halt or an approval gate, bold cyan for an address or a command to run next, and dim for detail
+such as a digest. The words are the same with or without color, so nothing is told by color alone.
+
+Output to a file or a pipe, as in CI, is the plain text shown above, byte for byte. Each of these
+commands takes `-color=auto|always|never` (default `auto`). `auto` colors only a terminal, and not
+when `NO_COLOR` is set to any value or `TERM` is `dumb`; on Windows it colors only a terminal known
+to read ANSI escapes (Windows Terminal, ConEmu, ANSICON, VS Code, or a `TERM` such as
+`xterm-256color`). `-color=always` colors even a pipe (for a log viewer that renders ANSI), and
+overrides `NO_COLOR`. Help (`-h`) is plain.
 
 ## What it cannot show
 

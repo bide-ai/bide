@@ -165,3 +165,30 @@ func TestResetCommandIsShellSafe(t *testing.T) {
 		}
 	}
 }
+
+// TestNextStepsColor: the next steps bide init prints are plain text by default (not a terminal)
+// and with -color=never, and in bold cyan with -color=always.
+func TestNextStepsColor(t *testing.T) {
+	for _, flag := range []string{"", "-color=never"} {
+		dir := filepath.Join(t.TempDir(), "refund")
+		args := []string{"-dev", checkout, dir}
+		if flag != "" {
+			args = append([]string{flag}, args...)
+		}
+		code, out := initCmd("", args...)
+		want := "wrote " + dir + " (module refund). Next:\n\n  cd " + dir + "\n  go mod tidy\n  go run .\n\nthen see README.md.\n"
+		if code != 0 || out != want {
+			t.Errorf("bide init %s: exit %d\n%q\nwant\n%q", flag, code, out, want)
+		}
+	}
+	dir := filepath.Join(t.TempDir(), "refund")
+	code, out := initCmd("", "-color=always", "-dev", checkout, dir)
+	for _, want := range []string{"\x1b[32m✓\x1b[0m wrote ", "\x1b[1;36mcd " + dir + "\x1b[0m", "\x1b[1;36mgo mod tidy\x1b[0m", "\x1b[1;36mgo run .\x1b[0m"} {
+		if code != 0 || !strings.Contains(out, want) {
+			t.Errorf("bide init -color=always: exit %d, output lacks %q:\n%q", code, want, out)
+		}
+	}
+	if code, _ := initCmd("", "-color=on", "-dev", checkout, filepath.Join(t.TempDir(), "x")); code != 2 {
+		t.Errorf("-color=on: exit %d, want 2", code)
+	}
+}

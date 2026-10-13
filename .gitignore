@@ -48,6 +48,7 @@ examples/approval/approver-keys.json
 !/internal/toolhook/
 !/internal/journaltest/
 !/internal/runview/
+!/internal/term/
 !/internal/auditcli/
 !/internal/errgroup/
 
