@@ -9,6 +9,7 @@ import (
 	"crypto/sha256"
 	"encoding/binary"
 	"encoding/hex"
+	"encoding/json"
 	"errors"
 	"strings"
 	"testing"
@@ -89,5 +90,32 @@ func TestReview_DecisionCheckCountsEarlyRecord(t *testing.T) {
 	d.Signature = ed25519.Sign(as["ops"].priv, agent.ApprovalDecisionBytes(pend.Subject(), "ops", true, later))
 	if err := agent.SubmitDecision(ctx, j, d, agent.WithDecisionCheck(vf)); err != nil {
 		t.Fatalf("SubmitDecision with WithDecisionCheck = %v; but the early decision does not count, and the same call without the check passes the gate", err)
+	}
+}
+
+// TestReview_ConformRejectsRetally (re-attack): a flow run whose gate asked again under v3 records
+// its outcome under agent.ApprovalRetallyStep ("approval-tally:<enc>:v3"). Flow.Conform maps an
+// "approval-tally:" record to its gate by cutting at the first ':' and looking the rest up as an
+// encoded node key, so "<enc>:v3" matches no gate and a correct re-approved run is reported as
+// not conforming ("approval record of a gate the run never reached").
+func TestReview_ConformRejectsRetally(t *testing.T) {
+	ctx := context.Background()
+	as, vf := approvers("ops")
+	j := agenttest.MemJournal()
+	refunds := 0
+	f := refundFlow(t, &agent.ApprovalPolicy{Need: 1, Approvers: []string{"ops"}}, vf, &refunds)
+	asPending(t, func() error { _, err := f.Run(ctx, j, "r1", "order-42"); return err }())
+	old, _ := json.Marshal(agent.ApprovalTally{Need: 1, Approvers: []string{"ops"}, Approved: 1, ApprovedBy: []string{"ops"}})
+	if _, err := journaltest.Put(ctx, j, "r1", agent.ApprovalTallyStep("node:refund"), agent.Record{Kind: agent.StepValue, Result: old}); err != nil {
+		t.Fatal(err)
+	}
+	pend := asPending(t, func() error { _, err := f.Run(ctx, j, "r1", "order-42"); return err }())
+	as["ops"].decide(t, j, pend, true)
+	if _, err := f.Run(ctx, j, "r1", "order-42"); err != nil || refunds != 1 {
+		t.Fatalf("drive after v3 re-approval = %v, refunds %d", err, refunds)
+	}
+	ok, diffs, err := f.Conform(ctx, j, "r1")
+	if err != nil || !ok {
+		t.Fatalf("Conform of a re-approved run = %v, %q, %v; want it to conform", ok, diffs, err)
 	}
 }
