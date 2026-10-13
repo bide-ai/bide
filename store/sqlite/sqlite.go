@@ -9,7 +9,8 @@
 // timeout so a writer holding the file's lock never delays a lease renewal past its cutoff.
 //
 // The tables are named with a prefix, "bide_" by default (see WithTablePrefix): bide_steps holds
-// the journal, bide_leases the leases, and bide_schema_version the schema version. Open refuses a
+// the journal, bide_leases the leases, bide_events the durable event trail (see EventStore), and
+// bide_schema_version the schema version. Open refuses a
 // file whose schema version is newer than this version knows. The file must be on a local disk:
 // SQLite's locking does not work over NFS. A forward jump of the system clock expires leases
 // early, which the journal's attempt claims keep safe.
@@ -59,8 +60,9 @@ var (
 
 // tables holds the table names, prefixed, and the statements built from them.
 type tables struct {
-	steps, leases, version string
-	insert, get, load      string
+	steps, leases, version, events    string
+	insert, get, load                 string
+	appendEvent, getEvent, loadEvents string
 }
 
 // Option configures Open and New.
@@ -75,7 +77,7 @@ func (f optionFunc) apply(c *config) error { return f(c) }
 var prefixPattern = regexp.MustCompile(`^[A-Za-z_][A-Za-z0-9_]*$`)
 
 // WithTablePrefix names the tables with prefix instead of "bide_": prefix+"steps",
-// prefix+"leases" and prefix+"schema_version". It must be an SQL identifier (letters, digits and
+// prefix+"leases", prefix+"events" and prefix+"schema_version". It must be an SQL identifier (letters, digits and
 // underscores, not starting with a digit), or Open and New return an ErrConfig error.
 func WithTablePrefix(prefix string) Option {
 	return optionFunc(func(c *config) error {
@@ -203,10 +205,15 @@ func New(ctx context.Context, db *sql.DB, opts ...Option) (*Store, error) {
 }
 
 func (c config) tables() tables {
-	t := tables{steps: c.prefix + "steps", leases: c.prefix + "leases", version: c.prefix + "schema_version"}
+	t := tables{steps: c.prefix + "steps", leases: c.prefix + "leases", version: c.prefix + "schema_version", events: c.prefix + "events"}
 	t.insert = `INSERT INTO ` + t.steps + ` (run_id, name, data) VALUES (?, ?, ?) ON CONFLICT (run_id, name) DO NOTHING`
 	t.get = `SELECT seq, data FROM ` + t.steps + ` WHERE run_id = ? AND name = ?`
 	t.load = `SELECT seq, name, data FROM ` + t.steps + ` WHERE run_id = ? AND seq > ? ORDER BY seq LIMIT ?`
+	t.appendEvent = `INSERT INTO ` + t.events + ` (run_id, seq, leaf)
+		SELECT ?1, ?2, ?3 WHERE ?2 = (SELECT COALESCE(MAX(seq) + 1, 0) FROM ` + t.events + ` WHERE run_id = ?1)
+		ON CONFLICT (run_id, seq) DO NOTHING`
+	t.getEvent = `SELECT leaf FROM ` + t.events + ` WHERE run_id = ? AND seq = ?`
+	t.loadEvents = `SELECT seq, leaf FROM ` + t.events + ` WHERE run_id = ? AND seq >= ? ORDER BY seq LIMIT ?`
 	return t
 }
 
@@ -238,8 +245,14 @@ func (s *Store) migrate(ctx context.Context) error {
 			id      INTEGER PRIMARY KEY CHECK (id = 1),
 			version INTEGER NOT NULL
 		);
-		INSERT INTO %[3]s (id, version) VALUES (1, %[4]d) ON CONFLICT (id) DO NOTHING;`,
-		s.t.steps, s.t.leases, s.t.version, schemaVersion)); err != nil {
+		INSERT INTO %[3]s (id, version) VALUES (1, %[4]d) ON CONFLICT (id) DO NOTHING;
+		CREATE TABLE IF NOT EXISTS %[5]s (
+			run_id TEXT    NOT NULL,
+			seq    INTEGER NOT NULL CHECK (seq >= 0),
+			leaf   BLOB    NOT NULL,
+			PRIMARY KEY (run_id, seq)
+		) WITHOUT ROWID;`,
+		s.t.steps, s.t.leases, s.t.version, schemaVersion, s.t.events)); err != nil {
 		return fmt.Errorf("sqlite: create tables: %w (%w)", err, agent.ErrStorage)
 	}
 	var v int

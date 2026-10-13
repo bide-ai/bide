@@ -3,6 +3,7 @@ package audit
 import (
 	"bytes"
 	"context"
+	"errors"
 	"fmt"
 	"sync"
 
@@ -22,6 +23,12 @@ import (
 // forking. A live stream re-emits replayed events with different flags across a crash and would
 // fork the trail — so PersistJournal is the supported path.
 
+// ErrSeqTaken is what EventStore.Append returns, wrapped, when a different leaf is already stored
+// at the requested seq: the position was taken. A caller that inserts if absent uses it to tell a
+// lost race (another writer stored its leaf there first) or a fork from a real failure, which
+// carries some other error. Test for it with errors.Is. A retry of the same leaf is not an error.
+var ErrSeqTaken = errors.New("audit: event position already holds a different leaf")
+
 // EventStore is the bring-your-own port: append canonical event leaves to your append-only
 // backend (a Postgres table with UNIQUE(run_id, seq) and insert-only grants, object storage
 // with object-lock/WORM, or a log) and read them back. Bide ships MemEventStore as the
@@ -32,8 +39,11 @@ type EventStore interface {
 	// Append durably records leaf at position seq (0-based, contiguous) for runID. It MUST be
 	// append-only and idempotent on (runID, seq): re-appending an already-stored seq with the
 	// SAME bytes is a no-op (so a retried mirror is safe), while a DIFFERENT leaf at an
-	// existing seq must error (a fork / tamper attempt). A seq beyond the next position is a
-	// gap and must error.
+	// existing seq must fail with an error that wraps ErrSeqTaken (a fork / tamper attempt, or a
+	// lost race with another writer of that position, of which exactly one wins). A seq beyond the
+	// next position, or a negative one, is a gap and must error without wrapping ErrSeqTaken. The
+	// store may be shared by several handles or processes; every one sees the same positions.
+	// Positions are contiguous per run, so a writer that wants seq n must have seen n-1 stored.
 	Append(ctx context.Context, runID string, seq int, leaf []byte) error
 	// Load returns every leaf for runID in seq order (0..n-1), or nil if the run is unknown.
 	Load(ctx context.Context, runID string) ([][]byte, error)
@@ -132,18 +142,21 @@ func NewMemEventStore() *MemEventStore { return &MemEventStore{runs: map[string]
 var _ EventStore = (*MemEventStore)(nil) // port/adapter contract
 
 // Append stores leaf at position seq of runID's trail. Re-appending identical bytes at a stored
-// position is a no-op; different bytes there, or a seq past the end of the trail, is an error.
+// position is a no-op; different bytes there fail with ErrSeqTaken, and a seq past the end of the
+// trail (or a negative one) is another error.
 func (s *MemEventStore) Append(_ context.Context, runID string, seq int, leaf []byte) error {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	cur := s.runs[runID]
 	switch {
+	case seq < 0:
+		return fmt.Errorf("audit: event position %d of run %s is negative", seq, runID)
 	case seq == len(cur): // the next position — append
 		s.runs[runID] = append(cur, append([]byte(nil), leaf...))
 		return nil
 	case seq < len(cur): // already stored — must be byte-identical (idempotent replay)
 		if !bytes.Equal(cur[seq], leaf) {
-			return fmt.Errorf("audit: event %d of run %s already stored with different bytes (fork/tamper)", seq, runID)
+			return fmt.Errorf("audit: event %d of run %s already stored with different bytes (fork/tamper): %w", seq, runID, ErrSeqTaken)
 		}
 		return nil
 	default: // seq > len(cur) — a gap; the trail must stay contiguous
