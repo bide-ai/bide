@@ -92,6 +92,12 @@ type Flow[In, Out any] struct {
 // m-of-n gate's terminal tally, before the node runs). In a loop body the key is the iteration's,
 // so each iteration is approved on its own.
 func (f *Flow[In, Out]) Run(ctx context.Context, store *agent.Journal, runID string, in In) (Out, error) {
+	out, err := f.run(ctx, store, runID, in)
+	f.core.runEnd(store, runID, err)
+	return out, err
+}
+
+func (f *Flow[In, Out]) run(ctx context.Context, store *agent.Journal, runID string, in In) (Out, error) {
 	var out Out
 	c := f.core
 	if err := journalhook.CheckRunID(ctx, runID); err != nil {

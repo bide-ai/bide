@@ -249,6 +249,12 @@ func WithLoadedApproverVerifiers(f agent.ApproverVerifierFor) LoadOption {
 	return func(c *builderCore) { c.approverVerifiers = f }
 }
 
+// WithLoadedNotifier binds a notifier to a loaded flow: the loader's equivalent of
+// Builder.WithNotifier.
+func WithLoadedNotifier(n agent.Notifier, trail agent.NotifyTrail, opts ...agent.NotifyOption) LoadOption {
+	return func(c *builderCore) { c.notifier = agent.WithNotifier(n, trail, opts...) }
+}
+
 // LoadReader is Load reading the config from r (for example an *os.File or an HTTP
 // body). It reads r to EOF, then behaves exactly like Load.
 func LoadReader[In, Out any](r io.Reader, reg *Registry, opts ...LoadOption) (*Flow[In, Out], error) {

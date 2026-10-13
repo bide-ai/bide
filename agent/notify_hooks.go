@@ -3,6 +3,7 @@ package agent
 import (
 	"context"
 	"errors"
+	"fmt"
 )
 
 // eventFromErr maps the error a drive of runID ended with to the event it raises, if it raises one.
@@ -147,3 +148,33 @@ func (e *notifyEngine) afterRecover(ctx context.Context, runID string, driven, r
 		e.recoveryOK(ctx, runID)
 	}
 }
+
+// RunNotifier tells a notifier when a run driven outside an Agent ends needing a person. A plan
+// flow uses one (see plan.Builder.WithNotifier); code that drives its own runs can too. It is the
+// WithNotifier option bound to a journal, and safe for concurrent use.
+type RunNotifier struct {
+	e *notifyEngine
+}
+
+// NewRunNotifier binds o, a WithNotifier option, to j, the journal the runs it will be told about
+// are in. A nil o, or a nil j, is ErrConfig.
+func NewRunNotifier(j *Journal, o NotifierOption) (*RunNotifier, error) {
+	no, ok := o.(notifierOption)
+	if !ok || j == nil {
+		return nil, fmt.Errorf("NewRunNotifier: a nil journal or an option that WithNotifier did not return: %w", ErrConfig)
+	}
+	e, err := no.engine(j)
+	if err != nil {
+		return nil, err
+	}
+	return &RunNotifier{e: e}, nil
+}
+
+// DriveEnd tells the notifier that a drive of runID ended with err: it queues the event err raises
+// (a halt, a pending approval, an aborted saga), if any, and returns at once. A drive that ended
+// with another error or none raises nothing.
+func (r *RunNotifier) DriveEnd(runID string, err error) { r.e.driveEnd(runID, err) }
+
+// Flush waits for the deliveries in flight to finish their round and stops the worker, as
+// Agent.FlushNotifications does.
+func (r *RunNotifier) Flush(ctx context.Context) error { return r.e.flush(ctx) }
