@@ -35,7 +35,7 @@ model when `OPENROUTER_API_KEY` or `OPENAI_API_KEY` is set.
 
 ## Install
 
-There are two things to install, for two audiences. The `bide` command (`bide demo`, `bide view`,
+There are two things to install, for two audiences. The `bide` command (`bide init`, `bide demo`, `bide view`,
 `bide check`, `bide audit`; see the [CLI reference](reference/cli.md)) is one program for everyone,
 installed as above. To build agents, add the library to a module of your own.
 
@@ -162,7 +162,7 @@ See [examples/README.md](../examples/README.md) for the full list.
 
 ## Building the repository
 
-This is a multi-module workspace (`go.work`): the core is one module and adapters such as `trace`, `mcptools`, `store/*`, `govern`, and the `govern/*log` backends are their own modules. To build or test everything with the module versions pinned in each `go.mod` rather than the workspace, set `GOWORK=off`:
+This is a multi-module workspace (`go.work`): the core is one module and adapters such as `trace`, `mcptools`, `store/*`, `govern`, and the `govern/*log` backends are their own modules. To build or test a module with the versions pinned in its `go.mod` rather than the workspace, set `GOWORK=off` in its directory (at the root, `./...` covers only the core module):
 
 ```
 GOWORK=off go build ./...

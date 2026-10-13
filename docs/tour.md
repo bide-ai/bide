@@ -738,7 +738,7 @@ func RequireTag(tag string) agent.ToolMiddleware {
 Bide is a multi-module repo: a dependency-light **core** (`github.com/bide-ai/bide`,
 the loop, schema, middleware, model adapters, the `plan` flow builder, `audit`; no dependency outside the standard library) plus one
 module per heavy adapter (`mcptools`, `trace`, `store/sqlite`, `store/postgres`, `govern/redislog`,
-`govern/sqlitelog`, `govern/postgreslog`, `codec/gcf`) and the `govern` module, which carries gsm and stays v0.x until gsm
+`govern/sqlitelog`, `govern/postgreslog`, `codec/gcf`), the `bide` command (`cmd/bide`) and the `govern` module, which carries gsm and stays v0.x until gsm
 is stable. Import an adapter and you pull its dependency tree; import only the core
 and you don't. A core-only consumer's external-module surface is 0, not 54. See
 [docs/reference/module-structure.md](reference/module-structure.md).

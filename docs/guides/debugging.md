@@ -139,9 +139,10 @@ Each record maps to a node in run order:
 - `StepApproval` -> `approved ✓` or `denied ✗`
 - `StepValue` -> `step: <name>` (a user-authored durable step, or the run's `run:start` and
   `run:complete` records)
-- `StepHeader`, `StepAttempt` and `StepNotStarted` records are skipped: they are the journal
-  header, the internal side-effect-safety marker and the record that an attempt never started, not
-  part of the visual flow.
+- Every other record is skipped: `StepHeader`, `StepAttempt` and `StepNotStarted` (the journal
+  header, the internal side-effect-safety marker and the record that an attempt never started),
+  `StepSignal` (a delivered signal) and `StepSagaFail` (a saga step's failure), none of which is
+  drawn in the visual flow.
 
 The chart opens with a `start([user])` node and closes with a `done([done])` node.
 

@@ -32,6 +32,7 @@ only when that adapter is imported.
 | postgres log | `…/govern/postgreslog` | jackc/pgx |
 | gcf codec | `…/codec/gcf` | blackwell-systems/gcf-go |
 | bide command | `…/cmd/bide` | the two store modules, go.yaml.in/yaml/v3 (a program, installed with `go install`, not imported) |
+| bide-view (deprecated) | `…/cmd/bide-view` | none: a program that only points to `bide view`, removed after v0.14.0 |
 
 The core module keeps everything with no heavy deps: `agent` (loop), `schema`, `middleware`,
 `model/anthropic`, `model/openai`, `model/gemini`, `plan`, `audit`, `eval`, `chaos`, `cmd/bench`,
@@ -93,7 +94,8 @@ It tags each library module `<dir>/vX.Y.Z` at that commit, so a consumer's `go g
 module from the proxy. Main keeps its `replace` directives, so development is unchanged.
 
 Published (tagged at every release): `govern`, `store/sqlite`, `store/postgres`, `mcptools`, `trace`,
-`codec/gcf`, `govern/sqlitelog`, `govern/redislog`, `govern/postgreslog`.
+`codec/gcf`, `govern/sqlitelog`, `govern/redislog`, `govern/postgreslog`, and the commands
+`cmd/bide` and `cmd/bide-view` (tagged one last time at v0.14.0, then removed).
 
 Repo-only (never tagged; they keep their `replace` directives): `examples/approval`,
 `examples/plan`, `examples/mcp`, `examples/observability`, `examples/govern`, `integration`,

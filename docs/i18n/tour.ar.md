@@ -629,7 +629,7 @@ func RequireTag(tag string) agent.ToolMiddleware {
 Bide مستودع متعدّد الوحدات: **نواة** خفيفة التبعيات (`github.com/bide-ai/bide`، الحلقة، schema،
 middleware، مُحوّلات النموذج، باني تدفّق `plan`، `audit`؛ بلا أي تبعية خارج المكتبة القياسية) مع وحدة
 واحدة لكل مُحوّل ثقيل (`mcptools`، `trace`، `store/sqlite`، `store/postgres`، `govern/redislog`،
-`govern/sqlitelog`، `govern/postgreslog`، `codec/gcf`)، ووحدة `govern` التي تحمل gsm
+`govern/sqlitelog`، `govern/postgreslog`، `codec/gcf`)، وأمر `bide` (`cmd/bide`)، ووحدة `govern` التي تحمل gsm
 وتبقى على v0.x حتى يستقرّ gsm. استورد مُحوّلًا فتسحب شجرة تبعياته؛ واستورد النواة فقط فلا
 تسحبها. سطح الوحدات الخارجية لمُستهلِك النواة-فقط هو 0، لا 54. انظر
 [docs/reference/module-structure.md](../../docs/reference/module-structure.md).

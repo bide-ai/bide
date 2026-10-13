@@ -157,7 +157,7 @@ into a governed event. This is how an LLM agent participates:
 ```go
 tool := govern.EventTool(gov, govern.EventToolConfig{Name: "pay", Description: "mark the order paid", Event: "pay"})
 // give `tool` to the agent; when the LLM calls it, "pay" is applied to shared state,
-// convergently, and durably. EventToolConfig also takes Safety, Options (agent.ToolOptions
+// convergently, and durably. EventToolConfig also takes Safety, Options (agent.ToolOption values
 // such as agent.WithApproval or agent.WithTimeout), and PolicyDigest (the attested form;
 // Attested without a PolicyDigest is refused with ErrConfig).
 ```

@@ -7,8 +7,9 @@ and provably convergent shared state.
 
 The core module lives at the repository root; adapters and backends (`trace`,
 `mcptools`, `codec/gcf`, the `store/*` backends, `govern` and its `govern/*` event-log
-backends), the example modules that import them, and the test-only `integration`
-module are separate modules stitched together by a `go.work` for local
+backends), the `bide` command (`cmd/bide`, and `cmd/bide-view`, a deprecated
+program that points to `bide view`), the example modules that import them, and the
+test-only `integration` module are separate modules stitched together by a `go.work` for local
 development. See
 [docs/reference/module-structure.md](reference/module-structure.md) for the
 layout and [README.md](../README.md) for the guarantees and their scope.
