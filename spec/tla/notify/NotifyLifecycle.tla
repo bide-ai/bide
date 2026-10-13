@@ -21,13 +21,13 @@ EXTENDS LifecycleMC
 CONSTANTS NProcs, NSlots, NEvents, NReqs, NFailAfter, NFailCount, NMaxRounds, NMaxCrash,
           NMaxLost, NMaxAmbig, NMaxFail, NMaxSlow, NLeased, NHolder, NJournal, p1, p2
 
-VARIABLES trail, lapsed, past, dpast, broken, opened, nlease, inc, progressed, npc, ev, len, act,
-          claim, nreq, ok, fails, memFS, memD, deliv, stale, late, failed, lateFail, ncrashes, lost,
-          nambig, sfail, slow, boundHit
+VARIABLES nclaim, ndeliv, trail, lapsed, past, dpast, broken, opened, nlease, inc, progressed, npc,
+          ev, len, act, claim, nreq, ok, fails, memFS, memD, deliv, stale, late, failed, lateFail,
+          ncrashes, lost, nambig, sfail, slow, boundHit
 
-nvars == <<trail, lapsed, past, dpast, broken, opened, nlease, inc, progressed, npc, ev, len, act,
-           claim, nreq, ok, fails, memFS, memD, deliv, stale, late, failed, lateFail, ncrashes,
-           lost, nambig, sfail, slow, boundHit>>
+nvars == <<nclaim, ndeliv, trail, lapsed, past, dpast, broken, opened, nlease, inc, progressed, npc,
+           ev, len, act, claim, nreq, ok, fails, memFS, memD, deliv, stale, late, failed, lateFail,
+           ncrashes, lost, nambig, sfail, slow, boundHit>>
 
 \* The events the journal holds, read from model 10's state (the notifier's step 3 reads them).
 Standing(e) ==
@@ -41,7 +41,8 @@ N == INSTANCE Notify WITH
        Procs <- NProcs, Slots <- NSlots, Events <- NEvents, Episodes <- 0, Reqs <- NReqs,
        FailAfter <- NFailAfter, FailCount <- NFailCount, MaxRounds <- NMaxRounds,
        MaxCrash <- NMaxCrash, MaxLost <- NMaxLost, MaxAmbig <- NMaxAmbig, MaxFail <- NMaxFail,
-       MaxSlow <- NMaxSlow, Resolve <- FALSE, UseLease <- NLeased, Holder <- NHolder, Bug <- "none",
+       MaxSlow <- NMaxSlow, Resolve <- FALSE, Notice <- FALSE, LongClaims <- FALSE,
+       UseLease <- NLeased, Holder <- NHolder, Bug <- "none",
        cur <- [e \in NEvents |-> Standing(e)],
        lease <- nlease, pc <- npc, crashes <- ncrashes, ambig <- nambig
 
