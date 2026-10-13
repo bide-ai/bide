@@ -9,6 +9,10 @@ journal format can change between pre-releases without a version bump. Curated h
 
 ## [Unreleased]
 
+### Fixed
+
+- `eval.Run` could start executions after its context was cancelled: the launcher's select between a free concurrency slot and the done context picked at random when both were ready. It now checks the context again after taking a slot. Found as a CI flake in `TestRun_CancelledEvalIsAnError`; `TestRun_NoExecutionStartsAfterCancel` reproduces it.
+
 ### Added
 
 - `bide init <dir>` scaffolds a project that runs with no API key: a plan flow (`flow.yaml`, checked by `bide check`) with a model node on a scripted model (and the lines that swap in a real one), a refund node behind a 2-of-3 approval gate, a SQLite journal, and a `go run .` that pauses at the gate, records two signed approvals with keys it generates, refunds once and writes the evidence `bide view` and `bide audit verify-approvals` read. The project requires bide at the command's own release version (`-dev <checkout>` for a build from source). Its own test runs in CI against the checkout, and `scripts/release.sh` runs the released `bide init` and builds and tests the project against the released modules.

@@ -393,6 +393,12 @@ launch:
 			case <-ctx.Done():
 				break launch
 			}
+			// A select picks at random among ready cases, so a free slot can win over a done
+			// context: check it again, so no execution starts after a cancellation.
+			if ctx.Err() != nil {
+				<-sem
+				break launch
+			}
 			wg.Add(1)
 			go func(i, r int) {
 				defer wg.Done()
