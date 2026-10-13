@@ -398,3 +398,24 @@ func TestNotifier_RecoverHaltIsNotARecoveryFailure(t *testing.T) {
 		t.Fatalf("notified %d times, want 1", sink.count())
 	}
 }
+
+func TestNewRunNotifier_Config(t *testing.T) {
+	good := WithNotifier(&fakeSink{}, NewMemNotifyTrail())
+	if _, err := NewRunNotifier(nil, good); !errors.Is(err, ErrConfig) {
+		t.Errorf("nil journal: %v", err)
+	}
+	if _, err := NewRunNotifier(memJournal(), nil); !errors.Is(err, ErrConfig) {
+		t.Errorf("nil option: %v", err)
+	}
+	if _, err := NewRunNotifier(memJournal(), WithNotifier(nil, NewMemNotifyTrail())); !errors.Is(err, ErrConfig) {
+		t.Errorf("nil notifier: %v", err)
+	}
+	rn, err := NewRunNotifier(memJournal(), good)
+	if err != nil {
+		t.Fatal(err)
+	}
+	rn.DriveEnd("r", errors.New("plain"))
+	if err := rn.Flush(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+}

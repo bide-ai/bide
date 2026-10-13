@@ -40,6 +40,18 @@ func (b *Builder[In, Out]) Build() (*Flow[In, Out], error) {
 		}
 	}
 
+	// A bound notifier is validated now, against a throwaway journal, so a nil notifier or trail or a
+	// bad option is an ErrConfig here and not a notifier that silently never runs.
+	if c.notifier != nil {
+		scratch, err := agent.NewJournal(agent.NewMemStore())
+		if err == nil {
+			_, err = agent.NewRunNotifier(scratch, c.notifier)
+		}
+		if err != nil {
+			return nil, fmt.Errorf("plan: build %q: %w", c.flowName, err)
+		}
+	}
+
 	// A flow needs an entry step: the first constructed node. An empty flow cannot
 	// consume In or produce Out.
 	if c.entry == "" {
@@ -629,6 +641,8 @@ func (c *builderCore) seal() *builderCore {
 		model:    c.model, // carry the bound model onto the frozen flow so Run can call it
 		// and the approver verifiers, so Run can count an m-of-n gate's decisions
 		approverVerifiers: c.approverVerifiers,
+		notifier:          c.notifier,
+		notify:            &flowNotify{},
 		loops:             make([]loopSpec, len(c.loops)),
 	}
 	copy(sealed.nodes, c.nodes)

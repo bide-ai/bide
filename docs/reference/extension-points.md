@@ -454,9 +454,10 @@ is the same on every attempt, to drop duplicates at the sink. A `Notification` h
 fields only, and `Err` is for an in-process notifier: a notifier that sends elsewhere should not
 forward error text or tool arguments, which can hold card numbers or personal data. Wrap
 `agent.ErrNotifyPermanent` for a failure a retry in the same round cannot fix, and call
-`agent.ReportNotifyAck` to record how a delivery was authenticated. The design is in
-[docs/design/notifier.md](../design/notifier.md); the webhook notifier that implements the port
-follows.
+`agent.ReportNotifyAck` to record how a delivery was authenticated. A plan flow takes the same notifier with `plan.Builder.WithNotifier` (or `plan.WithLoadedNotifier`
+for a loaded config), and code that drives its own runs binds it with `agent.NewRunNotifier`. The
+design is in [docs/design/notifier.md](../design/notifier.md); the webhook notifier that implements
+the port follows.
 
 ## `NotifyTrail`: delivery state, audited
 
