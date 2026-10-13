@@ -51,13 +51,17 @@ CONSTANTS
   MaxSlow,    \* budget of claims that lapse while their holder is still in its round
   Resolve,    \* the environment may end an event (ResolveHalt, a decision, the run ended)
   UseLease,     \* a deliverer starts only under the run's lease (the usual deliverer)
+  Notice,     \* model the overdue notice (sent by the holder in its round, or by a peer)
+  LongClaims, \* an event's claim may outlast any round (a long WithNotifyClaimTTL): its lapse
+              \* is not assumed (no fairness); a notice's short claim still lapses
   Holder,     \* what a claim names: "deliverer" (a deliverer of a process incarnation) or
               \* "process" (the process incarnation)
   Bug         \* "none" or a broken rule, see regress/
 
 ASSUME FailCount \in {"memory", "trail"} /\ Holder \in {"deliverer", "process"}
 ASSUME Bug \in {"none", "AckFirst", "NoUntil", "NoLapse", "NoSeq", "NoOverdue", "MemFailingSince",
-                "NoStaleCheck", "NoDoneCheck", "AckNoRetry"}
+                "NoStaleCheck", "NoDoneCheck", "AckNoRetry", "NoPeerNotice", "NoNoticeClaim"}
+ASSUME Notice \in BOOLEAN /\ LongClaims \in BOOLEAN
 ASSUME Reqs >= 1 /\ FailAfter >= 1 /\ MaxRounds >= 1 /\ Slots >= 1 /\ Episodes \in 0..2
 
 None == "none"
@@ -65,6 +69,9 @@ NoHolder == <<"none", 0, 0>>
 RecKeys == <<"rec0", "rec1">>
 RecKey(k) == RecKeys[k + 1]
 Keys == Events \cup {RecKey(k) : k \in 0..Episodes - 1}
+\* The overdue notice of event e has a key of its own (overdue:<key>), with its own records.
+NoticeOf(e) == "n_" \o e
+NoticeKeys == {NoticeOf(e) : e \in Keys}
 Dlv == Procs \X (1..Slots)
 \* vocabulary: begin
 \* The trail's leaf kinds (docs/design/notifier.md, "Records").
@@ -86,7 +93,8 @@ VARIABLES
   inc,        \* each process's incarnation: a restart is a new one, with a new holder token
   progressed, \* the process ended a delivery round or a recovery pass in this incarnation
   \* The deliverers.
-  pc,         \* "idle", "decide", "append", "send"
+  pc,         \* "idle", "decide", "append", "send", and for the overdue notice "pnotice",
+              \* "notice", "nack"
   ev,         \* the key it works on
   len,        \* the trail length it last loaded (it appends at len + 1)
   act,        \* the record it is appending
@@ -94,10 +102,12 @@ VARIABLES
   nreq,       \* requests made in this round
   ok,         \* the sink accepted, acked not yet in the trail
   fails,      \* FailCount "memory": failed requests per key, lost on a crash
+  nclaim,     \* a peer sending an overdue notice: the position of its claim on the notice's key
   \* Bug "MemFailingSince": the episode's start and D, in each process's memory.
   memFS, memD,
   \* Ghosts and budgets.
   deliv,      \* requests the sink accepted, per key
+  ndeliv,     \* overdue notices the sink accepted, per event key
   stale,      \* requests the sink accepted while the event no longer stood
   late,       \* claims appended past the deadline with no overdue in the trail
   failed,     \* failed requests (lost replies included), per key, over all processes
@@ -105,10 +115,11 @@ VARIABLES
   crashes, lost, ambig, sfail, slow,
   boundHit
 
-vars == <<trail, cur, lapsed, past, dpast, broken, opened, lease, inc, progressed, pc, ev, len, act,
-          claim, nreq, ok, fails, memFS, memD, deliv, stale, late, failed, lateFail, crashes, lost,
-          ambig, sfail, slow, boundHit>>
+vars == <<nclaim, ndeliv, trail, cur, lapsed, past, dpast, broken, opened, lease, inc, progressed,
+          pc, ev, len, act, claim, nreq, ok, fails, memFS, memD, deliv, stale, late, failed,
+          lateFail, crashes, lost, ambig, sfail, slow, boundHit>>
 procVars == <<inc, progressed>>
+noticeVars == <<nclaim, ndeliv>>
 envVars == <<cur, lapsed, past, dpast, broken, opened>>
 dlvVars == <<pc, ev, len, act, claim, nreq, ok, fails>>
 ghostVars == <<deliv, stale, late, failed, lateFail, crashes, lost, ambig, sfail, slow, boundHit>>
@@ -125,6 +136,10 @@ LastClaim(s, e) == IF ClaimsOf(s, e) = {} THEN 0
 \* Step 1's stop: acked (Bug "NoDoneCheck": not read) or cleared.
 Done(s, e) == (Bug # "NoDoneCheck" /\ Has(s, "acked", e)) \/ Has(s, "cleared", e)
 Acked(e) == Has(trail, "acked", e)
+NoticeAcked(e) == Has(trail, "acked", NoticeOf(e))
+\* The position of e's overdue record in s, 0 if none.
+OverPos(s, e) == IF \E i \in Pos(s) : s[i].k = "overdue" /\ s[i].e = e
+                 THEN CHOOSE i \in Pos(s) : s[i].k = "overdue" /\ s[i].e = e ELSE 0
 Open(e) == Has(trail, "observed", e) /\ ~Has(trail, "acked", e) /\ ~Has(trail, "cleared", e)
 \* Recovery episodes: one failing_since opens one, recovered closes it; k counts recovered.
 NRec(s) == Count(s, "recovered", "run")
@@ -152,8 +167,9 @@ FailingDue(a, s, e) ==
   IF FailCount = "trail" THEN Cardinality(ClaimsOf(s, e)) >= FailRounds
   ELSE fails[a][e] >= FailAfter
 
-\* A deliverer is in its round: sending under its claim, or holding the sink's acceptance.
-InRound(a) == claim[a] # 0 /\ (pc[a] = "send" \/ ok[a])
+\* A deliverer is in its round: sending the notice or the event under its claim, or holding the
+\* sink's acceptance.
+InRound(a) == claim[a] # 0 /\ (pc[a] \in {"send", "notice", "nack"} \/ ok[a])
 
 \* The protocol's initial state; the input cur is the journal's (Init, or model 10's state).
 InitProto ==
@@ -167,6 +183,8 @@ InitProto ==
   /\ len = [a \in Dlv |-> 0]
   /\ act = [a \in Dlv |-> None]
   /\ claim = [a \in Dlv |-> 0]
+  /\ nclaim = [a \in Dlv |-> 0]
+  /\ ndeliv = [e \in Keys |-> 0]
   /\ nreq = [a \in Dlv |-> 0]
   /\ ok = [a \in Dlv |-> FALSE]
   /\ fails = [a \in Dlv |-> [e \in Keys |-> 0]]
@@ -195,7 +213,8 @@ Start(a, e) ==
   /\ ev' = [ev EXCEPT ![a] = e]
   /\ len' = [len EXCEPT ![a] = Len(trail)]
   /\ pc' = [pc EXCEPT ![a] = "decide"]
-  /\ UNCHANGED <<trail, envVars, procVars, act, claim, nreq, ok, fails, memFS, memD, ghostVars>>
+  /\ UNCHANGED <<noticeVars, trail, envVars, procVars, act, claim, nreq, ok, fails, memFS, memD,
+                 ghostVars>>
 
 \* The pass ends: the deliverer forgets the key; the process keeps its memory (fails). The
 \* lease is released when no other deliverer of the process is busy.
@@ -223,7 +242,15 @@ Decide(a) ==
      ELSE IF Bug # "NoStaleCheck" /\ ~Current(e) THEN To("cleared")
      ELSE IF Bug # "NoOverdue" /\ e \in past /\ ~Has(s, "overdue", e) THEN To("overdue")
      ELSE IF FailingDue(a, s, e) /\ ~Has(s, "failing", e) THEN To("failing")
-     ELSE IF LiveOther(a, s, e) THEN FinishVars(a) /\ UNCHANGED <<boundHit, len>>
+     \* Another holder's live claim: stop. If that claim was taken before the event went overdue,
+     \* its holder may be gone for the whole claim, so this deliverer sends the overdue notice under
+     \* a short claim of its own on the notice's key (the core at 728a046b).
+     ELSE IF LiveOther(a, s, e) THEN
+       IF Notice /\ Bug # "NoPeerNotice" /\ e \in Events /\ OverPos(s, e) > LastClaim(s, e)
+          /\ ~NoticeAcked(e)
+       THEN /\ pc' = [pc EXCEPT ![a] = "pnotice"]
+            /\ UNCHANGED <<lease, ev, ok, claim, act, boundHit, len>>
+       ELSE FinishVars(a) /\ UNCHANGED <<boundHit, len>>
      \* At the configuration's bound the pass ends without a claim (BoundNotHit fails); a later
      \* pass still raises overdue, failing and cleared, so a sink that never accepts is checked.
      \* On a stale prefix the claim's append would be refused (ErrSeqTaken): reload instead.
@@ -233,7 +260,7 @@ Decide(a) ==
             /\ UNCHANGED <<pc, lease, ev, ok, claim, act, boundHit>>
        ELSE FinishVars(a) /\ boundHit' = TRUE /\ UNCHANGED len
      ELSE To("claimed")
-  /\ UNCHANGED <<trail, envVars, procVars, nreq, fails, memFS, memD, deliv, stale, late,
+  /\ UNCHANGED <<noticeVars, trail, envVars, procVars, nreq, fails, memFS, memD, deliv, stale, late,
                  failed, lateFail, crashes, lost, ambig, sfail, slow>>
 
 \* Write: append the record at len + 1. Another record there: ErrSeqTaken, reload and fold again
@@ -258,7 +285,12 @@ Write(a) ==
                   /\ IF Bug = "AckFirst"
                      THEN /\ act' = [act EXCEPT ![a] = "ackfirst"]
                           /\ pc' = [pc EXCEPT ![a] = "append"]
-                     ELSE pc' = [pc EXCEPT ![a] = "send"] /\ UNCHANGED act
+                     \* The holder of an overdue event sends the notice first, inside its round.
+                     ELSE /\ pc' = [pc EXCEPT ![a] =
+                                IF Notice /\ e \in Events
+                                   /\ Has(SubSeq(trail, 1, len[a]), "overdue", e)
+                                   /\ ~NoticeAcked(e) THEN "notice" ELSE "send"]
+                          /\ UNCHANGED act
                   /\ UNCHANGED ok
                 ELSE IF act[a] = "ackfirst" THEN
                   pc' = [pc EXCEPT ![a] = "send"] /\ UNCHANGED <<act, claim, nreq, ok>>
@@ -283,8 +315,8 @@ Write(a) ==
           /\ trail' = put /\ Reload(Len(put))
           /\ late' = IF lateNow THEN [late EXCEPT ![e] = @ + 1] ELSE late
           /\ lateFail' = IF failNow THEN [lateFail EXCEPT ![e] = @ + 1] ELSE lateFail
-  /\ UNCHANGED <<envVars, lease, procVars, ev, fails, memFS, memD, deliv, stale, failed, crashes,
-                 lost, sfail, slow, boundHit>>
+  /\ UNCHANGED <<noticeVars, envVars, lease, procVars, ev, fails, memFS, memD, deliv, stale, failed,
+                 crashes, lost, sfail, slow, boundHit>>
 
 \* One request of the round. The sink accepts (2xx), accepts with the reply lost, or fails. An
 \* acceptance is appended as acked; anything else is a failed request, and after Reqs of them
@@ -317,8 +349,72 @@ Send(a) ==
      \/ /\ MaxFail = -1 \/ sfail < MaxFail
         /\ sfail' = IF MaxFail = -1 THEN sfail ELSE sfail + 1
         /\ Failed /\ UNCHANGED <<deliv, stale, lost>>
-  /\ UNCHANGED <<trail, envVars, lease, inc, ev, memFS, memD, late, lateFail, crashes, ambig, slow,
-                 boundHit>>
+  /\ UNCHANGED <<noticeVars, trail, envVars, lease, inc, ev, memFS, memD, late, lateFail, crashes,
+                 ambig, slow, boundHit>>
+
+\* The overdue notice (Notice). A peer that found another holder's claim taken before the event
+\* went overdue claims the notice's key, unless another holder's claim on it is live (Bug
+\* "NoNoticeClaim": it does not claim). The observed record of the notice's key is appended with its
+\* first record. These appends are atomic load-and-append steps (a lost race reloads; no errors).
+PNotice(a) ==
+  /\ pc[a] = "pnotice"
+  /\ LET e == ev[a]
+         k == NoticeOf(e)
+         l == LastClaim(trail, k)
+         obs == IF Has(trail, "observed", k) THEN <<>> ELSE <<Rec("observed", k, NoHolder)>>
+     IN
+     IF NoticeAcked(e) \/ ~Open(e)
+        \/ (Bug # "NoNoticeClaim" /\ l # 0 /\ trail[l].h # Holds(a) /\ ClaimLive(l))
+     THEN FinishVars(a) /\ UNCHANGED <<trail, nclaim, boundHit>>
+     ELSE IF Cardinality(ClaimsOf(trail, k)) >= MaxRounds
+     THEN FinishVars(a) /\ boundHit' = TRUE /\ UNCHANGED <<trail, nclaim>>
+     ELSE IF Bug = "NoNoticeClaim"
+     THEN /\ trail' = trail \o obs /\ pc' = [pc EXCEPT ![a] = "notice"]
+          /\ UNCHANGED <<lease, ev, ok, claim, act, nclaim, boundHit>>
+     ELSE /\ trail' = trail \o obs \o <<Rec("claimed", k, Holds(a))>>
+          /\ nclaim' = [nclaim EXCEPT ![a] = Len(trail \o obs) + 1]
+          /\ pc' = [pc EXCEPT ![a] = "notice"]
+          /\ UNCHANGED <<lease, ev, ok, claim, act, boundHit>>
+  /\ UNCHANGED <<envVars, procVars, len, nreq, fails, memFS, memD, deliv, ndeliv, stale, late,
+                 failed, lateFail, crashes, lost, ambig, sfail, slow>>
+
+\* After the notice: the holder goes on to the event's own requests; a peer ends its pass.
+NoticeNext(a) ==
+  IF claim[a] # 0
+  THEN /\ pc' = [pc EXCEPT ![a] = "send"] /\ UNCHANGED <<lease, ev, ok, claim, act>>
+  ELSE FinishVars(a)
+
+\* One call for the notice (a single attempt; the next round tries again): accepted, accepted with
+\* the reply lost, or failed.
+NoticeSend(a) ==
+  /\ pc[a] = "notice"
+  /\ LET e == ev[a] IN
+     IF NoticeAcked(e) \/ ~Open(e) THEN
+       NoticeNext(a) /\ UNCHANGED <<ndeliv, lost, sfail>> /\ nclaim' = [nclaim EXCEPT ![a] = 0]
+     ELSE
+       \/ /\ MaxFail # -1 /\ ndeliv' = [ndeliv EXCEPT ![e] = @ + 1]
+          /\ pc' = [pc EXCEPT ![a] = "nack"]
+          /\ UNCHANGED <<lease, ev, ok, claim, act, nclaim, lost, sfail>>
+       \/ /\ MaxFail # -1 /\ lost < MaxLost /\ lost' = lost + 1
+          /\ ndeliv' = [ndeliv EXCEPT ![e] = @ + 1]
+          /\ NoticeNext(a) /\ nclaim' = [nclaim EXCEPT ![a] = 0] /\ UNCHANGED sfail
+       \/ /\ MaxFail = -1 \/ sfail < MaxFail
+          /\ sfail' = IF MaxFail = -1 THEN sfail ELSE sfail + 1
+          /\ NoticeNext(a) /\ nclaim' = [nclaim EXCEPT ![a] = 0] /\ UNCHANGED <<ndeliv, lost>>
+  /\ UNCHANGED <<trail, envVars, procVars, len, nreq, fails, memFS, memD, deliv, stale, late,
+                 failed, lateFail, crashes, ambig, slow, boundHit>>
+
+\* Record the notice's acknowledgement (unless the trail already holds one).
+NoticeAck(a) ==
+  /\ pc[a] = "nack"
+  /\ LET e == ev[a]
+         k == NoticeOf(e)
+         obs == IF Has(trail, "observed", k) THEN <<>> ELSE <<Rec("observed", k, NoHolder)>>
+     IN trail' = IF NoticeAcked(e) \/ ~Open(e) THEN trail
+                 ELSE trail \o obs \o <<Rec("acked", k, NoHolder)>>
+  /\ NoticeNext(a) /\ nclaim' = [nclaim EXCEPT ![a] = 0]
+  /\ UNCHANGED <<envVars, procVars, len, nreq, fails, memFS, memD, deliv, ndeliv, stale, late,
+                 failed, lateFail, crashes, lost, ambig, sfail, slow, boundHit>>
 
 \* A process dies and restarts with no memory: its deliverers' passes, their failure counts and
 \* (Bug "MemFailingSince") the episode it remembered are gone; the run's lease it held lapses
@@ -337,12 +433,13 @@ Crash(p) ==
   /\ ev' = [a \in Dlv |-> IF a[1] = p THEN None ELSE ev[a]]
   /\ act' = [a \in Dlv |-> IF a[1] = p THEN None ELSE act[a]]
   /\ claim' = [a \in Dlv |-> IF a[1] = p THEN 0 ELSE claim[a]]
+  /\ nclaim' = [a \in Dlv |-> IF a[1] = p THEN 0 ELSE nclaim[a]]
   /\ nreq' = [a \in Dlv |-> IF a[1] = p THEN 0 ELSE nreq[a]]
   /\ ok' = [a \in Dlv |-> IF a[1] = p THEN FALSE ELSE ok[a]]
   /\ fails' = [a \in Dlv |-> IF a[1] = p THEN [e \in Keys |-> 0] ELSE fails[a]]
   /\ memFS' = [memFS EXCEPT ![p] = FALSE] /\ memD' = [memD EXCEPT ![p] = FALSE]
-  /\ UNCHANGED <<trail, envVars, lease, len, deliv, stale, late, failed, lateFail, lost, ambig,
-                 sfail, slow, boundHit>>
+  /\ UNCHANGED <<trail, envVars, lease, ndeliv, len, deliv, stale, late, failed, lateFail, lost,
+                 ambig, sfail, slow, boundHit>>
 
 (***************************************************************************)
 (* Recovery passes and recovery_failing                                    *)
@@ -368,7 +465,7 @@ RecFail(p) ==
           /\ trail' = Append(trail, Rec("observed", RecKey(opened - 1), NoHolder))
           /\ UNCHANGED <<memFS, memD>>
   /\ progressed' = [progressed EXCEPT ![p] = TRUE]
-  /\ UNCHANGED <<envVars, lease, inc, dlvVars, ghostVars>>
+  /\ UNCHANGED <<noticeVars, envVars, lease, inc, dlvVars, ghostVars>>
 
 \* A recovery pass succeeds: an open episode gets recovered (or, Bug "MemFailingSince", the
 \* process forgets the one it remembered).
@@ -383,7 +480,8 @@ RecOK(p) ==
        /\ memFS[p]
        /\ memFS' = [memFS EXCEPT ![p] = FALSE] /\ memD' = [memD EXCEPT ![p] = FALSE]
        /\ UNCHANGED <<trail, dpast>>
-  /\ UNCHANGED <<cur, lapsed, past, broken, opened, lease, procVars, dlvVars, ghostVars>>
+  /\ UNCHANGED <<noticeVars, cur, lapsed, past, broken, opened, lease, procVars, dlvVars,
+                 ghostVars>>
 
 (***************************************************************************)
 (* The environment: time, the run's journal, the sink's faults             *)
@@ -395,58 +493,65 @@ RecOK(p) ==
 ClaimLapse(i) ==
   /\ Bug # "NoLapse"
   /\ i \in Pos(trail) /\ trail[i].k = "claimed" /\ i \notin lapsed
-  /\ \A j \in Pos(trail) : j < i /\ trail[j].k = "claimed" => j \in lapsed
-  /\ LET mid == \E a \in Dlv : claim[a] = i /\ InRound(a) IN
+  /\ \A j \in Pos(trail) :
+       j < i /\ trail[j].k = "claimed" /\ trail[j].e = trail[i].e => j \in lapsed
+  /\ LET mid == \E a \in Dlv :
+                \/ claim[a] = i /\ InRound(a)
+                \/ nclaim[a] = i /\ pc[a] \in {"notice", "nack"}
+     IN
      /\ mid => slow < MaxSlow
      /\ slow' = IF mid THEN slow + 1 ELSE slow
   /\ lapsed' = lapsed \cup {i}
-  /\ UNCHANGED <<trail, cur, past, dpast, broken, opened, lease, procVars, dlvVars, memFS, memD,
-                 deliv, stale, late, failed, lateFail, crashes, lost, ambig, sfail, boundHit>>
+  /\ UNCHANGED <<noticeVars, trail, cur, past, dpast, broken, opened, lease, procVars, dlvVars,
+                 memFS, memD, deliv, stale, late, failed, lateFail, crashes, lost, ambig, sfail,
+                 boundHit>>
 
 \* An observed event's deadline_at passes.
 Deadline(e) ==
   /\ Has(trail, "observed", e) /\ e \notin past
   /\ past' = past \cup {e}
-  /\ UNCHANGED <<trail, cur, lapsed, dpast, broken, opened, lease, procVars, dlvVars, memFS, memD,
-                 ghostVars>>
+  /\ UNCHANGED <<noticeVars, trail, cur, lapsed, dpast, broken, opened, lease, procVars, dlvVars,
+                 memFS, memD, ghostVars>>
 
 \* D passes since the open episode's failing_since (or, Bug "MemFailingSince", since the
 \* failing pass process p remembers).
 Elapse ==
   /\ Durable /\ EpisodeOpen(trail) /\ ~dpast
   /\ dpast' = TRUE
-  /\ UNCHANGED <<trail, cur, lapsed, past, broken, opened, lease, procVars, dlvVars, memFS, memD,
-                 ghostVars>>
+  /\ UNCHANGED <<noticeVars, trail, cur, lapsed, past, broken, opened, lease, procVars, dlvVars,
+                 memFS, memD, ghostVars>>
 ElapseMem(p) ==
   /\ ~Durable /\ memFS[p] /\ ~memD[p]
   /\ memD' = [memD EXCEPT ![p] = TRUE]
-  /\ UNCHANGED <<trail, envVars, lease, procVars, dlvVars, memFS, ghostVars>>
+  /\ UNCHANGED <<noticeVars, trail, envVars, lease, procVars, dlvVars, memFS, ghostVars>>
 
 \* The run's journal moves on: a halt is resolved, a decision submitted, the run ends.
 ResolveEvent(e) ==
   /\ Resolve /\ cur[e]
   /\ cur' = [cur EXCEPT ![e] = FALSE]
-  /\ UNCHANGED <<trail, lapsed, past, dpast, broken, opened, lease, procVars, dlvVars, memFS, memD,
-                 ghostVars>>
+  /\ UNCHANGED <<noticeVars, trail, lapsed, past, dpast, broken, opened, lease, procVars, dlvVars,
+                 memFS, memD, ghostVars>>
 
 \* Recovery of the run starts failing (a new episode, once the last one is closed) or works again.
 Break ==
   /\ ~broken /\ opened < Episodes
   /\ Durable => ~EpisodeOpen(trail)
   /\ broken' = TRUE /\ opened' = opened + 1
-  /\ UNCHANGED <<trail, cur, lapsed, past, dpast, lease, procVars, dlvVars, memFS, memD, ghostVars>>
+  /\ UNCHANGED <<noticeVars, trail, cur, lapsed, past, dpast, lease, procVars, dlvVars, memFS, memD,
+                 ghostVars>>
 Fix ==
   /\ broken /\ broken' = FALSE
-  /\ UNCHANGED <<trail, cur, lapsed, past, dpast, opened, lease, procVars, dlvVars, memFS, memD,
-                 ghostVars>>
+  /\ UNCHANGED <<noticeVars, trail, cur, lapsed, past, dpast, opened, lease, procVars, dlvVars,
+                 memFS, memD, ghostVars>>
 
 \* The run's lease lapses (its holder stalled, died or stopped renewing); the holder keeps running.
 LeaseLapse ==
   /\ lease # None /\ lease' = None
-  /\ UNCHANGED <<trail, envVars, procVars, dlvVars, memFS, memD, ghostVars>>
+  /\ UNCHANGED <<noticeVars, trail, envVars, procVars, dlvVars, memFS, memD, ghostVars>>
 
 \* The protocol's own steps: none writes cur, the run's journal.
 DlvNext(a) == (\E e \in Keys : Start(a, e)) \/ Decide(a) \/ Write(a) \/ Send(a)
+                \/ PNotice(a) \/ NoticeSend(a) \/ NoticeAck(a)
 ProtoNext ==
   \/ \E a \in Dlv : DlvNext(a)
   \/ \E p \in Procs : Crash(p) \/ RecFail(p) \/ RecOK(p)
@@ -461,6 +566,7 @@ EnvNext == \E e \in Events : ResolveEvent(e)
 \* The longest trail: per key an observed, its claims, an overdue, a failing and an acked or
 \* cleared; per episode a failing_since and a recovered.
 MaxLen == (MaxRounds + 4) * Cardinality(Keys) + 2 * Episodes
+          + (IF Notice THEN (MaxRounds + 3) * Cardinality(Events) ELSE 0)
 
 Next == ProtoNext \/ TimeNext \/ EnvNext
 Spec == Init /\ [][Next]_vars
@@ -471,7 +577,7 @@ Spec == Init /\ [][Next]_vars
 Fairness ==
   /\ \A a \in Dlv : WF_vars(DlvNext(a))
   /\ \A p \in Procs : WF_vars(RecFail(p)) /\ WF_vars(RecOK(p)) /\ WF_vars(ElapseMem(p))
-  /\ \A i \in 1..MaxLen : WF_vars(ClaimLapse(i))
+  /\ \A i \in 1..MaxLen : WF_vars(ClaimLapse(i) /\ (LongClaims => trail[i].e \in NoticeKeys))
   /\ \A e \in Keys : WF_vars(Deadline(e))
   /\ WF_vars(Elapse) /\ WF_vars(LeaseLapse)
 LiveSpec == Spec /\ Fairness
@@ -481,11 +587,11 @@ LiveSpec == Spec /\ Fairness
 (***************************************************************************)
 
 TypeOK ==
-  /\ trail \in Seq([k : RecordKinds, e : Keys \cup {"run"},
+  /\ trail \in Seq([k : RecordKinds, e : Keys \cup NoticeKeys \cup {"run"},
                     h : (Procs \X (0..Slots) \X Nat) \cup {NoHolder}])
   /\ cur \in [Events -> BOOLEAN]
   /\ lapsed \subseteq Pos(trail) /\ past \subseteq Keys
-  /\ pc \in [Dlv -> {"idle", "decide", "append", "send"}]
+  /\ pc \in [Dlv -> {"idle", "decide", "append", "send", "pnotice", "notice", "nack"}]
   /\ ev \in [Dlv -> Keys \cup {None}]
   /\ \A a \in Dlv : len[a] \in 0..Len(trail) /\ claim[a] \in 0..Len(trail)
   /\ lease \in Procs \cup {None}
@@ -523,6 +629,21 @@ ClaimWon ==
 \* an open event past its deadline gets overdue.
 OverdueBounded == \A e \in Keys : late[e] <= 1
 OverdueRaised == \A e \in Keys : (e \in past /\ Open(e)) ~> (~Open(e) \/ Has(trail, "overdue", e))
+
+\* 4. The overdue notice. It is sent (acked) while the event is open and overdue, under fairness;
+\* with long claims (LongClaims), whenever the event's last claim predates its overdue record,
+\* so a holder that claimed before the deadline and died does not hold the notice back (a holder
+\* that claimed after it sends the notice itself: limits/notice-late-holder-dies). Notices accepted
+\* are at most 2 + crashes + lost replies + mid-call lapses: a slow holder and a peer may each send
+\* one (limits/notice-slow-holder).
+NoticeSent ==
+  \A e \in Events : (Has(trail, "overdue", e) /\ Open(e)) ~> (NoticeAcked(e) \/ ~Open(e))
+PeerCovers ==
+  \A e \in Events :
+    (Has(trail, "overdue", e) /\ Open(e) /\ OverPos(trail, e) > LastClaim(trail, e))
+      ~> (NoticeAcked(e) \/ ~Open(e) \/ OverPos(trail, e) < LastClaim(trail, e))
+NoticeDupBound == \A e \in Events : ndeliv[e] <= 2 + crashes + lost + slow
+NoticeOnce == \A e \in Events : ndeliv[e] <= 1 + crashes + lost + slow
 
 \* 5. A crash loop still alerts: while recovery keeps failing, the recovery_failing event of the
 \* open episode (k recovered records so far; Bug "MemFailingSince": the environment's count) is

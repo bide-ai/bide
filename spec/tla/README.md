@@ -2319,9 +2319,9 @@ ticks and re-drives).
 audited trail `notify:<run>`, in which processes record that they observed an event, claimed a
 delivery round, had it acknowledged, and raised `failing`, `overdue` or `cleared`, plus the
 `failing_since` and `recovered` records of `recovery_failing`. It is in plain TLA+ like model 13.
-The trail's records and fold are in `agent` (`notify_record.go`, `notify_fold.go`, the lost race
-being `agent.ErrTrailConflict`); the deliverers, the claim rule and the recovery passes it checks
-are not built yet, so it has no map and no markers; its vocabulary block names the trail's leaf
+The protocol is in `agent`: the records and the fold (`notify_record.go`, `notify_fold.go`, the lost
+race being `agent.ErrTrailConflict`) and the round (`notify_engine.go`, matched as of core
+728a046b). The model has no map and no markers yet; its vocabulary block names the trail's leaf
 kinds. The note called it model 13, a number model 13 (probes) already has.
 
 ### What is modelled
@@ -2341,9 +2341,21 @@ kinds. The note called it model 13, a number model 13 (probes) already has.
   drive-end handoff) or one the trail holds open, under the run's lease when `UseLease` is set.
 - **Claims.** A claim names a holder token per process incarnation and deliverer (`Holder =
   "deliverer"`); a restart is a new incarnation. Its `until` passing is an environment step
-  (`ClaimLapse`, in claim order); a claim that lapses while its holder is still in its round (a
-  slow POST, a stall) is a fault with a budget (`MaxSlow`). The run's lease lapses at any time and
-  its holder keeps running.
+  (`ClaimLapse`, in claim order per key). The core counts another holder's claim as live until
+  `until` plus a skew margin (2 minutes) and starts a round only with its whole budget left, so a
+  claim lapses for its peers only after its holder is done, under the assumptions the model states:
+  clocks within the margin, and a store round trip short beside the claim. What remains is a
+  fault with a budget (`MaxSlow`): a claim that lapses while its holder is still in its round
+  (a call abandoned at its timeout that succeeds later, skew past the margin, or N2 and N3 below).
+  The run's lease lapses at any time and its holder keeps running.
+- **The overdue notice** (`Notice`, as in the core at 728a046b). It has a key of its own
+  (`overdue:<key>`). The holder of an overdue event sends it first in its round, under the
+  event's claim; a deliverer that finds another holder's live claim taken before the event went
+  overdue (that holder may be gone for the whole claim) sends it under a short claim of its own on
+  the notice's key, unless another peer's notice claim is live. One call; an acceptance is
+  recorded as the notice's `acked`; otherwise the next round sends it again while the event is
+  open. With `LongClaims`, an event's claim is not assumed to lapse (a long claim TTL), while a
+  notice's short claim is.
 - **The sink.** A request is accepted, accepted with its reply lost (`MaxLost`), or fails
   (`MaxFail`; `NoBudget`: the sink never accepts).
 - **Time.** Abstract: a claim lapsing, a deadline passing and `D` passing since `failing_since`
@@ -2363,7 +2375,9 @@ kinds. The note called it model 13, a number model 13 (probes) already has.
   notify step that leaves the lifecycle's alone.
 
 Abstracted away: record fields other than the kind, the key and a claim's holder (times are the
-abstract steps above), backoff (a failed round's next round is the next step at step 1), the
+abstract steps above), backoff and the trail's pacing (a failed round's next round is the next step at step 1; pacing
+and the engine's concurrent rounds, per-key lock and stuck-call rule only delay or remove calls),
+the
 signature and transport, the `notification_overdue` event's own delivery (the same protocol for
 another key) and the digest (the same records and fold).
 
@@ -2380,6 +2394,9 @@ another key) and the digest (the same records and fold).
 | 3 | `ClaimWon` | invariant | the claim a deliverer works under is its own record at the position it appended (of two appends at one position, one wins) |
 | 4 | `OverdueBounded` | invariant | at most one round of a key is claimed past its deadline before `overdue` is in the trail (the one whose check raced the deadline) |
 | 4 | `OverdueRaised` | liveness | an open event past its deadline gets `overdue` |
+| 4 | `NoticeSent` | liveness | an open, overdue event's notice is acknowledged (claims lapse in time) |
+| 4 | `PeerCovers` | liveness | with long claims: whenever the event's last claim predates its overdue record (its holder may be dead for the whole claim), the notice is acknowledged or a later claim takes it over |
+| 2 | `NoticeDupBound` | invariant | notices accepted are at most 2 + crashes + lost replies + mid-call lapses (a slow holder and a peer may each send one) |
 | 5 | `CrashLoopAlerts` | liveness | while recovery keeps failing, the open episode's `recovery_failing` is observed, however many restarts lose their memory |
 | 5 | `EpisodeCloses` | liveness | a successful pass closes the episode |
 | 6 | `LifeStepsOnly` | action | in the composition, on model 10's variables every step is a model 10 step or no change; model 10's invariants hold with the notifier interleaved |
@@ -2416,14 +2433,19 @@ the notifier.
 | `live-sink-down` | ci | A sink that never accepts: failing and overdue are raised and the event stays open (AckTrue, no acked). Failures counted from the trail. | 137,001 | 3 min |
 | `live-sink-down-loop` | ci | N1's fix: failures counted from the trail's claimed rounds. A sink that is down and a crash loop in which each incarnation ends one round before it dies: failing is still raised. | 5,447 | 6 s |
 | `live-crash-loop` | ci | A crash loop: recovery of the run fails, and the process crashes without bound, each restart losing its memory. recovery_failing is observed, and a successful pass closes the episode. | 2,649 | 5 s |
+| `notify-notice` | ci | The overdue notice: two processes, the holder sending it inside its round and a peer under a claim on the notice's key; a crash and a lost reply. | 652,169 | 53 s |
+| `live-notice` | ci | The overdue notice, under fairness: an open, overdue event's notice is acknowledged; a failed request. | 24,585 | 6 s |
+| `live-notice-long` | ci | The overdue notice with long claims: a holder that claimed before the deadline and died does not hold the notice back, a peer sends it; a crash. | 271,025 | 1 min |
 | `compose-resolve` | ci | Property 6: model 10's life-resolve (a leased primary, one Recover pass, the operator resolving halts; an error reply and a crash) with a notifier on the run's halt. | 254,606 | 2 min |
 | `compose-notify-reach` | ci | Vacuity of the notifier in the composition: a notification is delivered (NotifyNotReachable must be violated). | 2,165 | 4 s |
+| `deep-notice` | nightly | The overdue notice with a crash, a lost reply and a claim that lapses mid-round. | 2,365,395 | 27 s (8 workers) |
+| `deep-live-notice` | nightly | The overdue notice, under fairness, with a crash and a failed request. | 1,231,263 | 6 min |
 | `deep-faults` | nightly | Every fault at once: a crash, a lost reply, a trail append error, a failed request and a claim that lapses mid-round; two processes. | 7,565,060 | 21 min |
 | `deep-ambig` | nightly | A crash, a trail append error and a failed request. | 571,621 | 1 min |
 | `deep-leased` | nightly | Under the run's lease: a crash, a lost reply and a claim that lapses mid-round. | 586,944 | 1 min |
 | `deep-crashes` | nightly | Two crashes, a lost reply, a failed request; three requests per round. | 1,416,514 | 4 min |
 | `deep-three` | nightly | Three processes, a crash and a lost reply. | 2,241,818 | 10 min |
-| `deep-recovery` | nightly | recovery_failing in two episodes, one process; a crash. | 212,202 | 13 s (2 workers) |
+| `deep-recovery` | nightly | recovery_failing in two episodes, one process; a crash. | 245,778 | 5 s (8 workers) |
 | `deep-live-lost` | nightly | Liveness with a lost reply and a trail append that errors. | 77,709 | 1 min |
 | `deep-compose-leased` | nightly | Property 6: model 10's life-leased (a saga of two calls, a leased primary and a RecoverLoop worker; an error reply and a crash) with a notifier on the run's halt and its abort. | 935,832 | 13 min |
 | `deep-compose-approval` | nightly | Property 6: a model 10 run waiting for an approval, a RecoverLoop worker, the operator approving and resolving, a crash; a notifier on the approval. | 268,245 | 13 s (4 workers) |
@@ -2435,16 +2457,19 @@ they are the mutation check of every property above.
 
 | Config | Broken rule | Fails | Trace |
 |---|---|---|---|
-| `ack-first`, `ack-first-live` | `acked` appended before the request is sent ("done before the ack") | `AckTrue` (7 states); `NoSilentDrop` (26) |
+| `ack-first`, `ack-first-live` | `acked` appended before the request is sent ("done before the ack") | `AckTrue` (7 states); `NoSilentDrop` (25) |
 | `no-until`, `no-until-dup` | a claim with no `until` holds no one off | `NoConcurrentDouble` (11); `DupBound` with no fault (13) |
 | `no-lapse` | a claim that never lapses: a crashed holder's claim holds the event for ever | `NoSilentDrop` (19) |
 | `no-seq` | a store that keeps the last leaf at a position instead of refusing it (no `ErrSeqTaken`) | `ClaimWon` (9) |
-| `no-overdue`, `no-overdue-live` | no overdue rule | `OverdueBounded` (13); `OverdueRaised` (27) |
-| `mem-failing-since` | `failing_since` kept in each process's memory: a crash loop restarts the clock | `CrashLoopAlerts` (5) |
-| `no-stale-check` | no currency check (step 3): a resolved event is retried for ever while the sink is down | `StaleStops` (31) |
+| `no-overdue`, `no-overdue-live` | no overdue rule | `OverdueBounded` (13); `OverdueRaised` (28) |
+| `mem-failing-since` | `failing_since` kept in each process's memory: a crash loop restarts the clock | `CrashLoopAlerts` (7) |
+| `no-stale-check` | no currency check (step 3): a resolved event is retried for ever while the sink is down | `StaleStops` (32) |
 | `no-done-check` | step 1 does not stop at `acked` | `Once` (10) |
 | `ack-no-retry` | an `acked` append that errors is not retried in place | `DupBound` (13) |
 | `holder-process` | a claim names the process, not the deliverer | `NoConcurrentDouble` (11) |
+| `failing-count-memory` | N1, adopted: failures counted in each process's memory | `FailingBy` (15) |
+| `no-peer-notice` | only the holder sends the overdue notice (with long claims) | `PeerCovers` (19) |
+| `no-notice-claim` | peers send the notice with no claim of their own on its key | `NoticeDupBound` (21) |
 | `compose-in-journal` | the notifier writes the run's journal (its claim as an attempt marker on the run's last call, as a notification run as a Step of the run would) | `LifeStepsOnly` (12) |
 
 ### Limits and findings
@@ -2453,18 +2478,30 @@ they are the mutation check of every property above.
   the send are not atomic, so a request is accepted for an event resolved a moment before.
 - `limits/not-exactly-once` (`ExactlyOnce`): at least once, not exactly once; a lost reply alone
   makes a second delivery.
-- **N1: `failing` counted in memory** (`findings/failing-count-memory`, `FailingBy`, open). The
-  note says "On failure, count it; after the 8th total failure append failing once". A count in
+- `limits/notice-slow-holder` (`NoticeOnce`): one duplicate notice with no crash, lost reply or
+  lapse, as the core says: a holder that claimed before the deadline is slow and its round fails, a
+  peer sends the notice under its notice claim, and the holder's next round sends it before the
+  peer's acknowledgement is in the trail (17 states). The stable ID lets the sink drop it.
+- `limits/notice-late-holder-dies` (`NoticeSent`, with long claims): a holder that claimed after
+  the deadline and died holds the notice back for its claim, as it holds the event itself (the
+  note's accepted cost of a crashed holder).
+- **N1: `failing` counted in memory** (`regress/failing-count-memory`, `FailingBy`; adopted). The
+  note said "On failure, count it; after the 8th total failure append failing once". A count in
   process memory restarts at zero on every restart: with a sink that is down, one request a round
-  and one crash, p1 observes, claims round 1, fails (one failure); dies; its restart waits out the
-  old claim, claims round 2 and fails (two failures, its memory says one), then claims round 3
-  with no `failing` (FailAfter = 2, 15 states). A crash loop never raises it. `overdue` still is
-  (its deadline is in the trail), so no event is dropped silently; only the "notification
-  failing" signal is lost, as an in-memory `recovery_failing` counter would be. The fix the model
-  checks (`FailCount = "trail"`, every other configuration): count failed rounds from the trail's
-  `claimed` records, one per round, and raise `failing` once `ceil(FailAfter / Reqs)` rounds are
-  claimed with no ack (crashed rounds count as failed); `live-sink-down-loop` shows it raised
-  under a crash loop. The finding becomes a regression when the note adopts it.
+  and one crash, p1 claims round 1 and fails; dies; its restart waits out the old claim, claims
+  round 2 and fails (two failures, its memory says one), then claims round 3 with no `failing`.
+  A crash loop never raises it. The core counts failed rounds from the trail's `claimed` records
+  (`ceil(8 / 3)` rounds claimed with no ack, crashed rounds included), which the model checks in
+  every other configuration; `live-sink-down-loop` shows it raised under a crash loop.
+- **N2 and N3: budgets at a long claim TTL** (core 728a046b, by arithmetic, reported; open). A
+  peer's notice claim lasts at most 2 minutes, but its call may take an eighth of the claim TTL
+  and its acknowledgement's retries another eighth, so above a 16-minute TTL the call outlives
+  the notice claim and another peer can send the notice again (N2). `roundBudget` counts the
+  notice's call but not its acknowledgement's retries, so a round that starts under its holder's
+  own live claim with just over the budget left can run an eighth of the TTL past `until`, past
+  the 2-minute skew margin above a 16-minute TTL, and a peer can take the event over mid-round
+  with no fault (N3). In the model each is the mid-round lapse fault (`MaxSlow`), which the
+  duplicate bounds count; at the default 2-minute TTL neither occurs.
 
 Two rules the model needed, which the note implies but does not state: the claim's holder is
 unique per process incarnation and per deliverer (`holder-process`), and an `acked` append that
@@ -2482,7 +2519,14 @@ claim's two minutes, the deadline's five and `D`'s fifteen is covered. A bug tha
 interleaving in the standalone model with faults, two concurrent episodes, or more than two of one
 fault is outside the check. Two events at once outgrew a nightly run (over 55 million states with
 one crash); the protocol keeps a key's state in its own records, and keys share only the trail's
-positions and the deliverers' time, which `deep-compose-leased` exercises.
+positions and the deliverers' time, which `deep-compose-leased` exercises. The overdue notice is
+modelled in `notify-notice`, `live-notice`, `live-notice-long`, `deep-notice`, `deep-live-notice`
+and the notice regressions and limits, and left out of the other configurations (it adds a tenfold
+state space and does not change how the event itself is delivered) and of the composition with model
+10 (its steps, like every notify step, leave model 10's variables as they are). Durations are not
+checked: that a round's calls, backoff and acknowledgement fit inside its claim, and the clocks
+within the skew margin, are assumptions (N2 and N3 are where the core's arithmetic does not meet
+them).
 
 Model 13: one call, two drivers, attempts 0..2 (0..3 nightly), one crash (two nightly), one
 provider, and one grant of fresh probes. A bug that needs three drivers, or two calls sharing a

@@ -207,7 +207,7 @@ Protocol-Impact: none (error message wording only)
 Every override shows as a warning annotation on the pull request, so a reviewer sees it.
 
 **Regressions.** Every historical bug a model can state is kept as a configuration, usually behind
-a `Bug` constant, that must keep failing with its named property. There are 130 of them. One that starts passing means the model
+a `Bug` constant, that must keep failing with its named property. There are 133 of them. One that starts passing means the model
 lost the behavior it was written to check.
 
 One more check runs on the vocabulary. `TestProtocolVocabulary` compares the record kinds in
@@ -219,9 +219,9 @@ None of this checks that a Go function does what its model step says. Review doe
 
 Counts, from the repo on 2026-10-13:
 
-- 11 models. 261 configurations run in the merge queue and on every push to main (109 `ci`, 130
-  regression, 2 finding, 20 limit). 105 must pass, each also run for vacuity; 156 must fail with
-  their named property. 90 larger configurations run nightly.
+- 11 models. 268 configurations run in the merge queue and on every push to main (112 `ci`, 133
+  regression, 1 finding, 22 limit). 108 must pass, each also run for vacuity; 160 must fail with
+  their named property. 92 larger configurations run nightly.
 - A small safety configuration, `step-same-a1` (two drivers in one process, one error reply, one
   crash, one cancellation), visits 146,864 distinct states in a few seconds (re-run). Its nightly
   counterpart with two error replies visits 2,282,585 in about 12 seconds. The largest, `deep-faults`,
@@ -284,8 +284,8 @@ runtime promises and under which conditions.
 - "Caught before any release": docs/formal-verification.md says only L1, S1, S2 and S4 shipped.
 - "Three of the four were double fires", "three review rounds", "28 bugs": docs/formal-verification.md ("Why bide model-checks", "At a glance").
 - modelsync, markers, path rule, Protocol-Impact, TestProtocolVocabulary: docs/formal-verification.md "How the models and the code stay in step"; spec/tla/README.md "Keeping the code and the models in step"; marker text from agent/journal.go line 675; `go run ./internal/tools/modelsync` prints "modelsync: ok" on origin/main 21c5f604.
-- 130 regressions: `spec/tla/check.sh list regress | wc -l` = 130.
-- 261 = 109 + 130 + 2 + 20 (`check.sh list ci|regress|finding|limit`); 90 nightly (`check.sh list nightly`). "11 models": docs/formal-verification.md "At a glance".
+- 133 regressions: `spec/tla/check.sh list regress | wc -l` = 133.
+- 268 = 112 + 133 + 1 + 22 (`check.sh list ci|regress|finding|limit`); 92 nightly (`check.sh list nightly`). "11 models": docs/formal-verification.md "At a glance".
 - step-same-a1 146,864 states, 3 s: re-run 2026-10-13 and spec/tla/README.md table. step-same 2,282,585 / 12 s, deep-faults 31,402,708 / 2 min: spec/tla/README.md nightly table (development machine, Apple M1 Pro).
 - CI shard times: GitHub Actions run 38443313721 (push to main, 2026-10-13): Models (toolcall-flows) 18:01:53 to 18:06:03 = 4 min 10 s; whole workflow 18:00:53 to 18:06:11 = 5 min 18 s.
 - Nightly durations: scheduled Models runs 37765386131, 37919276985, 38043275489, 38130867661, 38240171387, 38385624156 (2026-10-08 to 2026-10-13): 3 h 40, 2 h 54, 2 h 20, 3 h 43, 2 h 49, 2 h 58. The workflow includes the Apalache jobs.
