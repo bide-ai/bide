@@ -2434,11 +2434,12 @@ the notifier.
 | `live-sink-down-loop` | ci | N1's fix: failures counted from the trail's claimed rounds. A sink that is down and a crash loop in which each incarnation ends one round before it dies: failing is still raised. | 5,447 | 6 s |
 | `live-crash-loop` | ci | A crash loop: recovery of the run fails, and the process crashes without bound, each restart losing its memory. recovery_failing is observed, and a successful pass closes the episode. | 2,649 | 5 s |
 | `notify-notice` | ci | The overdue notice: two processes, the holder sending it inside its round and a peer under a claim on the notice's key; a crash and a lost reply. | 652,169 | 53 s |
-| `live-notice` | ci | The overdue notice, under fairness: an open, overdue event's notice is acknowledged; a crash and a failed request. | 1,231,263 | 6 min |
+| `live-notice` | ci | The overdue notice, under fairness: an open, overdue event's notice is acknowledged; a failed request. | 24,585 | 6 s |
 | `live-notice-long` | ci | The overdue notice with long claims: a holder that claimed before the deadline and died does not hold the notice back, a peer sends it; a crash. | 271,025 | 1 min |
 | `compose-resolve` | ci | Property 6: model 10's life-resolve (a leased primary, one Recover pass, the operator resolving halts; an error reply and a crash) with a notifier on the run's halt. | 254,606 | 2 min |
 | `compose-notify-reach` | ci | Vacuity of the notifier in the composition: a notification is delivered (NotifyNotReachable must be violated). | 2,165 | 4 s |
 | `deep-notice` | nightly | The overdue notice with a crash, a lost reply and a claim that lapses mid-round. | 2,365,395 | 27 s (8 workers) |
+| `deep-live-notice` | nightly | The overdue notice, under fairness, with a crash and a failed request. | 1,231,263 | 6 min |
 | `deep-faults` | nightly | Every fault at once: a crash, a lost reply, a trail append error, a failed request and a claim that lapses mid-round; two processes. | 7,565,060 | 21 min |
 | `deep-ambig` | nightly | A crash, a trail append error and a failed request. | 571,621 | 1 min |
 | `deep-leased` | nightly | Under the run's lease: a crash, a lost reply and a claim that lapses mid-round. | 586,944 | 1 min |
@@ -2519,12 +2520,13 @@ interleaving in the standalone model with faults, two concurrent episodes, or mo
 fault is outside the check. Two events at once outgrew a nightly run (over 55 million states with
 one crash); the protocol keeps a key's state in its own records, and keys share only the trail's
 positions and the deliverers' time, which `deep-compose-leased` exercises. The overdue notice is
-modelled in `notify-notice`, `live-notice`, `live-notice-long`, `deep-notice` and the notice
-regressions and limits, and left out of the other configurations (it adds a tenfold state space and
-does not change how the event itself is delivered) and of the composition with model 10 (its steps,
-like every notify step, leave model 10's variables as they are). Durations are not checked: that a
-round's calls, backoff and acknowledgement fit inside its claim, and the clocks within the skew
-margin, are assumptions (N2 and N3 are where the core's arithmetic does not meet them).
+modelled in `notify-notice`, `live-notice`, `live-notice-long`, `deep-notice`, `deep-live-notice`
+and the notice regressions and limits, and left out of the other configurations (it adds a tenfold
+state space and does not change how the event itself is delivered) and of the composition with model
+10 (its steps, like every notify step, leave model 10's variables as they are). Durations are not
+checked: that a round's calls, backoff and acknowledgement fit inside its claim, and the clocks
+within the skew margin, are assumptions (N2 and N3 are where the core's arithmetic does not meet
+them).
 
 Model 13: one call, two drivers, attempts 0..2 (0..3 nightly), one crash (two nightly), one
 provider, and one grant of fresh probes. A bug that needs three drivers, or two calls sharing a
