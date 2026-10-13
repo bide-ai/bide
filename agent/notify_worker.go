@@ -36,6 +36,7 @@ type pendingNotify struct {
 	due      time.Time
 	inflight bool
 	lastErr  error // the error of the last round, nil if it ended cleanly
+	deferred bool  // lastErr is a deferral to another deliverer, not a failure of this engine's
 }
 
 func newNotifyWorker(e *notifyEngine) *notifyWorker {
@@ -176,8 +177,9 @@ func (w *notifyWorker) runRound(ctx context.Context, p *pendingNotify) {
 	w.inflight--
 	p.inflight = false
 	p.lastErr = err
+	p.deferred = false
 	if err == nil && !res.done {
-		p.lastErr = res.deferred
+		p.lastErr, p.deferred = res.deferred, res.deferred != nil
 	}
 	if res.done {
 		delete(w.pending, p.ev.key)
@@ -213,15 +215,34 @@ func (w *notifyWorker) isRunning() bool {
 	return w.running
 }
 
-// undelivered returns the last error of every event still queued: what flush could not deliver.
-func (w *notifyWorker) undelivered() error {
+// undelivered returns the last error of every event still queued: what flush could not deliver. An
+// event whose last round only deferred to another deliverer is looked up in the trail first, and
+// dropped if that deliverer has acknowledged (or cleared) it since.
+func (w *notifyWorker) undelivered(ctx context.Context) error {
+	type item struct {
+		err      error
+		ev       notifyEvent
+		deferred bool
+	}
 	w.mu.Lock()
-	defer w.mu.Unlock()
-	var errs []error
+	var items []item
 	for _, p := range w.pending {
 		if p.lastErr != nil {
-			errs = append(errs, p.lastErr)
+			items = append(items, item{p.lastErr, p.ev, p.deferred})
 		}
+	}
+	w.mu.Unlock()
+	var errs []error
+	for _, it := range items {
+		if it.deferred {
+			if recs, err := w.e.trail.Load(ctx, NotifyTrailName(it.ev.runID)); err == nil {
+				key := it.ev.key
+				if es := FoldNotify(recs).Events[key]; es != nil && !es.Open() {
+					continue // the deliverer it deferred to has finished
+				}
+			}
+		}
+		errs = append(errs, it.err)
 	}
 	return errors.Join(errs...)
 }
@@ -242,7 +263,7 @@ func (e *notifyEngine) flush(ctx context.Context) error {
 			if cancel != nil {
 				cancel()
 			}
-			return errors.Join(ctx.Err(), w.undelivered())
+			return errors.Join(ctx.Err(), w.undelivered(context.WithoutCancel(ctx)))
 		case <-time.After(2 * time.Millisecond):
 		}
 	}
@@ -263,8 +284,8 @@ func (e *notifyEngine) flush(ctx context.Context) error {
 		case <-done:
 		case <-ctx.Done():
 			cancel()
-			return errors.Join(ctx.Err(), w.undelivered())
+			return errors.Join(ctx.Err(), w.undelivered(context.WithoutCancel(ctx)))
 		}
 	}
-	return w.undelivered()
+	return w.undelivered(context.WithoutCancel(ctx))
 }

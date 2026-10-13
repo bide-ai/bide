@@ -9,6 +9,9 @@ import (
 	"time"
 )
 
+// minClaimTTL is the shortest claim WithNotifyClaimTTL accepts.
+const minClaimTTL = 30 * time.Second
+
 // notifyConfig is what NotifyOptions write, over the defaults newNotifyEngine sets.
 type notifyConfig struct {
 	deadline      time.Duration
@@ -262,16 +265,22 @@ func (e *notifyEngine) callNotify(ctx context.Context, n Notifier, note Notifica
 		err := n.Notify(context.WithValue(cctx, ackKey{}, &ack), note)
 		out <- result{ack, err}
 	}()
+	late := func(err error) error {
+		if err != nil && errors.Is(err, context.DeadlineExceeded) && ctx.Err() == nil {
+			return fmt.Errorf("notify: the call took longer than %v (the call limit is an eighth of the claim, %v; raise WithNotifyClaimTTL if the sink needs longer): %w", e.callTimeout(), e.cfg.claimTTL, err)
+		}
+		return err
+	}
 	select {
 	case r := <-out:
-		return r.ack, r.err
+		return r.ack, late(r.err)
 	case <-cctx.Done():
 		select {
 		case r := <-out: // it returned as the time ran out: take its answer
-			return r.ack, r.err
+			return r.ack, late(r.err)
 		default:
 		}
-		return NotifyAck{}, fmt.Errorf("notify: the call took longer than %v: %w", e.callTimeout(), cctx.Err())
+		return NotifyAck{}, late(cctx.Err())
 	}
 }
 

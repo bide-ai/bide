@@ -285,7 +285,9 @@ An independent review of the first implementation found these, and each is now a
   unless the trail holds an acknowledged one, so a death after the `overdue` record, a failed first
   delivery, a sweep and a restart all re-send it. A delivered but unrecorded notice is recorded
   without sending again.
-- **Every `Notify` call is bounded** by an eighth of the claim, and abandoned when the time is up
+- **Every `Notify` call is bounded** by an eighth of the claim (so `WithNotifyClaimTTL` must be at
+  least 30 seconds, and at least eight times the longest a sink takes; a call that outlives its limit
+  says so and names the option), and abandoned when the time is up
   even if the Notifier ignores its context (it counts as failed, and an abandoned call that later
   succeeds is a duplicate within the stated bound). A round makes at most four calls (the overdue
   notice is the fourth), so its calls take half the claim, its backoff and acknowledgement retries
@@ -310,10 +312,13 @@ An independent review of the first implementation found these, and each is now a
   for a plan flow's gate, the node's own result (`node:<name>`). The sweep applies the same test.
 - **A run that was aborted has a catch-up path.** `NotifyPending` also reads runs holding
   `run:aborted` (completed and cancelled runs are excluded from the listing) and raises
-  `run_aborted` for any whose trail has no event, if the run started within `WithNotifyAbortedWithin`
-  (24 hours): the abort records no time, so the run's `run:start` time stands for it, and enabling the
-  sweep does not page for every run that ever aborted. A run whose start records no time is not
-  raised. It costs one point read for each aborted run, every sweep.
+  `run_aborted` for any whose trail has no event, if the abort was within `WithNotifyAbortedWithin`
+  (24 hours), so enabling the sweep does not page for every run that ever aborted. `run:aborted`
+  records `aborted_at` (informational, like `started_at`: no drive, resume or recovery pass reads it,
+  and a run:aborted without it loads and behaves the same). For a run an earlier version aborted the
+  sweep uses the newest time the journal records for the run (an attempt marker's, else the start),
+  which is no later than the abort; a run whose journal records no time is not raised. It costs one
+  point read for each aborted run, every sweep, and a History read for each legacy one.
 - **Recovery episodes close on any pause**, a halt, a gate, a timer or a signal, which a pass counts
   as success. A run no Resumer can drive (`ErrNotResumable`) is a recovery failure and alerts after
   the duration. A pass ended by the shutdown's cancellation is not a failure.
@@ -328,7 +333,8 @@ An independent review of the first implementation found these, and each is now a
   the next event; an event queued while it leaves starts another.
 - **`FlushNotifications` returns what was not delivered**: the last error of each event still queued
   when the worker stops, and, for an event whose round deferred to another deliverer's live claim or
-  to its pace, that deferral, so a caller that exits after it knows. Key locks are removed when no
+  to its pace, that deferral (checked against the trail first, so an event the other deliverer has
+  since acknowledged is not reported), so a caller that exits after it knows. Key locks are removed when no
   round holds or waits for them. A plan flow keeps one notifier per
   store, not per `Journal` value.
 - **A trail with a record kind a newer version wrote loads**, in its position, and the fold skips it,
