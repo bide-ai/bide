@@ -9,6 +9,7 @@
   <br>
   Побочные эффекты срабатывают не более одного раза, даже при сбое. Каждое действие доказуемо постфактум.
 </p>
+<p align="center"><a href="https://codecov.io/gh/bide-ai/bide"><img src="https://codecov.io/gh/bide-ai/bide/branch/main/graph/badge.svg" alt="Coverage"></a></p>
 
 <p align="center"><img src="../../assets/crash-demo.gif" width="100%" alt="bide demo: агента убивают посреди списания, после перезапуска он останавливается с outcome unknown вместо повторного списания, списание подтверждается по записи платёжного провайдера, а bide view показывает проверенное аудиторское доказательство и подписи 2 из 3"></p>
 <p align="center">

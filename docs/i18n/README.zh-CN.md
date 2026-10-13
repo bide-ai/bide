@@ -9,6 +9,7 @@
   <br>
   副作用至多触发一次，即使跨越崩溃也是如此。每个动作事后均可证明。
 </p>
+<p align="center"><a href="https://codecov.io/gh/bide-ai/bide"><img src="https://codecov.io/gh/bide-ai/bide/branch/main/graph/badge.svg" alt="Coverage"></a></p>
 
 <p align="center"><img src="../../assets/crash-demo.gif" width="100%" alt="bide demo：智能体在扣款中途被杀死，重启后以 outcome unknown 停下而不是再次扣款，随后根据支付服务商的记录解决，bide view 显示审计证明与 2/3 审批签名均已验证"></p>
 <p align="center">

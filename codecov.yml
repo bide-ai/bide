@@ -1,0 +1,25 @@
+# Codecov settings. Coverage is information, not a gate: nothing here blocks a merge, and the
+# Coverage workflow is not a required check. The profile is built by scripts/coverage.sh from the
+# published modules only (no examples, benchmarks or integration module).
+coverage:
+  status:
+    project:
+      default:
+        informational: true
+    patch:
+      default:
+        informational: true
+
+comment: false
+
+ignore:
+  - "**/*_test.go"
+  - "**/testdata/**"
+  - "**/*.pb.go"
+  - "**/*_gen.go"
+  - "**/*.gen.go"
+  - "**/zz_generated*.go"
+  - "internal/tools/**"
+  - "examples/**"
+  - "benchmarks/**"
+  - "integration/**"

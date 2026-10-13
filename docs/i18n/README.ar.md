@@ -9,6 +9,7 @@
   <br>
   آثار جانبية تُنفَّذ مرة واحدة على الأكثر، حتى عبر انهيار. كل إجراء قابل للإثبات لاحقًا.
 </p>
+<p align="center"><a href="https://codecov.io/gh/bide-ai/bide"><img src="https://codecov.io/gh/bide-ai/bide/branch/main/graph/badge.svg" alt="Coverage"></a></p>
 
 <p align="center"><img src="../../assets/crash-demo.gif" width="100%" alt="bide demo: يُقتل الوكيل في منتصف الخصم، وعند إعادة التشغيل يتوقف بحالة outcome unknown بدل الخصم مرة أخرى، ثم يُحسم الخصم من سجل مزوّد الدفع، ويعرض bide view إثبات التدقيق وتواقيع الموافقة 2 من 3 وقد تحققت"></p>
 <p align="center">
