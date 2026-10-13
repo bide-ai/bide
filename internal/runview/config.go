@@ -6,6 +6,7 @@ import (
 	"slices"
 	"strings"
 
+	"github.com/bide-ai/bide/internal/term"
 	"github.com/bide-ai/bide/plan"
 )
 
@@ -263,21 +264,28 @@ func configGraph(r plan.ConfigReport) *Graph {
 // arm, or nothing for the config as a whole), warnings marked as such, then, when the config has
 // assertions, a line counting their verdicts, and reports whether any problem is an error (or,
 // with c.Strict, any problem at all). A violated, undecided or invalid assertion is an error.
-func Check(w io.Writer, c Config) bool {
+func Check(w io.Writer, c Config) bool { return CheckStyled(w, c, term.Style{}) }
+
+// CheckStyled is Check in st's colors (bide check on a terminal): a red cross on each error, a
+// violated assertion's counterexample path in red with the node it reaches in bold, risk classes
+// colored as the risk map colors them, and the verdict counts in green, red and amber. With color
+// off it writes what Check writes.
+func CheckStyled(w io.Writer, c Config, st term.Style) bool {
 	r := plan.InspectConfig(c.Data, c.Registry)
+	name := st.Dim(c.Name)
 	for _, p := range r.Problems {
 		where := p.Node
 		if where == "" && (p.From != "" || p.To != "") {
 			where = p.From + "->" + p.To
 		}
-		msg := p.Message
+		mark, msg := st.Cross(), problemText(st, p)
 		if p.Severity == "warning" {
-			msg = "warning: " + msg
+			mark, msg = st.Bang(), st.Warn("warning:")+" "+colorRisk(st, p.Message)
 		}
 		if where == "" {
-			fmt.Fprintf(w, "%s: %s\n", c.Name, msg)
+			fmt.Fprintf(w, "%s%s: %s\n", mark, name, msg)
 		} else {
-			fmt.Fprintf(w, "%s:%s: %s\n", c.Name, where, msg)
+			fmt.Fprintf(w, "%s%s:%s: %s\n", mark, name, st.Bold(where), msg)
 		}
 	}
 	if len(r.Assertions) > 0 {
@@ -292,7 +300,18 @@ func Check(w io.Writer, c Config) bool {
 				other++
 			}
 		}
-		fmt.Fprintf(w, "%s: %d assertion%s: %d hold, %d violated, %d undecided or invalid\n", c.Name, len(r.Assertions), plural(len(r.Assertions)), hold, violated, other)
+		mark := st.Pass()
+		if violated+other > 0 {
+			mark = st.Cross()
+		}
+		count := func(n int, what string, color func(string) string) string {
+			if n == 0 {
+				color = st.Dim
+			}
+			return color(fmt.Sprintf("%d %s", n, what))
+		}
+		fmt.Fprintf(w, "%s%s: %d assertion%s: %s, %s, %s\n", mark, name, len(r.Assertions), plural(len(r.Assertions)),
+			count(hold, "hold", st.OK), count(violated, "violated", st.Fail), count(other, "undecided or invalid", st.Warn))
 	}
 	return r.Errors() || c.Strict && len(r.Problems) > 0
 }

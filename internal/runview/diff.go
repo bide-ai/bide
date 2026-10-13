@@ -12,6 +12,7 @@ import (
 	"slices"
 	"strings"
 
+	"github.com/bide-ai/bide/internal/term"
 	"github.com/bide-ai/bide/plan"
 )
 
@@ -151,34 +152,51 @@ func BuildDiff(d Diff) (*DiffView, error) {
 // line per weakened approval gate, and a summary line with the counts and the digest, each
 // prefixed with the new config's name. It reports whether an approval policy was weakened.
 func CheckDiff(w io.Writer, d Diff) (weakened bool, err error) {
+	return CheckDiffStyled(w, d, term.Style{})
+}
+
+// CheckDiffStyled is CheckDiff in st's colors (bide check -diff -check on a terminal): added
+// green, removed red, changed amber, and each weakened approval gate in bold red, called out
+// before the changes rather than after them. With color off it writes what CheckDiff writes.
+func CheckDiffStyled(w io.Writer, d Diff, st term.Style) (weakened bool, err error) {
 	v, err := BuildDiff(d)
 	if err != nil {
 		return false, err
 	}
-	for _, c := range v.Changes {
-		fmt.Fprintf(w, "%s: %s\n", v.Name, c)
+	name := st.Dim(v.Name)
+	weak := func() {
+		for _, s := range v.Weakened {
+			fmt.Fprintf(w, "%s%s: %s\n", st.Cross(), name, st.BoldFail("approval policy weakened: "+s))
+		}
 	}
-	for _, s := range v.Weakened {
-		fmt.Fprintf(w, "%s: approval policy weakened: %s\n", v.Name, s)
+	if st.On() {
+		weak()
+	}
+	for _, c := range v.Changes {
+		fmt.Fprintf(w, "%s%s: %s\n", changeMark(st, c), name, changeText(st, c))
+	}
+	if !st.On() {
+		weak()
 	}
 	for _, s := range []struct {
 		which, name string
 		n           int
 	}{{"old", v.OldName, v.OldErrors}, {"new", v.Name, v.NewErrors}} {
 		if s.n > 0 {
-			fmt.Fprintf(w, "%s: note: the %s config has %d error(s), compared as far as it reads; bide check %s lists them\n", v.Name, s.which, s.n, s.name)
+			fmt.Fprintf(w, "%s%s: %s the %s config has %d error(s), compared as far as it reads; bide check %s lists them\n", st.Bang(), name, st.Warn("note:"), s.which, s.n, st.Path(s.name))
 		}
 	}
 	if len(v.Changes) == 0 {
-		fmt.Fprintf(w, "%s: no changes from %s; %s\n", v.Name, v.OldName, v.DigestLine())
+		fmt.Fprintf(w, "%s%s: no changes from %s; %s\n", st.Pass(), name, v.OldName, st.Dim(v.DigestLine()))
 	} else {
 		c := v.Counts
 		changes := "changes"
 		if len(v.Changes) == 1 {
 			changes = "change"
 		}
-		fmt.Fprintf(w, "%s: %d %s from %s (nodes: %d added, %d removed, %d changed; edges: %d added, %d removed, %d changed); %s\n",
-			v.Name, len(v.Changes), changes, v.OldName, c.NodesAdded, c.NodesRemoved, c.NodesChanged, c.EdgesAdded, c.EdgesRemoved, c.EdgesChanged, v.DigestLine())
+		fmt.Fprintf(w, "%s: %s from %s %s; %s\n", name, st.Bold(fmt.Sprintf("%d %s", len(v.Changes), changes)), v.OldName,
+			st.Dim(fmt.Sprintf("(nodes: %d added, %d removed, %d changed; edges: %d added, %d removed, %d changed)", c.NodesAdded, c.NodesRemoved, c.NodesChanged, c.EdgesAdded, c.EdgesRemoved, c.EdgesChanged)),
+			st.Dim(v.DigestLine()))
 	}
 	return len(v.Weakened) > 0, nil
 }

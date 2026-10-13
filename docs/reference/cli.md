@@ -35,6 +35,8 @@ usage: bide init [-module <path>] [-dev <bide checkout>] <dir>
 Writes a new project into dir, which must not exist or must be empty: main.go, main_test.go,
 flow.yaml, README.md, .gitignore and go.mod. Then: cd <dir> && go mod tidy && go run .
 
+  -color when
+    	when to color the output: auto (the default: on a terminal, unless NO_COLOR is set or TERM is dumb), always or never
   -dev string
     	a bide checkout to build against (replace directives), for a bide built from source
   -module string
@@ -55,6 +57,8 @@ Kill an agent mid-payment and watch it not charge twice (no API key).
 Usage of bide demo:
   -addr string
     	loopback address to serve the viewer on (port 0 picks a free one) (default "127.0.0.1:0")
+  -color when
+    	when to color the output: auto (the default: on a terminal, unless NO_COLOR is set or TERM is dumb), always or never
   -fast
     	no pauses between steps (for CI)
   -keep
@@ -129,6 +133,8 @@ Flags:
     	the expected policy's approver ids, comma-separated, in policy order; needs -need
   -check
     	with -config: serve nothing, print each problem as file:node: message, and exit 1 if any is an error; with -diff, print each change instead
+  -color when
+    	when to color the output: auto (the default: on a terminal, unless NO_COLOR is set or TERM is dumb), always or never
   -config string
     	a flow config (.json, or .yaml/.yml) to show instead of runs: its declared graph and its problems; nothing runs
   -db string
@@ -200,10 +206,16 @@ flows/refund.yaml -diff main). With -check it serves nothing, prints one line pe
 summary line, and exits 0: a diff is not a failure, unless -fail-on-weaken finds an approval gate
 removed or weakened. Flags may follow the file names.
 
+On a terminal the output is colored (a red cross on each error and its counterexample path in red,
+a green check on assertions that all hold); piped or redirected it is plain text. -color=never, or
+NO_COLOR set to any value, turns color off; -color=always keeps it on.
+
   -addr string
     	with -diff: address to serve the page on, a loopback IP (127.0.0.1 or ::1) or localhost, with a port (default "127.0.0.1:8484")
   -check
     	with -diff: serve nothing and print each change, then a summary line
+  -color when
+    	when to color the output: auto (the default: on a terminal, unless NO_COLOR is set or TERM is dumb), always or never
   -diff string
     	compare the one config given with this earlier version: a file, or else a git revision (<rev>:<path>, or <rev> for the config's path at rev)
   -fail-on-weaken
@@ -298,7 +310,9 @@ scheme the artifact is signed under. Every verb takes -max-input-bytes <n>: an i
 than n bytes (default 268435456, 256 MiB) is an error, and none is read past the cap. Every signed
 tree head an input carries must have a positive timestamp (Unix nanoseconds) no later than this
 machine's clock plus -max-clock-skew <duration> (default 5m). Every verb takes -json: it prints one
-JSON report on stdout (exit_code, result, verified, output, errors) instead of the text report.
+JSON report on stdout (exit_code, result, verified, output, errors) instead of the text report. On a
+terminal the text report is colored, with a VERIFIED or FAILED banner at its end; -color=never or
+NO_COLOR turns that off, and a pipe, a file or -json is always plain.
 
 Exit status. Only 0 means verified; treat every other status as a failure, and 4 as a failure,
 never as a reason to retry (a tampered "format" field yields 4):
@@ -326,6 +340,8 @@ Exit status:
 
 ```text
 Usage of bide audit prove:
+  -color when
+    	when to color the output: auto (the default: on a terminal, unless NO_COLOR is set or TERM is dumb), always or never; -json is never colored
   -index int
     	prove the record at this journal index (default -1)
   -journal string
@@ -348,6 +364,8 @@ Usage of bide audit prove:
 
 ```text
 Usage of bide audit prove-absent:
+  -color when
+    	when to color the output: auto (the default: on a terminal, unless NO_COLOR is set or TERM is dumb), always or never; -json is never colored
   -journal string
     	path to the journal export JSON (audit.ExportJournal)
   -json
@@ -370,6 +388,8 @@ Usage of bide audit prove-absent:
 Usage of bide audit verify:
   -bundle string
     	path to the ProofBundle JSON
+  -color when
+    	when to color the output: auto (the default: on a terminal, unless NO_COLOR is set or TERM is dumb), always or never; -json is never colored
   -json
     	print one JSON report on stdout instead of the text report
   -max-clock-skew duration
@@ -386,6 +406,8 @@ Usage of bide audit verify:
 Usage of bide audit verify-absent:
   -bundle string
     	path to the AbsenceBundle JSON
+  -color when
+    	when to color the output: auto (the default: on a terminal, unless NO_COLOR is set or TERM is dumb), always or never; -json is never colored
   -json
     	print one JSON report on stdout instead of the text report
   -max-clock-skew duration
@@ -410,6 +432,8 @@ Usage of bide audit verify-approvals:
     	the policy's eligible approver ids, comma-separated, in policy order
   -call string
     	the gated call's tool-use id, or a gated plan flow node's key ("node:<name>", "node:iter:<n>:<name>")
+  -color when
+    	when to color the output: auto (the default: on a terminal, unless NO_COLOR is set or TERM is dumb), always or never; -json is never colored
   -evidence string
     	path to the EvidencePackage JSON carrying the approval evidence
   -json
@@ -432,6 +456,8 @@ Usage of bide audit verify-convergence:
     	path to the convergence-leaf ProofBundle JSON (from ProveConvergence)
   -checker string
     	path to the external verified oracle (astchecker); if set, its verdict must agree with the certificate
+  -color when
+    	when to color the output: auto (the default: on a terminal, unless NO_COLOR is set or TERM is dumb), always or never; -json is never colored
   -json
     	print one JSON report on stdout instead of the text report
   -max-clock-skew duration
@@ -452,6 +478,8 @@ Usage of bide audit verify-evidence:
     	an approved policy digest for the run certificate; repeat once per allowed policy
   -approved-file string
     	path to a file of approved policy digests, one per line
+  -color when
+    	when to color the output: auto (the default: on a terminal, unless NO_COLOR is set or TERM is dumb), always or never; -json is never colored
   -evidence string
     	path to the EvidencePackage JSON (from audit.Evidence)
   -json
@@ -470,6 +498,8 @@ Usage of bide audit verify-evidence:
 Usage of bide audit verify-governance:
   -checker string
     	path to the external verified oracle (astchecker); if set, it is run on the policy
+  -color when
+    	when to color the output: auto (the default: on a terminal, unless NO_COLOR is set or TERM is dumb), always or never; -json is never colored
   -digest string
     	expected policy digest as hex (e.g. from a ProofBundle or the anchor); must match if set
   -json
@@ -490,6 +520,8 @@ Usage of bide audit verify-governed-action:
     	path to the action ProofBundle JSON (from prove -tool)
   -checker string
     	path to the external verified oracle (astchecker); if set, it certifies the policy converges
+  -color when
+    	when to color the output: auto (the default: on a terminal, unless NO_COLOR is set or TERM is dumb), always or never; -json is never colored
   -json
     	print one JSON report on stdout instead of the text report
   -max-clock-skew duration
@@ -506,6 +538,8 @@ Usage of bide audit verify-governed-action:
 
 ```text
 Usage of bide audit verify-quorum:
+  -color when
+    	when to color the output: auto (the default: on a terminal, unless NO_COLOR is set or TERM is dumb), always or never; -json is never colored
   -commit string
     	path to the commit action ProofBundle JSON (optional)
   -json
@@ -538,6 +572,8 @@ Usage of bide audit verify-run:
     	path to the RunCertificate JSON (from audit.CertifyRun)
   -checker string
     	path to the external verified oracle (astchecker); if set, its verdict must agree with each policy's certificate
+  -color when
+    	when to color the output: auto (the default: on a terminal, unless NO_COLOR is set or TERM is dumb), always or never; -json is never colored
   -json
     	print one JSON report on stdout instead of the text report
   -max-clock-skew duration

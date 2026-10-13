@@ -17,6 +17,7 @@ import (
 
 	"github.com/bide-ai/bide/agent"
 	"github.com/bide-ai/bide/audit"
+	"github.com/bide-ai/bide/internal/term"
 	"github.com/bide-ai/bide/plan"
 )
 
@@ -130,12 +131,14 @@ func Main(args []string, stdout, stderr io.Writer, stores Stores) int {
 	fs.IntVar(&f.need, "need", 0, "the expected policy's k: verify approvals against -need of -approvers instead of the recorded policy; needs -approvers and -approver-keys")
 	fs.StringVar(&f.approvers, "approvers", "", "the expected policy's approver ids, comma-separated, in policy order; needs -need")
 	addr := fs.String("addr", "127.0.0.1:8484", "address to serve on: a loopback IP (127.0.0.1 or ::1) or localhost, with a port")
+	color := term.Flag(fs)
 	if err := fs.Parse(args); err != nil {
 		if errors.Is(err, flag.ErrHelp) {
 			return 0
 		}
 		return 2
 	}
+	st := term.For(stdout, *color)
 	usage := func(msg string) int {
 		fmt.Fprintln(stderr, "bide view:", msg)
 		fs.Usage()
@@ -177,9 +180,9 @@ func Main(args []string, stdout, stderr io.Writer, stores Stores) int {
 				return 1
 			}
 			if !f.check {
-				return serve(*addr, "", Options{Diff: &d}, nil, stdout, stderr)
+				return serve(*addr, "", Options{Diff: &d}, nil, st, stdout, stderr)
 			}
-			weakened, _ := CheckDiff(stdout, d)
+			weakened, _ := CheckDiffStyled(stdout, d, st)
 			if weakened && f.failOnWeaken {
 				return 1
 			}
@@ -187,12 +190,12 @@ func Main(args []string, stdout, stderr io.Writer, stores Stores) int {
 		}
 		if f.check {
 			c.Strict = f.strict
-			if Check(stdout, c) {
+			if CheckStyled(stdout, c, st) {
 				return 1
 			}
 			return 0
 		}
-		return serve(*addr, "", Options{Config: &c}, nil, stdout, stderr)
+		return serve(*addr, "", Options{Config: &c}, nil, st, stdout, stderr)
 	}
 	inputs := 0
 	for _, set := range []bool{f.db != "", f.postgres != "", len(f.journals) > 0} {
@@ -228,11 +231,12 @@ func Main(args []string, stdout, stderr io.Writer, stores Stores) int {
 		fmt.Fprintln(stderr, "bide view:", err)
 		return 1
 	}
-	return serve(*addr, *run, o, closer, stdout, stderr)
+	return serve(*addr, *run, o, closer, st, stdout, stderr)
 }
 
-// serve listens on addr (a loopback address) and serves o until interrupted.
-func serve(addr, run string, o Options, closer io.Closer, stdout, stderr io.Writer) int {
+// serve listens on addr (a loopback address) and serves o until interrupted. It prints the page's
+// address in st's colors.
+func serve(addr, run string, o Options, closer io.Closer, st term.Style, stdout, stderr io.Writer) int {
 	if closer != nil {
 		defer closer.Close()
 	}
@@ -245,7 +249,7 @@ func serve(addr, run string, o Options, closer io.Closer, stdout, stderr io.Writ
 	if run != "" {
 		link += "run?id=" + url.QueryEscape(run)
 	}
-	fmt.Fprintln(stdout, "bide view: serving", link, "(read-only; Ctrl-C to stop)")
+	fmt.Fprint(stdout, servingLine(st, link))
 	srv := &http.Server{Handler: Handler(o), ReadHeaderTimeout: 5 * time.Second}
 	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt)
 	defer stop()
@@ -260,6 +264,11 @@ func serve(addr, run string, o Options, closer io.Closer, stdout, stderr io.Writ
 		return 1
 	}
 	return 0
+}
+
+// servingLine tells where the page is: the address to open in bold cyan, when st colors.
+func servingLine(st term.Style, link string) string {
+	return "bide view: serving " + st.Path(link) + " " + st.Dim("(read-only; Ctrl-C to stop)") + "\n"
 }
 
 // options reads every input the flags name, strictly (audit.UnmarshalStrict, as bide audit reads

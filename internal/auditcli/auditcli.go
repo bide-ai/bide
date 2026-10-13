@@ -161,7 +161,9 @@ scheme the artifact is signed under. Every verb takes -max-input-bytes <n>: an i
 than n bytes (default 268435456, 256 MiB) is an error, and none is read past the cap. Every signed
 tree head an input carries must have a positive timestamp (Unix nanoseconds) no later than this
 machine's clock plus -max-clock-skew <duration> (default 5m). Every verb takes -json: it prints one
-JSON report on stdout (exit_code, result, verified, output, errors) instead of the text report.
+JSON report on stdout (exit_code, result, verified, output, errors) instead of the text report. On a
+terminal the text report is colored, with a VERIFIED or FAILED banner at its end; -color=never or
+NO_COLOR turns that off, and a pipe, a file or -json is always plain.
 
 Exit status. Only 0 means verified; treat every other status as a failure, and 4 as a failure,
 never as a reason to retry (a tampered "format" field yields 4):
@@ -307,6 +309,7 @@ func (c *cli) verify(args []string) {
 	if !c.note(c.verdict(bundle.Verify(pub), "proof did not verify under this key")) {
 		return
 	}
+	c.checked(bundle.STH.TreeHead)
 	c.printf("OK: run %q record verified in a signed tree of size %d\n", bundle.RunID, bundle.STH.Size)
 }
 
@@ -1024,6 +1027,7 @@ func (c *cli) verifyEvidence(args []string) {
 	if !c.clean() {
 		return
 	}
+	c.checked(pkg.STH.TreeHead)
 	c.printf("PASS: run %q evidence verified (%d items) in a signed tree of size %d\n", rep.RunID, len(rep.Items), pkg.STH.Size)
 }
 
@@ -1162,6 +1166,7 @@ func (c *cli) verifyApprovals(args []string) {
 		c.failLine(line)
 	}
 	if c.clean() {
+		c.checked(pkg.STH.TreeHead)
 		c.printf("PASS: %d of %d required approvals verified, from complete evidence\n", len(v.Counted), v.Need)
 	}
 }
@@ -1304,6 +1309,7 @@ func (c *cli) verifyAbsent(args []string) {
 	if !c.note(c.verdict(bundle.Verify(pub, set), "absence proof did not verify under this key")) {
 		return
 	}
+	c.checked(bundle.STH.TreeHead)
 	c.printf("OK: %q is absent from run %q's first %d records (its signed %s key set of size %d)\n",
 		bundle.Absence.Key, bundle.RunID, bundle.STH.Journal.Size, set.Kind, bundle.Absence.Size)
 }
