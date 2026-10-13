@@ -413,9 +413,10 @@ func TallyApprovals(recs []Record, s ApprovalSubject, p ApprovalPolicy, verifier
 			c.Reason = reason
 		case !ok:
 			c.Reason = ReasonNoKey
-		case decisionReason(r, s, v) != "":
-			c.Reason = decisionReason(r, s, v)
 		default:
+			if c.Reason = decisionReason(r, s, v); c.Reason != "" {
+				break
+			}
 			c.Counted = true
 			decided[r.Approver()] = true
 			if r.Approved {
@@ -481,9 +482,10 @@ func ApprovalTallyStep(toolUseID string) string { return "approval-tally:" + enc
 func ApprovalPendingStep(toolUseID string) string { return "approval-pending:" + encodeID(toolUseID) }
 
 // ApprovalWait is what the record named ApprovalPendingStep holds: that a run paused at a call's
-// approval gate, the gate it waits on, and when (RecordedAt), which is when approvers are asked. The run writes it, as a StepValue and only if it is
-// absent, when it first pauses at the gate, in the drive whose model turn made the call; a resume
-// that pauses again writes nothing, and a record lost to a crash is not written later.
+// approval gate, the gate it waits on, and when (RecordedAt), which is when approvers are asked.
+// The run writes it, as a StepValue and only if it is absent, when it first pauses at the gate, in
+// the drive whose model turn made the call; a resume that pauses again writes nothing, and a
+// record lost to a crash is not written later.
 //
 // It is informational only, for a reader such as a run viewer, which can then show a gate before
 // any decision on it is recorded. No part of the engine reads it to decide anything: not the gate

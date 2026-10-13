@@ -515,8 +515,8 @@ U+007F, supplementary-plane characters (whose UTF-16 order differs from code poi
 the input, number literals such as `1.50`, `1e20`, `-0`, `1E+2`, and each rejection (duplicate name,
 lone surrogate, invalid UTF-8, trailing data).
 
-`ApprovalDecisionBytes` v2 on `main` uses `canonicalArgs`, which is `encoding/json` based and has the
-behaviors listed above as rejected. Approval bytes v3 (8.2) use `bide.cjson.v1` [engine work].
+`ApprovalDecisionBytes` v3 on `main` uses `canonicalArgs`, which is `encoding/json` based and has the
+behaviors listed above as rejected. Approval bytes v4 (8.2) use `bide.cjson.v1` [engine work].
 
 ### 5.7 Spec digests
 
@@ -781,7 +781,7 @@ each other's gate. Errors: `not_found`/`NO_SUCH_CALL`, `already_exists`/`ALREADY
 
 ```json
 {"run_id": "acme/order-1234", "tool_use_id": "toolu_02QQ", "approver_id": "legal",
- "approved": true, "alg": "ed25519", "signature": "3q2+7w...=="}
+ "approved": true, "decided_at": "2026-10-13T12:14:03.123Z", "alg": "ed25519", "signature": "3q2+7w...=="}
 ```
 
 **Approvals bind what is dispatched.** On `main`, the gate signs the model's arguments
@@ -795,10 +795,11 @@ tools, and the gate's subject is its output]. The approval subject is:
  "args_json": "{\"order\":\"1234\",\"amount_cents\":1250}", "spec_digest": "sha256:91aa..."}
 ```
 
-The approver signs **approval bytes v3** [engine work]:
+The approver signs **approval bytes v4** [engine work]: `main`'s v3 (`ApprovalDecisionBytes`, with
+the approver's signed `decided_at`) plus the spec digest, over `bide.cjson.v1` arguments:
 
 ```
-"bide.approval.v3\n"
+"bide.approval.v4\n"
 len32(run_id) run_id
 len32(tool_use_id) tool_use_id
 len32(tool_name) tool_name
@@ -806,10 +807,14 @@ SHA-256(bide.cjson.v1(args_json))          32 bytes
 len32(spec_digest) spec_digest
 len32(approver_id) approver_id
 1 byte: 1 approve, 0 deny
+len32(decided_at) decided_at               24 bytes, RFC 3339 UTC to the millisecond
 ```
 
 `len32` is a 4-byte big-endian length. Arguments that are not valid canonical-JSON input (5.6) are
-refused before the gate (`TOOL_ARGS`), so there is no fallback form.
+refused before the gate (`TOOL_ARGS`), so there is no fallback form. `decided_at` is the approver's
+clock at signing in exactly one form (`2026-10-13T12:14:03.123Z`, as `agent.FormatTimestamp`
+writes it); the engine refuses a decision whose `decided_at` does not format back to the same bytes,
+and journals beside it its own `recorded_at`. Neither time is read by the quorum logic.
 
 - The SDK MUST compute these bytes itself from the pause's `subject`, MUST show the approver the
   tool name, the arguments and the spec's description, and MUST NOT sign bytes supplied by the
@@ -1556,7 +1561,7 @@ sequenceDiagram
     E->>S: Insert @llm/0 (tool_use issue_refund, 2-of-2)
     Note over E: tool middleware rewrites args; subject = dispatched args + spec digest
     E-->>C: Run{activity: paused, pause: approval, subject, quorum 0/2}
-    A1->>A1: sign approval bytes v3 over the subject
+    A1->>A1: sign approval bytes v4 over the subject
     A1->>E: SubmitDecision(finance, sig)
     E->>S: Insert approval:toolu_02QQ:finance:<digest>
     A2->>E: SubmitDecision(legal, sig)
@@ -1859,7 +1864,7 @@ Client tests:
 | C3 | SSE with unknown event types | ignored; order kept |
 | C4 | SSE cut mid-run | reconnect; each durable event exactly once |
 | C5 | `turn_restarted` after deltas | accumulator cleared |
-| C6 | `bide.cjson.v1` and approval bytes v3 vectors | byte-equal |
+| C6 | `bide.cjson.v1` and approval bytes v4 vectors | byte-equal |
 | C7 | pause whose `subject.args_json` differs from its shown `args_json` | SDK refuses to sign |
 | C8 | every condition in 14.2 | mapped to the right class and category |
 | C9 | int64 as JSON strings and numbers | both parsed |
@@ -1869,7 +1874,7 @@ Client tests:
 ### 17.3 Shared fixtures
 
 Under `proto/bide/protocol/v1/testdata/` [engine work]: `bide.cjson.v1` vectors (5.6), approval bytes
-v3 vectors, schema-subset acceptance and rejection vectors, once-key sequences (numbered, named,
+v4 vectors, schema-subset acceptance and rejection vectors, once-key sequences (numbered, named,
 hashed), task-token vectors, push signature vectors (key, request, signed message, signature), and
 SSE transcripts. Generated from the Go implementation.
 
@@ -1968,7 +1973,7 @@ before any call exists.
 | Task tokens (stateless, HMAC, rotation, engine-clock limits) | 4.5 |
 | Tenancy: run-ID prefix enforcement everywhere | 4.7 |
 | W3C trace-context propagation into drives and tasks | 4.8, 10.1 |
-| `bide.cjson.v1`, spec digests, approval bytes v3 | 5.6, 5.7, 8.2 |
+| `bide.cjson.v1`, spec digests, approval bytes v4 | 5.6, 5.7, 8.2 |
 | **The drive model**: suspension, wake events, coalescing, timers re-derived at startup | 6 |
 | **The resume gate** for remote calls: `liveAttempts` consults begin records, the `remote` tag and the dispatch table, and waits instead of halting | 6.3 |
 | `max_attempts`, `max_deliveries`, `retry_window`, `lost_worker_floor` per tool; `DELIVERY_EXHAUSTED` | 6.3, 9.1, 10.9 |

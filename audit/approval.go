@@ -364,13 +364,13 @@ func VerifyApprovals(actions []EvidenceAction, toolUseID string, policy agent.Ap
 
 	subject := agent.ApprovalSubject{RunID: runID, ToolUseID: toolUseID, ToolName: call.Name, Args: call.Args}
 	got, checks := agent.TallyApprovals(decisions, subject, policy, verifierFor)
-	for i, c := range checks {
+	for _, c := range checks {
 		if !c.Counted {
 			v.Ignored = append(v.Ignored, IgnoredDecision{Approver: c.Approver, Step: c.Step, Reason: c.Reason})
 			continue
 		}
-		// checks holds one entry per decision record, in order, so checks[i] is decisions[i].
-		v.Times = append(v.Times, DecisionTime{Approver: c.Approver, Step: c.Step, DecidedAt: decisions[i].DecidedAt(), RecordedAt: decisions[i].RecordedAt()})
+		r := proven[c.Step].rec
+		v.Times = append(v.Times, DecisionTime{Approver: c.Approver, Step: c.Step, DecidedAt: r.DecidedAt(), RecordedAt: r.RecordedAt()})
 	}
 	v.AskedAt = askedAt(actions, recs, toolUseID, sth, runID, logV)
 	v.Times = FlagDecisionTimes(v.Times, v.AskedAt, DefaultDecisionTimeTolerance)
