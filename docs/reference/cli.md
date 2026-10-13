@@ -24,6 +24,7 @@ and `help`, and its import graph is the standard library and the core module (se
 |---|---|
 | [`bide init`](#bide-init) | scaffold a project: a gated plan flow on SQLite, with evidence for bide audit |
 | [`bide demo`](#bide-demo) | kill an agent mid-payment and watch it not charge twice (no API key) |
+| [`bide doctor`](#bide-doctor) | check that a first run can work: Go, SQLite, the module cache, model keys, your project |
 | [`bide sample`](#bide-sample) | write a sample journal of varied runs, with evidence and flow configs, and open bide view on it |
 | [`bide view`](#bide-view) | a read-only local page for one run of a journal, or a flow config's graph |
 | [`bide check`](#bide-check) | check plan flow configs, for CI: one file:node: message line per problem |
@@ -37,7 +38,7 @@ Scaffold a project: a gated plan flow on SQLite, with evidence for bide audit.
 ```text
 usage: bide init [-module <path>] [-dev <bide checkout>] <dir>
 
-Writes a new project into dir, which must not exist or must be empty: main.go, main_test.go,
+Writes a new project into dir, which must not exist or must be empty: main.go, color.go, main_test.go,
 flow.yaml, README.md, .gitignore and go.mod. Then: cd <dir> && go mod tidy && go run .
 
   -color when
@@ -70,6 +71,44 @@ Usage of bide demo:
     	keep the demo's directory (the journal, evidence and keys) and print it
   -no-browser
     	print the viewer's address instead of opening a browser
+
+Exit status:
+  0  success
+  1  failure: an input cannot be read or the command failed; for check, an error was found
+     (with -strict, any problem)
+  2  usage error: a bad flag or argument; nothing was read
+```
+
+## bide doctor
+
+Check that a first run can work: Go, SQLite, the module cache, model keys, your project.
+
+```text
+usage: bide doctor [-dir <project>] [-offline] [-postgres-env <var>]
+
+Checks that a first run of bide can work, and prints one line per check with a hint to fix a
+failure:
+
+  Go            the toolchain is installed and is Go 1.27 or later
+  bide          this bide against the latest release (skipped offline or on a build from source)
+  SQLite        a journal can be created and written in a temporary directory
+  Postgres      with the variable named by -postgres-env set, its DSN connects (the value is never printed)
+  model keys    which of OPENAI_API_KEY, OPENROUTER_API_KEY, ANTHROPIC_API_KEY, GEMINI_API_KEY and
+                GOOGLE_API_KEY are set (names only, never values); none is fine for the scripted demos
+  module cache  GOPATH and the module cache are writable, so go mod tidy can download bide
+  project       in a bide init project (go.mod and flow.yaml in -dir), the project builds
+
+Exit status is 0 when nothing failed (a warning does not fail), and 1 when a check failed. On a
+terminal the output is colored; -color=never, or NO_COLOR set to any value, turns color off.
+
+  -color when
+    	when to color the output: auto (the default: on a terminal, unless NO_COLOR is set or TERM is dumb), always or never
+  -dir string
+    	the directory to look for a bide init project in (default ".")
+  -offline
+    	skip the checks that need the network (the latest release)
+  -postgres-env string
+    	the environment variable holding a Postgres DSN to try; the check runs only if it is set (default "BIDE_POSTGRES_DSN")
 
 Exit status:
   0  success
@@ -640,7 +679,9 @@ Usage of bide audit verify-run:
 Print the version and the artifact formats bide audit reads (-json for JSON).
 
 ```text
-usage: bide version [-json]
+usage: bide version [-json] [-color auto|always|never]
+  -color when
+    	when to color the output: auto (the default: on a terminal, unless NO_COLOR is set or TERM is dumb), always or never
   -json
     	print the version and the artifact formats as JSON
 
