@@ -164,7 +164,7 @@ func TestReview2_ARoundEndsInsideItsClaim(t *testing.T) {
 	time.Sleep(time.Until(t0.Add(150 * time.Millisecond)))
 	sink.hang.Store(true)
 	done := make(chan struct{})
-	go func() { _, _ = p1.round(ctx, ev); close(done) }() // reuses its claim (250ms left > half), makes 4 calls of 100ms
+	go func() { _, _ = p1.round(ctx, ev); close(done) }()  // reuses its claim (250ms left > half), makes 4 calls of 100ms
 	time.Sleep(time.Until(t0.Add(500 * time.Millisecond))) // past until + margin by p2's (same) clock
 	go func() { _, _ = p2.round(ctx, ev) }()
 	<-done
