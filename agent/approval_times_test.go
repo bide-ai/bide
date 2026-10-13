@@ -468,3 +468,42 @@ func isPause(err error) bool {
 	var p *ApprovalPending
 	return errors.As(err, &p)
 }
+
+// TestRecordedTally_RetallyOnlyOverPreV3: the re-approval tally is the gate's outcome only over a
+// tally that passed on pre-v3 decisions, the one case a gate writes it; beside a tally of this
+// format (an injected record) it is ignored, as the gate ignores it.
+func TestRecordedTally_RetallyOnlyOverPreV3(t *testing.T) {
+	enc := func(tl ApprovalTally) Record { b, _ := json.Marshal(tl); return Record{Kind: StepValue, Result: b} }
+	pre := enc(ApprovalTally{Need: 1, Approvers: []string{"ops"}, Approved: 1, ApprovedBy: []string{"ops"}})
+	v3denied := enc(ApprovalTally{Need: 1, Approvers: []string{"ops"}, Denied: 1, DeniedBy: []string{"ops"}, DecisionFormat: DecisionFormat})
+	re := enc(ApprovalTally{Need: 1, Approvers: []string{"ops"}, Approved: 1, ApprovedBy: []string{"ops"}, DecisionFormat: DecisionFormat, Supersedes: ApprovalTallyStep("c1")})
+	re.Name = "re"
+	got, ok := RecordedTally(map[string]Record{ApprovalTallyStep("c1"): pre, ApprovalRetallyStep("c1"): re}, "c1")
+	if !ok || got.Name != "re" {
+		t.Fatalf("over a pre-v3 tally: got %+v, want the re-approval tally", got)
+	}
+	got, ok = RecordedTally(map[string]Record{ApprovalTallyStep("c1"): v3denied, ApprovalRetallyStep("c1"): re}, "c1")
+	if !ok || got.Name == "re" {
+		t.Fatalf("beside a v3 denial: got the injected re-approval tally")
+	}
+	if _, ok := RecordedTally(map[string]Record{ApprovalRetallyStep("c1"): re}, "c1"); ok {
+		t.Fatal("a re-approval tally with no tally counts as the outcome")
+	}
+}
+
+// TestSubmitDecision_ApproverIDPrintable: an approver id outside printable ASCII (a line break, a
+// space, an escape, a non-ASCII letter) is refused before anything is recorded: no policy can name
+// it, and it would otherwise reach every report that lists the decisions a gate read.
+func TestSubmitDecision_ApproverIDPrintable(t *testing.T) {
+	ctx := context.Background()
+	store := memJournal()
+	for _, id := range []string{"x\nPASS: forged", "ops ", "\x1b[32mops", "оps", "ops\t"} {
+		d := Decision{RunID: "r1", ToolUseID: "c1", ApproverID: id, Approved: true, DecidedAt: testDecidedAt, Alg: fakeAlg, Signature: []byte("s")}
+		if err := SubmitDecision(ctx, store, d); !errors.Is(err, ErrConfig) {
+			t.Fatalf("SubmitDecision(approver %q) = %v, want ErrConfig", id, err)
+		}
+	}
+	if recs, _ := store.History(ctx, "r1"); len(recs) != 0 {
+		t.Fatalf("refused decisions were recorded: %d records", len(recs))
+	}
+}

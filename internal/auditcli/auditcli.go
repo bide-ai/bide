@@ -33,6 +33,7 @@ import (
 	"sort"
 	"strconv"
 	"strings"
+	"unicode"
 	"time"
 
 	"github.com/bide-ai/bide/agent"
@@ -1012,7 +1013,7 @@ func (c *cli) verifyEvidence(args []string) {
 	}
 
 	if pkg.Label != "" {
-		c.printf("evidence for run %q: %s\n", rep.RunID, pkg.Label)
+		c.printf("evidence for run %q: %s\n", rep.RunID, cleanText(pkg.Label))
 	} else {
 		c.printf("evidence for run %q\n", rep.RunID)
 	}
@@ -1022,7 +1023,7 @@ func (c *cli) verifyEvidence(args []string) {
 		c.println("FAIL  signed tree head is NOT authentic under this key")
 	}
 	for _, p := range rep.Problems {
-		c.printf("FAIL  %s\n", p)
+		c.printf("FAIL  %s\n", cleanText(p))
 	}
 	for _, it := range rep.Items {
 		status := "FAIL"
@@ -1153,7 +1154,7 @@ func (c *cli) verifyApprovals(args []string) {
 		callArgs.Reset()
 		callArgs.Write(v.Args)
 	}
-	c.printf("approval gate on call %q: %s %s\n", *call, v.ToolName, callArgs.String())
+	c.printf("approval gate on call %q: %s %s\n", *call, cleanText(v.ToolName), cleanText(callArgs.String()))
 	if okRep {
 		proofs := "FAIL"
 		if rep.OK {
@@ -1162,17 +1163,17 @@ func (c *cli) verifyApprovals(args []string) {
 		c.printf("%s  every proof in the package verifies under the log key\n", proofs)
 	}
 	for _, id := range v.Counted {
-		c.printf("PASS  %s approved (signature verifies for this exact call)\n", id)
+		c.printf("PASS  %s approved (signature verifies for this exact call)\n", cleanText(id))
 	}
 	for _, id := range v.DeniedBy {
-		c.printf("INFO  %s denied\n", id)
+		c.printf("INFO  %s denied\n", cleanText(id))
 	}
 	for _, d := range v.Ignored {
-		c.printf("INFO  ignored %s: %s\n", d.Approver, d.Reason)
+		c.printf("INFO  ignored %s: %s\n", cleanText(d.Approver), cleanText(d.Reason))
 	}
 	c.decisionTimes(v, *tolerance)
 	for _, p := range v.Problems {
-		c.printf("FAIL  %s\n", p)
+		c.printf("FAIL  %s\n", cleanText(p))
 	}
 	if (okRep && !rep.OK) || !v.OK {
 		line := fmt.Sprintf("FAIL: %d of %d required approvals verified", len(v.Counted), v.Need)
@@ -1206,11 +1207,24 @@ func (c *cli) decisionTimes(v audit.ApprovalVerdict, tolerance time.Duration) {
 		if d.RecordedAt != "" {
 			recorded = timeText(d.RecordedAt) + " (the submitter's clock, not signed)"
 		}
-		c.printf("INFO  %s decided at %s (signed, the approver's clock), recorded at %s, %s\n", d.Approver, timeText(d.DecidedAt), recorded, gapText(d))
+		c.printf("INFO  %s decided at %s (signed, the approver's clock), recorded at %s, %s\n", cleanText(d.Approver), timeText(d.DecidedAt), recorded, gapText(d))
 		for _, f := range d.Flags {
-			c.printf("note: %s: %s\n", d.Approver, f)
+			c.printf("note: %s: %s\n", cleanText(d.Approver), f)
 		}
 	}
+}
+
+// cleanText is text from an input file (a journal record's approver id, a package's label, a
+// problem that quotes one) as the report prints it: as it is when every character is printable,
+// and otherwise quoted (Go syntax), so a line break or a terminal escape in an input never reads as
+// the verifier's own output.
+func cleanText(s string) string {
+	for _, r := range s {
+		if !unicode.IsPrint(r) {
+			return strconv.Quote(s)
+		}
+	}
+	return s
 }
 
 // timeText is a recorded time as the report prints it: as it is when it is in the one canonical
@@ -1245,7 +1259,7 @@ func gapText(d audit.DecisionTime) string {
 // evidenceItemLine phrases one report line in plain English, e.g.
 // `tool "call-charge": tool call included in the signed log`.
 func evidenceItemLine(it audit.EvidenceItem) string {
-	subject := it.Label
+	subject := cleanText(it.Label)
 	switch it.Kind {
 	case "tool":
 		if it.Ref != "" {
@@ -1256,13 +1270,13 @@ func evidenceItemLine(it audit.EvidenceItem) string {
 	case "step":
 		subject = fmt.Sprintf("step %q", it.Label)
 	case "grant":
-		subject = fmt.Sprintf("grant %s", it.Label)
+		subject = fmt.Sprintf("grant %s", cleanText(it.Label))
 	case "run-certificate":
 		subject = "run certificate"
 	case "consistency":
-		subject = it.Label
+		subject = cleanText(it.Label)
 	}
-	return fmt.Sprintf("%s: %s", subject, it.Note)
+	return fmt.Sprintf("%s: %s", subject, cleanText(it.Note))
 }
 
 // allowlist returns the evidence verify options for the auditor's approved-policy allowlist, the

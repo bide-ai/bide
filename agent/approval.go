@@ -498,14 +498,22 @@ func ApprovalTallyStep(toolUseID string) string { return "approval-tally:" + enc
 func ApprovalRetallyStep(toolUseID string) string { return ApprovalTallyStep(toolUseID) + ":v3" }
 
 // RecordedTally returns the record of the gate's outcome on toolUseID among records keyed by
-// name: the re-approval tally (ApprovalRetallyStep) when one is recorded, else the tally
-// (ApprovalTallyStep). ok is false when neither is.
+// name: the re-approval tally (ApprovalRetallyStep) when one is recorded over a tally that passed
+// on decisions predating DecisionFormat, which is the only case a gate writes one, else the tally
+// (ApprovalTallyStep). A re-approval tally beside any other tally is not the gate's outcome, as
+// tallyGate never reads it, so it is ignored. ok is false when there is no tally.
 func RecordedTally(byName map[string]Record, toolUseID string) (r Record, ok bool) {
-	if r, ok := byName[ApprovalRetallyStep(toolUseID)]; ok {
-		return r, true
-	}
 	r, ok = byName[ApprovalTallyStep(toolUseID)]
-	return r, ok
+	if !ok {
+		return r, false
+	}
+	var t ApprovalTally
+	if json.Unmarshal(r.Result, &t) == nil && predatesFormat(t) {
+		if re, ok := byName[ApprovalRetallyStep(toolUseID)]; ok {
+			return re, true
+		}
+	}
+	return r, true
 }
 
 // predatesFormat reports whether t is a tally that passed on decisions signed before
@@ -678,6 +686,12 @@ func submitDecision(ctx context.Context, store *Journal, op string, d Decision, 
 	}
 	if d.ApproverID == "" {
 		return fmt.Errorf("%s: empty approverID: %w", op, ErrConfig)
+	}
+	if !printableASCII(d.ApproverID) {
+		// No policy can name such an id (ApprovalPolicy.Validate), so the decision could never
+		// count; refusing it also keeps a line break or an escape out of every report that names
+		// the decisions a gate read.
+		return fmt.Errorf("%s: approverID %q is not printable ASCII (bytes 0x21 to 0x7E, no space), as every policy's approver ids are: %w", op, d.ApproverID, ErrConfig)
 	}
 	if d.Alg == "" {
 		return fmt.Errorf("%s: empty signature scheme (Decision.Alg): %w", op, ErrConfig)
