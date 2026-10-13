@@ -60,6 +60,7 @@ var notArtifacts = map[string]string{
 	"audit.MemAnchorLog":      "an in-memory log; its state is unexported",
 	"audit.MemEventStore":     "an in-memory store; its state is unexported",
 	"audit.EventLog":          "an in-memory log; its state is unexported",
+	"audit.NotifyTrail":       "an adapter over an EventStore; its state is unexported",
 	"audit.EarnedAuthority":   "a running ledger; its state is unexported",
 	"audit.KeySet":            "a key-set definition that carries a func",
 	"audit.RunCertSpec":       "the caller's input to CertifyRun",
