@@ -12,8 +12,12 @@ import (
 	"time"
 )
 
+// signedRequest signs a payload-shaped body that carries body as a field, with the matching
+// Bide-Delivery header, as bide sends it.
 func signedRequest(secrets []string, ts time.Time, body string) *http.Request {
+	body = `{"id":"d1","x":"` + body + `"}`
 	r := httptest.NewRequest("POST", "/hook", strings.NewReader(body))
+	r.Header.Set(HeaderDelivery, "d1")
 	r.Header.Set(HeaderTimestamp, strconv.FormatInt(ts.Unix(), 10))
 	r.Header.Set(HeaderSignature, Sign(secrets, ts.Unix(), []byte(body)))
 	return r
@@ -55,13 +59,13 @@ func TestSignTwoSecretsAndSkipsEmpty(t *testing.T) {
 
 func TestVerifyAccepts(t *testing.T) {
 	now := time.Now()
-	r := signedRequest([]string{"s"}, now, `{"k":"v"}`)
+	r := signedRequest([]string{"s"}, now, "plain")
 	if err := Verify(r, []string{"s"}, 0); err != nil {
 		t.Fatal(err)
 	}
 	// The body is still readable by the handler.
 	b, _ := io.ReadAll(r.Body)
-	if string(b) != `{"k":"v"}` {
+	if string(b) != `{"id":"d1","x":"plain"}` {
 		t.Fatalf("body after Verify: %q", b)
 	}
 }
@@ -186,7 +190,9 @@ func TestVerifyBindsDeliveryHeaderToSignedID(t *testing.T) {
 	now := time.Now()
 	body := `{"schema":"bide.notification.v1","id":"abc123","key":"k"}`
 	mk := func(delivery string) *http.Request {
-		r := signedRequest([]string{"s"}, now, body)
+		r := httptest.NewRequest("POST", "/hook", strings.NewReader(body))
+		r.Header.Set(HeaderTimestamp, strconv.FormatInt(now.Unix(), 10))
+		r.Header.Set(HeaderSignature, Sign([]string{"s"}, now.Unix(), []byte(body)))
 		if delivery != "" {
 			r.Header.Set(HeaderDelivery, delivery)
 		}
@@ -195,7 +201,7 @@ func TestVerifyBindsDeliveryHeaderToSignedID(t *testing.T) {
 	if err := Verify(mk("abc123"), []string{"s"}, 0); err != nil {
 		t.Fatalf("matching header: %v", err)
 	}
-	if err := Verify(mk(""), []string{"s"}, 0); err != nil {
+	if err := Verify(mk(""), []string{"s"}, 0); !errors.Is(err, ErrDeliveryID) {
 		t.Fatalf("no header: %v", err)
 	}
 	if err := Verify(mk("other"), []string{"s"}, 0); !errors.Is(err, ErrDeliveryID) {

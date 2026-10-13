@@ -465,6 +465,7 @@ n, err := notify.NewWebhook(os.Getenv("BIDE_WEBHOOK_URL"),
   deadline. Network errors, timeouts, 429 and 5xx are retried; any other 4xx is a permanent error for
   the round (`agent.ErrNotifyPermanent`; the outer backoff still tries again later, since a
   receiver's configuration can change).
+- **Auth record.** `auth.secret_slot` is `current` (one secret), `current+previous` (signed with both during a rotation) or empty (unsigned, which the webhook never sends).
 - **Proxy.** The environment's proxy applies unless `WithServerCA` or `WithServerPin` is set (then
   direct, unless `WithProxy` is given). A proxy only tunnels the TLS session.
 
@@ -475,7 +476,7 @@ n, err := notify.NewWebhook(os.Getenv("BIDE_WEBHOOK_URL"),
 | Header | Value |
 |---|---|
 | `Content-Type` | `application/json` |
-| `Bide-Delivery` | `Notification.ID`, identical on every attempt of an event and equal to the payload `id`; `notify.Verify` requires it to equal the signed `id`, since the signature covers the body, not headers |
+| `Bide-Delivery` | `Notification.ID`, identical on every attempt of an event and equal to the payload `id`; `notify.Verify` requires it to be present and equal to the signed `id`, since the signature covers the body, not headers |
 | `Bide-Timestamp` | Unix seconds when this request was sent |
 | `Bide-Signature` | `v1=<hex HMAC-SHA256(secret, Bide-Timestamp + "." + body)>`, one per secret, space separated |
 

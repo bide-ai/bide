@@ -43,7 +43,7 @@ var (
 	ErrBadSignature  = errors.New("notify: no signature matches")
 	ErrNoSecrets     = errors.New("notify: no secrets to verify with")
 	ErrBodyTooLarge  = errors.New("notify: request body too large to verify")
-	ErrDeliveryID    = errors.New("notify: Bide-Delivery does not match the signed id")
+	ErrDeliveryID    = errors.New("notify: Bide-Delivery is missing or does not match the signed id")
 	errSignatureRead = errors.New("notify: reading the request body")
 )
 
@@ -103,14 +103,13 @@ func verifyAt(r *http.Request, secrets []string, tolerance time.Duration, now ti
 		return err
 	}
 	// The signature covers the body, not the headers, so the delivery ID a receiver dedupes on must
-	// be the signed one: otherwise a captured request replayed with a fresh header passes dedupe.
-	if h := r.Header.Get(HeaderDelivery); h != "" {
-		var p struct {
-			ID string `json:"id"`
-		}
-		if json.Unmarshal(body, &p) != nil || p.ID != h {
-			return ErrDeliveryID
-		}
+	// be the signed one: otherwise a captured request replayed with a fresh (or deleted) header
+	// passes dedupe. bide always sends the header, so its absence is as bad as a mismatch.
+	var p struct {
+		ID string `json:"id"`
+	}
+	if h := r.Header.Get(HeaderDelivery); h == "" || json.Unmarshal(body, &p) != nil || p.ID != h {
+		return ErrDeliveryID
 	}
 	return nil
 }

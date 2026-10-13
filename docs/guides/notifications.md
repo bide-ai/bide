@@ -42,7 +42,7 @@ the first record of it.
 
 | Header | Value |
 |---|---|
-| `Bide-Delivery` | The notification ID, the same on every attempt of an event, and equal to the payload's `id`. Your dedupe key. The signature covers the body, so `Verify` checks that this header equals the signed `id`; dedupe on the body's `id` if you do not use `Verify`. |
+| `Bide-Delivery` | The notification ID, the same on every attempt of an event, and equal to the payload's `id`. The signature covers the body, not headers, so `Verify` requires this header to be present and equal to the signed `id`. Dedupe on the verified body `id`. |
 | `Bide-Timestamp` | Unix seconds when this request was sent. |
 | `Bide-Signature` | `v1=<hex>`, where hex is HMAC-SHA256 of `Bide-Timestamp + "." + body` under a secret. One `v1=` entry per secret, separated by spaces. |
 
@@ -84,13 +84,13 @@ http.HandleFunc("/bide", func(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, "bad request", http.StatusBadRequest)
 		return
 	}
-	handle(p) // dedupe on r.Header.Get(notify.HeaderDelivery) first
+	handle(p) // dedupe on p.ID, the signed delivery ID, first
 	w.WriteHeader(http.StatusNoContent)
 })
 ```
 
 `Verify` reads the body (up to 1 MiB), recomputes the signature over the raw bytes, compares in
-constant time, and rejects a timestamp more than the tolerance from your clock, in either direction, and a `Bide-Delivery` header that is not the signed body's `id` (`ErrDeliveryID`). It computes one MAC per secret and looks at no more than 8 entries of the signature header, so a forged request costs the same however many entries it carries. If the body is larger than the limit it returns `ErrBodyTooLarge`, and `r.Body` still yields every byte.
+constant time, and rejects a timestamp more than the tolerance from your clock, in either direction, and a `Bide-Delivery` header that is missing or is not the signed body's `id` (`ErrDeliveryID`). It computes one MAC per secret and looks at no more than 8 entries of the signature header, so a forged request costs the same however many entries it carries. If the body is larger than the limit it returns `ErrBodyTooLarge`, and `r.Body` still yields every byte.
 It returns one of `ErrNoSignature`, `ErrBadTimestamp`, `ErrStale`, `ErrBadSignature`, `ErrDeliveryID`,
 `ErrNoSecrets` or `ErrBodyTooLarge`; answer all of them with the same 4xx so a sender learns nothing about which check
 failed. A receiver in another language needs only the construction in the table above.
