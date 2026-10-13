@@ -41,12 +41,12 @@ func NotifyPending(ctx context.Context, j *Journal, n Notifier, trail NotifyTrai
 	if !ok {
 		return fmt.Errorf("NotifyPending needs a store that implements Lister (itself or through Unwrap) to enumerate runs: %w", ErrConfig)
 	}
-	e, err := newNotifyEngine(j, n, trail, opts)
+	e, err := newNotifyEngine(j, n, trail, opts, "sweep")
 	if err != nil {
 		return err
 	}
 	var errs []error
-	for runID, err := range lister.Runs(ctx, recoverFilter) {
+	for runID, err := range lister.Runs(ctx, sweepFilter) {
 		if err != nil {
 			errs = append(errs, fmt.Errorf("list runs for the notification sweep: %w (%w)", err, ErrStorage))
 			break
@@ -57,6 +57,20 @@ func NotifyPending(ctx context.Context, j *Journal, n Notifier, trail NotifyTrai
 		}
 		if IsSessionRun(runID) {
 			continue // the session drives it
+		}
+		if !IsSubRun(runID) {
+			if _, aborted, err := j.getEntry(ctx, runID, runAbortedStep); err != nil {
+				errs = append(errs, fmt.Errorf("notification sweep: read run %s: %w", runID, err))
+				continue
+			} else if aborted {
+				// An aborted run is over, so no recovery pass lists it: the sweep is the only catch-up
+				// for an abort whose drive died before it recorded the event.
+				ev := notifyEvent{key: AbortedKey(runID), kind: NotificationRunAborted, runID: runID, reason: "saga_aborted"}
+				if _, err := e.round(ctx, ev); err != nil {
+					errs = append(errs, fmt.Errorf("notification sweep: run %s: %w", runID, err))
+				}
+				continue
+			}
 		}
 		recs, err := j.History(ctx, runID)
 		if err != nil {
@@ -75,6 +89,10 @@ func NotifyPending(ctx context.Context, j *Journal, n Notifier, trail NotifyTrai
 	return errors.Join(errs...)
 }
 
+// sweepFilter lists the runs a sweep reads: every run that is not completed or cancelled, so the
+// unfinished ones and the aborted ones.
+var sweepFilter = RunFilter{ExcludeHolding: []string{runCompleteStep, runCancelledStep}}
+
 // pendingEvents returns the events journaled in recs, the history of the unfinished run runID, that
 // still need a person. A sub-agent's run (its ID holds '>') is attributed to its root run.
 func (e *notifyEngine) pendingEvents(runID string, recs []Record) []notifyEvent {
@@ -91,7 +109,7 @@ func (e *notifyEngine) pendingEvents(runID string, recs []Record) []notifyEvent 
 			continue
 		}
 		var w ApprovalWait
-		if err := json.Unmarshal(r.Result, &w); err != nil || w.ToolUseID == "" || have[ToolResultStep(w.ToolUseID)] {
+		if err := json.Unmarshal(r.Result, &w); err != nil || w.ToolUseID == "" || slices.ContainsFunc(gateDecidedNames(w.ToolUseID), func(n string) bool { return have[n] }) {
 			continue
 		}
 		ap := &NotifyApproval{ToolUseID: w.ToolUseID, ToolName: w.ToolName}

@@ -3,6 +3,8 @@ package agent
 import (
 	"context"
 	"errors"
+	"fmt"
+	"strings"
 	"testing"
 	"time"
 )
@@ -417,5 +419,238 @@ func TestNewRunNotifier_Config(t *testing.T) {
 	rn.DriveEnd("r", errors.New("plain"))
 	if err := rn.Flush(context.Background()); err != nil {
 		t.Fatal(err)
+	}
+}
+
+// D2. A marker with no time (one an earlier version wrote) must not give every halt of the call the
+// same key: the first attempt and a re-attempt after a not-started record are different events.
+func TestNotifier_UntimedHaltsOfSuccessiveAttemptsHaveDifferentKeys(t *testing.T) {
+	ctx := context.Background()
+	j := memJournal()
+	turn := Message{Role: RoleAssistant, Parts: []Part{ToolUse{ID: "c1", Name: "charge", Args: []byte(`{}`)}}}
+	if _, err := j.do(ctx, "r", modelStep(0), func(context.Context) (Record, error) {
+		return Record{Kind: StepModel, Message: &turn}, nil
+	}); err != nil {
+		t.Fatal(err)
+	}
+	charge := MustFunc("charge", "", func(context.Context, struct{}) (string, error) { return "ok", nil })
+	a := mustNew(NewScriptedModel(), j, WithTools(charge))
+	e := testEngine(t, j, &fakeSink{}, NewMemNotifyTrail(), &notifyClock{t: time.Now()}, "p")
+	haltKey := func() string {
+		t.Helper()
+		_, err := a.Run(ctx, "r", UserText("go"))
+		ev, ok := e.eventFromErr("r", err)
+		if !ok || ev.halt == nil || !ev.halt.AttemptedAt.IsZero() {
+			t.Fatalf("Run = %v; want a halt on an untimed marker", err)
+		}
+		return ev.key
+	}
+	won, m0, key0, err := j.claimNext(ctx, "r", toolAttemptStep("c1"), Record{Kind: StepAttempt, ToolUseID: "c1"})
+	if err != nil || !won {
+		t.Fatal(won, err)
+	}
+	k0 := haltKey()
+	if err := j.notStarted(ctx, "r", key0, m0); err != nil {
+		t.Fatal(err)
+	}
+	if won, _, _, err := j.claimNext(ctx, "r", toolAttemptStep("c1"), Record{Kind: StepAttempt, ToolUseID: "c1"}); err != nil || !won {
+		t.Fatal(won, err)
+	}
+	k1 := haltKey()
+	if k0 == k1 || strings.HasSuffix(k0, ":0") || strings.HasSuffix(k1, ":0") {
+		t.Fatalf("keys %q and %q: successive untimed attempts must differ, and neither may be :0", k0, k1)
+	}
+}
+
+// P4. A recovery_failing notification carries a closed class, and an error that is a sentinel or
+// nothing: never the Resumer's own text, which can hold a person's data.
+func TestNotifier_RecoveryFailingCarriesNoRawErrorText(t *testing.T) {
+	ctx := context.Background()
+	for _, tc := range []struct {
+		name string
+		err  error
+		is   error
+	}{
+		{"generic", errors.New("charge for card 4111111111111111 failed"), nil},
+		{"storage", fmt.Errorf("insert for card 4111111111111111: %w", ErrStorage), ErrStorage},
+	} {
+		clk := &notifyClock{t: time.Date(2026, 10, 13, 9, 0, 0, 0, time.UTC)}
+		j := memJournal()
+		tool := MustFunc("refund", "", func(context.Context, struct{}) (string, error) { return "ok", nil }, WithApproval(SingleApproval()))
+		if _, err := mustNew(NewScriptedModel(ToolTurn("c1", "refund", `{}`), TextTurn("done")), j, WithTools(tool)).Run(ctx, "r", UserText("go")); err == nil {
+			t.Fatal("setup")
+		}
+		trail, sink := NewMemNotifyTrail(), &fakeSink{}
+		broken := func(context.Context, string, RunStart) error { return tc.err }
+		for _, adv := range []time.Duration{0, 16 * time.Minute, time.Minute} {
+			clk.advance(adv)
+			_, _ = Recover(ctx, j, broken, WithNotifier(sink, trail, fixedNotifyClock(clk), WithNotifyHolder("p")))
+		}
+		waitFor(t, func() bool { return sink.count() >= 1 })
+		n := sink.calls[0]
+		if n.Kind != NotificationRecoveryFailing {
+			t.Fatalf("%s: %+v", tc.name, n)
+		}
+		if n.Err != nil && strings.Contains(n.Err.Error(), "4111") {
+			t.Fatalf("%s: the notification carries the Resumer's text: %v", tc.name, n.Err)
+		}
+		if tc.is != nil && !errors.Is(n.Err, tc.is) {
+			t.Fatalf("%s: Err = %v, want the sentinel %v", tc.name, n.Err, tc.is)
+		}
+		recs, _ := trail.Load(ctx, "notify:r")
+		for _, r := range recs {
+			if strings.Contains(r.Reason, "4111") {
+				t.Fatalf("%s: the trail carries the text: %+v", tc.name, r)
+			}
+		}
+	}
+}
+
+// P2. A shutdown's cancellation, returned by the Resumer, is not a recovery failure.
+func TestNotifier_ACancelledPassIsNotARecoveryFailure(t *testing.T) {
+	ctx := context.Background()
+	j := memJournal()
+	tool := MustFunc("refund", "", func(context.Context, struct{}) (string, error) { return "ok", nil }, WithApproval(SingleApproval()))
+	if _, err := mustNew(NewScriptedModel(ToolTurn("c1", "refund", `{}`), TextTurn("done")), j, WithTools(tool)).Run(ctx, "r", UserText("go")); err == nil {
+		t.Fatal("setup")
+	}
+	for name, resume := range map[string]Resumer{
+		"error value": func(context.Context, string, RunStart) error { return fmt.Errorf("model call: %w", context.Canceled) },
+	} {
+		trail := NewMemNotifyTrail()
+		_, _ = Recover(ctx, j, resume, WithNotifier(&fakeSink{}, trail))
+		if recs, _ := trail.Load(ctx, "notify:r"); len(recs) != 0 {
+			t.Fatalf("%s: a cancelled pass wrote %v", name, recKinds(recs))
+		}
+	}
+	cctx, cancel := context.WithCancel(ctx)
+	trail := NewMemNotifyTrail()
+	_, _ = Recover(cctx, j, func(c context.Context, _ string, _ RunStart) error {
+		cancel()
+		return errors.New("aborted by shutdown")
+	}, WithNotifier(&fakeSink{}, trail))
+	if recs, _ := trail.Load(ctx, "notify:r"); len(recs) != 0 {
+		t.Fatalf("a pass that ended with the context cancelled wrote %v", recKinds(recs))
+	}
+}
+
+// P1. An event queued while the worker is being stopped by a flush is not left without a worker.
+func TestNotifier_ASubmitDuringAFlushStopIsDelivered(t *testing.T) {
+	ctx := context.Background()
+	for range 100 {
+		clk := &notifyClock{t: time.Date(2026, 10, 13, 9, 0, 0, 0, time.UTC)}
+		sink := &fakeSink{}
+		e := testEngine(t, memJournal(), sink, NewMemNotifyTrail(), clk, "p")
+		e.w.submit(haltEvent())
+		waitFor(t, func() bool { return e.w.idle() })
+		// The flush has asked the dispatcher to stop; an event arrives before it has gone.
+		e.w.mu.Lock()
+		if e.w.running {
+			e.w.stopping = true
+			close(e.w.stop)
+		}
+		e.w.mu.Unlock()
+		other := notifyEvent{key: ApprovalKey("r2", "c9", 0), kind: NotificationApprovalPending, runID: "r2", approval: &NotifyApproval{ToolUseID: "c9", ToolName: "pay"}}
+		e.w.submit(other)
+		waitFor(t, func() bool { return e.w.idle() })
+		if sink.count() != 2 {
+			t.Fatalf("%d notifications, want 2: the event queued during the stop was not delivered", sink.count())
+		}
+		_ = e.flush(ctx)
+	}
+}
+
+// P1, deterministic: an event queued while the dispatcher is leaving marks a restart, and the exit
+// then starts another dispatcher, which delivers it.
+func TestNotifierWorker_AnEventQueuedWhileLeavingGetsANewDispatcher(t *testing.T) {
+	sink := &fakeSink{}
+	e := testEngine(t, memJournal(), sink, NewMemNotifyTrail(), &notifyClock{t: time.Now()}, "p")
+	w := e.w
+	w.mu.Lock()
+	w.running, w.stopping = true, true // a dispatcher that has been told to stop and has not gone yet
+	w.stop, w.done = make(chan struct{}), make(chan struct{})
+	w.mu.Unlock()
+	w.submit(haltEvent())
+	w.mu.Lock()
+	restart := w.restart
+	w.mu.Unlock()
+	if !restart {
+		t.Fatal("an event queued while the dispatcher was leaving did not mark a restart")
+	}
+	w.exited() // the old dispatcher goes
+	waitFor(t, func() bool { return sink.count() == 1 })
+	_ = e.flush(context.Background())
+}
+
+// A pause that is not a halt or a gate (a timer, a signal) is a success too, and closes an open
+// recovery failure episode.
+func TestNotifier_AnyPauseClosesTheRecoveryEpisode(t *testing.T) {
+	ctx := context.Background()
+	clk := &notifyClock{t: time.Date(2026, 10, 13, 9, 0, 0, 0, time.UTC)}
+	j := memJournal()
+	tool := MustFunc("refund", "", func(context.Context, struct{}) (string, error) { return "ok", nil }, WithApproval(SingleApproval()))
+	if _, err := mustNew(NewScriptedModel(ToolTurn("c1", "refund", `{}`), TextTurn("done")), j, WithTools(tool)).Run(ctx, "r", UserText("go")); err == nil {
+		t.Fatal("setup")
+	}
+	trail, sink := NewMemNotifyTrail(), &fakeSink{}
+	pass := func(err error) {
+		_, _ = Recover(ctx, j, func(context.Context, string, RunStart) error { return err }, WithNotifier(sink, trail, fixedNotifyClock(clk), WithNotifyHolder("p")))
+	}
+	pass(errors.New("blip"))
+	clk.advance(time.Minute)
+	pass(&TimerPending{RunRef: RunRef{RunID: "r", RootRunID: "r"}, Name: "tick", FireAt: clk.now().Add(time.Hour)})
+	clk.advance(time.Hour)
+	pass(errors.New("blip"))
+	time.Sleep(20 * time.Millisecond)
+	if sink.count() != 0 {
+		t.Fatalf("a failure an hour after a paused pass raised %+v", sink.calls)
+	}
+}
+
+// F2: each call of a Notifier is bounded by a fraction of the claim, so a round ends inside the
+// claim it holds.
+func TestNotifyRound_ACallIsBoundedByTheClaim(t *testing.T) {
+	ctx := context.Background()
+	clk := &notifyClock{t: time.Date(2026, 10, 13, 9, 0, 0, 0, time.UTC)}
+	var left time.Duration
+	sink := notifierFunc(func(c context.Context, _ Notification) error {
+		dl, ok := c.Deadline()
+		if !ok {
+			t.Error("a Notify call has no deadline")
+		}
+		left = time.Until(dl)
+		return nil
+	})
+	e := testEngine(t, memJournal(), sink, NewMemNotifyTrail(), clk, "p", WithNotifyClaimTTL(40*time.Second))
+	if _, err := e.round(ctx, haltEvent()); err != nil {
+		t.Fatal(err)
+	}
+	if left <= 0 || left > 10*time.Second {
+		t.Fatalf("the call had %v left; want at most a quarter of the 40 second claim", left)
+	}
+}
+
+// An overdue notice delivered whose acknowledgement could not be recorded is recorded by the next
+// round and not sent again.
+func TestNotifyRound_AnUnrecordedOverdueNoticeIsNotSentAgain(t *testing.T) {
+	ctx := context.Background()
+	clk := &notifyClock{t: time.Date(2026, 10, 13, 9, 0, 0, 0, time.UTC)}
+	ft := &failNTrail{NotifyTrail: NewMemNotifyTrail()}
+	primary, overdue := &fakeSink{fail: 1000}, &fakeSink{}
+	e := testEngine(t, memJournal(), primary, ft, clk, "p", WithOverdueNotifier(overdue))
+	ev := haltEvent()
+	_, _ = e.round(ctx, ev)
+	clk.advance(10 * time.Minute) // past the deadline
+	ft.set(1000)                  // the store refuses acknowledgements
+	_, _ = e.round(ctx, ev)
+	if overdue.count() != 1 {
+		t.Fatalf("setup: %d notices", overdue.count())
+	}
+	ft.set(0)
+	clk.advance(20 * time.Minute)
+	_, _ = e.round(ctx, ev)
+	recs, _ := ft.Load(ctx, "notify:r")
+	if overdue.count() != 1 || countKind(recs, NotifyAcked, OverdueKey(ev.key)) != 1 {
+		t.Fatalf("notices sent %d, acknowledged %d; want 1 and 1", overdue.count(), countKind(recs, NotifyAcked, OverdueKey(ev.key)))
 	}
 }

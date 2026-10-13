@@ -213,7 +213,7 @@ source of truth.
 | `observed` | once per event, first process to see it | `key`, `kind`, `event_at`, `observed_at`, `deadline_at` |
 | `claimed` | at the start of each delivery round | `key`, `holder`, `at`, `until` |
 | `acked` | after the sink acknowledged | `key`, `first_sent_at`, `acked_at`, `attempts`, `status`, `auth` |
-| `failing` | once, after 8 failed attempts | `key`, `failures`, `at` |
+| `failing` | once, when 3 rounds (8 attempts) have claimed the event without acknowledging it | `key`, `failures` (rounds), `at` |
 | `overdue` | once, when the deadline passes unacked | `key`, `at`, `latency` |
 | `failing_since` | a recovery pass failed and no episode is open for the run | `run`, `at`, `cause` (a class, not text) |
 | `recovered` | a recovery pass succeeded while an episode is open | `run`, `at` |
@@ -233,10 +233,16 @@ For event `key`, a process with the notifier configured, usually the one holding
    ended). If not, append `cleared` and stop.
 4. If another holder's `claimed.until` is in the future: stop (it will deliver). Otherwise append
    `claimed{holder, until = now + 2 min}`. `ErrSeqTaken` means another process won this round:
-   reload, fold, and stop if its claim is live.
+   reload, fold, and stop if its claim is live. The `holder` is unique to the deliverer: the
+   configured name, the kind of deliverer (drive, recover, sweep, flow) and a random nonce per
+   engine, so a drive's notifier and a sweep in one process, or a process that restarted under
+   the same name, never read each other's live claim as their own; and one engine runs one round
+   at a time per key.
 5. Deliver (one round: up to 3 requests with backoff, below). On success append `acked`. On
-   failure, count it; after the 8th total failure append `failing` once; wait out the backoff and
-   begin a new round at step 1.
+   failure wait out the backoff and begin a new round at step 1. Before a round starts, and when
+   one fails, count from the trail the rounds that claimed the event and never acknowledged it,
+   crashed ones included; at 3 (ceil(8/3)) append `failing` once. The count is not process
+   memory, so a deliverer that dies in every round still raises it.
 
 **One claim record per round, not per attempt.** A round's budget (about 45 s) fits inside the
 claim, so a live holder never renews mid-round; between rounds the claim lapses and the next round
@@ -252,8 +258,9 @@ durable; a claim that lapses while a slow POST is still in flight; and a lost re
 
 **Lost acknowledgement.** The sink accepted and the reply was lost, or the trail append failed
 after the sink accepted. Both look like a failed attempt, so the next one resends with the same
-`ID`. An append failure after a success is retried in place before the attempt is abandoned,
-because that window is cheap to narrow and the duplicate it avoids is real.
+`ID`. An append failure after a success is retried in place, under the round's claim, and if the
+store stays down the process remembers that it delivered and records the acknowledgement on its
+next round without sending again; only a process that dies first repeats the delivery.
 
 **The stale-alert race.** Step 3 checks "still current" before step 5 sends, and the two are not
 atomic. A halt resolved or a decision submitted in between can produce one alert for a state that
@@ -267,6 +274,53 @@ doubling, cap about 15 minutes, with jitter. After 8 failures the engine reports
 failing" (to `WithRecoverErrors`, as a `failing` record, and in the viewer) and keeps trying. Stop
 conditions are `acked` and `cleared` only. Giving up silently on the event whose purpose is to end
 silence is the wrong default.
+
+### Behavior fixed by the adversarial review
+
+An independent review of the first implementation found these, and each is now a test:
+
+- **The overdue notice is derived from the trail.** It is delivered inside the round that holds the
+  original event's claim, as part of it (no claim of its own, so an undelivered event writes one claim
+  per round however many notices it owes). Every round of an open, overdue event sends the notice
+  unless the trail holds an acknowledged one, so a death after the `overdue` record, a failed first
+  delivery, a sweep and a restart all re-send it. A delivered but unrecorded notice is recorded
+  without sending again.
+- **Every `Notify` call is bounded** by a quarter of the claim, so a round of three calls and their
+  backoff ends inside the claim it holds. Rounds of different events run concurrently (up to 8), so
+  one hung sink does not hold up the others. `RecoverLoop` bounds its flush on the way out (500 ms)
+  and cancels the calls still in flight.
+- **Claim liveness does not trust synchronized clocks.** `claimed.until` is written by one clock and
+  read by another. Another holder's claim counts as live until `until` plus a skew margin (default
+  2 minutes, `claimTTL`). A peer whose clock is ahead takes a live claim over only if it is ahead by
+  more than the claim's remaining time plus the margin: at the defaults, about 2.5 minutes at the
+  moment a round starts, less as the round runs. Run NTP-class synchronization on every deliverer.
+  The cost is a takeover after a crash that is up to the margin later.
+- **Pacing comes from the trail.** A new round starts no earlier than the last claim's time plus the
+  backoff for the rounds the trail records (no jitter, so every deliverer agrees). However many
+  sweeps or processes look at an undelivered event, it writes about four claims an hour at the cap.
+- **A decided gate is not reported.** "Current" reads what the gate itself reads: the single
+  approver's decision (`approval:<call>`), an m-of-n gate's terminal tally, the tool's result, and,
+  for a plan flow's gate, the node's own result (`node:<name>`). The sweep applies the same test.
+- **A run that was aborted has a catch-up path.** `NotifyPending` also reads runs holding
+  `run:aborted` (completed and cancelled runs are excluded from the listing) and raises
+  `run_aborted` for any whose trail has no event. It costs one point read for each aborted run.
+- **Recovery episodes close on any pause**, a halt, a gate, a timer or a signal, which a pass counts
+  as success. A run no Resumer can drive (`ErrNotResumable`) is a recovery failure and alerts after
+  the duration. A pass ended by the shutdown's cancellation is not a failure.
+- **`recovery_failing` carries a class, never the Resumer's text.** `Notification.Err` is the matching
+  sentinel (`ErrStorage`, `ErrNotResumable`) or nil.
+- **Halt keys for an untimed marker** use the live attempt's generation (the negative of one more than
+  it), not 0, so a re-attempt after a not-started record is a new event.
+- **An idle notifier holds no goroutine.** The dispatcher exits when nothing is queued and starts on
+  the next event; an event queued while it leaves starts another.
+- **`FlushNotifications` returns what was not delivered**: the last error of each event still queued
+  when the worker stops, so a caller that exits after it knows. A plan flow keeps one notifier per
+  store, not per `Journal` value.
+- **A trail with a record kind a newer version wrote loads**, in its position, and the fold skips it,
+  so a rolling upgrade does not stop the older processes.
+- **Known cost:** a recovery pass does a trail read for each run it drives that pauses or succeeds, to
+  close an open episode. It is one point read of a short trail; a deployment with very many paused
+  runs may want a longer recovery interval.
 
 ## Notification as evidence
 
@@ -482,7 +536,7 @@ webhook is a wider audience than the journal.
 ### Does the TLA+ lifecycle model need an update?
 
 No. Model 10 (`spec/tla/lifecycle`) is unchanged, because the notify trail is a separate stream
-that no lifecycle action reads or writes. A new small model, "13: notifications", composes the
+that no lifecycle action reads or writes. A new small model, "14: notifications" (`spec/tla/notify`; 13 is the probes model), composes the
 lifecycle's halt, pause and end states as an input with the trail protocol. It is TLC-only (a
 claim-and-append protocol over one trail; no need for Apalache) and checks, within stated bounds
 (processes, rounds, crash and ambiguous-append placements, claim lapse, a sink that may fail):
@@ -602,7 +656,7 @@ No durable `EventStore` exists today. `audit` defines the interface and ships on
 | 6 | `NotifyPending` sweep | S | 4 | |
 | 7 | `audit.VerifyNotifications` and the `bide audit` verb | M | 3 | verifier in `audit` can start early; the verb is a `cmd/bide` change |
 | 8 | Viewer "Needs attention": notified, acknowledged, overdue | M | 3 | reads the trail; `internal/runview` change |
-| 9 | Model 13 (TLC) and its CI shard | M | design approved | starts at once; must land before 4 merges, like the other models |
+| 9 | Model 14 (TLC) and its CI shard | M | design approved | starts at once; must land before 4 merges, like the other models |
 | 10 | Guide, recipe update, CHANGELOG, i18n, snippets | S | 4, 5 | docs current with the code |
 | 11 | Principal exclusion (open question 12) | M | none | independent of the notifier; includes Model 1b |
 

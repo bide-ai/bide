@@ -130,3 +130,25 @@ func TestNotifyTrail_LoadRefusesForeignLeaves(t *testing.T) {
 		t.Fatal("a non-notify leaf was accepted")
 	}
 }
+
+// P3. A record kind this version does not know (written by a newer process during a rolling
+// upgrade) loads, in its place, and the fold ignores it: an older process keeps delivering for the
+// run instead of refusing the whole trail.
+func TestNotifyTrail_LoadsAKindItDoesNotKnow(t *testing.T) {
+	ctx := context.Background()
+	tr := audit.NewNotifyTrail(audit.NewMemEventStore())
+	recs := []agent.NotifyRecord{notifyRec(agent.NotifyObserved, "k"), notifyRec("future_kind", "k"), notifyRec(agent.NotifyClaimed, "k")}
+	for i, r := range recs {
+		if err := tr.Append(ctx, "t", i, r); err != nil {
+			t.Fatal(err)
+		}
+	}
+	got, err := tr.Load(ctx, "t")
+	if err != nil || len(got) != 3 || got[1].Kind != "future_kind" {
+		t.Fatalf("Load = %+v, %v; want the unknown record kept in its position", got, err)
+	}
+	st := agent.FoldNotify(got)
+	if e := st.Events["k"]; e == nil || e.Rounds != 1 {
+		t.Fatalf("the fold did not skip the unknown kind: %+v", e)
+	}
+}
