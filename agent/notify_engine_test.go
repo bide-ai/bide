@@ -424,10 +424,10 @@ func TestNotifyRound_AnotherHoldersLiveClaimIsRespectedThenTakenOver(t *testing.
 
 	e := testEngine(t, memJournal(), sink, trail, clk, "p2")
 	res, err := e.round(ctx, ev)
-	if err != nil || res.done || sink.count() != 0 || !res.next.Equal(now.Add(2*time.Minute)) {
-		t.Fatalf("a live claim must be respected until it lapses: %+v %v calls=%d", res, err, sink.count())
+	if err != nil || res.done || sink.count() != 0 || !res.next.Equal(now.Add(4*time.Minute)) {
+		t.Fatalf("a live claim must be respected until it lapses, plus the skew margin: %+v %v calls=%d", res, err, sink.count())
 	}
-	clk.advance(2 * time.Minute) // the claim lapses exactly at Until
+	clk.advance(4 * time.Minute) // Until (2 minutes) plus the 2 minute skew margin
 	if res, err := e.round(ctx, ev); err != nil || !res.done || sink.count() != 1 {
 		t.Fatalf("takeover = %+v, %v, calls=%d", res, err, sink.count())
 	}
@@ -479,42 +479,44 @@ func TestNotifyRound_OverdueIsRaisedOnceAndTheOriginalKeepsRetrying(t *testing.T
 	if overdue.count() != 0 {
 		t.Fatal("overdue before the deadline")
 	}
-	clk.advance(6 * time.Minute) // past the 5 minute deadline
-	_, _ = e.round(ctx, ev)
-	_, _ = e.round(ctx, ev)
-	recs, _ := trail.Load(ctx, "notify:r")
-	n := 0
-	for _, r := range recs {
-		if r.Kind == NotifyOverdue && r.Key == ev.key {
-			n++
-			if r.Latency < 5*time.Minute {
-				t.Fatalf("overdue.latency = %v", r.Latency)
-			}
+	count := func(kind NotifyRecordKind, key string) int {
+		recs, _ := trail.Load(ctx, "notify:r")
+		return countKind(recs, kind, key)
+	}
+	notice := OverdueKey(ev.key)
+
+	// Past the deadline: one overdue record, and the notice goes out in the round that delivers the
+	// event, to the overdue sink, which is down. Every later round tries it again.
+	for i := range 3 {
+		clk.advance(20 * time.Minute)
+		_, _ = e.round(ctx, ev)
+		if overdue.count() != i+1 {
+			t.Fatalf("round %d: %d overdue attempts, want one per round", i, overdue.count())
 		}
 	}
-	if n != 1 {
-		t.Fatalf("%d overdue records, want 1", n)
+	if count(NotifyOverdue, ev.key) != 1 || count(NotifyObserved, notice) != 1 || count(NotifyClaimed, notice) != 0 {
+		recs, _ := trail.Load(ctx, "notify:r")
+		t.Fatalf("overdue records %d, notice observed %d, notice claims %d: %v", count(NotifyOverdue, ev.key), count(NotifyObserved, notice), count(NotifyClaimed, notice), recKinds(recs))
 	}
-	// The overdue notice is its own event, delivered to the overdue sink by the worker.
-	waitFor(t, func() bool { return overdue.count() >= 1 })
-	if got := overdue.calls[0]; got.Kind != NotificationOverdue || got.Key != OverdueKey(ev.key) || got.Reason != "deadline" {
+	if got := overdue.calls[0]; got.Kind != NotificationOverdue || got.Key != notice || got.Reason != "deadline" {
 		t.Fatalf("overdue notice = %+v", got)
 	}
-	// An overdue notice that itself goes unacknowledged is retried, not escalated again.
-	waitFor(t, func() bool { return e.w.settled() })
-	_ = e.flush(ctx)
-	noticeEv := notifyEvent{key: OverdueKey(ev.key), kind: NotificationOverdue, runID: "r", origKey: ev.key, reason: "deadline"}
-	for range 3 {
-		clk.advance(20 * time.Minute) // past the notice's backoff, its claim and what would be its deadline
-		_, _ = e.round(ctx, noticeEv)
+	// The overdue sink returns: the notice is acknowledged once, and not sent again.
+	overdue.mu.Lock()
+	overdue.fail = 0
+	overdue.mu.Unlock()
+	clk.advance(20 * time.Minute)
+	_, _ = e.round(ctx, ev)
+	n := overdue.count()
+	if count(NotifyAcked, notice) != 1 {
+		t.Fatal("the notice was not acknowledged")
 	}
-	recs, _ = trail.Load(ctx, "notify:r")
-	for _, r := range recs {
-		if r.Kind == NotifyOverdue && r.Key == OverdueKey(ev.key) {
-			t.Fatal("an overdue notice was itself marked overdue")
-		}
+	clk.advance(20 * time.Minute)
+	_, _ = e.round(ctx, ev)
+	if overdue.count() != n {
+		t.Fatal("an acknowledged notice was sent again")
 	}
-	// The original keeps retrying and closes when the sink returns.
+	// The original keeps retrying and closes when its sink returns.
 	sink.mu.Lock()
 	sink.fail = 0
 	sink.mu.Unlock()
@@ -522,7 +524,6 @@ func TestNotifyRound_OverdueIsRaisedOnceAndTheOriginalKeepsRetrying(t *testing.T
 	if res, err := e.round(ctx, ev); err != nil || !res.done {
 		t.Fatalf("original = %+v, %v", res, err)
 	}
-	_ = e.flush(ctx)
 }
 
 func waitFor(t *testing.T, cond func() bool) {

@@ -12,12 +12,8 @@ func (e *notifyEngine) eventFromErr(runID string, err error) (notifyEvent, bool)
 		return notifyEvent{}, false
 	}
 	if h, ok := errors.AsType[*OutcomeUnknown](err); ok {
-		var ms int64
-		if !h.AttemptedAt.IsZero() {
-			ms = h.AttemptedAt.UnixMilli()
-		}
 		return notifyEvent{
-			key: HaltedKey(h.RunID, h.Op.Kind, h.Op.ID, ms), kind: NotificationOutcomeUnknown, runID: rootOr(runID, h.RunRef), opRun: h.RunID,
+			key: HaltedKey(h.RunID, h.Op.Kind, h.Op.ID, e.haltAttempt(h)), kind: NotificationOutcomeUnknown, runID: rootOr(runID, h.RunRef), opRun: h.RunID,
 			eventAt: h.AttemptedAt, halt: &NotifyHalt{Op: h.Op, Cause: h.Cause, AttemptedAt: h.AttemptedAt}, err: err,
 		}, true
 	}
@@ -33,9 +29,45 @@ func (e *notifyEngine) eventFromErr(runID string, err error) (notifyEvent, bool)
 		}, true
 	}
 	if sa, ok := errors.AsType[*SagaAborted](err); ok && sa.CompensateErr == nil && len(sa.UnknownOutcome) == 0 && !errors.Is(err, ErrRunCancelled) {
-		return notifyEvent{key: AbortedKey(runID), kind: NotificationRunAborted, runID: runID, err: err}, true
+		return notifyEvent{key: AbortedKey(runID), kind: NotificationRunAborted, runID: runID, reason: "saga_aborted"}, true
 	}
 	return notifyEvent{}, false
+}
+
+// haltAttempt is what tells one halt of an operation from a later one: the live attempt marker's
+// time in Unix milliseconds, and for a marker that carries none (one an earlier version wrote), the
+// negative of one more than its generation, so the first attempt of an untimed marker, and each
+// numbered re-attempt after a not-started record, are different events. A marker whose generation
+// cannot be read counts as -1.
+func (e *notifyEngine) haltAttempt(h *OutcomeUnknown) int64 {
+	if !h.AttemptedAt.IsZero() {
+		return h.AttemptedAt.UnixMilli()
+	}
+	if e.j == nil {
+		return -1
+	}
+	base := toolAttemptStep(h.Op.ID)
+	if h.Op.Kind == OpStep {
+		base = stepAttemptStep(h.Op.ID)
+	}
+	return -int64(e.liveGeneration(context.Background(), h.RunID, base)) - 1
+}
+
+// liveGeneration is the generation of the live attempt of the effect whose first marker key is
+// base: 0 for the first attempt, n for the n-th re-attempt (see journal.liveAttempt).
+func (e *notifyEngine) liveGeneration(ctx context.Context, runID, base string) int {
+	for gen := 0; ; gen++ {
+		key := retryAttemptStep(base, gen)
+		marker, ok, err := e.j.Get(ctx, runID, key)
+		if err != nil || !ok {
+			return max(gen-1, 0)
+		}
+		if v, err := e.j.voided(ctx, runID, key, marker); err != nil {
+			return gen
+		} else if !v {
+			return gen
+		}
+	}
 }
 
 // rootOr returns the root run of ref, else the run the drive was of.
@@ -77,6 +109,19 @@ func causeClass(err error) string {
 	}
 }
 
+// causeSentinel is the error a recovery_failing notification carries for a cause class: a sentinel
+// or nothing, never the Resumer's own error, whose text can embed a run's arguments or a person's
+// data.
+func causeSentinel(class string) error {
+	switch class {
+	case "store_error":
+		return ErrStorage
+	case "not_resumable":
+		return ErrNotResumable
+	}
+	return nil
+}
+
 // recoveryFailed records that a recovery pass failed for runID, opening a failure episode if none
 // is open, and queues the recovery_failing event once the episode has lasted long enough.
 func (e *notifyEngine) recoveryFailed(ctx context.Context, runID string, cause error) {
@@ -103,7 +148,7 @@ func (e *notifyEngine) recoveryFailed(ctx context.Context, runID string, cause e
 		}
 		if st.RecoveryFailingDue(now, e.cfg.recoveryAfter) {
 			e.w.submit(notifyEvent{key: RecoveryKey(runID, st.Episodes), kind: NotificationRecoveryFailing, runID: runID,
-				eventAt: st.FailingSince.At, reason: st.FailingSince.Reason, episode: st.Episodes, err: cause})
+				eventAt: st.FailingSince.At, reason: st.FailingSince.Reason, episode: st.Episodes, err: causeSentinel(st.FailingSince.Reason)})
 		}
 		return
 	}
@@ -135,15 +180,21 @@ func (e *notifyEngine) recoveryOK(ctx context.Context, runID string) {
 }
 
 // afterRecover is called by a recovery pass with the outcome of one run: whether it drove the run
-// (driven), whether it called the Resumer (resumed), and the error.
+// (driven), whether it called the Resumer (resumed), and the error (a Resumer that does not drive
+// the run, ErrNotResumable, is passed as the failure it is).
 func (e *notifyEngine) afterRecover(ctx context.Context, runID string, driven, resumed bool, err error) {
 	if ev, ok := e.eventFromErr(runID, err); ok {
 		e.w.submit(ev)
-		return // a halt or a gate is the run waiting for a person, not recovery failing
+		e.recoveryOK(ctx, runID) // a halt or a gate is the run waiting for a person: recovery works
+		return
 	}
 	switch {
-	case err != nil && (!driven || !IsPause(err) && !errors.Is(err, ErrLeaseLost) && !cancelledEnd(err)):
-		e.recoveryFailed(ctx, runID, err)
+	case err != nil && IsPause(err):
+		e.recoveryOK(ctx, runID) // a pause is a success
+	case err != nil && (!driven || !errors.Is(err, ErrLeaseLost) && !cancelledEnd(err)):
+		if ctx.Err() == nil && !errors.Is(err, context.Canceled) {
+			e.recoveryFailed(ctx, runID, err) // not a shutdown's cancellation
+		}
 	case err == nil && resumed:
 		e.recoveryOK(ctx, runID)
 	}

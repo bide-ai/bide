@@ -2,16 +2,19 @@ package plan
 
 import (
 	"context"
+	"errors"
+	"reflect"
 	"sync"
 
 	"github.com/bide-ai/bide/agent"
 )
 
-// flowNotify holds a built flow's notifiers, one per journal it has run against: a flow is run
-// against many stores over its life, and a notifier is bound to the journal it reads.
+// flowNotify holds a built flow's notifiers, one per store it has run against: a flow is run against
+// many stores over its life, and a notifier is bound to a journal over the store it reads. Journals
+// over one store (an application that wraps its store in a new Journal per request) share one.
 type flowNotify struct {
 	mu  sync.Mutex
-	per map[*agent.Journal]*agent.RunNotifier
+	per map[any]*agent.RunNotifier // by the journal's store
 }
 
 // runEnd tells the flow's notifier, if it has one, that a drive of runID ended with err.
@@ -19,8 +22,9 @@ func (c *builderCore) runEnd(store *agent.Journal, runID string, err error) {
 	if c.notifier == nil || err == nil || store == nil {
 		return
 	}
+	key := storeKey(store)
 	c.notify.mu.Lock()
-	rn := c.notify.per[store]
+	rn := c.notify.per[key]
 	if rn == nil {
 		var cerr error
 		if rn, cerr = agent.NewRunNotifier(store, c.notifier); cerr != nil {
@@ -28,12 +32,21 @@ func (c *builderCore) runEnd(store *agent.Journal, runID string, err error) {
 			return // Build validated the option; a failure here has nothing to report to
 		}
 		if c.notify.per == nil {
-			c.notify.per = map[*agent.Journal]*agent.RunNotifier{}
+			c.notify.per = map[any]*agent.RunNotifier{}
 		}
-		c.notify.per[store] = rn
+		c.notify.per[key] = rn
 	}
 	c.notify.mu.Unlock()
 	rn.DriveEnd(runID, err)
+}
+
+// storeKey identifies the store under j: the Store value when it can be a map key (a pointer, the
+// usual case), else the journal itself.
+func storeKey(j *agent.Journal) any {
+	if st := j.Store(); st != nil && reflect.TypeOf(st).Comparable() {
+		return st
+	}
+	return j
 }
 
 // FlushNotifications waits for the flow's notifier to finish the deliveries in flight, for every
@@ -50,11 +63,11 @@ func (f *Flow[In, Out]) FlushNotifications(ctx context.Context) error {
 		rns = append(rns, rn)
 	}
 	c.notify.mu.Unlock()
-	var first error
+	var errs []error
 	for _, rn := range rns {
-		if err := rn.Flush(ctx); err != nil && first == nil {
-			first = err
+		if err := rn.Flush(ctx); err != nil {
+			errs = append(errs, err)
 		}
 	}
-	return first
+	return errors.Join(errs...)
 }

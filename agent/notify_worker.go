@@ -2,34 +2,51 @@ package agent
 
 import (
 	"context"
+	"errors"
 	"sync"
 	"time"
 )
 
-// notifyWorker delivers a notifyEngine's events on a goroutine of its own, so a slow sink never
+// notifyWorker delivers a notifyEngine's events on goroutines of its own, so a slow sink never
 // delays Run. It holds the events in memory only; the trail is what makes them durable, and a
-// RecoverLoop pass or NotifyPending finds again any event a dead process had not recorded. Rounds
-// run one at a time.
+// RecoverLoop pass or NotifyPending finds again any event a dead process had not recorded.
+//
+// A dispatcher goroutine runs while any event is queued or in flight, and exits when none is (the
+// next submit starts it again), so an idle notifier holds no goroutine. Each event's round runs on a
+// goroutine of its own, at most maxInflight at once, so one event whose sink hangs (a call is
+// bounded by the engine, but a Notifier may ignore its context) does not hold up the others.
 type notifyWorker struct {
 	e *notifyEngine
 
-	mu      sync.Mutex
-	pending map[string]*pendingNotify
-	running bool
-	wake    chan struct{}
-	stop    chan struct{}
-	done    chan struct{}
-	cancel  context.CancelFunc
+	mu       sync.Mutex
+	pending  map[string]*pendingNotify
+	inflight int
+	running  bool
+	stopping bool // flush has asked the dispatcher to stop
+	restart  bool // an event was queued while it was stopping
+	wake     chan struct{}
+	stop     chan struct{}
+	done     chan struct{}
+	cancel   context.CancelFunc
 }
 
 type pendingNotify struct {
 	ev       notifyEvent
 	due      time.Time
 	inflight bool
+	lastErr  error // the error of the last round, nil if it ended cleanly
 }
 
 func newNotifyWorker(e *notifyEngine) *notifyWorker {
 	return &notifyWorker{e: e, pending: map[string]*pendingNotify{}, wake: make(chan struct{}, 1)}
+}
+
+// signal wakes the dispatcher.
+func (w *notifyWorker) signal() {
+	select {
+	case w.wake <- struct{}{}:
+	default:
+	}
 }
 
 // submit queues ev for delivery. An event already queued, or in flight, is not queued twice.
@@ -39,16 +56,22 @@ func (w *notifyWorker) submit(ev notifyEvent) {
 	if _, ok := w.pending[ev.key]; !ok {
 		w.pending[ev.key] = &pendingNotify{ev: ev, due: w.e.cfg.now()}
 	}
-	if !w.running { // also restarts a worker FlushNotifications stopped with events still queued
-		ctx, cancel := context.WithCancel(context.Background())
-		w.running, w.cancel = true, cancel
-		w.stop, w.done = make(chan struct{}), make(chan struct{})
-		go w.loop(ctx, w.stop, w.done)
+	switch {
+	case !w.running:
+		w.startLocked()
+	case w.stopping:
+		w.restart = true // the dispatcher is on its way out: it starts another
 	}
-	select {
-	case w.wake <- struct{}{}:
-	default:
-	}
+	w.signal()
+}
+
+// startLocked starts the dispatcher. The caller holds w.mu.
+func (w *notifyWorker) startLocked() {
+	ctx, cancel := context.WithCancel(context.Background())
+	w.running, w.stopping, w.restart = true, false, false
+	w.cancel = cancel
+	w.stop, w.done = make(chan struct{}), make(chan struct{})
+	go w.loop(ctx, w.stop, w.done)
 }
 
 // idle reports whether nothing is queued or in flight.
@@ -60,66 +83,110 @@ func (w *notifyWorker) idle() bool {
 
 func (w *notifyWorker) loop(ctx context.Context, stop, done chan struct{}) {
 	defer func() {
-		w.mu.Lock()
-		w.running = false
-		w.mu.Unlock()
+		w.exited()
 		close(done)
 	}()
 	for {
 		select {
 		case <-stop:
 			return
+		case <-ctx.Done():
+			return
 		default:
 		}
 		w.mu.Lock()
-		var next *pendingNotify
+		if len(w.pending) == 0 {
+			w.stopping = true // idle: leaving. A submit before the deferred exit sets restart.
+			w.mu.Unlock()
+			return
+		}
+		now := w.e.cfg.now()
+		wait := time.Duration(-1)
 		for _, p := range w.pending {
-			if !p.inflight && (next == nil || p.due.Before(next.due)) {
-				next = p
+			if p.inflight {
+				continue
 			}
-		}
-		var wait time.Duration = -1
-		if next != nil {
-			if d := next.due.Sub(w.e.cfg.now()); d > 0 {
-				wait, next = d, nil
-			} else {
-				next.inflight = true
+			if d := p.due.Sub(now); d > 0 {
+				if wait < 0 || d < wait {
+					wait = d
+				}
+				continue
 			}
+			if w.inflight >= w.e.cfg.maxInflight {
+				continue
+			}
+			p.inflight = true
+			w.inflight++
+			go w.runRound(ctx, p)
 		}
 		w.mu.Unlock()
 
-		if next == nil {
-			var timer <-chan time.Time
-			if wait >= 0 {
-				t := time.NewTimer(wait)
-				defer t.Stop()
-				timer = t.C
-			}
-			select {
-			case <-w.wake:
-			case <-timer:
-			case <-stop:
-				return
-			case <-ctx.Done():
-				return
-			}
-			continue
+		var timer <-chan time.Time
+		var t *time.Timer
+		if wait >= 0 {
+			t = time.NewTimer(wait)
+			timer = t.C
 		}
-
-		res, err := w.e.round(ctx, next.ev)
-		w.e.report(err)
-		w.mu.Lock()
-		if res.done {
-			delete(w.pending, next.ev.key)
-		} else {
-			next.inflight = false
-			next.due = res.next
-			if next.due.IsZero() {
-				next.due = w.e.cfg.now().Add(w.e.backoff(1))
-			}
+		select {
+		case <-w.wake:
+		case <-timer:
+		case <-stop:
+		case <-ctx.Done():
 		}
-		w.mu.Unlock()
+		if t != nil {
+			t.Stop()
+		}
 	}
+}
+
+// exited records that the dispatcher is gone, and starts another if an event was queued while it
+// was leaving.
+func (w *notifyWorker) exited() {
+	w.mu.Lock()
+	defer w.mu.Unlock()
+	w.running, w.stopping = false, false
+	if w.restart && len(w.pending) > 0 {
+		w.startLocked()
+	}
+	w.restart = false
+}
+
+// runRound runs one round of p's event and records its outcome.
+func (w *notifyWorker) runRound(ctx context.Context, p *pendingNotify) {
+	res, err := w.e.round(ctx, p.ev)
+	if err != nil && ctx.Err() == nil {
+		w.e.report(err)
+	}
+	w.mu.Lock()
+	w.inflight--
+	p.inflight = false
+	p.lastErr = err
+	if res.done {
+		delete(w.pending, p.ev.key)
+	} else {
+		p.due = res.next
+		if p.due.IsZero() {
+			p.due = w.e.cfg.now().Add(w.e.backoff(1))
+		}
+	}
+	w.mu.Unlock()
+	w.signal()
+}
+
+// settled reports whether no event is in flight or due: what remains is waiting out a backoff.
+func (w *notifyWorker) settled() bool {
+	w.mu.Lock()
+	defer w.mu.Unlock()
+	if w.inflight > 0 {
+		return false
+	}
+	now := w.e.cfg.now()
+	for _, p := range w.pending {
+		if !p.due.After(now) {
+			return false
+		}
+	}
+	return true
 }
 
 func (w *notifyWorker) isRunning() bool {
@@ -128,21 +195,24 @@ func (w *notifyWorker) isRunning() bool {
 	return w.running
 }
 
-// settled reports whether no event is in flight or due: what remains is waiting out a backoff.
-func (w *notifyWorker) settled() bool {
+// undelivered returns the last error of every event still queued: what flush could not deliver.
+func (w *notifyWorker) undelivered() error {
 	w.mu.Lock()
 	defer w.mu.Unlock()
-	now := w.e.cfg.now()
+	var errs []error
 	for _, p := range w.pending {
-		if p.inflight || !p.due.After(now) {
-			return false
+		if p.lastErr != nil {
+			errs = append(errs, p.lastErr)
 		}
 	}
-	return true
+	return errors.Join(errs...)
 }
 
-// flush waits until every event that is in flight or due has had its round, then stops the worker.
-// Events waiting out a backoff are left for a later process. It cancels the round if ctx ends first.
+// flush waits until every event that is in flight or due has had its round, then stops the
+// dispatcher. Events waiting out a backoff are left for a later process, and their last errors are
+// what it returns, so a caller that exits after it knows what was not delivered. If ctx ends first
+// it cancels the rounds in flight (a Notifier that honors its context returns) and returns ctx's
+// error without waiting for one that does not.
 func (e *notifyEngine) flush(ctx context.Context) error {
 	w := e.w
 	for w.isRunning() && !w.settled() {
@@ -154,23 +224,29 @@ func (e *notifyEngine) flush(ctx context.Context) error {
 			if cancel != nil {
 				cancel()
 			}
-			return ctx.Err()
+			return errors.Join(ctx.Err(), w.undelivered())
 		case <-time.After(2 * time.Millisecond):
 		}
 	}
 	w.mu.Lock()
-	if !w.running {
-		w.mu.Unlock()
-		return nil
+	if w.running {
+		w.stopping = true
+		select {
+		case <-w.stop:
+		default:
+			close(w.stop)
+		}
 	}
-	stop, done, cancel := w.stop, w.done, w.cancel
-	select {
-	case <-stop:
-	default:
-		close(stop)
-	}
+	done, cancel := w.done, w.cancel
+	running := w.running
 	w.mu.Unlock()
-	<-done
-	cancel()
-	return nil
+	if running {
+		select {
+		case <-done:
+		case <-ctx.Done():
+			cancel()
+			return errors.Join(ctx.Err(), w.undelivered())
+		}
+	}
+	return w.undelivered()
 }

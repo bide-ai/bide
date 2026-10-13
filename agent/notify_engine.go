@@ -18,6 +18,8 @@ type notifyConfig struct {
 	failingAfter  int
 	recoveryAfter time.Duration
 	haltAge       time.Duration
+	skew          time.Duration // margin added to another holder's claim before it counts as lapsed
+	maxInflight   int           // rounds in flight at once in the worker
 	holder        string
 	overdue       Notifier
 	onError       func(error)
@@ -25,7 +27,7 @@ type notifyConfig struct {
 	// Not options: tests set them.
 	roundAttempts  int           // requests per round
 	attemptBackoff time.Duration // before the second request of a round, doubling
-	ackRetries     int           // in-place retries of the acked append
+	ackBackoff     time.Duration // before the first retry of the acked append, doubling to 8s
 	now            func() time.Time
 	sleep          func(context.Context, time.Duration) error
 	jitter         func(time.Duration) time.Duration
@@ -43,7 +45,9 @@ func defaultNotifyConfig() notifyConfig {
 		holder:         defaultHolder(),
 		roundAttempts:  3,
 		attemptBackoff: time.Second,
-		ackRetries:     3,
+		ackBackoff:     500 * time.Millisecond,
+		skew:           2 * time.Minute,
+		maxInflight:    8,
 		now:            time.Now,
 		sleep: func(ctx context.Context, d time.Duration) error {
 			t := time.NewTimer(d)
@@ -177,7 +181,44 @@ func (e *notifyEngine) round(ctx context.Context, ev notifyEvent) (roundResult, 
 	e.mu.Unlock()
 	km.Lock()
 	defer km.Unlock()
-	return e.roundLocked(ctx, ev)
+	res, err := e.roundLocked(ctx, ev)
+	if res.done {
+		e.forget(ev.key)
+	}
+	return res, err
+}
+
+// callTimeout bounds one call of a Notifier: a quarter of the claim, so a round of roundAttempts
+// calls and their backoff ends inside the claim it holds.
+func (e *notifyEngine) callTimeout() time.Duration { return e.cfg.claimTTL / 4 }
+
+// claimLive reports whether es has a claim that another deliverer must respect at now. A holder's
+// own claim is live until its Until; another holder's until Until plus the skew margin, because
+// Until was written by that holder's clock and read by this one's, and a peer running ahead by less
+// than the margin plus what is left of the claim must not take a live claim over. The tolerated skew
+// is about claimTTL + skew minus the round's elapsed time: 2.5 minutes at the defaults.
+func (e *notifyEngine) claimLive(es *NotifyEvent, now time.Time) bool {
+	if !es.Open() || es.Claim == nil {
+		return false
+	}
+	if es.Claim.Holder == e.holder {
+		return now.Before(es.Claim.Until)
+	}
+	return now.Before(es.Claim.Until.Add(e.cfg.skew))
+}
+
+// pace is the earliest time a new round for es may start: the last claim plus the backoff for the
+// rounds the trail records, with no jitter so every deliverer agrees. It is what bounds the claims
+// of an undelivered event to the backoff cap however many deliverers or sweeps look at it.
+func (e *notifyEngine) pace(es *NotifyEvent) time.Time {
+	if es.Claim == nil {
+		return time.Time{}
+	}
+	d := e.cfg.backoffBase
+	for i := 1; i < es.Rounds && d < e.cfg.backoffMax; i++ {
+		d *= 2
+	}
+	return es.Claim.At.Add(min(d, e.cfg.backoffMax))
 }
 
 func (e *notifyEngine) roundLocked(ctx context.Context, ev notifyEvent) (roundResult, error) {
@@ -230,17 +271,11 @@ func (e *notifyEngine) roundLocked(ctx context.Context, ev notifyEvent) (roundRe
 
 		if ev.kind != NotificationOverdue && es.OverdueDue(now) {
 			rec := NotifyRecord{Kind: NotifyOverdue, Key: ev.key, RunID: ev.runID, At: now, Latency: now.Sub(es.ObservedAt)}
-			conflict, err := e.appendRec(ctx, name, len(recs), rec)
-			if err != nil {
+			if _, err := e.appendRec(ctx, name, len(recs), rec); err != nil {
 				return roundResult{next: now.Add(e.backoff(e.failCount(ev.key)))}, err
 			}
-			if !conflict {
-				e.w.submit(notifyEvent{key: OverdueKey(ev.key), kind: NotificationOverdue, runID: ev.runID,
-					origKey: ev.key, reason: "deadline", principal: ev.principal, eventAt: now})
-			}
-			continue
+			continue // reload: the round that delivers the event sends the notice
 		}
-
 		// Rounds that claimed the event and never acknowledged it, crashed ones included, make it
 		// failing before another round starts.
 		if es.Failing == nil && es.Rounds >= e.failingRounds() && !triedFailing {
@@ -249,11 +284,14 @@ func (e *notifyEngine) roundLocked(ctx context.Context, ev notifyEvent) (roundRe
 			continue // reload: the trail has a record more
 		}
 
-		live := es.ClaimLive(now)
+		live := e.claimLive(es, now)
 		if live && es.Claim.Holder != e.holder {
-			return roundResult{next: es.Claim.Until}, nil // another process is delivering it
+			return roundResult{next: es.Claim.Until.Add(e.cfg.skew)}, nil // another deliverer has it
 		}
 		if !live || es.Claim.Until.Sub(now) <= e.cfg.claimTTL/2 {
+			if pace := e.pace(es); now.Before(pace) && !live {
+				return roundResult{next: pace}, nil // too soon after the last round, whoever ran it
+			}
 			rec := NotifyRecord{Kind: NotifyClaimed, Key: ev.key, RunID: ev.runID, At: now,
 				Holder: e.holder, Until: now.Add(e.cfg.claimTTL)}
 			conflict, err := e.appendRec(ctx, name, len(recs), rec)
@@ -290,6 +328,9 @@ func (e *notifyEngine) deliver(ctx context.Context, ev notifyEvent, es *NotifyEv
 	if ev.principal == nil {
 		ev.principal = e.principalOf(ctx, ev.runID)
 	}
+	if es.Overdue != nil {
+		e.deliverOverdueNotice(ctx, ev, es, name)
+	}
 	var lastErr error
 	for i := range e.cfg.roundAttempts {
 		e.mu.Lock()
@@ -302,8 +343,9 @@ func (e *notifyEngine) deliver(ctx context.Context, ev notifyEvent, es *NotifyEv
 		e.mu.Unlock()
 
 		var ack NotifyAck
-		nctx := context.WithValue(ctx, ackKey{}, &ack)
+		nctx, cancel := context.WithTimeout(context.WithValue(ctx, ackKey{}, &ack), e.callTimeout())
 		lastErr = e.notifierFor(ev).Notify(nctx, e.notification(ev, es, attempt))
+		cancel()
 		if lastErr == nil {
 			return e.ack(ctx, ev, name, first, attempt, ack)
 		}
@@ -330,6 +372,70 @@ func (e *notifyEngine) notifierFor(ev notifyEvent) Notifier {
 	return e.n
 }
 
+// deliverOverdueNotice sends the notice that es, which is overdue, is not acknowledged. It runs
+// inside the round that holds the event's claim, as part of it: the notice needs no claim of its
+// own, so an undelivered event writes one claim per round however many notices it owes, and the
+// notice is derived from the trail on every round (the event open, its overdue record present, no
+// acknowledged notice), so it survives a death after the overdue record, a failed delivery and a
+// restart. It is a single attempt; the next round tries again.
+func (e *notifyEngine) deliverOverdueNotice(ctx context.Context, ev notifyEvent, es *NotifyEvent, name string) {
+	key := OverdueKey(ev.key)
+	e.mu.Lock()
+	pa, owed := e.unacked[key]
+	e.mu.Unlock()
+	if owed { // delivered earlier and not recorded: record it, do not send again
+		if _, err := e.ack(ctx, notifyEvent{key: key, runID: ev.runID}, name, pa.first, pa.attempts, pa.ack); err == nil {
+			e.forget(key)
+		}
+		return
+	}
+	notice := notifyEvent{key: key, kind: NotificationOverdue, runID: ev.runID, origKey: ev.key, reason: "deadline",
+		principal: ev.principal, eventAt: es.Overdue.At}
+	for range maxTrailRetries {
+		recs, err := e.trail.Load(ctx, name)
+		if err != nil {
+			e.report(err)
+			return
+		}
+		ne := FoldNotify(recs).Events[key]
+		if ne != nil && !ne.Open() {
+			return
+		}
+		if ne == nil {
+			now := e.cfg.now()
+			rec := NotifyRecord{Kind: NotifyObserved, Key: key, RunID: ev.runID, At: now,
+				EventKind: string(NotificationOverdue), EventAt: es.Overdue.At, DeadlineAt: now.Add(e.cfg.deadline)}
+			if _, err := e.appendRec(ctx, name, len(recs), rec); err != nil {
+				e.report(err)
+				return
+			}
+			continue
+		}
+		e.mu.Lock()
+		e.attempts[key]++
+		attempt := e.attempts[key]
+		if _, ok := e.firstAt[key]; !ok {
+			e.firstAt[key] = e.cfg.now()
+		}
+		first := e.firstAt[key]
+		e.mu.Unlock()
+		var ack NotifyAck
+		nctx, cancel := context.WithTimeout(context.WithValue(ctx, ackKey{}, &ack), e.callTimeout())
+		err = e.notifierFor(notice).Notify(nctx, e.notification(notice, ne, attempt))
+		cancel()
+		if err != nil {
+			e.report(fmt.Errorf("notify: the overdue notice for %s was not delivered (tried again next round): %w", ev.key, err))
+			return
+		}
+		if _, aerr := e.ack(ctx, notice, name, first, attempt, ack); aerr != nil {
+			e.report(aerr)
+		} else {
+			e.forget(key)
+		}
+		return
+	}
+}
+
 func (e *notifyEngine) notification(ev notifyEvent, es *NotifyEvent, attempt int) Notification {
 	return Notification{
 		ID: NotifyID(ev.key), Key: ev.key, Kind: ev.kind, RunID: ev.runID,
@@ -339,10 +445,15 @@ func (e *notifyEngine) notification(ev notifyEvent, es *NotifyEvent, attempt int
 }
 
 // ack records the sink's acknowledgement. The sink has accepted by now, so a failure to record it is
-// retried in place: the cheaper window to close than the duplicate it would cause.
+// retried in place, with a growing delay, for as long as the round's claim is still ours (half the
+// claim): the cheaper window to close than the duplicate it would cause. If the store stays down
+// past that, this process remembers that it delivered and records the acknowledgement on its next
+// round without sending again.
 func (e *notifyEngine) ack(ctx context.Context, ev notifyEvent, name string, first time.Time, attempts int, ack NotifyAck) (roundResult, error) {
 	var lastErr error
-	for range e.cfg.ackRetries + 1 {
+	limit := e.cfg.now().Add(e.cfg.claimTTL / 2)
+	delay := e.cfg.ackBackoff
+	for {
 		recs, err := e.trail.Load(ctx, name)
 		if err != nil {
 			lastErr = err
@@ -354,18 +465,21 @@ func (e *notifyEngine) ack(ctx context.Context, ev notifyEvent, name string, fir
 				FirstSentAt: first, Attempts: attempts, Status: ack.Status, Auth: ack.Auth}
 			conflict, aerr := e.appendRec(ctx, name, len(recs), rec)
 			if aerr == nil && !conflict {
-				e.forget(ev.key)
 				return roundResult{done: true}, nil
 			}
 			lastErr = aerr // nil on a lost race: reload and decide again
 		}
-		if ctx.Err() != nil {
+		if ctx.Err() != nil || !e.cfg.now().Before(limit) {
 			break
 		}
+		if err := e.cfg.sleep(ctx, delay); err != nil {
+			break
+		}
+		delay = min(delay*2, 8*time.Second)
 	}
-	// Delivered but not recorded. This process remembers, and the next round records the
-	// acknowledgement without sending again; only a process that dies first repeats the delivery
-	// (the duplicate window), and the claim it left lapses.
+	// Delivered but not recorded. The next round of this process records the acknowledgement
+	// without sending again; only a process that dies first repeats the delivery (the duplicate
+	// window), and the claim it left lapses.
 	e.mu.Lock()
 	e.unacked[ev.key] = pendingAck{first: first, attempts: attempts, ack: ack}
 	e.mu.Unlock()
@@ -438,26 +552,43 @@ func (e *notifyEngine) current(ctx context.Context, ev notifyEvent, st NotifySta
 	if opRun == "" {
 		opRun = ev.runID
 	}
-	var result string
-	switch {
-	case ev.halt != nil && ev.halt.Op.Kind == OpTool:
-		result = ToolResultStep(ev.halt.Op.ID)
-	case ev.halt != nil:
-		result = ev.halt.Op.ID
-	case ev.approval != nil:
-		result = ToolResultStep(ev.approval.ToolUseID)
-	default:
+	if ev.halt != nil {
+		result := ev.halt.Op.ID
+		if ev.halt.Op.Kind == OpTool {
+			result = ToolResultStep(ev.halt.Op.ID)
+		}
+		if ok, err := e.hasRecord(ctx, opRun, result); err != nil || ok {
+			return false, "resolved", err
+		}
 		return true, "", nil
 	}
-	_, ok, err := e.j.Get(ctx, opRun, result)
-	if err != nil {
-		return false, "", err
-	}
-	if ok {
-		if ev.halt != nil {
-			return false, "resolved", nil
+	if ev.approval != nil {
+		decided, err := e.gateDecided(ctx, opRun, ev.approval.ToolUseID)
+		if err != nil || decided {
+			return false, "decided", err
 		}
-		return false, "decided", nil
 	}
 	return true, "", nil
+}
+
+func (e *notifyEngine) hasRecord(ctx context.Context, run, name string) (bool, error) {
+	_, ok, err := e.j.Get(ctx, run, name)
+	return ok, err
+}
+
+// gateDecided reports whether the gate of call on run has what the gate itself reads: a single
+// approver's decision (approval:<call>), an m-of-n gate's terminal tally (approval-tally:<call>),
+// the tool's result, or, for a plan flow's node whose key is call, the node's own result.
+func (e *notifyEngine) gateDecided(ctx context.Context, run, call string) (bool, error) {
+	for _, name := range gateDecidedNames(call) {
+		if ok, err := e.hasRecord(ctx, run, name); err != nil || ok {
+			return ok, err
+		}
+	}
+	return false, nil
+}
+
+// gateDecidedNames are the journal names whose presence ends the gate of call.
+func gateDecidedNames(call string) []string {
+	return []string{approvalStep(call), ApprovalTallyStep(call), ToolResultStep(call), call}
 }

@@ -715,7 +715,11 @@ func recoverRun(ctx context.Context, store *Journal, runID string, resume Resume
 		return err
 	}, cfg)
 	if cfg.notify != nil {
-		cfg.notify.afterRecover(ctx, runID, driven, resumed, err)
+		failure := err
+		if failure == nil && notResumable != nil {
+			failure = notResumable // no Resumer drives this run: recovery is failing for it
+		}
+		cfg.notify.afterRecover(ctx, runID, driven, resumed, failure)
 	}
 	switch {
 	case err != nil && (!driven || !IsPause(err) && !errors.Is(err, ErrLeaseLost) && !cancelledEnd(err)):
@@ -813,7 +817,12 @@ func RecoverLoop(ctx context.Context, store *Journal, resume Resumer, opts ...Re
 		if cfg.notify, err = cfg.notifier.engine(store, "recover"); err != nil {
 			return err
 		}
-		defer cfg.notify.flush(context.WithoutCancel(ctx))
+		defer func() {
+			// Bounded: a sink that ignores its context must not keep RecoverLoop from returning.
+			fctx, cancel := context.WithTimeout(context.WithoutCancel(ctx), 500*time.Millisecond)
+			defer cancel()
+			_ = cfg.notify.flush(fctx)
+		}()
 	}
 	if !cfg.intervalSet {
 		cfg.interval = max(cfg.ttl/2, 1)

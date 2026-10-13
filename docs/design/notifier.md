@@ -275,6 +275,53 @@ failing" (to `WithRecoverErrors`, as a `failing` record, and in the viewer) and 
 conditions are `acked` and `cleared` only. Giving up silently on the event whose purpose is to end
 silence is the wrong default.
 
+### Behavior fixed by the adversarial review
+
+An independent review of the first implementation found these, and each is now a test:
+
+- **The overdue notice is derived from the trail.** It is delivered inside the round that holds the
+  original event's claim, as part of it (no claim of its own, so an undelivered event writes one claim
+  per round however many notices it owes). Every round of an open, overdue event sends the notice
+  unless the trail holds an acknowledged one, so a death after the `overdue` record, a failed first
+  delivery, a sweep and a restart all re-send it. A delivered but unrecorded notice is recorded
+  without sending again.
+- **Every `Notify` call is bounded** by a quarter of the claim, so a round of three calls and their
+  backoff ends inside the claim it holds. Rounds of different events run concurrently (up to 8), so
+  one hung sink does not hold up the others. `RecoverLoop` bounds its flush on the way out (500 ms)
+  and cancels the calls still in flight.
+- **Claim liveness does not trust synchronized clocks.** `claimed.until` is written by one clock and
+  read by another. Another holder's claim counts as live until `until` plus a skew margin (default
+  2 minutes, `claimTTL`). A peer whose clock is ahead takes a live claim over only if it is ahead by
+  more than the claim's remaining time plus the margin: at the defaults, about 2.5 minutes at the
+  moment a round starts, less as the round runs. Run NTP-class synchronization on every deliverer.
+  The cost is a takeover after a crash that is up to the margin later.
+- **Pacing comes from the trail.** A new round starts no earlier than the last claim's time plus the
+  backoff for the rounds the trail records (no jitter, so every deliverer agrees). However many
+  sweeps or processes look at an undelivered event, it writes about four claims an hour at the cap.
+- **A decided gate is not reported.** "Current" reads what the gate itself reads: the single
+  approver's decision (`approval:<call>`), an m-of-n gate's terminal tally, the tool's result, and,
+  for a plan flow's gate, the node's own result (`node:<name>`). The sweep applies the same test.
+- **A run that was aborted has a catch-up path.** `NotifyPending` also reads runs holding
+  `run:aborted` (completed and cancelled runs are excluded from the listing) and raises
+  `run_aborted` for any whose trail has no event. It costs one point read for each aborted run.
+- **Recovery episodes close on any pause**, a halt, a gate, a timer or a signal, which a pass counts
+  as success. A run no Resumer can drive (`ErrNotResumable`) is a recovery failure and alerts after
+  the duration. A pass ended by the shutdown's cancellation is not a failure.
+- **`recovery_failing` carries a class, never the Resumer's text.** `Notification.Err` is the matching
+  sentinel (`ErrStorage`, `ErrNotResumable`) or nil.
+- **Halt keys for an untimed marker** use the live attempt's generation (the negative of one more than
+  it), not 0, so a re-attempt after a not-started record is a new event.
+- **An idle notifier holds no goroutine.** The dispatcher exits when nothing is queued and starts on
+  the next event; an event queued while it leaves starts another.
+- **`FlushNotifications` returns what was not delivered**: the last error of each event still queued
+  when the worker stops, so a caller that exits after it knows. A plan flow keeps one notifier per
+  store, not per `Journal` value.
+- **A trail with a record kind a newer version wrote loads**, in its position, and the fold skips it,
+  so a rolling upgrade does not stop the older processes.
+- **Known cost:** a recovery pass does a trail read for each run it drives that pauses or succeeds, to
+  close an open episode. It is one point read of a short trail; a deployment with very many paused
+  runs may want a longer recovery interval.
+
 ## Notification as evidence
 
 Three times for one event, all in the audited trail:

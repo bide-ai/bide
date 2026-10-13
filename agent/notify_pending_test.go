@@ -195,7 +195,7 @@ func TestNotifyPending_AFailedDeliveryIsReportedAndTheRestStillGoOut(t *testing.
 		t.Fatalf("the second run was not delivered after the first failed: %d calls", sink.count())
 	}
 	// The next sweep retries the one that failed, and only that, once its claim has lapsed.
-	clk.advance(3 * time.Minute)
+	clk.advance(4*time.Minute + 10*time.Second) // past the claim and the skew margin, before the deadline
 	if err := sweep(t, j, sink, trail, clk); err != nil || sink.count() != 5 || sink.calls[4].RunID != "a" {
 		t.Fatalf("second sweep: %v, calls=%d", err, sink.count())
 	}
