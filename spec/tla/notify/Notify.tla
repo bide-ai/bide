@@ -215,20 +215,25 @@ Decide(a) ==
   /\ LET s == SubSeq(trail, 1, len[a])
          e == ev[a]
          To(r) == /\ act' = [act EXCEPT ![a] = r] /\ pc' = [pc EXCEPT ![a] = "append"]
-                  /\ UNCHANGED <<lease, ev, ok, claim, boundHit>>
+                  /\ UNCHANGED <<lease, ev, ok, claim, boundHit, len>>
      IN
-     IF Done(s, e) THEN FinishVars(a) /\ UNCHANGED boundHit
+     IF Done(s, e) THEN FinishVars(a) /\ UNCHANGED <<boundHit, len>>
      ELSE IF ok[a] THEN To("acked")
      ELSE IF ~Has(s, "observed", e) THEN To("observed")
      ELSE IF Bug # "NoStaleCheck" /\ ~Current(e) THEN To("cleared")
      ELSE IF Bug # "NoOverdue" /\ e \in past /\ ~Has(s, "overdue", e) THEN To("overdue")
      ELSE IF FailingDue(a, s, e) /\ ~Has(s, "failing", e) THEN To("failing")
-     ELSE IF LiveOther(a, s, e) THEN FinishVars(a) /\ UNCHANGED boundHit
+     ELSE IF LiveOther(a, s, e) THEN FinishVars(a) /\ UNCHANGED <<boundHit, len>>
      \* At the configuration's bound the pass ends without a claim (BoundNotHit fails); a later
      \* pass still raises overdue, failing and cleared, so a sink that never accepts is checked.
-     ELSE IF Cardinality(ClaimsOf(s, e)) >= MaxRounds THEN FinishVars(a) /\ boundHit' = TRUE
+     \* On a stale prefix the claim's append would be refused (ErrSeqTaken): reload instead.
+     ELSE IF Cardinality(ClaimsOf(s, e)) >= MaxRounds THEN
+       IF Len(trail) # len[a]
+       THEN /\ len' = [len EXCEPT ![a] = Len(trail)]
+            /\ UNCHANGED <<pc, lease, ev, ok, claim, act, boundHit>>
+       ELSE FinishVars(a) /\ boundHit' = TRUE /\ UNCHANGED len
      ELSE To("claimed")
-  /\ UNCHANGED <<trail, envVars, procVars, len, nreq, fails, memFS, memD, deliv, stale, late,
+  /\ UNCHANGED <<trail, envVars, procVars, nreq, fails, memFS, memD, deliv, stale, late,
                  failed, lateFail, crashes, lost, ambig, sfail, slow>>
 
 \* Write: append the record at len + 1. Another record there: ErrSeqTaken, reload and fold again

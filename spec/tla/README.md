@@ -2398,11 +2398,11 @@ weakly fair; crashes, sink faults, an event's resolution and the episodes are no
 ### Configurations
 
 States are distinct states; times are TLC's own, on a development machine (Apple Silicon, shared
-with other work), one TLC worker each, six (pull-request rows) or eight (nightly rows)
-configurations at a time; CI runs four at a time. Pull requests: two processes, one event, up to
-three faults of the kinds named. Nightly: every fault at once, three processes, two events, two
-recovery episodes, two crashes, model 10's `life-leased` and `life-paused` composed with the
-notifier.
+with other work), one TLC worker each unless the row says otherwise, several configurations at a
+time; CI runs four at a time. Pull requests: two processes, one event, up to three faults of the
+kinds named. Nightly: every fault at once, three processes, two crashes, two recovery episodes, and
+model 10's `life-leased` (two event keys on one trail) and a one-run approval scenario composed with
+the notifier.
 
 | Config | Group | What | States | Time |
 |---|---|---|---|---|
@@ -2418,19 +2418,15 @@ notifier.
 | `live-crash-loop` | ci | A crash loop: recovery of the run fails, and the process crashes without bound, each restart losing its memory. recovery_failing is observed, and a successful pass closes the episode. | 2,649 | 5 s |
 | `compose-resolve` | ci | Property 6: model 10's life-resolve (a leased primary, one Recover pass, the operator resolving halts; an error reply and a crash) with a notifier on the run's halt. | 254,606 | 2 min |
 | `compose-notify-reach` | ci | Vacuity of the notifier in the composition: a notification is delivered (NotifyNotReachable must be violated). | 2,165 | 4 s |
-| `deep-faults` | nightly | Every fault at once: a crash, a lost reply, a trail append error, a failed request and a claim that lapses mid-round; two processes. | 7,565,060 | 28 min |
+| `deep-faults` | nightly | Every fault at once: a crash, a lost reply, a trail append error, a failed request and a claim that lapses mid-round; two processes. | 7,565,060 | 21 min |
 | `deep-ambig` | nightly | A crash, a trail append error and a failed request. | 571,621 | 1 min |
 | `deep-leased` | nightly | Under the run's lease: a crash, a lost reply and a claim that lapses mid-round. | 586,944 | 1 min |
-| `deep-crashes` | nightly | Two crashes, a lost reply, a failed request; three requests per round. | 1,416,514 | 3 min |
-| `deep-three` | nightly | Three processes, a crash, a lost reply and a claim that lapses mid-round. | ? | ? |
-| `deep-two-events` | nightly | Two events and a recovery episode; a crash, a lost reply, a claim that lapses mid-round. | ? | ? |
-| `deep-recovery` | nightly | recovery_failing in two episodes; a crash and a lost reply. | ? | ? |
-| `deep-live` | nightly | Liveness with a crash, a lost reply, a trail append error, a failed request and a claim that lapses mid-round. | ? | ? |
-| `deep-live-lost` | nightly | Liveness with a lost reply and a trail append that errors. | ? | ? |
-| `deep-sink-down` | nightly | A sink that never accepts, with a crash: failing and overdue are raised, the event stays open. | ? | ? |
-| `deep-crash-loop` | nightly | A crash loop over two failure episodes: recovery_failing is observed in each, however many restarts lose their memory. | ? | ? |
+| `deep-crashes` | nightly | Two crashes, a lost reply, a failed request; three requests per round. | 1,416,514 | 4 min |
+| `deep-three` | nightly | Three processes, a crash and a lost reply. | 2,241,818 | 10 min |
+| `deep-recovery` | nightly | recovery_failing in two episodes, one process; a crash. | 212,202 | 13 s (2 workers) |
+| `deep-live-lost` | nightly | Liveness with a lost reply and a trail append that errors. | 77,709 | 1 min |
 | `deep-compose-leased` | nightly | Property 6: model 10's life-leased (a saga of two calls, a leased primary and a RecoverLoop worker; an error reply and a crash) with a notifier on the run's halt and its abort. | 935,832 | 13 min |
-| `deep-compose-paused` | nightly | Property 6: model 10's life-paused (a run waiting for an approval, a halted run, a leased primary on a third; the operator) with two processes notifying the approval and the halt. | ? | ? |
+| `deep-compose-approval` | nightly | Property 6: a model 10 run waiting for an approval, a RecoverLoop worker, the operator approving and resolving, a crash; a notifier on the approval. | 268,245 | 13 s (4 workers) |
 
 ### Regressions: the protocol with one rule broken
 
@@ -2439,11 +2435,11 @@ they are the mutation check of every property above.
 
 | Config | Broken rule | Fails | Trace |
 |---|---|---|---|
-| `ack-first`, `ack-first-live` | `acked` appended before the request is sent ("done before the ack") | `AckTrue` (7 states); `NoSilentDrop` (23) |
+| `ack-first`, `ack-first-live` | `acked` appended before the request is sent ("done before the ack") | `AckTrue` (7 states); `NoSilentDrop` (26) |
 | `no-until`, `no-until-dup` | a claim with no `until` holds no one off | `NoConcurrentDouble` (11); `DupBound` with no fault (13) |
-| `no-lapse` | a claim that never lapses: a crashed holder's claim holds the event for ever | `NoSilentDrop` (18) |
+| `no-lapse` | a claim that never lapses: a crashed holder's claim holds the event for ever | `NoSilentDrop` (19) |
 | `no-seq` | a store that keeps the last leaf at a position instead of refusing it (no `ErrSeqTaken`) | `ClaimWon` (9) |
-| `no-overdue`, `no-overdue-live` | no overdue rule | `OverdueBounded` (13); `OverdueRaised` (32) |
+| `no-overdue`, `no-overdue-live` | no overdue rule | `OverdueBounded` (13); `OverdueRaised` (27) |
 | `mem-failing-since` | `failing_since` kept in each process's memory: a crash loop restarts the clock | `CrashLoopAlerts` (5) |
 | `no-stale-check` | no currency check (step 3): a resolved event is retried for ever while the sink is down | `StaleStops` (31) |
 | `no-done-check` | step 1 does not stop at `acked` | `Once` (10) |
@@ -2476,14 +2472,17 @@ errors is retried in place with the round's claim kept (`ack-no-retry`).
 
 ## What the bounds do not cover
 
-Model 14: two processes (three nightly) of one deliverer (two in `notify-slots`), one
-event (two nightly), one recovery episode (two nightly), two requests a round, and up to three
-faults among a crash, a lost reply, a trail append error, a failed request and a claim that lapses
-mid-round on pull requests (all five at once nightly); the composition with model 10 at its
-`life-resolve` bounds (`life-leased` and `life-paused` nightly). Times are abstract steps, so any
-relation between a claim's two minutes, the deadline's five and `D`'s fifteen is covered. A bug
-that needs a third event, two concurrent episodes, or more than two of one fault is outside the
-check.
+Model 14: two processes (three nightly) of one deliverer (two in `notify-slots`), one event per
+standalone configuration (two event keys on one trail in `deep-compose-leased`), one recovery
+episode (two nightly, in one process), two requests a round, and up to three faults among a crash, a
+lost reply, a trail append error, a failed request and a claim that lapses mid-round on pull
+requests (all five at once nightly); the composition with model 10 at its `life-resolve` bounds
+(`life-leased` and a one-run approval nightly). Times are abstract steps, so any relation between a
+claim's two minutes, the deadline's five and `D`'s fifteen is covered. A bug that needs two events
+interleaving in the standalone model with faults, two concurrent episodes, or more than two of one
+fault is outside the check. Two events at once outgrew a nightly run (over 55 million states with
+one crash); the protocol keeps a key's state in its own records, and keys share only the trail's
+positions and the deliverers' time, which `deep-compose-leased` exercises.
 
 Model 13: one call, two drivers, attempts 0..2 (0..3 nightly), one crash (two nightly), one
 provider, and one grant of fresh probes. A bug that needs three drivers, or two calls sharing a
