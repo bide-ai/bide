@@ -7,7 +7,11 @@
 # Test binaries, coverage, profiles
 *.test
 *.out
-coverage.*
+# coverage output only (not the coverage workflow, script or config)
+/coverage.out
+/coverage.txt
+/coverage.html
+*.coverprofile
 
 # Local test artifacts (temp SQLite event logs, etc.)
 *.db

@@ -165,6 +165,8 @@ func TestNeedsFragment(t *testing.T) {
 		{[]string{"go.mod", "store/sqlite/go.sum"}, false},
 		{[]string{"internal/journal/x.go"}, true},
 		{[]string{"spec/tla/claims/Claims.tla"}, false},
+		{[]string{"codecov.yml", ".gitattributes"}, false},
+		{[]string{"codecov.yml", "agent/run.go"}, true},
 	} {
 		if got := NeedsFragment(c.files); got != c.want {
 			t.Errorf("NeedsFragment(%v) = %v, want %v", c.files, got, c.want)
