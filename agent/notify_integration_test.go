@@ -742,3 +742,67 @@ func TestNotifier_ALazyKeyIsRetriedByTheWorker(t *testing.T) {
 	waitFor(t, func() bool { return sink.count() == 1 })
 	_ = e.flush(context.Background())
 }
+
+// Two peers finding an overdue event held by a dead holder send the notice once between them, under
+// the notice's own claim; and a holder that claimed after the event was overdue is left to send it.
+func TestNotifyRound_PeersSendTheOverdueNoticeOnceWhenTheHolderIsGone(t *testing.T) {
+	ctx := context.Background()
+	clk := &notifyClock{t: time.Date(2026, 10, 13, 9, 0, 0, 0, time.UTC)}
+	trail, j, ev := NewMemNotifyTrail(), memJournal(), haltEvent()
+	down, overdue := &fakeSink{fail: 1 << 30, err: ErrNotifyPermanent}, &fakeSink{fail: 1, err: ErrNotifyPermanent}
+	opts := []NotifyOption{WithOverdueNotifier(overdue), WithNotifyClaimTTL(time.Hour)}
+	_, _ = testEngine(t, j, down, trail, clk, "dead", opts...).round(ctx, ev) // claims for an hour, then its process dies
+	clk.advance(6 * time.Minute)
+	for _, name := range []string{"peer1", "peer2", "peer3"} {
+		_, _ = testEngine(t, j, down, trail, clk, name, opts...).round(ctx, ev)
+	}
+	if overdue.count() != 1 {
+		t.Fatalf("%d notice attempts from three peers inside one notice claim, want 1", overdue.count())
+	}
+	clk.advance(20 * time.Minute) // the notice's claim and pace have passed; its sink is back
+	_, _ = testEngine(t, j, down, trail, clk, "peer4", opts...).round(ctx, ev)
+	if overdue.count() != 2 {
+		t.Fatalf("%d notice attempts, want the retry by a later peer", overdue.count())
+	}
+	recs, _ := trail.Load(ctx, "notify:r")
+	if countKind(recs, NotifyAcked, OverdueKey(ev.key)) != 1 {
+		t.Fatalf("the notice is not acknowledged once: %v", recKinds(recs))
+	}
+	// An event whose holder claimed after the deadline sends its notice itself: a peer adds no claim.
+	trail2, ev2 := NewMemNotifyTrail(), haltEvent()
+	late := testEngine(t, j, down, trail2, clk, "late", opts...)
+	_, _ = late.round(ctx, ev2) // observed now
+	clk.advance(6 * time.Minute)
+	_, _ = late.round(ctx, ev2) // overdue, then a claim after it
+	before, _ := trail2.Load(ctx, "notify:r")
+	_, _ = testEngine(t, j, down, trail2, clk, "peer", opts...).round(ctx, ev2)
+	after, _ := trail2.Load(ctx, "notify:r")
+	if len(after) != len(before) {
+		t.Fatalf("a peer wrote %v beside a holder that claimed after the deadline", recKinds(after[len(before):]))
+	}
+}
+
+// Peers racing for the same overdue notice: the append of the notice's claim is the arbiter.
+func TestNotifyRound_RacingPeersSendTheOverdueNoticeOnce(t *testing.T) {
+	ctx := context.Background()
+	for iter := range 30 {
+		clk := &notifyClock{t: time.Date(2026, 10, 13, 9, 0, 0, 0, time.UTC)}
+		trail, j, ev := NewMemNotifyTrail(), memJournal(), haltEvent()
+		down, overdue := &fakeSink{fail: 1 << 30, err: ErrNotifyPermanent}, &fakeSink{fail: 1 << 30, err: ErrNotifyPermanent}
+		opts := []NotifyOption{WithOverdueNotifier(overdue), WithNotifyClaimTTL(time.Hour)}
+		_, _ = testEngine(t, j, down, trail, clk, "dead", opts...).round(ctx, ev)
+		clk.advance(6 * time.Minute)
+		start := make(chan struct{})
+		var wg sync.WaitGroup
+		for p := range 6 {
+			e := testEngine(t, j, down, trail, clk, "peer"+string(rune('a'+p)), opts...)
+			wg.Add(1)
+			go func() { defer wg.Done(); <-start; _, _ = e.round(ctx, ev) }()
+		}
+		close(start)
+		wg.Wait()
+		if overdue.count() != 1 {
+			t.Fatalf("iteration %d: %d peers sent the notice, want 1", iter, overdue.count())
+		}
+	}
+}

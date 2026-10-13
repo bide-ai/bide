@@ -228,8 +228,16 @@ type keyLock struct {
 // its claim remain (see roundLocked), so it ends inside the claim it holds.
 func (e *notifyEngine) callTimeout() time.Duration { return e.cfg.claimTTL / 8 }
 
-// roundBudget is the claim a round must have left to start under it: three quarters.
-func (e *notifyEngine) roundBudget() time.Duration { return e.cfg.claimTTL * 3 / 4 }
+// roundBudget is the claim a round must have left to start under it: the worst a round can take.
+// A round makes roundAttempts+1 calls (the overdue notice is one) of callTimeout each, sleeps
+// attemptBackoff, then twice that, between its attempts, and spends an eighth of the claim on the
+// acknowledgement. With the call limit an eighth of the claim, that is five eighths of it and the
+// backoff.
+func (e *notifyEngine) roundBudget() time.Duration {
+	calls := time.Duration(e.cfg.roundAttempts+1) * e.callTimeout()
+	sleeps := e.cfg.attemptBackoff * time.Duration(1<<(e.cfg.roundAttempts-1)-1)
+	return calls + sleeps + e.cfg.claimTTL/8
+}
 
 // callNotify makes one call of n, bounded by callTimeout whether or not n honors its context: the
 // call runs on a goroutine and is abandoned when the time is up, counting as failed (a Notifier
@@ -378,6 +386,17 @@ func (e *notifyEngine) roundLocked(ctx context.Context, ev notifyEvent) (roundRe
 
 		live := e.claimLive(es, now)
 		if live && es.Claim.Holder != e.holder {
+			// The holder sends the overdue notice in its own rounds. If it claimed before the event
+			// was overdue it has not had the chance, and may be gone for the whole claim: a peer sends
+			// the notice, under a short claim of its own on the notice's key, so that peers do not
+			// send it together. A holder that is only slow may send it too: one duplicate, which the
+			// notice's stable ID lets the sink drop.
+			if ev.kind != NotificationOverdue && es.Overdue != nil && es.Claim.At.Before(es.Overdue.At) {
+				if ev.principal == nil {
+					ev.principal = e.principalOf(ctx, ev.runID)
+				}
+				e.deliverOverdueNotice(ctx, ev, es, name, true)
+			}
 			return roundResult{next: es.Claim.Until.Add(e.cfg.skew), deferred: fmt.Errorf("notify: %s is held by another deliverer's claim until %s; not delivered by this process", ev.key, es.Claim.Until.Format(time.RFC3339))}, nil // another deliverer has it
 		}
 		if !live || es.Claim.Until.Sub(now) <= e.roundBudget() {
@@ -421,7 +440,7 @@ func (e *notifyEngine) deliver(ctx context.Context, ev notifyEvent, es *NotifyEv
 		ev.principal = e.principalOf(ctx, ev.runID)
 	}
 	if es.Overdue != nil {
-		e.deliverOverdueNotice(ctx, ev, es, name)
+		e.deliverOverdueNotice(ctx, ev, es, name, false)
 	}
 	var lastErr error
 	for i := range e.cfg.roundAttempts {
@@ -462,13 +481,13 @@ func (e *notifyEngine) notifierFor(ev notifyEvent) Notifier {
 	return e.n
 }
 
-// deliverOverdueNotice sends the notice that es, which is overdue, is not acknowledged. It runs
-// inside the round that holds the event's claim, as part of it: the notice needs no claim of its
-// own, so an undelivered event writes one claim per round however many notices it owes, and the
+// deliverOverdueNotice sends the notice that es, which is overdue, is not acknowledged. The deliverer
+// that holds the event's claim sends it inside its round, as part of it (claim is false): the notice
+// needs no claim of its own then, so an undelivered event writes one claim per round however many notices it owes, and the
 // notice is derived from the trail on every round (the event open, its overdue record present, no
 // acknowledged notice), so it survives a death after the overdue record, a failed delivery and a
 // restart. It is a single attempt; the next round tries again.
-func (e *notifyEngine) deliverOverdueNotice(ctx context.Context, ev notifyEvent, es *NotifyEvent, name string) {
+func (e *notifyEngine) deliverOverdueNotice(ctx context.Context, ev notifyEvent, es *NotifyEvent, name string, claim bool) {
 	key := OverdueKey(ev.key)
 	e.mu.Lock()
 	pa, owed := e.unacked[key]
@@ -500,6 +519,22 @@ func (e *notifyEngine) deliverOverdueNotice(ctx context.Context, ev notifyEvent,
 				return
 			}
 			continue
+		}
+		if claim { // a peer sending it: exclusive with other peers, under a short claim of its own
+			now := e.cfg.now()
+			if ne.Claim != nil && (e.claimLive(ne, now) || now.Before(e.pace(ne))) {
+				return
+			}
+			rec := NotifyRecord{Kind: NotifyClaimed, Key: key, RunID: ev.runID, At: now, Holder: e.holder,
+				Until: now.Add(min(e.cfg.claimTTL, 2*time.Minute))}
+			conflict, aerr := e.appendRec(ctx, name, len(recs), rec)
+			if aerr != nil {
+				e.report(aerr)
+				return
+			}
+			if conflict {
+				continue
+			}
 		}
 		e.mu.Lock()
 		e.attempts[key]++
@@ -555,10 +590,11 @@ func (e *notifyEngine) ack(ctx context.Context, ev notifyEvent, name string, fir
 			}
 			lastErr = aerr // nil on a lost race: reload and decide again
 		}
-		if ctx.Err() != nil || !e.cfg.now().Before(limit) {
+		remaining := limit.Sub(e.cfg.now())
+		if ctx.Err() != nil || remaining <= 0 {
 			break
 		}
-		if err := e.cfg.sleep(ctx, delay); err != nil {
+		if err := e.cfg.sleep(ctx, min(delay, remaining)); err != nil { // never past the limit
 			break
 		}
 		delay = min(delay*2, 8*time.Second)

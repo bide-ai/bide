@@ -292,12 +292,20 @@ An independent review of the first implementation found these, and each is now a
   succeeds is a duplicate within the stated bound). A round makes at most four calls (the overdue
   notice is the fourth), so its calls take half the claim, its backoff and acknowledgement retries
   a little more, and it starts only when more than three quarters of its claim remain: it ends inside
-  the claim it holds. Rounds of different events run concurrently (up to 8), so a hung sink holds
+  the claim it holds (the budget counts the backoff between attempts and the acknowledgement's
+  retries, whose sleeps are capped at what remains of their limit). Rounds of different events run concurrently (up to 8), so a hung sink holds
   neither the others nor, for long, its own slot. An abandoned call that has not returned is not
   repeated: its event makes no new call until it does, and an engine has at most 256 calls running,
   so a Notifier that never returns cannot gather goroutines; the refusal is reported to
   `WithNotifyErrors`. `RecoverLoop` bounds its flush on the way out (500 ms)
   and cancels the calls still in flight.
+- **A peer sends the overdue notice when the holder is gone.** The holder sends the notice inside its
+  own rounds, so a holder that claimed before the event was overdue, and may be dead for the whole
+  claim, would delay it by the claim (an hour at `WithNotifyClaimTTL(time.Hour)`). Such a peer sends
+  it under a short claim (at most 2 minutes) of its own on the notice's key, so peers do not send it
+  together; a holder that is only slow may send it too, one duplicate the notice's stable ID lets the
+  sink drop. A holder that claimed after the event was overdue is left to send it, so the common case
+  writes no extra claims.
 - **Claim liveness does not trust synchronized clocks.** `claimed.until` is written by one clock and
   read by another. Another holder's claim counts as live until `until` plus a skew margin (default
   2 minutes, `claimTTL`). A peer whose clock is ahead takes a live claim over only if it is ahead by
@@ -315,7 +323,9 @@ An independent review of the first implementation found these, and each is now a
   `run_aborted` for any whose trail has no event, if the abort was within `WithNotifyAbortedWithin`
   (24 hours), so enabling the sweep does not page for every run that ever aborted. `run:aborted`
   records `aborted_at` (informational, like `started_at`: no drive, resume or recovery pass reads it,
-  and a run:aborted without it loads and behaves the same). For a run an earlier version aborted the
+  and a run:aborted without it loads and behaves the same; it is stamped by the drive's clock, so a
+  run driven with `WithClock` carries that clock's time, and the sweep compares it with the
+  notifier's own). For a run an earlier version aborted the
   sweep uses the newest time the journal records for the run (an attempt marker's, else the start),
   which is no later than the abort; a run whose journal records no time is not raised. It costs one
   point read for each aborted run, every sweep, and a History read for each legacy one.
@@ -333,7 +343,8 @@ An independent review of the first implementation found these, and each is now a
   the next event; an event queued while it leaves starts another.
 - **`FlushNotifications` returns what was not delivered**: the last error of each event still queued
   when the worker stops, and, for an event whose round deferred to another deliverer's live claim or
-  to its pace, that deferral (checked against the trail first, so an event the other deliverer has
+  to its pace, that deferral (checked against the trail first, under the flush's own deadline and
+  at most two seconds, so a hung trail does not hold a shutdown; if the check fails the deferral stays, so an event the other deliverer has
   since acknowledged is not reported), so a caller that exits after it knows. Key locks are removed when no
   round holds or waits for them. A plan flow keeps one notifier per
   store, not per `Journal` value.

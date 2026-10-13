@@ -235,7 +235,10 @@ func (w *notifyWorker) undelivered(ctx context.Context) error {
 	var errs []error
 	for _, it := range items {
 		if it.deferred {
-			if recs, err := w.e.trail.Load(ctx, NotifyTrailName(it.ev.runID)); err == nil {
+			lctx, cancel := context.WithTimeout(ctx, 2*time.Second) // a hung trail must not hold the flush
+			recs, err := w.e.trail.Load(lctx, NotifyTrailName(it.ev.runID))
+			cancel()
+			if err == nil {
 				key := it.ev.key
 				if es := FoldNotify(recs).Events[key]; es != nil && !es.Open() {
 					continue // the deliverer it deferred to has finished
@@ -263,7 +266,7 @@ func (e *notifyEngine) flush(ctx context.Context) error {
 			if cancel != nil {
 				cancel()
 			}
-			return errors.Join(ctx.Err(), w.undelivered(context.WithoutCancel(ctx)))
+			return errors.Join(ctx.Err(), w.undelivered(ctx))
 		case <-time.After(2 * time.Millisecond):
 		}
 	}
@@ -284,8 +287,8 @@ func (e *notifyEngine) flush(ctx context.Context) error {
 		case <-done:
 		case <-ctx.Done():
 			cancel()
-			return errors.Join(ctx.Err(), w.undelivered(context.WithoutCancel(ctx)))
+			return errors.Join(ctx.Err(), w.undelivered(ctx))
 		}
 	}
-	return w.undelivered(context.WithoutCancel(ctx))
+	return w.undelivered(ctx)
 }
