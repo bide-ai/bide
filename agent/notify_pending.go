@@ -41,7 +41,7 @@ func NotifyPending(ctx context.Context, j *Journal, n Notifier, trail NotifyTrai
 	if !ok {
 		return fmt.Errorf("NotifyPending needs a store that implements Lister (itself or through Unwrap) to enumerate runs: %w", ErrConfig)
 	}
-	e, err := newNotifyEngine(j, n, trail, opts)
+	e, err := newNotifyEngine(j, n, trail, opts, "sweep")
 	if err != nil {
 		return err
 	}

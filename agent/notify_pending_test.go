@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"errors"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 )
@@ -193,7 +194,8 @@ func TestNotifyPending_AFailedDeliveryIsReportedAndTheRestStillGoOut(t *testing.
 	if sink.count() != 4 || sink.calls[3].RunID != "b" {
 		t.Fatalf("the second run was not delivered after the first failed: %d calls", sink.count())
 	}
-	// The next sweep retries the one that failed, and only that.
+	// The next sweep retries the one that failed, and only that, once its claim has lapsed.
+	clk.advance(3 * time.Minute)
 	if err := sweep(t, j, sink, trail, clk); err != nil || sink.count() != 5 || sink.calls[4].RunID != "a" {
 		t.Fatalf("second sweep: %v, calls=%d", err, sink.count())
 	}
@@ -212,5 +214,37 @@ func TestNotifyPending_Config(t *testing.T) {
 	}
 	if err := NotifyPending(ctx, memJournal(), &fakeSink{}, NewMemNotifyTrail(), WithNotifyHaltAge(0)); !errors.Is(err, ErrConfig) {
 		t.Errorf("zero halt age: %v", err)
+	}
+}
+
+// A drive's notifier and the sweep in one process, configured with one holder name, are two
+// holders: while the drive's delivery is in flight under its live claim, the sweep does not send.
+func TestNotifyPending_AndADriveInOneProcessAreTwoHolders(t *testing.T) {
+	ctx := context.Background()
+	charge := MustFunc("charge", "", func(context.Context, struct{}) (string, error) { return "ok", nil })
+	j := mustJournal(markerAt(t, time.Date(2026, 10, 13, 9, 0, 0, 0, time.UTC).UnixMilli()))
+	trail := NewMemNotifyTrail()
+	block, entered := make(chan struct{}), make(chan struct{})
+	var once sync.Once
+	slow := notifierFunc(func(context.Context, Notification) error {
+		once.Do(func() { close(entered) })
+		<-block
+		return nil
+	})
+	a := mustNew(NewScriptedModel(), j, WithTools(charge), WithNotifier(slow, trail, WithNotifyHolder("worker-1")))
+	if _, err := a.Run(ctx, "r", UserText("go")); !errors.As(err, new(*OutcomeUnknown)) {
+		t.Fatalf("Run = %v", err)
+	}
+	<-entered
+	sweepSink := &fakeSink{}
+	if err := NotifyPending(ctx, j, sweepSink, trail, WithNotifyHolder("worker-1"), WithNotifyHaltAge(time.Nanosecond)); err != nil {
+		t.Fatal(err)
+	}
+	if sweepSink.count() != 0 {
+		t.Fatal("the sweep delivered under the drive's live claim")
+	}
+	close(block)
+	if err := a.FlushNotifications(ctx); err != nil {
+		t.Fatal(err)
 	}
 }
