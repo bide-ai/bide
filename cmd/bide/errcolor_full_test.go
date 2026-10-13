@@ -39,3 +39,20 @@ func TestFullErrorPrefix(t *testing.T) {
 		t.Errorf("hint is not dim:\n%q", out)
 	}
 }
+
+// TestDoctorAndAuditErrors: doctor's usage error carries the prefix, and an audit error's hint,
+// after its semicolon, is dim.
+func TestDoctorAndAuditErrors(t *testing.T) {
+	_, _, out := runBide("doctor", "-color=always", "extra")
+	if !strings.HasPrefix(out, errPrefix+"bide doctor: unexpected argument") {
+		t.Errorf("doctor: %q", out)
+	}
+	_, _, plain := runBide("doctor", "extra")
+	if strings.Contains(plain, "\x1b") {
+		t.Errorf("piped doctor error is colored: %q", plain)
+	}
+	_, _, out = runBide("audit", "-color=always", "verify-evidence", "-evidence", "x.json", "-pubkey", "nothex")
+	if !strings.Contains(out, "; \x1b[2m") || !strings.Contains(out, errPrefix[:7]) {
+		t.Errorf("audit error hint is not dim:\n%q", out)
+	}
+}

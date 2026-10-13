@@ -278,7 +278,7 @@ func run(args []string, stdout, stderr io.Writer) int {
 		if errors.As(e, &ce) && ce.shown {
 			continue
 		}
-		fmt.Fprintln(stderr, errLabel, e)
+		fmt.Fprintln(stderr, errLabel, c.errStyle().Hint(e.Error(), "; "))
 	}
 	if c.json {
 		c.writeReport(code, msgs)

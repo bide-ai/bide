@@ -104,7 +104,7 @@ terminal the output is colored; -color=never, or NO_COLOR set to any value, turn
 		return 2
 	}
 	if fs.NArg() > 0 {
-		fmt.Fprintf(stderr, "bide doctor: unexpected argument %q\n", fs.Arg(0))
+		fmt.Fprintf(stderr, "%sbide doctor: unexpected argument %q\n", term.For(stderr, *color).ErrorPrefix(), fs.Arg(0))
 		fs.Usage()
 		return 2
 	}
