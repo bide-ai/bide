@@ -87,13 +87,13 @@ func TestRunListStates(t *testing.T) {
 			t.Errorf("%s: want state %q, rows %+v", id, state, l.Rows)
 		}
 	}
-	// A run whose journal holds a side effect's attempt marker is stamped; one that made none is not.
-	for _, r := range l.Rows {
-		if stamped := !r.LastStamped.IsZero(); stamped != (r.ID != "refund-1043" && r.ID != "refund-1044" && r.ID != "triage-3001" && r.ID != "refund-1045") {
-			t.Errorf("%s: stamped = %v (%v)", r.ID, stamped, r.LastStamped)
+	// Every run shows when it started but the one journaled with no start time, which comes last.
+	for i, r := range l.Rows {
+		if old := r.ID == "refund-0999"; r.Started.IsZero() != old || old != (i == len(l.Rows)-1) {
+			t.Errorf("%s (row %d): started %v", r.ID, i, r.Started)
 		}
 	}
-	want := map[string]int{"completed": 3, "halted": 2, "waiting": 1, "in-progress": 1, "failed": 2}
+	want := map[string]int{"completed": 4, "halted": 2, "waiting": 1, "in-progress": 1, "failed": 2}
 	for g, n := range want {
 		if l.Counts[g] != n {
 			t.Errorf("count %s = %d, want %d", g, l.Counts[g], n)
@@ -148,25 +148,42 @@ func TestRunListFilters(t *testing.T) {
 	}
 }
 
-// TestRunListOrder: most recently stamped first, then unstamped runs by run ID.
+// TestRunListOrder: newest first by the start time run:start records, then the runs that record
+// none (an earlier version's, one whose time is not a time, one with no run:start) by run ID.
 func TestRunListOrder(t *testing.T) {
-	at := func(ms int64) []agent.Record {
-		if ms == 0 {
-			return []agent.Record{{Name: "x", Kind: agent.StepValue}}
+	start := func(at string) []agent.Record {
+		res := `{"input":"go","kind":"agent"}`
+		if at != "" {
+			res = `{"input":"go","kind":"agent","started_at":"` + at + `"}`
 		}
-		return []agent.Record{{Name: "x", Kind: agent.StepValue}, {Name: "attempt:tool:c0", Kind: agent.StepAttempt, AttemptedAt: ms - 5000}, {Name: "attempt:tool:c1", Kind: agent.StepAttempt, AttemptedAt: ms}, {Name: "attempt:tool:c2", Kind: agent.StepAttempt, AttemptedAt: ms - 9000}}
+		return []agent.Record{{Name: "run:start", Kind: agent.StepValue, Result: json.RawMessage(res)}}
 	}
-	x := Exports{"b-none": at(0), "a-none": at(0), "old": at(1_000_000), "new": at(3_000_000), "mid": at(2_000_000)}
+	x := Exports{
+		"old":      start("2026-10-01T09:00:00.000Z"),
+		"new":      start("2026-10-12T23:59:59.999Z"),
+		"mid":      start("2026-10-12T08:00:00.500+02:00"),
+		"c-legacy": start(""),
+		"b-junk":   start("yesterday"),
+		"a-none":   {{Name: "x", Kind: agent.StepValue}},
+	}
 	l := Options{Source: x}.runList(context.Background(), ListFilter{Limit: listPage})
-	if got, want := ids(l), []string{"new", "mid", "old", "a-none", "b-none"}; !slices.Equal(got, want) {
+	if got, want := ids(l), []string{"new", "mid", "old", "a-none", "b-junk", "c-legacy"}; !slices.Equal(got, want) {
 		t.Fatalf("order = %v, want %v", got, want)
 	}
-	if got := l.Rows[0].LastStamped.UnixMilli(); got != 3_000_000 {
-		t.Fatalf("new's stamp = %d, want its last attempt marker's", got)
+	if got := l.Rows[1]; got.StartedText() != "2026-10-12 06:00:00 UTC" {
+		t.Fatalf("mid started %q, want its time in UTC", got.StartedText())
+	}
+	for _, r := range l.Rows[3:] {
+		if !r.Started.IsZero() || r.StartedText() != "" {
+			t.Fatalf("%s: started %v", r.ID, r.Started)
+		}
 	}
 	// A journal with records and no run:start is a run not started.
 	if r := l.Rows[3]; r.Group != "not-started" || r.StateText != "not started" || r.Kind != "" || r.KindText() != "unknown" {
 		t.Fatalf("a-none = %+v", r)
+	}
+	if code, body := get(t, Handler(Options{Source: x}), "/"); code != 200 || !strings.Contains(body, "2026-10-12 23:59:59 UTC") || strings.Count(body, `title="journaled by a version that recorded no start time">none<`) != 3 {
+		t.Fatalf("page = %d; want the start times, and none for the three runs that record none", code)
 	}
 }
 
