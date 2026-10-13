@@ -38,19 +38,10 @@ examples/approval/approval
 examples/approval/evidence.json
 examples/approval/approver-keys.json
 
-# internal strategy/positioning docs (not published); the Go packages under internal/ are tracked
-/internal/*
-!/internal/jsonfields/
-!/internal/strictjson/
-!/internal/mermaid/
-!/internal/tools/
-!/internal/journalhook/
-!/internal/toolhook/
-!/internal/journaltest/
-!/internal/runview/
-!/internal/term/
-!/internal/auditcli/
-!/internal/errgroup/
+# internal strategy/positioning docs (not published). Only those are ignored: every Go package
+# under internal/ is tracked, so a new package needs no entry here.
+/internal/*.md
+/internal/design/
 
 # a journal file written by v0.7.0, the fixture of store/sqlite's legacy-file test
 !/store/sqlite/testdata/v070.db

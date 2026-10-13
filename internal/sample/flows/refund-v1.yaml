@@ -1,0 +1,27 @@
+# yaml-language-server: $schema=https://raw.githubusercontent.com/bide-ai/bide/main/plan/schema/flow.schema.json
+# The refund flow as the sample's runs follow it (flow-3001 to flow-3004): a large refund goes
+# through review, which needs 2 of its 3 approvers, before it is charged. Four assertions hold.
+# Compare it with refund-v2.yaml:
+#   bide check flows/refund-v2.yaml -diff flows/refund-v1.yaml -check -fail-on-weaken
+version: 1
+flow: refund
+entry: validate
+nodes:
+  - {name: validate, block: validate, safety: readonly}
+  - {name: lookup, block: lookup}
+  - {name: review, block: review, safety: readonly, approval: {need: 2, approvers: [ops, finance, risk]}}
+  - {name: charge, block: charge, safety: side_effect}
+  - {name: credit, block: credit, safety: idempotent}
+  - {name: receipt, block: receipt, safety: idempotent}
+wiring:
+  - edge: [validate, lookup]
+  - switch: lookup
+    when: [{pred: large, to: review}]
+    else: credit
+  - edge: [review, charge]
+  - edge: [charge, receipt]
+assert:
+  - every path to charge passes approval >= 2 of 3
+  - no side effect after charge
+  - every path to a terminal passes validate
+  - credit reachable
