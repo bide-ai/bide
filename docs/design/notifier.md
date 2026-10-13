@@ -201,7 +201,7 @@ source of truth.
 |---|---|---|
 | `observed` | once per event, first process to see it | `key`, `kind`, `event_at`, `observed_at`, `deadline_at` |
 | `claimed` | at the start of each delivery round | `key`, `holder`, `at`, `until` |
-| `acked` | after the sink acknowledged | `key`, `first_sent_at`, `acked_at`, `attempts`, `status` |
+| `acked` | after the sink acknowledged | `key`, `first_sent_at`, `acked_at`, `attempts`, `status`, `auth` |
 | `failing` | once, after 8 failed attempts | `key`, `failures`, `at` |
 | `overdue` | once, when the deadline passes unacked | `key`, `at`, `latency` |
 | `cleared` | the event stopped being current | `key`, `at`, `reason` (`resolved`, `decided`, `ended`) |
@@ -274,7 +274,11 @@ Three times for one event, all in the audited trail:
 - `acked_at - observed_at` is within the notify deadline, or an `overdue` record exists for it;
 - no `acked` without an earlier `observed`; no `acked` for a key `cleared`.
 
-It reports "approvers were notified at T" with the T1, T2, T3 above.
+It reports "approvers were notified at T" with the T1, T2, T3 above, and how the delivery was
+authenticated: `auth` records `signature` (the signature scheme and which secret slot signed, current
+or previous, never the secret), `mtls` (whether a client certificate was presented, its SPKI hash,
+and whether the receiver was pinned or checked against a custom CA), and the negotiated TLS
+version. An audit policy can then require that approval notifications were sent with mTLS.
 
 What this does and does not prove: `acked` means the sink's endpoint accepted the request, not that
 a person read it. Times are the notifying process's clock; anchoring the trail's tree head with a
@@ -305,6 +309,9 @@ Package `notify` in the core module (`net/http`, `crypto/hmac`, `encoding/json`;
 n, err := notify.NewWebhook(os.Getenv("BIDE_WEBHOOK_URL"),
 	notify.WithSecrets(current, previous), // sign with current; previous is accepted by receivers during rotation
 	notify.WithTimeout(10*time.Second),    // per request
+	notify.WithClientCert(certFile, keyFile), // optional mutual TLS
+	notify.WithServerCA(caFile),              // optional private CA for the receiver
+	notify.WithServerPin(spkiSHA256),         // optional pin of the receiver's key
 )
 ```
 
@@ -318,6 +325,28 @@ n, err := notify.NewWebhook(os.Getenv("BIDE_WEBHOOK_URL"),
 - **Rotation.** With two secrets the request carries two signatures, so a receiver that has either
   secret verifies it: rotate by deploying `previous = old, current = new`, updating the receiver,
   then dropping `previous`.
+- **TLS version.** Minimum TLS 1.2, 1.3 negotiated when the receiver offers it. Stdlib `crypto/tls`
+  only; no cipher-suite list beyond the stdlib defaults.
+- **Optional mutual TLS.** `WithClientCert` presents a client certificate and key, given as files or
+  PEM from configuration or the environment, never written to the journal, the trail or a payload.
+  The pair is re-read through `tls.Config.GetClientCertificate` when the files change (checked by
+  modification time at most once a minute, and on a handshake failure), so a rotated or short-lived
+  certificate (cert-manager, SPIFFE) is picked up without a restart; a read that fails keeps the
+  last good pair and reports the error to `WithRecoverErrors`.
+- **Receiver verification.** `WithServerCA` sets a CA bundle for a private receiver in place of the
+  system roots (it does not add to them, so a private receiver cannot be impersonated by a public
+  CA). `WithServerPin` pins the SHA-256 of the receiver certificate's SubjectPublicKeyInfo: the
+  handshake fails unless a certificate in the verified chain matches, and a pin set may hold two
+  hashes so the receiver can rotate. Pinning is in addition to normal verification, never instead of it.
+- **mTLS is not a replacement for the HMAC signature**, which is always on:
+  - Slack, PagerDuty and most webhook receivers do not accept client certificates; the signature
+    works with every receiver that can read a header.
+  - TLS ends at proxies, load balancers and gateways, so the receiving application often never sees
+    the client identity; the signature travels with the payload to whatever finally reads it.
+  - A signature can be verified later, over the stored body, as evidence; a handshake leaves
+    nothing to check afterwards.
+
+  mTLS answers "who may connect" and the signature answers "who sent this body". They compose.
 - **Retries within a round.** Up to 3 requests with backoff (1 s, 2 s; jitter), `Retry-After`
   honored on 429. Network errors, timeouts, 429 and 5xx retry; any other 4xx is a permanent error for
   the round (the outer backoff still tries again later, since a receiver's configuration can change).
@@ -478,7 +507,9 @@ does not (the race between the currency check and the send).
 ## Non-goals
 
 - **Acting from the notification** (approve or resolve from Slack). It needs authenticated
-  callbacks, the approver key story and the m-of-n signature path; a later step.
+  callbacks, the approver key story and the m-of-n signature path; a later step. That inbound
+  direction is where mutual TLS matters most, since it would authenticate the system calling bide
+  rather than the system bide calls; this note's mTLS support is the outbound half only.
 - **Reminder and escalation policy** beyond the key shape that admits it (`r` in the approval key)
   and the one-shot overdue event.
 - **Routing rules** (which team gets which tool). One notifier per agent; fan out in the receiver,
@@ -512,5 +543,8 @@ does not (the race between the currency check and the send).
    (`run:aborted`) and `recovery_failing`, and revisit if a general terminal-failure record appears.
 9. **Digest scope.** Recommend v1 ships the digest as optional and off by default, over runs the
    sweep sees, and leaves per-tenant digests to the receiver.
-10. **When to build it.** Recommend building after the user approves this note, in this order: the
+10. **mTLS scope in v1.** Recommend shipping the client certificate with reload, the custom CA and
+    the SPKI pin together, since each is small over `crypto/tls`, and leaving certificate revocation
+    checking to the receiver's side. Inbound mTLS waits for the act-from-Slack step.
+11. **When to build it.** Recommend building after the user approves this note, in this order: the
     `ErrSeqTaken` contract, the trail port and adapter, the model, then the webhook and the sweep.
