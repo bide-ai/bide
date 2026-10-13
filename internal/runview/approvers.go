@@ -1,16 +1,19 @@
 package runview
 
 import (
+	"fmt"
 	"slices"
 	"strings"
 	"time"
 	"unicode"
 
 	"github.com/bide-ai/bide/agent"
+	"github.com/bide-ai/bide/audit"
 )
 
 // ApproverCard is one approver of an approval gate, as the page shows them: who, what they decided,
-// whether their signature verified, the fingerprint of their key and when it was signed.
+// whether their signature verified, the fingerprint of their key, and when they decided and when
+// bide recorded it.
 type ApproverCard struct {
 	Name     string
 	Initials string
@@ -25,9 +28,15 @@ type ApproverCard struct {
 	// Fingerprint is the approver's key as "ed25519:3b6a27bc" (the first 8 hex digits of the
 	// SHA-256 of its public key), when -approver-keys gave it.
 	Fingerprint string
-	// SignedBy is when the signed head that covers the decision was signed: the decision was
-	// journaled no later than that, since the journal records no time of its own for it.
-	SignedBy time.Time
+	// DecidedAt is when the approver says they decided, by their clock, inside the signature;
+	// RecordedAt is when bide journaled the decision, by bide's clock. Both are display text
+	// ("2026-10-13 12:14:03.123 UTC"), empty when the record holds none. Gap is the difference
+	// between them in words, shown without judgment, and Flags the sanity notes on them
+	// (audit.FlagDecisionTimes, under audit.DefaultDecisionTimeTolerance), which never change
+	// the gate's outcome. Empty for a pending approver.
+	DecidedAt, RecordedAt string
+	Gap                   string
+	Flags                 []string
 }
 
 // initials is up to two letters standing for an approver id: the first letters of its words
@@ -88,10 +97,6 @@ func cards(g Gate, p *Proof) []ApproverCard {
 		return nil
 	}
 	chk, checked := p.approval(g.ToolUseID)
-	var signedBy time.Time
-	if p != nil {
-		signedBy = p.SignedAt
-	}
 	names := slices.Clone(g.Approvers)
 	for _, n := range slices.Concat(g.ApprovedBy, g.DeniedBy) {
 		if !slices.Contains(names, n) {
@@ -110,7 +115,10 @@ func cards(g Gate, p *Proof) []ApproverCard {
 			c.State = "pending"
 		}
 		if c.State != "pending" {
-			c.SignedBy = signedBy
+			if t, ok := decisionTime(g, chk, n, c.State == "approved"); ok {
+				c.DecidedAt, c.RecordedAt = displayTime(t.DecidedAt), displayTime(t.RecordedAt)
+				c.Gap, c.Flags = gapWords(t), t.Flags
+			}
 			switch {
 			case checked && (slices.Contains(chk.Counted, n) || slices.Contains(chk.Denied, n)):
 				c.Verify, c.VerifyOK = "signature verified", true
@@ -125,4 +133,48 @@ func cards(g Gate, p *Proof) []ApproverCard {
 		out = append(out, c)
 	}
 	return out
+}
+
+// decisionTime is the two times of approver n's decision on g, with their sanity flags: from the
+// signature check's verdict when it counted the decision (the exact decision the recount
+// counted), else from the journal, the approver's first signed decision with that outcome, the
+// one the counting rule would count if its signature verifies.
+func decisionTime(g Gate, chk ApprovalCheck, n string, approved bool) (audit.DecisionTime, bool) {
+	if t, ok := chk.Times[n]; ok {
+		return t, true
+	}
+	for _, d := range g.Decisions {
+		if d.Signed && d.Approver == n && d.Approved == approved {
+			t := audit.DecisionTime{Approver: n, DecidedAt: d.DecidedAt, RecordedAt: d.RecordedAt}
+			return audit.FlagDecisionTimes([]audit.DecisionTime{t}, g.AskedAt, audit.DefaultDecisionTimeTolerance)[0], true
+		}
+	}
+	return audit.DecisionTime{}, false
+}
+
+// displayTime renders a recorded time ("2026-10-13T12:14:03.123Z") as "2026-10-13 12:14:03.123
+// UTC"; a value not in canonical form is shown as it is, marked, and an empty one stays empty.
+func displayTime(s string) string {
+	if s == "" {
+		return ""
+	}
+	t, err := agent.ParseTimestamp(s)
+	if err != nil {
+		return fmt.Sprintf("%q (not a canonical time)", s)
+	}
+	return t.Format("2006-01-02 15:04:05.000 UTC")
+}
+
+// gapWords phrases how long after the signed decision time bide recorded the decision, e.g.
+// "recorded 2.5s after the signed time"; empty when either time is missing.
+func gapWords(t audit.DecisionTime) string {
+	gap, ok := t.Gap()
+	switch {
+	case !ok:
+		return ""
+	case gap >= 0:
+		return "recorded " + gap.Round(time.Millisecond).String() + " after the signed time"
+	default:
+		return "recorded " + (-gap).Round(time.Millisecond).String() + " before the signed time"
+	}
 }

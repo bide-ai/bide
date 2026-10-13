@@ -120,6 +120,9 @@ type Gate struct {
 	Pending    []string   `json:"pending,omitempty"`
 	Decisions  []Decision `json:"decisions,omitempty"`
 	Tallied    bool       `json:"tallied"` // the gate journaled its terminal tally
+	// AskedAt is when the run paused at the gate (agent.ApprovalWait.RecordedAt, by bide's clock),
+	// empty when the journal does not say.
+	AskedAt string `json:"asked_at,omitempty"`
 	// Waiting: the run paused at this gate (its approval-pending record, agent.ApprovalWait) and
 	// the call has no result, no terminal tally, and (for a one-decision gate) no decision yet.
 	Waiting bool `json:"waiting"`
@@ -132,11 +135,14 @@ type Gate struct {
 	Cards []ApproverCard `json:"-"`
 }
 
-// Decision is one recorded approval decision.
+// Decision is one recorded approval decision. A signed decision carries two times: DecidedAt, the
+// approver's clock inside the signature, and RecordedAt, bide's clock when it was journaled.
 type Decision struct {
-	Approver string `json:"approver,omitempty"` // empty for a one-decision gate's Approve
-	Approved bool   `json:"approved"`
-	Signed   bool   `json:"signed"`
+	Approver   string `json:"approver,omitempty"` // empty for a one-decision gate's Approve
+	Approved   bool   `json:"approved"`
+	Signed     bool   `json:"signed"`
+	DecidedAt  string `json:"decided_at,omitempty"`
+	RecordedAt string `json:"recorded_at,omitempty"`
 }
 
 // Build reads the run's records into a View. recs is the run's journal in order (header
@@ -498,7 +504,7 @@ func gates(recs []agent.Record, calls map[string]agent.ToolUse, order []string) 
 		paused := false
 		if r, ok := byName[agent.ApprovalPendingStep(id)]; ok && json.Unmarshal(r.Result, &wait) == nil {
 			paused = true
-			g.Single, g.Need, g.Approvers = wait.Single, wait.Need, wait.Approvers
+			g.Single, g.Need, g.Approvers, g.AskedAt = wait.Single, wait.Need, wait.Approvers, wait.RecordedAt
 		}
 		resulted := false
 		for _, r := range recs {
@@ -506,7 +512,7 @@ func gates(recs []agent.Record, calls map[string]agent.ToolUse, order []string) 
 				resulted = true
 			}
 			if r.Kind == agent.StepApproval && r.ToolUseID == id {
-				g.Decisions = append(g.Decisions, Decision{Approver: r.Approver(), Approved: r.Approved, Signed: r.Approver() != ""})
+				g.Decisions = append(g.Decisions, Decision{Approver: r.Approver(), Approved: r.Approved, Signed: r.Approver() != "", DecidedAt: r.DecidedAt(), RecordedAt: r.RecordedAt()})
 			}
 			if (r.Kind == agent.StepToolResult || r.Kind == agent.StepSagaFail) && r.ToolUseID == id && r.Approval != nil {
 				g.Need, g.Approvers = r.Approval.Need, r.Approval.Approvers

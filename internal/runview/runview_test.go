@@ -447,6 +447,13 @@ func TestMainUsage(t *testing.T) {
 
 // gatedRun drives a run through a 2-of-3 gate with the given decisions (approver -> approved),
 // to its end, and returns its journal and a head over all of it signed by the log key.
+// gatedAsked and gatedRecorded are when gatedRun's run pauses and when its decisions are recorded,
+// by bide's clock; the approvers sign testDecidedAt (12:14:03.123), between the two.
+var (
+	gatedAsked    = time.Date(2026, 10, 13, 12, 14, 0, 0, time.UTC)
+	gatedRecorded = time.Date(2026, 10, 13, 12, 14, 5, 0, time.UTC)
+)
+
 func gatedRun(t *testing.T, decisions map[string]bool) (*agent.Journal, audit.SignedTreeHead) {
 	t.Helper()
 	ctx := context.Background()
@@ -458,7 +465,7 @@ func gatedRun(t *testing.T, decisions map[string]bool) (*agent.Journal, audit.Si
 	}
 	run := func() error {
 		m := agenttest.NewScriptedModel(agenttest.ToolTurn("c1", "refund", `{"Order":42}`), agenttest.TextTurn("done"))
-		_, err := agenttest.MustNew(m, j, agent.WithTools(refund), agent.WithApproverVerifiers(verifiers)).Run(ctx, "g1", agent.UserText("go"))
+		_, err := agenttest.MustNew(m, j, agent.WithTools(refund), agent.WithApproverVerifiers(verifiers), agent.WithClock(func() time.Time { return gatedAsked })).Run(ctx, "g1", agent.UserText("go"))
 		return err
 	}
 	if err := run(); !isPending(err) {
@@ -473,7 +480,8 @@ func gatedRun(t *testing.T, decisions map[string]bool) (*agent.Journal, audit.Si
 		}
 		subj := agent.ApprovalSubject{RunID: "g1", ToolUseID: "c1", ToolName: call.Name, Args: call.Args}
 		sig := ed25519.Sign(key(who), agent.ApprovalDecisionBytes(subj, who, approved, testDecidedAt))
-		if err := agent.SubmitDecision(ctx, j, agent.Decision{RunID: "g1", ToolUseID: "c1", ApproverID: who, Approved: approved, DecidedAt: testDecidedAt, Alg: audit.AlgEd25519, Signature: sig}); err != nil {
+		if err := agent.SubmitDecision(ctx, j, agent.Decision{RunID: "g1", ToolUseID: "c1", ApproverID: who, Approved: approved, DecidedAt: testDecidedAt, Alg: audit.AlgEd25519, Signature: sig},
+			agent.WithClock(func() time.Time { return gatedRecorded })); err != nil {
 			t.Fatal(err)
 		}
 	}

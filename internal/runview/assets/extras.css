@@ -17,6 +17,8 @@
 .astate { font-size: var(--t-sm); color: var(--muted); margin-left: var(--s1); }
 .averify { font-weight: 600; font-size: var(--t-sm); }
 .averify .ic { margin-right: 2px; }
+.aflag { color: var(--warn); font-weight: 600; }
+.aflag .ic { margin-right: 2px; }
 
 .merklewrap { padding: var(--s4); }
 svg.merkle { display: block; margin: 0 auto; max-width: 100%; height: auto; font-family: var(--font); }
