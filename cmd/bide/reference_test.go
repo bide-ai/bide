@@ -58,6 +58,10 @@ one dash (` + "`-db`" + `, ` + "`-evidence`" + `), and ` + "`bide help <command>
 2 for a usage error, for every command but ` + "`bide audit`" + `, which keeps its own statuses:
 only 0 means verified.
 
+On a terminal the text output is colored (a green ✓ and a red ✗ beside the words, never instead
+of them); written to a file or a pipe it is plain. ` + "`-color=auto|always|never`" + ` sets it, and
+` + "`NO_COLOR`" + ` (any value) or ` + "`TERM=dumb`" + ` turns ` + "`auto`" + ` off.
+
 Built with ` + "`-tags bide_audit_only`" + `, the program holds only ` + "`audit`" + `, ` + "`version`" + `
 and ` + "`help`" + `, and its import graph is the standard library and the core module (see the
 [security model](../guides/security-model.md)).

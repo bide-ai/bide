@@ -40,6 +40,9 @@ func (c *cli) styleLine(line string) string {
 	if strings.HasPrefix(line, "INFO  ") {
 		return st.Dim(line)
 	}
+	if strings.HasPrefix(line, "evidence for run ") || strings.HasPrefix(line, "approval gate on call ") {
+		return st.Heading(line)
+	}
 	return c.dimDetail(line)
 }
 

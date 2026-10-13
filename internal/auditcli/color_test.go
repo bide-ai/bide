@@ -75,13 +75,13 @@ func TestVerifyColor(t *testing.T) {
 	}
 }
 
-// TestVerifyEvidenceColor: each PASS line of verify-evidence gains a green check, and the report
-// ends with the VERIFIED banner.
+// TestVerifyEvidenceColor: the report's heading is bold, each PASS line of verify-evidence gains a
+// green check, and the report ends with the VERIFIED banner.
 func TestVerifyEvidenceColor(t *testing.T) {
 	f := newExitFixture(t)
 	code, stdout, _ := runCLI("verify-evidence", "-color=always", "-evidence", f.evidence, "-pubkey", f.pub)
 	plain := regexp.MustCompile("\x1b\\[[0-9;]*m").ReplaceAllString(stdout, "")
-	if code != 0 || !strings.Contains(stdout, "\x1b[32m✓\x1b[0m \x1b[32mPASS\x1b[0m  ") || !strings.Contains(plain, "\n✓ VERIFIED  tree size ") {
+	if code != 0 || !strings.HasPrefix(stdout, "\x1b[1mevidence for run ") || !strings.Contains(stdout, "\x1b[32m✓\x1b[0m \x1b[32mPASS\x1b[0m  ") || !strings.Contains(plain, "\n✓ VERIFIED  tree size ") {
 		t.Errorf("verify-evidence -color=always: exit %d\n%s", code, stdout)
 	}
 	_, never, _ := runCLI("verify-evidence", "-color=never", "-evidence", f.evidence, "-pubkey", f.pub)
