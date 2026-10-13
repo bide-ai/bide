@@ -224,7 +224,7 @@ is in [known limitations](docs/KNOWN-LIMITATIONS.md#governed-state-gsm).
 
 **Guides: inspect**
 
-- **[Run viewer](docs/guides/run-viewer.md)**: `bide view`, a read-only local page for one run (the timeline, a flow's path, halts, approval gates and the audit verdict), and `bide check` for flow configs in CI.
+- **[Run viewer](docs/guides/run-viewer.md)**: `bide view`, a read-only local page for one run (the timeline, a flow's path, halts, approval gates and the audit verdict), and `bide check` for flow configs in CI, with `-diff` to compare two versions of a flow and flag a weakened approval gate.
 - **[Debugging and recovery](docs/guides/debugging.md)**: `Replay`, `ReplayEvents`, Mermaid run diagrams, and `Recover`.
 
 **Guides: prove and govern**

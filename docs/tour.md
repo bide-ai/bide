@@ -444,7 +444,7 @@ attempts, approvals), a halted operation with the `ResolveHalt` call that record
 approval gate's k-of-n status (a tool call's or a flow node's) and whether its signatures verify, a
 plan flow's path over its declared topology, and whether the journal verifies against a signed tree
 head or an evidence package. It never writes to the store. `bide view -config flow.yaml` shows a flow
-definition the same way, with its problems marked on the graph, and `bide check flow.yaml` runs that check in CI.
+definition the same way, with its problems marked on the graph, and `bide check flow.yaml` runs that check in CI. `bide check flow.yaml -diff main` draws two versions of a flow on one graph (added in green, removed as dashed red ghosts, changed in amber) and calls out a weakened approval policy.
 Install it with `go install github.com/bide-ai/bide/cmd/bide@latest` (or `brew install bide-ai/tap/bide`); see the
 [run viewer guide](guides/run-viewer.md).
 
