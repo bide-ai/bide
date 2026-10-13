@@ -350,6 +350,5 @@ before the model is built or a stronger checker is chosen.
    cap), and a `WithNotifyRetry` option. The numbers are not load-bearing; the cap is.
 7. **Package placement.** Recommend `notify` in the core module (stdlib only) rather than a nested
    module, so the recipe's `agent.WithNotifier(notify.NewWebhook(...))` is a single import.
-8. **When to build it.** The project is stabilizing. Recommend no implementation until the freeze
-   lifts; the recipe covers the interim, and its page should link to this note as the planned
-   crash-safe version.
+8. **When to build it.** Recommend building after the user approves this note. The recipe covers
+   the interim, and its page should link to this note as the planned crash-safe version.
