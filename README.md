@@ -18,6 +18,7 @@
 ```sh
 # Install (or: go install github.com/bide-ai/bide/cmd/bide@latest)
 brew install bide-ai/tap/bide
+# Something fails? bide doctor checks Go, SQLite, the module cache and your project, and says how to fix each
 # 1. See it: kill an agent mid-payment; it does not charge twice (no API key)
 bide demo
 # 2. Build: a plan flow with a 2-of-3 approval gate, on SQLite, no API key

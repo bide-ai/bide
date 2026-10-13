@@ -16,6 +16,14 @@ With Go installed you can skip the install: `go run github.com/bide-ai/bide/cmd/
 
 No API key, no clone, no setup. It runs a payment agent in a child process, kills the process after the charge reaches a fake payment provider but before bide journals the result, and restarts the run: bide halts with "outcome unknown" instead of charging again. The demo then confirms the charge with the provider, records it (`agent.ResolveHalt`), finishes the run, verifies the signed audit trail and the 2-of-3 approval signatures, and opens the run in the [run viewer](guides/run-viewer.md). Pass `-no-browser` to print the viewer's address instead.
 
+## If something fails: `bide doctor`
+
+```
+bide doctor
+```
+
+`bide doctor` checks what a first run depends on and prints one line per check, with a fix for a failure: the Go version (1.27 or later), `bide` against the latest release (skipped offline), that SQLite works in a temporary directory, a Postgres DSN if `BIDE_POSTGRES_DSN` is set (`-postgres-env` names another variable), which model API key variables are set (names only, never values), that `GOPATH` and the module cache are writable, and, run inside a `bide init` project, that the project builds. It exits 1 if a check failed, 0 otherwise; a warning or a skipped check does not fail it. See the [CLI reference](reference/cli.md#bide-doctor).
+
 ## Start a project
 
 ```

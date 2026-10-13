@@ -18,6 +18,7 @@
 ```sh
 # Установка (или: go install github.com/bide-ai/bide/cmd/bide@latest)
 brew install bide-ai/tap/bide
+# Что-то не работает? bide doctor проверит Go, SQLite, кэш модулей и ваш проект и подскажет, как исправить
 # 1. посмотреть: агента убивают посреди платежа, второго списания нет (без API-ключа)
 bide demo
 # 2. собрать: plan-поток со шлюзом одобрения 2 из 3, на SQLite, без API-ключа

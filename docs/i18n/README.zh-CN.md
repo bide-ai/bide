@@ -18,6 +18,7 @@
 ```sh
 # 安装 (或: go install github.com/bide-ai/bide/cmd/bide@latest)
 brew install bide-ai/tap/bide
+# 出问题了？bide doctor 会检查 Go、SQLite、模块缓存和你的项目，并给出修复办法
 # 1. 看它运行：在支付中途杀死智能体，它不会重复扣款（无需 API key）
 bide demo
 # 2. 构建：一个带 2/3 审批门的 plan 流程，基于 SQLite，无需 API key

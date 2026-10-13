@@ -9,6 +9,7 @@ import (
 	"io"
 
 	"github.com/bide-ai/bide/cmd/bide/internal/demo"
+	"github.com/bide-ai/bide/cmd/bide/internal/doctor"
 	"github.com/bide-ai/bide/cmd/bide/internal/initcmd"
 	"github.com/bide-ai/bide/internal/runview"
 	"github.com/bide-ai/bide/internal/term"
@@ -31,6 +32,14 @@ func fullCommands() []command {
 			summary: "kill an agent mid-payment and watch it not charge twice (no API key)",
 			run: func(args []string, stdout, stderr io.Writer) int {
 				return demo.Main(args, []string{"demo"}, stdout, stderr)
+			},
+			exits: commonExits,
+		},
+		{
+			name:    "doctor",
+			summary: "check that a first run can work: Go, SQLite, the module cache, model keys, your project",
+			run: func(args []string, stdout, stderr io.Writer) int {
+				return doctor.Main(releaseVersion(), args, stdout, stderr)
 			},
 			exits: commonExits,
 		},
