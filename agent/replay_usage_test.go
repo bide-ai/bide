@@ -2,6 +2,7 @@ package agent
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"reflect"
 	"testing"
@@ -122,16 +123,35 @@ func journalsEqual(t *testing.T, a, b *Journal, runID string) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	// Salt is fresh random bytes per record (event-leaf.v2), so it never matches across runs.
-	for i := range ra {
-		ra[i].salt, ra[i].raw = nil, nil
-	}
-	for i := range rb {
-		rb[i].salt, rb[i].raw = nil, nil
+	// Salt is fresh random bytes per record (event-leaf.v2), so it never matches across runs, and
+	// run:start's informational start time is when each run started.
+	for _, rs := range [][]Record{ra, rb} {
+		for i := range rs {
+			rs[i].salt, rs[i].raw = nil, nil
+			rs[i].Result = withoutStartTime(t, rs[i])
+		}
 	}
 	if !reflect.DeepEqual(ra, rb) {
 		t.Fatalf("replayed journal differs:\n orig   %s\n replay %s", dumpRecords(ra), dumpRecords(rb))
 	}
+}
+
+// withoutStartTime is r's result, with the start time cleared if r is run:start.
+func withoutStartTime(t *testing.T, r Record) json.RawMessage {
+	t.Helper()
+	if r.Name != runStartStep {
+		return r.Result
+	}
+	var st RunStart
+	if err := json.Unmarshal(r.Result, &st); err != nil {
+		t.Fatal(err)
+	}
+	st.StartedAt = ""
+	b, err := json.Marshal(st)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return b
 }
 
 func dumpRecords(rs []Record) string {

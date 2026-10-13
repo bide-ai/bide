@@ -88,6 +88,11 @@ func (a *Agent) openPlan(ctx context.Context, runID string, d *driveSpec, recs [
 		if err != nil {
 			return ctx, nil, nil, err
 		}
+		now := clockFrom(ctx)
+		if d.cfg.clock != nil {
+			now = d.cfg.clock
+		}
+		want.StartedAt = startStamp(now) // informational: nothing below reads it (see RunStart)
 		b, err := marshalJournal(want.out())
 		if err != nil {
 			return ctx, nil, nil, fmt.Errorf("encode %s (run %s): %w (%w)", runStartStep, runID, err, ErrConfig)

@@ -31,7 +31,8 @@ import (
 // (failed attempts, losing hedge targets, and requests journaled in a late spend record after
 // it) in its Finish's Discarded, beside its own Usage, and a model call that
 // failed for good in the original fails again at the same point, reporting the same usage, so
-// the replayed run's Result.Spend, journal and WithTokenBudget stops match the original's. A
+// the replayed run's Result.Spend, journal (but for run:start's informational start time, which
+// is the replay's own) and WithTokenBudget stops match the original's. A
 // middleware in the replaying agent that retries such a failure moves on to the next recorded
 // response instead. This is only possible because the durable substrate records
 // a complete, replayable history in the first place.

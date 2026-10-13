@@ -443,19 +443,22 @@ func decodeStartEntry(b []byte) (RunStart, bool) {
 	return st, true
 }
 
-// plainStartPrefix, plainStartKind and plainStartLegacy frame the record written for the run:start
-// of an agent run with a plain text input and no other setting: name, kind, a result of the input
-// and the run's kind (none in a journal written before v0.10.0), and the salt, in that order.
+// plainStartPrefix, plainStartKind, plainStartAt and plainStartLegacy frame the record written for
+// the run:start of an agent run with a plain text input and no other setting: name, kind, a result
+// of the input, the run's kind (none in a journal written before v0.10.0) and its start time (none
+// in a journal written before it was recorded), and the salt, in that order.
 const (
 	plainStartPrefix = `{"name":"` + runStartStep + `","kind":"` + string(StepValue) + `","result":{"input":"`
 	plainStartKind   = `","kind":"` + string(RunKindAgent) + `"},"salt":"`
+	plainStartAt     = `","kind":"` + string(RunKindAgent) + `","started_at":"`
 	plainStartLegacy = `"},"salt":"`
 )
 
 // decodePlainStart decodes b if it is exactly the record written for the run:start of an agent run
-// with a plain text input and no other setting (by this version, or with no kind by an earlier
-// one), its input a JSON string with no escape (valid UTF-8, no '"', '\' or control character)
-// and its salt base64: the commonest start, read without the JSON decoder. Such bytes are valid
+// with a plain text input and no other setting (by this version, or with no start time or no kind
+// by an earlier one), its input and start time JSON strings with no escape (valid UTF-8, no '"',
+// '\' or control character) and its salt base64: the commonest start, read without the JSON
+// decoder. Such bytes are valid
 // JSON whose decoding is the start it returns. Anything else reports false and takes the JSON
 // decoding.
 func decodePlainStart(b []byte) (RunStart, bool) {
@@ -468,19 +471,24 @@ func decodePlainStart(b []byte) (RunStart, bool) {
 		return RunStart{}, false
 	}
 	in := rest[:end]
-	for _, c := range in {
-		if c < 0x20 || c == '\\' {
-			return RunStart{}, false
-		}
-	}
-	if !utf8.Valid(in) {
+	if !plainString(in) {
 		return RunStart{}, false
 	}
-	kind := RunKindAgent
+	kind, at := RunKindAgent, ""
 	salt, ok := bytes.CutPrefix(rest[end:], []byte(plainStartKind))
 	if !ok {
-		kind = ""
-		if salt, ok = bytes.CutPrefix(rest[end:], []byte(plainStartLegacy)); !ok {
+		if after, ok2 := bytes.CutPrefix(rest[end:], []byte(plainStartAt)); ok2 {
+			end := bytes.IndexByte(after, '"')
+			if end < 0 || !plainString(after[:end]) {
+				return RunStart{}, false
+			}
+			at = string(after[:end])
+			salt, ok = bytes.CutPrefix(after[end:], []byte(plainStartLegacy))
+		} else {
+			kind = ""
+			salt, ok = bytes.CutPrefix(rest[end:], []byte(plainStartLegacy))
+		}
+		if !ok {
 			return RunStart{}, false
 		}
 	}
@@ -488,7 +496,18 @@ func decodePlainStart(b []byte) (RunStart, bool) {
 	if !ok || !validSalt(salt) {
 		return RunStart{}, false
 	}
-	return RunStart{Input: UserText(string(in)), Kind: kind}, true
+	return RunStart{Input: UserText(string(in)), Kind: kind, StartedAt: at}, true
+}
+
+// plainString reports whether s, the contents of a JSON string up to its closing '"', is one
+// with no escape: valid UTF-8 with no '\' or control character. Its decoding is s.
+func plainString(s []byte) bool {
+	for _, c := range s {
+		if c < 0x20 || c == '\\' {
+			return false
+		}
+	}
+	return utf8.Valid(s)
 }
 
 // saltLen is the length of a salt's encoding: SaltSize bytes in standard base64, padded.
