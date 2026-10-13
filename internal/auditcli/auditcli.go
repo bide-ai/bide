@@ -33,8 +33,8 @@ import (
 	"sort"
 	"strconv"
 	"strings"
-	"unicode"
 	"time"
+	"unicode"
 
 	"github.com/bide-ai/bide/agent"
 	"github.com/bide-ai/bide/audit"
