@@ -443,7 +443,8 @@ journal or an exported one. It shows the run's timeline (model turns, tool calls
 attempts, approvals), a halted operation with the `ResolveHalt` call that records its outcome, each
 approval gate's k-of-n status (a tool call's or a flow node's) and whether its signatures verify, a
 plan flow's path over its declared topology, and whether the journal verifies against a signed tree
-head or an evidence package. It never writes to the store. Without `-run` it opens on a run list,
+head or an evidence package. It never writes to the store. While a run is in progress, its page
+follows it as records land, until the run ends. Without `-run` it opens on a run list,
 filtered by state, kind and run ID. `bide view -config flow.yaml` shows a flow
 definition the same way, with its problems marked on the graph, and `bide check flow.yaml` runs that check in CI. The page colors each node by what a crash does to it (a side effect halts, a read-only or idempotent node re-runs), and decides the config's `assert` lines, such as `every path to charge passes approval >= 2 of 3`, drawing a violation's counterexample path in red.
 Install it with `go install github.com/bide-ai/bide/cmd/bide@latest` (or `brew install bide-ai/tap/bide`); see the
