@@ -36,3 +36,27 @@ func TestRun_CancelledEvalIsAnError(t *testing.T) {
 		t.Fatalf("%d executions started; want none started after the cancellation", n)
 	}
 }
+
+// After a cancellation, Run starts no further executions, even when a concurrency slot is free at
+// the same moment: a select between a free slot and a done context picks either at random, so the
+// launcher must check the context again after taking a slot. Repeated because the race is random.
+func TestRun_NoExecutionStartsAfterCancel(t *testing.T) {
+	for iter := 0; iter < 20000; iter++ {
+		ctx, cancel := context.WithCancel(context.Background())
+		var started atomic.Int32
+		run := func(ctx context.Context, _ string) eval.RunOutput {
+			if started.Add(1) == 2 {
+				cancel()
+			}
+			return eval.RunOutput{Err: ctx.Err()}
+		}
+		_, err := eval.Run(ctx, run, []eval.Case{{Name: "c", Input: "x"}}, []eval.Metric{eval.NoError()}, eval.Options{Runs: 50, Concurrency: 1})
+		if !errors.Is(err, context.Canceled) {
+			t.Fatalf("iteration %d: err = %v, want context.Canceled", iter, err)
+		}
+		if n := started.Load(); n != 2 {
+			t.Fatalf("iteration %d: %d executions started; want 2 (none after the cancellation)", iter, n)
+		}
+		cancel()
+	}
+}

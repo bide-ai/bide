@@ -9,6 +9,10 @@ journal format can change between pre-releases without a version bump. Curated h
 
 ## [Unreleased]
 
+### Fixed
+
+- `eval.Run` could start executions after its context was cancelled: the launcher's select between a free concurrency slot and the done context picked at random when both were ready. It now checks the context again after taking a slot. Found as a CI flake in `TestRun_CancelledEvalIsAnError`; `TestRun_NoExecutionStartsAfterCancel` reproduces it.
+
 ### Added
 
 - The `bide init` project recovers from a crash: it starts with an `agent.Recover` pass whose Resumer drives the plan flow again from its journaled input, so a run an earlier process left unfinished completes, with its refund still made once. `BIDE_CRASH=notify go run .` kills the process mid-run to try it; the project's test does the same in a child process and checks one refund. `model()` has a marked block that swaps in a real model (`model/openai`, for OpenRouter or OpenAI) when `OPENROUTER_API_KEY` or `OPENAI_API_KEY` is set; the scripted model stays the default.
