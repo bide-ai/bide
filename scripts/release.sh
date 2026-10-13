@@ -440,14 +440,15 @@ while [ -n "$remaining" ]; do
       edits="$edits -require=$dep@$VERSION -dropreplace=$dep"
     done
     # shellcheck disable=SC2086
-    (cd "$CLONE/$m" && go mod edit $edits && gorun mod tidy 2>"$WORK/tidy.log") || { cat "$WORK/tidy.log"; die "$m: go mod tidy failed"; }
+    # A module with no bide requirements (a deprecated signpost) has nothing to pin.
+    (cd "$CLONE/$m" && { [ -z "$edits" ] || go mod edit $edits; } && gorun mod tidy 2>"$WORK/tidy.log") || { cat "$WORK/tidy.log"; die "$m: go mod tidy failed"; }
     check_gomod "$CLONE/$m"
     (cd "$CLONE/$m" && gorun build ./... && gorun vet ./...)
     if $TEST; then (cd "$CLONE/$m" && gorun test -count=1 ./... >"$WORK/test.log" 2>&1) || { cat "$WORK/test.log"; die "$m: tests failed"; }; fi
     note "$m: requires $(bide_requires "$CLONE/$m" | tr '\n' ' ')at $VERSION; builds$($TEST && echo ", vets and tests" || echo " and vets") with GOWORK=off"
   done
   # shellcheck disable=SC2086
-  (cd "$CLONE" && git add -- $(for m in $ready; do echo "$m/go.mod $m/go.sum"; done) \
+  (cd "$CLONE" && git add -- $(for m in $ready; do echo "$m/go.mod"; [ -f "$m/go.sum" ] && echo "$m/go.sum"; done) \
     && git commit --quiet -s -m "release: $(echo $ready | sed 's/ /, /g') require bide $VERSION" \
       -m "Tagged as$(for m in $ready; do printf ' %s/%s' "$m" "$VERSION"; done). This commit is reachable from those tags only; main keeps its replace directives.")
   commit=$(git -C "$CLONE" rev-parse HEAD)
