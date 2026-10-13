@@ -538,6 +538,8 @@ assert:
 | `<node> reachable` | a path from the entry reaches the node. |
 | `<node> unreachable` | no path from the entry reaches the node. |
 
+![A violated assertion on bide view -config: the shortest counterexample path, drawn in red, reaches charge without passing a 2-of-3 approval gate](img/run-viewer-config-assert-dark.png)
+
 A node is named bare (no spaces) or in double quotes, and the words are separated by spaces. Every
 assertion is decided by reachability over the declared graph (every edge, a join's inputs, and every
 Switch arm, loop-back arms included), never by listing paths, so a loop is visited once. The graph is

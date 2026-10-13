@@ -45,6 +45,13 @@ node handoffs.
 
 Status: working v0, live-verified end to end. Requires Go 1.27.
 
+<p align="center">
+  <img src="docs/guides/img/run-viewer-config-risk-dark.png" width="49%" alt="bide view -config: a flow's risk map, each node colored by what a crash does to it, with its approval gates marked">
+  <img src="docs/guides/img/run-viewer-config-assert-dark.png" width="49%" alt="bide view -config: a violated policy assertion, its shortest counterexample path drawn in red">
+</p>
+
+**See a flow's risk before it ships.** `bide view -config flow.yaml` colors each node by what a crash does to it (a side effect halts and asks; a read-only step re-runs) and checks the flow's `assert:` policy, such as `every path to charge passes approval >= 2 of 3`, on the graph. A violation comes with its shortest counterexample path, in red. `bide check flow.yaml` runs the same checks in CI and exits 1. See the [run viewer guide](docs/guides/run-viewer.md#check-a-flow-config).
+
 <p align="center"><img src="assets/divider-wave-2.png" width="100%" alt=""></p>
 
 ## One journal, four guarantees

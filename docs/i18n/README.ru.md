@@ -34,6 +34,13 @@ bide audit verify-evidence -evidence evidence.json -pubkey keys/log.pub
 
 Статус: рабочая v0, проверена сквозным путём вживую. Требуется Go 1.27.
 
+<p align="center">
+  <img src="../../docs/guides/img/run-viewer-config-risk-dark.png" width="49%" alt="bide view -config: a flow's risk map, each node colored by what a crash does to it, with its approval gates marked">
+  <img src="../../docs/guides/img/run-viewer-config-assert-dark.png" width="49%" alt="bide view -config: a violated policy assertion, its shortest counterexample path drawn in red">
+</p>
+
+**Риск потока виден до релиза.** `bide view -config flow.yaml` окрашивает каждый узел по тому, что с ним делает сбой (побочный эффект останавливается и спрашивает; шаг только для чтения перезапускается), и проверяет по графу политику `assert:` потока, например `every path to charge passes approval >= 2 of 3`. Нарушение показывается с кратчайшим путём-контрпримером, красным. `bide check flow.yaml` выполняет те же проверки в CI и завершается с кодом 1. См. [руководство по просмотрщику запусков](../../docs/guides/run-viewer.md#check-a-flow-config).
+
 ## Один журнал, четыре гарантии
 
 Агентный цикл занимает около 40 строк. Четыре гарантии берутся из надёжного журнала под ним, работающего только на добавление.

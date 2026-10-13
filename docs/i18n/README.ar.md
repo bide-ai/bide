@@ -44,6 +44,13 @@ RFC 6962، يمكن فحصها دون الوثوق بالمورّد)؛ وحال�
 
 الحالة: v0 عاملة، مُتحقَّق منها من طرف إلى طرف حيًّا. تتطلّب Go 1.27.
 
+<p align="center">
+  <img src="../../docs/guides/img/run-viewer-config-risk-dark.png" width="49%" alt="bide view -config: a flow's risk map, each node colored by what a crash does to it, with its approval gates marked">
+  <img src="../../docs/guides/img/run-viewer-config-assert-dark.png" width="49%" alt="bide view -config: a violated policy assertion, its shortest counterexample path drawn in red">
+</p>
+
+**اطّلع على مخاطر التدفق قبل إطلاقه.** يلوّن `bide view -config flow.yaml` كل عقدة بحسب ما يفعله الانهيار بها (الأثر الجانبي يتوقف ويسأل، والخطوة المقتصرة على القراءة تُعاد)، ويتحقق على الرسم البياني من سياسة `assert:` الخاصة بالتدفق، مثل `every path to charge passes approval >= 2 of 3`. وعند المخالفة يظهر أقصر مسار مثال مضاد باللون الأحمر. ويُجري `bide check flow.yaml` الفحوص نفسها في CI ويخرج بالرمز 1. راجع [دليل عارض التشغيل](../../docs/guides/run-viewer.md#check-a-flow-config).
+
 ## سجلّ واحد، أربع ضمانات
 
 حلقة الوكيل نحو 40 سطرًا. والضمانات الأربع تأتي من السجل المُعمَّر الذي لا يقبل إلا الإلحاق تحتها.
