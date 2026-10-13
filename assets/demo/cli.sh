@@ -1,7 +1,8 @@
 #!/usr/bin/env bash
 # cli.sh: regenerate the guides' colored terminal screenshots (docs/guides/img/cli-*-dark.png):
 # bide check on a violated policy assertion, bide check -diff -check on a weakened approval gate,
-# and bide audit verify-evidence on the demo's evidence, verified and then edited. Each is recorded
+# and bide audit verify-evidence on the demo's evidence, verified and then edited, plus go run . in a
+# project bide init scaffolded (docs/guides/img/cli-init-run-dark.png). Each is recorded
 # with charmbracelet/vhs in a real terminal, so the colors are the ones bide picks on its own
 # (-color=auto), 1200 pixels wide.
 #
@@ -39,8 +40,9 @@ b["record_bytes"] = base64.b64encode(base64.b64decode(b["record_bytes"]).replace
 json.dump(d, open(sys.argv[1] + "/evidence-edited.json", "w"), indent=2)
 PY
 
-shot() { # name height dir command...: one screenshot of the command's output
+shot() { # name height dir command...: one screenshot of the command's output (SHOT_WAIT: seconds)
   local name=$1 height=$2 dir=$3; shift 3
+  local wait=${SHOT_WAIT:-1.5}
   cat > "$work/$name.tape" <<TAPE
 Output "$work/$name.gif"
 Set Shell "bash"
@@ -57,7 +59,7 @@ Sleep 300ms
 Show
 Type "$*"
 Enter
-Sleep 1500ms
+Sleep ${wait}s
 Screenshot "$img/$name.png"
 Sleep 1s
 TAPE
@@ -71,3 +73,8 @@ shot cli-check-violation-dark 250 "$work" "bide check flows/refund-policy-bypass
 shot cli-diff-weakened-dark 300 "$work" "bide check flows/refund-v1.yaml -diff flows/refund-v2.yaml -check"
 shot cli-audit-verified-dark 330 "$work/run" "bide audit verify-evidence -evidence evidence.json -pubkey log.pub"
 shot cli-audit-failed-dark 350 "$work/run" "bide audit verify-evidence -evidence evidence-edited.json -pubkey log.pub"
+
+# A project bide init scaffolded, built against this checkout; built once first so go run . is quick.
+(cd "$work" && "$work/bin/bide" init -dev "$root" refund > /dev/null)
+(cd "$work/refund" && GOWORK=off GOFLAGS=-mod=mod go mod tidy > /dev/null 2>&1 && GOWORK=off GOFLAGS=-mod=mod go build ./...)
+SHOT_WAIT=6 shot cli-init-run-dark 330 "$work/refund" "go run ."

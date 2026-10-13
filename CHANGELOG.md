@@ -20,6 +20,10 @@ journal format can change between pre-releases without a version bump. Curated h
 
 - `bide audit` errors a first verification meets say what to do next: a missing evidence file, a `-pubkey` that is not a key (it takes `ed25519:<hex>`, 64 hex digits or a file such as `keys/log.pub`), a file that is not the JSON a flow or `bide audit` writes (such as the journal database), and an evidence package that did not verify (check the key came from out of band and the file is unmodified). Exit statuses are unchanged.
 
+### Changed
+
+- A second color pass over the CLI, on a terminal only (piped output is byte for byte what it was). Every error `bide` prints to stderr opens with a bold red `error:` (a hint after a semicolon is dim, in `bide init`'s messages), `bide` and `bide help` show bold headings and command names over dim summaries, and `bide version` is lightly styled. `bide version` takes `-color` like the other commands. The project `bide init` writes gets a `color.go` that colors its story (paused at the gate, approvals, done) with the same rules (a terminal, not `NO_COLOR`, not `TERM=dumb`), with a test of them; `examples/approval` and `examples/stripe-refund` color their narration the same way.
+
 ## [0.15.0] - 2026-10-13
 
 ### Added

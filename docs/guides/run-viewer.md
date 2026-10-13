@@ -532,6 +532,17 @@ to read ANSI escapes (Windows Terminal, ConEmu, ANSICON, VS Code, or a `TERM` su
 `xterm-256color`). `-color=always` colors even a pipe (for a log viewer that renders ANSI), and
 overrides `NO_COLOR`. Help (`-h`) is plain.
 
+An error on stderr opens with a bold red `error:` on a terminal (`bide: unknown command "x"` reads
+`error: bide: unknown command "x"`), and a "what to do next" hint the message carries after a
+semicolon is dim; piped, the line is the one it always was. The command list (`bide`, `bide help`) has
+bold headings and command names and dim summaries, and `bide version` is lightly styled; the flag
+help of a command (`bide <command> -h`) stays plain.
+
+The project `bide init` writes colors its own output the same way, from a small `color.go` it holds
+(a terminal only, off with `NO_COLOR` or `TERM=dumb`; delete it and make `tag` return its word if you
+want none), and so do the `examples/approval` and `examples/stripe-refund` programs, each with a copy
+of that helper, since an example is its own module and cannot import bide's.
+
 ## What it cannot show
 
 - **A flow run started before `flow:topology` was journaled** has only its digest, so pass its

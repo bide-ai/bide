@@ -103,3 +103,18 @@ func TestCommandListColor(t *testing.T) {
 		t.Errorf("version stripped of color differs from plain:\n%q", got)
 	}
 }
+
+// stripANSI drops the SGR escapes from s.
+func stripANSI(s string) string {
+	var b strings.Builder
+	for i := 0; i < len(s); i++ {
+		if s[i] == 0x1b {
+			for i < len(s) && s[i] != 'm' {
+				i++
+			}
+			continue
+		}
+		b.WriteByte(s[i])
+	}
+	return b.String()
+}
