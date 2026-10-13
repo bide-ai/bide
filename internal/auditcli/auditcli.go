@@ -138,13 +138,18 @@ const usageText = `bide audit: produce and verify audit proof bundles
 
   verify-approvals -evidence <file> -pubkey <hex|file> -call <tool-use-id|node-key> -need <k>
                    -approvers <id,id,...> -approver-keys <file> [-approved <digest>...] [-approved-file <file>]
+                   [-decision-time-tolerance <duration>]
          verify an m-of-n human approval gate from an evidence package: the request, every
          decision the gate read, its recorded tally, and the call's result all verify under the
          log key in one signed tree; recounting the decisions with each approver's key (a JSON
          object of approver id to public key text, <scheme>:<hex>) against the exact call reproduces the
          recorded tally; the gate enforced the expected policy; and at least k approved. Every
          proof in the package must verify too, so a package carrying a run certificate needs the
-         allowlist it is checked against (-approved / -approved-file, as for verify-evidence)
+         allowlist it is checked against (-approved / -approved-file, as for verify-evidence).
+         It also prints each counted decision's two times: decided_at, signed by the approver
+         (their clock), and recorded_at, when bide journaled it (bide's clock), with the gap,
+         and notes a decision signed more than the tolerance (default 5m) after it was recorded
+         or before the run asked for approval; these notes never change the verdict
 
   prove-absent -journal <file> -sth <file> -key (tool:<id>|policy:<digest>) [-out <file>]
          prove a thing did NOT happen (no such tool call / no action under that policy)
@@ -1048,10 +1053,14 @@ func (c *cli) verifyApprovals(args []string) {
 	var approved stringList
 	fs.Var(&approved, "approved", "an approved policy digest for the package's run certificate; repeat once per allowed policy")
 	approvedFile := fs.String("approved-file", "", "path to a file of approved policy digests, one per line")
+	tolerance := fs.Duration("decision-time-tolerance", audit.DefaultDecisionTimeTolerance, "how far a decision's signed time may be after the time bide recorded it before it is noted (a note, never a failure)")
 	c.parse(fs, args)
 
 	if *evidencePath == "" || *pubkey == "" || *call == "" || *need == 0 || *approvers == "" || *keysPath == "" {
 		c.usageError("")
+	}
+	if *tolerance < 0 {
+		c.usageError("verify-approvals: -decision-time-tolerance must not be negative")
 	}
 	// The expected policy comes from the command line, so an invalid one is a usage error, found
 	// before any file is read.
@@ -1158,6 +1167,7 @@ func (c *cli) verifyApprovals(args []string) {
 	for _, d := range v.Ignored {
 		c.printf("INFO  ignored %s: %s\n", d.Approver, d.Reason)
 	}
+	c.decisionTimes(v, *tolerance)
 	for _, p := range v.Problems {
 		c.printf("FAIL  %s\n", p)
 	}
@@ -1171,6 +1181,44 @@ func (c *cli) verifyApprovals(args []string) {
 	if c.clean() {
 		c.checked(pkg.STH.TreeHead)
 		c.printf("PASS: %d of %d required approvals verified, from complete evidence\n", len(v.Counted), v.Need)
+	}
+}
+
+// decisionTimes prints when the run asked for approval and each counted decision's two times, kept
+// apart: decided_at, signed by the approver by their clock, and recorded_at, by bide's clock and
+// anchored with the record; then the sanity notes under tolerance (audit.FlagDecisionTimes). The
+// notes are for the reader; they never change the verdict.
+func (c *cli) decisionTimes(v audit.ApprovalVerdict, tolerance time.Duration) {
+	if len(v.Times) == 0 {
+		return
+	}
+	if v.AskedAt != "" {
+		c.printf("INFO  approval asked at %s (bide's clock)\n", v.AskedAt)
+	} else {
+		c.printf("INFO  the evidence does not say when approval was asked (no approval-pending record with a time)\n")
+	}
+	for _, d := range audit.FlagDecisionTimes(v.Times, v.AskedAt, tolerance) {
+		recorded := "not recorded"
+		if d.RecordedAt != "" {
+			recorded = d.RecordedAt + " (bide's clock)"
+		}
+		c.printf("INFO  %s decided at %s (signed, the approver's clock), recorded at %s, %s\n", d.Approver, d.DecidedAt, recorded, gapText(d))
+		for _, f := range d.Flags {
+			c.printf("note: %s: %s\n", d.Approver, f)
+		}
+	}
+}
+
+// gapText phrases a decision's gap between its two times, without judging it.
+func gapText(d audit.DecisionTime) string {
+	gap, ok := d.Gap()
+	switch {
+	case !ok:
+		return "gap unknown"
+	case gap >= 0:
+		return fmt.Sprintf("%s after the signed time", gap)
+	default:
+		return fmt.Sprintf("%s before the signed time", -gap)
 	}
 }
 

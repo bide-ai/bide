@@ -44,7 +44,7 @@ func TestRev201_DecisionsBeforeRequestRefused(t *testing.T) {
 	ctx := context.Background()
 	j := agenttest.MemJournal()
 	for _, key := range []string{"node:refund", "node:iter:2:refund"} {
-		err := agent.SubmitDecision(ctx, j, agent.Decision{RunID: "r1", ToolUseID: key, ApproverID: "ops", Approved: true, Alg: "ed25519", Signature: make([]byte, 64)})
+		err := agent.SubmitDecision(ctx, j, agent.Decision{RunID: "r1", ToolUseID: key, ApproverID: "ops", Approved: true, DecidedAt: testDecidedAt, Alg: "ed25519", Signature: make([]byte, 64)})
 		if !errors.Is(err, agent.ErrConfig) {
 			t.Fatalf("SubmitDecision(%s) before the request = %v; want ErrConfig", key, err)
 		}
@@ -68,6 +68,9 @@ func TestRev201_StaleMofNDecisionBlocksGate(t *testing.T) {
 	h.Write([]byte{1})
 	h.Write(binary.BigEndian.AppendUint32(nil, uint32(len("ed25519"))))
 	h.Write([]byte("ed25519"))
+	at := agent.FormatTimestamp(d.DecidedAt)
+	h.Write(binary.BigEndian.AppendUint32(nil, uint32(len(at))))
+	h.Write([]byte(at))
 	h.Write(d.Signature)
 	if _, err := journaltest.Put(ctx, j, "r1", "approval:node%3Arefund:ops:"+hex.EncodeToString(h.Sum(nil)), rec); err != nil {
 		t.Fatal(err)

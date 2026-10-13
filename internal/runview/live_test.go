@@ -66,8 +66,8 @@ func TestLiveFollowsRun(t *testing.T) {
 		recs, _ := writer.History(ctx, "l1")
 		_, call, _ := agent.FindToolCall(recs, "c1")
 		subj := agent.ApprovalSubject{RunID: "l1", ToolUseID: "c1", ToolName: call.Name, Args: call.Args}
-		sig := ed25519.Sign(key(who), agent.ApprovalDecisionBytes(subj, who, true))
-		if err := agent.SubmitDecision(ctx, writer, agent.Decision{RunID: "l1", ToolUseID: "c1", ApproverID: who, Approved: true, Alg: audit.AlgEd25519, Signature: sig}); err != nil {
+		sig := ed25519.Sign(key(who), agent.ApprovalDecisionBytes(subj, who, true, testDecidedAt))
+		if err := agent.SubmitDecision(ctx, writer, agent.Decision{RunID: "l1", ToolUseID: "c1", ApproverID: who, Approved: true, DecidedAt: testDecidedAt, Alg: audit.AlgEd25519, Signature: sig}); err != nil {
 			t.Fatal(err)
 		}
 	}

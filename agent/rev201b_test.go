@@ -36,8 +36,8 @@ func TestRev201b_AgentIterShapedIDMofN(t *testing.T) {
 	if !errors.As(err, &pend) {
 		t.Fatalf("first run: %v", err)
 	}
-	sig := ed25519.Sign(priv, agent.ApprovalDecisionBytes(pend.Subject(), "ops", true))
-	if err := agent.SubmitDecision(ctx, j, agent.Decision{RunID: "r", ToolUseID: pend.ToolUseID, ApproverID: "ops", Approved: true, Alg: "ed25519", Signature: sig}); err != nil {
+	sig := ed25519.Sign(priv, agent.ApprovalDecisionBytes(pend.Subject(), "ops", true, testDecidedAt))
+	if err := agent.SubmitDecision(ctx, j, agent.Decision{RunID: "r", ToolUseID: pend.ToolUseID, ApproverID: "ops", Approved: true, DecidedAt: testDecidedAt, Alg: "ed25519", Signature: sig}); err != nil {
 		t.Fatalf("SubmitDecision: %v", err)
 	}
 	if _, err := newAgent().Run(ctx, "r", agent.UserText("go")); err != nil || ran != 1 {
@@ -52,7 +52,7 @@ func TestRev201b_NoStartYetRefused(t *testing.T) {
 	if err := agent.Approve(ctx, j, "fresh", "node:refund", true); !errors.Is(err, agent.ErrConfig) {
 		t.Fatalf("Approve before any start: %v", err)
 	}
-	if err := agent.SubmitDecision(ctx, j, agent.Decision{RunID: "fresh", ToolUseID: "node:iter:2:refund", ApproverID: "ops", Approved: true, Alg: "ed25519", Signature: make([]byte, 64)}); !errors.Is(err, agent.ErrConfig) {
+	if err := agent.SubmitDecision(ctx, j, agent.Decision{RunID: "fresh", ToolUseID: "node:iter:2:refund", ApproverID: "ops", Approved: true, DecidedAt: testDecidedAt, Alg: "ed25519", Signature: make([]byte, 64)}); !errors.Is(err, agent.ErrConfig) {
 		t.Fatalf("SubmitDecision before any start: %v", err)
 	}
 }

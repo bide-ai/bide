@@ -36,8 +36,8 @@ func sharedKey() (ed25519.PublicKey, ed25519.PrivateKey) {
 // signAs records a decision for approverID signed with priv, over the recorded call.
 func signAs(t *testing.T, store *Journal, runID, toolUseID, approverID string, priv ed25519.PrivateKey) {
 	t.Helper()
-	sig := ed25519.Sign(priv, ApprovalDecisionBytes(subjectOf(t, store, runID, toolUseID), approverID, true))
-	if err := SubmitDecision(context.Background(), store, Decision{RunID: runID, ToolUseID: toolUseID, ApproverID: approverID, Approved: true, Alg: "ed25519", Signature: sig}); err != nil {
+	sig := ed25519.Sign(priv, ApprovalDecisionBytes(subjectOf(t, store, runID, toolUseID), approverID, true, testDecidedAt))
+	if err := SubmitDecision(context.Background(), store, Decision{RunID: runID, ToolUseID: toolUseID, ApproverID: approverID, Approved: true, DecidedAt: testDecidedAt, Alg: "ed25519", Signature: sig}); err != nil {
 		t.Fatalf("SubmitDecision(%s): %v", approverID, err)
 	}
 }
@@ -136,7 +136,7 @@ func TestTallyApprovals_SharedKeyNeverCounts(t *testing.T) {
 		"a4": keyVerifier{signer: "h4"},
 	})
 	rec := func(approver, signer string) Record {
-		return Record{Name: "d:" + approver, Kind: StepApproval, ToolUseID: "c1", Approved: true, ApproverSignature: &ApproverSignature{Approver: approver, ApproverAlg: fakeAlg, Signature: fakeSign(signer, ApprovalDecisionBytes(s, approver, true))}}
+		return Record{Name: "d:" + approver, Kind: StepApproval, ToolUseID: "c1", Approved: true, ApproverSignature: &ApproverSignature{Approver: approver, ApproverAlg: fakeAlg, DecidedAt: FormatTimestamp(testDecidedAt), Signature: fakeSign(signer, ApprovalDecisionBytes(s, approver, true, testDecidedAt))}}
 	}
 	pol := ApprovalPolicy{Need: 2, Approvers: []string{"a1", "a2", "a3", "a4"}}
 	for _, order := range [][]string{{"a1", "a2", "a3", "a4"}, {"a2", "a1", "a3", "a4"}} {
@@ -181,8 +181,8 @@ func TestMofn_SharedKeyAfterCheckNeverCounts(t *testing.T) {
 	ctx := context.Background()
 	_, _ = a.Run(ctx, "r1", UserText("pay"))
 	for _, a := range pol.Approvers {
-		sig := fakeSign("h1", ApprovalDecisionBytes(subjectOf(t, store, "r1", "c1"), a, true))
-		if err := SubmitDecision(context.Background(), store, Decision{RunID: "r1", ToolUseID: "c1", ApproverID: a, Approved: true, Alg: fakeAlg, Signature: sig}); err != nil {
+		sig := fakeSign("h1", ApprovalDecisionBytes(subjectOf(t, store, "r1", "c1"), a, true, testDecidedAt))
+		if err := SubmitDecision(context.Background(), store, Decision{RunID: "r1", ToolUseID: "c1", ApproverID: a, Approved: true, DecidedAt: testDecidedAt, Alg: fakeAlg, Signature: sig}); err != nil {
 			t.Fatal(err)
 		}
 	}
@@ -219,8 +219,8 @@ func TestMofn_SharedKeyBetweenRounds(t *testing.T) {
 		}
 		return fakeVerifiers("a1", "a3")(id)
 	}
-	sig := fakeSign("a1", ApprovalDecisionBytes(subjectOf(t, store, "r1", "c1"), "a2", true))
-	if err := SubmitDecision(context.Background(), store, Decision{RunID: "r1", ToolUseID: "c1", ApproverID: "a2", Approved: true, Alg: fakeAlg, Signature: sig}); err != nil {
+	sig := fakeSign("a1", ApprovalDecisionBytes(subjectOf(t, store, "r1", "c1"), "a2", true, testDecidedAt))
+	if err := SubmitDecision(context.Background(), store, Decision{RunID: "r1", ToolUseID: "c1", ApproverID: "a2", Approved: true, DecidedAt: testDecidedAt, Alg: fakeAlg, Signature: sig}); err != nil {
 		t.Fatal(err)
 	}
 	_, err = mofnRun(store, "r1", false, pol, shared, &charged)
@@ -264,7 +264,7 @@ func TestMofn_TypedNilVerifierRefused(t *testing.T) {
 		}
 	})
 	s := ApprovalSubject{RunID: "r", ToolUseID: "c1", ToolName: "charge", Args: []byte(`{}`)}
-	recs := []Record{{Name: "d:a1", Kind: StepApproval, ToolUseID: "c1", Approved: true, ApproverSignature: &ApproverSignature{Approver: "a1", ApproverAlg: fakeAlg, Signature: []byte("x")}}}
+	recs := []Record{{Name: "d:a1", Kind: StepApproval, ToolUseID: "c1", Approved: true, ApproverSignature: &ApproverSignature{Approver: "a1", ApproverAlg: fakeAlg, DecidedAt: FormatTimestamp(testDecidedAt), Signature: []byte("x")}}}
 	noPanic(t, "TallyApprovals", func() {
 		tally, checks := TallyApprovals(recs, s, pol, vf)
 		if tally.Approved != 0 || len(checks) != 1 || checks[0].Counted {
@@ -280,7 +280,7 @@ func TestMofn_TypedNilVerifierRefused(t *testing.T) {
 		}
 	})
 	noPanic(t, "SubmitDecision with WithDecisionCheck", func() {
-		err := SubmitDecision(context.Background(), store, Decision{RunID: "r1", ToolUseID: "c1", ApproverID: "a1", Approved: true, Alg: fakeAlg, Signature: []byte("x")}, WithDecisionCheck(vf))
+		err := SubmitDecision(context.Background(), store, Decision{RunID: "r1", ToolUseID: "c1", ApproverID: "a1", Approved: true, DecidedAt: testDecidedAt, Alg: fakeAlg, Signature: []byte("x")}, WithDecisionCheck(vf))
 		if !errors.Is(err, ErrConfig) {
 			t.Fatalf("SubmitDecision = %v, want ErrConfig", err)
 		}
@@ -325,8 +325,8 @@ func TestMofn_RecordedTallyIsReusedNotRecounted(t *testing.T) {
 	// Under the old deployment a1 and a2 both resolved to key h1, held by one person.
 	subj := subjectOf(t, store, "r1", "c1")
 	for _, a := range pol.Approvers {
-		sig := fakeSign("h1", ApprovalDecisionBytes(subj, a, true))
-		if err := SubmitDecision(ctx, store, Decision{RunID: "r1", ToolUseID: "c1", ApproverID: a, Approved: true, Alg: fakeAlg, Signature: sig}); err != nil {
+		sig := fakeSign("h1", ApprovalDecisionBytes(subj, a, true, testDecidedAt))
+		if err := SubmitDecision(ctx, store, Decision{RunID: "r1", ToolUseID: "c1", ApproverID: a, Approved: true, DecidedAt: testDecidedAt, Alg: fakeAlg, Signature: sig}); err != nil {
 			t.Fatal(err)
 		}
 	}

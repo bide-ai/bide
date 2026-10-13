@@ -304,7 +304,7 @@ func Test_R105_SameKeyUnderTwoApproverIdsCountsTwice(t *testing.T) {
 	s := agent.ApprovalSubject{RunID: "r", ToolUseID: "c", ToolName: "wire", Args: json.RawMessage(`{}`)}
 	var recs []agent.Record
 	for _, id := range []string{"alice", "bob"} {
-		recs = append(recs, agent.Record{Name: "approval:c:" + id, Kind: agent.StepApproval, ToolUseID: "c", Approved: true, ApproverSignature: &agent.ApproverSignature{Approver: id, ApproverAlg: audit.AlgEd25519, Signature: ed25519.Sign(priv, agent.ApprovalDecisionBytes(s, id, true))}})
+		recs = append(recs, agent.Record{Name: "approval:c:" + id, Kind: agent.StepApproval, ToolUseID: "c", Approved: true, ApproverSignature: &agent.ApproverSignature{Approver: id, ApproverAlg: audit.AlgEd25519, DecidedAt: agent.FormatTimestamp(testDecidedAt), Signature: ed25519.Sign(priv, agent.ApprovalDecisionBytes(s, id, true, testDecidedAt))}})
 	}
 	p := agent.ApprovalPolicy{Need: 2, Approvers: []string{"alice", "bob"}}
 	got, _ := agent.TallyApprovals(recs, s, p, func(string) (agent.ApproverVerifier, bool) { return v, true })

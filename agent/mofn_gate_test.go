@@ -21,7 +21,7 @@ func (v fakeVerifier) PublicKey() []byte { return []byte(v.id) }
 
 // decideAs records a decision signed under fakeAlg.
 func decideAs(ctx context.Context, store *Journal, runID, toolUseID, approverID string, approved bool, sig []byte, opts ...ApproveOption) error {
-	return SubmitDecision(ctx, store, Decision{RunID: runID, ToolUseID: toolUseID, ApproverID: approverID, Approved: approved, Alg: fakeAlg, Signature: sig}, opts...)
+	return SubmitDecision(ctx, store, Decision{RunID: runID, ToolUseID: toolUseID, ApproverID: approverID, Approved: approved, DecidedAt: testDecidedAt, Alg: fakeAlg, Signature: sig}, opts...)
 }
 
 func (v fakeVerifier) Verify(message, sig []byte) bool {
@@ -66,7 +66,7 @@ func subjectOf(t *testing.T, store *Journal, runID, toolUseID string) ApprovalSu
 // approveAs records a correctly signed decision for approverID on the recorded call.
 func approveAs(t *testing.T, store *Journal, runID, toolUseID, approverID string, approved bool) {
 	t.Helper()
-	sig := fakeSign(approverID, ApprovalDecisionBytes(subjectOf(t, store, runID, toolUseID), approverID, approved))
+	sig := fakeSign(approverID, ApprovalDecisionBytes(subjectOf(t, store, runID, toolUseID), approverID, approved, testDecidedAt))
 	if err := decideAs(context.Background(), store, runID, toolUseID, approverID, approved, sig); err != nil {
 		t.Fatalf("decideAs(%s): %v", approverID, err)
 	}
@@ -284,7 +284,7 @@ func TestMofn_BadSignatureIgnored(t *testing.T) {
 
 	_, _ = mofnRun(store, "r1", true, pol, vf, &charged)
 	// bob signs alice's decision: the signature is well formed but not alice's.
-	forged := fakeSign("bob", ApprovalDecisionBytes(subjectOf(t, store, "r1", "c1"), "alice", true))
+	forged := fakeSign("bob", ApprovalDecisionBytes(subjectOf(t, store, "r1", "c1"), "alice", true, testDecidedAt))
 	if err := decideAs(context.Background(), store, "r1", "c1", "alice", true, forged); err != nil {
 		t.Fatal(err)
 	}

@@ -51,7 +51,9 @@ func ProveApproval(ctx context.Context, store *agent.Journal, runID, step string
 }
 
 // ApprovalEvidence builds the complete evidence for an m-of-n gated call under one STH, in
-// this order: the model turn that requested the call (Kind "call"), every decision record the
+// this order: the model turn that requested the call (Kind "call"), the record that the run
+// paused at the gate (agent.ApprovalWait, Kind "step", when the journal holds one: it carries when
+// approvers were asked), every decision record the
 // gate read (Kind "approval", from the journaled tally's Records, in journal order), the
 // gate's terminal tally (Kind "approval-tally"), and the call's result (Kind "tool", labelled
 // by its tool-use id as every tool action is). For a gated plan flow node, toolUseID is the
@@ -109,6 +111,13 @@ func ApprovalEvidence(ctx context.Context, store *agent.Journal, runID, toolUseI
 		return nil, err
 	}
 	out := []EvidenceAction{{Label: call.Name, Kind: KindCall, Ref: toolUseID, Bundle: callPB}}
+	if i, ok := index[agent.ApprovalPendingStep(toolUseID)]; ok && recs[i].Kind == agent.StepValue {
+		pb, err := prove(i)
+		if err != nil {
+			return nil, err
+		}
+		out = append(out, EvidenceAction{Label: recs[i].Name, Kind: KindStep, Ref: recs[i].Name, Bundle: pb})
+	}
 	for _, name := range tally.Records {
 		i, ok := index[name]
 		if !ok {
@@ -143,6 +152,13 @@ type ApprovalVerdict struct {
 	DeniedBy []string `json:"denied_by,omitempty"`
 	// Ignored lists every other disclosed decision, with the reason it did not count.
 	Ignored []IgnoredDecision `json:"ignored,omitempty"`
+	// Times lists the two times of every counted decision (approvals and denials), in journal
+	// order, with sanity flags under DefaultDecisionTimeTolerance (see FlagDecisionTimes). They are
+	// for a person reading the verdict: no time, and no flag, affects the count or OK.
+	Times []DecisionTime `json:"times,omitempty"`
+	// AskedAt is when the run recorded that it paused at the gate (agent.ApprovalWait.RecordedAt),
+	// from the proven approval-pending record, or "" when the evidence holds none with a time.
+	AskedAt string `json:"asked_at,omitempty"`
 	// Problems lists every way the evidence is inconsistent with itself or with the expected
 	// policy: an omitted decision the gate read, a recount that disagrees with the gate's
 	// journaled tally, a different enforced policy, or records out of order. Any problem fails
@@ -179,7 +195,13 @@ var (
 // name and arguments. It reports a Problem if the evidence omits a decision the gate read, if
 // the recount disagrees with the journaled tally, or if the gate enforced a different policy
 // than expected. A decision signed for other arguments, another run, or another call, or under
-// another scheme than its approver's key, does not verify and is listed in Ignored.
+// another scheme than its approver's key, does not verify and is listed in Ignored. So does a
+// decision whose signed decision time was changed, is missing (one signed under an earlier
+// decision format), or is not in canonical form.
+//
+// It reports each counted decision's signed decision time and recorded time in Times, flagged
+// under DefaultDecisionTimeTolerance, and when the run was asked in AskedAt. These are display
+// only: they never change Counted, Problems or OK.
 //
 // It returns the verdict with a nil error when the gate held (OK), and with an error wrapping
 // ErrNotVerified when it did not: Problems, too few approvals, or evidence that lacks the request,
@@ -342,11 +364,16 @@ func VerifyApprovals(actions []EvidenceAction, toolUseID string, policy agent.Ap
 
 	subject := agent.ApprovalSubject{RunID: runID, ToolUseID: toolUseID, ToolName: call.Name, Args: call.Args}
 	got, checks := agent.TallyApprovals(decisions, subject, policy, verifierFor)
-	for _, c := range checks {
+	for i, c := range checks {
 		if !c.Counted {
 			v.Ignored = append(v.Ignored, IgnoredDecision{Approver: c.Approver, Step: c.Step, Reason: c.Reason})
+			continue
 		}
+		// checks holds one entry per decision record, in order, so checks[i] is decisions[i].
+		v.Times = append(v.Times, DecisionTime{Approver: c.Approver, Step: c.Step, DecidedAt: decisions[i].DecidedAt(), RecordedAt: decisions[i].RecordedAt()})
 	}
+	v.AskedAt = askedAt(actions, recs, toolUseID, sth, runID, logV)
+	v.Times = FlagDecisionTimes(v.Times, v.AskedAt, DefaultDecisionTimeTolerance)
 	v.Counted, v.DeniedBy = got.ApprovedBy, got.DeniedBy
 	if !slices.Equal(got.ApprovedBy, tally.ApprovedBy) || !slices.Equal(got.DeniedBy, tally.DeniedBy) {
 		problem("the recount (approved by %v, denied by %v) disagrees with the gate's journaled tally (approved by %v, denied by %v)",

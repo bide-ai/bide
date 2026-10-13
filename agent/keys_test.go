@@ -37,22 +37,24 @@ var keyConstructors = map[string]func(string) string{
 	"notStartedStep":         func(s string) string { return notStartedStep(toolAttemptStep(s), "0123abcd") },
 	"nextAttemptStep":        func(s string) string { return nextAttemptStep(retryAttemptStep(stepAttemptStep(s), 1+len(s))) },
 	"approvalStep":           approvalStep,
-	"approvalDecisionStep":   func(s string) string { return approvalDecisionStep(s, "ops:1", true, "ed25519", []byte(s)) },
-	"ApprovalTallyStep":      ApprovalTallyStep,
-	"sagaCompensateStep":     sagaCompensateStep,
-	"sagaArgsStep":           sagaArgsStep,
-	"subRunLinkStep":         func(s string) string { return subRunLinkStep(s, s) },
-	"signalStep":             signalStep,
-	"awaitTimeoutStep":       awaitTimeoutStep,
-	"awaitResolvedStep":      awaitResolvedStep,
-	"timerStep":              timerStep,
-	"interruptStep":          interruptStep,
-	"chanStep":               func(s string) string { return chanStep(s, s) },
-	"chanAckStep":            func(s string) string { return chanAckStep(s, s) },
-	"sessionTurnStep":        func(s string) string { return sessionTurnStep(len(s)) },
-	"sessionStartStep":       func(s string) string { return sessionStartStep(len(s)) },
-	"sessionFromStep":        sessionFromStep,
-	"retrievalStep":          func(s string) string { return retrievalStep(len(s)) },
+	"approvalDecisionStep": func(s string) string {
+		return approvalDecisionStep(s, "ops:1", true, "ed25519", "2026-10-13T12:14:03.123Z", []byte(s))
+	},
+	"ApprovalTallyStep":  ApprovalTallyStep,
+	"sagaCompensateStep": sagaCompensateStep,
+	"sagaArgsStep":       sagaArgsStep,
+	"subRunLinkStep":     func(s string) string { return subRunLinkStep(s, s) },
+	"signalStep":         signalStep,
+	"awaitTimeoutStep":   awaitTimeoutStep,
+	"awaitResolvedStep":  awaitResolvedStep,
+	"timerStep":          timerStep,
+	"interruptStep":      interruptStep,
+	"chanStep":           func(s string) string { return chanStep(s, s) },
+	"chanAckStep":        func(s string) string { return chanAckStep(s, s) },
+	"sessionTurnStep":    func(s string) string { return sessionTurnStep(len(s)) },
+	"sessionStartStep":   func(s string) string { return sessionStartStep(len(s)) },
+	"sessionFromStep":    sessionFromStep,
+	"retrievalStep":      func(s string) string { return retrievalStep(len(s)) },
 	"planScopedStep": func(s string) string {
 		return planScopedStep(context.WithValue(context.Background(), planScopeKey{}, planScope{runID: "r", node: "node:n"}), "r", s)
 	},
@@ -138,7 +140,7 @@ func TestToolUseIDKeys_AreBoundedAndPrintable(t *testing.T) {
 		for _, id := range adversarialToolUseIDs() {
 			k := keyConstructors[name](id)
 			if name == "approvalDecisionStep" {
-				k = approvalDecisionStep(id, "ops", true, "ed25519", nil)
+				k = approvalDecisionStep(id, "ops", true, "ed25519", "2026-10-13T12:14:03.123Z", nil)
 			}
 			if len(k) > 256 || strings.IndexFunc(k, func(r rune) bool { return r < 0x21 || r > 0x7e }) >= 0 {
 				t.Fatalf("%s(%.30q) = %.60q (%d bytes), not short printable ASCII", name, id, k, len(k))

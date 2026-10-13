@@ -51,8 +51,8 @@ func TestFlowNodeGate(t *testing.T) {
 	}
 
 	for _, who := range []string{"ops", "risk"} {
-		sig := ed25519.Sign(key(who), agent.ApprovalDecisionBytes(pend.Subject(), who, true))
-		if err := agent.SubmitDecision(ctx, j, agent.Decision{RunID: "f1", ToolUseID: pend.ToolUseID, ApproverID: who, Approved: true, Alg: audit.AlgEd25519, Signature: sig}); err != nil {
+		sig := ed25519.Sign(key(who), agent.ApprovalDecisionBytes(pend.Subject(), who, true, testDecidedAt))
+		if err := agent.SubmitDecision(ctx, j, agent.Decision{RunID: "f1", ToolUseID: pend.ToolUseID, ApproverID: who, Approved: true, DecidedAt: testDecidedAt, Alg: audit.AlgEd25519, Signature: sig}); err != nil {
 			t.Fatal(err)
 		}
 	}

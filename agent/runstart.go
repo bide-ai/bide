@@ -80,10 +80,8 @@ func (s RunStart) Started() (time.Time, bool) {
 	return t, err == nil
 }
 
-// startStamp is a StartedAt for the time now returns: UTC, RFC 3339, to the millisecond.
-func startStamp(now func() time.Time) string {
-	return now().UTC().Truncate(time.Millisecond).Format("2006-01-02T15:04:05.000Z07:00")
-}
+// startStamp is a StartedAt for the time now returns (FormatTimestamp).
+func startStamp(now func() time.Time) string { return FormatTimestamp(now()) }
 
 // RunSettings are the per-run values a run's first caller chose (RunOptions), as run:start
 // journals them. A nil field is a setting the caller left alone: the agent's live value applies.

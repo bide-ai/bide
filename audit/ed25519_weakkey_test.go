@@ -134,7 +134,7 @@ func tSignFor(a *big.Int, pub, msg []byte) []byte {
 var weakSubject = agent.ApprovalSubject{RunID: "r1", ToolUseID: "c1", ToolName: "charge", Args: []byte(`{}`)}
 
 func weakRec(approver string, sig []byte) agent.Record {
-	return agent.Record{Name: "d:" + approver, Kind: agent.StepApproval, ToolUseID: "c1", Approved: true, ApproverSignature: &agent.ApproverSignature{Approver: approver, Signature: sig}}
+	return agent.Record{Name: "d:" + approver, Kind: agent.StepApproval, ToolUseID: "c1", Approved: true, ApproverSignature: &agent.ApproverSignature{Approver: approver, DecidedAt: agent.FormatTimestamp(testDecidedAt), Signature: sig}}
 }
 
 // mixedOrderKey returns one secret's two public keys: A = a·B, and A + T with T = (0, -1) of
@@ -158,7 +158,7 @@ func mixedOrderKey(t *testing.T) (pubA, pubAT ed25519.PublicKey, priv ed25519.Pr
 // subgroup check they get distinct key identities and one person fills two seats.
 func TestEd25519MixedOrderKeyIsNotASecondSeat(t *testing.T) {
 	pubA, pubAT, priv, a := mixedOrderKey(t)
-	msg2 := agent.ApprovalDecisionBytes(weakSubject, "a2", true)
+	msg2 := agent.ApprovalDecisionBytes(weakSubject, "a2", true, testDecidedAt)
 	sig2 := tSignFor(a, pubAT, msg2)
 	if !ed25519.Verify(pubAT, msg2, sig2) {
 		t.Fatal("setup: the one secret did not sign for A+T")
@@ -168,7 +168,7 @@ func TestEd25519MixedOrderKeyIsNotASecondSeat(t *testing.T) {
 		"a1": audit.Ed25519Verifier{Pub: pubA},
 		"a2": audit.Ed25519Verifier{Pub: pubAT},
 	})
-	sig1 := ed25519.Sign(priv, agent.ApprovalDecisionBytes(weakSubject, "a1", true))
+	sig1 := ed25519.Sign(priv, agent.ApprovalDecisionBytes(weakSubject, "a1", true, testDecidedAt))
 	tally, _ := agent.TallyApprovals([]agent.Record{weakRec("a1", sig1), weakRec("a2", sig2)}, weakSubject, pol, vf)
 	if err := pol.ValidateKeys(vf); !errors.Is(err, agent.ErrConfig) || tally.Passed() {
 		t.Fatalf("one ed25519 secret filled two seats: ValidateKeys=%v, approved %d of %d", err, tally.Approved, tally.Need)
@@ -204,7 +204,7 @@ func forgedForIdentity() []byte {
 func TestEd25519IdentityKeysRefused(t *testing.T) {
 	forged := forgedForIdentity()
 	for i, k := range identityEncodings() {
-		msg := agent.ApprovalDecisionBytes(weakSubject, "a", true)
+		msg := agent.ApprovalDecisionBytes(weakSubject, "a", true, testDecidedAt)
 		if !ed25519.Verify(k, msg, forged) {
 			t.Logf("encoding %d: crypto/ed25519 already rejects it", i)
 		}

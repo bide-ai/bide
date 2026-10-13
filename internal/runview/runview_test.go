@@ -224,8 +224,8 @@ func TestAgentRunTimeline(t *testing.T) {
 	_, call, _ := agent.FindToolCall(recs, "c1")
 	for _, who := range []string{"ops", "finance"} {
 		subj := agent.ApprovalSubject{RunID: "a1", ToolUseID: "c1", ToolName: call.Name, Args: call.Args}
-		sig := ed25519.Sign(key(who), agent.ApprovalDecisionBytes(subj, who, true))
-		if err := agent.SubmitDecision(ctx, j, agent.Decision{RunID: "a1", ToolUseID: "c1", ApproverID: who, Approved: true, Alg: audit.AlgEd25519, Signature: sig}); err != nil {
+		sig := ed25519.Sign(key(who), agent.ApprovalDecisionBytes(subj, who, true, testDecidedAt))
+		if err := agent.SubmitDecision(ctx, j, agent.Decision{RunID: "a1", ToolUseID: "c1", ApproverID: who, Approved: true, DecidedAt: testDecidedAt, Alg: audit.AlgEd25519, Signature: sig}); err != nil {
 			t.Fatal(err)
 		}
 	}
@@ -472,8 +472,8 @@ func gatedRun(t *testing.T, decisions map[string]bool) (*agent.Journal, audit.Si
 			continue
 		}
 		subj := agent.ApprovalSubject{RunID: "g1", ToolUseID: "c1", ToolName: call.Name, Args: call.Args}
-		sig := ed25519.Sign(key(who), agent.ApprovalDecisionBytes(subj, who, approved))
-		if err := agent.SubmitDecision(ctx, j, agent.Decision{RunID: "g1", ToolUseID: "c1", ApproverID: who, Approved: approved, Alg: audit.AlgEd25519, Signature: sig}); err != nil {
+		sig := ed25519.Sign(key(who), agent.ApprovalDecisionBytes(subj, who, approved, testDecidedAt))
+		if err := agent.SubmitDecision(ctx, j, agent.Decision{RunID: "g1", ToolUseID: "c1", ApproverID: who, Approved: approved, DecidedAt: testDecidedAt, Alg: audit.AlgEd25519, Signature: sig}); err != nil {
 			t.Fatal(err)
 		}
 	}

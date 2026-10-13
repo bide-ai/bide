@@ -157,6 +157,14 @@ type ApproverSignature struct {
 	Approver    string `json:"approver,omitempty"`     // the approver's id (Decision.ApproverID)
 	ApproverAlg Alg    `json:"approver_alg,omitempty"` // the scheme Signature is under
 	Signature   []byte `json:"signature,omitempty"`    // the approver's signature (Decision.Signature)
+	// DecidedAt is when the approver decided, by the approver's clock, as they signed it
+	// (Decision.DecidedAt, in FormatTimestamp's form): a claim the signature covers, so it cannot
+	// be changed after signing. RecordedAt is when SubmitDecision journaled the decision, by
+	// bide's clock (WithClock, the context's clock, or the wall clock), anchored by the journal's
+	// Merkle trail and not signed. Both are for people and auditors: the counting rule checks
+	// DecidedAt only as signed bytes, and nothing reads RecordedAt to decide anything.
+	DecidedAt  string `json:"decided_at,omitempty"`
+	RecordedAt string `json:"recorded_at,omitempty"`
 }
 
 // Finish returns why the model turn ended (ModelTurn.Finish), or "" when the record carries no
@@ -229,6 +237,24 @@ func (r Record) Signature() []byte {
 		return nil
 	}
 	return r.ApproverSignature.Signature
+}
+
+// DecidedAt returns the signed decision time of a signed decision (ApproverSignature.DecidedAt),
+// or "" when the record carries none.
+func (r Record) DecidedAt() string {
+	if r.ApproverSignature == nil {
+		return ""
+	}
+	return r.ApproverSignature.DecidedAt
+}
+
+// RecordedAt returns when a signed decision was journaled (ApproverSignature.RecordedAt), or ""
+// when the record carries none.
+func (r Record) RecordedAt() string {
+	if r.ApproverSignature == nil {
+		return ""
+	}
+	return r.ApproverSignature.RecordedAt
 }
 
 // modelTurn returns the ModelTurn of its arguments, or nil when they are all empty, so a record
@@ -312,7 +338,7 @@ func unmarshalRecord(b []byte) (Record, error) {
 	if f.ModelTurn != nil && *f.ModelTurn == (ModelTurn{}) {
 		f.ModelTurn = nil
 	}
-	if s := f.ApproverSignature; s != nil && s.Approver == "" && s.ApproverAlg == "" && len(s.Signature) == 0 {
+	if s := f.ApproverSignature; s != nil && s.Approver == "" && s.ApproverAlg == "" && len(s.Signature) == 0 && s.DecidedAt == "" && s.RecordedAt == "" {
 		f.ApproverSignature = nil
 	}
 	return Record(f), nil

@@ -50,8 +50,8 @@ func approvers(ids ...string) (map[string]edApprover, agent.ApproverVerifierFor)
 // decide records a's signed decision on the paused gate pend.
 func (a edApprover) decide(t *testing.T, j *agent.Journal, pend *agent.ApprovalPending, approved bool) {
 	t.Helper()
-	sig := ed25519.Sign(a.priv, agent.ApprovalDecisionBytes(pend.Subject(), a.id, approved))
-	if err := agent.SubmitDecision(context.Background(), j, agent.Decision{RunID: pend.RunID, ToolUseID: pend.ToolUseID, ApproverID: a.id, Approved: approved, Alg: "ed25519", Signature: sig}); err != nil {
+	sig := ed25519.Sign(a.priv, agent.ApprovalDecisionBytes(pend.Subject(), a.id, approved, testDecidedAt))
+	if err := agent.SubmitDecision(context.Background(), j, agent.Decision{RunID: pend.RunID, ToolUseID: pend.ToolUseID, ApproverID: a.id, Approved: approved, DecidedAt: testDecidedAt, Alg: "ed25519", Signature: sig}); err != nil {
 		t.Fatalf("SubmitDecision(%s): %v", a.id, err)
 	}
 }

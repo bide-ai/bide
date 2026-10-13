@@ -117,7 +117,7 @@ func TestMofnDST_AtMostOncePerApprover(t *testing.T) {
 	}
 
 	// Resubmitting ops' identical denial after the gate resolved maps to the same record: no-op.
-	sig := fakeSign("ops", ApprovalDecisionBytes(subjectOf(t, store, "r1", "c1"), "ops", false))
+	sig := fakeSign("ops", ApprovalDecisionBytes(subjectOf(t, store, "r1", "c1"), "ops", false, testDecidedAt))
 	if err := decideAs(ctx, store, "r1", "c1", "ops", false, sig); err != nil {
 		t.Fatal(err)
 	}

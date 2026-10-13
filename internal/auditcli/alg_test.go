@@ -103,11 +103,11 @@ func TestCLI_MLDSAAndHybridEndToEnd(t *testing.T) {
 				t.Fatal("no recorded call c1")
 			}
 			subject := agent.ApprovalSubject{RunID: runID, ToolUseID: "c1", ToolName: call.Name, Args: call.Args}
-			sig, err := approver.Sign(agent.ApprovalDecisionBytes(subject, "alice", true))
+			sig, err := approver.Sign(agent.ApprovalDecisionBytes(subject, "alice", true, testDecidedAt))
 			if err != nil {
 				t.Fatal(err)
 			}
-			if err := agent.SubmitDecision(ctx, store, agent.Decision{RunID: runID, ToolUseID: "c1", ApproverID: "alice", Approved: true, Alg: approver.Alg(), Signature: sig}); err != nil {
+			if err := agent.SubmitDecision(ctx, store, agent.Decision{RunID: runID, ToolUseID: "c1", ApproverID: "alice", Approved: true, DecidedAt: testDecidedAt, Alg: approver.Alg(), Signature: sig}); err != nil {
 				t.Fatal(err)
 			}
 			if _, err := a.Run(ctx, runID, agent.UserText("pay")); err != nil {

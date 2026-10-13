@@ -49,6 +49,7 @@ var auditArtifacts = []any{
 	audit.ConvergenceContent{},
 	audit.ApprovalVerdict{},
 	audit.IgnoredDecision{},
+	audit.DecisionTime{},
 	audit.JournalExport{},
 	verify.TreeRef{},
 }

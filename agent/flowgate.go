@@ -192,7 +192,7 @@ func flowGate(ctx context.Context, d *Journal, runID, key, node string, args jso
 	}
 	// The pause note, if it is missing (one Insert that keeps a recorded one), so a crash between
 	// the request and the note does not hide the wait from a viewer.
-	w := ApprovalWait{ToolUseID: key, ToolName: node, Single: single}
+	w := ApprovalWait{ToolUseID: key, ToolName: node, Single: single, RecordedAt: FormatTimestamp(clockFrom(ctx)())}
 	if !single {
 		w.Need, w.Approvers = pol.Need, slices.Clone(pol.Approvers)
 	}
