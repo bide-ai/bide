@@ -1215,7 +1215,9 @@ func gapText(d audit.DecisionTime) string {
 	switch {
 	case !ok:
 		return "gap unknown"
-	case gap >= 0:
+	case gap == 0:
+		return "in the same millisecond as the signed time"
+	case gap > 0:
 		return fmt.Sprintf("%s after the signed time", gap)
 	default:
 		return fmt.Sprintf("%s before the signed time", -gap)

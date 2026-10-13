@@ -30,7 +30,7 @@ type ApproverCard struct {
 	Fingerprint string
 	// DecidedAt is when the approver says they decided, by their clock, inside the signature;
 	// RecordedAt is when bide journaled the decision, by bide's clock. Both are display text
-	// ("2026-10-13 12:14:03.123 UTC"), empty when the record holds none. Gap is the difference
+	// in UTC ("2026-10-13 12:14:03.123"), empty when the record holds none. Gap is the difference
 	// between them in words, shown without judgment, and Flags the sanity notes on them
 	// (audit.FlagDecisionTimes, under audit.DefaultDecisionTimeTolerance), which never change
 	// the gate's outcome. Empty for a pending approver.
@@ -135,6 +135,11 @@ func cards(g Gate, p *Proof) []ApproverCard {
 	return out
 }
 
+// HasTimes reports whether any of the gate's approver cards shows a decision time.
+func (g Gate) HasTimes() bool {
+	return slices.ContainsFunc(g.Cards, func(c ApproverCard) bool { return c.DecidedAt != "" || c.RecordedAt != "" })
+}
+
 // decisionTime is the two times of approver n's decision on g, with their sanity flags: from the
 // signature check's verdict when it counted the decision (the exact decision the recount
 // counted), else from the journal, the approver's first signed decision with that outcome, the
@@ -152,8 +157,9 @@ func decisionTime(g Gate, chk ApprovalCheck, n string, approved bool) (audit.Dec
 	return audit.DecisionTime{}, false
 }
 
-// displayTime renders a recorded time ("2026-10-13T12:14:03.123Z") as "2026-10-13 12:14:03.123
-// UTC"; a value not in canonical form is shown as it is, marked, and an empty one stays empty.
+// displayTime renders a recorded time ("2026-10-13T12:14:03.123Z") as "2026-10-13 12:14:03.123"
+// (the page says the times are UTC); a value not in canonical form is shown as it is, marked, and
+// an empty one stays empty.
 func displayTime(s string) string {
 	if s == "" {
 		return ""
@@ -162,7 +168,7 @@ func displayTime(s string) string {
 	if err != nil {
 		return fmt.Sprintf("%q (not a canonical time)", s)
 	}
-	return t.Format("2006-01-02 15:04:05.000 UTC")
+	return t.Format("2006-01-02 15:04:05.000")
 }
 
 // gapWords phrases how long after the signed decision time bide recorded the decision, e.g.
@@ -172,7 +178,9 @@ func gapWords(t audit.DecisionTime) string {
 	switch {
 	case !ok:
 		return ""
-	case gap >= 0:
+	case gap == 0:
+		return "recorded in the same millisecond"
+	case gap > 0:
 		return "recorded " + gap.Round(time.Millisecond).String() + " after the signed time"
 	default:
 		return "recorded " + (-gap).Round(time.Millisecond).String() + " before the signed time"

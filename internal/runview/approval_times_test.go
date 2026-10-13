@@ -28,14 +28,14 @@ func TestCards_DecisionTimes(t *testing.T) {
 		return out
 	}
 	cs := by(cards(g, nil))
-	if c := cs["ops"]; c.DecidedAt != "2026-10-13 12:00:01.500 UTC" || c.RecordedAt != "2026-10-13 12:00:04.000 UTC" || c.Gap != "recorded 2.5s after the signed time" || len(c.Flags) != 0 {
+	if c := cs["ops"]; c.DecidedAt != "2026-10-13 12:00:01.500" || c.RecordedAt != "2026-10-13 12:00:04.000" || c.Gap != "recorded 2.5s after the signed time" || len(c.Flags) != 0 {
 		t.Errorf("ops = %+v", c)
 	}
 	if c := cs["finance"]; c.Gap != "recorded 19m0s before the signed time" || !slices.Equal(c.Flags, []string{audit.FlagDecidedAfterRecorded}) {
 		t.Errorf("finance = %+v", c)
 	}
 	// risk's card is the denial (its state), not the earlier approval.
-	if c := cs["risk"]; c.DecidedAt != "2026-10-13 11:50:00.000 UTC" || !slices.Equal(c.Flags, []string{audit.FlagDecidedBeforeAsked}) {
+	if c := cs["risk"]; c.DecidedAt != "2026-10-13 11:50:00.000" || !slices.Equal(c.Flags, []string{audit.FlagDecidedBeforeAsked}) {
 		t.Errorf("risk = %+v", c)
 	}
 
@@ -43,7 +43,7 @@ func TestCards_DecisionTimes(t *testing.T) {
 	p := &Proof{Approvals: map[string]ApprovalCheck{"c1": {Counted: []string{"ops", "finance"}, Denied: []string{"risk"}, Times: map[string]audit.DecisionTime{
 		"ops": {Approver: "ops", DecidedAt: "2026-10-13T12:00:02.000Z", RecordedAt: "2026-10-13T12:00:04.000Z"},
 	}}}}
-	if c := by(cards(g, p))["ops"]; c.DecidedAt != "2026-10-13 12:00:02.000 UTC" || c.Gap != "recorded 2s after the signed time" {
+	if c := by(cards(g, p))["ops"]; c.DecidedAt != "2026-10-13 12:00:02.000" || c.Gap != "recorded 2s after the signed time" {
 		t.Errorf("ops with the recount's times = %+v", c)
 	}
 

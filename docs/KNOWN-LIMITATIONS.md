@@ -244,6 +244,13 @@ person is your identity provider's job. It refuses two approvers whose verifiers
 but it cannot see that one person holds two different keys. Keep old public keys after a rotation so old evidence still
 verifies. See [Human approval](guides/hitl-approval.md#scope).
 
+**A decision's time is the approver's claim.** Each signed decision carries when the approver
+decided (`decided_at`, by their clock, inside the signature) and when bide recorded it
+(`recorded_at`, by bide's clock). The signature stops anyone changing `decided_at` later, but nothing
+vouches for the approver's clock: bide flags a `decided_at` far after `recorded_at` or before the run
+asked, and never counts by it. No trusted timestamp authority (RFC 3161) stamps decisions yet. See
+[When a decision was made](guides/hitl-approval.md#when-a-decision-was-made).
+
 **A denied flow gate compensates nothing.** A plan flow node whose approval gate is denied never
 runs, but plan flows have no saga mode, so the nodes before it keep their effects and the run stays
 unfinished until it is cancelled. See [Plan flows](guides/plan-flows.md#approval-gates-on-nodes).

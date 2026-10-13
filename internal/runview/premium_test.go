@@ -454,7 +454,7 @@ func TestApproverCards(t *testing.T) {
 	for _, who := range []string{"ops", "finance"} {
 		c := cs[who]
 		if c.State != "approved" || !c.VerifyOK || c.Verify != "signature verified" || !regexp.MustCompile(`^ed25519:[0-9a-f]{8}$`).MatchString(c.Fingerprint) ||
-			c.DecidedAt != "2026-10-13 12:14:03.123 UTC" || c.RecordedAt != "2026-10-13 12:14:05.000 UTC" || c.Gap != "recorded 1.877s after the signed time" || len(c.Flags) != 0 {
+			c.DecidedAt != "2026-10-13 12:14:03.123" || c.RecordedAt != "2026-10-13 12:14:05.000" || c.Gap != "recorded 1.877s after the signed time" || len(c.Flags) != 0 {
 			t.Errorf("%s card = %+v", who, c)
 		}
 	}
@@ -478,14 +478,14 @@ func TestApproverCards(t *testing.T) {
 		t.Errorf("no keys: ops = %+v", c)
 	}
 	cs = cardsOf(func(context.Context, string, []agent.Record) *Proof { return nil })
-	if c := cs["ops"]; c.VerifyOK || c.Verify != "signature not checked" || c.DecidedAt != "2026-10-13 12:14:03.123 UTC" || c.RecordedAt == "" {
+	if c := cs["ops"]; c.VerifyOK || c.Verify != "signature not checked" || c.DecidedAt != "2026-10-13 12:14:03.123" || c.RecordedAt == "" {
 		t.Errorf("no proof: ops = %+v", c)
 	}
 
 	h := Handler(Options{Source: JournalSource{J: j}, Provers: []Prover{HeadProver(sth, logPub, Approvals{Keys: approverKeys(nil)})}})
 	_, page := get(t, h, "/run?id=g1")
 	for _, want := range []string{`class="acard a-approved"`, `class="avatar" aria-hidden="true">OP<`, "signature verified", "key ed25519:", "Proof path",
-		"decided 2026-10-13 12:14:03.123 UTC", "recorded 2026-10-13 12:14:05.000 UTC", "recorded 1.877s after the signed time"} {
+		">decided</dt><dd>2026-10-13 12:14:03.123</dd></div>", ">recorded</dt><dd>2026-10-13 12:14:05.000</dd></div>", "recorded 1.877s after the signed time", `class="small muted atimesnote"`} {
 		if !strings.Contains(page, want) {
 			t.Errorf("the page lacks %s", want)
 		}
