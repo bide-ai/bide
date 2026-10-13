@@ -61,6 +61,44 @@ func TestStory(t *testing.T) {
 	}
 }
 
+// TestColorRules: color is for a terminal that wants it. NO_COLOR, TERM=dumb and a Windows
+// terminal not known to read ANSI escapes turn it off, and a program's output that is not a
+// terminal (as in go test) is plain.
+func TestColorRules(t *testing.T) {
+	env := func(kv ...string) func(string) string {
+		return func(k string) string {
+			for i := 0; i < len(kv); i += 2 {
+				if kv[i] == k {
+					return kv[i+1]
+				}
+			}
+			return ""
+		}
+	}
+	for _, tc := range []struct {
+		name string
+		env  func(string) string
+		goos string
+		want bool
+	}{
+		{"a terminal", env("TERM", "xterm-256color"), "linux", true},
+		{"NO_COLOR", env("TERM", "xterm", "NO_COLOR", "1"), "linux", false},
+		{"TERM=dumb", env("TERM", "dumb"), "darwin", false},
+		{"windows terminal", env("WT_SESSION", "x"), "windows", true},
+		{"windows console", env(), "windows", false},
+	} {
+		if got := colorOK(tc.env, tc.goos); got != tc.want {
+			t.Errorf("%s: colorOK = %v, want %v", tc.name, got, tc.want)
+		}
+	}
+	if got := tag(false, "32", "✓", "done:"); got != "done:" {
+		t.Errorf("plain tag = %q, want the bare word", got)
+	}
+	if got := tag(true, "32", "✓", "done:"); got != "\x1b[32m✓ done:\x1b[0m" {
+		t.Errorf("colored tag = %q", got)
+	}
+}
+
 // TestCrashAndRecover: the process dies inside notify, after the refund's result is journaled (exit
 // status 3). The next start recovers the interrupted run: it completes, and the provider holds
 // exactly one refund. This is BIDE_CRASH=notify go run . followed by go run .

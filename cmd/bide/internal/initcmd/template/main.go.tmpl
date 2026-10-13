@@ -140,7 +140,7 @@ func load(p provider, k keys, m agent.Model) (*plan.Flow[Order, Receipt], error)
 
 func main() {
 	if err := story(context.Background(), ".", model()); err != nil {
-		fmt.Fprintln(os.Stderr, "error:", err)
+		fmt.Fprintln(os.Stderr, tag(colorErr, "1;31", "✗", "error:"), err)
 		os.Exit(1)
 	}
 }
@@ -177,7 +177,7 @@ func story(ctx context.Context, dir string, m agent.Model) error {
 	if n, err := agent.Recover(ctx, j, resumeFlow(flow, j)); err != nil {
 		return err
 	} else if n > 0 {
-		fmt.Printf("recovered %d interrupted run(s)\n", n)
+		fmt.Printf("%s %d interrupted run(s)\n", tag(colorOut, "34", "✓", "recovered"), n)
 	}
 
 	in := Order{ID: "order-42", Amount: 120, Note: "the parcel arrived damaged"}
@@ -187,7 +187,7 @@ func story(ctx context.Context, dir string, m agent.Model) error {
 		switch {
 		case errors.As(err, &pend):
 			q := pend.Quorum
-			fmt.Printf("paused before %s: %d of %d approvals (pending %s)\n", pend.ToolUseID, q.Approved, q.Need, strings.Join(q.Pending, ", "))
+			fmt.Printf("%s before %s: %d of %d approvals (pending %s)\n", tag(colorOut, "33", "!", "paused"), pend.ToolUseID, q.Approved, q.Need, strings.Join(q.Pending, ", "))
 			if err := approve(ctx, j, k, q.Pending[0]); err != nil {
 				return err
 			}
@@ -195,7 +195,7 @@ func story(ctx context.Context, dir string, m agent.Model) error {
 		case err != nil:
 			return err
 		}
-		fmt.Printf("done: %s (%d)\nrefunds the provider holds: %d\n", out.Note, out.Amount, p.refunds())
+		fmt.Printf("%s %s (%d)\nrefunds the provider holds: %d\n", tag(colorOut, "32", "✓", "done:"), out.Note, out.Amount, p.refunds())
 		return writeEvidence(ctx, j, k, dir)
 	}
 	return errors.New("the run did not finish")
@@ -230,7 +230,7 @@ func crashIf(step string) {
 		return
 	}
 	_ = os.WriteFile(marker, nil, 0o644)
-	fmt.Printf("crash: the process dies inside %s (BIDE_CRASH=%s)\n", step, step)
+	fmt.Printf("%s the process dies inside %s (BIDE_CRASH=%s)\n", tag(colorOut, "1;31", "✗", "crash:"), step, step)
 	os.Exit(3)
 }
 
@@ -250,7 +250,7 @@ func approve(ctx context.Context, j *agent.Journal, k keys, id string) error {
 	if err := agent.SubmitDecision(ctx, j, d, agent.WithDecisionCheck(k.verifiers())); err != nil {
 		return err
 	}
-	fmt.Printf("%s approved %s\n", id, call.Args)
+	fmt.Printf("%s %s\n", tag(colorOut, "32", "✓", id+" approved"), call.Args)
 	return nil
 }
 
@@ -283,7 +283,7 @@ func writeEvidence(ctx context.Context, j *agent.Journal, k keys, dir string) er
 	if err := os.WriteFile(filepath.Join(dir, "keys", "log.pub"), []byte(k.public("log")+"\n"), 0o644); err != nil {
 		return err
 	}
-	fmt.Println("wrote evidence.json, approver-keys.json and keys/log.pub")
+	fmt.Printf("%s evidence.json, approver-keys.json and keys/log.pub\n", tag(colorOut, "32", "✓", "wrote"))
 	return nil
 }
 

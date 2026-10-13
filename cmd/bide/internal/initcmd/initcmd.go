@@ -26,6 +26,7 @@ var tmpl embed.FS
 var files = map[string]string{
 	"main.go.tmpl":      "main.go",
 	"main_test.go.tmpl": "main_test.go",
+	"color.go.tmpl":     "color.go",
 	"flow.yaml":         "flow.yaml",
 	"README.md.tmpl":    "README.md",
 	"gitignore.tmpl":    ".gitignore",
@@ -43,7 +44,7 @@ func Main(version string, args []string, stdout, stderr io.Writer) int {
 	fs.Usage = func() {
 		fmt.Fprint(fs.Output(), `usage: bide init [-module <path>] [-dev <bide checkout>] <dir>
 
-Writes a new project into dir, which must not exist or must be empty: main.go, main_test.go,
+Writes a new project into dir, which must not exist or must be empty: main.go, color.go, main_test.go,
 flow.yaml, README.md, .gitignore and go.mod. Then: cd <dir> && go mod tidy && go run .
 
 `)

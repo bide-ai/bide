@@ -37,7 +37,7 @@ Scaffold a project: a gated plan flow on SQLite, with evidence for bide audit.
 ```text
 usage: bide init [-module <path>] [-dev <bide checkout>] <dir>
 
-Writes a new project into dir, which must not exist or must be empty: main.go, main_test.go,
+Writes a new project into dir, which must not exist or must be empty: main.go, color.go, main_test.go,
 flow.yaml, README.md, .gitignore and go.mod. Then: cd <dir> && go mod tidy && go run .
 
   -color when
