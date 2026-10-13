@@ -228,7 +228,7 @@ func Recover(ctx context.Context, store *Journal, resume Resumer, opts ...Recove
 		return 0, err
 	}
 	if cfg.notifier != nil {
-		if cfg.notify, err = cfg.notifier.engine(store); err != nil {
+		if cfg.notify, err = cfg.notifier.engine(store, "recover"); err != nil {
 			return 0, err
 		}
 		defer cfg.notify.flush(ctx)
@@ -810,7 +810,7 @@ func RecoverLoop(ctx context.Context, store *Journal, resume Resumer, opts ...Re
 		return err
 	}
 	if cfg.notifier != nil {
-		if cfg.notify, err = cfg.notifier.engine(store); err != nil {
+		if cfg.notify, err = cfg.notifier.engine(store, "recover"); err != nil {
 			return err
 		}
 		defer cfg.notify.flush(context.WithoutCancel(ctx))

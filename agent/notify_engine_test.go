@@ -67,7 +67,7 @@ func testEngine(t *testing.T, j *Journal, n Notifier, trail NotifyTrail, clk *no
 			return nil
 		}),
 	}, opts...)
-	e, err := newNotifyEngine(j, n, trail, all)
+	e, err := newNotifyEngine(j, n, trail, all, "test")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -165,7 +165,7 @@ func TestNotifyRound_PermanentErrorEndsTheRoundNeverTheEvent(t *testing.T) {
 	trail := NewMemNotifyTrail()
 	sink := &fakeSink{fail: 1000, err: ErrNotifyPermanent}
 	var reported []error
-	e := testEngine(t, memJournal(), sink, trail, clk, "p1", WithOverdueNotifier(&fakeSink{}), WithNotifyFailingAfter(3), WithNotifyErrors(func(err error) { reported = append(reported, err) }))
+	e := testEngine(t, memJournal(), sink, trail, clk, "p1", WithOverdueNotifier(&fakeSink{}), WithNotifyFailingAfter(9), WithNotifyErrors(func(err error) { reported = append(reported, err) }))
 	ev := haltEvent()
 
 	res, err := e.round(ctx, ev)
@@ -188,7 +188,7 @@ func TestNotifyRound_PermanentErrorEndsTheRoundNeverTheEvent(t *testing.T) {
 		if r.Kind == NotifyFailing && r.Key == ev.key {
 			failing++
 			if r.Failures != 3 {
-				t.Fatalf("failing.failures = %d, want 3", r.Failures)
+				t.Fatalf("failing.failures = %d, want 3 rounds", r.Failures)
 			}
 		}
 		if r.Kind == NotifyAcked && r.Key == ev.key {
@@ -221,39 +221,195 @@ func TestNotifyRound_PermanentErrorEndsTheRoundNeverTheEvent(t *testing.T) {
 	_ = e.flush(ctx)
 }
 
-// failAckTrail fails every append of an acked record, as a store that is down at the worst moment.
-type failAckTrail struct {
+// failNTrail fails the next n appends of an acked record, as a store that is down at the worst moment.
+type failNTrail struct {
 	NotifyTrail
-	fail atomic.Bool
+	mu sync.Mutex
+	n  int
 }
 
-func (f *failAckTrail) Append(ctx context.Context, trail string, seq int, rec NotifyRecord) error {
-	if rec.Kind == NotifyAcked && f.fail.Load() {
-		return errors.New("store down")
+func (f *failNTrail) Append(ctx context.Context, trail string, seq int, rec NotifyRecord) error {
+	if rec.Kind == NotifyAcked {
+		f.mu.Lock()
+		if f.n > 0 {
+			f.n--
+			f.mu.Unlock()
+			return errors.New("store down")
+		}
+		f.mu.Unlock()
 	}
 	return f.NotifyTrail.Append(ctx, trail, seq, rec)
 }
 
-// The documented duplicate window: delivered, but the acknowledgement could not be recorded. The
-// next round sends it again with the same ID, and then closes it.
-func TestNotifyRound_DeliveredButNotRecordedIsSentAgain(t *testing.T) {
+func (f *failNTrail) set(n int) { f.mu.Lock(); f.n = n; f.mu.Unlock() }
+
+// A store error on the acked append is retried in place, under the round's claim, so one delivery
+// is one notification.
+func TestNotifyRound_AckIsRetriedInPlace(t *testing.T) {
 	ctx := context.Background()
 	clk := &notifyClock{t: time.Date(2026, 10, 13, 9, 0, 0, 0, time.UTC)}
-	ft := &failAckTrail{NotifyTrail: NewMemNotifyTrail()}
-	ft.fail.Store(true)
+	ft := &failNTrail{NotifyTrail: NewMemNotifyTrail()}
+	ft.set(2) // fewer than the in-place retries
+	sink := &fakeSink{}
+	e := testEngine(t, memJournal(), sink, ft, clk, "p1")
+	if res, err := e.round(ctx, haltEvent()); err != nil || !res.done {
+		t.Fatalf("round = %+v, %v", res, err)
+	}
+	recs, _ := ft.Load(ctx, "notify:r")
+	if sink.count() != 1 || !eqRecKinds(recKinds(recs), []NotifyRecordKind{NotifyObserved, NotifyClaimed, NotifyAcked}) {
+		t.Fatalf("calls=%d trail=%v; want one delivery, one claim, one ack", sink.count(), recKinds(recs))
+	}
+}
+
+// If the store stays down past the in-place retries, the next round of the same process records the
+// acknowledgement it owes and does not send again. Only a restart, which forgets that it delivered,
+// repeats the notification: the documented duplicate window.
+func TestNotifyRound_AnUnrecordedAckIsNotSentAgainByTheSameProcess(t *testing.T) {
+	ctx := context.Background()
+	clk := &notifyClock{t: time.Date(2026, 10, 13, 9, 0, 0, 0, time.UTC)}
+	ft := &failNTrail{NotifyTrail: NewMemNotifyTrail()}
+	ft.set(1000)
 	sink := &fakeSink{}
 	e := testEngine(t, memJournal(), sink, ft, clk, "p1")
 	res, err := e.round(ctx, haltEvent())
 	if err == nil || res.done || sink.count() != 1 {
 		t.Fatalf("round = %+v, %v, calls %d", res, err, sink.count())
 	}
-	ft.fail.Store(false)
+	ft.set(0)
 	clk.advance(time.Minute)
 	if res, err := e.round(ctx, haltEvent()); err != nil || !res.done {
 		t.Fatalf("second round = %+v, %v", res, err)
 	}
-	if sink.count() != 2 || sink.calls[0].ID != sink.calls[1].ID {
-		t.Fatalf("calls = %d with ids %q %q: want exactly one duplicate with one ID", sink.count(), sink.calls[0].ID, sink.calls[len(sink.calls)-1].ID)
+	if sink.count() != 1 {
+		t.Fatalf("the same process sent %d times, want 1", sink.count())
+	}
+	recs, _ := ft.Load(ctx, "notify:r")
+	if got := recKinds(recs); got[len(got)-1] != NotifyAcked || recs[len(recs)-1].Attempts != 1 {
+		t.Fatalf("trail = %v, last %+v", got, recs[len(recs)-1])
+	}
+
+	// A restart forgets: it delivers again, with the same ID.
+	ft2 := &failNTrail{NotifyTrail: NewMemNotifyTrail()}
+	ft2.set(1000)
+	sink2 := &fakeSink{}
+	e1 := testEngine(t, memJournal(), sink2, ft2, clk, "p1")
+	_, _ = e1.round(ctx, haltEvent())
+	ft2.set(0)
+	clk.advance(3 * time.Minute) // the claim has lapsed; the event is not yet overdue
+	e2 := testEngine(t, memJournal(), sink2, ft2, clk, "p1")
+	if res, err := e2.round(ctx, haltEvent()); err != nil || !res.done {
+		t.Fatalf("after restart = %+v, %v", res, err)
+	}
+	if sink2.count() != 2 || sink2.calls[0].ID != sink2.calls[1].ID {
+		t.Fatalf("after a restart: %d calls; want the one duplicate with one ID", sink2.count())
+	}
+}
+
+// Two deliverers in one process that share a configured holder name (a drive's notifier and a
+// sweep, say) are still two holders: a live claim of one stops the other.
+func TestNotifyRound_TwoDeliverersWithOneNameAreTwoHolders(t *testing.T) {
+	ctx := context.Background()
+	clk := &notifyClock{t: time.Date(2026, 10, 13, 9, 0, 0, 0, time.UTC)}
+	trail := NewMemNotifyTrail()
+	block, entered := make(chan struct{}), make(chan struct{})
+	slow := notifierFunc(func(context.Context, Notification) error {
+		close(entered)
+		<-block
+		return nil
+	})
+	fast := &fakeSink{}
+	a := testEngine(t, memJournal(), slow, trail, clk, "same")
+	b := testEngine(t, memJournal(), fast, trail, clk, "same")
+	done := make(chan struct{})
+	go func() { defer close(done); _, _ = a.round(ctx, haltEvent()) }()
+	<-entered
+	res, err := b.round(ctx, haltEvent())
+	if err != nil || res.done || fast.count() != 0 {
+		t.Fatalf("the second deliverer delivered under the first one's live claim: %+v %v calls=%d", res, err, fast.count())
+	}
+	close(block)
+	<-done
+	recs, _ := trail.Load(ctx, "notify:r")
+	holders := map[string]bool{}
+	for _, r := range recs {
+		if r.Kind == NotifyClaimed {
+			holders[r.Holder] = true
+		}
+	}
+	if len(holders) != 1 || !strings.HasPrefix(recs[1].Holder, "same/") {
+		t.Fatalf("claims: %+v", recs)
+	}
+	c := testEngine(t, memJournal(), fast, trail, clk, "same")
+	if c.holder == a.holder || c.holder == b.holder || a.holder == b.holder {
+		t.Fatalf("holders collide: %q %q %q", a.holder, b.holder, c.holder)
+	}
+}
+
+type notifierFunc func(context.Context, Notification) error
+
+func (f notifierFunc) Notify(ctx context.Context, n Notification) error { return f(ctx, n) }
+
+// The failing signal comes from the trail: rounds that claimed and never acknowledged, whoever ran
+// them and however they ended, so a process that dies in every round still raises it.
+func TestNotifyRound_FailingIsCountedFromTheTrailAcrossRestarts(t *testing.T) {
+	ctx := context.Background()
+	clk := &notifyClock{t: time.Date(2026, 10, 13, 9, 0, 0, 0, time.UTC)}
+	trail := NewMemNotifyTrail()
+	ev := haltEvent()
+	failingCount := func() (n int, failures int) {
+		recs, _ := trail.Load(ctx, "notify:r")
+		for _, r := range recs {
+			if r.Kind == NotifyFailing && r.Key == ev.key {
+				n++
+				failures = r.Failures
+			}
+		}
+		return
+	}
+	// Default: ceil(8/3) = 3 rounds. Each round is a new process (empty memory); the sink is down.
+	for i := range 2 {
+		e := testEngine(t, memJournal(), &fakeSink{fail: 1000}, trail, clk, "p")
+		_, _ = e.round(ctx, ev)
+		if n, _ := failingCount(); n != 0 {
+			t.Fatalf("failing raised after only %d rounds", i+1)
+		}
+		clk.advance(20 * time.Minute)
+	}
+	e := testEngine(t, memJournal(), &fakeSink{fail: 1000}, trail, clk, "p")
+	_, _ = e.round(ctx, ev)
+	if n, f := failingCount(); n != 1 || f != 3 {
+		t.Fatalf("after 3 rounds: %d failing records with failures=%d; want 1 with 3", n, f)
+	}
+	clk.advance(20 * time.Minute)
+	_, _ = testEngine(t, memJournal(), &fakeSink{fail: 1000}, trail, clk, "p").round(ctx, ev)
+	if n, _ := failingCount(); n != 1 {
+		t.Fatalf("%d failing records, want it raised once", n)
+	}
+}
+
+// Rounds that crashed (a claim with nothing after it) count too: a process that dies in every
+// round never reaches the end of one.
+func TestNotifyRound_CrashedRoundsCountTowardFailing(t *testing.T) {
+	ctx := context.Background()
+	clk := &notifyClock{t: time.Date(2026, 10, 13, 9, 0, 0, 0, time.UTC)}
+	trail := NewMemNotifyTrail()
+	ev := haltEvent()
+	now := clk.now()
+	_ = trail.Append(ctx, "notify:r", 0, NotifyRecord{Kind: NotifyObserved, Key: ev.key, RunID: "r", At: now, EventKind: string(ev.kind), DeadlineAt: now.Add(time.Hour)})
+	for i := 1; i <= 3; i++ {
+		_ = trail.Append(ctx, "notify:r", i, NotifyRecord{Kind: NotifyClaimed, Key: ev.key, RunID: "r", At: now, Holder: "dead", Until: now.Add(time.Minute)})
+	}
+	clk.advance(5 * time.Minute)
+	sink := &fakeSink{}
+	e := testEngine(t, memJournal(), sink, trail, clk, "p")
+	if res, err := e.round(ctx, ev); err != nil || !res.done {
+		t.Fatalf("round = %+v, %v", res, err)
+	}
+	recs, _ := trail.Load(ctx, "notify:r")
+	got := recKinds(recs)
+	want := []NotifyRecordKind{NotifyObserved, NotifyClaimed, NotifyClaimed, NotifyClaimed, NotifyFailing, NotifyClaimed, NotifyAcked}
+	if !eqRecKinds(got, want) {
+		t.Fatalf("trail = %v; want failing raised before the fourth round delivers", got)
 	}
 }
 
@@ -276,7 +432,7 @@ func TestNotifyRound_AnotherHoldersLiveClaimIsRespectedThenTakenOver(t *testing.
 		t.Fatalf("takeover = %+v, %v, calls=%d", res, err, sink.count())
 	}
 	recs, _ := trail.Load(ctx, "notify:r")
-	if got := recKinds(recs); !eqRecKinds(got, []NotifyRecordKind{NotifyObserved, NotifyClaimed, NotifyClaimed, NotifyAcked}) || recs[2].Holder != "p2" {
+	if got := recKinds(recs); !eqRecKinds(got, []NotifyRecordKind{NotifyObserved, NotifyClaimed, NotifyClaimed, NotifyAcked}) || !strings.HasPrefix(recs[2].Holder, "p2/") {
 		t.Fatalf("trail = %v", got)
 	}
 }
@@ -340,7 +496,7 @@ func TestNotifyRound_OverdueIsRaisedOnceAndTheOriginalKeepsRetrying(t *testing.T
 		t.Fatalf("%d overdue records, want 1", n)
 	}
 	// The overdue notice is its own event, delivered to the overdue sink by the worker.
-	waitFor(t, func() bool { return overdue.count() == 1 })
+	waitFor(t, func() bool { return overdue.count() >= 1 })
 	if got := overdue.calls[0]; got.Kind != NotificationOverdue || got.Key != OverdueKey(ev.key) || got.Reason != "deadline" {
 		t.Fatalf("overdue notice = %+v", got)
 	}
@@ -378,4 +534,32 @@ func waitFor(t *testing.T, cond func() bool) {
 		time.Sleep(5 * time.Millisecond)
 	}
 	t.Fatal("condition not reached")
+}
+
+// One engine runs one round at a time for a key, so a drive's goroutine and a sweep that share an
+// engine cannot both deliver under its own live claim.
+func TestNotifyRound_OneRoundAtATimePerKey(t *testing.T) {
+	ctx := context.Background()
+	clk := &notifyClock{t: time.Date(2026, 10, 13, 9, 0, 0, 0, time.UTC)}
+	block, entered := make(chan struct{}), make(chan struct{}, 2)
+	var calls atomic.Int32
+	sink := notifierFunc(func(context.Context, Notification) error {
+		calls.Add(1)
+		entered <- struct{}{}
+		<-block
+		return nil
+	})
+	e := testEngine(t, memJournal(), sink, NewMemNotifyTrail(), clk, "p")
+	var wg sync.WaitGroup
+	for range 2 {
+		wg.Add(1)
+		go func() { defer wg.Done(); _, _ = e.round(ctx, haltEvent()) }()
+	}
+	<-entered
+	time.Sleep(20 * time.Millisecond) // the second round, if it were not held, would be in Notify by now
+	close(block)
+	wg.Wait()
+	if calls.Load() != 1 {
+		t.Fatalf("%d deliveries under one engine, want 1", calls.Load())
+	}
 }

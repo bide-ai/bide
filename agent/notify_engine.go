@@ -86,15 +86,23 @@ type notifyEngine struct {
 	n     Notifier
 	trail NotifyTrail
 	cfg   notifyConfig
+	// holder is the name this engine's claims carry (see newNotifyEngine).
+	holder string
 
 	mu       sync.Mutex
-	attempts map[string]int       // delivery attempts made by this process, per key
-	fails    map[string]int       // failed attempts made by this process, per key
-	firstAt  map[string]time.Time // when this process first sent each key
+	unacked  map[string]pendingAck  // deliveries the sink accepted whose acknowledgement could not be recorded
+	keyMu    map[string]*sync.Mutex // one round at a time per key, in this engine
+	attempts map[string]int         // delivery attempts made by this process, per key
+	fails    map[string]int         // failed attempts made by this process, per key
+	firstAt  map[string]time.Time   // when this process first sent each key
 	w        *notifyWorker
 }
 
-func newNotifyEngine(j *Journal, n Notifier, trail NotifyTrail, opts []NotifyOption) (*notifyEngine, error) {
+// newNotifyEngine builds an engine for deliverer kind ("drive", "recover", "sweep", "flow"). Its
+// claims name a holder that is unique to this engine instance and to its kind: the configured
+// holder name, the kind, and a random nonce, so two deliverers in one process (a drive's notifier
+// and a sweep, say) or a restarted process never read each other's live claim as their own.
+func newNotifyEngine(j *Journal, n Notifier, trail NotifyTrail, opts []NotifyOption, kind string) (*notifyEngine, error) {
 	cfg := defaultNotifyConfig()
 	if err := applyOptions("WithNotifier", &cfg, opts, NotifyOption.applyNotify); err != nil {
 		return nil, err
@@ -103,7 +111,9 @@ func newNotifyEngine(j *Journal, n Notifier, trail NotifyTrail, opts []NotifyOpt
 		return nil, fmt.Errorf("WithNotifier: non-positive deadline or claim TTL: %w", ErrConfig)
 	}
 	e := &notifyEngine{j: j, n: n, trail: trail, cfg: cfg,
-		attempts: map[string]int{}, fails: map[string]int{}, firstAt: map[string]time.Time{}}
+		holder:   fmt.Sprintf("%s/%s/%016x", cfg.holder, kind, rand.Uint64()),
+		attempts: map[string]int{}, fails: map[string]int{}, firstAt: map[string]time.Time{},
+		unacked: map[string]pendingAck{}, keyMu: map[string]*sync.Mutex{}}
 	e.w = newNotifyWorker(e)
 	return e, nil
 }
@@ -112,6 +122,20 @@ func (e *notifyEngine) report(err error) {
 	if e.cfg.onError != nil && err != nil {
 		e.cfg.onError(err)
 	}
+}
+
+// pendingAck is what an engine owes the trail for a delivery the sink accepted: the next round
+// records it instead of sending again.
+type pendingAck struct {
+	first    time.Time
+	attempts int
+	ack      NotifyAck
+}
+
+// failingRounds is how many rounds that claimed and never acknowledged make a delivery failing:
+// failingAfter attempts at roundAttempts a round.
+func (e *notifyEngine) failingRounds() int {
+	return (e.cfg.failingAfter + e.cfg.roundAttempts - 1) / e.cfg.roundAttempts
 }
 
 // roundResult is the outcome of one round for an event.
@@ -142,7 +166,21 @@ func (e *notifyEngine) appendRec(ctx context.Context, trail string, seq int, rec
 // holds the claim. It returns when the event is closed, when another process holds a live claim,
 // or after a round of failed attempts.
 func (e *notifyEngine) round(ctx context.Context, ev notifyEvent) (roundResult, error) {
+	e.mu.Lock()
+	km := e.keyMu[ev.key]
+	if km == nil {
+		km = &sync.Mutex{}
+		e.keyMu[ev.key] = km
+	}
+	e.mu.Unlock()
+	km.Lock()
+	defer km.Unlock()
+	return e.roundLocked(ctx, ev)
+}
+
+func (e *notifyEngine) roundLocked(ctx context.Context, ev notifyEvent) (roundResult, error) {
 	name := NotifyTrailName(ev.runID)
+	triedFailing := false
 	for range maxTrailRetries {
 		recs, err := e.trail.Load(ctx, name)
 		if err != nil {
@@ -180,6 +218,14 @@ func (e *notifyEngine) round(ctx context.Context, ev notifyEvent) (roundResult, 
 			continue
 		}
 
+		// A delivery this process made and could not record: record it, do not send again.
+		e.mu.Lock()
+		pa, owed := e.unacked[ev.key]
+		e.mu.Unlock()
+		if owed {
+			return e.ack(ctx, ev, name, pa.first, pa.attempts, pa.ack)
+		}
+
 		if ev.kind != NotificationOverdue && es.OverdueDue(now) {
 			rec := NotifyRecord{Kind: NotifyOverdue, Key: ev.key, RunID: ev.runID, At: now, Latency: now.Sub(es.ObservedAt)}
 			conflict, err := e.appendRec(ctx, name, len(recs), rec)
@@ -193,13 +239,21 @@ func (e *notifyEngine) round(ctx context.Context, ev notifyEvent) (roundResult, 
 			continue
 		}
 
+		// Rounds that claimed the event and never acknowledged it, crashed ones included, make it
+		// failing before another round starts.
+		if es.Failing == nil && es.Rounds >= e.failingRounds() && !triedFailing {
+			triedFailing = true
+			e.markFailing(ctx, ev, name)
+			continue // reload: the trail has a record more
+		}
+
 		live := es.ClaimLive(now)
-		if live && es.Claim.Holder != e.cfg.holder {
+		if live && es.Claim.Holder != e.holder {
 			return roundResult{next: es.Claim.Until}, nil // another process is delivering it
 		}
 		if !live || es.Claim.Until.Sub(now) <= e.cfg.claimTTL/2 {
 			rec := NotifyRecord{Kind: NotifyClaimed, Key: ev.key, RunID: ev.runID, At: now,
-				Holder: e.cfg.holder, Until: now.Add(e.cfg.claimTTL)}
+				Holder: e.holder, Until: now.Add(e.cfg.claimTTL)}
 			conflict, err := e.appendRec(ctx, name, len(recs), rec)
 			if err != nil {
 				return roundResult{next: now.Add(e.backoff(e.failCount(ev.key)))}, err
@@ -253,11 +307,7 @@ func (e *notifyEngine) deliver(ctx context.Context, ev notifyEvent, es *NotifyEv
 		}
 		e.mu.Lock()
 		e.fails[ev.key]++
-		f := e.fails[ev.key]
 		e.mu.Unlock()
-		if f == e.cfg.failingAfter {
-			e.markFailing(ctx, ev, name, f, lastErr)
-		}
 		if ctx.Err() != nil || errors.Is(lastErr, ErrNotifyPermanent) {
 			break
 		}
@@ -267,6 +317,7 @@ func (e *notifyEngine) deliver(ctx context.Context, ev notifyEvent, es *NotifyEv
 			}
 		}
 	}
+	e.markFailing(ctx, ev, name) // this round has failed: it may be the one that makes the delivery failing
 	return roundResult{next: e.cfg.now().Add(e.backoff(e.failCount(ev.key)))}, lastErr
 }
 
@@ -310,33 +361,46 @@ func (e *notifyEngine) ack(ctx context.Context, ev notifyEvent, name string, fir
 			break
 		}
 	}
-	// Delivered but not recorded: the next round delivers it again (a duplicate), as designed.
+	// Delivered but not recorded. This process remembers, and the next round records the
+	// acknowledgement without sending again; only a process that dies first repeats the delivery
+	// (the duplicate window), and the claim it left lapses.
+	e.mu.Lock()
+	e.unacked[ev.key] = pendingAck{first: first, attempts: attempts, ack: ack}
+	e.mu.Unlock()
 	return roundResult{next: e.cfg.now().Add(e.backoff(1))},
 		fmt.Errorf("notify: %s delivered but its acknowledgement was not recorded: %w", ev.key, lastErr)
 }
 
 func (e *notifyEngine) forget(key string) {
 	e.mu.Lock()
+	delete(e.unacked, key)
 	delete(e.attempts, key)
 	delete(e.fails, key)
 	delete(e.firstAt, key)
 	e.mu.Unlock()
 }
 
-// markFailing records, once, that delivery of ev is failing, and reports it.
-func (e *notifyEngine) markFailing(ctx context.Context, ev notifyEvent, name string, failures int, cause error) {
-	e.report(fmt.Errorf("notify: delivery of %s is failing after %d attempts (it keeps retrying): %w", ev.key, failures, cause))
+// markFailing records, once, that delivery of ev is failing: its trail holds failingRounds rounds
+// that claimed the event and never acknowledged it. It counts the trail, not this process's memory,
+// so a deliverer that is restarted or dies in every round still raises it. It reports the failure to
+// the handler of WithNotifyErrors when it is the process that writes the record.
+func (e *notifyEngine) markFailing(ctx context.Context, ev notifyEvent, name string) {
 	for range maxTrailRetries {
 		recs, err := e.trail.Load(ctx, name)
 		if err != nil {
 			return
 		}
-		st := FoldNotify(recs)
-		if es := st.Events[ev.key]; es == nil || !es.Open() || es.Failing != nil {
+		es := FoldNotify(recs).Events[ev.key]
+		if es == nil || !es.Open() || es.Failing != nil || es.Rounds < e.failingRounds() {
 			return
 		}
-		rec := NotifyRecord{Kind: NotifyFailing, Key: ev.key, RunID: ev.runID, At: e.cfg.now(), Failures: failures}
-		if conflict, err := e.appendRec(ctx, name, len(recs), rec); err != nil || !conflict {
+		rec := NotifyRecord{Kind: NotifyFailing, Key: ev.key, RunID: ev.runID, At: e.cfg.now(), Failures: es.Rounds}
+		conflict, err := e.appendRec(ctx, name, len(recs), rec)
+		if err != nil {
+			return
+		}
+		if !conflict {
+			e.report(fmt.Errorf("notify: delivery of %s is failing after %d rounds without an acknowledgement (it keeps retrying)", ev.key, es.Rounds))
 			return
 		}
 	}

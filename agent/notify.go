@@ -152,9 +152,11 @@ func WithNotifyRetry(base, max time.Duration) NotifyOption {
 	})
 }
 
-// WithNotifyFailingAfter sets how many failed attempts, counted by this process, make a delivery
-// failing (default 8): a failing record is written, once, and the failure is reported to the
-// handler of WithNotifyErrors. Delivery continues. n must be at least 1.
+// WithNotifyFailingAfter sets how many failed delivery attempts make a delivery failing (default
+// 8). A round makes up to 3 attempts, so the count is taken in rounds, ceil(n/3), and from the
+// trail: rounds that claimed the event and never acknowledged it, whichever process ran them and
+// however they ended (a crash included). A failing record is written, once, and the failure is
+// reported to the handler of WithNotifyErrors. Delivery continues. n must be at least 1.
 func WithNotifyFailingAfter(n int) NotifyOption {
 	return notifyOption(func(c *notifyConfig) error {
 		if n < 1 {
@@ -242,18 +244,18 @@ func WithNotifier(n Notifier, trail NotifyTrail, opts ...NotifyOption) NotifierO
 	return notifierOption{n: n, trail: trail, opts: opts}
 }
 
-func (o notifierOption) engine(j *Journal) (*notifyEngine, error) {
+func (o notifierOption) engine(j *Journal, kind string) (*notifyEngine, error) {
 	if isNil(o.n) {
 		return nil, fmt.Errorf("WithNotifier: nil Notifier: %w", ErrConfig)
 	}
 	if isNil(o.trail) {
 		return nil, fmt.Errorf("WithNotifier: nil NotifyTrail (the guarantee needs a durable trail): %w", ErrConfig)
 	}
-	return newNotifyEngine(j, o.n, o.trail, o.opts)
+	return newNotifyEngine(j, o.n, o.trail, o.opts, kind)
 }
 
 func (o notifierOption) applyAgent(c *agentConfig) error {
-	e, err := o.engine(c.a.store)
+	e, err := o.engine(c.a.store, "drive")
 	if err != nil {
 		return err
 	}
