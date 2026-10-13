@@ -178,6 +178,21 @@ func WithNotifyRecoveryFailingAfter(d time.Duration) NotifyOption {
 	})
 }
 
+// WithNotifyHaltAge sets how old an attempt marker with no result must be before NotifyPending
+// reports it as a halt (default 5 minutes). A sweep reads the journal and cannot tell a halted
+// effect from one still running in a process it cannot see, so it waits: set it longer than your
+// longest tool call or Step, or a slow call is reported as halted. A marker with no recorded time
+// is not reported. It does not apply to a drive, which knows. d must be positive.
+func WithNotifyHaltAge(d time.Duration) NotifyOption {
+	return notifyOption(func(c *notifyConfig) error {
+		if d <= 0 {
+			return fmt.Errorf("WithNotifyHaltAge(%v): must be positive: %w", d, ErrConfig)
+		}
+		c.haltAge = d
+		return nil
+	})
+}
+
 // WithNotifyHolder names this process in the claims it writes (default host, pid and a random
 // number). Two processes must not share a name.
 func WithNotifyHolder(id string) NotifyOption {

@@ -1,10 +1,10 @@
 # Design: tell a human when a run needs them
 
 Status: approved, in progress. Build plan item 3 (the trail port, records, fold and `EventStore`
-adapter) has shipped, and item 4 (the notifier core: events at the end of a drive, claim and
-delivery, overdue, `recovery_failing`) is in review. It adds a small `Notifier` seam, a signed webhook
-implementation, and an audited delivery trail that gives notify-once across crashes and makes the
-notification itself evidence. Until it ships, the recipe "Get notified when a run needs a human"
+adapter) has shipped, item 4 (the notifier core: events at the end of a drive, claim and delivery,
+overdue, `recovery_failing`) is in review, and item 6 (`NotifyPending`) is built on it. It adds a
+small `Notifier` seam, a signed webhook implementation, and an audited delivery trail that gives
+notify-once across crashes and makes the notification itself evidence. Until it ships, the recipe "Get notified when a run needs a human"
 wires the existing hooks to a webhook with an in-process dedupe; this note is the crash-safe,
 auditable version of that recipe.
 
@@ -131,10 +131,10 @@ type NotifyTrail interface { /* Append at the next position, Load; see "Notify o
 func WithNotifier(n Notifier, trail NotifyTrail) Option // Agent (Build) and plan Flow
 func WithNotifier(n Notifier, trail NotifyTrail) RecoverLoopOption
 
-// NotifyPending runs one catch-up sweep: for every run the store lists as halted or paused (and
-// aborted or failing, where known) it observes the event, claims it, delivers it, and raises
-// overdue. Call it at startup and on a timer.
-func NotifyPending(ctx context.Context, j *Journal, n Notifier, trail NotifyTrail) error
+// NotifyPending runs one catch-up sweep: for every unfinished run it finds a gate waiting for
+// approval and an effect with no result older than WithNotifyHaltAge, and delivers those events
+// as a drive would, under the same keys. Call it at startup and on a timer.
+func NotifyPending(ctx context.Context, j *Journal, n Notifier, trail NotifyTrail, opts ...NotifyOption) error
 ```
 
 `WithNotifier` takes the trail: the crash-safe guarantee needs it, so a nil trail is `ErrConfig`.
