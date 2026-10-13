@@ -43,7 +43,7 @@ proofs. Each entry notes who it is for.
 
 ## Reference
 
-- **[CLI reference](reference/cli.md)**: every `bide` command (`demo`, `view`, `check`, `audit`, `version`), its flags and its exit statuses, generated from the flag sets.
+- **[CLI reference](reference/cli.md)**: every `bide` command (`init`, `demo`, `view`, `check`, `audit`, `version`), its flags and its exit statuses, generated from the flag sets.
 - **[Extension points](reference/extension-points.md)**: the ports and adapters (`Model`, `Store`, `Tool`, ...) and an "implement your own store" walkthrough.
 - **[Module structure](reference/module-structure.md)**: the multi-module repo layout.
 - **API**: the godoc of every package, at [pkg.go.dev](https://pkg.go.dev/github.com/bide-ai/bide/agent).

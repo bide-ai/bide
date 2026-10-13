@@ -99,7 +99,7 @@ tool := audit.AttenuatingSubAgent("researcher", "does research", subAgent, audit
         return audit.Grant{Scope: scope}
     },
     Rules: audit.ScopeRules{"limit": audit.NumericAtMost},
-}) // trailing agent.ToolOptions go to agent.SubAgent: agent.WithApproval gates the delegation
+}) // trailing agent.ToolOption values go to agent.SubAgent: agent.WithApproval gates the delegation
 ```
 
 On each call, if a signed grant is bound to the context, the tool mints a narrower child grant

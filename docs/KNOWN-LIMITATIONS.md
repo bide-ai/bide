@@ -306,7 +306,7 @@ guarded on `paid` is the standard case). gsm v0.12.0's `Build`, and every later 
 pair it checks for CC (every event pair, or only the pairs declared with `Independent`) exactly,
 with no footprint shortcut. A `govern.CertifyConvergence` certificate, or any other verdict,
 produced under v0.11.0 and anchored in a trail is still what v0.11.0 said: rebuild the machine
-under v0.13.0 and record a new certificate before relying on it.
+under v0.14.0, the version bide requires, and record a new certificate before relying on it.
 
 **Declared pairs narrow the guarantee.** With pairs declared, CC certifies only those pairs, so the
 guarantee covers runs whose events are reordered only across declared pairs; the events of every

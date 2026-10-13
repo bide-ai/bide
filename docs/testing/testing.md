@@ -16,8 +16,8 @@ an idealized plan. One item is stated differently here than you may expect:
 - The **differential oracle** work (a table oracle over emitted step tables, a rules oracle
   recomputing convergence from the combinator declarations, both extracted from the axiom-free
   Coq/Rocq proof) lives in the sibling `gsm` and `normalization-confluence` repositories, where
-  it can re-check gsm's convergence verdict on an exported machine (it does not run in gsm's CI
-  today). It is not a pair of `oracle_test.go` /
+  it can re-check gsm's convergence verdict on an exported machine (gsm's CI builds both checkers
+  from a pinned proof commit and runs them in its oracle cross-check job). It is not a pair of `oracle_test.go` /
   `astoracle_test.go` files inside Bide, and there is no `GSM_CONVERGENCE_CHECKER`
   environment variable in this repo. What Bide ships in-repo is a single optional hook,
   `GSM_AST_CHECKER`, in `govern/attested_e2e_test.go`, which runs the external verified oracle

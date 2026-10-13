@@ -25,9 +25,9 @@ without a sign-off fail the DCO check.
 
 ## Build and test
 
-This is a multi-module workspace. The core is one Go module at the repository root; adapters and backends are their own modules (`trace`, `mcp`, `store/sqlite`, `store/postgres`, `govern`, `govern/postgreslog`, `govern/redislog`, `govern/sqlitelog`, `codec/gcf`, the self-contained example modules `examples/approval`, `examples/plan`, `examples/mcp`, `examples/observability` and `examples/govern`, and the test-only `integration` module, which holds the core's tests that need govern). A `go.work` stitches them together for local development, and CI builds and tests every module listed in `MODULES` in `.github/workflows/ci.yml` (it fails if a module is missing from that list or from `go.work`). On Linux the tests run in parallel shards, one job each (`TEST_SHARDS` in the same file): a shard names modules (`mcp`) or single packages of a module (`.:agent`, the core's `agent` package), and a module entry covers the module's packages no package entry names. A new module goes on exactly one shard's line, or CI fails and says where (`.github/scripts/shards.sh check-modules`); a new package of the core needs nothing, since the `core` shard covers it.
+This is a multi-module workspace. The core is one Go module at the repository root; adapters and backends are their own modules (`trace`, `mcptools`, `store/sqlite`, `store/postgres`, `govern`, `govern/postgreslog`, `govern/redislog`, `govern/sqlitelog`, `codec/gcf`, the `bide` command `cmd/bide` and the deprecated `cmd/bide-view`, the self-contained example modules `examples/approval`, `examples/plan`, `examples/mcp`, `examples/observability` and `examples/govern`, and the test-only `integration` module, which holds the core's tests that need govern). A `go.work` stitches them together for local development, and CI builds and tests every module listed in `MODULES` in `.github/workflows/ci.yml` (it fails if a module is missing from that list or from `go.work`). On Linux the tests run in parallel shards, one job each (`TEST_SHARDS` in the same file): a shard names modules (`mcptools`) or single packages of a module (`.:agent`, the core's `agent` package), and a module entry covers the module's packages no package entry names. A new module goes on exactly one shard's line, or CI fails and says where (`.github/scripts/shards.sh check-modules`); a new package of the core needs nothing, since the `core` shard covers it.
 
-Build and test with the versions pinned in each `go.mod` (rather than the workspace) by setting `GOWORK=off`:
+Build and test a module with the versions pinned in its `go.mod` (rather than the workspace) by setting `GOWORK=off` in its directory (at the root, `./...` covers only the core module):
 
 ```
 GOWORK=off go build ./...
@@ -114,8 +114,9 @@ plainly. Internal-only changes (CI, tests, refactors with no API or behavior cha
 ## Releasing
 
 The core module and the library modules are released together under one version. Published
-modules, tagged `<dir>/vX.Y.Z` at every release: `govern`, `store/sqlite`, `store/postgres`, `mcp`,
-`trace`, `codec/gcf`, `govern/sqlitelog`, `govern/redislog`, `govern/postgreslog`. Repo-only
+modules, tagged `<dir>/vX.Y.Z` at every release: `govern`, `store/sqlite`, `store/postgres`, `mcptools`,
+`trace`, `codec/gcf`, `govern/sqlitelog`, `govern/redislog`, `govern/postgreslog`, and the commands
+`cmd/bide` and `cmd/bide-view` (the latter one last time, at v0.14.0). Repo-only
 modules, never tagged: `examples/*`, `integration`, `benchmarks`. The lists live in
 `scripts/release.sh`, and the Lint job fails if a module is in neither.
 
@@ -150,7 +151,7 @@ tree between releases.
 
    The script
    1. tags the core `vX.Y.Z` at HEAD, pushes the tag and waits until `proxy.golang.org` serves it;
-   2. for the modules that need only the core (`govern`, the stores, `mcp`, `trace`, `codec/gcf`),
+   2. for the modules that need only the core (`govern`, the stores, `mcptools`, `trace`, `codec/gcf`, and `cmd/bide-view`, which needs none),
       sets their `require` on the core to `vX.Y.Z`, drops the `replace`, runs `go mod tidy`
       against the proxy, builds, vets and tests each one with `GOWORK=off`, commits (signed off),
       tags each `<dir>/vX.Y.Z` at that commit, pushes the tags at most three per push and waits

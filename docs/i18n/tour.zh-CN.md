@@ -497,7 +497,7 @@ func RequireTag(tag string) agent.ToolMiddleware {
 
 ## 模块
 
-Bide 是一个多模块仓库：一个依赖精简的**核心**（`github.com/bide-ai/bide`，即循环、schema、中间件、模型适配器、`plan` 流程构建器、`audit`；除标准库外没有任何依赖），外加每个重型适配器一个模块（`mcptools`、`trace`、`store/sqlite`、`store/postgres`、`govern/redislog`、`govern/sqlitelog`、`govern/postgreslog`、`codec/gcf`），以及承载 gsm 的 `govern` 模块（在 gsm 稳定之前保持 v0.x）。导入一个适配器，你就拉进它的依赖树；只导入核心，你就不会。一个仅用核心的消费者，其外部模块表面是 0，而不是 54。见 [docs/reference/module-structure.md](../../docs/reference/module-structure.md)。
+Bide 是一个多模块仓库：一个依赖精简的**核心**（`github.com/bide-ai/bide`，即循环、schema、中间件、模型适配器、`plan` 流程构建器、`audit`；除标准库外没有任何依赖），外加每个重型适配器一个模块（`mcptools`、`trace`、`store/sqlite`、`store/postgres`、`govern/redislog`、`govern/sqlitelog`、`govern/postgreslog`、`codec/gcf`），`bide` 命令（`cmd/bide`），以及承载 gsm 的 `govern` 模块（在 gsm 稳定之前保持 v0.x）。导入一个适配器，你就拉进它的依赖树；只导入核心，你就不会。一个仅用核心的消费者，其外部模块表面是 0，而不是 54。见 [docs/reference/module-structure.md](../../docs/reference/module-structure.md)。
 
 ## 架构
 
