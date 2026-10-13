@@ -253,7 +253,7 @@ func TestApprovalGateThenCrash(t *testing.T) {
 	args := func(more ...string) []string { return append(append([]string{"run"}, base...), more...) }
 
 	out := mustProc(t, f, args()...)
-	want(t, out, "status: paused", "approved 0 of 2", "waiting on ops, finance, risk")
+	want(t, out, "status: paused", "approved 0 of 2", "waiting on ops, finance, risk", "-run "+runID+" -as ops")
 	mustProc(t, f, "approve", "-db", db, "-payment-intent", "pi_test_1", "-as", "ops")
 	out = mustProc(t, f, args()...)
 	want(t, out, "status: paused", "approved 1 of 2")
