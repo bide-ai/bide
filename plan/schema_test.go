@@ -825,10 +825,12 @@ func TestFlowSchema_SampleConfigsAreValid(t *testing.T) {
 			if err != nil {
 				t.Fatal(err)
 			}
-			if want := "# yaml-language-server: $schema=" + id; !strings.HasPrefix(string(b), want+"\n") {
+			// A Windows checkout may have CRLF line ends.
+			src := strings.ReplaceAll(string(b), "\r\n", "\n")
+			if want := "# yaml-language-server: $schema=" + id; !strings.HasPrefix(src, want+"\n") {
 				t.Errorf("first line is not %q", want)
 			}
-			v, err := yamlToValue(string(b))
+			v, err := yamlToValue(src)
 			if err != nil {
 				t.Fatal(err)
 			}
