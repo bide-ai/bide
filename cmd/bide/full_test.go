@@ -36,3 +36,39 @@ func TestInitThenCheck(t *testing.T) {
 		t.Fatalf("bide check -strict on the scaffold: exit %d\n%s%s", code, stdout, stderr)
 	}
 }
+
+// TestCheckDiff: bide check <file> -diff <old> -check (flags after the file) prints the changes and
+// exits 0, a weakened gate included; -fail-on-weaken exits 1 on the weakened gate and 0 on the
+// strengthened one; -check without -diff, and -diff with two files, are usage errors.
+func TestCheckDiff(t *testing.T) {
+	const v1, v2 = "../../examples/plan/flows/refund-v1.yaml", "../../examples/plan/flows/refund-v2.yaml"
+	code, stdout, stderr := runBide("check", v2, "-diff", v1, "-check")
+	if code != 0 || !strings.Contains(stdout, v2+": changed node charge: approval 1 of 3 -> 2 of 3 (strengthened)\n") ||
+		!strings.Contains(stdout, v2+": added node review: block review\n") || !strings.Contains(stdout, v2+": removed node skip: block skip\n") {
+		t.Errorf("bide check %s -diff %s -check: exit %d\n%s%s", v2, v1, code, stdout, stderr)
+	}
+	if code, stdout, stderr := runBide("check", v2, "-diff", v1, "-check", "-fail-on-weaken"); code != 0 {
+		t.Errorf("a strengthened gate with -fail-on-weaken: exit %d, want 0\n%s%s", code, stdout, stderr)
+	}
+	code, stdout, stderr = runBide("check", v1, "-diff", v2, "-check")
+	if code != 0 || !strings.Contains(stdout, v1+": approval policy weakened: charge: approval 2 of 3 -> 1 of 3\n") {
+		t.Errorf("a weakened gate: exit %d, want 0 and the weakened line\n%s%s", code, stdout, stderr)
+	}
+	if code, stdout, stderr := runBide("check", "-fail-on-weaken", v1, "-check", "-diff", v2); code != 1 {
+		t.Errorf("a weakened gate with -fail-on-weaken: exit %d, want 1\n%s%s", code, stdout, stderr)
+	}
+	for _, args := range [][]string{
+		{"check", v1, "-check"},
+		{"check", v1, "-fail-on-weaken"},
+		{"check", v1, v2, "-diff", v1, "-check"},
+		{"check", "-diff", v1},
+	} {
+		if code, _, _ := runBide(args...); code != 2 {
+			t.Errorf("bide %q: exit %d, want 2", args, code)
+		}
+	}
+	// Everything after -- is a file: -missing.yaml is read (and is not there), not parsed as a flag.
+	if code, stdout, stderr := runBide("check", "--", v1, "-missing.yaml"); code != 1 || !strings.Contains(stderr, "-missing.yaml") {
+		t.Errorf("bide check -- %s -missing.yaml: exit %d, want 1\n%s%s", v1, code, stdout, stderr)
+	}
+}

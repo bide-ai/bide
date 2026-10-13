@@ -51,35 +51,74 @@ func fullCommands() []command {
 }
 
 // runCheck is bide check: bide view's -config -check on each file. It exits 1 if any file has an
-// error (with -strict, any problem) or cannot be read.
+// error (with -strict, any problem) or cannot be read. With -diff it compares one file with an
+// earlier version (bide view -config <file> -diff <old>): a page, or with -check the changes as
+// text.
 func runCheck(args []string, stdout, stderr io.Writer) int {
 	fs := flag.NewFlagSet("bide check", flag.ContinueOnError)
 	fs.SetOutput(stderr)
 	fs.Usage = func() {
 		fmt.Fprint(fs.Output(), `usage: bide check [-strict] <flow.yaml|flow.json>...
+       bide check <flow.yaml|flow.json> -diff <old config|git revision> [-check [-fail-on-weaken]]
 
 Checks each plan flow config without running it, and prints one "file:node: message" line per
 problem ("file:from->to: message" for an edge or arm). The check is structural: types and
 registered blocks are checked when a program serves the page with its plan.Registry (package
 plan/planview). It is the check bide view -config shows on the graph.
 
+With -diff it compares the config with an earlier version of it instead, and serves a read-only
+local page (like bide view) that draws the new flow with added nodes and edges in green, removed
+ones as dashed red ghosts and changed nodes in amber, and calls out a weakened approval policy.
+-diff takes a file; when no file has that name, a git revision read with git show: <rev>:<path>
+(git's own form), or a bare <rev> for the config's own path at that revision (bide check
+flows/refund.yaml -diff main). With -check it serves nothing, prints one line per change and a
+summary line, and exits 0: a diff is not a failure, unless -fail-on-weaken finds an approval gate
+removed or weakened. Flags may follow the file names.
+
 `)
 		fs.PrintDefaults()
 	}
 	strict := fs.Bool("strict", false, "exit 1 on a warning too")
-	if err := fs.Parse(args); err != nil {
+	diff := fs.String("diff", "", "compare the one config given with this earlier version: a file, or else a git revision (<rev>:<path>, or <rev> for the config's path at rev)")
+	check := fs.Bool("check", false, "with -diff: serve nothing and print each change, then a summary line")
+	failOnWeaken := fs.Bool("fail-on-weaken", false, "with -diff -check: exit 1 if an approval gate was removed or weakened (its need lowered, or an approver added without raising the need)")
+	addr := fs.String("addr", "127.0.0.1:8484", "with -diff: address to serve the page on, a loopback IP (127.0.0.1 or ::1) or localhost, with a port")
+	files, err := parseInterspersed(fs, args)
+	if err != nil {
 		if errors.Is(err, flag.ErrHelp) {
 			return 0
 		}
 		return 2
 	}
-	if fs.NArg() == 0 {
-		fmt.Fprintln(stderr, "bide check: no flow config given")
+	usage := func(msg string) int {
+		fmt.Fprintln(stderr, "bide check:", msg)
 		fs.Usage()
 		return 2
 	}
+	if len(files) == 0 {
+		return usage("no flow config given")
+	}
+	if *diff == "" && (*check || *failOnWeaken) {
+		return usage("-check and -fail-on-weaken need -diff")
+	}
+	if *diff != "" {
+		if len(files) != 1 {
+			return usage("-diff compares one flow config")
+		}
+		a := []string{"-config", files[0], "-diff", *diff, "-addr", *addr}
+		if *check {
+			a = append(a, "-check")
+		}
+		if *failOnWeaken {
+			a = append(a, "-fail-on-weaken")
+		}
+		if *strict {
+			a = append(a, "-strict")
+		}
+		return runview.Main(a, stdout, stderr, stores)
+	}
 	code := 0
-	for _, file := range fs.Args() {
+	for _, file := range files {
 		a := []string{"-config", file, "-check"}
 		if *strict {
 			a = append(a, "-strict")
@@ -87,4 +126,24 @@ plan/planview). It is the check bide view -config shows on the graph.
 		code = max(code, runview.Main(a, stdout, stderr, stores))
 	}
 	return code
+}
+
+// parseInterspersed parses fs's flags wherever they stand among the arguments (bide check
+// flow.yaml -diff old.yaml), and returns the other arguments in order. Everything after "--" is an
+// argument.
+func parseInterspersed(fs *flag.FlagSet, args []string) ([]string, error) {
+	var rest []string
+	for {
+		if err := fs.Parse(args); err != nil {
+			return nil, err
+		}
+		left := fs.Args()
+		if len(left) == 0 {
+			return rest, nil
+		}
+		if n := len(args) - len(left); n > 0 && args[n-1] == "--" {
+			return append(rest, left...), nil
+		}
+		rest, args = append(rest, left[0]), left[1:]
+	}
 }

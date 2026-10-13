@@ -82,6 +82,8 @@ page is at `/run?id=<run>`, and the same view as JSON at `/run.json?id=<run>`.
 | `-config <file>` | A flow config (`.json`, or `.yaml`/`.yml`) to show instead of runs; see [Check a flow config](#check-a-flow-config). Takes none of the run flags. |
 | `-check` | With `-config`: serve nothing, print each problem as `file:node: message`, and exit 1 if any is an error. `bide check <file>...` is the same check, for several files. |
 | `-strict` | With `-check`: exit 1 on a warning too (`bide check -strict`). |
+| `-diff <old>` | With `-config`: compare it with an earlier version, a file or a git revision; see [Compare two versions of a flow](#compare-two-versions-of-a-flow). With `-check`, print the changes instead of serving the page. |
+| `-fail-on-weaken` | With `-diff -check`: exit 1 if an approval gate was removed or weakened. |
 | `-addr <host:port>` | Where to listen: a loopback IP or `localhost`, with a port. Default `127.0.0.1:8484`. Any other host is refused. |
 
 Input files are read strictly, as `bide audit` reads them (`audit.UnmarshalStrict`): a duplicate or
@@ -288,6 +290,88 @@ if err != nil {
 log.Fatal(http.Serve(ln, planview.Handler("refund.json", config, reg)))
 // or, in CI: if planview.Check(os.Stdout, "refund.json", config, reg) { os.Exit(1) }
 ```
+
+## Compare two versions of a flow
+
+`bide check <file> -diff <old>` compares a flow config with an earlier version of it, for review
+before a change ships. It serves a read-only page (as `bide view` does, on `-addr`) that draws the
+new flow with added nodes and edges in green, removed ones as dashed red ghosts where they were,
+and changed nodes in amber with what changed: the block, the `safety`, or the approval gate
+(`approval 1 of 3 -> 2 of 3`, strengthened or weakened). A summary card counts the changes and
+gives the digest before and after, and a weakened approval policy is called out above everything
+else. `bide view -config <file> -diff <old>` is the same page.
+
+```sh
+cd examples/plan
+bide check flows/refund-v2.yaml -diff flows/refund-v1.yaml            # the page
+bide check flows/refund-v2.yaml -diff main                            # against the file on main
+bide check flows/refund-v2.yaml -diff HEAD~1:examples/plan/flows/refund-v2.yaml
+bide check flows/refund-v1.yaml -diff flows/refund-v2.yaml -check -fail-on-weaken   # for CI
+```
+
+`examples/plan/flows/refund-v2.yaml` sends small refunds to a `review` step instead of skipping them
+and raises the refund approval from 1 of 3 to 2 of 3:
+
+<img src="./img/flow-diff-strengthened-dark.png" alt="bide check -diff: review added in green, skip removed as a dashed red ghost, charge amber with approval 1 of 3 -> 2 of 3 strengthened">
+
+The reverse comparison lowers the gate, so the page leads with the weakened policy:
+
+<img src="./img/flow-diff-weakened-dark.png" alt="bide check -diff with the approval gate lowered from 2 of 3 to 1 of 3, called out as approval policy weakened">
+
+**Where `-diff` reads the old version.** When a file has that name, it is the file. Otherwise the
+argument is a git revision, read with `git show` from the working directory: `<rev>:<path>` is
+git's own form (the path from the top of the repository, or from the working directory when it
+starts with `./`), and a bare `<rev>` (`main`, `HEAD~1`) means the config's own path at that
+revision. The extension of the path picks YAML or JSON. A file named like a revision wins; write
+`./main` or `main:<path>` to be explicit.
+
+**Text, for CI.** With `-check` it serves nothing and prints one line per change, a line per
+weakened gate and a summary, each prefixed with the new file's name:
+
+```text
+flows/refund-v1.yaml: changed node charge: approval 2 of 3 -> 1 of 3 (weakened)
+flows/refund-v1.yaml: added node skip: block skip
+flows/refund-v1.yaml: removed node review: block review
+flows/refund-v1.yaml: added edge validate -> skip: else
+flows/refund-v1.yaml: removed edge validate -> review: else
+flows/refund-v1.yaml: approval policy weakened: charge: approval 2 of 3 -> 1 of 3
+flows/refund-v1.yaml: 5 changes from flows/refund-v2.yaml (nodes: 1 added, 1 removed, 1 changed; edges: 1 added, 1 removed, 0 changed); digest not computed: the check is structural (the digest commits to the blocks' Go types; see plan/planview)
+```
+
+A diff is not a failure: it exits 0, unless `-fail-on-weaken` finds a weakened gate (exit 1). An
+old or new version that cannot be read as a flow config exits 1; a version with config errors is
+compared as far as it reads, with a note (`bide check <file>` lists the errors). `-diff` compares;
+it does not check, so `-strict` is a usage error with it.
+
+**What counts as weakened.** A gate is weakened when some set of approvals the new gate accepts
+would not have passed the old one: the gate was removed (a removed gated node counts, so renaming a
+gated node reads as removing its gate), its need was lowered, an approver was added without raising
+the need to match, or an approver was replaced. Precisely, need k of approvers A becomes need k' of
+approvers B, and the change is weakened unless k' minus the number of approvers in B and not in A
+is at least k. The reverse is strengthened; the same approvers and need in another policy order is
+reordered. The check compares each node's gate; it does not reason about paths, so a new arm that
+routes around a gated node shows as an added edge, not as a weakened policy. Read the graph for
+that.
+
+**The digest.** From the command line the comparison is structural, as `bide check` is, so it
+shows no digest. Package `plan/planview` serves the same page (`DiffHandler`) and text
+(`CheckDiff`) with a `plan.Registry` for each version, and then shows the digest each version's
+runs journal: a changed digest means a run paused under the old flow will not resume under the new
+one. `plan.Load` refuses a block registered and never used, so each version takes the Registry the
+program had at that version.
+
+<!-- docsnip: skip illustrative: old, cfg, oldReg and reg are the program's two config versions and Registries -->
+```go
+weakened, err := planview.CheckDiff(os.Stdout,
+	planview.Version{Name: "main:refund.json", Data: old, Registry: oldReg},
+	planview.Version{Name: "refund.json", Data: cfg, Registry: reg})
+if err != nil || weakened {
+	os.Exit(1)
+}
+```
+
+A GitHub Action that posts the `-check` text as a pull request comment is a planned follow-up; until
+then, a workflow step can run the command and post its output.
 
 ## What it cannot show
 

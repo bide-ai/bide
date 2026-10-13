@@ -9,6 +9,10 @@ journal format can change between pre-releases without a version bump. Curated h
 
 ## [Unreleased]
 
+### Added
+
+- `bide check flow.yaml -diff <old>` compares a flow config with an earlier version: a read-only page draws the new flow with added nodes and edges in green, removed ones as dashed red ghosts and changed nodes in amber (block, `safety`, approval gate: `approval 1 of 3 -> 2 of 3`), with a summary card (counts, the digest before and after) and a weakened approval policy called out first. `<old>` is a file or, when no file has that name, a git revision (`<rev>:<path>`, or a bare `<rev>` for the same path). `-check` prints one line per change and a summary, for CI, and exits 0 unless `-fail-on-weaken` finds a gate removed or weakened (a set of approvals the new gate accepts would not have passed the old one). `bide view -config <file> -diff <old>` is the same page, and package `plan/planview` serves it (`DiffHandler`, `CheckDiff`) with each version's `plan.Registry`, for the digests. `bide check` now accepts flags after the file names. Samples: `examples/plan/flows/refund-v1.yaml` and `refund-v2.yaml`.
+
 ## [0.14.1] - 2026-10-13
 
 ### Changed

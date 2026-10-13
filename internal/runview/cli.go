@@ -43,6 +43,7 @@ const usageText = `bide view: a read-only local web page for one run of a bide j
   bide view -postgres <dsn> [-run <id>] [flags]
   bide view -journal <export.json> [-journal ...] [-run <id>] [flags]
   bide view -config <flow.yaml|flow.json> [-check [-strict]]
+  bide view -config <flow.yaml|flow.json> -diff <old config|git revision> [-check [-fail-on-weaken]]
 
 It shows an agent run's timeline (model turns, tool calls with their Safety, attempts, approvals,
 halts, end state) or a plan flow's declared topology with the run's path (drawn from the topology
@@ -59,9 +60,17 @@ belongs to. The check is structural (types and registered blocks are checked whe
 the viewer with its plan.Registry, see package plan/planview). With -check it serves nothing and
 prints one "file:node: message" line per problem ("file:from->to: message" for an edge or arm).
 
+With -diff it compares the -config flow with an earlier version of it: the page draws the new flow
+with added nodes and edges in green, removed ones as dashed red ghosts and changed nodes in amber,
+and calls out an approval gate whose policy was weakened (removed, its need lowered, or an approver
+added without raising the need). -diff takes a file, or, when no file has that name, a git
+revision read with git show: <rev>:<path>, or a bare <rev> for the -config file's path at that
+revision. With -check it serves nothing and prints one line per change and a summary line.
+
 Exit status: 0 after a clean stop (or -h, or a -check that found no errors; warnings do not
-count unless -strict), 1 if an input cannot be read, the server fails, or -check found errors (or,
-with -strict, any problem), 2 for a usage error.
+count unless -strict; for -diff -check, a diff is not a failure), 1 if an input cannot be read,
+the server fails, -check found errors (or, with -strict, any problem), or -diff -check
+-fail-on-weaken found a weakened approval policy, 2 for a usage error.
 
 Flags:
 `
@@ -72,6 +81,8 @@ type flags struct {
 	config                string
 	check                 bool
 	strict                bool
+	diff                  string
+	failOnWeaken          bool
 	journals              multi
 	topo, digest          string
 	sth, evidence, pubkey string
@@ -94,8 +105,10 @@ func Main(args []string, stdout, stderr io.Writer, stores Stores) int {
 	fs.StringVar(&f.postgres, "postgres", "", "Postgres journal to read, a pgx DSN such as postgres://user:pass@host:5432/db, read in sessions the server holds read-only (postgres.OpenReadOnly)")
 	fs.Var(&f.journals, "journal", "exported journal (audit.ExportJournal as JSON) to read; repeatable")
 	fs.StringVar(&f.config, "config", "", "a flow config (.json, or .yaml/.yml) to show instead of runs: its declared graph and its problems; nothing runs")
-	fs.BoolVar(&f.check, "check", false, "with -config: serve nothing, print each problem as file:node: message, and exit 1 if any is an error")
+	fs.BoolVar(&f.check, "check", false, "with -config: serve nothing, print each problem as file:node: message, and exit 1 if any is an error; with -diff, print each change instead")
 	fs.BoolVar(&f.strict, "strict", false, "with -check: exit 1 on a warning too")
+	fs.StringVar(&f.diff, "diff", "", "with -config: compare it with this earlier version, a file or else a git revision (<rev>:<path>, or <rev> for the -config path at rev); -check prints the changes instead of serving the page")
+	fs.BoolVar(&f.failOnWeaken, "fail-on-weaken", false, "with -diff -check: exit 1 if an approval gate was removed or weakened")
 	run := fs.String("run", "", "run to open (default: the run list)")
 	fs.StringVar(&f.topo, "topology", "", "declared flow topology, JSON of flow.Topology(), to draw a flow run against instead of the topology the run journaled (flow:topology); for a run journaled before that record existed, or to check a run against another flow")
 	fs.StringVar(&f.digest, "digest", "", "flow.Digest() of the -topology flow, compared with the digest the run journaled (default: computed from -topology when it carries the digest's inputs)")
@@ -123,6 +136,15 @@ func Main(args []string, stdout, stderr io.Writer, stores Stores) int {
 	if f.strict && !f.check {
 		return usage("-strict needs -check")
 	}
+	if f.diff != "" && f.config == "" {
+		return usage("-diff needs -config")
+	}
+	if f.failOnWeaken && (f.diff == "" || !f.check) {
+		return usage("-fail-on-weaken needs -diff and -check")
+	}
+	if f.strict && f.diff != "" {
+		return usage("-strict checks one config's problems; -diff compares two (run bide check without -diff for the problems)")
+	}
 	if f.config != "" {
 		if f.db != "" || f.postgres != "" || len(f.journals) > 0 || *run != "" || f.sth != "" || f.evidence != "" || f.topo != "" {
 			return usage("-config shows a flow definition; it takes none of the run flags")
@@ -131,6 +153,26 @@ func Main(args []string, stdout, stderr io.Writer, stores Stores) int {
 		if err != nil {
 			fmt.Fprintf(stderr, "%s: %v\n", f.config, err)
 			return 1
+		}
+		if f.diff != "" {
+			old, err := readOld(f.diff, f.config, stores.YAML)
+			if err != nil {
+				fmt.Fprintln(stderr, "bide view:", err)
+				return 1
+			}
+			d := Diff{Old: old, New: c}
+			if _, err := BuildDiff(d); err != nil {
+				fmt.Fprintln(stderr, "bide view:", err)
+				return 1
+			}
+			if !f.check {
+				return serve(*addr, "", Options{Diff: &d}, nil, stdout, stderr)
+			}
+			weakened, _ := CheckDiff(stdout, d)
+			if weakened && f.failOnWeaken {
+				return 1
+			}
+			return 0
 		}
 		if f.check {
 			c.Strict = f.strict
@@ -307,15 +349,22 @@ func readConfig(path string, toJSON func([]byte) ([]byte, error)) (Config, error
 	if len(b) > maxInput {
 		return Config{}, fmt.Errorf("larger than %d bytes", maxInput)
 	}
+	return configFrom(path, path, b, toJSON)
+}
+
+// configFrom is the config named name, read from path's bytes b: a .yaml or .yml path's are
+// converted to JSON with toJSON.
+func configFrom(name, path string, b []byte, toJSON func([]byte) ([]byte, error)) (Config, error) {
 	if ext := strings.ToLower(filepath.Ext(path)); ext == ".yaml" || ext == ".yml" {
 		if toJSON == nil {
 			return Config{}, errors.New("this build reads JSON configs only")
 		}
+		var err error
 		if b, err = toJSON(b); err != nil {
 			return Config{}, fmt.Errorf("YAML: %w", err)
 		}
 	}
-	return Config{Name: path, Data: b}, nil
+	return Config{Name: name, Data: b}, nil
 }
 
 // readApproverKeys reads the approver key file bide audit verify-approvals reads: a JSON object of
