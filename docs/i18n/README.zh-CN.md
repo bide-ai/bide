@@ -34,6 +34,13 @@ bide audit verify-evidence -evidence evidence.json -pubkey keys/log.pub
 
 状态：可用的 v0，已完成端到端实地验证。需要 Go 1.27。
 
+<p align="center">
+  <img src="../../docs/guides/img/run-viewer-config-risk-dark.png" width="49%" alt="bide view -config: a flow's risk map, each node colored by what a crash does to it, with its approval gates marked">
+  <img src="../../docs/guides/img/run-viewer-config-assert-dark.png" width="49%" alt="bide view -config: a violated policy assertion, its shortest counterexample path drawn in red">
+</p>
+
+**发布前看清流程的风险。** `bide view -config flow.yaml` 按崩溃对每个节点的影响为其着色（副作用会停下并询问；只读步骤会重新运行），并在图上检查流程的 `assert:` 策略，例如 `every path to charge passes approval >= 2 of 3`。违反时会以红色给出最短的反例路径。`bide check flow.yaml` 在 CI 中执行相同的检查，并以退出码 1 结束。参见[运行查看器指南](../../docs/guides/run-viewer.md#check-a-flow-config)。
+
 ## 一条日志，四项保证
 
 智能体循环约 40 行。四项保证来自其下那条持久化、仅追加的日志。

@@ -34,6 +34,13 @@ bide audit verify-evidence -evidence evidence.json -pubkey keys/log.pub
 
 स्थिति: कार्यरत v0, एंड-टू-एंड लाइव-सत्यापित। Go 1.27 की आवश्यकता है।
 
+<p align="center">
+  <img src="../../docs/guides/img/run-viewer-config-risk-dark.png" width="49%" alt="bide view -config: a flow's risk map, each node colored by what a crash does to it, with its approval gates marked">
+  <img src="../../docs/guides/img/run-viewer-config-assert-dark.png" width="49%" alt="bide view -config: a violated policy assertion, its shortest counterexample path drawn in red">
+</p>
+
+**रिलीज़ से पहले फ़्लो का जोखिम देखें।** `bide view -config flow.yaml` हर नोड को इस आधार पर रंग देता है कि क्रैश उसके साथ क्या करता है (साइड इफ़ेक्ट रुककर पूछता है; केवल-पढ़ने वाला चरण फिर से चलता है), और ग्राफ़ पर फ़्लो की `assert:` नीति जाँचता है, जैसे `every path to charge passes approval >= 2 of 3`। उल्लंघन होने पर सबसे छोटा प्रति-उदाहरण पथ लाल रंग में दिखता है। `bide check flow.yaml` CI में यही जाँच चलाता है और 1 के साथ बाहर निकलता है। देखें [रन व्यूअर गाइड](../../docs/guides/run-viewer.md#check-a-flow-config)।
+
 ## एक जर्नल, चार गारंटियाँ
 
 एजेंट लूप लगभग 40 लाइनों का है। चारों गारंटियाँ उसके नीचे के टिकाऊ, append-only जर्नल से आती हैं।
