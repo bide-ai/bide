@@ -1,3 +1,7 @@
+github.com/bide-ai/bide v0.14.1 h1:YBDQEbGnycWAErFD9NPyuxH+YTL2eShZLEy2d3yCg5Q=
+github.com/bide-ai/bide v0.14.1/go.mod h1:/9TldvSgiSK7hwUc7FpvD2y3jGS5a6EgWhqaBUv+Diw=
+github.com/bide-ai/bide/govern v0.14.1 h1:43YpB8nk7ROHQH4puUFlg6EdIPhFCT+zCn1G229nmJo=
+github.com/bide-ai/bide/govern v0.14.1/go.mod h1:crUwCXNyU0JzuO7D4QOCW0VmzXlP6fWdaPbAyDWF7xE=
 github.com/blackwell-systems/gsm v0.14.0 h1:Aeb5is+kPN8CmwWZ3Vt6BQdNwTPdNIacucDKFjizMhI=
 github.com/blackwell-systems/gsm v0.14.0/go.mod h1:16Y8Evoyne2mqkkPxrh738bIMnyD3t13mhJAQgNXPeM=
 github.com/dustin/go-humanize v1.0.1 h1:GzkhY7T5VNhEkwH0PVJgjz+fX1rhBrR7pRT3mDkpeCY=
