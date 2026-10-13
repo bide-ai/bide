@@ -146,3 +146,27 @@ func TestNoLimit(t *testing.T) {
 		t.Fatal(err)
 	}
 }
+
+// TestSetLimitWhileActivePanics: changing the limit while functions hold a slot panics, as
+// x/sync/errgroup does, instead of silently replacing the semaphore those functions release into.
+func TestSetLimitWhileActivePanics(t *testing.T) {
+	g, _ := WithContext(context.Background())
+	g.SetLimit(1)
+	release := make(chan struct{})
+	g.Go(func() error { <-release; return nil })
+	panicked := false
+	func() {
+		defer func() { panicked = recover() != nil }()
+		g.SetLimit(2)
+	}()
+	if !panicked {
+		// The running function would now release its slot into the new semaphore and block, so
+		// Wait would never return: stop here.
+		t.Fatal("SetLimit with a function running did not panic")
+	}
+	close(release)
+	if err := g.Wait(); err != nil {
+		t.Fatal(err)
+	}
+	g.SetLimit(2) // nothing running: allowed
+}

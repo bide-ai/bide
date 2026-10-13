@@ -6,6 +6,7 @@ package errgroup
 
 import (
 	"context"
+	"fmt"
 	"sync"
 )
 
@@ -28,11 +29,15 @@ func WithContext(ctx context.Context) (*Group, context.Context) {
 }
 
 // SetLimit limits the number of functions running at once to n; a negative n removes the limit.
-// Call it before the first Go.
+// It panics if functions are running under a limit, as x/sync/errgroup's does: they would release
+// their slots into the new semaphore and block. Call it before the first Go.
 func (g *Group) SetLimit(n int) {
 	if n < 0 {
 		g.sem = nil
 		return
+	}
+	if active := len(g.sem); active != 0 {
+		panic(fmt.Errorf("errgroup: modify limit while %v goroutines in the group are still active", active))
 	}
 	g.sem = make(chan struct{}, n)
 }

@@ -14,7 +14,6 @@ require (
 	github.com/stretchr/testify v1.12.1 // indirect
 	go.uber.org/atomic v1.11.0 // indirect
 	golang.org/x/sys v0.47.0 // indirect
-	golang.org/x/text v0.42.0 // indirect
 )
 
 replace github.com/bide-ai/bide => ../../

@@ -200,7 +200,7 @@ A malformed policy is refused when the tool is built: `agent.WithApproval` (on `
 before any model call). A policy is malformed when it has no approvers (only
 `agent.SingleApproval()` asks for the one-decision gate; a policy literal such as `{Need: 1}` with an
 empty approver list is refused, never taken for it), an empty or duplicate approver id, an id that
-is not valid UTF-8, or `Need` outside `1..len(Approvers)` (see `ApprovalPolicy.Validate`), or when it
+is not printable ASCII, or `Need` outside `1..len(Approvers)` (see `ApprovalPolicy.Validate`), or when it
 is a `SingleApproval()` whose fields were changed.
 
 Verifiers are needed only for an m-of-n gate: the gate fails with `ErrConfig` (rather than counting
@@ -208,11 +208,14 @@ zero decisions) when a tool has an m-of-n policy but no `WithApproverVerifiers` 
 when an eligible approver's verifier has an empty `PublicKey()` (see above). A `SingleApproval()`
 gate needs none.
 
-Approver ids are compared as exact bytes, but a policy may not list two ids that differ only by
-case or Unicode normalization (`alice` and `Alice`, an NFC and an NFD `café`, a fullwidth and an
-ASCII spelling). They are compared under NFKC case folding, and such a policy is refused as
-ambiguous with `ErrConfig` naming both ids: a reader of the policy, or a key lookup that folds
-case, would take them for one approver, who could then fill two seats.
+Approver ids are printable ASCII: bytes 0x21 to 0x7E, so letters, digits and punctuation (an email
+address such as `ops@example.com` or a URI is a valid id), and no space, control character or
+character outside ASCII. An id outside that set could look like another one, a Cyrillic `о` in
+place of a Latin `o`, a fullwidth or an accented spelling, and let one approver fill two seats, so
+it is refused with `ErrConfig` naming it. Ids are compared as exact bytes, but a policy may not list
+two that differ only by case (`alice` and `Alice`): a reader of the policy, or a key lookup that
+folds case, would take them for one approver, so such a policy is refused naming both ids. Map
+names in other scripts to ASCII ids in your directory (an employee number, an email address).
 
 Distinct ids are not enough: the gate also refuses, with `ErrConfig` naming both approvers and the
 key, a policy two of whose approvers' verifiers report a common key identity, and a policy with an
