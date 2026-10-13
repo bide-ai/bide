@@ -60,6 +60,7 @@ export default defineConfig({
           { text: 'Support ticket triage', link: '/recipes/ticket-triage' },
           { text: 'Update a record safely', link: '/recipes/customer-record' },
           { text: 'Ambient agent', link: '/recipes/ambient-agent' },
+          { text: 'Get notified', link: '/recipes/notify-human' },
         ],
       },
       {

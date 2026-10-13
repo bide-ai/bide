@@ -216,7 +216,7 @@ is in [known limitations](docs/KNOWN-LIMITATIONS.md#governed-state-gsm).
 
 - **[Getting started](docs/getting-started.md)**: install, `bide demo`, `bide init`, your first agent, and the examples.
 - **[A tour of bide](docs/tour.md)**: the API section by section: graphs, ambient runs, the agent loop, streaming, typed output, sessions, the audit trail, human approval, errors, middleware and governance.
-- **[Recipes](docs/recipes/index.md)**: five complete flows to copy and run with no API key: a refund with a 2-of-3 approval, invoice approval, support ticket triage, a safe customer-record update, and an ambient agent that sleeps and wakes.
+- **[Recipes](docs/recipes/index.md)**: six complete flows to copy and run with no API key: a refund with a 2-of-3 approval, invoice approval, support ticket triage, a safe customer-record update, an ambient agent that sleeps and wakes, and a webhook that tells a person when a run needs them.
 - **[The guarantee](docs/GUARANTEE.md)** and **[known limitations](docs/KNOWN-LIMITATIONS.md)**: the precise durability guarantee and its bounds.
 
 **Concepts**

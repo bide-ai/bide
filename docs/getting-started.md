@@ -199,7 +199,7 @@ See [module structure](reference/module-structure.md) for the layout and [CONTRI
 
 ## Where next
 
-- Complete flows to copy and run (a refund with a 2-of-3 approval, invoice approval, ticket triage, a safe record update, an ambient agent): the [recipes](recipes/index.md).
+- Complete flows to copy and run (a refund with a 2-of-3 approval, invoice approval, ticket triage, a safe record update, an ambient agent, a webhook that tells a person when a run needs them): the [recipes](recipes/index.md).
 - The vocabulary: [Concepts](CONCEPTS.md).
 - Authoring flows as typed topology instead of plain Go: the [plan flows guide](guides/plan-flows.md) (the optional `plan` builder and declarative config).
 - The precise guarantee and its bounds: [Guarantee](GUARANTEE.md), [Known limitations](KNOWN-LIMITATIONS.md).
