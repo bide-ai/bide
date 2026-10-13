@@ -8,6 +8,7 @@ import (
 	"fmt"
 	"slices"
 	"sort"
+	"time"
 
 	"github.com/bide-ai/bide/agent"
 )
@@ -78,8 +79,14 @@ func ApprovalEvidence(ctx context.Context, store *agent.Journal, runID, toolUseI
 			index[r.Name] = i
 		}
 	}
-	tallyName := agent.ApprovalTallyStep(toolUseID)
+	// The gate's outcome: its re-approval tally when it asked again (the tally it first recorded
+	// passed on decisions that predate agent.DecisionFormat), else its tally.
+	tallyName := agent.ApprovalRetallyStep(toolUseID)
 	tallyIdx, ok := index[tallyName]
+	if !ok || recs[tallyIdx].Kind != agent.StepValue {
+		tallyName = agent.ApprovalTallyStep(toolUseID)
+		tallyIdx, ok = index[tallyName]
+	}
 	if !ok || recs[tallyIdx].Kind != agent.StepValue {
 		return nil, fmt.Errorf("audit: no journaled approval tally for call %q in run %s (not m-of-n gated, or its gate has not decided)", toolUseID, runID)
 	}
@@ -156,11 +163,15 @@ type ApprovalVerdict struct {
 	// order, with sanity flags under DefaultDecisionTimeTolerance (see FlagDecisionTimes). They are
 	// for a person reading the verdict: no time, and no flag, affects the count or OK.
 	Times []DecisionTime `json:"times,omitempty"`
-	// AskedAt is when the run asked for approval, by bide's clock: for a gated plan flow node the
+	// AskedAt is when the run asked for approval, by the run's clock: for a gated plan flow node the
 	// recorded_at of its proven request (agent.ApprovalRequest), else that of the proven
 	// approval-pending record (agent.ApprovalWait); "" when the evidence holds neither with a time
 	// (each decision is then flagged FlagAskedUnknown).
 	AskedAt string `json:"asked_at,omitempty"`
+	// HeadAt is when the signed tree head the evidence is proven under was signed (its
+	// TimestampNanos, in agent.FormatTimestamp's form): every record it covers, the decisions
+	// included, was journaled by then.
+	HeadAt string `json:"head_at,omitempty"`
 	// Problems lists every way the evidence is inconsistent with itself or with the expected
 	// policy: an omitted decision the gate read, a recount that disagrees with the gate's
 	// journaled tally, a different enforced policy, or records out of order. Any problem fails
@@ -259,10 +270,19 @@ func VerifyApprovals(actions []EvidenceAction, toolUseID string, policy agent.Ap
 	if err != nil {
 		return v, err
 	}
-	tallyName := agent.ApprovalTallyStep(toolUseID)
+	// The gate's outcome is its re-approval tally when the evidence holds one (the gate asked
+	// again because its first tally passed on decisions that predate agent.DecisionFormat), else
+	// its tally.
+	tallyName := agent.ApprovalRetallyStep(toolUseID)
 	tallyI, err := find(func(a EvidenceAction, r agent.Record) bool {
 		return a.Kind == KindApprovalTally && r.Name == tallyName
 	}, "approval tally")
+	if err != nil {
+		tallyName = agent.ApprovalTallyStep(toolUseID)
+		tallyI, err = find(func(a EvidenceAction, r agent.Record) bool {
+			return a.Kind == KindApprovalTally && r.Name == tallyName
+		}, "approval tally")
+	}
 	if err != nil {
 		return v, err
 	}
@@ -375,7 +395,10 @@ func VerifyApprovals(actions []EvidenceAction, toolUseID string, policy agent.Ap
 		v.Times = append(v.Times, DecisionTime{Approver: c.Approver, Step: c.Step, DecidedAt: r.DecidedAt(), RecordedAt: r.RecordedAt()})
 	}
 	v.AskedAt = askedAt(actions, recs, recs[reqI], flowNode, toolUseID, sth, runID, logV)
-	v.Times = FlagDecisionTimes(v.Times, v.AskedAt, DefaultDecisionTimeTolerance)
+	if at := agent.FormatTimestamp(time.Unix(0, sth.TimestampNanos)); validTimestamp(at) {
+		v.HeadAt = at
+	}
+	v.Times = CheckDecisionTimes(v.Times, TimeCheck{AskedAt: v.AskedAt, HeadAt: v.HeadAt, Tolerance: DefaultDecisionTimeTolerance})
 	v.Counted, v.DeniedBy = got.ApprovedBy, got.DeniedBy
 	if !slices.Equal(got.ApprovedBy, tally.ApprovedBy) || !slices.Equal(got.DeniedBy, tally.DeniedBy) {
 		problem("the recount (approved by %v, denied by %v) disagrees with the gate's journaled tally (approved by %v, denied by %v)",

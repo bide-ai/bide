@@ -594,7 +594,7 @@ func sagaFailure(runID string, recs []Record) (string, bool, error) {
 		if denied[id] {
 			return true, nil
 		}
-		v, ok := values[ApprovalTallyStep(id)]
+		v, ok := RecordedTally(values, id)
 		if !ok {
 			return false, nil
 		}

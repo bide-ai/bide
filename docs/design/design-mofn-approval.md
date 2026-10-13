@@ -108,9 +108,12 @@ they are vouched for by different parties:
   instant has one signed spelling. The domain tag is the encoding's version and is covered by the
   signature; a v2 decision (no time) does not verify under v3 and is refused with
   `ReasonNoDecidedAt`. There is no fallback: decisions signed before v3 must be re-signed.
-- **`recorded_at`, anchored.** `SubmitDecision` stamps the record with bide's clock (`WithClock`,
-  else the run clock on the context, else the wall clock) when it first writes it. It is not
-  signed by the approver; the journal's Merkle trail anchors it with the record. `ApprovalWait`
+- **`recorded_at`, anchored.** `SubmitDecision` stamps the record with the clock of the process
+  that calls it (`WithClock`, else the run clock on the context, else the wall clock) when it
+  first writes it, and an identical resubmission keeps the first time. It is that submitter's
+  claim, not a time bide vouches for: it is not signed, and whoever writes the journal chooses it.
+  The journal's Merkle trail anchors it with the record once a signed tree head covers it, and
+  the audit flags one later than that head, or out of journal order, beyond the tolerance. `ApprovalWait`
   (`approval-pending`) gains the same field, the time the run paused, and so does a flow gate's
   `ApprovalRequest`, the record the ordering rule counts from. The request's time is when a flow
   node's approvers are asked, else the pause's.
@@ -202,9 +205,11 @@ iteration, with this input.
    name: decision names are first-writer-wins and ed25519 signatures are deterministic, so the
    approver's identical decision afterwards is not recorded, and `Approve` and `SubmitDecision`
    report that (`ErrConfig`) instead of returning nil. For a `SingleApproval` gate the name is the
-   gate's one decision, so the gate cannot pass (it fails closed) and the run is cancelled; for an
-   m-of-n gate that approver's seat is lost for the gate, which passes with the others if `need` is
-   still reachable and is otherwise cancelled. `flows/limits/gate-early-stuck` states this limit. Found by the adversarial review of #195;
+   gate's one decision, so the gate cannot pass (it fails closed) and the run is cancelled. For an
+   m-of-n gate the approver signs again: since v3 a decision's name hashes its signed `decided_at`,
+   so a decision re-signed at a new time is a new record, written after the request, and counts.
+   The seat is not lost. (`flows/limits/gate-early-stuck` stated the v2 limit, where it was;
+   `Flows.tla` now lets an approver decide after an early decision.) Found by the adversarial review of #195;
    `flows/regress/gate-request-order` keeps it from coming back.
 2. `approval-pending:<node key>`: `ApprovalWait`, written on a pause that finds it missing (so a
    crash between the request and the note does not hide the wait). Informational, as for an agent.

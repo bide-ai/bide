@@ -383,9 +383,11 @@ bide audit: produce and verify audit proof bundles
          proof in the package must verify too, so a package carrying a run certificate needs the
          allowlist it is checked against (-approved / -approved-file, as for verify-evidence).
          It also prints each counted decision's two times: decided_at, signed by the approver
-         (their clock), and recorded_at, when bide journaled it (bide's clock), with the gap,
-         and notes a decision signed more than the tolerance (default 5m) after it was recorded
-         or before the run asked for approval; these notes never change the verdict
+         (their clock), and recorded_at, when it was journaled (the submitter's clock, not
+         signed), with the gap, and notes a decision signed more than the tolerance (default
+         5m) after it was recorded or before the run asked for approval, a recorded_at out of
+         journal order or after the signed head, and a time that is not canonical (printed
+         quoted); these notes never change the verdict
 
   prove-absent -journal <file> -sth <file> -key (tool:<id>|policy:<digest>) [-out <file>]
          prove a thing did NOT happen (no such tool call / no action under that policy)

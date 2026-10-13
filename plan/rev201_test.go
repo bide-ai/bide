@@ -55,7 +55,9 @@ func TestRev201_DecisionsBeforeRequestRefused(t *testing.T) {
 }
 
 // The m-of-n form: a pre-request decision stored under its canonical name (ed25519 signatures are
-// deterministic) swallows the approver's same decision after the pause, so the gate never passes.
+// deterministic) takes the name of the approver's identical decision after the pause, so that one
+// is not recorded and SubmitDecision says so (ErrConfig), pointing the approver at re-signing at a
+// new decided_at, which counts (TestReview_StaleSeatNotLostUnderV3).
 func TestRev201_StaleMofNDecisionBlocksGate(t *testing.T) {
 	ctx := context.Background()
 	as, vf := approvers("ops")
@@ -83,12 +85,12 @@ func TestRev201_StaleMofNDecisionBlocksGate(t *testing.T) {
 	if serr == nil && refunds == 0 {
 		t.Fatalf("SubmitDecision returned nil but its decision never counts")
 	}
-	if !errors.Is(serr, agent.ErrConfig) || !strings.Contains(serr.Error(), "seat is lost") {
-		t.Fatalf("SubmitDecision after a stale decision = %v; want ErrConfig naming the lost seat", serr)
+	if !errors.Is(serr, agent.ErrConfig) || !strings.Contains(serr.Error(), "sign the decision again at a new decided_at") {
+		t.Fatalf("SubmitDecision after a stale decision = %v; want ErrConfig saying to re-sign", serr)
 	}
 }
 
-// With a stale decision holding one approver's seat, the gate can still pass with the others.
+// With a stale decision on record for one approver, the gate can still pass with the others.
 func TestRev201_StaleSeatOthersCanPass(t *testing.T) {
 	ctx := context.Background()
 	as, vf := approvers("ops", "finance")

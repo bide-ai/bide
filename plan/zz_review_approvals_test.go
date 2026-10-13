@@ -9,6 +9,7 @@ import (
 	"crypto/sha256"
 	"encoding/binary"
 	"encoding/hex"
+	"errors"
 	"strings"
 	"testing"
 	"time"
@@ -18,12 +19,12 @@ import (
 	"github.com/bide-ai/bide/internal/journaltest"
 )
 
-// TestReview_StaleSeatNotLostUnderV3: SubmitDecision, the design doc (design-mofn-approval.md),
-// plan-flows.md and SubmitDecision's godoc say that when an approver's identical decision was
-// journaled before a flow gate's request, "their seat is lost for this gate". Under v3 the
-// decision's journal name hashes decided_at, so the approver re-signs at another time, the new
-// record gets a new name, and it counts: the seat is not lost. The error tells the operator to
-// give up on (or cancel) a gate the approver can still pass alone.
+// TestReview_StaleSeatNotLostUnderV3: when an approver's identical decision was journaled before a
+// flow gate's request, SubmitDecision (and its godoc, design-mofn-approval.md, plan-flows.md and
+// Flows.tla) said "their seat is lost for this gate". Under v3 the decision's journal name hashes
+// decided_at, so the approver re-signs at another time, the new record gets a new name, and it
+// counts: the seat is not lost. The error must not tell the operator to give up on (or cancel) a
+// gate the approver can still pass alone, and the re-signed decision must pass the gate.
 func TestReview_StaleSeatNotLostUnderV3(t *testing.T) {
 	ctx := context.Background()
 	as, vf := approvers("ops")
@@ -44,9 +45,14 @@ func TestReview_StaleSeatNotLostUnderV3(t *testing.T) {
 		t.Fatal(err)
 	}
 	pend := asPending(t, func() error { _, err := f.Run(ctx, j, "r1", "order-42"); return err }())
+	// The identical decision: it cannot be recorded (its name is taken), and must be reported, but
+	// not as a lost seat.
 	serr := agent.SubmitDecision(ctx, j, d)
-	if serr == nil || !strings.Contains(serr.Error(), "seat is lost") {
-		t.Fatalf("SubmitDecision = %v; want the stale-decision error", serr)
+	if !errors.Is(serr, agent.ErrConfig) {
+		t.Fatalf("SubmitDecision of the identical early decision = %v; want ErrConfig", serr)
+	}
+	if strings.Contains(serr.Error(), "seat is lost") {
+		t.Errorf("SubmitDecision says %q, but under v3 the approver can sign again at another time", serr)
 	}
 	// ops re-signs the same approval a second later.
 	later := d.DecidedAt.Add(time.Second)
@@ -55,8 +61,8 @@ func TestReview_StaleSeatNotLostUnderV3(t *testing.T) {
 	if err := agent.SubmitDecision(ctx, j, d); err != nil {
 		t.Fatalf("re-signed SubmitDecision: %v", err)
 	}
-	if _, err := f.Run(ctx, j, "r1", "order-42"); err == nil && refunds == 1 {
-		t.Fatalf("the error said %q, but ops passed the gate alone by re-signing at another time", serr)
+	if _, err := f.Run(ctx, j, "r1", "order-42"); err != nil || refunds != 1 {
+		t.Fatalf("Run after the re-signed approval = %v, refunds %d; want the node run once", err, refunds)
 	}
 }
 

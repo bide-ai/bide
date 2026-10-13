@@ -80,8 +80,9 @@ func flowDecision(ctx context.Context, d *Journal, op, runID, toolUseID string) 
 // staleDecision reports (ErrConfig) a decision whose journal name was already taken by a record
 // written before the gate's request, at reqSeq: that record cannot count, and this decision, having
 // the same name, was not recorded. For a SingleApproval gate the name is the gate's one decision, so
-// the gate cannot pass; for an m-of-n gate it is this approver's identical decision, so their seat
-// is lost for this gate.
+// the gate cannot pass; for an m-of-n gate it is this approver's identical decision, which cannot
+// count either, but the approver can sign again at a new decided_at: that is a new decision, with
+// a new name, recorded after the request, and it counts.
 func staleDecision(ctx context.Context, d *Journal, op, runID, toolUseID, name string, reqSeq int64, single bool) error {
 	e, ok, err := d.getEntry(ctx, runID, name)
 	if err != nil {
@@ -93,7 +94,7 @@ func staleDecision(ctx context.Context, d *Journal, op, runID, toolUseID, name s
 	if single {
 		return fmt.Errorf("%s: a decision on %s was recorded before the gate's request, so it cannot count, and it holds the gate's one decision: the gate cannot pass; cancel the run (agent.Cancel): %w", op, toolUseID, ErrConfig)
 	}
-	return fmt.Errorf("%s: this approver's identical decision on %s was recorded before the gate's request, so it cannot count and this one was not recorded: their seat is lost for this gate; it can still pass with the other approvers if Need is reachable, otherwise cancel the run (agent.Cancel): %w", op, toolUseID, ErrConfig)
+	return fmt.Errorf("%s: this approver's identical decision on %s was recorded before the gate's request, so it cannot count and this one was not recorded; sign the decision again at a new decided_at (a new decision, recorded after the request) and submit that: %w", op, toolUseID, ErrConfig)
 }
 
 // protocol:flows begin GRead GCount
@@ -161,10 +162,10 @@ func flowGate(ctx context.Context, d *Journal, runID, key, node string, args jso
 			if err != nil {
 				return false, err
 			}
-			if err := admitTally(runID, key, t); err != nil {
-				return false, err
+			if !predatesFormat(t) {
+				return t.Passed(), nil
 			}
-			return t.Passed(), nil
+			// It passed on decisions that predate this format: tallyGate asks again, below.
 		}
 	}
 	b, err := marshalJournal(ApprovalRequest{ToolUseID: key, ToolName: node, Args: args, RecordedAt: noteStamp(clockFrom(ctx))})
@@ -205,7 +206,11 @@ func flowGate(ctx context.Context, d *Journal, runID, key, node string, args jso
 	if b, err := json.Marshal(w); err == nil {
 		_, _ = d.put(ctx, runID, ApprovalPendingStep(key), Record{Kind: StepValue, Result: b})
 	}
-	return false, &ApprovalPending{RunRef: RunRef{RunID: runID, RootRunID: runID}, ToolUseID: key, ToolName: node, Args: req.Args, Quorum: quorum}
+	pend := &ApprovalPending{RunRef: RunRef{RunID: runID, RootRunID: runID}, ToolUseID: key, ToolName: node, Args: req.Args, Quorum: quorum}
+	if quorum != nil && quorum.Supersedes != "" {
+		pend.Reason = PendingReapproval
+	}
+	return false, pend
 }
 
 // protocol:flows end

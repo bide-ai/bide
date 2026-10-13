@@ -40,21 +40,22 @@ var keyConstructors = map[string]func(string) string{
 	"approvalDecisionStep": func(s string) string {
 		return approvalDecisionStep(s, "ops:1", true, "ed25519", "2026-10-13T12:14:03.123Z", []byte(s))
 	},
-	"ApprovalTallyStep":  ApprovalTallyStep,
-	"sagaCompensateStep": sagaCompensateStep,
-	"sagaArgsStep":       sagaArgsStep,
-	"subRunLinkStep":     func(s string) string { return subRunLinkStep(s, s) },
-	"signalStep":         signalStep,
-	"awaitTimeoutStep":   awaitTimeoutStep,
-	"awaitResolvedStep":  awaitResolvedStep,
-	"timerStep":          timerStep,
-	"interruptStep":      interruptStep,
-	"chanStep":           func(s string) string { return chanStep(s, s) },
-	"chanAckStep":        func(s string) string { return chanAckStep(s, s) },
-	"sessionTurnStep":    func(s string) string { return sessionTurnStep(len(s)) },
-	"sessionStartStep":   func(s string) string { return sessionStartStep(len(s)) },
-	"sessionFromStep":    sessionFromStep,
-	"retrievalStep":      func(s string) string { return retrievalStep(len(s)) },
+	"ApprovalTallyStep":   ApprovalTallyStep,
+	"ApprovalRetallyStep": ApprovalRetallyStep,
+	"sagaCompensateStep":  sagaCompensateStep,
+	"sagaArgsStep":        sagaArgsStep,
+	"subRunLinkStep":      func(s string) string { return subRunLinkStep(s, s) },
+	"signalStep":          signalStep,
+	"awaitTimeoutStep":    awaitTimeoutStep,
+	"awaitResolvedStep":   awaitResolvedStep,
+	"timerStep":           timerStep,
+	"interruptStep":       interruptStep,
+	"chanStep":            func(s string) string { return chanStep(s, s) },
+	"chanAckStep":         func(s string) string { return chanAckStep(s, s) },
+	"sessionTurnStep":     func(s string) string { return sessionTurnStep(len(s)) },
+	"sessionStartStep":    func(s string) string { return sessionStartStep(len(s)) },
+	"sessionFromStep":     sessionFromStep,
+	"retrievalStep":       func(s string) string { return retrievalStep(len(s)) },
 	"planScopedStep": func(s string) string {
 		return planScopedStep(context.WithValue(context.Background(), planScopeKey{}, planScope{runID: "r", node: "node:n"}), "r", s)
 	},
@@ -136,7 +137,7 @@ func TestEncodeID_IsBoundedAndPlain(t *testing.T) {
 
 // Every key built from a tool-use ID is short, printable ASCII, whatever the ID.
 func TestToolUseIDKeys_AreBoundedAndPrintable(t *testing.T) {
-	for _, name := range []string{"ToolResultStep", "toolAttemptStep", "approvalStep", "approvalDecisionStep", "ApprovalTallyStep", "sagaCompensateStep", "sagaArgsStep"} {
+	for _, name := range []string{"ToolResultStep", "toolAttemptStep", "approvalStep", "approvalDecisionStep", "ApprovalTallyStep", "ApprovalRetallyStep", "sagaCompensateStep", "sagaArgsStep"} {
 		for _, id := range adversarialToolUseIDs() {
 			k := keyConstructors[name](id)
 			if name == "approvalDecisionStep" {

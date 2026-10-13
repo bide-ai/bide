@@ -58,6 +58,7 @@ var auditArtifacts = []any{
 // written as JSON. A new exported struct type must be added to one list or the other.
 var notArtifacts = map[string]string{
 	"audit.AuditedStore":      "a store wrapper; its state is unexported",
+	"audit.TimeCheck":         "the inputs of CheckDecisionTimes, never written out",
 	"audit.MemAnchorLog":      "an in-memory log; its state is unexported",
 	"audit.MemEventStore":     "an in-memory store; its state is unexported",
 	"audit.EventLog":          "an in-memory log; its state is unexported",

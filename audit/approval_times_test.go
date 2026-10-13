@@ -14,8 +14,12 @@ import (
 	"github.com/bide-ai/bide/internal/journaltest"
 )
 
-// asked is when the timed gate's run pauses for approval, by its clock.
-var asked = time.Date(2026, 10, 13, 12, 0, 0, 0, time.UTC)
+// asked is when the timed gate's run pauses for approval, by its clock; headTime is when the log
+// signs the head over its journal, an hour later.
+var (
+	asked    = time.Date(2026, 10, 13, 12, 0, 0, 0, time.UTC)
+	headTime = asked.Add(time.Hour).UnixNano()
+)
 
 // decideAt records id's approval signed at decidedAt and journaled at recordedAt (WithClock).
 func (g *gate) decideAt(t *testing.T, id string, decidedAt, recordedAt time.Time) {
@@ -49,7 +53,7 @@ func timedGate(t *testing.T) *gate {
 // and still passes: the flags are not a verdict.
 func TestApprovalTimes_Verdict(t *testing.T) {
 	g := timedGate(t)
-	acts, err := audit.ApprovalEvidence(context.Background(), g.store, gateRun, "c1", g.sth(t, 1700000000))
+	acts, err := audit.ApprovalEvidence(context.Background(), g.store, gateRun, "c1", g.sth(t, headTime))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -111,7 +115,7 @@ func TestApprovalTimes_Verdict(t *testing.T) {
 // the record the log committed to, so the decision is not proven and the verdict fails.
 func TestApprovalTimes_TamperedInEvidence(t *testing.T) {
 	g := timedGate(t)
-	acts, err := audit.ApprovalEvidence(context.Background(), g.store, gateRun, "c1", g.sth(t, 1700000000))
+	acts, err := audit.ApprovalEvidence(context.Background(), g.store, gateRun, "c1", g.sth(t, headTime))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -158,7 +162,7 @@ func TestApprovalTimes_TamperedInJournal(t *testing.T) {
 	if err := g.run(); err != nil || g.charged != 1 {
 		t.Fatalf("run at quorum: %v (charged %d)", err, g.charged)
 	}
-	acts, err := audit.ApprovalEvidence(ctx, g.store, gateRun, "c1", g.sth(t, 1700000000))
+	acts, err := audit.ApprovalEvidence(ctx, g.store, gateRun, "c1", g.sth(t, headTime))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -191,7 +195,7 @@ func TestApprovalTimes_FlagsNeverUncount(t *testing.T) {
 	if err := g.run(); err != nil || g.charged != 1 {
 		t.Fatalf("the gate with flagged times: %v (charged %d); want it passed", err, g.charged)
 	}
-	acts, err := audit.ApprovalEvidence(context.Background(), g.store, gateRun, "c1", g.sth(t, 1700000000))
+	acts, err := audit.ApprovalEvidence(context.Background(), g.store, gateRun, "c1", g.sth(t, headTime))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -250,5 +254,48 @@ func TestApprovalTimes_FlowAskedAtIsTheRequest(t *testing.T) {
 		if slices.Contains(d.Flags, audit.FlagAskedUnknown) {
 			t.Fatalf("%s flagged unknown though the request has a time", d.Approver)
 		}
+	}
+}
+
+// TestApprovalTimes_RecordedOrderAndHead: recorded_at is the submitter's claim, so the verdict
+// checks it against what anchors it: the journal order (no later decision recorded more than the
+// tolerance before an earlier one, nor before the run asked) and the signed tree head that covers
+// it (no recorded_at more than the tolerance after the head was signed). Flags only.
+func TestApprovalTimes_RecordedOrderAndHead(t *testing.T) {
+	c := audit.TimeCheck{AskedAt: "2026-10-13T12:00:00.000Z", HeadAt: "2026-10-13T13:00:00.000Z", Tolerance: 5 * time.Minute}
+	in := []audit.DecisionTime{
+		{Approver: "a", DecidedAt: "2026-10-13T12:10:00.000Z", RecordedAt: "2026-10-13T12:10:01.000Z"},
+		{Approver: "b", DecidedAt: "2026-10-13T12:00:00.000Z", RecordedAt: "2026-10-13T12:04:00.000Z"}, // 6m before a's: out of order
+		{Approver: "c", DecidedAt: "2026-10-13T12:07:00.000Z", RecordedAt: "2026-10-13T12:07:00.000Z"}, // 3m before a's: within tolerance
+		{Approver: "d", DecidedAt: "2026-10-13T13:06:00.000Z", RecordedAt: "2026-10-13T13:06:00.000Z"}, // 6m after the head
+		{Approver: "e", DecidedAt: "2026-10-13T11:50:00.000Z", RecordedAt: "2026-10-13T11:50:00.000Z"}, // before the ask
+	}
+	got := audit.CheckDecisionTimes(in, c)
+	want := [][]string{nil, {audit.FlagRecordedOutOfOrder}, nil, {audit.FlagRecordedAfterHead}, {audit.FlagDecidedBeforeAsked, audit.FlagRecordedOutOfOrder}}
+	for i := range want {
+		if !slices.Equal(got[i].Flags, want[i]) {
+			t.Errorf("%s: flags %q, want %q", got[i].Approver, got[i].Flags, want[i])
+		}
+	}
+	if len(in[1].Flags) != 0 {
+		t.Error("CheckDecisionTimes modified its input")
+	}
+
+	// End to end: a decision whose submitter's clock reads an hour after the head is flagged; the
+	// verdict carries the head's time and still passes.
+	g := newGate(1, []string{"alice"}, []string{"alice"})
+	g.clock = func() time.Time { return asked }
+	wantPaused(t, g.run(), 0)
+	g.decideAt(t, "alice", asked.Add(time.Second), asked.Add(2*time.Hour))
+	if err := g.run(); err != nil || g.charged != 1 {
+		t.Fatalf("run: %v (charged %d)", err, g.charged)
+	}
+	acts, err := audit.ApprovalEvidence(context.Background(), g.store, gateRun, "c1", g.sth(t, headTime))
+	if err != nil {
+		t.Fatal(err)
+	}
+	v, err := audit.VerifyApprovals(acts, "c1", g.policy, g.resolver(), edV(g.logPub))
+	if err != nil || !v.OK || v.HeadAt != "2026-10-13T13:00:00.000Z" || !slices.Contains(v.Times[0].Flags, audit.FlagRecordedAfterHead) {
+		t.Fatalf("VerifyApprovals = %+v, %v; want OK, HeadAt set and the decision flagged", v, err)
 	}
 }

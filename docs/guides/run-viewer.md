@@ -300,7 +300,8 @@ signature not checked` when a proof was given without approver keys; `signature 
 otherwise), the fingerprint of their key (`ed25519:3b6a27bc`, the first 8 hex digits of the SHA-256
 of the public key, with `-approver-keys`), and the decision's two times, kept apart: when the
 approver decided (`decided`, their clock, inside the signature, so it cannot change after signing)
-and when bide recorded it (`recorded`, bide's clock, anchored by the journal's Merkle trail), with
+and when it was journaled (`recorded`, the submitter's clock, not signed, anchored by the journal's
+Merkle trail), with
 the gap between them, shown without judgment. A card notes a signed time more than 5 minutes after
 the recorded one (the approver's clock runs ahead) and a signed time before the run asked for
 approval (their clock runs behind, or the decision was signed in advance); the gate orders

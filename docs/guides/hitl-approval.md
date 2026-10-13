@@ -167,7 +167,7 @@ Every decision carries two times, kept apart on purpose:
 | Time | Whose clock | How it is protected |
 |---|---|---|
 | `decided_at` (`Record.DecidedAt`) | the approver's, when they signed | inside the signature: it cannot be changed after signing, but it is the approver's claim, and their clock may be wrong |
-| `recorded_at` (`Record.RecordedAt`) | bide's, when `SubmitDecision` journaled the decision (`agent.WithClock`, else the run's clock on the context, else the wall clock) | anchored by the journal's Merkle trail, with the record, under the signed tree head; not signed by the approver |
+| `recorded_at` (`Record.RecordedAt`) | the submitter's: the process that called `SubmitDecision`, when it journaled the decision (its `agent.WithClock`, else the run's clock on its context, else its wall clock); an identical resubmission keeps the first time | not signed: it is the submitter's claim. Anchored by the journal's Merkle trail, with the record, once a signed tree head covers it; the audit flags one later than that head (`audit.FlagRecordedAfterHead`) or out of journal order (`audit.FlagRecordedOutOfOrder`) |
 
 Both are for people and auditors. **Neither affects the gate**: `TallyApprovals` checks
 `decided_at` only as signed bytes (present, canonical, covered by the signature), never reads its
@@ -182,7 +182,7 @@ anything:
 
 - `decided_at` more than a tolerance after `recorded_at` (`audit.FlagDecidedAfterRecorded`; 5
   minutes by default, `audit.DefaultDecisionTimeTolerance`, or any other with
-  `audit.FlagDecisionTimes`): a decision cannot be recorded before it is made, so the approver's
+  `audit.CheckDecisionTimes`): a decision cannot be recorded before it is made, so the approver's
   clock runs ahead;
 - `decided_at` before the run asked (`audit.FlagDecidedBeforeAsked`): the approver's clock runs
   behind, or the decision was signed in advance. The gate never counts a decision by its time: it
@@ -190,14 +190,23 @@ anything:
   gate's request (`SubmitDecision` refuses one recorded before it). So a flagged decision was still
   recorded after the request; the flag says its signed time disagrees;
 - no ask time in the evidence (`audit.FlagAskedUnknown`: a run an earlier version recorded, or a
-  pause record lost to a crash), so the check above was not made.
+  pause record lost to a crash), so the check above was not made;
+- `recorded_at` missing or not a canonical time (`audit.FlagRecordedAtInvalid`): every report
+  prints it quoted, as text;
+- `recorded_at` more than the tolerance before an earlier decision's, or before the run asked
+  (`audit.FlagRecordedOutOfOrder`), or after the signed tree head that covers the record
+  (`ApprovalVerdict.HeadAt`, `audit.FlagRecordedAfterHead`): the journal's order, or the head,
+  says the submitter's time is wrong.
+
+Times run from the year 0001 to 9999; a decision time outside them has no canonical form.
 
 The gap between the two times is shown, not judged. `bide audit verify-approvals` prints all of it,
 with `-decision-time-tolerance` to change the tolerance, and `bide view` shows it on each approver's
 card.
 
 A later version may add an RFC 3161 trusted timestamp to each decision, a third time vouched for by
-a timestamp authority rather than by the approver or by bide. It is not part of this version.
+a timestamp authority rather than by the approver or by the submitter. It is not part of this
+version.
 
 ### What counts
 
@@ -249,6 +258,20 @@ call's ID and tool, the gate's `Need` and `Approvers` (or `Single`), and when th
 decides, and an auditor can see when approvers were asked. The run writes it once, in the drive whose model turn made
 the call, and a resume writes nothing. It is informational only: the gate, a resume and recovery never
 read it, and a failed write of it is dropped.
+
+### A run approved under an earlier decision format
+
+A run that an earlier version paused at an m-of-n gate, approved under `bide.approval.v2` (decisions
+with no signed time), and stopped before the call ran, journaled a tally that passed on decisions
+this version does not accept. Resumed now, the gate does not run the call on that tally: it asks
+again. `Run` returns `*ApprovalPending` with `Reason` set to `agent.PendingReapproval` and a fresh
+count (`Quorum`, whose `Supersedes` names the old tally), and `bide view` shows the gate as waiting
+for approval again. Approvers sign again under `bide.approval.v3` with `SubmitDecision`; once the
+gate passes it records the new outcome under `approval-tally:<encoded toolUseID>:v3`
+(`agent.ApprovalRetallyStep`), which every later drive, `audit.ApprovalEvidence` and
+`audit.VerifyApprovals` read in place of the old tally, and the call runs. A tally an earlier
+version recorded as a denial stays final, since it runs nothing, and a call that already ran under
+the earlier version is not asked again.
 
 ### Inside a sub-agent
 

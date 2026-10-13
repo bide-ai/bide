@@ -1,10 +1,12 @@
 package runview
 
 import (
+	"encoding/json"
 	"slices"
 	"strings"
 	"testing"
 
+	"github.com/bide-ai/bide/agent"
 	"github.com/bide-ai/bide/audit"
 )
 
@@ -80,5 +82,25 @@ func TestCards_SeveralDecisionsNoTimes(t *testing.T) {
 		"ops": {Approver: "ops", DecidedAt: "2026-10-13T12:00:35.000Z", RecordedAt: "2026-10-13T12:00:40.000Z"}}}}}
 	if c := cards(g, p)[0]; c.DecidedAt != "2026-10-13 12:00:35.000" || c.TimesNote != "" {
 		t.Fatalf("checked card = %+v", c)
+	}
+}
+
+// TestGates_PreV3TallyWaits: a run whose gate passed on decisions that predate the signed decision
+// format, and whose call has not run, shows as waiting for approval again, counting only decisions
+// with a signed time; one whose call ran under the earlier version shows its tally as it was.
+func TestGates_PreV3TallyWaits(t *testing.T) {
+	old, _ := json.Marshal(agent.ApprovalTally{Need: 1, Approvers: []string{"ops"}, Approved: 1, ApprovedBy: []string{"ops"}})
+	recs := []agent.Record{
+		{Name: agent.ApprovalTallyStep("c1"), Kind: agent.StepValue, Result: old},
+		{Name: "approval:c1:ops:v2", Kind: agent.StepApproval, ToolUseID: "c1", Approved: true, ApproverSignature: &agent.ApproverSignature{Approver: "ops", ApproverAlg: "ed25519", Signature: []byte("v2")}},
+	}
+	g := gates(recs, map[string]agent.ToolUse{"c1": {ID: "c1", Name: "refund"}}, []string{"c1"})
+	if len(g) != 1 || !g[0].Reapproval || !g[0].Waiting || g[0].Tallied || len(g[0].ApprovedBy) != 0 || !strings.HasPrefix(g[0].Status, "approval re-required") {
+		t.Fatalf("gates = %+v", g)
+	}
+	recs = append(recs, agent.Record{Name: "tool:c1", Kind: agent.StepToolResult, ToolUseID: "c1", Result: []byte(`"ok"`)})
+	g = gates(recs, map[string]agent.ToolUse{"c1": {ID: "c1", Name: "refund"}}, []string{"c1"})
+	if len(g) != 1 || g[0].Reapproval || !g[0].Tallied || g[0].Waiting {
+		t.Fatalf("gates after the call ran = %+v", g)
 	}
 }

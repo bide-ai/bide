@@ -159,9 +159,11 @@ type ApproverSignature struct {
 	Signature   []byte `json:"signature,omitempty"`    // the approver's signature (Decision.Signature)
 	// DecidedAt is when the approver decided, by the approver's clock, as they signed it
 	// (Decision.DecidedAt, in FormatTimestamp's form): a claim the signature covers, so it cannot
-	// be changed after signing. RecordedAt is when SubmitDecision journaled the decision, by
-	// bide's clock (WithClock, the context's clock, or the wall clock), anchored by the journal's
-	// Merkle trail and not signed. Both are for people and auditors: the counting rule checks
+	// be changed after signing. RecordedAt is when SubmitDecision journaled the decision, by the
+	// clock of the process that called it (its WithClock, else its context's clock, else its wall
+	// clock): that submitter's claim, not signed, and kept from the first submission of an
+	// identical decision. The journal's Merkle trail anchors it once a signed tree head covers the
+	// record, and that head's time bounds it. Both are for people and auditors: the counting rule checks
 	// DecidedAt only as signed bytes, and nothing reads RecordedAt to decide anything.
 	DecidedAt  string `json:"decided_at,omitempty"`
 	RecordedAt string `json:"recorded_at,omitempty"`

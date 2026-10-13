@@ -7,8 +7,9 @@ import (
 	"github.com/bide-ai/bide/agent"
 )
 
-// DefaultDecisionTimeTolerance is how far a decision's signed time may run ahead of the time bide
-// recorded it before FlagDecisionTimes flags the approver's clock as running ahead.
+// DefaultDecisionTimeTolerance is how far two clocks may disagree before CheckDecisionTimes flags
+// it: a decision's signed time running ahead of its recorded time, or a recorded time out of
+// journal order or after the signed tree head that covers it.
 const DefaultDecisionTimeTolerance = 5 * time.Minute
 
 // DecisionTime is the two times of one counted approver decision, kept apart on purpose:
@@ -16,8 +17,12 @@ const DefaultDecisionTimeTolerance = 5 * time.Minute
 //   - DecidedAt is when the approver says they decided, by their own clock. It is inside the
 //     signed decision (agent.ApprovalDecisionBytes), so it cannot be changed after signing, but it
 //     is the approver's claim: their clock may be wrong.
-//   - RecordedAt is when bide journaled the decision, by bide's clock. It is not signed; the
-//     journal's Merkle trail anchors it, with the record, under the signed tree head.
+//   - RecordedAt is when the decision was journaled, by the clock of the process that recorded it
+//     (SubmitDecision's caller: its WithClock, else its context's clock, else its wall clock).
+//     It is that submitter's claim, not a time bide vouches for: it is not signed, and an
+//     identical resubmission keeps the first submitter's time. The journal's Merkle trail anchors
+//     it, with the record, under the signed tree head, so it cannot change after the head is
+//     signed, and the head's own time bounds it (FlagRecordedAfterHead).
 //
 // Neither time affects the count (see agent.TallyApprovals). Flags are sanity checks for a person
 // reading the evidence (FlagDecisionTimes); they are never a verdict and never fail verification.
@@ -68,7 +73,25 @@ const (
 	// writes one with every decision, and it is not signed, so whoever wrote the journal changed
 	// or dropped it; readers show it quoted, as text, and FlagDecidedAfterRecorded is not checked.
 	FlagRecordedAtInvalid = "recorded_at is missing or not a canonical time (bide writes one with every decision; it is not signed), so it is shown only as quoted text"
+	// FlagRecordedOutOfOrder: the decision's recorded_at is more than the tolerance before the
+	// recorded_at of a decision journaled earlier, or before the run asked: the journal's order
+	// and its times disagree, so a submitter's clock is wrong or the time was not the recording's.
+	FlagRecordedOutOfOrder = "recorded_at is earlier than the journal order allows (before an earlier decision's recorded_at, or before the run asked): a submitter's clock is off, or the time was set by the submitter"
+	// FlagRecordedAfterHead: the decision's recorded_at is more than the tolerance after the signed
+	// tree head that covers its record was signed: the record existed by then, so the time is not
+	// when it was recorded.
+	FlagRecordedAfterHead = "recorded_at is later than the signed tree head that covers the decision: the record existed by then, so this time is not when it was recorded"
 )
+
+// TimeCheck is what CheckDecisionTimes compares decisions' times with: when the run asked
+// (ApprovalVerdict.AskedAt), when the signed tree head covering the decisions was signed
+// (ApprovalVerdict.HeadAt; "" skips that check), and how far clocks may disagree (Tolerance;
+// negative is zero).
+type TimeCheck struct {
+	AskedAt   string
+	HeadAt    string
+	Tolerance time.Duration
+}
 
 // FlagDecisionTimes returns times with Flags recomputed under tolerance: FlagDecidedAfterRecorded
 // when a decision's DecidedAt is more than tolerance after its RecordedAt (FlagRecordedAtInvalid
@@ -78,8 +101,22 @@ const (
 // canonical time. A negative tolerance is treated as zero. The input is not modified. No flag
 // affects the count or the verdict.
 func FlagDecisionTimes(times []DecisionTime, askedAt string, tolerance time.Duration) []DecisionTime {
-	tolerance = max(tolerance, 0)
-	asked, askedErr := agent.ParseTimestamp(askedAt)
+	return CheckDecisionTimes(times, TimeCheck{AskedAt: askedAt, Tolerance: tolerance})
+}
+
+// CheckDecisionTimes returns times, in journal order, with Flags recomputed: FlagDecisionTimes'
+// flags under c.AskedAt and c.Tolerance, and, for a canonical RecordedAt,
+// FlagRecordedOutOfOrder when it is more than the tolerance before an earlier decision's
+// RecordedAt or before c.AskedAt, and FlagRecordedAfterHead when it is more than the tolerance
+// after c.HeadAt. The input is not modified. No flag affects the count or the verdict.
+func CheckDecisionTimes(times []DecisionTime, c TimeCheck) []DecisionTime {
+	tolerance := max(c.Tolerance, 0)
+	asked, askedErr := agent.ParseTimestamp(c.AskedAt)
+	head, headErr := agent.ParseTimestamp(c.HeadAt)
+	latest := asked // the latest recorded time the journal order has reached
+	if askedErr != nil {
+		latest = time.Time{}
+	}
 	out := make([]DecisionTime, len(times))
 	for i, d := range times {
 		d.Flags = nil
@@ -96,6 +133,17 @@ func FlagDecisionTimes(times []DecisionTime, askedAt string, tolerance time.Dura
 			d.Flags = append(d.Flags, FlagAskedUnknown)
 		case err == nil && decided.Before(asked):
 			d.Flags = append(d.Flags, FlagDecidedBeforeAsked)
+		}
+		if rerr == nil {
+			if !latest.IsZero() && recorded.Add(tolerance).Before(latest) {
+				d.Flags = append(d.Flags, FlagRecordedOutOfOrder)
+			}
+			if recorded.After(latest) {
+				latest = recorded
+			}
+			if headErr == nil && recorded.After(head.Add(tolerance)) {
+				d.Flags = append(d.Flags, FlagRecordedAfterHead)
+			}
 		}
 		out[i] = d
 	}
@@ -135,4 +183,10 @@ func askedAt(actions []EvidenceAction, recs []agent.Record, request agent.Record
 		return w.RecordedAt
 	}
 	return ""
+}
+
+// validTimestamp reports whether s is in agent.FormatTimestamp's one form.
+func validTimestamp(s string) bool {
+	_, err := agent.ParseTimestamp(s)
+	return err == nil
 }

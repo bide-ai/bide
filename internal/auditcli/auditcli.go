@@ -148,9 +148,11 @@ const usageText = `bide audit: produce and verify audit proof bundles
          proof in the package must verify too, so a package carrying a run certificate needs the
          allowlist it is checked against (-approved / -approved-file, as for verify-evidence).
          It also prints each counted decision's two times: decided_at, signed by the approver
-         (their clock), and recorded_at, when bide journaled it (bide's clock), with the gap,
-         and notes a decision signed more than the tolerance (default 5m) after it was recorded
-         or before the run asked for approval; these notes never change the verdict
+         (their clock), and recorded_at, when it was journaled (the submitter's clock, not
+         signed), with the gap, and notes a decision signed more than the tolerance (default
+         5m) after it was recorded or before the run asked for approval, a recorded_at out of
+         journal order or after the signed head, and a time that is not canonical (printed
+         quoted); these notes never change the verdict
 
   prove-absent -journal <file> -sth <file> -key (tool:<id>|policy:<digest>) [-out <file>]
          prove a thing did NOT happen (no such tool call / no action under that policy)
@@ -1186,22 +1188,23 @@ func (c *cli) verifyApprovals(args []string) {
 }
 
 // decisionTimes prints when the run asked for approval and each counted decision's two times, kept
-// apart: decided_at, signed by the approver by their clock, and recorded_at, by bide's clock and
-// anchored with the record; then the sanity notes under tolerance (audit.FlagDecisionTimes). The
-// notes are for the reader; they never change the verdict.
+// apart: decided_at, signed by the approver by their clock, and recorded_at, by the clock of the
+// process that submitted the decision, not signed, anchored with the record; then the sanity
+// notes under tolerance (audit.CheckDecisionTimes). The notes are for the reader; they never
+// change the verdict. Every time from the evidence is printed through timeText.
 func (c *cli) decisionTimes(v audit.ApprovalVerdict, tolerance time.Duration) {
 	if len(v.Times) == 0 {
 		return
 	}
 	if v.AskedAt != "" {
-		c.printf("INFO  approval asked at %s (bide's clock)\n", timeText(v.AskedAt))
+		c.printf("INFO  approval asked at %s (the run's clock)\n", timeText(v.AskedAt))
 	} else {
 		c.printf("INFO  the evidence does not say when approval was asked (no approval-pending record with a time)\n")
 	}
-	for _, d := range audit.FlagDecisionTimes(v.Times, v.AskedAt, tolerance) {
+	for _, d := range audit.CheckDecisionTimes(v.Times, audit.TimeCheck{AskedAt: v.AskedAt, HeadAt: v.HeadAt, Tolerance: tolerance}) {
 		recorded := "not recorded"
 		if d.RecordedAt != "" {
-			recorded = timeText(d.RecordedAt) + " (bide's clock)"
+			recorded = timeText(d.RecordedAt) + " (the submitter's clock, not signed)"
 		}
 		c.printf("INFO  %s decided at %s (signed, the approver's clock), recorded at %s, %s\n", d.Approver, timeText(d.DecidedAt), recorded, gapText(d))
 		for _, f := range d.Flags {

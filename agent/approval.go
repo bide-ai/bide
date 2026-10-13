@@ -128,7 +128,7 @@ const DecisionFormat = "bide.approval.v3"
 // transit (a live model stream, the journal, an evidence file). decidedAt is RFC 3339 in UTC to
 // the millisecond, 24 bytes, e.g. "2026-10-13T12:14:03.123Z" (FormatTimestamp); a verifier
 // refuses a decision whose recorded time is in any other form (ParseTimestamp), so an instant
-// has one signed spelling. A time outside the years 0000 to 9999 has no such form, and a
+// has one signed spelling. A time outside the years 0001 to 9999 has no such form, and a
 // decision signed with one never counts. docs/design/design-mofn-approval.md works one decision
 // through to its exact bytes, for a verifier written in another language.
 func ApprovalDecisionBytes(s ApprovalSubject, approverID string, approved bool, decidedAt time.Time) []byte {
@@ -339,6 +339,10 @@ type ApprovalTally struct {
 	// refuses to run a call on such a tally that passed (ErrConfig), since its approvals do not
 	// verify under this format.
 	DecisionFormat string `json:"decision_format,omitempty"`
+	// Supersedes names the tally this count replaces: set when the gate re-asks for approval
+	// because the tally recorded under ApprovalTallyStep passed on decisions that predate
+	// DecisionFormat. The re-count is recorded under ApprovalRetallyStep once terminal.
+	Supersedes string `json:"supersedes,omitempty"`
 }
 
 // Passed reports whether Need approvals are in.
@@ -487,6 +491,29 @@ func IsApprovalDecision(r Record, toolUseID string) bool {
 // ApprovalTallyStep is the journal name of the gate's terminal tally for toolUseID.
 func ApprovalTallyStep(toolUseID string) string { return "approval-tally:" + encodeID(toolUseID) }
 
+// ApprovalRetallyStep is the journal name of the terminal tally a gate records when it re-asks for
+// approval because the tally under ApprovalTallyStep passed on decisions that predate
+// DecisionFormat (see ApprovalTally.Supersedes). When both are recorded, this one is the gate's
+// outcome. The encoded ID has no ':', so the name never collides with another call's tally.
+func ApprovalRetallyStep(toolUseID string) string { return ApprovalTallyStep(toolUseID) + ":v3" }
+
+// RecordedTally returns the record of the gate's outcome on toolUseID among records keyed by
+// name: the re-approval tally (ApprovalRetallyStep) when one is recorded, else the tally
+// (ApprovalTallyStep). ok is false when neither is.
+func RecordedTally(byName map[string]Record, toolUseID string) (r Record, ok bool) {
+	if r, ok := byName[ApprovalRetallyStep(toolUseID)]; ok {
+		return r, true
+	}
+	r, ok = byName[ApprovalTallyStep(toolUseID)]
+	return r, ok
+}
+
+// predatesFormat reports whether t is a tally that passed on decisions signed before
+// DecisionFormat: a terminal tally journaled by an earlier version, which carries no format. Its
+// approvals do not verify under this format, so a gate does not run the call on it; it asks again
+// (PendingReapproval). A denial is final whatever its format, since it runs nothing.
+func predatesFormat(t ApprovalTally) bool { return t.Passed() && t.DecisionFormat != DecisionFormat }
+
 // ApprovalPendingStep is the journal name of the record that a run paused at the approval gate of
 // the call toolUseID (see ApprovalWait).
 func ApprovalPendingStep(toolUseID string) string { return "approval-pending:" + encodeID(toolUseID) }
@@ -633,7 +660,8 @@ type Decision struct {
 // plan flow node's gate (ToolUseID a node key, in a flow's run) the run must have recorded the
 // gate's request: SubmitDecision refuses one with none (ErrConfig), and the gate counts only
 // decisions after it. An identical decision recorded before the request (same name) is reported
-// (ErrConfig): it cannot count, and this approver's seat is lost for the gate.
+// (ErrConfig): it cannot count; the approver re-signs at a new decided_at, which is a new decision
+// that counts.
 func SubmitDecision(ctx context.Context, store *Journal, d Decision, opts ...ApproveOption) error {
 	return submitDecision(ctx, store, "SubmitDecision", d, opts)
 }
@@ -662,7 +690,7 @@ func submitDecision(ctx context.Context, store *Journal, op string, d Decision, 
 	}
 	decidedAt := FormatTimestamp(d.DecidedAt)
 	if !canonicalTimestamp(decidedAt) {
-		return fmt.Errorf("%s: decision time %s has no canonical form (years 0000 to 9999): %w", op, d.DecidedAt, ErrConfig)
+		return fmt.Errorf("%s: decision time %s has no canonical form (years 0001 to 9999): %w", op, d.DecidedAt, ErrConfig)
 	}
 	o := approveOptions{now: clockFrom(ctx)}
 	for _, opt := range opts {
@@ -686,10 +714,10 @@ func submitDecision(ctx context.Context, store *Journal, op string, d Decision, 
 	if _, err := store.do(ctx, d.RunID, name, func(context.Context) (Record, error) {
 		// RecordedAt is read here, when the record is first written: an identical resubmission
 		// keeps the first record, and its time. It is held to the one form decided_at is, so a
-		// clock outside the years 0000 to 9999 records nothing rather than a time no reader accepts.
+		// clock outside the years 0001 to 9999 records nothing rather than a time no reader accepts.
 		recordedAt := FormatTimestamp(o.now())
 		if !canonicalTimestamp(recordedAt) {
-			return Record{}, fmt.Errorf("%s: the clock reads %s, which has no canonical form (years 0000 to 9999), so the decision's recorded_at cannot be written: %w", op, o.now(), ErrConfig)
+			return Record{}, fmt.Errorf("%s: the clock reads %s, which has no canonical form (years 0001 to 9999), so the decision's recorded_at cannot be written: %w", op, o.now(), ErrConfig)
 		}
 		return Record{Kind: StepApproval, ToolUseID: d.ToolUseID, Approved: d.Approved, ApproverSignature: &ApproverSignature{
 			Approver: d.ApproverID, ApproverAlg: d.Alg, Signature: d.Signature, DecidedAt: decidedAt, RecordedAt: recordedAt,

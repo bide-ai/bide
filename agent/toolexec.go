@@ -68,18 +68,23 @@ func tallyGate(ctx context.Context, store *Journal, runID string, s ApprovalSubj
 	if err != nil {
 		return ApprovalTally{}, false, fmt.Errorf("load history %s: %w (%w)", runID, err, ErrStorage)
 	}
-	name := ApprovalTallyStep(s.ToolUseID)
+	name, supersedes := ApprovalTallyStep(s.ToolUseID), ""
 	for _, r := range recs {
-		if r.Name == name && r.Kind == StepValue {
-			t, err := decodeTally(runID, r)
-			if err != nil {
-				return ApprovalTally{}, false, err
-			}
-			if err := admitTally(runID, s.ToolUseID, t); err != nil {
-				return ApprovalTally{}, false, err
-			}
-			return t, true, nil
+		if r.Kind != StepValue || r.Name != name && r.Name != ApprovalRetallyStep(s.ToolUseID) {
+			continue
 		}
+		t, err := decodeTally(runID, r)
+		if err != nil {
+			return ApprovalTally{}, false, err
+		}
+		if r.Name == name && predatesFormat(t) {
+			// A tally an earlier version journaled passed on decisions this format does not accept:
+			// the call does not run on it. The gate asks again, and records its new outcome under
+			// ApprovalRetallyStep, which a later evaluation reads instead.
+			supersedes, name = name, ApprovalRetallyStep(s.ToolUseID)
+			continue
+		}
+		return t, true, nil
 	}
 	if since != "" {
 		if i := slices.IndexFunc(recs, func(r Record) bool { return r.Name == since }); i >= 0 {
@@ -89,6 +94,7 @@ func tallyGate(ctx context.Context, store *Journal, runID string, s ApprovalSubj
 		}
 	}
 	tally, _ := TallyApprovals(recs, s, *pol, verifierFor)
+	tally.Supersedes = supersedes
 	if !tally.Passed() && !tally.Unreachable() {
 		return tally, false, nil
 	}
@@ -98,19 +104,6 @@ func tallyGate(ctx context.Context, store *Journal, runID string, s ApprovalSubj
 		return ApprovalTally{}, false, fmt.Errorf("record %s (run %s): %w (%w)", name, runID, err, ErrStorage)
 	}
 	return tally, true, nil
-}
-
-// admitTally refuses (ErrConfig) a recorded tally that passed but was counted under an earlier
-// decision format than DecisionFormat: its approvals are decisions this version does not accept
-// (no signed decision time), so neither the gate nor an offline audit could stand behind it, and
-// running the tool on it would act on approvals the audit fails. A recorded denial stays final
-// whatever its format, since it runs nothing.
-func admitTally(runID, toolUseID string, t ApprovalTally) error {
-	if !t.Passed() || t.DecisionFormat == DecisionFormat {
-		return nil
-	}
-	return fmt.Errorf("the approval gate on %s (run %s) passed under an earlier decision format than %s, whose decisions this version does not accept; the call does not run: cancel the run (agent.Cancel) and start it again to have it approved under %s: %w",
-		toolUseID, runID, DecisionFormat, DecisionFormat, ErrConfig)
 }
 
 // protocol:claims end

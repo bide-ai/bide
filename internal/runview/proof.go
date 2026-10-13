@@ -147,7 +147,7 @@ func checkApprovals(recs []agent.Record, ap Approvals, logV audit.Verifier, acti
 		}
 	}
 	for _, tu := range calls {
-		t, ok := byName[agent.ApprovalTallyStep(tu.ID)]
+		t, ok := agent.RecordedTally(byName, tu.ID)
 		if !ok {
 			continue
 		}

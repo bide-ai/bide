@@ -5,6 +5,7 @@ import (
 	"crypto/sha256"
 	"encoding/binary"
 	"encoding/hex"
+	"encoding/json"
 	"errors"
 	"math/rand/v2"
 	"reflect"
@@ -58,17 +59,19 @@ var nonCanonicalTimes = []string{
 	"2026-10-13T12:14:03.123Z+00:00", // both
 	"2026-10-13T12:14:03.123GMT",     // a zone abbreviation
 	"0000-00-00T00:00:00.000Z",       // no such date
-	"2026-10-13T12:60:03.123Z",       // no such minute
-	"2026-10-13T12:14:03.123−Z",      // a minus sign
-	"2026-10-13T12:14:03.123Ｚ",       // a fullwidth Z
-	"2026-10-13 12:14:03.123Z",       // a narrow space
-	"2026-10-13T12:14:03.123Ź",      // Z with a combining accent
+	"0000-01-01T00:00:00.000Z",       // year 0000, which other languages' date types cannot hold
+	"0000-12-31T23:59:59.999Z",
+	"2026-10-13T12:60:03.123Z",  // no such minute
+	"2026-10-13T12:14:03.123−Z", // a minus sign
+	"2026-10-13T12:14:03.123Ｚ",  // a fullwidth Z
+	"2026-10-13 12:14:03.123Z",  // a narrow space
+	"2026-10-13T12:14:03.123Ź", // Z with a combining accent
 }
 
 // TestParseTimestamp_Canonical: the one form is accepted and read back exactly; every other
 // spelling is refused, including ones that name the same instant.
 func TestParseTimestamp_Canonical(t *testing.T) {
-	for _, s := range []string{"2026-10-13T12:14:03.123Z", "2026-10-13T12:14:03.000Z", "0000-01-01T00:00:00.000Z", "9999-12-31T23:59:59.999Z", "2024-02-29T23:59:59.999Z"} {
+	for _, s := range []string{"2026-10-13T12:14:03.123Z", "2026-10-13T12:14:03.000Z", "0001-01-01T00:00:00.000Z", "9999-12-31T23:59:59.999Z", "2024-02-29T23:59:59.999Z"} {
 		got, err := ParseTimestamp(s)
 		if err != nil {
 			t.Fatalf("ParseTimestamp(%q) = %v, want it accepted", s, err)
@@ -101,8 +104,8 @@ func TestFormatTimestamp(t *testing.T) {
 			t.Fatalf("FormatTimestamp(%v) is not canonical: %v", at, err)
 		}
 	}
-	// A time outside the years 0000 to 9999 has no canonical form.
-	for _, at := range []time.Time{time.Date(10000, 1, 1, 0, 0, 0, 0, time.UTC), time.Date(-1, 1, 1, 0, 0, 0, 0, time.UTC)} {
+	// A time outside the years 0001 to 9999 has no canonical form.
+	for _, at := range []time.Time{time.Date(10000, 1, 1, 0, 0, 0, 0, time.UTC), time.Date(-1, 1, 1, 0, 0, 0, 0, time.UTC), time.Date(0, 6, 1, 0, 0, 0, 0, time.UTC)} {
 		if _, err := ParseTimestamp(FormatTimestamp(at)); err == nil {
 			t.Fatalf("FormatTimestamp(%v) = %q, accepted as canonical", at, FormatTimestamp(at))
 		}
@@ -381,21 +384,72 @@ func TestApprovalDecisionBytes_Vector(t *testing.T) {
 	}
 }
 
-// TestTally_PreV3PassedTallyRefused: a gate that finds a terminal tally which passed but carries
-// no decision format (journaled by a version before bide.approval.v3) refuses to run the call
-// (ErrConfig): its approvals do not verify under this format, so an audit would fail what the
-// gate ran. A pre-v3 denial is still final, and a tally of this format is reused as before.
-func TestTally_PreV3PassedTallyRefused(t *testing.T) {
-	passed := ApprovalTally{Need: 1, Approvers: []string{"ops"}, Approved: 1, ApprovedBy: []string{"ops"}}
-	if err := admitTally("r", "c1", passed); !errors.Is(err, ErrConfig) {
-		t.Fatalf("admitTally(pre-v3 passed) = %v, want ErrConfig", err)
+// TestGate_PreV3PassedTallyReapproval: a gate that finds a terminal tally which passed but carries
+// no decision format (journaled before bide.approval.v3, on decisions with no signed time) does
+// not run the call on it: it pauses (*ApprovalPending, Reason PendingReapproval) with a fresh
+// count. Approvers sign again under v3, the gate passes, records the new outcome under
+// ApprovalRetallyStep, and runs the call once; a later drive reuses that record. A pre-v3 denial
+// stays final.
+func TestGate_PreV3PassedTallyReapproval(t *testing.T) {
+	ctx := context.Background()
+	pol := &ApprovalPolicy{Need: 2, Approvers: []string{"ops", "fin"}}
+	vf := fakeVerifiers("ops", "fin")
+	store := memJournal()
+	charged := 0
+	if _, err := mofnRun(store, "r1", true, pol, vf, &charged); !isPause(err) {
+		t.Fatalf("first drive = %v, want a pause", err)
 	}
-	denied := ApprovalTally{Need: 1, Approvers: []string{"ops"}, Denied: 1, DeniedBy: []string{"ops"}}
-	if err := admitTally("r", "c1", denied); err != nil {
-		t.Fatalf("admitTally(pre-v3 denied) = %v, want it final", err)
+	// The run as an earlier version left it: two decisions with no signed time, and a tally that
+	// passed on them, journaled before the tool ran.
+	var names []string
+	for _, id := range pol.Approvers {
+		name := approvalStep("c1") + ":" + id + ":v2"
+		writeRaw(t, store, "r1", name, Record{Kind: StepApproval, ToolUseID: "c1", Approved: true, ApproverSignature: &ApproverSignature{Approver: id, ApproverAlg: fakeAlg, Signature: []byte("v2")}})
+		names = append(names, name)
 	}
-	passed.DecisionFormat = DecisionFormat
-	if err := admitTally("r", "c1", passed); err != nil {
-		t.Fatalf("admitTally(v3 passed) = %v", err)
+	old, _ := json.Marshal(ApprovalTally{Need: 2, Approvers: pol.Approvers, Approved: 2, ApprovedBy: pol.Approvers, Records: names})
+	writeRaw(t, store, "r1", ApprovalTallyStep("c1"), Record{Kind: StepValue, Result: old})
+
+	_, err := mofnRun(store, "r1", false, pol, vf, &charged)
+	var pend *ApprovalPending
+	if !errors.As(err, &pend) || pend.Reason != PendingReapproval || pend.Quorum == nil || pend.Quorum.Approved != 0 || pend.Quorum.Supersedes != ApprovalTallyStep("c1") || charged != 0 {
+		t.Fatalf("resume on a pre-v3 passed tally = %v (pend %+v, charged %d); want a re-approval pause and the call not run", err, pend, charged)
 	}
+	subj := subjectOf(t, store, "r1", "c1")
+	for _, id := range pol.Approvers {
+		if err := decideAs(ctx, store, "r1", "c1", id, true, fakeSign(id, ApprovalDecisionBytes(subj, id, true, testDecidedAt))); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if _, err := mofnRun(store, "r1", false, pol, vf, &charged); err != nil || charged != 1 {
+		t.Fatalf("drive after v3 re-approval = %v, charged %d; want the call run once", err, charged)
+	}
+	r, ok, err := store.Get(ctx, "r1", ApprovalRetallyStep("c1"))
+	if err != nil || !ok {
+		t.Fatalf("no re-approval tally recorded: %v", err)
+	}
+	re, err := decodeTally("r1", r)
+	if err != nil || !re.Passed() || re.DecisionFormat != DecisionFormat || re.Supersedes != ApprovalTallyStep("c1") {
+		t.Fatalf("re-approval tally = %+v, %v", re, err)
+	}
+	if _, err := mofnRun(store, "r1", false, pol, vf, &charged); err != nil || charged != 1 {
+		t.Fatalf("a later drive = %v, charged %d; want the recorded outcome reused", err, charged)
+	}
+
+	// A pre-v3 denial is final: the call is denied without asking again.
+	store2 := memJournal()
+	charged = 0
+	if _, err := mofnRun(store2, "r2", true, pol, vf, &charged); !isPause(err) {
+		t.Fatalf("first drive = %v", err)
+	}
+	denied, _ := json.Marshal(ApprovalTally{Need: 2, Approvers: pol.Approvers, Denied: 1, DeniedBy: []string{"ops"}})
+	writeRaw(t, store2, "r2", ApprovalTallyStep("c1"), Record{Kind: StepValue, Result: denied})
+	if _, err := mofnRun(store2, "r2", false, pol, vf, &charged); err != nil || charged != 0 {
+		t.Fatalf("resume on a pre-v3 denial = %v, charged %d; want it denied, not re-asked", err, charged)
+	}
+}
+
+func isPause(err error) bool {
+	var p *ApprovalPending
+	return errors.As(err, &p)
 }

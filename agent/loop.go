@@ -614,7 +614,7 @@ func (a *Agent) runLoop(ctx context.Context, runID string, d *driveSpec) (Messag
 			// is not carried over the same way: a gate that is still configured decides by its
 			// current policy, so a tightened policy applies to a call not yet run.
 			denied := decided[tu.ID] && !approvals[tu.ID]
-			if r, ok := values[ApprovalTallyStep(tu.ID)]; ok && !denied {
+			if r, ok := RecordedTally(values, tu.ID); ok && !denied {
 				tally, err := decodeTally(runID, r)
 				if err != nil {
 					return leave(err)
@@ -636,7 +636,11 @@ func (a *Agent) runLoop(ctx context.Context, runID string, d *driveSpec) (Messag
 						evTally := tally // the event gets its own copy; ApprovalPending keeps tally
 						evTally.Pending = append([]string(nil), tally.Pending...)
 						fire(ApprovalRequired{ToolUseID: tu.ID, Name: tu.Name, Args: tu.Args, Quorum: &evTally})
-						return leave(&ApprovalPending{RunRef: RunRef{RunID: runID, RootRunID: rootRunID(ctx, runID)}, ToolUseID: tu.ID, ToolName: tu.Name, Args: tu.Args, Quorum: &tally})
+						pend := &ApprovalPending{RunRef: RunRef{RunID: runID, RootRunID: rootRunID(ctx, runID)}, ToolUseID: tu.ID, ToolName: tu.Name, Args: tu.Args, Quorum: &tally}
+						if tally.Supersedes != "" {
+							pend.Reason = PendingReapproval
+						}
+						return leave(pend)
 					}
 					approved = tally.Passed()
 				} else {

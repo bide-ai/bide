@@ -110,9 +110,9 @@ func TestCLI_ApprovalTimesRoundTrip(t *testing.T) {
 		t.Fatalf("verify-approvals: exit %d\n%s%s", code, stdout, stderr)
 	}
 	for _, want := range []string{
-		"INFO  approval asked at 2026-10-13T12:00:00.000Z (bide's clock)",
-		"INFO  alice decided at 2026-10-13T12:00:01.500Z (signed, the approver's clock), recorded at 2026-10-13T12:00:04.000Z (bide's clock), 2.5s after the signed time",
-		"INFO  bob decided at 2026-10-13T12:15:00.000Z (signed, the approver's clock), recorded at 2026-10-13T12:05:00.000Z (bide's clock), 10m0s before the signed time",
+		"INFO  approval asked at 2026-10-13T12:00:00.000Z (the run's clock)",
+		"INFO  alice decided at 2026-10-13T12:00:01.500Z (signed, the approver's clock), recorded at 2026-10-13T12:00:04.000Z (the submitter's clock, not signed), 2.5s after the signed time",
+		"INFO  bob decided at 2026-10-13T12:15:00.000Z (signed, the approver's clock), recorded at 2026-10-13T12:05:00.000Z (the submitter's clock, not signed), 10m0s before the signed time",
 		"note: bob: " + audit.FlagDecidedAfterRecorded,
 		"PASS: 2 of 2 required approvals verified",
 	} {

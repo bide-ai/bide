@@ -248,8 +248,8 @@ out, err := flow.Run(ctx, j, runID, in) // runs the node once 2 of 3 have approv
   A decision written into the journal before the request by other means never counts and keeps its
   name: the approver's identical decision afterwards is not recorded, and `Approve` or
   `SubmitDecision` returns `ErrConfig` saying so. For a `SingleApproval` gate that blocks the gate
-  (cancel the run with `agent.Cancel`); for an m-of-n gate that approver's seat is lost for the gate,
-  which can still pass with the others if `need` is reachable, and otherwise must be cancelled. A
+  (cancel the run with `agent.Cancel`). For an m-of-n gate the approver signs again at a new time
+  (a new `DecidedAt`): that is a new decision, recorded after the request, and it counts. A
   `SingleApproval` gate is decided with `agent.Approve(ctx, j, pend.RunID, pend.ToolUseID, ok)`.
 - **A denial stops the run.** A gate whose quorum can no longer be reached (or an `Approve(false)`)
   never runs the node: `Run` returns an error wrapping `plan.ErrApprovalDenied`, and so does every

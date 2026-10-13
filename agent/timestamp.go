@@ -12,7 +12,7 @@ const timestampLayout = "2006-01-02T15:04:05.000Z"
 // FormatTimestamp returns t in the one form bide records times in (RunStart.StartedAt, a signed
 // decision's decided_at, the recorded_at of a decision and of ApprovalWait): RFC 3339 in UTC,
 // truncated to the millisecond, always 24 bytes and ending in "Z", e.g.
-// "2026-10-13T12:14:03.123Z". A time outside the years 0000 to 9999 has no such form: what
+// "2026-10-13T12:14:03.123Z". A time outside the years 0001 to 9999 has no such form: what
 // FormatTimestamp returns for it, ParseTimestamp refuses.
 func FormatTimestamp(t time.Time) string {
 	return t.UTC().Truncate(time.Millisecond).Format(timestampLayout)
@@ -30,6 +30,11 @@ func ParseTimestamp(s string) (time.Time, error) {
 	t, err := time.Parse(timestampLayout, s)
 	if err != nil {
 		return time.Time{}, fmt.Errorf("timestamp %q is not of the form 2006-01-02T15:04:05.000Z: %w", s, err)
+	}
+	if t.Year() < 1 {
+		// Year 0000 formats and parses, but many languages' date types start at year 1 (Python's
+		// datetime.MINYEAR), so a verifier outside Go could not read it back.
+		return time.Time{}, fmt.Errorf("timestamp %q is before the year 0001", s)
 	}
 	if FormatTimestamp(t) != s {
 		return time.Time{}, fmt.Errorf("timestamp %q is not in canonical form (want %q)", s, FormatTimestamp(t))

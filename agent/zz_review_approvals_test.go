@@ -11,7 +11,7 @@ import (
 )
 
 // TestReview_SubmitDecisionJournalsNonCanonicalRecordedAt: decided_at must have a canonical form
-// (years 0000 to 9999) or SubmitDecision refuses it, but recorded_at, from WithClock or the
+// (years 0001 to 9999) or SubmitDecision refuses it, but recorded_at, from WithClock or the
 // context's clock, is formatted and journaled unchecked. A clock outside the range writes a
 // recorded_at that ParseTimestamp refuses, through the public API, so every reader that shows it
 // (VerifyApprovals' Times, the CLI, the viewer) gets a value that is not in the one form.
@@ -61,7 +61,7 @@ func FuzzReview_ParseTimestamp(f *testing.F) {
 
 // FuzzReview_FormatTimestamp: for any instant, FormatTimestamp's output either is refused by
 // ParseTimestamp or reads back as the instant truncated to the millisecond; and an instant in
-// the years 0000 to 9999 is never refused.
+// the years 0001 to 9999 is never refused.
 func FuzzReview_FormatTimestamp(f *testing.F) {
 	f.Add(int64(1760357643), int64(123456789))
 	f.Add(int64(-62167219200), int64(500000)) // 0000-01-01
@@ -71,7 +71,7 @@ func FuzzReview_FormatTimestamp(f *testing.F) {
 		in := time.Unix(sec, nsec).UTC()
 		s := FormatTimestamp(in)
 		got, err := ParseTimestamp(s)
-		inRange := in.Year() >= 0 && in.Year() <= 9999
+		inRange := in.Year() >= 1 && in.Year() <= 9999 // year 0000 is refused since the review
 		if err != nil {
 			if inRange {
 				t.Fatalf("FormatTimestamp(%v) = %q, refused: %v", in, s, err)

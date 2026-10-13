@@ -120,8 +120,9 @@ way. The journal's other wall-clock times are each attempt marker's, the deadlin
 itself (a timer's wake time, an `AwaitFor` deadline), and an approval gate's display times: when
 the run paused at the gate (`ApprovalWait.RecordedAt`) or recorded a flow gate's request
 (`ApprovalRequest.RecordedAt`) and, on each signed m-of-n decision, when
-the approver decided (`decided_at`, by the approver's clock, inside the signature) and when bide
-recorded it (`recorded_at`, by bide's clock). The gate never reads those: it checks `decided_at`
+the approver decided (`decided_at`, by the approver's clock, inside the signature) and when it
+was journaled (`recorded_at`, by the submitting process's clock: its claim, not signed, anchored
+by the Merkle trail once a signed head covers it). The gate never reads those: it checks `decided_at`
 only as signed bytes, orders decisions by journal position, and counts the same whatever the times
 say.
 

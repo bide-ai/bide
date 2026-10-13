@@ -120,7 +120,7 @@ type Gate struct {
 	Pending    []string   `json:"pending,omitempty"`
 	Decisions  []Decision `json:"decisions,omitempty"`
 	Tallied    bool       `json:"tallied"` // the gate journaled its terminal tally
-	// AskedAt is when the run asked for approval, by bide's clock: a flow node's request time
+	// AskedAt is when the run asked for approval, by the run's clock: a flow node's request time
 	// (agent.ApprovalRequest.RecordedAt), else the pause's (agent.ApprovalWait.RecordedAt); empty
 	// when the journal does not say.
 	AskedAt string `json:"asked_at,omitempty"`
@@ -132,12 +132,17 @@ type Gate struct {
 	Signatures   string `json:"signatures"`
 	SignaturesOK bool   `json:"signatures_ok"`
 	Status       string `json:"status"`
+	// Reapproval: the gate's recorded tally passed on decisions that predate the signed decision
+	// format (agent.DecisionFormat) and the call has not run, so the gate asks again when the run
+	// resumes (agent.PendingReapproval); only decisions with a signed time count.
+	Reapproval bool `json:"reapproval,omitempty"`
 	// Cards is each approver as the page shows them (see ApproverCard); not in the JSON view.
 	Cards []ApproverCard `json:"-"`
 }
 
 // Decision is one recorded approval decision. A signed decision carries two times: DecidedAt, the
-// approver's clock inside the signature, and RecordedAt, bide's clock when it was journaled.
+// approver's clock inside the signature, and RecordedAt, the submitter's clock when it was
+// journaled (not signed).
 type Decision struct {
 	Approver   string `json:"approver,omitempty"` // empty for a one-decision gate's Approve
 	Approved   bool   `json:"approved"`
@@ -526,9 +531,16 @@ func gates(recs []agent.Record, calls map[string]agent.ToolUse, order []string) 
 				g.Need, g.Approvers = r.Approval.Need, r.Approval.Approvers
 			}
 		}
-		if t, ok := byName[agent.ApprovalTallyStep(id)]; ok {
+		if t, ok := agent.RecordedTally(byName, id); ok {
 			var tally agent.ApprovalTally
-			if json.Unmarshal(t.Result, &tally) == nil {
+			switch {
+			case json.Unmarshal(t.Result, &tally) != nil:
+			case !resulted && t.Name == agent.ApprovalTallyStep(id) && tally.Passed() && tally.DecisionFormat != agent.DecisionFormat:
+				// It passed on decisions that predate the signed decision format: the gate asks
+				// again when the run resumes, and only decisions with a signed time can count.
+				g.Reapproval = true
+				g.Need, g.Approvers = tally.Need, tally.Approvers
+			default:
 				g.Tallied = true
 				g.Need, g.Approvers = tally.Need, tally.Approvers
 				g.ApprovedBy, g.DeniedBy, g.Pending = tally.ApprovedBy, tally.DeniedBy, tally.Pending
@@ -541,6 +553,7 @@ func gates(recs []agent.Record, calls map[string]agent.ToolUse, order []string) 
 			g.Single = g.Single || len(g.Decisions) > 0 && !g.Decisions[0].Signed
 			for _, d := range g.Decisions {
 				switch {
+				case g.Reapproval && d.DecidedAt == "": // signed before the format: never counts now
 				case d.Signed && d.Approved && !slices.Contains(g.ApprovedBy, d.Approver):
 					g.ApprovedBy = append(g.ApprovedBy, d.Approver)
 				case d.Signed && !d.Approved && !slices.Contains(g.DeniedBy, d.Approver):
@@ -553,7 +566,7 @@ func gates(recs []agent.Record, calls map[string]agent.ToolUse, order []string) 
 				}
 			}
 		}
-		g.Waiting = paused && !resulted && !g.Tallied && !(g.Single && len(g.Decisions) > 0)
+		g.Waiting = (paused || g.Reapproval) && !resulted && !g.Tallied && !(g.Single && len(g.Decisions) > 0)
 		g.Status = gateStatus(g)
 		out = append(out, g)
 	}
@@ -583,6 +596,9 @@ func gateStatus(g Gate) string {
 		counts += fmt.Sprintf(", %d denied", d)
 	}
 	counts += fmt.Sprintf("; %d needed", g.Need)
+	if g.Reapproval && a < g.Need {
+		return "approval re-required: the recorded approvals predate " + agent.DecisionFormat + " (" + counts + ")"
+	}
 	switch {
 	case a >= g.Need:
 		return "approved (" + counts + ")"

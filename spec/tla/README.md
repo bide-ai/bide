@@ -923,6 +923,7 @@ every journal the drivers and the resolver can produce is a declared path, which
 | `flow-live` | ci | `Completes`, one driver; 1 error reply, 1 crash | 7,820 | <1 s |
 | `flow-gate` | ci | gates on `H` (per iteration) and `T`, 2 of 2; one driver, the resolver; 1 crash | 2,575,445 | 7 min (1 worker, beside other runs) |
 | `flow-gate-live` | ci | `Completes` with gates on `H` and `T`, 2 of 2, no early decisions; one driver; 1 error reply, 1 crash | 25,806 | 6 s |
+| `flow-gate-early` | ci | `Completes` and every safety property with a gate on `T`, 2 of 2, early decisions possible (each approver signs again after the request); one driver, no faults | 7,218 | 18 s |
 | `flow-two` | nightly | two drivers; `E`, `H`, `T` side effects; 1 error reply, 1 crash | 2,125,920 | 23 s |
 | `deep-flow-all-side` | nightly | every node a side effect, two drivers | 7,165,894 | 8 min (2 workers, beside other runs) |
 | `deep-flow-resolve` | nightly | two drivers and the resolver, 1 crash | 20,510,386 | 22 min (2 workers, beside other runs) |
@@ -937,10 +938,13 @@ with no gate check, as the runtime would have before flows enforced gates had `B
 them; `GateHeld`), `flows/regress/gate-unscoped` (a gate in a loop keyed per node, not per
 iteration, so the first iteration's tally lets the second run unapproved; `GateHeld`),
 `flows/regress/gate-request-order` (#195 review: a decision recorded before the gate's request was
-counted, so a node ran on an approval never made on its input; `GateHeld`). Limit (an accepted
-behavior, expected to fail): `flows/limits/gate-early-stuck` (a decision written directly before
-the request is final for its approver and never counts, so a 2 of 2 gate can never pass and the run
-waits until it is cancelled; `Completes`, 7,218 states). Further regressions:
+counted, so a node ran on an approval never made on its input; `GateHeld`). A decision written
+directly before the request never counts, and since `bide.approval.v3` it does not take its
+approver's seat: the approver signs again at a new `decided_at`, a new record after the request,
+which counts (`ADecide`). `flows/flow-gate-early` (a ci configuration, 2 of 2 with early decisions
+possible) checks that such a gate passes and the run completes (`Completes`) with every safety
+property; it replaces the limit `flows/limits/gate-early-stuck`, which stated the v2 behavior (the
+gate could never pass). Further regressions:
 `flows/regress/nested-unscoped` (#103 review F7:
 a Step a loop body ran had one key for every iteration, so later iterations replayed the first;
 `NestedOncePerIteration`, 38 states), `flows/regress/loop-switch-unscoped` (a guard: the loop

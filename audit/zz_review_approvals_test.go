@@ -7,6 +7,7 @@ import (
 	"context"
 	"crypto/ed25519"
 	"encoding/json"
+	"errors"
 	"slices"
 	"testing"
 	"time"
@@ -125,15 +126,30 @@ func TestReview_PreV3TallyReusedButUnverifiable(t *testing.T) {
 	if _, err := journaltest.Put(ctx, g.store, gateRun, agent.ApprovalTallyStep("c1"), agent.Record{Kind: agent.StepValue, Result: b}); err != nil {
 		t.Fatal(err)
 	}
+	// Fixed (user decision, fail closed): the resumed gate does not run the tool on the pre-v3
+	// tally. It pauses for approvers to decide again under v3, and the runtime and the auditor then
+	// agree on the one outcome the gate records.
 	runErr := g.run()
+	var pend *agent.ApprovalPending
+	if !errors.As(runErr, &pend) || pend.Reason != agent.PendingReapproval || g.charged != 0 {
+		t.Fatalf("resume on a pre-v3 passed tally = %v (charged %d); want a re-approval pause and the tool not run", runErr, g.charged)
+	}
+	if _, err := audit.ApprovalEvidence(ctx, g.store, gateRun, "c1", g.sth(t, 1700000000)); err == nil {
+		t.Fatal("evidence for a call that did not run")
+	}
+	g.decide(t, "alice", true, false)
+	g.decide(t, "bob", true, false)
+	if err := g.run(); err != nil || g.charged != 1 {
+		t.Fatalf("drive after v3 re-approval = %v (charged %d)", err, g.charged)
+	}
 	acts, err := audit.ApprovalEvidence(ctx, g.store, gateRun, "c1", g.sth(t, 1700000000))
 	if err != nil {
-		t.Fatalf("ApprovalEvidence (run: %v, charged %d): %v", runErr, g.charged, err)
+		t.Fatalf("ApprovalEvidence: %v", err)
 	}
 	v, verr := audit.VerifyApprovals(acts, "c1", g.policy, g.resolver(), edV(g.logPub))
-	if (g.charged == 1) != v.OK {
-		t.Fatalf("the gate ran the tool %d time(s) on a pre-v3 tally, but offline verification says OK=%v (%v; ignored %+v, problems %q)",
-			g.charged, v.OK, verr, v.Ignored, v.Problems)
+	if (g.charged == 1) != v.OK || !slices.Equal(v.Counted, []string{"alice", "bob"}) {
+		t.Fatalf("the gate ran the tool %d time(s), but offline verification says OK=%v (%v; counted %v, ignored %+v, problems %q)",
+			g.charged, v.OK, verr, v.Counted, v.Ignored, v.Problems)
 	}
 }
 

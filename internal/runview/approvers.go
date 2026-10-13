@@ -29,7 +29,7 @@ type ApproverCard struct {
 	// SHA-256 of its public key), when -approver-keys gave it.
 	Fingerprint string
 	// DecidedAt is when the approver says they decided, by their clock, inside the signature;
-	// RecordedAt is when bide journaled the decision, by bide's clock. Both are display text
+	// RecordedAt is when the decision was journaled, by the submitter's clock (not signed). Both are display text
 	// in UTC ("2026-10-13 12:14:03.123"), empty when the record holds none. Gap is the difference
 	// between them in words, shown without judgment, and Flags the sanity notes on them
 	// (audit.FlagDecisionTimes, under audit.DefaultDecisionTimeTolerance), which never change
@@ -101,6 +101,10 @@ func cards(g Gate, p *Proof) []ApproverCard {
 		return nil
 	}
 	chk, checked := p.approval(g.ToolUseID)
+	var headAt string // when the signed head over the journal was signed, if one was given
+	if p != nil && !p.SignedAt.IsZero() {
+		headAt = agent.FormatTimestamp(p.SignedAt)
+	}
 	names := slices.Clone(g.Approvers)
 	for _, n := range slices.Concat(g.ApprovedBy, g.DeniedBy) {
 		if !slices.Contains(names, n) {
@@ -119,7 +123,7 @@ func cards(g Gate, p *Proof) []ApproverCard {
 			c.State = "pending"
 		}
 		if c.State != "pending" {
-			t, ok, many := decisionTime(g, chk, n, c.State == "approved")
+			t, ok, many := decisionTime(g, chk, headAt, n, c.State == "approved")
 			switch {
 			case ok:
 				c.DecidedAt, c.RecordedAt = displayTime(t.DecidedAt), displayTime(t.RecordedAt)
@@ -154,7 +158,7 @@ func (g Gate) HasTimes() bool {
 // outcome. With several and no check, the one that counted is not known (a copy of a valid
 // signature under another decided_at never counts, but would read the same here), so none is
 // shown: ok is false and many is how many there are.
-func decisionTime(g Gate, chk ApprovalCheck, n string, approved bool) (t audit.DecisionTime, ok bool, many int) {
+func decisionTime(g Gate, chk ApprovalCheck, headAt string, n string, approved bool) (t audit.DecisionTime, ok bool, many int) {
 	if t, ok := chk.Times[n]; ok {
 		return t, true, 1
 	}
@@ -169,7 +173,7 @@ func decisionTime(g Gate, chk ApprovalCheck, n string, approved bool) (t audit.D
 		return audit.DecisionTime{}, false, many // none, several, or one an earlier version wrote
 	}
 	t = audit.DecisionTime{Approver: n, DecidedAt: only.DecidedAt, RecordedAt: only.RecordedAt}
-	return audit.FlagDecisionTimes([]audit.DecisionTime{t}, g.AskedAt, audit.DefaultDecisionTimeTolerance)[0], true, 1
+	return audit.CheckDecisionTimes([]audit.DecisionTime{t}, audit.TimeCheck{AskedAt: g.AskedAt, HeadAt: headAt, Tolerance: audit.DefaultDecisionTimeTolerance})[0], true, 1
 }
 
 // displayTime renders a recorded time ("2026-10-13T12:14:03.123Z") as "2026-10-13 12:14:03.123"
