@@ -9,6 +9,10 @@ It is the crash demo behind `bide demo` (a fake provider) against a real API, wi
 approval gate for large refunds. Stripe is called with `net/http` directly: no Stripe SDK, no new
 dependency.
 
+<p align="center"><img src="img/stripe-refund-dark.gif" width="100%" alt="A real Stripe test-mode run: two approvers sign off, the process is killed right after the refund request is sent (exit status 3), the restart halts because the outcome is unknown, the reconciling restart finds the refund in Stripe's own record and completes, and Stripe holds exactly 1 refund"></p>
+
+The recording is a real run against Stripe test mode (`assets/demo/stripe-refund-record.sh` regenerates it).
+
 ## The flow
 
 1. **Look up** the payment intent and its charge (`GET /v1/payment_intents/{id}`, `GET /v1/charges/{id}`): read-only, safe to re-run.

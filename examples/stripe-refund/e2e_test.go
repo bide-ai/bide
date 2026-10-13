@@ -171,7 +171,7 @@ func TestCrashAfterSendThenReconcile(t *testing.T) {
 
 	// With the reconciler it finds the refund at Stripe, resolves the halt, and finishes.
 	out = mustProc(t, f, "run", "-db", db, "-payment-intent", "pi_test_1", "-min-halt-age", "0s")
-	want(t, out, "status: halted", "reconcile: found re_fake_1", "resolved refund-1", "status: done", "Receipt: refunded 5000 usd (minor units) on pi_test_1 as re_fake_1 (succeeded).")
+	want(t, out, "status: halted", "reconcile: found re_fake_1", "resolved refund-1", "status: done", "Receipt: refunded 5000 usd on pi_test_1 as re_fake_1 (succeeded).")
 	if n := f.refundCount(); n != 1 {
 		t.Fatalf("%d refunds after reconciling, want exactly 1", n)
 	}
@@ -254,7 +254,8 @@ func TestApprovalGateThenCrash(t *testing.T) {
 
 	out := mustProc(t, f, args()...)
 	want(t, out, "status: paused", "approved 0 of 2", "waiting on ops, finance, risk", "-run "+runID+" -as ops")
-	mustProc(t, f, "approve", "-db", db, "-payment-intent", "pi_test_1", "-as", "ops")
+	out = mustProc(t, f, "approve", "-db", db, "-payment-intent", "pi_test_1", "-as", "ops")
+	want(t, out, "recorded: ops approved refund_large (amount 5000)")
 	out = mustProc(t, f, args()...)
 	want(t, out, "status: paused", "approved 1 of 2")
 	if f.refundCount() != 0 {
@@ -380,7 +381,7 @@ func TestReconcileAdoptsOnlyItsOwnRefund(t *testing.T) {
 		t.Fatalf("crash run exited %d:\n%s", code, out)
 	}
 	out := mustProc(t, f, append(args, "-min-halt-age", "0s")...)
-	want(t, out, "reconcile: found re_fake_2", "Receipt: refunded 1500 usd (minor units) on pi_test_1 as re_fake_2")
+	want(t, out, "reconcile: found re_fake_2", "Receipt: refunded 1500 usd on pi_test_1 as re_fake_2")
 	if strings.Contains(out, "re_other") {
 		t.Fatalf("adopted a refund that is not this step's:\n%s", out)
 	}
