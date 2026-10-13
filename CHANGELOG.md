@@ -9,6 +9,10 @@ journal format can change between pre-releases without a version bump. Curated h
 
 ## [Unreleased]
 
+### Fixed
+
+- `MemWaker.Start` no longer runs a `Fire` after its context is cancelled. A select picks at random among ready cases, so a ready tick could win over the done context, and the loop would resume due runs with a cancelled context during shutdown (still before the stopped channel closed); it now checks the context again after each tick (`TestMemWaker_StartNothingFiresAfterCancel`).
+
 ### Added
 
 - `examples/stripe-refund`: a refund agent against Stripe's TEST mode API, killed mid-refund. It looks up a payment intent (read-only), gates a refund over a threshold on 2-of-3 approval, sends `POST /v1/refunds` with an `Idempotency-Key` and metadata naming the run and call, and writes a receipt, on a SQLite journal. `-crash-after-send` exits the process right after the request is sent and before its result is journaled; the restart halts with `OutcomeUnknown` instead of refunding again, and a reconciler lists the payment intent's refunds, matches the step's key in their metadata, and resolves the halt with `ResolveHalt` (`WithMinHaltAge`, the refund as evidence), so exactly one refund exists. It resolves nothing when Stripe has no such refund. The example calls Stripe with `net/http` (no SDK, no new dependency), reads `STRIPE_SECRET_KEY` from the environment and refuses anything but an `sk_test_` key. Its tests run the binary as separate processes against a fake Stripe that honors idempotency keys and need no key; `demo.sh` and the README do the kill and restart against the real test API by hand. A new example module (`examples/stripe-refund`), listed in CI, `go.work` and the release script's repo-only modules.
