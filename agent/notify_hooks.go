@@ -163,7 +163,7 @@ func NewRunNotifier(j *Journal, o NotifierOption) (*RunNotifier, error) {
 	if !ok || j == nil {
 		return nil, fmt.Errorf("NewRunNotifier: a nil journal or an option that WithNotifier did not return: %w", ErrConfig)
 	}
-	e, err := no.engine(j)
+	e, err := no.engine(j, "flow")
 	if err != nil {
 		return nil, err
 	}
