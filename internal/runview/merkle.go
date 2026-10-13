@@ -108,7 +108,7 @@ func (m *MerklePath) Caption() string {
 // each node on the path, and the signed root at the top.
 func merkleSVG(m *MerklePath) string {
 	const (
-		w, rowH = 600, 78
+		w, rowH = 660, 78 // w leaves room for the signed time beside the root, on the side with no sibling
 		cx      = w / 2
 		nodeW   = 230
 		nodeH   = 46
@@ -166,7 +166,12 @@ func merkleSVG(m *MerklePath) string {
 			cx-nodeW/2-22, yy-4, nodeW+44, nodeH+8, cx-nodeW/2-10, yy+(nodeH-24)/2)
 		fmt.Fprintf(&b, `<text class="mkcap" x="%d" y="%d">signed root · %s</text><text class="mkhash" x="%d" y="%d">%s</text>`, cx+12, yy+16, html.EscapeString(m.Alg), cx+12, yy+nodeH-9, html.EscapeString(short8(m.Root)))
 		if !m.SignedAt.IsZero() {
-			fmt.Fprintf(&b, `<text class="mksub" x="%d" y="%d">signed</text><text class="mksub" x="%d" y="%d">%s</text>`, cx+nodeW/2+28, yy+nodeH/2-2, cx+nodeW/2+28, yy+nodeH/2+14, html.EscapeString(m.SignedAt.Format("2006-01-02 15:04:05 UTC")))
+			// Beside the root, opposite the last sibling, which sits in the root's row.
+			lx, anchor := cx+nodeW/2+28, "start"
+			if !m.Steps[n-1].Left {
+				lx, anchor = cx-nodeW/2-28, "end"
+			}
+			fmt.Fprintf(&b, `<text class="mksub" x="%d" y="%d" text-anchor="%s">signed</text><text class="mksub" x="%d" y="%d" text-anchor="%s">%s</text>`, lx, yy+nodeH/2-2, anchor, lx, yy+nodeH/2+14, anchor, html.EscapeString(m.SignedAt.Format("2006-01-02 15:04:05 UTC")))
 		}
 		fmt.Fprintf(&b, `<title>signed root %s</title></g>`, html.EscapeString(m.Root))
 	}

@@ -623,3 +623,39 @@ func TestPagesAskForNothingElsewhere(t *testing.T) {
 		}
 	}
 }
+
+// TestMerkleDiagramFitsTheSignedTime: the signed-time label beside the root sits inside the SVG,
+// with a conservative 8 user units for each character at the label's font size, on either side
+// the sibling can be.
+func TestMerkleDiagramFitsTheSignedTime(t *testing.T) {
+	for _, left := range []bool{true, false} {
+		m := &MerklePath{
+			Seq: 13, Size: 13, Name: "run:complete", Leaf: "7d1629c1aa", Root: "267b08bdaa", Alg: "ed25519:abcd", Climbed: true,
+			SignedAt: time.Date(2026, 10, 2, 9, 0, 0, 0, time.UTC),
+			Steps: []MerkleStep{
+				{Sibling: "91e79d07aa", Left: left, Node: "49c75e97aa"},
+				{Sibling: "dbb04dc0aa", Left: left, Node: "267b08bdaa"},
+			},
+		}
+		svg := string(m.Diagram())
+		vb := regexp.MustCompile(`viewBox="0 0 (\d+) \d+"`).FindStringSubmatch(svg)
+		lab := regexp.MustCompile(`<text class="mksub" x="(\d+)" y="\d+" text-anchor="(\w+)">(2026[^<]*)</text>`).FindStringSubmatch(svg)
+		if vb == nil || lab == nil {
+			t.Fatalf("left=%v: no viewBox or signed-time label in %s", left, svg)
+		}
+		var w, x int
+		fmt.Sscan(vb[1], &w)
+		fmt.Sscan(lab[1], &x)
+		lo, hi := x, x+8*len(lab[3])
+		if lab[2] == "end" {
+			lo, hi = x-8*len(lab[3]), x
+		}
+		if lo < 0 || hi > w {
+			t.Errorf("left=%v: the label %q spans %d to %d, outside the SVG width %d", left, lab[3], lo, hi, w)
+		}
+		// The label sits opposite the last sibling, so the two never overlap.
+		if (lab[2] == "end") == left {
+			t.Errorf("left=%v: the label is anchored %s, on the sibling's side", left, lab[2])
+		}
+	}
+}
