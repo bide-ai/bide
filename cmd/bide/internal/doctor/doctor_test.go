@@ -6,8 +6,10 @@ import (
 	"errors"
 	"os"
 	"path/filepath"
+	"regexp"
 	"strings"
 	"testing"
+	"unicode/utf8"
 
 	"github.com/bide-ai/bide/internal/term"
 )
@@ -22,6 +24,12 @@ func fakeEnv(t *testing.T, goOut string, vars map[string]string) Env {
 		Dir:     t.TempDir(),
 		Getenv:  func(k string) string { return vars[k] },
 		Run: func(_ context.Context, _, name string, args ...string) ([]byte, error) {
+			if name == "go" && len(args) == 2 && args[0] == "env" && args[1] == "GOTOOLCHAIN" {
+				if tc := vars["go env GOTOOLCHAIN"]; tc != "" {
+					return []byte(tc + "\n"), nil
+				}
+				return []byte("auto\n"), nil
+			}
 			if name == "go" && len(args) > 0 && args[0] == "env" {
 				return []byte(cache + "\n" + cache + "\n"), nil
 			}
@@ -51,14 +59,14 @@ func TestGoVersion(t *testing.T) {
 	}{
 		{"go version go1.27.0 darwin/arm64", OK},
 		{"go version go1.28.1 linux/amd64", OK},
-		{"go version go1.26.4 linux/amd64", Fail},
+		{"go version go1.26.4 linux/amd64", Warn}, // GOTOOLCHAIN=auto fetches 1.27 for a project
 		{"", Fail}, // go not on PATH
 	} {
 		r := byName(Check(context.Background(), fakeEnv(t, tc.out, nil)), "Go")
 		if r.Status != tc.want {
 			t.Errorf("go version %q: status %v (%s), want %v", tc.out, r.Status, r.Detail, tc.want)
 		}
-		if r.Status == Fail && !strings.Contains(r.Fix, "go.dev/dl") {
+		if r.Status == Fail && tc.out == "" && !strings.Contains(r.Fix, "go.dev/dl") {
 			t.Errorf("go version %q: fix %q does not say where to get Go", tc.out, r.Fix)
 		}
 	}
@@ -172,5 +180,66 @@ func TestMainUsage(t *testing.T) {
 	}
 	if code := Main("", []string{"extra"}, &out, &errb); code != 2 {
 		t.Errorf("an argument: %d; want 2", code)
+	}
+}
+
+// TestOldGoByToolchain: an old Go only fails where it cannot fetch Go 1.27 itself, and the fix text
+// gives the same two ways out as docs/getting-started.md.
+func TestOldGoByToolchain(t *testing.T) {
+	for _, tc := range []struct {
+		toolchain string
+		want      Status
+	}{
+		{"auto", Warn},
+		{"go1.21+auto", Warn},
+		{"local", Fail},
+		{"go1.26.1", Fail},
+		{"go1.26.1+path", Fail},
+	} {
+		env := fakeEnv(t, "go version go1.26.4 linux/amd64", map[string]string{"go env GOTOOLCHAIN": tc.toolchain})
+		r := byName(Check(context.Background(), env), "Go")
+		if r.Status != tc.want {
+			t.Errorf("GOTOOLCHAIN=%s: status %v (%s), want %v", tc.toolchain, r.Status, r.Detail, tc.want)
+		}
+		if tc.want == Fail && (!strings.Contains(r.Fix, "GOTOOLCHAIN=go1.27.0") || !strings.Contains(r.Fix, "go.dev/dl")) {
+			t.Errorf("GOTOOLCHAIN=%s: fix %q", tc.toolchain, r.Fix)
+		}
+		if tc.want == Warn && !strings.Contains(r.Detail, "GOTOOLCHAIN") {
+			t.Errorf("GOTOOLCHAIN=%s: detail %q does not say why it is only a warning", tc.toolchain, r.Detail)
+		}
+	}
+}
+
+var ansiRE = regexp.MustCompile("\x1b\\[[0-9;]*m")
+
+// TestReportLayout: on a color terminal the check names line up whatever the mark, and no line is
+// wider than 120 columns, even a long fix or a long directory.
+func TestReportLayout(t *testing.T) {
+	long := strings.Repeat("a long sentence that runs on ", 12)
+	rs := []Result{
+		{Name: "Go", Status: OK, Detail: "Go 1.27.0"},
+		{Name: "bide", Status: Skip, Detail: "built from source"},
+		{Name: "SQLite", Status: Warn, Detail: long, Fix: long},
+		{Name: "module cache", Status: Fail, Detail: "x", Fix: long},
+		{Name: "Postgres", Status: Skip, Detail: "no DSN"},
+	}
+	for _, on := range []bool{false, true} {
+		var b bytes.Buffer
+		Report(&b, term.New(on), rs)
+		col := -1 // reset per mode
+		for _, l := range strings.Split(strings.TrimRight(ansiRE.ReplaceAllString(b.String(), ""), "\n"), "\n") {
+			if w := utf8.RuneCountInString(l); w > 120 {
+				t.Errorf("color=%v: %d columns: %q", on, w, l)
+			}
+			for _, name := range []string{"Go ", "bide ", "SQLite ", "module cache ", "Postgres "} {
+				if i := strings.Index(l, "  "+name); i >= 0 && !strings.Contains(l, "fix:") {
+					i = utf8.RuneCountInString(l[:i]) // columns, not bytes
+					if col >= 0 && i != col {
+						t.Errorf("color=%v: name %q at column %d, others at %d: %q", on, name, i, col, l)
+					}
+					col = i
+				}
+			}
+		}
 	}
 }
