@@ -63,6 +63,19 @@ problem ("file:from->to: message" for an edge or arm). The check is structural: 
 registered blocks are checked when a program serves the page with its plan.Registry (package
 plan/planview). It is the check bide view -config shows on the graph.
 
+A config's assert lines are checked too, by reachability on the declared graph:
+
+  every path to <node> passes approval >= K [of N]
+  every path to <node> passes <node>
+  every path to a terminal passes <node>
+  no side effect after <node>
+  <node> reachable
+  <node> unreachable
+
+A violated assertion is an error, printed with a shortest counterexample path ("counterexample:
+a -> b -> c"); so is an assertion that is not in this grammar, names an undeclared node, or cannot
+be decided. A file with assertions ends with a line counting their verdicts.
+
 `)
 		fs.PrintDefaults()
 	}

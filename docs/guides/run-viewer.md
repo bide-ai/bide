@@ -299,10 +299,58 @@ The screenshot below is `examples/plan/flows/refund-typo.yaml`, whose last edge 
 
 <img src="./img/run-viewer-config-problem-dark.png" alt="bide view -config on a refund flow whose edge names an undeclared node, marked on the edge">
 
+### Risk map
+
+Each node is colored by what a crash does to it, the property that decides whether a resume is
+safe:
+
+| Color | Class | On a crash mid-node |
+|---|---|---|
+| orange | side effect: must not run twice | the resume halts (`*agent.OutcomeUnknown`) and asks for the outcome |
+| green | read-only: no external effect | the resume re-runs it |
+| blue | idempotent: safe to repeat | the resume re-runs it |
+| dashed | safety unknown | not known |
+
+A node with an approval gate has a purple border and a `gated: 2 of 3` line. Each node's tooltip
+says its class, what a crash does, and, for a side effect, whether every path to it passes an
+approval gate. The Side effects card sums it up: "1 side-effect step, 1 gated, 0 ungated", where a
+gated side effect is one every path from the entry to which passes a gate (its own or an earlier
+node's). From the command line a class is known only where the config states `safety`, since the
+block's registered `Safety` is Go code; the card then says how many nodes are "safety unknown
+without the Registry" and counts only the known side effects. With your Registry (`plan/planview`)
+every class is exact, a config's lowering included.
+
+### Policy assertions
+
+A config's `assert` list (see [Policy assertions](plan-flows.md#policy-assertions) for the grammar)
+is decided on the graph. The Assertions card lists each verdict (holds, violated, undecided or
+invalid), and a violated assertion's counterexample, a shortest path from the entry, is drawn in red
+on the graph. `examples/plan/flows/refund-policy.yaml` routes a large refund through `review`, a 2-of-3
+gate, to `charge`, and all four of its assertions hold:
+
+<img src="./img/run-viewer-config-risk-dark.png" alt="bide view -config on a refund flow: nodes colored by crash behavior, a 2-of-3 gate on review, and four holding assertions">
+
+`refund-policy-bypass.yaml` adds a `vip` arm from `lookup` straight to `charge`. The assertion
+`every path to charge passes approval >= 2 of 3` is violated, and its counterexample,
+`validate -> lookup -> charge`, is drawn in red:
+
+<img src="./img/run-viewer-config-assert-dark.png" alt="bide view -config on the same flow with a vip arm that bypasses the gate: the violated assertion and its counterexample path drawn in red">
+
+`bide check` fails on it and prints it as a line, then counts the verdicts:
+
+```text
+flows/refund-policy-bypass.yaml:charge: assert[0] "every path to charge passes approval >= 2 of 3" is violated: a path reaches "charge" without passing an approval gate of at least 2 of 3 (counterexample: validate -> lookup -> charge)
+flows/refund-policy-bypass.yaml: 4 assertions: 3 hold, 1 violated, 0 undecided or invalid
+```
+
+An undecided assertion (a node of unknown safety after X, in `no side effect after X`), an
+assertion outside the grammar, and one naming an undeclared node are errors as well.
+
 `bide check` (or `bide view -config <file> -check`) prints `file:node: message` for a node's problem, `file:from->to: message` for an
 edge's or an arm's, and `file: message` for the config as a whole, and exits 1 if any is an error
 (0 otherwise; a warning is printed as `warning:` and does not fail the check unless you add
-`-strict`; an unreadable file exits 1, a usage error 2). `bide check` takes several files and
+`-strict`; an unreadable file exits 1, a usage error 2). A violated, undecided or invalid assertion
+is an error. `bide check` takes several files and
 exits 1 if any of them fails.
 
 **Structural, from the command line.** The command cannot import your Go types, blocks or tools,
