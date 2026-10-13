@@ -32,7 +32,7 @@ var reservedPrefixes = []string{
 	"await-resolved:",   // AwaitFor's outcome
 	"timer:",            // Sleep / WaitUntil
 	"interrupt:",        // Interrupt / Resume
-	"chan:",             // Send
+	"chan:",             // Enqueue
 	"chanack:",          // Ack
 	"turn/",             // a session's completed turns
 	"start/",            // a session's started turns
