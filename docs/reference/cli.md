@@ -25,6 +25,7 @@ and `help`, and its import graph is the standard library and the core module (se
 | [`bide init`](#bide-init) | scaffold a project: a gated plan flow on SQLite, with evidence for bide audit |
 | [`bide demo`](#bide-demo) | kill an agent mid-payment and watch it not charge twice (no API key) |
 | [`bide doctor`](#bide-doctor) | check that a first run can work: Go, SQLite, the module cache, model keys, your project |
+| [`bide sample`](#bide-sample) | write a sample journal of varied runs, with evidence and flow configs, and open bide view on it |
 | [`bide view`](#bide-view) | a read-only local page for one run of a journal, or a flow config's graph |
 | [`bide check`](#bide-check) | check plan flow configs, for CI: one file:node: message line per problem |
 | [`bide audit`](#bide-audit) | produce and verify audit proofs offline |
@@ -108,6 +109,52 @@ terminal the output is colored; -color=never, or NO_COLOR set to any value, turn
     	skip the checks that need the network (the latest release)
   -postgres-env string
     	the environment variable holding a Postgres DSN to try; the check runs only if it is set (default "BIDE_POSTGRES_DSN")
+
+Exit status:
+  0  success
+  1  failure: an input cannot be read or the command failed; for check, an error was found
+     (with -strict, any problem)
+  2  usage error: a bad flag or argument; nothing was read
+```
+
+## bide sample
+
+Write a sample journal of varied runs, with evidence and flow configs, and open bide view on it.
+
+```text
+usage: bide sample [-out <dir>] [-no-browser] [-live] [-force]
+
+Writes a sample journal into dir (default: the current directory) and opens bide view on it. No
+API key, no network and no code needed: the runs are produced by the real runtime, driven by a
+scripted model and fake tools. dir holds:
+
+  sample.db             a SQLite journal of 14 runs: refund agent runs (completed, halted with an
+                        unknown outcome, halted and resolved, waiting at a 2-of-3 approval gate,
+                        approved, in progress, aborted, cancelled), plan flow runs, and a run of
+                        durable steps only
+  *.evidence.json       evidence packages for two runs, for bide audit and bide view -evidence
+  log.pub               the public key the evidence is signed with
+  approver-keys.json    the approvers' public keys, for bide view -approver-keys
+  flows/                three flow configs for bide view -config, bide check and bide check -diff
+  README.txt            what is inside, and the commands to try
+
+The runs are the same on every call: the same run IDs, states, start times and records, apart
+from the random salt each record carries (so the digests over the records, and the evidence that
+holds them, differ). The keys come from fixed public seeds: do not use them for anything real. The page is served read-only on
+a loopback address; stop it with Ctrl-C.
+
+  -addr string
+    	loopback address to serve the viewer on (port 0 picks a free one) (default "127.0.0.1:0")
+  -color when
+    	when to color the output: auto (the default: on a terminal, unless NO_COLOR is set or TERM is dumb), always or never
+  -force
+    	replace an existing sample.db
+  -live
+    	also keep one run, refund-live, progressing while you watch: it pauses at its approval gate, gets its two approvals and completes (about 20 seconds)
+  -no-browser
+    	print the viewer's address instead of opening a browser
+  -out string
+    	directory to write the sample into (created if missing) (default ".")
 
 Exit status:
   0  success

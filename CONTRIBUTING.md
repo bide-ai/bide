@@ -163,8 +163,11 @@ tree between releases.
    `scripts/release.sh --assemble-changelog vX.Y.Z <date>` (it adds the `## [X.Y.Z] - <date>`
    section, grouped Added, Changed, Fixed, Removed, Security, moves the `[Unreleased]` compare link,
    adds the `[X.Y.Z]` one, and deletes the fragments), review the result, and add
-   `docs/releases/vX.Y.Z.md`. Merge it and wait for CI on main to pass for that commit. The
-   release script refuses a commit that still has fragments.
+   `docs/releases/vX.Y.Z.md`. The notes become the GitHub Release body, where a relative path
+   does not resolve, so every link and image in them is absolute, an image pinned to the release
+   tag (`https://raw.githubusercontent.com/bide-ai/bide/vX.Y.Z/docs/guides/img/...`); `doccheck`
+   enforces it. Merge it and wait for CI on main to pass for that commit. The release script
+   refuses a commit that still has fragments.
 2. From a clean checkout of main, dry-run the release. Nothing leaves the machine: the script
    works in a scratch clone and pushes to a scratch repository that stands in for GitHub, and the
    go command resolves the bide modules from it.

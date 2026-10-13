@@ -1,0 +1,27 @@
+# yaml-language-server: $schema=https://raw.githubusercontent.com/bide-ai/bide/main/plan/schema/flow.schema.json
+# A refund flow with a vip arm that goes straight to charge, around review's gate. The assertion
+# "every path to charge passes approval >= 2 of 3" is violated, and bide check prints a shortest
+# counterexample path (validate -> lookup -> charge) and exits 1:
+#   bide check flows/refund-bypass.yaml
+version: 1
+flow: refund
+entry: validate
+nodes:
+  - {name: validate, block: validate, safety: readonly}
+  - {name: lookup, block: lookup}
+  - {name: review, block: review, safety: readonly, approval: {need: 2, approvers: [ops, finance, risk]}}
+  - {name: charge, block: charge, safety: side_effect}
+  - {name: credit, block: credit, safety: idempotent}
+  - {name: receipt, block: receipt, safety: idempotent}
+wiring:
+  - edge: [validate, lookup]
+  - switch: lookup
+    when: [{pred: large, to: review}, {pred: vip, to: charge}]
+    else: credit
+  - edge: [review, charge]
+  - edge: [charge, receipt]
+assert:
+  - every path to charge passes approval >= 2 of 3
+  - no side effect after charge
+  - every path to a terminal passes validate
+  - credit reachable

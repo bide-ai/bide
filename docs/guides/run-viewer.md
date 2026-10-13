@@ -28,6 +28,36 @@ bide demo            # -no-browser prints the URL instead; -keep keeps the journ
 
 With `-keep` it keeps its temp directory and prints the `bide view` command that reopens the run.
 
+## Explore a sample journal
+
+To browse many runs at once, with no code and no API key, `bide sample` writes a journal of 14 runs
+and opens this page on it:
+
+```sh
+bide sample                       # writes ./sample.db and its files, then opens bide view on it
+bide sample -out DIR -no-browser  # writes into DIR and prints the viewer's address
+bide sample -live                 # also keeps one run progressing while you watch (live mode)
+```
+
+The runs are produced by the real runtime, on a scripted model and fake tools: refund agent runs
+completed, halted with an unknown outcome, halted and then resolved with `ResolveHalt`, waiting at
+a 2-of-3 approval gate, approved with signatures, in progress, aborted and cancelled; plan flow
+runs completed, waiting at a gated node, approved and halted; and a run made of durable steps only.
+Next to the journal it writes two evidence packages and the keys that verify them, so the audit
+proof and the gate's signatures show as verified on `refund-1041` and `refund-1049`, and three flow
+configs: the refund flow, the same flow with its gate lowered from 2 of 3 to 1 of 3, and one with a
+violated assertion. Its `README.txt` lists the runs and the exact commands to try: `bide view
+-config`, `bide check`, `bide check -diff` and `bide audit verify-evidence` all have something to
+show.
+
+The runs are the same on every call (run IDs, states, start times and records), except for the
+random salt each record carries, so the digests and evidence differ; the keys are fixed public
+sample keys, not for anything real. The viewer is read-only on a loopback address, like `bide view`. With `-live` one more run,
+`refund-live`, goes on while you watch: it pauses at its gate, gets its two approvals and completes,
+and its page updates in place (see [Follow a run in progress](#follow-a-run-in-progress)). It is
+the only run that uses real time. `bide sample` will not replace an existing `sample.db` without
+`-force`.
+
 ## Install
 
 `bide view` is a command of `bide`, whose module (`github.com/bide-ai/bide/cmd/bide`) carries the
@@ -75,7 +105,7 @@ polls (see [Follow a run in progress](#follow-a-run-in-progress)).
 With no `-run`, the page opens on the journal's runs, so you can find the one that halted or is
 waiting without knowing its ID:
 
-![bide view's run list over a journal of ten runs: completed, halted, waiting for approval, in progress, aborted and cancelled agent and flow runs, newest first, with state counts and filters](img/run-viewer-run-list-dark.png)
+![bide view's run list over the sample journal of 14 runs: completed, halted, waiting for approval, in progress, aborted and cancelled agent and flow runs, newest first, with state counts and filters](img/run-viewer-run-list-dark.png)
 
 Each row is a run: its ID (a link to its page), its kind (`agent`, `flow` with the flow's name, or
 `session turn`), its state, when it started, and its record count. The state is the
@@ -106,14 +136,9 @@ admits) and says so when there are more; narrow the run ID filter to reach the o
 journal holds one run, so `-journal` lists as many runs as files it is given, and the page says so
 when it is one.
 
-To make the journal in the screenshot (ten runs, every state, one journaled with no start time, no
-API key), run the test that
-writes it and open it:
-
-```sh
-BIDE_RUNLIST_DEMO=$PWD/runs.db go test ./cmd/bide -run TestRunListDemo
-bide view -db runs.db
-```
+The screenshot is of the journal `bide sample` writes (see
+[Explore a sample journal](#explore-a-sample-journal)); `assets/demo/shots.sh` retakes it, and
+the halted flow, the risk map and the violated assertion below, from `bide sample`.
 
 ## Flags
 

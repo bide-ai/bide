@@ -17,17 +17,18 @@ import (
 
 	"github.com/bide-ai/bide/agent"
 	"github.com/bide-ai/bide/audit"
-	"github.com/bide-ai/bide/internal/runview/runlistdemo"
+	"github.com/bide-ai/bide/internal/sample"
 )
 
 // demoHandler serves the run list over a store holding the demo runs.
-func demoHandler(t *testing.T, prefix string) (h http.Handler, j *agent.Journal, runs []runlistdemo.Run) {
+func demoHandler(t *testing.T, prefix string) (h http.Handler, j *agent.Journal, runs []sample.Run) {
 	t.Helper()
 	s := agent.NewMemStore()
-	runs, err := runlistdemo.Write(context.Background(), s, prefix)
+	res, err := sample.Write(context.Background(), s, prefix)
 	if err != nil {
 		t.Fatal(err)
 	}
+	runs = res.Runs
 	j, err = agent.NewJournal(s)
 	if err != nil {
 		t.Fatal(err)
@@ -74,7 +75,7 @@ func TestRunListStates(t *testing.T) {
 		if r.Group != want.Group || r.Kind != want.Kind {
 			t.Errorf("%s: group %q kind %q, want %q %q", r.ID, r.Group, r.Kind, want.Group, want.Kind)
 		}
-		if tx, ok := text[want.Group]; ok && r.StateText != tx {
+		if tx, ok := text[want.Group]; ok && want.Kind != "steps" && r.StateText != tx {
 			t.Errorf("%s: state text %q, want %q", r.ID, r.StateText, tx)
 		}
 		if r.Records == 0 {
@@ -87,13 +88,20 @@ func TestRunListStates(t *testing.T) {
 			t.Errorf("%s: want state %q, rows %+v", id, state, l.Rows)
 		}
 	}
-	// Every run shows when it started but the one journaled with no start time, which comes last.
+	// Every run shows when it started but the two with no start time (one journaled by an earlier
+	// version, one of durable steps only), which come last.
 	for i, r := range l.Rows {
-		if old := r.ID == "refund-0999"; r.Started.IsZero() != old || old != (i == len(l.Rows)-1) {
+		if none := r.ID == "refund-0999" || r.ID == "reconcile-4001"; r.Started.IsZero() != none || none != (i >= len(l.Rows)-2) {
 			t.Errorf("%s (row %d): started %v", r.ID, i, r.Started)
 		}
 	}
-	want := map[string]int{"completed": 4, "halted": 2, "waiting": 1, "in-progress": 1, "failed": 2}
+	want := map[string]int{}
+	for _, r := range runs {
+		want[r.Group]++
+	}
+	if len(want) != 5 {
+		t.Fatalf("the sample's runs fall in %d state groups, want all 5: %v", len(want), want)
+	}
 	for g, n := range want {
 		if l.Counts[g] != n {
 			t.Errorf("count %s = %d, want %d", g, l.Counts[g], n)
@@ -107,7 +115,7 @@ func TestRunListStates(t *testing.T) {
 // TestRunListFilters: the state, kind and run ID filters, alone and together.
 func TestRunListFilters(t *testing.T) {
 	h, _, runs := demoHandler(t, "")
-	of := func(pred func(runlistdemo.Run) bool) []string {
+	of := func(pred func(sample.Run) bool) []string {
 		var out []string
 		for _, r := range runs {
 			if pred(r) {
@@ -119,14 +127,14 @@ func TestRunListFilters(t *testing.T) {
 	}
 	sorted := func(l RunList) []string { s := ids(l); slices.Sort(s); return s }
 	for _, g := range []string{"completed", "halted", "waiting", "in-progress", "failed"} {
-		if got, want := sorted(listOf(t, h, "?state="+g)), of(func(r runlistdemo.Run) bool { return r.Group == g }); !slices.Equal(got, want) {
+		if got, want := sorted(listOf(t, h, "?state="+g)), of(func(r sample.Run) bool { return r.Group == g }); !slices.Equal(got, want) {
 			t.Errorf("state=%s: %v, want %v", g, got, want)
 		}
 	}
-	if got, want := sorted(listOf(t, h, "?kind=flow")), of(func(r runlistdemo.Run) bool { return r.Kind == "flow" }); !slices.Equal(got, want) || len(got) != 3 {
+	if got, want := sorted(listOf(t, h, "?kind=flow")), of(func(r sample.Run) bool { return r.Kind == "flow" }); !slices.Equal(got, want) || len(got) != 4 {
 		t.Errorf("kind=flow: %v, want %v", got, want)
 	}
-	if got := sorted(listOf(t, h, "?q=REFUND-104")); len(got) != 5 || !slices.Equal(got, of(func(r runlistdemo.Run) bool { return strings.HasPrefix(r.ID, "refund-104") })) {
+	if got := sorted(listOf(t, h, "?q=REFUND-104")); !slices.Equal(got, of(func(r sample.Run) bool { return strings.HasPrefix(r.ID, "refund-104") })) {
 		t.Errorf("q=REFUND-104 (any case): %v", got)
 	}
 	l := listOf(t, h, "?state=halted&kind=flow")
@@ -134,7 +142,7 @@ func TestRunListFilters(t *testing.T) {
 		t.Errorf("halted flows: %v", got)
 	}
 	// The state counts follow the kind filter, not the state filter.
-	if l.Counts["completed"] != 2 || l.Counts["halted"] != 1 || l.All != 3 {
+	if l.Counts["completed"] != 2 || l.Counts["halted"] != 1 || l.Counts["waiting"] != 1 || l.All != 4 {
 		t.Errorf("counts under kind=flow: %v, all %d", l.Counts, l.All)
 	}
 	if got := ids(listOf(t, h, "?q=no-such-run")); len(got) != 0 {
@@ -143,7 +151,7 @@ func TestRunListFilters(t *testing.T) {
 	if code, body := get(t, h, "/?q=no-such-run"); code != 200 || !strings.Contains(body, "No run matches the filter.") {
 		t.Errorf("page for no match = %d", code)
 	}
-	if !slices.Equal(listOf(t, h, "?kind=flow").Kinds, []string{"agent", "flow"}) {
+	if !slices.Equal(listOf(t, h, "?kind=flow").Kinds, []string{"agent", "flow", "steps"}) {
 		t.Error("the kind options narrow to the filter")
 	}
 }

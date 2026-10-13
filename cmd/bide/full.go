@@ -11,6 +11,7 @@ import (
 	"github.com/bide-ai/bide/cmd/bide/internal/demo"
 	"github.com/bide-ai/bide/cmd/bide/internal/doctor"
 	"github.com/bide-ai/bide/cmd/bide/internal/initcmd"
+	"github.com/bide-ai/bide/cmd/bide/internal/samplecmd"
 	"github.com/bide-ai/bide/internal/runview"
 	"github.com/bide-ai/bide/internal/term"
 )
@@ -42,6 +43,12 @@ func fullCommands() []command {
 				return doctor.Main(releaseVersion(), args, stdout, stderr)
 			},
 			exits: commonExits,
+		},
+		{
+			name:    "sample",
+			summary: "write a sample journal of varied runs, with evidence and flow configs, and open bide view on it",
+			run:     samplecmd.Main,
+			exits:   commonExits,
 		},
 		{
 			name:    "view",

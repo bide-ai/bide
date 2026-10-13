@@ -152,7 +152,7 @@ tenants' runs of one name would share that state.
 dev. `store/sqlite.Open(path)` (one machine; three connection pools: a writer, readers, and a lease
 connection) and `store/postgres.Open(ctx, dsn)` (any number of nodes) are the persistent backends;
 each also has `New(ctx, db)` for a `*sql.DB` you opened, and `WithTablePrefix` (tables are
-`bide_steps`, `bide_leases` and `bide_schema_version` by default). All three implement `Lister` and
+`bide_steps`, `bide_leases`, `bide_events` (the durable event trail, see `EventStore` below) and `bide_schema_version` by default). All three implement `Lister` and
 `Leaser`. `store/postgres` sends every write (an insert, each lease call) as one statement that
 Postgres commits before it replies, so no transaction spans two round trips and a process stalled
 between them holds no lock another node waits on. A statement that a deployment whose
@@ -413,8 +413,9 @@ version is for tests and local dev. See the [audit guide](../guides/audit.md).
 type EventStore interface {
 	// Append durably records leaf at position seq (0-based, contiguous) for runID.
 	// Append-only and idempotent on (runID, seq): re-appending the same bytes is a no-op,
-	// a DIFFERENT leaf at an existing seq must error (fork/tamper), and a seq beyond the
-	// next position is a gap and must error.
+	// a DIFFERENT leaf at an existing seq must fail with an error wrapping audit.ErrSeqTaken
+	// (fork/tamper, or a lost race of which exactly one writer wins), and a seq beyond the
+	// next position is a gap and must error without wrapping it.
 	Append(ctx context.Context, runID string, seq int, leaf []byte) error
 	// Load returns every leaf for runID in seq order (0..n-1), or nil if unknown.
 	Load(ctx context.Context, runID string) ([][]byte, error)
@@ -432,6 +433,15 @@ stream, so re-mirroring after a crash appends the same leaves at the same positi
 holds its event's random salt, which a proof discloses from the stored bytes, so store leaves
 verbatim (see [audit](../guides/audit.md#committing-the-event-stream-not-just-the-journal)).
 
-**Reference adapter.** `audit.NewMemEventStore()` is the in-memory implementation; it
+`audit.ErrSeqTaken` is how a store reports a position that holds a different leaf; a caller that
+inserts if absent tells a lost race from a real failure with `errors.Is(err, audit.ErrSeqTaken)`.
+
+**Reference adapters.** `audit.NewMemEventStore()` is the in-memory implementation; it
 enforces the same append-only, idempotent, contiguous contract a real backend would enforce
-with a unique constraint and insert-only permissions.
+with a unique constraint and insert-only permissions. `store/sqlite` and `store/postgres` ship
+durable ones: `(*Store).EventStore()` returns an `audit.EventStore` over the same database and
+connections as the journal, in a `bide_events` table (the table prefix applies) with primary key
+`(run_id, seq)`. `Append` is one insert-if-absent statement, committed before it returns, so
+writers racing for a position, across connections or nodes, have exactly one winner and the
+rest get `ErrSeqTaken` (or a no-op for the same bytes). `audit/eventstoretest.Run` is the
+conformance suite every one of them passes; run it against your own backend.
