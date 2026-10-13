@@ -347,3 +347,19 @@ func TestAssert_SingleApproval(t *testing.T) {
 }
 
 func strconvQuote(s string) string { b, _ := json.Marshal(s); return string(b) }
+
+// TestInspectConfig_ModelSafety: with the Registry a Model node is read-only by default, so a
+// resume re-runs it, and a config's safety: side_effect lowers it to a side effect.
+func TestInspectConfig_ModelSafety(t *testing.T) {
+	reg := NewRegistry()
+	if err := reg.RegisterModel[ticket, review]("assessBlock", "Subject: {{.Subject}}"); err != nil {
+		t.Fatal(err)
+	}
+	cfg := `{"version":1,"flow":"triage","entry":"assess","nodes":[{"name":"assess","block":"assessBlock"SAFETY}],"wiring":[]}`
+	for safety, want := range map[string]NodeSafety{"": SafetyReadOnly, `,"safety":"side_effect"`: SafetySideEffect} {
+		r := InspectConfig([]byte(strings.Replace(cfg, "SAFETY", safety, 1)), reg)
+		if r.Safety["assess"] != want || r.Safety["assess"].RerunsOnCrash() != (want == SafetyReadOnly) {
+			t.Errorf("safety %q: %q, want %q (problems %+v)", safety, r.Safety["assess"], want, r.Problems)
+		}
+	}
+}

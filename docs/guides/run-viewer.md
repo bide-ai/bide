@@ -279,7 +279,7 @@ gated side effect is one every path from the entry to which passes a gate (its o
 node's). From the command line a class is known only where the config states `safety`, since the
 block's registered `Safety` is Go code; the card then says how many nodes are "safety unknown
 without the Registry" and counts only the known side effects. With your Registry (`plan/planview`)
-every class is exact, a config's lowering included.
+every class is exact, a config's lowering included: a Model node, for example, is read-only unless its config says `safety: side_effect`.
 
 ### Policy assertions
 
