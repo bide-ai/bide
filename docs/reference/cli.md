@@ -66,7 +66,7 @@ Usage of bide demo:
   -color when
     	when to color the output: auto (the default: on a terminal, unless NO_COLOR is set or TERM is dumb), always or never
   -fast
-    	no pauses between steps (for CI)
+    	no pauses between steps, and exit 0 when the demo is done instead of serving the viewer (for CI; with -keep, bide view reopens the run)
   -keep
     	keep the demo's directory (the journal, evidence and keys) and print it
   -no-browser
@@ -89,7 +89,8 @@ usage: bide doctor [-dir <project>] [-offline] [-postgres-env <var>]
 Checks that a first run of bide can work, and prints one line per check with a hint to fix a
 failure:
 
-  Go            the toolchain is installed and is Go 1.27 or later
+  Go            the toolchain is installed and is Go 1.27 or later (older is a warning where
+                GOTOOLCHAIN=auto lets go fetch 1.27 itself, and a failure where it does not)
   bide          this bide against the latest release (skipped offline or on a build from source)
   SQLite        a journal can be created and written in a temporary directory
   Postgres      with the variable named by -postgres-env set, its DSN connects (the value is never printed)

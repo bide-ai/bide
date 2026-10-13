@@ -23,7 +23,7 @@ evidence package and the approvers' keys, so the audit proof and the gate's sign
 verified:
 
 ```sh
-bide demo            # -no-browser prints the URL instead; -keep keeps the journal
+bide demo            # -no-browser prints the URL instead; -keep keeps the journal; -fast exits when done (CI)
 ```
 
 With `-keep` it keeps its temp directory and prints the `bide view` command that reopens the run.

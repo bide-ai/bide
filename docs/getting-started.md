@@ -14,7 +14,7 @@ bide demo
 
 With Go installed you can skip the install: `go run github.com/bide-ai/bide/cmd/bide@latest demo`.
 
-No API key, no clone, no setup. It runs a payment agent in a child process, kills the process after the charge reaches a fake payment provider but before bide journals the result, and restarts the run: bide halts with "outcome unknown" instead of charging again. The demo then confirms the charge with the provider, records it (`agent.ResolveHalt`), finishes the run, verifies the signed audit trail and the 2-of-3 approval signatures, and opens the run in the [run viewer](guides/run-viewer.md). Pass `-no-browser` to print the viewer's address instead.
+No API key, no clone, no setup. It runs a payment agent in a child process, kills the process after the charge reaches a fake payment provider but before bide journals the result, and restarts the run: bide halts with "outcome unknown" instead of charging again. The demo then confirms the charge with the provider, records it (`agent.ResolveHalt`), finishes the run, verifies the signed audit trail and the 2-of-3 approval signatures, and opens the run in the [run viewer](guides/run-viewer.md). Pass `-no-browser` to print the viewer's address instead; the demo then serves until you press Ctrl-C. Pass `-fast` in CI: it drops the pauses and exits 0 when the demo is done, without serving or opening a browser (add `-keep` to keep the journal and print the `bide view` command that reopens the run).
 
 ## Explore a sample journal
 
