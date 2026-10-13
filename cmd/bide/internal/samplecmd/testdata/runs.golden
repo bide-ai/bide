@@ -1,0 +1,14 @@
+triage-3004	kind=flow	state=waiting	group=waiting	records=11
+triage-3003	kind=flow	state=halted	group=halted	records=15
+triage-3002	kind=flow	state=completed	group=completed	records=18
+triage-3001	kind=flow	state=completed	group=completed	records=10
+ship-2001	kind=agent	state=aborted	group=failed	records=10
+refund-1045	kind=agent	state=cancelled	group=failed	records=7
+refund-1044	kind=agent	state=started	group=in-progress	records=3
+refund-1049	kind=agent	state=completed	group=completed	records=13
+refund-1043	kind=agent	state=waiting	group=waiting	records=7
+refund-1048	kind=agent	state=completed	group=completed	records=10
+refund-1042	kind=agent	state=halted	group=halted	records=6
+refund-1041	kind=agent	state=completed	group=completed	records=9
+reconcile-4001	kind=	state=not_started	group=not-started	records=6
+refund-0999	kind=agent	state=completed	group=completed	records=9

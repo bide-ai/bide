@@ -3,6 +3,7 @@
 //	bide init refund               scaffold a project: a gated plan flow, ready for go run .
 //	bide demo                      kill an agent mid-payment and watch it not charge twice
 //	bide doctor                    check that a first run can work, with a fix for each failure
+//	bide sample                    write a sample journal (14 runs, evidence, flow configs) and open bide view on it
 //	bide view -db run.db           a read-only local page for one run of a journal
 //	bide check flow.yaml           check a plan flow config, for CI
 //	bide audit verify-evidence ... produce and verify audit proofs offline
