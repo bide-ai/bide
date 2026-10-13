@@ -1,3 +1,4 @@
+# yaml-language-server: $schema=https://raw.githubusercontent.com/bide-ai/bide/main/plan/schema/flow.schema.json
 # The refund flow after a change: small refunds go to a review step instead of being skipped, and a
 # large refund needs two of its three approvers instead of one. Compare it with refund-v1.yaml:
 # bide check flows/refund-v2.yaml -diff flows/refund-v1.yaml

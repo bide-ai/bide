@@ -1,3 +1,4 @@
+# yaml-language-server: $schema=https://raw.githubusercontent.com/bide-ai/bide/main/plan/schema/flow.schema.json
 # The refund flow before a change: bide check flows/refund-v2.yaml -diff flows/refund-v1.yaml
 # compares the two (see docs/guides/run-viewer.md, "Compare two versions of a flow").
 version: 1

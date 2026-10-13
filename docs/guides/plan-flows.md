@@ -552,6 +552,54 @@ it never passes wrongly), and `no side effect after X` with a node of unknown sa
 known side effect) is undecided, which is also an error. An assertion outside the grammar, or one
 that names a node the config does not declare, is an error too.
 
+#### Editor support: a JSON Schema for flow configs
+
+A JSON Schema (Draft 2020-12) describes the config, so an editor can complete keys, show each key's
+description on hover and flag a misspelled key, a wrong `safety` value, an element that is not exactly one
+of edge, switch or join, and an `assert` line outside the grammar as you type. It lives at
+[`plan/schema/flow.schema.json`](https://github.com/bide-ai/bide/blob/main/plan/schema/flow.schema.json)
+and its `$id` is the raw URL
+`https://raw.githubusercontent.com/bide-ai/bide/main/plan/schema/flow.schema.json`. Replace `main` with a
+release tag to pin the schema to a version.
+
+The schema checks the shape of the file. Whether a block, predicate or node name exists, the types, and
+whether an assertion holds are still decided by `Load`, `bide check` and `bide view -config`.
+
+**YAML (VS Code with the Red Hat YAML extension, and other editors that run `yaml-language-server`).** Put
+this comment on the first line of the config:
+
+```yaml
+# yaml-language-server: $schema=https://raw.githubusercontent.com/bide-ai/bide/main/plan/schema/flow.schema.json
+version: 1
+```
+
+To cover every config in a project without touching each file, map the schema to file patterns in
+`.vscode/settings.json`:
+
+```json
+{
+  "yaml.schemas": {
+    "https://raw.githubusercontent.com/bide-ai/bide/main/plan/schema/flow.schema.json": [
+      "flow.yaml",
+      "flows/*.yaml"
+    ]
+  }
+}
+```
+
+A JSON config cannot carry a `"$schema"` key (it is not a config key, and `Load` refuses it), so map JSON
+files with the `json.schemas` setting (the same URL and `fileMatch` patterns) instead.
+
+**JetBrains IDEs** do not read the comment. Open Settings, Languages & Frameworks, Schemas and DTDs, JSON
+Schema Mappings, add the schema by URL (or the local `flow.schema.json`) and map it to your config files.
+
+A YAML plain scalar cannot start with a double quote, so an assertion that quotes a node name with a space
+in it is written as a single-quoted string: `'"send receipt" reachable'`.
+
+The schema is kept in step with the code by a test (`plan/schema_test.go`): every key `Load` decodes is in
+the schema and no other is, its enums and assertion patterns are the code's own, and every config in
+`examples/plan/flows` is valid under it.
+
 ### Load-time validation
 
 To see a config's graph and its problems before loading it, run `bide view -config flow.yaml`

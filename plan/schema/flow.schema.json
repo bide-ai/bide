@@ -1,0 +1,246 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://raw.githubusercontent.com/bide-ai/bide/main/plan/schema/flow.schema.json",
+  "title": "bide flow config",
+  "description": "A bide plan flow declared as data (YAML or JSON), read by plan.Load, bide check and bide view -config. Every key is snake_case. Block, predicate and merge names refer to Go code registered in a plan.Registry.",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["version", "nodes"],
+  "properties": {
+    "version": {
+      "const": 1,
+      "description": "Config format version. Required; this release reads only 1."
+    },
+    "flow": {
+      "type": "string",
+      "description": "The flow's label, used in diagrams, conformance and the topology digest."
+    },
+    "in": {
+      "type": "string",
+      "description": "Optional input type name, documentation only. Load cross-checks it against the Go In type."
+    },
+    "out": {
+      "type": "string",
+      "description": "Optional output type name, documentation only. Load cross-checks it against the Go Out type."
+    },
+    "entry": {
+      "type": "string",
+      "minLength": 1,
+      "description": "Name of the entry node. When omitted, the first node in nodes is the entry."
+    },
+    "nodes": {
+      "type": "array",
+      "description": "The steps, in order. The order is part of the topology digest.",
+      "items": { "$ref": "#/$defs/node" }
+    },
+    "wiring": {
+      "type": "array",
+      "description": "Ordered edges, switches and joins. Each element sets exactly one of edge, switch or join.",
+      "items": { "$ref": "#/$defs/wire" }
+    },
+    "assert": {
+      "type": "array",
+      "description": "Policy assertions about the graph, one per line. Checked by bide check and bide view -config; plan.Load ignores them and they are not part of the digest.",
+      "items": { "$ref": "#/$defs/assertion" },
+      "examples": [
+        [
+          "every path to charge passes approval >= 2 of 3",
+          "no side effect after charge",
+          "every path to a terminal passes validate",
+          "credit reachable"
+        ]
+      ]
+    }
+  },
+  "$defs": {
+    "safety": {
+      "enum": ["readonly", "idempotent", "side_effect"],
+      "description": "Retry-on-resume class. readonly and idempotent re-run after a crash; side_effect halts and asks for the outcome. A config may keep or lower the level the Go registration declares, never raise it."
+    },
+    "approval": {
+      "type": "object",
+      "description": "An m-of-n human approval gate: the run pauses before the node until need of the approvers have signed.",
+      "additionalProperties": false,
+      "required": ["need", "approvers"],
+      "properties": {
+        "need": {
+          "type": "integer",
+          "minimum": 1,
+          "description": "How many approvals are required, between 1 and the number of approvers."
+        },
+        "approvers": {
+          "type": "array",
+          "minItems": 1,
+          "uniqueItems": true,
+          "items": { "type": "string", "minLength": 1 },
+          "description": "The bounded set of approver ids (printable ASCII, distinct ignoring case)."
+        }
+      }
+    },
+    "node": {
+      "type": "object",
+      "description": "One step: its journal name and the registered block it runs.",
+      "additionalProperties": false,
+      "required": ["name", "block"],
+      "properties": {
+        "name": {
+          "type": "string",
+          "minLength": 1,
+          "description": "The node's name in the journal and in wiring."
+        },
+        "block": {
+          "type": "string",
+          "minLength": 1,
+          "description": "The name of the block registered in the plan.Registry."
+        },
+        "safety": {
+          "$ref": "#/$defs/safety",
+          "description": "Lower the retry class of this node. Omitted keeps what the block's Go registration declares."
+        },
+        "approval": {
+          "$ref": "#/$defs/approval",
+          "description": "Gate this node behind an m-of-n approval. Omitted keeps the gate the block declares, if any."
+        }
+      }
+    },
+    "arm": {
+      "type": "object",
+      "description": "One arm of a switch: the predicate and the node it routes to.",
+      "additionalProperties": false,
+      "required": ["pred", "to"],
+      "properties": {
+        "pred": {
+          "type": "string",
+          "minLength": 1,
+          "description": "The registered predicate name. Its input type must equal the switched node's output type."
+        },
+        "to": {
+          "type": "string",
+          "minLength": 1,
+          "description": "The node this arm routes to."
+        },
+        "loop_max": {
+          "type": "integer",
+          "minimum": 0,
+          "description": "When above 0, makes this arm a bounded loop-back to an earlier node (an ancestor of the switch): it runs again while pred holds, up to loop_max iterations. 0 or omitted is an ordinary forward arm."
+        }
+      }
+    },
+    "wire": {
+      "description": "One wiring element: an edge, a switch or a join.",
+      "oneOf": [
+        {
+          "title": "edge",
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["edge"],
+          "properties": {
+            "edge": {
+              "type": "array",
+              "minItems": 2,
+              "maxItems": 2,
+              "items": { "type": "string", "minLength": 1 },
+              "description": "[from, to]: the output of from feeds to."
+            }
+          }
+        },
+        {
+          "title": "switch",
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["switch"],
+          "properties": {
+            "switch": {
+              "type": "string",
+              "minLength": 1,
+              "description": "The node whose output is switched over. It routes only through its arms."
+            },
+            "when": {
+              "type": "array",
+              "description": "Predicate arms, tried in order.",
+              "items": { "$ref": "#/$defs/arm" }
+            },
+            "else": {
+              "type": "string",
+              "minLength": 1,
+              "description": "The fallback node when no arm matches. Omitted means no else arm."
+            }
+          }
+        },
+        {
+          "title": "join",
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["join", "inputs", "merge"],
+          "properties": {
+            "join": {
+              "type": "string",
+              "minLength": 1,
+              "description": "The fan-in node's name. It must not be a declared node; the join creates it."
+            },
+            "inputs": {
+              "type": "array",
+              "minItems": 1,
+              "items": { "type": "string", "minLength": 1 },
+              "description": "The upstream nodes, one per merge-block parameter, in order."
+            },
+            "merge": {
+              "type": "string",
+              "minLength": 1,
+              "description": "The merge block registered with RegisterJoin2 or RegisterJoin3."
+            },
+            "safety": {
+              "$ref": "#/$defs/safety",
+              "description": "Lower the join node's retry class. Without it, the merge block's registered options apply (none: a side effect)."
+            },
+            "approval": {
+              "$ref": "#/$defs/approval",
+              "description": "Gate the join node behind an m-of-n approval."
+            }
+          }
+        }
+      ]
+    },
+    "assertion": {
+      "type": "string",
+      "description": "A policy assertion. A node is named bare (no spaces) or in double quotes.",
+      "anyOf": [
+        {
+          "title": "approval gate on every path",
+          "pattern": "^\\s*every\\s+path\\s+to\\s+(\\S+|\"[^\"]*\")\\s+passes\\s+approval\\s+>=\\s+(\\d+)(?:\\s+of\\s+(\\d+))?\\s*$",
+          "description": "every path to <node> passes approval >= K [of N]"
+        },
+        {
+          "title": "every path to a terminal passes a node",
+          "pattern": "^\\s*every\\s+path\\s+to\\s+a\\s+terminal\\s+passes\\s+(\\S+|\"[^\"]*\")\\s*$",
+          "description": "every path to a terminal passes <node>"
+        },
+        {
+          "title": "every path to a node passes a node",
+          "pattern": "^\\s*every\\s+path\\s+to\\s+(\\S+|\"[^\"]*\")\\s+passes\\s+(\\S+|\"[^\"]*\")\\s*$",
+          "description": "every path to <node> passes <node>"
+        },
+        {
+          "title": "no side effect after a node",
+          "pattern": "^\\s*no\\s+side\\s+effect\\s+after\\s+(\\S+|\"[^\"]*\")\\s*$",
+          "description": "no side effect after <node>"
+        },
+        {
+          "title": "reachability",
+          "pattern": "^\\s*(\\S+|\"[^\"]*\")\\s+(reachable|unreachable)\\s*$",
+          "description": "<node> reachable | <node> unreachable"
+        }
+      ],
+      "examples": [
+        "every path to charge passes approval >= 2 of 3",
+        "every path to charge passes approval >= 1",
+        "every path to charge passes validate",
+        "every path to a terminal passes validate",
+        "no side effect after charge",
+        "credit reachable",
+        "legacy_path unreachable",
+        "\"send receipt\" reachable"
+      ]
+    }
+  }
+}
