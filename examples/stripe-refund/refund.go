@@ -8,7 +8,6 @@ import (
 	"errors"
 	"fmt"
 	"os"
-	"strings"
 	"time"
 
 	"github.com/bide-ai/bide/agent"
@@ -126,7 +125,7 @@ func (m model) Stream(_ context.Context, req agent.Request) (*agent.Stream, erro
 		case done:
 			var r refundResult
 			_ = json.Unmarshal(ref.Result, &r)
-			say(fmt.Sprintf("Receipt: refunded %d %s (minor units) on %s as %s (%s).", r.Amount, r.Currency, l.PaymentIntent, r.Refund, r.Status))
+			say(fmt.Sprintf("Receipt: refunded %d %s on %s as %s (%s).", r.Amount, r.Currency, l.PaymentIntent, r.Refund, r.Status))
 		case amount <= 0 || amount > l.Refundable:
 			say(fmt.Sprintf("No refund: %d requested, %d refundable on %s.", amount, l.Refundable, l.PaymentIntent))
 		default:
@@ -313,6 +312,8 @@ func approve(ctx context.Context, j *agent.Journal, runID, as string) error {
 		}
 		return err
 	}
-	say("recorded: %s approved %s %s", as, call.Name, strings.TrimSpace(string(call.Args)))
+	var args refundArgs
+	_ = json.Unmarshal(call.Args, &args)
+	say("recorded: %s approved %s (amount %d)", as, call.Name, args.Amount)
 	return nil
 }

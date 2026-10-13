@@ -43,7 +43,7 @@ func drive(ctx context.Context, j *agent.Journal, api *stripe, cfg config) error
 		}
 		res, err := ag.Run(ctx, cfg.runID, agent.UserText("Refund "+cfg.paymentIntent+"."))
 		if halt, ok := errors.AsType[*agent.OutcomeUnknown](err); ok {
-			say("status: halted. %s %s (%s) was attempted and its result was never journaled: the outcome is unknown, so it is not sent again.", halt.Op.Kind, halt.Op.ID, halt.Op.ToolName)
+			say("status: halted. %s was attempted, its result never journaled: the outcome is unknown, so it is not sent again.", halt.Op.ID)
 			if !cfg.reconcile {
 				say("not reconciling (-reconcile=false). Run again with reconciliation on, or resolve it by hand.")
 				return nil
