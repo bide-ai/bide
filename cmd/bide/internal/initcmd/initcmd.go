@@ -58,8 +58,9 @@ flow.yaml, README.md, .gitignore and go.mod. Then: cd <dir> && go mod tidy && go
 		}
 		return 2
 	}
+	es := term.For(stderr, *color) // error lines on stderr
 	if fs.NArg() != 1 {
-		fmt.Fprintln(stderr, "bide init: give exactly one directory")
+		fmt.Fprintln(stderr, es.ErrorPrefix()+"bide init: give exactly one directory")
 		fs.Usage()
 		return 2
 	}
@@ -68,22 +69,22 @@ flow.yaml, README.md, .gitignore and go.mod. Then: cd <dir> && go mod tidy && go
 	if name == "" {
 		abs, err := filepath.Abs(dir)
 		if err != nil {
-			fmt.Fprintln(stderr, "bide init:", err)
+			fmt.Fprintln(stderr, es.ErrorPrefix()+"bide init:", err)
 			return 1
 		}
 		name = filepath.Base(abs)
 	}
 	if !modName.MatchString(name) {
-		fmt.Fprintf(stderr, "bide init: %q is not a module path; name one with -module\n", name)
+		fmt.Fprintf(stderr, "%sbide init: %s\n", es.ErrorPrefix(), es.Hint(fmt.Sprintf("%q is not a module path; name one with -module", name), "; "))
 		return 2
 	}
 	gomod, err := goMod(name, version, *dev)
 	if err != nil {
-		fmt.Fprintln(stderr, "bide init:", err)
+		fmt.Fprintln(stderr, es.ErrorPrefix()+"bide init:", es.Hint(err.Error(), "; "))
 		return 2
 	}
 	if err := write(dir, name, gomod); err != nil {
-		fmt.Fprintln(stderr, "bide init:", err)
+		fmt.Fprintln(stderr, es.ErrorPrefix()+"bide init:", err)
 		return 1
 	}
 	st := term.For(stdout, *color)

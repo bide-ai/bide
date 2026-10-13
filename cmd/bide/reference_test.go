@@ -10,6 +10,7 @@ import (
 	"testing"
 
 	"github.com/bide-ai/bide/internal/auditcli"
+	"github.com/bide-ai/bide/internal/term"
 )
 
 var update = flag.Bool("update", false, "rewrite docs/reference/cli.md from the commands' flag sets")
@@ -72,12 +73,12 @@ and ` + "`help`" + `, and its import graph is the standard library and the core 
 		fmt.Fprintf(&b, "| [`bide %s`](#bide-%s) | %s |\n", c.name, c.name, c.summary)
 	}
 	for _, c := range commands {
-		fmt.Fprintf(&b, "\n## bide %s\n\n%s.\n\n```text\n%s```\n", c.name, capitalize(c.summary), commandHelp(c, nil))
+		fmt.Fprintf(&b, "\n## bide %s\n\n%s.\n\n```text\n%s```\n", c.name, capitalize(c.summary), commandHelp(c, nil, term.New(false)))
 		if c.name != "audit" {
 			continue
 		}
 		for _, v := range auditcli.Verbs() {
-			fmt.Fprintf(&b, "\n### bide audit %s\n\n```text\n%s```\n", v, commandHelp(c, []string{v}))
+			fmt.Fprintf(&b, "\n### bide audit %s\n\n```text\n%s```\n", v, commandHelp(c, []string{v}, term.New(false)))
 		}
 	}
 	return b.String()

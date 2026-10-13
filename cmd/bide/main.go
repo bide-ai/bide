@@ -28,6 +28,7 @@ import (
 	"strings"
 
 	"github.com/bide-ai/bide/internal/auditcli"
+	"github.com/bide-ai/bide/internal/term"
 )
 
 // version is the release version, set by a release build with -ldflags "-X main.version=v1.2.3".
@@ -107,7 +108,7 @@ func run(args []string, stdout, stderr io.Writer) int {
 	}
 	c, ok := find(name)
 	if !ok {
-		fmt.Fprintf(stderr, "bide: unknown command %q\n\n", name)
+		fmt.Fprintf(stderr, "%sbide: unknown command %q\n\n", term.For(stderr, term.Auto).ErrorPrefix(), name)
 		usage(stderr)
 		return 2
 	}
@@ -128,13 +129,15 @@ func find(name string) (command, bool) {
 	return command{}, false
 }
 
-// usage prints the command list.
+// usage prints the command list: on a terminal the headings and command names are bold and the
+// summaries dim. A command's own -h text (flag package output) stays plain.
 func usage(w io.Writer) {
-	fmt.Fprintln(w, "bide: durable, provable agents. Usage:\n\n  bide <command> [flags]\n\nCommands:")
+	st := term.For(w, term.Auto)
+	fmt.Fprintf(w, "bide: durable, provable agents. %s\n\n  bide <command> [flags]\n\n%s\n", st.Heading("Usage:"), st.Heading("Commands:"))
 	for _, c := range commands {
-		fmt.Fprintf(w, "  %-8s %s\n", c.name, c.summary)
+		fmt.Fprintf(w, "  %s%s %s\n", st.Bold(c.name), strings.Repeat(" ", max(0, 8-len(c.name))), st.Dim(c.summary))
 	}
-	fmt.Fprintln(w, "\nRun bide help <command> for a command's flags and exit statuses.")
+	fmt.Fprintf(w, "\nRun %s for a command's flags and exit statuses.\n", st.Bold("bide help <command>"))
 }
 
 // help prints help for the command (and, for audit, the verb) args name, or the command list, and
@@ -146,22 +149,23 @@ func help(args []string, stdout, stderr io.Writer) int {
 	}
 	c, ok := find(args[0])
 	if !ok || len(args) > 2 || (len(args) == 2 && c.name != "audit") {
-		fmt.Fprintf(stderr, "bide help: unknown command %q\n\n", strings.Join(args, " "))
+		fmt.Fprintf(stderr, "%sbide help: unknown command %q\n\n", term.For(stderr, term.Auto).ErrorPrefix(), strings.Join(args, " "))
 		usage(stderr)
 		return 2
 	}
-	fmt.Fprint(stdout, commandHelp(c, args[1:]))
+	fmt.Fprint(stdout, commandHelp(c, args[1:], term.For(stdout, term.Auto)))
 	return 0
 }
 
 // commandHelp is the help text of c (with verb, of one audit verb): the command's own -h output
 // and its exit statuses. Each command prints its usage and flags (FlagSet.PrintDefaults) for -h,
-// so this is generated from the flag sets the command parses.
-func commandHelp(c command, verb []string) string {
+// so this is generated from the flag sets the command parses. Only the "Exit status:" heading is
+// styled (by st); the flag package's text stays plain.
+func commandHelp(c command, verb []string, st term.Style) string {
 	var out strings.Builder
 	_ = c.run(append(verb, "-h"), &out, &out) // -h exits 0 or 2 by the command's own rules; help is 0
 	if len(verb) == 0 {
-		fmt.Fprintf(&out, "\nExit status:\n%s\n", indent(c.exits))
+		fmt.Fprintf(&out, "\n%s\n%s\n", st.Heading("Exit status:"), indent(c.exits))
 	}
 	return out.String()
 }
@@ -172,10 +176,11 @@ func runVersion(args []string, stdout, stderr io.Writer) int {
 	fs := flag.NewFlagSet("bide version", flag.ContinueOnError)
 	fs.SetOutput(stderr)
 	fs.Usage = func() {
-		fmt.Fprintln(fs.Output(), "usage: bide version [-json]")
+		fmt.Fprintln(fs.Output(), "usage: bide version [-json] [-color auto|always|never]")
 		fs.PrintDefaults()
 	}
 	asJSON := fs.Bool("json", false, "print the version and the artifact formats as JSON")
+	color := term.Flag(fs)
 	if err := fs.Parse(args); err != nil {
 		if errors.Is(err, flag.ErrHelp) {
 			return 0
@@ -183,11 +188,11 @@ func runVersion(args []string, stdout, stderr io.Writer) int {
 		return 2
 	}
 	if fs.NArg() > 0 {
-		fmt.Fprintf(stderr, "bide version: unexpected argument %q\n", fs.Arg(0))
+		fmt.Fprintf(stderr, "%sbide version: unexpected argument %q\n", term.For(stderr, term.Auto).ErrorPrefix(), fs.Arg(0))
 		fs.Usage()
 		return 2
 	}
-	a := []string{"-version"}
+	a := []string{"-version", "-color", color.String()}
 	if *asJSON {
 		a = append(a, "-json")
 	}

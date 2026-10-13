@@ -119,7 +119,7 @@ NO_COLOR set to any value, turns color off; -color=always keeps it on.
 		return 2
 	}
 	usage := func(msg string) int {
-		fmt.Fprintln(stderr, "bide check:", msg)
+		fmt.Fprintln(stderr, term.For(stderr, *color).ErrorPrefix()+"bide check:", msg)
 		fs.Usage()
 		return 2
 	}

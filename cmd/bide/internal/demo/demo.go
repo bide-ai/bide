@@ -128,7 +128,7 @@ func Main(args, self []string, stdout, stderr io.Writer) int {
 		return 2
 	}
 	if fs.NArg() > 0 {
-		fmt.Fprintf(stderr, "bide demo: unexpected argument %q\n", fs.Arg(0))
+		fmt.Fprintf(stderr, "%sbide demo: unexpected argument %q\n", term.For(stderr, *f.color).ErrorPrefix(), fs.Arg(0))
 		fs.Usage()
 		return 2
 	}

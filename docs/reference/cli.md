@@ -632,7 +632,9 @@ Usage of bide audit verify-run:
 Print the version and the artifact formats bide audit reads (-json for JSON).
 
 ```text
-usage: bide version [-json]
+usage: bide version [-json] [-color auto|always|never]
+  -color when
+    	when to color the output: auto (the default: on a terminal, unless NO_COLOR is set or TERM is dumb), always or never
   -json
     	print the version and the artifact formats as JSON
 

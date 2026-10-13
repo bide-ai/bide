@@ -106,6 +106,14 @@ type cli struct {
 	approverNote   bool            // a styled line dropped approverNote, which the banner says once
 }
 
+// errStyle is the style of an error line on stderr: off under -json, as the report is.
+func (c *cli) errStyle() term.Style {
+	if c.json {
+		return term.New(false)
+	}
+	return term.For(c.stderr, c.color)
+}
+
 func (c *cli) printf(format string, args ...any) { c.write(fmt.Sprintf(format, args...)) }
 func (c *cli) println(args ...any)               { c.write(fmt.Sprintln(args...)) }
 
@@ -139,7 +147,7 @@ func (c *cli) failLine(line string) {
 // usageError prints msg (if any) and the usage text, and unwinds the verb with a usage error.
 func (c *cli) usageError(msg string) {
 	if msg != "" {
-		fmt.Fprintln(c.stderr, msg)
+		fmt.Fprintln(c.stderr, c.errStyle().ErrorPrefix()+msg)
 	}
 	fmt.Fprint(c.stderr, usageText)
 	c.errs = append(c.errs, &cliError{class: errUsage, err: errors.New("usage error"), shown: true})
@@ -243,10 +251,10 @@ func run(args []string, stdout, stderr io.Writer) int {
 	}
 	if *showVersion {
 		if top.NArg() > 0 {
-			fmt.Fprintf(stderr, "bide audit: -version takes no verb or argument, got %q\n", top.Arg(0))
+			fmt.Fprintf(stderr, "%sbide audit: -version takes no verb or argument, got %q\n", c.errStyle().ErrorPrefix(), top.Arg(0))
 			return exitFor(errUsage)
 		}
-		printVersion(stdout, c.json)
+		printVersion(stdout, c.json, term.For(stdout, c.color))
 		return exitVerified
 	}
 	if top.NArg() == 0 {
@@ -256,17 +264,14 @@ func run(args []string, stdout, stderr io.Writer) int {
 	c.verb = top.Arg(0)
 	verb, ok := verbs[c.verb]
 	if !ok {
-		fmt.Fprintf(stderr, "bide audit: unknown verb %q\n", c.verb)
+		fmt.Fprintf(stderr, "%sbide audit: unknown verb %q\n", c.errStyle().ErrorPrefix(), c.verb)
 		fmt.Fprint(stderr, usageText)
 		return exitFor(errUsage)
 	}
 	err := c.call(func(a []string) { verb(c, a) }, top.Args()[1:])
 	code := exitFor(err)
 	var msgs []string
-	errLabel := "error:"
-	if !c.json {
-		errLabel = term.For(stderr, c.color).Fail(errLabel)
-	}
+	errLabel := c.errStyle().BoldFail("error:")
 	for _, e := range c.errs {
 		msgs = append(msgs, e.Error())
 		var ce *cliError
@@ -378,7 +383,7 @@ var readFormats = []artifactFormat{
 	{"journal export", audit.JournalExportFormat, "prove, prove-absent"},
 }
 
-func printVersion(w io.Writer, asJSON bool) {
+func printVersion(w io.Writer, asJSON bool, st term.Style) {
 	if asJSON {
 		b, err := json.MarshalIndent(struct {
 			Tool    string           `json:"tool"`
@@ -392,8 +397,8 @@ func printVersion(w io.Writer, asJSON bool) {
 		fmt.Fprintln(w, string(b))
 		return
 	}
-	fmt.Fprintf(w, "bide %s (%s)\nartifact formats read:\n", toolVersion(), runtime.Version())
+	fmt.Fprintf(w, "%s %s %s\n%s\n", st.Bold("bide"), st.Heading(toolVersion()), st.Dim("("+runtime.Version()+")"), st.Heading("artifact formats read:"))
 	for _, f := range readFormats {
-		fmt.Fprintf(w, "  %-17s %s  (%s)\n", f.Artifact+":", f.Format, f.Verbs)
+		fmt.Fprintf(w, "  %-17s %s  %s\n", f.Artifact+":", f.Format, st.Dim("("+f.Verbs+")"))
 	}
 }

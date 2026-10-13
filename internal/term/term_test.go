@@ -149,3 +149,23 @@ func TestStyle(t *testing.T) {
 		t.Error("a colored mark lost its symbol")
 	}
 }
+
+func TestErrorPrefixAndHint(t *testing.T) {
+	on, off := New(true), New(false)
+	if got := on.ErrorPrefix(); got != "\x1b[1;31merror:\x1b[0m " {
+		t.Errorf("ErrorPrefix on = %q", got)
+	}
+	if got := off.ErrorPrefix(); got != "" {
+		t.Errorf("ErrorPrefix off = %q", got)
+	}
+	msg := "not a module path; name one with -module"
+	if got := on.Hint(msg, "; "); got != "not a module path; \x1b[2mname one with -module\x1b[0m" {
+		t.Errorf("Hint on = %q", got)
+	}
+	if got := off.Hint(msg, "; "); got != msg {
+		t.Errorf("Hint off = %q", got)
+	}
+	if got := on.Hint("no hint here", "; "); got != "no hint here" {
+		t.Errorf("Hint without sep = %q", got)
+	}
+}
