@@ -91,6 +91,7 @@ export default defineConfig({
         items: [
           { text: 'Audit', link: '/guides/audit' },
           { text: 'Human approval (HITL)', link: '/guides/hitl-approval' },
+          { text: 'Notifications', link: '/guides/notifications' },
           { text: 'Security model', link: '/guides/security-model' },
           { text: 'Delegation', link: '/guides/delegation' },
           { text: 'Governance', link: '/guides/governance' },
