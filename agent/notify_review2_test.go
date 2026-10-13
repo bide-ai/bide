@@ -7,7 +7,6 @@ import (
 	"context"
 	"errors"
 	"sync"
-	"sync/atomic"
 	"testing"
 	"time"
 )
@@ -116,60 +115,39 @@ func TestReview2_DeafSinksDoNotStarveOtherEvents(t *testing.T) {
 	}
 }
 
-// modeSink fails fast until hang is set, then blocks each call until its context ends (it honors
-// its context). It tracks how many calls are in flight at once.
-type modeSink struct {
-	hang        atomic.Bool
-	inflight    atomic.Int32
-	maxInflight atomic.Int32
-}
-
-func (m *modeSink) Notify(ctx context.Context, n Notification) error {
-	if !m.hang.Load() {
-		return ErrNotifyPermanent
-	}
-	v := m.inflight.Add(1)
-	defer m.inflight.Add(-1)
-	for {
-		cur := m.maxInflight.Load()
-		if v <= cur || m.maxInflight.CompareAndSwap(cur, v) {
-			break
-		}
-	}
-	<-ctx.Done()
-	return ctx.Err()
-}
-
-// R2-3. "Every Notify call is bounded by a quarter of the claim, so a round of three calls and their
-// backoff ends inside the claim it holds." It does not: a round that owes an overdue notice makes
-// four calls, and a round reuses its own claim while more than half of it is left, so a round can
-// start with half the claim left and run a whole claim long. It overruns its claim by up to half the
-// claim plus the backoff, and the skew margin (fixed at 2 minutes, not scaled) covers that only
-// while the claim is under about 4 minutes. With WithNotifyClaimTTL(10*time.Minute) a peer takes
-// the claim over while the holder is still sending. Here the timings are scaled down 1500x (claim
-// 400ms, margin 80ms: the 10-minute claim and 2-minute margin).
+// R2-3. A round ends inside the claim it holds, for every allowed claim. The round is run on a fake
+// clock, with a sink that takes the longest a call may (the call limit) every time and a backoff in
+// the fake clock too, so the worst case is exercised at once and the test does not depend on the
+// speed of the machine. The round owes an overdue notice (four calls), and starts at each of several
+// points of its own earlier claim, so it reuses the claim or takes a new one; after it, the clock
+// must not be past the end of the claim it held (the skew margin is extra, not part of the budget).
 func TestReview2_ARoundEndsInsideItsClaim(t *testing.T) {
 	ctx := context.Background()
-	trail, j, ev := NewMemNotifyTrail(), memJournal(), haltEvent()
-	sink := &modeSink{}
-	tune := func(c *notifyConfig) {
-		c.claimTTL, c.skew, c.attemptBackoff = 400*time.Millisecond, 80*time.Millisecond, time.Millisecond
-	}
-	opts := []NotifyOption{WithNotifyDeadline(time.Millisecond), WithNotifyRetry(time.Millisecond, time.Millisecond)}
-	p1 := realEngine(t, j, sink, trail, "p1", tune, opts...)
-	p2 := realEngine(t, j, sink, trail, "p2", tune, opts...)
-
-	t0 := time.Now()
-	_, _ = p1.round(ctx, ev) // claims until t0+400ms; every call fails fast
-	time.Sleep(time.Until(t0.Add(150 * time.Millisecond)))
-	sink.hang.Store(true)
-	done := make(chan struct{})
-	go func() { _, _ = p1.round(ctx, ev); close(done) }()  // reuses its claim (250ms left > half), makes 4 calls of 100ms
-	time.Sleep(time.Until(t0.Add(500 * time.Millisecond))) // past until + margin by p2's (same) clock
-	go func() { _, _ = p2.round(ctx, ev) }()
-	<-done
-	if got := sink.maxInflight.Load(); got > 1 {
-		t.Fatalf("%d deliverers in flight for one key: the holder's round outran its claim plus the skew margin", got)
+	for _, ttl := range []time.Duration{30 * time.Second, 2 * time.Minute, 10 * time.Minute, time.Hour} {
+		for _, frac := range []float64{0, 0.1, 0.2, 0.26, 0.3, 0.5, 0.74} {
+			clk := &notifyClock{t: time.Date(2026, 10, 13, 9, 0, 0, 0, time.UTC)}
+			trail, ev := NewMemNotifyTrail(), haltEvent()
+			var e *notifyEngine
+			slow := notifierFunc(func(context.Context, Notification) error {
+				clk.advance(e.callTimeout()) // the worst a call may take
+				return errors.New("slow sink")
+			})
+			e = testEngine(t, memJournal(), slow, trail, clk, "p1", WithNotifyClaimTTL(ttl), WithNotifyDeadline(time.Millisecond))
+			_, _ = e.round(ctx, ev) // claims for ttl
+			// Start the second round part way into its own claim.
+			clk.advance(time.Duration(float64(ttl) * frac))
+			_, _ = e.round(ctx, ev)
+			recs, _ := trail.Load(ctx, NotifyTrailName("r"))
+			var until time.Time
+			for _, r := range recs {
+				if r.Kind == NotifyClaimed && r.Until.After(until) {
+					until = r.Until
+				}
+			}
+			if clk.now().After(until) {
+				t.Fatalf("ttl %v, round started %.0f%% into the claim: it ended %v past the end of its claim", ttl, frac*100, clk.now().Sub(until))
+			}
+		}
 	}
 }
 

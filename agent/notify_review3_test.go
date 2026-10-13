@@ -6,6 +6,8 @@ package agent
 import (
 	"context"
 	"encoding/json"
+	"errors"
+	"strings"
 	"sync"
 	"sync/atomic"
 	"testing"
@@ -84,24 +86,33 @@ func (s *slowSink) Notify(ctx context.Context, _ Notification) error {
 // configures what the doc allows and gets a delivery that can never succeed: every call times out
 // at 125ms. Nothing refuses the setting or says why.
 func TestReview3_AClaimTheDocAllowsCanDeliver(t *testing.T) {
+	// A claim too short for a call to ever succeed is refused, naming the floor...
+	_, err := newNotifyEngine(memJournal(), &slowSink{}, NewMemNotifyTrail(), []NotifyOption{WithNotifyClaimTTL(time.Second)}, "test")
+	if !errors.Is(err, ErrConfig) || !strings.Contains(err.Error(), "30s") {
+		t.Fatalf("WithNotifyClaimTTL(1s) = %v; want an ErrConfig that names the 30s floor", err)
+	}
+	// ... and one the option accepts delivers a sink that takes 200ms.
 	sink := &slowSink{d: 200 * time.Millisecond}
-	ev := haltEvent()
-	var errs []string
-	var mu sync.Mutex
 	e := realEngine(t, memJournal(), sink, NewMemNotifyTrail(), "p1", func(c *notifyConfig) {
 		c.attemptBackoff = time.Millisecond
-	}, WithNotifyClaimTTL(time.Second), WithNotifyRetry(10*time.Millisecond, 10*time.Millisecond),
-		WithNotifyErrors(func(err error) { mu.Lock(); errs = append(errs, err.Error()); mu.Unlock() }))
+	}, WithNotifyClaimTTL(30*time.Second), WithNotifyRetry(10*time.Millisecond, 10*time.Millisecond))
 	defer func() { _ = e.flush(context.Background()) }()
-	e.w.submit(ev)
+	e.w.submit(haltEvent())
 	if !pollUntil(3*time.Second, func() bool { return sink.ok.Load() > 0 }) {
-		mu.Lock()
-		defer mu.Unlock()
-		first := ""
-		if len(errs) > 0 {
-			first = errs[0]
-		}
-		t.Fatalf("a 200ms sink under WithNotifyClaimTTL(1s) was never delivered in 3s (%d errors; first: %s)", len(errs), first)
+		t.Fatal("a 200ms sink under WithNotifyClaimTTL(30s) was never delivered in 3s")
+	}
+}
+
+// A call that outlives its limit says what the limit is and how to raise it.
+func TestNotifyRound_ATimeoutNamesTheLimit(t *testing.T) {
+	ctx := context.Background()
+	sink := &slowSink{d: time.Hour}
+	e := realEngine(t, memJournal(), sink, NewMemNotifyTrail(), "p", func(c *notifyConfig) {
+		c.claimTTL, c.attemptBackoff = 80*time.Millisecond, time.Millisecond
+	}, WithNotifyDeadline(time.Hour))
+	_, err := e.round(ctx, haltEvent())
+	if err == nil || !strings.Contains(err.Error(), "WithNotifyClaimTTL") || !strings.Contains(err.Error(), "an eighth of the claim") {
+		t.Fatalf("err = %v; want the limit named", err)
 	}
 }
 

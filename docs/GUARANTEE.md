@@ -116,8 +116,11 @@ the journal holds, and so what a resume cannot be talked out of by a redeploy:
 UTC, RFC 3339 with milliseconds, by the drive's clock). It is informational, for listing runs: no
 drive, resume, recovery pass or at-most-once check reads it, a drive is never held to it, and a
 run whose `run:start` holds none (written by an earlier version) or another value resumes the same
-way. The journal's other wall-clock times are each attempt marker's and the deadlines a run sets
-itself (a timer's wake time, an `AwaitFor` deadline).
+way. `run:aborted` likewise records when a saga's finished rollback ended the run (`aborted_at`, in
+the same format, by the drive's clock, beside the reason as `reason`), also informational; a
+`run:aborted` an earlier version wrote is the reason alone and loads and behaves the same. The
+journal's other wall-clock times are each attempt marker's and the deadlines a run sets itself (a
+timer's wake time, an `AwaitFor` deadline).
 
 Configuration is live by design: it governs what a drive does next, not what the journal already
 says happened. A drive uses the configuration it is given for:

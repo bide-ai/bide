@@ -8,6 +8,7 @@ import (
 	"maps"
 	"slices"
 	"strings"
+	"time"
 )
 
 // NotifyPending runs one catch-up sweep for a notifier: it reads every unfinished run in j and
@@ -59,17 +60,18 @@ func NotifyPending(ctx context.Context, j *Journal, n Notifier, trail NotifyTrai
 			continue // the session drives it
 		}
 		if !IsSubRun(runID) {
-			if _, aborted, err := j.getEntry(ctx, runID, runAbortedStep); err != nil {
+			if abortEntry, aborted, err := j.getEntry(ctx, runID, runAbortedStep); err != nil {
 				errs = append(errs, fmt.Errorf("notification sweep: read run %s: %w", runID, err))
 				continue
 			} else if aborted {
 				// An aborted run is over, so no recovery pass lists it: the sweep is the only catch-up
-				// for an abort whose drive died before it recorded the event. Only a recent one: the
-				// journal records no time for the abort, so the run's start stands for it.
-				if start, ok, serr := RecordedStart(ctx, j, runID); serr != nil {
-					errs = append(errs, fmt.Errorf("notification sweep: read run %s: %w", runID, serr))
+				// for an abort whose drive died before it recorded the event. Only a recent one.
+				at, known, terr := e.abortTime(ctx, j, runID, abortEntry)
+				if terr != nil {
+					errs = append(errs, fmt.Errorf("notification sweep: read run %s: %w", runID, terr))
 					continue
-				} else if t, has := start.Started(); !ok || !has || e.cfg.now().Sub(t) > e.cfg.abortedWithin {
+				}
+				if !known || e.cfg.now().Sub(at) > e.cfg.abortedWithin {
 					continue
 				}
 				ev := notifyEvent{key: AbortedKey(runID), kind: NotificationRunAborted, runID: runID, reason: "saga_aborted"}
@@ -94,6 +96,47 @@ func NotifyPending(ctx context.Context, j *Journal, n Notifier, trail NotifyTrai
 		errs = append(errs, err)
 	}
 	return errors.Join(errs...)
+}
+
+// abortTime is when the aborted run runID aborted, for the sweep's window: the run:aborted record's
+// aborted_at when it has one. For a run an earlier version aborted it is the newest time the journal
+// records for the run (an attempt marker's, or the run's start), which is no later than the abort
+// and so a lower bound on how recent it was; known is false when the journal records none.
+func (e *notifyEngine) abortTime(ctx context.Context, j *Journal, runID string, abortEntry Entry) (at time.Time, known bool, err error) {
+	rec, err := decodeStored(runID, runAbortedStep, abortEntry.Data)
+	if err != nil {
+		return time.Time{}, false, err
+	}
+	if t, ok := abortedAt(rec); ok {
+		return t, true, nil
+	}
+	recs, err := j.History(ctx, runID)
+	if err != nil {
+		return time.Time{}, false, err
+	}
+	at, known = newestTime(recs)
+	return at, known, nil
+}
+
+// newestTime is the newest wall-clock time recs record: an attempt marker's, or the run's start.
+func newestTime(recs []Record) (time.Time, bool) {
+	var newest time.Time
+	for _, r := range recs {
+		var t time.Time
+		switch {
+		case r.Kind == StepAttempt:
+			t = markerTime(r.AttemptedAt)
+		case r.Kind == StepValue && r.Name == runStartStep:
+			var s RunStart
+			if json.Unmarshal(r.Result, &s) == nil {
+				t, _ = s.Started()
+			}
+		}
+		if t.After(newest) {
+			newest = t
+		}
+	}
+	return newest, !newest.IsZero()
 }
 
 // sweepFilter lists the runs a sweep reads: every run that is not completed or cancelled, so the

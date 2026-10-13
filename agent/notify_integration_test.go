@@ -5,6 +5,8 @@ import (
 	"errors"
 	"fmt"
 	"strings"
+	"sync"
+	"sync/atomic"
 	"testing"
 	"time"
 )
@@ -440,10 +442,14 @@ func TestNotifier_UntimedHaltsOfSuccessiveAttemptsHaveDifferentKeys(t *testing.T
 		t.Helper()
 		_, err := a.Run(ctx, "r", UserText("go"))
 		ev, ok := e.eventFromErr("r", err)
-		if !ok || ev.halt == nil || !ev.halt.AttemptedAt.IsZero() {
-			t.Fatalf("Run = %v; want a halt on an untimed marker", err)
+		if !ok || ev.halt == nil || !ev.halt.AttemptedAt.IsZero() || ev.keyFn == nil {
+			t.Fatalf("Run = %v; want a halt on an untimed marker whose key is computed off the drive's path", err)
 		}
-		return ev.key
+		key, kerr := ev.keyFn(ctx)
+		if kerr != nil {
+			t.Fatal(kerr)
+		}
+		return key
 	}
 	won, m0, key0, err := j.claimNext(ctx, "r", toolAttemptStep("c1"), Record{Kind: StepAttempt, ToolUseID: "c1"})
 	if err != nil || !won {
@@ -653,4 +659,86 @@ func TestNotifyRound_AnUnrecordedOverdueNoticeIsNotSentAgain(t *testing.T) {
 	if overdue.count() != 1 || countKind(recs, NotifyAcked, OverdueKey(ev.key)) != 1 {
 		t.Fatalf("notices sent %d, acknowledged %d; want 1 and 1", overdue.count(), countKind(recs, NotifyAcked, OverdueKey(ev.key)))
 	}
+}
+
+// A call abandoned at its timeout that has not returned is not repeated: the next attempts of the
+// round make no new call, so a Notifier that never returns cannot gather goroutines.
+func TestNotifyRound_AnAbandonedCallIsNotRepeatedWhileItIsStuck(t *testing.T) {
+	ctx := context.Background()
+	var calls atomic.Int32
+	release := make(chan struct{})
+	sink := notifierFunc(func(context.Context, Notification) error {
+		calls.Add(1)
+		<-release
+		return errors.New("released")
+	})
+	e := realEngine(t, memJournal(), sink, NewMemNotifyTrail(), "p", func(c *notifyConfig) {
+		c.claimTTL, c.attemptBackoff = 400*time.Millisecond, time.Millisecond
+	}, WithNotifyRetry(time.Millisecond, time.Millisecond), WithNotifyDeadline(time.Hour))
+	if _, err := e.round(ctx, haltEvent()); err == nil {
+		t.Fatal("a call that never returned was not an error")
+	}
+	if calls.Load() != 1 {
+		t.Fatalf("%d calls made in a round whose first call was abandoned and still running, want 1", calls.Load())
+	}
+	close(release)
+	waitFor(t, func() bool {
+		e.mu.Lock()
+		defer e.mu.Unlock()
+		return e.stuckAll == 0
+	})
+}
+
+// RecoverLoop reports to WithRecoverErrors the events its notifier could not deliver by the time
+// it stops.
+func TestNotifier_RecoverLoopReportsUndeliveredEventsAtExit(t *testing.T) {
+	j := gateRun(t)
+	sink := &fakeSink{fail: 1 << 30, err: ErrNotifyPermanent}
+	resume := func(context.Context, string, RunStart) error {
+		return &ApprovalPending{RunRef: RunRef{RunID: "r", RootRunID: "r"}, ToolUseID: "c1", ToolName: "refund"}
+	}
+	var mu sync.Mutex
+	var errs []error
+	ctx, cancel := context.WithCancel(context.Background())
+	done := make(chan struct{})
+	go func() {
+		defer close(done)
+		_ = RecoverLoop(ctx, j, resume, WithNotifier(sink, NewMemNotifyTrail(), WithNotifyRetry(time.Hour, time.Hour)), WithRecoverInterval(10*time.Millisecond),
+			WithRecoverErrors(func(err error) { mu.Lock(); errs = append(errs, err); mu.Unlock() }))
+	}()
+	waitFor(t, func() bool { return sink.count() > 0 })
+	time.Sleep(30 * time.Millisecond)
+	cancel()
+	<-done
+	mu.Lock()
+	defer mu.Unlock()
+	for _, err := range errs {
+		if strings.Contains(err.Error(), "sink") || errors.Is(err, ErrNotifyPermanent) {
+			return
+		}
+	}
+	t.Fatalf("RecoverLoop dropped its notifier's undelivered event at exit; errors seen: %v", errs)
+}
+
+// A halt whose key needs a read of the journal is queued at once, and its key is computed in the
+// worker, which tries again when the read fails.
+func TestNotifier_ALazyKeyIsRetriedByTheWorker(t *testing.T) {
+	st := &failGetStore{Store: markerAt(t, 0)}
+	j := mustJournal(st)
+	sink := &fakeSink{}
+	e := realEngine(t, j, sink, NewMemNotifyTrail(), "p", nil, WithNotifyRetry(5*time.Millisecond, 5*time.Millisecond))
+	halt := &OutcomeUnknown{RunRef: RunRef{RunID: "r", RootRunID: "r"}, Op: OpRef{Kind: OpTool, ID: "c1"}, Cause: HaltCrashed}
+	ev, ok := e.eventFromErr("r", halt)
+	if !ok {
+		t.Fatal("not queued")
+	}
+	st.armed.Store(true)
+	e.w.submit(ev)
+	time.Sleep(30 * time.Millisecond)
+	if sink.count() != 0 {
+		t.Fatal("delivered under a key that could not be computed")
+	}
+	st.armed.Store(false)
+	waitFor(t, func() bool { return sink.count() == 1 })
+	_ = e.flush(context.Background())
 }

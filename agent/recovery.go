@@ -821,7 +821,9 @@ func RecoverLoop(ctx context.Context, store *Journal, resume Resumer, opts ...Re
 			// Bounded: a sink that ignores its context must not keep RecoverLoop from returning.
 			fctx, cancel := context.WithTimeout(context.WithoutCancel(ctx), 500*time.Millisecond)
 			defer cancel()
-			_ = cfg.notify.flush(fctx)
+			if err := cfg.notify.flush(fctx); err != nil && cfg.onError != nil {
+				cfg.onError(err) // not ctx-guarded: the loop is ending, and these are its undelivered events
+			}
 		}()
 	}
 	if !cfg.intervalSet {

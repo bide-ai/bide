@@ -6,6 +6,7 @@ import (
 	"errors"
 	"fmt"
 	"strings"
+	"time"
 )
 
 // sagaTrip signals, inside the loop, that a saga step failed and the run must roll back.
@@ -119,20 +120,20 @@ func (a *Agent) runSagaWithTelemetry(ctx context.Context, runID string, d *drive
 		// has asked for the rollback, the saga ends run:cancelled.
 		if r, ok := recordNamed(recs, runCancelRequestedStep); ok && !ended {
 			trip := &cancelTrip{reason: endText(r)}
-			out, err := a.rollback(ctx, runID, fmt.Errorf("run %s: %w", runID, ErrRunCancelled), trip.reason, trip)
+			out, err := a.rollback(a.rollbackCtx(ctx, d), runID, fmt.Errorf("run %s: %w", runID, ErrRunCancelled), trip.reason, trip)
 			return out, usageTotals{}, 0, err
 		}
-		out, err := a.rollback(ctx, runID, errors.New(cause), cause, nil)
+		out, err := a.rollback(a.rollbackCtx(ctx, d), runID, errors.New(cause), cause, nil)
 		return out, usageTotals{}, 0, err
 	}
 
 	out, usage, turns, err := a.run(ctx, runID, d)
 	if trip, ok := errors.AsType[*sagaTrip](err); ok {
-		out, err := a.rollback(ctx, runID, trip.cause, trip.journaled, nil)
+		out, err := a.rollback(a.rollbackCtx(ctx, d), runID, trip.cause, trip.journaled, nil)
 		return out, usage, turns, err
 	}
 	if trip, ok := errors.AsType[*cancelTrip](err); ok {
-		out, err := a.rollback(ctx, runID, fmt.Errorf("run %s: %w", runID, ErrRunCancelled), trip.reason, trip)
+		out, err := a.rollback(a.rollbackCtx(ctx, d), runID, fmt.Errorf("run %s: %w", runID, ErrRunCancelled), trip.reason, trip)
 		return out, usage, turns, err
 	}
 	return out, usage, turns, err
@@ -150,6 +151,20 @@ func (a *Agent) runSagaWithTelemetry(ctx context.Context, runID string, d *drive
 // The marker is read back (rule 4): when another end marker landed first (the saga completed, or
 // another drive's rollback ended it otherwise), that one is the run's end, and the rollback
 // reports it: a completed run's answer, or the error its end gives.
+// rollbackCtx is ctx carrying the clock of the drive (the run's WithClock, else the agent's), which
+// stamps the time a finished rollback records in run:aborted.
+func (a *Agent) rollbackCtx(ctx context.Context, d *driveSpec) context.Context {
+	switch {
+	case d.cfg.clock != nil:
+		return contextWithClock(ctx, d.cfg.clock)
+	case a.clock != nil:
+		if _, set := ctx.Value(clockKey{}).(func() time.Time); !set {
+			return contextWithClock(ctx, a.clock)
+		}
+	}
+	return ctx
+}
+
 func (a *Agent) rollback(ctx context.Context, runID string, cause error, causeText string, cancel *cancelTrip) (Message, error) {
 	comp, uncomp, unknown, cerr := a.rollbackRun(ctx, runID, rootRunID(ctx, runID))
 	if cerr == nil {
@@ -174,7 +189,9 @@ func (a *Agent) rollback(ctx context.Context, runID string, cause error, causeTe
 				cause = fmt.Errorf("run %s: %w (a step failed after the cancellation was requested: %w)", runID, ErrRunCancelled, cause)
 			}
 		}
-		name, value := runAbortedStep, mustJSON(causeText)
+		// run:aborted records why and when (abortValue): the time is informational, for listing and for
+		// the notifier's catch-up; nothing that drives, resumes or recovers a run reads it.
+		name, value := runAbortedStep, mustJSONValue(abortValue{Reason: causeText, AbortedAt: startStamp(clockFrom(ctx))})
 		if cancel != nil {
 			name, value = runCancelledStep, mustJSONValue(cancelReason{Reason: causeText})
 		}

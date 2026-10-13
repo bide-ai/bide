@@ -8,6 +8,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"time"
 )
 
 // RunState is a run's state as Status reads it from the run's journal.
@@ -193,6 +194,27 @@ func Status(ctx context.Context, j *Journal, runID string) (RunStatus, error) {
 }
 
 // protocol:lifecycle end
+
+// abortValue is the value of run:aborted: why the saga aborted, and when (UTC, RFC 3339 with
+// milliseconds, by the drive's clock, as RunStart.StartedAt). AbortedAt is informational: no drive,
+// resume, recovery pass or at-most-once check reads it. A run:aborted an earlier version wrote is
+// the reason alone, as a JSON string, and loads and behaves the same. Its JSON is also a
+// cancelReason, so a reader of the reason (endText) reads both.
+type abortValue struct {
+	Reason    string `json:"reason"`
+	AbortedAt string `json:"aborted_at,omitempty"`
+}
+
+// abortedAt is when the run:aborted record r says the run aborted, and false when it says none (one
+// an earlier version wrote, or a value that is not an abortValue).
+func abortedAt(r Record) (time.Time, bool) {
+	var v abortValue
+	if json.Unmarshal(r.Result, &v) != nil || v.AbortedAt == "" {
+		return time.Time{}, false
+	}
+	t, err := time.Parse(time.RFC3339Nano, v.AbortedAt)
+	return t, err == nil
+}
 
 // endText is the text an end marker records: a cancellation's reason, or a saga's failure text.
 func endText(r Record) string {

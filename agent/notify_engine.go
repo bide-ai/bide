@@ -9,6 +9,9 @@ import (
 	"time"
 )
 
+// minClaimTTL is the shortest claim WithNotifyClaimTTL accepts.
+const minClaimTTL = 30 * time.Second
+
 // notifyConfig is what NotifyOptions write, over the defaults newNotifyEngine sets.
 type notifyConfig struct {
 	deadline      time.Duration
@@ -82,6 +85,10 @@ type notifyEvent struct {
 	reason    string
 	err       error
 
+	// keyFn, when set, computes the event's real key in the worker, off the drive's path (a halt on
+	// an untimed marker needs a read of the journal); key is a provisional one until then.
+	keyFn func(context.Context) (string, error)
+
 	episode int    // for recovery_failing: the episode number
 	origKey string // for an overdue notice: the event it is about
 }
@@ -103,6 +110,8 @@ type notifyEngine struct {
 	attempts map[string]int        // delivery attempts made by this process, per key
 	fails    map[string]int        // failed attempts made by this process, per key
 	firstAt  map[string]time.Time  // when this process first sent each key
+	stuck    map[string]int        // Notify calls started and not returned (abandoned ones included), per event key
+	stuckAll int                   // and in all
 	w        *notifyWorker
 }
 
@@ -121,7 +130,7 @@ func newNotifyEngine(j *Journal, n Notifier, trail NotifyTrail, opts []NotifyOpt
 	e := &notifyEngine{j: j, n: n, trail: trail, cfg: cfg,
 		holder:   fmt.Sprintf("%s/%s/%016x", cfg.holder, kind, rand.Uint64()),
 		attempts: map[string]int{}, fails: map[string]int{}, firstAt: map[string]time.Time{},
-		unacked: map[string]pendingAck{}, keyMu: map[string]*keyLock{}}
+		stuck: map[string]int{}, unacked: map[string]pendingAck{}, keyMu: map[string]*keyLock{}}
 	e.w = newNotifyWorker(e)
 	return e, nil
 }
@@ -201,6 +210,11 @@ func (e *notifyEngine) round(ctx context.Context, ev notifyEvent) (roundResult, 
 	return res, err
 }
 
+// maxStuckCalls bounds the Notify calls an engine has running at once, abandoned or not, and an
+// event has one: a Notifier that never returns cannot make it start goroutines without end, and
+// a deaf event does not starve the others.
+const maxStuckCalls = 256
+
 // keyLock is the mutex of one event key and the number of rounds holding or waiting for it.
 type keyLock struct {
 	mu   sync.Mutex
@@ -223,6 +237,14 @@ func (e *notifyEngine) roundBudget() time.Duration { return e.cfg.claimTTL * 3 /
 // call that later succeeds means the sink got the notification and the next attempt repeats it,
 // within the duplicate bound.
 func (e *notifyEngine) callNotify(ctx context.Context, n Notifier, note Notification) (NotifyAck, error) {
+	e.mu.Lock()
+	if e.stuck[note.Key] > 0 || e.stuckAll >= maxStuckCalls {
+		e.mu.Unlock()
+		return NotifyAck{}, fmt.Errorf("notify: an earlier call for %s was abandoned at its timeout and has not returned (or %d calls are in that state); no new call is made until it does", note.Key, maxStuckCalls)
+	}
+	e.stuck[note.Key]++
+	e.stuckAll++
+	e.mu.Unlock()
 	cctx, cancel := context.WithTimeout(ctx, e.callTimeout())
 	defer cancel()
 	type result struct {
@@ -231,20 +253,34 @@ func (e *notifyEngine) callNotify(ctx context.Context, n Notifier, note Notifica
 	}
 	out := make(chan result, 1)
 	go func() {
+		defer func() {
+			e.mu.Lock()
+			if e.stuck[note.Key]--; e.stuck[note.Key] == 0 {
+				delete(e.stuck, note.Key)
+			}
+			e.stuckAll--
+			e.mu.Unlock()
+		}()
 		var ack NotifyAck
 		err := n.Notify(context.WithValue(cctx, ackKey{}, &ack), note)
 		out <- result{ack, err}
 	}()
+	late := func(err error) error {
+		if err != nil && errors.Is(err, context.DeadlineExceeded) && ctx.Err() == nil {
+			return fmt.Errorf("notify: the call took longer than %v (the call limit is an eighth of the claim, %v; raise WithNotifyClaimTTL if the sink needs longer): %w", e.callTimeout(), e.cfg.claimTTL, err)
+		}
+		return err
+	}
 	select {
 	case r := <-out:
-		return r.ack, r.err
+		return r.ack, late(r.err)
 	case <-cctx.Done():
 		select {
 		case r := <-out: // it returned as the time ran out: take its answer
-			return r.ack, r.err
+			return r.ack, late(r.err)
 		default:
 		}
-		return NotifyAck{}, fmt.Errorf("notify: the call took longer than %v: %w", e.callTimeout(), cctx.Err())
+		return NotifyAck{}, late(cctx.Err())
 	}
 }
 

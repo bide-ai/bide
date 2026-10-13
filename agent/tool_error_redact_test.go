@@ -172,8 +172,15 @@ func TestSagaToolErrorURLCredentialsNotJournaled(t *testing.T) {
 			marker = string(r.Result)
 		}
 	}
-	if failure == "" || marker != failure {
-		t.Errorf("the rollback's terminal marker records %s, want the saga failure's text %s", marker, failure)
+	// The terminal marker records the failure's text as its reason, beside when the run aborted.
+	var abort struct {
+		Reason    string `json:"reason"`
+		AbortedAt string `json:"aborted_at"`
+	}
+	var failureText string
+	if json.Unmarshal([]byte(failure), &failureText) != nil || json.Unmarshal([]byte(marker), &abort) != nil || failure == "" ||
+		abort.Reason != failureText || abort.AbortedAt == "" {
+		t.Errorf("the rollback's terminal marker records %s, want the saga failure's text %s as its reason, with the time", marker, failure)
 	}
 	// A resumed saga reads the cause back from the journal: the terminal marker holds it redacted.
 	_, err = a.Run(context.Background(), "r1", agent.UserText("go"), agent.WithSaga())

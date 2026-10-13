@@ -128,11 +128,13 @@ func WithNotifyDeadline(d time.Duration) NotifyOption {
 
 // WithNotifyClaimTTL sets how long a process's claim on an event lasts (default 2 minutes). A
 // crashed deliverer's claim lapses after it, which is how another process takes over, so it bounds
-// the delay of a takeover; it must exceed one round's work. d must be positive.
+// the delay of a takeover. A round's calls and retries must fit inside the claim, so one call of a
+// Notifier is limited to an eighth of it: choose a claim at least eight times the longest a sink
+// takes to answer. d must be at least 30 seconds (a call limit of under 4 seconds).
 func WithNotifyClaimTTL(d time.Duration) NotifyOption {
 	return notifyOption(func(c *notifyConfig) error {
-		if d <= 0 {
-			return fmt.Errorf("WithNotifyClaimTTL(%v): must be positive: %w", d, ErrConfig)
+		if d < minClaimTTL {
+			return fmt.Errorf("WithNotifyClaimTTL(%v): must be at least %v, so that a call of the Notifier (limited to an eighth of the claim) can take a few seconds: %w", d, minClaimTTL, ErrConfig)
 		}
 		c.claimTTL = d
 		return nil
