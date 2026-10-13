@@ -25,6 +25,8 @@ bide demo
 bide init refund && cd refund && go mod tidy && go run .
 # 3. 检查：在本地只读页面中查看运行（先是运行列表，再是每次运行；会打印要打开的地址）
 bide view -db run.db
+#    可选，无需写代码：浏览一份包含 14 次运行、涵盖各种状态的示例日志
+bide sample
 # 4. 证明：离线验证这次运行的证据
 bide audit verify-evidence -evidence evidence.json -pubkey keys/log.pub
 ```

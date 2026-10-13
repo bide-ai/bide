@@ -25,6 +25,8 @@ bide demo
 bide init refund && cd refund && go mod tidy && go run .
 # 3. Inspect: the runs in a local, read-only page (a run list, then each run; it prints the address to open)
 bide view -db run.db
+#    Optional, no code needed: explore a sample journal of 14 runs in every state
+bide sample
 # 4. Prove: verify the run's evidence offline
 bide audit verify-evidence -evidence evidence.json -pubkey keys/log.pub
 ```

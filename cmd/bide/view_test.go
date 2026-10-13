@@ -19,7 +19,7 @@ import (
 	"github.com/bide-ai/bide/agent"
 	"github.com/bide-ai/bide/agent/agenttest"
 	"github.com/bide-ai/bide/internal/runview"
-	"github.com/bide-ai/bide/internal/runview/runlistdemo"
+	"github.com/bide-ai/bide/internal/sample"
 	"github.com/bide-ai/bide/store/postgres"
 	"github.com/bide-ai/bide/store/sqlite"
 )
@@ -111,7 +111,7 @@ func runList(t *testing.T, open func(string) (agent.Store, io.Closer, error), wh
 }
 
 // checkRunList: the list holds each demo run in its state group, with its kind.
-func checkRunList(t *testing.T, l runview.RunList, runs []runlistdemo.Run) {
+func checkRunList(t *testing.T, l runview.RunList, runs []sample.Run) {
 	t.Helper()
 	if l.Err != "" || len(l.Rows) != len(runs) {
 		t.Fatalf("list: err %q, %d rows, want %d", l.Err, len(l.Rows), len(runs))
@@ -128,8 +128,8 @@ func checkRunList(t *testing.T, l runview.RunList, runs []runlistdemo.Run) {
 }
 
 // TestRunListDemo: bide view lists a SQLite journal's runs, opened read-only, each in its state.
-// With BIDE_RUNLIST_DEMO set to a path it writes the demo journal there, the one the run viewer
-// guide's screenshots are taken of (bide view -db <path>).
+// With BIDE_RUNLIST_DEMO set to a path it writes the sample journal there (bide sample writes the
+// same one, with its evidence and flow configs).
 func TestRunListDemo(t *testing.T) {
 	path := os.Getenv("BIDE_RUNLIST_DEMO")
 	if path == "" {
@@ -141,12 +141,12 @@ func TestRunListDemo(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	runs, err := runlistdemo.Write(context.Background(), w, "")
+	res, err := sample.Write(context.Background(), w, "")
 	w.Close()
 	if err != nil {
 		t.Fatal(err)
 	}
-	checkRunList(t, runList(t, stores.SQLite, path, ""), runs)
+	checkRunList(t, runList(t, stores.SQLite, path, ""), res.Runs)
 	if l := runList(t, stores.SQLite, path, "?state=halted"); len(l.Rows) != 2 {
 		t.Fatalf("halted runs = %+v, want 2", l.Rows)
 	}
@@ -166,12 +166,12 @@ func TestPostgresRunList(t *testing.T) {
 	}
 	defer w.Close()
 	prefix := "bide-view-list-" + time.Now().Format("150405.000000000") + "-"
-	runs, err := runlistdemo.Write(ctx, w, prefix)
+	res, err := sample.Write(ctx, w, prefix)
 	if err != nil {
 		t.Fatal(err)
 	}
-	checkRunList(t, runList(t, stores.Postgres, dsn, "?q="+url.QueryEscape(prefix)), runs)
-	if l := runList(t, stores.Postgres, dsn, "?kind=flow&q="+url.QueryEscape(prefix)); len(l.Rows) != 3 {
+	checkRunList(t, runList(t, stores.Postgres, dsn, "?q="+url.QueryEscape(prefix)), res.Runs)
+	if l := runList(t, stores.Postgres, dsn, "?kind=flow&q="+url.QueryEscape(prefix)); len(l.Rows) != 4 {
 		t.Fatalf("flow runs = %+v, want 3", l.Rows)
 	}
 }
