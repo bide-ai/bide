@@ -178,7 +178,8 @@ flowchart TD
 `bide view` serves a read-only local page for one run: an agent run's timeline (model turns, tool
 calls with their `Safety`, attempts, approvals, halts with the `agent.HaltRef` to resolve each, and
 the end state), a plan flow's declared topology with the path the run took, and whether the journal
-verifies against a signed tree head or an evidence package. See the
+verifies against a signed tree head or an evidence package. The page of a run in progress follows
+it as records land. See the
 [run viewer guide](run-viewer.md) for installing and running it, its flags, what each part of the
 page means, a crash, resolve and verify demo, and what it cannot show.
 

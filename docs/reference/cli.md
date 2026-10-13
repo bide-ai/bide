@@ -93,6 +93,10 @@ With no -run the page opens on the run list: each run's kind, state (completed, 
 unknown, waiting for approval, in progress, aborted or cancelled), the time of its last attempt
 marker (a journal records no other time) and its record count, filtered by state, kind and run ID.
 
+From -db or -postgres, the page of a run in progress follows it (live mode): it polls the store
+about once a second for records after the last one it shows, and updates in place until the run
+journals its end marker. An exported journal (-journal) is shown as it is.
+
 With -config it shows a flow definition instead, without running anything: the declared graph,
 its approval gates, and every problem plan.InspectConfig finds, marked on the node, edge or arm it
 belongs to. The check is structural (types and registered blocks are checked when a program embeds
