@@ -1,0 +1,48 @@
+name: Coverage
+
+# Test coverage of the published modules, uploaded to Codecov. Not a required check, and an upload
+# failure never fails it. It authenticates with GitHub's OIDC token, so no Codecov secret is stored;
+# the id-token permission is on this one job only. Fork pull requests cannot get an OIDC token, so
+# they skip the upload (the tests still run).
+
+on:
+  push:
+    branches: [ main ]
+  pull_request:
+    branches: [ main ]
+    paths-ignore:
+      - '**.md'
+      - 'docs/**'
+      - 'docs-site/**'
+
+permissions:
+  contents: read
+
+concurrency:
+  group: coverage-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  coverage:
+    name: Coverage
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    permissions:
+      contents: read
+      id-token: write
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v5
+        with:
+          go-version: '1.27'
+      - name: Test with coverage (published modules, merged into coverage.out)
+        run: scripts/coverage.sh coverage.out
+      - name: Upload to Codecov
+        if: github.event_name != 'pull_request' || github.event.pull_request.head.repo.full_name == github.repository
+        # Pinned to a commit: this workflow holds an OIDC token. v7.1.1.
+        uses: codecov/codecov-action@303a32d7a59b442fa8d48b6a1cc6825c09c847a5
+        with:
+          use_oidc: true
+          files: coverage.out
+          fail_ci_if_error: false
+          disable_search: true

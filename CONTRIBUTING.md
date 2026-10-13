@@ -47,6 +47,8 @@ cd examples/observability && GOWORK=off go run .
 
 Some tests need external infrastructure and skip without it: `store/postgres` and `govern/postgreslog` look for `PG_DSN`; `govern/redislog` looks for `REDIS_ADDR`; the external convergence oracle cross-check looks for `GSM_AST_CHECKER`. The default suite is green with none of them set.
 
+Coverage of the published modules is reported to Codecov by the Coverage workflow (`.github/workflows/coverage.yml`) on pushes to main and on pull requests. It is information only: it is not a required check, an upload failure never fails it, and `codecov.yml` sets the project and patch statuses to informational. Run it locally with `scripts/coverage.sh` (it writes `coverage.out`, one merged profile, and prints the total; `go tool cover -html=coverage.out` shows it by line). Examples, benchmarks and the integration module are not measured.
+
 The fault-schedule explorations (the tests with `Explore` in their name, in `agent` and `plan`) run at a bound that fits CI by default. `BIDE_EXPLORE=1` runs the full bound (`BIDE_EXPLORE=1 GOWORK=off go test -count=1 -timeout 85m -run Explore ./agent ./plan`, about nine minutes on a development machine, without `-race`), and `BIDE_EXPLORE_SIGS=<file>` appends one line per explored concurrent schedule to that file. The Explore workflow (`.github/workflows/explore.yml`) runs the full bound nightly and on demand; it is not a required check. A new test with a `BIDE_EXPLORE` mode goes in the core module and has `Explore` in its name, or the nightly job does not run it (the job fails on a `BIDE_EXPLORE` test outside the core module).
 
 ## Module layout

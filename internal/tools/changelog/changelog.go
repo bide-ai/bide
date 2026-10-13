@@ -266,7 +266,7 @@ func exempt(f string) bool {
 		}
 	}
 	switch f {
-	case "LICENSE", "NOTICE", "DCO", ".gitignore", ".doccheck-allow", "go.sum", "go.work", "go.work.sum":
+	case "LICENSE", "NOTICE", "DCO", ".gitignore", ".gitattributes", ".doccheck-allow", "codecov.yml", "go.sum", "go.work", "go.work.sum":
 		return true
 	}
 	return strings.HasSuffix(f, "/go.sum") || strings.HasSuffix(f, "/go.mod") || f == "go.mod"
