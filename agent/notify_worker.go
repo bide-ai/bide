@@ -161,6 +161,9 @@ func (w *notifyWorker) runRound(ctx context.Context, p *pendingNotify) {
 	w.inflight--
 	p.inflight = false
 	p.lastErr = err
+	if err == nil && !res.done {
+		p.lastErr = res.deferred
+	}
 	if res.done {
 		delete(w.pending, p.ev.key)
 	} else {

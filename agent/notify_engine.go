@@ -18,6 +18,7 @@ type notifyConfig struct {
 	failingAfter  int
 	recoveryAfter time.Duration
 	haltAge       time.Duration
+	abortedWithin time.Duration
 	skew          time.Duration // margin added to another holder's claim before it counts as lapsed
 	maxInflight   int           // rounds in flight at once in the worker
 	holder        string
@@ -42,6 +43,7 @@ func defaultNotifyConfig() notifyConfig {
 		failingAfter:   8,
 		recoveryAfter:  15 * time.Minute,
 		haltAge:        5 * time.Minute,
+		abortedWithin:  24 * time.Hour,
 		holder:         defaultHolder(),
 		roundAttempts:  3,
 		attemptBackoff: time.Second,
@@ -96,11 +98,11 @@ type notifyEngine struct {
 	holder string
 
 	mu       sync.Mutex
-	unacked  map[string]pendingAck  // deliveries the sink accepted whose acknowledgement could not be recorded
-	keyMu    map[string]*sync.Mutex // one round at a time per key, in this engine
-	attempts map[string]int         // delivery attempts made by this process, per key
-	fails    map[string]int         // failed attempts made by this process, per key
-	firstAt  map[string]time.Time   // when this process first sent each key
+	unacked  map[string]pendingAck // deliveries the sink accepted whose acknowledgement could not be recorded
+	keyMu    map[string]*keyLock   // one round at a time per key, in this engine; present while one is held or waited for
+	attempts map[string]int        // delivery attempts made by this process, per key
+	fails    map[string]int        // failed attempts made by this process, per key
+	firstAt  map[string]time.Time  // when this process first sent each key
 	w        *notifyWorker
 }
 
@@ -119,7 +121,7 @@ func newNotifyEngine(j *Journal, n Notifier, trail NotifyTrail, opts []NotifyOpt
 	e := &notifyEngine{j: j, n: n, trail: trail, cfg: cfg,
 		holder:   fmt.Sprintf("%s/%s/%016x", cfg.holder, kind, rand.Uint64()),
 		attempts: map[string]int{}, fails: map[string]int{}, firstAt: map[string]time.Time{},
-		unacked: map[string]pendingAck{}, keyMu: map[string]*sync.Mutex{}}
+		unacked: map[string]pendingAck{}, keyMu: map[string]*keyLock{}}
 	e.w = newNotifyWorker(e)
 	return e, nil
 }
@@ -148,6 +150,9 @@ func (e *notifyEngine) failingRounds() int {
 type roundResult struct {
 	done bool      // the event is closed (acked or cleared): forget it
 	next time.Time // when to try again, if not done
+	// deferred says why a round that delivered nothing ended without an error: it found another
+	// deliverer's live claim, or the event's pace. FlushNotifications reports it as undelivered.
+	deferred error
 }
 
 // maxTrailRetries bounds how often a round reloads after losing an append race before it gives up
@@ -175,12 +180,20 @@ func (e *notifyEngine) round(ctx context.Context, ev notifyEvent) (roundResult, 
 	e.mu.Lock()
 	km := e.keyMu[ev.key]
 	if km == nil {
-		km = &sync.Mutex{}
+		km = &keyLock{}
 		e.keyMu[ev.key] = km
 	}
+	km.refs++
 	e.mu.Unlock()
-	km.Lock()
-	defer km.Unlock()
+	km.mu.Lock()
+	defer func() {
+		km.mu.Unlock()
+		e.mu.Lock()
+		if km.refs--; km.refs == 0 {
+			delete(e.keyMu, ev.key)
+		}
+		e.mu.Unlock()
+	}()
 	res, err := e.roundLocked(ctx, ev)
 	if res.done {
 		e.forget(ev.key)
@@ -188,9 +201,52 @@ func (e *notifyEngine) round(ctx context.Context, ev notifyEvent) (roundResult, 
 	return res, err
 }
 
-// callTimeout bounds one call of a Notifier: a quarter of the claim, so a round of roundAttempts
-// calls and their backoff ends inside the claim it holds.
-func (e *notifyEngine) callTimeout() time.Duration { return e.cfg.claimTTL / 4 }
+// keyLock is the mutex of one event key and the number of rounds holding or waiting for it.
+type keyLock struct {
+	mu   sync.Mutex
+	refs int
+}
+
+// callTimeout bounds one call of a Notifier. A round makes at most roundAttempts+1 calls (the
+// overdue notice is one more), so with an eighth of the claim for each, the calls take at most half
+// of it; the backoff between them and the acknowledgement's retries (another eighth) bring a round to
+// five eighths of a claim and a few seconds, and a round starts only when more than three quarters of
+// its claim remain (see roundLocked), so it ends inside the claim it holds.
+func (e *notifyEngine) callTimeout() time.Duration { return e.cfg.claimTTL / 8 }
+
+// roundBudget is the claim a round must have left to start under it: three quarters.
+func (e *notifyEngine) roundBudget() time.Duration { return e.cfg.claimTTL * 3 / 4 }
+
+// callNotify makes one call of n, bounded by callTimeout whether or not n honors its context: the
+// call runs on a goroutine and is abandoned when the time is up, counting as failed (a Notifier
+// that ignores its context must not hold a round, its key and a worker slot for good). An abandoned
+// call that later succeeds means the sink got the notification and the next attempt repeats it,
+// within the duplicate bound.
+func (e *notifyEngine) callNotify(ctx context.Context, n Notifier, note Notification) (NotifyAck, error) {
+	cctx, cancel := context.WithTimeout(ctx, e.callTimeout())
+	defer cancel()
+	type result struct {
+		ack NotifyAck
+		err error
+	}
+	out := make(chan result, 1)
+	go func() {
+		var ack NotifyAck
+		err := n.Notify(context.WithValue(cctx, ackKey{}, &ack), note)
+		out <- result{ack, err}
+	}()
+	select {
+	case r := <-out:
+		return r.ack, r.err
+	case <-cctx.Done():
+		select {
+		case r := <-out: // it returned as the time ran out: take its answer
+			return r.ack, r.err
+		default:
+		}
+		return NotifyAck{}, fmt.Errorf("notify: the call took longer than %v: %w", e.callTimeout(), cctx.Err())
+	}
+}
 
 // claimLive reports whether es has a claim that another deliverer must respect at now. A holder's
 // own claim is live until its Until; another holder's until Until plus the skew margin, because
@@ -286,11 +342,11 @@ func (e *notifyEngine) roundLocked(ctx context.Context, ev notifyEvent) (roundRe
 
 		live := e.claimLive(es, now)
 		if live && es.Claim.Holder != e.holder {
-			return roundResult{next: es.Claim.Until.Add(e.cfg.skew)}, nil // another deliverer has it
+			return roundResult{next: es.Claim.Until.Add(e.cfg.skew), deferred: fmt.Errorf("notify: %s is held by another deliverer's claim until %s; not delivered by this process", ev.key, es.Claim.Until.Format(time.RFC3339))}, nil // another deliverer has it
 		}
-		if !live || es.Claim.Until.Sub(now) <= e.cfg.claimTTL/2 {
+		if !live || es.Claim.Until.Sub(now) <= e.roundBudget() {
 			if pace := e.pace(es); now.Before(pace) && !live {
-				return roundResult{next: pace}, nil // too soon after the last round, whoever ran it
+				return roundResult{next: pace, deferred: fmt.Errorf("notify: %s is waiting out its backoff until %s; not delivered by this process", ev.key, pace.Format(time.RFC3339))}, nil // too soon after the last round, whoever ran it
 			}
 			rec := NotifyRecord{Kind: NotifyClaimed, Key: ev.key, RunID: ev.runID, At: now,
 				Holder: e.holder, Until: now.Add(e.cfg.claimTTL)}
@@ -343,9 +399,7 @@ func (e *notifyEngine) deliver(ctx context.Context, ev notifyEvent, es *NotifyEv
 		e.mu.Unlock()
 
 		var ack NotifyAck
-		nctx, cancel := context.WithTimeout(context.WithValue(ctx, ackKey{}, &ack), e.callTimeout())
-		lastErr = e.notifierFor(ev).Notify(nctx, e.notification(ev, es, attempt))
-		cancel()
+		ack, lastErr = e.callNotify(ctx, e.notifierFor(ev), e.notification(ev, es, attempt))
 		if lastErr == nil {
 			return e.ack(ctx, ev, name, first, attempt, ack)
 		}
@@ -419,10 +473,7 @@ func (e *notifyEngine) deliverOverdueNotice(ctx context.Context, ev notifyEvent,
 		}
 		first := e.firstAt[key]
 		e.mu.Unlock()
-		var ack NotifyAck
-		nctx, cancel := context.WithTimeout(context.WithValue(ctx, ackKey{}, &ack), e.callTimeout())
-		err = e.notifierFor(notice).Notify(nctx, e.notification(notice, ne, attempt))
-		cancel()
+		ack, err := e.callNotify(ctx, e.notifierFor(notice), e.notification(notice, ne, attempt))
 		if err != nil {
 			e.report(fmt.Errorf("notify: the overdue notice for %s was not delivered (tried again next round): %w", ev.key, err))
 			return
@@ -445,13 +496,12 @@ func (e *notifyEngine) notification(ev notifyEvent, es *NotifyEvent, attempt int
 }
 
 // ack records the sink's acknowledgement. The sink has accepted by now, so a failure to record it is
-// retried in place, with a growing delay, for as long as the round's claim is still ours (half the
-// claim): the cheaper window to close than the duplicate it would cause. If the store stays down
+// retried in place, with a growing delay, for an eighth of the claim: the cheaper window to close than the duplicate it would cause. If the store stays down
 // past that, this process remembers that it delivered and records the acknowledgement on its next
 // round without sending again.
 func (e *notifyEngine) ack(ctx context.Context, ev notifyEvent, name string, first time.Time, attempts int, ack NotifyAck) (roundResult, error) {
 	var lastErr error
-	limit := e.cfg.now().Add(e.cfg.claimTTL / 2)
+	limit := e.cfg.now().Add(e.cfg.claimTTL / 8)
 	delay := e.cfg.ackBackoff
 	for {
 		recs, err := e.trail.Load(ctx, name)

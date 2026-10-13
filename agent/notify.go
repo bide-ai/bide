@@ -195,6 +195,20 @@ func WithNotifyHaltAge(d time.Duration) NotifyOption {
 	})
 }
 
+// WithNotifyAbortedWithin sets how recent an aborted run must be for NotifyPending to raise its
+// run_aborted event (default 24 hours), by the time the run started, which is the only time its
+// journal records. It stops the first sweep after a notifier is enabled from paging for every run
+// that ever aborted. A run whose run:start records no time is not raised. d must be positive.
+func WithNotifyAbortedWithin(d time.Duration) NotifyOption {
+	return notifyOption(func(c *notifyConfig) error {
+		if d <= 0 {
+			return fmt.Errorf("WithNotifyAbortedWithin(%v): must be positive: %w", d, ErrConfig)
+		}
+		c.abortedWithin = d
+		return nil
+	})
+}
+
 // WithNotifyHolder names this process in the claims it writes (default host, pid and a random
 // number). Two processes must not share a name.
 func WithNotifyHolder(id string) NotifyOption {
