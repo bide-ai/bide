@@ -72,7 +72,7 @@ Step that crashes mid-POST would halt that run on the notifier, a halt about a h
 | `outcome_unknown` | a drive ends with `*OutcomeUnknown` | `halted:<run>:<op kind>:<op id>:<attempt n>` |
 | `approval_pending` | a drive ends with `*ApprovalPending` | `approval:<run>:<call id>:<r>` |
 | `run_aborted` | the run reaches the `run:aborted` end marker | `aborted:<run>` |
-| `recovery_failing` | a run fails `N` consecutive recovery passes (default 5): a Resumer error, not resumable, or store errors | `recovery:<run>:<k>` |
+| `recovery_failing` | a run has kept failing recovery for longer than `D` (default 15 minutes): a Resumer error, not resumable, or store errors | `recovery:<run>:<k>` |
 | `notification_overdue` | an event is not acknowledged by its deadline (below) | `overdue:<event key>` |
 | `digest` | a periodic summary of runs halted or waiting longer than `X` (below) | `digest:<bucket>` |
 
@@ -84,9 +84,13 @@ Ids are encoded as attempt keys encode them.
   an m-of-n gate gaining a decision is the same wait, not a new event. A later "still waiting after
   X" reminder is `r = 1, 2, ...` with the same record kinds and the same fold, so it needs no
   protocol change.
-- `k` in a recovery key counts earlier `recovery_failing` events for the run that were cleared by a
-  successful pass. The consecutive-failure counter is in memory, so a restart restarts the count
-  toward `N`; an event, once observed, is durable.
+- `recovery_failing` is measured in time, in the trail, not in a count in memory. A crash loop that
+  restarts the process every few minutes would reset an in-memory counter forever and never alert,
+  and a crash loop is exactly when the alert is needed. The first failing pass appends
+  `failing_since{run, at, cause class}`; later failing passes write nothing; the event is observed
+  once `now - failing_since.at > D`, by whichever process notices, across restarts and processes; a
+  pass that succeeds appends `recovered{at}`, which clears it. `k` in the key is the number of
+  `recovered` records for the run, so a second episode is a new event.
 - Plain errors returned from `Run` are not events: the caller has them. `run_aborted` is the
   terminal failure the engine itself journals.
 
@@ -204,6 +208,8 @@ source of truth.
 | `acked` | after the sink acknowledged | `key`, `first_sent_at`, `acked_at`, `attempts`, `status`, `auth` |
 | `failing` | once, after 8 failed attempts | `key`, `failures`, `at` |
 | `overdue` | once, when the deadline passes unacked | `key`, `at`, `latency` |
+| `failing_since` | a recovery pass failed and no episode is open for the run | `run`, `at`, `cause` (a class, not text) |
+| `recovered` | a recovery pass succeeded while an episode is open | `run`, `at` |
 | `cleared` | the event stopped being current | `key`, `at`, `reason` (`resolved`, `decided`, `ended`) |
 
 The fold of an event: **open** until `acked` or `cleared`; **claimed** if the last `claimed` has
@@ -387,6 +393,7 @@ webhook is a wider audience than the journal.
   "summary": "Run orders-1042 is waiting for approval of tool refund (call call_01).",
   "step": { "op_kind": "tool", "op_id": "call_01", "tool": "refund" },
   "halt": null,
+  "principal": { "on_behalf_of": "desk-7", "authority_ref": null },
   "approval": {
     "tool_use_id": "call_01",
     "tool": "refund",
@@ -420,10 +427,17 @@ webhook is a wider audience than the journal.
   one-click approval), and it would bypass the point of approvals here: a decision is signed with
   the approver's key and counted by the gate. Acting from the notification is a non-goal.
 - **Separation of duties.** The payload carries what a router needs: the gate's approver IDs and
-  its policy, `k` of `n`. bide does not know who requested a run unless the application says, so
-  *keeping a requester from being asked to approve their own request is the receiver's job*, using
-  these fields. The enforcement that matters is not in the message: the gate counts a decision only
-  from a listed approver with a verifying signature, one seat per key.
+  its policy, `k` of `n`, and the run's principal (`principal.on_behalf_of`, `authority_ref`; null
+  when the run has none). bide does know the principal: `run:start` journals it
+  (`agent.Principal`, `agent/runstart.go`) and restores it on every drive. It is the party the agent
+  acts for (a desk, an account, a user), which is not always the person who asked, so a receiver
+  routes *away from* the principal as one input and keeps its own rule for who the requester is.
+  The approvers are then asked by routing, which is advisory. What bide enforces today is that the
+  gate counts a decision only from a listed approver with a verifying signature, one seat per key.
+  It does **not** today refuse a decision because the approver is the run's principal: neither
+  `SubmitDecision`, `TallyApprovals` nor `VerifyApprovals` reads the principal (checked in
+  `agent/approval.go` and `audit/approval.go`), and `OnBehalfOf` is a free-form string with no
+  defined mapping to an approver ID. Open question 12 covers closing that.
 
 ## Fit with the existing pieces
 
@@ -476,7 +490,12 @@ claim-and-append protocol over one trail; no need for Apalache) and checks, with
    one `claimed.until` is in the future; and of two appends at one `seq`, exactly one wins.
 4. **Overdue is raised by the deadline.** An event with no `acked` past `deadline_at` gets
    `overdue` in a bounded number of rounds, whatever the sink does.
-5. **No interference with the run lifecycle.** Every Model 10 invariant holds with the notify actions
+5. **A crash loop still alerts.** A run that fails every recovery pass for longer than `D`, under
+   any number of process crashes and restarts (each restart losing all memory), gets a
+   `recovery_failing` event observed within a bounded number of rounds, and a successful pass
+   clears the episode. This is a case of no silent drop, listed apart because a counter held in
+   memory would miss it.
+6. **No interference with the run lifecycle.** Every Model 10 invariant holds with the notify actions
    interleaved, and the lifecycle's state space (projected on its own variables) is unchanged.
 
 Stale suppression is stated as what holds (no round starts for an event already `cleared`) and what
@@ -520,9 +539,9 @@ does not (the race between the currency check and the send).
 
 ## Open questions
 
-1. **Failure threshold for `recovery_failing`.** Recommend `N = 5` consecutive failed passes,
-   configurable, counted in memory (a restart restarts the count). A durable count would put a
-   record per failed pass in the trail, which is the growth this design avoids.
+1. **Duration for `recovery_failing`.** Recommend `D = 15 minutes` of continuous failure, configurable,
+   measured from the durable `failing_since` record. It costs two records per failure episode
+   (`failing_since`, `recovered`), nothing per failed pass.
 2. **Notify deadline default.** Recommend 5 minutes, configurable per agent and per event kind
    (approvals usually tighter than halts that wait on a provider).
 3. **Where `notification_overdue` goes.** Recommend the same sink by default, and an optional second
@@ -546,5 +565,45 @@ does not (the race between the currency check and the send).
 10. **mTLS scope in v1.** Recommend shipping the client certificate with reload, the custom CA and
     the SPKI pin together, since each is small over `crypto/tls`, and leaving certificate revocation
     checking to the receiver's side. Inbound mTLS waits for the act-from-Slack step.
-11. **When to build it.** Recommend building after the user approves this note, in this order: the
-    `ErrSeqTaken` contract, the trail port and adapter, the model, then the webhook and the sweep.
+11. **When to build it.** Recommend building after the user approves this note, in the order of the
+    build plan below.
+12. **Refuse an approval whose approver is the run's principal.** bide can: the principal is in
+    `run:start`, so `SubmitDecision` can read it, `TallyApprovals` (a pure function) can take it as
+    an input beside the policy and never count a matching approver, and `VerifyApprovals` recounts
+    with the same function from the run's evidence. The obstacles are that `OnBehalfOf` is free-form
+    and not an approver ID, and that the principal may be the customer rather than the requester.
+    Recommend an opt-in policy field (`ExcludePrincipal`, comparing `OnBehalfOf` to an approver ID
+    exactly), enforced at count time and at verify time, with a decision refused early at
+    `SubmitDecision` as feedback only (as `WithDecisionCheck` already is). It changes what the
+    approval tally and evidence record and needs an update to the approval-gate model (Model 1b), so
+    recommend it as its own change, not part of the notifier.
+
+## Build plan
+
+No durable `EventStore` exists today. `audit` defines the interface and ships only `MemEventStore`;
+`store/sqlite` and `store/postgres` implement `agent.Store`, not `EventStore`. Sizes are rough
+(S under a day, M one to three days, L about a week) for one engineer, excluding review.
+
+| # | Item | Size | Depends on | Notes |
+|---|---|---|---|---|
+| 1 | `audit.ErrSeqTaken` contract and a store conformance suite | S | none | the claim protocol rests on it; ships first |
+| 2a | SQLite `EventStore` (`store/sqlite`) | M | 1 | `UNIQUE(run_id, seq)`; passes the suite |
+| 2b | Postgres `EventStore` (`store/postgres`) | M | 1 | same schema shape; multi-process test as in `ha_multiproc_test.go` |
+| 3 | `agent.NotifyTrail` port, `audit.NewNotifyTrail` adapter, leaf kinds, fold | M | 1 (interface) | pure code; the fold is unit and fuzz tested |
+| 4 | Notifier core: events at drive end, observe, claim, backoff, `failing`, `overdue`, `recovery_failing`, delivery goroutine | L | 3 | the crash sweep and DST cases from the existing harnesses |
+| 5 | Webhook with HMAC, rotation, HTTPS-only, mTLS and reload | M | the `Notifier` interface only | can start at once |
+| 6 | `NotifyPending` sweep | S | 4 | |
+| 7 | `audit.VerifyNotifications` and the `bide audit` verb | M | 3 | verifier in `audit` can start early; the verb is a `cmd/bide` change |
+| 8 | Viewer "Needs attention": notified, acknowledged, overdue | M | 3 | reads the trail; `internal/runview` change |
+| 9 | Model 13 (TLC) and its CI shard | M | design approved | starts at once; must land before 4 merges, like the other models |
+| 10 | Guide, recipe update, CHANGELOG, i18n, snippets | S | 4, 5 | docs current with the code |
+| 11 | Principal exclusion (open question 12) | M | none | independent of the notifier; includes Model 1b |
+
+Order and parallelism:
+
+- **First:** 1, then 2a and 2b in parallel with 3. Items 5 and 9 can start the day the note is
+  approved.
+- **Critical path:** 1, 3, 4, 6, 10: about two weeks. Items 2a, 2b, 5, 7, 8, 9 and 11 run beside it.
+- **Gates:** 2a or 2b (one durable store, the one the deployment uses) before 4 can be called
+  crash-safe in production, and 9 before 4 merges. The adversarial review that touches journals,
+  leases and proofs applies to 3, 4 and 9.
