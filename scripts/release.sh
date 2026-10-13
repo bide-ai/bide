@@ -448,7 +448,7 @@ while [ -n "$remaining" ]; do
     note "$m: requires $(bide_requires "$CLONE/$m" | tr '\n' ' ')at $VERSION; builds$($TEST && echo ", vets and tests" || echo " and vets") with GOWORK=off"
   done
   # shellcheck disable=SC2086
-  (cd "$CLONE" && git add -- $(for m in $ready; do echo "$m/go.mod $m/go.sum"; done) \
+  (cd "$CLONE" && git add -- $(for m in $ready; do echo "$m/go.mod"; [ -f "$m/go.sum" ] && echo "$m/go.sum"; done) \
     && git commit --quiet -s -m "release: $(echo $ready | sed 's/ /, /g') require bide $VERSION" \
       -m "Tagged as$(for m in $ready; do printf ' %s/%s' "$m" "$VERSION"; done). This commit is reachable from those tags only; main keeps its replace directives.")
   commit=$(git -C "$CLONE" rev-parse HEAD)
