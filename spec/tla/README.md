@@ -710,14 +710,18 @@ resolution all run around it.
 - **A recorded denial is final.** The pre-pass denies a call whose Load read an `Approve(false)`
   or a failing recorded tally, whatever the gate is now (#70), and records the denial as the
   call's result.
-- **Separation of duties (`ExcludePrincipal`).** A policy may exclude the run's requester
-  (`sod`): the approver id the run's journaled principal names (`Requester`, or `"none"` when the
-  run records none), compared as the gate compares ids (equal, or one spelling of it under
+- **Separation of duties (`ExcludePrincipal`).** A policy may exclude the run's requesters
+  (`sod`): the approver id the run's `run:principal` names (`Requester`, or `"none"` when the run
+  records none) and those of the runs above it (`Ancestors`, a delegated sub-run's chain, each an
+  id or `"none"`), compared as the gate compares ids (equal, or one spelling of one under
   `FoldSame`). The gate's check (`checkRequester`, every evaluation, before a recorded tally is
-  read) refuses such a policy for a run with no requester, or one whose requester leaves fewer
-  than `need` other approvers; the count never seats the requester, and seats no one when the run
-  records no requester. The requester's key holder (`h1` in the configs) signs like anyone else;
-  only the seat is withheld. The requester is a fact of the run, so it is a constant here.
+  read) refuses such a policy for a run in whose chain a requester is unknown, or whose requesters
+  leave fewer than `need` other approvers; the count never seats a requester, and seats no one when
+  a requester is unknown. A requester's key holder (`h1` in the configs) signs like anyone else;
+  only the seat is withheld. The requesters are facts of the run, journaled when it starts, so they
+  are constants here; that a sub-run journals its parent's chain at its first drive is a pure
+  function of the parent's journaled values, which the Go tests drive through a real delegation and
+  its resume.
 
 <!-- modelsync: no-code claims Redeploy ResolverChange -->
 <!-- modelsync: map claims -->
@@ -742,7 +746,7 @@ resolution all run around it.
 | `TallySound` | invariant | a passing recorded tally rests on `need` valid approvals, signed over this exact call, by distinct people (the holders of the signing keys) |
 | `DenialSound` | invariant | a failing recorded tally rests on valid denials and seats the count excluded: an invalid record cannot force a denial |
 | `NoStuckPause` | invariant | the gate never pauses for approvals that are already in (no lockout) |
-| `SeparationOfDuties` | invariant | a recorded tally under a policy that excludes the requester was counted for a run that records one, seats none of the requester's approvals (under any spelling), and, when it passed, rests on `need` approvals from other approvers |
+| `SeparationOfDuties` | invariant | a recorded tally under a policy that excludes the requester was counted for a run that, with every run above it, records one, seats none of the requesters' approvals (the run's own or an ancestor's, under any spelling), and, when it passed, rests on `need` approvals from other approvers |
 
 `AtMostOnce`, `NoLiveOverride` and the rest of model 1's properties are checked in the same runs.
 A denial recorded after a drive's Load, on a process whose deployment has no gate, does not stop
@@ -766,6 +770,8 @@ every drive that read the denial.
 | `ap-sod-fold` | ci | the requester `a3` is `a1` under the case rule (`FoldSame`); 1 of `a1`, `a2` excluding the requester; `h1` and `h2` sign | 191 | 1 s |
 | `ap-sod-infeasible` | ci | 3 of 3 excluding the requester `a1`, one of them: the gate refuses the policy | 942 | 1 s |
 | `ap-sod-no-requester` | ci | a policy that excludes the requester, on a run that records none: the gate refuses it | 102 | <1 s |
+| `ap-sod-chain` | ci | a delegated sub-run: its own requester is `a2`, the run above it was requested by `a1`; 1 of 3 excluding the requesters; `h1`, `h2` and `h3` sign, and only `h3` may count | 1,795 | 7 s |
+| `ap-sod-anonymous-ancestor` | ci | a delegated sub-run under a root run that records no principal: the gate refuses the policy | 102 | 3 s |
 | `deep-ap-m-same` | nightly | m-of-n, two drivers in one process, three decisions, a redeploy; 1 error reply | 5,252,508 | 6 min |
 
 Regressions: `regress/ap-denial-not-final` (#70: a recorded denial honoured only while the tool
@@ -780,7 +786,9 @@ fixed in #109: two approvers on one key with neither the check nor the count loo
 after the resolver changed; `TallySound`, 10 states). `regress/ap-sod-no-exclusion` (the count ignoring the requester exclusion: the requester's
 approval is seated; `SeparationOfDuties`, 131 states), `regress/ap-sod-exact-match` (the requester
 compared with approver ids exactly, so another spelling of the requester's id counts;
-`SeparationOfDuties`, 45 states). Accepted: `limits/ap-resolver-change-denies`
+`SeparationOfDuties`, 45 states), `regress/ap-sod-own-only` (only the sub-run's own requester
+excluded, so the root run's requester approves the delegated call; `SeparationOfDuties`, 23
+states). Accepted: `limits/ap-resolver-change-denies`
 (a change that makes two approvers share a key excludes both seats, and the gate can deny with
 no denial recorded; `NoDenyWithoutDenials`, 8 states).
 
