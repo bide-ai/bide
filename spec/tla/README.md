@@ -1657,7 +1657,6 @@ The mechanisms of section 6 of the plan, as they apply here:
   at-most-once, lease exclusion and no-resume-of-an-ended-run are untouched. It does hold the lease
   a little longer (bounded by `WithReanchorTimeout`), which the model, a safety model, does not
   check for starvation.
-
 - **The model-code map** above names the Go function behind every label, checked by review (the
   plan's adversarial review gate) until trace validation lands.
 - **Regressions.** Every historical bug of this layer that the model can state is a `Bug` value
