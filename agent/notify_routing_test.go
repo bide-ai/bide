@@ -651,3 +651,34 @@ func TestEscalation_AScanDeliversAnOpenStepAndResumesTheChain(t *testing.T) {
 		t.Fatal("the open step was not delivered by the next process")
 	}
 }
+
+// An escalation made by a process that only has the trail (the one that observed the event is gone)
+// still carries the event's detail, read back from the journal: the gate's tool, policy and approvers,
+// and a halt's tool name.
+func TestEscalation_AStepAfterARestartCarriesTheEventsDetailFromTheJournal(t *testing.T) {
+	ctx := context.Background()
+	clk := routeClock()
+	j := memJournal()
+	putGate(t, j, "r", ApprovalWait{ToolUseID: "c1", ToolName: "refund", Need: 2, Approvers: []string{"alice", "bob", "carol"}})
+	def, lead := &fakeSink{}, &fakeSink{}
+	trail := NewMemNotifyTrail()
+	sinks := map[string]Notifier{"default": def, "lead": lead, "head": &fakeSink{}}
+	e1 := escalationEngine(t, j, trail, clk, "p1", sinks)
+	if err := e1.roundRouted(ctx, approvalEvent("alice", "bob", "carol")); err != nil {
+		t.Fatal(err)
+	}
+	clk.advance(6 * time.Minute)
+	e2 := escalationEngine(t, j, trail, clk, "p2", sinks)
+	scanAndFlush(t, e2, "r")
+	for i := 0; i < 3 && lead.count() == 0; i++ {
+		_ = e2.flush(ctx)
+	}
+	if lead.count() != 1 {
+		t.Fatalf("lead = %d", lead.count())
+	}
+	a := lead.calls[0].Approval
+	if a == nil || a.ToolName != "refund" || a.Need != 2 || a.Of != 3 || len(a.Approvers) != 3 {
+		t.Fatalf("approval detail = %+v", a)
+	}
+
+}

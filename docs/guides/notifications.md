@@ -318,9 +318,9 @@ third. Their secrets, mutual TLS and pins are independent.
 process that is running: a long-lived `Agent`, a `RecoverLoop` or a periodic `NotifyPending`. A pass
 that finds an event in the trail picks up the chain where the trail says it is, so a restart or a
 second process neither repeats a step nor skips one; but a deployment with nothing running at the
-deadline escalates at the next pass. An escalation made after a restart carries the event's identity
-(the operation or the tool use ID) and not its full detail: the approvers and the policy of an
-approval, and the cause of a halt, are in the original's notification and in the journal.
+deadline escalates at the next pass. An escalation made after a restart rebuilds the event from the trail and the journal: it
+carries the gate's tool, policy and approvers and the halted call's tool name, but not a halt's cause
+(the original's notification has it).
 
 ## Mutual TLS, a private CA and a key pin
 

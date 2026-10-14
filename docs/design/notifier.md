@@ -421,9 +421,11 @@ of a root run, every recovery pass, every run `NotifyPending` lists), so a proce
 memory leaves it to the next one, which continues from the trail's last step. Two processes that both find
 a step due submit it twice; the trail gives it one `observed` and one deliverer at a time.
 
-**Limit.** An escalation made from the scan, after a restart, rebuilds the event from its key and so carries
-the operation or tool use ID and not the cause of a halt or the approvers of a gate. A deployment with no
-process alive at a deadline escalates at the next pass.
+**Limit.** An escalation made from the scan, after a restart, rebuilds the event from the observed
+record's operation fields and reads the rest from the journal (a gate's `approval-pending` record, the
+halted call's request), so it carries the gate's tool, policy and approvers and the call's tool name, but
+not the cause of a halt, which only the drive that saw it knows. A deployment with no process alive at a
+deadline escalates at the next pass.
 
 ### Behavior fixed by the adversarial review
 

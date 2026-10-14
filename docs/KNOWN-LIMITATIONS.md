@@ -406,8 +406,8 @@ version control). A route is a kind or an approver ID, not a tool or an amount.
 **An escalation needs a running process at the deadline.** Deadlines are read by a process with the
 notifier configured (a long-lived `Agent`, `RecoverLoop` or a periodic `NotifyPending`). Nothing alive
 at the deadline means the step is taken at the next pass, late and not lost. A step made after a restart
-carries the event's identity (operation or tool use ID) and not its full detail (a halt's cause, a gate's
-approvers).
+rebuilds the event from the trail and the journal: it has the gate's tool, policy and approvers and the
+halted call's tool name, but not a halt's cause (the original's notification has it).
 
 **Acknowledged is not read.** A receiver's 2xx means its endpoint accepted the request. For an event
 that is not an approval, an acknowledged step ends the chain, which a person may not have seen; route

@@ -2,6 +2,7 @@ package agent
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"regexp"
@@ -394,6 +395,7 @@ func (e *notifyEngine) escRound(ctx context.Context, w notifyEvent) (roundResult
 	}
 	if level > 0 {
 		if se := st.Events[EscalationKey(base.key, level)]; se.Open() {
+			e.fillDetail(ctx, &base)                // a base rebuilt from the trail has its key's detail only
 			e.w.submit(e.escalationOf(base, level)) // a process that died after observing it: deliver it
 		}
 	}
@@ -407,6 +409,7 @@ func (e *notifyEngine) escRound(ctx context.Context, w notifyEvent) (roundResult
 	if now.Before(due) {
 		return roundResult{next: due}, nil
 	}
+	e.fillDetail(ctx, &base)
 	e.w.submit(e.escalationOf(base, level+1)) // idempotent: its round observes it once
 	return roundResult{next: now.Add(e.backoff(1))}, nil
 }
@@ -443,4 +446,42 @@ func (e *notifyEngine) escalationDue(ctx context.Context, ev notifyEvent, st Not
 	}
 	cur, _, err := e.current(ctx, ev, st)
 	return cur, err
+}
+
+// fillDetail completes ev, an event rebuilt from the trail (its key and operation fields), with the
+// detail its own notifications carry that the journal holds: a gate's tool, policy and approvers, a
+// halted call's tool name. A failed read leaves the event as it is: the escalation is sent without
+// the detail, which is in the journal and in the original's notification.
+func (e *notifyEngine) fillDetail(ctx context.Context, ev *notifyEvent) {
+	if e.j == nil {
+		return
+	}
+	run := ev.opRun
+	if run == "" {
+		run = ev.runID
+	}
+	switch {
+	case ev.approval != nil && ev.approval.ToolName == "":
+		rec, ok, err := e.j.Get(ctx, run, ApprovalPendingStep(ev.approval.ToolUseID))
+		if err != nil || !ok {
+			return
+		}
+		var w ApprovalWait
+		if json.Unmarshal(rec.Result, &w) != nil {
+			return
+		}
+		ev.approval.ToolName = w.ToolName
+		if !w.Single {
+			ev.approval.Need, ev.approval.Of = w.Need, len(w.Approvers)
+			ev.approval.Approvers = slices.Clone(w.Approvers)
+		}
+	case ev.halt != nil && ev.halt.Op.ToolName == "" && ev.halt.Op.Kind == OpTool:
+		recs, err := e.j.History(ctx, run)
+		if err != nil {
+			return
+		}
+		if _, call, ok := FindToolCall(recs, ev.halt.Op.ID); ok {
+			ev.halt.Op.ToolName = call.Name
+		}
+	}
 }
