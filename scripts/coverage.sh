@@ -6,10 +6,14 @@
 #   scripts/coverage.sh [OUT]   (default OUT: coverage.out in the current directory)
 #   scripts/coverage.sh --list  (print the modules it measures)
 #
-# Each module is tested from its own directory with GOWORK=off, as CI does, with -covermode=atomic.
-# The profiles name files by import path, which are distinct across modules, so merging is the
-# first profile's "mode:" line followed by every other line of every profile. The examples, the
-# benchmarks and the integration module are not measured; codecov.yml also ignores generated code.
+# Each module is tested from its own directory with GOWORK=off, as CI does, with -covermode=atomic
+# and -coverpkg=./..., so code in the module counts when any test in the module runs it (the
+# conformance and test-helper packages are exercised by other packages' tests). Every package's run
+# then repeats the blocks it covers, so the profiles are merged by internal/tools/covmerge, which
+# keeps one line per block with the highest count. Files are named by import path, distinct across
+# modules. The tests that need PG_DSN or REDIS_ADDR run when those are set in the environment (the
+# Coverage workflow starts the services) and skip otherwise. The examples, the benchmarks and the
+# integration module are not measured; codecov.yml also ignores generated code.
 set -euo pipefail
 
 # The root module and every published module, less the deprecated cmd/bide-view. The list comes
@@ -27,15 +31,14 @@ mkdir -p "$(dirname "$out")"
 tmp=$(mktemp -d)
 trap 'rm -rf "$tmp"' EXIT
 
+( cd "$root" && GOWORK=off go build -o "$tmp/covmerge" ./internal/tools/covmerge )
+
 n=0
 for m in $MODULES; do
   echo "== coverage $m =="
   n=$((n + 1))
-  ( cd "$root/$m" && GOWORK=off go test -count=1 -covermode=atomic -coverprofile="$tmp/$n.out" ./... )
+  ( cd "$root/$m" && GOWORK=off go test -count=1 -covermode=atomic -coverpkg=./... -coverprofile="$tmp/$n.out" ./... )
 done
 
-echo "mode: atomic" > "$out"
-for f in "$tmp"/*.out; do
-  grep -v '^mode:' "$f" >> "$out" || true
-done
+"$tmp/covmerge" -o "$out" "$tmp"/*.out
 go tool cover -func="$out" | tail -1
