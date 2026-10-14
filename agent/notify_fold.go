@@ -114,22 +114,45 @@ func (s *NotifyState) RecoveryFailingDue(now time.Time, d time.Duration) bool {
 	return s.FailingSince != nil && now.Sub(s.FailingSince.At) > d
 }
 
-// Watched is an event on the NotifyOpenTrail whose all-clear may still be owed.
+// Watched is an event on the open trail whose all-clear may still be owed.
 type Watched struct {
-	Key   string
-	RunID string
-	At    time.Time // when it was listed
+	Key   string    `json:"key"`
+	RunID string    `json:"run_id"`
+	At    time.Time `json:"at"` // when it was listed
 }
 
-// FoldWatch folds the NotifyOpenTrail, in append order, to the events still listed, in the order
-// they were listed. A watch for a key already listed is ignored; an unwatch removes the key, and a
-// later watch lists it again (at the place of its first listing). A record of another kind is
-// ignored.
-func FoldWatch(recs []NotifyRecord) []Watched {
+// OpenState is one open-trail segment folded.
+type OpenState struct {
+	Watched    []Watched // the events listed, in the order they were
+	Backfilled bool      // the events observed before the open trail existed were listed
+	Sealed     string    // the segment that continues this one, "" if it is not sealed
+}
+
+// FoldOpen folds an open-trail segment, in append order. A checkpoint is read only as the first
+// record; a watch for a key already listed is ignored; an unwatch removes the key, and a later watch
+// lists it again; nothing after a seal counts; a record of another kind is ignored.
+func FoldOpen(recs []NotifyRecord) OpenState {
+	var st OpenState
 	var order []string
 	open := map[string]Watched{}
-	for _, r := range recs {
+	for i, r := range recs {
+		if st.Sealed != "" {
+			break
+		}
 		switch r.Kind {
+		case NotifyCheckpoint:
+			if i != 0 {
+				continue
+			}
+			for _, w := range r.Watching {
+				if _, ok := open[w.Key]; !ok {
+					order = append(order, w.Key)
+				}
+				open[w.Key] = w
+			}
+			st.Backfilled = r.Backfilled
+		case NotifyBackfilled:
+			st.Backfilled = true
 		case NotifyWatch:
 			if _, ok := open[r.Key]; !ok {
 				open[r.Key] = Watched{Key: r.Key, RunID: r.RunID, At: r.At}
@@ -137,14 +160,18 @@ func FoldWatch(recs []NotifyRecord) []Watched {
 			}
 		case NotifyUnwatch:
 			delete(open, r.Key)
+		case NotifySeal:
+			st.Sealed = r.Next
 		}
 	}
-	var out []Watched
 	for _, k := range order {
 		if w, ok := open[k]; ok {
-			out = append(out, w)
+			st.Watched = append(st.Watched, w)
 			delete(open, k) // a key listed, unlisted and listed again appears once
 		}
 	}
-	return out
+	return st
 }
+
+// FoldWatch is the events FoldOpen lists.
+func FoldWatch(recs []NotifyRecord) []Watched { return FoldOpen(recs).Watched }

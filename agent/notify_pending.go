@@ -93,6 +93,9 @@ func NotifyPending(ctx context.Context, j *Journal, n Notifier, trail NotifyTrai
 			}
 		}
 	}
+	if err := e.backfillOpen(ctx, lister); err != nil { // events observed before the open trail existed
+		errs = append(errs, fmt.Errorf("notification sweep: list earlier events: %w", err))
+	}
 	e.queueScanOpen() // the all-clear of a run that is no longer unfinished
 	if err := e.flush(context.WithoutCancel(ctx)); err != nil {
 		errs = append(errs, err)

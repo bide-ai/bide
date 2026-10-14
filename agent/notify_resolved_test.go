@@ -3,6 +3,7 @@ package agent
 import (
 	"context"
 	"errors"
+	"fmt"
 	"strings"
 	"sync"
 	"testing"
@@ -475,7 +476,7 @@ func completeRun(t *testing.T, j *Journal, run string) {
 
 func openTrail(t *testing.T, tr NotifyTrail) []NotifyRecord {
 	t.Helper()
-	recs, err := tr.Load(context.Background(), NotifyOpenTrail)
+	recs, err := tr.Load(context.Background(), OpenSegment(resolvedClock().now()))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -538,7 +539,7 @@ func TestResolved_ARecoveryPassFindsTheAllClearOfACompletedRun(t *testing.T) {
 type openFails struct{ NotifyTrail }
 
 func (o openFails) Append(ctx context.Context, trail string, seq int, rec NotifyRecord) error {
-	if trail == NotifyOpenTrail {
+	if strings.HasPrefix(trail, NotifyOpenTrail) {
 		return errors.New("open trail down")
 	}
 	return o.NotifyTrail.Append(ctx, trail, seq, rec)
@@ -567,7 +568,7 @@ func TestResolved_AnEventIsWatchedBeforeItIsObserved(t *testing.T) {
 	if _, err := e2.round(ctx, notifyEvent{key: AbortedKey("r"), kind: NotificationRunAborted, runID: "r"}); err != nil {
 		t.Fatal(err)
 	}
-	if recs := openTrail(t, mem); len(recs) != 1 || recs[0].Kind != NotifyWatch || recs[0].Key != haltEvent().key || recs[0].RunID != "r" {
+	if recs := FoldWatch(openTrail(t, mem)); len(recs) != 1 || recs[0].Key != haltEvent().key || recs[0].RunID != "r" {
 		t.Fatalf("open trail = %+v", recs)
 	}
 }
@@ -578,7 +579,7 @@ func TestResolved_AnOrphanedWatchIsDropped(t *testing.T) {
 	ctx := context.Background()
 	clk := resolvedClock()
 	trail, sink := NewMemNotifyTrail(), &fakeSink{}
-	if err := trail.Append(ctx, NotifyOpenTrail, 0, NotifyRecord{Kind: NotifyWatch, Key: haltEvent().key, RunID: "r", At: clk.now()}); err != nil {
+	if err := trail.Append(ctx, OpenSegment(clk.now()), 0, NotifyRecord{Kind: NotifyWatch, Key: haltEvent().key, RunID: "r", At: clk.now()}); err != nil {
 		t.Fatal(err)
 	}
 	e := testEngine(t, memJournal(), sink, trail, clk, "p1")
@@ -618,7 +619,7 @@ func TestResolved_AnEventNeverClaimedIsUnlisted(t *testing.T) {
 		t.Fatal(res, err)
 	}
 	scanOpenAndFlush(t, e)
-	if recs := openTrail(t, trail); len(recs) != 2 || recs[1].Kind != NotifyUnwatch {
+	if recs := openTrail(t, trail); len(FoldWatch(recs)) != 0 || recs[len(recs)-1].Kind != NotifyUnwatch {
 		t.Fatalf("open trail = %v", recKinds(recs))
 	}
 	if sink.count() != 0 {
@@ -702,4 +703,258 @@ func TestResolved_RecoverLoopFindsTheAllClearOfACompletedRun(t *testing.T) {
 	waitFor(t, func() bool { return len(resolvedCalls(sink)) == 1 })
 	cancel()
 	<-done
+}
+
+// readCounter counts the loads of a trail family and the records they return.
+type readCounter struct {
+	NotifyTrail
+	mu      sync.Mutex
+	loads   map[string]int
+	records int
+}
+
+func newReadCounter() *readCounter {
+	return &readCounter{NotifyTrail: NewMemNotifyTrail(), loads: map[string]int{}}
+}
+
+func (r *readCounter) Load(ctx context.Context, trail string) ([]NotifyRecord, error) {
+	recs, err := r.NotifyTrail.Load(ctx, trail)
+	r.mu.Lock()
+	r.loads[trail]++
+	r.records += len(recs)
+	r.mu.Unlock()
+	return recs, err
+}
+
+func (r *readCounter) reset() { r.mu.Lock(); r.loads, r.records = map[string]int{}, 0; r.mu.Unlock() }
+
+func (r *readCounter) openLoads() (n int) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	for k, v := range r.loads {
+		if strings.HasPrefix(k, NotifyOpenTrail) {
+			n += v
+		}
+	}
+	return n
+}
+
+// Thousands of events over many days: the list a sweep reads stays the size of what is listed now
+// and of one day, not of history, and loses nothing.
+func TestResolved_TheOpenTrailsReadCostDoesNotGrowWithHistory(t *testing.T) {
+	ctx := context.Background()
+	clk := resolvedClock()
+	tr := newReadCounter()
+	e := testEngine(t, memJournal(), &fakeSink{}, tr, clk, "p1")
+	cost := func() int {
+		tr.reset()
+		if _, recs, err := e.openHead(ctx); err != nil {
+			t.Fatal(err)
+		} else {
+			return len(recs)
+		}
+		return 0
+	}
+	var prev []string
+	var atDay30 int
+	for day := range 300 {
+		clk.advance(24 * time.Hour)
+		var keys []string
+		for i := range 20 {
+			k := fmt.Sprintf("halted:d%d:tool:c%d:1", day, i)
+			if err := e.watch(ctx, k, "r"); err != nil {
+				t.Fatal(err)
+			}
+			keys = append(keys, k)
+		}
+		for _, k := range prev { // yesterday's are done
+			if err := e.unwatch(ctx, k); err != nil {
+				t.Fatal(err)
+			}
+		}
+		for _, k := range keys[:18] {
+			if err := e.unwatch(ctx, k); err != nil {
+				t.Fatal(err)
+			}
+		}
+		prev = keys[18:]
+		if day == 30 {
+			atDay30 = cost()
+		}
+	}
+	// 6000 events listed over 300 days; two are open.
+	n := cost()
+	if n > 150 || atDay30 > 150 {
+		t.Fatalf("the head segment holds %d records at day 300 and %d at day 30; it must not grow with history", n, atDay30)
+	}
+	if loads := tr.openLoads(); loads > 3 {
+		t.Fatalf("finding the head took %d loads", loads)
+	}
+	_, recs, _ := e.openHead(ctx)
+	st := FoldOpen(recs)
+	if len(st.Watched) != 2 || st.Watched[0].Key != prev[0] || st.Watched[1].Key != prev[1] {
+		t.Fatalf("listed = %+v, want %v", st.Watched, prev)
+	}
+	// And the work of a scan is that bound too: it reads the head and the trails of the runs listed.
+	tr.reset()
+	if err := e.scanOpen(ctx); err != nil {
+		t.Fatal(err)
+	}
+	if tr.records > 200 {
+		t.Fatalf("a scan read %d records", tr.records)
+	}
+}
+
+// A segment is sealed, and the next begins with a checkpoint of what the sealed one lists; a roller
+// that died between the two is finished by the next writer.
+func TestResolved_ARolloverSealsAndCheckpoints(t *testing.T) {
+	ctx := context.Background()
+	clk := resolvedClock()
+	tr := NewMemNotifyTrail()
+	e := testEngine(t, memJournal(), &fakeSink{}, tr, clk, "p1")
+	if err := e.watch(ctx, "k1", "r"); err != nil {
+		t.Fatal(err)
+	}
+	if err := e.watch(ctx, "k2", "r"); err != nil {
+		t.Fatal(err)
+	}
+	if err := e.unwatch(ctx, "k2"); err != nil {
+		t.Fatal(err)
+	}
+	day1 := OpenSegment(clk.now())
+	// The roller dies after the seal.
+	recs, _ := tr.Load(ctx, day1)
+	clk.advance(24 * time.Hour)
+	day2 := OpenSegment(clk.now())
+	if err := tr.Append(ctx, day1, len(recs), NotifyRecord{Kind: NotifySeal, At: clk.now(), Next: day2}); err != nil {
+		t.Fatal(err)
+	}
+	name, head, err := e.openHead(ctx)
+	if err != nil || name != day2 {
+		t.Fatalf("head = %s, %v", name, err)
+	}
+	if len(head) != 1 || head[0].Kind != NotifyCheckpoint || len(head[0].Watching) != 1 || head[0].Watching[0].Key != "k1" {
+		t.Fatalf("head = %+v", head)
+	}
+	// An ordinary rollover: day 3's writer seals day 2 and checkpoints.
+	clk.advance(24 * time.Hour)
+	if err := e.watch(ctx, "k3", "r"); err != nil {
+		t.Fatal(err)
+	}
+	d2, _ := tr.Load(ctx, day2)
+	if d2[len(d2)-1].Kind != NotifySeal {
+		t.Fatalf("day 2 = %v, want it sealed", recKinds(d2))
+	}
+	_, head, _ = e.openHead(ctx)
+	if got := FoldOpen(head).Watched; len(got) != 2 || got[0].Key != "k1" || got[1].Key != "k3" {
+		t.Fatalf("listed = %+v", got)
+	}
+	// Nothing is appended to a sealed segment: a writer with a stale view loses the race.
+	if err := tr.Append(ctx, day2, len(d2)-1, NotifyRecord{Kind: NotifyWatch, Key: "late", RunID: "r", At: clk.now()}); !errors.Is(err, ErrTrailConflict) {
+		t.Fatalf("append over the seal = %v, want a conflict", err)
+	}
+}
+
+// A process whose clock is a day behind follows the seals to the newest segment and writes there.
+func TestResolved_AProcessWithALaggingClockWritesToTheNewestSegment(t *testing.T) {
+	ctx := context.Background()
+	clkA := resolvedClock()
+	tr := NewMemNotifyTrail()
+	a := testEngine(t, memJournal(), &fakeSink{}, tr, clkA, "a")
+	if err := a.watch(ctx, "k1", "r"); err != nil {
+		t.Fatal(err)
+	}
+	clkB := resolvedClock()
+	b := testEngine(t, memJournal(), &fakeSink{}, tr, clkB, "b")
+	clkA.advance(24 * time.Hour)
+	if err := a.watch(ctx, "k2", "r"); err != nil { // A rolls to day 2
+		t.Fatal(err)
+	}
+	if err := b.watch(ctx, "k3", "r"); err != nil { // B still thinks it is day 1
+		t.Fatal(err)
+	}
+	day1, _ := tr.Load(ctx, OpenSegment(clkB.now()))
+	if last := day1[len(day1)-1]; last.Kind != NotifySeal {
+		t.Fatalf("day 1 ends %v", recKinds(day1))
+	}
+	_, recs, _ := a.openHead(ctx)
+	if got := FoldOpen(recs).Watched; len(got) != 3 {
+		t.Fatalf("listed = %+v, want k1, k2, k3", got)
+	}
+}
+
+// A notifier that was idle for months still finds what it listed, once it has looked back; a
+// fresh deployment looks back once and then finds today's segment at once.
+func TestResolved_AnIdleGapKeepsTheListAndALookupIsCheapAfterTheFirst(t *testing.T) {
+	ctx := context.Background()
+	clk := resolvedClock()
+	tr := newReadCounter()
+	e := testEngine(t, memJournal(), &fakeSink{}, tr, clk, "p1")
+	if _, recs, err := e.openHead(ctx); err != nil || len(recs) != 1 || recs[0].Kind != NotifyCheckpoint {
+		t.Fatal(recs, err)
+	}
+	tr.reset()
+	if _, _, err := e.openHead(ctx); err != nil || tr.openLoads() > 2 {
+		t.Fatalf("the second lookup took %d loads: %v", tr.openLoads(), err)
+	}
+	if res, err := e.round(ctx, haltEvent()); err != nil || !res.done { // delivered, listed
+		t.Fatal(res, err)
+	}
+	clk.advance(200 * 24 * time.Hour)
+	if err := e.scanOpen(ctx); err != nil {
+		t.Fatal(err)
+	}
+	tr.reset()
+	_, recs, err := e.openHead(ctx)
+	if err != nil || tr.openLoads() > 2 {
+		t.Fatalf("after the roll the lookup took %d loads: %v", tr.openLoads(), err)
+	}
+	if got := FoldOpen(recs).Watched; len(got) != 1 || got[0].Key != haltEvent().key {
+		t.Fatalf("the idle gap lost the list: %+v", got)
+	}
+}
+
+// Events observed before the open trail existed are listed, once, by the first sweep: a delivered
+// halt of a run that has since completed gets its all-clear, and a later sweep does not read the
+// finished run again.
+func TestResolved_TheFirstSweepListsEventsObservedBeforeTheOpenTrail(t *testing.T) {
+	ctx := context.Background()
+	clk := sweepClock()
+	j := memJournal()
+	tr := newReadCounter()
+	sink := &fakeSink{}
+	at := clk.now()
+	ev := haltEvent()
+	for i, r := range []NotifyRecord{
+		{Kind: NotifyObserved, Key: ev.key, RunID: "r", At: at, EventKind: string(ev.kind), EventAt: at, DeadlineAt: at.Add(time.Minute)},
+		{Kind: NotifyClaimed, Key: ev.key, RunID: "r", At: at, Holder: "old", Until: at.Add(time.Minute)},
+		{Kind: NotifyAcked, Key: ev.key, RunID: "r", At: at, Attempts: 1, Status: 200},
+	} {
+		if err := tr.Append(ctx, "notify:r", i, r); err != nil {
+			t.Fatal(err)
+		}
+	}
+	putResult(t, j, "r", "c1")
+	completeRun(t, j, "r")
+
+	if err := sweep(t, j, sink, tr, clk); err != nil {
+		t.Fatal(err)
+	}
+	if got := resolvedCalls(sink); len(got) != 1 || got[0].Reason != "ended" {
+		t.Fatalf("calls = %+v", sink.calls)
+	}
+	_, recs, _ := testEngine(t, j, sink, tr, clk, "x").openHead(ctx)
+	if st := FoldOpen(recs); !st.Backfilled || len(st.Watched) != 0 {
+		t.Fatalf("open state = %+v", st)
+	}
+	tr.reset()
+	if err := sweep(t, j, sink, tr, clk); err != nil {
+		t.Fatal(err)
+	}
+	if n := tr.loads["notify:r"]; n != 0 {
+		t.Fatalf("the second sweep read the finished run's trail %d times", n)
+	}
+	if len(resolvedCalls(sink)) != 1 {
+		t.Fatal("sent again")
+	}
 }

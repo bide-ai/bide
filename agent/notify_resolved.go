@@ -224,7 +224,7 @@ func (e *notifyEngine) unwatch(ctx context.Context, key string) error {
 
 func (e *notifyEngine) setWatch(ctx context.Context, key, runID string, want bool) error {
 	for range maxTrailRetries {
-		recs, err := e.trail.Load(ctx, NotifyOpenTrail)
+		name, recs, err := e.openHead(ctx)
 		if err != nil {
 			return err
 		}
@@ -242,7 +242,7 @@ func (e *notifyEngine) setWatch(ctx context.Context, key, runID string, want boo
 		if !want {
 			rec.Kind, rec.RunID = NotifyUnwatch, run
 		}
-		conflict, err := e.appendRec(ctx, NotifyOpenTrail, len(recs), rec)
+		conflict, err := e.appendRec(ctx, name, len(recs), rec)
 		if err != nil {
 			return err
 		}
@@ -251,6 +251,82 @@ func (e *notifyEngine) setWatch(ctx context.Context, key, runID string, want boo
 		}
 	}
 	return fmt.Errorf("notify: trail %s: lost the append race %d times in a row for %s", NotifyOpenTrail, maxTrailRetries, key)
+}
+
+// openLookback is the farthest, in days, newestOpenSegment looks back for a segment: ten years.
+// Every call that finds none writes today's segment, so the look back is long only the first time
+// and after a gap in which no sweep or recovery pass of any process ran.
+const openLookback = 3660
+
+// newestOpenSegment finds the newest non-empty open-trail segment: tomorrow's (a peer whose clock is
+// ahead), today's, then each earlier day. "" if there is none within openLookback days.
+func (e *notifyEngine) newestOpenSegment(ctx context.Context) (string, []NotifyRecord, error) {
+	now := e.cfg.now()
+	for off := -1; off <= openLookback; off++ {
+		n := OpenSegment(now.AddDate(0, 0, -off))
+		r, err := e.trail.Load(ctx, n)
+		if err != nil || len(r) > 0 {
+			return n, r, err
+		}
+	}
+	return "", nil, nil
+}
+
+// openHead returns the open-trail segment writes go to and its records: the newest segment, with
+// seals followed, and rolled forward to today's. A segment from an earlier day is sealed (the
+// append race makes the seal final) and today's starts with a checkpoint of the set listed in it.
+func (e *notifyEngine) openHead(ctx context.Context) (string, []NotifyRecord, error) {
+	today := OpenSegment(e.cfg.now())
+	name, recs, err := e.newestOpenSegment(ctx)
+	if err != nil {
+		return "", nil, err
+	}
+	if name == "" { // none: start today's with an empty checkpoint, so later lookups stop there
+		cp := NotifyRecord{Kind: NotifyCheckpoint, At: e.cfg.now()}
+		if _, aerr := e.appendRec(ctx, today, 0, cp); aerr != nil {
+			return "", nil, aerr
+		}
+		recs, err = e.trail.Load(ctx, today)
+		return today, recs, err
+	}
+	for range 4 * maxTrailRetries {
+		st := FoldOpen(recs)
+		switch {
+		case st.Sealed != "":
+			next := st.Sealed
+			nrecs, lerr := e.trail.Load(ctx, next)
+			if lerr != nil {
+				return "", nil, lerr
+			}
+			if len(nrecs) == 0 { // the roller died after the seal, or is racing: write the checkpoint
+				cp := NotifyRecord{Kind: NotifyCheckpoint, At: e.cfg.now(), Watching: st.Watched, Backfilled: st.Backfilled}
+				if _, aerr := e.appendRec(ctx, next, 0, cp); aerr != nil {
+					return "", nil, aerr
+				}
+				if nrecs, lerr = e.trail.Load(ctx, next); lerr != nil {
+					return "", nil, lerr
+				}
+			}
+			name, recs = next, nrecs
+		case name < today:
+			var aerr error
+			if recs, aerr = e.sealSegment(ctx, name, recs, today); aerr != nil {
+				return "", nil, aerr
+			}
+		default:
+			return name, recs, nil
+		}
+	}
+	return "", nil, fmt.Errorf("notify: trail %s: could not roll the open trail forward", NotifyOpenTrail)
+}
+
+// sealSegment appends a seal to segment name (records recs) naming next, and returns its records
+// afterwards (reloaded if the append lost a race).
+func (e *notifyEngine) sealSegment(ctx context.Context, name string, recs []NotifyRecord, next string) ([]NotifyRecord, error) {
+	if _, err := e.appendRec(ctx, name, len(recs), NotifyRecord{Kind: NotifySeal, At: e.cfg.now(), Next: next}); err != nil {
+		return nil, err
+	}
+	return e.trail.Load(ctx, name)
 }
 
 // queueScanOpen queues the scan of the NotifyOpenTrail.
@@ -263,7 +339,7 @@ func (e *notifyEngine) queueScanOpen() {
 // nobody scanned), without reading every finished run. An event listed for longer than
 // orphanWatchAfter whose run's trail has no record of it is unlisted.
 func (e *notifyEngine) scanOpen(ctx context.Context) error {
-	recs, err := e.trail.Load(ctx, NotifyOpenTrail)
+	_, recs, err := e.openHead(ctx)
 	if err != nil {
 		return err
 	}
@@ -295,4 +371,61 @@ func (e *notifyEngine) scanOpen(ctx context.Context) error {
 		}
 	}
 	return errors.Join(errs...)
+}
+
+// backfillOpen lists, once, the events observed before the open trail existed: every event in a
+// run's trail that can still owe an all-clear. It reads each run's trail one time (the sweep's
+// Lister enumerates every run, finished ones included), and records that it is done, so it is
+// skipped from then on; one that is interrupted starts over, which is safe because listing is
+// idempotent.
+func (e *notifyEngine) backfillOpen(ctx context.Context, lister Lister) error {
+	_, recs, err := e.openHead(ctx)
+	if err != nil {
+		return err
+	}
+	if FoldOpen(recs).Backfilled {
+		return nil
+	}
+	for runID, lerr := range lister.Runs(ctx, RunFilter{}) {
+		if lerr != nil {
+			return lerr
+		}
+		if IsSubRun(runID) || IsSessionRun(runID) {
+			continue
+		}
+		trail, terr := e.trail.Load(ctx, NotifyTrailName(runID))
+		if terr != nil {
+			return terr
+		}
+		st := FoldNotify(trail)
+		for _, key := range st.Keys {
+			es := st.Events[key]
+			if !resolvable(es.Kind) || es.Cleared != nil && es.Rounds == 0 {
+				continue
+			}
+			if r := st.Events[ResolvedKey(key)]; r != nil && r.Acked != nil {
+				continue
+			}
+			if werr := e.watch(ctx, key, es.RunID); werr != nil {
+				return werr
+			}
+		}
+	}
+	for range maxTrailRetries {
+		name, recs, herr := e.openHead(ctx)
+		if herr != nil {
+			return herr
+		}
+		if FoldOpen(recs).Backfilled {
+			return nil
+		}
+		conflict, aerr := e.appendRec(ctx, name, len(recs), NotifyRecord{Kind: NotifyBackfilled, At: e.cfg.now()})
+		if aerr != nil {
+			return aerr
+		}
+		if !conflict {
+			return nil
+		}
+	}
+	return fmt.Errorf("notify: trail %s: lost the append race recording the backfill", NotifyOpenTrail)
 }

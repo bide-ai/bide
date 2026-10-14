@@ -39,6 +39,14 @@ const (
 	// it was cleared before any delivery was attempted, or it was never observed); written to the
 	// NotifyOpenTrail.
 	NotifyUnwatch NotifyRecordKind = "unwatch"
+	// NotifyCheckpoint: the first record of every open-trail segment but the first: the events
+	// listed when the previous segment was sealed, carried forward (Watching, Backfilled), so a read
+	// starts at the newest segment.
+	NotifyCheckpoint NotifyRecordKind = "checkpoint"
+	// NotifySeal: the last record of an open-trail segment; Next names the segment that continues it.
+	NotifySeal NotifyRecordKind = "seal"
+	// NotifyBackfilled: the events observed before the open trail existed were listed (once).
+	NotifyBackfilled NotifyRecordKind = "backfilled"
 )
 
 // NotifyAuth records how a delivery was authenticated, next to the delivery it authenticated.
@@ -95,6 +103,11 @@ type NotifyRecord struct {
 	OpKind string `json:"op_kind,omitempty"`
 	OpID   string `json:"op_id,omitempty"`
 
+	// checkpoint: the events listed, and whether the backfill is done. seal: the next segment.
+	Watching   []Watched `json:"watching,omitempty"`
+	Backfilled bool      `json:"backfilled,omitempty"`
+	Next       string    `json:"next,omitempty"`
+
 	// cleared: "resolved", "decided", "ended" or "recovered". observed, for a resolved event: the same
 	// code, why the event it clears ended. failing_since: a class of cause, never error text.
 	Reason string `json:"reason,omitempty"`
@@ -111,6 +124,14 @@ func (r NotifyRecord) Normalized() NotifyRecord {
 	r.DeadlineAt = normTime(r.DeadlineAt)
 	r.Until = normTime(r.Until)
 	r.FirstSentAt = normTime(r.FirstSentAt)
+	if r.Watching != nil {
+		w := make([]Watched, len(r.Watching))
+		for i, x := range r.Watching {
+			x.At = normTime(x.At)
+			w[i] = x
+		}
+		r.Watching = w
+	}
 	return r
 }
 
@@ -124,12 +145,21 @@ func normTime(t time.Time) time.Time {
 // NotifyTrailName is the name of runID's notification trail in a NotifyTrail.
 func NotifyTrailName(runID string) string { return "notify:" + runID }
 
-// NotifyOpenTrail is the name of the trail that lists the events whose all-clear may still be owed:
-// a watch record before an outcome_unknown, approval_pending or recovery_failing event is observed,
-// an unwatch record when nothing more is owed for it. It belongs to no run, so a sweep or a recovery
-// pass finds the runs that need a scan, including a run that has completed since, without reading
-// every finished run. It grows by two records per such event, ever.
+// NotifyOpenTrail is the prefix of the trail that lists the events whose all-clear may still be
+// owed: a watch record before an outcome_unknown, approval_pending or recovery_failing event is
+// observed, an unwatch record when nothing more is owed for it. It belongs to no run, so a sweep or a
+// recovery pass finds the runs that need a scan, including a run that has completed since, without
+// reading every finished run.
+//
+// It is kept in one segment per UTC day, OpenSegment(t), so a read is bounded by the events listed
+// now and the day's records, not by history. A writer that finds the newest segment is not today's
+// appends seal to it (the append race makes the seal final: nothing is appended after it), then
+// checkpoint, the listed set folded from it, as the first record of today's. The trails stay
+// append-only and verifiable: a checkpoint must equal the fold of the segment it continues.
 const NotifyOpenTrail = "notify:@open"
+
+// OpenSegment is the name of the open-trail segment of the UTC day t is in.
+func OpenSegment(t time.Time) string { return NotifyOpenTrail + ":" + t.UTC().Format("2006-01-02") }
 
 // NotifyDigestTrail is the name of the trail the periodic digest uses; it belongs to no run.
 const NotifyDigestTrail = "notify:@digest"
