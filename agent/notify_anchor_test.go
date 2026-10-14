@@ -113,3 +113,16 @@ func TestRecover_AsksTheTrailToAnchorEachRunsTrail(t *testing.T) {
 		t.Fatalf("the recovery pass anchored %v, want [notify:r]", got)
 	}
 }
+
+// Flushing the notifier, which a process does as it stops, asks the trail to sign what the last
+// deliveries wrote.
+func TestFlush_AsksTheTrailToAnchorWhatItWrote(t *testing.T) {
+	trail := &anchoringTrail{MemNotifyTrail: NewMemNotifyTrail()}
+	e := testEngine(t, memJournal(), &fakeSink{}, trail, &notifyClock{t: sweepClock().t}, "p")
+	if err := e.flush(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	if len(trail.calls) != 1 {
+		t.Fatalf("%d AnchorTrails calls on flush, want 1", len(trail.calls))
+	}
+}
