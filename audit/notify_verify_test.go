@@ -816,3 +816,27 @@ func TestVerifyNotifications_AnUntimedResolutionIsAWarningAndFailsUnderStrict(t 
 		t.Fatalf("strict, unobserved: %v", err)
 	}
 }
+
+// An event observed but never claimed (no delivery attempted) and then decided owes no all-clear.
+func TestVerifyNotifications_NoAllClearIsOwedForAnUnattemptedEvent(t *testing.T) {
+	ctx := context.Background()
+	mem := agent.NewMemStore()
+	j, _ := agent.NewJournal(mem)
+	tool := agent.MustFunc("refund", "refund", func(context.Context, struct{}) (string, error) { return "ok", nil }, agent.WithApproval(agent.SingleApproval()))
+	a, _ := agent.New(agenttest.NewScriptedModel(agenttest.ToolTurn("c1", "refund", `{}`)), j, agent.WithTools(tool))
+	if _, err := a.Run(ctx, "r1", agent.UserText("go")); !errors.As(err, new(*agent.ApprovalPending)) {
+		t.Fatal(err)
+	}
+	if _, _, err := mem.Insert(ctx, "r1", agent.ToolResultStep("c1"), []byte(`{"name":"`+agent.ToolResultStep("c1")+`","kind":"tool_result","tool_use_id":"c1"}`)); err != nil {
+		t.Fatal(err)
+	}
+	jx, _ := audit.ExportJournal(ctx, j, "r1")
+	gate := agent.ApprovalKey("r1", "c1", 0)
+	b := newTrail(t).add(observed(gate, agent.NotificationApprovalPending, 0, 1))
+	rep, err := verifyNotify(t, b, func(in *audit.NotifyVerifyInput) { in.Journals = []audit.JournalExport{jx}; in.Now = time.Now().Add(time.Hour) })
+	for _, e := range rep.Events {
+		if e.Key == agent.ResolvedKey(gate) {
+			t.Fatalf("an all-clear is owed for an event never delivered: %+v (err %v)", e, err)
+		}
+	}
+}
