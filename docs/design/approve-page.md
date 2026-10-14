@@ -30,9 +30,18 @@ The design therefore has two deployment modes, and says plainly what each gives:
    script, no dependencies) built reproducibly from this repository and hosted by the approver's own
    organization, on a dedicated origin, separate from the application and from anything else the
    organization serves. It talks to the application's intake over CORS (`approvals.WithCORS(origin)`,
-   an exact origin, never `*`). The organization pins the bundle: it publishes the bundle's SHA-256
-   (in the release's signed checksums), serves it with Subresource Integrity on the entry point,
-   and reviews an update before deploying it. The application cannot change what the page does.
+   an exact origin, never `*`). A cross-origin request is preceded by an `OPTIONS` preflight that carries
+   no credentials: the handler answers it before mutual TLS or bearer authentication is applied (and
+   before `WithAuth`), with only the CORS headers and no data, or the browser can never reach the
+   endpoint; every other request is authenticated as before. The organization pins the bundle. Subresource Integrity covers
+   only a script or stylesheet a page loads, not the HTML document that loads it, so the entry
+   document itself is pinned another way: the release publishes the SHA-256 of every file in the
+   bundle in its signed checksums, the organization verifies them when it deploys and reviews an
+   update first, and the entry document is a minimal loader that carries `integrity` attributes for
+   the script and stylesheet (so a changed script is refused by the browser even if the host is
+   changed to serve it). A host that can change the entry document can still change what runs, which
+   is why the organization, not the application, hosts it and why a hash check at deploy time, and
+   not the browser, is what pins the document. The application cannot change what the page does.
    Compromise of that origin is the residual risk, and it is the organization's, not the gated
    application's.
 2. **Served by the application (`approvals.WithPage()`, off by default, for development and

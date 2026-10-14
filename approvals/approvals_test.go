@@ -668,6 +668,32 @@ func TestDecision_ReplayAnswersFromTheRecordedTally(t *testing.T) {
 	}
 }
 
+// A decision recorded after the gate settled (by another writer: the endpoint itself refuses one) is
+// not one the gate counted: a recount would count it, and the recorded tally says it was not.
+func TestDecision_LateDecisionIsNotCountedAfterTheTally(t *testing.T) {
+	r := newRig(t)
+	for _, id := range []string{"alice", "bob"} {
+		r.post(r.decision(id, true))
+	}
+	if err := r.run(); err != nil {
+		t.Fatal(err)
+	}
+	b := r.decision("carol", true)
+	at, _ := agent.ParseTimestamp(b.DecidedAt)
+	sig, _ := base64.StdEncoding.DecodeString(b.Signature)
+	d := agent.Decision{RunID: runID, ToolUseID: "c1", ApproverID: "carol", Approved: true, DecidedAt: at, Alg: agent.Alg(b.Alg), Signature: sig}
+	if err := agent.SubmitDecision(context.Background(), r.app, d); err != nil {
+		t.Fatal(err)
+	}
+	status, out := r.post(b)
+	if status != 200 || out["recorded"] != false || out["counted"] != false {
+		t.Fatalf("%d %v", status, out)
+	}
+	if gate := out["gate"].(map[string]any); gate["approved"] != float64(2) {
+		t.Fatalf("the late decision changed the standing: %v", gate)
+	}
+}
+
 // With separation of duties the standing excludes the requester, as the gate does: the requester's
 // decision is recorded and does not count, and the response says so.
 func TestDecision_ExcludePrincipalIsHonored(t *testing.T) {
