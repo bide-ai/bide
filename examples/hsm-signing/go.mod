@@ -10,7 +10,7 @@ require (
 	github.com/bide-ai/bide v0.0.0
 	github.com/bide-ai/bide/signer/gcpkms v0.0.0-00010101000000-000000000000
 	github.com/bide-ai/bide/signer/pkcs11 v0.0.0
-	github.com/blackwell-systems/gcp-kms-emulator v0.9.0
+	github.com/blackwell-systems/gcp-kms-emulator v0.10.0
 	google.golang.org/api v0.288.0
 	google.golang.org/grpc v1.84.0
 )

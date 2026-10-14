@@ -20,9 +20,7 @@ import (
 )
 
 // emulatedKMS starts the Cloud KMS emulator in the test process, points newKMSClient at it, and
-// returns the name of a key version with the algorithm. The Ed25519 path is tested in signer/gcpkms,
-// whose tests skip while the emulator lacks EC_SIGN_ED25519; this module's tests run in the
-// Integration job, where a skip fails the job, so they use P-256 only.
+// returns the name of a key version with the algorithm.
 func emulatedKMS(t *testing.T, alg kmspb.CryptoKeyVersion_CryptoKeyVersionAlgorithm) string {
 	t.Helper()
 	t.Setenv("IAM_MODE", "off")
@@ -64,7 +62,7 @@ func emulatedKMS(t *testing.T, alg kmspb.CryptoKeyVersion_CryptoKeyVersionAlgori
 
 func TestRunWithCloudKMSP256(t *testing.T) {
 	version := emulatedKMS(t, kmspb.CryptoKeyVersion_EC_SIGN_P256_SHA256)
-	env := map[string]string{"BIDE_GCPKMS_KEY_VERSION": version, "BIDE_GCPKMS_SCHEME": "ecdsa-p256"}
+	env := map[string]string{"BIDE_GCPKMS_KEY_VERSION": version, "BIDE_GCPKMS_SCHEME": "ecdsa-p256", "BIDE_GCPKMS_ALLOW_SOFTWARE": "1"}
 	var out bytes.Buffer
 	if err := run(context.Background(), func(k string) string { return env[k] }, &out); err != nil {
 		t.Fatal(err)
@@ -76,16 +74,32 @@ func TestRunWithCloudKMSP256(t *testing.T) {
 	}
 }
 
-// The emulator's keys are software keys, so BIDE_GCPKMS_REQUIRE_HSM refuses them, and so does a
-// scheme the key version is not.
+func TestRunWithCloudKMSEd25519(t *testing.T) {
+	version := emulatedKMS(t, kmspb.CryptoKeyVersion_EC_SIGN_ED25519)
+	env := map[string]string{"BIDE_GCPKMS_KEY_VERSION": version, "BIDE_GCPKMS_ALLOW_SOFTWARE": "1"}
+	var out bytes.Buffer
+	if err := run(context.Background(), func(k string) string { return env[k] }, &out); err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(out.String(), "log public key: ed25519:") {
+		t.Errorf("output:\n%s", out.String())
+	}
+}
+
+// The emulator's keys are software keys, so without BIDE_GCPKMS_ALLOW_SOFTWARE they are refused, and a
+// scheme the key version is not is refused too.
 func TestCloudKMSRefusals(t *testing.T) {
 	version := emulatedKMS(t, kmspb.CryptoKeyVersion_EC_SIGN_P256_SHA256)
 	var out bytes.Buffer
-	env := map[string]string{"BIDE_GCPKMS_KEY_VERSION": version, "BIDE_GCPKMS_SCHEME": "ecdsa-p256", "BIDE_GCPKMS_REQUIRE_HSM": "1"}
-	if err := run(context.Background(), func(k string) string { return env[k] }, &out); !errors.Is(err, gcpkms.ErrNotHSM) {
-		t.Fatalf("RequireHSM on a software key: %v", err)
+	env := map[string]string{"BIDE_GCPKMS_KEY_VERSION": version, "BIDE_GCPKMS_SCHEME": "ecdsa-p256"}
+	if err := run(context.Background(), func(k string) string { return env[k] }, &out); !errors.Is(err, gcpkms.ErrProtectionLevel) {
+		t.Fatalf("a software key by default: %v", err)
 	}
-	env = map[string]string{"BIDE_GCPKMS_KEY_VERSION": version} // the Ed25519 default
+	env["BIDE_GCPKMS_ALLOW_EXTERNAL"] = "1" // external is not software
+	if err := run(context.Background(), func(k string) string { return env[k] }, &out); !errors.Is(err, gcpkms.ErrProtectionLevel) {
+		t.Fatalf("a software key with only external allowed: %v", err)
+	}
+	env = map[string]string{"BIDE_GCPKMS_KEY_VERSION": version, "BIDE_GCPKMS_ALLOW_SOFTWARE": "1"} // the Ed25519 default
 	if err := run(context.Background(), func(k string) string { return env[k] }, &out); !errors.Is(err, gcpkms.ErrNoEd25519) {
 		t.Fatalf("a P-256 key under the default scheme: %v", err)
 	}

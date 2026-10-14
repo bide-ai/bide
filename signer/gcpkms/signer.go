@@ -19,20 +19,23 @@
 //
 // # Protection level
 //
-// Google offers EC_SIGN_ED25519 at protection level SOFTWARE only, so an Ed25519 key is never in
-// an HSM there. EC_SIGN_P256_SHA256 is available in an HSM. Config.RequireHSM makes Open refuse a
-// version whose protection level is not HSM or HSM_SINGLE_TENANT (ErrNotHSM), which means it
-// refuses every Ed25519 version: a deployment that must keep its signing key in an HSM uses
-// audit.AlgECDSAP256. RequireHSM is off by default for that reason, since a default that refuses
-// the default scheme would fail every Ed25519 Open. The level reported on every Sign response must
-// equal the level Open pinned.
+// The signer is fail-closed about where the key lives. By default Open accepts only a version whose
+// protection level is HSM or HSM_SINGLE_TENANT (ErrProtectionLevel otherwise). Config.AllowSoftware
+// also accepts SOFTWARE, and Config.AllowExternal also accepts EXTERNAL and EXTERNAL_VPC (Cloud EKM);
+// both are explicit opt-outs, and a zero Config is the safe one.
+//
+// Google offers EC_SIGN_ED25519 at protection level SOFTWARE only, so Cloud KMS has no HSM-backed
+// Ed25519 key: the Ed25519 scheme opens only with AllowSoftware, and the error without it says so
+// and points to audit.AlgECDSAP256 (EC_SIGN_P256_SHA256), which supports HSM. A deployment that must
+// keep its signing key in an HSM uses P-256 and leaves both options off. The level Open found is
+// pinned: a Sign response that reports another level is ErrIntegrity.
 //
 // # What Open checks, and what each call needs
 //
 // Config.KeyVersion is the full CryptoKeyVersion resource name, including the numeric version ID:
 // there is no "latest" alias, so a rotation to a new primary version cannot change which key
 // signs. Open reads the version (cloudkms.cryptoKeyVersions.get), refuses one that is not ENABLED
-// (ErrVersionState), of the wrong algorithm, or of the wrong protection level, reads its public key
+// (ErrVersionState), of the wrong algorithm, or of a protection level not allowed, reads its public key
 // (cloudkms.cryptoKeyVersions.viewPublicKey), and signs once (cloudkms.cryptoKeyVersions.useToSign;
 // one billed operation) to prove the permission and that the key signs under the public key it
 // reported. A CryptoKeyVersion with an EC_SIGN algorithm exists only in a key with purpose
@@ -79,8 +82,8 @@
 //	if err != nil { ... }
 //	store, err := audit.NewAuditedStore(inner, s, anchor)
 //
-// Set Scheme: audit.AlgECDSAP256 (and RequireHSM: true for an HSM-protected key) for an
-// EC_SIGN_P256_SHA256 key. The client authenticates with Application Default Credentials; none of
+// Set Scheme: audit.AlgECDSAP256 for an EC_SIGN_P256_SHA256 key in an HSM; an Ed25519 key needs
+// AllowSoftware: true. The client authenticates with Application Default Credentials; none of
 // them reach this package.
 package gcpkms
 
@@ -128,9 +131,10 @@ var (
 	ErrNoP256 = errors.New("gcpkms: the key version is not an EC_SIGN_P256_SHA256 signing key")
 	// ErrVersionState means the key version is not ENABLED.
 	ErrVersionState = errors.New("gcpkms: the key version is not enabled")
-	// ErrNotHSM means Config.RequireHSM is set and the key version's protection level is not HSM or
-	// HSM_SINGLE_TENANT.
-	ErrNotHSM = errors.New("gcpkms: the key version is not protected by an HSM")
+	// ErrProtectionLevel means the key version's protection level is not one Config allows: by
+	// default only HSM and HSM_SINGLE_TENANT; AllowSoftware adds SOFTWARE and AllowExternal adds
+	// EXTERNAL and EXTERNAL_VPC.
+	ErrProtectionLevel = errors.New("gcpkms: the key version's protection level is not allowed")
 	// ErrIntegrity means a Cloud KMS response failed an integrity check: a checksum that does not
 	// match, a response for another resource, a missing checksum field, or a protection level that
 	// differs from the one Open pinned.
@@ -205,11 +209,14 @@ type Config struct {
 	// EC_SIGN_ED25519) or audit.AlgECDSAP256 (algorithm EC_SIGN_P256_SHA256). A version of the other
 	// algorithm is refused, never used under the wrong scheme.
 	Scheme audit.Alg
-	// RequireHSM makes Open refuse a version whose protection level is not HSM or HSM_SINGLE_TENANT.
-	// Google offers Ed25519 at protection level SOFTWARE only, so RequireHSM with the Ed25519 scheme
-	// always fails; use audit.AlgECDSAP256. It is off by default because the default scheme is
-	// Ed25519.
-	RequireHSM bool
+	// AllowSoftware lets Open accept a key version at protection level SOFTWARE. Off by default, so
+	// a zero Config requires an HSM. Google offers Ed25519 at SOFTWARE only, so the Ed25519 scheme
+	// needs it; audit.AlgECDSAP256 does not.
+	AllowSoftware bool
+	// AllowExternal lets Open accept a key version at protection level EXTERNAL or EXTERNAL_VPC
+	// (Cloud EKM, a key manager outside Google). Off by default; bide does not look inside the
+	// external manager.
+	AllowExternal bool
 	// Timeout bounds each Cloud KMS call; zero means DefaultTimeout.
 	Timeout time.Duration
 }
@@ -222,17 +229,17 @@ type Signer struct {
 	timeout time.Duration
 	pub     []byte
 	alg     audit.Alg
-	level   kmspb.ProtectionLevel
-	v       audit.Verifier // checks every signature against the public key
+	level   kmspb.ProtectionLevel // pinned at Open
+	v       audit.Verifier        // checks every signature against the public key
 }
 
 var _ audit.Signer = (*Signer)(nil)
 
-// Open reads the key version, checks that it is an enabled signing key of Config.Scheme (and an HSM
-// key if RequireHSM), reads and checks its public key, and signs once to prove the key and the
+// Open reads the key version, checks that it is an enabled signing key of Config.Scheme whose
+// protection level Config allows (HSM by default), reads and checks its public key, and signs once to prove the key and the
 // caller's cloudkms.cryptoKeyVersions.useToSign permission. It fails with ErrNoEd25519 (or ErrNoP256
 // for the P-256 scheme) for a version of another algorithm, ErrVersionState for one that is not
-// enabled, and ErrNotHSM when RequireHSM is not met.
+// enabled, and ErrProtectionLevel for a protection level Config does not allow.
 func Open(ctx context.Context, cfg Config) (*Signer, error) {
 	switch {
 	case cfg.Client == nil:
@@ -278,8 +285,12 @@ func Open(ctx context.Context, cfg Config) (*Signer, error) {
 	if s.level == kmspb.ProtectionLevel_PROTECTION_LEVEL_UNSPECIFIED {
 		return nil, fmt.Errorf("gcpkms: key version %s reports no protection level: %w", cfg.KeyVersion, ErrIntegrity)
 	}
-	if cfg.RequireHSM && s.level != kmspb.ProtectionLevel_HSM && s.level != kmspb.ProtectionLevel_HSM_SINGLE_TENANT {
-		return nil, fmt.Errorf("gcpkms: key version %s has protection level %s, RequireHSM needs HSM or HSM_SINGLE_TENANT: %w", cfg.KeyVersion, s.level, ErrNotHSM)
+	if !levelAllowed(s.level, cfg) {
+		hint := "set Config.AllowSoftware or Config.AllowExternal to accept it"
+		if alg == audit.AlgEd25519 {
+			hint = "Cloud KMS has no HSM-backed Ed25519 key (EC_SIGN_ED25519 is SOFTWARE only): set Config.AllowSoftware to use it, or use audit.AlgECDSAP256 with an EC_SIGN_P256_SHA256 key for an HSM"
+		}
+		return nil, fmt.Errorf("gcpkms: key version %s has protection level %s; %s: %w", cfg.KeyVersion, s.level, hint, ErrProtectionLevel)
 	}
 
 	pk, err := cfg.Client.GetPublicKey(ctx, &kmspb.GetPublicKeyRequest{Name: cfg.KeyVersion, PublicKeyFormat: kmspb.PublicKey_PEM})
@@ -302,6 +313,19 @@ func Open(ctx context.Context, cfg Config) (*Signer, error) {
 		return nil, fmt.Errorf("gcpkms: self-test signature: %w", err)
 	}
 	return s, nil
+}
+
+// levelAllowed reports whether cfg accepts the protection level.
+func levelAllowed(l kmspb.ProtectionLevel, cfg Config) bool {
+	switch l {
+	case kmspb.ProtectionLevel_HSM, kmspb.ProtectionLevel_HSM_SINGLE_TENANT:
+		return true
+	case kmspb.ProtectionLevel_SOFTWARE:
+		return cfg.AllowSoftware
+	case kmspb.ProtectionLevel_EXTERNAL, kmspb.ProtectionLevel_EXTERNAL_VPC:
+		return cfg.AllowExternal
+	}
+	return false
 }
 
 // checkPublicKey checks a GetPublicKey response against the version Open pinned and returns the
