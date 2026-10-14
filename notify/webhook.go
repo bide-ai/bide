@@ -24,6 +24,7 @@ import (
 	"io"
 	"math/rand/v2"
 	"net/http"
+	"net/http/httptrace"
 	"net/url"
 	"os"
 	"strconv"
@@ -339,9 +340,9 @@ func sleepCtx(ctx context.Context, d time.Duration) error {
 // the round cannot fix (a 4xx other than 429, a redirect) is a *PermanentError, which wraps
 // agent.ErrNotifyPermanent.
 func (w *Webhook) Notify(ctx context.Context, n agent.Notification) error {
-	body, err := json.Marshal(w.payload(n))
+	body, err := jsonMarshal(w.payload(n))
 	if err != nil {
-		return fmt.Errorf("notify: encoding the payload: %w", err)
+		return err
 	}
 	res, err := w.deliver(ctx, n.ID, body)
 	if err != nil {
@@ -349,6 +350,14 @@ func (w *Webhook) Notify(ctx context.Context, n agent.Notification) error {
 	}
 	agent.ReportNotifyAck(ctx, agent.NotifyAck{Status: res.Status, Auth: res.Auth})
 	return nil
+}
+
+func jsonMarshal(p Payload) ([]byte, error) {
+	body, err := json.Marshal(p)
+	if err != nil {
+		return nil, fmt.Errorf("notify: encoding the payload: %w", err)
+	}
+	return body, nil
 }
 
 var _ agent.Notifier = (*Webhook)(nil)
@@ -430,6 +439,10 @@ func (w *Webhook) once(ctx context.Context, id string, body []byte, sent time.Ti
 	rctx, cancel := context.WithTimeout(ctx, w.timeout)
 	defer cancel()
 	rctx, pres := withPresented(rctx)
+	if tr, ok := ctx.Value(probeKey{}).(*probeTrace); ok {
+		tr.reset()
+		rctx = httptrace.WithClientTrace(rctx, tr.clientTrace())
+	}
 	ts := sent.Unix()
 	req, err := http.NewRequestWithContext(rctx, http.MethodPost, w.url.String(), bytes.NewReader(body))
 	if err != nil {
