@@ -21,6 +21,7 @@ use (
 	./mcptools
 	./signer/awskms
 	./signer/awskms/emulatortest
+	./signer/azurekv
 	./signer/gcpkms
 	./signer/gcpkms/emulatortest
 	./signer/pkcs11

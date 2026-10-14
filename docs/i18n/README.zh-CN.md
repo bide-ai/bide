@@ -150,7 +150,7 @@ Temporal 借助一个服务器和一支 worker 机群提供持久化执行。而
 - **[审计](../../docs/guides/audit.md)**：带证明的运行。一次运行随附一份可移植的 `RunCertificate`，可用 `bide audit verify-run` 离线核验。可在 `examples/govern/proof-carrying-run` 中运行。
 - **[委派](../../docs/guides/delegation.md)**：子智能体只能收窄的签名能力授权（`Grant`/`SignGrant`），离线核验（`VerifyDelegationChain`），外加从一份干净轨迹中赢得的权限。可在 `examples/govern/delegation`、`examples/govern/authority` 中运行。
 - **[安全模型](../../docs/guides/security-model.md)**：密码学保证的确切范围（完整性、真实性、防篡改性、不可否认性、选择性披露）以及范围之外的内容（机密性）。在依赖审计轨迹之前请读这个。
-- **[密钥托管](../../docs/guides/key-custody.md)**：把审计日志和审批人的签名密钥放在 PKCS#11 HSM（测试用 SoftHSM2）、AWS KMS 或 Google Cloud KMS 中，位于 `audit.Signer` 之后。审批人可用 HSM 或 AWS KMS 中的密钥通过 `bide-hsm approve`（从源码构建）在终端中决定。可运行示例：`examples/hsm-signing`。
+- **[密钥托管](../../docs/guides/key-custody.md)**：把审计日志和审批人的签名密钥放在 PKCS#11 HSM（测试用 SoftHSM2）、AWS KMS、Google Cloud KMS 或 Azure Key Vault（ECDSA P-256）中，位于 `audit.Signer` 之后。审批人可用 HSM 或 AWS KMS 中的密钥通过 `bide-hsm approve`（从源码构建）在终端中决定。可运行示例：`examples/hsm-signing`。
 - **[治理](../../docs/guides/governance.md)**：Tier-2 受治理状态底座（gsm）。把共享状态描述为一个注册表，而 `Build()` 检查每一种交错都收敛，否则返回一个反例。可在 `examples/govern/mesh`、`examples/govern/compose` 中运行。
 - **[通知](../../docs/guides/notifications.md)**：运行停止或等待批准时通知人：已签名的 HTTPS webhook（`notify.NewWebhook`）、一次调用的接收端验证（`notify.Verify`）、可选的双向 TLS 与密钥固定。
 - **[批准](../../docs/guides/hitl-approval.md)**：工具运行之前的持久化人类签核，从 1-of-1 到签名的 m-of-n（`ApprovalPolicy`、`SubmitDecision`），并离线证明 k 位具名批准人在动作之前批准了它（`audit.ApprovalEvidence`、`audit.VerifyApprovals`）。可在 `examples/approval` 中运行。 审批人可用 `bide approve` 在终端中决定（它先显示日志中的调用，再签名），密钥由 `bide keygen` 生成。

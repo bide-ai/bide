@@ -3,7 +3,7 @@
 bide's guarantees rest on who holds the signing keys (see [Security model](security-model.md#key-custody)).
 A key file on the application host is a key the application, and so anyone who compromises it, can use
 freely. This guide puts the key in a PKCS#11 token (a hardware security module, a smart card, or SoftHSM2
-for tests), in AWS KMS or in Google Cloud KMS, behind the same `audit.Signer` interface every signing entry point already takes.
+for tests), in AWS KMS, in Google Cloud KMS or in Azure Key Vault (including Managed HSM), behind the same `audit.Signer` interface every signing entry point already takes.
 Nothing on the verifying side changes: an auditor still holds only the public key, and `bide audit` and
 `audit.NewVerifier` check the signatures as they check any Ed25519 signature.
 
@@ -18,12 +18,13 @@ the duties of the people who can use the key.
 | PKCS#11 | `github.com/bide-ai/bide/signer/pkcs11` (cgo) | Ed25519 (`CKK_EC_EDWARDS`, token lists `CKM_EDDSA`) or ECDSA P-256 (`CKK_EC`, `CKM_ECDSA`) | the audit log (tree heads, evidence seals, grants), approver decisions | SoftHSM2 only |
 | AWS KMS | `github.com/bide-ai/bide/signer/awskms` (pure Go, AWS SDK) | Ed25519 (`ECC_NIST_EDWARDS25519`) or ECDSA P-256 (`ECC_NIST_P256`), usage `SIGN_VERIFY` | the same | a fake KMS client and an in-process AWS KMS emulator (`signer/awskms/emulatortest`), never AWS |
 | Google Cloud KMS | `github.com/bide-ai/bide/signer/gcpkms` (pure Go, Google Cloud SDK) | Ed25519 (`EC_SIGN_ED25519`, software only) or ECDSA P-256 (`EC_SIGN_P256_SHA256`, software or HSM), purpose `ASYMMETRIC_SIGN` | the same | the Cloud KMS emulator (`signer/gcpkms/emulatortest`) and a fake client, never Google Cloud |
+| Azure Key Vault, Managed HSM | `github.com/bide-ai/bide/signer/azurekv` (pure Go, Azure SDK) | ECDSA P-256 only (`EC-HSM`, curve `P-256`, `ES256`) | the same | a fake client and the Azure SDK's in-process fake server, never Azure (Microsoft has no emulator) |
 
-All three are separate Go modules, so the core `github.com/bide-ai/bide` module gains no cgo and no cloud SDK.
-`Config.Scheme` is `audit.AlgEd25519` (the default) or `audit.AlgECDSAP256` (for the Google Cloud KMS signer the default is `audit.AlgECDSAP256`, below); the signers never substitute
+All four are separate Go modules, so the core `github.com/bide-ai/bide` module gains no cgo and no cloud SDK.
+`Config.Scheme` is `audit.AlgEd25519` (the default) or `audit.AlgECDSAP256` (for the Google Cloud KMS signer the default is `audit.AlgECDSAP256`, below; the Azure signer has no `Scheme` because Key Vault has no Ed25519 and it signs `audit.AlgECDSAP256` only); the signers never substitute
 one for the other. A token or key of the wrong kind is refused with `ErrNoEd25519` or `ErrNoP256` and the
 error names what was found. Pick Ed25519 where the HSM or KMS has it; pick ECDSA P-256 where it does not
-(many HSMs, and cloud key services such as Azure Key Vault, and any Google Cloud KMS key that must be in an HSM). Both are FIPS-approved signature schemes.
+(many HSMs, and cloud key services such as Azure Key Vault, which has no Ed25519 at all, and any Google Cloud KMS key that must be in an HSM). Both are FIPS-approved signature schemes.
 ECDSA signatures are randomized, so signing one message twice gives two different valid signatures.
 
 Not supported, and why:
@@ -32,9 +33,9 @@ Not supported, and why:
   `MLDSASigner`, so an HSM signer cannot be one half of a hybrid; and AWS KMS and Google Cloud KMS offer no context parameter
   for ML-DSA, which bide's ML-DSA signatures use for domain separation. Post-quantum anchoring stays with
   software keys; hybrid in a token is deferred (the hybrid scheme stays `ed25519+ml-dsa-65`).
-- **Azure Key Vault.** Planned ([roadmap](../ROADMAP.md#bank-readiness)).
+- **Ed25519 in Azure.** Key Vault and Managed HSM offer EC keys on P-256, P-256K, P-384 and P-521 and RSA keys, and no Ed25519, so the Azure signer is P-256 only.
 - **Hardware attestation**, except for Google Cloud KMS with `VerifyAttestation` (below). The PKCS#11 and AWS
-  KMS signers do not check that the key was generated in hardware or that it is non-extractable; that is a
+  KMS signers (and the Azure one, beyond the key type and `hsmPlatform` the service reports) do not check that the key was generated in hardware or that it is non-extractable; that is a
   property of how the token or key was provisioned.
 
 ## PKCS#11
@@ -361,6 +362,93 @@ the fake client. bide's tests never call Google Cloud, so the interoperability o
 verifier rests on Google's documentation; check it once against your own key version before relying on it (sign a
 message, verify it with `audit.VerifierOf`).
 
+## Azure Key Vault and Managed HSM
+
+Azure has no Ed25519, so this signer is ECDSA P-256 only (`Alg()` is `ecdsa-p256`). Microsoft documents the
+key types and algorithms in [Key types, algorithms, and operations](https://learn.microsoft.com/azure/key-vault/keys/about-keys-details)
+(Managed HSM: [the same page for Managed HSM](https://learn.microsoft.com/azure/key-vault/managed-hsm/about-keys-details)).
+
+### Create the key
+
+A key is HSM-protected when it is an `EC-HSM` key: in a vault of the Premium tier, or in a Managed HSM (every
+Managed HSM key is HSM-protected). A Standard-tier vault can hold only software `EC` and `RSA` keys; HSM-protected key
+types need the Premium SKU ([About keys](https://learn.microsoft.com/azure/key-vault/keys/about-keys): "HSM key types in
+Premium SKU", "Software-protected keys (Key Vault Standard and Premium)").
+
+```sh
+az keyvault key create --vault-name myvault --name bide-audit \
+    --kty EC-HSM --curve P-256 --ops sign verify
+# Managed HSM: az keyvault key create --hsm-name myhsm --name bide-audit --kty EC-HSM --curve P-256 --ops sign verify
+az keyvault key show --vault-name myvault --name bide-audit --query key.kid
+```
+
+The `kid` it prints is the key identifier **with its version**, the value for `Config.KeyID`. Use that value
+and not the version-less one: the version-less identifier means "the latest version", so a rotation or a new
+version created by someone else would silently change which key signs. `Open` refuses an identifier without a
+version. Restricting `--ops` to `sign verify` is good practice; the signer needs only `sign` in `key_ops`.
+
+Give the application's identity the **Key Vault Crypto User** role (Managed HSM: **Managed HSM Crypto User**),
+scoped to this one key, or on a legacy access policy the `get` and `sign` key permissions. Key administrators
+(Crypto Officer) should not hold `sign`.
+
+### Use it
+
+<!-- docsnip: setup ctx context.Context; inner agent.Store; anchor audit.Anchor -->
+```go
+signer, err := azurekv.Open(ctx, azurekv.Config{
+	KeyID: "https://myvault.vault.azure.net/keys/bide-audit/0123456789abcdef0123456789abcdef",
+})
+if err != nil {
+	log.Fatal(err)
+}
+
+store, err := audit.NewAuditedStore(inner, signer, anchor)
+```
+
+Credentials come from `azidentity` and never from a flag or a field holding a secret: by default
+`azidentity.NewDefaultAzureCredential` (workload identity, managed identity, the Azure CLI, the `AZURE_CLIENT_*`
+environment); set `Config.Credential` to pin a specific `azidentity` credential, for example a managed identity
+credential for one identity.
+
+What `Open` checks, and refuses with a typed error:
+
+- **Key type and curve.** `EC-HSM`, or `EC` only with `Config.AllowSoftwareKey`; curve `P-256`; a public point on
+  the curve (`azurekv.ErrNoP256`).
+- **HSM protection.** A software key is refused unless `AllowSoftwareKey` is set (`azurekv.ErrNotHSM`). The default is
+  strict because the reason to use a key service for an audit log is custody the application cannot override; a
+  software key is held in a software cryptographic module of the service (FIPS 140-2 Level 1), and a bank's
+  policy decides whether that is acceptable. A key whose `hsmPlatform` is `0` is treated as a software key: Microsoft documents
+  `0` as "protected by a FIPS 140-2 Level 1 software cryptographic module" (`1` is FIPS 140-2 Level 2 HSM
+  hardware, `2` is FIPS 140-3 Level 3; [Key attributes](https://learn.microsoft.com/azure/key-vault/keys/about-keys-details#key-attributes))
+  and lists "software-protected (HSM Platform 0) keys" under FIPS 140-2 Level 1 in its
+  [compliance table](https://learn.microsoft.com/azure/key-vault/keys/about-keys#compliance). The check is
+  defence in depth on top of the `EC-HSM` key type.
+- **Usable now.** Enabled, now not before `nbf` and before `exp`, and `key_ops` includes `sign`
+  (`azurekv.ErrKeyUnusable`). The window is checked again on every `Sign`, without calling Azure, so a key that
+  expires while the process runs fails with a clear error and not with a 403.
+- **Not exportable.** A key marked exportable, or with a release policy, can leave the service under that policy, so
+  its private key is not confined to it (`azurekv.ErrExportable`).
+- **The pinned key answered.** The identifier in the service's answer (and in each signature response) must name
+  the pinned vault, key and version (`azurekv.ErrKeyMismatch`).
+
+`Sign` hashes the message with SHA-256, sends the 32-byte digest with `ES256` (Key Vault signs a hash and
+does not hash for you), converts the 64-byte `r||s` answer with `audit.ECDSAP256SignatureFromRaw` (which folds
+a high `s` to the low `s` bide verifies), and checks the signature against the public key before returning
+it. Like the other signers it signs once at `Open` (one billed operation; it catches a missing `sign`
+permission). Each call has a timeout (`Config.Timeout`, default 30 seconds).
+
+**Errors carry no response content.** The Azure SDK's errors print the HTTP response, and a credential error can
+print a token endpoint's reply. The signer returns `*azurekv.Error`, holding only the operation, the HTTP status
+and Azure's error code (`Forbidden`, `KeyDisabled`, ...), and a timeout still satisfies
+`errors.Is(err, context.DeadlineExceeded)`. The signer's `String` and `%+v` show the key identifier and the
+public key's ID only.
+
+The Azure signer is tested against a fake client and against the Azure SDK's in-process fake server (so the
+real client's wire types are exercised); bide's tests never call Azure, and Microsoft publishes no Key Vault
+emulator. Microsoft's documentation points at RFC 7518 for `ES256` (64-byte `r||s`) but does not restate the
+encoding, so check the signer once against your own key (sign a message, verify it with `audit.VerifierOf`);
+a service answer in any other encoding makes `Sign` fail rather than return a bad signature.
+
 ## Approver keys
 
 An approver decision is a signature over `agent.ApprovalDecisionBytes(subject, approverID, approved,
@@ -379,7 +467,7 @@ approver (see [Human approval](hitl-approval.md)).
 
 `bide approve` loads the approver's key from a key file, and the `bide` binary is pure Go
 (`CGO_ENABLED=0`, reproducible builds), so it cannot load a PKCS#11 library. `bide-hsm` is the companion
-program for approvers whose keys are in an HSM, on a smart card or token, or in AWS KMS (Google Cloud KMS keys are not supported by `bide-hsm` yet: its references are `pkcs11:` and `awskms:`). `bide-hsm
+program for approvers whose keys are in an HSM, on a smart card or token, or in AWS KMS (Google Cloud KMS and Azure Key Vault keys are not supported by `bide-hsm` yet: its references are `pkcs11:` and `awskms:`). `bide-hsm
 approve` is `bide approve`: one implementation of the display, the confirmation, the signature, the
 record and the receipt (`cmd/bide/internal/approvecmd`), with `-key` naming a key by reference instead of
 a file. `bide-hsm pubkey` prints the entry that enrols a key.
@@ -511,4 +599,4 @@ verify.
 - [Security model: key custody](security-model.md#key-custody): what each key signs and why they are distinct.
 - [Audit](audit.md#signature-schemes-and-post-quantum-anchoring): the signature schemes.
 - [Known limitations](../KNOWN-LIMITATIONS.md#key-custody).
-- `examples/hsm-signing`: the PKCS#11 signer end to end, or the Google Cloud KMS signer with `BIDE_GCPKMS_KEY_VERSION` set.
+- `examples/hsm-signing`: the PKCS#11 signer end to end, the Google Cloud KMS signer with `BIDE_GCPKMS_KEY_VERSION` set, or the Azure Key Vault signer with `BIDE_AZURE_KEY_ID` set.
