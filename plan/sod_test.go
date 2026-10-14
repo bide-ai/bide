@@ -14,7 +14,7 @@ import (
 
 // Separation of duties on a plan flow node's gate: the requester is the flow run's principal,
 // journaled in its run:principal and run:start from the identity its context carries
-// (agent.ContextWithIdentity).
+// (agent.WithIdentity on Flow.Run).
 
 var opsFinRisk = []string{"ops", "finance", "risk"}
 
@@ -22,8 +22,8 @@ func sodGate(need int) *agent.ApprovalPolicy {
 	return &agent.ApprovalPolicy{Need: need, Approvers: opsFinRisk, ExcludePrincipal: true}
 }
 
-func asRequester(id string) context.Context {
-	return agent.ContextWithIdentity(context.Background(), agent.Identity{OnBehalfOf: id})
+func asRequester(id string) agent.RunOption {
+	return agent.WithIdentity(agent.Identity{OnBehalfOf: id})
 }
 
 // The requester's approval never counts on a flow node's gate; the node runs on two approvals
@@ -33,14 +33,14 @@ func TestSoDFlow_RequesterExcluded(t *testing.T) {
 	j := agenttest.MemJournal()
 	refunds := 0
 	f := refundFlow(t, sodGate(2), vf, &refunds)
-	ctx := asRequester("ops")
+	ctx, ops := context.Background(), asRequester("ops")
 
-	_, err := f.Run(ctx, j, "r1", "order-42")
+	_, err := f.Run(ctx, j, "r1", "order-42", ops)
 	pend := asPending(t, err)
 	as["ops"].decide(t, j, pend, true)
 	as["finance"].decide(t, j, pend, true)
 
-	_, err = f.Run(ctx, j, "r1", "order-42")
+	_, err = f.Run(ctx, j, "r1", "order-42", ops)
 	pend = asPending(t, err)
 	if refunds != 0 || pend.Quorum == nil || pend.Quorum.Approved != 1 || !slices.Equal(pend.Quorum.Excluded, []string{"ops"}) {
 		t.Fatalf("refunds = %d, quorum = %+v; want the requester's approval not counted", refunds, pend.Quorum)
@@ -74,13 +74,13 @@ func TestSoDFlow_PrincipalJournaledAndHeld(t *testing.T) {
 	j := agenttest.MemJournal()
 	refunds := 0
 	f := refundFlow(t, sodGate(2), vf, &refunds)
-	_, err := f.Run(asRequester("ops"), j, "r1", "order-42")
+	_, err := f.Run(context.Background(), j, "r1", "order-42", asRequester("ops"))
 	asPending(t, err)
 	start, ok, err := agent.RecordedStart(context.Background(), j, "r1")
 	if err != nil || !ok || start.Principal == nil || start.Principal.OnBehalfOf != "ops" {
 		t.Fatalf("run:start = %+v (%v, %v); want principal ops", start, ok, err)
 	}
-	_, err = f.Run(asRequester("finance"), j, "r1", "order-42")
+	_, err = f.Run(context.Background(), j, "r1", "order-42", asRequester("finance"))
 	if !errors.Is(err, agent.ErrConfig) || !strings.Contains(err.Error(), "principal") {
 		t.Fatalf("Run under another principal = %v; want ErrConfig naming the principal", err)
 	}
@@ -166,7 +166,7 @@ func TestSoDFlow_NoPrincipalRunResumesUnderOne(t *testing.T) {
 	f := refundFlow(t, &agent.ApprovalPolicy{Need: 2, Approvers: opsFinRisk}, vf, &refunds)
 	_, err := f.Run(context.Background(), j, "r1", "order-42")
 	asPending(t, err)
-	_, err = f.Run(asRequester("ops"), j, "r1", "order-42")
+	_, err = f.Run(context.Background(), j, "r1", "order-42", asRequester("ops"))
 	asPending(t, err)
 	start, ok, err := agent.RecordedStart(context.Background(), j, "r1")
 	if err != nil || !ok || start.Principal != nil {
@@ -182,14 +182,14 @@ func TestSoDFlow_NodeRunsRecordTheFlowAsAncestor(t *testing.T) {
 	inner := agenttest.MustNew(agenttest.NewScriptedModel(agenttest.TextTurn("ok")), j)
 	b := New[int, int]("outer")
 	b.Step("work", func(ctx context.Context, n int) (int, error) {
-		_, err := inner.Run(agent.ContextWithIdentity(ctx, agent.Identity{OnBehalfOf: "desk"}), "inner", agent.UserText("go"))
+		_, err := inner.Run(ctx, "inner", agent.UserText("go"), agent.WithIdentity(agent.Identity{OnBehalfOf: "desk"}))
 		return n, err
 	}, ReadOnly())
 	f, err := b.Build()
 	if err != nil {
 		t.Fatal(err)
 	}
-	if _, err := f.Run(asRequester("ops"), j, "flow-1", 1); err != nil {
+	if _, err := f.Run(context.Background(), j, "flow-1", 1, asRequester("ops")); err != nil {
 		t.Fatal(err)
 	}
 	recs, err := j.History(context.Background(), "inner")
@@ -199,5 +199,42 @@ func TestSoDFlow_NodeRunsRecordTheFlowAsAncestor(t *testing.T) {
 	rp, ok := agent.RecordedPrincipal(recs)
 	if !ok || !slices.Equal(rp.Requesters(), []string{"ops", "desk"}) {
 		t.Fatalf("inner run's run:principal = %+v (%v); want desk under ops", rp, ok)
+	}
+}
+
+// A flow run takes agent.WithIdentity alone: any other run option is ErrConfig.
+func TestSoDFlow_RunTakesIdentityOnly(t *testing.T) {
+	_, vf := approvers(opsFinRisk...)
+	refunds := 0
+	f := refundFlow(t, sodGate(2), vf, &refunds)
+	_, err := f.Run(context.Background(), agenttest.MemJournal(), "r1", "order-42", agent.WithSaga())
+	if !errors.Is(err, agent.ErrConfig) || !strings.Contains(err.Error(), "WithIdentity only") {
+		t.Fatalf("Run with WithSaga = %v; want ErrConfig", err)
+	}
+	if _, err := f.Run(context.Background(), agenttest.MemJournal(), "r1", "order-42", nil); !errors.Is(err, agent.ErrConfig) {
+		t.Fatalf("Run with a nil option = %v; want ErrConfig", err)
+	}
+}
+
+// The identity a flow run is given is the one its nodes see, with the journaled principal: a
+// later drive that passes none runs its nodes under the journaled principal.
+func TestSoDFlow_NodesSeeTheRunIdentity(t *testing.T) {
+	j := agenttest.MemJournal()
+	var seen []string
+	b := New[int, int]("who")
+	b.Step("work", func(ctx context.Context, n int) (int, error) {
+		id, _ := agent.IdentityFrom(ctx)
+		seen = append(seen, id.OnBehalfOf)
+		return n, nil
+	}, Idempotent())
+	f, err := b.Build()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := f.Run(context.Background(), j, "w1", 1, asRequester("ops")); err != nil {
+		t.Fatal(err)
+	}
+	if !slices.Equal(seen, []string{"ops"}) {
+		t.Fatalf("the node saw %q; want ops", seen)
 	}
 }

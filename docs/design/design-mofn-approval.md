@@ -277,7 +277,7 @@ A bank's maker-checker rule: whoever initiated an action may not approve it. An 
 
 **Who the requester is.** bide already journals, in each run's `run:start`, the principal the run
 acts for: `RunStart.Principal.OnBehalfOf`, from the `Identity` the deployment starts the run with
-(`WithIdentity`; for a plan flow run, the identity its context carries, which this change makes
+(`WithIdentity`, which `plan.Flow.Run` now takes too, or for a flow run inside an agent run the identity its context carries, which this change makes
 flows journal too). It is restored on every later drive, and a drive under another principal is
 `ErrConfig`, so it cannot change once a call has paused. That, and the principal of every run above
 it, are the requesters. Rejected alternatives:

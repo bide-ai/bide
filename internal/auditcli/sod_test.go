@@ -19,7 +19,7 @@ import (
 // verify-approvals -exclude-principal checks a gate that excludes the requester: it names the
 // requester, ignores their decision, and fails without the flag (the gate enforced another policy).
 func TestCLI_VerifyApprovalsExcludePrincipal(t *testing.T) {
-	ctx := agent.ContextWithIdentity(context.Background(), agent.Identity{OnBehalfOf: "ops"})
+	ctx, ops := context.Background(), agent.WithIdentity(agent.Identity{OnBehalfOf: "ops"})
 	dir := t.TempDir()
 	_, logPriv, _ := ed25519.GenerateKey(rand.Reader)
 	logSigner := audit.Ed25519Signer{Priv: logPriv}
@@ -45,7 +45,7 @@ func TestCLI_VerifyApprovalsExcludePrincipal(t *testing.T) {
 	}
 	store := agenttest.MemJournal()
 	const runID = "run-sod"
-	_, err = f.Run(ctx, store, runID, 120)
+	_, err = f.Run(ctx, store, runID, 120, ops)
 	var pend *agent.ApprovalPending
 	if !errors.As(err, &pend) {
 		t.Fatalf("Run = %v; want a pause at the gate", err)

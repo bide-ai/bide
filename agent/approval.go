@@ -580,7 +580,7 @@ func checkRequester(p ApprovalPolicy, recs []Record, runID, toolUseID string) er
 	}
 	rp, ok := RecordedPrincipal(recs)
 	if !ok {
-		return fmt.Errorf("the approval policy excludes the requester, but run %s records no requester (no run:principal, or one that does not read strictly): start the run with an identity whose OnBehalfOf names the requester (WithIdentity, or ContextWithIdentity for a plan flow): %w", runID, ErrConfig)
+		return fmt.Errorf("the approval policy excludes the requester, but run %s records no requester (no run:principal, or one that does not read strictly): start the run with an identity whose OnBehalfOf names the requester (WithIdentity, for an agent run or a plan flow run): %w", runID, ErrConfig)
 	}
 	at := slices.IndexFunc(recs, IsRunPrincipal)
 	if callIdx, _, found := FindToolCall(recs, toolUseID); found && callIdx < at {

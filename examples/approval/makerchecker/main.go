@@ -81,9 +81,9 @@ func story(ctx context.Context, j *agent.Journal, out func(format string, args .
 		return 0, audit.ApprovalVerdict{}, err
 	}
 	// The maker: the deployment's authentication says ops asked for this refund.
-	asOps := agent.ContextWithIdentity(ctx, agent.Identity{Actor: "refund-desk@1", OnBehalfOf: "ops"})
+	asOps := agent.WithIdentity(agent.Identity{Actor: "refund-desk@1", OnBehalfOf: "ops"})
 	run := func() (*agent.ApprovalPending, error) {
-		_, err := flow.Run(asOps, j, runID, Order{ID: "order-42"})
+		_, err := flow.Run(ctx, j, runID, Order{ID: "order-42"}, asOps)
 		var pend *agent.ApprovalPending
 		if errors.As(err, &pend) {
 			q := pend.Quorum

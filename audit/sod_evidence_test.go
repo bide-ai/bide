@@ -232,7 +232,7 @@ func TestSoDEvidence_ForgedTallyDetected(t *testing.T) {
 // A gated plan flow node: the flow run's principal is the requester, and the evidence verifies
 // offline with the requester's approval ignored.
 func TestSoDEvidence_FlowGate(t *testing.T) {
-	ctx := agent.ContextWithIdentity(context.Background(), agent.Identity{OnBehalfOf: "alice"})
+	ctx, alice := context.Background(), agent.WithIdentity(agent.Identity{OnBehalfOf: "alice"})
 	g := newGate(2, []string{"alice", "bob", "carol"}, []string{"alice", "bob", "carol"})
 	g.policy.ExcludePrincipal = true
 	b := plan.New[int, int]("refunds").WithApproverVerifiers(g.resolver())
@@ -243,7 +243,7 @@ func TestSoDEvidence_FlowGate(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	_, err = f.Run(ctx, g.store, flowRun, 120)
+	_, err = f.Run(ctx, g.store, flowRun, 120, alice)
 	var pend *agent.ApprovalPending
 	if !errors.As(err, &pend) {
 		t.Fatalf("first drive = %v", err)

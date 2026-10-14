@@ -330,8 +330,7 @@ _, err := a.Run(ctx, runID, agent.UserText("refund order 42"),
 	agent.WithIdentity(agent.Identity{Actor: "refund-agent@1.4.2", OnBehalfOf: "ops"}))
 ```
 
-A plan flow run takes it from its context: `f.Run(agent.ContextWithIdentity(ctx, id), journal,
-runID, in)`.
+A plan flow run takes the same option: `f.Run(ctx, journal, runID, in, agent.WithIdentity(id))`.
 
 **Runs above the run are requesters too.** A run started inside another run's drive (a sub-agent's
 run, a delegation through `audit.AttenuatingSubAgent`, a `SubRunFor` run, or a plan flow started

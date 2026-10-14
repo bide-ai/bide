@@ -19,7 +19,7 @@ import (
 // requester's signed approval or list them as pending, and after it the tally's exclusion, the
 // requester's card, and the signature check against the recorded policy (exclusion included).
 func TestSoD_ViewerShowsRequesterExcluded(t *testing.T) {
-	ctx := agent.ContextWithIdentity(context.Background(), agent.Identity{OnBehalfOf: "ops"})
+	ctx, ops := context.Background(), agent.WithIdentity(agent.Identity{OnBehalfOf: "ops"})
 	j := agenttest.MemJournal()
 	policy := agent.ApprovalPolicy{Need: 2, Approvers: []string{"ops", "finance", "risk"}, ExcludePrincipal: true}
 	b := plan.New[int, string]("refunds").WithApproverVerifiers(approverKeys(nil))
@@ -28,7 +28,7 @@ func TestSoD_ViewerShowsRequesterExcluded(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	_, err = f.Run(ctx, j, "f1", 120)
+	_, err = f.Run(ctx, j, "f1", 120, ops)
 	var pend *agent.ApprovalPending
 	if !errors.As(err, &pend) {
 		t.Fatalf("Run = %v; want a pause", err)

@@ -108,7 +108,7 @@ the journal holds, and so what a resume cannot be talked out of by a redeploy:
   halts, if it was attempted with no result);
 - the requesters an approval gate with `ExcludePrincipal` excludes: the run's principal and those
   of the runs above it, in `run:principal` (agent.RunPrincipal) and `run:start`, for a flow run as
-  for an agent run (a flow run journals the identity its context carries, and a run started inside
+  for an agent run (a flow run journals the identity `Flow.Run` is given with `WithIdentity`, or the one its context carries, and a run started inside
   another's drive records that drive's chain). The gate reads them from the journal on every
   evaluation, so a redeploy or a later drive cannot change who may not approve; a gate that
   excluded the requester journals them in its terminal tally, and an offline audit recounts from the

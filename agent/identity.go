@@ -1,6 +1,10 @@
 package agent
 
-import "context"
+import (
+	"context"
+	"fmt"
+	"reflect"
+)
 
 // Identity is the accountability binding for a run: which agent instance acted, on whose behalf,
 // and under what authority. It is assigned by the DEPLOYMENT, not by the model: the operator sets
@@ -39,22 +43,34 @@ func contextWithIdentity(ctx context.Context, id Identity) context.Context {
 	return context.WithValue(ctx, identityKey{}, id)
 }
 
-// ContextWithIdentity binds id to ctx as the acting identity of the runs driven under it, for a
-// caller that drives a run without run options: a plan flow's run (plan.Flow.Run) journals id's
-// OnBehalfOf and AuthorityRef as the run's principal (RunStart.Principal), as an agent run does with
-// WithIdentity, and a later drive under another principal is ErrConfig. An agent run driven under
-// ctx takes id as its identity unless it is given WithIdentity. The principal's OnBehalfOf is the
-// run's requester, which an approval policy with ExcludePrincipal excludes. An empty id returns ctx
-// unchanged.
-func ContextWithIdentity(ctx context.Context, id Identity) context.Context {
-	if id.Empty() {
-		return ctx
-	}
-	return contextWithIdentity(ctx, id)
-}
-
 // IdentityFrom returns the acting identity bound to ctx, and whether one was set.
 func IdentityFrom(ctx context.Context) (Identity, bool) {
 	id, ok := ctx.Value(identityKey{}).(Identity)
 	return id, ok
+}
+
+// flowRunIdentity is journalhook.RunIdentity: the identity a plan flow run's options give. A flow
+// run takes WithIdentity alone: its other settings (the turn limit, a tool filter, a saga, ...) are
+// an agent run's.
+func flowRunIdentity(opts []any) (actor, onBehalfOf, authorityRef string, set bool, err error) {
+	var c runConfig
+	for i, o := range opts {
+		ro, ok := o.(RunOption)
+		if !ok || isNil(ro) {
+			return "", "", "", false, fmt.Errorf("plan flow run option %d is %T, not an agent.RunOption: %w", i, o, ErrConfig)
+		}
+		if err := ro.applyRun(&c); err != nil {
+			return "", "", "", false, err
+		}
+		id := c.identity
+		c.identity = nil
+		if !reflect.DeepEqual(c, runConfig{}) {
+			return "", "", "", false, fmt.Errorf("plan flow run option %d: a flow run takes agent.WithIdentity only: %w", i, ErrConfig)
+		}
+		c.identity = id
+	}
+	if c.identity == nil {
+		return "", "", "", false, nil
+	}
+	return c.identity.Actor, c.identity.OnBehalfOf, c.identity.AuthorityRef, true, nil
 }

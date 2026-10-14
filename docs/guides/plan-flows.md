@@ -261,7 +261,7 @@ out, err := flow.Run(ctx, j, runID, in) // runs the node once 2 of 3 have approv
 - **A gate on an arm not taken never pauses.**
 - **Separation of duties.** A policy with `ExcludePrincipal` never counts the run's requester (see
   [Human approval](hitl-approval.md#separation-of-duties)). A flow run's requester is the
-  `OnBehalfOf` of the identity its context carries when it starts, which the run journals in its
+  `OnBehalfOf` of the identity it starts with (`agent.WithIdentity` passed to `Run`, or the one its context carries inside an agent run), which the run journals in its
   `run:principal` and `run:start` (a flow started inside another run's drive also records that
   run's principal chain, and runs its nodes start record the flow's); a later drive under another principal is `ErrConfig`, and one with none runs under the
   journaled one. A flow run recorded with no principal (every flow run an earlier version started)
@@ -269,8 +269,8 @@ out, err := flow.Run(ctx, j, runID, in) // runs the node once 2 of 3 have approv
 
   <!-- docsnip: setup ctx context.Context; j *agent.Journal; flow *plan.Flow[int, int]; runID string; in int -->
   ```go
-  ctx = agent.ContextWithIdentity(ctx, agent.Identity{OnBehalfOf: "ops"}) // from your auth layer
-  out, err := flow.Run(ctx, j, runID, in) // ops's own approval of a gated node never counts
+  ops := agent.WithIdentity(agent.Identity{OnBehalfOf: "ops"}) // from your auth layer
+  out, err := flow.Run(ctx, j, runID, in, ops) // ops's own approval of a gated node never counts
   ```
 - **The digest commits to the gate**, so a paused run cannot be resumed under a flow whose gate was
   removed or changed. A node carries one gate: `plan.Approval` on a `Tool` whose agent tool declares

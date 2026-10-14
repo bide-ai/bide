@@ -50,6 +50,12 @@ var Gate func(ctx context.Context, j any, runID, key, node string, args json.Raw
 // run's principal chain bound, for the runs the flow's nodes start.
 var Begin func(ctx context.Context, j any, runID string, start any) (runCtx context.Context, completed json.RawMessage, done bool, err error)
 
+// RunIdentity reads a plan flow run's options (each an agent.RunOption): the identity
+// agent.WithIdentity gives, as its Actor, OnBehalfOf and AuthorityRef, and set=false when none does.
+// An option a flow run does not take (every one but WithIdentity), a nil one, or one that is not an
+// agent.RunOption is ErrConfig.
+var RunIdentity func(opts []any) (actor, onBehalfOf, authorityRef string, set bool, err error)
+
 // CheckRunID refuses (ErrConfig) a run ID agent.Run refuses: an empty one, or one of the form the
 // engine reserves for the runs of sub-agents and session turns.
 var CheckRunID func(ctx context.Context, runID string) error

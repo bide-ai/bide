@@ -348,7 +348,7 @@ func beginRun(ctx context.Context, d *Journal, runID string, want RunStart) (con
 		return ctx, nil, false, fmt.Errorf("record %s (run %s): %w", runStartStep, runID, err)
 	}
 	if inserted {
-		return contextWithChain(ctx, runChain(want)), nil, false, nil // a new run: nothing to hold it to, and no completion
+		return bindRun(ctx, want), nil, false, nil // a new run: nothing to hold it to, and no completion
 	}
 	recs := []Record{rec}
 	end, ok, err := firstEndOf(ctx, d, runID, runCompleteStep, runCancelledStep)
@@ -359,7 +359,7 @@ func beginRun(ctx context.Context, d *Journal, runID string, want RunStart) (con
 	if err != nil {
 		return ctx, nil, false, err
 	}
-	ctx = contextWithChain(ctx, runChain(got))
+	ctx = bindRun(ctx, got)
 	switch {
 	case ok && end.name == runCancelledStep:
 		return ctx, nil, false, fmt.Errorf("run %s: %w", runID, ErrRunCancelled) // its first end marker
@@ -470,4 +470,20 @@ func sameMessage(a, b Message) bool {
 	x, errA := marshalJournal(a)
 	y, errB := marshalJournal(b)
 	return errA == nil && errB == nil && bytes.Equal(x, y)
+}
+
+// bindRun binds a flow run's principal chain, and its identity (the drive's Actor, the journaled
+// principal), to ctx for the code its nodes run and the runs they start, as openPlan does for an
+// agent run.
+func bindRun(ctx context.Context, start RunStart) context.Context {
+	ctx = contextWithChain(ctx, runChain(start))
+	idn, _ := IdentityFrom(ctx)
+	if idn.Actor == "" && start.Principal == nil {
+		return ctx
+	}
+	run := Identity{Actor: idn.Actor}
+	if pr := start.Principal; pr != nil {
+		run.OnBehalfOf, run.AuthorityRef = pr.OnBehalfOf, pr.AuthorityRef
+	}
+	return contextWithIdentity(ctx, run)
 }
