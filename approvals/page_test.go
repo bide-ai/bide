@@ -12,6 +12,7 @@ import (
 	"path/filepath"
 	"regexp"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 
@@ -186,6 +187,9 @@ func nodeBin(t *testing.T) string {
 			return p
 		}
 	}
+	if os.Getenv("CI") != "" {
+		t.Fatal("node is not on PATH, and the approve page's script tests must run in CI (the workflow's test jobs install it)")
+	}
 	t.Skip("node is not installed: the page's script tests are skipped")
 	return ""
 }
@@ -347,4 +351,20 @@ func inlineScript(html string) bool {
 		}
 	}
 	return false
+}
+
+// The page's routes answer a stalled body like every other path (WithPage on).
+func TestPage_EveryPathAnswersAStalledBody(t *testing.T) {
+	r := newRig(t, approvals.WithPage(), approvals.WithAuth(allowAll), approvals.WithRateLimit(0, 0), approvals.WithGlobalRateLimit(0, 0))
+	var wg sync.WaitGroup
+	for _, method := range []string{"GET", "POST", "PUT", "DELETE", "HEAD", "OPTIONS"} {
+		for _, path := range []string{"/page/", "/page/page.js", "/page/app.css", "/page/nothing.js", "/page/config.json"} {
+			wg.Go(func() {
+				if got := stalledStatus(t, r, method, path, "text/plain"); got == "" {
+					t.Errorf("%s %s with a stalled body: no response within 700ms", method, path)
+				}
+			})
+		}
+	}
+	wg.Wait()
 }

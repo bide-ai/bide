@@ -45,6 +45,8 @@ The example modules that import separate modules (`examples/approval`, `examples
 cd examples/observability && GOWORK=off go run .
 ```
 
+The approve page's script tests (`approvals/page`, run by `go test ./approvals`) need Node 20 or later on PATH (Ed25519 in WebCrypto) and skip without it locally; with `CI` set they fail instead, and the workflow's test jobs install Node. Regenerate the golden vectors the script is tested against with `GOWORK=off go test ./agent -run TestCanonicalVectors -update` after a deliberate change to the canonical arguments or the decision bytes.
+
 Some tests need external infrastructure and skip without it: `store/postgres` and `govern/postgreslog` look for `PG_DSN`; `govern/redislog` looks for `REDIS_ADDR`; the external convergence oracle cross-check looks for `GSM_AST_CHECKER`. The default suite is green with none of them set. The AWS KMS signer needs no setup: `signer/awskms/emulatortest` starts an in-process AWS KMS emulator ([aws-kms-emulator](https://github.com/blackwell-systems/aws-kms-emulator)) in each test, so `cd signer/awskms/emulatortest && go test ./...` runs everything.
 
 Coverage of the published modules is reported to Codecov by the Coverage workflow (`.github/workflows/coverage.yml`) on pushes to main, and on demand for a branch (see "What CI runs, and when"). It is information only: it is not a required check, an upload failure never fails it, and `codecov.yml` sets the project and patch statuses to informational. Run it locally with `scripts/coverage.sh` (it writes `coverage.out`, one merged profile, and prints the total; `go tool cover -html=coverage.out` shows it by line). Examples, benchmarks and the integration module are not measured.

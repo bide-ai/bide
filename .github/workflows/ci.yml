@@ -303,6 +303,9 @@ jobs:
         with:
           go-version: '1.27'
           cache-dependency-path: '**/go.sum'
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22' # the approve page's script tests (approvals/page) run under Node: Ed25519 in WebCrypto needs 20 or later
       - name: Build & test (the shard's modules and packages)
         shell: bash
         env:
@@ -372,6 +375,9 @@ jobs:
         with:
           go-version: '1.27'
           cache-dependency-path: '**/go.sum'
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22' # the approve page's script tests (approvals/page) run under Node: Ed25519 in WebCrypto needs 20 or later
       - name: Build & test (all modules)
         shell: bash
         run: |
@@ -391,6 +397,9 @@ jobs:
         with:
           go-version: '1.27'
           cache-dependency-path: '**/go.sum'
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22' # the approve page's script tests (approvals/page) run under Node: Ed25519 in WebCrypto needs 20 or later
       - name: Build & test (all modules)
         shell: bash
         run: |
