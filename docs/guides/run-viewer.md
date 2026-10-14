@@ -166,6 +166,7 @@ when it is one.
 The screenshot is of the journal `bide sample` writes (see
 [Explore a sample journal](#explore-a-sample-journal)); `assets/demo/shots.sh` retakes it, and
 the halted flow, the risk map and the violated assertion below, from `bide sample`.
+`assets/demo/shots-approval.sh` retakes the approval run's screenshots (halted, verified, timeline) by driving `examples/approval`.
 
 ## Needs attention
 
