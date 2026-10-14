@@ -235,15 +235,18 @@ func TestAnchorLog_Refusals(t *testing.T) {
 	if err := audit.VerifyAnchorInclusion(root, entries[1], proof); err != nil {
 		t.Fatalf("genuine inclusion: %v", err)
 	}
-	for name, mutate := range map[string]func(e *audit.AnchorEntry){
-		"another position": func(e *audit.AnchorEntry) { e.Seq = 0 },
-		"another run":      func(e *audit.AnchorEntry) { e.RunID = "x" },
-		"a changed head":   func(e *audit.AnchorEntry) { e.STH.TimestampNanos++ },
+	for name, tc := range map[string]struct {
+		mutate func(e *audit.AnchorEntry)
+		want   string
+	}{
+		"another position": {func(e *audit.AnchorEntry) { e.Seq = 0 }, "anchor entry says it is at 0, but the proof is for index 1"},
+		"another run":      {func(e *audit.AnchorEntry) { e.RunID = "x" }, `anchor entry is for run "x", but its tree head is for run "r"`},
+		"a changed head":   {func(e *audit.AnchorEntry) { e.STH.TimestampNanos++ }, "the anchor entry is not leaf 1 of the 2-entry log under this root"},
 	} {
 		e := entries[1]
-		mutate(&e)
-		if err := audit.VerifyAnchorInclusion(root, e, proof); !errors.Is(err, audit.ErrNotVerified) {
-			t.Errorf("%s: err = %v, want ErrNotVerified", name, err)
+		tc.mutate(&e)
+		if err := audit.VerifyAnchorInclusion(root, e, proof); !errors.Is(err, audit.ErrNotVerified) || !strings.Contains(err.Error(), tc.want) {
+			t.Errorf("%s: err = %v, want ErrNotVerified containing %q", name, err, tc.want)
 		}
 	}
 	bad := entries[1]
