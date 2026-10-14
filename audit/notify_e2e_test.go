@@ -229,6 +229,9 @@ func TestVerifyNotifications_TheRealEnginesTrailVerifiesUnderEveryRoutingShape(t
 			return append(recv(s, "lead", "head"), agent.WithNotifyEscalation(agent.NotificationApprovalPending,
 				agent.EscalationStep{Receiver: "lead", Deadline: time.Minute}, agent.EscalationStep{Receiver: "head", Deadline: time.Minute}))
 		}},
+		{name: "a halt with an escalation chain", halt: true, escalate: true, opts: func(s func() agent.Notifier) []agent.NotifyOption {
+			return append(recv(s, "lead"), agent.WithNotifyEscalation(agent.NotificationOutcomeUnknown, agent.EscalationStep{Receiver: "lead", Deadline: time.Minute}))
+		}},
 		{name: "an escalation chain with routed approvers, then an all-clear", approvers: []string{"alice", "bob"}, escalate: true, decide: true, opts: func(s func() agent.Notifier) []agent.NotifyOption {
 			return append(recv(s, "risk", "lead"), agent.WithNotifyApproverRoute("alice", "risk"),
 				agent.WithNotifyEscalation(agent.NotificationApprovalPending, agent.EscalationStep{Receiver: "lead", Deadline: time.Minute}))
