@@ -50,8 +50,9 @@ func (c *cli) notifications(args []string) {
 	maxAck := fs.Duration("max-ack", 0, "fail an event not acknowledged within this long of when the run entered its state (0: only each event's recorded deadline)")
 	grace := fs.Duration("grace", 5*time.Minute, "how long after an event began that a missing observation is not yet a failure (the notifier's detection window)")
 	recovery := fs.Duration("recovery-failing-after", 15*time.Minute, "how long a recovery failure episode may be open before a recovery_failing event is owed (the notifier's setting)")
+	routingPath := fs.String("routing", "", "the notifier's routing as JSON (agent.RoutingOf, from the options the notifier was built with): every event must have been delivered to the receivers it routes to, and each due escalation step to its receiver; without it per-receiver completeness is not checked")
 	strict := fs.Bool("strict", false, "also fail (exit 1) on a warning: a decided gate no notifier observed (unobserved_resolved), or an all-clear owed that cannot be timed (all_clear_untimed)")
-	maxTail := fs.Duration("max-unattested", 0, "fail a trail whose oldest record after its newest signed head is older than this (0: report the gap, do not fail it)")
+	maxTail := fs.Duration("max-unattested", 0, "how long records after a trail's newest signed head may stay unattested: a trail with one older fails, and an event resting on tail records no older than this is accepted WITHOUT a signature, so its content and times (written by whoever appended it) are trusted; 0 (default): strict, an event resting on the tail fails (unattested)")
 	asOf := fs.String("as-of", "", "judge pending events as of this RFC 3339 time (default now)")
 	c.parse(fs, args)
 
@@ -86,6 +87,11 @@ func (c *cli) notifications(args []string) {
 
 	in := audit.NotifyVerifyInput{Unanchored: *unanchored, Now: now, MaxAck: *maxAck, Grace: *grace, RecoveryFailingAfter: *recovery, MaxTailAge: *maxTail, MaxClockSkew: maxClockSkew, Strict: *strict}
 	ok := true
+	if *routingPath != "" {
+		var rt agent.NotifyRouting
+		ok = c.note(c.readJSON(*routingPath, &rt)) && ok
+		in.Routing = &rt
+	}
 	if *pubkey != "" {
 		v, err := readPubKey(*pubkey)
 		ok = c.note(err) && ok

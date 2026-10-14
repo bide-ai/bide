@@ -409,6 +409,35 @@ func TestNotificationsVerb_ShowsTheReceiverOfEachEventAndASummaryPerReceiver(t *
 	}
 }
 
+func TestNotificationsVerb_TailAndReceivers(t *testing.T) {
+	key := agent.ApprovalKey("r1", "c1", 0)
+	f := newNotifyFixture(t)
+	f.add(agent.NotifyRecord{Kind: agent.NotifyObserved, Key: key, At: nat(1), EventKind: "approval_pending", EventAt: nat(0), DeadlineAt: nat(301)},
+		agent.NotifyRecord{Kind: agent.NotifyClaimed, Key: key, At: nat(1), Holder: "p1", Until: nat(121)})
+	trail, sth := f.files() // head over the two records
+	f.add(agent.NotifyRecord{Kind: agent.NotifyAcked, Key: key, At: nat(3), FirstSentAt: nat(3), Attempts: 1, Status: 200})
+	x, _ := audit.ExportNotifyTrail(context.Background(), f.es, nTrail)
+	writeJSON(t, trail, x)
+	args := []string{"notifications", "-trail", trail, "-sth", sth, "-pubkey", f.pub, "-as-of", nat(60).Format(time.RFC3339)}
+	code, out, _ := runCLI(args...)
+	if code != 1 || !strings.Contains(out, "FAIL  unattested") || !strings.Contains(out, "not attested by it") {
+		t.Fatalf("exit %d\n%s", code, out)
+	}
+	if code, out, _ := runCLI(append(args, "-max-unattested", "1h")...); code != 0 {
+		t.Fatalf("-max-unattested: exit %d\n%s", code, out)
+	}
+	rt, _ := agent.RoutingOf(agent.WithNotifyReceiver("oncall", nil2{}), agent.WithNotifyRoute(agent.NotificationApprovalPending, "oncall"))
+	rp := filepath.Join(f.dir, "routing.json")
+	writeJSON(t, rp, rt)
+	if code, out, _ := runCLI(append(args, "-max-unattested", "1h", "-routing", rp, "-as-of", nat(3000).Format(time.RFC3339))...); code != 1 || !strings.Contains(out, "no_delivery") {
+		t.Fatalf("-routing: exit %d\n%s", code, out)
+	}
+}
+
+type nil2 struct{}
+
+func (nil2) Notify(context.Context, agent.Notification) error { return nil }
+
 // A notifier that anchors its trail leaves one head per size in its anchor log; the verb takes any
 // number of them for a trail, checks each, and reports the records the newest does not attest.
 func TestNotificationsVerb_ManyHeadsAndTheUnattestedGap(t *testing.T) {
@@ -435,6 +464,10 @@ func TestNotificationsVerb_ManyHeadsAndTheUnattestedGap(t *testing.T) {
 		t.Fatalf("both heads: exit %d\n%s", code, out)
 	}
 	code, out := run("-sth", early)
+	if code != 1 || !strings.Contains(out, "FAIL  unattested") { // strict by default: the second event rests on the tail
+		t.Fatalf("the early head, strict: exit %d\n%s", code, out)
+	}
+	code, out = run("-sth", early, "-max-unattested", "1h")
 	if code != 0 || !strings.Contains(out, "signed head over the first 3") || !strings.Contains(out, "the last 3 are not attested by it (the oldest, from 2026-10-13T09:00:01Z, for 59s)") {
 		t.Fatalf("the early head only: exit %d\n%s", code, out)
 	}

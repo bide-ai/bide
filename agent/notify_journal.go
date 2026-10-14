@@ -24,6 +24,9 @@ type JournalNotifyEvent struct {
 	// Current reports whether the journal still shows the event unresolved: a gate with no
 	// decision, an attempt with no result. An event that is not current was resolved since.
 	Current bool
+	// Approvers is the gate's approvers, in policy order; nil for a 1-of-1 gate and for other kinds.
+	// A notifier routes an approval by them (NotifyRouting.Receivers).
+	Approvers []string
 	// ResolvedAt is, for a gate that is not current, when its newest decision was journaled (the
 	// decision's recorded_at, by the submitter's clock), so a decision made at the time is known
 	// and an all-clear can be judged late. Zero when the event is current, or when the journal
@@ -60,6 +63,9 @@ func JournalNotifyEvents(runID string, recs []Record) []JournalNotifyEvent {
 		ev := JournalNotifyEvent{
 			Key: ApprovalKey(runID, w.ToolUseID, 0), Kind: NotificationApprovalPending, RunID: root, At: at,
 			Current: !slices.ContainsFunc(gateDecidedNames(w.ToolUseID), func(n string) bool { return have[n] }),
+		}
+		if !w.Single {
+			ev.Approvers = slices.Clone(w.Approvers)
 		}
 		if !ev.Current {
 			for _, d := range recs {

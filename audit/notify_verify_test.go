@@ -454,11 +454,17 @@ func TestVerifyNotifications_TamperedTrailsAreCaught(t *testing.T) {
 		}
 	}
 
-	// A trail grown after the head still verifies, and says how much the head does not attest.
+	// A trail grown after the head reports how much the head does not attest, and the events that
+	// rest on the tail are unattested unless the tail is accepted.
 	b.complete(agent.ApprovalKey("r1", "c3", 0), agent.NotificationApprovalPending, 10)
 	rep, err = anchored(b, b.export(), head, pub)
-	if err != nil || !rep.Trails[0].Anchored || rep.Trails[0].Tail != 3 {
+	if !errors.Is(err, audit.ErrNotVerified) || !rep.Trails[0].Anchored || rep.Trails[0].Tail != 3 {
 		t.Fatalf("grown trail: %v %+v", err, rep.Trails)
+	}
+	rep, err = audit.VerifyNotifications(audit.NotifyVerifyInput{Trails: []audit.NotifyTrailExport{b.export()}, Heads: []audit.SignedTreeHead{head},
+		Verifier: audit.Ed25519Verifier{Pub: pub}, Now: at(60), MaxTailAge: time.Hour})
+	if err != nil || rep.Trails[0].Tail != 3 {
+		t.Fatalf("grown trail, tail accepted: %v %+v", err, rep.Trails)
 	}
 }
 

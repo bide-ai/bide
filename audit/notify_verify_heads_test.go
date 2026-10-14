@@ -5,6 +5,7 @@ import (
 	"context"
 	"crypto/ed25519"
 	"encoding/json"
+	"errors"
 	"slices"
 	"strings"
 	"testing"
@@ -126,7 +127,8 @@ func TestVerifyNotifications_ReportsTheUnattestedGapAndItsAge(t *testing.T) {
 	x := b.export()
 	rep, err := verifyWith(b, x, heads[:3], pub, nil) // the anchor stopped after the third record
 	tr := rep.Trails[0]
-	if err != nil || !tr.Anchored || tr.HeadSize != 3 || tr.Tail != 3 {
+	// The events that rest on the tail are unattested (default MaxTailAge 0 is strict), and the gap is reported.
+	if !errors.Is(err, audit.ErrNotVerified) || !tr.Anchored || tr.HeadSize != 3 || tr.Tail != 3 {
 		t.Fatalf("%v %+v", err, tr)
 	}
 	// Record 3 is the first unattested one; it is dated at(1+5) = 6s after t0 (see complete).

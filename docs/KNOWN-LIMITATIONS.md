@@ -347,7 +347,10 @@ signs and anchors its trail only if you wrap its event store in an `audit.Audite
 `UNANCHORED`. Publishing is in the background and best effort, so records written since the last
 published head (the publisher's delay, or an anchor outage plus the time to the next sweep, or a
 process that died before it published) are read but not attested; the report gives their count
-and age, and `-max-unattested` fails one older than your bound. A record deleted from that tail
+and age, and `-max-unattested` fails one older than your bound. An event that rests on such records is
+`unattested` and fails, unless a nonzero `-max-unattested` accepts recent ones, which are then trusted
+without a signature (content and times). Per-receiver completeness is checked only with the
+notifier's routing (`-routing`). A record deleted from that tail
 cannot be found. The heads attest the trail, not who may sign: a signing key the application can
 use freely lets an attacker who controls the process sign a rewritten trail, so keep it in an HSM or
 KMS signer. The check cannot find an event that left no trace in the journals it was given and no

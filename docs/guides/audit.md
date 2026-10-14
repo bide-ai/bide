@@ -547,7 +547,22 @@ the trail was given must match the prefix it names, so a deleted, reordered or c
 found (exit 1) even when it was rewritten after the newest head was published. Records after the
 newest head are read and reported as not attested: the report gives their count (`tail`), the time of
 the first (`tail_since`) and how long ago that was (`tail_age_ns`), and `-max-unattested` makes a gap
-older than a bound a failure. A record deleted from that tail cannot be found.
+older than a bound a failure. An event whose observation, acknowledgement or clearing is only in the
+tail is `unattested`, a problem, because whoever can append to the stored trail could have written it.
+`-max-unattested` (library `MaxTailAge`) is the one knob: with a nonzero bound, an event resting on
+tail records no older than it is accepted, for a live trail between heads. **Those records are
+accepted without a signature, so their content and their times, which whoever appended them wrote, are
+trusted**; the default, 0, is strict. A record deleted from that tail cannot be found.
+
+**Per-receiver completeness.** The trail cannot know the routing, so by default a fan-out that reached
+one receiver passes. `-routing routing.json` (library `Routing`) takes the notifier's routing, which you write with
+`agent.RoutingOf(opts...)` from the same options you pass the notifier, so the two cannot differ: each
+halt, approval, abort and recovery failure must have a delivery to the receivers `NotifyRouting.Receivers`
+gives it (the method the notifier routes by: the kind's route, or for an approval the receivers of its
+approvers, which needs the gate's journal), and each escalation step that is due (its deadline and the
+grace passed, the event neither acknowledged nor, for an approval, cleared or resolved) must have a
+delivery to its chain's receiver. One without is `no_delivery` and fails. Overdue notices and
+all-clears are not checked this way. Without `-routing`, per-receiver completeness is not checked.
 
 <!-- docsnip: setup ctx context.Context; evStore audit.EventStore; journal *agent.Journal; runID string; signer audit.Signer; verifier audit.Verifier -->
 ```go

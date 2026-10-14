@@ -611,7 +611,11 @@ Two things to set up on your side:
   a prefix of the trail, and the largest is the newest. Records after the newest head are read but
   not attested; the report says how many there are and how long the oldest has gone unattested, and
   `-max-unattested` fails a gap older than the bound you set, which is how you check the anchoring is
-  keeping up. `audit.SignNotifyTrail` remains for signing a head by hand. The head attests the trail,
+  keeping up. An event whose ack, clearing or observation is only in that tail is `unattested` and
+  fails; a nonzero `-max-unattested` accepts it when its tail records are that recent, without a
+  signature, so their content and times are trusted (default 0: strict). Add `-routing routing.json`
+  (from `agent.RoutingOf` with the notifier's options) to require a delivery to each receiver an
+  event routes to and to each due escalation step; without it that is not checked. `audit.SignNotifyTrail` remains for signing a head by hand. The head attests the trail,
   not who may sign: keep the signing key where the application cannot use it freely (an HSM or KMS
   signer), or an attacker who controls the process can sign a rewritten trail.
 - **Give it the journals.** The check of the trail alone cannot find a halt or a gate that no

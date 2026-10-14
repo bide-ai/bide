@@ -809,7 +809,7 @@ bide audit: produce and verify audit proof bundles
 
   notifications (-trail <file>... [-journal <file>...] | -db <file> | -postgres-env <var>) [-run <id>]
                 (-sth <file>... -pubkey <hex|file> | -unanchored) [-max-ack <duration>] [-max-unattested <duration>]
-                [-strict] [-as-of <time>]
+                [-strict] [-routing <file>] [-as-of <time>]
          verify that every event that needed a person (an unknown-outcome halt, an approval gate,
          an aborted run, a recovery failure, an overdue notice, an all-clear) was notified, and
          when it was acknowledged: each trail's leaves are read strictly (an unknown record kind or
@@ -819,11 +819,11 @@ bide audit: produce and verify audit proof bundles
          number per trail, each verified) the trail's first records are exactly what the newest
          head commits to, so a deleted or reordered record is found, and the records after it
          are reported with how many there are and how long the oldest has gone unattested
-         (-max-unattested fails a gap older than that); and each gate, halt and abort a
+         (-max-unattested fails a gap older than that, and bounds the tail an event may rest on); and each gate, halt and abort a
          journal shows must be observed in its run's trail. Each event gets a verdict: acked,
          acked_late (past its deadline or -max-ack), pending, failing, overdue, cleared before
          notification, never_notified, and the command fails (exit 1) on acked_late, overdue and
-         never_notified (and, with -strict, on the warnings unobserved_resolved and all_clear_untimed). -db and -postgres-env (a variable holding the DSN) read every run, or -run,
+         never_notified (and, with -strict, on the warnings unobserved_resolved and all_clear_untimed). A verdict that rests on records after the newest signed head is unattested and fails unless every tail record it rests on is within -max-unattested (default 0: strict; records within a nonzero bound are accepted without a signature); with -routing (the notifier's routing, agent.RoutingOf as JSON), an event with no delivery to a receiver it routes to, or a due escalation step with none, is no_delivery and fails. -db and -postgres-env (a variable holding the DSN) read every run, or -run,
          from a store, in the full bide command; the audit-only build reads exported files
 
   verify-receipts -receipt <file|dir> -journal <export> -heads <file> -pubkey <hex|file> -approver-keys <file>
@@ -931,13 +931,15 @@ Usage of bide audit notifications:
   -max-input-bytes int
     	the largest input file, in bytes, the verb reads; a larger one is an error (default 268435456)
   -max-unattested duration
-    	fail a trail whose oldest record after its newest signed head is older than this (0: report the gap, do not fail it)
+    	how long records after a trail's newest signed head may stay unattested: a trail with one older fails, and an event resting on tail records no older than this is accepted WITHOUT a signature, so its content and times (written by whoever appended it) are trusted; 0 (default): strict, an event resting on the tail fails (unattested)
   -postgres-env string
     	read them from the Postgres journal whose DSN is in this environment variable (never given on the command line)
   -pubkey string
     	the public key as <scheme>:<hex> (ed25519, ecdsa-p256, ml-dsa-65, ed25519+ml-dsa-65) or bare ed25519 hex, or a path to a file containing it; it verifies every -sth
   -recovery-failing-after duration
     	how long a recovery failure episode may be open before a recovery_failing event is owed (the notifier's setting) (default 15m0s)
+  -routing string
+    	the notifier's routing as JSON (agent.RoutingOf, from the options the notifier was built with): every event must have been delivered to the receivers it routes to, and each due escalation step to its receiver; without it per-receiver completeness is not checked
   -run string
     	with -db or -postgres-env: only this run and its sub-runs; default every run
   -sth value
