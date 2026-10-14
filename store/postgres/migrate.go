@@ -32,8 +32,11 @@ var ErrSchemaVersion = errors.New("postgres: the schema version does not match")
 //   - a missing schema, table (steps, leases, schema version, events), next_seq function or
 //     lease index fails with an error that wraps ErrSchemaMissing;
 //   - a schema version other than this package's fails with an error that wraps ErrSchemaVersion;
-//   - a table without the uniqueness the store depends on, and a next_seq function that is not the
-//     one this version creates, fail as they do for Open (agent.ErrConfig).
+//   - a table that differs from the migration's (a column of another type, nullable or missing, a
+//     nondeterministic collation, an extra NOT NULL column with no default, a trigger, rule or
+//     row-level security on it), one without the uniqueness the store depends on, a lease index
+//     that is not the migration's plain btree on the leases table, and a next_seq function that
+//     is not the one this version creates, fail as they do for Open (agent.ErrConfig).
 //
 // Both errors also wrap agent.ErrConfig. The role needs USAGE on the schema, SELECT on the version
 // table (and the steps, leases and events tables), the privileges its operations use (see the
@@ -119,6 +122,9 @@ func MigrateDB(ctx context.Context, db *sql.DB, opts ...Option) (MigrationResult
 		return res, err
 	}
 	if err := s.checkEvents(ctx); err != nil {
+		return res, err
+	}
+	if err := s.checkIndexes(ctx); err != nil {
 		return res, err
 	}
 	return res, nil

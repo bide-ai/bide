@@ -449,6 +449,16 @@ func nextSeqBody(schema string) string {
 // checked here.
 func (l *Log) checkSchema(ctx context.Context) error {
 	schema := l.schema
+	if err := l.checkTable(ctx, "governed_events", eventsColumns); err != nil {
+		return err
+	}
+	if _, _, haveVersion, err := schemaCurrent(ctx, l.db, schema); err != nil {
+		return err
+	} else if haveVersion { // a log from before the version table is version 1 and has none
+		if err := l.checkTable(ctx, versionTable, versionColumns); err != nil {
+			return err
+		}
+	}
 	for _, cols := range [][]string{{"entity", "seq"}, {"entity", "append_id"}} {
 		var ok bool
 		if err := l.db.QueryRowContext(ctx, `SELECT EXISTS (SELECT 1 FROM pg_catalog.pg_index AS i

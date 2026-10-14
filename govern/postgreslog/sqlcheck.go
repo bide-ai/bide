@@ -53,7 +53,7 @@ var (
 	// sqlFunctions are the functions a statement may call.
 	sqlFunctions = map[string]bool{
 		// the catalog reads in checkSchema, schemaCurrent and logSchema
-		"pg_catalog.array_agg": true, "pg_catalog.unnest": true, "pg_catalog.current_schema": true,
+		"pg_catalog.array_agg": true, "pg_catalog.format_type": true, "pg_catalog.unnest": true, "pg_catalog.current_schema": true,
 		"pg_catalog.current_schemas": true, "pg_catalog.array_position": true,
 	}
 	// sqlListWords are the keywords the log's statements follow with a parenthesized list or

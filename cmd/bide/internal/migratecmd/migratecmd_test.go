@@ -30,8 +30,9 @@ func TestUsageErrors(t *testing.T) {
 		want string
 	}{
 		"no variable named": {nil, nil, "-postgres-env is required"},
-		"variable unset":    {nil, []string{"-postgres-env", "X"}, "X is not set"},
-		"a dsn as argument": {map[string]string{"X": "postgres://u:p@h/db"}, []string{"-postgres-env", "X", "postgres://u:secret@h/db"}, "never an argument"},
+		"variable unset":    {nil, []string{"-postgres-env", "X", "-schema", "s"}, "X is not set"},
+		"no schema":         {map[string]string{"X": "postgres://u@h/db"}, []string{"-postgres-env", "X"}, "-schema is required"},
+		"a dsn as argument": {map[string]string{"X": "postgres://u:p@h/db"}, []string{"-postgres-env", "X", "-schema", "s", "postgres://u:secret@h/db"}, "never an argument"},
 	} {
 		code, out, errOut := run(t, tc.env, tc.args...)
 		if code != 2 || !strings.Contains(errOut, tc.want) || out != "" {
@@ -59,7 +60,7 @@ func TestReport(t *testing.T) {
 	migrate = func(context.Context, string, ...postgres.Option) (postgres.MigrationResult, error) {
 		return postgres.MigrationResult{Schema: "app", Before: 1, After: 1}, nil
 	}
-	code, out, _ = run(t, env, "-postgres-env", "D")
+	code, out, _ = run(t, env, "-postgres-env", "D", "-schema", "app")
 	if code != 0 || !strings.Contains(out, "version before 1, after 1") || !strings.Contains(out, "nothing to create") {
 		t.Errorf("current schema: %d %q", code, out)
 	}
@@ -67,7 +68,7 @@ func TestReport(t *testing.T) {
 	migrate = func(context.Context, string, ...postgres.Option) (postgres.MigrationResult, error) {
 		return postgres.MigrationResult{Schema: "app", After: 1, DryRun: true, Created: []string{"index i"}, Statements: []string{"\n CREATE INDEX i\n"}}, nil
 	}
-	code, out, _ = run(t, env, "-postgres-env", "D", "-dry-run")
+	code, out, _ = run(t, env, "-postgres-env", "D", "-schema", "app", "-dry-run")
 	if code != 0 || !strings.Contains(out, "rolled back") || !strings.Contains(out, "CREATE INDEX i;") || !strings.Contains(out, "would create index i") {
 		t.Errorf("dry run: %d %q", code, out)
 	}
@@ -81,7 +82,7 @@ func TestFailureRedactsTheDSN(t *testing.T) {
 	migrate = func(_ context.Context, d string, _ ...postgres.Option) (postgres.MigrationResult, error) {
 		return postgres.MigrationResult{}, fmt.Errorf("cannot connect to %s: password hunter2 refused", d)
 	}
-	code, out, errOut := run(t, map[string]string{"D": dsn}, "-postgres-env", "D")
+	code, out, errOut := run(t, map[string]string{"D": dsn}, "-postgres-env", "D", "-schema", "app")
 	if code != 1 || out != "" || strings.Contains(errOut, "hunter2") || strings.Contains(errOut, dsn) || !strings.Contains(errOut, "cannot connect") {
 		t.Fatalf("code %d, out %q, err %q", code, out, errOut)
 	}
@@ -95,7 +96,7 @@ func TestAgainstPostgres(t *testing.T) {
 	}
 	prefix := fmt.Sprintf("mc%d_", time.Now().UnixNano())
 	env := map[string]string{"D": dsn}
-	code, out, errOut := run(t, env, "-postgres-env", "D", "-prefix", prefix, "-dry-run")
+	code, out, errOut := run(t, env, "-postgres-env", "D", "-schema", "public", "-prefix", prefix, "-dry-run")
 	if code != 0 || !strings.Contains(out, "would create table") || !strings.Contains(out, "CREATE TABLE IF NOT EXISTS") {
 		t.Fatalf("dry run: %d %q %q", code, out, errOut)
 	}
@@ -105,12 +106,46 @@ func TestAgainstPostgres(t *testing.T) {
 	} else if !errors.Is(err, postgres.ErrSchemaMissing) {
 		t.Fatal(err)
 	}
-	code, out, errOut = run(t, env, "-postgres-env", "D", "-prefix", prefix)
+	code, out, errOut = run(t, env, "-postgres-env", "D", "-schema", "public", "-prefix", prefix)
 	if code != 0 || !strings.Contains(out, "version before none, after 1") {
 		t.Fatalf("migrate: %d %q %q", code, out, errOut)
 	}
-	code, out, errOut = run(t, env, "-postgres-env", "D", "-prefix", prefix)
+	code, out, errOut = run(t, env, "-postgres-env", "D", "-schema", "public", "-prefix", prefix)
 	if code != 0 || !strings.Contains(out, "version before 1, after 1") || !strings.Contains(out, "nothing to create") {
 		t.Fatalf("migrate again: %d %q %q", code, out, errOut)
+	}
+}
+
+// redact handles the URL and keyword/value forms of a DSN, bare and quoted passwords, and a
+// password in the query, however the driver echoes them.
+func TestRedact(t *testing.T) {
+	for _, tc := range []struct{ dsn, echo string }{
+		{"postgres://u:hunter2@h/db", "dial postgres://u:hunter2@h/db failed; password hunter2"},
+		{"postgres://u:p%40ss%2Fw@h/db", "failed for user u password p@ss/w and p%40ss%2Fw"},
+		{"postgres://u@h/db?password=hunter2&sslmode=disable", "bad password hunter2"},
+		{"host=h user=u password=hunter2 dbname=db", "failed to connect to `host=h user=u password=hunter2 dbname=db`: password hunter2"},
+		{"host=h user=u password='hun ter\\'2' dbname=db", "failed: password is hun ter'2, dsn host=h user=u password='hun ter\\'2' dbname=db"},
+		{"user=u dbname=db PASSWORD = hunter2", "echo PASSWORD = hunter2 and hunter2"},
+	} {
+		got := redact(tc.echo, tc.dsn)
+		for _, secret := range []string{"hunter2", "hun ter'2", "p@ss/w", "p%40ss%2Fw"} {
+			if strings.Contains(got, secret) {
+				t.Errorf("redact(%q) = %q still holds %q", tc.dsn, got, secret)
+			}
+		}
+	}
+}
+
+// A driver error that echoes a keyword/value DSN with a password is redacted by the command.
+func TestFailureRedactsAKeywordDSN(t *testing.T) {
+	old := migrate
+	t.Cleanup(func() { migrate = old })
+	const dsn = "host=h user=u password=hunter2 dbname=db"
+	migrate = func(_ context.Context, d string, _ ...postgres.Option) (postgres.MigrationResult, error) {
+		return postgres.MigrationResult{}, fmt.Errorf("failed to connect to `%s`: auth failed", d)
+	}
+	code, _, errOut := run(t, map[string]string{"D": dsn}, "-postgres-env", "D", "-schema", "app")
+	if code != 1 || strings.Contains(errOut, "hunter2") || !strings.Contains(errOut, "auth failed") {
+		t.Fatalf("code %d, err %q", code, errOut)
 	}
 }

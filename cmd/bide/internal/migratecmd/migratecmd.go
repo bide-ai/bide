@@ -17,6 +17,7 @@ import (
 	"net/url"
 	"os"
 	"os/signal"
+	"regexp"
 	"strings"
 
 	"github.com/bide-ai/bide/internal/term"
@@ -36,7 +37,7 @@ func Main(args []string, stdout, stderr io.Writer) int {
 	fs := flag.NewFlagSet("bide migrate", flag.ContinueOnError)
 	fs.SetOutput(stderr)
 	fs.Usage = func() {
-		fmt.Fprint(fs.Output(), `usage: bide migrate -postgres-env <var> [-schema <name>] [-prefix <p>] [-dry-run]
+		fmt.Fprint(fs.Output(), `usage: bide migrate -postgres-env <var> -schema <name> [-prefix <p>] [-dry-run]
 
 Creates or checks a Postgres journal's schema, as the role in the DSN, so that the running service
 can open the store with postgres.WithoutMigration under a role that has no DDL rights. Run it
@@ -51,7 +52,8 @@ it back, printing the SQL: that shows what would be created and that the role ma
 leaves nothing behind.
 
 The DSN is read from the environment variable -postgres-env names and is never an argument or
-output. Pin -schema (the schema must exist; the migration does not create it).
+output. -schema is required (the schema must exist; the migration does not create it): without one the tables would
+land in whichever schema the DSN's search path puts first.
 
 Exit status is 0 when the schema is current, 1 when the migration failed, and 2 for a usage
 error.
@@ -60,7 +62,7 @@ error.
 		fs.PrintDefaults()
 	}
 	pgEnv := fs.String("postgres-env", "", "the environment variable holding the owner role's Postgres DSN (required)")
-	schema := fs.String("schema", "", "the schema the tables are in; it must exist (empty: the first schema on the DSN's search path, which warns: pin it)")
+	schema := fs.String("schema", "", "the schema the tables are in; it must exist (required)")
 	prefix := fs.String("prefix", "", `the table name prefix (empty: "bide_")`)
 	dry := fs.Bool("dry-run", false, "run the migration in a transaction, print its SQL, and roll back")
 	color := term.Flag(fs)
@@ -81,15 +83,14 @@ error.
 		return usage(fmt.Sprintf("unexpected argument %q (the DSN is never an argument: set -postgres-env)", fs.Arg(0)))
 	case *pgEnv == "":
 		return usage("-postgres-env is required: the name of the environment variable holding the DSN")
+	case *schema == "":
+		return usage("-schema is required: without one the tables land in the first schema on the DSN's search path")
 	}
 	dsn := getenv(*pgEnv)
 	if dsn == "" {
 		return usage("the environment variable " + *pgEnv + " is not set")
 	}
-	var opts []postgres.Option
-	if *schema != "" {
-		opts = append(opts, postgres.WithSchema(*schema))
-	}
+	opts := []postgres.Option{postgres.WithSchema(*schema)}
 	if *prefix != "" {
 		opts = append(opts, postgres.WithTablePrefix(*prefix))
 	}
@@ -134,13 +135,50 @@ func report(w io.Writer, st term.Style, res postgres.MigrationResult) {
 	}
 }
 
-// redact removes the DSN and its password from msg: a driver may echo what it was given.
+// redact removes the DSN and its password from msg: a driver may echo what it was given. It
+// handles a URL DSN (the password, encoded or not, and a password query parameter) and a
+// keyword/value DSN (password=secret, password='a b').
 func redact(msg, dsn string) string {
-	msg = strings.ReplaceAll(msg, dsn, "<dsn>")
-	if u, err := url.Parse(dsn); err == nil && u.User != nil {
-		if pw, ok := u.User.Password(); ok && pw != "" {
-			msg = strings.ReplaceAll(msg, pw, "<password>")
+	secrets := []string{dsn}
+	if u, err := url.Parse(dsn); err == nil && strings.Contains(dsn, "://") {
+		if u.User != nil {
+			if pw, ok := u.User.Password(); ok {
+				secrets = append(secrets, pw)
+				if _, enc, ok := strings.Cut(u.User.String(), ":"); ok { // as the DSN wrote it
+					secrets = append(secrets, enc)
+				}
+			}
+		}
+		secrets = append(secrets, u.Query().Get("password"))
+	} else {
+		for _, m := range keywordPassword.FindAllStringSubmatch(dsn, -1) {
+			secrets = append(secrets, unquoteKeyword(m[1]))
+		}
+	}
+	for _, sec := range secrets {
+		if sec != "" {
+			msg = strings.ReplaceAll(msg, sec, "<redacted>")
 		}
 	}
 	return msg
+}
+
+// keywordPassword matches password=value in a keyword/value DSN, the value bare or single-quoted.
+var keywordPassword = regexp.MustCompile(`(?i)(?:^|\s)password\s*=\s*('(?:\\.|[^'\\])*'|\S+)`)
+
+// unquoteKeyword is the value of a keyword/value DSN field: a quoted value without its quotes and
+// backslash escapes.
+func unquoteKeyword(v string) string {
+	if len(v) >= 2 && v[0] == '\'' && v[len(v)-1] == '\'' {
+		v = v[1 : len(v)-1]
+		var b strings.Builder
+		for i := 0; i < len(v); i++ {
+			if v[i] == '\\' && i+1 < len(v) {
+				i++
+			}
+			b.WriteByte(v[i])
+		}
+		return b.String()
+	}
+	return v
 }

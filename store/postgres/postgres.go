@@ -530,6 +530,9 @@ func newStore(ctx context.Context, db *sql.DB, readOnly bool, opts []Option) (*S
 		if err := s.checkEvents(ctx); err != nil {
 			return nil, err
 		}
+		if err := s.checkIndexes(ctx); err != nil {
+			return nil, err
+		}
 	}
 	return s, nil
 }
@@ -763,13 +766,13 @@ func (s *Store) migrate(ctx context.Context, dryRun bool) (MigrationResult, erro
 }
 
 // leaseIndex is an index of the leases table the migration creates when missing.
-type leaseIndex struct{ name, cols string }
+type leaseIndex struct{ name, cols, key, collation string }
 
 // leaseIndexes are the indexes of the lapsed listing (see migrate).
 func leaseIndexes(t tables) []leaseIndex {
 	return []leaseIndex{
-		{t.leases + "_expiry", `(expiry)`},
-		{t.leases + "_run_c", `((run_id COLLATE pg_catalog."C"))`},
+		{t.leases + "_expiry", `(expiry)`, "expiry", ""},
+		{t.leases + "_run_c", `((run_id COLLATE pg_catalog."C"))`, "run_id", "C"},
 	}
 }
 
@@ -786,6 +789,14 @@ func (s *Store) checkSchema(ctx context.Context) error {
 		}
 		if !isTable.Bool {
 			return fmt.Errorf("postgres: %s.%s is not an ordinary or partitioned table: %w", quoteIdent(s.schema), table, agent.ErrConfig)
+		}
+	}
+	for _, c := range []struct {
+		table string
+		cols  []column
+	}{{s.t.steps, stepsColumns}, {s.t.leases, leasesColumns}, {s.t.version, versionColumns}} {
+		if err := s.checkTable(ctx, c.table, c.cols); err != nil {
+			return err
 		}
 	}
 	for _, u := range []struct {
@@ -830,6 +841,9 @@ func (s *Store) checkEvents(ctx context.Context) error {
 	}
 	if !isTable.Bool {
 		return fmt.Errorf("postgres: %s.%s is not an ordinary or partitioned table: %w", quoteIdent(s.schema), s.t.events, agent.ErrConfig)
+	}
+	if err := s.checkTable(ctx, s.t.events, eventsColumns); err != nil {
+		return err
 	}
 	var ok bool
 	if err := s.db.QueryRowContext(ctx, requiredUnique, s.t.events, s.schema, []string{"run_id", "seq"}).Scan(&ok); err != nil {
