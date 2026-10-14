@@ -342,6 +342,13 @@ the all-clear was acknowledged, or the event was cleared before any delivery was
 listed for over an hour whose run's trail has no record of it (the process died between the two
 appends) is unlisted, and listed again if it is observed later.
 
+*Clocks.* The time of an open-trail record is structural. It is the writer's clock, moved later when
+that is needed for the record to fall in its segment's UTC day and after the record before it (a
+process whose clock is behind a segment another process's clock ran ahead into follows the chain and
+writes there); the writer's own reading is kept in `clock_at` (open-trail records only, always earlier
+than `at`), so the move is visible, and it only ever makes a time later. No deadline or latency is
+computed from an open-trail time.
+
 *Bounded.* The open trail is append-only and verifiable, and a read does not grow with history. It
 is kept in one segment per UTC day, `notify:@open:<date>` (`agent.OpenSegment`), and an index,
 `notify:@open:index:<year>` (`agent.OpenIndex`), holds one `segment` record per segment created. A

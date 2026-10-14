@@ -1265,12 +1265,32 @@ func TestResolved_AClockAheadSealsADayNoOneElseHasReached(t *testing.T) {
 		t.Fatalf("listed = %+v, want k2 and k3 (k1 unwatched)", got)
 	}
 	day := segmentDayOf(name)
+	clamped := 0
 	for i, r := range recs {
+		if !r.ClockAt.IsZero() {
+			clamped++
+			if !r.ClockAt.Before(r.At) {
+				t.Errorf("record %d: clock_at %s is not before at %s", i, r.ClockAt, r.At)
+			}
+		}
 		if r.At.Before(day) {
 			t.Errorf("record %d (%s) is dated %s, before its segment's day %s", i, r.Kind, r.At, day)
 		}
 		if i > 0 && r.At.Before(recs[i-1].At) {
 			t.Errorf("record %d (%s) is dated %s, before record %d (%s)", i, r.Kind, r.At, i-1, recs[i-1].At)
+		}
+	}
+	// B's watch of k3 was written with its clock three days behind the segment: dated forward, and
+	// the clock reading it was moved from is kept.
+	if clamped == 0 {
+		t.Error("no record keeps the writer's own clock reading although B's was moved forward")
+	}
+	for _, r := range recs {
+		if r.Key == "k3" && (r.ClockAt.IsZero() || !r.ClockAt.Equal(clkB.now())) {
+			t.Errorf("k3's record: clock_at = %s, want B's clock %s", r.ClockAt, clkB.now())
+		}
+		if r.Key == "k2" && !r.ClockAt.IsZero() {
+			t.Errorf("A's record was not moved, yet clock_at = %s", r.ClockAt)
 		}
 	}
 	for _, y := range []int{clkA.now().Year()} {

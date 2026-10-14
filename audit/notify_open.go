@@ -93,6 +93,9 @@ func checkOpenGroup(trails map[string][]agent.NotifyRecord, skew time.Duration, 
 		listed := map[string]bool{}
 		day := segmentDay(name)
 		for i, r := range recs {
+			if !r.ClockAt.IsZero() && !r.ClockAt.Before(r.At) {
+				add(name, i, recs, "keeps the writer's clock reading %s, which is not earlier than its time %s: a time is only moved later", r.ClockAt.UTC().Format(time.RFC3339), r.At.UTC().Format(time.RFC3339))
+			}
 			if r.At.IsZero() {
 				add(name, i, recs, "has no time")
 			} else if validSegmentName(name) && r.Kind != agent.NotifySeal && !inDay(r.At, day, skew) {
@@ -247,6 +250,9 @@ func checkOpenGroup(trails map[string][]agent.NotifyRecord, skew time.Duration, 
 		for i, r := range recs {
 			if r.At.IsZero() {
 				add(name, i, recs, "has no time")
+			}
+			if !r.ClockAt.IsZero() && !r.ClockAt.Before(r.At) {
+				add(name, i, recs, "keeps the writer's clock reading %s, which is not earlier than its time", r.ClockAt.UTC().Format(time.RFC3339))
 			}
 			if i > 0 && r.At.Before(recs[i-1].At.Add(-skew)) {
 				add(name, i, recs, "is dated more than %s before record %d", skew, i-1)

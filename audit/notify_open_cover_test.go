@@ -147,3 +147,15 @@ func TestVerifyNotifications_AnchoredTheOldestSegmentDeletedIsFound(t *testing.T
 		}
 	}
 }
+
+func TestVerifyNotifications_AClockAtOnARunTrailRecordIsAViolation(t *testing.T) {
+	k1 := agent.ApprovalKey("r1", "c1", 0)
+	b := newTrail(t)
+	obs := observed(k1, agent.NotificationApprovalPending, 1, 2)
+	obs.ClockAt = at(1)
+	b.add(obs, claimed(k1, 3), acked(k1, 4, 4))
+	rep, _ := checkTrails(t, b.export())
+	if !strings.Contains(violationsOf(rep), "clock_at") {
+		t.Fatalf("violations = %q", violationsOf(rep))
+	}
+}

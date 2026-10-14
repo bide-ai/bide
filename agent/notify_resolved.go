@@ -257,21 +257,26 @@ func segmentDayOf(name string) time.Time {
 	return t
 }
 
-// openAt is the time a record appended after recs to the open-trail trail segment carries: the
-// clock's, but no earlier than the segment's day and no earlier than the record before it. A writer
-// whose clock is behind a segment another process's clock ran ahead into follows the chain to it and
-// writes there, and its records are then dated at the segment's start, or after the last record,
-// so the segment stays one whose records fall in its day and in order (which the verifier checks).
-// The time in an open-trail record is structural, not evidence of when something happened.
-func (e *notifyEngine) openAt(segment string, recs []NotifyRecord) time.Time {
-	at := e.cfg.now()
+// stamp sets the time of rec, to be appended after recs to the open-trail segment (or index) named
+// segment: the clock's, but no earlier than the segment's day and no earlier than the record before
+// it. A writer whose clock is behind a segment another process's clock ran ahead into follows the
+// chain to it and writes there, and its records are then dated at the segment's start, or after the
+// last record, so the segment stays one whose records fall in its day and in order (which the
+// verifier checks). The time is then moved only later, never earlier, so a delivery never looks
+// earlier than it was, and the writer's own reading is kept in ClockAt so an audit can see it.
+func (e *notifyEngine) stamp(rec *NotifyRecord, segment string, recs []NotifyRecord) {
+	now := e.cfg.now()
+	at := now
 	if d := segmentDayOf(segment); at.Before(d) {
 		at = d
 	}
 	if n := len(recs); n > 0 && at.Before(recs[n-1].At) {
 		at = recs[n-1].At
 	}
-	return at
+	rec.At = at
+	if at.After(now) {
+		rec.ClockAt = now
+	}
 }
 
 func (e *notifyEngine) setWatch(ctx context.Context, key, runID string, want bool) error {
@@ -290,10 +295,11 @@ func (e *notifyEngine) setWatch(ctx context.Context, key, runID string, want boo
 		if listed == want {
 			return nil
 		}
-		rec := NotifyRecord{Kind: NotifyWatch, Key: key, RunID: runID, At: e.openAt(name, recs)}
+		rec := NotifyRecord{Kind: NotifyWatch, Key: key, RunID: runID}
 		if !want {
 			rec.Kind, rec.RunID = NotifyUnwatch, run
 		}
+		e.stamp(&rec, name, recs)
 		conflict, err := e.appendRec(ctx, name, len(recs), rec)
 		if err != nil {
 			return err
@@ -347,7 +353,9 @@ func (e *notifyEngine) indexSegment(ctx context.Context, name string) error {
 		if slices.ContainsFunc(recs, func(r NotifyRecord) bool { return r.Kind == NotifySegment && r.Next == name }) {
 			return nil
 		}
-		conflict, err := e.appendRec(ctx, idx, len(recs), NotifyRecord{Kind: NotifySegment, At: e.openAt(name, recs), Next: name})
+		rec := NotifyRecord{Kind: NotifySegment, Next: name}
+		e.stamp(&rec, name, recs)
+		conflict, err := e.appendRec(ctx, idx, len(recs), rec)
 		if err != nil {
 			return err
 		}
@@ -391,10 +399,11 @@ func (e *notifyEngine) openHead(ctx context.Context) (string, []NotifyRecord, er
 				return "", nil, fmt.Errorf("notify: trail %s: a chain of seals too long to follow", NotifyOpenTrail)
 			}
 			if len(recs) == 0 {
-				cp := NotifyRecord{Kind: NotifyCheckpoint, At: e.openAt(name, nil)}
+				cp := NotifyRecord{Kind: NotifyCheckpoint}
 				if prev != nil {
 					cp.Watching, cp.Backfilled = prev.Watched, prev.Backfilled
 				}
+				e.stamp(&cp, name, nil)
 				if _, aerr := e.appendRec(ctx, name, 0, cp); aerr != nil {
 					return "", nil, aerr
 				}
@@ -540,7 +549,9 @@ func (e *notifyEngine) backfillOpen(ctx context.Context) error {
 		if FoldOpen(recs).Backfilled {
 			return nil
 		}
-		conflict, aerr := e.appendRec(ctx, name, len(recs), NotifyRecord{Kind: NotifyBackfilled, At: e.openAt(name, recs)})
+		mark := NotifyRecord{Kind: NotifyBackfilled}
+		e.stamp(&mark, name, recs)
+		conflict, aerr := e.appendRec(ctx, name, len(recs), mark)
 		if aerr != nil {
 			return aerr
 		}

@@ -605,7 +605,12 @@ What it checks, and the status each event gets:
   checkpoint, the index lists the segments in creation order, each in the index of its own year, and a
   segment it names exists unless it is the first or the last created (with signed heads, any missing
   segment is a finding: a deleted newest segment, or one a writer has not created yet, which a sweep
-  repairs, so run the audit again); every record is dated within its segment's UTC day (a seal, in
+  repairs, so run the audit again); every record is dated within its segment's UTC day (a record
+  written by a process whose clock is behind its segment, because another process's clock ran ahead
+  and sealed into a later day, has its time moved later, to the segment's start or just after the
+  record before it, and keeps its own clock reading in `clock_at`: a time is only ever moved
+  later, so a delivery never looks earlier than it was, and the verifier requires `clock_at` to be
+  earlier than the time and only on open-trail records) (a seal, in
   the day of the segment it seals into), a seal may skip days nobody ran on but not a segment an
   index lists, and every delivered `outcome_unknown`, `approval_pending` or `recovery_failing` event
   in a run trail is listed on the open trail, or was observed before it and covered by the recorded

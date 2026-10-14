@@ -513,6 +513,9 @@ func checkNotifyTrail(trail string, recs []agent.NotifyRecord, skew time.Duratio
 		if i > 0 && r.At.Before(recs[i-1].At.Add(-skew)) {
 			bad(i, "is dated %s, more than %s before record %d (%s): the trail is out of order, or a clock is wrong", r.At.Format(time.RFC3339Nano), skew, i-1, recs[i-1].At.Format(time.RFC3339Nano))
 		}
+		if !r.ClockAt.IsZero() {
+			bad(i, "has a clock_at, which only open-trail records carry")
+		}
 		if root != "@digest" && r.RunID != root && r.Kind != agent.NotifyFailingSince && r.Kind != agent.NotifyRecovered {
 			bad(i, "names run %q in the trail of run %q", r.RunID, root)
 		}

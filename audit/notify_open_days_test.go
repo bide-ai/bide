@@ -138,3 +138,17 @@ func TestOpenDays_AnIndexNamesSegmentsOfItsYear(t *testing.T) {
 		t.Fatal("the index of 2025 names a segment of 2026 and verifies")
 	}
 }
+
+// clock_at is the writer's own clock reading, kept when the record's time was moved later to fit
+// its segment: it must be earlier than the time, and only the open trail's records carry it.
+func TestOpenDays_ClockAtIsEarlierThanAtAndOnlyOnOpenRecords(t *testing.T) {
+	tr := odTrails()
+	tr[odSeg(14)][1].ClockAt = odAt(14, 0).Add(-time.Hour) // a seal moved forward: fine
+	if p := checkOpenGroup(tr, time.Minute, false); len(p) != 0 {
+		t.Fatalf("a clock_at before at: %s", problems(p))
+	}
+	tr[odSeg(14)][1].ClockAt = tr[odSeg(14)][1].At.Add(time.Hour)
+	if p := checkOpenGroup(tr, time.Minute, false); len(p) == 0 {
+		t.Fatal("a clock_at after at verifies: a record cannot be moved earlier")
+	}
+}

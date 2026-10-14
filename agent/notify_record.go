@@ -75,6 +75,10 @@ type NotifyRecord struct {
 	Key   string           `json:"key,omitempty"` // the event key; empty for failing_since and recovered
 	RunID string           `json:"run_id,omitempty"`
 	At    time.Time        `json:"at"`
+	// ClockAt is, on an open-trail record only, the writer's own clock reading when At was moved
+	// later than it to fit the record's segment (see openAt): At is never earlier than the clock, so
+	// a time moved only ever makes a delivery look later. Zero when At is the clock's reading.
+	ClockAt time.Time `json:"clock_at,omitzero"`
 
 	// observed
 	EventKind string `json:"event_kind,omitempty"` // the NotificationKind of the event
@@ -127,6 +131,7 @@ func (NotifyRecord) agentEvent() {}
 // were written in.
 func (r NotifyRecord) Normalized() NotifyRecord {
 	r.At = normTime(r.At)
+	r.ClockAt = normTime(r.ClockAt)
 	r.EventAt = normTime(r.EventAt)
 	r.DeadlineAt = normTime(r.DeadlineAt)
 	r.Until = normTime(r.Until)
