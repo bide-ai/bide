@@ -1,0 +1,3 @@
+Section: Fixed
+
+`govern/sqlitelog` and `store/sqlite` no longer fail with `SQLITE_BUSY` ("database is locked") when many writers in one process append to one file at once, which a slow disk (the Windows CI runner) made the shared conformance test hit after its 30 second wait: SQLite's busy handler is not a queue, so a writer that had just released the lock won it back and one unlucky writer waited out everyone else's whole run; the writers in a process now take turns on each file in the order they ask, and `govern/sqlitelog` sets its busy timeout in the connection string so that every connection the pool opens has it (it was set on the first connection only). Writers in different processes are still not ordered, which `docs/KNOWN-LIMITATIONS.md` states.

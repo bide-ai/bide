@@ -432,7 +432,12 @@ journal even where it reads it differently. Finish or resolve runs before upgrad
 pre-releases. At 1.0 the tag becomes `bide.journal.v1`, and 1.0 refuses every pre-release journal.
 
 **SQLite is for one machine.** SQLite allows one writer at a time; a writer waits up to 30 seconds
-for the lock before failing. Its leases coordinate the processes that share one database file on
+for the lock before failing. The writers in one process that share a file (several `store/sqlite`
+stores or `govern/sqlitelog` logs on it) take turns in the order they ask, so a burst of them cannot
+starve one past the 30 seconds. Writers in different processes are not ordered: SQLite's wait for
+the lock is not a queue, so with many processes writing one file at once (or a very slow disk) an
+unlucky one can still wait out the 30 seconds and fail with "database is locked"; keep the writing
+processes few, or use Postgres. Its leases coordinate the processes that share one database file on
 one machine, not nodes: the file must be on a local disk, since SQLite's locking does not work over
 NFS. Use Postgres for more than one node. A forward jump of the system clock expires SQLite leases
 early (their expiry is computed from the clock), which the attempt claims keep safe.
