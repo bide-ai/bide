@@ -1,0 +1,11 @@
+{
+  "algorithm": "EC_SIGN_P256_SHA256",
+  "attestation": {
+    "format": "CAVIUM_V2_COMPRESSED"
+  },
+  "createTime": "2026-10-14T12:15:40.937973395Z",
+  "generateTime": "2026-10-14T12:15:41.593557037Z",
+  "name": "projects/bide-attest-1ced6e/locations/us-east1/keyRings/bide-attest/cryptoKeys/bide-p256/cryptoKeyVersions/1",
+  "protectionLevel": "HSM",
+  "state": "ENABLED"
+}

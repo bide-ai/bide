@@ -13,6 +13,7 @@ import (
 	"encoding/base64"
 	"encoding/binary"
 	"encoding/hex"
+	"encoding/json"
 	"encoding/pem"
 	"errors"
 	"math/big"
@@ -94,7 +95,7 @@ func TestRealAttestationChainAndSignature(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	objs, err := parseV1(content)
+	objs, err := parseObjects(content)
 	if err != nil || len(objs) != 2 {
 		t.Fatalf("objects %d, err %v", len(objs), err)
 	}
@@ -324,10 +325,20 @@ func (h *testHSM) v1(t *testing.T, objs ...*attrs) []byte {
 	return append(data, h.sign(t, data)...)
 }
 
-// v2 builds a version 2 attestation: a 20-byte header and one object.
+// v2 builds a version 2 attestation: the version 2 response header has a fifth word.
 func (h *testHSM) v2(t *testing.T, o *attrs) []byte {
 	t.Helper()
-	data := append(make([]byte, 20), o.object()...)
+	info := binary.BigEndian.AppendUint16(nil, 1)
+	info = binary.BigEndian.AppendUint16(info, 0)
+	info = binary.BigEndian.AppendUint16(info, 8)
+	info = binary.BigEndian.AppendUint16(info, 0)
+	buf := append(info, o.object()...)
+	hdr := binary.BigEndian.AppendUint32(nil, 0)
+	hdr = binary.BigEndian.AppendUint32(hdr, 3)
+	hdr = binary.BigEndian.AppendUint32(hdr, uint32(20+len(buf)+attestSigSize))
+	hdr = binary.BigEndian.AppendUint32(hdr, uint32(len(buf)))
+	hdr = binary.BigEndian.AppendUint32(hdr, uint32(len(buf)))
+	data := append(hdr, buf...)
 	return append(data, h.sign(t, data)...)
 }
 
@@ -425,10 +436,6 @@ func TestAttestationStructureRefusals(t *testing.T) {
 				t.Errorf("format %d: %v", f, err)
 			}
 		}
-		// A v1 blob declared v2 and the reverse do not parse as the other.
-		if err := verifyAttestation(h.att(gz(t, good), v2fmt), testVersion, pub, h.roots); !errors.Is(err, ErrAttestation) {
-			t.Errorf("v1 as v2: %v", err)
-		}
 	})
 	t.Run("not gzip", func(t *testing.T) {
 		if err := verifyAttestation(h.att(good, v1fmt), testVersion, pub, h.roots); !errors.Is(err, ErrAttestation) {
@@ -502,9 +509,13 @@ func TestAttestationStructureRefusals(t *testing.T) {
 		}
 	})
 	t.Run("bytes after the last attribute", func(t *testing.T) {
-		data := append(make([]byte, 20), goodAttrs(testVersion, pub).object()...)
-		data = append(data, 0, 0, 0)
-		if err := verifyAttestation(h.att(gz(t, resign(data)), v2fmt), testVersion, pub, h.roots); err == nil || !strings.Contains(err.Error(), "after the last") {
+		info := []byte{0, 1, 0, 0, 0, 8, 0, 0}
+		buf := append(append(info, goodAttrs(testVersion, pub).object()...), 0, 0, 0)
+		hdr := binary.BigEndian.AppendUint32(nil, 0)
+		hdr = binary.BigEndian.AppendUint32(hdr, 3)
+		hdr = binary.BigEndian.AppendUint32(hdr, uint32(16+len(buf)+attestSigSize))
+		hdr = binary.BigEndian.AppendUint32(hdr, uint32(len(buf)))
+		if err := verifyAttestation(h.att(gz(t, resign(append(hdr, buf...))), v1fmt), testVersion, pub, h.roots); err == nil || !strings.Contains(err.Error(), "after the last") {
 			t.Errorf("%v", err)
 		}
 	})
@@ -725,5 +736,110 @@ func TestOpenVerifyAttestation(t *testing.T) {
 	// Roots without VerifyAttestation are a configuration error: nothing would be verified.
 	if _, err := Open(ctx, Config{Client: f, KeyVersion: testVersion, AttestationRoots: h.roots}); !errors.Is(err, agent.ErrConfig) {
 		t.Fatalf("roots without VerifyAttestation: %v", err)
+	}
+}
+
+// ---- a real Cloud HSM key version: CAVIUM_V2_COMPRESSED, P-256, protection level HSM ----
+
+type realVersion struct {
+	Name            string `json:"name"`
+	ProtectionLevel string `json:"protectionLevel"`
+}
+
+func realCloudHSM(t *testing.T) (att *kmspb.KeyOperationAttestation, name string, point []byte) {
+	t.Helper()
+	gzb := readTestdata(t, "cloudhsm-v2.att.gz")
+	var v realVersion
+	if err := json.Unmarshal(readTestdata(t, "cloudhsm-v2.version.json"), &v); err != nil {
+		t.Fatal(err)
+	}
+	blk, _ := pem.Decode(readTestdata(t, "cloudhsm-v2.pub.pem"))
+	pt, err := audit.ECDSAP256PublicKeyFromSPKI(blk.Bytes)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return &kmspb.KeyOperationAttestation{
+		Format:     kmspb.KeyOperationAttestation_CAVIUM_V2_COMPRESSED,
+		Content:    gzb,
+		CertChains: &kmspb.KeyOperationAttestation_CertificateChains{CaviumCerts: []string{string(readTestdata(t, "cloudhsm-v2.chain.pem"))}},
+	}, v.Name, pt
+}
+
+// The real attestation of a real Cloud HSM key verifies under the built-in roots, with the key
+// version's name and public key.
+func TestRealCloudHSMAttestationVerifies(t *testing.T) {
+	att, name, point := realCloudHSM(t)
+	roots, err := defaultAttestationRoots()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := verifyAttestation(att, name, point, roots); err != nil {
+		t.Fatalf("a real Cloud HSM attestation: %v", err)
+	}
+	// V1 and V2 are the same layout to the parser, so the format label does not matter.
+	att.Format = kmspb.KeyOperationAttestation_CAVIUM_V1_COMPRESSED
+	if err := verifyAttestation(att, name, point, roots); err != nil {
+		t.Fatalf("labelled v1: %v", err)
+	}
+	att.Format = kmspb.KeyOperationAttestation_CAVIUM_V2_COMPRESSED
+
+	// It proves this key version and no other.
+	for _, other := range []string{
+		strings.TrimSuffix(name, "1") + "2",
+		strings.Replace(name, "bide-p256", "bide-p257", 1),
+		strings.Replace(name, "us-east1", "us-east2", 1),
+		strings.Replace(name, "projects/", "projects/x", 1),
+	} {
+		if err := verifyAttestation(att, other, point, roots); err == nil || !strings.Contains(err.Error(), "key ID") {
+			t.Errorf("version %s: %v", other, err)
+		}
+	}
+	// It proves this public key and no other.
+	bad := bytes.Clone(point)
+	bad[40] ^= 1
+	if err := verifyAttestation(att, name, bad, roots); err == nil || !strings.Contains(err.Error(), "public key") {
+		t.Errorf("other key: %v", err)
+	}
+	// Any change to the signed content breaks it.
+	content, _ := gunzipLimited(att.Content)
+	for _, i := range []int{3, 40, 300, 700, len(content) - attestSigSize - 1, len(content) - 1} {
+		c := bytes.Clone(content)
+		c[i] ^= 1
+		a := &kmspb.KeyOperationAttestation{Format: att.Format, Content: gz(t, c), CertChains: att.CertChains}
+		if err := verifyAttestation(a, name, point, roots); err == nil {
+			t.Errorf("byte %d flipped: verified", i)
+		}
+	}
+	// The wrong roots, the synthetic roots, and a chain missing any one of its four certificates.
+	if err := verifyAttestation(att, name, point, newTestHSM(t).roots); err == nil {
+		t.Error("verified under unrelated roots")
+	}
+	for i := range 4 {
+		var keep []string
+		for j, b := range strings.SplitAfter(string(readTestdata(t, "cloudhsm-v2.chain.pem")), "-----END CERTIFICATE-----\n") {
+			if j != i && strings.TrimSpace(b) != "" {
+				keep = append(keep, b)
+			}
+		}
+		a := &kmspb.KeyOperationAttestation{Format: att.Format, Content: att.Content,
+			CertChains: &kmspb.KeyOperationAttestation_CertificateChains{CaviumCerts: []string{strings.Join(keep, "")}}}
+		if err := verifyAttestation(a, name, point, roots); !errors.Is(err, ErrAttestation) {
+			t.Errorf("without certificate %d: %v", i, err)
+		}
+	}
+}
+
+// Open with a real attestation passes the attestation check; the fake cannot sign with the real key,
+// so Open stops at its self-test signature, and not at the attestation.
+func TestOpenWithARealAttestationReachesTheSelfTest(t *testing.T) {
+	att, name, _ := realCloudHSM(t)
+	blk, _ := pem.Decode(readTestdata(t, "cloudhsm-v2.pub.pem"))
+	f := newP256(t, kmspb.ProtectionLevel_HSM)
+	f.pem = string(pem.EncodeToMemory(blk))
+	f.attestation = att
+	f.versionName = name
+	_, err := Open(context.Background(), Config{Client: f, KeyVersion: name, VerifyAttestation: true})
+	if errors.Is(err, ErrAttestation) || !errors.Is(err, ErrBadSignature) {
+		t.Fatalf("err = %v, want the self-test signature to be the first failure", err)
 	}
 }

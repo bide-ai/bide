@@ -45,6 +45,7 @@ type fake struct {
 	ver         *kmspb.CryptoKeyVersion
 	pem         string                         // overrides the PEM when set
 	attestation *kmspb.KeyOperationAttestation // returned with the key version
+	versionName string                         // answers to this name instead of testVersion when set
 
 	onVersion func(*kmspb.CryptoKeyVersion)
 	onKey     func(*kmspb.PublicKey)
@@ -87,16 +88,23 @@ func newP256(t *testing.T, level kmspb.ProtectionLevel) *fake {
 		ProtectionLevel: level, Algorithm: kmspb.CryptoKeyVersion_EC_SIGN_P256_SHA256}}
 }
 
+func (f *fake) vn() string {
+	if f.versionName != "" {
+		return f.versionName
+	}
+	return testVersion
+}
+
 func crcOf(b []byte) *wrapperspb.Int64Value { return wrapperspb.Int64(int64(crc32c(b))) }
 
 func (f *fake) GetCryptoKeyVersion(_ context.Context, req *kmspb.GetCryptoKeyVersionRequest, _ ...gax.CallOption) (*kmspb.CryptoKeyVersion, error) {
 	if f.getErr != nil {
 		return nil, f.getErr
 	}
-	if req.Name != testVersion {
+	if req.Name != f.vn() {
 		return nil, status.Error(codes.NotFound, "no such version "+req.Name)
 	}
-	v := &kmspb.CryptoKeyVersion{Name: f.ver.Name, State: f.ver.State, ProtectionLevel: f.ver.ProtectionLevel, Algorithm: f.ver.Algorithm, Attestation: f.attestation}
+	v := &kmspb.CryptoKeyVersion{Name: f.vn(), State: f.ver.State, ProtectionLevel: f.ver.ProtectionLevel, Algorithm: f.ver.Algorithm, Attestation: f.attestation}
 	if f.onVersion != nil {
 		f.onVersion(v)
 	}
@@ -107,7 +115,7 @@ func (f *fake) GetPublicKey(_ context.Context, req *kmspb.GetPublicKeyRequest, _
 	if f.pubErr != nil {
 		return nil, f.pubErr
 	}
-	if req.Name != testVersion {
+	if req.Name != f.vn() {
 		return nil, status.Error(codes.NotFound, "no such version "+req.Name)
 	}
 	if req.PublicKeyFormat != kmspb.PublicKey_PEM {
@@ -121,7 +129,7 @@ func (f *fake) GetPublicKey(_ context.Context, req *kmspb.GetPublicKeyRequest, _
 			p = spkiPEM(f.ed.Public())
 		}
 	}
-	pk := &kmspb.PublicKey{Name: testVersion, Pem: p, PemCrc32C: crcOf([]byte(p)), Algorithm: f.ver.Algorithm, ProtectionLevel: f.ver.ProtectionLevel}
+	pk := &kmspb.PublicKey{Name: f.vn(), Pem: p, PemCrc32C: crcOf([]byte(p)), Algorithm: f.ver.Algorithm, ProtectionLevel: f.ver.ProtectionLevel}
 	if f.onKey != nil {
 		f.onKey(pk)
 	}
@@ -136,7 +144,7 @@ func (f *fake) AsymmetricSign(ctx context.Context, req *kmspb.AsymmetricSignRequ
 	if f.signErr != nil {
 		return nil, f.signErr
 	}
-	if req.Name != testVersion {
+	if req.Name != f.vn() {
 		return nil, status.Error(codes.NotFound, "the key version was not pinned: "+req.Name)
 	}
 	resp := &kmspb.AsymmetricSignResponse{Name: req.Name, ProtectionLevel: f.ver.ProtectionLevel}

@@ -55,7 +55,7 @@ func attErr(format string, args ...any) error {
 //     the certificates in the attestation; any other certificate is refused;
 //  2. the attestation is signed (RSA-2048, PKCS#1 v1.5, SHA-256, the last 256 bytes) by both
 //     partition certificates;
-//  3. one attested EC object has the public point pub, is not extractable, was generated on the HSM
+//  3. one attested EC object (the key's private-key object) has the public point pub, is not extractable, was generated on the HSM
 //     (not imported), and its key ID carries the SHA-256 of the key version's resource name.
 //
 // Validity periods of the certificates are not checked, as in Google's verifier: the attestation
@@ -91,12 +91,7 @@ func verifyAttestation(att *kmspb.KeyOperationAttestation, version string, pub [
 			return attErr("the %s certificate does not verify the attestation signature", name)
 		}
 	}
-	var objs []map[uint32][]byte
-	if att.GetFormat() == kmspb.KeyOperationAttestation_CAVIUM_V1_COMPRESSED {
-		objs, err = parseV1(content)
-	} else {
-		objs, err = parseV2(content)
-	}
+	objs, err := parseObjects(content)
 	if err != nil {
 		return attErr("%v", err)
 	}
@@ -281,33 +276,29 @@ func parseObject(r *reader) (map[uint32][]byte, error) {
 	return attrs, nil
 }
 
-// parseV1 reads the version 1 layout (Marvell firmware before 3.2): a 16-byte response header (code,
-// flags, total size, buffer size), the attestation buffer that ends where the 256-byte signature
-// begins, and in the buffer an info header (version, flags, offset of the first key, offset of the
-// second key, 0 if none) followed by one or two objects.
-func parseV1(content []byte) ([]map[uint32][]byte, error) {
+// parseObjects reads the attested objects. Both Cavium formats share this layout, confirmed against a
+// real CAVIUM_V2_COMPRESSED attestation of a Cloud HSM key and a real version 1 one: a response header
+// of big-endian words (response code, request flags, total size, buffer size, and in version 2 the
+// buffer size again, so the header is 16 or 20 bytes plus any padding), the attestation buffer, which
+// is the last "buffer size" bytes before the 256-byte signature, and in the buffer an info header
+// (version, flags, offset of the first object, offset of the second object or 0, all 16-bit) followed
+// by one or two objects.
+func parseObjects(content []byte) ([]map[uint32][]byte, error) {
 	body := content[:len(content)-attestSigSize]
 	r := &reader{b: body}
-	for range 2 {
-		if _, err := r.u32(); err != nil { // response code, request flags
+	for range 3 { // response code, request flags, total size
+		if _, err := r.u32(); err != nil {
 			return nil, err
 		}
-	}
-	total, err := r.u32()
-	if err != nil {
-		return nil, err
 	}
 	buf, err := r.u32()
 	if err != nil {
 		return nil, err
 	}
-	if uint64(buf) > uint64(len(body)) || buf < 8 {
-		return nil, fmt.Errorf("version 1 buffer size %d does not fit %d bytes (total size field %d)", buf, len(content), total)
+	if uint64(buf) > uint64(len(body)-r.pos) || buf < 8 {
+		return nil, fmt.Errorf("buffer size %d does not fit the %d bytes after the header", buf, len(body)-r.pos)
 	}
 	attest := body[len(body)-int(buf):]
-	if len(attest) < 8 {
-		return nil, errors.New("buffer too short")
-	}
 	first := uint32(binary.BigEndian.Uint16(attest[4:]))
 	second := uint32(binary.BigEndian.Uint16(attest[6:]))
 	ends := []uint32{buf}
@@ -327,20 +318,6 @@ func parseV1(content []byte) ([]map[uint32][]byte, error) {
 		objs = append(objs, o)
 	}
 	return objs, nil
-}
-
-// parseV2 reads the version 2 layout (firmware 3.2-08 and later): a 20-byte header, then one object.
-func parseV2(content []byte) ([]map[uint32][]byte, error) {
-	body := content[:len(content)-attestSigSize]
-	const header = 20
-	if len(body) < header {
-		return nil, errors.New("version 2 content shorter than its header")
-	}
-	o, err := parseObject(&reader{b: body[header:]})
-	if err != nil {
-		return nil, err
-	}
-	return []map[uint32][]byte{o}, nil
 }
 
 func boolAttr(o map[uint32][]byte, tag uint32) (v, ok bool) {

@@ -301,7 +301,7 @@ non-extractable key whose public key is the one `GetPublicKey` returned. It read
 3. **The attested key.** One attested EC object must have the key version's public point, must not be extractable
    (`0x0162` false), must have been generated on the HSM and not imported (`0x0163` true), and its key ID (`0x0102`) must
    carry, as its second SHA-256 digest, the digest of the key version's resource name. Properties are never combined
-   across objects. Formats `CAVIUM_V1_COMPRESSED` and `CAVIUM_V2_COMPRESSED` are read; any other format is refused.
+   across objects. Formats `CAVIUM_V1_COMPRESSED` and `CAVIUM_V2_COMPRESSED` are read (the same object layout; version 2 has a five-word response header); any other format is refused. The attested object is the key's private-key object, which carries the public point.
 
 The trust anchors are Google's owner root ("Hawksbill Root v1 prod", SHA-256
 `46b5fd35...df0de095`, from Google's sample code and `gstatic.com/cloudhsm/roots`) and Marvell's manufacturer root
