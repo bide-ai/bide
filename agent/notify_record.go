@@ -3,6 +3,7 @@ package agent
 import (
 	"crypto/sha256"
 	"encoding/hex"
+	"fmt"
 	"strconv"
 	"time"
 )
@@ -45,6 +46,8 @@ const (
 	NotifyCheckpoint NotifyRecordKind = "checkpoint"
 	// NotifySeal: the last record of an open-trail segment; Next names the segment that continues it.
 	NotifySeal NotifyRecordKind = "seal"
+	// NotifySegment: one record of the open trail's index, naming (Next) a segment that was created.
+	NotifySegment NotifyRecordKind = "segment"
 	// NotifyBackfilled: the events observed before the open trail existed were listed (once).
 	NotifyBackfilled NotifyRecordKind = "backfilled"
 )
@@ -157,6 +160,12 @@ func NotifyTrailName(runID string) string { return "notify:" + runID }
 // checkpoint, the listed set folded from it, as the first record of today's. The trails stay
 // append-only and verifiable: a checkpoint must equal the fold of the segment it continues.
 const NotifyOpenTrail = "notify:@open"
+
+// OpenIndex is the name of the open trail's index for a UTC year: one NotifySegment record per
+// segment created, so the newest segment is found by reading the last record of the newest index
+// (one or two loads, whatever the gaps and the age of the deployment), and the index is the size of
+// a year of days at most.
+func OpenIndex(year int) string { return fmt.Sprintf("%s:index:%04d", NotifyOpenTrail, year) }
 
 // OpenSegment is the name of the open-trail segment of the UTC day t is in.
 func OpenSegment(t time.Time) string { return NotifyOpenTrail + ":" + t.UTC().Format("2006-01-02") }

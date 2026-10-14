@@ -757,10 +757,10 @@ func TestResolved_TheOpenTrailsReadCostDoesNotGrowWithHistory(t *testing.T) {
 	}
 	var prev []string
 	var atDay30 int
-	for day := range 300 {
+	for day := range 1100 { // three years
 		clk.advance(24 * time.Hour)
 		var keys []string
-		for i := range 20 {
+		for i := range 6 {
 			k := fmt.Sprintf("halted:d%d:tool:c%d:1", day, i)
 			if err := e.watch(ctx, k, "r"); err != nil {
 				t.Fatal(err)
@@ -772,22 +772,22 @@ func TestResolved_TheOpenTrailsReadCostDoesNotGrowWithHistory(t *testing.T) {
 				t.Fatal(err)
 			}
 		}
-		for _, k := range keys[:18] {
+		for _, k := range keys[:4] {
 			if err := e.unwatch(ctx, k); err != nil {
 				t.Fatal(err)
 			}
 		}
-		prev = keys[18:]
-		if day == 30 {
+		prev = keys[4:]
+		if day == 400 {
 			atDay30 = cost()
 		}
 	}
-	// 6000 events listed over 300 days; two are open.
+	// 6600 events listed over three years; two are open.
 	n := cost()
-	if n > 150 || atDay30 > 150 {
-		t.Fatalf("the head segment holds %d records at day 300 and %d at day 30; it must not grow with history", n, atDay30)
+	if n > 40 || atDay30 > 40 {
+		t.Fatalf("the head segment holds %d records at day 1100 and %d at day 400; it must not grow with history", n, atDay30)
 	}
-	if loads := tr.openLoads(); loads > 3 {
+	if loads := tr.openLoads(); loads > 4 {
 		t.Fatalf("finding the head took %d loads", loads)
 	}
 	_, recs, _ := e.openHead(ctx)
@@ -800,7 +800,8 @@ func TestResolved_TheOpenTrailsReadCostDoesNotGrowWithHistory(t *testing.T) {
 	if err := e.scanOpen(ctx); err != nil {
 		t.Fatal(err)
 	}
-	if tr.records > 200 {
+	// The head, and the index of the year: at most a year of segments, never the years before it.
+	if tr.records > 450 {
 		t.Fatalf("a scan read %d records", tr.records)
 	}
 }
@@ -957,4 +958,198 @@ func TestResolved_TheFirstSweepListsEventsObservedBeforeTheOpenTrail(t *testing.
 	if len(resolvedCalls(sink)) != 1 {
 		t.Fatal("sent again")
 	}
+}
+
+// A lookup costs the same few loads on a fresh deployment, after a 400-day gap, and across a year
+// boundary.
+func TestResolved_ALookupIsConstantWhateverTheGap(t *testing.T) {
+	ctx := context.Background()
+	clk := resolvedClock()
+	tr := newReadCounter()
+	e := testEngine(t, memJournal(), &fakeSink{}, tr, clk, "p1")
+	loads := func() int {
+		tr.reset()
+		if _, _, err := e.openHead(ctx); err != nil {
+			t.Fatal(err)
+		}
+		return tr.openLoads()
+	}
+	if n := loads(); n > indexYearsBack+10 { // looks for an index in each year back, once, then creates the first segment
+		t.Fatalf("a fresh deployment's first lookup took %d loads", n)
+	}
+	if n := loads(); n > 3 {
+		t.Fatalf("a lookup took %d loads", n)
+	}
+	if res, err := e.round(ctx, haltEvent()); err != nil || !res.done {
+		t.Fatal(res, err)
+	}
+	clk.advance(400 * 24 * time.Hour)
+	if n := loads(); n > 16 { // first of a new year, after a gap of more than a year: the index walk is by year
+		t.Fatalf("the lookup after a 400-day gap took %d loads", n)
+	}
+	if n := loads(); n > 3 {
+		t.Fatalf("the next lookup took %d loads", n)
+	}
+	_, recs, _ := e.openHead(ctx)
+	if got := FoldOpen(recs).Watched; len(got) != 1 || got[0].Key != haltEvent().key {
+		t.Fatalf("the gap lost the list: %+v", got)
+	}
+}
+
+// A writer that dies after creating a segment and before indexing it, or after sealing and before
+// the checkpoint: the next writer finishes the work, and nothing listed is lost.
+func TestResolved_ACrashBetweenCreatingASegmentAndIndexingItIsRepaired(t *testing.T) {
+	ctx := context.Background()
+	clk := resolvedClock()
+	tr := NewMemNotifyTrail()
+	e := testEngine(t, memJournal(), &fakeSink{}, tr, clk, "p1")
+	if err := e.watch(ctx, "k1", "r"); err != nil {
+		t.Fatal(err)
+	}
+	day1 := OpenSegment(clk.now())
+	recs, _ := tr.Load(ctx, day1)
+	clk.advance(24 * time.Hour)
+	day2 := OpenSegment(clk.now())
+	// The roller sealed day 1 and created day 2 with its checkpoint, and died before indexing it.
+	if err := tr.Append(ctx, day1, len(recs), NotifyRecord{Kind: NotifySeal, At: clk.now(), Next: day2}); err != nil {
+		t.Fatal(err)
+	}
+	if err := tr.Append(ctx, day2, 0, NotifyRecord{Kind: NotifyCheckpoint, At: clk.now(), Watching: FoldWatch(recs)}); err != nil {
+		t.Fatal(err)
+	}
+	idx, _ := tr.Load(ctx, OpenIndex(clk.now().Year()))
+	if LastSegment(idx) != day1 {
+		t.Fatalf("setup: index ends with %s", LastSegment(idx))
+	}
+	name, head, err := e.openHead(ctx)
+	if err != nil || name != day2 || len(FoldWatch(head)) != 1 {
+		t.Fatalf("head = %s %v %v", name, head, err)
+	}
+	idx, _ = tr.Load(ctx, OpenIndex(clk.now().Year()))
+	if LastSegment(idx) != day2 {
+		t.Fatalf("the index was not repaired: ends with %s", LastSegment(idx))
+	}
+	// Another writer died after indexing the first segment and before creating it.
+	tr2 := NewMemNotifyTrail()
+	if err := tr2.Append(ctx, OpenIndex(clk.now().Year()), 0, NotifyRecord{Kind: NotifySegment, At: clk.now(), Next: day2}); err != nil {
+		t.Fatal(err)
+	}
+	e2 := testEngine(t, memJournal(), &fakeSink{}, tr2, clk, "p2")
+	if name, head, err := e2.openHead(ctx); err != nil || name != day2 || len(head) != 1 || head[0].Kind != NotifyCheckpoint {
+		t.Fatalf("head = %s %v %v", name, head, err)
+	}
+}
+
+// The backfill is done once, however many processes try at the same time, and it survives the
+// rollover to a new day; an event nobody was told of is not listed.
+func TestResolved_ConcurrentBackfillsListEachEventOnceAndRecordOneMarker(t *testing.T) {
+	ctx := context.Background()
+	clk := sweepClock()
+	j := memJournal()
+	tr := NewMemNotifyTrail()
+	at := clk.now()
+	for i := range 12 {
+		run := fmt.Sprintf("run%02d", i)
+		key := HaltedKey(run, OpTool, "c1", 100)
+		recs := []NotifyRecord{
+			{Kind: NotifyObserved, Key: key, RunID: run, At: at, EventKind: string(NotificationOutcomeUnknown), EventAt: at, DeadlineAt: at.Add(time.Minute)},
+		}
+		if i%3 != 0 { // delivered; the others were cleared before any claim
+			recs = append(recs,
+				NotifyRecord{Kind: NotifyClaimed, Key: key, RunID: run, At: at, Holder: "old", Until: at.Add(time.Minute)},
+				NotifyRecord{Kind: NotifyAcked, Key: key, RunID: run, At: at, Attempts: 1, Status: 200})
+		} else {
+			recs = append(recs, NotifyRecord{Kind: NotifyCleared, Key: key, RunID: run, At: at, Reason: "resolved"})
+		}
+		for k, r := range recs {
+			if err := tr.Append(ctx, NotifyTrailName(run), k, r); err != nil {
+				t.Fatal(err)
+			}
+		}
+		putMarker(t, j, run, "c1", at.UnixMilli())
+	}
+	var wg sync.WaitGroup
+	for i := range 4 {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			e := testEngine(t, j, &fakeSink{}, tr, clk, fmt.Sprintf("p%d", i))
+			if err := e.backfillOpen(ctx); err != nil {
+				t.Error(err)
+			}
+		}()
+	}
+	wg.Wait()
+	e := testEngine(t, j, &fakeSink{}, tr, clk, "x")
+	_, recs, err := e.openHead(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	marks := 0
+	for _, r := range recs {
+		if r.Kind == NotifyBackfilled {
+			marks++
+		}
+	}
+	st := FoldOpen(recs)
+	if marks != 1 || !st.Backfilled || len(st.Watched) != 8 {
+		t.Fatalf("markers = %d, backfilled = %v, listed = %d (want 1, true, 8)", marks, st.Backfilled, len(st.Watched))
+	}
+	clk.advance(48 * time.Hour)
+	_, recs, _ = e.openHead(ctx)
+	if st := FoldOpen(recs); !st.Backfilled || len(st.Watched) != 8 {
+		t.Fatalf("after the rollover: backfilled = %v, listed = %d", st.Backfilled, len(st.Watched))
+	}
+}
+
+// Recover and RecoverLoop run the backfill too, for a deployment that never calls NotifyPending.
+func TestResolved_RecoverAndRecoverLoopBackfill(t *testing.T) {
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	clk := resolvedClock()
+	setup := func() (*Journal, NotifyTrail) {
+		j := memJournal()
+		tr := NewMemNotifyTrail()
+		e := testEngine(t, j, &fakeSink{}, tr, clk, "old")
+		if res, err := e.round(ctx, haltEvent()); err != nil || !res.done {
+			t.Fatal(res, err)
+		}
+		// An older version: nothing is listed.
+		clean := NewMemNotifyTrail()
+		recs, _ := tr.Load(ctx, "notify:r")
+		for i, r := range recs {
+			if err := clean.Append(ctx, "notify:r", i, r); err != nil {
+				t.Fatal(err)
+			}
+		}
+		putMarker(t, j, "r", "c1", clk.now().UnixMilli())
+		if _, _, err := j.putEntry(ctx, "r", runStartStep, Record{Kind: StepValue, Result: []byte("{}")}); err != nil {
+			t.Fatal(err)
+		}
+		return j, clean
+	}
+	resume := func(context.Context, string, RunStart) error { return nil }
+	listed := func(j *Journal, tr NotifyTrail) []Watched {
+		_, recs, err := testEngine(t, j, &fakeSink{}, tr, clk, "x").openHead(ctx)
+		if err != nil {
+			t.Fatal(err)
+		}
+		return FoldWatch(recs)
+	}
+	j, tr := setup()
+	if _, err := Recover(ctx, j, resume, WithNotifier(&fakeSink{}, tr, fixedNotifyClock(clk), WithNotifyHolder("p"))); err != nil {
+		t.Fatal(err)
+	}
+	if got := listed(j, tr); len(got) != 1 {
+		t.Fatalf("Recover listed %+v", got)
+	}
+	j, tr = setup()
+	done := make(chan struct{})
+	go func() {
+		defer close(done)
+		_ = RecoverLoop(ctx, j, resume, WithNotifier(&fakeSink{}, tr, fixedNotifyClock(clk), WithNotifyHolder("loop")), WithRecoverInterval(10*time.Millisecond))
+	}()
+	waitFor(t, func() bool { return len(listed(j, tr)) == 1 })
+	cancel()
+	<-done
 }

@@ -175,3 +175,14 @@ func FoldOpen(recs []NotifyRecord) OpenState {
 
 // FoldWatch is the events FoldOpen lists.
 func FoldWatch(recs []NotifyRecord) []Watched { return FoldOpen(recs).Watched }
+
+// LastSegment is the segment named by the last NotifySegment record of an open-trail index, "" if
+// there is none.
+func LastSegment(recs []NotifyRecord) string {
+	for i := len(recs) - 1; i >= 0; i-- {
+		if recs[i].Kind == NotifySegment {
+			return recs[i].Next
+		}
+	}
+	return ""
+}

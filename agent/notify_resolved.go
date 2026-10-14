@@ -91,9 +91,12 @@ func eventFromKey(es *NotifyEvent) (notifyEvent, bool) {
 // scanRound runs the catch-up scan of ev.runID's trail as a round of the worker.
 func (e *notifyEngine) scanRound(ctx context.Context, ev notifyEvent) (roundResult, error) {
 	var err error
-	if ev.runID == "" {
+	switch ev.runID {
+	case "":
 		err = e.scanOpen(ctx)
-	} else {
+	case "@backfill":
+		err = e.backfillOpen(ctx)
+	default:
 		err = e.clearScan(ctx, ev.runID)
 	}
 	if err != nil {
@@ -253,71 +256,130 @@ func (e *notifyEngine) setWatch(ctx context.Context, key, runID string, want boo
 	return fmt.Errorf("notify: trail %s: lost the append race %d times in a row for %s", NotifyOpenTrail, maxTrailRetries, key)
 }
 
-// openLookback is the farthest, in days, newestOpenSegment looks back for a segment: ten years.
-// Every call that finds none writes today's segment, so the look back is long only the first time
-// and after a gap in which no sweep or recovery pass of any process ran.
-const openLookback = 3660
+// indexYearsBack is how many years back indexLast looks for an index when this year's has no record
+// yet. It is walked only by the first lookup of a new year, so a gap of years costs that many loads
+// once.
+const indexYearsBack = 50
 
-// newestOpenSegment finds the newest non-empty open-trail segment: tomorrow's (a peer whose clock is
-// ahead), today's, then each earlier day. "" if there is none within openLookback days.
-func (e *notifyEngine) newestOpenSegment(ctx context.Context) (string, []NotifyRecord, error) {
-	now := e.cfg.now()
-	for off := -1; off <= openLookback; off++ {
-		n := OpenSegment(now.AddDate(0, 0, -off))
-		r, err := e.trail.Load(ctx, n)
-		if err != nil || len(r) > 0 {
-			return n, r, err
+// indexLast returns the segment the newest open-trail index ends with, "" if there is none, and the
+// year of that index. It reads this year's index (and the next year's in December, for a peer whose
+// clock is ahead), then earlier years if this year's has no record.
+func (e *notifyEngine) indexLast(ctx context.Context) (string, int, error) {
+	now := e.cfg.now().UTC()
+	y := now.Year()
+	var years []int
+	if now.Month() == time.December {
+		years = append(years, y+1)
+	}
+	for i := 0; i <= indexYearsBack; i++ {
+		years = append(years, y-i)
+	}
+	for _, yr := range years {
+		recs, err := e.trail.Load(ctx, OpenIndex(yr))
+		if err != nil {
+			return "", 0, err
+		}
+		if seg := LastSegment(recs); seg != "" {
+			return seg, yr, nil
 		}
 	}
-	return "", nil, nil
+	return "", y, nil
 }
 
-// openHead returns the open-trail segment writes go to and its records: the newest segment, with
-// seals followed, and rolled forward to today's. A segment from an earlier day is sealed (the
-// append race makes the seal final) and today's starts with a checkpoint of the set listed in it.
+// indexSegment appends name to the index of this year unless the index already ends with it.
+func (e *notifyEngine) indexSegment(ctx context.Context, name string) error {
+	idx := OpenIndex(e.cfg.now().UTC().Year())
+	for range maxTrailRetries {
+		recs, err := e.trail.Load(ctx, idx)
+		if err != nil {
+			return err
+		}
+		if LastSegment(recs) == name {
+			return nil
+		}
+		conflict, err := e.appendRec(ctx, idx, len(recs), NotifyRecord{Kind: NotifySegment, At: e.cfg.now(), Next: name})
+		if err != nil {
+			return err
+		}
+		if !conflict {
+			return nil
+		}
+	}
+	return fmt.Errorf("notify: trail %s: lost the append race indexing %s", idx, name)
+}
+
+// openHead returns the open-trail segment writes go to and its records. It reads the index for the
+// newest segment, follows seals to the end of the chain, rolls a segment from an earlier day forward
+// (a seal on it, then a checkpoint of its set as the first record of today's, then an index record),
+// and repairs the index if a writer died before indexing the segment it created. That order is what
+// makes a crash at any step recoverable: after the seal the chain names the next segment; a
+// segment reached through a seal that is still empty gets its checkpoint; a segment reached through
+// the chain but not in the index gets indexed; and the index names an empty segment only for the
+// very first one, which has nothing to carry. A lookup is O(1) loads however long the gap.
 func (e *notifyEngine) openHead(ctx context.Context) (string, []NotifyRecord, error) {
 	today := OpenSegment(e.cfg.now())
-	name, recs, err := e.newestOpenSegment(ctx)
-	if err != nil {
-		return "", nil, err
-	}
-	if name == "" { // none: start today's with an empty checkpoint, so later lookups stop there
-		cp := NotifyRecord{Kind: NotifyCheckpoint, At: e.cfg.now()}
-		if _, aerr := e.appendRec(ctx, today, 0, cp); aerr != nil {
-			return "", nil, aerr
-		}
-		recs, err = e.trail.Load(ctx, today)
-		return today, recs, err
-	}
 	for range 4 * maxTrailRetries {
-		st := FoldOpen(recs)
-		switch {
-		case st.Sealed != "":
-			next := st.Sealed
-			nrecs, lerr := e.trail.Load(ctx, next)
-			if lerr != nil {
-				return "", nil, lerr
+		last, _, err := e.indexLast(ctx)
+		if err != nil {
+			return "", nil, err
+		}
+		if last == "" { // the first segment: index it before it is created
+			if err := e.indexSegment(ctx, today); err != nil {
+				return "", nil, err
 			}
-			if len(nrecs) == 0 { // the roller died after the seal, or is racing: write the checkpoint
-				cp := NotifyRecord{Kind: NotifyCheckpoint, At: e.cfg.now(), Watching: st.Watched, Backfilled: st.Backfilled}
-				if _, aerr := e.appendRec(ctx, next, 0, cp); aerr != nil {
+			continue
+		}
+		name := last
+		recs, err := e.trail.Load(ctx, name)
+		if err != nil {
+			return "", nil, err
+		}
+		var prev *OpenState // the sealed segment name continues, once the chain has been followed
+		sealedNow := false
+		for hops := 0; ; hops++ {
+			if hops > 4*maxTrailRetries {
+				return "", nil, fmt.Errorf("notify: trail %s: a chain of seals too long to follow", NotifyOpenTrail)
+			}
+			if len(recs) == 0 {
+				cp := NotifyRecord{Kind: NotifyCheckpoint, At: e.cfg.now()}
+				if prev != nil {
+					cp.Watching, cp.Backfilled = prev.Watched, prev.Backfilled
+				}
+				if _, aerr := e.appendRec(ctx, name, 0, cp); aerr != nil {
 					return "", nil, aerr
 				}
-				if nrecs, lerr = e.trail.Load(ctx, next); lerr != nil {
-					return "", nil, lerr
+				if recs, err = e.trail.Load(ctx, name); err != nil {
+					return "", nil, err
 				}
+				continue
 			}
-			name, recs = next, nrecs
-		case name < today:
-			var aerr error
-			if recs, aerr = e.sealSegment(ctx, name, recs, today); aerr != nil {
-				return "", nil, aerr
+			st := FoldOpen(recs)
+			if st.Sealed == "" {
+				break
 			}
-		default:
-			return name, recs, nil
+			prev = &st
+			name = st.Sealed
+			if recs, err = e.trail.Load(ctx, name); err != nil {
+				return "", nil, err
+			}
 		}
+		if name < today { // an earlier day: seal it, and the next pass follows the seal
+			if _, err := e.sealSegment(ctx, name, recs, today); err != nil {
+				return "", nil, err
+			}
+			sealedNow = true
+		}
+		if name != last { // reached through the chain: the index is behind
+			if err := e.indexSegment(ctx, name); err != nil {
+				return "", nil, err
+			}
+		}
+		if sealedNow {
+			continue
+		}
+		return name, recs, nil
 	}
-	return "", nil, fmt.Errorf("notify: trail %s: could not roll the open trail forward", NotifyOpenTrail)
+	return "", nil, fmt.Errorf("notify: trail %s: could not find or roll the open trail's head", NotifyOpenTrail)
 }
 
 // sealSegment appends a seal to segment name (records recs) naming next, and returns its records
@@ -327,6 +389,11 @@ func (e *notifyEngine) sealSegment(ctx context.Context, name string, recs []Noti
 		return nil, err
 	}
 	return e.trail.Load(ctx, name)
+}
+
+// queueBackfill queues the one-time listing of the events observed before the open trail existed.
+func (e *notifyEngine) queueBackfill() {
+	e.w.submit(notifyEvent{key: scanKey("@backfill"), scan: true, runID: "@backfill"})
 }
 
 // queueScanOpen queues the scan of the NotifyOpenTrail.
@@ -378,7 +445,11 @@ func (e *notifyEngine) scanOpen(ctx context.Context) error {
 // Lister enumerates every run, finished ones included), and records that it is done, so it is
 // skipped from then on; one that is interrupted starts over, which is safe because listing is
 // idempotent.
-func (e *notifyEngine) backfillOpen(ctx context.Context, lister Lister) error {
+func (e *notifyEngine) backfillOpen(ctx context.Context) error {
+	lister, ok := Capability[Lister](e.j.store)
+	if !ok {
+		return nil // a store that cannot list runs has none to list
+	}
 	_, recs, err := e.openHead(ctx)
 	if err != nil {
 		return err
