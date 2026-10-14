@@ -672,7 +672,18 @@ func (s *Store) migrate(ctx context.Context, dryRun bool) (MigrationResult, erro
 			return res, errSchemaNewer(res.Before)
 		}
 	}
+	// What the migration will create, for the result: the tables that are missing (a v0.9.0
+	// journal has no events table) and, below, the function and the indexes.
+	for _, table := range []string{s.t.steps, s.t.leases, s.t.version, s.t.events} {
+		var isTable sql.NullBool
+		if err := tx.QueryRowContext(ctx, relationIsTable, table, s.schema).Scan(&isTable); errors.Is(err, sql.ErrNoRows) {
+			res.Created = append(res.Created, "table "+quoteIdent(s.schema)+"."+table)
+		} else if err != nil {
+			return res, fmt.Errorf("postgres: look up %s: %w (%w)", table, err, agent.ErrStorage)
+		}
+	}
 	if !haveNextSeq {
+		res.Created = append(res.Created, "function "+quoteIdent(s.schema)+"."+s.t.nextSeq+"(text)")
 		body := s.t.nextSeqBody(s.schema)
 		if strings.Contains(body, "$bide$") {
 			return res, fmt.Errorf("postgres: schema name %q holds $bide$: %w", s.schema, agent.ErrConfig)
@@ -724,6 +735,7 @@ func (s *Store) migrate(ctx context.Context, dryRun bool) (MigrationResult, erro
 		if have {
 			continue
 		}
+		res.Created = append(res.Created, "index "+quoteIdent(s.schema)+"."+ix.name)
 		if err := run("create index "+ix.name+" on "+s.t.leases+" (the tables' owner must run the migration)",
 			`CREATE INDEX IF NOT EXISTS `+quoteIdent(ix.name)+` ON `+s.t.qLeases+` `+ix.cols); err != nil {
 			return res, err

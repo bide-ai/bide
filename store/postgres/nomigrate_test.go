@@ -99,6 +99,12 @@ func TestWithoutMigration_LeastPrivilege(t *testing.T) {
 	if again.Before != schemaVersion || again.After != schemaVersion {
 		t.Fatalf("second Migrate = %+v, want version %d before and after", again, schemaVersion)
 	}
+	if len(again.Created) != 0 {
+		t.Fatalf("second Migrate created %v", again.Created)
+	}
+	if len(res.Created) != 7 { // four tables, the function and two indexes
+		t.Fatalf("first Migrate created %v", res.Created)
+	}
 	for _, st := range again.Statements { // idempotent: no function and no index on a current schema
 		if strings.Contains(st, "CREATE FUNCTION") || strings.Contains(st, "CREATE INDEX") {
 			t.Fatalf("second Migrate ran %q", st)

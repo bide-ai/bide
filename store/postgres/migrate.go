@@ -65,6 +65,9 @@ type MigrationResult struct {
 	Before int
 	// After is the schema version once the migration is done: the version of this package.
 	After int
+	// Created names what the migration created (with WithDryRun, would create): tables, the
+	// next_seq function and lease indexes, schema-qualified. It is empty on a current schema.
+	Created []string
 	// Statements are the SQL statements the migration ran, in order, as sent to the server. A
 	// CREATE TABLE IF NOT EXISTS (and the version row's INSERT ... ON CONFLICT DO NOTHING) is
 	// listed even when the table exists: it is sent, and does nothing. The function and each

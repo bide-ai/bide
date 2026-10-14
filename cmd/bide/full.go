@@ -13,6 +13,7 @@ import (
 	"github.com/bide-ai/bide/cmd/bide/internal/demo"
 	"github.com/bide-ai/bide/cmd/bide/internal/doctor"
 	"github.com/bide-ai/bide/cmd/bide/internal/initcmd"
+	"github.com/bide-ai/bide/cmd/bide/internal/migratecmd"
 	"github.com/bide-ai/bide/cmd/bide/internal/samplecmd"
 	"github.com/bide-ai/bide/internal/runview"
 	"github.com/bide-ai/bide/internal/term"
@@ -72,6 +73,12 @@ func fullCommands() []command {
 			name:    "keygen",
 			summary: "create an approver key pair for bide approve and print the public key policies and verifiers use",
 			run:     approvecmd.KeygenMain,
+			exits:   commonExits,
+		},
+		{
+			name:    "migrate",
+			summary: "create or check a Postgres journal's schema as its owner, so the service needs no DDL rights",
+			run:     migratecmd.Main,
 			exits:   commonExits,
 		},
 		{
