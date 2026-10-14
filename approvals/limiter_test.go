@@ -41,3 +41,27 @@ func TestLimiter_BoundedAndEvictsIdleClients(t *testing.T) {
 		}
 	}
 }
+
+// The buckets of clients in use stay at the front of the recency list: a new source finds the idle
+// ones at the back and takes one's place, instead of being pushed into the shared overflow bucket by
+// the busy ones.
+func TestLimiter_BusyClientsAreNotTheOnesProbed(t *testing.T) {
+	now := time.Date(2026, 10, 14, 12, 0, 0, 0, time.UTC)
+	l := newLimiter(1, 2, 0, 0, 20, func() time.Time { return now })
+	for i := range 20 {
+		l.take(fmt.Sprint("c", i))
+		l.take(fmt.Sprint("c", i)) // drained
+	}
+	now = now.Add(5 * time.Second) // every bucket has refilled
+	for i := range 12 {
+		l.take(fmt.Sprint("c", i)) // c0..c11 are in use again
+	}
+	if ok, _ := l.take("newcomer"); !ok || l.clients["newcomer"] == nil {
+		t.Fatalf("the newcomer was not given a bucket of its own (%d clients)", len(l.clients))
+	}
+	for i := range 12 {
+		if l.clients[fmt.Sprint("c", i)] == nil {
+			t.Fatalf("busy client c%d was evicted", i)
+		}
+	}
+}
