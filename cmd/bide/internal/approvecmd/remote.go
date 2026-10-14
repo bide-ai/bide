@@ -23,7 +23,7 @@ import (
 	"github.com/bide-ai/bide/audit"
 )
 
-// bide approve -to <url> decides through an application's approval intake (package approvals)
+// -to <url> decides through an application's approval intake (package approvals)
 // instead of writing the journal: it fetches the pending call from the endpoint, shows it, signs the
 // decision with the approver's key, and posts it. The application records it through its own
 // journal, so its audit log signs it as it is written. What the endpoint says is not trusted for
@@ -279,9 +279,13 @@ func (c *cmd) approveRemote(ctx context.Context) error {
 			return err
 		}
 	}
-	signer, err := LoadSigner(f.key)
+	signer, err := c.src.Load(f.key)
 	if err != nil {
-		return err
+		// The source's error may hold text from a vendor library: show it escaped.
+		return errors.New(safe(err.Error()))
+	}
+	if cl, ok := signer.(io.Closer); ok {
+		defer cl.Close()
 	}
 	if err := checkEnrolled(keys, f.as, signer); err != nil {
 		return err
@@ -390,7 +394,7 @@ func (c *cmd) remoteReceipt(rc audit.DecisionReceipt, d agent.Decision, s agent.
 		return fmt.Errorf("the decision was recorded, but the receipt the endpoint returned does not verify, so none was written: %w", err)
 	}
 	if path == "" {
-		path = filepath.Join(filepath.Dir(c.f.key), defaultReceiptName(c.f.run, c.f.call, c.f.as, rc.DecidedAt))
+		path = filepath.Join(c.src.receiptDir(c.f.key), defaultReceiptName(c.f.run, c.f.call, c.f.as, rc.DecidedAt))
 	}
 	b, err := json.MarshalIndent(rc, "", "  ")
 	if err != nil {
