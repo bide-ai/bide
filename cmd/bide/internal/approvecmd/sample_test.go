@@ -70,8 +70,8 @@ func TestSampleJournal(t *testing.T) {
 	if !strings.HasPrefix(flow.Call, "node:") || flow.Need != 2 || strings.Join(flow.ApprovedBy, ",") != "finance" {
 		t.Fatalf("%+v", flow)
 	}
-	// Finance already signed on this flow node; the refusal says so, with the recorded time.
-	code, _, errs = run("", "-run", flow.Run, "-call", flow.Call, "-as", "finance", "-key", keyFile("finance"), "-yes", "-approver-keys", keys)
+	// Finance already approved this flow node; rejecting it now is refused, with the recorded time (approving again would be "already recorded").
+	code, _, errs = run("", "-run", flow.Run, "-call", flow.Call, "-as", "finance", "-key", keyFile("finance"), "-yes", "-reject", "-approver-keys", keys)
 	if code != 1 || !strings.Contains(errs, "finance already decided") || !strings.Contains(errs, "approved at 2026-") {
 		t.Fatalf("%d %s", code, errs)
 	}

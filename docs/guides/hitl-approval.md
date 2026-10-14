@@ -421,9 +421,15 @@ If the arguments are longer than the view (40 lines, 200 characters a line), `bi
 sign, because the signature binds all of them and what is hidden could be the field that matters;
 rerun with `-full`. It records nothing, and says why, when the call has no gate, the run is not waiting on it (it ended, or
 the call has a result), the gate already has its approvals or can no longer pass, you are not one of its
-approvers, you already decided (it names what you decided and when), or your key file can be read by
+approvers, you already decided the other way (it names what you decided and when), or your key file can be read by
 others (it checks again after you confirm, in case the gate was decided or the run ended while you
-read). Refusals on the gate's standing or on your earlier decision use only decisions it has verified
+read). Deciding again what your counted decision already says (approve after approve, reject after
+reject) is not a refusal: `bide approve` prints `already recorded: your approve at <decided_at> counts;
+nothing to do`, points to the receipt written when you signed, signs and writes nothing, and exits 0, so
+a retry after a lost response is safe under every scheme (a randomized one such as `ecdsa-p256` would
+otherwise sign the same decision to different bytes and add a second record). This needs
+`-approver-keys`, because only a verified decision is known to count; with `-unverified` a repeat is
+still refused. Refusals on the gate's standing or on your earlier decision use only decisions it has verified
 with `-approver-keys`; a junk record in the journal that the gate ignores never locks you out, and
 `-list` without `-approver-keys` labels its counts unverified and calls no gate settled. A call whose
 `approval-pending` note was lost (the note is the journal's only record of the gate's policy) is refused

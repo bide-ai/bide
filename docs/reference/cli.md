@@ -280,13 +280,16 @@ It reads the call from the journal, never from a flag or a notification, and sho
 about to sign: the run, the tool, the call's arguments (indented JSON, long ones cut; -full shows
 all), the gate (k of n, who has decided, who is pending) and the SHA-256 of the arguments the
 signature binds. It then asks you to type your approver id (or y) to confirm; -yes skips the
-question, for scripts. The decision is signed with your private key (made by bide keygen: Ed25519, ML-DSA-65 or hybrid),
+question, for scripts. The decision is signed with your private key (made by bide keygen: Ed25519, ECDSA P-256, ML-DSA-65 or hybrid),
 checked against the call before it is recorded, and recorded with the time you decided.
 
 It refuses, and records nothing, when the call has no waiting gate, the run is not waiting on it,
 the gate already passed or was denied, you are not one of the gate's approvers, you already decided
-(it says what, and when), or the key file can be read by others (on Unix, as ssh refuses one). It
-checks again after you confirm, in case the gate was decided or the run ended while you read. It
+the other way (it says what, and when), or the key file can be read by others (on Unix, as ssh refuses one). It
+checks again after you confirm, in case the gate was decided or the run ended while you read. If
+your counted decision is the one you are making again (approve after approve, reject after reject),
+it signs and writes nothing, prints "already recorded: your approve at <time> counts; nothing to do"
+and exits 0, so a retry after a lost response is safe, under every scheme. It
 never refuses, and -list never settles a gate, on records it has not verified: without
 -approver-keys the standing is labelled unverified. A call whose approval-pending note was lost (the
 note is the journal's only record of the gate's policy) is refused with a precise message: the
