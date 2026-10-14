@@ -183,6 +183,8 @@ type mtlsDriverOut struct {
 	Tool   string   `json:"tool"`
 	Origin string   `json:"origin"`
 	Error  string   `json:"error"`
+	Loaded bool     `json:"loaded"`
+	Status string   `json:"status"`
 	Log    []string `json:"log"`
 }
 
@@ -208,12 +210,30 @@ func TestPage_ClientCertificateInChrome(t *testing.T) {
 	if _, err := os.Stat(filepath.Join(driverDir, "node_modules", "puppeteer-core")); err != nil {
 		mtlsFail(t, "puppeteer-core is not installed in %s (npm ci there): %v", driverDir, err)
 	}
-	for _, mode := range []string{"same-origin", "include"} {
-		t.Run(mode, func(t *testing.T) { chromeMTLS(t, node, chrome, driverDir, mode == "include") })
-	}
+	t.Run("same-origin", func(t *testing.T) { chromeMTLS(t, node, chrome, driverDir, mtlsMode{}) })
+	t.Run("include", func(t *testing.T) {
+		chromeMTLS(t, node, chrome, driverDir, mtlsMode{cross: true, credentials: "include", allow: true})
+	})
+	// What a deployment gets wrong: Chrome does not present the certificate, or does not let the page
+	// read the answer, and the page says it could not load the call.
+	t.Run("cross-origin without credentials include", func(t *testing.T) {
+		chromeMTLS(t, node, chrome, driverDir, mtlsMode{cross: true, credentials: "same-origin", allow: true, refused: true})
+	})
+	t.Run("include without WithCORSCredentials", func(t *testing.T) {
+		chromeMTLS(t, node, chrome, driverDir, mtlsMode{cross: true, credentials: "include", refused: true})
+	})
 }
 
-func chromeMTLS(t *testing.T, node, chrome, driverDir string, crossOrigin bool) {
+// mtlsMode is one configuration of the page and the intake.
+type mtlsMode struct {
+	cross       bool   // the page is hosted on another origin than the intake
+	credentials string // config.json's "credentials" (cross-origin)
+	allow       bool   // the intake has WithCORSCredentials
+	refused     bool   // the page is expected not to load the call
+}
+
+func chromeMTLS(t *testing.T, node, chrome, driverDir string, mode mtlsMode) {
+	crossOrigin := mode.cross
 	work := t.TempDir()
 	home := filepath.Join(work, "home")
 	pki := newMTLSPKI(t, work)
@@ -233,8 +253,11 @@ func chromeMTLS(t *testing.T, node, chrome, driverDir string, crossOrigin bool) 
 		pageSrv := httptest.NewUnstartedServer(nil)
 		pageSrv.TLS = &tls.Config{Certificates: []tls.Certificate{pki.srvCert}, MinVersion: tls.VersionTLS12}
 		pageOrigin := "https://" + pageSrv.Listener.Addr().String()
-		opts = append(opts, approvals.WithCORS(pageOrigin), approvals.WithCORSCredentials())
-		cfg, _ := json.Marshal(map[string]string{"intake": intakeOrigin, "credentials": "include"})
+		opts = append(opts, approvals.WithCORS(pageOrigin))
+		if mode.allow {
+			opts = append(opts, approvals.WithCORSCredentials())
+		}
+		cfg, _ := json.Marshal(map[string]string{"intake": intakeOrigin, "credentials": mode.credentials})
 		csp := approvals.PageCSP(intakeOrigin)
 		files := approvals.PageFiles()
 		types := map[string]string{"index.html": "text/html; charset=utf-8", "page.js": "text/javascript; charset=utf-8", "app.css": "text/css; charset=utf-8", "config.json": "application/json"}
@@ -318,6 +341,13 @@ loop:
 	}
 	t.Logf("what Chrome did:\n%s", strings.Join(out.Log, "\n"))
 	t.Logf("seen by the intake's WithAuth hook: %q", seen.all())
+	if mode.refused {
+		if out.Loaded || out.OK {
+			t.Fatalf("the page loaded the call although Chrome should not have let it: %+v", out)
+		}
+		t.Logf("the page said: %s", out.Status)
+		return
+	}
 	if !out.OK || !strings.HasPrefix(out.Result, "Approved: signed and recorded") || out.Tool != "charge" {
 		t.Fatalf("the page did not complete an Approve: %+v", out)
 	}

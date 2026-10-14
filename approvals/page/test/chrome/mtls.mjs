@@ -35,8 +35,13 @@ try {
   };
 
   await stage('open the page', () => page.goto(env.PAGE_URL, { waitUntil: 'load', timeout: 30000 }));
-  // The call loads with the page (a GET /pending with the page's credentials mode).
-  await stage('the call loads', () => page.waitForSelector('#call-panel:not([hidden])', { timeout: 30000 }));
+  // The call loads with the page (a GET /pending with the page's credentials mode), or the page says
+  // why it could not.
+  await stage('the call loads', () => page.waitForFunction(() => !document.getElementById('call-panel').hidden || (document.getElementById('status').textContent !== '' && document.getElementById('status').textContent !== 'Loading the call...'), { timeout: 30000 }));
+  if (await page.$eval('#call-panel', (e) => e.hidden)) {
+    out = { ok: false, loaded: false, status: await text('status'), log };
+    throw out;
+  }
   const tool = await text('call-tool');
   const origin = await text('origin');
   await stage('create the key', async () => {
@@ -59,9 +64,9 @@ try {
   });
   const result = await text('result');
   const cls = await page.$eval('#result', (e) => e.className);
-  out = { ok: cls === 'ok', result, tool, origin, log };
+  out = { ok: cls === 'ok', loaded: true, result, tool, origin, log };
 } catch (e) {
-  out = { ok: false, error: e.message, log };
+  if (e !== out) out = { ok: false, error: e.message, log };
 } finally {
   await browser.close();
 }
