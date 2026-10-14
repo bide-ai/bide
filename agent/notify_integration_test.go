@@ -250,14 +250,18 @@ func TestNotifier_RecoveryFailingCountsAcrossRestarts(t *testing.T) {
 	if sink.count() != 1 {
 		t.Fatalf("notified %d times in one episode, want 1", sink.count())
 	}
-	pass(fine) // recovers: the episode closes
+	pass(fine) // recovers: the episode closes, and the receiver is told
+	waitFor(t, func() bool { return sink.count() == 2 })
+	if c := sink.calls[1]; c.Kind != NotificationResolved || c.Reason != "recovered" || c.Clears == nil || c.Clears.Key != RecoveryKey("r", 0) {
+		t.Fatalf("after the recovery: %+v", c)
+	}
 	clk.advance(time.Hour)
 	pass(broken) // a new episode opens: not due yet
 	clk.advance(16 * time.Minute)
 	pass(broken)
-	waitFor(t, func() bool { return sink.count() == 2 })
-	if sink.calls[1].Key != RecoveryKey("r", 1) {
-		t.Fatalf("second episode key = %q", sink.calls[1].Key)
+	waitFor(t, func() bool { return sink.count() == 3 })
+	if sink.calls[2].Key != RecoveryKey("r", 1) {
+		t.Fatalf("second episode key = %q", sink.calls[2].Key)
 	}
 }
 
