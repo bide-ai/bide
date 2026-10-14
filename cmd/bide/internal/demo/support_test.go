@@ -293,11 +293,11 @@ func TestKeptLines(t *testing.T) {
 func TestViewErrors(t *testing.T) {
 	dir := t.TempDir()
 	pub, _, _ := ed25519.GenerateKey(rand.Reader)
-	if _, err := view(context.Background(), dir, pub); err == nil {
+	if _, err := view(context.Background(), dir, filepath.Join(dir, journalFile), pub); err == nil {
 		t.Error("view of an empty directory succeeded")
 	}
 	write(t, filepath.Join(dir, evidenceFile), `{"bogus":1}`)
-	if _, err := view(context.Background(), dir, pub); err == nil {
+	if _, err := view(context.Background(), dir, filepath.Join(dir, journalFile), pub); err == nil {
 		t.Error("view with an evidence file of another shape succeeded")
 	}
 }
@@ -434,14 +434,14 @@ func TestViewOverDamagedDirectory(t *testing.T) {
 	raw, _ := hex.DecodeString(strings.TrimSpace(string(seed)))
 	logPub := ed25519.NewKeyFromSeed(raw).Public().(ed25519.PublicKey)
 
-	r, err := view(context.Background(), dir, logPub)
+	r, err := view(context.Background(), dir, filepath.Join(dir, journalFile), logPub)
 	if err != nil || !r.proof.OK || !r.anchored.OK || !r.approvals.OK || r.logPub != audit.FormatPublicKey(audit.AlgEd25519, logPub) {
 		t.Fatalf("view with the log key: %+v, %v", r, err)
 	}
 	r.close()
 
 	other, _, _ := ed25519.GenerateKey(rand.Reader)
-	r, err = view(context.Background(), dir, other)
+	r, err = view(context.Background(), dir, filepath.Join(dir, journalFile), other)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -459,7 +459,7 @@ func TestViewOverDamagedDirectory(t *testing.T) {
 		if err := os.Remove(path); err != nil {
 			t.Fatal(err)
 		}
-		if r, err := view(context.Background(), dir, logPub); err == nil {
+		if r, err := view(context.Background(), dir, filepath.Join(dir, journalFile), logPub); err == nil {
 			r.close()
 			t.Errorf("view without %s succeeded", name)
 		}
@@ -468,7 +468,7 @@ func TestViewOverDamagedDirectory(t *testing.T) {
 		}
 	}
 	write(t, filepath.Join(dir, anchorFile), "")
-	if r, err := view(context.Background(), dir, logPub); err == nil {
+	if r, err := view(context.Background(), dir, filepath.Join(dir, journalFile), logPub); err == nil {
 		r.close()
 		t.Error("view with an empty anchor succeeded")
 	}
