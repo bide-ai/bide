@@ -389,7 +389,7 @@ caches, so a repeat that lands on the other one is forwarded.
 
 The CLI is a thin wrapper over package `notify/relay`, for a receiver you already run:
 
-<!-- docsnip: setup secrets []string; slackURL, routingKey string -->
+<!-- docsnip: setup secrets []string; slackURL, routingKey string; returns error -->
 ```go
 slack, err := relay.NewSlack(relay.SlackConfig{WebhookURL: slackURL, ViewURL: "https://bide.example.com/runs"})
 if err != nil {
