@@ -234,6 +234,7 @@ func flowGate(ctx context.Context, d *Journal, runID, key, node string, args jso
 	pend := &ApprovalPending{RunRef: RunRef{RunID: runID, RootRunID: runID}, ToolUseID: key, ToolName: node, Args: req.Args, Quorum: quorum}
 	if quorum != nil {
 		pend.Reason = quorum.reapproval
+		noteReask(ctx, d, runID, key, node, pol, *quorum)
 	}
 	return false, pend
 }
