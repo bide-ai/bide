@@ -1317,3 +1317,202 @@ func TestDecision_PolicyTurnedOnAfterThePauseIsHonoredWithTheLivePolicy(t *testi
 		}
 	})
 }
+
+// G1: a live policy that is now single-approver (changed after the pause note, which says m-of-n)
+// is not an m-of-n gate: the gate waits for agent.Approve and ignores signed decisions, so the
+// intake takes none, and the other way round (a live m-of-n policy over a note that says single) is
+// served, not refused as a single gate.
+func TestDecision_LiveSingleAndMofNPoliciesAreFollowed(t *testing.T) {
+	r := newRig(t, approvals.WithRateLimit(0, 0), approvals.WithGlobalRateLimit(0, 0))
+	r.single = true
+	_, pend := r.get("/pending?run=" + runID + "&call=c1")
+	if pend["state"] != "single" {
+		t.Fatalf("a live single policy: %v", pend)
+	}
+	if status, out := r.post(r.decision("alice", true)); status != 422 || code(out) != "single_gate" {
+		t.Fatalf("a signed decision under a gate that is now single: %d %v", status, out)
+	}
+	// The note of a gate that paused single, under a live m-of-n policy: served as m-of-n.
+	r2 := newRigWith(t, "c1", agent.SingleApproval(), approvals.WithRateLimit(0, 0), approvals.WithGlobalRateLimit(0, 0))
+	r2.single = false
+	r2.policy = agent.ApprovalPolicy{Need: 2, Approvers: []string{"alice", "bob", "carol"}}
+	if status, out := r2.post(r2.decision("alice", true)); status != 200 || out["counted"] != true {
+		t.Fatalf("a live m-of-n policy over a single note: %d %v", status, out)
+	}
+}
+
+// What the gate would refuse, the intake refuses: approvers whose enrolled keys are one key (the gate
+// refuses the whole policy, ErrConfig: one seat per key), an invalid policy, and a policy that
+// excludes a requester the run does not record. GET says state "error" with the reason, and POST is
+// refused (409 gate_misconfigured), so no approver is told that a decision counts under a gate that
+// will not run.
+func TestDecision_AGateTheGateRefusesIsRefused(t *testing.T) {
+	for name, tc := range map[string]struct {
+		mutate func(r *rig)
+		reason string
+	}{
+		"approvers on one key": {func(r *rig) {
+			r.enrolled["carol"], r.privs["carol"] = r.enrolled["bob"], r.privs["bob"]
+		}, "key"},
+		"an invalid policy":                            {func(r *rig) { r.policy = agent.ApprovalPolicy{Need: 5, Approvers: []string{"alice", "bob"}} }, "need"},
+		"excludes a requester the run does not record": {func(r *rig) { r.policy.ExcludePrincipal = true }, "requester"},
+	} {
+		t.Run(name, func(t *testing.T) {
+			r := newRig(t, approvals.WithRateLimit(0, 0), approvals.WithGlobalRateLimit(0, 0))
+			tc.mutate(r)
+			_, pend := r.get("/pending?run=" + runID + "&call=c1")
+			if pend["state"] != "error" || !strings.Contains(strings.ToLower(fmt.Sprint(pend["reason"])), tc.reason) {
+				t.Fatalf("pending: %v", pend)
+			}
+			before := r.records()
+			if status, out := r.post(r.decision("alice", true)); status != http.StatusConflict || code(out) != "gate_misconfigured" {
+				t.Fatalf("a decision under a gate the gate refuses: %d %v", status, out)
+			}
+			if r.records() != before {
+				t.Fatal("a decision was recorded under a misconfigured gate")
+			}
+			if err := r.run(); !errors.Is(err, agent.ErrConfig) {
+				t.Fatalf("the real gate: %v, want ErrConfig", err)
+			}
+		})
+	}
+}
+
+// The intake and the agent's own gate agree: the same journal and the same live policy go to both,
+// and what the gate does (pause asking, refuse, run the call, deny it) is what the intake reports.
+// The scenarios are the ways the two could drift: a policy changed after the pause, a recorded tally
+// the policy now supersedes, keys, and a requester.
+func TestGateAgreement(t *testing.T) {
+	// seedTally records a terminal tally the gate did not write itself (as an earlier drive or version
+	// would have), to start from a gate that has already counted.
+	seedTally := func(t *testing.T, r *rig, tally agent.ApprovalTally) {
+		t.Helper()
+		raw, _ := json.Marshal(tally)
+		data, err := agent.JournalEntry(agent.ApprovalTallyStep("c1"), agent.Record{Kind: agent.StepValue, Result: raw})
+		if err != nil {
+			t.Fatal(err)
+		}
+		if _, _, err := r.stall.Store.Insert(context.Background(), runID, agent.ApprovalTallyStep("c1"), data); err != nil {
+			t.Fatal(err)
+		}
+	}
+	abc := []string{"alice", "bob", "carol"}
+	sod := agent.Identity{Actor: "agent@1", OnBehalfOf: "alice"}
+	type outcome int
+	const (
+		asks    outcome = iota // the gate pauses asking (a waiting gate)
+		runs                   // the gate passes and the call runs
+		denies                 // the gate denies and the call does not run
+		refuses                // the gate fails: ErrConfig
+		single                 // a one-decision gate: it waits for agent.Approve
+		ungated                // no gate: the call runs
+	)
+	cases := []struct {
+		name     string
+		identity agent.Identity
+		policy   *agent.ApprovalPolicy
+		setup    func(t *testing.T, r *rig)
+		want     outcome
+		reason   string // the gate's reason for asking again
+	}{
+		{name: "a fresh pause", want: asks},
+		{name: "one of two decisions", setup: func(t *testing.T, r *rig) { r.post(r.decision("alice", true)) }, want: asks},
+		{name: "quorum approved, not yet recorded", setup: func(t *testing.T, r *rig) {
+			r.post(r.decision("alice", true))
+			r.post(r.decision("bob", true))
+		}, want: runs},
+		{name: "quorum denied", setup: func(t *testing.T, r *rig) {
+			r.post(r.decision("alice", false))
+			r.post(r.decision("bob", false))
+		}, want: denies},
+		{name: "approver removed from the policy after deciding", setup: func(t *testing.T, r *rig) {
+			r.post(r.decision("alice", true))
+			r.post(r.decision("bob", true))
+			r.policy.Approvers = []string{"alice", "carol", "dave"}
+		}, want: asks},
+		{name: "a recorded tally that passed, requester not excluded, policy now excludes", identity: sod,
+			setup: func(t *testing.T, r *rig) {
+				r.policy.ExcludePrincipal = true
+				seedTally(t, r, agent.ApprovalTally{Need: 2, Approvers: abc, Approved: 2, ApprovedBy: []string{"alice", "bob"}, DecisionFormat: agent.DecisionFormat})
+			}, want: asks, reason: agent.PendingSoDReapproval},
+		{name: "a recorded tally of an earlier decision format",
+			setup: func(t *testing.T, r *rig) {
+				seedTally(t, r, agent.ApprovalTally{Need: 2, Approvers: abc, Approved: 2, ApprovedBy: []string{"bob", "carol"}, DecisionFormat: "bide.approval.v2"})
+			}, want: asks, reason: agent.PendingReapproval},
+		{name: "a recorded tally that passed under the policy now", setup: func(t *testing.T, r *rig) {
+			seedTally(t, r, agent.ApprovalTally{Need: 2, Approvers: abc, Approved: 2, ApprovedBy: []string{"alice", "bob"}, DecisionFormat: agent.DecisionFormat})
+		}, want: runs},
+		{name: "a recorded denial", setup: func(t *testing.T, r *rig) {
+			seedTally(t, r, agent.ApprovalTally{Need: 2, Approvers: abc, Approved: 0, Denied: 2, DeniedBy: []string{"alice", "bob"}, DecisionFormat: agent.DecisionFormat})
+		}, want: denies},
+		{name: "approvers on one key", setup: func(t *testing.T, r *rig) { r.enrolled["carol"], r.privs["carol"] = r.enrolled["bob"], r.privs["bob"] }, want: refuses},
+		{name: "an invalid policy", setup: func(t *testing.T, r *rig) {
+			r.policy = agent.ApprovalPolicy{Need: 5, Approvers: []string{"alice", "bob"}}
+		}, want: refuses},
+		{name: "excludes a requester the run does not record", setup: func(t *testing.T, r *rig) { r.policy.ExcludePrincipal = true }, want: refuses},
+		{name: "a policy that cannot pass once the requester is excluded", identity: sod,
+			setup: func(t *testing.T, r *rig) {
+				r.policy = agent.ApprovalPolicy{Need: 3, Approvers: abc, ExcludePrincipal: true}
+			}, want: refuses},
+		{name: "a gate that is now one-decision", setup: func(t *testing.T, r *rig) { r.single = true }, want: single},
+		{name: "a gate that was removed", setup: func(t *testing.T, r *rig) { r.ungated = true }, want: ungated},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			r := newRigAs(t, "c1", nil, tc.identity, approvals.WithRateLimit(0, 0), approvals.WithGlobalRateLimit(0, 0))
+			if tc.setup != nil {
+				tc.setup(t, r)
+			}
+			// What the intake says, before the gate acts.
+			_, pend := r.get("/pending?run=" + runID + "&call=c1")
+			state, _ := pend["state"].(string)
+			gate, _ := pend["gate"].(map[string]any)
+			passed, failed := gate["passed"] == true, gate["failed"] == true
+			reason, _ := pend["reason"].(string)
+
+			// What the gate does.
+			err := r.run()
+			var pending *agent.ApprovalPending
+			got := runs
+			switch {
+			case errors.Is(err, agent.ErrConfig):
+				got = refuses
+			case errors.As(err, &pending) && pending.Quorum == nil:
+				got = single
+			case errors.As(err, &pending):
+				got = asks
+			case err != nil:
+				t.Fatalf("the gate: %v", err)
+			case r.ungated:
+				got = ungated
+			case r.charged.Load() == 0:
+				got = denies
+			}
+			if got != tc.want {
+				t.Fatalf("the gate did %d, want %d (%v)", got, tc.want, err)
+			}
+			if got == asks && pending.Reason != tc.reason {
+				t.Fatalf("the gate asks again because %q, want %q", pending.Reason, tc.reason)
+			}
+			// The intake agrees.
+			ok := false
+			switch got {
+			case asks:
+				ok = state == "waiting" && !passed && !failed && reason == tc.reason
+			case runs:
+				ok = state == "decided" || state == "waiting" && passed
+			case denies:
+				ok = state == "decided" || state == "waiting" && failed
+			case refuses:
+				ok = state == "error"
+			case single:
+				ok = state == "single"
+			case ungated:
+				ok = state == "decided"
+			}
+			if !ok {
+				t.Fatalf("the gate %v (%v), the intake says state %q passed %v failed %v reason %q", got, err, state, passed, failed, reason)
+			}
+		})
+	}
+}

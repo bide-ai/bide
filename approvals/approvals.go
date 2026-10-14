@@ -103,7 +103,7 @@ type Pending struct {
 	ArgsText       string          `json:"args_text,omitempty"` // the arguments when they are not JSON: shown as text
 	ArgsSHA256     string          `json:"args_sha256"`         // SHA-256 of the canonical arguments, lowercase hex: what a signature binds
 	DecisionFormat string          `json:"decision_format"`     // agent.DecisionFormat: the format a signature must be in
-	State          string          `json:"state"`               // StateWaiting, StateDecided or StateEnded
+	State          string          `json:"state"`               // StateWaiting, StateDecided, StateEnded, StateSingle or StateError
 	AskedAt        string          `json:"asked_at,omitempty"`  // when the run paused at the gate, by the run's clock
 	// Reason says why the call waits again after a tally: agent.PendingReapproval or
 	// agent.PendingSoDReapproval. Empty on a call's first ask.
@@ -119,6 +119,12 @@ const (
 	StateDecided = "decided"
 	// StateEnded: the run ended; it takes no more.
 	StateEnded = "ended"
+	// StateSingle: a one-decision gate (agent.Approve), which takes no signed decision.
+	StateSingle = "single"
+	// StateError: the gate would refuse to evaluate (an invalid policy, approvers on one key, a
+	// requester the run does not record): the run fails at the call, and the intake takes no
+	// decision. Pending.Reason says why.
+	StateError = "error"
 )
 
 // Gate is the standing of an m-of-n gate, counted as the gate counts: only decisions that verify
@@ -618,6 +624,8 @@ type gateRecords struct {
 	recs    []agent.Record
 	subject agent.ApprovalSubject
 	wait    agent.ApprovalWait
+	pol     *agent.ApprovalPolicy // the gate's policy: the live one (WithGatePolicy), else the pause note's
+	st      agent.GateStanding    // agent.EvaluateGate: where the gate itself says it stands
 }
 
 var errNoGate = errors.New("no waiting approval gate for this call")
@@ -641,54 +649,38 @@ func (h *Handler) load(ctx context.Context, run, call string) (*gateRecords, err
 			if err := audit.UnmarshalStrict(r.Result, &g.wait); err != nil || g.wait.ToolUseID != call {
 				return nil, errNoGate
 			}
-			// The live policy, when the application gives one, is what the gate enforces now.
-			if h.policyFor != nil && !g.wait.Single {
-				if p, ok := h.policyFor(tu.Name); ok && p != nil {
-					if b, err := json.Marshal(p); err == nil && string(b) != `{"single":true}` {
-						g.wait.Need, g.wait.Approvers, g.wait.ExcludePrincipal = p.Need, slices.Clone(p.Approvers), p.ExcludePrincipal
-					}
-				}
+			// The policy the gate enforces now: the application's live one for a tool it knows, else
+			// the pause note's (written once, when the run first paused).
+			g.pol = policyOfNote(g.wait)
+			if p, ok := h.policyFor(tu.Name); ok {
+				g.pol = p // nil: the tool has no gate now
 			}
+			g.st = agent.EvaluateGate(recs, g.subject, g.pol, h.verifiers)
 			return g, nil
 		}
 	}
 	return nil, errNoGate
 }
 
-// recordedOutcome is the gate's recorded terminal tally, when it is one the gate would act on. A tally
-// that passed on decisions signed before the current format (agent.PendingReapproval), or without
-// excluding the requester under a policy that now excludes it (agent.PendingSoDReapproval), is not
-// an outcome: the gate asks again when the run resumes, so the call is still waiting. reask names
-// why in that case.
-func recordedOutcome(g *gateRecords, byName map[string]agent.Record) (t agent.ApprovalTally, ok bool, reask string) {
-	rec, found := agent.RecordedTally(byName, g.subject.ToolUseID)
-	if !found {
-		return t, false, ""
+// policyOfNote is the policy a pause note records.
+func policyOfNote(w agent.ApprovalWait) *agent.ApprovalPolicy {
+	if w.Single {
+		return agent.SingleApproval()
 	}
-	if json.Unmarshal(rec.Result, &t) != nil {
-		return t, true, "" // a tally the gate cannot read is the gate's to refuse
-	}
-	switch {
-	case t.Passed() && t.DecisionFormat != agent.DecisionFormat:
-		return t, false, agent.PendingReapproval
-	case t.Passed() && !t.ExcludePrincipal && g.wait.ExcludePrincipal:
-		return t, false, agent.PendingSoDReapproval
-	}
-	return t, true, ""
+	return &agent.ApprovalPolicy{Need: w.Need, Approvers: slices.Clone(w.Approvers), ExcludePrincipal: w.ExcludePrincipal}
 }
 
-// state says whether the gate takes decisions: the call has a result or the gate a recorded
-// tally (decided), or the run ended.
+// state says whether the gate takes decisions, as the agent's own gate reads it
+// (agent.EvaluateGate): waiting, decided, a one-decision gate the intake does not serve, a gate that
+// would refuse to evaluate, or a run that ended while the gate waited.
 func (h *Handler) state(ctx context.Context, g *gateRecords) (string, error) {
-	byName := make(map[string]agent.Record, len(g.recs))
-	for _, r := range g.recs {
-		byName[r.Name] = r
-		if (r.Kind == agent.StepToolResult || r.Kind == agent.StepSagaFail) && r.ToolUseID == g.subject.ToolUseID {
-			return StateDecided, nil
-		}
-	}
-	if _, ok, _ := recordedOutcome(g, byName); ok {
+	switch g.st.Status {
+	case agent.GateDecided, agent.GateUngated:
 		return StateDecided, nil
+	case agent.GateSingle:
+		return StateSingle, nil
+	case agent.GateMisconfigured:
+		return StateError, nil
 	}
 	st, err := agent.Status(ctx, h.j, g.subject.RunID)
 	if err != nil {
@@ -701,7 +693,8 @@ func (h *Handler) state(ctx context.Context, g *gateRecords) (string, error) {
 	return StateWaiting, nil
 }
 
-// gate counts the gate's decisions as the gate does.
+// gate is the gate's standing as the agent's gate counts it (agent.EvaluateGate): its recorded
+// tally once it has one, else the count of the journal.
 func (h *Handler) gate(g *gateRecords) Gate {
 	out, _ := h.gateChecks(g)
 	return out
@@ -709,41 +702,14 @@ func (h *Handler) gate(g *gateRecords) Gate {
 
 // gateChecks is gate with the classification of every decision record the gate read.
 func (h *Handler) gateChecks(g *gateRecords) (Gate, []agent.DecisionCheck) {
-	p := agent.ApprovalPolicy{Need: g.wait.Need, Approvers: g.wait.Approvers, ExcludePrincipal: g.wait.ExcludePrincipal}
-	t, checks := agent.TallyApprovals(g.recs, g.subject, p, h.verifiers)
-	// Once the gate has settled, what it enforced is in its recorded tally, whatever keys the handler
-	// resolves now: that is what a caller sees, for a replay as for GET /pending.
-	byName := make(map[string]agent.Record, len(g.recs))
-	for _, r := range g.recs {
-		byName[r.Name] = r
+	t, checks := g.st.Tally, g.st.Checks
+	need, approvers := t.Need, slices.Clone(t.Approvers)
+	if g.pol != nil && len(approvers) == 0 {
+		need, approvers = g.pol.Need, slices.Clone(g.pol.Approvers)
 	}
-	settled := false
-	if rt, ok, _ := recordedOutcome(g, byName); ok && rt.DecisionFormat == agent.DecisionFormat {
-		t, settled = rt, true
-	}
-	out := Gate{Need: t.Need, Approvers: slices.Clone(t.Approvers), Approved: t.Approved, Denied: t.Denied,
+	out := Gate{Need: need, Approvers: approvers, Approved: t.Approved, Denied: t.Denied,
 		Pending: slices.Clone(t.Pending), Excluded: slices.Clone(t.Excluded), Passed: t.Passed(), Failed: t.Unreachable()}
-	for i := range checks {
-		if settled && checks[i].Counted {
-			// The recorded tally names the approvers whose decision counted, by verdict.
-			by := t.DeniedBy
-			if checks[i].Approved {
-				by = t.ApprovedBy
-			}
-			if !slices.Contains(by, checks[i].Approver) {
-				checks[i].Counted, checks[i].Reason = false, "not counted by the gate's recorded tally"
-			}
-		} else if settled && !checks[i].Counted && checks[i].Reason == agent.ReasonNoKey {
-			// A key no longer resolved: the tally, not the recount, says whether it counted.
-			by := t.DeniedBy
-			if checks[i].Approved {
-				by = t.ApprovedBy
-			}
-			if slices.Contains(by, checks[i].Approver) {
-				checks[i].Counted, checks[i].Reason = true, ""
-			}
-		}
-		c := checks[i]
+	for _, c := range checks {
 		out.Decisions = append(out.Decisions, GateDecision{Approver: c.Approver, Approved: c.Approved, Counted: c.Counted, Reason: c.Reason})
 	}
 	return out, checks
@@ -776,12 +742,11 @@ func (h *Handler) pending(w http.ResponseWriter, r *http.Request) {
 	}
 	p := Pending{Run: run, Call: call, Tool: g.subject.ToolName, ArgsSHA256: audit.ApprovalArgsDigest(g.subject),
 		DecisionFormat: agent.DecisionFormat, State: st, AskedAt: g.wait.RecordedAt, Gate: h.gate(g)}
-	if st == StateWaiting {
-		byName := make(map[string]agent.Record, len(g.recs))
-		for _, r := range g.recs {
-			byName[r.Name] = r
-		}
-		_, _, p.Reason = recordedOutcome(g, byName)
+	switch st {
+	case StateWaiting:
+		p.Reason = g.st.Reason
+	case StateError:
+		p.Reason = shorten(g.st.Err.Error())
 	}
 	switch args := g.subject.Args; {
 	case len(args) == 0:
@@ -871,15 +836,20 @@ func (h *Handler) decide(w http.ResponseWriter, r *http.Request) {
 		h.fail(w, err)
 		return
 	}
-	if g.wait.Single {
+	if g.st.Status == agent.GateSingle {
 		writeError(w, http.StatusUnprocessableEntity, "single_gate", "this is a single-approver gate, which takes no signed decision; use agent.Approve")
+		return
+	}
+	if g.st.Status == agent.GateMisconfigured {
+		h.onErr(fmt.Errorf("approvals: the gate on %s/%s would refuse to evaluate: %w", d.RunID, d.ToolUseID, g.st.Err))
+		writeError(w, http.StatusConflict, "gate_misconfigured", "the gate cannot be evaluated, so the run fails at this call and takes no decision: "+shorten(g.st.Err.Error()))
 		return
 	}
 	if strings.HasPrefix(d.ToolUseID, "node:") {
 		writeError(w, http.StatusUnprocessableEntity, "unsupported", "the endpoint does not take decisions on plan flow node gates")
 		return
 	}
-	if !slices.Contains(g.wait.Approvers, d.ApproverID) {
+	if g.pol == nil || !slices.Contains(g.pol.Approvers, d.ApproverID) {
 		writeError(w, http.StatusForbidden, "not_an_approver", "the approver is not one of this gate's approvers")
 		return
 	}

@@ -50,22 +50,23 @@ func (m chargeModel) Stream(_ context.Context, req agent.Request) (*agent.Stream
 // rig is an application: a 2-of-{alice,bob,carol} gated "charge" tool over a journal that an
 // audit.AuditedStore signs, with the intake handler mounted on a server.
 type rig struct {
-	identity agent.Identity // the run's acting identity, when set (separation of duties)
-	call     string
-	stall    *stallStore
-	t        *testing.T
-	inner    agent.Store
-	log      *audit.MemAnchorLog
-	logPub   ed25519.PublicKey
-	app      *agent.Journal // the application's: signs what it writes
-	privs    map[string]ed25519.PrivateKey
-	enrolled map[string]ed25519.PublicKey // dave is enrolled but not on the gate
-	policy   agent.ApprovalPolicy
-	charged  atomic.Int32
-	h        *approvals.Handler
-	srv      *httptest.Server
-	now      time.Time
-	nowMu    sync.Mutex
+	ungated, single bool           // the tool's gate as built now: none, or a one-decision gate (a redeploy)
+	identity        agent.Identity // the run's acting identity, when set (separation of duties)
+	call            string
+	stall           *stallStore
+	t               *testing.T
+	inner           agent.Store
+	log             *audit.MemAnchorLog
+	logPub          ed25519.PublicKey
+	app             *agent.Journal // the application's: signs what it writes
+	privs           map[string]ed25519.PrivateKey
+	enrolled        map[string]ed25519.PublicKey // dave is enrolled but not on the gate
+	policy          agent.ApprovalPolicy
+	charged         atomic.Int32
+	h               *approvals.Handler
+	srv             *httptest.Server
+	now             time.Time
+	nowMu           sync.Mutex
 }
 
 func (r *rig) clock() time.Time {
@@ -139,19 +140,25 @@ func newRigAs(t *testing.T, call string, policy *agent.ApprovalPolicy, id agent.
 
 // run drives the application's run once.
 func (r *rig) run() error {
-	charge := agent.MustFunc("charge", "charge the card", func(context.Context, struct {
+	charge, err := agent.Func("charge", "charge the card", func(context.Context, struct {
 		Amount int    `json:"amount"`
 		To     string `json:"to"`
 	}) (string, error) {
 		r.charged.Add(1)
 		return "ok", nil
-	}, agent.WithApproval(&r.policy))
+	}, r.toolApproval())
+	if err != nil {
+		return err // the tool refuses a policy that is invalid when it is built
+	}
 	var ropts []agent.RunOption
 	if !r.identity.Empty() {
 		ropts = append(ropts, agent.WithIdentity(r.identity))
 	}
-	_, err := agenttest.MustNew(chargeModel{id: r.call}, r.app, agent.WithTools(charge), agent.WithApproverVerifiers(r.verifiers)).
-		Run(context.Background(), runID, agent.UserText("pay"), ropts...)
+	a, err := agent.New(chargeModel{id: r.call}, r.app, agent.WithTools(charge), agent.WithApproverVerifiers(r.verifiers))
+	if err != nil {
+		return err // the agent refuses a gate it cannot enforce when it is built
+	}
+	_, err = a.Run(context.Background(), runID, agent.UserText("pay"), ropts...)
 	return err
 }
 
@@ -305,7 +312,29 @@ func (s *stallStore) Load(ctx context.Context, runID string, after int64) iter.S
 	return s.Store.Load(ctx, runID, after)
 }
 
-// livePolicy is WithGatePolicy for the rig: the policy its tool is built with.
+// gatePolicy is the policy the rig's tool is built with now: none (ungated), a one-decision gate, or
+// the m-of-n policy.
+func (r *rig) gatePolicy() *agent.ApprovalPolicy {
+	switch {
+	case r.ungated:
+		return nil
+	case r.single:
+		return agent.SingleApproval()
+	}
+	p := r.policy
+	return &p
+}
+
+// toolApproval is the tool option that builds that gate.
+func (r *rig) toolApproval() agent.ToolOption {
+	if p := r.gatePolicy(); p != nil {
+		return agent.WithApproval(p)
+	}
+	return agent.WithTitle("charge") // no gate: a no-op option
+}
+
+// livePolicy is WithGatePolicy for the rig: the policy its tool is built with, as the application
+// would give it.
 func (r *rig) livePolicy() approvals.Option {
-	return approvals.WithGatePolicy(func(tool string) (*agent.ApprovalPolicy, bool) { return &r.policy, tool == "charge" })
+	return approvals.WithGatePolicy(func(tool string) (*agent.ApprovalPolicy, bool) { return r.gatePolicy(), tool == "charge" })
 }

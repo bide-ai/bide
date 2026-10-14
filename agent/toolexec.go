@@ -42,17 +42,26 @@ func decodeTally(runID string, r Record) (ApprovalTally, error) {
 // resolved gate, carrying the policy it enforced and every decision record it read. Once that
 // record exists it is authoritative: a replay reuses it rather than recounting, so the outcome
 // cannot drift if keys or policy change later.
-func (a *Agent) quorumTally(ctx context.Context, runID string, tu ToolUse, pol *ApprovalPolicy) (ApprovalTally, bool, error) {
+// gatePolicyError is what an m-of-n gate refuses before it counts, on every evaluation and before a
+// recorded tally is read, so a resolver or a policy changed since the last run is checked again: an
+// invalid policy (Validate), no approver verifiers (ErrConfig), or one seat per signing key broken
+// (approverSeats: two approvers on one key, a key with no identity). A recorded tally is still
+// reused, not recounted: one written before these checks existed stands as recorded.
+func gatePolicyError(pol *ApprovalPolicy, verifierFor ApproverVerifierFor) error {
 	if err := pol.Validate(); err != nil {
-		return ApprovalTally{}, false, fmt.Errorf("agent: tool %q: %w", tu.Name, err)
+		return err
 	}
-	if a.approverVerifiers == nil {
-		return ApprovalTally{}, false, fmt.Errorf("agent: tool %q has an m-of-n Approval policy but no approver verifiers are configured (see WithApproverVerifiers): %w", tu.Name, ErrConfig)
+	if verifierFor == nil {
+		return fmt.Errorf("it has an m-of-n Approval policy but no approver verifiers are configured (see WithApproverVerifiers): %w", ErrConfig)
 	}
-	// One seat per signing key (F5), checked on every evaluation and before a recorded tally is
-	// read, so a resolver changed since the last run is checked again. A recorded tally is still
-	// reused, not recounted: one written before this check existed stands as recorded.
-	if _, _, err := approverSeats(*pol, a.approverVerifiers); err != nil {
+	if _, _, err := approverSeats(*pol, verifierFor); err != nil {
+		return err
+	}
+	return nil
+}
+
+func (a *Agent) quorumTally(ctx context.Context, runID string, tu ToolUse, pol *ApprovalPolicy) (ApprovalTally, bool, error) {
+	if err := gatePolicyError(pol, a.approverVerifiers); err != nil {
 		return ApprovalTally{}, false, fmt.Errorf("agent: tool %q: %w", tu.Name, err)
 	}
 	return tallyGate(ctx, a.store, runID, ApprovalSubject{RunID: runID, ToolUseID: tu.ID, ToolName: tu.Name, Args: tu.Args}, pol, a.approverVerifiers, "")
@@ -94,10 +103,48 @@ func tallyGateOnce(ctx context.Context, store *Journal, runID string, s Approval
 	if err != nil {
 		return ApprovalTally{}, false, false, fmt.Errorf("load history %s: %w (%w)", runID, err, ErrStorage)
 	}
+	c, err := countGate(recs, runID, s, pol, verifierFor, since)
+	if err != nil {
+		return ApprovalTally{}, false, false, err
+	}
+	if c.recorded {
+		return c.tally, true, false, nil
+	}
+	tally := c.tally
+	if !tally.Passed() && !tally.Unreachable() {
+		return tally, false, false, nil
+	}
+	tally.DecisionFormat = DecisionFormat
+	tally, err = step(ctx, store, runID, c.name, func(context.Context) (ApprovalTally, error) { return tally, nil }, WithSafety(Safety{ReadOnly: true}))
+	if err != nil {
+		return ApprovalTally{}, false, false, fmt.Errorf("record %s (run %s): %w (%w)", c.name, runID, err, ErrStorage)
+	}
+	// The journal holds the first writer's tally under name: another drive's, perhaps counted under
+	// a policy that did not exclude the requester. Evaluate again from the journal.
+	if supersededForSoD(tally, pol) {
+		return ApprovalTally{}, false, true, nil
+	}
+	return tally, true, false, nil
+}
+
+// gateCount is the evaluation of an m-of-n gate over a journal, before anything is recorded: what
+// the gate (tallyGateOnce) records and acts on, and what EvaluateGate reports, from one function, so
+// the two cannot disagree.
+type gateCount struct {
+	tally    ApprovalTally   // the recorded outcome, or the count of the journal (reapproval set when it is not terminal)
+	checks   []DecisionCheck // how each decision record was classified (nil for a recorded outcome)
+	recorded bool            // tally is the gate's recorded, final outcome
+	name     string          // the step a terminal count is recorded under
+}
+
+// countGate evaluates the m-of-n gate for s over recs, runID's records (see tallyGateOnce for the
+// rules). It checks separation of duties from the run's journaled principal, reads the recorded
+// outcome, and otherwise counts. It records nothing.
+func countGate(recs []Record, runID string, s ApprovalSubject, pol *ApprovalPolicy, verifierFor ApproverVerifierFor, since string) (gateCount, error) {
 	// Separation of duties, checked like the keys: on every evaluation, before a recorded tally is
 	// read, from the run's journaled principal.
 	if err := checkRequester(*pol, recs, runID, s.ToolUseID); err != nil {
-		return ApprovalTally{}, false, false, err
+		return gateCount{}, err
 	}
 	rp, _ := RecordedPrincipal(recs)
 	byName := map[string]Record{}
@@ -112,11 +159,11 @@ func tallyGateOnce(ctx context.Context, store *Journal, runID string, s Approval
 	if rt, ok := RecordedTally(byName, s.ToolUseID); ok {
 		t, err := decodeTally(runID, rt)
 		if err != nil {
-			return ApprovalTally{}, false, false, err
+			return gateCount{}, err
 		}
 		switch {
 		case t.ExcludePrincipal && !slices.Equal(t.Requesters, rp.Requesters()):
-			return ApprovalTally{}, false, false, fmt.Errorf("run %s: the approval tally %s excluded requesters %q, but the run's run:principal names %q: %w", runID, rt.Name, t.Requesters, rp.Requesters(), ErrConfig)
+			return gateCount{}, fmt.Errorf("run %s: the approval tally %s excluded requesters %q, but the run's run:principal names %q: %w", runID, rt.Name, t.Requesters, rp.Requesters(), ErrConfig)
 		case rt.Name == ApprovalTallyStep(s.ToolUseID) && predatesFormat(t):
 			// A tally an earlier version journaled passed on decisions this format does not accept:
 			// the call does not run on it. The gate asks again, and records its new outcome under
@@ -125,7 +172,7 @@ func tallyGateOnce(ctx context.Context, store *Journal, runID string, s Approval
 		case supersededForSoD(t, pol):
 			supersedes, name = rt.Name, ApprovalSoDRetallyStep(s.ToolUseID)
 		default:
-			return t, true, false, nil
+			return gateCount{tally: t, recorded: true, name: rt.Name}, nil
 		}
 	}
 	if since != "" {
@@ -141,7 +188,7 @@ func tallyGateOnce(ctx context.Context, store *Journal, runID string, s Approval
 			recs = nil
 		}
 	}
-	tally, _ := TallyApprovals(recs, s, *pol, verifierFor)
+	tally, checks := TallyApprovals(recs, s, *pol, verifierFor)
 	tally.Supersedes = supersedes
 	if !tally.Passed() && !tally.Unreachable() {
 		switch name {
@@ -150,19 +197,8 @@ func tallyGateOnce(ctx context.Context, store *Journal, runID string, s Approval
 		case ApprovalSoDRetallyStep(s.ToolUseID):
 			tally.reapproval = PendingSoDReapproval
 		}
-		return tally, false, false, nil
 	}
-	tally.DecisionFormat = DecisionFormat
-	tally, err = step(ctx, store, runID, name, func(context.Context) (ApprovalTally, error) { return tally, nil }, WithSafety(Safety{ReadOnly: true}))
-	if err != nil {
-		return ApprovalTally{}, false, false, fmt.Errorf("record %s (run %s): %w (%w)", name, runID, err, ErrStorage)
-	}
-	// The journal holds the first writer's tally under name: another drive's, perhaps counted under
-	// a policy that did not exclude the requester. Evaluate again from the journal.
-	if supersededForSoD(tally, pol) {
-		return ApprovalTally{}, false, true, nil
-	}
-	return tally, true, false, nil
+	return gateCount{tally: tally, checks: checks, name: name}, nil
 }
 
 // supersededForSoD reports whether pol, a policy that excludes the requester, supersedes the
