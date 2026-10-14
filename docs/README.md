@@ -40,7 +40,7 @@ proofs. Each entry notes who it is for.
 - **[Notifications](guides/notifications.md)**: the signed webhook notifier, receiver verification (`notify.Verify`), mutual TLS, and the payload.
 - **[Human approval (human-in-the-loop)](guides/hitl-approval.md)**: human sign-off before a tool runs, 1-of-1 or signed m-of-n, provable offline.
 - **[Security model](guides/security-model.md)**: the cryptographic guarantees and their exact scope (confidentiality is out of scope).
-- **[Key custody](guides/key-custody.md)**: signing keys in a PKCS#11 HSM or AWS KMS instead of key files, behind `audit.Signer`.
+- **[Key custody](guides/key-custody.md)**: signing keys in a PKCS#11 HSM, AWS KMS or Google Cloud KMS instead of key files, behind `audit.Signer`.
 - **[Delegation](guides/delegation.md)**: signed grants, attenuating delegation, and earned authority.
 - **[Governance](guides/governance.md)**: convergent governed state (Tier-2), federation, and gsm-backed synthesis and coordination.
 - **[Quorum](guides/quorum.md)**: governed k-of-n model agreement, verifiable offline.

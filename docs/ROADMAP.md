@@ -17,7 +17,7 @@ Changes that touch claims, the journal, leases, sagas or proofs are reviewed adv
 
 bide is meant to be usable by banks and other regulated institutions. What that needs beyond today, first items first:
 
-- Key custody: Ed25519 and ECDSA P-256 audit-log and approver signing keys in a PKCS#11 HSM or AWS KMS through `audit.Signer` have shipped ([key custody guide](guides/key-custody.md)). Next: Azure Key Vault and Google Cloud KMS, a PKCS#11 URI for the command-line approval tools, and a trial against a hardware HSM.
+- Key custody: Ed25519 and ECDSA P-256 audit-log and approver signing keys in a PKCS#11 HSM, AWS KMS or Google Cloud KMS through `audit.Signer` have shipped ([key custody guide](guides/key-custody.md)). Next: Azure Key Vault, a PKCS#11 URI for the command-line approval tools, and a trial against a hardware HSM.
 - Separation of duties: an opt-in approval policy that refuses a decision from the principal who requested the call (maker-checker), checked in the approval gate's formal model (model 1b).
 - Approver identity: approver keys bound to an institution's identity, with certificates from its own CA or keys issued through its SSO, and revocation that the gate and `bide audit` honor.
 - Evidence for regulators: a threat model, a security and versioning policy, signed releases with an SBOM, and guidance on retaining and archiving journals and evidence packages.

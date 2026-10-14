@@ -1,9 +1,10 @@
 // Command hsm-signing runs an agent whose audit log is signed by a key held in a
-// hardware security module (or SoftHSM2, a software token, for trying it out). The agent refunds
-// an order; every journal write is anchored with a tree head signed inside the token; an auditor
-// then verifies the anchored head and an evidence package with the public key alone.
+// hardware security module (or SoftHSM2, a software token, for trying it out) or in Google Cloud
+// KMS. The agent refunds an order; every journal write is anchored with a tree head signed inside
+// the token or by Cloud KMS; an auditor then verifies the anchored head and an evidence package with
+// the public key alone.
 //
-// Configure it with environment variables (a PIN is never a command-line argument):
+// Configure a PKCS#11 token with environment variables (a PIN is never a command-line argument):
 //
 //	BIDE_PKCS11_MODULE   path of the PKCS#11 library (libsofthsm2.so, a vendor library)
 //	BIDE_PKCS11_TOKEN    label of the token
@@ -12,9 +13,22 @@
 //	BIDE_HSM_PIN         the user PIN, or
 //	BIDE_HSM_PIN_FILE    the path of a file that holds it
 //
+// Or set BIDE_GCPKMS_KEY_VERSION to use Google Cloud KMS instead of a token:
+//
+//	BIDE_GCPKMS_KEY_VERSION  the full CryptoKeyVersion name,
+//	                         projects/P/locations/L/keyRings/R/cryptoKeys/K/cryptoKeyVersions/N
+//	BIDE_GCPKMS_SCHEME       "ecdsa-p256" (default, available in an HSM) or "ed25519" (software only)
+//	BIDE_GCPKMS_ALLOW_SOFTWARE_KEY  "1" to accept a SOFTWARE key version; ed25519 needs it, and without it
+//	                         only an HSM key version opens
+//	BIDE_GCPKMS_ALLOW_EXTERNAL_KEY  "1" to accept an EXTERNAL or EXTERNAL_VPC (Cloud EKM) key version
+//
+// Cloud KMS authenticates with Application Default Credentials (gcloud auth application-default
+// login, or a workload identity); no credential is read from the environment by this program.
+//
 //	go run .
 //
-// docs/guides/key-custody.md sets up a SoftHSM2 token for it and says what a real HSM needs.
+// docs/guides/key-custody.md sets up a SoftHSM2 token and a Cloud KMS key for it and says what a
+// real HSM needs.
 package main
 
 import (
@@ -25,9 +39,12 @@ import (
 	"io"
 	"os"
 
+	kms "cloud.google.com/go/kms/apiv1"
+
 	"github.com/bide-ai/bide/agent"
 	"github.com/bide-ai/bide/agent/agenttest"
 	"github.com/bide-ai/bide/audit"
+	"github.com/bide-ai/bide/signer/gcpkms"
 	"github.com/bide-ai/bide/signer/pkcs11"
 )
 
@@ -56,23 +73,64 @@ func config(getenv func(string) string) (pkcs11.Config, error) {
 		cfg.PIN = pkcs11.PINFromFile(f)
 	}
 	if cfg.Module == "" || cfg.TokenLabel == "" {
-		return cfg, errors.New("set BIDE_PKCS11_MODULE and BIDE_PKCS11_TOKEN (see the comment at the top of main.go)")
+		return cfg, errors.New("set BIDE_PKCS11_MODULE and BIDE_PKCS11_TOKEN, or BIDE_GCPKMS_KEY_VERSION (see the comment at the top of main.go)")
 	}
 	return cfg, nil
 }
 
-func run(ctx context.Context, getenv func(string) string, out io.Writer) error {
+// newKMSClient creates the Cloud KMS client; a test replaces it to talk to an emulator.
+var newKMSClient = func(ctx context.Context) (gcpkms.API, func(), error) {
+	c, err := kms.NewKeyManagementClient(ctx)
+	if err != nil {
+		return nil, nil, err
+	}
+	return c, func() { c.Close() }, nil
+}
+
+// gcpConfig reads the Cloud KMS signer configuration from the environment.
+func gcpConfig(getenv func(string) string) gcpkms.Config {
+	cfg := gcpkms.Config{KeyVersion: getenv("BIDE_GCPKMS_KEY_VERSION"),
+		AllowSoftwareKey: getenv("BIDE_GCPKMS_ALLOW_SOFTWARE_KEY") == "1", AllowExternalKey: getenv("BIDE_GCPKMS_ALLOW_EXTERNAL_KEY") == "1"}
+	if sc := getenv("BIDE_GCPKMS_SCHEME"); sc != "" {
+		cfg.Scheme = audit.Alg(sc)
+	}
+	return cfg
+}
+
+// openSigner opens the Cloud KMS signer when BIDE_GCPKMS_KEY_VERSION is set and the PKCS#11 signer
+// otherwise. The private key stays in the token or in Cloud KMS; bide sends it each message to sign.
+func openSigner(ctx context.Context, getenv func(string) string) (audit.Signer, func(), error) {
+	if getenv("BIDE_GCPKMS_KEY_VERSION") != "" {
+		client, closeClient, err := newKMSClient(ctx)
+		if err != nil {
+			return nil, nil, fmt.Errorf("cloud kms client: %w", err)
+		}
+		cfg := gcpConfig(getenv)
+		cfg.Client = client
+		s, err := gcpkms.Open(ctx, cfg)
+		if err != nil {
+			closeClient()
+			return nil, nil, err
+		}
+		return s, closeClient, nil
+	}
 	cfg, err := config(getenv)
 	if err != nil {
-		return err
+		return nil, nil, err
 	}
+	s, err := pkcs11.Open(cfg)
+	if err != nil {
+		return nil, nil, err
+	}
+	return s, func() { s.Close() }, nil
+}
 
-	// The signer: the private key stays in the token; bide sends it each message to sign.
-	signer, err := pkcs11.Open(cfg)
+func run(ctx context.Context, getenv func(string) string, out io.Writer) error {
+	signer, closeSigner, err := openSigner(ctx, getenv)
 	if err != nil {
 		return err
 	}
-	defer signer.Close()
+	defer closeSigner()
 
 	// Every journal write is anchored with a tree head the token signs. In production the anchor
 	// is a log in another trust domain; MemAnchorLog stands in for it here.
@@ -122,6 +180,6 @@ func run(ctx context.Context, getenv func(string) string, out io.Writer) error {
 	if err != nil || !rep.OK {
 		return fmt.Errorf("the evidence does not verify: %v", err)
 	}
-	fmt.Fprintln(out, "evidence for refund-1: sealed by the token, verified with the public key alone")
+	fmt.Fprintln(out, "evidence for refund-1: sealed by the key service or token, verified with the public key alone")
 	return nil
 }

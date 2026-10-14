@@ -186,7 +186,7 @@ it was not rewritten is what anchoring (above) makes provable afterward.
 
 Attribution is only as strong as the key custody behind these signatures. The runtime does not
 generate, store or rotate keys; supplying and protecting them is the deployment's responsibility.
-A signing key can live in a PKCS#11 token (an HSM) or in AWS KMS instead of a key file, behind the same
+A signing key can live in a PKCS#11 token (an HSM), in AWS KMS or in Google Cloud KMS instead of a key file, behind the same
 `audit.Signer` interface: see [Key custody](key-custody.md) for what is supported and its limits.
 
 ## Identity is a claim, not authentication
@@ -210,8 +210,8 @@ the claim's truth beyond the key custody behind the run's signatures.
 Signed tree heads sign under a pluggable scheme, all in the Go 1.27 standard library, so choosing
 one adds no dependency:
 
-- `ed25519` (`Ed25519Signer`): small, fast, FIPS-approved. Its key can be held in a PKCS#11 token or AWS
-  KMS instead of in memory ([Key custody](key-custody.md)).
+- `ed25519` (`Ed25519Signer`): small, fast, FIPS-approved. Its key can be held in a PKCS#11 token, AWS
+  KMS or Google Cloud KMS instead of in memory ([Key custody](key-custody.md)).
 - `ecdsa-p256` (`ECDSAP256Signer`): the scheme many HSMs and cloud KMS sign where they cannot sign
   Ed25519; SHA-256, a 64-byte low-S `r || s` signature, a 65-byte uncompressed point (see
   [Audit](audit.md#ecdsa-p-256)).
