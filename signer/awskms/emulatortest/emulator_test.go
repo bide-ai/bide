@@ -312,6 +312,28 @@ func (c stalling) Sign(ctx context.Context, in *kms.SignInput, o ...func(*kms.Op
 	return c.Client.Sign(ctx, in, o...)
 }
 
+// openWithin runs Open and fails the test if it has not returned in 5 seconds, so a regression that
+// ignores a deadline or cancellation fails fast and does not hang until the test binary's timeout.
+func openWithin(t *testing.T, ctx context.Context, cfg awskms.Config) (*awskms.Signer, error) {
+	t.Helper()
+	type result struct {
+		s   *awskms.Signer
+		err error
+	}
+	done := make(chan result, 1)
+	go func() {
+		s, err := awskms.Open(ctx, cfg)
+		done <- result{s, err}
+	}()
+	select {
+	case r := <-done:
+		return r.s, r.err
+	case <-time.After(5 * time.Second):
+		t.Fatal("Open did not return within 5s: it ignores a deadline or a cancellation")
+		return nil, nil
+	}
+}
+
 // Open is bounded by Config.Timeout on each KMS call (the public key read and the self-test
 // signature) and by the caller's context, whichever KMS call is slow.
 func TestOpenHonorsTimeoutAndContext(t *testing.T) {
@@ -324,10 +346,10 @@ func TestOpenHonorsTimeoutAndContext(t *testing.T) {
 			cfg := sc.config(client, id)
 			cfg.Timeout = 50 * time.Millisecond
 			start := time.Now()
-			if _, err := awskms.Open(context.Background(), cfg); !errors.Is(err, context.DeadlineExceeded) {
+			if _, err := openWithin(t, context.Background(), cfg); !errors.Is(err, context.DeadlineExceeded) {
 				t.Errorf("%s: err = %v, want the deadline", name, err)
 			}
-			if d := time.Since(start); d > 10*time.Second {
+			if d := time.Since(start); d > 5*time.Second {
 				t.Errorf("%s: Open took %v with a 50ms timeout", name, d)
 			}
 
@@ -335,7 +357,7 @@ func TestOpenHonorsTimeoutAndContext(t *testing.T) {
 			cfg.Timeout = time.Hour
 			ctx, cancel := context.WithCancel(context.Background())
 			time.AfterFunc(50*time.Millisecond, cancel)
-			if _, err := awskms.Open(ctx, cfg); !errors.Is(err, context.Canceled) {
+			if _, err := openWithin(t, ctx, cfg); !errors.Is(err, context.Canceled) {
 				t.Errorf("%s, cancelled by the caller: err = %v, want context.Canceled", name, err)
 			}
 		}
@@ -343,7 +365,7 @@ func TestOpenHonorsTimeoutAndContext(t *testing.T) {
 		// A context cancelled before Open makes no signer.
 		ctx, cancel := context.WithCancel(context.Background())
 		cancel()
-		if s, err := awskms.Open(ctx, sc.config(c, id)); !errors.Is(err, context.Canceled) {
+		if s, err := openWithin(t, ctx, sc.config(c, id)); !errors.Is(err, context.Canceled) {
 			t.Errorf("a cancelled context: signer %v, err = %v, want context.Canceled", s, err)
 		}
 	})
