@@ -13,27 +13,24 @@ the duties of the people who can use the key.
 
 ## What is supported
 
-| Signer | Module | Key | Signs | Limit |
+| Signer | Module | Keys (`Config.Scheme`) | Signs | Tested against |
 |---|---|---|---|---|
-| PKCS#11 | `github.com/bide-ai/bide/signer/pkcs11` (cgo) | Ed25519 (`CKK_EC_EDWARDS`) on a token that lists `CKM_EDDSA` | the audit log (tree heads, evidence seals, grants), approver decisions | tested against SoftHSM2 only |
-| AWS KMS | `github.com/bide-ai/bide/signer/awskms` (pure Go, AWS SDK) | `ECC_NIST_EDWARDS25519`, usage `SIGN_VERIFY` | the audit log (tree heads, evidence seals, grants), approver decisions | 4096-byte messages: fine for tree heads, grants and evidence seals (a fixed 60 bytes since evidence v6), see [below](#the-kms-4096-byte-limit) |
+| PKCS#11 | `github.com/bide-ai/bide/signer/pkcs11` (cgo) | Ed25519 (`CKK_EC_EDWARDS`, token lists `CKM_EDDSA`) or ECDSA P-256 (`CKK_EC`, `CKM_ECDSA`) | the audit log (tree heads, evidence seals, grants), approver decisions | SoftHSM2 only |
+| AWS KMS | `github.com/bide-ai/bide/signer/awskms` (pure Go, AWS SDK) | Ed25519 (`ECC_NIST_EDWARDS25519`) or ECDSA P-256 (`ECC_NIST_P256`), usage `SIGN_VERIFY` | the same | a fake KMS client only |
 
 Both are separate Go modules, so the core `github.com/bide-ai/bide` module gains no cgo and no cloud SDK.
-Both sign Ed25519 only: `audit.AlgEd25519`. They never substitute another algorithm when a key or token
-cannot do Ed25519; they refuse with `ErrNoEd25519` and name what they found.
+`Config.Scheme` is `audit.AlgEd25519` (the default) or `audit.AlgECDSAP256`; the signers never substitute
+one for the other. A token or key of the wrong kind is refused with `ErrNoEd25519` or `ErrNoP256` and the
+error names what was found. Pick Ed25519 where the HSM or KMS has it; pick ECDSA P-256 where it does not
+(many HSMs, and cloud key services such as Azure Key Vault). Both are FIPS-approved signature schemes.
+ECDSA signatures are randomized, so signing one message twice gives two different valid signatures.
 
 Not supported, and why:
 
-- **ECDSA P-256 keys, yet.** Many HSMs and every cloud key service can do ECDSA P-256, and some HSMs cannot do
-  Ed25519. bide has an `ecdsa-p256` scheme (`audit.AlgECDSAP256`, [Audit](audit.md#ecdsa-p-256)) that every
-  verifier reads, but these signers do not have a P-256 mode yet, so a P-256-only token or key cannot be used
-  through them until they gain one. The pieces they need are in `audit`:
-  `ECDSAP256SignatureFromDER` for KMS, `ECDSAP256SignatureFromRaw` for PKCS#11, and
-  `ECDSAP256PublicKeyFromSPKI` for the public key.
 - **ML-DSA and hybrid in a token.** `audit.HybridSigner` holds a concrete `Ed25519Signer` and an
   `MLDSASigner`, so an HSM signer cannot be one half of a hybrid; and AWS KMS offers no context parameter
   for ML-DSA, which bide's ML-DSA signatures use for domain separation. Post-quantum anchoring stays with
-  software keys; hybrid in a token is deferred.
+  software keys; hybrid in a token is deferred (the hybrid scheme stays `ed25519+ml-dsa-65`).
 - **Azure Key Vault and Google Cloud KMS.** Planned ([roadmap](../ROADMAP.md#bank-readiness)).
 - **Hardware attestation.** A signer does not check that the key was generated in hardware or that it is
   non-extractable; that is a property of how the token was provisioned.
@@ -42,10 +39,14 @@ Not supported, and why:
 
 ### Requirements
 
-The token must list the `CKM_EDDSA` mechanism (PKCS#11 v3.0) and hold the key as `CKK_EC_EDWARDS`
-(`EC_EDWARDS` in `pkcs11-tool`). `pkcs11-tool --module LIB --list-mechanisms` shows it as `EDDSA`. If it
-does not, `pkcs11.Open` returns an error wrapping `pkcs11.ErrNoEd25519`. A token with only ECDSA is a case
-for the `ecdsa-p256` decision above.
+For Ed25519 the token must list the `CKM_EDDSA` mechanism (PKCS#11 v3.0) and hold the key as
+`CKK_EC_EDWARDS` (`EC_EDWARDS` in `pkcs11-tool`). `pkcs11-tool --module LIB --list-mechanisms` shows it as
+`EDDSA`. If it does not, `pkcs11.Open` returns an error wrapping `pkcs11.ErrNoEd25519`.
+
+For ECDSA P-256 (`Config.Scheme: audit.AlgECDSAP256`) the token must list `CKM_ECDSA` and hold a `CKK_EC`
+key on prime256v1 (`EC:prime256v1`). bide signs SHA-256 of the message, so the signer hashes on the host
+and sends the token the 32-byte digest to `CKM_ECDSA`; the token's raw `r||s` is converted to the canonical
+low-S form bide verifies. A missing mechanism or a key of another type returns `pkcs11.ErrNoP256`.
 
 The signer uses `CKM_EDDSA` with no parameters, which is pure Ed25519 (RFC 8032), the scheme
 `audit.Ed25519Signer` produces. A token that demands `CK_EDDSA_PARAMS` for the pure variant is not
@@ -138,6 +139,7 @@ package sealed by the token.
 ```sh
 aws kms create-key --key-spec ECC_NIST_EDWARDS25519 --key-usage SIGN_VERIFY \
     --description 'bide audit log signing key'
+# For ECDSA P-256 instead: --key-spec ECC_NIST_P256, and Scheme: audit.AlgECDSAP256 below.
 aws kms create-alias --alias-name alias/bide-audit --target-key-id <key id>
 ```
 
@@ -159,27 +161,30 @@ if err != nil {
 store, err := audit.NewAuditedStore(inner, signer, anchor)
 ```
 
+With `Scheme: audit.AlgECDSAP256` the key is `ECC_NIST_P256` and KMS signs `ECDSA_SHA_256` over the SHA-256 digest of the message (`MessageType` `DIGEST`).
+
 `Open` resolves the key once and then signs with its ARN, so an alias moved to another key later cannot
-change which key signs. It refuses any key that is not `ECC_NIST_EDWARDS25519` with usage `SIGN_VERIFY`
-that offers `ED25519_SHA_512` (`awskms.ErrNoEd25519`). KMS signs with `ED25519_SHA_512` over the raw
+change which key signs. It refuses any key that is not of the scheme's spec with usage `SIGN_VERIFY` that offers the scheme's
+signing algorithm (`awskms.ErrNoEd25519`, `awskms.ErrNoP256`). For Ed25519 that is `ECC_NIST_EDWARDS25519` and `ED25519_SHA_512`. KMS signs with `ED25519_SHA_512` over the raw
 message (`MessageType` `RAW`), which is pure Ed25519 as RFC 8032 defines it. Like the PKCS#11 signer, it
 signs once at `Open` (one billed request; it also catches a missing `kms:Sign` permission) and verifies each signature against the public key before returning it. Each KMS call has a timeout
 (`Config.Timeout`, default 30 seconds).
 
 The AWS signer is tested against a fake KMS client in bide's CI, which holds an Ed25519 key and enforces
 the call shape KMS documents (key ARN, algorithm, `RAW`, the size limit). bide's tests never call AWS, so
-the interoperability of KMS's `ED25519_SHA_512` output with bide's verifier rests on AWS's documentation of
-that algorithm; check it once against your own key before relying on it (sign a message, verify it with
+the interoperability of KMS's `ED25519_SHA_512` and `ECDSA_SHA_256` output with bide's verifier rests on
+AWS's documentation of those algorithms (and, for ECDSA, on KMS's DER signatures, which the signer
+converts to bide's low-S `r||s`); check it once against your own key before relying on it (sign a message, verify it with
 `audit.VerifierOf`).
 
 ### The KMS 4096-byte limit
 
-KMS signs at most 4096 bytes, and Ed25519 signs the whole message. Tree heads, grants and approver
-decisions are small but carry caller-chosen text: a tree head is about 110 bytes plus the run ID's length (a run ID of about 4000 bytes or more does not fit), and an approver decision includes the tool call's arguments; `Sign` returns `awskms.ErrMessageTooLarge` without calling KMS for a message over the limit. An evidence package seal is not one of them: since evidence format
-`bide.audit.evidence.v6` the seal (`audit.Evidence`, `EvidencePackage.Seal`) signs a fixed 60-byte message,
-a tag and the SHA-256 of the package, so a package of any size is sealed. Evidence in the older v5 format
-(a seal over the whole package JSON) cannot be produced by this signer; v5 packages made earlier still
-verify.
+Under Ed25519 KMS signs at most 4096 bytes, and Ed25519 signs the whole message. Tree heads, grants and
+approver decisions are small but carry caller-chosen text: a tree head is about 110 bytes plus the run ID's
+length (a run ID of about 4000 bytes or more does not fit), and an approver decision includes the tool
+call's arguments. `Sign` then returns `awskms.ErrMessageTooLarge` naming the size, without calling KMS. An
+evidence package seal signs a fixed 60-byte message (evidence format v6) and always fits. Under ECDSA
+P-256, KMS signs a 32-byte digest, so there is no limit.
 
 ## Approver keys
 

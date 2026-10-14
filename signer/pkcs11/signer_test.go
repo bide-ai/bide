@@ -2,7 +2,10 @@ package pkcs11
 
 import (
 	"bytes"
+	"crypto/ecdsa"
 	"crypto/ed25519"
+	"crypto/elliptic"
+	"crypto/rand"
 	"errors"
 	"fmt"
 	"os"
@@ -463,5 +466,89 @@ func TestCKRErrorSurvivesScrubbing(t *testing.T) {
 	tok.failNext = []error{codeErr(CKRKeyHandleInvalid)}
 	if _, err := s.Sign([]byte("m")); !errors.Is(err, CKRError{Code: CKRKeyHandleInvalid}) {
 		t.Fatalf("sign err = %v", err)
+	}
+}
+
+// p256Token is a token with an ECDSA P-256 key; its sessions return the canonical signature, as
+// the real session does.
+type p256Token struct{ signer audit.ECDSAP256Signer }
+
+func newP256Token(t *testing.T) *p256Token {
+	t.Helper()
+	k, err := ecdsa.GenerateKey(elliptic.P256(), rand.Reader)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return &p256Token{audit.ECDSAP256Signer{Priv: k}}
+}
+
+func (p *p256Token) open(Config, string) (session, []byte, error) {
+	return p256Session{p.signer}, p.signer.PublicKey(), nil
+}
+
+type p256Session struct{ s audit.ECDSAP256Signer }
+
+func (s p256Session) sign(m []byte) ([]byte, error) { return s.s.Sign(m) }
+func (p256Session) close() error                    { return nil }
+
+func TestP256Scheme(t *testing.T) {
+	tok := newP256Token(t)
+	cfg := goodConfig()
+	cfg.Scheme = audit.AlgECDSAP256
+	s, err := openWith(cfg, tok.open)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if s.Alg() != audit.AlgECDSAP256 || len(s.PublicKey()) != 65 {
+		t.Fatalf("Alg %s, key %d bytes", s.Alg(), len(s.PublicKey()))
+	}
+	v, err := audit.VerifierOf(s)
+	if err != nil {
+		t.Fatal(err)
+	}
+	sig, err := s.Sign([]byte("m"))
+	if err != nil || !v.Verify([]byte("m"), sig) {
+		t.Fatalf("sig %x, err %v", sig, err)
+	}
+	if got := v.KeyIDs(); len(got) != 1 || got[0] != audit.KeyID("ecdsa-p256", s.PublicKey()) {
+		t.Fatalf("KeyIDs = %v", got)
+	}
+	if !strings.HasPrefix(s.String(), "pkcs11.Signer{ecdsa-p256:") {
+		t.Fatalf("String = %s", s)
+	}
+
+	// A token that exposes an Ed25519 key under the P-256 scheme is refused.
+	ed := newFakeToken(t)
+	if _, err := openWith(cfg, ed.open); err == nil {
+		t.Fatal("an Ed25519 public key was accepted as P-256")
+	}
+	// A configured public key must be the scheme's size.
+	cfg.PublicKey = make([]byte, 32)
+	if _, err := openWith(cfg, tok.open); !errors.Is(err, agent.ErrConfig) {
+		t.Fatalf("32-byte Config.PublicKey under P-256: err = %v", err)
+	}
+	cfg.PublicKey = nil
+	cfg.Scheme = "rsa"
+	if _, err := openWith(cfg, tok.open); !errors.Is(err, agent.ErrConfig) {
+		t.Fatalf("unknown scheme: err = %v", err)
+	}
+}
+
+func TestParsePointP256(t *testing.T) {
+	tok := newP256Token(t)
+	pt := tok.signer.PublicKey()
+	for name, in := range map[string][]byte{"raw": pt, "der": append([]byte{0x04, 0x41}, pt...)} {
+		got, err := parsePoint(audit.AlgECDSAP256, in)
+		if err != nil || !bytes.Equal(got, pt) {
+			t.Fatalf("%s: %v", name, err)
+		}
+	}
+	for _, bad := range [][]byte{nil, pt[:64], append([]byte{0x04, 0x40}, pt...), bytes.Repeat([]byte{7}, 32)} {
+		if _, err := parsePoint(audit.AlgECDSAP256, bad); !errors.Is(err, ErrNoP256) {
+			t.Fatalf("accepted or wrong error for %x: %v", bad, err)
+		}
+	}
+	if !isP256Params([]byte{0x06, 0x08, 0x2a, 0x86, 0x48, 0xce, 0x3d, 0x03, 0x01, 0x07}) || isP256Params(ed25519OID) {
+		t.Fatal("P-256 parameter check")
 	}
 }

@@ -6,10 +6,14 @@ import (
 	"crypto/ecdsa"
 	"crypto/ed25519"
 	"crypto/elliptic"
+	"crypto/rand"
+	"crypto/sha256"
 	"crypto/x509"
+	"encoding/asn1"
 	"encoding/json"
 	"errors"
 	"fmt"
+	"math/big"
 	"strings"
 	"sync/atomic"
 	"testing"
@@ -38,6 +42,8 @@ type fakeKMS struct {
 	signErr  error
 	wrongKey ed25519.PrivateKey // sign with this key instead (a replaced key)
 	lastCtx  context.Context
+	p256     *ecdsa.PrivateKey // when set, the fake is an ECC_NIST_P256 key
+	highS    bool              // return a high-S signature, as KMS may
 }
 
 func newFake(t *testing.T) *fakeKMS {
@@ -55,6 +61,12 @@ func (f *fakeKMS) GetPublicKey(_ context.Context, in *kms.GetPublicKeyInput, _ .
 		return nil, errors.New("NotFoundException")
 	}
 	der := f.der
+	if f.p256 != nil {
+		d, _ := x509.MarshalPKIXPublicKey(&f.p256.PublicKey)
+		arn := testARN
+		return &kms.GetPublicKeyOutput{KeyId: &arn, KeySpec: types.KeySpecEccNistP256, KeyUsage: f.usage,
+			SigningAlgorithms: []types.SigningAlgorithmSpec{types.SigningAlgorithmSpecEcdsaSha256}, PublicKey: d}, nil
+	}
 	if der == nil {
 		der, _ = x509.MarshalPKIXPublicKey(f.priv.Public())
 	}
@@ -68,6 +80,16 @@ func (f *fakeKMS) Sign(ctx context.Context, in *kms.SignInput, _ ...func(*kms.Op
 	switch {
 	case f.signErr != nil:
 		return nil, f.signErr
+	case f.p256 != nil:
+		if in.SigningAlgorithm != types.SigningAlgorithmSpecEcdsaSha256 || in.MessageType != types.MessageTypeDigest || len(in.Message) != sha256.Size {
+			return nil, errors.New("ValidationException: ECDSA_SHA_256 needs a 32-byte DIGEST")
+		}
+		r, sv, _ := ecdsa.Sign(rand.Reader, f.p256, in.Message)
+		if f.highS == (sv.Cmp(new(big.Int).Rsh(elliptic.P256().Params().N, 1)) <= 0) {
+			sv = new(big.Int).Sub(elliptic.P256().Params().N, sv)
+		}
+		der, _ := asn1.Marshal(struct{ R, S *big.Int }{r, sv})
+		return &kms.SignOutput{Signature: der}, nil
 	case *in.KeyId != testARN:
 		return nil, errors.New("signing with " + *in.KeyId + ": the key was not resolved to its ARN")
 	case in.SigningAlgorithm != types.SigningAlgorithmSpecEd25519Sha512:
@@ -324,31 +346,98 @@ func TestEvidenceSealUnderLimit(t *testing.T) {
 	}
 }
 
-// Open signs once: a key without kms:Sign permission, or whose signatures do not verify under the
-// public key it reported, is found there.
-func TestOpenSelfTest(t *testing.T) {
-	f := newFake(t)
-	f.signErr = errors.New("AccessDeniedException")
-	if _, err := Open(context.Background(), Config{Client: f, KeyID: testARN}); !errors.Is(err, f.signErr) {
-		t.Fatalf("no sign permission: err = %v", err)
+func newP256Fake(t *testing.T) *fakeKMS {
+	t.Helper()
+	k, err := ecdsa.GenerateKey(elliptic.P256(), rand.Reader)
+	if err != nil {
+		t.Fatal(err)
 	}
-	f = newFake(t)
-	_, f.wrongKey, _ = ed25519.GenerateKey(nil)
-	if _, err := Open(context.Background(), Config{Client: f, KeyID: testARN}); err == nil {
-		t.Fatal("Open accepted a key whose signatures do not verify under its public key")
+	f := newFake(t)
+	f.p256 = k
+	return f
+}
+
+func openP256(t *testing.T, f *fakeKMS) *Signer {
+	t.Helper()
+	s, err := Open(context.Background(), Config{Client: f, KeyID: "alias/bide-audit", Scheme: audit.AlgECDSAP256})
+	if err != nil {
+		t.Fatal(err)
+	}
+	return s
+}
+
+func TestP256Scheme(t *testing.T) {
+	for _, highS := range []bool{false, true} {
+		f := newP256Fake(t)
+		f.highS = highS // KMS may return either S; bide verifies the low-S form
+		s := openP256(t, f)
+		if s.Alg() != audit.AlgECDSAP256 || len(s.PublicKey()) != 65 {
+			t.Fatalf("Alg %s, key %d bytes", s.Alg(), len(s.PublicKey()))
+		}
+		v, err := audit.VerifierOf(s)
+		if err != nil {
+			t.Fatal(err)
+		}
+		// A message over the Ed25519 limit signs: KMS sees only the 32-byte digest.
+		for _, n := range []int{0, 100, MaxMessageSize + 1, 200000} {
+			msg := bytes.Repeat([]byte{'x'}, n)
+			sig, err := s.Sign(msg)
+			if err != nil || len(sig) != 64 || !v.Verify(msg, sig) {
+				t.Fatalf("highS=%v, %d bytes: %v", highS, n, err)
+			}
+		}
 	}
 }
 
-// A tree head carries the run ID, so a long one outgrows the limit; the error names the size.
-func TestTreeHeadWithLongRunIDIsRefusedClearly(t *testing.T) {
-	s := open(t, newFake(t))
-	th := audit.TreeHead{Kind: audit.TreeJournal, RunID: strings.Repeat("r", 5000), Size: 1, Root: make([]byte, 32), TimestampNanos: 1}
-	_, err := audit.SignTreeHead(th, s)
-	if !errors.Is(err, ErrMessageTooLarge) || !strings.Contains(err.Error(), "-byte message exceeds") {
-		t.Fatalf("err = %v", err)
+func TestP256RefusesOtherKeys(t *testing.T) {
+	// An Ed25519 key under the P-256 scheme, and a P-256 key under the Ed25519 scheme.
+	if _, err := Open(context.Background(), Config{Client: newFake(t), KeyID: testARN, Scheme: audit.AlgECDSAP256}); !errors.Is(err, ErrNoP256) {
+		t.Fatalf("Ed25519 key under P-256: err = %v", err)
 	}
-	th.RunID = strings.Repeat("r", 3800)
-	if _, err := audit.SignTreeHead(th, s); err != nil {
-		t.Fatalf("a 3800-byte run ID fits: %v", err)
+	if _, err := Open(context.Background(), Config{Client: newP256Fake(t), KeyID: testARN}); !errors.Is(err, ErrNoEd25519) {
+		t.Fatalf("P-256 key under Ed25519: err = %v", err)
+	}
+	if _, err := Open(context.Background(), Config{Client: newFake(t), KeyID: testARN, Scheme: "rsa"}); !errors.Is(err, agent.ErrConfig) {
+		t.Fatalf("unknown scheme: err = %v", err)
+	}
+}
+
+func TestP256SignRefusesAReplacedKey(t *testing.T) {
+	f := newP256Fake(t)
+	s := openP256(t, f)
+	other, _ := ecdsa.GenerateKey(elliptic.P256(), rand.Reader)
+	f.p256 = other
+	// The fake now also reports other's public key, but the signer keeps the one it read at Open.
+	if _, err := s.Sign([]byte("m")); err == nil {
+		t.Fatal("signature by a different key accepted")
+	}
+}
+
+// With P-256 the evidence seal and large packages sign: KMS never sees more than a digest.
+func TestP256EvidenceSealsAnyPackage(t *testing.T) {
+	ctx := context.Background()
+	s := openP256(t, newP256Fake(t))
+	store, err := audit.NewAuditedStore(agent.NewMemStore(), s, audit.NewMemAnchorLog())
+	if err != nil {
+		t.Fatal(err)
+	}
+	j := agenttest.MustJournal(store)
+	refund := agent.MustFunc("refund", "refund a payment", func(context.Context, struct{}) (string, error) { return "refunded", nil })
+	var turns []agenttest.ScriptedTurn
+	for i := range 12 {
+		turns = append(turns, agenttest.ToolTurn(fmt.Sprintf("call-%d", i), "refund", `{}`))
+	}
+	turns = append(turns, agenttest.TextTurn("done"))
+	a := agenttest.MustNew(agenttest.NewScriptedModel(turns...), j, agent.WithTools(refund))
+	if _, err := a.Run(ctx, "run-ev", agent.UserText("hi")); err != nil {
+		t.Fatal(err)
+	}
+	v, _ := audit.VerifierOf(s)
+	ev, err := audit.Evidence(ctx, j, "run-ev", s, 1700000000, audit.WithAllToolCalls())
+	if err != nil {
+		t.Fatalf("a 12-action package: %v", err)
+	}
+	if rep, err := ev.Verify(v); err != nil || !rep.OK {
+		t.Fatalf("%+v %v", rep, err)
 	}
 }

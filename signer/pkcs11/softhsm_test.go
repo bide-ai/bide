@@ -372,3 +372,79 @@ func TestClassify(t *testing.T) {
 		}
 	}
 }
+
+func p256Config() Config {
+	c := hsmConfig("p256")
+	c.Scheme = audit.AlgECDSAP256
+	return c
+}
+
+func TestSoftHSMP256SignAndVerify(t *testing.T) {
+	needSoftHSM(t)
+	s := openTest(t, p256Config())
+	v, err := audit.VerifierOf(s)
+	if err != nil {
+		t.Fatalf("public key read from the token is not a bide P-256 key: %v", err)
+	}
+	for _, msg := range [][]byte{{}, []byte("a"), bytes.Repeat([]byte("evidence "), 20000)} {
+		sig, err := s.Sign(msg)
+		if err != nil {
+			t.Fatalf("sign %d bytes: %v", len(msg), err)
+		}
+		if len(sig) != 64 || !v.Verify(msg, sig) {
+			t.Fatalf("token signature over %d bytes does not verify under bide's P-256 verifier", len(msg))
+		}
+	}
+}
+
+func TestSoftHSMP256RefusesOtherKeys(t *testing.T) {
+	needSoftHSM(t)
+	c := hsmConfig("audit") // an Ed25519 key
+	c.Scheme = audit.AlgECDSAP256
+	if _, err := Open(c); !errors.Is(err, ErrNoP256) {
+		t.Fatalf("Ed25519 key under the P-256 scheme: err = %v, want ErrNoP256", err)
+	}
+	if _, err := Open(hsmConfig("p256")); !errors.Is(err, ErrNoEd25519) {
+		t.Fatalf("P-256 key under the Ed25519 scheme: err = %v, want ErrNoEd25519", err)
+	}
+}
+
+func TestSoftHSMP256AuditedStoreAnchorAndEvidence(t *testing.T) {
+	needSoftHSM(t)
+	ctx := context.Background()
+	s := openTest(t, p256Config())
+	anchor := audit.NewMemAnchorLog()
+	store, err := audit.NewAuditedStore(agent.NewMemStore(), s, anchor)
+	if err != nil {
+		t.Fatal(err)
+	}
+	j := agenttest.MustJournal(store)
+	refund := agent.MustFunc("refund", "refund a payment", func(context.Context, struct{}) (string, error) { return "refunded", nil })
+	a := agenttest.MustNew(agenttest.NewScriptedModel(agenttest.ToolTurn("call-1", "refund", `{}`), agenttest.TextTurn("done")), j, agent.WithTools(refund))
+	if _, err := a.Run(ctx, "run-p256", agent.UserText("hi")); err != nil {
+		t.Fatal(err)
+	}
+	v, err := audit.ParsePublicKey(audit.FormatPublicKey(audit.AlgECDSAP256, s.PublicKey()))
+	if err != nil {
+		t.Fatal(err)
+	}
+	entries := anchor.Entries()
+	if len(entries) == 0 {
+		t.Fatal("nothing anchored")
+	}
+	root, err := audit.Root(ctx, j, "run-p256")
+	if err != nil {
+		t.Fatal(err)
+	}
+	sth := entries[len(entries)-1].STH
+	if err := sth.Verify(v); err != nil || !bytes.Equal(sth.Root, root) {
+		t.Fatalf("anchored head: %v", err)
+	}
+	ev, err := audit.Evidence(ctx, j, "run-p256", s, sth.TimestampNanos, audit.WithAllToolCalls())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if rep, err := ev.Verify(v); err != nil || !rep.OK || len(ev.Actions) == 0 {
+		t.Fatalf("evidence: %+v, %v", rep, err)
+	}
+}
