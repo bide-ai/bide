@@ -14,6 +14,7 @@ require (
 	github.com/bide-ai/bide/store/sqlite v0.0.0
 	github.com/googleapis/gax-go/v2 v2.26.2
 	golang.org/x/term v0.47.0
+	google.golang.org/protobuf v1.36.12
 )
 
 require (
@@ -71,7 +72,6 @@ require (
 	google.golang.org/genproto/googleapis/api v0.0.0-20260715232425-e75dac1f907d // indirect
 	google.golang.org/genproto/googleapis/rpc v0.0.0-20261005182115-fad411399dd8 // indirect
 	google.golang.org/grpc v1.84.0 // indirect
-	google.golang.org/protobuf v1.36.12 // indirect
 	modernc.org/libc v1.75.7 // indirect
 	modernc.org/mathutil v1.7.1 // indirect
 	modernc.org/memory v1.12.1 // indirect

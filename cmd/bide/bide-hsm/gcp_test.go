@@ -2,18 +2,26 @@ package main
 
 import (
 	"context"
+	"crypto/ecdsa"
+	"crypto/elliptic"
+	"crypto/rand"
+	"crypto/x509"
+	"encoding/pem"
 	"errors"
+	"hash/crc32"
 	"strings"
 	"testing"
 
 	"cloud.google.com/go/kms/apiv1/kmspb"
 	gax "github.com/googleapis/gax-go/v2"
+	"google.golang.org/protobuf/types/known/wrapperspb"
 
 	"github.com/bide-ai/bide/signer/gcpkms"
 )
 
-// stubGCP is a Cloud KMS client that reports one P-256 key version at a protection level and stops
-// at the public key, so what a test sees is how far Open got: the flags that decide the protection
+// stubGCP is a Cloud KMS client that reports one P-256 key version at a protection level, with a valid
+// public key and no attestation, and stops at the self-test signature, so what a test sees is how
+// far Open got: the flags that decide the protection
 // level is passed through if, and only if, it changed the outcome.
 // The emulator-based tests of the gcpkms: reference are in the emulatortest module.
 type stubGCP struct {
@@ -24,8 +32,18 @@ func (s stubGCP) GetCryptoKeyVersion(_ context.Context, r *kmspb.GetCryptoKeyVer
 	return &kmspb.CryptoKeyVersion{Name: r.Name, Algorithm: kmspb.CryptoKeyVersion_EC_SIGN_P256_SHA256, State: kmspb.CryptoKeyVersion_ENABLED, ProtectionLevel: s.level}, nil
 }
 
-func (stubGCP) GetPublicKey(context.Context, *kmspb.GetPublicKeyRequest, ...gax.CallOption) (*kmspb.PublicKey, error) {
-	return nil, errors.New("stub: get the public key")
+func (s stubGCP) GetPublicKey(_ context.Context, r *kmspb.GetPublicKeyRequest, _ ...gax.CallOption) (*kmspb.PublicKey, error) {
+	k, err := ecdsa.GenerateKey(elliptic.P256(), rand.Reader)
+	if err != nil {
+		return nil, err
+	}
+	der, err := x509.MarshalPKIXPublicKey(&k.PublicKey)
+	if err != nil {
+		return nil, err
+	}
+	p := string(pem.EncodeToMemory(&pem.Block{Type: "PUBLIC KEY", Bytes: der}))
+	return &kmspb.PublicKey{Name: r.Name, Pem: p, PemCrc32C: wrapperspb.Int64(int64(crc32.Checksum([]byte(p), crc32.MakeTable(crc32.Castagnoli)))),
+		Algorithm: kmspb.CryptoKeyVersion_EC_SIGN_P256_SHA256, ProtectionLevel: s.level}, nil
 }
 
 func (stubGCP) AsymmetricSign(context.Context, *kmspb.AsymmetricSignRequest, ...gax.CallOption) (*kmspb.AsymmetricSignResponse, error) {
@@ -40,17 +58,21 @@ func gcpWith(t *testing.T, level kmspb.ProtectionLevel, args ...string) result {
 	return hsmWith(t, d, "", append([]string{"pubkey", "-key", gcpRef}, args...)...)
 }
 
-// -allow-software-key reaches the signer's Config: a software key is refused without it and goes on
-// with it. (-verify-attestation is shown reaching the signer in the emulatortest module.)
+// -allow-software-key and -verify-attestation reach the signer's Config: a software key is refused
+// without the first and goes on with it; an HSM key goes on to the self-test signature unless the
+// second makes it check the (absent) attestation first.
 func TestGCPKMSFlagsReachTheSigner(t *testing.T) {
 	if r := gcpWith(t, kmspb.ProtectionLevel_SOFTWARE); r.code != 1 || !strings.Contains(r.errOut, "protection level") {
 		t.Fatalf("software, default: %d\n%s", r.code, r.all())
 	}
-	if r := gcpWith(t, kmspb.ProtectionLevel_SOFTWARE, "-allow-software-key"); r.code != 1 || !strings.Contains(r.errOut, "get the public key") {
+	if r := gcpWith(t, kmspb.ProtectionLevel_SOFTWARE, "-allow-software-key"); r.code != 1 || !strings.Contains(r.errOut, "self-test signature") {
 		t.Fatalf("software, allowed: %d\n%s", r.code, r.all())
 	}
-	if r := gcpWith(t, kmspb.ProtectionLevel_HSM); r.code != 1 || !strings.Contains(r.errOut, "get the public key") {
+	if r := gcpWith(t, kmspb.ProtectionLevel_HSM); r.code != 1 || !strings.Contains(r.errOut, "self-test signature") {
 		t.Fatalf("HSM, default: %d\n%s", r.code, r.all())
+	}
+	if r := gcpWith(t, kmspb.ProtectionLevel_HSM, "-verify-attestation"); r.code != 1 || strings.Contains(r.errOut, "self-test signature") || !strings.Contains(strings.ToLower(r.errOut), "attestation") {
+		t.Fatalf("HSM, attestation: %d\n%s", r.code, r.all())
 	}
 }
 
