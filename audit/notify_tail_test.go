@@ -43,17 +43,21 @@ func TestVerifyNotifications_UnattestedTailVerdictsFailTheAudit(t *testing.T) {
 		for _, e := range rep.Events {
 			found = found || e.Status == audit.NotifyStatusUnattested
 		}
-		if !found || rep.Trails[0].Tail != 1 || rep.Trails[0].TailFirstAt.IsZero() || rep.Trails[0].TailLastAt.IsZero() {
+		if !found || rep.Trails[0].Tail != 1 || rep.Trails[0].TailSince.IsZero() || rep.Trails[0].TailAge <= 0 {
 			t.Errorf("%s: no unattested verdict or no tail range: %+v %+v", name, rep.Events, rep.Trails[0])
 		}
+		// A bound shorter than the tail's age does not accept it.
+		if _, err := tailVerify(t, b, head, pub, func(in *audit.NotifyVerifyInput) { in.MaxTailAge = time.Second }); !errors.Is(err, audit.ErrNotVerified) {
+			t.Errorf("%s: a bound below the tail's age accepted it: %v", name, err)
+		}
 		// The opt-in accepts the tail, and still reports it.
-		rep, err = tailVerify(t, b, head, pub, func(in *audit.NotifyVerifyInput) { in.AcceptTail = true })
+		rep, err = tailVerify(t, b, head, pub, func(in *audit.NotifyVerifyInput) { in.MaxTailAge = time.Hour })
 		if errors.Is(err, audit.ErrNotVerified) && !strings.Contains(strings.Join(rep.Problems, ";"), "overdue") || rep.Trails[0].Tail != 1 {
-			t.Errorf("%s: AcceptTail: err %v tail %d", name, err, rep.Trails[0].Tail)
+			t.Errorf("%s: MaxTailAge: err %v tail %d", name, err, rep.Trails[0].Tail)
 		}
 		for _, e := range rep.Events {
 			if e.Status == audit.NotifyStatusUnattested {
-				t.Errorf("%s: AcceptTail still reports unattested", name)
+				t.Errorf("%s: MaxTailAge still reports unattested", name)
 			}
 		}
 	}
@@ -257,5 +261,21 @@ func TestVerifyNotifications_RoutingEscalationStops(t *testing.T) {
 	u := newTrail(t).add(observed(halt, agent.NotificationOutcomeUnknown, 0, 1), claimed(halt, 1))
 	if _, err := verifyNotify(t, u, func(in *audit.NotifyVerifyInput) { in.Routing, in.Now, in.MaxClockSkew = rt, at(2000), 10*time.Second }); err == nil {
 		t.Fatal("an unacknowledged halt owes a step")
+	}
+}
+
+// A forged ack stamped within a nonzero bound is accepted, without a signature: the documented cost
+// of the opt-in. The default (0) rejects it, and so does a bound it is older than.
+func TestVerifyNotifications_ARecentForgedTailRecordIsTrustedUnderABound(t *testing.T) {
+	pub, priv, _ := ed25519.GenerateKey(nil)
+	k := agent.ApprovalKey("r1", "c1", 0)
+	b := newTrail(t).add(observed(k, agent.NotificationApprovalPending, 0, 1), claimed(k, 1))
+	head := headFor(t, b, priv)
+	b.add(acked(k, 55, 58)) // forged, stamped just before Now (at(60))
+	if _, err := tailVerify(t, b, head, pub, nil); !errors.Is(err, audit.ErrNotVerified) {
+		t.Fatalf("default: %v", err)
+	}
+	if _, err := tailVerify(t, b, head, pub, func(in *audit.NotifyVerifyInput) { in.MaxTailAge = time.Minute }); err != nil {
+		t.Fatalf("within the bound it is trusted: %v", err)
 	}
 }

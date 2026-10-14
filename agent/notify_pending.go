@@ -24,6 +24,12 @@ import (
 // delivery that failed (those events are retried by the next sweep) and any run it could not read;
 // it does not stop at the first.
 //
+// When the trail signs and anchors its records (audit.NewAuditedEventStore beneath audit.NewNotifyTrail),
+// the sweep also signs again the trail of each run it looked at that grew past its last signed head,
+// within the anchor's timeout, so an outage of the anchor leaves an unattested stretch of trail only
+// until the next sweep; a failure is reported to the handler of WithNotifyErrors and is not the
+// sweep's error.
+//
 // What it can see is narrower than a drive. A gate is found from the run's approval-pending record.
 // A halt is found from an attempt marker that no not-started record voids and that has no result
 // after WithNotifyHaltAge (default 5 minutes): it cannot tell a halted effect from one a process it
@@ -47,6 +53,8 @@ func NotifyPending(ctx context.Context, j *Journal, n Notifier, trail NotifyTrai
 		return err
 	}
 	var errs []error
+	seen := map[string]bool{} // the trails of the runs the sweep looked at
+	var trails []string
 	for runID, err := range lister.Runs(ctx, sweepFilter) {
 		if err != nil {
 			errs = append(errs, fmt.Errorf("list runs for the notification sweep: %w (%w)", err, ErrStorage))
@@ -60,6 +68,10 @@ func NotifyPending(ctx context.Context, j *Journal, n Notifier, trail NotifyTrai
 			continue // the session drives it
 		}
 		e.queueScan(runID) // an event delivered earlier may have stopped being current
+		if name := NotifyTrailName(treeRootID(runID)); !seen[name] {
+			seen[name] = true
+			trails = append(trails, name)
+		}
 		if !IsSubRun(runID) {
 			if abortEntry, aborted, err := j.getEntry(ctx, runID, runAbortedStep); err != nil {
 				errs = append(errs, fmt.Errorf("notification sweep: read run %s: %w", runID, err))
@@ -98,9 +110,18 @@ func NotifyPending(ctx context.Context, j *Journal, n Notifier, trail NotifyTrai
 		errs = append(errs, fmt.Errorf("notification sweep: list earlier events: %w", err))
 	}
 	e.queueScanOpen() // the all-clear of a run that is no longer unfinished
-	if err := e.flush(context.WithoutCancel(ctx)); err != nil {
+	if err := e.flushDeliveries(context.WithoutCancel(ctx)); err != nil {
 		errs = append(errs, err)
 	}
+	// Last, after the deliveries have grown the trails: sign again any trail that grew past its last
+	// head, which an anchor outage or a process that died before anchoring left behind. Its failure
+	// goes to WithNotifyErrors, not to the sweep's result: it is not a delivery.
+	// The trails that belong to no run are signed too: the digest's and the open trail's segments and
+	// index (the list of events whose all-clear may be owed).
+	if _, ok := e.trail.(NotifyTrailAnchorer); ok {
+		trails = append(trails, e.globalTrails(ctx)...)
+	}
+	e.anchorTrails(ctx, trails...)
 	return errors.Join(errs...)
 }
 

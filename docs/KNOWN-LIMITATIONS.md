@@ -341,13 +341,19 @@ cannot be matched against guessed neighbouring records. Key-set leaves are not s
 neighbouring keys by design, and neither are anchor-log leaves, which hold signed tree heads meant to
 be public.
 
-**Notification evidence is only as strong as the anchor you give the trail.** The notifier writes its
-trail but does not sign it; `bide audit notifications` finds a deleted or reordered record only
-against a signed head (`audit.SignNotifyTrail`) that you create and anchor outside the database,
-and fails (`unattested`) an event whose verdict rests on records after the newest head, unless
-`-accept-tail`. It does not check that every routed receiver got a delivery unless given the
-notifier's routing (`-routing`). Without a head the report says
-`UNANCHORED`. The check cannot find an event that left no trace in the journals it was given and no
+**Notification evidence is only as strong as the anchor and key you give the trail.** The notifier
+signs and anchors its trail only if you wrap its event store in an `audit.AuditedEventStore`
+(or sign heads by hand with `audit.SignNotifyTrail`); without a signed head the report says
+`UNANCHORED`. Publishing is in the background and best effort, so records written since the last
+published head (the publisher's delay, or an anchor outage plus the time to the next sweep, or a
+process that died before it published) are read but not attested; the report gives their count
+and age, and `-max-unattested` fails one older than your bound. An event that rests on such records is
+`unattested` and fails, unless a nonzero `-max-unattested` accepts recent ones, which are then trusted
+without a signature (content and times). Per-receiver completeness is checked only with the
+notifier's routing (`-routing`). A record deleted from that tail
+cannot be found. The heads attest the trail, not who may sign: a signing key the application can
+use freely lets an attacker who controls the process sign a rewritten trail, so keep it in an HSM or
+KMS signer. The check cannot find an event that left no trace in the journals it was given and no
 record in the trail (a halt that a later result resolved before the audit), cannot say that a person
 read a notification (an acknowledgement is the sink's 2xx), and dates events by the notifying
 processes' clocks. An all-clear owed for an event whose resolution the journal does not time (a tool's

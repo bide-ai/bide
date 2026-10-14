@@ -2640,6 +2640,17 @@ they are the mutation check of every property above.
   timeout that succeeds later; the configurations without `MaxSlow` (`live-notice-long` among them,
   with `NoticeDupBound` under long claims) have none.
 
+**Signing and anchoring the trail is outside the model, and changes none of its properties.**
+`audit.AuditedEventStore` publishes a signed tree head over the trail after an append has committed.
+It reads the trail, writes only to the anchor, and does not alter the result or the timing of the
+append: a background publisher does the work, so a round's appends cost what they did (the claim
+arithmetic of `N2`/`N3`, which counts the store's round trips as short, still holds, and `Notify.tla`'s
+`ASSUME` over the claim TTLs is not touched). No delivery property reads the anchor or the head
+(`NotifyOnce`, `NoticeOnce`, the liveness properties, the composition with model 10), and the head
+adds no step that writes the trail. What anchoring adds are properties of the evidence, not of
+delivery: heads grow, and each commits to a prefix of the trail. They are checked by Go tests
+(`audit/audited_event_store_test.go`), not by this model.
+
 Two rules the model needed, which the note implies but does not state: the claim's holder is
 unique per process incarnation and per deliverer (`holder-process`), and an `acked` append that
 errors is retried in place with the round's claim kept (`ack-no-retry`).

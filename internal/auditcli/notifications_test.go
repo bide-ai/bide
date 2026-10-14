@@ -423,17 +423,67 @@ func TestNotificationsVerb_TailAndReceivers(t *testing.T) {
 	if code != 1 || !strings.Contains(out, "FAIL  unattested") || !strings.Contains(out, "not attested by it") {
 		t.Fatalf("exit %d\n%s", code, out)
 	}
-	if code, out, _ := runCLI(append(args, "-accept-tail")...); code != 0 {
-		t.Fatalf("-accept-tail: exit %d\n%s", code, out)
+	if code, out, _ := runCLI(append(args, "-max-unattested", "1h")...); code != 0 {
+		t.Fatalf("-max-unattested: exit %d\n%s", code, out)
 	}
 	rt, _ := agent.RoutingOf(agent.WithNotifyReceiver("oncall", nil2{}), agent.WithNotifyRoute(agent.NotificationApprovalPending, "oncall"))
 	rp := filepath.Join(f.dir, "routing.json")
 	writeJSON(t, rp, rt)
-	if code, out, _ := runCLI(append(args, "-accept-tail", "-routing", rp, "-as-of", nat(3000).Format(time.RFC3339))...); code != 1 || !strings.Contains(out, "no_delivery") {
-		t.Fatalf("-expect-receivers: exit %d\n%s", code, out)
+	if code, out, _ := runCLI(append(args, "-max-unattested", "1h", "-routing", rp, "-as-of", nat(3000).Format(time.RFC3339))...); code != 1 || !strings.Contains(out, "no_delivery") {
+		t.Fatalf("-routing: exit %d\n%s", code, out)
 	}
 }
 
 type nil2 struct{}
 
 func (nil2) Notify(context.Context, agent.Notification) error { return nil }
+
+// A notifier that anchors its trail leaves one head per size in its anchor log; the verb takes any
+// number of them for a trail, checks each, and reports the records the newest does not attest.
+func TestNotificationsVerb_ManyHeadsAndTheUnattestedGap(t *testing.T) {
+	f := newNotifyFixture(t).event(agent.ApprovalKey("r1", "c1", 0), agent.NotificationApprovalPending, 3)
+	sign := func(name string) string {
+		h, err := audit.SignNotifyTrail(context.Background(), f.es, nTrail, audit.Ed25519Signer{Priv: f.priv}, nat(30))
+		if err != nil {
+			t.Fatal(err)
+		}
+		p := filepath.Join(f.dir, name)
+		writeJSON(t, p, h)
+		return p
+	}
+	early := sign("early.json")
+	f.event(agent.ApprovalKey("r1", "c2", 0), agent.NotificationApprovalPending, 4)
+	late := sign("late.json")
+	trail, _ := f.files()
+	run := func(extra ...string) (int, string) {
+		code, out, _ := runCLI(append([]string{"notifications", "-trail", trail, "-pubkey", f.pub, "-as-of", nat(60).Format(time.RFC3339)}, extra...)...)
+		return code, out
+	}
+
+	if code, out := run("-sth", early, "-sth", late); code != 0 || !strings.Contains(out, "the newest of 2 that all verify") || strings.Contains(out, "not attested") {
+		t.Fatalf("both heads: exit %d\n%s", code, out)
+	}
+	code, out := run("-sth", early)
+	if code != 1 || !strings.Contains(out, "FAIL  unattested") { // strict by default: the second event rests on the tail
+		t.Fatalf("the early head, strict: exit %d\n%s", code, out)
+	}
+	code, out = run("-sth", early, "-max-unattested", "1h")
+	if code != 0 || !strings.Contains(out, "signed head over the first 3") || !strings.Contains(out, "the last 3 are not attested by it (the oldest, from 2026-10-13T09:00:01Z, for 59s)") {
+		t.Fatalf("the early head only: exit %d\n%s", code, out)
+	}
+	if code, out := run("-sth", early, "-max-unattested", "30s"); code != 1 || !strings.Contains(out, "gone unattested for 59s") {
+		t.Fatalf("-max-unattested 30s: exit %d\n%s", code, out)
+	}
+	if code, out := run("-sth", early, "-max-unattested", "2m"); code != 0 {
+		t.Fatalf("-max-unattested 2m: exit %d\n%s", code, out)
+	}
+	if code, _ := run("-sth", late, "-max-unattested", "-1s"); code != 2 {
+		t.Fatalf("a negative -max-unattested: exit %d, want 2", code)
+	}
+	// One head that does not match the trail fails the audit although the other does.
+	other := newNotifyFixtureAt(t, f.priv).event(agent.ApprovalKey("r1", "c9", 0), agent.NotificationApprovalPending, 3)
+	_, wrong := other.files()
+	if code, out := run("-sth", late, "-sth", wrong); code != 1 || !strings.Contains(out, "FAIL  trail notify:r1: signed head of size 3") {
+		t.Fatalf("a head of another history: exit %d\n%s", code, out)
+	}
+}

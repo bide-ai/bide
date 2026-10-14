@@ -462,7 +462,7 @@ func TestVerifyNotifications_TamperedTrailsAreCaught(t *testing.T) {
 		t.Fatalf("grown trail: %v %+v", err, rep.Trails)
 	}
 	rep, err = audit.VerifyNotifications(audit.NotifyVerifyInput{Trails: []audit.NotifyTrailExport{b.export()}, Heads: []audit.SignedTreeHead{head},
-		Verifier: audit.Ed25519Verifier{Pub: pub}, Now: at(60), AcceptTail: true})
+		Verifier: audit.Ed25519Verifier{Pub: pub}, Now: at(60), MaxTailAge: time.Hour})
 	if err != nil || rep.Trails[0].Tail != 3 {
 		t.Fatalf("grown trail, tail accepted: %v %+v", err, rep.Trails)
 	}

@@ -131,6 +131,7 @@ type notifyEngine struct {
 	fails    map[string]int        // failed attempts made by this process, per key
 	firstAt  map[string]time.Time  // when this process first sent each key
 	stuck    map[string]int        // Notify calls started and not returned (abandoned ones included), per event key
+	globalAt time.Time             // when a recovery pass last signed the global trails again
 	stuckAll int                   // and in all
 	w        *notifyWorker
 }

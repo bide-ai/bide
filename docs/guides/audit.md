@@ -535,18 +535,24 @@ the [notifier](notifications.md) writes what it did about that to its own audite
 and `bide audit notifications` answer the auditor's question from that trail and the run journals,
 offline: was every event that needed a person notified, was it acknowledged, and when?
 
-The trail is not signed by the notifier, and the verifier says what that costs. Its leaves are
-Merkle-committed like any event trail, so `audit.SignNotifyTrail` can sign a tree head over them and you can publish
-that head to an `Anchor`, but nothing does it for you: a deployment signs and anchors on its own
-schedule, as for a journal. Without a signed head the verifier still reads the trail strictly, and
-the report marks it `UNANCHORED`: whoever can write the event store could have deleted or reordered
-records, and nothing in the trail shows it. With a head, the first `head_size` records must be exactly the leaves the head
-commits to, so a deleted, reordered or changed record is found (exit 1). Records after the newest
-head are read and reported as not attested (`tail`, with the time range of its records). An event whose
-observation, acknowledgement or clearing is only in the tail is `unattested`, which fails the audit,
-because whoever can append to the stored trail could have written it; `-accept-tail` (library
-`AcceptTail`) accepts it, for a live trail between heads. A record deleted from the tail cannot be
-found. Sign and anchor often enough that the tail is short.
+The trail is signed and anchored when the application asks for it, and the verifier says what each case
+costs. Wrap the trail's event store in an `audit.AuditedEventStore` (see the
+[notifications guide](notifications.md#auditing-were-the-people-told)) and every growth of a trail
+publishes a signed tree head to an `Anchor`, as `AuditedStore` does for a journal, with the same
+`Signer`. Without it, `audit.SignNotifyTrail` signs a head by hand. Without any signed head the
+verifier still reads the trail strictly, and the report marks it `UNANCHORED`: whoever can write the
+event store could have deleted or reordered records, and nothing in the trail shows it. With heads, the
+first `head_size` records must be exactly the leaves the newest head commits to, and every other head
+the trail was given must match the prefix it names, so a deleted, reordered or changed record is
+found (exit 1) even when it was rewritten after the newest head was published. Records after the
+newest head are read and reported as not attested: the report gives their count (`tail`), the time of
+the first (`tail_since`) and how long ago that was (`tail_age_ns`), and `-max-unattested` makes a gap
+older than a bound a failure. An event whose observation, acknowledgement or clearing is only in the
+tail is `unattested`, a problem, because whoever can append to the stored trail could have written it.
+`-max-unattested` (library `MaxTailAge`) is the one knob: with a nonzero bound, an event resting on
+tail records no older than it is accepted, for a live trail between heads. **Those records are
+accepted without a signature, so their content and their times, which whoever appended them wrote, are
+trusted**; the default, 0, is strict. A record deleted from that tail cannot be found.
 
 **Per-receiver completeness.** The trail cannot know the routing, so by default a fan-out that reached
 one receiver passes. `-routing routing.json` (library `Routing`) takes the notifier's routing, which you write with
@@ -562,7 +568,8 @@ all-clears are not checked this way. Without `-routing`, per-receiver completene
 ```go
 trail := agent.NotifyTrailName(runID) // "notify:<run>"
 
-// At the notifier's side, on a schedule: sign a head over the trail and anchor it.
+// At the notifier's side: an audit.AuditedEventStore around evStore signs and anchors the trail as it
+// is written. To sign a head by hand instead, on a schedule:
 head, _ := audit.SignNotifyTrail(ctx, evStore, trail, signer, time.Now())
 
 // Export what the auditor needs (or let `bide audit notifications -db` read the stores).

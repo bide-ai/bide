@@ -551,18 +551,55 @@ had a record deleted, or is not a history a notifier writes.
 
 ```
 bide audit notifications -db run.db -sth notify-r1.sth.json -pubkey keys/log.pub
+bide audit notifications -db run.db -pubkey keys/log.pub -max-unattested 10m $(for f in anchor/notify-r1-*.json; do echo -sth $f; done)
 bide audit notifications -postgres-env BIDE_POSTGRES_DSN -unanchored -max-ack 10m
 ```
 
 Two things to set up on your side:
 
-- **Sign and anchor the trail.** The notifier writes the trail; it does not sign it. Call
-  `audit.SignNotifyTrail(ctx, eventStore, agent.NotifyTrailName(runID), signer, time.Now())` on a
-  schedule and publish the head to an `Anchor` (or any log in another trust domain). With a head,
-  a deleted or reordered record is found; without one the report says `UNANCHORED`, and whoever can
-  write the event store could have changed the trail undetected. An event whose acknowledgement, clearing or
-  observation is only after the newest head is `unattested` and fails (`-accept-tail` accepts it).
-  Add `-routing routing.json` (from `agent.RoutingOf` with the notifier's options) to require a delivery to each receiver an event routes to and to each due escalation step; without it that is not checked.
+- **Sign and anchor the trail.** Wrap the event store the trail lives in with an
+  `audit.AuditedEventStore`, and the notifier's trail is signed and anchored as it is written, with the
+  same `audit.Signer` and `audit.Anchor` as a journal (`audit.NewAuditedStore`), so an HSM or KMS signer
+  and an external transparency log work unchanged:
+
+  <!-- docsnip: setup evStore audit.EventStore; signer audit.Signer; anchor audit.Anchor; sink agent.Notifier -->
+  ```go
+  audited, _ := audit.NewAuditedEventStore(evStore, signer, anchor)
+  audited.OnError(func(trail string, err error) { log.Printf("anchoring %s: %v", trail, err) })
+  trail := audit.NewNotifyTrail(audited)
+  opt := agent.WithNotifier(sink, trail) // the trail is signed as it is written
+  ```
+
+  Each growth of a run's trail (`notify:<run>`) publishes a signed tree head (kind `events`, run ID the
+  trail's name, the head `audit.SignNotifyTrail` signs) from a background publisher, so the anchor,
+  the signer and the clock are never on the delivery path: a slow or hung anchor cannot lengthen a
+  round, and a failure to publish never fails or delays a delivery (it goes to `OnError`). One attempt
+  is abandoned after `WithTimeout` (default 3 seconds) even if the anchor ignores its context, and
+  after a failure the store pauses for `WithCooldown` (default 30 seconds) and then probes, so an
+  outage costs one timeout per cooldown. What an outage or a crash left unsigned is signed again by
+  `NotifyPending`, `RecoverLoop`, `Recover` and `FlushNotifications`, for the runs they look at and
+  for any trail an earlier attempt failed, and `Reanchor`, `ReanchorPending` and `Flush` do it on
+  demand. The window left open is therefore the publisher's delay when the anchor is healthy, and the
+  outage plus the time to the next sweep when it is not. The wrapper signs every trail written
+  through it, so the trails that belong to no run are covered as well: the digest's, the open trail's
+  daily segments (`notify:@open:<date>`) and its yearly index (`notify:@open:index:<year>`); a sweep
+  and, once a minute, a recovery pass sign again the digest, the index, today's segment and the newest
+  three. Call `Flush` (or `FlushNotifications`) before
+  the process exits.
+
+  A trail with no head is reported `UNANCHORED`, and whoever can write the event store could have
+  changed it undetected; with heads, a deleted, reordered or changed record is found. Give the
+  verifier every head the anchor holds for a trail (`-sth`, once per head): each must verify and match
+  a prefix of the trail, and the largest is the newest. Records after the newest head are read but
+  not attested; the report says how many there are and how long the oldest has gone unattested, and
+  `-max-unattested` fails a gap older than the bound you set, which is how you check the anchoring is
+  keeping up. An event whose ack, clearing or observation is only in that tail is `unattested` and
+  fails; a nonzero `-max-unattested` accepts it when its tail records are that recent, without a
+  signature, so their content and times are trusted (default 0: strict). Add `-routing routing.json`
+  (from `agent.RoutingOf` with the notifier's options) to require a delivery to each receiver an
+  event routes to and to each due escalation step; without it that is not checked. `audit.SignNotifyTrail` remains for signing a head by hand. The head attests the trail,
+  not who may sign: keep the signing key where the application cannot use it freely (an HSM or KMS
+  signer), or an attacker who controls the process can sign a rewritten trail.
 - **Give it the journals.** The check of the trail alone cannot find a halt or a gate that no
   notifier ever saw; the cross-check against the journals can. `-db` and `-postgres-env` read both
   from the store, read-only (the Postgres DSN is read from the named environment variable, never

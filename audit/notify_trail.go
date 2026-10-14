@@ -25,7 +25,10 @@ type NotifyTrail struct {
 	store EventStore
 }
 
-var _ agent.NotifyTrail = (*NotifyTrail)(nil)
+var (
+	_ agent.NotifyTrail         = (*NotifyTrail)(nil)
+	_ agent.NotifyTrailAnchorer = (*NotifyTrail)(nil)
+)
 
 // NewNotifyTrail returns a NotifyTrail over store.
 func NewNotifyTrail(store EventStore) *NotifyTrail { return &NotifyTrail{store: store} }
@@ -78,6 +81,27 @@ func (t *NotifyTrail) Append(ctx context.Context, trail string, seq int, rec age
 		return fmt.Errorf("%w: %s position %d (%w)", agent.ErrTrailConflict, trail, seq, appendErr)
 	}
 	return fmt.Errorf("audit: notify trail %s append at %d: %w", trail, seq, appendErr)
+}
+
+// AnchorTrails implements agent.NotifyTrailAnchorer: it asks the AuditedEventStore beneath the
+// trail's store (found through Unwrap, under any decorator) to publish a head for each named trail
+// that has grown past its last one, and for some that an earlier failure left unanchored. A trail
+// over a store that anchors nothing has nothing to publish, and returns nil.
+func (t *NotifyTrail) AnchorTrails(ctx context.Context, trails []string) error {
+	var s EventStore = t.store
+	for range 64 {
+		if an, ok := s.(interface {
+			AnchorTrails(context.Context, []string) error
+		}); ok {
+			return an.AnchorTrails(ctx, trails)
+		}
+		u, ok := s.(interface{ Unwrap() EventStore })
+		if !ok {
+			return nil
+		}
+		s = u.Unwrap()
+	}
+	return nil
 }
 
 // decodeNotifyLeaf reads a notify record from a stored event leaf. The leaf's kind must be the

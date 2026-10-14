@@ -258,6 +258,15 @@ func (w *notifyWorker) undelivered(ctx context.Context) error {
 // it cancels the rounds in flight (a Notifier that honors its context returns) and returns ctx's
 // error without waiting for one that does not.
 func (e *notifyEngine) flush(ctx context.Context) error {
+	err := e.flushDeliveries(ctx)
+	// The deliveries have written their last records: have a trail that signs them sign them now,
+	// within ctx, so a process that stops cleanly leaves nothing unattested. A failure is reported,
+	// not returned: it is not an undelivered event.
+	e.anchorTrails(ctx)
+	return err
+}
+
+func (e *notifyEngine) flushDeliveries(ctx context.Context) error {
 	w := e.w
 	for w.isRunning() && !w.settled() {
 		select {

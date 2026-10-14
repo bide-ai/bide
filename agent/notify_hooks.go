@@ -210,6 +210,15 @@ func (e *notifyEngine) recoveryOK(ctx context.Context, runID string) {
 // the run, ErrNotResumable, is passed as the failure it is).
 func (e *notifyEngine) afterRecover(ctx context.Context, runID string, driven, resumed bool, err error) {
 	defer e.queueScan(runID) // after recoveryOK and recoveryFailed: an episode may just have closed
+	// The pass wrote records to the trail, or found it grown while the anchor was out: sign it again
+	// (a trail that does not sign is not asked). Bounded by the anchor's timeout.
+	defer func() {
+		names := []string{NotifyTrailName(treeRootID(runID))}
+		if _, ok := e.trail.(NotifyTrailAnchorer); ok && e.globalDue() {
+			names = append(names, e.globalTrails(ctx)...)
+		}
+		e.anchorTrails(ctx, names...)
+	}()
 	if ev, ok := e.eventFromErr(runID, err); ok {
 		e.submit(ev)
 		e.recoveryOK(ctx, runID) // a halt or a gate is the run waiting for a person: recovery works

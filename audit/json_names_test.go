@@ -68,6 +68,7 @@ var auditArtifacts = []any{
 var notArtifacts = map[string]string{
 	"audit.NotifyVerifyInput": "the input of VerifyNotifications, built in code",
 	"audit.AuditedStore":      "a store wrapper; its state is unexported",
+	"audit.AuditedEventStore": "an event store wrapper; its state is unexported",
 	"audit.TimeCheck":         "the inputs of CheckDecisionTimes, never written out",
 	"audit.ReceiptFinding":    "the result of CheckReceipt, printed by bide audit, never written as an artifact",
 	"audit.CoverageBound":     "the inputs of CheckDecisionCoverage, never written out",

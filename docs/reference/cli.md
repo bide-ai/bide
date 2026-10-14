@@ -806,18 +806,22 @@ bide audit: produce and verify audit proof bundles
          quoted); these notes never change the verdict
 
   notifications (-trail <file>... [-journal <file>...] | -db <file> | -postgres-env <var>) [-run <id>]
-                (-sth <file>... -pubkey <hex|file> | -unanchored) [-max-ack <duration>] [-strict] [-accept-tail] [-routing <file>] [-as-of <time>]
+                (-sth <file>... -pubkey <hex|file> | -unanchored) [-max-ack <duration>] [-max-unattested <duration>]
+                [-strict] [-routing <file>] [-as-of <time>]
          verify that every event that needed a person (an unknown-outcome halt, an approval gate,
          an aborted run, a recovery failure, an overdue notice, an all-clear) was notified, and
          when it was acknowledged: each trail's leaves are read strictly (an unknown record kind or
          field is an error) and must be a history a notifier writes (nothing acknowledged twice,
-         nothing out of order, every acknowledgement after a claim); with a signed head (-sth,
-         from audit.SignNotifyTrail) the trail's first records are exactly what the head
-         commits to, so a deleted or reordered record is found; and each gate, halt and abort a
+         nothing out of order, every acknowledgement after a claim); with signed heads (-sth, from
+         audit.SignNotifyTrail or the anchor log of a notifier that anchors its trail, any
+         number per trail, each verified) the trail's first records are exactly what the newest
+         head commits to, so a deleted or reordered record is found, and the records after it
+         are reported with how many there are and how long the oldest has gone unattested
+         (-max-unattested fails a gap older than that, and bounds the tail an event may rest on); and each gate, halt and abort a
          journal shows must be observed in its run's trail. Each event gets a verdict: acked,
          acked_late (past its deadline or -max-ack), pending, failing, overdue, cleared before
          notification, never_notified, and the command fails (exit 1) on acked_late, overdue and
-         never_notified (and, with -strict, on the warnings unobserved_resolved and all_clear_untimed). A verdict that rests on records after the newest signed head is unattested and fails unless -accept-tail; with -routing (the notifier's routing, agent.RoutingOf as JSON), an event with no delivery to a receiver it routes to, or a due escalation step with none, is no_delivery and fails. -db and -postgres-env (a variable holding the DSN) read every run, or -run,
+         never_notified (and, with -strict, on the warnings unobserved_resolved and all_clear_untimed). A verdict that rests on records after the newest signed head is unattested and fails unless every tail record it rests on is within -max-unattested (default 0: strict; records within a nonzero bound are accepted without a signature); with -routing (the notifier's routing, agent.RoutingOf as JSON), an event with no delivery to a receiver it routes to, or a due escalation step with none, is no_delivery and fails. -db and -postgres-env (a variable holding the DSN) read every run, or -run,
          from a store, in the full bide command; the audit-only build reads exported files
 
   verify-receipts -receipt <file|dir> -journal <export> -heads <file> -pubkey <hex|file> -approver-keys <file>
@@ -906,8 +910,6 @@ Exit status:
 
 ```text
 Usage of bide audit notifications:
-  -accept-tail
-    	accept verdicts that rest on records after the newest signed head (a live trail between heads); without it such an event is unattested and fails
   -as-of string
     	judge pending events as of this RFC 3339 time (default now)
   -color when
@@ -926,6 +928,8 @@ Usage of bide audit notifications:
     	how far past this machine's clock a signed head's timestamp may be (default 5m0s)
   -max-input-bytes int
     	the largest input file, in bytes, the verb reads; a larger one is an error (default 268435456)
+  -max-unattested duration
+    	how long records after a trail's newest signed head may stay unattested: a trail with one older fails, and an event resting on tail records no older than this is accepted WITHOUT a signature, so its content and times (written by whoever appended it) are trusted; 0 (default): strict, an event resting on the tail fails (unattested)
   -postgres-env string
     	read them from the Postgres journal whose DSN is in this environment variable (never given on the command line)
   -pubkey string
@@ -937,7 +941,7 @@ Usage of bide audit notifications:
   -run string
     	with -db or -postgres-env: only this run and its sub-runs; default every run
   -sth value
-    	a signed tree head over a trail (audit.SignNotifyTrail as JSON); repeat once per trail
+    	a signed tree head over a trail, as JSON (audit.SignNotifyTrail, or an entry's sth from the anchor log of a notifier that anchors its trail); repeat for as many as you have, any number per trail: each must verify and match a prefix of the trail, the largest is the newest
   -strict
     	also fail (exit 1) on a warning: a decided gate no notifier observed (unobserved_resolved), or an all-clear owed that cannot be timed (all_clear_untimed)
   -trail value
