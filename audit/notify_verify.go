@@ -1,0 +1,655 @@
+package audit
+
+import (
+	"bytes"
+	"encoding/json"
+	"errors"
+	"fmt"
+	"slices"
+	"strings"
+	"time"
+
+	"github.com/bide-ai/bide/agent"
+)
+
+// NotifyStatus is what a trail and the run journals together say about one event that needed a
+// person. NotifyStatus.Problem says which statuses fail an audit.
+type NotifyStatus string
+
+const (
+	// NotifyStatusAcked: the sink acknowledged the event within its deadline (and within the bound).
+	NotifyStatusAcked NotifyStatus = "acked"
+	// NotifyStatusAckedLate: acknowledged, but after the event's deadline or the bound. A problem.
+	NotifyStatusAckedLate NotifyStatus = "acked_late"
+	// NotifyStatusPending: observed, not yet acknowledged, and not yet past its deadline at Now.
+	NotifyStatusPending NotifyStatus = "pending"
+	// NotifyStatusFailing: like pending, and delivery has failed repeatedly (a failing record).
+	NotifyStatusFailing NotifyStatus = "failing"
+	// NotifyStatusOverdue: observed, not acknowledged, and past its deadline or the bound at Now.
+	// A problem.
+	NotifyStatusOverdue NotifyStatus = "overdue"
+	// NotifyStatusClearedBeforeNotification: the event stopped being current before any delivery
+	// was attempted, so no one was owed a notification.
+	NotifyStatusClearedBeforeNotification NotifyStatus = "cleared_before_notification"
+	// NotifyStatusClearedUnacknowledged: delivery was attempted, never acknowledged, and the event
+	// then stopped being current. Whether the receiver was told is unknown, which is why the
+	// all-clear is owed (see NotifyStatusNeverNotified for a missing one).
+	NotifyStatusClearedUnacknowledged NotifyStatus = "cleared_unacknowledged"
+	// NotifyStatusNeverNotified: the journal (or the trail itself) shows an event that needed a
+	// person and the trail holds no observation of it. A problem.
+	NotifyStatusNeverNotified NotifyStatus = "never_notified"
+	// NotifyStatusNotYetDue: like never_notified, but the event is younger than the grace period at
+	// Now, so a notifier has not yet been late with it.
+	NotifyStatusNotYetDue NotifyStatus = "not_yet_due"
+	// NotifyStatusUnobservedResolved: the journal shows a gate that was decided, and the trail
+	// holds no observation of it. The person who decided it knew of it, so this is not a failure,
+	// and it is reported so a gate that was never notified is not invisible.
+	NotifyStatusUnobservedResolved NotifyStatus = "unobserved_resolved"
+)
+
+// Problem reports whether a status fails an audit.
+func (s NotifyStatus) Problem() bool {
+	switch s {
+	case NotifyStatusAckedLate, NotifyStatusOverdue, NotifyStatusNeverNotified:
+		return true
+	}
+	return false
+}
+
+// NotifyVerifyInput is what VerifyNotifications reads.
+type NotifyVerifyInput struct {
+	// Trails are the notification trails to verify. A trail the journals say is owed events and
+	// that is not here is read as a trail with no records.
+	Trails []NotifyTrailExport
+	// Heads are signed tree heads over the trails (SignNotifyTrail), matched to a trail by RunID,
+	// which is the trail's name. They are verified under Verifier.
+	Heads []SignedTreeHead
+	// Verifier verifies Heads. It is required if there are any, or unless Unanchored.
+	Verifier Verifier
+	// Unanchored allows a trail with no signed head. The trail is then read but nothing attests that
+	// it is complete or unaltered, and the report says so (NotifyTrailReport.Anchored is false).
+	Unanchored bool
+	// Journals are run journals the events are cross-checked against: every gate, halt and abort
+	// they show is expected in the trail of its root run.
+	Journals []JournalExport
+
+	// Now is the time pending and overdue events are judged at; time.Now if zero.
+	Now time.Time
+	// MaxAck, if positive, is the longest an event may wait, from the time the run entered the state
+	// (the observation time if the record has none) to its acknowledgement; an event past it is late
+	// or overdue even within its recorded deadline. The recorded deadline always applies.
+	MaxAck time.Duration
+	// Grace is how long after an event began a missing observation is not yet a failure. It is the
+	// notifier's detection window: the default, 5 minutes, matches agent.WithNotifyHaltAge and the
+	// default deadline.
+	Grace time.Duration
+	// RecoveryFailingAfter is how long a recovery failure episode may be open before a
+	// recovery_failing event is owed. The default, 15 minutes, is the notifier's.
+	RecoveryFailingAfter time.Duration
+	// MaxClockSkew is how far a record may be dated before the one that precedes it (the writers'
+	// clocks differ) before the trail is out of order. The default is DefaultClockSkew.
+	MaxClockSkew time.Duration
+}
+
+// NotifyTrailReport is what was established about one trail.
+type NotifyTrailReport struct {
+	Trail   string `json:"trail"`
+	Records int    `json:"records"`
+	// Anchored is true when a signed head over the trail verified, and the trail's first HeadSize
+	// records are exactly the leaves it commits to.
+	Anchored bool `json:"anchored"`
+	HeadSize int  `json:"head_size,omitempty"`
+	// Tail counts the records after the head: read, but not attested by it.
+	Tail     int       `json:"tail,omitempty"`
+	HeadTime time.Time `json:"head_time,omitzero"`
+	// Violations are the ways the trail is malformed, out of order, or does not match its head.
+	Violations []string `json:"violations,omitempty"`
+}
+
+// NotifyEventVerdict is the verdict on one event.
+type NotifyEventVerdict struct {
+	Trail  string       `json:"trail"`
+	Key    string       `json:"key"`
+	Kind   string       `json:"kind"`
+	RunID  string       `json:"run_id,omitempty"`
+	Status NotifyStatus `json:"status"`
+	// Why says, in a sentence, what makes the status a problem or what the status rests on.
+	Why string `json:"why,omitempty"`
+	// InJournal is true when a journal supplied shows the event.
+	InJournal bool `json:"in_journal,omitempty"`
+
+	EventAt     time.Time `json:"event_at,omitzero"`
+	ObservedAt  time.Time `json:"observed_at,omitzero"`
+	DeadlineAt  time.Time `json:"deadline_at,omitzero"`
+	FirstSentAt time.Time `json:"first_sent_at,omitzero"`
+	AckedAt     time.Time `json:"acked_at,omitzero"`
+	ClearedAt   time.Time `json:"cleared_at,omitzero"`
+	Attempts    int       `json:"attempts,omitempty"`
+	Rounds      int       `json:"rounds,omitempty"`
+	// Detection is ObservedAt - EventAt: how long the event was unseen. Delivery is AckedAt -
+	// ObservedAt. Total is AckedAt - EventAt.
+	Detection time.Duration `json:"detection_ns,omitempty"`
+	Delivery  time.Duration `json:"delivery_ns,omitempty"`
+	Total     time.Duration `json:"total_ns,omitempty"`
+	// Auth is how the acknowledged delivery was authenticated.
+	Auth *agent.NotifyAuth `json:"auth,omitempty"`
+}
+
+// NotifyReport is the result of VerifyNotifications.
+type NotifyReport struct {
+	Trails   []NotifyTrailReport  `json:"trails"`
+	Events   []NotifyEventVerdict `json:"events"`
+	Problems []string             `json:"problems,omitempty"`
+}
+
+// Counts returns how many events have each status.
+func (r NotifyReport) Counts() map[NotifyStatus]int {
+	m := map[NotifyStatus]int{}
+	for _, e := range r.Events {
+		m[e.Status]++
+	}
+	return m
+}
+
+var notifyKinds = []agent.NotificationKind{
+	agent.NotificationOutcomeUnknown, agent.NotificationApprovalPending, agent.NotificationRunAborted,
+	agent.NotificationRecoveryFailing, agent.NotificationOverdue, agent.NotificationResolved,
+}
+
+var notifyRecordKinds = []agent.NotifyRecordKind{
+	agent.NotifyObserved, agent.NotifyClaimed, agent.NotifyAcked, agent.NotifyFailing, agent.NotifyOverdue,
+	agent.NotifyCleared, agent.NotifyFailingSince, agent.NotifyRecovered,
+}
+
+var notifyClearReasons = []string{"resolved", "decided", "ended", "recovered"}
+
+// decodeNotifyLeafStrict reads a notification record from a stored event leaf, and refuses what
+// the engine's NotifyTrail.Load keeps: a field it does not know, a duplicate key, a record kind
+// this version does not know, a leaf whose JSON is not the canonical encoding of the record it
+// holds. A verifier that skipped a record it could not read would pass a trail it did not check.
+func decodeNotifyLeafStrict(leaf []byte) (agent.NotifyRecord, error) {
+	body, ok := bytes.CutPrefix(leaf, []byte(eventLeafTag))
+	if !ok {
+		return agent.NotifyRecord{}, malformed(errors.New("not an event leaf"))
+	}
+	var el eventLeaf
+	if err := UnmarshalStrict(body, &el); err != nil {
+		return agent.NotifyRecord{}, err
+	}
+	if len(el.Salt) != agent.SaltSize {
+		return agent.NotifyRecord{}, malformed(fmt.Errorf("%d-byte salt, want %d", len(el.Salt), agent.SaltSize))
+	}
+	kind, isNotify := strings.CutPrefix(el.Kind, "notify_")
+	if !isNotify {
+		return agent.NotifyRecord{}, malformed(fmt.Errorf("leaf kind %q is not a notify record", el.Kind))
+	}
+	var rec agent.NotifyRecord
+	if err := UnmarshalStrict(el.Event, &rec); err != nil {
+		return agent.NotifyRecord{}, err
+	}
+	if string(rec.Kind) != kind {
+		return agent.NotifyRecord{}, malformed(fmt.Errorf("leaf kind %q holds a %q record", el.Kind, rec.Kind))
+	}
+	if !slices.Contains(notifyRecordKinds, rec.Kind) {
+		return agent.NotifyRecord{}, malformed(fmt.Errorf("record kind %q is not one this version reads", rec.Kind))
+	}
+	if again, err := json.Marshal(rec); err != nil || !bytes.Equal(again, el.Event) {
+		return agent.NotifyRecord{}, malformed(errors.New("the record is not in canonical form"))
+	}
+	return rec, nil
+}
+
+// VerifyNotifications reads notification trails strictly and says, for every event that needed a
+// person, whether it was notified and acknowledged, and when. It checks:
+//
+//   - every leaf is a notification record of a kind and shape this version reads (else the error
+//     wraps ErrMalformed and no verdict is given);
+//   - each trail is a valid history: an event is observed once and before anything else about it,
+//     nothing follows its acknowledgement or clearing, an acknowledgement follows a claim and
+//     carries a time, an attempt count and a 2xx status, an overdue record follows the deadline
+//     and states the latency the times imply, an overdue notice follows the overdue record it
+//     reports, an all-clear follows the clearing or acknowledgement it reports, records are dated
+//     in order within MaxClockSkew, and the recovery failure episodes open and close in turn;
+//   - with a signed head, the head verifies, is a head of this trail, and commits to its first
+//     HeadSize leaves, so a record deleted, reordered or changed before the head is found;
+//   - against the journals, every approval gate, unknown-outcome halt and aborted run they show is
+//     observed in the trail of its root run (or is within Grace of beginning); a recovery failure
+//     episode open longer than RecoveryFailingAfter, an overdue record, and a clearing after an
+//     attempted delivery each owe a notification that the trail must hold.
+//
+// The error is nil only if the trails are well formed and anchored (or Unanchored), and no event
+// has a status that is a Problem. The report is returned with every error but a malformed leaf,
+// so a failing audit can say what failed. An error wraps ErrNotVerified, ErrMalformed or
+// agent.ErrConfig (for input that cannot be used together: two exports of one trail, heads and
+// no Verifier).
+//
+// What it does not establish: that anyone read a notification (an acknowledgement is the sink's
+// 2xx); the times are those of the notifying processes' clocks, bounded above only by the head's
+// timestamp; an event that left no trace in the supplied journals (a halt a later result resolved)
+// and no record in the trail cannot be found; and records after the newest head are read but not
+// attested.
+func VerifyNotifications(in NotifyVerifyInput) (NotifyReport, error) {
+	if in.Now.IsZero() {
+		in.Now = time.Now()
+	}
+	if in.Grace <= 0 {
+		in.Grace = 5 * time.Minute
+	}
+	if in.RecoveryFailingAfter <= 0 {
+		in.RecoveryFailingAfter = 15 * time.Minute
+	}
+	if in.MaxClockSkew <= 0 {
+		in.MaxClockSkew = DefaultClockSkew
+	}
+	if in.Verifier == nil && (len(in.Heads) > 0 || !in.Unanchored) {
+		return NotifyReport{}, fmt.Errorf("audit: verify notifications: signed heads need a Verifier (or set Unanchored): %w", agent.ErrConfig)
+	}
+
+	trails := map[string]*NotifyTrailExport{}
+	var names []string
+	for i := range in.Trails {
+		t := &in.Trails[i]
+		if err := formatOf(*t, t.Format); err != nil {
+			return NotifyReport{}, err
+		}
+		if _, dup := trails[t.Trail]; dup {
+			return NotifyReport{}, fmt.Errorf("audit: verify notifications: two exports of trail %q: %w", t.Trail, agent.ErrConfig)
+		}
+		trails[t.Trail] = t
+		names = append(names, t.Trail)
+	}
+	heads := map[string]SignedTreeHead{}
+	for _, h := range in.Heads {
+		if _, dup := heads[h.RunID]; dup {
+			return NotifyReport{}, fmt.Errorf("audit: verify notifications: two signed heads for trail %q: %w", h.RunID, agent.ErrConfig)
+		}
+		heads[h.RunID] = h
+	}
+
+	// The events the journals show, by the trail that owes them.
+	owed := map[string][]agent.JournalNotifyEvent{}
+	for _, jx := range in.Journals {
+		recs, err := jx.Journal()
+		if err != nil {
+			return NotifyReport{}, err
+		}
+		for _, ev := range agent.JournalNotifyEvents(jx.RunID, recs) {
+			name := agent.NotifyTrailName(ev.RunID)
+			owed[name] = append(owed[name], ev)
+		}
+	}
+	for name := range owed {
+		if trails[name] == nil {
+			names = append(names, name)
+		}
+	}
+	for name := range heads {
+		if trails[name] == nil && !slices.Contains(names, name) {
+			names = append(names, name)
+		}
+	}
+	slices.Sort(names)
+
+	var rep NotifyReport
+	var decodeErrs []error
+	for _, name := range names {
+		var leaves [][]byte
+		if t := trails[name]; t != nil {
+			leaves = t.Leaves
+		}
+		tr := NotifyTrailReport{Trail: name, Records: len(leaves)}
+		recs := make([]agent.NotifyRecord, len(leaves))
+		decoded := true
+		for i, leaf := range leaves {
+			r, err := decodeNotifyLeafStrict(leaf)
+			if err != nil {
+				decodeErrs = append(decodeErrs, fmt.Errorf("audit: notify trail %s record %d: %w", name, i, err))
+				decoded = false
+				break
+			}
+			recs[i] = r
+		}
+		in.anchor(&tr, leaves, heads, trails[name] != nil)
+		if decoded {
+			tr.Violations = append(tr.Violations, checkNotifyTrail(name, recs, in.MaxClockSkew)...)
+			rep.Events = append(rep.Events, in.verdicts(name, recs, owed[name])...)
+		}
+		rep.Trails = append(rep.Trails, tr)
+	}
+	if len(decodeErrs) > 0 {
+		return rep, errors.Join(decodeErrs...)
+	}
+	for _, tr := range rep.Trails {
+		for _, v := range tr.Violations {
+			rep.Problems = append(rep.Problems, fmt.Sprintf("trail %s: %s", tr.Trail, v))
+		}
+	}
+	for _, e := range rep.Events {
+		if e.Status.Problem() {
+			rep.Problems = append(rep.Problems, fmt.Sprintf("%s %s: %s: %s", e.Kind, e.Key, e.Status, e.Why))
+		}
+	}
+	if len(rep.Problems) > 0 {
+		return rep, notVerified("audit: notifications: %d problem(s), first: %s", len(rep.Problems), rep.Problems[0])
+	}
+	return rep, nil
+}
+
+// anchor checks the trail against its signed head and records the outcome in tr.
+func (in NotifyVerifyInput) anchor(tr *NotifyTrailReport, leaves [][]byte, heads map[string]SignedTreeHead, supplied bool) {
+	h, ok := heads[tr.Trail]
+	if !ok {
+		if supplied && !in.Unanchored {
+			tr.Violations = append(tr.Violations, "no signed head: nothing attests that the trail is complete or unaltered (give one, or allow an unanchored trail)")
+		}
+		return
+	}
+	bad := func(format string, args ...any) { tr.Violations = append(tr.Violations, fmt.Sprintf(format, args...)) }
+	if err := h.Verify(in.Verifier); err != nil {
+		bad("signed head does not verify: %v", err)
+		return
+	}
+	if h.Kind != TreeEvents {
+		bad("signed head is of the %q tree, not an event trail", h.Kind)
+		return
+	}
+	if err := CheckTimestamp(h.TreeHead, in.Now, in.MaxClockSkew); err != nil {
+		bad("%v", err)
+		return
+	}
+	tr.HeadSize, tr.HeadTime = h.Size, time.Unix(0, h.TimestampNanos).UTC()
+	if h.Size > len(leaves) {
+		bad("trail has %d record(s) and its signed head commits to %d: records were deleted", len(leaves), h.Size)
+		return
+	}
+	if !bytes.Equal(merkleRoot(leaves[:h.Size]), h.Root) {
+		bad("the first %d record(s) are not the ones the signed head commits to: a record was changed, reordered or replaced", h.Size)
+		return
+	}
+	tr.Anchored, tr.Tail = true, len(leaves)-h.Size
+}
+
+// checkNotifyTrail returns the ways recs, the records of trail, are not a history a notifier
+// writes. It is stricter than agent.FoldNotify, which ignores what does not apply.
+func checkNotifyTrail(trail string, recs []agent.NotifyRecord, skew time.Duration) []string {
+	var out []string
+	bad := func(i int, format string, args ...any) {
+		out = append(out, fmt.Sprintf("record %d (%s): %s", i, recs[i].Kind, fmt.Sprintf(format, args...)))
+	}
+	root := strings.TrimPrefix(trail, "notify:")
+	type ev struct {
+		kind                    agent.NotificationKind
+		observed                agent.NotifyRecord
+		claimed, acked, cleared bool
+		failing, overdue        bool
+		overdueRec              agent.NotifyRecord
+	}
+	events := map[string]*ev{}
+	episodeOpen, episodes := false, 0
+	for i, r := range recs {
+		if r.At.IsZero() {
+			bad(i, "has no time")
+		}
+		if i > 0 && r.At.Before(recs[i-1].At.Add(-skew)) {
+			bad(i, "is dated %s, more than %s before record %d (%s): the trail is out of order, or a clock is wrong", r.At.Format(time.RFC3339Nano), skew, i-1, recs[i-1].At.Format(time.RFC3339Nano))
+		}
+		if root != "@digest" && r.RunID != root && r.Kind != agent.NotifyFailingSince && r.Kind != agent.NotifyRecovered {
+			bad(i, "names run %q in the trail of run %q", r.RunID, root)
+		}
+		switch r.Kind {
+		case agent.NotifyFailingSince:
+			if r.Key != "" {
+				bad(i, "has an event key")
+			}
+			if episodeOpen {
+				bad(i, "opens a recovery failure episode while one is open")
+			}
+			episodeOpen = true
+			continue
+		case agent.NotifyRecovered:
+			if r.Key != "" {
+				bad(i, "has an event key")
+			}
+			if !episodeOpen {
+				bad(i, "closes a recovery failure episode that is not open")
+			}
+			episodeOpen = false
+			episodes++
+			continue
+		}
+		if r.Key == "" {
+			bad(i, "has no event key")
+			continue
+		}
+		if r.Kind == agent.NotifyObserved {
+			if events[r.Key] != nil {
+				bad(i, "observes event %q a second time", r.Key)
+				continue
+			}
+			e := &ev{kind: agent.NotificationKind(r.EventKind), observed: r}
+			events[r.Key] = e
+			if !slices.Contains(notifyKinds, e.kind) {
+				bad(i, "event kind %q is not one this version reads", r.EventKind)
+			}
+			if r.EventAt.IsZero() {
+				bad(i, "has no event time")
+			}
+			switch {
+			case e.kind == agent.NotificationResolved:
+				if !r.DeadlineAt.IsZero() {
+					bad(i, "an all-clear has a deadline")
+				}
+				if !slices.Contains(notifyClearReasons, r.Reason) {
+					bad(i, "an all-clear's reason %q is not one this version reads", r.Reason)
+				}
+			case !r.DeadlineAt.After(r.At):
+				bad(i, "deadline %s is not after the observation", r.DeadlineAt.Format(time.RFC3339Nano))
+			}
+			switch e.kind {
+			case agent.NotificationOutcomeUnknown:
+				requirePrefix(bad, i, r.Key, "halted:")
+			case agent.NotificationApprovalPending:
+				requirePrefix(bad, i, r.Key, "approval:")
+			case agent.NotificationRunAborted:
+				requirePrefix(bad, i, r.Key, "aborted:")
+			case agent.NotificationRecoveryFailing:
+				requirePrefix(bad, i, r.Key, "recovery:")
+				if !episodeOpen {
+					bad(i, "reports a recovery failure with no episode open")
+				}
+				if want := agent.RecoveryKey(r.RunID, episodes); r.Key != want {
+					bad(i, "key %q is not the key of episode %d (%q)", r.Key, episodes, want)
+				}
+			case agent.NotificationOverdue:
+				orig, ok := strings.CutPrefix(r.Key, "overdue:")
+				if !ok {
+					bad(i, "key %q is not an overdue notice's", r.Key)
+				} else if p := events[orig]; p == nil || !p.overdue {
+					bad(i, "reports event %q overdue before an overdue record says so", orig)
+				}
+			case agent.NotificationResolved:
+				orig, ok := strings.CutPrefix(r.Key, "resolved:")
+				if !ok {
+					bad(i, "key %q is not an all-clear's", r.Key)
+				} else if p := events[orig]; p == nil || !(p.acked || p.cleared) {
+					bad(i, "clears event %q before it was acknowledged or cleared", orig)
+				}
+			}
+			continue
+		}
+		e := events[r.Key]
+		if e == nil {
+			bad(i, "is about event %q, which has not been observed", r.Key)
+			continue
+		}
+		if e.acked || e.cleared {
+			bad(i, "follows the event's %s", map[bool]string{true: "acknowledgement", false: "clearing"}[e.acked])
+			continue
+		}
+		switch r.Kind {
+		case agent.NotifyClaimed:
+			if r.Holder == "" {
+				bad(i, "has no holder")
+			}
+			if !r.Until.After(r.At) {
+				bad(i, "claim ends at %s, not after it begins", r.Until.Format(time.RFC3339Nano))
+			}
+			e.claimed = true
+		case agent.NotifyAcked:
+			if e.kind != agent.NotificationOverdue && !e.claimed {
+				bad(i, "acknowledges an event that was never claimed for delivery")
+			}
+			if r.FirstSentAt.IsZero() || r.FirstSentAt.After(r.At) {
+				bad(i, "first send time %s is missing or after the acknowledgement", r.FirstSentAt.Format(time.RFC3339Nano))
+			}
+			if r.Attempts < 1 {
+				bad(i, "records %d attempts", r.Attempts)
+			}
+			if r.Status != 0 && (r.Status < 200 || r.Status > 299) { // 0: a sink that is not HTTP
+				bad(i, "records status %d, not a 2xx", r.Status)
+			}
+			if r.At.Before(e.observed.At.Add(-skew)) {
+				bad(i, "is dated before the event's observation")
+			}
+			e.acked = true
+		case agent.NotifyFailing:
+			if r.Failures < 1 {
+				bad(i, "records %d failures", r.Failures)
+			}
+			e.failing = true
+		case agent.NotifyOverdue:
+			if e.kind == agent.NotificationOverdue || e.kind == agent.NotificationResolved {
+				bad(i, "a notice of kind %s is never overdue", e.kind)
+			}
+			if e.overdue {
+				bad(i, "marks the event overdue a second time")
+			}
+			if !r.At.After(e.observed.DeadlineAt) {
+				bad(i, "is dated at or before the deadline %s", e.observed.DeadlineAt.Format(time.RFC3339Nano))
+			}
+			if r.Latency != r.At.Sub(e.observed.At) {
+				bad(i, "latency %s is not the time from observation to this record (%s)", r.Latency, r.At.Sub(e.observed.At))
+			}
+			e.overdue, e.overdueRec = true, r
+		case agent.NotifyCleared:
+			if !slices.Contains(notifyClearReasons, r.Reason) {
+				bad(i, "reason %q is not one this version reads", r.Reason)
+			}
+			e.cleared = true
+		}
+	}
+	return out
+}
+
+func requirePrefix(bad func(int, string, ...any), i int, key, prefix string) {
+	if !strings.HasPrefix(key, prefix) {
+		bad(i, "key %q does not begin %q", key, prefix)
+	}
+}
+
+// verdicts folds recs and the journal events owed to the trail into a verdict for each event.
+func (in NotifyVerifyInput) verdicts(trail string, recs []agent.NotifyRecord, journal []agent.JournalNotifyEvent) []NotifyEventVerdict {
+	st := agent.FoldNotify(recs)
+	var out []NotifyEventVerdict
+	seen := map[string]int{} // key -> index in out
+	inJournal := map[string]bool{}
+	for _, j := range journal {
+		inJournal[j.Key] = true
+	}
+	add := func(v NotifyEventVerdict) { seen[v.Key] = len(out); out = append(out, v) }
+	for _, key := range st.Keys {
+		add(in.verdict(trail, st.Events[key], inJournal[key]))
+	}
+	missing := func(key, kind, runID string, at time.Time, why string, status NotifyStatus) {
+		if _, ok := seen[key]; ok {
+			return
+		}
+		if status == NotifyStatusNeverNotified && !at.IsZero() && in.Now.Before(at.Add(in.Grace)) {
+			status, why = NotifyStatusNotYetDue, "began "+at.UTC().Format(time.RFC3339)+", within the grace period"
+		}
+		add(NotifyEventVerdict{Trail: trail, Key: key, Kind: kind, RunID: runID, Status: status, Why: why, EventAt: at, InJournal: inJournal[key]})
+	}
+	for _, j := range journal {
+		if _, ok := st.Events[j.Key]; ok {
+			continue
+		}
+		if j.Current {
+			missing(j.Key, string(j.Kind), j.RunID, j.At, "the journal shows the event and the trail has no record of it", NotifyStatusNeverNotified)
+		} else {
+			missing(j.Key, string(j.Kind), j.RunID, j.At, "the journal shows a gate that was decided; the trail never observed it", NotifyStatusUnobservedResolved)
+		}
+	}
+	root := strings.TrimPrefix(trail, "notify:")
+	for _, key := range st.Keys {
+		e := st.Events[key]
+		switch {
+		case e.Overdue != nil && (e.Acked != nil || e.Open()) && st.Events[agent.OverdueKey(key)] == nil:
+			missing(agent.OverdueKey(key), string(agent.NotificationOverdue), e.RunID, e.Overdue.At,
+				"the event was marked overdue and the trail never observed its overdue notice", NotifyStatusNeverNotified)
+		case e.Cleared != nil && e.Rounds > 0 && st.Events[agent.ResolvedKey(key)] == nil && owesAllClear(e.Kind):
+			missing(agent.ResolvedKey(key), string(agent.NotificationResolved), e.RunID, e.Cleared.At,
+				"delivery of the event was attempted and it was then cleared, and the trail never observed the all-clear", NotifyStatusNeverNotified)
+		}
+	}
+	if st.FailingSince != nil && in.Now.Sub(st.FailingSince.At) > in.RecoveryFailingAfter {
+		missing(agent.RecoveryKey(root, st.Episodes), string(agent.NotificationRecoveryFailing), root, st.FailingSince.At.Add(in.RecoveryFailingAfter),
+			"a recovery failure episode has been open longer than "+in.RecoveryFailingAfter.String()+" and the trail never observed a recovery_failing event", NotifyStatusNeverNotified)
+	}
+	return out
+}
+
+func owesAllClear(kind string) bool {
+	switch agent.NotificationKind(kind) {
+	case agent.NotificationOutcomeUnknown, agent.NotificationApprovalPending, agent.NotificationRecoveryFailing:
+		return true
+	}
+	return false
+}
+
+// verdict is the verdict on one observed event.
+func (in NotifyVerifyInput) verdict(trail string, e *agent.NotifyEvent, inJournal bool) NotifyEventVerdict {
+	v := NotifyEventVerdict{
+		Trail: trail, Key: e.Key, Kind: e.Kind, RunID: e.RunID, InJournal: inJournal, Rounds: e.Rounds,
+		EventAt: e.EventAt, ObservedAt: e.ObservedAt, DeadlineAt: e.DeadlineAt,
+		Detection: e.ObservedAt.Sub(e.EventAt),
+	}
+	ref := e.EventAt
+	if ref.IsZero() {
+		ref = e.ObservedAt
+	}
+	past := func(t time.Time) (bool, string) {
+		switch {
+		case !e.DeadlineAt.IsZero() && t.After(e.DeadlineAt):
+			return true, "past its deadline " + e.DeadlineAt.UTC().Format(time.RFC3339)
+		case in.MaxAck > 0 && t.Sub(ref) > in.MaxAck:
+			return true, fmt.Sprintf("%s after the event began, past the bound %s", t.Sub(ref).Round(time.Second), in.MaxAck)
+		}
+		return false, ""
+	}
+	switch {
+	case e.Acked != nil:
+		a := e.Acked
+		v.AckedAt, v.FirstSentAt, v.Attempts, v.Auth = a.At, a.FirstSentAt, a.Attempts, a.Auth
+		v.Delivery, v.Total = a.At.Sub(e.ObservedAt), a.At.Sub(ref)
+		v.Status = NotifyStatusAcked
+		if late, why := past(a.At); late {
+			v.Status, v.Why = NotifyStatusAckedLate, "acknowledged "+why
+		}
+	case e.Cleared != nil:
+		v.ClearedAt = e.Cleared.At
+		if e.Rounds == 0 {
+			v.Status, v.Why = NotifyStatusClearedBeforeNotification, "cleared ("+e.Cleared.Reason+") before any delivery was attempted"
+		} else {
+			v.Status, v.Why = NotifyStatusClearedUnacknowledged, "cleared ("+e.Cleared.Reason+") after delivery was attempted and never acknowledged"
+		}
+	default:
+		v.Status = NotifyStatusPending
+		if e.Failing != nil {
+			v.Status = NotifyStatusFailing
+		}
+		if late, why := past(in.Now); late {
+			v.Status, v.Why = NotifyStatusOverdue, "not acknowledged, "+why
+		}
+	}
+	return v
+}

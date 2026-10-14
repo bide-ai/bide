@@ -51,12 +51,17 @@ var auditArtifacts = []any{
 	audit.IgnoredDecision{},
 	audit.DecisionTime{},
 	audit.JournalExport{},
+	audit.NotifyTrailExport{},
+	audit.NotifyReport{},
+	audit.NotifyTrailReport{},
+	audit.NotifyEventVerdict{},
 	verify.TreeRef{},
 }
 
 // notArtifacts is every other exported struct type of audit and audit/verify, with why it is never
 // written as JSON. A new exported struct type must be added to one list or the other.
 var notArtifacts = map[string]string{
+	"audit.NotifyVerifyInput": "the input of VerifyNotifications, built in code",
 	"audit.AuditedStore":      "a store wrapper; its state is unexported",
 	"audit.TimeCheck":         "the inputs of CheckDecisionTimes, never written out",
 	"audit.MemAnchorLog":      "an in-memory log; its state is unexported",
