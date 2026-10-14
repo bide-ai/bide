@@ -488,7 +488,7 @@ func TestSignatureChecksumMismatchIsRetried(t *testing.T) {
 			r.SignatureCrc32C = wrapperspb.Int64(r.SignatureCrc32C.Value ^ 0x10)
 		}
 		before = f.signs.Load()
-		if _, err := s.Sign(msg); !errors.Is(err, ErrIntegrity) || f.signs.Load()-before != maxSignAttempts {
+		if _, err := s.Sign(msg); !errors.Is(err, ErrIntegrity) || f.signs.Load()-before != 3 {
 			t.Fatalf("err %v after %d calls", err, f.signs.Load()-before)
 		}
 	}
@@ -583,6 +583,23 @@ func TestP256HighSIsNormalised(t *testing.T) {
 		if err != nil || len(sig) != 64 || !v.Verify(msg, sig) {
 			t.Fatalf("err %v", err)
 		}
+	}
+}
+
+// The signature a caller receives is its own: changing it does not change what the client returned.
+func TestSignReturnsACopy(t *testing.T) {
+	f := newEd(t)
+	s := open(t, f)
+	var held []byte
+	f.onSign = func(r *kmspb.AsymmetricSignResponse) { held = r.Signature }
+	sig, err := s.Sign([]byte("m"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	want := bytes.Clone(held)
+	sig[0] ^= 0xff
+	if !bytes.Equal(held, want) {
+		t.Fatal("Sign returned the response's own slice")
 	}
 }
 

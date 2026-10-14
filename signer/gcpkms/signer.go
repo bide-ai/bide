@@ -294,7 +294,7 @@ func Open(ctx context.Context, cfg Config) (*Signer, error) {
 	if err != nil {
 		return nil, fmt.Errorf("gcpkms: the public key of %s is not a usable %s key: %w", cfg.KeyVersion, alg, err)
 	}
-	s.pub, s.v = bytes.Clone(pub), v
+	s.pub, s.v = pub, v // pub is freshly parsed, so the signer owns it
 	// One signature proves the caller may sign with the key and that Cloud KMS's output verifies
 	// under the public key it reported, so a missing permission or a mismatch is found here and not
 	// by the first anchor. It is one billed Cloud KMS operation.

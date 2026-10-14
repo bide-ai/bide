@@ -19,6 +19,7 @@ use (
 	./integration
 	./mcptools
 	./signer/awskms
+	./signer/gcpkms
 	./signer/pkcs11
 	./store/postgres
 	./store/sqlite

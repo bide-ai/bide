@@ -122,8 +122,8 @@ ag.Run(ctx, runID, agent.UserText(input)) // each step → a signed STH, publish
 ```
 
 The signer is any `audit.Signer`: `Ed25519Signer`, `MLDSASigner`, or `HybridSigner` (see
-[Signature schemes](#signature-schemes-and-post-quantum-anchoring)), or an Ed25519 key held in a
-PKCS#11 token or AWS KMS (see [Key custody](key-custody.md)).
+[Signature schemes](#signature-schemes-and-post-quantum-anchoring)), or an Ed25519 or ECDSA P-256 key held in a
+PKCS#11 token, AWS KMS or Google Cloud KMS (see [Key custody](key-custody.md)).
 
 On every journal growth (each `Insert` that stores an entry) `AuditedStore` commits the run's
 Merkle root, signs an STH, and calls `Anchor.Publish`. It anchors after every insert, whether it
@@ -981,8 +981,8 @@ binding hold whichever scheme signs. An evidence package names its key by `{alg,
 `EvidencePackage.Verify` refuses a verifier whose scheme or key is not that one. Four schemes are
 available, all in the Go 1.27 standard library, so this adds no dependency:
 
-- `ed25519` (`Ed25519Signer`): small, fast, FIPS-approved. Its key can be held in a PKCS#11 token or AWS
-  KMS instead of in memory ([Key custody](key-custody.md)).
+- `ed25519` (`Ed25519Signer`): small, fast, FIPS-approved. Its key can be held in a PKCS#11 token, AWS
+  KMS or Google Cloud KMS instead of in memory ([Key custody](key-custody.md)).
 - `ecdsa-p256` (`ECDSAP256Signer`, FIPS 186-5): for keys that live where Ed25519 does not: many HSMs,
   AWS KMS and Azure Key Vault sign P-256 and not Ed25519. See [ECDSA P-256](#ecdsa-p-256) for the exact
   encodings.
