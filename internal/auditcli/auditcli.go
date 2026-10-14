@@ -41,7 +41,7 @@ import (
 )
 
 // pubkeyHelp is the help text of every -pubkey flag.
-const pubkeyHelp = "public key as <scheme>:<hex> (ed25519, ml-dsa-65, ed25519+ml-dsa-65) or bare ed25519 hex, or a path to a file containing it"
+const pubkeyHelp = "public key as <scheme>:<hex> (ed25519, ecdsa-p256, ml-dsa-65, ed25519+ml-dsa-65) or bare ed25519 hex, or a path to a file containing it"
 
 // policyFormatVersion is the published domain-separation tag for the combinator policy
 // serialization (gsm's PolicyFormatVersion). It is hardcoded here on purpose: the verifier
@@ -134,7 +134,7 @@ const usageText = `bide audit: produce and verify audit proof bundles
 
   verify-evidence -evidence <file> -pubkey <hex|file> [-approved <digest>...] [-approved-file <file>]
          verify a portable evidence package offline and print a plain-English report: the
-         format, seal, key, and run binding, then one line per proven action (tool call, step,
+         format, seal (a digest of the package, or the whole package for an older v5 package), key, and run binding, then one line per proven action (tool call, step,
          grant), plus the run certificate (checked against the given allowlist, required when
          the package carries one) and consistency proof if present
 
@@ -184,7 +184,7 @@ JSON input is parsed strictly: a duplicate or case-variant key, an unknown field
 an error; a bundle, certificate, package, journal export or signed tree head (at any depth) must
 carry the "format" this version reads (one made by an older release is refused with a message
 naming the format; -version lists them); and a public key is <scheme>:<hex>, where the scheme is
-ed25519, ml-dsa-65 or ed25519+ml-dsa-65, or bare 64-digit ed25519 hex. The key's scheme must be the
+ed25519, ecdsa-p256, ml-dsa-65 or ed25519+ml-dsa-65, or bare 64-digit ed25519 hex. The key's scheme must be the
 scheme the artifact is signed under. Every verb takes -max-input-bytes <n>: an input file larger
 than n bytes (default 268435456, 256 MiB) is an error, and none is read past the cap. Every signed
 tree head an input carries must have a positive timestamp (Unix nanoseconds) no later than this
@@ -1020,6 +1020,9 @@ func (c *cli) verifyEvidence(args []string) {
 	} else {
 		c.printf("evidence for run %q\n", rep.RunID)
 	}
+	if pkg.Format == audit.EvidenceFormatV5 {
+		c.printf("NOTE  format %s: sealed over the whole package, not over its digest; it verifies, and evidence made by this version is %s\n", audit.EvidenceFormatV5, audit.EvidenceFormat)
+	}
 	if rep.STHVerified {
 		c.printf("PASS  signed tree head authentic (size %d)\n", pkg.STH.Size)
 	} else {
@@ -1056,7 +1059,7 @@ func (c *cli) verifyApprovals(args []string) {
 	call := fs.String("call", "", `the gated call's tool-use id, or a gated plan flow node's key ("node:<name>", "node:iter:<n>:<name>")`)
 	need := fs.Int("need", 0, "approvals the policy requires (k)")
 	approvers := fs.String("approvers", "", "the policy's eligible approver ids, comma-separated, in policy order")
-	keysPath := fs.String("approver-keys", "", `JSON object of approver id to public key text (<scheme>:<hex>, or bare ed25519 hex), e.g. {"ops":"ed25519:ab12..."}`)
+	keysPath := fs.String("approver-keys", "", `JSON object of approver id to public key text (<scheme>:<hex>, or bare ed25519 hex), e.g. {"ops":"ed25519:ab12..."} or {"ops":"ecdsa-p256:04ab..."}`)
 	var approved stringList
 	fs.Var(&approved, "approved", "an approved policy digest for the package's run certificate; repeat once per allowed policy")
 	approvedFile := fs.String("approved-file", "", "path to a file of approved policy digests, one per line")

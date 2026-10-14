@@ -10,7 +10,7 @@
 // builds a journal record's leaf from the bytes a store persists for it (a proof's record_bytes,
 // the record's random salt included), KeyLeaf an absence key's, EventLeaf an event's (its random
 // salt included), and AnchorLeaf an anchor entry's. TreeHead checks a signed tree head under any of
-// the three schemes (ed25519, ml-dsa-65, and their hybrid), with a Verifier from NewVerifier. The algorithms mirror the audit package exactly and are
+// the four schemes (ed25519, ecdsa-p256, ml-dsa-65, and the ed25519+ml-dsa-65 hybrid), with a Verifier from NewVerifier. The algorithms mirror the audit package exactly and are
 // cross-checked against it in the tests, so the intentional duplication cannot drift.
 //
 // This mirror is verification-only, by design: it can check a proof, never mint one.
@@ -18,11 +18,14 @@ package verify
 
 import (
 	"bytes"
+	"crypto/ecdsa"
 	"crypto/ed25519"
+	"crypto/elliptic"
 	"crypto/mldsa"
 	"crypto/sha256"
 	"encoding/binary"
 	"errors"
+	"math/big"
 	"math/bits"
 	"strings"
 )
@@ -216,14 +219,16 @@ func TreeHead(h Head, sig []byte, v Verifier) bool {
 // Verifier checks signatures under one scheme with one public key. NewVerifier builds one for each
 // scheme the audit package signs with.
 type Verifier interface {
-	// Alg names the scheme: "ed25519", "ml-dsa-65", or "ed25519+ml-dsa-65".
+	// Alg names the scheme: "ed25519", "ecdsa-p256", "ml-dsa-65", or "ed25519+ml-dsa-65".
 	Alg() string
 	// Verify reports whether sig is a valid signature over message.
 	Verify(message, sig []byte) bool
 }
 
 // NewVerifier returns the verifier of scheme alg for the encoded public key pub, with the
-// encodings the audit package uses: ed25519, the 32-byte key; ml-dsa-65, the 1952-byte ML-DSA-65
+// encodings the audit package uses: ed25519, the 32-byte key; ecdsa-p256, the 65-byte SEC1
+// uncompressed point (0x04 || X || Y), whose signatures are 64-byte low-S r||s over SHA-256 of the
+// message; ml-dsa-65, the 1952-byte ML-DSA-65
 // public key; ed25519+ml-dsa-65, a 4-byte big-endian length of the Ed25519 key, the Ed25519 key,
 // then the ML-DSA-65 key. A weak Ed25519 key is refused, as audit.NewVerifier refuses it.
 //
@@ -243,6 +248,15 @@ func NewVerifier(alg string, pub []byte) (Verifier, error) {
 			return nil, errors.New("verify: a weak ed25519 public key (small or mixed order, or not canonically encoded)")
 		}
 		return edVerifier(bytes.Clone(pub)), nil
+	case "ecdsa-p256":
+		if len(pub) != 65 {
+			return nil, errors.New("verify: an ecdsa-p256 public key is 65 bytes (SEC1 uncompressed)")
+		}
+		k, err := ecdsa.ParseUncompressedPublicKey(elliptic.P256(), pub)
+		if err != nil {
+			return nil, errors.New("verify: an ecdsa-p256 public key is not a P-256 point: " + err.Error())
+		}
+		return p256Verifier{k}, nil
 	case "ml-dsa-65":
 		pk, err := mldsa.NewPublicKey(mldsa.MLDSA65(), pub)
 		if err != nil {
@@ -277,6 +291,25 @@ func (edVerifier) Alg() string { return "ed25519" }
 // crypto/ed25519 alone accepts forged signatures under a small-order key.
 func (v edVerifier) Verify(m, sig []byte) bool {
 	return usableKey(v) && ed25519.Verify(ed25519.PublicKey(v), m, sig)
+}
+
+type p256Verifier struct{ pk *ecdsa.PublicKey }
+
+func (p256Verifier) Alg() string { return "ecdsa-p256" }
+
+// Verify reports whether sig is a canonical ECDSA P-256 signature over SHA-256(m): 64 bytes, r||s,
+// 1 <= r < n and 1 <= s <= (n-1)/2. A high-S signature is refused.
+func (v p256Verifier) Verify(m, sig []byte) bool {
+	if v.pk == nil || len(sig) != 64 {
+		return false
+	}
+	n := elliptic.P256().Params().N
+	r, s := new(big.Int).SetBytes(sig[:32]), new(big.Int).SetBytes(sig[32:])
+	if r.Sign() == 0 || r.Cmp(n) >= 0 || s.Sign() == 0 || s.Cmp(new(big.Int).Rsh(n, 1)) > 0 {
+		return false
+	}
+	h := sha256.Sum256(m)
+	return ecdsa.Verify(v.pk, h[:], r, s)
 }
 
 type mldsaVerifier struct{ pk *mldsa.PublicKey }

@@ -301,7 +301,7 @@ sig, _ := audit.Sign(head, audit.Ed25519Signer{Priv: priv}) // anchor it: sign /
 
 对于**选择性披露**，`audit.Root` / `Prove` / `VerifyInclusion` 构建一棵 **RFC 6962**（证书透明度）Merkle 树，因此你能经由一个 O(log n) 的包含性证明证明某条记录是一次已承诺运行的一部分，而不泄露其他记录（例如向审计员表明发生过某一笔扣款，却不暴露任何其他客户或提示）。而 `ProveConsistency` / `VerifyConsistency` 证明一个较早的根是一个较晚的根的**仅追加前缀**：历史只被追加，从未被重写或重排（透明度日志的保证）。该实现已对照发布的 RFC 6962 测试向量核验。
 
-`SignTreeHead` 产出 CT 风格的**签名树头（Signed Tree Head）**，即 `{Kind, RunID, Size, Root, TimestampNanos}` 连同其签名方案一起，由任意 `audit.Signer`（Ed25519、ML-DSA-65 或二者混合）签名，就是你要发布的那件工件。完整流程：签署一个 STH，稍后用一个包含性证明披露单条记录，审计员对照签名过的根来核验它，并证明两个 STH 之间的仅追加式增长。关于该模型、API 以及端到端的合规流程，见 [docs/guides/audit.md](../../docs/guides/audit.md)。
+`SignTreeHead` 产出 CT 风格的**签名树头（Signed Tree Head）**，即 `{Kind, RunID, Size, Root, TimestampNanos}` 连同其签名方案一起，由任意 `audit.Signer`（Ed25519、ECDSA P-256、ML-DSA-65 或二者混合）签名，就是你要发布的那件工件。完整流程：签署一个 STH，稍后用一个包含性证明披露单条记录，审计员对照签名过的根来核验它，并证明两个 STH 之间的仅追加式增长。关于该模型、API 以及端到端的合规流程，见 [docs/guides/audit.md](../../docs/guides/audit.md)。
 
 ### 运行查看器
 

@@ -5,6 +5,7 @@ import (
 	"errors"
 	"fmt"
 	"reflect"
+	"slices"
 
 	"github.com/bide-ai/bide/agent"
 )
@@ -106,8 +107,22 @@ func (EvidencePackage) artifactFormat() (string, string) { return "evidence pack
 func (SignedTreeHead) artifactFormat() (string, string)  { return "signed tree head", STHFormat }
 func (AnchorEntry) artifactFormat() (string, string)     { return "anchor entry", AnchorEntryFormat }
 
-// checkFormat returns an ErrFormat error unless got is want.
-func checkFormat(name, got, want string) error {
+// legacyFormatted is a formatted artifact whose previous formats this version still reads.
+type legacyFormatted interface {
+	formatted
+	// legacyFormats lists the older formats that still verify.
+	legacyFormats() []string
+}
+
+// legacyFormats lists the evidence formats older than EvidenceFormat that still verify: v5 differs
+// only in its seal (see EvidenceFormatV5).
+func (EvidencePackage) legacyFormats() []string { return []string{EvidenceFormatV5} }
+
+// checkFormat returns an ErrFormat error unless got is want, or one of legacy.
+func checkFormat(name, got, want string, legacy ...string) error {
+	if got != "" && slices.Contains(legacy, got) {
+		return nil
+	}
 	switch got {
 	case want:
 		return nil
@@ -121,7 +136,15 @@ func checkFormat(name, got, want string) error {
 // formatOf returns an ErrFormat error unless got is the format f's type reads.
 func formatOf(f formatted, got string) error {
 	name, want := f.artifactFormat()
-	return checkFormat(name, got, want)
+	return checkFormat(name, got, want, legacyOf(f)...)
+}
+
+// legacyOf returns the older formats f's type still reads, if any.
+func legacyOf(f formatted) []string {
+	if l, ok := f.(legacyFormatted); ok {
+		return l.legacyFormats()
+	}
+	return nil
 }
 
 // checkFormats returns an ErrFormat error for the first artifact in v, v itself or one it carries
@@ -201,5 +224,5 @@ func checkDataFormat(data []byte, f formatted) error {
 			return fmt.Errorf("the %s has a format that is not a string: %w", name, ErrFormat)
 		}
 	}
-	return checkFormat(name, got, want)
+	return checkFormat(name, got, want, legacyOf(f)...)
 }

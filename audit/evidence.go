@@ -3,6 +3,7 @@ package audit
 import (
 	"bytes"
 	"context"
+	"crypto/sha256"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -23,10 +24,23 @@ import (
 // "format" on each ProofBundle and on the RunCertificate. v5 names the signing key by scheme and
 // key ({alg, public_key}) rather than by ed25519 hex, carries bide.audit.proof.v3 bundles (each
 // record as its stored bytes) and bide.audit.sth.v5 heads, and labels its actions snake_case kinds.
-const EvidenceFormat = "bide.audit.evidence.v5"
+// v6 is v5 with a different seal: the log key signs a fixed 60-byte message (a 28-byte tag, a 32-byte digest), the seal tag followed by
+// the SHA-256 of the package's canonical JSON, not the JSON itself, so a signer with a message size
+// limit (AWS KMS signs at most 4096 bytes) can seal a package of any size. Nothing else changed, so
+// a v5 package still verifies (under its original whole-package seal) but is never produced.
+const EvidenceFormat = "bide.audit.evidence.v6"
 
-// evidenceSealTag domain-separates the package seal from every other message the log key signs.
+// EvidenceFormatV5 is the previous evidence format, whose seal covers the whole package JSON rather
+// than its digest. Verify reads it, so evidence sealed before v6 stays checkable; nothing produces it,
+// and Seal refuses a package of this format (re-create the evidence to seal it as v6).
+const EvidenceFormatV5 = "bide.audit.evidence.v5"
+
+// evidenceSealTag domain-separates the package seal from every other message the log key signs. The
+// signed message is the tag followed by SHA-256(canonical package JSON with Signature empty).
 const evidenceSealTag = EvidenceFormat + ".seal\x00"
+
+// evidenceSealTagV5 is the v5 seal tag: the signed message is the tag followed by the package JSON.
+const evidenceSealTagV5 = EvidenceFormatV5 + ".seal\x00"
 
 // An EvidencePackage is the portable, offline-verifiable evidence artifact for one run: a single
 // self-contained bundle that PACKAGES a run's already-produced cryptographic proofs (a signed tree
@@ -82,8 +96,8 @@ type EvidencePackage struct {
 	// this run's journal to STH. It is nil unless WithConsistencyFrom was set.
 	Consistency *EvidenceConsistency `json:"consistency,omitempty"`
 
-	// Signature is the seal: the log key's signature, under Alg, over the package with Signature
-	// empty (see Seal). A package changed after sealing, including one with actions appended, fails to
+	// Signature is the seal: the log key's signature, under Alg, over the seal tag and the SHA-256
+	// of the package's JSON with Signature empty (see Seal). A package changed after sealing, including one with actions appended, fails to
 	// verify until resealed.
 	Signature []byte `json:"signature"`
 }
@@ -322,14 +336,19 @@ func Evidence(ctx context.Context, store *agent.Journal, runID string, s Signer,
 	return pkg, nil
 }
 
-// Seal signs the package with s, the log key that signed its STH, over the package's JSON encoding
-// with Signature empty under a dedicated domain tag. Evidence seals what it builds; a caller that
-// adds actions afterwards (for instance ApprovalEvidence's output) seals again. It refuses a signer
-// whose scheme and key are not the ones the package names (Alg, PublicKey), and a package with
-// invalid UTF-8 in any string, which JSON would silently rewrite.
+// Seal signs the package with s, the log key that signed its STH. The signed message is fixed-size:
+// the domain tag "bide.audit.evidence.v6.seal\x00" followed by the SHA-256 of the package's JSON
+// encoding with Signature empty, so the size of the package never reaches the signer. Evidence seals
+// what it builds; a caller that adds actions afterwards (for instance ApprovalEvidence's output)
+// seals again. It refuses a signer whose scheme and key are not the ones the package names (Alg,
+// PublicKey), a package with invalid UTF-8 in any string, which JSON would silently rewrite, and a
+// package of the older EvidenceFormatV5, which is never re-sealed.
 func (e *EvidencePackage) Seal(s Signer) error {
 	if err := checkSigner(s); err != nil {
 		return fmt.Errorf("audit: seal evidence: %w", err)
+	}
+	if e.Format == EvidenceFormatV5 {
+		return fmt.Errorf("audit: seal evidence: a %s package is verified, not re-sealed; re-create the evidence for %s: %w", EvidenceFormatV5, EvidenceFormat, agent.ErrConfig)
 	}
 	if s.Alg() != e.Alg || !bytes.Equal(s.PublicKey(), e.PublicKey) {
 		return fmt.Errorf("audit: seal evidence: the signer's %s key is not the key the package names: %w", s.Alg(), agent.ErrConfig)
@@ -346,6 +365,8 @@ func (e *EvidencePackage) Seal(s Signer) error {
 	return nil
 }
 
+// sealMessage is what the log key signs: the tag and the SHA-256 of the package JSON (EvidenceFormat),
+// or the tag and the JSON itself (EvidenceFormatV5, read-only).
 func (e EvidencePackage) sealMessage() ([]byte, error) {
 	e.Signature = nil
 	if err := checkUTF8(e); err != nil {
@@ -355,7 +376,11 @@ func (e EvidencePackage) sealMessage() ([]byte, error) {
 	if err != nil {
 		return nil, fmt.Errorf("audit: seal evidence: %w", err)
 	}
-	return append([]byte(evidenceSealTag), b...), nil
+	if e.Format == EvidenceFormatV5 {
+		return append([]byte(evidenceSealTagV5), b...), nil
+	}
+	d := sha256.Sum256(b)
+	return append([]byte(evidenceSealTag), d[:]...), nil
 }
 
 // gatherGrants enumerates the anchored grant leaves in the journal (audit:grant:<digest>), proves each

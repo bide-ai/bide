@@ -72,6 +72,8 @@ var notArtifacts = map[string]string{
 	"audit.Ed25519Signer":     "a signing key",
 	"audit.Ed25519Verifier":   "a verifying key",
 	"audit.MLDSASigner":       "a signing key",
+	"audit.ECDSAP256Signer":   "a signing key",
+	"audit.ECDSAP256Verifier": "a verifying key",
 	"audit.MLDSAVerifier":     "a verifying key",
 	"audit.HybridSigner":      "a pair of signing keys",
 	"audit.HybridVerifier":    "a pair of verifying keys",

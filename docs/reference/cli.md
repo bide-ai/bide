@@ -572,7 +572,7 @@ bide audit: produce and verify audit proof bundles
 
   verify-evidence -evidence <file> -pubkey <hex|file> [-approved <digest>...] [-approved-file <file>]
          verify a portable evidence package offline and print a plain-English report: the
-         format, seal, key, and run binding, then one line per proven action (tool call, step,
+         format, seal (a digest of the package, or the whole package for an older v5 package), key, and run binding, then one line per proven action (tool call, step,
          grant), plus the run certificate (checked against the given allowlist, required when
          the package carries one) and consistency proof if present
 
@@ -622,7 +622,7 @@ JSON input is parsed strictly: a duplicate or case-variant key, an unknown field
 an error; a bundle, certificate, package, journal export or signed tree head (at any depth) must
 carry the "format" this version reads (one made by an older release is refused with a message
 naming the format; -version lists them); and a public key is <scheme>:<hex>, where the scheme is
-ed25519, ml-dsa-65 or ed25519+ml-dsa-65, or bare 64-digit ed25519 hex. The key's scheme must be the
+ed25519, ecdsa-p256, ml-dsa-65 or ed25519+ml-dsa-65, or bare 64-digit ed25519 hex. The key's scheme must be the
 scheme the artifact is signed under. Every verb takes -max-input-bytes <n>: an input file larger
 than n bytes (default 268435456, 256 MiB) is an error, and none is read past the cap. Every signed
 tree head an input carries must have a positive timestamp (Unix nanoseconds) no later than this
@@ -714,7 +714,7 @@ Usage of bide audit verify:
   -max-input-bytes int
     	the largest input file, in bytes, the verb reads; a larger one is an error (default 268435456)
   -pubkey string
-    	public key as <scheme>:<hex> (ed25519, ml-dsa-65, ed25519+ml-dsa-65) or bare ed25519 hex, or a path to a file containing it
+    	public key as <scheme>:<hex> (ed25519, ecdsa-p256, ml-dsa-65, ed25519+ml-dsa-65) or bare ed25519 hex, or a path to a file containing it
 ```
 
 ### bide audit verify-absent
@@ -732,7 +732,7 @@ Usage of bide audit verify-absent:
   -max-input-bytes int
     	the largest input file, in bytes, the verb reads; a larger one is an error (default 268435456)
   -pubkey string
-    	public key as <scheme>:<hex> (ed25519, ml-dsa-65, ed25519+ml-dsa-65) or bare ed25519 hex, or a path to a file containing it
+    	public key as <scheme>:<hex> (ed25519, ecdsa-p256, ml-dsa-65, ed25519+ml-dsa-65) or bare ed25519 hex, or a path to a file containing it
 ```
 
 ### bide audit verify-approvals
@@ -744,7 +744,7 @@ Usage of bide audit verify-approvals:
   -approved-file string
     	path to a file of approved policy digests, one per line
   -approver-keys string
-    	JSON object of approver id to public key text (<scheme>:<hex>, or bare ed25519 hex), e.g. {"ops":"ed25519:ab12..."}
+    	JSON object of approver id to public key text (<scheme>:<hex>, or bare ed25519 hex), e.g. {"ops":"ed25519:ab12..."} or {"ops":"ecdsa-p256:04ab..."}
   -approvers string
     	the policy's eligible approver ids, comma-separated, in policy order
   -call string
@@ -764,7 +764,7 @@ Usage of bide audit verify-approvals:
   -need int
     	approvals the policy requires (k)
   -pubkey string
-    	the log's public key as <scheme>:<hex> (ed25519, ml-dsa-65, ed25519+ml-dsa-65) or bare ed25519 hex, or a path to a file containing it
+    	the log's public key as <scheme>:<hex> (ed25519, ecdsa-p256, ml-dsa-65, ed25519+ml-dsa-65) or bare ed25519 hex, or a path to a file containing it
 ```
 
 ### bide audit verify-convergence
@@ -786,7 +786,7 @@ Usage of bide audit verify-convergence:
   -policy-bundle string
     	path to the policy-leaf ProofBundle JSON (from ProvePolicy)
   -pubkey string
-    	public key as <scheme>:<hex> (ed25519, ml-dsa-65, ed25519+ml-dsa-65) or bare ed25519 hex, or a path to a file containing it
+    	public key as <scheme>:<hex> (ed25519, ecdsa-p256, ml-dsa-65, ed25519+ml-dsa-65) or bare ed25519 hex, or a path to a file containing it
 ```
 
 ### bide audit verify-evidence
@@ -808,7 +808,7 @@ Usage of bide audit verify-evidence:
   -max-input-bytes int
     	the largest input file, in bytes, the verb reads; a larger one is an error (default 268435456)
   -pubkey string
-    	public key as <scheme>:<hex> (ed25519, ml-dsa-65, ed25519+ml-dsa-65) or bare ed25519 hex, or a path to a file containing it
+    	public key as <scheme>:<hex> (ed25519, ecdsa-p256, ml-dsa-65, ed25519+ml-dsa-65) or bare ed25519 hex, or a path to a file containing it
 ```
 
 ### bide audit verify-governance
@@ -850,7 +850,7 @@ Usage of bide audit verify-governed-action:
   -policy-bundle string
     	path to the policy-leaf ProofBundle JSON (from ProvePolicy)
   -pubkey string
-    	public key as <scheme>:<hex> (ed25519, ml-dsa-65, ed25519+ml-dsa-65) or bare ed25519 hex, or a path to a file containing it
+    	public key as <scheme>:<hex> (ed25519, ecdsa-p256, ml-dsa-65, ed25519+ml-dsa-65) or bare ed25519 hex, or a path to a file containing it
 ```
 
 ### bide audit verify-quorum
@@ -872,7 +872,7 @@ Usage of bide audit verify-quorum:
   -name string
     	the quorum's name, as passed to govern.Quorum
   -pubkey string
-    	public key as <scheme>:<hex> (ed25519, ml-dsa-65, ed25519+ml-dsa-65) or bare ed25519 hex, or a path to a file containing it
+    	public key as <scheme>:<hex> (ed25519, ecdsa-p256, ml-dsa-65, ed25519+ml-dsa-65) or bare ed25519 hex, or a path to a file containing it
   -tally string
     	path to the quorum tally ProofBundle JSON (the quorum/<name>/tally step)
   -vote value
@@ -926,7 +926,7 @@ Usage of bide audit verify-run:
   -max-input-bytes int
     	the largest input file, in bytes, the verb reads; a larger one is an error (default 268435456)
   -pubkey string
-    	public key as <scheme>:<hex> (ed25519, ml-dsa-65, ed25519+ml-dsa-65) or bare ed25519 hex, or a path to a file containing it
+    	public key as <scheme>:<hex> (ed25519, ecdsa-p256, ml-dsa-65, ed25519+ml-dsa-65) or bare ed25519 hex, or a path to a file containing it
 ```
 
 ## bide version

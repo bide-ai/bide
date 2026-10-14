@@ -317,6 +317,20 @@ cannot be matched against guessed neighbouring records. Key-set leaves are not s
 neighbouring keys by design, and neither are anchor-log leaves, which hold signed tree heads meant to
 be public.
 
+**The log key can be in an HSM or KMS only under ed25519 or ecdsa-p256, not under the post-quantum
+schemes.** `ecdsa-p256` is the scheme most HSMs and cloud KMS can sign (AWS KMS, Azure Key Vault,
+PKCS#11), and an evidence package's seal signs a fixed 60-byte message, so a KMS with a 4096-byte
+limit can seal any package. Hybrid post-quantum keys inside an HSM are deferred: `audit.HybridSigner`'s
+halves are the concrete `Ed25519Signer` and `MLDSASigner` types that hold their keys in process, and no
+HSM or cloud KMS signs ML-DSA yet. A buyer who needs both a hardware-held key and post-quantum
+protection has to choose one for now. ECDSA P-256 signatures are randomized, so signing one tree
+head twice gives two different valid signatures (ed25519 and ML-DSA give the same bytes).
+
+**Evidence sealed before format v6 keeps its older seal.** A `bide.audit.evidence.v5` package, whose
+seal covers the whole package JSON, still verifies (`bide audit verify-evidence` notes the format),
+but it cannot be re-sealed and its seal cannot be produced by a signer that refuses large messages.
+Re-create the evidence to get a v6 package.
+
 ## Key custody
 
 A signing key can be held in a PKCS#11 token or AWS KMS ([Key custody](guides/key-custody.md)). What is and is not supported:

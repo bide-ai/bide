@@ -98,7 +98,7 @@ if pend, ok := errors.AsType[*agent.ApprovalPending](err); ok {
 `Decision.DecidedAt` is when the approver decided, by their own clock, and is required: pass the
 same time to `ApprovalDecisionBytes` and to `Decision`, since the signature covers it (see [When a
 decision was made](#when-a-decision-was-made)). `Decision.Alg` names the scheme the signature is
-under and is required too (`SubmitDecision` refuses an empty one, or a zero `DecidedAt`, with
+under (`ed25519`, `ecdsa-p256`, `ml-dsa-65`, `ed25519+ml-dsa-65`) and is required too (`SubmitDecision` refuses an empty one, or a zero `DecidedAt`, with
 `agent.ErrConfig`, and so an `ApproverID` that is not printable ASCII, which no policy can name). It is journaled with the decision as `Record.ApproverAlg`, and the
 gate counts the decision only if it equals the `Alg()` of the verifier your resolver returns for
 that approver: a valid signature journaled under another scheme name, or none, is ignored with
@@ -332,7 +332,11 @@ never from a configured name, so that two verifiers built over one key report th
 `audit` verifiers report the scheme and the hex SHA-256 of the public key's encoding
 (`audit.KeyID`, for example `ed25519:3b6a27bc...`):
 
-- `audit.Ed25519Verifier` and `audit.MLDSAVerifier` report one identity. The ML-DSA label names the
+- `audit.Ed25519Verifier`, `audit.ECDSAP256Verifier` and `audit.MLDSAVerifier` report one identity (for
+  ECDSA P-256, the SHA-256 of the 65-byte uncompressed point; a key that is not on the curve verifies
+  nothing and reports none). ECDSA P-256 signs with fresh randomness, so an approver who signs the same
+  decision twice produces two different signatures and so two records; the gate counts an approver once
+  (their first acceptable record), as it does for any resubmission. The ML-DSA label names the
   key's parameter set (`ml-dsa-44`, `ml-dsa-65` or `ml-dsa-87`). A key that verifies nothing (a nil
   ML-DSA key, or a weak Ed25519 key) reports none, so the gate refuses it rather than seating it.
 - A weak Ed25519 key is one `audit.CheckEd25519PublicKey` refuses: the wrong length, not the

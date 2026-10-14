@@ -3,11 +3,15 @@ package verify_test
 import (
 	"bytes"
 	"context"
+	"crypto/ecdsa"
 	"crypto/ed25519"
+	"crypto/elliptic"
 	"crypto/mldsa"
+	"crypto/rand"
 	"encoding/base64"
 	"encoding/binary"
 	"encoding/json"
+	"math/big"
 	"testing"
 
 	"github.com/bide-ai/bide/agent"
@@ -155,7 +159,46 @@ func signers(t *testing.T) []audit.Signer {
 		t.Fatal(err)
 	}
 	ed := audit.Ed25519Signer{Priv: edPriv}
-	return []audit.Signer{ed, audit.MLDSASigner{Priv: ml}, audit.HybridSigner{Ed: ed, ML: audit.MLDSASigner{Priv: ml}}}
+	pk, err := ecdsa.GenerateKey(elliptic.P256(), rand.Reader)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return []audit.Signer{ed, audit.MLDSASigner{Priv: ml}, audit.HybridSigner{Ed: ed, ML: audit.MLDSASigner{Priv: ml}}, audit.ECDSAP256Signer{Priv: pk}}
+}
+
+// The standalone ecdsa-p256 verifier agrees with the audit package on the wire form: 64-byte low-S
+// r||s over SHA-256, a 65-byte uncompressed point. High-S twins, DER, compressed and off-curve
+// points are refused.
+func TestVerify_P256Strict(t *testing.T) {
+	k, _ := ecdsa.GenerateKey(elliptic.P256(), rand.Reader)
+	s := audit.ECDSAP256Signer{Priv: k}
+	v := standaloneVerifier(t, s)
+	msg := []byte("standalone")
+	sig, _ := s.Sign(msg)
+	if !v.Verify(msg, sig) || v.Alg() != "ecdsa-p256" {
+		t.Fatal("canonical signature refused")
+	}
+	n := elliptic.P256().Params().N
+	hi := new(big.Int).Sub(n, new(big.Int).SetBytes(sig[32:]))
+	twin := append(append([]byte{}, sig[:32]...), hi.FillBytes(make([]byte, 32))...)
+	if v.Verify(msg, twin) {
+		t.Error("high-S twin accepted")
+	}
+	if v.Verify(msg, sig[:63]) || v.Verify(msg, make([]byte, 64)) || v.Verify(msg, append(sig[:64:64], 0)) {
+		t.Error("malformed signature accepted")
+	}
+	pub := s.PublicKey()
+	if _, err := verify.NewVerifier("ecdsa-p256", elliptic.MarshalCompressed(elliptic.P256(), k.X, k.Y)); err == nil {
+		t.Error("compressed key accepted")
+	}
+	off := append([]byte{}, pub...)
+	off[64] ^= 1
+	if _, err := verify.NewVerifier("ecdsa-p256", off); err == nil {
+		t.Error("off-curve key accepted")
+	}
+	if _, err := verify.NewVerifier("ed25519", pub); err == nil {
+		t.Error("a P-256 key was read as ed25519")
+	}
 }
 
 // The signed tree head encoding names its version, bide.audit.sth.v5, and signs the scheme with

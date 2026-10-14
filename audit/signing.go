@@ -15,7 +15,8 @@ import (
 
 // Signature-scheme agility. Everything this package signs (tree heads, evidence seals, grants, the
 // linear head) and everything it verifies goes through a Signer or a Verifier, so a deployment can
-// choose classical (ed25519, small and fast, FIPS-approved), post-quantum (ML-DSA-65, FIPS 204), or
+// choose classical (ed25519, small and fast, FIPS-approved; or ECDSA P-256, which HSMs and cloud KMS
+// sign where they cannot sign Ed25519), post-quantum (ML-DSA-65, FIPS 204), or
 // a hybrid of both (secure if either holds, the direction transparency logs are moving). All three
 // are stdlib as of Go 1.27, so post-quantum anchoring adds no dependency.
 //
@@ -38,6 +39,7 @@ const (
 	AlgEd25519 Alg = "ed25519"           // classical Ed25519 (small, fast, FIPS-approved)
 	AlgMLDSA65 Alg = "ml-dsa-65"         // post-quantum ML-DSA-65 (FIPS 204)
 	AlgHybrid  Alg = "ed25519+ml-dsa-65" // both schemes; valid only if both verify
+	// AlgECDSAP256 (ECDSA P-256 over SHA-256) is declared in signing_p256.go.
 )
 
 // mldsaContext domain-separates ML-DSA signatures produced by this package from ML-DSA signatures
@@ -83,6 +85,7 @@ type Verifier interface {
 // NewVerifier returns the verifier of scheme alg for the encoded public key pub:
 //
 //	ed25519:           the 32-byte Ed25519 public key
+//	ecdsa-p256:        the 65-byte SEC1 uncompressed point 0x04 || X || Y (see signing_p256.go)
 //	ml-dsa-65:         the 1952-byte ML-DSA-65 public key encoding (mldsa.PublicKey.Bytes)
 //	ed25519+ml-dsa-65: a 4-byte big-endian length of the Ed25519 key, the Ed25519 key, then the
 //	                   ML-DSA-65 key (HybridSigner.PublicKey)
@@ -101,6 +104,8 @@ func NewVerifier(alg Alg, pub []byte) (Verifier, error) {
 			return nil, fmt.Errorf("%w (%w)", err, ErrMalformed)
 		}
 		return Ed25519Verifier{Pub: bytes.Clone(pub)}, nil
+	case AlgECDSAP256:
+		return newECDSAP256Verifier(pub)
 	case AlgMLDSA65:
 		pk, err := mldsa.NewPublicKey(mldsa.MLDSA65(), pub)
 		if err != nil {

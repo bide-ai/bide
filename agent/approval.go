@@ -178,15 +178,16 @@ func canonicalArgs(raw json.RawMessage) []byte {
 	return bytes.TrimSuffix(buf.Bytes(), []byte("\n"))
 }
 
-// Alg names a signature scheme: "ed25519", "ml-dsa-65", or "ed25519+ml-dsa-65". The audit package
-// defines the schemes (audit.AlgEd25519, audit.AlgMLDSA65, audit.AlgHybrid) and their signers and
+// Alg names a signature scheme: "ed25519", "ecdsa-p256", "ml-dsa-65", or "ed25519+ml-dsa-65". The
+// audit package defines the schemes (audit.AlgEd25519, audit.AlgECDSAP256, audit.AlgMLDSA65,
+// audit.AlgHybrid) and their signers and
 // verifiers; the agent package only journals the name, with each approver decision, so a decision is
 // checked under the scheme it was signed with.
 type Alg string
 
 // ApproverVerifier checks an approver's signature over the decision bytes under one scheme and
-// names the signing keys behind it. audit.Ed25519Verifier, audit.MLDSAVerifier and
-// audit.HybridVerifier implement it, so a deployment reuses the existing verifiers with no new
+// names the signing keys behind it. audit.Ed25519Verifier, audit.ECDSAP256Verifier,
+// audit.MLDSAVerifier and audit.HybridVerifier implement it, so a deployment reuses the existing verifiers with no new
 // cryptography and no agent->audit import.
 type ApproverVerifier interface {
 	// Alg names the verifier's scheme. A decision counts only if it was journaled under this scheme.
@@ -663,7 +664,10 @@ type Decision struct {
 // ApproverID that is not printable ASCII (see ApprovalPolicy.Validate), which no policy can name.
 //
 // Each distinct decision is its own journal record; resubmitting the identical decision is a
-// no-op. The gate counts each approver's first valid decision and ignores the rest, so an
+// no-op: the same signature maps to the same record name, and with WithDecisionCheck the same
+// approver, verdict, scheme and decided_at with a different signature (a randomized scheme such as
+// ecdsa-p256 re-signs differently) is recognised as the same decision and written once. Without the
+// check, a retry with a new signature adds a second record, which the gate ignores. The gate counts each approver's first valid decision and ignores the rest, so an
 // invalid record never blocks a valid one. Without WithDecisionCheck, SubmitDecision does not
 // verify: a decision that will not count is recorded and reported by the gate as ignored. For a
 // plan flow node's gate (ToolUseID a node key, in a flow's run) the run must have recorded the
@@ -722,8 +726,18 @@ func submitDecision(ctx context.Context, store *Journal, op string, d Decision, 
 	}
 	name := approvalDecisionStep(d.ToolUseID, d.ApproverID, d.Approved, d.Alg, decidedAt, d.Signature)
 	if o.verifierFor != nil {
-		if err := checkDecision(ctx, store, op, d, name, flow, o.verifierFor); err != nil {
+		same, err := checkDecision(ctx, store, op, d, name, decidedAt, flow, o.verifierFor)
+		if err != nil {
 			return err
+		}
+		if same != "" {
+			// The same decision is already journaled (a retry after a lost response). Writing
+			// again would add a record whenever the signature differs, as a randomized scheme's does.
+			name = same
+			if flow {
+				return staleDecision(ctx, store, op, d.RunID, d.ToolUseID, name, reqSeq, false)
+			}
+			return nil
 		}
 	}
 	if _, err := store.do(ctx, d.RunID, name, func(context.Context) (Record, error) {
@@ -747,31 +761,33 @@ func submitDecision(ctx context.Context, store *Journal, op string, d Decision, 
 }
 
 // checkDecision is WithDecisionCheck's pre-flight: the decision verifies for the recorded
-// call, and the approver has no other valid decision on it (an identical one is fine). For a plan
+// call, and the approver has no other valid decision on it. A valid record with the same approver,
+// verdict, scheme and decided_at is the same decision, whatever its signature bytes (a randomized
+// scheme signs it differently each time): its name is returned, and nothing is written again. For a plan
 // flow node's gate (flow) it reads, as the gate does, only the decisions after the gate's request:
 // one recorded before it never counts, so it does not make this one "already decided".
-func checkDecision(ctx context.Context, store *Journal, op string, d Decision, name string, flow bool, verifierFor ApproverVerifierFor) error {
+func checkDecision(ctx context.Context, store *Journal, op string, d Decision, name, decidedAt string, flow bool, verifierFor ApproverVerifierFor) (string, error) {
 	recs, err := store.History(ctx, d.RunID)
 	if err != nil {
-		return fmt.Errorf("%s: load history %s: %w (%w)", op, d.RunID, err, ErrStorage)
+		return "", fmt.Errorf("%s: load history %s: %w (%w)", op, d.RunID, err, ErrStorage)
 	}
 	_, call, ok := FindToolCall(recs, d.ToolUseID)
 	if !ok {
-		return fmt.Errorf("%s: no tool call %q in run %s: %w", op, d.ToolUseID, d.RunID, ErrInvalidApproval)
+		return "", fmt.Errorf("%s: no tool call %q in run %s: %w", op, d.ToolUseID, d.RunID, ErrInvalidApproval)
 	}
 	v, ok := verifierFor(d.ApproverID)
 	if !ok || v == nil {
-		return fmt.Errorf("%s: no key for approver %q: %w", op, d.ApproverID, ErrInvalidApproval)
+		return "", fmt.Errorf("%s: no key for approver %q: %w", op, d.ApproverID, ErrInvalidApproval)
 	}
 	if isNilVerifier(v) {
-		return fmt.Errorf("%s: the resolver returned a nil %T verifier for approver %q: %w", op, v, d.ApproverID, ErrConfig)
+		return "", fmt.Errorf("%s: the resolver returned a nil %T verifier for approver %q: %w", op, v, d.ApproverID, ErrConfig)
 	}
 	if d.Alg != v.Alg() {
-		return fmt.Errorf("%s: approver %q: decision signed under %q, key is %q: %w", op, d.ApproverID, d.Alg, v.Alg(), ErrInvalidApproval)
+		return "", fmt.Errorf("%s: approver %q: decision signed under %q, key is %q: %w", op, d.ApproverID, d.Alg, v.Alg(), ErrInvalidApproval)
 	}
 	s := ApprovalSubject{RunID: d.RunID, ToolUseID: d.ToolUseID, ToolName: call.Name, Args: call.Args}
 	if !v.Verify(ApprovalDecisionBytes(s, d.ApproverID, d.Approved, d.DecidedAt), d.Signature) {
-		return fmt.Errorf("%s: approver %q: %s: %w", op, d.ApproverID, ReasonBadSig, ErrInvalidApproval)
+		return "", fmt.Errorf("%s: approver %q: %s: %w", op, d.ApproverID, ReasonBadSig, ErrInvalidApproval)
 	}
 	if flow {
 		i := slices.IndexFunc(recs, func(r Record) bool { return r.Name == ApprovalRequestStep(d.ToolUseID) })
@@ -782,10 +798,13 @@ func checkDecision(ctx context.Context, store *Journal, op string, d Decision, n
 			continue
 		}
 		if decisionReason(r, s, v) == "" {
-			return fmt.Errorf("%s: approver %q already decided on call %q: %w", op, d.ApproverID, d.ToolUseID, ErrAlreadyDecided)
+			if r.Approved == d.Approved && r.ApproverAlg() == d.Alg && r.DecidedAt() == decidedAt {
+				return r.Name, nil
+			}
+			return "", fmt.Errorf("%s: approver %q already decided on call %q: %w", op, d.ApproverID, d.ToolUseID, ErrAlreadyDecided)
 		}
 	}
-	return nil
+	return "", nil
 }
 
 // notePending records, unless it is recorded already, that the run paused at tu's gate pol (see

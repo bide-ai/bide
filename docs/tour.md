@@ -430,7 +430,7 @@ is checked against the published RFC 6962 test vectors.
 
 `SignTreeHead` produces the CT-style **Signed Tree Head** (format `bide.audit.sth.v5`), `{Kind, RunID,
 Size, Root, TimestampNanos}` signed together with its scheme under any `audit.Signer`: Ed25519,
-ML-DSA-65 (post-quantum), or a hybrid of both. That is the artifact you publish. Leaves commit to the
+ECDSA P-256 (the scheme HSMs and cloud KMS sign), ML-DSA-65 (post-quantum), or a hybrid of Ed25519 and ML-DSA-65. That is the artifact you publish. Leaves commit to the
 bytes the journal stores for each record, verbatim, so a proof carries those bytes (`record_bytes`) and
 a record written by a newer release with fields this one does not know still verifies. The full flow: sign an STH, later disclose a single record with an
 inclusion proof an auditor checks against the signed root, and prove append-only growth between two STHs.
