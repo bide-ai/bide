@@ -26,6 +26,17 @@
 // Cloud KMS authenticates with Application Default Credentials (gcloud auth application-default
 // login, or a workload identity); no credential is read from the environment by this program.
 //
+// Or set BIDE_AZURE_KEY_ID to use Azure Key Vault or Managed HSM (ECDSA P-256 only; Azure has no
+// Ed25519):
+//
+//	BIDE_AZURE_KEY_ID    the full key identifier with its version, such as
+//	                     https://myvault.vault.azure.net/keys/bide-audit/0123456789abcdef0123456789abcdef
+//	BIDE_AZURE_ALLOW_SOFTWARE_KEY   "1" to accept a software-protected EC key; without it only an EC-HSM key
+//	                     (Premium vault or Managed HSM) opens
+//
+// Azure credentials come from the standard Azure environment through azidentity (workload identity,
+// managed identity, "az login", AZURE_CLIENT_*), never from a flag.
+//
 //	go run .
 //
 // docs/guides/key-custody.md sets up a SoftHSM2 token and a Cloud KMS key for it and says what a
@@ -45,6 +56,7 @@ import (
 	"github.com/bide-ai/bide/agent"
 	"github.com/bide-ai/bide/agent/agenttest"
 	"github.com/bide-ai/bide/audit"
+	"github.com/bide-ai/bide/signer/azurekv"
 	"github.com/bide-ai/bide/signer/gcpkms"
 	"github.com/bide-ai/bide/signer/pkcs11"
 )
@@ -74,7 +86,7 @@ func config(getenv func(string) string) (pkcs11.Config, error) {
 		cfg.PIN = pkcs11.PINFromFile(f)
 	}
 	if cfg.Module == "" || cfg.TokenLabel == "" {
-		return cfg, errors.New("set BIDE_PKCS11_MODULE and BIDE_PKCS11_TOKEN, or BIDE_GCPKMS_KEY_VERSION (see the comment at the top of main.go)")
+		return cfg, errors.New("set BIDE_PKCS11_MODULE and BIDE_PKCS11_TOKEN, BIDE_GCPKMS_KEY_VERSION or BIDE_AZURE_KEY_ID (see the comment at the top of main.go)")
 	}
 	return cfg, nil
 }
@@ -88,6 +100,10 @@ var newKMSClient = func(ctx context.Context) (gcpkms.API, func(), error) {
 	return c, func() { c.Close() }, nil
 }
 
+// azureAPI is the Key Vault client the Azure signer uses; nil (the default) builds a real one from
+// azidentity. A test sets it to a fake.
+var azureAPI azurekv.API
+
 // gcpConfig reads the Cloud KMS signer configuration from the environment.
 func gcpConfig(getenv func(string) string) gcpkms.Config {
 	cfg := gcpkms.Config{KeyVersion: getenv("BIDE_GCPKMS_KEY_VERSION"),
@@ -99,9 +115,19 @@ func gcpConfig(getenv func(string) string) gcpkms.Config {
 	return cfg
 }
 
-// openSigner opens the Cloud KMS signer when BIDE_GCPKMS_KEY_VERSION is set and the PKCS#11 signer
-// otherwise. The private key stays in the token or in Cloud KMS; bide sends it each message to sign.
+// openSigner opens the Cloud KMS signer when BIDE_GCPKMS_KEY_VERSION is set, the Azure signer when
+// BIDE_AZURE_KEY_ID is set, and the PKCS#11 signer otherwise. The private key stays in the token or in Cloud KMS; bide sends it each message to sign.
 func openSigner(ctx context.Context, getenv func(string) string) (audit.Signer, func(), error) {
+	if id := getenv("BIDE_AZURE_KEY_ID"); id != "" {
+		if getenv("BIDE_GCPKMS_KEY_VERSION") != "" {
+			return nil, nil, errors.New("set only one of BIDE_AZURE_KEY_ID and BIDE_GCPKMS_KEY_VERSION")
+		}
+		s, err := azurekv.Open(ctx, azurekv.Config{KeyID: id, AllowSoftwareKey: getenv("BIDE_AZURE_ALLOW_SOFTWARE_KEY") == "1", Client: azureAPI})
+		if err != nil {
+			return nil, nil, err
+		}
+		return s, func() {}, nil
+	}
 	if getenv("BIDE_GCPKMS_KEY_VERSION") != "" {
 		client, closeClient, err := newKMSClient(ctx)
 		if err != nil {

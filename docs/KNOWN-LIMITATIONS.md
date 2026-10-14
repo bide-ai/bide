@@ -333,9 +333,9 @@ Re-create the evidence to get a v6 package.
 
 ## Key custody
 
-A signing key can be held in a PKCS#11 token, AWS KMS or Google Cloud KMS ([Key custody](guides/key-custody.md)). What is and is not supported:
+A signing key can be held in a PKCS#11 token, AWS KMS, Google Cloud KMS or Azure Key Vault ([Key custody](guides/key-custody.md)). What is and is not supported:
 
-- **Ed25519 and ECDSA P-256 only.** The PKCS#11, AWS KMS and Google Cloud KMS signers sign `ed25519` (the default) or `ecdsa-p256` (`Config.Scheme`) and refuse a token or key of the other kind (`ErrNoEd25519`, `ErrNoP256`); they never substitute one scheme for the other. A token or key service with neither cannot be used.
+- **Ed25519 and ECDSA P-256 only.** The PKCS#11, AWS KMS and Google Cloud KMS signers sign `ed25519` (the default) or `ecdsa-p256` (`Config.Scheme`) and refuse a token or key of the other kind (`ErrNoEd25519`, `ErrNoP256`); they never substitute one scheme for the other. The Azure Key Vault signer signs `ecdsa-p256` only, because Key Vault and Managed HSM offer no Ed25519. A token or key service with neither cannot be used.
 - **No ML-DSA or hybrid in a token.** `audit.HybridSigner` holds a software Ed25519 key, and KMS has no ML-DSA context parameter, so post-quantum and hybrid anchoring use software keys. Hybrid in a token is deferred.
 - **The PKCS#11 signer is tested against SoftHSM2 only.** No hardware HSM has been tried. It uses `CKM_EDDSA` without parameters (pure Ed25519) or `CKM_ECDSA` over a SHA-256 digest, and needs cgo; a token that requires `CK_EDDSA_PARAMS` for pure Ed25519 is not supported.
 - **The AWS KMS signer is tested against a fake client and an emulator, never against AWS.** Whether real KMS's `ED25519_SHA_512` and `ECDSA_SHA_256` output verifies under bide's verifier rests on AWS's documentation of those algorithms; the emulator ([aws-kms-emulator](https://github.com/blackwell-systems/aws-kms-emulator), run in the test process by the module `signer/awskms/emulatortest`) is its author's reading of them.
