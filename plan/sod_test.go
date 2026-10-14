@@ -219,22 +219,30 @@ func TestSoDFlow_RunTakesIdentityOnly(t *testing.T) {
 // The identity a flow run is given is the one its nodes see, with the journaled principal: a
 // later drive that passes none runs its nodes under the journaled principal.
 func TestSoDFlow_NodesSeeTheRunIdentity(t *testing.T) {
-	j := agenttest.MemJournal()
+	ctx, j := context.Background(), agenttest.MemJournal()
 	var seen []string
-	b := New[int, int]("who")
-	b.Step("work", func(ctx context.Context, n int) (int, error) {
+	who := func(ctx context.Context, n int) (int, error) {
 		id, _ := agent.IdentityFrom(ctx)
 		seen = append(seen, id.OnBehalfOf)
 		return n, nil
-	}, Idempotent())
+	}
+	b := New[int, int]("who")
+	first := b.Step("first", who, Idempotent())
+	second := b.Step("second", who, Idempotent(), Approval(agent.SingleApproval()))
+	b.Edge(first, second)
 	f, err := b.Build()
 	if err != nil {
 		t.Fatal(err)
 	}
-	if _, err := f.Run(context.Background(), j, "w1", 1, asRequester("ops")); err != nil {
+	_, err = f.Run(ctx, j, "w1", 1, asRequester("ops"))
+	pend := asPending(t, err)
+	if err := agent.Approve(ctx, j, "w1", pend.ToolUseID, true); err != nil {
 		t.Fatal(err)
 	}
-	if !slices.Equal(seen, []string{"ops"}) {
-		t.Fatalf("the node saw %q; want ops", seen)
+	if _, err := f.Run(ctx, j, "w1", 1); err != nil { // a resume with no identity
+		t.Fatal(err)
+	}
+	if !slices.Equal(seen, []string{"ops", "ops"}) {
+		t.Fatalf("the nodes saw %q; want ops both times", seen)
 	}
 }
