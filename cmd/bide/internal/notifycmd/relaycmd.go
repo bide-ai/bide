@@ -35,7 +35,7 @@ For each request it checks the signature, the timestamp and the signed delivery 
 and answers 401 to anything else. It then forwards to every configured destination and answers 204
 only when all of them took the notification; if one failed it answers 502, and bide sends the event
 again. Because bide's delivery is at least once, the relay remembers the delivery IDs it forwarded
-(-dedupe of them) and acknowledges a repeat without forwarding it again; after a partial failure
+(-dedupe of them; -state keeps them across a restart) and acknowledges a repeat without forwarding it again; after a partial failure
 only the destination that failed is tried again.
 
   Slack       an incoming webhook URL: a Block Kit message with the run, kind, summary, deadline,
@@ -68,6 +68,7 @@ proxy that terminates TLS on the same host. Forwarding has a budget (-forward-ti
 	pdURL := fs.String("pagerduty-url", relay.DefaultPagerDutyURL, "the PagerDuty Events API endpoint (the EU region has its own)")
 	viewURL := fs.String("view-url", "", "the run viewer's base URL, for the \"Open in viewer\" button when a notification has no view.url")
 	dedupe := fs.Int("dedupe", relay.DefaultDedupeSize, "how many delivery IDs to remember")
+	statePath := fs.String("state", "", "keep the delivery IDs forwarded and the events cleared in this file, so they survive a restart (without it a restart forgets them)")
 	fwd := fs.Duration("forward-timeout", relay.DefaultForwardTimeout, "the budget for forwarding one delivery; keep it below bide's request timeout (10 s)")
 	color := term.Flag(fs)
 	if st := parse(fs, args); st >= 0 {
@@ -120,7 +121,7 @@ proxy that terminates TLS on the same host. Forwarding has a budget (-forward-ti
 	logf := func(f string, a ...any) {
 		fmt.Fprintf(stderr, "%s relay: %s\n", timeNow().Format("15:04:05"), fmt.Sprintf(strings.TrimPrefix(f, "relay: "), a...))
 	}
-	h, err := relay.New(relay.Config{Secrets: secrets.list(), Sinks: sinks, DedupeSize: *dedupe, ForwardTimeout: *fwd, Logf: logf})
+	h, err := relay.New(relay.Config{Secrets: secrets.list(), Sinks: sinks, DedupeSize: *dedupe, ForwardTimeout: *fwd, StatePath: *statePath, Logf: logf})
 	if err != nil {
 		return failure("relay", stderr, "%v", err)
 	}

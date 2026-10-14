@@ -69,6 +69,15 @@ type Config struct {
 	// clear (the event was cleared while its request failed, or its reply was lost) would reopen an
 	// incident that is over.
 	ClearsID func(notify.Payload) string
+	// StatePath, if set, is a file the Handler keeps its memory in, so the delivery IDs it forwarded
+	// and the event IDs it saw cleared survive a restart: without it a trigger that arrives after a
+	// restart, for an event cleared before it, is forwarded and reopens the incident, and a
+	// redelivery is forwarded again. The file is written atomically after each change (bounded by
+	// DedupeSize, like the in-memory sets), holds IDs and sink names only, and is read at New: a
+	// missing file is a first start, an unreadable or invalid one is an error. If a later write
+	// fails the Handler logs it and carries on, with its memory in the process as without a file.
+	// One file belongs to one relay process.
+	StatePath string
 	// ForwardTimeout bounds the forwarding of one delivery; zero means DefaultForwardTimeout. Forwarding
 	// continues after the sender gives up, so a retry finds it done.
 	ForwardTimeout time.Duration
@@ -87,6 +96,7 @@ type Handler struct {
 	logf    func(string, ...any)
 	seen    *dedupe
 	cleared *idSet
+	state   *stateStore
 	clears  func(notify.Payload) string
 }
 
@@ -120,6 +130,15 @@ func New(c Config) (*Handler, error) {
 		seen:    newDedupe(c.DedupeSize),
 		cleared: newIDSet(c.DedupeSize),
 		clears:  c.ClearsID,
+	}
+	if c.StatePath != "" {
+		h.state = &stateStore{path: c.StatePath}
+		if err := h.state.load(h.seen, h.cleared); err != nil {
+			return nil, err
+		}
+		if err := h.state.save(h.seen, h.cleared); err != nil { // fail now if it cannot be written
+			return nil, err
+		}
 	}
 	if h.clears == nil {
 		h.clears = ClearsID
@@ -162,7 +181,9 @@ func (h *Handler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	if id := h.clears(p); id != "" {
-		h.cleared.add(id) // before forwarding: a retry of this clear must still guard the event
+		if h.cleared.add(id) { // before forwarding: a retry of this clear must still guard the event
+			h.persist()
+		}
 	} else if h.cleared.has(p.ID) {
 		h.log("relay: delivery %s (%s, run %s) dropped: already cleared", short(p.ID), p.Kind, p.RunID)
 		w.WriteHeader(http.StatusNoContent)
@@ -219,10 +240,24 @@ func (h *Handler) forward(ctx context.Context, p notify.Payload, todo []Sink) []
 	wg.Wait()
 	h.seen.end(p.ID, done)
 	if len(done) > 0 {
+		h.persist()
+	}
+	if len(done) > 0 {
 		sort.Strings(done)
 		h.log("relay: delivery %s (%s, run %s) forwarded to %s", short(p.ID), p.Kind, p.RunID, strings.Join(done, ", "))
 	}
 	return failed
+}
+
+// persist saves the state file, if there is one. A failure is logged, never fatal: a notification
+// must still go out.
+func (h *Handler) persist() {
+	if h.state == nil {
+		return
+	}
+	if err := h.state.save(h.seen, h.cleared); err != nil {
+		h.log("relay: %v (the memory of forwarded and cleared events is in the process only until this works)", err)
+	}
 }
 
 // safeSend turns a panicking sink into an error, so one bad sink cannot leave a delivery marked
@@ -367,12 +402,13 @@ func newIDSet(max int) *idSet {
 	return &idSet{max: max, ll: list.New(), m: map[string]*list.Element{}}
 }
 
-func (s *idSet) add(id string) {
+// add records id and reports whether it was not there before.
+func (s *idSet) add(id string) bool {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	if el, ok := s.m[id]; ok {
 		s.ll.MoveToFront(el)
-		return
+		return false
 	}
 	s.m[id] = s.ll.PushFront(id)
 	for s.ll.Len() > s.max {
@@ -380,10 +416,55 @@ func (s *idSet) add(id string) {
 		s.ll.Remove(el)
 		delete(s.m, el.Value.(string))
 	}
+	return true
+}
+
+// snapshot is the IDs, oldest first.
+func (s *idSet) snapshot() []string {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	out := make([]string, 0, s.ll.Len())
+	for el := s.ll.Back(); el != nil; el = el.Prev() {
+		out = append(out, el.Value.(string))
+	}
+	return out
 }
 
 func (s *idSet) has(id string) bool {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	return s.m[id] != nil
+}
+
+// snapshot is the entries with at least one sink done, oldest first. An entry with none has
+// nothing to remember.
+func (d *dedupe) snapshot() []seenState {
+	d.mu.Lock()
+	defer d.mu.Unlock()
+	out := make([]seenState, 0, d.ll.Len())
+	for el := d.ll.Back(); el != nil; el = el.Prev() {
+		e := el.Value.(*entry)
+		if len(e.done) == 0 {
+			continue
+		}
+		names := make([]string, 0, len(e.done))
+		for n := range e.done {
+			names = append(names, n)
+		}
+		sort.Strings(names)
+		out = append(out, seenState{ID: e.id, Done: names})
+	}
+	return out
+}
+
+// restore adds an entry loaded from a state file as the most recent.
+func (d *dedupe) restore(id string, done []string) {
+	d.mu.Lock()
+	defer d.mu.Unlock()
+	e := &entry{id: id, done: map[string]bool{}}
+	for _, n := range done {
+		e.done[n] = true
+	}
+	d.m[id] = d.ll.PushFront(e)
+	d.evict()
 }

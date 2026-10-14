@@ -463,9 +463,11 @@ machines an application builds. See the [roadmap](ROADMAP.md#gsm-convergence) an
 
 **The relay's memory is in the process.** `bide notify relay` (package `notify/relay`) drops
 redeliveries by delivery ID and drops a trigger whose event it saw cleared, both from bounded
-in-memory caches (`-dedupe`, 10000 by default). After a restart, or once more than that many other
-events have gone by, a late redelivery is forwarded again, and a trigger that arrives after a clear it
-has forgotten reopens the PagerDuty incident. Slack shows a repeat twice. Run one relay: two behind a
+in-memory caches (`-dedupe`, 10000 by default). Without `-state <file>`, a restart empties them: a late
+redelivery is forwarded again, and a trigger that arrives after a clear the relay has forgotten
+reopens the PagerDuty incident. With `-state` the caches survive a restart, but once more than
+`-dedupe` other events have gone by the oldest are still forgotten, and a failed write to the file is
+logged, not fatal. Slack shows a repeat twice. Run one relay: two behind a
 load balancer have separate caches. A lost notification is not among the failures: the relay answers
 2xx only after every destination took the event. It does not forward error text or tool arguments.
 
