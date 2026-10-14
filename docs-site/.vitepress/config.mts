@@ -117,6 +117,7 @@ export default defineConfig({
         text: 'Reference',
         items: [
           { text: 'CLI reference', link: '/reference/cli' },
+          { text: 'bide-hsm reference', link: '/reference/bide-hsm' },
           { text: 'Extension points', link: '/reference/extension-points' },
           { text: 'Module structure', link: '/reference/module-structure' },
           { text: 'API (pkg.go.dev)', link: 'https://pkg.go.dev/github.com/bide-ai/bide/agent' },

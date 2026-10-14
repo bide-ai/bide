@@ -36,3 +36,15 @@ func (*Token) GenerateEd25519Extractable(string, []byte) error { return nil }
 
 // GenerateEd25519NoSign does nothing without cgo.
 func (*Token) GenerateEd25519NoSign(string, []byte) error { return nil }
+
+// GenerateP256Key does nothing without cgo.
+func (*Token) GenerateP256Key(string, []byte) error { return nil }
+
+// GenerateP256Extractable does nothing without cgo.
+func (*Token) GenerateP256Extractable(string, []byte) error { return nil }
+
+// GenerateEd25519Remarked does nothing without cgo.
+func (*Token) GenerateEd25519Remarked(string, []byte) error { return nil }
+
+// GenerateEd25519AlwaysAuth does nothing without cgo.
+func (*Token) GenerateEd25519AlwaysAuth(string, []byte) error { return nil }

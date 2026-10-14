@@ -4,6 +4,14 @@
 # everyone else, auditors included, without a Go toolchain. cmd/bide is its own
 # module; at the root tag its replace directives point at the tagged tree, so
 # the binary is built from exactly the source the tag names.
+#
+# bide-hsm (cmd/bide/bide-hsm: bide approve for keys in an HSM or a KMS) is not built here. It needs
+# cgo, because the PKCS#11 library is loaded at run time, and a cgo binary is only as reproducible
+# as the C toolchain that built it, which a release for three operating systems and two
+# architectures does not pin. It is installed from source (CGO_ENABLED=1 go install
+# github.com/bide-ai/bide/cmd/bide/bide-hsm@vX.Y.Z, verified by the Go checksum database), and
+# scripts/release.sh installs and runs it from the module proxy at every release. Keeping it out of
+# this file leaves bide pure Go (CGO_ENABLED=0 above) and scripts/repro.sh unchanged.
 version: 2
 
 project_name: bide

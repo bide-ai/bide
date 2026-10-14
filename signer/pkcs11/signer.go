@@ -51,6 +51,7 @@ import (
 	"strconv"
 	"strings"
 	"sync"
+	"unicode/utf8"
 
 	"github.com/bide-ai/bide/agent"
 	"github.com/bide-ai/bide/audit"
@@ -82,13 +83,24 @@ var (
 	// ErrNoCgo is returned by Open in a build without cgo, where no PKCS#11 library can be loaded.
 	ErrNoCgo = errors.New("pkcs11: this build has no cgo, so it cannot load a PKCS#11 module")
 	// ErrExtractable means Config.RequireNonExtractable is set and the token does not mark the key
-	// CKA_EXTRACTABLE=false and CKA_SENSITIVE=true.
+	// CKA_EXTRACTABLE=false and CKA_SENSITIVE=true, or reports that it was once extractable or not
+	// sensitive (CKA_NEVER_EXTRACTABLE or CKA_ALWAYS_SENSITIVE false).
 	ErrExtractable = errors.New("pkcs11: the key is not marked non-extractable and sensitive")
+
+	// ErrNoProtectedAuthPath means Config.ProtectedAuthPath is set and the token does not have the
+	// CKF_PROTECTED_AUTHENTICATION_PATH flag: it has no PIN pad or reader of its own, so the PIN must
+	// be given (Config.PIN).
+	ErrNoProtectedAuthPath = errors.New("pkcs11: the token has no protected authentication path (no PIN pad)")
 
 	// errSessionLost marks a failure that opening a fresh session may cure (the session handle is
 	// stale, the token was removed and returned, or the login lapsed).
 	errSessionLost = errors.New("pkcs11: the session was lost")
 )
+
+// MinPINLength is the shortest PIN Open accepts, in characters. SoftHSM2 refuses a shorter one and
+// tokens commonly do (CK_TOKEN_INFO.ulMinPinLen); a PIN of one or two characters would also make
+// the scrubbing of error messages replace those characters everywhere.
+const MinPINLength = 4
 
 // selfTest is the message signed once when a session opens.
 const selfTest = "bide.signer.selftest.v1"
@@ -190,9 +202,18 @@ type Config struct {
 	// PublicKey is the key's 32-byte Ed25519 public key, for a token that does not expose it. When
 	// the token does expose it, the two must be equal. Optional.
 	PublicKey []byte
+	// ProtectedAuthPath logs in with no PIN, for a token that collects it itself, on a PIN pad or a
+	// reader with its own keypad (the token has CKF_PROTECTED_AUTHENTICATION_PATH): C_Login is
+	// called with a NULL PIN and the person enters the PIN on the device. Open fails with
+	// ErrNoProtectedAuthPath if the token lacks the flag, and a token that has the flag fails with
+	// agent.ErrConfig if PIN is set instead. It is exclusive with PIN. Each session open asks the
+	// person again.
+	ProtectedAuthPath bool
 	// RequireNonExtractable makes Open fail with ErrExtractable unless the token reports the key as
-	// CKA_EXTRACTABLE=false and CKA_SENSITIVE=true, so the key cannot be read out of the token.
-	// It checks what the token says; it is not an attestation.
+	// CKA_EXTRACTABLE=false and CKA_SENSITIVE=true, so the key cannot be read out of the token. When
+	// the token also reports CKA_NEVER_EXTRACTABLE and CKA_ALWAYS_SENSITIVE, both must be true: a key
+	// that was extractable once may have been copied before it was marked otherwise. It checks what
+	// the token says; it is not an attestation.
 	RequireNonExtractable bool
 }
 
@@ -200,7 +221,13 @@ type Config struct {
 type session interface {
 	// sign returns the token's signature over msg in the encoding the scheme's audit verifier
 	// reads (for ecdsa-p256, the canonical low-S r||s).
-	sign(msg []byte) ([]byte, error)
+	//
+	// auth supplies the PIN for a key that demands authentication for each signature
+	// (CKA_ALWAYS_AUTHENTICATE): the session calls it between initialising the signature and
+	// signing, and logs in with it as the context-specific user. An empty PIN with no error means
+	// the token collects it itself (a protected authentication path). A key without the attribute
+	// never calls it.
+	sign(msg []byte, auth func() (string, error)) ([]byte, error)
 	// close ends the session and releases the module.
 	close() error
 }
@@ -252,6 +279,8 @@ func (c Config) check() error {
 		return fmt.Errorf("pkcs11: Config.Module is required: %w", agent.ErrConfig)
 	case (c.TokenLabel == "") == (c.SlotID == nil):
 		return fmt.Errorf("pkcs11: set exactly one of Config.TokenLabel and Config.SlotID: %w", agent.ErrConfig)
+	case c.ProtectedAuthPath && c.PIN != nil:
+		return fmt.Errorf("pkcs11: set Config.PIN or Config.ProtectedAuthPath, not both: %w", agent.ErrConfig)
 	case c.KeyLabel == "" && len(c.KeyID) == 0:
 		return fmt.Errorf("pkcs11: set Config.KeyLabel or Config.KeyID: %w", agent.ErrConfig)
 	case c.Scheme != "" && c.Scheme != audit.AlgEd25519 && c.Scheme != audit.AlgECDSAP256:
@@ -280,10 +309,16 @@ func pubSize(a audit.Alg) int {
 // connect opens a session, reading the PIN just for the login.
 func (s *Signer) connect() (session, []byte, audit.Verifier, error) {
 	pin := ""
-	if s.cfg.PIN != nil {
+	if s.cfg.PIN != nil && !s.cfg.ProtectedAuthPath {
 		p, err := s.cfg.PIN()
 		if err != nil {
 			return nil, nil, nil, err
+		}
+		// scrub removes the PIN from messages by substring, which garbles every message when the
+		// PIN is a character or two; PKCS#11 tokens enforce a minimum of their own (SoftHSM2's is
+		// 4), so a shorter value is a mistake, refused here without being shown.
+		if utf8.RuneCountInString(p) < MinPINLength {
+			return nil, nil, nil, fmt.Errorf("pkcs11: the PIN is shorter than %d characters, which no token accepts and the error scrubbing cannot protect: %w", MinPINLength, agent.ErrConfig)
 		}
 		pin = p
 	}
@@ -313,7 +348,14 @@ func (s *Signer) connect() (session, []byte, audit.Verifier, error) {
 	}
 	// One signature proves the private key is the key pair of the public key, at Open and at every
 	// reopen, so a mismatch is found here and not by the first anchor.
-	sig, err := sess.sign([]byte(selfTest))
+	// A key that demands authentication for each signature is not signed with here: that would
+	// ask the person for a PIN to prove nothing they will see. Its first real signature is checked
+	// against the public key all the same (Sign).
+	if a, isA := sess.(interface{ demandsAuth() bool }); isA && a.demandsAuth() {
+		ok = true
+		return sess, bytes.Clone(pub), v, nil
+	}
+	sig, err := sess.sign([]byte(selfTest), nil)
 	if err != nil {
 		return nil, nil, nil, fmt.Errorf("pkcs11: self-test signature: %w", err)
 	}
@@ -339,7 +381,7 @@ func scrub(err error, pin string) error {
 	if code, ok := ckrCodeOf(err); ok {
 		e.is = append(e.is, CKRError{Code: code})
 	}
-	for _, s := range []error{ErrNoEd25519, ErrNoP256, ErrKeyNotFound, ErrAmbiguous, ErrNoCgo, ErrExtractable, errSessionLost, agent.ErrConfig, audit.ErrMalformed} {
+	for _, s := range []error{ErrNoEd25519, ErrNoP256, ErrNoProtectedAuthPath, ErrKeyNotFound, ErrAmbiguous, ErrNoCgo, ErrExtractable, errSessionLost, agent.ErrConfig, audit.ErrMalformed} {
 		if errors.Is(err, s) {
 			e.is = append(e.is, s)
 		}
@@ -383,6 +425,7 @@ func (s *Signer) Sign(message []byte) ([]byte, error) {
 		return nil, fmt.Errorf("pkcs11: the signer is closed: %w", agent.ErrConfig)
 	}
 	var err error
+	usedPIN := ""
 	for try := 0; try <= maxSessionReopenTries; try++ {
 		if s.sess == nil {
 			if err = s.reopen(); err != nil {
@@ -390,7 +433,7 @@ func (s *Signer) Sign(message []byte) ([]byte, error) {
 			}
 		}
 		var sig []byte
-		sig, err = s.sess.sign(message)
+		sig, err = s.sess.sign(message, s.contextPIN(&usedPIN))
 		if err == nil {
 			if !s.v.Verify(message, sig) {
 				return nil, fmt.Errorf("pkcs11: the token's signature does not verify under its own public key")
@@ -398,12 +441,36 @@ func (s *Signer) Sign(message []byte) ([]byte, error) {
 			return sig, nil
 		}
 		if !errors.Is(err, errSessionLost) {
-			return nil, fmt.Errorf("pkcs11: sign: %w", scrub(err, ""))
+			return nil, fmt.Errorf("pkcs11: sign: %w", scrub(err, usedPIN))
 		}
 		s.sess.close()
 		s.sess = nil
 	}
-	return nil, fmt.Errorf("pkcs11: sign: %w", scrub(err, ""))
+	return nil, fmt.Errorf("pkcs11: sign: %w", scrub(err, usedPIN))
+}
+
+// contextPIN returns the source of the PIN for one signature that needs authentication
+// (CKA_ALWAYS_AUTHENTICATE), from the same Config as the login: the PIN source asked again (so a
+// prompt asks for every signature, which is the point of the attribute), or nothing for a protected
+// authentication path. The PIN used is recorded in *used so a failure can be scrubbed of it.
+func (s *Signer) contextPIN(used *string) func() (string, error) {
+	return func() (string, error) {
+		switch {
+		case s.cfg.ProtectedAuthPath:
+			return "", nil
+		case s.cfg.PIN == nil:
+			return "", fmt.Errorf("pkcs11: the key demands authentication for each signature (CKA_ALWAYS_AUTHENTICATE) and Config has no PIN source: %w", agent.ErrConfig)
+		}
+		p, err := s.cfg.PIN()
+		if err != nil {
+			return "", err
+		}
+		if utf8.RuneCountInString(p) < MinPINLength {
+			return "", fmt.Errorf("pkcs11: the PIN is shorter than %d characters, which no token accepts and the error scrubbing cannot protect: %w", MinPINLength, agent.ErrConfig)
+		}
+		*used = p
+		return p, nil
+	}
 }
 
 // reopen opens a new session and requires it to hold the same key as before.

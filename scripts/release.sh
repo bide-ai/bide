@@ -50,11 +50,14 @@ GITHUB_REPO=${BIDE_GITHUB_REPO:-bide-ai/bide}
 PROXY=https://proxy.golang.org
 
 # Libraries users import. Each is tagged <dir>/vX.Y.Z at every release.
-PUBLISHED="govern store/sqlite store/postgres mcptools trace codec/gcf govern/sqlitelog govern/redislog govern/postgreslog signer/pkcs11 signer/awskms signer/gcpkms cmd/bide cmd/bide-view"
+PUBLISHED="govern store/sqlite store/postgres mcptools trace codec/gcf govern/sqlitelog govern/redislog govern/postgreslog signer/pkcs11 signer/awskms signer/gcpkms cmd/bide cmd/bide/bide-hsm cmd/bide-view"
 # Published modules whose root package is a command (package main), installed with go install. The
 # consumer check builds them instead of importing them, since a program cannot be imported.
 # cmd/bide-view is a signpost to bide view, tagged one last time at v0.14.0 and then removed.
-COMMANDS="cmd/bide cmd/bide-view"
+# cmd/bide/bide-hsm is bide approve for keys in an HSM or a KMS; it needs cgo, so it is released as
+# source (go install) and not as a prebuilt binary (see .goreleaser.yaml). It lives under cmd/bide
+# so that it can use that module's internal approvecmd package.
+COMMANDS="cmd/bide cmd/bide/bide-hsm cmd/bide-view"
 # Modules that exist only to keep their dependencies out of the core. They keep their replace
 # directives and are never tagged.
 REPO_ONLY="signer/gcpkms/emulatortest signer/awskms/emulatortest examples/approval examples/govern examples/hsm-signing examples/mcp examples/observability examples/plan examples/stripe-refund integration benchmarks"
@@ -312,6 +315,8 @@ self_test() {
   [ "$libs" = "a b " ] || { echo "self-test: the consumer would import [$libs], want [a b ]"; fail=true; }
   in_list cmd/bide $(libraries) && { echo "self-test: the consumer would import the bide command"; fail=true; }
   in_list cmd/bide-view $(libraries) && { echo "self-test: the consumer would import the bide-view signpost"; fail=true; }
+  in_list cmd/bide/bide-hsm $(libraries) && { echo "self-test: the consumer would import the bide-hsm command"; fail=true; }
+  in_list cmd/bide/bide-hsm $PUBLISHED || { echo "self-test: bide-hsm is not published"; fail=true; }
   self_test_push || fail=true
   self_test_changelog || fail=true
   $fail && return 1
@@ -545,6 +550,14 @@ GOBIN="$WORK/bin" gorun install "$(module_path cmd/bide)@$VERSION" 2>"$WORK/inst
 (cd "$WORK/scaffold" && gorun mod tidy && gorun vet ./... && gorun test -count=1 ./... >"$WORK/scaffold.log" 2>&1) || { cat "$WORK/scaffold.log"; die "the bide init project does not build and pass its test against $VERSION"; }
 (cd "$WORK/scaffold" && "$WORK/bin/bide" check -strict flow.yaml) || die "bide check fails on the bide init project"
 note "bide init writes a project that requires $VERSION, builds, and passes its test"
+
+# bide-hsm is installed from source as a user installs it (it builds with or without cgo, so this
+# needs no C toolchain); its version command runs and names the release it was built from.
+say "verify: bide-hsm with the released module"
+GOBIN="$WORK/bin" gorun install "$(module_path cmd/bide/bide-hsm)@$VERSION" 2>"$WORK/install.log" || { cat "$WORK/install.log"; die "go install cmd/bide/bide-hsm@$VERSION failed"; }
+hsm_version=$("$WORK/bin/bide-hsm" version) || die "bide-hsm version failed"
+echo "$hsm_version" | head -1 | grep -qx "bide-hsm $VERSION" || die "bide-hsm version says [$(echo "$hsm_version" | head -1)], want [bide-hsm $VERSION]"
+note "bide-hsm $VERSION installs and runs ($(echo "$hsm_version" | sed -n 2p))"
 
 if $PUSH; then
   git -C "$REPO" fetch --quiet "$REMOTE" --tags

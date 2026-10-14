@@ -108,6 +108,11 @@ of the environment variable that holds the DSN, so the password stays out of the
 the shell history and the commands -list prints; -postgres takes the DSN itself, and the listed
 commands then name $` + defaultPostgresEnv + `.
 
+A key in an HSM, on a smart card or token, or in a cloud KMS is used by bide-hsm approve, a separate
+program (the PKCS#11 library needs cgo, which this one is built without): the same command, with
+-key naming the key by reference, a PKCS#11 URI or a KMS key ARN, in place of a key file.
+go install github.com/bide-ai/bide/cmd/bide/bide-hsm@latest builds it.
+
 Exit status: 0 on success (for -list, even when nothing waits), 1 if the command refused or
 failed, 2 for a usage error.
 
@@ -135,13 +140,20 @@ type flags struct {
 
 // Main is the bide approve command: it parses args and decides on, or lists, calls that wait for
 // a decision. Confirmation is read from in. It returns the exit status: 0 on success, 1 on a
-// refusal or a failure, 2 for a usage error.
+// refusal or a failure, 2 for a usage error. The approver's key is a key file (FileKeys).
 func Main(args []string, in io.Reader, stdout, stderr io.Writer, stores Stores) int {
+	return MainWith(args, in, stdout, stderr, stores, FileKeys())
+}
+
+// MainWith is Main with the approver's key taken from src instead of a key file: the display, the
+// confirmation, the signature, the record and the receipt are the same code, whatever holds the
+// key. bide-hsm uses it to sign with a key in an HSM or a KMS.
+func MainWith(args []string, in io.Reader, stdout, stderr io.Writer, stores Stores, src KeySource) int {
 	var f flags
-	fs := flag.NewFlagSet("bide approve", flag.ContinueOnError)
+	fs := flag.NewFlagSet(src.Prog, flag.ContinueOnError)
 	fs.SetOutput(stderr)
 	fs.Usage = func() {
-		fmt.Fprint(fs.Output(), usageText)
+		fmt.Fprint(fs.Output(), src.Usage)
 		fs.PrintDefaults()
 	}
 	fs.StringVar(&f.db, "db", "", "SQLite journal file")
@@ -150,16 +162,19 @@ func Main(args []string, in io.Reader, stdout, stderr io.Writer, stores Stores) 
 	fs.StringVar(&f.run, "run", "", "the run whose journal holds the call: the pause's run ID")
 	fs.StringVar(&f.call, "call", "", "the call's tool-use ID (for a plan flow node, its key, such as node:review)")
 	fs.StringVar(&f.as, "as", "", "your approver id, exactly as the gate's policy lists it (not for a single-approver gate)")
-	fs.StringVar(&f.key, "key", "", "your private key file, as bide keygen writes it (Ed25519, ML-DSA-65 or hybrid) (not for a single-approver gate); on Unix it must not be readable by group or others")
-	fs.StringVar(&f.approverKeys, "approver-keys", "", `approver public keys, a JSON object of approver id to key text, e.g. {"ops":"ed25519:ab12..."}, the file bide view -approver-keys reads (bide keygen -as prints an entry): refuse a -key that is not the one enrolled for -as, and verify the tally. Required for an m-of-n gate unless -unverified`)
+	fs.StringVar(&f.key, "key", "", src.KeyHelp)
+	fs.StringVar(&f.approverKeys, "approver-keys", "", `approver public keys, a JSON object of approver id to key text, e.g. {"ops":"ed25519:ab12..."}, the file bide view -approver-keys reads (`+src.EnrolHelp+`): refuse a -key that is not the one enrolled for -as, and verify the tally. Required for an m-of-n gate unless -unverified`)
 	fs.BoolVar(&f.unverified, "unverified", false, "decide an m-of-n gate without -approver-keys: the key is not checked against the one enrolled for you, and the tally is not verified")
-	fs.StringVar(&f.receipt, "receipt", "", "where to write the decision receipt (default: next to -key, named <run>-<call>-<approver>.receipt.json); mode 0600, never overwritten")
+	fs.StringVar(&f.receipt, "receipt", "", src.ReceiptHelp)
 	fs.StringVar(&f.verifyReceipt, "verify-receipt", "", "verify a decision receipt on its own, against -approver-keys, instead of deciding anything: its signature over the exact call it states")
 	fs.BoolVar(&f.reject, "reject", false, "record a rejection instead of an approval")
 	fs.BoolVar(&f.yes, "yes", false, "do not ask for confirmation (for scripts); what is signed is still shown")
 	fs.BoolVar(&f.full, "full", false, "show all of the call's arguments, not the first lines")
-	fs.BoolVar(&f.list, "list", false, "list the calls that wait for a decision, each with its bide approve command; nothing is recorded")
+	fs.BoolVar(&f.list, "list", false, "list the calls that wait for a decision, each with its "+src.Prog+" command; nothing is recorded")
 	fs.BoolVar(&f.asJSON, "json", false, "with -list: print the waiting calls as JSON")
+	if src.Flags != nil {
+		src.Flags(fs)
+	}
 	color := term.Flag(fs)
 	if err := fs.Parse(args); err != nil {
 		if errors.Is(err, flag.ErrHelp) {
@@ -169,11 +184,14 @@ func Main(args []string, in io.Reader, stdout, stderr io.Writer, stores Stores) 
 	}
 	st, es := term.For(stdout, *color), term.For(stderr, *color)
 	usage := func(msg string) int {
-		fmt.Fprintln(stderr, es.ErrorPrefix()+"bide approve:", msg)
+		fmt.Fprintln(stderr, es.ErrorPrefix()+src.Prog+":", msg)
 		fs.Usage()
 		return 2
 	}
 	if fs.NArg() > 0 {
+		if src.NoEchoArgs {
+			return usage("unexpected argument (the command takes flags only; the key goes after -key)")
+		}
 		return usage(fmt.Sprintf("unexpected argument %q", fs.Arg(0)))
 	}
 	if msg := f.check(); msg != "" {
@@ -182,7 +200,7 @@ func Main(args []string, in io.Reader, stdout, stderr io.Writer, stores Stores) 
 	// No signal handling: Ctrl-C at the prompt ends the command, and a decision is one journal write,
 	// so an interrupt leaves it recorded or not recorded.
 	ctx := context.Background()
-	c := &cmd{f: f, in: bufio.NewReader(in), out: stdout, st: st, stores: stores}
+	c := &cmd{f: f, in: bufio.NewReader(in), out: stdout, st: st, stores: stores, src: src}
 	var err error
 	switch {
 	case f.verifyReceipt != "":
@@ -193,7 +211,7 @@ func Main(args []string, in io.Reader, stdout, stderr io.Writer, stores Stores) 
 		err = c.approve(ctx)
 	}
 	if err != nil {
-		fmt.Fprintln(stderr, es.ErrorPrefix()+"bide approve:", es.Hint(err.Error(), "; "))
+		fmt.Fprintln(stderr, es.ErrorPrefix()+src.Prog+":", es.Hint(err.Error(), "; "))
 		return 1
 	}
 	return 0
@@ -242,7 +260,7 @@ func (f flags) check() string {
 	case f.run == "":
 		return "no -run given"
 	case f.call == "":
-		return "no -call given (bide approve -list shows the calls that wait)"
+		return "no -call given (-list shows the calls that wait)"
 	}
 	if f.unverified && f.approverKeys != "" {
 		return "-unverified and -approver-keys are opposites: give the keys to check the decision, or -unverified to skip the check"
@@ -260,6 +278,7 @@ type cmd struct {
 	out    io.Writer
 	st     term.Style
 	stores Stores
+	src    KeySource
 }
 
 // open opens the journal the flags name. A SQLite file must already exist: a mistyped path must not
@@ -339,9 +358,9 @@ func load(ctx context.Context, j *agent.Journal, run, call string) (*gateOf, err
 		// A call with no result and no gate record is either not gated or gated with its
 		// approval-pending note lost (the note is informational, written once when the run first
 		// pauses; a lost write is never made up). Without the note the policy is not in the journal,
-		// and bide approve will not take one from a flag: the approvers and the count it shows must
+		// and this command will not take one from a flag: the approvers and the count it shows must
 		// come from the journal, or an operator's typo would decide who may sign.
-		return nil, refuse("call %s of run %s has no result and no approval-pending record: it is not gated, or its note was lost and the journal does not hold the gate's policy, so bide approve cannot check the approver or the count and will not take them from a flag; decide from the application with agent.SubmitDecision (or agent.Approve for a single-approver gate)", safe(call), safe(run))
+		return nil, refuse("call %s of run %s has no result and no approval-pending record: it is not gated, or its note was lost and the journal does not hold the gate's policy, so this command cannot check the approver or the count and will not take them from a flag; decide from the application with agent.SubmitDecision (or agent.Approve for a single-approver gate)", safe(call), safe(run))
 	}
 	if !found || i < 0 {
 		var ids []string
@@ -527,13 +546,13 @@ func (c *cmd) approve(ctx context.Context) error {
 		return refuse("the gate on call %s is a single-approver gate (agent.Approve): its decision carries no approver id and no signature, so -as and -key do not apply; drop them", safe(f.call))
 	}
 	if !single && (f.as == "" || f.key == "") {
-		return refuse("the gate on call %s is a %s gate: give -as (your approver id) and -key (your private key file)", safe(f.call), gateShape(g.gate))
+		return refuse("the gate on call %s is a %s gate: give -as (your approver id) and -key (%s)", safe(f.call), gateShape(g.gate), c.src.KeyNoun)
 	}
 	if single && f.unverified {
 		return refuse("the gate on call %s is a single-approver gate: its decision is unsigned, so there is no key to verify and -unverified does not apply; drop it", safe(f.call))
 	}
 	if !single && f.approverKeys == "" && !f.unverified {
-		return refuse("an m-of-n decision needs -approver-keys: the file of enrolled approver public keys, a JSON object of approver id to key text (the file bide view -approver-keys reads; bide keygen -as %s prints this approver's entry). Without it nothing checks that your key is the one the application enrols, and a decision signed with another key is recorded and never counts. To decide anyway, pass -unverified", cmp.Or(safe(f.as), "<id>"))
+		return refuse("an m-of-n decision needs -approver-keys: the file of enrolled approver public keys, a JSON object of approver id to key text (the file bide view -approver-keys reads; %s %s prints this approver's entry). Without it nothing checks that your key is the one the application enrols, and a decision signed with another key is recorded and never counts. To decide anyway, pass -unverified", c.src.EnrolCmd, cmp.Or(safe(f.as), "<id>"))
 	}
 	var keys map[string]audit.Verifier
 	var verifierFor agent.ApproverVerifierFor
@@ -548,8 +567,12 @@ func (c *cmd) approve(ctx context.Context) error {
 	}
 	var signer audit.Signer
 	if !single {
-		if signer, err = LoadSigner(f.key); err != nil {
-			return err
+		if signer, err = c.src.Load(f.key); err != nil {
+			// The source's error may hold text from a vendor library: show it escaped.
+			return errors.New(safe(err.Error()))
+		}
+		if cl, ok := signer.(io.Closer); ok {
+			defer cl.Close()
 		}
 		if err := checkEnrolled(keys, f.as, signer); err != nil {
 			return err
@@ -565,7 +588,7 @@ func (c *cmd) approve(ctx context.Context) error {
 	s := g.subject(f.run)
 	shown := argsDigest(s)
 	if clipped := c.show(g, s, signer); clipped {
-		return refuse("the call's arguments are longer than the view, and the signature binds all of them: bide approve will not sign what you have not seen. Rerun with -full to see them all (the digest above is the one that would be signed)")
+		return refuse("the call's arguments are longer than the view, and the signature binds all of them: this command will not sign what you have not seen. Rerun with -full to see them all (the digest above is the one that would be signed)")
 	}
 	if !c.confirm(single) {
 		return refuse("not confirmed; nothing was recorded")
@@ -639,11 +662,11 @@ func (c *cmd) alreadyRecorded(err error) error {
 		fmt.Fprintf(c.out, "recorded %s; nothing was signed or written\n", safe(rec.recordAt))
 	}
 	if c.f.key != "" {
-		p := filepath.Join(filepath.Dir(c.f.key), defaultReceiptName(c.f.run, c.f.call, c.f.as, rec.decidedAt))
+		p := filepath.Join(c.src.receiptDir(c.f.key), defaultReceiptName(c.f.run, c.f.call, c.f.as, rec.decidedAt))
 		if _, serr := os.Stat(p); serr == nil {
 			fmt.Fprintf(c.out, "receipt %s\n", c.st.Path(p))
 		} else {
-			fmt.Fprintln(c.out, "its receipt was written when you signed it (by default next to your key, or where -receipt named it)")
+			fmt.Fprintln(c.out, "its receipt was written when you signed it (by default "+c.src.ReceiptWhere+", or where -receipt named it)")
 		}
 	}
 	return nil
@@ -707,6 +730,12 @@ func (c *cmd) show(g *gateOf, s agent.ApprovalSubject, sg audit.Signer) (clipped
 		}
 		row("pending", safe(strings.Join(gt.Pending, ", ")))
 		row("you", fmt.Sprintf("%s, with %s key %s", st.Bold(c.f.as), sg.Alg(), keyName(sg)))
+		if w, ok := sg.(interface{ Where() string }); ok && w.Where() != "" {
+			row("held in", safe(w.Where()))
+		}
+		if n, ok := sg.(interface{ Notice() string }); ok && n.Notice() != "" {
+			row("", st.Warn(safe(n.Notice())))
+		}
 		if c.f.approverKeys == "" {
 			row("", st.BoldFail("UNVERIFIED")+" "+st.Warn("this key is not checked against the key enrolled for you (-unverified, no -approver-keys): if the application enrols another, the decision is recorded and never counts"))
 		}
@@ -913,7 +942,9 @@ func (c *cmd) list(ctx context.Context) error {
 			}
 			line := func(approver string) {
 				cmdline, err := approveline.Command(tgt, run, g.ToolUseID, approver, "", "", g.Single)
-				if err != nil {
+				if err == nil {
+					cmdline = c.src.rewriteLine(cmdline)
+				} else {
 					cmdline = "(no command: this run or call id holds characters that cannot be shown or pasted safely; decide from the application)"
 				}
 				w.Commands = append(w.Commands, cmdline)
@@ -973,7 +1004,7 @@ func (c *cmd) list(ctx context.Context) error {
 	if c.f.postgres != "" {
 		fmt.Fprintf(c.out, "\n%s\n", st.Dim("Set $"+defaultPostgresEnv+" to the DSN, or use -postgres-env with your own variable: the commands above never carry the DSN."))
 	}
-	fmt.Fprintf(c.out, "\n%s\n", st.Dim("Replace '"+approveline.KeyFilePlaceholder+"' with the path of your private key (bide keygen makes one) and '"+approveline.KeysFilePlaceholder+"' with the file of enrolled approver public keys. bide approve shows what it signs and asks first."))
+	fmt.Fprintf(c.out, "\n%s\n", st.Dim(c.src.ListHint))
 	return nil
 }
 
@@ -988,7 +1019,10 @@ const auditLine = "the decision is signed into the audit log at the app's next w
 // written: a named file must not exist (a receipt is never overwritten) and its directory must.
 func (c *cmd) receiptTarget() (string, error) {
 	p := c.f.receipt
-	dir := filepath.Dir(cmp.Or(p, c.f.key))
+	dir := filepath.Dir(p)
+	if p == "" {
+		dir = c.src.receiptDir(c.f.key)
+	}
 	if p != "" {
 		if _, err := os.Lstat(p); err == nil {
 			return "", refuse("the receipt file %s exists, and a receipt is never overwritten: remove it, or name another with -receipt", p)
@@ -999,6 +1033,11 @@ func (c *cmd) receiptTarget() (string, error) {
 	}
 	return p, nil
 }
+
+// maxNamePart bounds each of the run, call and approver parts of a default receipt name, so that the
+// whole name (three parts, the 24-byte decision time, three separators and ".receipt.json") stays
+// under the 255 bytes a file name may be on the common file systems.
+const maxNamePart = 56
 
 // defaultReceiptName is <run>-<call>-<approver>-<decided_at>.receipt.json with every character outside
 // letters, digits, dot, dash and underscore written as an underscore, so a run or call id (any
@@ -1015,8 +1054,8 @@ func defaultReceiptName(run, call, approver, decidedAt string) string {
 				b.WriteByte('_')
 			}
 		}
-		if b.Len() > 80 {
-			return b.String()[:80]
+		if b.Len() > maxNamePart {
+			return b.String()[:maxNamePart]
 		}
 		return b.String()
 	}
@@ -1034,7 +1073,7 @@ func (c *cmd) writeReceipt(ctx context.Context, j *agent.Journal, s agent.Approv
 	}
 	decidedAt := agent.FormatTimestamp(d.DecidedAt)
 	if path == "" {
-		path = filepath.Join(filepath.Dir(c.f.key), defaultReceiptName(c.f.run, c.f.call, c.f.as, decidedAt))
+		path = filepath.Join(c.src.receiptDir(c.f.key), defaultReceiptName(c.f.run, c.f.call, c.f.as, decidedAt))
 	}
 	for i := len(recs) - 1; i >= 0; i-- {
 		r := recs[i]
@@ -1052,7 +1091,7 @@ func (c *cmd) writeReceipt(ctx context.Context, j *agent.Journal, s agent.Approv
 		if err := writeExclusive(path, append(b, '\n'), 0o600); err != nil {
 			return r.Name, fmt.Errorf("the decision was recorded, but its receipt was not written: %w", err)
 		}
-		fmt.Fprintf(c.out, "%sreceipt %s %s\n", c.st.Pass(), c.st.Path(path), c.st.Dim("(mode 0600; verify it with bide approve -verify-receipt, or bide audit verify-receipts)"))
+		fmt.Fprintf(c.out, "%sreceipt %s %s\n", c.st.Pass(), c.st.Path(path), c.st.Dim("(mode 0600; verify it with "+c.src.Prog+" -verify-receipt, or bide audit verify-receipts)"))
 		fmt.Fprintf(c.out, "audit: %s\n", auditLine)
 		return r.Name, nil
 	}

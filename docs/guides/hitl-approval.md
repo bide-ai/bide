@@ -408,7 +408,7 @@ the signature binds. That digest is read out of the very bytes that are signed
 (`agent.ApprovalDecisionBytes`), so it is the digest of the call as the journal holds it. Text in the
 arguments that could repaint a terminal or reorder what you read (escape sequences, bidirectional
 overrides) is shown escaped. It then asks you to type your approver id (or `y`); `-yes` skips the
-question for scripts. The decision is signed with your key (Ed25519, ML-DSA-65 or hybrid), checked against the call by
+question for scripts. The decision is signed with your key (Ed25519, ECDSA P-256, ML-DSA-65 or hybrid), checked against the call by
 `agent.WithDecisionCheck` with the public key derived from your private key, and recorded with
 `agent.SubmitDecision`, stamped with your clock in the canonical form. A single-approver gate
 (`agent.Approve`) has no approver id and no signature: `bide approve` records it as `agent.Approve`
@@ -443,8 +443,8 @@ A key file is one line of hex: the Ed25519 seed (64 characters, the form `bide d
 in), `ecdsa-p256:` and the 32-byte ECDSA P-256 private scalar (the scheme most HSMs and cloud KMS sign; its public key is 130 hex characters, `ecdsa-p256:04...`), `ml-dsa-65:` and the ML-DSA-65 seed, or `ed25519+ml-dsa-65:` and both seeds for a hybrid, for
 buyers who require post-quantum or hybrid signatures (`bide keygen -alg`). `bide approve` holds the key
 only as an `audit.Signer`: it signs the decision bytes, names the scheme and derives the public key
-through that interface, so a signer in an HSM or a KMS can take the file's place later without changing
-the flow (not built yet). `bide keygen` writes the file with mode 0600, never overwrites a file, never
+through that interface, so a signer in an HSM or a KMS takes the file's place without changing the flow:
+see [Keys in an HSM or a KMS](#keys-in-an-hsm-or-a-kms). `bide keygen` writes the file with mode 0600, never overwrites a file, never
 prints it, and prints the public key in the text policies and verifiers read (`<scheme>:<hex>`, see
 `audit.ParsePublicKey`; an ML-DSA public key is nearly 4000 hex characters, so the command names it by
 its key ID where it shows one). The file is not encrypted: keep it on your own machine. ML-DSA needs a
@@ -472,8 +472,21 @@ gate counts the decisions and the call runs or is denied. `bide approve` never r
 control, bidirectional or invisible character, a combining mark, or a space other than the ASCII space
 gets no command line (`approveline.Unsafe`), and the command shows such text escaped; write accented text
 precomposed (NFC). The commands never carry a secret: a Postgres journal is named by
-`-postgres-env VAR`, not by its DSN, and the key by its file. `internal/approveline` builds the same
+`-postgres-env VAR`, not by its DSN, and the key by its file (`bide-hsm approve -list` suggests the same
+command with `-key '<key-ref>'`, a reference to a key that holds no PIN). `internal/approveline` builds the same
 line, for a notification to carry.
+
+### Keys in an HSM or a KMS
+
+An approver whose key is in an HSM, on a smart card or token, or in AWS KMS decides with `bide-hsm approve`,
+a companion program that is `bide approve` with `-key` naming the key by reference (an RFC 7512 `pkcs11:`
+URI, or `awskms:<key ARN>`) instead of a file. It is a separate program because the PKCS#11 library needs
+cgo and the `bide` binary is pure Go; the display, the confirmation, the signature, the record and the
+receipt are the same code, so everything above applies. `bide-hsm pubkey -as <id> -key <ref>` prints the
+`-approver-keys` entry that enrols the key. The PIN is read from a file, an environment variable or a prompt on the terminal, and is
+never part of the reference, a PKCS#11 key the token does not mark non-extractable is refused, and the
+program is built from source. See [Key custody](key-custody.md#deciding-from-the-terminal-bide-hsm) for the
+reference forms and what this does and does not protect, and the [bide-hsm reference](../reference/bide-hsm.md).
 
 Deciding on a click in a chat message is out of scope on purpose. A button handled by a server must sign
 with a key the server holds, and one server holding the keys of k approvers collapses k-of-n

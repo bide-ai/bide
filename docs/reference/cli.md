@@ -343,6 +343,11 @@ of the environment variable that holds the DSN, so the password stays out of the
 the shell history and the commands -list prints; -postgres takes the DSN itself, and the listed
 commands then name $BIDE_POSTGRES_DSN.
 
+A key in an HSM, on a smart card or token, or in a cloud KMS is used by bide-hsm approve, a separate
+program (the PKCS#11 library needs cgo, which this one is built without): the same command, with
+-key naming the key by reference, a PKCS#11 URI or a KMS key ARN, in place of a key file.
+go install github.com/bide-ai/bide/cmd/bide/bide-hsm@latest builds it.
+
 Exit status: 0 on success (for -list, even when nothing waits), 1 if the command refused or
 failed, 2 for a usage error.
 
@@ -362,7 +367,7 @@ Flags:
   -json
     	with -list: print the waiting calls as JSON
   -key string
-    	your private key file, as bide keygen writes it (Ed25519, ML-DSA-65 or hybrid) (not for a single-approver gate); on Unix it must not be readable by group or others
+    	your private key file, as bide keygen writes it (Ed25519, ECDSA P-256, ML-DSA-65 or hybrid) (not for a single-approver gate); on Unix it must not be readable by group or others
   -list
     	list the calls that wait for a decision, each with its bide approve command; nothing is recorded
   -postgres string

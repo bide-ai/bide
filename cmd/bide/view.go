@@ -67,28 +67,7 @@ var stores = runview.Stores{
 
 // approveStores opens the journals bide approve decides on: read-write to record a decision,
 // read-only to list the calls that wait.
-var approveStores = approvecmd.Stores{
-	SQLite: func(path string, readOnly bool) (agent.Store, io.Closer, error) {
-		if readOnly {
-			return stores.SQLite(path)
-		}
-		s, err := sqlite.Open(path)
-		if err != nil {
-			return nil, nil, err
-		}
-		return s, s, nil
-	},
-	Postgres: func(dsn string, readOnly bool) (agent.Store, io.Closer, error) {
-		if readOnly {
-			return stores.Postgres(dsn)
-		}
-		s, err := postgres.Open(context.Background(), dsn)
-		if err != nil {
-			return nil, nil, err
-		}
-		return s, s, nil
-	},
-}
+var approveStores = approvecmd.JournalStores()
 
 // yamlToJSON converts a YAML flow config to the JSON plan reads. A YAML document is decoded into
 // plain values (a duplicate key is an error, as plan's strict JSON reading refuses one), and every
