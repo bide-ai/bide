@@ -2,6 +2,7 @@ package approvecmd
 
 import (
 	"bytes"
+	"cmp"
 	"context"
 	"crypto/tls"
 	"crypto/x509"
@@ -309,17 +310,20 @@ func (c *cmd) approveRemote(ctx context.Context) error {
 	if !c.confirm(false) {
 		return refuse("not confirmed; nothing was recorded")
 	}
-	// The gate may have been decided, or the call's arguments changed, while the approver sat at the
-	// prompt: fetch again, check again, and sign only what was shown.
-	p, s, err = rem.pending(ctx, f.run, f.call)
+	// The gate may have been decided, or the call changed, while the approver sat at the prompt: fetch
+	// again and refuse on any difference in what was shown. What is signed is the subject captured
+	// at display time (s: run, call, tool, arguments), never one rebuilt from this second fetch, so
+	// the approver signs exactly what they read.
+	p2, s2, err := rem.pending(ctx, f.run, f.call)
 	if err != nil {
 		return fmt.Errorf("the endpoint changed while you were deciding; nothing was signed: %w", err)
 	}
-	if err := remotePreflight(p, f.as); err != nil {
+	if err := remotePreflight(p2, f.as); err != nil {
 		return fmt.Errorf("the endpoint changed while you were deciding; nothing was signed: %w", err)
 	}
-	if audit.ApprovalArgsDigest(s) != shown {
-		return errors.New("the call's arguments changed while you were deciding; nothing was signed")
+	if s2.ToolName != s.ToolName || audit.ApprovalArgsDigest(s2) != shown || s2.RunID != s.RunID || s2.ToolUseID != s.ToolUseID ||
+		p2.Gate.Need != p.Gate.Need || !slices.Equal(p2.Gate.Approvers, p.Gate.Approvers) || p2.DecisionFormat != p.DecisionFormat {
+		return errors.New("the call or its gate changed while you were deciding (the tool, the arguments, or who must approve); nothing was signed")
 	}
 
 	at := now()
@@ -361,6 +365,12 @@ func (c *cmd) approveRemote(ctx context.Context) error {
 	if err := c.remoteReceipt(resp.Receipt, d, s, signer, receiptPath); err != nil {
 		return err
 	}
+	if !resp.Counted {
+		// Two decisions of one approver sent at once (an approve and a reject) are both recorded and
+		// the first in journal order counts: this one is not it, and must not report success.
+		why := cmp.Or(resp.Reason, "an earlier decision of yours")
+		return fmt.Errorf("the decision was recorded, but it does not count: another decision of yours counts (%s)", safe(why))
+	}
 	return nil
 }
 
@@ -389,6 +399,9 @@ func (c *cmd) remoteReceipt(rc audit.DecisionReceipt, d agent.Decision, s agent.
 		rc.DecidedAt != agent.FormatTimestamp(d.DecidedAt) || rc.Alg != d.Alg || !bytes.Equal(rc.Signature, d.Signature) ||
 		rc.ArgsSHA != audit.ApprovalArgsDigest(s) || rc.Record != agent.DecisionStep(d) {
 		return errors.New("the decision was recorded, but the receipt the endpoint returned is not this decision, so none was written")
+	}
+	if rc.Anchor != nil {
+		return errors.New("the decision was recorded, but the receipt the endpoint returned carries an anchoring proof, which only your own verify-receipts -update may add, so none was written")
 	}
 	if err := rc.Verify(own); err != nil {
 		return fmt.Errorf("the decision was recorded, but the receipt the endpoint returned does not verify, so none was written: %w", err)

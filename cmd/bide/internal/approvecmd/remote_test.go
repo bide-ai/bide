@@ -10,6 +10,7 @@ import (
 	"crypto/x509/pkix"
 	"encoding/json"
 	"encoding/pem"
+	"fmt"
 	"math/big"
 	"net/http"
 	"net/http/httptest"
@@ -17,6 +18,7 @@ import (
 	"path/filepath"
 	"runtime"
 	"strings"
+	"sync"
 	"sync/atomic"
 	"testing"
 	"time"
@@ -415,5 +417,130 @@ func TestRemote_BadReceiptIsNotWritten(t *testing.T) {
 				t.Fatalf("a bad receipt was written: %v", m)
 			}
 		})
+	}
+}
+
+// The subject signed is the one shown at the prompt: an endpoint that shows one tool and then
+// another gets nothing signed.
+func TestRemote_ToolNameChangingWhileDecidingIsNotSigned(t *testing.T) {
+	f := newFixture(t, twoOfThree, refundArgs)
+	gets, posts := new(atomic.Int32), new(atomic.Int32)
+	srv := f.intake(func(next http.Handler) http.Handler {
+		return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			if r.Method == http.MethodPost {
+				posts.Add(1)
+				next.ServeHTTP(w, r)
+				return
+			}
+			rec := httptest.NewRecorder()
+			next.ServeHTTP(rec, r)
+			var p approvals.Pending
+			if err := json.Unmarshal(rec.Body.Bytes(), &p); err != nil {
+				t.Error(err)
+			}
+			if gets.Add(1) == 1 {
+				p.Tool = "lookup" // what the approver reads
+			}
+			writeTestJSON(w, p)
+		})
+	})
+	code, out, errs := f.runTo("ops\n", f.to(srv.URL, "ops")...)
+	if !strings.Contains(out, "lookup") {
+		t.Fatalf("setup: the prompt did not show the substituted tool:\n%s", out)
+	}
+	if code != 1 || posts.Load() != 0 || len(f.decisions()) != 0 || !strings.Contains(errs, "changed while you were deciding") {
+		t.Fatalf("exit %d, %d posts, %d decisions\n%s", code, posts.Load(), len(f.decisions()), errs)
+	}
+}
+
+// An approve and a reject by one approver, at once: at most one command exits 0, and a command whose
+// decision does not count says so instead of reporting success.
+func TestRemote_ConcurrentApproveAndRejectOnlyOneSucceeds(t *testing.T) {
+	for i := range 20 {
+		f := newFixture(t, twoOfThree, refundArgs)
+		srv := f.intake(nil)
+		var wg sync.WaitGroup
+		var mu sync.Mutex
+		codes := map[bool]int{}
+		errTexts := map[bool]string{}
+		start := make(chan struct{})
+		for _, rej := range []bool{false, true} {
+			wg.Go(func() {
+				<-start
+				args := f.to(srv.URL, "ops", "-yes", "-receipt", filepath.Join(f.dir, fmt.Sprint("r-", rej, ".json")))
+				if rej {
+					args = append(args, "-reject")
+				}
+				c, _, e := f.runTo("", args...)
+				mu.Lock()
+				codes[rej], errTexts[rej] = c, e
+				mu.Unlock()
+			})
+		}
+		close(start)
+		wg.Wait()
+		if codes[false] == 0 && codes[true] == 0 {
+			t.Fatalf("iteration %d: approve and reject by one approver both exit 0 through -to (%d records)", i, len(f.decisions()))
+		}
+		for rej, c := range codes {
+			if c != 0 && !strings.Contains(errTexts[rej], "already_decided") && !strings.Contains(errTexts[rej], "already decided") && !strings.Contains(errTexts[rej], "another decision of yours counts") {
+				t.Fatalf("iteration %d: the command that did not succeed (reject=%v) says %q", i, rej, errTexts[rej])
+			}
+		}
+	}
+}
+
+// A receipt the endpoint returns with an anchoring proof is not written: only the approver's own
+// verify-receipts -update adds one.
+func TestRemote_ReceiptWithAnAnchorIsNotWritten(t *testing.T) {
+	f := newFixture(t, twoOfThree, refundArgs)
+	srv := f.intake(func(next http.Handler) http.Handler {
+		return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			rec := httptest.NewRecorder()
+			next.ServeHTTP(rec, r)
+			if r.Method != http.MethodPost {
+				w.Write(rec.Body.Bytes())
+				return
+			}
+			var resp approvals.Response
+			if err := json.Unmarshal(rec.Body.Bytes(), &resp); err != nil {
+				t.Error(err)
+			}
+			resp.Receipt.Anchor = &audit.ProofBundle{Format: audit.ProofFormat, STH: audit.SignedTreeHead{Format: audit.STHFormat}}
+			writeTestJSON(w, resp)
+		})
+	})
+	code, _, errs := f.runTo("", f.to(srv.URL, "ops", "-yes")...)
+	if code != 1 || !strings.Contains(errs, "anchoring proof") {
+		t.Fatalf("exit %d\n%s", code, errs)
+	}
+	if m, _ := filepath.Glob(filepath.Join(f.dir, "*.receipt.json")); len(m) != 0 {
+		t.Fatalf("written: %v", m)
+	}
+}
+
+// A decision the endpoint says does not count (another decision of the approver's counts) is not
+// reported as success.
+func TestRemote_UncountedDecisionIsNotSuccess(t *testing.T) {
+	f := newFixture(t, twoOfThree, refundArgs)
+	srv := f.intake(func(next http.Handler) http.Handler {
+		return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			rec := httptest.NewRecorder()
+			next.ServeHTTP(rec, r)
+			if r.Method != http.MethodPost {
+				w.Write(rec.Body.Bytes())
+				return
+			}
+			var resp approvals.Response
+			if err := json.Unmarshal(rec.Body.Bytes(), &resp); err != nil {
+				t.Error(err)
+			}
+			resp.Counted, resp.Reason = false, "superseded"
+			writeTestJSON(w, resp)
+		})
+	})
+	code, _, errs := f.runTo("", f.to(srv.URL, "ops", "-yes")...)
+	if code != 1 || !strings.Contains(errs, "another decision of yours counts") || !strings.Contains(errs, "superseded") {
+		t.Fatalf("exit %d\n%s", code, errs)
 	}
 }

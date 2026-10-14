@@ -5,6 +5,7 @@ import (
 	"crypto/sha256"
 	"encoding/hex"
 	"encoding/json"
+	"net"
 	"net/http"
 	"strings"
 	"sync"
@@ -540,5 +541,126 @@ func TestBusy(t *testing.T) {
 	unblock()
 	if status := <-first; status != 200 {
 		t.Fatalf("the request in progress: %d", status)
+	}
+}
+
+// A stalled body holds one in-flight slot for at most the read timeout, and the slot is taken before
+// the body is read, so stalled clients cannot pile up handlers.
+func TestDecision_StalledBodyIsCutOff(t *testing.T) {
+	r := newRig(t, approvals.WithReadTimeout(300*time.Millisecond), approvals.WithMaxInFlight(2),
+		approvals.WithRateLimit(0, 0), approvals.WithGlobalRateLimit(0, 0))
+	var conns []net.Conn
+	for range 2 {
+		c, err := net.Dial("tcp", r.srv.Listener.Addr().String())
+		if err != nil {
+			t.Fatal(err)
+		}
+		defer c.Close()
+		c.Write([]byte("POST /decisions HTTP/1.1\r\nHost: x\r\nContent-Type: application/json\r\nContent-Length: 4000\r\n\r\n{"))
+		conns = append(conns, c)
+	}
+	time.Sleep(100 * time.Millisecond)
+	if status, _ := r.post(r.decision("alice", true)); status != http.StatusServiceUnavailable {
+		t.Fatalf("with both slots held by stalled bodies: status %d, want 503", status)
+	}
+	time.Sleep(600 * time.Millisecond) // past the read timeout: the stalled requests are cut off
+	if status, out := r.post(r.decision("alice", true)); status != 200 {
+		t.Fatalf("after the stalled bodies timed out: %d %v", status, out)
+	}
+	_ = conns
+}
+
+// One approver's approve and reject sent at once: either the second is refused as already decided
+// (it saw the first), or both are recorded and the first in journal order counts. In every case
+// exactly one decision counts, no response claims counted for the other, and OnRecorded runs once
+// for each decision that was written.
+func TestDecision_ConcurrentApproveAndReject(t *testing.T) {
+	for i := range 20 {
+		var mu sync.Mutex
+		hooks := 0
+		r := newRig(t, approvals.WithRateLimit(0, 0), approvals.WithGlobalRateLimit(0, 0),
+			approvals.OnRecorded(func(context.Context, approvals.Recorded) { mu.Lock(); hooks++; mu.Unlock() }))
+		bodies := []body{r.decision("alice", true), r.decision("alice", false)}
+		for j := range bodies { // a distinct decision time keeps the two names apart
+			s := r.subject()
+			at := time.Date(2026, 10, 13, 12, 0, 1+j, 0, time.UTC)
+			bodies[j].DecidedAt = agent.FormatTimestamp(at)
+			bodies[j].Signature = sign(r, "alice", s, bodies[j].Approved, at)
+		}
+		var wg sync.WaitGroup
+		type answer struct{ counted, recorded bool }
+		answers := make(chan answer, 2)
+		start := make(chan struct{})
+		for _, b := range bodies {
+			wg.Go(func() {
+				<-start
+				status, out := r.post(b)
+				if status != 200 && status != 409 {
+					t.Errorf("status %d %v", status, out)
+				}
+				c, _ := out["counted"].(bool)
+				rec, _ := out["recorded"].(bool)
+				answers <- answer{c, rec}
+			})
+		}
+		close(start)
+		wg.Wait()
+		close(answers)
+		counted, recorded := 0, 0
+		for a := range answers {
+			if a.counted {
+				counted++
+			}
+			if a.recorded {
+				recorded++
+			}
+		}
+		r.h.Wait()
+		mu.Lock()
+		if counted > 1 || recorded < 1 || hooks != recorded {
+			t.Fatalf("iteration %d: %d say counted (want at most 1), %d recorded, %d hooks", i, counted, recorded, hooks)
+		}
+		mu.Unlock()
+		// The journal holds the decisions the responses say were written, and the gate counts one.
+		if _, out := r.get("/pending?run=" + runID + "&call=c1"); int(out["gate"].(map[string]any)["approved"].(float64))+int(out["gate"].(map[string]any)["denied"].(float64)) != 1 {
+			t.Fatalf("iteration %d: the gate counts %v", i, out["gate"])
+		}
+	}
+}
+
+// Two identical requests at once: one writes (recorded true), and OnRecorded runs once.
+func TestDecision_ConcurrentIdenticalFiresOnce(t *testing.T) {
+	for i := range 20 {
+		var mu sync.Mutex
+		hooks := 0
+		r := newRig(t, approvals.WithRateLimit(0, 0), approvals.WithGlobalRateLimit(0, 0),
+			approvals.OnRecorded(func(context.Context, approvals.Recorded) { mu.Lock(); hooks++; mu.Unlock() }))
+		b := r.decision("alice", true)
+		var wg sync.WaitGroup
+		recorded := make(chan bool, 8)
+		start := make(chan struct{})
+		for range 8 {
+			wg.Go(func() {
+				<-start
+				_, out := r.post(b)
+				rec, _ := out["recorded"].(bool)
+				recorded <- rec
+			})
+		}
+		close(start)
+		wg.Wait()
+		close(recorded)
+		n := 0
+		for rec := range recorded {
+			if rec {
+				n++
+			}
+		}
+		r.h.Wait()
+		mu.Lock()
+		if n != 1 || hooks != 1 {
+			t.Fatalf("iteration %d: %d requests say recorded (want 1), %d hooks (want 1)", i, n, hooks)
+		}
+		mu.Unlock()
 	}
 }

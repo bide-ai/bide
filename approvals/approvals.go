@@ -73,12 +73,19 @@ type Request struct {
 // Response is the body of a successful POST /decisions.
 type Response struct {
 	// Recorded is true when this request wrote the decision's record, false when the journal already
-	// held it (a replay): the same decision again changes nothing.
+	// held it (a replay, or an identical request that won a race): the same decision again changes
+	// nothing, and OnRecorded runs for the request that wrote it only.
 	Recorded   bool   `json:"recorded"`
 	Record     string `json:"record"`      // the journal record's name (agent.DecisionStep)
 	Index      int    `json:"index"`       // its position in the run's journal (0 is the header)
 	RecordedAt string `json:"recorded_at"` // when it was journaled, by the recording process's clock
 	Gate       Gate   `json:"gate"`        // the gate's standing after the decision, verified
+	// Counted is whether this decision is the one the gate counts for its approver. It is false for a
+	// decision recorded beside an earlier valid one of the same approver (an approve and a reject
+	// sent at once: both are recorded, and the first in journal order counts), and Reason says why. A
+	// client that reports success must check it.
+	Counted bool   `json:"counted"`
+	Reason  string `json:"reason,omitempty"`
 	// Receipt is the decision's receipt (audit.DecisionReceipt), built from the journal record, for
 	// the approver to keep: it carries the signed decision, the call's arguments, and where the
 	// journal holds the record. Record, Index, RecordedAt and LeafHash are the application's word.
@@ -166,6 +173,8 @@ var (
 const (
 	// DefaultMaxBodyBytes bounds a request body: a hybrid signature in base64 is about 4.7 KiB.
 	DefaultMaxBodyBytes = 64 << 10
+	// DefaultReadTimeout bounds how long a POST may take to send its body.
+	DefaultReadTimeout = 10 * time.Second
 	// DefaultRate and DefaultBurst are the per-client request rate and burst.
 	DefaultRate  = 2.0
 	DefaultBurst = 10
@@ -187,25 +196,26 @@ type Option func(*Handler) error
 
 // Handler is the intake. Create it with New; it is safe for concurrent use.
 type Handler struct {
-	j         *agent.Journal
-	verifiers agent.ApproverVerifierFor
-	now       func() time.Time
-	maxBody   int64
-	auth      func(*http.Request, Access) error
-	clientKey func(*http.Request) string
-	onErr     func(error)
-	onRec     func(context.Context, Recorded)
-	lim       *limiter
-	rate      float64
-	burst     int
-	gRate     float64
-	gBurst    int
-	maxKeys   int
-	sem       chan struct{} // journal work in flight
-	hooks     chan struct{} // OnRecorded hooks in flight
-	wg        sync.WaitGroup
-	mux       *http.ServeMux
-	inflight  int
+	j           *agent.Journal
+	verifiers   agent.ApproverVerifierFor
+	now         func() time.Time
+	maxBody     int64
+	readTimeout time.Duration
+	auth        func(*http.Request, Access) error
+	clientKey   func(*http.Request) string
+	onErr       func(error)
+	onRec       func(context.Context, Recorded)
+	lim         *limiter
+	rate        float64
+	burst       int
+	gRate       float64
+	gBurst      int
+	maxKeys     int
+	sem         chan struct{} // journal work in flight
+	hooks       chan struct{} // OnRecorded hooks in flight
+	wg          sync.WaitGroup
+	mux         *http.ServeMux
+	inflight    int
 }
 
 // New returns the intake handler over j, the application's own journal: for decisions to be signed
@@ -219,7 +229,7 @@ func New(j *agent.Journal, verifierFor agent.ApproverVerifierFor, opts ...Option
 	if verifierFor == nil {
 		return nil, fmt.Errorf("approvals: nil approver verifiers: %w", agent.ErrConfig)
 	}
-	h := &Handler{j: j, verifiers: verifierFor, now: time.Now, maxBody: DefaultMaxBodyBytes,
+	h := &Handler{j: j, verifiers: verifierFor, now: time.Now, maxBody: DefaultMaxBodyBytes, readTimeout: DefaultReadTimeout,
 		rate: DefaultRate, burst: DefaultBurst, gRate: DefaultGlobalRate, gBurst: DefaultGlobalBurst,
 		maxKeys: DefaultMaxClients, inflight: DefaultMaxInFlight,
 		clientKey: remoteHost, onErr: func(error) {}}
@@ -262,6 +272,20 @@ func WithMaxBodyBytes(n int64) Option {
 			return configErr("body limit must be at least 1, got %d", n)
 		}
 		h.maxBody = n
+		return nil
+	}
+}
+
+// WithReadTimeout bounds how long a POST /decisions may take to send its body (DefaultReadTimeout).
+// The request holds an in-flight slot while it is read, so a stalled client costs one slot for at
+// most this long. It does not replace http.Server.ReadHeaderTimeout, which bounds the headers
+// before the handler runs: set both.
+func WithReadTimeout(d time.Duration) Option {
+	return func(h *Handler) error {
+		if d <= 0 {
+			return configErr("read timeout must be positive, got %v", d)
+		}
+		h.readTimeout = d
 		return nil
 	}
 }
@@ -314,8 +338,9 @@ func WithMaxClients(n int) Option {
 }
 
 // WithClientKey names the client a request is limited as. By default it is the host of
-// r.RemoteAddr; behind a proxy that is the proxy, so give a function that reads the address the
-// proxy vouches for (and only that).
+// r.RemoteAddr; behind a reverse proxy or load balancer that is the proxy's address, so every
+// client shares one bucket: set it there, to a function that reads the address the proxy vouches
+// for (and only that header, which the proxy must overwrite, never pass through from the client).
 func WithClientKey(fn func(*http.Request) string) Option {
 	return func(h *Handler) error {
 		if fn == nil {
@@ -505,6 +530,12 @@ func (h *Handler) state(ctx context.Context, g *gateRecords) (string, error) {
 
 // gate counts the gate's decisions as the gate does.
 func (h *Handler) gate(g *gateRecords) Gate {
+	out, _ := h.gateChecks(g)
+	return out
+}
+
+// gateChecks is gate with the classification of every decision record the gate read.
+func (h *Handler) gateChecks(g *gateRecords) (Gate, []agent.DecisionCheck) {
 	p := agent.ApprovalPolicy{Need: g.wait.Need, Approvers: g.wait.Approvers}
 	t, checks := agent.TallyApprovals(g.recs, g.subject, p, h.verifiers)
 	out := Gate{Need: t.Need, Approvers: slices.Clone(t.Approvers), Approved: t.Approved, Denied: t.Denied,
@@ -512,7 +543,7 @@ func (h *Handler) gate(g *gateRecords) Gate {
 	for _, c := range checks {
 		out.Decisions = append(out.Decisions, GateDecision{Approver: c.Approver, Approved: c.Approved, Counted: c.Counted, Reason: c.Reason})
 	}
-	return out
+	return out, checks
 }
 
 func (h *Handler) pending(w http.ResponseWriter, r *http.Request) {
@@ -565,6 +596,15 @@ func (h *Handler) fail(w http.ResponseWriter, err error) {
 }
 
 func (h *Handler) decide(w http.ResponseWriter, r *http.Request) {
+	// The in-flight slot is taken before the body is read, and the read has a deadline of its own, so
+	// a client that sends headers and stalls holds one slot for at most readTimeout, not a goroutine
+	// for as long as the server's timeouts allow (set http.Server.ReadHeaderTimeout too).
+	release, ok := h.work(w)
+	if !ok {
+		return
+	}
+	defer release()
+	_ = http.NewResponseController(w).SetReadDeadline(time.Now().Add(h.readTimeout)) // a writer with no deadlines: the server's own apply
 	if mt, _, err := mime.ParseMediaType(r.Header.Get("Content-Type")); err != nil || mt != "application/json" {
 		writeError(w, http.StatusUnsupportedMediaType, "unsupported_media_type", "send application/json")
 		return
@@ -601,12 +641,6 @@ func (h *Handler) decide(w http.ResponseWriter, r *http.Request) {
 	if !h.authorize(w, r, Access{Method: r.Method, RunID: req.Run, ToolUseID: req.Call, Approver: req.Approver}) {
 		return
 	}
-	release, ok := h.work(w)
-	if !ok {
-		return
-	}
-	defer release()
-
 	ctx := r.Context()
 	g, err := h.load(ctx, d.RunID, d.ToolUseID)
 	if err != nil {
@@ -627,8 +661,8 @@ func (h *Handler) decide(w http.ResponseWriter, r *http.Request) {
 	}
 	step := agent.DecisionStep(d)
 	idx := slices.IndexFunc(g.recs, func(rec agent.Record) bool { return rec.Name == step })
-	replay := idx >= 0
-	if !replay {
+	wrote := false
+	if idx < 0 {
 		st, err := h.state(ctx, g)
 		if err != nil {
 			h.fail(w, err)
@@ -638,7 +672,15 @@ func (h *Handler) decide(w http.ResponseWriter, r *http.Request) {
 			writeError(w, http.StatusConflict, "not_waiting", "the gate takes no more decisions: "+st)
 			return
 		}
-		err = agent.SubmitDecision(ctx, h.j, d, agent.WithDecisionCheck(h.verifiers), agent.WithClock(h.now))
+		// SubmitDecision reads its clock only when it writes the record (an identical request that
+		// races it shares that write, and a record another process wrote first is read back), so
+		// the stamp says whether this request wrote: the clock was read and the record carries it.
+		var stamp string
+		err = agent.SubmitDecision(ctx, h.j, d, agent.WithDecisionCheck(h.verifiers), agent.WithClock(func() time.Time {
+			t := h.now()
+			stamp = agent.FormatTimestamp(t)
+			return t
+		}))
 		switch {
 		case errors.Is(err, agent.ErrAlreadyDecided):
 			writeError(w, http.StatusConflict, "already_decided", "this approver already has a decision on the call that counts")
@@ -663,15 +705,20 @@ func (h *Handler) decide(w http.ResponseWriter, r *http.Request) {
 			h.fail(w, fmt.Errorf("decision %s recorded but not found in run %s", step, d.RunID))
 			return
 		}
+		wrote = stamp != "" && g.recs[idx].RecordedAt() == stamp
 	}
 	rc, err := audit.NewDecisionReceipt(g.subject, d, g.recs[idx], idx)
 	if err != nil {
 		h.fail(w, err)
 		return
 	}
-	resp := Response{Recorded: !replay, Record: step, Index: idx, RecordedAt: g.recs[idx].RecordedAt(), Gate: h.gate(g), Receipt: rc}
+	gate, checks := h.gateChecks(g)
+	resp := Response{Recorded: wrote, Record: step, Index: idx, RecordedAt: g.recs[idx].RecordedAt(), Gate: gate, Receipt: rc}
+	if i := slices.IndexFunc(checks, func(c agent.DecisionCheck) bool { return c.Step == step }); i >= 0 {
+		resp.Counted, resp.Reason = checks[i].Counted, checks[i].Reason
+	}
 	writeJSON(w, http.StatusOK, resp)
-	if !replay {
+	if wrote {
 		h.recorded(r.Context(), Recorded{RunID: d.RunID, RootRunID: agent.RootRunID(d.RunID), ToolUseID: d.ToolUseID, Approver: d.ApproverID,
 			Approved: d.Approved, Record: step, Index: idx, Decided: resp.Gate.Passed || resp.Gate.Failed})
 	}
