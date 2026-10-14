@@ -12,8 +12,6 @@ import (
 	"slices"
 	"strings"
 	"time"
-
-	"github.com/bide-ai/bide/internal/strictjson"
 )
 
 // This file holds the m-of-n approval gate's data model: the policy check, what an approver
@@ -346,10 +344,11 @@ type ApprovalTally struct {
 	// the requester here.
 	Excluded []string `json:"excluded,omitempty"`
 	// ExcludePrincipal records that the policy excluded the requester (ApprovalPolicy.ExcludePrincipal),
-	// and Requester the requester the count excluded: the run's journaled principal
-	// (RecordedRequester), empty when it records none.
-	ExcludePrincipal bool   `json:"exclude_principal,omitempty"`
-	Requester        string `json:"requester,omitempty"`
+	// and Requesters the requesters the count excluded: the principals the run's run:principal
+	// names, those of the runs above it first and the run's own last (RunPrincipal.Requesters);
+	// empty when it records none.
+	ExcludePrincipal bool     `json:"exclude_principal,omitempty"`
+	Requesters       []string `json:"requesters,omitempty"`
 	// Records names every decision record on this call the gate read, valid or not, in
 	// journal order. Evidence must disclose all of them, so an omitted decision is detectable.
 	Records []string `json:"records,omitempty"`
@@ -419,12 +418,14 @@ const (
 // what order, or the outcome, and the time a decision was journaled (RecordedAt) is not read.
 // Journal order alone orders decisions.
 //
-// Separation of duties: with p.ExcludePrincipal, the requester is the principal the run's run:start
-// record among recs names (RecordedRequester), and an approver whose id equals it, ignoring ASCII
-// case, never counts (ReasonRequester). When recs hold no run:start with a requester in printable
-// ASCII, no approver counts (ReasonNoRequester): the rule fails closed rather than count a
-// decision it cannot tell apart from the requester's. A caller that passes only some of a run's
-// records (offline verification, or a gate counting after a request) includes the run:start.
+// Separation of duties: with p.ExcludePrincipal, the requesters are the principals the run's
+// run:principal record among recs names (RecordedPrincipal, RunPrincipal.Requesters): the run's
+// own and those of every run above it. An approver whose id equals any of them, ignoring ASCII
+// case, never counts (ReasonRequester). When recs hold no run:principal, or one naming an empty or
+// non-ASCII requester, no approver counts (ReasonNoRequester): the rule fails closed rather than
+// count a decision it cannot tell apart from a requester's. A caller that passes only some of a
+// run's records (offline verification, or a gate counting after a request) includes the
+// run:principal.
 //
 // It returns the tally and a classification of every record it considered. It does not
 // validate p (see ApprovalPolicy.ValidateKeys, which the gate runs first and which refuses a
@@ -438,18 +439,19 @@ func TallyApprovals(recs []Record, s ApprovalSubject, p ApprovalPolicy, verifier
 	vs, bad, _ := approverSeats(p, verifierFor)
 	if p.ExcludePrincipal {
 		t.ExcludePrincipal = true
-		req, ok := RecordedRequester(recs)
+		rp, ok := RecordedPrincipal(recs)
 		if ok {
-			t.Requester = req
+			t.Requesters = rp.Requesters()
 		}
+		usable := ok && requesterProblem(rp) == ""
 		for _, id := range p.Approvers {
 			if _, done := bad[id]; done {
 				continue
 			}
 			switch {
-			case !ok || !printableASCII(req):
+			case !usable:
 				bad[id] = ReasonNoRequester
-			case sameApprover(id, req):
+			case slices.ContainsFunc(t.Requesters, func(r string) bool { return sameApprover(id, r) }):
 				bad[id] = ReasonRequester
 			}
 		}
@@ -540,82 +542,82 @@ func sameApprover(a, b string) bool {
 	return strings.ToLower(a) == strings.ToLower(b)
 }
 
-// RecordedRequester returns the requester of the run whose records recs are: the principal its
-// run:start record names (RunStart.Principal.OnBehalfOf, the Identity the run was started with),
-// which a policy with ExcludePrincipal excludes. ok is false when recs hold no run:start, when it
-// does not decode strictly or names no OnBehalfOf, and when recs hold two run:start records that
-// disagree.
-// It reads only what the journal holds, so the gate and an offline verifier find the same requester.
-func RecordedRequester(recs []Record) (requester string, ok bool) {
-	for _, r := range recs {
-		if !IsRunStart(r) {
-			continue
+// requesterProblem is why a run's recorded principal p names no usable requester for a policy
+// that excludes the requester, or "" when every requester it names (Requesters) is a non-empty
+// printable ASCII id. An empty entry is a run, the run itself or one above it, that records no
+// principal: who requested is not known, so no one can be excluded for it.
+func requesterProblem(p RunPrincipal) string {
+	reqs := p.Requesters()
+	for i, r := range reqs {
+		who := "the run"
+		if i < len(reqs)-1 {
+			who = fmt.Sprintf("the run %d above it", len(reqs)-1-i)
 		}
-		// Read strictly (no duplicate or case-variant name, at any depth), so the record names one
-		// principal to every reader, the gate, an auditor and a verifier in another language alike;
-		// names a later version adds are allowed.
-		var st struct {
-			Principal *Principal `json:"principal"`
+		switch {
+		case r == "":
+			return who + " records no principal (OnBehalfOf)"
+		case !printableASCII(r):
+			return fmt.Sprintf("%s records requester %q, which is not printable ASCII (bytes 0x21 to 0x7E, no space) as approver ids are, so it cannot be compared with them", who, r)
 		}
-		if strictjson.Unmarshal(r.Result, &st, &strictjson.Options{AllowUnknown: true}) != nil || st.Principal == nil || st.Principal.OnBehalfOf == "" {
-			return "", false
-		}
-		if ok && st.Principal.OnBehalfOf != requester {
-			return "", false
-		}
-		requester, ok = st.Principal.OnBehalfOf, true
 	}
-	return requester, ok
+	return ""
 }
 
-// IsRunStart reports whether r is a run's run:start record (see RunStart): the record that holds
-// the run's principal, which RecordedRequester reads. Evidence for a gate that excludes the
-// requester discloses it (see audit.ApprovalEvidence).
-func IsRunStart(r Record) bool { return r.Kind == StepValue && r.Name == runStartStep }
-
 // checkRequester is the gate's check of p's requester exclusion against the run's records recs,
-// run on every evaluation, before a recorded tally is read, beside the key check: a policy that
-// excludes the requester is refused (ErrConfig) when the run records no requester, or one that is
-// not printable ASCII (it cannot be compared with approver ids, and could only look like one), and
-// when Need is out of reach once the requester's seat is taken away. It is refused too when recs
-// hold the request of the call toolUseID before the run's start: a run an earlier version started
-// records its start only when a drive under this version first loads it, so that principal is the
-// resuming drive's, not the requester's.
+// run on every evaluation, before a recorded tally is read, beside the key check. A policy that
+// excludes the requester is refused (ErrConfig) when:
+//
+//   - the run records no run:principal (RecordedPrincipal), or one that names no usable requester:
+//     the run, or a run above it, records no principal, or one that is not printable ASCII;
+//   - recs hold the request of the call toolUseID before the run:principal: a run an earlier
+//     version started records it only when a drive under this version first loads the run, so it
+//     names the resuming drive's principal, not the requester's;
+//   - the run:start in recs names another principal or other ancestors than the run:principal;
+//   - Need is out of reach once every requester's seat is taken away.
 func checkRequester(p ApprovalPolicy, recs []Record, runID, toolUseID string) error {
 	if !p.ExcludePrincipal {
 		return nil
 	}
-	req, ok := RecordedRequester(recs)
-	start := slices.IndexFunc(recs, IsRunStart)
-	if callIdx, _, found := FindToolCall(recs, toolUseID); ok && found && callIdx < start {
-		return fmt.Errorf("the approval policy excludes the requester, but run %s recorded its principal (run:start) only after call %q was requested, as a run an earlier version started does, so it does not name who requested the call: %w", runID, toolUseID, ErrConfig)
+	rp, ok := RecordedPrincipal(recs)
+	if !ok {
+		return fmt.Errorf("the approval policy excludes the requester, but run %s records no requester (no run:principal, or one that does not read strictly): start the run with an identity whose OnBehalfOf names the requester (WithIdentity, or ContextWithIdentity for a plan flow): %w", runID, ErrConfig)
 	}
-	switch {
-	case !ok:
-		return fmt.Errorf("the approval policy excludes the requester, but run %s records no requester (its run:start names no principal): start the run with an identity whose OnBehalfOf names the requester (WithIdentity, or ContextWithIdentity for a plan flow): %w", runID, ErrConfig)
-	case !printableASCII(req):
-		return fmt.Errorf("the approval policy excludes the requester, but run %s records requester %q, which is not printable ASCII (bytes 0x21 to 0x7E, no space) as approver ids are, so it cannot be compared with them: %w", runID, req, ErrConfig)
+	at := slices.IndexFunc(recs, IsRunPrincipal)
+	if callIdx, _, found := FindToolCall(recs, toolUseID); found && callIdx < at {
+		return fmt.Errorf("the approval policy excludes the requester, but run %s recorded its principal (run:principal) only after call %q was requested, as a run an earlier version started does, so it does not name who requested the call: %w", runID, toolUseID, ErrConfig)
 	}
-	seats := len(p.Approvers)
+	if i := slices.IndexFunc(recs, func(r Record) bool { return r.Kind == StepValue && r.Name == runStartStep }); i >= 0 {
+		var st RunStart
+		if err := json.Unmarshal(recs[i].Result, &st); err != nil || !rp.sameAs(st) {
+			return fmt.Errorf("the approval policy excludes the requester, but run %s's run:principal and run:start name different principals: %w", runID, ErrConfig)
+		}
+	}
+	if why := requesterProblem(rp); why != "" {
+		return fmt.Errorf("the approval policy excludes the requester, but in run %s %s: %w", runID, why, ErrConfig)
+	}
+	seats := 0
 	for _, id := range p.Approvers {
-		if sameApprover(id, req) {
-			seats--
+		if !slices.ContainsFunc(rp.Requesters(), func(r string) bool { return sameApprover(id, r) }) {
+			seats++
 		}
 	}
 	if seats < p.Need {
-		return fmt.Errorf("the approval policy needs %d of %d approvers and excludes the requester %q, one of them, so only %d can approve: the gate could never pass: %w", p.Need, len(p.Approvers), req, seats, ErrConfig)
+		return fmt.Errorf("the approval policy needs %d of %d approvers and excludes the requesters %q, so only %d can approve: the gate could never pass: %w", p.Need, len(p.Approvers), rp.Requesters(), seats, ErrConfig)
 	}
 	return nil
 }
 
 // protocol:claims end
 
-// requesterFrom is the requester of the run ctx drives, as its drive bound it: the journaled
-// principal's OnBehalfOf (see openPlan), or "" when the run has none. Only the pause note reads it;
-// the gate reads the journal (RecordedRequester).
-func requesterFrom(ctx context.Context) string {
-	id, _ := IdentityFrom(ctx)
-	return id.OnBehalfOf
+// requestersFrom is the requesters of the run ctx drives, as its drive bound them: the journaled
+// principals of the run and the runs above it (see openPlan), or nil when it has none. Only the
+// pause note reads it; the gate reads the journal (RecordedPrincipal).
+func requestersFrom(ctx context.Context) []string {
+	chain := chainFrom(ctx)
+	if len(chain) == 0 {
+		return nil
+	}
+	return RunPrincipal{Principal: chain[len(chain)-1], Ancestors: chain[:len(chain)-1]}.Requesters()
 }
 
 // IsApprovalDecision reports whether r is an m-of-n approver decision (written by SubmitDecision)
@@ -683,9 +685,9 @@ type ApprovalWait struct {
 	Approvers  []string `json:"approvers,omitempty"`   // the m-of-n gate's eligible approvers, in policy order
 	RecordedAt string   `json:"recorded_at,omitempty"` // when the run paused here, by the drive's clock
 	// ExcludePrincipal: the m-of-n gate excludes the requester (ApprovalPolicy.ExcludePrincipal), and
-	// Requester is the run's requester it excludes (RecordedRequester).
-	ExcludePrincipal bool   `json:"exclude_principal,omitempty"`
-	Requester        string `json:"requester,omitempty"`
+	// Requesters are the requesters it excludes (RunPrincipal.Requesters).
+	ExcludePrincipal bool     `json:"exclude_principal,omitempty"`
+	Requesters       []string `json:"requesters,omitempty"`
 }
 
 // FindToolCall returns the journal index of the record that requested toolUseID, and the call
@@ -956,7 +958,7 @@ func (a *Agent) notePending(ctx context.Context, runID string, tu ToolUse, pol *
 		w.Need, w.Approvers = pol.Need, slices.Clone(pol.Approvers)
 		w.ExcludePrincipal = pol.ExcludePrincipal
 		if pol.ExcludePrincipal {
-			w.Requester = requesterFrom(ctx)
+			w.Requesters = requestersFrom(ctx)
 		}
 	}
 	b, err := json.Marshal(w)

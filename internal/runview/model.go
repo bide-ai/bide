@@ -139,10 +139,11 @@ type Gate struct {
 	// Cards is each approver as the page shows them (see ApproverCard); not in the JSON view.
 	Cards []ApproverCard `json:"-"`
 	// ExcludePrincipal: the gate never counts the run's requester (agent.ApprovalPolicy.ExcludePrincipal);
-	// Requester is that requester, and Excluded the approvers who fill no seat (the tally's, or before
+	// Requesters are the requesters (the run's principal and those of the runs above it), and Excluded
+	// the approvers who fill no seat (the tally's, or before
 	// it, the approver ids equal to the requester ignoring case).
 	ExcludePrincipal bool     `json:"exclude_principal,omitempty"`
-	Requester        string   `json:"requester,omitempty"`
+	Requesters       []string `json:"requesters,omitempty"`
 	Excluded         []string `json:"excluded,omitempty"`
 }
 
@@ -517,7 +518,7 @@ func gates(recs []agent.Record, calls map[string]agent.ToolUse, order []string) 
 		if r, ok := byName[agent.ApprovalPendingStep(id)]; ok && json.Unmarshal(r.Result, &wait) == nil {
 			paused = true
 			g.Single, g.Need, g.Approvers, g.AskedAt = wait.Single, wait.Need, wait.Approvers, wait.RecordedAt
-			g.ExcludePrincipal, g.Requester = wait.ExcludePrincipal, wait.Requester
+			g.ExcludePrincipal, g.Requesters = wait.ExcludePrincipal, wait.Requesters
 		}
 		// A flow node's request is when approvers were asked, and what the ordering rule counts from.
 		if r, ok := byName[agent.ApprovalRequestStep(id)]; ok {
@@ -556,12 +557,13 @@ func gates(recs []agent.Record, calls map[string]agent.ToolUse, order []string) 
 				g.Tallied = true
 				g.Need, g.Approvers = tally.Need, tally.Approvers
 				g.ApprovedBy, g.DeniedBy, g.Pending = tally.ApprovedBy, tally.DeniedBy, tally.Pending
-				g.ExcludePrincipal, g.Requester, g.Excluded = tally.ExcludePrincipal, tally.Requester, tally.Excluded
+				g.ExcludePrincipal, g.Requesters, g.Excluded = tally.ExcludePrincipal, tally.Requesters, tally.Excluded
 			}
 		}
-		if !g.Tallied && g.ExcludePrincipal && g.Requester != "" {
+		if !g.Tallied && g.ExcludePrincipal {
 			for _, a := range g.Approvers {
-				if strings.EqualFold(a, g.Requester) { // approver ids are ASCII: the gate's case rule
+				// Approver ids are ASCII: EqualFold is the gate's case rule.
+				if slices.ContainsFunc(g.Requesters, func(r string) bool { return r != "" && strings.EqualFold(a, r) }) {
 					g.Excluded = append(g.Excluded, a)
 				}
 			}

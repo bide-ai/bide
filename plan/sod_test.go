@@ -13,7 +13,8 @@ import (
 )
 
 // Separation of duties on a plan flow node's gate: the requester is the flow run's principal,
-// journaled in its run:start from the identity its context carries (agent.ContextWithIdentity).
+// journaled in its run:principal and run:start from the identity its context carries
+// (agent.ContextWithIdentity).
 
 var opsFinRisk = []string{"ops", "finance", "risk"}
 
@@ -61,7 +62,7 @@ func TestSoDFlow_RequesterExcluded(t *testing.T) {
 	if err := json.Unmarshal(rec.Result, &tally); err != nil {
 		t.Fatal(err)
 	}
-	if !tally.ExcludePrincipal || tally.Requester != "ops" || !slices.Equal(tally.ApprovedBy, []string{"finance", "risk"}) {
+	if !tally.ExcludePrincipal || !slices.Equal(tally.Requesters, []string{"ops"}) || !slices.Equal(tally.ApprovedBy, []string{"finance", "risk"}) {
 		t.Fatalf("tally = %+v; want finance and risk counted, ops excluded", tally)
 	}
 }
@@ -170,5 +171,33 @@ func TestSoDFlow_NoPrincipalRunResumesUnderOne(t *testing.T) {
 	start, ok, err := agent.RecordedStart(context.Background(), j, "r1")
 	if err != nil || !ok || start.Principal != nil {
 		t.Fatalf("run:start = %+v (%v, %v); want it to keep no principal", start, ok, err)
+	}
+}
+
+// A flow run binds its principal chain for the runs its nodes start: an agent run started inside a
+// node records the flow run's principal as its ancestor, so a gate in it excludes the flow's
+// requester too.
+func TestSoDFlow_NodeRunsRecordTheFlowAsAncestor(t *testing.T) {
+	j := agenttest.MemJournal()
+	inner := agenttest.MustNew(agenttest.NewScriptedModel(agenttest.TextTurn("ok")), j)
+	b := New[int, int]("outer")
+	b.Step("work", func(ctx context.Context, n int) (int, error) {
+		_, err := inner.Run(agent.ContextWithIdentity(ctx, agent.Identity{OnBehalfOf: "desk"}), "inner", agent.UserText("go"))
+		return n, err
+	}, ReadOnly())
+	f, err := b.Build()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := f.Run(asRequester("ops"), j, "flow-1", 1); err != nil {
+		t.Fatal(err)
+	}
+	recs, err := j.History(context.Background(), "inner")
+	if err != nil {
+		t.Fatal(err)
+	}
+	rp, ok := agent.RecordedPrincipal(recs)
+	if !ok || !slices.Equal(rp.Requesters(), []string{"ops", "desk"}) {
+		t.Fatalf("inner run's run:principal = %+v (%v); want desk under ops", rp, ok)
 	}
 }

@@ -92,10 +92,10 @@ func tallyGate(ctx context.Context, store *Journal, runID string, s ApprovalSubj
 		return t, true, nil
 	}
 	if since != "" {
-		// The decisions after since, and the run's start, which names the requester a policy that
-		// excludes the requester reads (TallyApprovals).
+		// The decisions after since, and the run's run:principal, which names the requesters a policy
+		// that excludes the requester reads (TallyApprovals).
 		var start []Record
-		if i := slices.IndexFunc(recs, IsRunStart); i >= 0 {
+		if i := slices.IndexFunc(recs, IsRunPrincipal); i >= 0 {
 			start = recs[i : i+1]
 		}
 		if i := slices.IndexFunc(recs, func(r Record) bool { return r.Name == since }); i >= 0 {

@@ -65,6 +65,7 @@ type RunStart struct {
 	Typed     *TypedStart                `json:"typed,omitempty"`
 	Settings  RunSettings                `json:"settings,omitzero"`
 	Principal *Principal                 `json:"principal,omitempty"`
+	Ancestors []Principal                `json:"ancestors,omitempty"`
 	Tools     []string                   `json:"tools,omitempty"`
 	Ext       map[string]json.RawMessage `json:"ext,omitempty"`
 	StartedAt string                     `json:"started_at,omitempty"`
@@ -113,6 +114,13 @@ type TypedStart struct {
 // Principal is the part of a run's Identity that is journaled: on whose behalf it acts and under
 // what authority. It is restored on every later drive, and a drive that passes another is
 // ErrConfig. The Actor is not journaled: it is the deployment that drives the run now.
+//
+// RunStart.Ancestors are the principals of the runs above a run started inside another run's
+// drive (a sub-agent's, a delegation's, a SubRunFor run's, or a plan flow's run started from a
+// tool), root first, as that drive bound them: the parent's ancestors and the parent's own
+// principal (empty for a run that has none). They are recorded only when one of them, or the run's
+// own principal, is set, and also in the run's run:principal (see RunPrincipal); the journaled
+// value is authoritative, and later drives are not compared with it.
 type Principal struct {
 	OnBehalfOf   string `json:"on_behalf_of,omitempty"`
 	AuthorityRef string `json:"authority_ref,omitempty"`
@@ -128,6 +136,7 @@ type runStartWire struct {
 	Typed     *TypedStart                `json:"typed,omitempty"`
 	Settings  RunSettings                `json:"settings,omitzero"`
 	Principal *Principal                 `json:"principal,omitempty"`
+	Ancestors []Principal                `json:"ancestors,omitempty"`
 	Tools     []string                   `json:"tools,omitempty"`
 	Ext       map[string]json.RawMessage `json:"ext,omitempty"`
 	StartedAt string                     `json:"started_at,omitempty"`
@@ -146,7 +155,7 @@ func (s RunStart) out() runStartOut {
 		in = t
 	}
 	return runStartOut{Input: in, Saga: s.Saga, Kind: s.Kind, Session: s.Session, Flow: s.Flow,
-		Typed: s.Typed, Settings: s.Settings, Principal: s.Principal, Tools: s.Tools, Ext: s.Ext, StartedAt: s.StartedAt}
+		Typed: s.Typed, Settings: s.Settings, Principal: s.Principal, Ancestors: s.Ancestors, Tools: s.Tools, Ext: s.Ext, StartedAt: s.StartedAt}
 }
 
 // runStartOut is runStartWire as MarshalJSON writes it: the input a string or a Message, encoded in
@@ -160,6 +169,7 @@ type runStartOut struct {
 	Typed     *TypedStart                `json:"typed,omitempty"`
 	Settings  RunSettings                `json:"settings,omitzero"`
 	Principal *Principal                 `json:"principal,omitempty"`
+	Ancestors []Principal                `json:"ancestors,omitempty"`
 	Tools     []string                   `json:"tools,omitempty"`
 	Ext       map[string]json.RawMessage `json:"ext,omitempty"`
 	StartedAt string                     `json:"started_at,omitempty"`
@@ -183,7 +193,7 @@ func (s *RunStart) UnmarshalJSON(b []byte) error {
 // w holds it.
 func (w *runStartWire) start() (RunStart, error) {
 	s := RunStart{Saga: w.Saga, Kind: w.Kind, Session: w.Session, Flow: w.Flow, Typed: w.Typed,
-		Settings: w.Settings, Principal: w.Principal, Tools: w.Tools, Ext: w.Ext, StartedAt: w.StartedAt}
+		Settings: w.Settings, Principal: w.Principal, Ancestors: w.Ancestors, Tools: w.Tools, Ext: w.Ext, StartedAt: w.StartedAt}
 	in := bytes.TrimSpace(w.Input)
 	switch {
 	case len(in) == 0 || bytes.Equal(in, []byte("null")):
@@ -301,13 +311,29 @@ func RecordedStart(ctx context.Context, d *Journal, runID string) (RunStart, boo
 }
 
 // beginRun is journalhook.Begin: the completion of a finished run, or else want held as the run's
-// start (see holdToStart).
-func beginRun(ctx context.Context, d *Journal, runID string, want RunStart) (json.RawMessage, bool, error) {
+// start (see holdToStart). A new run records its run:principal before its run:start (see
+// RunPrincipal), with the ancestors of the drive that starts it. The context it returns binds the
+// run's principal chain for the runs its nodes start.
+func beginRun(ctx context.Context, d *Journal, runID string, want RunStart) (context.Context, json.RawMessage, bool, error) {
 	if want.kind() == RunKindFlow {
 		// A flow's input is held by its canonical JSON (see equalJSON); one that has none (a
 		// repeated key, a lone surrogate) could not be told apart from another, so it is refused.
 		if _, err := canonicalJSON(want.Input.Text()); err != nil {
-			return nil, false, fmt.Errorf("run %s: the flow input: %w (%w)", runID, err, ErrConfig)
+			return ctx, nil, false, fmt.Errorf("run %s: the flow input: %w (%w)", runID, err, ErrConfig)
+		}
+	}
+	want.Ancestors = startAncestors(ctx, want.Principal)
+	if want.Principal != nil || len(want.Ancestors) > 0 {
+		// Only a run with no run:start yet takes a run:principal: a run an earlier version started
+		// keeps its recorded start, with no principal.
+		_, exists, err := d.getEntry(ctx, runID, runStartStep)
+		if err != nil {
+			return ctx, nil, false, fmt.Errorf("read %s (run %s): %w (%w)", runStartStep, runID, err, ErrStorage)
+		}
+		if !exists {
+			if _, err := putPrincipal(ctx, d, runID, want); err != nil {
+				return ctx, nil, false, err
+			}
 		}
 	}
 	if want.StartedAt == "" {
@@ -315,30 +341,32 @@ func beginRun(ctx context.Context, d *Journal, runID string, want RunStart) (jso
 	}
 	b, err := marshalJournal(want.out())
 	if err != nil {
-		return nil, false, fmt.Errorf("encode %s (run %s): %w (%w)", runStartStep, runID, err, ErrConfig)
+		return ctx, nil, false, fmt.Errorf("encode %s (run %s): %w (%w)", runStartStep, runID, err, ErrConfig)
 	}
 	rec, inserted, err := d.putNew(ctx, runID, runStartStep, Record{Kind: StepValue, Result: b})
 	if err != nil {
-		return nil, false, fmt.Errorf("record %s (run %s): %w", runStartStep, runID, err)
+		return ctx, nil, false, fmt.Errorf("record %s (run %s): %w", runStartStep, runID, err)
 	}
 	if inserted {
-		return nil, false, nil // a new run: nothing to hold it to, and no completion
+		return contextWithChain(ctx, runChain(want)), nil, false, nil // a new run: nothing to hold it to, and no completion
 	}
 	recs := []Record{rec}
 	end, ok, err := firstEndOf(ctx, d, runID, runCompleteStep, runCancelledStep)
 	if err != nil {
-		return nil, false, err
+		return ctx, nil, false, err
 	}
-	if err := holdToStart(ctx, d, runID, recs, want); err != nil {
-		return nil, false, err
+	got, err := holdToStart(ctx, d, runID, recs, want)
+	if err != nil {
+		return ctx, nil, false, err
 	}
+	ctx = contextWithChain(ctx, runChain(got))
 	switch {
 	case ok && end.name == runCancelledStep:
-		return nil, false, fmt.Errorf("run %s: %w", runID, ErrRunCancelled) // its first end marker
+		return ctx, nil, false, fmt.Errorf("run %s: %w", runID, ErrRunCancelled) // its first end marker
 	case ok:
-		return end.rec.Result, true, nil
+		return ctx, end.rec.Result, true, nil
 	}
-	return nil, false, nil
+	return ctx, nil, false, nil
 }
 
 // checkFinishedStart refuses (ErrConfig) a drive of kind want, with the given input (nil: the
@@ -370,7 +398,7 @@ func checkFinishedStart(runID string, recs []Record, want RunKind, input *Messag
 // against the recorded one: a drive that differs is ErrConfig, since the run's journal answers
 // the recorded input under the recorded entry point's rules. recs is the run's journal as the
 // drive read it; a start recorded there is checked without another read.
-func holdToStart(ctx context.Context, d *Journal, runID string, recs []Record, want RunStart) error {
+func holdToStart(ctx context.Context, d *Journal, runID string, recs []Record, want RunStart) (RunStart, error) {
 	var rec Record
 	found := false
 	for _, r := range recs {
@@ -385,44 +413,44 @@ func holdToStart(ctx context.Context, d *Journal, runID string, recs []Record, w
 		}
 		b, err := marshalJournal(want.out())
 		if err != nil {
-			return fmt.Errorf("encode %s (run %s): %w (%w)", runStartStep, runID, err, ErrConfig)
+			return RunStart{}, fmt.Errorf("encode %s (run %s): %w (%w)", runStartStep, runID, err, ErrConfig)
 		}
 		rec, err = d.put(ctx, runID, runStartStep, Record{Kind: StepValue, Result: b})
 		if err != nil {
-			return fmt.Errorf("record %s (run %s): %w (%w)", runStartStep, runID, err, ErrStorage)
+			return RunStart{}, fmt.Errorf("record %s (run %s): %w (%w)", runStartStep, runID, err, ErrStorage)
 		}
 	}
 	var got RunStart
 	if err := json.Unmarshal(rec.Result, &got); err != nil {
-		return fmt.Errorf("decode %s (run %s): %w (%w)", runStartStep, runID, err, ErrStorage)
+		return RunStart{}, fmt.Errorf("decode %s (run %s): %w (%w)", runStartStep, runID, err, ErrStorage)
 	}
 	switch {
 	case got.kind() != want.kind():
-		return fmt.Errorf("run %s was started as a run of kind %q, not %q; drive it the way it was started (see RecordedStart), or start a new run with a new run ID: %w", runID, got.kind(), want.kind(), ErrConfig)
+		return RunStart{}, fmt.Errorf("run %s was started as a run of kind %q, not %q; drive it the way it was started (see RecordedStart), or start a new run with a new run ID: %w", runID, got.kind(), want.kind(), ErrConfig)
 	case got.kind() == RunKindFlow && (got.Flow == nil || want.Flow == nil || got.Flow.Name != want.Flow.Name):
-		return fmt.Errorf("run %s was started by flow %s, not %s; resume it with the flow it started with, or start a new run with a new run ID: %w", runID, flowName(got.Flow), flowName(want.Flow), ErrConfig)
+		return RunStart{}, fmt.Errorf("run %s was started by flow %s, not %s; resume it with the flow it started with, or start a new run with a new run ID: %w", runID, flowName(got.Flow), flowName(want.Flow), ErrConfig)
 	case got.Saga && !want.Saga:
-		return fmt.Errorf("run %s was started as a saga; drive it with WithSaga(): %w", runID, ErrConfig)
+		return RunStart{}, fmt.Errorf("run %s was started as a saga; drive it with WithSaga(): %w", runID, ErrConfig)
 	case !got.Saga && want.Saga:
-		return fmt.Errorf("run %s was not started as a saga; resume it with Run (or Stream): %w", runID, ErrConfig)
+		return RunStart{}, fmt.Errorf("run %s was not started as a saga; resume it with Run (or Stream): %w", runID, ErrConfig)
 	case want.Principal != nil && got.Principal != nil && *got.Principal != *want.Principal:
 		// A drive that names no principal runs under the recorded one; one that names another is
 		// refused, so the run's requester (see ApprovalPolicy.ExcludePrincipal) never changes. A run
 		// recorded with none (every flow run an earlier version started) keeps none: a drive under a
 		// principal is not refused, and its principal is not recorded.
-		return fmt.Errorf("run %s was started with another principal (OnBehalfOf, AuthorityRef; see RecordedStart); drive it with the journaled one, or with none, or start a new run with a new run ID: %w", runID, ErrConfig)
+		return RunStart{}, fmt.Errorf("run %s was started with another principal (OnBehalfOf, AuthorityRef; see RecordedStart); drive it with the journaled one, or with none, or start a new run with a new run ID: %w", runID, ErrConfig)
 	case got.kind() == RunKindFlow:
 		same, err := equalJSON([]byte(got.Input.Text()), []byte(want.Input.Text()))
 		if err != nil {
-			return fmt.Errorf("run %s: compare its input with the recorded one: %w (%w)", runID, err, ErrConfig)
+			return RunStart{}, fmt.Errorf("run %s: compare its input with the recorded one: %w (%w)", runID, err, ErrConfig)
 		}
 		if !same {
-			return fmt.Errorf("run %s was started with a different input (see RecordedStart); resume it with that input, or start a new run with a new run ID: %w", runID, ErrConfig)
+			return RunStart{}, fmt.Errorf("run %s was started with a different input (see RecordedStart); resume it with that input, or start a new run with a new run ID: %w", runID, ErrConfig)
 		}
 	case got.kind() != RunKindFlow && !sameMessage(got.Input, want.Input):
-		return fmt.Errorf("run %s was started with a different input (see RecordedStart); resume it with that input, or start a new run with a new run ID: %w", runID, ErrConfig)
+		return RunStart{}, fmt.Errorf("run %s was started with a different input (see RecordedStart); resume it with that input, or start a new run with a new run ID: %w", runID, ErrConfig)
 	}
-	return nil
+	return got, nil
 }
 
 // flowName quotes f's name for an error, or says there is none.

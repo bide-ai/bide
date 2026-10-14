@@ -53,8 +53,9 @@ func ProveApproval(ctx context.Context, store *agent.Journal, runID, step string
 
 // ApprovalEvidence builds the complete evidence for an m-of-n gated call under one STH, in
 // this order: for a gate whose tally excluded the requester (agent.ApprovalTally.ExcludePrincipal),
-// the run's run:start record (Kind "step", Ref "run:start"), which names the requester (and
-// discloses the run's input with it); the model turn that requested the call (Kind "call"), the record that the run
+// the run's run:principal record (Kind "step", Ref "run:principal"; agent.RunPrincipal), which names
+// the requesters and nothing of the run's input; the model turn that requested the call (Kind
+// "call"), the record that the run
 // paused at the gate (agent.ApprovalWait, Kind "step", when the journal holds one: it carries when
 // approvers were asked), every decision record the
 // gate read (Kind "approval", from the journaled tally's Records, in journal order), the
@@ -125,11 +126,12 @@ func ApprovalEvidence(ctx context.Context, store *agent.Journal, runID, toolUseI
 	}
 	var out []EvidenceAction
 	if tally.ExcludePrincipal {
-		// Separation of duties: the requester is the principal the run's start names, so the
-		// evidence proves that record, for VerifyApprovals to recount with the same exclusion.
-		i := slices.IndexFunc(recs, agent.IsRunStart)
+		// Separation of duties: the requesters are the principals the run's run:principal names, so
+		// the evidence proves that record (it holds no run input), for VerifyApprovals to recount
+		// with the same exclusion.
+		i := slices.IndexFunc(recs, agent.IsRunPrincipal)
 		if i < 0 {
-			return nil, fmt.Errorf("audit: the gate on call %q excluded the requester, but run %s has no run:start record naming one", toolUseID, runID)
+			return nil, fmt.Errorf("audit: the gate on call %q excluded the requester, but run %s has no run:principal record naming one", toolUseID, runID)
 		}
 		pb, err := prove(i)
 		if err != nil {
@@ -197,10 +199,12 @@ type ApprovalVerdict struct {
 	// approval-pending record (agent.ApprovalWait); "" when the evidence holds neither with a time
 	// (each decision is then flagged FlagAskedUnknown).
 	AskedAt string `json:"asked_at,omitempty"`
-	// Requester is the run's requester the recount excluded, from the proven run:start record, when
-	// the expected policy excludes the requester (agent.ApprovalPolicy.ExcludePrincipal); empty
-	// otherwise, or when the evidence does not prove one.
-	Requester string `json:"requester,omitempty"`
+	// Requesters are the requesters the recount excluded, from the proven run:principal record
+	// (agent.RunPrincipal.Requesters: the principals of the runs above the run, root first, then the
+	// run's own), when the expected policy excludes the requester
+	// (agent.ApprovalPolicy.ExcludePrincipal); empty otherwise, or when the evidence does not prove
+	// one.
+	Requesters []string `json:"requesters,omitempty"`
 	// HeadAt is when the signed tree head the evidence is proven under was signed (its
 	// TimestampNanos, in agent.FormatTimestamp's form): every record it covers, the decisions
 	// included, was journaled by then.
@@ -246,12 +250,13 @@ var (
 // decision format), or is not in canonical form.
 //
 // Separation of duties: when the expected policy excludes the requester, or the journaled tally
-// says the gate did, the evidence must prove the run's run:start record (ApprovalEvidence emits
-// it), under the same signed tree head and run, before the request. The recount reads the requester
-// from it, as the gate did, and lists the requester's decisions in Ignored
-// (agent.ReasonRequester). It reports a Problem if the gate's exclusion differs from the expected
-// policy's, if the tally names another requester than the run's start, or if the run's start is
-// missing or not proven; without it the recount counts no one.
+// says the gate did, the evidence must prove the run's run:principal record (ApprovalEvidence
+// emits it; it holds the principals and nothing of the run's input), under the same signed tree
+// head and run, before the request. The recount reads the requesters from it, as the gate did, and
+// lists their decisions in Ignored (agent.ReasonRequester). It reports a Problem if the gate's
+// exclusion differs from the expected policy's, if the tally names other requesters than the
+// run:principal, or if the run:principal is missing, not proven, or not before the request; without
+// it the recount counts no one.
 //
 // It reports each counted decision's signed decision time and recorded time in Times, flagged
 // under DefaultDecisionTimeTolerance, and when the run was asked in AskedAt. These are display
@@ -375,7 +380,7 @@ func VerifyApprovals(actions []EvidenceAction, toolUseID string, policy agent.Ap
 	if tally.Need != policy.Need || !slices.Equal(tally.Approvers, policy.Approvers) {
 		problem("the gate enforced need %d of %v, not the expected need %d of %v", tally.Need, tally.Approvers, policy.Need, policy.Approvers)
 	}
-	// Separation of duties: the run's start names the requester, proven like the request.
+	// Separation of duties: the run's run:principal names the requesters, proven like the request.
 	var start []agent.Record
 	if policy.ExcludePrincipal || tally.ExcludePrincipal {
 		if tally.ExcludePrincipal != policy.ExcludePrincipal {
@@ -383,13 +388,13 @@ func VerifyApprovals(actions []EvidenceAction, toolUseID string, policy agent.Ap
 		}
 		startI := -1
 		for i, a := range actions {
-			if a.Kind == KindStep && agent.IsRunStart(recs[i]) {
+			if a.Kind == KindStep && agent.IsRunPrincipal(recs[i]) {
 				startI = i
 				break
 			}
 		}
 		if startI < 0 {
-			problem("the evidence has no run:start record, which names the requester the policy excludes; the recount counts no one")
+			problem("the evidence has no run:principal record, which names the requesters the policy excludes; the recount counts no one")
 		} else {
 			sa := &actions[startI]
 			err := sa.Bundle.Verify(logV)
@@ -398,19 +403,19 @@ func VerifyApprovals(actions []EvidenceAction, toolUseID string, policy agent.Ap
 			}
 			switch {
 			case err != nil:
-				problem("the proof of the run:start record does not verify under the log key; the recount counts no one")
+				problem("the proof of the run:principal record does not verify under the log key; the recount counts no one")
 			case !sameTreeHead(sa.Bundle.STH, sth) || sa.Bundle.RunID != runID:
-				problem("the run:start record is not proven under the same signed tree head and run as the result; the recount counts no one")
+				problem("the run:principal record is not proven under the same signed tree head and run as the result; the recount counts no one")
 			case sa.Bundle.Inclusion.Index >= reqIdx:
-				problem("the run:start record is at %d, not before the request at %d; the recount counts no one", sa.Bundle.Inclusion.Index, reqIdx)
+				problem("the run:principal record is at %d, not before the request at %d; the recount counts no one", sa.Bundle.Inclusion.Index, reqIdx)
 			default:
 				start = []agent.Record{recs[startI]}
 			}
 		}
-		if req, ok := agent.RecordedRequester(start); ok {
-			v.Requester = req
-			if tally.ExcludePrincipal && tally.Requester != req {
-				problem("the gate's tally names requester %q, but the run's start names %q", tally.Requester, req)
+		if rp, ok := agent.RecordedPrincipal(start); ok {
+			v.Requesters = rp.Requesters()
+			if tally.ExcludePrincipal && !slices.Equal(tally.Requesters, v.Requesters) {
+				problem("the gate's tally names requesters %q, but the run's run:principal names %q", tally.Requesters, v.Requesters)
 			}
 		}
 	}

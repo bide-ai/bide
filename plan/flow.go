@@ -118,7 +118,7 @@ func (f *Flow[In, Out]) run(ctx context.Context, store *agent.Journal, runID str
 		start.Principal = &agent.Principal{OnBehalfOf: id.OnBehalfOf, AuthorityRef: id.AuthorityRef}
 	}
 	// protocol:flows begin Begin BeginStart
-	done, finished, err := journalhook.Begin(ctx, store, runID, start)
+	ctx, done, finished, err := journalhook.Begin(ctx, store, runID, start)
 	if err != nil {
 		return out, fmt.Errorf("plan: run %q: %w", c.flowName, err)
 	}

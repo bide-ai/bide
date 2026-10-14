@@ -93,6 +93,13 @@ func (a *Agent) openPlan(ctx context.Context, runID string, d *driveSpec, recs [
 			now = d.cfg.clock
 		}
 		want.StartedAt = startStamp(now) // informational: nothing below reads it (see RunStart)
+		// The run's principal, and those of the runs above it, are recorded first, in a record of
+		// their own (run:principal), so evidence can prove them without the run's input.
+		want.Ancestors = startAncestors(ctx, want.Principal)
+		wrotePrincipal, err := putPrincipal(ctx, a.store, runID, want)
+		if err != nil {
+			return ctx, nil, nil, err
+		}
 		b, err := marshalJournal(want.out())
 		if err != nil {
 			return ctx, nil, nil, fmt.Errorf("encode %s (run %s): %w (%w)", runStartStep, runID, err, ErrConfig)
@@ -112,6 +119,9 @@ func (a *Agent) openPlan(ctx context.Context, runID string, d *driveSpec, recs [
 		// wrote the run first, and that drive (or a Cancel) may have written more since the Load.
 		// Either way the open knows run:start (its own, or the one it was handed back).
 		wrote, found = startWritten, !inserted
+		if wrotePrincipal {
+			wrote = []string{runPrincipalStep, runStartStep}
+		}
 	}
 	if found {
 		if err := a.holdDrive(runID, d, start, idn, explicitID); err != nil {
@@ -190,6 +200,8 @@ func (a *Agent) openPlan(ctx context.Context, runID string, d *driveSpec, recs [
 		}
 		ctx = contextWithIdentity(ctx, run)
 	}
+	// The principal chain the runs this drive starts record as their ancestors.
+	ctx = contextWithChain(ctx, runChain(start))
 	if d.cfg.waker != nil {
 		ctx = contextWithWaker(ctx, d.cfg.waker)
 	}

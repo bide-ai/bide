@@ -81,7 +81,7 @@ func TestCLI_VerifyApprovalsExcludePrincipal(t *testing.T) {
 	if code != 0 {
 		t.Fatalf("verify-approvals -exclude-principal: exit %d, want 0\n%s%s", code, stdout, stderr)
 	}
-	for _, want := range []string{"requester ops", "ignored ops: " + agent.ReasonRequester, "PASS  finance approved", "PASS  risk approved"} {
+	for _, want := range []string{"requesters ops", "ignored ops: " + agent.ReasonRequester, "PASS  finance approved", "PASS  risk approved"} {
 		if !strings.Contains(stdout, want) {
 			t.Errorf("output lacks %q:\n%s", want, stdout)
 		}

@@ -13,7 +13,7 @@ func startedRun(t *testing.T, saga bool) *MemStore {
 	t.Helper()
 	s := NewMemStore()
 	start := RunStart{Input: UserText("go"), Kind: RunKindAgent, Saga: saga}
-	if _, _, err := journalhook.Begin(context.Background(), mustJournal(s), "r", start); err != nil {
+	if _, _, _, err := journalhook.Begin(context.Background(), mustJournal(s), "r", start); err != nil {
 		t.Fatal(err)
 	}
 	return s

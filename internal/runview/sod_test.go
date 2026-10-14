@@ -44,7 +44,7 @@ func TestSoD_ViewerShowsRequesterExcluded(t *testing.T) {
 
 	v := viewOf(t, Handler(Options{Source: JournalSource{J: j}}), "f1")
 	g := v.Gates[0]
-	if !g.ExcludePrincipal || g.Requester != "ops" || !slices.Equal(g.Excluded, []string{"ops"}) {
+	if !g.ExcludePrincipal || !slices.Equal(g.Requesters, []string{"ops"}) || !slices.Equal(g.Excluded, []string{"ops"}) {
 		t.Fatalf("gate %+v; want ops excluded as the requester", g)
 	}
 	if !slices.Equal(g.ApprovedBy, []string{"finance"}) || !slices.Equal(g.Pending, []string{"risk"}) || !strings.HasPrefix(g.Status, "pending") {
@@ -67,7 +67,7 @@ func TestSoD_ViewerShowsRequesterExcluded(t *testing.T) {
 	h := Handler(Options{Source: JournalSource{J: j}, Provers: []Prover{HeadProver(sth, logPub, Approvals{Keys: approverKeys(nil)})}})
 	v = viewOf(t, h, "f1")
 	g = v.Gates[0]
-	if !g.Tallied || !g.SignaturesOK || !strings.HasPrefix(g.Status, "approved") || !slices.Equal(g.Excluded, []string{"ops"}) || g.Requester != "ops" {
+	if !g.Tallied || !g.SignaturesOK || !strings.HasPrefix(g.Status, "approved") || !slices.Equal(g.Excluded, []string{"ops"}) || !slices.Equal(g.Requesters, []string{"ops"}) {
 		t.Fatalf("gate after quorum %+v; want approved, signatures verified, ops excluded", g)
 	}
 	_, page := get(t, h, "/run?id=f1")

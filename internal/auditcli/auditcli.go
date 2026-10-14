@@ -1295,8 +1295,8 @@ func (c *cli) verifyApprovals(args []string) {
 		}
 		c.printf("%s  every proof in the package verifies under the log key\n", proofs)
 	}
-	if policy.ExcludePrincipal && v.Requester != "" {
-		c.printf("INFO  requester %s (the run's principal, from its proven run:start): their decisions never count\n", cleanText(v.Requester))
+	if policy.ExcludePrincipal && len(v.Requesters) > 0 {
+		c.printf("INFO  requesters %s (the principals of the run and the runs above it, from its proven run:principal): their decisions never count\n", cleanText(strings.Join(v.Requesters, ", ")))
 	}
 	for _, id := range v.Counted {
 		c.printf("PASS  %s approved (signature verifies for this exact call)\n", cleanText(id))

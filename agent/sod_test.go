@@ -11,7 +11,7 @@ import (
 )
 
 // Separation of duties: an m-of-n policy with ExcludePrincipal never counts a decision by the
-// principal the run acts for (its journaled run:start principal, OnBehalfOf).
+// principal the run acts for (its run:principal record, OnBehalfOf), nor any of the runs above it.
 
 // sodRun drives one run of a fresh agent with a gated "charge" tool, as mofnRun does, under the
 // identity id when it is not empty (a resume passes none: the journaled principal applies).
@@ -57,7 +57,7 @@ func TestSoD_RequesterApprovalNeverCounts(t *testing.T) {
 	_, err = sodRun(store, "r1", false, pol, vf, &charged, Identity{})
 	wantPending(t, err, counts{Need: 2, Approved: 1, ApprovedBy: []string{"bob"}, Pending: []string{"carol"}})
 	var pend *ApprovalPending
-	if errors.As(err, &pend); pend.Quorum.Requester != "alice" || !pend.Quorum.ExcludePrincipal || !slices.Equal(pend.Quorum.Excluded, []string{"alice"}) {
+	if errors.As(err, &pend); !slices.Equal(pend.Quorum.Requesters, []string{"alice"}) || !pend.Quorum.ExcludePrincipal || !slices.Equal(pend.Quorum.Excluded, []string{"alice"}) {
 		t.Fatalf("running tally = %+v, want requester alice excluded", *pend.Quorum)
 	}
 	if charged != 0 {
@@ -79,7 +79,7 @@ func TestSoD_RequesterApprovalNeverCounts(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if !tally.ExcludePrincipal || tally.Requester != "alice" || !slices.Equal(tally.Excluded, []string{"alice"}) ||
+	if !tally.ExcludePrincipal || !slices.Equal(tally.Requesters, []string{"alice"}) || !slices.Equal(tally.Excluded, []string{"alice"}) ||
 		!slices.Equal(tally.ApprovedBy, []string{"bob", "carol"}) {
 		t.Fatalf("tally = %+v, want bob and carol counted, alice excluded as the requester", tally)
 	}
@@ -100,8 +100,8 @@ func TestSoD_TallyClassifiesRequester(t *testing.T) {
 	if len(checks) != 1 || checks[0].Counted || checks[0].Reason != ReasonRequester {
 		t.Fatalf("checks = %+v, want alice's decision not counted: %q", checks, ReasonRequester)
 	}
-	if got, ok := RecordedRequester(recs); !ok || got != "alice" {
-		t.Fatalf("RecordedRequester = %q, %v, want alice", got, ok)
+	if got, ok := RecordedPrincipal(recs); !ok || !slices.Equal(got.Requesters(), []string{"alice"}) {
+		t.Fatalf("RecordedPrincipal = %+v, %v, want alice", got, ok)
 	}
 }
 
@@ -132,7 +132,7 @@ func TestSoD_RequesterNotAnApprover(t *testing.T) {
 	}
 	rec, _ := hasStep(t, store, "r1", ApprovalTallyStep("c1"))
 	tally, _ := decodeTally("r1", rec)
-	if tally.Requester != "desk-7" || len(tally.Excluded) != 0 || tally.Approved != 3 {
+	if !slices.Equal(tally.Requesters, []string{"desk-7"}) || len(tally.Excluded) != 0 || tally.Approved != 3 {
 		t.Fatalf("tally = %+v, want requester desk-7 and no one excluded", tally)
 	}
 }
@@ -222,7 +222,7 @@ func TestSoD_PolicyJSON(t *testing.T) {
 	}
 }
 
-// The counting rule fails closed on its own: given records with no run:start (no requester), a
+// The counting rule fails closed on its own: given records with no run:principal (no requester), a
 // policy that excludes the requester counts no one, and the tally is unreachable rather than
 // passing on whoever signed.
 func TestSoD_TallyWithoutStartCountsNoOne(t *testing.T) {
@@ -232,7 +232,7 @@ func TestSoD_TallyWithoutStartCountsNoOne(t *testing.T) {
 	_, _ = sodRun(store, "r1", true, pol, vf, &charged, Identity{OnBehalfOf: "alice"})
 	approveAs(t, store, "r1", "c1", "bob", true)
 	recs, _ := store.History(context.Background(), "r1")
-	recs = slices.DeleteFunc(recs, func(r Record) bool { return r.Name == runStartStep })
+	recs = slices.DeleteFunc(recs, IsRunPrincipal)
 	tally, checks := TallyApprovals(recs, subjectOf(t, store, "r1", "c1"), *pol, vf)
 	if tally.Passed() || !tally.Unreachable() || len(checks) != 1 || checks[0].Reason != ReasonNoRequester {
 		t.Fatalf("tally = %+v, checks = %+v, want nothing counted (%q)", tally, checks, ReasonNoRequester)
@@ -249,7 +249,7 @@ func TestSoD_PauseNoteCarriesExclusion(t *testing.T) {
 		t.Fatal("no pause note")
 	}
 	var w ApprovalWait
-	if err := json.Unmarshal(rec.Result, &w); err != nil || !w.ExcludePrincipal || w.Requester != "alice" {
+	if err := json.Unmarshal(rec.Result, &w); err != nil || !w.ExcludePrincipal || !slices.Equal(w.Requesters, []string{"alice"}) {
 		t.Fatalf("pause note = %s (%v), want the exclusion and requester alice", rec.Result, err)
 	}
 }
@@ -276,12 +276,13 @@ func TestSoD_SubAgentInheritsRequester(t *testing.T) {
 	if !errors.As(err, &pend) {
 		t.Fatalf("err = %v, want the sub-run's gate to pause", err)
 	}
-	if pend.Quorum == nil || pend.Quorum.Requester != "alice" || !slices.Equal(pend.Quorum.Excluded, []string{"alice"}) {
+	// The root run's principal, then the sub-run's own, which it inherited.
+	if pend.Quorum == nil || !slices.Equal(pend.Quorum.Requesters, []string{"alice", "alice"}) || !slices.Equal(pend.Quorum.Excluded, []string{"alice"}) {
 		t.Fatalf("sub-run tally = %+v, want requester alice excluded", pend.Quorum)
 	}
 }
 
-// A run that an earlier version started records its run:start only when a drive under this version
+// A run that an earlier version started records its run:principal only when a drive under this version
 // first loads it, after the call was requested; its principal is then whatever that drive was given,
 // not the requester's. The gate refuses to take a requester recorded after the request.
 func TestSoD_RunStartAfterTheRequestIsConfigError(t *testing.T) {
@@ -294,9 +295,9 @@ func TestSoD_RunStartAfterTheRequestIsConfigError(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	legacy := memJournal() // the same run with no run:start, as an earlier version journaled it
+	legacy := memJournal() // the same run with no run:start or run:principal, as an earlier version journaled it
 	for _, r := range recs {
-		if r.Name == runStartStep {
+		if r.Name == runStartStep || r.Name == runPrincipalStep {
 			continue
 		}
 		if _, err := legacy.put(ctx, "r1", r.Name, r); err != nil {
@@ -307,8 +308,8 @@ func TestSoD_RunStartAfterTheRequestIsConfigError(t *testing.T) {
 	if !errors.Is(err, ErrConfig) || !strings.Contains(err.Error(), "after") {
 		t.Fatalf("err = %v, want ErrConfig: the requester was recorded after the request", err)
 	}
-	if got, _ := RecordedRequester(mustHistory(t, legacy, "r1")); got != "mallory" {
-		t.Fatalf("the late run:start names %q; the test expects the resuming drive's principal", got)
+	if got, _ := RecordedPrincipal(mustHistory(t, legacy, "r1")); !slices.Equal(got.Requesters(), []string{"mallory"}) {
+		t.Fatalf("the late run:principal names %q; the test expects the resuming drive's principal", got.Requesters())
 	}
 }
 
@@ -321,27 +322,176 @@ func mustHistory(t *testing.T, j *Journal, runID string) []Record {
 	return recs
 }
 
-// RecordedRequester reads run:start strictly: a record that names the principal twice, or under a
-// case variant encoding/json would also read, names no requester (the gate then refuses the run).
-func TestSoD_RecordedRequesterIsStrict(t *testing.T) {
-	start := func(js string) []Record {
-		return []Record{{Name: runStartStep, Kind: StepValue, Result: json.RawMessage(js)}}
+// RecordedPrincipal reads run:principal strictly: a record that names the principal twice, or under
+// a case variant encoding/json would also read, names no requester (the gate then refuses the run).
+func TestSoD_RecordedPrincipalIsStrict(t *testing.T) {
+	rec := func(js string) []Record {
+		return []Record{{Name: runPrincipalStep, Kind: StepValue, Result: json.RawMessage(js)}}
 	}
-	for js, want := range map[string]string{
-		`{"input":"x","principal":{"on_behalf_of":"alice"}}`:                                    "alice",
-		`{"input":"x","principal":{"on_behalf_of":"alice"},"later_field":1}`:                    "alice",
-		`{"input":"x","principal":{"on_behalf_of":"alice"},"Principal":{"on_behalf_of":"bob"}}`: "",
-		`{"input":"x","principal":{"on_behalf_of":"alice","on_behalf_of":"bob"}}`:               "",
-		`{"input":"x","principal":{"On_Behalf_Of":"bob"}}`:                                      "",
-		`{"input":"x"}`: "",
+	for js, want := range map[string][]string{
+		`{"principal":{"on_behalf_of":"alice"}}`:                                                     {"alice"},
+		`{"principal":{"on_behalf_of":"alice"},"later_field":1}`:                                     {"alice"},
+		`{"principal":{"on_behalf_of":"bob"},"ancestors":[{"on_behalf_of":"alice"}]}`:                {"alice", "bob"},
+		`{"principal":{"on_behalf_of":"alice"},"Principal":{"on_behalf_of":"bob"}}`:                  nil,
+		`{"principal":{"on_behalf_of":"alice","on_behalf_of":"bob"}}`:                                nil,
+		`{"principal":{"On_Behalf_Of":"bob"}}`:                                                       nil,
+		`{"principal":{"on_behalf_of":"bob"},"ancestors":[{"on_behalf_of":"a","ON_BEHALF_OF":"b"}]}`: nil,
 	} {
-		got, ok := RecordedRequester(start(js))
-		if got != want || ok != (want != "") {
-			t.Errorf("RecordedRequester(%s) = %q, %v; want %q", js, got, ok, want)
+		got, ok := RecordedPrincipal(rec(js))
+		if ok != (want != nil) || ok && !slices.Equal(got.Requesters(), want) {
+			t.Errorf("RecordedPrincipal(%s) = %q, %v; want %q", js, got.Requesters(), ok, want)
 		}
 	}
-	two := append(start(`{"principal":{"on_behalf_of":"alice"}}`), start(`{"principal":{"on_behalf_of":"bob"}}`)...)
-	if got, ok := RecordedRequester(two); ok {
-		t.Errorf("two disagreeing run:start records: %q", got)
+	two := append(rec(`{"principal":{"on_behalf_of":"alice"}}`), rec(`{"principal":{"on_behalf_of":"bob"}}`)...)
+	if got, ok := RecordedPrincipal(two); ok {
+		t.Errorf("two disagreeing run:principal records: %q", got.Requesters())
+	}
+}
+
+// delegateTool runs a sub-agent tool under another identity, as audit.AttenuatingSubAgent does for a
+// delegation: the sub-run acts on behalf of the delegate, not the parent's principal.
+type delegateTool struct {
+	inner Tool
+	as    Identity
+}
+
+func (d delegateTool) Spec() ToolSpec { return d.inner.Spec() }
+func (d delegateTool) Unwrap() Tool   { return d.inner }
+func (d delegateTool) Call(ctx context.Context, args json.RawMessage) (json.RawMessage, error) {
+	return d.inner.Call(contextWithIdentity(ctx, d.as), args)
+}
+
+// delegatedRun drives root (on behalf of rootID, or no one when it is empty) whose tool "pay"
+// delegates to a sub-agent acting for "desk", whose gated "charge" call pauses.
+func delegatedRun(t *testing.T, store *Journal, pol *ApprovalPolicy, rootID string, first bool) error {
+	t.Helper()
+	var charged int
+	charge := &countingTool{name: "charge", approval: pol, calls: &charged}
+	childTurns := [][]Emit{textTurn("child done")}
+	parentTurns := [][]Emit{textTurn("done")}
+	if first {
+		childTurns = [][]Emit{toolTurn("c1", "charge", `{}`), textTurn("child done")}
+		parentTurns = [][]Emit{toolTurn("p1", "pay", `{"task":"go"}`), textTurn("done")}
+	}
+	child, err := New(&scriptModel{turns: childTurns}, store, WithTools(charge), WithApproverVerifiers(fakeVerifiers(abc...)))
+	if err != nil {
+		t.Fatal(err)
+	}
+	tool := delegateTool{inner: MustSubAgent("pay", "pays", child), as: Identity{Actor: "pay-agent", OnBehalfOf: "desk"}}
+	parent, err := New(&scriptModel{turns: parentTurns}, store, WithTools(tool))
+	if err != nil {
+		t.Fatal(err)
+	}
+	var opts []RunOption
+	if rootID != "" && first {
+		opts = append(opts, WithIdentity(Identity{OnBehalfOf: rootID}))
+	}
+	_, err = parent.Run(context.Background(), "root", UserText("pay"), opts...)
+	return err
+}
+
+// A gate in a delegated sub-run excludes the principal of every run above it, not only the
+// sub-run's own: alice started the root run, the sub-run acts for desk, and alice's approval of
+// the sub-run's call never counts. The sub-run records its ancestors in its run:principal and its
+// run:start when it starts, so its own journal proves them.
+func TestSoD_DelegatedSubRunExcludesAncestors(t *testing.T) {
+	store := memJournal()
+	pol := sodPolicy(2)
+	err := delegatedRun(t, store, pol, "alice", true)
+	var pend *ApprovalPending
+	if !errors.As(err, &pend) {
+		t.Fatalf("err = %v, want the sub-run's gate to pause", err)
+	}
+	if !slices.Equal(pend.Quorum.Requesters, []string{"alice", "desk"}) || !slices.Equal(pend.Quorum.Excluded, []string{"alice"}) {
+		t.Fatalf("tally = %+v, want requesters alice and desk, alice excluded", pend.Quorum)
+	}
+	sub := SubRunID("root", "p1")
+	rp, ok := RecordedPrincipal(mustHistory(t, store, sub))
+	if !ok || rp.Principal.OnBehalfOf != "desk" || len(rp.Ancestors) != 1 || rp.Ancestors[0].OnBehalfOf != "alice" {
+		t.Fatalf("sub-run run:principal = %+v (%v), want desk under alice", rp, ok)
+	}
+	start, _, _ := RecordedStart(context.Background(), store, sub)
+	if !rp.sameAs(start) {
+		t.Fatalf("run:start %+v and run:principal %+v disagree", start, rp)
+	}
+	approveAs(t, store, sub, "c1", "alice", true)
+	approveAs(t, store, sub, "c1", "bob", true)
+	err = delegatedRun(t, store, pol, "", false)
+	if !errors.As(err, &pend) || pend.Quorum.Approved != 1 {
+		t.Fatalf("err = %v, want still paused with bob's approval alone counted", err)
+	}
+	approveAs(t, store, sub, "c1", "carol", true)
+	if err := delegatedRun(t, store, pol, "", false); err != nil {
+		t.Fatalf("run at quorum without alice: %v", err)
+	}
+}
+
+// Fail closed: a delegated sub-run under a root run that records no principal has an ancestor
+// whose requester is unknown, so a gate that excludes the requester refuses it.
+func TestSoD_DelegatedUnderAnonymousRootIsConfigError(t *testing.T) {
+	store := memJournal()
+	// The sub-run's ErrConfig reaches the parent as the delegation call's error result.
+	if err := delegatedRun(t, store, sodPolicy(2), "", true); err != nil {
+		t.Fatalf("err = %v", err)
+	}
+	recs := mustHistory(t, store, "root")
+	i := slices.IndexFunc(recs, func(r Record) bool { return r.Kind == StepToolResult && r.ToolUseID == "p1" })
+	if i < 0 || !strings.Contains(string(recs[i].Result), "above it records no principal") {
+		t.Fatalf("the delegation's result does not report the unknown ancestor: %+v", recs[i])
+	}
+	if _, ok := hasStep(t, store, SubRunID("root", "p1"), ApprovalTallyStep("c1")); ok {
+		t.Fatal("the sub-run's gate recorded a tally")
+	}
+}
+
+// run:principal is the first record a run writes, before run:start, and holds the principal alone:
+// not the run's input.
+func TestSoD_RunPrincipalHoldsNoInput(t *testing.T) {
+	store := memJournal()
+	var charged int
+	_, _ = sodRun(store, "r1", true, sodPolicy(2), fakeVerifiers(abc...), &charged, Identity{Actor: "agent@1", OnBehalfOf: "alice", AuthorityRef: "grant:7"})
+	recs := mustHistory(t, store, "r1")
+	pi := slices.IndexFunc(recs, IsRunPrincipal)
+	si := slices.IndexFunc(recs, func(r Record) bool { return r.Name == runStartStep })
+	if pi < 0 || si < 0 || pi > si {
+		t.Fatalf("run:principal at %d, run:start at %d; want the principal first", pi, si)
+	}
+	if string(recs[pi].Result) != `{"principal":{"on_behalf_of":"alice","authority_ref":"grant:7"}}` {
+		t.Fatalf("run:principal = %s", recs[pi].Result)
+	}
+	// A run with no principal, started outside any run, records none.
+	plain := memJournal()
+	_, _ = sodRun(plain, "r2", true, &ApprovalPolicy{Need: 1, Approvers: abc}, fakeVerifiers(abc...), &charged, Identity{Actor: "agent@1"})
+	if slices.ContainsFunc(mustHistory(t, plain, "r2"), IsRunPrincipal) {
+		t.Fatal("a run with no principal recorded a run:principal")
+	}
+}
+
+// A run:principal already in the journal (a concurrent first drive's, or written by someone with
+// journal access before the run started) that names another principal refuses the drive.
+func TestSoD_ForeignRunPrincipalRefused(t *testing.T) {
+	ctx := context.Background()
+	store := memJournal()
+	b, _ := json.Marshal(RunPrincipal{Principal: Principal{OnBehalfOf: "mallory"}})
+	if _, err := store.put(ctx, "r1", runPrincipalStep, Record{Kind: StepValue, Result: b}); err != nil {
+		t.Fatal(err)
+	}
+	var charged int
+	_, err := sodRun(store, "r1", true, sodPolicy(2), fakeVerifiers(abc...), &charged, Identity{OnBehalfOf: "alice"})
+	if !errors.Is(err, ErrConfig) || !strings.Contains(err.Error(), "another principal") {
+		t.Fatalf("err = %v, want ErrConfig: another principal", err)
+	}
+}
+
+// The gate holds run:principal to run:start: a run:principal that names another principal than the
+// run:start (written before the run started, for a run that then started with no principal of its
+// own? not possible through the engine) is refused. Here the records are written directly.
+func TestSoD_PrincipalStartMismatchRefused(t *testing.T) {
+	recs := []Record{
+		{Name: runPrincipalStep, Kind: StepValue, Result: json.RawMessage(`{"principal":{"on_behalf_of":"bob"}}`)},
+		{Name: runStartStep, Kind: StepValue, Result: json.RawMessage(`{"input":"x","principal":{"on_behalf_of":"alice"}}`)},
+	}
+	if err := checkRequester(*sodPolicy(2), recs, "r1", "c1"); !errors.Is(err, ErrConfig) || !strings.Contains(err.Error(), "different principals") {
+		t.Fatalf("err = %v, want ErrConfig naming the mismatch", err)
 	}
 }

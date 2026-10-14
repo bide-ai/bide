@@ -67,14 +67,14 @@ func init() {
 	journalhook.Marshal = marshalJournal
 	journalhook.SameJSON = sameJSON
 	// protocol:flows begin Begin BeginStart
-	journalhook.Begin = func(ctx context.Context, j any, runID string, start any) (json.RawMessage, bool, error) {
+	journalhook.Begin = func(ctx context.Context, j any, runID string, start any) (context.Context, json.RawMessage, bool, error) {
 		d, ok := j.(*Journal)
 		if !ok {
-			return nil, false, fmt.Errorf("journalhook.Begin: %T is not a journal: %w", j, ErrConfig)
+			return ctx, nil, false, fmt.Errorf("journalhook.Begin: %T is not a journal: %w", j, ErrConfig)
 		}
 		want, ok := start.(RunStart)
 		if !ok {
-			return nil, false, fmt.Errorf("journalhook.Begin: start is %T, not an agent.RunStart: %w", start, ErrConfig)
+			return ctx, nil, false, fmt.Errorf("journalhook.Begin: start is %T, not an agent.RunStart: %w", start, ErrConfig)
 		}
 		return beginRun(ctx, d, runID, want)
 	}
