@@ -1,4 +1,4 @@
-**English** · [简体中文](docs/i18n/README.zh-CN.md) · [Русский](docs/i18n/README.ru.md) · [हिन्दी](docs/i18n/README.hi.md) · [العربية](docs/i18n/README.ar.md)
+**English** · [简体中文](docs/i18n/README.zh-CN.md) · [Русский](docs/i18n/README.ru.md) · [हिन्दी](docs/i18n/README.hi.md) · [العربية](docs/i18n/README.ar.md) &nbsp; [![Coverage](https://codecov.io/gh/bide-ai/bide/branch/main/graph/badge.svg)](https://codecov.io/gh/bide-ai/bide)
 
 <p align="center">
   <img src="assets/bide-banner.png" alt="Bide">
@@ -9,7 +9,6 @@
   <br>
   Side effects fire at most once, even across a crash. Every action is provable afterwards.
 </p>
-<p align="center"><a href="https://codecov.io/gh/bide-ai/bide"><img src="https://codecov.io/gh/bide-ai/bide/branch/main/graph/badge.svg" alt="Coverage"></a></p>
 
 <p align="center"><img src="assets/crash-demo.gif" width="100%" alt="bide demo: an agent is killed mid-charge, the restart halts with outcome unknown instead of charging again, the charge is resolved from the provider's record, and bide view shows the run with its audit proof and 2-of-3 approval signatures verified"></p>
 <p align="center">

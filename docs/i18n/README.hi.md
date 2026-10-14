@@ -1,4 +1,4 @@
-[English](../../README.md) · [简体中文](README.zh-CN.md) · [Русский](README.ru.md) · **हिन्दी** · [العربية](README.ar.md)
+[English](../../README.md) · [简体中文](README.zh-CN.md) · [Русский](README.ru.md) · **हिन्दी** · [العربية](README.ar.md) &nbsp; [![Coverage](https://codecov.io/gh/bide-ai/bide/branch/main/graph/badge.svg)](https://codecov.io/gh/bide-ai/bide)
 
 <p align="center">
   <img src="../../assets/bide-banner.png" alt="Bide">
@@ -9,7 +9,6 @@
   <br>
   साइड इफ़ेक्ट ज़्यादा-से-ज़्यादा एक बार चलते हैं, क्रैश के आर-पार भी। हर कार्रवाई बाद में प्रमाणनीय है।
 </p>
-<p align="center"><a href="https://codecov.io/gh/bide-ai/bide"><img src="https://codecov.io/gh/bide-ai/bide/branch/main/graph/badge.svg" alt="Coverage"></a></p>
 
 <p align="center"><img src="../../assets/crash-demo.gif" width="100%" alt="bide demo: भुगतान के बीच एजेंट को मार दिया जाता है, पुनः आरंभ पर वह दोबारा चार्ज करने के बजाय outcome unknown पर रुकता है, चार्ज प्रदाता के रिकॉर्ड से सुलझाया जाता है, और bide view सत्यापित ऑडिट प्रमाण और 2-में-से-3 अनुमोदन हस्ताक्षर दिखाता है"></p>
 <p align="center">
