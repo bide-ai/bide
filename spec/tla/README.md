@@ -2547,23 +2547,40 @@ development machine; the `ci` ones were sized to finish in minutes, the large ve
 | `esc-lost` | ci | One step with a lost sink reply. | 1,195,857 | 58 s |
 | `esc-crash` | ci | One step with a crash. | 1,002,682 | 3 min |
 | `esc-undecided` | ci | An approval (`EscMode = "undecided"`): escalated although acknowledged, two steps. | 881,759 | 2 min |
-| `esc-clears` | ci | One process, a sink that fails once: a step's all-clear when the event stops standing. | 1,446 | 1 s |
+| `esc-clears` | ci | One process, a sink that fails once. Too small to deliver a step (see below): the all-clear properties for the event itself. | 1,446 | 1 s |
 | `live-esc` | ci | Liveness of the chain (`EscRaised`, `EscDelivered`, `EscStops`), two processes, event not resolved. | 207,774 | 1 min |
 | `live-esc-undecided` | ci | The same for an approval, one process. | 318 | 1 s |
 | `live-esc-clears` | ci | `ClearsDelivered`, `EscStops`, one process. | 1,446 | 1 s |
 | `route-two` | ci | Two keys for one gate (two receivers), one failing request: both are acknowledged. One process. | 3,811 | 1 s |
 | `deep-esc` | nightly | Every fault at once with two steps. | not run locally | |
-| `deep-esc-clears`, `deep-live-esc`, `deep-live-esc-undecided`, `deep-route-two` | nightly | The larger versions of the `ci` ones above (two processes, with the all-clear, or with the event resolved): `deep-route-two` 3,824,395 states, 23 min; `deep-esc-clears` over 88 million states, 4 hours; `deep-live-esc` 1.1 million, 23 min; `deep-live-esc-undecided` 0.88 million, 32 min. | | |
+| `deep-esc-clears` | nightly | Two processes, a sink that fails once, with the all-clear: the step properties non-vacuously, both vacuity effects checked. | not run to completion locally (over 15 min) | |
+| `deep-live-esc`, `deep-live-esc-undecided`, `deep-route-two` | nightly | The larger versions of the `ci` ones above (two processes, with the all-clear, or with the event resolved): `deep-route-two` 3,824,395 states, 23 min; `deep-live-esc` 1.1 million, 23 min; `deep-live-esc-undecided` 0.88 million, 32 min. | | |
 
-The vacuity check (`EffectNotReachable`, which TLC must report violated) is: with `Clears`, an
-all-clear is delivered (a step's all-clear is among them); with `Levels` and no `Clears`, the first
-step of a chain is delivered. It was first written as "the last step": in `esc-unacked` (two steps, not acknowledged mode) the last
-step is delivered only if the first step is not acknowledged either, which needs a second failed
-request, and the fault budget of the configuration does not give it, so that vacuity check failed
-(the effect never fires) although the first step is reached. The first step is the effect that
-configuration exists to exercise. The last step of a two-step chain is reached in `esc-undecided`
-(an approval is escalated whatever was acknowledged), where the vacuity check with the old condition
-passed at depth 20, and in `deep-esc`.
+The vacuity check (`EffectNotReachable`, which TLC must report violated) is: with `Clears` and
+`Levels`, an escalation step is delivered and so is that step's all-clear (a state with both for one
+step; the event's own all-clear is not enough, since it would let the step properties hold
+vacuously); with `Clears` alone, an all-clear; with `Levels` alone, the first step of a chain; else a
+delivery. `EscDelivNotReachable` and `EscClearNotReachable` are its two halves, and a configuration
+may name further ones to check with `\* VACUITY-ALSO: <Name>` (`check.sh` runs each as an invariant that
+TLC must report violated); `deep-esc-clears` names both.
+
+Reaching a step's all-clear takes two processes (one retrying the event, one escalating it) and a
+failed request, which the one-process `esc-clears` and `live-esc-clears` (CI-sized, a second each) do
+not have; their step properties therefore hold only vacuously for steps. They say so with `VACUITY:
+skip`, and `regress/esc-clears-reach-step` and `-reach-clear` (a few seconds) check, at the
+two-process bound, that a step and a step's all-clear are delivered. The properties over steps with
+`Clears` are checked non-vacuously only by the nightly `deep-esc-clears`, which is large (it did not
+finish in 15 minutes locally; not run to completion). The vacuity condition was first written as
+"the last step" and then "the first step"; the former failed for a two-step chain whose sink accepts
+at its first request (the last step is reached only if the first step's receiver also fails), the
+latter was too weak under `Clears` (found in review): it let the event's own all-clear satisfy it.
+
+Routing of an approval by its approvers is checked by `RouteReaches` and `RouteNoExtra` (in
+`route-two`, over every map of three approvers to two receivers or no route and every route of the
+kind): every approver is reached, through its route or through the route of the kind, which is
+delivered to when any approver has no route and not otherwise. `regress/drop-unrouted` (`Bug =
+"DropUnrouted"`) leaves the route of the kind out, as the core did before the fix, and fails
+`RouteReaches`.
 
 ### Regressions: the protocol with one rule broken
 
@@ -2589,6 +2606,8 @@ they are the mutation check of every property above.
 | `clear-unclaimed` | the all-clear is owed for an event cleared before any delivery was attempted | `ClearOnlyIfTold` (12) |
 | `clear-overdue` | the all-clear has a deadline and goes overdue like an event | `ClearNeverOverdue` (16) |
 | `no-clear` | an event that stopped standing after it was delivered never gets its all-clear | `ClearsDelivered` (19) |
+| `drop-unrouted` | an approval with an unrouted approver is not delivered to the route of the kind | `RouteReaches` (depth 0) |
+| `esc-clears-reach-step`, `esc-clears-reach-clear` | reachability: with `Clears`, a step and a step's all-clear are delivered (the vacuity probes, inverted) | `EscDelivNotReachable` (14 states deep), `EscClearNotReachable` (depth 23) |
 | `shared-ack` | both receivers of a gate share one key: the first acknowledgement closes the second's | `NoSilentDrop` (liveness) |
 | `esc-early` | a step is observed before its event's deadline | `EscOnlyIfDue` |
 | `esc-skip` | step 2 does not wait for step 1 | `EscChain` |
