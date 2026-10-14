@@ -262,7 +262,7 @@ func openKMS(ctx context.Context, k *keyref.KMS, alg audit.Alg, o Options) (audi
 	}
 	c, err := mk(ctx, k.Region)
 	if err != nil {
-		return nil, fmt.Errorf("awskms: configure the AWS client: %w", err)
+		return nil, credError("awskms: could not load AWS credentials or configuration; set AWS_PROFILE or the standard AWS environment, or check the shared config files", err)
 	}
 	s, err := awskms.Open(ctx, awskms.Config{Client: c, KeyID: k.ARN, Scheme: alg})
 	if err != nil {
@@ -278,7 +278,7 @@ func openGCP(ctx context.Context, g *keyref.GCPKMS, alg audit.Alg, o Options) (a
 	}
 	c, err := mk(ctx)
 	if err != nil {
-		return nil, fmt.Errorf("gcpkms: configure the Cloud KMS client: %w", err)
+		return nil, credError("gcpkms: could not load Google application default credentials; run gcloud auth application-default login or set GOOGLE_APPLICATION_CREDENTIALS", err)
 	}
 	s, err := gcpkms.Open(ctx, gcpkms.Config{Client: c, KeyVersion: g.Version, Scheme: alg,
 		AllowSoftwareKey: o.AllowSoftwareKey, VerifyAttestation: o.VerifyAttestation})
@@ -292,6 +292,20 @@ func defaultGCP(ctx context.Context) (gcpkms.API, error) {
 	ctx, cancel := context.WithTimeout(ctx, configTimeout)
 	defer cancel()
 	return gcpkmsclient.NewKeyManagementClient(ctx)
+}
+
+// credError is a fixed message for a failure to load cloud credentials or configuration. The SDKs'
+// errors can echo the content of a malformed credentials or config file (a character, a type value, a
+// parse detail), so the message is never built from them; only a context error keeps its identity for
+// errors.Is.
+func credError(msg string, err error) error {
+	switch {
+	case errors.Is(err, context.DeadlineExceeded):
+		return fmt.Errorf("%s: %w", msg, context.DeadlineExceeded)
+	case errors.Is(err, context.Canceled):
+		return fmt.Errorf("%s: %w", msg, context.Canceled)
+	}
+	return errors.New(msg)
 }
 
 // configTimeout bounds loading the AWS configuration, which can reach for the instance metadata
