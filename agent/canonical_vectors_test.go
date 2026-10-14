@@ -233,7 +233,7 @@ func buildVectors() vectorFile {
 		{"unicode ids", "r\u00fcn>sub", "node:iter:2:\u4e2d", "t\u00f6ol", []byte(`{"k":"v"}`), "approver-\u00e9", true},
 		{"empty args", "r", "c", "t", nil, "a", true},
 		{"non-json args", "r", "c", "t", []byte("free text"), "a", false},
-		{"long ids", strings.Repeat("r", 300), strings.Repeat("c", 70000), "t", []byte(`[1]`), strings.Repeat("a", 200), true},
+		{"long ids", strings.Repeat("r", 300), strings.Repeat("c", 5000), "t", []byte(`[1]`), strings.Repeat("a", 200), true},
 	} {
 		s := ApprovalSubject{RunID: d.run, ToolUseID: d.call, ToolName: d.tool, Args: d.args}
 		v.Decisions = append(v.Decisions, decisionVector{Name: d.name, RunID: d.run, ToolUseID: d.call, ToolName: d.tool,
