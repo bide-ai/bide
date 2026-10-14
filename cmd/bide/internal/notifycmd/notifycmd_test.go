@@ -589,6 +589,9 @@ func TestHintClassifiesByErrorTypeNotText(t *testing.T) {
 	if got := hint(notify.ProbeResult{}, dns); !strings.Contains(got, "does not resolve") {
 		t.Errorf("dns: %q", got)
 	}
+	if got := hint(notify.ProbeResult{}, &net.DNSError{Err: "server misbehaving", Name: "x"}); strings.Contains(got, "does not resolve") {
+		t.Errorf("a DNS failure that is not a missing name: %q", got)
+	}
 	to := fmt.Errorf("notify: POST to x failed: %w", context.DeadlineExceeded)
 	if got := hint(notify.ProbeResult{}, to); !strings.Contains(got, "no answer in time") {
 		t.Errorf("timeout: %q", got)
