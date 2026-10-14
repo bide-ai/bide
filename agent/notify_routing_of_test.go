@@ -19,7 +19,8 @@ func TestRoutingOf_ReceiversAndEscalation(t *testing.T) {
 		approvers []string
 		want      []string
 	}{
-		"fan-out":          {NotificationApprovalPending, []string{"b", "a", "x"}, []string{"fin", "risk"}},
+		"fan-out": {NotificationApprovalPending, []string{"b", "a"}, []string{"fin", "risk"}},
+		"an unrouted approver also reaches the kind's receiver": {NotificationApprovalPending, []string{"b", "a", "x"}, []string{DefaultReceiver, "fin", "risk"}},
 		"unrouted gate":    {NotificationApprovalPending, []string{"x"}, []string{DefaultReceiver}},
 		"1-of-1 gate":      {NotificationApprovalPending, nil, []string{DefaultReceiver}},
 		"a routed kind":    {NotificationOutcomeUnknown, nil, []string{"oncall"}},
