@@ -48,8 +48,8 @@ const writeBusyTimeout = 30 * time.Second
 
 // Store is a SQLite-backed agent.Store.
 type Store struct {
-	w, r, l *sql.DB // writer (one connection), readers, leases (one connection)
-	own     bool    // Close closes the pools: Open opened them
+	w, r, l *sql.DB        // writer (one connection), readers, leases (one connection)
+	own     bool           // Close closes the pools: Open opened them
 	gate    *filegate.Gate // queues this process's writers on the file
 	t       tables
 }
