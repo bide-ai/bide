@@ -350,9 +350,9 @@ func TestAttentionApproveCommand(t *testing.T) {
 		t.Error("without the hook the page shows a bide approve command or does not say there is none")
 	}
 	var seen []string
-	o.ApproveCommand = func(runID, toolUseID string, single bool) string {
+	o.ApproveCommand = func(runID, toolUseID string, single bool) (string, error) {
 		seen = append(seen, runID+"/"+toolUseID)
-		return "bide approve -db j.db -run " + runID + " -call " + toolUseID + " <&>"
+		return "bide approve -db j.db -run " + runID + " -call " + toolUseID + " <&>", nil
 	}
 	_, page := get(t, Handler(o), "/attention")
 	if !strings.Contains(page, "bide approve -db j.db -run refund-1043 -call ") || !strings.Contains(page, "&lt;&amp;&gt;") {

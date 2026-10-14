@@ -20,7 +20,7 @@
 <dt>Pending</dt><dd>{{if .Pending}}{{join .Pending ", "}}{{else}}<span class="muted">none</span>{{end}}</dd>{{end}}
 <dt>Status</dt><dd>{{.Status}}</dd>
 </dl>{{end}}
-{{if .Command}}<p class="attn-label">Record a decision</p><pre class="attn-cmd">{{.Command}}</pre>{{end}}
+{{if .Command}}<p class="attn-label">Record a decision</p><pre class="attn-cmd">{{.Command}}</pre>{{else if .NoCommand}}<p class="attn-label">Record a decision</p><p class="muted">{{.NoCommand}}: an id holds a control or invisible character. Use <code>bide approve -list</code>.</p>{{end}}
 {{with .Halt}}<p class="attn-label">Outcome unknown: look the operation up where it ran, then record what happened</p><pre class="attn-cmd">agent.ResolveHalt(ctx, journal,
   {{.Ref}},
   agent.Outcome{Result: ...})</pre>{{end}}

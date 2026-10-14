@@ -129,7 +129,7 @@ type Options struct {
 	// ApproveCommand, when set, writes the bide approve command line that records a decision on a
 	// call of a run (single: a one-decision gate). The Needs attention list shows it with each
 	// pending approval; without it the list says it has none.
-	ApproveCommand func(runID, toolUseID string, single bool) string
+	ApproveCommand func(runID, toolUseID string, single bool) (string, error)
 	// Now is the clock the Needs attention list measures waits by; nil is time.Now.
 	Now func() time.Time
 

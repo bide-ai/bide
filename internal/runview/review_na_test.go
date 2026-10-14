@@ -162,7 +162,7 @@ func TestReviewAttentionEscapes(t *testing.T) {
 	recs := sampleRecs(t, "refund-1043")
 	const evil = `<script>alert(1)</script>"'`
 	x := Exports{evil: recs}
-	o := Options{Source: x, Now: func() time.Time { return attnNow }, ApproveCommand: func(r, c string, s bool) string { return "x " + r + " " + c }}
+	o := Options{Source: x, Now: func() time.Time { return attnNow }, ApproveCommand: func(r, c string, s bool) (string, error) { return "x " + r + " " + c, nil }}
 	h := Handler(o)
 	code, page := get(t, h, "/attention")
 	if code != 200 || strings.Contains(page, "<script>alert(1)") {

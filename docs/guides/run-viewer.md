@@ -179,8 +179,13 @@ Each item is one thing to do, and says since when:
 
 - **Waiting for approval**: the call and its tool, the gate (k of n), who has approved, who has denied
   and who is still pending, and how long it has waited (from the time the run asked, `AskedAt`).
-  The command that records a decision, `bide approve ...`, is shown with it when the viewer knows
-  the journal's name as that command takes it; otherwise the page says it has none.
+  The command that records a decision is shown with it, as `bide approve` writes it
+  (`approveline.Command`): the journal by its absolute path for `-db`, by the variable you gave
+  `-postgres-env` for a Postgres journal, and by the placeholder `<VAR>` when you gave a raw `-postgres`
+  DSN, since a DSN holds a password and is never put in a command. The approver's own id and key files
+  are placeholders too. Every value is quoted for a POSIX shell, so a run or call ID with a quote, a
+  space, `;` or `$(` is one word; an ID with a control, bidirectional or invisible character gets
+  *no command (unsafe id)* instead. An exported journal has no store to name, so it shows none.
 - **Halted: outcome unknown**: the operation whose attempt marker is live with no result, when it was
   attempted, and the `agent.ResolveHalt` call with its `HaltRef`, as on the run's page. Resolve it
   only after looking the operation up where it ran.
@@ -223,6 +228,7 @@ has an item. An aborted or cancelled run is listed too, since a halt outlives ei
 |---|---|
 | `-db <file>` | SQLite journal to read, opened read-only. Give one of `-db`, `-postgres` and `-journal`. |
 | `-postgres <dsn>` | Postgres journal to read, a pgx DSN; read in read-only sessions. |
+| `-postgres-env <VAR>` | The Postgres journal, its DSN read from this environment variable instead of the command line, so the password stays out of the argument list. Exclusive with `-postgres`. The Needs attention list's `bide approve` commands name the same variable. |
 | `-journal <file>` | An exported journal (`audit.JournalExport` JSON). Repeat it for several runs. |
 | `-run <id>` | The run whose URL to print. Without it, the printed URL is the [run list](#the-run-list). |
 | `-topology <file>` | A declared topology, as JSON of `flow.Topology()`, to draw a flow run against instead of the topology the run journaled: for a run started before `flow:topology` was journaled, or to check a run against another flow. |

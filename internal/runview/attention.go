@@ -4,6 +4,7 @@ import (
 	"cmp"
 	"context"
 	"encoding/json"
+	"errors"
 	"maps"
 	"net/http"
 	"net/url"
@@ -13,6 +14,7 @@ import (
 	"time"
 
 	"github.com/bide-ai/bide/agent"
+	"github.com/bide-ai/bide/internal/approveline"
 )
 
 // AttentionList is the Needs attention page: every unfinished run that needs a person, and every
@@ -66,6 +68,9 @@ type AttentionItem struct {
 	// Command is the bide approve command that records a decision on the call, when the viewer
 	// knows how to write one (Options.ApproveCommand). Empty otherwise.
 	Command string `json:"command,omitempty"`
+	// NoCommand says why an approval has none although the viewer writes them: an id that cannot be
+	// shown or pasted safely (approveline.ErrUnsafe).
+	NoCommand string `json:"no_command,omitempty"`
 	// Notify says whether the item was notified and acknowledged; nil without the notify trail.
 	Notify *NotifyStatus `json:"notify,omitempty"`
 }
@@ -305,7 +310,15 @@ func (o Options) runItems(v *View, recs []agent.Record) []AttentionItem {
 				ApprovedBy: g.ApprovedBy, DeniedBy: g.DeniedBy, Pending: g.Pending, Reapproval: g.Reapproval, Status: g.Status}}
 		it.Summary = "Approval for " + cmp.Or(g.ToolName, g.ToolUseID) + " is waiting."
 		if o.ApproveCommand != nil {
-			it.Command = o.ApproveCommand(v.RunID, g.ToolUseID, g.Single)
+			cmd, err := o.ApproveCommand(v.RunID, g.ToolUseID, g.Single)
+			switch {
+			case errors.Is(err, approveline.ErrUnsafe):
+				it.NoCommand = "no command (unsafe id)"
+			case err != nil:
+				it.NoCommand = "no command"
+			default:
+				it.Command = cmd
+			}
 		}
 		out = append(out, it)
 	}

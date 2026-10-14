@@ -176,6 +176,7 @@ bide view: a read-only local web page for one run of a bide journal
 
   bide view -db <file> [-run <id>] [flags]
   bide view -postgres <dsn> [-run <id>] [flags]
+  bide view -postgres-env <VAR> [-run <id>] [flags]
   bide view -journal <export.json> [-journal ...] [-run <id>] [flags]
   bide view -config <flow.yaml|flow.json> [-check [-strict]]
   bide view -config <flow.yaml|flow.json> -diff <old config|git revision> [-check [-fail-on-weaken]]
@@ -250,6 +251,8 @@ Flags:
     	the expected policy's k: verify approvals against -need of -approvers instead of the recorded policy; needs -approvers and -approver-keys
   -postgres string
     	Postgres journal to read, a pgx DSN such as postgres://user:pass@host:5432/db, read in sessions the server holds read-only (postgres.OpenReadOnly)
+  -postgres-env string
+    	name of the environment variable that holds the Postgres DSN, instead of -postgres: keeps the password out of the argument list, and is the name the Needs attention list's bide approve commands use
   -pubkey string
     	log public key as <scheme>:<hex>, or bare ed25519 hex, or a file holding it
   -run string
