@@ -1,0 +1,263 @@
+package audit_test
+
+import (
+	"context"
+	"crypto/ed25519"
+	"encoding/json"
+	"errors"
+	"slices"
+	"strings"
+	"testing"
+	"time"
+
+	"github.com/bide-ai/bide/agent"
+	"github.com/bide-ai/bide/agent/agenttest"
+	"github.com/bide-ai/bide/audit"
+	"github.com/bide-ai/bide/internal/journaltest"
+	"github.com/bide-ai/bide/plan"
+)
+
+// Separation of duties, offline: the evidence for a gate that excludes the requester discloses the
+// run's start (which names the requester), and VerifyApprovals recounts with the same exclusion.
+
+// runAs drives g's agent once as requester (the run's principal on its first drive; a resume
+// passes none and runs under the journaled one).
+func (g *gate) runAs(requester string) error {
+	charge := agent.MustFunc("charge", "charge the card", func(context.Context, struct {
+		Amount int `json:"amount"`
+	}) (string, error) {
+		g.charged++
+		return "ok", nil
+	}, agent.WithApproval(&g.policy))
+	var opts []agent.RunOption
+	if requester != "" {
+		opts = append(opts, agent.WithIdentity(agent.Identity{Actor: "agent@1", OnBehalfOf: requester}))
+	}
+	a := agenttest.MustNew(chargeModel{}, g.store, agent.WithTools(charge), agent.WithApproverVerifiers(g.resolver()))
+	_, err := a.Run(context.Background(), gateRun, agent.UserText("pay"), opts...)
+	return err
+}
+
+// sodPassedGate: 2 of {alice, bob, carol}, requested by alice, who approves; so do bob and carol.
+// alice's approval never counts; bob and carol pass the gate.
+func sodPassedGate(t *testing.T, exclude bool) *gate {
+	t.Helper()
+	g := newGate(2, []string{"alice", "bob", "carol"}, []string{"alice", "bob", "carol"})
+	g.policy.ExcludePrincipal = exclude
+	wantPaused(t, g.runAs("alice"), 0)
+	g.decide(t, "alice", true, false)
+	g.decide(t, "bob", true, false)
+	if exclude {
+		wantPaused(t, g.runAs(""), 1)
+		g.decide(t, "carol", true, false)
+	}
+	if err := g.runAs(""); err != nil {
+		t.Fatalf("run at quorum: %v", err)
+	}
+	if g.charged != 1 {
+		t.Fatalf("charge ran %d times, want 1", g.charged)
+	}
+	return g
+}
+
+// The evidence starts with the run's start, proven under the same head, and VerifyApprovals
+// recounts bob and carol, lists alice as ignored for being the requester, and names her.
+func TestSoDEvidence_ExcludedDecisionVerifiesOffline(t *testing.T) {
+	g := sodPassedGate(t, true)
+	sth := g.sth(t, 1700000000)
+	acts, err := audit.ApprovalEvidence(context.Background(), g.store, gateRun, "c1", sth)
+	if err != nil {
+		t.Fatalf("ApprovalEvidence: %v", err)
+	}
+	if acts[0].Kind != audit.KindStep || acts[0].Ref != "run:start" {
+		t.Fatalf("evidence starts with %s %q, want the run's start", acts[0].Kind, acts[0].Ref)
+	}
+	for i := 1; i < len(acts); i++ {
+		if acts[i].Bundle.Inclusion.Index <= acts[i-1].Bundle.Inclusion.Index {
+			t.Fatalf("evidence %d (%s) is not after evidence %d in the journal", i, acts[i].Kind, i-1)
+		}
+	}
+	v, err := audit.VerifyApprovals(acts, "c1", g.policy, g.resolver(), edV(g.logPub))
+	if err != nil || !v.OK {
+		t.Fatalf("VerifyApprovals = %+v, %v", v, err)
+	}
+	if !slices.Equal(v.Counted, []string{"bob", "carol"}) || v.Requester != "alice" {
+		t.Fatalf("verdict = %+v, want bob and carol counted and requester alice", v)
+	}
+	if got := ignoredReason(v, "alice"); got != agent.ReasonRequester {
+		t.Fatalf("alice ignored for %q, want %q", got, agent.ReasonRequester)
+	}
+
+	// The evidence also verifies as a package.
+	pkg, err := audit.Evidence(context.Background(), g.store, gateRun, edS(g.logPriv), 1700000000)
+	if err != nil {
+		t.Fatal(err)
+	}
+	acts, err = audit.ApprovalEvidence(context.Background(), g.store, gateRun, "c1", pkg.STH)
+	if err != nil {
+		t.Fatal(err)
+	}
+	pkg.Actions = append(pkg.Actions, acts...)
+	if err := pkg.Seal(edS(g.logPriv)); err != nil {
+		t.Fatal(err)
+	}
+	if rep, err := pkg.Verify(edV(g.logPub)); err != nil || !rep.OK {
+		t.Fatalf("package Verify: %v %+v", err, rep.Items)
+	}
+	if v, err := audit.VerifyApprovals(pkg.Actions, "c1", g.policy, g.resolver(), edV(g.logPub)); err != nil || !v.OK {
+		t.Fatalf("VerifyApprovals over the package = %+v, %v", v, err)
+	}
+}
+
+// Evidence that omits the run's start cannot show who the requester was: the recount counts no
+// one and the verdict fails, with a problem saying why.
+func TestSoDEvidence_WithoutRunStartFails(t *testing.T) {
+	g := sodPassedGate(t, true)
+	acts, err := audit.ApprovalEvidence(context.Background(), g.store, gateRun, "c1", g.sth(t, 1700000000))
+	if err != nil {
+		t.Fatal(err)
+	}
+	v, err := audit.VerifyApprovals(acts[1:], "c1", g.policy, g.resolver(), edV(g.logPub))
+	if !errors.Is(err, audit.ErrNotVerified) || v.OK || len(v.Counted) != 0 || !hasProblem(v, "run:start") {
+		t.Fatalf("verdict = %+v, %v; want not verified, nothing counted, a problem naming run:start", v, err)
+	}
+}
+
+// A run's start from another run, proven under another head, is not this run's requester.
+func TestSoDEvidence_ForeignRunStartFails(t *testing.T) {
+	g := sodPassedGate(t, true)
+	acts, err := audit.ApprovalEvidence(context.Background(), g.store, gateRun, "c1", g.sth(t, 1700000000))
+	if err != nil {
+		t.Fatal(err)
+	}
+	other := sodPassedGate(t, true)
+	other.logPub, other.logPriv = g.logPub, g.logPriv // the same log operator
+	foreign, err := audit.ApprovalEvidence(context.Background(), other.store, gateRun, "c1", other.sth(t, 1700000001))
+	if err != nil {
+		t.Fatal(err)
+	}
+	acts[0] = foreign[0]
+	v, err := audit.VerifyApprovals(acts, "c1", g.policy, g.resolver(), edV(g.logPub))
+	if !errors.Is(err, audit.ErrNotVerified) || v.OK || !hasProblem(v, "run:start") {
+		t.Fatalf("verdict = %+v, %v; want a problem with the run's start", v, err)
+	}
+}
+
+// An auditor who expects separation of duties fails a gate that did not enforce it (alice, the
+// requester, counted), and one who does not expect it fails a gate that did (the gate enforced
+// another policy).
+func TestSoDEvidence_PolicyMismatch(t *testing.T) {
+	g := sodPassedGate(t, false)
+	acts, err := audit.ApprovalEvidence(context.Background(), g.store, gateRun, "c1", g.sth(t, 1700000000))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if acts[0].Kind == audit.KindStep && acts[0].Ref == "run:start" {
+		t.Fatal("the evidence of a gate that does not exclude the requester discloses the run's start")
+	}
+	want := g.policy
+	want.ExcludePrincipal = true
+	v, err := audit.VerifyApprovals(acts, "c1", want, g.resolver(), edV(g.logPub))
+	if !errors.Is(err, audit.ErrNotVerified) || v.OK || !hasProblem(v, "requester") {
+		t.Fatalf("expecting exclusion of a gate without it: %+v, %v; want a problem", v, err)
+	}
+
+	g = sodPassedGate(t, true)
+	acts, err = audit.ApprovalEvidence(context.Background(), g.store, gateRun, "c1", g.sth(t, 1700000000))
+	if err != nil {
+		t.Fatal(err)
+	}
+	want = g.policy
+	want.ExcludePrincipal = false
+	v, err = audit.VerifyApprovals(acts, "c1", want, g.resolver(), edV(g.logPub))
+	if !errors.Is(err, audit.ErrNotVerified) || v.OK || !hasProblem(v, "requester") {
+		t.Fatalf("not expecting the exclusion of a gate with it: %+v, %v; want a problem", v, err)
+	}
+}
+
+// A tally written by someone with journal write access, claiming another requester and counting
+// alice, makes the gate run the call (a recorded tally is authoritative), but the offline recount
+// from the run's start excludes alice, and VerifyApprovals reports both disagreements.
+func TestSoDEvidence_ForgedTallyDetected(t *testing.T) {
+	ctx := context.Background()
+	g := newGate(2, []string{"alice", "bob", "carol"}, []string{"alice", "bob", "carol"})
+	g.policy.ExcludePrincipal = true
+	wantPaused(t, g.runAs("alice"), 0)
+	g.decide(t, "alice", true, false)
+	g.decide(t, "bob", true, false)
+	recs, err := g.store.History(ctx, gateRun)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var names []string
+	for _, r := range recs {
+		if agent.IsApprovalDecision(r, "c1") {
+			names = append(names, r.Name)
+		}
+	}
+	forged := agent.ApprovalTally{Need: 2, Approvers: g.policy.Approvers, Approved: 2, ApprovedBy: []string{"alice", "bob"},
+		Pending: []string{"carol"}, Records: names, DecisionFormat: agent.DecisionFormat, ExcludePrincipal: true, Requester: "zed"}
+	b, _ := json.Marshal(forged)
+	if _, err := journaltest.Put(ctx, g.store, gateRun, agent.ApprovalTallyStep("c1"), agent.Record{Kind: agent.StepValue, Result: b}); err != nil {
+		t.Fatal(err)
+	}
+	if err := g.runAs(""); err != nil || g.charged != 1 {
+		t.Fatalf("run on the forged tally = %v (charged %d)", err, g.charged)
+	}
+	acts, err := audit.ApprovalEvidence(ctx, g.store, gateRun, "c1", g.sth(t, 1700000000))
+	if err != nil {
+		t.Fatal(err)
+	}
+	v, err := audit.VerifyApprovals(acts, "c1", g.policy, g.resolver(), edV(g.logPub))
+	if !errors.Is(err, audit.ErrNotVerified) || v.OK {
+		t.Fatalf("forged tally verified: %+v", v)
+	}
+	if !hasProblem(v, `"zed"`) || !hasProblem(v, "disagrees") || !slices.Equal(v.Counted, []string{"bob"}) {
+		t.Fatalf("problems = %q, counted %v; want the requester and the recount reported", v.Problems, v.Counted)
+	}
+}
+
+// A gated plan flow node: the flow run's principal is the requester, and the evidence verifies
+// offline with the requester's approval ignored.
+func TestSoDEvidence_FlowGate(t *testing.T) {
+	ctx := agent.ContextWithIdentity(context.Background(), agent.Identity{OnBehalfOf: "alice"})
+	g := newGate(2, []string{"alice", "bob", "carol"}, []string{"alice", "bob", "carol"})
+	g.policy.ExcludePrincipal = true
+	b := plan.New[int, int]("refunds").WithApproverVerifiers(g.resolver())
+	pay := b.Step("pay", func(_ context.Context, n int) (int, error) { g.charged++; return n, nil }, plan.Approval(&g.policy))
+	notify := b.Step("notify", func(_ context.Context, n int) (int, error) { return n, nil }, plan.ReadOnly())
+	b.Edge(pay, notify)
+	f, err := b.Build()
+	if err != nil {
+		t.Fatal(err)
+	}
+	_, err = f.Run(ctx, g.store, flowRun, 120)
+	var pend *agent.ApprovalPending
+	if !errors.As(err, &pend) {
+		t.Fatalf("first drive = %v", err)
+	}
+	for _, id := range []string{"alice", "bob", "carol"} {
+		sig := ed25519.Sign(g.privs[id], agent.ApprovalDecisionBytes(pend.Subject(), id, true, testDecidedAt))
+		if err := agent.SubmitDecision(ctx, g.store, agent.Decision{RunID: flowRun, ToolUseID: pend.ToolUseID, ApproverID: id, Approved: true, DecidedAt: testDecidedAt, Alg: audit.AlgEd25519, Signature: sig}); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if _, err := f.Run(context.Background(), g.store, flowRun, 120); err != nil || g.charged != 1 {
+		t.Fatalf("drive at quorum = %v, ran %d", err, g.charged)
+	}
+	pkg, err := audit.Evidence(ctx, g.store, flowRun, edS(g.logPriv), time.Now().Add(-time.Hour).UnixNano())
+	if err != nil {
+		t.Fatal(err)
+	}
+	acts, err := audit.ApprovalEvidence(ctx, g.store, flowRun, "node:pay", pkg.STH)
+	if err != nil {
+		t.Fatal(err)
+	}
+	v, err := audit.VerifyApprovals(acts, "node:pay", g.policy, g.resolver(), edV(g.logPub))
+	if err != nil || !v.OK || !slices.Equal(v.Counted, []string{"bob", "carol"}) || ignoredReason(v, "alice") != agent.ReasonRequester {
+		t.Fatalf("verdict = %+v, %v; want bob and carol counted, alice ignored as the requester", v, err)
+	}
+	if !strings.Contains(acts[0].Ref, "run:start") {
+		t.Fatalf("flow evidence starts with %q, want the run's start", acts[0].Ref)
+	}
+}
