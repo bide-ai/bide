@@ -239,16 +239,17 @@ func TestVerifyRejectsOtherFormats(t *testing.T) {
 // name here, never reuse one a verifier in the field already reads as something else.
 func TestFormatNames(t *testing.T) {
 	for got, want := range map[string]string{
-		ProofFormat:          "bide.audit.proof.v3",
-		AbsenceFormat:        "bide.audit.absence.v3",
-		RunCertificateFormat: "bide.audit.runcert.v3",
-		CurrentGrantFormat:   "bide.audit.current-grant.v3",
-		EventInclusionFormat: "bide.audit.event-inclusion.v3",
-		EvidenceFormat:       "bide.audit.evidence.v5",
-		STHFormat:            "bide.audit.sth.v5",
-		AnchorEntryFormat:    "bide.audit.anchor-entry.v1",
-		JournalExportFormat:  "bide.audit.journal-export.v1",
-		GrantFormat:          "bide.audit.grant.v2",
+		ProofFormat:             "bide.audit.proof.v3",
+		AbsenceFormat:           "bide.audit.absence.v3",
+		RunCertificateFormat:    "bide.audit.runcert.v3",
+		CurrentGrantFormat:      "bide.audit.current-grant.v3",
+		EventInclusionFormat:    "bide.audit.event-inclusion.v3",
+		EvidenceFormat:          "bide.audit.evidence.v5",
+		STHFormat:               "bide.audit.sth.v5",
+		AnchorEntryFormat:       "bide.audit.anchor-entry.v1",
+		JournalExportFormat:     "bide.audit.journal-export.v1",
+		NotifyTrailExportFormat: "bide.audit.notify-trail-export.v1",
+		GrantFormat:             "bide.audit.grant.v2",
 	} {
 		if got != want {
 			t.Errorf("format %q, want %q", got, want)
