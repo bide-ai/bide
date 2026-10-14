@@ -107,10 +107,17 @@ func (e *notifyEngine) driveEnd(runID string, err error) {
 	if IsSubRun(runID) {
 		return // the root run's drive carries the same error up and raises it
 	}
+	e.driveEndRoot(runID, err)
+}
+
+// driveEndRoot is driveEnd for a run its caller says is a root: a plan flow's run (which is its own
+// root whatever its ID holds, and files its events under its own trail, as the sweep does), or one
+// the caller drives itself.
+func (e *notifyEngine) driveEndRoot(runID string, err error) {
 	if ev, ok := e.eventFromErr(runID, err); ok {
 		e.w.submit(ev)
 	}
-	e.queueScan(runID) // the drive may have resolved, decided or ended an event already delivered
+	e.queueScanTrail(runID) // the drive may have resolved, decided or ended an event already delivered
 }
 
 // causeClass is the closed-set cause of a recovery failure.
@@ -241,7 +248,7 @@ func NewRunNotifier(j *Journal, o NotifierOption) (*RunNotifier, error) {
 // DriveEnd tells the notifier that a drive of runID ended with err: it queues the event err raises
 // (a halt, a pending approval, an aborted saga), if any, and returns at once. A drive that ended
 // with another error or none raises nothing.
-func (r *RunNotifier) DriveEnd(runID string, err error) { r.e.driveEnd(runID, err) }
+func (r *RunNotifier) DriveEnd(runID string, err error) { r.e.driveEndRoot(runID, err) }
 
 // Flush waits for the deliveries in flight to finish their round and stops the worker, as
 // Agent.FlushNotifications does.

@@ -111,7 +111,12 @@ func (e *notifyEngine) queueScan(runID string) {
 	if IsSubRun(runID) {
 		return // the root run's trail holds its events
 	}
-	e.w.submit(notifyEvent{key: scanKey(runID), scan: true, runID: runID})
+	e.queueScanTrail(runID)
+}
+
+// queueScanTrail queues the scan of the trail of root, a run known to be a root.
+func (e *notifyEngine) queueScanTrail(root string) {
+	e.w.submit(notifyEvent{key: scanKey(root), scan: true, runID: root})
 }
 
 // clearScan reads runID's trail and queues, for each event in it, what it owes a receiver now:

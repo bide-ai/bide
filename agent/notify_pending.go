@@ -87,6 +87,7 @@ func NotifyPending(ctx context.Context, j *Journal, n Notifier, trail NotifyTrai
 			errs = append(errs, fmt.Errorf("notification sweep: read run %s: %w", runID, err))
 			continue
 		}
+		e.queueScanTrail(runStartRoot(runID, recs)) // a flow run with a mark in its ID is its own root
 		for _, ev := range e.pendingEvents(runID, recs) {
 			if _, err := e.round(ctx, ev); err != nil {
 				errs = append(errs, fmt.Errorf("notification sweep: run %s: %w", runID, err))
@@ -148,10 +149,27 @@ func newestTime(recs []Record) (time.Time, bool) {
 // unfinished ones and the aborted ones.
 var sweepFilter = RunFilter{ExcludeHolding: []string{runCompleteStep, runCancelledStep}}
 
+// runStartRoot is the root run whose trail holds the events of runID, from its history: a plan
+// flow's run (its run:start records RunKindFlow) is its own root, whatever its ID holds, as the
+// flow files its events under; any other run is attributed to the root its ID names (treeRootID),
+// so a sub-agent's run is its root run's.
+func runStartRoot(runID string, recs []Record) string {
+	for _, r := range recs {
+		if r.Kind == StepValue && r.Name == runStartStep {
+			var s RunStart
+			if json.Unmarshal(r.Result, &s) == nil && s.kind() == RunKindFlow {
+				return runID
+			}
+			break
+		}
+	}
+	return treeRootID(runID)
+}
+
 // pendingEvents returns the events journaled in recs, the history of the unfinished run runID, that
 // still need a person. A sub-agent's run (its ID holds '>') is attributed to its root run.
 func (e *notifyEngine) pendingEvents(runID string, recs []Record) []notifyEvent {
-	root := treeRootID(runID)
+	root := runStartRoot(runID, recs)
 	have := make(map[string]bool, len(recs))
 	for _, r := range recs {
 		have[r.Name] = true

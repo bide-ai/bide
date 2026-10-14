@@ -2,6 +2,7 @@ package agent
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"strings"
@@ -1152,4 +1153,43 @@ func TestResolved_RecoverAndRecoverLoopBackfill(t *testing.T) {
 	waitFor(t, func() bool { return len(listed(j, tr)) == 1 })
 	cancel()
 	<-done
+}
+
+// A flow run is its own root, whatever its ID holds: a flow named "tenant>flow1" is not a
+// sub-agent of "tenant". The hook path (RunNotifier.DriveEnd) and the sweep file its gate under the
+// same trail, the flow run's, and deliver it once.
+func TestNotifier_AFlowRunWithAMarkInItsIDHasOneRootOnBothPaths(t *testing.T) {
+	ctx := context.Background()
+	clk := sweepClock()
+	const flow = "tenant>flow1"
+	j := memJournal()
+	start, _ := json.Marshal(RunStart{Kind: RunKindFlow, Flow: &FlowRef{Name: "f"}})
+	if _, _, err := j.putEntry(ctx, flow, runStartStep, Record{Kind: StepValue, Result: start}); err != nil {
+		t.Fatal(err)
+	}
+	putGate(t, j, flow, ApprovalWait{ToolUseID: "node:pay", ToolName: "pay", Single: true})
+	tr, sink := NewMemNotifyTrail(), &fakeSink{}
+
+	rn, err := NewRunNotifier(j, WithNotifier(sink, tr, fixedNotifyClock(clk), WithNotifyHolder("flow")))
+	if err != nil {
+		t.Fatal(err)
+	}
+	rn.DriveEnd(flow, &ApprovalPending{RunRef: RunRef{RunID: flow, RootRunID: flow}, ToolUseID: "node:pay", ToolName: "pay"})
+	if err := rn.Flush(ctx); err != nil {
+		t.Fatal(err)
+	}
+	if sink.count() != 1 || sink.calls[0].RunID != flow {
+		t.Fatalf("the hook path: %d deliveries, %+v", sink.count(), sink.calls)
+	}
+	if err := sweep(t, j, sink, tr, clk); err != nil {
+		t.Fatal(err)
+	}
+	if sink.count() != 1 {
+		t.Fatalf("the sweep delivered the gate again: %d deliveries", sink.count())
+	}
+	for name, recs := range tr.trails {
+		if len(recs) > 0 && name != NotifyTrailName(flow) && !strings.HasPrefix(name, NotifyOpenTrail) {
+			t.Fatalf("a record under %s: the event belongs to %s only", name, NotifyTrailName(flow))
+		}
+	}
 }
