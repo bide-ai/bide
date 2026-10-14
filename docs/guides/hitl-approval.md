@@ -224,9 +224,14 @@ signed decision time in canonical form, and the signature verifies for this call
   same rule as 1-of-1. Resubmitting a decision is a no-op: its journal step is named by the decision
   (call, approver, verdict, scheme and `decided_at`, `agent.DecisionStep`), never by its signature bytes, so a
   randomized scheme such as `ecdsa-p256`, which signs one decision differently each time, still journals it
-  once, even when two submissions race (with `WithDecisionCheck`; without it the library cannot tell a
-  re-signing from a bad record, and writes the second under a signature-derived name, which the counting
-  rule supersedes). A record that is not the approver's valid decision never takes the decision's name.
+  once, even when two submissions race. Exactly: an identical resubmission (same signature), including of a
+  decision a version that named by signature journaled, is a no-op with or without `WithDecisionCheck`;
+  a re-signing under different bytes is found and not rewritten only with `WithDecisionCheck`, which reads
+  the signatures (without it the library cannot tell a re-signing from a bad record, and writes the
+  second under a signature-derived name, which the counting rule supersedes). A record that is not the
+  approver's valid decision never takes the decision's name. `agent.HeldDecisionStep` finds the record
+  that holds a decision (signature included) wherever it is; `agent.DecisionStep` is only the name
+  written first, not a lookup key.
 - **Only valid denials can deny.** Invalid records never count toward "k is unreachable", so they
   cannot force a denial either.
 - **One key is one seat.** An approver whose verifier shares a key identity with another approver's,

@@ -263,9 +263,9 @@ relying on the exclusion. See
 
 **Journals written before the decision step was keyed by identity.** A decision recorded by an earlier
 version is named by its signature (`approval:<call>:<approver>:<hash with the signature>`). It reads,
-counts and verifies as before, and `bide audit` and evidence read it unchanged; a re-signing of such a
-decision (`WithDecisionCheck`) finds it by what it says and writes nothing more. Only a randomized
-scheme submitted without `WithDecisionCheck` can still add a duplicate record, which the counting
+counts and verifies as before, and `bide audit` and evidence read it unchanged; an identical resubmission is a no-op with or without a check, and a re-signing under different bytes
+(`WithDecisionCheck`) finds it by what it says and writes nothing more. Only a randomized
+scheme re-signing submitted without `WithDecisionCheck` can still add a duplicate record, which the counting
 rule supersedes. See [Human approval](guides/hitl-approval.md).
 
 **A decision's time is the approver's claim.** Each signed decision carries when the approver
