@@ -173,7 +173,7 @@ func (f *fake) AsymmetricSign(ctx context.Context, req *kmspb.AsymmetricSignRequ
 
 func open(t *testing.T, f *fake, mod ...func(*Config)) *Signer {
 	t.Helper()
-	cfg := Config{Client: f, KeyVersion: testVersion, AllowSoftware: f.ec == nil}
+	cfg := Config{Client: f, KeyVersion: testVersion, Scheme: audit.AlgEd25519, AllowSoftwareKey: true}
 	if f.ec != nil {
 		cfg.Scheme = audit.AlgECDSAP256
 	}
@@ -235,7 +235,7 @@ func TestRequestShape(t *testing.T) {
 
 func TestOpenRefusesOtherKeys(t *testing.T) {
 	ctx := context.Background()
-	if _, err := Open(ctx, Config{Client: newP256(t, kmspb.ProtectionLevel_HSM), KeyVersion: testVersion}); !errors.Is(err, ErrNoEd25519) {
+	if _, err := Open(ctx, Config{Client: newP256(t, kmspb.ProtectionLevel_HSM), KeyVersion: testVersion, Scheme: audit.AlgEd25519}); !errors.Is(err, ErrNoEd25519) {
 		t.Fatalf("P-256 version under Ed25519: %v", err)
 	}
 	if _, err := Open(ctx, Config{Client: newEd(t), KeyVersion: testVersion, Scheme: audit.AlgECDSAP256}); !errors.Is(err, ErrNoP256) {
@@ -264,7 +264,7 @@ func TestOpenRefusesStates(t *testing.T) {
 	} {
 		f := newEd(t)
 		f.ver.State = st
-		_, err := Open(context.Background(), Config{Client: f, KeyVersion: testVersion, AllowSoftware: true})
+		_, err := Open(context.Background(), Config{Client: f, KeyVersion: testVersion, Scheme: audit.AlgEd25519, AllowSoftwareKey: true})
 		if !errors.Is(err, ErrVersionState) {
 			t.Errorf("state %s: err = %v", st, err)
 		}
@@ -293,7 +293,7 @@ func TestProtectionLevelPolicy(t *testing.T) {
 		{kmspb.ProtectionLevel_HSM, true, true, true},
 	} {
 		f := newP256(t, tc.level)
-		s, err := Open(ctx, Config{Client: f, KeyVersion: testVersion, Scheme: audit.AlgECDSAP256, AllowSoftware: tc.soft, AllowExternal: tc.ext})
+		s, err := Open(ctx, Config{Client: f, KeyVersion: testVersion, Scheme: audit.AlgECDSAP256, AllowSoftwareKey: tc.soft, AllowExternalKey: tc.ext})
 		if tc.ok != (err == nil) || (!tc.ok && !errors.Is(err, ErrProtectionLevel)) {
 			t.Errorf("%+v: err = %v", tc, err)
 		}
@@ -306,24 +306,24 @@ func TestProtectionLevelPolicy(t *testing.T) {
 	}
 	// A level the signer does not know is refused even with both options set.
 	f := newP256(t, kmspb.ProtectionLevel(99))
-	if _, err := Open(ctx, Config{Client: f, KeyVersion: testVersion, Scheme: audit.AlgECDSAP256, AllowSoftware: true, AllowExternal: true}); !errors.Is(err, ErrProtectionLevel) {
+	if _, err := Open(ctx, Config{Client: f, KeyVersion: testVersion, Scheme: audit.AlgECDSAP256, AllowSoftwareKey: true, AllowExternalKey: true}); !errors.Is(err, ErrProtectionLevel) {
 		t.Errorf("unknown level: %v", err)
 	}
 	// An unspecified level is not trusted.
 	f = newP256(t, kmspb.ProtectionLevel_PROTECTION_LEVEL_UNSPECIFIED)
-	if _, err := Open(ctx, Config{Client: f, KeyVersion: testVersion, Scheme: audit.AlgECDSAP256, AllowSoftware: true, AllowExternal: true}); !errors.Is(err, ErrIntegrity) {
+	if _, err := Open(ctx, Config{Client: f, KeyVersion: testVersion, Scheme: audit.AlgECDSAP256, AllowSoftwareKey: true, AllowExternalKey: true}); !errors.Is(err, ErrIntegrity) {
 		t.Fatalf("unspecified protection level: %v", err)
 	}
 }
 
 // Cloud KMS has no HSM-backed Ed25519 key, so the zero Config refuses Ed25519 and says why.
-func TestEd25519NeedsAllowSoftware(t *testing.T) {
+func TestEd25519NeedsAllowSoftwareKey(t *testing.T) {
 	f := newEd(t)
-	_, err := Open(context.Background(), Config{Client: f, KeyVersion: testVersion})
+	_, err := Open(context.Background(), Config{Client: f, KeyVersion: testVersion, Scheme: audit.AlgEd25519})
 	if !errors.Is(err, ErrProtectionLevel) {
 		t.Fatalf("err = %v", err)
 	}
-	for _, want := range []string{"no HSM-backed Ed25519", "AllowSoftware", "AudAlg"} {
+	for _, want := range []string{"no HSM-backed Ed25519", "AllowSoftwareKey", "AudAlg"} {
 		want = strings.Replace(want, "AudAlg", "ECDSAP256", 1)
 		if !strings.Contains(err.Error(), want) {
 			t.Errorf("error lacks %q: %v", want, err)
@@ -332,12 +332,12 @@ func TestEd25519NeedsAllowSoftware(t *testing.T) {
 	if f.signs.Load() != 0 {
 		t.Error("signed before refusing")
 	}
-	if _, err := Open(context.Background(), Config{Client: f, KeyVersion: testVersion, AllowSoftware: true}); err != nil {
-		t.Fatalf("with AllowSoftware: %v", err)
+	if _, err := Open(context.Background(), Config{Client: f, KeyVersion: testVersion, Scheme: audit.AlgEd25519, AllowSoftwareKey: true}); err != nil {
+		t.Fatalf("with AllowSoftwareKey: %v", err)
 	}
 	// The P-256 message points the other way: it names the options, not P-256.
 	_, err = Open(context.Background(), Config{Client: newP256(t, kmspb.ProtectionLevel_SOFTWARE), KeyVersion: testVersion, Scheme: audit.AlgECDSAP256})
-	if !errors.Is(err, ErrProtectionLevel) || !strings.Contains(err.Error(), "AllowSoftware") || strings.Contains(err.Error(), "no HSM-backed Ed25519") {
+	if !errors.Is(err, ErrProtectionLevel) || !strings.Contains(err.Error(), "AllowSoftwareKey") || strings.Contains(err.Error(), "no HSM-backed Ed25519") {
 		t.Fatalf("P-256 software: %v", err)
 	}
 }
@@ -381,22 +381,22 @@ func TestResponseForAnotherResourceRefused(t *testing.T) {
 	const other = "projects/bank-prod/locations/europe-west2/keyRings/bide/cryptoKeys/audit/cryptoKeyVersions/4"
 	f := newEd(t)
 	f.onVersion = func(v *kmspb.CryptoKeyVersion) { v.Name = other }
-	if _, err := Open(ctx, Config{Client: f, KeyVersion: testVersion, AllowSoftware: true}); !errors.Is(err, ErrIntegrity) {
+	if _, err := Open(ctx, Config{Client: f, KeyVersion: testVersion, Scheme: audit.AlgEd25519, AllowSoftwareKey: true}); !errors.Is(err, ErrIntegrity) {
 		t.Fatalf("version: %v", err)
 	}
 	f = newEd(t)
 	f.onKey = func(p *kmspb.PublicKey) { p.Name = other }
-	if _, err := Open(ctx, Config{Client: f, KeyVersion: testVersion, AllowSoftware: true}); !errors.Is(err, ErrIntegrity) {
+	if _, err := Open(ctx, Config{Client: f, KeyVersion: testVersion, Scheme: audit.AlgEd25519, AllowSoftwareKey: true}); !errors.Is(err, ErrIntegrity) {
 		t.Fatalf("public key: %v", err)
 	}
 	f = newEd(t)
 	f.onKey = func(p *kmspb.PublicKey) { p.Name = "" }
-	if _, err := Open(ctx, Config{Client: f, KeyVersion: testVersion, AllowSoftware: true}); !errors.Is(err, ErrIntegrity) {
+	if _, err := Open(ctx, Config{Client: f, KeyVersion: testVersion, Scheme: audit.AlgEd25519, AllowSoftwareKey: true}); !errors.Is(err, ErrIntegrity) {
 		t.Fatalf("public key without name: %v", err)
 	}
 	f = newEd(t)
 	f.onSign = func(r *kmspb.AsymmetricSignResponse) { r.Name = other }
-	if _, err := Open(ctx, Config{Client: f, KeyVersion: testVersion, AllowSoftware: true}); !errors.Is(err, ErrIntegrity) {
+	if _, err := Open(ctx, Config{Client: f, KeyVersion: testVersion, Scheme: audit.AlgEd25519, AllowSoftwareKey: true}); !errors.Is(err, ErrIntegrity) {
 		t.Fatalf("sign: %v", err)
 	}
 	if f.signs.Load() != 1 {
@@ -418,13 +418,13 @@ func TestPublicKeyIntegrity(t *testing.T) {
 	for name, mut := range cases {
 		f := newEd(t)
 		f.onKey = mut
-		if _, err := Open(ctx, Config{Client: f, KeyVersion: testVersion, AllowSoftware: true}); !errors.Is(err, ErrIntegrity) {
+		if _, err := Open(ctx, Config{Client: f, KeyVersion: testVersion, Scheme: audit.AlgEd25519, AllowSoftwareKey: true}); !errors.Is(err, ErrIntegrity) {
 			t.Errorf("%s: err = %v", name, err)
 		}
 	}
 	f := newEd(t)
 	f.onKey = func(p *kmspb.PublicKey) { p.Algorithm = kmspb.CryptoKeyVersion_EC_SIGN_P256_SHA256 }
-	if _, err := Open(ctx, Config{Client: f, KeyVersion: testVersion, AllowSoftware: true}); !errors.Is(err, ErrNoEd25519) {
+	if _, err := Open(ctx, Config{Client: f, KeyVersion: testVersion, Scheme: audit.AlgEd25519, AllowSoftwareKey: true}); !errors.Is(err, ErrNoEd25519) {
 		t.Errorf("public key algorithm: %v", err)
 	}
 }
@@ -456,10 +456,10 @@ func TestPublicKeyShapeRefused(t *testing.T) {
 		if tc.p256 {
 			f, cfg = newP256(t, kmspb.ProtectionLevel_HSM), Config{Scheme: audit.AlgECDSAP256}
 		} else {
-			f = newEd(t)
+			f, cfg = newEd(t), Config{Scheme: audit.AlgEd25519}
 		}
 		f.pem = tc.pem
-		cfg.Client, cfg.KeyVersion, cfg.AllowSoftware = f, testVersion, true
+		cfg.Client, cfg.KeyVersion, cfg.AllowSoftwareKey = f, testVersion, true
 		if _, err := Open(ctx, cfg); !errors.Is(err, tc.sentin) {
 			t.Errorf("%s: err = %v", name, err)
 		}
@@ -467,7 +467,7 @@ func TestPublicKeyShapeRefused(t *testing.T) {
 	// Trailing whitespace after the block is how PEM is usually written and is accepted.
 	f := newEd(t)
 	f.pem = spkiPEM(f.ed.Public()) + "\n\n"
-	if _, err := Open(ctx, Config{Client: f, KeyVersion: testVersion, AllowSoftware: true}); err != nil {
+	if _, err := Open(ctx, Config{Client: f, KeyVersion: testVersion, Scheme: audit.AlgEd25519, AllowSoftwareKey: true}); err != nil {
 		t.Errorf("trailing newlines: %v", err)
 	}
 }
@@ -699,14 +699,14 @@ func TestErrorsCarryOnlyTheCode(t *testing.T) {
 		}
 		f := newEd(t)
 		f.getErr = leak
-		_, err := Open(context.Background(), Config{Client: f, KeyVersion: testVersion, AllowSoftware: true})
+		_, err := Open(context.Background(), Config{Client: f, KeyVersion: testVersion, Scheme: audit.AlgEd25519, AllowSoftwareKey: true})
 		check("get version", err)
 		f = newEd(t)
 		f.pubErr = leak
-		_, err = Open(context.Background(), Config{Client: f, KeyVersion: testVersion, AllowSoftware: true})
+		_, err = Open(context.Background(), Config{Client: f, KeyVersion: testVersion, Scheme: audit.AlgEd25519, AllowSoftwareKey: true})
 		check("get public key", err)
 		f = newEd(t)
-		_, err = Open(context.Background(), Config{Client: &lateFail{f, leak}, KeyVersion: testVersion, AllowSoftware: true})
+		_, err = Open(context.Background(), Config{Client: &lateFail{f, leak}, KeyVersion: testVersion, Scheme: audit.AlgEd25519, AllowSoftwareKey: true})
 		check("self-test sign", err)
 		f = newEd(t)
 		s := open(t, f)
@@ -758,7 +758,7 @@ func TestContextErrorsKeepTheirSentinel(t *testing.T) {
 
 func TestTimeout(t *testing.T) {
 	f := newEd(t)
-	s, err := Open(context.Background(), Config{Client: f, KeyVersion: testVersion, AllowSoftware: true, Timeout: 3 * time.Second})
+	s, err := Open(context.Background(), Config{Client: f, KeyVersion: testVersion, Scheme: audit.AlgEd25519, AllowSoftwareKey: true, Timeout: 3 * time.Second})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -779,7 +779,7 @@ func TestOpenHonoursTheContext(t *testing.T) {
 	cancel()
 	f := newEd(t)
 	f.getErr = ctx.Err()
-	if _, err := Open(ctx, Config{Client: f, KeyVersion: testVersion, AllowSoftware: true}); !errors.Is(err, context.Canceled) {
+	if _, err := Open(ctx, Config{Client: f, KeyVersion: testVersion, Scheme: audit.AlgEd25519, AllowSoftwareKey: true}); !errors.Is(err, context.Canceled) {
 		t.Fatalf("err = %v", err)
 	}
 }
@@ -790,7 +790,7 @@ type ctxKey struct{}
 func TestOpenPassesItsContextToTheSelfTest(t *testing.T) {
 	f := newEd(t)
 	ctx := context.WithValue(context.Background(), ctxKey{}, "open")
-	if _, err := Open(ctx, Config{Client: f, KeyVersion: testVersion, AllowSoftware: true}); err != nil {
+	if _, err := Open(ctx, Config{Client: f, KeyVersion: testVersion, Scheme: audit.AlgEd25519, AllowSoftwareKey: true}); err != nil {
 		t.Fatal(err)
 	}
 	if f.lastCtx.Value(ctxKey{}) != "open" {
@@ -894,5 +894,115 @@ func TestAuditedStoreAndEvidenceThroughKMS(t *testing.T) {
 				t.Fatalf("%+v %v", rep, err)
 			}
 		})
+	}
+}
+
+// The default scheme is P-256, the one Cloud KMS offers in an HSM, so a zero-policy Open works on an HSM key.
+func TestDefaultSchemeIsP256(t *testing.T) {
+	s, err := Open(context.Background(), Config{Client: newP256(t, kmspb.ProtectionLevel_HSM), KeyVersion: testVersion})
+	if err != nil || s.Alg() != audit.AlgECDSAP256 {
+		t.Fatalf("err %v", err)
+	}
+	// An Ed25519 key under the default scheme is refused, and the error says how to use it.
+	_, err = Open(context.Background(), Config{Client: newEd(t), KeyVersion: testVersion, AllowSoftwareKey: true})
+	if !errors.Is(err, ErrNoP256) || !strings.Contains(err.Error(), "audit.AlgEd25519") || !strings.Contains(err.Error(), "AllowSoftwareKey") {
+		t.Fatalf("err = %v", err)
+	}
+}
+
+// AllowSoftwareKey widens what Open accepts, not what it trusts: on an HSM key the level is still pinned.
+func TestAllowSoftwareKeyStillPinsTheLevel(t *testing.T) {
+	f := newP256(t, kmspb.ProtectionLevel_HSM)
+	s := open(t, f, func(c *Config) { c.AllowSoftwareKey = true })
+	if s.ProtectionLevel() != "HSM" {
+		t.Fatalf("level %s", s.ProtectionLevel())
+	}
+	f.onSign = func(r *kmspb.AsymmetricSignResponse) { r.ProtectionLevel = kmspb.ProtectionLevel_SOFTWARE }
+	if _, err := s.Sign([]byte("m")); !errors.Is(err, ErrIntegrity) {
+		t.Fatalf("a key that stopped being an HSM key signed: %v", err)
+	}
+}
+
+// pem.Decode skips text before the first block; the signer does not.
+func TestPEMLeadingJunkAndHeadersRefused(t *testing.T) {
+	f := newEd(t)
+	good := spkiPEM(f.ed.Public())
+	der, _ := pem.Decode([]byte(good))
+	for name, p := range map[string]string{
+		"leading junk": "junk before the block\n" + good,
+		"headers":      string(pem.EncodeToMemory(&pem.Block{Type: "PUBLIC KEY", Headers: map[string]string{"X-Evil": "1"}, Bytes: der.Bytes})),
+	} {
+		g := newEd(t)
+		g.pem = p
+		if _, err := Open(context.Background(), Config{Client: g, KeyVersion: testVersion, Scheme: audit.AlgEd25519, AllowSoftwareKey: true}); !errors.Is(err, ErrNoEd25519) {
+			t.Errorf("%s accepted: %v", name, err)
+		}
+	}
+	// Leading blank lines are fine.
+	f.pem = "\n\n" + good
+	if _, err := Open(context.Background(), Config{Client: f, KeyVersion: testVersion, Scheme: audit.AlgEd25519, AllowSoftwareKey: true}); err != nil {
+		t.Errorf("leading whitespace: %v", err)
+	}
+}
+
+// A retry after a checksum mismatch never returns a signature that does not verify.
+func TestRetryNeverReturnsAWrongSignature(t *testing.T) {
+	f := newEd(t)
+	s := open(t, f)
+	n := 0
+	f.onSign = func(r *kmspb.AsymmetricSignResponse) {
+		n++
+		if n == 1 {
+			r.SignatureCrc32C = wrapperspb.Int64(r.SignatureCrc32C.Value ^ 1)
+			return
+		}
+		r.Signature = ed25519.Sign(f.ed, []byte("another message"))
+		r.SignatureCrc32C = crcOf(r.Signature)
+	}
+	before := f.signs.Load()
+	sig, err := s.Sign([]byte("m"))
+	if !errors.Is(err, ErrBadSignature) || sig != nil || f.signs.Load()-before != 2 {
+		t.Fatalf("sig %x err %v, %d calls", sig, err, f.signs.Load()-before)
+	}
+}
+
+// A cancelled context stops the retry loop before another call.
+func TestCancelStopsRetries(t *testing.T) {
+	f := newEd(t)
+	s := open(t, f)
+	ctx, cancel := context.WithCancel(context.Background())
+	f.onSign = func(r *kmspb.AsymmetricSignResponse) {
+		cancel()
+		r.SignatureCrc32C = wrapperspb.Int64(r.SignatureCrc32C.Value ^ 1)
+	}
+	before := f.signs.Load()
+	_, err := s.sign(ctx, []byte("m"))
+	if !errors.Is(err, context.Canceled) {
+		t.Fatalf("err = %v", err)
+	}
+	if got := f.signs.Load() - before; got != 1 {
+		t.Fatalf("%d calls after the context was cancelled", got)
+	}
+}
+
+// Timeout bounds Sign as a whole: three slow attempts do not take three timeouts.
+func TestTimeoutBoundsTheWholeRetryLoop(t *testing.T) {
+	f := newEd(t)
+	s := open(t, f, func(c *Config) { c.Timeout = 100 * time.Millisecond })
+	f.onSign = func(r *kmspb.AsymmetricSignResponse) {
+		time.Sleep(60 * time.Millisecond)
+		r.SignatureCrc32C = wrapperspb.Int64(r.SignatureCrc32C.Value ^ 1)
+	}
+	before := f.signs.Load()
+	start := time.Now()
+	_, err := s.Sign([]byte("m"))
+	if d := time.Since(start); d > 180*time.Millisecond {
+		t.Fatalf("Sign took %v with Timeout 100ms", d)
+	}
+	if !errors.Is(err, context.DeadlineExceeded) && !errors.Is(err, ErrIntegrity) {
+		t.Fatalf("err = %v", err)
+	}
+	if got := f.signs.Load() - before; got > 2 {
+		t.Fatalf("%d attempts inside one deadline", got)
 	}
 }

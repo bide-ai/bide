@@ -8,26 +8,28 @@
 //
 // Config.Scheme picks the scheme, and the signer never signs with a different one in its place:
 //
-//   - audit.AlgEd25519 (the default): a CryptoKeyVersion with algorithm EC_SIGN_ED25519, which
-//     signs the raw message in the request's data field in PureEdDSA mode (RFC 8032), so audit's
-//     verifiers check its signatures with no change. Open refuses a version of another algorithm
-//     (ErrNoEd25519).
-//   - audit.AlgECDSAP256: a version with algorithm EC_SIGN_P256_SHA256, signing the SHA-256 digest
-//     of the message in the request's digest field. Cloud KMS returns an ASN.1 DER signature,
-//     which the signer converts to the canonical low-S r||s that audit verifies. Open refuses a
-//     version of another algorithm (ErrNoP256).
+//   - audit.AlgECDSAP256 (the default, because it is the scheme Cloud KMS offers in an HSM): a
+//     version with algorithm EC_SIGN_P256_SHA256, signing the SHA-256 digest of the message in the
+//     request's digest field. Cloud KMS returns an ASN.1 DER signature, which the signer converts
+//     to the canonical low-S r||s that audit verifies. Open refuses a version of another algorithm
+//     (ErrNoP256).
+//   - audit.AlgEd25519: a CryptoKeyVersion with algorithm EC_SIGN_ED25519, which signs the raw
+//     message in the request's data field in PureEdDSA mode (RFC 8032), so audit's verifiers check
+//     its signatures with no change. Open refuses a version of another algorithm (ErrNoEd25519).
+//     Ed25519 needs Config.AllowSoftwareKey (see Protection level).
 //
 // # Protection level
 //
 // The signer is fail-closed about where the key lives. By default Open accepts only a version whose
-// protection level is HSM or HSM_SINGLE_TENANT (ErrProtectionLevel otherwise). Config.AllowSoftware
-// also accepts SOFTWARE, and Config.AllowExternal also accepts EXTERNAL and EXTERNAL_VPC (Cloud EKM);
+// protection level is HSM or HSM_SINGLE_TENANT (ErrProtectionLevel otherwise). Config.AllowSoftwareKey
+// also accepts SOFTWARE, and Config.AllowExternalKey also accepts EXTERNAL and EXTERNAL_VPC (Cloud EKM);
 // both are explicit opt-outs, and a zero Config is the safe one.
 //
 // Google offers EC_SIGN_ED25519 at protection level SOFTWARE only, so Cloud KMS has no HSM-backed
-// Ed25519 key: the Ed25519 scheme opens only with AllowSoftware, and the error without it says so
-// and points to audit.AlgECDSAP256 (EC_SIGN_P256_SHA256), which supports HSM. A deployment that must
-// keep its signing key in an HSM uses P-256 and leaves both options off. The level Open found is
+// Ed25519 key: the Ed25519 scheme (Config.Scheme set to audit.AlgEd25519) opens only with
+// AllowSoftwareKey, and the error without it says so and points to audit.AlgECDSAP256
+// (EC_SIGN_P256_SHA256), which supports HSM. A deployment that must keep its signing key in an HSM
+// uses the default P-256 scheme and leaves both options off. The level Open found is
 // pinned: a Sign response that reports another level is ErrIntegrity.
 //
 // # What Open checks, and what each call needs
@@ -40,7 +42,8 @@
 // one billed operation) to prove the permission and that the key signs under the public key it
 // reported. A CryptoKeyVersion with an EC_SIGN algorithm exists only in a key with purpose
 // ASYMMETRIC_SIGN, so the algorithm check is also the purpose check and needs no permission on the
-// CryptoKey. A custom role holding exactly those three permissions on the key version is enough.
+// CryptoKey. Neither predefined signer role holds cloudkms.cryptoKeyVersions.get; a custom role with
+// exactly those three permissions on the key version is enough.
 //
 // # Integrity checks
 //
@@ -56,8 +59,8 @@
 //
 // # Message size
 //
-// Google documents no size limit for the data of an EC_SIGN_ED25519 request, so this signer
-// enforces none and sends the message as given. Tree heads, grants and approver decisions are small
+// Google documents no size limit for the data of an EC_SIGN_ED25519 request (its signing guide states
+// one only for raw RSA algorithms), so this signer enforces none and sends the message as given. Tree heads, grants and approver decisions are small
 // (a tree head is about 110 bytes plus the run ID's length) and an evidence package seal signs a
 // fixed 60-byte message. If Cloud KMS rejects a message as too large, Sign returns a CodeError with
 // code InvalidArgument. Under ECDSA P-256 Cloud KMS signs a 32-byte digest, so there is no limit.
@@ -82,8 +85,8 @@
 //	if err != nil { ... }
 //	store, err := audit.NewAuditedStore(inner, s, anchor)
 //
-// Set Scheme: audit.AlgECDSAP256 for an EC_SIGN_P256_SHA256 key in an HSM; an Ed25519 key needs
-// AllowSoftware: true. The client authenticates with Application Default Credentials; none of
+// The default is an EC_SIGN_P256_SHA256 key in an HSM. An Ed25519 key needs Scheme: audit.AlgEd25519
+// and AllowSoftwareKey: true. The client authenticates with Application Default Credentials; none of
 // them reach this package.
 package gcpkms
 
@@ -99,6 +102,7 @@ import (
 	"hash/crc32"
 	"io"
 	"regexp"
+	"strings"
 	"time"
 
 	kms "cloud.google.com/go/kms/apiv1"
@@ -112,7 +116,7 @@ import (
 	"github.com/bide-ai/bide/audit"
 )
 
-// DefaultTimeout bounds each Cloud KMS call when Config.Timeout is zero.
+// DefaultTimeout bounds Open, and each Sign with its retries, when Config.Timeout is zero.
 const DefaultTimeout = 30 * time.Second
 
 // maxSignAttempts is how many times Sign asks Cloud KMS when the checksum of the signature it
@@ -132,7 +136,7 @@ var (
 	// ErrVersionState means the key version is not ENABLED.
 	ErrVersionState = errors.New("gcpkms: the key version is not enabled")
 	// ErrProtectionLevel means the key version's protection level is not one Config allows: by
-	// default only HSM and HSM_SINGLE_TENANT; AllowSoftware adds SOFTWARE and AllowExternal adds
+	// default only HSM and HSM_SINGLE_TENANT; AllowSoftwareKey adds SOFTWARE and AllowExternalKey adds
 	// EXTERNAL and EXTERNAL_VPC.
 	ErrProtectionLevel = errors.New("gcpkms: the key version's protection level is not allowed")
 	// ErrIntegrity means a Cloud KMS response failed an integrity check: a checksum that does not
@@ -205,19 +209,21 @@ type Config struct {
 	// projects/P/locations/L/keyRings/R/cryptoKeys/K/cryptoKeyVersions/N. Required. Signing uses
 	// exactly this version.
 	KeyVersion string
-	// Scheme is the signature scheme of the key version: audit.AlgEd25519 (the default; algorithm
-	// EC_SIGN_ED25519) or audit.AlgECDSAP256 (algorithm EC_SIGN_P256_SHA256). A version of the other
-	// algorithm is refused, never used under the wrong scheme.
+	// Scheme is the signature scheme of the key version: audit.AlgECDSAP256 (the default; algorithm
+	// EC_SIGN_P256_SHA256, available in an HSM) or audit.AlgEd25519 (algorithm EC_SIGN_ED25519,
+	// software only, so it needs AllowSoftwareKey). A version of the other algorithm is refused,
+	// never used under the wrong scheme.
 	Scheme audit.Alg
-	// AllowSoftware lets Open accept a key version at protection level SOFTWARE. Off by default, so
+	// AllowSoftwareKey lets Open accept a key version at protection level SOFTWARE. Off by default, so
 	// a zero Config requires an HSM. Google offers Ed25519 at SOFTWARE only, so the Ed25519 scheme
-	// needs it; audit.AlgECDSAP256 does not.
-	AllowSoftware bool
-	// AllowExternal lets Open accept a key version at protection level EXTERNAL or EXTERNAL_VPC
+	// needs it; audit.AlgECDSAP256 does not. With it set, the level Open found is still pinned.
+	AllowSoftwareKey bool
+	// AllowExternalKey lets Open accept a key version at protection level EXTERNAL or EXTERNAL_VPC
 	// (Cloud EKM, a key manager outside Google). Off by default; bide does not look inside the
 	// external manager.
-	AllowExternal bool
-	// Timeout bounds each Cloud KMS call; zero means DefaultTimeout.
+	AllowExternalKey bool
+	// Timeout bounds Open as a whole (its reads and self-test signature share one deadline) and each
+	// Sign as a whole, retries included; zero means DefaultTimeout.
 	Timeout time.Duration
 }
 
@@ -252,7 +258,7 @@ func Open(ctx context.Context, cfg Config) (*Signer, error) {
 	}
 	alg := cfg.Scheme
 	if alg == "" {
-		alg = audit.AlgEd25519
+		alg = audit.AlgECDSAP256
 	}
 	if alg != audit.AlgEd25519 && alg != audit.AlgECDSAP256 {
 		return nil, fmt.Errorf("gcpkms: Config.Scheme %q is not ed25519 or ecdsa-p256: %w", alg, agent.ErrConfig)
@@ -276,7 +282,11 @@ func Open(ctx context.Context, cfg Config) (*Signer, error) {
 		return nil, fmt.Errorf("gcpkms: the key version response names %q, want %q: %w", ver.GetName(), cfg.KeyVersion, ErrIntegrity)
 	}
 	if ver.GetAlgorithm() != want {
-		return nil, fmt.Errorf("gcpkms: key version %s has algorithm %s, want %s for the %s scheme: %w", cfg.KeyVersion, ver.GetAlgorithm(), want, alg, sentinel)
+		hint := ""
+		if alg == audit.AlgECDSAP256 && ver.GetAlgorithm() == kmspb.CryptoKeyVersion_EC_SIGN_ED25519 {
+			hint = " (for an Ed25519 key set Config.Scheme to audit.AlgEd25519 and Config.AllowSoftwareKey)"
+		}
+		return nil, fmt.Errorf("gcpkms: key version %s has algorithm %s, want %s for the %s scheme%s: %w", cfg.KeyVersion, ver.GetAlgorithm(), want, alg, hint, sentinel)
 	}
 	if ver.GetState() != kmspb.CryptoKeyVersion_ENABLED {
 		return nil, fmt.Errorf("gcpkms: key version %s is %s, want ENABLED: %w", cfg.KeyVersion, ver.GetState(), ErrVersionState)
@@ -286,9 +296,9 @@ func Open(ctx context.Context, cfg Config) (*Signer, error) {
 		return nil, fmt.Errorf("gcpkms: key version %s reports no protection level: %w", cfg.KeyVersion, ErrIntegrity)
 	}
 	if !levelAllowed(s.level, cfg) {
-		hint := "set Config.AllowSoftware or Config.AllowExternal to accept it"
+		hint := "set Config.AllowSoftwareKey or Config.AllowExternalKey to accept it"
 		if alg == audit.AlgEd25519 {
-			hint = "Cloud KMS has no HSM-backed Ed25519 key (EC_SIGN_ED25519 is SOFTWARE only): set Config.AllowSoftware to use it, or use audit.AlgECDSAP256 with an EC_SIGN_P256_SHA256 key for an HSM"
+			hint = "Cloud KMS has no HSM-backed Ed25519 key (EC_SIGN_ED25519 is SOFTWARE only): set Config.AllowSoftwareKey to use it, or use audit.AlgECDSAP256 with an EC_SIGN_P256_SHA256 key for an HSM"
 		}
 		return nil, fmt.Errorf("gcpkms: key version %s has protection level %s; %s: %w", cfg.KeyVersion, s.level, hint, ErrProtectionLevel)
 	}
@@ -321,9 +331,9 @@ func levelAllowed(l kmspb.ProtectionLevel, cfg Config) bool {
 	case kmspb.ProtectionLevel_HSM, kmspb.ProtectionLevel_HSM_SINGLE_TENANT:
 		return true
 	case kmspb.ProtectionLevel_SOFTWARE:
-		return cfg.AllowSoftware
+		return cfg.AllowSoftwareKey
 	case kmspb.ProtectionLevel_EXTERNAL, kmspb.ProtectionLevel_EXTERNAL_VPC:
-		return cfg.AllowExternal
+		return cfg.AllowExternalKey
 	}
 	return false
 }
@@ -342,7 +352,9 @@ func (s *Signer) checkPublicKey(pk *kmspb.PublicKey, want kmspb.CryptoKeyVersion
 		return nil, fmt.Errorf("gcpkms: the public key of %s reports protection level %s, the key version reports %s: %w", s.version, pk.GetProtectionLevel(), s.level, ErrIntegrity)
 	}
 	blk, rest := pem.Decode([]byte(pk.GetPem()))
-	if blk == nil || blk.Type != "PUBLIC KEY" || len(bytes.TrimSpace(rest)) != 0 {
+	// The block must start the string (pem.Decode skips text before it) and carry no headers.
+	if blk == nil || blk.Type != "PUBLIC KEY" || len(blk.Headers) != 0 || len(bytes.TrimSpace(rest)) != 0 ||
+		!strings.HasPrefix(strings.TrimLeft(pk.GetPem(), " \t\r\n"), "-----BEGIN PUBLIC KEY-----") {
 		return nil, fmt.Errorf("gcpkms: the public key of %s is not one PEM PUBLIC KEY block: %w", s.version, sentinel)
 	}
 	if s.alg == audit.AlgECDSAP256 {
@@ -363,7 +375,7 @@ func (s *Signer) checkPublicKey(pk *kmspb.PublicKey, want kmspb.CryptoKeyVersion
 	return ed, nil
 }
 
-// Alg reports the signature scheme (Config.Scheme, audit.AlgEd25519 by default).
+// Alg reports the signature scheme (Config.Scheme, audit.AlgECDSAP256 by default).
 func (s *Signer) Alg() audit.Alg { return s.alg }
 
 // PublicKey returns the public key of the key version (32 bytes for Ed25519, the 65-byte
@@ -382,7 +394,8 @@ var crcTable = crc32.MakeTable(crc32.Castagnoli)
 
 func crc32c(b []byte) uint32 { return crc32.Checksum(b, crcTable) }
 
-// Sign returns Cloud KMS's signature over message in the encoding audit verifies. Under Ed25519 the
+// Sign returns Cloud KMS's signature over message in the encoding audit verifies. Config.Timeout bounds the
+// whole call, retries included. Under Ed25519 the
 // message goes in the request's data field; under P-256 Cloud KMS signs the SHA-256 digest. It
 // checks the response's integrity fields and then the signature against the public key before
 // returning it, so a key replaced behind the version name is an error here and not a signature
@@ -405,7 +418,13 @@ func (s *Signer) sign(ctx context.Context, message []byte) ([]byte, error) {
 		req.Data = message
 		req.DataCrc32C = wrapperspb.Int64(int64(crc32c(message)))
 	}
+	// One deadline covers every attempt, so Timeout bounds Sign however many attempts it makes.
+	ctx, cancel := context.WithTimeout(ctx, s.timeout)
+	defer cancel()
 	for attempt := 1; ; attempt++ {
+		if err := ctx.Err(); err != nil {
+			return nil, callError("sign with "+s.version, err)
+		}
 		sig, retry, err := s.signOnce(ctx, req)
 		if err == nil {
 			if s.v == nil || !s.v.Verify(message, sig) {
@@ -422,8 +441,6 @@ func (s *Signer) sign(ctx context.Context, message []byte) ([]byte, error) {
 // signOnce makes one AsymmetricSign call and checks the response. retry reports a failure that
 // Google's integrity guide says to retry: the signature's checksum did not match.
 func (s *Signer) signOnce(ctx context.Context, req *kmspb.AsymmetricSignRequest) (sig []byte, retry bool, err error) {
-	ctx, cancel := context.WithTimeout(ctx, s.timeout)
-	defer cancel()
 	out, err := s.client.AsymmetricSign(ctx, req)
 	if err != nil {
 		return nil, false, callError("sign with "+s.version, err)

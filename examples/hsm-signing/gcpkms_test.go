@@ -62,7 +62,7 @@ func emulatedKMS(t *testing.T, alg kmspb.CryptoKeyVersion_CryptoKeyVersionAlgori
 
 func TestRunWithCloudKMSP256(t *testing.T) {
 	version := emulatedKMS(t, kmspb.CryptoKeyVersion_EC_SIGN_P256_SHA256)
-	env := map[string]string{"BIDE_GCPKMS_KEY_VERSION": version, "BIDE_GCPKMS_SCHEME": "ecdsa-p256", "BIDE_GCPKMS_ALLOW_SOFTWARE": "1"}
+	env := map[string]string{"BIDE_GCPKMS_KEY_VERSION": version, "BIDE_GCPKMS_ALLOW_SOFTWARE_KEY": "1"} // P-256 is the default scheme
 	var out bytes.Buffer
 	if err := run(context.Background(), func(k string) string { return env[k] }, &out); err != nil {
 		t.Fatal(err)
@@ -76,7 +76,7 @@ func TestRunWithCloudKMSP256(t *testing.T) {
 
 func TestRunWithCloudKMSEd25519(t *testing.T) {
 	version := emulatedKMS(t, kmspb.CryptoKeyVersion_EC_SIGN_ED25519)
-	env := map[string]string{"BIDE_GCPKMS_KEY_VERSION": version, "BIDE_GCPKMS_ALLOW_SOFTWARE": "1"}
+	env := map[string]string{"BIDE_GCPKMS_KEY_VERSION": version, "BIDE_GCPKMS_SCHEME": "ed25519", "BIDE_GCPKMS_ALLOW_SOFTWARE_KEY": "1"}
 	var out bytes.Buffer
 	if err := run(context.Background(), func(k string) string { return env[k] }, &out); err != nil {
 		t.Fatal(err)
@@ -86,22 +86,22 @@ func TestRunWithCloudKMSEd25519(t *testing.T) {
 	}
 }
 
-// The emulator's keys are software keys, so without BIDE_GCPKMS_ALLOW_SOFTWARE they are refused, and a
+// The emulator's keys are software keys, so without BIDE_GCPKMS_ALLOW_SOFTWARE_KEY they are refused, and a
 // scheme the key version is not is refused too.
 func TestCloudKMSRefusals(t *testing.T) {
 	version := emulatedKMS(t, kmspb.CryptoKeyVersion_EC_SIGN_P256_SHA256)
 	var out bytes.Buffer
-	env := map[string]string{"BIDE_GCPKMS_KEY_VERSION": version, "BIDE_GCPKMS_SCHEME": "ecdsa-p256"}
+	env := map[string]string{"BIDE_GCPKMS_KEY_VERSION": version}
 	if err := run(context.Background(), func(k string) string { return env[k] }, &out); !errors.Is(err, gcpkms.ErrProtectionLevel) {
 		t.Fatalf("a software key by default: %v", err)
 	}
-	env["BIDE_GCPKMS_ALLOW_EXTERNAL"] = "1" // external is not software
+	env["BIDE_GCPKMS_ALLOW_EXTERNAL_KEY"] = "1" // external is not software
 	if err := run(context.Background(), func(k string) string { return env[k] }, &out); !errors.Is(err, gcpkms.ErrProtectionLevel) {
 		t.Fatalf("a software key with only external allowed: %v", err)
 	}
-	env = map[string]string{"BIDE_GCPKMS_KEY_VERSION": version, "BIDE_GCPKMS_ALLOW_SOFTWARE": "1"} // the Ed25519 default
+	env = map[string]string{"BIDE_GCPKMS_KEY_VERSION": version, "BIDE_GCPKMS_SCHEME": "ed25519", "BIDE_GCPKMS_ALLOW_SOFTWARE_KEY": "1"}
 	if err := run(context.Background(), func(k string) string { return env[k] }, &out); !errors.Is(err, gcpkms.ErrNoEd25519) {
-		t.Fatalf("a P-256 key under the default scheme: %v", err)
+		t.Fatalf("a P-256 key under the ed25519 scheme: %v", err)
 	}
 }
 

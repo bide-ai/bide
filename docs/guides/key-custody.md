@@ -20,7 +20,7 @@ the duties of the people who can use the key.
 | Google Cloud KMS | `github.com/bide-ai/bide/signer/gcpkms` (pure Go, Google Cloud SDK) | Ed25519 (`EC_SIGN_ED25519`, software only) or ECDSA P-256 (`EC_SIGN_P256_SHA256`, software or HSM), purpose `ASYMMETRIC_SIGN` | the same | the Cloud KMS emulator (`signer/gcpkms/emulatortest`) and a fake client, never Google Cloud |
 
 All three are separate Go modules, so the core `github.com/bide-ai/bide` module gains no cgo and no cloud SDK.
-`Config.Scheme` is `audit.AlgEd25519` (the default) or `audit.AlgECDSAP256`; the signers never substitute
+`Config.Scheme` is `audit.AlgEd25519` (the default) or `audit.AlgECDSAP256` (for the Google Cloud KMS signer the default is `audit.AlgECDSAP256`, below); the signers never substitute
 one for the other. A token or key of the wrong kind is refused with `ErrNoEd25519` or `ErrNoP256` and the
 error names what was found. Pick Ed25519 where the HSM or KMS has it; pick ECDSA P-256 where it does not
 (many HSMs, and cloud key services such as Azure Key Vault, and any Google Cloud KMS key that must be in an HSM). Both are FIPS-approved signature schemes.
@@ -196,7 +196,7 @@ P-256, KMS signs a 32-byte digest, so there is no limit.
 gcloud kms keyrings create bide --location europe-west2
 gcloud kms keys create audit --keyring bide --location europe-west2 \
     --purpose asymmetric-signing --default-algorithm ec-sign-p256-sha256 --protection-level hsm
-# Ed25519 (Google offers it in software only; the signer then needs AllowSoftware: true):
+# Ed25519 (Google offers it in software only; the signer then needs AllowSoftwareKey: true):
 #   --default-algorithm ec-sign-ed25519 --protection-level software
 gcloud kms keys versions list --key audit --keyring bide --location europe-west2
 ```
@@ -206,9 +206,9 @@ bide pins a key **version**, not a key: the version name ends in the numeric ver
 needs three permissions on that version and nothing else: `cloudkms.cryptoKeyVersions.get` (the signer
 checks that the version is enabled and reads its algorithm and protection level),
 `cloudkms.cryptoKeyVersions.viewPublicKey` and `cloudkms.cryptoKeyVersions.useToSign`. Neither
-predefined `roles/cloudkms.signer` nor `roles/cloudkms.signerVerifier` includes the first, and
+predefined `roles/cloudkms.signer` (which has `useToSign`, not `viewPublicKey`) nor `roles/cloudkms.signerVerifier` (which has `useToSign` and `viewPublicKey`) includes the first, and
 `roles/cloudkms.viewer` grants far more than needed, so create a custom role with those three
-permissions ([Cloud KMS permissions and roles](https://docs.cloud.google.com/kms/docs/reference/permissions-and-roles)).
+permissions (role contents checked against [Cloud KMS permissions and roles](https://docs.cloud.google.com/kms/docs/reference/permissions-and-roles), 2026-10-14).
 Key administrators should not hold `useToSign`, which is the separation that matters.
 
 The custom role, ready to copy (replace the project, and bind the role on the key version or its key, not on the project):
@@ -241,7 +241,8 @@ includedPermissions:
 signer, err := gcpkms.Open(ctx, gcpkms.Config{
 	Client:     kmsClient, // *kms.KeyManagementClient from kms.NewKeyManagementClient(ctx)
 	KeyVersion: "projects/bank/locations/europe-west2/keyRings/bide/cryptoKeys/audit/cryptoKeyVersions/1",
-	Scheme:     audit.AlgECDSAP256, // an EC_SIGN_P256_SHA256 key in an HSM; the zero policy requires HSM
+	// Scheme defaults to audit.AlgECDSAP256: an EC_SIGN_P256_SHA256 key version in an HSM. The zero
+	// Config requires an HSM key version.
 })
 if err != nil {
 	log.Fatal(err)
@@ -264,7 +265,7 @@ What `Open` checks, in order, each failure a named error:
 - **The state** is `ENABLED` (`gcpkms.ErrVersionState` otherwise). A version disabled or destroyed after
   `Open` fails at `Sign` with a `gcpkms.CodeError` (`FailedPrecondition`).
 - **The protection level** is `HSM` or `HSM_SINGLE_TENANT` unless you opt out (`gcpkms.ErrProtectionLevel`
-  otherwise): `Config.AllowSoftware` also accepts `SOFTWARE`, and `Config.AllowExternal` also accepts
+  otherwise): `Config.AllowSoftwareKey` also accepts `SOFTWARE`, and `Config.AllowExternalKey` also accepts
   `EXTERNAL` and `EXTERNAL_VPC` (Cloud EKM). The level is pinned at `Open`, and a signature response that
   reports another level is `ErrIntegrity`.
 - **A self-test signature** (one billed operation) proves the `useToSign` permission and that Cloud KMS's
@@ -272,17 +273,23 @@ What `Open` checks, in order, each failure a named error:
 
 **Protection level.** The zero `Config` is the safe one: only an HSM-protected key version opens. Google offers
 `EC_SIGN_ED25519` at protection level `SOFTWARE` only ([algorithms](https://docs.cloud.google.com/kms/docs/algorithms)),
-so Cloud KMS has no HSM-backed Ed25519 key, and the Ed25519 scheme opens only with `AllowSoftware: true`; without
-it `Open` fails with `gcpkms.ErrProtectionLevel` and a message that says exactly that and points to P-256. A
-deployment that must keep the signing key in an HSM, a bank for example, uses `Scheme: audit.AlgECDSAP256` with an
+so Cloud KMS has no HSM-backed Ed25519 key. The default `Scheme` is therefore `audit.AlgECDSAP256`, so a default
+`Open` works on an HSM key. Ed25519 needs both `Scheme: audit.AlgEd25519` and `AllowSoftwareKey: true`; an Ed25519
+key under the default scheme fails with `gcpkms.ErrNoP256` and a message naming both fields, and the Ed25519 scheme
+without `AllowSoftwareKey` fails with `gcpkms.ErrProtectionLevel` and a message that says Cloud KMS has no
+HSM-backed Ed25519 key and points to P-256. `AllowSoftwareKey` widens what `Open` accepts, not what it trusts: the
+level found is still pinned and checked on every signature. A
+deployment that must keep the signing key in an HSM, a bank for example, uses the default scheme with an
 `EC_SIGN_P256_SHA256` key version at protection level `HSM` and leaves both options off. The level is what Cloud KMS
 reports; bide does not verify the signed HSM attestation Cloud KMS offers for `HSM` versions, and bide does not look
-inside an external key manager when `AllowExternal` is set.
+inside an external key manager when `AllowExternalKey` is set.
 
 **What is signed.** Ed25519 sends the message in the request's `data` field and Cloud KMS signs it in PureEdDSA mode
 (RFC 8032), which is what `audit.Ed25519Signer` produces. ECDSA P-256 sends the SHA-256 digest in the `digest`
 field; Cloud KMS returns an ASN.1 DER signature, which the signer converts to the canonical low-S `r||s`. Google
-documents no size limit for the Ed25519 `data` field, so the signer enforces none; a message Cloud KMS rejects
+documents no size limit for the Ed25519 `data` field (its [signing guide](https://docs.cloud.google.com/kms/docs/create-validate-signatures)
+states one only for raw RSA algorithms, and the [quotas page](https://docs.cloud.google.com/kms/quotas) none),
+so the signer enforces none; a message Cloud KMS rejects
 comes back as a `CodeError` with code `InvalidArgument`. Cloud KMS cannot sign an empty message under
 Ed25519, which `Sign` refuses with `gcpkms.ErrEmptyMessage` (audit never signs an empty message). Under P-256
 Cloud KMS sees a 32-byte digest, so there is no limit, and an evidence package of any size seals.
@@ -303,14 +310,13 @@ the version name is an error at `Sign`. A request Cloud KMS rejects for a checks
 status code and nothing else, because the text of such an error can include request detail or the output of a
 failed credential exchange. Branch on it with `errors.Is(err, gcpkms.CodeError{Code: codes.PermissionDenied})`; a
 cancelled or expired context also matches `context.Canceled` or `context.DeadlineExceeded`. Neither the error
-chain, `%v`, `%+v`, `%#v` nor the signer's `String` carries a credential. Each call has a timeout
-(`Config.Timeout`, default 30 seconds).
+chain, `%v`, `%+v`, `%#v` nor the signer's `String` carries a credential. `Config.Timeout` (default 30 seconds) bounds `Open` as a whole and each `Sign` as a whole, retries included.
 
 **Tests.** The signer's own tests use a fake client. The module `signer/gcpkms/emulatortest` (test-only, never
 tagged, so the emulator is not in the module graph of anyone who imports `signer/gcpkms`) runs the signer through
 the real Cloud KMS Go client against [gcp-kms-emulator](https://github.com/blackwell-systems/gcp-kms-emulator)
 v0.10.0, started in the test process on an in-memory gRPC listener, for both algorithms: no Docker, network or
-credentials. The emulator reports protection level `SOFTWARE` for every key, so those tests set `AllowSoftware`; the
+credentials. The emulator reports protection level `SOFTWARE` for every key, so those tests set `AllowSoftwareKey`; the
 `HSM` success path, the response-integrity failures and the other failures the emulator cannot produce are covered by
 the fake client. bide's tests never call Google Cloud, so the interoperability of Cloud KMS's signatures with bide's
 verifier rests on Google's documentation; check it once against your own key version before relying on it (sign a

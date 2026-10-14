@@ -4,7 +4,7 @@ package emulatortest
 // github.com/blackwell-systems/gcp-kms-emulator, started in the test process on an in-memory gRPC
 // listener. They need no Docker, network or credentials.
 //
-// The emulator reports protection level SOFTWARE for every key, so every Open here sets AllowSoftware,
+// The emulator reports protection level SOFTWARE for every key, so every Open here sets AllowSoftwareKey,
 // and the success path of the default (HSM only) policy is covered by the fake client in
 // ../signer_test.go.
 
@@ -120,7 +120,7 @@ func (e *emu) ed25519Key(t *testing.T) string {
 }
 
 func p256(t *testing.T, e *emu, version string, mod ...func(*gcpkms.Config)) (*gcpkms.Signer, error) {
-	cfg := gcpkms.Config{Client: e.client, KeyVersion: version, Scheme: audit.AlgECDSAP256, AllowSoftware: true}
+	cfg := gcpkms.Config{Client: e.client, KeyVersion: version, Scheme: audit.AlgECDSAP256, AllowSoftwareKey: true}
 	for _, m := range mod {
 		m(&cfg)
 	}
@@ -152,7 +152,7 @@ func TestEmulatorP256(t *testing.T) {
 func TestEmulatorEd25519(t *testing.T) {
 	e := startEmulator(t, nil)
 	version := e.ed25519Key(t)
-	s, err := gcpkms.Open(context.Background(), gcpkms.Config{Client: e.client, KeyVersion: version, AllowSoftware: true})
+	s, err := gcpkms.Open(context.Background(), gcpkms.Config{Client: e.client, KeyVersion: version, Scheme: audit.AlgEd25519, AllowSoftwareKey: true})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -167,8 +167,8 @@ func TestEmulatorEd25519(t *testing.T) {
 			t.Fatalf("%d bytes: %v", n, err)
 		}
 	}
-	// Without AllowSoftware no Ed25519 version opens: Cloud KMS has none in an HSM.
-	if _, err := gcpkms.Open(context.Background(), gcpkms.Config{Client: e.client, KeyVersion: version}); !errors.Is(err, gcpkms.ErrProtectionLevel) {
+	// Without AllowSoftwareKey no Ed25519 version opens: Cloud KMS has none in an HSM.
+	if _, err := gcpkms.Open(context.Background(), gcpkms.Config{Client: e.client, KeyVersion: version, Scheme: audit.AlgEd25519}); !errors.Is(err, gcpkms.ErrProtectionLevel) {
 		t.Fatalf("default policy: %v", err)
 	}
 	// An Ed25519 version is not a P-256 key.
@@ -180,7 +180,7 @@ func TestEmulatorEd25519(t *testing.T) {
 func TestEmulatorRefusals(t *testing.T) {
 	e := startEmulator(t, nil)
 	ctx := context.Background()
-	ed := gcpkms.Config{Client: e.client, AllowSoftware: true}
+	ed := gcpkms.Config{Client: e.client, Scheme: audit.AlgEd25519, AllowSoftwareKey: true}
 
 	// Algorithms that are neither of the two bide uses, and keys that do not sign.
 	for _, alg := range []kmspb.CryptoKeyVersion_CryptoKeyVersionAlgorithm{
@@ -205,7 +205,7 @@ func TestEmulatorRefusals(t *testing.T) {
 
 	// The emulator, like Cloud KMS, reports a software key as SOFTWARE: the default policy refuses it.
 	v := e.signKey(t, kmspb.CryptoKeyVersion_EC_SIGN_P256_SHA256)
-	if _, err := p256(t, e, v, func(c *gcpkms.Config) { c.AllowSoftware = false }); !errors.Is(err, gcpkms.ErrProtectionLevel) {
+	if _, err := p256(t, e, v, func(c *gcpkms.Config) { c.AllowSoftwareKey = false }); !errors.Is(err, gcpkms.ErrProtectionLevel) {
 		t.Errorf("a software key under the default policy: %v", err)
 	}
 
@@ -375,7 +375,7 @@ func TestEmulatorAuditedStoreAndEvidence(t *testing.T) {
 
 func TestEmulatorEd25519AuditedStore(t *testing.T) {
 	e := startEmulator(t, nil)
-	s, err := gcpkms.Open(context.Background(), gcpkms.Config{Client: e.client, KeyVersion: e.ed25519Key(t), AllowSoftware: true})
+	s, err := gcpkms.Open(context.Background(), gcpkms.Config{Client: e.client, KeyVersion: e.ed25519Key(t), Scheme: audit.AlgEd25519, AllowSoftwareKey: true})
 	if err != nil {
 		t.Fatal(err)
 	}

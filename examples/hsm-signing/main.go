@@ -17,10 +17,10 @@
 //
 //	BIDE_GCPKMS_KEY_VERSION  the full CryptoKeyVersion name,
 //	                         projects/P/locations/L/keyRings/R/cryptoKeys/K/cryptoKeyVersions/N
-//	BIDE_GCPKMS_SCHEME       "ed25519" (default) or "ecdsa-p256", the algorithm of the key version
-//	BIDE_GCPKMS_ALLOW_SOFTWARE  "1" to accept a SOFTWARE key version (Ed25519 is software only);
-//	                         without it only an HSM key version opens, so use ecdsa-p256 with an HSM key
-//	BIDE_GCPKMS_ALLOW_EXTERNAL  "1" to accept an EXTERNAL or EXTERNAL_VPC (Cloud EKM) key version
+//	BIDE_GCPKMS_SCHEME       "ecdsa-p256" (default, available in an HSM) or "ed25519" (software only)
+//	BIDE_GCPKMS_ALLOW_SOFTWARE_KEY  "1" to accept a SOFTWARE key version; ed25519 needs it, and without it
+//	                         only an HSM key version opens
+//	BIDE_GCPKMS_ALLOW_EXTERNAL_KEY  "1" to accept an EXTERNAL or EXTERNAL_VPC (Cloud EKM) key version
 //
 // Cloud KMS authenticates with Application Default Credentials (gcloud auth application-default
 // login, or a workload identity); no credential is read from the environment by this program.
@@ -90,7 +90,7 @@ var newKMSClient = func(ctx context.Context) (gcpkms.API, func(), error) {
 // gcpConfig reads the Cloud KMS signer configuration from the environment.
 func gcpConfig(getenv func(string) string) gcpkms.Config {
 	cfg := gcpkms.Config{KeyVersion: getenv("BIDE_GCPKMS_KEY_VERSION"),
-		AllowSoftware: getenv("BIDE_GCPKMS_ALLOW_SOFTWARE") == "1", AllowExternal: getenv("BIDE_GCPKMS_ALLOW_EXTERNAL") == "1"}
+		AllowSoftwareKey: getenv("BIDE_GCPKMS_ALLOW_SOFTWARE_KEY") == "1", AllowExternalKey: getenv("BIDE_GCPKMS_ALLOW_EXTERNAL_KEY") == "1"}
 	if sc := getenv("BIDE_GCPKMS_SCHEME"); sc != "" {
 		cfg.Scheme = audit.Alg(sc)
 	}
