@@ -305,7 +305,8 @@ and reports the TLS handshake, the HTTP status, whether the receiver acknowledge
 and the timing. The sample is for a run that does not exist (its ID starts notify-test-); a relay
 that forwards to Slack or PagerDuty forwards it too. The secret is never printed.
 
-Kinds: approval_pending, outcome_unknown, run_aborted, recovery_failing, notification_overdue.
+Kinds: approval_pending, outcome_unknown, run_aborted, recovery_failing, notification_overdue, resolved. A resolved is the all-clear of the approval_pending with the same -run: send that first, then
+the resolved, to see a relay open and then close a PagerDuty incident.
 
 Exit status: 0 the receiver acknowledged; 1 it did not; 2 usage error.
 
@@ -318,13 +319,15 @@ Exit status: 0 the receiver acknowledged; 1 it did not; 2 usage error.
   -color when
     	when to color the output: auto (the default: on a terminal, unless NO_COLOR is set or TERM is dumb), always or never
   -kind string
-    	the kind of the sample notification: approval_pending, outcome_unknown, run_aborted, recovery_failing, notification_overdue (default "approval_pending")
+    	the kind of the sample notification: approval_pending, outcome_unknown, run_aborted, recovery_failing, notification_overdue, resolved (default "approval_pending")
   -pin string
     	require the receiver's key to match this SPKI SHA-256 (64 hex characters or base64); two, comma separated, during a rotation
   -previous-secret-env string
     	the environment variable that holds the previous secret, during a rotation (optional) (default "BIDE_WEBHOOK_SECRET_PREVIOUS")
   -previous-secret-file string
     	read the previous secret from this file; used instead of -previous-secret-env
+  -run string
+    	the sample's run ID (default: notify-test-<random>, a new event each time). Send an approval_pending and then a resolved for the same -run to test a relay's all-clear
   -secret-env string
     	the environment variable that holds the signing secret (default "BIDE_WEBHOOK_SECRET")
   -secret-file string

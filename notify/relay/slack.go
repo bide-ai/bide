@@ -194,6 +194,7 @@ var kindTitles = map[string]string{
 	"run_aborted":          "Run aborted",
 	"recovery_failing":     "Recovery failing",
 	"notification_overdue": "Notification overdue",
+	"resolved":             "All clear",
 }
 
 // KindTitle is the short heading for a notification kind; a kind it does not know is shown as it is

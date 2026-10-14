@@ -656,3 +656,64 @@ func TestClearThatFailsToForwardStillGuardsTheEvent(t *testing.T) {
 		t.Fatalf("late trigger: %d", got)
 	}
 }
+
+func resolved(runID string) agent.Notification {
+	orig := approval(runID)
+	key := agent.ResolvedKey(orig.Key)
+	return agent.Notification{
+		ID: agent.NotifyID(key), Key: key, Kind: agent.NotificationResolved, RunID: runID, Attempt: 1, Reason: "decided",
+		EventAt: orig.EventAt.Add(time.Minute),
+		Clears:  &agent.NotifyClears{Key: orig.Key, ID: orig.ID, Kind: orig.Kind},
+	}
+}
+
+func TestTriggerThenResolveWithPagerDuty(t *testing.T) {
+	r := newRig(t)
+	trig := approval("orders-1042")
+	if err := r.send(t, trig); err != nil {
+		t.Fatal(err)
+	}
+	if err := r.send(t, resolved("orders-1042")); err != nil {
+		t.Fatal(err)
+	}
+	if r.pd.count() != 2 {
+		t.Fatalf("pagerduty saw %d requests, want trigger and resolve", r.pd.count())
+	}
+	var first, second PagerDutyEvent
+	json.Unmarshal(r.pd.bodies[0], &first)
+	json.Unmarshal(r.pd.bodies[1], &second)
+	if first.EventAction != "trigger" || second.EventAction != "resolve" || first.DedupKey != trig.ID || second.DedupKey != trig.ID || second.Payload != nil {
+		t.Fatalf("trigger %+v, resolve %+v", first, second)
+	}
+	// Slack hears the all clear too.
+	if r.slack.count() != 2 || !strings.Contains(string(r.slack.last(t)), "All clear") {
+		t.Fatalf("slack: %d messages; last:\n%s", r.slack.count(), r.slack.last(t))
+	}
+	// Redelivering the clear does not resolve twice; a trigger arriving late is dropped.
+	if err := r.send(t, resolved("orders-1042")); err != nil {
+		t.Fatal(err)
+	}
+	if err := r.send(t, trig); err != nil {
+		t.Fatal(err)
+	}
+	if r.pd.count() != 2 || r.slack.count() != 2 {
+		t.Fatalf("after a repeat and a late trigger: pagerduty %d, slack %d, want 2 each", r.pd.count(), r.slack.count())
+	}
+}
+
+func TestClearBeforeItsEventNeverOpensAnIncident(t *testing.T) {
+	r := newRig(t)
+	if err := r.send(t, resolved("orders-7")); err != nil {
+		t.Fatal(err)
+	}
+	if err := r.send(t, approval("orders-7")); err != nil { // the event's delayed delivery
+		t.Fatal(err)
+	}
+	for i, b := range r.pd.bodies {
+		var ev PagerDutyEvent
+		json.Unmarshal(b, &ev)
+		if ev.EventAction == "trigger" {
+			t.Fatalf("pagerduty request %d is a trigger after the clear", i)
+		}
+	}
+}

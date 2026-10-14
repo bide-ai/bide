@@ -383,9 +383,6 @@ has forgotten reopens the PagerDuty incident. Slack shows a repeat twice. Run on
 load balancer have separate caches. A lost notification is not among the failures: the relay answers
 2xx only after every destination took the event. It does not forward error text or tool arguments.
 
-**PagerDuty resolve waits on the "resolved" kind.** Until the notifier's all-clear kind is in a
-release, the relay only triggers incidents.
-
 **A test notification is a real one to a relay.** `bide notify test` sends a sample for a run that does
 not exist; a relay forwards it to Slack and PagerDuty like any other event.
 

@@ -256,12 +256,25 @@ func TestPagerDutyResolveHook(t *testing.T) {
 	}
 }
 
-func TestPagerDutyDefaultNeverResolvesUntilClearsKeyIsWired(t *testing.T) {
-	if _, ok := DefaultResolveTarget(notify.Payload{Kind: ResolveKind, Key: "resolved:x"}); ok {
-		t.Fatal("DefaultResolveTarget resolved with ClearsID unwired: a clear would resolve the wrong incident")
+func TestPagerDutyDefaultResolveUsesClearsID(t *testing.T) {
+	id := agent.NotifyID("orig")
+	got, ok := DefaultResolveTarget(notify.Payload{Kind: ResolveKind, Clears: &notify.Clears{ID: id}})
+	if !ok || got != id {
+		t.Fatalf("resolve target = %q, %v", got, ok)
 	}
 	if _, ok := DefaultResolveTarget(samplePayload("approval_pending")); ok {
 		t.Fatal("a trigger kind was treated as a clear")
+	}
+	if _, ok := DefaultResolveTarget(notify.Payload{Kind: ResolveKind}); ok {
+		t.Fatal("a resolved with no clears detail named an incident")
+	}
+}
+
+func TestPagerDutyIgnoresAClearThatNamesNoEvent(t *testing.T) {
+	up := newUpstream(t)
+	pd, _ := NewPagerDuty(PagerDutyConfig{RoutingKey: "rk", URL: up.URL})
+	if err := pd.Send(context.Background(), notify.Payload{Kind: ResolveKind, ID: agent.NotifyID("x"), Summary: "over"}); err != nil || up.count() != 0 {
+		t.Fatalf("err %v, %d requests: a nameless clear must neither trigger nor resolve", err, up.count())
 	}
 }
 

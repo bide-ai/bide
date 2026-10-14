@@ -26,6 +26,7 @@ var kinds = []agent.NotificationKind{
 	agent.NotificationRunAborted,
 	agent.NotificationRecoveryFailing,
 	agent.NotificationOverdue,
+	agent.NotificationResolved,
 }
 
 func kindNames() string {
@@ -39,12 +40,14 @@ func kindNames() string {
 // sampleNotification is a notification of kind for a run that does not exist. Its run ID and key
 // hold a random nonce, so each test is a new event to a receiver that drops redeliveries (bide
 // notify relay does), and the run ID says "notify-test" wherever a person reads it.
-func sampleNotification(kind agent.NotificationKind, now time.Time) (agent.Notification, error) {
-	var nonce [4]byte
-	if _, err := rand.Read(nonce[:]); err != nil {
-		return agent.Notification{}, err
+func sampleNotification(kind agent.NotificationKind, now time.Time, run string) (agent.Notification, error) {
+	if run == "" {
+		var nonce [4]byte
+		if _, err := rand.Read(nonce[:]); err != nil {
+			return agent.Notification{}, err
+		}
+		run = "notify-test-" + hex.EncodeToString(nonce[:])
 	}
-	run := "notify-test-" + hex.EncodeToString(nonce[:])
 	n := agent.Notification{
 		Kind: kind, RunID: run, EventAt: now.Add(-5 * time.Second), Observed: now, Deadline: now.Add(5 * time.Minute), Attempt: 1,
 		Principal: &agent.Principal{OnBehalfOf: "notify-test", AuthorityRef: "bide notify test"},
@@ -66,6 +69,13 @@ func sampleNotification(kind agent.NotificationKind, now time.Time) (agent.Notif
 	case agent.NotificationOverdue:
 		n.Key = agent.OverdueKey(agent.ApprovalKey(run, "call_test", 0))
 		n.Reason = "deadline"
+	case agent.NotificationResolved:
+		// The all-clear of the approval a test of kind approval_pending sends for the same run.
+		orig := agent.ApprovalKey(run, "call_test", 0)
+		n.Key = agent.ResolvedKey(orig)
+		n.Reason = "decided"
+		n.Clears = &agent.NotifyClears{Key: orig, ID: agent.NotifyID(orig), Kind: agent.NotificationApprovalPending}
+		n.Deadline = time.Time{}
 	default:
 		return agent.Notification{}, fmt.Errorf("unknown kind %q (one of %s)", kind, kindNames())
 	}
@@ -93,7 +103,8 @@ and reports the TLS handshake, the HTTP status, whether the receiver acknowledge
 and the timing. The sample is for a run that does not exist (its ID starts notify-test-); a relay
 that forwards to Slack or PagerDuty forwards it too. The secret is never printed.
 
-Kinds: %s.
+Kinds: %s. A resolved is the all-clear of the approval_pending with the same -run: send that first, then
+the resolved, to see a relay open and then close a PagerDuty incident.
 
 Exit status: 0 the receiver acknowledged; 1 it did not; 2 usage error.
 
@@ -109,6 +120,7 @@ Exit status: 0 the receiver acknowledged; 1 it did not; 2 usage error.
 	cert := fs.String("client-cert", "", "present this client certificate (PEM) for mutual TLS; needs -client-key")
 	key := fs.String("client-key", "", "the client certificate's private key (PEM)")
 	timeout := fs.Duration("timeout", notify.DefaultTimeout, "the request timeout")
+	runID := fs.String("run", "", "the sample's run ID (default: notify-test-<random>, a new event each time). Send an approval_pending and then a resolved for the same -run to test a relay's all-clear")
 	viewURL := fs.String("view-url", "", "put a view link for the run viewer's base URL in the payload, as WithViewURL does")
 	viewDB := fs.String("view-db", "", "the journal file the payload's view command opens, as WithViewDB does")
 	color := term.Flag(fs)
@@ -153,7 +165,7 @@ Exit status: 0 the receiver acknowledged; 1 it did not; 2 usage error.
 	if err != nil {
 		return failure("test", stderr, "%s", configMessage(err))
 	}
-	n, err := sampleNotification(agent.NotificationKind(*kind), timeNow())
+	n, err := sampleNotification(agent.NotificationKind(*kind), timeNow(), *runID)
 	if err != nil {
 		return failure("test", stderr, "%v", err)
 	}

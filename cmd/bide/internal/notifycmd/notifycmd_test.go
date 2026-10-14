@@ -165,8 +165,8 @@ func TestEveryKindIsSentAndVerified(t *testing.T) {
 		}
 	}
 	// Two tests of one kind are two events, not a redelivery: the nonce differs.
-	a, _ := sampleNotification(kinds[0], time.Now())
-	b, _ := sampleNotification(kinds[0], time.Now())
+	a, _ := sampleNotification(kinds[0], time.Now(), "")
+	b, _ := sampleNotification(kinds[0], time.Now(), "")
 	if a.ID == b.ID || a.RunID == b.RunID {
 		t.Fatal("two samples share an ID")
 	}
@@ -507,5 +507,24 @@ func TestRelayConfigErrors(t *testing.T) {
 	e.Reset()
 	if code := run(context.Background(), []string{"relay", "-client-ca", "x"}, &o, &e, nil); code != 2 {
 		t.Fatalf("-client-ca without -cert: %d", code)
+	}
+}
+
+func TestRelayOpensThenClosesAnIncidentForTheSameRun(t *testing.T) {
+	slack, pd := newFake(t), newFake(t)
+	setEnv(t, map[string]string{defaultSecretEnv: testSecretValue, defaultSlackEnv: slack.URL + "/services/" + slackPathSecret, defaultPagerDutyEnv: pdKeySecret})
+	r := startVerb(t, "relay", "-addr", "127.0.0.1:0", "-pagerduty-url", pd.URL)
+	url := "http://" + r.addr.String() + "/"
+	for _, k := range []string{"approval_pending", "resolved"} {
+		if code, out, errs := test(t, "-url", url, "-kind", k, "-run", "notify-test-demo"); code != 0 {
+			t.Fatalf("%s: exit %d\n%s%s", k, code, out, errs)
+		}
+	}
+	if pd.n() != 2 || !strings.Contains(pd.bodies[0], `"event_action":"trigger"`) || !strings.Contains(pd.bodies[1], `"event_action":"resolve"`) {
+		t.Fatalf("pagerduty bodies: %q", pd.bodies)
+	}
+	key := func(b string) string { return strings.Split(strings.Split(b, `"dedup_key":"`)[1], `"`)[0] }
+	if key(pd.bodies[0]) != key(pd.bodies[1]) || len(key(pd.bodies[0])) != 64 {
+		t.Fatalf("the resolve does not name the trigger's incident: %q", pd.bodies)
 	}
 }

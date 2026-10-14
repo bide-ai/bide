@@ -323,7 +323,9 @@ says which stage failed and what to try, and exits 1:
 | `no response ... connection refused` | Nothing is listening at that address. |
 
 `-kind` picks the sample's kind (`approval_pending` by default; `outcome_unknown`, `run_aborted`,
-`recovery_failing` and `notification_overdue` too). `-ca`, `-pin`, `-client-cert` and `-client-key`
+`recovery_failing`, `notification_overdue` and `resolved` too). To watch a relay open and close a
+PagerDuty incident, send `-kind approval_pending -run notify-test-demo`, then `-kind resolved -run
+notify-test-demo`: the `resolved` is the all-clear of that approval. `-ca`, `-pin`, `-client-cert` and `-client-key`
 are the receiver-side checks of the [mutual TLS](#mutual-tls-a-private-ca-and-a-key-pin) section;
 `-view-url` and `-view-db` shape the payload's view pointer as `WithViewURL` and `WithViewDB` do.
 Each test is a new event, so a receiver that drops redeliveries does not drop the second test. The
@@ -359,6 +361,9 @@ For each request the relay verifies the signature, the timestamp and the signed 
   run, kind, deadline, the tool and who may approve, and an "Open in viewer" button when there is a
   link (the payload's `view.url` from `WithViewURL`, else `-view-url` plus the run ID). Everything that
   came from the run is escaped, so a run ID cannot open an `@channel` mention.
+- **The all-clear** (`resolved`, see [The all-clear](#the-all-clear)) posts an "All clear" message to Slack
+  and a `resolve` to PagerDuty with the `dedup_key` of the event it ends. If the clear reaches the relay
+  first, the relay remembers the cleared ID and drops the event's trigger when it arrives.
 - **PagerDuty** gets an Events API v2 `trigger` whose `dedup_key` is the event's notification ID (the
   `id` of the payload, the SHA-256 of the event key). It is the same on every delivery of the event,
   so PagerDuty folds repeats into one incident; a resolve names the same key. Severity follows the
@@ -410,9 +415,10 @@ http.Handle("/bide", h) // verifies, dedupes by delivery ID, forwards, answers 2
 
 A `relay.Sink` is `Name() string` and `Send(ctx, notify.Payload) error`, so another destination (a
 different chat, an email gateway) is one type. `relay.SlackMessage` and `relay.PagerDutyTrigger`
-build the bodies without sending them. The PagerDuty sink resolves an incident for a payload its
-`ResolveTarget` recognizes as an all clear; `relay.DefaultResolveTarget` is the hook where the
-notifier's all-clear kind plugs in, and it resolves nothing until that kind exists.
+build the bodies without sending them. The PagerDuty sink resolves the incident of a `resolved`
+notification: `relay.DefaultResolveTarget` takes the `clears.id` of the payload, which is the
+`dedup_key` the event's trigger used, and `PagerDutyConfig.ResolveTarget` replaces it. A `resolved`
+payload with no `clears` names no incident and is ignored, not turned into a trigger.
 
 ## What an acknowledgement means
 
