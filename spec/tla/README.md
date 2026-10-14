@@ -425,17 +425,17 @@ moved to nightly (#132).
 | `step-cross-a1` | Step | 2 in 2 | 1, 1, 1 | 0..2 | safety | 152,375 | 2 s |
 | `tool-same-a1` | tool | 2 in 1 | 1, 1, 1 | 0..2 | safety | 69,179 | 1 s |
 | `tool-cross-a1` | tool | 2 in 2 | 1, 1, 1 | 0..2 | safety | 155,019 | 2 s |
-| `resolve-lease` | tool, resolver (lease) | 2 leased in 2 | 2, 1, 1 | 0..3 | safety | 80,919 | 1 s |
+| `resolve-lease` | tool, resolver (lease) | 2 leased in 2 | 2, 1, 1 | 0..3 | safety | 106,133 | 1 s |
 | `resolve-minage-claim` | tool, resolver (min age, the F2 fix) | 2 in 2 | 2, 1, 0 | 0..4 | safety | 531,951 | 11 s |
-| `intent` | two Steps that pause, the caller, resolver (lease) | 2 leased in 1 | 1, 1, 0 | 0..2 | safety, per intent | 1,370 | <1 s |
-| `intent-minage-claim` | two tool calls, the caller, resolver (min age, the F2 fix) | 2 in 2 | 2, 0, 0 | 0..3 | safety, per intent | 662 | <1 s |
-| `live-step-same` | Step | 2 in 1 | 1, 1, 1 | 0..2 | `Progress` | 291,262 | 9 s |
-| `live-tool-cross` | tool | 2 in 2 | 1, 1, 1 | 0..2 | `Progress` | 144,243 | 5 s |
-| `resolve-minage-claim-a3` | tool, resolver (min age, F2 and F3 fixed) | 2 in 2 | 3, 0, 0 | 0..4 | safety | 702,817 | 6 s |
-| `resolve-lease-claim` | tool, resolver (lease, F4's fix), a leased driver and a plain Run | 2 in 1 | 3, 0, 0 | 0..4 | safety | 331,475 | 6 s |
-| `resolve-in-proc-tool` | tool, resolver in the drivers' process (min age, fixes) | 2 in 1 | 2, 1, 0 | 0..4 | safety | 285,231 | 4 s |
-| `flow-same` | one marker key (plan flow) | 2 in 1 | 2, 1, 1 | 0 | safety | 6,588 | <1 s |
-| `flow-cross` | one marker key (plan flow) | 2 in 2 | 2, 1, 1 | 0 | safety | 14,357 | 1 s |
+| `intent` | two Steps that pause, the caller, resolver (lease) | 2 leased in 1 | 1, 1, 0 | 0..2 | safety, per intent | 1,999 | <1 s |
+| `intent-minage-claim` | two tool calls, the caller, resolver (min age, the F2 fix) | 2 in 2 | 2, 0, 0 | 0..3 | safety, per intent | 1,279 | <1 s |
+| `live-step-same` | Step | 2 in 1 | 1, 1, 1 | 0..2 | `Progress` | 291,184 | 9 s |
+| `live-tool-cross` | tool | 2 in 2 | 1, 1, 1 | 0..2 | `Progress` | 155,019 | 5 s |
+| `resolve-minage-claim-a3` | tool, resolver (min age, F2 and F3 fixed) | 2 in 2 | 3, 0, 0 | 0..4 | safety | 739,260 | 6 s |
+| `resolve-lease-claim` | tool, resolver (lease, F4's fix), a leased driver and a plain Run | 2 in 1 | 3, 0, 0 | 0..4 | safety | 349,939 | 6 s |
+| `resolve-in-proc-tool` | tool, resolver in the drivers' process (min age, fixes) | 2 in 1 | 2, 1, 0 | 0..4 | safety | 297,618 | 4 s |
+| `flow-same` | one marker key (plan flow) | 2 in 1 | 2, 1, 1 | 0 | safety | 6,530 | <1 s |
+| `flow-cross` | one marker key (plan flow) | 2 in 2 | 2, 1, 1 | 0 | safety | 14,293 | 1 s |
 | `evict-tool-same-a1` | tool, 1 eviction | 2 in 1 | 1, 1, 1 | 0..2 | safety | 71,812 | 2 s |
 
 Nightly (and on demand, `workflow_dispatch`):
@@ -757,9 +757,9 @@ every drive that read the denial.
 
 | Config | Group | What | States | Time |
 |---|---|---|---|---|
-| `ap-one-cross` | ci | 1-of-1, two drivers in two processes with their own deployments; a redeploy removes the gate or makes it m-of-n; two `Approve` calls; 1 error reply, 1 crash | 172,801 | 4 s |
-| `ap-m-cross` | ci | m-of-n (2 of 3), two drivers in two processes recording the tally concurrently; two decisions from the approvers or the adversary; a redeploy tightens or loosens one process's policy; 1 error reply | 415,936 | 8 s |
-| `ap-m-bound` | ci | m-of-n with decisions signed over another call; one driver, three decisions | 2,790 | <1 s |
+| `ap-one-cross` | ci | 1-of-1, two drivers in two processes with their own deployments; a redeploy removes the gate or makes it m-of-n; two `Approve` calls; 1 error reply, 1 crash | 175,641 | 4 s |
+| `ap-m-cross` | ci | m-of-n (2 of 3), two drivers in two processes recording the tally concurrently; two decisions from the approvers or the adversary; a redeploy tightens or loosens one process's policy; 1 error reply | 485,589 | 8 s |
+| `ap-m-bound` | ci | m-of-n with decisions signed over another call; one driver, three decisions | 3,191 | <1 s |
 | `ap-one-resolve` | ci | 1-of-1 with an operator resolving halts (lease check, claim of the next attempt); 1 error reply, 1 crash | 3,857 | <1 s |
 | `ap-one-resolve-minage` | ci | 1-of-1 with an operator resolving halts under `WithMinHaltAge` and the claim of the next attempt; 2 error replies | 48,356 | 2 s |
 | `ap-fold-check` | ci | the #68 fix: a policy listing one approver twice is refused | 222 | <1 s |
@@ -1615,9 +1615,9 @@ pull-request job (about 55 before P14's extension; measured on the CI runner).
 | `pickup-reach` | ci | Vacuity of the pickup configurations: a dead holder's run waits after its lease lapsed (PickupNotReachable must be violated), under the rule since #126. | 267 | <1 s |
 | `life-resolve` | ci | One run: a leased primary Run, one Recover pass (not RecoverLoop) and an operator resolving halts; an error reply and a crash. | 13,644 | 1 s |
 | `live-pickup` | ci | PickedUp under v0.9.0's rule: a halted run listed before a leased primary's run, the primary dies; every step and the clock weakly fair. | 7,775 | 3 s |
-| `life-cancel-saga` | ci | Cancel (P14) on a saga of two calls under the adopted rule (L4): a rollback request, answered by the drive's rollback and run:cancelled. A leased primary, a worker, a crash. | 95,034 | 3 s |
-| `life-status` | ci | Status (D8) by Gets with the re-read (L6): a saga of one call, a plain Run, Cancel racing completion and the rollback. | 1,065 | <1 s |
-| `life-status-load` | ci | Status (D8) by one Load, the same scenario. | 435 | <1 s |
+| `life-cancel-saga` | ci | Cancel (P14) on a saga of two calls under the adopted rule (L4): a rollback request, answered by the drive's rollback and run:cancelled. A leased primary, a worker, a crash. | 99,008 | 3 s |
+| `life-status` | ci | Status (D8) by Gets with the re-read (L6): a saga of one call, a plain Run, Cancel racing completion and the rollback. | 1,113 | <1 s |
+| `life-status-load` | ci | Status (D8) by one Load, the same scenario. | 450 | <1 s |
 | `life-filter` | ci | The tool filter (D3), journaled and enforced at dispatch (L5): the primary filters call 2's tool out, a worker recovers the run passing no filter; a crash. | 6,634 | 1 s |
 | `life-limits` | ci | The journaling rule (B1): a primary with a one-turn limit; a later Resume raises it (an amendment), or passes another prompt or filter (ErrConfig); a worker; a crash. | 89,248 | 3 s |
 | `life-not-started` | ci | A run with no run:start: recovery skips it, reports it once per process and reads run:start again every pass (L7); the primary dies after starting the run. StartedRunSettles and PickedUp, every step and the clock weakly fair. | 4,027 | 2 s |
@@ -1845,22 +1845,22 @@ finding and limit configurations included, with vacuity runs and JVM starts) tak
 
 | Config | Group | What | States | Time |
 |---|---|---|---|---|
-| `deleg-faults` | ci | A saga delegates under `P`, then fails. It covers mint, reuse on resume and `BindRollback`, with a crash, an error reply, a read error, a wrong binding, and `P` expiring. | 54,878 | 1 s |
-| `deleg-ungranted` | ci | The same with no grant bound: the ungranted marker, and a resume under a grant refused. | 10,022 | <1 s |
-| `deleg-expiry` | ci | A child grant that expires: `CallGuard`, the expired journaled grant (F2), and `BindRollback` with no expiry check, with a crash. | 1,228 | <1 s |
-| `nested` | ci | A delegation inside a delegation, with a crash, a read error, and `P` expiring. | 17,848 | <1 s |
-| `halt` | ci | The child's turn holds an Unrecorded refusal joined with a lost outcome, with a crash. | 2,787 | <1 s |
-| `subruns` | ci | Programmatic sub-runs that are declared, undeclared, and declared on another store, with a crash and an error reply. | 2,389 | <1 s |
-| `sub-long` | ci | A tool-use ID longer than `encodeID`'s limit (B1). | 207 | <1 s |
-| `sub-store` | ci | A saga's sub-run on another store is refused (B2). | 119 | <1 s |
-| `sub-late` | ci | A sub-run started after its call returned is refused. | 128 | <1 s |
-| `plain-tree` | ci | A plain sub-run's sub-run, three levels (B3), with a crash and an error reply. | 1,580 | <1 s |
-| `rerun` | ci | The rollback re-runs a call that never ran, which starts a sub-run, and its outcome may be lost (B4). | 580 | <1 s |
-| `live-unrec` | ci | `UnrecordedContinues` and `RollbackEnds` with a read error, an error reply, a wrong binding, and `P` expiring. | 5,309 | 1 s |
-| `fix-d1-chain` | ci | D1's tree with the fixes, with both liveness properties. | 647 | <1 s |
+| `deleg-faults` | ci | A saga delegates under `P`, then fails. It covers mint, reuse on resume and `BindRollback`, with a crash, an error reply, a read error, a wrong binding, and `P` expiring. | 54,939 | 1 s |
+| `deleg-ungranted` | ci | The same with no grant bound: the ungranted marker, and a resume under a grant refused. | 10,035 | <1 s |
+| `deleg-expiry` | ci | A child grant that expires: `CallGuard`, the expired journaled grant (F2), and `BindRollback` with no expiry check, with a crash. | 1,234 | <1 s |
+| `nested` | ci | A delegation inside a delegation, with a crash, a read error, and `P` expiring. | 17,902 | <1 s |
+| `halt` | ci | The child's turn holds an Unrecorded refusal joined with a lost outcome, with a crash. | 2,864 | <1 s |
+| `subruns` | ci | Programmatic sub-runs that are declared, undeclared, and declared on another store, with a crash and an error reply. | 2,398 | <1 s |
+| `sub-long` | ci | A tool-use ID longer than `encodeID`'s limit (B1). | 209 | <1 s |
+| `sub-store` | ci | A saga's sub-run on another store is refused (B2). | 121 | <1 s |
+| `sub-late` | ci | A sub-run started after its call returned is refused. | 130 | <1 s |
+| `plain-tree` | ci | A plain sub-run's sub-run, three levels (B3), with a crash and an error reply. | 1,583 | <1 s |
+| `rerun` | ci | The rollback re-runs a call that never ran, which starts a sub-run, and its outcome may be lost (B4). | 584 | <1 s |
+| `live-unrec` | ci | `UnrecordedContinues` and `RollbackEnds` with a read error, an error reply, a wrong binding, and `P` expiring. | 5,321 | 1 s |
+| `fix-d1-chain` | ci | D1's tree with the fixes, with both liveness properties. | 657 | <1 s |
 | `fix-d2-guard` | ci | D2's tree with the fixes, with a crash. | 1,118 | <1 s |
-| `fix-d3-recurse` | ci | D3's tree with the fixes, with a crash. | 341 | <1 s |
-| `fixes-all` | ci | D1 to D3 in one tree: a delegation under `P`, then, after `P` expired, D3's plain sub-run and D2's delegation under `P2`, with every property. Each fix left out fails it (`RollbackEnds`, `AuthorityNarrows`, `RollbackSound`). | 1,338 | 1 s |
+| `fix-d3-recurse` | ci | D3's tree with the fixes, with a crash. | 343 | <1 s |
+| `fixes-all` | ci | D1 to D3 in one tree: a delegation under `P`, then, after `P` expired, D3's plain sub-run and D2's delegation under `P2`, with every property. Each fix left out fails it (`RollbackEnds`, `AuthorityNarrows`, `RollbackSound`). | 1,348 | 1 s |
 | `cancel-tree` | ci | P14's `Cancel` of the root of nested delegations at any step, with a crash: every run of the tree reads the root's cancellation after a won claim (`NoFireAfterRootCancel`). | 834 | <1 s |
 | `cancel-tree-saga` | ci | The same in a saga tree, with `RollbackSound`. | 1,429 | <1 s |
 | `deep-deleg` | nightly | The saga delegation under every fault, two of each, with a child grant expiring at tick 2. | 1,310,328 | 1 min |
