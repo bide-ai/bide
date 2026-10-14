@@ -19,6 +19,7 @@ import (
 	"github.com/bide-ai/bide/agent"
 	"github.com/bide-ai/bide/agent/agenttest"
 	"github.com/bide-ai/bide/audit"
+	"github.com/bide-ai/bide/internal/approveline"
 	"github.com/bide-ai/bide/store/sqlite"
 )
 
@@ -562,5 +563,82 @@ func TestReview_NoDecisionAfterTheRunEndedDuringPrompt(t *testing.T) {
 	code := Main(append([]string{"-db", fx.db, "-color", "never"}, fx.as("ops")...), hook, &out, &errb, stores)
 	if code != 1 || len(fx.decisions()) != 0 {
 		t.Fatalf("exit %d, %d decisions: %s", code, len(fx.decisions()), errb.String())
+	}
+}
+
+// R11: a receipt is the approver's own claim: Record and Index are unsigned, and nothing in it shows
+// the decision was ever journaled. A decision signed by a key that never submitted it, naming a
+// position, must not make the audit say a decision was deleted from an untouched journal.
+func TestReview_FabricatedReceiptAccusesAnUntouchedJournal(t *testing.T) {
+	dir := t.TempDir()
+	db := filepath.Join(dir, "j.db")
+	s, err := sqlite.Open(db)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer s.Close()
+	pubs, keyFiles, keysJSON := enrol(t, dir)
+	verify := func(id string) (agent.ApproverVerifier, bool) { v, ok := pubs[id]; return v, ok }
+	logPub, logPriv, _ := ed25519.GenerateKey(rand.Reader)
+	anc := &listAnchor{}
+	as, err := audit.NewAuditedStore(s, audit.Ed25519Signer{Priv: logPriv}, anc)
+	if err != nil {
+		t.Fatal(err)
+	}
+	aj := agenttest.MustJournal(as)
+	refund := agent.MustFunc("refund", "refund", func(context.Context, json.RawMessage) (string, error) { return "ok", nil }, agent.WithApproval(twoOfThree))
+	drive := func() error {
+		m := agenttest.NewScriptedModel(agenttest.ToolTurn("c2", "refund", refundArgs), agenttest.TextTurn("done"))
+		_, err := agenttest.MustNew(m, aj, agent.WithTools(refund), agent.WithApproverVerifiers(verify)).Run(context.Background(), "r1", agent.UserText("go"))
+		return err
+	}
+	if _, ok := errors.AsType[*agent.ApprovalPending](drive()); !ok {
+		t.Fatal("no pause")
+	}
+	for _, id := range []string{"ops", "finance"} {
+		var out, errb bytes.Buffer
+		if code := Main([]string{"-db", db, "-color", "never", "-run", "r1", "-call", "c2", "-as", id, "-key", keyFiles[id], "-approver-keys", keysJSON, "-yes"}, strings.NewReader(""), &out, &errb, stores); code != 0 {
+			t.Fatalf("%s: %s", id, errb.String())
+		}
+	}
+	if err := drive(); err != nil {
+		t.Fatalf("resume: %v", err)
+	}
+	recs, _ := aj.History(context.Background(), "r1")
+	anc.mu.Lock()
+	heads := append([]audit.SignedTreeHead(nil), anc.sths...)
+	anc.mu.Unlock()
+
+	sg, err := LoadSigner(keyFiles["risk"])
+	if err != nil {
+		t.Fatal(err)
+	}
+	at := time.Now()
+	subj := agent.ApprovalSubject{RunID: "r1", ToolUseID: "c2", ToolName: "refund", Args: json.RawMessage(refundArgs)}
+	sig, _ := sg.Sign(agent.ApprovalDecisionBytes(subj, "risk", false, at))
+	fab := audit.DecisionReceipt{
+		Format: audit.ReceiptFormat, RunID: "r1", ToolUseID: "c2", ToolName: "refund", Args: json.RawMessage(refundArgs),
+		ArgsSHA: audit.ApprovalArgsDigest(subj), Approver: "risk", Approved: false, DecidedAt: agent.FormatTimestamp(at),
+		Alg: sg.Alg(), Signature: sig, Record: "approval:c2:risk:made-up", Index: 3, RecordedAt: agent.FormatTimestamp(at),
+	}
+	if err := fab.Verify(pubs["risk"]); err != nil {
+		t.Fatalf("the fabricated receipt should verify on its own: %v", err)
+	}
+	f := audit.CheckReceipt(fab, recs, heads, audit.Ed25519Verifier{Pub: logPub})
+	if f.Verdict == audit.ReceiptDeleted || f.Verdict != audit.ReceiptUnmatched {
+		t.Fatalf("a receipt for a decision never submitted makes the audit say %q about an untouched journal: %s", f.Verdict, f.Detail)
+	}
+}
+
+// R12: characters approveline.Unsafe must refuse: they render as nothing or change how the text
+// around them is drawn.
+func TestReview_UnsafeLeavesInvisibleMarks(t *testing.T) {
+	for _, r := range []rune{0x034F, 0xFE0F, 0xE0100, 0x17B4, 0x17B5, 0xFFFC, 0x3000, 0x1D173} {
+		if !approveline.Unsafe(r) {
+			t.Errorf("approveline.Unsafe(U+%04X) = false", r)
+		}
+		if safe("x"+string(r)+"y") == "x"+string(r)+"y" {
+			t.Errorf("safe leaves U+%04X unescaped", r)
+		}
 	}
 }

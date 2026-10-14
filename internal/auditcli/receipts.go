@@ -2,10 +2,12 @@ package auditcli
 
 import (
 	"bytes"
+	"encoding/json"
 	"fmt"
 	"os"
 	"path/filepath"
 	"reflect"
+	"runtime"
 	"sort"
 	"strings"
 	"time"
@@ -30,6 +32,7 @@ func (c *cli) verifyReceipts(args []string) {
 	fs.Var(&heads, "heads", "signed tree heads of the journal: a file with one head, or one head per line (the anchor log a published head is appended to); repeatable")
 	pubkey := fs.String("pubkey", "", "the log's "+pubkeyHelp)
 	keysPath := fs.String("approver-keys", "", `JSON object of approver id to public key text (<scheme>:<hex>), e.g. {"ops":"ed25519:ab12..."}`)
+	update := fs.Bool("update", false, "write an anchoring proof into each receipt whose decision a signed head now commits to (an atomic rewrite of the receipt file, mode kept): from then on a signed head that omits the decision proves its deletion; without it the verdict is the approver's claim")
 	c.parse(fs, args)
 
 	c.require(fs, required{"-receipt", len(receipts) == 0}, required{"-journal", len(journals) == 0}, required{"-heads", len(heads) == 0}, absent("-pubkey", *pubkey), absent("-approver-keys", *keysPath))
@@ -70,6 +73,7 @@ func (c *cli) verifyReceipts(args []string) {
 		signed = append(signed, hs...)
 	}
 	var rs []audit.DecisionReceipt
+	var paths []string
 	for _, p := range files {
 		var r audit.DecisionReceipt
 		if err := c.readJSON(p, &r); err != nil {
@@ -77,13 +81,14 @@ func (c *cli) verifyReceipts(args []string) {
 			continue
 		}
 		rs = append(rs, r)
+		paths = append(paths, p)
 	}
 	if !ok || !c.clean() {
 		return
 	}
 
 	failed, pending := 0, 0
-	for _, r := range rs {
+	for i, r := range rs {
 		what := fmt.Sprintf("%s %s on call %s of run %s (record %s)", cleanText(r.Approver), approvedWord(r.Approved), cleanText(r.ToolUseID), cleanText(r.RunID), cleanText(r.Record))
 		v, known := keys[r.Approver]
 		if !known {
@@ -103,8 +108,16 @@ func (c *cli) verifyReceipts(args []string) {
 		}
 		f := audit.CheckReceipt(r, journal, signed, logKey)
 		switch {
-		case f.Verdict == audit.ReceiptAnchored:
-			c.printf("PASS  %s: signature verifies; %s\n", what, cleanText(f.Detail))
+		case f.Verdict == audit.ReceiptAnchored || f.Verdict == audit.ReceiptRedacted:
+			c.printf("PASS  %s: signature verifies; %s: %s\n", what, f.Verdict, cleanText(f.Detail))
+			if *update && r.Anchor == nil && f.Verdict == audit.ReceiptAnchored {
+				if err := anchorReceiptFile(paths[i], r, journal, signed, logKey); err != nil {
+					c.printf("FAIL  %s: the anchoring proof was not stored: %s\n", what, cleanText(err.Error()))
+					failed++
+				} else {
+					c.printf("INFO  %s: anchoring proof stored in %s\n", what, cleanText(paths[i]))
+				}
+			}
 		case f.Verdict == audit.ReceiptPending:
 			c.printf("INFO  %s: signature verifies; pending: %s\n", what, cleanText(f.Detail))
 			pending++
@@ -125,6 +138,41 @@ func (c *cli) verifyReceipts(args []string) {
 		return
 	}
 	c.printf("PASS: %d receipt(s) verified and committed to by signed heads\n", len(rs))
+}
+
+// anchorReceiptFile adds the anchoring proof to the receipt file at path, by writing a temporary file
+// beside it with the receipt's mode and renaming it over the receipt, so a crash leaves the old
+// receipt or the new one. It adds one field; nothing the approver signed or claimed changes.
+func anchorReceiptFile(path string, r audit.DecisionReceipt, journal []agent.Record, heads []audit.SignedTreeHead, logKey audit.Verifier) error {
+	out, err := audit.AnchorReceipt(r, journal, heads, logKey)
+	if err != nil {
+		return err
+	}
+	b, err := json.MarshalIndent(out, "", "  ")
+	if err != nil {
+		return err
+	}
+	fi, err := os.Stat(path)
+	if err != nil {
+		return err
+	}
+	tmp, err := os.CreateTemp(filepath.Dir(path), ".receipt-*.tmp")
+	if err != nil {
+		return err
+	}
+	defer os.Remove(tmp.Name())
+	if _, err := tmp.Write(append(b, '\n')); err != nil {
+		tmp.Close()
+		return err
+	}
+	if err := tmp.Chmod(fi.Mode().Perm()); err != nil && runtime.GOOS != "windows" {
+		tmp.Close()
+		return err
+	}
+	if err := tmp.Close(); err != nil {
+		return err
+	}
+	return os.Rename(tmp.Name(), path)
 }
 
 func approvedWord(approved bool) string {

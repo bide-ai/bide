@@ -189,18 +189,48 @@ func agentJournal(t *testing.T, recs []agent.Record) *agent.Journal {
 	return j
 }
 
-func TestVerifyReceipts_Deleted(t *testing.T) {
+func TestVerifyReceipts_DeletedNeedsTheProof(t *testing.T) {
 	f := newReceiptFixture(t)
 	journal, heads := f.removeDecision()
 	args := f.args(heads)
 	args[4] = journal
+	// Without an anchoring proof the receipt is the approver's claim.
 	code, out, _ := runCLI(args...)
-	if code != 1 || !strings.Contains(out, "FAIL") || !strings.Contains(out, "decision deleted after signing") {
-		t.Fatalf("%d\n%s", code, out)
+	if code != 1 || !strings.Contains(out, "receipt not matched by the journal (the approver's claim)") || strings.Contains(out, "decision deleted after signing") {
+		t.Fatalf("unproven: %d\n%s", code, out)
+	}
+	// While the decision is anchored, -update stores the proof in the receipt file, keeping its mode.
+	before, _ := os.Stat(f.receipt)
+	code, out, _ = runCLI(f.args(f.headsAnchored, "-update")...)
+	if code != 0 || !strings.Contains(out, "anchoring proof stored") {
+		t.Fatalf("-update: %d\n%s", code, out)
+	}
+	after, _ := os.Stat(f.receipt)
+	if before.Mode().Perm() != after.Mode().Perm() {
+		t.Fatalf("mode %v became %v", before.Mode().Perm(), after.Mode().Perm())
+	}
+	if code, out, _ := runCLI(f.args(f.headsAnchored, "-update")...); code != 0 || strings.Contains(out, "stored") {
+		t.Fatalf("a second -update changes nothing: %d\n%s", code, out)
+	}
+	// With the proof, the same tampered journal proves the deletion.
+	code, out, _ = runCLI(args...)
+	if code != 1 || !strings.Contains(out, "decision deleted after signing") {
+		t.Fatalf("proven: %d\n%s", code, out)
+	}
+	// The receipt on its own still verifies.
+	b, _ := os.ReadFile(f.receipt)
+	var r audit.DecisionReceipt
+	if err := audit.UnmarshalStrict(b, &r); err != nil || r.Anchor == nil {
+		t.Fatalf("receipt after -update: %v %v", err, r.Anchor)
+	}
+	// -update does nothing for a pending receipt.
+	g := newReceiptFixture(t)
+	if code, out, _ := runCLI(g.args(g.headsBefore, "-update")...); code != 0 || strings.Contains(out, "stored") {
+		t.Fatalf("pending -update: %d %s", code, out)
 	}
 }
 
-func TestVerifyReceipts_NeverAnchored(t *testing.T) {
+func TestVerifyReceipts_AbsentIsAClaim(t *testing.T) {
 	f := newReceiptFixture(t)
 	// The journal lacks the decision (it ends before its position) and no head reaches it.
 	exp, err := audit.ExportJournal(context.Background(), f.store, f.rc.RunID)
@@ -213,7 +243,7 @@ func TestVerifyReceipts_NeverAnchored(t *testing.T) {
 	args := f.args(f.headsBefore)
 	args[4] = short
 	code, out, _ := runCLI(args...)
-	if code != 1 || !strings.Contains(out, "decision never anchored") {
+	if code != 1 || !strings.Contains(out, "receipt not matched by the journal") {
 		t.Fatalf("%d\n%s", code, out)
 	}
 	// A late head that stops short does not accuse: the verdict is positional, not by time.

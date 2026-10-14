@@ -37,7 +37,7 @@ func TestCommand(t *testing.T) {
 // TestCommandRefusesUnsafeIDs: a run, call or approver id with a control, bidi, invisible or filler
 // character, or bytes that are not UTF-8, cannot be written into a line a person reads and pastes.
 func TestCommandRefusesUnsafeIDs(t *testing.T) {
-	for _, r := range []rune{0x1b, 0x07, 0x7f, 0x9b, 0x202e, 0x2066, 0x200b, 0x2028, 0x3164, 0x2800, 0x115f, 0x1160, 0xffa0, 0x00ad, 0x180e, 0xfeff} {
+	for _, r := range []rune{0x1b, 0x07, 0x7f, 0x9b, 0x202e, 0x2066, 0x200b, 0x2028, 0x3164, 0x2800, 0x115f, 0x1160, 0xffa0, 0x00ad, 0x180e, 0xfeff, 0x034f, 0xfe0f, 0xe0100, 0x17b4, 0x17b5, 0xfffc, 0x3000, 0x00a0, 0x2003, 0x0301, 0x20dd, 0x1d173} {
 		bad := "c" + string(r) + "x"
 		for i, args := range [][3]string{{bad, "c", "ops"}, {"r", bad, "ops"}, {"r", "c", bad}} {
 			if got, err := Command(Journal{SQLite: "j.db"}, args[0], args[1], args[2], "k", "ks", false); err == nil {
@@ -55,7 +55,10 @@ func TestCommandRefusesUnsafeIDs(t *testing.T) {
 	if _, err := Command(Journal{SQLite: "j.db"}, "заказ-1", "c", "ops", "k", "ks", false); err != nil {
 		t.Errorf("ordinary text refused: %v", err)
 	}
-	if !Unsafe(0x3164) || Unsafe('a') || Unsafe(' ') {
+	if _, err := Command(Journal{SQLite: "j.db"}, "caf\u00e9", "c", "ops", "k", "ks", false); err != nil {
+		t.Errorf("a precomposed accent refused: %v", err)
+	}
+	if !Unsafe(0x3164) || Unsafe('a') || Unsafe(' ') || Unsafe('\u00e9') {
 		t.Error("Unsafe misclassifies")
 	}
 }

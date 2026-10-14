@@ -116,12 +116,10 @@ func TestReceipt_Pending(t *testing.T) {
 	}
 }
 
-// TestReceipt_Deleted: the decision is removed from the journal before any head covered it, and a
-// later head is signed over the journal without it: the head reaches the decision's position, and
-// the position holds something else.
-func TestReceipt_Deleted(t *testing.T) {
-	w := newReceiptWorld(t)
-	// The same run, in which alice's decision never landed: bob and carol decide instead.
+// tamperedWorld is the same run in which alice's decision never landed (bob and carol decided
+// instead), with a head the log key signed over that journal.
+func tamperedWorld(t *testing.T, w *receiptWorld) ([]agent.Record, audit.SignedTreeHead) {
+	t.Helper()
 	g2 := newGate(2, []string{"alice", "bob", "carol"}, nil)
 	g2.pubs, g2.privs, g2.logPub, g2.logPriv = w.g.pubs, w.g.privs, w.g.logPub, w.g.logPriv
 	wantPaused(t, g2.run(), 0)
@@ -130,10 +128,17 @@ func TestReceipt_Deleted(t *testing.T) {
 	if err := g2.run(); err != nil {
 		t.Fatal(err)
 	}
-	tampered := journalOf(t, g2)
-	h := headAt(t, g2, g2.logPriv, receiptRecordedAt.Add(time.Hour))
+	return journalOf(t, g2), headAt(t, g2, g2.logPriv, receiptRecordedAt.Add(time.Hour))
+}
+
+// TestReceipt_UnmatchedWithoutProof: a journal that lacks the decision where the receipt says, under
+// a signed head, is the approver's claim until the receipt carries an anchoring proof: nothing shows
+// the application ever journaled the decision.
+func TestReceipt_UnmatchedWithoutProof(t *testing.T) {
+	w := newReceiptWorld(t)
+	tampered, h := tamperedWorld(t, w)
 	f := w.check(tampered, w.before, h)
-	if f.Verdict != audit.ReceiptDeleted || !f.Verdict.Failed() || !strings.Contains(f.Detail, "removed or replaced") {
+	if f.Verdict != audit.ReceiptUnmatched || !f.Verdict.Failed() || !strings.Contains(f.Detail, "only if the approver's receipt is trusted") {
 		t.Fatalf("%+v", f)
 	}
 	// The same head with an honest journal is anchored: the verdict is about the journal.
@@ -142,12 +147,130 @@ func TestReceipt_Deleted(t *testing.T) {
 	}
 }
 
-// TestReceipt_NeverAnchored: the journal lacks the decision and no head reaches its position. A head
-// signed long after the decision that stops short of it proves nothing (clocks differ and heads
-// arrive out of order), so the verdict is positional: here it stays pending.
-func TestReceipt_NeverAnchored(t *testing.T) {
+// TestReceipt_DeletedWithProof: once the decision is anchored, the receipt takes the proof (the record
+// under a signed head), and from then on a signed head that matches the journal and holds something
+// else at the position proves the deletion.
+func TestReceipt_DeletedWithProof(t *testing.T) {
 	w := newReceiptWorld(t)
-	if f := w.check(w.pausedJ, w.before); f.Verdict != audit.ReceiptNeverAnchored || !f.Verdict.Failed() {
+	anchored, err := audit.AnchorReceipt(w.receipt, w.final, []audit.SignedTreeHead{w.before, w.head}, edV(w.g.logPub))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if anchored.Anchor == nil || anchored.Anchor.STH.Size != w.head.Size {
+		t.Fatalf("anchor: %+v", anchored.Anchor)
+	}
+	if err := anchored.Verify(edV(w.g.pubs["alice"])); err != nil {
+		t.Fatalf("a receipt with a proof still verifies on its own: %v", err)
+	}
+	// The receipt survives JSON, strictly.
+	b, _ := json.Marshal(anchored)
+	var back audit.DecisionReceipt
+	if err := audit.UnmarshalStrict(b, &back); err != nil {
+		t.Fatal(err)
+	}
+	tampered, h := tamperedWorld(t, w)
+	f := audit.CheckReceipt(back, tampered, []audit.SignedTreeHead{w.before, h}, edV(w.g.logPub))
+	if f.Verdict != audit.ReceiptDeleted || !strings.Contains(f.Detail, "removed or replaced") {
+		t.Fatalf("%+v", f)
+	}
+	// The honest journal still reads as anchored with the proof in the receipt.
+	if f := audit.CheckReceipt(back, w.final, []audit.SignedTreeHead{w.head}, edV(w.g.logPub)); f.Verdict != audit.ReceiptAnchored {
+		t.Fatalf("%+v", f)
+	}
+	// A proof that does not hold is unchecked, never an accusation.
+	bad := back
+	proof := *bad.Anchor
+	proof.RecordBytes = append([]byte(nil), proof.RecordBytes...)
+	proof.RecordBytes[len(proof.RecordBytes)-2] ^= 1
+	bad.Anchor = &proof
+	if f := audit.CheckReceipt(bad, tampered, []audit.SignedTreeHead{h}, edV(w.g.logPub)); f.Verdict != audit.ReceiptUnchecked {
+		t.Fatalf("tampered proof: %+v", f)
+	}
+	// A proof signed by another key is not a proof.
+	if f := audit.CheckReceipt(back, tampered, []audit.SignedTreeHead{h}, edV(ed25519PubOf(t))); f.Verdict == audit.ReceiptDeleted {
+		t.Fatalf("a proof under a key the auditor does not trust accused: %+v", f)
+	}
+	// AnchorReceipt makes a proof only of what holds.
+	if _, err := audit.AnchorReceipt(w.receipt, tampered, []audit.SignedTreeHead{h}, edV(w.g.logPub)); err == nil {
+		t.Fatal("a proof was made for a decision the journal does not hold")
+	}
+	if _, err := audit.AnchorReceipt(w.receipt, w.afterAlice, []audit.SignedTreeHead{w.before}, edV(w.g.logPub)); err == nil {
+		t.Fatal("a proof was made with no head reaching the position")
+	}
+}
+
+func ed25519PubOf(t *testing.T) ed25519.PublicKey {
+	t.Helper()
+	pub, _, err := ed25519.GenerateKey(rand.Reader)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return pub
+}
+
+// TestReceipt_FabricatedIsTheApproversClaim: an approver signs a decision they never submitted and
+// names a position. The journal and its heads are untouched; the verdict must not accuse anyone.
+func TestReceipt_FabricatedIsTheApproversClaim(t *testing.T) {
+	w := newReceiptWorld(t)
+	s := w.g.subject(t)
+	at := testDecidedAt
+	sig := ed25519.Sign(w.g.privs["carol"], agent.ApprovalDecisionBytes(s, "carol", false, at))
+	fab := audit.DecisionReceipt{
+		Format: audit.ReceiptFormat, RunID: gateRun, ToolUseID: "c1", ToolName: s.ToolName, Args: s.Args, ArgsSHA: audit.ApprovalArgsDigest(s),
+		Approver: "carol", Approved: false, DecidedAt: agent.FormatTimestamp(at), Alg: audit.AlgEd25519, Signature: sig,
+		Record: "approval:c1:carol:made-up", Index: 3, RecordedAt: agent.FormatTimestamp(at), LeafHash: strings.Repeat("ab", 32),
+	}
+	if err := fab.Verify(edV(w.g.pubs["carol"])); err != nil {
+		t.Fatalf("the fabricated receipt verifies on its own: %v", err)
+	}
+	f := audit.CheckReceipt(fab, w.final, []audit.SignedTreeHead{w.before, w.head}, edV(w.g.logPub))
+	if f.Verdict == audit.ReceiptDeleted || f.Verdict != audit.ReceiptUnmatched {
+		t.Fatalf("%+v", f)
+	}
+	// It cannot be given a proof either: the journal does not hold it.
+	if _, err := audit.AnchorReceipt(fab, w.final, []audit.SignedTreeHead{w.head}, edV(w.g.logPub)); err == nil {
+		t.Fatal("a proof was made for a fabricated receipt")
+	}
+}
+
+// TestReceipt_Redacted: a decision a redaction has replaced with a tombstone (which keeps the leaf
+// hash) is "redacted (anchored)", with the proof or without, never deleted.
+func TestReceipt_Redacted(t *testing.T) {
+	w := newReceiptWorld(t)
+	anchored, err := audit.AnchorReceipt(w.receipt, w.final, []audit.SignedTreeHead{w.head}, edV(w.g.logPub))
+	if err != nil {
+		t.Fatal(err)
+	}
+	exp, err := audit.ExportJournal(context.Background(), w.g.store, gateRun)
+	if err != nil {
+		t.Fatal(err)
+	}
+	exp.Records[w.receipt.Index] = []byte(`{"redacted":{"leaf_hash":"` + w.receipt.LeafHash + `","at_ms":1}}`)
+	redacted, err := exp.Journal()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !redacted[w.receipt.Index].Redacted {
+		t.Fatal("the tombstone did not read as redacted")
+	}
+	for name, r := range map[string]audit.DecisionReceipt{"without proof": w.receipt, "with proof": anchored} {
+		f := audit.CheckReceipt(r, redacted, []audit.SignedTreeHead{w.head}, edV(w.g.logPub))
+		if f.Verdict != audit.ReceiptRedacted || f.Verdict.Failed() {
+			t.Errorf("%s: %+v", name, f)
+		}
+	}
+	// A tombstone that keeps some other leaf is not this decision.
+	exp.Records[w.receipt.Index] = []byte(`{"redacted":{"leaf_hash":"` + strings.Repeat("cd", 32) + `","at_ms":1}}`)
+	if _, err := exp.Journal(); err != nil {
+		t.Fatal(err)
+	}
+}
+
+// TestReceipt_NeverAnchoredIsAClaim: the journal lacks the decision and no head reaches its
+// position. A late head that stops short proves nothing (clocks differ, heads arrive out of order).
+func TestReceipt_AbsentIsAClaim(t *testing.T) {
+	w := newReceiptWorld(t)
+	if f := w.check(w.pausedJ, w.before); f.Verdict != audit.ReceiptUnmatched || !f.Verdict.Failed() {
 		t.Fatalf("absent from the journal: %+v", f)
 	}
 	late := headAt(t, &gate{store: freshPaused(t, w), logPriv: w.g.logPriv}, w.g.logPriv, receiptRecordedAt.Add(24*time.Hour))
@@ -176,7 +299,7 @@ func TestReceipt_UncheckedAndIgnored(t *testing.T) {
 	}
 	_, badPriv, _ := ed25519.GenerateKey(rand.Reader)
 	forged := headAt(t, w.g, badPriv, receiptRecordedAt.Add(time.Hour))
-	if f := w.check(w.pausedJ, forged); f.Verdict != audit.ReceiptNeverAnchored {
+	if f := w.check(w.pausedJ, forged); f.Verdict != audit.ReceiptUnmatched {
 		t.Fatalf("a head the log key did not sign must be ignored: %+v", f)
 	}
 	wrongRun := w.head

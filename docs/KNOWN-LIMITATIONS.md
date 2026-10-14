@@ -265,8 +265,8 @@ informational `approval-pending` note, written once when the run first pauses. I
 approve -list` does not show it: decide from the application. A decision written by `bide approve`
 goes through the journal's plain store, so it is covered by a signed tree head only at the
 application's next write to the run (`AuditedStore` anchoring is best-effort even there); a receipt
-kept by the approver, checked with `bide audit verify-receipts`, notices a decision deleted before
-then. A store cannot refuse a second decision of one approver without letting a bad record take their
+kept by the approver, checked with `bide audit verify-receipts -update`, can prove a decision
+deleted once a signed head has committed to it; before that, a mismatch is only the approver's claim. A store cannot refuse a second decision of one approver without letting a bad record take their
 place, so concurrent decisions of one approver are both recorded and the first valid one counts. See
 [Deciding from the terminal](guides/hitl-approval.md#deciding-from-the-terminal) and [Decision
 receipts](guides/audit.md#decision-receipts-noticing-a-decision-deleted-before-it-was-anchored).

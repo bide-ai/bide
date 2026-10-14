@@ -21,15 +21,22 @@ var ErrUnsafe = errors.New("approveline: an id holds a control, bidirectional, i
 
 // Unsafe reports whether r is a character that renders as nothing, or changes how the text around
 // it is shown or run: a control character, a Unicode format character (bidirectional overrides and
-// isolates, zero-width characters, the soft hyphen), a line or paragraph separator, or one of the
-// fillers that render as blank (Hangul and braille fillers). The command line and the viewer escape
+// isolates, zero-width characters, the soft hyphen), a line or paragraph separator, any space other
+// than the ASCII space (no-break, ideographic, em and en spaces), any combining or enclosing mark
+// (variation selectors, the combining grapheme joiner, the Khmer inherent vowels), the object
+// replacement character, or one of the fillers that render as blank (Hangul and braille fillers).
+// Combining marks are refused so that an id cannot carry marks that draw nothing or restyle the
+// character before them; text with accents is written precomposed (NFC), where it is ordinary. The command line and the viewer escape
 // them; a line that would carry one is not written.
 func Unsafe(r rune) bool {
 	switch r {
-	case 0x115F, 0x1160, 0x3164, 0xFFA0, 0x2800, 0x180E, 0x2028, 0x2029:
+	case 0x115F, 0x1160, 0x3164, 0xFFA0, 0x2800, 0x180E, 0x2028, 0x2029, 0xFFFC:
 		return true
+	case ' ':
+		return false
 	}
-	return unicode.IsControl(r) || unicode.Is(unicode.Cf, r) || unicode.Is(unicode.Zl, r) || unicode.Is(unicode.Zp, r)
+	return unicode.IsControl(r) || unicode.Is(unicode.Cf, r) || unicode.Is(unicode.Zl, r) || unicode.Is(unicode.Zp, r) ||
+		unicode.Is(unicode.Zs, r) || unicode.Is(unicode.Mn, r) || unicode.Is(unicode.Me, r)
 }
 
 // checkText returns ErrUnsafe if s holds an unsafe character or invalid UTF-8.
