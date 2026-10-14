@@ -549,10 +549,14 @@ because whoever can append to the stored trail could have written it; `-accept-t
 found. Sign and anchor often enough that the tail is short.
 
 **Per-receiver completeness.** The trail cannot know the routing, so by default a fan-out that reached
-one receiver passes. `-expect-receivers risk,finance` (library `ExpectedReceivers`; `default` names the
-default receiver) requires every halt, approval, abort and recovery failure to have a delivery to each
-listed receiver; one without is `no_delivery` and fails. Escalation steps, overdue notices and
-all-clears are not checked this way. Without the flag, per-receiver completeness is not checked.
+one receiver passes. `-routing routing.json` (library `Routing`) takes the notifier's routing, which you write with
+`agent.RoutingOf(opts...)` from the same options you pass the notifier, so the two cannot differ: each
+halt, approval, abort and recovery failure must have a delivery to the receivers `NotifyRouting.Receivers`
+gives it (the method the notifier routes by: the kind's route, or for an approval the receivers of its
+approvers, which needs the gate's journal), and each escalation step that is due (its deadline and the
+grace passed, the event neither acknowledged nor, for an approval, cleared or resolved) must have a
+delivery to its chain's receiver. One without is `no_delivery` and fails. Overdue notices and
+all-clears are not checked this way. Without `-routing`, per-receiver completeness is not checked.
 
 <!-- docsnip: setup ctx context.Context; evStore audit.EventStore; journal *agent.Journal; runID string; signer audit.Signer; verifier audit.Verifier -->
 ```go

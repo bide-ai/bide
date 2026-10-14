@@ -94,11 +94,14 @@ type NotifyVerifyInput struct {
 	// AcceptTail accepts the verdicts that rest on records after the newest signed head (a live
 	// trail between heads). Without it such an event is NotifyStatusUnattested and fails the audit.
 	AcceptTail bool
-	// ExpectedReceivers, if set, names the receivers (agent.DefaultReceiver for the default one)
-	// every event that needs a person must have been delivered to: an event with no delivery to one
-	// of them is NotifyStatusNoDelivery. Without it, whether each routed receiver was reached is not
-	// checked: the trail alone cannot know the routing.
-	ExpectedReceivers []string
+	// Routing, if set, is the notifier's routing (agent.RoutingOf, the same options the notifier was
+	// built with): each event that needs a person must have been delivered to the receivers it
+	// routes to (NotifyRouting.Receivers, the method the notifier routes by), and each escalation
+	// step that was due to its chain's receiver. A missing delivery is NotifyStatusNoDelivery. An
+	// approval routed by its approvers needs its journal to be supplied, to know them; without it
+	// the approval is not checked. Without Routing, per-receiver completeness is not checked: the
+	// trail alone cannot know the routing.
+	Routing *agent.NotifyRouting
 
 	// Strict makes a warning status (NotifyStatus.Warning) a problem, so an audit fails on it.
 	Strict bool
@@ -767,8 +770,8 @@ func (in NotifyVerifyInput) verdicts(trail string, recs []agent.NotifyRecord, jo
 		}
 	}
 	root := strings.TrimPrefix(trail, "notify:")
-	if len(in.ExpectedReceivers) > 0 {
-		in.checkReceivers(trail, st, &out)
+	if in.Routing != nil {
+		in.checkRouting(trail, st, journal, &out)
 	}
 	for _, j := range journal {
 		for _, key := range deliveries(j.Key) {
@@ -896,10 +899,19 @@ func checkOpFields(bad func(int, string, ...any), i int, r agent.NotifyRecord, k
 	}
 }
 
-// checkReceivers adds a NotifyStatusNoDelivery verdict for every receiver in ExpectedReceivers that
-// an event needing a person was not delivered to. Deliveries of one event are its own key (the
-// default receiver) and its agent.ToKey keys (one per named receiver).
-func (in NotifyVerifyInput) checkReceivers(trail string, st agent.NotifyState, out *[]NotifyEventVerdict) {
+// checkRouting adds a NotifyStatusNoDelivery verdict for every delivery the routing owes an event
+// that the trail does not hold: to each receiver the event routes to, and, for an event with an
+// escalation chain, to each step's receiver once the step is due. Deliveries of one event are its
+// own key (the default receiver) and its agent.ToKey keys (one per named receiver).
+func (in NotifyVerifyInput) checkRouting(trail string, st agent.NotifyState, journal []agent.JournalNotifyEvent, out *[]NotifyEventVerdict) {
+	approvers := map[string][]string{}
+	over := map[string]bool{} // events the journal shows resolved
+	for _, j := range journal {
+		over[j.Key] = !j.Current
+		if j.Kind == agent.NotificationApprovalPending {
+			approvers[j.Key] = j.Approvers
+		}
+	}
 	type group struct {
 		first *agent.NotifyEvent
 		to    map[string]bool
@@ -927,7 +939,15 @@ func (in NotifyVerifyInput) checkReceivers(trail string, st agent.NotifyState, o
 	}
 	for _, base := range order {
 		g := groups[base]
-		for _, want := range in.ExpectedReceivers {
+		kind := agent.NotificationKind(g.first.Kind)
+		var apps []string
+		if kind == agent.NotificationApprovalPending {
+			var known bool
+			if apps, known = approvers[base]; !known && in.Routing.ApproverRouted() {
+				continue // the gate's approvers are not known: its receivers cannot be derived
+			}
+		}
+		for _, want := range in.Routing.Receivers(kind, apps) {
 			if g.to[want] {
 				continue
 			}
@@ -935,12 +955,45 @@ func (in NotifyVerifyInput) checkReceivers(trail string, st agent.NotifyState, o
 			if want == agent.DefaultReceiver {
 				key = base
 			}
-			status, why := NotifyStatusNoDelivery, "the event has no delivery to the expected receiver "+want
+			status, why := NotifyStatusNoDelivery, "the routing sends the event to receiver "+want+" and the trail has no delivery to it"
 			if in.Now.Before(g.first.ObservedAt.Add(in.Grace)) {
 				status, why = NotifyStatusNotYetDue, "observed within the grace period; no delivery to receiver "+want+" yet"
 			}
 			*out = append(*out, NotifyEventVerdict{Trail: trail, Key: key, Kind: g.first.Kind, RunID: g.first.RunID, Status: status, Why: why,
 				EventAt: g.first.EventAt, ObservedAt: g.first.ObservedAt, Receiver: want})
+		}
+	}
+	// Escalation: each observed delivery of a kind with a chain owes the step receivers in turn, a
+	// step being due when the deadline before it (the event's, or the previous step's) has passed
+	// with the event not acknowledged (an approval: not cleared) and not cleared.
+	for _, key := range st.Keys {
+		e := st.Events[key]
+		chain := in.Routing.Escalation[agent.NotificationKind(e.Kind)]
+		if len(chain) == 0 || e.Cleared != nil || e.DeadlineAt.IsZero() || over[key] || st.Events[agent.ResolvedKey(key)] != nil {
+			continue // no chain, or the event stopped being current: the chain stops with it
+		}
+		due := e.DeadlineAt
+		isApproval := agent.NotificationKind(e.Kind) == agent.NotificationApprovalPending
+		stopped := !isApproval && e.Acked != nil
+		for l, want := range chain {
+			if stopped || in.Now.Before(due.Add(in.Grace)) {
+				break
+			}
+			sk := agent.EscalationKey(key, l+1)
+			se := st.Events[sk]
+			if se == nil || se.ReceiverName() != want {
+				why := "the escalation step is due to receiver " + want + " and the trail has no delivery of it to that receiver"
+				*out = append(*out, NotifyEventVerdict{Trail: trail, Key: sk, Kind: string(agent.NotificationEscalated), RunID: e.RunID,
+					Status: NotifyStatusNoDelivery, Why: why, EventAt: due, Receiver: want, Level: l + 1})
+				break
+			}
+			if !isApproval && se.Acked != nil {
+				break
+			}
+			if se.Cleared != nil {
+				break
+			}
+			due = se.DeadlineAt
 		}
 	}
 }

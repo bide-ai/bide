@@ -1,13 +1,16 @@
 package audit_test
 
 import (
+	"context"
 	"crypto/ed25519"
 	"errors"
+	"slices"
 	"strings"
 	"testing"
 	"time"
 
 	"github.com/bide-ai/bide/agent"
+	"github.com/bide-ai/bide/agent/agenttest"
 	"github.com/bide-ai/bide/audit"
 )
 
@@ -67,49 +70,146 @@ func TestVerifyNotifications_UnattestedTailVerdictsFailTheAudit(t *testing.T) {
 	}
 }
 
-func TestVerifyNotifications_ExpectedReceivers(t *testing.T) {
-	gate := agent.ApprovalKey("r1", "c1", 0)
-	risk, fin := agent.ToKey("risk", gate), agent.ToKey("finance", gate)
-	exp := func(rs ...string) func(*audit.NotifyVerifyInput) {
-		return func(in *audit.NotifyVerifyInput) {
-			in.ExpectedReceivers = rs
-			in.Now = at(2000)
-			in.MaxClockSkew = 10 * time.Second
-		}
-	}
-	b := newTrail(t)
-	deliver(b, obsTo(risk, agent.NotificationApprovalPending, 1, "risk"), 2, 3)
-	// Not given: not checked.
-	if _, err := verifyNotify(t, b, func(in *audit.NotifyVerifyInput) { in.Now = at(2000); in.MaxClockSkew = 10 * time.Second }); err != nil {
+func routing(t *testing.T, opts ...agent.NotifyOption) *agent.NotifyRouting {
+	t.Helper()
+	r, err := agent.RoutingOf(opts...)
+	if err != nil {
 		t.Fatal(err)
 	}
-	rep, err := verifyNotify(t, b, exp("risk", "finance"))
-	if !errors.Is(err, audit.ErrNotVerified) || notifyStatusOf(t, rep, fin) != audit.NotifyStatusNoDelivery {
-		t.Fatalf("err %v report %+v", err, rep.Events)
+	return &r
+}
+
+type nopSink struct{}
+
+func (nopSink) Notify(context.Context, agent.Notification) error { return nil }
+
+func TestVerifyNotifications_RoutingOwesEachRoutedReceiver(t *testing.T) {
+	gate := agent.ApprovalKey("r1", "c1", 0)
+	halt := agent.HaltedKey("r1", agent.OpTool, "c1", 1)
+	risk, fin := agent.ToKey("risk", gate), agent.ToKey("finance", gate)
+	opts := []agent.NotifyOption{
+		agent.WithNotifyReceiver("risk", nopSink{}), agent.WithNotifyReceiver("finance", nopSink{}), agent.WithNotifyReceiver("oncall", nopSink{}),
+		agent.WithNotifyApproverRoute("rita", "risk"), agent.WithNotifyApproverRoute("fin", "finance"),
+		agent.WithNotifyRoute(agent.NotificationOutcomeUnknown, "oncall"),
 	}
+	rt := routing(t, opts...)
+	with := func(extra ...func(*audit.NotifyVerifyInput)) func(*audit.NotifyVerifyInput) {
+		return func(in *audit.NotifyVerifyInput) {
+			in.Routing, in.Now, in.MaxClockSkew = rt, at(2000), 10*time.Second
+			for _, f := range extra {
+				f(in)
+			}
+		}
+	}
+	gateJ := func(in *audit.NotifyVerifyInput) {
+		jx, _ := journalGateWith(t, "r1", []string{"rita", "fin"})
+		in.Journals = []audit.JournalExport{jx}
+	}
+	// Approvals go to the approvers' receivers, halts to on-call: no false no_delivery for the others.
+	b := newTrail(t)
+	deliver(b, obsTo(risk, agent.NotificationApprovalPending, 1, "risk"), 2, 3)
 	deliver(b, obsTo(fin, agent.NotificationApprovalPending, 1, "finance"), 2, 3)
-	if rep, err := verifyNotify(t, b, exp("risk", "finance")); err != nil {
-		t.Fatalf("every receiver reached: %v %v", err, rep.Problems)
+	deliver(b, obsTo(halt, agent.NotificationOutcomeUnknown, 1, "oncall"), 2, 3)
+	if rep, err := verifyNotify(t, b, with(gateJ)); err != nil {
+		t.Fatalf("routed deliveries all present: %v %v", err, rep.Problems)
 	}
-	// An unrouted event is a delivery to the default receiver.
-	d := newTrail(t).complete(agent.HaltedKey("r1", agent.OpTool, "c1", 1), agent.NotificationOutcomeUnknown, 0)
-	if rep, err := verifyNotify(t, d, exp(agent.DefaultReceiver)); err != nil {
-		t.Fatalf("default reached: %v %v", err, rep.Problems)
-	}
-	rep, err = verifyNotify(t, d, exp(agent.DefaultReceiver, "oncall"))
-	if !errors.Is(err, audit.ErrNotVerified) || notifyStatusOf(t, rep, agent.ToKey("oncall", agent.HaltedKey("r1", agent.OpTool, "c1", 1))) != audit.NotifyStatusNoDelivery {
+	// The finance delivery is missing.
+	b2 := newTrail(t)
+	deliver(b2, obsTo(risk, agent.NotificationApprovalPending, 1, "risk"), 2, 3)
+	rep, err := verifyNotify(t, b2, with(gateJ))
+	if !errors.Is(err, audit.ErrNotVerified) || notifyStatusOf(t, rep, fin) != audit.NotifyStatusNoDelivery {
 		t.Fatalf("err %v %+v", err, rep.Events)
 	}
-	// Within the grace period the missing delivery is not yet due.
-	rep, err = verifyNotify(t, d, func(in *audit.NotifyVerifyInput) { in.ExpectedReceivers = []string{"oncall"}; in.Now = at(30) })
-	if err != nil || notifyStatusOf(t, rep, agent.ToKey("oncall", agent.HaltedKey("r1", agent.OpTool, "c1", 1))) != audit.NotifyStatusNotYetDue {
+	// Without the journal the approvers are unknown, so an approver-routed gate is not checked.
+	if rep, err := verifyNotify(t, b2, with()); err != nil {
+		t.Fatalf("approvers unknown: %v %v", err, rep.Problems)
+	}
+	// A halt that went to the default receiver, not on-call.
+	h := newTrail(t).complete(halt, agent.NotificationOutcomeUnknown, 0)
+	rep, err = verifyNotify(t, h, with())
+	if !errors.Is(err, audit.ErrNotVerified) || notifyStatusOf(t, rep, agent.ToKey("oncall", halt)) != audit.NotifyStatusNoDelivery {
+		t.Fatalf("err %v %+v", err, rep.Events)
+	}
+	// Within the grace period it is not yet due.
+	rep, err = verifyNotify(t, h, with(func(in *audit.NotifyVerifyInput) { in.Now = at(30) }))
+	if err != nil || notifyStatusOf(t, rep, agent.ToKey("oncall", halt)) != audit.NotifyStatusNotYetDue {
 		t.Fatalf("grace: %v %+v", err, rep.Events)
 	}
-	// Escalation steps, overdue notices and all-clears are not routed events of their own.
-	e := newTrail(t)
-	deliver(e, obsTo(gate, agent.NotificationApprovalPending, 1, ""), 2, 3)
-	deliver(e, step(gate, 1, 310, 600, "lead"), 311, 312)
-	if rep, err := verifyNotify(t, e, exp(agent.DefaultReceiver)); err != nil {
-		t.Fatalf("a step must not need every receiver: %v %v", err, rep.Problems)
+	// No routing at all: nothing is checked.
+	if _, err := verifyNotify(t, h, nil); err != nil {
+		t.Fatal(err)
 	}
+}
+
+func TestVerifyNotifications_RoutingOwesDueEscalationSteps(t *testing.T) {
+	gate := agent.ApprovalKey("r1", "c1", 0)
+	rt := routing(t, agent.WithNotifyReceiver("lead", nopSink{}), agent.WithNotifyReceiver("head", nopSink{}),
+		agent.WithNotifyEscalation(agent.NotificationApprovalPending,
+			agent.EscalationStep{Receiver: "lead", Deadline: 10 * time.Minute}, agent.EscalationStep{Receiver: "head", Deadline: 10 * time.Minute}))
+	run := func(b *trailBuilder, now int) (audit.NotifyReport, error) {
+		return verifyNotify(t, b, func(in *audit.NotifyVerifyInput) { in.Routing, in.Now, in.MaxClockSkew = rt, at(now), 10*time.Second })
+	}
+	b := newTrail(t)
+	deliver(b, obsTo(gate, agent.NotificationApprovalPending, 1, ""), 2, 3) // deadline 301s, undecided
+	if _, err := run(b, 200); err != nil {
+		t.Fatalf("no step is due before the deadline: %v", err)
+	}
+	rep, err := run(b, 1000)
+	if !errors.Is(err, audit.ErrNotVerified) || notifyStatusOf(t, rep, agent.EscalationKey(gate, 1)) != audit.NotifyStatusNoDelivery {
+		t.Fatalf("step 1 due, not delivered: %v %+v", err, rep.Events)
+	}
+	// Step 1 delivered, to the wrong receiver.
+	wrong := newTrail(t)
+	deliver(wrong, obsTo(gate, agent.NotificationApprovalPending, 1, ""), 2, 3)
+	deliver(wrong, step(gate, 1, 310, 600, "head"), 311, 312)
+	if _, err := run(wrong, 1000); !errors.Is(err, audit.ErrNotVerified) {
+		t.Fatalf("step 1 to the wrong receiver: %v", err)
+	}
+	// Step 1 delivered; step 2 is due at 910s and not delivered.
+	b.add()
+	deliver(b, step(gate, 1, 310, 600, "lead"), 311, 312)
+	if _, err := run(b, 800); err != nil {
+		t.Fatalf("step 2 not yet due: %v", err)
+	}
+	rep, err = run(b, 1500)
+	if !errors.Is(err, audit.ErrNotVerified) || notifyStatusOf(t, rep, agent.EscalationKey(gate, 2)) != audit.NotifyStatusNoDelivery {
+		t.Fatalf("step 2 due: %v %+v", err, rep.Events)
+	}
+	deliver(b, step(gate, 2, 911, 600, "head"), 912, 913)
+	if rep, err := run(b, 1500); err != nil {
+		t.Fatalf("both steps delivered: %v %v", err, rep.Problems)
+	}
+	// A cleared event stops the chain.
+	c := newTrail(t)
+	deliver(c, obsTo(gate, agent.NotificationApprovalPending, 1, ""), 2, 3)
+	c.add(agent.NotifyRecord{Kind: agent.NotifyObserved, Key: agent.ResolvedKey(gate), At: at(6), EventKind: "resolved", EventAt: at(5), Reason: "decided"})
+	rep, _ = run(c, 1500)
+	for _, e := range rep.Events {
+		if e.Status == audit.NotifyStatusNoDelivery {
+			t.Fatalf("a cleared event owes no step: %+v", e)
+		}
+	}
+}
+
+// journalGateWith pauses an m-of-n gate over approvers (1 of them needed) and exports the journal.
+func journalGateWith(t *testing.T, run string, approvers []string) (audit.JournalExport, *agent.Journal) {
+	t.Helper()
+	pol := &agent.ApprovalPolicy{Need: 1, Approvers: approvers}
+	tool := agent.MustFunc("refund", "refund", func(context.Context, struct{}) (string, error) { return "ok", nil }, agent.WithApproval(pol))
+	verifiers := func(id string) (agent.ApproverVerifier, bool) {
+		return quorumVerifier(id), slices.Contains(approvers, id)
+	}
+	j, _ := agent.NewJournal(agent.NewMemStore())
+	a, err := agent.New(agenttest.NewScriptedModel(agenttest.ToolTurn("c1", "refund", `{}`)), j, agent.WithTools(tool), agent.WithApproverVerifiers(verifiers))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := a.Run(context.Background(), run, agent.UserText("go")); !errors.As(err, new(*agent.ApprovalPending)) {
+		t.Fatalf("Run = %v", err)
+	}
+	x, err := audit.ExportJournal(context.Background(), j, run)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return x, j
 }

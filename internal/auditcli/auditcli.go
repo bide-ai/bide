@@ -156,7 +156,7 @@ const usageText = `bide audit: produce and verify audit proof bundles
          quoted); these notes never change the verdict
 
   notifications (-trail <file>... [-journal <file>...] | -db <file> | -postgres-env <var>) [-run <id>]
-                (-sth <file>... -pubkey <hex|file> | -unanchored) [-max-ack <duration>] [-strict] [-accept-tail] [-expect-receivers <a,b>] [-as-of <time>]
+                (-sth <file>... -pubkey <hex|file> | -unanchored) [-max-ack <duration>] [-strict] [-accept-tail] [-routing <file>] [-as-of <time>]
          verify that every event that needed a person (an unknown-outcome halt, an approval gate,
          an aborted run, a recovery failure, an overdue notice, an all-clear) was notified, and
          when it was acknowledged: each trail's leaves are read strictly (an unknown record kind or
@@ -167,7 +167,7 @@ const usageText = `bide audit: produce and verify audit proof bundles
          journal shows must be observed in its run's trail. Each event gets a verdict: acked,
          acked_late (past its deadline or -max-ack), pending, failing, overdue, cleared before
          notification, never_notified, and the command fails (exit 1) on acked_late, overdue and
-         never_notified (and, with -strict, on the warnings unobserved_resolved and all_clear_untimed). A verdict that rests on records after the newest signed head is unattested and fails unless -accept-tail; with -expect-receivers, an event with no delivery to a listed receiver is no_delivery and fails. -db and -postgres-env (a variable holding the DSN) read every run, or -run,
+         never_notified (and, with -strict, on the warnings unobserved_resolved and all_clear_untimed). A verdict that rests on records after the newest signed head is unattested and fails unless -accept-tail; with -routing (the notifier's routing, agent.RoutingOf as JSON), an event with no delivery to a receiver it routes to, or a due escalation step with none, is no_delivery and fails. -db and -postgres-env (a variable holding the DSN) read every run, or -run,
          from a store, in the full bide command; the audit-only build reads exported files
 
   verify-receipts -receipt <file|dir> -journal <export> -heads <file> -pubkey <hex|file> -approver-keys <file>

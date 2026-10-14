@@ -51,7 +51,7 @@ func (c *cli) notifications(args []string) {
 	grace := fs.Duration("grace", 5*time.Minute, "how long after an event began that a missing observation is not yet a failure (the notifier's detection window)")
 	recovery := fs.Duration("recovery-failing-after", 15*time.Minute, "how long a recovery failure episode may be open before a recovery_failing event is owed (the notifier's setting)")
 	acceptTail := fs.Bool("accept-tail", false, "accept verdicts that rest on records after the newest signed head (a live trail between heads); without it such an event is unattested and fails")
-	receivers := fs.String("expect-receivers", "", "comma-separated receivers (\"default\" for the default one) every event that needs a person must have been delivered to; without it per-receiver completeness is not checked")
+	routingPath := fs.String("routing", "", "the notifier's routing as JSON (agent.RoutingOf, from the options the notifier was built with): every event must have been delivered to the receivers it routes to, and each due escalation step to its receiver; without it per-receiver completeness is not checked")
 	strict := fs.Bool("strict", false, "also fail (exit 1) on a warning: a decided gate no notifier observed (unobserved_resolved), or an all-clear owed that cannot be timed (all_clear_untimed)")
 	asOf := fs.String("as-of", "", "judge pending events as of this RFC 3339 time (default now)")
 	c.parse(fs, args)
@@ -86,10 +86,12 @@ func (c *cli) notifications(args []string) {
 	}
 
 	in := audit.NotifyVerifyInput{Unanchored: *unanchored, Now: now, MaxAck: *maxAck, Grace: *grace, RecoveryFailingAfter: *recovery, MaxClockSkew: maxClockSkew, Strict: *strict, AcceptTail: *acceptTail}
-	if *receivers != "" {
-		in.ExpectedReceivers = strings.Split(*receivers, ",")
-	}
 	ok := true
+	if *routingPath != "" {
+		var rt agent.NotifyRouting
+		ok = c.note(c.readJSON(*routingPath, &rt)) && ok
+		in.Routing = &rt
+	}
 	if *pubkey != "" {
 		v, err := readPubKey(*pubkey)
 		ok = c.note(err) && ok

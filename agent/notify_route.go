@@ -256,34 +256,22 @@ func kindOfKey(key string) NotificationKind {
 // routed returns the deliveries of ev: one, to the receiver its kind names, or, for an approval
 // whose approvers are routed to several receivers, one for each, under a key of its own.
 func (e *notifyEngine) routed(ev notifyEvent) []notifyEvent {
-	kindRecv := receiverID(DefaultReceiver)
-	if r, ok := e.cfg.routes[ev.kind]; ok {
-		kindRecv = receiverID(r)
+	var approvers []string
+	if ev.approval != nil {
+		approvers = ev.approval.Approvers
 	}
-	if ev.kind == NotificationApprovalPending && ev.approval != nil && len(e.cfg.approverRoutes) > 0 {
-		var recvs []string
-		for _, a := range ev.approval.Approvers {
-			if r, ok := e.cfg.approverRoutes[a]; ok && !slices.Contains(recvs, receiverID(r)) {
-				recvs = append(recvs, receiverID(r))
-			}
-		}
-		if len(recvs) > 0 {
-			slices.Sort(recvs)
-			if len(recvs) == 1 {
-				ev.receiver = recvs[0]
-				return []notifyEvent{ev}
-			}
-			out := make([]notifyEvent, 0, len(recvs))
-			for _, r := range recvs {
-				d := ev
-				d.receiver, d.key = r, ToKey(receiverLabel(r), ev.key)
-				out = append(out, d)
-			}
-			return out
-		}
+	recvs := e.cfg.routing().Receivers(ev.kind, approvers)
+	if len(recvs) == 1 {
+		ev.receiver = receiverID(recvs[0])
+		return []notifyEvent{ev}
 	}
-	ev.receiver = kindRecv
-	return []notifyEvent{ev}
+	out := make([]notifyEvent, 0, len(recvs))
+	for _, r := range recvs {
+		d := ev
+		d.receiver, d.key = receiverID(r), ToKey(r, ev.key)
+		out = append(out, d)
+	}
+	return out
 }
 
 // submit routes ev and queues each delivery, and the escalation chase of each one that has a chain.

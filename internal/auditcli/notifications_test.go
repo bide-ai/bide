@@ -426,7 +426,14 @@ func TestNotificationsVerb_TailAndReceivers(t *testing.T) {
 	if code, out, _ := runCLI(append(args, "-accept-tail")...); code != 0 {
 		t.Fatalf("-accept-tail: exit %d\n%s", code, out)
 	}
-	if code, out, _ := runCLI(append(args, "-accept-tail", "-expect-receivers", "default,oncall", "-as-of", nat(3000).Format(time.RFC3339))...); code != 1 || !strings.Contains(out, "no_delivery") {
+	rt, _ := agent.RoutingOf(agent.WithNotifyReceiver("oncall", nil2{}), agent.WithNotifyRoute(agent.NotificationApprovalPending, "oncall"))
+	rp := filepath.Join(f.dir, "routing.json")
+	writeJSON(t, rp, rt)
+	if code, out, _ := runCLI(append(args, "-accept-tail", "-routing", rp, "-as-of", nat(3000).Format(time.RFC3339))...); code != 1 || !strings.Contains(out, "no_delivery") {
 		t.Fatalf("-expect-receivers: exit %d\n%s", code, out)
 	}
 }
+
+type nil2 struct{}
+
+func (nil2) Notify(context.Context, agent.Notification) error { return nil }
