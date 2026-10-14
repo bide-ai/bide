@@ -108,6 +108,11 @@ func newConfig(opts []Option) (config, error) {
 // Open opens (creating if needed) a SQLite journal at path, in WAL mode, with its three connection
 // pools. ":memory:" opens an ephemeral in-memory store for tests, on one connection shared by all
 // three roles (an in-memory database lives on one connection).
+//
+// Open reaches the file by its canonical path (absolute, symlinks resolved), so that every handle on
+// it, whatever path it was given, makes SQLite derive the same -wal and -shm names; two names for one
+// WAL-mode database corrupt it (https://sqlite.org/howtocorrupt.html). A hard link has no canonical
+// name, so a file with more than one hard link is refused with an error wrapping agent.ErrConfig.
 func Open(path string, opts ...Option) (*Store, error) {
 	cfg, err := newConfig(opts)
 	if err != nil {

@@ -26,7 +26,11 @@ type Log struct {
 	gate *filegate.Gate // queues this process's writers on the file
 }
 
-// Open opens (creating if needed) an event log at path (":memory:" for ephemeral).
+// Open opens (creating if needed) an event log at path (":memory:" for ephemeral). It uses the
+// canonical path (absolute, symlinks resolved), so that every handle on the file makes SQLite derive
+// the same -wal and -shm names, and it refuses a file with more than one hard link, which has no
+// canonical name, with an error wrapping agent.ErrConfig: two names for one WAL-mode database corrupt
+// it (https://sqlite.org/howtocorrupt.html).
 func Open(path string) (*Log, error) {
 	// A writer waits up to 30s for another process's write lock. SQLite's busy handler is not
 	// fair, so under a burst of writers on one file (or a slow disk) a single writer can wait
