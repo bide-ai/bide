@@ -3,7 +3,9 @@ package filegate
 import (
 	"context"
 	"errors"
+	"os"
 	"path/filepath"
+	"slices"
 	"sync"
 	"testing"
 	"time"
@@ -107,5 +109,93 @@ func TestClose_ForgetsTheGate(t *testing.T) {
 	mu.Unlock()
 	if there {
 		t.Fatal("the gate outlived its last handle")
+	}
+}
+
+// A lease statement is admitted ahead of every ordinary writer already waiting, and after the one
+// inside.
+func TestEnterFirst_JumpsTheQueue(t *testing.T) {
+	h := For(filepath.Join(t.TempDir(), "p.db"))
+	defer h.Close()
+	hold, err := h.Enter(context.Background())
+	if err != nil {
+		t.Fatal(err)
+	}
+	var mu sync.Mutex
+	var order []string
+	var wg sync.WaitGroup
+	enter := func(name string, first bool) {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			f := h.Enter
+			if first {
+				f = h.EnterFirst
+			}
+			leave, err := f(context.Background())
+			if err != nil {
+				t.Error(err)
+				return
+			}
+			mu.Lock()
+			order = append(order, name)
+			mu.Unlock()
+			leave()
+		}()
+		time.Sleep(10 * time.Millisecond) // let it park
+	}
+	enter("a", false)
+	enter("b", false)
+	enter("lease1", true)
+	enter("lease2", true)
+	hold()
+	wg.Wait()
+	want := []string{"lease1", "lease2", "a", "b"}
+	if !slices.Equal(order, want) {
+		t.Fatalf("admitted as %v, want %v", order, want)
+	}
+}
+
+// Spellings of one file share a gate by identity: a relative path after a chdir, a symlink, and a
+// file that did not exist when the first handle asked.
+func TestFor_KeysByFileIdentity(t *testing.T) {
+	dir := t.TempDir()
+	p := filepath.Join(dir, "new.db") // does not exist yet
+	a := For(p)
+	defer a.Close()
+	if _, err := os.Stat(p); err != nil {
+		t.Fatalf("For did not create the file: %v", err)
+	}
+	b := For(p)
+	defer b.Close()
+	if a.g != b.g {
+		t.Fatal("handles on a file that did not exist got different gates")
+	}
+	link := filepath.Join(dir, "link.db")
+	if os.Symlink(p, link) == nil {
+		c := For(link)
+		defer c.Close()
+		if c.g != a.g {
+			t.Fatal("a symlink got its own gate")
+		}
+	}
+	old, _ := os.Getwd()
+	defer os.Chdir(old)
+	if err := os.Chdir(dir); err != nil {
+		t.Fatal(err)
+	}
+	d := For("new.db")
+	defer d.Close()
+	if d.g != a.g {
+		t.Fatal("a relative path got its own gate")
+	}
+	other := t.TempDir()
+	if err := os.Chdir(other); err != nil {
+		t.Fatal(err)
+	}
+	e := For("new.db") // the same relative name, now a different file
+	defer e.Close()
+	if e.g == a.g {
+		t.Fatal("a different file under the same relative name shared a gate")
 	}
 }

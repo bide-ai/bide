@@ -520,6 +520,13 @@ func leaseBusyTimeout(ttl time.Duration) time.Duration {
 // reports the rows it changed. Expiries are computed in SQL from the database's clock
 // (unixepoch('subsec')), so every process sharing the file compares against one clock.
 func (s *Store) leaseExec(ctx context.Context, busy time.Duration, query string, args ...any) (int64, error) {
+	// A lease statement has a deadline the journal writes do not: it goes ahead of the writers
+	// queued on the file, behind only the one inside.
+	leave, err := s.gate.EnterFirst(ctx)
+	if err != nil {
+		return 0, err
+	}
+	defer leave()
 	conn, err := s.l.Conn(ctx)
 	if err != nil {
 		return 0, err
