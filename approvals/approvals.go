@@ -791,8 +791,8 @@ func (h *Handler) decide(w http.ResponseWriter, r *http.Request) {
 	ctl := http.NewResponseController(w)
 	_ = ctl.SetReadDeadline(time.Now().Add(h.readTimeout)) // a writer with no deadlines: the server's own apply
 	b, err := io.ReadAll(http.MaxBytesReader(w, r.Body, h.maxBody))
-	// The deadline is for the body only: left set, it would expire during the handling after it and
-	// cancel the connection's context.
+	// The deadline is for the body only: it is cleared once the body is read, so that it cannot expire
+	// on a later read of the connection (the response phase, or a pipelined request).
 	_ = ctl.SetReadDeadline(time.Time{})
 	releaseRead()
 	if err != nil {

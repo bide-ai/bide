@@ -298,6 +298,9 @@ func (s *stallStore) Load(ctx context.Context, runID string, after int64) iter.S
 	if rel != nil {
 		s.entered <- struct{}{}
 		<-rel
+		if err := ctx.Err(); err != nil { // a request whose context was cancelled while it waited
+			return func(yield func(agent.Entry, error) bool) { yield(agent.Entry{}, err) }
+		}
 	}
 	return s.Store.Load(ctx, runID, after)
 }
