@@ -278,6 +278,13 @@ it, a run another holder leases is that holder's to sign, and a failing anchor d
 finds a decision left outside every head. See
 [A decision written by another process](guides/hitl-approval.md#a-decision-written-by-another-process).
 
+**The approval intake serves m-of-n tool-call gates only.** `approvals.Handler` refuses a
+single-approver gate (no signature to check) and a plan flow node's gate. Two identical decisions
+that race can both be answered `recorded: true` and both start the `OnRecorded` hook; the journal
+holds one record. `GET /pending` shows a call's arguments to any caller the handler lets through, so
+confidential arguments need `WithAuth` or a private network. See
+[Taking decisions over HTTP](guides/hitl-approval.md#taking-decisions-over-http).
+
 **Decisions signed before `bide.approval.v3` must be signed again.** They no longer verify. A run
 whose gate passed on them before the upgrade, and whose call has not run, pauses to ask again
 (`agent.PendingReapproval`) rather than run on approvals an audit would fail. See

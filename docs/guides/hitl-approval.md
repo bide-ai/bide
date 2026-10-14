@@ -679,6 +679,72 @@ a run certificate needs its allowlist: `-approved <digest>` (repeatable) or `-ap
 Evidence files commit to the exact recorded bytes. Keep them byte-exact: a tool that re-orders JSON
 object keys inside a recorded message breaks that record's proof.
 
+## Taking decisions over HTTP
+
+Package `approvals` is an `http.Handler` an application mounts so that approvers can decide on a
+call without direct access to the database. The application stays the only writer of its journal and
+the only signer of its audit log: a decision that arrives is verified, then recorded through the
+application's own `*agent.Journal`, so an `audit.AuditedStore` signs a head over it as it is written.
+That closes the gap [a decision written by another process](#a-decision-written-by-another-process)
+leaves, and it lets the log key stay in the application's HSM.
+
+<!-- docsnip: setup journal *agent.Journal; verifierFor agent.ApproverVerifierFor; mux *http.ServeMux; resume func(context.Context, string) -->
+```go
+h, err := approvals.New(journal, verifierFor,
+	approvals.OnRecorded(func(ctx context.Context, r approvals.Recorded) {
+		if r.Decided {
+			resume(ctx, r.RootRunID) // the application's policy: re-run now, or leave it to RecoverLoop
+		}
+	}))
+if err != nil {
+	panic(err)
+}
+mux.Handle("/approvals/", http.StripPrefix("/approvals", h))
+```
+
+`GET /pending?run=<id>&call=<tool-use id>` returns the call as the journal records it: the tool, the
+arguments, `args_sha256` (the digest a signature binds), the gate (k of n, who decided, who is
+pending, counted as the gate counts) and its state (`waiting`, `decided`, `ended`). A client shows
+this to the approver before they sign. `POST /decisions` takes one JSON object, `run`, `call`,
+`approver`, `approved`, `decided_at`, `alg` and `signature` (base64), where the signature is over
+`agent.ApprovalDecisionBytes` of the call the client was shown. A client that signs the arguments it
+displayed, and finds the digest it computes from them equal to `args_sha256`, signs what it showed;
+if the endpoint showed other arguments than the journal holds, the signature does not verify against
+the recorded call and nothing is recorded.
+
+**The signature is the authorization.** The handler needs no authentication to be correct: it
+records a decision only if the call exists and waits, the approver is one the gate names, and the
+signature verifies under the key `verifierFor` enrolls for them (`agent.WithDecisionCheck`), and the
+gate re-verifies every record when the run resumes. A replay of a recorded decision is a no-op
+(`recorded: false`, the same place in the journal); a second, different decision by an approver who
+already has one that counts is refused (409). Two identical requests that race may both answer
+`recorded: true` (and both start `OnRecorded`); the journal holds one record.
+
+**What the handler adds around that.** Requests are read strictly (`application/json` only, one
+object, no unknown or duplicate fields, no trailing data) and bounded (`WithMaxBodyBytes`, 64 KiB by
+default). Rate limits apply before anything is read: per client (2 a second, burst 10) and over all
+clients (50 a second, burst 100), with the client the host of `RemoteAddr` unless `WithClientKey`
+names one (behind a proxy, name the address the proxy vouches for); past `WithMaxClients` new clients
+share one bucket, so a flood of sources is limited as one. At most `WithMaxInFlight` (16) requests
+work on the journal at once; more get 503 with `Retry-After`. Errors are `{"error":{"code","message"}}`
+with stable codes, and a store error is reported to `WithOnError`, never to the caller. A request for
+a run or call that is not there and one for a call with no gate read the same.
+
+**Who may reach it, and who may read.** `GET /pending` shows a call's arguments to any caller the
+handler lets through, and anyone who can reach `POST /decisions` can make the application do a
+signature check and, for a valid decision, a journal write. If the arguments are confidential, or the
+endpoint is not on a private network, set `WithAuth`: a hook that runs after the rate limit and before
+the journal is touched, given the method, run, call and (for a POST) approver, and returns nil,
+`approvals.ErrUnauthenticated` (401) or `approvals.ErrForbidden` (403). It is where a deployment
+checks a client certificate (`r.TLS.PeerCertificates`) and ties an approver id to it. Terminating TLS
+is the server's job (`http.Server.TLSConfig`).
+
+**What it does not serve.** A single-approver gate (`agent.Approve`) has no signature to check, so it
+is refused (422 `single_gate`); a plan flow node's gate (a call id starting `node:`) is refused (422
+`unsupported`); a decision for a gate that already settled, or a run that ended, is 409 `not_waiting`.
+`OnRecorded` is an accelerator: a run waiting on a decision is also re-driven by `agent.RecoverLoop`,
+and a hook is dropped (and reported) when `WithMaxInFlight` hooks are already running.
+
 ## Scope
 
 - The core does not authenticate who holds a key. Binding an approver id to a person is your identity
