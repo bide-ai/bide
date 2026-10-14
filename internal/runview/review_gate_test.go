@@ -105,3 +105,52 @@ func TestGate_RealSingleGateStillSingle(t *testing.T) {
 		}
 	}
 }
+
+// A one-decision gate is single by its pause note while it waits, and by the policy the call ran
+// under once it has a result; neither depends on the decisions.
+func TestGate_SingleGateByNoteAndByPolicy(t *testing.T) {
+	j := agenttest.MemJournal()
+	refund := agent.MustFunc("refund", "refund", func(context.Context, struct{}) (string, error) { return "ok", nil }, agent.WithApproval(agent.SingleApproval()))
+	run := func() error {
+		m := agenttest.NewScriptedModel(agenttest.ToolTurn("c1", "refund", `{}`), agenttest.TextTurn("done"))
+		_, err := agenttest.MustNew(m, j, agent.WithTools(refund)).Run(context.Background(), "r1", agent.UserText("go"))
+		return err
+	}
+	gate := func() Gate {
+		recs, _ := j.History(context.Background(), "r1")
+		gs := Build(context.Background(), "r1", recs, nil).Gates
+		if len(gs) != 1 {
+			t.Fatalf("gates: %+v", gs)
+		}
+		return gs[0]
+	}
+	if err := run(); err == nil {
+		t.Fatal("no pause")
+	}
+	if g := gate(); !g.Single || !g.Waiting || !strings.Contains(g.Status, "none recorded") {
+		t.Fatalf("waiting: %+v", g)
+	}
+	if err := agent.Approve(context.Background(), j, "r1", "c1", true); err != nil {
+		t.Fatal(err)
+	}
+	if g := gate(); !g.Single || g.Waiting || g.Status != "approved (single decision)" {
+		t.Fatalf("decided: %+v", g)
+	}
+	if err := run(); err != nil {
+		t.Fatal(err)
+	}
+	// With the call run, the pause note is not what says so: remove it from the reading and the
+	// policy the result journaled still does.
+	recs, _ := j.History(context.Background(), "r1")
+	var noNote []agent.Record
+	for _, r := range recs {
+		if !strings.HasPrefix(r.Name, "approval-pending:") {
+			noNote = append(noNote, r)
+		}
+	}
+	for _, g := range Build(context.Background(), "r1", noNote, nil).Gates {
+		if !g.Single || g.Status != "approved (single decision)" {
+			t.Fatalf("by policy: %+v", g)
+		}
+	}
+}
