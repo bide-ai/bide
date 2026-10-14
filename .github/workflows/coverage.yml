@@ -14,6 +14,10 @@ on:
       - '**.md'
       - 'docs/**'
       - 'docs-site/**'
+      - 'assets/**'
+      - 'spec/tla/**'
+      - 'examples/**' # the example modules are not measured
+      - '.github/ISSUE_TEMPLATE/**'
 
 permissions:
   contents: read

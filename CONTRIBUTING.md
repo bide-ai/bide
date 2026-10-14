@@ -55,22 +55,24 @@ The fault-schedule explorations (the tests with `Explore` in their name, in `age
 
 Five workflows check a pull request: CI (`ci.yml`), Models, gsm machine gate, Changelog and DCO. The required checks are the names in branch protection; several of them are a final job that stands for parallel jobs (the shard jobs are not required themselves, so the layout can change), and every one reports on every pull request, even when its work is skipped.
 
-| Check (required) | What it stands for | Pull request | Merge queue and main |
-|---|---|---|---|
-| `Lint` | `Lint (static)`: modelsync, gofmt, vet, doccheck, docs snippets, removed names; `Lint (reproducible builds)`; `Lint (govulncheck)` | modelsync, docs snippets and removed names always; the rest when code changed | everything |
-| `Test (ubuntu-latest)` | `Test (ubuntu-latest, agent \| core \| rest)` under `-race`, and a run without `encoding/json/v2` | when code changed | always |
-| `Test (macos-latest)` | one job, every module, without `-race` | when code changed | always |
-| `Test (windows-latest)` | `Test (windows-latest, sqlite \| core \| rest)`, every module, without `-race` | when code changed | always |
-| `Integration (Postgres, Redis)` | the Postgres and Redis suites against service containers, twice each | when code changed | always |
-| `Models` | the TLA+ shards that hold a model whose directory under `spec/tla` the change touches | those models only | every model |
-| `gsm machine gate` | the two extracted checkers over every machine bide's programs make | when code changed | always |
-| `Changelog fragment`, `dco` | fragment present and well formed; every commit signed off | always | always (cheap) |
+| Check (required) | What it stands for | Code change | Examples only | Documentation only |
+|---|---|---|---|---|
+| `Lint` | modelsync, gofmt, vet, doccheck, docs snippets, removed names, govulncheck, reproducible builds | all | all but the reproducible-build check | modelsync, docs snippets, removed names |
+| `Test (ubuntu-latest)` | `Test (ubuntu-latest, agent \| core \| rest)` under `-race`, and a run without `encoding/json/v2` | all | the `rest` shard (it holds the examples) | skipped |
+| `Test (macos-latest)` | one job, every module, without `-race` | runs | skipped | skipped |
+| `Test (windows-latest)` | `Test (windows-latest, sqlite \| rest)`, every module, without `-race` | runs | skipped | skipped |
+| `Integration (Postgres, Redis)` | the Postgres and Redis suites against service containers, twice each | runs | skipped | skipped |
+| `Models` | the TLA+ shards that hold a model whose directory under `spec/tla` the change touches (every model in the merge queue) | those models | none | those models |
+| `gsm machine gate` | the two extracted checkers over every machine bide's programs make | runs | runs | skipped |
+| `Changelog fragment`, `dco` | fragment present and well formed; every commit signed off | runs | runs | runs |
 
-"Code changed" means the pull request touches any path other than `docs/`, `docs-site/`, `assets/`, `spec/tla/`, `.github/ISSUE_TEMPLATE/`, Markdown files, `LICENSE`, `NOTICE`, `DCO` and the `docs`, `bench`, `models` and `explore` workflows (`.github/scripts/changed-code.sh`); a change to anything else, a failed diff or an unexpected event counts as code. A documentation-only pull request therefore runs the lint parts that read documentation, Models only if a spec changed, and the cheap checks. The Coverage workflow (not required) skips documentation-only pull requests with a path filter; the nightly Models and Apalache jobs, the benchmarks and the explorations have their own workflows and never gate a pull request.
+A skipped job still satisfies its required check, and a final job reports the name of each sharded check, so a skipped check never waits forever. The merge queue and pushes to main run everything.
 
-To get the full suite on a pull request, touch a file outside the documentation list (a one-line change to a Go file or to `.github/workflows/ci.yml` does it; a change to `spec/tla/check.sh`, `tools.lock`, `.github/scripts/shards.sh` or `models.yml` runs every model), or run the merge queue, which always runs everything. Pushing a new commit to a pull request cancels the superseded run of the same workflow; pushes to main and merge queue batches are never cancelled.
+"Documentation only" means the pull request touches only `docs/`, `docs-site/`, `assets/`, `spec/tla/`, `.github/ISSUE_TEMPLATE/`, Markdown files, `LICENSE`, `NOTICE`, `DCO` and the `docs`, `bench`, `models` and `explore` workflows; "examples only" means the other changed paths all lie under `examples/` (no other module imports an example module); both are decided by `.github/scripts/changed-code.sh`. Any other change, a failed diff or an unexpected event counts as a code change. The Coverage workflow (not required) skips pull requests that touch only those paths and `examples/`; the nightly Models and Apalache jobs, the benchmarks and the explorations have their own workflows and never gate a pull request.
 
-The Linux and Windows test jobs, Integration and Models are balanced by measured time. The longest single package is `agent` on Linux (about four minutes under `-race`) and `store/sqlite` on Windows (about four minutes), so a shard cannot get faster than its package. When a shard becomes the slowest check, move modules between shard lines (`TEST_SHARDS`, `WINDOWS_SHARDS`, `MODEL_SHARDS`); the Changes and plan jobs fail unless every module and configuration is on exactly one line.
+To get the full suite on a pull request, touch a Go file outside `examples/` or `.github/workflows/ci.yml` (a one-line change does it; a change to `spec/tla/check.sh`, `tools.lock`, `.github/scripts/shards.sh` or `models.yml` runs every model), or run the merge queue, which always runs everything. Pushing a new commit to a pull request cancels the superseded run of the same workflow; pushes to main and merge queue batches are never cancelled.
+
+The Linux and Windows test shards and the Models shards are balanced by measured time. The longest single package is `agent` on Linux (about four minutes under `-race`) and `store/sqlite` on Windows (about four minutes), so a shard cannot get faster than its package. When a shard becomes the slowest check, move modules between shard lines (`TEST_SHARDS`, `WINDOWS_SHARDS`, `MODEL_SHARDS`); the Changes and plan jobs fail unless every module and configuration is on exactly one line.
 
 ## Module layout
 

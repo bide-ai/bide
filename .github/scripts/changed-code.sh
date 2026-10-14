@@ -8,14 +8,22 @@
 # requests.
 #
 #   git diff --name-only BASE HEAD | .github/scripts/changed-code.sh
+#
+# With --examples-only it exits 0 only if the code paths all lie under examples/ (the example
+# modules, which no other module imports), and 1 otherwise.
 set -euo pipefail
 
 files=$(cat)
 if [ -z "$files" ]; then
+  [ "${1:-}" = --examples-only ] && exit 1
   exit 0
 fi
 # The TLA+ models have their own workflow (models.yml), which decides which of them to check.
 other=$(echo "$files" | grep -vE '^(docs/|docs-site/|assets/|spec/tla/|\.github/ISSUE_TEMPLATE/)|\.md$|^(LICENSE|NOTICE|DCO)$|^\.github/workflows/(docs|bench|models|explore)\.yml$' || true)
+if [ "${1:-}" = --examples-only ]; then
+  [ -n "$other" ] && ! echo "$other" | grep -qvE '^examples/'
+  exit
+fi
 if [ -n "$other" ]; then
   echo "$other"
   exit 0
