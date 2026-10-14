@@ -142,9 +142,9 @@ func Open(ctx context.Context, cfg Config) (*Signer, error) {
 	if s.timeout <= 0 {
 		s.timeout = DefaultTimeout
 	}
-	ctx, cancel := context.WithTimeout(ctx, s.timeout)
+	callCtx, cancel := context.WithTimeout(ctx, s.timeout)
 	defer cancel()
-	out, err := cfg.Client.GetPublicKey(ctx, &kms.GetPublicKeyInput{KeyId: &cfg.KeyID, GrantTokens: s.grants})
+	out, err := cfg.Client.GetPublicKey(callCtx, &kms.GetPublicKeyInput{KeyId: &cfg.KeyID, GrantTokens: s.grants})
 	if err != nil {
 		return nil, fmt.Errorf("awskms: get the public key of %s: %w", cfg.KeyID, err)
 	}
@@ -188,8 +188,8 @@ func Open(ctx context.Context, cfg Config) (*Signer, error) {
 	s.keyARN, s.pub, s.v = *out.KeyId, bytes.Clone(pub), v
 	// One signature proves the caller may sign with the key and that KMS's output verifies under
 	// the public key it reported, so a missing kms:Sign permission or a mismatch is found here and
-	// not by the first anchor. It is one billed KMS request.
-	if _, err := s.Sign([]byte(selfTest)); err != nil {
+	// not by the first anchor. It is one billed KMS request, bounded by ctx as well as by the timeout.
+	if _, err := s.sign(ctx, []byte(selfTest)); err != nil {
 		return nil, fmt.Errorf("awskms: self-test signature: %w", err)
 	}
 	return s, nil
@@ -210,7 +210,10 @@ func (s *Signer) KeyARN() string { return s.keyARN }
 // under P-256 KMS signs a 32-byte digest and there is no limit. It checks the signature against the public key
 // before returning it, so a key replaced behind the ARN is an error here and not a signature that
 // fails to verify later.
-func (s *Signer) Sign(message []byte) ([]byte, error) {
+func (s *Signer) Sign(message []byte) ([]byte, error) { return s.sign(context.Background(), message) }
+
+// sign is Sign with a caller's context, which Open passes so that cancelling Open stops its self-test.
+func (s *Signer) sign(ctx context.Context, message []byte) ([]byte, error) {
 	in := &kms.SignInput{KeyId: &s.keyARN, GrantTokens: s.grants}
 	if s.alg == audit.AlgECDSAP256 {
 		// KMS signs the SHA-256 digest; a digest is 32 bytes, so the 4096-byte limit never applies.
@@ -222,7 +225,7 @@ func (s *Signer) Sign(message []byte) ([]byte, error) {
 		}
 		in.Message, in.MessageType, in.SigningAlgorithm = message, types.MessageTypeRaw, types.SigningAlgorithmSpecEd25519Sha512
 	}
-	ctx, cancel := context.WithTimeout(context.Background(), s.timeout)
+	ctx, cancel := context.WithTimeout(ctx, s.timeout)
 	defer cancel()
 	out, err := s.client.Sign(ctx, in)
 	if err != nil {

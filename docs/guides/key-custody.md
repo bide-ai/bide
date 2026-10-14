@@ -16,7 +16,7 @@ the duties of the people who can use the key.
 | Signer | Module | Keys (`Config.Scheme`) | Signs | Tested against |
 |---|---|---|---|---|
 | PKCS#11 | `github.com/bide-ai/bide/signer/pkcs11` (cgo) | Ed25519 (`CKK_EC_EDWARDS`, token lists `CKM_EDDSA`) or ECDSA P-256 (`CKK_EC`, `CKM_ECDSA`) | the audit log (tree heads, evidence seals, grants), approver decisions | SoftHSM2 only |
-| AWS KMS | `github.com/bide-ai/bide/signer/awskms` (pure Go, AWS SDK) | Ed25519 (`ECC_NIST_EDWARDS25519`) or ECDSA P-256 (`ECC_NIST_P256`), usage `SIGN_VERIFY` | the same | a fake KMS client only |
+| AWS KMS | `github.com/bide-ai/bide/signer/awskms` (pure Go, AWS SDK) | Ed25519 (`ECC_NIST_EDWARDS25519`) or ECDSA P-256 (`ECC_NIST_P256`), usage `SIGN_VERIFY` | the same | a fake KMS client and an in-process AWS KMS emulator (`signer/awskms/emulatortest`), never AWS |
 | Google Cloud KMS | `github.com/bide-ai/bide/signer/gcpkms` (pure Go, Google Cloud SDK) | Ed25519 (`EC_SIGN_ED25519`, software only) or ECDSA P-256 (`EC_SIGN_P256_SHA256`, software or HSM), purpose `ASYMMETRIC_SIGN` | the same | the Cloud KMS emulator (`signer/gcpkms/emulatortest`) and a fake client, never Google Cloud |
 
 All three are separate Go modules, so the core `github.com/bide-ai/bide` module gains no cgo and no cloud SDK.
@@ -172,12 +172,18 @@ message (`MessageType` `RAW`), which is pure Ed25519 as RFC 8032 defines it. Lik
 signs once at `Open` (one billed request; it also catches a missing `kms:Sign` permission) and verifies each signature against the public key before returning it. Each KMS call has a timeout
 (`Config.Timeout`, default 30 seconds).
 
-The AWS signer is tested against a fake KMS client in bide's CI, which holds an Ed25519 key and enforces
-the call shape KMS documents (key ARN, algorithm, `RAW`, the size limit). bide's tests never call AWS, so
-the interoperability of KMS's `ED25519_SHA_512` and `ECDSA_SHA_256` output with bide's verifier rests on
-AWS's documentation of those algorithms (and, for ECDSA, on KMS's DER signatures, which the signer
-converts to bide's low-S `r||s`); check it once against your own key before relying on it (sign a message, verify it with
-`audit.VerifierOf`).
+The AWS signer is tested two ways in bide's CI, and never against AWS. A fake KMS client holds an Ed25519
+or P-256 key and enforces the call shape KMS documents (key ARN, algorithm, `RAW` or `DIGEST`, the size
+limit); it also produces failures an emulator cannot (a key without the expected signing algorithm or
+usage, a replaced key, a bad DER signature). For both schemes the signer is also tested, through the AWS
+SDK, against [aws-kms-emulator](https://github.com/blackwell-systems/aws-kms-emulator), run in-process by
+the test-only module `signer/awskms/emulatortest`: `Open` and its self-test, signing (KMS's DER P-256
+signatures converted to bide's low-S `r||s`, many of them), verification with `audit.NewVerifier`, a full
+`AuditedStore` anchor and evidence seal, the refusal of keys of another spec, and disabled and
+pending-deletion keys. An emulator is its author's reading of the KMS documentation, so the
+interoperability of real KMS's `ED25519_SHA_512` and `ECDSA_SHA_256` output with bide's verifier still rests
+on AWS's documentation of those algorithms; check it once against your own key before relying on it (sign a
+message, verify it with `audit.VerifierOf`).
 
 ### The KMS 4096-byte limit
 
