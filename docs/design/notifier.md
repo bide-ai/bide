@@ -216,7 +216,9 @@ source of truth.
 | `overdue` | once, when the deadline passes unacked | `key`, `at`, `latency` |
 | `failing_since` | a recovery pass failed and no episode is open for the run | `run`, `at`, `cause` (a class, not text) |
 | `recovered` | a recovery pass succeeded while an episode is open | `run`, `at` |
-| `watch`, `unwatch` | on the open trail `notify:@open`, not a run's: an event whose all-clear may be owed is listed before it is observed, and unlisted when nothing more is owed | `key`, `run`, `at` |
+| `watch`, `unwatch` | in a segment of the open trail `notify:@open:<date>`, not a run's: an event whose all-clear may be owed is listed before it is observed, and unlisted when nothing more is owed | `key`, `run`, `at` |
+| `checkpoint`, `seal`, `backfilled` | in an open-trail segment: the listed set carried into a new segment (first record), the pointer to the next segment (last record), the one-time listing of earlier events | `watching`, `backfilled`; `next` |
+| `segment` | in the open trail's index `notify:@open:index:<year>`: a segment was created | `next` |
 | `cleared` | the event stopped being current, while it was still open | `key`, `at`, `reason` (`resolved`, `decided`, `ended`, `recovered`) |
 
 The fold of an event: **open** until `acked` or `cleared`; **claimed** if the last `claimed` has
@@ -338,9 +340,35 @@ the open trail: it folds the list, loads the trail of each run that has a listed
 as above, whether or not the run has finished. `unwatch{key}` is appended when nothing more is owed:
 the all-clear was acknowledged, or the event was cleared before any delivery was attempted. A key
 listed for over an hour whose run's trail has no record of it (the process died between the two
-appends) is unlisted, and listed again if it is observed later. The list is two records per such
-event, ever, and a scan folds all of it: sized for events that need a person, not for runs. Events
-observed before this trail existed are not on it; for them only the scans above apply.
+appends) is unlisted, and listed again if it is observed later.
+
+*Bounded.* The open trail is append-only and verifiable, and a read does not grow with history. It
+is kept in one segment per UTC day, `notify:@open:<date>` (`agent.OpenSegment`), and an index,
+`notify:@open:index:<year>` (`agent.OpenIndex`), holds one `segment` record per segment created. A
+lookup reads the last record of the newest index (this year's, or the nearest earlier one the first
+time in a year) and then the segment: a few loads however long the gap and however old the
+deployment. A writer that finds the newest segment is from an earlier day appends `seal{next}` to it
+(the append race makes the seal final: no record can follow it), then writes `checkpoint{watching,
+backfilled}`, the set listed in the sealed segment, as the first record of today's, then indexes
+today's. So a read is the listed set plus one day's records, and the index is a year of days at most.
+A checkpoint must equal the fold of the segment it continues, which `bide audit notifications`
+checks. A crash is repaired by the next writer at any step: after the seal the chain names the next
+segment, which gets its checkpoint; a segment reached through the chain but missing from the index is
+indexed; the index names an empty segment only for the very first one, which has nothing to carry. A
+peer whose clock is behind follows the seals to the newest segment.
+
+*Events from before the open trail.* The first sweep (`NotifyPending`), `Recover` pass or
+`RecoverLoop` pass that finds no `backfilled` marker lists every event in every run's trail that can
+still owe an all-clear (the run list includes finished runs; each trail is read once, ever), then
+appends `backfilled`. Listing is idempotent, so two processes backfilling at once list each event
+once and race only for the one marker, and an interrupted backfill starts over. The marker is
+carried by every checkpoint.
+
+*Roots.* An event is filed under its root run's trail. A plan flow's run is its own root whatever its
+ID holds (a flow named `tenant>flow1` is not a sub-agent of `tenant`): the hook path
+(`RunNotifier.DriveEnd`, from the flow's `RunRef`) and the sweep (from the run's `run:start`, which
+records `RunKindFlow`) agree on it. Any other run with a `>` in its ID is a sub-agent's, attributed to
+the root its ID names.
 
 **An ID too long to encode.** A key holds each ID in encoded form, and one longer than 96
 characters is replaced by its digest, which cannot be turned back into the ID. The `observed` record

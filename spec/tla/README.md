@@ -2367,7 +2367,7 @@ kinds. The note called it model 13, a number model 13 (probes) already has.
   lost), and the event no longer stands; an event still open with a claim is cleared by step 3 first.
   A deliverer pass may start on it then: the catch-up scan of a drive end, a recovery pass or a
   sweep, or the scan of the open trail that reaches a run that completed meanwhile (an event is
-  listed there before it is observed), which the model, like every start, leaves to the fair
+  listed there before it is observed; the trail is kept in sealed daily segments), which the model, like every start, leaves to the fair
   deliverers; the listing and the scan are checked by the Go tests. An event never claimed is
   not told of, and `run_aborted` (never non-current in the core) has none. The recovery_failing
   episodes' all-clears use the same machinery and are not modelled. The input assumption: an event
