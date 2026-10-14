@@ -1869,14 +1869,33 @@ func TestNotifyTrailLocks_NotHeldAcrossTheErrorHandler(t *testing.T) {
 // be delivered.
 func TestNotifyTrailLocks_NoReportIsMadeUnderALock(t *testing.T) {
 	var reports, held int64
+	trackLockOwners.Store(true)
 	reportGuard = func() {
 		atomic.AddInt64(&reports, 1)
-		if n := trailLocksHeld.Load(); n != 0 {
-			atomic.AddInt64(&held, n)
+		// Only the goroutine making the report counts: others in the process hold their own locks.
+		if n := trailLocksHeldByCaller(); n != 0 {
+			atomic.AddInt64(&held, int64(n))
 		}
 	}
-	defer func() { reportGuard = nil }()
+	defer func() { reportGuard = nil; trackLockOwners.Store(false) }()
 	ctx := context.Background()
+	// Other goroutines in the process (other tests' workers, here a holder of its own) hold trail locks
+	// while the scenarios run; they must not count against the reporting goroutine.
+	holding, release, done := make(chan struct{}), make(chan struct{}), make(chan struct{})
+	go func() {
+		defer close(done)
+		unlock, err := lockTrail(ctx, "notify:some-other-run")
+		if err != nil {
+			t.Error(err)
+			close(holding)
+			return
+		}
+		close(holding)
+		<-release
+		unlock()
+	}()
+	<-holding
+	defer func() { close(release); <-done }()
 	clk := resolvedClock()
 
 	e := testEngine(t, memJournal(), &fakeSink{}, trailLoadFails{NewMemNotifyTrail()}, clk, "p1")
