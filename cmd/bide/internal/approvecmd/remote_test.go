@@ -196,6 +196,14 @@ func TestRemote_Preflight(t *testing.T) {
 	if code != 1 || posts.Load() != before+1 {
 		t.Fatalf("risk after the gate passed: %d, %d posts\n%s", code, posts.Load(), errs)
 	}
+	// And once the run has resumed and the call has run, the call is no longer waiting.
+	if _, err := f.drive(twoOfThree, false); err != nil {
+		t.Fatal(err)
+	}
+	code, _, errs = f.runTo("", f.to(srv.URL, "risk", "-yes")...)
+	if code != 1 || !strings.Contains(errs, "not waiting") || posts.Load() != before+1 {
+		t.Fatalf("risk after the call ran: %d, %d posts\n%s", code, posts.Load(), errs)
+	}
 }
 
 // -reject signs a rejection, and the confirmation says so.
@@ -238,8 +246,12 @@ func TestRemote_EndpointRefusals(t *testing.T) {
 func TestRemote_URLRules(t *testing.T) {
 	f := newFixture(t, twoOfThree, refundArgs)
 	for _, u := range []string{"http://example.com", "ftp://x", "https://user:pw@example.com", "https://example.com/?a=b", "example.com", "https://"} {
-		if code, _, errs := f.runTo("", f.to(u, "ops", "-yes")...); code != 1 {
+		code, _, errs := f.runTo("", f.to(u, "ops", "-yes")...)
+		if code != 1 {
 			t.Errorf("%s: exit %d %s", u, code, errs)
+		}
+		if u == "http://example.com" && !strings.Contains(errs, "in the clear") {
+			t.Errorf("http to another host was not refused for the clear text: %s", errs)
 		}
 	}
 	other := httptest.NewServer(http.HandlerFunc(func(http.ResponseWriter, *http.Request) { t.Error("a redirect was followed") }))
@@ -337,4 +349,71 @@ func writeSelfSigned(t *testing.T, dir string) (certPath, keyPath string) {
 	os.WriteFile(certPath, pem.EncodeToMemory(&pem.Block{Type: "CERTIFICATE", Bytes: der}), 0o600)
 	os.WriteFile(keyPath, pem.EncodeToMemory(&pem.Block{Type: "EC PRIVATE KEY", Bytes: kb}), 0o600)
 	return certPath, keyPath
+}
+
+// If the call's arguments change between the display and the signature, nothing is signed.
+func TestRemote_ArgumentsChangingWhileDecidingAreNotSigned(t *testing.T) {
+	f := newFixture(t, twoOfThree, refundArgs)
+	gets, posts := new(atomic.Int32), new(atomic.Int32)
+	srv := f.intake(func(next http.Handler) http.Handler {
+		return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			if r.Method == http.MethodPost {
+				posts.Add(1)
+				next.ServeHTTP(w, r)
+				return
+			}
+			rec := httptest.NewRecorder()
+			next.ServeHTTP(rec, r)
+			var p approvals.Pending
+			if err := json.Unmarshal(rec.Body.Bytes(), &p); err != nil {
+				t.Error(err)
+			}
+			if gets.Add(1) > 1 { // the second fetch, after the confirmation
+				p.Args = json.RawMessage(`{"order":1049,"amount":999}`)
+				p.ArgsSHA256 = audit.ApprovalArgsDigest(agent.ApprovalSubject{RunID: p.Run, ToolUseID: p.Call, ToolName: p.Tool, Args: p.Args})
+			}
+			writeTestJSON(w, p)
+		})
+	})
+	code, _, errs := f.runTo("ops\n", f.to(srv.URL, "ops")...)
+	if code != 1 || posts.Load() != 0 || !strings.Contains(errs, "changed while you were deciding") {
+		t.Fatalf("exit %d, %d posts\n%s", code, posts.Load(), errs)
+	}
+}
+
+// A receipt the endpoint returns that is not the decision signed, or does not verify, is not
+// written; the decision itself stays recorded, and the command says so.
+func TestRemote_BadReceiptIsNotWritten(t *testing.T) {
+	for name, tamper := range map[string]func(*audit.DecisionReceipt){
+		"another verdict": func(r *audit.DecisionReceipt) { r.Approved = !r.Approved },
+		"another record":  func(r *audit.DecisionReceipt) { r.Record = "approval:other" },
+		"other arguments": func(r *audit.DecisionReceipt) { r.Args = json.RawMessage(`{"order":1}`) },
+	} {
+		t.Run(name, func(t *testing.T) {
+			f := newFixture(t, twoOfThree, refundArgs)
+			srv := f.intake(func(next http.Handler) http.Handler {
+				return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+					rec := httptest.NewRecorder()
+					next.ServeHTTP(rec, r)
+					if r.Method != http.MethodPost {
+						w.Write(rec.Body.Bytes())
+						return
+					}
+					var resp approvals.Response
+					if err := json.Unmarshal(rec.Body.Bytes(), &resp); err != nil {
+						t.Error(err)
+					}
+					tamper(&resp.Receipt)
+					writeTestJSON(w, resp)
+				})
+			})
+			code, _, errs := f.runTo("", f.to(srv.URL, "ops", "-yes")...)
+			if code != 1 || !strings.Contains(errs, "the decision was recorded") || len(f.decisions()) != 1 {
+				t.Fatalf("exit %d, %d decisions\n%s", code, len(f.decisions()), errs)
+			}
+			if m, _ := filepath.Glob(filepath.Join(f.dir, "*.receipt.json")); len(m) != 0 {
+				t.Fatalf("a bad receipt was written: %v", m)
+			}
+		})
+	}
 }
