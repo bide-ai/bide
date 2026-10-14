@@ -11,7 +11,28 @@ This page lists work that is not done yet. It describes intent, not promises of 
 - A deadline for a gate that never reaches its approvals, so a run waiting on approvers who do not answer stops on a schedule instead of staying unfinished until it is cancelled; and a way to clear a stale decision written before a gate's request.
 - Moving the journal format tag from `v1-dev` to its final value, which waits for 1.0.
 
+- Separation of duties for approvals: an opt-in policy that refuses a decision from the principal who requested the call, checked in the approval gate's formal model (model 1b).
+
 Changes that touch claims, the journal, leases, sagas or proofs are reviewed adversarially before they merge.
+
+### Notifications and approvals
+
+The notifier tells a person when a run needs them ([notifications guide](guides/notifications.md)). Next, in progress first:
+
+- An all-clear notification when an event stops being current (a halt resolved, a gate decided, a run ended), so a receiver can close the incident it opened.
+- `bide notify test` and `bide notify listen`, to check a receiver end to end, and a relay that verifies bide's signed webhooks and forwards them to Slack and PagerDuty.
+- `bide approve`, `bide keygen` and a list of pending approvals: an approver signs a decision with their own key, after seeing the call and its arguments as the journal records them.
+- Proof that notifications went out: a verifier for the notification trail and a `bide audit` check, so an auditor can see that every halt and pending approval was notified and acknowledged, and when.
+- A "Needs attention" list in the run viewer: pending approvals and unresolved halts across a journal.
+- Routing and escalation: different receivers by event kind (approvals to approvers, unknown outcomes to on-call), and an overdue notice that escalates to a second receiver.
+- An approve page in the run viewer, signed in the browser with an Ed25519 key that never leaves it. Later: passkey (WebAuthn) approvals, as a new signature algorithm.
+
+Out of scope: approve buttons in chat that a server signs on an approver's behalf. Keeping each approver's key with that approver is what makes a k-of-n gate k independent decisions.
+
+### Trust and project process
+
+- Trust pages: a threat model beside [SECURITY.md](../SECURITY.md), the stability and versioning policy, and a scoped comparison with Temporal, LangGraph and plain retries.
+- A lighter merge-queue CI, so a queued change waits on the checks that matter for it.
 
 ### Formal models of the coordination protocols
 
