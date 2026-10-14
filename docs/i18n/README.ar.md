@@ -253,7 +253,7 @@ gsm، ProofBundle). ويُذكَر ضمان المعمورية الدقيق في
 - **[الحوكمة](../../docs/guides/governance.md)**: ركيزة الحالة المحكومة من Tier-2 (gsm). صِف الحالة المشتركة
   كسجلّ، ويفحص `Build()` أن كل تشابك يتقارب أو يُعيد مثالًا مضادًّا. قابل للتشغيل: `examples/govern/mesh`،
   `examples/govern/compose`.
-- **[الإشعارات](../../docs/guides/notifications.md)**: إبلاغ شخص عند توقف تشغيل أو انتظاره الموافقة: webhook عبر HTTPS موقَّع (`notify.NewWebhook`)، وتحقق من جهة المستلم باستدعاء واحد (`notify.Verify`)، وTLS متبادل وتثبيت مفتاح اختياريان.
+- **[الإشعارات](../../docs/guides/notifications.md)**: إبلاغ شخص عند توقف تشغيل أو انتظاره الموافقة، وإشعار انتهاء الحدث (all-clear): webhook عبر HTTPS موقَّع (`notify.NewWebhook`)، وتحقق من جهة المستلم باستدعاء واحد (`notify.Verify`)، وTLS متبادل وتثبيت مفتاح اختياريان.
 - **[الموافقة](../../docs/guides/hitl-approval.md)**: توقيع بشري مُعمَّر قبل تشغيل أداة، من 1-من-1 إلى m-من-n
   الموقَّعة (`ApprovalPolicy`، `SubmitDecision`)، مع برهان دون اتصال على أن k مُوافِقين مُسمَّين وافقوا قبل الفعل
   (`audit.ApprovalEvidence`، `audit.VerifyApprovals`). قابل للتشغيل: `examples/approval`.

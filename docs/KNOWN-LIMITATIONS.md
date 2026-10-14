@@ -262,6 +262,8 @@ whose gate passed on them before the upgrade, and whose call has not run, pauses
 runs, but plan flows have no saga mode, so the nodes before it keep their effects and the run stays
 unfinished until it is cancelled. See [Plan flows](guides/plan-flows.md#approval-gates-on-nodes).
 
+**The all-clear is found by a scan, not pushed.** A `resolved` notification is sent when the next drive, recovery pass or `NotifyPending` sweep touches the run, so a run that completes in a process that dies before then, and is not listed as unfinished, leaves its incident open until another pass of that run; a missing all-clear fails safe. It is not ordered after its event (a receiver matches them by `clears.id`), it is never overdue, and an event whose key holds the digest of an over-long ID cannot be checked. See [The all-clear](guides/notifications.md#the-all-clear).
+
 **A quorum needs short, fixed answers.** Voters must pick from a set of labels, so a quorum does not
 apply to free-form output. Agreement lowers the risk of one model's mistake, but models can be wrong
 together. A tie is never agreement. See [Quorum](guides/quorum.md#what-a-quorum-does-not-do).
