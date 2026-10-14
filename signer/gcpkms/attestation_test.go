@@ -519,6 +519,43 @@ func TestAttestationStructureRefusals(t *testing.T) {
 			t.Errorf("%v", err)
 		}
 	})
+	t.Run("buffer and object offsets that do not fit", func(t *testing.T) {
+		obj := goodAttrs(testVersion, pub).object()
+		build := func(bufField uint32, first, second uint16, tail []byte) []byte {
+			info := binary.BigEndian.AppendUint16(nil, 1)
+			info = binary.BigEndian.AppendUint16(info, 0)
+			info = binary.BigEndian.AppendUint16(info, first)
+			info = binary.BigEndian.AppendUint16(info, second)
+			buf := append(append(info, obj...), tail...)
+			hdr := binary.BigEndian.AppendUint32(nil, 0)
+			hdr = binary.BigEndian.AppendUint32(hdr, 3)
+			hdr = binary.BigEndian.AppendUint32(hdr, uint32(16+len(buf)+attestSigSize))
+			if bufField == 0xdead {
+				bufField = uint32(len(buf))
+			}
+			hdr = binary.BigEndian.AppendUint32(hdr, bufField)
+			return resign(append(hdr, buf...))
+		}
+		if err := verifyAttestation(h.att(gz(t, build(0xdead, 8, 0, nil)), v1fmt), testVersion, pub, h.roots); err != nil {
+			t.Fatalf("baseline: %v", err)
+		}
+		for name, c := range map[string][]byte{
+			"buffer size 0":              build(0, 8, 0, nil),
+			"buffer size 4":              build(4, 8, 0, nil),
+			"buffer size 7":              build(7, 8, 0, nil),
+			"buffer size past the end":   build(1<<20, 8, 0, nil),
+			"first object at 0":          build(0xdead, 0, 0, nil),
+			"first object at 4":          build(0xdead, 4, 0, nil),
+			"first object past the end":  build(0xdead, 60000, 0, nil),
+			"second object past the end": build(0xdead, 8, 60000, nil),
+			"second before first":        build(0xdead, 8, 4, nil),
+			"second equals first":        build(0xdead, 8, 8, nil),
+		} {
+			if err := verifyAttestation(h.att(gz(t, c), v1fmt), testVersion, pub, h.roots); !errors.Is(err, ErrAttestation) {
+				t.Errorf("%s: %v", name, err)
+			}
+		}
+	})
 	t.Run("duplicate attribute", func(t *testing.T) {
 		a := goodAttrs(testVersion, pub)
 		a.order = append(a.order, attrExtractable) // written twice

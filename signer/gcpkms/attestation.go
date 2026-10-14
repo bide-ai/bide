@@ -251,7 +251,7 @@ func parseObject(r *reader) (map[uint32][]byte, error) {
 	if count > maxAttributes {
 		return nil, fmt.Errorf("%d attributes", count)
 	}
-	attrs := make(map[uint32][]byte, count)
+	attrs := make(map[uint32][]byte) // not sized by count: the count is untrusted
 	for range count {
 		tag, err := r.u32()
 		if err != nil {
@@ -331,9 +331,6 @@ func boolAttr(o map[uint32][]byte, tag uint32) (v, ok bool) {
 // checkObjects looks for an attested object that proves pub is an HSM-generated, non-extractable EC key
 // of the key version. It returns the failure of the first object when none does.
 func checkObjects(objs []map[uint32][]byte, version string, pub []byte) error {
-	if len(objs) == 0 {
-		return attErr("no attested objects")
-	}
 	var first error
 	for _, o := range objs {
 		err := checkObject(o, version, pub)
@@ -343,6 +340,9 @@ func checkObjects(objs []map[uint32][]byte, version string, pub []byte) error {
 		if first == nil {
 			first = err
 		}
+	}
+	if first == nil { // no objects: never a success
+		return attErr("no attested objects")
 	}
 	return first
 }
