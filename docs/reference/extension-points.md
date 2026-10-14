@@ -459,7 +459,8 @@ type Notifier interface {
 ```
 
 The port behind `agent.WithNotifier`. `Notify` is called when a run halts on an unknown outcome,
-waits for approval, is aborted, or cannot be recovered, and again after an error, a crash or a lost
+waits for approval, is aborted, or cannot be recovered (and, with `agent.NotificationResolved`, when
+an event it reported is over: `Notification.Clears` says which), and again after an error, a crash or a lost
 reply: return nil only once the sink has accepted the notification, and use `Notification.ID`, which
 is the same on every attempt, to drop duplicates at the sink. A `Notification` holds structured
 fields only, and `Err` is for an in-process notifier: a notifier that sends elsewhere should not

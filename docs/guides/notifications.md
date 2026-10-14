@@ -135,15 +135,67 @@ Schema `bide.notification.v1`:
   },
   "abort": null,
   "failing": null,
+  "clears": null,
   "view": { "command": "bide view -db /var/lib/orders/run.db -run orders-1042", "url": null }
 }
 ```
 
-`kind` is `outcome_unknown`, `approval_pending`, `run_aborted`, `recovery_failing` or
-`notification_overdue`. At most one of `halt`, `approval`, `abort` and `failing` is set, as the kind
-says. `summary` is generated from the structured fields, so a chat message can post it as it is.
-`notification_overdue` also carries a `reason`. New fields are additive within `v1`; ignore the ones
-you do not know.
+`kind` is `outcome_unknown`, `approval_pending`, `run_aborted`, `recovery_failing`,
+`notification_overdue` or `resolved`. At most one of `halt`, `approval`, `abort`, `failing` and
+`clears` is set, as the kind says. `summary` is generated from the structured fields, so a chat
+message can post it as it is. `notification_overdue` and `resolved` also carry a `reason`. New fields
+are additive within `v1` (`clears` is one; it is `null` on every other kind); ignore the ones you do
+not know.
+
+### The all-clear
+
+When an event you were told of stops being current, a second notification closes it: `kind` is
+`resolved` (`agent.NotificationResolved`; `agent.Notification.Clears` for an in-process notifier),
+and `clears` names the event.
+
+```json
+{
+  "schema": "bide.notification.v1",
+  "id": "41b7...c0",
+  "key": "resolved:approval:orders-1042:call_01:0",
+  "kind": "resolved",
+  "run_id": "orders-1042",
+  "event_at": "2026-10-13T09:31:40Z",
+  "observed_at": "2026-10-13T09:31:41Z",
+  "deadline_at": null,
+  "attempt": 1,
+  "summary": "Run orders-1042: the approval_pending event is over (decided). No action is needed for it.",
+  "step": null,
+  "halt": null,
+  "principal": { "on_behalf_of": "desk-7", "authority_ref": "" },
+  "approval": null,
+  "abort": null,
+  "failing": null,
+  "clears": { "id": "9f2c...e1", "key": "approval:orders-1042:call_01:0", "kind": "approval_pending" },
+  "reason": "decided",
+  "view": { "command": "bide view -db /var/lib/orders/run.db -run orders-1042", "url": null }
+}
+```
+
+`reason` is `resolved` (a halt was resolved), `decided` (a gate was decided), `ended` (the run
+ended) or `recovered` (recovery works again). `event_at` is when bide found the event no longer
+current, which is no earlier than when it ended; there is no `deadline_at`. The all-clear has an `id`
+of its own, delivered at least once and signed like any other, so dedupe on it as usual.
+
+**Matching it to the event.** `clears.id` and `clears.key` are the `id` and `key` your receiver got
+for the event. Event keys are never reused and an event that stopped does not start again, so the
+`clears.id` is final: treat every delivery of that ID, before or after the all-clear, as superseded.
+Do not rely on the order of arrival. The all-clear can come first when the event's own delivery had
+failed, or its reply was lost, before the event stopped (the request may have landed, so the
+all-clear is sent). A receiver that keys incidents on the ID (PagerDuty's `dedup_key`) needs nothing
+more; a stateless relay may drop an all-clear for an ID it has never seen.
+
+**What does not get one.** `run_aborted`, which is a fact and not a state; an event that stopped
+before bide tried to deliver it (nobody was told); and `notification_overdue` and `resolved`
+themselves. An all-clear is never overdue: it has no deadline and no overdue notice, because a
+missing one leaves an incident open, which fails safe. It is retried for as long as the process
+runs, and reported to `WithNotifyErrors` as failing like any delivery. A receiver that treated every
+POST as a new alert should switch on `kind`.
 
 `view.command` is a `bide view` command, and `bide view` needs a store. With `WithViewDB` the command
 names your SQLite journal file, as above, and runs where that path is readable. Without it the webhook
@@ -256,10 +308,14 @@ shape applies. Use the notification ID as the dedup key and PagerDuty collapses 
 
 <!-- docsnip: setup p notify.Payload; routingKey string -->
 ```go
+action, dedup := "trigger", p.ID
+if p.Clears != nil { // the all-clear: close the incident the event opened
+	action, dedup = "resolve", p.Clears.ID
+}
 event := map[string]any{
 	"routing_key":  routingKey,
-	"event_action": "trigger",
-	"dedup_key":    p.ID,
+	"event_action": action,
+	"dedup_key":    dedup,
 	"payload": map[string]any{
 		"summary":  p.Summary,
 		"source":   "bide",
@@ -268,6 +324,9 @@ event := map[string]any{
 			"run_id": p.RunID, "kind": p.Kind, "approvers": p.Approval, "view": p.View.Command,
 		},
 	},
+}
+if action == "resolve" {
+	delete(event, "payload") // a resolve needs only the routing key and the dedup key
 }
 ```
 

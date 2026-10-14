@@ -77,6 +77,7 @@ Step that crashes mid-POST would halt that run on the notifier, a halt about a h
 | `run_aborted` | the run reaches the `run:aborted` end marker | `aborted:<run>` |
 | `recovery_failing` | a run has kept failing recovery for longer than `D` (default 15 minutes): a Resumer error, not resumable, or store errors | `recovery:<run>:<k>` |
 | `notification_overdue` | an event is not acknowledged by its deadline (below) | `overdue:<event key>` |
+| `resolved` | an `outcome_unknown`, `approval_pending` or `recovery_failing` event that a receiver was, or may have been, told of stopped being current: the all-clear (below) | `resolved:<event key>` |
 | `digest` | a periodic summary of runs halted or waiting longer than `X` (below) | `digest:<bucket>` |
 
 Ids are encoded as attempt keys encode them.
@@ -215,10 +216,12 @@ source of truth.
 | `overdue` | once, when the deadline passes unacked | `key`, `at`, `latency` |
 | `failing_since` | a recovery pass failed and no episode is open for the run | `run`, `at`, `cause` (a class, not text) |
 | `recovered` | a recovery pass succeeded while an episode is open | `run`, `at` |
-| `cleared` | the event stopped being current | `key`, `at`, `reason` (`resolved`, `decided`, `ended`) |
+| `cleared` | the event stopped being current, while it was still open | `key`, `at`, `reason` (`resolved`, `decided`, `ended`, `recovered`) |
 
 The fold of an event: **open** until `acked` or `cleared`; **claimed** if the last `claimed` has
-`until` in the future.
+`until` in the future. An acknowledged event is never `cleared` afterwards (the first terminal record
+is final), so the end of a delivered event is recorded as the all-clear's own `observed` record,
+below. That record has `reason` and no `deadline_at`.
 
 ### Protocol
 
@@ -272,6 +275,65 @@ doubling, cap about 15 minutes, with jitter. After 8 failures the engine reports
 failing" (to `WithRecoverErrors`, as a `failing` record, and in the viewer) and keeps trying. Stop
 conditions are `acked` and `cleared` only. Giving up silently on the event whose purpose is to end
 silence is the wrong default.
+
+### The all-clear
+
+A receiver that was told of an event holds an incident open (a page, a ticket, a Slack thread). The
+trail recorded when the event stopped being current (`cleared`), but nothing told the receiver, so
+the incident stayed open until a person closed it. `resolved` is that notification. It is delivered
+by the same engine as any event: its own key (`resolved:<event key>`), its own `observed`, `claimed`
+and `acked` records, the same claim race, retry, backoff and `failing` record, and the stable ID
+`NotifyID(resolved:<event key>)`.
+
+**When it is owed.** For an `outcome_unknown`, `approval_pending` or `recovery_failing` event that is
+no longer current, in either of two states:
+
+- *acknowledged*: the receiver was told. The all-clear says the event is over, with the reason
+  (`resolved`, `decided`, `ended`, `recovered`) the currency check gives;
+- *cleared after a delivery was attempted* (the trail holds a `claimed` for it): the receiver may have
+  been told, since a request can land although its reply was lost or its call abandoned. Clearing
+  stops the event's own delivery, so the all-clear is the only message the receiver gets about it,
+  and it names the event so the receiver can close an incident it may or may not have opened.
+
+An event never claimed was never sent, so nothing is owed. `run_aborted` is a fact and never stops
+being current, so it has no all-clear. An overdue notice and an all-clear are not incidents and have
+none.
+
+**Never overdue.** An all-clear is observed with no `deadline_at`; no `overdue` record is written for
+it and no overdue notice is sent. The deadline exists because silence about an event that needs a
+person is dangerous. A missing all-clear leaves an incident open, which fails safe: the next person
+to look sees the run is fine. It is still retried for as long as the process runs, and raises the same
+`failing` record after the same number of rounds, reported to `WithNotifyErrors`. The model checks
+that it never goes overdue.
+
+**Ordering.** Delivery order between an event and its all-clear is not guaranteed, and need not be.
+Event keys are never reused (a halt's key holds its attempt marker's time, a gate's its reminder
+number, a recovery failure's its episode) and an event that stopped being current does not become
+current again, so the all-clear's `clears.id` is final: a receiver that gets an all-clear for an ID
+treats every delivery of that ID, before or after, as superseded. The all-clear can arrive first only
+when the event was cleared before it was acknowledged (a call in flight or a lost reply); the model
+shows the case (`limits/clear-before-event`). A receiver without a way to remember an ID it has not
+seen (a stateless relay) may ignore an all-clear for an ID it does not know; one that does remember
+(PagerDuty's `dedup_key` does) gets the right incident state either way. No sequence number is
+needed because the identity is the order.
+
+**How an all-clear is found.** A *scan* of the run's trail reads it, folds it, and for each such
+event checks currency as a round does (from the journal; the key holds the run, operation or gate and
+the episode, so the check needs nothing else). It is queued on the notifier's worker after every drive
+of a root run (`Run`, a plan flow), after every recovery pass over a run, and for every run the sweep
+(`NotifyPending`) lists, so a decision, a resolution, the run's end and a recovery are each noticed by
+the next process that touches the run. A round that clears an event also queues its all-clear, and a
+scan queues an all-clear that was observed and not acknowledged, so a process that dies after any
+record resumes from the trail. The scan only reads and appends through the claim protocol, so any
+number of processes may run it.
+
+**Cost and limit.** One trail read per drive end, recovery pass and sweep run, off the drive's path,
+and a journal read for each acknowledged event not yet cleared. A run that ends in a process that dies
+before the scan, and is not unfinished, is not listed by the sweep (completed runs are excluded), so
+its all-clear waits for another drive or pass of that run: the same catch-up gap as an event whose
+process died, narrower because the incident it leaves open is the safe one. An event whose key holds
+an ID's digest (an ID longer than 96 encoded characters) cannot be rebuilt from the key, and a scan
+reports it to `WithNotifyErrors` instead of checking it.
 
 ### Behavior fixed by the adversarial review
 
@@ -360,6 +422,8 @@ An independent review of the first implementation found these, and each is now a
 - **`VerifyNotifications` must read the trail strictly.** The engine's `Load` keeps a record kind it does
   not know in its position so an older process keeps delivering; the verifier (build plan item 7) must
   refuse a kind it cannot read, or an older verifier would pass a trail it did not check.
+- **The all-clear's scan costs a trail read** per drive end, recovery pass and swept run (see "The
+  all-clear").
 - **Known cost:** a recovery pass does a trail read for each run it drives that pauses or succeeds, to
   close an open episode. It is one point read of a short trail; a deployment with very many paused
   runs may want a longer recovery interval.
@@ -381,7 +445,9 @@ Three times for one event, all in the audited trail:
   and consistent with an earlier head (`ProveConsistency`), so nothing was dropped or rewritten;
 - for every approval gate in the run's approval evidence, the trail holds `observed` for that gate;
 - `acked_at - observed_at` is within the notify deadline, or an `overdue` record exists for it;
-- no `acked` without an earlier `observed`; no `acked` for a key `cleared`.
+- no `acked` without an earlier `observed`; no `acked` for a key `cleared`;
+- every `resolved` event's `observed` record follows an `acked` or a `cleared` (with a `claimed`) for the
+  event it clears, and no `overdue` record exists for a `resolved` key.
 
 It reports "approvers were notified at T" with the T1, T2, T3 above, and how the delivery was
 authenticated: `auth` records `signature` (the signature scheme and which secret slot signed, current
@@ -517,9 +583,12 @@ webhook is a wider audience than the journal.
 ```
 
 - `kind` is one of `outcome_unknown`, `approval_pending`, `run_aborted`, `recovery_failing`,
-  `notification_overdue`, `digest`. Exactly one of `halt` (`cause` as an enum, `attempted_at`),
-  `approval`, `abort` (a reason code from a closed set, not text) or `failing` (`passes`, a cause
-  class) is non-null where the kind has one; `digest` has `rows`.
+  `notification_overdue`, `resolved`, `digest`. Exactly one of `halt` (`cause` as an enum,
+  `attempted_at`), `approval`, `abort` (a reason code from a closed set, not text), `failing`
+  (`passes`, a cause class) or `clears` (`id`, `key` and `kind` of the event a `resolved`
+  notification ends; `reason` says why: `resolved`, `decided`, `ended` or `recovered`) is non-null
+  where the kind has one; `digest` has `rows`. A `resolved` payload has no `deadline_at`, and its
+  `event_at` is when a notifier found the event no longer current, an upper bound on when it ended.
 - `summary` is generated from the structured fields, so a Slack workflow can post it without a
   template and without error text.
 - **Minimal by default.** The fields above are everything: kind, run ID, step, tool name, approver
@@ -607,6 +676,14 @@ claim-and-append protocol over one trail; no need for Apalache) and checks, with
    memory would miss it.
 6. **No interference with the run lifecycle.** Every Model 10 invariant holds with the notify actions
    interleaved, and the lifecycle's state space (projected on its own variables) is unchanged.
+7. **Final records.** Once a key is `acked` or `cleared` nothing more is appended for it, and
+   `observed`, `overdue`, `failing`, `acked` and `cleared` are each appended at most once per key.
+8. **The all-clear** (`Clears`, key `r_<event>`). None is observed or delivered for an event that
+   still stands; none for an event never claimed; none before the event is acknowledged or cleared; it
+   is never overdue; and under fairness, with a sink that accepts in the end, every event that stopped
+   standing after a delivery was attempted gets its all-clear acknowledged. It is not delivered
+   after the event: an event cleared with a request in flight is never acknowledged, and its
+   all-clear is (`limits/clear-before-event`).
 
 Stale suppression is stated as what holds (no round starts for an event already `cleared`) and what
 does not (the race between the currency check and the send).

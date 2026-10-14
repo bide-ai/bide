@@ -28,6 +28,17 @@
 (* while its holder is still in its round (a stalled or slow POST) only    *)
 (* within the budget MaxSlow.                                              *)
 (*                                                                          *)
+(* The all-clear (Clears): an event that stops being current, and that a   *)
+(* receiver was, or may have been, told of (a claim is the trace of a      *)
+(* delivery attempt: a request can land although its reply is lost), is    *)
+(* owed a resolved notification. It is a key of its own, r_<event>, with   *)
+(* the records and the rounds of any key, and one difference: no deadline, *)
+(* so it is never overdue. It is owed once the event is acked, or cleared  *)
+(* with a claim in the trail, and not current; a deliverer pass may start  *)
+(* it then (the catch-up scan of a drive end, a recovery pass or a sweep). *)
+(* An event still open with a claim and no longer current is cleared by    *)
+(* the ordinary step 3 first. An event never claimed is not told of.       *)
+(*                                                                          *)
 (* The lifecycle is an input: cur[e] is whether event e still stands in    *)
 (* the run's journal (a halt not resolved, an approval not decided, a run  *)
 (* aborted). No action of the protocol writes it; NotifyLifecycle.tla      *)
@@ -52,6 +63,7 @@ CONSTANTS
   Resolve,    \* the environment may end an event (ResolveHalt, a decision, the run ended)
   UseLease,     \* a deliverer starts only under the run's lease (the usual deliverer)
   Notice,     \* model the overdue notice (sent by the holder in its round, or by a peer)
+  Clears,     \* model the all-clear: a resolved notification, key r_<event>, for each event
   LongClaims, \* an event's claim may outlast any round (a long WithNotifyClaimTTL): its lapse
               \* is not assumed (no fairness); a notice's short claim still lapses
   Holder,     \* what a claim names: "deliverer" (a deliverer of a process incarnation) or
@@ -60,15 +72,19 @@ CONSTANTS
 
 ASSUME FailCount \in {"memory", "trail"} /\ Holder \in {"deliverer", "process"}
 ASSUME Bug \in {"none", "AckFirst", "NoUntil", "NoLapse", "NoSeq", "NoOverdue", "MemFailingSince",
-                "NoStaleCheck", "NoDoneCheck", "AckNoRetry", "NoPeerNotice", "NoNoticeClaim"}
-ASSUME Notice \in BOOLEAN /\ LongClaims \in BOOLEAN
+                "NoStaleCheck", "NoDoneCheck", "AckNoRetry", "NoPeerNotice", "NoNoticeClaim",
+                "ClearEarly", "ClearUnclaimed", "ClearOverdue", "NoClear"}
+ASSUME Notice \in BOOLEAN /\ LongClaims \in BOOLEAN /\ Clears \in BOOLEAN
 ASSUME Reqs >= 1 /\ FailAfter >= 1 /\ MaxRounds >= 1 /\ Slots >= 1 /\ Episodes \in 0..2
 
 None == "none"
 NoHolder == <<"none", 0, 0>>
 RecKeys == <<"rec0", "rec1">>
 RecKey(k) == RecKeys[k + 1]
-Keys == Events \cup {RecKey(k) : k \in 0..Episodes - 1}
+\* The all-clear of event e has a key of its own (resolved:<key>), with its own records.
+ResOf(e) == "r_" \o e
+ResKeys == IF Clears THEN {ResOf(e) : e \in Events} ELSE {}
+Keys == Events \cup {RecKey(k) : k \in 0..Episodes - 1} \cup ResKeys
 \* The overdue notice of event e has a key of its own (overdue:<key>), with its own records.
 NoticeOf(e) == "n_" \o e
 NoticeKeys == {NoticeOf(e) : e \in Keys}
@@ -156,7 +172,8 @@ LiveOther(a, s, e) == LET l == LastClaim(s, e) IN
 \* Step 3's check, read at the step: the journal for an event of the run, the trail (or, Bug
 \* "MemFailingSince", the failing passes) for recovery_failing.
 Current(e) ==
-  IF e \in Events THEN cur[e]
+  IF e \in ResKeys THEN TRUE   \* an all-clear is a fact: it never stops being owed
+  ELSE IF e \in Events THEN cur[e]
   ELSE IF Durable THEN EpisodeOpen(trail) /\ e = RecKey(NRec(trail))
   ELSE broken /\ e = RecKey(opened - 1)
 
@@ -201,12 +218,30 @@ Init == InitProto /\ cur = [e \in Events |-> TRUE]
 (* The deliverers                                                          *)
 (***************************************************************************)
 
+\* Who may have been told of e: a delivery of it was attempted. A claim is its trace: the request
+\* can land although its reply is lost.
+Told(e) == ClaimsOf(trail, e) # {}
+\* The all-clear of e is owed: e is closed (acked, or cleared) and no longer stands, and a delivery
+\* of it was attempted. Bug "ClearEarly": owed while e stands; "ClearUnclaimed": owed with no
+\* attempt; "NoClear": never owed.
+Owed(e) ==
+  /\ Clears /\ Bug # "NoClear"
+  /\ Bug = "ClearEarly" \/ ~cur[e]
+  /\ Acked(e) \/ Has(trail, "cleared", e)
+  /\ Bug = "ClearUnclaimed" \/ Told(e)
+\* A pass may start on a key the journal shows as standing, one the trail holds open, or an
+\* all-clear that is owed.
+Startable(e) ==
+  \/ e \in Events /\ cur[e]
+  \/ Open(e)
+  \/ \E o \in Events : e = ResOf(o) /\ Owed(o)
+
 \* A pass starts (the drive-end handoff, a RecoverLoop pass, a NotifyPending sweep) for a key the
 \* journal shows as standing, or one the trail holds open; it loads the trail. Under UseLease the
 \* process takes the run's lease, unless another process holds it.
 Start(a, e) ==
   /\ pc[a] = "idle"
-  /\ (e \in Events /\ cur[e]) \/ Open(e)
+  /\ Startable(e)
   /\ ~Done(trail, e)
   /\ UseLease => lease \in {None, a[1]}
   /\ lease' = IF UseLease THEN a[1] ELSE lease
@@ -506,6 +541,11 @@ ClaimLapse(i) ==
                  memFS, memD, deliv, stale, late, failed, lateFail, crashes, lost, ambig, sfail,
                  boundHit>>
 
+\* The keys that have a deadline_at: not an all-clear, which is never overdue (it is a statement
+\* that nothing needs doing; missing one leaves an incident open, which fails safe). Bug
+\* "ClearOverdue": it has one.
+DeadlineKeys == IF Bug = "ClearOverdue" THEN Keys ELSE Keys \ ResKeys
+
 \* An observed event's deadline_at passes.
 Deadline(e) ==
   /\ Has(trail, "observed", e) /\ e \notin past
@@ -558,7 +598,7 @@ ProtoNext ==
 \* Time and the faults of the world, which the lifecycle (cur) is not part of.
 TimeNext ==
   \/ \E i \in Pos(trail) : ClaimLapse(i)
-  \/ \E e \in Keys : Deadline(e)
+  \/ \E e \in DeadlineKeys : Deadline(e)
   \/ Elapse \/ \E p \in Procs : ElapseMem(p)
   \/ Break \/ Fix \/ LeaseLapse
 EnvNext == \E e \in Events : ResolveEvent(e)
@@ -578,7 +618,7 @@ Fairness ==
   /\ \A a \in Dlv : WF_vars(DlvNext(a))
   /\ \A p \in Procs : WF_vars(RecFail(p)) /\ WF_vars(RecOK(p)) /\ WF_vars(ElapseMem(p))
   /\ \A i \in 1..MaxLen : WF_vars(ClaimLapse(i) /\ (LongClaims => trail[i].e \in NoticeKeys))
-  /\ \A e \in Keys : WF_vars(Deadline(e))
+  /\ \A e \in DeadlineKeys : WF_vars(Deadline(e))
   /\ WF_vars(Elapse) /\ WF_vars(LeaseLapse)
 LiveSpec == Spec /\ Fairness
 
@@ -709,9 +749,32 @@ NoStaleDelivery == \A e \in Keys : stale[e] = 0
 \* What the design does not claim (limits/not-exactly-once): exactly once.
 ExactlyOnce == \A e \in Keys : deliv[e] <= 1
 
+\* 8. The all-clear (Clears). None is observed, let alone delivered, for an event that still stands;
+\* none for an event nobody was told of; none before the event is closed (acked, or cleared by the
+\* ordinary step 3); and an all-clear never goes overdue. The inputs it relies on: an event that
+\* stops standing does not stand again (ResolveEvent only clears cur), and keys are not reused.
+ClearNeverEarly ==
+  Clears => \A e \in Events :
+    (Has(trail, "observed", ResOf(e)) \/ deliv[ResOf(e)] > 0) => ~cur[e]
+ClearOnlyIfTold ==
+  Clears => \A e \in Events : Has(trail, "observed", ResOf(e)) => Told(e)
+ClearAfterClose ==
+  Clears => \A e \in Events : Has(trail, "observed", ResOf(e)) => Acked(e) \/ Has(trail, "cleared", e)
+ClearNeverOverdue ==
+  \A r \in ResKeys : ~Has(trail, "overdue", r) /\ ~Has(trail, "observed", NoticeOf(r)) /\ ndeliv[r] = 0
+\* Under fairness, with a sink that accepts in the end: every event that stopped standing after a
+\* delivery of it was attempted gets its all-clear acknowledged.
+ClearsDelivered ==
+  Clears => \A e \in Events : (~cur[e] /\ Told(e)) ~> Acked(ResOf(e))
+\* What does not hold (limits/clear-before-event): the all-clear is not delivered after the event.
+\* An event cleared while its request was in flight or its reply lost is never acked, and its
+\* all-clear is delivered all the same; a receiver matches them by key, in either order.
+ClearAfterEventAck ==
+  Clears => \A e \in Events : Acked(ResOf(e)) => Acked(e)
+
 \* The configuration's bound on rounds never blocks a deliverer.
 BoundNotHit == ~boundHit
 
-\* Vacuity (check.sh): a notification is delivered.
-EffectNotReachable == \A e \in Keys : deliv[e] = 0
+\* Vacuity (check.sh): a notification is delivered; with Clears, an all-clear is.
+EffectNotReachable == IF Clears THEN \A r \in ResKeys : deliv[r] = 0 ELSE \A e \in Keys : deliv[e] = 0
 =============================================================================
