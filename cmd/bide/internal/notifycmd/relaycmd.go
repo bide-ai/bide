@@ -68,7 +68,7 @@ proxy that terminates TLS on the same host. Forwarding has a budget (-forward-ti
 	pdURL := fs.String("pagerduty-url", relay.DefaultPagerDutyURL, "the PagerDuty Events API endpoint (the EU region has its own)")
 	viewURL := fs.String("view-url", "", "the run viewer's base URL, for the \"Open in viewer\" button when a notification has no view.url")
 	dedupe := fs.Int("dedupe", relay.DefaultDedupeSize, "how many delivery IDs to remember")
-	statePath := fs.String("state", "", "keep the delivery IDs forwarded and the events cleared in this file, so they survive a restart (without it a restart forgets them)")
+	statePath := fs.String("state", "", "keep the delivery IDs forwarded and the events cleared in this file, so they survive a restart (without it a restart forgets them); one relay per file, enforced by a lock")
 	fwd := fs.Duration("forward-timeout", relay.DefaultForwardTimeout, "the budget for forwarding one delivery; keep it below bide's request timeout (10 s)")
 	color := term.Flag(fs)
 	if st := parse(fs, args); st >= 0 {
@@ -125,6 +125,8 @@ proxy that terminates TLS on the same host. Forwarding has a budget (-forward-ti
 	if err != nil {
 		return failure("relay", stderr, "%v", err)
 	}
+
+	defer h.Close() // releases the -state lock
 
 	var cfg *tls.Config
 	scheme := "http"

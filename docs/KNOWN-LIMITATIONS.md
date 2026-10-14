@@ -472,7 +472,7 @@ in-memory caches (`-dedupe`, 10000 by default). Without `-state <file>`, a resta
 redelivery is forwarded again, and a trigger that arrives after a clear the relay has forgotten
 reopens the PagerDuty incident. With `-state` the caches survive a restart, but once more than
 `-dedupe` other events have gone by the oldest are still forgotten, and a failed write to the file is
-logged, not fatal. Slack shows a repeat twice. Run one relay: two behind a
+logged, not fatal. A second relay on the same file is refused at start by an operating-system lock. Slack shows a repeat twice. Run one relay: two behind a
 load balancer have separate caches. A lost notification is not among the failures: the relay answers
 2xx only after every destination took the event. It does not forward error text or tool arguments.
 

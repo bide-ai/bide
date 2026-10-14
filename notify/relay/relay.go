@@ -76,7 +76,9 @@ type Config struct {
 	// DedupeSize, like the in-memory sets), holds IDs and sink names only, and is read at New: a
 	// missing file is a first start, an unreadable or invalid one is an error. If a later write
 	// fails the Handler logs it and carries on, with its memory in the process as without a file.
-	// One file belongs to one relay process.
+	// The Handler holds an exclusive operating-system lock on StatePath+".lock" until Close or the
+	// process ends (a crash releases it), and New fails if another relay holds it: two relays
+	// sharing one file would overwrite each other's memory.
 	StatePath string
 	// ForwardTimeout bounds the forwarding of one delivery; zero means DefaultForwardTimeout. Forwarding
 	// continues after the sender gives up, so a retry finds it done.
@@ -133,10 +135,15 @@ func New(c Config) (*Handler, error) {
 	}
 	if c.StatePath != "" {
 		h.state = &stateStore{path: c.StatePath}
+		if err := h.state.acquire(); err != nil {
+			return nil, err
+		}
 		if err := h.state.load(h.seen, h.cleared); err != nil {
+			h.state.release()
 			return nil, err
 		}
 		if err := h.state.save(h.seen, h.cleared); err != nil { // fail now if it cannot be written
+			h.state.release()
 			return nil, err
 		}
 	}
@@ -247,6 +254,15 @@ func (h *Handler) forward(ctx context.Context, p notify.Payload, todo []Sink) []
 		h.log("relay: delivery %s (%s, run %s) forwarded to %s", short(p.ID), p.Kind, p.RunID, strings.Join(done, ", "))
 	}
 	return failed
+}
+
+// Close releases the state file's lock, so another relay may use the file. A Handler without a
+// StatePath has nothing to release. The lock is also released when the process exits.
+func (h *Handler) Close() error {
+	if h.state == nil {
+		return nil
+	}
+	return h.state.release()
 }
 
 // persist saves the state file, if there is one. A failure is logged, never fatal: a notification

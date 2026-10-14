@@ -465,7 +465,7 @@ proxy that terminates TLS on the same host. Forwarding has a budget (-forward-ti
   -slack-url-file string
     	read the Slack webhook URL from this file; used instead of -slack-url-env
   -state string
-    	keep the delivery IDs forwarded and the events cleared in this file, so they survive a restart (without it a restart forgets them)
+    	keep the delivery IDs forwarded and the events cleared in this file, so they survive a restart (without it a restart forgets them); one relay per file, enforced by a lock
   -view-url string
     	the run viewer's base URL, for the "Open in viewer" button when a notification has no view.url
 ```

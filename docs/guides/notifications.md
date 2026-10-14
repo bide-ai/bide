@@ -493,8 +493,13 @@ absorbs a repeated trigger by its `dedup_key`; Slack shows a repeat twice.
 file is a first start; one it cannot parse is an error, so the memory is never silently empty) and
 rewrites it atomically after each change, bounded by `-dedupe` like the caches. It holds delivery IDs,
 cleared IDs and sink names, no payload and no secret. If a write fails the relay logs it and keeps
-forwarding, with its memory in the process as without the file. One file belongs to one relay: two
-relays behind a load balancer still have separate memories, so run one.
+forwarding, with its memory in the process as without the file. One file belongs to one relay: the
+relay holds an exclusive operating-system lock (`<file>.lock`, `flock` on Unix, `LockFileEx` on
+Windows) for as long as it runs, and a second relay on the same file refuses to start, naming it. The
+lock belongs to the process, so a relay that crashes or is killed releases it and the next one starts;
+there is no stale lock to delete. A save that is killed part way leaves the previous state file
+intact, and the next start removes the half-written temporary file. Two relays behind a load balancer
+still need a file each, and still have separate memories, so run one.
 
 When Slack or PagerDuty refuses a forward, the relay's log names the sink, the HTTP status and, if the
 reply carries one, a short error token such as `no_service` or `invalid event` (Slack's or PagerDuty's

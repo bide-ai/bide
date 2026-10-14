@@ -32,6 +32,48 @@ type seenState struct {
 type stateStore struct {
 	path string
 	mu   sync.Mutex
+	lock *os.File // holds the OS lock on path+".lock" for the store's life
+	// beforeRename, if set, runs after the temporary file is written and before it replaces the
+	// state file; tests use it to stop a save at the torn-write point.
+	beforeRename func() error
+}
+
+// acquire takes the exclusive OS lock that makes this process the only relay on the state file. The
+// lock is on a sibling file (path + ".lock"), since a save replaces the state file's inode, and it
+// is the operating system's: a process that dies, however it dies, releases it, so there is no
+// stale lock to clean up. A second relay on the file gets an error naming the file. It also removes
+// temporary files a killed save left (it holds the lock, so none is in use).
+func (s *stateStore) acquire() error {
+	f, err := os.OpenFile(s.path+".lock", os.O_CREATE|os.O_RDWR, 0o600)
+	if err != nil {
+		return fmt.Errorf("relay: opening the state lock: %w", unwrapPath(err))
+	}
+	held, err := lockFile(f)
+	if err != nil {
+		f.Close()
+		return fmt.Errorf("relay: locking the state file: %w", err)
+	}
+	if held {
+		f.Close()
+		return fmt.Errorf("relay: the state file %s is in use by another relay; one file belongs to one relay", s.path)
+	}
+	s.lock = f
+	if stale, _ := filepath.Glob(s.path + ".tmp-*"); len(stale) > 0 {
+		for _, p := range stale {
+			os.Remove(p)
+		}
+	}
+	return nil
+}
+
+// release gives up the lock.
+func (s *stateStore) release() error {
+	if s.lock == nil {
+		return nil
+	}
+	err := s.lock.Close()
+	s.lock = nil
+	return err
 }
 
 // load reads the file into d and c. A missing file is a first start; a file that cannot be read
@@ -82,6 +124,9 @@ func (s *stateStore) save(d *dedupe, c *idSet) error {
 	}
 	if cerr := f.Close(); werr == nil {
 		werr = cerr
+	}
+	if werr == nil && s.beforeRename != nil {
+		werr = s.beforeRename()
 	}
 	if werr == nil {
 		werr = os.Rename(tmp, s.path)
