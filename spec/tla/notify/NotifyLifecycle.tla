@@ -41,7 +41,7 @@ N == INSTANCE Notify WITH
        Procs <- NProcs, Slots <- NSlots, Events <- NEvents, Episodes <- 0, Reqs <- NReqs,
        FailAfter <- NFailAfter, FailCount <- NFailCount, MaxRounds <- NMaxRounds,
        MaxCrash <- NMaxCrash, MaxLost <- NMaxLost, MaxAmbig <- NMaxAmbig, MaxFail <- NMaxFail,
-       MaxSlow <- NMaxSlow, Resolve <- FALSE, Notice <- FALSE, Clears <- FALSE, LongClaims <- FALSE,
+       MaxSlow <- NMaxSlow, Resolve <- FALSE, Levels <- 0, EscMode <- "unacked", Notice <- FALSE, Clears <- FALSE, LongClaims <- FALSE,
        UseLease <- NLeased, Holder <- NHolder, Bug <- "none",
        cur <- [e \in NEvents |-> Standing(e)],
        lease <- nlease, pc <- npc, crashes <- ncrashes, ambig <- nambig

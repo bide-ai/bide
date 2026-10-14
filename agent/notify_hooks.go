@@ -115,7 +115,7 @@ func (e *notifyEngine) driveEnd(runID string, err error) {
 // the caller drives itself.
 func (e *notifyEngine) driveEndRoot(runID string, err error) {
 	if ev, ok := e.eventFromErr(runID, err); ok {
-		e.w.submit(ev)
+		e.submit(ev)
 	}
 	e.queueScanTrail(runID) // the drive may have resolved, decided or ended an event already delivered
 }
@@ -170,7 +170,7 @@ func (e *notifyEngine) recoveryFailed(ctx context.Context, runID string, cause e
 			return // a fresh episode is not due
 		}
 		if st.RecoveryFailingDue(now, e.cfg.recoveryAfter) {
-			e.w.submit(notifyEvent{key: RecoveryKey(runID, st.Episodes), kind: NotificationRecoveryFailing, runID: runID,
+			e.submit(notifyEvent{key: RecoveryKey(runID, st.Episodes), kind: NotificationRecoveryFailing, runID: runID,
 				eventAt: st.FailingSince.At, reason: st.FailingSince.Reason, episode: st.Episodes, err: causeSentinel(st.FailingSince.Reason)})
 		}
 		return
@@ -208,7 +208,7 @@ func (e *notifyEngine) recoveryOK(ctx context.Context, runID string) {
 func (e *notifyEngine) afterRecover(ctx context.Context, runID string, driven, resumed bool, err error) {
 	defer e.queueScan(runID) // after recoveryOK and recoveryFailed: an episode may just have closed
 	if ev, ok := e.eventFromErr(runID, err); ok {
-		e.w.submit(ev)
+		e.submit(ev)
 		e.recoveryOK(ctx, runID) // a halt or a gate is the run waiting for a person: recovery works
 		return
 	}

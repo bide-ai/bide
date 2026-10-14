@@ -76,7 +76,7 @@ func NotifyPending(ctx context.Context, j *Journal, n Notifier, trail NotifyTrai
 					continue
 				}
 				ev := notifyEvent{key: AbortedKey(runID), kind: NotificationRunAborted, runID: runID, reason: "saga_aborted"}
-				if _, err := e.round(ctx, ev); err != nil {
+				if err := e.roundRouted(ctx, ev); err != nil {
 					errs = append(errs, fmt.Errorf("notification sweep: run %s: %w", runID, err))
 				}
 				continue
@@ -89,7 +89,7 @@ func NotifyPending(ctx context.Context, j *Journal, n Notifier, trail NotifyTrai
 		}
 		e.queueScanTrail(runStartRoot(runID, recs)) // a flow run with a mark in its ID is its own root
 		for _, ev := range e.pendingEvents(runID, recs) {
-			if _, err := e.round(ctx, ev); err != nil {
+			if err := e.roundRouted(ctx, ev); err != nil {
 				errs = append(errs, fmt.Errorf("notification sweep: run %s: %w", runID, err))
 			}
 		}

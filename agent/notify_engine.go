@@ -28,6 +28,11 @@ type notifyConfig struct {
 	overdue       Notifier
 	onError       func(error)
 
+	receivers      map[string]Notifier                   // named receivers besides the default
+	routes         map[NotificationKind]string           // receiver by kind
+	approverRoutes map[string]string                     // receiver by approver
+	escalation     map[NotificationKind][]EscalationStep // chain by kind
+
 	// Not options: tests set them.
 	roundAttempts  int           // requests per round
 	attemptBackoff time.Duration // before the second request of a round, doubling
@@ -90,8 +95,16 @@ type notifyEvent struct {
 	keyFn func(context.Context) (string, error)
 
 	episode  int              // for recovery_failing: the episode number
-	origKey  string           // for an overdue notice or an all-clear: the event it is about
-	origKind NotificationKind // for an all-clear: that event's kind
+	origKey  string           // for an overdue notice, an all-clear or an escalation: the event it is about
+	origKind NotificationKind // for an all-clear or an escalation: that event's kind
+
+	receiver string        // the receiver the event is to: "" for the default (see receiverID)
+	level    int           // for an escalation: its step of the chain, from 1
+	deadline time.Duration // when set, the event's own deadline, in place of the notifier's
+
+	// escWatch marks the escalation watch of base (see escRound), not an event: key is watchKey.
+	escWatch bool
+	base     *notifyEvent
 
 	// scan marks the catch-up job of runID's trail (see clearScan), not an event: key is scanKey.
 	scan bool
@@ -133,6 +146,9 @@ func newNotifyEngine(j *Journal, n Notifier, trail NotifyTrail, opts []NotifyOpt
 	}
 	if cfg.claimTTL <= 0 || cfg.deadline <= 0 {
 		return nil, fmt.Errorf("WithNotifier: non-positive deadline or claim TTL: %w", ErrConfig)
+	}
+	if err := cfg.validateRouting(); err != nil {
+		return nil, err
 	}
 	e := &notifyEngine{j: j, n: n, trail: trail, cfg: cfg,
 		holder:   fmt.Sprintf("%s/%s/%016x", cfg.holder, kind, rand.Uint64()),
@@ -195,6 +211,9 @@ func (e *notifyEngine) appendRec(ctx context.Context, trail string, seq int, rec
 func (e *notifyEngine) round(ctx context.Context, ev notifyEvent) (roundResult, error) {
 	if ev.scan {
 		return e.scanRound(ctx, ev)
+	}
+	if ev.escWatch {
+		return e.escRound(ctx, ev)
 	}
 	e.mu.Lock()
 	km := e.keyMu[ev.key]
@@ -370,8 +389,12 @@ func (e *notifyEngine) roundLocked(ctx context.Context, ev notifyEvent) (roundRe
 					return roundResult{next: now.Add(e.backoff(e.failCount(ev.key)))}, err
 				}
 			}
+			dl := e.cfg.deadline
+			if ev.deadline > 0 {
+				dl = ev.deadline
+			}
 			rec := NotifyRecord{Kind: NotifyObserved, Key: ev.key, RunID: ev.runID, At: now,
-				EventKind: string(ev.kind), EventAt: at, DeadlineAt: now.Add(e.cfg.deadline)}
+				EventKind: string(ev.kind), EventAt: at, DeadlineAt: now.Add(dl), Receiver: ev.receiver, Level: ev.level}
 			rec.OpRun, rec.OpKind, rec.OpID = ev.operation()
 			if ev.kind == NotificationResolved {
 				// A clear is never overdue, so it has no deadline; it records why the event ended.
@@ -412,7 +435,7 @@ func (e *notifyEngine) roundLocked(ctx context.Context, ev notifyEvent) (roundRe
 			return e.ack(ctx, ev, name, pa.first, pa.attempts, pa.ack)
 		}
 
-		if ev.kind != NotificationOverdue && ev.kind != NotificationResolved && es.OverdueDue(now) {
+		if ev.kind != NotificationOverdue && ev.kind != NotificationResolved && ev.kind != NotificationEscalated && es.OverdueDue(now) {
 			rec := NotifyRecord{Kind: NotifyOverdue, Key: ev.key, RunID: ev.runID, At: now, Latency: now.Sub(es.ObservedAt)}
 			if _, err := e.appendRec(ctx, name, len(recs), rec); err != nil {
 				return roundResult{next: now.Add(e.backoff(e.failCount(ev.key)))}, err
@@ -521,7 +544,7 @@ func (e *notifyEngine) notifierFor(ev notifyEvent) Notifier {
 	if ev.kind == NotificationOverdue && e.cfg.overdue != nil {
 		return e.cfg.overdue
 	}
-	return e.n
+	return e.notifierOf(ev)
 }
 
 // deliverOverdueNotice sends the notice that es, which is overdue, is not acknowledged. The deliverer
@@ -542,7 +565,7 @@ func (e *notifyEngine) deliverOverdueNotice(ctx context.Context, ev notifyEvent,
 		return
 	}
 	notice := notifyEvent{key: key, kind: NotificationOverdue, runID: ev.runID, origKey: ev.key, reason: "deadline",
-		principal: ev.principal, eventAt: es.Overdue.At}
+		principal: ev.principal, eventAt: es.Overdue.At, receiver: ev.receiver}
 	for range maxTrailRetries {
 		recs, err := e.trail.Load(ctx, name)
 		if err != nil {
@@ -556,7 +579,7 @@ func (e *notifyEngine) deliverOverdueNotice(ctx context.Context, ev notifyEvent,
 		if ne == nil {
 			now := e.cfg.now()
 			rec := NotifyRecord{Kind: NotifyObserved, Key: key, RunID: ev.runID, At: now,
-				EventKind: string(NotificationOverdue), EventAt: es.Overdue.At, DeadlineAt: now.Add(e.cfg.deadline)}
+				EventKind: string(NotificationOverdue), EventAt: es.Overdue.At, DeadlineAt: now.Add(e.cfg.deadline), Receiver: ev.receiver}
 			if _, err := e.appendRec(ctx, name, len(recs), rec); err != nil {
 				e.report(err)
 				return
@@ -608,9 +631,13 @@ func (e *notifyEngine) notification(ev notifyEvent, es *NotifyEvent, attempt int
 		ID: NotifyID(ev.key), Key: ev.key, Kind: ev.kind, RunID: ev.runID,
 		EventAt: es.EventAt, Observed: es.ObservedAt, Deadline: es.DeadlineAt, Attempt: attempt,
 		Halt: ev.halt, Approval: ev.approval, Principal: ev.principal, Reason: ev.reason, Err: ev.err,
+		Receiver: receiverLabel(ev.receiver),
 	}
-	if ev.kind == NotificationResolved {
+	switch ev.kind {
+	case NotificationResolved:
 		n.Clears = &NotifyClears{Key: ev.origKey, ID: NotifyID(ev.origKey), Kind: ev.origKind}
+	case NotificationEscalated:
+		n.Escalates = &NotifyEscalates{Key: ev.origKey, ID: NotifyID(ev.origKey), Kind: ev.origKind, Level: ev.level}
 	}
 	return n
 }
@@ -710,6 +737,18 @@ func (e *notifyEngine) current(ctx context.Context, ev notifyEvent, st NotifySta
 		return true, "", nil
 	case NotificationRunAborted, NotificationResolved:
 		return true, "", nil
+	case NotificationEscalated:
+		// A step stands while the event it escalates does: it is not acknowledged by a receiver
+		// being told, and a chain ends only when the event stops being current.
+		o := st.Events[ev.origKey]
+		if o == nil || o.Cleared != nil {
+			return false, "resolved", nil
+		}
+		base, ok := eventFromKey(o)
+		if !ok {
+			return true, "", nil
+		}
+		return e.current(ctx, base, st)
 	}
 	status, err := Status(ctx, e.j, ev.runID)
 	if err != nil {

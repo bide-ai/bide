@@ -31,7 +31,15 @@ const (
 	// run ended, recovery recovered). Notification.Clears says which event, so a receiver can close
 	// its incident; it is the all clear.
 	NotificationResolved NotificationKind = "resolved"
+	// NotificationEscalated: an outcome_unknown, approval_pending or recovery_failing event was not
+	// acknowledged (an approval: not decided) by its deadline, and the next receiver of its
+	// escalation chain is told. Notification.Escalates says which event and which step of the chain.
+	NotificationEscalated NotificationKind = "escalated"
 )
+
+// DefaultReceiver is the name of the receiver WithNotifier's Notifier is, in Notification.Receiver
+// and in WithNotifyRoute, WithNotifyApproverRoute and EscalationStep.
+const DefaultReceiver = "default"
 
 // NotifyHalt is the structured detail of a NotificationOutcomeUnknown notification.
 type NotifyHalt struct {
@@ -64,6 +72,18 @@ type NotifyClears struct {
 	Kind NotificationKind
 }
 
+// NotifyEscalates is the structured detail of a NotificationEscalated notification: the event it
+// escalates, and the step of the chain it is.
+type NotifyEscalates struct {
+	// Key and ID are the key and the delivery ID (NotifyID(Key)) of the event that was not
+	// acknowledged or decided in time, as that event's own notifications carry them.
+	Key, ID string
+	// Kind is that event's kind.
+	Kind NotificationKind
+	// Level is the step of the escalation chain, from 1.
+	Level int
+}
+
 // Notification is one delivery attempt of an event to a Notifier. It holds structured fields only:
 // no tool arguments, results, or error text travel in it, except Err, which is for an in-process
 // Notifier and which a Notifier that sends the notification elsewhere must not forward by default.
@@ -85,10 +105,14 @@ type Notification struct {
 	// Attempt counts the delivery attempts this process has made for the event, from 1.
 	Attempt int
 
-	Halt      *NotifyHalt     // for NotificationOutcomeUnknown
-	Approval  *NotifyApproval // for NotificationApprovalPending
-	Principal *Principal      // the run's principal, nil if it has none
-	Clears    *NotifyClears   // for NotificationResolved
+	Halt      *NotifyHalt      // for NotificationOutcomeUnknown
+	Approval  *NotifyApproval  // for NotificationApprovalPending
+	Principal *Principal       // the run's principal, nil if it has none
+	Clears    *NotifyClears    // for NotificationResolved
+	Escalates *NotifyEscalates // for NotificationEscalated
+	// Receiver is the name of the receiver this delivery is to: DefaultReceiver for WithNotifier's
+	// Notifier, else a name given to WithNotifyReceiver.
+	Receiver string
 	// Reason is a code from a closed set, never error text: for NotificationRecoveryFailing the cause
 	// class ("resume_error", "store_error", "not_resumable"), for NotificationOverdue "deadline", for
 	// NotificationResolved why the event ended ("resolved", "decided", "ended", "recovered").

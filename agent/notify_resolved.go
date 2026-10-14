@@ -17,7 +17,7 @@ import (
 // run_aborted is a fact and never does; a resolved or overdue notice is not an incident.
 func resolvable(kind string) bool {
 	switch NotificationKind(kind) {
-	case NotificationOutcomeUnknown, NotificationApprovalPending, NotificationRecoveryFailing:
+	case NotificationOutcomeUnknown, NotificationApprovalPending, NotificationRecoveryFailing, NotificationEscalated:
 		return true
 	}
 	return false
@@ -44,8 +44,21 @@ func (ev notifyEvent) operation() (run, kind, id string) {
 // record, and for a record from before them the key, which holds the encoded IDs. ok is false for
 // such a record whose key holds the digest of an ID (see encodeID).
 func eventFromKey(es *NotifyEvent) (notifyEvent, bool) {
-	ev := notifyEvent{key: es.Key, kind: NotificationKind(es.Kind), runID: es.RunID}
-	parts := strings.Split(es.Key, ":")
+	ev := notifyEvent{key: es.Key, kind: NotificationKind(es.Kind), runID: es.RunID, receiver: es.Receiver, level: es.Level}
+	if ev.kind == NotificationEscalated { // escalated:<level>:<the key of the event it escalates>
+		parts := strings.SplitN(es.Key, ":", 3)
+		if len(parts) != 3 || parts[0] != "escalated" || kindOfKey(parts[2]) == "" {
+			return notifyEvent{}, false
+		}
+		lvl, err := strconv.Atoi(parts[1])
+		if err != nil {
+			return notifyEvent{}, false
+		}
+		ev.origKey, ev.origKind, ev.level = parts[2], kindOfKey(parts[2]), lvl
+		return ev, true
+	}
+	// A delivery to one of several receivers has the key to:<receiver>:<key>.
+	parts := strings.Split(stripTo(es.Key), ":")
 	dec := func(i int) (string, bool) {
 		if i >= len(parts) {
 			return "", false
@@ -159,6 +172,13 @@ func (e *notifyEngine) clearScanFold(ctx context.Context, st NotifyState) error 
 		if !resolvable(es.Kind) {
 			continue
 		}
+		if es.Cleared == nil && NotificationKind(es.Kind) != NotificationEscalated && len(e.cfg.escalation[NotificationKind(es.Kind)]) > 0 {
+			// The chain of an event is chased by whoever sees the event: a process that died with
+			// its chase in memory leaves it to this one.
+			if ev, ok := eventFromKey(es); ok {
+				e.w.submit(chaseOf(ev))
+			}
+		}
 		if es.Cleared != nil && es.Rounds == 0 { // nobody was told: nothing is owed
 			if err := e.unwatch(ctx, key); err != nil {
 				errs = append(errs, err)
@@ -200,7 +220,7 @@ func (e *notifyEngine) clearScanFold(ctx context.Context, st NotifyState) error 
 // clearOf is the all-clear event for es, an event that stopped being current for reason, as of at.
 func clearOf(es *NotifyEvent, reason string, at time.Time) notifyEvent {
 	return notifyEvent{key: ResolvedKey(es.Key), kind: NotificationResolved, runID: es.RunID,
-		origKey: es.Key, origKind: NotificationKind(es.Kind), reason: reason, eventAt: at}
+		origKey: es.Key, origKind: NotificationKind(es.Kind), reason: reason, eventAt: at, receiver: es.Receiver}
 }
 
 // resumeResolved queues again the all-clear that es, an observed and unacknowledged resolved event

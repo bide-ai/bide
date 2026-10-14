@@ -77,8 +77,12 @@ type NotifyRecord struct {
 	At    time.Time        `json:"at"`
 
 	// observed
-	EventKind  string    `json:"event_kind,omitempty"` // the NotificationKind of the event
-	EventAt    time.Time `json:"event_at,omitzero"`    // when the run entered the state, from the journal
+	EventKind string `json:"event_kind,omitempty"` // the NotificationKind of the event
+	// Receiver is the receiver the event is to (see WithNotifyReceiver); empty for the default one.
+	Receiver string `json:"receiver,omitempty"`
+	// Level is the step of the escalation chain of an escalated event, from 1.
+	Level      int       `json:"level,omitempty"`
+	EventAt    time.Time `json:"event_at,omitzero"` // when the run entered the state, from the journal
 	DeadlineAt time.Time `json:"deadline_at,omitzero"`
 
 	// claimed

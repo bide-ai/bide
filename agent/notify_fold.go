@@ -12,6 +12,8 @@ type NotifyEvent struct {
 	DeadlineAt          time.Time
 	OpRun, OpKind, OpID string // recorded at observation for a halt or an approval (see NotifyRecord)
 	Reason              string // recorded at observation: for a resolved event, why the event it clears ended
+	Receiver            string // recorded at observation: the receiver the event is to, "" for the default
+	Level               int    // recorded at observation: the step of an escalated event's chain, 0 otherwise
 
 	Claim   *NotifyRecord // the latest claimed record, nil if never claimed
 	Rounds  int           // how many claimed records the event has
@@ -63,7 +65,7 @@ func FoldNotify(recs []NotifyRecord) NotifyState {
 				continue
 			}
 			st.Events[r.Key] = &NotifyEvent{Key: r.Key, Kind: r.EventKind, RunID: r.RunID, EventAt: r.EventAt, ObservedAt: r.At, DeadlineAt: r.DeadlineAt, Reason: r.Reason,
-				OpRun: r.OpRun, OpKind: r.OpKind, OpID: r.OpID}
+				OpRun: r.OpRun, OpKind: r.OpKind, OpID: r.OpID, Receiver: r.Receiver, Level: r.Level}
 			st.Keys = append(st.Keys, r.Key)
 		case NotifyClaimed:
 			if e := st.openEvent(r.Key); e != nil {
@@ -185,4 +187,19 @@ func LastSegment(recs []NotifyRecord) string {
 		}
 	}
 	return ""
+}
+
+// ReceiverName is the name of the receiver the event is to: DefaultReceiver when none is recorded.
+func (e *NotifyEvent) ReceiverName() string { return receiverLabel(e.Receiver) }
+
+// ByReceiver groups the keys of the events in the trail by the receiver they are to
+// (DefaultReceiver for the default one), each in the order observed: the per-receiver view of a
+// run's deliveries, whose acknowledgement an auditor reads from Events[key].
+func (s NotifyState) ByReceiver() map[string][]string {
+	out := map[string][]string{}
+	for _, k := range s.Keys {
+		r := s.Events[k].ReceiverName()
+		out[r] = append(out[r], k)
+	}
+	return out
 }
