@@ -301,6 +301,14 @@ records the decision as agent.Approve does, takes neither -as nor -key, and says
 flag keeps the checks in one place; a rejection is the same act with the opposite byte, and the
 confirmation prompt says REJECT in capitals.
 
+An m-of-n decision also leaves a receipt (-receipt, default next to -key; mode 0600, never
+overwritten): the signed decision with the call's arguments, the journal record's name and position,
+and when it was recorded; no key material. The decision is signed into the audit log at the app's
+next write to the run (bide approve cannot tell whether the application audits the journal, so it
+says this either way). -verify-receipt <file> -approver-keys <keys> checks a receipt on its own,
+reading no journal; bide audit verify-receipts checks receipts against the journal and its signed
+heads, and flags a decision deleted after signing.
+
 After the decision is recorded, re-run the run's root run ID (agent.Run with the same ID) or let
 RecoverLoop pick it up: the gate counts the decisions and the call runs or is denied. bide approve
 never runs the call.
@@ -337,12 +345,16 @@ Flags:
     	Postgres journal, a pgx DSN such as postgres://user:pass@host:5432/db; prefer -postgres-env, which keeps the password out of the argument list
   -postgres-env string
     	name of the environment variable that holds the Postgres DSN
+  -receipt string
+    	where to write the decision receipt (default: next to -key, named <run>-<call>-<approver>.receipt.json); mode 0600, never overwritten
   -reject
     	record a rejection instead of an approval
   -run string
     	the run whose journal holds the call: the pause's run ID
   -unverified
     	decide an m-of-n gate without -approver-keys: the key is not checked against the one enrolled for you, and the tally is not verified
+  -verify-receipt string
+    	verify a decision receipt on its own, against -approver-keys, instead of deciding anything: its signature over the exact call it states
   -yes
     	do not ask for confirmation (for scripts); what is signed is still shown
 
@@ -523,6 +535,17 @@ bide audit: produce and verify audit proof bundles
          5m) after it was recorded or before the run asked for approval, a recorded_at out of
          journal order or after the signed head, and a time that is not canonical (printed
          quoted); these notes never change the verdict
+
+  verify-receipts -receipt <file|dir> -journal <export> -heads <file> -pubkey <hex|file> -approver-keys <file>
+         verify decision receipts (written by bide approve): each signature verifies for the
+         approver's key over the exact call, and the signed tree heads (-heads: a head, or one per
+         line, as the anchor log holds them) commit to the decision where the receipt says it was
+         journaled. Distinct verdicts: anchored (PASS); pending, the journal holds it and no head
+         reaches it yet (INFO, exit 0); "decision deleted after signing", a head that reaches its
+         position commits to a journal that holds something else there; "decision never anchored",
+         a head signed more than -skew (default 1m) after it was recorded stops short of it, or the
+         journal lacks it and no head reaches its position; unchecked, a head reaches it but does
+         not match the journal given. -receipt, -journal and -heads repeat
 
   prove-absent -journal <file> -sth <file> -key (tool:<id>|policy:<digest>) [-out <file>]
          prove a thing did NOT happen (no such tool call / no action under that policy)
@@ -792,6 +815,32 @@ Usage of bide audit verify-quorum:
     	path to the quorum tally ProofBundle JSON (the quorum/<name>/tally step)
   -vote value
     	path to one vote ProofBundle JSON (a quorum/<name>/vote/<voter> step); repeat once per voter
+```
+
+### bide audit verify-receipts
+
+```text
+Usage of bide audit verify-receipts:
+  -approver-keys string
+    	JSON object of approver id to public key text (<scheme>:<hex>), e.g. {"ops":"ed25519:ab12..."}
+  -color when
+    	when to color the output: auto (the default: on a terminal, unless NO_COLOR is set or TERM is dumb), always or never; -json is never colored
+  -heads value
+    	signed tree heads of the journal: a file with one head, or one head per line (the anchor log a published head is appended to); repeatable
+  -journal value
+    	the run's journal export (audit.ExportJournal), one per run the receipts name; repeatable
+  -json
+    	print one JSON report on stdout instead of the text report
+  -max-clock-skew duration
+    	how far past this machine's clock a signed head's timestamp may be (default 5m0s)
+  -max-input-bytes int
+    	the largest input file, in bytes, the verb reads; a larger one is an error (default 268435456)
+  -pubkey string
+    	the log's public key as <scheme>:<hex> (ed25519, ml-dsa-65, ed25519+ml-dsa-65) or bare ed25519 hex, or a path to a file containing it
+  -receipt value
+    	a decision receipt file, or a directory of *.receipt.json files; repeatable
+  -skew duration
+    	how far a head's time may fall short of a receipt's recorded_at before a head that omits the decision counts as signed after it (default 1m0s)
 ```
 
 ### bide audit verify-run

@@ -75,6 +75,14 @@ records the decision as agent.Approve does, takes neither -as nor -key, and says
 flag keeps the checks in one place; a rejection is the same act with the opposite byte, and the
 confirmation prompt says REJECT in capitals.
 
+An m-of-n decision also leaves a receipt (-receipt, default next to -key; mode 0600, never
+overwritten): the signed decision with the call's arguments, the journal record's name and position,
+and when it was recorded; no key material. The decision is signed into the audit log at the app's
+next write to the run (bide approve cannot tell whether the application audits the journal, so it
+says this either way). -verify-receipt <file> -approver-keys <keys> checks a receipt on its own,
+reading no journal; bide audit verify-receipts checks receipts against the journal and its signed
+heads, and flags a decision deleted after signing.
+
 After the decision is recorded, re-run the run's root run ID (agent.Run with the same ID) or let
 RecoverLoop pick it up: the gate counts the decisions and the call runs or is denied. bide approve
 never runs the call.
