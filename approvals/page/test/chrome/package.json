@@ -1,0 +1,9 @@
+{
+  "name": "bide-approve-page-chrome",
+  "private": true,
+  "type": "module",
+  "description": "Drives the approve page in real Chrome for the mutual-TLS check (approvals/page_mtls_test.go); installed only by the Page mTLS (Chrome) job.",
+  "dependencies": {
+    "puppeteer-core": "25.14.0"
+  }
+}

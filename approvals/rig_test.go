@@ -62,6 +62,7 @@ type rig struct {
 	app             *agent.Journal // the application's: signs what it writes
 	privs           map[string]ed25519.PrivateKey
 	enrolled        map[string]ed25519.PublicKey // dave is enrolled but not on the gate
+	enrolMu         sync.RWMutex                 // guards enrolled once the handler serves (enrol)
 	policy          agent.ApprovalPolicy
 	charged         atomic.Int32
 	h               *approvals.Handler
@@ -82,8 +83,18 @@ func (r *rig) advance(d time.Duration) {
 	r.nowMu.Unlock()
 }
 
+// enrol enrols pub for approver id while the handler is serving (a browser test enrols the key the
+// page made).
+func (r *rig) enrol(id string, pub ed25519.PublicKey) {
+	r.enrolMu.Lock()
+	defer r.enrolMu.Unlock()
+	r.enrolled[id] = pub
+}
+
 func (r *rig) verifiers(id string) (agent.ApproverVerifier, bool) {
+	r.enrolMu.RLock()
 	pub, ok := r.enrolled[id]
+	r.enrolMu.RUnlock()
 	if !ok {
 		return nil, false
 	}
