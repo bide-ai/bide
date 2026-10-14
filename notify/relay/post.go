@@ -3,6 +3,7 @@ package relay
 import (
 	"bytes"
 	"context"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"io"
@@ -24,8 +25,10 @@ const (
 	// maxRetryAfter is the longest Retry-After a Send waits out. The sender's own request has a
 	// timeout too (10 s unless configured), so a long wait is worse than failing now.
 	maxRetryAfter = 2 * time.Second
-	// maxErrBody is how much of a refusal's body goes in the error text.
-	maxErrBody = 200
+	// maxErrBody is how much of a refusal's body is read to look for an error code.
+	maxErrBody = 2048
+	// maxCode is the longest error code kept.
+	maxCode = 40
 )
 
 // outbound posts JSON to a third party with a timeout and a few bounded retries. Its errors name
@@ -139,35 +142,59 @@ func (o *outbound) once(ctx context.Context, body []byte) (status int, retryAfte
 			retryAfter = time.Duration(n) * time.Second
 		}
 	}
-	return resp.StatusCode, retryAfter, &StatusError{Sink: o.name, Status: resp.StatusCode, Body: printable(b)}
+	return resp.StatusCode, retryAfter, &StatusError{Sink: o.name, Status: resp.StatusCode, Code: errorCode(b)}
 }
 
-// A StatusError is a non-2xx answer from a third party. Body is the start of its reply, which both
-// Slack ("no_service") and PagerDuty (a JSON message) use to say what is wrong; it holds no URL.
+// A StatusError is a non-2xx answer from a third party. Code is a short token the third party
+// named the problem with ("no_service", "channel_not_found", "invalid event"), kept only if it
+// looks like one (see errorCode); it is never free text, which can echo the request, and never a URL.
 type StatusError struct {
 	Sink   string
 	Status int
-	Body   string
+	Code   string
 }
 
-// Error names the sink, the status and the start of the reply; never a URL.
+// Error names the sink, the status and the code if there is one; never a URL or reply text.
 func (e *StatusError) Error() string {
-	if e.Body == "" {
+	if e.Code == "" {
 		return fmt.Sprintf("relay: %s answered HTTP %d", e.Sink, e.Status)
 	}
-	return fmt.Sprintf("relay: %s answered HTTP %d: %s", e.Sink, e.Status, e.Body)
+	return fmt.Sprintf("relay: %s answered HTTP %d: %s", e.Sink, e.Status, e.Code)
 }
 
-// printable keeps the printable start of a reply for an error line.
-func printable(b []byte) string {
-	if len(b) > maxErrBody {
-		b = b[:maxErrBody]
+// errorCode extracts an allow-listed error token from a reply: the whole body if it is one token
+// (Slack's incoming webhooks answer "no_service", "invalid_payload"), or the "error" or "status"
+// field of a JSON body (Slack's Web API, PagerDuty's "invalid event"). A token is lower case
+// letters, digits and underscores (spaces too, inside JSON), at most 40 characters. Anything else,
+// and every other field such as PagerDuty's "message" and "errors", is dropped.
+func errorCode(b []byte) string {
+	t := strings.TrimSpace(string(b))
+	if isCode(t, false) {
+		return t
 	}
-	s := strings.Map(func(r rune) rune {
-		if r < ' ' || r == 0x7f {
-			return ' '
+	var j struct {
+		Error  any `json:"error"`
+		Status any `json:"status"`
+	}
+	if json.Unmarshal(b, &j) != nil {
+		return ""
+	}
+	for _, v := range []any{j.Error, j.Status} {
+		if s, ok := v.(string); ok && isCode(s, true) {
+			return s
 		}
-		return r
-	}, string(b))
-	return strings.TrimSpace(s)
+	}
+	return ""
+}
+
+func isCode(s string, spaces bool) bool {
+	if s == "" || len(s) > maxCode || s[0] < 'a' || s[0] > 'z' {
+		return false
+	}
+	for _, r := range s {
+		if !(r >= 'a' && r <= 'z' || r >= '0' && r <= '9' || r == '_' || spaces && r == ' ') {
+			return false
+		}
+	}
+	return true
 }

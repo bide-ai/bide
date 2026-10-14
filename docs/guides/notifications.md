@@ -483,10 +483,23 @@ short backoff, and a total budget (`-forward-timeout`, 8 s) under bide's own 10 
 
 A clear can reach the relay before the event it ends (the event was cleared while its request was failing, or its reply was lost). The relay remembers the IDs it has seen cleared, as many as `-dedupe`, and acknowledges a later notification of such an event without forwarding it, logging "dropped: already cleared"; otherwise that trigger would reopen an incident that is over.
 
-The caches live in the process. After a restart, or when more than `-dedupe` other events came in
-between, a late redelivery is forwarded again, and so is a trigger that arrives after a clear the relay has forgotten: a rare duplicate or stale message, never a lost one. PagerDuty
-absorbs a repeated trigger by its `dedup_key` (a trigger after a forgotten clear does reopen the incident); Slack shows a repeat twice. Run one relay: two behind a load balancer have separate
-caches, so a repeat that lands on the other one is forwarded.
+By default the caches live in the process, and a restart empties them. Then a late redelivery is
+forwarded again, and so is a trigger that arrives after a clear: one that reached the relay before the
+restart reopens the PagerDuty incident its clear closed. The same happens when more than `-dedupe`
+other events came in between. That is a rare duplicate or stale message, never a lost one. PagerDuty
+absorbs a repeated trigger by its `dedup_key`; Slack shows a repeat twice.
+
+`-state <file>` keeps both caches across restarts. The relay reads the file when it starts (a missing
+file is a first start; one it cannot parse is an error, so the memory is never silently empty) and
+rewrites it atomically after each change, bounded by `-dedupe` like the caches. It holds delivery IDs,
+cleared IDs and sink names, no payload and no secret. If a write fails the relay logs it and keeps
+forwarding, with its memory in the process as without the file. One file belongs to one relay: two
+relays behind a load balancer still have separate memories, so run one.
+
+When Slack or PagerDuty refuses a forward, the relay's log names the sink, the HTTP status and, if the
+reply carries one, a short error token such as `no_service` or `invalid event` (Slack's or PagerDuty's
+`error` or `status` field, or a plain one-token body). It never logs the rest of the reply, which can
+echo the request.
 
 Routes can point at different relays. A deployment that sends approvals to a Slack channel and
 halts to a pager runs two relays (or one per environment), each with its own secret, and gives each

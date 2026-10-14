@@ -528,3 +528,27 @@ func TestRelayOpensThenClosesAnIncidentForTheSameRun(t *testing.T) {
 		t.Fatalf("the resolve does not name the trigger's incident: %q", pd.bodies)
 	}
 }
+
+func TestRelayStateFileSurvivesARestart(t *testing.T) {
+	slack := newFake(t)
+	setEnv(t, map[string]string{defaultSecretEnv: testSecretValue, defaultSlackEnv: slack.URL + "/services/" + slackPathSecret})
+	state := filepath.Join(t.TempDir(), "relay.state")
+	r := startVerb(t, "relay", "-addr", "127.0.0.1:0", "-state", state)
+	url := "http://" + r.addr.String() + "/"
+	if code, out, errs := test(t, "-url", url, "-run", "notify-test-s"); code != 0 {
+		t.Fatalf("exit %d\n%s%s", code, out, errs)
+	}
+	r.finish(t)
+	if b, err := os.ReadFile(state); err != nil || !strings.Contains(string(b), `"seen"`) {
+		t.Fatalf("state file: %v %q", err, b)
+	}
+	r2 := startVerb(t, "relay", "-addr", "127.0.0.1:0", "-state", state)
+	// The same event again (same run, same key) is a repeat after the restart.
+	if code, out, errs := test(t, "-url", "http://"+r2.addr.String()+"/", "-run", "notify-test-s"); code != 0 {
+		t.Fatalf("exit %d\n%s%s", code, out, errs)
+	}
+	if slack.n() != 1 {
+		t.Fatalf("slack saw %d messages, want 1 across the restart", slack.n())
+	}
+	noSecretLeaks(t, "relay output", r.stdout.String(), r.stderr.String(), r2.stdout.String(), r2.stderr.String())
+}
