@@ -13,7 +13,6 @@ import (
 	"path/filepath"
 	"strings"
 	"sync"
-	"syscall"
 	"testing"
 	"time"
 
@@ -323,6 +322,7 @@ func TestMainRunFlagErrors(t *testing.T) {
 // interrupt is repeated until Main returns, since the server installs its handler after it prints
 // its address.
 func serveMain(t *testing.T, args []string, probe func(base string)) (int, string, string) {
+	skipNoSelfInterrupt(t)
 	t.Helper()
 	guard := make(chan os.Signal, 8) // keeps an early interrupt from killing the test binary
 	signal.Notify(guard, os.Interrupt)
@@ -346,7 +346,7 @@ func serveMain(t *testing.T, args []string, probe func(base string)) (int, strin
 	base := strings.Fields(line[start:])[0]
 	probe(base)
 	for {
-		_ = syscall.Kill(os.Getpid(), syscall.SIGINT)
+		interruptSelf(t)
 		select {
 		case code := <-done:
 			return code, out.String(), errb.String()

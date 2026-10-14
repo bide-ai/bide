@@ -13,7 +13,6 @@ import (
 	"path/filepath"
 	"strings"
 	"sync"
-	"syscall"
 	"testing"
 	"time"
 
@@ -303,6 +302,7 @@ func TestViewErrors(t *testing.T) {
 // TestDemoServes: without -fast the command serves the finished run's page on the loopback address
 // it prints, and exits 0 when interrupted.
 func TestDemoServes(t *testing.T) {
+	skipNoSelfInterrupt(t)
 	if testing.Short() {
 		t.Skip("the narration pauses between steps")
 	}
@@ -339,7 +339,7 @@ func TestDemoServes(t *testing.T) {
 		t.Errorf("GET %s = %d:\n%s", link, resp.StatusCode, body)
 	}
 	for {
-		_ = syscall.Kill(os.Getpid(), syscall.SIGINT)
+		interruptSelf(t)
 		select {
 		case code := <-done:
 			if code != 0 {
