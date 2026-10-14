@@ -845,6 +845,17 @@ func TestStateFileProblemsAreRefusedAtStart(t *testing.T) {
 	if _, err := New(Config{Secrets: []string{secret}, Sinks: []Sink{sink}, StatePath: filepath.Join(dir, "missing-dir", "x.state")}); err == nil {
 		t.Error("an unwritable state path was accepted")
 	}
+	// A refused start releases the lock: once the file is fixed the next start works.
+	os.WriteFile(bad, []byte(`{"version":1,"cleared":[],"seen":[]}`), 0o600)
+	if h, err := New(Config{Secrets: []string{secret}, Sinks: []Sink{sink}, StatePath: bad}); err != nil {
+		t.Errorf("after fixing the file: %v", err)
+	} else {
+		h.Close()
+	}
+	os.WriteFile(bad, []byte("{not json"), 0o600)
+	if _, err := New(Config{Secrets: []string{secret}, Sinks: []Sink{sink}, StatePath: bad}); err == nil || strings.Contains(err.Error(), "in use") {
+		t.Errorf("a refused start left the lock held: %v", err)
+	}
 	wrong := filepath.Join(dir, "v2.state")
 	os.WriteFile(wrong, []byte(`{"version":2,"cleared":[],"seen":[]}`), 0o600)
 	if _, err := New(Config{Secrets: []string{secret}, Sinks: []Sink{sink}, StatePath: wrong}); err == nil {
