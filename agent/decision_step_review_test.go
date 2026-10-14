@@ -90,3 +90,22 @@ func TestHeldDecisionStepIsNotValidity(t *testing.T) {
 		t.Fatalf("a junk signature: held %v verified %v %v", held, ver, err)
 	}
 }
+
+// A resolver that does not know the approver, or hands back a nil verifier, verifies nothing and
+// must not panic.
+func TestHeldDecisionStepWithAnUnusableResolver(t *testing.T) {
+	ctx := context.Background()
+	j, _, base := pausedOne(t)
+	d := Decision{RunID: "r", ToolUseID: "c1", ApproverID: "a", Approved: true, DecidedAt: testDecidedAt, Alg: fakeAlg, Signature: append([]byte{1}, base...)}
+	if err := SubmitDecision(ctx, j, d); err != nil {
+		t.Fatal(err)
+	}
+	for name, vf := range map[string]ApproverVerifierFor{
+		"unknown": func(string) (ApproverVerifier, bool) { return nil, false },
+		"nil":     func(string) (ApproverVerifier, bool) { var v *randVerifier; return v, true },
+	} {
+		if _, held, ver, err := HeldDecisionStep(ctx, j, d, vf); err != nil || !held || ver {
+			t.Errorf("%s: held %v verified %v %v", name, held, ver, err)
+		}
+	}
+}
