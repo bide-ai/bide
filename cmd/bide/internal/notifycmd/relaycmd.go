@@ -69,6 +69,7 @@ proxy that terminates TLS on the same host. Forwarding has a budget (-forward-ti
 	viewURL := fs.String("view-url", "", "the run viewer's base URL, for the \"Open in viewer\" button when a notification has no view.url")
 	dedupe := fs.Int("dedupe", relay.DefaultDedupeSize, "how many delivery IDs to remember")
 	statePath := fs.String("state", "", "keep the delivery IDs forwarded and the events cleared in this file, so they survive a restart (without it a restart forgets them); one relay per file, enforced by a lock")
+	stateFlush := fs.Duration("state-flush", relay.DefaultStateFlushDelay, "with -state: how long a change may wait so a burst costs one file write; a clear is always written at once, and a crash can lose the last window of forwarded-delivery entries (negative: write every change)")
 	fwd := fs.Duration("forward-timeout", relay.DefaultForwardTimeout, "the budget for forwarding one delivery; keep it below bide's request timeout (10 s)")
 	color := term.Flag(fs)
 	if st := parse(fs, args); st >= 0 {
@@ -121,7 +122,7 @@ proxy that terminates TLS on the same host. Forwarding has a budget (-forward-ti
 	logf := func(f string, a ...any) {
 		fmt.Fprintf(stderr, "%s relay: %s\n", timeNow().Format("15:04:05"), fmt.Sprintf(strings.TrimPrefix(f, "relay: "), a...))
 	}
-	h, err := relay.New(relay.Config{Secrets: secrets.list(), Sinks: sinks, DedupeSize: *dedupe, ForwardTimeout: *fwd, StatePath: *statePath, Logf: logf})
+	h, err := relay.New(relay.Config{Secrets: secrets.list(), Sinks: sinks, DedupeSize: *dedupe, ForwardTimeout: *fwd, StatePath: *statePath, StateFlushDelay: *stateFlush, Logf: logf})
 	if err != nil {
 		return failure("relay", stderr, "%v", err)
 	}

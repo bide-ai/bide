@@ -725,7 +725,7 @@ func TestClearBeforeItsEventNeverOpensAnIncident(t *testing.T) {
 func restartHandler(t *testing.T, path string, sends *atomic.Int32, size int) (*httptest.Server, *rig) {
 	t.Helper()
 	sink := &funcSink{name: "s", fn: func(context.Context, notify.Payload) error { sends.Add(1); return nil }}
-	h, err := New(Config{Secrets: []string{secret}, Sinks: []Sink{sink}, StatePath: path, DedupeSize: size, Logf: func(string, ...any) {},
+	h, err := New(Config{Secrets: []string{secret}, Sinks: []Sink{sink}, StatePath: path, StateFlushDelay: -1, DedupeSize: size, Logf: func(string, ...any) {},
 		ClearsID: func(p notify.Payload) string {
 			if p.Kind == "resolved" {
 				return agent.NotifyID("k1")
@@ -1020,5 +1020,184 @@ func TestKilledSaveLeavesTheOldStateLoadable(t *testing.T) {
 	}
 	if tmp, _ := filepath.Glob(path + ".tmp-*"); len(tmp) != 0 {
 		t.Fatalf("a stale temporary file was kept: %v", tmp)
+	}
+}
+
+// ---- coalesced writes, directory sync, duplicate restore ----
+
+func coalescingHandler(t *testing.T, path string, delay time.Duration) (*Handler, *rig) {
+	t.Helper()
+	sink := &funcSink{name: "s"}
+	h, err := New(Config{Secrets: []string{secret}, Sinks: []Sink{sink}, StatePath: path, StateFlushDelay: delay, Logf: func(string, ...any) {},
+		ClearsID: func(p notify.Payload) string {
+			if p.Kind == "resolved" {
+				return agent.NotifyID("k1")
+			}
+			return ""
+		}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	srv := httptest.NewServer(h)
+	t.Cleanup(srv.Close)
+	return h, &rig{srv: srv}
+}
+
+func sendEvents(t *testing.T, rg *rig, n int, prefix string) {
+	t.Helper()
+	for i := 0; i < n; i++ {
+		k := prefix + strconv.Itoa(i)
+		rg.raw(t, payloadBody(t, func(p *notify.Payload) { p.ID, p.Key = agent.NotifyID(k), k }), nil)
+	}
+}
+
+func seenInFile(t *testing.T, path string) int {
+	t.Helper()
+	b, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var st stateFile
+	if err := json.Unmarshal(b, &st); err != nil {
+		t.Fatal(err)
+	}
+	return len(st.Seen)
+}
+
+func TestStateWritesAreCoalescedAndFlushedWithinTheDelay(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "relay.state")
+	h, rg := coalescingHandler(t, path, 100*time.Millisecond)
+	base := h.state.saveCount()
+	sendEvents(t, rg, 40, "e")
+	if n := h.state.saveCount() - base; n > 10 {
+		t.Fatalf("%d writes for 40 events inside one window; writes are not coalesced", n)
+	}
+	waitFor2(t, "the flush", func() bool { return seenInFile(t, path) == 40 })
+	h.Close()
+}
+
+func TestCloseFlushesPendingState(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "relay.state")
+	h, rg := coalescingHandler(t, path, time.Hour)
+	sendEvents(t, rg, 5, "e")
+	if n := seenInFile(t, path); n != 0 {
+		t.Fatalf("file holds %d entries before the window ended", n)
+	}
+	h.Close()
+	if n := seenInFile(t, path); n != 5 {
+		t.Fatalf("Close left %d of 5 entries unwritten", n)
+	}
+}
+
+func TestACrashLosesOnlyTheLastWindowOfDedupeEntries(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "relay.state")
+	h, rg := coalescingHandler(t, path, time.Hour)
+	sendEvents(t, rg, 3, "old")
+	h.state.save(h.seen, h.cleared) // written by an earlier window
+	sendEvents(t, rg, 3, "new")
+	h.crash() // no Close: the pending window is lost
+	h2, _ := coalescingHandler(t, path, time.Hour)
+	if n := len(h2.seen.snapshot()); n != 3 {
+		t.Fatalf("after a crash %d entries survive, want the 3 written before the window", n)
+	}
+	h2.Close()
+}
+
+func TestAClearIsWrittenAtOnceNotWithTheWindow(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "relay.state")
+	h, rg := coalescingHandler(t, path, time.Hour)
+	clear := payloadBody(t, func(p *notify.Payload) {
+		p.Kind, p.ID, p.Key = "resolved", agent.NotifyID("resolved:k1"), "resolved:k1"
+	})
+	rg.raw(t, clear, nil)
+	h.crash()
+	h2, rg2 := coalescingHandler(t, path, time.Hour)
+	var sends atomic.Int32
+	h2.sinks = []Sink{&funcSink{name: "s", fn: func(context.Context, notify.Payload) error { sends.Add(1); return nil }}}
+	if got := rg2.raw(t, payloadBody(t, nil), nil); got != 204 || sends.Load() != 0 {
+		t.Fatalf("a trigger after a crash that followed a clear: %d, %d sends; the clear must be durable at once", got, sends.Load())
+	}
+	h2.Close()
+}
+
+func TestWriteThroughWhenTheDelayIsNegative(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "relay.state")
+	h, rg := coalescingHandler(t, path, -1)
+	sendEvents(t, rg, 3, "e")
+	if n := seenInFile(t, path); n != 3 {
+		t.Fatalf("write-through left %d of 3 entries unwritten", n)
+	}
+	h.Close()
+}
+
+func TestSyncDirIsCalledAfterTheRename(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "relay.state")
+	h, _ := coalescingHandler(t, path, -1)
+	var order []string
+	h.state.afterRename = func() { order = append(order, "after-rename") }
+	h.state.syncDir = func(dir string) error { order = append(order, "syncdir:"+filepath.Base(dir)); return nil }
+	if err := h.state.save(h.seen, h.cleared); err != nil {
+		t.Fatal(err)
+	}
+	if len(order) != 2 || order[0] != "after-rename" || !strings.HasPrefix(order[1], "syncdir:") {
+		t.Fatalf("order %v: the directory must be synced after the rename", order)
+	}
+	h.state.syncDir = func(string) error { return errors.New("disk") }
+	if err := h.state.save(h.seen, h.cleared); err == nil {
+		t.Fatal("a failed directory sync was not reported")
+	}
+	h.state.syncDir = syncDir
+	h.Close()
+}
+
+func TestRestoreDropsDuplicateIDsFromTheFile(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "relay.state")
+	os.WriteFile(path, []byte(`{"version":1,"cleared":["c","c"],"seen":[{"id":"x","done":["a"]},{"id":"y","done":["a"]},{"id":"x","done":["b"]}]}`), 0o600)
+	h, _ := coalescingHandler(t, path, -1)
+	defer h.Close()
+	if h.seen.ll.Len() != 2 || len(h.seen.m) != 2 || h.cleared.ll.Len() != 1 {
+		t.Fatalf("seen %d/%d, cleared %d; want 2/2 and 1", h.seen.ll.Len(), len(h.seen.m), h.cleared.ll.Len())
+	}
+	snap := h.seen.snapshot()
+	var x seenState
+	for _, e := range snap {
+		if e.ID == "x" {
+			x = e
+		}
+	}
+	if len(x.Done) != 2 {
+		t.Fatalf("a duplicate's sinks were not merged: %+v", snap)
+	}
+	if snap[len(snap)-1].ID != "x" {
+		t.Fatalf("the later duplicate should be the most recent: %+v", snap)
+	}
+}
+
+func waitFor2(t *testing.T, what string, cond func() bool) {
+	t.Helper()
+	for end := time.Now().Add(5 * time.Second); time.Now().Before(end); time.Sleep(10 * time.Millisecond) {
+		if cond() {
+			return
+		}
+	}
+	t.Fatalf("timed out waiting for %s", what)
+}
+
+func BenchmarkStateSave(b *testing.B) {
+	for _, n := range []int{1000, 10000} {
+		b.Run(strconv.Itoa(n), func(b *testing.B) {
+			d, c := newDedupe(n), newIDSet(n)
+			for i := 0; i < n; i++ {
+				d.restore(agent.NotifyID("e"+strconv.Itoa(i)), []string{"slack", "pagerduty"})
+				c.add(agent.NotifyID("c" + strconv.Itoa(i)))
+			}
+			s := &stateStore{path: filepath.Join(b.TempDir(), "relay.state"), syncDir: syncDir}
+			b.ResetTimer()
+			for i := 0; i < b.N; i++ {
+				if err := s.save(d, c); err != nil {
+					b.Fatal(err)
+				}
+			}
+		})
 	}
 }

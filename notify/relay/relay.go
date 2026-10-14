@@ -38,6 +38,8 @@ const (
 	// per-request timeout (10 s), so a slow third party makes the relay answer 502 before bide
 	// gives up on the request.
 	DefaultForwardTimeout = 8 * time.Second
+	// DefaultStateFlushDelay is how long a state file write may be deferred and coalesced.
+	DefaultStateFlushDelay = time.Second
 )
 
 // A Sink takes a verified notification to somewhere else. Send returns nil only once the
@@ -76,6 +78,14 @@ type Config struct {
 	// DedupeSize, like the in-memory sets), holds IDs and sink names only, and is read at New: a
 	// missing file is a first start, an unreadable or invalid one is an error. If a later write
 	// fails the Handler logs it and carries on, with its memory in the process as without a file.
+	// StateFlushDelay is how long a change to the forwarded-delivery set waits before the file is
+	// rewritten, so a burst of events costs one write, not one each (the whole file is rewritten and
+	// synced, which grows with DedupeSize). Zero means DefaultStateFlushDelay; negative writes through
+	// on every change. A clear is never delayed: its ID is written at once, because a late trigger
+	// after a crash is the failure the file exists to prevent. Close writes what is pending. A crash
+	// (not Close) can lose the forwarded-delivery entries of the last StateFlushDelay, so a redelivery
+	// of those events is forwarded once more: a repeat, never a lost notification.
+	StateFlushDelay time.Duration
 	// The Handler holds an exclusive operating-system lock on StatePath+".lock" until Close or the
 	// process ends (a crash releases it), and New fails if another relay holds it: two relays
 	// sharing one file would overwrite each other's memory.
@@ -99,7 +109,13 @@ type Handler struct {
 	seen    *dedupe
 	cleared *idSet
 	state   *stateStore
-	clears  func(notify.Payload) string
+	// pmu guards the pending state write.
+	pmu    sync.Mutex
+	dirty  bool
+	timer  *time.Timer
+	closed bool
+	delay  time.Duration
+	clears func(notify.Payload) string
 }
 
 // New returns a Handler, or an error for a configuration that cannot work.
@@ -134,7 +150,11 @@ func New(c Config) (*Handler, error) {
 		clears:  c.ClearsID,
 	}
 	if c.StatePath != "" {
-		h.state = &stateStore{path: c.StatePath}
+		h.state = &stateStore{path: c.StatePath, syncDir: syncDir}
+		h.delay = c.StateFlushDelay
+		if h.delay == 0 {
+			h.delay = DefaultStateFlushDelay
+		}
 		if err := h.state.acquire(); err != nil {
 			return nil, err
 		}
@@ -189,7 +209,7 @@ func (h *Handler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	}
 	if id := h.clears(p); id != "" {
 		if h.cleared.add(id) { // before forwarding: a retry of this clear must still guard the event
-			h.persist()
+			h.persist(true)
 		}
 	} else if h.cleared.has(p.ID) {
 		h.log("relay: delivery %s (%s, run %s) dropped: already cleared", short(p.ID), p.Kind, p.RunID)
@@ -247,7 +267,7 @@ func (h *Handler) forward(ctx context.Context, p notify.Payload, todo []Sink) []
 	wg.Wait()
 	h.seen.end(p.ID, done)
 	if len(done) > 0 {
-		h.persist()
+		h.persist(false)
 	}
 	if len(done) > 0 {
 		sort.Strings(done)
@@ -256,21 +276,78 @@ func (h *Handler) forward(ctx context.Context, p notify.Payload, todo []Sink) []
 	return failed
 }
 
-// Close releases the state file's lock, so another relay may use the file. A Handler without a
-// StatePath has nothing to release. The lock is also released when the process exits.
+// Close writes any pending state and releases the state file's lock, so another relay may use the
+// file. A Handler without a StatePath has nothing to do. The lock is also released when the process
+// exits.
 func (h *Handler) Close() error {
 	if h.state == nil {
 		return nil
 	}
-	return h.state.release()
+	h.pmu.Lock()
+	h.closed = true
+	if h.timer != nil {
+		h.timer.Stop()
+		h.timer = nil
+	}
+	var err error
+	if h.dirty {
+		h.dirty = false
+		err = h.state.save(h.seen, h.cleared)
+	}
+	h.pmu.Unlock()
+	if rerr := h.state.release(); err == nil {
+		err = rerr
+	}
+	return err
 }
 
-// persist saves the state file, if there is one. A failure is logged, never fatal: a notification
-// must still go out.
-func (h *Handler) persist() {
+// crash drops the lock and any pending write without saving, as a killed process does. Tests only.
+func (h *Handler) crash() {
+	h.pmu.Lock()
+	h.closed = true
+	if h.timer != nil {
+		h.timer.Stop()
+	}
+	h.dirty = false
+	h.pmu.Unlock()
+	h.state.release()
+}
+
+// persist saves the state file, if there is one: now when urgent or when the delay is negative,
+// else within StateFlushDelay together with whatever else changes by then. A failure is logged,
+// never fatal: a notification must still go out.
+func (h *Handler) persist(urgent bool) {
 	if h.state == nil {
 		return
 	}
+	h.pmu.Lock()
+	defer h.pmu.Unlock()
+	if h.closed {
+		return
+	}
+	if urgent || h.delay < 0 {
+		h.dirty = false
+		h.saveLocked()
+		return
+	}
+	h.dirty = true
+	if h.timer == nil {
+		h.timer = time.AfterFunc(h.delay, h.flush)
+	}
+}
+
+func (h *Handler) flush() {
+	h.pmu.Lock()
+	defer h.pmu.Unlock()
+	h.timer = nil
+	if h.closed || !h.dirty {
+		return
+	}
+	h.dirty = false
+	h.saveLocked()
+}
+
+func (h *Handler) saveLocked() {
 	if err := h.state.save(h.seen, h.cleared); err != nil {
 		h.log("relay: %v (the memory of forwarded and cleared events is in the process only until this works)", err)
 	}
@@ -478,9 +555,14 @@ func (d *dedupe) restore(id string, done []string) {
 	d.mu.Lock()
 	defer d.mu.Unlock()
 	e := &entry{id: id, done: map[string]bool{}}
+	if el, ok := d.m[id]; ok { // a duplicate in the file: one entry, with the sinks of both, most recent
+		e = el.Value.(*entry)
+		d.ll.MoveToFront(el)
+	} else {
+		d.m[id] = d.ll.PushFront(e)
+	}
 	for _, n := range done {
 		e.done[n] = true
 	}
-	d.m[id] = d.ll.PushFront(e)
 	d.evict()
 }
