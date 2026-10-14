@@ -40,10 +40,11 @@ const secret = "ya29.SECRET-TOKEN-0123456789"
 // request shape and the request checksums, and fills in the response integrity fields. The hooks
 // let a test corrupt a response. No test calls Google Cloud.
 type fake struct {
-	ed  ed25519.PrivateKey
-	ec  *ecdsa.PrivateKey
-	ver *kmspb.CryptoKeyVersion
-	pem string // overrides the PEM when set
+	ed          ed25519.PrivateKey
+	ec          *ecdsa.PrivateKey
+	ver         *kmspb.CryptoKeyVersion
+	pem         string                         // overrides the PEM when set
+	attestation *kmspb.KeyOperationAttestation // returned with the key version
 
 	onVersion func(*kmspb.CryptoKeyVersion)
 	onKey     func(*kmspb.PublicKey)
@@ -95,7 +96,7 @@ func (f *fake) GetCryptoKeyVersion(_ context.Context, req *kmspb.GetCryptoKeyVer
 	if req.Name != testVersion {
 		return nil, status.Error(codes.NotFound, "no such version "+req.Name)
 	}
-	v := &kmspb.CryptoKeyVersion{Name: f.ver.Name, State: f.ver.State, ProtectionLevel: f.ver.ProtectionLevel, Algorithm: f.ver.Algorithm}
+	v := &kmspb.CryptoKeyVersion{Name: f.ver.Name, State: f.ver.State, ProtectionLevel: f.ver.ProtectionLevel, Algorithm: f.ver.Algorithm, Attestation: f.attestation}
 	if f.onVersion != nil {
 		f.onVersion(v)
 	}
