@@ -300,12 +300,6 @@ func (a *AuditedEventStore) AnchorTrails(ctx context.Context, trails []string) e
 		}
 	}
 
-	if a.coolingDown() {
-		for _, n := range names {
-			a.markDirty(n)
-		}
-		return nil
-	}
 	ctx, cancel := context.WithTimeout(ctx, anchorBudgetTimeouts*a.timeout)
 	defer cancel()
 	for i, n := range names {

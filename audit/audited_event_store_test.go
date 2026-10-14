@@ -793,3 +793,75 @@ func TestAuditedEventStore_HeadsOnlyGrowWithThePublisherAndTheResignPathRacing(t
 		}
 	}
 }
+
+// countingStore counts Loads.
+type countingStore struct {
+	audit.EventStore
+	mu    sync.Mutex
+	loads int
+}
+
+func (c *countingStore) Load(ctx context.Context, trail string) ([][]byte, error) {
+	c.mu.Lock()
+	c.loads++
+	c.mu.Unlock()
+	return c.EventStore.Load(ctx, trail)
+}
+
+func (c *countingStore) n() int { c.mu.Lock(); defer c.mu.Unlock(); return c.loads }
+
+// While the anchor is in its cooldown nothing reads a trail for it: neither the publisher nor the
+// re-sign path pays a Load per skipped trail, so a sweep over many trails stays cheap in an outage.
+func TestAuditedEventStore_TheCooldownSkipsBeforeReadingTheTrail(t *testing.T) {
+	ctx := context.Background()
+	_, priv, _ := ed25519.GenerateKey(nil)
+	fa := &trailAnchor{down: true}
+	cs := &countingStore{EventStore: audit.NewMemEventStore()}
+	s, err := audit.NewAuditedEventStore(cs, audit.Ed25519Signer{Priv: priv}, fa)
+	if err != nil {
+		t.Fatal(err)
+	}
+	s.WithCooldown(time.Hour)
+	tr := audit.NewNotifyTrail(s)
+	appendNotify(t, tr, "notify:a", 0, 1)
+	if err := s.Flush(ctx); err != nil { // the one attempt that fails and opens the breaker
+		t.Fatal(err)
+	}
+	appendNotify(t, tr, "notify:b", 0, 1)
+	if err := s.Flush(ctx); err != nil {
+		t.Fatal(err)
+	}
+	before := cs.n()
+	names := make([]string, 50)
+	for i := range names {
+		names[i] = fmt.Sprintf("notify:x%d", i)
+	}
+	if err := s.AnchorTrails(ctx, names); err != nil {
+		t.Fatal(err)
+	}
+	if got := cs.n() - before; got != 0 {
+		t.Fatalf("%d Loads during the cooldown, want none", got)
+	}
+}
+
+// A caller that gives up on a slow Reanchor says nothing about the anchor: the breaker stays closed
+// and the next trail is published.
+func TestAuditedEventStore_ACallerGivingUpDoesNotTripTheBreaker(t *testing.T) {
+	fa := &trailAnchor{delay: 400 * time.Millisecond}
+	r := newRig(t, fa)
+	r.s.WithCooldown(time.Hour)
+	tr := audit.NewNotifyTrail(r.s)
+	appendNotify(t, tr, "notify:a", 0, 1)
+	r.flush(t)
+	appendNotify(t, tr, "notify:a", 1, 1)
+	ctx, cancel := context.WithTimeout(context.Background(), 50*time.Millisecond)
+	defer cancel()
+	if err := r.s.Reanchor(ctx, "notify:a"); err == nil {
+		t.Fatal("Reanchor returned no error although its context ended mid-publish")
+	}
+	appendNotify(t, tr, "notify:b", 0, 1)
+	r.flush(t)
+	if got := fa.sizes("notify:b"); !slices.Equal(got, []int{1}) {
+		t.Fatalf("notify:b heads = %v: the breaker opened because a caller gave up", got)
+	}
+}
