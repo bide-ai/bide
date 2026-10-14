@@ -266,10 +266,12 @@ func TestTimeout(t *testing.T) {
 }
 
 // cancelAfterKey cancels the caller's context once GetPublicKey has answered, as a caller giving up
-// during Open would.
+// during Open would, and records the state of the context Sign is called with.
 type cancelAfterKey struct {
 	*fakeKMS
-	cancel context.CancelFunc
+	cancel     context.CancelFunc
+	signCtxErr *error
+	signCalled *bool
 }
 
 func (c cancelAfterKey) GetPublicKey(ctx context.Context, in *kms.GetPublicKeyInput, o ...func(*kms.Options)) (*kms.GetPublicKeyOutput, error) {
@@ -278,8 +280,14 @@ func (c cancelAfterKey) GetPublicKey(ctx context.Context, in *kms.GetPublicKeyIn
 	return out, err
 }
 
+func (c cancelAfterKey) Sign(ctx context.Context, in *kms.SignInput, o ...func(*kms.Options)) (*kms.SignOutput, error) {
+	*c.signCalled, *c.signCtxErr = true, ctx.Err()
+	return c.fakeKMS.Sign(ctx, in, o...)
+}
+
 // Open's self-test signature is bounded by Open's context, not only by Config.Timeout: a context
-// cancelled during Open reaches the Sign call, and Open fails with the context's error.
+// cancelled during Open is the context the Sign call receives. (The fake does not honor a context;
+// that a real client does is tested in signer/awskms/emulatortest.)
 func TestOpenCancelsTheSelfTest(t *testing.T) {
 	for _, scheme := range []audit.Alg{audit.AlgEd25519, audit.AlgECDSAP256} {
 		f := newFake(t)
@@ -287,12 +295,13 @@ func TestOpenCancelsTheSelfTest(t *testing.T) {
 			f = newP256Fake(t)
 		}
 		ctx, cancel := context.WithCancel(context.Background())
-		defer cancel()
-		_, err := Open(ctx, Config{Client: cancelAfterKey{f, cancel}, KeyID: testARN, Scheme: scheme})
-		if f.lastCtx == nil || f.lastCtx.Err() == nil {
-			t.Fatalf("%s: the self-test Sign did not receive Open's cancelled context", scheme)
+		var called bool
+		var ctxErr error
+		Open(ctx, Config{Client: cancelAfterKey{f, cancel, &ctxErr, &called}, KeyID: testARN, Scheme: scheme})
+		cancel()
+		if !called || !errors.Is(ctxErr, context.Canceled) {
+			t.Fatalf("%s: self-test Sign called %v with context error %v, want Open's cancelled context", scheme, called, ctxErr)
 		}
-		_ = err // the fake does not honor ctx; the context reaching Sign is what is checked
 	}
 }
 
