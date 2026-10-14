@@ -11,9 +11,18 @@ This page lists work that is not done yet. It describes intent, not promises of 
 - A deadline for a gate that never reaches its approvals, so a run waiting on approvers who do not answer stops on a schedule instead of staying unfinished until it is cancelled; and a way to clear a stale decision written before a gate's request.
 - Moving the journal format tag from `v1-dev` to its final value, which waits for 1.0.
 
-- Separation of duties for approvals: an opt-in policy that refuses a decision from the principal who requested the call, checked in the approval gate's formal model (model 1b).
-
 Changes that touch claims, the journal, leases, sagas or proofs are reviewed adversarially before they merge.
+
+### Bank readiness
+
+bide is meant to be usable by banks and other regulated institutions. What that needs beyond today, first items first:
+
+- Key custody: approver and audit-log signing keys held in an HSM or a cloud key service instead of key files, through the existing `audit.Signer` interface, starting with PKCS#11 and AWS KMS (then Azure Key Vault and Google Cloud KMS).
+- Separation of duties: an opt-in approval policy that refuses a decision from the principal who requested the call (maker-checker), checked in the approval gate's formal model (model 1b).
+- Approver identity: approver keys bound to an institution's identity, with certificates from its own CA or keys issued through its SSO, and revocation that the gate and `bide audit` honor.
+- Evidence for regulators: a threat model, a security and versioning policy, signed releases with an SBOM, and guidance on retaining and archiving journals and evidence packages.
+
+This is engineering toward those requirements, not a compliance certification.
 
 ### Notifications and approvals
 
@@ -31,7 +40,7 @@ Out of scope: approve buttons in chat that a server signs on an approver's behal
 
 ### Trust and project process
 
-- Trust pages: a threat model beside [SECURITY.md](../SECURITY.md), the stability and versioning policy, and a scoped comparison with Temporal, LangGraph and plain retries.
+- Trust pages: a threat model beside [SECURITY.md](../SECURITY.md), the stability and versioning policy, and a scoped comparison with Temporal, LangGraph and plain retries (also part of bank readiness, above).
 - A lighter merge-queue CI, so a queued change waits on the checks that matter for it.
 
 ### Formal models of the coordination protocols
