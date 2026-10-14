@@ -2359,6 +2359,17 @@ kinds. The note called it model 13, a number model 13 (probes) already has.
   recorded as the notice's `acked`; otherwise the next round sends it again while the event is
   open. With `LongClaims`, an event's claim is not assumed to lapse (a long claim TTL), while a
   notice's short claim is.
+- **The all-clear** (`Clears`, as in the core at the all-clear change). An event that stops
+  standing after a delivery of it was attempted is owed a resolved notification, a key of its own
+  (`r_<event>`, `resolved:<key>` in the core) with the records and the rounds of any key, and no
+  deadline, so it is never overdue. It is owed when the event is acked, or cleared with a claim in
+  the trail (a claim is the trace of a delivery attempt: a request can land although its reply is
+  lost), and the event no longer stands; an event still open with a claim is cleared by step 3 first.
+  A deliverer pass may start on it then: the catch-up scan of a drive end, a recovery pass or a
+  sweep, which the model, like every start, leaves to the fair deliverers. An event never claimed is
+  not told of, and `run_aborted` (never non-current in the core) has none. The recovery_failing
+  episodes' all-clears use the same machinery and are not modelled. The input assumption: an event
+  that stops standing does not stand again, which the keys guarantee (never reused).
 - **The sink.** A request is accepted, accepted with its reply lost (`MaxLost`), or fails
   (`MaxFail`; `NoBudget`: the sink never accepts).
 - **Time.** Abstract: a claim lapsing, a deadline passing and `D` passing since `failing_since`
@@ -2406,6 +2417,10 @@ another key) and the digest (the same records and fold).
 | 7 | `Terminal`, `Once` | invariant | once a key is acked or cleared nothing more is appended for it; `observed`, `overdue`, `failing`, `acked` and `cleared` are each appended at most once per key |
 | | `ObservedFirst` | invariant | every record of a key follows its `observed` (the verifier's rule) |
 | | `StaleStops` | liveness | an observed event that is resolved ends cleared or acked |
+| 8 | `ClearNeverEarly`, `ClearOnlyIfTold`, `ClearAfterClose` | invariant | with `Clears`: no all-clear is observed or delivered for an event that still stands, none for an event nobody was told of (no claim), none before the event is acked or cleared |
+| 8 | `ClearNeverOverdue` | invariant | an all-clear has no `overdue` record and no overdue notice |
+| 8 | `ClearsDelivered` | liveness | every event that stopped standing after a delivery of it was attempted gets its all-clear acked (a sink that accepts in the end) |
+| 8 | `ClearAfterEventAck` | limit | does not hold: an event cleared with its request failed is never acked, and its all-clear is delivered all the same (`limits/clear-before-event`) |
 | | `BoundNotHit` | invariant | the configuration's round bound never stops a delivery |
 
 Property 6 needs no more than `LifeStepsOnly`: model 10's actions read no notify variable, so
@@ -2441,6 +2456,10 @@ the notifier.
 | `live-notice-long` | ci | The overdue notice with long claims: a holder that claimed before the deadline and died does not hold the notice back, a peer sends it; a crash. | 271,025 | 1 min |
 | `compose-resolve` | ci | Property 6: model 10's life-resolve (a leased primary, one Recover pass, the operator resolving halts; an error reply and a crash) with a notifier on the run's halt. | 254,606 | 2 min |
 | `compose-notify-reach` | ci | Vacuity of the notifier in the composition: a notification is delivered (NotifyNotReachable must be violated). | 2,165 | 4 s |
+| `notify-clear` | ci | The all-clear: two processes deliver one event and its all-clear (key `r_e1`); the event may stop standing at any time; a crash. No all-clear for an event that stands, none for one nobody was told of, none before the event is closed, none overdue. | 496,868 | 9 s |
+| `notify-clear-lost` | ci | The all-clear with a lost sink reply and a claim that lapses mid-round. | 738,858 | 14 s |
+| `live-clear` | ci | Liveness of the all-clear (`ClearsDelivered`, `NoSilentDrop`, `StaleStops`): every step and time weakly fair; a failed request. | 456,617 | 3 min |
+| `live-clear-crash` | ci | Liveness of the all-clear with a crash. | 993,707 | 5 min |
 | `deep-notice` | nightly | The overdue notice with a crash, a lost reply and a claim that lapses mid-round. | 2,365,395 | 27 s (8 workers) |
 | `deep-live-notice` | nightly | The overdue notice, under fairness, with a crash and a failed request. | 1,231,263 | 6 min |
 | `deep-faults` | nightly | Every fault at once: a crash, a lost reply, a trail append error, a failed request and a claim that lapses mid-round; two processes. | 7,565,060 | 21 min |
@@ -2473,12 +2492,20 @@ they are the mutation check of every property above.
 | `failing-count-memory` | N1, adopted: failures counted in each process's memory | `FailingBy` (15) |
 | `no-peer-notice` | only the holder sends the overdue notice (with long claims) | `PeerCovers` (19) |
 | `no-notice-claim` | peers send the notice with no claim of their own on its key | `NoticeDupBound` (21) |
+| `clear-early` | the all-clear is owed as soon as the event is acked, while it still stands | `ClearNeverEarly` (13) |
+| `clear-unclaimed` | the all-clear is owed for an event cleared before any delivery was attempted | `ClearOnlyIfTold` (12) |
+| `clear-overdue` | the all-clear has a deadline and goes overdue like an event | `ClearNeverOverdue` (16) |
+| `no-clear` | an event that stopped standing after it was delivered never gets its all-clear | `ClearsDelivered` (19) |
 | `compose-in-journal` | the notifier writes the run's journal (its claim as an attempt marker on the run's last call, as a notification run as a Step of the run would) | `LifeStepsOnly` (12) |
 
 ### Limits and findings
 
 - `limits/stale-alert` (`NoStaleDelivery`): the race the note documents. The currency check and
   the send are not atomic, so a request is accepted for an event resolved a moment before.
+- `limits/clear-before-event` (`ClearAfterEventAck`): the all-clear is not promised after the
+  event. An event whose request failed and that stopped standing is cleared, never acknowledged,
+  and its all-clear is delivered all the same (a request that failed may have landed); the
+  all-clear names the event's key, which is how a receiver matches them in either order.
 - `limits/not-exactly-once` (`ExactlyOnce`): at least once, not exactly once; a lost reply alone
   makes a second delivery.
 - `limits/notice-slow-holder` (`NoticeOnce`): one duplicate notice with no crash, lost reply or
@@ -2525,7 +2552,9 @@ standalone configuration (two event keys on one trail in `deep-compose-leased`),
 episode (two nightly, in one process), two requests a round, and up to three faults among a crash, a
 lost reply, a trail append error, a failed request and a claim that lapses mid-round on pull
 requests (all five at once nightly); the composition with model 10 at its `life-resolve` bounds
-(`life-leased` and a one-run approval nightly). Times are abstract steps, so any relation between a
+(`life-leased` and a one-run approval nightly). The all-clear is a second key on the trail, so its
+configurations use one process-crash or one lost reply and a claim lapse, not all three at once, and
+leave recovery_failing's all-clear and the composition with model 10 out. Times are abstract steps, so any relation between a
 claim's two minutes, the deadline's five and `D`'s fifteen is covered. A bug that needs two events
 interleaving in the standalone model with faults, two concurrent episodes, or more than two of one
 fault is outside the check. Two events at once outgrew a nightly run (over 55 million states with
