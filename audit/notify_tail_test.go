@@ -309,8 +309,9 @@ func TestVerifyNotifications_KeylessTailRecordsAreUnattested(t *testing.T) {
 	for name, tc := range map[string]struct {
 		head, tail []agent.NotifyRecord
 	}{
-		"a recovered only in the tail":     {[]agent.NotifyRecord{fail}, []agent.NotifyRecord{rec}},
-		"a failing_since only in the tail": {nil, []agent.NotifyRecord{{Kind: agent.NotifyFailingSince, At: at(3500), RunID: "r1", Reason: "storage"}}},
+		"a recovered only in the tail":                     {[]agent.NotifyRecord{fail}, []agent.NotifyRecord{rec}},
+		"an episode closed and another opened in the tail": {[]agent.NotifyRecord{fail}, []agent.NotifyRecord{rec, {Kind: agent.NotifyFailingSince, At: at(3100), RunID: "r1", Reason: "storage"}}},
+		"a failing_since only in the tail":                 {nil, []agent.NotifyRecord{{Kind: agent.NotifyFailingSince, At: at(3500), RunID: "r1", Reason: "storage"}}},
 	} {
 		b := newTrail(t)
 		if len(tc.head) == 0 { // a head needs one record: an unrelated complete event
