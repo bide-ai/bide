@@ -67,10 +67,10 @@ func TestVerifyNotifications_UnattestedTailVerdictsFailTheAudit(t *testing.T) {
 	if _, err := tailVerify(t, c, h2, pub, nil); err != nil {
 		t.Fatalf("a complete attested trail: %v", err)
 	}
-	// A tail that adds only a claim to an already-observed event changes no verdict.
+	// A tail that opens a recovery episode changes the recovery state: unattested (see the keyless test).
 	c.add(agent.NotifyRecord{Kind: agent.NotifyFailingSince, At: at(50), RunID: "r1"})
-	if rep, err := tailVerify(t, c, h2, pub, nil); err != nil || rep.Trails[0].Tail != 1 {
-		t.Fatalf("a harmless tail: %v", err)
+	if rep, err := tailVerify(t, c, h2, pub, nil); !errors.Is(err, audit.ErrNotVerified) || rep.Trails[0].Tail != 1 {
+		t.Fatalf("a tail that opens an episode: %v", err)
 	}
 }
 
