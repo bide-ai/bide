@@ -3,6 +3,7 @@ package audit_test
 import (
 	"context"
 	"errors"
+	"slices"
 	"strings"
 	"testing"
 	"time"
@@ -162,21 +163,34 @@ func TestCheckDecisionCoverage_RejectsHeadsThatDoNotBelong(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	cases := map[string]audit.SignedTreeHead{"signature": badSig, "run": otherRun, "root": fork}
-	for name, h := range cases {
+	// A head that does not verify, or is another run's, is ignored. One the log key signed for this
+	// run that is not this journal's is divergent, and fails the check.
+	for name, h := range map[string]audit.SignedTreeHead{"signature": badSig, "run": otherRun} {
 		t.Run(name, func(t *testing.T) {
 			rep, err := audit.CheckDecisionCoverage(gateRun, cg.recs, []audit.SignedTreeHead{h}, v, audit.CoverageBound{MaxRecords: 1})
 			if err != nil {
 				t.Fatal(err)
 			}
-			if len(rep.RejectedHeads) != 1 || !strings.Contains(rep.RejectedHeads[0].Reason, name) {
-				t.Fatalf("rejected heads %+v, want one naming %q", rep.RejectedHeads, name)
+			if len(rep.RejectedHeads) != 1 || !strings.Contains(rep.RejectedHeads[0].Reason, name) || len(rep.DivergentHeads) != 0 {
+				t.Fatalf("rejected %+v divergent %+v, want one rejected head naming %q", rep.RejectedHeads, rep.DivergentHeads, name)
 			}
-			if rep.Decisions[0].Status == audit.CoverageCovered || rep.OK() {
+			if rep.Decisions[0].Status == audit.CoverageCovered {
 				t.Fatalf("a head that does not belong covered a decision: %v", statusOf(rep))
 			}
 		})
 	}
+	t.Run("root", func(t *testing.T) {
+		rep, err := audit.CheckDecisionCoverage(gateRun, cg.recs, []audit.SignedTreeHead{fork, cg.whole}, v, audit.CoverageBound{})
+		if err != nil {
+			t.Fatal(err)
+		}
+		if len(rep.DivergentHeads) != 1 || !strings.Contains(rep.DivergentHeads[0].Reason, "root") || rep.OK() {
+			t.Fatalf("divergent %+v ok=%v, want one divergent head and a failure", rep.DivergentHeads, rep.OK())
+		}
+		if rep.Heads != 1 || statusOf(rep)[0] != audit.CoverageCovered {
+			t.Fatalf("the matching head still counts: heads %d, statuses %v", rep.Heads, statusOf(rep))
+		}
+	})
 	_, err = audit.CheckDecisionCoverage(gateRun, cg.recs, nil, nil, audit.CoverageBound{})
 	if !errors.Is(err, agent.ErrConfig) {
 		t.Fatalf("a nil verifier: %v, want ErrConfig", err)
@@ -195,5 +209,54 @@ func TestCheckDecisionCoverage_NoDecisionsNoHeads(t *testing.T) {
 	rep, _ = audit.CheckDecisionCoverage(gateRun, cg.recs, nil, v, audit.CoverageBound{MaxRecords: 1})
 	if got := statusOf(rep); got[0] == audit.CoverageCovered || got[1] == audit.CoverageCovered {
 		t.Fatalf("with no heads: %v", got)
+	}
+}
+
+// A decision removed from the export does not vanish: every signed head that reaches past it no
+// longer matches, which is divergence, and the check fails.
+func TestCheckDecisionCoverage_DeletedDecisionFails(t *testing.T) {
+	cg := newCoverageGate(t)
+	a := cg.decision[0]
+	tampered := slices.Delete(slices.Clone(cg.recs), a, a+1)
+	rep, err := audit.CheckDecisionCoverage(gateRun, tampered, []audit.SignedTreeHead{cg.before, cg.afterAlice, cg.whole}, edV(cg.logPub), audit.CoverageBound{MaxRecords: 1})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if rep.OK() || len(rep.DivergentHeads) != 2 {
+		t.Fatalf("ok=%v, divergent %+v; want both heads that reach past the deletion divergent", rep.OK(), rep.DivergentHeads)
+	}
+}
+
+// An export cut before the decisions is shorter than the heads the log signed: the heads that
+// reach past it are divergent, so a truncated export fails and says why.
+func TestCheckDecisionCoverage_TruncatedExportFails(t *testing.T) {
+	cg := newCoverageGate(t)
+	rep, err := audit.CheckDecisionCoverage(gateRun, cg.recs[:cg.decision[0]], []audit.SignedTreeHead{cg.before, cg.afterAlice, cg.whole}, edV(cg.logPub), audit.CoverageBound{MaxRecords: 1})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if rep.OK() || len(rep.DivergentHeads) != 2 || !strings.Contains(rep.DivergentHeads[0].Reason, "out of range") {
+		t.Fatalf("ok=%v, divergent %+v", rep.OK(), rep.DivergentHeads)
+	}
+}
+
+// A decision with no recorded time (an unsigned agent.Approve decision records none) is flagged,
+// and under an age bound it is over the bound: it cannot be shown to be inside it.
+func TestCheckDecisionCoverage_NoRecordedTime(t *testing.T) {
+	cg := newCoverageGate(t)
+	recs := append(slices.Clone(cg.recs), agent.Record{Kind: agent.StepApproval, ToolUseID: "x", Approved: false})
+	heads := []audit.SignedTreeHead{cg.whole}
+	rep, err := audit.CheckDecisionCoverage(gateRun, recs, heads, edV(cg.logPub), audit.CoverageBound{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	last := rep.Decisions[len(rep.Decisions)-1]
+	if last.Status != audit.CoveragePending || last.Note != audit.NoteNoRecordedTime {
+		t.Fatalf("without an age bound: %q note %q, want pending with the note", last.Status, last.Note)
+	}
+	rep, _ = audit.CheckDecisionCoverage(gateRun, recs, heads, edV(cg.logPub), audit.CoverageBound{MaxAge: time.Second, Now: time.Now().Add(1000 * time.Hour)})
+	last = rep.Decisions[len(rep.Decisions)-1]
+	if last.Status != audit.CoverageOverdue || last.Basis != audit.BasisAge {
+		t.Fatalf("under an age bound: %q basis %q, want overdue on age", last.Status, last.Basis)
 	}
 }

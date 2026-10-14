@@ -261,7 +261,7 @@ order or after the signed head, and never counts by them. No trusted timestamp a
 the log key signs a run's tree head on its own writes. A decision recorded by another process
 (for example `bide approve` writing the database) is under no signed head until `agent.RecoverLoop`
 next drives the run and re-signs it (within one pass interval), and not at all if no pass drives
-it. The window is bounded by the interval only while a loop runs; `bide audit verify-decision-coverage`
+it, a run another holder leases is that holder's to sign, and a failing anchor delays it. A re-sign ratifies what the database holds: a signed head shows a record was there, not that it is authentic. The window is bounded by the interval only while a loop runs; `bide audit verify-decision-coverage`
 finds a decision left outside every head. See
 [A decision written by another process](guides/hitl-approval.md#a-decision-written-by-another-process).
 

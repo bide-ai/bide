@@ -24,6 +24,7 @@ var auditArtifacts = []any{
 	audit.CoverageReport{},
 	audit.DecisionCoverage{},
 	audit.RejectedHead{},
+	audit.DivergentHead{},
 	audit.ProofBundle{},
 	audit.AbsenceBundle{},
 	audit.Absence{},

@@ -76,6 +76,7 @@ func TestCLI_VerifyDecisionCoverage(t *testing.T) {
 		}
 	}
 	whole := headNow()
+	alicePos := afterAlice.Size - 1 // alice's decision is the last record the head after her decision covers
 	journalPath := filepath.Join(dir, "journal.json")
 	writeJSON(t, journalPath, exportJournal(t, store, runID))
 	paths := map[string]string{}
@@ -122,8 +123,20 @@ func TestCLI_VerifyDecisionCoverage(t *testing.T) {
 	forged := filepath.Join(dir, "forged.json")
 	writeJSON(t, forged, signHead(t, th, audit.Ed25519Signer{Priv: otherPriv}))
 	code, stdout, _ = cover("-heads", forged, "-max-records", "1")
-	if code != exitNotVerified || !strings.Contains(stdout, "not counted") {
+	if code != exitNotVerified || !strings.Contains(stdout, "not counted") || strings.Contains(stdout, "DIVERGENT") {
 		t.Fatalf("a forged head: exit %d\n%s", code, stdout)
+	}
+	// An export with alice's decision removed: every head that reaches past it diverges, so the verb
+	// fails (the not-verified class) and says to re-export, instead of passing a shorter list.
+	var x audit.JournalExport
+	exp := exportJournal(t, store, runID)
+	x = exp
+	x.Records = append(append([][]byte(nil), exp.Records[:alicePos]...), exp.Records[alicePos+1:]...)
+	deleted := filepath.Join(dir, "journal-deleted.json")
+	writeJSON(t, deleted, x)
+	code, stdout, _ = runCLI("verify-decision-coverage", "-journal", deleted, "-heads", paths["alice"], "-heads", paths["whole"], "-pubkey", logKey, "-max-records", "1")
+	if code != exitNotVerified || !strings.Contains(stdout, "DIVERGENT") || !strings.Contains(stdout, "re-export") {
+		t.Fatalf("a deleted decision: exit %d\n%s", code, stdout)
 	}
 	// Usage.
 	for _, args := range [][]string{

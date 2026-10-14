@@ -7,6 +7,7 @@ package agent
 
 import (
 	"bytes"
+	"cmp"
 	"container/list"
 	"context"
 	"encoding/base64"
@@ -40,17 +41,18 @@ func (f recoverLoopOption) applyRecoverLoop(c *recoverConfig) error { f(c); retu
 // recoverConfig is what LeaseOption, RecoverOption and RecoverLoopOption values write. Lease
 // reads the lease fields, Recover those too, and RecoverLoop every field.
 type recoverConfig struct {
-	holder      string
-	ttl         time.Duration
-	interval    time.Duration // RecoverLoop only; 0 means ttl/2
-	concurrency int           // RecoverLoop only
-	lapsedConc  int           // RecoverLoop only: the lapsed loop's concurrency
-	onError     func(error)   // RecoverLoop only
-	notifier    *notifierOption
-	notify      *notifyEngine                       // built from notifier with the store, by Recover and RecoverLoop
-	reanchor    func(context.Context, string) error // RecoverLoop only: re-signs a run waiting on a person
-	reanchorSet bool                                // reanchor was set (nil turns re-signing off)
-	intervalSet bool
+	holder          string
+	ttl             time.Duration
+	interval        time.Duration // RecoverLoop only; 0 means ttl/2
+	concurrency     int           // RecoverLoop only
+	lapsedConc      int           // RecoverLoop only: the lapsed loop's concurrency
+	onError         func(error)   // RecoverLoop only
+	notifier        *notifierOption
+	notify          *notifyEngine                       // built from notifier with the store, by Recover and RecoverLoop
+	reanchor        func(context.Context, string) error // re-signs a run waiting on a person (WithReanchor)
+	reanchorSet     bool                                // reanchor was set (nil turns re-signing off)
+	reanchorTimeout time.Duration                       // each re-sign's deadline; 0 means half the lease TTL
+	intervalSet     bool
 }
 
 // WithLeaseHolder names the worker that claims leases, as the leases table and logs show it.
@@ -217,6 +219,10 @@ func completedAnswer(recs []Record) (Message, bool) {
 // its answer, so an unfinished turn resumes when its message is sent again (the same message
 // through Send or Send, or the redelivered SendOnce or SendOnce). Recover re-drives
 // every other incomplete run it enumerates. A nil resume is ErrConfig.
+//
+// A run whose drive ends waiting on an approval or a halt resolution is re-signed, as RecoverLoop
+// re-signs it: through the store's Reanchor method (audit.AuditedStore) or WithReanchor's function,
+// which WithReanchor(nil) turns off. It writes nothing to the journal.
 func Recover(ctx context.Context, store *Journal, resume Resumer, opts ...RecoverOption) (int, error) {
 	if resume == nil {
 		return 0, fmt.Errorf("Recover: nil Resumer: %w", ErrConfig)
@@ -715,7 +721,7 @@ func recoverRun(ctx context.Context, store *Journal, runID string, resume Resume
 		// nothing to the journal, so what the pass does to the run is unchanged.
 		if fn := cfg.reanchorFunc(store); fn != nil {
 			if runs := waitingRuns(err); runs != nil {
-				reanchorErr = reanchorWaiting(ctx, fn, runs)
+				reanchorErr = reanchorWaiting(ctx, fn, runs, cmp.Or(cfg.reanchorTimeout, cfg.ttl/2))
 			}
 		}
 		if err != nil && errors.Is(err, ErrNotResumable) {

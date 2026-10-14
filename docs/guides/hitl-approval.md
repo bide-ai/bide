@@ -279,10 +279,11 @@ the earlier version is not asked again.
 
 When approvers record decisions with a tool that writes the database directly (not through the
 application), the application's `audit.AuditedStore` did not write them, and no signed tree head
-covers them until the application next writes to that run. Run `agent.RecoverLoop` over the
+covers them until the application next writes to that run. Run `agent.RecoverLoop` (or `agent.Recover`) over the
 `AuditedStore`: each pass re-signs the runs it found waiting on an approval or a halt resolution,
-so the decision is under a signed head within one pass (see
-[the audit guide](audit.md)). `bide audit verify-decision-coverage` checks a journal export
+so the decision is under a signed head within one pass of a run that pass drives (see
+[the audit guide](audit.md)). Being under a signed head is not being authentic: it means the
+database held the record when the head was signed. `bide audit verify-decision-coverage` checks a journal export
 against the published heads and fails a decision no head covers within a bound you state, by
 journal position (`-max-records`) or by age (`-max-age`, which compares two machines' clocks).
 

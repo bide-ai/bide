@@ -47,6 +47,9 @@ func TestOptionScopes_TypeChecked(t *testing.T) {
 			_ = []agent.LeaseOption{agent.WithLeaseHolder(""), agent.WithLeaseTTL(1)}
 			_ = []agent.RecoverOption{agent.WithLeaseHolder(""), agent.WithLeaseTTL(1)}
 			_ = []agent.RecoverLoopOption{agent.WithLeaseHolder(""), agent.WithLeaseTTL(1), agent.WithRecoverInterval(1)}`,
+		"ReanchorOption fits RecoverOption and RecoverLoopOption": `
+			_ = []agent.RecoverOption{agent.WithReanchor(nil), agent.WithReanchorTimeout(1)}
+			_ = []agent.RecoverLoopOption{agent.WithReanchor(nil), agent.WithReanchorTimeout(1), agent.WithRecoverInterval(1)}`,
 		"agent-only options": `
 			_ = []agent.Option{agent.WithTools(), agent.WithMiddleware(), agent.WithToolMiddleware(), agent.WithApproverVerifiers(nil),
 				agent.WithToolErrorRedactor(nil), agent.WithRetrieval(nil, 1), agent.WithSystemPromptFunc(nil), agent.WithOptions()}`,
@@ -127,7 +130,7 @@ func TestOptionScopes_TypeChecked(t *testing.T) {
 		}
 	}
 	slices.Sort(combos)
-	if want := []string{"AgentRunOption", "ClockOption", "ConcurrencyOption", "LeaseControl", "NotifierOption", "SafetyOption"}; !slices.Equal(combos, want) {
+	if want := []string{"AgentRunOption", "ClockOption", "ConcurrencyOption", "LeaseControl", "NotifierOption", "ReanchorOption", "SafetyOption"}; !slices.Equal(combos, want) {
 		t.Errorf("combination types = %v, want the closed list %v", combos, want)
 	}
 
@@ -144,12 +147,12 @@ func TestOptionScopes_TypeChecked(t *testing.T) {
 		"WithLeaseHolder": "LeaseControl", "WithLeaseTTL": "LeaseControl",
 		"WithTools": "Option", "WithMiddleware": "Option", "WithToolMiddleware": "Option", "WithApproverVerifiers": "Option",
 		"WithToolErrorRedactor": "Option", "WithRetrieval": "Option", "WithSystemPromptFunc": "Option", "WithOptions": "Option",
-		"WithRecoverInterval": "RecoverLoopOption", "WithRecoverConcurrency": "RecoverLoopOption", "WithRecoverLapsedConcurrency": "RecoverLoopOption", "WithRecoverErrors": "RecoverLoopOption", "WithReanchor": "RecoverLoopOption",
+		"WithRecoverInterval": "RecoverLoopOption", "WithRecoverConcurrency": "RecoverLoopOption", "WithRecoverLapsedConcurrency": "RecoverLoopOption", "WithRecoverErrors": "RecoverLoopOption", "WithReanchor": "ReanchorOption", "WithReanchorTimeout": "ReanchorOption",
 		"WithMinHaltAge": "ResolveOption", "WithoutLiveDriverCheck": "ResolveOption", "WithEvidence": "ResolveOption",
 		"WithRetrievalRetry": "RetrievalOption",
 		"WithApproval":       "ToolOption", "WithTimeout": "ToolOption", "WithTitle": "ToolOption", "WithOutputSchema": "ToolOption", "WithSubRuns": "ToolOption",
 	}
-	optionTypes := append(slices.Clone(scopes), "AgentRunOption", "ConcurrencyOption", "ClockOption", "SafetyOption", "LeaseControl", "NotifierOption")
+	optionTypes := append(slices.Clone(scopes), "AgentRunOption", "ConcurrencyOption", "ClockOption", "SafetyOption", "LeaseControl", "NotifierOption", "ReanchorOption")
 	for _, name := range pkg.Scope().Names() {
 		fn, ok := pkg.Scope().Lookup(name).(*types.Func)
 		if !ok || !fn.Exported() {
@@ -241,7 +244,7 @@ func TestOptionScopes_ConstructorsOutsideAgent(t *testing.T) {
 	}
 	optionTypes := []string{"Option", "RunOption", "ParallelOption", "StepOption", "ResolveOption", "ToolOption",
 		"LeaseOption", "RecoverOption", "RecoverLoopOption", "RetrievalOption",
-		"AgentRunOption", "ConcurrencyOption", "ClockOption", "SafetyOption", "LeaseControl"}
+		"AgentRunOption", "ConcurrencyOption", "ClockOption", "SafetyOption", "LeaseControl", "ReanchorOption"}
 	root, err := filepath.Abs("..")
 	if err != nil {
 		t.Fatal(err)

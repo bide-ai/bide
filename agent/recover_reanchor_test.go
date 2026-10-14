@@ -3,6 +3,8 @@ package agent
 import (
 	"context"
 	"errors"
+	"fmt"
+	"slices"
 	"sync"
 	"testing"
 	"testing/synctest"
@@ -161,4 +163,81 @@ func TestRecoverLoop_WithReanchor(t *testing.T) {
 			t.Fatal("WithReanchor(nil) did not turn re-signing off")
 		}
 	})
+}
+
+// A re-sign that hangs is cut off at its deadline: it does not hold the run's lease and the loop's
+// only slot for as long as the anchor blocks, and the other waiting run is re-signed.
+func TestRecoverLoop_HungReanchorDoesNotStarveOtherRuns(t *testing.T) {
+	synctest.Test(t, func(t *testing.T) {
+		s := NewMemStore()
+		for _, id := range []string{"a", "b"} {
+			seedRun(t, s, id)
+		}
+		var mu sync.Mutex
+		signed := map[string]int{}
+		var reports []error
+		stop := runLoop(t, mustJournal(s), func(_ context.Context, id string, _ RunStart) error { return pausedAt(id) },
+			WithRecoverInterval(20*time.Millisecond), WithRecoverConcurrency(1), WithReanchorTimeout(time.Second),
+			WithRecoverErrors(func(err error) { mu.Lock(); reports = append(reports, err); mu.Unlock() }),
+			WithReanchor(func(ctx context.Context, id string) error {
+				if id == "a" {
+					<-ctx.Done() // the anchor hangs
+					return ctx.Err()
+				}
+				mu.Lock()
+				signed[id]++
+				mu.Unlock()
+				return nil
+			}))
+		time.Sleep(10 * time.Second)
+		stop()
+		mu.Lock()
+		defer mu.Unlock()
+		if signed["b"] == 0 {
+			t.Fatal("run b was never re-signed: run a's hung re-sign holds the only slot")
+		}
+		if len(reports) == 0 || !errors.Is(reports[0], context.DeadlineExceeded) || !errors.Is(reports[0], ErrStorage) {
+			t.Fatalf("the hung re-sign was reported as %v, want the deadline wrapping ErrStorage", reports)
+		}
+	})
+}
+
+func TestWithReanchorTimeout_MustBePositive(t *testing.T) {
+	s := NewMemStore()
+	err := RecoverLoop(context.Background(), mustJournal(s), func(context.Context, string, RunStart) error { return nil }, WithReanchorTimeout(0))
+	if !errors.Is(err, ErrConfig) {
+		t.Fatalf("a zero timeout: %v, want ErrConfig", err)
+	}
+}
+
+// Parallel sub-agents that wait together return their pauses joined: every one is re-signed, with
+// the root, and a pause wrapped in another error is found too.
+func TestWaitingRuns_WalksJoinedErrors(t *testing.T) {
+	err := errors.Join(
+		&ApprovalPending{RunRef: RunRef{RunID: "root>sub1", RootRunID: "root"}, ToolUseID: "c1"},
+		fmt.Errorf("sub2: %w", &OutcomeUnknown{RunRef: RunRef{RunID: "root>sub2", RootRunID: "root"}}),
+		&TimerPending{RunRef: RunRef{RunID: "root>sub3", RootRunID: "root"}},
+	)
+	got := waitingRuns(err)
+	slices.Sort(got)
+	if want := []string{"root", "root>sub1", "root>sub2"}; !slices.Equal(got, want) {
+		t.Fatalf("waitingRuns = %v, want %v", got, want)
+	}
+	if waitingRuns(nil) != nil || waitingRuns(errors.New("x")) != nil {
+		t.Fatal("a non-pause is a waiting run")
+	}
+}
+
+// Recover, the single pass, re-signs a waiting run as RecoverLoop does, and WithReanchor(nil)
+// turns it off for it too.
+func TestRecover_Reanchors(t *testing.T) {
+	resume := func(context.Context, string, RunStart) error { return pausedAt("r") }
+	s := &reanchoringStore{MemStore: NewMemStore()}
+	seedRun(t, s.MemStore, "r")
+	if _, err := Recover(context.Background(), mustJournal(s), resume); err != nil || s.count("r") != 1 {
+		t.Fatalf("Recover: %v, re-signed %d times; want once", err, s.count("r"))
+	}
+	if _, err := Recover(context.Background(), mustJournal(s), resume, WithReanchor(nil)); err != nil || s.count("r") != 1 {
+		t.Fatalf("Recover with WithReanchor(nil): %v, re-signed %d times in all; want still once", err, s.count("r"))
+	}
 }

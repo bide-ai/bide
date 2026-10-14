@@ -60,27 +60,44 @@ type DecisionCoverage struct {
 	CoveredBySize int `json:"covered_by_size,omitempty"`
 	// Behind is how many records the journal holds after this one.
 	Behind int `json:"behind"`
+	// Note says what limits the finding: "no recorded time" for a record with no usable
+	// recorded_at (an unsigned agent.Approve decision records none), which an age bound treats as
+	// over the bound.
+	Note string `json:"note,omitempty"`
 }
 
-// RejectedHead is a head CheckDecisionCoverage did not count, and why.
+// RejectedHead is a head CheckDecisionCoverage ignored, and why: it does not verify under the log
+// key, or it is not a journal head of the run. It says nothing about the journal.
 type RejectedHead struct {
+	Size   int    `json:"size"`
+	Reason string `json:"reason"`
+}
+
+// DivergentHead is a head the log key signed for this run that does not match the journal given:
+// the journal is shorter than the head (a stale or truncated export), or its first Size records are
+// not what the head signed (an export, or a journal, that differs from what was signed). It is
+// evidence against the export, not noise: a decision deleted from the export looks exactly like
+// this, so any such head fails the check.
+type DivergentHead struct {
 	Size   int    `json:"size"`
 	Reason string `json:"reason"`
 }
 
 // CoverageReport is CheckDecisionCoverage's result.
 type CoverageReport struct {
-	RunID         string             `json:"run_id"`
-	Records       int                `json:"records"`
-	Heads         int                `json:"heads"`        // heads that verified and belong to this journal
-	LargestHead   int                `json:"largest_head"` // the largest such head's size, 0 if none
-	Decisions     []DecisionCoverage `json:"decisions"`
-	RejectedHeads []RejectedHead     `json:"rejected_heads,omitempty"`
+	RunID          string             `json:"run_id"`
+	Records        int                `json:"records"`
+	Heads          int                `json:"heads"`        // heads that verified and belong to this journal
+	LargestHead    int                `json:"largest_head"` // the largest such head's size, 0 if none
+	Decisions      []DecisionCoverage `json:"decisions"`
+	RejectedHeads  []RejectedHead     `json:"rejected_heads,omitempty"`  // ignored: invalid, or not this run's
+	DivergentHeads []DivergentHead    `json:"divergent_heads,omitempty"` // signed for this run, and not this journal's
 }
 
-// OK reports whether no decision is overdue.
+// OK reports whether no decision is overdue and no signed head diverges from the journal given.
 func (r CoverageReport) OK() bool {
-	return !slices.ContainsFunc(r.Decisions, func(d DecisionCoverage) bool { return d.Status == CoverageOverdue })
+	return len(r.DivergentHeads) == 0 &&
+		!slices.ContainsFunc(r.Decisions, func(d DecisionCoverage) bool { return d.Status == CoverageOverdue })
 }
 
 // CheckDecisionCoverage reports, for each approval decision in recs (runID's journal, in order),
@@ -91,8 +108,17 @@ func (r CoverageReport) OK() bool {
 // next writes to the run, which for a rejection may never happen.
 //
 // A head counts only if it verifies under v, is a journal head of runID, and its root is the root
-// of recs' own prefix of its size; any other is listed in RejectedHeads and covers nothing. A head
-// of size n covers the records at positions 0 to n-1. Heads are used by size, never by the order
+// of recs' own prefix of its size. A head that is not a journal head of runID, or does not verify,
+// is ignored (RejectedHeads). A head the log key signed for runID that does not match recs, because
+// recs is shorter than the head or differs from what it signed, is a DivergentHead and fails the
+// check: the export is stale, truncated, or has had a record removed (re-export the journal; if it
+// still diverges, the journal is not what was signed). A head of size n covers the records at
+// positions 0 to n-1.
+//
+// "Covered" means a signed head includes the record, not that the record is authentic: the check
+// ratifies what the journal holds, so verify-approvals is the check that a decision is genuine. The
+// bounds are only as strong as the export's completeness, which divergent heads test: an export
+// cut short shrinks every decision's Behind, and recorded_at is not signed. Heads are used by size, never by the order
 // they are given in or by their timestamps: two processes anchoring one run can deliver a smaller
 // head after a larger one, and both commit to prefixes of one journal.
 //
@@ -110,12 +136,21 @@ func CheckDecisionCoverage(runID string, recs []agent.Record, heads []SignedTree
 	rep := CoverageReport{RunID: runID, Records: len(recs)}
 	var sizes []int // sizes of the heads that count, ascending
 	for _, h := range heads {
+		switch {
+		case h.Kind != TreeJournal:
+			rep.RejectedHeads = append(rep.RejectedHeads, RejectedHead{Size: h.Size, Reason: fmt.Sprintf("tree head is a %q tree, not a journal", h.Kind)})
+			continue
+		case h.RunID != runID:
+			rep.RejectedHeads = append(rep.RejectedHeads, RejectedHead{Size: h.Size, Reason: fmt.Sprintf("tree head is for run %q, not %q", h.RunID, runID)})
+			continue
+		}
 		if err := h.Verify(v); err != nil {
 			rep.RejectedHeads = append(rep.RejectedHeads, RejectedHead{Size: h.Size, Reason: fmt.Sprintf("signature: %v", err)})
 			continue
 		}
+		// From here the head is the log's own, for this run: it must match the journal given.
 		if _, err := journalPrefix(runID, recs, h.TreeHead); err != nil {
-			rep.RejectedHeads = append(rep.RejectedHeads, RejectedHead{Size: h.Size, Reason: err.Error()})
+			rep.DivergentHeads = append(rep.DivergentHeads, DivergentHead{Size: h.Size, Reason: err.Error()})
 			continue
 		}
 		sizes = append(sizes, h.Size)
@@ -130,6 +165,9 @@ func CheckDecisionCoverage(runID string, recs []agent.Record, heads []SignedTree
 			continue
 		}
 		d := DecisionCoverage{Step: r.Name, Approver: r.Approver(), Index: i, RecordedAt: r.RecordedAt(), Behind: len(recs) - 1 - i}
+		if _, err := agent.ParseTimestamp(d.RecordedAt); err != nil {
+			d.Note = NoteNoRecordedTime
+		}
 		if k, _ := slices.BinarySearch(sizes, i+1); k < len(sizes) {
 			d.CoveredBySize = sizes[k] // the smallest head of size at least i+1
 		}
@@ -148,15 +186,20 @@ func CheckDecisionCoverage(runID string, recs []agent.Record, heads []SignedTree
 	return rep, nil
 }
 
+// NoteNoRecordedTime is DecisionCoverage.Note for a decision whose record has no usable recorded_at.
+const NoteNoRecordedTime = "no recorded time"
+
 // overAge reports whether recordedAt is more than bound.MaxAge+bound.Tolerance before bound.Now.
-// A bound without an age or a Now, and a time that is not canonical, is not over.
+// Without an age or a Now there is no age bound, and nothing is over it. Under one, a decision with
+// no usable recorded time (an unsigned agent.Approve decision records none, and recorded_at is not
+// signed) cannot be shown to be inside it, so it is over.
 func overAge(recordedAt string, b CoverageBound) bool {
 	if b.MaxAge <= 0 || b.Now.IsZero() {
 		return false
 	}
 	at, err := agent.ParseTimestamp(recordedAt)
 	if err != nil {
-		return false
+		return true
 	}
 	return b.Now.Sub(at) > b.MaxAge+max(b.Tolerance, 0)
 }

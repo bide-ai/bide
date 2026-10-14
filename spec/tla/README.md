@@ -1650,6 +1650,14 @@ options. L4 to L7 were findings against P14's design as first written; their rul
 
 The mechanisms of section 6 of the plan, as they apply here:
 
+- **Unmodelled: the re-sign of a waiting run.** After a drive ends at an approval or a halt,
+  `recoverRun` calls the store's `Reanchor` (or `WithReanchor`'s function), which signs and
+  publishes a tree head and writes nothing to the journal. The model has no head or anchor state,
+  and the call is not a driver transition: it neither writes an entry nor changes the lease, so
+  at-most-once, lease exclusion and no-resume-of-an-ended-run are untouched. It does hold the lease
+  a little longer (bounded by `WithReanchorTimeout`), which the model, a safety model, does not
+  check for starvation.
+
 - **The model-code map** above names the Go function behind every label, checked by review (the
   plan's adversarial review gate) until trace validation lands.
 - **Regressions.** Every historical bug of this layer that the model can state is a `Bug` value

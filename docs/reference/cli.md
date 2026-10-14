@@ -637,8 +637,13 @@ bide audit: produce and verify audit proof bundles
          journal after it with no head covering it (positions and head sizes, no clock), or, with
          -max-age, recorded more than that plus -max-age-tolerance before -now (default: this
          machine's clock; the weaker basis, since the recorder's clock is its own). With neither
-         bound nothing is overdue. Any overdue decision fails the verb. Halt resolutions are not
-         checked
+         bound nothing is overdue; under -max-age a decision with no recorded time (an unsigned
+         agent.Approve decision records none) counts as over it. A head the log key signed for this
+         run that does not match the export (the export is shorter than the head, or its prefix
+         differs) is divergent, which fails the verb like an overdue decision: a decision deleted
+         from an export looks exactly like that, so re-export the journal and run again. Covered
+         means in a signed head, not authentic (verify-approvals checks that). Halt resolutions are
+         not checked
 
   prove-absent -journal <file> -sth <file> -key (tool:<id>|policy:<digest>) [-out <file>]
          prove a thing did NOT happen (no such tool call / no action under that policy)

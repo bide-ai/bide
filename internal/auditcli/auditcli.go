@@ -182,8 +182,13 @@ const usageText = `bide audit: produce and verify audit proof bundles
          journal after it with no head covering it (positions and head sizes, no clock), or, with
          -max-age, recorded more than that plus -max-age-tolerance before -now (default: this
          machine's clock; the weaker basis, since the recorder's clock is its own). With neither
-         bound nothing is overdue. Any overdue decision fails the verb. Halt resolutions are not
-         checked
+         bound nothing is overdue; under -max-age a decision with no recorded time (an unsigned
+         agent.Approve decision records none) counts as over it. A head the log key signed for this
+         run that does not match the export (the export is shorter than the head, or its prefix
+         differs) is divergent, which fails the verb like an overdue decision: a decision deleted
+         from an export looks exactly like that, so re-export the journal and run again. Covered
+         means in a signed head, not authentic (verify-approvals checks that). Halt resolutions are
+         not checked
 
   prove-absent -journal <file> -sth <file> -key (tool:<id>|policy:<digest>) [-out <file>]
          prove a thing did NOT happen (no such tool call / no action under that policy)
@@ -1053,13 +1058,13 @@ func (c *cli) verifyDecisionCoverage(args []string) {
 	for _, h := range rep.RejectedHeads {
 		c.printf("note: head of size %d not counted: %s\n", h.Size, cleanText(h.Reason))
 	}
+	for _, h := range rep.DivergentHeads {
+		c.printf("DIVERGENT  a head of size %d, signed by the log key for this run, is not this journal's: %s\n", h.Size, cleanText(h.Reason))
+	}
 	c.printf("INFO  run %s: %d records, %d signed heads counted (largest covers %d)\n", cleanText(rep.RunID), rep.Records, rep.Heads, rep.LargestHead)
 	overdue := 0
 	for _, d := range rep.Decisions {
-		who := cleanText(d.Approver)
-		if who == "" {
-			who = "(no approver signature) " + cleanText(d.Step)
-		}
+		who := decisionLabel(d)
 		switch d.Status {
 		case audit.CoverageCovered:
 			c.printf("INFO  %s: record %d covered by a head of size %d\n", who, d.Index, d.CoveredBySize)
@@ -1070,12 +1075,28 @@ func (c *cli) verifyDecisionCoverage(args []string) {
 			c.printf("INFO  %s: record %d overdue (%s): no signed head covers it, %d records after it, recorded %s\n", who, d.Index, d.Basis, d.Behind, timeText(d.RecordedAt))
 		}
 	}
+	for _, d := range rep.Decisions {
+		if d.Note != "" {
+			c.printf("note: %s: record %d has %s, so an age bound cannot clear it\n", decisionLabel(d), d.Index, d.Note)
+		}
+	}
+	if len(rep.DivergentHeads) > 0 {
+		c.fail("%d signed head(s) do not match the journal given: the export is stale or cut short (re-export the journal and run again), or it has had a record removed or changed since the log signed it; the decisions listed above are not the complete record", len(rep.DivergentHeads))
+	}
 	if overdue > 0 {
 		c.fail("%d of %d decisions are under no signed tree head past the bound", overdue, len(rep.Decisions))
 	}
 	if c.clean() {
 		c.printf("OK: no decision is overdue (%d decisions checked)\n", len(rep.Decisions))
 	}
+}
+
+// decisionLabel names a decision's approver for a report: the approver id, or the record for an unsigned one.
+func decisionLabel(d audit.DecisionCoverage) string {
+	if a := cleanText(d.Approver); a != "" {
+		return a
+	}
+	return "(no approver signature) " + cleanText(d.Step)
 }
 
 // verifyEvidence verifies a portable evidence package (audit.Evidence) from public artifacts alone:
