@@ -16,7 +16,7 @@
     <p class="gatehead {{.Class}}"><b>{{.ToolName}}</b>: {{.Headline}}</p>
     <p class="cline">{{if .Single}}one decision{{else}}needs {{.Need}} of {{len .Approvers}}{{end}}{{if not .Waiting}}{{with .SigLine}}; <span class="gatesig {{if eq . "signatures verified"}}good{{else if . | hasPrefix "signatures NOT"}}bad{{else}}muted{{end}}">{{.}}</span>{{end}}{{end}}</p>
     <details><summary>who decided</summary>
-    {{if .Single}}<p class="small">one decision</p>{{else}}<p class="small">approvers: {{join .Approvers ", "}}</p>{{end}}
+    {{if .Single}}<p class="small">one decision{{with .DecisionAt}}, recorded {{.}} UTC by the clock of the process that called Approve{{end}}</p>{{else}}<p class="small">approvers: {{join .Approvers ", "}}</p>{{end}}
     {{if .ApprovedBy}}<p class="small">approved by {{join .ApprovedBy ", "}}{{if .DeniedBy}}; denied by {{join .DeniedBy ", "}}{{end}}</p>{{else if .DeniedBy}}<p class="small">denied by {{join .DeniedBy ", "}}</p>{{end}}
     {{if and .Waiting .Pending}}<p class="small">waiting on {{join .Pending ", "}}</p>{{end}}</details>{{end}}</div>{{end}}
   <div class="card"><h3>Audit proof</h3>{{with .Proof}}

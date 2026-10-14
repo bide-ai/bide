@@ -15,7 +15,7 @@ import (
 func TestRunComplete_FlowRecordsEndTime(t *testing.T) {
 	ctx := context.Background()
 	j := agenttest.MemJournal()
-	var fired int
+	fired := 1 // the node's first call fails; start past it
 	flow := effectFlow(t, &fired, Idempotent())
 	before := time.Now().Add(-time.Second)
 	if out, err := flow.Run(ctx, j, "r", 5); err != nil || out != "charged 5" {
