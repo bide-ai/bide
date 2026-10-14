@@ -1,6 +1,6 @@
 # Design: a browser page for approving a call
 
-Status: proposed, for review. Nothing in this note is built. It follows the approval intake
+Status: decided, not built. The user decided the questions at the end of this note (below), and the page is built as its own pull request after the intake merges. It follows the approval intake
 (`approvals.Handler`, [Taking decisions over HTTP](../guides/hitl-approval.md#taking-decisions-over-http)),
 which already takes a signed decision over HTTP and shows a pending call. The page is the client that
 lets an approver who has no `bide` binary sign one. This revision folds in an adversarial review of
@@ -199,22 +199,25 @@ that an approver reads only calls they can decide. (Review point 6.)
 5. Docs: the guide section (with the two modes, the controls note, enrolment and rotation) and
    KNOWN-LIMITATIONS.
 
-## Decisions for review
+## Decisions
 
-1. **Build the page, with the approver-controlled origin as the design?** The app-served mode is then
-   a labeled low-assurance option. Recommendation: yes. The alternative is to build only the
-   app-served page, which is simpler and weaker in the way described above, and not to describe it as
-   suitable for a bank.
-2. **Is Ed25519-in-browser acceptable as the first version, with WebAuthn as the named follow-up?**
-   Recommendation: yes, because the Ed25519 page needs no protocol change; commit to the WebAuthn
-   design next, since it is the only option that stops a hostile script signing silently.
-3. **Sign the digest the browser computes (a second canonicalizer, UTF-8-ordered, with golden
-   vectors)?** Recommendation: yes; the alternative breaks "what you see is what you sign".
-4. **Require `WithAuth` wherever the page or CORS is enabled?** Recommendation: yes, as a
-   construction error rather than a documented caution.
-5. **Enrolment: require an out-of-band fingerprint comparison and a second person's sign-off for
-   rotation, and add a rotation-window verifier?** Recommendation: the comparison and the sign-off are
-   process, written into the guide now; the rotation-window verifier is a code change, scoped with
-   WebAuthn. Say if you want it earlier.
-6. **Ids in the URL fragment, and one device per approver id for the first version?** Recommendation:
-   yes to both.
+Decided by the user, and the basis for the build:
+
+1. **Build the page**, with the approver-controlled origin or pinned bundle as the design (the
+   app-served page is the labeled low-assurance mode only).
+2. **The browser computes the canonical digest itself** and signs that, with a UTF-8-ordered
+   canonicalizer and golden vectors from Go.
+3. **Passkeys (WebAuthn) are a separate follow-up**, with their own design and a new signature
+   scheme. Until they exist, **gates for high-value actions should wait for passkeys**: a key a
+   script on the page can use is not a per-signature human gesture, so the Ed25519 page suits gates
+   where an approver's key held in a browser is an acceptable level of assurance, not those where each
+   signature must be shown to be a deliberate act of a person. The guide says so beside the page's
+   documentation, and the page's first-use text says it.
+4. **Ids go in the URL fragment**, not the query.
+5. **One device per approver id** for the first version; a second device is a rotation, or a second
+   approver id on the gate.
+
+Standing from the review, carried into the build: `WithAuth` is required wherever the page or CORS is
+enabled (a construction error); enrolment needs an out-of-band fingerprint comparison, and a rotation
+a second person's sign-off, both written into the guide as process; the rotation-window verifier is a
+code change scoped with the WebAuthn design.
