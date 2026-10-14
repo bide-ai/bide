@@ -9,6 +9,8 @@ import (
 	"crypto/x509"
 	"crypto/x509/pkix"
 	"encoding/pem"
+	"errors"
+	"fmt"
 	"io"
 	"math/big"
 	"net"
@@ -18,6 +20,7 @@ import (
 	"path/filepath"
 	"strings"
 	"sync"
+	"syscall"
 	"testing"
 	"time"
 
@@ -558,4 +561,39 @@ func TestRelayStateFileSurvivesARestart(t *testing.T) {
 		t.Fatalf("the lock file is still open after the relay stopped: %v", err)
 	}
 	noSecretLeaks(t, "relay output", r.stdout.String(), r.stderr.String(), r2.stdout.String(), r2.stderr.String())
+}
+
+// TestConnectionRefusedIsRecognizedByErrnoNotByOSText: the hint must not depend on how an operating
+// system words a refused connection. Windows words it "No connection could be made because the target
+// machine actively refused it" and reports WSAECONNREFUSED (10061), Unix says "connection refused"
+// with ECONNREFUSED; the test builds both shapes, so it checks the Windows path on any OS.
+func TestConnectionRefusedIsRecognizedByErrnoNotByOSText(t *testing.T) {
+	for name, errno := range map[string]error{
+		"unix":    syscall.ECONNREFUSED,
+		"windows": syscall.Errno(10061),
+	} {
+		wrapped := fmt.Errorf("notify: POST to 127.0.0.1:1 failed: %w", &net.OpError{Op: "dial", Net: "tcp", Err: os.NewSyscallError("connectex", errno)})
+		got := hint(notify.ProbeResult{}, wrapped)
+		if !strings.Contains(got, "nothing is listening") {
+			t.Errorf("%s: hint %q", name, got)
+		}
+	}
+	// Other errors, however they are worded, are not taken for a refusal.
+	if got := hint(notify.ProbeResult{}, errors.New("connection refused by the proxy policy")); strings.Contains(got, "nothing is listening") {
+		t.Errorf("a message with the words, but no errno, was taken for a refused connection: %q", got)
+	}
+}
+
+func TestHintClassifiesByErrorTypeNotText(t *testing.T) {
+	dns := fmt.Errorf("notify: POST to x failed: %w", &net.DNSError{Err: "any words the resolver likes", Name: "x", IsNotFound: true})
+	if got := hint(notify.ProbeResult{}, dns); !strings.Contains(got, "does not resolve") {
+		t.Errorf("dns: %q", got)
+	}
+	to := fmt.Errorf("notify: POST to x failed: %w", context.DeadlineExceeded)
+	if got := hint(notify.ProbeResult{}, to); !strings.Contains(got, "no answer in time") {
+		t.Errorf("timeout: %q", got)
+	}
+	if got := hint(notify.ProbeResult{}, errors.New("no such host, in words only")); strings.Contains(got, "does not resolve") {
+		t.Errorf("words alone were taken for a DNS failure: %q", got)
+	}
 }

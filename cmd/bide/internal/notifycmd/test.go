@@ -12,6 +12,7 @@ import (
 	"net/url"
 	"os"
 	"strings"
+	"syscall"
 	"time"
 
 	"github.com/bide-ai/bide/agent"
@@ -323,7 +324,7 @@ func hint(res notify.ProbeResult, err error) string {
 		return "the receiver's key is not the one pinned; compare -pin with the receiver's SPKI hash (it changes when the key does)"
 	case strings.Contains(msg, "bad certificate") || strings.Contains(msg, "certificate required"):
 		return "the receiver wants a client certificate this machine did not present or it did not accept; pass -client-cert and -client-key"
-	case strings.Contains(msg, "context deadline exceeded") || strings.Contains(msg, "timeout"):
+	case isTimeout(err) || isTimeout(res.HandshakeErr):
 		return "no answer in time: is the address reachable, and is the receiver slow? raise -timeout if it needs longer"
 	case errors.As(err, &perm) && (perm.Status == 401 || perm.Status == 403):
 		return "the receiver refused the signature: its secret differs from this one, or it is rotating (use -previous-secret-env); the secret is never shown, compare how each side reads it"
@@ -335,14 +336,34 @@ func hint(res notify.ProbeResult, err error) string {
 		return fmt.Sprintf("the receiver refused the delivery with HTTP %d; its logs say why", perm.Status)
 	case res.Status >= 500 || res.Status == 429:
 		return fmt.Sprintf("the receiver failed or is busy (HTTP %d); bide retries this, so look at the receiver's logs", res.Status)
-	case strings.Contains(msg, "connection refused"):
+	case isRefused(err) || isRefused(res.HandshakeErr):
 		return "nothing is listening at that address and port; start the receiver (bide notify listen) or check -url"
 	case res.Handshake && res.Status == 0:
 		return "the connection broke after the handshake; a receiver that requires mutual TLS says so only now (TLS 1.3), so try -client-cert and -client-key, and look at the receiver's log"
-	case strings.Contains(msg, "no such host"):
+	case isNoSuchHost(err):
 		return "the host name does not resolve; check -url"
 	case strings.Contains(msg, "http: server gave HTTP response to HTTPS client"):
 		return "the receiver speaks plain http on that port; use an https URL, or put TLS in front of it"
 	}
 	return ""
+}
+
+// isRefused reports a refused connection by its error number, not by how the operating system
+// words it ("connection refused" on Unix, "actively refused it" on Windows). Windows reports
+// WSAECONNREFUSED (10061), which is not syscall.ECONNREFUSED there, so both are checked; 10061 is
+// no error number on Unix, where nothing matches it.
+func isRefused(err error) bool {
+	return err != nil && (errors.Is(err, syscall.ECONNREFUSED) || errors.Is(err, syscall.Errno(10061)))
+}
+
+// isNoSuchHost reports a name that does not resolve, by the resolver's own error.
+func isNoSuchHost(err error) bool {
+	var dns *net.DNSError
+	return errors.As(err, &dns) && dns.IsNotFound
+}
+
+// isTimeout reports a deadline or timeout from the context, the os package or the net package.
+func isTimeout(err error) bool {
+	var ne net.Error
+	return err != nil && (errors.Is(err, context.DeadlineExceeded) || errors.Is(err, os.ErrDeadlineExceeded) || (errors.As(err, &ne) && ne.Timeout()))
 }
