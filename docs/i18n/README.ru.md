@@ -27,6 +27,8 @@ bide init refund && cd refund && go mod tidy && go run .
 bide view -db run.db
 #    По желанию, без кода: изучить образец журнала из 14 запусков во всех состояниях
 bide sample
+#    Вызов ждёт на шлюзе одобрения? Покажите его и подпишите решение из терминала
+bide approve -db run.db -list
 # 4. доказать: проверить доказательства запуска офлайн
 bide audit verify-evidence -evidence evidence.json -pubkey keys/log.pub
 ```

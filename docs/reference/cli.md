@@ -27,6 +27,8 @@ and `help`, and its import graph is the standard library and the core module (se
 | [`bide doctor`](#bide-doctor) | check that a first run can work: Go, SQLite, the module cache, model keys, your project |
 | [`bide sample`](#bide-sample) | write a sample journal of varied runs, with evidence and flow configs, and open bide view on it |
 | [`bide view`](#bide-view) | a read-only local page for one run of a journal, or a flow config's graph |
+| [`bide approve`](#bide-approve) | record your signed approval (or -reject) of a call that waits for a decision; -list shows what waits |
+| [`bide keygen`](#bide-keygen) | create an approver key pair for bide approve and print the public key policies and verifiers use |
 | [`bide check`](#bide-check) | check plan flow configs, for CI: one file:node: message line per problem |
 | [`bide audit`](#bide-audit) | produce and verify audit proofs offline |
 | [`bide version`](#bide-version) | print the version and the artifact formats bide audit reads (-json for JSON) |
@@ -254,6 +256,127 @@ Flags:
     	with -check: exit 1 on a warning too
   -topology string
     	declared flow topology, JSON of flow.Topology(), to draw a flow run against instead of the topology the run journaled (flow:topology); for a run journaled before that record existed, or to check a run against another flow
+
+Exit status:
+  0  success
+  1  failure: an input cannot be read or the command failed; for check, an error was found
+     (with -strict, any problem)
+  2  usage error: a bad flag or argument; nothing was read
+```
+
+## bide approve
+
+Record your signed approval (or -reject) of a call that waits for a decision; -list shows what waits.
+
+```text
+bide approve: record a signed approval, or a rejection, of a call that waits for a decision
+
+  bide approve -db <file> -run <id> -call <tool-use id> -as <approver> -key <key-file> [flags]
+  bide approve -postgres-env <VAR> -run <id> -call <tool-use id> -as <approver> -key <key-file>
+  bide approve -db <file> -list
+
+It reads the call from the journal, never from a flag or a notification, and shows what it is
+about to sign: the run, the tool, the call's arguments (indented JSON, long ones cut; -full shows
+all), the gate (k of n, who has decided, who is pending) and the SHA-256 of the arguments the
+signature binds. It then asks you to type your approver id (or y) to confirm; -yes skips the
+question, for scripts. The decision is signed with your Ed25519 private key (made by bide keygen),
+checked against the call before it is recorded, and recorded with the time you decided.
+
+It refuses, and records nothing, when the call has no waiting gate, the run is not waiting on it,
+the gate already passed or was denied, you are not one of the gate's approvers, you already decided
+(it says what, and when), or the key file can be read by others (on Unix, as ssh refuses one).
+
+With -approver-keys (a JSON object of approver id to public key, the file bide view reads) it also
+refuses a key that is not the one enrolled for you, and prints a verified tally. Without it, the
+journal does not hold the approvers' keys, so the tally it prints counts the decisions recorded,
+and the gate checks every signature when the run resumes: a decision signed with a key the
+application does not enrol is recorded but never counts.
+
+A single-approver gate (agent.Approve) has no approver identity and no signature: bide approve
+records the decision as agent.Approve does, takes neither -as nor -key, and says so.
+
+-reject records a rejection: the same checks, the same signature over a denial. One command with a
+flag keeps the checks in one place; a rejection is the same act with the opposite byte, and the
+confirmation prompt says REJECT in capitals.
+
+After the decision is recorded, re-run the run's root run ID (agent.Run with the same ID) or let
+RecoverLoop pick it up: the gate counts the decisions and the call runs or is denied. bide approve
+never runs the call.
+
+-list prints the calls in the journal that wait for a decision, each with the bide approve command
+that decides it; -json prints them as JSON. A Postgres journal is named by -postgres-env, the name
+of the environment variable that holds the DSN, so the password stays out of the argument list,
+the shell history and the commands -list prints; -postgres takes the DSN itself, and the listed
+commands then name $BIDE_POSTGRES_DSN.
+
+Exit status: 0 on success (for -list, even when nothing waits), 1 if the command refused or
+failed, 2 for a usage error.
+
+Flags:
+  -approver-keys string
+    	approver public keys, a JSON object of approver id to key text, e.g. {"ops":"ed25519:ab12..."}: refuse a -key that is not the one enrolled for -as, and verify the tally
+  -as string
+    	your approver id, exactly as the gate's policy lists it (not for a single-approver gate)
+  -call string
+    	the call's tool-use ID (for a plan flow node, its key, such as node:review)
+  -color when
+    	when to color the output: auto (the default: on a terminal, unless NO_COLOR is set or TERM is dumb), always or never
+  -db string
+    	SQLite journal file
+  -full
+    	show all of the call's arguments, not the first lines
+  -json
+    	with -list: print the waiting calls as JSON
+  -key string
+    	your Ed25519 private key file, as bide keygen writes it (not for a single-approver gate); on Unix it must not be readable by group or others
+  -list
+    	list the calls that wait for a decision, each with its bide approve command; nothing is recorded
+  -postgres string
+    	Postgres journal, a pgx DSN such as postgres://user:pass@host:5432/db; prefer -postgres-env, which keeps the password out of the argument list
+  -postgres-env string
+    	name of the environment variable that holds the Postgres DSN
+  -reject
+    	record a rejection instead of an approval
+  -run string
+    	the run whose journal holds the call: the pause's run ID
+  -yes
+    	do not ask for confirmation (for scripts); what is signed is still shown
+
+Exit status:
+  0  success
+  1  failure: an input cannot be read or the command failed; for check, an error was found
+     (with -strict, any problem)
+  2  usage error: a bad flag or argument; nothing was read
+```
+
+## bide keygen
+
+Create an approver key pair for bide approve and print the public key policies and verifiers use.
+
+```text
+usage: bide keygen -out <key-file> [-as <approver id>] [-color auto|always|never]
+
+Creates an approver key pair for bide approve. The private key is written to <key-file> (64 hex
+characters, the Ed25519 seed) with mode 0600, and is never printed; the public key is written to
+<key-file>.pub and printed, in the form approval policies and verifiers read:
+
+  ed25519:<hex>
+
+Enroll that public key as the approver's verifier in the application that runs the gated agent
+(audit.ParsePublicKey reads it), and in the JSON object bide approve -approver-keys and bide view
+-approver-keys read: {"ops": "ed25519:<hex>"}. With -as, bide keygen prints that JSON entry for
+the id.
+
+It refuses to overwrite a file. The private key file is not encrypted; keep it on the approver's
+own machine, readable only by the approver. Anyone who can read it can sign as the approver.
+
+Flags:
+  -as string
+    	the approver id the key is for: prints the approver-keys entry for it
+  -color when
+    	when to color the output: auto (the default: on a terminal, unless NO_COLOR is set or TERM is dumb), always or never
+  -out string
+    	file to write the private key to (mode 0600); the public key goes to <file>.pub. It must not exist
 
 Exit status:
   0  success

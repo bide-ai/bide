@@ -27,6 +27,8 @@ bide init refund && cd refund && go mod tidy && go run .
 bide view -db run.db
 #    Optional, no code needed: explore a sample journal of 14 runs in every state
 bide sample
+#    A call waits at an approval gate? List it, and sign your decision from the terminal
+bide approve -db run.db -list
 # 4. Prove: verify the run's evidence offline
 bide audit verify-evidence -evidence evidence.json -pubkey keys/log.pub
 ```
@@ -243,7 +245,7 @@ is in [known limitations](docs/KNOWN-LIMITATIONS.md#governed-state-gsm).
 
 - **[Audit](docs/guides/audit.md)**: the tamper-evident trail and proof-carrying runs, checkable offline with `bide audit`. Runnable: `examples/govern/proof-carrying-run`.
 - **[Notifications](docs/guides/notifications.md)**: tell a person when a run halts or waits for approval: a signed HTTPS webhook (`notify.NewWebhook`), a one-call receiver check (`notify.Verify`), optional mutual TLS and key pinning, and what the payload leaves out. Slack and PagerDuty adapters.
-- **[Human approval](docs/guides/hitl-approval.md)**: sign-off before a tool runs, 1-of-1 to signed m-of-n, with offline proof that k named approvers approved first. Runnable: `examples/approval`.
+- **[Human approval](docs/guides/hitl-approval.md)**: sign-off before a tool runs, 1-of-1 to signed m-of-n, with offline proof that k named approvers approved first. Decide from a terminal with `bide approve` (it shows the call it reads from the journal, then signs), and make a key with `bide keygen`. Runnable: `examples/approval`.
 - **[A refund against Stripe test mode](examples/stripe-refund/README.md)**: kill a refund agent mid-refund; the restart halts instead of refunding twice, then a reconciler resolves the step from Stripe's own record. Runnable: `examples/stripe-refund`.
 - **[Security model](docs/guides/security-model.md)**: the exact scope of the cryptographic guarantees, and the audit-only build of `bide`. Read before relying on the trail.
 - **[Key custody](docs/guides/key-custody.md)**: audit-log and approver signing keys in a PKCS#11 HSM (SoftHSM2 for tests) or AWS KMS, behind `audit.Signer`. Runnable: `examples/hsm-signing`.

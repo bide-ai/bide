@@ -76,6 +76,14 @@ A visual builder for `plan` flows, built up from the read-only tools that exist 
 - A GitHub Action that posts a config diff on a pull request, and an HTML export of a page.
 - Later: an editor that writes the config.
 
+### Approving from more places
+
+`bide approve` and `bide keygen` let an approver sign a decision from a terminal, on the call as the journal holds it ([approvals guide](guides/hitl-approval.md#deciding-from-the-terminal)). The next surfaces keep the property that makes k-of-n mean something: each approver signs with a key only that approver holds.
+
+- Next: an approve page in the run viewer, with Ed25519 keys held in the browser. The page shows the call from the journal and its arguments digest, as `bide approve` does, and signs in the browser, so the key never reaches the server that serves the page.
+- Later: passkey (WebAuthn) approvals, as a new signature algorithm beside `ed25519`, `ml-dsa-65` and the hybrid, so an approver's key can live in a platform authenticator or a security key and never in a file. The decision bytes stay the same; the algorithm name and its verifier are new.
+- Out of scope: server-side custodial signing, for a chat button or any click handled by a service that holds the approvers' keys. One server holding the keys of k approvers collapses k-of-n independence: whoever controls the server decides alone, and the audit can no longer show that k separate people approved. A notification points at `bide approve` instead (`internal/approveline` builds the command line).
+
 ## Later: bide beyond Go
 
 ### The bide protocol

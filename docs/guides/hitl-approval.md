@@ -13,6 +13,8 @@ The gate is part of the tool's spec (`ToolSpec.Approval`), not of its `Safety`, 
 a call may be retried. A `SubAgent` takes `WithApproval` too, so a parent can require approval before
 it delegates. Each call's result journals the policy it ran under (`Record.Approval`).
 
+Approvers can decide from a terminal with [`bide approve`](#deciding-from-the-terminal).
+
 For a typed value rather than a yes/no, use `Interrupt`/`AnswerInterrupt` instead (see the
 [tour](../tour.md#human-in-the-loop)).
 
@@ -382,6 +384,66 @@ decision recorded before the request anyway (written directly) never counts, and
 identical decision afterwards returns `ErrConfig`: see [Flows](flows.md#approval-gates-on-nodes) for
 what that means for the gate. A denial stops the flow with
 `plan.ErrApprovalDenied`. Evidence and `bide audit verify-approvals` take the node's key as the call.
+
+## Deciding from the terminal
+
+An approver who does not write Go decides with `bide approve`, on a journal the gated agent runs
+against (a SQLite file, or Postgres by the name of the environment variable that holds its DSN):
+
+```
+bide keygen -out ops.key -as ops               # once: a key pair; prints the public key to enrol
+bide approve -db run.db -list                  # the calls that wait, each with its command
+bide approve -db run.db -run refund-1049 -call c2 -as ops -key ops.key \
+    -approver-keys approver-keys.json
+```
+
+`bide approve` reads the call from the journal, never from a flag or a notification, and shows what it
+is about to sign: the run, the tool, the call's arguments (indented JSON; long ones are cut, and
+`-full` shows all), the gate (k of n, who has decided, who is pending) and the SHA-256 of the arguments
+the signature binds. That digest is read out of the very bytes that are signed
+(`agent.ApprovalDecisionBytes`), so it is the digest of the call as the journal holds it. Text in the
+arguments that could repaint a terminal or reorder what you read (escape sequences, bidirectional
+overrides) is shown escaped. It then asks you to type your approver id (or `y`); `-yes` skips the
+question for scripts. The decision is signed with your Ed25519 key, checked against the call by
+`agent.WithDecisionCheck` with the public key derived from your private key, and recorded with
+`agent.SubmitDecision`, stamped with your clock in the canonical form. A single-approver gate
+(`agent.Approve`) has no approver id and no signature: `bide approve` records it as `agent.Approve`
+does, takes neither `-as` nor `-key`, and says the decision is unsigned.
+
+`-reject` records a rejection: the same checks and the same signature, over a denial. It is a flag of
+`bide approve`, not a second command, so the checks live in one place and the prompt says `REJECT`.
+
+It records nothing, and says why, when the call has no gate, the run is not waiting on it (it ended, or
+the call has a result), the gate already has its approvals or can no longer pass, you are not one of its
+approvers, you already decided (it names what you decided and when), or your key file can be read by
+others: on Unix a private key with any group or other permission bit is refused, as `ssh` refuses one.
+
+A key file is the Ed25519 seed as 64 hex characters, the form `bide demo` writes its log key in.
+`bide keygen` writes it with mode 0600, never overwrites a file, never prints it, and prints the public
+key in the text policies and verifiers read (`ed25519:<hex>`, see `audit.ParsePublicKey`). The file is
+not encrypted: keep it on your own machine. A hardware or passkey signer is a different `Alg`, not a
+change to this format (see the [roadmap](../ROADMAP.md)).
+
+**Which key counts.** The journal records approver ids, not keys: the application's verifiers
+(`agent.WithApproverVerifiers`) hold those. A key that is not the one enrolled for you produces a
+decision that is recorded and never counts (`agent.ReasonBadSig`), and does not take your place. Give
+`-approver-keys` (the file `bide view -approver-keys` reads) and `bide approve` refuses a key that is not
+the one enrolled for `-as`, before anything is recorded, and verifies the tally it prints with the
+counting rule the gate runs (`agent.TallyApprovals`). Without it the tally counts the decisions recorded,
+and the command says the gate checks every signature when the run resumes.
+
+After the decision is recorded, re-run the pause's `RootRunID` (or let `RecoverLoop` pick it up): the
+gate counts the decisions and the call runs or is denied. `bide approve` never runs the call.
+
+`bide approve -list` shows the calls that wait for a decision, each with the command that decides it
+(`-json` for scripts). The commands never carry a secret: a Postgres journal is named by
+`-postgres-env VAR`, not by its DSN, and the key by its file. `internal/approveline` builds the same
+line, for a notification to carry.
+
+Deciding on a click in a chat message is out of scope on purpose. A button handled by a server must sign
+with a key the server holds, and one server holding the keys of k approvers collapses k-of-n
+independence: whoever controls the server decides alone. See the [roadmap](../ROADMAP.md) for approvals
+in the viewer, with keys held in the browser, and with passkeys.
 
 ## Proving the gate held
 

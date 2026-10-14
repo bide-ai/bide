@@ -278,8 +278,8 @@ carries the run ID and tool name, never the tool's arguments or results, which c
 personal data. Add detail only after deciding who may read it.
 
 In a service, call `n.Handle` in the same three places as the program does. Do not approve or resolve
-from a link in the message: decide in the viewer or with `SubmitDecision` and `agent.ResolveHalt`, where
-the decision is signed and checked.
+from a link in the message: decide with `bide approve` (it shows the call from the journal, then signs and checks the decision),
+in the viewer, or with `SubmitDecision` and `agent.ResolveHalt`, where the decision is signed and checked.
 
 ## What it does not promise
 

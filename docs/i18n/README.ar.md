@@ -27,6 +27,8 @@ bide init refund && cd refund && go mod tidy && go run .
 bide view -db run.db
 #    اختياري ودون كتابة شيفرة: استكشف سجلًّا نموذجيًّا من 14 تشغيلًا في كل الحالات
 bide sample
+#    هل تنتظر مكالمة عند بوابة الموافقة؟ اعرضها ووقّع قرارك من الطرفية
+bide approve -db run.db -list
 # 4. أثبِت: تحقّق من أدلة التشغيل دون اتصال
 bide audit verify-evidence -evidence evidence.json -pubkey keys/log.pub
 ```

@@ -62,7 +62,7 @@ The real model is sent the refund type's JSON schema as structured output. To ga
 ## Install
 
 There are two things to install, for two audiences. The `bide` command (`bide init`, `bide demo`, `bide sample`, `bide view`,
-`bide check`, `bide audit`; see the [CLI reference](reference/cli.md)) is one program for everyone,
+`bide approve`, `bide keygen`, `bide check`, `bide audit`; see the [CLI reference](reference/cli.md)) is one program for everyone,
 installed as above. To build agents, add the library to a module of your own.
 
 In a module of your own (`go mod init example.com/hello` in a new directory):

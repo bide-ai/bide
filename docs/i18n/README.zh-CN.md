@@ -27,6 +27,8 @@ bide init refund && cd refund && go mod tidy && go run .
 bide view -db run.db
 #    可选，无需写代码：浏览一份包含 14 次运行、涵盖各种状态的示例日志
 bide sample
+#    某个调用停在审批关卡？列出它，并在终端签署你的决定
+bide approve -db run.db -list
 # 4. 证明：离线验证这次运行的证据
 bide audit verify-evidence -evidence evidence.json -pubkey keys/log.pub
 ```
