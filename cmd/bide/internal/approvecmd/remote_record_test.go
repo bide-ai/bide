@@ -108,3 +108,29 @@ func TestRemote_RecordedSignatureDifferingFromTheSentOneIsNoted(t *testing.T) {
 		t.Fatalf("exit %d\n%s\n%s", code, out, errs)
 	}
 }
+
+// A record name off the decision shape is refused before the command prints that the decision was
+// recorded, and its escape sequence never reaches the terminal.
+func TestRemote_BogusRecordNameIsNotAnnouncedOrEchoed(t *testing.T) {
+	f := newFixture(t, twoOfThree, refundArgs)
+	srv := f.intake(func(next http.Handler) http.Handler {
+		return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			rec := httptest.NewRecorder()
+			next.ServeHTTP(rec, r)
+			if r.Method != http.MethodPost {
+				w.Write(rec.Body.Bytes())
+				return
+			}
+			var resp approvals.Response
+			if err := json.Unmarshal(rec.Body.Bytes(), &resp); err != nil {
+				t.Error(err)
+			}
+			resp.Record = "approval:bogus\x1b[31m"
+			writeTestJSON(w, resp)
+		})
+	})
+	code, out, errs := f.runTo("", f.to(srv.URL, "ops", "-yes")...)
+	if code != 1 || strings.Contains(out, "signed and recorded") || strings.ContainsAny(out+errs, "\x1b") {
+		t.Fatalf("exit %d\n%s\n%s", code, out, errs)
+	}
+}
