@@ -481,3 +481,52 @@ func TestP256EvidenceSealsAnyPackage(t *testing.T) {
 		t.Fatalf("%+v %v", rep, err)
 	}
 }
+
+// lyingKMS answers GetPublicKey with another key ARN than the one resolved.
+type lyingKMS struct {
+	API
+	keyID string
+}
+
+func (l lyingKMS) GetPublicKey(ctx context.Context, in *kms.GetPublicKeyInput, o ...func(*kms.Options)) (*kms.GetPublicKeyOutput, error) {
+	out, err := l.API.GetPublicKey(ctx, in, o...)
+	if err == nil {
+		out.KeyId = &l.keyID
+	}
+	return out, err
+}
+
+// The key ARN KMS returns is the key asked for: not another key, another account's key, or (for an
+// alias) a key outside the alias's partition, region and account.
+func TestOpenRefusesAnotherKeyARN(t *testing.T) {
+	other := "arn:aws:kms:eu-west-1:999999999999:key/1234abcd-12ab-34cd-56ef-1234567890ab"
+	sameAcct := "arn:aws:kms:eu-west-1:111122223333:key/aaaaaaaa-12ab-34cd-56ef-1234567890ab"
+	for _, tc := range []struct {
+		name, requested, got string
+		ok                   bool
+	}{
+		{"key ARN, same back", testARN, testARN, true},
+		{"key ARN, another account's key back", testARN, other, false},
+		{"key ARN, another key in the account back", testARN, sameAcct, false},
+		{"alias ARN, a key of the account", "arn:aws:kms:eu-west-1:111122223333:alias/bide-audit", sameAcct, true},
+		{"alias ARN, another account's key", "arn:aws:kms:eu-west-1:111122223333:alias/bide-audit", other, false},
+		{"alias ARN, another region's key", "arn:aws:kms:eu-west-1:111122223333:alias/bide-audit", "arn:aws:kms:us-east-1:111122223333:key/abc", false},
+		{"alias ARN, another partition's key", "arn:aws:kms:eu-west-1:111122223333:alias/bide-audit", "arn:aws-cn:kms:eu-west-1:111122223333:key/abc", false},
+		{"alias name, a key ARN", "alias/bide-audit", testARN, true},
+		{"alias name, not a key ARN", "alias/bide-audit", "not-an-arn", false},
+		{"alias name, an alias ARN back", "alias/bide-audit", "arn:aws:kms:eu-west-1:111122223333:alias/x", false},
+		{"key ID, its own ARN", "1234abcd-12ab-34cd-56ef-1234567890ab", testARN, true},
+		{"key ID, another key's ARN", "1234abcd-12ab-34cd-56ef-1234567890ab", sameAcct, false},
+	} {
+		err := checkResolved(tc.requested, tc.got)
+		if (err == nil) != tc.ok || (err != nil && !errors.Is(err, agent.ErrConfig)) {
+			t.Errorf("%s: err = %v, want ok = %v", tc.name, err, tc.ok)
+		}
+	}
+	// Through Open: a fake that answers with another account's key is refused before any signing.
+	f := newFake(t)
+	l := lyingKMS{API: f, keyID: other}
+	if _, err := Open(context.Background(), Config{Client: l, KeyID: testARN}); !errors.Is(err, agent.ErrConfig) || f.signs.Load() != 0 {
+		t.Fatalf("err = %v, signs = %d", err, f.signs.Load())
+	}
+}

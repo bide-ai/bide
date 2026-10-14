@@ -203,6 +203,16 @@ func (k *Token) generateEd25519(label string, id []byte, canSign bool) error {
 }
 
 func (k *Token) generate(label string, id []byte, canSign, extractable bool) error {
+	return k.generateWith(label, id, canSign, extractable, false)
+}
+
+// GenerateEd25519AlwaysAuth creates an Ed25519 key pair whose private key has CKA_ALWAYS_AUTHENTICATE
+// true: each signature needs a context-specific login between C_SignInit and C_Sign.
+func (k *Token) GenerateEd25519AlwaysAuth(label string, id []byte) error {
+	return k.generateWith(label, id, true, false, true)
+}
+
+func (k *Token) generateWith(label string, id []byte, canSign, extractable, alwaysAuth bool) error {
 	return k.withSession(func(ctx *p11.Ctx, sh p11.SessionHandle) error {
 		pub := []*p11.Attribute{
 			p11.NewAttribute(p11.CKA_EC_PARAMS, []byte{0x06, 0x03, 0x2b, 0x65, 0x70}), p11.NewAttribute(p11.CKA_VERIFY, true),
@@ -212,6 +222,9 @@ func (k *Token) generate(label string, id []byte, canSign, extractable bool) err
 			p11.NewAttribute(p11.CKA_SIGN, canSign), p11.NewAttribute(p11.CKA_TOKEN, true), p11.NewAttribute(p11.CKA_PRIVATE, true),
 			p11.NewAttribute(p11.CKA_SENSITIVE, !extractable), p11.NewAttribute(p11.CKA_EXTRACTABLE, extractable),
 			p11.NewAttribute(p11.CKA_LABEL, label), p11.NewAttribute(p11.CKA_ID, id),
+		}
+		if alwaysAuth {
+			priv = append(priv, p11.NewAttribute(p11.CKA_ALWAYS_AUTHENTICATE, true))
 		}
 		_, _, err := ctx.GenerateKeyPair(sh, []*p11.Mechanism{p11.NewMechanism(ckmECEdwardsKeyGen, nil)}, pub, priv)
 		if err != nil {
@@ -229,5 +242,52 @@ func (k *Token) GenerateP256(label string) error {
 			[]*p11.Attribute{p11.NewAttribute(p11.CKA_EC_PARAMS, p256), p11.NewAttribute(p11.CKA_VERIFY, true), p11.NewAttribute(p11.CKA_TOKEN, true), p11.NewAttribute(p11.CKA_LABEL, label)},
 			[]*p11.Attribute{p11.NewAttribute(p11.CKA_SIGN, true), p11.NewAttribute(p11.CKA_TOKEN, true), p11.NewAttribute(p11.CKA_PRIVATE, true), p11.NewAttribute(p11.CKA_LABEL, label)})
 		return err
+	})
+}
+
+// GenerateP256Key creates an ECDSA P-256 key pair with the label and CKA_ID whose private key is
+// sensitive and not extractable, the key an approver or a signer should keep on a token.
+func (k *Token) GenerateP256Key(label string, id []byte) error {
+	return k.generateP256(label, id, false)
+}
+
+// GenerateP256Extractable creates an ECDSA P-256 key pair whose private key is extractable and not
+// sensitive, a key Config.RequireNonExtractable must refuse.
+func (k *Token) GenerateP256Extractable(label string, id []byte) error {
+	return k.generateP256(label, id, true)
+}
+
+func (k *Token) generateP256(label string, id []byte, extractable bool) error {
+	return k.withSession(func(ctx *p11.Ctx, sh p11.SessionHandle) error {
+		p256 := []byte{0x06, 0x08, 0x2a, 0x86, 0x48, 0xce, 0x3d, 0x03, 0x01, 0x07}
+		_, _, err := ctx.GenerateKeyPair(sh, []*p11.Mechanism{p11.NewMechanism(p11.CKM_EC_KEY_PAIR_GEN, nil)},
+			[]*p11.Attribute{p11.NewAttribute(p11.CKA_EC_PARAMS, p256), p11.NewAttribute(p11.CKA_VERIFY, true), p11.NewAttribute(p11.CKA_TOKEN, true), p11.NewAttribute(p11.CKA_LABEL, label), p11.NewAttribute(p11.CKA_ID, id)},
+			[]*p11.Attribute{p11.NewAttribute(p11.CKA_SIGN, true), p11.NewAttribute(p11.CKA_TOKEN, true), p11.NewAttribute(p11.CKA_PRIVATE, true),
+				p11.NewAttribute(p11.CKA_SENSITIVE, !extractable), p11.NewAttribute(p11.CKA_EXTRACTABLE, extractable),
+				p11.NewAttribute(p11.CKA_LABEL, label), p11.NewAttribute(p11.CKA_ID, id)})
+		return err
+	})
+}
+
+// GenerateEd25519Remarked creates an Ed25519 key pair that is extractable and not sensitive, then
+// marks the private key CKA_EXTRACTABLE=false and CKA_SENSITIVE=true, the only direction a token
+// allows. The token now reports the key as non-extractable and sensitive, but keeps
+// CKA_NEVER_EXTRACTABLE and CKA_ALWAYS_SENSITIVE false: the key could have been copied out before
+// it was marked, and Config.RequireNonExtractable must refuse it.
+func (k *Token) GenerateEd25519Remarked(label string, id []byte) error {
+	if err := k.generate(label, id, true, true); err != nil {
+		return err
+	}
+	return k.withSession(func(ctx *p11.Ctx, sh p11.SessionHandle) error {
+		tmpl := []*p11.Attribute{p11.NewAttribute(p11.CKA_CLASS, p11.CKO_PRIVATE_KEY), p11.NewAttribute(p11.CKA_LABEL, label), p11.NewAttribute(p11.CKA_ID, id)}
+		if err := ctx.FindObjectsInit(sh, tmpl); err != nil {
+			return err
+		}
+		objs, _, err := ctx.FindObjects(sh, 2)
+		ctx.FindObjectsFinal(sh)
+		if err != nil || len(objs) != 1 {
+			return fmt.Errorf("find the key %q to re-mark: %v (%d objects)", label, err, len(objs))
+		}
+		return ctx.SetAttributeValue(sh, objs[0], []*p11.Attribute{p11.NewAttribute(p11.CKA_EXTRACTABLE, false), p11.NewAttribute(p11.CKA_SENSITIVE, true)})
 	})
 }

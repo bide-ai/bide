@@ -53,6 +53,7 @@ import (
 	"fmt"
 	"io"
 	"slices"
+	"strings"
 	"time"
 
 	"github.com/aws/aws-sdk-go-v2/service/kms"
@@ -164,6 +165,9 @@ func Open(ctx context.Context, cfg Config) (*Signer, error) {
 	if out.KeyId == nil || *out.KeyId == "" {
 		return nil, fmt.Errorf("awskms: KMS returned no key ARN for %s", cfg.KeyID)
 	}
+	if err := checkResolved(cfg.KeyID, *out.KeyId); err != nil {
+		return nil, err
+	}
 	var pub []byte
 	if alg == audit.AlgECDSAP256 {
 		pub, err = audit.ECDSAP256PublicKeyFromSPKI(out.PublicKey)
@@ -193,6 +197,35 @@ func Open(ctx context.Context, cfg Config) (*Signer, error) {
 		return nil, fmt.Errorf("awskms: self-test signature: %w", err)
 	}
 	return s, nil
+}
+
+// checkResolved refuses a key ARN that KMS returned for requested when it is not the key requested:
+// a redirected endpoint or a wrong answer naming another key, or another account's, would otherwise
+// be pinned and signed with. A key ARN or key ID must come back as that key; an alias (by ARN or by
+// name) must resolve to a key ARN, and for an alias ARN in the same partition, region and account.
+func checkResolved(requested, got string) error {
+	bad := func(why string) error {
+		return fmt.Errorf("awskms: KMS resolved %s to a key that is not the one requested (%s): %w", requested, why, agent.ErrConfig)
+	}
+	gp := strings.Split(got, ":")
+	if len(gp) != 6 || gp[0] != "arn" || gp[2] != "kms" || !strings.HasPrefix(gp[5], "key/") {
+		return bad("the answer is not a key ARN")
+	}
+	if rp := strings.Split(requested, ":"); len(rp) == 6 && rp[0] == "arn" && rp[2] == "kms" {
+		switch {
+		case strings.HasPrefix(rp[5], "key/"):
+			if got != requested {
+				return bad("a different key ARN came back")
+			}
+		case rp[1] != gp[1] || rp[3] != gp[3] || rp[4] != gp[4]:
+			return bad("the key is in another partition, region or account than the alias")
+		}
+		return nil
+	}
+	if !strings.HasPrefix(requested, "alias/") && !strings.HasSuffix(got, ":key/"+requested) {
+		return bad("a different key ID came back")
+	}
+	return nil
 }
 
 // Alg reports the signature scheme (Config.Scheme, audit.AlgEd25519 by default).

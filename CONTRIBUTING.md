@@ -25,7 +25,7 @@ without a sign-off fail the DCO check.
 
 ## Build and test
 
-This is a multi-module workspace. The core is one Go module at the repository root; adapters and backends are their own modules (`trace`, `mcptools`, `store/sqlite`, `store/postgres`, `govern`, `govern/postgreslog`, `govern/redislog`, `govern/sqlitelog`, `codec/gcf`, the `bide` command `cmd/bide` and the deprecated `cmd/bide-view`, the self-contained example modules `examples/approval`, `examples/plan`, `examples/mcp`, `examples/observability`, `examples/stripe-refund` and `examples/govern`, the test-only `integration` module, which holds the core's tests that need govern, and the test-only `signer/awskms/emulatortest`, which runs the AWS KMS signer against an in-process emulator and keeps the emulator out of the signer's module graph). A `go.work` stitches them together for local development, and CI builds and tests every module listed in `MODULES` in `.github/workflows/ci.yml` (it fails if a module is missing from that list or from `go.work`). On Linux the tests run in parallel shards, one job each (`TEST_SHARDS` in the same file): a shard names modules (`mcptools`) or single packages of a module (`.:agent`, the core's `agent` package), and a module entry covers the module's packages no package entry names. A new module goes on exactly one shard's line, or CI fails and says where (`.github/scripts/shards.sh check-modules`); a new package of the core needs nothing, since the `core` shard covers it.
+This is a multi-module workspace. The core is one Go module at the repository root; adapters and backends are their own modules (`trace`, `mcptools`, `store/sqlite`, `store/postgres`, `govern`, `govern/postgreslog`, `govern/redislog`, `govern/sqlitelog`, `codec/gcf`, the `bide` command `cmd/bide`, the `bide-hsm` command `cmd/bide/bide-hsm` (its own module under `cmd/bide`, so that it can import that module's internal approval code; it needs cgo for PKCS#11 keys), and the deprecated `cmd/bide-view`, the self-contained example modules `examples/approval`, `examples/plan`, `examples/mcp`, `examples/observability`, `examples/stripe-refund` and `examples/govern`, the test-only `integration` module, which holds the core's tests that need govern, and the test-only `signer/awskms/emulatortest`, which runs the AWS KMS signer against an in-process emulator and keeps the emulator out of the signer's module graph). A `go.work` stitches them together for local development, and CI builds and tests every module listed in `MODULES` in `.github/workflows/ci.yml` (it fails if a module is missing from that list or from `go.work`). On Linux the tests run in parallel shards, one job each (`TEST_SHARDS` in the same file): a shard names modules (`mcptools`) or single packages of a module (`.:agent`, the core's `agent` package), and a module entry covers the module's packages no package entry names. A new module goes on exactly one shard's line, or CI fails and says where (`.github/scripts/shards.sh check-modules`); a new package of the core needs nothing, since the `core` shard covers it.
 
 Build and test a module with the versions pinned in its `go.mod` (rather than the workspace) by setting `GOWORK=off` in its directory (at the root, `./...` covers only the core module):
 
@@ -171,8 +171,8 @@ go run ./internal/tools/changelog check -base origin/main -head HEAD
 
 The core module and the library modules are released together under one version. Published
 modules, tagged `<dir>/vX.Y.Z` at every release: `govern`, `store/sqlite`, `store/postgres`, `mcptools`,
-`trace`, `codec/gcf`, `govern/sqlitelog`, `govern/redislog`, `govern/postgreslog`, and the commands
-`cmd/bide` and `cmd/bide-view` (the latter one last time, at v0.14.0). Repo-only
+`trace`, `codec/gcf`, `govern/sqlitelog`, `govern/redislog`, `govern/postgreslog`, `signer/pkcs11`, `signer/awskms`, and the commands
+`cmd/bide`, `cmd/bide/bide-hsm` (installed from source with `go install`, never built into the release archives: it needs cgo) and `cmd/bide-view` (the latter one last time, at v0.14.0). Repo-only
 modules, never tagged: `examples/*`, `integration`, `benchmarks`. The lists live in
 `scripts/release.sh`, and the Lint job fails if a module is in neither.
 
@@ -220,6 +220,8 @@ tree between releases.
       for the proxy;
    3. does the same for the governed-event logs, which also require `govern` at `vX.Y.Z`, and for
       the `bide` command, which requires the stores;
+   3a. then for `bide-hsm`, which requires `bide`, the stores and the two signers; it is installed
+      from the proxy and `bide-hsm version` must report the release;
    4. checks each module with `go list -m <module>@vX.Y.Z` against the proxy, and builds a scratch
       consumer module that `go get`s every published module at `vX.Y.Z` with an empty module cache,
       then installs the released `bide` and checks that the project `bide init` writes builds and

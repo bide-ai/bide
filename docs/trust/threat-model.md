@@ -11,7 +11,7 @@ bide is a library, not a service. You run it inside your own processes against y
 | Funds and records, reached through side effects | A charge, a refund, an email, a record update that a tool performs outside bide | The downstream system. bide controls whether and how often the call is made, not what the downstream does with it |
 | The journal | The append-only record of a run: model turns, tool results, attempt markers, approval decisions | Your store: SQLite file or Postgres tables (`bide_steps`, `bide_leases`, `bide_events`, `bide_schema_version` by default) |
 | Signing keys | The tree-head (log) key that signs commitments; the grant issuer key that signs delegations | Supplied by the deployment (`audit.Signer`). Key files, or an Ed25519 or ECDSA P-256 key in a PKCS#11 token, AWS KMS or Google Cloud KMS ([key custody](../guides/key-custody.md)); see [operations](operations.md) |
-| Approver keys | One key per approver of an m-of-n gate | The approvers. bide holds only public keys (verifiers) |
+| Approver keys | One key per approver of an m-of-n gate | The approvers. bide holds only public keys (verifiers). A key file, or a key in a PKCS#11 token or AWS KMS used through `bide-hsm approve` ([key custody](../guides/key-custody.md#deciding-from-the-terminal-bide-hsm)) |
 | Webhook secrets | HMAC secrets shared with notification receivers | The sender's configuration and the receiver's |
 | Anchored tree heads | Signed heads published to an independent log | The anchor you operate (`audit.Anchor`) |
 
@@ -69,6 +69,7 @@ An approver whose key is stolen, who is coerced, or who approves carelessly.
 - **Detects.** `bide audit verify-approvals` checks offline that k named approvers signed this call before it ran, and detects an omitted decision, a recount mismatch, or a different enforced policy. Decision times are flagged when implausible (`audit.CheckDecisionTimes`) but never change a count.
 - **Does not address.**
   - One person holding two different keys, or k approvers colluding or all compromised.
+  - What an HSM or KMS key does not protect. With the key in a token (`bide-hsm approve`), the key cannot be copied out when the token marks it non-extractable (the token's word, not an attestation), but the token signs the bytes it is handed: on a compromised approver workstation with the token unlocked, malware can have it sign a decision other than the one `bide-hsm` displayed. A token with a trusted display that confirms each signature is not supported. A PIN kept in a file or an environment variable on that workstation is exposed with it.
   - Whether an approver understood what they approved.
   - Trusted time: `decided_at` is the approver's clock, and no RFC 3161 authority stamps decisions yet ([known limitations](../KNOWN-LIMITATIONS.md#approval-and-quorum)).
   - Weighted votes, role rules and approval deadlines are not supported.

@@ -22,7 +22,7 @@ func (r *rawToken) open(Config, string) (session, []byte, error) { return rawSes
 
 type rawSession struct{ r *rawToken }
 
-func (s rawSession) sign(m []byte) ([]byte, error) {
+func (s rawSession) sign(m []byte, _ func() (string, error)) ([]byte, error) {
 	// what the real session does with the token output
 	return audit.ECDSAP256SignatureFromRaw(s.r.sign(s.r.k, m))
 }

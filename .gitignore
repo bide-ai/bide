@@ -33,6 +33,9 @@
 # a command built in its own directory (go build . in cmd/<name>), as cmd/bide-demo/bide-demo once was
 /cmd/*/bide
 /cmd/*/bide-*
+# ...but cmd/bide/bide-hsm is a source directory (the bide-hsm module); only its built binary is ignored
+!/cmd/bide/bide-hsm/
+/cmd/bide/bide-hsm/bide-hsm
 
 # compiled example binaries (from `go build .` in an example dir)
 examples/mcp/mcp

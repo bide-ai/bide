@@ -59,7 +59,7 @@ type fakeSession struct {
 	closed bool
 }
 
-func (s *fakeSession) sign(m []byte) ([]byte, error) {
+func (s *fakeSession) sign(m []byte, _ func() (string, error)) ([]byte, error) {
 	s.tok.mu.Lock()
 	defer s.tok.mu.Unlock()
 	if len(s.tok.failNext) > 0 {
@@ -488,8 +488,8 @@ func (p *p256Token) open(Config, string) (session, []byte, error) {
 
 type p256Session struct{ s audit.ECDSAP256Signer }
 
-func (s p256Session) sign(m []byte) ([]byte, error) { return s.s.Sign(m) }
-func (p256Session) close() error                    { return nil }
+func (s p256Session) sign(m []byte, _ func() (string, error)) ([]byte, error) { return s.s.Sign(m) }
+func (p256Session) close() error                                              { return nil }
 
 func TestP256Scheme(t *testing.T) {
 	tok := newP256Token(t)
@@ -550,5 +550,124 @@ func TestParsePointP256(t *testing.T) {
 	}
 	if !isP256Params([]byte{0x06, 0x08, 0x2a, 0x86, 0x48, 0xce, 0x3d, 0x03, 0x01, 0x07}) || isP256Params(ed25519OID) {
 		t.Fatal("P-256 parameter check")
+	}
+}
+
+// A PIN shorter than MinPINLength is refused before the token is touched, and is not shown: the
+// scrubbing of error messages replaces the PIN by substring, which a one-character PIN would garble.
+func TestShortPINIsRefused(t *testing.T) {
+	for _, pin := range []string{"Q", "QZ", "QZq", ""} {
+		tok := newFakeToken(t)
+		c := goodConfig()
+		c.PIN = func() (string, error) { return pin, nil }
+		_, err := openWith(c, tok.open)
+		if !errors.Is(err, agent.ErrConfig) || tok.opens != 0 {
+			t.Fatalf("PIN of %d characters: err = %v, opens = %d", len(pin), err, tok.opens)
+		}
+		if pin != "" && strings.Contains(err.Error(), pin) {
+			t.Fatalf("the error shows the PIN: %v", err)
+		}
+	}
+	c := goodConfig()
+	c.PIN = func() (string, error) { return "1234", nil }
+	if _, err := openWith(c, newFakeToken(t).open); err != nil {
+		t.Fatalf("a 4-character PIN: %v", err)
+	}
+}
+
+// authSession is a key with CKA_ALWAYS_AUTHENTICATE: it signs only after the authentication the
+// signer supplies between initialising the signature and signing, as a context-specific login.
+type authSession struct {
+	priv   ed25519.PrivateKey
+	want   string // the PIN it accepts; "" for a protected path
+	signs  int
+	authed []string
+}
+
+func (s *authSession) demandsAuth() bool { return true }
+func (s *authSession) close() error      { return nil }
+func (s *authSession) sign(m []byte, auth func() (string, error)) ([]byte, error) {
+	pin, err := auth()
+	if err != nil {
+		return nil, err
+	}
+	s.authed = append(s.authed, pin)
+	if pin != s.want {
+		return nil, fmt.Errorf("CKR_PIN_INCORRECT after %q", pin)
+	}
+	s.signs++
+	return ed25519.Sign(s.priv, m), nil
+}
+
+func openAuth(t *testing.T, cfg Config, want string) (*Signer, *authSession, *int) {
+	t.Helper()
+	_, priv, _ := ed25519.GenerateKey(nil)
+	sess := &authSession{priv: priv, want: want}
+	opens := 0
+	s, err := openWith(cfg, func(Config, string) (session, []byte, error) {
+		opens++
+		return sess, priv.Public().(ed25519.PublicKey), nil
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	return s, sess, &opens
+}
+
+// A key that demands authentication for each signature is authenticated for each one, with the PIN
+// source asked again, and is not signed with at Open (that would ask for a PIN to show nothing).
+func TestAlwaysAuthenticateKeyIsAuthenticatedPerSignature(t *testing.T) {
+	asked := 0
+	c := goodConfig()
+	c.PIN = func() (string, error) { asked++; return "246810", nil }
+	s, sess, _ := openAuth(t, c, "246810")
+	if sess.signs != 0 || len(sess.authed) != 0 || asked != 1 {
+		t.Fatalf("after Open: %d signs, %d authentications, PIN asked %d times (once, for the login)", sess.signs, len(sess.authed), asked)
+	}
+	v, _ := audit.VerifierOf(s)
+	for i := range 3 {
+		sig, err := s.Sign([]byte("decision"))
+		if err != nil || !v.Verify([]byte("decision"), sig) {
+			t.Fatalf("signature %d: %v", i, err)
+		}
+	}
+	if sess.signs != 3 || len(sess.authed) != 3 || asked != 4 {
+		t.Fatalf("%d signs, %d authentications, PIN asked %d times; want 3, 3, 4", sess.signs, len(sess.authed), asked)
+	}
+}
+
+func TestAlwaysAuthenticateWrongShortAndMissingPIN(t *testing.T) {
+	// The token's rejection is reported, with the PIN scrubbed out of it.
+	c := goodConfig()
+	c.PIN = func() (string, error) { return "246810", nil }
+	s, _, _ := openAuth(t, c, "135790")
+	if _, err := s.Sign([]byte("m")); err == nil || strings.Contains(err.Error(), "246810") || !strings.Contains(err.Error(), "CKR_PIN_INCORRECT") {
+		t.Fatalf("wrong PIN: %v", err)
+	}
+	// A PIN source that now gives a PIN too short is refused before the token sees it.
+	short := false
+	c.PIN = func() (string, error) {
+		if short {
+			return "Qz", nil
+		}
+		return "246810", nil
+	}
+	s, sess, _ := openAuth(t, c, "246810")
+	short = true
+	if _, err := s.Sign([]byte("m")); !errors.Is(err, agent.ErrConfig) || len(sess.authed) != 0 {
+		t.Fatalf("short PIN: %v (%d authentications)", err, len(sess.authed))
+	}
+	// No PIN source and no protected path: a configuration error, not a signature attempt.
+	c = goodConfig()
+	c.PIN = nil
+	s, sess, _ = openAuth(t, c, "")
+	if _, err := s.Sign([]byte("m")); !errors.Is(err, agent.ErrConfig) || sess.signs != 0 {
+		t.Fatalf("no PIN source: %v", err)
+	}
+	// A protected authentication path authenticates with no PIN.
+	c = Config{Module: "m", TokenLabel: "t", KeyLabel: "k", ProtectedAuthPath: true}
+	s, sess, _ = openAuth(t, c, "")
+	if _, err := s.Sign([]byte("m")); err != nil || sess.signs != 1 || sess.authed[0] != "" {
+		t.Fatalf("protected path: %v %q", err, sess.authed)
 	}
 }

@@ -30,8 +30,11 @@ only when that adapter is imported.
 | redis log | `…/govern/redislog` | redis/go-redis |
 | sqlite log | `…/govern/sqlitelog` | modernc.org/sqlite |
 | postgres log | `…/govern/postgreslog` | jackc/pgx |
+| PKCS#11 signer | `…/signer/pkcs11` | miekg/pkcs11 (needs cgo; without it the module builds and `Open` returns `ErrNoCgo`) |
+| AWS KMS signer | `…/signer/awskms` | the AWS SDK for Go v2 KMS client |
 | gcf codec | `…/codec/gcf` | blackwell-systems/gcf-go |
 | bide command | `…/cmd/bide` | the two store modules, go.yaml.in/yaml/v3 (a program, installed with `go install`, not imported) |
+| bide-hsm command | `…/cmd/bide/bide-hsm` | the PKCS#11 and AWS KMS signers (`signer/pkcs11` needs cgo), the AWS SDK, the two store modules, and `cmd/bide` for its internal approval code (a program, built from source with `go install`; not in the release archives) |
 | bide-view (deprecated) | `…/cmd/bide-view` | none: a program that only points to `bide view`, removed after v0.14.0 |
 
 The core module keeps everything with no heavy deps: `agent` (loop), `schema`, `middleware`,

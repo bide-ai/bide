@@ -67,6 +67,8 @@ scripts/repro.sh vX.Y.Z      # downloads the release, checks it against checksum
 
 It exits non-zero if any binary differs. Together the three checks (signature, checksum, reproduction) reduce trust in a downloaded `bide` to trust in the source at the tag and the Go toolchain.
 
+`bide-hsm` (`bide approve` for keys in an HSM or a KMS) is not in the release archives, so none of this applies to it. It needs cgo, so a prebuilt binary would be only as reproducible as the C toolchain behind it, which the release does not pin for each operating system and architecture; the pure-Go `bide` binary keeps the guarantees above. Build `bide-hsm` from source, `CGO_ENABLED=1 go install github.com/bide-ai/bide/cmd/bide/bide-hsm@vX.Y.Z`, which the Go checksum database verifies. Two builds of it with `-trimpath -buildvcs=false` from copies of the tree at different paths with one toolchain were byte-identical when tried on one machine; without `-trimpath` (which a plain `go install` does not pass) they differ, and none of that is a claim about other toolchains.
+
 ## Read the SBOM
 
 ```sh

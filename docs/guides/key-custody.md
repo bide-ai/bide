@@ -113,9 +113,9 @@ Behavior to rely on:
 - **The PIN** (also in `%q`, JSON and escaped forms a library may print) comes from `PINFromEnv(name)` or `PINFromFile(path)`, never from a command-line argument or a
   string field. It is read each time a session opens and is not kept by the signer. It does not appear in
   an error message, in the error chain (`errors.Unwrap`, `%#v`; the chain keeps only this package's sentinels such as `ErrKeyNotFound`), or in `%v`/`%+v` of the signer. The PKCS#11 return code survives as `pkcs11.CKRError{Code}` (message-free), so a caller can branch on `errors.Is(err, pkcs11.CKRError{Code: pkcs11.CKRPinLocked})`, and on `CKRPinIncorrect`, `CKRTokenNotPresent`, `CKRKeyHandleInvalid`, `CKRSessionClosed`, `CKRUserNotLoggedIn` and the rest of the exported codes. A nil `Config.PIN` skips the login, for a
-  token that is already logged in or authenticates through a protected path (a PIN pad).
+  token that is already logged in. A token with a PIN pad (`CKF_PROTECTED_AUTHENTICATION_PATH`) is logged in with `Config.ProtectedAuthPath`, which calls `C_Login` with no PIN so the person types it on the device; it is exclusive with `Config.PIN`, and `Open` fails with `ErrNoProtectedAuthPath` if the token has no such path. A key with `CKA_ALWAYS_AUTHENTICATE` is authenticated for each signature with a context-specific login (`CKU_CONTEXT_SPECIFIC`), using the same PIN source (or protected path); `Open` does not sign its self-test with it. A PIN shorter than `MinPINLength` (4) is refused.
 - **Open proves the key pair.** It signs one fixed message and checks it against the public key, at open and at every reopen, so a private key that is not the pair of the exposed public key fails there and not at the first anchor. A key of type `CKK_EC_EDWARDS` that is Ed448 returns `ErrNoEd25519`.
-- **Non-extractable keys.** The key is not readable by the application through this signer, but whether the token lets it be exported is the token's policy. Set `Config.RequireNonExtractable` to make `Open` fail with `pkcs11.ErrExtractable` unless the token reports the key as `CKA_EXTRACTABLE=false` and `CKA_SENSITIVE=true`. That checks what the token says; it is not an attestation.
+- **Non-extractable keys.** The key is not readable by the application through this signer, but whether the token lets it be exported is the token's policy. Set `Config.RequireNonExtractable` to make `Open` fail with `pkcs11.ErrExtractable` unless the token reports the key as `CKA_EXTRACTABLE=false` and `CKA_SENSITIVE=true`, and, where the token reports them, `CKA_NEVER_EXTRACTABLE` and `CKA_ALWAYS_SENSITIVE` as true (a key that was extractable once may have been copied before it was marked otherwise). That checks what the token says; it is not an attestation.
 - **Every signature is checked** against the token's public key before `Sign` returns it, so a faulty token
   or a wrong key is an error at signing time, not a head that fails to verify later.
 - **A lost session** (the token was reset, removed and returned, or the login lapsed) is reopened once and
@@ -189,8 +189,9 @@ message, verify it with `audit.VerifierOf`).
 
 Under Ed25519 KMS signs at most 4096 bytes, and Ed25519 signs the whole message. Tree heads, grants and
 approver decisions are small but carry caller-chosen text: a tree head is about 110 bytes plus the run ID's
-length (a run ID of about 4000 bytes or more does not fit), and an approver decision includes the tool
-call's arguments. `Sign` then returns `awskms.ErrMessageTooLarge` naming the size, without calling KMS. An
+length (a run ID of about 4000 bytes or more does not fit), and an approver decision carries the run,
+call, tool and approver names and the SHA-256 of the arguments (not the arguments, so a call with large
+arguments is fine). `Sign` then returns `awskms.ErrMessageTooLarge` naming the size, without calling KMS. An
 evidence package seal signs a fixed 60-byte message (evidence format v6) and always fits. Under ECDSA
 P-256, KMS signs a 32-byte digest, so there is no limit.
 
@@ -374,13 +375,126 @@ sig, err := approver.Sign(agent.ApprovalDecisionBytes(pend.Subject(), "finance",
 The verifier the gate uses is `audit.VerifierOf(approver)`, built from the public key alone, as for any
 approver (see [Human approval](hitl-approval.md)).
 
-Command-line tools that sign a decision with a key loaded from a file do not read keys from a token or a
-key service yet. Doing so means accepting a PKCS#11 URI (RFC 7512) where they accept a key file, for example
-`pkcs11:token=bide;object=bide-finance?module-path=/usr/lib/softhsm/libsofthsm2.so&pin-source=file:/run/secrets/hsm-pin`.
-The `token`, `object` and `id` attributes select the token and key, `module-path` names the library, and
-`pin-source` names a PIN file (a URI never carries the PIN). The `bide` binary is pure Go (`CGO_ENABLED=0`,
-reproducible builds) and the PKCS#11 signer needs cgo, so that is a build-tagged variant or a companion
-binary, not a change to the default build.
+### Deciding from the terminal: `bide-hsm`
+
+`bide approve` loads the approver's key from a key file, and the `bide` binary is pure Go
+(`CGO_ENABLED=0`, reproducible builds), so it cannot load a PKCS#11 library. `bide-hsm` is the companion
+program for approvers whose keys are in an HSM, on a smart card or token, or in AWS KMS (Google Cloud KMS keys are not supported by `bide-hsm` yet: its references are `pkcs11:` and `awskms:`). `bide-hsm
+approve` is `bide approve`: one implementation of the display, the confirmation, the signature, the
+record and the receipt (`cmd/bide/internal/approvecmd`), with `-key` naming a key by reference instead of
+a file. `bide-hsm pubkey` prints the entry that enrols a key.
+
+```sh
+export BIDE_HSM_PIN=...            # or pin-source=file:/path (mode 0600) in the reference
+KEY='pkcs11:token=bide;object=finance?module-path=/usr/lib/softhsm/libsofthsm2.so'
+
+bide-hsm pubkey -as finance -key "$KEY"       # once: prints the approver-keys entry to enrol
+bide-hsm approve -db run.db -list             # the calls that wait, each with its command
+bide-hsm approve -db run.db -run refund-1049 -call c2 -as finance -key "$KEY" \
+    -approver-keys approver-keys.json
+```
+
+**Key references.** A key is named by a reference, parsed strictly:
+
+- `pkcs11:token=<label>;object=<label>;id=<%xx>?module-path=<abs path>&pin-source=<source>`, an RFC 7512
+  PKCS#11 URI. `token` (or `slot-id`) selects the token; `object` (the key's `CKA_LABEL`), `id` (its
+  `CKA_ID`, percent-encoded bytes) or both select the key; `module-path` is the vendor's library, an
+  absolute path, which `bide-hsm` loads and runs. `type`, if given, must be `private`.
+- `awskms:arn:aws:kms:<region>:<account>:key/<id>` (or `alias/<name>`), an AWS KMS key by its full ARN.
+  The ARN's region configures the client, so the reference does not depend on the environment for it;
+  credentials come from the AWS SDK's default chain. `signer/awskms` requires KMS to answer with the key
+  asked for (the same key ARN for a key ARN; a key in the alias's partition, region and account for an alias
+  ARN), so a redirected endpoint or a wrong answer naming another account's key is refused before anything is
+  signed; `bide-hsm approve` shows an alias with the key ARN it resolved to. The `awskms:` prefix, not `kms://`, is the form:
+  it names the signer (`signer/awskms`) and leaves room for other key services as other schemes.
+
+**The PIN is never in the reference.** `pin-value` is refused outright, since a PIN in an argument sits
+in the process list and the shell history. The PIN comes from `pin-source=file:/absolute/path`, read each
+time a session opens, and on Unix refused when another user owns it or group or others can read it (as `bide approve`
+refuses a key file, and as `ssh` refuses a private key; the checks are made on the open file, which is opened
+without blocking so a named pipe is refused, not waited on); from `pin-source=env:NAME` (an extension of RFC 7512, which defines only URIs for
+this); from `pin-source=prompt`, which asks on the controlling terminal with echo off (it opens `/dev/tty`,
+or `CONIN$` on Windows, and never reads standard input or a pipe, so a script cannot feed it; with no terminal it
+is refused with an error saying so, and detection asks once per run, not once per attempt); or, with no
+`pin-source`, from `$BIDE_HSM_PIN`. A token with its own PIN pad
+or keypad reader (it reports `CKF_PROTECTED_AUTHENTICATION_PATH`) uses `pin-source=protected`: `C_Login` is
+called with no PIN and the person types it on the device. It is refused for a token without the flag (SoftHSM2
+has none), a token with the flag is refused a PIN (`pkcs11.Config.ProtectedAuthPath` and `Config.PIN` are
+exclusive), and it needs `-alg`, since scheme detection would log in, and ask on the pad, more than once.
+Tested against a fake login and SoftHSM2's refusal, never a real PIN pad.
+
+**Per-signature authentication.** A key with `CKA_ALWAYS_AUTHENTICATE` (common for approver keys) needs a
+context-specific login for every signature. The signer reads the attribute when it opens the key and, for
+such a key, calls `C_Login` as `CKU_CONTEXT_SPECIFIC` between `C_SignInit` and `C_Sign`, with the same PIN
+source as the login: a prompt asks again for each signature (which is the point), a file or environment
+variable is read again, and a protected authentication path asks on the pad. `Open` does not sign its
+self-test with such a key (that would ask for a PIN to show nothing); the first real signature is still
+checked against the public key. A wrong PIN at signing is the token's error, and the session is replaced
+before the next signature, since the token keeps the failed signature active. Tested against a fake that
+signs only after the login and against SoftHSM2; each approval asks for the PIN twice with a prompt (the
+login when the key is opened, then the signature).
+
+**PIN length.** A PIN shorter than 4 characters is refused
+before the token is touched (SoftHSM2 and most tokens enforce a minimum of their own, and the scrubbing of
+error messages replaces the PIN by substring, which a one-character PIN would garble). An error names the
+variable or the file, never a PIN. The parser's errors never repeat a value from the reference, and a
+stray argument given without `-key` is not echoed, so a PIN typed into `pin-value` or after the command
+is not printed back. An error from the token or its library names what it looked up (a label, a path)
+as the reference wrote it, so a PIN typed into `object`, `token`, `module-path` or `pin-source` would
+be printed back on the approver's own terminal; the PIN was then already in the process list and the shell
+history, which is why `bide-hsm` cannot make that safe, only keep the PIN out of the places it controls.
+Every attribute that is not listed above (`serial`,
+`manufacturer`, `module-name`, and any other) is refused, not ignored: an ignored attribute would let a
+reference select a key more loosely than it reads.
+
+**Non-extractable by default.** `RequireNonExtractable` is on: a PKCS#11 key the token does not report as
+`CKA_EXTRACTABLE=false` and `CKA_SENSITIVE=true` is refused, because an approver key that can be read out
+of the token defeats keeping it there; and when the token also reports `CKA_NEVER_EXTRACTABLE` and
+`CKA_ALWAYS_SENSITIVE`, both must be true, since a key that was extractable once may have been copied
+before it was marked otherwise. `-allow-extractable` lifts that, and `bide-hsm approve` then prints
+a notice beside the key. It is the token's word and not an attestation (see
+[known limitations](../KNOWN-LIMITATIONS.md#key-custody)); it does not apply to a KMS key.
+
+**The scheme** is Ed25519 or ECDSA P-256 and is detected (Ed25519 is tried first, and only a key that is
+not an Ed25519 key is tried as P-256, so a wrong PIN costs one login, not two); `-alg` names it. Labels are
+not unique on a token: when a reference selects both an Ed25519 key and an ECDSA P-256 key, detection
+refuses (`pkcs11.ErrAmbiguous`) and asks for `id=` or `-alg` instead of picking one, at the cost of one more
+login to look for the second key. Enrol
+the key's `<scheme>:<hex>` from `bide-hsm pubkey`, in the application's verifier and in the
+`-approver-keys` file; `bide-hsm approve` refuses a key that is not the one enrolled for `-as`, before it
+records anything.
+
+**What the approver sees, and what the cloud sees.** `bide-hsm approve` shows the key's scheme and
+fingerprint and, beside them, where it is held: the reference without the source of the PIN (the token,
+the key's label, the module; or the KMS key ARN). For KMS, each run opens the key with `kms:GetPublicKey`
+and one `kms:Sign` self-test (billed, and logged by CloudTrail), then one `kms:Sign` for the decision;
+the role needs those two permissions and no others. The AWS SDK's own configuration applies, including
+the endpoint overrides it honors (`AWS_ENDPOINT_URL_KMS`, `AWS_ENDPOINT_URL`, the shared config file), which
+is how a VPC endpoint is used; a call sent elsewhere by such a setting is a different KMS, and what it
+signs only counts if the key is the one enrolled. An environment variable that holds a PIN is visible in
+`/proc/<pid>/environ` to the same user (and root) and is inherited by every child process; prefer
+`pin-source=file:` on a private file, or an environment variable set for the one command.
+
+**What it does and does not protect.** The key stays in the token or KMS, which signs the bytes
+`bide-hsm` hands it. `bide-hsm` shows the call it read from the journal and signs the digest it showed,
+but the token does not see the call: on a compromised approver workstation, with the token unlocked,
+malware can have it sign a decision other than the one displayed. A token with a trusted display that
+confirms each signature is not supported. `module-path` loads native code into the process, so name only
+a library you trust. A receipt is written in the working directory (`-receipt` names another file), as
+there is no key file to put it beside.
+
+**Building it.** `bide-hsm` is not in the release archives. It is built from source:
+
+```sh
+CGO_ENABLED=1 go install github.com/bide-ai/bide/cmd/bide/bide-hsm@latest
+```
+
+It needs a C compiler for PKCS#11 keys. Built with `CGO_ENABLED=0` it compiles and still signs with a KMS
+key; a `pkcs11:` reference then fails with `pkcs11.ErrNoCgo`, and `bide-hsm version` says which build
+you have. It is a module of its own, under `cmd/bide` so that it can use that module's internal approval
+code. See [the bide-hsm reference](../reference/bide-hsm.md) for every flag. `bide audit verify-receipts`
+(and its `-update`) signs nothing, so the receipts of decisions signed this way are verified with the
+`bide` binary as any receipt is.
 
 ## Verifying and rotating
 

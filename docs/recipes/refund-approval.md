@@ -132,7 +132,9 @@ makes a key and prints the `approver-keys.json` entry; `bide approve -db run.db 
 wait; `bide approve -db run.db -run <run> -call <call> -as ops -key ops.key -approver-keys
 approver-keys.json` shows the refund as the journal holds it, with the SHA-256 the signature binds, asks
 you to confirm, and records the signed decision, leaving a receipt. See [Deciding from the
-terminal](../guides/hitl-approval.md#deciding-from-the-terminal).
+terminal](../guides/hitl-approval.md#deciding-from-the-terminal). An approver whose key is in an HSM or a KMS
+runs `bide-hsm approve` with `-key` naming it by reference instead of a file ([Key
+custody](../guides/key-custody.md#deciding-from-the-terminal-bide-hsm)).
 
 ## What a crash does
 

@@ -12,12 +12,13 @@ import (
 	"fmt"
 	"io"
 	"os"
-	"runtime"
+	"path/filepath"
 	"slices"
 	"strings"
 
 	"github.com/bide-ai/bide/agent"
 	"github.com/bide-ai/bide/audit"
+	"github.com/bide-ai/bide/internal/approveline"
 	"github.com/bide-ai/bide/internal/term"
 )
 
@@ -50,26 +51,97 @@ var algs = []audit.Alg{audit.AlgEd25519, audit.AlgECDSAP256, audit.AlgMLDSA65, a
 // character, which is one character of a secret in a terminal log.
 var errKeyFormat = errors.New("not a bide approver key: want the hex seed bide keygen writes (ed25519), or ecdsa-p256:<hex>, ml-dsa-65:<hex>, or ed25519+ml-dsa-65:<hex>:<hex>")
 
+// KeySource says where the approver's private key comes from, and carries the words that name it,
+// so one implementation of the display, the confirmation, the signature, the record and the receipt
+// serves a key file (FileKeys) and a key held in an HSM or a KMS (bide-hsm).
+type KeySource struct {
+	// Prog is the command's name in its messages and usage: "bide approve".
+	Prog string
+	// Usage heads the command's -h output; the flags follow it.
+	Usage string
+	// KeyHelp is the help text of the -key flag.
+	KeyHelp string
+	// KeyNoun says what -key takes, for "give -as and -key (<KeyNoun>)": "your private key file".
+	KeyNoun string
+	// EnrolCmd is the command that prints an approver-keys entry for a key, named in the refusal that
+	// asks for -approver-keys: "bide keygen -as".
+	EnrolCmd string
+	// ReceiptWhere says where a default receipt goes, for the message of a repeated decision.
+	ReceiptWhere string
+	// NoEchoArgs keeps a stray positional argument out of the usage error: a key reference given
+	// without -key can hold a secret.
+	NoEchoArgs bool
+	// EnrolHelp completes "(...)" after -approver-keys in the help: how to get an entry for a key.
+	EnrolHelp string
+	// ReceiptHelp is the help text of -receipt.
+	ReceiptHelp string
+	// ListHint is the line -list prints under the commands it suggests, about the placeholders.
+	ListHint string
+	// Placeholder is what -list writes for -key in a suggested command; empty keeps
+	// approveline.KeyFilePlaceholder.
+	Placeholder string
+	// Flags registers the source's own flags before the command parses its arguments. Optional.
+	Flags func(fs *flag.FlagSet)
+	// Load returns the signer for the value of -key. It runs after the arguments are parsed, so a
+	// closure can read the flags Flags registered. A signer that is an io.Closer is closed when the
+	// command ends, and one with a Notice() string method has the notice shown with the key. It must never put key material, a PIN or a credential in an error.
+	Load func(ref string) (audit.Signer, error)
+	// ReceiptDir returns the directory a default receipt goes in for the value of -key. Nil means
+	// the directory of the key file named.
+	ReceiptDir func(ref string) string
+}
+
+// FileKeys is the key source of bide approve: -key names a key file bide keygen wrote.
+func FileKeys() KeySource {
+	return KeySource{
+		Prog:         "bide approve",
+		Usage:        usageText,
+		KeyHelp:      "your private key file, as bide keygen writes it (Ed25519, ECDSA P-256, ML-DSA-65 or hybrid) (not for a single-approver gate); on Unix it must not be readable by group or others",
+		KeyNoun:      "your private key file",
+		EnrolHelp:    "bide keygen -as prints an entry",
+		EnrolCmd:     "bide keygen -as",
+		ReceiptWhere: "next to your key",
+		ReceiptHelp:  "where to write the decision receipt (default: next to -key, named <run>-<call>-<approver>.receipt.json); mode 0600, never overwritten",
+		ListHint:     "Replace '" + approveline.KeyFilePlaceholder + "' with the path of your private key (bide keygen makes one) and '" + approveline.KeysFilePlaceholder + "' with the file of enrolled approver public keys. bide approve shows what it signs and asks first.",
+		Placeholder:  approveline.KeyFilePlaceholder,
+		Load:         LoadSigner,
+	}
+}
+
+// receiptDir is the directory of a default receipt for the -key value ref.
+func (k KeySource) receiptDir(ref string) string {
+	if k.ReceiptDir != nil {
+		return k.ReceiptDir(ref)
+	}
+	return filepath.Dir(ref)
+}
+
+// rewriteLine adapts a command line approveline built ("bide approve ... '<key-file>' ...") to this
+// source: its command name and its placeholder for -key.
+func (k KeySource) rewriteLine(line string) string {
+	if k.Prog != "bide approve" {
+		line = k.Prog + strings.TrimPrefix(line, "bide approve")
+	}
+	if k.Placeholder != "" && k.Placeholder != approveline.KeyFilePlaceholder {
+		// Only the -key argument: a run or call id may itself read '<key-file>'.
+		line = strings.Replace(line, " -key '"+approveline.KeyFilePlaceholder+"'", " -key '"+k.Placeholder+"'", 1)
+	}
+	return line
+}
+
 // LoadSigner reads the approver private key at path as an audit.Signer. It refuses a key file that
-// is not a regular file and, on Unix, one that group or others can read or write, as ssh does: the
-// file's mode is read from the open file, so what is checked is what is read. It never returns or
+// is not a regular file and, on Unix, one that another user owns or that group or others can read or
+// write, as ssh does (OpenPrivate): what is checked is the open file, so it is what is read. It never returns or
 // prints key material in an error.
 func LoadSigner(path string) (audit.Signer, error) {
-	f, err := os.Open(path)
+	f, err := OpenPrivate(path, "key file")
 	if err != nil {
+		if _, ok := errors.AsType[*PrivateFileError](err); ok {
+			return nil, err
+		}
 		return nil, fmt.Errorf("key file %s: %w", path, unwrapPath(err))
 	}
 	defer f.Close()
-	fi, err := f.Stat()
-	if err != nil {
-		return nil, fmt.Errorf("key file %s: %w", path, unwrapPath(err))
-	}
-	if !fi.Mode().IsRegular() {
-		return nil, fmt.Errorf("key file %s is not a regular file", path)
-	}
-	if runtime.GOOS != "windows" && fi.Mode().Perm()&0o077 != 0 {
-		return nil, fmt.Errorf("key file %s is accessible by others (mode %04o); a private key must not be: run chmod 600 %s", path, fi.Mode().Perm(), path)
-	}
 	b, err := io.ReadAll(io.LimitReader(f, maxKeyFile+1))
 	if err != nil {
 		return nil, fmt.Errorf("key file %s: %w", path, unwrapPath(err))

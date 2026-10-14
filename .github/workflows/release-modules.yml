@@ -17,6 +17,7 @@ on:
     tags:
       - '*/v*'
       - '*/*/v*'
+      - '*/*/*/v*'
   workflow_dispatch:
     inputs:
       tag:

@@ -8,6 +8,7 @@ import (
 	"crypto/ed25519"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"os"
 	"path/filepath"
 	"strings"
@@ -49,6 +50,12 @@ func TestMain(m *testing.M) {
 			return err
 		}
 		if err := tok.GenerateEd25519NoSign("nosign", []byte{5}); err != nil {
+			return err
+		}
+		if err := tok.GenerateEd25519Remarked("remarked", []byte{7}); err != nil {
+			return err
+		}
+		if err := tok.GenerateEd25519AlwaysAuth("always", []byte{8}); err != nil {
 			return err
 		}
 		return tok.GenerateP256("p256")
@@ -188,6 +195,19 @@ func TestSoftHSMRequireNonExtractable(t *testing.T) {
 	c.RequireNonExtractable = true
 	if _, err := Open(c); !errors.Is(err, ErrExtractable) {
 		t.Fatalf("err = %v, want ErrExtractable", err)
+	}
+}
+
+// A key that was extractable and was marked non-extractable afterwards reads as non-extractable
+// and sensitive, but the token keeps its history: CKA_NEVER_EXTRACTABLE and CKA_ALWAYS_SENSITIVE
+// are false, the key may have been copied out, and RequireNonExtractable refuses it.
+func TestSoftHSMRequireNonExtractableRefusesARemarkedKey(t *testing.T) {
+	needSoftHSM(t)
+	c := hsmConfig("remarked")
+	openTest(t, c) // usable unless the option is set
+	c.RequireNonExtractable = true
+	if _, err := Open(c); !errors.Is(err, ErrExtractable) || !strings.Contains(err.Error(), "CKA_NEVER_EXTRACTABLE") {
+		t.Fatalf("err = %v, want ErrExtractable naming CKA_NEVER_EXTRACTABLE", err)
 	}
 }
 
@@ -446,5 +466,63 @@ func TestSoftHSMP256AuditedStoreAnchorAndEvidence(t *testing.T) {
 	}
 	if rep, err := ev.Verify(v); err != nil || !rep.OK || len(ev.Actions) == 0 {
 		t.Fatalf("evidence: %+v, %v", rep, err)
+	}
+}
+
+// SoftHSM2 has no PIN pad (it lacks CKF_PROTECTED_AUTHENTICATION_PATH): asking for a protected
+// authentication path is refused, and the config is exclusive with a PIN.
+func TestSoftHSMRefusesProtectedAuthPath(t *testing.T) {
+	needSoftHSM(t)
+	c := hsmConfig("audit")
+	c.PIN = nil
+	c.ProtectedAuthPath = true
+	if _, err := Open(c); !errors.Is(err, ErrNoProtectedAuthPath) || !errors.Is(err, agent.ErrConfig) {
+		t.Fatalf("err = %v, want ErrNoProtectedAuthPath", err)
+	}
+	c.PIN = hsmConfig("").PIN
+	if _, err := Open(c); !errors.Is(err, agent.ErrConfig) || !strings.Contains(err.Error(), "not both") {
+		t.Fatalf("both PIN and ProtectedAuthPath: %v", err)
+	}
+}
+
+// A key with CKA_ALWAYS_AUTHENTICATE signs only after a context-specific login for each signature:
+// the signer logs in as the context-specific user between C_SignInit and C_Sign with the PIN source,
+// asked again each time. (Without it SoftHSM2 fails the signature with CKR_USER_NOT_LOGGED_IN.)
+func TestSoftHSMAlwaysAuthenticateKey(t *testing.T) {
+	needSoftHSM(t)
+	asked := 0
+	c := hsmConfig("always")
+	c.PIN = func() (string, error) { asked++; return tok.PIN, nil }
+	s := openTest(t, c)
+	if asked != 1 {
+		t.Fatalf("PIN asked %d times at Open, want 1 (the login)", asked)
+	}
+	v, _ := audit.VerifierOf(s)
+	for i := range 3 {
+		msg := []byte(fmt.Sprintf("decision %d", i))
+		sig, err := s.Sign(msg)
+		if err != nil || !v.Verify(msg, sig) {
+			t.Fatalf("signature %d: %v", i, err)
+		}
+	}
+	if asked != 4 {
+		t.Fatalf("PIN asked %d times after 3 signatures, want 4", asked)
+	}
+	// A wrong PIN at signing is the token's refusal, with the PIN scrubbed.
+	wrong := false
+	c.PIN = func() (string, error) {
+		if wrong {
+			return "97531357", nil
+		}
+		return tok.PIN, nil
+	}
+	s2 := openTest(t, c)
+	wrong = true
+	if _, err := s2.Sign([]byte("m")); err == nil || strings.Contains(err.Error(), "97531357") {
+		t.Fatalf("wrong PIN at signing: %v", err)
+	}
+	wrong = false
+	if _, err := s2.Sign([]byte("m")); err != nil {
+		t.Fatalf("the right PIN after a wrong one: %v", err)
 	}
 }

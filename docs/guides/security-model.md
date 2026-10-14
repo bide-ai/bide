@@ -187,7 +187,7 @@ it was not rewritten is what anchoring (above) makes provable afterward.
 Attribution is only as strong as the key custody behind these signatures. The runtime does not
 generate, store or rotate keys; supplying and protecting them is the deployment's responsibility.
 A signing key can live in a PKCS#11 token (an HSM), in AWS KMS or in Google Cloud KMS instead of a key file, behind the same
-`audit.Signer` interface: see [Key custody](key-custody.md) for what is supported and its limits.
+`audit.Signer` interface, and an approver decides from a terminal with a PKCS#11 or AWS KMS key through `bide-hsm approve`: see [Key custody](key-custody.md) for what is supported and its limits.
 
 ## Identity is a claim, not authentication
 
