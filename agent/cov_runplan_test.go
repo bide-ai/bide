@@ -152,3 +152,90 @@ func TestRun_CorruptRecordedStart(t *testing.T) {
 		t.Fatal("the model was called for a run whose start could not be read")
 	}
 }
+
+// A later drive's different limit is journaled as an amendment before it drives and honored by the
+// drives after it; an amendment the journal holds that does not decode, or one the store cannot
+// record, stops the drive (ErrStorage) rather than driving under limits nobody can read back.
+func TestRun_LimitAmendments(t *testing.T) {
+	ctx := context.Background()
+	// seed leaves run "r" started, with a model that stops after one tool turn.
+	seed := func(t *testing.T, s Store) *Journal {
+		t.Helper()
+		j := mustJournal(s)
+		a := mustNew(&scriptModel{turns: [][]Emit{errTurn(errors.New("down"))}}, j)
+		if _, err := a.Run(ctx, "r", UserText("go"), WithMaxTurns(5)); err == nil {
+			t.Fatal("seed did not stop")
+		}
+		return j
+	}
+	t.Run("recorded", func(t *testing.T) {
+		j := seed(t, NewMemStore())
+		a := mustNew(&scriptModel{turns: [][]Emit{textTurn("ok")}}, j)
+		if _, err := a.Run(ctx, "r", UserText("go"), WithMaxTurns(7)); err != nil {
+			t.Fatal(err)
+		}
+		r, ok, err := j.Get(ctx, "r", runLimitsStep(0))
+		if err != nil || !ok || string(r.Result) != `{"max_turns":7}` {
+			t.Fatalf("amendment = %s, %v, %v; want max_turns 7", r.Result, ok, err)
+		}
+	})
+	t.Run("corrupt amendment", func(t *testing.T) {
+		j := seed(t, NewMemStore())
+		writeRaw(t, j, "r", runLimitsStep(0), Record{Kind: StepValue, Result: []byte(`[1]`)})
+		a := mustNew(&scriptModel{turns: [][]Emit{textTurn("ok")}}, j)
+		if _, err := a.Run(ctx, "r", UserText("go")); !errors.Is(err, ErrStorage) {
+			t.Fatalf("Run over a corrupt amendment = %v; want ErrStorage", err)
+		}
+	})
+	t.Run("amendment cannot be recorded", func(t *testing.T) {
+		s := NewMemStore()
+		seed(t, s)
+		j := mustJournal(covInsertFail{s, "run:limits:"})
+		m := &countModel{inner: &scriptModel{turns: [][]Emit{textTurn("ok")}}}
+		if _, err := mustNew(m, j).Run(ctx, "r", UserText("go"), WithMaxTurns(7)); !errors.Is(err, ErrStorage) {
+			t.Fatalf("Run = %v; want ErrStorage", err)
+		}
+		if m.calls.Load() != 0 {
+			t.Fatal("the run was driven under a limit that could not be journaled")
+		}
+	})
+}
+
+// An m-of-n gate is checked before it counts: an invalid policy, no approver verifiers, or an
+// approver whose verifier has no key identity is ErrConfig, and the journal is not read.
+func TestQuorumTally_RefusesAnUnusableGate(t *testing.T) {
+	ctx := context.Background()
+	tu := ToolUse{ID: "c1", Name: "charge"}
+	good := &ApprovalPolicy{Need: 1, Approvers: []string{"a"}}
+	noKey := func(id string) (ApproverVerifier, bool) { return noKeyVerifier{fakeVerifier{id}}, true }
+	for name, c := range map[string]struct {
+		pol *ApprovalPolicy
+		vf  ApproverVerifierFor
+	}{
+		"invalid policy":     {&ApprovalPolicy{Need: 2, Approvers: []string{"a"}}, fakeVerifiers("a")},
+		"no verifiers":       {good, nil},
+		"verifier no key id": {good, noKey},
+	} {
+		a := &Agent{store: mustJournal(loadFails{NewMemStore()}), approverVerifiers: c.vf}
+		if _, _, err := a.quorumTally(ctx, "r", tu, c.pol); !errors.Is(err, ErrConfig) {
+			t.Errorf("%s: quorumTally = %v; want ErrConfig (before any read of the journal)", name, err)
+		}
+	}
+}
+
+// The tally reads the journal to count: an unreadable history is ErrStorage, and a recorded
+// terminal tally that does not decode is ErrStorage rather than a pass.
+func TestTallyGate_JournalFaults(t *testing.T) {
+	ctx := context.Background()
+	subj := ApprovalSubject{RunID: "r", ToolUseID: "c1", ToolName: "charge"}
+	pol := &ApprovalPolicy{Need: 1, Approvers: []string{"a"}}
+	vf := fakeVerifiers("a")
+	if _, _, err := tallyGate(ctx, mustJournal(loadFails{NewMemStore()}), "r", subj, pol, vf, ""); !errors.Is(err, ErrStorage) {
+		t.Errorf("unreadable history = %v; want ErrStorage", err)
+	}
+	j := memJournal()
+	writeRaw(t, j, "r", ApprovalTallyStep("c1"), Record{Kind: StepValue, Result: []byte(`[1]`)})
+	if _, _, err := tallyGate(ctx, j, "r", subj, pol, vf, ""); !errors.Is(err, ErrStorage) {
+		t.Errorf("corrupt recorded tally = %v; want ErrStorage", err)
+	}
+}
