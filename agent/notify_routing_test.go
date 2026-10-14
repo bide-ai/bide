@@ -664,7 +664,7 @@ func TestEscalation_AStepAfterARestartCarriesTheEventsDetailFromTheJournal(t *te
 	trail := NewMemNotifyTrail()
 	sinks := map[string]Notifier{"default": def, "lead": lead, "head": &fakeSink{}}
 	e1 := escalationEngine(t, j, trail, clk, "p1", sinks)
-	if err := e1.roundRouted(ctx, approvalEvent("alice", "bob", "carol")); err != nil {
+	if _, err := e1.round(ctx, e1.routed(approvalEvent("alice", "bob", "carol"))[0]); err != nil { // no chase: only the restarted process escalates
 		t.Fatal(err)
 	}
 	clk.advance(6 * time.Minute)
