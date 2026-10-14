@@ -115,9 +115,18 @@ func tallyGateOnce(ctx context.Context, store *Journal, runID string, s Approval
 		return tally, false, false, nil
 	}
 	tally.DecisionFormat = DecisionFormat
-	tally, err = step(ctx, store, runID, c.name, func(context.Context) (ApprovalTally, error) { return tally, nil }, WithSafety(Safety{ReadOnly: true}))
+	// The step the count is recorded under, by its constructor: the first count under the tally's own
+	// step, a count that supersedes another under its re-tally step.
+	name := ApprovalTallyStep(s.ToolUseID)
+	switch c.name {
+	case ApprovalRetallyStep(s.ToolUseID):
+		name = ApprovalRetallyStep(s.ToolUseID)
+	case ApprovalSoDRetallyStep(s.ToolUseID):
+		name = ApprovalSoDRetallyStep(s.ToolUseID)
+	}
+	tally, err = step(ctx, store, runID, name, func(context.Context) (ApprovalTally, error) { return tally, nil }, WithSafety(Safety{ReadOnly: true}))
 	if err != nil {
-		return ApprovalTally{}, false, false, fmt.Errorf("record %s (run %s): %w (%w)", c.name, runID, err, ErrStorage)
+		return ApprovalTally{}, false, false, fmt.Errorf("record %s (run %s): %w (%w)", name, runID, err, ErrStorage)
 	}
 	// The journal holds the first writer's tally under name: another drive's, perhaps counted under
 	// a policy that did not exclude the requester. Evaluate again from the journal.
