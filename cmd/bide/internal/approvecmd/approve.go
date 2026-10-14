@@ -8,9 +8,9 @@ package approvecmd
 
 import (
 	"bufio"
+	"bytes"
 	"cmp"
 	"context"
-	"crypto/ed25519"
 	"encoding/json"
 	"errors"
 	"flag"
@@ -52,7 +52,7 @@ It reads the call from the journal, never from a flag or a notification, and sho
 about to sign: the run, the tool, the call's arguments (indented JSON, long ones cut; -full shows
 all), the gate (k of n, who has decided, who is pending) and the SHA-256 of the arguments the
 signature binds. It then asks you to type your approver id (or y) to confirm; -yes skips the
-question, for scripts. The decision is signed with your Ed25519 private key (made by bide keygen),
+question, for scripts. The decision is signed with your private key (made by bide keygen: Ed25519, ML-DSA-65 or hybrid),
 checked against the call before it is recorded, and recorded with the time you decided.
 
 It refuses, and records nothing, when the call has no waiting gate, the run is not waiting on it,
@@ -125,7 +125,7 @@ func Main(args []string, in io.Reader, stdout, stderr io.Writer, stores Stores) 
 	fs.StringVar(&f.run, "run", "", "the run whose journal holds the call: the pause's run ID")
 	fs.StringVar(&f.call, "call", "", "the call's tool-use ID (for a plan flow node, its key, such as node:review)")
 	fs.StringVar(&f.as, "as", "", "your approver id, exactly as the gate's policy lists it (not for a single-approver gate)")
-	fs.StringVar(&f.key, "key", "", "your Ed25519 private key file, as bide keygen writes it (not for a single-approver gate); on Unix it must not be readable by group or others")
+	fs.StringVar(&f.key, "key", "", "your private key file, as bide keygen writes it (Ed25519, ML-DSA-65 or hybrid) (not for a single-approver gate); on Unix it must not be readable by group or others")
 	fs.StringVar(&f.approverKeys, "approver-keys", "", `approver public keys, a JSON object of approver id to key text, e.g. {"ops":"ed25519:ab12..."}, the file bide view -approver-keys reads (bide keygen -as prints an entry): refuse a -key that is not the one enrolled for -as, and verify the tally. Required for an m-of-n gate unless -unverified`)
 	fs.BoolVar(&f.unverified, "unverified", false, "decide an m-of-n gate without -approver-keys: the key is not checked against the one enrolled for you, and the tally is not verified")
 	fs.BoolVar(&f.reject, "reject", false, "record a rejection instead of an approval")
@@ -448,18 +448,18 @@ func (c *cmd) approve(ctx context.Context) error {
 	if err := g.preflight(f.run, f.as, verifierFor); err != nil {
 		return err
 	}
-	var priv ed25519.PrivateKey
+	var signer audit.Signer
 	if !single {
-		if priv, err = LoadKey(f.key); err != nil {
+		if signer, err = LoadSigner(f.key); err != nil {
 			return err
 		}
-		if err := checkEnrolled(keys, f.as, priv); err != nil {
+		if err := checkEnrolled(keys, f.as, signer); err != nil {
 			return err
 		}
 	}
 
 	s := g.subject(f.run)
-	c.show(g, s, priv)
+	c.show(g, s, signer)
 	if !c.confirm(single) {
 		return refuse("not confirmed; nothing was recorded")
 	}
@@ -475,18 +475,20 @@ func (c *cmd) approve(ctx context.Context) error {
 		if !digestAt(msg, s, argsDigest(s)) {
 			return errors.New("internal error: the decision bytes do not carry the shown arguments digest; nothing was signed")
 		}
-		sig := ed25519.Sign(priv, msg)
-		d := agent.Decision{RunID: f.run, ToolUseID: f.call, ApproverID: f.as, Approved: !f.reject, DecidedAt: at, Alg: audit.AlgEd25519, Signature: sig}
+		sig, err := signer.Sign(msg)
+		if err != nil {
+			return fmt.Errorf("sign the decision (nothing was recorded): %w", err)
+		}
+		d := agent.Decision{RunID: f.run, ToolUseID: f.call, ApproverID: f.as, Approved: !f.reject, DecidedAt: at, Alg: signer.Alg(), Signature: sig}
 		// The check verifies the signature against the call as the journal holds it, with the
 		// public key derived from the private key, so a decision that does not verify is never
 		// recorded; the gate re-verifies every record itself against the application's keys.
-		own := func(id string) (agent.ApproverVerifier, bool) {
-			if id != f.as {
-				return nil, false
-			}
-			return audit.Ed25519Verifier{Pub: priv.Public().(ed25519.PublicKey)}, true
+		own, err := audit.NewVerifier(signer.Alg(), signer.PublicKey())
+		if err != nil {
+			return fmt.Errorf("your key is not a usable verification key (nothing was recorded): %w", err)
 		}
-		if err := agent.SubmitDecision(ctx, j, d, agent.WithDecisionCheck(own)); err != nil {
+		ownFor := func(id string) (agent.ApproverVerifier, bool) { return own, id == f.as }
+		if err := agent.SubmitDecision(ctx, j, d, agent.WithDecisionCheck(ownFor)); err != nil {
 			return fmt.Errorf("the decision was not recorded: %w", err)
 		}
 		fmt.Fprintf(c.out, "\n%s%s call %s as %s, signed and recorded (decided %s)\n", c.st.Pass(), c.verb(!f.reject), safe(f.call), c.st.Bold(f.as), agent.FormatTimestamp(at))
@@ -510,7 +512,7 @@ func gateShape(g runview.Gate) string {
 }
 
 // checkEnrolled refuses a private key whose public key is not the one -approver-keys enrols for as.
-func checkEnrolled(keys map[string]audit.Verifier, as string, priv ed25519.PrivateKey) error {
+func checkEnrolled(keys map[string]audit.Verifier, as string, sg audit.Signer) error {
 	if keys == nil {
 		return nil
 	}
@@ -518,16 +520,14 @@ func checkEnrolled(keys map[string]audit.Verifier, as string, priv ed25519.Priva
 	if !ok {
 		return refuse("-approver-keys has no key for %q", safe(as))
 	}
-	have := publicKeyText(priv)
-	want := audit.FormatPublicKey(v.Alg(), v.PublicKey())
-	if have != want {
-		return refuse("the public key of your -key (%s) is not the key enrolled for %q in -approver-keys (%s); a decision signed with it would be recorded and never count", have, safe(as), want)
+	if sg.Alg() != v.Alg() || !bytes.Equal(sg.PublicKey(), v.PublicKey()) {
+		return refuse("your -key (%s %s) is not the key enrolled for %q in -approver-keys (%s %s); a decision signed with it would be recorded and never count", sg.Alg(), keyName(sg), safe(as), v.Alg(), audit.KeyID(string(v.Alg()), v.PublicKey()))
 	}
 	return nil
 }
 
 // show prints what is about to be signed, all of it read from the journal.
-func (c *cmd) show(g *gateOf, s agent.ApprovalSubject, priv ed25519.PrivateKey) {
+func (c *cmd) show(g *gateOf, s agent.ApprovalSubject, sg audit.Signer) {
 	st, gt := c.st, g.gate
 	action := st.Bold("Approve this call?")
 	if c.f.reject {
@@ -549,7 +549,7 @@ func (c *cmd) show(g *gateOf, s agent.ApprovalSubject, priv ed25519.PrivateKey) 
 			row("decided", fmt.Sprintf("%s %s at %s", safe(d.Approver), verdict(d.Approved), safe(d.DecidedAt)))
 		}
 		row("pending", safe(strings.Join(gt.Pending, ", ")))
-		row("you", fmt.Sprintf("%s, with key %s", st.Bold(c.f.as), publicKeyText(priv)))
+		row("you", fmt.Sprintf("%s, with %s key %s", st.Bold(c.f.as), sg.Alg(), keyName(sg)))
 		if c.f.approverKeys == "" {
 			row("", st.BoldFail("UNVERIFIED")+" "+st.Warn("this key is not checked against the key enrolled for you (-unverified, no -approver-keys): if the application enrols another, the decision is recorded and never counts"))
 		}

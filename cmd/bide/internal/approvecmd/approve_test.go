@@ -3,7 +3,6 @@ package approvecmd
 import (
 	"bytes"
 	"context"
-	"crypto/ed25519"
 	"crypto/sha256"
 	"encoding/hex"
 	"encoding/json"
@@ -43,12 +42,18 @@ const refundArgs = `{"order":1049,"amount":120,"note":"refund <ok>"}`
 
 func newFixture(t *testing.T, policy *agent.ApprovalPolicy, args string) *fixture {
 	t.Helper()
+	return newFixtureAlg(t, policy, args, audit.AlgEd25519)
+}
+
+// newFixtureAlg is newFixture with every approver's key in scheme alg.
+func newFixtureAlg(t *testing.T, policy *agent.ApprovalPolicy, args string, alg audit.Alg) *fixture {
+	t.Helper()
 	f := &fixture{t: t, dir: t.TempDir(), keys: map[string]string{}, pubs: map[string]audit.Verifier{}, charges: new(atomic.Int32), args: args, run: "refund-1049", call: "c2"}
 	f.db = filepath.Join(f.dir, "j.db")
 	enrol := map[string]string{}
 	for _, id := range approvers {
 		path := filepath.Join(f.dir, id+".key")
-		priv, err := writeKeyPair(path)
+		priv, err := writeKeyPair(path, alg)
 		if err != nil {
 			t.Fatal(err)
 		}
@@ -367,7 +372,7 @@ func (f *fixture) allRecords() []agent.Record {
 
 func publicKeyTextOf(t *testing.T, keyFile string) string {
 	t.Helper()
-	k, err := LoadKey(keyFile)
+	k, err := LoadSigner(keyFile)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -425,7 +430,7 @@ func TestKeyFileModeRefused(t *testing.T) {
 		if err := os.Chmod(f.keys["ops"], mode); err != nil {
 			t.Fatal(err)
 		}
-		if _, err := LoadKey(f.keys["ops"]); err != nil {
+		if _, err := LoadSigner(f.keys["ops"]); err != nil {
 			t.Errorf("mode %04o refused: %v", mode, err)
 		}
 	}
@@ -450,7 +455,7 @@ func TestKeyFileErrorsNeverShowTheKey(t *testing.T) {
 		if err := os.WriteFile(path, []byte(content), 0o600); err != nil {
 			t.Fatal(err)
 		}
-		_, err := LoadKey(path)
+		_, err := LoadSigner(path)
 		if err == nil {
 			t.Errorf("%s: accepted", name)
 			continue
@@ -460,10 +465,10 @@ func TestKeyFileErrorsNeverShowTheKey(t *testing.T) {
 			t.Errorf("%s: the error shows key material: %s", name, msg)
 		}
 	}
-	if _, err := LoadKey(dir); err == nil || !strings.Contains(err.Error(), "not a regular file") {
+	if _, err := LoadSigner(dir); err == nil || !strings.Contains(err.Error(), "not a regular file") {
 		t.Errorf("a directory: %v", err)
 	}
-	if _, err := LoadKey(filepath.Join(dir, "missing")); err == nil {
+	if _, err := LoadSigner(filepath.Join(dir, "missing")); err == nil {
 		t.Error("a missing file was accepted")
 	}
 }
@@ -611,7 +616,7 @@ func TestKeygen(t *testing.T) {
 			t.Fatalf("private key mode %04o", fi.Mode().Perm())
 		}
 	}
-	priv, err := LoadKey(path)
+	priv, err := LoadSigner(path)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -626,8 +631,9 @@ func TestKeygen(t *testing.T) {
 		t.Fatalf("the printed public key does not parse: %v", err)
 	}
 	msg := []byte("m")
-	if !v.Verify(msg, ed25519.Sign(priv, msg)) {
-		t.Fatal("the key pair does not match")
+	sig, err := priv.Sign(msg)
+	if err != nil || !v.Verify(msg, sig) {
+		t.Fatalf("the key pair does not match: %v", err)
 	}
 	// No overwrite, of either file, and nothing is left behind by a refusal.
 	for _, victim := range []string{path, path + ".pub"} {
@@ -725,5 +731,112 @@ func TestSingleGateNeedsNoKeys(t *testing.T) {
 	}
 	if code, _, errs := f.run_("", "-run", f.run, "-call", f.call, "-yes"); code != 0 {
 		t.Fatalf("%d %s", code, errs)
+	}
+}
+
+// TestSchemes: an approver's key can be Ed25519, ML-DSA-65 or a hybrid. bide keygen makes each, the
+// key file round-trips through the audit.Signer the command signs with, and a 2-of-3 gate of keys
+// in that scheme passes and runs the call, with the tally verified under the scheme.
+func TestSchemes(t *testing.T) {
+	for _, alg := range algs {
+		t.Run(string(alg), func(t *testing.T) {
+			f := newFixtureAlg(t, twoOfThree, refundArgs, alg)
+			sg, err := LoadSigner(f.keys["ops"])
+			if err != nil || sg.Alg() != alg {
+				t.Fatalf("LoadSigner: %v %v", sg, err)
+			}
+			pubFile, _ := os.ReadFile(f.keys["ops"] + ".pub")
+			if v, err := audit.ParsePublicKey(string(pubFile)); err != nil || v.Alg() != alg {
+				t.Fatalf("the .pub file does not parse under %s: %v", alg, err)
+			}
+			for _, id := range []string{"ops", "finance"} {
+				if code, out, errs := f.run_("", f.as(id, "-yes")...); code != 0 {
+					t.Fatalf("%s: %d %s\n%s", id, code, errs, out)
+				} else if id == "finance" {
+					contains(t, "tally", out, "verified tally: 2 of 2 needed approved by ops, finance")
+				}
+			}
+			recs := f.decisions()
+			if len(recs) != 2 || recs[0].ApproverAlg() != alg {
+				t.Fatalf("recorded under %q, want %q", recs[0].ApproverAlg(), alg)
+			}
+			if _, err := f.drive(twoOfThree, false); err != nil || f.charges.Load() != 1 {
+				t.Fatalf("resume: %v, ran %d times", err, f.charges.Load())
+			}
+		})
+	}
+}
+
+// TestSchemeMismatch: a key of another scheme than the one enrolled for the approver is refused
+// before recording, and the refusal names both key identities, not the keys.
+func TestSchemeMismatch(t *testing.T) {
+	f := newFixtureAlg(t, twoOfThree, refundArgs, audit.AlgEd25519)
+	other := filepath.Join(f.dir, "ml.key")
+	if _, err := writeKeyPair(other, audit.AlgMLDSA65); err != nil {
+		t.Fatal(err)
+	}
+	code, _, errs := f.run_("", "-run", f.run, "-call", f.call, "-as", "ops", "-key", other, "-yes", "-approver-keys", f.keysJSON)
+	if code != 1 || !strings.Contains(errs, "ml-dsa-65") || !strings.Contains(errs, "is not the key enrolled") {
+		t.Fatalf("%d %s", code, errs)
+	}
+	if len(errs) > 1000 {
+		t.Fatalf("the refusal prints whole public keys (%d bytes)", len(errs))
+	}
+	if n := len(f.decisions()); n != 0 {
+		t.Fatalf("%d decisions", n)
+	}
+}
+
+// TestKeyLinesNeverShowKeyMaterial: malformed hybrid and ML-DSA lines are refused without echoing
+// any part of them.
+func TestKeyLinesNeverShowKeyMaterial(t *testing.T) {
+	dir := t.TempDir()
+	good := strings.Repeat("ab", 32)
+	for name, content := range map[string]string{
+		"ml not hex":      "ml-dsa-65:" + strings.Repeat("ab", 31) + "zq",
+		"ml short":        "ml-dsa-65:" + strings.Repeat("ab", 16),
+		"hybrid one seed": "ed25519+ml-dsa-65:" + good,
+		"hybrid three":    "ed25519+ml-dsa-65:" + good + ":" + good + ":" + good,
+		"hybrid bad half": "ed25519+ml-dsa-65:" + good + ":" + strings.Repeat("cd", 31) + "zq",
+		"unknown scheme":  "rsa:" + good,
+		"ed25519 two":     good + ":" + good,
+	} {
+		path := filepath.Join(dir, strings.ReplaceAll(name, " ", "_"))
+		if err := os.WriteFile(path, []byte(content+"\n"), 0o600); err != nil {
+			t.Fatal(err)
+		}
+		_, err := LoadSigner(path)
+		if err == nil {
+			t.Errorf("%s: accepted", name)
+			continue
+		}
+		for _, leak := range []string{"zq", "abab", "cdcd", "invalid byte"} {
+			if strings.Contains(err.Error(), leak) {
+				t.Errorf("%s: the error shows key material (%q): %v", name, leak, err)
+			}
+		}
+	}
+}
+
+// TestKeygenAlg: -alg picks the scheme; an unknown one is a usage error; the private key is never
+// printed in any scheme.
+func TestKeygenAlg(t *testing.T) {
+	dir := t.TempDir()
+	for _, alg := range algs {
+		path := filepath.Join(dir, strings.NewReplacer("+", "_", "-", "_").Replace(string(alg))+".key")
+		var out, errb bytes.Buffer
+		if code := KeygenMain([]string{"-out", path, "-alg", string(alg), "-as", "ops", "-color", "never"}, &out, &errb); code != 0 {
+			t.Fatalf("%s: %d %s", alg, code, errb.String())
+		}
+		raw, _ := os.ReadFile(path)
+		for _, part := range strings.Split(strings.TrimSpace(string(raw)), ":") {
+			if len(part) == seedHexLen && strings.Contains(out.String(), part) {
+				t.Fatalf("%s: the private key was printed", alg)
+			}
+		}
+		contains(t, string(alg), out.String(), "public key  "+string(alg)+":")
+	}
+	if code := KeygenMain([]string{"-out", filepath.Join(dir, "x"), "-alg", "rsa"}, io.Discard, io.Discard); code != 2 {
+		t.Fatalf("unknown -alg: %d", code)
 	}
 }
