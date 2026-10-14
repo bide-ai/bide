@@ -89,13 +89,14 @@ type ConcurrencyOption interface {
 
 // ClockOption is a clock that applies to an agent (Option), to one run (RunOption), to a halt
 // resolution (ResolveOption), to a recorded approver decision (ApproveOption), and to a
-// cancellation (CancelOption): WithClock.
+// cancellation (CancelOption), and to an interrupt answer or signal (AnswerOption): WithClock.
 type ClockOption interface {
 	Option
 	RunOption
 	ResolveOption
 	ApproveOption
 	CancelOption
+	AnswerOption
 }
 
 // SafetyOption is a Safety that applies to a tool (ToolOption) and to a step (StepOption):

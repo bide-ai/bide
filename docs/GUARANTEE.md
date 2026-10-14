@@ -128,10 +128,10 @@ the same format, by the drive's clock, beside the reason as `reason`), also info
 `run:aborted` an earlier version wrote is the reason alone and loads and behaves the same. The
 records that resolve something a person was told about each note when they were written
 (`recorded_at`, `Record.RecordedAt`: UTC, RFC 3339 with milliseconds): a single approver's decision
-(`agent.Approve`), the result `agent.ResolveHalt` injects, a run's end marker (`run:complete`,
+(`agent.Approve`), an interrupt answer (`AnswerInterrupt`) and a signal (`Signal`), the result `agent.ResolveHalt` injects, a run's end marker (`run:complete`,
 `run:aborted`, `run:cancelled`) and a saga's rollback request (`run:cancel-requested`). The time is
 the claim of the process that wrote the record, by `agent.WithClock` where the call takes it
-(`Approve`, `ResolveHalt`, `Cancel`), else the run's clock, else the wall clock; the first write
+(`Approve`, `ResolveHalt`, `Cancel`, `AnswerInterrupt`, `Signal`), else the run's clock, else the wall clock; the first write
 sets it and a repeated call keeps it. Nothing signs it (the resolver of a halt, unlike an m-of-n
 approver, holds no key) and the Merkle trail anchors it once a signed head covers the record. It is
 informational like `started_at`: no drive, gate, claim, replay, resume or recovery pass reads it,

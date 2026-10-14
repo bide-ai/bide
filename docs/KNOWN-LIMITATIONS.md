@@ -319,7 +319,7 @@ fingerprint comparison out of band. Gates for high-value actions should wait for
 which are not built: they need a new signature scheme in the gate and the auditor. See
 [Approving in the browser](guides/hitl-approval.md#approving-in-the-browser).
 
-**A resolution's, a single approval's and a run's end time are the writer's claim.** Each of these
+**A resolution's, a single approval's, an answer's and a run's end time are the writer's claim.** Each of these
 records notes when it was written (`recorded_at`), by the clock of the process that wrote it, and
 nothing signs it: an m-of-n approver signs their `decided_at`, but a single approver (`agent.Approve`)
 and the operator who resolves a halt (`agent.ResolveHalt`) hold no key the runtime knows, so their

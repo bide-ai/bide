@@ -587,3 +587,38 @@ func decodeTimes(js string) (Record, error) {
 	_ = json.Unmarshal([]byte(js), &name)
 	return DecodeStoredRecord("r", name.Name, []byte(js))
 }
+
+// An interrupt answer and a signal note when they were written: WithClock's clock, else the
+// context's, else the wall clock; a redelivery keeps the first time; a nil clock or option is
+// ErrConfig and records nothing.
+func TestRecordTimes_AnswersAndSignals(t *testing.T) {
+	ctx := context.Background()
+	j := memJournal()
+	if err := j.AnswerInterrupt(ctx, "r", "q", "yes", WithClock(fixedClock(timesA))); err != nil {
+		t.Fatal(err)
+	}
+	if err := j.AnswerInterrupt(ctx, "r", "q", "no", WithClock(fixedClock(timesB))); err != nil {
+		t.Fatal(err)
+	}
+	if err := j.Signal(contextWithClock(ctx, fixedClock(timesB)), "r", "s", 1); err != nil {
+		t.Fatal(err)
+	}
+	if err := j.Signal(ctx, "r", "s2", 1, WithClock(fixedClock(timesC))); err != nil {
+		t.Fatal(err)
+	}
+	for name, want := range map[string]string{interruptStep("q"): stampA, signalStep("s"): stampB, signalStep("s2"): stampC} {
+		rec, ok := hasStep(t, j, "r", name)
+		if !ok || rec.RecordedAt() != want {
+			t.Errorf("%s: %+v (found %v), want recorded_at %q", name, rec, ok, want)
+		}
+	}
+	if err := j.Signal(ctx, "r", "bad", 1, WithClock(nil)); !errors.Is(err, ErrConfig) {
+		t.Errorf("Signal with a nil clock = %v", err)
+	}
+	if err := j.AnswerInterrupt(ctx, "r", "bad", 1, nil); !errors.Is(err, ErrConfig) {
+		t.Errorf("AnswerInterrupt with a nil option = %v", err)
+	}
+	if _, ok := hasStep(t, j, "r", signalStep("bad")); ok {
+		t.Error("a refused Signal recorded a record")
+	}
+}
