@@ -15,8 +15,10 @@
 // Ed25519 support defined by PKCS#11 v3.0. Open reports ErrNoEd25519 when the token does not list
 // the mechanism or the selected key is of another type (an ECDSA or RSA key, say). It never signs
 // with a different algorithm in its place: a signature of another scheme would not verify under
-// audit.NewVerifier(audit.AlgEd25519, ...). A token with only ECDSA P-256 needs an
-// ecdsa-p256 audit.Alg, which is a protocol change (docs/guides/key-custody.md).
+// audit.NewVerifier(audit.AlgEd25519, ...). A token with only ECDSA P-256 would sign
+// audit.AlgECDSAP256, a scheme audit verifies (audit.ECDSAP256Signer, with
+// audit.ECDSAP256SignatureFromRaw for CKM_ECDSA's r||s output); this signer has no P-256 mode yet
+// (docs/guides/key-custody.md).
 //
 // The mechanism is used without parameters, which selects pure Ed25519 (RFC 8032), the scheme
 // audit.Ed25519Signer produces. A token that insists on CK_EDDSA_PARAMS for the pure variant is

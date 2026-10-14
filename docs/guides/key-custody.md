@@ -16,7 +16,7 @@ the duties of the people who can use the key.
 | Signer | Module | Key | Signs | Limit |
 |---|---|---|---|---|
 | PKCS#11 | `github.com/bide-ai/bide/signer/pkcs11` (cgo) | Ed25519 (`CKK_EC_EDWARDS`) on a token that lists `CKM_EDDSA` | the audit log (tree heads, evidence seals, grants), approver decisions | tested against SoftHSM2 only |
-| AWS KMS | `github.com/bide-ai/bide/signer/awskms` (pure Go, AWS SDK) | `ECC_NIST_EDWARDS25519`, usage `SIGN_VERIFY` | tree heads, grants, approver decisions | 4096-byte messages: evidence packages above a few actions cannot be sealed ([below](#the-kms-4096-byte-limit)) |
+| AWS KMS | `github.com/bide-ai/bide/signer/awskms` (pure Go, AWS SDK) | `ECC_NIST_EDWARDS25519`, usage `SIGN_VERIFY` | the audit log (tree heads, evidence seals, grants), approver decisions | 4096-byte messages: fine for tree heads, grants and evidence seals (a fixed 60 bytes since evidence v6), see [below](#the-kms-4096-byte-limit) |
 
 Both are separate Go modules, so the core `github.com/bide-ai/bide` module gains no cgo and no cloud SDK.
 Both sign Ed25519 only: `audit.AlgEd25519`. They never substitute another algorithm when a key or token
@@ -24,10 +24,12 @@ cannot do Ed25519; they refuse with `ErrNoEd25519` and name what they found.
 
 Not supported, and why:
 
-- **ECDSA P-256 keys.** Many HSMs and every cloud key service can do ECDSA P-256, and some HSMs cannot do
-  Ed25519. bide has no `ecdsa-p256` scheme (`audit.Alg`), so a P-256 key cannot sign anything bide
-  verifies. Adding one is a protocol change (a new scheme name in every signed artifact, a verifier, the CLI
-  and the formal models). It is planned, and these signers will get a P-256 mode when it lands.
+- **ECDSA P-256 keys, yet.** Many HSMs and every cloud key service can do ECDSA P-256, and some HSMs cannot do
+  Ed25519. bide has an `ecdsa-p256` scheme (`audit.AlgECDSAP256`, [Audit](audit.md#ecdsa-p-256)) that every
+  verifier reads, but these signers do not have a P-256 mode yet, so a P-256-only token or key cannot be used
+  through them until they gain one. The pieces they need are in `audit`:
+  `ECDSAP256SignatureFromDER` for KMS, `ECDSAP256SignatureFromRaw` for PKCS#11, and
+  `ECDSAP256PublicKeyFromSPKI` for the public key.
 - **ML-DSA and hybrid in a token.** `audit.HybridSigner` holds a concrete `Ed25519Signer` and an
   `MLDSASigner`, so an HSM signer cannot be one half of a hybrid; and AWS KMS offers no context parameter
   for ML-DSA, which bide's ML-DSA signatures use for domain separation. Post-quantum anchoring stays with
@@ -173,12 +175,11 @@ that algorithm; check it once against your own key before relying on it (sign a 
 ### The KMS 4096-byte limit
 
 KMS signs at most 4096 bytes, and Ed25519 signs the whole message. Tree heads, grants and approver
-decisions are small but carry caller-chosen text: a tree head is about 110 bytes plus the run ID's length (a run ID of about 4000 bytes or more does not fit), and an approver decision includes the tool call's arguments. An evidence package seal (`audit.Evidence`, `EvidencePackage.Seal`) signs the
-package's whole JSON encoding, which exceeds 4096 bytes once the package proves more than a few actions
-(a 12-action package is about 11 KB). `Sign` then returns `awskms.ErrMessageTooLarge` without calling KMS,
-and `audit.Evidence` fails with it. Options today: build evidence with a signer that has no limit (a
-PKCS#11 token or a software key), or prove fewer actions per package. The planned fix is to seal over a
-digest of the package, which changes the evidence format and will remove the limit.
+decisions are small but carry caller-chosen text: a tree head is about 110 bytes plus the run ID's length (a run ID of about 4000 bytes or more does not fit), and an approver decision includes the tool call's arguments; `Sign` returns `awskms.ErrMessageTooLarge` without calling KMS for a message over the limit. An evidence package seal is not one of them: since evidence format
+`bide.audit.evidence.v6` the seal (`audit.Evidence`, `EvidencePackage.Seal`) signs a fixed 60-byte message,
+a tag and the SHA-256 of the package, so a package of any size is sealed. Evidence in the older v5 format
+(a seal over the whole package JSON) cannot be produced by this signer; v5 packages made earlier still
+verify.
 
 ## Approver keys
 

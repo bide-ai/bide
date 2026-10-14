@@ -1035,8 +1035,8 @@ scheme works inside the FIPS 140-3 module (`crypto/ecdsa`), unlike ML-DSA.
 post-quantum half, and no HSM or cloud KMS signs ML-DSA yet, so a `P-256 + ML-DSA` hybrid would not
 move the keys into the HSM either. **Hybrid post-quantum keys inside an HSM are deferred:**
 `HybridSigner`'s halves are the concrete `Ed25519Signer` and `MLDSASigner` types, which hold their keys
-in process memory. A deployment that needs the log key in an HSM or KMS today uses `ed25519` or
-`ecdsa-p256`, and one that needs post-quantum protection today keeps the hybrid key in the process.
+in process memory. A deployment that needs the log key in an HSM or KMS uses `ed25519` (the
+[key custody](key-custody.md) signers sign it today) or `ecdsa-p256` (verifiable now; the signers gain a P-256 mode separately), and one that needs post-quantum protection today keeps the hybrid key in the process.
 
 Every artifact that names a scheme (a tree head, an evidence package, an approval decision's
 `Alg`) takes `ecdsa-p256` with no format change: the scheme is a string in the artifact, and an

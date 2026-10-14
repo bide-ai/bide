@@ -230,8 +230,8 @@ run-bound encoding. An approver's m-of-n decision is journaled with the scheme i
 (`Record.ApproverAlg`), and the gate counts it only under a verifier of that scheme. One toolchain
 constraint: `crypto/mldsa` is unavailable under the FIPS 140-3 module, so FIPS mode and ML-DSA
 are mutually exclusive. A FIPS-required deployment takes ed25519 or ecdsa-p256; a post-quantum-focused one
-takes ML-DSA or hybrid. A deployment that must keep the log key in an HSM or KMS uses ed25519 or
-ecdsa-p256 today: hybrid post-quantum keys inside an HSM are deferred (`HybridSigner`'s halves hold
+takes ML-DSA or hybrid. A deployment that must keep the log key in an HSM or KMS uses ed25519 (the
+key custody signers) or ecdsa-p256 (verifiable now, with signer support to follow): hybrid post-quantum keys inside an HSM are deferred (`HybridSigner`'s halves hold
 their keys in process, and no KMS signs ML-DSA). An evidence package's seal signs a fixed-size digest
 of the package, not the package, so a KMS with a message size limit (AWS KMS: 4096 bytes) can seal any
 package.
