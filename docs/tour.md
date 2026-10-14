@@ -762,7 +762,7 @@ schema           reflect Go types → inline JSON Schema + OpenAIStrict
 middleware       Retry, RateLimit, Cost, Hedge
 trace            opt-in OTel gen_ai.* spans
 store/sqlite     on-disk durable resume (single binary, no cluster)
-store/postgres   HA durable resume (any node resumes any run)
+store/postgres   HA durable resume (any node resumes any run); bide migrate + WithoutMigration for a role with no DDL rights
 govern           Tier-2: federated governed state + quorum for agents that must agree (gsm-backed; own module)
 ```
 

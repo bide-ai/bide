@@ -21,6 +21,7 @@ proofs. Each entry notes who it is for.
 - **[Plan flows](guides/plan-flows.md)**: the `plan` package. Author a plan flow, prove a run followed the declared graph, with at-most-once and halt-on-ambiguity inherited from the substrate.
 - **[Durable steps](guides/durable-steps.md)**: `Step`, `Parallel`/`Task` fan-in, and sagas on the durable substrate.
 - **[Reliability](guides/reliability.md)**: retry, hedge, rate limit, cost tracking, and how they compose.
+- **[Postgres store](guides/postgres.md)**: multi-node durable resume, `bide migrate`, and opening the store without migrating under a role that has no DDL rights.
 - **[Signals and ambient](guides/signals.md)**: timers, human-in-the-loop, and durable signals (`Signal`/`Await`/`AwaitFor`, ordered channels). At-least-once transport in, exactly-once application.
 - **[Models](guides/models.md)**: the Anthropic, OpenAI-compatible, and Gemini adapters, `WithBaseURL`, caching, and multimodal input.
 - **[MCP](guides/mcp.md)**: Model Context Protocol as a runtime tool source.

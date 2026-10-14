@@ -8,7 +8,9 @@
 // column is bytea and whose primary key is (run_id, seq); bide_schema_version the schema version; and the function
 // bide_next_seq_v1 gives an insert its position. Open and New create the tables and the function
 // if they do not exist and refuse a database whose schema version is newer than this version
-// knows. They never alter an existing table or replace a function, so they refuse a table that
+// knows. With WithoutMigration they create nothing, for a role with no CREATE on the schema, and
+// refuse a schema that is missing (ErrSchemaMissing) or at another version (ErrSchemaVersion); the
+// owner runs Migrate (bide migrate). They never alter an existing table or replace a function, so they refuse a table that
 // lacks a uniqueness the store's statements depend on (unique (run_id, seq) and (run_id, name) on
 // bide_steps, (run_id, seq) on bide_events, and run_id on bide_leases) and a next_seq function with another definition. Run IDs
 // are compared and ordered by their bytes (collation "C"), so a Lister's order does not depend on
