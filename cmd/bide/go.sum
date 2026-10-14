@@ -1,3 +1,9 @@
+github.com/bide-ai/bide v0.16.0 h1:df0BWMrN50/ian78EIMWV7gAkA1wzWCX0kKtIfi0Sak=
+github.com/bide-ai/bide v0.16.0/go.mod h1:/9TldvSgiSK7hwUc7FpvD2y3jGS5a6EgWhqaBUv+Diw=
+github.com/bide-ai/bide/store/postgres v0.16.0 h1:COpVi+parZWA20IJUSfIPwDHhlX7+lF7xddwtcEJ3fc=
+github.com/bide-ai/bide/store/postgres v0.16.0/go.mod h1:fgXYxI1rdBJiYJoH4sxnynaHVOYVIBBI22U5/2Gpsrw=
+github.com/bide-ai/bide/store/sqlite v0.16.0 h1:fxcjq8D7jpLiJ281oZISjh/ejIos8k7zCI6p9kT6N8E=
+github.com/bide-ai/bide/store/sqlite v0.16.0/go.mod h1:yvE+1T5ObTSl40SxrivQTf6aOEi29srAQBWJtiwVpjY=
 github.com/davecgh/go-spew v1.1.0/go.mod h1:J7Y8YcW2NihsgmVo/mv3lAwl/skON4iLHjSsI+c5H38=
 github.com/dustin/go-humanize v1.0.1 h1:GzkhY7T5VNhEkwH0PVJgjz+fX1rhBrR7pRT3mDkpeCY=
 github.com/dustin/go-humanize v1.0.1/go.mod h1:Mu1zIs6XwVuF/gI1OepvI0qD18qycQx+mFykh5fBlto=
