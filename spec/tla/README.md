@@ -763,24 +763,24 @@ every drive that read the denial.
 | Config | Group | What | States | Time |
 |---|---|---|---|---|
 | `ap-one-cross` | ci | 1-of-1, two drivers in two processes with their own deployments; a redeploy removes the gate or makes it m-of-n; two `Approve` calls; 1 error reply, 1 crash | 175,641 | 4 s |
-| `ap-m-cross` | ci | m-of-n (2 of 3), two drivers in two processes recording the tally concurrently; two decisions from the approvers or the adversary; a redeploy tightens or loosens one process's policy; 1 error reply | 485,589 | 8 s |
-| `ap-m-bound` | ci | m-of-n with decisions signed over another call; one driver, three decisions | 3,191 | <1 s |
+| `ap-m-cross` | ci | m-of-n (2 of 3), two drivers in two processes recording the tally concurrently; two decisions from the approvers or the adversary; a redeploy tightens or loosens one process's policy; 1 error reply | 501,741 | 8 s |
+| `ap-m-bound` | ci | m-of-n with decisions signed over another call; one driver, three decisions | 3,255 | <1 s |
 | `ap-one-resolve` | ci | 1-of-1 with an operator resolving halts (lease check, claim of the next attempt); 1 error reply, 1 crash | 3,857 | <1 s |
 | `ap-one-resolve-minage` | ci | 1-of-1 with an operator resolving halts under `WithMinHaltAge` and the claim of the next attempt; 2 error replies | 48,356 | 2 s |
 | `ap-fold-check` | ci | the #68 fix: a policy listing one approver twice is refused | 222 | <1 s |
 | `ap-shared-key-check` | ci | F5's fix (#109): a policy whose approvers share a key is refused | 102 | <1 s |
 | `ap-keysets-check` | ci | key sets that meet without being equal ({k1, k4} and {k2, k4}) are refused | 2,406 | <1 s |
-| `ap-resolver-change` | ci | the resolver changes between the check and the count (a2 now accepts a1's key); two drivers, three decisions | 75,730 | 2 s |
-| `ap-sod` | ci | separation of duties: 2 of 3 excluding the requester `a1`, whose key `h1` holds; two drivers in two processes record the tally concurrently while three decisions arrive (`h1` as `a1`, `h2`, `h3`); a redeploy may drop the exclusion on one process | 167,403 | 24 s |
-| `ap-sod-fold` | ci | the requester `a3` is `a1` under the case rule (`FoldSame`); 1 of `a1`, `a2` excluding the requester; `h1` and `h2` sign | 191 | 1 s |
+| `ap-resolver-change` | ci | the resolver changes between the check and the count (a2 now accepts a1's key); two drivers, three decisions | 87,065 | 2 s |
+| `ap-sod` | ci | separation of duties: 2 of 3 excluding the requester `a1`, whose key `h1` holds; two drivers in two processes record the tally concurrently while three decisions arrive (`h1` as `a1`, `h2`, `h3`); a redeploy may drop the exclusion on one process | 177,539 | 24 s |
+| `ap-sod-fold` | ci | the requester `a3` is `a1` under the case rule (`FoldSame`); 1 of `a1`, `a2` excluding the requester; `h1` and `h2` sign | 203 | 1 s |
 | `ap-sod-infeasible` | ci | 3 of 3 excluding the requester `a1`, one of them: the gate refuses the policy | 942 | 1 s |
 | `ap-sod-no-requester` | ci | a policy that excludes the requester, on a run that records none: the gate refuses it | 102 | <1 s |
 | `ap-sod-redeploy` | ci | separation of duties added by a redeploy: 2 of 3 without the exclusion, and one process's redeploy makes it exclude the requester `a1`; `h1` and `h2` approve; two drivers in two processes. A tally the old deployment records, `a1` counted, never lets a drive under the new one fire | 7,693 | 2 s |
-| `ap-sod-chain` | ci | a delegated sub-run: its own requester is `a2`, the run above it was requested by `a1`; 1 of 3 excluding the requesters; `h1`, `h2` and `h3` sign, and only `h3` may count | 1,795 | 7 s |
+| `ap-sod-chain` | ci | a delegated sub-run: its own requester is `a2`, the run above it was requested by `a1`; 1 of 3 excluding the requesters; `h1`, `h2` and `h3` sign, and only `h3` may count | 1,911 | 7 s |
 | `ap-sod-anonymous-ancestor` | ci | a delegated sub-run under a root run that records no principal: the gate refuses the policy | 102 | 3 s |
 | `deep-ap-m-same` | nightly | m-of-n, two drivers in one process, three decisions, a redeploy; 1 error reply | 5,252,508 | 6 min |
 
-Regressions: `regress/ap-denial-not-final` (#70: a recorded denial honoured only while the tool
+Regressions (a regression's state count is the states TLC explored until the violation, with one TLC worker, and varies with the worker count): `regress/ap-denial-not-final` (#70: a recorded denial honoured only while the tool
 had a gate; `DenialFinal`, 12 states), `regress/ap-unbound-subject` (approval v2: a signature over
 another call counted; `TallySound`, 14 states), `regress/ap-slot-per-approver` (approval v2: one
 record per approver, so a forged record took the approver's place and the gate waited for
@@ -790,13 +790,13 @@ fixed in #109: two approvers on one key with neither the check nor the count loo
 `TallySound`, 9 states), `regress/ap-set-equality` (key sets compared for equality, not overlap;
 `TallySound`, 9 states), `regress/ap-no-count-exclusion` (the count seating what the check passed
 after the resolver changed; `TallySound`, 10 states). `regress/ap-sod-no-exclusion` (the count ignoring the requester exclusion: the requester's
-approval is seated; `SeparationOfDuties`, 131 states), `regress/ap-sod-exact-match` (the requester
+approval is seated; `SeparationOfDuties`, 125 states), `regress/ap-sod-exact-match` (the requester
 compared with approver ids exactly, so another spelling of the requester's id counts;
-`SeparationOfDuties`, 45 states), `regress/ap-sod-own-only` (only the sub-run's own requester
+`SeparationOfDuties`, 38 states), `regress/ap-sod-own-only` (only the sub-run's own requester
 excluded, so the root run's requester approves the delegated call; `SeparationOfDuties`, 23
 states), `regress/ap-sod-weak-tally-stands` (a recorded tally stands whatever the policy is now,
 so the old deployment's tally, counting the requester, lets a drive under the excluding policy
-fire; `SeparationOfDuties`, 5,788 states). Accepted: `limits/ap-resolver-change-denies`
+fire; `SeparationOfDuties`, 5,382 states). Accepted: `limits/ap-resolver-change-denies`
 (a change that makes two approvers share a key excludes both seats, and the gate can deny with
 no denial recorded; `NoDenyWithoutDenials`, 8 states).
 
