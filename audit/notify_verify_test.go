@@ -1027,24 +1027,39 @@ func TestVerifyNotifications_OperationFieldsMatchTheKey(t *testing.T) {
 // An escalation step carries the operation of the event it escalates, judged against that event's key.
 func TestVerifyNotifications_EscalationStepOperationFields(t *testing.T) {
 	gate := agent.ApprovalKey("r1", "c1", 0)
+	halt := agent.HaltedKey("r1", agent.OpTool, "c1", 1234)
 	for name, tc := range map[string]struct {
-		call string
-		want string
-	}{"the same call": {"c1", ""}, "another call": {"c2", "does not match"}} {
+		call, kind, key string
+		want            string
+	}{
+		"the same call":        {"c1", "gate", gate, ""},
+		"another call":         {"c2", "gate", gate, "does not match"},
+		"a halt, the same":     {"c1", "tool", halt, ""},
+		"a halt, another call": {"c2", "tool", halt, "does not match"},
+	} {
 		b := newTrail(t)
-		deliver(b, obsTo(gate, agent.NotificationApprovalPending, 1, ""), 2, 3)
-		st := step(gate, 1, 310, 600, "lead")
-		st.OpRun, st.OpKind, st.OpID = "r1", "gate", tc.call
+		kind := agent.NotificationApprovalPending
+		if tc.key == halt {
+			kind = agent.NotificationOutcomeUnknown
+		}
+		if kind == agent.NotificationOutcomeUnknown { // a halt's chain runs only while it is unacknowledged
+			b.add(obsTo(tc.key, kind, 1, ""), claimed(tc.key, 1))
+		} else {
+			deliver(b, obsTo(tc.key, kind, 1, ""), 2, 3)
+		}
+		st := step(tc.key, 1, 310, 600, "lead")
+		st.OpRun, st.OpKind, st.OpID = "r1", tc.kind, tc.call
 		b.add(st)
 		rep, err := verifyNotify(t, b, func(in *audit.NotifyVerifyInput) { in.Now = at(320); in.MaxClockSkew = 10 * time.Second })
+		viol := strings.Join(rep.Trails[0].Violations, ";")
 		if tc.want == "" {
-			if err != nil {
-				t.Errorf("%s: %v %v", name, err, rep.Problems)
+			if viol != "" { // the unacknowledged halt is overdue by design here; only the trail's own rules are judged
+				t.Errorf("%s: %v", name, viol)
 			}
 			continue
 		}
-		if !errors.Is(err, audit.ErrNotVerified) || !strings.Contains(strings.Join(rep.Trails[0].Violations, ";"), tc.want) {
-			t.Errorf("%s: %v %v", name, err, rep.Trails[0].Violations)
+		if !errors.Is(err, audit.ErrNotVerified) || !strings.Contains(viol, tc.want) {
+			t.Errorf("%s: %v %v", name, err, viol)
 		}
 	}
 }
