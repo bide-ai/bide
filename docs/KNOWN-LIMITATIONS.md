@@ -459,8 +459,23 @@ record shape change between pre-releases, so a later pre-release does not refuse
 journal even where it reads it differently. Finish or resolve runs before upgrading between
 pre-releases. At 1.0 the tag becomes `bide.journal.v1`, and 1.0 refuses every pre-release journal.
 
+**One SQLite file, one name, one link.** SQLite coordinates the connections to a WAL-mode database
+through files it names from the path it was given, so two handles that reach one file by different
+names can each take the WAL for their own and corrupt the database ([SQLite: how to
+corrupt](https://sqlite.org/howtocorrupt.html)). `store/sqlite` and `govern/sqlitelog` open the
+canonical path (absolute, symlinks resolved), so a symlink, a `..` spelling, a relative path or a
+different case reaches the same WAL. A hard link has no canonical name: a file with more than one hard
+link is refused with an `ErrConfig` error at `Open`, `OpenReadOnly` and `New`. Keep one directory entry
+per journal file. A `*sql.DB` you open yourself and give to `sqlite.New` is not rewritten: open it on
+the canonical path too.
+
 **SQLite is for one machine.** SQLite allows one writer at a time; a writer waits up to 30 seconds
-for the lock before failing. Its leases coordinate the processes that share one database file on
+for the lock before failing. The writers in one process that share a file (several `store/sqlite`
+stores or `govern/sqlitelog` logs on it) take turns in the order they ask, so a burst of them cannot
+starve one past the 30 seconds. Writers in different processes are not ordered: SQLite's wait for
+the lock is not a queue, so with many processes writing one file at once (or a very slow disk) an
+unlucky one can still wait out the 30 seconds and fail with "database is locked"; keep the writing
+processes few, or use Postgres. Its leases coordinate the processes that share one database file on
 one machine, not nodes: the file must be on a local disk, since SQLite's locking does not work over
 NFS. Use Postgres for more than one node. A forward jump of the system clock expires SQLite leases
 early (their expiry is computed from the clock), which the attempt claims keep safe.
