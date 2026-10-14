@@ -789,6 +789,60 @@ is refused (422 `single_gate`); a plan flow node's gate (a call id starting `nod
 `OnRecorded` is an accelerator: a run waiting on a decision is also re-driven by `agent.RecoverLoop`,
 and a hook is dropped (and reported) when `WithMaxInFlight` hooks are already running.
 
+## Approving in the browser
+
+For an approver with no `bide` binary, the intake has a browser page: an approver opens a link from a
+notification, sees the call, and signs in the browser. The page holds an Ed25519 key in WebCrypto
+(not extractable, in IndexedDB), computes the SHA-256 of the canonical arguments itself from the
+arguments it displays (it does not sign the server's digest, so what is signed is what is shown),
+fetches the call again after the confirmation and signs nothing if the tool, arguments or gate
+differ, posts the decision, and checks the receipt that comes back (the decision it signed, no
+anchoring proof, a signature that verifies under its own key). The decision flow is the same as
+`bide approve -to`; the page is the same checks in a browser.
+
+**Who serves the page matters more than anything else about it.** A signature is only as good as the
+code that asks for it. A page the application serves lets the application serve a script that shows one
+call and signs another, with the approver's real key, and the endpoint cannot tell. So there are two
+modes, and the page says which one it is in:
+
+- **Hosted by the approver's organization (the design).** Write the bundle with
+  `go run github.com/bide-ai/bide/approvals/cmd/approvepage -out ./site` (deterministic: the same release
+  gives the same bytes, with a `SHA256SUMS` you check with `sha256sum -c` against the sums the release
+  publishes), put it on **a dedicated origin that serves nothing else** (the key lives in that origin's
+  IndexedDB, so every script on the origin can use it), and add `config.json` next to it,
+  `{"intake": "https://app.example.com/approvals"}`. Serve it with the policy `approvals.PageCSP(intakeOrigin)`
+  returns. Subresource Integrity in `index.html` pins the script and the stylesheet, but cannot pin the
+  entry document itself: pin that by the published hash, checked when you deploy, and review an update
+  before you deploy it. On the application, `approvals.WithCORS("https://approve.example.com")` lets that
+  origin call the intake: it answers the preflight (`OPTIONS`) before any authentication, since a browser
+  sends the preflight without credentials, and allows no cookies cross-origin, so authenticate with mutual
+  TLS, which the browser presents on its own.
+- **Served by the application (`approvals.WithPage()`, development and low assurance).** The page is
+  at `<mount>/page/#run=<id>&call=<id>`. The application can change what it does, and the page
+  carries a banner that says so. Not for a bank.
+
+Both options require `WithAuth` (`approvals.New` returns an error without it): the page reads a call's
+arguments through `GET /pending`, so the endpoint must know who is asking, and a link in a notification
+is forwarded and logged. Tie the caller to an approver on the gate in the hook.
+
+**Enrolling the key.** The page shows the public key and its fingerprint (`audit.KeyID`) when it creates the
+key. The approver reads the fingerprint to whoever enrols keys, **out of band** (a call, in person, a ticket
+in an authenticated system), who compares it with the fingerprint of the key they enrol. An enrolment that
+skipped the comparison is not an enrolment of that person. A new browser, a cleared store (and, in Safari,
+seven days without a visit) is a rotation: a new key under the same approver id, with a second person's
+sign-off, and the old public key kept, because decisions made under it still verify. One browser per
+approver id; a second device is a rotation, or a second approver id on the gate.
+
+**What the page does not protect against.** The typed approver id, the Approve and Reject buttons, and
+the scroll-to-the-end requirement for long arguments are aids against a hurried approver, not controls: a
+script on the page can do each of them. A script that runs on the page's origin can ask the key to sign,
+extractable or not. The defence is the origin (above) and the pinned bundle; the stronger one is a
+passkey (WebAuthn), which asks for a gesture for each signature and keeps the key in hardware. That needs a
+new signature scheme in the gate and the auditor, and is its own design (see
+[the design note](../design/approve-page.md)). **A gate for a high-value action should wait for passkeys**:
+a key a script can use is not a per-signature human gesture. See also
+[KNOWN-LIMITATIONS](../KNOWN-LIMITATIONS.md).
+
 ## Scope
 
 - The core does not authenticate who holds a key. Binding an approver id to a person is your identity

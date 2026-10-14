@@ -300,6 +300,17 @@ standing is read from the gate's own tally, and decide through the intake. A not
 a re-ask would need a new record kind every reader understands, a change to the journal's format of its
 own.
 
+**The browser approve page is as strong as the origin that serves it, and no stronger than a key a
+script can use.** A page the application serves can sign anything the approver's key will sign (the
+page says so); the design is a bundle hosted by the approver's organization on a dedicated origin and
+pinned by its published hashes, whose entry document Subresource Integrity cannot pin, so the hash is
+checked at deploy time. The page's key is non-extractable but usable by any script on its origin, and the
+page's confirmation steps (the typed id, the buttons, the scroll to the end) are aids, not controls. It
+supports Ed25519 only (WebCrypto has no ML-DSA), one browser per approver id, and key enrolment needs a
+fingerprint comparison out of band. Gates for high-value actions should wait for passkeys (WebAuthn),
+which are not built: they need a new signature scheme in the gate and the auditor. See
+[Approving in the browser](guides/hitl-approval.md#approving-in-the-browser).
+
 **Decisions signed before `bide.approval.v3` must be signed again.** They no longer verify. A run
 whose gate passed on them before the upgrade, and whose call has not run, pauses to ask again
 (`agent.PendingReapproval`) rather than run on approvals an audit would fail. See

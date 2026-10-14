@@ -1,6 +1,6 @@
 # Design: a browser page for approving a call
 
-Status: decided, not built. The user decided the questions at the end of this note (below), and the page is built as its own pull request after the intake merges. It follows the approval intake
+Status: built (the page, `approvals.WithPage`, `approvals.WithCORS`, `cmd/approvepage`, and the golden vectors); the passkey follow-up is not. The user decided the questions at the end of this note (below), and the page was built to this note. It follows the approval intake
 (`approvals.Handler`, [Taking decisions over HTTP](../guides/hitl-approval.md#taking-decisions-over-http)),
 which already takes a signed decision over HTTP and shows a pending call. The page is the client that
 lets an approver who has no `bide` binary sign one. This revision folds in an adversarial review of
