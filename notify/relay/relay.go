@@ -63,6 +63,12 @@ type Config struct {
 	// full the least recently seen ID is forgotten, and an old event redelivered after that is
 	// forwarded again: the bound trades memory for a rare repeat, never for a lost notification.
 	DedupeSize int
+	// ClearsID says whether p is a clear and the ID of the event it ends ("" when it is not); nil
+	// means ClearsID. The relay remembers the IDs it saw cleared (as many as DedupeSize) and drops a
+	// later notification of such an event instead of forwarding it: a trigger that arrives after its
+	// clear (the event was cleared while its request failed, or its reply was lost) would reopen an
+	// incident that is over.
+	ClearsID func(notify.Payload) string
 	// ForwardTimeout bounds the forwarding of one delivery; zero means DefaultForwardTimeout. Forwarding
 	// continues after the sender gives up, so a retry finds it done.
 	ForwardTimeout time.Duration
@@ -80,6 +86,8 @@ type Handler struct {
 	timeout time.Duration
 	logf    func(string, ...any)
 	seen    *dedupe
+	cleared *idSet
+	clears  func(notify.Payload) string
 }
 
 // New returns a Handler, or an error for a configuration that cannot work.
@@ -110,6 +118,11 @@ func New(c Config) (*Handler, error) {
 		timeout: c.ForwardTimeout,
 		logf:    c.Logf,
 		seen:    newDedupe(c.DedupeSize),
+		cleared: newIDSet(c.DedupeSize),
+		clears:  c.ClearsID,
+	}
+	if h.clears == nil {
+		h.clears = ClearsID
 	}
 	if h.timeout <= 0 {
 		h.timeout = DefaultForwardTimeout
@@ -146,6 +159,13 @@ func (h *Handler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	if err := json.NewDecoder(r.Body).Decode(&p); err != nil || p.Schema != notify.Schema {
 		h.log("relay: rejected a verified delivery %s: not a %s document", short(r.Header.Get(notify.HeaderDelivery)), notify.Schema)
 		http.Error(w, "bad request", http.StatusBadRequest)
+		return
+	}
+	if id := h.clears(p); id != "" {
+		h.cleared.add(id) // before forwarding: a retry of this clear must still guard the event
+	} else if h.cleared.has(p.ID) {
+		h.log("relay: delivery %s (%s, run %s) dropped: already cleared", short(p.ID), p.Kind, p.RunID)
+		w.WriteHeader(http.StatusNoContent)
 		return
 	}
 	todo, st := h.seen.begin(p.ID, h.sinks)
@@ -330,4 +350,40 @@ func (d *dedupe) evict() {
 		}
 		el = prev
 	}
+}
+
+// idSet is a bounded set of IDs; adding past the bound forgets the least recently added.
+type idSet struct {
+	mu  sync.Mutex
+	max int
+	ll  *list.List
+	m   map[string]*list.Element
+}
+
+func newIDSet(max int) *idSet {
+	if max <= 0 {
+		max = DefaultDedupeSize
+	}
+	return &idSet{max: max, ll: list.New(), m: map[string]*list.Element{}}
+}
+
+func (s *idSet) add(id string) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if el, ok := s.m[id]; ok {
+		s.ll.MoveToFront(el)
+		return
+	}
+	s.m[id] = s.ll.PushFront(id)
+	for s.ll.Len() > s.max {
+		el := s.ll.Back()
+		s.ll.Remove(el)
+		delete(s.m, el.Value.(string))
+	}
+}
+
+func (s *idSet) has(id string) bool {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return s.m[id] != nil
 }

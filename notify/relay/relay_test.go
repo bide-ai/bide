@@ -585,3 +585,74 @@ func TestEvictionNeverDropsAnInFlightDelivery(t *testing.T) {
 		t.Fatalf("repeat of the in-flight event: status %d, %d extra sends (its claim was evicted)", got, sends.Load()-before)
 	}
 }
+
+func TestLateTriggerAfterItsClearIsAcknowledgedButDropped(t *testing.T) {
+	var sends atomic.Int32
+	sink := &funcSink{name: "s", fn: func(context.Context, notify.Payload) error { sends.Add(1); return nil }}
+	trigID := agent.NotifyID("k1")
+	h, _ := New(Config{Secrets: []string{secret}, Sinks: []Sink{sink}, Logf: func(string, ...any) {},
+		ClearsID: func(p notify.Payload) string {
+			if p.Kind == "resolved" {
+				return trigID
+			}
+			return ""
+		}})
+	srv := httptest.NewServer(h)
+	defer srv.Close()
+	rg := &rig{srv: srv}
+	clear := payloadBody(t, func(p *notify.Payload) {
+		p.Kind, p.ID, p.Key = "resolved", agent.NotifyID("resolved:k1"), "resolved:k1"
+	})
+	if got := rg.raw(t, clear, nil); got != 204 || sends.Load() != 1 {
+		t.Fatalf("clear: %d, %d sends", got, sends.Load())
+	}
+	if got := rg.raw(t, payloadBody(t, nil), nil); got != 204 || sends.Load() != 1 {
+		t.Fatalf("late trigger: status %d, %d sends; want 204 and no forward", got, sends.Load())
+	}
+	// An unrelated event is still forwarded.
+	other := payloadBody(t, func(p *notify.Payload) { p.ID, p.Key = agent.NotifyID("k2"), "k2" })
+	if got := rg.raw(t, other, nil); got != 204 || sends.Load() != 2 {
+		t.Fatalf("unrelated: %d, %d sends", got, sends.Load())
+	}
+}
+
+func TestClearedSetIsBounded(t *testing.T) {
+	s := newIDSet(3)
+	for i := 0; i < 20; i++ {
+		s.add(strconv.Itoa(i))
+	}
+	if len(s.m) != 3 || s.ll.Len() != 3 || !s.has("19") || s.has("0") {
+		t.Fatalf("set holds %d entries", len(s.m))
+	}
+}
+
+func TestClearThatFailsToForwardStillGuardsTheEvent(t *testing.T) {
+	fail := atomic.Bool{}
+	fail.Store(true)
+	sink := &funcSink{name: "s", fn: func(_ context.Context, p notify.Payload) error {
+		if fail.Load() {
+			return errors.New("down")
+		}
+		return nil
+	}}
+	h, _ := New(Config{Secrets: []string{secret}, Sinks: []Sink{sink}, Logf: func(string, ...any) {},
+		ClearsID: func(p notify.Payload) string {
+			if p.Kind == "resolved" {
+				return agent.NotifyID("k1")
+			}
+			return ""
+		}})
+	srv := httptest.NewServer(h)
+	defer srv.Close()
+	rg := &rig{srv: srv}
+	clear := payloadBody(t, func(p *notify.Payload) {
+		p.Kind, p.ID, p.Key = "resolved", agent.NotifyID("resolved:k1"), "resolved:k1"
+	})
+	if got := rg.raw(t, clear, nil); got != 502 {
+		t.Fatalf("clear: %d", got)
+	}
+	fail.Store(false)
+	if got := rg.raw(t, payloadBody(t, nil), nil); got != 204 {
+		t.Fatalf("late trigger: %d", got)
+	}
+}
