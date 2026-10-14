@@ -643,7 +643,11 @@ type waiting struct {
 	DeniedBy   []string `json:"denied_by,omitempty"`
 	Pending    []string `json:"pending,omitempty"`
 	AskedAt    string   `json:"asked_at,omitempty"`
-	Commands   []string `json:"commands"`
+	// Settled says the recorded decisions already settle the gate ("approved": it has its approvals;
+	// "denied": it can no longer pass): the run only needs re-running, and no command is offered.
+	// Counted from the journal as recorded, unverified: the gate checks every signature on resume.
+	Settled  string   `json:"settled,omitempty"`
+	Commands []string `json:"commands"`
 }
 
 // list prints the calls that wait for a decision in the journal.
@@ -677,14 +681,20 @@ func (c *cmd) list(ctx context.Context) error {
 				continue
 			}
 			w := waiting{Run: run, Call: g.ToolUseID, Tool: g.ToolName, Single: g.Single, Need: g.Need, Approvers: g.Approvers, ApprovedBy: g.ApprovedBy, DeniedBy: g.DeniedBy, Pending: g.Pending, AskedAt: g.AskedAt}
-			if g.Single {
+			switch {
+			case g.Single:
 				w.Commands = []string{approveline.Command(tgt, run, g.ToolUseID, "", "", true)}
+			case len(g.ApprovedBy) >= g.Need && g.Need > 0:
+				w.Settled = "approved"
+			case g.Need > 0 && len(g.Approvers)-len(g.DeniedBy) < g.Need:
+				w.Settled = "denied"
+			default:
+				for _, id := range g.Pending {
+					w.Commands = append(w.Commands, approveline.Command(tgt, run, g.ToolUseID, id, "", false))
+				}
 			}
-			for _, id := range g.Pending {
-				w.Commands = append(w.Commands, approveline.Command(tgt, run, g.ToolUseID, id, "", false))
-			}
-			if len(w.Commands) == 0 {
-				w.Commands = []string{approveline.Command(tgt, run, g.ToolUseID, "", "", false)}
+			if w.Commands == nil {
+				w.Commands = []string{}
 			}
 			out = append(out, w)
 		}
@@ -709,7 +719,14 @@ func (c *cmd) list(ctx context.Context) error {
 			fmt.Fprintf(c.out, "    one approver, one decision (unsigned)\n")
 		} else {
 			fmt.Fprintf(c.out, "    %d of %d: %s%s\n", w.Need, len(w.Approvers), safe(strings.Join(w.Approvers, ", ")), names("; approved by", w.ApprovedBy)+names("; denied by", w.DeniedBy))
-			fmt.Fprintf(c.out, "    pending: %s\n", safe(strings.Join(w.Pending, ", ")))
+			switch w.Settled {
+			case "approved":
+				fmt.Fprintf(c.out, "    %s\n", st.OK("approvals recorded: re-run the run and the call runs (agent.Run with the same run ID, or RecoverLoop)"))
+			case "denied":
+				fmt.Fprintf(c.out, "    %s\n", st.Fail("can no longer pass: re-run the run and the call is denied"))
+			default:
+				fmt.Fprintf(c.out, "    pending: %s\n", safe(strings.Join(w.Pending, ", ")))
+			}
 		}
 		for _, cmdline := range w.Commands {
 			fmt.Fprintf(c.out, "    %s\n", st.Path(cmdline))
@@ -718,6 +735,6 @@ func (c *cmd) list(ctx context.Context) error {
 	if c.f.postgres != "" {
 		fmt.Fprintf(c.out, "\n%s\n", st.Dim("Set $"+defaultPostgresEnv+" to the DSN, or use -postgres-env with your own variable: the commands above never carry the DSN."))
 	}
-	fmt.Fprintf(c.out, "\n%s\n", st.Dim("Replace "+approveline.ApproverPlaceholder+" and "+approveline.KeyFilePlaceholder+" with your own; bide approve shows what it signs and asks first."))
+	fmt.Fprintf(c.out, "\n%s\n", st.Dim("Replace '"+approveline.KeyFilePlaceholder+"' with the path of your private key (bide keygen makes one). bide approve shows what it signs and asks first."))
 	return nil
 }
