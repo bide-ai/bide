@@ -358,3 +358,23 @@ func TestNotificationsVerb_PostgresDSNComesFromTheEnvironment(t *testing.T) {
 		t.Fatalf("both -db and -postgres-env: exit %d, want 2", code)
 	}
 }
+
+// A decided gate no notifier observed does not fail the audit, and is shown as a warning.
+func TestNotificationsVerb_UnobservedResolvedIsAWarning(t *testing.T) {
+	ctx := context.Background()
+	tool := agent.MustFunc("refund", "refund", func(context.Context, struct{}) (string, error) { return "ok", nil }, agent.WithApproval(agent.SingleApproval()))
+	mem := agent.NewMemStore()
+	j, _ := agent.NewJournal(mem)
+	a, _ := agent.New(agenttest.NewScriptedModel(agenttest.ToolTurn("c1", "refund", `{}`)), j, agent.WithTools(tool))
+	if _, err := a.Run(ctx, "w", agent.UserText("go")); !errors.As(err, new(*agent.ApprovalPending)) {
+		t.Fatal(err)
+	}
+	if _, _, err := mem.Insert(ctx, "w", agent.ToolResultStep("c1"), []byte(`{"name":"`+agent.ToolResultStep("c1")+`","kind":"tool_result","tool_use_id":"c1"}`)); err != nil {
+		t.Fatal(err)
+	}
+	fakeStores(t, memNotifyStore{mem, audit.NewMemEventStore(), new(bool)})
+	code, out, _ := runCLI("notifications", "-db", "x.db", "-unanchored", "-as-of", time.Now().Add(time.Hour).Format(time.RFC3339))
+	if code != 0 || !strings.Contains(out, "note: WARNING unobserved_resolved") {
+		t.Fatalf("exit %d\n%s", code, out)
+	}
+}

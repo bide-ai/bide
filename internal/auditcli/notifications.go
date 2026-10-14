@@ -228,6 +228,8 @@ func (c *cli) report(rep audit.NotifyReport) {
 		switch {
 		case e.Status.Problem():
 			mark = "FAIL  "
+		case e.Status == audit.NotifyStatusUnobservedResolved:
+			mark = "note: WARNING "
 		case e.Status == audit.NotifyStatusAcked || e.Status == audit.NotifyStatusClearedBeforeNotification:
 			mark = "PASS  "
 		}

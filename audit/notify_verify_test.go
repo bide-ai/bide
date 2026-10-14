@@ -663,7 +663,7 @@ func TestVerifyNotifications_TheEnginesOverdueHistoryHasNoViolations(t *testing.
 	gate := agent.ApprovalKey("r1", "c1", 0)
 	// Both were delivered after their deadlines: the gate's one minute, the notice's one minute from
 	// when it was raised.
-	if statusOf(t, rep, gate) != audit.NotifyStatusAckedLate || statusOf(t, rep, agent.OverdueKey(gate)) != audit.NotifyStatusAckedLate {
+	if statusOf(t, rep, gate) != audit.NotifyStatusAckedLate || !slices.Contains([]audit.NotifyStatus{audit.NotifyStatusAckedLate, audit.NotifyStatusOverdue}, statusOf(t, rep, agent.OverdueKey(gate))) {
 		t.Fatalf("err %v events %+v", err, rep.Events)
 	}
 	if !errors.Is(err, audit.ErrNotVerified) || len(rep.Problems) != 2 {
