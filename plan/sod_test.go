@@ -274,3 +274,26 @@ func TestSoDFlow_WeakTallyDoesNotDecide(t *testing.T) {
 		t.Fatalf("Run at quorum = %v (refunds %d)", err, refunds)
 	}
 }
+
+// Conform holds a run's run:principal to its run:start: one naming another principal (here written
+// into a run recorded with none) is a divergence.
+func TestSoDFlow_ConformChecksRunPrincipal(t *testing.T) {
+	ctx := context.Background()
+	_, vf := approvers(opsFinRisk...)
+	j := agenttest.MemJournal()
+	refunds := 0
+	f := refundFlow(t, &agent.ApprovalPolicy{Need: 2, Approvers: opsFinRisk}, vf, &refunds)
+	_, err := f.Run(ctx, j, "r1", "order-42")
+	asPending(t, err)
+	if ok, diffs, err := f.Conform(ctx, j, "r1"); err != nil || !ok {
+		t.Fatalf("Conform before = %v %v %v", ok, diffs, err)
+	}
+	b, _ := json.Marshal(agent.RunPrincipal{Principal: agent.Principal{OnBehalfOf: "mallory"}})
+	if _, err := journaltest.Put(ctx, j, "r1", "run:principal", agent.Record{Kind: agent.StepValue, Result: b}); err != nil {
+		t.Fatal(err)
+	}
+	ok, diffs, err := f.Conform(ctx, j, "r1")
+	if err != nil || ok || !slices.ContainsFunc(diffs, func(d string) bool { return strings.Contains(d, "run:principal") }) {
+		t.Fatalf("Conform = %v %v %v; want the run:principal reported", ok, diffs, err)
+	}
+}

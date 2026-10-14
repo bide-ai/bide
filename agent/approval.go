@@ -594,7 +594,7 @@ func checkRequester(p ApprovalPolicy, recs []Record, runID, toolUseID string) er
 	}
 	if i := slices.IndexFunc(recs, func(r Record) bool { return r.Kind == StepValue && r.Name == runStartStep }); i >= 0 {
 		var st RunStart
-		if err := json.Unmarshal(recs[i].Result, &st); err != nil || !rp.sameAs(st) {
+		if err := json.Unmarshal(recs[i].Result, &st); err != nil || !rp.Matches(st) {
 			return fmt.Errorf("the approval policy excludes the requester, but run %s's run:principal and run:start name different principals: %w", runID, ErrConfig)
 		}
 	}

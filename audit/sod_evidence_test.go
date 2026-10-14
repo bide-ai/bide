@@ -464,6 +464,17 @@ func TestSoDEvidence_SoDRetally(t *testing.T) {
 	if _, err := audit.VerifyApprovals(swapped, "c1", g.policy, g.resolver(), edV(g.logPub)); !errors.Is(err, audit.ErrNotVerified) {
 		t.Fatalf("a superseded tally under another head: %v; want not verified", err)
 	}
+	// Without the re-tally, the outcome the evidence shows is the superseded tally, which did not
+	// exclude the requester: an auditor expecting the exclusion is told so.
+	var noSod []audit.EvidenceAction
+	for _, a := range acts {
+		if a.Ref != agent.ApprovalSoDRetallyStep("c1") {
+			noSod = append(noSod, a)
+		}
+	}
+	if v, err := audit.VerifyApprovals(noSod, "c1", g.policy, g.resolver(), edV(g.logPub)); !errors.Is(err, audit.ErrNotVerified) || v.OK || !hasProblem(v, "exclude_principal") {
+		t.Fatalf("evidence without the re-tally: %+v, %v; want a problem with the gate's exclusion", v, err)
+	}
 	// Without the superseded tally the evidence names no outcome.
 	var trimmed []audit.EvidenceAction
 	for _, a := range acts {

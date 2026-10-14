@@ -7,6 +7,7 @@ import (
 	"reflect"
 	"slices"
 	"strings"
+	"sync"
 	"testing"
 )
 
@@ -415,7 +416,7 @@ func TestSoD_DelegatedSubRunExcludesAncestors(t *testing.T) {
 		t.Fatalf("sub-run run:principal = %+v (%v), want desk under alice", rp, ok)
 	}
 	start, _, _ := RecordedStart(context.Background(), store, sub)
-	if !rp.sameAs(start) {
+	if !rp.Matches(start) {
 		t.Fatalf("run:start %+v and run:principal %+v disagree", start, rp)
 	}
 	approveAs(t, store, sub, "c1", "alice", true)
@@ -657,5 +658,51 @@ func TestSoD_NotificationNamesExcluded(t *testing.T) {
 	evs := e.pendingEvents("r1", mustHistory(t, store, "r1"))
 	if len(evs) != 1 || !slices.Equal(evs[0].approval.Excluded, []string{"alice"}) {
 		t.Fatalf("events from the pause note = %+v, want alice excluded", evs)
+	}
+}
+
+// Two drives race to record the first tally of one call: one runs a policy that does not exclude
+// the requester, the other one that does. Whoever lands first, the excluding drive never goes by a
+// tally that counted the requester, the weaker drive goes by a passing tally, and the journal's
+// outcome excludes the requester.
+func TestSoD_RacingWeakAndExcludingDrives(t *testing.T) {
+	ctx := context.Background()
+	vf := fakeVerifiers(abc...)
+	weak, strong := &ApprovalPolicy{Need: 2, Approvers: abc}, sodPolicy(2)
+	for i := range 50 {
+		store := memJournal()
+		var charged int
+		_, _ = sodRun(store, "r1", true, strong, vf, &charged, Identity{OnBehalfOf: "alice"})
+		for _, id := range abc {
+			approveAs(t, store, "r1", "c1", id, true)
+		}
+		s := subjectOf(t, store, "r1", "c1")
+		var wg sync.WaitGroup
+		var wt, st ApprovalTally
+		var werr, serr error
+		wg.Add(2)
+		go func() { defer wg.Done(); wt, _, werr = tallyGate(ctx, store, "r1", s, weak, vf, "") }()
+		go func() { defer wg.Done(); st, _, serr = tallyGate(ctx, store, "r1", s, strong, vf, "") }()
+		wg.Wait()
+		if werr != nil || serr != nil {
+			t.Fatalf("round %d: %v / %v", i, werr, serr)
+		}
+		if !st.Passed() || !st.ExcludePrincipal || !slices.Equal(st.ApprovedBy, []string{"bob", "carol"}) {
+			t.Fatalf("round %d: the excluding drive went by %+v", i, st)
+		}
+		if !wt.Passed() {
+			t.Fatalf("round %d: the weaker drive went by %+v", i, wt)
+		}
+		byName := map[string]Record{}
+		for _, r := range mustHistory(t, store, "r1") {
+			if r.Kind == StepValue {
+				byName[r.Name] = r
+			}
+		}
+		rt, _ := RecordedTally(byName, "c1")
+		out, err := decodeTally("r1", rt)
+		if err != nil || !out.ExcludePrincipal {
+			t.Fatalf("round %d: the journal's outcome %s = %+v (%v); want one that excludes the requester", i, rt.Name, out, err)
+		}
 	}
 }

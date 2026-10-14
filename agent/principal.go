@@ -42,8 +42,10 @@ func (p RunPrincipal) Requesters() []string {
 	return append(out, p.Principal.OnBehalfOf)
 }
 
-// sameAs reports whether p names the principal and ancestors start does.
-func (p RunPrincipal) sameAs(start RunStart) bool {
+// Matches reports whether p names the principal and the ancestors start does (RunStart.Principal,
+// read as an empty principal when nil, and RunStart.Ancestors): the agreement a drive and the gate
+// hold run:principal and run:start to.
+func (p RunPrincipal) Matches(start RunStart) bool {
 	var own Principal
 	if start.Principal != nil {
 		own = *start.Principal
