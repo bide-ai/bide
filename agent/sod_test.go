@@ -280,3 +280,43 @@ func TestSoD_SubAgentInheritsRequester(t *testing.T) {
 		t.Fatalf("sub-run tally = %+v, want requester alice excluded", pend.Quorum)
 	}
 }
+
+// A run that an earlier version started records its run:start only when a drive under this version
+// first loads it, after the call was requested; its principal is then whatever that drive was given,
+// not the requester's. The gate refuses to take a requester recorded after the request.
+func TestSoD_RunStartAfterTheRequestIsConfigError(t *testing.T) {
+	ctx := context.Background()
+	src := memJournal()
+	pol, vf := sodPolicy(2), fakeVerifiers(abc...)
+	var charged int
+	_, _ = sodRun(src, "r1", true, pol, vf, &charged, Identity{OnBehalfOf: "alice"})
+	recs, err := src.History(ctx, "r1")
+	if err != nil {
+		t.Fatal(err)
+	}
+	legacy := memJournal() // the same run with no run:start, as an earlier version journaled it
+	for _, r := range recs {
+		if r.Name == runStartStep {
+			continue
+		}
+		if _, err := legacy.put(ctx, "r1", r.Name, r); err != nil {
+			t.Fatal(err)
+		}
+	}
+	_, err = sodRun(legacy, "r1", false, pol, vf, &charged, Identity{OnBehalfOf: "mallory"})
+	if !errors.Is(err, ErrConfig) || !strings.Contains(err.Error(), "after") {
+		t.Fatalf("err = %v, want ErrConfig: the requester was recorded after the request", err)
+	}
+	if got, _ := RecordedRequester(mustHistory(t, legacy, "r1")); got != "mallory" {
+		t.Fatalf("the late run:start names %q; the test expects the resuming drive's principal", got)
+	}
+}
+
+func mustHistory(t *testing.T, j *Journal, runID string) []Record {
+	t.Helper()
+	recs, err := j.History(context.Background(), runID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return recs
+}

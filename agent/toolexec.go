@@ -70,7 +70,7 @@ func tallyGate(ctx context.Context, store *Journal, runID string, s ApprovalSubj
 	}
 	// Separation of duties, checked like the keys: on every evaluation, before a recorded tally is
 	// read, from the run's journaled start.
-	if err := checkRequester(*pol, recs, runID); err != nil {
+	if err := checkRequester(*pol, recs, runID, s.ToolUseID); err != nil {
 		return ApprovalTally{}, false, err
 	}
 	name, supersedes := ApprovalTallyStep(s.ToolUseID), ""

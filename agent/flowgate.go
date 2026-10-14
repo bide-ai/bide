@@ -142,7 +142,7 @@ func flowGate(ctx context.Context, d *Journal, runID, key, node string, args jso
 		if ok {
 			start = []Record{r}
 		}
-		if err := checkRequester(*pol, start, runID); err != nil {
+		if err := checkRequester(*pol, start, runID, key); err != nil {
 			return false, fmt.Errorf("plan node %q: %w", node, err)
 		}
 		requester, _ = RecordedRequester(start)

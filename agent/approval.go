@@ -569,12 +569,19 @@ func IsRunStart(r Record) bool { return r.Kind == StepValue && r.Name == runStar
 // run on every evaluation, before a recorded tally is read, beside the key check: a policy that
 // excludes the requester is refused (ErrConfig) when the run records no requester, or one that is
 // not printable ASCII (it cannot be compared with approver ids, and could only look like one), and
-// when Need is out of reach once the requester's seat is taken away.
-func checkRequester(p ApprovalPolicy, recs []Record, runID string) error {
+// when Need is out of reach once the requester's seat is taken away. It is refused too when recs
+// hold the request of the call toolUseID before the run's start: a run an earlier version started
+// records its start only when a drive under this version first loads it, so that principal is the
+// resuming drive's, not the requester's.
+func checkRequester(p ApprovalPolicy, recs []Record, runID, toolUseID string) error {
 	if !p.ExcludePrincipal {
 		return nil
 	}
 	req, ok := RecordedRequester(recs)
+	start := slices.IndexFunc(recs, IsRunStart)
+	if callIdx, _, found := FindToolCall(recs, toolUseID); ok && found && callIdx < start {
+		return fmt.Errorf("the approval policy excludes the requester, but run %s recorded its principal (run:start) only after call %q was requested, as a run an earlier version started does, so it does not name who requested the call: %w", runID, toolUseID, ErrConfig)
+	}
 	switch {
 	case !ok:
 		return fmt.Errorf("the approval policy excludes the requester, but run %s records no requester (its run:start names no principal): start the run with an identity whose OnBehalfOf names the requester (WithIdentity, or ContextWithIdentity for a plan flow): %w", runID, ErrConfig)
