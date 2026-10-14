@@ -1201,3 +1201,23 @@ func BenchmarkStateSave(b *testing.B) {
 		})
 	}
 }
+
+func TestAFlushAfterCloseWritesNothing(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "relay.state")
+	h, rg := coalescingHandler(t, path, time.Hour)
+	sendEvents(t, rg, 2, "e")
+	h.Close()
+	n := h.state.saveCount()
+	h.flush() // a timer that fired as the relay closed must not write without the lock
+	if h.state.saveCount() != n {
+		t.Fatal("a flush after Close wrote the state file without holding the lock")
+	}
+}
+
+func TestZeroFlushDelayMeansTheDefault(t *testing.T) {
+	h, _ := coalescingHandler(t, filepath.Join(t.TempDir(), "relay.state"), 0)
+	defer h.Close()
+	if h.delay != DefaultStateFlushDelay {
+		t.Fatalf("delay %v, want %v", h.delay, DefaultStateFlushDelay)
+	}
+}
