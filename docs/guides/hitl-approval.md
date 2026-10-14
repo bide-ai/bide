@@ -404,7 +404,7 @@ the signature binds. That digest is read out of the very bytes that are signed
 (`agent.ApprovalDecisionBytes`), so it is the digest of the call as the journal holds it. Text in the
 arguments that could repaint a terminal or reorder what you read (escape sequences, bidirectional
 overrides) is shown escaped. It then asks you to type your approver id (or `y`); `-yes` skips the
-question for scripts. The decision is signed with your Ed25519 key, checked against the call by
+question for scripts. The decision is signed with your key (Ed25519, ML-DSA-65 or hybrid), checked against the call by
 `agent.WithDecisionCheck` with the public key derived from your private key, and recorded with
 `agent.SubmitDecision`, stamped with your clock in the canonical form. A single-approver gate
 (`agent.Approve`) has no approver id and no signature: `bide approve` records it as `agent.Approve`
