@@ -14,6 +14,7 @@ Each section says what the limit is, whether it affects you, and what to do abou
 - [Plan flows](#flows)
 - [Audit and proofs](#audit-and-proofs)
 - [Governed state (gsm)](#governed-state-gsm)
+- [Notifications](#notifications)
 - [Stores](#stores)
 
 ## Durability and recovery
@@ -369,6 +370,22 @@ bide's required `gsm machine gate` CI check runs the two checkers extracted from
 machine the governance examples build (see `.github/gsm-gate`); it covers those examples, not the
 machines an application builds. See the [roadmap](ROADMAP.md#gsm-convergence) and
 [Convergent governance](guides/governance.md#under-the-hood).
+
+## Notifications
+
+**The relay's memory is in the process.** `bide notify relay` (package `notify/relay`) drops
+redeliveries by delivery ID and drops a trigger whose event it saw cleared, both from bounded
+in-memory caches (`-dedupe`, 10000 by default). After a restart, or once more than that many other
+events have gone by, a late redelivery is forwarded again, and a trigger that arrives after a clear it
+has forgotten reopens the PagerDuty incident. Slack shows a repeat twice. Run one relay: two behind a
+load balancer have separate caches. A lost notification is not among the failures: the relay answers
+2xx only after every destination took the event. It does not forward error text or tool arguments.
+
+**PagerDuty resolve waits on the "resolved" kind.** Until the notifier's all-clear kind is in a
+release, the relay only triggers incidents.
+
+**A test notification is a real one to a relay.** `bide notify test` sends a sample for a run that does
+not exist; a relay forwards it to Slack and PagerDuty like any other event.
 
 ## Stores
 

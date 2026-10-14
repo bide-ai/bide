@@ -36,7 +36,7 @@ proofs. Each entry notes who it is for.
 ## Guides: prove and govern
 
 - **[Audit](guides/audit.md)**: the tamper-evident trail and proof-carrying runs.
-- **[Notifications](guides/notifications.md)**: the signed webhook notifier, receiver verification (`notify.Verify`), mutual TLS, and the payload.
+- **[Notifications](guides/notifications.md)**: the signed webhook notifier, receiver verification (`notify.Verify`), mutual TLS, and the payload; `bide notify test`, `listen` and `relay` to test a receiver and forward to Slack and PagerDuty.
 - **[Human approval (human-in-the-loop)](guides/hitl-approval.md)**: human sign-off before a tool runs, 1-of-1 or signed m-of-n, provable offline.
 - **[Security model](guides/security-model.md)**: the cryptographic guarantees and their exact scope (confidentiality is out of scope).
 - **[Delegation](guides/delegation.md)**: signed grants, attenuating delegation, and earned authority.

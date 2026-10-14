@@ -468,7 +468,9 @@ forward error text or tool arguments, which can hold card numbers or personal da
 `agent.ReportNotifyAck` to record how a delivery was authenticated. A plan flow takes the same notifier with `plan.Builder.WithNotifier` (or `plan.WithLoadedNotifier`
 for a loaded config), and code that drives its own runs binds it with `agent.NewRunNotifier`. The
 design is in [docs/design/notifier.md](../design/notifier.md); the webhook notifier that implements
-the port follows.
+the port follows. On the receiving side, `relay.Sink` in package `notify/relay` (`Name() string`,
+`Send(ctx, notify.Payload) error`) is the port for forwarding a verified webhook somewhere else;
+`relay.NewSlack` and `relay.NewPagerDuty` implement it (see [Notifications](../guides/notifications.md#embed-the-relay)).
 
 ## `NotifyTrail`: delivery state, audited
 
