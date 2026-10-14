@@ -66,6 +66,9 @@ func TestDefinitionsAreChecked(t *testing.T) {
 			`DROP TABLE S.bide_events`,
 			`CREATE TABLE S.bide_events (run_id text COLLATE "C" NOT NULL, seq int8 NOT NULL CHECK (seq >= 0), leaf bytea NOT NULL, PRIMARY KEY (run_id, seq)) PARTITION BY HASH (run_id)`,
 			`CREATE TABLE S.bide_events_p0 PARTITION OF S.bide_events FOR VALUES WITH (MODULUS 1, REMAINDER 0)`}, "ordinary table"},
+		{"partitioned steps with no partitions", []string{
+			`DROP TABLE S.bide_steps`,
+			`CREATE TABLE S.bide_steps (run_id text COLLATE "C" NOT NULL, seq int8 NOT NULL, name text NOT NULL, data bytea NOT NULL, UNIQUE (run_id, seq), UNIQUE (run_id, name)) PARTITION BY HASH (run_id)`}, "ordinary table"},
 		{"inheritance child of steps", []string{`CREATE TABLE S.bide_steps_child () INHERITS (S.bide_steps)`}, "partition or inheritance"},
 		{"leases inherits another table", []string{`CREATE TABLE S.parent (run_id text NOT NULL)`, `ALTER TABLE S.bide_leases INHERIT S.parent`}, "partition or inheritance"},
 	}
