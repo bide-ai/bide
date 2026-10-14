@@ -467,7 +467,7 @@ approver (see [Human approval](hitl-approval.md)).
 
 `bide approve` loads the approver's key from a key file, and the `bide` binary is pure Go
 (`CGO_ENABLED=0`, reproducible builds), so it cannot load a PKCS#11 library. `bide-hsm` is the companion
-program for approvers whose keys are in an HSM, on a smart card or token, or in AWS KMS (Google Cloud KMS keys are not supported by `bide-hsm` yet: its references are `pkcs11:` and `awskms:`). `bide-hsm
+program for approvers whose keys are in an HSM, on a smart card or token, or in AWS KMS (Google Cloud KMS and Azure Key Vault keys are not supported by `bide-hsm` yet: its references are `pkcs11:` and `awskms:`). `bide-hsm
 approve` is `bide approve`: one implementation of the display, the confirmation, the signature, the
 record and the receipt (`cmd/bide/internal/approvecmd`), with `-key` naming a key by reference instead of
 a file. `bide-hsm pubkey` prints the entry that enrols a key.

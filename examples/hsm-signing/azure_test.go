@@ -37,6 +37,7 @@ func (f fakeVault) Sign(_ context.Context, _, _ string, p azkeys.SignParameters,
 		return azkeys.SignResponse{}, err
 	}
 	return azkeys.SignResponse{KeyOperationResult: azkeys.KeyOperationResult{
+		KID:    to.Ptr(azkeys.ID(azureKeyID)),
 		Result: append(r.FillBytes(make([]byte, 32)), s.FillBytes(make([]byte, 32))...)}}, nil
 }
 
