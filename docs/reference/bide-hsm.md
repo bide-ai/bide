@@ -72,6 +72,12 @@ A key reference is one of:
       HSM-backed Ed25519 key, so an Ed25519 key needs it, and approve then says so beside the key);
       -verify-attestation requires the key's Cloud HSM attestation to prove it was generated in the
       HSM and cannot be extracted.
+  azurekv:https://<vault>.vault.azure.net/keys/<name>/<32-hex-version>
+      An Azure Key Vault or Managed HSM key by its full identifier with the version pinned (a base
+      identifier without a version would follow rotation and is refused). The key is ECDSA P-256 (Key
+      Vault has no Ed25519), HSM-protected unless -allow-software-key, and not exportable.
+      Credentials are the Azure SDK's default credential chain. The principal needs the
+      "Key Vault Crypto User" role (Managed HSM Crypto User) on the key.
 
 The key is Ed25519 or ECDSA P-256, the schemes HSMs and KMS sign; -alg names the scheme, and
 without it the key's type is detected. A PKCS#11 key must be marked non-extractable and sensitive
@@ -85,7 +91,7 @@ Flags:
   -allow-extractable
     	use a PKCS#11 key the token does not mark non-extractable and sensitive; by default such a key is refused
   -allow-software-key
-    	use a Google Cloud KMS key version at protection level SOFTWARE; by default only an HSM-backed version is used, and Cloud KMS has no HSM-backed Ed25519 key
+    	use a software-protected key: a Google Cloud KMS key version at protection level SOFTWARE, or an Azure Key Vault key that is not HSM-protected; by default only an HSM-backed key is used, and Cloud KMS has no HSM-backed Ed25519 key
   -approver-keys string
     	approver public keys, a JSON object of approver id to key text, e.g. {"ops":"ed25519:ab12..."}, the file bide view -approver-keys reads (bide-hsm pubkey -as prints an entry): refuse a -key that is not the one enrolled for -as, and verify the tally. Required for an m-of-n gate unless -unverified
   -as string
@@ -101,7 +107,7 @@ Flags:
   -json
     	with -list: print the waiting calls as JSON
   -key string
-    	reference to your key in an HSM or KMS: a pkcs11: URI (RFC 7512; quote it), awskms:<key ARN> or gcpkms:<key version>; not for a single-approver gate
+    	reference to your key in an HSM or KMS: a pkcs11: URI (RFC 7512; quote it), awskms:<key ARN>, gcpkms:<key version> or azurekv:<key identifier>; not for a single-approver gate
   -list
     	list the calls that wait for a decision, each with its bide-hsm approve command; nothing is recorded
   -postgres string
@@ -166,6 +172,12 @@ A key reference is one of:
       HSM-backed Ed25519 key, so an Ed25519 key needs it, and approve then says so beside the key);
       -verify-attestation requires the key's Cloud HSM attestation to prove it was generated in the
       HSM and cannot be extracted.
+  azurekv:https://<vault>.vault.azure.net/keys/<name>/<32-hex-version>
+      An Azure Key Vault or Managed HSM key by its full identifier with the version pinned (a base
+      identifier without a version would follow rotation and is refused). The key is ECDSA P-256 (Key
+      Vault has no Ed25519), HSM-protected unless -allow-software-key, and not exportable.
+      Credentials are the Azure SDK's default credential chain. The principal needs the
+      "Key Vault Crypto User" role (Managed HSM Crypto User) on the key.
 
 The key is Ed25519 or ECDSA P-256, the schemes HSMs and KMS sign; -alg names the scheme, and
 without it the key's type is detected. A PKCS#11 key must be marked non-extractable and sensitive
@@ -179,13 +191,13 @@ Flags:
   -allow-extractable
     	use a PKCS#11 key the token does not mark non-extractable and sensitive; by default such a key is refused
   -allow-software-key
-    	use a Google Cloud KMS key version at protection level SOFTWARE; by default only an HSM-backed version is used, and Cloud KMS has no HSM-backed Ed25519 key
+    	use a software-protected key: a Google Cloud KMS key version at protection level SOFTWARE, or an Azure Key Vault key that is not HSM-protected; by default only an HSM-backed key is used, and Cloud KMS has no HSM-backed Ed25519 key
   -as string
     	the approver id the key is for: prints the approver-keys entry for it
   -color when
     	when to color the output: auto (the default: on a terminal, unless NO_COLOR is set or TERM is dumb), always or never
   -key string
-    	reference to the key: a pkcs11: URI (quote it), awskms:<key ARN> or gcpkms:<key version>
+    	reference to the key: a pkcs11: URI (quote it), awskms:<key ARN>, gcpkms:<key version> or azurekv:<key identifier>
   -verify-attestation
     	for a Google Cloud KMS key version in an HSM, require its Cloud HSM attestation to prove the key was generated there and cannot be extracted
 ```
@@ -241,6 +253,12 @@ A key reference is one of:
       HSM-backed Ed25519 key, so an Ed25519 key needs it, and approve then says so beside the key);
       -verify-attestation requires the key's Cloud HSM attestation to prove it was generated in the
       HSM and cannot be extracted.
+  azurekv:https://<vault>.vault.azure.net/keys/<name>/<32-hex-version>
+      An Azure Key Vault or Managed HSM key by its full identifier with the version pinned (a base
+      identifier without a version would follow rotation and is refused). The key is ECDSA P-256 (Key
+      Vault has no Ed25519), HSM-protected unless -allow-software-key, and not exportable.
+      Credentials are the Azure SDK's default credential chain. The principal needs the
+      "Key Vault Crypto User" role (Managed HSM Crypto User) on the key.
 
 The key is Ed25519 or ECDSA P-256, the schemes HSMs and KMS sign; -alg names the scheme, and
 without it the key's type is detected. A PKCS#11 key must be marked non-extractable and sensitive

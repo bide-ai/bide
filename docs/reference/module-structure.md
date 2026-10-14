@@ -34,7 +34,7 @@ only when that adapter is imported.
 | AWS KMS signer | `…/signer/awskms` | the AWS SDK for Go v2 KMS client |
 | gcf codec | `…/codec/gcf` | blackwell-systems/gcf-go |
 | bide command | `…/cmd/bide` | the two store modules, go.yaml.in/yaml/v3 (a program, installed with `go install`, not imported) |
-| bide-hsm command | `…/cmd/bide/bide-hsm` | the PKCS#11, AWS KMS and Google Cloud KMS signers (`signer/pkcs11` needs cgo), the AWS SDK, the Cloud KMS client, the two store modules, and `cmd/bide` for its internal approval code (a program, built from source with `go install`; not in the release archives) |
+| bide-hsm command | `…/cmd/bide/bide-hsm` | the PKCS#11, AWS KMS, Google Cloud KMS and Azure Key Vault signers (`signer/pkcs11` needs cgo), the AWS SDK, the Cloud KMS client, the two store modules, and `cmd/bide` for its internal approval code (a program, built from source with `go install`; not in the release archives) |
 | bide-view (deprecated) | `…/cmd/bide-view` | none: a program that only points to `bide view`, removed after v0.14.0 |
 
 The core module keeps everything with no heavy deps: `agent` (loop), `schema`, `middleware`,

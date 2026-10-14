@@ -381,3 +381,32 @@ func TestCredentialLoadErrorsCarryNoFileContent(t *testing.T) {
 		t.Fatalf("a timeout lost its identity: %v", err)
 	}
 }
+
+// The Azure default credential chain, given malformed credential material, reports a reduced error
+// (operation and code), never content from the files or the environment.
+func TestAzureCredentialErrorsCarryNoContent(t *testing.T) {
+	const secret = "s3cr3t-file-content-xyz"
+	bad := t.TempDir() + "/bad"
+	if err := os.WriteFile(bad, []byte("-----BEGIN CERTIFICATE-----\n"+secret+"\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	for k, v := range map[string]string{
+		"AZURE_TENANT_ID": "tenant-" + secret, "AZURE_CLIENT_ID": "client-" + secret,
+		"AZURE_CLIENT_CERTIFICATE_PATH": bad, "AZURE_CLIENT_SECRET": secret,
+		"AZURE_FEDERATED_TOKEN_FILE": bad, "AZURE_AUTHORITY_HOST": "https://login.invalid/" + secret,
+		"IMDS_ENDPOINT": "http://127.0.0.1:1/" + secret, "MSI_ENDPOINT": "",
+	} {
+		t.Setenv(k, v)
+	}
+	r, err := keyref.Parse("azurekv:https://bank-prod.vault.azure.net/keys/k/0123456789abcdef0123456789abcdef")
+	if err != nil {
+		t.Fatal(err)
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), 20*time.Second)
+	defer cancel()
+	_, err = Open(ctx, r, Options{})
+	if err == nil || strings.Contains(err.Error(), secret) || strings.Contains(err.Error(), "BEGIN") {
+		t.Fatalf("%v", err)
+	}
+	t.Log(err)
+}
