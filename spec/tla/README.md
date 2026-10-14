@@ -2539,14 +2539,14 @@ the notifier.
 | `deep-compose-approval` | nightly | Property 6: a model 10 run waiting for an approval, a RecoverLoop worker, the operator approving and resolving, a crash; a notifier on the approval. | 268,245 | 13 s (4 workers) |
 
 Routing and escalation configurations (states and times from local `check.sh` runs on a shared
-development machine; the `ci` ones were sized to finish in minutes, the large versions are `nightly`):
+development machine; the `ci` ones were sized to finish in minutes; `esc-unacked`, `esc-lost`, `esc-crash` and `esc-undecided` (1M to 7M states, 27 s to 3 min on a fast 10-core machine with several workers, too slow for one CI worker) are `nightly` as `deep-*`, and the safety properties of the chain (`EscOnlyIfDue`, `EscChain`, `EscNotWhenSatisfied`) are checked in CI only through the regressions that break each and the small liveness configs):
 
 | Config | Group | What | States | Time |
 |---|---|---|---|---|
-| `esc-unacked` | ci | Escalation, two steps; two processes, a sink that fails once, the event may be resolved at any time. | 1,127,613 | 27 s |
-| `esc-lost` | ci | One step with a lost sink reply. | 1,195,857 | 58 s |
-| `esc-crash` | ci | One step with a crash. | 1,002,682 | 3 min |
-| `esc-undecided` | ci | An approval (`EscMode = "undecided"`): escalated although acknowledged, two steps. | 881,759 | 2 min |
+| `deep-esc-unacked` | nightly | Escalation, two steps; two processes, a sink that fails once, the event may be resolved at any time. | 1,127,613 | 27 s |
+| `deep-esc-lost` | nightly | One step with a lost sink reply. | 1,195,857 | 58 s |
+| `deep-esc-crash` | nightly | One step with a crash. | 1,002,682 | 3 min |
+| `deep-esc-undecided` | nightly | An approval (`EscMode = "undecided"`): escalated although acknowledged, two steps. | 881,759 | 2 min |
 | `esc-clears` | ci | One process, a sink that fails once. Too small to deliver a step (see below): the all-clear properties for the event itself. | 1,446 | 1 s |
 | `live-esc` | ci | Liveness of the chain (`EscRaised`, `EscDelivered`, `EscStops`), two processes, event not resolved. | 207,774 | 1 min |
 | `live-esc-undecided` | ci | The same for an approval, one process. | 318 | 1 s |

@@ -46,7 +46,8 @@ env:
     delegation: delegation delegation/regress delegation/limits
     toolcall-flows: toolcall toolcall/regress toolcall/limits flows flows/regress
     protocol-sessions: protocol protocol/regress protocol/limits sessions sessions/regress sessions/limits
-    notify: notify notify/regress notify/limits
+    notify: notify
+    notify-regress: notify/regress notify/limits
 
 jobs:
   plan:
