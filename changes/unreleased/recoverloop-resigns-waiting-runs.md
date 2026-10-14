@@ -1,0 +1,3 @@
+Section: Added
+
+`agent.RecoverLoop` re-signs a run whose drive ended waiting on an approval or a halt resolution (`agent.Reanchorer`, implemented by `audit.AuditedStore`, found through `Unwrap`; `agent.WithReanchor` names another function or turns it off), so a decision another process wrote straight into the database is under a signed tree head within one pass instead of at the application's next write to the run. `audit.CheckDecisionCoverage` and `bide audit verify-decision-coverage` check a journal export against signed heads and flag a decision no head covers past a bound stated in journal positions (`-max-records`) or, as the weaker basis, age (`-max-age`).

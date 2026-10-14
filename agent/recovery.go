@@ -801,6 +801,11 @@ func cancelledEnd(err error) bool {
 // A run with no run:start, and a run no Resumer drives, are skipped and reported once per process,
 // as Recover reports them (to the WithRecoverErrors handler); every pass reads run:start again.
 //
+// A run whose drive ends waiting on an approval or a halt resolution is re-signed on every pass, when
+// the journal's store has a Reanchor method (audit.AuditedStore, found through Unwrap) or
+// WithReanchor names one: a decision another process wrote is then under a signed tree head within
+// one pass. It reads that run's journal and writes nothing to it.
+//
 // Run it once per process, for the life of the process, with the same resume Recover takes:
 //
 //	go func() {

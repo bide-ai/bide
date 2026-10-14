@@ -21,6 +21,9 @@ import (
 // as JSON: proof artifacts, their parts, the leaves they commit, and the structured verdicts. Every
 // type nested in one of them is checked with it.
 var auditArtifacts = []any{
+	audit.CoverageReport{},
+	audit.DecisionCoverage{},
+	audit.RejectedHead{},
 	audit.ProofBundle{},
 	audit.AbsenceBundle{},
 	audit.Absence{},
@@ -61,6 +64,7 @@ var notArtifacts = map[string]string{
 	"audit.AuditedStore":      "a store wrapper; its state is unexported",
 	"audit.TimeCheck":         "the inputs of CheckDecisionTimes, never written out",
 	"audit.ReceiptFinding":    "the result of CheckReceipt, printed by bide audit, never written as an artifact",
+	"audit.CoverageBound":     "the inputs of CheckDecisionCoverage, never written out",
 	"audit.MemAnchorLog":      "an in-memory log; its state is unexported",
 	"audit.MemEventStore":     "an in-memory store; its state is unexported",
 	"audit.EventLog":          "an in-memory log; its state is unexported",

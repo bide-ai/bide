@@ -626,6 +626,20 @@ bide audit: produce and verify audit proof bundles
          proof in each receipt file whose decision a signed head now commits to. -receipt,
          -journal and -heads repeat
 
+  verify-decision-coverage -journal <file> -heads <file> [-heads <file>...] -pubkey <hex|file>
+                           [-max-records <n>] [-max-age <duration>] [-max-age-tolerance <duration>] [-now <time>]
+         check that every approval decision in a journal export is covered by a signed tree head:
+         a decision written by a process that does not sign (a CLI writing the database) is under
+         no head until the signer next writes to the run, which for a rejection may be never. A
+         head counts only if it verifies under the key, is a journal head of the export's run, and
+         is the root of the export's own prefix of its size; heads are used by size, in any order.
+         Each decision is covered, pending, or overdue. Overdue is: -max-records records of
+         journal after it with no head covering it (positions and head sizes, no clock), or, with
+         -max-age, recorded more than that plus -max-age-tolerance before -now (default: this
+         machine's clock; the weaker basis, since the recorder's clock is its own). With neither
+         bound nothing is overdue. Any overdue decision fails the verb. Halt resolutions are not
+         checked
+
   prove-absent -journal <file> -sth <file> -key (tool:<id>|policy:<digest>) [-out <file>]
          prove a thing did NOT happen (no such tool call / no action under that policy)
          against a signed key-set head of the matching kind (see audit.SignAbsenceRoot)
@@ -804,6 +818,34 @@ Usage of bide audit verify-convergence:
     	path to the policy-leaf ProofBundle JSON (from ProvePolicy)
   -pubkey string
     	public key as <scheme>:<hex> (ed25519, ecdsa-p256, ml-dsa-65, ed25519+ml-dsa-65) or bare ed25519 hex, or a path to a file containing it
+```
+
+### bide audit verify-decision-coverage
+
+```text
+Usage of bide audit verify-decision-coverage:
+  -color when
+    	when to color the output: auto (the default: on a terminal, unless NO_COLOR is set or TERM is dumb), always or never; -json is never colored
+  -heads value
+    	path to a signed tree head JSON; repeat once per head (any order)
+  -journal string
+    	path to the journal export JSON (audit.ExportJournal)
+  -json
+    	print one JSON report on stdout instead of the text report
+  -max-age duration
+    	how long after its recorded_at a decision may stay uncovered (0: no bound); compares clocks
+  -max-age-tolerance duration
+    	clock skew allowed on top of -max-age (default 5m0s)
+  -max-clock-skew duration
+    	how far past this machine's clock a signed head's timestamp may be (default 5m0s)
+  -max-input-bytes int
+    	the largest input file, in bytes, the verb reads; a larger one is an error (default 268435456)
+  -max-records int
+    	records the journal may hold after a decision before a head must cover it (0: no bound)
+  -now string
+    	the time -max-age is measured to, RFC 3339 (default: this machine's clock)
+  -pubkey string
+    	the log's public key as <scheme>:<hex> (ed25519, ml-dsa-65, ed25519+ml-dsa-65) or bare ed25519 hex, or a path to a file containing it
 ```
 
 ### bide audit verify-evidence

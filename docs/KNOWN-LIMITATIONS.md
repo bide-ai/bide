@@ -257,6 +257,14 @@ anyone changing `decided_at` later, and the journal's Merkle trail stops anyone 
 order or after the signed head, and never counts by them. No trusted timestamp authority (RFC 3161) stamps decisions yet. See
 [When a decision was made](guides/hitl-approval.md#when-a-decision-was-made).
 
+**A decision another process wrote waits for a pass to be signed.** The application that holds
+the log key signs a run's tree head on its own writes. A decision recorded by another process
+(for example `bide approve` writing the database) is under no signed head until `agent.RecoverLoop`
+next drives the run and re-signs it (within one pass interval), and not at all if no pass drives
+it. The window is bounded by the interval only while a loop runs; `bide audit verify-decision-coverage`
+finds a decision left outside every head. See
+[A decision written by another process](guides/hitl-approval.md#a-decision-written-by-another-process).
+
 **Decisions signed before `bide.approval.v3` must be signed again.** They no longer verify. A run
 whose gate passed on them before the upgrade, and whose call has not run, pauses to ask again
 (`agent.PendingReapproval`) rather than run on approvals an audit would fail. See
