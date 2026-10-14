@@ -23,9 +23,26 @@ func resolvable(kind string) bool {
 	return false
 }
 
+// operation names the operation or gate an event is about, for its observed record: the run whose
+// journal holds it, the kind ("tool" or "step" for a halt, "gate" for an approval) and its ID.
+func (ev notifyEvent) operation() (run, kind, id string) {
+	run = ev.opRun
+	if run == "" {
+		run = ev.runID
+	}
+	switch {
+	case ev.halt != nil:
+		return run, string(ev.halt.Op.Kind), ev.halt.Op.ID
+	case ev.approval != nil:
+		return run, "gate", ev.approval.ToolUseID
+	}
+	return "", "", ""
+}
+
 // eventFromKey rebuilds from a trail record of an event the part of the event that "is it still
-// current" reads: the run and the operation or gate a key names. ok is false for a key it cannot
-// read, which includes an ID so long that the key holds its digest (see encodeID).
+// current" reads: the run and the operation or gate. It reads the operation fields of the observed
+// record, and for a record from before them the key, which holds the encoded IDs. ok is false for
+// such a record whose key holds the digest of an ID (see encodeID).
 func eventFromKey(es *NotifyEvent) (notifyEvent, bool) {
 	ev := notifyEvent{key: es.Key, kind: NotificationKind(es.Kind), runID: es.RunID}
 	parts := strings.Split(es.Key, ":")
@@ -37,6 +54,10 @@ func eventFromKey(es *NotifyEvent) (notifyEvent, bool) {
 	}
 	switch ev.kind {
 	case NotificationOutcomeUnknown: // halted:<run>:<op kind>:<op id>:<attempt>
+		if es.OpID != "" && es.OpKind != "gate" {
+			ev.opRun, ev.halt = es.OpRun, &NotifyHalt{Op: OpRef{Kind: OpKind(es.OpKind), ID: es.OpID}}
+			return ev, true
+		}
 		run, ok1 := dec(1)
 		kind, ok2 := dec(2)
 		op, ok3 := dec(3)
@@ -45,6 +66,10 @@ func eventFromKey(es *NotifyEvent) (notifyEvent, bool) {
 		}
 		ev.opRun, ev.halt = run, &NotifyHalt{Op: OpRef{Kind: OpKind(kind), ID: op}}
 	case NotificationApprovalPending: // approval:<run>:<call>:<reminder>
+		if es.OpID != "" && es.OpKind == "gate" {
+			ev.opRun, ev.approval = es.OpRun, &NotifyApproval{ToolUseID: es.OpID}
+			return ev, true
+		}
 		run, ok1 := dec(1)
 		call, ok2 := dec(2)
 		if len(parts) != 4 || parts[0] != "approval" || !ok1 || !ok2 {
@@ -65,7 +90,13 @@ func eventFromKey(es *NotifyEvent) (notifyEvent, bool) {
 
 // scanRound runs the catch-up scan of ev.runID's trail as a round of the worker.
 func (e *notifyEngine) scanRound(ctx context.Context, ev notifyEvent) (roundResult, error) {
-	if err := e.clearScan(ctx, ev.runID); err != nil {
+	var err error
+	if ev.runID == "" {
+		err = e.scanOpen(ctx)
+	} else {
+		err = e.clearScan(ctx, ev.runID)
+	}
+	if err != nil {
 		return roundResult{next: e.cfg.now().Add(e.backoff(1))}, err
 	}
 	return roundResult{done: true}, nil
@@ -98,17 +129,35 @@ func (e *notifyEngine) clearScan(ctx context.Context, runID string) error {
 	if err != nil {
 		return err
 	}
-	st := FoldNotify(recs)
+	return e.clearScanFold(ctx, FoldNotify(recs))
+}
+
+// clearScanFold is clearScan over a trail already loaded and folded. It also unlists, from the
+// NotifyOpenTrail, each event for which nothing more is owed.
+func (e *notifyEngine) clearScanFold(ctx context.Context, st NotifyState) error {
 	var errs []error
 	for _, key := range st.Keys {
 		es := st.Events[key]
 		if NotificationKind(es.Kind) == NotificationResolved {
 			if es.Open() {
 				e.resumeResolved(es, &st)
+			} else if es.Acked != nil {
+				if err := e.unwatch(ctx, strings.TrimPrefix(key, "resolved:")); err != nil {
+					errs = append(errs, err)
+				}
 			}
 			continue
 		}
-		if !resolvable(es.Kind) || st.Events[ResolvedKey(key)] != nil {
+		if !resolvable(es.Kind) {
+			continue
+		}
+		if es.Cleared != nil && es.Rounds == 0 { // nobody was told: nothing is owed
+			if err := e.unwatch(ctx, key); err != nil {
+				errs = append(errs, err)
+			}
+			continue
+		}
+		if st.Events[ResolvedKey(key)] != nil {
 			continue
 		}
 		switch {
@@ -156,4 +205,94 @@ func (e *notifyEngine) resumeResolved(es *NotifyEvent, st *NotifyState) {
 		return
 	}
 	e.w.submit(clearOf(orig, es.Reason, es.EventAt))
+}
+
+// orphanWatchAfter is how long an event may be listed without an observed record before a scan
+// unlists it: the process that listed it died before it observed the event. If the event is
+// observed later, the round lists it again.
+const orphanWatchAfter = time.Hour
+
+// watch lists key, of an event on runID's trail, on the NotifyOpenTrail unless it is listed.
+func (e *notifyEngine) watch(ctx context.Context, key, runID string) error {
+	return e.setWatch(ctx, key, runID, true)
+}
+
+// unwatch unlists key unless it is not listed.
+func (e *notifyEngine) unwatch(ctx context.Context, key string) error {
+	return e.setWatch(ctx, key, "", false)
+}
+
+func (e *notifyEngine) setWatch(ctx context.Context, key, runID string, want bool) error {
+	for range maxTrailRetries {
+		recs, err := e.trail.Load(ctx, NotifyOpenTrail)
+		if err != nil {
+			return err
+		}
+		var run string
+		listed := false
+		for _, w := range FoldWatch(recs) {
+			if w.Key == key {
+				listed, run = true, w.RunID
+			}
+		}
+		if listed == want {
+			return nil
+		}
+		rec := NotifyRecord{Kind: NotifyWatch, Key: key, RunID: runID, At: e.cfg.now()}
+		if !want {
+			rec.Kind, rec.RunID = NotifyUnwatch, run
+		}
+		conflict, err := e.appendRec(ctx, NotifyOpenTrail, len(recs), rec)
+		if err != nil {
+			return err
+		}
+		if !conflict {
+			return nil
+		}
+	}
+	return fmt.Errorf("notify: trail %s: lost the append race %d times in a row for %s", NotifyOpenTrail, maxTrailRetries, key)
+}
+
+// queueScanOpen queues the scan of the NotifyOpenTrail.
+func (e *notifyEngine) queueScanOpen() {
+	e.w.submit(notifyEvent{key: scanKey("@open"), scan: true})
+}
+
+// scanOpen scans the trail of every run that has an event on the NotifyOpenTrail: the way a sweep
+// or a recovery pass reaches the all-clear of a run that is not unfinished (it completed while
+// nobody scanned), without reading every finished run. An event listed for longer than
+// orphanWatchAfter whose run's trail has no record of it is unlisted.
+func (e *notifyEngine) scanOpen(ctx context.Context) error {
+	recs, err := e.trail.Load(ctx, NotifyOpenTrail)
+	if err != nil {
+		return err
+	}
+	byRun := map[string][]Watched{}
+	var runs []string
+	for _, w := range FoldWatch(recs) {
+		if _, ok := byRun[w.RunID]; !ok {
+			runs = append(runs, w.RunID)
+		}
+		byRun[w.RunID] = append(byRun[w.RunID], w)
+	}
+	var errs []error
+	for _, run := range runs {
+		trail, lerr := e.trail.Load(ctx, NotifyTrailName(run))
+		if lerr != nil {
+			errs = append(errs, lerr)
+			continue
+		}
+		st := FoldNotify(trail)
+		for _, w := range byRun[run] {
+			if st.Events[w.Key] == nil && e.cfg.now().Sub(w.At) > orphanWatchAfter {
+				if uerr := e.unwatch(ctx, w.Key); uerr != nil {
+					errs = append(errs, uerr)
+				}
+			}
+		}
+		if cerr := e.clearScanFold(ctx, st); cerr != nil {
+			errs = append(errs, cerr)
+		}
+	}
+	return errors.Join(errs...)
 }

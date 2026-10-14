@@ -93,6 +93,7 @@ func NotifyPending(ctx context.Context, j *Journal, n Notifier, trail NotifyTrai
 			}
 		}
 	}
+	e.queueScanOpen() // the all-clear of a run that is no longer unfinished
 	if err := e.flush(context.WithoutCancel(ctx)); err != nil {
 		errs = append(errs, err)
 	}

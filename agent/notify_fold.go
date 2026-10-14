@@ -4,13 +4,14 @@ import "time"
 
 // NotifyEvent is the state of one event, folded from a notification trail.
 type NotifyEvent struct {
-	Key        string
-	Kind       string // the NotificationKind recorded at observation
-	RunID      string
-	EventAt    time.Time
-	ObservedAt time.Time
-	DeadlineAt time.Time
-	Reason     string // recorded at observation: for a resolved event, why the event it clears ended
+	Key                 string
+	Kind                string // the NotificationKind recorded at observation
+	RunID               string
+	EventAt             time.Time
+	ObservedAt          time.Time
+	DeadlineAt          time.Time
+	OpRun, OpKind, OpID string // recorded at observation for a halt or an approval (see NotifyRecord)
+	Reason              string // recorded at observation: for a resolved event, why the event it clears ended
 
 	Claim   *NotifyRecord // the latest claimed record, nil if never claimed
 	Rounds  int           // how many claimed records the event has
@@ -61,7 +62,8 @@ func FoldNotify(recs []NotifyRecord) NotifyState {
 			if _, dup := st.Events[r.Key]; dup {
 				continue
 			}
-			st.Events[r.Key] = &NotifyEvent{Key: r.Key, Kind: r.EventKind, RunID: r.RunID, EventAt: r.EventAt, ObservedAt: r.At, DeadlineAt: r.DeadlineAt, Reason: r.Reason}
+			st.Events[r.Key] = &NotifyEvent{Key: r.Key, Kind: r.EventKind, RunID: r.RunID, EventAt: r.EventAt, ObservedAt: r.At, DeadlineAt: r.DeadlineAt, Reason: r.Reason,
+				OpRun: r.OpRun, OpKind: r.OpKind, OpID: r.OpID}
 			st.Keys = append(st.Keys, r.Key)
 		case NotifyClaimed:
 			if e := st.openEvent(r.Key); e != nil {
@@ -110,4 +112,39 @@ func (s *NotifyState) openEvent(key string) *NotifyEvent {
 // now, so a recovery_failing event is due. It is false with no open episode.
 func (s *NotifyState) RecoveryFailingDue(now time.Time, d time.Duration) bool {
 	return s.FailingSince != nil && now.Sub(s.FailingSince.At) > d
+}
+
+// Watched is an event on the NotifyOpenTrail whose all-clear may still be owed.
+type Watched struct {
+	Key   string
+	RunID string
+	At    time.Time // when it was listed
+}
+
+// FoldWatch folds the NotifyOpenTrail, in append order, to the events still listed, in the order
+// they were listed. A watch for a key already listed is ignored; an unwatch removes the key, and a
+// later watch lists it again (at the place of its first listing). A record of another kind is
+// ignored.
+func FoldWatch(recs []NotifyRecord) []Watched {
+	var order []string
+	open := map[string]Watched{}
+	for _, r := range recs {
+		switch r.Kind {
+		case NotifyWatch:
+			if _, ok := open[r.Key]; !ok {
+				open[r.Key] = Watched{Key: r.Key, RunID: r.RunID, At: r.At}
+				order = append(order, r.Key)
+			}
+		case NotifyUnwatch:
+			delete(open, r.Key)
+		}
+	}
+	var out []Watched
+	for _, k := range order {
+		if w, ok := open[k]; ok {
+			out = append(out, w)
+			delete(open, k) // a key listed, unlisted and listed again appears once
+		}
+	}
+	return out
 }

@@ -252,6 +252,9 @@ func Recover(ctx context.Context, store *Journal, resume Resumer, opts ...Recove
 			errs = append(errs, err)
 		}
 	}
+	if cfg.notify != nil {
+		cfg.notify.queueScanOpen() // the all-clear of a run that is no longer unfinished
+	}
 	return recovered, errors.Join(errs...)
 }
 
@@ -925,6 +928,9 @@ func RecoverLoop(ctx context.Context, store *Journal, resume Resumer, opts ...Re
 				before()
 			}
 			pass(f, slots)
+			if cfg.notify != nil {
+				cfg.notify.queueScanOpen() // the all-clear of a run that is no longer unfinished
+			}
 			select {
 			case <-ctx.Done():
 				return

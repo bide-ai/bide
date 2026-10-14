@@ -679,3 +679,27 @@ func TestResolved_ARecordWithoutTheOperationFieldsIsReadFromItsKey(t *testing.T)
 		t.Fatalf("calls = %+v", sink.calls)
 	}
 }
+
+// RecoverLoop reaches the all-clear of a completed run too, on its first pass.
+func TestResolved_RecoverLoopFindsTheAllClearOfACompletedRun(t *testing.T) {
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	clk := resolvedClock()
+	j := memJournal()
+	trail, sink := NewMemNotifyTrail(), &fakeSink{}
+	e := testEngine(t, j, sink, trail, clk, "dies")
+	if res, err := e.round(ctx, haltEvent()); err != nil || !res.done {
+		t.Fatal(res, err)
+	}
+	putResult(t, j, "r", "c1")
+	completeRun(t, j, "r")
+	resume := func(context.Context, string, RunStart) error { return nil }
+	done := make(chan struct{})
+	go func() {
+		defer close(done)
+		_ = RecoverLoop(ctx, j, resume, WithNotifier(sink, trail, fixedNotifyClock(clk), WithNotifyHolder("loop")), WithRecoverInterval(10*time.Millisecond))
+	}()
+	waitFor(t, func() bool { return len(resolvedCalls(sink)) == 1 })
+	cancel()
+	<-done
+}

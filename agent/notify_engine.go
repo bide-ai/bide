@@ -216,6 +216,12 @@ func (e *notifyEngine) round(ctx context.Context, ev notifyEvent) (roundResult, 
 	res, err := e.roundLocked(ctx, ev)
 	if res.done {
 		e.forget(ev.key)
+		if err == nil && ev.kind == NotificationResolved && ev.origKey != "" {
+			// Nothing more is owed for the event: unlist it (a scan does it too, if this fails).
+			if uerr := e.unwatch(ctx, ev.origKey); uerr != nil {
+				e.report(uerr)
+			}
+		}
 	}
 	return res, err
 }
@@ -357,8 +363,16 @@ func (e *notifyEngine) roundLocked(ctx context.Context, ev notifyEvent) (roundRe
 			if at.IsZero() {
 				at = now
 			}
+			// An event that can stop being current is listed before it is observed, so no event that
+			// is delivered is missing from the list a sweep reads (see NotifyOpenTrail).
+			if resolvable(string(ev.kind)) {
+				if err := e.watch(ctx, ev.key, ev.runID); err != nil {
+					return roundResult{next: now.Add(e.backoff(e.failCount(ev.key)))}, err
+				}
+			}
 			rec := NotifyRecord{Kind: NotifyObserved, Key: ev.key, RunID: ev.runID, At: now,
 				EventKind: string(ev.kind), EventAt: at, DeadlineAt: now.Add(e.cfg.deadline)}
+			rec.OpRun, rec.OpKind, rec.OpID = ev.operation()
 			if ev.kind == NotificationResolved {
 				// A clear is never overdue, so it has no deadline; it records why the event ended.
 				rec.DeadlineAt, rec.Reason = time.Time{}, ev.reason
