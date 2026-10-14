@@ -1445,6 +1445,15 @@ func TestGateAgreement(t *testing.T) {
 		{name: "a recorded denial", setup: func(t *testing.T, r *rig) {
 			seedTally(t, r, agent.ApprovalTally{Need: 2, Approvers: abc, Approved: 0, Denied: 2, DeniedBy: []string{"alice", "bob"}, DecisionFormat: agent.DecisionFormat})
 		}, want: denies},
+		{name: "a recorded denial under a gate that was removed", setup: func(t *testing.T, r *rig) {
+			seedTally(t, r, agent.ApprovalTally{Need: 2, Approvers: abc, Approved: 0, Denied: 2, DeniedBy: []string{"alice", "bob"}, DecisionFormat: agent.DecisionFormat})
+			r.ungated = true
+		}, want: denies},
+		{name: "a human's Approve(false) on the call", setup: func(t *testing.T, r *rig) {
+			if err := agent.Approve(context.Background(), r.app, runID, "c1", false); err != nil {
+				t.Fatal(err)
+			}
+		}, want: denies},
 		{name: "approvers on one key", setup: func(t *testing.T, r *rig) { r.enrolled["carol"], r.privs["carol"] = r.enrolled["bob"], r.privs["bob"] }, want: refuses},
 		{name: "an invalid policy", setup: func(t *testing.T, r *rig) {
 			r.policy = agent.ApprovalPolicy{Need: 5, Approvers: []string{"alice", "bob"}}
@@ -1483,10 +1492,10 @@ func TestGateAgreement(t *testing.T) {
 				got = asks
 			case err != nil:
 				t.Fatalf("the gate: %v", err)
-			case r.ungated:
-				got = ungated
 			case r.charged.Load() == 0:
 				got = denies
+			case r.ungated:
+				got = ungated
 			}
 			if got != tc.want {
 				t.Fatalf("the gate did %d, want %d (%v)", got, tc.want, err)

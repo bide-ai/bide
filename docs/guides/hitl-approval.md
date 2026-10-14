@@ -777,7 +777,11 @@ its pause note, written once when the run first pauses, so a policy changed afte
 turned on) is in the gate but not the note, and a gate whose tally passed under the old policy asks again
 while a handler that read the note would show it decided and refuse the approvals it needs, so the run would
 wait for ever. A tool the function does not know (`ok` false) falls back to the note (see
-[KNOWN-LIMITATIONS](../KNOWN-LIMITATIONS.md)).
+[KNOWN-LIMITATIONS](../KNOWN-LIMITATIONS.md)). The handler evaluates the gate with `agent.EvaluateGate`, the
+function the agent's own gate evaluates with, so the two agree: a gate the gate would refuse (an invalid
+policy, approvers on one key, a requester the run does not record) is state `error` on `GET /pending` and `409
+gate_misconfigured` on `POST /decisions`; a one-decision gate is state `single`; a live policy that changed
+after the pause (the shape, the approvers, `ExcludePrincipal`) is the one counted.
 
 **What it does not serve.** A single-approver gate (`agent.Approve`) has no signature to check, so it
 is refused (422 `single_gate`); a plan flow node's gate (a call id starting `node:`) is refused (422

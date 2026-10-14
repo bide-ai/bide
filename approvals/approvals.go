@@ -359,10 +359,12 @@ func WithMaxReaders(total, perClient int) Option {
 // tally passed under the old policy and the call has not run, the gate asks again; a handler that
 // read the old policy from the note would show the gate as decided and refuse the new approvals
 // (not_waiting), and the run would wait for ever. So a gate on a tool fn knows is counted under the
-// live policy (its need, approvers and ExcludePrincipal), the way the gate counts; for a tool fn does
-// not know (ok false: no policy for it, or a single-approver one, which the intake does not serve)
-// the note is the fallback. fn is called for every request that reads a gate, so it should be a
-// lookup:
+// live policy, by agent.EvaluateGate, the function the agent's own gate evaluates with, so the two
+// cannot disagree: the policy's shape (a one-decision gate is not served), its validity and keys (a
+// gate the gate would refuse is refused here, state "error"), separation of duties, a recorded tally
+// it supersedes, and the count. fn returns ok false for a tool it does not know, and the pause
+// note is then the fallback; ok true with a nil policy says the tool has no gate now. fn is called
+// for every request that reads a gate, so it should be a lookup:
 //
 //	approvals.WithGatePolicy(func(tool string) (*agent.ApprovalPolicy, bool) {
 //	    p, ok := policies[tool] // the policies the tools were built with agent.WithApproval
