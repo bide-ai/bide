@@ -113,6 +113,15 @@ func TestDecision_RecordedSignedAndReplayIsANoOp(t *testing.T) {
 	if gate["approved"] != float64(1) || gate["passed"] != false {
 		t.Fatalf("gate %v", gate)
 	}
+	// The response carries the decision's receipt, which verifies under the approver's key.
+	raw, _ := json.Marshal(out["receipt"])
+	var rc audit.DecisionReceipt
+	if err := audit.UnmarshalStrict(raw, &rc); err != nil {
+		t.Fatal(err)
+	}
+	if err := rc.Verify(audit.Ed25519Verifier{Pub: r.enrolled["alice"]}); err != nil || rc.Index != index || rc.Approver != "alice" {
+		t.Fatalf("receipt: %v (%+v)", err, rc)
+	}
 
 	status, out = r.post(r.decision("alice", true))
 	if status != http.StatusOK || out["recorded"] != false || int(out["index"].(float64)) != index {

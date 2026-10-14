@@ -39,8 +39,6 @@ package approvals
 import (
 	"cmp"
 	"context"
-	"crypto/sha256"
-	"encoding/hex"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -81,6 +79,10 @@ type Response struct {
 	Index      int    `json:"index"`       // its position in the run's journal (0 is the header)
 	RecordedAt string `json:"recorded_at"` // when it was journaled, by the recording process's clock
 	Gate       Gate   `json:"gate"`        // the gate's standing after the decision, verified
+	// Receipt is the decision's receipt (audit.DecisionReceipt), built from the journal record, for
+	// the approver to keep: it carries the signed decision, the call's arguments, and where the
+	// journal holds the record. Record, Index, RecordedAt and LeafHash are the application's word.
+	Receipt audit.DecisionReceipt `json:"receipt"`
 }
 
 // Pending is the body of GET /pending: a gated call, from the journal.
@@ -513,19 +515,6 @@ func (h *Handler) gate(g *gateRecords) Gate {
 	return out
 }
 
-// argsDigest is the SHA-256 of the canonical arguments of s in lowercase hex: the digest the
-// signature over agent.ApprovalDecisionBytes binds, read out of those bytes at the offset their
-// layout fixes (after the domain tag and the three length-prefixed ids), so it is the digest
-// signed and not a second computation of it.
-func argsDigest(s agent.ApprovalSubject) string {
-	b := agent.ApprovalDecisionBytes(s, "x", true, time.Unix(0, 0))
-	off := len(agent.DecisionFormat) + 1 + 3*4 + len(s.RunID) + len(s.ToolUseID) + len(s.ToolName)
-	if len(b) < off+sha256.Size {
-		return "" // unreachable: the layout carries the digest
-	}
-	return hex.EncodeToString(b[off : off+sha256.Size])
-}
-
 func (h *Handler) pending(w http.ResponseWriter, r *http.Request) {
 	q := r.URL.Query()
 	run, call := q.Get("run"), q.Get("call")
@@ -551,7 +540,7 @@ func (h *Handler) pending(w http.ResponseWriter, r *http.Request) {
 		h.fail(w, err)
 		return
 	}
-	p := Pending{Run: run, Call: call, Tool: g.subject.ToolName, ArgsSHA256: argsDigest(g.subject),
+	p := Pending{Run: run, Call: call, Tool: g.subject.ToolName, ArgsSHA256: audit.ApprovalArgsDigest(g.subject),
 		DecisionFormat: agent.DecisionFormat, State: st, AskedAt: g.wait.RecordedAt, Gate: h.gate(g)}
 	switch args := g.subject.Args; {
 	case len(args) == 0:
@@ -675,7 +664,12 @@ func (h *Handler) decide(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 	}
-	resp := Response{Recorded: !replay, Record: step, Index: idx, RecordedAt: g.recs[idx].RecordedAt(), Gate: h.gate(g)}
+	rc, err := audit.NewDecisionReceipt(g.subject, d, g.recs[idx], idx)
+	if err != nil {
+		h.fail(w, err)
+		return
+	}
+	resp := Response{Recorded: !replay, Record: step, Index: idx, RecordedAt: g.recs[idx].RecordedAt(), Gate: h.gate(g), Receipt: rc}
 	writeJSON(w, http.StatusOK, resp)
 	if !replay {
 		h.recorded(r.Context(), Recorded{RunID: d.RunID, RootRunID: agent.RootRunID(d.RunID), ToolUseID: d.ToolUseID, Approver: d.ApproverID,

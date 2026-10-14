@@ -739,6 +739,20 @@ the journal is touched, given the method, run, call and (for a POST) approver, a
 checks a client certificate (`r.TLS.PeerCertificates`) and ties an approver id to it. Terminating TLS
 is the server's job (`http.Server.TLSConfig`).
 
+**Deciding through it from the terminal.** `bide approve -to <url> -run <id> -call <id> -as <approver>
+-key <key-file> -approver-keys <file>` is the display-then-sign flow of `bide approve` with the endpoint in
+place of the database: it fetches the pending call, shows it, asks for confirmation, signs, and posts the
+decision. It computes the SHA-256 of the arguments it displays, refuses an endpoint whose own `args_sha256`
+differs, and signs the digest it computed, so what is signed is what is shown; an endpoint that shows other
+arguments than its journal holds gets a signature its journal refuses, and nothing is recorded. The URL must
+be `https` (`http` only to a loopback address) and a redirect is not followed; `-tls-ca`, `-client-cert` with
+`-client-key`, and `-token-env` (a bearer token read from the named environment variable, never from the
+command line) cover a private CA, mutual TLS and a token. The receipt it writes is the one the endpoint
+returns, checked against the decision signed and against the approver's key; its record, position and leaf
+hash are the application's word until a signed head covers them (`bide audit verify-receipts -update`).
+If the request fails with no answer, run the command again: the decision may have been recorded, and one
+of yours that counts is refused as already decided.
+
 **What it does not serve.** A single-approver gate (`agent.Approve`) has no signature to check, so it
 is refused (422 `single_gate`); a plan flow node's gate (a call id starting `node:`) is refused (422
 `unsupported`); a decision for a gate that already settled, or a run that ended, is 409 `not_waiting`.

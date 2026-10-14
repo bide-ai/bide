@@ -48,6 +48,7 @@ const usageText = `bide approve: record a signed approval, or a rejection, of a 
   bide approve -db <file> -run <id> -call <tool-use id> -as <approver> -key <key-file> [flags]
   bide approve -postgres-env <VAR> -run <id> -call <tool-use id> -as <approver> -key <key-file>
   bide approve -db <file> -list
+  bide approve -to <url> -run <id> -call <tool-use id> -as <approver> -key <key-file> -approver-keys <file>
 
 It reads the call from the journal, never from a flag or a notification, and shows what it is
 about to sign: the run, the tool, the call's arguments (indented JSON, long ones cut; -full shows
@@ -96,6 +97,23 @@ says this either way). -verify-receipt <file> -approver-keys <keys> checks a rec
 reading no journal; bide audit verify-receipts checks receipts against the journal and its signed
 heads, and flags a decision deleted after signing.
 
+-to <url> decides through an application's approval intake (package approvals) instead of writing a
+journal, for an approver with no database access: the application records the signed decision through
+its own journal, so its audit log signs it as it is written. The call is fetched from the endpoint and
+shown, and what is signed is what is shown: the command computes the SHA-256 of the arguments it
+displays and refuses an endpoint whose own digest differs, shows the digest it computed, and signs
+that. The endpoint verifies the signature against the call it holds, so arguments shown that are not
+the journal's produce a decision that records nothing. The same refusals apply (the call is not
+waiting, you are not an approver, you already decided), and the gate is read again after you confirm.
+The URL must be https (http only to a loopback address), carry no credentials, and a redirect is
+not followed. -tls-ca names the CA that signs the endpoint's certificate (instead of the system
+roots), -client-cert and -client-key present a client certificate for mutual TLS, and -token-env
+names an environment variable that holds a bearer token to send. -to serves m-of-n gates (a
+single-approver gate has no signature), and -list does not go with it. The decision's receipt is
+the one the endpoint returns, checked against what you signed and against your key before it is
+written. If the request fails with no answer, the decision may or may not have been recorded: run
+the command again, and a decision of yours that counts is refused as already decided.
+
 After the decision is recorded, re-run the run's root run ID (agent.Run with the same ID) or let
 RecoverLoop pick it up: the gate counts the decisions and the call runs or is denied. bide approve
 never runs the call.
@@ -136,6 +154,10 @@ type flags struct {
 	unverified                bool
 	receipt, verifyReceipt    string
 	list, asJSON              bool
+	to                        string // an approval intake's base URL (package approvals): decide through it
+	tlsCA                     string
+	clientCert, clientKey     string
+	tokenEnv                  string
 }
 
 // Main is the bide approve command: it parses args and decides on, or lists, calls that wait for
@@ -170,6 +192,11 @@ func MainWith(args []string, in io.Reader, stdout, stderr io.Writer, stores Stor
 	fs.BoolVar(&f.reject, "reject", false, "record a rejection instead of an approval")
 	fs.BoolVar(&f.yes, "yes", false, "do not ask for confirmation (for scripts); what is signed is still shown")
 	fs.BoolVar(&f.full, "full", false, "show all of the call's arguments, not the first lines")
+	fs.StringVar(&f.to, "to", "", "decide through an application's approval intake (package approvals) at this base URL (https, or http to loopback) instead of writing a journal: the call is fetched from the endpoint, shown, signed and posted")
+	fs.StringVar(&f.tlsCA, "tls-ca", "", "with -to: the PEM CA certificate(s) that sign the endpoint's certificate, instead of the system roots")
+	fs.StringVar(&f.clientCert, "client-cert", "", "with -to: a PEM client certificate for mutual TLS (with -client-key)")
+	fs.StringVar(&f.clientKey, "client-key", "", "with -to: the PEM private key of -client-cert")
+	fs.StringVar(&f.tokenEnv, "token-env", "", "with -to: name of the environment variable that holds a bearer token to send (the token never goes on the command line)")
 	fs.BoolVar(&f.list, "list", false, "list the calls that wait for a decision, each with its "+src.Prog+" command; nothing is recorded")
 	fs.BoolVar(&f.asJSON, "json", false, "with -list: print the waiting calls as JSON")
 	if src.Flags != nil {
@@ -205,6 +232,8 @@ func MainWith(args []string, in io.Reader, stdout, stderr io.Writer, stores Stor
 	switch {
 	case f.verifyReceipt != "":
 		err = c.verifyReceiptFile()
+	case f.to != "":
+		err = c.approveRemote(ctx)
 	case f.list:
 		err = c.list(ctx)
 	default:
@@ -226,7 +255,7 @@ func (f flags) check() string {
 		if f.approverKeys == "" {
 			return "-verify-receipt needs -approver-keys, the file of enrolled approver public keys"
 		}
-		for name, set := range map[string]bool{"-db": f.db != "", "-postgres": f.postgres != "", "-postgres-env": f.postgresEnv != "", "-run": f.run != "", "-call": f.call != "", "-as": f.as != "", "-key": f.key != "", "-reject": f.reject, "-yes": f.yes, "-full": f.full, "-list": f.list, "-json": f.asJSON, "-unverified": f.unverified, "-receipt": f.receipt != ""} {
+		for name, set := range map[string]bool{"-db": f.db != "", "-postgres": f.postgres != "", "-postgres-env": f.postgresEnv != "", "-run": f.run != "", "-call": f.call != "", "-as": f.as != "", "-key": f.key != "", "-reject": f.reject, "-yes": f.yes, "-full": f.full, "-list": f.list, "-json": f.asJSON, "-unverified": f.unverified, "-receipt": f.receipt != "", "-to": f.to != ""} {
 			if set {
 				return name + " does not go with -verify-receipt, which reads no journal"
 			}
@@ -235,6 +264,33 @@ func (f flags) check() string {
 	}
 	if f.receipt != "" && f.list {
 		return "-receipt does not go with -list"
+	}
+	if f.to != "" {
+		for name, set := range map[string]bool{"-db": f.db != "", "-postgres": f.postgres != "", "-postgres-env": f.postgresEnv != "", "-list": f.list, "-json": f.asJSON} {
+			if set {
+				return name + " does not go with -to, which decides through an endpoint and opens no journal"
+			}
+		}
+		switch {
+		case f.run == "":
+			return "no -run given"
+		case f.call == "":
+			return "no -call given"
+		case f.as == "" || f.key == "":
+			return "-to takes a signed decision: give -as and -key (the intake serves m-of-n gates only)"
+		case f.unverified && f.approverKeys != "":
+			return "-unverified and -approver-keys are opposites: give the keys to check the decision, or -unverified to skip the check"
+		case f.approverKeys == "" && !f.unverified:
+			return "an m-of-n decision needs -approver-keys, or -unverified to decide without checking your key against the enrolled one"
+		case (f.clientCert == "") != (f.clientKey == ""):
+			return "-client-cert and -client-key go together"
+		}
+		return ""
+	}
+	for name, set := range map[string]bool{"-tls-ca": f.tlsCA != "", "-client-cert": f.clientCert != "", "-client-key": f.clientKey != "", "-token-env": f.tokenEnv != ""} {
+		if set {
+			return name + " goes with -to"
+		}
 	}
 	n := 0
 	for _, s := range []string{f.db, f.postgres, f.postgresEnv} {
