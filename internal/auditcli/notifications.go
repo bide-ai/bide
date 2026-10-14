@@ -207,6 +207,13 @@ func (c *cli) readStore(in *audit.NotifyVerifyInput, db, pgEnv, run string) erro
 			return unusable(err)
 		}
 	}
+	// The digest's trail belongs to no run either, and a head over it is checked against all of it:
+	// it is read when the audit is of every run, or when a head names it.
+	if run == "" || slices.ContainsFunc(in.Heads, func(h audit.SignedTreeHead) bool { return h.RunID == agent.NotifyDigestTrail }) {
+		if _, err := add(agent.NotifyDigestTrail); err != nil {
+			return unusable(err)
+		}
+	}
 	// The open trail: every yearly index, the segments they name, and the segments those seal into.
 	now := time.Now().UTC()
 	segs := map[string]bool{}
@@ -233,22 +240,6 @@ func (c *cli) readStore(in *audit.NotifyVerifyInput, db, pgEnv, run string) erro
 		if next := agent.FoldOpen(recs).Sealed; next != "" && !segs[next] {
 			segs[next] = true
 			queue = append(queue, next)
-		}
-	}
-	// The two trails that belong to no run (the events whose all-clear may be owed, the digest's)
-	// are read whole, so a head over one is checked against all of it: they are read when the audit
-	// is of every run, or when a head names them.
-	for _, name := range []string{agent.NotifyOpenTrail, agent.NotifyDigestTrail} {
-		named := slices.ContainsFunc(in.Heads, func(h audit.SignedTreeHead) bool { return h.RunID == name })
-		if run != "" && !named {
-			continue
-		}
-		x, err := audit.ExportNotifyTrail(ctx, s.Events, name)
-		if err != nil {
-			return unusable(err)
-		}
-		if len(x.Leaves) > 0 {
-			in.Trails = append(in.Trails, x)
 		}
 	}
 	return nil

@@ -639,3 +639,157 @@ func TestAuditedEventStore_AnchorTrailsRespectsTheCooldownAndReanchorDoesNot(t *
 		t.Fatalf("after recovery: %v, heads %v", err, fa.sizes("notify:r2"))
 	}
 }
+
+// failingAppendStore commits an append and then reports an error when failNext is set, as a store
+// does when its reply is lost.
+type failingAppendStore struct {
+	audit.EventStore
+	mu       sync.Mutex
+	failNext bool
+}
+
+func (f *failingAppendStore) Append(ctx context.Context, trail string, seq int, leaf []byte) error {
+	err := f.EventStore.Append(ctx, trail, seq, leaf)
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	if err == nil && f.failNext {
+		f.failNext = false
+		return errors.New("reply lost")
+	}
+	return err
+}
+
+// An append that errors may have committed, so its trail is remembered as unanchored without
+// touching the anchor, and the next Reanchor signs it.
+func TestAuditedEventStore_AnAppendThatErroredLeavesItsTrailUnanchored(t *testing.T) {
+	ctx := context.Background()
+	_, priv, _ := ed25519.GenerateKey(nil)
+	fa := &trailAnchor{}
+	inner := &failingAppendStore{EventStore: audit.NewMemEventStore(), failNext: true}
+	s, err := audit.NewAuditedEventStore(inner, audit.Ed25519Signer{Priv: priv}, fa)
+	if err != nil {
+		t.Fatal(err)
+	}
+	leafErr := s.Append(ctx, trailName, 0, []byte("x"))
+	if leafErr == nil {
+		t.Fatal("the lossy append reported no error")
+	}
+	if !slices.Equal(s.Unanchored(), []string{trailName}) || fa.tried() != 0 {
+		t.Fatalf("Unanchored = %v after %d attempts: an errored append must be remembered without touching the anchor", s.Unanchored(), fa.tried())
+	}
+}
+
+// While a head is being published, a write that errors marks the trail unanchored: the publish in
+// flight did not cover it, so it must not clear that mark.
+func TestAuditedEventStore_APublishDoesNotClearAMarkMadeDuringIt(t *testing.T) {
+	ctx := context.Background()
+	_, priv, _ := ed25519.GenerateKey(nil)
+	gate := make(chan struct{})
+	fa := &trailAnchor{hang: gate}
+	inner := &failingAppendStore{EventStore: audit.NewMemEventStore()}
+	s, err := audit.NewAuditedEventStore(inner, audit.Ed25519Signer{Priv: priv}, fa)
+	if err != nil {
+		t.Fatal(err)
+	}
+	s.WithTimeout(10 * time.Second)
+	tr := audit.NewNotifyTrail(s)
+	appendNotify(t, tr, trailName, 0, 1) // the publisher is now blocked inside Publish
+	deadline := time.Now().Add(5 * time.Second)
+	for fa.tried() == 0 && time.Now().Before(deadline) {
+		time.Sleep(time.Millisecond)
+	}
+	inner.mu.Lock()
+	inner.failNext = true
+	inner.mu.Unlock()
+	if err := s.Append(ctx, trailName, 1, []byte("lost-reply")); err == nil {
+		t.Fatal("expected the lossy append to report an error")
+	}
+	close(gate)
+	if err := s.Flush(ctx); err != nil {
+		t.Fatal(err)
+	}
+	if !slices.Equal(s.Unanchored(), []string{trailName}) {
+		t.Fatalf("Unanchored = %v: the publish in flight cleared a mark it did not cover", s.Unanchored())
+	}
+}
+
+// After a cooldown, exactly one publisher probes a recovering anchor, however many trails reach
+// the anchor at once.
+func TestAuditedEventStore_OnlyOneProbeAfterTheCooldown(t *testing.T) {
+	ctx := context.Background()
+	fa := &trailAnchor{down: true, delay: 150 * time.Millisecond}
+	r := newRig(t, fa)
+	r.s.WithCooldown(40 * time.Millisecond)
+	tr := audit.NewNotifyTrail(r.s)
+	const trails = 8
+	for i := range trails {
+		appendNotify(t, tr, fmt.Sprintf("notify:t%d", i), 0, 1)
+		r.flush(t) // the first fails and opens the breaker; the rest are skipped
+	}
+	time.Sleep(80 * time.Millisecond) // the cooldown has passed
+	before := fa.tried()
+	var wg sync.WaitGroup
+	for i := range trails {
+		wg.Go(func() { _ = r.s.AnchorTrails(ctx, []string{fmt.Sprintf("notify:t%d", i)}) })
+	}
+	wg.Wait()
+	if got := fa.tried() - before; got != 1 {
+		t.Fatalf("%d publish attempts reached a failing anchor after the cooldown, want one probe", got)
+	}
+}
+
+// The background publisher and the re-sign path (AnchorTrails, Reanchor, ReanchorPending) race
+// over several trails against a slow, jittery anchor: whatever the interleaving, the heads that
+// arrive for a trail only grow, and each trail ends covered.
+func TestAuditedEventStore_HeadsOnlyGrowWithThePublisherAndTheResignPathRacing(t *testing.T) {
+	ctx := context.Background()
+	fa := &trailAnchor{delay: 2 * time.Millisecond}
+	r := newRig(t, fa)
+	r.s.WithCooldown(0)
+	tr := audit.NewNotifyTrail(r.s)
+	trails := []string{"notify:a", "notify:b", "notify:c"}
+	const perTrail = 25
+	stop := make(chan struct{})
+	var resign sync.WaitGroup
+	for k := range 4 {
+		resign.Go(func() {
+			for i := 0; ; i++ {
+				select {
+				case <-stop:
+					return
+				default:
+				}
+				switch (i + k) % 3 {
+				case 0:
+					_ = r.s.AnchorTrails(ctx, trails)
+				case 1:
+					_ = r.s.Reanchor(ctx, trails[i%len(trails)])
+				default:
+					_ = r.s.ReanchorPending(ctx)
+				}
+			}
+		})
+	}
+	var writers sync.WaitGroup
+	for _, name := range trails {
+		writers.Go(func() { appendNotify(t, tr, name, 0, perTrail) })
+	}
+	writers.Wait()
+	r.flush(t)
+	close(stop)
+	resign.Wait()
+	for _, name := range trails {
+		if err := r.s.Reanchor(ctx, name); err != nil {
+			t.Fatal(err)
+		}
+		sizes := fa.sizes(name)
+		if len(sizes) == 0 || sizes[len(sizes)-1] != perTrail {
+			t.Fatalf("%s: heads %v do not end at %d", name, sizes, perTrail)
+		}
+		for i := 1; i < len(sizes); i++ {
+			if sizes[i] <= sizes[i-1] {
+				t.Fatalf("%s: arrival order went %d then %d: %v", name, sizes[i-1], sizes[i], sizes)
+			}
+		}
+	}
+}

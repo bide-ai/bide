@@ -84,7 +84,7 @@ func TestAuditNotifications_AutoAnchoredTrailOnSQLite(t *testing.T) {
 	args := shArgs([]string{"audit", "notifications", "-db", path}, pubkey, heads)
 
 	code, out, errOut := runBide(args...)
-	if code != 0 || !strings.Contains(out, "PASS  acked") || !strings.Contains(out, "that all verify") || strings.Contains(out, "UNANCHORED") || strings.Contains(out, "not attested") {
+	if code != 0 || !strings.Contains(out, "PASS  acked") || !strings.Contains(out, "trail notify:@open:") || strings.Contains(out, "UNANCHORED") || strings.Contains(out, "not attested") {
 		t.Fatalf("exit %d\n%s\n%s", code, out, errOut)
 	}
 
@@ -130,7 +130,7 @@ func TestAuditNotifications_AutoAnchoredTrailOnPostgres(t *testing.T) {
 	args := shArgs([]string{"audit", "notifications", "-postgres-env", "BIDE_AUDIT_TEST_DSN", "-run", run, "-as-of", late}, pubkey, heads)
 
 	code, out, errOut := runBide(args...)
-	if code != 0 || !strings.Contains(out, "PASS  acked") || !strings.Contains(out, "that all verify") || strings.Contains(out+errOut, dsn) {
+	if code != 0 || !strings.Contains(out, "PASS  acked") || !strings.Contains(out, "trail notify:@open:") || strings.Contains(out+errOut, dsn) {
 		t.Fatalf("exit %d\n%s\n%s", code, out, errOut)
 	}
 
