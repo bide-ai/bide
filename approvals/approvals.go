@@ -238,6 +238,8 @@ type Handler struct {
 	maxBody                  int64
 	readTimeout              time.Duration
 	policyFor                func(tool string) (*agent.ApprovalPolicy, bool) // WithGatePolicy
+	page                     bool                                            // WithPage
+	corsOrigin               string                                          // WithCORS
 	readSem                  chan struct{}                                   // bodies being read, before any work on the journal
 	readMu                   sync.Mutex
 	readBy                   map[string]int // bodies being read, by client
@@ -291,6 +293,12 @@ func New(j *agent.Journal, verifierFor agent.ApproverVerifierFor, opts ...Option
 	h.hooks = make(chan struct{}, h.inflight)
 	h.readSem = make(chan struct{}, h.maxReaders)
 	h.mux = http.NewServeMux()
+	if (h.page || h.corsOrigin != "") && h.auth == nil {
+		return nil, configErr("WithPage and WithCORS need WithAuth: the page reads a call's arguments through GET /pending, so the endpoint must know who is asking")
+	}
+	if h.page {
+		h.mux.HandleFunc("GET /page/", h.servePage)
+	}
 	h.mux.HandleFunc("GET /pending", h.pending)
 	h.mux.HandleFunc("POST /decisions", h.decide)
 	return h, nil
@@ -486,6 +494,9 @@ func (h *Handler) Wait() { h.wg.Wait() }
 func (h *Handler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	w.Header().Set("Cache-Control", "no-store")
 	w.Header().Set("X-Content-Type-Options", "nosniff")
+	if h.cors(w, r) {
+		return
+	}
 	// Only POST /decisions reads a body. Any other request that carries one (or may: its length is
 	// unknown) is answered with the connection closing, so the response does not wait for a body that
 	// is never read (see refuseEarly), whatever the path or method answers, a 404 and a 405 included.
