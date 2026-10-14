@@ -15,6 +15,11 @@ on:
 permissions:
   contents: read
 
+# A new push to a pull request cancels the superseded run; main and the merge queue never cancel.
+concurrency:
+  group: gsm-gate-${{ github.event.pull_request.number || github.ref }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+
 jobs:
   gate:
     name: gsm machine gate
@@ -29,10 +34,30 @@ jobs:
         with:
           path: bide
 
+      # A pull request that changes only documentation, assets, TLA+ specifications or issue
+      # templates cannot change what a bide program makes, so the rest of the job is skipped; the
+      # job still reports, so the required check passes. Pushes to main, the merge queue and any
+      # doubt (the file list cannot be read) run everything. Same file test as ci.yml's Changes job.
+      - id: changes
+        name: Does the change touch code?
+        env:
+          GH_TOKEN: ${{ github.token }}
+          EVENT: ${{ github.event_name }}
+          PR: ${{ github.event.pull_request.number }}
+        run: |
+          code=true
+          if [ "$EVENT" = pull_request ] && files=$(gh api --paginate "repos/$GITHUB_REPOSITORY/pulls/$PR/files" --jq '.[].filename') && [ -n "$files" ]; then
+            echo "Changed files:"; echo "$files"
+            echo "$files" | .github/scripts/changed-code.sh >/dev/null || code=false
+          fi
+          echo "code=$code" | tee -a "$GITHUB_OUTPUT"
+
       - name: Read pins
+        if: steps.changes.outputs.code != 'false'
         run: cat .github/gsm-gate/pins.env >> "$GITHUB_ENV"
 
       - name: Checkout gsm at the pinned commit
+        if: steps.changes.outputs.code != 'false'
         uses: actions/checkout@v4
         with:
           repository: ${{ env.GSM_REPO }}
@@ -42,9 +67,11 @@ jobs:
 
       # gsm's pins name the proof commit, the Rocq image (by digest) and the two checker binaries.
       - name: Read gsm's checker pins
+        if: steps.changes.outputs.code != 'false'
         run: cat ../gsm/.github/oracle/pins.env >> "$GITHUB_ENV"
 
       - name: Checkout the proof at gsm's pinned commit
+        if: steps.changes.outputs.code != 'false'
         uses: actions/checkout@v4
         with:
           repository: ${{ env.NC_REPO }}
@@ -52,9 +79,11 @@ jobs:
           path: nc
 
       - name: Build the extracted checkers
+        if: steps.changes.outputs.code != 'false'
         run: bash ../nc/coq/extraction/ci-build.sh "$ROCQ_IMAGE"
 
       - name: Verify gsm's pinned hashes
+        if: steps.changes.outputs.code != 'false'
         # Every file in gsm's SHA256SUMS must match, and both checkers the pins name must be among them.
         working-directory: nc/coq/extraction
         run: |
@@ -66,6 +95,7 @@ jobs:
           done
 
       - uses: actions/setup-go@v5
+        if: steps.changes.outputs.code != 'false'
         with:
           go-version: '1.27'
 
@@ -77,6 +107,7 @@ jobs:
       # machines.txt, and -scan loads every bide module and fails if bide makes a gsm machine outside
       # the programs (see the README).
       - name: Run every program and check its machines
+        if: steps.changes.outputs.code != 'false'
         working-directory: gsm/internal/cmd/gsmgate
         env:
           GOWORK: 'off'
@@ -93,7 +124,7 @@ jobs:
       # The pinned gsm commit must be on gsm's main: reviewed and merged, not a branch head. Last, so
       # the checks above still report when it fails.
       - name: The pinned gsm commit is on gsm's main
-        if: ${{ !cancelled() }}
+        if: ${{ !cancelled() && steps.changes.outputs.code != 'false' }}
         run: |
           git -C ../gsm merge-base --is-ancestor "$GSM_COMMIT" origin/main ||
             { echo "::error::GSM_COMMIT $GSM_COMMIT is not on $GSM_REPO main"; exit 1; }

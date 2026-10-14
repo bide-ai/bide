@@ -28,6 +28,11 @@ on:
 permissions:
   contents: read
 
+# A new push to a pull request cancels the superseded run; main, the merge queue and the nightly never cancel.
+concurrency:
+  group: models-${{ github.event.pull_request.number || github.ref }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+
 # The pull-request set runs in parallel shards, one job each, by configuration directory: a model's
 # directory, or its regress, findings or limits directory (check.sh's TLC_DIRS). Balanced by the
 # measured TLC times; the plan job fails unless every ci, regress, finding and limit configuration

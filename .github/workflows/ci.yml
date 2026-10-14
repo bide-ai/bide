@@ -11,6 +11,12 @@ on:
 permissions:
   contents: read
 
+# A new push to a pull request cancels the superseded run; pushes to main and merge queue batches
+# are never cancelled (each one is a distinct commit that must report its own result).
+concurrency:
+  group: ci-${{ github.event.pull_request.number || github.ref }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+
 # Multi-module repo: the core module plus one module per heavy adapter. Each is
 # built/tested in its own directory (its go.mod resolves the core via a replace
 # directive; a root go.work also ties them together for local dev). The Lint job
@@ -29,6 +35,12 @@ env:
     agent: .:agent
     core: .
     rest: mcptools trace store/sqlite store/postgres govern govern/redislog govern/sqlitelog govern/postgreslog codec/gcf cmd/bide cmd/bide-view examples/approval examples/plan examples/mcp examples/observability examples/govern examples/stripe-refund integration
+  # The Windows test shards (no -race), balanced by measured time: store/sqlite alone takes about
+  # four minutes there (fsync-bound), the core and the other modules about one and two.
+  WINDOWS_SHARDS: |
+    sqlite: store/sqlite
+    core: .
+    rest: mcptools trace store/postgres govern govern/redislog govern/sqlitelog govern/postgreslog codec/gcf cmd/bide cmd/bide-view examples/approval examples/plan examples/mcp examples/observability examples/govern examples/stripe-refund integration
 
 jobs:
   # Decides whether a pull request touches anything the Go jobs test. A PR that changes only
@@ -44,6 +56,7 @@ jobs:
     outputs:
       code: ${{ steps.diff.outputs.code }}
       shards: ${{ steps.shards.outputs.shards }}
+      windows-shards: ${{ steps.shards.outputs.windows }}
     steps:
       - uses: actions/checkout@v4
         with:
@@ -57,10 +70,9 @@ jobs:
           code=true
           if [ "${{ github.event_name }}" = "pull_request" ] && files=$(git diff --name-only "$BASE" "$HEAD"); then
             echo "Changed files:"; echo "$files"
-            # Paths no Go build or test reads (the TLA+ models have their own workflow, models.yml).
-            # Everything else is code.
-            other=$(echo "$files" | grep -vE '^(docs/|docs-site/|assets/|spec/tla/|\.github/ISSUE_TEMPLATE/)|\.md$|^(LICENSE|NOTICE|DCO)$|^\.github/workflows/(docs|bench|models|explore)\.yml$' || true)
-            [ -n "$files" ] && [ -z "$other" ] && code=false
+            # Paths no Go build or test reads are listed in changed-code.sh (shared with the
+            # gsm machine gate); everything else is code.
+            echo "$files" | .github/scripts/changed-code.sh >/dev/null || code=false
           fi
           echo "code=$code" | tee -a "$GITHUB_OUTPUT"
       - id: shards
@@ -70,9 +82,14 @@ jobs:
         run: |
           .github/scripts/shards.sh check-modules
           echo "shards=$(.github/scripts/shards.sh json)" | tee -a "$GITHUB_OUTPUT"
+          SHARDS="$WINDOWS_SHARDS" .github/scripts/shards.sh check-modules
+          echo "windows=$(SHARDS="$WINDOWS_SHARDS" .github/scripts/shards.sh json)" | tee -a "$GITHUB_OUTPUT"
 
+  # Lint is four jobs: this one (its name is distinct from the required "Lint", which the
+  # lint-result job below reports), the reproducible-build check and govulncheck (the slowest
+  # steps, in parallel with it), and the result.
   lint:
-    name: Lint
+    name: Lint (static)
     needs: changes
     # Gated per step, not per job: the docs snippet check runs on every change, documentation
     # included, and the rest only when code changed.
@@ -88,6 +105,7 @@ jobs:
       - uses: actions/setup-go@v5
         with:
           go-version: '1.27'
+          cache-dependency-path: '**/go.sum'
       - name: Code and models in step (modelsync, TestProtocolVocabulary)
         # Runs on every change, documentation and spec-only ones included. modelsync checks that
         # every region marker ("// protocol:<model> begin <Action> ...") names an action the
@@ -188,11 +206,6 @@ jobs:
           # pass its own tests; TestAuditOnlyBuildIsCore checks its import graph in every build.
           echo "== vet and test cmd/bide -tags bide_audit_only =="
           ( cd cmd/bide && go vet -tags bide_audit_only ./... && go test -tags bide_audit_only -count=1 . )
-      - name: Reproducible bide builds
-        if: needs.changes.outputs.code != 'false'
-        # Two builds of cmd/bide from copies of the tree at different paths are byte-identical, and
-        # .goreleaser.yaml builds with the flags scripts/repro.sh rebuilds a release with.
-        run: scripts/repro.sh --self-test
       - name: doccheck (all modules)
         if: needs.changes.outputs.code != 'false'
         # Every exported identifier has a doc comment that starts with its name, and every package
@@ -226,8 +239,35 @@ jobs:
         # ResolveHaltRef, agent.Durable, the pause aliases, ...) appears in Go code, godoc or docs,
         # outside the historical records (CHANGELOG.md, docs/releases, docs/design). -godoc checks `go doc -all` of every public package too.
         run: go run ./internal/tools/oldnames -godoc
+
+  lint-repro:
+    name: Lint (reproducible builds)
+    needs: changes
+    if: ${{ !cancelled() && needs.changes.outputs.code != 'false' }}
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v5
+        with:
+          go-version: '1.27'
+          cache-dependency-path: '**/go.sum'
+      - name: Reproducible bide builds
+        # Two builds of cmd/bide from copies of the tree at different paths are byte-identical, and
+        # .goreleaser.yaml builds with the flags scripts/repro.sh rebuilds a release with.
+        run: scripts/repro.sh --self-test
+
+  lint-vuln:
+    name: Lint (govulncheck)
+    needs: changes
+    if: ${{ !cancelled() && needs.changes.outputs.code != 'false' }}
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v5
+        with:
+          go-version: '1.27'
+          cache-dependency-path: '**/go.sum'
       - name: govulncheck (all modules)
-        if: needs.changes.outputs.code != 'false'
         # Known vulnerabilities in dependencies or the standard library that bide's code can reach
         # fail the build.
         run: |
@@ -236,6 +276,21 @@ jobs:
             echo "== govulncheck $m =="
             ( cd "$m" && "$(go env GOPATH)/bin/govulncheck" ./... )
           done
+
+  # The required check Lint. It always reports: success when the Changes job succeeded and the
+  # static job passed and either only documentation changed (the other two are skipped) or they
+  # passed too.
+  lint-result:
+    name: Lint
+    needs: [changes, lint, lint-repro, lint-vuln]
+    if: always()
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          sparse-checkout: .github/scripts
+      - name: Every lint job passed
+        run: .github/scripts/shards.sh verdict "${{ needs.changes.result }}" "${{ needs.changes.outputs.code }}" "static=${{ needs.lint.result }}" "repro=${{ needs.lint-repro.result }}" "vuln=${{ needs.lint-vuln.result }}"
 
   # Linux: the modules in shards, one job each, under the race detector, which finds the same races
   # on Linux as it would on macOS. Test (ubuntu-latest), the required check, stands for the shards
@@ -255,6 +310,7 @@ jobs:
       - uses: actions/setup-go@v5
         with:
           go-version: '1.27'
+          cache-dependency-path: '**/go.sum'
       - name: Build & test (the shard's modules and packages)
         shell: bash
         env:
@@ -274,6 +330,7 @@ jobs:
       - uses: actions/setup-go@v5
         with:
           go-version: '1.27'
+          cache-dependency-path: '**/go.sum'
       - name: Test without encoding/json/v2 (core, govern and integration modules)
         shell: bash
         # encoding/json/v2 is a Go experiment in Go 1.27, on by default. bide does not depend on it,
@@ -301,9 +358,9 @@ jobs:
       - name: Every shard passed
         run: .github/scripts/shards.sh verdict "${{ needs.changes.result }}" "${{ needs.changes.outputs.code }}" "shards=${{ needs.test-linux.result }}" "nojsonv2=${{ needs.test-nojsonv2.result }}"
 
-  # macOS and Windows: every module in one job each (about 3 and 4 minutes, under the Linux core
-  # shard), without -race, which also runs the scale tests at full size (they run smaller under
-  # -race).
+  # macOS: every module in one job (about 3 to 4 minutes, under the Linux shards), without -race,
+  # which also runs the scale tests at full size (they run smaller under -race). Windows is
+  # sharded below.
   test:
     name: Test
     needs: changes
@@ -313,7 +370,7 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        os: [macos-latest, windows-latest]
+        os: [macos-latest]
     steps:
       - name: Documentation-only change
         if: needs.changes.outputs.code == 'false'
@@ -324,6 +381,7 @@ jobs:
         if: needs.changes.outputs.code != 'false'
         with:
           go-version: '1.27'
+          cache-dependency-path: '**/go.sum'
       - name: Build & test (all modules)
         if: needs.changes.outputs.code != 'false'
         shell: bash
@@ -333,11 +391,58 @@ jobs:
             ( cd "$m" && go build ./... && go test -count=1 ./... )
           done
 
+  # Windows: the modules in shards, one job each, without -race (WINDOWS_SHARDS). Unsharded, one
+  # job took 6 to 9 minutes, the longest check of a pull request, because store/sqlite alone takes
+  # four minutes there. Every module still builds and tests on Windows, in full.
+  test-windows:
+    name: Test (windows-latest, ${{ matrix.shard }})
+    needs: changes
+    if: needs.changes.outputs.code != 'false'
+    runs-on: windows-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        shard: ${{ fromJSON(needs.changes.outputs.windows-shards) }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v5
+        with:
+          go-version: '1.27'
+          cache-dependency-path: '**/go.sum'
+      - name: Build & test (the shard's modules and packages)
+        shell: bash
+        env:
+          SHARD: ${{ matrix.shard }}
+        run: SHARDS="$WINDOWS_SHARDS" .github/scripts/shards.sh run "$SHARD" -count=1
+
+  # The required check for Windows. It always reports, like Test (ubuntu-latest).
+  test-windows-result:
+    name: Test (windows-latest)
+    needs: [changes, test-windows]
+    if: always()
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          sparse-checkout: .github/scripts
+      - name: Every shard passed
+        run: .github/scripts/shards.sh verdict "${{ needs.changes.result }}" "${{ needs.changes.outputs.code }}" "shards=${{ needs.test-windows.result }}"
+
   integration:
-    name: Integration (Postgres, Redis)
+    name: Integration (Postgres, Redis, ${{ matrix.name }})
     needs: changes
     if: ${{ !cancelled() && needs.changes.outputs.code != 'false' }}
     runs-on: ubuntu-latest
+    # Two jobs in parallel: the Postgres store's suite is over half of the time. The required check
+    # Integration (Postgres, Redis) is the result job below.
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - name: store
+            modules: store/postgres
+          - name: logs and cmd
+            modules: govern/postgreslog govern/redislog cmd/bide
     # The Postgres store (cross-instance at-most-once, leases) and the shared governed-event logs
     # need real services; their tests skip without PG_DSN / REDIS_ADDR, so the Test jobs above
     # never run them. This job does, against service containers.
@@ -364,12 +469,13 @@ jobs:
       - uses: actions/setup-go@v5
         with:
           go-version: '1.27'
+          cache-dependency-path: '**/go.sum'
       - name: Integration tests (twice each; a skip fails the job)
         run: |
           # -count=2 runs each suite twice against the same services, so a test that only passes
           # on a fresh database fails here. A skip means the services were not reached, which
           # would silently test nothing, so it fails the job.
-          for m in store/postgres govern/postgreslog govern/redislog cmd/bide; do
+          for m in ${{ matrix.modules }}; do
             echo "== $m =="
             out=$(cd "$m" && go test -race -count=2 -v ./... 2>&1) || { echo "$out"; exit 1; }
             echo "$out" | grep -E '^(ok|FAIL|--- (PASS|FAIL|SKIP))'
@@ -378,3 +484,16 @@ jobs:
               exit 1
             fi
           done
+
+  # The required check Integration (Postgres, Redis). It always reports, like Test (ubuntu-latest).
+  integration-result:
+    name: Integration (Postgres, Redis)
+    needs: [changes, integration]
+    if: always()
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          sparse-checkout: .github/scripts
+      - name: Every job passed
+        run: .github/scripts/shards.sh verdict "${{ needs.changes.result }}" "${{ needs.changes.outputs.code }}" "jobs=${{ needs.integration.result }}"
