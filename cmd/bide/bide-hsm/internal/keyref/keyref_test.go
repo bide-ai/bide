@@ -277,3 +277,12 @@ func TestParseAzureKV(t *testing.T) {
 		}
 	}
 }
+
+// A base identifier is refused for what it is, not only as a malformed one: it would follow rotation.
+func TestAzureKVBaseIdentifierIsNamed(t *testing.T) {
+	for _, ref := range []string{"azurekv:https://v.vault.azure.net/keys/k", "azurekv:https://v.vault.azure.net/keys/k/"} {
+		if _, err := Parse(ref); err == nil || !strings.Contains(err.Error(), "pin the version") {
+			t.Errorf("%s: %v", ref, err)
+		}
+	}
+}
