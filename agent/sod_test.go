@@ -142,11 +142,11 @@ func TestSoD_RequesterNotAnApprover(t *testing.T) {
 // ErrConfig, and runs nothing.
 func TestSoD_NoUsableRequesterIsConfigError(t *testing.T) {
 	for name, id := range map[string]Identity{
-		"no principal":    {Actor: "agent@1"},
-		"authority only":  {AuthorityRef: "grant:1"},
-		"non-ASCII":       {OnBehalfOf: "аlice"}, // Cyrillic a
-		"space":           {OnBehalfOf: "alice smith"},
-		"control":         {OnBehalfOf: "alice\n"},
+		"no principal":   {Actor: "agent@1"},
+		"authority only": {AuthorityRef: "grant:1"},
+		"non-ASCII":      {OnBehalfOf: "аlice"}, // Cyrillic a
+		"space":          {OnBehalfOf: "alice smith"},
+		"control":        {OnBehalfOf: "alice\n"},
 	} {
 		t.Run(name, func(t *testing.T) {
 			store := memJournal()
