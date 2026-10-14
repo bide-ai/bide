@@ -4,7 +4,8 @@ A run that halts on an unknown outcome or waits at an approval gate stops until 
 notifier tells that person. `agent.WithNotifier` raises the event and keeps the delivery record in an
 audited trail (see the [design note](../design/notifier.md) for the guarantee); this page is about the
 shipped delivery, package `notify`: a signed HTTPS POST of a small JSON document, and the one-call
-check for the receiver.
+check for the receiver. [Set up, test and relay](#set-up-test-and-relay) covers the `bide notify` commands that
+test a receiver and forward to Slack and PagerDuty.
 
 ```go
 import "github.com/bide-ai/bide/notify"
@@ -268,71 +269,148 @@ rotation), never a secret; whether a client certificate was presented and its SP
 receiver was pinned or checked against a custom CA; and the negotiated TLS version. An audit policy can
 then require that approval notifications were sent with mTLS.
 
-## Slack
+## Set up, test and relay
 
-An incoming webhook wants `{"text": "..."}`, and a Workflow Builder webhook wants flat string
-variables. The payload is neither, and Slack cannot check a signature header, so put a small adapter in
-front of it: it verifies, then forwards the generated `summary`.
+Three commands in `bide notify` take you from nothing to a working notification, and none of them
+needs your application to run. They use the same package `notify` code as the real notifier, so a
+setup that passes them passes in production.
 
-<!-- docsnip: setup secrets []string; slackURL string -->
-```go
-http.HandleFunc("/bide-to-slack", func(w http.ResponseWriter, r *http.Request) {
-	if err := notify.Verify(r, secrets, 0); err != nil {
-		http.Error(w, "unauthorized", http.StatusUnauthorized)
-		return
-	}
-	var p notify.Payload
-	if err := json.NewDecoder(r.Body).Decode(&p); err != nil {
-		http.Error(w, "bad request", http.StatusBadRequest)
-		return
-	}
-	msg, _ := json.Marshal(map[string]string{"text": p.Summary + " To look: `" + p.View.Command + "`"})
-	resp, err := http.Post(slackURL, "application/json", bytes.NewReader(msg))
-	if err != nil || resp.StatusCode/100 != 2 {
-		http.Error(w, "upstream", http.StatusBadGateway) // bide retries the round
-		return
-	}
-	resp.Body.Close()
-	w.WriteHeader(http.StatusNoContent)
-})
+| Command | What it does |
+|---|---|
+| `bide notify test` | Sends one signed sample notification to your receiver and reports the TLS handshake, the HTTP status, whether the receiver acknowledged, and the timing. |
+| `bide notify listen` | A local HTTPS receiver with a self-signed certificate that verifies each request and prints the event. |
+| `bide notify relay` | A receiver that verifies bide's webhooks and forwards them to Slack and PagerDuty. |
+
+The signing secret is read from an environment variable (`BIDE_WEBHOOK_SECRET`, or the name given to
+`-secret-env`) or a file (`-secret-file`), never from a flag value, and no command prints or logs it.
+Use the same secret your application passes to `notify.WithSecrets`. During a rotation the previous
+secret is `BIDE_WEBHOOK_SECRET_PREVIOUS` (or `-previous-secret-env`, `-previous-secret-file`).
+
+### Test your receiver
+
+Start with the whole path on one machine. In one terminal:
+
+```sh
+export BIDE_WEBHOOK_SECRET=$(openssl rand -hex 32)
+bide notify listen
 ```
 
-A 502 makes bide retry, and a Slack post that succeeded before a lost reply may repeat: that is the
-at-least-once contract. Remember `Bide-Delivery` in your adapter's store if a duplicate message matters.
-The Slack webhook URL is itself a credential; keep it in the adapter's configuration, not in bide's.
+It makes a self-signed certificate, writes it to a file, and prints that file (the CA to trust), the
+certificate's pin, and the command to try. In a second terminal, with the same secret:
 
-## PagerDuty
-
-The Events API v2 wants a `routing_key`, an `event_action` and a `dedup_key`, so the same adapter
-shape applies. Use the notification ID as the dedup key and PagerDuty collapses redeliveries for you:
-
-<!-- docsnip: setup p notify.Payload; routingKey string -->
-```go
-action, dedup := "trigger", p.ID
-if p.Clears != nil { // the all-clear: close the incident the event opened
-	action, dedup = "resolve", p.Clears.ID
-}
-event := map[string]any{
-	"routing_key":  routingKey,
-	"event_action": action,
-	"dedup_key":    dedup,
-	"payload": map[string]any{
-		"summary":  p.Summary,
-		"source":   "bide",
-		"severity": "critical",
-		"custom_details": map[string]any{
-			"run_id": p.RunID, "kind": p.Kind, "approvers": p.Approval, "view": p.View.Command,
-		},
-	},
-}
-if action == "resolve" {
-	delete(event, "payload") // a resolve needs only the routing key and the dedup key
-}
+```sh
+bide notify test -url https://127.0.0.1:8443/ -ca /tmp/bide-notify-ca-123.pem
 ```
 
-POST it to `https://events.pagerduty.com/v2/enqueue`. For `approval_pending` you may prefer `warning`
-and for `outcome_unknown` `critical`: a halt on an unknown outcome is the case where a missed alert is
-expensive.
+```text
+bide notify test: approval_pending to https://127.0.0.1:8443 (event 3f9a1c0d7be2...)
+  tls       ok: TLS 1.3 in 3 ms; private CA
+  delivery  HTTP 204, acknowledged (1 request, 9 ms in all)
+  signature hmac-sha256 signed with the current secret
+the receiver acknowledged the test notification
+```
+
+and the first terminal prints the verified event. Then point `-url` at your own receiver. A failure
+says which stage failed and what to try, and exits 1:
+
+| You see | Meaning |
+|---|---|
+| `tls failed: ... unknown authority` | The receiver's certificate is not signed by a CA this machine trusts. Pass `-ca <file>` with the CA that signed it. |
+| `tls failed: ... matches no configured pin` | The receiver's key is not the one in `-pin`. |
+| `HTTP 401, refused` | The receiver rejected the signature: its secret differs from the sender's, or the clock is off by more than 5 minutes. |
+| `HTTP 404` | Nothing at that path. |
+| `HTTP 502` or `503` | The receiver failed or is busy. bide retries these. |
+| `no response ... connection refused` | Nothing is listening at that address. |
+
+`-kind` picks the sample's kind (`approval_pending` by default; `outcome_unknown`, `run_aborted`,
+`recovery_failing` and `notification_overdue` too). `-ca`, `-pin`, `-client-cert` and `-client-key`
+are the receiver-side checks of the [mutual TLS](#mutual-tls-a-private-ca-and-a-key-pin) section;
+`-view-url` and `-view-db` shape the payload's view pointer as `WithViewURL` and `WithViewDB` do.
+Each test is a new event, so a receiver that drops redeliveries does not drop the second test. The
+sample is for a run called `notify-test-<hex>`, which does not exist: a relay forwards it like any other
+event, so a test against a relay posts a real message to Slack and opens a real PagerDuty incident.
+Use a test channel and a test service, and resolve the incident.
+
+`bide notify listen -client-ca <file>` requires a client certificate, to try the `-client-cert` path;
+`-cert` and `-key` serve a certificate of your own instead of the generated one.
+
+### Slack and PagerDuty through the relay
+
+Slack's incoming webhooks cannot check a signature, and PagerDuty wants its own event format, so
+neither can be the notifier's URL. `bide notify relay` is the small receiver between them:
+
+```sh
+export BIDE_WEBHOOK_SECRET=...                                   # the secret bide signs with
+export SLACK_WEBHOOK_URL=https://hooks.slack.com/services/...    # a Slack incoming webhook
+export PAGERDUTY_ROUTING_KEY=...                                 # an Events API v2 integration key
+bide notify relay -addr :8443 -cert relay.crt -key relay.key -view-url https://bide.example.com/runs
+```
+
+and in your application, `notify.NewWebhook("https://relay.example.com:8443/", notify.WithSecrets(...))`.
+A destination is on when its variable is set (or its `-slack-url-file`, `-pagerduty-key-file` is
+named); the Slack URL and the routing key are credentials, read from the environment or a file, and
+never printed or logged. `bide` requires `https` for a receiver that is not on localhost, so give the
+relay `-cert` and `-key`, or terminate TLS in front of it.
+
+For each request the relay verifies the signature, the timestamp and the signed delivery ID with
+`notify.Verify`, and answers `401` to anything else, for every kind of failure alike. Then:
+
+- **Slack** gets a Block Kit message: a header naming what happened, the generated summary, the
+  run, kind, deadline, the tool and who may approve, and an "Open in viewer" button when there is a
+  link (the payload's `view.url` from `WithViewURL`, else `-view-url` plus the run ID). Everything that
+  came from the run is escaped, so a run ID cannot open an `@channel` mention.
+- **PagerDuty** gets an Events API v2 `trigger` whose `dedup_key` is the event's notification ID (the
+  `id` of the payload, the SHA-256 of the event key). It is the same on every delivery of the event,
+  so PagerDuty folds repeats into one incident; a resolve names the same key. Severity follows the
+  kind: `outcome_unknown` and `notification_overdue` are `critical`, `run_aborted` and
+  `recovery_failing` are `error`, and `approval_pending` is `warning`. `-pagerduty-url` points at the
+  EU endpoint.
+- Error text and tool arguments are never forwarded, even if the sender allowed them with
+  `WithFields`: a message in a chat room or on a pager has left the access control the viewer applies.
+
+**At least once, and what the relay does about it.** A relay that answered `204` before it had
+forwarded would lose the notification when Slack was down; so it answers `204` only after every
+destination took the event, and `502` when one did not, which makes bide retry the same event with the
+same ID. The retry can arrive when the first attempt had in fact succeeded (a lost reply), or when only
+one of two destinations failed, so the relay keeps the delivery IDs it has forwarded in a bounded
+memory cache (`-dedupe`, 10000 by default) and, per ID, which destinations took it. A repeat is
+acknowledged without forwarding again, and after a partial failure only the destination that failed
+is tried again. A duplicate that arrives while the first is still being forwarded gets `503`, so bide
+retries rather than being told something that is not yet true. Forwarding keeps going if bide gives up
+waiting, so its retry finds the work done. Outbound calls have a 3 s timeout, up to 3 requests with a
+short backoff, and a total budget (`-forward-timeout`, 8 s) under bide's own 10 s request timeout.
+
+The cache lives in the process. After a restart, or when more than `-dedupe` other events came in
+between, a late redelivery is forwarded again: a rare duplicate message, never a lost one. PagerDuty
+absorbs it by its `dedup_key`; Slack shows it twice. Run one relay: two behind a load balancer have separate
+caches, so a repeat that lands on the other one is forwarded.
+
+### Embed the relay
+
+The CLI is a thin wrapper over package `notify/relay`, for a receiver you already run:
+
+<!-- docsnip: setup secrets []string; slackURL, routingKey string -->
+```go
+slack, err := relay.NewSlack(relay.SlackConfig{WebhookURL: slackURL, ViewURL: "https://bide.example.com/runs"})
+if err != nil {
+	return err
+}
+pd, err := relay.NewPagerDuty(relay.PagerDutyConfig{RoutingKey: routingKey})
+if err != nil {
+	return err
+}
+h, err := relay.New(relay.Config{Secrets: secrets, Sinks: []relay.Sink{slack, pd}})
+if err != nil {
+	return err
+}
+http.Handle("/bide", h) // verifies, dedupes by delivery ID, forwards, answers 204, 401 or 502
+```
+
+A `relay.Sink` is `Name() string` and `Send(ctx, notify.Payload) error`, so another destination (a
+different chat, an email gateway) is one type. `relay.SlackMessage` and `relay.PagerDutyTrigger`
+build the bodies without sending them. The PagerDuty sink resolves an incident for a payload its
+`ResolveTarget` recognizes as an all clear; `relay.DefaultResolveTarget` is the hook where the
+notifier's all-clear kind plugs in, and it resolves nothing until that kind exists.
 
 ## What an acknowledgement means
 

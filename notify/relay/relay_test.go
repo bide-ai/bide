@@ -553,3 +553,35 @@ func (f *funcSink) Send(ctx context.Context, p notify.Payload) error {
 }
 
 func sprintf(format string, a ...any) string { return fmt.Sprintf(format, a...) }
+
+func TestEvictionNeverDropsAnInFlightDelivery(t *testing.T) {
+	gate := make(chan struct{})
+	entered := make(chan struct{}, 2)
+	var sends atomic.Int32
+	sink := &funcSink{name: "s", fn: func(_ context.Context, p notify.Payload) error {
+		sends.Add(1)
+		if p.Key == "slow" {
+			entered <- struct{}{}
+			<-gate
+		}
+		return nil
+	}}
+	h, _ := New(Config{Secrets: []string{secret}, Sinks: []Sink{sink}, DedupeSize: 1})
+	srv := httptest.NewServer(h)
+	defer srv.Close()
+	rg := &rig{srv: srv}
+	slow := payloadBody(t, func(p *notify.Payload) { p.ID, p.Key = agent.NotifyID("slow"), "slow" })
+	done := make(chan int, 1)
+	go func() { done <- rg.raw(t, slow, nil) }()
+	<-entered
+	// Another event arrives while the first is in flight and the cache is full.
+	if got := rg.raw(t, payloadBody(t, func(p *notify.Payload) { p.ID, p.Key = agent.NotifyID("fast"), "fast" }), nil); got != 204 {
+		t.Fatalf("second event: %d", got)
+	}
+	close(gate)
+	<-done
+	before := sends.Load()
+	if got := rg.raw(t, slow, nil); got != 204 || sends.Load() != before {
+		t.Fatalf("repeat of the in-flight event: status %d, %d extra sends (its claim was evicted)", got, sends.Load()-before)
+	}
+}

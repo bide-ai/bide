@@ -277,6 +277,9 @@ variable or a secret store, not in the code: anyone who has it can post to the c
 carries the run ID and tool name, never the tool's arguments or results, which can hold card numbers or
 personal data. Add detail only after deciding who may read it.
 
+The built-in notifier ([Notifications](../guides/notifications.md)) does this with a signed webhook, and
+`bide notify relay` forwards it to Slack and PagerDuty; `bide notify test` checks a receiver.
+
 In a service, call `n.Handle` in the same three places as the program does. Do not approve or resolve
 from a link in the message: decide in the viewer or with `SubmitDecision` and `agent.ResolveHalt`, where
 the decision is signed and checked.
