@@ -184,10 +184,12 @@ func flowGate(ctx context.Context, d *Journal, runID, key, node string, args jso
 			if err != nil {
 				return false, err
 			}
-			if !predatesFormat(t) {
+			// A denial is final. A pass is final unless it predates this format, or separation of
+			// duties is in play (the policy or the tally excludes the requester): tallyGate then
+			// decides, below, from the whole journal (a re-approval tally may supersede this one).
+			if !t.Passed() || !predatesFormat(t) && !pol.ExcludePrincipal && !t.ExcludePrincipal {
 				return t.Passed(), nil
 			}
-			// It passed on decisions that predate this format: tallyGate asks again, below.
 		}
 	}
 	b, err := marshalJournal(ApprovalRequest{ToolUseID: key, ToolName: node, Args: args, RecordedAt: noteStamp(clockFrom(ctx))})
@@ -230,8 +232,8 @@ func flowGate(ctx context.Context, d *Journal, runID, key, node string, args jso
 		_, _ = d.put(ctx, runID, ApprovalPendingStep(key), Record{Kind: StepValue, Result: b})
 	}
 	pend := &ApprovalPending{RunRef: RunRef{RunID: runID, RootRunID: runID}, ToolUseID: key, ToolName: node, Args: req.Args, Quorum: quorum}
-	if quorum != nil && quorum.Supersedes != "" {
-		pend.Reason = PendingReapproval
+	if quorum != nil {
+		pend.Reason = quorum.reapproval
 	}
 	return false, pend
 }

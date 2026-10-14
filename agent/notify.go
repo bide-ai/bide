@@ -43,6 +43,10 @@ type NotifyApproval struct {
 	Need, Of  int
 	Approvers []string // the gate's eligible approvers; nil for a 1-of-1 gate
 	Approved  int      // approvals counted when the event was observed
+	// Excluded are the approvers who may not decide on this call: under separation of duties
+	// (ApprovalPolicy.ExcludePrincipal), those who are requesters of the run. Their decisions never
+	// count, so a notifier need not ask them.
+	Excluded []string
 }
 
 // Notification is one delivery attempt of an event to a Notifier. It holds structured fields only:

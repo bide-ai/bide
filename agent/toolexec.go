@@ -64,32 +64,69 @@ func (a *Agent) quorumTally(ctx context.Context, runID string, tu ToolUse, pol *
 // tool call (quorumTally) and a plan flow node (flowGate) both count through it. With since set
 // (a flow node's request), only the records after the one named since are counted.
 func tallyGate(ctx context.Context, store *Journal, runID string, s ApprovalSubject, pol *ApprovalPolicy, verifierFor ApproverVerifierFor, since string) (ApprovalTally, bool, error) {
+	// At most twice: a count recorded by another drive at the same moment may be one this policy
+	// supersedes (it passed without excluding the requester), and is then counted again.
+	for range 2 {
+		t, final, again, err := tallyGateOnce(ctx, store, runID, s, pol, verifierFor, since)
+		if err != nil || !again {
+			return t, final, err
+		}
+	}
+	return ApprovalTally{}, false, fmt.Errorf("run %s: the approval gate on %s found its outcome superseded again after recounting: %w", runID, s.ToolUseID, ErrStorage)
+}
+
+// tallyGateOnce is one evaluation of tallyGate. again reports that the tally it recorded, or that
+// another drive recorded first, is one pol supersedes, so the caller evaluates once more.
+//
+// The recorded outcome (RecordedTally) is final, except:
+//   - a tally that passed on decisions that predate DecisionFormat is counted again, under
+//     ApprovalRetallyStep;
+//   - under a policy that excludes the requester, a tally that passed without excluding it (one
+//     recorded before a redeploy added the exclusion, or by a drive still running the old policy) is
+//     counted again, under ApprovalSoDRetallyStep, with the exclusion: a call never runs on
+//     approvals that counted a requester while its gate excludes them;
+//   - a tally that excluded the requester names the requesters the run's run:principal names, or
+//     the journal is not one the gate wrote, and the gate refuses it (ErrConfig).
+//
+// A recorded denial is final whatever the policy is now: it runs nothing.
+func tallyGateOnce(ctx context.Context, store *Journal, runID string, s ApprovalSubject, pol *ApprovalPolicy, verifierFor ApproverVerifierFor, since string) (_ ApprovalTally, final, again bool, _ error) {
 	recs, err := store.History(ctx, runID)
 	if err != nil {
-		return ApprovalTally{}, false, fmt.Errorf("load history %s: %w (%w)", runID, err, ErrStorage)
+		return ApprovalTally{}, false, false, fmt.Errorf("load history %s: %w (%w)", runID, err, ErrStorage)
 	}
 	// Separation of duties, checked like the keys: on every evaluation, before a recorded tally is
-	// read, from the run's journaled start.
+	// read, from the run's journaled principal.
 	if err := checkRequester(*pol, recs, runID, s.ToolUseID); err != nil {
-		return ApprovalTally{}, false, err
+		return ApprovalTally{}, false, false, err
+	}
+	rp, _ := RecordedPrincipal(recs)
+	byName := map[string]Record{}
+	for _, r := range recs {
+		if r.Kind == StepValue && (r.Name == ApprovalTallyStep(s.ToolUseID) || r.Name == ApprovalRetallyStep(s.ToolUseID) || r.Name == ApprovalSoDRetallyStep(s.ToolUseID)) {
+			if _, dup := byName[r.Name]; !dup {
+				byName[r.Name] = r
+			}
+		}
 	}
 	name, supersedes := ApprovalTallyStep(s.ToolUseID), ""
-	for _, r := range recs {
-		if r.Kind != StepValue || r.Name != name && r.Name != ApprovalRetallyStep(s.ToolUseID) {
-			continue
-		}
-		t, err := decodeTally(runID, r)
+	if rt, ok := RecordedTally(byName, s.ToolUseID); ok {
+		t, err := decodeTally(runID, rt)
 		if err != nil {
-			return ApprovalTally{}, false, err
+			return ApprovalTally{}, false, false, err
 		}
-		if r.Name == name && predatesFormat(t) {
+		switch {
+		case t.ExcludePrincipal && !slices.Equal(t.Requesters, rp.Requesters()):
+			return ApprovalTally{}, false, false, fmt.Errorf("run %s: the approval tally %s excluded requesters %q, but the run's run:principal names %q: %w", runID, rt.Name, t.Requesters, rp.Requesters(), ErrConfig)
+		case rt.Name == ApprovalTallyStep(s.ToolUseID) && predatesFormat(t):
 			// A tally an earlier version journaled passed on decisions this format does not accept:
 			// the call does not run on it. The gate asks again, and records its new outcome under
 			// ApprovalRetallyStep, which a later evaluation reads instead.
-			supersedes, name = name, ApprovalRetallyStep(s.ToolUseID)
-			continue
+			supersedes, name = rt.Name, ApprovalRetallyStep(s.ToolUseID)
+		case supersededForSoD(t, pol):
+			supersedes, name = rt.Name, ApprovalSoDRetallyStep(s.ToolUseID)
+		default:
+			return t, true, false, nil
 		}
-		return t, true, nil
 	}
 	if since != "" {
 		// The decisions after since, and the run's run:principal, which names the requesters a policy
@@ -107,14 +144,31 @@ func tallyGate(ctx context.Context, store *Journal, runID string, s ApprovalSubj
 	tally, _ := TallyApprovals(recs, s, *pol, verifierFor)
 	tally.Supersedes = supersedes
 	if !tally.Passed() && !tally.Unreachable() {
-		return tally, false, nil
+		switch name {
+		case ApprovalRetallyStep(s.ToolUseID):
+			tally.reapproval = PendingReapproval
+		case ApprovalSoDRetallyStep(s.ToolUseID):
+			tally.reapproval = PendingSoDReapproval
+		}
+		return tally, false, false, nil
 	}
 	tally.DecisionFormat = DecisionFormat
 	tally, err = step(ctx, store, runID, name, func(context.Context) (ApprovalTally, error) { return tally, nil }, WithSafety(Safety{ReadOnly: true}))
 	if err != nil {
-		return ApprovalTally{}, false, fmt.Errorf("record %s (run %s): %w (%w)", name, runID, err, ErrStorage)
+		return ApprovalTally{}, false, false, fmt.Errorf("record %s (run %s): %w (%w)", name, runID, err, ErrStorage)
 	}
-	return tally, true, nil
+	// The journal holds the first writer's tally under name: another drive's, perhaps counted under
+	// a policy that did not exclude the requester. Evaluate again from the journal.
+	if supersededForSoD(tally, pol) {
+		return ApprovalTally{}, false, true, nil
+	}
+	return tally, true, false, nil
+}
+
+// supersededForSoD reports whether pol, a policy that excludes the requester, supersedes the
+// recorded tally t: t passed without excluding it.
+func supersededForSoD(t ApprovalTally, pol *ApprovalPolicy) bool {
+	return pol.ExcludePrincipal && t.Passed() && !t.ExcludePrincipal
 }
 
 // protocol:claims end

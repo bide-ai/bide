@@ -482,7 +482,9 @@ type ApprovalPending struct {
 	// decisions with SubmitDecision, then re-run.
 	Quorum *ApprovalTally
 	// Reason says why the call waits when it is not its first ask: PendingReapproval when the gate
-	// had passed on decisions that predate DecisionFormat and asks again. Empty otherwise.
+	// had passed on decisions that predate DecisionFormat and asks again, PendingSoDReapproval when
+	// it had passed on approvals counted without excluding the requester and its policy now
+	// excludes them. Empty otherwise.
 	Reason string
 }
 
@@ -490,6 +492,11 @@ type ApprovalPending struct {
 // before DecisionFormat (a run journaled by an earlier version): its call did not run, and it
 // runs once approvers decide again under DecisionFormat with SubmitDecision.
 const PendingReapproval = "approval re-required: the recorded approvals predate " + DecisionFormat + "; approvers sign again, then re-run"
+
+// PendingSoDReapproval is ApprovalPending.Reason for a gate whose recorded tally passed without
+// excluding the requester (ApprovalPolicy.ExcludePrincipal) while its policy now excludes it: the
+// call did not run, and it runs once enough approvers who are not requesters have decided.
+const PendingSoDReapproval = "approval re-required: the recorded approvals were counted without excluding the requester, whom the gate now excludes; approvers who are not requesters decide, then re-run"
 
 // Error names the run and the call awaiting approval.
 func (e *ApprovalPending) Error() string {

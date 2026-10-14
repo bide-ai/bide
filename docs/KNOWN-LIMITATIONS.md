@@ -251,9 +251,10 @@ verifies. See [Human approval](guides/hitl-approval.md#scope).
 **Separation of duties compares ids, not people.** With `ExcludePrincipal`, the gate never counts an
 approver whose id is a requester of the run: its journaled principal (`OnBehalfOf`) or that of a run
 above it, ignoring ASCII case. A requester who also holds another approver's key can still sign as
-that approver, and the requesters and the approvers must be named in one id namespace. A tally
-recorded before the policy excluded the requester stands as recorded, and a run an earlier version
-started (with no `run:principal` before its call's request) cannot pass an excluding gate. See
+that approver, and the requesters and the approvers must be named in one id namespace. A run started
+before this version cannot pass a gate that excludes the requester: it has no `run:principal` from
+before its calls' requests, and nothing backfills one (a principal recorded later would name whoever
+resumed the run, not who requested it), so cancel such a run and start it again. See
 [Separation of duties](guides/hitl-approval.md#separation-of-duties).
 
 **A decision's time is the approver's claim.** Each signed decision carries when the approver

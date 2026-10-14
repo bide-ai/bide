@@ -165,6 +165,13 @@ func (e *notifyEngine) pendingEvents(runID string, recs []Record) []notifyEvent 
 		ap := &NotifyApproval{ToolUseID: w.ToolUseID, ToolName: w.ToolName}
 		if !w.Single {
 			ap.Need, ap.Of, ap.Approvers = w.Need, len(w.Approvers), append([]string(nil), w.Approvers...)
+			if w.ExcludePrincipal {
+				for _, a := range w.Approvers {
+					if slices.ContainsFunc(w.Requesters, func(r string) bool { return r != "" && SameApprover(a, r) }) {
+						ap.Excluded = append(ap.Excluded, a)
+					}
+				}
+			}
 		}
 		out = append(out, notifyEvent{key: ApprovalKey(runID, w.ToolUseID, 0), kind: NotificationApprovalPending, runID: root, opRun: runID, approval: ap})
 	}

@@ -325,6 +325,14 @@ version) or disagreeing with `run:start`; and a policy whose `Need` exceeds the 
 the requesters are excluded. It records nothing then: a denial tally would be final, and no approver
 denied. The counting rule itself, given no usable requester, seats no one.
 
+**A weaker recorded tally does not decide.** A recorded tally is authoritative, except that a gate
+whose policy excludes the requester does not go by one that passed without excluding it (recorded
+before a redeploy added the exclusion, or by a drive still on the old policy that recorded first): it
+asks again and records its outcome under `ApprovalSoDRetallyStep`, whose `Supersedes` names the old
+tally, and `RecordedTally` makes it the outcome for every reader. A denial stays final. An excluding
+tally whose `Requesters` differ from the run's `run:principal` is refused, since the gate never writes
+one.
+
 **Evidence.** `ApprovalEvidence` discloses the run's `run:principal` for a gate that excluded the
 requester, and `VerifyApprovals` requires it, proven under the same head and run and before the
 request, when the expected policy or the tally excludes the requester. It reports a problem when the

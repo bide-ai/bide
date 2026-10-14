@@ -729,7 +729,7 @@ resolution all run around it.
 |---|---|
 | `ApGate` | `Agent.runLoop`'s pre-pass: `decided`/`approvals` and `values` from the Load, then `t.Safety()` |
 | `QTally` | `Agent.quorumTally`: `ApprovalPolicy.Validate` and the key check, `History`, the requester check (`checkRequester`), a recorded `ApprovalTallyStep` |
-| `QCount` | `TallyApprovals` with the resolver as it is now: shared and keyless seats excluded (`ReasonSharedKey`, `ReasonNoKeyID`), and the requester under `ExcludePrincipal` (`RecordedRequester`, `ReasonRequester`, `ReasonNoRequester`) |
+| `QCount` | `TallyApprovals` with the resolver as it is now: shared and keyless seats excluded (`ReasonSharedKey`, `ReasonNoKeyID`), and the requester under `ExcludePrincipal` (`RecordedPrincipal`, `ReasonRequester`, `ReasonNoRequester`) |
 | `QRecord` | `quorumTally`'s `step` recording the tally (retry-safe, first writer wins) |
 | `Deny` | the pre-pass's `Journal.put` of the denied result |
 | `Approve1` | `Approve` |

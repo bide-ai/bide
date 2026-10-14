@@ -359,8 +359,13 @@ type ApprovalTally struct {
 	DecisionFormat string `json:"decision_format,omitempty"`
 	// Supersedes names the tally this count replaces: set when the gate re-asks for approval
 	// because the tally recorded under ApprovalTallyStep passed on decisions that predate
-	// DecisionFormat. The re-count is recorded under ApprovalRetallyStep once terminal.
+	// DecisionFormat (the re-count is recorded under ApprovalRetallyStep once terminal), or because
+	// the tally it would go by passed without excluding the requester and its policy now excludes it
+	// (recorded under ApprovalSoDRetallyStep).
 	Supersedes string `json:"supersedes,omitempty"`
+	// reapproval is the ApprovalPending.Reason of a running count that re-asks (PendingReapproval,
+	// PendingSoDReapproval); it is not journaled.
+	reapproval string
 }
 
 // Passed reports whether Need approvals are in.
@@ -451,7 +456,7 @@ func TallyApprovals(recs []Record, s ApprovalSubject, p ApprovalPolicy, verifier
 			switch {
 			case !usable:
 				bad[id] = ReasonNoRequester
-			case slices.ContainsFunc(t.Requesters, func(r string) bool { return sameApprover(id, r) }):
+			case slices.ContainsFunc(t.Requesters, func(r string) bool { return SameApprover(id, r) }):
 				bad[id] = ReasonRequester
 			}
 		}
@@ -532,10 +537,11 @@ func canonicalTimestamp(s string) bool {
 
 // protocol:claims begin QTally QCount
 
-// sameApprover reports whether two ids name one approver: equal ignoring ASCII case, the rule
-// Validate holds a policy's ids to. Approver ids are printable ASCII, so for them strings.ToLower is
-// ASCII case folding; an id outside ASCII is equal only to itself.
-func sameApprover(a, b string) bool {
+// SameApprover reports whether two ids name one approver: equal ignoring ASCII case, the rule
+// Validate holds a policy's ids to, and the rule a gate that excludes the requester matches a
+// requester to an approver id by. Approver ids are printable ASCII, so for them strings.ToLower is
+// ASCII case folding; an id outside printable ASCII is equal only to itself.
+func SameApprover(a, b string) bool {
 	if !printableASCII(a) || !printableASCII(b) {
 		return a == b
 	}
@@ -557,7 +563,7 @@ func requesterProblem(p RunPrincipal) string {
 		case r == "":
 			return who + " records no principal (OnBehalfOf)"
 		case !printableASCII(r):
-			return fmt.Sprintf("%s records requester %q, which is not printable ASCII (bytes 0x21 to 0x7E, no space) as approver ids are, so it cannot be compared with them", who, r)
+			return fmt.Sprintf("%s records requester %q, which is not printable ASCII: requester ids, like approver ids, must be printable ASCII (bytes 0x21 to 0x7E, no space) to be compared with them", who, r)
 		}
 	}
 	return ""
@@ -584,7 +590,7 @@ func checkRequester(p ApprovalPolicy, recs []Record, runID, toolUseID string) er
 	}
 	at := slices.IndexFunc(recs, IsRunPrincipal)
 	if callIdx, _, found := FindToolCall(recs, toolUseID); found && callIdx < at {
-		return fmt.Errorf("the approval policy excludes the requester, but run %s recorded its principal (run:principal) only after call %q was requested, as a run an earlier version started does, so it does not name who requested the call: %w", runID, toolUseID, ErrConfig)
+		return fmt.Errorf("the approval policy excludes the requester, but run %s was started before this version: it recorded its principal (run:principal) only after call %q was requested, so the record names whoever resumed the run, not who requested the call; nothing backfills it, so the run cannot pass this gate (cancel it, and start the work again as a new run): %w", runID, toolUseID, ErrConfig)
 	}
 	if i := slices.IndexFunc(recs, func(r Record) bool { return r.Kind == StepValue && r.Name == runStartStep }); i >= 0 {
 		var st RunStart
@@ -597,7 +603,7 @@ func checkRequester(p ApprovalPolicy, recs []Record, runID, toolUseID string) er
 	}
 	seats := 0
 	for _, id := range p.Approvers {
-		if !slices.ContainsFunc(rp.Requesters(), func(r string) bool { return sameApprover(id, r) }) {
+		if !slices.ContainsFunc(rp.Requesters(), func(r string) bool { return SameApprover(id, r) }) {
 			seats++
 		}
 	}
@@ -635,23 +641,68 @@ func ApprovalTallyStep(toolUseID string) string { return "approval-tally:" + enc
 // outcome. The encoded ID has no ':', so the name never collides with another call's tally.
 func ApprovalRetallyStep(toolUseID string) string { return ApprovalTallyStep(toolUseID) + ":v3" }
 
+// ApprovalSoDRetallyStep is the journal name of the terminal tally a gate records when it re-asks
+// for approval because the tally it would otherwise go by passed without excluding the requester,
+// and the gate's policy now excludes it (ApprovalPolicy.ExcludePrincipal: a redeploy added the
+// exclusion, or a drive still running the old policy recorded first). Its Supersedes names that
+// tally. When it is recorded over that tally, it is the gate's outcome.
+func ApprovalSoDRetallyStep(toolUseID string) string { return ApprovalTallyStep(toolUseID) + ":sod" }
+
 // RecordedTally returns the record of the gate's outcome on toolUseID among records keyed by
-// name: the re-approval tally (ApprovalRetallyStep) when one is recorded over a tally that passed
-// on decisions predating DecisionFormat, which is the only case a gate writes one, else the tally
-// (ApprovalTallyStep). A re-approval tally beside any other tally is not the gate's outcome, as
-// tallyGate never reads it, so it is ignored. ok is false when there is no tally.
+// name. It starts from the tally (ApprovalTallyStep); over one that passed on decisions predating
+// DecisionFormat, the re-approval tally (ApprovalRetallyStep) is the outcome when recorded; and
+// over an outcome so far that passed without excluding the requester, the separation-of-duties
+// re-approval tally (ApprovalSoDRetallyStep) is the outcome when it is recorded, excluded the
+// requester, and supersedes exactly that outcome (its Supersedes names it). Those are the only
+// cases a gate writes them, so a re-approval tally beside any other tally is not the gate's outcome
+// and is ignored. ok is false when there is no tally.
 func RecordedTally(byName map[string]Record, toolUseID string) (r Record, ok bool) {
 	r, ok = byName[ApprovalTallyStep(toolUseID)]
 	if !ok {
 		return r, false
 	}
 	var t ApprovalTally
-	if json.Unmarshal(r.Result, &t) == nil && predatesFormat(t) {
+	if json.Unmarshal(r.Result, &t) != nil {
+		return r, true
+	}
+	if predatesFormat(t) {
 		if re, ok := byName[ApprovalRetallyStep(toolUseID)]; ok {
-			return re, true
+			r = re
+			if json.Unmarshal(r.Result, &t) != nil {
+				return r, true
+			}
+		}
+	}
+	if t.Passed() && !t.ExcludePrincipal {
+		if sod, ok := byName[ApprovalSoDRetallyStep(toolUseID)]; ok {
+			var st ApprovalTally
+			if json.Unmarshal(sod.Result, &st) == nil && st.ExcludePrincipal && st.Supersedes == r.Name {
+				return sod, true
+			}
 		}
 	}
 	return r, true
+}
+
+// SupersededTallies returns the names of the tallies that outcome, the gate's outcome (as RecordedTally
+// returns it, among byName) supersedes, oldest first: the tally its Supersedes names, and that
+// one's, and so on. Evidence for a re-approval tally carries them, since they decide that it is
+// the outcome.
+func SupersededTallies(byName map[string]Record, outcome string) []string {
+	var out []string
+	for cur := outcome; len(out) < 3; {
+		var t ApprovalTally
+		r, ok := byName[cur]
+		if !ok || json.Unmarshal(r.Result, &t) != nil || t.Supersedes == "" || t.Supersedes == cur {
+			break
+		}
+		if _, ok := byName[t.Supersedes]; !ok {
+			break
+		}
+		out = append([]string{t.Supersedes}, out...)
+		cur = t.Supersedes
+	}
+	return out
 }
 
 // predatesFormat reports whether t is a tally that passed on decisions signed before

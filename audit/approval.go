@@ -82,11 +82,12 @@ func ApprovalEvidence(ctx context.Context, store *agent.Journal, runID, toolUseI
 			index[r.Name] = i
 		}
 	}
-	// The gate's outcome, as the runtime reads it (agent.RecordedTally): its re-approval tally
-	// when the tally it first recorded passed on decisions that predate agent.DecisionFormat,
-	// else its tally.
-	byName := make(map[string]agent.Record, 2)
-	for _, n := range []string{agent.ApprovalTallyStep(toolUseID), agent.ApprovalRetallyStep(toolUseID)} {
+	// The gate's outcome, as the runtime reads it (agent.RecordedTally): a re-approval tally over a
+	// tally it supersedes (one that predates agent.DecisionFormat, or one that passed without
+	// excluding the requester when the gate's policy came to exclude it), else its tally.
+	tallyNames := []string{agent.ApprovalTallyStep(toolUseID), agent.ApprovalRetallyStep(toolUseID), agent.ApprovalSoDRetallyStep(toolUseID)}
+	byName := make(map[string]agent.Record, len(tallyNames))
+	for _, n := range tallyNames {
 		if i, ok := index[n]; ok && recs[i].Kind == agent.StepValue {
 			byName[n] = recs[i]
 		}
@@ -162,14 +163,19 @@ func ApprovalEvidence(ctx context.Context, store *agent.Journal, runID, toolUseI
 	if err != nil {
 		return nil, err
 	}
-	// A re-approval tally travels with the tally it supersedes: VerifyApprovals honors it only
-	// over a tally that predates agent.DecisionFormat, which it can tell only from that tally.
-	if orig := agent.ApprovalTallyStep(toolUseID); tallyName != orig {
-		origPB, err := prove(index[orig])
+	// A re-approval tally travels with the tallies it supersedes, in journal order: VerifyApprovals
+	// honors it only over the tally it supersedes, which it can tell only from that tally.
+	var superseded []int
+	for _, n := range agent.SupersededTallies(byName, tallyName) {
+		superseded = append(superseded, index[n])
+	}
+	slices.Sort(superseded)
+	for _, i := range superseded {
+		pb, err := prove(i)
 		if err != nil {
 			return nil, err
 		}
-		out = append(out, EvidenceAction{Label: "approval tally (superseded)", Kind: KindApprovalTally, Ref: orig, Bundle: origPB})
+		out = append(out, EvidenceAction{Label: "approval tally (superseded)", Kind: KindApprovalTally, Ref: recs[i].Name, Bundle: pb})
 	}
 	out = append(out,
 		EvidenceAction{Label: "approval tally", Kind: KindApprovalTally, Ref: tallyName, Bundle: tallyPB},
@@ -316,16 +322,18 @@ func VerifyApprovals(actions []EvidenceAction, toolUseID string, policy agent.Ap
 	if err != nil {
 		return v, err
 	}
-	// The gate's outcome, as the runtime reads it (agent.RecordedTally): its re-approval tally
-	// when the tally it first recorded passed on decisions that predate agent.DecisionFormat,
-	// else its tally. A re-approval tally beside any other tally is not the gate's outcome.
-	byName := make(map[string]agent.Record, 2)
+	// The gate's outcome, as the runtime reads it (agent.RecordedTally): a re-approval tally over a
+	// tally it supersedes, else its tally. A re-approval tally beside any other tally is not the
+	// gate's outcome. Every tally that decides the choice must be proven, like the outcome (below).
+	byName := make(map[string]agent.Record, 3)
+	tallyAt := map[string]int{}
 	for i, a := range actions {
 		if a.Kind != KindApprovalTally {
 			continue
 		}
 		if _, dup := byName[recs[i].Name]; !dup {
 			byName[recs[i].Name] = recs[i]
+			tallyAt[recs[i].Name] = i
 		}
 	}
 	rt, found := agent.RecordedTally(byName, toolUseID)
@@ -351,7 +359,14 @@ func VerifyApprovals(actions []EvidenceAction, toolUseID string, policy agent.Ap
 	}
 	req, tallyAct, result := &actions[reqI], &actions[tallyI], &actions[resultI]
 	sth, runID := result.Bundle.STH, result.Bundle.RunID
-	for _, a := range []*EvidenceAction{req, tallyAct, result} {
+	mustProve := []*EvidenceAction{req, tallyAct, result}
+	// The tallies the outcome supersedes decide which tally is the outcome: they are proven too, and
+	// must come before it.
+	superseded := agent.SupersededTallies(byName, tallyName)
+	for _, n := range superseded {
+		mustProve = append(mustProve, &actions[tallyAt[n]])
+	}
+	for _, a := range mustProve {
 		if err := a.Bundle.Verify(logV); err != nil {
 			if !errors.Is(err, ErrNotVerified) {
 				return v, err
@@ -376,6 +391,11 @@ func VerifyApprovals(actions []EvidenceAction, toolUseID string, policy agent.Ap
 	reqIdx, tallyIdx, resultIdx := req.Bundle.Inclusion.Index, tallyAct.Bundle.Inclusion.Index, result.Bundle.Inclusion.Index
 	if !(reqIdx < tallyIdx && tallyIdx < resultIdx) {
 		problem("records out of order: request at %d, tally at %d, result at %d (want request < tally < result)", reqIdx, tallyIdx, resultIdx)
+	}
+	for _, n := range superseded {
+		if at := actions[tallyAt[n]].Bundle.Inclusion.Index; at >= tallyIdx {
+			problem("the superseded tally %q is at %d, not before the tally that supersedes it at %d", n, at, tallyIdx)
+		}
 	}
 	if tally.Need != policy.Need || !slices.Equal(tally.Approvers, policy.Approvers) {
 		problem("the gate enforced need %d of %v, not the expected need %d of %v", tally.Need, tally.Approvers, policy.Need, policy.Approvers)

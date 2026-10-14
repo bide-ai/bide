@@ -499,3 +499,163 @@ func TestSoD_PrincipalStartMismatchRefused(t *testing.T) {
 		t.Fatalf("err = %v, want ErrConfig naming the mismatch", err)
 	}
 }
+
+// A stored record's approval policy round-trips exclude_principal: the policy a tool result
+// journals reads back as the gate the call ran under.
+func TestSoD_StoredApprovalRoundTrip(t *testing.T) {
+	for _, p := range []*ApprovalPolicy{sodPolicy(2), {Need: 1, Approvers: abc}, SingleApproval()} {
+		data, err := JournalEntry(ToolResultStep("c1"), Record{Kind: StepToolResult, ToolUseID: "c1", Result: json.RawMessage(`"ok"`), Approval: p})
+		if err != nil {
+			t.Fatal(err)
+		}
+		got, err := DecodeStoredRecord("r1", ToolResultStep("c1"), data)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if got.Approval == nil || got.Approval.ExcludePrincipal != p.ExcludePrincipal || got.Approval.Need != p.Need || got.Approval.single() != p.single() {
+			t.Fatalf("policy %+v read back as %+v", p, got.Approval)
+		}
+	}
+}
+
+// A tally recorded under a policy that did not exclude the requester, for a call that has not run,
+// does not decide a gate whose policy now excludes the requester (a redeploy added the exclusion):
+// the gate asks again (PendingSoDReapproval), counts without the requester, and records the new
+// outcome under ApprovalSoDRetallyStep, which supersedes the old tally for every reader.
+func TestSoD_WeakTallySupersededByExcludingPolicy(t *testing.T) {
+	ctx := context.Background()
+	store := memJournal()
+	vf := fakeVerifiers(abc...)
+	var charged int
+	weak, strong := &ApprovalPolicy{Need: 2, Approvers: abc}, sodPolicy(2)
+	_, _ = sodRun(store, "r1", true, weak, vf, &charged, Identity{OnBehalfOf: "alice"})
+	approveAs(t, store, "r1", "c1", "alice", true)
+	approveAs(t, store, "r1", "c1", "bob", true)
+	s := subjectOf(t, store, "r1", "c1")
+	if _, final, err := tallyGate(ctx, store, "r1", s, weak, vf, ""); err != nil || !final {
+		t.Fatalf("the weak gate did not record its tally: %v %v", final, err)
+	}
+	// The redeploy: the call has not run, and its gate now excludes the requester.
+	_, err := sodRun(store, "r1", false, strong, vf, &charged, Identity{})
+	var pend *ApprovalPending
+	if !errors.As(err, &pend) || pend.Reason != PendingSoDReapproval || pend.Quorum.Supersedes != ApprovalTallyStep("c1") || pend.Quorum.Approved != 1 {
+		t.Fatalf("err = %v, want a re-approval pause superseding the weak tally with bob alone counted", err)
+	}
+	if charged != 0 {
+		t.Fatal("the call ran on the weak tally")
+	}
+	approveAs(t, store, "r1", "c1", "carol", true)
+	if _, err := sodRun(store, "r1", false, strong, vf, &charged, Identity{}); err != nil || charged != 1 {
+		t.Fatalf("run at quorum without the requester: %v (charged %d)", err, charged)
+	}
+	byName := map[string]Record{}
+	for _, r := range mustHistory(t, store, "r1") {
+		if r.Kind == StepValue {
+			byName[r.Name] = r
+		}
+	}
+	if rt, ok := RecordedTally(byName, "c1"); !ok || rt.Name != ApprovalSoDRetallyStep("c1") {
+		t.Fatalf("RecordedTally = %q, want the separation-of-duties re-tally", rt.Name)
+	}
+	if got := SupersededTallies(byName, ApprovalSoDRetallyStep("c1")); !slices.Equal(got, []string{ApprovalTallyStep("c1")}) {
+		t.Fatalf("SupersededTallies = %q", got)
+	}
+	// A recorded denial stays final, whatever the policy is now.
+}
+
+// A weak denial is final under an excluding policy: it runs nothing.
+func TestSoD_WeakDenialStaysFinal(t *testing.T) {
+	ctx := context.Background()
+	store := memJournal()
+	vf := fakeVerifiers(abc...)
+	var charged int
+	weak := &ApprovalPolicy{Need: 2, Approvers: abc}
+	_, _ = sodRun(store, "r1", true, weak, vf, &charged, Identity{OnBehalfOf: "alice"})
+	approveAs(t, store, "r1", "c1", "bob", false)
+	approveAs(t, store, "r1", "c1", "carol", false)
+	if tally, final, err := tallyGate(ctx, store, "r1", subjectOf(t, store, "r1", "c1"), sodPolicy(2), vf, ""); err != nil || !final || tally.Passed() {
+		t.Fatalf("tally = %+v final=%v err=%v, want the denial final", tally, final, err)
+	}
+}
+
+// A tally that excluded other requesters than the run's run:principal names is not one the gate
+// wrote: the gate refuses it.
+func TestSoD_ExcludingTallyWithOtherRequestersRefused(t *testing.T) {
+	ctx := context.Background()
+	store := memJournal()
+	vf := fakeVerifiers(abc...)
+	var charged int
+	_, _ = sodRun(store, "r1", true, sodPolicy(2), vf, &charged, Identity{OnBehalfOf: "alice"})
+	b, _ := json.Marshal(ApprovalTally{Need: 2, Approvers: abc, Approved: 2, ApprovedBy: []string{"alice", "bob"},
+		DecisionFormat: DecisionFormat, ExcludePrincipal: true, Requesters: []string{"zed"}})
+	writeRaw(t, store, "r1", ApprovalTallyStep("c1"), Record{Kind: StepValue, Result: b})
+	_, err := sodRun(store, "r1", false, sodPolicy(2), vf, &charged, Identity{})
+	if !errors.Is(err, ErrConfig) || !strings.Contains(err.Error(), `"zed"`) || charged != 0 {
+		t.Fatalf("err = %v (charged %d), want ErrConfig naming the recorded requesters", err, charged)
+	}
+	if _, _, err := tallyGate(ctx, store, "r1", subjectOf(t, store, "r1", "c1"), &ApprovalPolicy{Need: 2, Approvers: abc}, vf, ""); !errors.Is(err, ErrConfig) {
+		t.Fatalf("under a policy that does not exclude the requester: %v, want ErrConfig too", err)
+	}
+}
+
+// raceStore records, just before the gate's own tally is inserted, a weak tally another drive
+// (still running a policy that does not exclude the requester) counted first.
+type raceStore struct {
+	Store
+	weak []byte
+	done bool
+}
+
+func (s *raceStore) Unwrap() Store { return s.Store }
+func (s *raceStore) Insert(ctx context.Context, runID, name string, data []byte) (Entry, bool, error) {
+	if name == ApprovalTallyStep("c1") && !s.done {
+		s.done = true
+		if _, _, err := s.Store.Insert(ctx, runID, name, s.weak); err != nil {
+			return Entry{}, false, err
+		}
+	}
+	return s.Store.Insert(ctx, runID, name, data)
+}
+
+// When another drive's weak tally lands first under the name the excluding gate records, the gate
+// does not go by it: it evaluates again and records the excluding re-tally.
+func TestSoD_ConcurrentWeakTallyRecountedAgain(t *testing.T) {
+	ctx := context.Background()
+	weakTally, _ := json.Marshal(ApprovalTally{Need: 2, Approvers: abc, Approved: 2, ApprovedBy: []string{"alice", "bob"}, DecisionFormat: DecisionFormat})
+	weak, err := JournalEntry(ApprovalTallyStep("c1"), Record{Kind: StepValue, Result: weakTally})
+	if err != nil {
+		t.Fatal(err)
+	}
+	rs := &raceStore{Store: NewMemStore(), weak: weak}
+	store := mustJournal(rs)
+	vf := fakeVerifiers(abc...)
+	var charged int
+	_, _ = sodRun(store, "r1", true, sodPolicy(2), vf, &charged, Identity{OnBehalfOf: "alice"})
+	for _, id := range abc {
+		approveAs(t, store, "r1", "c1", id, true)
+	}
+	tally, final, err := tallyGate(ctx, store, "r1", subjectOf(t, store, "r1", "c1"), sodPolicy(2), vf, "")
+	if err != nil || !final || !tally.ExcludePrincipal || !slices.Equal(tally.ApprovedBy, []string{"bob", "carol"}) || tally.Supersedes != ApprovalTallyStep("c1") {
+		t.Fatalf("tally = %+v final=%v err=%v, want the excluding re-tally over the weak one", tally, final, err)
+	}
+	if !rs.done {
+		t.Fatal("the race was not staged")
+	}
+}
+
+// The approval-pending notification names the approvers a gate excludes as requesters, from the
+// pause and from the pause note, so a notifier routes away from them.
+func TestSoD_NotificationNamesExcluded(t *testing.T) {
+	store := memJournal()
+	var charged int
+	_, err := sodRun(store, "r1", true, sodPolicy(2), fakeVerifiers(abc...), &charged, Identity{OnBehalfOf: "alice"})
+	e := &notifyEngine{cfg: defaultNotifyConfig()}
+	ev, ok := e.eventFromErr("r1", err)
+	if !ok || ev.approval == nil || !slices.Equal(ev.approval.Excluded, []string{"alice"}) {
+		t.Fatalf("event from the pause = %+v, want alice excluded", ev.approval)
+	}
+	evs := e.pendingEvents("r1", mustHistory(t, store, "r1"))
+	if len(evs) != 1 || !slices.Equal(evs[0].approval.Excluded, []string{"alice"}) {
+		t.Fatalf("events from the pause note = %+v, want alice excluded", evs)
+	}
+}

@@ -562,8 +562,8 @@ func gates(recs []agent.Record, calls map[string]agent.ToolUse, order []string) 
 		}
 		if !g.Tallied && g.ExcludePrincipal {
 			for _, a := range g.Approvers {
-				// Approver ids are ASCII: EqualFold is the gate's case rule.
-				if slices.ContainsFunc(g.Requesters, func(r string) bool { return r != "" && strings.EqualFold(a, r) }) {
+				// The gate's rule for matching a requester to an approver id.
+				if slices.ContainsFunc(g.Requesters, func(r string) bool { return r != "" && agent.SameApprover(a, r) }) {
 					g.Excluded = append(g.Excluded, a)
 				}
 			}

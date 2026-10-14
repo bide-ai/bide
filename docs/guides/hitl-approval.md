@@ -352,12 +352,20 @@ person who started the root run still may not approve the sub-run's call. The ta
     could be excluded for it);
   - a requester that is not printable ASCII (it cannot be compared with approver ids, and could only
     look like one);
-  - a run whose `run:principal` follows the call's request (a run an earlier version started gets it
-    from the first drive under this version, so it names whoever resumed the run), or disagrees
-    with its `run:start`;
+  - a run whose `run:principal` follows the call's request, or disagrees with its `run:start`. A run
+    started before this version gets its `run:principal` from the first drive under this version,
+    so it names whoever resumed the run; nothing backfills the requester, so such a run cannot pass
+    an excluding gate: cancel it and start the work again as a new run;
   - a policy whose `Need` is out of reach once the requesters' seats are taken away (3 of 3 where
     one of the three requested). `Validate` cannot check this, since it depends on who requests; it
     refuses `ExcludePrincipal` on `SingleApproval()`, whose decision names no approver.
+- **A tally recorded before the exclusion does not decide.** When the policy comes to exclude the
+  requester (a redeploy) after the gate recorded a passing tally under a policy that did not, and the
+  call has not run, the gate asks again (`agent.PendingSoDReapproval`), counts without the
+  requesters, and records the new outcome under `approval-tally:<id>:sod`
+  (`agent.ApprovalSoDRetallyStep`, whose `Supersedes` names the old tally); every reader, and the
+  evidence, goes by it. A recorded denial stays final. A tally that excluded other requesters than
+  the run's `run:principal` names is refused (`ErrConfig`).
 - **Offline.** The `run:principal` record is the evidence of who requested, and it holds nothing
   else: not the run's input. `ApprovalEvidence` discloses it for a gate that excluded the requester,
   and `VerifyApprovals` recounts with the same exclusion (see [Proving the gate

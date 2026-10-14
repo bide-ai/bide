@@ -187,9 +187,10 @@ func TestSoDEvidence_PolicyMismatch(t *testing.T) {
 	}
 }
 
-// A tally written by someone with journal write access, claiming another requester and counting
-// alice, makes the gate run the call (a recorded tally is authoritative), but the offline recount
-// from the run's run:principal excludes alice, and VerifyApprovals reports both disagreements.
+// A tally written by someone with journal write access, naming the run's requester but counting
+// alice anyway, makes the gate run the call (a recorded tally is authoritative), but the offline
+// recount from the run:principal excludes alice, and VerifyApprovals reports the disagreement. A
+// forged tally naming another requester is refused by the gate itself (see the agent tests).
 func TestSoDEvidence_ForgedTallyDetected(t *testing.T) {
 	ctx := context.Background()
 	g := newGate(2, []string{"alice", "bob", "carol"}, []string{"alice", "bob", "carol"})
@@ -208,7 +209,7 @@ func TestSoDEvidence_ForgedTallyDetected(t *testing.T) {
 		}
 	}
 	forged := agent.ApprovalTally{Need: 2, Approvers: g.policy.Approvers, Approved: 2, ApprovedBy: []string{"alice", "bob"},
-		Pending: []string{"carol"}, Records: names, DecisionFormat: agent.DecisionFormat, ExcludePrincipal: true, Requesters: []string{"zed"}}
+		Pending: []string{"carol"}, Records: names, DecisionFormat: agent.DecisionFormat, ExcludePrincipal: true, Requesters: []string{"alice"}}
 	b, _ := json.Marshal(forged)
 	if _, err := journaltest.Put(ctx, g.store, gateRun, agent.ApprovalTallyStep("c1"), agent.Record{Kind: agent.StepValue, Result: b}); err != nil {
 		t.Fatal(err)
@@ -224,7 +225,7 @@ func TestSoDEvidence_ForgedTallyDetected(t *testing.T) {
 	if !errors.Is(err, audit.ErrNotVerified) || v.OK {
 		t.Fatalf("forged tally verified: %+v", v)
 	}
-	if !hasProblem(v, `"zed"`) || !hasProblem(v, "disagrees") || !slices.Equal(v.Counted, []string{"bob"}) {
+	if !hasProblem(v, "disagrees") || !slices.Equal(v.Counted, []string{"bob"}) {
 		t.Fatalf("problems = %q, counted %v; want the requester and the recount reported", v.Problems, v.Counted)
 	}
 }
@@ -394,4 +395,106 @@ func TestSoDEvidence_PrincipalAfterRequestFails(t *testing.T) {
 	if !errors.Is(err, audit.ErrNotVerified) || v.OK || !hasProblem(v, "not before the request") {
 		t.Fatalf("verdict = %+v, %v; want a problem: the run:principal is not before the request", v, err)
 	}
+}
+
+// A gate whose policy came to exclude the requester after it recorded a tally that counted the
+// requester asks again and records a re-tally that supersedes it. Its evidence carries both, in
+// journal order, and verifies offline against the excluding policy; against a policy that does not
+// exclude the requester it does not.
+func TestSoDEvidence_SoDRetally(t *testing.T) {
+	ctx := context.Background()
+	g := newGate(2, []string{"alice", "bob", "carol"}, []string{"alice", "bob", "carol"})
+	g.policy = agent.ApprovalPolicy{Need: 2, Approvers: []string{"alice", "bob", "carol"}}
+	wantPaused(t, g.runAs("alice"), 0)
+	g.decide(t, "alice", true, false)
+	g.decide(t, "bob", true, false)
+	// A drive under the old policy records its passing tally, and stops before the charge.
+	weak, _ := json.Marshal(agent.ApprovalTally{Need: 2, Approvers: g.policy.Approvers, Approved: 2, ApprovedBy: []string{"alice", "bob"},
+		DecisionFormat: agent.DecisionFormat, Records: decisionNames(t, g)})
+	if _, err := journaltest.Put(ctx, g.store, gateRun, agent.ApprovalTallyStep("c1"), agent.Record{Kind: agent.StepValue, Result: weak}); err != nil {
+		t.Fatal(err)
+	}
+	g.policy.ExcludePrincipal = true // the redeploy
+	var pend *agent.ApprovalPending
+	if err := g.runAs(""); !errors.As(err, &pend) || pend.Reason != agent.PendingSoDReapproval {
+		t.Fatalf("drive under the excluding policy = %v; want a re-approval pause", err)
+	}
+	g.decide(t, "carol", true, false)
+	if err := g.runAs(""); err != nil || g.charged != 1 {
+		t.Fatalf("drive at quorum = %v (charged %d)", err, g.charged)
+	}
+	acts, err := audit.ApprovalEvidence(ctx, g.store, gateRun, "c1", g.sth(t, 1700000000))
+	if err != nil {
+		t.Fatal(err)
+	}
+	var refs []string
+	for _, a := range acts {
+		if a.Kind == audit.KindApprovalTally {
+			refs = append(refs, a.Ref)
+		}
+	}
+	if !slices.Equal(refs, []string{agent.ApprovalTallyStep("c1"), agent.ApprovalSoDRetallyStep("c1")}) {
+		t.Fatalf("evidence tallies = %q; want the superseded tally, then the re-tally", refs)
+	}
+	v, err := audit.VerifyApprovals(acts, "c1", g.policy, g.resolver(), edV(g.logPub))
+	if err != nil || !v.OK || !slices.Equal(v.Counted, []string{"bob", "carol"}) {
+		t.Fatalf("verdict = %+v, %v; want bob and carol", v, err)
+	}
+	weakPol := g.policy
+	weakPol.ExcludePrincipal = false
+	if v, err := audit.VerifyApprovals(acts, "c1", weakPol, g.resolver(), edV(g.logPub)); err == nil || v.OK {
+		t.Fatal("the re-tally verified against a policy that does not exclude the requester")
+	}
+	// Without the superseded tally the evidence names no outcome.
+	var trimmed []audit.EvidenceAction
+	for _, a := range acts {
+		if a.Ref != agent.ApprovalTallyStep("c1") {
+			trimmed = append(trimmed, a)
+		}
+	}
+	if _, err := audit.VerifyApprovals(trimmed, "c1", g.policy, g.resolver(), edV(g.logPub)); !errors.Is(err, audit.ErrNotVerified) {
+		t.Fatalf("evidence without the superseded tally: %v; want not verified", err)
+	}
+}
+
+// An excluding tally whose requesters are not the run:principal's, written into the journal with
+// a result, is reported offline.
+func TestSoDEvidence_TallyRequestersMismatch(t *testing.T) {
+	ctx := context.Background()
+	g := newGate(2, []string{"alice", "bob", "carol"}, []string{"alice", "bob", "carol"})
+	g.policy.ExcludePrincipal = true
+	wantPaused(t, g.runAs("alice"), 0)
+	g.decide(t, "bob", true, false)
+	g.decide(t, "carol", true, false)
+	forged, _ := json.Marshal(agent.ApprovalTally{Need: 2, Approvers: g.policy.Approvers, Approved: 2, ApprovedBy: []string{"bob", "carol"},
+		Excluded: []string{"alice"}, Records: decisionNames(t, g), DecisionFormat: agent.DecisionFormat, ExcludePrincipal: true, Requesters: []string{"zed"}})
+	if _, err := journaltest.Put(ctx, g.store, gateRun, agent.ApprovalTallyStep("c1"), agent.Record{Kind: agent.StepValue, Result: forged}); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := journaltest.Put(ctx, g.store, gateRun, agent.ToolResultStep("c1"), agent.Record{Kind: agent.StepToolResult, ToolUseID: "c1", Result: json.RawMessage(`"ok"`)}); err != nil {
+		t.Fatal(err)
+	}
+	acts, err := audit.ApprovalEvidence(ctx, g.store, gateRun, "c1", g.sth(t, 1700000000))
+	if err != nil {
+		t.Fatal(err)
+	}
+	v, err := audit.VerifyApprovals(acts, "c1", g.policy, g.resolver(), edV(g.logPub))
+	if !errors.Is(err, audit.ErrNotVerified) || v.OK || !hasProblem(v, `"zed"`) {
+		t.Fatalf("verdict = %+v, %v; want a problem naming the tally's requesters", v, err)
+	}
+}
+
+func decisionNames(t *testing.T, g *gate) []string {
+	t.Helper()
+	recs, err := g.store.History(context.Background(), gateRun)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var names []string
+	for _, r := range recs {
+		if agent.IsApprovalDecision(r, "c1") {
+			names = append(names, r.Name)
+		}
+	}
+	return names
 }
