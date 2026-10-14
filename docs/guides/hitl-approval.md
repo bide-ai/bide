@@ -837,6 +837,16 @@ control and review, as the bundle. The browser enforces the host's Content-Secur
 is not in its `connect-src` (a `config.json` that was changed to name another one) is blocked, and the page
 says so. Set `connect-src` to the one intake (`approvals.PageCSP(intakeOrigin)`).
 
+**What has been verified in a browser.** The page was driven in real Chrome for the page served by the
+application: creating and enrolling a key, signing an Approve, a counted decision recorded by the
+application, and a cookie-authenticated same-origin page (the cookie reached both the page and `GET /pending`).
+Mutual TLS, same-origin or cross-origin with `credentials: "include"`, was **not** verified in a browser: it
+needs a client certificate in the browser's certificate store (the login Keychain on macOS), which the test
+setup did not import. The page's fetch options per credentials mode are tested, and the intake's CORS headers
+for credentials are tested, but a deployment that authenticates with client certificates should check the
+page in its own browsers before relying on it: open the page, and confirm that `GET /pending` succeeds
+(the endpoint's `WithAuth` hook sees the certificate) and that a decision is accepted.
+
 **The page shows every argument.** The signature binds all of the call's arguments, so none is cut from
 what the approver reads (a long value scrolls in its box); the CLI refuses to sign what it had to clip, and
 the page never clips. The page also shows the gate's `reason` when it asks again, and offers no decision on a
