@@ -1282,3 +1282,32 @@ func TestResolved_AClockAheadSealsADayNoOneElseHasReached(t *testing.T) {
 		}
 	}
 }
+
+// The roller with the clock ahead dies after sealing, before the checkpoint: the process behind
+// writes the checkpoint into the future segment, dated no earlier than the segment's day.
+func TestResolved_ACheckpointWrittenFromBehindIsDatedInItsSegmentsDay(t *testing.T) {
+	ctx := context.Background()
+	clkA, clkB := resolvedClock(), resolvedClock()
+	tr := NewMemNotifyTrail()
+	b := testEngine(t, memJournal(), &fakeSink{}, tr, clkB, "b")
+	if err := b.watch(ctx, "k1", "r"); err != nil {
+		t.Fatal(err)
+	}
+	day0 := OpenSegment(clkB.now())
+	recs, _ := tr.Load(ctx, day0)
+	clkA.advance(3 * 24 * time.Hour)
+	day3 := OpenSegment(clkA.now())
+	if err := tr.Append(ctx, day0, len(recs), NotifyRecord{Kind: NotifySeal, At: clkA.now(), Next: day3}); err != nil {
+		t.Fatal(err)
+	}
+	if err := tr.Append(ctx, OpenIndex(clkA.now().Year()), 1, NotifyRecord{Kind: NotifySegment, At: clkA.now(), Next: day3}); err != nil {
+		t.Fatal(err)
+	}
+	name, head, err := b.openHead(ctx)
+	if err != nil || name != day3 || len(head) != 1 || head[0].Kind != NotifyCheckpoint {
+		t.Fatalf("head = %s %v %v", name, head, err)
+	}
+	if head[0].At.Before(segmentDayOf(day3)) {
+		t.Fatalf("the checkpoint is dated %s, before its segment's day", head[0].At)
+	}
+}
