@@ -558,7 +558,7 @@ func (a *Agent) runLoop(ctx context.Context, runID string, d *driveSpec) (Messag
 			}
 			// The first end marker in journal order is the run's end (rule 4): Cancel may have
 			// landed after the drive's last check, so the markers are read back.
-			first, err := writeEnd(ctx, a.store, runID, runCompleteStep, Record{Kind: StepValue}, endOthers(runCompleteStep, saga))
+			first, err := writeEnd(ctx, a.store, runID, runCompleteStep, Record{Kind: StepValue, ApproverSignature: recordedStamp(clockFrom(ctx))}, endOthers(runCompleteStep, saga))
 			if err != nil {
 				return leave(fmt.Errorf("mark complete (run %s): %w (%w)", runID, err, ErrStorage))
 			}

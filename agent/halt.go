@@ -22,16 +22,29 @@ import (
 // paused there): Approve refuses one with none (ErrConfig), and the gate honors only a decision that
 // follows it; a decision recorded before the request under the same name is reported (ErrConfig),
 // since it holds the gate's one decision and the gate cannot pass.
-func Approve(ctx context.Context, d *Journal, runID, toolUseID string, approved bool) error {
+//
+// The record notes when it was written (Record.RecordedAt), by WithClock's clock, else the clock
+// ctx carries (a run's), else the wall clock: the claim of the process that called Approve, not
+// signed, set by the first decision and kept by the idempotent calls after it. It is for people and
+// auditors; the gate never reads it. Approve takes no WithDecisionCheck, which belongs to
+// SubmitDecision's signed decisions (ErrConfig).
+func Approve(ctx context.Context, d *Journal, runID, toolUseID string, approved bool, opts ...ApproveOption) error {
 	if runID == "" {
 		return fmt.Errorf("Approve: empty runID: %w", ErrConfig)
+	}
+	o := approveOptions{now: clockFrom(ctx)}
+	if err := applyOptions("Approve", &o, opts, ApproveOption.applyApprove); err != nil {
+		return err
+	}
+	if o.verifierFor != nil {
+		return fmt.Errorf("Approve: WithDecisionCheck checks a signed decision, which SubmitDecision records; a single approver's decision is not signed: %w", ErrConfig)
 	}
 	reqSeq, flow, err := flowDecision(ctx, d, "Approve", runID, toolUseID)
 	if err != nil {
 		return err
 	}
 	if _, err := d.do(ctx, runID, approvalStep(toolUseID), func(context.Context) (Record, error) {
-		return Record{Kind: StepApproval, ToolUseID: toolUseID, Approved: approved}, nil
+		return Record{Kind: StepApproval, ToolUseID: toolUseID, Approved: approved, ApproverSignature: recordedStamp(o.now)}, nil
 	}); err != nil {
 		return err
 	}
@@ -156,6 +169,14 @@ type Outcome struct {
 // requires WithMinHaltAge: another driver may be running the effect, and resolving it while it
 // is young could record an outcome that driver is about to contradict.
 //
+// The recorded outcome notes when it was written (Record.RecordedAt), by WithClock's clock, else
+// the clock ctx carries (a run's), else the wall clock. It is the claim of the process that
+// resolved the halt: the resolver signs nothing (ResolveHalt takes no key, and the runtime has no
+// list of who may resolve), so the time is anchored only by the journal's Merkle trail once a
+// signed head covers the record. It is informational: no drive, resume, replay or recovery pass
+// reads it, and WithMinHaltAge measures against the attempt marker's time and the clock WithClock
+// names (the wall clock by default), never the context's.
+//
 // Deciding the true outcome is a human (or reconciler) judgment the runtime cannot make for you.
 func ResolveHalt(ctx context.Context, store *Journal, ref HaltRef, out Outcome, opts ...ResolveOption) error {
 	return resolveHalt(ctx, store, "ResolveHalt", ref, out, opts)
@@ -279,7 +300,14 @@ func resolveHalt(ctx context.Context, store *Journal, op string, ref HaltRef, ou
 			return &HaltInFlight{RunID: ref.RunID, RootRunID: root, Op: ref.Op, Attempt: heldKey}
 		}
 	}
-	rec := Record{Kind: h.kind, Result: b, IsError: out.IsError, Reconciled: cfg.reconciled, Evidence: cfg.evidence}
+	// The resolution's recorded_at is informational (Record.RecordedAt): WithClock's clock, else the
+	// context's, else the wall clock. WithMinHaltAge measures against cfg.now alone, whatever the
+	// context carries, as it always has.
+	stampNow := cfg.now
+	if !cfg.nowSet {
+		stampNow = clockFrom(ctx)
+	}
+	rec := Record{Kind: h.kind, Result: b, IsError: out.IsError, Reconciled: cfg.reconciled, Evidence: cfg.evidence, ApproverSignature: recordedStamp(stampNow)}
 	if h.kind == StepToolResult {
 		rec.ToolUseID = id
 	}
@@ -404,6 +432,7 @@ type resolveConfig struct {
 	noLiveCheck bool
 	minHaltAge  time.Duration
 	now         func() time.Time
+	nowSet      bool // WithClock was given: now also stamps the result's recorded_at
 	evidence    json.RawMessage
 	reconciled  bool
 }

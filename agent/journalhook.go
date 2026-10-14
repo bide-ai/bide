@@ -88,7 +88,7 @@ func init() {
 		}
 		// The first end marker in journal order is the run's end (rule 4): a flow cancelled before
 		// its completion landed is cancelled, whatever this drive completed.
-		first, err := writeEnd(ctx, d, runID, runCompleteStep, Record{Kind: StepValue, Result: result}, []string{runCancelledStep})
+		first, err := writeEnd(ctx, d, runID, runCompleteStep, Record{Kind: StepValue, Result: result, ApproverSignature: recordedStamp(clockFrom(ctx))}, []string{runCancelledStep})
 		if err != nil {
 			return nil, err
 		}

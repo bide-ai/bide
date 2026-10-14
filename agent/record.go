@@ -69,11 +69,12 @@ type Record struct {
 	IsError   bool            `json:"is_error,omitempty"`    // StepToolResult
 	Approved  bool            `json:"approved,omitempty"`    // StepApproval
 	// ApproverSignature is the signed decision of a StepApproval record written by SubmitDecision:
-	// who decided and their signature. Nil on every other record, including an approval that Approve
-	// or Deny wrote. Read it through the nil-safe accessors (Record.Approver, ApproverAlg,
-	// Signature). It sits behind a pointer to keep Record small (see TestRecord_Size); its fields
-	// are journaled in place, as members of the record. A copy of the record shares it: do not write
-	// through it.
+	// who decided and their signature. It also carries the informational recorded_at alone, with no
+	// signed decision, on the records that note when they were journaled (see
+	// ApproverSignature.RecordedAt). Nil on every other record. Read it through the nil-safe
+	// accessors (Record.Approver, ApproverAlg, Signature, DecidedAt, RecordedAt). It sits behind a
+	// pointer to keep Record small (see TestRecord_Size); its fields are journaled in place, as
+	// members of the record. A copy of the record shares it: do not write through it.
 	*ApproverSignature
 	// AttemptedAt is the Unix-millis wall-clock time an attempt marker (StepAttempt) was
 	// written, i.e. just before a non-retriable side effect fired. It is set once and read
@@ -165,6 +166,18 @@ type ApproverSignature struct {
 	// identical decision. The journal's Merkle trail anchors it once a signed tree head covers the
 	// record, and that head's time bounds it. Both are for people and auditors: the counting rule checks
 	// DecidedAt only as signed bytes, and nothing reads RecordedAt to decide anything.
+	//
+	// RecordedAt also appears alone, with no approver and no signature, on the other records that
+	// resolve something a person was told about: a single approver's decision (Approve), the result
+	// ResolveHalt injects, a run's end markers (run:complete, run:aborted, run:cancelled) and a
+	// saga's rollback request (run:cancel-requested). It is then the claim of the process that
+	// wrote the record, by the clock named at the writing call (WithClock on Approve, ResolveHalt
+	// and Cancel), else the clock the context carries (a run's), else the wall clock, and the same
+	// rules hold: it is informational, set when the record is first written and kept from then on,
+	// and no gate, claim, replay or recovery decision reads it. A record written before the time
+	// existed has none, and Record.RecordedAt reports "" for it: a reader never supplies one. On
+	// these records a clock with no canonical form (outside the years 0001 to 9999) records no
+	// time, since they never fail for want of one.
 	DecidedAt  string `json:"decided_at,omitempty"`
 	RecordedAt string `json:"recorded_at,omitempty"`
 }

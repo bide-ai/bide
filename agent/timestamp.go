@@ -52,3 +52,14 @@ func noteStamp(now func() time.Time) string {
 	}
 	return s
 }
+
+// recordedStamp is the ApproverSignature that carries only a recorded_at for the time now returns
+// (see ApproverSignature.RecordedAt), or nil when the time has no canonical form: the records that
+// carry it never fail for want of it.
+func recordedStamp(now func() time.Time) *ApproverSignature {
+	s := noteStamp(now)
+	if s == "" {
+		return nil
+	}
+	return &ApproverSignature{RecordedAt: s}
+}

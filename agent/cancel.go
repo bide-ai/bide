@@ -38,9 +38,30 @@ type RunStatus struct {
 	// Records is the number of records the run's journal held when Status read it, the journal
 	// header included.
 	Records int
+	// EndedAt is when the run's first end marker was written (its Record.RecordedAt; for a
+	// run:aborted that has none, the aborted_at it records), in FormatTimestamp's form, by the
+	// clock of the process that wrote it. It is "" for a run with no end marker, and for one whose
+	// end marker records no time (written before they did): never a time Status supplies. It is
+	// informational: nothing that drives, resumes or recovers a run reads it.
+	EndedAt string
 }
 
 var errP14NotBuilt = errors.New("p14: not built yet")
+
+// CancelOption configures Cancel: WithClock, the clock that stamps the record's RecordedAt.
+type CancelOption interface {
+	applyCancel(*cancelConfig) error
+}
+
+type cancelConfig struct{ now func() time.Time }
+
+func (f clockOption) applyCancel(c *cancelConfig) error {
+	if err := f.check(); err != nil {
+		return err
+	}
+	c.now = f
+	return nil
+}
 
 // cancelReason is the record run:cancelled and run:cancel-requested hold.
 type cancelReason struct {
@@ -88,12 +109,21 @@ type cancelReason struct {
 //
 // Cancel accepts any run ID but the empty one: a sub-run's or a session turn's run is a run too
 // (see Session.Send for what a cancelled turn does to its session).
-func Cancel(ctx context.Context, j *Journal, runID, reason string) error {
+//
+// The run:cancelled record (and a saga's run:cancel-requested) notes when it was written
+// (Record.RecordedAt), by WithClock's clock, else the clock ctx carries, else the wall clock. It is
+// informational, for people and auditors: no drive, recovery pass or check reads it, and the first
+// end marker in journal order is the run's end whatever the times say.
+func Cancel(ctx context.Context, j *Journal, runID, reason string, opts ...CancelOption) error {
 	if j == nil {
 		return fmt.Errorf("Cancel: nil journal: %w", ErrConfig)
 	}
 	if runID == "" {
 		return fmt.Errorf("Cancel: empty runID: %w", ErrConfig)
+	}
+	cfg := cancelConfig{now: clockFrom(ctx)}
+	if err := applyOptions("Cancel", &cfg, opts, CancelOption.applyCancel); err != nil {
+		return err
 	}
 	// CGet: a run that is over is refused (its first end marker is the run's end).
 	var first *endMarker
@@ -122,13 +152,13 @@ func Cancel(ctx context.Context, j *Journal, runID, reason string) error {
 	}
 	if start.Saga {
 		// CReq: a saga's rollback request, not an end marker.
-		if _, err := j.put(ctx, runID, runCancelRequestedStep, Record{Kind: StepValue, Result: b}); err != nil {
+		if _, err := j.put(ctx, runID, runCancelRequestedStep, Record{Kind: StepValue, Result: b, ApproverSignature: recordedStamp(cfg.now)}); err != nil {
 			return err
 		}
 		return nil
 	}
 	// CIns, CRead: run:cancelled, then the end markers read back; the first is the run's end.
-	end, err := writeEnd(ctx, j, runID, runCancelledStep, Record{Kind: StepValue, Result: b}, endOthers(runCancelledStep, false))
+	end, err := writeEnd(ctx, j, runID, runCancelledStep, Record{Kind: StepValue, Result: b, ApproverSignature: recordedStamp(cfg.now)}, endOthers(runCancelledStep, false))
 	if err != nil {
 		return err
 	}
@@ -182,6 +212,7 @@ func Status(ctx context.Context, j *Journal, runID string) (RunStatus, error) {
 		st.State = RunStarted
 		return st, nil
 	}
+	st.EndedAt = endedAt(end.rec)
 	switch end.name {
 	case runCompleteStep:
 		st.State = RunCompleted
@@ -214,6 +245,22 @@ func abortedAt(r Record) (time.Time, bool) {
 	}
 	t, err := time.Parse(time.RFC3339Nano, v.AbortedAt)
 	return t, err == nil
+}
+
+// endedAt is the time the end marker r says it was written: its recorded_at, else a run:aborted's
+// aborted_at, else "". A recorded time that is not in FormatTimestamp's form is not reported.
+func endedAt(r Record) string {
+	if s := r.RecordedAt(); s != "" {
+		if canonicalTimestamp(s) {
+			return s
+		}
+		return ""
+	}
+	var v abortValue
+	if r.Name == runAbortedStep && json.Unmarshal(r.Result, &v) == nil && canonicalTimestamp(v.AbortedAt) {
+		return v.AbortedAt
+	}
+	return ""
 }
 
 // endText is the text an end marker records: a cancellation's reason, or a saga's failure text.
