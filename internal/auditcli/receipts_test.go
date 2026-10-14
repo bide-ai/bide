@@ -202,21 +202,29 @@ func TestVerifyReceipts_Deleted(t *testing.T) {
 
 func TestVerifyReceipts_NeverAnchored(t *testing.T) {
 	f := newReceiptFixture(t)
-	// A head over the paused journal, stamped well after the decision was recorded.
-	ctx := context.Background()
-	th, err := audit.NewTreeHead(ctx, agentJournal(t, f.recs[:f.rc.Index]), f.rc.RunID, receiptTime.Add(time.Hour).UnixNano())
+	// The journal lacks the decision (it ends before its position) and no head reaches it.
+	exp, err := audit.ExportJournal(context.Background(), f.store, f.rc.RunID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	exp.Records = exp.Records[:f.rc.Index]
+	short := filepath.Join(f.dir, "short.json")
+	writeJSON(t, short, exp)
+	args := f.args(f.headsBefore)
+	args[4] = short
+	code, out, _ := runCLI(args...)
+	if code != 1 || !strings.Contains(out, "decision never anchored") {
+		t.Fatalf("%d\n%s", code, out)
+	}
+	// A late head that stops short does not accuse: the verdict is positional, not by time.
+	th, err := audit.NewTreeHead(context.Background(), agentJournal(t, f.recs[:f.rc.Index]), f.rc.RunID, receiptTime.Add(24*time.Hour).UnixNano())
 	if err != nil {
 		t.Fatal(err)
 	}
 	late := filepath.Join(f.dir, "late.heads")
 	writeHeads(t, late, mustSign(t, th, f.logPriv))
-	code, out, _ := runCLI(f.args(late)...)
-	if code != 1 || !strings.Contains(out, "decision never anchored") {
-		t.Fatalf("%d\n%s", code, out)
-	}
-	// Within the skew it is not an accusation; a wide -skew keeps it pending too.
-	if code, out, _ := runCLI(f.args(late, "-skew", "3h")...); code != 0 || !strings.Contains(out, "pending") {
-		t.Fatalf("wide skew: %d\n%s", code, out)
+	if code, out, _ := runCLI(f.args(late)...); code != 0 || !strings.Contains(out, "pending") {
+		t.Fatalf("late head: %d\n%s", code, out)
 	}
 }
 
@@ -263,9 +271,6 @@ func TestVerifyReceipts_BadInputs(t *testing.T) {
 	}
 	if code, _, _ := runCLI(f.args(f.journal)...); code != 4 {
 		t.Fatalf("a journal for -heads: %d", code)
-	}
-	if code, _, _ := runCLI(f.args(f.headsAnchored, "-skew", "-1s")...); code != 2 {
-		t.Fatalf("negative skew: %d", code)
 	}
 	if code, _, _ := runCLI("verify-receipts"); code != 2 {
 		t.Fatalf("no flags: %d", code)

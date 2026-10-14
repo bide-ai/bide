@@ -118,9 +118,9 @@ const (
 	// position, and that prefix does not hold the decision there: the decision was removed or
 	// replaced after it was recorded, and the head was signed over the journal without it.
 	ReceiptDeleted ReceiptVerdict = "decision deleted after signing"
-	// ReceiptNeverAnchored: the decision was recorded, yet no signed head commits to it although
-	// one was signed after it (a head that stops short of its position, signed later than the skew
-	// allows), or the journal does not hold it and no head covers its position.
+	// ReceiptNeverAnchored: the decision was recorded, yet the journal does not hold it and no
+	// signed head reaches its position, so nothing signed ever committed to it and the journal no
+	// longer shows it.
 	ReceiptNeverAnchored ReceiptVerdict = "decision never anchored"
 	// ReceiptUnchecked: a head reaches the position but does not match the journal given, so
 	// nothing can be said of the decision from it. A journal that does not match a signed head is
@@ -137,47 +137,28 @@ type ReceiptFinding struct {
 	Detail  string
 }
 
-// DefaultReceiptSkew is how far a head's signing time may fall short of a receipt's recorded_at
-// before CheckReceipt takes a head that omits the decision as signed after it. The two times come
-// from different clocks (the process that journaled the decision, and the one that signed the head),
-// and a head signs what the journal held when it was read, a moment before it is stamped.
-const DefaultReceiptSkew = time.Minute
-
 // CheckReceipt decides whether the signed tree heads of the run commit to the receipt's decision.
-// journal is the run's journal (JournalExport.Journal), heads are heads of it signed by the log key
-// logKey (a head that does not verify, or is of another run or tree, is ignored), and skew is
-// DefaultReceiptSkew unless set.
+// journal is the run's journal (JournalExport.Journal) and heads are heads of it signed by the log
+// key logKey (a head that does not verify, or is of another run or tree, is ignored).
 //
-// "Should contain" is positional. A journal only grows, and the decision is at Index. So a head
-// whose size is above Index commits to a journal prefix that includes position Index, and that
-// prefix must hold the decision there. CheckReceipt rebuilds the prefix's root from journal and
-// compares it with the head's, so what it says about a head it says about a head that matches this
-// journal. A head at or below Index says nothing of the decision, except through time: one signed
-// at least skew after recorded_at, which stops short of it, was signed over a journal that lacked a
-// decision that was already recorded.
-func CheckReceipt(r DecisionReceipt, journal []agent.Record, heads []SignedTreeHead, logKey Verifier, skew time.Duration) ReceiptFinding {
-	if skew <= 0 {
-		skew = DefaultReceiptSkew
-	}
-	recordedAt, err := agent.ParseTimestamp(r.RecordedAt)
-	if err != nil {
-		return ReceiptFinding{ReceiptUnchecked, fmt.Sprintf("the receipt's recorded_at is not a timestamp: %v", err)}
-	}
+// "Should contain" is positional, and never by time: the clocks of the approver's machine and the
+// application differ, and heads reach an anchor out of order. A journal only grows, and the
+// decision is at the receipt's Index. So a head whose size is above Index commits to a journal
+// prefix that includes position Index, and that prefix must hold the decision there. CheckReceipt
+// rebuilds the prefix's root from journal and compares it with the head's, so what it says about a
+// head it says about a head that matches this journal. A head at or below Index says nothing of the
+// decision. recorded_at is for display only.
+func CheckReceipt(r DecisionReceipt, journal []agent.Record, heads []SignedTreeHead, logKey Verifier) ReceiptFinding {
 	if r.Index < 0 {
 		return ReceiptFinding{ReceiptUnchecked, "the receipt's index is negative"}
 	}
 	holds := r.Index < len(journal) && r.isRecord(journal[r.Index])
-	var late *SignedTreeHead
 	unmatched := ""
-	for i := range heads {
-		h := heads[i]
+	for _, h := range heads {
 		if h.Kind != TreeJournal || h.RunID != r.RunID || logKey == nil || h.Verify(logKey) != nil {
 			continue
 		}
 		if h.Size <= r.Index {
-			if h.TimestampNanos >= recordedAt.Add(skew).UnixNano() && late == nil {
-				late = &heads[i]
-			}
 			continue
 		}
 		// The head reaches the decision's position: it must match this journal to say anything.
@@ -199,9 +180,6 @@ func CheckReceipt(r DecisionReceipt, journal []agent.Record, heads []SignedTreeH
 	switch {
 	case unmatched != "":
 		return ReceiptFinding{ReceiptUnchecked, unmatched + ", so it says nothing of the decision"}
-	case late != nil:
-		return ReceiptFinding{ReceiptNeverAnchored, fmt.Sprintf("the head of size %d signed at %s, after the decision was recorded at %s, stops short of its position %d",
-			late.Size, time.Unix(0, late.TimestampNanos).UTC().Format(time.RFC3339), r.RecordedAt, r.Index)}
 	case !holds:
 		return ReceiptFinding{ReceiptNeverAnchored, fmt.Sprintf("the journal does not hold the decision at position %d (%d records) and no signed head covers that position", r.Index, len(journal))}
 	}

@@ -162,8 +162,7 @@ const usageText = `bide audit: produce and verify audit proof bundles
          journaled. Distinct verdicts: anchored (PASS); pending, the journal holds it and no head
          reaches it yet (INFO, exit 0); "decision deleted after signing", a head that reaches its
          position commits to a journal that holds something else there; "decision never anchored",
-         a head signed more than -skew (default 1m) after it was recorded stops short of it, or the
-         journal lacks it and no head reaches its position; unchecked, a head reaches it but does
+         the journal lacks it and no head reaches its position; unchecked, a head reaches it but does
          not match the journal given. -receipt, -journal and -heads repeat
 
   prove-absent -journal <file> -sth <file> -key (tool:<id>|policy:<digest>) [-out <file>]

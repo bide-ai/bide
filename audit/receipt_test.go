@@ -92,7 +92,7 @@ func newReceiptWorld(t *testing.T) *receiptWorld {
 }
 
 func (w *receiptWorld) check(journal []agent.Record, heads ...audit.SignedTreeHead) audit.ReceiptFinding {
-	return audit.CheckReceipt(w.receipt, journal, heads, edV(w.g.logPub), 0)
+	return audit.CheckReceipt(w.receipt, journal, heads, edV(w.g.logPub))
 }
 
 // TestReceipt_Anchored: a head over the finished journal commits to the decision.
@@ -142,23 +142,17 @@ func TestReceipt_Deleted(t *testing.T) {
 	}
 }
 
-// TestReceipt_NeverAnchored: a head signed well after the decision was recorded stops short of its
-// position; and a journal that lacks the decision with no head reaching it.
+// TestReceipt_NeverAnchored: the journal lacks the decision and no head reaches its position. A head
+// signed long after the decision that stops short of it proves nothing (clocks differ and heads
+// arrive out of order), so the verdict is positional: here it stays pending.
 func TestReceipt_NeverAnchored(t *testing.T) {
 	w := newReceiptWorld(t)
-	late := headAt(t, &gate{store: freshPaused(t, w), logPriv: w.g.logPriv}, w.g.logPriv, receiptRecordedAt.Add(time.Hour))
-	f := w.check(w.afterAlice, late)
-	if f.Verdict != audit.ReceiptNeverAnchored || !f.Verdict.Failed() {
-		t.Fatalf("%+v", f)
-	}
-	// Within the skew, a head that stops short is not yet an accusation.
-	soon := headAt(t, &gate{store: freshPaused(t, w), logPriv: w.g.logPriv}, w.g.logPriv, receiptRecordedAt.Add(time.Second))
-	if f := w.check(w.afterAlice, soon); f.Verdict != audit.ReceiptPending {
-		t.Fatalf("within skew: %+v", f)
-	}
-	// The journal lacks the decision, and no head reaches its position.
-	if f := w.check(w.pausedJ, w.before); f.Verdict != audit.ReceiptNeverAnchored {
+	if f := w.check(w.pausedJ, w.before); f.Verdict != audit.ReceiptNeverAnchored || !f.Verdict.Failed() {
 		t.Fatalf("absent from the journal: %+v", f)
+	}
+	late := headAt(t, &gate{store: freshPaused(t, w), logPriv: w.g.logPriv}, w.g.logPriv, receiptRecordedAt.Add(24*time.Hour))
+	if f := w.check(w.afterAlice, late); f.Verdict != audit.ReceiptPending {
+		t.Fatalf("a late head that stops short must not accuse: %+v", f)
 	}
 }
 

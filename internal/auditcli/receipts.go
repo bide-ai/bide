@@ -30,13 +30,9 @@ func (c *cli) verifyReceipts(args []string) {
 	fs.Var(&heads, "heads", "signed tree heads of the journal: a file with one head, or one head per line (the anchor log a published head is appended to); repeatable")
 	pubkey := fs.String("pubkey", "", "the log's "+pubkeyHelp)
 	keysPath := fs.String("approver-keys", "", `JSON object of approver id to public key text (<scheme>:<hex>), e.g. {"ops":"ed25519:ab12..."}`)
-	skew := fs.Duration("skew", audit.DefaultReceiptSkew, "how far a head's time may fall short of a receipt's recorded_at before a head that omits the decision counts as signed after it")
 	c.parse(fs, args)
 
 	c.require(fs, required{"-receipt", len(receipts) == 0}, required{"-journal", len(journals) == 0}, required{"-heads", len(heads) == 0}, absent("-pubkey", *pubkey), absent("-approver-keys", *keysPath))
-	if *skew <= 0 {
-		c.usageError("verify-receipts: -skew must be positive")
-	}
 
 	logKey, err := readPubKey(*pubkey)
 	ok := c.note(err)
@@ -105,7 +101,7 @@ func (c *cli) verifyReceipts(args []string) {
 			c.note(unusable(fmt.Errorf("no -journal for run %q, which receipt %s names", r.RunID, r.Record)))
 			continue
 		}
-		f := audit.CheckReceipt(r, journal, signed, logKey, *skew)
+		f := audit.CheckReceipt(r, journal, signed, logKey)
 		switch {
 		case f.Verdict == audit.ReceiptAnchored:
 			c.printf("PASS  %s: signature verifies; %s\n", what, cleanText(f.Detail))
