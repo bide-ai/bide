@@ -1,3 +1,0 @@
-Section: Added
-
-`plan.Builder.WithNotifier(notifier, trail, opts...)` and `plan.WithLoadedNotifier` tell an `agent.Notifier`, at least once and with a stable ID, when a run that `Flow.Run` drives halts on an unknown outcome, waits at an approval gate, or is aborted, as `agent.WithNotifier` does for an agent run. The binding is runtime only (the digest is unchanged), is validated by `Build`, and keeps one notifier per journal the flow runs against; `Flow.FlushNotifications` waits for deliveries in flight. `agent.NewRunNotifier` and `RunNotifier.DriveEnd` let code that drives its own runs do the same.

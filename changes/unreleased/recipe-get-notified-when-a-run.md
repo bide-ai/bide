@@ -1,3 +1,0 @@
-Section: Added
-
-Recipe: [get notified when a run needs a human](docs/recipes/notify-human.md). A complete program that posts one JSON message to a webhook (a Slack incoming webhook, say) the first time a run halts on an unknown outcome or waits for approval, from the three places bide reports it (the error `Run` returns, the `Resumer` that `RecoverLoop` calls, and a `MemWaker` wakeup), and not again on every recovery pass. It says plainly what its in-process dedupe cannot do (a restart may notify again, a crash before the POST may drop the message) and points to the planned built-in notifier. Linked from the recipes index, the docs site sidebar, the README and its translations, and getting started.
