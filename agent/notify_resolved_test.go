@@ -1922,3 +1922,28 @@ func TestNotifyTrailLocks_NoReportIsMadeUnderALock(t *testing.T) {
 		t.Fatalf("a report was made with %d trail lock(s) held", h)
 	}
 }
+
+// The guard itself: it counts the calling goroutine's locks, and only its own.
+func TestNotifyTrailLocks_TheGuardCountsTheCallersOwnLocks(t *testing.T) {
+	trackLockOwners.Store(true)
+	defer trackLockOwners.Store(false)
+	ctx := context.Background()
+	if n := trailLocksHeldByCaller(); n != 0 {
+		t.Fatalf("holds %d before taking any", n)
+	}
+	u1, _ := lockTrail(ctx, "notify:g1")
+	u2, _ := lockTrail(ctx, "notify:g2")
+	if n := trailLocksHeldByCaller(); n != 2 {
+		t.Fatalf("holds %d, want 2", n)
+	}
+	other := make(chan int)
+	go func() { other <- trailLocksHeldByCaller() }()
+	if n := <-other; n != 0 {
+		t.Fatalf("another goroutine sees %d of this one's locks", n)
+	}
+	u1()
+	u2()
+	if n := trailLocksHeldByCaller(); n != 0 {
+		t.Fatalf("holds %d after releasing both", n)
+	}
+}
