@@ -221,3 +221,24 @@ func TestView_ResolutionLineAndGateTimeNeedCanonicalSingle(t *testing.T) {
 		t.Errorf("m-of-n DecisionAt = %q, want none", got)
 	}
 }
+
+// timeline places bars on the span from the earliest to the latest time, whatever the journal
+// order: a record stamped by a slow clock after later ones moves the left edge, it does not erase
+// or shift the others' bars.
+func TestTimeline_SpanIsEarliestToLatest(t *testing.T) {
+	t0 := time.Date(2026, 10, 14, 9, 0, 0, 0, time.UTC)
+	evs := []Event{{At: t0}, {At: t0.Add(10 * time.Second)}, {At: t0.Add(-5 * time.Second)}}
+	timeline(evs, t0)
+	for i, e := range evs {
+		if e.Bar == nil || e.Bar.X < 0 || e.Bar.W <= 0 || e.Bar.X+e.Bar.W > 100.0001 {
+			t.Fatalf("event %d bar = %+v", i, e.Bar)
+		}
+	}
+	// The run's start is 5s after the earliest time on a 15s span: a third of the way along.
+	if x := evs[0].Bar.X; x < 33.2 || x > 33.5 {
+		t.Errorf("start bar X = %v, want 33.3 (5s of 15s)", x)
+	}
+	if x := evs[2].Bar.X; x != 0 {
+		t.Errorf("earliest bar X = %v, want 0", x)
+	}
+}

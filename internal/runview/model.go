@@ -781,8 +781,8 @@ func timeline(evs []Event, start time.Time) {
 			label = durText(to-from) + " until the next timestamped record"
 		}
 		bar := &TimeBar{X: 100 * float64(from) / float64(span), W: 100 * float64(to-from) / float64(span), Label: label}
-		bar.W = min(max(bar.W, 1.2), 100)
-		bar.X = max(min(bar.X, 100-bar.W), 0)
+		bar.W = max(bar.W, 1.2)
+		bar.X = min(bar.X, 100-bar.W) // lo is the earliest time, so X is never negative
 		e.Bar = bar
 	}
 }
