@@ -286,11 +286,13 @@ It refuses, and records nothing, when the call has no waiting gate, the run is n
 the gate already passed or was denied, you are not one of the gate's approvers, you already decided
 (it says what, and when), or the key file can be read by others (on Unix, as ssh refuses one).
 
-With -approver-keys (a JSON object of approver id to public key, the file bide view reads) it also
-refuses a key that is not the one enrolled for you, and prints a verified tally. Without it, the
-journal does not hold the approvers' keys, so the tally it prints counts the decisions recorded,
-and the gate checks every signature when the run resumes: a decision signed with a key the
-application does not enrol is recorded but never counts.
+An m-of-n decision needs -approver-keys, a JSON object of approver id to public key (the file bide
+view -approver-keys reads; bide keygen -as <id> prints an entry): the journal holds approver ids,
+not keys, so this file is the only way to check that your key is the one the application enrols. It
+refuses a key that is not the one enrolled for you before recording anything, and prints a verified
+tally. -unverified decides without it: the decision is recorded even if the key is not the enrolled
+one (then it never counts), a warning says so, and the tally printed counts the decisions recorded,
+labelled unverified. A single-approver gate has no signature, so it takes neither.
 
 A single-approver gate (agent.Approve) has no approver identity and no signature: bide approve
 records the decision as agent.Approve does, takes neither -as nor -key, and says so.
@@ -314,7 +316,7 @@ failed, 2 for a usage error.
 
 Flags:
   -approver-keys string
-    	approver public keys, a JSON object of approver id to key text, e.g. {"ops":"ed25519:ab12..."}: refuse a -key that is not the one enrolled for -as, and verify the tally
+    	approver public keys, a JSON object of approver id to key text, e.g. {"ops":"ed25519:ab12..."}, the file bide view -approver-keys reads (bide keygen -as prints an entry): refuse a -key that is not the one enrolled for -as, and verify the tally. Required for an m-of-n gate unless -unverified
   -as string
     	your approver id, exactly as the gate's policy lists it (not for a single-approver gate)
   -call string
@@ -339,6 +341,8 @@ Flags:
     	record a rejection instead of an approval
   -run string
     	the run whose journal holds the call: the pause's run ID
+  -unverified
+    	decide an m-of-n gate without -approver-keys: the key is not checked against the one enrolled for you, and the tally is not verified
   -yes
     	do not ask for confirmation (for scripts); what is signed is still shown
 

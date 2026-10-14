@@ -426,11 +426,14 @@ change to this format (see the [roadmap](../ROADMAP.md)).
 
 **Which key counts.** The journal records approver ids, not keys: the application's verifiers
 (`agent.WithApproverVerifiers`) hold those. A key that is not the one enrolled for you produces a
-decision that is recorded and never counts (`agent.ReasonBadSig`), and does not take your place. Give
-`-approver-keys` (the file `bide view -approver-keys` reads) and `bide approve` refuses a key that is not
-the one enrolled for `-as`, before anything is recorded, and verifies the tally it prints with the
-counting rule the gate runs (`agent.TallyApprovals`). Without it the tally counts the decisions recorded,
-and the command says the gate checks every signature when the run resumes.
+decision that is recorded and never counts (`agent.ReasonBadSig`), and does not take your place. So an
+m-of-n decision requires `-approver-keys`, the file of enrolled public keys that `bide view
+-approver-keys` reads (`bide keygen -as <id>` prints an entry for it): `bide approve` refuses a key that
+is not the one enrolled for `-as`, before anything is recorded, and verifies the tally it prints with the
+counting rule the gate runs (`agent.TallyApprovals`). `-unverified` decides without the file: the
+warning is printed prominently and the tally is labelled unverified, since it counts the decisions
+recorded and the gate checks every signature when the run resumes. A single-approver gate is unsigned and
+takes neither flag.
 
 After the decision is recorded, re-run the pause's `RootRunID` (or let `RecoverLoop` pick it up): the
 gate counts the decisions and the call runs or is denied. `bide approve` never runs the call.

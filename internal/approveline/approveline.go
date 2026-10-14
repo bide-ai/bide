@@ -24,17 +24,20 @@ type Journal struct {
 const (
 	ApproverPlaceholder = "<approver>"
 	KeyFilePlaceholder  = "<key-file>"
+	KeysFilePlaceholder = "<keys-file>"
 )
 
 // Command returns the bide approve command line that records a decision on call callID of run
-// runID in journal j. approver and keyFile are the approver's id and private key file; an empty
-// one is written as a placeholder (ApproverPlaceholder, KeyFilePlaceholder). A single-approval
-// gate has no approver identity and no signature: pass single, and neither is written.
+// runID in journal j. approver, keyFile and keysFile are the approver's id, private key file and the
+// public-keys file bide approve checks the key against (-approver-keys, required for an m-of-n
+// gate); an empty one is written as a placeholder (ApproverPlaceholder, KeyFilePlaceholder,
+// KeysFilePlaceholder). A single-approval
+// gate has no approver identity and no signature: pass single, and none of the three is written.
 //
 // Arguments are quoted for a POSIX shell, where a value needs it, so an id with a space or a
 // quote (a run ID may be any string) cannot split into two arguments or run a command. A
 // placeholder is quoted too, so a pasted line fails loudly instead of running something else.
-func Command(j Journal, runID, callID, approver, keyFile string, single bool) string {
+func Command(j Journal, runID, callID, approver, keyFile, keysFile string, single bool) string {
 	args := []string{"bide", "approve"}
 	switch {
 	case j.SQLite != "":
@@ -50,7 +53,10 @@ func Command(j Journal, runID, callID, approver, keyFile string, single bool) st
 		if keyFile == "" {
 			keyFile = KeyFilePlaceholder
 		}
-		args = append(args, "-as", quote(approver), "-key", quote(keyFile))
+		if keysFile == "" {
+			keysFile = KeysFilePlaceholder
+		}
+		args = append(args, "-as", quote(approver), "-key", quote(keyFile), "-approver-keys", quote(keysFile))
 	}
 	return strings.Join(args, " ")
 }

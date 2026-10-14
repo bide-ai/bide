@@ -106,8 +106,14 @@ func (f *fixture) run_(stdin string, args ...string) (code int, stdout, stderr s
 	return code, out.String(), errb.String()
 }
 
+// as is the flags of a decision by approver id, checked against the enrolled keys (-approver-keys).
 func (f *fixture) as(id string, extra ...string) []string {
-	return append([]string{"-run", f.run, "-call", f.call, "-as", id, "-key", f.keys[id]}, extra...)
+	return append([]string{"-run", f.run, "-call", f.call, "-as", id, "-key", f.keys[id], "-approver-keys", f.keysJSON}, extra...)
+}
+
+// asUnverified is as without the enrolled keys, which needs the explicit -unverified.
+func (f *fixture) asUnverified(id string, extra ...string) []string {
+	return append([]string{"-run", f.run, "-call", f.call, "-as", id, "-key", f.keys[id], "-unverified"}, extra...)
 }
 
 // decisions returns the approval decision records on the call in the journal.
@@ -162,7 +168,7 @@ func TestEndToEnd(t *testing.T) {
 		t.Fatalf("-list = %d: %s", code, errs)
 	}
 	contains(t, "-list", out, "run refund-1049", "call c2", "tool refund", "2 of 3", "pending: ops, finance, risk",
-		"bide approve -db "+f.db+" -run refund-1049 -call c2 -as ops -key '<key-file>'")
+		"bide approve -db "+f.db+" -run refund-1049 -call c2 -as ops -key '<key-file>' -approver-keys '<keys-file>'")
 
 	// ops approves, confirming by typing the approver id.
 	code, out, errs = f.run_("ops\n", f.as("ops", "-approver-keys", f.keysJSON)...)
@@ -281,6 +287,7 @@ func TestRefusals(t *testing.T) {
 	rec("already decided", 1, "ops already decided on call c2: approved at 20", "", f.as("ops", "-yes")...)
 	rec("already decided, rejecting", 1, "ops already decided", "", f.as("ops", "-yes", "-reject")...)
 	// The refusal names the recorded time, and with -approver-keys it checks the signature.
+	rec("already decided (unverified)", 1, "counted unverified", "", f.asUnverified("ops", "-yes")...)
 	rec("already decided (verified)", 1, "ops already decided on call c2", "", f.as("ops", "-yes", "-approver-keys", f.keysJSON)...)
 
 	// A single-approver gate takes neither -as nor -key; and a missing -as on an m-of-n gate.
@@ -331,11 +338,11 @@ func TestWrongKeyIsRefusedBeforeRecording(t *testing.T) {
 
 	// Without -approver-keys the wrong key cannot be known: the decision is recorded, never counts
 	// (the gate's rule), and does not take the real approver's place; the output warned about it.
-	code, out, _ := f.run_("", "-run", f.run, "-call", f.call, "-as", "ops", "-key", f.keys["finance"], "-yes")
+	code, out, _ := f.run_("", "-run", f.run, "-call", f.call, "-as", "ops", "-key", f.keys["finance"], "-yes", "-unverified")
 	if code != 0 {
 		t.Fatal("expected the unchecked wrong-key decision to be recorded")
 	}
-	contains(t, "warning", out, "no -approver-keys")
+	contains(t, "warning", out, "UNVERIFIED", "not checked against the key enrolled")
 	recs := f.allRecords()
 	subject := agent.ApprovalSubject{RunID: f.run, ToolUseID: f.call, ToolName: "refund", Args: json.RawMessage(refundArgs)}
 	verify := func(id string) (agent.ApproverVerifier, bool) { v, ok := f.pubs[id]; return v, ok }
@@ -671,5 +678,52 @@ func TestArgsDigest(t *testing.T) {
 	empty := sha256.Sum256([]byte(`{}`))
 	if got := argsDigest(s); got != hex.EncodeToString(empty[:]) {
 		t.Fatalf("empty args: %s", got)
+	}
+}
+
+// TestKeysRequired: an m-of-n decision needs the enrolled keys (-approver-keys), or an explicit
+// -unverified. Without either it is refused before the key file is read and nothing is recorded; the
+// refusal names the file bide view reads and where bide keygen prints the entry.
+func TestKeysRequired(t *testing.T) {
+	f := newFixture(t, twoOfThree, refundArgs)
+	args := []string{"-run", f.run, "-call", f.call, "-as", "ops", "-key", f.keys["ops"], "-yes"}
+	code, _, errs := f.run_("", args...)
+	if code != 1 {
+		t.Fatalf("code %d: %s", code, errs)
+	}
+	contains(t, "refusal", errs, "-approver-keys", "bide view", "bide keygen", "-unverified")
+	// Refused before the key is read: a missing key file gives the same refusal.
+	if code, _, errs := f.run_("", "-run", f.run, "-call", f.call, "-as", "ops", "-key", filepath.Join(f.dir, "absent.key"), "-yes"); code != 1 || !strings.Contains(errs, "-approver-keys") {
+		t.Fatalf("missing key, no keys: %d %s", code, errs)
+	}
+	if n := len(f.decisions()); n != 0 {
+		t.Fatalf("%d decisions recorded", n)
+	}
+	// The two are exclusive, and -unverified is for deciding only.
+	if code, _, errs := f.run_("", f.as("ops", "-yes", "-unverified")...); code != 2 || !strings.Contains(errs, "-unverified") {
+		t.Fatalf("both: %d %s", code, errs)
+	}
+	if code, _, errs := f.run_("", "-list", "-unverified"); code != 2 || !strings.Contains(errs, "-unverified") {
+		t.Fatalf("-list -unverified: %d %s", code, errs)
+	}
+	// -unverified keeps the old behavior: recorded, warned, and the tally is labelled unverified.
+	code, out, errs := f.run_("", f.asUnverified("ops", "-yes")...)
+	if code != 0 {
+		t.Fatalf("%d %s", code, errs)
+	}
+	contains(t, "unverified", out, "UNVERIFIED", "not checked against the key enrolled", "recorded decisions: 1 of 2 needed approved by ops", "counted from the journal")
+	if n := len(f.decisions()); n != 1 {
+		t.Fatalf("%d decisions", n)
+	}
+}
+
+// TestSingleGateNeedsNoKeys: a single-approver gate has no signature to check, so neither flag.
+func TestSingleGateNeedsNoKeys(t *testing.T) {
+	f := newFixture(t, agent.SingleApproval(), refundArgs)
+	if code, _, errs := f.run_("", "-run", f.run, "-call", f.call, "-yes", "-unverified"); code != 1 && code != 2 || !strings.Contains(errs, "-unverified") {
+		t.Fatalf("-unverified on a single gate: %d %s", code, errs)
+	}
+	if code, _, errs := f.run_("", "-run", f.run, "-call", f.call, "-yes"); code != 0 {
+		t.Fatalf("%d %s", code, errs)
 	}
 }

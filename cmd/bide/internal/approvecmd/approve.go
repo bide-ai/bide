@@ -59,11 +59,13 @@ It refuses, and records nothing, when the call has no waiting gate, the run is n
 the gate already passed or was denied, you are not one of the gate's approvers, you already decided
 (it says what, and when), or the key file can be read by others (on Unix, as ssh refuses one).
 
-With -approver-keys (a JSON object of approver id to public key, the file bide view reads) it also
-refuses a key that is not the one enrolled for you, and prints a verified tally. Without it, the
-journal does not hold the approvers' keys, so the tally it prints counts the decisions recorded,
-and the gate checks every signature when the run resumes: a decision signed with a key the
-application does not enrol is recorded but never counts.
+An m-of-n decision needs -approver-keys, a JSON object of approver id to public key (the file bide
+view -approver-keys reads; bide keygen -as <id> prints an entry): the journal holds approver ids,
+not keys, so this file is the only way to check that your key is the one the application enrols. It
+refuses a key that is not the one enrolled for you before recording anything, and prints a verified
+tally. -unverified decides without it: the decision is recorded even if the key is not the enrolled
+one (then it never counts), a warning says so, and the tally printed counts the decisions recorded,
+labelled unverified. A single-approver gate has no signature, so it takes neither.
 
 A single-approver gate (agent.Approve) has no approver identity and no signature: bide approve
 records the decision as agent.Approve does, takes neither -as nor -key, and says so.
@@ -102,6 +104,7 @@ type flags struct {
 	run, call, as, key        string
 	approverKeys              string
 	reject, yes, full         bool
+	unverified                bool
 	list, asJSON              bool
 }
 
@@ -123,7 +126,8 @@ func Main(args []string, in io.Reader, stdout, stderr io.Writer, stores Stores) 
 	fs.StringVar(&f.call, "call", "", "the call's tool-use ID (for a plan flow node, its key, such as node:review)")
 	fs.StringVar(&f.as, "as", "", "your approver id, exactly as the gate's policy lists it (not for a single-approver gate)")
 	fs.StringVar(&f.key, "key", "", "your Ed25519 private key file, as bide keygen writes it (not for a single-approver gate); on Unix it must not be readable by group or others")
-	fs.StringVar(&f.approverKeys, "approver-keys", "", `approver public keys, a JSON object of approver id to key text, e.g. {"ops":"ed25519:ab12..."}: refuse a -key that is not the one enrolled for -as, and verify the tally`)
+	fs.StringVar(&f.approverKeys, "approver-keys", "", `approver public keys, a JSON object of approver id to key text, e.g. {"ops":"ed25519:ab12..."}, the file bide view -approver-keys reads (bide keygen -as prints an entry): refuse a -key that is not the one enrolled for -as, and verify the tally. Required for an m-of-n gate unless -unverified`)
+	fs.BoolVar(&f.unverified, "unverified", false, "decide an m-of-n gate without -approver-keys: the key is not checked against the one enrolled for you, and the tally is not verified")
 	fs.BoolVar(&f.reject, "reject", false, "record a rejection instead of an approval")
 	fs.BoolVar(&f.yes, "yes", false, "do not ask for confirmation (for scripts); what is signed is still shown")
 	fs.BoolVar(&f.full, "full", false, "show all of the call's arguments, not the first lines")
@@ -177,7 +181,7 @@ func (f flags) check() string {
 		return "give exactly one of -db, -postgres and -postgres-env"
 	}
 	if f.list {
-		for name, set := range map[string]bool{"-run": f.run != "", "-call": f.call != "", "-as": f.as != "", "-key": f.key != "", "-reject": f.reject, "-yes": f.yes, "-full": f.full, "-approver-keys": f.approverKeys != ""} {
+		for name, set := range map[string]bool{"-run": f.run != "", "-call": f.call != "", "-as": f.as != "", "-key": f.key != "", "-reject": f.reject, "-yes": f.yes, "-full": f.full, "-approver-keys": f.approverKeys != "", "-unverified": f.unverified} {
 			if set {
 				return name + " does not go with -list"
 			}
@@ -192,6 +196,9 @@ func (f flags) check() string {
 		return "no -run given"
 	case f.call == "":
 		return "no -call given (bide approve -list shows the calls that wait)"
+	}
+	if f.unverified && f.approverKeys != "" {
+		return "-unverified and -approver-keys are opposites: give the keys to check the decision, or -unverified to skip the check"
 	}
 	if (f.as == "") != (f.key == "") {
 		return "-as and -key go together"
@@ -424,6 +431,12 @@ func (c *cmd) approve(ctx context.Context) error {
 	if !single && (f.as == "" || f.key == "") {
 		return refuse("the gate on call %s is a %s gate: give -as (your approver id) and -key (your private key file)", safe(f.call), gateShape(g.gate))
 	}
+	if single && f.unverified {
+		return refuse("the gate on call %s is a single-approver gate: its decision is unsigned, so there is no key to verify and -unverified does not apply; drop it", safe(f.call))
+	}
+	if !single && f.approverKeys == "" && !f.unverified {
+		return refuse("an m-of-n decision needs -approver-keys: the file of enrolled approver public keys, a JSON object of approver id to key text (the file bide view -approver-keys reads; bide keygen -as %s prints this approver's entry). Without it nothing checks that your key is the one the application enrols, and a decision signed with another key is recorded and never counts. To decide anyway, pass -unverified", cmp.Or(safe(f.as), "<id>"))
+	}
 	var keys map[string]audit.Verifier
 	var verifierFor agent.ApproverVerifierFor
 	if f.approverKeys != "" {
@@ -538,7 +551,7 @@ func (c *cmd) show(g *gateOf, s agent.ApprovalSubject, priv ed25519.PrivateKey) 
 		row("pending", safe(strings.Join(gt.Pending, ", ")))
 		row("you", fmt.Sprintf("%s, with key %s", st.Bold(c.f.as), publicKeyText(priv)))
 		if c.f.approverKeys == "" {
-			row("", st.Warn("this key is not checked against the key enrolled for you (no -approver-keys): if the application enrols another, the decision is recorded and never counts"))
+			row("", st.BoldFail("UNVERIFIED")+" "+st.Warn("this key is not checked against the key enrolled for you (-unverified, no -approver-keys): if the application enrols another, the decision is recorded and never counts"))
 		}
 	}
 	if gt.AskedAt != "" {
@@ -608,11 +621,11 @@ func (c *cmd) after(ctx context.Context, j *agent.Journal, verifierFor agent.App
 		}
 	default:
 		passed, denied = len(gt.ApprovedBy) >= gt.Need, len(gt.Approvers)-len(gt.DeniedBy) < gt.Need
-		fmt.Fprintf(c.out, "recorded decisions: %d of %d needed approved%s%s\n", len(gt.ApprovedBy), gt.Need, names(" by", gt.ApprovedBy), names("; denied by", gt.DeniedBy))
+		fmt.Fprintf(c.out, "%s recorded decisions: %d of %d needed approved%s%s\n", st.BoldFail("UNVERIFIED"), len(gt.ApprovedBy), gt.Need, names(" by", gt.ApprovedBy), names("; denied by", gt.DeniedBy))
 		if len(gt.Pending) > 0 && !passed && !denied {
 			fmt.Fprintf(c.out, "still pending: %s\n", safe(strings.Join(gt.Pending, ", ")))
 		}
-		fmt.Fprintln(c.out, st.Dim("(counted from the journal; the gate checks every signature when the run resumes. Give -approver-keys to verify them here.)"))
+		fmt.Fprintln(c.out, st.Dim("(counted from the journal, unverified; the gate checks every signature when the run resumes. Give -approver-keys to verify them here.)"))
 	}
 	switch {
 	case passed:
@@ -684,14 +697,14 @@ func (c *cmd) list(ctx context.Context) error {
 			w := waiting{Run: run, Call: g.ToolUseID, Tool: g.ToolName, Single: g.Single, Need: g.Need, Approvers: g.Approvers, ApprovedBy: g.ApprovedBy, DeniedBy: g.DeniedBy, Pending: g.Pending, AskedAt: g.AskedAt}
 			switch {
 			case g.Single:
-				w.Commands = []string{approveline.Command(tgt, run, g.ToolUseID, "", "", true)}
+				w.Commands = []string{approveline.Command(tgt, run, g.ToolUseID, "", "", "", true)}
 			case len(g.ApprovedBy) >= g.Need && g.Need > 0:
 				w.Settled = "approved"
 			case g.Need > 0 && len(g.Approvers)-len(g.DeniedBy) < g.Need:
 				w.Settled = "denied"
 			default:
 				for _, id := range g.Pending {
-					w.Commands = append(w.Commands, approveline.Command(tgt, run, g.ToolUseID, id, "", false))
+					w.Commands = append(w.Commands, approveline.Command(tgt, run, g.ToolUseID, id, "", "", false))
 				}
 			}
 			if w.Commands == nil {
@@ -736,6 +749,6 @@ func (c *cmd) list(ctx context.Context) error {
 	if c.f.postgres != "" {
 		fmt.Fprintf(c.out, "\n%s\n", st.Dim("Set $"+defaultPostgresEnv+" to the DSN, or use -postgres-env with your own variable: the commands above never carry the DSN."))
 	}
-	fmt.Fprintf(c.out, "\n%s\n", st.Dim("Replace '"+approveline.KeyFilePlaceholder+"' with the path of your private key (bide keygen makes one). bide approve shows what it signs and asks first."))
+	fmt.Fprintf(c.out, "\n%s\n", st.Dim("Replace '"+approveline.KeyFilePlaceholder+"' with the path of your private key (bide keygen makes one) and '"+approveline.KeysFilePlaceholder+"' with the file of enrolled approver public keys. bide approve shows what it signs and asks first."))
 	return nil
 }
