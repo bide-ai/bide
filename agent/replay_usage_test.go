@@ -129,6 +129,9 @@ func journalsEqual(t *testing.T, a, b *Journal, runID string) {
 		for i := range rs {
 			rs[i].salt, rs[i].raw = nil, nil
 			rs[i].Result = withoutStartTime(t, rs[i])
+			if sg := rs[i].ApproverSignature; sg != nil && sg.Approver == "" {
+				rs[i].ApproverSignature = nil // a recorded_at alone: the time of the drive that wrote it
+			}
 		}
 	}
 	if !reflect.DeepEqual(ra, rb) {
