@@ -260,8 +260,11 @@ func classifyHead(h SignedTreeHead, runID string, logKey Verifier, journal []age
 // prefix that includes position Index, and that prefix must hold the decision there. CheckReceipt
 // rebuilds the prefix's leaves and root from journal and compares the root with the head's, so what
 // it says about a head it says about a head that matches this journal; the decision is held when the
-// leaf at Index is the decision's leaf hash (so a redacted record, whose tombstone keeps it, still
-// holds). A head at or below Index says nothing of the decision. recorded_at is display only.
+// leaf at Index is the decision's leaf hash under a valid Anchor, or the record there is the decision
+// (isRecord) without one; a redaction tombstone holds when it keeps the receipt's claimed leaf hash.
+// Only a receipt with a valid Anchor is evidence against a forged tombstone; without one, a
+// tombstone that keeps the claimed hash is the approver's claim read back. The check is as fresh as
+// the journal and heads supplied: a later write or head is not seen. A head at or below Index says nothing of the decision. recorded_at is display only.
 //
 // What a mismatch means depends on the receipt. Its Record, Index and LeafHash are the approver's
 // claim, and without an Anchor nothing shows the application ever journaled the decision, so a
@@ -279,13 +282,21 @@ func CheckReceipt(r DecisionReceipt, journal []agent.Record, heads []SignedTreeH
 	}
 	if !proven {
 		if want, err = hex.DecodeString(r.LeafHash); err != nil || len(want) != 32 {
-			want = nil // no usable claim: fall back to the decision's own fields
+			want = nil // no usable claim
 		}
 	}
 	// holdsAt reports whether the record at journal[i], whose leaf hash is leaf, is the decision.
+	// With a valid anchoring proof the proof fixes the decision's leaf hash. Without one, the
+	// receipt's leaf_hash is the approver's unsigned claim and is trusted for nothing a record
+	// can show for itself: a plain record holds only if it is the decision (approver, signature and
+	// decided_at are signature-bound), and the claimed leaf hash is used only for a redaction
+	// tombstone, whose bytes are gone and which keeps nothing but the leaf hash.
 	holdsAt := func(leaf []byte, i int) bool {
-		if want != nil {
+		switch {
+		case want != nil && proven:
 			return bytes.Equal(leaf, want)
+		case journal[i].Redacted:
+			return want != nil && bytes.Equal(leaf, want)
 		}
 		return r.isRecord(journal[i])
 	}

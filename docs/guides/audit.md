@@ -504,6 +504,13 @@ the head sizes and the signing order do not matter. The receipt format stays `v1
 optional and the format is not yet released). Run `-update` once the decision is anchored, and keep the
 updated receipt.
 
+Without an anchoring proof the receipt's `leaf_hash` is the approver's unsigned claim, so a plain record
+at the position holds only if it is the decision itself (its approver, signature and `decided_at` are
+signature-bound), and the claimed hash is trusted only for a redaction tombstone, which keeps nothing
+else. Only a receipt carrying a valid anchoring proof is evidence against a forged tombstone. The check
+is as fresh as the journal export and the heads supplied: a write or a head that came after them is not
+seen.
+
 Heads that do not verify under the log key, or are of another run, are ignored, and heads are read by
 size, never by arrival order. What this does not do: it checks only decisions whose receipts someone
 kept, so a decision deleted before its approver made a receipt, or before a receipt got its proof, is

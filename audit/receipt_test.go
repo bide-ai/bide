@@ -4,6 +4,7 @@ import (
 	"context"
 	"crypto/ed25519"
 	"crypto/rand"
+	"encoding/hex"
 	"encoding/json"
 	"errors"
 	"strings"
@@ -368,5 +369,28 @@ func TestReceipt_Verify(t *testing.T) {
 	// A receipt for a record that is not the decision is refused at creation.
 	if _, err := audit.NewDecisionReceipt(w.g.subject(t), agent.Decision{ApproverID: "alice"}, w.final[0], 0); err == nil {
 		t.Error("a receipt was made for the journal header")
+	}
+}
+
+// TestReceipt_StrippedAnchorAndEditedLeafHash: an edit of the unsigned leaf_hash, with the anchor
+// removed, must not make a deleted decision read as anchored. Without an anchor a plain record holds
+// only if it is the decision itself; the claimed leaf hash is trusted for a redaction tombstone alone.
+func TestReceipt_StrippedAnchorAndEditedLeafHash(t *testing.T) {
+	w := newReceiptWorld(t)
+	proven, err := audit.AnchorReceipt(w.receipt, w.final, []audit.SignedTreeHead{w.head}, edV(w.g.logPub))
+	if err != nil {
+		t.Fatal(err)
+	}
+	tampered, h := tamperedWorld(t, w)
+	if f := audit.CheckReceipt(proven, tampered, []audit.SignedTreeHead{h}, edV(w.g.logPub)); f.Verdict != audit.ReceiptDeleted {
+		t.Fatalf("setup: %+v", f)
+	}
+	edited := proven
+	edited.Anchor = nil
+	// Set the claimed leaf hash to whatever the tampered journal holds at the position.
+	recs := tampered
+	edited.LeafHash = hex.EncodeToString(audit.JournalLeafHash(recs[proven.Index].Raw()))
+	if f := audit.CheckReceipt(edited, tampered, []audit.SignedTreeHead{h}, edV(w.g.logPub)); f.Verdict != audit.ReceiptUnmatched {
+		t.Fatalf("an edited receipt: %+v", f)
 	}
 }

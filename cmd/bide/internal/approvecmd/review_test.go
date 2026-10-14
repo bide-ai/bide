@@ -625,7 +625,7 @@ func TestReview_FabricatedReceiptAccusesAnUntouchedJournal(t *testing.T) {
 		t.Fatalf("the fabricated receipt should verify on its own: %v", err)
 	}
 	f := audit.CheckReceipt(fab, recs, heads, audit.Ed25519Verifier{Pub: logPub})
-	if f.Verdict == audit.ReceiptDeleted || f.Verdict != audit.ReceiptUnmatched {
+	if f.Verdict != audit.ReceiptUnmatched {
 		t.Fatalf("a receipt for a decision never submitted makes the audit say %q about an untouched journal: %s", f.Verdict, f.Detail)
 	}
 }
