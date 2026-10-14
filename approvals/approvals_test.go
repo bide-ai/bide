@@ -481,3 +481,52 @@ func TestNew_Config(t *testing.T) {
 	}
 	_ = audit.AlgEd25519
 }
+
+// A single-approver gate takes no signed decision, and a plan flow node's gate is not served: each
+// is refused with its own code and records nothing.
+func TestDecision_UnsupportedGates(t *testing.T) {
+	single := newRigWith(t, "c1", agent.SingleApproval())
+	before := single.records()
+	b := single.decisionOn(single.subject(), "alice", true)
+	if status, out := single.post(b); status != 422 || code(out) != "single_gate" {
+		t.Errorf("single gate: %d %v", status, out)
+	}
+	if single.records() != before {
+		t.Error("a decision on a single-approver gate was recorded")
+	}
+
+	node := newRigWith(t, "node:review", nil)
+	before = node.records()
+	b = node.decisionOn(node.subject(), "alice", true)
+	if status, out := node.post(b); status != 422 || code(out) != "unsupported" {
+		t.Errorf("node gate: %d %v", status, out)
+	}
+	if node.records() != before {
+		t.Error("a decision on a node-key gate was recorded")
+	}
+}
+
+// Work on the journal is capped: past the cap a request is told to retry, and the one in progress
+// still completes.
+func TestBusy(t *testing.T) {
+	r := newRig(t, approvals.WithMaxInFlight(1), approvals.WithRateLimit(0, 0), approvals.WithGlobalRateLimit(0, 0))
+	release := r.stall.arm()
+	first := make(chan int, 1)
+	go func() {
+		status, _ := r.get("/pending?run=" + runID + "&call=c1")
+		first <- status
+	}()
+	<-r.stall.entered
+	resp, err := http.Get(r.srv.URL + "/pending?run=" + runID + "&call=c1")
+	if err != nil {
+		t.Fatal(err)
+	}
+	resp.Body.Close()
+	if resp.StatusCode != http.StatusServiceUnavailable || resp.Header.Get("Retry-After") == "" {
+		t.Fatalf("second request: %d, Retry-After %q", resp.StatusCode, resp.Header.Get("Retry-After"))
+	}
+	close(release)
+	if status := <-first; status != 200 {
+		t.Fatalf("the request in progress: %d", status)
+	}
+}

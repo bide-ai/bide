@@ -7,6 +7,7 @@ import (
 	"crypto/rand"
 	"encoding/base64"
 	"encoding/json"
+	"iter"
 	"net/http"
 	"net/http/httptest"
 	"sync"
@@ -23,9 +24,9 @@ import (
 const runID = "run-pay"
 
 // chargeModel calls the "charge" tool until a tool result is in the conversation, then answers.
-type chargeModel struct{}
+type chargeModel struct{ id string }
 
-func (chargeModel) Stream(_ context.Context, req agent.Request) (*agent.Stream, error) {
+func (m chargeModel) Stream(_ context.Context, req agent.Request) (*agent.Stream, error) {
 	ch := make(chan agent.Emit, 2)
 	done := false
 	for _, m := range req.Messages {
@@ -39,7 +40,7 @@ func (chargeModel) Stream(_ context.Context, req agent.Request) (*agent.Stream, 
 		ch <- agent.Emit{Event: agent.TextDelta{Text: "charged"}}
 		ch <- agent.Emit{Event: agent.Finish{Reason: "stop"}}
 	} else {
-		ch <- agent.Emit{Event: agent.ToolCallDelta{Index: 0, ID: "c1", Name: "charge", ArgsFragment: json.RawMessage(`{"amount":120, "to":"acme"}`)}}
+		ch <- agent.Emit{Event: agent.ToolCallDelta{Index: 0, ID: m.id, Name: "charge", ArgsFragment: json.RawMessage(`{"amount":120, "to":"acme"}`)}}
 		ch <- agent.Emit{Event: agent.Finish{Reason: "tool_use"}}
 	}
 	close(ch)
@@ -49,6 +50,8 @@ func (chargeModel) Stream(_ context.Context, req agent.Request) (*agent.Stream, 
 // rig is an application: a 2-of-{alice,bob,carol} gated "charge" tool over a journal that an
 // audit.AuditedStore signs, with the intake handler mounted on a server.
 type rig struct {
+	call     string
+	stall    *stallStore
 	t        *testing.T
 	inner    agent.Store
 	log      *audit.MemAnchorLog
@@ -87,16 +90,26 @@ func (r *rig) verifiers(id string) (agent.ApproverVerifier, bool) {
 // newRig builds the application and drives its run to the approval pause.
 func newRig(t *testing.T, opts ...approvals.Option) *rig {
 	t.Helper()
-	r := &rig{t: t, privs: map[string]ed25519.PrivateKey{}, enrolled: map[string]ed25519.PublicKey{},
+	return newRigWith(t, "c1", nil, opts...)
+}
+
+// newRigWith is newRig for a call id, and a gate policy other than the 2-of-3 (nil keeps it).
+func newRigWith(t *testing.T, call string, policy *agent.ApprovalPolicy, opts ...approvals.Option) *rig {
+	t.Helper()
+	r := &rig{t: t, call: call, privs: map[string]ed25519.PrivateKey{}, enrolled: map[string]ed25519.PublicKey{},
 		policy: agent.ApprovalPolicy{Need: 2, Approvers: []string{"alice", "bob", "carol"}},
 		now:    time.Date(2026, 10, 13, 12, 0, 0, 0, time.UTC)}
 	for _, id := range []string{"alice", "bob", "carol", "dave"} {
 		pub, priv, _ := ed25519.GenerateKey(rand.Reader)
 		r.privs[id], r.enrolled[id] = priv, pub
 	}
+	if policy != nil {
+		r.policy = *policy
+	}
 	var logPriv ed25519.PrivateKey
 	r.logPub, logPriv, _ = ed25519.GenerateKey(rand.Reader)
-	r.inner = agent.NewMemStore()
+	r.stall = &stallStore{Store: agent.NewMemStore(), entered: make(chan struct{}, 4)}
+	r.inner = r.stall
 	r.log = audit.NewMemAnchorLog()
 	as, err := audit.NewAuditedStore(r.inner, audit.Ed25519Signer{Priv: logPriv}, r.log)
 	if err != nil {
@@ -125,7 +138,7 @@ func (r *rig) run() error {
 		r.charged.Add(1)
 		return "ok", nil
 	}, agent.WithApproval(&r.policy))
-	_, err := agenttest.MustNew(chargeModel{}, r.app, agent.WithTools(charge), agent.WithApproverVerifiers(r.verifiers)).
+	_, err := agenttest.MustNew(chargeModel{id: r.call}, r.app, agent.WithTools(charge), agent.WithApproverVerifiers(r.verifiers)).
 		Run(context.Background(), runID, agent.UserText("pay"))
 	return err
 }
@@ -136,11 +149,11 @@ func (r *rig) subject() agent.ApprovalSubject {
 	if err != nil {
 		r.t.Fatal(err)
 	}
-	_, call, ok := agent.FindToolCall(recs, "c1")
+	_, call, ok := agent.FindToolCall(recs, r.call)
 	if !ok {
 		r.t.Fatal("no call c1")
 	}
-	return agent.ApprovalSubject{RunID: runID, ToolUseID: "c1", ToolName: call.Name, Args: call.Args}
+	return agent.ApprovalSubject{RunID: runID, ToolUseID: r.call, ToolName: call.Name, Args: call.Args}
 }
 
 // body is the JSON a client posts for approver id's decision, signed over s.
@@ -221,3 +234,33 @@ func code(out map[string]any) string {
 func b64(b []byte) string { return base64.StdEncoding.EncodeToString(b) }
 
 func ed25519Sign(r *rig, id string, msg []byte) []byte { return ed25519.Sign(r.privs[id], msg) }
+
+// stallStore blocks Load while armed, to hold a request inside the journal.
+type stallStore struct {
+	agent.Store
+	mu      sync.Mutex
+	release chan struct{}
+	entered chan struct{}
+}
+
+func (s *stallStore) Unwrap() agent.Store { return s.Store }
+
+// arm makes the next Load wait until the returned channel is closed.
+func (s *stallStore) arm() chan struct{} {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.release = make(chan struct{})
+	return s.release
+}
+
+func (s *stallStore) Load(ctx context.Context, runID string, after int64) iter.Seq2[agent.Entry, error] {
+	s.mu.Lock()
+	rel := s.release
+	s.release = nil
+	s.mu.Unlock()
+	if rel != nil {
+		s.entered <- struct{}{}
+		<-rel
+	}
+	return s.Store.Load(ctx, runID, after)
+}
