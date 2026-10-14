@@ -265,6 +265,37 @@ func TestTimeout(t *testing.T) {
 	}
 }
 
+// cancelAfterKey cancels the caller's context once GetPublicKey has answered, as a caller giving up
+// during Open would.
+type cancelAfterKey struct {
+	*fakeKMS
+	cancel context.CancelFunc
+}
+
+func (c cancelAfterKey) GetPublicKey(ctx context.Context, in *kms.GetPublicKeyInput, o ...func(*kms.Options)) (*kms.GetPublicKeyOutput, error) {
+	out, err := c.fakeKMS.GetPublicKey(ctx, in, o...)
+	c.cancel()
+	return out, err
+}
+
+// Open's self-test signature is bounded by Open's context, not only by Config.Timeout: a context
+// cancelled during Open reaches the Sign call, and Open fails with the context's error.
+func TestOpenCancelsTheSelfTest(t *testing.T) {
+	for _, scheme := range []audit.Alg{audit.AlgEd25519, audit.AlgECDSAP256} {
+		f := newFake(t)
+		if scheme == audit.AlgECDSAP256 {
+			f = newP256Fake(t)
+		}
+		ctx, cancel := context.WithCancel(context.Background())
+		defer cancel()
+		_, err := Open(ctx, Config{Client: cancelAfterKey{f, cancel}, KeyID: testARN, Scheme: scheme})
+		if f.lastCtx == nil || f.lastCtx.Err() == nil {
+			t.Fatalf("%s: the self-test Sign did not receive Open's cancelled context", scheme)
+		}
+		_ = err // the fake does not honor ctx; the context reaching Sign is what is checked
+	}
+}
+
 func TestFormatShowsNoConfiguration(t *testing.T) {
 	s := open(t, newFake(t))
 	for _, out := range []string{fmt.Sprint(s), fmt.Sprintf("%+v", s), fmt.Sprintf("%#v", s)} {
