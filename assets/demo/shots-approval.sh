@@ -66,12 +66,12 @@ shot run-viewer-agent-halted "http://127.0.0.1:$port/run?id=refund-42" 1300
 pub=$(./approval evidence -db a.db -out ev.json 2>&1 | grep -o '[0-9a-f]\{64\}' | head -1)
 serve $((port + 1)) -db a.db -evidence ev.json -pubkey "$pub" -approver-keys approver-keys.json
 shot run-viewer-agent-verified "http://127.0.0.1:$((port + 1))/run?id=refund-42" 1300
-if command -v sips > /dev/null; then
+if command -v ffmpeg > /dev/null; then
   saved=$out; out=$work
   shot full "http://127.0.0.1:$((port + 1))/run?id=refund-42" 3500 > /dev/null
   out=$saved
-  sips --cropToHeightWidth 1720 1200 --cropOffset "${TIMELINE_Y:-1590}" 0 "$work/full-$theme.png" --out "$out/run-viewer-timeline-$theme.png" > /dev/null
+  ffmpeg -loglevel error -y -i "$work/full-$theme.png" -vf "crop=1200:1720:0:${TIMELINE_Y:-1590}" "$out/run-viewer-timeline-$theme.png"
   echo "$out/run-viewer-timeline-$theme.png"
 else
-  echo "shots-approval.sh: no sips; run-viewer-timeline not retaken" >&2
+  echo "shots-approval.sh: no ffmpeg; run-viewer-timeline not retaken" >&2
 fi
