@@ -278,9 +278,12 @@ func TestEscalation_AnUnacknowledgedEventGoesToTheNextReceiverAtItsDeadline(t *t
 	halt := haltEvent()
 	_, _ = e.round(context.Background(), halt) // the sink is down: observed, claimed, not acked
 
-	watch(t, e, halt)
+	res0 := watch(t, e, halt)
 	if lead.count() != 0 {
 		t.Fatal("escalated before the deadline")
+	}
+	if want := foldTrail(t, trail).Events[halt.key].DeadlineAt; !res0.next.Equal(want) || res0.done {
+		t.Fatalf("the watch before the deadline = %+v, want to wake at the deadline %v", res0, want)
 	}
 	clk.advance(6 * time.Minute)
 	res := watch(t, e, halt)
@@ -459,26 +462,12 @@ func TestEscalation_AnotherProcessResumesTheChainFromTheTrail(t *testing.T) {
 	clk.advance(6 * time.Minute)
 	e2 := escalationEngine(t, j, trail, clk, "p2", map[string]Notifier{"default": def, "lead": lead, "head": &fakeSink{}})
 	scanAndFlush(t, e2, "r")
-	// The scan queued the event's watcher; run it as the worker would.
-	if _, err := e2.round(ctx, watchOf(rebuilt(t, trail, halt.key))); err != nil {
-		t.Fatal(err)
-	}
-	if err := e2.flush(ctx); err != nil {
-		t.Logf("flush: %v", err)
+	for i := 0; i < 3 && lead.count() == 0; i++ { // the scan queued the watch; it queues the step
+		_ = e2.flush(ctx)
 	}
 	if lead.count() != 1 {
 		t.Fatalf("lead = %d, want 1", lead.count())
 	}
-}
-
-func rebuilt(t *testing.T, tr NotifyTrail, key string) notifyEvent {
-	t.Helper()
-	es := foldTrail(t, tr).Events[key]
-	ev, ok := eventFromKey(es)
-	if !ok {
-		t.Fatalf("eventFromKey(%s) failed", key)
-	}
-	return ev
 }
 
 func TestEscalation_TwoProcessesRaceToOneObservedEscalation(t *testing.T) {
@@ -577,6 +566,17 @@ func TestEscalation_AStepIsObservedOnlyWhenDueOnTheLoadedTrail(t *testing.T) {
 			t.Fatal("a step was observed after the event was cleared")
 		}
 	})
+	t.Run("event resolved in the journal, not yet cleared in the trail", func(t *testing.T) {
+		e, trail, clk, _, lead := newEng(t)
+		putResult(t, e.j, "r", "c1")
+		clk.advance(6 * time.Minute)
+		if _, err := e.round(ctx, step(e, 1)); err != nil {
+			t.Fatal(err)
+		}
+		if lead.count() != 0 || foldTrail(t, trail).Events[EscalationKey(haltEvent().key, 1)] != nil {
+			t.Fatal("a step was observed for an event the journal shows resolved")
+		}
+	})
 	t.Run("a later step without the one before", func(t *testing.T) {
 		e, trail, clk, _, _ := newEng(t)
 		clk.advance(time.Hour)
@@ -601,5 +601,53 @@ func TestRouting_TheGuidesWorkedExampleIsAValidConfiguration(t *testing.T) {
 	}, "test")
 	if err != nil {
 		t.Fatal(err)
+	}
+}
+
+// A step has no overdue notice of its own: its deadline is the next step's.
+func TestEscalation_AStepIsNeverOverdue(t *testing.T) {
+	clk := routeClock()
+	def, lead := &fakeSink{fail: 1000}, &fakeSink{fail: 1000}
+	trail := NewMemNotifyTrail()
+	e := escalationEngine(t, memJournal(), trail, clk, "p1", map[string]Notifier{"default": def, "lead": lead, "head": &fakeSink{fail: 1000}})
+	halt := haltEvent()
+	_, _ = e.round(context.Background(), halt)
+	clk.advance(6 * time.Minute)
+	watch(t, e, halt)
+	key := EscalationKey(halt.key, 1)
+	clk.advance(11 * time.Minute) // past the step's own deadline, its sink still down
+	_, _ = e.round(context.Background(), e.escalationOf(halt, 1))
+	es := foldTrail(t, trail).Events[key]
+	if es == nil || es.Overdue != nil || len(recsFor(t, trail, OverdueKey(key))) != 0 {
+		t.Fatalf("a step went overdue: %+v", es)
+	}
+}
+
+// A process that finds an open step in the trail (the one that observed it is gone) delivers it,
+// through the scan and its watch, without being told of the event.
+func TestEscalation_AScanDeliversAnOpenStepAndResumesTheChain(t *testing.T) {
+	ctx := context.Background()
+	clk := routeClock()
+	j := memJournal()
+	def, lead := &fakeSink{fail: 1000}, &fakeSink{fail: 3} // lead is down for the first process's round only
+	trail := NewMemNotifyTrail()
+	sinks := map[string]Notifier{"default": def, "lead": lead, "head": &fakeSink{}}
+	e1 := escalationEngine(t, j, trail, clk, "p1", sinks)
+	halt := haltEvent()
+	_, _ = e1.round(ctx, halt)
+	clk.advance(6 * time.Minute)
+	watch(t, e1, halt)
+	if st := foldTrail(t, trail).Events[EscalationKey(halt.key, 1)]; st == nil || st.Acked != nil {
+		t.Fatalf("setup: step 1 = %+v, want observed and open", st)
+	}
+	clk.advance(20 * time.Minute) // the first process is gone; its backoff has passed
+	e2 := escalationEngine(t, j, trail, clk, "p2", sinks)
+	scanAndFlush(t, e2, "r")
+	for i := 0; i < 3 && foldTrail(t, trail).Events[EscalationKey(halt.key, 1)].Acked == nil; i++ {
+		_ = e2.flush(ctx)
+		clk.advance(time.Minute)
+	}
+	if foldTrail(t, trail).Events[EscalationKey(halt.key, 1)].Acked == nil {
+		t.Fatal("the open step was not delivered by the next process")
 	}
 }

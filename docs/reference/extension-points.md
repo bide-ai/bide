@@ -460,7 +460,7 @@ type Notifier interface {
 
 The port behind `agent.WithNotifier`. `Notify` is called when a run halts on an unknown outcome,
 waits for approval, is aborted, or cannot be recovered (and, with `agent.NotificationResolved`, when
-an event it reported is over: `Notification.Clears` says which), and again after an error, a crash or a lost
+an event it reported is over: `Notification.Clears` says which; with `agent.NotificationEscalated`, when an event nobody acknowledged or decided is escalated to it: `Notification.Escalates` says which), and again after an error, a crash or a lost
 reply: return nil only once the sink has accepted the notification, and use `Notification.ID`, which
 is the same on every attempt, to drop duplicates at the sink. A `Notification` holds structured
 fields only, and `Err` is for an in-process notifier: a notifier that sends elsewhere should not
@@ -472,6 +472,12 @@ design is in [docs/design/notifier.md](../design/notifier.md); the webhook notif
 the port follows. On the receiving side, `relay.Sink` in package `notify/relay` (`Name() string`,
 `Send(ctx, notify.Payload) error`) is the port for forwarding a verified webhook somewhere else;
 `relay.NewSlack` and `relay.NewPagerDuty` implement it (see [Notifications](../guides/notifications.md#embed-the-relay)).
+
+One `WithNotifier` can serve several receivers: `agent.WithNotifyReceiver` adds a named `Notifier`,
+`WithNotifyRoute` and `WithNotifyApproverRoute` choose where events go, and `WithNotifyEscalation`
+sets a bounded chain of receivers for an event not acknowledged (an approval: not decided) in time.
+`Notification.Receiver` says which receiver a call is for. Each receiver has its own records in the
+trail; see [Routing and escalation](../guides/notifications.md#routing-and-escalation).
 
 ## `NotifyTrail`: delivery state, audited
 
