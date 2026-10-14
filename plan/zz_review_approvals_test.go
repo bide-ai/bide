@@ -6,9 +6,6 @@ package plan
 import (
 	"context"
 	"crypto/ed25519"
-	"crypto/sha256"
-	"encoding/binary"
-	"encoding/hex"
 	"encoding/json"
 	"errors"
 	"strings"
@@ -34,15 +31,7 @@ func TestReview_StaleSeatNotLostUnderV3(t *testing.T) {
 	f := refundFlow(t, &agent.ApprovalPolicy{Need: 1, Approvers: []string{"ops"}}, vf, &refunds)
 	const args = `{"order":"order-42","amount":120}`
 	d, rec := signedDecision(as["ops"], "r1", "node:refund", "refund", args, true)
-	h := sha256.New()
-	h.Write([]byte{1})
-	h.Write(binary.BigEndian.AppendUint32(nil, uint32(len("ed25519"))))
-	h.Write([]byte("ed25519"))
-	at := agent.FormatTimestamp(d.DecidedAt)
-	h.Write(binary.BigEndian.AppendUint32(nil, uint32(len(at))))
-	h.Write([]byte(at))
-	h.Write(d.Signature)
-	if _, err := journaltest.Put(ctx, j, "r1", "approval:node%3Arefund:ops:"+hex.EncodeToString(h.Sum(nil)), rec); err != nil {
+	if _, err := journaltest.Put(ctx, j, "r1", agent.DecisionStep(d), rec); err != nil {
 		t.Fatal(err)
 	}
 	pend := asPending(t, func() error { _, err := f.Run(ctx, j, "r1", "order-42"); return err }())

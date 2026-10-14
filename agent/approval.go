@@ -763,12 +763,35 @@ func FindToolCall(recs []Record, toolUseID string) (idx int, call ToolUse, ok bo
 	return -1, ToolUse{}, false
 }
 
-// approvalDecisionStep is the journal name of one decision. It is distinct per decision (the
-// approved flag, the scheme, the signed decision time and the signature are hashed into it), so an
-// approver's records never collide: a bad record cannot take the name a later valid one needs (a
-// copy of a valid signature under another decision time, say), and an identical resubmission maps
-// to the same name and stays a no-op. Deterministic signatures (ed25519, and audit's ML-DSA
-// signer) resubmit to the same name; randomized ones add a record the counting rule supersedes.
+// decisionIdentityStep is the journal name of one decision, derived from what the decision is and
+// never from its signature bytes: the call, the approver, the verdict, the scheme and the signed
+// decision time are hashed into it. A run holds one call under one id and its arguments are fixed by
+// the journal (a flow gate refuses a request whose input differs), so run, call and the signed
+// bytes' subject digest are fixed by the call id. Every re-signing of one decision, whatever the
+// scheme (ECDSA from a KMS or HSM signs the same decision differently each time), maps to one name,
+// so concurrent submissions race on one key and the first writer wins.
+func decisionIdentityStep(toolUseID, approverID string, approved bool, alg Alg, decidedAt string) string {
+	h := sha256.New()
+	h.Write([]byte("identity\x00"))
+	if approved {
+		h.Write([]byte{1})
+	} else {
+		h.Write([]byte{0})
+	}
+	h.Write(binary.BigEndian.AppendUint32(nil, uint32(len(alg))))
+	h.Write([]byte(alg))
+	h.Write(binary.BigEndian.AppendUint32(nil, uint32(len(decidedAt))))
+	h.Write([]byte(decidedAt))
+	return approvalStep(toolUseID) + ":" + approverID + ":" + hex.EncodeToString(h.Sum(nil))
+}
+
+// approvalDecisionStep is the signature-derived journal name of one decision: the approved flag, the
+// scheme, the signed decision time and the signature hashed. Journals written before the decision
+// step was keyed by identity (decisionIdentityStep) hold every decision under it, and they still
+// read and count (the gate and audit read records, not names). SubmitDecision uses it only as the
+// fallback for a decision whose identity name is already held by a record that is not the
+// approver's valid decision (a junk signature written without a check): the bad record must not
+// take the name the real decision needs, so the real one is journaled under its own signature.
 func approvalDecisionStep(toolUseID, approverID string, approved bool, alg Alg, decidedAt string, sig []byte) string {
 	h := sha256.New()
 	if approved {
@@ -785,13 +808,14 @@ func approvalDecisionStep(toolUseID, approverID string, approved bool, alg Alg, 
 }
 
 // DecisionStep returns the journal name SubmitDecision gives the record of d: distinct for each
-// distinct decision (approver, verdict, scheme, decision time and signature), and the same for an
-// identical resubmission, which is why that is a no-op. A service that takes decisions over a
+// distinct decision (call, approver, verdict, scheme and decision time), and the same for every
+// resubmission of it, whatever its signature bytes, which is why that is a no-op. (A decision whose
+// name a bad record already holds is journaled under another name; see SubmitDecision.) A service that takes decisions over a
 // network reads it to tell a decision it records from one it already holds. A zero or
 // non-canonical d.DecidedAt has no record (SubmitDecision refuses it); the name is then of
 // FormatTimestamp's rendering of it.
 func DecisionStep(d Decision) string {
-	return approvalDecisionStep(d.ToolUseID, d.ApproverID, d.Approved, d.Alg, FormatTimestamp(d.DecidedAt), d.Signature)
+	return decisionIdentityStep(d.ToolUseID, d.ApproverID, d.Approved, d.Alg, FormatTimestamp(d.DecidedAt))
 }
 
 // ReportWritten makes SubmitDecision set *wrote to whether this call stored the decision's record:
@@ -954,13 +978,15 @@ func submitDecision(ctx context.Context, store *Journal, op string, d Decision, 
 	if err != nil {
 		return err
 	}
-	name := approvalDecisionStep(d.ToolUseID, d.ApproverID, d.Approved, d.Alg, decidedAt, d.Signature)
+	name := decisionIdentityStep(d.ToolUseID, d.ApproverID, d.Approved, d.Alg, decidedAt)
+	var chk *decisionCheckResult
 	if o.verifierFor != nil {
-		same, err := checkDecision(ctx, store, op, d, name, decidedAt, flow, o.verifierFor)
+		c, err := checkDecision(ctx, store, op, d, decidedAt, flow, o.verifierFor)
 		if err != nil {
 			return err
 		}
-		if same != "" {
+		chk = &c
+		if same := c.same; same != "" {
 			// The same decision is already journaled (a retry after a lost response). Writing
 			// again would add a record whenever the signature differs, as a randomized scheme's does.
 			name = same
@@ -970,24 +996,64 @@ func submitDecision(ctx context.Context, store *Journal, op string, d Decision, 
 			return nil
 		}
 	}
-	if _, err := store.do(ctx, d.RunID, name, func(context.Context) (Record, error) {
-		// RecordedAt is read here, when the record is first written: an identical resubmission
-		// keeps the first record, and its time. It is held to the one form decided_at is, so a
-		// clock outside the years 0001 to 9999 records nothing rather than a time no reader accepts.
-		recordedAt := FormatTimestamp(o.now())
-		if !canonicalTimestamp(recordedAt) {
-			return Record{}, fmt.Errorf("%s: the clock reads %s, which has no canonical form (years 0001 to 9999), so the decision's recorded_at cannot be written: %w", op, o.now(), ErrConfig)
-		}
-		return Record{Kind: StepApproval, ToolUseID: d.ToolUseID, Approved: d.Approved, ApproverSignature: &ApproverSignature{
-			Approver: d.ApproverID, ApproverAlg: d.Alg, Signature: d.Signature, DecidedAt: decidedAt, RecordedAt: recordedAt,
-		}}, nil
-	}); err != nil {
+	write := func(name string) (Record, error) {
+		return store.do(ctx, d.RunID, name, func(context.Context) (Record, error) {
+			// RecordedAt is read here, when the record is first written: an identical resubmission
+			// keeps the first record, and its time. It is held to the one form decided_at is, so a
+			// clock outside the years 0001 to 9999 records nothing rather than a time no reader accepts.
+			recordedAt := FormatTimestamp(o.now())
+			if !canonicalTimestamp(recordedAt) {
+				return Record{}, fmt.Errorf("%s: the clock reads %s, which has no canonical form (years 0001 to 9999), so the decision's recorded_at cannot be written: %w", op, o.now(), ErrConfig)
+			}
+			return Record{Kind: StepApproval, ToolUseID: d.ToolUseID, Approved: d.Approved, ApproverSignature: &ApproverSignature{
+				Approver: d.ApproverID, ApproverAlg: d.Alg, Signature: d.Signature, DecidedAt: decidedAt, RecordedAt: recordedAt,
+			}}, nil
+		})
+	}
+	got, err := write(name)
+	if err != nil {
 		return err
+	}
+	if !bytes.Equal(got.Signature(), d.Signature) {
+		// The identity name holds another record: a re-signing of this decision (ECDSA signs one
+		// decision differently each time) that won the race, or a record that is not this
+		// approver's valid decision. The first is the decision already journaled: write nothing
+		// more. The second must not take this decision's name, so it is journaled under its own
+		// signature. Without a check the two cannot be told apart, and the record is written: a
+		// duplicate the counting rule supersedes, which is why a randomized scheme submits with
+		// WithDecisionCheck.
+		if chk != nil && chk.validSame(got) {
+			if flow {
+				return staleDecision(ctx, store, op, d.RunID, d.ToolUseID, name, reqSeq, false)
+			}
+			return nil
+		}
+		name = approvalDecisionStep(d.ToolUseID, d.ApproverID, d.Approved, d.Alg, decidedAt, d.Signature)
+		if _, err := write(name); err != nil {
+			return err
+		}
 	}
 	if flow {
 		return staleDecision(ctx, store, op, d.RunID, d.ToolUseID, name, reqSeq, false)
 	}
 	return nil
+}
+
+// decisionCheckResult is what WithDecisionCheck's pre-flight found: the name of the approver's
+// valid record of this same decision when the journal holds one, and what it verified against.
+type decisionCheckResult struct {
+	same string
+	s    ApprovalSubject
+	v    ApproverVerifier
+	d    Decision
+	at   string
+}
+
+// validSame reports whether r is the approver's valid record of this decision: valid for the
+// recorded call, with the same approver, verdict, scheme and decision time.
+func (c decisionCheckResult) validSame(r Record) bool {
+	return IsApprovalDecision(r, c.d.ToolUseID) && r.Approver() == c.d.ApproverID && decisionReason(r, c.s, c.v) == "" &&
+		r.Approved == c.d.Approved && r.ApproverAlg() == c.d.Alg && r.DecidedAt() == c.at
 }
 
 // checkDecision is WithDecisionCheck's pre-flight: the decision verifies for the recorded
@@ -996,45 +1062,46 @@ func submitDecision(ctx context.Context, store *Journal, op string, d Decision, 
 // scheme signs it differently each time): its name is returned, and nothing is written again. For a plan
 // flow node's gate (flow) it reads, as the gate does, only the decisions after the gate's request:
 // one recorded before it never counts, so it does not make this one "already decided".
-func checkDecision(ctx context.Context, store *Journal, op string, d Decision, name, decidedAt string, flow bool, verifierFor ApproverVerifierFor) (string, error) {
+func checkDecision(ctx context.Context, store *Journal, op string, d Decision, decidedAt string, flow bool, verifierFor ApproverVerifierFor) (decisionCheckResult, error) {
+	var none decisionCheckResult
 	recs, err := store.History(ctx, d.RunID)
 	if err != nil {
-		return "", fmt.Errorf("%s: load history %s: %w (%w)", op, d.RunID, err, ErrStorage)
+		return none, fmt.Errorf("%s: load history %s: %w (%w)", op, d.RunID, err, ErrStorage)
 	}
 	_, call, ok := FindToolCall(recs, d.ToolUseID)
 	if !ok {
-		return "", fmt.Errorf("%s: no tool call %q in run %s: %w", op, d.ToolUseID, d.RunID, ErrInvalidApproval)
+		return none, fmt.Errorf("%s: no tool call %q in run %s: %w", op, d.ToolUseID, d.RunID, ErrInvalidApproval)
 	}
 	v, ok := verifierFor(d.ApproverID)
 	if !ok || v == nil {
-		return "", fmt.Errorf("%s: no key for approver %q: %w", op, d.ApproverID, ErrInvalidApproval)
+		return none, fmt.Errorf("%s: no key for approver %q: %w", op, d.ApproverID, ErrInvalidApproval)
 	}
 	if isNilVerifier(v) {
-		return "", fmt.Errorf("%s: the resolver returned a nil %T verifier for approver %q: %w", op, v, d.ApproverID, ErrConfig)
+		return none, fmt.Errorf("%s: the resolver returned a nil %T verifier for approver %q: %w", op, v, d.ApproverID, ErrConfig)
 	}
 	if d.Alg != v.Alg() {
-		return "", fmt.Errorf("%s: approver %q: decision signed under %q, key is %q: %w", op, d.ApproverID, d.Alg, v.Alg(), ErrInvalidApproval)
+		return none, fmt.Errorf("%s: approver %q: decision signed under %q, key is %q: %w", op, d.ApproverID, d.Alg, v.Alg(), ErrInvalidApproval)
 	}
 	s := ApprovalSubject{RunID: d.RunID, ToolUseID: d.ToolUseID, ToolName: call.Name, Args: call.Args}
 	if !v.Verify(ApprovalDecisionBytes(s, d.ApproverID, d.Approved, d.DecidedAt), d.Signature) {
-		return "", fmt.Errorf("%s: approver %q: %s: %w", op, d.ApproverID, ReasonBadSig, ErrInvalidApproval)
+		return none, fmt.Errorf("%s: approver %q: %s: %w", op, d.ApproverID, ReasonBadSig, ErrInvalidApproval)
 	}
 	if flow {
 		i := slices.IndexFunc(recs, func(r Record) bool { return r.Name == ApprovalRequestStep(d.ToolUseID) })
 		recs = recs[i+1:] // flowDecision found the request, so i >= 0
 	}
 	for _, r := range recs {
-		if !IsApprovalDecision(r, d.ToolUseID) || r.Approver() != d.ApproverID || r.Name == name {
+		if !IsApprovalDecision(r, d.ToolUseID) || r.Approver() != d.ApproverID {
 			continue
 		}
 		if decisionReason(r, s, v) == "" {
 			if r.Approved == d.Approved && r.ApproverAlg() == d.Alg && r.DecidedAt() == decidedAt {
-				return r.Name, nil
+				return decisionCheckResult{same: r.Name, s: s, v: v, d: d, at: decidedAt}, nil
 			}
-			return "", fmt.Errorf("%s: approver %q already decided on call %q: %w", op, d.ApproverID, d.ToolUseID, ErrAlreadyDecided)
+			return none, fmt.Errorf("%s: approver %q already decided on call %q: %w", op, d.ApproverID, d.ToolUseID, ErrAlreadyDecided)
 		}
 	}
-	return "", nil
+	return decisionCheckResult{s: s, v: v, d: d, at: decidedAt}, nil
 }
 
 // notePending records, unless it is recorded already, that the run paused at tu's gate pol (see

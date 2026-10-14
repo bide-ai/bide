@@ -6,6 +6,7 @@ import (
 	"encoding/binary"
 	"encoding/hex"
 	"errors"
+	"net/url"
 	"strings"
 	"testing"
 
@@ -66,15 +67,7 @@ func TestRev201_StaleMofNDecisionBlocksGate(t *testing.T) {
 	f := refundFlow(t, &agent.ApprovalPolicy{Need: 1, Approvers: []string{"ops"}}, vf, &refunds)
 	const args = `{"order":"order-42","amount":120}`
 	d, rec := signedDecision(as["ops"], "r1", "node:refund", "refund", args, true)
-	h := sha256.New()
-	h.Write([]byte{1})
-	h.Write(binary.BigEndian.AppendUint32(nil, uint32(len("ed25519"))))
-	h.Write([]byte("ed25519"))
-	at := agent.FormatTimestamp(d.DecidedAt)
-	h.Write(binary.BigEndian.AppendUint32(nil, uint32(len(at))))
-	h.Write([]byte(at))
-	h.Write(d.Signature)
-	if _, err := journaltest.Put(ctx, j, "r1", "approval:node%3Arefund:ops:"+hex.EncodeToString(h.Sum(nil)), rec); err != nil {
+	if _, err := journaltest.Put(ctx, j, "r1", agent.DecisionStep(d), rec); err != nil {
 		t.Fatal(err)
 	}
 	_, err := f.Run(ctx, j, "r1", "order-42")
@@ -107,4 +100,40 @@ func TestRev201_StaleSeatOthersCanPass(t *testing.T) {
 	if _, err := f.Run(ctx, j, "r1", "order-42"); err != nil || refunds != 1 {
 		t.Fatalf("Run with finance's approval = %v, refunds %d; want the node run once", err, refunds)
 	}
+}
+
+// A stale decision under the previous, signature-derived name does not take the name of the
+// approver's identical decision after the pause: the new record has its own name and counts.
+func TestRev201_LegacyNamedStaleDecisionDoesNotBlock(t *testing.T) {
+	ctx := context.Background()
+	as, vf := approvers("ops")
+	j := agenttest.MemJournal()
+	refunds := 0
+	f := refundFlow(t, &agent.ApprovalPolicy{Need: 1, Approvers: []string{"ops"}}, vf, &refunds)
+	const args = `{"order":"order-42","amount":120}`
+	d, rec := signedDecision(as["ops"], "r1", "node:refund", "refund", args, true)
+	if _, err := journaltest.Put(ctx, j, "r1", legacyDecisionStep(d), rec); err != nil {
+		t.Fatal(err)
+	}
+	asPending(t, func() error { _, err := f.Run(ctx, j, "r1", "order-42"); return err }())
+	if err := agent.SubmitDecision(ctx, j, d); err != nil {
+		t.Fatalf("SubmitDecision: %v", err)
+	}
+	if _, err := f.Run(ctx, j, "r1", "order-42"); err != nil || refunds != 1 {
+		t.Fatalf("Run = %v, refunds %d", err, refunds)
+	}
+}
+
+// legacyDecisionStep is the signature-derived name journals written before the decision step was
+// keyed by identity hold their decisions under.
+func legacyDecisionStep(d agent.Decision) string {
+	h := sha256.New()
+	h.Write([]byte{1})
+	h.Write(binary.BigEndian.AppendUint32(nil, uint32(len(d.Alg))))
+	h.Write([]byte(d.Alg))
+	at := agent.FormatTimestamp(d.DecidedAt)
+	h.Write(binary.BigEndian.AppendUint32(nil, uint32(len(at))))
+	h.Write([]byte(at))
+	h.Write(d.Signature)
+	return "approval:" + url.QueryEscape(d.ToolUseID) + ":" + d.ApproverID + ":" + hex.EncodeToString(h.Sum(nil))
 }
