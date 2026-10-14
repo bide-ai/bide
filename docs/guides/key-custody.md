@@ -467,7 +467,7 @@ approver (see [Human approval](hitl-approval.md)).
 
 `bide approve` loads the approver's key from a key file, and the `bide` binary is pure Go
 (`CGO_ENABLED=0`, reproducible builds), so it cannot load a PKCS#11 library. `bide-hsm` is the companion
-program for approvers whose keys are in an HSM, on a smart card or token, or in AWS KMS (Google Cloud KMS and Azure Key Vault keys are not supported by `bide-hsm` yet: its references are `pkcs11:` and `awskms:`). `bide-hsm
+program for approvers whose keys are in an HSM, on a smart card or token, in AWS KMS, or in Google Cloud KMS (Azure Key Vault keys are not supported by `bide-hsm` yet: its references are `pkcs11:`, `awskms:` and `gcpkms:`). `bide-hsm
 approve` is `bide approve`: one implementation of the display, the confirmation, the signature, the
 record and the receipt (`cmd/bide/internal/approvecmd`), with `-key` naming a key by reference instead of
 a file. `bide-hsm pubkey` prints the entry that enrols a key.
@@ -495,6 +495,16 @@ bide-hsm approve -db run.db -run refund-1049 -call c2 -as finance -key "$KEY" \
   ARN), so a redirected endpoint or a wrong answer naming another account's key is refused before anything is
   signed; `bide-hsm approve` shows an alias with the key ARN it resolved to. The `awskms:` prefix, not `kms://`, is the form:
   it names the signer (`signer/awskms`) and leaves room for other key services as other schemes.
+- `gcpkms:projects/<p>/locations/<l>/keyRings/<r>/cryptoKeys/<k>/cryptoKeyVersions/<n>`, a Google Cloud KMS key
+  version by its full resource name. The version is the number Cloud KMS assigns, pinned: no alias, no
+  `latest`, no `primary`, no query, so signing uses exactly the version the reference names (`signer/gcpkms`
+  also checks that Cloud KMS answers with that name). Credentials are Google's application default
+  credentials. Only an HSM-backed version is used by default, as in `signer/gcpkms`; Cloud KMS has no HSM-backed
+  Ed25519 key, so an Ed25519 key needs `-allow-software-key` (and `bide-hsm approve` then says, beside the
+  key, that it is at protection level SOFTWARE). `-verify-attestation` requires the version's Cloud HSM
+  attestation to prove the key was generated in the HSM and cannot be extracted (P-256 in an HSM only; it
+  excludes `-allow-software-key`). The scheme is detected, P-256 first (the HSM-backed one). `Open` makes one
+  billed self-test signature.
 
 **The PIN is never in the reference.** `pin-value` is refused outright, since a PIN in an argument sits
 in the process list and the shell history. The PIN comes from `pin-source=file:/absolute/path`, read each

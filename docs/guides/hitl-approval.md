@@ -478,7 +478,7 @@ line, for a notification to carry.
 
 ### Keys in an HSM or a KMS
 
-An approver whose key is in an HSM, on a smart card or token, or in AWS KMS decides with `bide-hsm approve`,
+An approver whose key is in an HSM, on a smart card or token, in AWS KMS or in Google Cloud KMS decides with `bide-hsm approve`,
 a companion program that is `bide approve` with `-key` naming the key by reference (an RFC 7512 `pkcs11:`
 URI, or `awskms:<key ARN>`) instead of a file. It is a separate program because the PKCS#11 library needs
 cgo and the `bide` binary is pure Go; the display, the confirmation, the signature, the record and the
