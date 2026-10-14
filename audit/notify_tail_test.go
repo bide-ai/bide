@@ -279,3 +279,21 @@ func TestVerifyNotifications_ARecentForgedTailRecordIsTrustedUnderABound(t *test
 		t.Fatalf("within the bound it is trusted: %v", err)
 	}
 }
+
+// The bound is judged per event, on the tail records of that event: an old record of another event
+// does not make a recent one unattested, and an old record of its own does (the status, not only the
+// trail-level violation).
+func TestVerifyNotifications_TheBoundIsPerEvent(t *testing.T) {
+	pub, priv, _ := ed25519.GenerateKey(nil)
+	k1, k2 := agent.ApprovalKey("r1", "c1", 0), agent.ApprovalKey("r1", "c2", 0)
+	b := newTrail(t).add(observed(k1, agent.NotificationApprovalPending, 0, 1), claimed(k1, 1), observed(k2, agent.NotificationApprovalPending, 0, 1), claimed(k2, 1))
+	head := headFor(t, b, priv)
+	b.add(acked(k1, 2, 3), acked(k2, 55, 58)) // k1's ack is 57s old at Now, k2's 2s
+	rep, _ := tailVerify(t, b, head, pub, func(in *audit.NotifyVerifyInput) { in.MaxTailAge = 10 * time.Second })
+	if notifyStatusOf(t, rep, k1) != audit.NotifyStatusUnattested {
+		t.Fatalf("k1 rests on an old tail record: %+v", rep.Events)
+	}
+	if notifyStatusOf(t, rep, k2) != audit.NotifyStatusAcked {
+		t.Fatalf("k2 rests on a recent one: %+v", rep.Events)
+	}
+}
