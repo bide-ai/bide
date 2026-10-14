@@ -4,6 +4,7 @@ import (
 	"context"
 	"database/sql"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"os"
 	"strings"
@@ -95,7 +96,7 @@ func TestPostgres_ConcurrentOpensCreateTheSchemaOnce(t *testing.T) {
 }
 
 // Open creates bide_steps with a bytea data column, and never rewrites an existing bide_steps
-// table: altering a column takes the table's exclusive lock and changes what the nodes already
+// table (it refuses one whose data column is not bytea): altering a column takes the table's exclusive lock and changes what the nodes already
 // running on it write, so a node that opens the store during a rolling deploy would break them.
 // Skips without PG_DSN.
 func TestPostgres_OpenCreatesByteaAndNeverAltersTheJournal(t *testing.T) {
@@ -125,11 +126,14 @@ func TestPostgres_OpenCreatesByteaAndNeverAltersTheJournal(t *testing.T) {
 		PRIMARY KEY (run_id, name), UNIQUE (run_id, seq))`); err != nil {
 		t.Fatal(err)
 	}
-	s, err = Open(ctx, dsn)
-	if err != nil {
-		t.Fatal(err)
+	// The text column is refused (the journal keeps each entry's bytes verbatim, which text cannot
+	// hold), not converted.
+	if s, err = Open(ctx, dsn); err == nil {
+		s.Close()
+		t.Fatal("Open accepted a bide_steps.data column of type text")
+	} else if !errors.Is(err, agent.ErrConfig) {
+		t.Fatalf("Open of a text data column = %v, want ErrConfig", err)
 	}
-	s.Close()
 	if typ := dataType(admin, schema); typ != "text" {
 		t.Fatalf("Open rewrote an existing bide_steps.data column from text to %s", typ)
 	}
