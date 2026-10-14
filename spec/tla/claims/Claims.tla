@@ -388,7 +388,10 @@ QCount:
   else
     qt := [rec |-> TRUE, passed |-> Passed(CallOf[self], gp), pol |-> gp,
            signers |-> Signers(CallOf[self], gp), excl |-> NExcl(gp),
-           denials |-> NVotes(CallOf[self], gp, FALSE), seated |-> Seated(CallOf[self], gp, TRUE)];
+           denials |-> NVotes(CallOf[self], gp, FALSE),
+           \* Ghost for SeparationOfDuties, kept only where it is checked, so the other policies'
+           \* state spaces stay as they were.
+           seated |-> IF Policies[gp].sod THEN Seated(CallOf[self], gp, TRUE) ELSE {}];
   end if;
 QRecord:
   \* The terminal tally, journaled before the tool runs (a retry-safe step: first writer wins, and
@@ -1003,7 +1006,10 @@ QCount(self) == /\ pc[self] = "QCount"
                            /\ qt' = qt
                       ELSE /\ qt' = [qt EXCEPT ![self] = [rec |-> TRUE, passed |-> Passed(CallOf[self], gp[self]), pol |-> gp[self],
                                                           signers |-> Signers(CallOf[self], gp[self]), excl |-> NExcl(gp[self]),
-                                                          denials |-> NVotes(CallOf[self], gp[self], FALSE), seated |-> Seated(CallOf[self], gp[self], TRUE)]]
+                                                          denials |-> NVotes(CallOf[self], gp[self], FALSE),
+                                                         
+                                                         
+                                                          seated |-> IF Policies[gp[self]].sod THEN Seated(CallOf[self], gp[self], TRUE) ELSE {}]]
                            /\ pc' = [pc EXCEPT ![self] = "QRecord"]
                            /\ UNCHANGED << badPause, outcome >>
                 /\ UNCHANGED << marker, nsSet, heldSet, result, toolFail, 

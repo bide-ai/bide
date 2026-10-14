@@ -762,6 +762,10 @@ every drive that read the denial.
 | `ap-shared-key-check` | ci | F5's fix (#109): a policy whose approvers share a key is refused | 102 | <1 s |
 | `ap-keysets-check` | ci | key sets that meet without being equal ({k1, k4} and {k2, k4}) are refused | 2,406 | <1 s |
 | `ap-resolver-change` | ci | the resolver changes between the check and the count (a2 now accepts a1's key); two drivers, three decisions | 75,730 | 2 s |
+| `ap-sod` | ci | separation of duties: 2 of 3 excluding the requester `a1`, whose key `h1` holds; two drivers in two processes record the tally concurrently while three decisions arrive (`h1` as `a1`, `h2`, `h3`); a redeploy may drop the exclusion on one process | 167,403 | 24 s |
+| `ap-sod-fold` | ci | the requester `a3` is `a1` under the case rule (`FoldSame`); 1 of `a1`, `a2` excluding the requester; `h1` and `h2` sign | 191 | 1 s |
+| `ap-sod-infeasible` | ci | 3 of 3 excluding the requester `a1`, one of them: the gate refuses the policy | 942 | 1 s |
+| `ap-sod-no-requester` | ci | a policy that excludes the requester, on a run that records none: the gate refuses it | 102 | <1 s |
 | `deep-ap-m-same` | nightly | m-of-n, two drivers in one process, three decisions, a redeploy; 1 error reply | 5,252,508 | 6 min |
 
 Regressions: `regress/ap-denial-not-final` (#70: a recorded denial honoured only while the tool
@@ -773,7 +777,10 @@ two seats under two spellings of one id; `TallySound`, 14 states), `regress/ap-s
 fixed in #109: two approvers on one key with neither the check nor the count looking at keys;
 `TallySound`, 9 states), `regress/ap-set-equality` (key sets compared for equality, not overlap;
 `TallySound`, 9 states), `regress/ap-no-count-exclusion` (the count seating what the check passed
-after the resolver changed; `TallySound`, 10 states). Accepted: `limits/ap-resolver-change-denies`
+after the resolver changed; `TallySound`, 10 states). `regress/ap-sod-no-exclusion` (the count ignoring the requester exclusion: the requester's
+approval is seated; `SeparationOfDuties`, 131 states), `regress/ap-sod-exact-match` (the requester
+compared with approver ids exactly, so another spelling of the requester's id counts;
+`SeparationOfDuties`, 45 states). Accepted: `limits/ap-resolver-change-denies`
 (a change that makes two approvers share a key excludes both seats, and the gate can deny with
 no denial recorded; `NoDenyWithoutDenials`, 8 states).
 
