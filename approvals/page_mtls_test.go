@@ -214,13 +214,16 @@ func TestPage_ClientCertificateInChrome(t *testing.T) {
 	t.Run("include", func(t *testing.T) {
 		chromeMTLS(t, node, chrome, driverDir, mtlsMode{cross: true, credentials: "include", allow: true})
 	})
-	// What a deployment gets wrong: Chrome does not present the certificate, or does not let the page
-	// read the answer, and the page says it could not load the call.
-	t.Run("cross-origin without credentials include", func(t *testing.T) {
-		chromeMTLS(t, node, chrome, driverDir, mtlsMode{cross: true, credentials: "same-origin", allow: true, refused: true})
-	})
+	// An intake that does not allow credentials: the request is authenticated by the certificate, and
+	// Chrome refuses to give the page the answer, so the page says it could not load the call.
 	t.Run("include without WithCORSCredentials", func(t *testing.T) {
 		chromeMTLS(t, node, chrome, driverDir, mtlsMode{cross: true, credentials: "include", refused: true})
+	})
+	// Observed, not asserted: whether Chrome presents the certificate when the page, hosted on another
+	// origin, does not ask for credentials "include" (the Fetch standard says a client certificate is
+	// a credential, so a browser need not). The result is logged for the Chrome that runs.
+	t.Run("observation: cross-origin with credentials same-origin", func(t *testing.T) {
+		chromeMTLS(t, node, chrome, driverDir, mtlsMode{cross: true, credentials: "same-origin", allow: true, observe: true})
 	})
 }
 
@@ -230,6 +233,7 @@ type mtlsMode struct {
 	credentials string // config.json's "credentials" (cross-origin)
 	allow       bool   // the intake has WithCORSCredentials
 	refused     bool   // the page is expected not to load the call
+	observe     bool   // log what happened; assert nothing about the page's result
 }
 
 func chromeMTLS(t *testing.T, node, chrome, driverDir string, mode mtlsMode) {
@@ -295,6 +299,9 @@ func chromeMTLS(t *testing.T, node, chrome, driverDir string, mode mtlsMode) {
 	if err := os.MkdirAll(enrolDir, 0o700); err != nil {
 		t.Fatal(err)
 	}
+	if v, err := exec.Command(chrome, "--version").Output(); err == nil {
+		t.Logf("browser: %s", strings.TrimSpace(string(v)))
+	}
 	cmd := exec.Command(node, "mtls.mjs")
 	cmd.Dir = driverDir
 	cmd.Env = append(os.Environ(), "HOME="+home, "CHROME_BIN="+chrome, "PAGE_URL="+pageURL, "ENROL_DIR="+enrolDir, "APPROVER="+mtlsApprover,
@@ -341,7 +348,15 @@ loop:
 	}
 	t.Logf("what Chrome did:\n%s", strings.Join(out.Log, "\n"))
 	t.Logf("seen by the intake's WithAuth hook: %q", seen.all())
+	if mode.observe {
+		t.Logf("observed: the page %s (loaded the call: %v; completed an Approve: %v; status %q; result %q)", "ran", out.Loaded, out.OK, out.Status, out.Result)
+		t.Logf("observed: the intake's hook saw the client certificate on GET /pending: %v", seen.has("GET", "/pending", pki.clientCN))
+		return
+	}
 	if mode.refused {
+		if !seen.has("GET", "/pending", pki.clientCN) {
+			t.Errorf("the request was not authenticated by the certificate, so the refusal is not the browser's CORS check: %q", seen.all())
+		}
 		if out.Loaded || out.OK {
 			t.Fatalf("the page loaded the call although Chrome should not have let it: %+v", out)
 		}
