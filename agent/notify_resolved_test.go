@@ -3,6 +3,7 @@ package agent
 import (
 	"context"
 	"errors"
+	"sync"
 	"testing"
 	"time"
 )
@@ -396,7 +397,8 @@ func errorsAsHalt(err error) bool {
 func TestResolved_ARecoveryPassScansTheRunsTrail(t *testing.T) {
 	ctx := context.Background()
 	j := memJournal()
-	trail, sink := NewMemNotifyTrail(), &fakeSink{}
+	loads := &loadCounter{NotifyTrail: NewMemNotifyTrail(), n: map[string]int{}}
+	trail, sink := loads, &fakeSink{}
 	e := testEngine(t, j, sink, trail, resolvedClock(), "p1")
 	if res, err := e.round(ctx, haltEvent()); err != nil || !res.done {
 		t.Fatal(res, err)
@@ -406,11 +408,55 @@ func TestResolved_ARecoveryPassScansTheRunsTrail(t *testing.T) {
 	if err := e.flush(ctx); err != nil || len(resolvedCalls(sink)) != 0 {
 		t.Fatalf("a sub-run's pass scanned: %v %d", err, len(resolvedCalls(sink)))
 	}
+	// The one read is the recovery episode's (recoveryOK); a scan would be a second.
+	if n := loads.count("notify:r>sub"); n != 1 {
+		t.Fatalf("a sub-run's pass read its own trail %d times, want 1 (the episode's): the root run's trail holds the events", n)
+	}
 	e.afterRecover(ctx, "r", true, true, nil)
 	if err := e.flush(ctx); err != nil {
 		t.Fatal(err)
 	}
 	if got := resolvedCalls(sink); len(got) != 1 {
+		t.Fatalf("all-clears = %+v", got)
+	}
+}
+
+// loadCounter counts the loads of each trail.
+type loadCounter struct {
+	NotifyTrail
+	mu sync.Mutex
+	n  map[string]int
+}
+
+func (l *loadCounter) Load(ctx context.Context, trail string) ([]NotifyRecord, error) {
+	l.mu.Lock()
+	l.n[trail]++
+	l.mu.Unlock()
+	return l.NotifyTrail.Load(ctx, trail)
+}
+
+func (l *loadCounter) count(trail string) int { l.mu.Lock(); defer l.mu.Unlock(); return l.n[trail] }
+
+// A process that cleared an event after a delivery was attempted and died before it queued the
+// all-clear: the next scan finds the cleared event with its claim and owes the receiver.
+func TestResolved_AClearedEventWhoseAllClearWasNeverQueuedIsFoundByTheScan(t *testing.T) {
+	ctx := context.Background()
+	clk := resolvedClock()
+	trail, sink := NewMemNotifyTrail(), &fakeSink{}
+	ev := haltEvent()
+	at := clk.now()
+	for i, r := range []NotifyRecord{
+		{Kind: NotifyObserved, Key: ev.key, RunID: "r", At: at, EventKind: string(ev.kind), EventAt: at, DeadlineAt: at.Add(time.Minute)},
+		{Kind: NotifyClaimed, Key: ev.key, RunID: "r", At: at, Holder: "gone", Until: at.Add(time.Minute)},
+		{Kind: NotifyCleared, Key: ev.key, RunID: "r", At: at.Add(time.Second), Reason: "resolved"},
+	} {
+		if err := trail.Append(ctx, "notify:r", i, r); err != nil {
+			t.Fatal(err)
+		}
+	}
+	scanAndFlush(t, testEngine(t, memJournal(), sink, trail, clk, "p1"), "r")
+	got := resolvedCalls(sink)
+	if len(got) != 1 || got[0].Reason != "resolved" || !got[0].EventAt.Equal(at.Add(time.Second)) {
 		t.Fatalf("all-clears = %+v", got)
 	}
 }
