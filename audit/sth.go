@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"encoding/binary"
+	"errors"
 	"fmt"
 	"strings"
 
@@ -147,6 +148,11 @@ func NewTreeHead(ctx context.Context, store *agent.Journal, runID string, timest
 	return journalHead(runID, recs, timestamp)
 }
 
+// ErrRootMismatch is wrapped by the error of a proof or check that finds a signed tree head's root
+// is not the root of the run's journal at the head's size: the journal was changed after the head
+// was signed, or the head is for another history.
+var ErrRootMismatch = errors.New("audit: tree head root does not match")
+
 // journalHead is the journal TreeHead over recs (the whole slice) for runID.
 func journalHead(runID string, recs []agent.Record, timestamp int64) (TreeHead, error) {
 	leaves, err := journalLeafHashes(recs)
@@ -173,7 +179,7 @@ func journalPrefix(runID string, recs []agent.Record, th TreeHead) ([]agent.Reco
 		return nil, err
 	}
 	if !bytes.Equal(th.Root, hashRoot(leaves)) {
-		return nil, fmt.Errorf("audit: tree head root does not match run %s at size %d (wrong head or history diverged)", runID, th.Size)
+		return nil, fmt.Errorf("%w run %s at size %d (wrong head or history diverged)", ErrRootMismatch, runID, th.Size)
 	}
 	return recs[:th.Size], nil
 }

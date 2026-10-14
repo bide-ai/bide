@@ -508,12 +508,49 @@ func tamper(ctx context.Context, dir string, logPub ed25519.PublicKey, res *resu
 	if len(bad.proof.Problems) == 0 {
 		return errors.New("the tampered journal failed verification without a reason")
 	}
-	p.more(p.st.Cross() + p.red(p.bold("verify failed")))
+	// The viewer's proof carries its problems as text, so the typed error comes from the same call
+	// it makes: the inclusion proof of the last record under the anchored head.
+	perr := proveAnchored(ctx, dir, copyPath)
+	res.tamperErr = perr
+	p.more(p.st.Cross() + p.red(p.bold("verify failed")+verdictReason(perr)))
 	pause(500 * time.Millisecond)
-	why := strings.TrimPrefix(bad.proof.Problems[0], "the signed head does not commit to this journal: ")
+	why := bad.proof.Problems[0]
+	if perr != nil {
+		why = perr.Error()
+	}
+	why = strings.TrimPrefix(why, "the signed head does not commit to this journal: ")
 	why, _, _ = strings.Cut(strings.TrimPrefix(why, "audit: "), " (")
-	p.more(p.red(shorten(why, 60)))
+	p.more(p.dim(shorten(why, 60)))
 	return nil
+}
+
+// proveAnchored is the check at the heart of the viewer's proof: the inclusion proof of the last
+// record the anchored head covers, built from the journal at journalPath. It returns its error.
+func proveAnchored(ctx context.Context, dir, journalPath string) error {
+	sth, err := fileAnchor(filepath.Join(dir, anchorFile)).latest()
+	if err != nil {
+		return err
+	}
+	s, err := sqlite.OpenReadOnly(journalPath)
+	if err != nil {
+		return err
+	}
+	defer s.Close()
+	j, err := agent.NewJournal(s)
+	if err != nil {
+		return err
+	}
+	_, err = audit.ProveRecord(ctx, j, runID, sth.Size-1, sth)
+	return err
+}
+
+// verdictReason is a plain-language reason for a failed verification, chosen by the error's type:
+// empty (just "verify failed") for an error it has no wording for.
+func verdictReason(err error) string {
+	if errors.Is(err, audit.ErrRootMismatch) {
+		return ": journal changed since it was signed"
+	}
+	return ""
 }
 
 // thousands formats n with a comma between thousands.

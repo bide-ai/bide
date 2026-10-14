@@ -220,6 +220,7 @@ type result struct {
 	notified     *notify.Payload // the halt notification the receiver verified
 	tampered     *runview.Proof  // the evidence checked against the tampered copy of the journal
 	tamperedSeq  int             // the record the copy changes
+	tamperErr    error           // why the anchored head does not prove the copy
 }
 
 // demo runs the whole story in dir and returns the viewer over the finished run. It fails unless
@@ -277,10 +278,6 @@ func demo(ctx context.Context, dir string, cfg config, p *printer, fast bool) (*
 	if err != nil {
 		return nil, err
 	}
-	if err := rec.snapshot(dir, "empty"); err != nil {
-		closeJ()
-		return nil, err
-	}
 	_, err = newAgent(j, dir, cfg, nil).Run(ctx, runID, agent.UserText(input))
 	pend, ok := errors.AsType[*agent.ApprovalPending](err)
 	if !ok {
@@ -314,9 +311,6 @@ func demo(ctx context.Context, dir string, cfg config, p *printer, fast bool) (*
 	// 2. The agent runs in a child process; the parent kills it after the charge, before the
 	// charge's result is journaled.
 	if err := crash(ctx, dir, p, pause); err != nil {
-		return nil, err
-	}
-	if err := rec.snapshot(dir, "crashed"); err != nil {
 		return nil, err
 	}
 	pause(1000 * time.Millisecond)

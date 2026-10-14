@@ -5,6 +5,8 @@ import (
 	"context"
 	"database/sql"
 	"encoding/pem"
+	"errors"
+	"fmt"
 	"net/http/httptest"
 	"os"
 	"path/filepath"
@@ -13,6 +15,7 @@ import (
 	"time"
 
 	"github.com/bide-ai/bide/agent"
+	"github.com/bide-ai/bide/audit"
 	"github.com/bide-ai/bide/internal/term"
 	"github.com/bide-ai/bide/notify"
 	"github.com/bide-ai/bide/store/sqlite"
@@ -75,6 +78,9 @@ func TestDemo(t *testing.T) {
 	if res.tampered == nil || res.tampered.OK || len(res.tampered.Problems) == 0 {
 		t.Fatalf("the tampered journal verified: %+v", res.tampered)
 	}
+	if !errors.Is(res.tamperErr, audit.ErrRootMismatch) {
+		t.Fatalf("the tampered journal failed with %v, want audit.ErrRootMismatch", res.tamperErr)
+	}
 	if res.tamperedSeq != 3 {
 		t.Fatalf("tampered record %d, want 3 (the charge request)", res.tamperedSeq)
 	}
@@ -86,7 +92,7 @@ func TestDemo(t *testing.T) {
 	}
 
 	text := out.String()
-	for _, want := range []string{"Without bide  restart retries the charge", "provider charges: 2  double charge", "ops notified  signed webhook (outcome_unknown)", "6 Tamper  change record 3: $120 \u2192 $1,200", "verify failed", "tree head root does not match", "process killed mid-charge", "outcome unknown: not charging again", "provider charges: 1", "charge ch_1 found", "run completed", "charged exactly once."} {
+	for _, want := range []string{"Without bide  restart retries the charge", "provider charges: 2  double charge", "ops notified  signed webhook (outcome_unknown)", "6 Tamper  change record 3: $120 \u2192 $1,200", "verify failed: journal changed since it was signed", "tree head root does not match", "process killed mid-charge", "outcome unknown: not charging again", "provider charges: 1", "charge ch_1 found", "run completed", "charged exactly once."} {
 		if !strings.Contains(text, want) {
 			t.Errorf("the narration lacks %q:\n%s", want, text)
 		}
@@ -123,6 +129,22 @@ func journalArgs(t *testing.T, path string) string {
 		t.Fatal(err)
 	}
 	return data
+}
+
+// The plain-language line follows the error's type, not its text: a wrapped sentinel gets its
+// wording, and any other error gets none.
+func TestVerdictReasonFollowsTheErrorType(t *testing.T) {
+	wrapped := fmt.Errorf("the signed head does not commit: %w", fmt.Errorf("%w run r at size 3", audit.ErrRootMismatch))
+	if got := verdictReason(wrapped); !strings.Contains(got, "changed since it was signed") {
+		t.Errorf("verdictReason(root mismatch) = %q", got)
+	}
+	// The same words in another error's text do not borrow the wording.
+	lookalike := errors.New("audit: tree head root does not match run r at size 3")
+	for _, err := range []error{lookalike, errors.New("boom"), nil} {
+		if got := verdictReason(err); got != "" {
+			t.Errorf("verdictReason(%v) = %q, want none", err, got)
+		}
+	}
 }
 
 // The order of the narration is the story's: the run without bide first, the halt before its
@@ -196,12 +218,12 @@ func TestDemoRecords(t *testing.T) {
 	for _, l := range strings.Split(strings.TrimSpace(string(b)), "\n") {
 		names = append(names, strings.Fields(l)[0])
 	}
-	want := []string{"empty", "pending", "approved", "crashed", "halted", "resolved", "verified", "tampered", "final"}
+	want := []string{"pending", "approved", "halted", "resolved", "verified", "tampered", "final"}
 	if strings.Join(names, " ") != strings.Join(want, " ") {
 		t.Fatalf("marks %v, want %v", names, want)
 	}
 	counts := map[string]int{}
-	for _, name := range want[:6] {
+	for _, name := range want[:4] {
 		s, err := sqlite.OpenReadOnly(filepath.Join(rec, name+".db"))
 		if err != nil {
 			t.Fatalf("%s.db: %v", name, err)
@@ -219,8 +241,8 @@ func TestDemoRecords(t *testing.T) {
 	}
 	// Each state holds more of the story than the one before it.
 	prev := -1
-	for _, name := range want[:6] {
-		if counts[name] <= prev && name != "halted" {
+	for _, name := range want[:4] {
+		if counts[name] <= prev {
 			t.Errorf("%s.db holds %d records, not more than the state before (%d): %v", name, counts[name], prev, counts)
 		}
 		prev = counts[name]
@@ -270,7 +292,7 @@ func TestDemoColor(t *testing.T) {
 		"\x1b[31m2\x1b[0m \x1b[1m\x1b[31mCrash  \x1b[0m\x1b[0m",
 		"\x1b[33m\u2192 ops notified\x1b[0m  signed webhook (outcome_unknown)",
 		"\x1b[31m6\x1b[0m \x1b[1m\x1b[31mTamper \x1b[0m\x1b[0m",
-		"\x1b[31m\u2717\x1b[0m \x1b[31m\x1b[1mverify failed\x1b[0m\x1b[0m",
+		"\x1b[31m\u2717\x1b[0m \x1b[31m\x1b[1mverify failed\x1b[0m: journal changed since it was signed\x1b[0m",
 		"\x1b[1m\x1b[33mRestart\x1b[0m\x1b[0m",
 		"\x1b[1m\x1b[34mResolve\x1b[0m\x1b[0m",
 		"\x1b[1m\x1b[32mProve  \x1b[0m\x1b[0m",
