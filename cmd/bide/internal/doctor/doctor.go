@@ -21,6 +21,7 @@ import (
 	"time"
 	"unicode/utf8"
 
+	"github.com/bide-ai/bide/internal/approveline"
 	"github.com/bide-ai/bide/internal/term"
 	"github.com/bide-ai/bide/store/postgres"
 	"github.com/bide-ai/bide/store/sqlite"
@@ -107,6 +108,11 @@ terminal the output is colored; -color=never, or NO_COLOR set to any value, turn
 	}
 	if fs.NArg() > 0 {
 		fmt.Fprintf(stderr, "%sbide doctor: unexpected argument %q\n", term.For(stderr, *color).ErrorPrefix(), fs.Arg(0))
+		fs.Usage()
+		return 2
+	}
+	if *pgEnv != "" && !approveline.ValidEnvName(*pgEnv) {
+		fmt.Fprintf(stderr, "%sbide doctor: %s\n", term.For(stderr, *color).ErrorPrefix(), approveline.NotAnEnvName)
 		fs.Usage()
 		return 2
 	}

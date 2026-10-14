@@ -11,6 +11,7 @@ package approveline
 
 import (
 	"errors"
+	"regexp"
 	"strings"
 	"unicode"
 	"unicode/utf8"
@@ -123,3 +124,15 @@ func quote(s string) string {
 	}
 	return "'" + strings.ReplaceAll(s, "'", `'\''`) + "'"
 }
+
+var envName = regexp.MustCompile(`^[A-Za-z_][A-Za-z0-9_]*$`)
+
+// ValidEnvName reports whether s can be the name of an environment variable: letters, digits and
+// underscores, not starting with a digit. A command that takes -postgres-env checks it before
+// anything else, so that a DSN given by mistake (it holds a password) is refused without being
+// echoed in an error.
+func ValidEnvName(s string) bool { return envName.MatchString(s) }
+
+// NotAnEnvName is the usage error for a -postgres-env value that is not a variable name. It never
+// holds the value.
+const NotAnEnvName = "-postgres-env takes the name of an environment variable, not a DSN"

@@ -71,6 +71,7 @@ export default defineConfig({
           { text: 'Plan flows', link: '/guides/plan-flows' },
           { text: 'Durable steps', link: '/guides/durable-steps' },
           { text: 'Reliability', link: '/guides/reliability' },
+          { text: 'Postgres store', link: '/guides/postgres' },
           { text: 'Signals and ambient', link: '/guides/signals' },
           { text: 'Models', link: '/guides/models' },
           { text: 'MCP', link: '/guides/mcp' },

@@ -8,7 +8,9 @@
 // column is bytea and whose primary key is (run_id, seq); bide_schema_version the schema version; and the function
 // bide_next_seq_v1 gives an insert its position. Open and New create the tables and the function
 // if they do not exist and refuse a database whose schema version is newer than this version
-// knows. They never alter an existing table or replace a function, so they refuse a table that
+// knows. With WithoutMigration they create nothing, for a role with no CREATE on the schema, and
+// refuse a schema that is missing (ErrSchemaMissing) or at another version (ErrSchemaVersion); the
+// owner runs Migrate (bide migrate). They never alter an existing table or replace a function, so they refuse a table that
 // lacks a uniqueness the store's statements depend on (unique (run_id, seq) and (run_id, name) on
 // bide_steps, (run_id, seq) on bide_events, and run_id on bide_leases) and a next_seq function with another definition. Run IDs
 // are compared and ordered by their bytes (collation "C"), so a Lister's order does not depend on
@@ -71,7 +73,7 @@
 // given and the search path plays no part. Without it, every Open discovers the schema: the first
 // schema on the search path holding a relation named like the steps table, or the first schema on
 // the path (current_schema()), where the migration creates the tables, when none does; it refuses
-// a first relation of that name that is not an ordinary or partitioned table, and logs a warning.
+// a first relation of that name that is not an ordinary table, with no partitions or inheritance, and logs a warning.
 // Discovery runs again at every Open, so a role that can create a schema earlier on the path can
 // redirect a restarting node to a store of its own: any role with CREATE on the database can
 // create the "$user" schema the default search path puts first. Discovery is safe only when every
@@ -384,6 +386,9 @@ type Option interface{ apply(*config) error }
 type config struct {
 	prefix string
 	schema string // set by WithSchema; empty: discover it (see storeSchema)
+
+	noMigrate bool // set by WithoutMigration: verify the schema, never create it
+	dryRun    bool // set by WithDryRun: Migrate rolls back (see MigrateDB)
 }
 
 type optionFunc func(*config) error
@@ -454,15 +459,12 @@ func newConfig(opts []Option) (config, error) {
 }
 
 // Open connects to Postgres via a pgx DSN (e.g. "postgres://user:pass@host:5432/db") and ensures
-// the schema exists. Close closes the connection pool.
+// the schema exists, creating it when it does not; with WithoutMigration it only verifies it, for a
+// role with no DDL rights (see Migrate). Close closes the connection pool.
 func Open(ctx context.Context, dsn string, opts ...Option) (*Store, error) {
-	db, err := sql.Open("pgx", dsn)
+	db, err := openPool(ctx, dsn, "Open")
 	if err != nil {
-		return nil, fmt.Errorf("postgres: Open: cannot use the DSN: %w; it should look like postgres://user:pass@host:5432/db: %w", err, agent.ErrConfig)
-	}
-	if err := db.PingContext(ctx); err != nil {
-		db.Close()
-		return nil, fmt.Errorf("postgres: Open: cannot reach the database: %w; check the DSN (host, port, user, password, database), that the server is running, and sslmode: %w", err, agent.ErrStorage)
+		return nil, err
 	}
 	s, err := New(ctx, db, opts...)
 	if err != nil {
@@ -473,21 +475,73 @@ func Open(ctx context.Context, dsn string, opts ...Option) (*Store, error) {
 	return s, nil
 }
 
+// openPool opens a pool on dsn and pings it; who names the caller in the errors.
+func openPool(ctx context.Context, dsn, who string) (*sql.DB, error) {
+	db, err := sql.Open("pgx", dsn)
+	if err != nil {
+		return nil, fmt.Errorf("postgres: %s: cannot use the DSN: %w; it should look like postgres://user:pass@host:5432/db: %w", who, err, agent.ErrConfig)
+	}
+	if err := db.PingContext(ctx); err != nil {
+		db.Close()
+		return nil, fmt.Errorf("postgres: %s: cannot reach the database: %w; check the DSN (host, port, user, password, database), that the server is running, and sslmode: %w", who, err, agent.ErrStorage)
+	}
+	return db, nil
+}
+
 // New returns a Store over db, which the caller opened (with the pgx driver) and closes, and
-// ensures the schema exists.
+// ensures the schema exists, or with WithoutMigration verifies it (see Open).
 func New(ctx context.Context, db *sql.DB, opts ...Option) (*Store, error) {
 	return newStore(ctx, db, false, opts)
 }
 
 // newStore is New, and OpenReadOnly when readOnly is set: a read-only store does not migrate, it
-// reads the schema version and checks the tables as they are.
+// reads the schema version and checks the tables as they are. A store made with WithoutMigration
+// does not migrate either, and checks everything the migration would have created (see verify).
 func newStore(ctx context.Context, db *sql.DB, readOnly bool, opts []Option) (*Store, error) {
-	if db == nil {
-		return nil, fmt.Errorf("postgres: New: nil db: %w", agent.ErrConfig)
-	}
 	cfg, err := newConfig(opts)
 	if err != nil {
 		return nil, err
+	}
+	if cfg.dryRun {
+		return nil, fmt.Errorf("postgres: WithDryRun is for Migrate, not for opening a store: %w", agent.ErrConfig)
+	}
+	s, err := prepare(ctx, db, cfg)
+	if err != nil {
+		return nil, err
+	}
+	switch {
+	case readOnly:
+		if err := s.checkVersion(ctx); err != nil {
+			return nil, err
+		}
+	case cfg.noMigrate:
+		if err := s.verify(ctx); err != nil {
+			return nil, err
+		}
+	default:
+		if _, err := s.migrate(ctx, false); err != nil {
+			return nil, err
+		}
+	}
+	if err := s.checkSchema(ctx); err != nil {
+		return nil, err
+	}
+	if !readOnly { // a journal from before the event trail has no events table, and a read-only open does not create one
+		if err := s.checkEvents(ctx); err != nil {
+			return nil, err
+		}
+		if err := s.checkIndexes(ctx); err != nil {
+			return nil, err
+		}
+	}
+	return s, nil
+}
+
+// prepare resolves the store's schema and builds its statements, touching nothing: it is the part
+// of opening a store that Open, OpenReadOnly and Migrate share.
+func prepare(ctx context.Context, db *sql.DB, cfg config) (*Store, error) {
+	if db == nil {
+		return nil, fmt.Errorf("postgres: New: nil db: %w", agent.ErrConfig)
 	}
 	schema := cfg.schema
 	if schema != "" {
@@ -496,9 +550,13 @@ func newStore(ctx context.Context, db *sql.DB, readOnly bool, opts []Option) (*S
 			return nil, fmt.Errorf("postgres: look up schema %q: %w (%w)", schema, err, agent.ErrStorage)
 		}
 		if !exists {
+			if cfg.noMigrate {
+				return nil, fmt.Errorf("postgres: the pinned schema %q does not exist; the database owner creates it and runs Migrate (bide migrate): %w (%w)", schema, ErrSchemaMissing, agent.ErrConfig)
+			}
 			return nil, fmt.Errorf("postgres: the pinned schema %q does not exist; create it, Open does not: %w", schema, agent.ErrConfig)
 		}
 	}
+	var err error
 	if schema == "" {
 		if schema, err = storeSchema(ctx, db, cfg.prefix+"steps"); err != nil {
 			return nil, err
@@ -510,34 +568,14 @@ func newStore(ctx context.Context, db *sql.DB, readOnly bool, opts []Option) (*S
 	if err != nil {
 		return nil, err
 	}
-	s := &Store{db: db, t: t, schema: schema}
-	if readOnly {
-		var v int
-		if err := retryScan(ctx, func() error { return db.QueryRowContext(ctx, string(t.readVersion)).Scan(&v) }); err != nil {
-			return nil, fmt.Errorf("postgres: read schema version (is it a bide journal?): %w (%w)", err, agent.ErrStorage)
-		}
-		if v > schemaVersion {
-			return nil, fmt.Errorf("postgres: the database's schema version is %d, newer than this version's %d: %w", v, schemaVersion, agent.ErrConfig)
-		}
-	} else if err := s.migrate(ctx); err != nil {
-		return nil, err
-	}
-	if err := s.checkSchema(ctx); err != nil {
-		return nil, err
-	}
-	if !readOnly { // a journal from before the event trail has no events table, and a read-only open does not create one
-		if err := s.checkEvents(ctx); err != nil {
-			return nil, err
-		}
-	}
-	return s, nil
+	return &Store{db: db, t: t, schema: schema}, nil
 }
 
 // storeSchema returns the schema the store's tables are in, which Open records and every statement
 // names from then on: the first schema on the search path holding a relation named steps (the
 // steps table, as an unqualified name would resolve), or the first schema on the path, where the
 // migration creates the tables, when none does. It refuses, with ErrConfig, a first relation of
-// that name that is not an ordinary or partitioned table (a view, a foreign table, a sequence):
+// that name that is not an ordinary table, with no partitions or inheritance (a view, a foreign table, a sequence):
 // the store would read and write through it while checking another table.
 func storeSchema(ctx context.Context, db *sql.DB, steps string) (string, error) {
 	var first, current sql.NullString
@@ -569,14 +607,14 @@ func retryScan(ctx context.Context, fn func() error) error {
 }
 
 // firstRelation returns, for the relation name $1: the schema of the first relation of that name
-// on the search path (NULL when there is none); whether that relation is an ordinary or
-// partitioned table; and current_schema(), where the migration creates the tables when there is
+// on the search path (NULL when there is none); whether that relation is an ordinary
+// table; and current_schema(), where the migration creates the tables when there is
 // none.
 const firstRelation = `SELECT
 	(SELECT n.nspname FROM pg_catalog.pg_class AS c JOIN pg_catalog.pg_namespace AS n ON n.oid OPERATOR(pg_catalog.=) c.relnamespace
 		WHERE c.relname OPERATOR(pg_catalog.=) $1 AND n.nspname OPERATOR(pg_catalog.=) ANY (pg_catalog.current_schemas(false))
 		ORDER BY pg_catalog.array_position(pg_catalog.current_schemas(false), n.nspname) LIMIT 1),
-	(SELECT c.relkind OPERATOR(pg_catalog.=) 'r' OR c.relkind OPERATOR(pg_catalog.=) 'p'
+	(SELECT c.relkind OPERATOR(pg_catalog.=) 'r'
 		FROM pg_catalog.pg_class AS c JOIN pg_catalog.pg_namespace AS n ON n.oid OPERATOR(pg_catalog.=) c.relnamespace
 		WHERE c.relname OPERATOR(pg_catalog.=) $1 AND n.nspname OPERATOR(pg_catalog.=) ANY (pg_catalog.current_schemas(false))
 		ORDER BY pg_catalog.array_position(pg_catalog.current_schemas(false), n.nspname) LIMIT 1),
@@ -590,19 +628,30 @@ const migrateLock = 0x62696465
 // an existing table: altering a table other nodes are running on would take its exclusive lock and
 // change what they write. So Open then checks that an existing table has each uniqueness the
 // store's single statements depend on, and the next_seq function its definition (see
-// checkSchema), and refuses one that does not.
-func (s *Store) migrate(ctx context.Context) error {
+// checkSchema), and refuses one that does not. It reports the schema version it found and left
+// and the statements it ran. With dryRun it runs them all and rolls the transaction back, which
+// shows what the migration would do, and whether the role may do it, while changing nothing.
+func (s *Store) migrate(ctx context.Context, dryRun bool) (MigrationResult, error) {
+	res := MigrationResult{Schema: s.schema, DryRun: dryRun}
 	tx, err := s.db.BeginTx(ctx, txOptions)
 	if err != nil {
-		return fmt.Errorf("postgres: migrate: %w (%w)", err, agent.ErrStorage)
+		return res, fmt.Errorf("postgres: migrate: %w (%w)", err, agent.ErrStorage)
 	}
 	defer tx.Rollback()
+	// run executes one statement of the migration and records it.
+	run := func(failure, stmt string) error {
+		res.Statements = append(res.Statements, stmt)
+		if _, err := tx.ExecContext(ctx, stmt); err != nil {
+			return fmt.Errorf("postgres: %s: %w (%w)", failure, err, agent.ErrStorage)
+		}
+		return nil
+	}
 	// Set before the lock is taken, so the migration never holds it idle without the bound.
 	if _, err := tx.ExecContext(ctx, fmt.Sprintf(`SET LOCAL idle_in_transaction_session_timeout = %d`, migrateIdleTimeout.Milliseconds())); err != nil {
-		return fmt.Errorf("postgres: migrate: %w (%w)", err, agent.ErrStorage)
+		return res, fmt.Errorf("postgres: migrate: %w (%w)", err, agent.ErrStorage)
 	}
 	if _, err := tx.ExecContext(ctx, `SELECT pg_catalog.pg_advisory_xact_lock($1::pg_catalog.int8)`, migrateLock); err != nil {
-		return fmt.Errorf("postgres: migrate: %w (%w)", err, agent.ErrStorage)
+		return res, fmt.Errorf("postgres: migrate: %w (%w)", err, agent.ErrStorage)
 	}
 	// The next_seq function, created if missing and never replaced (see nextSeqVersion); the first
 	// statement after the lock, so no statement between could refresh the session's catalog cache
@@ -612,19 +661,44 @@ func (s *Store) migrate(ctx context.Context) error {
 	// refresh: it sees a function another node created while this one waited for the lock.
 	var haveNextSeq bool
 	if err := tx.QueryRowContext(ctx, nextSeqPresent, s.t.nextSeq, s.schema).Scan(&haveNextSeq); err != nil {
-		return fmt.Errorf("postgres: look up %s: %w (%w)", s.t.nextSeq, err, agent.ErrStorage)
+		return res, fmt.Errorf("postgres: look up %s: %w (%w)", s.t.nextSeq, err, agent.ErrStorage)
+	}
+	// The version already recorded, 0 when the schema has none yet. A newer one is refused before
+	// anything is created.
+	var haveVersion sql.NullBool
+	if err := tx.QueryRowContext(ctx, relationIsTable, s.t.version, s.schema).Scan(&haveVersion); err != nil && !errors.Is(err, sql.ErrNoRows) {
+		return res, fmt.Errorf("postgres: look up %s: %w (%w)", s.t.version, err, agent.ErrStorage)
+	}
+	if haveVersion.Bool {
+		if err := tx.QueryRowContext(ctx, versionQuery(s.t.qVersion)).Scan(&res.Before); err != nil && !errors.Is(err, sql.ErrNoRows) {
+			return res, fmt.Errorf("postgres: read schema version: %w (%w)", err, agent.ErrStorage)
+		}
+		if res.Before > schemaVersion {
+			return res, errSchemaNewer(res.Before)
+		}
+	}
+	// What the migration will create, for the result: the tables that are missing (a v0.9.0
+	// journal has no events table) and, below, the function and the indexes.
+	for _, table := range []string{s.t.steps, s.t.leases, s.t.version, s.t.events} {
+		var isTable sql.NullBool
+		if err := tx.QueryRowContext(ctx, relationIsTable, table, s.schema).Scan(&isTable); errors.Is(err, sql.ErrNoRows) {
+			res.Created = append(res.Created, "table "+quoteIdent(s.schema)+"."+table)
+		} else if err != nil {
+			return res, fmt.Errorf("postgres: look up %s: %w (%w)", table, err, agent.ErrStorage)
+		}
 	}
 	if !haveNextSeq {
+		res.Created = append(res.Created, "function "+quoteIdent(s.schema)+"."+s.t.nextSeq+"(text)")
 		body := s.t.nextSeqBody(s.schema)
 		if strings.Contains(body, "$bide$") {
-			return fmt.Errorf("postgres: schema name %q holds $bide$: %w", s.schema, agent.ErrConfig)
+			return res, fmt.Errorf("postgres: schema name %q holds $bide$: %w", s.schema, agent.ErrConfig)
 		}
-		if _, err := tx.ExecContext(ctx, `CREATE FUNCTION `+s.t.qNextSeq+
+		if err := run("create "+s.t.nextSeq, `CREATE FUNCTION `+s.t.qNextSeq+
 			`(r pg_catalog.text) RETURNS pg_catalog.int8 LANGUAGE plpgsql VOLATILE SET search_path = pg_catalog, pg_temp AS $bide$`+body+`$bide$`); err != nil {
-			return fmt.Errorf("postgres: create %s: %w (%w)", s.t.nextSeq, err, agent.ErrStorage)
+			return res, err
 		}
 	}
-	if _, err := tx.ExecContext(ctx, fmt.Sprintf(`
+	if err := run("create tables", fmt.Sprintf(`
 		CREATE TABLE IF NOT EXISTS %[1]s (
 			run_id pg_catalog.text COLLATE pg_catalog."C" NOT NULL,
 			seq    pg_catalog.int8  NOT NULL,
@@ -650,7 +724,7 @@ func (s *Store) migrate(ctx context.Context) error {
 			PRIMARY KEY (run_id, seq)
 		);`,
 		s.t.qSteps, s.t.qLeases, s.t.qVersion, schemaVersion, s.t.qEvents)); err != nil {
-		return fmt.Errorf("postgres: create tables: %w (%w)", err, agent.ErrStorage)
+		return res, err
 	}
 	// The lapsed listing's indexes (see runsPage): expiry finds the few lapsed leases among many
 	// live ones, and run_id under "C", the listing's order, pages through many lapsed leases
@@ -658,32 +732,48 @@ func (s *Store) migrate(ctx context.Context) error {
 	// holds the leases table's SHARE lock (lease writes wait) for as long as it takes to index a
 	// table that holds only live and lapsed leases. Creating an index takes the table's owner, so
 	// a store role that does not own the tables needs the owner to open the store once.
-	for _, ix := range []struct{ name, cols string }{
-		{s.t.leases + "_expiry", `(expiry)`},
-		{s.t.leases + "_run_c", `((run_id COLLATE pg_catalog."C"))`},
-	} {
+	for _, ix := range leaseIndexes(s.t) {
 		var have bool
 		if err := tx.QueryRowContext(ctx, indexPresent, ix.name, s.schema).Scan(&have); err != nil {
-			return fmt.Errorf("postgres: look up index %s: %w (%w)", ix.name, err, agent.ErrStorage)
+			return res, fmt.Errorf("postgres: look up index %s: %w (%w)", ix.name, err, agent.ErrStorage)
 		}
 		if have {
 			continue
 		}
-		if _, err := tx.ExecContext(ctx, `CREATE INDEX IF NOT EXISTS `+quoteIdent(ix.name)+` ON `+s.t.qLeases+` `+ix.cols); err != nil {
-			return fmt.Errorf("postgres: create index %s on %s (the tables' owner must open the store once to create it): %w (%w)", ix.name, s.t.leases, err, agent.ErrStorage)
+		res.Created = append(res.Created, "index "+quoteIdent(s.schema)+"."+ix.name)
+		if err := run("create index "+ix.name+" on "+s.t.leases+" (the tables' owner must run the migration)",
+			`CREATE INDEX IF NOT EXISTS `+quoteIdent(ix.name)+` ON `+s.t.qLeases+` `+ix.cols); err != nil {
+			return res, err
 		}
 	}
-	var v int
-	if err := tx.QueryRowContext(ctx, versionQuery(s.t.qVersion)).Scan(&v); err != nil {
-		return fmt.Errorf("postgres: read schema version: %w (%w)", err, agent.ErrStorage)
+	if err := tx.QueryRowContext(ctx, versionQuery(s.t.qVersion)).Scan(&res.After); err != nil {
+		return res, fmt.Errorf("postgres: read schema version: %w (%w)", err, agent.ErrStorage)
 	}
-	if v > schemaVersion {
-		return fmt.Errorf("postgres: the database's schema version is %d, newer than this version's %d: %w", v, schemaVersion, agent.ErrConfig)
+	if res.After > schemaVersion {
+		return res, errSchemaNewer(res.After)
+	}
+	if res.After != schemaVersion { // the migration has no step from another version
+		return res, fmt.Errorf("postgres: the database's schema version is %d and this version has no migration from it to %d: %w (%w)",
+			res.After, schemaVersion, ErrSchemaVersion, agent.ErrConfig)
+	}
+	if dryRun {
+		return res, nil // the deferred Rollback undoes it all
 	}
 	if err := tx.Commit(); err != nil {
-		return fmt.Errorf("postgres: migrate: %w (%w)", err, agent.ErrStorage)
+		return res, fmt.Errorf("postgres: migrate: %w (%w)", err, agent.ErrStorage)
 	}
-	return nil
+	return res, nil
+}
+
+// leaseIndex is an index of the leases table the migration creates when missing.
+type leaseIndex struct{ name, cols, key, collation string }
+
+// leaseIndexes are the indexes of the lapsed listing (see migrate).
+func leaseIndexes(t tables) []leaseIndex {
+	return []leaseIndex{
+		{t.leases + "_expiry", `(expiry)`, "expiry", ""},
+		{t.leases + "_run_c", `((run_id COLLATE pg_catalog."C"))`, "run_id", "C"},
+	}
 }
 
 // checkSchema checks, after the migration committed, that the tables have each uniqueness the
@@ -698,7 +788,7 @@ func (s *Store) checkSchema(ctx context.Context) error {
 			return fmt.Errorf("postgres: check %s: %w (%w)", table, err, agent.ErrStorage)
 		}
 		if !isTable.Bool {
-			return fmt.Errorf("postgres: %s.%s is not an ordinary or partitioned table: %w", quoteIdent(s.schema), table, agent.ErrConfig)
+			return fmt.Errorf("postgres: %s.%s is not an ordinary table, with no partitions or inheritance: %w", quoteIdent(s.schema), table, agent.ErrConfig)
 		}
 	}
 	for _, u := range []struct {
@@ -716,6 +806,14 @@ func (s *Store) checkSchema(ctx context.Context) error {
 		if !ok {
 			return fmt.Errorf("postgres: table %s has no unique index on exactly (%s) that is checked at once and covers every row; the store depends on it (it turns a race for a position into a retry, or arbitrates ON CONFLICT) and never alters an existing table: %w",
 				u.table, strings.Join(u.cols, ", "), agent.ErrConfig)
+		}
+	}
+	for _, c := range []struct {
+		table string
+		cols  tableSpec
+	}{{s.t.steps, stepsSpec}, {s.t.leases, leasesSpec}, {s.t.version, versionSpec}} {
+		if err := s.checkTable(ctx, c.table, c.cols); err != nil {
+			return err
 		}
 	}
 	var sameNextSeq, sameOwner sql.NullBool
@@ -742,7 +840,7 @@ func (s *Store) checkEvents(ctx context.Context) error {
 		return fmt.Errorf("postgres: check %s: %w (%w)", s.t.events, err, agent.ErrStorage)
 	}
 	if !isTable.Bool {
-		return fmt.Errorf("postgres: %s.%s is not an ordinary or partitioned table: %w", quoteIdent(s.schema), s.t.events, agent.ErrConfig)
+		return fmt.Errorf("postgres: %s.%s is not an ordinary table, with no partitions or inheritance: %w", quoteIdent(s.schema), s.t.events, agent.ErrConfig)
 	}
 	var ok bool
 	if err := s.db.QueryRowContext(ctx, requiredUnique, s.t.events, s.schema, []string{"run_id", "seq"}).Scan(&ok); err != nil {
@@ -751,6 +849,9 @@ func (s *Store) checkEvents(ctx context.Context) error {
 	if !ok {
 		return fmt.Errorf("postgres: table %s has no unique index on exactly (run_id, seq) that is checked at once and covers every row; the event trail's insert-if-absent arbitrates on it and the store never alters an existing table: %w",
 			s.t.events, agent.ErrConfig)
+	}
+	if err := s.checkTable(ctx, s.t.events, eventsSpec); err != nil {
+		return err
 	}
 	return nil
 }
@@ -775,9 +876,9 @@ const requiredUnique = `SELECT EXISTS (SELECT 1 FROM pg_catalog.pg_index AS i
 				JOIN pg_catalog.pg_attribute AS a ON a.attrelid OPERATOR(pg_catalog.=) i.indrelid AND a.attnum OPERATOR(pg_catalog.=) k)
 			OPERATOR(pg_catalog.=) (SELECT pg_catalog.array_agg(c ORDER BY c) FROM pg_catalog.unnest($3::pg_catalog.text[]) AS c))`
 
-// relationIsTable returns whether the relation $1 in schema $2 is an ordinary or partitioned
+// relationIsTable returns whether the relation $1 in schema $2 is an ordinary
 // table, and no row when there is no such relation.
-const relationIsTable = `SELECT c.relkind OPERATOR(pg_catalog.=) 'r' OR c.relkind OPERATOR(pg_catalog.=) 'p'
+const relationIsTable = `SELECT c.relkind OPERATOR(pg_catalog.=) 'r'
 	FROM pg_catalog.pg_class AS c
 	WHERE c.relname OPERATOR(pg_catalog.=) $1
 		AND c.relnamespace OPERATOR(pg_catalog.=) (SELECT n.oid FROM pg_catalog.pg_namespace AS n WHERE n.nspname OPERATOR(pg_catalog.=) $2)`

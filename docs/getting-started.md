@@ -62,7 +62,7 @@ The real model is sent the refund type's JSON schema as structured output. To ga
 ## Install
 
 There are two things to install, for two audiences. The `bide` command (`bide init`, `bide demo`, `bide sample`, `bide view`,
-`bide approve`, `bide keygen`, `bide check`, `bide audit`; see the [CLI reference](reference/cli.md)) is one program for everyone,
+`bide approve`, `bide keygen`, `bide check`, `bide migrate`, `bide audit`; see the [CLI reference](reference/cli.md)) is one program for everyone,
 installed as above. To build agents, add the library to a module of your own.
 
 In a module of your own (`go mod init example.com/hello` in a new directory):
@@ -148,7 +148,7 @@ a, err := agent.New(model, journal, agent.WithTools(weather))
 
 With it the program prints `It's 72F and clear in SF.` and then `true`, with no network access.
 
-`NewMemStore` is in-memory; for durable resume across restarts use the SQLite store (`store/sqlite`) or the Postgres store (`store/postgres`) for high availability. See the [durable steps guide](guides/durable-steps.md) and [debugging and recovery](guides/debugging.md).
+`NewMemStore` is in-memory; for durable resume across restarts use the SQLite store (`store/sqlite`) or the Postgres store (`store/postgres`) for high availability (see the [Postgres store guide](guides/postgres.md) for running it without DDL rights). See the [durable steps guide](guides/durable-steps.md) and [debugging and recovery](guides/debugging.md).
 
 ## Configuring an agent
 

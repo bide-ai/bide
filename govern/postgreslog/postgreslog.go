@@ -25,7 +25,7 @@
 // pinned. With WithSchema, the recommended deployment, the search path plays no part. Without it,
 // every Open discovers the schema: the first schema on the search path holding a relation named
 // governed_events, or the first schema on the path when none does yet (see logSchema); it refuses
-// a first relation of that name that is not an ordinary or partitioned table, migrates a legacy
+// a first relation of that name that is not an ordinary table, with no partitions or inheritance, migrates a legacy
 // table in a later schema in place, and logs a warning. Discovery runs again at every Open, so a
 // role that can create a schema earlier on the path (any role with CREATE on the database can
 // create the "$user" schema the default search path puts first) can redirect a restarting
@@ -41,6 +41,10 @@
 // entity's advisory key (pg_advisory_lock(hashtextextended(entity, 0))) and stall its appends, as
 // in earlier versions; it corrupts nothing. After ALTER SCHEMA ... RENAME, drop the function
 // (DROP FUNCTION <schema>.governed_events_next_seq_v1(text)) and Open again.
+//
+// The migration also records the schema version in governed_events_schema_version (1). A log
+// created before that table existed is version 1; the migration adds the table. Open refuses another
+// version with ErrSchemaVersion.
 //
 // A retry does not always follow another transaction's commit: at serializable, Postgres may fail
 // a statement for a conflict with a transaction that has not committed yet, and many processes
@@ -77,6 +81,8 @@ type Log struct {
 	// over the table or next_seq in this process. Which schema an unpinned Open uses is another
 	// matter (see logSchema and WithSchema).
 	append, byID, since logSQL
+	readVersion         logSQL // the schema version row, read by verify and migrate's check
+	qVersion            string // the version table, schema-qualified
 }
 
 // logSQL is one statement that passed the statement check (see sqlcheck.go), naming the log's
@@ -113,7 +119,7 @@ func newLogSQL(q string, nextSeq, table []sqlTok) (logSQL, error) {
 
 // newLog returns a Log over db in schema, or, when schema is empty, in the schema logSchema finds
 // (with a warning), with its statements.
-func newLog(ctx context.Context, db *sql.DB, schema string) (*Log, error) {
+func newLog(ctx context.Context, db *sql.DB, schema string, noMigrate bool) (*Log, error) {
 	if schema != "" {
 		var exists bool
 		if err := retry(ctx, func() error {
@@ -122,6 +128,9 @@ func newLog(ctx context.Context, db *sql.DB, schema string) (*Log, error) {
 			return nil, fmt.Errorf("postgreslog: look up schema %q: %w", schema, err)
 		}
 		if !exists {
+			if noMigrate {
+				return nil, fmt.Errorf("postgreslog: the pinned schema %q does not exist; the database owner creates it and runs Migrate: %w (%w)", schema, ErrSchemaMissing, agent.ErrConfig)
+			}
 			return nil, fmt.Errorf("postgreslog: the pinned schema %q does not exist; create it, Open does not: %w", schema, agent.ErrConfig)
 		}
 	}
@@ -155,7 +164,14 @@ func newLog(ctx context.Context, db *sql.DB, schema string) (*Log, error) {
 	if err != nil {
 		return nil, fmt.Errorf("postgreslog: schema %q: %w (%w)", schema, err, agent.ErrConfig)
 	}
-	l := &Log{db: db, schema: schema}
+	l := &Log{db: db, schema: schema, qVersion: quoteIdent(schema) + "." + versionTable}
+	versionName, err := parseName(l.qVersion)
+	if err != nil {
+		return nil, fmt.Errorf("postgreslog: schema %q: %w (%w)", schema, err, agent.ErrConfig)
+	}
+	if l.readVersion, err = newLogSQL(`SELECT version FROM `+l.qVersion+` WHERE id OPERATOR(pg_catalog.=) 1`, nil, versionName); err != nil {
+		return nil, err
+	}
 	if l.append, err = newLogSQL(`INSERT INTO `+table+` (entity, seq, event, append_id)
 			VALUES ($1::pg_catalog.text, `+quoteIdent(schema)+`.`+nextSeqFunction+`($1::pg_catalog.text), $2, $3)
 			ON CONFLICT (entity, append_id) DO NOTHING
@@ -175,7 +191,8 @@ func newLog(ctx context.Context, db *sql.DB, schema string) (*Log, error) {
 type Option interface{ apply(*config) error }
 
 type config struct {
-	schema string // set by WithSchema; empty: discover it (see logSchema)
+	schema    string // set by WithSchema; empty: discover it (see logSchema)
+	noMigrate bool   // set by WithoutMigration
 }
 
 type optionFunc func(*config) error
@@ -203,12 +220,118 @@ func WithSchema(name string) Option {
 	})
 }
 
+// ErrSchemaMissing is wrapped by the error Open returns when the log's schema (the pinned schema,
+// governed_events with its append_id index, or the next_seq function) does not exist and the log
+// was opened WithoutMigration. Run Migrate as the schema's owner, then Open again. The error also
+// wraps agent.ErrConfig. It is the counterpart of store/postgres's ErrSchemaMissing; this package
+// does not import that module.
+var ErrSchemaMissing = errors.New("postgreslog: the schema is missing")
+
+// WithoutMigration makes Open verify the schema instead of creating it: it runs no CREATE and no
+// ALTER, so its role needs no CREATE on the schema. The owner runs Migrate once at deploy time.
+// Open refuses a schema that lacks governed_events (with its append_id index) or the next_seq
+// function with an error that wraps ErrSchemaMissing and agent.ErrConfig, and checks the unique
+// indexes and the function as it does after a migration. The role needs USAGE on the schema,
+// SELECT and INSERT on governed_events and EXECUTE on the next_seq function.
+func WithoutMigration() Option {
+	return optionFunc(func(c *config) error {
+		c.noMigrate = true
+		return nil
+	})
+}
+
+// Migrate opens the log at dsn as the role in the DSN, which needs the privileges of the schema's
+// owner, creates or migrates governed_events and the next_seq function as Open does, checks them,
+// and closes the pool. It is idempotent. Run it as the owner, and have the service Open the log
+// WithoutMigration. WithoutMigration is an agent.ErrConfig error here.
+func Migrate(ctx context.Context, dsn string, opts ...Option) error {
+	var cfg config
+	for _, o := range opts {
+		if o == nil {
+			return fmt.Errorf("postgreslog: nil option: %w", agent.ErrConfig)
+		}
+		if err := o.apply(&cfg); err != nil {
+			return err
+		}
+	}
+	if cfg.noMigrate {
+		return fmt.Errorf("postgreslog: Migrate with WithoutMigration would do nothing: %w", agent.ErrConfig)
+	}
+	l, err := Open(ctx, dsn, opts...)
+	if err != nil {
+		return err
+	}
+	return l.Close()
+}
+
+// verify is what a log opened WithoutMigration does in place of the migration: it checks that the
+// table, its append_id index and the function exist, and creates nothing.
+func (l *Log) verify(ctx context.Context) error {
+	current, haveNextSeq, haveVersion, err := schemaCurrent(ctx, l.db, l.schema)
+	if err != nil {
+		return err
+	}
+	switch {
+	case !current:
+		return fmt.Errorf("postgreslog: %s.governed_events with its governed_events_append_id index does not exist; the schema's owner creates it with Migrate, and a log that may not migrate never does: %w (%w)",
+			quoteIdent(l.schema), ErrSchemaMissing, agent.ErrConfig)
+	case !haveNextSeq:
+		return fmt.Errorf("postgreslog: function %s.%s(text) does not exist; the schema's owner creates it with Migrate, and a log that may not migrate never does: %w (%w)",
+			quoteIdent(l.schema), nextSeqFunction, ErrSchemaMissing, agent.ErrConfig)
+	}
+	if !haveVersion { // a log from before the version table is version 1; Migrate adds the table
+		return nil
+	}
+	return l.checkRecordedVersion(ctx)
+}
+
+// checkRecordedVersion reads the version table and refuses a version other than this package's.
+func (l *Log) checkRecordedVersion(ctx context.Context) error {
+	var v int
+	if err := retry(ctx, func() error { return l.db.QueryRowContext(ctx, string(l.readVersion)).Scan(&v) }); err != nil {
+		return fmt.Errorf("postgreslog: read the schema version: %w", err)
+	}
+	return checkVersion(v)
+}
+
+// checkVersion refuses a recorded schema version other than this package's.
+func checkVersion(v int) error {
+	switch {
+	case v > schemaVersion:
+		return errSchemaNewer(v)
+	case v != schemaVersion:
+		return fmt.Errorf("postgreslog: the log's schema version is %d, not this version's %d, and there is no migration from it: %w (%w)",
+			v, schemaVersion, ErrSchemaVersion, agent.ErrConfig)
+	}
+	return nil
+}
+
+// schemaVersion is the version of the tables this package creates and reads, recorded in
+// versionTable by the migration. A log created before the table existed is version 1: the
+// migration adds the table and records 1.
+const schemaVersion = 1
+
+// versionTable holds the schema version, one row.
+const versionTable = "governed_events_schema_version"
+
+// ErrSchemaVersion is wrapped by the error returned when the log's recorded schema version is not
+// the one this version of the package uses: a newer one needs a newer program, and there is no
+// migration from another one. The error also wraps agent.ErrConfig. It is the counterpart of
+// store/postgres's ErrSchemaVersion.
+var ErrSchemaVersion = errors.New("postgreslog: the schema version does not match")
+
+// errSchemaNewer is the error for a log whose schema version v is newer than this version's.
+func errSchemaNewer(v int) error {
+	return fmt.Errorf("postgreslog: the log's schema version is %d, newer than this version's %d: a newer bide wrote it, and this version does not know what changed, so it refuses to migrate or use it; use a newer bide: %w (%w)",
+		v, schemaVersion, ErrSchemaVersion, agent.ErrConfig)
+}
+
 // warnf reports the log discovering its schema through the search path. It logs through the
 // default slog logger, which an application sets with slog.SetDefault; a test replaces it.
 var warnf = func(msg string, args ...any) { slog.Warn(msg, args...) }
 
 // Open connects to Postgres via a pgx DSN (e.g. "postgres://user:pass@host:5432/db") and ensures
-// the schema exists. Pin the schema with WithSchema; without it, Open discovers the schema through
+// the schema exists, or with WithoutMigration only verifies it. Pin the schema with WithSchema; without it, Open discovers the schema through
 // the search path (see logSchema) and logs a warning.
 func Open(ctx context.Context, dsn string, opts ...Option) (*Log, error) {
 	var cfg config
@@ -228,12 +351,17 @@ func Open(ctx context.Context, dsn string, opts ...Option) (*Log, error) {
 		db.Close()
 		return nil, err
 	}
-	l, err := newLog(ctx, db, cfg.schema)
+	l, err := newLog(ctx, db, cfg.schema, cfg.noMigrate)
 	if err != nil {
 		db.Close()
 		return nil, err
 	}
-	if err := l.migrate(ctx); err != nil {
+	if cfg.noMigrate {
+		err = l.verify(ctx)
+	} else {
+		err = l.migrate(ctx)
+	}
+	if err != nil {
 		db.Close()
 		return nil, err
 	}
@@ -255,7 +383,7 @@ const nextSeqFunction = "governed_events_next_seq_v1"
 
 // logSchema returns, for the relation name governed_events: the schema of the first relation of
 // that name on the search path, as an unqualified governed_events resolves (NULL when there is
-// none); whether that relation is an ordinary or partitioned table; and current_schema(), where
+// none); whether that relation is an ordinary table; and current_schema(), where
 // the migration creates the table when there is none. newLog records the schema, and refuses a
 // first relation that is not a table (a view, a foreign table, a sequence): appends would go
 // through it while Open checked another table.
@@ -263,7 +391,7 @@ const logSchema = `SELECT
 	(SELECT n.nspname FROM pg_catalog.pg_class AS c JOIN pg_catalog.pg_namespace AS n ON n.oid OPERATOR(pg_catalog.=) c.relnamespace
 		WHERE c.relname OPERATOR(pg_catalog.=) 'governed_events' AND n.nspname OPERATOR(pg_catalog.=) ANY (pg_catalog.current_schemas(false))
 		ORDER BY pg_catalog.array_position(pg_catalog.current_schemas(false), n.nspname) LIMIT 1),
-	(SELECT c.relkind OPERATOR(pg_catalog.=) 'r' OR c.relkind OPERATOR(pg_catalog.=) 'p' FROM pg_catalog.pg_class AS c JOIN pg_catalog.pg_namespace AS n ON n.oid OPERATOR(pg_catalog.=) c.relnamespace
+	(SELECT c.relkind OPERATOR(pg_catalog.=) 'r' FROM pg_catalog.pg_class AS c JOIN pg_catalog.pg_namespace AS n ON n.oid OPERATOR(pg_catalog.=) c.relnamespace
 		WHERE c.relname OPERATOR(pg_catalog.=) 'governed_events' AND n.nspname OPERATOR(pg_catalog.=) ANY (pg_catalog.current_schemas(false))
 		ORDER BY pg_catalog.array_position(pg_catalog.current_schemas(false), n.nspname) LIMIT 1),
 	pg_catalog.current_schema()`
@@ -338,6 +466,16 @@ func (l *Log) checkSchema(ctx context.Context) error {
 				strings.Join(cols, ", "), agent.ErrConfig)
 		}
 	}
+	if err := l.checkTable(ctx, "governed_events", eventsSpec); err != nil {
+		return err
+	}
+	if _, _, haveVersion, err := schemaCurrent(ctx, l.db, schema); err != nil {
+		return err
+	} else if haveVersion { // a log from before the version table is version 1 and has none
+		if err := l.checkTable(ctx, versionTable, versionSpec); err != nil {
+			return err
+		}
+	}
 	var same, sameOwner sql.NullBool
 	if err := l.db.QueryRowContext(ctx, `SELECT
 			l.lanname OPERATOR(pg_catalog.=) 'plpgsql' AND p.provolatile OPERATOR(pg_catalog.=) 'v' AND NOT p.prosecdef AND NOT p.proretset
@@ -396,9 +534,17 @@ const migrateIdleTimeout = 5 * time.Second
 // timeout (migrateLockTimeout), so it cannot wedge the table.
 func (l *Log) migrate(ctx context.Context) error {
 	schema := l.schema
-	current, haveNextSeq, err := schemaCurrent(ctx, l.db, schema)
-	if err != nil || current && haveNextSeq {
+	current, haveNextSeq, haveVersion, err := schemaCurrent(ctx, l.db, schema)
+	if err != nil {
 		return err
+	}
+	if haveVersion { // a newer version is refused before anything is created or locked
+		if err := l.checkRecordedVersion(ctx); err != nil {
+			return err
+		}
+		if current && haveNextSeq {
+			return nil
+		}
 	}
 	tx, err := l.db.BeginTx(ctx, txOptions)
 	if err != nil {
@@ -433,7 +579,7 @@ func (l *Log) migrate(ctx context.Context) error {
 		}
 	}
 	if current {
-		return tx.Commit()
+		return l.recordVersion(ctx, tx)
 	}
 	// The lock timeout is set after the advisory lock, so a process waiting for another's
 	// migration waits for it to finish rather than give up.
@@ -453,13 +599,35 @@ func (l *Log) migrate(ctx context.Context) error {
 		CREATE UNIQUE INDEX IF NOT EXISTS governed_events_append_id ON `+table+` (entity, append_id);`); err != nil {
 		return fmt.Errorf("postgreslog: migrate governed_events (another session may hold the table; retry Open): %w", err)
 	}
+	return l.recordVersion(ctx, tx)
+}
+
+// recordVersion creates the version table when missing, records schemaVersion in it when it holds
+// no row (a log from before the table is version 1), and commits. It is part of migrate's
+// transaction.
+func (l *Log) recordVersion(ctx context.Context, tx *sql.Tx) error {
+	if _, err := tx.ExecContext(ctx, `
+		CREATE TABLE IF NOT EXISTS `+l.qVersion+` (
+			id      pg_catalog.int4 PRIMARY KEY CHECK (id OPERATOR(pg_catalog.=) 1),
+			version pg_catalog.int4 NOT NULL
+		);
+		INSERT INTO `+l.qVersion+fmt.Sprintf(` (id, version) VALUES (1, %d) ON CONFLICT (id) DO NOTHING;`, schemaVersion)); err != nil {
+		return fmt.Errorf("postgreslog: migrate: record the schema version: %w", err)
+	}
+	var v int
+	if err := tx.QueryRowContext(ctx, `SELECT version FROM `+l.qVersion+` WHERE id OPERATOR(pg_catalog.=) 1`).Scan(&v); err != nil {
+		return fmt.Errorf("postgreslog: migrate: read the schema version: %w", err)
+	}
+	if err := checkVersion(v); err != nil {
+		return err
+	}
 	return tx.Commit()
 }
 
 // schemaCurrent reports whether governed_events in schema exists with its unique append_id index
-// (the last thing migrate creates, over the append_id column), and whether nextSeqFunction exists
-// beside it, reading only the catalog.
-func schemaCurrent(ctx context.Context, db *sql.DB, schema string) (current, haveNextSeq bool, err error) {
+// (the last thing migrate creates, over the append_id column), whether nextSeqFunction exists
+// beside it, and whether the version table exists, reading only the catalog.
+func schemaCurrent(ctx context.Context, db *sql.DB, schema string) (current, haveNextSeq, haveVersion bool, err error) {
 	err = db.QueryRowContext(ctx, `SELECT
 			EXISTS (SELECT 1 FROM pg_catalog.pg_index AS i
 				JOIN pg_catalog.pg_class AS t ON t.oid OPERATOR(pg_catalog.=) i.indrelid JOIN pg_catalog.pg_class AS x ON x.oid OPERATOR(pg_catalog.=) i.indexrelid
@@ -467,9 +635,12 @@ func schemaCurrent(ctx context.Context, db *sql.DB, schema string) (current, hav
 					AND t.relnamespace OPERATOR(pg_catalog.=) (SELECT n.oid FROM pg_catalog.pg_namespace AS n WHERE n.nspname OPERATOR(pg_catalog.=) $1)),
 			EXISTS (SELECT 1 FROM pg_catalog.pg_proc
 				WHERE proname OPERATOR(pg_catalog.=) $2 AND proargtypes OPERATOR(pg_catalog.=) '25'::pg_catalog.oidvector
-					AND pronamespace OPERATOR(pg_catalog.=) (SELECT n.oid FROM pg_catalog.pg_namespace AS n WHERE n.nspname OPERATOR(pg_catalog.=) $1))`,
-		schema, nextSeqFunction).Scan(&current, &haveNextSeq)
-	return current, haveNextSeq, err
+					AND pronamespace OPERATOR(pg_catalog.=) (SELECT n.oid FROM pg_catalog.pg_namespace AS n WHERE n.nspname OPERATOR(pg_catalog.=) $1)),
+			EXISTS (SELECT 1 FROM pg_catalog.pg_class AS c
+				WHERE c.relname OPERATOR(pg_catalog.=) $3 AND c.relkind OPERATOR(pg_catalog.=) 'r'
+					AND c.relnamespace OPERATOR(pg_catalog.=) (SELECT n.oid FROM pg_catalog.pg_namespace AS n WHERE n.nspname OPERATOR(pg_catalog.=) $1))`,
+		schema, nextSeqFunction, versionTable).Scan(&current, &haveNextSeq, &haveVersion)
+	return current, haveNextSeq, haveVersion, err
 }
 
 // Close releases the underlying database connection pool.

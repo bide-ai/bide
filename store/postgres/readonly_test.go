@@ -67,6 +67,8 @@ func TestOpenReadOnly(t *testing.T) {
 	if s2, err := OpenReadOnly(ctx, dsn, WithTablePrefix(prefix+"none_")); err == nil {
 		s2.Close()
 		t.Fatal("OpenReadOnly opened a database with no journal tables under that prefix")
+	} else if !errors.Is(err, ErrSchemaMissing) {
+		t.Fatalf("OpenReadOnly with no journal tables = %v, want ErrSchemaMissing", err)
 	}
 }
 
