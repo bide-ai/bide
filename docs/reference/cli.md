@@ -279,7 +279,7 @@ It reads the call from the journal, never from a flag or a notification, and sho
 about to sign: the run, the tool, the call's arguments (indented JSON, long ones cut; -full shows
 all), the gate (k of n, who has decided, who is pending) and the SHA-256 of the arguments the
 signature binds. It then asks you to type your approver id (or y) to confirm; -yes skips the
-question, for scripts. The decision is signed with your Ed25519 private key (made by bide keygen),
+question, for scripts. The decision is signed with your private key (made by bide keygen: Ed25519, ML-DSA-65 or hybrid),
 checked against the call before it is recorded, and recorded with the time you decided.
 
 It refuses, and records nothing, when the call has no waiting gate, the run is not waiting on it,
@@ -330,7 +330,7 @@ Flags:
   -json
     	with -list: print the waiting calls as JSON
   -key string
-    	your Ed25519 private key file, as bide keygen writes it (not for a single-approver gate); on Unix it must not be readable by group or others
+    	your private key file, as bide keygen writes it (Ed25519, ML-DSA-65 or hybrid) (not for a single-approver gate); on Unix it must not be readable by group or others
   -list
     	list the calls that wait for a decision, each with its bide approve command; nothing is recorded
   -postgres string
@@ -358,23 +358,30 @@ Exit status:
 Create an approver key pair for bide approve and print the public key policies and verifiers use.
 
 ```text
-usage: bide keygen -out <key-file> [-as <approver id>] [-color auto|always|never]
+usage: bide keygen -out <key-file> [-as <approver id>] [-alg ed25519|ml-dsa-65|ed25519+ml-dsa-65] [-color auto|always|never]
 
-Creates an approver key pair for bide approve. The private key is written to <key-file> (64 hex
-characters, the Ed25519 seed) with mode 0600, and is never printed; the public key is written to
-<key-file>.pub and printed, in the form approval policies and verifiers read:
+Creates an approver key pair for bide approve. The private key is written to <key-file> (the key's
+seed as hex: 64 characters for ed25519, the default; "ml-dsa-65:" and the seed for ML-DSA-65;
+"ed25519+ml-dsa-65:" and both seeds for a hybrid, for buyers who require post-quantum or hybrid
+signatures) with mode 0600, and is never printed; the public key is written to <key-file>.pub and
+printed, in the form approval policies and verifiers read:
 
-  ed25519:<hex>
+  <scheme>:<hex>        e.g. ed25519:<hex>
+
+An ML-DSA-65 or hybrid public key is long (nearly 4000 hex characters). ML-DSA needs a Go
+build with crypto/mldsa, which the FIPS 140-3 module v1.0.0 lacks.
 
 Enroll that public key as the approver's verifier in the application that runs the gated agent
 (audit.ParsePublicKey reads it), and in the JSON object bide approve -approver-keys and bide view
--approver-keys read: {"ops": "ed25519:<hex>"}. With -as, bide keygen prints that JSON entry for
+-approver-keys read: {"ops": "<scheme>:<hex>"}. With -as, bide keygen prints that JSON entry for
 the id.
 
 It refuses to overwrite a file. The private key file is not encrypted; keep it on the approver's
 own machine, readable only by the approver. Anyone who can read it can sign as the approver.
 
 Flags:
+  -alg string
+    	signature scheme: ed25519, ml-dsa-65 or ed25519+ml-dsa-65 (hybrid) (default "ed25519")
   -as string
     	the approver id the key is for: prints the approver-keys entry for it
   -color when

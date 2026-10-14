@@ -418,11 +418,17 @@ the call has a result), the gate already has its approvals or can no longer pass
 approvers, you already decided (it names what you decided and when), or your key file can be read by
 others: on Unix a private key with any group or other permission bit is refused, as `ssh` refuses one.
 
-A key file is the Ed25519 seed as 64 hex characters, the form `bide demo` writes its log key in.
-`bide keygen` writes it with mode 0600, never overwrites a file, never prints it, and prints the public
-key in the text policies and verifiers read (`ed25519:<hex>`, see `audit.ParsePublicKey`). The file is
-not encrypted: keep it on your own machine. A hardware or passkey signer is a different `Alg`, not a
-change to this format (see the [roadmap](../ROADMAP.md)).
+A key file is one line of hex: the Ed25519 seed (64 characters, the form `bide demo` writes its log key
+in), `ml-dsa-65:` and the ML-DSA-65 seed, or `ed25519+ml-dsa-65:` and both seeds for a hybrid, for
+buyers who require post-quantum or hybrid signatures (`bide keygen -alg`). `bide approve` holds the key
+only as an `audit.Signer`: it signs the decision bytes, names the scheme and derives the public key
+through that interface, so a signer in an HSM or a KMS can take the file's place later without changing
+the flow (not built yet). `bide keygen` writes the file with mode 0600, never overwrites a file, never
+prints it, and prints the public key in the text policies and verifiers read (`<scheme>:<hex>`, see
+`audit.ParsePublicKey`; an ML-DSA public key is nearly 4000 hex characters, so the command names it by
+its key ID where it shows one). The file is not encrypted: keep it on your own machine. ML-DSA needs a
+Go build with `crypto/mldsa`, which the FIPS 140-3 module v1.0.0 lacks. A passkey signer is a different
+`Alg` (see the [roadmap](../ROADMAP.md)).
 
 **Which key counts.** The journal records approver ids, not keys: the application's verifiers
 (`agent.WithApproverVerifiers`) hold those. A key that is not the one enrolled for you produces a
