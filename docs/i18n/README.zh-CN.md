@@ -5,9 +5,9 @@
 </p>
 
 <p align="center">
-  <strong>用 Go 构建的持久化 AI 智能体，面向经手资金、修改记录或在审计之下运行的智能体。</strong>
+  <strong>用 Go 构建的持久化、可问责的 AI 智能体，面向经手资金、修改记录或在审计之下运行的智能体。</strong>
   <br>
-  副作用至多触发一次，即使跨越崩溃也是如此。每个动作事后均可证明。
+  为经手资金的 AI 智能体提供的问责层：副作用至多触发一次，即使跨越崩溃也是如此；人始终掌控；每个动作事后均可证明。
 </p>
 
 <p align="center"><img src="../../assets/crash-demo.gif" width="100%" alt="bide demo：智能体在扣款中途被杀死，重启后以 outcome unknown 停下而不是再次扣款，随后根据支付服务商的记录解决，bide view 显示审计证明与 2/3 审批签名均已验证；没有 bide 时重启会重试扣款，服务商扣了两次；停下时会通过签名 webhook 通知；改动日志副本中的一个金额则验证失败"></p>
@@ -33,7 +33,9 @@ bide approve -db run.db -list
 bide audit verify-evidence -evidence evidence.json -pubkey keys/log.pub
 ```
 
-一条仅追加（append-only）的日志，作为一个纯 Go 库，带来四项保证：副作用至多触发一次，即使跨越崩溃也是如此，因此它们无需是幂等的；在单个进程内承载成千上万个并发的持久化运行，它是一个库，无需运行集群；一条可加密验证的审计轨迹（RFC 6962 Merkle 证明，无需信任厂商即可核验）；以及可证明收敛的共享状态，其收敛条件经过机器核验。
+一条仅追加（append-only）的日志，作为一个纯 Go 库，带来五项保证：副作用至多触发一次，即使跨越崩溃也是如此，因此它们无需是幂等的；在单个进程内承载成千上万个并发的持久化运行，它是一个库，无需运行集群；一条可加密验证的审计轨迹（RFC 6962 Merkle 证明，无需信任厂商即可核验）；可证明收敛的共享状态，其收敛条件经过机器核验；以及人始终掌控：k-of-n 签名审批、排除发起人的职责分离、放在 HSM 或云 KMS 中的签名密钥，还有一个通知人并记录通知已发出的通知器。
+
+Bide 朝着银行对处理资金的软件的要求构建：密钥置于应用之外、职责分离、防篡改的轨迹、明确的失败模式。它没有通过任何标准的认证，也不声称符合任何标准；[密钥托管](../../docs/guides/key-custody.md)与[威胁模型](../../docs/trust/threat-model.md)说明了哪些在范围内、哪些不在。
 
 **环境智能体（ambient agent）。** 环境智能体在无人值守下运行：它休眠，直到某个触发条件（一个计划任务或一个事件）将其唤醒，随后工作数小时乃至数天，仅在需要判断时才暂停以询问人类，全程无人盯着每一步。这样的智能体必须做到崩溃安全、重复触发安全、事后可证明。Bide 为此提供了持久化的生命周期：持久化的 `Sleep`/`WaitUntil` 定时器、用于按时间或事件驱动唤醒的可插拔 `Waker`，以及用于类型化人在回路（human-in-the-loop）的持久化 `Interrupt`/`AnswerInterrupt`，全都建立在同一条日志之上。你负责提供触发源和监督 UI；运行时则保证每次运行在休眠、崩溃和节点交接之间始终正确。
 
@@ -46,9 +48,9 @@ bide audit verify-evidence -evidence evidence.json -pubkey keys/log.pub
 
 **发布前看清流程的风险。** `bide view -config flow.yaml` 按崩溃对每个节点的影响为其着色（副作用会停下并询问；只读步骤会重新运行），并在图上检查流程的 `assert:` 策略，例如 `every path to charge passes approval >= 2 of 3`。违反时会以红色给出最短的反例路径。`bide check flow.yaml` 在 CI 中执行相同的检查，并以退出码 1 结束。参见[运行查看器指南](../../docs/guides/run-viewer.md#check-a-flow-config)。
 
-## 一条日志，四项保证
+## 一条日志，五项保证
 
-智能体循环约 40 行。四项保证来自其下那条持久化、仅追加的日志。
+智能体循环约 40 行。五项保证来自其下那条持久化、仅追加的日志。
 
 ### 1 · 至多一次（实测）
 
@@ -77,7 +79,7 @@ Temporal、DBOS、trpc-agent-go、ADK 和 eino 通过重新运行来恢复：活
 
 Temporal 借助一个服务器和一支 worker 机群提供持久化执行。而这里，它来自一个你本就在运行的存储适配器（本地用 SQLite，生产用 Postgres）。一个 hello-world 只导入标准库：没有 Temporal、gRPC 或向量数据库依赖（由 `architecture_test.go` 强制保证）。
 
-单个进程可以同时让许多持久化运行处于进行中。智能体的工作是 I/O 密集型的（在等待模型和工具调用），而 goroutine 无需集群即可吸收这类等待。[`cmd/bench`](../../cmd/bench/README.md) 测试工具对此做了测量：20,000 次运行，每次同时有 5,000 次处于进行中，每次运行在模型上阻塞约 100ms，在 10 核 Apple silicon Mac 上约半秒（约 470ms，于 v0.7.0 测得）、标准 4 vCPU CI 运行器上约一秒的墙钟时间内完成，跑在几千个 goroutine 和数十 MB 之上（`go run ./cmd/bench -runs 20000 -concurrency 5000 -latency 50ms`）。这测量的是吞吐量；每次调用的延迟由提供商决定。在高扇出下，上限是持久化存储的写入吞吐量。每一个并发运行都保有全部四项保证。为了负载下的可靠性，提供了按尝试计的超时、带退避（backoff）且能区分瞬时错误与终结性错误的重试、对冲式（hedged）模型调用（同时发起一个备份调用，取先到者，用于降低尾延迟并实现提供商故障切换），以及用于模型和工具调用的限流器（rate limiter）（[middleware](../../middleware)、[docs/guides/reliability.md](../../docs/guides/reliability.md)）。
+单个进程可以同时让许多持久化运行处于进行中。智能体的工作是 I/O 密集型的（在等待模型和工具调用），而 goroutine 无需集群即可吸收这类等待。[`cmd/bench`](../../cmd/bench/README.md) 测试工具对此做了测量：20,000 次运行，每次同时有 5,000 次处于进行中，每次运行在模型上阻塞约 100ms，在 10 核 Apple silicon Mac 上约半秒（约 470ms，于 v0.7.0 测得）、标准 4 vCPU CI 运行器上约一秒的墙钟时间内完成，跑在几千个 goroutine 和数十 MB 之上（`go run ./cmd/bench -runs 20000 -concurrency 5000 -latency 50ms`）。这测量的是吞吐量；每次调用的延迟由提供商决定。在高扇出下，上限是持久化存储的写入吞吐量。每一个并发运行都在同一条日志上，因此保有上述保证。为了负载下的可靠性，提供了按尝试计的超时、带退避（backoff）且能区分瞬时错误与终结性错误的重试、对冲式（hedged）模型调用（同时发起一个备份调用，取先到者，用于降低尾延迟并实现提供商故障切换），以及用于模型和工具调用的限流器（rate limiter）（[middleware](../../middleware)、[docs/guides/reliability.md](../../docs/guides/reliability.md)）。
 
 为实现高可用，任意节点都能从共享存储恢复任意运行，而相互竞争的驱动方通过一个按运行计的租约（lease）（`agent.Lease`）来协调：通常同一时刻只有一个进程驱动某个运行，崩溃持有者的租约会过期，从而由另一个节点的 `agent.RecoverLoop` 接管。停顿超过租约期限的持有者可能醒来时仍在驱动该运行，但它无法再次触发副作用：至多一次依靠的是尝试声明（attempt claim），而不是租约。测试覆盖了内存存储上的并发 worker 互斥、崩溃接管，以及并发驱动方下的至多一次（`agent/ha_e2e_test.go`），还有 Postgres 上的跨进程至多一次，即两个存储实例共享同一个数据库（`store/postgres/postgres_test.go` 中的 `TestPostgres_HAAtMostOnceAcrossInstances`；Postgres 后端用一次 DB 时钟 upsert 实现该租约）。
 
@@ -104,6 +106,17 @@ Temporal 借助一个服务器和一支 worker 机群提供持久化执行。而
 - **在规模上测试。** 1,000 万个受治理智能体被驱动经历随机的、违反不变量的顺序，全部收敛到同一个有效状态，每个都附有一份可离线核验的审计证明（这是一个框架级测试：桩模型、内存存储；见 [docs/testing/testing.md](../../docs/testing/testing.md)）。
 
 这个论断是精确的：对满足条件的机器、在离散且确定性的状态上，重放的顺序无关收敛性，而非"智能体总能达成一致"。详情见[治理指南](../../docs/guides/governance.md)；确切范围（因果交付与 `Independent` 事件对、交付义务、哪些检查由证明生成而哪些是 Go 代码，以及 gsm 版本历史）见[已知限制](../../docs/KNOWN-LIMITATIONS.md#governed-state-gsm)。
+
+### 5 · 人始终掌控
+
+智能体要经手资金时，由人来决定，而这个人决定了什么会记录在案。关卡、密钥和通知与其余部分同属一条日志。
+
+- **k-of-n 签名审批。** 用 `WithApproval` 构建的工具会让运行在执行前停下，直到 n 位具名批准人中有 k 位对这一确切调用签署了决定（`bide.approval.v3`；决定时间在签名之内）。审计员可离线核验 k 位具名批准人在动作之前批准了它。批准人用 `bide approve` 在终端中决定。参见[批准指南](../../docs/guides/hitl-approval.md)。
+- **职责分离。** 使用 `ExcludePrincipal` 时，关卡从不计入运行发起人（或上层任何运行的发起人）的决定；被排除的决定仍留在记录中并被标明。Bide 比较的是 id，无法看出同一个人持有两个身份。
+- **密钥置于应用之外。** 审计日志和批准人的签名密钥可以放在 PKCS#11 HSM、AWS KMS、Google Cloud KMS 或 Azure Key Vault 中，位于同一个 `audit.Signer` 接口之后，使用 Ed25519 或 ECDSA P-256。验证方只持有公钥。这是密钥托管，不是合规认证：[密钥托管](../../docs/guides/key-custody.md)列出了每种签名器所针对的测试对象（SoftHSM2 和模拟器，从不是真实的云）以及它不检查的内容。
+- **一条可以证明已送达的通知。** 运行停止或等待批准时会发出通知（已签名的 HTTPS webhook，`notify.NewWebhook`），审计轨迹记录每次尝试以及接收端是否确认。确认的意思是你的端点返回了 2xx，而不是有人读过它。参见[通知](../../docs/guides/notifications.md)。
+
+范围见[已知限制](../../docs/KNOWN-LIMITATIONS.md#approval-and-quorum)：批准人是固定的具名集合；把密钥关联到某个人是你的身份提供方的工作；决定的时间是批准人自己的声明。
 
 ### 与持久化执行及智能体运行时的对比
 

@@ -54,7 +54,7 @@ func TestErrorPrefix(t *testing.T) {
 // TestPipedErrorsUnchanged pins the text of piped errors.
 func TestPipedErrorsUnchanged(t *testing.T) {
 	_, _, got := runBide("nope")
-	if !strings.HasPrefix(got, "bide: unknown command \"nope\"\n\nbide: durable, provable agents. Usage:\n") {
+	if !strings.HasPrefix(got, "bide: unknown command \"nope\"\n\nbide: the accountability layer for AI agents that move money. Usage:\n") {
 		t.Errorf("unknown command, piped:\n%q", got)
 	}
 	_, _, got = runBide("version", "extra")
