@@ -110,14 +110,14 @@ type Halt struct {
 // Gate is a tool call's or a plan flow node's approval gate, from the decisions and tally the
 // journal holds. A flow node's ToolUseID is its key ("node:<name>", "node:iter:<n>:<name>").
 type Gate struct {
-	ToolUseID  string     `json:"tool_use_id"`
-	ToolName   string     `json:"tool_name,omitempty"`
-	Single     bool       `json:"single,omitempty"` // a one-decision gate (agent.Approve)
-	Need       int        `json:"need,omitempty"`
-	Approvers  []string   `json:"approvers,omitempty"`
-	ApprovedBy []string   `json:"approved_by,omitempty"`
-	DeniedBy   []string   `json:"denied_by,omitempty"`
-	Pending    []string   `json:"pending,omitempty"`
+	ToolUseID  string   `json:"tool_use_id"`
+	ToolName   string   `json:"tool_name,omitempty"`
+	Single     bool     `json:"single,omitempty"` // a one-decision gate (agent.Approve)
+	Need       int      `json:"need,omitempty"`
+	Approvers  []string `json:"approvers,omitempty"`
+	ApprovedBy []string `json:"approved_by,omitempty"`
+	DeniedBy   []string `json:"denied_by,omitempty"`
+	Pending    []string `json:"pending,omitempty"`
 	// ExcludePrincipal: the gate never counts the run's requester (agent.ApprovalPolicy.ExcludePrincipal);
 	// Requester is that requester, and Excluded the approvers who fill no seat (the tally's, or before
 	// it, the approver ids equal to the requester ignoring case).
@@ -125,7 +125,7 @@ type Gate struct {
 	Requester        string     `json:"requester,omitempty"`
 	Excluded         []string   `json:"excluded,omitempty"`
 	Decisions        []Decision `json:"decisions,omitempty"`
-	Tallied    bool       `json:"tallied"` // the gate journaled its terminal tally
+	Tallied          bool       `json:"tallied"` // the gate journaled its terminal tally
 	// AskedAt is when the run asked for approval, by the run's clock: a flow node's request time
 	// (agent.ApprovalRequest.RecordedAt), else the pause's (agent.ApprovalWait.RecordedAt); empty
 	// when the journal does not say.
