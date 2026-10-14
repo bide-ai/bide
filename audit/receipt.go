@@ -20,7 +20,7 @@ import (
 // arguments on disk keeps the receipt where they keep the journal.
 
 // ReceiptFormat identifies a decision receipt.
-const ReceiptFormat = "bide.decision-receipt.v1"
+const ReceiptFormat = "bide.audit.decision-receipt.v1"
 
 // DecisionReceipt is one signed approver decision, with the journal record that holds it.
 type DecisionReceipt struct {
