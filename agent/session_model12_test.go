@@ -234,11 +234,20 @@ func (m *turnstileModel) Stream(ctx context.Context, req Request) (*Stream, erro
 
 // leasedProc is one process's handle on a shared MemStore that, unlike procStore, has the store's
 // leases, as two processes of a store with a Leaser (store/sqlite, store/postgres). inserted, when
-// set, is called after each Insert lands.
+// set, is called after each Insert lands; acquired, after each AcquireLease that grants a lease.
 type leasedProc struct {
 	Store
 	Leaser
 	inserted func(runID, name string)
+	acquired func(runID string)
+}
+
+func (p leasedProc) AcquireLease(ctx context.Context, runID, holder string, ttl time.Duration) (bool, error) {
+	ok, err := p.Leaser.AcquireLease(ctx, runID, holder, ttl)
+	if ok && err == nil && p.acquired != nil {
+		p.acquired(runID)
+	}
+	return ok, err
 }
 
 func (p leasedProc) Insert(ctx context.Context, runID, name string, data []byte) (Entry, bool, error) {
@@ -261,19 +270,22 @@ func TestModel12_S4_TwoWorkersOvershootATurnBudget(t *testing.T) {
 	tool := lookupTool(func() {})
 	started := make(chan struct{})
 	var once sync.Once
-	journal := func() *Journal { // one process's journal over the shared store
-		j, err := NewJournal(leasedProc{Store: shared, Leaser: shared, inserted: func(runID, name string) {
-			if runID == sessionJournalID("c1") && name == sessionStartStep(0) {
-				once.Do(func() { close(started) })
-			}
-		}})
+	journal := func(acquired func(runID string)) *Journal { // one process's journal over the shared store
+		j, err := NewJournal(leasedProc{Store: shared, Leaser: shared, acquired: acquired})
 		if err != nil {
 			t.Fatal(err)
 		}
 		return j
 	}
-	aA := mustNew(m, journal(), WithTools(tool), WithTokenBudget(budget))
-	aB := mustNew(m, journal(), WithTools(tool), WithTokenBudget(budget))
+	// B starts once A holds the lease on the turn's run: A drives the turn, and B, refused the
+	// lease, does not. Waiting on the lease itself, not on A's start/0 record, which A writes before
+	// it takes the lease, so B cannot take the lease first however the two are scheduled.
+	aA := mustNew(m, journal(func(runID string) {
+		if IsSessionRun(runID) && runID != sessionJournalID("c1") {
+			once.Do(func() { close(started) })
+		}
+	}), WithTools(tool), WithTokenBudget(budget))
+	aB := mustNew(m, journal(nil), WithTools(tool), WithTokenBudget(budget))
 	hA, hB := openSession(t, aA, "c1"), openSession(t, aB, "c1")
 	ctxA := context.WithValue(context.Background(), m12drv{}, "A")
 	ctxB := context.WithValue(context.Background(), m12drv{}, "B")
@@ -281,18 +293,19 @@ func TestModel12_S4_TwoWorkersOvershootATurnBudget(t *testing.T) {
 	wg.Add(2)
 	var errA, errB error
 	go func() { defer wg.Done(); _, errA = hA.Send(ctxA, UserText("x")); m.finish("A") }()
-	// B starts once A has claimed the turn (start/0), so B joins it rather than claiming it.
+	// A failsafe only: the test never depends on a wall-clock wait, and a deadlock fails with the
+	// state below rather than hanging the suite.
 	select {
 	case <-started:
-	case <-time.After(5 * time.Second):
-		t.Fatal("timed out waiting for A's turn start")
+	case <-time.After(time.Minute):
+		t.Fatal("timed out waiting for A to take the turn's lease")
 	}
 	go func() { defer wg.Done(); _, errB = hB.Send(ctxB, UserText("x")); m.finish("B") }()
 	done := make(chan struct{})
 	go func() { wg.Wait(); close(done) }()
 	select {
 	case <-done:
-	case <-time.After(5 * time.Second):
+	case <-time.After(time.Minute):
 		m.mu.Lock()
 		t.Fatalf("timed out: turn %q, calls %v, done %v, bReady %v", m.turn, m.calls, m.done, m.bReady)
 	}
