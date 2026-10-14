@@ -38,6 +38,7 @@
 package approvals
 
 import (
+	"bytes"
 	"cmp"
 	"context"
 	"encoding/json"
@@ -78,7 +79,7 @@ type Response struct {
 	// held it (a replay, or an identical request that won a race): the same decision again changes
 	// nothing, and OnRecorded runs for the request that wrote it only.
 	Recorded   bool   `json:"recorded"`
-	Record     string `json:"record"`      // the journal record's name (agent.DecisionStep)
+	Record     string `json:"record"`      // the name of the journal record that holds the decision (found, not derived: see agent.HeldDecisionStep)
 	Index      int    `json:"index"`       // its position in the run's journal (0 is the header)
 	RecordedAt string `json:"recorded_at"` // when it was journaled, by the recording process's clock
 	Gate       Gate   `json:"gate"`        // the gate's standing after the decision, verified
@@ -859,8 +860,7 @@ func (h *Handler) decide(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusForbidden, "not_an_approver", "the approver is not one of this gate's approvers")
 		return
 	}
-	step := agent.DecisionStep(d)
-	idx := h.findDecision(g, d, step)
+	idx := h.findDecision(g, d)
 	wrote := false
 	if idx < 0 {
 		st, err := h.state(ctx, g)
@@ -895,13 +895,13 @@ func (h *Handler) decide(w http.ResponseWriter, r *http.Request) {
 			h.fail(w, err)
 			return
 		}
-		if idx = h.findDecision(g, d, step); idx < 0 {
-			h.fail(w, fmt.Errorf("decision %s recorded but not found in run %s", step, d.RunID))
+		if idx = h.findDecision(g, d); idx < 0 {
+			h.fail(w, fmt.Errorf("the decision of %q on %s was recorded but not found in run %s", d.ApproverID, d.ToolUseID, d.RunID))
 			return
 		}
 	}
 	// The record the response is about: d's own, or the same decision's under another name.
-	step = g.recs[idx].Name
+	step := g.recs[idx].Name
 	d.Signature = g.recs[idx].Signature()
 	rc, err := audit.NewDecisionReceipt(g.subject, d, g.recs[idx], idx)
 	if err != nil {
@@ -929,22 +929,34 @@ func (h *Handler) decide(w http.ResponseWriter, r *http.Request) {
 	}
 }
 
-// findDecision is the journal position of d's record: the record under its own name, else the record
-// of the same decision under another (the agent's SubmitDecision does not write a decision it finds
+// findDecision is the journal position of d's record: a record with d's own bytes, else the record
+// of the same decision under other bytes (the agent's SubmitDecision does not write a decision it finds
 // already journaled, by the same approver, verdict, scheme and decision time, whatever the signature
 // bytes: a randomized scheme signs one decision into different bytes). Only a record whose signature
 // verifies under the approver's key for this call stands in for d: a record that does not verify is no
 // decision (the gate ignores it), so it must not hide the genuine one from SubmitDecision. -1 if there
 // is none.
-func (h *Handler) findDecision(g *gateRecords, d agent.Decision, step string) int {
-	if i := slices.IndexFunc(g.recs, func(r agent.Record) bool { return r.Name == step }); i >= 0 {
+func (h *Handler) findDecision(g *gateRecords, d agent.Decision) int {
+	// The record under the decision's identity name (agent.DecisionStep) is not necessarily the
+	// decision: a bad record may hold that name, and the real decision is then journaled under
+	// another. So no record is taken for the decision by its name; one is, if it is the approver's
+	// valid record of this same decision (same approver, verdict, scheme and decided_at, verifying
+	// for the recorded call under the approver's enrolled key, whatever its signature bytes: a
+	// randomized scheme signs one decision into different bytes). The first such record in journal
+	// order is the one the gate counts.
+	at := agent.FormatTimestamp(d.DecidedAt)
+	// A record with d's own bytes is d, found whatever its name and whatever key resolves now (a
+	// replay after a rotation answers from the record that counted).
+	if i := slices.IndexFunc(g.recs, func(r agent.Record) bool {
+		return agent.IsApprovalDecision(r, d.ToolUseID) && r.Approver() == d.ApproverID && r.Approved == d.Approved && r.ApproverAlg() == d.Alg &&
+			r.DecidedAt() == at && bytes.Equal(r.Signature(), d.Signature)
+	}); i >= 0 {
 		return i
 	}
 	v, ok := h.verifiers(d.ApproverID)
 	if !ok || v == nil {
 		return -1
 	}
-	at := agent.FormatTimestamp(d.DecidedAt)
 	msg := agent.ApprovalDecisionBytes(g.subject, d.ApproverID, d.Approved, d.DecidedAt)
 	return slices.IndexFunc(g.recs, func(r agent.Record) bool {
 		return agent.IsApprovalDecision(r, d.ToolUseID) && r.Approver() == d.ApproverID && r.Approved == d.Approved && r.ApproverAlg() == d.Alg &&
