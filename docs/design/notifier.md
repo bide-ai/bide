@@ -209,13 +209,14 @@ source of truth.
 
 | Record | Written | Fields |
 |---|---|---|
-| `observed` | once per event, first process to see it | `key`, `kind`, `event_at`, `observed_at`, `deadline_at` |
+| `observed` | once per event, first process to see it | `key`, `kind`, `event_at`, `observed_at`, `deadline_at`; for a halt or approval also `op_run`, `op_kind`, `op_id` |
 | `claimed` | at the start of each delivery round | `key`, `holder`, `at`, `until` |
 | `acked` | after the sink acknowledged | `key`, `first_sent_at`, `acked_at`, `attempts`, `status`, `auth` |
 | `failing` | once, when 3 rounds (8 attempts) have claimed the event without acknowledging it | `key`, `failures` (rounds), `at` |
 | `overdue` | once, when the deadline passes unacked | `key`, `at`, `latency` |
 | `failing_since` | a recovery pass failed and no episode is open for the run | `run`, `at`, `cause` (a class, not text) |
 | `recovered` | a recovery pass succeeded while an episode is open | `run`, `at` |
+| `watch`, `unwatch` | on the open trail `notify:@open`, not a run's: an event whose all-clear may be owed is listed before it is observed, and unlisted when nothing more is owed | `key`, `run`, `at` |
 | `cleared` | the event stopped being current, while it was still open | `key`, `at`, `reason` (`resolved`, `decided`, `ended`, `recovered`) |
 
 The fold of an event: **open** until `acked` or `cleared`; **claimed** if the last `claimed` has
@@ -317,23 +318,39 @@ seen (a stateless relay) may ignore an all-clear for an ID it does not know; one
 (PagerDuty's `dedup_key` does) gets the right incident state either way. No sequence number is
 needed because the identity is the order.
 
-**How an all-clear is found.** A *scan* of the run's trail reads it, folds it, and for each such
-event checks currency as a round does (from the journal; the key holds the run, operation or gate and
-the episode, so the check needs nothing else). It is queued on the notifier's worker after every drive
-of a root run (`Run`, a plan flow), after every recovery pass over a run, and for every run the sweep
-(`NotifyPending`) lists, so a decision, a resolution, the run's end and a recovery are each noticed by
-the next process that touches the run. A round that clears an event also queues its all-clear, and a
-scan queues an all-clear that was observed and not acknowledged, so a process that dies after any
-record resumes from the trail. The scan only reads and appends through the claim protocol, so any
-number of processes may run it.
+**How an all-clear is found.** A *scan* of a run's trail reads it, folds it, and for each such
+event checks currency as a round does, from the journal. The scan is queued on the notifier's worker
+after every drive of a root run (`Run`, a plan flow), after every recovery pass over a run, and for
+every unfinished run the sweep (`NotifyPending`) lists, so a decision, a resolution, the run's end and
+a recovery are each noticed by the next process that touches the run. A round that clears an event
+also queues its all-clear, and a scan queues an all-clear that was observed and not acknowledged, so a
+process that dies after any record resumes from the trail. The scan only reads and appends through
+the claim protocol, so any number of processes may run it.
 
-**Cost and limit.** One trail read per drive end, recovery pass and sweep run, off the drive's path,
-and a journal read for each acknowledged event not yet cleared. A run that ends in a process that dies
-before the scan, and is not unfinished, is not listed by the sweep (completed runs are excluded), so
-its all-clear waits for another drive or pass of that run: the same catch-up gap as an event whose
-process died, narrower because the incident it leaves open is the safe one. An event whose key holds
-an ID's digest (an ID longer than 96 encoded characters) cannot be rebuilt from the key, and a scan
-reports it to `WithNotifyErrors` instead of checking it.
+**A run that completed while nobody scanned.** The sweep and a recovery pass list unfinished runs,
+and a run that completes in a process that dies before its scan is not one. The *open trail*
+(`notify:@open`, `agent.NotifyOpenTrail`) closes that gap without reading every finished run. Before
+a round observes an `outcome_unknown`, `approval_pending` or `recovery_failing` event, it appends
+`watch{key, run}` to the open trail (idempotent while the key is listed); if that append fails the
+event is not observed or sent in that round, so no event that was delivered is missing from the
+list. A sweep (after its run loop), a `Recover` pass and each pass of `RecoverLoop` queue a scan of
+the open trail: it folds the list, loads the trail of each run that has a listed event, and scans it
+as above, whether or not the run has finished. `unwatch{key}` is appended when nothing more is owed:
+the all-clear was acknowledged, or the event was cleared before any delivery was attempted. A key
+listed for over an hour whose run's trail has no record of it (the process died between the two
+appends) is unlisted, and listed again if it is observed later. The list is two records per such
+event, ever, and a scan folds all of it: sized for events that need a person, not for runs. Events
+observed before this trail existed are not on it; for them only the scans above apply.
+
+**An ID too long to encode.** A key holds each ID in encoded form, and one longer than 96
+characters is replaced by its digest, which cannot be turned back into the ID. The `observed` record
+of a halt or an approval therefore also carries `op_run`, `op_kind` (`tool`, `step` or `gate`) and
+`op_id`, which the currency check reads in preference to the key. A record from before them has none
+and is read from its key, which works for every ID that fits.
+
+**Cost.** One trail read per drive end, recovery pass and swept run, one more for the open trail per
+sweep and recovery pass plus one per run listed, off the drive's path, and a journal read for each
+acknowledged event not yet cleared.
 
 ### Behavior fixed by the adversarial review
 
@@ -422,8 +439,8 @@ An independent review of the first implementation found these, and each is now a
 - **`VerifyNotifications` must read the trail strictly.** The engine's `Load` keeps a record kind it does
   not know in its position so an older process keeps delivering; the verifier (build plan item 7) must
   refuse a kind it cannot read, or an older verifier would pass a trail it did not check.
-- **The all-clear's scan costs a trail read** per drive end, recovery pass and swept run (see "The
-  all-clear").
+- **The all-clear's scans cost trail reads** per drive end, recovery pass and swept run, plus the
+  open trail's (see "The all-clear").
 - **Known cost:** a recovery pass does a trail read for each run it drives that pauses or succeeds, to
   close an open episode. It is one point read of a short trail; a deployment with very many paused
   runs may want a longer recovery interval.
