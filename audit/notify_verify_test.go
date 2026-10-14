@@ -901,7 +901,7 @@ func openChain(t *testing.T) (day0, day1, index audit.NotifyTrailExport) {
 	k1, k2 := agent.ApprovalKey("r1", "c1", 0), agent.ApprovalKey("r1", "c2", 0)
 	day0 = recsTrail(t, day(0),
 		segRec(agent.NotifyCheckpoint, 0, ""), op(agent.NotifyWatch, k1, 1), op(agent.NotifyWatch, k2, 2), op(agent.NotifyUnwatch, k1, 3),
-		segRec(agent.NotifyBackfilled, 4, ""), segRec(agent.NotifySeal, 5, day(1)))
+		segRec(agent.NotifyBackfilled, 4, ""), segRec(agent.NotifySeal, 86400, day(1)))
 	day1 = recsTrail(t, day(1), agent.NotifyRecord{Kind: agent.NotifyCheckpoint, At: at(86400), Backfilled: true,
 		Watching: []agent.Watched{{Key: k2, RunID: "r1", At: at(2)}}}, op(agent.NotifyUnwatch, k2, 86401))
 	index = recsTrail(t, agent.OpenIndex(t0.Year()), segRec(agent.NotifySegment, 0, day(0)), segRec(agent.NotifySegment, 86400, day(1)))
@@ -924,7 +924,7 @@ func TestVerifyNotifications_TheOpenTrail(t *testing.T) {
 		"a checkpoint that loses the backfill": {[]audit.NotifyTrailExport{d0, recsTrail(t, day(1), agent.NotifyRecord{Kind: agent.NotifyCheckpoint, At: at(86400),
 			Watching: []agent.Watched{{Key: k2, RunID: "r1", At: at(2)}}}), idx}, "backfilled is false"},
 		"a continuation with no checkpoint": {[]audit.NotifyTrailExport{d0, recsTrail(t, day(1), op(agent.NotifyUnwatch, k2, 86400)), idx}, "does not start with a checkpoint"},
-		"a record after the seal":           {[]audit.NotifyTrailExport{recsTrail(t, day(0), segRec(agent.NotifyCheckpoint, 0, ""), segRec(agent.NotifySeal, 1, day(1)), op(agent.NotifyWatch, k2, 2)), d1, idx}, "follows the seal"},
+		"a record after the seal":           {[]audit.NotifyTrailExport{recsTrail(t, day(0), segRec(agent.NotifyCheckpoint, 0, ""), segRec(agent.NotifySeal, 86400, day(1)), op(agent.NotifyWatch, k2, 2)), d1, idx}, "follows the seal"},
 		"an unwatch of an unlisted event":   {[]audit.NotifyTrailExport{recsTrail(t, day(0), op(agent.NotifyUnwatch, k2, 1))}, "not listed"},
 		"a checkpoint in the middle":        {[]audit.NotifyTrailExport{recsTrail(t, day(0), op(agent.NotifyWatch, k2, 1), segRec(agent.NotifyCheckpoint, 2, ""))}, "only the first record"},
 		"a seal into an earlier day":        {[]audit.NotifyTrailExport{recsTrail(t, day(1), segRec(agent.NotifySeal, 1, day(0)))}, "not a later segment"},

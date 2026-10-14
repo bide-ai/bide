@@ -165,6 +165,11 @@ func NotifyTrailName(runID string) string { return "notify:" + runID }
 // append-only and verifiable: a checkpoint must equal the fold of the segment it continues.
 const NotifyOpenTrail = "notify:@open"
 
+// OpenFirstYear is the first year an open-trail index can exist: the year the open trail began. Every
+// lookup, and every audit, looks at the years from it to the present, so none depends on a bound
+// chosen for a deployment's age.
+const OpenFirstYear = 2026
+
 // OpenIndex is the name of the open trail's index for a UTC year: one NotifySegment record per
 // segment created, so the newest segment is found by reading the last record of the newest index
 // (one or two loads, whatever the gaps and the age of the deployment), and the index is the size of

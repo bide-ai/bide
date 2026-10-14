@@ -364,7 +364,8 @@ func VerifyNotifications(in NotifyVerifyInput) (NotifyReport, error) {
 			all[name] = recs
 		}
 	}
-	openV := checkOpenGroup(all, in.MaxClockSkew)
+	openV := checkOpenGroup(all, in.MaxClockSkew, !in.Unanchored)
+	coverV := checkOpenCoverage(all, in.MaxClockSkew)
 	for _, name := range names {
 		var leaves [][]byte
 		if t := trails[name]; t != nil {
@@ -377,6 +378,7 @@ func VerifyNotifications(in NotifyVerifyInput) (NotifyReport, error) {
 			switch openTrailKind(name) {
 			case openNone:
 				tr.Violations = append(tr.Violations, checkNotifyTrail(name, recs, in.MaxClockSkew)...)
+				tr.Violations = append(tr.Violations, coverV[name]...)
 				rep.Events = append(rep.Events, in.verdicts(name, recs, owed[name])...)
 			default:
 				tr.Violations = append(tr.Violations, openV[name]...)

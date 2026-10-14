@@ -975,7 +975,7 @@ func TestResolved_ALookupIsConstantWhateverTheGap(t *testing.T) {
 		}
 		return tr.openLoads()
 	}
-	if n := loads(); n > indexYearsBack+10 { // looks for an index in each year back, once, then creates the first segment
+	if n := loads(); n > 12 { // one index lookup per year since the open trail began, then creates the first segment
 		t.Fatalf("a fresh deployment's first lookup took %d loads", n)
 	}
 	if n := loads(); n > 3 {
@@ -1191,5 +1191,45 @@ func TestNotifier_AFlowRunWithAMarkInItsIDHasOneRootOnBothPaths(t *testing.T) {
 		if len(recs) > 0 && name != NotifyTrailName(flow) && !strings.HasPrefix(name, NotifyOpenTrail) {
 			t.Fatalf("a record under %s: the event belongs to %s only", name, NotifyTrailName(flow))
 		}
+	}
+}
+
+// Every segment is indexed, in the index of the year it is named for, whatever the writer's clock
+// or how many days passed between the crash and the repair.
+func TestResolved_EverySegmentIsIndexedUnderItsOwnYearInOrder(t *testing.T) {
+	ctx := context.Background()
+	clk := &notifyClock{t: time.Date(2026, 12, 30, 9, 0, 0, 0, time.UTC)}
+	tr := NewMemNotifyTrail()
+	e := testEngine(t, memJournal(), &fakeSink{}, tr, clk, "p1")
+	if err := e.watch(ctx, "k1", "r"); err != nil {
+		t.Fatal(err)
+	}
+	d1 := OpenSegment(clk.now())
+	recs, _ := tr.Load(ctx, d1)
+	// A roller sealed day 1 into day 2 and wrote day 2's checkpoint, then died; days later (and
+	// across the new year) another writer comes, and a third unindexed segment follows.
+	clk.advance(24 * time.Hour)
+	d2 := OpenSegment(clk.now())
+	if err := tr.Append(ctx, d1, len(recs), NotifyRecord{Kind: NotifySeal, At: clk.now(), Next: d2}); err != nil {
+		t.Fatal(err)
+	}
+	if err := tr.Append(ctx, d2, 0, NotifyRecord{Kind: NotifyCheckpoint, At: clk.now(), Watching: FoldWatch(recs)}); err != nil {
+		t.Fatal(err)
+	}
+	clk.advance(5 * 24 * time.Hour) // 2027-01-04
+	if err := e.watch(ctx, "k2", "r"); err != nil {
+		t.Fatal(err)
+	}
+	d3 := OpenSegment(clk.now())
+	got := map[string][]string{}
+	for _, year := range []int{2026, 2027} {
+		irecs, _ := tr.Load(ctx, OpenIndex(year))
+		for _, r := range irecs {
+			got[OpenIndex(year)] = append(got[OpenIndex(year)], r.Next)
+		}
+	}
+	want := map[string][]string{OpenIndex(2026): {d1, d2}, OpenIndex(2027): {d3}}
+	if fmt.Sprint(got) != fmt.Sprint(want) {
+		t.Fatalf("indexes = %v, want %v", got, want)
 	}
 }
