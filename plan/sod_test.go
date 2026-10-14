@@ -154,3 +154,21 @@ func TestSoDFlow_AssertExcludingRequester(t *testing.T) {
 		t.Fatalf("plain form on an excluding gate: %+v", res)
 	}
 }
+
+// A flow run recorded with no principal (as every flow run before this version was) resumes under a
+// context that now carries an identity: the drive is not refused, and the run keeps no principal, so
+// a gate that excludes the requester still refuses it.
+func TestSoDFlow_NoPrincipalRunResumesUnderOne(t *testing.T) {
+	_, vf := approvers(opsFinRisk...)
+	j := agenttest.MemJournal()
+	refunds := 0
+	f := refundFlow(t, &agent.ApprovalPolicy{Need: 2, Approvers: opsFinRisk}, vf, &refunds)
+	_, err := f.Run(context.Background(), j, "r1", "order-42")
+	asPending(t, err)
+	_, err = f.Run(asRequester("ops"), j, "r1", "order-42")
+	asPending(t, err)
+	start, ok, err := agent.RecordedStart(context.Background(), j, "r1")
+	if err != nil || !ok || start.Principal != nil {
+		t.Fatalf("run:start = %+v (%v, %v); want it to keep no principal", start, ok, err)
+	}
+}

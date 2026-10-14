@@ -263,7 +263,8 @@ out, err := flow.Run(ctx, j, runID, in) // runs the node once 2 of 3 have approv
   [Human approval](hitl-approval.md#separation-of-duties)). A flow run's requester is the
   `OnBehalfOf` of the identity its context carries when it starts, which the run journals in its
   `run:start`; a later drive under another principal is `ErrConfig`, and one with none runs under the
-  journaled one. A flow run with no requester stops at such a gate with `ErrConfig`.
+  journaled one. A flow run recorded with no principal (every flow run an earlier version started)
+  keeps none, whatever a later drive carries, and stops at such a gate with `ErrConfig`.
 
   <!-- docsnip: setup ctx context.Context; j *agent.Journal; flow *plan.Flow[int, int]; runID string; in int -->
   ```go

@@ -405,9 +405,11 @@ func holdToStart(ctx context.Context, d *Journal, runID string, recs []Record, w
 		return fmt.Errorf("run %s was started as a saga; drive it with WithSaga(): %w", runID, ErrConfig)
 	case !got.Saga && want.Saga:
 		return fmt.Errorf("run %s was not started as a saga; resume it with Run (or Stream): %w", runID, ErrConfig)
-	case want.Principal != nil && (got.Principal == nil || *got.Principal != *want.Principal):
+	case want.Principal != nil && got.Principal != nil && *got.Principal != *want.Principal:
 		// A drive that names no principal runs under the recorded one; one that names another is
-		// refused, so the run's requester (see ApprovalPolicy.ExcludePrincipal) never changes.
+		// refused, so the run's requester (see ApprovalPolicy.ExcludePrincipal) never changes. A run
+		// recorded with none (every flow run an earlier version started) keeps none: a drive under a
+		// principal is not refused, and its principal is not recorded.
 		return fmt.Errorf("run %s was started with another principal (OnBehalfOf, AuthorityRef; see RecordedStart); drive it with the journaled one, or with none, or start a new run with a new run ID: %w", runID, ErrConfig)
 	case got.kind() == RunKindFlow:
 		same, err := equalJSON([]byte(got.Input.Text()), []byte(want.Input.Text()))

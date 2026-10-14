@@ -320,3 +320,28 @@ func mustHistory(t *testing.T, j *Journal, runID string) []Record {
 	}
 	return recs
 }
+
+// RecordedRequester reads run:start strictly: a record that names the principal twice, or under a
+// case variant encoding/json would also read, names no requester (the gate then refuses the run).
+func TestSoD_RecordedRequesterIsStrict(t *testing.T) {
+	start := func(js string) []Record {
+		return []Record{{Name: runStartStep, Kind: StepValue, Result: json.RawMessage(js)}}
+	}
+	for js, want := range map[string]string{
+		`{"input":"x","principal":{"on_behalf_of":"alice"}}`:                                    "alice",
+		`{"input":"x","principal":{"on_behalf_of":"alice"},"later_field":1}`:                    "alice",
+		`{"input":"x","principal":{"on_behalf_of":"alice"},"Principal":{"on_behalf_of":"bob"}}`: "",
+		`{"input":"x","principal":{"on_behalf_of":"alice","on_behalf_of":"bob"}}`:               "",
+		`{"input":"x","principal":{"On_Behalf_Of":"bob"}}`:                                      "",
+		`{"input":"x"}`: "",
+	} {
+		got, ok := RecordedRequester(start(js))
+		if got != want || ok != (want != "") {
+			t.Errorf("RecordedRequester(%s) = %q, %v; want %q", js, got, ok, want)
+		}
+	}
+	two := append(start(`{"principal":{"on_behalf_of":"alice"}}`), start(`{"principal":{"on_behalf_of":"bob"}}`)...)
+	if got, ok := RecordedRequester(two); ok {
+		t.Errorf("two disagreeing run:start records: %q", got)
+	}
+}

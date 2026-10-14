@@ -12,6 +12,8 @@ import (
 	"slices"
 	"strings"
 	"time"
+
+	"github.com/bide-ai/bide/internal/strictjson"
 )
 
 // This file holds the m-of-n approval gate's data model: the policy check, what an approver
@@ -541,15 +543,21 @@ func sameApprover(a, b string) bool {
 // RecordedRequester returns the requester of the run whose records recs are: the principal its
 // run:start record names (RunStart.Principal.OnBehalfOf, the Identity the run was started with),
 // which a policy with ExcludePrincipal excludes. ok is false when recs hold no run:start, when it
-// does not decode or names no OnBehalfOf, and when recs hold two run:start records that disagree.
+// does not decode strictly or names no OnBehalfOf, and when recs hold two run:start records that
+// disagree.
 // It reads only what the journal holds, so the gate and an offline verifier find the same requester.
 func RecordedRequester(recs []Record) (requester string, ok bool) {
 	for _, r := range recs {
 		if !IsRunStart(r) {
 			continue
 		}
-		var st RunStart
-		if json.Unmarshal(r.Result, &st) != nil || st.Principal == nil || st.Principal.OnBehalfOf == "" {
+		// Read strictly (no duplicate or case-variant name, at any depth), so the record names one
+		// principal to every reader, the gate, an auditor and a verifier in another language alike;
+		// names a later version adds are allowed.
+		var st struct {
+			Principal *Principal `json:"principal"`
+		}
+		if strictjson.Unmarshal(r.Result, &st, &strictjson.Options{AllowUnknown: true}) != nil || st.Principal == nil || st.Principal.OnBehalfOf == "" {
 			return "", false
 		}
 		if ok && st.Principal.OnBehalfOf != requester {
