@@ -5,9 +5,9 @@
 Output "terminal.mp4"
 
 Set Shell "bash"
-Set FontSize 20
+Set FontSize 18
 Set Width 790
-Set Height 900
+Set Height 1050
 Set Padding 22
 Set Theme "Dracula"
 Set TypingSpeed 35ms
@@ -23,5 +23,5 @@ Sleep 400ms
 Type "bide demo"
 Sleep 400ms
 Enter
-Wait+Screen@40s /Ctrl-C to quit/
-Sleep 2500ms
+Wait+Screen@90s /Ctrl-C to quit/
+Sleep 4s

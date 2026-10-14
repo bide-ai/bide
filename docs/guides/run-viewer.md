@@ -18,9 +18,9 @@ request to any other host.
 ![bide view on a plan flow halted mid-node: END STATE "halted: outcome unknown", the halt with its ResolveHalt snippet, and the topology with the path taken](img/run-viewer-flow-halted-dark.png)
 
 The quickest way to see the page is the crash demo, which needs no API key and no journal of your
-own. It kills an agent mid-charge, resolves the halt, and opens this page on the run, with an
+own. It first shows the same crash without bide (a naive retry charges twice), then kills an agent mid-charge, resolves the halt, and opens this page on the run, with an
 evidence package and the approvers' keys, so the audit proof and the gate's signatures show as
-verified:
+verified, and finally changes one amount in a copy of the journal so that verification fails:
 
 ```sh
 bide demo            # -no-browser prints the URL instead; -keep keeps the journal; -fast exits when done (CI)

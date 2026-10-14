@@ -10,7 +10,7 @@
   Side effects fire at most once, even across a crash. Every action is provable afterwards.
 </p>
 
-<p align="center"><img src="assets/crash-demo.gif" width="100%" alt="bide demo: an agent is killed mid-charge, the restart halts with outcome unknown instead of charging again, the charge is resolved from the provider's record, and bide view shows the run with its audit proof and 2-of-3 approval signatures verified"></p>
+<p align="center"><img src="assets/crash-demo.gif" width="100%" alt="bide demo: without bide a restart retries the charge and the provider charges twice; with bide an agent is killed mid-charge, the restart halts with outcome unknown and notifies ops with a signed webhook, the charge is resolved from the provider's record, bide view shows the run with its audit proof and 2-of-3 approval signatures verified, and changing one amount in a copy of the journal makes verification fail"></p>
 <p align="center">
   <img src="assets/quote-rule-left.png" width="72" alt="">&nbsp;&nbsp;<em>A pause you can clear beats a double-fire you can't.</em>&nbsp;&nbsp;<img src="assets/quote-rule-right.png" width="72" alt="">
 </p>

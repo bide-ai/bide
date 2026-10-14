@@ -5,6 +5,7 @@ import (
 	"context"
 	"crypto/ed25519"
 	"crypto/rand"
+	"database/sql"
 	"encoding/hex"
 	"io"
 	"net/http"
@@ -202,7 +203,14 @@ func TestRecorder(t *testing.T) {
 	if !r.on() {
 		t.Fatal("a set recorder is off")
 	}
-	write(t, filepath.Join(dir, journalFile), "journal bytes")
+	src, err := sql.Open("sqlite", filepath.Join(dir, journalFile))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := src.Exec("CREATE TABLE t (v TEXT); INSERT INTO t VALUES ('journal row')"); err != nil {
+		t.Fatal(err)
+	}
+	src.Close()
 	if err := r.snapshot(dir, "halted"); err != nil {
 		t.Fatal(err)
 	}
@@ -214,9 +222,15 @@ func TestRecorder(t *testing.T) {
 	if len(lines) != 2 || !strings.HasPrefix(lines[0], "halted ") || !strings.HasPrefix(lines[1], "verified ") {
 		t.Errorf("marks = %q", marks)
 	}
-	if b, _ := os.ReadFile(filepath.Join(rec, "halted.db")); string(b) != "journal bytes" {
-		t.Errorf("halted.db = %q", b)
+	snap, err := sql.Open("sqlite", filepath.Join(rec, "halted.db"))
+	if err != nil {
+		t.Fatal(err)
 	}
+	var v string
+	if err := snap.QueryRow("SELECT v FROM t").Scan(&v); err != nil || v != "journal row" {
+		t.Errorf("halted.db holds %q, %v; want the journal's row", v, err)
+	}
+	snap.Close()
 	if err := r.snapshot(t.TempDir(), "x"); err == nil {
 		t.Error("snapshot of a directory with no journal succeeded")
 	}
@@ -238,7 +252,8 @@ func TestDemoRecordsMarks(t *testing.T) {
 	}
 	res.close()
 	marks, _ := os.ReadFile(filepath.Join(rec, "marks.txt"))
-	if !strings.HasPrefix(string(marks), "halted ") || !strings.Contains(string(marks), "\nverified ") {
+	h, v := strings.Index(string(marks), "\nhalted "), strings.Index(string(marks), "\nverified ")
+	if h < 0 || v < h {
 		t.Errorf("marks = %q, want halted then verified", marks)
 	}
 	if fi, err := os.Stat(filepath.Join(rec, "halted.db")); err != nil || fi.Size() == 0 {
@@ -293,11 +308,11 @@ func TestKeptLines(t *testing.T) {
 func TestViewErrors(t *testing.T) {
 	dir := t.TempDir()
 	pub, _, _ := ed25519.GenerateKey(rand.Reader)
-	if _, err := view(context.Background(), dir, pub); err == nil {
+	if _, err := view(context.Background(), dir, filepath.Join(dir, journalFile), pub); err == nil {
 		t.Error("view of an empty directory succeeded")
 	}
 	write(t, filepath.Join(dir, evidenceFile), `{"bogus":1}`)
-	if _, err := view(context.Background(), dir, pub); err == nil {
+	if _, err := view(context.Background(), dir, filepath.Join(dir, journalFile), pub); err == nil {
 		t.Error("view with an evidence file of another shape succeeded")
 	}
 }
@@ -371,11 +386,14 @@ func (s *syncBuf) String() string {
 	return s.b.String()
 }
 
-// TestDemoFailsInUnusableDirectory: the demo reports a directory it cannot write to rather than
+// TestDemoFailsInUnusableDirectory: the demo reports a directory it cannot create or write to (here
+// one below a file) rather than
 // narrating a story it cannot tell.
 func TestDemoFailsInUnusableDirectory(t *testing.T) {
 	var out bytes.Buffer
-	res, err := demo(context.Background(), filepath.Join(t.TempDir(), "gone"), config{}, newPrinter(&out, term.Never), true)
+	file := filepath.Join(t.TempDir(), "file")
+	write(t, file, "")
+	res, err := demo(context.Background(), filepath.Join(file, "dir"), config{}, newPrinter(&out, term.Never), true)
 	if err == nil {
 		res.close()
 		t.Fatal("demo in a missing directory succeeded")
@@ -434,14 +452,14 @@ func TestViewOverDamagedDirectory(t *testing.T) {
 	raw, _ := hex.DecodeString(strings.TrimSpace(string(seed)))
 	logPub := ed25519.NewKeyFromSeed(raw).Public().(ed25519.PublicKey)
 
-	r, err := view(context.Background(), dir, logPub)
+	r, err := view(context.Background(), dir, filepath.Join(dir, journalFile), logPub)
 	if err != nil || !r.proof.OK || !r.anchored.OK || !r.approvals.OK || r.logPub != audit.FormatPublicKey(audit.AlgEd25519, logPub) {
 		t.Fatalf("view with the log key: %+v, %v", r, err)
 	}
 	r.close()
 
 	other, _, _ := ed25519.GenerateKey(rand.Reader)
-	r, err = view(context.Background(), dir, other)
+	r, err = view(context.Background(), dir, filepath.Join(dir, journalFile), other)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -459,7 +477,7 @@ func TestViewOverDamagedDirectory(t *testing.T) {
 		if err := os.Remove(path); err != nil {
 			t.Fatal(err)
 		}
-		if r, err := view(context.Background(), dir, logPub); err == nil {
+		if r, err := view(context.Background(), dir, filepath.Join(dir, journalFile), logPub); err == nil {
 			r.close()
 			t.Errorf("view without %s succeeded", name)
 		}
@@ -468,7 +486,7 @@ func TestViewOverDamagedDirectory(t *testing.T) {
 		}
 	}
 	write(t, filepath.Join(dir, anchorFile), "")
-	if r, err := view(context.Background(), dir, logPub); err == nil {
+	if r, err := view(context.Background(), dir, filepath.Join(dir, journalFile), logPub); err == nil {
 		r.close()
 		t.Error("view with an empty anchor succeeded")
 	}

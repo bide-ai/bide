@@ -5,15 +5,21 @@ import (
 	"bytes"
 	"context"
 	"crypto/ed25519"
+	"crypto/rand"
+	"database/sql"
 	"encoding/hex"
 	"encoding/json"
+	"encoding/pem"
 	"errors"
 	"fmt"
 	"io"
+	"net/http"
+	"net/http/httptest"
 	"os"
 	"os/exec"
 	"path/filepath"
 	"runtime"
+	"strconv"
 	"strings"
 	"sync"
 	"time"
@@ -22,6 +28,7 @@ import (
 	"github.com/bide-ai/bide/audit"
 	"github.com/bide-ai/bide/internal/runview"
 	"github.com/bide-ai/bide/internal/term"
+	"github.com/bide-ai/bide/notify"
 	"github.com/bide-ai/bide/store/sqlite"
 )
 
@@ -172,9 +179,9 @@ func verifiers(keys map[string]string) agent.ApproverVerifierFor {
 	}
 }
 
-// view opens dir's journal read-only, as bide view does, and checks the run against the exported
-// evidence, the approvers' public keys and the last head the audited store anchored.
-func view(ctx context.Context, dir string, logPub ed25519.PublicKey) (*result, error) {
+// view opens the journal at journalPath read-only, as bide view does, and checks the run against
+// dir's exported evidence, the approvers' public keys and the last head the audited store anchored.
+func view(ctx context.Context, dir, journalPath string, logPub ed25519.PublicKey) (*result, error) {
 	var pkg audit.EvidencePackage
 	if err := readStrict(filepath.Join(dir, evidenceFile), &pkg); err != nil {
 		return nil, err
@@ -189,7 +196,7 @@ func view(ctx context.Context, dir string, logPub ed25519.PublicKey) (*result, e
 	}
 	logV := audit.Ed25519Verifier{Pub: logPub}
 	ap := runview.Approvals{Keys: verifiers(keys)}
-	s, err := sqlite.OpenReadOnly(filepath.Join(dir, journalFile))
+	s, err := sqlite.OpenReadOnly(journalPath)
 	if err != nil {
 		return nil, err
 	}
@@ -292,7 +299,11 @@ func (p *printer) line(s string) { fmt.Fprintln(p.out, s) }
 // what happens.
 func (p *printer) step(n int, label string, color func(string) string, what string) {
 	p.line("")
-	p.line(fmt.Sprintf("%s %s %s", color(fmt.Sprint(n)), p.bold(color(fmt.Sprintf("%-7s", label))), what))
+	pad := ""
+	if len(label) > 7 {
+		pad = " " // a label wider than the column still keeps two spaces from the text
+	}
+	p.line(fmt.Sprintf("%s %s%s %s", color(fmt.Sprint(n)), p.bold(color(fmt.Sprintf("%-7s", label))), pad, what))
 }
 
 // more prints a line under the current step, aligned with its text.
@@ -335,15 +346,230 @@ func (r recorder) mark(event string) error {
 	return f.Close()
 }
 
-// snapshot copies the closed journal in dir to <name>.db in the recorder's directory, and marks
-// the event.
+// snapshot copies the journal in dir to <name>.db in the recorder's directory, and marks the event.
+// It does nothing when the recorder is off.
 func (r recorder) snapshot(dir, name string) error {
+	if !r.on() {
+		return nil
+	}
 	if err := r.mark(name); err != nil {
 		return err
 	}
-	b, err := os.ReadFile(filepath.Join(dir, journalFile))
+	return copyJournal(filepath.Join(dir, journalFile), filepath.Join(r.dir, name+".db"))
+}
+
+// copyJournal writes a consistent copy of the SQLite journal src to dst (which must not exist),
+// including what its write-ahead log holds, as a file copy of a journal a killed process left would
+// not.
+func copyJournal(src, dst string) error {
+	if _, err := os.Stat(src); err != nil { // opening a missing file would create an empty journal
+		return err
+	}
+	db, err := sql.Open("sqlite", src)
 	if err != nil {
 		return err
 	}
-	return os.WriteFile(filepath.Join(r.dir, name+".db"), b, 0o644)
+	defer db.Close()
+	_, err = db.Exec("VACUUM INTO '" + strings.ReplaceAll(dst, "'", "''") + "'")
+	return err
+}
+
+// withoutBide replays the crash without bide, for contrast: an agent with no journal charges, dies
+// after the provider took the charge, and on restart has nothing that says it already did, so it
+// charges again. It uses a fake provider of its own (in dir/naive) and returns the charges it
+// holds at the end.
+func withoutBide(dir string, p *printer, pause func(time.Duration)) (int, error) {
+	pdir := filepath.Join(dir, naiveDir)
+	if err := os.MkdirAll(pdir, 0o755); err != nil {
+		return 0, err
+	}
+	p.step(0, "Without bide", p.red, "restart retries the charge")
+	pause(700 * time.Millisecond)
+	in := chargeArgs{Order: order, Amount: amount}
+	first, err := providerCharge(pdir, in)
+	if err != nil {
+		return 0, err
+	}
+	p.more(fmt.Sprintf("charged $%d (%s), then the process died", amount, first.ID))
+	pause(1000 * time.Millisecond)
+	// The restarted process has no journal: it knows nothing of the first attempt, so it asks again.
+	if _, err := providerCharge(pdir, in); err != nil {
+		return 0, err
+	}
+	all, err := providerCharges(pdir)
+	if err != nil {
+		return 0, err
+	}
+	p.more(p.red(fmt.Sprintf("provider charges: %d", len(all))) + "  " + p.st.Cross() + p.red(p.bold("double charge")))
+	if len(all) != 2 {
+		return 0, fmt.Errorf("the run without bide left %d charges, want 2", len(all))
+	}
+	return len(all), nil
+}
+
+// receiver is the in-process HTTPS endpoint the demo's webhook notifier delivers to. It accepts a
+// delivery only if its HMAC signature verifies (notify.Verify, as a real receiver would).
+type receiver struct {
+	srv      *httptest.Server
+	secret   string
+	notifier agent.Notifier
+	got      chan notify.Payload
+	rejected chan error
+}
+
+func newReceiver() (*receiver, error) {
+	var seed [16]byte
+	if _, err := rand.Read(seed[:]); err != nil {
+		return nil, err
+	}
+	r := &receiver{secret: hex.EncodeToString(seed[:]), got: make(chan notify.Payload, 8), rejected: make(chan error, 8)}
+	r.srv = httptest.NewTLSServer(http.HandlerFunc(func(w http.ResponseWriter, req *http.Request) {
+		if err := notify.Verify(req, []string{r.secret}, 0); err != nil {
+			r.rejected <- err
+			http.Error(w, "bad signature", http.StatusUnauthorized)
+			return
+		}
+		var pl notify.Payload
+		if err := json.NewDecoder(req.Body).Decode(&pl); err != nil {
+			r.rejected <- err
+			http.Error(w, "bad body", http.StatusBadRequest)
+			return
+		}
+		r.got <- pl
+		w.WriteHeader(http.StatusNoContent)
+	}))
+	ca := pem.EncodeToMemory(&pem.Block{Type: "CERTIFICATE", Bytes: r.srv.Certificate().Raw})
+	w, err := notify.NewWebhook(r.srv.URL, notify.WithSecrets(r.secret, ""), notify.WithServerCAPEM(ca))
+	if err != nil {
+		r.srv.Close()
+		return nil, err
+	}
+	r.notifier = w
+	return r, nil
+}
+
+func (r *receiver) close() { r.srv.Close() }
+
+// verified returns the halt notification the receiver accepted, and fails if it received none or
+// refused one.
+func (r *receiver) verified() (*notify.Payload, error) {
+	select {
+	case err := <-r.rejected:
+		return nil, fmt.Errorf("the receiver refused the halt notification: %w", err)
+	default:
+	}
+	select {
+	case pl := <-r.got:
+		if pl.Kind != string(agent.NotificationOutcomeUnknown) || pl.RunID != runID {
+			return nil, fmt.Errorf("the receiver got a %s notification for %s, want outcome_unknown for %s", pl.Kind, pl.RunID, runID)
+		}
+		return &pl, nil
+	default:
+		return nil, errors.New("the receiver got no halt notification")
+	}
+}
+
+// tamper changes the amount of the charge request ($120 to $1,200) in a copy of the journal,
+// leaving the journal itself alone, and checks the copy as bide view does against the evidence
+// and the anchored head, which sign the original. It fails if the copy still verifies.
+func tamper(ctx context.Context, dir string, logPub ed25519.PublicKey, res *result, p *printer, pause func(time.Duration)) error {
+	copyPath := filepath.Join(dir, tamperedFile)
+	if err := copyJournal(filepath.Join(dir, journalFile), copyPath); err != nil {
+		return err
+	}
+	db, err := sql.Open("sqlite", copyPath)
+	if err != nil {
+		return err
+	}
+	var seq int
+	err = db.QueryRow(`SELECT seq FROM bide_steps WHERE run_id = ? AND name = '@llm/0'`, runID).Scan(&seq)
+	if err == nil {
+		var r sql.Result
+		r, err = db.Exec(`UPDATE bide_steps SET data = replace(data, ?, ?) WHERE seq = ?`,
+			fmt.Sprintf(`"amount":%d}`, amount), fmt.Sprintf(`"amount":%d}`, amount*10), seq)
+		if err == nil {
+			if n, _ := r.RowsAffected(); n != 1 {
+				err = fmt.Errorf("the charge request in the copy holds no amount of %d", amount)
+			}
+		}
+	}
+	db.Close()
+	if err != nil {
+		return err
+	}
+	p.step(6, "Tamper", p.red, fmt.Sprintf("change record %d: $%d \u2192 $%s", seq, amount, thousands(amount*10)))
+	pause(900 * time.Millisecond)
+	bad, err := view(ctx, dir, copyPath, logPub)
+	if err != nil {
+		return err
+	}
+	bad.close()
+	res.tampered, res.tamperedSeq = bad.proof, seq
+	if bad.proof.OK {
+		return errors.New("the evidence still verifies against the tampered journal")
+	}
+	if len(bad.proof.Problems) == 0 {
+		return errors.New("the tampered journal failed verification without a reason")
+	}
+	// The viewer's proof carries its problems as text, so the typed error comes from the same call
+	// it makes: the inclusion proof of the last record under the anchored head.
+	perr := proveAnchored(ctx, dir, copyPath)
+	res.tamperErr = perr
+	p.more(p.st.Cross() + p.red(p.bold("verify failed")+verdictReason(perr)))
+	pause(500 * time.Millisecond)
+	why := bad.proof.Problems[0]
+	if perr != nil {
+		why = perr.Error()
+	}
+	why = strings.TrimPrefix(why, "the signed head does not commit to this journal: ")
+	why, _, _ = strings.Cut(strings.TrimPrefix(why, "audit: "), " (")
+	p.more(p.dim(shorten(why, 60)))
+	return nil
+}
+
+// proveAnchored is the check at the heart of the viewer's proof: the inclusion proof of the last
+// record the anchored head covers, built from the journal at journalPath. It returns its error.
+func proveAnchored(ctx context.Context, dir, journalPath string) error {
+	sth, err := fileAnchor(filepath.Join(dir, anchorFile)).latest()
+	if err != nil {
+		return err
+	}
+	s, err := sqlite.OpenReadOnly(journalPath)
+	if err != nil {
+		return err
+	}
+	defer s.Close()
+	j, err := agent.NewJournal(s)
+	if err != nil {
+		return err
+	}
+	_, err = audit.ProveRecord(ctx, j, runID, sth.Size-1, sth)
+	return err
+}
+
+// verdictReason is a plain-language reason for a failed verification, chosen by the error's type:
+// empty (just "verify failed") for an error it has no wording for.
+func verdictReason(err error) string {
+	if errors.Is(err, audit.ErrRootMismatch) {
+		return ": journal changed since it was signed"
+	}
+	return ""
+}
+
+// thousands formats n with a comma between thousands.
+func thousands(n int) string {
+	s := strconv.Itoa(n)
+	for i := len(s) - 3; i > 0; i -= 3 {
+		s = s[:i] + "," + s[i:]
+	}
+	return s
+}
+
+// shorten cuts s to at most n runes, ending in an ellipsis when it cuts.
+func shorten(s string, n int) string {
+	r := []rune(s)
+	if len(r) <= n {
+		return s
+	}
+	return string(r[:n-1]) + "\u2026"
 }
