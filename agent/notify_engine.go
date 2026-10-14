@@ -22,6 +22,7 @@ type notifyConfig struct {
 	recoveryAfter time.Duration
 	haltAge       time.Duration
 	abortedWithin time.Duration
+	upgradeWindow time.Duration // how long after the first backfill the second pass runs
 	skew          time.Duration // margin added to another holder's claim before it counts as lapsed
 	maxInflight   int           // rounds in flight at once in the worker
 	holder        string
@@ -52,6 +53,7 @@ func defaultNotifyConfig() notifyConfig {
 		recoveryAfter:  15 * time.Minute,
 		haltAge:        5 * time.Minute,
 		abortedWithin:  24 * time.Hour,
+		upgradeWindow:  24 * time.Hour,
 		holder:         defaultHolder(),
 		roundAttempts:  3,
 		attemptBackoff: time.Second,

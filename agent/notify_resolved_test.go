@@ -1441,3 +1441,40 @@ func TestResolved_ARollingUpgradeASecondBackfillCatchesWhatCompletedMeanwhile(t 
 		t.Fatalf("a third backfill pass read the run's trail %d times", n)
 	}
 }
+
+// The upgrade window is an option: a staged rollout over a week sets it to a week, and the second
+// backfill pass waits that long.
+func TestResolved_TheUpgradeWindowIsAnOption(t *testing.T) {
+	ctx := context.Background()
+	clk := sweepClock()
+	j := memJournal()
+	tr := NewMemNotifyTrail()
+	newer := testEngine(t, j, &fakeSink{}, tr, clk, "new", WithNotifyUpgradeWindow(7*24*time.Hour))
+	putMarker(t, j, "r", "c1", clk.now().UnixMilli())
+	if err := newer.backfillOpen(ctx); err != nil {
+		t.Fatal(err)
+	}
+	ev := haltEvent()
+	oldWriter(t, tr, ev, clk.now())
+	putResult(t, j, "r", "c1")
+	completeRun(t, j, "r")
+	clk.advance(3 * 24 * time.Hour) // past the default window, inside the configured one
+	if err := newer.backfillOpen(ctx); err != nil {
+		t.Fatal(err)
+	}
+	if listedKeys(t, newer)[ev.key] {
+		t.Fatal("the second pass ran before the configured window")
+	}
+	clk.advance(5 * 24 * time.Hour)
+	if err := newer.backfillOpen(ctx); err != nil {
+		t.Fatal(err)
+	}
+	if !listedKeys(t, newer)[ev.key] {
+		t.Fatal("the second pass did not run after the configured window")
+	}
+	for _, bad := range []time.Duration{0, -time.Hour} {
+		if _, err := newNotifyEngine(memJournal(), &fakeSink{}, NewMemNotifyTrail(), []NotifyOption{WithNotifyUpgradeWindow(bad)}, "test"); !errors.Is(err, ErrConfig) {
+			t.Errorf("WithNotifyUpgradeWindow(%v) = %v, want ErrConfig", bad, err)
+		}
+	}
+}

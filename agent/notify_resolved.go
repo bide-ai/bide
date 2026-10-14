@@ -587,19 +587,17 @@ func (e *notifyEngine) backfillOpen(ctx context.Context) error {
 	return fmt.Errorf("notify: trail %s: lost the append race recording the backfill", NotifyOpenTrail)
 }
 
-// secondBackfillAfter is how long after the first backfill pass the second is due. A rolling upgrade
-// leaves processes of the previous version delivering events they do not list; the second pass lists
-// those that a scan has not reached (a run that completed meanwhile). Two passes, ever.
-const secondBackfillAfter = 24 * time.Hour
-
 // backfillDue reports whether a backfill pass is owed given the open trail's state: the first, or,
-// once secondBackfillAfter has passed since it, the second.
+// once the upgrade window (WithNotifyUpgradeWindow, a day by default) has passed since it, the
+// second. A rolling upgrade leaves processes of the previous version delivering events they do not
+// list; the second pass lists those that a scan has not reached (a run that completed meanwhile).
+// Two passes, ever.
 func (e *notifyEngine) backfillDue(st OpenState) bool {
 	switch {
 	case !st.Backfilled:
 		return true
 	case st.Backfills < 2:
-		return e.cfg.now().Sub(st.BackfillAt) > secondBackfillAfter
+		return e.cfg.now().Sub(st.BackfillAt) > e.cfg.upgradeWindow
 	}
 	return false
 }

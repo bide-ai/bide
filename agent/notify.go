@@ -262,6 +262,23 @@ func WithNotifyAbortedWithin(d time.Duration) NotifyOption {
 	})
 }
 
+// WithNotifyUpgradeWindow sets how long after the first backfill pass the second runs (default 24
+// hours). A rolling upgrade leaves processes of the previous version delivering events they do not
+// list on the open trail; every scan of an unfinished run lists such an event, and the second pass
+// lists what no scan reached (a run such a process saw to completion). Set it to the time your
+// upgrade takes to reach every process, a week for a staged rollout across regions: an event a
+// previous-version process delivers after the second pass, in a run that ends before a new-version
+// scan reaches it, stays unlisted, and `bide audit notifications` reports it. d must be positive.
+func WithNotifyUpgradeWindow(d time.Duration) NotifyOption {
+	return notifyOption(func(c *notifyConfig) error {
+		if d <= 0 {
+			return fmt.Errorf("WithNotifyUpgradeWindow(%v): must be positive: %w", d, ErrConfig)
+		}
+		c.upgradeWindow = d
+		return nil
+	})
+}
+
 // WithNotifyClock sets the clock the notifier reads: for claim and deadline times, backoff, and
 // the age of an aborted run or a halt in a sweep. Default time.Now. A deployment whose runs are
 // driven with WithClock (a test, a simulation) should give the notifier the same clock, because
