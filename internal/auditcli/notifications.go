@@ -170,7 +170,7 @@ func (c *cli) readStore(in *audit.NotifyVerifyInput, db, pgEnv, run string) erro
 	if run != "" && !slices.Contains(ids, run) {
 		return unusable(fmt.Errorf("-run %s: the store holds no such run", run))
 	}
-	roots := map[string]bool{}
+	roots := map[string]bool{} // the runs whose trails may hold events: roots, and the roots events name (a flow run is its own)
 	for _, id := range ids {
 		x, err := audit.ExportJournal(ctx, j, id)
 		if err != nil {
@@ -180,24 +180,69 @@ func (c *cli) readStore(in *audit.NotifyVerifyInput, db, pgEnv, run string) erro
 		if !agent.IsSubRun(id) {
 			roots[id] = true
 		}
-	}
-	// The global trail of events whose all-clear may be owed is read too (once, with every run or
-	// with -run), and checked as a trail of its own.
-	names := []string{agent.NotifyOpenTrail}
-	for _, id := range slices.Sorted(mapKeys(roots)) {
-		names = append(names, agent.NotifyTrailName(id))
-	}
-	for _, name := range names {
-		x, err := audit.ExportNotifyTrail(ctx, s.Events, name)
+		recs, err := x.Journal()
 		if err != nil {
 			return unusable(err)
 		}
-		if len(x.Leaves) > 0 {
-			in.Trails = append(in.Trails, x)
+		for _, ev := range agent.JournalNotifyEvents(id, recs) {
+			roots[ev.RunID] = true
+		}
+	}
+	add := func(name string) ([]agent.NotifyRecord, error) {
+		x, err := audit.ExportNotifyTrail(ctx, s.Events, name)
+		if err != nil {
+			return nil, err
+		}
+		if len(x.Leaves) == 0 {
+			return nil, nil
+		}
+		in.Trails = append(in.Trails, x)
+		recs, err := audit.NewNotifyTrail(memLeaves{x.Leaves}).Load(ctx, name)
+		return recs, err
+	}
+	for _, id := range slices.Sorted(mapKeys(roots)) {
+		if _, err := add(agent.NotifyTrailName(id)); err != nil {
+			return unusable(err)
+		}
+	}
+	// The open trail: every yearly index, the segments they name, and the segments those seal into.
+	now := time.Now().UTC()
+	segs := map[string]bool{}
+	var queue []string
+	for y := now.Year() + 1; y >= now.Year()-50; y-- {
+		recs, err := add(agent.OpenIndex(y))
+		if err != nil {
+			return unusable(err)
+		}
+		for _, r := range recs {
+			if r.Kind == agent.NotifySegment && !segs[r.Next] {
+				segs[r.Next] = true
+				queue = append(queue, r.Next)
+			}
+		}
+	}
+	for len(queue) > 0 {
+		name := queue[0]
+		queue = queue[1:]
+		recs, err := add(name)
+		if err != nil {
+			return unusable(err)
+		}
+		if next := agent.FoldOpen(recs).Sealed; next != "" && !segs[next] {
+			segs[next] = true
+			queue = append(queue, next)
 		}
 	}
 	return nil
 }
+
+// memLeaves is an audit.EventStore over the leaves of one trail, to decode them as records.
+type memLeaves struct{ leaves [][]byte }
+
+func (m memLeaves) Append(context.Context, string, int, []byte) error {
+	return errors.New("read-only")
+}
+func (m memLeaves) Load(context.Context, string) ([][]byte, error) { return m.leaves, nil }
 
 func mapKeys(m map[string]bool) func(yield func(string) bool) {
 	return func(yield func(string) bool) {

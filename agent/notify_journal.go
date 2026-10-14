@@ -42,7 +42,7 @@ type JournalNotifyEvent struct {
 // What it cannot see: a halt resolved by a later result leaves no attempt marker without a result,
 // so the journal no longer shows it; and recovery_failing and overdue are not journal facts.
 func JournalNotifyEvents(runID string, recs []Record) []JournalNotifyEvent {
-	root := treeRootID(runID)
+	root := runStartRoot(runID, recs)
 	have := make(map[string]bool, len(recs))
 	for _, r := range recs {
 		have[r.Name] = true
@@ -96,7 +96,7 @@ func JournalNotifyEvents(runID string, recs []Record) []JournalNotifyEvent {
 			Key: HaltedKey(runID, kind, id, at.UnixMilli()), Kind: NotificationOutcomeUnknown, RunID: root, At: at, Current: true,
 		})
 	}
-	if !IsSubRun(runID) {
+	if root == runID {
 		for _, r := range recs {
 			if r.Name == runAbortedStep {
 				at, _ := abortedAt(r)

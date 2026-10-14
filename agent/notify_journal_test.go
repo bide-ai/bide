@@ -156,3 +156,41 @@ func TestJournalNotifyEvents_SubRunGateAndAbort(t *testing.T) {
 		t.Fatalf("gate = %+v", e)
 	}
 }
+
+// A plan flow's run (its run:start records kind flow) is its own root even when its ID holds '>',
+// as the notifier files its events; any other run with '>' is its tree root's.
+func TestJournalNotifyEvents_AFlowRunIsItsOwnRoot(t *testing.T) {
+	ctx := context.Background()
+	j := memJournal()
+	flow, plain := "f>x", "p>x"
+	for _, run := range []string{flow, plain} {
+		kind := `{"kind":"flow"}`
+		if run == plain {
+			kind = `{"kind":"agent"}`
+		}
+		if _, _, err := j.putEntry(ctx, run, runStartStep, Record{Kind: StepValue, Result: []byte(kind)}); err != nil {
+			t.Fatal(err)
+		}
+		putGate(t, j, run, ApprovalWait{ToolUseID: "c1", ToolName: "refund", Single: true})
+		if _, _, err := j.putEntry(ctx, run, runAbortedStep, Record{Kind: StepValue, Result: []byte(`{}`)}); err != nil {
+			t.Fatal(err)
+		}
+	}
+	for run, want := range map[string]string{flow: flow, plain: "p"} {
+		recs, _ := j.History(ctx, run)
+		evs := JournalNotifyEvents(run, recs)
+		if len(evs) < 1 || evs[0].RunID != want {
+			t.Fatalf("%s: events %+v, want root %q", run, evs, want)
+		}
+		// An abort is the root run's event, so the flow reports its own and a sub-run's is not one.
+		aborts := 0
+		for _, e := range evs {
+			if e.Kind == NotificationRunAborted {
+				aborts++
+			}
+		}
+		if (run == flow) != (aborts == 1) {
+			t.Fatalf("%s: %d abort events", run, aborts)
+		}
+	}
+}

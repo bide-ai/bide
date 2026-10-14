@@ -173,6 +173,7 @@ var notifyKinds = []agent.NotificationKind{
 var notifyRecordKinds = []agent.NotifyRecordKind{
 	agent.NotifyObserved, agent.NotifyClaimed, agent.NotifyAcked, agent.NotifyFailing, agent.NotifyOverdue,
 	agent.NotifyCleared, agent.NotifyFailingSince, agent.NotifyRecovered, agent.NotifyWatch, agent.NotifyUnwatch,
+	agent.NotifyCheckpoint, agent.NotifySeal, agent.NotifySegment, agent.NotifyBackfilled,
 }
 
 var notifyClearReasons = []string{"resolved", "decided", "ended", "recovered"}
@@ -306,28 +307,42 @@ func VerifyNotifications(in NotifyVerifyInput) (NotifyReport, error) {
 
 	var rep NotifyReport
 	var decodeErrs []error
+	all := map[string][]agent.NotifyRecord{} // the trails that decoded
+	for _, name := range names {
+		var leaves [][]byte
+		if t := trails[name]; t != nil {
+			leaves = t.Leaves
+		}
+		recs := make([]agent.NotifyRecord, len(leaves))
+		ok := true
+		for i, leaf := range leaves {
+			r, err := decodeNotifyLeafStrict(leaf)
+			if err != nil {
+				decodeErrs = append(decodeErrs, fmt.Errorf("audit: notify trail %s record %d: %w", name, i, err))
+				ok = false
+				break
+			}
+			recs[i] = r
+		}
+		if ok {
+			all[name] = recs
+		}
+	}
+	openV := checkOpenGroup(all, in.MaxClockSkew)
 	for _, name := range names {
 		var leaves [][]byte
 		if t := trails[name]; t != nil {
 			leaves = t.Leaves
 		}
 		tr := NotifyTrailReport{Trail: name, Records: len(leaves)}
-		recs := make([]agent.NotifyRecord, len(leaves))
-		decoded := true
-		for i, leaf := range leaves {
-			r, err := decodeNotifyLeafStrict(leaf)
-			if err != nil {
-				decodeErrs = append(decodeErrs, fmt.Errorf("audit: notify trail %s record %d: %w", name, i, err))
-				decoded = false
-				break
-			}
-			recs[i] = r
-		}
 		in.anchor(&tr, leaves, heads, trails[name] != nil)
-		if decoded {
-			tr.Violations = append(tr.Violations, checkNotifyTrail(name, recs, in.MaxClockSkew)...)
-			if name != agent.NotifyOpenTrail {
+		if recs, ok := all[name]; ok {
+			switch openTrailKind(name) {
+			case openNone:
+				tr.Violations = append(tr.Violations, checkNotifyTrail(name, recs, in.MaxClockSkew)...)
 				rep.Events = append(rep.Events, in.verdicts(name, recs, owed[name])...)
+			default:
+				tr.Violations = append(tr.Violations, openV[name]...)
 			}
 		}
 		rep.Trails = append(rep.Trails, tr)
@@ -388,9 +403,6 @@ func (in NotifyVerifyInput) anchor(tr *NotifyTrailReport, leaves [][]byte, heads
 // checkNotifyTrail returns the ways recs, the records of trail, are not a history a notifier
 // writes. It is stricter than agent.FoldNotify, which ignores what does not apply.
 func checkNotifyTrail(trail string, recs []agent.NotifyRecord, skew time.Duration) []string {
-	if trail == agent.NotifyOpenTrail {
-		return checkOpenTrail(recs, skew)
-	}
 	var out []string
 	bad := func(i int, format string, args ...any) {
 		out = append(out, fmt.Sprintf("record %d (%s): %s", i, recs[i].Kind, fmt.Sprintf(format, args...)))
@@ -416,8 +428,8 @@ func checkNotifyTrail(trail string, recs []agent.NotifyRecord, skew time.Duratio
 			bad(i, "names run %q in the trail of run %q", r.RunID, root)
 		}
 		switch r.Kind {
-		case agent.NotifyWatch, agent.NotifyUnwatch:
-			bad(i, "belongs to the %s trail, not a run's", agent.NotifyOpenTrail)
+		case agent.NotifyWatch, agent.NotifyUnwatch, agent.NotifyCheckpoint, agent.NotifySeal, agent.NotifySegment, agent.NotifyBackfilled:
+			bad(i, "belongs to the open trail (%s), not a run's", agent.NotifyOpenTrail)
 			continue
 		case agent.NotifyFailingSince:
 			if r.Key != "" {
@@ -724,40 +736,4 @@ func checkOpFields(bad func(int, string, ...any), i int, r agent.NotifyRecord, k
 	if cut(r.Key) != cut(want) {
 		bad(i, "key %q does not match its operation (op_run %q, op_kind %q, op_id %q)", r.Key, r.OpRun, r.OpKind, r.OpID)
 	}
-}
-
-// checkOpenTrail checks the global trail of events whose all-clear may still be owed: only watch
-// and unwatch records, each naming an event and a run, an unwatch only while its event is watched,
-// dated in order within skew.
-func checkOpenTrail(recs []agent.NotifyRecord, skew time.Duration) []string {
-	var out []string
-	bad := func(i int, format string, args ...any) {
-		out = append(out, fmt.Sprintf("record %d (%s): %s", i, recs[i].Kind, fmt.Sprintf(format, args...)))
-	}
-	watched := map[string]bool{}
-	for i, r := range recs {
-		if r.At.IsZero() {
-			bad(i, "has no time")
-		}
-		if i > 0 && r.At.Before(recs[i-1].At.Add(-skew)) {
-			bad(i, "is dated more than %s before record %d: the trail is out of order, or a clock is wrong", skew, i-1)
-		}
-		if r.Kind != agent.NotifyWatch && r.Kind != agent.NotifyUnwatch {
-			bad(i, "a run's record on the %s trail", agent.NotifyOpenTrail)
-			continue
-		}
-		if r.Key == "" || r.RunID == "" {
-			bad(i, "names no event key or run")
-			continue
-		}
-		switch {
-		case r.Kind == agent.NotifyWatch:
-			watched[r.Key] = true
-		case !watched[r.Key]:
-			bad(i, "unwatches event %q, which is not watched", r.Key)
-		default:
-			delete(watched, r.Key)
-		}
-	}
-	return out
 }

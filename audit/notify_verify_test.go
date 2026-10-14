@@ -373,11 +373,15 @@ func TestVerifyNotifications_ARealNotifierTrailVerifies(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	ox, err := audit.ExportNotifyTrail(ctx, es, agent.NotifyOpenTrail)
-	if err != nil {
-		t.Fatal(err)
+	trails := []audit.NotifyTrailExport{tx}
+	for _, name := range []string{agent.OpenSegment(time.Now()), agent.OpenIndex(time.Now().UTC().Year())} {
+		ox, err := audit.ExportNotifyTrail(ctx, es, name)
+		if err != nil || len(ox.Leaves) == 0 {
+			t.Fatalf("the notifier wrote no %s: %v", name, err)
+		}
+		trails = append(trails, ox)
 	}
-	rep, err := audit.VerifyNotifications(audit.NotifyVerifyInput{Trails: []audit.NotifyTrailExport{tx, ox}, Journals: []audit.JournalExport{jx}, Unanchored: true})
+	rep, err := audit.VerifyNotifications(audit.NotifyVerifyInput{Trails: trails, Journals: []audit.JournalExport{jx}, Unanchored: true})
 	if err != nil {
 		t.Fatalf("%v\n%+v", err, rep)
 	}
@@ -848,52 +852,121 @@ func TestVerifyNotifications_NoAllClearIsOwedForAnUnattemptedEvent(t *testing.T)
 	}
 }
 
-// ---- the global open trail and operation fields ----
+// ---- the open trail: segments and an index ----
 
-func openTrail(t *testing.T, recs ...agent.NotifyRecord) audit.NotifyTrailExport {
+func recsTrail(t *testing.T, name string, recs ...agent.NotifyRecord) audit.NotifyTrailExport {
 	t.Helper()
 	es := audit.NewMemEventStore()
 	tr := audit.NewNotifyTrail(es)
 	for i, r := range recs {
-		if err := tr.Append(context.Background(), agent.NotifyOpenTrail, i, r); err != nil {
+		if err := tr.Append(context.Background(), name, i, r); err != nil {
 			t.Fatal(err)
 		}
 	}
-	x, err := audit.ExportNotifyTrail(context.Background(), es, agent.NotifyOpenTrail)
+	x, err := audit.ExportNotifyTrail(context.Background(), es, name)
 	if err != nil {
 		t.Fatal(err)
 	}
 	return x
 }
 
-func watchRec(k agent.NotifyRecordKind, key string, sec int) agent.NotifyRecord {
+func op(k agent.NotifyRecordKind, key string, sec int) agent.NotifyRecord {
 	return agent.NotifyRecord{Kind: k, Key: key, RunID: "r1", At: at(sec)}
 }
 
-func TestVerifyNotifications_TheOpenTrail(t *testing.T) {
-	k := agent.ApprovalKey("r1", "c1", 0)
-	verifyOpen := func(recs ...agent.NotifyRecord) (audit.NotifyReport, error) {
-		return audit.VerifyNotifications(audit.NotifyVerifyInput{Trails: []audit.NotifyTrailExport{openTrail(t, recs...)}, Unanchored: true, Now: at(60)})
-	}
-	if rep, err := verifyOpen(watchRec(agent.NotifyWatch, k, 1), watchRec(agent.NotifyWatch, k, 2), watchRec(agent.NotifyUnwatch, k, 3), watchRec(agent.NotifyWatch, k, 4)); err != nil || len(rep.Events) != 0 {
-		t.Fatalf("a valid open trail: %v %+v", err, rep)
-	}
-	for name, recs := range map[string][]agent.NotifyRecord{
-		"unwatch of an unwatched key": {watchRec(agent.NotifyUnwatch, k, 1)},
-		"a run's record":              {{Kind: agent.NotifyObserved, Key: k, RunID: "r1", At: at(1)}},
-		"no key":                      {{Kind: agent.NotifyWatch, RunID: "r1", At: at(1)}},
-		"no run":                      {{Kind: agent.NotifyWatch, Key: k, At: at(1)}},
-		"out of order":                {watchRec(agent.NotifyWatch, k, 1000), watchRec(agent.NotifyUnwatch, k, 1)},
-	} {
-		if _, err := verifyOpen(recs...); !errors.Is(err, audit.ErrNotVerified) {
-			t.Errorf("%s: err = %v, want ErrNotVerified", name, err)
+func day(n int) string { return agent.OpenSegment(t0.AddDate(0, 0, n)) }
+
+func segRec(kind agent.NotifyRecordKind, sec int, next string) agent.NotifyRecord {
+	return agent.NotifyRecord{Kind: kind, At: at(sec), Next: next}
+}
+
+func checkTrails(t *testing.T, xs ...audit.NotifyTrailExport) (audit.NotifyReport, error) {
+	t.Helper()
+	return audit.VerifyNotifications(audit.NotifyVerifyInput{Trails: xs, Unanchored: true, Now: at(60)})
+}
+
+func violationsOf(rep audit.NotifyReport) string {
+	var all []string
+	for _, tr := range rep.Trails {
+		for _, v := range tr.Violations {
+			all = append(all, tr.Trail+": "+v)
 		}
 	}
-	// Watch and unwatch do not belong on a run's trail.
-	b := newTrail(t).add(agent.NotifyRecord{Kind: agent.NotifyWatch, Key: k, At: at(1)})
-	rep, err := verifyNotify(t, b, nil)
-	if !errors.Is(err, audit.ErrNotVerified) || !strings.Contains(strings.Join(rep.Trails[0].Violations, ";"), "not a run's") {
-		t.Fatalf("watch on a run trail: %v %+v", err, rep.Trails)
+	return strings.Join(all, "\n")
+}
+
+// A two-day open trail as the notifier writes it: day 0 lists two events and sees one unlisted, is
+// sealed, and day 1 starts with a checkpoint of what remains.
+func openChain(t *testing.T) (day0, day1, index audit.NotifyTrailExport) {
+	k1, k2 := agent.ApprovalKey("r1", "c1", 0), agent.ApprovalKey("r1", "c2", 0)
+	day0 = recsTrail(t, day(0),
+		segRec(agent.NotifyCheckpoint, 0, ""), op(agent.NotifyWatch, k1, 1), op(agent.NotifyWatch, k2, 2), op(agent.NotifyUnwatch, k1, 3),
+		segRec(agent.NotifyBackfilled, 4, ""), segRec(agent.NotifySeal, 5, day(1)))
+	day1 = recsTrail(t, day(1), agent.NotifyRecord{Kind: agent.NotifyCheckpoint, At: at(86400), Backfilled: true,
+		Watching: []agent.Watched{{Key: k2, RunID: "r1", At: at(2)}}}, op(agent.NotifyUnwatch, k2, 86401))
+	index = recsTrail(t, agent.OpenIndex(t0.Year()), segRec(agent.NotifySegment, 0, day(0)), segRec(agent.NotifySegment, 86400, day(1)))
+	return
+}
+
+func TestVerifyNotifications_TheOpenTrail(t *testing.T) {
+	d0, d1, idx := openChain(t)
+	if rep, err := checkTrails(t, d0, d1, idx); err != nil || len(rep.Events) != 0 {
+		t.Fatalf("a valid open trail: %v\n%s", err, violationsOf(rep))
+	}
+	k2 := agent.ApprovalKey("r1", "c2", 0)
+	for name, tc := range map[string]struct {
+		xs   []audit.NotifyTrailExport
+		want string
+	}{
+		"a checkpoint that drops an event": {[]audit.NotifyTrailExport{d0, recsTrail(t, day(1), agent.NotifyRecord{Kind: agent.NotifyCheckpoint, At: at(86400), Backfilled: true}), idx}, "does not equal"},
+		"a checkpoint that adds an event": {[]audit.NotifyTrailExport{d0, recsTrail(t, day(1), agent.NotifyRecord{Kind: agent.NotifyCheckpoint, At: at(86400), Backfilled: true,
+			Watching: []agent.Watched{{Key: k2, RunID: "r1", At: at(2)}, {Key: "x", RunID: "r1", At: at(2)}}}), idx}, "does not equal"},
+		"a checkpoint that loses the backfill": {[]audit.NotifyTrailExport{d0, recsTrail(t, day(1), agent.NotifyRecord{Kind: agent.NotifyCheckpoint, At: at(86400),
+			Watching: []agent.Watched{{Key: k2, RunID: "r1", At: at(2)}}}), idx}, "backfilled is false"},
+		"a continuation with no checkpoint": {[]audit.NotifyTrailExport{d0, recsTrail(t, day(1), op(agent.NotifyUnwatch, k2, 86400)), idx}, "does not start with a checkpoint"},
+		"a record after the seal":           {[]audit.NotifyTrailExport{recsTrail(t, day(0), segRec(agent.NotifyCheckpoint, 0, ""), segRec(agent.NotifySeal, 1, day(1)), op(agent.NotifyWatch, k2, 2)), d1, idx}, "follows the seal"},
+		"an unwatch of an unlisted event":   {[]audit.NotifyTrailExport{recsTrail(t, day(0), op(agent.NotifyUnwatch, k2, 1))}, "not listed"},
+		"a checkpoint in the middle":        {[]audit.NotifyTrailExport{recsTrail(t, day(0), op(agent.NotifyWatch, k2, 1), segRec(agent.NotifyCheckpoint, 2, ""))}, "only the first record"},
+		"a seal into an earlier day":        {[]audit.NotifyTrailExport{recsTrail(t, day(1), segRec(agent.NotifySeal, 1, day(0)))}, "not a later segment"},
+		"a second backfill": {[]audit.NotifyTrailExport{d0, recsTrail(t, day(1), agent.NotifyRecord{Kind: agent.NotifyCheckpoint, At: at(86400), Backfilled: true,
+			Watching: []agent.Watched{{Key: k2, RunID: "r1", At: at(2)}}}, segRec(agent.NotifyBackfilled, 86401, "")), idx}, "recorded 2 times"},
+		"a watch with no run":                     {[]audit.NotifyTrailExport{recsTrail(t, day(0), agent.NotifyRecord{Kind: agent.NotifyWatch, Key: k2, At: at(1)})}, "no event key or run"},
+		"a run record in a segment":               {[]audit.NotifyTrailExport{recsTrail(t, day(0), op(agent.NotifyObserved, k2, 1))}, "does not belong"},
+		"a segment no seal reaches":               {[]audit.NotifyTrailExport{d0, d1, recsTrail(t, day(5), segRec(agent.NotifyCheckpoint, 5, "")), idx}, "chain is broken"},
+		"a first segment that carries events":     {[]audit.NotifyTrailExport{d1, idx}, "not here"},
+		"an older segment missing from the index": {[]audit.NotifyTrailExport{d0, d1, recsTrail(t, agent.OpenIndex(t0.Year()), segRec(agent.NotifySegment, 86400, day(1)))}, "in no index"},
+		"an index out of order":                   {[]audit.NotifyTrailExport{d0, d1, recsTrail(t, agent.OpenIndex(t0.Year()), segRec(agent.NotifySegment, 0, day(1)), segRec(agent.NotifySegment, 1, day(0)))}, "creation order"},
+		"a run record in an index":                {[]audit.NotifyTrailExport{recsTrail(t, agent.OpenIndex(t0.Year()), op(agent.NotifyWatch, k2, 1))}, "does not belong in an index"},
+		"an index naming a bad segment":           {[]audit.NotifyTrailExport{recsTrail(t, agent.OpenIndex(t0.Year()), segRec(agent.NotifySegment, 1, "notify:@open:soon"))}, "not a segment"},
+		"a middle segment gone": {[]audit.NotifyTrailExport{d0, recsTrail(t, day(2), agent.NotifyRecord{Kind: agent.NotifyCheckpoint, At: at(2 * 86400), Backfilled: true}),
+			recsTrail(t, agent.OpenIndex(t0.Year()), segRec(agent.NotifySegment, 0, day(0)), segRec(agent.NotifySegment, 1, day(1)), segRec(agent.NotifySegment, 2, day(2)))}, "neither the first nor the last"},
+	} {
+		rep, err := checkTrails(t, tc.xs...)
+		if tc.want == "" { // the newest segment may be missing from the index (a crash before indexing it)
+			if err != nil {
+				t.Errorf("%s: %v\n%s", name, err, violationsOf(rep))
+			}
+			continue
+		}
+		if !errors.Is(err, audit.ErrNotVerified) || !strings.Contains(violationsOf(rep), tc.want) {
+			t.Errorf("%s: err %v, violations:\n%s\nwant one with %q", name, err, violationsOf(rep), tc.want)
+		}
+	}
+	// The newest segment may be missing from the index: a writer died before indexing it.
+	if rep, err := checkTrails(t, d0, d1, recsTrail(t, agent.OpenIndex(t0.Year()), segRec(agent.NotifySegment, 0, day(0)))); err != nil {
+		t.Errorf("the newest segment not yet indexed: %v\n%s", err, violationsOf(rep))
+	}
+	// A sealed segment whose successor was not yet written is a crash between the two, not a violation.
+	if rep, err := checkTrails(t, d0, idx); err != nil {
+		t.Errorf("a successor not yet written: %v\n%s", err, violationsOf(rep))
+	}
+	// The open kinds do not belong on a run's trail.
+	for _, kind := range []agent.NotifyRecordKind{agent.NotifyWatch, agent.NotifyUnwatch, agent.NotifyCheckpoint, agent.NotifySeal, agent.NotifySegment, agent.NotifyBackfilled} {
+		b := newTrail(t).add(agent.NotifyRecord{Kind: kind, Key: k2, At: at(1), Next: day(1)})
+		rep, err := verifyNotify(t, b, nil)
+		if !errors.Is(err, audit.ErrNotVerified) || !strings.Contains(strings.Join(rep.Trails[0].Violations, ";"), "not a run's") {
+			t.Errorf("%s on a run trail: %v %+v", kind, err, rep.Trails)
+		}
 	}
 }
 
