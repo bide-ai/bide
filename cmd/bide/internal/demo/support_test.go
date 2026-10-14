@@ -412,3 +412,61 @@ func TestVerifiersDemo(t *testing.T) {
 		}
 	}
 }
+
+// TestViewOverDamagedDirectory: the verification step run over a finished demo directory. With the
+// right log key everything verifies; with another key the proofs fail but view still reports them
+// (the demo then refuses to claim success); a missing input file is an error, not a pass.
+func TestViewOverDamagedDirectory(t *testing.T) {
+	dir := t.TempDir()
+	var out bytes.Buffer
+	res, err := demo(context.Background(), dir, config{}, newPrinter(&out, term.Never), true)
+	if err != nil {
+		t.Fatalf("demo: %v\n%s", err, out.String())
+	}
+	res.close()
+	seed, err := os.ReadFile(filepath.Join(dir, logKeyFile))
+	if err != nil {
+		t.Fatal(err)
+	}
+	raw, _ := hex.DecodeString(strings.TrimSpace(string(seed)))
+	logPub := ed25519.NewKeyFromSeed(raw).Public().(ed25519.PublicKey)
+
+	r, err := view(context.Background(), dir, logPub)
+	if err != nil || !r.proof.OK || !r.anchored.OK || !r.approvals.OK || r.logPub != audit.FormatPublicKey(audit.AlgEd25519, logPub) {
+		t.Fatalf("view with the log key: %+v, %v", r, err)
+	}
+	r.close()
+
+	other, _, _ := ed25519.GenerateKey(rand.Reader)
+	r, err = view(context.Background(), dir, other)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if r.proof.OK || r.anchored.OK {
+		t.Errorf("proofs verified under a key that did not sign them: evidence %v, anchored %v", r.proof.OK, r.anchored.OK)
+	}
+	r.close()
+
+	for _, name := range []string{keysFile, anchorFile, journalFile, evidenceFile} {
+		path := filepath.Join(dir, name)
+		saved, err := os.ReadFile(path)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if err := os.Remove(path); err != nil {
+			t.Fatal(err)
+		}
+		if r, err := view(context.Background(), dir, logPub); err == nil {
+			r.close()
+			t.Errorf("view without %s succeeded", name)
+		}
+		if err := os.WriteFile(path, saved, 0o644); err != nil {
+			t.Fatal(err)
+		}
+	}
+	write(t, filepath.Join(dir, anchorFile), "")
+	if r, err := view(context.Background(), dir, logPub); err == nil {
+		r.close()
+		t.Error("view with an empty anchor succeeded")
+	}
+}

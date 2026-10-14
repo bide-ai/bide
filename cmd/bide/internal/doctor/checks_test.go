@@ -255,3 +255,65 @@ func TestMainRuns(t *testing.T) {
 		t.Errorf("stderr: %s", errb.String())
 	}
 }
+
+// TestGoCheckEdges: a go command that does not run fails with the install hint; output with no
+// version is a warning, not a pass; a missing patch number reads as .0.
+func TestGoCheckEdges(t *testing.T) {
+	ctx := context.Background()
+	env := fakeEnv(t, "", nil) // go not found
+	if r := checkGo(ctx, env); r.Status != Fail || !strings.Contains(r.Detail, "the go command did not run") || !strings.Contains(r.Fix, "https://go.dev/dl/") {
+		t.Errorf("go missing: %+v", r)
+	}
+	if r := checkGo(ctx, fakeEnv(t, "something unrelated\n", nil)); r.Status != Warn || !strings.Contains(r.Detail, "could not read the version from: something unrelated") {
+		t.Errorf("unreadable version: %+v", r)
+	}
+	if r := checkGo(ctx, fakeEnv(t, "go version go1.28 linux/amd64", nil)); r.Status != OK || r.Detail != "Go 1.28.0" {
+		t.Errorf("go1.28: %+v", r)
+	}
+	if _, ok := parseGo("go version devel +abc"); ok {
+		t.Error("parseGo read a version from a devel build")
+	}
+	if v, ok := parseGo("go version go1.27rc1 linux/amd64"); !ok || v != [3]int{1, 27, 0} {
+		t.Errorf("parseGo of a release candidate = %v, %v", v, ok)
+	}
+}
+
+// TestToolchainFetch: go may fetch a newer toolchain when GOTOOLCHAIN is auto or ends in +auto,
+// not when it is pinned or local, and not when go cannot say.
+func TestToolchainFetch(t *testing.T) {
+	ask := func(out string, err error) bool {
+		env := Env{Run: func(context.Context, string, string, ...string) ([]byte, error) { return []byte(out), err }}
+		return canFetchToolchain(context.Background(), env)
+	}
+	for out, want := range map[string]bool{"auto\n": true, "go1.26.0+auto\n": true, "local\n": false, "go1.27.0\n": false, "": false} {
+		if got := ask(out, nil); got != want {
+			t.Errorf("GOTOOLCHAIN=%q: %v, want %v", strings.TrimSpace(out), got, want)
+		}
+	}
+	if ask("auto", errors.New("go env failed")) {
+		t.Error("a failing go env was taken as auto")
+	}
+}
+
+// TestWrap: long text breaks at spaces so no line passes the width, later lines are indented to
+// the column, and a word longer than the room stays whole.
+func TestWrap(t *testing.T) {
+	got := wrap("one two three four five six", 4, 16)
+	for i, line := range strings.Split(got, "\n") {
+		if i > 0 && !strings.HasPrefix(line, "    ") {
+			t.Errorf("line %d %q is not indented to the column", i, line)
+		}
+		if len(line)+4 > 16 && i == 0 || len(line) > 16 {
+			t.Errorf("line %d %q is past the width", i, line)
+		}
+	}
+	if strings.Join(strings.Fields(got), " ") != "one two three four five six" {
+		t.Errorf("wrapping changed the words: %q", got)
+	}
+	if got := wrap("short", 4, 80); got != "short" {
+		t.Errorf("short text = %q", got)
+	}
+	if got := wrap("supercalifragilisticexpialidocious end", 4, 20); !strings.HasPrefix(got, "supercalifragilisticexpialidocious\n    end") {
+		t.Errorf("long word = %q", got)
+	}
+}
