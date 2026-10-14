@@ -155,3 +155,21 @@ func TestRecover_SignsTheGlobalTrailsOncePerInterval(t *testing.T) {
 		t.Fatalf("after the interval the digest trail was named %d times, want 2", count())
 	}
 }
+
+// Just after New Year the newest segments are in last year's index, and are still signed.
+func TestGlobalTrails_FollowTheIndexAcrossNewYear(t *testing.T) {
+	ctx := context.Background()
+	trail := &anchoringTrail{MemNotifyTrail: NewMemNotifyTrail()}
+	clk := &notifyClock{t: time.Date(2027, 1, 3, 12, 0, 0, 0, time.UTC)}
+	e := testEngine(t, memJournal(), &fakeSink{}, trail, clk, "p")
+	last := OpenSegment(time.Date(2026, 12, 31, 0, 0, 0, 0, time.UTC))
+	if err := trail.Append(ctx, OpenIndex(2026), 0, NotifyRecord{Kind: NotifySegment, At: clk.now(), Next: last}); err != nil {
+		t.Fatal(err)
+	}
+	got := e.globalTrails(ctx)
+	for _, want := range []string{OpenIndex(2026), last, OpenSegment(clk.now()), NotifyDigestTrail} {
+		if !slices.Contains(got, want) {
+			t.Errorf("globalTrails = %v, lacks %s", got, want)
+		}
+	}
+}
