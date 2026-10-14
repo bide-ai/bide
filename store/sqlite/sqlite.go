@@ -27,6 +27,8 @@ import (
 	"time"
 
 	"github.com/bide-ai/bide/agent"
+	"github.com/bide-ai/bide/internal/dbpath"
+	"github.com/bide-ai/bide/internal/filegate"
 	_ "modernc.org/sqlite"
 )
 
@@ -47,8 +49,9 @@ const writeBusyTimeout = 30 * time.Second
 
 // Store is a SQLite-backed agent.Store.
 type Store struct {
-	w, r, l *sql.DB // writer (one connection), readers, leases (one connection)
-	own     bool    // Close closes the pools: Open opened them
+	w, r, l *sql.DB        // writer (one connection), readers, leases (one connection)
+	own     bool           // Close closes the pools: Open opened them
+	gate    *filegate.Gate // queues this process's writers on the file
 	t       tables
 }
 
@@ -105,6 +108,11 @@ func newConfig(opts []Option) (config, error) {
 // Open opens (creating if needed) a SQLite journal at path, in WAL mode, with its three connection
 // pools. ":memory:" opens an ephemeral in-memory store for tests, on one connection shared by all
 // three roles (an in-memory database lives on one connection).
+//
+// Open reaches the file by its canonical path (absolute, symlinks resolved), so that every handle on
+// it, whatever path it was given, makes SQLite derive the same -wal and -shm names; two names for one
+// WAL-mode database corrupt it (https://sqlite.org/howtocorrupt.html). A hard link has no canonical
+// name, so a file with more than one hard link is refused with an error wrapping agent.ErrConfig.
 func Open(path string, opts ...Option) (*Store, error) {
 	cfg, err := newConfig(opts)
 	if err != nil {
@@ -121,30 +129,39 @@ func Open(path string, opts ...Option) (*Store, error) {
 		db.SetMaxIdleConns(1)
 		db.SetConnMaxLifetime(0)
 		db.SetConnMaxIdleTime(0)
-		s := &Store{w: db, r: db, l: db, own: true, t: cfg.tables()}
+		s := &Store{w: db, r: db, l: db, own: true, t: cfg.tables(), gate: filegate.For(":memory:")}
 		if err := s.migrate(ctx); err != nil {
 			db.Close()
 			return nil, err
 		}
 		return s, nil
 	}
+	// Every handle on a file must reach it by one name, or SQLite's -wal and -shm names differ
+	// and two handles corrupt the WAL (sqlite.org/howtocorrupt.html).
+	path, err = dbpath.Canonical(path, true)
+	if err != nil {
+		return nil, fmt.Errorf("sqlite: Open: %w (%w)", err, agent.ErrConfig)
+	}
 	w, err := sql.Open("sqlite", withQuery(path, busy+"&_pragma=journal_mode(WAL)"))
 	if err != nil {
 		return nil, err
 	}
 	w.SetMaxOpenConns(1) // one writer: an Insert's MAX(seq)+1 never races another in this process
-	s := &Store{w: w, own: true, t: cfg.tables()}
+	s := &Store{w: w, own: true, t: cfg.tables(), gate: filegate.For(path)}
 	if err := s.migrate(ctx); err != nil { // creates the file in WAL mode before the other pools open it
 		w.Close()
+		s.gate.Close()
 		return nil, fmt.Errorf("sqlite: Open %s: %w%s", path, err, openHint(err))
 	}
 	if s.r, err = sql.Open("sqlite", withQuery(path, busy+"&_pragma=query_only(1)")); err != nil {
 		w.Close()
+		s.gate.Close()
 		return nil, err
 	}
 	s.r.SetMaxOpenConns(8)
 	if s.l, err = sql.Open("sqlite", withQuery(path, busy)); err != nil {
 		w.Close()
+		s.gate.Close()
 		s.r.Close()
 		return nil, err
 	}
@@ -197,11 +214,29 @@ func New(ctx context.Context, db *sql.DB, opts ...Option) (*Store, error) {
 	if !strings.EqualFold(mode, "wal") {
 		return nil, fmt.Errorf("sqlite: New: db is in journal mode %q, want WAL: %w", mode, agent.ErrConfig)
 	}
-	s := &Store{w: db, r: db, l: db, t: cfg.tables()}
+	file := mainFile(ctx, db)
+	if file != "" {
+		if err := dbpath.CheckLinks(file); err != nil {
+			return nil, fmt.Errorf("sqlite: New: %w (%w)", err, agent.ErrConfig)
+		}
+	}
+	s := &Store{w: db, r: db, l: db, t: cfg.tables(), gate: filegate.For(file)}
 	if err := s.migrate(ctx); err != nil {
+		s.gate.Close()
 		return nil, err
 	}
 	return s, nil
+}
+
+// mainFile is the path of db's main database file, or "" for an in-memory or temporary database or
+// when it cannot be read; the writers of a Store over such a db do not queue.
+func mainFile(ctx context.Context, db *sql.DB) string {
+	var seq int
+	var name, file string
+	if err := db.QueryRowContext(ctx, `SELECT seq, name, file FROM pragma_database_list WHERE name = 'main'`).Scan(&seq, &name, &file); err != nil {
+		return ""
+	}
+	return file
 }
 
 func (c config) tables() tables {
@@ -290,6 +325,7 @@ func (s *Store) refuseLegacy(ctx context.Context) error {
 
 // Close closes the connection pools Open opened. A Store made with New leaves its db open.
 func (s *Store) Close() error {
+	s.gate.Close()
 	if !s.own {
 		return nil
 	}
@@ -308,7 +344,7 @@ func (s *Store) Close() error {
 // increases in commit order, within a run and across the table. The entry it returns for a new row
 // holds data itself (SQLite copied it).
 func (s *Store) Insert(ctx context.Context, runID, name string, data []byte) (agent.Entry, bool, error) {
-	res, err := s.w.ExecContext(ctx, s.t.insert, runID, name, data)
+	res, err := s.write(ctx, s.t.insert, runID, name, data)
 	if err != nil {
 		return agent.Entry{}, false, fmt.Errorf("insert step %q: %w (%w)", name, err, agent.ErrStorage)
 	}
@@ -331,6 +367,18 @@ func (s *Store) Insert(ctx context.Context, runID, name string, data []byte) (ag
 		return agent.Entry{}, false, fmt.Errorf("insert step %q: the insert conflicted but no entry exists: %w", name, agent.ErrStorage)
 	}
 	return e, false, nil
+}
+
+// write runs one write statement on the writer connection when it is this process's turn at the
+// file: SQLite's busy handler is not a queue, so without the turns a burst of writers (or a slow
+// disk) can starve one of them past the busy timeout.
+func (s *Store) write(ctx context.Context, query string, args ...any) (sql.Result, error) {
+	leave, err := s.gate.Enter(ctx)
+	if err != nil {
+		return nil, err
+	}
+	defer leave()
+	return s.w.ExecContext(ctx, query, args...)
 }
 
 // Get implements agent.Store. It reads on the writer's connection: the journal reads a step just
@@ -490,6 +538,13 @@ func leaseBusyTimeout(ttl time.Duration) time.Duration {
 // reports the rows it changed. Expiries are computed in SQL from the database's clock
 // (unixepoch('subsec')), so every process sharing the file compares against one clock.
 func (s *Store) leaseExec(ctx context.Context, busy time.Duration, query string, args ...any) (int64, error) {
+	// A lease statement has a deadline the journal writes do not: it goes ahead of the writers
+	// queued on the file, behind only the one inside.
+	leave, err := s.gate.EnterFirst(ctx)
+	if err != nil {
+		return 0, err
+	}
+	defer leave()
 	conn, err := s.l.Conn(ctx)
 	if err != nil {
 		return 0, err

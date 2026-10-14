@@ -28,6 +28,7 @@ var approvers = []string{"ops", "finance", "risk"}
 
 // fixture is a SQLite journal with one run paused at a 2-of-3 gate, and a key file per approver.
 type fixture struct {
+	policy   *agent.ApprovalPolicy // the gate's policy, as the application's tool is built with
 	t        *testing.T
 	db       string
 	dir      string
@@ -56,7 +57,7 @@ func newFixtureAlg(t *testing.T, policy *agent.ApprovalPolicy, args string, alg 
 
 func newFixtureID(t *testing.T, policy *agent.ApprovalPolicy, args string, alg audit.Alg, identity string) *fixture {
 	t.Helper()
-	f := &fixture{identity: identity, t: t, dir: t.TempDir(), keys: map[string]string{}, pubs: map[string]audit.Verifier{}, charges: new(atomic.Int32), args: args, run: "refund-1049", call: "c2"}
+	f := &fixture{policy: policy, identity: identity, t: t, dir: t.TempDir(), keys: map[string]string{}, pubs: map[string]audit.Verifier{}, charges: new(atomic.Int32), args: args, run: "refund-1049", call: "c2"}
 	f.db = filepath.Join(f.dir, "j.db")
 	enrol := map[string]string{}
 	for _, id := range approvers {

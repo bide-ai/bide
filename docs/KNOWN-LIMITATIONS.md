@@ -279,6 +279,28 @@ it, a run another holder leases is that holder's to sign, and a failing anchor d
 finds a decision left outside every head. See
 [A decision written by another process](guides/hitl-approval.md#a-decision-written-by-another-process).
 
+**The approval intake serves m-of-n tool-call gates only.** `approvals.Handler` refuses a
+single-approver gate (no signature to check) and a plan flow node's gate. Two different decisions of one approver
+sent at once are both recorded and the first counts (the response says `counted`). `GET /pending` shows a call's arguments to any caller the handler lets through, so
+confidential arguments need `WithAuth` or a private network. See
+[Taking decisions over HTTP](guides/hitl-approval.md#taking-decisions-over-http).
+
+**The intake and the viewer learn a gate's policy from its pause note unless told the live one.** The
+`approval-pending` record is informational, insert-once by name, and written when the run first pauses
+at the gate. A redeploy that changes the gate's policy afterwards (adding `ExcludePrincipal`, say) is
+enforced by the gate itself when the run resumes, but is not in the note. If the gate's recorded tally
+passed under the old policy and the call has not run (a crash between the tally and the call), the gate
+asks again, and a reader that takes the policy from the note shows the gate as decided: the intake then
+refuses the new approvals (`not_waiting`), so nobody can approve through it and the run waits.
+**The intake requires the live policy** (`approvals.New` fails without it): `approvals.WithGatePolicy(func(tool string) (*agent.ApprovalPolicy,
+bool))` returns each gated tool's policy as the agent is built with it, and the handler counts the gate
+under that (the way the gate does) and uses the note only for a tool it does not know. `bide view` and
+`bide approve`, which read the database with no access to the application's policy, still read the note:
+after a policy change that adds `ExcludePrincipal`, re-drive the run (or let `RecoverLoop` do it) so the
+standing is read from the gate's own tally, and decide through the intake. A note that is refreshed on
+a re-ask would need a new record kind every reader understands, a change to the journal's format of its
+own.
+
 **Decisions signed before `bide.approval.v3` must be signed again.** They no longer verify. A run
 whose gate passed on them before the upgrade, and whose call has not run, pauses to ask again
 (`agent.PendingReapproval`) rather than run on approvals an audit would fail. See
@@ -513,8 +535,23 @@ record shape change between pre-releases, so a later pre-release does not refuse
 journal even where it reads it differently. Finish or resolve runs before upgrading between
 pre-releases. At 1.0 the tag becomes `bide.journal.v1`, and 1.0 refuses every pre-release journal.
 
+**One SQLite file, one name, one link.** SQLite coordinates the connections to a WAL-mode database
+through files it names from the path it was given, so two handles that reach one file by different
+names can each take the WAL for their own and corrupt the database ([SQLite: how to
+corrupt](https://sqlite.org/howtocorrupt.html)). `store/sqlite` and `govern/sqlitelog` open the
+canonical path (absolute, symlinks resolved), so a symlink, a `..` spelling, a relative path or a
+different case reaches the same WAL. A hard link has no canonical name: a file with more than one hard
+link is refused with an `ErrConfig` error at `Open`, `OpenReadOnly` and `New`. Keep one directory entry
+per journal file. A `*sql.DB` you open yourself and give to `sqlite.New` is not rewritten: open it on
+the canonical path too.
+
 **SQLite is for one machine.** SQLite allows one writer at a time; a writer waits up to 30 seconds
-for the lock before failing. Its leases coordinate the processes that share one database file on
+for the lock before failing. The writers in one process that share a file (several `store/sqlite`
+stores or `govern/sqlitelog` logs on it) take turns in the order they ask, so a burst of them cannot
+starve one past the 30 seconds. Writers in different processes are not ordered: SQLite's wait for
+the lock is not a queue, so with many processes writing one file at once (or a very slow disk) an
+unlucky one can still wait out the 30 seconds and fail with "database is locked"; keep the writing
+processes few, or use Postgres. Its leases coordinate the processes that share one database file on
 one machine, not nodes: the file must be on a local disk, since SQLite's locking does not work over
 NFS. Use Postgres for more than one node. A forward jump of the system clock expires SQLite leases
 early (their expiry is computed from the clock), which the attempt claims keep safe.

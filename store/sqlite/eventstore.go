@@ -42,7 +42,7 @@ func (e *EventStore) Append(ctx context.Context, runID string, seq int, leaf []b
 		return fmt.Errorf("sqlite: event position %d of run %s is negative", seq, runID)
 	}
 	s := e.s
-	res, err := s.w.ExecContext(ctx, s.t.appendEvent, runID, seq, leaf)
+	res, err := s.write(ctx, s.t.appendEvent, runID, seq, leaf)
 	if err != nil {
 		return fmt.Errorf("sqlite: append event %d of run %s: %w (%w)", seq, runID, err, agent.ErrStorage)
 	}

@@ -136,6 +136,9 @@ type Gate struct {
 	// format (agent.DecisionFormat) and the call has not run, so the gate asks again when the run
 	// resumes (agent.PendingReapproval); only decisions with a signed time count.
 	Reapproval bool `json:"reapproval,omitempty"`
+	// ReapprovalSoD: the re-ask is because the recorded tally passed without excluding the requester
+	// and the gate's policy now excludes it (agent.PendingSoDReapproval); Reapproval is set too.
+	ReapprovalSoD bool `json:"reapproval_sod,omitempty"`
 	// Cards is each approver as the page shows them (see ApproverCard); not in the JSON view.
 	Cards []ApproverCard `json:"-"`
 	// ExcludePrincipal: the gate never counts the run's requester (agent.ApprovalPolicy.ExcludePrincipal);
@@ -548,10 +551,13 @@ func gates(recs []agent.Record, calls map[string]agent.ToolUse, order []string) 
 			var tally agent.ApprovalTally
 			switch {
 			case json.Unmarshal(t.Result, &tally) != nil:
-			case !resulted && t.Name == agent.ApprovalTallyStep(id) && tally.Passed() && tally.DecisionFormat != agent.DecisionFormat:
-				// It passed on decisions that predate the signed decision format: the gate asks
-				// again when the run resumes, and only decisions with a signed time can count.
+			case !resulted && agent.GateReask(tally, g.ExcludePrincipal) != "":
+				// The gate asks again rather than act on this tally (agent.GateReask, the rule the gate
+				// itself applies): it passed on decisions that predate the signed decision format, or
+				// without excluding the requester under a policy that now excludes it. Only decisions
+				// with a signed time count, and the requester's does not.
 				g.Reapproval = true
+				g.ReapprovalSoD = agent.GateReask(tally, g.ExcludePrincipal) == agent.PendingSoDReapproval
 				g.Need, g.Approvers = tally.Need, tally.Approvers
 			default:
 				g.Tallied = true
@@ -639,6 +645,9 @@ func gateStatus(g Gate) string {
 	counts += fmt.Sprintf("; %d needed", g.Need)
 	if len(g.Excluded) > 0 {
 		counts += fmt.Sprintf("; %s excluded", strings.Join(g.Excluded, ", "))
+	}
+	if g.ReapprovalSoD && a < g.Need {
+		return "approval re-required: the recorded approvals were counted without excluding the requester, whom the gate now excludes (" + counts + ")"
 	}
 	if g.Reapproval && a < g.Need {
 		return "approval re-required: the recorded approvals predate " + agent.DecisionFormat + " (" + counts + ")"

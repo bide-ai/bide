@@ -98,6 +98,10 @@ Flags:
     	your approver id, exactly as the gate's policy lists it (not for a single-approver gate)
   -call string
     	the call's tool-use ID (for a plan flow node, its key, such as node:review)
+  -client-cert string
+    	with -to: a PEM client certificate for mutual TLS (with -client-key)
+  -client-key string
+    	with -to: the PEM private key of -client-cert
   -color when
     	when to color the output: auto (the default: on a terminal, unless NO_COLOR is set or TERM is dumb), always or never
   -db string
@@ -120,6 +124,12 @@ Flags:
     	record a rejection instead of an approval
   -run string
     	the run whose journal holds the call: the pause's run ID
+  -tls-ca string
+    	with -to: the PEM CA certificate(s) that sign the endpoint's certificate, instead of the system roots
+  -to string
+    	decide through an application's approval intake (package approvals) at this base URL (https, or http to loopback) instead of writing a journal: the call is fetched from the endpoint, shown, signed and posted
+  -token-env string
+    	with -to: name of the environment variable that holds a bearer token to send (the token never goes on the command line)
   -unverified
     	decide an m-of-n gate without -approver-keys: the key is not checked against the one enrolled for you, and the tally is not verified
   -verify-attestation
