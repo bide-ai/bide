@@ -413,10 +413,21 @@ does, takes neither `-as` nor `-key`, and says the decision is unsigned.
 `-reject` records a rejection: the same checks and the same signature, over a denial. It is a flag of
 `bide approve`, not a second command, so the checks live in one place and the prompt says `REJECT`.
 
-It records nothing, and says why, when the call has no gate, the run is not waiting on it (it ended, or
+If the arguments are longer than the view (40 lines, 200 characters a line), `bide approve` will not
+sign, because the signature binds all of them and what is hidden could be the field that matters;
+rerun with `-full`. It records nothing, and says why, when the call has no gate, the run is not waiting on it (it ended, or
 the call has a result), the gate already has its approvals or can no longer pass, you are not one of its
 approvers, you already decided (it names what you decided and when), or your key file can be read by
-others: on Unix a private key with any group or other permission bit is refused, as `ssh` refuses one.
+others (it checks again after you confirm, in case the gate was decided or the run ended while you
+read). Refusals on the gate's standing or on your earlier decision use only decisions it has verified
+with `-approver-keys`; a junk record in the journal that the gate ignores never locks you out, and
+`-list` without `-approver-keys` labels its counts unverified and calls no gate settled. A call whose
+`approval-pending` note was lost (the note is the journal's only record of the gate's policy) is refused
+with a message that says so: the approvers and the count must come from the journal, never from a
+flag, so decide from the application. If you and another terminal decide as one approver at once, both
+decisions are recorded, the first valid one counts, and the other command exits 1
+("another decision of yours counts"). A store cannot refuse the second record itself without making a
+bad record able to take an approver's place; the counting rule is the constraint. Also: on Unix a private key with any group or other permission bit is refused, as `ssh` refuses one.
 
 A key file is one line of hex: the Ed25519 seed (64 characters, the form `bide demo` writes its log key
 in), `ml-dsa-65:` and the ML-DSA-65 seed, or `ed25519+ml-dsa-65:` and both seeds for a hybrid, for
@@ -447,7 +458,8 @@ After the decision is recorded, re-run the pause's `RootRunID` (or let `RecoverL
 gate counts the decisions and the call runs or is denied. `bide approve` never runs the call.
 
 `bide approve -list` shows the calls that wait for a decision, each with the command that decides it
-(`-json` for scripts). The commands never carry a secret: a Postgres journal is named by
+(`-json` for scripts; `-approver-keys` makes its counts the gate's own). A run or call id that holds a
+control, bidirectional or invisible character gets no command line. The commands never carry a secret: a Postgres journal is named by
 `-postgres-env VAR`, not by its DSN, and the key by its file. `internal/approveline` builds the same
 line, for a notification to carry.
 

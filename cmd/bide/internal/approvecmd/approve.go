@@ -58,7 +58,17 @@ checked against the call before it is recorded, and recorded with the time you d
 
 It refuses, and records nothing, when the call has no waiting gate, the run is not waiting on it,
 the gate already passed or was denied, you are not one of the gate's approvers, you already decided
-(it says what, and when), or the key file can be read by others (on Unix, as ssh refuses one).
+(it says what, and when), or the key file can be read by others (on Unix, as ssh refuses one). It
+checks again after you confirm, in case the gate was decided or the run ended while you read. It
+never refuses, and -list never settles a gate, on records it has not verified: without
+-approver-keys the standing is labelled unverified. A call whose approval-pending note was lost (the
+note is the journal's only record of the gate's policy) is refused with a precise message: the
+approvers and the count shown must come from the journal, never from a flag.
+
+If the arguments are longer than the view (40 lines, 200 characters a line), bide approve will not
+sign: the signature binds all of them, and what it hid could be what matters. Rerun with -full. If
+you and another terminal decide as one approver at once, both decisions are recorded, the first
+valid one counts, and the other command exits 1 ("another decision of yours counts").
 
 An m-of-n decision needs -approver-keys, a JSON object of approver id to public key (the file bide
 view -approver-keys reads; bide keygen -as <id> prints an entry): the journal holds approver ids,
@@ -88,7 +98,9 @@ RecoverLoop pick it up: the gate counts the decisions and the call runs or is de
 never runs the call.
 
 -list prints the calls in the journal that wait for a decision, each with the bide approve command
-that decides it; -json prints them as JSON. A Postgres journal is named by -postgres-env, the name
+that decides it; -json prints them as JSON. With -approver-keys it counts each gate as the gate does
+(verified); without it the counts are labelled unverified and no gate is called settled. Run and
+call ids that hold control, bidirectional or invisible characters get no command. A Postgres journal is named by -postgres-env, the name
 of the environment variable that holds the DSN, so the password stays out of the argument list,
 the shell history and the commands -list prints; -postgres takes the DSN itself, and the listed
 commands then name $` + defaultPostgresEnv + `.

@@ -475,9 +475,9 @@ signed, the journal record's name and position, and when it was recorded, with n
 
 `DecisionReceipt.Verify(v)` checks a receipt on its own: the arguments hash to `args_sha256`, and the
 signature verifies, under the approver's key, over `agent.ApprovalDecisionBytes` of exactly that run,
-call, tool, arguments, approver, decision and time. `audit.CheckReceipt(receipt, journal, heads, logKey,
-skew)` then decides whether the signed heads commit to the decision. "Should contain" is positional: a
-journal only grows, and the decision is at the receipt's `index`, so a head whose size is above `index`
+call, tool, arguments, approver, decision and time. `audit.CheckReceipt(receipt, journal, heads, logKey)` then decides whether the signed heads commit to the decision. "Should contain" is positional, never by time: the approver's machine and the application keep
+different clocks and heads reach an anchor out of order, so a head's timestamp and a receipt's
+`recorded_at` (display only) decide nothing. A journal only grows, and the decision is at the receipt's `index`, so a head whose size is above `index`
 commits to a journal prefix that includes that position, and the prefix must hold the decision there.
 `CheckReceipt` rebuilds the prefix's root from the journal and compares it with the head's. The
 verdicts:
@@ -487,15 +487,14 @@ verdicts:
 | `anchored` | a head that matches the journal reaches the position, and the decision is there | no |
 | `pending` | the journal holds the decision and no head reaches its position yet (the application has not written to the run since) | no |
 | `decision deleted after signing` | a head that matches the journal reaches the position, and the journal holds something else there: the decision was removed or replaced before the head was signed, and the head was signed over the journal without it | yes |
-| `decision never anchored` | a head signed more than `skew` (default one minute) after `recorded_at` stops short of the position; or the journal lacks the decision and no head reaches its position | yes |
+| `decision never anchored` | the journal lacks the decision and no head reaches its position, so nothing signed ever committed to it and the journal no longer shows it | yes |
 | `unchecked` | a head reaches the position but does not match the journal given, so it says nothing of the decision (a journal that does not match a signed head fails its own verification) | yes, in `verify-receipts` |
 
-Heads that do not verify under the log key, or are of another run, are ignored. The `skew` allows for
-the two clocks (the process that journaled the decision, and the one that stamped the head) and for a
-head signing what the journal held a moment before it was stamped. What this does not do: it
-checks only decisions whose receipts someone kept, so a decision deleted before its approver made a
-receipt is not noticed, and a receipt cannot show that a decision was deleted if no signed head ever
-reached its position (it is then `pending`, or `never anchored` once a later head stops short of it).
+Heads that do not verify under the log key, or are of another run, are ignored, and heads are read by
+size, never by arrival order. What this does not do: it checks only decisions whose receipts someone
+kept, so a decision deleted before its approver made a receipt is not noticed, and a receipt cannot
+show that a decision was deleted if no signed head ever reached its position (a head that stops short
+of it says nothing, however late it was signed).
 `bide audit verify-receipts` is the command line (below).
 
 ## CLI reference: `bide audit`
@@ -575,7 +574,7 @@ Conventions shared across verbs:
 | `verify-convergence` | `-cert-bundle`, `-policy-bundle`, `-pubkey` | `-checker` | An anchored `ConfluenceCertificate` links to the policy leaf (each bundle must be the leaf it is read as: `audit:convergence:<digest>` and `audit:policy:<digest>`, both `StepValue`); with `-checker`, the oracle's convergence verdict must AGREE with the certificate, so overstated convergence is caught; the compensation-free (CRDT) classification is cross-checked only when the oracle emits a `compensation_free=` line, and otherwise stays producer-reported (the CLI prints a note saying so). |
 | `verify-quorum` | `-name`, `-tally`, `-vote` (repeatable), `-pubkey`, `-k` | `-commit` | A governed k-of-n quorum: the tally and every vote bundle authentic, in the same signed tree and run, and recorded by the quorum named `-name`; the disclosed votes exactly the votes the tally records; the recorded tally recomputes from them (a forged tally is caught); and `votes_for >= k`; with `-commit`, a governed commit (a tool call's result) is anchored in the same tree. |
 | `verify-run` | `-cert`, `-pubkey`, and at least one of `-approved <digest>` (repeatable) / `-approved-file <file>` (both together form one allowlist) | `-checker <astchecker>` | A proof-carrying run certificate: the used-policy set is bound by a signed used-policy head to this run and to the certificate's journal tree, and is a subset of the approved allowlist (only-approved-policies), and every used policy has an anchored, digest-linked convergence certificate in the run's signed tree (policies-convergence-certified); with `-checker`, the oracle's convergence verdict on each used policy must AGREE with its certificate. |
-| `verify-receipts` | `-receipt` (file or directory, repeatable), `-journal` (export per run, repeatable), `-heads` (a head, or one per line; repeatable), `-pubkey`, `-approver-keys` | `-skew <duration>` (default 1m) | Decision receipts written by `bide approve`: each signature verifies for the approver's key over the exact call it states, and the signed heads commit to the decision at its journal position (`audit.CheckReceipt`). Prints one line per receipt: PASS when anchored, INFO when pending (exit 0), FAIL for `decision deleted after signing`, `decision never anchored` and `unchecked` (exit 1). A missing journal for a receipt's run, or an unreadable input, is exit 4. |
+| `verify-receipts` | `-receipt` (file or directory, repeatable), `-journal` (export per run, repeatable), `-heads` (a head, or one per line; repeatable), `-pubkey`, `-approver-keys` | none | Decision receipts written by `bide approve`: each signature verifies for the approver's key over the exact call it states, and the signed heads commit to the decision at its journal position (`audit.CheckReceipt`). Prints one line per receipt: PASS when anchored, INFO when pending (exit 0), FAIL for `decision deleted after signing`, `decision never anchored` and `unchecked` (exit 1). A missing journal for a receipt's run, or an unreadable input, is exit 4. |
 | `verify-approvals` | `-evidence`, `-pubkey`, `-call`, `-need`, `-approvers`, `-approver-keys` | `-approved <digest>` (repeatable), `-approved-file <file>` (together, one allowlist, required when the package carries a run certificate) | An m-of-n approval gate from an `EvidencePackage`: the request, every decision the gate read, its recorded tally, and the call's result all verify in one signed tree and in order; recounting the decisions with the approvers' keys (a JSON object of id to key text, `<alg>:<hex>` or bare ed25519 hex; two of the policy's approvers on one key, or a weak key, is an unusable input) against the exact call reproduces the recorded tally; the gate enforced the expected policy; and at least k approved. Catches an omitted decision, which `verify-evidence` alone cannot. |
 | `verify-evidence` | `-evidence`, `-pubkey` | `-approved <digest>` (repeatable), `-approved-file <file>` (together, one allowlist) | A run-level `EvidencePackage`: the format, seal, and key are right, the signed tree head is an authentic journal head of the package's run, every packaged action proof verifies against it with the kind and label its record says, the grant chain is the anchored grants, the consistency proof holds between its two signed heads, and any run certificate is for this run and passes against the given allowlist (required when the package carries one). Prints one line per item and an overall PASS/FAIL. |
 
