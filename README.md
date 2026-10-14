@@ -198,7 +198,7 @@ is in [known limitations](docs/KNOWN-LIMITATIONS.md#governed-state-gsm).
 ### 5 · People in control
 
 When an agent is about to move money, a person decides, and what that person decided is on the
-record. The gate, the keys and the notice are part of the same journal as the rest.
+record. The gate and the notice are recorded on the same audited trail as the rest, and the keys sign it.
 
 - **k-of-n signed approvals.** A tool built with `WithApproval` halts the run before it executes
   until k of n named approvers have signed a decision over the exact call (`bide.approval.v3`; the
@@ -213,7 +213,7 @@ record. The gate, the keys and the notice are part of the same journal as the re
   Ed25519 or ECDSA P-256. Verifiers hold only the public key. This is key custody, not a
   compliance certification: [key custody](docs/guides/key-custody.md) lists what each signer is
   tested against (SoftHSM2 and emulators, never a live cloud) and what it does not check.
-- **A notice a person can be shown to have received.** A run that halts or waits for approval
+- **A notice with a record.** A run that halts or waits for approval
   raises a notification (a signed HTTPS webhook, `notify.NewWebhook`), and an audited trail records
   each attempt and whether the sink acknowledged it. An acknowledgement means your endpoint
   answered 2xx, not that a person read it. See [notifications](docs/guides/notifications.md).
