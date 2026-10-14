@@ -163,3 +163,39 @@ func TestNotifier_HaltAttemptDistinguishesGenerations(t *testing.T) {
 		t.Error("haltAttempt over an unreadable marker succeeded")
 	}
 }
+
+// A round that cannot read or write the trail, or cannot tell whether its event still stands,
+// returns the fault with the time to try again, and sends nothing: an alert is never delivered
+// on a state the engine could not record or read.
+func TestNotifyRound_FaultsSendNothingAndSayWhenToRetry(t *testing.T) {
+	ctx := context.Background()
+	clk := &notifyClock{t: time.Date(2026, 10, 13, 9, 0, 0, 0, time.UTC)}
+	for name, c := range map[string]struct {
+		trail func(*covTrail)
+		store func(*MemStore) Store
+	}{
+		"trail unreadable":       {func(t *covTrail) { t.loadErr = errCovBlip }, nil},
+		"observation unwritable": {func(t *covTrail) { t.appendErr = errCovBlip }, nil},
+		"run state unreadable":   {nil, func(s *MemStore) Store { return loadFails{s} }},
+	} {
+		t.Run(name, func(t *testing.T) {
+			tr := &covTrail{MemNotifyTrail: NewMemNotifyTrail()}
+			if c.trail != nil {
+				c.trail(tr)
+			}
+			var st Store = NewMemStore()
+			if c.store != nil {
+				st = c.store(NewMemStore())
+			}
+			sink := &fakeSink{}
+			e := testEngine(t, mustJournal(st), sink, tr, clk, "p1")
+			res, err := e.round(ctx, haltEvent())
+			if err == nil || res.done || !res.next.After(clk.now()) {
+				t.Fatalf("round = %+v, %v; want a fault, not done, and a retry time in the future", res, err)
+			}
+			if sink.count() != 0 {
+				t.Fatalf("an alert was sent despite the fault: %d", sink.count())
+			}
+		})
+	}
+}
