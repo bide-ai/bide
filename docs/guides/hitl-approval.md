@@ -283,6 +283,19 @@ decides, and an auditor can see when approvers were asked. The run writes it onc
 the call, and a resume writes nothing. It is informational only: the gate, a resume and recovery never
 read it, and a failed write of it is dropped.
 
+When the gate asks again over a recorded tally it does not act on (a tally that predates
+`bide.approval.v3`, or one that passed without excluding the requester under a policy that now
+excludes it), the drive that pauses at the re-ask also records a re-ask note:
+`approval-pending:<encoded toolUseID>:v3` or `:sod` (`agent.ApprovalReaskStep`), an
+`agent.ApprovalWait` with the policy the gate asks under, why (`Reask`) and the tally it asks over
+(`Supersedes`). It is written only if absent (the first writer wins), by every drive that pauses at
+the re-ask, so one lost to a crash is written by the next. The first note keeps the policy of the
+first pause; `bide view`, `bide approve`, the intake's note fallback, notifications and evidence read
+the newest note (`agent.LatestPauseNote`), so a gate that asks again after a policy change shows as
+waiting under the policy it asks under. A notification for a re-ask is an event of its own
+(`agent.ApprovalReaskKey`, and `reask` in the webhook payload). Like the first note, the gate never
+reads it.
+
 ### A run approved under an earlier decision format
 
 A run that an earlier version paused at an m-of-n gate, approved under `bide.approval.v2` (decisions
@@ -802,8 +815,9 @@ tools are built with, is not optional: `approvals.New` returns an error without 
 its pause note, written once when the run first pauses, so a policy changed after the pause (`ExcludePrincipal`
 turned on) is in the gate but not the note, and a gate whose tally passed under the old policy asks again
 while a handler that read the note would show it decided and refuse the approvals it needs, so the run would
-wait for ever. A tool the function does not know (`ok` false) falls back to the note (see
-[KNOWN-LIMITATIONS](../KNOWN-LIMITATIONS.md)). The handler evaluates the gate with `agent.EvaluateGate`, the
+wait for ever. A tool the function does not know (`ok` false) falls back to the newest pause note, which
+holds the policy the gate asks under once a drive has re-asked (`agent.ApprovalReaskStep`); before any
+drive re-asks, the journal does not know about a redeploy, which is why the live policy is required. The handler evaluates the gate with `agent.EvaluateGate`, the
 function the agent's own gate evaluates with, so the two agree: a gate the gate would refuse (an invalid
 policy, approvers on one key, a requester the run does not record) is state `error` on `GET /pending` and `409
 gate_misconfigured` on `POST /decisions`; a one-decision gate is state `single`; a live policy that changed

@@ -292,32 +292,7 @@ sent at once are both recorded and the first counts (the response says `counted`
 confidential arguments need `WithAuth` or a private network. See
 [Taking decisions over HTTP](guides/hitl-approval.md#taking-decisions-over-http).
 
-**The intake and the viewer learn a gate's policy from its pause note unless told the live one.** The
-`approval-pending` record is informational, insert-once by name, and written when the run first pauses
-at the gate. A redeploy that changes the gate's policy afterwards (adding `ExcludePrincipal`, say) is
-enforced by the gate itself when the run resumes, but is not in the note. If the gate's recorded tally
-passed under the old policy and the call has not run (a crash between the tally and the call), the gate
-asks again, and a reader that takes the policy from the note shows the gate as decided: the intake then
-refuses the new approvals (`not_waiting`), so nobody can approve through it and the run waits.
-**The intake requires the live policy** (`approvals.New` fails without it): `approvals.WithGatePolicy(func(tool string) (*agent.ApprovalPolicy,
-bool))` returns each gated tool's policy as the agent is built with it, and the handler counts the gate
-under that (the way the gate does) and uses the note only for a tool it does not know. `bide view` and
-`bide approve`, which read the database with no access to the application's policy, still read the note:
-after a policy change that adds `ExcludePrincipal`, re-drive the run (or let `RecoverLoop` do it) so the
-standing is read from the gate's own tally, and decide through the intake. A note that is refreshed on
-a re-ask would need a new record kind every reader understands, a change to the journal's format of its
-own.
-
-**The browser approve page is as strong as the origin that serves it, and no stronger than a key a
-script can use.** A page the application serves can sign anything the approver's key will sign (the
-page says so); the design is a bundle hosted by the approver's organization on a dedicated origin and
-pinned by its published hashes, whose entry document Subresource Integrity cannot pin, so the hash is
-checked at deploy time. The page's key is non-extractable but usable by any script on its origin, and the
-page's confirmation steps (the typed id, the buttons, the scroll to the end) are aids, not controls. It
-supports Ed25519 only (WebCrypto has no ML-DSA), one browser per approver id, and key enrolment needs a
-fingerprint comparison out of band. Gates for high-value actions should wait for passkeys (WebAuthn),
-which are not built: they need a new signature scheme in the gate and the auditor. See
-[Approving in the browser](guides/hitl-approval.md#approving-in-the-browser).
+**Until the run is driven again, a viewer that cannot see the live policy shows a gate asking again as decided.** A redeploy that changes a gate's policy (adding `ExcludePrincipal`, say) is enforced by the gate when the run resumes. If the recorded tally passed under the old policy and the call has not run (a crash between the tally and the call), the gate asks again, and writes a re-ask note with the policy it asks under (`approval-pending:<id>:sod` or `:v3`); `bide view`, `bide approve`, the intake's fallback, notifications, evidence and `plan.Conform` read the newest note. The note is written by the drive, so before the run is re-driven (by you or `RecoverLoop`) a reader with no access to the application's policy still shows the gate as decided. The intake does not have this gap: `approvals.New` requires the live policy (`approvals.WithGatePolicy`) and counts the gate under it.
 
 **A resolution's, a single approval's, an answer's and a run's end time are the writer's claim.** Each of these
 records notes when it was written (`recorded_at`), by the clock of the process that wrote it, and

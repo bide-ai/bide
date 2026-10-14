@@ -211,7 +211,9 @@ credential and never goes in a payload: an adapter that reads from Postgres repl
 **In it:** kind, run ID, the step and tool name, the gate's approver IDs and its policy (k of n), the
 run's principal, the times, and a view pointer. For a gate with separation of duties
 (`ExcludePrincipal`), `approval.excluded` lists the approvers who are requesters of the run: their
-decisions never count, so a router should not ask them.
+decisions never count, so a router should not ask them. When the gate asks again over a recorded tally it does not act on
+(a redeploy turned on `ExcludePrincipal`, or the tally predates the decision format),
+`approval.reask` says why: it is a notification of its own, since approvers must decide again.
 
 **Deliberately not in it:**
 
