@@ -113,7 +113,7 @@ func newLogSQL(q string, nextSeq, table []sqlTok) (logSQL, error) {
 
 // newLog returns a Log over db in schema, or, when schema is empty, in the schema logSchema finds
 // (with a warning), with its statements.
-func newLog(ctx context.Context, db *sql.DB, schema string) (*Log, error) {
+func newLog(ctx context.Context, db *sql.DB, schema string, noMigrate bool) (*Log, error) {
 	if schema != "" {
 		var exists bool
 		if err := retry(ctx, func() error {
@@ -122,6 +122,9 @@ func newLog(ctx context.Context, db *sql.DB, schema string) (*Log, error) {
 			return nil, fmt.Errorf("postgreslog: look up schema %q: %w", schema, err)
 		}
 		if !exists {
+			if noMigrate {
+				return nil, fmt.Errorf("postgreslog: the pinned schema %q does not exist; the database owner creates it and runs Migrate: %w (%w)", schema, ErrSchemaMissing, agent.ErrConfig)
+			}
 			return nil, fmt.Errorf("postgreslog: the pinned schema %q does not exist; create it, Open does not: %w", schema, agent.ErrConfig)
 		}
 	}
@@ -175,7 +178,8 @@ func newLog(ctx context.Context, db *sql.DB, schema string) (*Log, error) {
 type Option interface{ apply(*config) error }
 
 type config struct {
-	schema string // set by WithSchema; empty: discover it (see logSchema)
+	schema    string // set by WithSchema; empty: discover it (see logSchema)
+	noMigrate bool   // set by WithoutMigration
 }
 
 type optionFunc func(*config) error
@@ -203,12 +207,74 @@ func WithSchema(name string) Option {
 	})
 }
 
+// ErrSchemaMissing is wrapped by the error Open returns when the log's schema (the pinned schema,
+// governed_events with its append_id index, or the next_seq function) does not exist and the log
+// was opened WithoutMigration. Run Migrate as the schema's owner, then Open again. The error also
+// wraps agent.ErrConfig. It is the counterpart of store/postgres's ErrSchemaMissing; this package
+// does not import that module. The log keeps no schema version, so there is no ErrSchemaVersion.
+var ErrSchemaMissing = errors.New("postgreslog: the schema is missing")
+
+// WithoutMigration makes Open verify the schema instead of creating it: it runs no CREATE and no
+// ALTER, so its role needs no CREATE on the schema. The owner runs Migrate once at deploy time.
+// Open refuses a schema that lacks governed_events (with its append_id index) or the next_seq
+// function with an error that wraps ErrSchemaMissing and agent.ErrConfig, and checks the unique
+// indexes and the function as it does after a migration. The role needs USAGE on the schema,
+// SELECT and INSERT on governed_events and EXECUTE on the next_seq function.
+func WithoutMigration() Option {
+	return optionFunc(func(c *config) error {
+		c.noMigrate = true
+		return nil
+	})
+}
+
+// Migrate opens the log at dsn as the role in the DSN, which needs the privileges of the schema's
+// owner, creates or migrates governed_events and the next_seq function as Open does, checks them,
+// and closes the pool. It is idempotent. Run it as the owner, and have the service Open the log
+// WithoutMigration. WithoutMigration is an agent.ErrConfig error here.
+func Migrate(ctx context.Context, dsn string, opts ...Option) error {
+	var cfg config
+	for _, o := range opts {
+		if o == nil {
+			return fmt.Errorf("postgreslog: nil option: %w", agent.ErrConfig)
+		}
+		if err := o.apply(&cfg); err != nil {
+			return err
+		}
+	}
+	if cfg.noMigrate {
+		return fmt.Errorf("postgreslog: Migrate with WithoutMigration would do nothing: %w", agent.ErrConfig)
+	}
+	l, err := Open(ctx, dsn, opts...)
+	if err != nil {
+		return err
+	}
+	return l.Close()
+}
+
+// verify is what a log opened WithoutMigration does in place of the migration: it checks that the
+// table, its append_id index and the function exist, and creates nothing.
+func (l *Log) verify(ctx context.Context) error {
+	current, haveNextSeq, err := schemaCurrent(ctx, l.db, l.schema)
+	if err != nil {
+		return err
+	}
+	switch {
+	case !current:
+		return fmt.Errorf("postgreslog: %s.governed_events with its governed_events_append_id index does not exist; the schema's owner creates it with Migrate, and a log that may not migrate never does: %w (%w)",
+			quoteIdent(l.schema), ErrSchemaMissing, agent.ErrConfig)
+	case !haveNextSeq:
+		return fmt.Errorf("postgreslog: function %s.%s(text) does not exist; the schema's owner creates it with Migrate, and a log that may not migrate never does: %w (%w)",
+			quoteIdent(l.schema), nextSeqFunction, ErrSchemaMissing, agent.ErrConfig)
+	}
+	return nil
+}
+
 // warnf reports the log discovering its schema through the search path. It logs through the
 // default slog logger, which an application sets with slog.SetDefault; a test replaces it.
 var warnf = func(msg string, args ...any) { slog.Warn(msg, args...) }
 
 // Open connects to Postgres via a pgx DSN (e.g. "postgres://user:pass@host:5432/db") and ensures
-// the schema exists. Pin the schema with WithSchema; without it, Open discovers the schema through
+// the schema exists, or with WithoutMigration only verifies it. Pin the schema with WithSchema; without it, Open discovers the schema through
 // the search path (see logSchema) and logs a warning.
 func Open(ctx context.Context, dsn string, opts ...Option) (*Log, error) {
 	var cfg config
@@ -228,12 +294,17 @@ func Open(ctx context.Context, dsn string, opts ...Option) (*Log, error) {
 		db.Close()
 		return nil, err
 	}
-	l, err := newLog(ctx, db, cfg.schema)
+	l, err := newLog(ctx, db, cfg.schema, cfg.noMigrate)
 	if err != nil {
 		db.Close()
 		return nil, err
 	}
-	if err := l.migrate(ctx); err != nil {
+	if cfg.noMigrate {
+		err = l.verify(ctx)
+	} else {
+		err = l.migrate(ctx)
+	}
+	if err != nil {
 		db.Close()
 		return nil, err
 	}

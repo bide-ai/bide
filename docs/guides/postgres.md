@@ -72,6 +72,10 @@ GRANT SELECT ON bide.bide_steps, bide.bide_events, bide.bide_leases, bide.bide_s
 
 Creating the lease indexes on a database from v0.9.0 takes the table's owner, so the first `Migrate` after that upgrade must run as the owner role.
 
+## The governed event log
+
+`govern/postgreslog` has the same split: the owner runs `postgreslog.Migrate(ctx, ownerDSN, postgreslog.WithSchema("bide"))`, and the service opens the log with `postgreslog.WithoutMigration()`. Open then creates nothing and refuses a schema without `governed_events` (and its `append_id` index) or the `governed_events_next_seq_v1` function with `postgreslog.ErrSchemaMissing` (also `agent.ErrConfig`). The log keeps no schema version, so there is no version error. The service role needs `USAGE` on the schema, `SELECT` and `INSERT` on `governed_events`, and `EXECUTE` on the function. `bide migrate` covers the journal store only; migrate the log through `postgreslog.Migrate`.
+
 ## What this does not cover
 
-The governed event log (`govern/postgreslog`) migrates on open too and has no migration-free mode yet; see [known limitations](../KNOWN-LIMITATIONS.md). The SQLite store has no equivalent: a SQLite database is a file, so the process that writes the journal needs write access to that file, and there is no separate DDL privilege to withhold. Use `sqlite.OpenReadOnly` for readers.
+The SQLite store has no equivalent: a SQLite database is a file, so the process that writes the journal needs write access to that file, and there is no separate DDL privilege to withhold. Use `sqlite.OpenReadOnly` for readers.
