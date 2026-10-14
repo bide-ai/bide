@@ -304,8 +304,13 @@ func (e *notifyEngine) stamp(rec *NotifyRecord, segment string, recs []NotifyRec
 }
 
 func (e *notifyEngine) setWatch(ctx context.Context, key, runID string, want bool) error {
-	for range maxTrailRetries {
-		name, recs, err := e.openHead(ctx)
+	defer lockTrail(NotifyOpenTrail)() // every open-trail segment and index: one writer at a time in this process
+	conflicts := 0
+	for step := 0; step < maxTrailSteps && conflicts < maxTrailRetries; step++ {
+		if conflicts > 0 {
+			e.conflictBackoff(ctx, conflicts)
+		}
+		name, recs, err := e.openHeadLocked(ctx)
 		if err != nil {
 			return err
 		}
@@ -331,6 +336,7 @@ func (e *notifyEngine) setWatch(ctx context.Context, key, runID string, want boo
 		if !conflict {
 			return nil
 		}
+		conflicts++
 	}
 	return fmt.Errorf("notify: trail %s: lost the append race %d times in a row for %s", NotifyOpenTrail, maxTrailRetries, key)
 }
@@ -399,6 +405,12 @@ func (e *notifyEngine) indexSegment(ctx context.Context, name string) error {
 // the chain but not in the index gets indexed; and the index names an empty segment only for the
 // very first one, which has nothing to carry. A lookup is O(1) loads however long the gap.
 func (e *notifyEngine) openHead(ctx context.Context) (string, []NotifyRecord, error) {
+	defer lockTrail(NotifyOpenTrail)()
+	return e.openHeadLocked(ctx)
+}
+
+// openHeadLocked is openHead for a caller that holds the open trail's lock.
+func (e *notifyEngine) openHeadLocked(ctx context.Context) (string, []NotifyRecord, error) {
 	today := OpenSegment(e.cfg.now())
 	for range 4 * maxTrailRetries {
 		last, _, err := e.indexLast(ctx)

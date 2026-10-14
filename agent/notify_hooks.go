@@ -152,6 +152,7 @@ func causeSentinel(class string) error {
 // is open, and queues the recovery_failing event once the episode has lasted long enough.
 func (e *notifyEngine) recoveryFailed(ctx context.Context, runID string, cause error) {
 	name := NotifyTrailName(runID)
+	defer lockTrail(name)()
 	for range maxTrailRetries {
 		recs, err := e.trail.Load(ctx, name)
 		if err != nil {
@@ -184,6 +185,7 @@ func (e *notifyEngine) recoveryFailed(ctx context.Context, runID string, cause e
 // is open.
 func (e *notifyEngine) recoveryOK(ctx context.Context, runID string) {
 	name := NotifyTrailName(runID)
+	defer lockTrail(name)()
 	for range maxTrailRetries {
 		recs, err := e.trail.Load(ctx, name)
 		if err != nil {

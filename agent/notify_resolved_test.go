@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"math/rand/v2"
 	"strings"
 	"sync"
 	"sync/atomic"
@@ -1634,5 +1635,97 @@ func TestResolved_ASlowOpenTrailStoreDoesNotHoldRecoverForLong(t *testing.T) {
 	}
 	if took := time.Since(start); took > 5*time.Second {
 		t.Fatalf("Recover took %v with a stuck open-trail store", took)
+	}
+}
+
+// Many events of one run share its trail: rounds of different keys in one process, over one engine
+// or several (a drive's notifier and a sweep), append to it at the same time. Losing a position to
+// a sibling in the same process is expected and cheap, and must never exhaust a round's retries.
+func TestNotifyRound_ManyKeysOnOneTrailInOneProcessNeverLoseTheirAppendRace(t *testing.T) {
+	ctx := context.Background()
+	for iter := range 20 {
+		tr, sink := NotifyTrail(slowTrail{NewMemNotifyTrail()}), &fakeSink{}
+		j := memJournal()
+		engines := []*notifyEngine{
+			testEngine(t, j, sink, tr, resolvedClock(), "drive"),
+			testEngine(t, j, sink, tr, resolvedClock(), "sweep"),
+		}
+		var wg sync.WaitGroup
+		errs := make(chan error, 64)
+		for k := range 24 {
+			run := fmt.Sprintf("r%d", k%3) // three runs: their trails and the one open trail all contend
+			ev := notifyEvent{key: HaltedKey(run, OpTool, fmt.Sprintf("c%d", k), 100), kind: NotificationOutcomeUnknown, runID: run,
+				halt: &NotifyHalt{Op: OpRef{Kind: OpTool, ID: fmt.Sprintf("c%d", k)}, Cause: HaltCrashed}}
+			for _, e := range engines {
+				wg.Add(1)
+				go func() {
+					defer wg.Done()
+					if _, err := e.round(ctx, ev); err != nil && strings.Contains(err.Error(), "append race") {
+						errs <- err
+					}
+				}()
+			}
+		}
+		wg.Wait()
+		close(errs)
+		for err := range errs {
+			t.Fatalf("iteration %d: %v", iter, err)
+		}
+	}
+}
+
+// slowTrail gives a store a round trip's latency, so the load-decide-append windows of concurrent
+// rounds overlap as they do against a real database.
+type slowTrail struct{ NotifyTrail }
+
+func (s slowTrail) Load(ctx context.Context, trail string) ([]NotifyRecord, error) {
+	recs, err := s.NotifyTrail.Load(ctx, trail)
+	time.Sleep(time.Duration(rand.IntN(300)) * time.Microsecond)
+	return recs, err
+}
+
+// racingTrail loses its first n appends to another process: a foreign record takes the position first.
+type racingTrail struct {
+	NotifyTrail
+	mu    sync.Mutex
+	n     int
+	trail string
+}
+
+func (r *racingTrail) Append(ctx context.Context, trail string, seq int, rec NotifyRecord) error {
+	r.mu.Lock()
+	race := r.n > 0 && trail == r.trail && rec.Kind != NotifyWatch
+	if race {
+		r.n--
+	}
+	r.mu.Unlock()
+	if race {
+		_ = r.NotifyTrail.Append(ctx, trail, seq, NotifyRecord{Kind: NotifyObserved, Key: fmt.Sprintf("foreign:%d", seq), RunID: "r", At: rec.At,
+			EventKind: string(NotificationRunAborted), EventAt: rec.At, DeadlineAt: rec.At.Add(time.Hour)})
+	}
+	return r.NotifyTrail.Append(ctx, trail, seq, rec)
+}
+
+// Positions lost to another process are retried after a jittered backoff, and are counted apart
+// from the round's own progress: a round that observes, claims and acknowledges while five of its
+// appends lose the race still finishes.
+func TestNotifyRound_PositionsLostToAnotherProcessDoNotExhaustTheRetries(t *testing.T) {
+	ctx := context.Background()
+	clk := resolvedClock()
+	tr := &racingTrail{NotifyTrail: NewMemNotifyTrail(), n: 5, trail: "notify:r"}
+	sink := &fakeSink{}
+	e := testEngine(t, memJournal(), sink, tr, clk, "p1")
+	res, err := e.round(ctx, haltEvent())
+	if err != nil || !res.done || sink.count() != 1 {
+		t.Fatalf("round = %+v, %v, %d deliveries", res, err, sink.count())
+	}
+	if len(clk.sleeps) < 5 {
+		t.Fatalf("%d backoffs for 5 lost races, want one each: %v", len(clk.sleeps), clk.sleeps)
+	}
+	// Lost for good, the round gives up with the retry error, and a later round tries again.
+	tr2 := &racingTrail{NotifyTrail: NewMemNotifyTrail(), n: 100, trail: "notify:r"}
+	e2 := testEngine(t, memJournal(), &fakeSink{}, tr2, resolvedClock(), "p2")
+	if _, err := e2.round(ctx, haltEvent()); err == nil || !strings.Contains(err.Error(), "append race") {
+		t.Fatalf("round = %v, want the lost-race error", err)
 	}
 }
