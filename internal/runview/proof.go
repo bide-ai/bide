@@ -156,12 +156,12 @@ func checkApprovals(recs []agent.Record, ap Approvals, logV audit.Verifier, acti
 			out[tu.ID] = ApprovalCheck{Text: "signatures not verified: the journaled tally does not read: " + err.Error()}
 			continue
 		}
-		recorded := agent.ApprovalPolicy{Need: tally.Need, Approvers: tally.Approvers}
+		recorded := agent.ApprovalPolicy{Need: tally.Need, Approvers: tally.Approvers, ExcludePrincipal: tally.ExcludePrincipal}
 		policy, against := recorded, "against the recorded policy"
 		var mismatch string
 		if ap.Expected != nil {
 			policy, against = *ap.Expected, "against the expected policy"
-			if recorded.Need != policy.Need || !slices.Equal(recorded.Approvers, policy.Approvers) {
+			if recorded.Need != policy.Need || !slices.Equal(recorded.Approvers, policy.Approvers) || recorded.ExcludePrincipal != policy.ExcludePrincipal {
 				mismatch = fmt.Sprintf("recorded policy %s differs from expected %s", policyText(recorded), policyText(policy))
 			}
 		}
@@ -201,7 +201,11 @@ type Approvals struct {
 
 // policyText renders a policy as "k of n (a, b, c)".
 func policyText(p agent.ApprovalPolicy) string {
-	return fmt.Sprintf("%d of %d (%s)", p.Need, len(p.Approvers), strings.Join(p.Approvers, ", "))
+	s := fmt.Sprintf("%d of %d (%s)", p.Need, len(p.Approvers), strings.Join(p.Approvers, ", "))
+	if p.ExcludePrincipal {
+		s += " excluding the requester"
+	}
+	return s
 }
 
 // approvalText phrases a VerifyApprovals verdict: the count and who counted when it holds, and

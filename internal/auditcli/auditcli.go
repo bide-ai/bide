@@ -1187,6 +1187,7 @@ func (c *cli) verifyApprovals(args []string) {
 	call := fs.String("call", "", `the gated call's tool-use id, or a gated plan flow node's key ("node:<name>", "node:iter:<n>:<name>")`)
 	need := fs.Int("need", 0, "approvals the policy requires (k)")
 	approvers := fs.String("approvers", "", "the policy's eligible approver ids, comma-separated, in policy order")
+	excludePrincipal := fs.Bool("exclude-principal", false, "the policy excludes the run's requester from approving (separation of duties); the evidence must prove the run's run:start")
 	keysPath := fs.String("approver-keys", "", `JSON object of approver id to public key text (<scheme>:<hex>, or bare ed25519 hex), e.g. {"ops":"ed25519:ab12..."} or {"ops":"ecdsa-p256:04ab..."}`)
 	var approved stringList
 	fs.Var(&approved, "approved", "an approved policy digest for the package's run certificate; repeat once per allowed policy")
@@ -1200,7 +1201,7 @@ func (c *cli) verifyApprovals(args []string) {
 	}
 	// The expected policy comes from the command line, so an invalid one is a usage error, found
 	// before any file is read.
-	policy := agent.ApprovalPolicy{Need: *need, Approvers: strings.Split(*approvers, ",")}
+	policy := agent.ApprovalPolicy{Need: *need, Approvers: strings.Split(*approvers, ","), ExcludePrincipal: *excludePrincipal}
 	if err := policy.Validate(); err != nil {
 		c.usageError(fmt.Sprintf("verify-approvals: -need and -approvers: %v", err))
 	}
@@ -1293,6 +1294,9 @@ func (c *cli) verifyApprovals(args []string) {
 			proofs = "PASS"
 		}
 		c.printf("%s  every proof in the package verifies under the log key\n", proofs)
+	}
+	if policy.ExcludePrincipal && v.Requester != "" {
+		c.printf("INFO  requester %s (the run's principal, from its proven run:start): their decisions never count\n", cleanText(v.Requester))
 	}
 	for _, id := range v.Counted {
 		c.printf("PASS  %s approved (signature verifies for this exact call)\n", cleanText(id))

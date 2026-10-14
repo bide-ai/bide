@@ -115,6 +115,16 @@ func cards(g Gate, p *Proof) []ApproverCard {
 	for _, n := range names {
 		c := ApproverCard{Name: n, Initials: initials(n), Fingerprint: chk.Keys[n]}
 		switch {
+		case slices.Contains(g.Excluded, n):
+			// Fills no seat: the gate excludes the run's requester (or the tally excluded them).
+			c.State = "excluded"
+			if g.Requester != "" && strings.EqualFold(n, g.Requester) {
+				c.Why = "excluded: the run's requester, who may not approve their own request (separation of duties)"
+			} else {
+				c.Why = "excluded: fills no seat in this gate"
+			}
+			out = append(out, c)
+			continue
 		case slices.Contains(g.ApprovedBy, n):
 			c.State = "approved"
 		case slices.Contains(g.DeniedBy, n):

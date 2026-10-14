@@ -40,7 +40,7 @@
 {{if .HasTimes}}<p class="small muted atimesnote"><b>decided</b>: when the approver says they decided, by their clock, inside their signature. <b>recorded</b>: when the decision was journaled, by the clock of whoever submitted it, not signed, anchored in the journal. Times are UTC; neither changes the count.</p>{{end}}
 <ul class="acards">{{range .Cards}}<li class="acard a-{{.State}}">
 <span class="avatar" aria-hidden="true">{{.Initials}}</span>
-<div class="abody"><p class="aname"><b>{{.Name}}</b> <span class="astate">{{if eq .State "approved"}}{{icon "ok"}} approved{{else if eq .State "denied"}}{{icon "x"}} denied{{else}}{{icon "wait"}} pending{{end}}</span></p>
+<div class="abody"><p class="aname"><b>{{.Name}}</b> <span class="astate">{{if eq .State "approved"}}{{icon "ok"}} approved{{else if eq .State "denied"}}{{icon "x"}} denied{{else if eq .State "excluded"}}excluded{{else}}{{icon "wait"}} pending{{end}}</span></p>
 {{if .Verify}}<p class="averify {{if .VerifyOK}}good{{else if eq .Verify "signature NOT verified"}}bad{{else}}muted{{end}}">{{if .VerifyOK}}{{icon "approval"}} {{else if eq .Verify "signature NOT verified"}}{{icon "x"}} {{end}}{{.Verify}}</p>{{end}}
 {{with .Why}}<p class="small bad">{{.}}</p>{{end}}
 {{with .Fingerprint}}<p class="small mono" title="the first 8 hex digits of the SHA-256 of the approver's public key">key {{.}}</p>{{end}}
@@ -61,7 +61,7 @@
 
 {{if .Gates}}<section><h2>Approval gates</h2>
 <div class="tablewrap"><table><thead><tr><th>Call</th><th>Gate</th><th>Approved by</th><th>Denied by</th><th>Pending</th><th>Status</th><th>Signatures</th></tr></thead><tbody>
-{{range .Gates}}<tr><td><code>{{.ToolUseID}}</code> {{.ToolName}}</td><td>{{if .Single}}one decision{{else}}{{.Need}} of {{len .Approvers}}{{if .Approvers}} ({{join .Approvers ", "}}){{end}}{{end}}</td>
+{{range .Gates}}<tr><td><code>{{.ToolUseID}}</code> {{.ToolName}}</td><td>{{if .Single}}one decision{{else}}{{.Need}} of {{len .Approvers}}{{if .Approvers}} ({{join .Approvers ", "}}){{end}}{{if .ExcludePrincipal}}, excluding the requester{{with .Requester}} ({{.}}){{end}}{{end}}{{end}}</td>
 <td>{{join .ApprovedBy ", "}}</td><td>{{join .DeniedBy ", "}}</td><td>{{join .Pending ", "}}</td><td>{{.Status}}</td><td class="{{if .SignaturesOK}}good{{else if .Signatures | hasPrefix "signatures NOT"}}bad{{else}}muted{{end}}">{{.Signatures}}</td></tr>{{end}}
 </tbody></table></div></section>{{end}}
 
