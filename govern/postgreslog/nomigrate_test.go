@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"net/url"
 	"os"
+	"strings"
 	"testing"
 	"time"
 
@@ -82,6 +83,7 @@ func TestWithoutMigration_LeastPrivilege(t *testing.T) {
 		}
 	}
 	exec(`GRANT SELECT, INSERT ON ` + schema + `.governed_events TO ` + app)
+	exec(`GRANT SELECT ON ` + schema + `.governed_events_schema_version TO ` + app)
 	exec(`REVOKE ALL ON FUNCTION ` + schema + `.governed_events_next_seq_v1(text) FROM PUBLIC`)
 	exec(`GRANT EXECUTE ON FUNCTION ` + schema + `.governed_events_next_seq_v1(text) TO ` + app)
 
@@ -104,5 +106,61 @@ func TestWithoutMigration_LeastPrivilege(t *testing.T) {
 		t.Fatal("opened without the next_seq function")
 	} else if !errors.Is(err, postgreslog.ErrSchemaMissing) {
 		t.Fatal(err)
+	}
+
+	if err := postgreslog.Migrate(ctx, dsn(owner), opts...); err != nil {
+		t.Fatalf("Migrate after dropping the function: %v", err)
+	}
+	exec(`GRANT EXECUTE ON FUNCTION ` + schema + `.governed_events_next_seq_v1(text) TO ` + app)
+	version := func() (v int) {
+		t.Helper()
+		if err := admin.QueryRowContext(ctx, `SELECT version FROM `+schema+`.governed_events_schema_version`).Scan(&v); err != nil {
+			t.Fatal(err)
+		}
+		return v
+	}
+	if v := version(); v != 1 {
+		t.Fatalf("recorded version %d, want 1", v)
+	}
+
+	// A log from before the version table is version 1: the service opens it WithoutMigration,
+	// and Migrate adds the table and records 1, idempotently.
+	exec(`DROP TABLE ` + schema + `.governed_events_schema_version`)
+	l2, err := postgreslog.Open(ctx, dsn(app), noMig...)
+	if err != nil {
+		t.Fatalf("a log without the version table: %v", err)
+	}
+	l2.Close()
+	for range 2 {
+		if err := postgreslog.Migrate(ctx, dsn(owner), opts...); err != nil {
+			t.Fatalf("Migrate over a log without the version table: %v", err)
+		}
+		if v := version(); v != 1 {
+			t.Fatalf("recorded version %d, want 1", v)
+		}
+	}
+	exec(`GRANT SELECT ON ` + schema + `.governed_events_schema_version TO ` + app)
+
+	// Another version is refused by the service, by Migrate and by a migrating Open, and a newer
+	// one says why.
+	for _, v := range []string{"2", "0"} {
+		exec(`UPDATE ` + schema + `.governed_events_schema_version SET version = ` + v)
+		if x, err := postgreslog.Open(ctx, dsn(app), noMig...); err == nil {
+			x.Close()
+			t.Fatalf("opened a log at version %s", v)
+		} else if !errors.Is(err, postgreslog.ErrSchemaVersion) || !errors.Is(err, agent.ErrConfig) {
+			t.Fatalf("version %s: %v", v, err)
+		}
+		merr := postgreslog.Migrate(ctx, dsn(owner), opts...)
+		if !errors.Is(merr, postgreslog.ErrSchemaVersion) {
+			t.Fatalf("Migrate at version %s: %v", v, merr)
+		}
+		if v == "2" && !strings.Contains(merr.Error(), "newer bide wrote it") {
+			t.Fatalf("Migrate at version 2 does not say why: %v", merr)
+		}
+		if x, err := postgreslog.Open(ctx, dsn(owner), opts...); err == nil {
+			x.Close()
+			t.Fatalf("a migrating Open accepted version %s", v)
+		}
 	}
 }

@@ -101,8 +101,8 @@ on the path, which any role with `CREATE` on the database can do for the `"$user
 default search path puts first, can redirect a restarting node to a store of its own. `Open` logs
 a warning when it discovers the schema. With the schema pinned, the search path plays no part.
 
-**Migrations have no down step, and the only schema version is 1.** A Postgres store schema at
-another version is refused (`ErrSchemaVersion`), not converted. The governed log keeps no version.
+**Migrations have no down step, and the only schema version is 1.** A Postgres store or governed
+log schema at another version is refused (`ErrSchemaVersion`), not converted.
 
 **Renaming the Postgres store's schema needs one step.** The `bide_next_seq_v1` function names
 its schema, so after `ALTER SCHEMA ... RENAME` inserts fail and `Open` refuses it: drop the
