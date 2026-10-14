@@ -104,6 +104,7 @@ type cli struct {
 	st             term.Style      // the report's colors: off under -json and off a terminal
 	head           *audit.TreeHead // the signed tree a verify verb checked, for the banner
 	approverNote   bool            // a styled line dropped approverNote, which the banner says once
+	orphans        []string        // notifications: runs the open trail lists that have no journal in the store
 }
 
 // errStyle is the style of an error line on stderr: off under -json, as the report is.

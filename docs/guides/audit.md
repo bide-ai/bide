@@ -602,10 +602,20 @@ What it checks, and the status each event gets:
   (`notify:@open:index:<year>`): each sealed segment's successor starts with a checkpoint equal to
   what the sealed one folds to (`agent.FoldOpen`), an unwatch happens only while its event is listed,
   nothing follows a seal, the backfill is recorded once, only the first segment starts without a
-  checkpoint, the index lists the segments in creation order, and a segment it names exists unless it
-  is the first or the last created; the open-trail record kinds are a violation on a run's trail.
-  `bide audit notifications -db` and `-postgres-env` read the indexes, the segments they name and the
-  segments those seal into. A run's events are in the trail of its root run (a plan flow's run is its
+  checkpoint, the index lists the segments in creation order, each in the index of its own year, and a
+  segment it names exists unless it is the first or the last created (with signed heads, any missing
+  segment is a finding: a deleted newest segment, or one a writer has not created yet, which a sweep
+  repairs, so run the audit again); every record is dated within its segment's UTC day (a seal, in
+  the day of the segment it seals into), a seal may skip days nobody ran on but not a segment an
+  index lists, and every delivered `outcome_unknown`, `approval_pending` or `recovery_failing` event
+  in a run trail is listed on the open trail, or was observed before it and covered by the recorded
+  backfill; the open-trail record kinds are a violation on a run's trail. With signed heads, each
+  open-trail segment and index needs its own (the same `SignNotifyTrail` heads as a run's trail), so
+  a record or a whole segment deleted from either end is found. `bide audit notifications -db` and
+  `-postgres-env` read every yearly index from 2026 (the year the open trail began), the segments
+  they name and the segments those seal into (and the index of each segment's year, however far
+  ahead), and a run that the open trail lists but that has no journal in the store is reported as a
+  warning (`-strict` fails on it) while its trail is verified all the same. A run's events are in the trail of its root run (a plan flow's run is its
   own root). A trail that breaks a rule is reported with the record
   and the rule (exit 1).
 - **Routing and escalation.** Each event's receiver and, for an escalation step, its level are in

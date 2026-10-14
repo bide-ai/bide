@@ -125,6 +125,13 @@ func (c *cli) notifications(args []string) {
 		return
 	}
 	c.report(rep, *strict)
+	for _, id := range c.orphans {
+		if *strict {
+			c.failLine(fmt.Sprintf("FAIL  run %s: listed on the open trail, with no journal in this store: its events are not cross-checked against one (-strict)", cleanText(id)))
+		} else {
+			c.printf("note: WARNING run %s: listed on the open trail, with no journal in this store: its events are not cross-checked against one (journal deleted, or from another database)\n", cleanText(id))
+		}
+	}
 	if b, merr := json.Marshal(rep); merr == nil {
 		c.artifact = b
 	}
@@ -220,14 +227,23 @@ func (c *cli) readStore(in *audit.NotifyVerifyInput, db, pgEnv, run string) erro
 			return unusable(err)
 		}
 	}
-	// The open trail: every yearly index, the segments they name, and the segments those seal into.
+	// The open trail: every yearly index from the year it began, the segments they name, the segments
+	// those seal into, and the index of each segment's year, however far the seals lead.
 	now := time.Now().UTC()
 	segs := map[string]bool{}
+	loaded := map[string]bool{}
 	var queue []string
-	for y := now.Year() + 1; y >= now.Year()-50; y-- {
-		recs, err := add(agent.OpenIndex(y))
+	listedRuns := map[string]bool{}
+	var loadIndex func(year int) error
+	loadIndex = func(year int) error {
+		name := agent.OpenIndex(year)
+		if loaded[name] {
+			return nil
+		}
+		loaded[name] = true
+		recs, err := add(name)
 		if err != nil {
-			return unusable(err)
+			return err
 		}
 		for _, r := range recs {
 			if r.Kind == agent.NotifySegment && !segs[r.Next] {
@@ -235,17 +251,50 @@ func (c *cli) readStore(in *audit.NotifyVerifyInput, db, pgEnv, run string) erro
 				queue = append(queue, r.Next)
 			}
 		}
+		return nil
+	}
+	for y := agent.OpenFirstYear; y <= now.Year()+1; y++ {
+		if err := loadIndex(y); err != nil {
+			return unusable(err)
+		}
 	}
 	for len(queue) > 0 {
 		name := queue[0]
 		queue = queue[1:]
+		if t, err := time.Parse("2006-01-02", strings.TrimPrefix(name, agent.NotifyOpenTrail+":")); err == nil {
+			if err := loadIndex(t.Year()); err != nil {
+				return unusable(err)
+			}
+		}
 		recs, err := add(name)
 		if err != nil {
 			return unusable(err)
 		}
-		if next := agent.FoldOpen(recs).Sealed; next != "" && !segs[next] {
+		st := agent.FoldOpen(recs)
+		for _, w := range st.Watched {
+			listedRuns[w.RunID] = true
+		}
+		for _, r := range recs {
+			if r.Kind == agent.NotifyWatch {
+				listedRuns[r.RunID] = true
+			}
+		}
+		if next := st.Sealed; next != "" && !segs[next] {
 			segs[next] = true
 			queue = append(queue, next)
+		}
+	}
+	// A run the open trail lists that has no journal in this store: its trail is read and verified
+	// all the same, and the run is reported, since nothing here cross-checks it against a journal.
+	if run == "" {
+		for _, id := range slices.Sorted(mapKeys(listedRuns)) {
+			if roots[id] {
+				continue
+			}
+			if _, err := add(agent.NotifyTrailName(id)); err != nil {
+				return unusable(err)
+			}
+			c.orphans = append(c.orphans, id)
 		}
 	}
 	return nil

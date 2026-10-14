@@ -487,3 +487,102 @@ func TestNotificationsVerb_ManyHeadsAndTheUnattestedGap(t *testing.T) {
 		t.Fatalf("a head of another history: exit %d\n%s", code, out)
 	}
 }
+
+// A run whose events the open trail lists but whose journal is not in the store (the journal was
+// deleted, or the trail came from another database) is reported, not skipped: its trail is
+// verified all the same, and -strict fails on it.
+func TestNotificationsVerb_ARunListedOnTheOpenTrailWithNoJournalIsReported(t *testing.T) {
+	ctx := context.Background()
+	mem, es := agent.NewMemStore(), audit.NewMemEventStore()
+	other, _ := agent.NewJournal(agent.NewMemStore()) // the journal of "z" is somewhere else
+	tool := agent.MustFunc("refund", "refund", func(context.Context, struct{}) (string, error) { return "ok", nil }, agent.WithApproval(agent.SingleApproval()))
+	drive := func(j *agent.Journal, run string) {
+		a, _ := agent.New(agenttest.NewScriptedModel(agenttest.ToolTurn("c1", "refund", `{}`)), j, agent.WithTools(tool),
+			agent.WithNotifier(&okSink{}, audit.NewNotifyTrail(es), agent.WithNotifyHolder("p1")))
+		if _, err := a.Run(ctx, run, agent.UserText("go")); !errors.As(err, new(*agent.ApprovalPending)) {
+			t.Fatal(err)
+		}
+		if err := a.FlushNotifications(ctx); err != nil {
+			t.Fatal(err)
+		}
+	}
+	j, _ := agent.NewJournal(mem)
+	drive(j, "a")
+	drive(other, "z")
+	closed := false
+	fakeStores(t, memNotifyStore{mem, es, &closed})
+
+	code, out, errOut := runCLI("notifications", "-db", "x.db", "-unanchored")
+	if code != 0 || !strings.Contains(out, "trail notify:z") || !strings.Contains(out, "WARNING") || !strings.Contains(out, "z") || !strings.Contains(out, "no journal") {
+		t.Fatalf("exit %d\n%s\n%s", code, out, errOut)
+	}
+	if code, out, _ := runCLI("notifications", "-db", "x.db", "-unanchored", "-strict"); code != 1 || !strings.Contains(out, "no journal") {
+		t.Fatalf("-strict: exit %d\n%s", code, out)
+	}
+	// -run a reads only a: z is not this audit's.
+	if code, out, _ := runCLI("notifications", "-db", "x.db", "-unanchored", "-run", "a", "-strict"); code != 0 || strings.Contains(out, "notify:z") {
+		t.Fatalf("-run a: exit %d\n%s", code, out)
+	}
+}
+
+// The segments are found by following the index and the seals, wherever they lead: a seal into a
+// segment years ahead of the clock (a peer whose clock was wrong) is read with its year's index, not
+// skipped because it is past a fixed bound.
+func TestNotificationsVerb_TheOpenTrailIsFollowedPastAnyFixedYearBound(t *testing.T) {
+	ctx := context.Background()
+	mem, es := agent.NewMemStore(), audit.NewMemEventStore()
+	tr := audit.NewNotifyTrail(es)
+	now := time.Now().UTC()
+	far := now.AddDate(5, 0, 0)
+	segNow, segFar := agent.OpenSegment(now), agent.OpenSegment(far)
+	put := func(name string, recs ...agent.NotifyRecord) {
+		t.Helper()
+		for i, r := range recs {
+			if err := tr.Append(ctx, name, i, r); err != nil {
+				t.Fatal(err)
+			}
+		}
+	}
+	put(agent.OpenIndex(now.Year()), agent.NotifyRecord{Kind: agent.NotifySegment, At: now, Next: segNow})
+	put(segNow, agent.NotifyRecord{Kind: agent.NotifyCheckpoint, At: now}, agent.NotifyRecord{Kind: agent.NotifySeal, At: far, Next: segFar})
+	put(segFar, agent.NotifyRecord{Kind: agent.NotifyCheckpoint, At: far})
+	put(agent.OpenIndex(far.Year()), agent.NotifyRecord{Kind: agent.NotifySegment, At: far, Next: segFar})
+	closed := false
+	fakeStores(t, memNotifyStore{mem, es, &closed})
+	code, out, errOut := runCLI("notifications", "-db", "x.db", "-unanchored")
+	for _, want := range []string{"trail " + segFar, "trail " + agent.OpenIndex(far.Year())} {
+		if !strings.Contains(out, want) {
+			t.Fatalf("exit %d: %q is not read\n%s\n%s", code, want, out, errOut)
+		}
+	}
+}
+
+// Two notifiers whose clocks differ by days, over one store: the open trail they write together is
+// one the audit accepts, and each run's event is found.
+func TestNotificationsVerb_AnOpenTrailWrittenByClocksDaysApartVerifies(t *testing.T) {
+	ctx := context.Background()
+	mem, es := agent.NewMemStore(), audit.NewMemEventStore()
+	j, _ := agent.NewJournal(mem)
+	tool := agent.MustFunc("refund", "refund", func(context.Context, struct{}) (string, error) { return "ok", nil }, agent.WithApproval(agent.SingleApproval()))
+	base := time.Now().UTC()
+	drive := func(run string, skew time.Duration, holder string) {
+		a, _ := agent.New(agenttest.NewScriptedModel(agenttest.ToolTurn("c1", "refund", `{}`)), j, agent.WithTools(tool),
+			agent.WithNotifier(&okSink{}, audit.NewNotifyTrail(es), agent.WithNotifyHolder(holder),
+				agent.WithNotifyClock(func() time.Time { return base.Add(skew) })))
+		if _, err := a.Run(ctx, run, agent.UserText("go")); !errors.As(err, new(*agent.ApprovalPending)) {
+			t.Fatal(err)
+		}
+		if err := a.FlushNotifications(ctx); err != nil {
+			t.Fatal(err)
+		}
+	}
+	drive("a", 0, "p-normal")
+	drive("b", 72*time.Hour, "p-ahead") // seals today's segment into one three days on
+	drive("c", 0, "p-normal2")          // follows the chain into the future segment
+	closed := false
+	fakeStores(t, memNotifyStore{mem, es, &closed})
+	code, out, errOut := runCLI("notifications", "-db", "x.db", "-unanchored", "-as-of", base.Add(96*time.Hour).Format(time.RFC3339))
+	if code != 0 || !strings.Contains(out, "approval:a:c1:0") || !strings.Contains(out, "approval:c:c1:0") || strings.Contains(out, "FAIL") {
+		t.Fatalf("exit %d\n%s\n%s", code, out, errOut)
+	}
+}

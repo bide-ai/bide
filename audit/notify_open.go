@@ -44,12 +44,24 @@ func validSegmentName(name string) bool {
 	return err == nil && agent.OpenSegment(t) == name
 }
 
+// segmentDay is the UTC day a segment is named for.
+func segmentDay(name string) time.Time {
+	t, _ := time.Parse("2006-01-02", strings.TrimPrefix(name, agent.NotifyOpenTrail+":"))
+	return t
+}
+
+// inDay reports whether t is in the UTC day starting at start, give or take skew (the writers' clocks
+// differ).
+func inDay(t, start time.Time, skew time.Duration) bool {
+	return !t.Before(start.Add(-skew)) && t.Before(start.Add(24*time.Hour+skew))
+}
+
 // checkOpenGroup returns, by trail name, the ways the open-trail segments and indexes in trails
 // (the decoded records of every trail given) are not what a notifier writes. Segments are checked
 // for their own shape and as a chain: each sealed segment is continued by a segment whose checkpoint
 // is exactly what the sealed one folds to (agent.FoldOpen), and only the first segment starts
 // without one. Indexes are checked as the creation order of the segments.
-func checkOpenGroup(trails map[string][]agent.NotifyRecord, skew time.Duration) map[string][]string {
+func checkOpenGroup(trails map[string][]agent.NotifyRecord, skew time.Duration, anchored bool) map[string][]string {
 	out := map[string][]string{}
 	add := func(name string, i int, recs []agent.NotifyRecord, format string, args ...any) {
 		where := "trail"
@@ -79,9 +91,12 @@ func checkOpenGroup(trails map[string][]agent.NotifyRecord, skew time.Duration) 
 			add(name, -1, recs, "%q is not the name of an open-trail segment (a UTC day)", name)
 		}
 		listed := map[string]bool{}
+		day := segmentDay(name)
 		for i, r := range recs {
 			if r.At.IsZero() {
 				add(name, i, recs, "has no time")
+			} else if validSegmentName(name) && r.Kind != agent.NotifySeal && !inDay(r.At, day, skew) {
+				add(name, i, recs, "is dated %s, outside the segment's day (%s) by more than %s", r.At.UTC().Format(time.RFC3339), day.Format("2006-01-02"), skew)
 			}
 			if i > 0 && r.At.Before(recs[i-1].At.Add(-skew)) {
 				add(name, i, recs, "is dated more than %s before record %d: the segment is out of order, or a clock is wrong", skew, i-1)
@@ -120,6 +135,12 @@ func checkOpenGroup(trails map[string][]agent.NotifyRecord, skew time.Duration) 
 				}
 				if !validSegmentName(r.Next) || r.Next <= name {
 					add(name, i, recs, "seals into %q, which is not a later segment", r.Next)
+				} else {
+					if !r.At.IsZero() && !inDay(r.At, segmentDay(r.Next), skew) {
+						add(name, i, recs, "is dated %s, outside the day of the segment it seals into (%s) by more than %s: the roller writes the seal on the day it rolls into", r.At.UTC().Format(time.RFC3339), segmentDay(r.Next).Format("2006-01-02"), skew)
+					}
+					// Days may be skipped (nobody ran on them) but not over a segment an index lists
+					// (checked below); one that exists and no index lists is a broken chain.
 				}
 			default:
 				add(name, i, recs, "a %s record does not belong in an open-trail segment", r.Kind)
@@ -176,6 +197,47 @@ func checkOpenGroup(trails map[string][]agent.NotifyRecord, skew time.Duration) 
 		first = false
 	}
 
+	// Anchored, nothing may be missing: a segment named by an index or a seal that is not given is a
+	// segment deleted (the newest too: a writer that died before creating it is indistinguishable,
+	// and a sweep repairs it, so the audit is run again). Unanchored nothing attests the trails
+	// anyway, so the newest segment may be missing, as the crash window allows.
+	if anchored {
+		named := map[string]string{} // segment -> who names it
+		for _, name := range idxs {
+			for _, r := range trails[name] {
+				if r.Kind == agent.NotifySegment && validSegmentName(r.Next) {
+					named[r.Next] = name
+				}
+			}
+		}
+		for _, name := range segs {
+			if next := agent.FoldOpen(trails[name]).Sealed; next != "" && validSegmentName(next) {
+				if _, ok := named[next]; !ok {
+					named[next] = name
+				}
+			}
+		}
+		for seg, by := range named {
+			if _, ok := trails[seg]; !ok {
+				add(by, -1, nil, "%s is named by this trail and is not among the trails given: a segment deleted, or one a writer has not created yet (a sweep repairs that: run the audit again)", seg)
+			}
+		}
+	}
+
+	// A seal may not skip a segment an index lists, even one that is missing from the trails given.
+	for _, name := range idxs {
+		for _, r := range trails[name] {
+			if r.Kind != agent.NotifySegment || !validSegmentName(r.Next) {
+				continue
+			}
+			for _, sname := range segs {
+				if st := agent.FoldOpen(trails[sname]); st.Sealed != "" && r.Next > sname && r.Next < st.Sealed {
+					add(sname, -1, nil, "seals into %s, skipping %s, which an index lists", st.Sealed, r.Next)
+				}
+			}
+		}
+	}
+
 	// The indexes: one segment record each, in creation order; each segment named exists, or is the
 	// first or the last created.
 	var indexed []string
@@ -197,6 +259,12 @@ func checkOpenGroup(trails map[string][]agent.NotifyRecord, skew time.Duration) 
 				add(name, i, recs, "names %q, which is not a segment", r.Next)
 				continue
 			}
+			if want := agent.OpenIndex(segmentDay(r.Next).Year()); want != name {
+				add(name, i, recs, "names %s, a segment of the year %d: it belongs in %s", r.Next, segmentDay(r.Next).Year(), want)
+			}
+			if !r.At.IsZero() && r.At.Before(segmentDay(r.Next).Add(-skew)) {
+				add(name, i, recs, "is dated %s, before the day of the segment it names (%s): a segment is indexed when it is created", r.At.UTC().Format(time.RFC3339), r.Next)
+			}
 			if lastIndexed != "" && r.Next <= lastIndexed {
 				add(name, i, recs, "names %q after %q: segments are indexed in creation order", r.Next, lastIndexed)
 			}
@@ -215,6 +283,85 @@ func checkOpenGroup(trails map[string][]agent.NotifyRecord, skew time.Duration) 
 		for n, seg := range segs {
 			if len(trails[seg]) > 0 && !slices.Contains(indexed, seg) && n != len(segs)-1 {
 				add(seg, -1, nil, "the segment is in no index and is not the newest")
+			}
+		}
+	}
+	return out
+}
+
+// openListing is what the open trail lists across the segments given: the event keys ever listed
+// (a watch record, or a checkpoint's set), whether a backfill is recorded, when the open trail began,
+// and whether there is one at all.
+type openListing struct {
+	any        bool
+	keys       map[string]bool
+	backfilled bool
+	began      time.Time
+}
+
+func listingOf(trails map[string][]agent.NotifyRecord) openListing {
+	l := openListing{keys: map[string]bool{}}
+	for name, recs := range trails {
+		if openTrailKind(name) != openSegment {
+			continue
+		}
+		l.any = true
+		for _, r := range recs {
+			if !r.At.IsZero() && (l.began.IsZero() || r.At.Before(l.began)) {
+				l.began = r.At
+			}
+			switch r.Kind {
+			case agent.NotifyWatch:
+				l.keys[r.Key] = true
+			case agent.NotifyCheckpoint:
+				for _, w := range r.Watching {
+					l.keys[w.Key] = true
+				}
+				l.backfilled = l.backfilled || r.Backfilled
+			case agent.NotifyBackfilled:
+				l.backfilled = true
+			}
+		}
+	}
+	return l
+}
+
+// checkOpenCoverage returns, by run trail, the delivered events that can owe an all-clear and are
+// not on the open trail, when one is given. The notifier lists an event before it observes it, so
+// an event observed after the open trail began that is not listed was dropped from it; one observed
+// earlier is on it only through the backfill, which must then be recorded. An event cleared before
+// any delivery was attempted owes nothing.
+func checkOpenCoverage(trails map[string][]agent.NotifyRecord, skew time.Duration) map[string][]string {
+	l := listingOf(trails)
+	out := map[string][]string{}
+	if !l.any {
+		return out
+	}
+	for name, recs := range trails {
+		if openTrailKind(name) != openNone || strings.HasPrefix(name, agent.NotifyTrailName("@")) {
+			continue
+		}
+		st := agent.FoldNotify(recs)
+		for _, key := range st.Keys {
+			es := st.Events[key]
+			switch agent.NotificationKind(es.Kind) {
+			case agent.NotificationOutcomeUnknown, agent.NotificationApprovalPending, agent.NotificationRecoveryFailing:
+			default:
+				continue
+			}
+			if es.Cleared != nil && es.Rounds == 0 || l.keys[key] {
+				continue
+			}
+			if r := st.Events[agent.ResolvedKey(key)]; r != nil && r.Acked != nil {
+				continue // the all-clear was delivered: the backfill, like the engine, owes it nothing
+			}
+			switch {
+			case !es.ObservedAt.Before(l.began.Add(-skew)):
+				out[name] = append(out[name], fmt.Sprintf("event %s was observed after the open trail began and was never listed on it: its all-clear could be missed", key))
+			case !l.backfilled:
+				out[name] = append(out[name], fmt.Sprintf("event %s was observed before the open trail and is not listed on it, and no backfill is recorded", key))
+			default:
+				out[name] = append(out[name], fmt.Sprintf("event %s was observed before the open trail and is not listed on it, though the backfill is recorded", key))
 			}
 		}
 	}

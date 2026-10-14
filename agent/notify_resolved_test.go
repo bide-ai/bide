@@ -975,7 +975,7 @@ func TestResolved_ALookupIsConstantWhateverTheGap(t *testing.T) {
 		}
 		return tr.openLoads()
 	}
-	if n := loads(); n > indexYearsBack+10 { // looks for an index in each year back, once, then creates the first segment
+	if n := loads(); n > 12 { // one index lookup per year since the open trail began, then creates the first segment
 		t.Fatalf("a fresh deployment's first lookup took %d loads", n)
 	}
 	if n := loads(); n > 3 {
@@ -1191,5 +1191,123 @@ func TestNotifier_AFlowRunWithAMarkInItsIDHasOneRootOnBothPaths(t *testing.T) {
 		if len(recs) > 0 && name != NotifyTrailName(flow) && !strings.HasPrefix(name, NotifyOpenTrail) {
 			t.Fatalf("a record under %s: the event belongs to %s only", name, NotifyTrailName(flow))
 		}
+	}
+}
+
+// Every segment is indexed, in the index of the year it is named for, whatever the writer's clock
+// or how many days passed between the crash and the repair.
+func TestResolved_EverySegmentIsIndexedUnderItsOwnYearInOrder(t *testing.T) {
+	ctx := context.Background()
+	clk := &notifyClock{t: time.Date(2026, 12, 30, 9, 0, 0, 0, time.UTC)}
+	tr := NewMemNotifyTrail()
+	e := testEngine(t, memJournal(), &fakeSink{}, tr, clk, "p1")
+	if err := e.watch(ctx, "k1", "r"); err != nil {
+		t.Fatal(err)
+	}
+	d1 := OpenSegment(clk.now())
+	recs, _ := tr.Load(ctx, d1)
+	// A roller sealed day 1 into day 2 and wrote day 2's checkpoint, then died; days later (and
+	// across the new year) another writer comes, and a third unindexed segment follows.
+	clk.advance(24 * time.Hour)
+	d2 := OpenSegment(clk.now())
+	if err := tr.Append(ctx, d1, len(recs), NotifyRecord{Kind: NotifySeal, At: clk.now(), Next: d2}); err != nil {
+		t.Fatal(err)
+	}
+	if err := tr.Append(ctx, d2, 0, NotifyRecord{Kind: NotifyCheckpoint, At: clk.now(), Watching: FoldWatch(recs)}); err != nil {
+		t.Fatal(err)
+	}
+	clk.advance(5 * 24 * time.Hour) // 2027-01-04
+	if err := e.watch(ctx, "k2", "r"); err != nil {
+		t.Fatal(err)
+	}
+	d3 := OpenSegment(clk.now())
+	got := map[string][]string{}
+	for _, year := range []int{2026, 2027} {
+		irecs, _ := tr.Load(ctx, OpenIndex(year))
+		for _, r := range irecs {
+			got[OpenIndex(year)] = append(got[OpenIndex(year)], r.Next)
+		}
+	}
+	want := map[string][]string{OpenIndex(2026): {d1, d2}, OpenIndex(2027): {d3}}
+	if fmt.Sprint(got) != fmt.Sprint(want) {
+		t.Fatalf("indexes = %v, want %v", got, want)
+	}
+}
+
+// A process whose clock runs days ahead seals a segment for a day no other clock has reached. The
+// other processes follow the chain to it and write there, and every record in a segment is dated no
+// earlier than its day, so the open trail stays one a verifier accepts.
+func TestResolved_AClockAheadSealsADayNoOneElseHasReached(t *testing.T) {
+	ctx := context.Background()
+	clkA, clkB := resolvedClock(), resolvedClock()
+	tr := NewMemNotifyTrail()
+	a := testEngine(t, memJournal(), &fakeSink{}, tr, clkA, "a")
+	b := testEngine(t, memJournal(), &fakeSink{}, tr, clkB, "b")
+	if err := b.watch(ctx, "k1", "r"); err != nil {
+		t.Fatal(err)
+	}
+	clkA.advance(3 * 24 * time.Hour) // A is three days ahead
+	if err := a.watch(ctx, "k2", "r"); err != nil {
+		t.Fatal(err)
+	}
+	if err := b.watch(ctx, "k3", "r"); err != nil { // B, on its own day, follows the chain
+		t.Fatal(err)
+	}
+	if err := b.unwatch(ctx, "k1"); err != nil {
+		t.Fatal(err)
+	}
+	name, recs, err := b.openHead(ctx)
+	if err != nil || name != OpenSegment(clkA.now()) {
+		t.Fatalf("head = %s, %v: B did not follow the chain to A's segment", name, err)
+	}
+	got := FoldOpen(recs).Watched
+	if len(got) != 2 || got[0].Key != "k2" || got[1].Key != "k3" {
+		t.Fatalf("listed = %+v, want k2 and k3 (k1 unwatched)", got)
+	}
+	day := segmentDayOf(name)
+	for i, r := range recs {
+		if r.At.Before(day) {
+			t.Errorf("record %d (%s) is dated %s, before its segment's day %s", i, r.Kind, r.At, day)
+		}
+		if i > 0 && r.At.Before(recs[i-1].At) {
+			t.Errorf("record %d (%s) is dated %s, before record %d (%s)", i, r.Kind, r.At, i-1, recs[i-1].At)
+		}
+	}
+	for _, y := range []int{clkA.now().Year()} {
+		idx, _ := tr.Load(ctx, OpenIndex(y))
+		for i, r := range idx {
+			if r.At.Before(segmentDayOf(r.Next)) {
+				t.Errorf("index record %d is dated before the segment it names", i)
+			}
+		}
+	}
+}
+
+// The roller with the clock ahead dies after sealing, before the checkpoint: the process behind
+// writes the checkpoint into the future segment, dated no earlier than the segment's day.
+func TestResolved_ACheckpointWrittenFromBehindIsDatedInItsSegmentsDay(t *testing.T) {
+	ctx := context.Background()
+	clkA, clkB := resolvedClock(), resolvedClock()
+	tr := NewMemNotifyTrail()
+	b := testEngine(t, memJournal(), &fakeSink{}, tr, clkB, "b")
+	if err := b.watch(ctx, "k1", "r"); err != nil {
+		t.Fatal(err)
+	}
+	day0 := OpenSegment(clkB.now())
+	recs, _ := tr.Load(ctx, day0)
+	clkA.advance(3 * 24 * time.Hour)
+	day3 := OpenSegment(clkA.now())
+	if err := tr.Append(ctx, day0, len(recs), NotifyRecord{Kind: NotifySeal, At: clkA.now(), Next: day3}); err != nil {
+		t.Fatal(err)
+	}
+	if err := tr.Append(ctx, OpenIndex(clkA.now().Year()), 1, NotifyRecord{Kind: NotifySegment, At: clkA.now(), Next: day3}); err != nil {
+		t.Fatal(err)
+	}
+	name, head, err := b.openHead(ctx)
+	if err != nil || name != day3 || len(head) != 1 || head[0].Kind != NotifyCheckpoint {
+		t.Fatalf("head = %s %v %v", name, head, err)
+	}
+	if head[0].At.Before(segmentDayOf(day3)) {
+		t.Fatalf("the checkpoint is dated %s, before its segment's day", head[0].At)
 	}
 }

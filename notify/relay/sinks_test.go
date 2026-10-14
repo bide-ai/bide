@@ -286,3 +286,39 @@ func TestClipKeepsRunesWhole(t *testing.T) {
 		}
 	}
 }
+
+func TestStatusErrorKeepsOnlyAnAllowListedToken(t *testing.T) {
+	cases := map[string]struct{ body, want string }{
+		"slack plain token":  {"no_service", "no_service"},
+		"slack json error":   {`{"ok":false,"error":"channel_not_found"}`, "channel_not_found"},
+		"pagerduty status":   {`{"status":"invalid event","message":"Event object is invalid: card 4111111111111111","errors":["x"]}`, "invalid event"},
+		"free text":          {"Your card 4111111111111111 was refused", ""},
+		"uppercase text":     {"Invalid Payload", ""},
+		"plain with spaces":  {"invalid payload for acct 42", ""},
+		"json free message":  {`{"message":"secret thing"}`, ""},
+		"json error is text": {`{"error":"Something SECRET happened at T000/B000"}`, ""},
+		"too long token":     {strings.Repeat("a", 80), ""},
+		"empty":              {"", ""},
+		"digits only":        {"503", ""},
+		"leading underscore": {"_hidden", ""},
+	}
+	for name, c := range cases {
+		srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			w.WriteHeader(400)
+			w.Write([]byte(c.body))
+		}))
+		s, _ := NewSlack(SlackConfig{WebhookURL: srv.URL, Attempts: 1})
+		err := s.Send(context.Background(), samplePayload("run_aborted"))
+		srv.Close()
+		var se *StatusError
+		if !errors.As(err, &se) || se.Code != c.want {
+			t.Errorf("%s: err %v, want code %q", name, err, c.want)
+			continue
+		}
+		for _, leak := range []string{"4111", "SECRET", "secret thing", "T000"} {
+			if strings.Contains(err.Error(), leak) {
+				t.Errorf("%s: error %q leaks %q", name, err, leak)
+			}
+		}
+	}
+}
