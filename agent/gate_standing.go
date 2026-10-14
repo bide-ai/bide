@@ -61,12 +61,22 @@ type GateStanding struct {
 // (GateReask), and the count.
 //
 // recs are the run's records (Journal.History), s names the call (RunID, ToolUseID, ToolName, Args),
-// and a call of a sub-agent is evaluated in the sub-run's journal.
+// and a call of a sub-agent is evaluated in the sub-run's journal. A plan flow node's gate is
+// evaluated with EvaluateGateAfter.
 func EvaluateGate(recs []Record, s ApprovalSubject, pol *ApprovalPolicy, verifierFor ApproverVerifierFor) GateStanding {
+	return EvaluateGateAfter(recs, s, pol, verifierFor, "")
+}
+
+// EvaluateGateAfter is EvaluateGate for a plan flow node's gate (s.ToolUseID a node key), which
+// counts only the decisions recorded after the gate's request, the step ApprovalRequestStep(key)
+// names, and whose result is the key's own record. With since "" it is EvaluateGate.
+func EvaluateGateAfter(recs []Record, s ApprovalSubject, pol *ApprovalPolicy, verifierFor ApproverVerifierFor, since string) GateStanding {
 	// A recorded result: the call ran, or was denied (a denial is recorded as a result).
 	var singleDecided, singleApproved bool
 	for _, r := range recs {
 		switch {
+		case r.Kind == StepValue && r.Name == s.ToolUseID && planNodeKey(s.ToolUseID):
+			return GateStanding{Status: GateDecided, Ran: true} // a plan flow node's result is its key's own record
 		case (r.Kind == StepToolResult || r.Kind == StepSagaFail) && r.ToolUseID == s.ToolUseID:
 			st := GateStanding{Status: GateDecided, Ran: true, Denied: r.Kind == StepToolResult && r.IsError && string(r.Result) == `"tool call denied by human"`}
 			// The tally the gate recorded, for a reader that shows how it was decided.
@@ -119,7 +129,7 @@ func EvaluateGate(recs []Record, s ApprovalSubject, pol *ApprovalPolicy, verifie
 	if err := gatePolicyError(pol, verifierFor); err != nil {
 		return GateStanding{Status: GateMisconfigured, Err: err}
 	}
-	c, err := countGate(recs, s.RunID, s, pol, verifierFor, "")
+	c, err := countGate(recs, s.RunID, s, pol, verifierFor, since)
 	if err != nil {
 		return GateStanding{Status: GateMisconfigured, Err: err}
 	}

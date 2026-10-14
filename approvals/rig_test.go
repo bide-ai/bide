@@ -50,6 +50,7 @@ func (m chargeModel) Stream(_ context.Context, req agent.Request) (*agent.Stream
 // rig is an application: a 2-of-{alice,bob,carol} gated "charge" tool over a journal that an
 // audit.AuditedStore signs, with the intake handler mounted on a server.
 type rig struct {
+	randomized      bool           // signatures are randomized: a leading byte that is not signed (see randVerifier)
 	ungated, single bool           // the tool's gate as built now: none, or a one-decision gate (a redeploy)
 	identity        agent.Identity // the run's acting identity, when set (separation of duties)
 	call            string
@@ -86,7 +87,19 @@ func (r *rig) verifiers(id string) (agent.ApproverVerifier, bool) {
 	if !ok {
 		return nil, false
 	}
+	if r.randomized {
+		return randVerifier{audit.Ed25519Verifier{Pub: pub}}, true
+	}
 	return audit.Ed25519Verifier{Pub: pub}, true
+}
+
+// randVerifier is a randomized scheme's verifier (as ECDSA from a KMS or an HSM): the signature carries
+// a leading byte that is not part of what is signed, so one decision can be signed into signature
+// bytes that differ, and each gives its own journal record name.
+type randVerifier struct{ audit.Ed25519Verifier }
+
+func (v randVerifier) Verify(msg, sig []byte) bool {
+	return len(sig) > 1 && v.Ed25519Verifier.Verify(msg, sig[1:])
 }
 
 // newRig builds the application and drives its run to the approval pause.

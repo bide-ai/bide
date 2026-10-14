@@ -1525,3 +1525,83 @@ func TestGateAgreement(t *testing.T) {
 		})
 	}
 }
+
+// A randomized signature scheme (ECDSA from a KMS or an HSM) signs one decision into different
+// bytes, and each gives its own journal record. A client retry racing its first attempt submits
+// the one decision twice: both are recorded (the journal's step name varies with the signature, so
+// the check and the insert are not one step), and the gate counts one and supersedes the other.
+// Exactly one response says recorded and counted, and OnRecorded runs once.
+func TestDecision_ARetryWithADifferentSignatureIsNotRecordedTwice(t *testing.T) {
+	for i := range 60 {
+		var mu sync.Mutex
+		hooks := 0
+		r := newRig(t, approvals.WithRateLimit(0, 0), approvals.WithGlobalRateLimit(0, 0),
+			approvals.OnRecorded(func(context.Context, approvals.Recorded) { mu.Lock(); hooks++; mu.Unlock() }))
+		r.randomized = true
+		base := r.decision("alice", true)
+		raw, _ := base64.StdEncoding.DecodeString(base.Signature)
+		type answer struct{ recorded, counted bool }
+		answers := make(chan answer, 8)
+		start := make(chan struct{})
+		var wg sync.WaitGroup
+		for k := range 8 {
+			b := base
+			b.Signature = base64.StdEncoding.EncodeToString(append([]byte{byte(k)}, raw...))
+			wg.Go(func() {
+				<-start
+				status, out := r.post(b)
+				if status != 200 && status != 409 {
+					t.Errorf("status %d %v", status, out)
+				}
+				rec, _ := out["recorded"].(bool)
+				c, _ := out["counted"].(bool)
+				answers <- answer{rec, c}
+			})
+		}
+		close(start)
+		wg.Wait()
+		close(answers)
+		recorded, counted := 0, 0
+		for a := range answers {
+			if a.recorded {
+				recorded++
+			}
+			if a.counted {
+				counted++
+			}
+		}
+		r.h.Wait()
+		mu.Lock()
+		h := hooks
+		mu.Unlock()
+		if recorded != 1 || h != 1 || counted < 1 {
+			t.Fatalf("iteration %d: %d responses say recorded, %d say counted, %d hooks; want exactly one recorded and one hook", i, recorded, counted, h)
+		}
+	}
+}
+
+// The same decision submitted again with other signature bytes (a randomized scheme re-signs it) is
+// not written again: the response is about the record already journaled, recorded false, with its
+// own receipt.
+func TestDecision_TheSameDecisionResignedIsTheRecordAlreadyJournaled(t *testing.T) {
+	r := newRig(t, approvals.WithRateLimit(0, 0), approvals.WithGlobalRateLimit(0, 0))
+	r.randomized = true
+	base := r.decision("alice", true)
+	raw, _ := base64.StdEncoding.DecodeString(base.Signature)
+	first := base
+	first.Signature = base64.StdEncoding.EncodeToString(append([]byte{1}, raw...))
+	status, out1 := r.post(first)
+	if status != 200 || out1["recorded"] != true {
+		t.Fatalf("first: %d %v", status, out1)
+	}
+	again := base
+	again.Signature = base64.StdEncoding.EncodeToString(append([]byte{2}, raw...))
+	before := r.records()
+	status, out2 := r.post(again)
+	if status != 200 || out2["recorded"] != false || out2["counted"] != true || out2["record"] != out1["record"] || out2["index"] != out1["index"] {
+		t.Fatalf("the re-signed decision: %d %v (first %v)", status, out2, out1)
+	}
+	if r.records() != before {
+		t.Fatal("the re-signed decision was written again")
+	}
+}

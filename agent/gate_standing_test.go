@@ -1,7 +1,9 @@
 package agent
 
 import (
+	"context"
 	"encoding/json"
+	"errors"
 	"testing"
 )
 
@@ -60,5 +62,102 @@ func TestGateReask(t *testing.T) {
 		if got := GateReask(tc.t, tc.sod); got != tc.want {
 			t.Errorf("%s: %q, want %q", name, got, tc.want)
 		}
+	}
+}
+
+// A plan flow node's gate is read as the flow's own gate reads it (flowGate): only the decisions after
+// its request count, and the node's result is the key's own record. EvaluateGateAfter, given the
+// request's step, agrees with flowGate on every one of these, and EvaluateGate, which counts the whole
+// journal, would not (the decision recorded before the request).
+func TestEvaluateGateAfter_AgreesWithFlowGate(t *testing.T) {
+	ctx := context.Background()
+	vf := fakeVerifiers("a", "b")
+	pol := &ApprovalPolicy{Need: 2, Approvers: []string{"a", "b"}}
+	args := json.RawMessage(`{"amount":7}`)
+	subj := ApprovalSubject{RunID: "r1", ToolUseID: "node:pay", ToolName: "pay", Args: args}
+	decide := func(t *testing.T, j *Journal, id string, v bool) {
+		t.Helper()
+		if err := decideAs(ctx, j, "r1", "node:pay", id, v, fakeSign(id, ApprovalDecisionBytes(subj, id, v, testDecidedAt))); err != nil {
+			t.Fatal(err)
+		}
+	}
+	type result int
+	const (
+		pauses result = iota
+		passes
+		denies
+	)
+	for name, tc := range map[string]struct {
+		setup func(t *testing.T, j *Journal)
+		want  result
+	}{
+		"just paused":   {func(t *testing.T, j *Journal) {}, pauses},
+		"one decision":  {func(t *testing.T, j *Journal) { decide(t, j, "a", true) }, pauses},
+		"quorum":        {func(t *testing.T, j *Journal) { decide(t, j, "a", true); decide(t, j, "b", true) }, passes},
+		"quorum denied": {func(t *testing.T, j *Journal) { decide(t, j, "a", false); decide(t, j, "b", true) }, denies},
+		"both decisions are signed before the request": {func(t *testing.T, j *Journal) {}, pauses},
+	} {
+		t.Run(name, func(t *testing.T) {
+			j := memJournal()
+			if name == "both decisions are signed before the request" {
+				// Decisions recorded under their names before the gate's request: they cannot count.
+				for _, id := range []string{"a", "b"} {
+					sig := fakeSign(id, ApprovalDecisionBytes(subj, id, true, testDecidedAt))
+					writeRaw(t, j, "r1", approvalDecisionStep("node:pay", id, true, fakeAlg, FormatTimestamp(testDecidedAt), sig),
+						Record{Kind: StepApproval, ToolUseID: "node:pay", Approved: true, ApproverSignature: &ApproverSignature{Approver: id, ApproverAlg: fakeAlg, Signature: sig, DecidedAt: FormatTimestamp(testDecidedAt)}})
+				}
+			}
+			var pend *ApprovalPending
+			if _, err := flowGate(ctx, j, "r1", "node:pay", "pay", args, pol, vf); !errors.As(err, &pend) {
+				t.Fatalf("first evaluation = %v; want the pause", err)
+			}
+			tc.setup(t, j)
+			recs, _ := j.History(ctx, "r1")
+			st := EvaluateGateAfter(recs, subj, pol, vf, ApprovalRequestStep("node:pay"))
+			whole := EvaluateGate(recs, subj, pol, vf)
+			approved, err := flowGate(ctx, j, "r1", "node:pay", "pay", args, pol, vf)
+			got := passes
+			switch {
+			case errors.As(err, &pend):
+				got = pauses
+			case err != nil:
+				t.Fatalf("flowGate: %v", err)
+			case !approved:
+				got = denies
+			}
+			if got != tc.want {
+				t.Fatalf("flowGate did %d, want %d", got, tc.want)
+			}
+			switch got {
+			case pauses:
+				if st.Status != GateWaiting || st.Tally.Passed() || st.Tally.Unreachable() {
+					t.Fatalf("flowGate pauses, EvaluateGateAfter says %+v", st)
+				}
+			case passes:
+				if st.Status != GateWaiting || !st.Tally.Passed() {
+					t.Fatalf("flowGate passes, EvaluateGateAfter says %+v", st)
+				}
+			case denies:
+				if st.Status != GateWaiting || !st.Tally.Unreachable() {
+					t.Fatalf("flowGate denies, EvaluateGateAfter says %+v", st)
+				}
+			}
+			// After the gate acts, its recorded outcome is read the same way, and the node's result is the
+			// key's own record.
+			recs, _ = j.History(ctx, "r1")
+			if got != pauses {
+				if st := EvaluateGateAfter(recs, subj, pol, vf, ApprovalRequestStep("node:pay")); st.Status != GateDecided || !st.Recorded {
+					t.Fatalf("after the gate recorded its outcome: %+v", st)
+				}
+			}
+			if name == "both decisions are signed before the request" && whole.Tally.Approved != 2 {
+				t.Fatalf("setup: the whole-journal count should see both decisions, got %+v", whole.Tally)
+			}
+			writeRaw(t, j, "r1", "node:pay", Record{Kind: StepValue, Result: []byte(`"done"`)})
+			recs, _ = j.History(ctx, "r1")
+			if st := EvaluateGateAfter(recs, subj, pol, vf, ApprovalRequestStep("node:pay")); st.Status != GateDecided || !st.Ran {
+				t.Fatalf("a node whose result is recorded: %+v", st)
+			}
+		})
 	}
 }

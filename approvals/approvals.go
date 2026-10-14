@@ -657,7 +657,11 @@ func (h *Handler) load(ctx context.Context, run, call string) (*gateRecords, err
 			if p, ok := h.policyFor(tu.Name); ok {
 				g.pol = p // nil: the tool has no gate now
 			}
-			g.st = agent.EvaluateGate(recs, g.subject, g.pol, h.verifiers)
+			since := ""
+			if strings.HasPrefix(call, "node:") {
+				since = agent.ApprovalRequestStep(call) // a plan flow node's gate counts the decisions after its request
+			}
+			g.st = agent.EvaluateGateAfter(recs, g.subject, g.pol, h.verifiers, since)
 			return g, nil
 		}
 	}
@@ -856,7 +860,7 @@ func (h *Handler) decide(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	step := agent.DecisionStep(d)
-	idx := slices.IndexFunc(g.recs, func(rec agent.Record) bool { return rec.Name == step })
+	idx := findDecision(g.recs, d, step)
 	wrote := false
 	if idx < 0 {
 		st, err := h.state(ctx, g)
@@ -891,11 +895,14 @@ func (h *Handler) decide(w http.ResponseWriter, r *http.Request) {
 			h.fail(w, err)
 			return
 		}
-		if idx = slices.IndexFunc(g.recs, func(rec agent.Record) bool { return rec.Name == step }); idx < 0 {
+		if idx = findDecision(g.recs, d, step); idx < 0 {
 			h.fail(w, fmt.Errorf("decision %s recorded but not found in run %s", step, d.RunID))
 			return
 		}
 	}
+	// The record the response is about: d's own, or the same decision's under another name.
+	step = g.recs[idx].Name
+	d.Signature = g.recs[idx].Signature()
 	rc, err := audit.NewDecisionReceipt(g.subject, d, g.recs[idx], idx)
 	if err != nil {
 		h.fail(w, err)
@@ -905,12 +912,35 @@ func (h *Handler) decide(w http.ResponseWriter, r *http.Request) {
 	resp := Response{Recorded: wrote, Record: step, Index: idx, RecordedAt: g.recs[idx].RecordedAt(), Gate: gate, Receipt: rc}
 	if i := slices.IndexFunc(checks, func(c agent.DecisionCheck) bool { return c.Step == step }); i >= 0 {
 		resp.Counted, resp.Reason = checks[i].Counted, checks[i].Reason
+		// A record this request wrote that the gate supersedes (the same decision was written under
+		// another signature by a request that raced this one: the step name varies with the signature,
+		// so the journal cannot refuse the second) is a duplicate, not a decision this request
+		// recorded: Recorded is false, and OnRecorded does not run for it.
+		if wrote && checks[i].Reason == agent.ReasonSuperseded {
+			wrote = false
+			resp.Recorded = false
+		}
 	}
+	resp.Record = step
 	writeJSON(w, http.StatusOK, resp)
 	if wrote {
 		h.recorded(r.Context(), Recorded{RunID: d.RunID, RootRunID: agent.RootRunID(d.RunID), ToolUseID: d.ToolUseID, Approver: d.ApproverID,
 			Approved: d.Approved, Record: step, Index: idx, Decided: resp.Gate.Passed || resp.Gate.Failed})
 	}
+}
+
+// findDecision is the journal position of d's record: the record under its own name, else the record
+// of the same decision under another (the agent's SubmitDecision does not write a decision it finds
+// already journaled, by the same approver, verdict, scheme and decision time, whatever the signature
+// bytes: a randomized scheme signs one decision into different bytes). -1 if there is none.
+func findDecision(recs []agent.Record, d agent.Decision, step string) int {
+	if i := slices.IndexFunc(recs, func(r agent.Record) bool { return r.Name == step }); i >= 0 {
+		return i
+	}
+	at := agent.FormatTimestamp(d.DecidedAt)
+	return slices.IndexFunc(recs, func(r agent.Record) bool {
+		return agent.IsApprovalDecision(r, d.ToolUseID) && r.Approver() == d.ApproverID && r.Approved == d.Approved && r.ApproverAlg() == d.Alg && r.DecidedAt() == at
+	})
 }
 
 // recorded starts the OnRecorded hook, if any, outside the request.
