@@ -218,11 +218,17 @@ func (o Options) attention(ctx context.Context) AttentionList {
 		// A trail is read for a run that has not ended or has an item: a finished run with nothing to
 		// do has nothing in its trail that a person must act on.
 		if tr != nil && (!ended(v.State) || len(items) > 0) {
-			root := treeRoot(id)
-			if f := tr.of(root); f.err != nil {
+			// An event of the run is filed under the trail of the root that drove it: the root its ID
+			// names (agent.SubRunID), or the run itself when it drove itself (a flow gate files its pause
+			// under its own run, whatever its ID looks like). Both are read.
+			unread := false
+			for _, root := range slices.Compact([]string{id, treeRoot(id)}) {
+				unread = unread || tr.of(root).err != nil
+			}
+			if unread {
 				l.TrailUnread++
-			} else if st := f.st; root == id && st.FailingSince != nil && !ended(v.State) {
-				// A recovery failure is of the root run's drive; its sub-runs do not repeat it.
+			} else if st := tr.of(id).st; st.FailingSince != nil && !ended(v.State) {
+				// A recovery failure is recorded under the run recovery was run for: the run's own trail.
 				items = append(items, AttentionItem{Kind: AttentionRecovery, KindText: "recovery failing", RunID: id, Since: st.FailingSince.At,
 					Reason: st.FailingSince.Reason, Summary: "Recovery has kept failing for this run" + reasonSuffix(st.FailingSince.Reason) + "."})
 			}
@@ -230,7 +236,7 @@ func (o Options) attention(ctx context.Context) AttentionList {
 		l.Items = append(l.Items, items...)
 	}
 	if tr != nil {
-		if len(ids) > 0 && !tr.probe(agent.NotifyTrailName(ids[0])) {
+		if len(ids) > 0 && !tr.probe(ids[0]) {
 			l.TrailUnread++
 		}
 		var states []*agent.NotifyState
@@ -479,7 +485,11 @@ func (o Options) cachedAttention(ctx context.Context) AttentionList {
 	if o.cache == nil {
 		return o.attention(ctx)
 	}
-	return o.cache.get("attention", func() any { return o.attention(context.WithoutCancel(ctx)) }).(AttentionList)
+	return o.cache.get("attention", func() any {
+		bctx, cancel := context.WithTimeout(context.WithoutCancel(ctx), buildTimeout)
+		defer cancel()
+		return o.attention(bctx)
+	}).(AttentionList)
 }
 
 // cachedRunList is runList, served again for cacheTTL per filter.
@@ -487,5 +497,14 @@ func (o Options) cachedRunList(ctx context.Context, f ListFilter) RunList {
 	if o.cache == nil {
 		return o.runList(ctx, f)
 	}
-	return o.cache.get("runs"+query(f), func() any { return o.runList(context.WithoutCancel(ctx), f) }).(RunList)
+	return o.cache.get("runs"+query(f), func() any {
+		bctx, cancel := context.WithTimeout(context.WithoutCancel(ctx), buildTimeout)
+		defer cancel()
+		return o.runList(bctx, f)
+	}).(RunList)
 }
+
+// buildTimeout bounds one build of a cached page (the request that triggers it may go away, and the
+// others waiting on it must not wait for a hung store): past it the reads fail as "timed out", which
+// the page counts as unread and says so, never as clear.
+var buildTimeout = 30 * time.Second

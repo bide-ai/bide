@@ -169,3 +169,23 @@ func TestReviewAttentionEscapes(t *testing.T) {
 		t.Errorf("unescaped run id in page (code %d)", code)
 	}
 }
+
+// Confirmation round. A flow gate records its pause with RootRunID = its own run ID (agent/flowgate.go),
+// so a flow run whose ID holds '>' has its events in its own trail, while treeRoot names the part before '>'.
+func TestReviewFlowGateRootIsItsOwnRun(t *testing.T) {
+	const id = "wf>1"
+	recs := sampleRecs(t, "refund-1043")
+	x := Exports{id: recs}
+	v := Build(t.Context(), id, recs, nil)
+	call := v.Gates[0].ToolUseID
+	es := audit.NewMemEventStore()
+	k := agent.ApprovalKey(id, call, 0)
+	t0 := attnNow.Add(-time.Hour)
+	trailWith(t, es, id,
+		agent.NotifyRecord{Kind: agent.NotifyObserved, Key: k, RunID: id, At: t0, EventKind: string(agent.NotificationApprovalPending), EventAt: t0},
+		agent.NotifyRecord{Kind: agent.NotifyAcked, Key: k, RunID: id, At: t0.Add(time.Second), Status: 200})
+	l := Options{Source: x, Events: es, Now: func() time.Time { return attnNow }}.attention(t.Context())
+	if n := notifyOf(l, "approval", id); n == nil || n.State != NotifyAcked {
+		t.Errorf("notify = %+v; the run's own trail records it acknowledged", n)
+	}
+}

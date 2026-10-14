@@ -153,7 +153,7 @@ class of a store error (`store error`, `timed out`), never the store's own text,
 connection string. A listed run with no records is counted and noted (`empty`).
 
 The viewer reads each unfinished root run's trail when it loads the list, one read per run, and one
-more to notice a store it cannot read when no run needed one. Both lists are served again for two
+more to notice a store it cannot read when no run needed one. An event of a run is looked for in the trail of the root its ID names (a sub-agent's) and in the run's own (a flow gate files its pause under its own run); a build that takes more than 30 seconds fails as "timed out" and the page says so. Both lists are served again for two
 seconds, so a page that refreshes itself, or several viewers, cost the store one read of its runs
 per two seconds.
 
@@ -184,7 +184,7 @@ Each item is one thing to do, and says since when:
   `-postgres-env` for a Postgres journal, and by the placeholder `<VAR>` when you gave a raw `-postgres`
   DSN, since a DSN holds a password and is never put in a command. The approver's own id and key files
   are placeholders too. Every value is quoted for a POSIX shell, so a run or call ID with a quote, a
-  space, `;` or `$(` is one word; an ID with a control, bidirectional or invisible character gets
+  space, `;` or `$(` is one word (also for a Windows `-db` path: the quoting is POSIX's, for a POSIX shell, so in `cmd.exe` or PowerShell quote the path yourself); an ID with a control, bidirectional or invisible character gets
   *no command (unsafe id)* instead. An exported journal has no store to name, so it shows none.
 - **Halted: outcome unknown**: the operation whose attempt marker is live with no result, when it was
   attempted, and the `agent.ResolveHalt` call with its `HaltRef`, as on the run's page. Resolve it
@@ -228,7 +228,7 @@ has an item. An aborted or cancelled run is listed too, since a halt outlives ei
 |---|---|
 | `-db <file>` | SQLite journal to read, opened read-only. Give one of `-db`, `-postgres` and `-journal`. |
 | `-postgres <dsn>` | Postgres journal to read, a pgx DSN; read in read-only sessions. |
-| `-postgres-env <VAR>` | The Postgres journal, its DSN read from this environment variable instead of the command line, so the password stays out of the argument list. Exclusive with `-postgres`. The Needs attention list's `bide approve` commands name the same variable. |
+| `-postgres-env <VAR>` | The Postgres journal, its DSN read from this environment variable instead of the command line, so the password stays out of the argument list. The value is a variable's name (letters, digits, underscore); a DSN given here is refused without being echoed. Exclusive with `-postgres`. The Needs attention list's `bide approve` commands name the same variable. |
 | `-journal <file>` | An exported journal (`audit.JournalExport` JSON). Repeat it for several runs. |
 | `-run <id>` | The run whose URL to print. Without it, the printed URL is the [run list](#the-run-list). |
 | `-topology <file>` | A declared topology, as JSON of `flow.Topology()`, to draw a flow run against instead of the topology the run journaled: for a run started before `flow:topology` was journaled, or to check a run against another flow. |

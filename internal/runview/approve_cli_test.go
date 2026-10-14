@@ -50,3 +50,15 @@ func TestPostgresEnvFlag(t *testing.T) {
 		t.Errorf("unset: %d %q", code, msg)
 	}
 }
+
+// TestPostgresEnvIsNotADSN: a DSN given where the variable's name belongs is a usage error that does
+// not echo it.
+func TestPostgresEnvIsNotADSN(t *testing.T) {
+	for _, v := range []string{"postgres://u:S3cr3tPw@127.0.0.1:1/db", "a b", "1x"} {
+		var out, errb bytes.Buffer
+		code := Main([]string{"-postgres-env", v}, &out, &errb, Stores{})
+		if code != 2 || !strings.Contains(errb.String(), "-postgres-env takes the name of an environment variable, not a DSN") || strings.Contains(errb.String(), "S3cr3tPw") || (strings.Contains(v, "://") && strings.Contains(errb.String(), v)) {
+			t.Errorf("%q: exit %d, stderr %q", v, code, errb.String())
+		}
+	}
+}

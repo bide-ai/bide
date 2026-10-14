@@ -275,14 +275,106 @@ func TestCoverageComplete(t *testing.T) {
 	}
 }
 
-// TestRunListReadsRootTrailsOnly: a sub-run's trail is its root's, so the run list reads one trail
-// per unfinished root run.
-func TestRunListReadsRootTrailsOnly(t *testing.T) {
+// TestRunListReadsEachUnfinishedRunsOwnTrail: recovery is recorded under the run it was run for, so the
+// run list reads one trail per unfinished run, and none for a finished one.
+func TestRunListReadsEachUnfinishedRunsOwnTrail(t *testing.T) {
 	wait := sampleRecs(t, "refund-1043")
 	x := Exports{"root": wait, agent.SubRunID("root", "c1"): wait, agent.SubRunID("root", "c2"): wait}
 	c := &countingEvents{EventStore: audit.NewMemEventStore()}
 	Options{Source: x, Events: c}.runList(t.Context(), ListFilter{Limit: 50})
-	if c.loads.Load() != 1 {
-		t.Errorf("%d trail loads for one root run and two sub-runs, want 1", c.loads.Load())
+	if c.loads.Load() != 3 {
+		t.Errorf("%d trail loads for three unfinished runs, want 3", c.loads.Load())
+	}
+}
+
+// TestAttentionFlowGateTrails: a flow gate files its events under its own run's trail even when the
+// run's ID holds '>', and a sub-agent's under its root's; both are read, for items and for recovery.
+func TestAttentionFlowGateTrails(t *testing.T) {
+	const own = "wf>1"
+	recs := sampleRecs(t, "refund-1043")
+	call := Build(t.Context(), own, recs, nil).Gates[0].ToolUseID
+	t0 := attnNow.Add(-time.Hour)
+	es := audit.NewMemEventStore()
+	k := agent.ApprovalKey(own, call, 0)
+	trailWith(t, es, own,
+		agent.NotifyRecord{Kind: agent.NotifyObserved, Key: k, RunID: own, At: t0, EventKind: string(agent.NotificationApprovalPending), EventAt: t0},
+		agent.NotifyRecord{Kind: agent.NotifyAcked, Key: k, RunID: own, At: t0.Add(time.Second), Status: 200},
+		agent.NotifyRecord{Kind: agent.NotifyFailingSince, RunID: own, At: t0, Reason: "resume_error"})
+	o := Options{Source: Exports{own: recs}, Events: es, Now: func() time.Time { return attnNow }}
+	l := o.attention(t.Context())
+	if n := notifyOf(l, "approval", own); n == nil || n.State != NotifyAcked {
+		t.Errorf("the run's own trail was not read: %+v", n)
+	}
+	if rec := itemsByKind(l.Items, AttentionRecovery); len(rec) != 1 || rec[0].RunID != own {
+		t.Errorf("recovery items %+v; want the run's own failing recovery", rec)
+	}
+	if rl := o.runList(t.Context(), ListFilter{Limit: 50}); rl.Recovering != 1 {
+		t.Errorf("run list recovering %d, want 1", rl.Recovering)
+	}
+	// Neither trail records it: none, not a read failure.
+	l = Options{Source: Exports{own: recs}, Events: audit.NewMemEventStore(), Now: o.Now}.attention(t.Context())
+	if n := notifyOf(l, "approval", own); n == nil || n.State != NotifyNone || l.TrailUnread != 0 {
+		t.Errorf("empty trails: %+v, unread %d", n, l.TrailUnread)
+	}
+}
+
+// namedEvents records the trail names read.
+type namedEvents struct {
+	audit.EventStore
+	mu    sync.Mutex
+	names []string
+}
+
+func (n *namedEvents) Load(ctx context.Context, name string) ([][]byte, error) {
+	n.mu.Lock()
+	n.names = append(n.names, name)
+	n.mu.Unlock()
+	return n.EventStore.Load(ctx, name)
+}
+
+// TestProbeReadsTheRunsTrail: the probe that notices a dead store reads notify:<run>, not a name with
+// the prefix twice.
+func TestProbeReadsTheRunsTrail(t *testing.T) {
+	done := sampleRecs(t, "refund-1041")
+	for name, read := range map[string]func(Options){
+		"attention": func(o Options) { o.attention(t.Context()) },
+		"run list":  func(o Options) { o.runList(t.Context(), ListFilter{Limit: 50}) },
+	} {
+		ev := &namedEvents{EventStore: audit.NewMemEventStore()}
+		read(Options{Source: Exports{"only": done}, Events: ev})
+		if len(ev.names) != 1 || ev.names[0] != "notify:only" {
+			t.Errorf("%s: trail reads %q, want [notify:only]", name, ev.names)
+		}
+	}
+}
+
+// hangSource blocks every read until its context ends.
+type hangSource struct{ Exports }
+
+func (hangSource) History(ctx context.Context, _ string) ([]agent.Record, error) {
+	<-ctx.Done()
+	return nil, ctx.Err()
+}
+
+// TestCachedBuildTimesOut: a store that hangs gives a page that says the runs timed out, not a hang
+// and not a clear page.
+func TestCachedBuildTimesOut(t *testing.T) {
+	old := buildTimeout
+	buildTimeout = 50 * time.Millisecond
+	defer func() { buildTimeout = old }()
+	h := Handler(Options{Source: hangSource{Exports{"a": nil}}, Events: audit.NewMemEventStore()})
+	for _, path := range []string{"/attention.json", "/runs.json"} {
+		_, js := get(t, h, path)
+		var s struct {
+			Status string `json:"status"`
+			Error  string `json:"error"`
+			Unread int    `json:"unread"`
+		}
+		if err := json.Unmarshal([]byte(js), &s); err != nil {
+			t.Fatal(err)
+		}
+		if s.Status != StatusUnknown || !strings.Contains(s.Error, "timed out") || s.Unread != 1 {
+			t.Errorf("%s: %+v", path, s)
+		}
 	}
 }

@@ -228,9 +228,9 @@ func (o Options) runList(ctx context.Context, f ListFilter) RunList {
 		}
 		l.Counts[r.Group]++
 		l.All++
-		// A trail is read for a root run that has not ended (a sub-run's events are in its root's trail,
-		// and so is the recovery): a finished run has no recovery to fail.
-		if tr != nil && !ended(r.State) && treeRoot(id) == id {
+		// The run's own trail is read, for a run that has not ended: recovery is recorded under the run it
+		// was run for, and a finished run has none to fail.
+		if tr != nil && !ended(r.State) {
 			if fold := tr.of(id); fold.err != nil {
 				l.TrailUnread++
 			} else if fold.st.FailingSince != nil {
@@ -241,7 +241,7 @@ func (o Options) runList(ctx context.Context, f ListFilter) RunList {
 			rows = append(rows, r)
 		}
 	}
-	if tr != nil && len(ids) > 0 && !tr.probe(agent.NotifyTrailName(ids[0])) {
+	if tr != nil && len(ids) > 0 && !tr.probe(ids[0]) {
 		l.TrailUnread++ // a store that cannot be read is noticed even when no run needed its trail
 	}
 	for k := range kinds {

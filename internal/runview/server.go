@@ -140,6 +140,8 @@ type Options struct {
 // /attention (as JSON at /attention.json; see AttentionList) and a run at /run?id=<run>
 // (its View as JSON at /run.json?id=<run>, and, for a run in progress in a store, its live updates
 // at /run/live?id=<run>&after=<cursor>).
+// The run list and the Needs attention list are built at most once per cacheTTL (2 seconds) per query, and
+// a build is cut off after buildTimeout (30 seconds), so many viewers cost the store one read of its runs.
 // It answers only GET and HEAD, and only requests addressed to a loopback host, so a page on
 // another site cannot read it through a rebound DNS name.
 func Handler(o Options) http.Handler {

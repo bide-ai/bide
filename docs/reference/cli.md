@@ -195,7 +195,9 @@ run:start records it; none for a run an earlier version journaled) and its recor
 first, filtered by state, kind and run ID. Its headline links to the Needs attention list (/attention):
 every run waiting for approval, halted with an unknown outcome or aborted, newest first, with the gate's
 approvers and the ResolveHalt call, and, from -db or -postgres, whether the notifier told someone and
-the sink acknowledged it (the notification trail in the same database).
+the sink acknowledged it (the notification trail in the same database). The run list and that list are
+built at most once every 2 seconds, so a page that reloads itself costs the store little. A
+bide approve command shown there is quoted for a POSIX shell, also for a Windows -db path.
 
 From -db or -postgres, the page of a run in progress follows it (live mode): it polls the store
 about once a second for records after the last one it shows, and updates in place until the run

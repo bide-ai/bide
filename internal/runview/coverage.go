@@ -159,13 +159,13 @@ func (t *trailReader) of(root string) *trailFold {
 	return f
 }
 
-// probe reads one trail if none was read, so a store that cannot be read is noticed even when no run
-// needed its trail. It reports whether the store answered.
-func (t *trailReader) probe(name string) bool {
+// probe reads the trail of run if none was read, so a store that cannot be read is noticed even when no
+// run needed its trail. It reports whether the store answered.
+func (t *trailReader) probe(run string) bool {
 	if len(t.folds) > 0 {
 		return true
 	}
-	return t.of(name).err == nil
+	return t.of(run).err == nil
 }
 
 // ttlCache holds a computed page for a moment, so many viewers (or one page refreshing itself) cost
