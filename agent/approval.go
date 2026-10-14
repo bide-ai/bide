@@ -393,8 +393,8 @@ const (
 	ReasonAlg         = "signed under another scheme than the approver's key"
 	ReasonNoDecidedAt = "no signed decision time: signed under an earlier decision format than bide.approval.v3, which this version does not accept"
 	ReasonDecidedAt   = "the signed decision time is not in canonical form (2006-01-02T15:04:05.000Z)"
-	ReasonRequester   = "the approver is the run's requester, whom the policy excludes (separation of duties)"
-	ReasonNoRequester = "the policy excludes the requester, and the run records no requester principal in printable ASCII"
+	ReasonRequester   = "the approver is a requester of the run (its principal, or that of a run above it), whom the policy excludes (separation of duties)"
+	ReasonNoRequester = "the policy excludes the requester, and the run, or a run above it, records no requester principal in printable ASCII"
 )
 
 // protocol:claims begin QCount

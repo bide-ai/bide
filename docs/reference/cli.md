@@ -246,7 +246,7 @@ Flags:
   -evidence string
     	evidence package (audit.EvidencePackage JSON) to verify; needs -pubkey
   -exclude-principal
-    	the expected policy excludes the run's requester from approving (separation of duties); needs -need
+    	the expected policy excludes the run's requesters (its principal and those of the runs above it) from approving (separation of duties); needs -need
   -fail-on-weaken
     	with -diff -check: exit 1 if an approval gate was removed or weakened
   -journal value
@@ -797,7 +797,7 @@ Usage of bide audit verify-approvals:
   -evidence string
     	path to the EvidencePackage JSON carrying the approval evidence
   -exclude-principal
-    	the policy excludes the run's requester from approving (separation of duties); the evidence must prove the run's run:start
+    	the policy excludes the run's requesters (its principal and those of the runs above it) from approving (separation of duties); the evidence must prove the run's run:principal
   -json
     	print one JSON report on stdout instead of the text report
   -max-clock-skew duration

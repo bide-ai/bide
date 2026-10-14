@@ -230,7 +230,7 @@ signed decision time in canonical form, and the signature verifies for this call
   counts; the counting rule excludes those seats as well, so a resolver that answers differently
   between the check and the count still cannot seat one person twice.
 - **The requester never counts under separation of duties.** With `ExcludePrincipal`, an approver
-  whose id is the run's requester fills no seat (`agent.ReasonRequester`); see [Separation of
+  whose id is a requester of the run fills no seat (`agent.ReasonRequester`); see [Separation of
   duties](#separation-of-duties).
 - A `SubmitDecision` decision never satisfies a 1-of-1 gate, and `Approve` never counts toward an m-of-n
   one.
@@ -253,14 +253,14 @@ Eligibility is not checked there, because the policy lives on the tool.
 Every decision is a journaled step, so decisions survive crashes and can arrive over any span of
 time. When the gate reaches a terminal outcome (proceed or deny), it journals the tally as its own
 step, `approval-tally:<encoded toolUseID>` (`agent.ApprovalTallyStep`), **before the tool runs**. That record carries the policy it
-enforced (`Need`, `Approvers`, and `ExcludePrincipal` with the `Requester` it excluded), who approved
+enforced (`Need`, `Approvers`, and `ExcludePrincipal` with the `Requesters` it excluded), who approved
 and denied, who filled no seat (`Excluded`), and the name of every decision record it read
 (`Records`). A resumed run reads that record instead of recounting, so the outcome is fixed once
 decided even if keys rotate or the policy changes later. A pause records no decision and no tally, so
 it stays open for more decisions. It does record that the run waits:
 `approval-pending:<encoded toolUseID>` (`agent.ApprovalPendingStep`), an `agent.ApprovalWait` with the
 call's ID and tool, the gate's `Need` and `Approvers` (or `Single`), its `ExcludePrincipal` and
-`Requester` when it excludes the requester, and when the run paused
+`Requesters` when it excludes the requester, and when the run paused
 (`RecordedAt`, by the run's clock), so a reader such as `bide view` can list the gate before anyone
 decides, and an auditor can see when approvers were asked. The run writes it once, in the drive whose model turn made
 the call, and a resume writes nothing. It is informational only: the gate, a resume and recovery never
@@ -318,10 +318,11 @@ refund := agent.MustFunc("refund", "refund the order", doRefund,
 ```
 
 The requester is the run's principal: the `OnBehalfOf` of the `agent.Identity` the deployment
-starts the run with, which the run journals in its `run:start` record (`RunStart.Principal`). The
-deployment sets it from its own authentication (an IdP session, a service identity), never the
-model. Once journaled it is fixed: a later drive under another principal is `ErrConfig`, and a drive
-that passes none runs under the journaled one.
+starts the run with. The deployment sets it from its own authentication (an IdP session, a service
+identity), never the model. The run's first drive journals it in a record of its own,
+`run:principal` (`agent.RunPrincipal`), before `run:start`, and in `run:start` too. Once journaled it
+is fixed: a later drive under another principal is `ErrConfig`, and a drive that passes none runs
+under the journaled one.
 
 <!-- docsnip: setup ctx context.Context; a *agent.Agent; runID string -->
 ```go
@@ -332,27 +333,36 @@ _, err := a.Run(ctx, runID, agent.UserText("refund order 42"),
 A plan flow run takes it from its context: `f.Run(agent.ContextWithIdentity(ctx, id), journal,
 runID, in)`.
 
-- **What counts.** An approver id equal to the requester, ignoring ASCII case (the rule
-  `Validate` holds approver ids to), fills no seat: their decisions, approvals and denials alike,
-  are listed with `agent.ReasonRequester` and never count, and the tally lists them in `Excluded`.
-  `k` must then be met by the other approvers. A requester who is not an approver (a service, a
-  desk) excludes no one.
+**Runs above the run are requesters too.** A run started inside another run's drive (a sub-agent's
+run, a delegation through `audit.AttenuatingSubAgent`, a `SubRunFor` run, or a plan flow started
+from a tool) records, in its `run:principal` and its `run:start`, the principals of every run above
+it, root first (`RunPrincipal.Ancestors`). The gate excludes all of them
+(`RunPrincipal.Requesters`): a delegated sub-run acts for the delegating grant's subject, but the
+person who started the root run still may not approve the sub-run's call. The tally lists them in
+`Requesters`.
+
+- **What counts.** An approver id equal to any requester, ignoring ASCII case (the rule `Validate`
+  holds approver ids to), fills no seat: their decisions, approvals and denials alike, are listed
+  with `agent.ReasonRequester` and never count, and the tally lists them in `Excluded`. `k` must
+  then be met by the other approvers. A requester who is not an approver (a service, a desk)
+  excludes no one.
 - **It fails closed.** On every evaluation, before it reads a recorded tally, the gate refuses with
-  `ErrConfig` a run that records no requester (no identity, or one with an empty `OnBehalfOf`), a
-  run that recorded its `run:start` only after the call was requested (a run an earlier version
-  started gets its `run:start` from the first drive under this version, so it names whoever resumed
-  it, not the requester), a requester that is not printable ASCII (it cannot be compared with approver ids, and could only
-  look like one), and a policy whose `Need` is out of reach once the requester's seat is taken away
-  (3 of 3 where the requester is one of the three). `Validate` cannot check that last case, since it
-  depends on who requests; it refuses `ExcludePrincipal` on `SingleApproval()`, whose decision names
-  no approver.
-- **Inside a sub-agent** the requester is the sub-run's principal. A plain `SubAgent` inherits its
-  parent's identity, so it is the same requester; `audit.AttenuatingSubAgent` rebinds the sub-run to
-  `OnBehalfOf` the delegating grant's subject, which is then the requester the sub-run's gate
-  excludes (see [Known limitations](../KNOWN-LIMITATIONS.md)).
-- **Offline.** The run's `run:start` record is the evidence of who requested: `ApprovalEvidence`
-  discloses it for a gate that excluded the requester, and `VerifyApprovals` recounts with the same
-  exclusion (see [Proving the gate held](#proving-the-gate-held)).
+  `ErrConfig`:
+  - a run with no `run:principal` (no identity, or one with an empty `OnBehalfOf`), or one in which
+    the run, or a run above it, records no `OnBehalfOf` (who requested is then not known, so no one
+    could be excluded for it);
+  - a requester that is not printable ASCII (it cannot be compared with approver ids, and could only
+    look like one);
+  - a run whose `run:principal` follows the call's request (a run an earlier version started gets it
+    from the first drive under this version, so it names whoever resumed the run), or disagrees
+    with its `run:start`;
+  - a policy whose `Need` is out of reach once the requesters' seats are taken away (3 of 3 where
+    one of the three requested). `Validate` cannot check this, since it depends on who requests; it
+    refuses `ExcludePrincipal` on `SingleApproval()`, whose decision names no approver.
+- **Offline.** The `run:principal` record is the evidence of who requested, and it holds nothing
+  else: not the run's input. `ApprovalEvidence` discloses it for a gate that excluded the requester,
+  and `VerifyApprovals` recounts with the same exclusion (see [Proving the gate
+  held](#proving-the-gate-held)).
 
 It compares ids, not people. The gate cannot see that the requester also holds another approver's
 key; issuing one key per person, and naming the requester and the approvers in one id namespace, is
@@ -572,8 +582,8 @@ in the viewer, with keys held in the browser, and with passkeys.
 ## Proving the gate held
 
 `audit.ApprovalEvidence` builds the complete evidence for a gated call under one signed tree head, in
-journal order: for a gate that excluded the requester, the run's `run:start` record (a `step` item:
-it names the requester, and discloses the run's input with it); the model turn that requested the
+journal order: for a gate that excluded the requester, the run's `run:principal` record (a `step`
+item: it names the requesters and nothing else); the model turn that requested the
 call (its tool and arguments), the gate's
 `approval-pending` record when the journal holds one (a `step` item: it says when approvers were
 asked), every decision record the gate read, valid or not, the gate's recorded tally, and the
@@ -600,7 +610,7 @@ v, err := audit.VerifyApprovals(pkg.Actions, toolUseID, policy, approverVerifier
 // v.ToolName, v.Args: the exact call that was approved.
 // v.Counted, v.DeniedBy: who. v.Ignored: every other decision, with the reason.
 // v.Times, v.AskedAt: when each counted decision was made and recorded, and sanity flags.
-// v.Requester: the requester the recount excluded, when the policy excludes the requester.
+// v.Requesters: the requesters the recount excluded, when the policy excludes the requester.
 // v.Problems: every inconsistency found (any problem fails the verdict).
 ```
 
@@ -616,7 +626,7 @@ problem when:
   `Need: 2` was required;
 - the request, decisions, tally, and result are out of order;
 - under separation of duties, the gate's exclusion of the requester differs from the expected
-  policy's, the tally names another requester than the run's `run:start`, or the evidence does not
+  policy's, the tally names other requesters than the run's `run:principal`, or the evidence does not
   prove that record under the same head and run, before the request (the recount then counts no
   one).
 
@@ -644,7 +654,7 @@ bide audit verify-approvals -evidence evidence.json -pubkey <log key> -call refu
 ```
 
 Add `-exclude-principal` when the expected policy excludes the requester: the output then names the
-requester from the proven `run:start`, and lists their decisions as ignored.
+requesters from the proven `run:principal`, and lists their decisions as ignored.
 
 It prints the approved call, each approver who counted, every ignored decision with its reason, when
 approval was asked and each counted decision's `decided_at` and `recorded_at` with the gap (and a
@@ -666,9 +676,8 @@ object keys inside a recorded message breaks that record's proof.
   person one key is the identity provider's job too.
 - The approver set is bounded and fixed per policy. There are no weighted votes, role predicates
   ("at least one from risk"), delegated approval, or deadline to resolve a gate that never reaches k.
-- Separation of duties excludes one principal, the run's requester, by id. It does not exclude the
-  principals of the runs above a delegated sub-run, or someone who holds an approver's key and
-  also requests under another id.
+- Separation of duties excludes requesters by id: the run's and those of the runs above it. It does
+  not exclude someone who holds an approver's key and also requests under another id.
 - The tally does not record which key verified each approver (each decision does record its scheme,
   `Record.ApproverAlg`). An auditor needs the keys that were
   valid when the gate decided; after a rotation, keep the old public keys to verify old evidence.
@@ -682,6 +691,8 @@ submission, the refund runs exactly once at 2 of 3, and an auditor verifies the 
 with public keys only (`cd examples/approval && go run .`). Its test drives every actor as a separate
 process and checks the evidence with `bide audit verify-evidence` and `verify-approvals`, including a
 tampered file and one with a decision left out. `examples/approval/flow` does the same for a gated
-plan flow node loaded from a config (`go run ./flow`).
+plan flow node loaded from a config (`go run ./flow`), and `examples/approval/makerchecker` shows
+separation of duties: the requester's own approval is recorded but never counts, and the audit
+proves who requested without the run's input (`go run ./makerchecker`).
 
 The design and its tradeoffs are in [docs/design/design-mofn-approval.md](../design/design-mofn-approval.md).

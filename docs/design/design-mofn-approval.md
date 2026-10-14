@@ -279,50 +279,65 @@ A bank's maker-checker rule: whoever initiated an action may not approve it. An 
 acts for: `RunStart.Principal.OnBehalfOf`, from the `Identity` the deployment starts the run with
 (`WithIdentity`; for a plan flow run, the identity its context carries, which this change makes
 flows journal too). It is restored on every later drive, and a drive under another principal is
-`ErrConfig`, so it cannot change once a call has paused. That is the requester. The alternatives:
+`ErrConfig`, so it cannot change once a call has paused. That, and the principal of every run above
+it, are the requesters. Rejected alternatives:
 
 - `Identity.Actor`, the acting agent instance, is not journaled and is not a person.
-- The delegation chain (model 11): a delegated sub-run's principal is the delegating grant's
-  subject, and the root's principal lives in another run's journal, under another signed head.
-  Excluding every principal up the chain would make the evidence span several runs; it is deferred
-  (see Known limitations). A gate in a sub-run excludes the sub-run's own principal.
-- A new requester record signed by the requester: no requester holds a key in bide today, and the
-  journal already commits to `run:start` under the signed tree head.
+- A requester record signed by the requester: no requester holds a key in bide today, and the
+  journal already commits the run's records under the signed tree head.
 
-**The gate decides from the journal only.** The gate reads the requester from `run:start`
-(`RecordedRequester`) on every evaluation. The counting rule `TallyApprovals` reads it from the
-records it is given, so an offline verifier that passes the proven `run:start` beside the decisions
-counts exactly as the gate did. An approver id equal to the requester, ignoring ASCII case (the rule
-`Validate` holds approver ids to), fills no seat (`ReasonRequester`) and is listed in the tally's
-`Excluded`; the tally records `ExcludePrincipal` and `Requester`.
+**The delegation chain, journaled in the sub-run.** A delegated sub-run acts for the delegating
+grant's subject (`audit.AttenuatingSubAgent`), so its own principal is not the person who started
+the root run. Every drive binds its run's principal chain (the run's ancestors and its own
+principal) to its context, and a run started inside it (a sub-agent's, a delegation's, a
+`SubRunFor` run, a plan flow's) records that chain as its `Ancestors`, at its first drive, from
+its parent's journaled values. Its own journal then proves every requester, so the evidence stays
+within one run under one signed head. A run above it that records no principal is an ancestor whose
+requester is unknown: an excluding gate refuses the run rather than exclude no one for it. The
+journaled chain is authoritative; later drives are not compared with it.
+
+**A record of its own: `run:principal`.** A run's first drive writes `run:principal`
+(`RunPrincipal`: the principal and the ancestors, nothing else) before `run:start`, and only if it is
+absent; a drive that finds one naming another principal is refused. Evidence proves the requesters
+with it alone, so an auditor never receives the run's input, which `run:start` carries. The gate
+holds `run:principal` to `run:start` (they must agree) and requires it before the call's request.
+
+**The gate decides from the journal only.** The gate reads the requesters from `run:principal`
+(`RecordedPrincipal`, strict: no duplicate or case-variant name) on every evaluation. The counting
+rule `TallyApprovals` reads it from the records it is given, so an offline verifier that passes the
+proven `run:principal` beside the decisions counts exactly as the gate did. An approver id equal to
+any requester, ignoring ASCII case (the rule `Validate` holds approver ids to), fills no seat
+(`ReasonRequester`) and is listed in the tally's `Excluded`; the tally records `ExcludePrincipal`
+and `Requesters`.
 
 **The signed decision is unchanged.** Approvers sign the call (`bide.approval.v3`), not the
 requester: whether a decision counts under separation of duties is a fact of the run, proven by
-`run:start` under the same head, not something the approver vouches for. Binding the requester into
-the signature would need a new format and would add nothing the gate's check relies on.
+`run:principal` under the same head, not something the approver vouches for. Binding the requester
+into the signature would need a new format and would add nothing the gate's check relies on.
 
-**Fails closed, at the gate.** Whether `Need` stays reachable without the requester depends on who
+**Fails closed, at the gate.** Whether `Need` stays reachable without the requesters depends on who
 requests, so `Validate` cannot decide it (it refuses `ExcludePrincipal` only on `SingleApproval`,
 whose decision names no approver). The gate refuses with `ErrConfig`, before it reads a recorded
-tally, as the key check does: a run that records no requester, a run whose `run:start` follows the
-call's request (one an earlier version started: its `run:start` names whoever first resumed it under
-this version), a requester that is not printable ASCII, and a policy whose `Need` exceeds the
-approvers left once the requester is excluded. `VerifyApprovals` likewise requires the `run:start`
-before the request. It
-records nothing then: a denial tally would be final, and no approver denied. The counting rule
-itself, given no usable requester, seats no one.
+tally, as the key check does: a run with no `run:principal`, or one in which the run or a run above
+it records no requester; a requester that is not printable ASCII; a `run:principal` after the call's
+request (a run an earlier version started gets it from whoever first resumes it under this
+version) or disagreeing with `run:start`; and a policy whose `Need` exceeds the approvers left once
+the requesters are excluded. It records nothing then: a denial tally would be final, and no approver
+denied. The counting rule itself, given no usable requester, seats no one.
 
-**Evidence.** `ApprovalEvidence` discloses the run's `run:start` for a gate that excluded the
+**Evidence.** `ApprovalEvidence` discloses the run's `run:principal` for a gate that excluded the
 requester, and `VerifyApprovals` requires it, proven under the same head and run and before the
 request, when the expected policy or the tally excludes the requester. It reports a problem when the
-gate's exclusion differs from the expected policy's or the tally names another requester. The cost:
-`run:start` carries the run's input, which the evidence then discloses.
+gate's exclusion differs from the expected policy's or the tally names other requesters.
 
-**Model.** Model 1b (`spec/tla/claims`) carries the run's requester as a constant and the
-exclusion as a policy field; `SeparationOfDuties` holds in `ap-sod`, `ap-sod-fold`,
-`ap-sod-infeasible` and `ap-sod-no-requester`, and the regressions `ap-sod-no-exclusion` (the count
-ignores the exclusion) and `ap-sod-exact-match` (ids compared exactly, so another spelling of the
-requester counts) violate it.
+**Model.** Model 1b (`spec/tla/claims`) carries the run's requester and its ancestors' as constants
+(`Requester`, `Ancestors`) and the exclusion as a policy field. Model 1b, not model 11, because what
+the gate must guarantee is a counting rule over the journaled chain; the chain itself is a pure
+function of the parent's journaled values at the sub-run's first drive, which the Go tests drive
+through a real delegation and resume. `SeparationOfDuties` holds in `ap-sod`, `ap-sod-fold`,
+`ap-sod-chain`, `ap-sod-infeasible`, `ap-sod-no-requester` and `ap-sod-anonymous-ancestor`, and the
+regressions `ap-sod-no-exclusion` (the count ignores the exclusion), `ap-sod-exact-match` (ids
+compared exactly) and `ap-sod-own-only` (only the sub-run's own requester excluded) violate it.
 
 ## Original design
 

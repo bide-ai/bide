@@ -1187,7 +1187,7 @@ func (c *cli) verifyApprovals(args []string) {
 	call := fs.String("call", "", `the gated call's tool-use id, or a gated plan flow node's key ("node:<name>", "node:iter:<n>:<name>")`)
 	need := fs.Int("need", 0, "approvals the policy requires (k)")
 	approvers := fs.String("approvers", "", "the policy's eligible approver ids, comma-separated, in policy order")
-	excludePrincipal := fs.Bool("exclude-principal", false, "the policy excludes the run's requester from approving (separation of duties); the evidence must prove the run's run:start")
+	excludePrincipal := fs.Bool("exclude-principal", false, "the policy excludes the run's requesters (its principal and those of the runs above it) from approving (separation of duties); the evidence must prove the run's run:principal")
 	keysPath := fs.String("approver-keys", "", `JSON object of approver id to public key text (<scheme>:<hex>, or bare ed25519 hex), e.g. {"ops":"ed25519:ab12..."} or {"ops":"ecdsa-p256:04ab..."}`)
 	var approved stringList
 	fs.Var(&approved, "approved", "an approved policy digest for the package's run certificate; repeat once per allowed policy")

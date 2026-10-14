@@ -181,12 +181,14 @@ type ApprovalPolicy struct {
 	Approvers []string `json:"approvers,omitempty"` // eligible approver ids, printable ASCII (see Validate); the bounded set (n)
 
 	// ExcludePrincipal is separation of duties ("maker-checker"): the gate never counts a decision
-	// by the run's requester, the principal the run acts for (its journaled run:start principal,
-	// Identity.OnBehalfOf, which RecordedRequester reads). An approver id equal to the requester,
-	// ignoring ASCII case, fills no seat (ReasonRequester), and the gate refuses with ErrConfig a
-	// run that records no requester, or one that is not printable ASCII, and a policy whose Need is
-	// unreachable once the requester is excluded. It applies to m-of-n policies only: Validate
-	// refuses it on SingleApproval, whose decision names no approver.
+	// by a requester of the run: the principal the run acts for (Identity.OnBehalfOf), or that of
+	// any run above it, as its run:principal record names them (RunPrincipal.Requesters). An
+	// approver id equal to a requester, ignoring ASCII case, fills no seat (ReasonRequester), and the
+	// gate refuses with ErrConfig a run whose requesters it cannot tell (no run:principal, a run in
+	// the chain with no OnBehalfOf, a requester that is not printable ASCII, a run:principal
+	// journaled after the call's request) and a policy whose Need is unreachable once they are
+	// excluded. It applies to m-of-n policies only: Validate refuses it on SingleApproval, whose
+	// decision names no approver.
 	ExcludePrincipal bool `json:"exclude_principal,omitempty"`
 
 	// one marks the policy SingleApproval returned (and its copies): the one-decision gate. It is
