@@ -53,13 +53,16 @@ It reads the call from the journal, never from a flag or a notification, and sho
 about to sign: the run, the tool, the call's arguments (indented JSON, long ones cut; -full shows
 all), the gate (k of n, who has decided, who is pending) and the SHA-256 of the arguments the
 signature binds. It then asks you to type your approver id (or y) to confirm; -yes skips the
-question, for scripts. The decision is signed with your private key (made by bide keygen: Ed25519, ML-DSA-65 or hybrid),
+question, for scripts. The decision is signed with your private key (made by bide keygen: Ed25519, ECDSA P-256, ML-DSA-65 or hybrid),
 checked against the call before it is recorded, and recorded with the time you decided.
 
 It refuses, and records nothing, when the call has no waiting gate, the run is not waiting on it,
 the gate already passed or was denied, you are not one of the gate's approvers, you already decided
-(it says what, and when), or the key file can be read by others (on Unix, as ssh refuses one). It
-checks again after you confirm, in case the gate was decided or the run ended while you read. It
+the other way (it says what, and when), or the key file can be read by others (on Unix, as ssh refuses one). It
+checks again after you confirm, in case the gate was decided or the run ended while you read. If
+your counted decision is the one you are making again (approve after approve, reject after reject),
+it signs and writes nothing, prints "already recorded: your approve at <time> counts; nothing to do"
+and exits 0, so a retry after a lost response is safe, under every scheme. It
 never refuses, and -list never settles a gate, on records it has not verified: without
 -approver-keys the standing is labelled unverified. A call whose approval-pending note was lost (the
 note is the journal's only record of the gate's policy) is refused with a precise message: the
@@ -366,12 +369,49 @@ func verdict(approved bool) string {
 	return "denied"
 }
 
+// recorded is what preflight returns when the approver's counted decision is the one they are
+// making again (an approve after an approve, a reject after a reject): nothing to sign or record.
+type recorded struct {
+	approved            bool
+	decidedAt, recordAt string
+}
+
+func (e *recorded) Error() string {
+	return fmt.Sprintf("already recorded: your %s at %s counts; nothing to do", verdictVerb(e.approved), safe(cmp.Or(e.decidedAt, "an unknown time")))
+}
+
+// verdictVerb is the decision as the approver names it.
+func verdictVerb(approved bool) string {
+	if approved {
+		return "approve"
+	}
+	return "reject"
+}
+
 // preflight refuses a decision that cannot count or cannot be made: the run ended, the gate is
 // decided, the call is not waiting, the approver is not one of the gate's, or already decided. It
 // reads the journal only. verifierFor, when non-nil, tells a valid earlier decision of the approver
 // from one that does not verify.
-func (g *gateOf) preflight(run, as string, verifierFor agent.ApproverVerifierFor) error {
+func (g *gateOf) preflight(run, as string, reject bool, verifierFor agent.ApproverVerifierFor) error {
 	gt := g.gate
+	// An approver whose counted decision is the one they are making again has nothing to do, even
+	// if the gate has since passed or the run has ended: a retry after a lost response succeeds.
+	if verifierFor != nil && as != "" && slices.Contains(gt.Approvers, as) {
+		_, checks := agent.TallyApprovals(g.recs, g.subject(run), agent.ApprovalPolicy{Need: gt.Need, Approvers: gt.Approvers}, verifierFor)
+		for _, ck := range checks {
+			if ck.Approver != as || !ck.Counted || ck.Approved == reject {
+				continue
+			}
+			d := runview.Decision{}
+			for _, x := range gt.Decisions {
+				if x.Approver == as && x.Approved == ck.Approved {
+					d = x
+					break
+				}
+			}
+			return &recorded{approved: ck.Approved, decidedAt: d.DecidedAt, recordAt: d.RecordedAt}
+		}
+	}
 	switch g.view.State {
 	case string(agent.RunCompleted), string(agent.RunAborted), string(agent.RunCancelled):
 		return refuse("run %s has ended (%s); it does not wait on call %s", safe(run), g.view.StateText, safe(gt.ToolUseID))
@@ -503,8 +543,8 @@ func (c *cmd) approve(ctx context.Context) error {
 		}
 		verifierFor = verifiers(keys)
 	}
-	if err := g.preflight(f.run, f.as, verifierFor); err != nil {
-		return err
+	if err := g.preflight(f.run, f.as, f.reject, verifierFor); err != nil {
+		return c.alreadyRecorded(err)
 	}
 	var signer audit.Signer
 	if !single {
@@ -535,7 +575,10 @@ func (c *cmd) approve(ctx context.Context) error {
 	if g, err = load(ctx, j, f.run, f.call); err != nil {
 		return fmt.Errorf("the journal changed while you were deciding; nothing was recorded: %w", err)
 	}
-	if err := g.preflight(f.run, f.as, verifierFor); err != nil {
+	if err := g.preflight(f.run, f.as, f.reject, verifierFor); err != nil {
+		if rec, ok := errors.AsType[*recorded](err); ok {
+			return c.alreadyRecorded(rec)
+		}
 		return fmt.Errorf("the journal changed while you were deciding; nothing was recorded: %w", err)
 	}
 	if s = g.subject(f.run); argsDigest(s) != shown {
@@ -581,6 +624,29 @@ func (c *cmd) approve(ctx context.Context) error {
 		return err
 	}
 	return receiptErr
+}
+
+// alreadyRecorded turns preflight's *recorded into a success: it says the decision counts, signs
+// and writes nothing, and points at the receipt written when it was signed (by default next to the
+// key). Any other error is returned as it is.
+func (c *cmd) alreadyRecorded(err error) error {
+	rec, ok := errors.AsType[*recorded](err)
+	if !ok {
+		return err
+	}
+	fmt.Fprintf(c.out, "%s%s\n", c.st.Pass(), rec.Error())
+	if rec.recordAt != "" {
+		fmt.Fprintf(c.out, "recorded %s; nothing was signed or written\n", safe(rec.recordAt))
+	}
+	if c.f.key != "" {
+		p := filepath.Join(filepath.Dir(c.f.key), defaultReceiptName(c.f.run, c.f.call, c.f.as, rec.decidedAt))
+		if _, serr := os.Stat(p); serr == nil {
+			fmt.Fprintf(c.out, "receipt %s\n", c.st.Path(p))
+		} else {
+			fmt.Fprintln(c.out, "its receipt was written when you signed it (by default next to your key, or where -receipt named it)")
+		}
+	}
+	return nil
 }
 
 // verb is the past tense of the decision, colored.

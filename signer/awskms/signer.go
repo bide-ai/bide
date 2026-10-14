@@ -18,11 +18,10 @@
 // pre-hashed form that audit's verifiers accept). Tree heads, grants and approver decisions are small, but each carries
 // caller-chosen text: a tree head is about 110 bytes plus the run ID's length, and an approver
 // decision includes the tool call's arguments. A run ID near 4000 bytes, or large arguments,
-// exceed the limit, and Sign returns ErrMessageTooLarge naming the size. An evidence package seal (audit.EvidencePackage.Seal) signs the package's whole JSON encoding
-// and exceeds the limit once the package proves more than a few actions: Sign then returns
-// ErrMessageTooLarge. Seal such packages with a signer that has no limit (a PKCS#11 token, a
-// software key), or do not seal them; the actions in an unsealed package still verify through
-// their inclusion proofs. See docs/guides/key-custody.md.
+// exceed the limit, and Sign returns ErrMessageTooLarge naming the size. An evidence package seal
+// (audit.EvidencePackage.Seal) does not count against it: since evidence format
+// bide.audit.evidence.v6 the seal signs a fixed 60-byte message (a tag and the SHA-256 of the
+// package), so a package of any size can be sealed. See docs/guides/key-custody.md.
 //
 // # Use
 //

@@ -208,7 +208,7 @@ connection pool:
   "engine": {
     "version": "v0.9.0",
     "journal_formats": ["bide.journal.v1-dev.1"],
-    "proof_formats": ["bide.audit.proof.v3", "bide.audit.evidence.v5", "bide.audit.sth.v5"]
+    "proof_formats": ["bide.audit.proof.v3", "bide.audit.evidence.v6", "bide.audit.sth.v5"]
   },
   "limits": {
     "max_message_bytes": 4194304,
@@ -235,7 +235,7 @@ connection pool:
 |---|---|---|---|
 | protocol | `bide.protocol.v1` | per connection or endpoint | SDKs, engine |
 | journal format | `bide.journal.v1-dev.N` [redesign] | per run, in the `@journal` header | engine only |
-| proof formats | `bide.audit.evidence.v5`, ... [redesign] | per artifact, in its `format` field | auditors only |
+| proof formats | `bide.audit.evidence.v6` (v5 still read), ... [redesign] | per artifact, in its `format` field | auditors only |
 
 - The three axes are independent; none implies another.
 - **Journal keys in the protocol are opaque.** `task_id` and `attempt.key` are journal keys under the
@@ -823,7 +823,7 @@ and journals beside it its own `recorded_at`. Neither time is read by the quorum
   tenant's approver keys (`PutApproverKeys`, 9.5): `invalid_argument`/`config`/`INVALID_APPROVAL`,
   `already_exists`/`config`/`ALREADY_DECIDED`.
 - The response carries the `quorum` tally (`ApprovalTally`) and `passed`/`unreachable`.
-- `alg`: `ed25519` (REQUIRED in SDKs); `ml-dsa-65` and the hybrid (OPTIONAL).
+- `alg`: `ed25519` (REQUIRED in SDKs); `ecdsa-p256`, `ml-dsa-65` and the hybrid (OPTIONAL).
 - **The task carries the approval reference** (10.1): the decision and tally record names, the
   approved `args_digest` and the `spec_digest`. A worker SHOULD check that its `args_json` hashes to
   `args_digest` and that `spec_digest` matches its handler, and otherwise report `not_started`/

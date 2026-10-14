@@ -2,7 +2,9 @@ package auditcli
 
 import (
 	"context"
+	"crypto/ecdsa"
 	"crypto/ed25519"
+	"crypto/elliptic"
 	"crypto/mldsa"
 	"crypto/rand"
 	"encoding/json"
@@ -69,6 +71,13 @@ func TestCLI_MLDSAAndHybridEndToEnd(t *testing.T) {
 	for name, mk := range map[string]func(*testing.T) audit.Signer{
 		"ml-dsa-65": func(t *testing.T) audit.Signer { return newMLDSASigner(t) },
 		"hybrid":    func(t *testing.T) audit.Signer { return newHybridSigner(t) },
+		"ecdsa-p256": func(t *testing.T) audit.Signer {
+			k, err := ecdsa.GenerateKey(elliptic.P256(), rand.Reader)
+			if err != nil {
+				t.Fatal(err)
+			}
+			return audit.ECDSAP256Signer{Priv: k}
+		},
 	} {
 		t.Run(name, func(t *testing.T) {
 			ctx := context.Background()

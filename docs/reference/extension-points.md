@@ -314,7 +314,7 @@ a typed Go function and derives the spec's `Input` schema from `In` at construct
 maps directly onto MCP annotations (see the [MCP guide](../guides/mcp.md)). Trailing tool options set
 the rest of the tool's `ToolSpec`: `WithApproval` (a human gate: `SingleApproval()`, or a signed
 m-of-n `ApprovalPolicy`), `WithTimeout`, `WithTitle`, `WithOutputSchema`, and `WithSafety`. For the m-of-n policy, approver signatures are checked through the `ApproverVerifier` hook (`Alg()`, `Verify` and `KeyIDs`), which the
-`audit` package's Ed25519, ML-DSA, and hybrid verifiers implement; a decision counts only under the scheme
+`audit` package's Ed25519, ECDSA P-256, ML-DSA, and hybrid verifiers implement; a decision counts only under the scheme
 journaled with it (`Decision.Alg`, recorded as `Record.ApproverAlg`), which must be its approver key's. Its `KeyIDs` method names the keys
 behind a verifier, derived from the public key's bytes, and the gate refuses a policy two of whose
 approvers share one (see [approval](../guides/hitl-approval.md#key-identity)).

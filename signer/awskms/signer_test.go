@@ -7,6 +7,7 @@ import (
 	"crypto/ed25519"
 	"crypto/elliptic"
 	"crypto/x509"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"strings"
@@ -284,9 +285,9 @@ func TestAuditedStoreAnchorsThroughKMS(t *testing.T) {
 	}
 }
 
-// Evidence seals what it builds, over the package's whole JSON encoding, which outgrows KMS's
-// limit: a package that proves a few actions fits, one that proves a dozen does not.
-func TestEvidenceSealLimit(t *testing.T) {
+// Evidence seals a fixed-size digest message, so a package of any size seals under KMS's limit: a
+// one-action package and a twelve-action one (about 11 KB of JSON) both seal and verify.
+func TestEvidenceSealUnderLimit(t *testing.T) {
 	ctx := context.Background()
 	s := open(t, newFake(t))
 	store, err := audit.NewAuditedStore(agent.NewMemStore(), s, audit.NewMemAnchorLog())
@@ -306,15 +307,20 @@ func TestEvidenceSealLimit(t *testing.T) {
 	}
 	v, _ := audit.VerifierOf(s)
 
-	one, err := audit.Evidence(ctx, j, "run-ev", s, 1700000000, audit.WithToolCall("call-0"))
-	if err != nil {
-		t.Fatalf("a one-action package: %v", err)
-	}
-	if rep, err := one.Verify(v); err != nil || !rep.OK {
-		t.Fatalf("one-action package: %+v %v", rep, err)
-	}
-	if _, err := audit.Evidence(ctx, j, "run-ev", s, 1700000000, audit.WithAllToolCalls()); !errors.Is(err, ErrMessageTooLarge) {
-		t.Fatalf("a 12-action package: err = %v, want ErrMessageTooLarge", err)
+	for name, opts := range map[string][]audit.EvidenceOption{
+		"one action":  {audit.WithToolCall("call-0")},
+		"all actions": {audit.WithAllToolCalls()},
+	} {
+		pkg, err := audit.Evidence(ctx, j, "run-ev", s, 1700000000, opts...)
+		if err != nil {
+			t.Fatalf("%s: %v", name, err)
+		}
+		if raw, _ := json.Marshal(pkg); name == "all actions" && len(raw) <= MaxMessageSize {
+			t.Fatalf("the package is %d bytes; the test needs one over the limit", len(raw))
+		}
+		if rep, err := pkg.Verify(v); err != nil || !rep.OK {
+			t.Fatalf("%s: %+v %v", name, rep, err)
+		}
 	}
 }
 

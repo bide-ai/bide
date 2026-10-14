@@ -98,7 +98,7 @@ if pend, ok := errors.AsType[*agent.ApprovalPending](err); ok {
 `Decision.DecidedAt` is when the approver decided, by their own clock, and is required: pass the
 same time to `ApprovalDecisionBytes` and to `Decision`, since the signature covers it (see [When a
 decision was made](#when-a-decision-was-made)). `Decision.Alg` names the scheme the signature is
-under and is required too (`SubmitDecision` refuses an empty one, or a zero `DecidedAt`, with
+under (`ed25519`, `ecdsa-p256`, `ml-dsa-65`, `ed25519+ml-dsa-65`) and is required too (`SubmitDecision` refuses an empty one, or a zero `DecidedAt`, with
 `agent.ErrConfig`, and so an `ApproverID` that is not printable ASCII, which no policy can name). It is journaled with the decision as `Record.ApproverAlg`, and the
 gate counts the decision only if it equals the `Alg()` of the verifier your resolver returns for
 that approver: a valid signature journaled under another scheme name, or none, is ignored with
@@ -332,7 +332,11 @@ never from a configured name, so that two verifiers built over one key report th
 `audit` verifiers report the scheme and the hex SHA-256 of the public key's encoding
 (`audit.KeyID`, for example `ed25519:3b6a27bc...`):
 
-- `audit.Ed25519Verifier` and `audit.MLDSAVerifier` report one identity. The ML-DSA label names the
+- `audit.Ed25519Verifier`, `audit.ECDSAP256Verifier` and `audit.MLDSAVerifier` report one identity (for
+  ECDSA P-256, the SHA-256 of the 65-byte uncompressed point; a key that is not on the curve verifies
+  nothing and reports none). ECDSA P-256 signs with fresh randomness, so an approver who signs the same
+  decision twice produces two different signatures and so two records; the gate counts an approver once
+  (their first acceptable record), as it does for any resubmission. The ML-DSA label names the
   key's parameter set (`ml-dsa-44`, `ml-dsa-65` or `ml-dsa-87`). A key that verifies nothing (a nil
   ML-DSA key, or a weak Ed25519 key) reports none, so the gate refuses it rather than seating it.
 - A weak Ed25519 key is one `audit.CheckEd25519PublicKey` refuses: the wrong length, not the
@@ -417,9 +421,15 @@ If the arguments are longer than the view (40 lines, 200 characters a line), `bi
 sign, because the signature binds all of them and what is hidden could be the field that matters;
 rerun with `-full`. It records nothing, and says why, when the call has no gate, the run is not waiting on it (it ended, or
 the call has a result), the gate already has its approvals or can no longer pass, you are not one of its
-approvers, you already decided (it names what you decided and when), or your key file can be read by
+approvers, you already decided the other way (it names what you decided and when), or your key file can be read by
 others (it checks again after you confirm, in case the gate was decided or the run ended while you
-read). Refusals on the gate's standing or on your earlier decision use only decisions it has verified
+read). Deciding again what your counted decision already says (approve after approve, reject after
+reject) is not a refusal: `bide approve` prints `already recorded: your approve at <decided_at> counts;
+nothing to do`, points to the receipt written when you signed, signs and writes nothing, and exits 0, so
+a retry after a lost response is safe under every scheme (a randomized one such as `ecdsa-p256` would
+otherwise sign the same decision to different bytes and add a second record). This needs
+`-approver-keys`, because only a verified decision is known to count; with `-unverified` a repeat is
+still refused. Refusals on the gate's standing or on your earlier decision use only decisions it has verified
 with `-approver-keys`; a junk record in the journal that the gate ignores never locks you out, and
 `-list` without `-approver-keys` labels its counts unverified and calls no gate settled. A call whose
 `approval-pending` note was lost (the note is the journal's only record of the gate's policy) is refused
@@ -430,7 +440,7 @@ decisions are recorded, the first valid one counts, and the other command exits 
 bad record able to take an approver's place; the counting rule is the constraint. Also: on Unix a private key with any group or other permission bit is refused, as `ssh` refuses one.
 
 A key file is one line of hex: the Ed25519 seed (64 characters, the form `bide demo` writes its log key
-in), `ml-dsa-65:` and the ML-DSA-65 seed, or `ed25519+ml-dsa-65:` and both seeds for a hybrid, for
+in), `ecdsa-p256:` and the 32-byte ECDSA P-256 private scalar (the scheme most HSMs and cloud KMS sign; its public key is 130 hex characters, `ecdsa-p256:04...`), `ml-dsa-65:` and the ML-DSA-65 seed, or `ed25519+ml-dsa-65:` and both seeds for a hybrid, for
 buyers who require post-quantum or hybrid signatures (`bide keygen -alg`). `bide approve` holds the key
 only as an `audit.Signer`: it signs the decision bytes, names the scheme and derives the public key
 through that interface, so a signer in an HSM or a KMS can take the file's place later without changing

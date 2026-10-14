@@ -59,6 +59,8 @@ type gate struct {
 	logPriv ed25519.PrivateKey
 	charged int
 	clock   func() time.Time // the run's clock (agent.WithClock), when set
+	// p256 holds approvers that sign with ECDSA P-256 instead of their (unused) Ed25519 key.
+	p256 map[string]audit.ECDSAP256Signer
 }
 
 // newGate registers a key for every id in registered (eligible or not).
@@ -79,6 +81,10 @@ func newGate(need int, approvers, registered []string) *gate {
 // resolver maps approver ids to keys, the same shape the gate uses at run time.
 func (g *gate) resolver() agent.ApproverVerifierFor {
 	return func(id string) (agent.ApproverVerifier, bool) {
+		if k, ok := g.p256[id]; ok {
+			v, err := audit.VerifierOf(k)
+			return v, err == nil
+		}
 		pub, ok := g.pubs[id]
 		if !ok {
 			return nil, false
@@ -120,11 +126,19 @@ func (g *gate) subject(t *testing.T) agent.ApprovalSubject {
 // decide records id's signed decision; tamper corrupts the signature.
 func (g *gate) decide(t *testing.T, id string, approved, tamper bool) {
 	t.Helper()
-	sig := ed25519.Sign(g.privs[id], agent.ApprovalDecisionBytes(g.subject(t), id, approved, testDecidedAt))
+	msg := agent.ApprovalDecisionBytes(g.subject(t), id, approved, testDecidedAt)
+	alg := audit.AlgEd25519
+	var sig []byte
+	if k, ok := g.p256[id]; ok {
+		alg = audit.AlgECDSAP256
+		sig, _ = k.Sign(msg)
+	} else {
+		sig = ed25519.Sign(g.privs[id], msg)
+	}
 	if tamper {
 		sig[0] ^= 0xff
 	}
-	d := agent.Decision{RunID: gateRun, ToolUseID: "c1", ApproverID: id, Approved: approved, DecidedAt: testDecidedAt, Alg: audit.AlgEd25519, Signature: sig}
+	d := agent.Decision{RunID: gateRun, ToolUseID: "c1", ApproverID: id, Approved: approved, DecidedAt: testDecidedAt, Alg: alg, Signature: sig}
 	if err := agent.SubmitDecision(context.Background(), g.store, d); err != nil {
 		t.Fatalf("SubmitDecision %s: %v", id, err)
 	}

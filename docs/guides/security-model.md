@@ -212,6 +212,9 @@ one adds no dependency:
 
 - `ed25519` (`Ed25519Signer`): small, fast, FIPS-approved. Its key can be held in a PKCS#11 token or AWS
   KMS instead of in memory ([Key custody](key-custody.md)).
+- `ecdsa-p256` (`ECDSAP256Signer`): the scheme many HSMs and cloud KMS sign where they cannot sign
+  Ed25519; SHA-256, a 64-byte low-S `r || s` signature, a 65-byte uncompressed point (see
+  [Audit](audit.md#ecdsa-p-256)).
 - `ml-dsa-65` (`MLDSASigner`, FIPS 204): post-quantum.
 - `ed25519+ml-dsa-65` (`HybridSigner`): accepted only if both signatures verify. Each component
   signs a distinct label followed by the message (`bide.hybrid.ed25519.v1`,
@@ -226,8 +229,12 @@ run certificates, grants, the anchored store), and every scheme signs the same s
 run-bound encoding. An approver's m-of-n decision is journaled with the scheme it was signed under
 (`Record.ApproverAlg`), and the gate counts it only under a verifier of that scheme. One toolchain
 constraint: `crypto/mldsa` is unavailable under the FIPS 140-3 module, so FIPS mode and ML-DSA
-are mutually exclusive. A FIPS-required deployment takes ed25519; a post-quantum-focused one
-takes ML-DSA or hybrid.
+are mutually exclusive. A FIPS-required deployment takes ed25519 or ecdsa-p256; a post-quantum-focused one
+takes ML-DSA or hybrid. A deployment that must keep the log key in an HSM or KMS uses ed25519 (the
+key custody signers) or ecdsa-p256 (verifiable now, with signer support to follow): hybrid post-quantum keys inside an HSM are deferred (`HybridSigner`'s halves hold
+their keys in process, and no KMS signs ML-DSA). An evidence package's seal signs a fixed-size digest
+of the package, not the package, so a KMS with a message size limit (AWS KMS: 4096 bytes) can seal any
+package.
 
 ## Offline verification
 
@@ -258,7 +265,7 @@ Verification never requires trusting the producer or importing the producer's ru
   Trusting a downloaded `bide` then comes down to trusting the source at the tag and the Go
   toolchain, not the machine that built it.
 - The **`audit/verify` package** is stdlib-only (no `agent` dependency) and checks inclusion,
-  consistency, and tree-head signatures under all three schemes (`verify.TreeHead` with a
+  consistency, and tree-head signatures under all four schemes (`verify.TreeHead` with a
   `verify.NewVerifier`) from raw leaf bytes (`verify.JournalLeaf` builds a record's from the bytes a
   store persists for it, a proof's `record_bytes`, salt included). A third party who will not import the
   SDK at all can vendor just this package, or reimplement it from RFC 6962 and check the SDK

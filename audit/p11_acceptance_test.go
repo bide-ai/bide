@@ -3,8 +3,12 @@ package audit_test
 import (
 	"bytes"
 	"context"
+	"crypto/ecdsa"
 	"crypto/ed25519"
+	"crypto/elliptic"
 	"crypto/mldsa"
+	"crypto/rand"
+	"crypto/sha256"
 	"encoding/base64"
 	"encoding/binary"
 	"encoding/hex"
@@ -33,7 +37,11 @@ func p11Signers(t *testing.T) map[string]audit.Signer {
 	}
 	ed := audit.Ed25519Signer{Priv: edPriv}
 	mls := audit.MLDSASigner{Priv: ml}
-	return map[string]audit.Signer{"ed25519": ed, "ml-dsa-65": mls, "hybrid": audit.HybridSigner{Ed: ed, ML: mls}}
+	pk, err := ecdsa.GenerateKey(elliptic.P256(), rand.Reader)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return map[string]audit.Signer{"ed25519": ed, "ml-dsa-65": mls, "hybrid": audit.HybridSigner{Ed: ed, ML: mls}, "ecdsa-p256": audit.ECDSAP256Signer{Priv: pk}}
 }
 
 func p11Verifier(t *testing.T, s audit.Signer) audit.Verifier {
@@ -489,7 +497,8 @@ func resealAs(t *testing.T, p audit.EvidencePackage, s audit.Signer) []byte {
 	if err != nil {
 		t.Fatal(err)
 	}
-	sig, err := s.Sign(append([]byte(audit.EvidenceFormat+".seal\x00"), b...))
+	d := sha256.Sum256(b)
+	sig, err := s.Sign(append([]byte(audit.EvidenceFormat+".seal\x00"), d[:]...))
 	if err != nil {
 		t.Fatal(err)
 	}

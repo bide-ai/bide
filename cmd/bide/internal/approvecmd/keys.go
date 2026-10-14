@@ -1,7 +1,9 @@
 package approvecmd
 
 import (
+	"crypto/ecdsa"
 	"crypto/ed25519"
+	"crypto/elliptic"
 	"crypto/mldsa"
 	"crypto/rand"
 	"encoding/hex"
@@ -24,6 +26,7 @@ import (
 // form bide demo writes its log key in:
 //
 //	<64 hex>                                     ed25519 (the Ed25519 seed)
+//	ecdsa-p256:<64 hex>                          ECDSA P-256 (the private scalar, 32 bytes big-endian)
 //	ml-dsa-65:<64 hex>                           ML-DSA-65 (the FIPS 204 seed)
 //	ed25519+ml-dsa-65:<64 hex>:<64 hex>          hybrid (the Ed25519 seed, then the ML-DSA-65 seed)
 //
@@ -40,12 +43,12 @@ const (
 )
 
 // algs are the schemes bide keygen makes and bide approve signs with, in the order help lists them.
-var algs = []audit.Alg{audit.AlgEd25519, audit.AlgMLDSA65, audit.AlgHybrid}
+var algs = []audit.Alg{audit.AlgEd25519, audit.AlgECDSAP256, audit.AlgMLDSA65, audit.AlgHybrid}
 
 // errKeyFormat is the only thing said about a key file whose content is not a key. It never
 // includes the content, or any part of it: a hex decoding error would name the first bad
 // character, which is one character of a secret in a terminal log.
-var errKeyFormat = errors.New("not a bide approver key: want the hex seed bide keygen writes (ed25519), or ml-dsa-65:<hex>, or ed25519+ml-dsa-65:<hex>:<hex>")
+var errKeyFormat = errors.New("not a bide approver key: want the hex seed bide keygen writes (ed25519), or ecdsa-p256:<hex>, ml-dsa-65:<hex>, or ed25519+ml-dsa-65:<hex>:<hex>")
 
 // LoadSigner reads the approver private key at path as an audit.Signer. It refuses a key file that
 // is not a regular file and, on Unix, one that group or others can read or write, as ssh does: the
@@ -113,6 +116,12 @@ func parseSigner(line string) (audit.Signer, error) {
 	switch alg {
 	case audit.AlgEd25519:
 		return audit.Ed25519Signer{Priv: ed25519.NewKeyFromSeed(raw[0])}, nil
+	case audit.AlgECDSAP256:
+		k, err := ecdsa.ParseRawPrivateKey(elliptic.P256(), raw[0])
+		if err != nil {
+			return nil, errKeyFormat // a scalar that is zero or not below the group order
+		}
+		return audit.ECDSAP256Signer{Priv: k}, nil
 	case audit.AlgMLDSA65:
 		k, err := mldsa.NewPrivateKey(mldsa.MLDSA65(), raw[0])
 		if err != nil {
@@ -143,6 +152,16 @@ func newSigner(alg audit.Alg) (audit.Signer, string, error) {
 			return nil, "", err
 		}
 		return audit.Ed25519Signer{Priv: k}, hex.EncodeToString(k.Seed()), nil
+	case audit.AlgECDSAP256:
+		k, err := ecdsa.GenerateKey(elliptic.P256(), rand.Reader)
+		if err != nil {
+			return nil, "", err
+		}
+		d, err := k.Bytes()
+		if err != nil {
+			return nil, "", err
+		}
+		return audit.ECDSAP256Signer{Priv: k}, "ecdsa-p256:" + hex.EncodeToString(d), nil
 	case audit.AlgMLDSA65:
 		k, err := ml()
 		if err != nil {
@@ -184,10 +203,11 @@ func keyName(sg audit.Signer) string {
 }
 
 // keygenUsage heads bide keygen's -h output.
-const keygenUsage = `usage: bide keygen -out <key-file> [-as <approver id>] [-alg ed25519|ml-dsa-65|ed25519+ml-dsa-65] [-color auto|always|never]
+const keygenUsage = `usage: bide keygen -out <key-file> [-as <approver id>] [-alg ed25519|ecdsa-p256|ml-dsa-65|ed25519+ml-dsa-65] [-color auto|always|never]
 
 Creates an approver key pair for bide approve. The private key is written to <key-file> (the key's
-seed as hex: 64 characters for ed25519, the default; "ml-dsa-65:" and the seed for ML-DSA-65;
+seed as hex: 64 characters for ed25519, the default; "ecdsa-p256:" and the 32-byte private
+scalar for ECDSA P-256, the scheme most HSMs and cloud KMS sign; "ml-dsa-65:" and the seed for ML-DSA-65;
 "ed25519+ml-dsa-65:" and both seeds for a hybrid, for buyers who require post-quantum or hybrid
 signatures) with mode 0600, and is never printed; the public key is written to <key-file>.pub and
 printed, in the form approval policies and verifiers read:
@@ -219,7 +239,7 @@ func KeygenMain(args []string, stdout, stderr io.Writer) int {
 	}
 	out := fs.String("out", "", "file to write the private key to (mode 0600); the public key goes to <file>.pub. It must not exist")
 	as := fs.String("as", "", "the approver id the key is for: prints the approver-keys entry for it")
-	alg := fs.String("alg", string(audit.AlgEd25519), "signature scheme: ed25519, ml-dsa-65 or ed25519+ml-dsa-65 (hybrid)")
+	alg := fs.String("alg", string(audit.AlgEd25519), "signature scheme: ed25519, ecdsa-p256, ml-dsa-65 or ed25519+ml-dsa-65 (hybrid)")
 	color := term.Flag(fs)
 	if err := fs.Parse(args); err != nil {
 		if errors.Is(err, flag.ErrHelp) {

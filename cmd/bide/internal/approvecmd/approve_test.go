@@ -291,11 +291,11 @@ func TestRefusals(t *testing.T) {
 	if code, _, errs := f.run_("", f.as("ops", "-yes")...); code != 0 {
 		t.Fatalf("ops: %s", errs)
 	}
-	rec("already decided", 1, "ops already decided on call c2: approved at 20", "", f.as("ops", "-yes")...)
-	rec("already decided, rejecting", 1, "ops already decided", "", f.as("ops", "-yes", "-reject")...)
+	rec("already recorded (same verdict, verified)", 0, "", "", f.as("ops", "-yes")...)
+	rec("already decided, rejecting", 1, "ops already decided on call c2: approved at 20", "", f.as("ops", "-yes", "-reject")...)
 	// The refusal names the recorded time, and with -approver-keys it checks the signature.
 	rec("already decided (unverified)", 1, "already decided", "", f.asUnverified("ops", "-yes")...)
-	rec("already decided (verified)", 1, "ops already decided on call c2", "", f.as("ops", "-yes", "-approver-keys", f.keysJSON)...)
+	rec("already recorded (verified)", 0, "", "", f.as("ops", "-yes", "-approver-keys", f.keysJSON)...)
 
 	// A single-approver gate takes neither -as nor -key; and a missing -as on an m-of-n gate.
 	rec("m-of-n without -as", 1, "is a 2-of-3 gate: give -as", "", "-run", f.run, "-call", f.call, "-yes")
@@ -800,6 +800,11 @@ func TestKeyLinesNeverShowKeyMaterial(t *testing.T) {
 		"hybrid one seed": "ed25519+ml-dsa-65:" + good,
 		"hybrid three":    "ed25519+ml-dsa-65:" + good + ":" + good + ":" + good,
 		"hybrid bad half": "ed25519+ml-dsa-65:" + good + ":" + strings.Repeat("cd", 31) + "zq",
+		"p256 zero":       "ecdsa-p256:" + strings.Repeat("00", 32),
+		"p256 above n":    "ecdsa-p256:" + strings.Repeat("ff", 32),
+		"p256 short":      "ecdsa-p256:" + strings.Repeat("ab", 16),
+		"p256 not hex":    "ecdsa-p256:" + strings.Repeat("ab", 31) + "zq",
+		"p256 two":        "ecdsa-p256:" + good + ":" + good,
 		"unknown scheme":  "rsa:" + good,
 		"ed25519 two":     good + ":" + good,
 	} {
@@ -1049,4 +1054,60 @@ func word(p string) string {
 		return "'" + p + "'"
 	}
 	return p
+}
+
+// TestRetryIsIdempotent: under every scheme, deciding again what the approver's counted decision
+// already says (approve after approve, reject after reject) exits 0 with "already recorded", signs
+// nothing, adds no record and writes no second receipt; the opposite verdict is still refused as
+// already decided. ecdsa-p256 signs differently each time, so there a retry could not be told
+// apart by its signature, even at one decision time.
+func TestRetryIsIdempotent(t *testing.T) {
+	at := time.Date(2026, 10, 13, 12, 14, 3, 123_000_000, time.UTC)
+	old := now
+	now = func() time.Time { return at }
+	defer func() { now = old }()
+	for _, alg := range algs {
+		for _, reject := range []bool{false, true} {
+			verb := map[bool]string{false: "approve", true: "reject"}[reject]
+			t.Run(string(alg)+"/"+verb, func(t *testing.T) {
+				f := newFixtureAlg(t, twoOfThree, refundArgs, alg)
+				flags := func(extra ...string) []string {
+					a := f.as("ops", append([]string{"-yes"}, extra...)...)
+					if reject {
+						a = append(a, "-reject")
+					}
+					return a
+				}
+				first, second := filepath.Join(f.dir, "r1.json"), filepath.Join(f.dir, "r2.json")
+				if code, _, errs := f.run_("", flags("-receipt", first)...); code != 0 {
+					t.Fatal(errs)
+				}
+				code, out, errs := f.run_("", flags("-receipt", second)...)
+				if code != 0 || !strings.Contains(out, "already recorded: your "+verb+" at 2026-10-13T12:14:03.123Z counts; nothing to do") {
+					t.Fatalf("retry: %d %s\n%s", code, errs, out)
+				}
+				if n := len(f.decisions()); n != 1 {
+					t.Fatalf("%d decision records after a retry, want 1", n)
+				}
+				if _, err := os.Stat(second); err == nil {
+					t.Fatal("the retry wrote a receipt")
+				}
+				r := readReceipt(t, first)
+				if err := r.Verify(f.pubs["ops"]); err != nil {
+					t.Fatal(err)
+				}
+				// The other verdict is a different decision: refused.
+				other := f.as("ops", "-yes")
+				if !reject {
+					other = append(other, "-reject")
+				}
+				if code, _, errs := f.run_("", other...); code != 1 || !strings.Contains(errs, "already decided") {
+					t.Fatalf("the opposite verdict: %d %s", code, errs)
+				}
+				if n := len(f.decisions()); n != 1 {
+					t.Fatalf("%d decision records", n)
+				}
+			})
+		}
+	}
 }

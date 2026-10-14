@@ -346,7 +346,7 @@ its layout in a `"format"` field:
 | `RunCertificate` | `bide.audit.runcert.v3` | `audit.RunCertificateFormat` |
 | `CurrentGrantProof` | `bide.audit.current-grant.v3` | `audit.CurrentGrantFormat` |
 | `EventInclusion` | `bide.audit.event-inclusion.v3` | `audit.EventInclusionFormat` |
-| `EvidencePackage` | `bide.audit.evidence.v5` | `audit.EvidenceFormat` |
+| `EvidencePackage` | `bide.audit.evidence.v6` (v5 still verifies, see [below](#the-run-level-evidence-bundle-evidencepackage)) | `audit.EvidenceFormat` |
 | `AnchorEntry` | `bide.audit.anchor-entry.v1` | `audit.AnchorEntryFormat` |
 | `JournalExport` | `bide.audit.journal-export.v1` | `audit.JournalExportFormat` |
 | `DecisionReceipt` | `bide.audit.decision-receipt.v1` | `audit.ReceiptFormat` |
@@ -389,7 +389,7 @@ report, err := pkg.Verify(v, audit.WithApprovedPolicies(allowlist...)) // trusti
 `Verify` trusts the verifier you pass, never the key embedded in the package, and every field of the
 package is verified or derived from verified data:
 
-- `Format` must be `audit.EvidenceFormat` (`bide.audit.evidence.v5`; any other is `audit.ErrFormat`),
+- `Format` must be `audit.EvidenceFormat` (`bide.audit.evidence.v6`) or `audit.EvidenceFormatV5` (`bide.audit.evidence.v5`, verified but never produced); any other is `audit.ErrFormat`,
   and the package's `alg` and `public_key` must be the scheme and key of the verifier you pass: a
   verifier for any other key does not verify the package, even one whose signatures would check.
 - The STH must be an authentic journal head of the package's `RunID`, so the run the report names is
@@ -402,8 +402,49 @@ package is verified or derived from verified data:
 - The consistency proof is checked from its earlier signed head (an authentic journal head of the
   same run, of the size the proof starts from) to the package STH.
 - `Label`, the one field no proof covers, is covered by the seal: `Evidence` ends with `pkg.Seal(signer)`,
-  the log key's signature over the whole package, so nothing can be edited, added, or dropped after
-  sealing. A caller that adds actions afterwards reseals.
+  the log key's signature over a fixed-size digest of the whole package, so nothing can be edited,
+  added, or dropped after sealing. A caller that adds actions afterwards reseals.
+- The seal's signed message is `"bide.audit.evidence.v6.seal\x00"` followed by the 32-byte SHA-256 of the
+  package's JSON with `signature` empty (60 bytes under every scheme: a 28-byte tag and a 32-byte digest, whatever the package's size), so
+  a signer with a message size limit can seal any package: AWS KMS signs at most 4096 bytes, and a
+  12-action package is about 11 KB. A `bide.audit.evidence.v5` package, made before this, signed the
+  tag `"bide.audit.evidence.v5.seal\x00"` and the whole JSON instead; `Verify` still checks it that way
+  (and `bide audit verify-evidence` prints a `NOTE` line for it), so evidence already issued stays
+  verifiable. Nothing produces v5, and `Seal` refuses a v5 package (re-create the evidence for a v6
+  seal). A v6 package relabelled v5, or the reverse, does not verify, since the two seals differ.
+- The package JSON that is hashed is exactly Go's `encoding/json.Marshal` of `audit.EvidencePackage`
+  with `signature` set to null: struct fields in declaration order, no white space, `omitempty`
+  fields (`label`, `grants`, `run_certificate`, `consistency`, an action's `ref`, a head's `journal`) left out when empty; a nil
+  slice is `null`, an empty byte slice is `""` and an empty list is `[]`, byte slices as
+  standard padded base64, and strings escaped as Go escapes them: `<`, `>` and `&` as `\u003c`,
+  `\u003e`, `\u0026` (inside the nested STH and bundles too), U+2028 and U+2029 as `\u2028` and
+  `\u2029`, backspace, form feed, newline, return and tab as `\b`, `\f`, `\n`, `\r`, `\t`, the other
+  control characters below 0x20 as `\u00XX`, and 0x7f and all other text (non-ASCII included) as UTF-8, unescaped. A verifier in another language that parses and
+  re-serializes the package will not get these bytes; hash the package as Go writes it, or reproduce
+  the rules. This vector (also pinned by `TestEvidence_SealTestVector`) checks an implementation:
+  seed `SHA-256("bide evidence seal test vector")` for the Ed25519 key (public key
+  `b34c6b63f9aab350160a34a2d7437023e9ac57b903b8796933b09e9535ee4318`), and the package
+
+  ```
+  {"format":"bide.audit.evidence.v6","run_id":"run-\u003c1\u003e\u0026","label":"a\u003cb\u003e\u0026\u2028","alg":"ed25519","public_key":"s0xrY/mqs1AWCjSi10NwI+msV7kDuHlpM7CelTXuQxg=","sth":{"format":"bide.audit.sth.v5","kind":"journal","run_id":"run-\u003c1\u003e\u0026","size":1,"root":"AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA=","timestamp_nanos":1,"alg":"ed25519","signature":"AQI="},"actions":[],"signature":null}
+  ```
+
+  whose SHA-256 is `a25f2b4d2292044fa7cfce2f13f903dd1af45b356c24f545318cdd8bb8579d79`, so the
+  signed message is `"bide.audit.evidence.v6.seal\x00"` followed by those 32 bytes, and the seal
+  is `6a890e49f287d27e5c9568d35a7dcfc7b7acd166024cdfd1d1773ae42f3ac96420a050f5b11d48b508bcef7579100fb301912f49ec48becfb5f80859526f1c04`.
+
+  A second vector, same key, covers control characters and nil versus empty slices (the label is the
+  bytes `00 07 08 0c 0a 0d 09 1f 7f c3a9`; the head's `root` is nil and its `signature` empty;
+  `actions` is nil):
+
+  ```
+  {"format":"bide.audit.evidence.v6","run_id":"r","label":"\u0000\u0007\b\f\n\r\t\u001f<0x7f>é","alg":"ed25519","public_key":"s0xrY/mqs1AWCjSi10NwI+msV7kDuHlpM7CelTXuQxg=","sth":{"format":"bide.audit.sth.v5","kind":"journal","run_id":"r","size":0,"root":null,"timestamp_nanos":1,"alg":"ed25519","signature":""},"actions":null,"signature":null}
+  ```
+
+  (`<0x7f>` stands for the one byte 0x7f.) Its SHA-256 is
+  `b00738e35cd95337fa1d72b3595a52575a450d9b12a508cf2f6d85431807a978` and its seal is
+  `019dca1ace3e93e9970fe0894a5766a0c6ccf74d243322f9767e139f78dbb7e9966a1fefcb0c280d3822f9d6a34e33f8f5e573713b59e7df96149c2f4bb2be00`
+  (`TestEvidence_SealTestVector2`).
 - Every signed head the package carries (its STH, each action and grant bundle's head, the run
   certificate's heads, and the consistency proof's earlier head) follows the timestamp rule below.
 - The package must prove something: one action, grant, run certificate, or consistency proof at
@@ -532,7 +573,7 @@ and every verify verb needs only a bundle and an out-of-band public key. Build i
 
 Conventions shared across verbs:
 
-- `-pubkey` accepts a key in text form, `<alg>:<hex>` (`ed25519`, `ml-dsa-65`, or
+- `-pubkey` accepts a key in text form, `<alg>:<hex>` (`ed25519`, `ecdsa-p256`, `ml-dsa-65`, or
   `ed25519+ml-dsa-65`, as `audit.FormatPublicKey` writes it) or bare hex of a 32-byte ed25519 key,
   or a path to a file holding either (read with `audit.ParsePublicKey`; anything else exits 4 with a
   message). An ed25519 key, alone or in a hybrid, must be one `audit.CheckEd25519PublicKey` accepts:
@@ -937,11 +978,14 @@ take a verifier. `audit.NewVerifier(alg, pub)` builds a verifier from an encoded
 (`bide.audit.sth.v5`: scheme, kind, run ID, size, root, timestamp, and the source journal of a
 key-set head), so a head's signature is never read under another scheme, and the kind and run
 binding hold whichever scheme signs. An evidence package names its key by `{alg, public_key}`, and
-`EvidencePackage.Verify` refuses a verifier whose scheme or key is not that one. Three schemes are
+`EvidencePackage.Verify` refuses a verifier whose scheme or key is not that one. Four schemes are
 available, all in the Go 1.27 standard library, so this adds no dependency:
 
 - `ed25519` (`Ed25519Signer`): small, fast, FIPS-approved. Its key can be held in a PKCS#11 token or AWS
   KMS instead of in memory ([Key custody](key-custody.md)).
+- `ecdsa-p256` (`ECDSAP256Signer`, FIPS 186-5): for keys that live where Ed25519 does not: many HSMs,
+  AWS KMS and Azure Key Vault sign P-256 and not Ed25519. See [ECDSA P-256](#ecdsa-p-256) for the exact
+  encodings.
 - `ml-dsa-65` (`MLDSASigner`, FIPS 204): post-quantum.
 - `ed25519+ml-dsa-65` (`HybridSigner`): accepted only if both signatures verify. Each component
   signs its own label followed by the message (`bide.hybrid.ed25519.v1` and
@@ -955,7 +999,49 @@ not affected and is unchanged. Choosing ML-DSA or hybrid for the anchor signatur
 signature exposure without touching the tree. One toolchain constraint: `crypto/mldsa` is
 unavailable under the FIPS 140-3 module, so FIPS mode and ML-DSA are mutually exclusive in this
 toolchain (ed25519 keeps working in FIPS mode). Pick per buyer: a FIPS-required buyer takes
-ed25519, a post-quantum-focused buyer takes ML-DSA or hybrid.
+ed25519 or ECDSA P-256, a post-quantum-focused buyer takes ML-DSA or hybrid.
+
+### ECDSA P-256
+
+The wire formats are fixed so a signer and a verifier written apart (an HSM adapter, a verifier in
+another language) agree on every byte:
+
+| Part | Form |
+|---|---|
+| Scheme name | `ecdsa-p256` (`audit.AlgECDSAP256`) |
+| Hash | SHA-256 over the exact message bytes (the bytes Ed25519 would sign); a KMS in digest mode signs `SHA-256(message)` |
+| Signature | 64 bytes, `r \|\| s`, each a 32-byte big-endian integer (IEEE P1363), not ASN.1 DER |
+| Canonical form | `1 <= r < n` and `1 <= s <= (n-1)/2` (low S); a verifier refuses anything else, including the valid high-S twin of a signature, so a signature has one encoding and nobody can turn one valid signature into a second |
+| Public key | 65 bytes, the SEC1 uncompressed point `0x04 \|\| X \|\| Y`, on the curve; compressed, hybrid and infinity encodings and off-curve points are refused (`ErrMalformed`) |
+| Text form | `ecdsa-p256:` and 130 lowercase hex digits (`audit.FormatPublicKey`); bare hex is always read as Ed25519, never as P-256 |
+| Key identity | `audit.KeyID("ecdsa-p256", point)`: the scheme and the SHA-256 of the 65-byte point |
+
+Why `r || s` and not DER: a DER signature has several encodings of one value (BER padding, leading
+zeros), so accepting it means a parser that is strict in a way every implementation must copy; a
+fixed 64 bytes has no such room, and Azure Key Vault and PKCS#11 `CKM_ECDSA` already return it. AWS
+KMS returns DER, so an adapter converts it once with `audit.ECDSAP256SignatureFromDER` (strict DER in,
+canonical low-S `r || s` out); `audit.ECDSAP256SignatureFromRaw` does the same for a raw `r || s` (an
+HSM's high-S output becomes low-S by `s = n - s`), and `audit.ECDSAP256PublicKeyFromSPKI` reads the
+point out of the SubjectPublicKeyInfo a KMS `GetPublicKey` returns. Low S is enforced because ECDSA is
+malleable: `(r, n-s)` verifies whenever `(r, s)` does.
+
+Two differences from Ed25519 to know about. Signing is randomized (`crypto/ecdsa` mixes the key and
+the message into the nonce), so signing the same tree head twice gives two different valid signatures
+where Ed25519 and ML-DSA give the same bytes; an approver who resubmits a decision adds a second
+record, which the counting rule ignores (it takes an approver's first acceptable record). And the
+scheme works inside the FIPS 140-3 module (`crypto/ecdsa`), unlike ML-DSA.
+
+**P-256 is not a hybrid half.** The hybrid scheme stays `ed25519+ml-dsa-65`. A hybrid exists for its
+post-quantum half, and no HSM or cloud KMS signs ML-DSA yet, so a `P-256 + ML-DSA` hybrid would not
+move the keys into the HSM either. **Hybrid post-quantum keys inside an HSM are deferred:**
+`HybridSigner`'s halves are the concrete `Ed25519Signer` and `MLDSASigner` types, which hold their keys
+in process memory. A deployment that needs the log key in an HSM or KMS uses `ed25519` (the
+[key custody](key-custody.md) signers sign it today) or `ecdsa-p256` (verifiable now; the signers gain a P-256 mode separately), and one that needs post-quantum protection today keeps the hybrid key in the process.
+
+Every artifact that names a scheme (a tree head, an evidence package, an approval decision's
+`Alg`) takes `ecdsa-p256` with no format change: the scheme is a string in the artifact, and an
+older verifier that does not know it refuses the artifact (`ErrMalformed`) rather than misreading it.
+The standalone `audit/verify` package verifies it too (`verify.NewVerifier("ecdsa-p256", point)`).
 
 ## Signed authority grants and the delegation chain
 
@@ -963,7 +1049,7 @@ Identity binds who acted (see above); a **grant** binds *by what authority*, non
 `audit.Grant{Issuer, Subject, Scope, NotAfterUnix, ParentRef}` is a statement by a principal authorizing
 an actor within a scope; its canonical bytes (`Grant.Bytes`) start with the `bide.audit.grant.v2`
 tag and are both signed and digested. `SignGrant` signs it with the issuer's own key (an `audit.Signer`:
-Ed25519, ML-DSA, or hybrid), distinct from the log's tree-head key, so the authorization is
+Ed25519, ECDSA P-256, ML-DSA, or hybrid), distinct from the log's tree-head key, so the authorization is
 attributable to the principal, not the operator. `RecordGrant` / `ProveGrant` anchor and prove it as
 a leaf like a policy, and a governed action's `agent.Identity.AuthorityRef` is set to the grant's
 `Digest`, so the action links to an in-log, issuer-signed authority.

@@ -686,7 +686,12 @@ resolution all run around it.
   id it names, the person who signed, the verdict, the key it was signed with, and whether it was
   signed over this exact call or another call or other arguments (`Subjects`). People sign as an
   approver with a key they hold that a resolver maps to it (`KeyOf`, `KeyOf2`, `Holder`); an
-  actor holding no key (`hx`) forges. An identical resubmission adds nothing.
+  actor holding no key (`hx`) forges. An identical resubmission adds nothing. The model abstracts
+  the signature scheme to `valid` (the verifier accepts the signature under a key the approver's
+  verifier holds), so adding a scheme (ECDSA P-256) changes no rule here. A randomized scheme
+  signs one decision to different bytes each time, so a resubmission is a second record by the same
+  approver; the counting rule already takes only an approver's first acceptable record, which is the
+  case the model explores with two records by one approver.
 - **Keys (#109).** Each approver's verifier accepts a set of keys (`KeyIDs`: several during a
   rotation, both components of a hybrid). The resolver (`keys`) may change once (`KeyOf2`), at any
   time, a count already under way included. The gate's check (`ValidateKeys`, every evaluation)
