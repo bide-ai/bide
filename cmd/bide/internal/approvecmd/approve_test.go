@@ -437,6 +437,7 @@ func TestKeyFileErrorsNeverShowTheKey(t *testing.T) {
 		"binary":    "\x00\x01\x02",
 		"huge":      strings.Repeat("a", 5000),
 		"with text": "key: " + strings.Repeat("ab", 32),
+		"padded":    strings.Repeat("ab", 32) + strings.Repeat(" ", 2000),
 	} {
 		path := filepath.Join(dir, strings.ReplaceAll(name, " ", "_"))
 		if err := os.WriteFile(path, []byte(content), 0o600); err != nil {
@@ -464,10 +465,10 @@ func TestKeyFileErrorsNeverShowTheKey(t *testing.T) {
 // and a long argument is cut with a note that the signature binds all of it.
 func TestDisplayIsSafe(t *testing.T) {
 	long := strings.Repeat("x", 5000)
-	args, _ := json.Marshal(map[string]any{"memo": "\x1b[2J\x1b[Happroved by finance \u202e", "long": long, "bell": "\a"})
+	args, _ := json.Marshal(map[string]any{"memo": "\x1b[2J\x1b[Happroved by finance \u202e \u009b31m \x7f \u200b", "long": long, "bell": "\a"})
 	f := newFixture(t, twoOfThree, string(args))
 	_, out, _ := f.run_("n\n", f.as("ops")...)
-	if strings.ContainsAny(out, "\x1b\a\u202e") {
+	if strings.ContainsAny(out, "\x1b\a\u202e\u009b\x7f\u200b") {
 		t.Fatalf("raw control characters reached the terminal: %q", out)
 	}
 	contains(t, "output", out, `\u202e`, "more bytes not shown", "-full shows everything")
@@ -475,7 +476,7 @@ func TestDisplayIsSafe(t *testing.T) {
 	if !strings.Contains(full, long) || strings.Contains(full, "not shown") {
 		t.Fatal("-full did not show all of the arguments")
 	}
-	if strings.ContainsAny(full, "\x1b\a\u202e") {
+	if strings.ContainsAny(full, "\x1b\a\u202e\u009b\x7f\u200b") {
 		t.Fatalf("raw control characters reached the terminal with -full: %q", full)
 	}
 }
@@ -533,7 +534,9 @@ func TestListJSON(t *testing.T) {
 	}
 	// An open error never shows the DSN.
 	var errb bytes.Buffer
-	bad := Stores{Postgres: func(dsn string, readOnly bool) (agent.Store, io.Closer, error) { return nil, nil, errors.New("dial " + dsn) }}
+	bad := Stores{Postgres: func(dsn string, readOnly bool) (agent.Store, io.Closer, error) {
+		return nil, nil, errors.New("dial " + dsn)
+	}}
 	code = Main([]string{"-postgres", "postgres://u:hunter2@h/db", "-list"}, strings.NewReader(""), io.Discard, &errb, bad)
 	if code != 1 || strings.Contains(errb.String(), "hunter2") {
 		t.Fatalf("%d: %s", code, errb.String())
