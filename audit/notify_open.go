@@ -139,13 +139,8 @@ func checkOpenGroup(trails map[string][]agent.NotifyRecord, skew time.Duration, 
 					if !r.At.IsZero() && !inDay(r.At, segmentDay(r.Next), skew) {
 						add(name, i, recs, "is dated %s, outside the day of the segment it seals into (%s) by more than %s: the roller writes the seal on the day it rolls into", r.At.UTC().Format(time.RFC3339), segmentDay(r.Next).Format("2006-01-02"), skew)
 					}
-					// Days may be skipped (nobody ran on them) but not over a segment that exists or
-					// that an index lists: that would hide it from the chain.
-					for _, other := range segs {
-						if other > name && other < r.Next {
-							add(name, i, recs, "seals into %s, skipping %s, which exists", r.Next, other)
-						}
-					}
+					// Days may be skipped (nobody ran on them) but not over a segment an index lists
+					// (checked below); one that exists and no index lists is a broken chain.
 				}
 			default:
 				add(name, i, recs, "a %s record does not belong in an open-trail segment", r.Kind)

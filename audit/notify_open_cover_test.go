@@ -62,7 +62,7 @@ func TestVerifyNotifications_AnEventFromBeforeTheOpenTrailNeedsTheBackfill(t *te
 	idx := recsTrail(t, agent.OpenIndex(t0.Year()), segRec(agent.NotifySegment, 0, day(0)))
 	run := newTrail(t).complete(k3, agent.NotificationApprovalPending, -7200).export()
 	rep, _ := checkTrails(t, run, day0, idx)
-	if !strings.Contains(violationsOf(rep), "backfill") {
+	if !strings.Contains(violationsOf(rep), "no backfill is recorded") {
 		t.Fatalf("violations = %q", violationsOf(rep))
 	}
 	withMark := recsTrail(t, day(0), segRec(agent.NotifyCheckpoint, 0, ""), op(agent.NotifyWatch, k1, 1), op(agent.NotifyWatch, k3, 2), segRec(agent.NotifyBackfilled, 3, ""))
