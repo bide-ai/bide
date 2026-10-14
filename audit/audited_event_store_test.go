@@ -873,3 +873,52 @@ func TestAuditedEventStore_ACallerGivingUpDoesNotTripTheBreaker(t *testing.T) {
 		t.Fatalf("notify:b heads = %v: the breaker opened because a caller gave up", got)
 	}
 }
+
+// A process that starts fresh (it remembers no head, and no failure) signs the global trails again
+// on its first sweep: the digest's, the open index, today's segment and the newest few before it,
+// and not the older sealed ones.
+func TestNotifyPending_AFreshProcessSignsTheGlobalTrails(t *testing.T) {
+	ctx := context.Background()
+	mem := audit.NewMemEventStore()
+	plain := audit.NewNotifyTrail(mem)
+	now := time.Now().UTC()
+	idx := agent.OpenIndex(now.Year())
+	var segs []string
+	for i := 5; i >= 0; i-- {
+		seg := agent.OpenSegment(now.AddDate(0, 0, -i))
+		segs = append(segs, seg)
+		if err := plain.Append(ctx, seg, 0, agent.NotifyRecord{Kind: agent.NotifySeal, At: now, Next: "x"}); err != nil {
+			t.Fatal(err)
+		}
+		if err := plain.Append(ctx, idx, 5-i, agent.NotifyRecord{Kind: agent.NotifySegment, At: now, Next: seg}); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if err := plain.Append(ctx, agent.NotifyDigestTrail, 0, agent.NotifyRecord{Kind: agent.NotifyClaimed, Key: "d", At: now, Holder: "p"}); err != nil {
+		t.Fatal(err)
+	}
+
+	_, priv, _ := ed25519.GenerateKey(nil)
+	fa := &trailAnchor{}
+	s, err := audit.NewAuditedEventStore(mem, audit.Ed25519Signer{Priv: priv}, fa)
+	if err != nil {
+		t.Fatal(err)
+	}
+	j, err := agent.NewJournal(agent.NewMemStore())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := agent.NotifyPending(ctx, j, &recSink{}, audit.NewNotifyTrail(s), agent.WithNotifyHolder("sweeper"), agent.WithNotifyErrors(func(err error) { t.Log("notifier:", err) })); err != nil {
+		t.Fatal(err)
+	}
+	for _, name := range []string{agent.NotifyDigestTrail, idx, segs[3], segs[4], segs[5]} {
+		if len(fa.sizes(name)) == 0 {
+			t.Errorf("%s was not signed by the first sweep", name)
+		}
+	}
+	for _, name := range segs[:3] {
+		if len(fa.sizes(name)) != 0 {
+			t.Errorf("%s, an old sealed segment, was signed again", name)
+		}
+	}
+}

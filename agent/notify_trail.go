@@ -99,7 +99,7 @@ func (e *notifyEngine) globalTrails(ctx context.Context) []string {
 			names = append(names, idx)
 		}
 		for _, r := range recs {
-			if r.Kind == NotifySegment {
+			if r.Kind == NotifySegment && !slices.Contains(segs, r.Next) {
 				segs = append(segs, r.Next)
 			}
 		}
