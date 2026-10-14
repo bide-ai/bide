@@ -1,8 +1,8 @@
-// Package pkcs11 is an audit.Signer whose Ed25519 private key lives in a PKCS#11 token: a
-// hardware security module, a smart card, or SoftHSM2 for tests. bide hands the token each
-// message and gets the signature back, so the application never holds the key. Whether the key can
-// be exported from the token at all is the token's policy; Config.RequireNonExtractable makes
-// Open check that the token marks the key non-extractable.
+// Package pkcs11 is an audit.Signer whose private key lives in a PKCS#11 token: a hardware
+// security module, a smart card, or SoftHSM2 for tests. bide hands the token each message and gets
+// the signature back, so the application never holds the key. Whether the key can be exported from
+// the token at all is the token's policy; Config.RequireNonExtractable makes Open check that the
+// token marks the key non-extractable.
 //
 // It lives in its own Go module because the PKCS#11 library it uses (github.com/miekg/pkcs11)
 // needs cgo and a vendor library loaded at run time. The core bide module stays pure Go and
@@ -10,19 +10,17 @@
 //
 // # What it signs with
 //
-// bide's audit log (tree heads, evidence seals, grants) and approver decisions are Ed25519, so
-// the token must support PKCS#11 mechanism CKM_EDDSA (0x1057) on a CKK_EC_EDWARDS key, the
-// Ed25519 support defined by PKCS#11 v3.0. Open reports ErrNoEd25519 when the token does not list
-// the mechanism or the selected key is of another type (an ECDSA or RSA key, say). It never signs
-// with a different algorithm in its place: a signature of another scheme would not verify under
-// audit.NewVerifier(audit.AlgEd25519, ...). A token with only ECDSA P-256 would sign
-// audit.AlgECDSAP256, a scheme audit verifies (audit.ECDSAP256Signer, with
-// audit.ECDSAP256SignatureFromRaw for CKM_ECDSA's r||s output); this signer has no P-256 mode yet
-// (docs/guides/key-custody.md).
+// Config.Scheme picks the scheme, and the signer never signs with a different one in its place:
 //
-// The mechanism is used without parameters, which selects pure Ed25519 (RFC 8032), the scheme
-// audit.Ed25519Signer produces. A token that insists on CK_EDDSA_PARAMS for the pure variant is
-// not supported.
+//   - audit.AlgEd25519 (the default): a CKK_EC_EDWARDS key and mechanism CKM_EDDSA (0x1057, PKCS#11
+//     v3.0), used without parameters, which selects pure Ed25519 (RFC 8032), the scheme
+//     audit.Ed25519Signer produces. A token that insists on CK_EDDSA_PARAMS for the pure variant is
+//     not supported. Open reports ErrNoEd25519 when the token does not list the mechanism or the key
+//     is of another type, an Ed448 key included.
+//   - audit.AlgECDSAP256: a CKK_EC key on prime256v1 and mechanism CKM_ECDSA over the SHA-256 of the
+//     message, for the HSMs that cannot do Ed25519. The token's raw r||s output is converted to
+//     the canonical low-S form audit verifies. Open reports ErrNoP256 when the token does not list
+//     CKM_ECDSA or the key is not a P-256 key.
 //
 // # Use
 //
@@ -73,6 +71,9 @@ var (
 	// ErrNoEd25519 means the token cannot do Ed25519: it does not list CKM_EDDSA, or the key
 	// selected is not a CKK_EC_EDWARDS key.
 	ErrNoEd25519 = errors.New("pkcs11: the token has no Ed25519 support")
+	// ErrNoP256 means Config.Scheme is audit.AlgECDSAP256 and the token does not list CKM_ECDSA, or
+	// the key selected is not an ECDSA P-256 key.
+	ErrNoP256 = errors.New("pkcs11: the token has no ECDSA P-256 support")
 	// ErrKeyNotFound means no private key on the token matches the label and ID in Config.
 	ErrKeyNotFound = errors.New("pkcs11: no matching signing key on the token")
 	// ErrAmbiguous means more than one token or key matches the Config; add a label, an ID or a
@@ -174,6 +175,10 @@ type Config struct {
 	TokenLabel string
 	// SlotID selects the token by slot number when TokenLabel is empty.
 	SlotID *uint
+	// Scheme is the signature scheme of the key: audit.AlgEd25519 (the default; a CKK_EC_EDWARDS
+	// key and CKM_EDDSA) or audit.AlgECDSAP256 (a CKK_EC key on prime256v1 and CKM_ECDSA over the
+	// SHA-256 of the message). A key of the other scheme is refused, never used under the wrong one.
+	Scheme audit.Alg
 	// KeyLabel and KeyID select the private key (CKA_LABEL, CKA_ID). At least one is required;
 	// when both are set, both must match.
 	KeyLabel string
@@ -193,7 +198,8 @@ type Config struct {
 
 // session is one logged-in connection to the token, bound to the selected key.
 type session interface {
-	// sign returns the token's Ed25519 signature over msg.
+	// sign returns the token's signature over msg in the encoding the scheme's audit verifier
+	// reads (for ecdsa-p256, the canonical low-S r||s).
 	sign(msg []byte) ([]byte, error)
 	// close ends the session and releases the module.
 	close() error
@@ -203,13 +209,14 @@ type session interface {
 // the Signer so that a test can supply a token that fails in chosen ways.
 type opener func(cfg Config, pin string) (session, []byte, error)
 
-// Signer signs with an Ed25519 key held by a PKCS#11 token. It satisfies audit.Signer and is safe
+// Signer signs with a key held by a PKCS#11 token (Ed25519 or ECDSA P-256, see Config.Scheme). It satisfies audit.Signer and is safe
 // for concurrent use; signing calls are serialised, since a PKCS#11 session runs one signing
 // operation at a time.
 type Signer struct {
 	cfg  Config
 	open opener
 	pub  []byte
+	v    audit.Verifier // checks every signature against the public key
 
 	mu     sync.Mutex
 	sess   session
@@ -227,14 +234,15 @@ func openWith(cfg Config, open opener) (*Signer, error) {
 	if err := cfg.check(); err != nil {
 		return nil, err
 	}
+	cfg.Scheme = schemeOrDefault(cfg.Scheme)
 	cfg.KeyID = bytes.Clone(cfg.KeyID)
 	cfg.PublicKey = bytes.Clone(cfg.PublicKey)
 	s := &Signer{cfg: cfg, open: open}
-	sess, pub, err := s.connect()
+	sess, pub, v, err := s.connect()
 	if err != nil {
 		return nil, err
 	}
-	s.sess, s.pub = sess, pub
+	s.sess, s.pub, s.v = sess, pub, v
 	return s, nil
 }
 
@@ -246,25 +254,42 @@ func (c Config) check() error {
 		return fmt.Errorf("pkcs11: set exactly one of Config.TokenLabel and Config.SlotID: %w", agent.ErrConfig)
 	case c.KeyLabel == "" && len(c.KeyID) == 0:
 		return fmt.Errorf("pkcs11: set Config.KeyLabel or Config.KeyID: %w", agent.ErrConfig)
-	case c.PublicKey != nil && len(c.PublicKey) != ed25519PointSize:
-		return fmt.Errorf("pkcs11: Config.PublicKey is %d bytes, want %d: %w", len(c.PublicKey), ed25519PointSize, agent.ErrConfig)
+	case c.Scheme != "" && c.Scheme != audit.AlgEd25519 && c.Scheme != audit.AlgECDSAP256:
+		return fmt.Errorf("pkcs11: Config.Scheme %q is not ed25519 or ecdsa-p256: %w", c.Scheme, agent.ErrConfig)
+	case c.PublicKey != nil && len(c.PublicKey) != pubSize(c.Scheme):
+		return fmt.Errorf("pkcs11: Config.PublicKey is %d bytes, want %d for %s: %w", len(c.PublicKey), pubSize(c.Scheme), schemeOrDefault(c.Scheme), agent.ErrConfig)
 	}
 	return nil
 }
 
+func schemeOrDefault(a audit.Alg) audit.Alg {
+	if a == "" {
+		return audit.AlgEd25519
+	}
+	return a
+}
+
+// pubSize is the length of a public key of the scheme in the encoding audit.NewVerifier reads.
+func pubSize(a audit.Alg) int {
+	if a == audit.AlgECDSAP256 {
+		return 65
+	}
+	return ed25519PointSize
+}
+
 // connect opens a session, reading the PIN just for the login.
-func (s *Signer) connect() (session, []byte, error) {
+func (s *Signer) connect() (session, []byte, audit.Verifier, error) {
 	pin := ""
 	if s.cfg.PIN != nil {
 		p, err := s.cfg.PIN()
 		if err != nil {
-			return nil, nil, err
+			return nil, nil, nil, err
 		}
 		pin = p
 	}
 	sess, pub, err := s.open(s.cfg, pin)
 	if err != nil {
-		return nil, nil, scrub(err, pin)
+		return nil, nil, nil, scrub(err, pin)
 	}
 	ok := false
 	defer func() {
@@ -276,26 +301,27 @@ func (s *Signer) connect() (session, []byte, error) {
 		if len(pub) == 0 {
 			pub = s.cfg.PublicKey
 		} else if !bytes.Equal(pub, s.cfg.PublicKey) {
-			return nil, nil, fmt.Errorf("pkcs11: the token's public key differs from Config.PublicKey: %w", agent.ErrConfig)
+			return nil, nil, nil, fmt.Errorf("pkcs11: the token's public key differs from Config.PublicKey: %w", agent.ErrConfig)
 		}
 	}
 	if len(pub) == 0 {
-		return nil, nil, fmt.Errorf("pkcs11: the token does not expose the public key; set Config.PublicKey: %w", agent.ErrConfig)
+		return nil, nil, nil, fmt.Errorf("pkcs11: the token does not expose the public key; set Config.PublicKey: %w", agent.ErrConfig)
 	}
-	if _, err := audit.NewVerifier(audit.AlgEd25519, pub); err != nil {
-		return nil, nil, fmt.Errorf("pkcs11: the token's public key is not a usable Ed25519 key: %w", err)
+	v, err := audit.NewVerifier(s.cfg.Scheme, pub)
+	if err != nil {
+		return nil, nil, nil, fmt.Errorf("pkcs11: the token's public key is not a usable %s key: %w", s.cfg.Scheme, err)
 	}
 	// One signature proves the private key is the key pair of the public key, at Open and at every
 	// reopen, so a mismatch is found here and not by the first anchor.
 	sig, err := sess.sign([]byte(selfTest))
 	if err != nil {
-		return nil, nil, fmt.Errorf("pkcs11: self-test signature: %w", err)
+		return nil, nil, nil, fmt.Errorf("pkcs11: self-test signature: %w", err)
 	}
-	if len(sig) != ed25519SigSize || !ed25519.Verify(pub, []byte(selfTest), sig) {
-		return nil, nil, fmt.Errorf("pkcs11: self-test: the private key is not the key pair of the public key the token exposes")
+	if !v.Verify([]byte(selfTest), sig) {
+		return nil, nil, nil, fmt.Errorf("pkcs11: self-test: the private key is not the key pair of the public key the token exposes")
 	}
 	ok = true
-	return sess, bytes.Clone(pub), nil
+	return sess, bytes.Clone(pub), v, nil
 }
 
 // scrub returns a copy of err that cannot leak the PIN: its message has the PIN removed in the
@@ -313,7 +339,7 @@ func scrub(err error, pin string) error {
 	if code, ok := ckrCodeOf(err); ok {
 		e.is = append(e.is, CKRError{Code: code})
 	}
-	for _, s := range []error{ErrNoEd25519, ErrKeyNotFound, ErrAmbiguous, ErrNoCgo, ErrExtractable, errSessionLost, agent.ErrConfig, audit.ErrMalformed} {
+	for _, s := range []error{ErrNoEd25519, ErrNoP256, ErrKeyNotFound, ErrAmbiguous, ErrNoCgo, ErrExtractable, errSessionLost, agent.ErrConfig, audit.ErrMalformed} {
 		if errors.Is(err, s) {
 			e.is = append(e.is, s)
 		}
@@ -339,14 +365,14 @@ type scrubbed struct {
 func (e scrubbed) Error() string   { return e.msg }
 func (e scrubbed) Unwrap() []error { return e.is }
 
-// Alg reports the signature scheme (audit.AlgEd25519).
-func (*Signer) Alg() audit.Alg { return audit.AlgEd25519 }
+// Alg reports the signature scheme (Config.Scheme, audit.AlgEd25519 by default).
+func (s *Signer) Alg() audit.Alg { return s.cfg.Scheme }
 
-// PublicKey returns the 32-byte Ed25519 public key of the token's key, in the encoding
+// PublicKey returns the public key of the token's key (32 bytes for Ed25519, the 65-byte uncompressed point for P-256), in the encoding
 // audit.NewVerifier reads. It is read once, when the Signer opens.
 func (s *Signer) PublicKey() []byte { return bytes.Clone(s.pub) }
 
-// Sign returns the token's Ed25519 signature over message. It checks the signature against the
+// Sign returns the token's signature over message. It checks the signature against the
 // public key before returning it, so a faulty token or a wrong key is an error here and not a
 // signature that fails to verify later. If the session was lost (the token was reset or removed
 // and returned) it opens a new one and signs again, once.
@@ -366,7 +392,7 @@ func (s *Signer) Sign(message []byte) ([]byte, error) {
 		var sig []byte
 		sig, err = s.sess.sign(message)
 		if err == nil {
-			if len(sig) != ed25519SigSize || !ed25519.Verify(s.pub, message, sig) {
+			if !s.v.Verify(message, sig) {
 				return nil, fmt.Errorf("pkcs11: the token's signature does not verify under its own public key")
 			}
 			return sig, nil
@@ -382,7 +408,7 @@ func (s *Signer) Sign(message []byte) ([]byte, error) {
 
 // reopen opens a new session and requires it to hold the same key as before.
 func (s *Signer) reopen() error {
-	sess, pub, err := s.connect()
+	sess, pub, v, err := s.connect()
 	if err != nil {
 		return fmt.Errorf("pkcs11: reopen the session: %w", err)
 	}
@@ -390,7 +416,7 @@ func (s *Signer) reopen() error {
 		sess.close()
 		return fmt.Errorf("pkcs11: reopen the session: the key now selected has a different public key: %w", agent.ErrConfig)
 	}
-	s.sess = sess
+	s.sess, s.v = sess, v
 	return nil
 }
 
@@ -413,7 +439,7 @@ func (s *Signer) Close() error {
 // String describes the signer by its key identity (audit.KeyID of the public key), which is not
 // secret.
 func (s *Signer) String() string {
-	return fmt.Sprintf("pkcs11.Signer{%s}", audit.KeyID(string(audit.AlgEd25519), s.pub))
+	return fmt.Sprintf("pkcs11.Signer{%s}", audit.KeyID(string(s.cfg.Scheme), s.pub))
 }
 
 // Format writes String for every verb, so no fmt verb prints the configuration.

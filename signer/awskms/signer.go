@@ -1,27 +1,32 @@
-// Package awskms is an audit.Signer whose Ed25519 private key lives in AWS KMS. KMS does not
+// Package awskms is an audit.Signer whose Ed25519 or ECDSA P-256 private key lives in AWS KMS. KMS does not
 // export asymmetric private keys; bide sends KMS each message and gets the signature back.
 //
 // It lives in its own Go module so that the AWS SDK stays out of the core module.
 //
 // # What it signs with
 //
-// bide's audit log and approver decisions are Ed25519, so the KMS key must be an asymmetric key
-// of key spec ECC_NIST_EDWARDS25519 with key usage SIGN_VERIFY, which signs with
-// ED25519_SHA_512. That algorithm is pure Ed25519 (RFC 8032) over the raw message, so audit's
-// verifiers check its signatures with no change. Open signs once to prove the key and the
-// caller's kms:Sign permission (one billed request), and refuses a key of another spec (ErrNoEd25519)
-// and never signs with a different algorithm in its place.
+// Config.Scheme picks the scheme, and the signer never signs with a different one in its place:
+//
+//   - audit.AlgEd25519 (the default): a key of spec ECC_NIST_EDWARDS25519 with usage SIGN_VERIFY,
+//     signing ED25519_SHA_512 over the raw message, which is pure Ed25519 (RFC 8032), so audit's
+//     verifiers check its signatures with no change. Open refuses a key of another spec
+//     (ErrNoEd25519).
+//   - audit.AlgECDSAP256: a key of spec ECC_NIST_P256, signing ECDSA_SHA_256 over the SHA-256 digest
+//     of the message (MessageType DIGEST). KMS returns an ASN.1 DER signature, which the signer
+//     converts to the canonical low-S r||s that audit verifies. Open refuses a key of another spec
+//     (ErrNoP256).
+//
+// Open signs once to prove the key and the caller's kms:Sign permission (one billed request).
 //
 // # The 4096-byte limit
 //
-// KMS signs a raw message of at most 4096 bytes, and Ed25519 signs the whole message (there is no
-// pre-hashed form that audit's verifiers accept). Tree heads, grants and approver decisions are small, but each carries
-// caller-chosen text: a tree head is about 110 bytes plus the run ID's length, and an approver
-// decision includes the tool call's arguments. A run ID near 4000 bytes, or large arguments,
-// exceed the limit, and Sign returns ErrMessageTooLarge naming the size. An evidence package seal
-// (audit.EvidencePackage.Seal) does not count against it: since evidence format
-// bide.audit.evidence.v6 the seal signs a fixed 60-byte message (a tag and the SHA-256 of the
-// package), so a package of any size can be sealed. See docs/guides/key-custody.md.
+// Under Ed25519 KMS signs a raw message of at most 4096 bytes, and Ed25519 signs the whole message.
+// Tree heads, grants and approver decisions are small, but each carries caller-chosen text: a tree
+// head is about 110 bytes plus the run ID's length, and an approver decision includes the tool
+// call's arguments. A run ID near 4000 bytes, or large arguments, exceed the limit, and Sign
+// returns ErrMessageTooLarge naming the size. An evidence package seal signs a fixed 60-byte
+// message (evidence format v6) and fits. Under ECDSA P-256 KMS signs a 32-byte digest, so there is
+// no limit.
 //
 // # Use
 //
@@ -33,6 +38,8 @@
 //	if err != nil { ... }
 //	store, err := audit.NewAuditedStore(inner, s, anchor)
 //
+// Set Scheme: audit.AlgECDSAP256 for an ECC_NIST_P256 key.
+//
 // Grant the application's role kms:GetPublicKey and kms:Sign on the key, and nothing else.
 package awskms
 
@@ -40,6 +47,7 @@ import (
 	"bytes"
 	"context"
 	"crypto/ed25519"
+	"crypto/sha256"
 	"crypto/x509"
 	"errors"
 	"fmt"
@@ -65,8 +73,11 @@ const selfTest = "bide.signer.selftest.v1"
 
 // Errors a caller can test with errors.Is.
 var (
-	// ErrNoEd25519 means the KMS key is not an Ed25519 signing key.
+	// ErrNoEd25519 means Config.Scheme is Ed25519 and the KMS key is not an Ed25519 signing key.
 	ErrNoEd25519 = errors.New("awskms: the KMS key is not an Ed25519 signing key")
+	// ErrNoP256 means Config.Scheme is audit.AlgECDSAP256 and the KMS key is not an ECDSA P-256
+	// signing key.
+	ErrNoP256 = errors.New("awskms: the KMS key is not an ECDSA P-256 signing key")
 	// ErrMessageTooLarge means the message is longer than KMS signs (MaxMessageSize).
 	ErrMessageTooLarge = errors.New("awskms: the message is longer than KMS signs")
 )
@@ -86,25 +97,33 @@ type Config struct {
 	// it once and signs with the key's ARN, so an alias moved to another key afterwards cannot
 	// change which key signs.
 	KeyID string
+	// Scheme is the signature scheme of the KMS key: audit.AlgEd25519 (the default; key spec
+	// ECC_NIST_EDWARDS25519, signing ED25519_SHA_512) or audit.AlgECDSAP256 (key spec ECC_NIST_P256,
+	// signing ECDSA_SHA_256 over the SHA-256 digest of the message). A key of the other spec is
+	// refused, never used under the wrong scheme.
+	Scheme audit.Alg
 	// Timeout bounds each KMS call; zero means DefaultTimeout.
 	Timeout time.Duration
 	// GrantTokens are passed to GetPublicKey and Sign. Optional.
 	GrantTokens []string
 }
 
-// Signer signs with an Ed25519 KMS key. It satisfies audit.Signer and is safe for concurrent use.
+// Signer signs with an Ed25519 or ECDSA P-256 KMS key (see Config.Scheme). It satisfies audit.Signer and is safe for concurrent use.
 type Signer struct {
 	client  API
 	keyARN  string
 	timeout time.Duration
 	grants  []string
-	pub     ed25519.PublicKey
+	pub     []byte
+	alg     audit.Alg
+	v       audit.Verifier // checks every signature against the public key
 }
 
 var _ audit.Signer = (*Signer)(nil)
 
-// Open resolves the key, checks that it is an Ed25519 signing key, and reads its public key. It
-// fails with ErrNoEd25519, naming the key's spec, for any other key.
+// Open resolves the key, checks that it is a signing key of Config.Scheme, reads its public key, and
+// signs once to prove the key and the caller's kms:Sign permission. It fails with ErrNoEd25519 (or
+// ErrNoP256 for the P-256 scheme), naming the key's spec, for a key of any other kind.
 func Open(ctx context.Context, cfg Config) (*Signer, error) {
 	switch {
 	case cfg.Client == nil:
@@ -112,7 +131,14 @@ func Open(ctx context.Context, cfg Config) (*Signer, error) {
 	case cfg.KeyID == "":
 		return nil, fmt.Errorf("awskms: Config.KeyID is required: %w", agent.ErrConfig)
 	}
-	s := &Signer{client: cfg.Client, timeout: cfg.Timeout, grants: slices.Clone(cfg.GrantTokens)}
+	alg := cfg.Scheme
+	if alg == "" {
+		alg = audit.AlgEd25519
+	}
+	if alg != audit.AlgEd25519 && alg != audit.AlgECDSAP256 {
+		return nil, fmt.Errorf("awskms: Config.Scheme %q is not ed25519 or ecdsa-p256: %w", alg, agent.ErrConfig)
+	}
+	s := &Signer{client: cfg.Client, alg: alg, timeout: cfg.Timeout, grants: slices.Clone(cfg.GrantTokens)}
 	if s.timeout <= 0 {
 		s.timeout = DefaultTimeout
 	}
@@ -122,30 +148,44 @@ func Open(ctx context.Context, cfg Config) (*Signer, error) {
 	if err != nil {
 		return nil, fmt.Errorf("awskms: get the public key of %s: %w", cfg.KeyID, err)
 	}
-	if out.KeySpec != types.KeySpecEccNistEdwards25519 {
-		return nil, fmt.Errorf("awskms: key %s has spec %q, want ECC_NIST_EDWARDS25519 (bide's audit log signs with Ed25519): %w", cfg.KeyID, out.KeySpec, ErrNoEd25519)
+	spec, signAlg, sentinel := types.KeySpecEccNistEdwards25519, types.SigningAlgorithmSpecEd25519Sha512, ErrNoEd25519
+	if alg == audit.AlgECDSAP256 {
+		spec, signAlg, sentinel = types.KeySpecEccNistP256, types.SigningAlgorithmSpecEcdsaSha256, ErrNoP256
+	}
+	if out.KeySpec != spec {
+		return nil, fmt.Errorf("awskms: key %s has spec %q, want %s for the %s scheme: %w", cfg.KeyID, out.KeySpec, spec, alg, sentinel)
 	}
 	if out.KeyUsage != types.KeyUsageTypeSignVerify {
-		return nil, fmt.Errorf("awskms: key %s has usage %q, want SIGN_VERIFY: %w", cfg.KeyID, out.KeyUsage, ErrNoEd25519)
+		return nil, fmt.Errorf("awskms: key %s has usage %q, want SIGN_VERIFY: %w", cfg.KeyID, out.KeyUsage, sentinel)
 	}
-	if !slices.Contains(out.SigningAlgorithms, types.SigningAlgorithmSpecEd25519Sha512) {
-		return nil, fmt.Errorf("awskms: key %s does not offer ED25519_SHA_512: %w", cfg.KeyID, ErrNoEd25519)
+	if !slices.Contains(out.SigningAlgorithms, signAlg) {
+		return nil, fmt.Errorf("awskms: key %s does not offer %s: %w", cfg.KeyID, signAlg, sentinel)
 	}
 	if out.KeyId == nil || *out.KeyId == "" {
 		return nil, fmt.Errorf("awskms: KMS returned no key ARN for %s", cfg.KeyID)
 	}
-	pk, err := x509.ParsePKIXPublicKey(out.PublicKey)
+	var pub []byte
+	if alg == audit.AlgECDSAP256 {
+		pub, err = audit.ECDSAP256PublicKeyFromSPKI(out.PublicKey)
+		if err != nil {
+			return nil, fmt.Errorf("awskms: parse the public key of %s: %v: %w", cfg.KeyID, err, sentinel)
+		}
+	} else {
+		pk, err := x509.ParsePKIXPublicKey(out.PublicKey)
+		if err != nil {
+			return nil, fmt.Errorf("awskms: parse the public key of %s: %w", cfg.KeyID, err)
+		}
+		ed, ok := pk.(ed25519.PublicKey)
+		if !ok {
+			return nil, fmt.Errorf("awskms: the public key of %s is %T, not Ed25519: %w", cfg.KeyID, pk, sentinel)
+		}
+		pub = ed
+	}
+	v, err := audit.NewVerifier(alg, pub)
 	if err != nil {
-		return nil, fmt.Errorf("awskms: parse the public key of %s: %w", cfg.KeyID, err)
+		return nil, fmt.Errorf("awskms: the public key of %s is not a usable %s key: %w", cfg.KeyID, alg, err)
 	}
-	pub, ok := pk.(ed25519.PublicKey)
-	if !ok {
-		return nil, fmt.Errorf("awskms: the public key of %s is %T, not Ed25519: %w", cfg.KeyID, pk, ErrNoEd25519)
-	}
-	if _, err := audit.NewVerifier(audit.AlgEd25519, pub); err != nil {
-		return nil, fmt.Errorf("awskms: the public key of %s is not a usable Ed25519 key: %w", cfg.KeyID, err)
-	}
-	s.keyARN, s.pub = *out.KeyId, bytes.Clone(pub)
+	s.keyARN, s.pub, s.v = *out.KeyId, bytes.Clone(pub), v
 	// One signature proves the caller may sign with the key and that KMS's output verifies under
 	// the public key it reported, so a missing kms:Sign permission or a mismatch is found here and
 	// not by the first anchor. It is one billed KMS request.
@@ -155,45 +195,56 @@ func Open(ctx context.Context, cfg Config) (*Signer, error) {
 	return s, nil
 }
 
-// Alg reports the signature scheme (audit.AlgEd25519).
-func (*Signer) Alg() audit.Alg { return audit.AlgEd25519 }
+// Alg reports the signature scheme (Config.Scheme, audit.AlgEd25519 by default).
+func (s *Signer) Alg() audit.Alg { return s.alg }
 
-// PublicKey returns the 32-byte Ed25519 public key of the KMS key, in the encoding
-// audit.NewVerifier reads. It is read once, when the Signer opens.
+// PublicKey returns the public key of the KMS key (32 bytes for Ed25519, the 65-byte uncompressed
+// point for P-256), in the encoding audit.NewVerifier reads. It is read once, when the Signer opens.
 func (s *Signer) PublicKey() []byte { return bytes.Clone(s.pub) }
 
 // KeyARN is the ARN of the KMS key the signer signs with.
 func (s *Signer) KeyARN() string { return s.keyARN }
 
-// Sign returns KMS's Ed25519 signature over message, which is at most MaxMessageSize bytes (longer
-// is ErrMessageTooLarge, with no call to KMS). It checks the signature against the public key
+// Sign returns KMS's signature over message in the encoding audit verifies. Under Ed25519 the
+// message is at most MaxMessageSize bytes (longer is ErrMessageTooLarge, with no call to KMS);
+// under P-256 KMS signs a 32-byte digest and there is no limit. It checks the signature against the public key
 // before returning it, so a key replaced behind the ARN is an error here and not a signature that
 // fails to verify later.
 func (s *Signer) Sign(message []byte) ([]byte, error) {
-	if len(message) > MaxMessageSize {
-		return nil, fmt.Errorf("awskms: a %d-byte message exceeds the %d bytes KMS signs: %w", len(message), MaxMessageSize, ErrMessageTooLarge)
+	in := &kms.SignInput{KeyId: &s.keyARN, GrantTokens: s.grants}
+	if s.alg == audit.AlgECDSAP256 {
+		// KMS signs the SHA-256 digest; a digest is 32 bytes, so the 4096-byte limit never applies.
+		h := sha256.Sum256(message)
+		in.Message, in.MessageType, in.SigningAlgorithm = h[:], types.MessageTypeDigest, types.SigningAlgorithmSpecEcdsaSha256
+	} else {
+		if len(message) > MaxMessageSize {
+			return nil, fmt.Errorf("awskms: a %d-byte message exceeds the %d bytes KMS signs: %w", len(message), MaxMessageSize, ErrMessageTooLarge)
+		}
+		in.Message, in.MessageType, in.SigningAlgorithm = message, types.MessageTypeRaw, types.SigningAlgorithmSpecEd25519Sha512
 	}
 	ctx, cancel := context.WithTimeout(context.Background(), s.timeout)
 	defer cancel()
-	out, err := s.client.Sign(ctx, &kms.SignInput{
-		KeyId:            &s.keyARN,
-		Message:          message,
-		MessageType:      types.MessageTypeRaw,
-		SigningAlgorithm: types.SigningAlgorithmSpecEd25519Sha512,
-		GrantTokens:      s.grants,
-	})
+	out, err := s.client.Sign(ctx, in)
 	if err != nil {
 		return nil, fmt.Errorf("awskms: sign with %s: %w", s.keyARN, err)
 	}
-	if len(out.Signature) != ed25519.SignatureSize || !ed25519.Verify(s.pub, message, out.Signature) {
+	sig := out.Signature
+	if s.alg == audit.AlgECDSAP256 {
+		// KMS returns an ASN.1 DER ECDSA-Sig-Value; audit verifies the canonical low-S r||s.
+		sig, err = audit.ECDSAP256SignatureFromDER(sig)
+		if err != nil {
+			return nil, fmt.Errorf("awskms: KMS's signature from %s is not a valid ECDSA signature: %w", s.keyARN, err)
+		}
+	}
+	if s.v == nil || !s.v.Verify(message, sig) {
 		return nil, fmt.Errorf("awskms: KMS's signature does not verify under the key's public key (was the key replaced?)")
 	}
-	return bytes.Clone(out.Signature), nil
+	return bytes.Clone(sig), nil
 }
 
 // String describes the signer by its key identity (audit.KeyID of the public key).
 func (s *Signer) String() string {
-	return fmt.Sprintf("awskms.Signer{%s %s}", s.keyARN, audit.KeyID(string(audit.AlgEd25519), s.pub))
+	return fmt.Sprintf("awskms.Signer{%s %s}", s.keyARN, audit.KeyID(string(s.alg), s.pub))
 }
 
 // Format writes String for every verb.

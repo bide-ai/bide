@@ -7,7 +7,8 @@
 //
 //	BIDE_PKCS11_MODULE   path of the PKCS#11 library (libsofthsm2.so, a vendor library)
 //	BIDE_PKCS11_TOKEN    label of the token
-//	BIDE_PKCS11_KEY      label of the Ed25519 signing key (default "bide-audit")
+//	BIDE_PKCS11_KEY      label of the signing key (default "bide-audit")
+//	BIDE_PKCS11_SCHEME   "ed25519" (default) or "ecdsa-p256", the scheme of the key
 //	BIDE_HSM_PIN         the user PIN, or
 //	BIDE_HSM_PIN_FILE    the path of a file that holds it
 //
@@ -44,6 +45,9 @@ func config(getenv func(string) string) (pkcs11.Config, error) {
 		TokenLabel: getenv("BIDE_PKCS11_TOKEN"),
 		KeyLabel:   getenv("BIDE_PKCS11_KEY"),
 		PIN:        pkcs11.PINFromEnv("BIDE_HSM_PIN"),
+	}
+	if sc := getenv("BIDE_PKCS11_SCHEME"); sc != "" {
+		cfg.Scheme = audit.Alg(sc)
 	}
 	if cfg.KeyLabel == "" {
 		cfg.KeyLabel = "bide-audit"
@@ -89,7 +93,7 @@ func run(ctx context.Context, getenv func(string) string, out io.Writer) error {
 
 	// The auditor holds only the public key: the text form below is what "bide audit verify-*
 	// -pubkey" takes.
-	pubText := audit.FormatPublicKey(audit.AlgEd25519, signer.PublicKey())
+	pubText := audit.FormatPublicKey(signer.Alg(), signer.PublicKey())
 	fmt.Fprintln(out, "log public key:", pubText)
 	v, err := audit.ParsePublicKey(pubText)
 	if err != nil {

@@ -11,7 +11,12 @@ import (
 )
 
 func TestMain(m *testing.M) {
-	os.Exit(pkcs11test.Run(m, func(tok *pkcs11test.Token) error { return tok.GenerateEd25519("bide-audit", []byte{1}) }))
+	os.Exit(pkcs11test.Run(m, func(tok *pkcs11test.Token) error {
+		if err := tok.GenerateEd25519("bide-audit", []byte{1}); err != nil {
+			return err
+		}
+		return tok.GenerateP256("bide-audit-p256")
+	}))
 }
 
 func TestRunWithSoftHSM(t *testing.T) {
@@ -29,6 +34,20 @@ func TestRunWithSoftHSM(t *testing.T) {
 	}
 	if strings.Contains(out.String(), tok.PIN) {
 		t.Error("the output contains the PIN")
+	}
+}
+
+func TestRunP256(t *testing.T) {
+	tok := pkcs11test.Require(t)
+	env := map[string]string{"BIDE_PKCS11_MODULE": tok.Module, "BIDE_PKCS11_TOKEN": tok.Label, "BIDE_HSM_PIN": tok.PIN,
+		"BIDE_PKCS11_KEY": "bide-audit-p256", "BIDE_PKCS11_SCHEME": "ecdsa-p256"}
+	t.Setenv("BIDE_HSM_PIN", tok.PIN)
+	var out bytes.Buffer
+	if err := run(context.Background(), func(k string) string { return env[k] }, &out); err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(out.String(), "log public key: ecdsa-p256:") {
+		t.Errorf("output:\n%s", out.String())
 	}
 }
 

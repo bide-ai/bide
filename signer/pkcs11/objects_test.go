@@ -7,6 +7,8 @@ import (
 	"testing"
 
 	p11 "github.com/miekg/pkcs11"
+
+	"github.com/bide-ai/bide/audit"
 )
 
 // fakeObjects is a token with one private key whose attributes are chosen by the test.
@@ -52,5 +54,12 @@ func TestFindPrivateKeyChecksCurveParams(t *testing.T) {
 	}
 	if _, _, err := findPrivateKey(with(nil), 0, cfg); err != nil {
 		t.Fatalf("a token that reports no parameters is not refused: %v", err)
+	}
+	p256 := Config{KeyLabel: "k", Scheme: audit.AlgECDSAP256}
+	if _, _, err := findPrivateKey(with(ed25519OID), 0, p256); !errors.Is(err, ErrNoP256) {
+		t.Fatalf("Ed25519 parameters under P-256: err = %v, want ErrNoP256", err)
+	}
+	if _, _, err := findPrivateKey(with(p256OID), 0, p256); err != nil {
+		t.Fatalf("P-256 parameters: %v", err)
 	}
 }

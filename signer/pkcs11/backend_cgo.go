@@ -4,6 +4,7 @@ package pkcs11
 
 import (
 	"bytes"
+	"crypto/sha256"
 	"errors"
 	"fmt"
 	"strings"
@@ -12,7 +13,15 @@ import (
 	p11 "github.com/miekg/pkcs11"
 
 	"github.com/bide-ai/bide/agent"
+	"github.com/bide-ai/bide/audit"
 )
+
+const (
+	ckmECDSA = 0x1041 // CKM_ECDSA: raw ECDSA over a digest the caller computed
+	ckkEC    = 0x03   // CKK_EC
+)
+
+func isP256(cfg Config) bool { return cfg.Scheme == audit.AlgECDSAP256 }
 
 // modules are the PKCS#11 libraries this process has initialised. A module is initialised once
 // per process (a second C_Initialize fails) and finalised when its last user closes, so several
@@ -61,6 +70,7 @@ func (m *module) release() {
 
 // tokenSession is a logged-in session on the token with the signing key found.
 type tokenSession struct {
+	p256 bool
 	mod  *module
 	sh   p11.SessionHandle
 	key  p11.ObjectHandle
@@ -87,14 +97,14 @@ func openOn(mod *module, cfg Config, pin string) (*tokenSession, []byte, error) 
 	if err != nil {
 		return nil, nil, err
 	}
-	if err := requireEdDSA(ctx, slot); err != nil {
+	if err := requireMechanism(ctx, slot, cfg); err != nil {
 		return nil, nil, err
 	}
 	sh, err := ctx.OpenSession(slot, p11.CKF_SERIAL_SESSION)
 	if err != nil {
 		return nil, nil, fmt.Errorf("pkcs11: open a session: %w", err)
 	}
-	ts := &tokenSession{mod: mod, sh: sh}
+	ts := &tokenSession{mod: mod, sh: sh, p256: isP256(cfg)}
 	fail := func(err error) (*tokenSession, []byte, error) {
 		ctx.CloseSession(sh)
 		return nil, nil, err
@@ -118,12 +128,22 @@ func openOn(mod *module, cfg Config, pin string) (*tokenSession, []byte, error) 
 
 func (t *tokenSession) sign(msg []byte) ([]byte, error) {
 	ctx := t.mod.ctx
-	if err := ctx.SignInit(t.sh, []*p11.Mechanism{p11.NewMechanism(ckmEdDSA, nil)}, t.key); err != nil {
+	mech, in := uint(ckmEdDSA), msg
+	if t.p256 {
+		// CKM_ECDSA signs a digest the caller computed; bide's P-256 scheme signs SHA-256(message).
+		h := sha256.Sum256(msg)
+		mech, in = ckmECDSA, h[:]
+	}
+	if err := ctx.SignInit(t.sh, []*p11.Mechanism{p11.NewMechanism(mech, nil)}, t.key); err != nil {
 		return nil, classify(err)
 	}
-	sig, err := ctx.Sign(t.sh, msg)
+	sig, err := ctx.Sign(t.sh, in)
 	if err != nil {
 		return nil, classify(err)
+	}
+	if t.p256 {
+		// The token returns raw r||s; audit verifies the canonical low-S form.
+		return audit.ECDSAP256SignatureFromRaw(sig)
 	}
 	return sig, nil
 }
@@ -203,18 +223,23 @@ func findSlot(ctx *p11.Ctx, cfg Config) (uint, error) {
 	return 0, fmt.Errorf("pkcs11: %s matches %d tokens: %w", want, len(match), ErrAmbiguous)
 }
 
-// requireEdDSA fails with ErrNoEd25519 unless the token lists CKM_EDDSA.
-func requireEdDSA(ctx *p11.Ctx, slot uint) error {
+// requireMechanism fails with ErrNoEd25519 (ErrNoP256 for the P-256 scheme) unless the token lists
+// the scheme's signing mechanism.
+func requireMechanism(ctx *p11.Ctx, slot uint, cfg Config) error {
+	want, name, sentinel := uint(ckmEdDSA), "CKM_EDDSA (Ed25519)", ErrNoEd25519
+	if isP256(cfg) {
+		want, name, sentinel = ckmECDSA, "CKM_ECDSA (ECDSA P-256)", ErrNoP256
+	}
 	ms, err := ctx.GetMechanismList(slot)
 	if err != nil {
 		return fmt.Errorf("pkcs11: list the token's mechanisms: %w", err)
 	}
 	for _, m := range ms {
-		if m.Mechanism == ckmEdDSA {
+		if m.Mechanism == want {
 			return nil
 		}
 	}
-	return fmt.Errorf("pkcs11: the token does not list CKM_EDDSA (Ed25519), which bide's audit log needs: %w", ErrNoEd25519)
+	return fmt.Errorf("pkcs11: the token does not list %s, which the %s scheme needs: %w", name, cfg.Scheme, sentinel)
 }
 
 func keyTemplate(cfg Config, class uint, keyType *uint) []*p11.Attribute {
@@ -254,8 +279,11 @@ func find(ctx objectAPI, sh p11.SessionHandle, tmpl []*p11.Attribute) ([]p11.Obj
 
 // findPrivateKey returns the one Ed25519 private key the Config selects, and its CKA_ID.
 func findPrivateKey(ctx objectAPI, sh p11.SessionHandle, cfg Config) (p11.ObjectHandle, []byte, error) {
-	edwards := uint(ckkECEdwards)
-	objs, err := find(ctx, sh, keyTemplate(cfg, p11.CKO_PRIVATE_KEY, &edwards))
+	keyType, sentinel, scheme := uint(ckkECEdwards), ErrNoEd25519, "Ed25519 (CKK_EC_EDWARDS)"
+	if isP256(cfg) {
+		keyType, sentinel, scheme = ckkEC, ErrNoP256, "ECDSA P-256 (CKK_EC on prime256v1)"
+	}
+	objs, err := find(ctx, sh, keyTemplate(cfg, p11.CKO_PRIVATE_KEY, &keyType))
 	if err != nil {
 		return 0, nil, err
 	}
@@ -270,8 +298,8 @@ func findPrivateKey(ctx objectAPI, sh p11.SessionHandle, cfg Config) (p11.Object
 		}
 		// CKK_EC_EDWARDS covers Ed448 too; the curve parameters tell them apart when the token
 		// reports them for the private key.
-		if pa, err := ctx.GetAttributeValue(sh, objs[0], []*p11.Attribute{p11.NewAttribute(p11.CKA_EC_PARAMS, nil)}); err == nil && len(pa) == 1 && len(pa[0].Value) != 0 && !isEd25519Params(pa[0].Value) {
-			return 0, nil, fmt.Errorf("pkcs11: the key's CKA_EC_PARAMS do not name Ed25519 (an Ed448 key?): %w", ErrNoEd25519)
+		if pa, err := ctx.GetAttributeValue(sh, objs[0], []*p11.Attribute{p11.NewAttribute(p11.CKA_EC_PARAMS, nil)}); err == nil && len(pa) == 1 && len(pa[0].Value) != 0 && !paramsMatch(cfg, pa[0].Value) {
+			return 0, nil, fmt.Errorf("pkcs11: the key's CKA_EC_PARAMS do not name the %s curve (for Ed25519, an Ed448 key?): %w", cfg.Scheme, sentinel)
 		}
 		if cfg.RequireNonExtractable {
 			ea, err := ctx.GetAttributeValue(sh, objs[0], []*p11.Attribute{p11.NewAttribute(p11.CKA_EXTRACTABLE, nil), p11.NewAttribute(p11.CKA_SENSITIVE, nil)})
@@ -284,7 +312,7 @@ func findPrivateKey(ctx objectAPI, sh p11.SessionHandle, cfg Config) (p11.Object
 		// A key of another type under the same label tells the operator what is wrong.
 		other, _ := find(ctx, sh, keyTemplate(cfg, p11.CKO_PRIVATE_KEY, nil))
 		if len(other) > 0 {
-			return 0, nil, fmt.Errorf("pkcs11: the selected key is not an Ed25519 key (not CKK_EC_EDWARDS); bide's audit log signs with Ed25519: %w", ErrNoEd25519)
+			return 0, nil, fmt.Errorf("pkcs11: the selected key is not a %s key, and Config.Scheme is %s: %w", scheme, cfg.Scheme, sentinel)
 		}
 		return 0, nil, fmt.Errorf("pkcs11: no private key with label %q and the given ID: %w", cfg.KeyLabel, ErrKeyNotFound)
 	}
@@ -300,10 +328,10 @@ func readPublicKey(ctx objectAPI, sh p11.SessionHandle, cfg Config, priv p11.Obj
 		if err != nil || len(attrs) != 2 || len(attrs[0].Value) == 0 {
 			return nil, nil
 		}
-		if len(attrs[1].Value) != 0 && !isEd25519Params(attrs[1].Value) {
-			return nil, fmt.Errorf("pkcs11: the key's CKA_EC_PARAMS do not name Ed25519: %w", ErrNoEd25519)
+		if len(attrs[1].Value) != 0 && !paramsMatch(cfg, attrs[1].Value) {
+			return nil, fmt.Errorf("pkcs11: the key's CKA_EC_PARAMS do not name the %s curve: %w", cfg.Scheme, schemeSentinel(cfg))
 		}
-		return parseECPoint(attrs[0].Value)
+		return parsePoint(cfg.Scheme, attrs[0].Value)
 	}
 	if pub, err := read(priv); pub != nil || err != nil {
 		return pub, err
@@ -320,4 +348,18 @@ func readPublicKey(ctx objectAPI, sh p11.SessionHandle, cfg Config, priv p11.Obj
 		return nil, nil
 	}
 	return read(objs[0])
+}
+
+func paramsMatch(cfg Config, p []byte) bool {
+	if isP256(cfg) {
+		return isP256Params(p)
+	}
+	return isEd25519Params(p)
+}
+
+func schemeSentinel(cfg Config) error {
+	if isP256(cfg) {
+		return ErrNoP256
+	}
+	return ErrNoEd25519
 }
