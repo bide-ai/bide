@@ -258,9 +258,9 @@ define
   \* A recorded outcome that holds separation of duties: it passed under a policy that excludes the
   \* requester, seating none of the requesters.
   SoDHeld(c)    == LET t == Outcome(c) IN t.rec /\ t.passed /\ Policies[t.pol].sod /\ \A a \in t.seated : ~ReqSame(a)
-  \* The gate supersedes the recorded outcome t: its policy n excludes the requester and t passed
-  \* without excluding it (historically, WeakTallyStands: it never did).
-  Superseded(n, t) == Policies[n].sod /\ t.passed /\ ~Policies[t.pol].sod /\ Bug # "WeakTallyStands"
+  \* The gate supersedes the recorded outcome of call c: its policy n excludes the requester and the
+  \* outcome passed without excluding it (historically, WeakTallyStands: it never did).
+  Superseded(n, c) == Policies[n].sod /\ Outcome(c).passed /\ ~Policies[Outcome(c).pol].sod /\ Bug # "WeakTallyStands"
   \* A recorded sufficient approval for a drive whose gate is n: an Approve(true), or a passing
   \* recorded tally (either; a weaker deployment may run on the tally the re-tally supersedes), and
   \* for a gate that excludes the requester, a passing outcome that held separation of duties.
@@ -407,7 +407,7 @@ QTally:
     \* A recorded denial is final; a pass is final unless the policy supersedes it (it excludes the
     \* requester and the pass did not): then the gate counts again, below.
     if ~Outcome(CallOf[self]).passed then goto Deny;
-    elsif ~Superseded(gp, Outcome(CallOf[self])) then goto Claim;
+    elsif ~Superseded(gp, CallOf[self]) then goto Claim;
     end if;
   end if;
 QCount:
@@ -446,7 +446,7 @@ QDecide:
   \* the policy supersedes is counted again.
   if ~Outcome(CallOf[self]).passed then
     goto Deny;
-  elsif Superseded(gp, Outcome(CallOf[self])) then
+  elsif Superseded(gp, CallOf[self]) then
     goto QTally;
   else
     goto Claim;
@@ -808,7 +808,7 @@ Denied(c)     == one[c] = "no" \/ (Outcome(c).rec /\ ~Outcome(c).passed)
 SoDHeld(c)    == LET t == Outcome(c) IN t.rec /\ t.passed /\ Policies[t.pol].sod /\ \A a \in t.seated : ~ReqSame(a)
 
 
-Superseded(n, t) == Policies[n].sod /\ t.passed /\ ~Policies[t.pol].sod /\ Bug # "WeakTallyStands"
+Superseded(n, c) == Policies[n].sod /\ Outcome(c).passed /\ ~Policies[Outcome(c).pol].sod /\ Bug # "WeakTallyStands"
 
 
 
@@ -1053,7 +1053,7 @@ QTally(self) == /\ pc[self] = "QTally"
                       ELSE /\ IF Outcome(CallOf[self]).rec
                                  THEN /\ IF ~Outcome(CallOf[self]).passed
                                             THEN /\ pc' = [pc EXCEPT ![self] = "Deny"]
-                                            ELSE /\ IF ~Superseded(gp[self], Outcome(CallOf[self]))
+                                            ELSE /\ IF ~Superseded(gp[self], CallOf[self])
                                                        THEN /\ pc' = [pc EXCEPT ![self] = "Claim"]
                                                        ELSE /\ pc' = [pc EXCEPT ![self] = "QCount"]
                                  ELSE /\ pc' = [pc EXCEPT ![self] = "QCount"]
@@ -1139,7 +1139,7 @@ QRecord(self) == /\ pc[self] = "QRecord"
 QDecide(self) == /\ pc[self] = "QDecide"
                  /\ IF ~Outcome(CallOf[self]).passed
                        THEN /\ pc' = [pc EXCEPT ![self] = "Deny"]
-                       ELSE /\ IF Superseded(gp[self], Outcome(CallOf[self]))
+                       ELSE /\ IF Superseded(gp[self], CallOf[self])
                                   THEN /\ pc' = [pc EXCEPT ![self] = "QTally"]
                                   ELSE /\ pc' = [pc EXCEPT ![self] = "Claim"]
                  /\ UNCHANGED << marker, nsSet, heldSet, result, toolFail, 
