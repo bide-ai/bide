@@ -365,7 +365,10 @@ person who started the root run still may not approve the sub-run's call. The ta
   requesters, and records the new outcome under `approval-tally:<id>:sod`
   (`agent.ApprovalSoDRetallyStep`, whose `Supersedes` names the old tally); every reader, and the
   evidence, goes by it. A recorded denial stays final. A tally that excluded other requesters than
-  the run's `run:principal` names is refused (`ErrConfig`).
+  the run's `run:principal` names is refused (`ErrConfig`). Drain the processes still on the old
+  policy before relying on the exclusion: while both run, an old process may run a call that a new
+  one re-tallies, and the audit then reports the re-tally (see
+  [Known limitations](../KNOWN-LIMITATIONS.md)).
 - **Offline.** The `run:principal` record is the evidence of who requested, and it holds nothing
   else: not the run's input. `ApprovalEvidence` discloses it for a gate that excluded the requester,
   and `VerifyApprovals` recounts with the same exclusion (see [Proving the gate
