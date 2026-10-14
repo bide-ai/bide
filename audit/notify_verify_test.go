@@ -986,22 +986,30 @@ func TestVerifyNotifications_OperationFieldsMatchTheKey(t *testing.T) {
 	withOp := func(key string, kind agent.NotificationKind, run, opKind, id string) agent.NotifyRecord {
 		r := observed(key, kind, 0, 1)
 		r.OpRun, r.OpKind, r.OpID = run, opKind, id
+		if to, _, ok := agent.SplitToKey(key); ok {
+			r.Receiver = to
+		}
+		if lvl, _, ok := agent.ParseEscalationKey(key); ok {
+			r.Level = lvl
+		}
 		return r
 	}
 	for name, tc := range map[string]struct {
 		rec  agent.NotifyRecord
 		want string // "" for valid
 	}{
-		"a gate":                   {withOp(gate, agent.NotificationApprovalPending, "r1", "gate", "c1"), ""},
-		"a tool halt":              {withOp(halt, agent.NotificationOutcomeUnknown, "r1", "tool", "c9"), ""},
-		"no fields (older record)": {observed(gate, agent.NotificationApprovalPending, 0, 1), ""},
-		"gate with another call":   {withOp(gate, agent.NotificationApprovalPending, "r1", "gate", "c2"), "does not match"},
-		"gate with another run":    {withOp(gate, agent.NotificationApprovalPending, "r2", "gate", "c1"), "does not match"},
-		"halt with a step kind":    {withOp(halt, agent.NotificationOutcomeUnknown, "r1", "step", "c9"), "does not match"},
-		"halt with the gate kind":  {withOp(halt, agent.NotificationOutcomeUnknown, "r1", "gate", "c9"), "not tool or step"},
-		"gate with the tool kind":  {withOp(gate, agent.NotificationApprovalPending, "r1", "tool", "c1"), "not gate"},
-		"only some fields":         {withOp(gate, agent.NotificationApprovalPending, "r1", "", "c1"), "not all three"},
-		"fields on another kind":   {withOp(agent.AbortedKey("r1"), agent.NotificationRunAborted, "r1", "gate", "c1"), "names an operation"},
+		"a fan-out gate":             {withOp(agent.ToKey("risk", gate), agent.NotificationApprovalPending, "r1", "gate", "c1"), ""},
+		"a fan-out gate, wrong call": {withOp(agent.ToKey("risk", gate), agent.NotificationApprovalPending, "r1", "gate", "c2"), "does not match"},
+		"a gate":                     {withOp(gate, agent.NotificationApprovalPending, "r1", "gate", "c1"), ""},
+		"a tool halt":                {withOp(halt, agent.NotificationOutcomeUnknown, "r1", "tool", "c9"), ""},
+		"no fields (older record)":   {observed(gate, agent.NotificationApprovalPending, 0, 1), ""},
+		"gate with another call":     {withOp(gate, agent.NotificationApprovalPending, "r1", "gate", "c2"), "does not match"},
+		"gate with another run":      {withOp(gate, agent.NotificationApprovalPending, "r2", "gate", "c1"), "does not match"},
+		"halt with a step kind":      {withOp(halt, agent.NotificationOutcomeUnknown, "r1", "step", "c9"), "does not match"},
+		"halt with the gate kind":    {withOp(halt, agent.NotificationOutcomeUnknown, "r1", "gate", "c9"), "not tool or step"},
+		"gate with the tool kind":    {withOp(gate, agent.NotificationApprovalPending, "r1", "tool", "c1"), "not gate"},
+		"only some fields":           {withOp(gate, agent.NotificationApprovalPending, "r1", "", "c1"), "not all three"},
+		"fields on another kind":     {withOp(agent.AbortedKey("r1"), agent.NotificationRunAborted, "r1", "gate", "c1"), "names an operation"},
 	} {
 		rep, err := verifyNotify(t, newTrail(t).add(tc.rec), nil)
 		if tc.want == "" {
@@ -1012,6 +1020,31 @@ func TestVerifyNotifications_OperationFieldsMatchTheKey(t *testing.T) {
 		}
 		if !errors.Is(err, audit.ErrNotVerified) || !strings.Contains(strings.Join(rep.Trails[0].Violations, ";"), tc.want) {
 			t.Errorf("%s: err %v violations %v, want one with %q", name, err, rep.Trails[0].Violations, tc.want)
+		}
+	}
+}
+
+// An escalation step carries the operation of the event it escalates, judged against that event's key.
+func TestVerifyNotifications_EscalationStepOperationFields(t *testing.T) {
+	gate := agent.ApprovalKey("r1", "c1", 0)
+	for name, tc := range map[string]struct {
+		call string
+		want string
+	}{"the same call": {"c1", ""}, "another call": {"c2", "does not match"}} {
+		b := newTrail(t)
+		deliver(b, obsTo(gate, agent.NotificationApprovalPending, 1, ""), 2, 3)
+		st := step(gate, 1, 310, 600, "lead")
+		st.OpRun, st.OpKind, st.OpID = "r1", "gate", tc.call
+		b.add(st)
+		rep, err := verifyNotify(t, b, func(in *audit.NotifyVerifyInput) { in.Now = at(320); in.MaxClockSkew = 10 * time.Second })
+		if tc.want == "" {
+			if err != nil {
+				t.Errorf("%s: %v %v", name, err, rep.Problems)
+			}
+			continue
+		}
+		if !errors.Is(err, audit.ErrNotVerified) || !strings.Contains(strings.Join(rep.Trails[0].Violations, ";"), tc.want) {
+			t.Errorf("%s: %v %v", name, err, rep.Trails[0].Violations)
 		}
 	}
 }

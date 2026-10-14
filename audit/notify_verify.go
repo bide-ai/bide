@@ -567,7 +567,7 @@ func checkNotifyTrail(trail string, recs []agent.NotifyRecord, skew time.Duratio
 			key := r.Key
 			if to, base, ok := agent.SplitToKey(r.Key); ok {
 				key = base
-				if to != r.Receiver {
+				if to != receiverOf(r.Receiver) {
 					bad(i, "key %q is a delivery to receiver %q and the record names %q", r.Key, to, r.Receiver)
 				}
 				if e.kind != agent.NotificationApprovalPending {
@@ -947,6 +947,27 @@ func checkOpFields(bad func(int, string, ...any), i int, r agent.NotifyRecord, k
 		return
 	}
 	var want string
+	if kind == agent.NotificationEscalated {
+		// An escalation step carries the operation of the event it escalates: judge it as that event.
+		_, orig, ok := agent.ParseEscalationKey(r.Key)
+		if !ok {
+			bad(i, "key %q is not an escalation step's", r.Key)
+			return
+		}
+		if _, base, isTo := agent.SplitToKey(orig); isTo {
+			orig = base
+		}
+		switch {
+		case strings.HasPrefix(orig, "halted:"):
+			kind = agent.NotificationOutcomeUnknown
+		case strings.HasPrefix(orig, "approval:"):
+			kind = agent.NotificationApprovalPending
+		default:
+			bad(i, "an escalation of %q names an operation", orig)
+			return
+		}
+		r.Key = orig
+	}
 	switch kind {
 	case agent.NotificationOutcomeUnknown:
 		if r.OpKind != string(agent.OpTool) && r.OpKind != string(agent.OpStep) {
@@ -965,7 +986,11 @@ func checkOpFields(bad func(int, string, ...any), i int, r agent.NotifyRecord, k
 		return
 	}
 	cut := func(k string) string { return k[:strings.LastIndex(k, ":")] }
-	if cut(r.Key) != cut(want) {
+	key := r.Key
+	if _, base, ok := agent.SplitToKey(key); ok {
+		key = base // a fan-out delivery's key is the event's key under a receiver prefix
+	}
+	if cut(key) != cut(want) {
 		bad(i, "key %q does not match its operation (op_run %q, op_kind %q, op_id %q)", r.Key, r.OpRun, r.OpKind, r.OpID)
 	}
 }
@@ -1067,4 +1092,13 @@ func (in NotifyVerifyInput) checkRouting(trail string, st agent.NotifyState, jou
 			due = se.DeadlineAt
 		}
 	}
+}
+
+// receiverOf is the name a record's receiver field stands for: the default receiver is recorded as
+// empty, and a fan-out key names it "default".
+func receiverOf(r string) string {
+	if r == "" {
+		return agent.DefaultReceiver
+	}
+	return r
 }
