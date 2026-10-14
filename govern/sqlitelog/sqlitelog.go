@@ -14,6 +14,7 @@ import (
 	"time"
 
 	"github.com/bide-ai/bide/agent"
+	"github.com/bide-ai/bide/internal/dbpath"
 	"github.com/bide-ai/bide/internal/filegate"
 	"modernc.org/sqlite"
 	sqlite3 "modernc.org/sqlite/lib"
@@ -31,6 +32,12 @@ func Open(path string) (*Log, error) {
 	// fair, so under a burst of writers on one file (or a slow disk) a single writer can wait
 	// well past a few seconds; failing then would lose a write whose side effect already ran. The
 	// timeout is in the DSN, not a PRAGMA run once, so every connection the pool opens has it.
+	// Every handle on a file must reach it by one name, or SQLite's -wal and -shm names differ and
+	// two handles corrupt the WAL (sqlite.org/howtocorrupt.html).
+	path, err := dbpath.Canonical(path, true)
+	if err != nil {
+		return nil, fmt.Errorf("sqlitelog: Open: %w (%w)", err, agent.ErrConfig)
+	}
 	db, err := sql.Open("sqlite", withQuery(path, fmt.Sprintf("_pragma=busy_timeout(%d)", busyWait.Milliseconds())))
 	if err != nil {
 		return nil, err

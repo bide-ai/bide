@@ -27,6 +27,7 @@ import (
 	"time"
 
 	"github.com/bide-ai/bide/agent"
+	"github.com/bide-ai/bide/internal/dbpath"
 	"github.com/bide-ai/bide/internal/filegate"
 	_ "modernc.org/sqlite"
 )
@@ -130,6 +131,12 @@ func Open(path string, opts ...Option) (*Store, error) {
 		}
 		return s, nil
 	}
+	// Every handle on a file must reach it by one name, or SQLite's -wal and -shm names differ
+	// and two handles corrupt the WAL (sqlite.org/howtocorrupt.html).
+	path, err = dbpath.Canonical(path, true)
+	if err != nil {
+		return nil, fmt.Errorf("sqlite: Open: %w (%w)", err, agent.ErrConfig)
+	}
 	w, err := sql.Open("sqlite", withQuery(path, busy+"&_pragma=journal_mode(WAL)"))
 	if err != nil {
 		return nil, err
@@ -202,7 +209,13 @@ func New(ctx context.Context, db *sql.DB, opts ...Option) (*Store, error) {
 	if !strings.EqualFold(mode, "wal") {
 		return nil, fmt.Errorf("sqlite: New: db is in journal mode %q, want WAL: %w", mode, agent.ErrConfig)
 	}
-	s := &Store{w: db, r: db, l: db, t: cfg.tables(), gate: filegate.For(mainFile(ctx, db))}
+	file := mainFile(ctx, db)
+	if file != "" {
+		if err := dbpath.CheckLinks(file); err != nil {
+			return nil, fmt.Errorf("sqlite: New: %w (%w)", err, agent.ErrConfig)
+		}
+	}
+	s := &Store{w: db, r: db, l: db, t: cfg.tables(), gate: filegate.For(file)}
 	if err := s.migrate(ctx); err != nil {
 		s.gate.Close()
 		return nil, err

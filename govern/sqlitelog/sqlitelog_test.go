@@ -2,9 +2,14 @@ package sqlitelog_test
 
 import (
 	"context"
+	"errors"
+	"fmt"
+	"os"
 	"path/filepath"
+	"sync"
 	"testing"
 
+	"github.com/bide-ai/bide/agent"
 	"github.com/bide-ai/bide/govern"
 	"github.com/bide-ai/bide/govern/sqlitelog"
 	gsm "github.com/blackwell-systems/gsm"
@@ -84,5 +89,67 @@ func TestSQLiteLog_DurableReconstructAcrossReopen(t *testing.T) {
 	}
 	if s2.Get(status) != "shipped" || !s2.GetBool(paid) || s2.GetInt(inv) != 1 {
 		t.Fatalf("reconstructed = {%s %v %d}, want {shipped true 1}", s2.Get(status), s2.GetBool(paid), s2.GetInt(inv))
+	}
+}
+
+// A hard-linked file is refused: two handles on its names would corrupt the WAL
+// (sqlite.org/howtocorrupt.html).
+func TestOpen_RefusesAHardLinkedFile(t *testing.T) {
+	dir := t.TempDir()
+	f, h := filepath.Join(dir, "a.db"), filepath.Join(dir, "b.db")
+	l, err := sqlitelog.Open(f)
+	if err != nil {
+		t.Fatal(err)
+	}
+	l.Close()
+	if err := os.Link(f, h); err != nil {
+		t.Skip("no hard links:", err)
+	}
+	for _, p := range []string{f, h} {
+		if l, err := sqlitelog.Open(p); err == nil {
+			l.Close()
+			t.Errorf("Open(%q) accepted a file with two links", p)
+		} else if !errors.Is(err, agent.ErrConfig) {
+			t.Errorf("Open(%q) = %v, want ErrConfig", p, err)
+		}
+	}
+}
+
+// Appends through a symlink and through the real path share one WAL.
+func TestOpen_SymlinkAndRealPathShareTheLog(t *testing.T) {
+	dir := t.TempDir()
+	f, link := filepath.Join(dir, "real.db"), filepath.Join(dir, "link.db")
+	a, err := sqlitelog.Open(f)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer a.Close()
+	if os.Symlink(f, link) != nil {
+		t.Skip("no symlinks")
+	}
+	b, err := sqlitelog.Open(link)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer b.Close()
+	var wg sync.WaitGroup
+	for i, l := range []*sqlitelog.Log{a, b} {
+		for g := range 8 {
+			wg.Add(1)
+			go func() {
+				defer wg.Done()
+				for n := range 100 {
+					id := fmt.Sprintf("%d-%d-%d", i, g, n)
+					if _, err := l.Append(context.Background(), "e", id, id); err != nil {
+						t.Error(err)
+						return
+					}
+				}
+			}()
+		}
+	}
+	wg.Wait()
+	if ev, err := a.Events(context.Background(), "e", 0); err != nil || len(ev) != 1600 {
+		t.Fatalf("%d events, %v; want 1600", len(ev), err)
 	}
 }

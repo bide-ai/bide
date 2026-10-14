@@ -8,6 +8,7 @@ import (
 	"strings"
 
 	"github.com/bide-ai/bide/agent"
+	"github.com/bide-ai/bide/internal/dbpath"
 )
 
 // OpenReadOnly opens the SQLite journal at path for reading only. The file is opened read-only
@@ -28,6 +29,9 @@ func OpenReadOnly(path string, opts ...Option) (*Store, error) {
 	}
 	if path == ":memory:" || strings.Contains(path, "mode=memory") {
 		return nil, fmt.Errorf("sqlite: OpenReadOnly: an in-memory database has nothing to read: %w", agent.ErrConfig)
+	}
+	if path, err = dbpath.Canonical(path, false); err != nil {
+		return nil, fmt.Errorf("sqlite: OpenReadOnly: %w (%w)", err, agent.ErrConfig)
 	}
 	dsn := "file:" + (&url.URL{Path: path}).EscapedPath() + "?mode=ro&_pragma=query_only(1)&" +
 		fmt.Sprintf("_pragma=busy_timeout(%d)", writeBusyTimeout.Milliseconds())
