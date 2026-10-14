@@ -2,6 +2,7 @@ package audit_test
 
 import (
 	"context"
+	"crypto/ed25519"
 	"errors"
 	"slices"
 	"strings"
@@ -184,7 +185,7 @@ func TestCheckDecisionCoverage_RejectsHeadsThatDoNotBelong(t *testing.T) {
 		if err != nil {
 			t.Fatal(err)
 		}
-		if len(rep.DivergentHeads) != 1 || !strings.Contains(rep.DivergentHeads[0].Reason, "root") || rep.OK() {
+		if len(rep.DivergentHeads) != 1 || !strings.Contains(rep.DivergentHeads[0].Reason, "does not match") || rep.OK() {
 			t.Fatalf("divergent %+v ok=%v, want one divergent head and a failure", rep.DivergentHeads, rep.OK())
 		}
 		if rep.Heads != 1 || statusOf(rep)[0] != audit.CoverageCovered {
@@ -235,7 +236,7 @@ func TestCheckDecisionCoverage_TruncatedExportFails(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if rep.OK() || len(rep.DivergentHeads) != 2 || !strings.Contains(rep.DivergentHeads[0].Reason, "out of range") {
+	if rep.OK() || len(rep.DivergentHeads) != 2 || !strings.Contains(rep.DivergentHeads[0].Reason, "longer than the journal") {
 		t.Fatalf("ok=%v, divergent %+v", rep.OK(), rep.DivergentHeads)
 	}
 }
@@ -258,5 +259,51 @@ func TestCheckDecisionCoverage_NoRecordedTime(t *testing.T) {
 	last = rep.Decisions[len(rep.Decisions)-1]
 	if last.Status != audit.CoverageOverdue || last.Basis != audit.BasisAge {
 		t.Fatalf("under an age bound: %q basis %q, want overdue on age", last.Status, last.Basis)
+	}
+}
+
+// verify-receipts and verify-decision-coverage classify heads by one rule, so on the same journal
+// and heads they cannot disagree: an anchored decision is covered, a decision no head reaches is
+// pending in both, and a journal with the decision removed fails both.
+func TestCheckDecisionCoverage_AgreesWithCheckReceipt(t *testing.T) {
+	cg := newCoverageGate(t)
+	v := edV(cg.logPub)
+	a := cg.decision[0]
+	d := agent.Decision{RunID: gateRun, ToolUseID: "c1", ApproverID: "alice", Approved: true,
+		DecidedAt: asked.Add(time.Second), Alg: audit.AlgEd25519}
+	d.Signature = ed25519.Sign(cg.privs["alice"], agent.ApprovalDecisionBytes(cg.subject(t), "alice", true, d.DecidedAt))
+	rcpt, err := audit.NewDecisionReceipt(cg.subject(t), d, cg.recs[a], a)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, tc := range []struct {
+		name    string
+		recs    []agent.Record
+		heads   []audit.SignedTreeHead
+		covered bool
+		failed  bool
+	}{
+		{"anchored", cg.recs, []audit.SignedTreeHead{cg.afterAlice}, true, false},
+		{"no head reaches it", cg.recs, []audit.SignedTreeHead{cg.before}, false, false},
+		{"decision removed from the export", slices.Delete(slices.Clone(cg.recs), a, a+1), []audit.SignedTreeHead{cg.afterAlice, cg.whole}, false, true},
+		{"export cut short", cg.recs[:a], []audit.SignedTreeHead{cg.afterAlice}, false, true},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			rep, err := audit.CheckDecisionCoverage(gateRun, tc.recs, tc.heads, v, audit.CoverageBound{})
+			if err != nil {
+				t.Fatal(err)
+			}
+			f := audit.CheckReceipt(rcpt, tc.recs, tc.heads, v)
+			gotCovered := len(rep.Decisions) > 0 && rep.Decisions[0].Status == audit.CoverageCovered
+			if gotCovered != tc.covered || (f.Verdict == audit.ReceiptAnchored) != tc.covered {
+				t.Errorf("covered: coverage %v, receipt %q; want %v", gotCovered, f.Verdict, tc.covered)
+			}
+			// A failure of either is a failure of both: CheckReceipt reports anything that is not
+			// anchored or pending as not holding (unmatched, unchecked or deleted).
+			receiptFailed := f.Verdict.Failed()
+			if receiptFailed != tc.failed || !rep.OK() != tc.failed {
+				t.Errorf("failed: coverage ok=%v, receipt %q; want failed=%v", rep.OK(), f.Verdict, tc.failed)
+			}
+		})
 	}
 }

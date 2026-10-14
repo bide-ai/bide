@@ -275,7 +275,7 @@ informational `approval-pending` note, written once when the run first pauses. I
 `bide approve` refuses the call (it will not take the approvers or the count from a flag), and `bide
 approve -list` does not show it: decide from the application. A decision written by `bide approve`
 goes through the journal's plain store, so it is covered by a signed tree head only at the
-application's next write to the run (`AuditedStore` anchoring is best-effort even there); a receipt
+application's next write to the run or the next `RecoverLoop`/`Recover` pass that finds the run waiting (`AuditedStore` anchoring is best-effort even there; `bide audit verify-decision-coverage` flags a decision left unsigned past a bound); a receipt
 kept by the approver, checked with `bide audit verify-receipts -update`, can prove a decision
 deleted once a signed head has committed to it; before that, a mismatch is only the approver's claim. A store cannot refuse a second decision of one approver without letting a bad record take their
 place, so concurrent decisions of one approver are both recorded and the first valid one counts. See

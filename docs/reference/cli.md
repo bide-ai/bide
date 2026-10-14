@@ -628,7 +628,10 @@ bide audit: produce and verify audit proof bundles
 
   verify-decision-coverage -journal <file> -heads <file> [-heads <file>...] -pubkey <hex|file>
                            [-max-records <n>] [-max-age <duration>] [-max-age-tolerance <duration>] [-now <time>]
-         check that every approval decision in a journal export is covered by a signed tree head:
+         check that every approval decision in a journal export is covered by a signed tree head
+         (the operator's or auditor's check, which needs no receipts; the approver runs
+         verify-receipts to check their own decisions were kept; both read heads the same way and
+         classify them by one rule, -heads taking a head or one per line):
          a decision written by a process that does not sign (a CLI writing the database) is under
          no head until the signer next writes to the run, which for a rejection may be never. A
          head counts only if it verifies under the key, is a journal head of the export's run, and
@@ -832,7 +835,7 @@ Usage of bide audit verify-decision-coverage:
   -color when
     	when to color the output: auto (the default: on a terminal, unless NO_COLOR is set or TERM is dumb), always or never; -json is never colored
   -heads value
-    	path to a signed tree head JSON; repeat once per head (any order)
+    	path to a signed tree head: one head, or one per line as the anchor log holds them; repeat (any order), as for verify-receipts
   -journal string
     	path to the journal export JSON (audit.ExportJournal)
   -json

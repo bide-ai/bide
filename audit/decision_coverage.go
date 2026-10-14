@@ -136,24 +136,16 @@ func CheckDecisionCoverage(runID string, recs []agent.Record, heads []SignedTree
 	rep := CoverageReport{RunID: runID, Records: len(recs)}
 	var sizes []int // sizes of the heads that count, ascending
 	for _, h := range heads {
-		switch {
-		case h.Kind != TreeJournal:
-			rep.RejectedHeads = append(rep.RejectedHeads, RejectedHead{Size: h.Size, Reason: fmt.Sprintf("tree head is a %q tree, not a journal", h.Kind)})
-			continue
-		case h.RunID != runID:
-			rep.RejectedHeads = append(rep.RejectedHeads, RejectedHead{Size: h.Size, Reason: fmt.Sprintf("tree head is for run %q, not %q", h.RunID, runID)})
-			continue
+		// One classification for every check that reads heads against an export (CheckReceipt
+		// too), so the two verbs cannot disagree on the same data.
+		switch class, _, why := classifyHead(h, runID, v, recs); class {
+		case headIgnored:
+			rep.RejectedHeads = append(rep.RejectedHeads, RejectedHead{Size: h.Size, Reason: why})
+		case headDivergent:
+			rep.DivergentHeads = append(rep.DivergentHeads, DivergentHead{Size: h.Size, Reason: why})
+		default:
+			sizes = append(sizes, h.Size)
 		}
-		if err := h.Verify(v); err != nil {
-			rep.RejectedHeads = append(rep.RejectedHeads, RejectedHead{Size: h.Size, Reason: fmt.Sprintf("signature: %v", err)})
-			continue
-		}
-		// From here the head is the log's own, for this run: it must match the journal given.
-		if _, err := journalPrefix(runID, recs, h.TreeHead); err != nil {
-			rep.DivergentHeads = append(rep.DivergentHeads, DivergentHead{Size: h.Size, Reason: err.Error()})
-			continue
-		}
-		sizes = append(sizes, h.Size)
 	}
 	slices.Sort(sizes)
 	rep.Heads = len(sizes)

@@ -173,7 +173,10 @@ const usageText = `bide audit: produce and verify audit proof bundles
 
   verify-decision-coverage -journal <file> -heads <file> [-heads <file>...] -pubkey <hex|file>
                            [-max-records <n>] [-max-age <duration>] [-max-age-tolerance <duration>] [-now <time>]
-         check that every approval decision in a journal export is covered by a signed tree head:
+         check that every approval decision in a journal export is covered by a signed tree head
+         (the operator's or auditor's check, which needs no receipts; the approver runs
+         verify-receipts to check their own decisions were kept; both read heads the same way and
+         classify them by one rule, -heads taking a head or one per line):
          a decision written by a process that does not sign (a CLI writing the database) is under
          no head until the signer next writes to the run, which for a rejection may be never. A
          head counts only if it verifies under the key, is a journal head of the export's run, and
@@ -1008,7 +1011,7 @@ func (c *cli) verifyDecisionCoverage(args []string) {
 	fs := c.flagSet("verify-decision-coverage")
 	journal := fs.String("journal", "", "path to the journal export JSON (audit.ExportJournal)")
 	var heads stringList
-	fs.Var(&heads, "heads", "path to a signed tree head JSON; repeat once per head (any order)")
+	fs.Var(&heads, "heads", "path to a signed tree head: one head, or one per line as the anchor log holds them; repeat (any order), as for verify-receipts")
 	pubkey := fs.String("pubkey", "", "the log's "+pubkeyHelp)
 	maxRecords := fs.Int("max-records", 0, "records the journal may hold after a decision before a head must cover it (0: no bound)")
 	maxAge := fs.Duration("max-age", 0, "how long after its recorded_at a decision may stay uncovered (0: no bound); compares clocks")
@@ -1041,10 +1044,12 @@ func (c *cli) verifyDecisionCoverage(args []string) {
 	}
 	pub, err := readPubKey(*pubkey)
 	okKey := c.note(err)
-	sths := make([]audit.SignedTreeHead, len(heads))
+	var sths []audit.SignedTreeHead
 	okHeads := true
-	for i, p := range heads {
-		okHeads = c.note(c.readJSON(p, &sths[i])) && okHeads
+	for _, p := range heads {
+		hs, err := c.readHeads(p)
+		okHeads = c.note(err) && okHeads
+		sths = append(sths, hs...)
 	}
 	if !okJournal || !okKey || !okHeads {
 		return

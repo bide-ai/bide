@@ -580,6 +580,19 @@ kept, so a decision deleted before its approver made a receipt, or before a rece
 not proved deleted, and a head that stops short of the position says nothing, however late it was
 signed. `bide audit verify-receipts` is the command line (below).
 
+**Which verb to run.** The approver runs `verify-receipts` on the receipts they kept: it asks whether
+*their* decision was kept, and notices one deleted after a head committed to it. The operator or an
+auditor runs `verify-decision-coverage` on a journal export and the heads: it needs no receipts and asks
+whether *every* decision in the journal is under a signed head within a bound, which is how a decision
+left unsigned (no head covers it past `-max-records` or `-max-age`) is found while it is still
+unsigned. They classify heads by one rule and read head files the same way (a head, or an anchor log
+with one per line), so on the same journal and heads they do not disagree: an anchored decision is
+anchored in one and covered in the other; one no head reaches is `pending` in both; a head the log key
+signed for the run that the export does not match (a stale or cut export, or a record removed) fails
+both. They differ in what they bound: `verify-receipts` has no age or position bound for a pending
+decision, and `verify-decision-coverage` does. Run both when you can.
+
+
 ## CLI reference: `bide audit`
 
 The `bide audit` command ([`cmd/bide`](../../cmd/bide), its code in
