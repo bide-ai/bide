@@ -45,6 +45,11 @@ const (
 	// holds no observation of it. The person who decided it knew of it, so this is not a failure,
 	// and it is reported so a gate that was never notified is not invisible.
 	NotifyStatusUnobservedResolved NotifyStatus = "unobserved_resolved"
+	// NotifyStatusAllClearUntimed: an acknowledged event was resolved (the journal shows its gate
+	// decided) and the trail holds no all-clear, but the journal holds no time for the resolution
+	// (a tool's result, a run's end), so the all-clear cannot be judged late. A warning, like
+	// unobserved_resolved.
+	NotifyStatusAllClearUntimed NotifyStatus = "all_clear_untimed"
 )
 
 // Problem reports whether a status fails an audit.
@@ -54,6 +59,12 @@ func (s NotifyStatus) Problem() bool {
 		return true
 	}
 	return false
+}
+
+// Warning reports whether a status is shown as a warning: it does not fail an audit unless
+// NotifyVerifyInput.Strict is set.
+func (s NotifyStatus) Warning() bool {
+	return s == NotifyStatusUnobservedResolved || s == NotifyStatusAllClearUntimed
 }
 
 // NotifyVerifyInput is what VerifyNotifications reads.
@@ -72,6 +83,9 @@ type NotifyVerifyInput struct {
 	// Journals are run journals the events are cross-checked against: every gate, halt and abort
 	// they show is expected in the trail of its root run.
 	Journals []JournalExport
+
+	// Strict makes a warning status (NotifyStatus.Warning) a problem, so an audit fails on it.
+	Strict bool
 
 	// Now is the time pending and overdue events are judged at; time.Now if zero.
 	Now time.Time
@@ -325,7 +339,7 @@ func VerifyNotifications(in NotifyVerifyInput) (NotifyReport, error) {
 		}
 	}
 	for _, e := range rep.Events {
-		if e.Status.Problem() {
+		if e.Status.Problem() || in.Strict && e.Status.Warning() {
 			rep.Problems = append(rep.Problems, fmt.Sprintf("%s %s: %s: %s", e.Kind, e.Key, e.Status, e.Why))
 		}
 	}
@@ -580,6 +594,19 @@ func (in NotifyVerifyInput) verdicts(trail string, recs []agent.NotifyRecord, jo
 		}
 	}
 	root := strings.TrimPrefix(trail, "notify:")
+	for _, j := range journal {
+		e := st.Events[j.Key]
+		if j.Current || e == nil || e.Cleared != nil || e.Rounds == 0 && e.Acked == nil || !owesAllClear(e.Kind) || st.Events[agent.ResolvedKey(j.Key)] != nil {
+			continue
+		}
+		if j.ResolvedAt.IsZero() {
+			missing(agent.ResolvedKey(j.Key), string(agent.NotificationResolved), e.RunID, time.Time{},
+				"the journal shows the event resolved, with no time for it, and the trail holds no all-clear", NotifyStatusAllClearUntimed)
+			continue
+		}
+		missing(agent.ResolvedKey(j.Key), string(agent.NotificationResolved), e.RunID, j.ResolvedAt,
+			"the journal shows the event resolved at "+j.ResolvedAt.UTC().Format(time.RFC3339)+" and the trail never observed the all-clear", NotifyStatusNeverNotified)
+	}
 	for _, key := range st.Keys {
 		e := st.Events[key]
 		switch {

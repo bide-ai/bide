@@ -527,8 +527,13 @@ What it checks, and the status each event gets:
   `-max-ack` from when the run entered the state); `pending` and `failing` (open, within the deadline);
   `overdue` (open, past the deadline or `-max-ack`); `cleared_before_notification` and
   `cleared_unacknowledged` (the event stopped being current first); `never_notified`;
-  `unobserved_resolved` (a gate the journal shows decided that the trail never observed: reported, not
-  a failure). `acked_late`, `overdue` and `never_notified` fail the audit.
+  `unobserved_resolved` (a gate the journal shows decided that the trail never observed) and
+  `all_clear_untimed` (an acknowledged event the journal shows resolved, with no all-clear in the
+  trail, where the journal holds no time for the resolution): warnings, shown as `note: WARNING`, that
+  fail the audit only under `-strict`. `acked_late`, `overdue` and `never_notified` always fail it.
+- **A late all-clear.** An approval gate decided by m-of-n decisions carries each decision's
+  `recorded_at`; if the newest is older than `-grace` and the trail, which acknowledged the gate,
+  has no all-clear, the all-clear is `never_notified`.
 
 ```
 $ bide audit notifications -db run.db -sth notify-r1.sth.json -pubkey keys/log.pub
@@ -541,8 +546,8 @@ What this does not prove: that anyone read a notification (an acknowledgement is
 and `bide audit` cannot see past the sink); the times are the notifying processes' clocks, bounded
 above only by the head's signed timestamp; an event that left no trace in the journals supplied (a
 halt that a later result resolved, or a gate in a run whose journal was not supplied) and no record
-in the trail cannot be found; and an all-clear owed for an acknowledged event that was later decided
-is found only when the clearing is recorded. Take the public key from the operator out of band, as
+in the trail cannot be found; and an all-clear owed for an event whose resolution the journal does not
+time (a tool's result, a halt resolution, a run's end) is a warning, not a verdict. Take the public key from the operator out of band, as
 for any signed head.
 
 ## CLI reference: `bide audit`
@@ -623,7 +628,7 @@ Conventions shared across verbs:
 | `verify-quorum` | `-name`, `-tally`, `-vote` (repeatable), `-pubkey`, `-k` | `-commit` | A governed k-of-n quorum: the tally and every vote bundle authentic, in the same signed tree and run, and recorded by the quorum named `-name`; the disclosed votes exactly the votes the tally records; the recorded tally recomputes from them (a forged tally is caught); and `votes_for >= k`; with `-commit`, a governed commit (a tool call's result) is anchored in the same tree. |
 | `verify-run` | `-cert`, `-pubkey`, and at least one of `-approved <digest>` (repeatable) / `-approved-file <file>` (both together form one allowlist) | `-checker <astchecker>` | A proof-carrying run certificate: the used-policy set is bound by a signed used-policy head to this run and to the certificate's journal tree, and is a subset of the approved allowlist (only-approved-policies), and every used policy has an anchored, digest-linked convergence certificate in the run's signed tree (policies-convergence-certified); with `-checker`, the oracle's convergence verdict on each used policy must AGREE with its certificate. |
 | `verify-approvals` | `-evidence`, `-pubkey`, `-call`, `-need`, `-approvers`, `-approver-keys` | `-approved <digest>` (repeatable), `-approved-file <file>` (together, one allowlist, required when the package carries a run certificate) | An m-of-n approval gate from an `EvidencePackage`: the request, every decision the gate read, its recorded tally, and the call's result all verify in one signed tree and in order; recounting the decisions with the approvers' keys (a JSON object of id to key text, `<alg>:<hex>` or bare ed25519 hex; two of the policy's approvers on one key, or a weak key, is an unusable input) against the exact call reproduces the recorded tally; the gate enforced the expected policy; and at least k approved. Catches an omitted decision, which `verify-evidence` alone cannot. |
-| `notifications` | exported files: `-trail` (repeatable) and `-pubkey` with `-sth` per trail, or `-unanchored`; or a store: `-db` or `-postgres-env`, with the same | `-journal` (repeatable), `-run <id>` (store only), `-max-ack <duration>`, `-grace <duration>`, `-recovery-failing-after <duration>`, `-as-of <time>` | That every event that needed a person (an unknown-outcome halt, an approval gate, an aborted run, a recovery failure, an overdue notice, an all-clear) was notified and acknowledged in time: the trail is read strictly and is a history a notifier writes; with a signed head, the trail's first records are exactly what the head commits to; every gate, halt and abort a journal shows is observed. Exit 1 on `acked_late`, `overdue`, `never_notified`, or a trail that does not hold together. See [Notification evidence](#notification-evidence-were-the-people-told). |
+| `notifications` | exported files: `-trail` (repeatable) and `-pubkey` with `-sth` per trail, or `-unanchored`; or a store: `-db` or `-postgres-env`, with the same | `-journal` (repeatable), `-run <id>` (store only), `-strict`, `-max-ack <duration>`, `-grace <duration>`, `-recovery-failing-after <duration>`, `-as-of <time>` | That every event that needed a person (an unknown-outcome halt, an approval gate, an aborted run, a recovery failure, an overdue notice, an all-clear) was notified and acknowledged in time: the trail is read strictly and is a history a notifier writes; with a signed head, the trail's first records are exactly what the head commits to; every gate, halt and abort a journal shows is observed. Exit 1 on `acked_late`, `overdue`, `never_notified`, or a trail that does not hold together. See [Notification evidence](#notification-evidence-were-the-people-told). |
 | `verify-evidence` | `-evidence`, `-pubkey` | `-approved <digest>` (repeatable), `-approved-file <file>` (together, one allowlist) | A run-level `EvidencePackage`: the format, seal, and key are right, the signed tree head is an authentic journal head of the package's run, every packaged action proof verifies against it with the kind and label its record says, the grant chain is the anchored grants, the consistency proof holds between its two signed heads, and any run certificate is for this run and passes against the given allowlist (required when the package carries one). Prints one line per item and an overall PASS/FAIL. |
 
 The `-checker` flag points at the external verified oracle binary (the `astchecker` extracted from

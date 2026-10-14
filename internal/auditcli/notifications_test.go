@@ -377,4 +377,9 @@ func TestNotificationsVerb_UnobservedResolvedIsAWarning(t *testing.T) {
 	if code != 0 || !strings.Contains(out, "note: WARNING unobserved_resolved") {
 		t.Fatalf("exit %d\n%s", code, out)
 	}
+	// -strict lets a bank fail on it.
+	code, out, _ = runCLI("notifications", "-db", "x.db", "-unanchored", "-strict", "-as-of", time.Now().Add(time.Hour).Format(time.RFC3339))
+	if code != 1 || !strings.Contains(out, "FAIL  unobserved_resolved") {
+		t.Fatalf("-strict: exit %d\n%s", code, out)
+	}
 }

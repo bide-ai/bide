@@ -24,6 +24,11 @@ type JournalNotifyEvent struct {
 	// Current reports whether the journal still shows the event unresolved: a gate with no
 	// decision, an attempt with no result. An event that is not current was resolved since.
 	Current bool
+	// ResolvedAt is, for a gate that is not current, when its newest decision was journaled (the
+	// decision's recorded_at, by the submitter's clock), so a decision made at the time is known
+	// and an all-clear can be judged late. Zero when the event is current, or when the journal
+	// holds no time for what resolved it (a tool's result, a run's end).
+	ResolvedAt time.Time
 }
 
 // JournalNotifyEvents returns the events recs, the history of runID, records that need a person,
@@ -52,10 +57,21 @@ func JournalNotifyEvents(runID string, recs []Record) []JournalNotifyEvent {
 			continue
 		}
 		at, _ := time.Parse(time.RFC3339Nano, w.RecordedAt)
-		out = append(out, JournalNotifyEvent{
+		ev := JournalNotifyEvent{
 			Key: ApprovalKey(runID, w.ToolUseID, 0), Kind: NotificationApprovalPending, RunID: root, At: at,
 			Current: !slices.ContainsFunc(gateDecidedNames(w.ToolUseID), func(n string) bool { return have[n] }),
-		})
+		}
+		if !ev.Current {
+			for _, d := range recs {
+				if !IsApprovalDecision(d, w.ToolUseID) {
+					continue
+				}
+				if t, err := time.Parse(time.RFC3339Nano, d.RecordedAt()); err == nil && t.After(ev.ResolvedAt) {
+					ev.ResolvedAt = t
+				}
+			}
+		}
+		out = append(out, ev)
 	}
 	live := liveAttempts(recs)
 	for _, base := range slices.Sorted(maps.Keys(live)) {
