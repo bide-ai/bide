@@ -27,6 +27,7 @@ import (
 	"time"
 
 	"github.com/bide-ai/bide/agent"
+	"github.com/bide-ai/bide/internal/filegate"
 	_ "modernc.org/sqlite"
 )
 
@@ -49,6 +50,7 @@ const writeBusyTimeout = 30 * time.Second
 type Store struct {
 	w, r, l *sql.DB // writer (one connection), readers, leases (one connection)
 	own     bool    // Close closes the pools: Open opened them
+	gate    *filegate.Gate // queues this process's writers on the file
 	t       tables
 }
 
@@ -121,7 +123,7 @@ func Open(path string, opts ...Option) (*Store, error) {
 		db.SetMaxIdleConns(1)
 		db.SetConnMaxLifetime(0)
 		db.SetConnMaxIdleTime(0)
-		s := &Store{w: db, r: db, l: db, own: true, t: cfg.tables()}
+		s := &Store{w: db, r: db, l: db, own: true, t: cfg.tables(), gate: filegate.For(":memory:")}
 		if err := s.migrate(ctx); err != nil {
 			db.Close()
 			return nil, err
@@ -133,18 +135,21 @@ func Open(path string, opts ...Option) (*Store, error) {
 		return nil, err
 	}
 	w.SetMaxOpenConns(1) // one writer: an Insert's MAX(seq)+1 never races another in this process
-	s := &Store{w: w, own: true, t: cfg.tables()}
+	s := &Store{w: w, own: true, t: cfg.tables(), gate: filegate.For(path)}
 	if err := s.migrate(ctx); err != nil { // creates the file in WAL mode before the other pools open it
 		w.Close()
+		s.gate.Close()
 		return nil, fmt.Errorf("sqlite: Open %s: %w%s", path, err, openHint(err))
 	}
 	if s.r, err = sql.Open("sqlite", withQuery(path, busy+"&_pragma=query_only(1)")); err != nil {
 		w.Close()
+		s.gate.Close()
 		return nil, err
 	}
 	s.r.SetMaxOpenConns(8)
 	if s.l, err = sql.Open("sqlite", withQuery(path, busy)); err != nil {
 		w.Close()
+		s.gate.Close()
 		s.r.Close()
 		return nil, err
 	}
@@ -197,11 +202,23 @@ func New(ctx context.Context, db *sql.DB, opts ...Option) (*Store, error) {
 	if !strings.EqualFold(mode, "wal") {
 		return nil, fmt.Errorf("sqlite: New: db is in journal mode %q, want WAL: %w", mode, agent.ErrConfig)
 	}
-	s := &Store{w: db, r: db, l: db, t: cfg.tables()}
+	s := &Store{w: db, r: db, l: db, t: cfg.tables(), gate: filegate.For(mainFile(ctx, db))}
 	if err := s.migrate(ctx); err != nil {
+		s.gate.Close()
 		return nil, err
 	}
 	return s, nil
+}
+
+// mainFile is the path of db's main database file, or "" for an in-memory or temporary database or
+// when it cannot be read; the writers of a Store over such a db do not queue.
+func mainFile(ctx context.Context, db *sql.DB) string {
+	var seq int
+	var name, file string
+	if err := db.QueryRowContext(ctx, `SELECT seq, name, file FROM pragma_database_list WHERE name = 'main'`).Scan(&seq, &name, &file); err != nil {
+		return ""
+	}
+	return file
 }
 
 func (c config) tables() tables {
@@ -290,6 +307,7 @@ func (s *Store) refuseLegacy(ctx context.Context) error {
 
 // Close closes the connection pools Open opened. A Store made with New leaves its db open.
 func (s *Store) Close() error {
+	s.gate.Close()
 	if !s.own {
 		return nil
 	}
@@ -308,7 +326,7 @@ func (s *Store) Close() error {
 // increases in commit order, within a run and across the table. The entry it returns for a new row
 // holds data itself (SQLite copied it).
 func (s *Store) Insert(ctx context.Context, runID, name string, data []byte) (agent.Entry, bool, error) {
-	res, err := s.w.ExecContext(ctx, s.t.insert, runID, name, data)
+	res, err := s.write(ctx, s.t.insert, runID, name, data)
 	if err != nil {
 		return agent.Entry{}, false, fmt.Errorf("insert step %q: %w (%w)", name, err, agent.ErrStorage)
 	}
@@ -331,6 +349,18 @@ func (s *Store) Insert(ctx context.Context, runID, name string, data []byte) (ag
 		return agent.Entry{}, false, fmt.Errorf("insert step %q: the insert conflicted but no entry exists: %w", name, agent.ErrStorage)
 	}
 	return e, false, nil
+}
+
+// write runs one write statement on the writer connection when it is this process's turn at the
+// file: SQLite's busy handler is not a queue, so without the turns a burst of writers (or a slow
+// disk) can starve one of them past the busy timeout.
+func (s *Store) write(ctx context.Context, query string, args ...any) (sql.Result, error) {
+	leave, err := s.gate.Enter(ctx)
+	if err != nil {
+		return nil, err
+	}
+	defer leave()
+	return s.w.ExecContext(ctx, query, args...)
 }
 
 // Get implements agent.Store. It reads on the writer's connection: the journal reads a step just

@@ -10,32 +10,32 @@ import (
 	"database/sql"
 	"errors"
 	"fmt"
+	"strings"
 	"time"
 
 	"github.com/bide-ai/bide/agent"
+	"github.com/bide-ai/bide/internal/filegate"
 	"modernc.org/sqlite"
 	sqlite3 "modernc.org/sqlite/lib"
 )
 
 // Log is an on-disk append-only event log per entity.
 type Log struct {
-	db *sql.DB
+	db   *sql.DB
+	gate *filegate.Gate // queues this process's writers on the file
 }
 
 // Open opens (creating if needed) an event log at path (":memory:" for ephemeral).
 func Open(path string) (*Log, error) {
-	db, err := sql.Open("sqlite", path)
+	// A writer waits up to 30s for another process's write lock. SQLite's busy handler is not
+	// fair, so under a burst of writers on one file (or a slow disk) a single writer can wait
+	// well past a few seconds; failing then would lose a write whose side effect already ran. The
+	// timeout is in the DSN, not a PRAGMA run once, so every connection the pool opens has it.
+	db, err := sql.Open("sqlite", withQuery(path, fmt.Sprintf("_pragma=busy_timeout(%d)", busyWait.Milliseconds())))
 	if err != nil {
 		return nil, err
 	}
 	db.SetMaxOpenConns(1)
-	// A writer waits up to 30s for another process's write lock. SQLite's busy handler is not
-	// fair, so under a burst of writers on one file (or a slow disk) a single writer can wait
-	// well past a few seconds; failing then would lose a write whose side effect already ran.
-	if _, err := db.Exec(`PRAGMA busy_timeout=30000;`); err != nil {
-		db.Close()
-		return nil, err
-	}
 	if err := useWAL(db, busyWait); err != nil {
 		db.Close()
 		return nil, err
@@ -44,7 +44,15 @@ func Open(path string) (*Log, error) {
 		db.Close()
 		return nil, err
 	}
-	return &Log{db: db}, nil
+	return &Log{db: db, gate: filegate.For(path)}, nil
+}
+
+// withQuery appends the DSN query parameter q to path.
+func withQuery(path, q string) string {
+	if strings.Contains(path, "?") {
+		return path + "&" + q
+	}
+	return path + "?" + q
 }
 
 // busyWait bounds how long Open retries switching a busy file to WAL mode, as busy_timeout
@@ -115,7 +123,10 @@ func migrateLocked(ctx context.Context, db *sql.Conn) error {
 }
 
 // Close releases the underlying database handle.
-func (l *Log) Close() error { return l.db.Close() }
+func (l *Log) Close() error {
+	l.gate.Close()
+	return l.db.Close()
+}
 
 // Append durably records an event for an entity under id and returns its position (its seq). The
 // seq is computed and inserted in one statement; SQLite serializes writers, and the (entity, seq)
@@ -126,13 +137,20 @@ func (l *Log) Append(ctx context.Context, entity, id, event string) (int64, erro
 	if id == "" {
 		return 0, fmt.Errorf("sqlitelog: empty append id: %w", agent.ErrConfig)
 	}
+	// The writers in this process take turns on the file, so that a burst of them (or a slow disk)
+	// cannot starve one in SQLite's busy handler, which is not a queue.
+	leave, err := l.gate.Enter(ctx)
+	if err != nil {
+		return 0, err
+	}
 	var seq int64
-	err := l.db.QueryRowContext(ctx, `
+	err = l.db.QueryRowContext(ctx, `
 		INSERT INTO events (entity, seq, event, append_id)
 		VALUES (?, (SELECT COALESCE(MAX(seq), -1) + 1 FROM events WHERE entity = ?), ?, ?)
 		ON CONFLICT (entity, append_id) DO NOTHING
 		RETURNING seq`,
 		entity, entity, event, id).Scan(&seq)
+	leave()
 	if err == nil {
 		return seq, nil
 	}
