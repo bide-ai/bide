@@ -524,3 +524,82 @@ func TestEscalation_EscalatedKeysParseBack(t *testing.T) {
 		t.Fatalf("a receiver-qualified approval key: %+v, %v", ev, ok)
 	}
 }
+
+// The observation of a step is checked on the trail prefix it is appended at, so a step that is
+// submitted and then not due (the event acknowledged or cleared meanwhile, the deadline not reached,
+// the step before it not observed) writes nothing.
+func TestEscalation_AStepIsObservedOnlyWhenDueOnTheLoadedTrail(t *testing.T) {
+	ctx := context.Background()
+	newEng := func(t *testing.T) (*notifyEngine, *MemNotifyTrail, *notifyClock, *fakeSink, *fakeSink) {
+		clk := routeClock()
+		def, lead, trail := &fakeSink{fail: 1000}, &fakeSink{}, NewMemNotifyTrail()
+		e := escalationEngine(t, memJournal(), trail, clk, "p1", map[string]Notifier{"default": def, "lead": lead, "head": &fakeSink{}})
+		_, _ = e.round(ctx, haltEvent())
+		return e, trail, clk, def, lead
+	}
+	step := func(e *notifyEngine, level int) notifyEvent { return e.escalationOf(haltEvent(), level) }
+
+	t.Run("before the deadline", func(t *testing.T) {
+		e, trail, _, _, lead := newEng(t)
+		if _, err := e.round(ctx, step(e, 1)); err != nil {
+			t.Fatal(err)
+		}
+		if lead.count() != 0 || foldTrail(t, trail).Events[EscalationKey(haltEvent().key, 1)] != nil {
+			t.Fatal("a step was observed before its event's deadline")
+		}
+	})
+	t.Run("event acknowledged meanwhile", func(t *testing.T) {
+		e, trail, clk, def, lead := newEng(t)
+		clk.advance(6 * time.Minute)
+		def.mu.Lock()
+		def.fail = 0
+		def.mu.Unlock()
+		clk.advance(time.Minute)
+		if _, err := e.round(ctx, haltEvent()); err != nil { // the sink is back: the halt is acked
+			t.Fatal(err)
+		}
+		if _, err := e.round(ctx, step(e, 1)); err != nil {
+			t.Fatal(err)
+		}
+		if lead.count() != 0 || foldTrail(t, trail).Events[EscalationKey(haltEvent().key, 1)] != nil {
+			t.Fatal("a step was observed after the event was acknowledged")
+		}
+	})
+	t.Run("event cleared meanwhile", func(t *testing.T) {
+		e, trail, clk, _, lead := newEng(t)
+		putResult(t, e.j, "r", "c1")
+		clk.advance(6 * time.Minute)
+		_, _ = e.round(ctx, haltEvent()) // writes cleared
+		if _, err := e.round(ctx, step(e, 1)); err != nil {
+			t.Fatal(err)
+		}
+		if lead.count() != 0 || foldTrail(t, trail).Events[EscalationKey(haltEvent().key, 1)] != nil {
+			t.Fatal("a step was observed after the event was cleared")
+		}
+	})
+	t.Run("a later step without the one before", func(t *testing.T) {
+		e, trail, clk, _, _ := newEng(t)
+		clk.advance(time.Hour)
+		if _, err := e.round(ctx, step(e, 2)); err != nil {
+			t.Fatal(err)
+		}
+		if foldTrail(t, trail).Events[EscalationKey(haltEvent().key, 2)] != nil {
+			t.Fatal("step 2 was observed with no step 1")
+		}
+	})
+}
+
+// The configuration in the notifications guide's worked example builds.
+func TestRouting_TheGuidesWorkedExampleIsAValidConfiguration(t *testing.T) {
+	_, err := newNotifyEngine(memJournal(), &fakeSink{}, NewMemNotifyTrail(), []NotifyOption{
+		WithNotifyReceiver("approvers", &fakeSink{}), WithNotifyReceiver("oncall", &fakeSink{}), WithNotifyReceiver("lead", &fakeSink{}),
+		WithNotifyRoute(NotificationApprovalPending, "approvers"), WithNotifyRoute(NotificationOutcomeUnknown, "oncall"),
+		WithNotifyRoute(NotificationRecoveryFailing, "oncall"), WithNotifyDeadline(5 * time.Minute),
+		WithNotifyEscalation(NotificationOutcomeUnknown, EscalationStep{Receiver: "lead", Deadline: 15 * time.Minute}, EscalationStep{Receiver: "default", Deadline: 30 * time.Minute}),
+		WithNotifyEscalation(NotificationApprovalPending, EscalationStep{Receiver: "lead", Deadline: time.Hour}),
+		WithNotifyApproverRoute("alice", "approvers"), WithNotifyApproverRoute("bob", "lead"),
+	}, "test")
+	if err != nil {
+		t.Fatal(err)
+	}
+}

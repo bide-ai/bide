@@ -374,3 +374,37 @@ func (e *notifyEngine) escRound(ctx context.Context, w notifyEvent) (roundResult
 	e.w.submit(e.escalationOf(base, level+1)) // idempotent: its round observes it once
 	return roundResult{next: now.Add(e.backoff(1))}, nil
 }
+
+// escalationDue reports whether the step ev (an escalation) may be observed on st, the trail as
+// loaded: its event is observed and not cleared and still stands, neither it nor an earlier step has
+// been acknowledged (an approval is satisfied only by being decided), its deadline (step 1) or the
+// previous step's (later steps) has passed, and for a later step the previous one is observed.
+func (e *notifyEngine) escalationDue(ctx context.Context, ev notifyEvent, st NotifyState, now time.Time) (bool, error) {
+	base := st.Events[ev.origKey]
+	if base == nil || base.Cleared != nil {
+		return false, nil
+	}
+	if ev.origKind != NotificationApprovalPending {
+		if base.Acked != nil {
+			return false, nil
+		}
+		for l := 1; l < ev.level; l++ {
+			if se := st.Events[EscalationKey(ev.origKey, l)]; se != nil && se.Acked != nil {
+				return false, nil
+			}
+		}
+	}
+	due := base.DeadlineAt
+	if ev.level > 1 {
+		prev := st.Events[EscalationKey(ev.origKey, ev.level-1)]
+		if prev == nil {
+			return false, nil
+		}
+		due = prev.DeadlineAt
+	}
+	if now.Before(due) {
+		return false, nil
+	}
+	cur, _, err := e.current(ctx, ev, st)
+	return cur, err
+}

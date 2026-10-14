@@ -380,6 +380,51 @@ and is read from its key, which works for every ID that fits.
 sweep and recovery pass plus one per run listed, off the drive's path, and a journal read for each
 acknowledged event not yet cleared.
 
+### Routing and escalation
+
+**Routing** sends each event to one receiver, chosen by its kind (`WithNotifyRoute`) and, for an
+approval, by its approvers (`WithNotifyApproverRoute`). **Escalation** (`WithNotifyEscalation`) tells
+the next receiver of a bounded chain when an event is not acknowledged by its deadline, or, for an
+approval, is not decided by it. Both are decided in the engine, not in a `Notifier` that fans out, and
+the reason is the audited trail. A `Notifier` that sent to several sinks would return one result, so the
+trail would hold one `acked` for all of them, a failure of one would retry all of them, and an auditor
+could not say through which receiver a person was told. In the engine, each delivery to each receiver is
+a key of its own, so it has its own `observed`, `claimed` and `acked` records, its own retries, backoff,
+`failing` and `overdue`, and the claim race and the duplicate bound hold for it as they hold for any key.
+The unit the protocol, the fold and the model were built on does not change: a key.
+
+**What a route is.** A route maps an event to a receiver name; `observed` records it (`receiver`, empty
+for the default receiver, so a trail written without routing is unchanged). The delivery ID is
+`NotifyID(key)` as before. The all-clear and the overdue notice of an event follow its receiver. An
+approval whose approvers are routed to several receivers is several deliveries, each under the key
+`to:<receiver>:<key>`; a gate with one receiver for all its routed approvers keeps its plain key. Sharing
+one key between receivers is the mistake the key rule prevents, and the model shows it
+(`regress/shared-ack`): the first receiver's `acked` would close the event for the others.
+
+**What a step is.** Step `l` of the chain of event `k` is the key `escalated:<l>:<k>`, kind `escalated`,
+observed with the receiver, the level and a deadline of its own, the step's. It is an ordinary event in
+every other respect, with two differences: it has no overdue record (its deadline is the next step's), and
+it stands as long as the event it escalates (`current` reads that event), so it is cleared with it and the
+receiver it told gets the all-clear (`resolved:escalated:<l>:<k>`). A step is observed only if, on the
+trail prefix the deliverer loaded, the event is not cleared, no receiver of the event or an earlier step
+has acknowledged it (an approval is satisfied only by being decided), the event's deadline (step 1) or the
+previous step's (later steps) has passed, and, for a later step, the previous step is observed. The append
+that observes it is at the position after that prefix, so the check and the observation are one atomic step
+of the trail: no step is observed after an acknowledgement or a clearing the trail shows. The chain is
+bounded by its configured length (at most four) and ends there; the last step's deadline passing raises
+nothing more.
+
+**Who runs it.** A worker job, the *watch* of an event, wakes at the deadline of the current step, reads
+the trail and submits the next step's delivery; it writes nothing until a step is due. It is queued when
+an event is routed and, for an event already in a trail, by the scan of the run's trail (after every drive
+of a root run, every recovery pass, every run `NotifyPending` lists), so a process that dies with a watch in
+memory leaves it to the next one, which continues from the trail's last step. Two processes that both find
+a step due submit it twice; the trail gives it one `observed` and one deliverer at a time.
+
+**Limit.** An escalation made from the scan, after a restart, rebuilds the event from its key and so carries
+the operation or tool use ID and not the cause of a halt or the approvers of a gate. A deployment with no
+process alive at a deadline escalates at the next pass.
+
 ### Behavior fixed by the adversarial review
 
 An independent review of the first implementation found these, and each is now a test:
@@ -782,10 +827,11 @@ does not (the race between the currency check and the send).
   callbacks, the approver key story and the m-of-n signature path; a later step. That inbound
   direction is where mutual TLS matters most, since it would authenticate the system calling bide
   rather than the system bide calls; this note's mTLS support is the outbound half only.
-- **Reminder and escalation policy** beyond the key shape that admits it (`r` in the approval key)
-  and the one-shot overdue event.
-- **Routing rules** (which team gets which tool). One notifier per agent; fan out in the receiver,
-  or compose `Notifier` values.
+- **Reminder policy** beyond the key shape that admits it (`r` in the approval key) and the one-shot
+  overdue event. Escalation is a bounded chain of receivers (see "Routing and escalation"), not a
+  schedule of repeats.
+- **Routing rules beyond kind and approver** (which team gets which tool, by amount, by principal). A
+  route is a kind or an approver ID; anything finer is done in the receiver.
 - **Proving a person read it.** `acked` is the endpoint's acceptance.
 - **Notifying about ordinary tool errors or a plain error returned from `Run`.** The caller has
   those.

@@ -525,9 +525,36 @@ func TestPayloadResolvedNamesTheEventItClears(t *testing.T) {
 	}
 }
 
+func TestPayloadEscalatedNamesTheEventItEscalatesAndCarriesItsDetail(t *testing.T) {
+	w := plainWebhook(t)
+	n := sampleApproval()
+	base := n.Key
+	n.Key, n.ID = agent.EscalationKey(base, 2), agent.NotifyID(agent.EscalationKey(base, 2))
+	n.Kind, n.Reason, n.Receiver = agent.NotificationEscalated, "undecided", "lead"
+	n.Escalates = &agent.NotifyEscalates{Key: base, ID: agent.NotifyID(base), Kind: agent.NotificationApprovalPending, Level: 2}
+	m, body := notifyJSON(t, w, n)
+	e, ok := m["escalates"].(map[string]any)
+	if !ok || e["id"] != agent.NotifyID(base) || e["key"] != base || e["kind"] != "approval_pending" || e["level"] != float64(2) {
+		t.Fatalf("escalates: %s", body)
+	}
+	if m["kind"] != "escalated" || m["id"] != n.ID || m["key"] != n.Key || m["reason"] != "undecided" || m["receiver"] != "lead" {
+		t.Fatalf("envelope: %s", body)
+	}
+	if ap, _ := m["approval"].(map[string]any); ap == nil || ap["tool"] != "refund" || len(ap["approvers"].([]any)) != 3 {
+		t.Fatalf("an escalation must carry the event's own detail: %s", body)
+	}
+	if !strings.HasPrefix(m["summary"].(string), "Escalation 2: ") {
+		t.Fatalf("summary %q", m["summary"])
+	}
+	if m["clears"] != nil {
+		t.Fatalf("clears set on an escalation: %s", body)
+	}
+}
+
 func TestPayloadIsMinimalByDefault(t *testing.T) {
 	w := plainWebhook(t)
 	n := approvalWithSecrets()
+	n.Receiver = agent.DefaultReceiver // the engine always sets it
 	n.Err = &withText{n.Err, "stripe said: card " + cardNumber + " declined"}
 	m, body := notifyJSON(t, w, n)
 	if strings.Contains(body, cardNumber) || strings.Contains(body, "declined") || strings.Contains(body, "amount") {
@@ -542,7 +569,7 @@ func TestPayloadIsMinimalByDefault(t *testing.T) {
 	// Exactly the documented top-level fields: a new one must be a deliberate, reviewed change.
 	want := map[string]bool{"schema": true, "id": true, "key": true, "kind": true, "run_id": true, "event_at": true, "observed_at": true,
 		"deadline_at": true, "attempt": true, "summary": true, "step": true, "halt": true, "principal": true, "approval": true,
-		"abort": true, "failing": true, "clears": true, "view": true}
+		"abort": true, "failing": true, "clears": true, "escalates": true, "receiver": true, "view": true}
 	for k := range m {
 		if !want[k] {
 			t.Errorf("undocumented top-level field %q", k)

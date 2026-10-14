@@ -852,6 +852,9 @@ EscDelivered == \A k \in EscKeys : Has(trail, "observed", k) ~> (Acked(k) \/ Has
 \* The configuration's bound on rounds never blocks a deliverer.
 BoundNotHit == ~boundHit
 
-\* Vacuity (check.sh): a notification is delivered; with Clears, an all-clear is.
-EffectNotReachable == IF Clears THEN \A r \in ResKeys : deliv[r] = 0 ELSE \A e \in Keys : deliv[e] = 0
+\* Vacuity (check.sh): a notification is delivered; with Levels, an escalation is; with Clears, an
+\* all-clear is.
+EffectNotReachable ==
+  IF Levels > 0 THEN \A k \in EscKeys : deliv[k] = 0
+  ELSE IF Clears THEN \A r \in ResKeys : deliv[r] = 0 ELSE \A e \in Keys : deliv[e] = 0
 =============================================================================

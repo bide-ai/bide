@@ -142,10 +142,13 @@ Schema `bide.notification.v1`:
 ```
 
 `kind` is `outcome_unknown`, `approval_pending`, `run_aborted`, `recovery_failing`,
-`notification_overdue` or `resolved`. At most one of `halt`, `approval`, `abort`, `failing` and
-`clears` is set, as the kind says. `summary` is generated from the structured fields, so a chat
-message can post it as it is. `notification_overdue` and `resolved` also carry a `reason`. New fields
-are additive within `v1` (`clears` is one; it is `null` on every other kind); ignore the ones you do
+`notification_overdue`, `resolved` or `escalated`. At most one of `halt`, `approval`, `abort`,
+`failing` and `clears` is set, as the kind says; an `escalated` notification carries the detail of the
+event it escalates and sets `escalates` (see [Routing and escalation](#routing-and-escalation)), and
+every payload names its `receiver`. `summary` is generated from the structured fields, so a chat
+message can post it as it is. `notification_overdue`, `resolved` and `escalated` also carry a `reason`.
+New fields are additive within `v1` (`clears` and `escalates` are two; each is `null` on every other
+kind); ignore the ones you do
 not know.
 
 ### The all-clear
@@ -230,6 +233,94 @@ notify.WithFields(notify.ErrorText, notify.Args("refund"))
 `ErrorText` adds `error` (bounded to 4 KiB). `Args("refund")` adds `approval.args` for approval
 notifications of the tools named, and of no other tool. A deployment under PCI-style rules leaves both
 out and puts detail behind the viewer, where access control applies.
+
+## Routing and escalation
+
+One notifier can serve several receivers: the approvers' channel, the on-call pager, a manager. Each
+is a `Notifier` of its own (usually a webhook with its own URL and secret, and its own
+adapter, see [Slack](#slack) and [PagerDuty](#pagerduty)), named with `WithNotifyReceiver`. The notifier given to `WithNotifier`
+is the receiver `default`.
+
+<!-- docsnip: setup journal *agent.Journal; model agent.Model; store audit.EventStore; approvers, oncall, lead, ops *notify.Webhook; returns error -->
+```go
+a, err := agent.New(model, journal, agent.WithNotifier(ops, audit.NewNotifyTrail(store),
+	agent.WithNotifyReceiver("approvers", approvers),
+	agent.WithNotifyReceiver("oncall", oncall),
+	agent.WithNotifyReceiver("lead", lead),
+
+	// Where an event goes: by kind, and for an approval optionally by approver.
+	agent.WithNotifyRoute(agent.NotificationApprovalPending, "approvers"),
+	agent.WithNotifyRoute(agent.NotificationOutcomeUnknown, "oncall"),
+	agent.WithNotifyRoute(agent.NotificationRecoveryFailing, "oncall"),
+
+	// Who is told next, when an event is not acknowledged (an approval: not decided) in time.
+	agent.WithNotifyDeadline(5*time.Minute),
+	agent.WithNotifyEscalation(agent.NotificationOutcomeUnknown,
+		agent.EscalationStep{Receiver: "lead", Deadline: 15 * time.Minute},
+		agent.EscalationStep{Receiver: "default", Deadline: 30 * time.Minute}),
+	agent.WithNotifyEscalation(agent.NotificationApprovalPending,
+		agent.EscalationStep{Receiver: "lead", Deadline: time.Hour}),
+))
+```
+
+A halt now pages `oncall`. If `oncall`'s endpoint has not acknowledged it five minutes after bide
+observed the event, `lead` is told, in an `escalated` notification that carries the halt's own
+detail and names it (`escalates.id`). `lead` has 15 minutes of its own; if it does not acknowledge
+either, the last step, `default` (here, the operations channel), is told. The chain ends there: it is
+at most four steps, and bide does not repeat it. An approval is different, because being told is not
+the point: if the approval is still undecided when the five minutes are up (even though the approvers'
+channel acknowledged the message), `lead` is told, and the chain continues while the gate stands.
+
+**Routing.** A route sends the events of one kind to one receiver. The kinds are `outcome_unknown`,
+`approval_pending`, `run_aborted` and `recovery_failing`; an event with no route goes to `default`.
+The all-clear of an event goes to the receiver the event went to, so that the incident it closes is
+the one that was opened; an overdue notice does too, unless `WithOverdueNotifier` names another.
+For an approval you may also route by approver:
+
+<!-- docsnip: skip an excerpt: two options of the call above -->
+```go
+agent.WithNotifyApproverRoute("alice", "risk"),
+agent.WithNotifyApproverRoute("bob", "finance"),
+```
+
+A gate whose approvers are `alice`, `bob` and `carol` is then delivered to both `risk` and
+`finance`, as two deliveries: each has its own key (`to:<receiver>:<key>`), its own ID, its own claim
+and acknowledgement in the trail, and its own retries. One receiver acknowledging does not stand for
+the other, and one being down does not hold the other back. An approver with no route, a 1-of-1 gate
+(which names no approvers) and a gate with none of its approvers routed go to the route of the kind.
+
+**What the trail shows.** All of a run's deliveries are in the one trail, `notify:<run>`, and each
+receiver's are told apart by the `receiver` field of the event's `observed` record (empty for
+`default`): `agent.FoldNotify(records).ByReceiver()` groups the event keys by receiver, and for each
+the fold has its `observed`, `claimed` and `acked` records. An auditor asks, per receiver, whether
+every event was delivered: every key of that receiver has an `acked` or a `cleared`. An escalation is
+an event like any other (key `escalated:<step>:<key>`, with its `receiver`, its `level`, its own
+`deadline_at` of the step's length, and its own claims and acknowledgement), so the escalation, who it
+went to and when they acknowledged it are evidence in the same log. The routing configuration is not
+in the trail: it is code. Keep it in version control, and read the trail for what happened.
+
+**Stopping.** An escalation stops, and the chain with it, when the event stops being current (the
+halt is resolved, the gate decided, the run ended, recovery recovered) and, for an event that is not an
+approval, when the event or a step has been acknowledged: someone has it. A receiver already told of a
+step gets its all-clear, like any receiver. The original event keeps being delivered to its own
+receiver whatever happens to the escalation.
+
+**What the receiver sees.** `kind` is `escalated`, `escalates` is `{ "id", "key", "kind", "level" }`
+(null on every other kind) and `receiver` is the name. `halt`, `approval` and `step` are those of the
+event, so a page can say what is wrong. `reason` is `deadline` (not acknowledged in time) or `undecided`
+(an approval, not decided in time). Dedupe on `id` as usual: the ID of a step is its own.
+
+**Different relays.** Each receiver is a `Notifier`, so each can point at its own relay: the
+approvers' webhook at a Slack adapter, the on-call one at a PagerDuty adapter, the escalation at a
+third. Their secrets, mutual TLS and pins are independent.
+
+**It needs a process that is alive at the deadline.** The deadline is checked by the notifier of a
+process that is running: a long-lived `Agent`, a `RecoverLoop` or a periodic `NotifyPending`. A pass
+that finds an event in the trail picks up the chain where the trail says it is, so a restart or a
+second process neither repeats a step nor skips one; but a deployment with nothing running at the
+deadline escalates at the next pass. An escalation made after a restart carries the event's identity
+(the operation or the tool use ID) and not its full detail: the approvers and the policy of an
+approval, and the cause of a halt, are in the original's notification and in the journal.
 
 ## Mutual TLS, a private CA and a key pin
 

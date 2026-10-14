@@ -397,6 +397,23 @@ load balancer have separate caches. A lost notification is not among the failure
 **A test notification is a real one to a relay.** `bide notify test` sends a sample for a run that does
 not exist; a relay forwards it to Slack and PagerDuty like any other event.
 
+**Routing and escalation are configuration, not evidence of intent.** The trail records which receiver
+each event went to, when it was observed, claimed and acknowledged, and each step of an escalation
+chain; it does not record the routing rules or the chain that were configured, so it cannot show that an
+event *should* have been escalated and was not (that needs the configuration, which is code under your
+version control). A route is a kind or an approver ID, not a tool or an amount.
+
+**An escalation needs a running process at the deadline.** Deadlines are read by a process with the
+notifier configured (a long-lived `Agent`, `RecoverLoop` or a periodic `NotifyPending`). Nothing alive
+at the deadline means the step is taken at the next pass, late and not lost. A step made after a restart
+carries the event's identity (operation or tool use ID) and not its full detail (a halt's cause, a gate's
+approvers).
+
+**Acknowledged is not read.** A receiver's 2xx means its endpoint accepted the request. For an event
+that is not an approval, an acknowledged step ends the chain, which a person may not have seen; route
+the step to a receiver that pages. An approval is escalated until it is decided, whatever was
+acknowledged. A chain is at most four steps and is not repeated.
+
 ## Stores
 
 **Upgrading from v0.8.0 or earlier is not a rolling deploy.** Their journals have no journal

@@ -378,6 +378,17 @@ func (e *notifyEngine) roundLocked(ctx context.Context, ev notifyEvent) (roundRe
 		es := st.Events[ev.key]
 
 		if es == nil {
+			if ev.kind == NotificationEscalated {
+				// A step is observed only if it is due on the trail this append is made at (the
+				// append at len(recs) fails if the trail has moved), and its event still stands.
+				due, err := e.escalationDue(ctx, ev, st, now)
+				if err != nil {
+					return roundResult{next: now.Add(e.backoff(e.failCount(ev.key)))}, err
+				}
+				if !due {
+					return roundResult{done: true}, nil // the watch decides again when it is
+				}
+			}
 			at := ev.eventAt
 			if at.IsZero() {
 				at = now

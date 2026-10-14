@@ -2372,6 +2372,20 @@ kinds. The note called it model 13, a number model 13 (probes) already has.
   not told of, and `run_aborted` (never non-current in the core) has none. The recovery_failing
   episodes' all-clears use the same machinery and are not modelled. The input assumption: an event
   that stops standing does not stand again, which the keys guarantee (never reused).
+- **Routing and escalation** (`Levels`, `EscMode`, as in the core at the routing change). Routing
+  needs no variable: an event goes to one receiver, and a gate routed to several receivers is several
+  keys (`to:<receiver>:<key>`), each with the records, claims and rounds of any key, so each receiver
+  has its own acknowledgement; two `Events` are two receivers of one gate, and `Bug = "SharedAck"` is
+  the one-key fan-out in which the first acknowledgement closes the other. Escalation gives each event
+  `e` the keys `x1_e`, `x2_e` (up to `Levels`), the steps of a bounded chain. A step is observed, by the
+  ordinary step 2, only if the prefix the deliverer loaded shows `e` not cleared and (`EscMode =
+  "unacked"`) neither `e` nor an earlier step acknowledged, and `e`'s deadline (step 1) or the previous
+  step's own deadline has passed with that step observed; the append at the loaded position makes the
+  check atomic with the observation. `EscMode = "undecided"` is an approval: acknowledgement does not
+  satisfy it, only `e` ceasing to stand. A step stands while `e` does (`Current`), has no `overdue`
+  record (its deadline is the next step's) and, with `Clears`, an all-clear like any key. The chain's end
+  is structural: the keys are the finite set. The watch job and the worker's dedupe are not modelled
+  (the model's fair deliverers start on whatever the trail makes startable).
 - **The sink.** A request is accepted, accepted with its reply lost (`MaxLost`), or fails
   (`MaxFail`; `NoBudget`: the sink never accepts).
 - **Time.** Abstract: a claim lapsing, a deadline passing and `D` passing since `failing_since`
@@ -2423,6 +2437,12 @@ another key) and the digest (the same records and fold).
 | 8 | `ClearNeverOverdue` | invariant | an all-clear has no `overdue` record and no overdue notice |
 | 8 | `ClearsDelivered` | liveness | every event that stopped standing after a delivery of it was attempted gets its all-clear acked (a sink that accepts in the end) |
 | 8 | `ClearAfterEventAck` | limit | does not hold: an event cleared with its request failed is never acked, and its all-clear is delivered all the same (`limits/clear-before-event`) |
+| 9 | `EscOnlyIfDue` | invariant | a step is observed only after its deadline (the event's, or the previous step's) has passed |
+| 9 | `EscChain` | invariant | step 2 is observed after step 1, in the trail's order |
+| 9 | `EscNotWhenSatisfied` | invariant | no step is observed after the event, or an earlier step, was acknowledged (an approval: never, by acknowledgement), or after the event was cleared, on the very prefix the append is made at |
+| 9 | `EscRaised` | liveness | a due step for an event that is not satisfied is observed, unless the event stops standing, is satisfied or cleared first |
+| 9 | `EscDelivered`, `EscStops` | liveness | a step observed is acked or cleared (a sink that accepts in the end); a step for an event that no longer stands is closed |
+| 9 | `NoSilentDrop` over two keys | liveness | with two receivers of one gate, each key is acked: one receiver's acknowledgement does not stand for the other (`route-two`; `regress/shared-ack` breaks it) |
 | | `BoundNotHit` | invariant | the configuration's round bound never stops a delivery |
 
 Property 6 needs no more than `LifeStepsOnly`: model 10's actions read no notify variable, so
