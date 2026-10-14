@@ -205,7 +205,7 @@ func TestEndToEnd(t *testing.T) {
 	if code != 1 {
 		t.Fatalf("risk after quorum = %d, want 1", code)
 	}
-	contains(t, "risk refusal", errs, "already has its 2 approval(s) recorded")
+	contains(t, "risk refusal", errs, "already has its 2 approval(s) (verified)")
 
 	// The run resumes and the call runs once.
 	res, err := f.drive(twoOfThree, false)
@@ -294,7 +294,7 @@ func TestRefusals(t *testing.T) {
 	rec("already decided", 1, "ops already decided on call c2: approved at 20", "", f.as("ops", "-yes")...)
 	rec("already decided, rejecting", 1, "ops already decided", "", f.as("ops", "-yes", "-reject")...)
 	// The refusal names the recorded time, and with -approver-keys it checks the signature.
-	rec("already decided (unverified)", 1, "counted unverified", "", f.asUnverified("ops", "-yes")...)
+	rec("already decided (unverified)", 1, "already decided", "", f.asUnverified("ops", "-yes")...)
 	rec("already decided (verified)", 1, "ops already decided on call c2", "", f.as("ops", "-yes", "-approver-keys", f.keysJSON)...)
 
 	// A single-approver gate takes neither -as nor -key; and a missing -as on an m-of-n gate.
@@ -905,7 +905,7 @@ func TestReceipt(t *testing.T) {
 		t.Fatalf("index %d does not point at record %q", r.Index, r.Record)
 	}
 	// It checks against the journal: not yet in any signed head, which is pending, not a failure.
-	if fnd := audit.CheckReceipt(r, recs, nil, f.pubs["ops"], 0); fnd.Verdict != audit.ReceiptPending {
+	if fnd := audit.CheckReceipt(r, recs, nil, f.pubs["ops"]); fnd.Verdict != audit.ReceiptPending {
 		t.Fatalf("%+v", fnd)
 	}
 
@@ -1017,7 +1017,7 @@ func TestReceiptOnAnAuditedJournal(t *testing.T) {
 		}
 		return hs
 	}
-	if fnd := audit.CheckReceipt(rc, f.allRecords(), heads(), logKey, 0); fnd.Verdict != audit.ReceiptPending {
+	if fnd := audit.CheckReceipt(rc, f.allRecords(), heads(), logKey); fnd.Verdict != audit.ReceiptPending {
 		t.Fatalf("before the app writes: %+v", fnd)
 	}
 
@@ -1037,7 +1037,7 @@ func TestReceiptOnAnAuditedJournal(t *testing.T) {
 	if _, err := agenttest.MustNew(m, agenttest.MustJournal(as), agent.WithTools(refund), agent.WithApproverVerifiers(verify)).Run(context.Background(), f.run, agent.UserText("refund")); err != nil {
 		t.Fatal(err)
 	}
-	if fnd := audit.CheckReceipt(rc, f.allRecords(), heads(), logKey, 0); fnd.Verdict != audit.ReceiptAnchored {
+	if fnd := audit.CheckReceipt(rc, f.allRecords(), heads(), logKey); fnd.Verdict != audit.ReceiptAnchored {
 		t.Fatalf("after the app writes: %+v", fnd)
 	}
 }

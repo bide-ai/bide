@@ -87,7 +87,7 @@ func TestReview_JunkRecordsMakeListSayApproved(t *testing.T) {
 		t.Fatal("the gate counted junk signatures")
 	}
 	_, out, _ := fx.run_("", "-list")
-	if strings.Contains(out, "approvals recorded: re-run the run and the call runs") {
+	if strings.Contains(out, "approvals recorded") || strings.Contains(out, "approvals verified") {
 		t.Fatalf("-list says the call runs on re-run; the gate (verified) still waits for all three approvers:\n%s", out)
 	}
 }
@@ -255,6 +255,7 @@ func TestReview_DecisionWrittenOutsideAuditedStoreIsNotAnchored(t *testing.T) {
 	}
 	recs, _ := aj.History(context.Background(), "r1")
 	covered := anc.latest("r1")
+	headsBefore := anc.all("r1")
 
 	// What the end-to-end flow does NOT lose: after the application resumes, its writes anchor the
 	// whole journal and the evidence verifies.
@@ -284,7 +285,7 @@ func TestReview_DecisionWrittenOutsideAuditedStoreIsNotAnchored(t *testing.T) {
 		t.Fatalf("the window closed by itself: the latest head covers %d of %d records", covered, len(recs))
 	}
 	rc := readReceipt(t, receiptsIn(t, dir)[0])
-	if fnd := audit.CheckReceipt(rc, recs, anc.all("r1"), audit.Ed25519Verifier{Pub: logPub}); fnd.Verdict != audit.ReceiptPending {
+	if fnd := audit.CheckReceipt(rc, recs, headsBefore, audit.Ed25519Verifier{Pub: logPub}); fnd.Verdict != audit.ReceiptPending {
 		t.Fatalf("before the resume: %+v", fnd)
 	}
 	if fnd := audit.CheckReceipt(rc, recs2, anc.all("r1"), audit.Ed25519Verifier{Pub: logPub}); fnd.Verdict != audit.ReceiptAnchored {
@@ -529,11 +530,11 @@ func TestReview_ListVerifiesWithKeys(t *testing.T) {
 	}
 	closeJ()
 	_, out, _ := fx.run_("", "-list", "-approver-keys", fx.keysJSON)
-	if strings.Contains(out, "approvals recorded") || !strings.Contains(out, "-as ops") || !strings.Contains(out, "pending: ops, finance, risk") {
+	if strings.Contains(out, "approvals verified") || !strings.Contains(out, "-as ops") || !strings.Contains(out, "pending: ops, finance, risk") {
 		t.Fatalf("verified -list:\n%s", out)
 	}
 	_, out, _ = fx.run_("", "-list")
-	if strings.Contains(out, "approvals recorded") || !strings.Contains(out, "unverified") || !strings.Contains(out, "-as risk") {
+	if strings.Contains(out, "approvals verified") || !strings.Contains(out, "unverified") || !strings.Contains(out, "-as risk") {
 		t.Fatalf("unverified -list:\n%s", out)
 	}
 	// Real approvals, verified, settle it.
@@ -542,7 +543,7 @@ func TestReview_ListVerifiesWithKeys(t *testing.T) {
 			t.Fatalf("%s: %s", id, errs)
 		}
 	}
-	if _, out, _ = fx.run_("", "-list", "-approver-keys", fx.keysJSON); !strings.Contains(out, "approvals recorded") {
+	if _, out, _ = fx.run_("", "-list", "-approver-keys", fx.keysJSON); !strings.Contains(out, "approvals verified") {
 		t.Fatalf("verified approvals do not settle -list:\n%s", out)
 	}
 }

@@ -83,9 +83,9 @@ func TestSampleJournal(t *testing.T) {
 	contains(t, "flow approval", out, "o-3004", "verified tally: 2 of 2 needed approved by finance, ops", "the gate has its approvals")
 	// The gate has its approvals but the run was not re-run: it still waits, and the list says what
 	// to do instead of offering a command; the agent run at another gate still offers its commands.
-	_, out, _ = run("", "-list")
+	_, out, _ = run("", "-list", "-approver-keys", keys)
 	i := strings.Index(out, "run triage-3004")
-	if i < 0 || !strings.Contains(out[i:], "approvals recorded: re-run the run") || strings.Contains(out[i:], "-run triage-3004") {
+	if i < 0 || !strings.Contains(out[i:], "approvals verified: re-run the run") || strings.Contains(out[i:], "-run triage-3004") {
 		t.Fatalf("-list after: %s", out)
 	}
 	if !strings.Contains(out, "-run refund-1043 -call c2 -as finance") {

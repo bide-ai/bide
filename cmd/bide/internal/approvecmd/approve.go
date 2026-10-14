@@ -210,7 +210,7 @@ func (f flags) check() string {
 		return "give exactly one of -db, -postgres and -postgres-env"
 	}
 	if f.list {
-		for name, set := range map[string]bool{"-run": f.run != "", "-call": f.call != "", "-as": f.as != "", "-key": f.key != "", "-reject": f.reject, "-yes": f.yes, "-full": f.full, "-approver-keys": f.approverKeys != "", "-unverified": f.unverified, "-receipt": f.receipt != ""} {
+		for name, set := range map[string]bool{"-run": f.run != "", "-call": f.call != "", "-as": f.as != "", "-key": f.key != "", "-reject": f.reject, "-yes": f.yes, "-full": f.full, "-unverified": f.unverified, "-receipt": f.receipt != ""} {
 			if set {
 				return name + " does not go with -list"
 			}
@@ -312,6 +312,19 @@ func load(ctx context.Context, j *agent.Journal, run, call string) (*gateOf, err
 	v := runview.Build(ctx, run, recs, nil)
 	_, tu, found := agent.FindToolCall(recs, call)
 	i := slices.IndexFunc(v.Gates, func(g runview.Gate) bool { return g.ToolUseID == call })
+	if found && i < 0 {
+		for _, r := range recs {
+			if (r.Kind == agent.StepToolResult || r.Kind == agent.StepSagaFail) && r.ToolUseID == call {
+				return nil, refuse("call %s of run %s already has a result and no gate record: it is not gated, or it already ran", safe(call), safe(run))
+			}
+		}
+		// A call with no result and no gate record is either not gated or gated with its
+		// approval-pending note lost (the note is informational, written once when the run first
+		// pauses; a lost write is never made up). Without the note the policy is not in the journal,
+		// and bide approve will not take one from a flag: the approvers and the count it shows must
+		// come from the journal, or an operator's typo would decide who may sign.
+		return nil, refuse("call %s of run %s has no result and no approval-pending record: it is not gated, or its note was lost and the journal does not hold the gate's policy, so bide approve cannot check the approver or the count and will not take them from a flag; decide from the application with agent.SubmitDecision (or agent.Approve for a single-approver gate)", safe(call), safe(run))
+	}
 	if !found || i < 0 {
 		var ids []string
 		for _, g := range v.Gates {
@@ -355,8 +368,8 @@ func (g *gateOf) preflight(run, as string, verifierFor agent.ApproverVerifierFor
 		}
 		return refuse("the gate on call %s already decided: it %s (%s)", safe(gt.ToolUseID), out, safe(gt.Status))
 	}
-	if gt.Single && len(gt.Decisions) > 0 {
-		d := gt.Decisions[0]
+	if i := slices.IndexFunc(gt.Decisions, func(d runview.Decision) bool { return !d.Signed }); gt.Single && i >= 0 {
+		d := gt.Decisions[i]
 		return refuse("the single-approver gate on call %s already has its decision: %s (recorded %s)", safe(gt.ToolUseID), verdict(d.Approved), cmp.Or(d.RecordedAt, "at an unknown time"))
 	}
 	if !gt.Waiting {
@@ -371,34 +384,34 @@ func (g *gateOf) preflight(run, as string, verifierFor agent.ApproverVerifierFor
 	if !slices.Contains(gt.Approvers, as) {
 		return refuse("%q is not an approver of the gate on call %s; its approvers are: %s", safe(as), safe(gt.ToolUseID), safe(strings.Join(gt.Approvers, ", ")))
 	}
-	// With the approvers' keys, the standing is the one the gate computes (TallyApprovals); without
-	// them it is the decisions recorded, valid or not, and the refusal says so.
-	counted := map[string]bool{}
-	approved, denied := len(gt.ApprovedBy), len(gt.DeniedBy)
-	hint := "; the decisions are counted unverified: give -approver-keys to check their signatures"
-	if verifierFor != nil {
-		t, checks := agent.TallyApprovals(g.recs, g.subject(run), agent.ApprovalPolicy{Need: gt.Need, Approvers: gt.Approvers}, verifierFor)
-		for _, c := range checks {
-			if c.Counted {
-				counted[c.Approver] = true
-			}
-		}
-		approved, denied, hint = t.Approved, t.Denied, ""
+	// Refusing on the standing of the gate or on an earlier decision of the approver needs the
+	// decisions verified: a record that does not verify holds nobody's place, and one that nothing
+	// has checked must never lock an approver out or settle a gate (a junk record is one
+	// SubmitDecision call away for anyone who can write the journal). Without the approvers' keys
+	// bide approve refuses only on what is certain; SubmitDecision's own check, under the
+	// approver's key, still refuses a second valid decision of the same key.
+	if verifierFor == nil {
+		return nil
 	}
+	t, checks := agent.TallyApprovals(g.recs, g.subject(run), agent.ApprovalPolicy{Need: gt.Need, Approvers: gt.Approvers}, verifierFor)
 	switch {
-	case approved >= gt.Need:
-		return refuse("the gate on call %s already has its %d approval(s) recorded; nothing more is needed: re-run run %s%s", safe(gt.ToolUseID), gt.Need, safe(run), hint)
-	case len(gt.Approvers)-denied < gt.Need:
-		return refuse("the gate on call %s can no longer pass (%d denied of %d approvers, %d needed): re-run run %s and the call is denied%s", safe(gt.ToolUseID), denied, len(gt.Approvers), gt.Need, safe(run), hint)
+	case t.Passed():
+		return refuse("the gate on call %s already has its %d approval(s) (verified); nothing more is needed: re-run run %s", safe(gt.ToolUseID), gt.Need, safe(run))
+	case t.Unreachable():
+		return refuse("the gate on call %s can no longer pass (%d denied of %d approvers, %d needed): re-run run %s and the call is denied", safe(gt.ToolUseID), t.Denied, len(gt.Approvers), gt.Need, safe(run))
 	}
-	for _, d := range gt.Decisions {
-		if d.Approver != as || d.DecidedAt == "" { // a decision with no signed time is of the earlier format, which does not count
+	for _, ck := range checks {
+		if ck.Approver != as || !ck.Counted {
 			continue
 		}
-		if verifierFor != nil && !counted[as] {
-			continue // it does not verify, so it holds nobody's place: the approver can decide
+		d := runview.Decision{}
+		for _, x := range gt.Decisions {
+			if x.Approver == as && x.Approved == ck.Approved {
+				d = x
+				break
+			}
 		}
-		return refuse("%s already decided on call %s: %s at %s (recorded %s)%s", safe(as), safe(gt.ToolUseID), verdict(d.Approved), safe(d.DecidedAt), safe(cmp.Or(d.RecordedAt, "at an unknown time")), hint)
+		return refuse("%s already decided on call %s: %s at %s (recorded %s)", safe(as), safe(gt.ToolUseID), verdict(ck.Approved), safe(cmp.Or(d.DecidedAt, "an unknown time")), safe(cmp.Or(d.RecordedAt, "an unknown time")))
 	}
 	return nil
 }
@@ -495,9 +508,23 @@ func (c *cmd) approve(ctx context.Context) error {
 		}
 	}
 	s := g.subject(f.run)
-	c.show(g, s, signer)
+	shown := argsDigest(s)
+	if clipped := c.show(g, s, signer); clipped {
+		return refuse("the call's arguments are longer than the view, and the signature binds all of them: bide approve will not sign what you have not seen. Rerun with -full to see them all (the digest above is the one that would be signed)")
+	}
 	if !c.confirm(single) {
 		return refuse("not confirmed; nothing was recorded")
+	}
+	// The gate may have been decided, or the run ended, while the approver sat at the prompt: read
+	// the journal again, check again, and sign only what was shown.
+	if g, err = load(ctx, j, f.run, f.call); err != nil {
+		return fmt.Errorf("the journal changed while you were deciding; nothing was recorded: %w", err)
+	}
+	if err := g.preflight(f.run, f.as, verifierFor); err != nil {
+		return fmt.Errorf("the journal changed while you were deciding; nothing was recorded: %w", err)
+	}
+	if s = g.subject(f.run); argsDigest(s) != shown {
+		return errors.New("the call's arguments changed while you were deciding; nothing was signed")
 	}
 
 	if single {
@@ -528,11 +555,14 @@ func (c *cmd) approve(ctx context.Context) error {
 			return fmt.Errorf("the decision was not recorded: %w", err)
 		}
 		fmt.Fprintf(c.out, "\n%s%s call %s as %s, signed and recorded (decided %s)\n", c.st.Pass(), c.verb(!f.reject), safe(f.call), c.st.Bold(f.as), agent.FormatTimestamp(at))
-		if rerr := c.writeReceipt(ctx, j, s, d, receiptPath); rerr != nil {
-			receiptErr = rerr
+		mine, rerr := c.writeReceipt(ctx, j, s, d, receiptPath)
+		receiptErr = rerr
+		if err := c.after(ctx, j, verifierFor, ownFor, mine); err != nil {
+			return err
 		}
+		return receiptErr
 	}
-	if err := c.after(ctx, j, verifierFor); err != nil {
+	if err := c.after(ctx, j, verifierFor, nil, ""); err != nil {
 		return err
 	}
 	return receiptErr
@@ -569,7 +599,7 @@ func checkEnrolled(keys map[string]audit.Verifier, as string, sg audit.Signer) e
 }
 
 // show prints what is about to be signed, all of it read from the journal.
-func (c *cmd) show(g *gateOf, s agent.ApprovalSubject, sg audit.Signer) {
+func (c *cmd) show(g *gateOf, s agent.ApprovalSubject, sg audit.Signer) (clipped bool) {
 	st, gt := c.st, g.gate
 	action := st.Bold("Approve this call?")
 	if c.f.reject {
@@ -588,7 +618,11 @@ func (c *cmd) show(g *gateOf, s agent.ApprovalSubject, sg audit.Signer) {
 			if d.Approver == "" || d.DecidedAt == "" {
 				continue
 			}
-			row("decided", fmt.Sprintf("%s %s at %s", safe(d.Approver), verdict(d.Approved), safe(d.DecidedAt)))
+			label := ""
+			if c.f.approverKeys == "" {
+				label = " (recorded, unverified)"
+			}
+			row("decided", fmt.Sprintf("%s %s at %s%s", safe(d.Approver), verdict(d.Approved), safe(d.DecidedAt), label))
 		}
 		row("pending", safe(strings.Join(gt.Pending, ", ")))
 		row("you", fmt.Sprintf("%s, with %s key %s", st.Bold(c.f.as), sg.Alg(), keyName(sg)))
@@ -613,10 +647,11 @@ func (c *cmd) show(g *gateOf, s agent.ApprovalSubject, sg audit.Signer) {
 	}
 	if gt.Single {
 		fmt.Fprintln(c.out)
-		return
+		return hidden > 0
 	}
 	fmt.Fprintf(c.out, "\n  %s %s\n", "args SHA-256", st.Bold(argsDigest(s)))
 	fmt.Fprintf(c.out, "  %s\n\n", st.Dim("your signature binds this digest with the run, call, tool and your id, your decision and its time, and nothing else"))
+	return hidden > 0
 }
 
 // confirm asks the approver to confirm, unless -yes. For an m-of-n gate the approver types their
@@ -642,7 +677,7 @@ func (c *cmd) confirm(single bool) bool {
 // after reads the call's journal again and prints the gate's standing and what to do next. With the
 // approvers' keys the tally is verified here (agent.TallyApprovals, the rule the gate runs);
 // without them it counts the decisions recorded.
-func (c *cmd) after(ctx context.Context, j *agent.Journal, verifierFor agent.ApproverVerifierFor) error {
+func (c *cmd) after(ctx context.Context, j *agent.Journal, verifierFor, own agent.ApproverVerifierFor, mine string) error {
 	f, st := c.f, c.st
 	g, err := load(ctx, j, f.run, f.call)
 	if err != nil {
@@ -650,18 +685,24 @@ func (c *cmd) after(ctx context.Context, j *agent.Journal, verifierFor agent.App
 	}
 	gt := g.gate
 	passed, denied := false, false
+	unverified := false
+	var counts []agent.DecisionCheck
 	switch {
 	case gt.Single:
-		passed, denied = len(gt.Decisions) > 0 && gt.Decisions[0].Approved, len(gt.Decisions) > 0 && !gt.Decisions[0].Approved
+		if i := slices.IndexFunc(gt.Decisions, func(d runview.Decision) bool { return !d.Signed }); i >= 0 {
+			passed, denied = gt.Decisions[i].Approved, !gt.Decisions[i].Approved
+		}
 		fmt.Fprintf(c.out, "%s\n", gt.Status)
 	case verifierFor != nil:
-		t, _ := agent.TallyApprovals(g.recs, g.subject(f.run), agent.ApprovalPolicy{Need: gt.Need, Approvers: gt.Approvers}, verifierFor)
+		var t agent.ApprovalTally
+		t, counts = agent.TallyApprovals(g.recs, g.subject(f.run), agent.ApprovalPolicy{Need: gt.Need, Approvers: gt.Approvers}, verifierFor)
 		passed, denied = t.Passed(), t.Unreachable()
 		fmt.Fprintf(c.out, "verified tally: %d of %d needed approved%s%s\n", t.Approved, t.Need, names(" by", t.ApprovedBy), names("; denied by", t.DeniedBy))
 		if len(t.Pending) > 0 && !passed && !denied {
 			fmt.Fprintf(c.out, "still pending: %s\n", safe(strings.Join(t.Pending, ", ")))
 		}
 	default:
+		unverified = true
 		passed, denied = len(gt.ApprovedBy) >= gt.Need, len(gt.Approvers)-len(gt.DeniedBy) < gt.Need
 		fmt.Fprintf(c.out, "%s recorded decisions: %d of %d needed approved%s%s\n", st.BoldFail("UNVERIFIED"), len(gt.ApprovedBy), gt.Need, names(" by", gt.ApprovedBy), names("; denied by", gt.DeniedBy))
 		if len(gt.Pending) > 0 && !passed && !denied {
@@ -669,7 +710,22 @@ func (c *cmd) after(ctx context.Context, j *agent.Journal, verifierFor agent.App
 		}
 		fmt.Fprintln(c.out, st.Dim("(counted from the journal, unverified; the gate checks every signature when the run resumes. Give -approver-keys to verify them here.)"))
 	}
+	var countErr error
+	if mine != "" {
+		// Does this decision count? With the approvers' keys, by the gate's rule. Without them, by the
+		// same rule over the approver's own key alone: a record that key did not sign holds nobody's
+		// place, so a junk record before this one does not displace it.
+		ownCounts := counts
+		if verifierFor == nil {
+			_, ownCounts = agent.TallyApprovals(g.recs, g.subject(f.run), agent.ApprovalPolicy{Need: gt.Need, Approvers: gt.Approvers}, own)
+		}
+		countErr = ownDecisionCounts(mine, ownCounts)
+	}
 	switch {
+	case countErr != nil:
+		fmt.Fprintf(c.out, "\n%s %s\n", st.Cross(), countErr)
+	case unverified && (passed || denied):
+		fmt.Fprintf(c.out, "\n%s the recorded decisions would settle the gate if their signatures verify. Next: re-run run %s (or let RecoverLoop resume it); the gate checks every signature and then runs or denies the call.\n", st.Bang(), st.Bold(safe(f.run)))
 	case passed:
 		fmt.Fprintf(c.out, "\n%s the gate has its approvals. Next: re-run run %s (agent.Run with the same run ID, or let RecoverLoop resume it; for a sub-agent's run, its root run ID); the call then runs.\n", st.Pass(), st.Bold(safe(f.run)))
 	case denied:
@@ -677,7 +733,20 @@ func (c *cmd) after(ctx context.Context, j *agent.Journal, verifierFor agent.App
 	default:
 		fmt.Fprintf(c.out, "\nNext: the other pending approvers decide. When the gate has its decisions, re-run run %s (or let RecoverLoop resume it).\n", st.Bold(safe(f.run)))
 	}
-	return nil
+	return countErr
+}
+
+// ownDecisionCounts checks that the decision just recorded (the journal record named mine) is the
+// approver's decision the gate counts. Two decisions of one approver race (an approve and a reject
+// from two terminals): both are recorded, the first valid one in journal order counts, and the other
+// command must not report success.
+func ownDecisionCounts(mine string, checks []agent.DecisionCheck) error {
+	for _, ck := range checks {
+		if ck.Step == mine && ck.Counted {
+			return nil
+		}
+	}
+	return fmt.Errorf("another decision of yours counts: this one (record %s) was recorded, but the gate counts only an approver's first valid decision, and it already counted another; nothing you do now changes it", safe(mine))
 }
 
 func names(label string, ids []string) string {
@@ -699,9 +768,13 @@ type waiting struct {
 	DeniedBy   []string `json:"denied_by,omitempty"`
 	Pending    []string `json:"pending,omitempty"`
 	AskedAt    string   `json:"asked_at,omitempty"`
+	// Verified says the standing above is the gate's own count (agent.TallyApprovals with the
+	// approvers' keys, -approver-keys). Without it the standing counts the decisions as recorded,
+	// signatures unchecked, and is never taken to settle the gate.
+	Verified bool `json:"verified"`
 	// Settled says the recorded decisions already settle the gate ("approved": it has its approvals;
-	// "denied": it can no longer pass): the run only needs re-running, and no command is offered.
-	// Counted from the journal as recorded, unverified: the gate checks every signature on resume.
+	// "denied": it can no longer pass): the run only needs re-running, and no command is offered. Set
+	// only when Verified.
 	Settled  string   `json:"settled,omitempty"`
 	Commands []string `json:"commands"`
 }
@@ -713,6 +786,14 @@ func (c *cmd) list(ctx context.Context) error {
 		return err
 	}
 	defer closer.Close()
+	var verifierFor agent.ApproverVerifierFor
+	if c.f.approverKeys != "" {
+		keys, err := approverKeys(c.f.approverKeys)
+		if err != nil {
+			return err
+		}
+		verifierFor = verifiers(keys)
+	}
 	l, ok := agent.Capability[agent.Lister](j.Store())
 	if !ok {
 		return errors.New("this journal's store cannot list runs; use -run with -call, or bide view")
@@ -737,16 +818,32 @@ func (c *cmd) list(ctx context.Context) error {
 				continue
 			}
 			w := waiting{Run: run, Call: g.ToolUseID, Tool: g.ToolName, Single: g.Single, Need: g.Need, Approvers: g.Approvers, ApprovedBy: g.ApprovedBy, DeniedBy: g.DeniedBy, Pending: g.Pending, AskedAt: g.AskedAt}
+			if _, tu, found := agent.FindToolCall(recs, g.ToolUseID); found && verifierFor != nil && !g.Single && g.Need > 0 {
+				// The gate's own count, with the approvers' keys: records that do not verify count for
+				// nothing, and a pending approver is one with no valid decision.
+				t, _ := agent.TallyApprovals(recs, agent.ApprovalSubject{RunID: run, ToolUseID: g.ToolUseID, ToolName: tu.Name, Args: tu.Args}, agent.ApprovalPolicy{Need: g.Need, Approvers: g.Approvers}, verifierFor)
+				w.Verified, w.ApprovedBy, w.DeniedBy, w.Pending = true, t.ApprovedBy, t.DeniedBy, t.Pending
+				switch {
+				case t.Passed():
+					w.Settled = "approved"
+				case t.Unreachable():
+					w.Settled = "denied"
+				}
+			}
+			line := func(approver string) {
+				cmdline, err := approveline.Command(tgt, run, g.ToolUseID, approver, "", "", g.Single)
+				if err != nil {
+					cmdline = "(no command: this run or call id holds characters that cannot be shown or pasted safely; decide from the application)"
+				}
+				w.Commands = append(w.Commands, cmdline)
+			}
 			switch {
 			case g.Single:
-				w.Commands = []string{approveline.Command(tgt, run, g.ToolUseID, "", "", "", true)}
-			case len(g.ApprovedBy) >= g.Need && g.Need > 0:
-				w.Settled = "approved"
-			case g.Need > 0 && len(g.Approvers)-len(g.DeniedBy) < g.Need:
-				w.Settled = "denied"
+				line("")
+			case w.Settled != "":
 			default:
-				for _, id := range g.Pending {
-					w.Commands = append(w.Commands, approveline.Command(tgt, run, g.ToolUseID, id, "", "", false))
+				for _, id := range w.Pending {
+					line(id)
 				}
 			}
 			if w.Commands == nil {
@@ -774,10 +871,14 @@ func (c *cmd) list(ctx context.Context) error {
 		if w.Single {
 			fmt.Fprintf(c.out, "    one approver, one decision (unsigned)\n")
 		} else {
-			fmt.Fprintf(c.out, "    %d of %d: %s%s\n", w.Need, len(w.Approvers), safe(strings.Join(w.Approvers, ", ")), names("; approved by", w.ApprovedBy)+names("; denied by", w.DeniedBy))
+			label := ""
+			if !w.Verified {
+				label = " (decisions as recorded, unverified: give -approver-keys)"
+			}
+			fmt.Fprintf(c.out, "    %d of %d: %s%s%s\n", w.Need, len(w.Approvers), safe(strings.Join(w.Approvers, ", ")), names("; approved by", w.ApprovedBy)+names("; denied by", w.DeniedBy), label)
 			switch w.Settled {
 			case "approved":
-				fmt.Fprintf(c.out, "    %s\n", st.OK("approvals recorded: re-run the run and the call runs (agent.Run with the same run ID, or RecoverLoop)"))
+				fmt.Fprintf(c.out, "    %s\n", st.OK("approvals verified: re-run the run and the call runs (agent.Run with the same run ID, or RecoverLoop)"))
 			case "denied":
 				fmt.Fprintf(c.out, "    %s\n", st.Fail("can no longer pass: re-run the run and the call is denied"))
 			default:
@@ -785,7 +886,7 @@ func (c *cmd) list(ctx context.Context) error {
 			}
 		}
 		for _, cmdline := range w.Commands {
-			fmt.Fprintf(c.out, "    %s\n", st.Path(cmdline))
+			fmt.Fprintf(c.out, "    %s\n", st.Path(safe(cmdline)))
 		}
 	}
 	if c.f.postgres != "" {
@@ -845,10 +946,10 @@ func defaultReceiptName(run, call, approver, decidedAt string) string {
 // approver signed, to path (mode 0600, exclusive), and prints where it went and when the decision
 // is signed into the audit log. The decision is recorded either way; a receipt that cannot be
 // written is reported as an error, with that said.
-func (c *cmd) writeReceipt(ctx context.Context, j *agent.Journal, s agent.ApprovalSubject, d agent.Decision, path string) error {
+func (c *cmd) writeReceipt(ctx context.Context, j *agent.Journal, s agent.ApprovalSubject, d agent.Decision, path string) (record string, err error) {
 	recs, err := j.History(ctx, c.f.run)
 	if err != nil {
-		return fmt.Errorf("the decision was recorded; reading the journal for its receipt failed: %w", err)
+		return "", fmt.Errorf("the decision was recorded; reading the journal for its receipt failed: %w", err)
 	}
 	decidedAt := agent.FormatTimestamp(d.DecidedAt)
 	if path == "" {
@@ -861,20 +962,20 @@ func (c *cmd) writeReceipt(ctx context.Context, j *agent.Journal, s agent.Approv
 		}
 		rc, err := audit.NewDecisionReceipt(s, d, r, i)
 		if err != nil {
-			return fmt.Errorf("the decision was recorded; its receipt could not be made: %w", err)
+			return r.Name, fmt.Errorf("the decision was recorded; its receipt could not be made: %w", err)
 		}
 		b, err := json.MarshalIndent(rc, "", "  ")
 		if err != nil {
-			return fmt.Errorf("the decision was recorded; its receipt could not be made: %w", err)
+			return r.Name, fmt.Errorf("the decision was recorded; its receipt could not be made: %w", err)
 		}
 		if err := writeExclusive(path, append(b, '\n'), 0o600); err != nil {
-			return fmt.Errorf("the decision was recorded, but its receipt was not written: %w", err)
+			return r.Name, fmt.Errorf("the decision was recorded, but its receipt was not written: %w", err)
 		}
 		fmt.Fprintf(c.out, "%sreceipt %s %s\n", c.st.Pass(), c.st.Path(path), c.st.Dim("(mode 0600; verify it with bide approve -verify-receipt, or bide audit verify-receipts)"))
 		fmt.Fprintf(c.out, "audit: %s\n", auditLine)
-		return nil
+		return r.Name, nil
 	}
-	return errors.New("the decision was recorded, but its record is not in the journal read back, so no receipt was written")
+	return "", errors.New("the decision was recorded, but its record is not in the journal read back, so no receipt was written")
 }
 
 // verifyReceiptFile is bide approve -verify-receipt: the receipt's signature over the exact call it

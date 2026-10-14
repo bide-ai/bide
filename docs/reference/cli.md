@@ -543,8 +543,7 @@ bide audit: produce and verify audit proof bundles
          journaled. Distinct verdicts: anchored (PASS); pending, the journal holds it and no head
          reaches it yet (INFO, exit 0); "decision deleted after signing", a head that reaches its
          position commits to a journal that holds something else there; "decision never anchored",
-         a head signed more than -skew (default 1m) after it was recorded stops short of it, or the
-         journal lacks it and no head reaches its position; unchecked, a head reaches it but does
+         the journal lacks it and no head reaches its position; unchecked, a head reaches it but does
          not match the journal given. -receipt, -journal and -heads repeat
 
   prove-absent -journal <file> -sth <file> -key (tool:<id>|policy:<digest>) [-out <file>]
@@ -839,8 +838,6 @@ Usage of bide audit verify-receipts:
     	the log's public key as <scheme>:<hex> (ed25519, ml-dsa-65, ed25519+ml-dsa-65) or bare ed25519 hex, or a path to a file containing it
   -receipt value
     	a decision receipt file, or a directory of *.receipt.json files; repeatable
-  -skew duration
-    	how far a head's time may fall short of a receipt's recorded_at before a head that omits the decision counts as signed after it (default 1m0s)
 ```
 
 ### bide audit verify-run
