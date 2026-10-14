@@ -175,7 +175,7 @@ func TestEndToEnd(t *testing.T) {
 		t.Fatalf("-list = %d: %s", code, errs)
 	}
 	contains(t, "-list", out, "run refund-1049", "call c2", "tool refund", "2 of 3", "pending: ops, finance, risk",
-		"bide approve -db "+f.db+" -run refund-1049 -call c2 -as ops -key '<key-file>' -approver-keys '<keys-file>'")
+		"bide approve -db "+word(f.db)+" -run refund-1049 -call c2 -as ops -key '<key-file>' -approver-keys '<keys-file>'")
 
 	// ops approves, confirming by typing the approver id.
 	code, out, errs = f.run_("ops\n", f.as("ops", "-approver-keys", f.keysJSON)...)
@@ -500,7 +500,7 @@ func TestDisplayIsSafe(t *testing.T) {
 func TestSingleApproverGate(t *testing.T) {
 	f := newFixture(t, agent.SingleApproval(), refundArgs)
 	_, out, _ := f.run_("", "-list")
-	contains(t, "-list", out, "one approver, one decision", "bide approve -db "+f.db+" -run refund-1049 -call c2\n")
+	contains(t, "-list", out, "one approver, one decision", "bide approve -db "+word(f.db)+" -run refund-1049 -call c2\n")
 	if strings.Contains(out, "-as") {
 		t.Fatalf("a single gate's command names an approver: %s", out)
 	}
@@ -1040,4 +1040,13 @@ func TestReceiptOnAnAuditedJournal(t *testing.T) {
 	if fnd := audit.CheckReceipt(rc, f.allRecords(), heads(), logKey); fnd.Verdict != audit.ReceiptAnchored {
 		t.Fatalf("after the app writes: %+v", fnd)
 	}
+}
+
+// word is how a printed command writes path p: as is on Unix temp paths, single-quoted when it holds
+// a character the POSIX quoting in approveline does not leave bare (a Windows path's backslashes).
+func word(p string) string {
+	if strings.ContainsAny(p, "\\ ") {
+		return "'" + p + "'"
+	}
+	return p
 }
