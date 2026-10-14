@@ -241,18 +241,19 @@ func (c *cli) parse(fs *flag.FlagSet, args []string) {
 
 // verbs maps each verb to its function.
 var verbs = map[string]func(*cli, []string){
-	"prove":                  (*cli).prove,
-	"verify":                 (*cli).verify,
-	"verify-governance":      (*cli).verifyGovernance,
-	"verify-governed-action": (*cli).verifyGovernedAction,
-	"verify-convergence":     (*cli).verifyConvergence,
-	"verify-quorum":          (*cli).verifyQuorum,
-	"verify-run":             (*cli).verifyRun,
-	"verify-evidence":        (*cli).verifyEvidence,
-	"verify-approvals":       (*cli).verifyApprovals,
-	"verify-receipts":        (*cli).verifyReceipts,
-	"prove-absent":           (*cli).proveAbsent,
-	"verify-absent":          (*cli).verifyAbsent,
+	"prove":                    (*cli).prove,
+	"verify":                   (*cli).verify,
+	"verify-governance":        (*cli).verifyGovernance,
+	"verify-governed-action":   (*cli).verifyGovernedAction,
+	"verify-convergence":       (*cli).verifyConvergence,
+	"verify-quorum":            (*cli).verifyQuorum,
+	"verify-run":               (*cli).verifyRun,
+	"verify-evidence":          (*cli).verifyEvidence,
+	"verify-approvals":         (*cli).verifyApprovals,
+	"verify-receipts":          (*cli).verifyReceipts,
+	"verify-decision-coverage": (*cli).verifyDecisionCoverage,
+	"prove-absent":             (*cli).proveAbsent,
+	"verify-absent":            (*cli).verifyAbsent,
 }
 
 // Verbs returns the name of every verb, sorted.

@@ -171,6 +171,20 @@ const usageText = `bide audit: produce and verify audit proof bundles
          proof in each receipt file whose decision a signed head now commits to. -receipt,
          -journal and -heads repeat
 
+  verify-decision-coverage -journal <file> -heads <file> [-heads <file>...] -pubkey <hex|file>
+                           [-max-records <n>] [-max-age <duration>] [-max-age-tolerance <duration>] [-now <time>]
+         check that every approval decision in a journal export is covered by a signed tree head:
+         a decision written by a process that does not sign (a CLI writing the database) is under
+         no head until the signer next writes to the run, which for a rejection may be never. A
+         head counts only if it verifies under the key, is a journal head of the export's run, and
+         is the root of the export's own prefix of its size; heads are used by size, in any order.
+         Each decision is covered, pending, or overdue. Overdue is: -max-records records of
+         journal after it with no head covering it (positions and head sizes, no clock), or, with
+         -max-age, recorded more than that plus -max-age-tolerance before -now (default: this
+         machine's clock; the weaker basis, since the recorder's clock is its own). With neither
+         bound nothing is overdue. Any overdue decision fails the verb. Halt resolutions are not
+         checked
+
   prove-absent -journal <file> -sth <file> -key (tool:<id>|policy:<digest>) [-out <file>]
          prove a thing did NOT happen (no such tool call / no action under that policy)
          against a signed key-set head of the matching kind (see audit.SignAbsenceRoot)
@@ -980,6 +994,87 @@ func (c *cli) verifyRun(args []string) {
 	}
 	if c.clean() {
 		c.println("OK: the verified oracle agrees with every policy's certificate: the whole run ran under approved, provably convergent policies")
+	}
+}
+
+// verifyDecisionCoverage reports each approval decision in a journal export as covered by a signed
+// tree head, pending, or overdue (audit.CheckDecisionCoverage), and fails if any is overdue.
+func (c *cli) verifyDecisionCoverage(args []string) {
+	fs := c.flagSet("verify-decision-coverage")
+	journal := fs.String("journal", "", "path to the journal export JSON (audit.ExportJournal)")
+	var heads stringList
+	fs.Var(&heads, "heads", "path to a signed tree head JSON; repeat once per head (any order)")
+	pubkey := fs.String("pubkey", "", "the log's "+pubkeyHelp)
+	maxRecords := fs.Int("max-records", 0, "records the journal may hold after a decision before a head must cover it (0: no bound)")
+	maxAge := fs.Duration("max-age", 0, "how long after its recorded_at a decision may stay uncovered (0: no bound); compares clocks")
+	tolerance := fs.Duration("max-age-tolerance", audit.DefaultDecisionTimeTolerance, "clock skew allowed on top of -max-age")
+	nowText := fs.String("now", "", "the time -max-age is measured to, RFC 3339 (default: this machine's clock)")
+	c.parse(fs, args)
+
+	c.require(fs, absent("-journal", *journal), absent("-pubkey", *pubkey), required{"-heads", len(heads) == 0})
+	if *maxRecords < 0 || *maxAge < 0 || *tolerance < 0 {
+		c.usageError("verify-decision-coverage: -max-records, -max-age and -max-age-tolerance must not be negative")
+	}
+	now := time.Now()
+	if *nowText != "" {
+		t, err := time.Parse(time.RFC3339Nano, *nowText)
+		if err != nil {
+			c.usageError(fmt.Sprintf("verify-decision-coverage: -now: %v", err))
+		}
+		now = t
+	}
+
+	var x audit.JournalExport
+	okJournal := c.note(c.readJSON(*journal, &x))
+	var recs []agent.Record
+	if okJournal {
+		var err error
+		recs, err = x.Journal()
+		if err != nil {
+			okJournal = c.note(unusable(err))
+		}
+	}
+	pub, err := readPubKey(*pubkey)
+	okKey := c.note(err)
+	sths := make([]audit.SignedTreeHead, len(heads))
+	okHeads := true
+	for i, p := range heads {
+		okHeads = c.note(c.readJSON(p, &sths[i])) && okHeads
+	}
+	if !okJournal || !okKey || !okHeads {
+		return
+	}
+
+	rep, err := audit.CheckDecisionCoverage(x.RunID, recs, sths, pub, audit.CoverageBound{MaxRecords: *maxRecords, MaxAge: *maxAge, Now: now, Tolerance: *tolerance})
+	if err != nil {
+		c.note(unusable(err))
+		return
+	}
+	for _, h := range rep.RejectedHeads {
+		c.printf("note: head of size %d not counted: %s\n", h.Size, cleanText(h.Reason))
+	}
+	c.printf("INFO  run %s: %d records, %d signed heads counted (largest covers %d)\n", cleanText(rep.RunID), rep.Records, rep.Heads, rep.LargestHead)
+	overdue := 0
+	for _, d := range rep.Decisions {
+		who := cleanText(d.Approver)
+		if who == "" {
+			who = "(no approver signature) " + cleanText(d.Step)
+		}
+		switch d.Status {
+		case audit.CoverageCovered:
+			c.printf("INFO  %s: record %d covered by a head of size %d\n", who, d.Index, d.CoveredBySize)
+		case audit.CoveragePending:
+			c.printf("INFO  %s: record %d pending: no signed head covers it yet, %d records after it\n", who, d.Index, d.Behind)
+		default:
+			overdue++
+			c.printf("INFO  %s: record %d overdue (%s): no signed head covers it, %d records after it, recorded %s\n", who, d.Index, d.Basis, d.Behind, timeText(d.RecordedAt))
+		}
+	}
+	if overdue > 0 {
+		c.fail("%d of %d decisions are under no signed tree head past the bound", overdue, len(rep.Decisions))
+	}
+	if c.clean() {
+		c.printf("OK: no decision is overdue (%d decisions checked)\n", len(rep.Decisions))
 	}
 }
 
