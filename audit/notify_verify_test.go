@@ -907,8 +907,8 @@ func openChain(t *testing.T) (day0, day1, index audit.NotifyTrailExport) {
 	k1, k2 := agent.ApprovalKey("r1", "c1", 0), agent.ApprovalKey("r1", "c2", 0)
 	day0 = recsTrail(t, day(0),
 		segRec(agent.NotifyCheckpoint, 0, ""), op(agent.NotifyWatch, k1, 1), op(agent.NotifyWatch, k2, 2), op(agent.NotifyUnwatch, k1, 3),
-		segRec(agent.NotifyBackfilled, 4, ""), segRec(agent.NotifySeal, 86400, day(1)))
-	day1 = recsTrail(t, day(1), agent.NotifyRecord{Kind: agent.NotifyCheckpoint, At: at(86400), Backfilled: true, Backfills: 1, BackfillAt: at(4),
+		agent.NotifyRecord{Kind: agent.NotifyBackfilled, At: at(4), BackfillWindow: time.Hour}, segRec(agent.NotifySeal, 86400, day(1)))
+	day1 = recsTrail(t, day(1), agent.NotifyRecord{Kind: agent.NotifyCheckpoint, At: at(86400), Backfilled: true, Backfills: 1, BackfillAt: at(4), BackfillWindow: time.Hour,
 		Watching: []agent.Watched{{Key: k2, RunID: "r1", At: at(2)}}}, op(agent.NotifyUnwatch, k2, 86401))
 	index = recsTrail(t, agent.OpenIndex(t0.Year()), segRec(agent.NotifySegment, 0, day(0)), segRec(agent.NotifySegment, 86400, day(1)))
 	return
@@ -934,7 +934,7 @@ func TestVerifyNotifications_TheOpenTrail(t *testing.T) {
 		"an unwatch of an unlisted event":   {[]audit.NotifyTrailExport{recsTrail(t, day(0), op(agent.NotifyUnwatch, k2, 1))}, "not listed"},
 		"a checkpoint in the middle":        {[]audit.NotifyTrailExport{recsTrail(t, day(0), op(agent.NotifyWatch, k2, 1), segRec(agent.NotifyCheckpoint, 2, ""))}, "only the first record"},
 		"a seal into an earlier day":        {[]audit.NotifyTrailExport{recsTrail(t, day(1), segRec(agent.NotifySeal, 1, day(0)))}, "not a later segment"},
-		"a third backfill": {[]audit.NotifyTrailExport{d0, recsTrail(t, day(1), agent.NotifyRecord{Kind: agent.NotifyCheckpoint, At: at(86400), Backfilled: true, Backfills: 1, BackfillAt: at(4),
+		"a third backfill": {[]audit.NotifyTrailExport{d0, recsTrail(t, day(1), agent.NotifyRecord{Kind: agent.NotifyCheckpoint, At: at(86400), Backfilled: true, Backfills: 1, BackfillAt: at(4), BackfillWindow: time.Hour,
 			Watching: []agent.Watched{{Key: k2, RunID: "r1", At: at(2)}}}, segRec(agent.NotifyBackfilled, 86401, ""), segRec(agent.NotifyBackfilled, 86402, "")), idx}, "recorded 3 times"},
 		"a checkpoint that loses the backfill time": {[]audit.NotifyTrailExport{d0, recsTrail(t, day(1), agent.NotifyRecord{Kind: agent.NotifyCheckpoint, At: at(86400), Backfilled: true,
 			Watching: []agent.Watched{{Key: k2, RunID: "r1", At: at(2)}}}), idx}, "backfill pass"},

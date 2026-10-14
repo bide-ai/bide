@@ -614,7 +614,7 @@ What it checks, and the status each event gets:
   the day of the segment it seals into), a seal may skip days nobody ran on but not a segment an
   index lists, and every delivered `outcome_unknown`, `approval_pending` or `recovery_failing` event
   in a run trail is listed on the open trail, or was observed before it and covered by a recorded
-  backfill (at most two passes, the second after `WithNotifyUpgradeWindow`, a day by default, which is what catches an event a
+  backfill (at most two passes, the second no earlier than the window the first recorded (`WithNotifyUpgradeWindow`, a day by default), which is what catches an event a
   process of the previous version delivered, without listing it, during a rolling upgrade; the
   first new-version scan of an unfinished run lists such an event at once, so during an upgrade
   the audit can report an event as unlisted until then, and set the window to the time the upgrade

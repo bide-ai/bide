@@ -125,11 +125,12 @@ type Watched struct {
 
 // OpenState is one open-trail segment folded.
 type OpenState struct {
-	Watched    []Watched // the events listed, in the order they were
-	Backfilled bool      // the events observed before the open trail existed were listed
-	Backfills  int       // the backfill passes recorded, in this segment and the ones before it
-	BackfillAt time.Time // when the last one was recorded
-	Sealed     string    // the segment that continues this one, "" if it is not sealed
+	Watched        []Watched     // the events listed, in the order they were
+	Backfilled     bool          // the events observed before the open trail existed were listed
+	Backfills      int           // the backfill passes recorded, in this segment and the ones before it
+	BackfillAt     time.Time     // when the last one was recorded
+	BackfillWindow time.Duration // the window the first pass recorded
+	Sealed         string        // the segment that continues this one, "" if it is not sealed
 }
 
 // FoldOpen folds an open-trail segment, in append order. A checkpoint is read only as the first
@@ -154,11 +155,14 @@ func FoldOpen(recs []NotifyRecord) OpenState {
 				}
 				open[w.Key] = w
 			}
-			st.Backfilled, st.Backfills, st.BackfillAt = r.Backfilled, r.Backfills, r.BackfillAt
+			st.Backfilled, st.Backfills, st.BackfillAt, st.BackfillWindow = r.Backfilled, r.Backfills, r.BackfillAt, r.BackfillWindow
 			if r.Backfilled && st.Backfills == 0 {
 				st.Backfills = 1
 			}
 		case NotifyBackfilled:
+			if st.Backfills == 0 {
+				st.BackfillWindow = r.BackfillWindow
+			}
 			st.Backfilled, st.Backfills, st.BackfillAt = true, st.Backfills+1, r.At
 		case NotifyWatch:
 			if _, ok := open[r.Key]; !ok {

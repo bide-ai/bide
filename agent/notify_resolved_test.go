@@ -1478,3 +1478,46 @@ func TestResolved_TheUpgradeWindowIsAnOption(t *testing.T) {
 		}
 	}
 }
+
+// The window is recorded with the first pass, and the second pass waits for it whatever a later
+// process is configured with: a verifier can then check the spacing from the trail alone.
+func TestResolved_TheSecondPassWaitsForTheWindowTheFirstRecorded(t *testing.T) {
+	ctx := context.Background()
+	clk := sweepClock()
+	j := memJournal()
+	tr := NewMemNotifyTrail()
+	first := testEngine(t, j, &fakeSink{}, tr, clk, "first", WithNotifyUpgradeWindow(7*24*time.Hour))
+	if err := first.backfillOpen(ctx); err != nil {
+		t.Fatal(err)
+	}
+	_, recs, _ := first.openHead(ctx)
+	if st := FoldOpen(recs); st.BackfillWindow != 7*24*time.Hour {
+		t.Fatalf("recorded window = %v, want 7 days", st.BackfillWindow)
+	}
+	var mark NotifyRecord
+	for _, r := range recs {
+		if r.Kind == NotifyBackfilled {
+			mark = r
+		}
+	}
+	if mark.BackfillWindow != 7*24*time.Hour {
+		t.Fatalf("the marker records window %v", mark.BackfillWindow)
+	}
+	other := testEngine(t, j, &fakeSink{}, tr, clk, "other") // the default, a day
+	clk.advance(3 * 24 * time.Hour)
+	if err := other.backfillOpen(ctx); err != nil {
+		t.Fatal(err)
+	}
+	_, recs, _ = other.openHead(ctx)
+	if st := FoldOpen(recs); st.Backfills != 1 {
+		t.Fatalf("a process configured with a shorter window ran the second pass early: %d passes", st.Backfills)
+	}
+	clk.advance(5 * 24 * time.Hour)
+	if err := other.backfillOpen(ctx); err != nil {
+		t.Fatal(err)
+	}
+	_, recs, _ = other.openHead(ctx)
+	if st := FoldOpen(recs); st.Backfills != 2 || st.BackfillWindow != 7*24*time.Hour {
+		t.Fatalf("passes = %d, window = %v", st.Backfills, st.BackfillWindow)
+	}
+}

@@ -150,7 +150,35 @@ func checkOpenGroup(trails map[string][]agent.NotifyRecord, skew time.Duration, 
 			}
 		}
 	}
-	// A backfill is done once: count the records that make it, not the checkpoints that carry it.
+	// The backfill passes in order across the segments: the first records the window, the second is
+	// no sooner than the first plus that window, and the checkpoints carry both.
+	var passes int
+	var firstAt time.Time
+	var window time.Duration
+	for _, name := range segs {
+		for i, r := range trails[name] {
+			switch r.Kind {
+			case agent.NotifyCheckpoint:
+				if i == 0 && r.Backfills > passes {
+					passes = r.Backfills
+				}
+				if i == 0 && window == 0 {
+					window = r.BackfillWindow
+				}
+			case agent.NotifyBackfilled:
+				if passes == 0 {
+					if r.BackfillWindow <= 0 {
+						add(name, i, trails[name], "the first backfill pass records no window: the second pass cannot be held to one")
+					}
+					window, firstAt = r.BackfillWindow, r.At
+				} else if !firstAt.IsZero() && r.At.Before(firstAt.Add(window).Add(-skew)) {
+					add(name, i, trails[name], "the second backfill pass is dated %s, inside the window (%s) the first (%s) recorded", r.At.UTC().Format(time.RFC3339), window, firstAt.UTC().Format(time.RFC3339))
+				}
+				passes++
+			}
+		}
+	}
+	// A backfill is done at most twice: count the records that make it, not the checkpoints that carry it.
 	own := 0
 	for _, name := range segs {
 		for _, r := range trails[name] {
@@ -182,6 +210,9 @@ func checkOpenGroup(trails map[string][]agent.NotifyRecord, skew time.Duration, 
 		}
 		if cp.Backfilled != st.Backfilled {
 			add(st.Sealed, 0, next, "backfilled is %v, and %s folds to %v", cp.Backfilled, name, st.Backfilled)
+		}
+		if cp.BackfillWindow != st.BackfillWindow {
+			add(st.Sealed, 0, next, "the checkpoint carries backfill window %s, and %s folds to %s", cp.BackfillWindow, name, st.BackfillWindow)
 		}
 		if n := max(cp.Backfills, b2i(cp.Backfilled)); n != st.Backfills || !cp.BackfillAt.Equal(st.BackfillAt) {
 			add(st.Sealed, 0, next, "the checkpoint carries %d backfill pass(es), last at %s, and %s folds to %d, last at %s", n, cp.BackfillAt.UTC().Format(time.RFC3339), name, st.Backfills, st.BackfillAt.UTC().Format(time.RFC3339))

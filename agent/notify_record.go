@@ -122,6 +122,10 @@ type NotifyRecord struct {
 	// older process delivered without listing them during a rolling upgrade.
 	Backfills  int       `json:"backfills,omitempty"`
 	BackfillAt time.Time `json:"backfill_at,omitzero"`
+	// BackfillWindow is, on the first backfill marker and on every checkpoint after it, the upgrade
+	// window the first pass recorded: the second pass is due no sooner than BackfillAt of the first
+	// plus it, and the verifier holds the trail to that.
+	BackfillWindow time.Duration `json:"backfill_window,omitempty"`
 	Next       string    `json:"next,omitempty"`
 
 	// cleared: "resolved", "decided", "ended" or "recovered". observed, for a resolved event: the same

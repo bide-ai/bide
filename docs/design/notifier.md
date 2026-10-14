@@ -380,7 +380,10 @@ process delivered, and its all-clear follows when it ends; (2) a second backfill
 the upgrade window (`WithNotifyUpgradeWindow`, a day by default) after the first, in any `NotifyPending`, `Recover` or `RecoverLoop`,
 and lists what a scan could not reach (a run the old process saw to completion, which no sweep or
 recovery pass lists as unfinished). There are two passes, ever: the checkpoint carries their count
-(`backfills`) and the time of the last (`backfill_at`). An old process that delivers an event after
+(`backfills`), the time of the last (`backfill_at`) and the window the first pass recorded
+(`backfill_window`, also on the first marker); the second pass waits for the recorded window, not
+its own process's setting, and the verifier requires the second marker no earlier than the first
+plus that window. An old process that delivers an event after
 the second pass, in a run that ends before any new-version scan reaches it, leaves it unlisted, and
 the audit reports it ("observed after the open trail began and was never listed"); set the window
 to the time the upgrade takes to reach every process (a week for a staged rollout across regions).

@@ -1,6 +1,7 @@
 package agent
 
 import (
+	"cmp"
 	"context"
 	"errors"
 	"fmt"
@@ -424,7 +425,7 @@ func (e *notifyEngine) openHead(ctx context.Context) (string, []NotifyRecord, er
 			if len(recs) == 0 {
 				cp := NotifyRecord{Kind: NotifyCheckpoint}
 				if prev != nil {
-					cp.Watching, cp.Backfilled, cp.Backfills, cp.BackfillAt = prev.Watched, prev.Backfilled, prev.Backfills, prev.BackfillAt
+					cp.Watching, cp.Backfilled, cp.Backfills, cp.BackfillAt, cp.BackfillWindow = prev.Watched, prev.Backfilled, prev.Backfills, prev.BackfillAt, prev.BackfillWindow
 				}
 				e.stamp(&cp, name, nil)
 				if _, aerr := e.appendRec(ctx, name, 0, cp); aerr != nil {
@@ -574,7 +575,10 @@ func (e *notifyEngine) backfillOpen(ctx context.Context) error {
 		if FoldOpen(recs).Backfills > start.Backfills {
 			return nil // another process finished this pass
 		}
-		mark := NotifyRecord{Kind: NotifyBackfilled}
+		mark := NotifyRecord{Kind: NotifyBackfilled, BackfillWindow: e.cfg.upgradeWindow}
+		if st := FoldOpen(recs); st.Backfills > 0 {
+			mark.BackfillWindow = st.BackfillWindow // the first pass's, which the second honors
+		}
 		e.stamp(&mark, name, recs)
 		conflict, aerr := e.appendRec(ctx, name, len(recs), mark)
 		if aerr != nil {
@@ -597,7 +601,10 @@ func (e *notifyEngine) backfillDue(st OpenState) bool {
 	case !st.Backfilled:
 		return true
 	case st.Backfills < 2:
-		return e.cfg.now().Sub(st.BackfillAt) > e.cfg.upgradeWindow
+		// The window the first pass recorded, not this process's: the verifier holds the second pass
+		// to it. (A first pass recorded with none, by a version that did not, uses this process's.)
+		window := cmp.Or(st.BackfillWindow, e.cfg.upgradeWindow)
+		return e.cfg.now().Sub(st.BackfillAt) > window
 	}
 	return false
 }
