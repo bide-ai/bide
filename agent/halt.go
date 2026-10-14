@@ -170,12 +170,12 @@ type Outcome struct {
 // is young could record an outcome that driver is about to contradict.
 //
 // The recorded outcome notes when it was written (Record.RecordedAt), by WithClock's clock, else
-// the clock ctx carries (a run's), else the wall clock. It is the claim of the process that
+// the wall clock (the one clock of the call: its claim marker and WithMinHaltAge use it too, and the
+// context's clock is not read). It is the claim of the process that
 // resolved the halt: the resolver signs nothing (ResolveHalt takes no key, and the runtime has no
 // list of who may resolve), so the time is anchored only by the journal's Merkle trail once a
 // signed head covers the record. It is informational: no drive, resume, replay or recovery pass
-// reads it, and WithMinHaltAge measures against the attempt marker's time and the clock WithClock
-// names (the wall clock by default), never the context's.
+// reads it.
 //
 // Deciding the true outcome is a human (or reconciler) judgment the runtime cannot make for you.
 func ResolveHalt(ctx context.Context, store *Journal, ref HaltRef, out Outcome, opts ...ResolveOption) error {
@@ -300,14 +300,10 @@ func resolveHalt(ctx context.Context, store *Journal, op string, ref HaltRef, ou
 			return &HaltInFlight{RunID: ref.RunID, RootRunID: root, Op: ref.Op, Attempt: heldKey}
 		}
 	}
-	// The resolution's recorded_at is informational (Record.RecordedAt): WithClock's clock, else the
-	// context's, else the wall clock. WithMinHaltAge measures against cfg.now alone, whatever the
-	// context carries, as it always has.
-	stampNow := cfg.now
-	if !cfg.nowSet {
-		stampNow = clockFrom(ctx)
-	}
-	rec := Record{Kind: h.kind, Result: b, IsError: out.IsError, Reconciled: cfg.reconciled, Evidence: cfg.evidence, ApproverSignature: recordedStamp(stampNow)}
+	// The resolution's recorded_at is informational (Record.RecordedAt) and comes from cfg.now, the
+	// clock the call's claim marker and WithMinHaltAge use too: WithClock, else the wall clock. A
+	// resolver is not a drive of the run, so the context's clock is not read.
+	rec := Record{Kind: h.kind, Result: b, IsError: out.IsError, Reconciled: cfg.reconciled, Evidence: cfg.evidence, ApproverSignature: recordedStamp(cfg.now)}
 	if h.kind == StepToolResult {
 		rec.ToolUseID = id
 	}
@@ -432,7 +428,6 @@ type resolveConfig struct {
 	noLiveCheck bool
 	minHaltAge  time.Duration
 	now         func() time.Time
-	nowSet      bool // WithClock was given: now also stamps the result's recorded_at
 	evidence    json.RawMessage
 	reconciled  bool
 }

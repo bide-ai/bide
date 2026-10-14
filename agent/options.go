@@ -716,14 +716,14 @@ func (f clockOption) applyResolve(c *resolveConfig) error {
 	if err := f.check(); err != nil {
 		return err
 	}
-	c.now, c.nowSet = f, true
+	c.now = f
 	return nil
 }
 
 // WithClock sets the clock that reads "now": for a run (an agent's runs, or one run), the clock
 // its durable timers (Sleep, WaitUntil, AwaitFor) measure against and that stamps the times it
 // records (RunStart.StartedAt, ApprovalWait.RecordedAt, the end markers' RecordedAt); for
-// ResolveHalt, the clock WithMinHaltAge measures against and that stamps the outcome's RecordedAt;
+// ResolveHalt, the one clock of the call: WithMinHaltAge measures against it, and it stamps the claim marker and the outcome's RecordedAt (the context's clock is not read);
 // for SubmitDecision, Approve and Cancel, the clock that stamps the record's RecordedAt. The
 // default is time.Now. Deployments leave it unset; tests
 // pass a controllable clock to advance time deterministically. A nil now is ErrConfig.

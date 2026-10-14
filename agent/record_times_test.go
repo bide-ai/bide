@@ -105,7 +105,7 @@ func TestRecordTimes_SingleApprovalClockFaults(t *testing.T) {
 }
 
 // ResolveHalt's recorded outcome, for a tool call and for a Step, carries recorded_at: WithClock's
-// clock, else the context's, else the wall clock. The resolver signs nothing, so the record has
+// clock, else the wall clock (never the context's, which is the run's: the resolver is not a drive). The resolver signs nothing, so the record has
 // no approver or signature.
 func TestRecordTimes_ResolveHalt(t *testing.T) {
 	ctx := context.Background()
@@ -128,12 +128,10 @@ func TestRecordTimes_ResolveHalt(t *testing.T) {
 		want  string
 		recon bool
 	}{
-		"tool, WithClock":          {covHalt, ToolResultStep("c1"), ctx, []ResolveOption{WithClock(fixedClock(timesA))}, stampA, false},
-		"tool, context clock":      {covHalt, ToolResultStep("c1"), contextWithClock(ctx, fixedClock(timesB)), nil, stampB, false},
-		"tool, option beats ctx":   {covHalt, ToolResultStep("c1"), contextWithClock(ctx, fixedClock(timesB)), []ResolveOption{WithClock(fixedClock(timesC))}, stampC, false},
-		"step, WithClock":          {stepRef, "charge", ctx, []ResolveOption{WithClock(fixedClock(timesA))}, stampA, false},
-		"step, context clock":      {stepRef, "charge", contextWithClock(ctx, fixedClock(timesB)), nil, stampB, false},
-		"reconciled, context time": {covHalt, ToolResultStep("c1"), contextWithClock(ctx, fixedClock(timesC)), []ResolveOption{WithEvidence("provider says charged")}, stampC, true},
+		"tool, WithClock":        {covHalt, ToolResultStep("c1"), ctx, []ResolveOption{WithClock(fixedClock(timesA))}, stampA, false},
+		"tool, option beats ctx": {covHalt, ToolResultStep("c1"), contextWithClock(ctx, fixedClock(timesB)), []ResolveOption{WithClock(fixedClock(timesC))}, stampC, false},
+		"step, WithClock":        {stepRef, "charge", ctx, []ResolveOption{WithClock(fixedClock(timesA))}, stampA, false},
+		"reconciled":             {covHalt, ToolResultStep("c1"), ctx, []ResolveOption{WithEvidence("provider says charged"), WithClock(fixedClock(timesC))}, stampC, true},
 	} {
 		j := mk()
 		if err := ResolveHalt(c.ctx, j, c.ref, Outcome{Result: "charged"}, append(c.opts, WithoutLiveDriverCheck())...); err != nil {
@@ -175,7 +173,7 @@ func TestRecordTimes_ResolveHalt(t *testing.T) {
 	}
 }
 
-// The context's clock stamps the resolution but never measures a halt's age: WithMinHaltAge
+// The context's clock neither stamps the resolution nor measures a halt's age: WithMinHaltAge
 // compares the attempt marker's wall-clock time with the clock WithClock names, else the wall
 // clock, as it did before the resolution carried a time.
 func TestRecordTimes_ResolveHaltAgeIgnoresContextClock(t *testing.T) {
@@ -621,4 +619,26 @@ func TestRecordTimes_AnswersAndSignals(t *testing.T) {
 	if _, ok := hasStep(t, j, "r", signalStep("bad")); ok {
 		t.Error("a refused Signal recorded a record")
 	}
+}
+
+// stripRecordedAt zeroes the recorded_at of every record of rs (and nothing else of a signed
+// decision's signature: approver, scheme, signature and decided_at stay, so a comparison still sees
+// them), and reports which records carried one.
+func stripRecordedAt(rs []Record) []bool {
+	had := make([]bool, len(rs))
+	for i := range rs {
+		s := rs[i].ApproverSignature
+		if s == nil {
+			continue
+		}
+		had[i] = s.RecordedAt != ""
+		c := *s
+		c.RecordedAt = ""
+		if c.Approver == "" && c.ApproverAlg == "" && len(c.Signature) == 0 && c.DecidedAt == "" {
+			rs[i].ApproverSignature = nil
+		} else {
+			rs[i].ApproverSignature = &c
+		}
+	}
+	return had
 }

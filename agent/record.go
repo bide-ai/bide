@@ -171,8 +171,9 @@ type ApproverSignature struct {
 	// resolve something a person was told about: a single approver's decision (Approve), the result
 	// ResolveHalt injects, a run's end markers (run:complete, run:aborted, run:cancelled) and a
 	// saga's rollback request (run:cancel-requested). It is then the claim of the process that
-	// wrote the record, by the clock named at the writing call (WithClock on Approve, ResolveHalt
-	// and Cancel), else the clock the context carries (a run's), else the wall clock, and the same
+	// wrote the record, by the clock named at the writing call (WithClock on Approve, ResolveHalt,
+	// Cancel, AnswerInterrupt and Signal), else the clock the context carries (a run's; ResolveHalt
+	// reads WithClock, else the wall clock, never the context's), else the wall clock, and the same
 	// rules hold: it is informational, set when the record is first written and kept from then on,
 	// and no gate, claim, replay or recovery decision reads it. A record written before the time
 	// existed has none, and Record.RecordedAt reports "" for it: a reader never supplies one. On

@@ -752,7 +752,13 @@ func timeline(evs []Event, start time.Time) {
 	if origin.IsZero() {
 		origin = evs[at[0]].At
 	}
-	last := evs[at[len(at)-1]].At
+	// The span is the earliest to the latest time, not the first to the last in journal order: a
+	// record stamped by a process whose clock is behind (a resume on another host) can sit earlier
+	// than the rows before it, and must not erase the others' bars.
+	lo, hi := origin, origin
+	for _, i := range at {
+		lo, hi = minTime(lo, evs[i].At), maxTime(hi, evs[i].At)
+	}
 	for _, i := range at {
 		e := &evs[i]
 		e.Abs = e.At.UTC().Format("2006-01-02 15:04:05.000 UTC")
@@ -761,22 +767,22 @@ func timeline(evs []Event, start time.Time) {
 			e.Rel = "start"
 		}
 	}
-	span := last.Sub(origin)
+	span := hi.Sub(lo)
 	if span <= 0 || len(at) < 2 {
 		return
 	}
 	for k, i := range at {
 		e := &evs[i]
-		from := e.At.Sub(origin)
+		from := e.At.Sub(lo)
 		to := from
 		label := "last timestamped record"
 		if k+1 < len(at) {
-			to = evs[at[k+1]].At.Sub(origin)
+			to = evs[at[k+1]].At.Sub(lo)
 			label = durText(to-from) + " until the next timestamped record"
 		}
 		bar := &TimeBar{X: 100 * float64(from) / float64(span), W: 100 * float64(to-from) / float64(span), Label: label}
-		bar.W = max(bar.W, 1.2)
-		bar.X = min(bar.X, 100-bar.W)
+		bar.W = min(max(bar.W, 1.2), 100)
+		bar.X = max(min(bar.X, 100-bar.W), 0)
 		e.Bar = bar
 	}
 }
@@ -795,4 +801,18 @@ func durText(d time.Duration) string {
 		return fmt.Sprintf("%dh %02dm", int(d.Hours()), int(d.Minutes())%60)
 	}
 	return fmt.Sprintf("%dd %dh", int(d.Hours())/24, int(d.Hours())%24)
+}
+
+func minTime(a, b time.Time) time.Time {
+	if b.Before(a) {
+		return b
+	}
+	return a
+}
+
+func maxTime(a, b time.Time) time.Time {
+	if b.After(a) {
+		return b
+	}
+	return a
 }

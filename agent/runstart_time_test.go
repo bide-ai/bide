@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"reflect"
 	"regexp"
+	"slices"
 	"testing"
 	"time"
 )
@@ -265,6 +266,7 @@ func TestRunStart_StartedAtIsNotRead(t *testing.T) {
 func sameDrive(t *testing.T, a, b *Journal, runID string) {
 	t.Helper()
 	var js [2][]Record
+	var presence [2][]bool
 	for i, j := range []*Journal{a, b} {
 		recs, err := j.History(context.Background(), runID)
 		if err != nil {
@@ -272,15 +274,16 @@ func sameDrive(t *testing.T, a, b *Journal, runID string) {
 		}
 		for k := range recs {
 			recs[k].salt, recs[k].raw = nil, nil
-			if s := recs[k].ApproverSignature; s != nil && s.Approver == "" {
-				recs[k].ApproverSignature = nil // a recorded_at alone: the time of the drive that wrote it
-			}
 			recs[k].Result = withoutStartTime(t, recs[k])
 			if recs[k].Kind == StepAttempt {
 				recs[k].AttemptedAt, recs[k].claim = 0, ""
 			}
 		}
+		presence[i] = stripRecordedAt(recs)
 		js[i] = recs
+	}
+	if !slices.Equal(presence[0], presence[1]) {
+		t.Fatalf("the journals differ in which records carry a recorded_at:\n %s\n %s", dumpRecords(js[0]), dumpRecords(js[1]))
 	}
 	if !reflect.DeepEqual(js[0], js[1]) {
 		t.Fatalf("journals differ:\n %s\n %s", dumpRecords(js[0]), dumpRecords(js[1]))

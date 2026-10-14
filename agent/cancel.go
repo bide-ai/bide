@@ -247,14 +247,11 @@ func abortedAt(r Record) (time.Time, bool) {
 	return t, err == nil
 }
 
-// endedAt is the time the end marker r says it was written: its recorded_at, else a run:aborted's
-// aborted_at, else "". A recorded time that is not in FormatTimestamp's form is not reported.
+// endedAt is the time the end marker r says it was written: its recorded_at, else (when that is
+// absent or not in FormatTimestamp's form) a run:aborted's valid aborted_at, else "".
 func endedAt(r Record) string {
-	if s := r.RecordedAt(); s != "" {
-		if canonicalTimestamp(s) {
-			return s
-		}
-		return ""
+	if s := r.RecordedAt(); canonicalTimestamp(s) {
+		return s
 	}
 	var v abortValue
 	if r.Name == runAbortedStep && json.Unmarshal(r.Result, &v) == nil && canonicalTimestamp(v.AbortedAt) {
