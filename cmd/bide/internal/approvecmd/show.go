@@ -7,10 +7,10 @@ import (
 	"encoding/json"
 	"fmt"
 	"strings"
-	"time"
 	"unicode/utf8"
 
 	"github.com/bide-ai/bide/agent"
+	"github.com/bide-ai/bide/audit"
 	"github.com/bide-ai/bide/internal/approveline"
 )
 
@@ -104,15 +104,10 @@ func clip(text string) (string, int) {
 	return strings.Join(out, "\n"), hidden
 }
 
-// argsDigest returns the SHA-256 of the call's canonical arguments as the signature binds it. It
-// is read out of the very bytes an approver signs (agent.ApprovalDecisionBytes), at the offset the
-// layout fixes (after the domain tag and the three length-prefixed ids), so the digest shown is
+// argsDigest returns the SHA-256 of the call's canonical arguments as the signature binds it
+// (audit.ApprovalArgsDigest, read out of the very bytes an approver signs), so the digest shown is
 // the digest signed, not a second computation that could drift from it.
-func argsDigest(s agent.ApprovalSubject) string {
-	b := agent.ApprovalDecisionBytes(s, "x", true, time.Unix(0, 0))
-	off := len(agent.DecisionFormat) + 1 + 3*4 + len(s.RunID) + len(s.ToolUseID) + len(s.ToolName)
-	return hex.EncodeToString(b[off : off+32])
-}
+func argsDigest(s agent.ApprovalSubject) string { return audit.ApprovalArgsDigest(s) }
 
 // digestAt reports whether msg, decision bytes, carry digest at the offset argsDigest reads it
 // from. Run before signing, it checks the layout this file assumes is the layout in use.

@@ -41,6 +41,10 @@ var keyConstructors = map[string]func(string) string{
 	"approvalDecisionStep": func(s string) string {
 		return approvalDecisionStep(s, "ops:1", true, "ed25519", "2026-10-13T12:14:03.123Z", []byte(s))
 	},
+	"DecisionStep": func(s string) string {
+		return DecisionStep(Decision{ToolUseID: s, ApproverID: "ops:2", Approved: true, Alg: "ed25519",
+			DecidedAt: time.Date(2026, 10, 13, 12, 14, 3, 123e6, time.UTC), Signature: []byte(s)})
+	},
 	"ApprovalTallyStep":      ApprovalTallyStep,
 	"ApprovalRetallyStep":    ApprovalRetallyStep,
 	"ApprovalSoDRetallyStep": ApprovalSoDRetallyStep,

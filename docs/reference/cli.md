@@ -285,6 +285,7 @@ bide approve: record a signed approval, or a rejection, of a call that waits for
   bide approve -db <file> -run <id> -call <tool-use id> -as <approver> -key <key-file> [flags]
   bide approve -postgres-env <VAR> -run <id> -call <tool-use id> -as <approver> -key <key-file>
   bide approve -db <file> -list
+  bide approve -to <url> -run <id> -call <tool-use id> -as <approver> -key <key-file> -approver-keys <file>
 
 It reads the call from the journal, never from a flag or a notification, and shows what it is
 about to sign: the run, the tool, the call's arguments (indented JSON, long ones cut; -full shows
@@ -333,6 +334,23 @@ says this either way). -verify-receipt <file> -approver-keys <keys> checks a rec
 reading no journal; bide audit verify-receipts checks receipts against the journal and its signed
 heads, and flags a decision deleted after signing.
 
+-to <url> decides through an application's approval intake (package approvals) instead of writing a
+journal, for an approver with no database access: the application records the signed decision through
+its own journal, so its audit log signs it as it is written. The call is fetched from the endpoint and
+shown, and what is signed is what is shown: the command computes the SHA-256 of the arguments it
+displays and refuses an endpoint whose own digest differs, shows the digest it computed, and signs
+that. The endpoint verifies the signature against the call it holds, so arguments shown that are not
+the journal's produce a decision that records nothing. The same refusals apply (the call is not
+waiting, you are not an approver, you already decided), and the gate is read again after you confirm.
+The URL must be https (http only to a loopback address), carry no credentials, and a redirect is
+not followed. -tls-ca names the CA that signs the endpoint's certificate (instead of the system
+roots), -client-cert and -client-key present a client certificate for mutual TLS, and -token-env
+names an environment variable that holds a bearer token to send. -to serves m-of-n gates (a
+single-approver gate has no signature), and -list does not go with it. The decision's receipt is
+the one the endpoint returns, checked against what you signed and against your key before it is
+written. If the request fails with no answer, the decision may or may not have been recorded: run
+the command again, and a decision of yours that counts is refused as already decided.
+
 After the decision is recorded, re-run the run's root run ID (agent.Run with the same ID) or let
 RecoverLoop pick it up: the gate counts the decisions and the call runs or is denied. bide approve
 never runs the call.
@@ -360,6 +378,10 @@ Flags:
     	your approver id, exactly as the gate's policy lists it (not for a single-approver gate)
   -call string
     	the call's tool-use ID (for a plan flow node, its key, such as node:review)
+  -client-cert string
+    	with -to: a PEM client certificate for mutual TLS (with -client-key)
+  -client-key string
+    	with -to: the PEM private key of -client-cert
   -color when
     	when to color the output: auto (the default: on a terminal, unless NO_COLOR is set or TERM is dumb), always or never
   -db string
@@ -382,6 +404,12 @@ Flags:
     	record a rejection instead of an approval
   -run string
     	the run whose journal holds the call: the pause's run ID
+  -tls-ca string
+    	with -to: the PEM CA certificate(s) that sign the endpoint's certificate, instead of the system roots
+  -to string
+    	decide through an application's approval intake (package approvals) at this base URL (https, or http to loopback) instead of writing a journal: the call is fetched from the endpoint, shown, signed and posted
+  -token-env string
+    	with -to: name of the environment variable that holds a bearer token to send (the token never goes on the command line)
   -unverified
     	decide an m-of-n gate without -approver-keys: the key is not checked against the one enrolled for you, and the tally is not verified
   -verify-receipt string

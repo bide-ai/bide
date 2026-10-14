@@ -153,7 +153,7 @@ Temporal 借助一个服务器和一支 worker 机群提供持久化执行。而
 - **[密钥托管](../../docs/guides/key-custody.md)**：把审计日志和审批人的签名密钥放在 PKCS#11 HSM（测试用 SoftHSM2）、AWS KMS、Google Cloud KMS 或 Azure Key Vault（ECDSA P-256）中，位于 `audit.Signer` 之后。审批人可用 HSM、AWS KMS 或 Google Cloud KMS 或 Azure Key Vault 中的密钥通过 `bide-hsm approve`（从源码构建）在终端中决定。可运行示例：`examples/hsm-signing`。
 - **[治理](../../docs/guides/governance.md)**：Tier-2 受治理状态底座（gsm）。把共享状态描述为一个注册表，而 `Build()` 检查每一种交错都收敛，否则返回一个反例。可在 `examples/govern/mesh`、`examples/govern/compose` 中运行。
 - **[通知](../../docs/guides/notifications.md)**：运行停止或等待批准时通知人：已签名的 HTTPS webhook（`notify.NewWebhook`）、一次调用的接收端验证（`notify.Verify`）、可选的双向 TLS 与密钥固定。
-- **[批准](../../docs/guides/hitl-approval.md)**：工具运行之前的持久化人类签核，从 1-of-1 到签名的 m-of-n（`ApprovalPolicy`、`SubmitDecision`），可选职责分离（运行的发起人永不计入，`ExcludePrincipal`），并离线证明 k 位具名批准人在动作之前批准了它（`audit.ApprovalEvidence`、`audit.VerifyApprovals`）。可在 `examples/approval` 中运行。 审批人可用 `bide approve` 在终端中决定（它先显示日志中的调用，再签名），密钥由 `bide keygen` 生成。
+- **[批准](../../docs/guides/hitl-approval.md)**：工具运行之前的持久化人类签核，从 1-of-1 到签名的 m-of-n（`ApprovalPolicy`、`SubmitDecision`），可选职责分离（运行的发起人永不计入，`ExcludePrincipal`），并离线证明 k 位具名批准人在动作之前批准了它（`audit.ApprovalEvidence`、`audit.VerifyApprovals`）。可在 `examples/approval` 中运行。 审批人可用 `bide approve` 在终端中决定（它先显示日志中的调用，再签名），密钥由 `bide keygen` 生成。应用可挂载 `approvals.Handler`，通过 HTTP 接收已签名的决定，审批人再用 `bide approve -to <url>` 提交。
 - **[Stripe 测试模式退款](../../examples/stripe-refund/README.md)**：在退款中途杀掉智能体；重启时停下而不是退两次款，随后对账器依据 Stripe 自己的记录解决该步骤。可在 `examples/stripe-refund` 中运行。
 - **[法定人数](../../docs/guides/quorum.md)**：受治理的 k-of-n 模型一致（`govern.Quorum`），计票锚定在日志中并可离线重新核对（`bide audit verify-quorum`）。可在 `examples/govern/quorum` 中运行。
 

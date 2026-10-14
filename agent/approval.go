@@ -784,14 +784,49 @@ func approvalDecisionStep(toolUseID, approverID string, approved bool, alg Alg, 
 	return approvalStep(toolUseID) + ":" + approverID + ":" + hex.EncodeToString(h.Sum(nil))
 }
 
-// ApproveOption configures SubmitDecision: WithDecisionCheck, or WithClock for the clock that
-// stamps the decision's RecordedAt.
+// DecisionStep returns the journal name SubmitDecision gives the record of d: distinct for each
+// distinct decision (approver, verdict, scheme, decision time and signature), and the same for an
+// identical resubmission, which is why that is a no-op. A service that takes decisions over a
+// network reads it to tell a decision it records from one it already holds. A zero or
+// non-canonical d.DecidedAt has no record (SubmitDecision refuses it); the name is then of
+// FormatTimestamp's rendering of it.
+func DecisionStep(d Decision) string {
+	return approvalDecisionStep(d.ToolUseID, d.ApproverID, d.Approved, d.Alg, FormatTimestamp(d.DecidedAt), d.Signature)
+}
+
+// ReportWritten makes SubmitDecision set *wrote to whether this call stored the decision's record:
+// true when its Insert won the store's first-writer race, false when the journal already held the
+// decision (an identical resubmission, another writer's record under the same name, a concurrent
+// call that wrote it first, in this process or another). It is false when SubmitDecision returns an
+// error. Of any number of concurrent submissions of byte-identical decisions (the same signature
+// bytes, so the same record name) exactly one sees true, which is what a service that acts once per
+// recorded decision needs. A scheme whose signatures are randomized (ECDSA from a KMS or an HSM) signs
+// one decision into different bytes, each a record name of its own, and SubmitDecision's check
+// that the decision is not already journaled is not one step with its insert: two such submissions
+// racing both write, and both see true. The gate counts one and supersedes the other (the
+// duplicate stays in the journal). wrote must not be shared between calls.
+func ReportWritten(wrote *bool) ApproveOption { return reportWritten{wrote} }
+
+type reportWritten struct{ p *bool }
+
+func (r reportWritten) applyApprove(o *approveOptions) error {
+	if r.p == nil {
+		return fmt.Errorf("ReportWritten: nil pointer: %w", ErrConfig)
+	}
+	*r.p = false
+	o.wrote = r.p
+	return nil
+}
+
+// ApproveOption configures SubmitDecision: WithDecisionCheck, WithClock for the clock that stamps
+// the decision's RecordedAt, or ReportWritten.
 type ApproveOption interface {
 	applyApprove(*approveOptions) error
 }
 
 type approveOptions struct {
 	verifierFor ApproverVerifierFor
+	wrote       *bool // ReportWritten
 	now         func() time.Time
 }
 
@@ -911,6 +946,9 @@ func submitDecision(ctx context.Context, store *Journal, op string, d Decision, 
 		if err := opt.applyApprove(&o); err != nil {
 			return fmt.Errorf("%s: %w", op, err)
 		}
+	}
+	if o.wrote != nil {
+		ctx = context.WithValue(ctx, wroteKey{}, o.wrote)
 	}
 	reqSeq, flow, err := flowDecision(ctx, store, op, d.RunID, d.ToolUseID)
 	if err != nil {
