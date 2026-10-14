@@ -853,7 +853,7 @@ func TestAuditedEventStore_ACallerGivingUpDoesNotTripTheBreaker(t *testing.T) {
 	tr := audit.NewNotifyTrail(r.s)
 	appendNotify(t, tr, "notify:a", 0, 1)
 	r.flush(t)
-	appendNotify(t, tr, "notify:a", 1, 1)
+	appendNotify(t, audit.NewNotifyTrail(r.mem), "notify:a", 1, 1) // behind the wrapper's back: only Reanchor will see it
 	ctx, cancel := context.WithTimeout(context.Background(), 50*time.Millisecond)
 	defer cancel()
 	if err := r.s.Reanchor(ctx, "notify:a"); err == nil {
