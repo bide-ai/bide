@@ -285,6 +285,15 @@ if halt, ok := errors.AsType[*agent.OutcomeUnknown](err); ok {
 }
 ```
 
+The recorded result notes when it was written (`Record.RecordedAt`, `recorded_at`): the resolving
+process's clock, `agent.WithClock` if you pass it, else the run's clock on `ctx`, else the wall
+clock. The resolver signs nothing, so the time is a claim anchored only by the journal's Merkle
+trail once a signed head covers the record. An auditor reads it to tell when a notified halt was
+resolved (`bide view` shows it on the timeline and in the verdict, `bide audit verify-evidence`
+beside the tool call). It is informational: `WithMinHaltAge` measures against the attempt marker
+and the clock `WithClock` names (the wall clock by default), never the context's, and no drive
+reads the time.
+
 `halt.Ref()` names the run, the operation (`Op`: a tool call, `OpTool`, with its tool-use ID, or a
 `Step`, `OpStep`, with its name), and the halt's `Cause`. Pass the result value an actual call would
 have returned, and `IsError: true` if the verified outcome was a failure the model should react to

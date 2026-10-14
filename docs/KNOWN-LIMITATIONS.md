@@ -319,6 +319,15 @@ fingerprint comparison out of band. Gates for high-value actions should wait for
 which are not built: they need a new signature scheme in the gate and the auditor. See
 [Approving in the browser](guides/hitl-approval.md#approving-in-the-browser).
 
+**A resolution's, a single approval's and a run's end time are the writer's claim.** Each of these
+records notes when it was written (`recorded_at`), by the clock of the process that wrote it, and
+nothing signs it: an m-of-n approver signs their `decided_at`, but a single approver (`agent.Approve`)
+and the operator who resolves a halt (`agent.ResolveHalt`) hold no key the runtime knows, so their
+time is anchored only by the journal's Merkle trail once a signed head covers the record, and no
+clock is vouched for. A record written before the times existed has none and is reported as having
+none. A tool result a model-driven call produced has no `recorded_at` (the attempt marker's
+`attempted_at` is its time). Nothing reads these times to decide anything.
+
 **Decisions signed before `bide.approval.v3` must be signed again.** They no longer verify. A run
 whose gate passed on them before the upgrade, and whose call has not run, pauses to ask again
 (`agent.PendingReapproval`) rather than run on approvals an audit would fail. See

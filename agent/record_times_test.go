@@ -352,9 +352,15 @@ func TestRecordTimes_NotRead(t *testing.T) {
 	variants := map[string]func(*ApproverSignature) *ApproverSignature{
 		"as written": func(s *ApproverSignature) *ApproverSignature { return s },
 		"absent":     func(*ApproverSignature) *ApproverSignature { return nil },
-		"different":  func(*ApproverSignature) *ApproverSignature { return &ApproverSignature{RecordedAt: "1999-01-01T00:00:00.000Z"} },
-		"far future": func(*ApproverSignature) *ApproverSignature { return &ApproverSignature{RecordedAt: "9999-12-31T23:59:59.999Z"} },
-		"not a time": func(*ApproverSignature) *ApproverSignature { return &ApproverSignature{RecordedAt: "not a time \x00 ‮"} },
+		"different": func(*ApproverSignature) *ApproverSignature {
+			return &ApproverSignature{RecordedAt: "1999-01-01T00:00:00.000Z"}
+		},
+		"far future": func(*ApproverSignature) *ApproverSignature {
+			return &ApproverSignature{RecordedAt: "9999-12-31T23:59:59.999Z"}
+		},
+		"not a time": func(*ApproverSignature) *ApproverSignature {
+			return &ApproverSignature{RecordedAt: "not a time \x00 ‮"}
+		},
 	}
 	// rewrite replaces the stamp on every record of run "r" that carries a lone recorded_at or is
 	// named in names.

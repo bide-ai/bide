@@ -138,7 +138,9 @@ const usageText = `bide audit: produce and verify audit proof bundles
          verify a portable evidence package offline and print a plain-English report: the
          format, seal (a digest of the package, or the whole package for an older v5 package), key, and run binding, then one line per proven action (tool call, step,
          grant), plus the run certificate (checked against the given allowlist, required when
-         the package carries one) and consistency proof if present
+         the package carries one) and consistency proof if present; a tool call or step whose
+         record says when it was written (a resolved halt, a run's end) shows that time as the
+         writing process's claim
 
   verify-approvals -evidence <file> -pubkey <hex|file> -call <tool-use-id|node-key> -need <k>
                    -approvers <id,id,...> -approver-keys <file> [-approved <digest>...] [-approved-file <file>]

@@ -346,6 +346,15 @@ version does not know, so a record a newer release wrote verifies and displays h
 case-variant names, invalid UTF-8, escaped lone surrogates. The public key must come from the anchor operator, not the bundle: that is what makes it
 **proofs you verify, not logs you trust.**
 
+A record can say when it was written: `Record.RecordedAt` (`recorded_at`) on a single approver's
+decision, a result `ResolveHalt` injected, and a run's end marker. The proof commits to it with the
+rest of the record, so it cannot change once a signed head covers the record, but it is the writing
+process's claim and no clock is vouched for (the resolver of a halt signs nothing; an m-of-n
+approver signs only `decided_at`). `bide audit verify` prints it after its verdict, and
+`bide audit verify-evidence` appends it to a tool call's or step's line (`recorded at <time> by
+the clock of the process that wrote it`). A record with no time prints nothing, and a time that is
+not in the canonical form is printed quoted. It is informational: nothing in verification reads it.
+
 For the auditor who does not write Go, the `bide audit` CLI wraps this (`prove` over an
 exported journal + STH, `verify` over a bundle + key; only exit 0 means verified). And for a third
 party who will not import the SDK at all, [`audit/verify`](../../audit/verify) is a **stdlib-only**
