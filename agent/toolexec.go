@@ -68,6 +68,11 @@ func tallyGate(ctx context.Context, store *Journal, runID string, s ApprovalSubj
 	if err != nil {
 		return ApprovalTally{}, false, fmt.Errorf("load history %s: %w (%w)", runID, err, ErrStorage)
 	}
+	// Separation of duties, checked like the keys: on every evaluation, before a recorded tally is
+	// read, from the run's journaled start.
+	if err := checkRequester(*pol, recs, runID); err != nil {
+		return ApprovalTally{}, false, err
+	}
 	name, supersedes := ApprovalTallyStep(s.ToolUseID), ""
 	for _, r := range recs {
 		if r.Kind != StepValue || r.Name != name && r.Name != ApprovalRetallyStep(s.ToolUseID) {
@@ -87,8 +92,14 @@ func tallyGate(ctx context.Context, store *Journal, runID string, s ApprovalSubj
 		return t, true, nil
 	}
 	if since != "" {
+		// The decisions after since, and the run's start, which names the requester a policy that
+		// excludes the requester reads (TallyApprovals).
+		var start []Record
+		if i := slices.IndexFunc(recs, IsRunStart); i >= 0 {
+			start = recs[i : i+1]
+		}
 		if i := slices.IndexFunc(recs, func(r Record) bool { return r.Name == since }); i >= 0 {
-			recs = recs[i+1:]
+			recs = append(slices.Clone(start), recs[i+1:]...)
 		} else {
 			recs = nil
 		}

@@ -130,6 +130,23 @@ func flowGate(ctx context.Context, d *Journal, runID, key, node string, args jso
 			return false, fmt.Errorf("plan node %q: %w", node, err)
 		}
 	}
+	// Separation of duties: the requester is the flow run's journaled principal (its run:start),
+	// checked on every evaluation, before a recorded outcome is read, as the keys are.
+	var requester string
+	if !single && pol.ExcludePrincipal {
+		var start []Record
+		r, ok, err := d.Get(ctx, runID, runStartStep)
+		if err != nil {
+			return false, fmt.Errorf("read %s (run %s): %w (%w)", runStartStep, runID, err, ErrStorage)
+		}
+		if ok {
+			start = []Record{r}
+		}
+		if err := checkRequester(*pol, start, runID); err != nil {
+			return false, fmt.Errorf("plan node %q: %w", node, err)
+		}
+		requester, _ = RecordedRequester(start)
+	}
 
 	// GRead: a recorded outcome is final. A single decision counts only if it follows the gate's
 	// request in the journal: one recorded before it (node keys are predictable) was not made on
@@ -202,6 +219,7 @@ func flowGate(ctx context.Context, d *Journal, runID, key, node string, args jso
 	w := ApprovalWait{ToolUseID: key, ToolName: node, Single: single, RecordedAt: noteStamp(clockFrom(ctx))}
 	if !single {
 		w.Need, w.Approvers = pol.Need, slices.Clone(pol.Approvers)
+		w.ExcludePrincipal, w.Requester = pol.ExcludePrincipal, requester
 	}
 	if b, err := json.Marshal(w); err == nil {
 		_, _ = d.put(ctx, runID, ApprovalPendingStep(key), Record{Kind: StepValue, Result: b})
