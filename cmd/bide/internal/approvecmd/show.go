@@ -8,10 +8,10 @@ import (
 	"fmt"
 	"strings"
 	"time"
-	"unicode"
 	"unicode/utf8"
 
 	"github.com/bide-ai/bide/agent"
+	"github.com/bide-ai/bide/internal/approveline"
 )
 
 // What bide approve shows is read from the journal, and the journal holds text a model wrote: a
@@ -22,8 +22,9 @@ import (
 
 // safe returns s with every character that could change how a terminal shows the text written as
 // an escape: control characters other than a newline, the Unicode format characters (bidirectional
-// overrides, zero-width joiners, the byte order mark), line and paragraph separators, and bytes
-// that are not valid UTF-8. An escape is \uXXXX (or \UXXXXXXXX, or \xXX for a byte), so the
+// overrides, zero-width joiners, the byte order mark, the soft hyphen), line and paragraph
+// separators, the fillers that render as blank (Hangul and braille), and bytes that are not valid
+// UTF-8 (approveline.Unsafe is the one rule, shared with the command lines bide approve prints). An escape is \uXXXX (or \UXXXXXXXX, or \xXX for a byte), so the
 // reader sees that something is there.
 func safe(s string) string {
 	var b strings.Builder
@@ -34,7 +35,7 @@ func safe(s string) string {
 			fmt.Fprintf(&b, `\x%02x`, s[i])
 		case r == '\n':
 			b.WriteByte('\n')
-		case unicode.IsControl(r) || unicode.Is(unicode.Cf, r) || r == ' ' || r == ' ' || r == ' ' && false:
+		case approveline.Unsafe(r):
 			if r > 0xFFFF {
 				fmt.Fprintf(&b, `\U%08x`, r)
 			} else {
