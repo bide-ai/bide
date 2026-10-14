@@ -378,3 +378,27 @@ func TestCachedBuildTimesOut(t *testing.T) {
 		}
 	}
 }
+
+// onlyFailing fails the load of one trail name.
+type onlyFailing struct {
+	audit.EventStore
+	name string
+}
+
+func (o onlyFailing) Load(ctx context.Context, name string) ([][]byte, error) {
+	if name == o.name {
+		return nil, context.DeadlineExceeded
+	}
+	return o.EventStore.Load(ctx, name)
+}
+
+// TestAttentionOwnTrailUnreadIsCounted: when the run's own trail cannot be read but its root's can, the
+// list still counts the run's trail as unread and is not clear.
+func TestAttentionOwnTrailUnreadIsCounted(t *testing.T) {
+	const own = "wf>1"
+	recs := sampleRecs(t, "refund-1043")
+	o := Options{Source: Exports{own: recs}, Events: onlyFailing{audit.NewMemEventStore(), agent.NotifyTrailName(own)}, Now: func() time.Time { return attnNow }}
+	if l := o.attention(t.Context()); l.TrailUnread != 1 {
+		t.Errorf("trail unread %d, want 1", l.TrailUnread)
+	}
+}
