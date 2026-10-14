@@ -9,6 +9,14 @@ Please report security issues privately, not in a public issue.
 
 You will get an acknowledgement, and a fix plus disclosure timeline once the report is triaged. bide is Apache-2.0, maintained by Dayna Blackwell (bide-ai).
 
+## Verifying releases
+
+Release archives and `checksums.txt` are signed keylessly with cosign (GitHub OIDC), and each archive has an SPDX SBOM. See [Verifying releases](docs/trust/verify-releases.md) for the commands. Release binaries also rebuild byte for byte from their tag (`scripts/repro.sh`).
+
+## Trust documentation
+
+For security and risk reviewers: the [threat model](docs/trust/threat-model.md) (assets, actors, what bide prevents, detects and does not address), [stability and support](docs/trust/stability.md), a [comparison with Temporal, LangGraph and idempotency keys](docs/trust/comparison.md), and [operations guidance](docs/trust/operations.md) (key custody, retention, backups, clocks, database roles).
+
 ## Scope
 
 The cryptographic guarantees cover integrity, authenticity, tamper-evidence, and non-repudiation, not confidentiality (journal leaves are not encrypted). See [docs/guides/security-model.md](docs/guides/security-model.md) for the exact scope before reporting.

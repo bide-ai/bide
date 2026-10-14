@@ -218,6 +218,7 @@ is in [known limitations](docs/KNOWN-LIMITATIONS.md#governed-state-gsm).
 - **[A tour of bide](docs/tour.md)**: the API section by section: graphs, ambient runs, the agent loop, streaming, typed output, sessions, the audit trail, human approval, errors, middleware and governance.
 - **[Recipes](docs/recipes/index.md)**: six complete flows to copy and run with no API key: a refund with a 2-of-3 approval, invoice approval, support ticket triage, a safe customer-record update, an ambient agent that sleeps and wakes, and a webhook that tells a person when a run needs them.
 - **[The guarantee](docs/GUARANTEE.md)** and **[known limitations](docs/KNOWN-LIMITATIONS.md)**: the precise durability guarantee and its bounds.
+- **Trust**: for security and risk reviewers, the [threat model](docs/trust/threat-model.md), [stability and support](docs/trust/stability.md), a [comparison](docs/trust/comparison.md) with Temporal, LangGraph and idempotency keys, [operations guidance](docs/trust/operations.md) (keys, retention, database roles), and [verifying releases](docs/trust/verify-releases.md) (signatures and SBOMs).
 
 **Concepts**
 

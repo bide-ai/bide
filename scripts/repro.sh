@@ -82,18 +82,23 @@ if [ -z "$FROM" ]; then
   FROM=$WORK/dl
   gh release download "$TAG" -R "$REPO" -p 'bide_*' -p checksums.txt -D "$FROM" || die "could not download the $TAG release"
 fi
-(cd "$FROM" && for a in bide_*; do
+# The release also holds an SBOM (<archive>.sbom.json) and a signature bundle (<file>.sigstore.json)
+# per archive; they are not archives, so only the archives are checked and rebuilt here.
+(cd "$FROM" && for a in bide_*.tar.gz bide_*.zip; do
+  [ -e "$a" ] || continue
   want=$(awk -v f="$a" '$2 == f {print $1}' checksums.txt)
   [ -n "$want" ] || die "$a is not in checksums.txt"
   [ "$(sha "$a")" = "$want" ] || die "$a does not match checksums.txt"
 done)
+compgen -G "$FROM/bide_*.tar.gz" >/dev/null || compgen -G "$FROM/bide_*.zip" >/dev/null || die "no archive in $FROM"
 echo "==> the archives match checksums.txt"
 
 git clone --quiet --depth 1 --branch "$TAG" "https://github.com/$REPO" "$WORK/src" 2>/dev/null ||
   git clone --quiet --depth 1 --branch "$TAG" "$(git rev-parse --show-toplevel)" "$WORK/src" || die "could not clone $TAG"
 version=${TAG}
 fail=false
-for a in "$FROM"/bide_*; do
+for a in "$FROM"/bide_*.tar.gz "$FROM"/bide_*.zip; do
+  [ -e "$a" ] || continue
   name=$(basename "$a"); base=${name%.tar.gz}; base=${base%.zip}
   goos=$(echo "$base" | awk -F_ '{print $(NF-1)}'); goarch=$(echo "$base" | awk -F_ '{print $NF}')
   mkdir -p "$WORK/x/$base"

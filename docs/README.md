@@ -43,6 +43,16 @@ proofs. Each entry notes who it is for.
 - **[Governance](guides/governance.md)**: convergent governed state (Tier-2), federation, and gsm-backed synthesis and coordination.
 - **[Quorum](guides/quorum.md)**: governed k-of-n model agreement, verifiable offline.
 
+## Trust
+
+For security and risk reviewers. Read with the guarantee and the known limitations.
+
+- **[Threat model](trust/threat-model.md)** (evaluator): assets, actors and trust boundaries, and for each threat what bide prevents, what it detects and how, and what it does not address.
+- **[Stability and support](trust/stability.md)** (evaluator): the 0.x versioning policy, how breaking changes are announced, journal and proof format versions, what stays verifiable across versions, and the deprecation process.
+- **[Comparison](trust/comparison.md)** (evaluator): bide, Temporal, LangGraph, and retries with idempotency keys, on side effects across crashes, human approval, audit evidence and operations, including where the others are stronger.
+- **[Operations guidance](trust/operations.md)** (operator): key custody, journal retention and archiving, backups, clocks, and least-privilege Postgres roles.
+- **[Verifying releases](trust/verify-releases.md)** (operator): cosign signatures, SBOMs and reproducible builds.
+
 ## Reference
 
 - **[CLI reference](reference/cli.md)**: every `bide` command (`init`, `demo`, `view`, `check`, `audit`, `version`), its flags and its exit statuses, generated from the flag sets.

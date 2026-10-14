@@ -15,6 +15,7 @@ const items = [
   'recipes',
   'reference',
   'testing',
+  'trust',
   'blog',
 ]
 

@@ -128,6 +128,8 @@ Temporal 借助一个服务器和一支 worker 机群提供持久化执行。而
 
 初来乍到？从 **[入门](../../docs/getting-started.md)** 开始，用 **[文档索引](../../docs/README.md)** 获取完整地图，并参见 **[概念](../../docs/CONCEPTS.md)** 了解词汇（journal、at-most-once、lease、Waker、gsm、ProofBundle）。精确的持久性保证陈述于 **[保证](../../docs/GUARANTEE.md)**，其边界见 **[已知限制](../../docs/KNOWN-LIMITATIONS.md)**。
 
+信任文档（面向安全与风险评审）：[威胁模型](../../docs/trust/threat-model.md)、[稳定性与支持](../../docs/trust/stability.md)、[对比](../../docs/trust/comparison.md)、[运维指南](../../docs/trust/operations.md)、[验证发布版本](../../docs/trust/verify-releases.md)（英文）。
+
 **手写与构建**
 
 - **[配方](../../docs/recipes/index.md)**：六个可复制即用、无需 API 密钥即可运行的完整流程：3 选 2 审批的退款、发票审批、工单分流、安全更新客户记录、会休眠并唤醒的环境智能体，以及在运行需要人工介入时通知相关人员的 webhook。
