@@ -825,6 +825,23 @@ Both options require `WithAuth` (`approvals.New` returns an error without it): t
 arguments through `GET /pending`, so the endpoint must know who is asking, and a link in a notification
 is forwarded and logged. Tie the caller to an approver on the gate in the hook.
 
+**Credentials and `config.json`.** The page's requests carry the credentials of the page's own origin
+(`same-origin`: cookies, HTTP authentication, a TLS client certificate), so an application that serves the page
+authenticates it the way it authenticates anything else. A page hosted on another origin names the intake in
+`config.json` (`{"intake": "https://app.example.com/approvals"}`) and, to send a cookie or a client
+certificate cross-origin, `"credentials": "include"`, which the intake must allow with
+`approvals.WithCORSCredentials()` (credentials are then allowed to the one origin `WithCORS` names, never to a
+wildcard). **`config.json` is protected content**: it says where the approver's signed decisions are sent, and
+it is outside the bundle's published hashes, so the host serves it from the same place, under the same access
+control and review, as the bundle. The browser enforces the host's Content-Security-Policy: an intake origin that
+is not in its `connect-src` (a `config.json` that was changed to name another one) is blocked, and the page
+says so. Set `connect-src` to the one intake (`approvals.PageCSP(intakeOrigin)`).
+
+**The page shows every argument.** The signature binds all of the call's arguments, so none is cut from
+what the approver reads (a long value scrolls in its box); the CLI refuses to sign what it had to clip, and
+the page never clips. The page also shows the gate's `reason` when it asks again, and offers no decision on a
+gate the endpoint reports as `error` (the gate would refuse to evaluate), `single` or `decided`.
+
 **Enrolling the key.** The page shows the public key and its fingerprint (`audit.KeyID`) when it creates the
 key. The approver reads the fingerprint to whoever enrols keys, **out of band** (a call, in person, a ticket
 in an authenticated system), who compares it with the fingerprint of the key they enrol. An enrolment that

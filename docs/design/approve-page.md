@@ -129,8 +129,9 @@ valid signature (safe) or lets two different arguments canonicalize alike (not).
 
 As in the CLI: all of the arguments, in a monospace block set with `textContent` (never `innerHTML`),
 with control characters, bidirectional overrides and zero-width characters shown visibly as escapes.
-Very long values are shown in full behind a scroll. Signing is disabled until the approver has
-reached the end, as an aid against signing what was not read (see "Controls").
+Very long values are shown in full in a scroll box and are never clipped: a clipped view with Approve
+enabled would sign arguments the approver did not read, which the CLI refuses to do. Signing is also disabled
+until the approver has reached the end of the box, as an aid (see "Controls").
 
 ## Same-origin, locked down
 
