@@ -32,6 +32,13 @@ const (
 	NotifyFailingSince NotifyRecordKind = "failing_since"
 	// NotifyRecovered: a recovery pass succeeded while a failure episode was open.
 	NotifyRecovered NotifyRecordKind = "recovered"
+	// NotifyWatch: an event that can stop being current is about to be observed; written to the
+	// NotifyOpenTrail, not to a run's trail. Idempotent per key while the key is watched.
+	NotifyWatch NotifyRecordKind = "watch"
+	// NotifyUnwatch: nothing more is owed for the watched event (its all-clear was acknowledged, or
+	// it was cleared before any delivery was attempted, or it was never observed); written to the
+	// NotifyOpenTrail.
+	NotifyUnwatch NotifyRecordKind = "unwatch"
 )
 
 // NotifyAuth records how a delivery was authenticated, next to the delivery it authenticated.
@@ -79,6 +86,15 @@ type NotifyRecord struct {
 	// overdue
 	Latency time.Duration `json:"latency,omitempty"` // At minus ObservedAt
 
+	// observed, for a halt or an approval event: the operation or gate the key names, so that whether
+	// the event is still current can be checked from the record when an ID in the key was too long to
+	// encode (it is a digest). OpRun is the run whose journal holds the operation or gate, OpKind
+	// "tool" or "step" for a halt and "gate" for an approval, OpID the operation's or call's ID. A
+	// record written before these fields has none; the key is read instead.
+	OpRun  string `json:"op_run,omitempty"`
+	OpKind string `json:"op_kind,omitempty"`
+	OpID   string `json:"op_id,omitempty"`
+
 	// cleared: "resolved", "decided", "ended" or "recovered". observed, for a resolved event: the same
 	// code, why the event it clears ended. failing_since: a class of cause, never error text.
 	Reason string `json:"reason,omitempty"`
@@ -107,6 +123,13 @@ func normTime(t time.Time) time.Time {
 
 // NotifyTrailName is the name of runID's notification trail in a NotifyTrail.
 func NotifyTrailName(runID string) string { return "notify:" + runID }
+
+// NotifyOpenTrail is the name of the trail that lists the events whose all-clear may still be owed:
+// a watch record before an outcome_unknown, approval_pending or recovery_failing event is observed,
+// an unwatch record when nothing more is owed for it. It belongs to no run, so a sweep or a recovery
+// pass finds the runs that need a scan, including a run that has completed since, without reading
+// every finished run. It grows by two records per such event, ever.
+const NotifyOpenTrail = "notify:@open"
 
 // NotifyDigestTrail is the name of the trail the periodic digest uses; it belongs to no run.
 const NotifyDigestTrail = "notify:@digest"
