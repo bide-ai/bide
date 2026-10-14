@@ -680,7 +680,7 @@ func TestDecision_RecordWrittenFirstByAnotherProcess(t *testing.T) {
 	d.Signature = sig
 	rec := agent.Record{Name: agent.DecisionStep(d), Kind: agent.StepApproval, ToolUseID: "c1", Approved: true, ApproverSignature: &agent.ApproverSignature{
 		Approver: "alice", ApproverAlg: d.Alg, Signature: sig, DecidedAt: b.DecidedAt, RecordedAt: "2026-10-13T11:00:00.000Z"}}
-	data, err := agent.EncodeRecord(rec)
+	data, err := agent.JournalEntry(agent.DecisionStep(d), rec)
 	if err != nil {
 		t.Fatal(err)
 	}
