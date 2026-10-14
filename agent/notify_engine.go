@@ -309,6 +309,11 @@ func (e *notifyEngine) callNotify(ctx context.Context, n Notifier, note Notifica
 	out := make(chan result, 1)
 	go func() {
 		defer func() {
+			if r := recover(); r != nil { // a Notifier that panics fails the call, not the process
+				out <- result{NotifyAck{}, fmt.Errorf("notify: the Notifier panicked: %v", r)}
+			}
+		}()
+		defer func() {
 			e.mu.Lock()
 			if e.stuck[note.Key]--; e.stuck[note.Key] == 0 {
 				delete(e.stuck, note.Key)

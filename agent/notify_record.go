@@ -126,7 +126,7 @@ type NotifyRecord struct {
 	// window the first pass recorded: the second pass is due no sooner than BackfillAt of the first
 	// plus it, and the verifier holds the trail to that.
 	BackfillWindow time.Duration `json:"backfill_window,omitempty"`
-	Next       string    `json:"next,omitempty"`
+	Next           string        `json:"next,omitempty"`
 
 	// cleared: "resolved", "decided", "ended" or "recovered". observed, for a resolved event: the same
 	// code, why the event it clears ended. failing_since: a class of cause, never error text.

@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"testing"
 	"time"
 )
@@ -1519,5 +1520,119 @@ func TestResolved_TheSecondPassWaitsForTheWindowTheFirstRecorded(t *testing.T) {
 	_, recs, _ = other.openHead(ctx)
 	if st := FoldOpen(recs); st.Backfills != 2 || st.BackfillWindow != 7*24*time.Hour {
 		t.Fatalf("passes = %d, window = %v", st.Backfills, st.BackfillWindow)
+	}
+}
+
+type brokenOpenTrail struct {
+	NotifyTrail
+	panics bool
+}
+
+func (b brokenOpenTrail) fail(trail string) error {
+	if strings.HasPrefix(trail, NotifyOpenTrail) {
+		if b.panics {
+			panic("open trail store exploded")
+		}
+		return errors.New("open trail store down")
+	}
+	return nil
+}
+
+func (b brokenOpenTrail) Load(ctx context.Context, trail string) ([]NotifyRecord, error) {
+	if err := b.fail(trail); err != nil {
+		return nil, err
+	}
+	return b.NotifyTrail.Load(ctx, trail)
+}
+
+func (b brokenOpenTrail) Append(ctx context.Context, trail string, seq int, rec NotifyRecord) error {
+	if err := b.fail(trail); err != nil {
+		return err
+	}
+	return b.NotifyTrail.Append(ctx, trail, seq, rec)
+}
+
+// The open trail's scan and the backfill run on the notifier's worker, off recovery: a trail store
+// that errors or panics on them leaves Recover's count and error, and RecoverLoop's passes, as they
+// are with a healthy one. (The failure goes to WithNotifyErrors.)
+func TestResolved_AFailingOpenTrailStoreLeavesRecoveryAlone(t *testing.T) {
+	for _, panics := range []bool{false, true} {
+		t.Run(fmt.Sprintf("panics=%v", panics), func(t *testing.T) {
+			ctx := context.Background()
+			run := func(tr NotifyTrail) (int, error, int) {
+				j := memJournal()
+				putMarker(t, j, "r", "c1", resolvedClock().now().UnixMilli())
+				if _, _, err := j.putEntry(ctx, "r", runStartStep, Record{Kind: StepValue, Result: []byte("{}")}); err != nil {
+					t.Fatal(err)
+				}
+				var reported int32
+				resume := func(context.Context, string, RunStart) error { return nil }
+				n, err := Recover(ctx, j, resume, WithNotifier(&fakeSink{}, tr, fixedNotifyClock(resolvedClock()), WithNotifyHolder("p"),
+					WithNotifyErrors(func(error) { atomic.AddInt32(&reported, 1) })))
+				return n, err, int(atomic.LoadInt32(&reported))
+			}
+			wantN, wantErr, _ := run(NewMemNotifyTrail())
+			gotN, gotErr, reported := run(brokenOpenTrail{NewMemNotifyTrail(), panics})
+			if gotN != wantN || (gotErr == nil) != (wantErr == nil) {
+				t.Fatalf("Recover = %d, %v with a failing open trail store; %d, %v with a healthy one", gotN, gotErr, wantN, wantErr)
+			}
+			if reported == 0 {
+				t.Error("the failure was not reported to WithNotifyErrors")
+			}
+		})
+	}
+}
+
+type panicSink struct{}
+
+func (panicSink) Notify(context.Context, Notification) error { panic("sink exploded") }
+
+// A Notifier that panics fails its call (and is retried), not the process.
+func TestNotifyRound_APanickingNotifierFailsTheCallNotTheProcess(t *testing.T) {
+	ctx := context.Background()
+	e := testEngine(t, memJournal(), panicSink{}, NewMemNotifyTrail(), resolvedClock(), "p1")
+	if res, err := e.round(ctx, haltEvent()); err == nil || res.done || !strings.Contains(err.Error(), "panicked") {
+		t.Fatalf("round = %+v, %v, want a failed round naming the panic", res, err)
+	}
+}
+
+type slowOpenTrail struct {
+	NotifyTrail
+	release chan struct{}
+}
+
+func (s slowOpenTrail) Load(ctx context.Context, trail string) ([]NotifyRecord, error) {
+	if strings.HasPrefix(trail, NotifyOpenTrail) {
+		select {
+		case <-s.release:
+		case <-ctx.Done():
+			return nil, ctx.Err()
+		}
+	}
+	return s.NotifyTrail.Load(ctx, trail)
+}
+
+// A slow open-trail store holds the scan and the backfill, not the recovery pass: Recover returns
+// once its events are delivered and the bounded wait for the scans has passed, with the same count.
+func TestResolved_ASlowOpenTrailStoreDoesNotHoldRecoverForLong(t *testing.T) {
+	old := scanFlushWait
+	scanFlushWait = 100 * time.Millisecond
+	defer func() { scanFlushWait = old }()
+	ctx := context.Background()
+	j := memJournal()
+	putMarker(t, j, "r", "c1", resolvedClock().now().UnixMilli())
+	if _, _, err := j.putEntry(ctx, "r", runStartStep, Record{Kind: StepValue, Result: []byte("{}")}); err != nil {
+		t.Fatal(err)
+	}
+	release := make(chan struct{})
+	defer close(release)
+	resume := func(context.Context, string, RunStart) error { return nil }
+	start := time.Now()
+	n, err := Recover(ctx, j, resume, WithNotifier(&fakeSink{}, slowOpenTrail{NewMemNotifyTrail(), release}, fixedNotifyClock(resolvedClock()), WithNotifyHolder("p")))
+	if err != nil || n != 1 {
+		t.Fatalf("Recover = %d, %v", n, err)
+	}
+	if took := time.Since(start); took > 5*time.Second {
+		t.Fatalf("Recover took %v with a stuck open-trail store", took)
 	}
 }

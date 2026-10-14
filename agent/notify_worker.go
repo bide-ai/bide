@@ -168,7 +168,7 @@ func (w *notifyWorker) runRound(ctx context.Context, p *pendingNotify) {
 		}
 	}
 	if err == nil {
-		res, err = w.e.round(ctx, ev)
+		res, err = w.e.safeRound(ctx, ev)
 	}
 	if err != nil && ctx.Err() == nil {
 		w.e.report(err)
@@ -193,21 +193,44 @@ func (w *notifyWorker) runRound(ctx context.Context, p *pendingNotify) {
 	w.signal()
 }
 
-// settled reports whether no event is in flight or due: what remains is waiting out a backoff.
-func (w *notifyWorker) settled() bool {
+// safeRound is round with a panic, from a NotifyTrail or the engine's own code, turned into the
+// round's error: a trail store that panics must not take the process down, nor the recovery pass or
+// drive that queued the work. The round is retried like any failed one.
+func (e *notifyEngine) safeRound(ctx context.Context, ev notifyEvent) (res roundResult, err error) {
+	defer func() {
+		if r := recover(); r != nil {
+			res, err = roundResult{next: e.cfg.now().Add(e.backoff(1))}, fmt.Errorf("notify: %s: panic in the notifier: %v", ev.key, r)
+		}
+	}()
+	return e.round(ctx, ev)
+}
+
+// settled reports whether no event is in flight or due: what remains is waiting out a backoff. With
+// ignoreScans, the catch-up scans and the backfill (jobs that find all-clears, not events a person
+// is waiting for) do not count, so a slow trail store cannot hold a flush for long.
+func (w *notifyWorker) settled() bool { return w.settledFor(false) }
+
+// settledFor is settled, with ignoreScans as described there.
+func (w *notifyWorker) settledFor(ignoreScans bool) bool {
 	w.mu.Lock()
 	defer w.mu.Unlock()
-	if w.inflight > 0 {
-		return false
-	}
 	now := w.e.cfg.now()
 	for _, p := range w.pending {
-		if !p.due.After(now) {
+		if ignoreScans && p.ev.scan {
+			continue
+		}
+		if p.inflight || !p.due.After(now) {
 			return false
 		}
 	}
 	return true
 }
+
+// scanFlushWait is how long a flush waits for the catch-up scans and the backfill before it stops
+// waiting for them and leaves them to run on (or to the next process): a flush ends a Recover pass,
+// a drive's notifications and a sweep, which a slow trail store must not hold up. A variable so a
+// test can shorten it.
+var scanFlushWait = 10 * time.Second
 
 func (w *notifyWorker) isRunning() bool {
 	w.mu.Lock()
@@ -268,7 +291,8 @@ func (e *notifyEngine) flush(ctx context.Context) error {
 
 func (e *notifyEngine) flushDeliveries(ctx context.Context) error {
 	w := e.w
-	for w.isRunning() && !w.settled() {
+	start := time.Now()
+	for w.isRunning() && !w.settledFor(time.Since(start) > scanFlushWait) {
 		select {
 		case <-ctx.Done():
 			w.mu.Lock()
