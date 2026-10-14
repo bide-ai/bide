@@ -1061,5 +1061,92 @@ func TestVerifyNotifications_EscalationStepOperationFields(t *testing.T) {
 		if !errors.Is(err, audit.ErrNotVerified) || !strings.Contains(viol, tc.want) {
 			t.Errorf("%s: %v %v", name, err, viol)
 		}
+
+// ---- all-clear times from the records that resolve an event ----
+
+// A single approver's decision (agent.Approve) carries its recorded_at, so an all-clear owed for
+// the gate it decided is judged by the grace period like an m-of-n gate's, not left untimed.
+func TestVerifyNotifications_ASingleApprovalTimesTheAllClear(t *testing.T) {
+	ctx := context.Background()
+	mem := agent.NewMemStore()
+	j, _ := agent.NewJournal(mem)
+	tool := agent.MustFunc("refund", "refund", func(context.Context, struct{}) (string, error) { return "ok", nil }, agent.WithApproval(agent.SingleApproval()))
+	a, _ := agent.New(agenttest.NewScriptedModel(agenttest.ToolTurn("c1", "refund", `{}`)), j, agent.WithTools(tool))
+	if _, err := a.Run(ctx, "r1", agent.UserText("go")); !errors.As(err, new(*agent.ApprovalPending)) {
+		t.Fatal(err)
+	}
+	es := audit.NewMemEventStore()
+	if err := agent.NotifyPending(ctx, j, &toggleSink{}, audit.NewNotifyTrail(es), agent.WithNotifyHolder("sweeper")); err != nil {
+		t.Fatal(err)
+	}
+	decided := time.Now().Truncate(time.Millisecond)
+	if err := agent.Approve(ctx, j, "r1", "c1", true, agent.WithClock(func() time.Time { return decided })); err != nil {
+		t.Fatal(err)
+	}
+	tx, _ := audit.ExportNotifyTrail(ctx, es, trailName)
+	jx, _ := audit.ExportJournal(ctx, j, "r1")
+	gate := agent.ApprovalKey("r1", "c1", 0)
+	run := func(now time.Time) (audit.NotifyReport, error) {
+		return audit.VerifyNotifications(audit.NotifyVerifyInput{Trails: []audit.NotifyTrailExport{tx}, Journals: []audit.JournalExport{jx}, Unanchored: true, Now: now})
+	}
+	rep, err := run(decided.Add(time.Minute))
+	if err != nil || notifyStatusOf(t, rep, agent.ResolvedKey(gate)) != audit.NotifyStatusNotYetDue {
+		t.Fatalf("within the grace period: %v %+v", err, rep.Events)
+	}
+	rep, err = run(decided.Add(10 * time.Minute))
+	if !errors.Is(err, audit.ErrNotVerified) || notifyStatusOf(t, rep, agent.ResolvedKey(gate)) != audit.NotifyStatusNeverNotified {
+		t.Fatalf("after it: %v %+v", err, rep.Events)
+	}
+}
+
+// A halt resolved with agent.ResolveHalt is a journal event that is no longer current, timed by the
+// injected result's recorded_at: its all-clear is judged late after the grace period.
+func TestVerifyNotifications_AResolvedHaltTimesTheAllClear(t *testing.T) {
+	ctx := context.Background()
+	mem := agent.NewMemStore()
+	charge := agent.MustFunc("charge", "", func(context.Context, struct{}) (string, error) { return "ok", nil })
+	drive := func(s agent.Store) error {
+		j, _ := agent.NewJournal(s)
+		a, _ := agent.New(agenttest.NewScriptedModel(agenttest.ToolTurn("c1", "charge", `{}`), agenttest.TextTurn("done")), j, agent.WithTools(charge))
+		_, err := a.Run(ctx, "r1", agent.UserText("go"))
+		return err
+	}
+	_ = drive(crashBeforeResultStore{mem})
+	var halt *agent.OutcomeUnknown
+	if err := drive(mem); !errors.As(err, &halt) {
+		t.Fatalf("second drive = %v", err)
+	}
+	j, _ := agent.NewJournal(mem)
+	clock := &stepClock{now: time.Now().Add(2 * time.Minute)}
+	es := audit.NewMemEventStore()
+	if err := agent.NotifyPending(ctx, j, &toggleSink{}, audit.NewNotifyTrail(es), sweepOpts(clock)...); err != nil {
+		t.Fatal(err)
+	}
+	resolved := clock.now.Add(time.Minute).Truncate(time.Millisecond)
+	if err := agent.ResolveHalt(ctx, j, halt.Ref(), agent.Outcome{Result: "ok", Evidence: "provider"}, agent.WithClock(func() time.Time { return resolved }), agent.WithoutLiveDriverCheck()); err != nil {
+		t.Fatal(err)
+	}
+	tx, _ := audit.ExportNotifyTrail(ctx, es, trailName)
+	jx, _ := audit.ExportJournal(ctx, j, "r1")
+	events := agent.JournalNotifyEvents("r1", mustHistory(t, j, "r1"))
+	var key string
+	for _, e := range events {
+		if e.Kind == agent.NotificationOutcomeUnknown && !e.Current && e.ResolvedAt.Equal(resolved) {
+			key = e.Key
+		}
+	}
+	if key == "" {
+		t.Fatalf("no resolved halt timed %v in %+v", resolved, events)
+	}
+	run := func(now time.Time) (audit.NotifyReport, error) {
+		return audit.VerifyNotifications(audit.NotifyVerifyInput{Trails: []audit.NotifyTrailExport{tx}, Journals: []audit.JournalExport{jx}, Unanchored: true, Now: now})
+	}
+	rep, err := run(resolved.Add(time.Minute))
+	if err != nil || notifyStatusOf(t, rep, agent.ResolvedKey(key)) != audit.NotifyStatusNotYetDue {
+		t.Fatalf("within the grace period: %v %+v", err, rep.Events)
+	}
+	rep, err = run(resolved.Add(10 * time.Minute))
+	if !errors.Is(err, audit.ErrNotVerified) || notifyStatusOf(t, rep, agent.ResolvedKey(key)) != audit.NotifyStatusNeverNotified {
+		t.Fatalf("after it: %v %+v", err, rep.Events)
 	}
 }

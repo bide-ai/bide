@@ -27,10 +27,12 @@ type JournalNotifyEvent struct {
 	// Approvers is the gate's approvers, in policy order; nil for a 1-of-1 gate and for other kinds.
 	// A notifier routes an approval by them (NotifyRouting.Receivers).
 	Approvers []string
-	// ResolvedAt is, for a gate that is not current, when its newest decision was journaled (the
-	// decision's recorded_at, by the submitter's clock), so a decision made at the time is known
-	// and an all-clear can be judged late. Zero when the event is current, or when the journal
-	// holds no time for what resolved it (a tool's result, a run's end).
+	// ResolvedAt is, for an event that is not current, when what resolved it was journaled: a
+	// gate's newest decision (signed or a single approver's) or the result agent.ResolveHalt
+	// injected for a halt, by the recorded_at of that record (the writing process's clock, not
+	// signed), so an all-clear can be judged late. Zero when the event is current, or when the
+	// record that resolved it holds no time (written before records carried one, or a result the
+	// halted driver itself recorded).
 	ResolvedAt time.Time
 }
 
@@ -42,8 +44,9 @@ type JournalNotifyEvent struct {
 // and a halt is returned whatever its age (the caller applies the age the notifier waits before
 // reporting one, WithNotifyHaltAge).
 //
-// What it cannot see: a halt resolved by a later result leaves no attempt marker without a result,
-// so the journal no longer shows it; and recovery_failing and overdue are not journal facts.
+// A halt resolved by agent.ResolveHalt is returned with Current false and ResolvedAt the time its
+// injected result records; a halt a later drive resolved by running the call is not a halt the
+// journal shows. recovery_failing and overdue are not journal facts.
 func JournalNotifyEvents(runID string, recs []Record) []JournalNotifyEvent {
 	root := runStartRoot(runID, recs)
 	have := make(map[string]bool, len(recs))
@@ -69,10 +72,11 @@ func JournalNotifyEvents(runID string, recs []Record) []JournalNotifyEvent {
 		}
 		if !ev.Current {
 			for _, d := range recs {
-				if !IsApprovalDecision(d, w.ToolUseID) {
+				// A signed m-of-n decision or a single approver's (Approve): either resolves the gate.
+				if d.Kind != StepApproval || d.ToolUseID != w.ToolUseID {
 					continue
 				}
-				if t, err := time.Parse(time.RFC3339Nano, d.RecordedAt()); err == nil && t.After(ev.ResolvedAt) {
+				if t, err := ParseTimestamp(d.RecordedAt()); err == nil && t.After(ev.ResolvedAt) {
 					ev.ResolvedAt = t
 				}
 			}
@@ -95,7 +99,21 @@ func JournalNotifyEvents(runID string, recs []Record) []JournalNotifyEvent {
 			continue
 		}
 		at := markerTime(m.AttemptedAt)
-		if have[result] || at.IsZero() {
+		if at.IsZero() {
+			continue
+		}
+		if have[result] {
+			// Only a result ResolveHalt injected shows a halt that was resolved: any other result
+			// is a call that ran to its end.
+			for _, r := range recs {
+				if r.Name == result && r.Reconciled {
+					t, _ := ParseTimestamp(r.RecordedAt())
+					out = append(out, JournalNotifyEvent{
+						Key: HaltedKey(runID, kind, id, at.UnixMilli()), Kind: NotificationOutcomeUnknown, RunID: root, At: at, ResolvedAt: t,
+					})
+					break
+				}
+			}
 			continue
 		}
 		out = append(out, JournalNotifyEvent{

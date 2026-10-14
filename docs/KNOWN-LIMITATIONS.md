@@ -405,9 +405,10 @@ use freely lets an attacker who controls the process sign a rewritten trail, so 
 KMS signer. The check cannot find an event that left no trace in the journals it was given and no
 record in the trail (a halt that a later result resolved before the audit), cannot say that a person
 read a notification (an acknowledgement is the sink's 2xx), and dates events by the notifying
-processes' clocks. An all-clear owed for an event whose resolution the journal does not time (a tool's
-result, a halt resolution, a run's end) cannot be judged late; it is reported as the warning
-`all_clear_untimed`, and `-strict` fails on it. See [Audit](guides/audit.md#notification-evidence-were-the-people-told).
+processes' clocks and the resolving processes' (the `recorded_at` of a decision or a `ResolveHalt`
+result, unsigned). An all-clear owed for a journal an earlier version wrote, whose resolving record
+holds no time, cannot be judged late and is reported as the warning `all_clear_untimed` (`-strict`
+fails on it). See [Audit](guides/audit.md#notification-evidence-were-the-people-told).
 
 **The log key can be in an HSM or KMS only under ed25519 or ecdsa-p256, not under the post-quantum
 schemes.** `ecdsa-p256` is the scheme most HSMs and cloud KMS can sign (AWS KMS, Azure Key Vault,

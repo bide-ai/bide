@@ -47,9 +47,9 @@ const (
 	// and it is reported so a gate that was never notified is not invisible.
 	NotifyStatusUnobservedResolved NotifyStatus = "unobserved_resolved"
 	// NotifyStatusAllClearUntimed: an acknowledged event was resolved (the journal shows its gate
-	// decided) and the trail holds no all-clear, but the journal holds no time for the resolution
-	// (a tool's result, a run's end), so the all-clear cannot be judged late. A warning, like
-	// unobserved_resolved.
+	// decided, or its halt resolved) and the trail holds no all-clear, but the resolving record
+	// holds no recorded_at (one an earlier version wrote), so the all-clear cannot be judged late.
+	// A warning, like unobserved_resolved.
 	NotifyStatusAllClearUntimed NotifyStatus = "all_clear_untimed"
 	// NotifyStatusUnattested: the event's observation, acknowledgement or clearing is in the records
 	// after the newest signed head, which nothing attests: whoever can append to the stored trail

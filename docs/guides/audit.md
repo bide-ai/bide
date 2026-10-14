@@ -667,10 +667,10 @@ What it checks, and the status each event gets:
   `cleared_unacknowledged` (the event stopped being current first); `never_notified`;
   `unobserved_resolved` (a gate the journal shows decided that the trail never observed) and
   `all_clear_untimed` (an acknowledged event the journal shows resolved, with no all-clear in the
-  trail, where the journal holds no time for the resolution): warnings, shown as `note: WARNING`, that
+  trail, where the resolving record holds no time: one an earlier version wrote): warnings, shown as `note: WARNING`, that
   fail the audit only under `-strict`. `acked_late`, `overdue` and `never_notified` always fail it.
-- **A late all-clear.** An approval gate decided by m-of-n decisions carries each decision's
-  `recorded_at`; if the newest is older than `-grace` and the trail, which acknowledged the gate,
+- **A late all-clear.** A gate's decisions (m-of-n, or a single approver's `agent.Approve`) and the
+  result `agent.ResolveHalt` injects for a halt each carry a `recorded_at`; if the newest is older than `-grace` and the trail, which acknowledged the gate,
   has no all-clear, the all-clear is `never_notified`.
 
 ```
@@ -684,8 +684,9 @@ What this does not prove: that anyone read a notification (an acknowledgement is
 and `bide audit` cannot see past the sink); the times are the notifying processes' clocks, bounded
 above only by the head's signed timestamp; an event that left no trace in the journals supplied (a
 halt that a later result resolved, or a gate in a run whose journal was not supplied) and no record
-in the trail cannot be found; and an all-clear owed for an event whose resolution the journal does not
-time (a tool's result, a halt resolution, a run's end) is a warning, not a verdict. Take the public key from the operator out of band, as
+in the trail cannot be found; the resolution times are the resolving processes' unsigned claims; and
+an all-clear owed for an event whose resolving record holds no time (a journal an earlier version
+wrote) is a warning, not a verdict. Take the public key from the operator out of band, as
 for any signed head.
 
 ### Decision receipts: noticing a decision deleted before it was anchored
