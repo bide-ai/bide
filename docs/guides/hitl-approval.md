@@ -704,7 +704,7 @@ mux.Handle("/approvals/", http.StripPrefix("/approvals", h))
 
 `GET /pending?run=<id>&call=<tool-use id>` returns the call as the journal records it: the tool, the
 arguments, `args_sha256` (the digest a signature binds), the gate (k of n, who decided, who is
-pending, counted as the gate counts, separation of duties included) and its state (`waiting`, `decided`, `ended`). A client shows
+pending, counted as the gate counts, separation of duties included) and its state (`waiting`, `decided`, `ended`; a gate whose recorded tally passed on decisions of an earlier format, or without excluding a requester the policy now excludes, is `waiting` again, with a `reason`). A client shows
 this to the approver before they sign. `POST /decisions` takes one JSON object, `run`, `call`,
 `approver`, `approved`, `decided_at`, `alg` and `signature` (base64), where the signature is over
 `agent.ApprovalDecisionBytes` of the call the client was shown. A client that signs the arguments it
@@ -727,13 +727,14 @@ recount, so a replay shows what the gate enforced even after a key rotation), an
 **What the handler adds around that.** Requests are read strictly (`application/json` only, one
 object, no unknown or duplicate fields, no trailing data) and bounded (`WithMaxBodyBytes`, 64 KiB by
 default). A POST is authorized from its headers and the connection alone before its body is read
-(`WithAuth` is called first with the method only, then again with the run, call and approver once the
-body is parsed), so a client that fails it is refused without a stalled read; the body is then read in
+(`WithAuth` is called first with `Access.Phase` `PhaseIdentity` and no ids, so it can only authenticate, then again
+with `PhaseRequest` and the run, call and approver once the body is parsed, where a hook binding an approver to a
+client certificate enforces the binding; it must be idempotent), so a client that fails it is refused without a stalled read; the body is then read in
 a pool of its own (`WithMaxReaders`: 32 overall, 4 per client, each under `WithReadTimeout`, 10 s), and
 only afterwards does the request take a slot for work on the journal. A client that stalls costs one
 reader for that long and starves nothing that is working. Set `http.Server.ReadHeaderTimeout`
 too: it bounds the headers, before the handler runs. Rate limits apply before anything is read: per client (2 a second, burst 10) and over all
-clients (50 a second, burst 100), with the client the host of `RemoteAddr` unless `WithClientKey`
+clients (50 a second, burst 100), with the client the host of `RemoteAddr` (an IPv6 address standing for its /64) unless `WithClientKey`
 names one (**behind a reverse proxy or load balancer set it**: otherwise every client is the proxy
 and shares one bucket; read only the header the proxy overwrites); past `WithMaxClients` new clients
 share one bucket, so a flood of sources is limited as one. At most `WithMaxInFlight` (16) requests

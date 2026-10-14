@@ -341,11 +341,12 @@ func WithMaxReaders(total, perClient int) Option {
 }
 
 // WithAuth sets a hook that runs for every request, after the rate limit and before the journal is
-// read or written, with what the request asks for. A POST /decisions calls it twice: first with the
-// method alone (RunID, ToolUseID and Approver empty), from the headers and the connection, before
-// the body is read, so a client that fails it is refused without costing a stalled read; then with
-// the decision's run, call and approver once the body is parsed. A hook that ties an approver to the
-// caller must therefore treat an empty Approver as "identity only". Return nil to allow it, ErrUnauthenticated for
+// read or written, with what the request asks for. A POST /decisions calls it twice, and Access.Phase
+// says which call it is: PhaseIdentity first, from the headers and the connection, before the body is
+// read (RunID, ToolUseID and Approver empty: it must only authenticate), so a client that fails it is
+// refused without costing a stalled read; then PhaseRequest with the decision's run, call and approver
+// once the body is parsed, where a hook that ties an approver to a client certificate enforces the
+// binding. The hook must be idempotent: both calls are made for one request. Return nil to allow it, ErrUnauthenticated for
 // a request with no valid credentials (401), or ErrForbidden, or any other error, to refuse it
 // (403). It is where a deployment checks a client certificate (r.TLS.PeerCertificates) or an
 // identity, and ties an approver id to it (Access.Approver). The signature is the authorization of
@@ -391,8 +392,9 @@ func WithMaxClients(n int) Option {
 	}
 }
 
-// WithClientKey names the client a request is limited as. By default it is the host of
-// r.RemoteAddr; behind a reverse proxy or load balancer that is the proxy's address, so every
+// WithClientKey names the client a request is limited as (and the client whose concurrent body reads
+// are capped). By default it is the host of r.RemoteAddr, an IPv6 address standing for its /64 (the
+// unit an operator assigns to one host or site) and an IPv4-mapped one for the IPv4 address; behind a reverse proxy or load balancer that is the proxy's address, so every
 // client shares one bucket: set it there, to a function that reads the address the proxy vouches
 // for (and only that header, which the proxy must overwrite, never pass through from the client).
 func WithClientKey(fn func(*http.Request) string) Option {
