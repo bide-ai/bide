@@ -34,21 +34,25 @@ jobs:
         with:
           path: bide
 
-      # A pull request that changes only documentation, assets, TLA+ specifications or issue
-      # templates cannot change what a bide program makes, so the rest of the job is skipped; the
-      # job still reports, so the required check passes. Pushes to main, the merge queue and any
-      # doubt (the file list cannot be read) run everything. Same file test as ci.yml's Changes job.
+      # On a pull request the gate runs only when the change can alter what a bide program makes
+      # (changed-code.sh --gsm: code, less CI scripts, other workflows and tool configuration), or
+      # the pull request has the full-ci label. Otherwise the rest of the job is skipped and the job
+      # still reports, so the required check passes. Pushes to main and the merge queue always run
+      # it, and so does any doubt (the file list or the labels cannot be read).
       - id: changes
-        name: Does the change touch code?
+        name: Does the change need the gate?
         env:
           GH_TOKEN: ${{ github.token }}
           EVENT: ${{ github.event_name }}
           PR: ${{ github.event.pull_request.number }}
         run: |
           code=true
-          if [ "$EVENT" = pull_request ] && files=$(gh api --paginate "repos/$GITHUB_REPOSITORY/pulls/$PR/files" --jq '.[].filename') && [ -n "$files" ]; then
+          if [ "$EVENT" = pull_request ] && files=$(gh api --paginate "repos/$GITHUB_REPOSITORY/pulls/$PR/files" --jq '.[].filename') && [ -n "$files" ] && labels=$(gh api "repos/$GITHUB_REPOSITORY/pulls/$PR" --jq '[.labels[].name] | join(",")'); then
             echo "Changed files:"; echo "$files"
-            echo "$files" | .github/scripts/changed-code.sh >/dev/null || code=false
+            case ",$labels," in
+              *,full-ci,*) ;;
+              *) echo "$files" | .github/scripts/changed-code.sh --gsm >/dev/null || code=false ;;
+            esac
           fi
           echo "code=$code" | tee -a "$GITHUB_OUTPUT"
 

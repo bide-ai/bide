@@ -35,29 +35,37 @@ env:
     agent: .:agent
     core: .
     rest: mcptools trace store/sqlite store/postgres govern govern/redislog govern/sqlitelog govern/postgreslog codec/gcf cmd/bide cmd/bide-view examples/approval examples/plan examples/mcp examples/observability examples/govern examples/stripe-refund integration
-  # The Windows test shards (no -race), balanced by measured time: store/sqlite alone takes about
-  # four minutes there (fsync-bound), every other module together about two. Two shards, not more:
-  # each job pays a runner start, setup-go and a cache restore (about 70 s on Windows).
-  WINDOWS_SHARDS: |
-    sqlite: store/sqlite
-    rest: . mcptools trace store/postgres govern govern/redislog govern/sqlitelog govern/postgreslog codec/gcf cmd/bide cmd/bide-view examples/approval examples/plan examples/mcp examples/observability examples/govern examples/stripe-refund integration
 
 jobs:
-  # Decides whether a pull request touches anything the Go jobs test. A PR that changes only
-  # documentation skips their steps (except Lint's docs snippet check, which compiles the Go
-  # blocks of the docs), but every job still runs and reports under its usual name, so the
-  # required checks pass instead of waiting forever. Pushes to main always run everything,
-  # and any doubt (a failed diff, an unexpected event, this job failing) counts as a code change:
-  # the gated jobs run unless this job succeeded and said otherwise (the Linux test shards, which
-  # it plans, fail Test (ubuntu-latest) instead).
+  # Decides what a run needs. The merge queue is where the full matrix runs, once per batch of
+  # pull requests, because GitHub Free allows 20 concurrent jobs and one pull request's full run is
+  # about 20. A pull request runs the fast subset: this job, Lint, the Linux race tests, dco, the
+  # changelog check, and Models and the gsm machine gate when their inputs changed. The other
+  # required checks (Test (macos-latest), Test (windows-latest), Integration (Postgres, Redis))
+  # are skipped on a pull request, which satisfies them, and run in the merge queue and on main.
+  # The "full-ci" label on a pull request (then re-run the workflow, or push) runs everything on
+  # the pull request too. Outputs:
+  #   code    false when the change touches only documentation (and the like, changed-code.sh):
+  #           the Go jobs' steps are skipped, but every job still reports under its usual name
+  #   full    true on a push, in the merge queue, with the full-ci label, and on any doubt
+  #   heavy   code and full: the macOS, Windows and Integration jobs, the json/v2 job and Lint's
+  #           reproducible-build check run
+  #   shards  the Linux test shards: all, or only "rest" for a pull request that changes the
+  #           example modules and nothing else (no other module imports them)
+  # Any doubt (a failed diff, an unexpected event, this job failing) counts as a code change and as
+  # full: the gated jobs run unless this job succeeded and said otherwise (the Linux test shards,
+  # which it plans, fail Test (ubuntu-latest) instead).
   changes:
     name: Changes
     runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      pull-requests: read # the label check reads the pull request
     outputs:
       code: ${{ steps.diff.outputs.code }}
-      broad: ${{ steps.diff.outputs.broad }}
+      full: ${{ steps.diff.outputs.full }}
+      heavy: ${{ steps.diff.outputs.heavy }}
       shards: ${{ steps.shards.outputs.shards }}
-      windows-shards: ${{ steps.shards.outputs.windows }}
     steps:
       - uses: actions/checkout@v4
         with:
@@ -65,38 +73,48 @@ jobs:
       - id: diff
         shell: bash
         env:
-          BASE: ${{ github.event.pull_request.base.sha }}
-          HEAD: ${{ github.event.pull_request.head.sha }}
+          GH_TOKEN: ${{ github.token }}
+          EVENT: ${{ github.event_name }}
+          PR: ${{ github.event.pull_request.number }}
+          BASE: ${{ github.event.pull_request.base.sha || github.event.merge_group.base_sha }}
+          HEAD: ${{ github.event.pull_request.head.sha || github.event.merge_group.head_sha }}
         run: |
           code=true
-          broad=true
-          if [ "${{ github.event_name }}" = "pull_request" ] && files=$(git diff --name-only "$BASE" "$HEAD"); then
+          full=true
+          examples=false
+          if [ "$EVENT" = pull_request ]; then
+            # The label is read now, not from the event, so re-running the workflow after adding it works.
+            if labels=$(gh api "repos/$GITHUB_REPOSITORY/pulls/$PR" --jq '[.labels[].name] | join(",")'); then
+              case ",$labels," in *,full-ci,*) ;; *) full=false ;; esac
+            fi
+          fi
+          # A pull request and a merge queue batch are diffed against their base; a push to main is not.
+          if [ "$EVENT" != push ] && files=$(git diff --name-only "$BASE" "$HEAD"); then
             echo "Changed files:"; echo "$files"
             # Paths no Go build or test reads are listed in changed-code.sh (shared with the
             # gsm machine gate); everything else is code.
             echo "$files" | .github/scripts/changed-code.sh >/dev/null || code=false
-            # Code that only the example modules contain (no other module imports them) is not
-            # "broad": the macOS, Windows and Integration jobs, the agent and core Linux shards
-            # and the reproducibility check skip it; the Linux rest shard (race) and Lint run.
-            if [ "$code" = true ] && echo "$files" | .github/scripts/changed-code.sh --examples-only >/dev/null; then broad=false; fi
+            # Code that only the example modules contain: no other module imports them.
+            if [ "$code" = true ] && echo "$files" | .github/scripts/changed-code.sh --examples-only >/dev/null; then examples=true; fi
           fi
-          [ "$code" = false ] && broad=false
+          heavy=false
+          [ "$code" = true ] && [ "$full" = true ] && heavy=true
           echo "code=$code" | tee -a "$GITHUB_OUTPUT"
-          echo "broad=$broad" | tee -a "$GITHUB_OUTPUT"
+          echo "full=$full" | tee -a "$GITHUB_OUTPUT"
+          echo "heavy=$heavy" | tee -a "$GITHUB_OUTPUT"
+          echo "examples=$examples" | tee -a "$GITHUB_OUTPUT"
       - id: shards
         name: Every module is in exactly one Linux test shard
         env:
           SHARDS: ${{ env.TEST_SHARDS }}
         run: |
           .github/scripts/shards.sh check-modules
-          if [ "${{ steps.diff.outputs.broad }}" = false ]; then
-            # Only the example modules changed: the Linux shard that holds them.
+          if [ "${{ steps.diff.outputs.examples }}" = true ] && [ "${{ steps.diff.outputs.full }}" = false ]; then
+            # Only the example modules changed: the shard that holds them.
             echo 'shards=["rest"]' | tee -a "$GITHUB_OUTPUT"
           else
             echo "shards=$(.github/scripts/shards.sh json)" | tee -a "$GITHUB_OUTPUT"
           fi
-          SHARDS="$WINDOWS_SHARDS" .github/scripts/shards.sh check-modules
-          echo "windows=$(SHARDS="$WINDOWS_SHARDS" .github/scripts/shards.sh json)" | tee -a "$GITHUB_OUTPUT"
 
   lint:
     name: Lint
@@ -217,7 +235,8 @@ jobs:
           echo "== vet and test cmd/bide -tags bide_audit_only =="
           ( cd cmd/bide && go vet -tags bide_audit_only ./... && go test -tags bide_audit_only -count=1 . )
       - name: Reproducible bide builds
-        if: needs.changes.outputs.broad != 'false'
+        # In the merge queue and on main (heavy), not on a pull request.
+        if: needs.changes.outputs.heavy != 'false'
         # Two builds of cmd/bide from copies of the tree at different paths are byte-identical, and
         # .goreleaser.yaml builds with the flags scripts/repro.sh rebuilds a release with.
         run: scripts/repro.sh --self-test
@@ -296,7 +315,7 @@ jobs:
   test-nojsonv2:
     name: Test (ubuntu-latest, without encoding/json/v2)
     needs: changes
-    if: needs.changes.outputs.code != 'false' && needs.changes.outputs.broad != 'false'
+    if: needs.changes.outputs.heavy != 'false'
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
@@ -330,21 +349,22 @@ jobs:
           sparse-checkout: .github/scripts
       - name: Every shard passed
         env:
-          BROAD: ${{ needs.changes.outputs.broad }}
+          HEAVY: ${{ needs.changes.outputs.heavy }}
         run: |
-          # The json/v2 job does not run for a change to the example modules only.
+          # The json/v2 job runs in the merge queue and on main, not on a pull request.
           jobs=("shards=${{ needs.test-linux.result }}")
-          [ "$BROAD" = false ] || jobs+=("nojsonv2=${{ needs.test-nojsonv2.result }}")
+          [ "$HEAVY" = false ] || jobs+=("nojsonv2=${{ needs.test-nojsonv2.result }}")
           .github/scripts/shards.sh verdict "${{ needs.changes.result }}" "${{ needs.changes.outputs.code }}" "${jobs[@]}"
 
-  # macOS: every module in one job (about 3 to 4 minutes, under the Linux shards), without -race,
-  # which also runs the scale tests at full size (they run smaller under -race). Windows is
-  # sharded below. The job is skipped for a change that is not broad (documentation or the example
-  # modules only); a skipped job satisfies its required check, as Integration's does.
+  # macOS and Windows: every module in one job each, without -race, which also runs the scale
+  # tests at full size (they run smaller under -race). About 3 to 4 minutes on macOS and 6 to 9 on
+  # Windows (store/sqlite alone is 4). Skipped on a pull request (see Changes), run in the merge
+  # queue and on main; a skipped job satisfies its required check, as Integration's does. One job
+  # each, not sharded: each extra job costs a runner start and about 70 s of setup.
   test-macos:
     name: Test (macos-latest)
     needs: changes
-    if: needs.changes.outputs.broad != 'false'
+    if: ${{ !cancelled() && needs.changes.outputs.heavy != 'false' }}
     runs-on: macos-latest
     steps:
       - uses: actions/checkout@v4
@@ -360,48 +380,31 @@ jobs:
             ( cd "$m" && go build ./... && go test -count=1 ./... )
           done
 
-  # Windows: the modules in shards, one job each, without -race (WINDOWS_SHARDS). Unsharded, one
-  # job took 6 to 9 minutes, the longest check of a pull request, because store/sqlite alone takes
-  # four minutes there. Every module still builds and tests on Windows, in full.
   test-windows:
-    name: Test (windows-latest, ${{ matrix.shard }})
+    name: Test (windows-latest)
     needs: changes
-    if: needs.changes.outputs.broad != 'false'
+    if: ${{ !cancelled() && needs.changes.outputs.heavy != 'false' }}
     runs-on: windows-latest
-    strategy:
-      fail-fast: false
-      matrix:
-        shard: ${{ fromJSON(needs.changes.outputs.windows-shards) }}
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-go@v5
         with:
           go-version: '1.27'
           cache-dependency-path: '**/go.sum'
-      - name: Build & test (the shard's modules and packages)
+      - name: Build & test (all modules)
         shell: bash
-        env:
-          SHARD: ${{ matrix.shard }}
-        run: SHARDS="$WINDOWS_SHARDS" .github/scripts/shards.sh run "$SHARD" -count=1
-
-  # The required check for Windows. It always reports, like Test (ubuntu-latest).
-  test-windows-result:
-    name: Test (windows-latest)
-    needs: [changes, test-windows]
-    if: always()
-    runs-on: ubuntu-latest
-    steps:
-      - uses: actions/checkout@v4
-        with:
-          sparse-checkout: .github/scripts
-      - name: Every shard passed
-        run: .github/scripts/shards.sh verdict "${{ needs.changes.result }}" "${{ needs.changes.outputs.broad }}" "shards=${{ needs.test-windows.result }}"
+        run: |
+          for m in $MODULES; do
+            echo "== $m =="
+            ( cd "$m" && go build ./... && go test -count=1 ./... )
+          done
 
   integration:
     name: Integration (Postgres, Redis)
     needs: changes
-    if: ${{ !cancelled() && needs.changes.outputs.broad != 'false' }}
+    if: ${{ !cancelled() && needs.changes.outputs.heavy != 'false' }}
     runs-on: ubuntu-latest
+    # Skipped on a pull request, like the macOS and Windows jobs.
     # The Postgres store (cross-instance at-most-once, leases) and the shared governed-event logs
     # need real services; their tests skip without PG_DSN / REDIS_ADDR, so the Test jobs above
     # never run them. This job does, against service containers.

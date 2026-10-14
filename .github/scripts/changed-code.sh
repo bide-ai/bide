@@ -9,6 +9,9 @@
 #
 #   git diff --name-only BASE HEAD | .github/scripts/changed-code.sh
 #
+# With --gsm it exits 0 if a path can change what a bide program makes (the gsm machine gate):
+# code, less the CI scripts and the other workflows, scripts/ and tool configuration.
+#
 # With --examples-only it exits 0 only if the code paths all lie under examples/ (the example
 # modules, which no other module imports), and 1 otherwise.
 set -euo pipefail
@@ -20,6 +23,13 @@ if [ -z "$files" ]; then
 fi
 # The TLA+ models have their own workflow (models.yml), which decides which of them to check.
 other=$(echo "$files" | grep -vE '^(docs/|docs-site/|assets/|spec/tla/|\.github/ISSUE_TEMPLATE/)|\.md$|^(LICENSE|NOTICE|DCO)$|^\.github/workflows/(docs|bench|models|explore)\.yml$' || true)
+if [ "${1:-}" = --gsm ]; then
+  rest=$(echo "$other" | grep -vE '^(\.github/(scripts/|workflows/)|scripts/|codecov\.yml$|\.gitignore$|\.gitattributes$)' || true)
+  # the gate's own workflow and catalog are inputs of the gate
+  gate=$(echo "$files" | grep -E '^\.github/(gsm-gate/|workflows/gsm-gate\.yml$)' || true)
+  [ -n "$rest" ] || [ -n "$gate" ]
+  exit
+fi
 if [ "${1:-}" = --examples-only ]; then
   [ -n "$other" ] && ! echo "$other" | grep -qvE '^examples/'
   exit

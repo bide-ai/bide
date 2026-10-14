@@ -79,7 +79,7 @@ parse() {
 # count WORD LIST: how many lines of LIST are exactly WORD.
 count() { grep -cxF -- "$1" <<< "$2" || true; }
 
-where_test='TEST_SHARDS (Linux) and WINDOWS_SHARDS (Windows) in .github/workflows/ci.yml'
+where_test='TEST_SHARDS in .github/workflows/ci.yml'
 
 check_modules() {
   local all mods pkgs listed m e n ok=0
