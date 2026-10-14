@@ -284,6 +284,17 @@ sent at once are both recorded and the first counts (the response says `counted`
 confidential arguments need `WithAuth` or a private network. See
 [Taking decisions over HTTP](guides/hitl-approval.md#taking-decisions-over-http).
 
+**The intake and the viewer learn a gate's policy from its pause note, which is written once.** The
+`approval-pending` record is informational, insert-once by name, and written when the run first pauses at
+the gate. A redeploy that changes the gate's policy afterwards (adding `ExcludePrincipal`, say) is
+enforced by the gate itself when the run resumes (it asks again), but `approvals.Handler` and `bide view`
+read the policy from the note, so until the run is re-driven past the gate they may report a gate whose
+recorded tally passed under the old policy as decided rather than asking again. A refresh would need a
+new record kind that every reader (the engine, the viewer, the intake, evidence) understands, which is
+its own change to the journal's format, not an edit of the note. Re-drive the run (or let `RecoverLoop`
+do it) after a policy change: the gate's ask is then recorded as a pause, and the standing is read from
+the gate's own tally.
+
 **Decisions signed before `bide.approval.v3` must be signed again.** They no longer verify. A run
 whose gate passed on them before the upgrade, and whose call has not run, pauses to ask again
 (`agent.PendingReapproval`) rather than run on approvals an audit would fail. See

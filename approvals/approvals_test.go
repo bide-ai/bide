@@ -1156,14 +1156,23 @@ func TestEveryPathAnswersAStalledBody(t *testing.T) {
 // Requests that route to nothing are rate limited like the rest: a flood of 404s and 405s from one
 // client does not escape the limit.
 func TestRateLimitCoversEveryPath(t *testing.T) {
+	for _, path := range []string{"/nothing", "/pending/x"} { // each path routes to nothing: a 404
+		r := newRig(t, approvals.WithRateLimit(0.001, 2), approvals.WithGlobalRateLimit(0, 0))
+		for i := range 2 {
+			if status, _ := r.get(path); status == http.StatusTooManyRequests {
+				t.Fatalf("%s: limited at request %d of a burst of 2", path, i+1)
+			}
+		}
+		if status, _ := r.get(path); status != http.StatusTooManyRequests {
+			t.Fatalf("%s: %d, want 429 once the client has spent its burst on paths that route to nothing", path, status)
+		}
+	}
+	// A path with the wrong method (a 405) is counted too.
 	r := newRig(t, approvals.WithRateLimit(0.001, 2), approvals.WithGlobalRateLimit(0, 0))
-	for i, path := range []string{"/nothing", "/pending/x", "/decisions"} { // a 404, a 404, and a 405 for GET
-		status, _ := r.get(path)
-		if i < 2 && status == http.StatusTooManyRequests {
-			t.Fatalf("%s: limited too early", path)
-		}
-		if i == 2 && status != http.StatusTooManyRequests {
-			t.Fatalf("%s: %d, want 429 once the client has spent its two requests", path, status)
-		}
+	for range 2 {
+		r.get("/decisions")
+	}
+	if status, _ := r.get("/decisions"); status != http.StatusTooManyRequests {
+		t.Fatalf("a 405 path: %d, want 429", status)
 	}
 }
