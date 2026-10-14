@@ -150,6 +150,8 @@ VARIABLES
   dlog,
   \* @type: Str -> { rec: Bool, passed: Bool, pol: Str, signers: Set(Str), excl: Int, denials: Int, seated: Set(Str) };
   tally,
+  \* @type: Str -> { rec: Bool, passed: Bool, pol: Str, signers: Set(Str), excl: Int, denials: Int, seated: Set(Str) };
+  stally,
   \* @type: Str -> (Str -> Str);
   policy,
   \* @type: Int;
@@ -164,6 +166,8 @@ VARIABLES
   badPause,
   \* @type: Bool;
   badDeny,
+  \* @type: Bool;
+  badSoD,
   \* @type: Str -> Set(Str);
   keys,
   \* @type: Int;

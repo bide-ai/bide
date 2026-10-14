@@ -93,6 +93,7 @@ TypeCommon ==
   /\ one = [c \in Calls |-> "none"]
   /\ dlog = [c \in Calls |-> <<>>]
   /\ tally = [c \in Calls |-> NoTally]
+  /\ stally = [c \in Calls |-> NoTally]
   /\ policy = [p \in Procs |-> Policy0]
   /\ approves1 = 0
   /\ submits = 0
@@ -100,6 +101,7 @@ TypeCommon ==
   /\ badFire = FALSE
   /\ badPause = FALSE
   /\ badDeny = FALSE
+  /\ badSoD = FALSE
   /\ keys = KeyOf
   /\ resChanges = 0
   /\ pc \in [Drivers \cup ResolverSet -> DriverLabels \cup ResolverLabels]
