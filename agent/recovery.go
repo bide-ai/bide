@@ -47,7 +47,9 @@ type recoverConfig struct {
 	lapsedConc  int           // RecoverLoop only: the lapsed loop's concurrency
 	onError     func(error)   // RecoverLoop only
 	notifier    *notifierOption
-	notify      *notifyEngine // built from notifier with the store, by Recover and RecoverLoop
+	notify      *notifyEngine                       // built from notifier with the store, by Recover and RecoverLoop
+	reanchor    func(context.Context, string) error // RecoverLoop only: re-signs a run waiting on a person
+	reanchorSet bool                                // reanchor was set (nil turns re-signing off)
 	intervalSet bool
 }
 
@@ -691,6 +693,7 @@ func recoverRun(ctx context.Context, store *Journal, runID string, resume Resume
 		resumed      bool
 		notStarted   bool
 		notResumable error // the resumer's ErrNotResumable
+		reanchorErr  error // re-signing a run waiting on a person failed
 	)
 	driven, err := leaseRun(ctx, store, runID, func(ctx context.Context) error {
 		if over, err := runEnded(ctx, store, runID); err != nil || over {
@@ -707,6 +710,14 @@ func recoverRun(ctx context.Context, store *Journal, runID string, resume Resume
 			return nil
 		}
 		err = resume(ctx, runID, start)
+		// A run waiting on a decision or a halt resolution is re-signed under the lease, so a
+		// decision another process recorded is under a signed head within this pass. It writes
+		// nothing to the journal, so what the pass does to the run is unchanged.
+		if fn := cfg.reanchorFunc(store); fn != nil {
+			if runs := waitingRuns(err); runs != nil {
+				reanchorErr = reanchorWaiting(ctx, fn, runs)
+			}
+		}
 		if err != nil && errors.Is(err, ErrNotResumable) {
 			notResumable = err
 			return nil
@@ -728,6 +739,8 @@ func recoverRun(ctx context.Context, store *Journal, runID string, resume Resume
 		return false, fmt.Errorf("recover run %s: skipped: %w", runID, ErrNotStarted)
 	case notResumable != nil && reportOnce(store, runID, ErrNotResumable):
 		return false, fmt.Errorf("recover run %s: skipped: %w", runID, notResumable)
+	case reanchorErr != nil && ctx.Err() == nil:
+		return resumed, fmt.Errorf("recover run %s: %w", runID, reanchorErr)
 	}
 	return resumed, nil
 }
