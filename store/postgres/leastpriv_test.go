@@ -4,9 +4,9 @@ package postgres
 // the migration, a service role drives runs (a journal write, an attempt claim, a lease, the event
 // store), and a read-only role inspects. If the table in that page is missing a privilege this
 // fails; the denied-statement checks show that the service role cannot edit or remove the journal.
+// The service role has no CREATE on the schema and opens the store WithoutMigration; the default
 // Open runs CREATE TABLE IF NOT EXISTS even when the tables exist, which Postgres allows only with
-// CREATE on the schema, so the service role needs it (the test pins that, so a store that gains a
-// no-migration open updates the page). Skips without PG_DSN.
+// CREATE, so it fails for that role (the test pins that). Skips without PG_DSN.
 
 import (
 	"context"
@@ -29,32 +29,29 @@ func TestLeastPrivilegeRoles(t *testing.T) {
 	rv120Exec(t, admin, `CREATE SCHEMA `+schema+` AUTHORIZATION `+owner)
 	t.Cleanup(func() { admin.ExecContext(context.Background(), `DROP SCHEMA IF EXISTS `+schema+` CASCADE`) })
 
-	// 1. The owner opens the store once: tables, indexes and next_seq are created and owned by it.
-	os, err := Open(ctx, rv120DSN(t, base, owner, ""), WithSchema(schema))
-	if err != nil {
+	// 1. The owner runs the migration once: tables, indexes and next_seq are created and owned by it.
+	if _, err := Migrate(ctx, rv120DSN(t, base, owner, ""), WithSchema(schema)); err != nil {
 		t.Fatalf("owner: %v", err)
 	}
-	os.Close()
 
 	// 2. The grants of the page's table, and nothing else.
 	rv120Exec(t, admin,
 		`GRANT USAGE ON SCHEMA `+schema+` TO `+app+`, `+reader,
 		`GRANT SELECT, INSERT ON `+schema+`.bide_steps, `+schema+`.bide_events TO `+app,
 		`GRANT SELECT, INSERT, UPDATE, DELETE ON `+schema+`.bide_leases TO `+app,
-		`GRANT SELECT, INSERT ON `+schema+`.bide_schema_version TO `+app,
+		`GRANT SELECT ON `+schema+`.bide_schema_version TO `+app,
 		`GRANT SELECT ON `+schema+`.bide_steps, `+schema+`.bide_events, `+schema+`.bide_leases, `+schema+`.bide_schema_version TO `+reader,
 		`REVOKE ALL ON FUNCTION `+schema+`.bide_next_seq_v1(text) FROM PUBLIC`,
 		`GRANT EXECUTE ON FUNCTION `+schema+`.bide_next_seq_v1(text) TO `+app,
 	)
 
-	// 3. Without CREATE on the schema the service role cannot open the store: the migration's
-	// CREATE TABLE IF NOT EXISTS is refused. With it, the role opens the store and drives a run.
+	// 3. The service role has no CREATE on the schema: the default Open, which migrates, is refused;
+	// opened WithoutMigration, the role drives a run.
 	if x, err := Open(ctx, rv120DSN(t, base, app, ""), WithSchema(schema)); err == nil {
 		x.Close()
-		t.Fatal("a role without CREATE on the schema opened the store: docs/trust/operations.md says it cannot")
+		t.Fatal("a role without CREATE on the schema ran the migration in Open")
 	}
-	rv120Exec(t, admin, `GRANT CREATE ON SCHEMA `+schema+` TO `+app)
-	s, err := Open(ctx, rv120DSN(t, base, app, ""), WithSchema(schema))
+	s, err := Open(ctx, rv120DSN(t, base, app, ""), WithSchema(schema), WithoutMigration())
 	if err != nil {
 		t.Fatalf("service role cannot open the store: %v", err)
 	}
