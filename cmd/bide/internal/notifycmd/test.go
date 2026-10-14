@@ -27,6 +27,7 @@ var kinds = []agent.NotificationKind{
 	agent.NotificationRecoveryFailing,
 	agent.NotificationOverdue,
 	agent.NotificationResolved,
+	agent.NotificationEscalated,
 }
 
 func kindNames() string {
@@ -76,6 +77,13 @@ func sampleNotification(kind agent.NotificationKind, now time.Time, run string) 
 		n.Reason = "decided"
 		n.Clears = &agent.NotifyClears{Key: orig, ID: agent.NotifyID(orig), Kind: agent.NotificationApprovalPending}
 		n.Deadline = time.Time{}
+	case agent.NotificationEscalated:
+		// The first step of the chain of the approval a test of kind approval_pending sends for the same run.
+		orig := agent.ApprovalKey(run, "call_test", 0)
+		n.Key = agent.EscalationKey(orig, 1)
+		n.Approval = &agent.NotifyApproval{ToolUseID: "call_test", ToolName: "refund", Need: 2, Of: 3, Approvers: []string{"alice", "bob", "carol"}, Approved: 1}
+		n.Escalates = &agent.NotifyEscalates{Key: orig, ID: agent.NotifyID(orig), Kind: agent.NotificationApprovalPending, Level: 1}
+		n.Reason, n.Receiver = "undecided", "escalation-test"
 	default:
 		return agent.Notification{}, fmt.Errorf("unknown kind %q (one of %s)", kind, kindNames())
 	}

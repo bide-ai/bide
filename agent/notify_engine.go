@@ -102,9 +102,9 @@ type notifyEvent struct {
 	level    int           // for an escalation: its step of the chain, from 1
 	deadline time.Duration // when set, the event's own deadline, in place of the notifier's
 
-	// escWatch marks the escalation watch of base (see escRound), not an event: key is watchKey.
-	escWatch bool
-	base     *notifyEvent
+	// chase marks the escalation chase of base (see escRound), not an event: key is chaseKey.
+	chase bool
+	base  *notifyEvent
 
 	// scan marks the catch-up job of runID's trail (see clearScan), not an event: key is scanKey.
 	scan bool
@@ -212,7 +212,7 @@ func (e *notifyEngine) round(ctx context.Context, ev notifyEvent) (roundResult, 
 	if ev.scan {
 		return e.scanRound(ctx, ev)
 	}
-	if ev.escWatch {
+	if ev.chase {
 		return e.escRound(ctx, ev)
 	}
 	e.mu.Lock()

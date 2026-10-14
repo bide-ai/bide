@@ -305,7 +305,7 @@ and reports the TLS handshake, the HTTP status, whether the receiver acknowledge
 and the timing. The sample is for a run that does not exist (its ID starts notify-test-); a relay
 that forwards to Slack or PagerDuty forwards it too. The secret is never printed.
 
-Kinds: approval_pending, outcome_unknown, run_aborted, recovery_failing, notification_overdue, resolved. A resolved is the all-clear of the approval_pending with the same -run: send that first, then
+Kinds: approval_pending, outcome_unknown, run_aborted, recovery_failing, notification_overdue, resolved, escalated. A resolved is the all-clear of the approval_pending with the same -run: send that first, then
 the resolved, to see a relay open and then close a PagerDuty incident.
 
 Exit status: 0 the receiver acknowledged; 1 it did not; 2 usage error.
@@ -319,7 +319,7 @@ Exit status: 0 the receiver acknowledged; 1 it did not; 2 usage error.
   -color when
     	when to color the output: auto (the default: on a terminal, unless NO_COLOR is set or TERM is dumb), always or never
   -kind string
-    	the kind of the sample notification: approval_pending, outcome_unknown, run_aborted, recovery_failing, notification_overdue, resolved (default "approval_pending")
+    	the kind of the sample notification: approval_pending, outcome_unknown, run_aborted, recovery_failing, notification_overdue, resolved, escalated (default "approval_pending")
   -pin string
     	require the receiver's key to match this SPKI SHA-256 (64 hex characters or base64); two, comma separated, during a rotation
   -previous-secret-env string

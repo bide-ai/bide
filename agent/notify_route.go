@@ -191,12 +191,48 @@ func EscalationKey(key string, level int) string {
 	return "escalated:" + strconv.Itoa(level) + ":" + key
 }
 
+// SplitToKey splits the key of a fan-out delivery, "to:<receiver>:<key>" (see ToKey), into the
+// receiver and the key of the event it delivers. ok is false for any other key.
+func SplitToKey(key string) (receiver, base string, ok bool) {
+	rest, ok := strings.CutPrefix(key, "to:")
+	if !ok {
+		return "", "", false
+	}
+	receiver, base, ok = strings.Cut(rest, ":")
+	if !ok || !receiverName.MatchString(receiver) || base == "" {
+		return "", "", false
+	}
+	return receiver, base, true
+}
+
+// ParseEscalationKey splits the key of an escalation step, "escalated:<level>:<key>" (see
+// EscalationKey), into its level (from 1) and the key of the event it escalates. ok is false for any
+// other key.
+func ParseEscalationKey(key string) (level int, orig string, ok bool) {
+	parts := strings.SplitN(key, ":", 3)
+	if len(parts) != 3 || parts[0] != "escalated" || parts[2] == "" {
+		return 0, "", false
+	}
+	level, err := strconv.Atoi(parts[1])
+	if err != nil || level < 1 || strconv.Itoa(level) != parts[1] {
+		return 0, "", false
+	}
+	return level, parts[2], true
+}
+
+// ValidReceiver reports whether name is one a trail may record for a receiver other than the
+// default: what WithNotifyReceiver accepts, and not DefaultReceiver, which a trail records as no name.
+func ValidReceiver(name string) bool {
+	return receiverName.MatchString(name) && name != DefaultReceiver
+}
+
+// MaxEscalationSteps is the most steps an escalation chain may have.
+const MaxEscalationSteps = maxEscalationSteps
+
 // stripTo returns key without the "to:<receiver>:" prefix of a fan-out delivery.
 func stripTo(key string) string {
-	if rest, ok := strings.CutPrefix(key, "to:"); ok {
-		if _, k, ok := strings.Cut(rest, ":"); ok {
-			return k
-		}
+	if _, base, ok := SplitToKey(key); ok {
+		return base
 	}
 	return key
 }
@@ -249,25 +285,25 @@ func (e *notifyEngine) routed(ev notifyEvent) []notifyEvent {
 	return []notifyEvent{ev}
 }
 
-// submit routes ev and queues each delivery, and the escalation watch of each one that has a chain.
+// submit routes ev and queues each delivery, and the escalation chase of each one that has a chain.
 func (e *notifyEngine) submit(ev notifyEvent) {
 	for _, d := range e.routed(ev) {
 		e.w.submit(d)
-		if w, ok := e.watchFor(d); ok {
+		if w, ok := e.chaseFor(d); ok {
 			e.w.submit(w)
 		}
 	}
 }
 
 // roundRouted runs a round for each delivery of ev, in this goroutine (the sweep's way), and queues
-// the escalation watch of each. The errors are joined.
+// the escalation chase of each. The errors are joined.
 func (e *notifyEngine) roundRouted(ctx context.Context, ev notifyEvent) error {
 	var errs []error
 	for _, d := range e.routed(ev) {
 		if _, err := e.round(ctx, d); err != nil {
 			errs = append(errs, err)
 		}
-		if w, ok := e.watchFor(d); ok {
+		if w, ok := e.chaseFor(d); ok {
 			e.w.submit(w)
 		}
 	}
@@ -284,23 +320,23 @@ func (e *notifyEngine) notifierOf(ev notifyEvent) Notifier {
 	return e.n
 }
 
-// watchFor is the escalation watch of ev, if its kind has a chain.
-func (e *notifyEngine) watchFor(ev notifyEvent) (notifyEvent, bool) {
+// chaseFor is the escalation chase of ev, if its kind has a chain.
+func (e *notifyEngine) chaseFor(ev notifyEvent) (notifyEvent, bool) {
 	if len(e.cfg.escalation[ev.kind]) == 0 {
 		return notifyEvent{}, false
 	}
-	return watchOf(ev), true
+	return chaseOf(ev), true
 }
 
-// watchOf is the worker job that watches ev's deadline and escalates it. It is a job, not an event:
+// chaseOf is the worker job that chases ev's deadline and escalates it. It is a job, not an event:
 // it writes nothing to the trail until a step is due.
-func watchOf(ev notifyEvent) notifyEvent {
+func chaseOf(ev notifyEvent) notifyEvent {
 	b := ev
-	return notifyEvent{key: watchKey(ev.key), escWatch: true, runID: ev.runID, base: &b}
+	return notifyEvent{key: chaseKey(ev.key), chase: true, runID: ev.runID, base: &b}
 }
 
-// watchKey is the worker key of the escalation watch of the event with key.
-func watchKey(key string) string { return "escwatch:" + key }
+// chaseKey is the worker key of the escalation chase of the event with key.
+func chaseKey(key string) string { return "escchase:" + key }
 
 // escalationOf is the delivery of step level of ev's chain.
 func (e *notifyEngine) escalationOf(base notifyEvent, level int) notifyEvent {
@@ -313,11 +349,11 @@ func (e *notifyEngine) escalationOf(base notifyEvent, level int) notifyEvent {
 	if base.kind == NotificationApprovalPending {
 		d.reason = "undecided"
 	}
-	d.escWatch, d.base, d.scan = false, nil, false
+	d.chase, d.base, d.scan = false, nil, false
 	return d
 }
 
-// escRound is one pass of the escalation watch of w.base: it brings the chain as far as the trail
+// escRound is one pass of the escalation chase of w.base: it brings the chain as far as the trail
 // and the clock say it is due, and returns when to look again.
 func (e *notifyEngine) escRound(ctx context.Context, w notifyEvent) (roundResult, error) {
 	base := *w.base

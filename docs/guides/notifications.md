@@ -483,6 +483,12 @@ between, a late redelivery is forwarded again, and so is a trigger that arrives 
 absorbs a repeated trigger by its `dedup_key` (a trigger after a forgotten clear does reopen the incident); Slack shows a repeat twice. Run one relay: two behind a load balancer have separate
 caches, so a repeat that lands on the other one is forwarded.
 
+Routes can point at different relays. A deployment that sends approvals to a Slack channel and
+halts to a pager runs two relays (or one per environment), each with its own secret, and gives each
+its own `notify.NewWebhook` URL as a receiver (see [Routing and escalation](#routing-and-escalation));
+the relay needs nothing from the routing, and the `escalated` kind it forwards is a critical
+PagerDuty incident of its own (dedup key: the step's ID) that its all-clear closes.
+
 ### Embed the relay
 
 The CLI is a thin wrapper over package `notify/relay`, for a receiver you already run:
@@ -543,6 +549,13 @@ Two things to set up on your side:
   notifier ever saw; the cross-check against the journals can. `-db` and `-postgres-env` read both
   from the store, read-only (the Postgres DSN is read from the named environment variable, never
   given on the command line). From exported files, pass `-trail` and `-journal` for each run.
+
+With routing, every verdict names the receiver (and the level of an escalation step), `-json`
+carries them, and the text report adds a line per receiver: whether each receiver was told is its own
+`acked`. The checks include the escalation chain: a step is valid only if it is after its deadline, in
+order, and for an event not yet acknowledged or cleared. The audit cannot see the configuration, so
+it cannot say that an event *should* have been routed or escalated; see
+[known limitations](../KNOWN-LIMITATIONS.md#notifications).
 
 The report gives each event its times (when the run entered the state, when the notifier saw it,
 when the sink acknowledged it), the attempts, and how the delivery was authenticated. See

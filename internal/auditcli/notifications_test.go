@@ -383,3 +383,28 @@ func TestNotificationsVerb_UnobservedResolvedIsAWarning(t *testing.T) {
 		t.Fatalf("-strict: exit %d\n%s", code, out)
 	}
 }
+
+func TestNotificationsVerb_ShowsTheReceiverOfEachEventAndASummaryPerReceiver(t *testing.T) {
+	gate := agent.ApprovalKey("r1", "c1", 0)
+	step := agent.EscalationKey(gate, 1)
+	f := newNotifyFixture(t)
+	f.add(
+		agent.NotifyRecord{Kind: agent.NotifyObserved, Key: gate, At: nat(1), EventKind: "approval_pending", EventAt: nat(0), DeadlineAt: nat(1).Add(30 * time.Second), Receiver: "approvers"},
+		agent.NotifyRecord{Kind: agent.NotifyClaimed, Key: gate, At: nat(1), Holder: "p1", Until: nat(121)},
+		agent.NotifyRecord{Kind: agent.NotifyAcked, Key: gate, At: nat(3), FirstSentAt: nat(3), Attempts: 1, Status: 200},
+		agent.NotifyRecord{Kind: agent.NotifyObserved, Key: step, At: nat(40), EventKind: "escalated", EventAt: nat(40), DeadlineAt: nat(40).Add(time.Minute), Receiver: "lead", Level: 1},
+		agent.NotifyRecord{Kind: agent.NotifyClaimed, Key: step, At: nat(40), Holder: "p1", Until: nat(160)},
+		agent.NotifyRecord{Kind: agent.NotifyAcked, Key: step, At: nat(42), FirstSentAt: nat(42), Attempts: 1, Status: 200})
+	code, out, errOut := f.verify()
+	if code != 0 {
+		t.Fatalf("exit %d\n%s\n%s", code, out, errOut)
+	}
+	for _, want := range []string{"receiver approvers", "receiver lead", "level 1"} {
+		if !strings.Contains(out, want) {
+			t.Errorf("output lacks %q:\n%s", want, out)
+		}
+	}
+	if !strings.Contains(out, "INFO  approvers: 1 acked") || !strings.Contains(out, "INFO  lead: 1 acked") {
+		t.Errorf("no summary per receiver:\n%s", out)
+	}
+}

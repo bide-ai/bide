@@ -147,6 +147,11 @@ type NotifyEventVerdict struct {
 	Total     time.Duration `json:"total_ns,omitempty"`
 	// Auth is how the acknowledged delivery was authenticated.
 	Auth *agent.NotifyAuth `json:"auth,omitempty"`
+	// Receiver is the receiver the event was to ("default" when the trail names none): the verdicts
+	// of one receiver are the answer to whether every event reached it. Level is the step of an
+	// escalation chain for a NotificationEscalated event, 0 otherwise.
+	Receiver string `json:"receiver,omitempty"`
+	Level    int    `json:"level,omitempty"`
 }
 
 // NotifyReport is the result of VerifyNotifications.
@@ -165,9 +170,26 @@ func (r NotifyReport) Counts() map[NotifyStatus]int {
 	return m
 }
 
+// CountsByReceiver returns, for each receiver, how many of its events have each status.
+func (r NotifyReport) CountsByReceiver() map[string]map[NotifyStatus]int {
+	m := map[string]map[NotifyStatus]int{}
+	for _, e := range r.Events {
+		name := e.Receiver
+		if name == "" {
+			name = agent.DefaultReceiver
+		}
+		if m[name] == nil {
+			m[name] = map[NotifyStatus]int{}
+		}
+		m[name][e.Status]++
+	}
+	return m
+}
+
 var notifyKinds = []agent.NotificationKind{
 	agent.NotificationOutcomeUnknown, agent.NotificationApprovalPending, agent.NotificationRunAborted,
 	agent.NotificationRecoveryFailing, agent.NotificationOverdue, agent.NotificationResolved,
+	agent.NotificationEscalated,
 }
 
 var notifyRecordKinds = []agent.NotifyRecordKind{
@@ -408,14 +430,7 @@ func checkNotifyTrail(trail string, recs []agent.NotifyRecord, skew time.Duratio
 		out = append(out, fmt.Sprintf("record %d (%s): %s", i, recs[i].Kind, fmt.Sprintf(format, args...)))
 	}
 	root := strings.TrimPrefix(trail, "notify:")
-	type ev struct {
-		kind                    agent.NotificationKind
-		observed                agent.NotifyRecord
-		claimed, acked, cleared bool
-		failing, overdue        bool
-		overdueRec              agent.NotifyRecord
-	}
-	events := map[string]*ev{}
+	events := map[string]*trailEvent{}
 	episodeOpen, episodes := false, 0
 	for i, r := range recs {
 		if r.At.IsZero() {
@@ -455,13 +470,33 @@ func checkNotifyTrail(trail string, recs []agent.NotifyRecord, skew time.Duratio
 			bad(i, "has no event key")
 			continue
 		}
+		if r.Kind != agent.NotifyObserved && (r.Receiver != "" || r.Level != 0) {
+			bad(i, "names a receiver or a level; only an observation does")
+		}
 		if r.Kind == agent.NotifyObserved {
 			if events[r.Key] != nil {
 				bad(i, "observes event %q a second time", r.Key)
 				continue
 			}
-			e := &ev{kind: agent.NotificationKind(r.EventKind), observed: r}
+			e := &trailEvent{kind: agent.NotificationKind(r.EventKind), observed: r}
 			events[r.Key] = e
+			if r.Receiver != "" && !agent.ValidReceiver(r.Receiver) {
+				bad(i, "receiver %q is not a name a notifier records", r.Receiver)
+			}
+			if r.Level != 0 && e.kind != agent.NotificationEscalated {
+				bad(i, "a level on an event that is not an escalation step")
+			}
+			// A fan-out delivery names its receiver in its key, and the record agrees.
+			key := r.Key
+			if to, base, ok := agent.SplitToKey(r.Key); ok {
+				key = base
+				if to != r.Receiver {
+					bad(i, "key %q is a delivery to receiver %q and the record names %q", r.Key, to, r.Receiver)
+				}
+				if e.kind != agent.NotificationApprovalPending {
+					bad(i, "only an approval is delivered to several receivers")
+				}
+			}
 			if !slices.Contains(notifyKinds, e.kind) {
 				bad(i, "event kind %q is not one this version reads", r.EventKind)
 			}
@@ -482,9 +517,9 @@ func checkNotifyTrail(trail string, recs []agent.NotifyRecord, skew time.Duratio
 			checkOpFields(bad, i, r, e.kind)
 			switch e.kind {
 			case agent.NotificationOutcomeUnknown:
-				requirePrefix(bad, i, r.Key, "halted:")
+				requirePrefix(bad, i, key, "halted:")
 			case agent.NotificationApprovalPending:
-				requirePrefix(bad, i, r.Key, "approval:")
+				requirePrefix(bad, i, key, "approval:")
 			case agent.NotificationRunAborted:
 				requirePrefix(bad, i, r.Key, "aborted:")
 			case agent.NotificationRecoveryFailing:
@@ -501,6 +536,8 @@ func checkNotifyTrail(trail string, recs []agent.NotifyRecord, skew time.Duratio
 					bad(i, "key %q is not an overdue notice's", r.Key)
 				} else if p := events[orig]; p == nil || !p.overdue {
 					bad(i, "reports event %q overdue before an overdue record says so", orig)
+				} else if p.observed.Receiver != r.Receiver {
+					bad(i, "an overdue notice goes to the receiver of its event (%q), not %q", p.observed.Receiver, r.Receiver)
 				}
 			case agent.NotificationResolved:
 				orig, ok := strings.CutPrefix(r.Key, "resolved:")
@@ -508,7 +545,11 @@ func checkNotifyTrail(trail string, recs []agent.NotifyRecord, skew time.Duratio
 					bad(i, "key %q is not an all-clear's", r.Key)
 				} else if p := events[orig]; p == nil || !(p.acked || p.cleared) {
 					bad(i, "clears event %q before it was acknowledged or cleared", orig)
+				} else if p.observed.Receiver != r.Receiver {
+					bad(i, "an all-clear goes to the receiver of its event (%q), not %q", p.observed.Receiver, r.Receiver)
 				}
+			case agent.NotificationEscalated:
+				checkEscalationStep(bad, i, r, events, skew)
 			}
 			continue
 		}
@@ -553,7 +594,7 @@ func checkNotifyTrail(trail string, recs []agent.NotifyRecord, skew time.Duratio
 			}
 			e.failing = true
 		case agent.NotifyOverdue:
-			if e.kind == agent.NotificationOverdue || e.kind == agent.NotificationResolved {
+			if e.kind == agent.NotificationOverdue || e.kind == agent.NotificationResolved || e.kind == agent.NotificationEscalated {
 				bad(i, "a notice of kind %s is never overdue", e.kind)
 			}
 			if e.overdue {
@@ -574,6 +615,68 @@ func checkNotifyTrail(trail string, recs []agent.NotifyRecord, skew time.Duratio
 		}
 	}
 	return out
+}
+
+// trailEvent is what checkNotifyTrail has seen of one event so far.
+type trailEvent struct {
+	kind                    agent.NotificationKind
+	observed                agent.NotifyRecord
+	claimed, acked, cleared bool
+	failing, overdue        bool
+	overdueRec              agent.NotifyRecord
+}
+
+// checkEscalationStep checks an observed escalation step: its key and level agree and are within the
+// bound; the event it escalates was observed, is one that can be escalated, and has not been cleared
+// (nor, unless it is an approval, acknowledged, itself or by an earlier step); and it comes after
+// the deadline of the event (step 1) or of the step before it, which was observed. The clocks of two
+// writers may differ by skew, so only an observation earlier than that is a violation.
+func checkEscalationStep(bad func(int, string, ...any), i int, r agent.NotifyRecord, events map[string]*trailEvent, skew time.Duration) {
+	level, orig, ok := agent.ParseEscalationKey(r.Key)
+	if !ok {
+		bad(i, "key %q is not an escalation step's", r.Key)
+		return
+	}
+	if r.Level != level {
+		bad(i, "level %d is not the key's %d", r.Level, level)
+	}
+	if level > agent.MaxEscalationSteps {
+		bad(i, "level %d is beyond the bound of an escalation chain (%d)", level, agent.MaxEscalationSteps)
+	}
+	p := events[orig]
+	if p == nil {
+		bad(i, "escalates event %q, which has not been observed", orig)
+		return
+	}
+	if !owesAllClear(string(p.kind)) {
+		bad(i, "escalates event %q of kind %s, which is not escalated", orig, p.kind)
+	}
+	if p.cleared {
+		bad(i, "escalates event %q, which was already cleared", orig)
+	}
+	if p.kind != agent.NotificationApprovalPending {
+		satisfied := p.acked
+		for l := 1; l < level; l++ {
+			if s := events[agent.EscalationKey(orig, l)]; s != nil && s.acked {
+				satisfied = true
+			}
+		}
+		if satisfied {
+			bad(i, "escalates event %q, which was already acknowledged (itself or an earlier step)", orig)
+		}
+	}
+	due, what := p.observed.DeadlineAt, "the event's deadline"
+	if level > 1 {
+		prev := events[agent.EscalationKey(orig, level-1)]
+		if prev == nil {
+			bad(i, "is step %d of %q and step %d was not observed", level, orig, level-1)
+			return
+		}
+		due, what = prev.observed.DeadlineAt, fmt.Sprintf("step %d's deadline", level-1)
+	}
+	if r.At.Add(skew).Before(due) {
+		bad(i, "is dated %s, before %s (%s)", r.At.Format(time.RFC3339Nano), what, due.Format(time.RFC3339Nano))
+	}
 }
 
 func requirePrefix(bad func(int, string, ...any), i int, key, prefix string) {
@@ -604,8 +707,21 @@ func (in NotifyVerifyInput) verdicts(trail string, recs []agent.NotifyRecord, jo
 		}
 		add(NotifyEventVerdict{Trail: trail, Key: key, Kind: kind, RunID: runID, Status: status, Why: why, EventAt: at, InJournal: inJournal[key]})
 	}
+	// An approval routed to several receivers is several deliveries, each under a key of its own
+	// (agent.ToKey): the journal's key is accounted for by any of them, and each is judged alone.
+	deliveries := func(key string) []string {
+		var ks []string
+		for _, k := range st.Keys {
+			if k == key {
+				ks = append(ks, k)
+			} else if _, base, ok := agent.SplitToKey(k); ok && base == key {
+				ks = append(ks, k)
+			}
+		}
+		return ks
+	}
 	for _, j := range journal {
-		if _, ok := st.Events[j.Key]; ok {
+		if len(deliveries(j.Key)) > 0 {
 			continue
 		}
 		if j.Current {
@@ -616,17 +732,19 @@ func (in NotifyVerifyInput) verdicts(trail string, recs []agent.NotifyRecord, jo
 	}
 	root := strings.TrimPrefix(trail, "notify:")
 	for _, j := range journal {
-		e := st.Events[j.Key]
-		if j.Current || e == nil || e.Cleared != nil || e.Rounds == 0 && e.Acked == nil || !owesAllClear(e.Kind) || st.Events[agent.ResolvedKey(j.Key)] != nil {
-			continue
+		for _, key := range deliveries(j.Key) {
+			e := st.Events[key]
+			if j.Current || e.Cleared != nil || e.Rounds == 0 && e.Acked == nil || !owesAllClear(e.Kind) || st.Events[agent.ResolvedKey(key)] != nil {
+				continue
+			}
+			if j.ResolvedAt.IsZero() {
+				missing(agent.ResolvedKey(key), string(agent.NotificationResolved), e.RunID, time.Time{},
+					"the journal shows the event resolved, with no time for it, and the trail holds no all-clear", NotifyStatusAllClearUntimed)
+				continue
+			}
+			missing(agent.ResolvedKey(key), string(agent.NotificationResolved), e.RunID, j.ResolvedAt,
+				"the journal shows the event resolved at "+j.ResolvedAt.UTC().Format(time.RFC3339)+" and the trail never observed the all-clear", NotifyStatusNeverNotified)
 		}
-		if j.ResolvedAt.IsZero() {
-			missing(agent.ResolvedKey(j.Key), string(agent.NotificationResolved), e.RunID, time.Time{},
-				"the journal shows the event resolved, with no time for it, and the trail holds no all-clear", NotifyStatusAllClearUntimed)
-			continue
-		}
-		missing(agent.ResolvedKey(j.Key), string(agent.NotificationResolved), e.RunID, j.ResolvedAt,
-			"the journal shows the event resolved at "+j.ResolvedAt.UTC().Format(time.RFC3339)+" and the trail never observed the all-clear", NotifyStatusNeverNotified)
 	}
 	for _, key := range st.Keys {
 		e := st.Events[key]
@@ -648,7 +766,7 @@ func (in NotifyVerifyInput) verdicts(trail string, recs []agent.NotifyRecord, jo
 
 func owesAllClear(kind string) bool {
 	switch agent.NotificationKind(kind) {
-	case agent.NotificationOutcomeUnknown, agent.NotificationApprovalPending, agent.NotificationRecoveryFailing:
+	case agent.NotificationOutcomeUnknown, agent.NotificationApprovalPending, agent.NotificationRecoveryFailing, agent.NotificationEscalated:
 		return true
 	}
 	return false
@@ -660,6 +778,7 @@ func (in NotifyVerifyInput) verdict(trail string, e *agent.NotifyEvent, inJourna
 		Trail: trail, Key: e.Key, Kind: e.Kind, RunID: e.RunID, InJournal: inJournal, Rounds: e.Rounds,
 		EventAt: e.EventAt, ObservedAt: e.ObservedAt, DeadlineAt: e.DeadlineAt,
 		Detection: e.ObservedAt.Sub(e.EventAt),
+		Receiver:  e.ReceiverName(), Level: e.Level,
 	}
 	ref := e.EventAt
 	if ref.IsZero() {

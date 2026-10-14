@@ -126,12 +126,12 @@ func DefaultResolveTarget(p notify.Payload) (string, bool) {
 	return id, id != ""
 }
 
-// DefaultSeverity is the severity of the incident a notification opens: a halt on an unknown outcome
-// and an overdue notification are critical (a missed alert is expensive there), an abort and a
+// DefaultSeverity is the severity of the incident a notification opens: a halt on an unknown outcome,
+// an overdue notification and an escalation are critical (a missed alert is expensive there), an abort and a
 // failing recovery are errors, and an approval waiting is a warning.
 func DefaultSeverity(p notify.Payload) string {
 	switch p.Kind {
-	case "outcome_unknown", "notification_overdue":
+	case "outcome_unknown", "notification_overdue", "escalated":
 		return "critical"
 	case "run_aborted", "recovery_failing":
 		return "error"

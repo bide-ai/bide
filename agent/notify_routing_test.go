@@ -258,11 +258,11 @@ func escalationEngine(t *testing.T, j *Journal, trail NotifyTrail, clk *notifyCl
 	return testEngine(t, j, sinks["default"], trail, clk, holder, append(all, opts...)...)
 }
 
-func watch(t *testing.T, e *notifyEngine, ev notifyEvent) roundResult {
+func chase(t *testing.T, e *notifyEngine, ev notifyEvent) roundResult {
 	t.Helper()
-	res, err := e.round(context.Background(), watchOf(ev))
+	res, err := e.round(context.Background(), chaseOf(ev))
 	if err != nil {
-		t.Fatalf("watch: %v", err)
+		t.Fatalf("chase: %v", err)
 	}
 	if err := e.flush(context.Background()); err != nil {
 		t.Logf("flush: %v", err)
@@ -278,15 +278,15 @@ func TestEscalation_AnUnacknowledgedEventGoesToTheNextReceiverAtItsDeadline(t *t
 	halt := haltEvent()
 	_, _ = e.round(context.Background(), halt) // the sink is down: observed, claimed, not acked
 
-	res0 := watch(t, e, halt)
+	res0 := chase(t, e, halt)
 	if lead.count() != 0 {
 		t.Fatal("escalated before the deadline")
 	}
 	if want := foldTrail(t, trail).Events[halt.key].DeadlineAt; !res0.next.Equal(want) || res0.done {
-		t.Fatalf("the watch before the deadline = %+v, want to wake at the deadline %v", res0, want)
+		t.Fatalf("the chase before the deadline = %+v, want to wake at the deadline %v", res0, want)
 	}
 	clk.advance(6 * time.Minute)
-	res := watch(t, e, halt)
+	res := chase(t, e, halt)
 	if lead.count() != 1 {
 		t.Fatalf("lead got %d notifications, want 1", lead.count())
 	}
@@ -314,7 +314,7 @@ func TestEscalation_AnUnacknowledgedEventGoesToTheNextReceiverAtItsDeadline(t *t
 		t.Fatal("an escalation is itself escalated, not overdue-noticed")
 	}
 	if !res.next.IsZero() && !res.done && res.next.Before(clk.now()) {
-		t.Fatalf("watch next in the past: %v", res.next)
+		t.Fatalf("chase next in the past: %v", res.next)
 	}
 }
 
@@ -327,12 +327,12 @@ func TestEscalation_TheChainContinuesWhileTheEventIsUnacknowledgedAndStopsAtItsB
 	_, _ = e.round(context.Background(), halt)
 
 	clk.advance(6 * time.Minute)
-	watch(t, e, halt)
+	chase(t, e, halt)
 	if lead.count() == 0 || head.count() != 0 {
 		t.Fatalf("level 1: lead=%d head=%d", lead.count(), head.count())
 	}
 	clk.advance(11 * time.Minute) // past level 1's own deadline
-	watch(t, e, halt)
+	chase(t, e, halt)
 	if head.count() == 0 {
 		t.Fatal("level 2 did not fire at level 1's deadline")
 	}
@@ -341,12 +341,12 @@ func TestEscalation_TheChainContinuesWhileTheEventIsUnacknowledgedAndStopsAtItsB
 		t.Fatalf("level 2 = %+v", es)
 	}
 	clk.advance(2 * time.Hour)
-	res := watch(t, e, halt)
+	res := chase(t, e, halt)
 	if st := foldTrail(t, trail); st.Events[EscalationKey(halt.key, 3)] != nil {
 		t.Fatal("the chain went past its bound")
 	}
 	if !res.done {
-		t.Fatalf("an exhausted chain left its watcher running: %+v", res)
+		t.Fatalf("an exhausted chain left its chase running: %+v", res)
 	}
 }
 
@@ -358,7 +358,7 @@ func TestEscalation_AnAcknowledgedEventIsNotEscalated(t *testing.T) {
 	halt := haltEvent()
 	mustRound(t, e, halt)
 	clk.advance(time.Hour)
-	res := watch(t, e, halt)
+	res := chase(t, e, halt)
 	if lead.count() != 0 || !res.done {
 		t.Fatalf("an acked halt was escalated: lead=%d res=%+v", lead.count(), res)
 	}
@@ -373,14 +373,14 @@ func TestEscalation_AClearedEventStopsTheChainAndTheEscalatedReceiverGetsTheAllC
 	halt := haltEvent()
 	_, _ = e.round(context.Background(), halt)
 	clk.advance(6 * time.Minute)
-	watch(t, e, halt)
+	chase(t, e, halt)
 	if lead.count() != 1 {
 		t.Fatalf("lead = %d", lead.count())
 	}
 
 	putResult(t, j, "r", "c1") // the halt is resolved
 	clk.advance(30 * time.Minute)
-	watch(t, e, halt)
+	chase(t, e, halt)
 	scanAndFlush(t, e, "r")
 	if head.count() != 0 {
 		t.Fatalf("head was escalated to after the halt was resolved: %d", head.count())
@@ -409,7 +409,7 @@ func TestEscalation_AClearBeforeTheDeadlineMeansNoEscalation(t *testing.T) {
 	_, _ = e.round(context.Background(), halt)
 	putResult(t, j, "r", "c1")
 	clk.advance(10 * time.Minute)
-	res := watch(t, e, halt)
+	res := chase(t, e, halt)
 	if lead.count() != 0 || !res.done {
 		t.Fatalf("lead=%d res=%+v", lead.count(), res)
 	}
@@ -427,7 +427,7 @@ func TestEscalation_AnApprovalAcknowledgedButUndecidedIsEscalated(t *testing.T) 
 		t.Fatal("setup: the approval was not acked")
 	}
 	clk.advance(6 * time.Minute)
-	watch(t, e, ap)
+	chase(t, e, ap)
 	if lead.count() != 1 || lead.calls[0].Reason != "undecided" || lead.calls[0].Approval == nil || lead.calls[0].Approval.ToolUseID != "c1" {
 		t.Fatalf("lead = %+v", lead.calls)
 	}
@@ -443,7 +443,7 @@ func TestEscalation_ADecidedApprovalIsNotEscalated(t *testing.T) {
 	mustRound(t, e, ap)
 	putResult(t, j, "r", "c1")
 	clk.advance(time.Hour)
-	res := watch(t, e, ap)
+	res := chase(t, e, ap)
 	if lead.count() != 0 || !res.done {
 		t.Fatalf("a decided approval was escalated: lead=%d res=%+v", lead.count(), res)
 	}
@@ -462,7 +462,7 @@ func TestEscalation_AnotherProcessResumesTheChainFromTheTrail(t *testing.T) {
 	clk.advance(6 * time.Minute)
 	e2 := escalationEngine(t, j, trail, clk, "p2", map[string]Notifier{"default": def, "lead": lead, "head": &fakeSink{}})
 	scanAndFlush(t, e2, "r")
-	for i := 0; i < 3 && lead.count() == 0; i++ { // the scan queued the watch; it queues the step
+	for i := 0; i < 3 && lead.count() == 0; i++ { // the scan queued the chase; it queues the step
 		_ = e2.flush(ctx)
 	}
 	if lead.count() != 1 {
@@ -482,8 +482,8 @@ func TestEscalation_TwoProcessesRaceToOneObservedEscalation(t *testing.T) {
 	halt := haltEvent()
 	_, _ = e1.round(ctx, halt)
 	clk.advance(6 * time.Minute)
-	watch(t, e1, halt)
-	watch(t, e2, halt)
+	chase(t, e1, halt)
+	chase(t, e2, halt)
 	if n := len(recsFor(t, trail, EscalationKey(halt.key, 1))); n < 3 {
 		t.Fatalf("escalation records = %d", n)
 	}
@@ -613,7 +613,7 @@ func TestEscalation_AStepIsNeverOverdue(t *testing.T) {
 	halt := haltEvent()
 	_, _ = e.round(context.Background(), halt)
 	clk.advance(6 * time.Minute)
-	watch(t, e, halt)
+	chase(t, e, halt)
 	key := EscalationKey(halt.key, 1)
 	clk.advance(11 * time.Minute) // past the step's own deadline, its sink still down
 	_, _ = e.round(context.Background(), e.escalationOf(halt, 1))
@@ -624,7 +624,7 @@ func TestEscalation_AStepIsNeverOverdue(t *testing.T) {
 }
 
 // A process that finds an open step in the trail (the one that observed it is gone) delivers it,
-// through the scan and its watch, without being told of the event.
+// through the scan and its chase, without being told of the event.
 func TestEscalation_AScanDeliversAnOpenStepAndResumesTheChain(t *testing.T) {
 	ctx := context.Background()
 	clk := routeClock()
@@ -636,7 +636,7 @@ func TestEscalation_AScanDeliversAnOpenStepAndResumesTheChain(t *testing.T) {
 	halt := haltEvent()
 	_, _ = e1.round(ctx, halt)
 	clk.advance(6 * time.Minute)
-	watch(t, e1, halt)
+	chase(t, e1, halt)
 	if st := foldTrail(t, trail).Events[EscalationKey(halt.key, 1)]; st == nil || st.Acked != nil {
 		t.Fatalf("setup: step 1 = %+v, want observed and open", st)
 	}

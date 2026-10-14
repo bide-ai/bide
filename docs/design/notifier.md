@@ -543,6 +543,10 @@ It checks:
   so nothing was dropped, reordered or rewritten before it. Records after the head are read and
   reported as not attested. Consistency between two heads is not a separate step: each head is
   checked against the full trail;
+- with routing and escalation, the receiver and level each event records are well formed; an
+  escalation step is dated after the deadline it follows, in order, for an event that is not
+  cleared (nor, unless an approval, acknowledged); an all-clear and an overdue notice go to their
+  event's receiver; and a fan-out delivery (`to:<receiver>:<key>`) names its receiver;
 - for every approval gate, unknown-outcome halt and aborted run in the supplied journals
   (`agent.JournalNotifyEvents`, keyed as the notifier keys them), the trail holds `observed` for
   it, or the event is younger than the grace period;

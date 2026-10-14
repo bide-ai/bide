@@ -193,7 +193,7 @@ func TestSlackMessageStaysWithinSlackLimits(t *testing.T) {
 }
 
 func TestSlackTitlesCoverEveryKind(t *testing.T) {
-	for _, k := range []string{"approval_pending", "outcome_unknown", "run_aborted", "recovery_failing", "notification_overdue"} {
+	for _, k := range []string{"approval_pending", "outcome_unknown", "run_aborted", "recovery_failing", "notification_overdue", "escalated"} {
 		if KindTitle(k) == strings.ReplaceAll(k, "_", " ") {
 			t.Errorf("%s has no title", k)
 		}
@@ -204,7 +204,7 @@ func TestSlackTitlesCoverEveryKind(t *testing.T) {
 }
 
 func TestPagerDutySeverityByKind(t *testing.T) {
-	want := map[string]string{"outcome_unknown": "critical", "notification_overdue": "critical", "run_aborted": "error", "recovery_failing": "error", "approval_pending": "warning", "future_kind": "warning"}
+	want := map[string]string{"outcome_unknown": "critical", "notification_overdue": "critical", "escalated": "critical", "run_aborted": "error", "recovery_failing": "error", "approval_pending": "warning", "future_kind": "warning"}
 	for k, w := range want {
 		if got := DefaultSeverity(notify.Payload{Kind: k}); got != w {
 			t.Errorf("%s: %s, want %s", k, got, w)

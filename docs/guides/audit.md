@@ -523,6 +523,21 @@ What it checks, and the status each event gets:
   segments those seal into. A run's events are in the trail of its root run (a plan flow's run is its
   own root). A trail that breaks a rule is reported with the record
   and the rule (exit 1).
+- **Routing and escalation.** Each event's receiver and, for an escalation step, its level are in
+  the trail (the `receiver` and `level` of its `observed` record), so every verdict names the
+  receiver and the report counts statuses per receiver (`CountsByReceiver`; `bide audit
+  notifications` prints a line for each). A receiver's `acked` is the answer to whether that receiver
+  was told. The history rules extend to the chain: an escalation step (`escalated:<level>:<key>`)
+  must follow an observed event of a kind that is escalated, not cleared and, unless it is an
+  approval, not acknowledged (itself or an earlier step); it must be dated after the event's
+  deadline (step 1) or the previous step's own deadline (later steps, whose predecessor must be
+  observed); its level agrees with its key and is within the bound of four; it is never overdue; an
+  all-clear and an overdue notice go to the receiver of their event; a delivery to one of several
+  receivers (`to:<receiver>:<key>`) names that receiver in its record. The cross-check accepts any
+  delivery of a gate (`to:<receiver>:<key>`) as the gate being observed, and judges each delivery
+  on its own. What it cannot know is the routing and escalation that was configured: a gate whose
+  trail shows one delivery may have been routed to two receivers, and a halt that was never
+  escalated may have had no chain.
 - **The journal cross-check.** Every approval gate, unknown-outcome halt (an attempt marker with no
   result) and aborted run a supplied journal shows must be observed in the trail of its root run. A
   gate with no `observed` record is `never_notified`, even when everything the trail does hold is

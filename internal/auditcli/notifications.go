@@ -6,6 +6,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"maps"
 	"os"
 	"slices"
 	"strings"
@@ -295,6 +296,12 @@ func (c *cli) report(rep audit.NotifyReport, strict bool) {
 		if !e.AckedAt.IsZero() {
 			line += fmt.Sprintf("  acknowledged %s after %d attempt(s), %s after it began", e.AckedAt.UTC().Format(time.RFC3339), e.Attempts, e.Total.Round(time.Millisecond))
 		}
+		if e.Receiver != "" && e.Receiver != agent.DefaultReceiver {
+			line += "  receiver " + e.Receiver
+		}
+		if e.Level > 0 {
+			line += fmt.Sprintf("  level %d", e.Level)
+		}
 		if e.Why != "" {
 			line += "  (" + cleanText(e.Why) + ")"
 		}
@@ -310,6 +317,16 @@ func (c *cli) report(rep audit.NotifyReport, strict bool) {
 	}
 	if len(parts) > 0 {
 		c.printf("INFO  %s\n", strings.Join(parts, ", "))
+	}
+	// With more than one receiver, the answer to "was every event delivered to each of them".
+	if by := rep.CountsByReceiver(); len(by) > 1 {
+		for _, name := range slices.Sorted(maps.Keys(by)) {
+			var ps []string
+			for _, s := range slices.Sorted(mapKeysStatus(by[name])) {
+				ps = append(ps, fmt.Sprintf("%d %s", by[name][audit.NotifyStatus(s)], s))
+			}
+			c.printf("INFO  %s: %s\n", name, strings.Join(ps, ", "))
+		}
 	}
 }
 
