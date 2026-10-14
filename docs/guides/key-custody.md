@@ -467,7 +467,7 @@ approver (see [Human approval](hitl-approval.md)).
 
 `bide approve` loads the approver's key from a key file, and the `bide` binary is pure Go
 (`CGO_ENABLED=0`, reproducible builds), so it cannot load a PKCS#11 library. `bide-hsm` is the companion
-program for approvers whose keys are in an HSM, on a smart card or token, in AWS KMS, or in Google Cloud KMS (Azure Key Vault keys are not supported by `bide-hsm` yet: its references are `pkcs11:`, `awskms:` and `gcpkms:`). `bide-hsm
+program for approvers whose keys are in an HSM, on a smart card or token, in AWS KMS, or in Google Cloud KMS or in Azure Key Vault. `bide-hsm
 approve` is `bide approve`: one implementation of the display, the confirmation, the signature, the
 record and the receipt (`cmd/bide/internal/approvecmd`), with `-key` naming a key by reference instead of
 a file. `bide-hsm pubkey` prints the entry that enrols a key.
@@ -505,6 +505,16 @@ bide-hsm approve -db run.db -run refund-1049 -call c2 -as finance -key "$KEY" \
   attestation to prove the key was generated in the HSM and cannot be extracted (P-256 in an HSM only; it
   excludes `-allow-software-key`). The scheme is detected, P-256 first (the HSM-backed one). `Open` makes one
   billed self-test signature.
+- `azurekv:https://<vault>.vault.azure.net/keys/<name>/<32-hex-version>`, an Azure Key Vault or Managed HSM
+  key by its full identifier with the version pinned: a base identifier (no version) would follow a rotation
+  and is refused, as are a port, credentials, a query, a fragment, an upper-case host, and a host that is not a
+  Key Vault or Managed HSM host of the Azure public, China or US Government cloud (`signer/azurekv` applies the
+  same rules and also checks that the service answers with that name and version). The key is ECDSA P-256 (Key
+  Vault has no Ed25519, so `-alg ed25519` is refused), not exportable, and HSM-protected unless
+  `-allow-software-key`, in which case `bide-hsm approve` shows it as software-protected with a notice. The beside-the-key line shows
+  `(HSM-protected)` or `(software-protected)`. Credentials are the Azure SDK's default credential chain; the
+  principal needs "Key Vault Crypto User" (Managed HSM Crypto User) on the key. `Open` makes one billed
+  self-test signature.
 
 **The PIN is never in the reference.** `pin-value` is refused outright, since a PIN in an argument sits
 in the process list and the shell history. The PIN comes from `pin-source=file:/absolute/path`, read each

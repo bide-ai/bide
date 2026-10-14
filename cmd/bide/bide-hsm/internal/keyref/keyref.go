@@ -35,13 +35,22 @@
 // A full CryptoKeyVersion resource name with a numeric version: no alias, no "latest", so the
 // reference names one key version and signing uses exactly that. Credentials come from Google's
 // application default credentials.
+//
+//	azurekv:https://<vault>.vault.azure.net/keys/<name>/<32-hex-version>
+//
+// A full key identifier with its version (a Key Vault or Managed HSM host of the Azure public, China
+// or US Government cloud): no base identifier, which would follow a rotation, no port, credentials,
+// query or fragment. The key is an ECDSA P-256 key, the only kind Key Vault signs that bide uses.
+// Credentials come from the Azure SDK's default credential chain.
 package keyref
 
 import (
 	"errors"
 	"fmt"
+	"net/url"
 	"path/filepath"
 	"regexp"
+	"slices"
 	"strconv"
 	"strings"
 	"unicode/utf8"
@@ -57,6 +66,7 @@ const (
 	KindPKCS11 Kind = iota + 1
 	KindAWSKMS
 	KindGCPKMS
+	KindAzureKV
 )
 
 // Ref is a parsed key reference. Exactly one of PKCS11 and KMS is set, as Kind says.
@@ -65,6 +75,7 @@ type Ref struct {
 	PKCS11 *PKCS11
 	KMS    *KMS
 	GCP    *GCPKMS
+	Azure  *AzureKV
 }
 
 // PKCS11 is a parsed pkcs11: URI.
@@ -78,6 +89,11 @@ type PKCS11 struct {
 	PINEnv       string // pin-source=env:...
 	PINPrompt    bool   // pin-source=prompt: ask on the controlling terminal
 	PINProtected bool   // pin-source=protected: the token collects the PIN on its own PIN pad
+}
+
+// AzureKV is a parsed azurekv: reference.
+type AzureKV struct {
+	KeyID string // https://<vault host>/keys/<name>/<version>, as given
 }
 
 // GCPKMS is a parsed gcpkms: reference.
@@ -109,6 +125,40 @@ var known = map[string]bool{
 
 var pathAttrs = map[string]bool{"token": true, "slot-id": true, "object": true, "id": true, "type": true}
 var queryAttrs = map[string]bool{"module-path": true, "pin-source": true}
+
+var (
+	azureKeyName    = regexp.MustCompile(`^[0-9A-Za-z-]{1,127}$`)
+	azureKeyVersion = regexp.MustCompile(`^[0-9a-fA-F]{32}$`)
+	// azureHosts are the DNS suffixes of Key Vault and Managed HSM in the Azure public, China and US
+	// Government clouds, as signer/azurekv accepts by default.
+	azureHosts = []string{".vault.azure.net", ".managedhsm.azure.net", ".vault.azure.cn", ".managedhsm.azure.cn", ".vault.usgovcloudapi.net", ".managedhsm.usgovcloudapi.net"}
+)
+
+// parseAzure checks a full, versioned key identifier, with the rules signer/azurekv applies.
+func parseAzure(id string) (*AzureKV, error) {
+	bad := func(why string) (*AzureKV, error) { return nil, errors.New("azurekv: " + why) }
+	u, err := url.Parse(id)
+	if err != nil || u.Scheme != "https" || u.Host == "" {
+		return bad("not an https key identifier: want azurekv:https://<vault>.vault.azure.net/keys/<name>/<32-hex-version>")
+	}
+	if u.User != nil || u.RawQuery != "" || u.Fragment != "" || u.Opaque != "" || u.ForceQuery || strings.Contains(u.Host, ":") {
+		return bad("a key identifier carries no credentials, port, query or fragment")
+	}
+	if id != "https://"+u.Host+u.EscapedPath() || u.Host != strings.ToLower(u.Host) {
+		return bad("the key identifier is not in its plain lower-case host form")
+	}
+	if !slices.ContainsFunc(azureHosts, func(s string) bool { return strings.HasSuffix(u.Host, s) && len(u.Host) > len(s) }) {
+		return bad("the host is not a Key Vault or Managed HSM host of the Azure public, China or US Government cloud")
+	}
+	parts := strings.Split(strings.TrimPrefix(u.EscapedPath(), "/"), "/")
+	if (len(parts) == 2 || len(parts) == 3 && parts[2] == "") && parts[0] == "keys" && azureKeyName.MatchString(parts[1]) {
+		return bad("no version: pin the version (a base identifier would follow rotation)")
+	}
+	if len(parts) != 3 || parts[0] != "keys" || !azureKeyName.MatchString(parts[1]) || !azureKeyVersion.MatchString(parts[2]) {
+		return bad("not of the form https://<vault>.vault.azure.net/keys/<name>/<32-hex-version>")
+	}
+	return &AzureKV{KeyID: id}, nil
+}
 
 // gcpVersion is the shape of a CryptoKeyVersion resource name, as signer/gcpkms accepts it: the version
 // is the number Cloud KMS assigns, so an alias or "latest" is not a version.
@@ -163,8 +213,14 @@ func Parse(s string) (Ref, error) {
 			return Ref{}, errors.New("gcpkms: not a CryptoKeyVersion resource name: want gcpkms:projects/<p>/locations/<l>/keyRings/<r>/cryptoKeys/<k>/cryptoKeyVersions/<n> with a numeric version (no alias, no latest, no query)")
 		}
 		return Ref{Kind: KindGCPKMS, GCP: &GCPKMS{Version: v}}, nil
+	case strings.HasPrefix(s, "azurekv:"):
+		a, err := parseAzure(strings.TrimPrefix(s, "azurekv:"))
+		if err != nil {
+			return Ref{}, err
+		}
+		return Ref{Kind: KindAzureKV, Azure: a}, nil
 	}
-	return Ref{}, errors.New("key reference has no scheme bide-hsm knows: want a pkcs11: URI (RFC 7512), awskms:<key ARN> or gcpkms:<key version>")
+	return Ref{}, errors.New("key reference has no scheme bide-hsm knows: want a pkcs11: URI (RFC 7512), awskms:<key ARN>, gcpkms:<key version> or azurekv:<key identifier>")
 }
 
 func parseKMS(rest string) (*KMS, error) {
@@ -410,6 +466,8 @@ func (r Ref) String() string {
 		return "awskms:" + r.KMS.ARN
 	case KindGCPKMS:
 		return "gcpkms:" + r.GCP.Version
+	case KindAzureKV:
+		return "azurekv:" + r.Azure.KeyID
 	case KindPKCS11:
 		p := r.PKCS11
 		var parts []string

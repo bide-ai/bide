@@ -232,3 +232,48 @@ func TestParseGCPKMS(t *testing.T) {
 		}
 	}
 }
+
+func TestParseAzureKV(t *testing.T) {
+	const id = "https://bank-prod.vault.azure.net/keys/approver-1/0123456789abcdef0123456789ABCDEF"
+	r, err := Parse("azurekv:" + id)
+	if err != nil || r.Kind != KindAzureKV || r.Azure == nil || r.Azure.KeyID != id || r.GCP != nil || r.String() != "azurekv:"+id {
+		t.Fatalf("%+v %v", r, err)
+	}
+	for _, h := range []string{"hsm1.managedhsm.azure.net", "v.vault.azure.cn", "v.managedhsm.azure.cn", "v.vault.usgovcloudapi.net", "v.managedhsm.usgovcloudapi.net"} {
+		if _, err := Parse("azurekv:https://" + h + "/keys/k/0123456789abcdef0123456789abcdef"); err != nil {
+			t.Errorf("%s: %v", h, err)
+		}
+	}
+	const v = "0123456789abcdef0123456789abcdef"
+	for name, ref := range map[string]string{
+		"empty":            "azurekv:",
+		"no version":       "azurekv:https://v.vault.azure.net/keys/k",
+		"empty version":    "azurekv:https://v.vault.azure.net/keys/k/",
+		"short version":    "azurekv:https://v.vault.azure.net/keys/k/0123",
+		"non-hex version":  "azurekv:https://v.vault.azure.net/keys/k/0123456789abcdef0123456789abcdeg",
+		"http":             "azurekv:http://v.vault.azure.net/keys/k/" + v,
+		"other host":       "azurekv:https://evil.example.com/keys/k/" + v,
+		"lookalike host":   "azurekv:https://vault.azure.net.evil.com/keys/k/" + v,
+		"bare suffix":      "azurekv:https://.vault.azure.net/keys/k/" + v,
+		"port":             "azurekv:https://v.vault.azure.net:8443/keys/k/" + v,
+		"empty port":       "azurekv:https://v.vault.azure.net:/keys/k/" + v,
+		"credentials":      "azurekv:https://" + secret + "@v.vault.azure.net/keys/k/" + v,
+		"query":            "azurekv:https://v.vault.azure.net/keys/k/" + v + "?x=" + secret,
+		"fragment":         "azurekv:https://v.vault.azure.net/keys/k/" + v + "#" + secret,
+		"empty query":      "azurekv:https://v.vault.azure.net/keys/k/" + v + "?",
+		"upper-case host":  "azurekv:https://V.vault.azure.net/keys/k/" + v,
+		"secrets path":     "azurekv:https://v.vault.azure.net/secrets/k/" + v,
+		"extra segment":    "azurekv:https://v.vault.azure.net/keys/k/" + v + "/x",
+		"escaped name":     "azurekv:https://v.vault.azure.net/keys/k%2e/" + v,
+		"bad name":         "azurekv:https://v.vault.azure.net/keys/" + secret + "_x/" + v,
+		"no scheme":        "azurekv:v.vault.azure.net/keys/k/" + v,
+		"whitespace":       "azurekv:https://v.vault.azure.net/keys/k /" + v,
+		"uppercase scheme": "AZUREKV:https://v.vault.azure.net/keys/k/" + v,
+	} {
+		if r, err := Parse(ref); err == nil {
+			t.Errorf("%s: %q parsed as %+v", name, ref, r)
+		} else if strings.Contains(err.Error(), secret) {
+			t.Errorf("%s: the error repeats a value: %v", name, err)
+		}
+	}
+}

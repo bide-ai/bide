@@ -60,7 +60,7 @@ PUBLISHED="govern store/sqlite store/postgres mcptools trace codec/gcf govern/sq
 COMMANDS="cmd/bide cmd/bide/bide-hsm cmd/bide-view"
 # Modules that exist only to keep their dependencies out of the core. They keep their replace
 # directives and are never tagged.
-REPO_ONLY="cmd/bide/bide-hsm/emulatortest signer/gcpkms/emulatortest signer/awskms/emulatortest examples/approval examples/govern examples/hsm-signing examples/mcp examples/observability examples/plan examples/stripe-refund integration benchmarks"
+REPO_ONLY="cmd/bide/bide-hsm/azuretest cmd/bide/bide-hsm/emulatortest signer/gcpkms/emulatortest signer/awskms/emulatortest examples/approval examples/govern examples/hsm-signing examples/mcp examples/observability examples/plan examples/stripe-refund integration benchmarks"
 
 # gorun runs the go command the way the release resolves modules; the release flow below replaces it.
 gorun() { env GOWORK=off go "$@"; }

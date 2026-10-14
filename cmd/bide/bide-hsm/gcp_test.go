@@ -82,12 +82,26 @@ func TestGCPKMSFlagRefusals(t *testing.T) {
 		args []string
 		want string
 	}{
-		{[]string{"-key", "awskms:arn:aws:kms:us-east-1:111122223333:key/abc", "-allow-software-key"}, "gcpkms: key only"},
+		{[]string{"-key", "awskms:arn:aws:kms:us-east-1:111122223333:key/abc", "-allow-software-key"}, "gcpkms: or azurekv: key only"},
 		{[]string{"-key", "awskms:arn:aws:kms:us-east-1:111122223333:key/abc", "-verify-attestation"}, "gcpkms: key only"},
 		{[]string{"-key", gcpRef, "-allow-software-key", "-verify-attestation"}, "do not go together"},
 	} {
 		if r := hsm(t, nil, "", append([]string{"pubkey"}, tc.args...)...); r.code != 1 || !strings.Contains(r.errOut, tc.want) {
 			t.Errorf("%v: %d\n%s", tc.args, r.code, r.all())
 		}
+	}
+}
+
+// -allow-software-key is for a gcpkms: or azurekv: key; -verify-attestation for a gcpkms: key only.
+func TestAzureKVFlags(t *testing.T) {
+	const ref = "azurekv:https://bank-prod.vault.azure.net/keys/approver/0123456789abcdef0123456789abcdef"
+	if r := hsm(t, nil, "", "pubkey", "-key", ref, "-verify-attestation"); r.code != 1 || !strings.Contains(r.errOut, "gcpkms: key only") {
+		t.Fatalf("attestation on azure: %d\n%s", r.code, r.all())
+	}
+	if r := hsm(t, nil, "", "pubkey", "-key", ref, "-alg", "ed25519"); r.code != 1 || !strings.Contains(r.errOut, "no Ed25519") {
+		t.Fatalf("-alg ed25519: %d\n%s", r.code, r.all())
+	}
+	if r := hsm(t, nil, "", "pubkey", "-key", "azurekv:https://x.example.com/keys/k/0123456789abcdef0123456789abcdef"); r.code != 1 || !strings.Contains(r.errOut, "not a Key Vault") {
+		t.Fatalf("host: %d\n%s", r.code, r.all())
 	}
 }

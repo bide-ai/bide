@@ -20,6 +20,7 @@ import (
 	"github.com/bide-ai/bide/cmd/bide/bide-hsm/internal/keyref"
 	"github.com/bide-ai/bide/cmd/bide/internal/approvecmd"
 	"github.com/bide-ai/bide/signer/awskms"
+	"github.com/bide-ai/bide/signer/azurekv"
 	"github.com/bide-ai/bide/signer/gcpkms"
 	"github.com/bide-ai/bide/signer/pkcs11"
 )
@@ -38,14 +39,18 @@ type Options struct {
 	// KMSClient returns the KMS client for a region. Nil uses the AWS SDK's default credential
 	// chain with that region. A test supplies a fake.
 	KMSClient func(ctx context.Context, region string) (awskms.API, error)
-	// AllowSoftwareKey lets a Google Cloud KMS key version at protection level SOFTWARE be used.
-	// By default only an HSM-backed version is, and Cloud KMS has no HSM-backed Ed25519 key, so an
-	// Ed25519 key needs this. It applies to a gcpkms: reference only.
+	// AllowSoftwareKey lets a software-protected key be used: a Google Cloud KMS key version at
+	// protection level SOFTWARE, or an Azure Key Vault EC key that is not HSM-protected. By default
+	// only an HSM-backed key is, and Cloud KMS has no HSM-backed Ed25519 key, so an Ed25519 key
+	// needs this. It applies to gcpkms: and azurekv: references only.
 	AllowSoftwareKey bool
 	// VerifyAttestation makes a Google Cloud KMS key version prove, by its Cloud HSM attestation,
 	// that its key was generated in the HSM and cannot be extracted (signer/gcpkms
 	// Config.VerifyAttestation). It applies to a gcpkms: reference only.
 	VerifyAttestation bool
+	// AzureClient is the Key Vault client. Nil uses the Azure SDK's default credential chain. A test
+	// supplies one connected to the SDK's fake server.
+	AzureClient azurekv.API
 	// GCPClient returns the Cloud KMS client. Nil uses Google's application default credentials. A
 	// test supplies one connected to an emulator.
 	GCPClient func(ctx context.Context) (gcpkms.API, error)
@@ -60,6 +65,13 @@ type Options struct {
 // key is held (Where) and, when the non-extractable check was lifted, says so (Notice).
 func Open(ctx context.Context, ref keyref.Ref, o Options) (audit.Signer, error) {
 	algs := []audit.Alg{audit.AlgEd25519, audit.AlgECDSAP256}
+	if ref.Kind == keyref.KindAzureKV {
+		// Key Vault has no Ed25519: the key is ECDSA P-256 or nothing.
+		if o.Alg != "" && o.Alg != audit.AlgECDSAP256 {
+			return nil, fmt.Errorf("-alg %q: an azurekv: key is ECDSA P-256 (Key Vault has no Ed25519)", o.Alg)
+		}
+		algs = []audit.Alg{audit.AlgECDSAP256}
+	}
 	if ref.Kind == keyref.KindGCPKMS {
 		// P-256 is Cloud KMS's HSM-backed scheme and the signer's default; Ed25519 is software only.
 		algs = []audit.Alg{audit.AlgECDSAP256, audit.AlgEd25519}
@@ -91,6 +103,8 @@ func Open(ctx context.Context, ref keyref.Ref, o Options) (audit.Signer, error) 
 			s, err = openKMS(ctx, ref.KMS, alg, o)
 		case keyref.KindGCPKMS:
 			s, err = openGCP(ctx, ref.GCP, alg, o)
+		case keyref.KindAzureKV:
+			s, err = openAzure(ctx, ref.Azure, o)
 		default:
 			return nil, errors.New("not a key reference")
 		}
@@ -115,6 +129,14 @@ func Open(ctx context.Context, ref keyref.Ref, o Options) (audit.Signer, error) 
 				d.where += " (protection level " + g.ProtectionLevel() + ")"
 				if g.ProtectionLevel() != "HSM" && g.ProtectionLevel() != "HSM_SINGLE_TENANT" {
 					d.notice = "-allow-software-key: this key version is at protection level " + g.ProtectionLevel() + ", not in an HSM"
+				}
+			}
+			if h, ok := s.(interface{ HSMProtected() bool }); ok && ref.Kind == keyref.KindAzureKV {
+				if h.HSMProtected() {
+					d.where += " (HSM-protected)"
+				} else {
+					d.where += " (software-protected)"
+					d.notice = "-allow-software-key: this key is software-protected in Key Vault, not in an HSM"
 				}
 			}
 			if ref.Kind == keyref.KindPKCS11 && o.AllowExtractable {
@@ -142,7 +164,7 @@ func notOfScheme(err error, alg audit.Alg) bool {
 	if alg == audit.AlgEd25519 {
 		return errors.Is(err, pkcs11.ErrNoEd25519) || errors.Is(err, awskms.ErrNoEd25519) || errors.Is(err, gcpkms.ErrNoEd25519)
 	}
-	return errors.Is(err, pkcs11.ErrNoP256) || errors.Is(err, awskms.ErrNoP256) || errors.Is(err, gcpkms.ErrNoP256)
+	return errors.Is(err, pkcs11.ErrNoP256) || errors.Is(err, awskms.ErrNoP256) || errors.Is(err, gcpkms.ErrNoP256) || errors.Is(err, azurekv.ErrNoP256)
 }
 
 // described is a signer with where its key is held and a notice for the approver. It forwards Close.
@@ -265,6 +287,14 @@ func openKMS(ctx context.Context, k *keyref.KMS, alg audit.Alg, o Options) (audi
 		return nil, credError("awskms: could not load AWS credentials or configuration; set AWS_PROFILE or the standard AWS environment, or check the shared config files", err)
 	}
 	s, err := awskms.Open(ctx, awskms.Config{Client: c, KeyID: k.ARN, Scheme: alg})
+	if err != nil {
+		return nil, err
+	}
+	return s, nil
+}
+
+func openAzure(ctx context.Context, a *keyref.AzureKV, o Options) (audit.Signer, error) {
+	s, err := azurekv.Open(ctx, azurekv.Config{KeyID: a.KeyID, AllowSoftwareKey: o.AllowSoftwareKey, Client: o.AzureClient})
 	if err != nil {
 		return nil, err
 	}
