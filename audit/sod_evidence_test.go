@@ -440,6 +440,13 @@ func TestSoDEvidence_SoDRetally(t *testing.T) {
 	if err != nil || !v.OK || !slices.Equal(v.Counted, []string{"bob", "carol"}) {
 		t.Fatalf("verdict = %+v, %v; want bob and carol", v, err)
 	}
+	// The gate's re-ask note travels with the evidence: the verdict says why and when it asked again.
+	if !slices.ContainsFunc(acts, func(a audit.EvidenceAction) bool { return a.Ref == agent.ApprovalReaskStep("c1", true) }) {
+		t.Fatal("the evidence lacks the gate's re-ask note")
+	}
+	if v.Reask != agent.PendingSoDReapproval || v.ReaskedAt == "" {
+		t.Fatalf("verdict re-ask = %q at %q; want the separation-of-duties re-ask and its time", v.Reask, v.ReaskedAt)
+	}
 	weakPol := g.policy
 	weakPol.ExcludePrincipal = false
 	if v, err := audit.VerifyApprovals(acts, "c1", weakPol, g.resolver(), edV(g.logPub)); err == nil || v.OK {

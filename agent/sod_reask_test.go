@@ -144,3 +144,38 @@ func TestSoDReask_FormatReaskNote(t *testing.T) {
 		t.Fatal("a separation-of-duties note was written for a format re-ask")
 	}
 }
+
+// A re-ask is a notification of its own: the pause and the re-ask note both carry the reason under
+// ApprovalReaskKey, the first ask's note is ended by the recorded tally, and the re-ask is ended
+// only by its re-tally or the call's result.
+func TestSoDReask_Notification(t *testing.T) {
+	ctx := context.Background()
+	store := memJournal()
+	err := weakThenStrong(t, store)
+	e := &notifyEngine{cfg: defaultNotifyConfig(), j: store}
+	ev, ok := e.eventFromErr("r1", err)
+	if !ok || ev.key != ApprovalReaskKey("r1", "c1", true) || ev.approval.Reask != PendingSoDReapproval || !slices.Equal(ev.approval.Excluded, []string{"alice"}) {
+		t.Fatalf("event from the re-ask pause = %+v (%+v)", ev, ev.approval)
+	}
+	evs := e.pendingEvents("r1", mustHistory(t, store, "r1"))
+	if len(evs) != 1 || evs[0].key != ApprovalReaskKey("r1", "c1", true) || evs[0].approval.Reask != PendingSoDReapproval {
+		t.Fatalf("events from the notes = %+v; want only the re-ask", evs)
+	}
+	if decided, err := e.gateDecided(ctx, "r1", "c1", PendingSoDReapproval); err != nil || decided {
+		t.Fatalf("the re-ask reads as decided (%v); the recorded tally it asks over does not end it", err)
+	}
+	if decided, _ := e.gateDecided(ctx, "r1", "c1", ""); !decided {
+		t.Fatal("the first ask is not ended by its recorded tally")
+	}
+	approveAs(t, store, "r1", "c1", "carol", true)
+	var charged int
+	if _, err := sodRun(store, "r1", false, sodPolicy(2), fakeVerifiers(abc...), &charged, Identity{}); err != nil {
+		t.Fatal(err)
+	}
+	if decided, _ := e.gateDecided(ctx, "r1", "c1", PendingSoDReapproval); !decided {
+		t.Fatal("the re-ask is not ended by its re-tally")
+	}
+	if evs := e.pendingEvents("r1", mustHistory(t, store, "r1")); len(evs) != 0 {
+		t.Fatalf("events after the gate passed = %+v", evs)
+	}
+}

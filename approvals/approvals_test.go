@@ -1311,6 +1311,23 @@ func TestDecision_PolicyTurnedOnAfterThePauseIsHonoredWithTheLivePolicy(t *testi
 			t.Fatalf("%d %v", status, out)
 		}
 	})
+	t.Run("after a re-drive that asked again, the newest pause note is followed", func(t *testing.T) {
+		r := newRigAs(t, "c1", old, id, approvals.WithRateLimit(0, 0), approvals.WithGlobalRateLimit(0, 0),
+			approvals.WithGatePolicy(func(string) (*agent.ApprovalPolicy, bool) { return nil, false }))
+		seed(t, r)
+		r.policy = *live // the redeploy, and a re-drive under it: the gate asks again and notes it
+		if err := r.run(); !agent.IsPause(err) {
+			t.Fatalf("re-drive = %v", err)
+		}
+		_, pend := r.get("/pending?run=" + runID + "&call=c1")
+		if pend["state"] != "waiting" || pend["reason"] != agent.PendingSoDReapproval {
+			t.Fatalf("pending: %v", pend)
+		}
+		status, out := r.post(r.decision("carol", true))
+		if status != 200 || out["counted"] != true {
+			t.Fatalf("carol's decision on the re-asked gate: %d %v", status, out)
+		}
+	})
 	t.Run("a live policy for another tool changes nothing", func(t *testing.T) {
 		r := newRigAs(t, "c1", old, id, approvals.WithRateLimit(0, 0), approvals.WithGlobalRateLimit(0, 0),
 			approvals.WithGatePolicy(func(string) (*agent.ApprovalPolicy, bool) { return live, false }))
