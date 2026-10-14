@@ -584,7 +584,9 @@ The design choices, and why:
   publish out of order; both heads are prefixes of one trail and the verifier compares by size.
 - **A bounded window.** The records between the last published head and the end of the trail are the
   window. `NotifyPending` (for each run it looks at), the recovery pass (for each run it recovers),
-  and `FlushNotifications` ask the trail to sign again any trail that grew past its last head, or
+  and `FlushNotifications` ask the trail to sign again any trail that grew past its last head (a
+  sweep and, once a minute, a recovery pass also name the global trails: the digest's, the open
+  trail's index for this and last year, today's segment and the newest three), or
   that an earlier attempt failed to publish (`agent.NotifyTrailAnchorer`, optional; best effort,
   reported to `WithNotifyErrors`, never a delivery error). The verifier reports the window's size
   and age and can fail it (`-max-unattested`).

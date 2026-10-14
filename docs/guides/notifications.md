@@ -580,7 +580,11 @@ Two things to set up on your side:
   `NotifyPending`, `RecoverLoop`, `Recover` and `FlushNotifications`, for the runs they look at and
   for any trail an earlier attempt failed, and `Reanchor`, `ReanchorPending` and `Flush` do it on
   demand. The window left open is therefore the publisher's delay when the anchor is healthy, and the
-  outage plus the time to the next sweep when it is not. Call `Flush` (or `FlushNotifications`) before
+  outage plus the time to the next sweep when it is not. The wrapper signs every trail written
+  through it, so the trails that belong to no run are covered as well: the digest's, the open trail's
+  daily segments (`notify:@open:<date>`) and its yearly index (`notify:@open:index:<year>`); a sweep
+  and, once a minute, a recovery pass sign again the digest, the index, today's segment and the newest
+  three. Call `Flush` (or `FlushNotifications`) before
   the process exits.
 
   A trail with no head is reported `UNANCHORED`, and whoever can write the event store could have
