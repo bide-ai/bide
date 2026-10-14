@@ -111,8 +111,12 @@ func TestAuditedEventStore_RefusesBadConfiguration(t *testing.T) {
 	_, priv, _ := ed25519.GenerateKey(nil)
 	good := audit.Ed25519Signer{Priv: priv}
 	for name, c := range map[string]func() (*audit.AuditedEventStore, error){
-		"nil store":  func() (*audit.AuditedEventStore, error) { return audit.NewAuditedEventStore(nil, good, audit.NewMemAnchorLog()) },
-		"nil anchor": func() (*audit.AuditedEventStore, error) { return audit.NewAuditedEventStore(audit.NewMemEventStore(), good, nil) },
+		"nil store": func() (*audit.AuditedEventStore, error) {
+			return audit.NewAuditedEventStore(nil, good, audit.NewMemAnchorLog())
+		},
+		"nil anchor": func() (*audit.AuditedEventStore, error) {
+			return audit.NewAuditedEventStore(audit.NewMemEventStore(), good, nil)
+		},
 		"no key": func() (*audit.AuditedEventStore, error) {
 			return audit.NewAuditedEventStore(audit.NewMemEventStore(), audit.Ed25519Signer{}, audit.NewMemAnchorLog())
 		},
@@ -555,7 +559,9 @@ func TestNotifyPending_ABoundedSweepOverAHungAnchor(t *testing.T) {
 		t.Fatal(err)
 	}
 	done := make(chan error, 1)
-	go func() { done <- agent.NotifyPending(context.Background(), j, &recSink{}, trail, agent.WithNotifyHolder("sweeper")) }()
+	go func() {
+		done <- agent.NotifyPending(context.Background(), j, &recSink{}, trail, agent.WithNotifyHolder("sweeper"))
+	}()
 	select {
 	case <-done:
 	case <-time.After(10 * time.Second):

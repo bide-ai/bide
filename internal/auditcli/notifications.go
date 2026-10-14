@@ -40,7 +40,7 @@ func (c *cli) notifications(args []string) {
 	fs := c.flagSet("notifications")
 	var trails, heads, journals stringList
 	fs.Var(&trails, "trail", "a notification trail export (audit.ExportNotifyTrail as JSON); repeat once per trail")
-	fs.Var(&heads, "sth", "a signed tree head over a trail (audit.SignNotifyTrail as JSON); repeat once per trail")
+	fs.Var(&heads, "sth", "a signed tree head over a trail, as JSON (audit.SignNotifyTrail, or an entry's sth from the anchor log of a notifier that anchors its trail); repeat for as many as you have, any number per trail: each must verify and match a prefix of the trail, the largest is the newest")
 	fs.Var(&journals, "journal", "a run's journal export (audit.ExportJournal as JSON) to cross-check against; repeat once per run")
 	pubkey := fs.String("pubkey", "", "the "+pubkeyHelp+"; it verifies every -sth")
 	unanchored := fs.Bool("unanchored", false, "accept a trail with no signed head: it is read, and nothing attests that it is complete or unaltered")
@@ -51,6 +51,7 @@ func (c *cli) notifications(args []string) {
 	grace := fs.Duration("grace", 5*time.Minute, "how long after an event began that a missing observation is not yet a failure (the notifier's detection window)")
 	recovery := fs.Duration("recovery-failing-after", 15*time.Minute, "how long a recovery failure episode may be open before a recovery_failing event is owed (the notifier's setting)")
 	strict := fs.Bool("strict", false, "also fail (exit 1) on a warning: a decided gate no notifier observed (unobserved_resolved), or an all-clear owed that cannot be timed (all_clear_untimed)")
+	maxTail := fs.Duration("max-unattested", 0, "fail a trail whose oldest record after its newest signed head is older than this (0: report the gap, do not fail it)")
 	asOf := fs.String("as-of", "", "judge pending events as of this RFC 3339 time (default now)")
 	c.parse(fs, args)
 
@@ -71,8 +72,8 @@ func (c *cli) notifications(args []string) {
 		c.usageLine(fs.Name() + ": missing -pubkey (and an -sth for each trail); give -unanchored to read a trail nothing attests")
 	case len(heads) > 0 && *pubkey == "":
 		c.usageLine(fs.Name() + ": -sth needs -pubkey")
-	case *maxAck < 0 || *grace < 0 || *recovery < 0:
-		c.usageLine(fs.Name() + ": -max-ack, -grace and -recovery-failing-after must not be negative")
+	case *maxAck < 0 || *grace < 0 || *recovery < 0 || *maxTail < 0:
+		c.usageLine(fs.Name() + ": -max-ack, -grace, -recovery-failing-after and -max-unattested must not be negative")
 	}
 	now := time.Now()
 	if *asOf != "" {
@@ -83,7 +84,7 @@ func (c *cli) notifications(args []string) {
 		now = t
 	}
 
-	in := audit.NotifyVerifyInput{Unanchored: *unanchored, Now: now, MaxAck: *maxAck, Grace: *grace, RecoveryFailingAfter: *recovery, MaxClockSkew: maxClockSkew, Strict: *strict}
+	in := audit.NotifyVerifyInput{Unanchored: *unanchored, Now: now, MaxAck: *maxAck, Grace: *grace, RecoveryFailingAfter: *recovery, MaxTailAge: *maxTail, MaxClockSkew: maxClockSkew, Strict: *strict}
 	ok := true
 	if *pubkey != "" {
 		v, err := readPubKey(*pubkey)
@@ -261,8 +262,11 @@ func (c *cli) report(rep audit.NotifyReport, strict bool) {
 		switch {
 		case tr.Anchored:
 			line := fmt.Sprintf("INFO  trail %s: %d records; signed head over the first %d (signed %s)", tr.Trail, tr.Records, tr.HeadSize, tr.HeadTime.Format(time.RFC3339))
+			if tr.Heads > 1 {
+				line += fmt.Sprintf(", the newest of %d that all verify", tr.Heads)
+			}
 			if tr.Tail > 0 {
-				line += fmt.Sprintf("; the last %d are not attested by it", tr.Tail)
+				line += fmt.Sprintf("; the last %d are not attested by it (the oldest, from %s, for %s)", tr.Tail, tr.TailSince.UTC().Format(time.RFC3339), tr.TailAge.Round(time.Second))
 			}
 			c.println(line)
 		default:

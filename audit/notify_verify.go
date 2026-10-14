@@ -2,6 +2,7 @@ package audit
 
 import (
 	"bytes"
+	"cmp"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -72,8 +73,11 @@ type NotifyVerifyInput struct {
 	// Trails are the notification trails to verify. A trail the journals say is owed events and
 	// that is not here is read as a trail with no records.
 	Trails []NotifyTrailExport
-	// Heads are signed tree heads over the trails (SignNotifyTrail), matched to a trail by RunID,
-	// which is the trail's name. They are verified under Verifier.
+	// Heads are signed tree heads over the trails (SignNotifyTrail, or the ones an
+	// AuditedEventStore publishes as the trail is written), matched to a trail by RunID, which is the
+	// trail's name. A trail may have several, as an anchor log holds one for every size: each is
+	// verified under Verifier and must commit to a prefix of the trail, and the largest is the
+	// newest. They are verified under Verifier.
 	Heads []SignedTreeHead
 	// Verifier verifies Heads. It is required if there are any, or unless Unanchored.
 	Verifier Verifier
@@ -100,6 +104,12 @@ type NotifyVerifyInput struct {
 	// RecoveryFailingAfter is how long a recovery failure episode may be open before a
 	// recovery_failing event is owed. The default, 15 minutes, is the notifier's.
 	RecoveryFailingAfter time.Duration
+	// MaxTailAge, if positive, is the longest a record may sit after the newest signed head of its
+	// trail, unattested: a trail whose oldest unattested record is older than this at Now is a
+	// violation. It bounds how long a rewrite of the trail's end could go undetected, and is the
+	// check that a notifier's automatic anchoring is keeping up. Zero reports the gap and does not
+	// fail it.
+	MaxTailAge time.Duration
 	// MaxClockSkew is how far a record may be dated before the one that precedes it (the writers'
 	// clocks differ) before the trail is out of order. The default is DefaultClockSkew.
 	MaxClockSkew time.Duration
@@ -113,9 +123,16 @@ type NotifyTrailReport struct {
 	// records are exactly the leaves it commits to.
 	Anchored bool `json:"anchored"`
 	HeadSize int  `json:"head_size,omitempty"`
-	// Tail counts the records after the head: read, but not attested by it.
-	Tail     int       `json:"tail,omitempty"`
-	HeadTime time.Time `json:"head_time,omitzero"`
+	// Heads counts the signed heads supplied for the trail, each of which verified and commits to a
+	// prefix of it; HeadSize and HeadTime are the newest's.
+	Heads int `json:"heads,omitempty"`
+	// Tail counts the records after the newest head: read, but not attested by it. TailSince is
+	// the time of the first of them and TailAge is how long before Now that was: how long the oldest
+	// unattested record has gone without a signed head over it.
+	Tail      int           `json:"tail,omitempty"`
+	TailSince time.Time     `json:"tail_since,omitzero"`
+	TailAge   time.Duration `json:"tail_age_ns,omitempty"`
+	HeadTime  time.Time     `json:"head_time,omitzero"`
 	// Violations are the ways the trail is malformed, out of order, or does not match its head.
 	Violations []string `json:"violations,omitempty"`
 }
@@ -295,12 +312,9 @@ func VerifyNotifications(in NotifyVerifyInput) (NotifyReport, error) {
 		trails[t.Trail] = t
 		names = append(names, t.Trail)
 	}
-	heads := map[string]SignedTreeHead{}
+	heads := map[string][]SignedTreeHead{}
 	for _, h := range in.Heads {
-		if _, dup := heads[h.RunID]; dup {
-			return NotifyReport{}, fmt.Errorf("audit: verify notifications: two signed heads for trail %q: %w", h.RunID, agent.ErrConfig)
-		}
-		heads[h.RunID] = h
+		heads[h.RunID] = append(heads[h.RunID], h)
 	}
 
 	// The events the journals show, by the trail that owes them.
@@ -357,8 +371,9 @@ func VerifyNotifications(in NotifyVerifyInput) (NotifyReport, error) {
 			leaves = t.Leaves
 		}
 		tr := NotifyTrailReport{Trail: name, Records: len(leaves)}
-		in.anchor(&tr, leaves, heads, trails[name] != nil)
-		if recs, ok := all[name]; ok {
+		recs, ok := all[name]
+		in.anchor(&tr, leaves, recs, heads[name], ok, trails[name] != nil)
+		if ok {
 			switch openTrailKind(name) {
 			case openNone:
 				tr.Violations = append(tr.Violations, checkNotifyTrail(name, recs, in.MaxClockSkew)...)
@@ -388,38 +403,72 @@ func VerifyNotifications(in NotifyVerifyInput) (NotifyReport, error) {
 	return rep, nil
 }
 
-// anchor checks the trail against its signed head and records the outcome in tr.
-func (in NotifyVerifyInput) anchor(tr *NotifyTrailReport, leaves [][]byte, heads map[string]SignedTreeHead, supplied bool) {
-	h, ok := heads[tr.Trail]
-	if !ok {
+// anchor checks the trail against its signed heads and records the outcome in tr. Every head must
+// verify and commit to a prefix of the trail: an anchor log keeps one head for each size the trail
+// reached, so a record rewritten after the fact contradicts every head that covered it, not only
+// the newest. recs are the decoded records (valid only if decoded), used to date the unattested tail.
+func (in NotifyVerifyInput) anchor(tr *NotifyTrailReport, leaves [][]byte, recs []agent.NotifyRecord, heads []SignedTreeHead, decoded, supplied bool) {
+	if len(heads) == 0 {
 		if supplied && !in.Unanchored {
 			tr.Violations = append(tr.Violations, "no signed head: nothing attests that the trail is complete or unaltered (give one, or allow an unanchored trail)")
 		}
 		return
 	}
-	bad := func(format string, args ...any) { tr.Violations = append(tr.Violations, fmt.Sprintf(format, args...)) }
-	if err := h.Verify(in.Verifier); err != nil {
-		bad("signed head does not verify: %v", err)
+	bad := func(h SignedTreeHead, format string, args ...any) {
+		tr.Violations = append(tr.Violations, fmt.Sprintf("signed head of size %d: %s", h.Size, fmt.Sprintf(format, args...)))
+	}
+	heads = slices.Clone(heads)
+	slices.SortStableFunc(heads, func(a, b SignedTreeHead) int {
+		if c := cmp.Compare(a.Size, b.Size); c != 0 {
+			return c
+		}
+		return cmp.Compare(a.TimestampNanos, b.TimestampNanos)
+	})
+	ok := true
+	var newest SignedTreeHead
+	for _, h := range heads {
+		switch {
+		case h.Verify(in.Verifier) != nil:
+			bad(h, "does not verify: %v", h.Verify(in.Verifier))
+			ok = false
+			continue
+		case h.Kind != TreeEvents:
+			bad(h, "is of the %q tree, not an event trail", h.Kind)
+			ok = false
+			continue
+		}
+		if err := CheckTimestamp(h.TreeHead, in.Now, in.MaxClockSkew); err != nil {
+			bad(h, "%v", err)
+			ok = false
+			continue
+		}
+		if h.Size > len(leaves) {
+			bad(h, "the trail has %d record(s) and the head commits to %d: records were deleted", len(leaves), h.Size)
+			ok = false
+			continue
+		}
+		if !bytes.Equal(merkleRoot(leaves[:h.Size]), h.Root) {
+			bad(h, "the first %d record(s) are not the ones the head commits to: a record was changed, reordered or replaced", h.Size)
+			ok = false
+			continue
+		}
+		newest = h
+	}
+	if !ok {
 		return
 	}
-	if h.Kind != TreeEvents {
-		bad("signed head is of the %q tree, not an event trail", h.Kind)
-		return
+	tr.Anchored, tr.Heads = true, len(heads)
+	tr.HeadSize, tr.HeadTime = newest.Size, time.Unix(0, newest.TimestampNanos).UTC()
+	tr.Tail = len(leaves) - newest.Size
+	if tr.Tail > 0 && decoded {
+		tr.TailSince = recs[newest.Size].At
+		if age := in.Now.Sub(tr.TailSince); age > 0 {
+			tr.TailAge = age
+		}
+		if in.MaxTailAge > 0 && tr.TailAge > in.MaxTailAge {
+			tr.Violations = append(tr.Violations, fmt.Sprintf("%d record(s) after the newest signed head (size %d) have gone unattested for %s, longer than the %s allowed: the anchoring is not keeping up", tr.Tail, newest.Size, tr.TailAge.Round(time.Second), in.MaxTailAge))
+		}
 	}
-	if err := CheckTimestamp(h.TreeHead, in.Now, in.MaxClockSkew); err != nil {
-		bad("%v", err)
-		return
-	}
-	tr.HeadSize, tr.HeadTime = h.Size, time.Unix(0, h.TimestampNanos).UTC()
-	if h.Size > len(leaves) {
-		bad("trail has %d record(s) and its signed head commits to %d: records were deleted", len(leaves), h.Size)
-		return
-	}
-	if !bytes.Equal(merkleRoot(leaves[:h.Size]), h.Root) {
-		bad("the first %d record(s) are not the ones the signed head commits to: a record was changed, reordered or replaced", h.Size)
-		return
-	}
-	tr.Anchored, tr.Tail = true, len(leaves)-h.Size
 }
 
 // checkNotifyTrail returns the ways recs, the records of trail, are not a history a notifier
