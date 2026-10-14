@@ -116,9 +116,12 @@ func NotifyPending(ctx context.Context, j *Journal, n Notifier, trail NotifyTrai
 	// Last, after the deliveries have grown the trails: sign again any trail that grew past its last
 	// head, which an anchor outage or a process that died before anchoring left behind. Its failure
 	// goes to WithNotifyErrors, not to the sweep's result: it is not a delivery.
-	// The two trails that belong to no run are signed too: the list of events whose all-clear may be
-	// owed, and the digest's.
-	e.anchorTrails(ctx, append(trails, NotifyOpenTrail, NotifyDigestTrail)...)
+	// The trails that belong to no run are signed too: the digest's and the open trail's segments and
+	// index (the list of events whose all-clear may be owed).
+	if _, ok := e.trail.(NotifyTrailAnchorer); ok {
+		trails = append(trails, e.globalTrails(ctx)...)
+	}
+	e.anchorTrails(ctx, trails...)
 	return errors.Join(errs...)
 }
 

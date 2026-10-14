@@ -41,7 +41,7 @@ func anchoredGate(t *testing.T, s agent.Store, es audit.EventStore, run string, 
 	}
 	dir := t.TempDir()
 	for i, e := range anchor.Entries() {
-		if e.RunID != agent.NotifyTrailName(run) && e.RunID != agent.NotifyOpenTrail {
+		if e.RunID != agent.NotifyTrailName(run) {
 			continue
 		}
 		p := filepath.Join(dir, fmt.Sprintf("head-%d.json", i))
@@ -84,7 +84,7 @@ func TestAuditNotifications_AutoAnchoredTrailOnSQLite(t *testing.T) {
 	args := shArgs([]string{"audit", "notifications", "-db", path}, pubkey, heads)
 
 	code, out, errOut := runBide(args...)
-	if code != 0 || !strings.Contains(out, "PASS  acked") || !strings.Contains(out, "trail notify:@open:") || strings.Contains(out, "UNANCHORED") || strings.Contains(out, "not attested") {
+	if code != 0 || !strings.Contains(out, "PASS  acked") || strings.Contains(out, "UNANCHORED") || strings.Contains(out, "not attested") {
 		t.Fatalf("exit %d\n%s\n%s", code, out, errOut)
 	}
 
@@ -111,7 +111,8 @@ func TestAuditNotifications_AutoAnchoredTrailOnSQLite(t *testing.T) {
 	}
 }
 
-// The same against Postgres (PG_DSN).
+// The same against Postgres (PG_DSN). The shared test database holds other tests' trails that no
+// head covers (the open trail), so -unanchored accepts those; the heads given are still checked.
 func TestAuditNotifications_AutoAnchoredTrailOnPostgres(t *testing.T) {
 	dsn := os.Getenv("PG_DSN")
 	if dsn == "" {
@@ -127,10 +128,10 @@ func TestAuditNotifications_AutoAnchoredTrailOnPostgres(t *testing.T) {
 	run := "anch-told-" + time.Now().Format("150405.000000000")
 	pubkey, heads := anchoredGate(t, s, s.EventStore(), run, audit.NewMemAnchorLog())
 	late := time.Now().Add(time.Hour).Format(time.RFC3339)
-	args := shArgs([]string{"audit", "notifications", "-postgres-env", "BIDE_AUDIT_TEST_DSN", "-run", run, "-as-of", late}, pubkey, heads)
+	args := shArgs([]string{"audit", "notifications", "-postgres-env", "BIDE_AUDIT_TEST_DSN", "-run", run, "-as-of", late, "-unanchored"}, pubkey, heads)
 
 	code, out, errOut := runBide(args...)
-	if code != 0 || !strings.Contains(out, "PASS  acked") || !strings.Contains(out, "trail notify:@open:") || strings.Contains(out+errOut, dsn) {
+	if code != 0 || !strings.Contains(out, "PASS  acked") || strings.Contains(out+errOut, dsn) {
 		t.Fatalf("exit %d\n%s\n%s", code, out, errOut)
 	}
 

@@ -6,6 +6,7 @@ import (
 	"slices"
 	"sync"
 	"testing"
+	"time"
 )
 
 // anchoringTrail is a NotifyTrail that records the AnchorTrails calls the notifier makes.
@@ -48,7 +49,7 @@ func TestNotifyPending_AsksTheTrailToAnchorTheTrailsItLookedAt(t *testing.T) {
 	if err := sweep(t, j, &fakeSink{}, trail, clk); err != nil {
 		t.Fatal(err)
 	}
-	if got, want := trail.all(), []string{NotifyDigestTrail, NotifyOpenTrail, "notify:r1", "notify:r2"}; !slices.Equal(got, want) {
+	if got, want := trail.all(), []string{NotifyDigestTrail, OpenSegment(clk.now()), OpenIndex(clk.now().Year()), "notify:r1", "notify:r2"}; !slices.Equal(got, want) {
 		t.Fatalf("anchored %v, want %v", got, want)
 	}
 	if len(trail.calls) != 1 {
@@ -109,8 +110,9 @@ func TestRecover_AsksTheTrailToAnchorEachRunsTrail(t *testing.T) {
 	if _, err := Recover(ctx, j, resume, WithNotifier(&fakeSink{}, trail)); err != nil && !errors.As(err, new(*ApprovalPending)) {
 		t.Fatal(err)
 	}
-	if got := trail.all(); !slices.Equal(got, []string{"notify:r"}) {
-		t.Fatalf("the recovery pass anchored %v, want [notify:r]", got)
+	// The run's own trail and the global ones (the first pass is due for them).
+	if got := trail.all(); !slices.Contains(got, "notify:r") || !slices.Contains(got, NotifyDigestTrail) || !slices.Contains(got, OpenSegment(time.Now())) {
+		t.Fatalf("the recovery pass anchored %v, want notify:r and the global trails", got)
 	}
 }
 
@@ -124,5 +126,32 @@ func TestFlush_AsksTheTrailToAnchorWhatItWrote(t *testing.T) {
 	}
 	if len(trail.calls) != 1 {
 		t.Fatalf("%d AnchorTrails calls on flush, want 1", len(trail.calls))
+	}
+}
+
+// A recovery pass signs the global trails again once a minute, not once per run it visits.
+func TestRecover_SignsTheGlobalTrailsOncePerInterval(t *testing.T) {
+	clk := &notifyClock{t: sweepClock().t}
+	trail := &anchoringTrail{MemNotifyTrail: NewMemNotifyTrail()}
+	e := testEngine(t, memJournal(), &fakeSink{}, trail, clk, "p")
+	for _, run := range []string{"a", "b", "c"} {
+		e.afterRecover(context.Background(), run, true, true, nil)
+	}
+	count := func() int {
+		n := 0
+		for _, c := range trail.all() {
+			if c == NotifyDigestTrail {
+				n++
+			}
+		}
+		return n
+	}
+	if count() != 1 {
+		t.Fatalf("the digest trail was named %d times by 3 runs in one interval, want 1", count())
+	}
+	clk.advance(2 * time.Minute)
+	e.afterRecover(context.Background(), "d", true, true, nil)
+	if count() != 2 {
+		t.Fatalf("after the interval the digest trail was named %d times, want 2", count())
 	}
 }

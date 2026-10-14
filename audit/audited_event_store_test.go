@@ -568,6 +568,14 @@ func TestNotifyPending_ResignsAGrownTrailAfterAnOutage(t *testing.T) {
 	if len(sizes) != 1 || sizes[0] != len(log) || len(log) == 0 {
 		t.Fatalf("heads after the sweep = %v, trail has %d records", sizes, len(log))
 	}
+	// The trails that belong to no run are signed again too: today's open segment and the index.
+	for _, name := range []string{agent.OpenSegment(time.Now()), agent.OpenIndex(time.Now().UTC().Year())} {
+		stored, _ := r.mem.Load(ctx, name)
+		got := fa.sizes(name)
+		if len(stored) == 0 || len(got) == 0 || got[len(got)-1] != len(stored) {
+			t.Fatalf("%s: %d records stored, heads %v after the sweep", name, len(stored), got)
+		}
+	}
 }
 
 // A sweep over a hung anchor still returns: every anchoring it does is bounded by the timeout.
