@@ -833,7 +833,10 @@ func TestVerifyNotifications_NoAllClearIsOwedForAnUnattemptedEvent(t *testing.T)
 	jx, _ := audit.ExportJournal(ctx, j, "r1")
 	gate := agent.ApprovalKey("r1", "c1", 0)
 	b := newTrail(t).add(observed(gate, agent.NotificationApprovalPending, 0, 1))
-	rep, err := verifyNotify(t, b, func(in *audit.NotifyVerifyInput) { in.Journals = []audit.JournalExport{jx}; in.Now = time.Now().Add(time.Hour) })
+	rep, err := verifyNotify(t, b, func(in *audit.NotifyVerifyInput) {
+		in.Journals = []audit.JournalExport{jx}
+		in.Now = time.Now().Add(time.Hour)
+	})
 	for _, e := range rep.Events {
 		if e.Key == agent.ResolvedKey(gate) {
 			t.Fatalf("an all-clear is owed for an event never delivered: %+v (err %v)", e, err)
