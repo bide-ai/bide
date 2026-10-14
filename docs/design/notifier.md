@@ -388,6 +388,14 @@ the second pass, in a run that ends before any new-version scan reaches it, leav
 the audit reports it ("observed after the open trail began and was never listed"); set the window
 to the time the upgrade takes to reach every process (a week for a staged rollout across regions).
 
+*Isolation from recovery.* The scans and the backfill run on the notifier's worker, never on the
+recovery pass or drive that queued them: a trail store that errors fails only the job (reported to
+`WithNotifyErrors`, retried after the backoff), one that panics fails the round (a panic in a
+`Notifier` fails the call), and a store that hangs does not hold the pass: `Recover` and a flush wait
+for the scans for at most ten seconds, after which they leave them to run on, or to the next process,
+while events a person is waiting for are still waited for as before. `Recover`'s count and error are
+what they would be with a healthy store.
+
 *Roots.* An event is filed under its root run's trail. A plan flow's run is its own root whatever its
 ID holds (a flow named `tenant>flow1` is not a sub-agent of `tenant`): the hook path
 (`RunNotifier.DriveEnd`, from the flow's `RunRef`) and the sweep (from the run's `run:start`, which
