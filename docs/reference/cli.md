@@ -245,6 +245,8 @@ Flags:
     	flow.Digest() of the -topology flow, compared with the digest the run journaled (default: computed from -topology when it carries the digest's inputs)
   -evidence string
     	evidence package (audit.EvidencePackage JSON) to verify; needs -pubkey
+  -exclude-principal
+    	the expected policy excludes the run's requester from approving (separation of duties); needs -need
   -fail-on-weaken
     	with -diff -check: exit 1 if an approval gate was removed or weakened
   -journal value
@@ -794,6 +796,8 @@ Usage of bide audit verify-approvals:
     	how far a decision's signed time may be after the time bide recorded it before it is noted (a note, never a failure) (default 5m0s)
   -evidence string
     	path to the EvidencePackage JSON carrying the approval evidence
+  -exclude-principal
+    	the policy excludes the run's requester from approving (separation of duties); the evidence must prove the run's run:start
   -json
     	print one JSON report on stdout instead of the text report
   -max-clock-skew duration

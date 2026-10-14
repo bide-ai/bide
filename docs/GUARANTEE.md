@@ -106,6 +106,11 @@ the journal holds, and so what a resume cannot be talked out of by a redeploy:
   approval gate each completed call ran under (`Record.Safety`, `Record.Approval`): a completed write is rolled back even if its tool was relabelled
   `ReadOnly` since, and a call whose tool is no longer registered is reported uncompensated (or
   halts, if it was attempted with no result);
+- the requester an approval gate with `ExcludePrincipal` excludes: the principal's `OnBehalfOf`
+  in `run:start`, for a flow run as for an agent run (a flow run journals the identity its context
+  carries). The gate reads it from the journal on every evaluation, so a redeploy or a later drive
+  cannot change who may not approve; a gate that excluded the requester journals the requester in
+  its terminal tally, and an offline audit recounts from the proven `run:start`;
 - for a flow (`plan`), its flow name and input (`run:start`, kind `flow`), its topology digest,
   each switch's choice, and each node's attempt marker (a node runs as an `agent.Journal.Step`, so a node
   attempted as a side effect halts on resume even if it is relabelled retry-safe since); a flow run

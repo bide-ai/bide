@@ -33,6 +33,8 @@ Where the implementation refined this design:
   an approver out. v2 closes that and three related gaps.
 - **v3: decision times** (below). Each decision carries the time the approver decided, signed, and
   the time bide recorded it, anchored; the gate reads neither.
+- **Separation of duties** (below). `ApprovalPolicy.ExcludePrincipal` keeps the run's requester
+  from filling a seat.
 
 ## v2: decisions and evidence
 
@@ -267,6 +269,57 @@ regressions `gate-missing` (no gate check), `gate-unscoped` (a per-node key in a
 `gate-request-order` (a decision recorded before the request counted) fail `GateHeld`. The counting
 rule over signed records, and that a counted signature binds the request's input, are model 1b's
 and the Go tests' (`plan/rev_gate_test.go`, `plan/gate_test.go`), not model 7's.
+
+## Separation of duties (`ExcludePrincipal`)
+
+A bank's maker-checker rule: whoever initiated an action may not approve it. An m-of-n policy with
+`ExcludePrincipal` never counts a decision by the run's **requester**.
+
+**Who the requester is.** bide already journals, in each run's `run:start`, the principal the run
+acts for: `RunStart.Principal.OnBehalfOf`, from the `Identity` the deployment starts the run with
+(`WithIdentity`; for a plan flow run, the identity its context carries, which this change makes
+flows journal too). It is restored on every later drive, and a drive under another principal is
+`ErrConfig`, so it cannot change once a call has paused. That is the requester. The alternatives:
+
+- `Identity.Actor`, the acting agent instance, is not journaled and is not a person.
+- The delegation chain (model 11): a delegated sub-run's principal is the delegating grant's
+  subject, and the root's principal lives in another run's journal, under another signed head.
+  Excluding every principal up the chain would make the evidence span several runs; it is deferred
+  (see Known limitations). A gate in a sub-run excludes the sub-run's own principal.
+- A new requester record signed by the requester: no requester holds a key in bide today, and the
+  journal already commits to `run:start` under the signed tree head.
+
+**The gate decides from the journal only.** The gate reads the requester from `run:start`
+(`RecordedRequester`) on every evaluation. The counting rule `TallyApprovals` reads it from the
+records it is given, so an offline verifier that passes the proven `run:start` beside the decisions
+counts exactly as the gate did. An approver id equal to the requester, ignoring ASCII case (the rule
+`Validate` holds approver ids to), fills no seat (`ReasonRequester`) and is listed in the tally's
+`Excluded`; the tally records `ExcludePrincipal` and `Requester`.
+
+**The signed decision is unchanged.** Approvers sign the call (`bide.approval.v3`), not the
+requester: whether a decision counts under separation of duties is a fact of the run, proven by
+`run:start` under the same head, not something the approver vouches for. Binding the requester into
+the signature would need a new format and would add nothing the gate's check relies on.
+
+**Fails closed, at the gate.** Whether `Need` stays reachable without the requester depends on who
+requests, so `Validate` cannot decide it (it refuses `ExcludePrincipal` only on `SingleApproval`,
+whose decision names no approver). The gate refuses with `ErrConfig`, before it reads a recorded
+tally, as the key check does: a run that records no requester, a requester that is not printable
+ASCII, and a policy whose `Need` exceeds the approvers left once the requester is excluded. It
+records nothing then: a denial tally would be final, and no approver denied. The counting rule
+itself, given no usable requester, seats no one.
+
+**Evidence.** `ApprovalEvidence` discloses the run's `run:start` for a gate that excluded the
+requester, and `VerifyApprovals` requires it, proven under the same head and run and before the
+request, when the expected policy or the tally excludes the requester. It reports a problem when the
+gate's exclusion differs from the expected policy's or the tally names another requester. The cost:
+`run:start` carries the run's input, which the evidence then discloses.
+
+**Model.** Model 1b (`spec/tla/claims`) carries the run's requester as a constant and the
+exclusion as a policy field; `SeparationOfDuties` holds in `ap-sod`, `ap-sod-fold`,
+`ap-sod-infeasible` and `ap-sod-no-requester`, and the regressions `ap-sod-no-exclusion` (the count
+ignores the exclusion) and `ap-sod-exact-match` (ids compared exactly, so another spelling of the
+requester counts) violate it.
 
 ## Original design
 

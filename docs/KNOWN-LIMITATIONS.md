@@ -248,6 +248,17 @@ person is your identity provider's job. It refuses two approvers whose verifiers
 but it cannot see that one person holds two different keys. Keep old public keys after a rotation so old evidence still
 verifies. See [Human approval](guides/hitl-approval.md#scope).
 
+**Separation of duties excludes one id: the run's requester.** With `ExcludePrincipal`, the gate
+never counts the approver whose id is the run's journaled principal (`OnBehalfOf`, ignoring ASCII
+case). It compares ids, not people: a requester who also holds another approver's key can still
+sign as that approver, and the requester and the approvers must be named in one id namespace. In a
+sub-run, the requester is the sub-run's principal: a plain sub-agent inherits its parent's, but
+`audit.AttenuatingSubAgent` rebinds it to the delegating grant's subject, so the root run's
+principal is not excluded from a gate inside a delegated sub-run. The evidence for such a gate
+discloses the run's `run:start`, the run's input included. A tally recorded before the policy
+excluded the requester stands as recorded. See
+[Separation of duties](guides/hitl-approval.md#separation-of-duties).
+
 **A decision's time is the approver's claim.** Each signed decision carries when the approver
 decided (`decided_at`, by their clock, inside the signature) and when it was journaled
 (`recorded_at`, by the clock of the process that submitted it, not signed). The signature stops

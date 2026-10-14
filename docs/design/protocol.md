@@ -17,6 +17,10 @@ disposition of every finding.
   decision; the shape `{"need": 1, "approvers": []}` is refused as a configuration error, as a Go
   `ApprovalPolicy` with no approvers is. Sections 5.3, 9.1 and Appendix A changed; no claim rule
   did (section 18).
+- **Separation of duties: `exclude_principal`.** Section 5.3's m-of-n form takes an optional
+  `"exclude_principal": true`, as the Go `ApprovalPolicy.ExcludePrincipal` and a flow config's
+  approval block do. The requester it excludes is the run's principal, which the run's start
+  already carries; no claim rule changed (the counting rule is model 1b's).
 
 ## 0. Scope
 
@@ -429,7 +433,10 @@ Part types: `text`, `reasoning`, `tool_use` (`id`, `name`, `args`, `signature`),
   - `{"single": true}` is the 1-of-1 gate (one decision, recorded with `Approve`), and an SDK maps
     it to `agent.SingleApproval()`. It carries no `need` and no `approvers`.
   - `{"need": k, "approvers": [...]}` is an m-of-n `ApprovalPolicy`, which MUST pass
-    `ApprovalPolicy.Validate`: at least one approver, and `1 <= need <= len(approvers)`.
+    `ApprovalPolicy.Validate`: at least one approver, and `1 <= need <= len(approvers)`. It may
+    carry `"exclude_principal": true` (`ApprovalPolicy.ExcludePrincipal`, separation of duties: the
+    gate never counts the run's requester, the run's journaled principal); `false` is the same as
+    absent, and `single` beside it is refused.
 
   The gate is never inferred from a shape, as in the Go API: `{"need": 1, "approvers": []}`, any
   other policy with no approvers, and `single` together with `need` or `approvers` are refused

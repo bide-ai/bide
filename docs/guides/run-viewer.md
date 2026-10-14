@@ -238,6 +238,7 @@ has an item. An aborted or cancelled run is listed too, since a halt outlives ei
 | `-pubkey <key>` | The log's public key: `<scheme>:<hex>` (`ed25519`, `ecdsa-p256`, `ml-dsa-65`, `ed25519+ml-dsa-65`), bare ed25519 hex, or a file holding either. |
 | `-approver-keys <file>` | The approvers' public keys, the file `bide audit verify-approvals` reads: a JSON object of approver id to key text, such as `{"ops":"ed25519:ab12..."}`. With it, each m-of-n gate's signatures are verified. Needs `-sth` or `-evidence`. |
 | `-need <k>`, `-approvers <a,b,c>` | The policy you expect (k of these approvers, in policy order). With them the signatures are verified against this policy, as `bide audit verify-approvals -need -approvers` does, and a gate whose recorded policy differs fails. Need `-approver-keys`. |
+| `-exclude-principal` | With `-need`: the policy you expect excludes the run's requester ([separation of duties](hitl-approval.md#separation-of-duties)), and a gate that did not fails. The page marks the requester's card as excluded and names the requester in the gate table either way. |
 | `-config <file>` | A flow config (`.json`, or `.yaml`/`.yml`) to show instead of runs; see [Check a flow config](#check-a-flow-config). Takes none of the run flags. |
 | `-check` | With `-config`: serve nothing, print each problem as `file:node: message`, and exit 1 if any is an error. `bide check <file>...` is the same check, for several files. |
 | `-strict` | With `-check`: exit 1 on a warning too (`bide check -strict`). |

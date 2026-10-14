@@ -260,7 +260,7 @@ gsm، ProofBundle). ويُذكَر ضمان المعمورية الدقيق في
   `examples/govern/compose`.
 - **[الإشعارات](../../docs/guides/notifications.md)**: إبلاغ شخص عند توقف تشغيل أو انتظاره الموافقة: webhook عبر HTTPS موقَّع (`notify.NewWebhook`)، وتحقق من جهة المستلم باستدعاء واحد (`notify.Verify`)، وTLS متبادل وتثبيت مفتاح اختياريان.
 - **[الموافقة](../../docs/guides/hitl-approval.md)**: توقيع بشري مُعمَّر قبل تشغيل أداة، من 1-من-1 إلى m-من-n يقرّر المُوافِق من الطرفية بالأمر `bide approve` (يعرض الاستدعاء من السجل ثم يوقّع)، ويُنشئ `bide keygen` المفتاح.
-  الموقَّعة (`ApprovalPolicy`، `SubmitDecision`)، مع برهان دون اتصال على أن k مُوافِقين مُسمَّين وافقوا قبل الفعل
+  الموقَّعة (`ApprovalPolicy`، `SubmitDecision`)، مع فصل اختياري للمهام (لا يُحتسب طالب التشغيل أبدًا، `ExcludePrincipal`)، مع برهان دون اتصال على أن k مُوافِقين مُسمَّين وافقوا قبل الفعل
   (`audit.ApprovalEvidence`، `audit.VerifyApprovals`). قابل للتشغيل: `examples/approval`.
 - **[استرداد عبر وضع الاختبار في Stripe](../../examples/stripe-refund/README.md)**: أوقف وكيل استرداد في منتصف الاسترداد؛ تتوقف إعادة التشغيل بدل أن يُسترد المبلغ مرتين، ثم يحسم المُسوِّي الخطوة من سجل Stripe نفسه. قابل للتشغيل: `examples/stripe-refund`.
 - **[النِّصاب](../../docs/guides/quorum.md)**: اتّفاق نماذج محكوم k-من-n (`govern.Quorum`)، مع تثبيت التعداد
