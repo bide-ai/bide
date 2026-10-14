@@ -197,10 +197,7 @@ func AnchorReceipt(r DecisionReceipt, journal []agent.Record, heads []SignedTree
 	var best *SignedTreeHead
 	for i := range heads {
 		h := heads[i]
-		if h.Kind != TreeJournal || h.RunID != r.RunID || logKey == nil || h.Verify(logKey) != nil || h.Size <= r.Index || h.Size > len(journal) {
-			continue
-		}
-		if _, err := journalPrefix(r.RunID, journal, h.TreeHead); err != nil {
+		if class, _, _ := classifyHead(h, r.RunID, logKey, journal); class != headMatches || h.Size <= r.Index {
 			continue
 		}
 		if best == nil || h.Size < best.Size {
@@ -220,6 +217,37 @@ func AnchorReceipt(r DecisionReceipt, journal []agent.Record, heads []SignedTree
 		return r, fmt.Errorf("audit: the journal's record at position %d is not this decision: %v: %w", r.Index, err, ErrNotVerified)
 	}
 	return out, nil
+}
+
+// headClass is how a signed tree head relates to a journal given for its run.
+type headClass int
+
+const (
+	// headIgnored: not a journal head of the run, or not signed by the log key; it says nothing.
+	headIgnored headClass = iota
+	// headMatches: signed by the log key, and its root is the root of the journal's first Size records.
+	headMatches
+	// headDivergent: signed by the log key, of this run, and not the root of the journal given: the
+	// journal is shorter than the head, or its first Size records are not what the head signed.
+	headDivergent
+)
+
+// classifyHead classifies h against journal, the records of run runID: ignored (invalid, foreign, or
+// not a journal head), matching (with the leaf hashes of its prefix), or divergent (with why). It is
+// the one place that decides which heads may speak of a journal, for every check that reads heads
+// against an export.
+func classifyHead(h SignedTreeHead, runID string, logKey Verifier, journal []agent.Record) (class headClass, leaves [][]byte, why string) {
+	if h.Kind != TreeJournal || h.RunID != runID || logKey == nil || h.Verify(logKey) != nil {
+		return headIgnored, nil, ""
+	}
+	if h.Size < 0 || h.Size > len(journal) {
+		return headDivergent, nil, fmt.Sprintf("a head of size %d is longer than the journal given (%d records)", h.Size, len(journal))
+	}
+	leaves, err := journalLeafHashes(journal[:h.Size])
+	if err != nil || !bytes.Equal(hashRoot(leaves), h.Root) {
+		return headDivergent, nil, fmt.Sprintf("a head of size %d does not match the journal's first %d records", h.Size, h.Size)
+	}
+	return headMatches, leaves, ""
 }
 
 // CheckReceipt decides whether the signed tree heads of the run commit to the receipt's decision.
@@ -264,20 +292,13 @@ func CheckReceipt(r DecisionReceipt, journal []agent.Record, heads []SignedTreeH
 	redacted := func(i int) bool { return i < len(journal) && journal[i].Redacted }
 	unmatched := ""
 	for _, h := range heads {
-		if h.Kind != TreeJournal || h.RunID != r.RunID || logKey == nil || h.Verify(logKey) != nil {
-			continue
-		}
-		if h.Size <= r.Index {
-			continue
+		class, leaves, why := classifyHead(h, r.RunID, logKey, journal)
+		if class == headIgnored || h.Size <= r.Index {
+			continue // not a head of this run that the log key signed, or one that stops short of the position
 		}
 		// The head reaches the decision's position: it must match this journal to say anything.
-		if h.Size > len(journal) {
-			unmatched = fmt.Sprintf("a head of size %d is longer than the journal given (%d records)", h.Size, len(journal))
-			continue
-		}
-		leaves, err := journalLeafHashes(journal[:h.Size])
-		if err != nil || !bytes.Equal(hashRoot(leaves), h.Root) {
-			unmatched = fmt.Sprintf("a head of size %d does not match the journal's first %d records", h.Size, h.Size)
+		if class == headDivergent {
+			unmatched = why
 			continue
 		}
 		at := time.Unix(0, h.TimestampNanos).UTC().Format(time.RFC3339)
