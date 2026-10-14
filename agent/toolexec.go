@@ -16,7 +16,7 @@ import (
 	"sync"
 )
 
-// protocol:claims begin QTally QCount QRecord
+// protocol:claims begin QTally QCount QRecord QDecide
 
 // decodeTally reads the terminal tally an m-of-n gate journaled (r, a StepValue record of run
 // runID), strictly, as audit.VerifyApprovals reads it (no duplicate or case-variant name, no

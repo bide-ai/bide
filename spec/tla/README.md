@@ -718,7 +718,11 @@ resolution all run around it.
   read) refuses such a policy for a run in whose chain a requester is unknown, or whose requesters
   leave fewer than `need` other approvers; the count never seats a requester, and seats no one when
   a requester is unknown. A requester's key holder (`h1` in the configs) signs like anyone else;
-  only the seat is withheld. The requesters are facts of the run, journaled when it starts, so they
+  only the seat is withheld. A recorded tally that passed without excluding the requester does not
+  decide a gate whose policy excludes it (a redeploy added the exclusion, or another process still
+  runs the old policy and recorded first): the gate counts again and records the outcome as a
+  re-tally (`stally`, `approval-tally:<id>:sod`), which is the gate's outcome from then on
+  (`Outcome`). A denial stays final. The requesters are facts of the run, journaled when it starts, so they
   are constants here; that a sub-run journals its parent's chain at its first drive is a pure
   function of the parent's journaled values, which the Go tests drive through a real delegation and
   its resume.
@@ -730,7 +734,8 @@ resolution all run around it.
 | `ApGate` | `Agent.runLoop`'s pre-pass: `decided`/`approvals` and `values` from the Load, then `t.Safety()` |
 | `QTally` | `Agent.quorumTally`: `ApprovalPolicy.Validate` and the key check, `History`, the requester check (`checkRequester`), a recorded `ApprovalTallyStep` |
 | `QCount` | `TallyApprovals` with the resolver as it is now: shared and keyless seats excluded (`ReasonSharedKey`, `ReasonNoKeyID`), and the requester under `ExcludePrincipal` (`RecordedPrincipal`, `ReasonRequester`, `ReasonNoRequester`) |
-| `QRecord` | `quorumTally`'s `step` recording the tally (retry-safe, first writer wins) |
+| `QRecord` | `quorumTally`'s `step` recording the tally (retry-safe, first writer wins), or, over a tally the policy supersedes, the separation-of-duties re-tally (`ApprovalSoDRetallyStep`) |
+| `QDecide` | `tallyGateOnce` after the write: the gate goes by the record the journal holds, and counts again when it is one the policy supersedes (another drive's weaker tally landed first) |
 | `Deny` | the pre-pass's `Journal.put` of the denied result |
 | `Approve1` | `Approve` |
 | `Submit` | `SubmitDecision` (without `WithDecisionCheck`: the gate never depends on it) |
@@ -741,12 +746,12 @@ resolution all run around it.
 
 | Property | Kind | Statement |
 |---|---|---|
-| `NoUnapprovedFire` | invariant | an effect fires under a gate only with a recorded sufficient approval (an `Approve(true)` or a passing recorded tally) |
+| `NoUnapprovedFire` | invariant | an effect fires under a gate only with a recorded sufficient approval for the firing drive's gate (an `Approve(true)`, a passing recorded tally or re-tally, and under an excluding policy an outcome that held separation of duties) |
 | `DenialFinal` | invariant | a drive whose Load read a recorded denial never fires the effect, whatever the gate is now |
 | `TallySound` | invariant | a passing recorded tally rests on `need` valid approvals, signed over this exact call, by distinct people (the holders of the signing keys) |
 | `DenialSound` | invariant | a failing recorded tally rests on valid denials and seats the count excluded: an invalid record cannot force a denial |
 | `NoStuckPause` | invariant | the gate never pauses for approvals that are already in (no lockout) |
-| `SeparationOfDuties` | invariant | a recorded tally under a policy that excludes the requester was counted for a run that, with every run above it, records one, seats none of the requesters' approvals (the run's own or an ancestor's, under any spelling), and, when it passed, rests on `need` approvals from other approvers |
+| `SeparationOfDuties` | invariant | a recorded tally or re-tally under a policy that excludes the requester was counted for a run that, with every run above it, records one, seats none of the requesters' approvals (the run's own or an ancestor's, under any spelling), and, when it passed, rests on `need` approvals from other approvers; and no effect fires under a gate that excludes the requester, as the firing drive's deployment has it, without an outcome that held separation of duties |
 
 `AtMostOnce`, `NoLiveOverride` and the rest of model 1's properties are checked in the same runs.
 A denial recorded after a drive's Load, on a process whose deployment has no gate, does not stop
@@ -770,6 +775,7 @@ every drive that read the denial.
 | `ap-sod-fold` | ci | the requester `a3` is `a1` under the case rule (`FoldSame`); 1 of `a1`, `a2` excluding the requester; `h1` and `h2` sign | 191 | 1 s |
 | `ap-sod-infeasible` | ci | 3 of 3 excluding the requester `a1`, one of them: the gate refuses the policy | 942 | 1 s |
 | `ap-sod-no-requester` | ci | a policy that excludes the requester, on a run that records none: the gate refuses it | 102 | <1 s |
+| `ap-sod-redeploy` | ci | separation of duties added by a redeploy: 2 of 3 without the exclusion, and one process's redeploy makes it exclude the requester `a1`; `h1` and `h2` approve; two drivers in two processes. A tally the old deployment records, `a1` counted, never lets a drive under the new one fire | 7,693 | 2 s |
 | `ap-sod-chain` | ci | a delegated sub-run: its own requester is `a2`, the run above it was requested by `a1`; 1 of 3 excluding the requesters; `h1`, `h2` and `h3` sign, and only `h3` may count | 1,795 | 7 s |
 | `ap-sod-anonymous-ancestor` | ci | a delegated sub-run under a root run that records no principal: the gate refuses the policy | 102 | 3 s |
 | `deep-ap-m-same` | nightly | m-of-n, two drivers in one process, three decisions, a redeploy; 1 error reply | 5,252,508 | 6 min |
@@ -788,7 +794,9 @@ approval is seated; `SeparationOfDuties`, 131 states), `regress/ap-sod-exact-mat
 compared with approver ids exactly, so another spelling of the requester's id counts;
 `SeparationOfDuties`, 45 states), `regress/ap-sod-own-only` (only the sub-run's own requester
 excluded, so the root run's requester approves the delegated call; `SeparationOfDuties`, 23
-states). Accepted: `limits/ap-resolver-change-denies`
+states), `regress/ap-sod-weak-tally-stands` (a recorded tally stands whatever the policy is now,
+so the old deployment's tally, counting the requester, lets a drive under the excluding policy
+fire; `SeparationOfDuties`, 5,788 states). Accepted: `limits/ap-resolver-change-denies`
 (a change that makes two approvers share a key excludes both seats, and the gate can deny with
 no denial recorded; `NoDenyWithoutDenials`, 8 states).
 

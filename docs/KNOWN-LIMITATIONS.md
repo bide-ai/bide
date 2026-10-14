@@ -254,7 +254,11 @@ above it, ignoring ASCII case. A requester who also holds another approver's key
 that approver, and the requesters and the approvers must be named in one id namespace. A run started
 before this version cannot pass a gate that excludes the requester: it has no `run:principal` from
 before its calls' requests, and nothing backfills one (a principal recorded later would name whoever
-resumed the run, not who requested it), so cancel such a run and start it again. See
+resumed the run, not who requested it), so cancel such a run and start it again. While a rollout
+leaves some processes on a policy without the exclusion and some with it, a call a process on the
+old policy runs may also get a re-tally from a process on the new one (`approval-tally:<id>:sod`),
+and an audit then reports that re-tally as the gate's outcome; drain the old processes before
+relying on the exclusion. See
 [Separation of duties](guides/hitl-approval.md#separation-of-duties).
 
 **A decision's time is the approver's claim.** Each signed decision carries when the approver
