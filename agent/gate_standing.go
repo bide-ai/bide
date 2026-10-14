@@ -94,6 +94,10 @@ func EvaluateGateAfter(recs []Record, s ApprovalSubject, pol *ApprovalPolicy, ve
 				}
 			}
 			return st
+		case since != "" && r.Name == since:
+			// A flow gate honours a single decision only if it follows the request: one recorded
+			// before it (node keys are predictable) was not made on the node's input, as flowGate reads it.
+			singleDecided, singleApproved = false, false
 		case r.Kind == StepApproval && r.ToolUseID == s.ToolUseID && r.Approver() == "":
 			singleDecided, singleApproved = true, r.Approved // the last one, as the loop reads it
 		}

@@ -860,7 +860,7 @@ func (h *Handler) decide(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	step := agent.DecisionStep(d)
-	idx := findDecision(g.recs, d, step)
+	idx := h.findDecision(g, d, step)
 	wrote := false
 	if idx < 0 {
 		st, err := h.state(ctx, g)
@@ -895,7 +895,7 @@ func (h *Handler) decide(w http.ResponseWriter, r *http.Request) {
 			h.fail(w, err)
 			return
 		}
-		if idx = findDecision(g.recs, d, step); idx < 0 {
+		if idx = h.findDecision(g, d, step); idx < 0 {
 			h.fail(w, fmt.Errorf("decision %s recorded but not found in run %s", step, d.RunID))
 			return
 		}
@@ -932,14 +932,23 @@ func (h *Handler) decide(w http.ResponseWriter, r *http.Request) {
 // findDecision is the journal position of d's record: the record under its own name, else the record
 // of the same decision under another (the agent's SubmitDecision does not write a decision it finds
 // already journaled, by the same approver, verdict, scheme and decision time, whatever the signature
-// bytes: a randomized scheme signs one decision into different bytes). -1 if there is none.
-func findDecision(recs []agent.Record, d agent.Decision, step string) int {
-	if i := slices.IndexFunc(recs, func(r agent.Record) bool { return r.Name == step }); i >= 0 {
+// bytes: a randomized scheme signs one decision into different bytes). Only a record whose signature
+// verifies under the approver's key for this call stands in for d: a record that does not verify is no
+// decision (the gate ignores it), so it must not hide the genuine one from SubmitDecision. -1 if there
+// is none.
+func (h *Handler) findDecision(g *gateRecords, d agent.Decision, step string) int {
+	if i := slices.IndexFunc(g.recs, func(r agent.Record) bool { return r.Name == step }); i >= 0 {
 		return i
 	}
+	v, ok := h.verifiers(d.ApproverID)
+	if !ok || v == nil {
+		return -1
+	}
 	at := agent.FormatTimestamp(d.DecidedAt)
-	return slices.IndexFunc(recs, func(r agent.Record) bool {
-		return agent.IsApprovalDecision(r, d.ToolUseID) && r.Approver() == d.ApproverID && r.Approved == d.Approved && r.ApproverAlg() == d.Alg && r.DecidedAt() == at
+	msg := agent.ApprovalDecisionBytes(g.subject, d.ApproverID, d.Approved, d.DecidedAt)
+	return slices.IndexFunc(g.recs, func(r agent.Record) bool {
+		return agent.IsApprovalDecision(r, d.ToolUseID) && r.Approver() == d.ApproverID && r.Approved == d.Approved && r.ApproverAlg() == d.Alg &&
+			r.DecidedAt() == at && v.Alg() == d.Alg && v.Verify(msg, r.Signature())
 	})
 }
 
