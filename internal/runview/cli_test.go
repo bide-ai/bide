@@ -190,16 +190,16 @@ func TestOptionsErrors(t *testing.T) {
 		f    flags
 		want string
 	}{
-		{"missing journal", flags{journals: multi{missing}}, "no such file"},
+		{"missing journal", flags{journals: multi{missing}}, notFound},
 		{"journal of another shape", flags{journals: multi{junk}}, "parse " + junk},
-		{"missing sth", with(base, func(f *flags) { f.sth = missing }), "no such file"},
-		{"missing evidence", with(base, func(f *flags) { f.evidence = missing }), "no such file"},
-		{"missing approver keys", with(base, func(f *flags) { f.sth, f.approverKeys = in.sth, missing }), "no such file"},
+		{"missing sth", with(base, func(f *flags) { f.sth = missing }), notFound},
+		{"missing evidence", with(base, func(f *flags) { f.evidence = missing }), notFound},
+		{"missing approver keys", with(base, func(f *flags) { f.sth, f.approverKeys = in.sth, missing }), notFound},
 		{"bad approver key", with(base, func(f *flags) { f.sth, f.approverKeys = in.sth, badKeys }), `approver "ops" key`},
 		{"pubkey neither key nor file", flags{journals: multi{in.journal}, pubkey: missing}, "is neither a key nor a readable file"},
 	}
 	for _, c := range cases {
-		if _, _, err := options(c.f, Stores{}); err == nil || !strings.Contains(err.Error(), c.want) {
+		if _, _, err := options(c.f, Stores{}); err == nil || !containsWant(err.Error(), c.want) {
 			t.Errorf("%s: err = %v, want it to contain %q", c.name, err, c.want)
 		}
 	}
@@ -237,7 +237,7 @@ func TestReadStrictAndConfig(t *testing.T) {
 	if _, err := readConfig(dir, nil); err == nil {
 		t.Error("readConfig of a directory succeeded")
 	}
-	if _, err := readConfig(filepath.Join(dir, "none.json"), nil); err == nil || !strings.Contains(err.Error(), "no such file") {
+	if _, err := readConfig(filepath.Join(dir, "none.json"), nil); err == nil || !isNotFound(err.Error()) {
 		t.Errorf("missing config: %v", err)
 	}
 	yml := filepath.Join(dir, "f.yml")
@@ -308,7 +308,7 @@ func TestMainConfigCheck(t *testing.T) {
 func TestMainRunFlagErrors(t *testing.T) {
 	var out, errb bytes.Buffer
 	missing := filepath.Join(t.TempDir(), "missing.json")
-	if code := Main([]string{"-journal", missing}, &out, &errb, Stores{}); code != 1 || !strings.Contains(errb.String(), "bide view:") || !strings.Contains(errb.String(), "no such file") {
+	if code := Main([]string{"-journal", missing}, &out, &errb, Stores{}); code != 1 || !strings.Contains(errb.String(), "bide view:") || !isNotFound(errb.String()) {
 		t.Errorf("missing journal: exit %d, stderr %q", code, errb.String())
 	}
 	errb.Reset()
@@ -415,4 +415,19 @@ func TestMainServesConfigAndDiff(t *testing.T) {
 			t.Errorf("%s: exit %d, stderr %q", name, code, errs)
 		}
 	}
+}
+
+// notFound stands for the operating system's "file not found" text in an expected error: Unix says
+// "no such file", Windows "cannot find the file".
+const notFound = "\x00not found"
+
+func isNotFound(s string) bool {
+	return strings.Contains(s, "no such file") || strings.Contains(s, "cannot find the file")
+}
+
+func containsWant(s, want string) bool {
+	if want == notFound {
+		return isNotFound(s)
+	}
+	return strings.Contains(s, want)
 }
