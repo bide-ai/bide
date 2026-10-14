@@ -301,7 +301,7 @@ non-extractable key whose public key is the one `GetPublicKey` returned. It read
 3. **The attested key.** One attested EC object must have the key version's public point, must not be extractable
    (`0x0162` false), must have been generated on the HSM and not imported (`0x0163` true), and its key ID (`0x0102`) must
    carry, as its second SHA-256 digest, the digest of the key version's resource name. Properties are never combined
-   across objects. Formats `CAVIUM_V1_COMPRESSED` and `CAVIUM_V2_COMPRESSED` are read (the same object layout; version 2 has a five-word response header); any other format is refused. The attested object is the key's private-key object, which carries the public point.
+   across objects, and the object must be a private key (class `0x0000` = 3). Formats `CAVIUM_V1_COMPRESSED` and `CAVIUM_V2_COMPRESSED` are read (the same object layout; version 2 has a five-word response header); any other format is refused. The attested object is the key's private-key object, which carries the public point.
 
 The trust anchors are Google's owner root ("Hawksbill Root v1 prod", SHA-256
 `46b5fd35...df0de095`, from Google's sample code and `gstatic.com/cloudhsm/roots`) and Marvell's manufacturer root
@@ -311,7 +311,7 @@ default `Open` works with no setup and a change to either is deliberate. A deplo
 its own checked route sets `Config.AttestationRoots` (both certificates; it replaces the pair) and does not depend on
 the copies in bide. **Validity periods are not enforced**, as in Google's verifier: the statement records a past fact
 (the key was created in that HSM), the HSM certificates are long lived, and Marvell's root already expired on
-2025-11-16 (Google's expires 2030-01-01) without the statement becoming false; there is no revocation. What
+2025-11-16 (Google's expires 2030-01-01) without the statement becoming false; there is no revocation. Without validity dates or revocation, a leaked partition key from a decommissioned HSM would still verify, so a verifier that needs time bounds or revocation must supply its own roots (`Config.AttestationRoots`) and check dates itself. What
 attestation does not prove: that the HSM firmware or Google's operation of it is sound, or that the application's
 `useToSign` access is limited (that is IAM). `VerifyAttestation` needs an `HSM` key version, so it never applies to
 Ed25519 or software keys, and `Open` with it on fails for them. `examples/hsm-signing` turns it on with `BIDE_GCPKMS_VERIFY_ATTESTATION=1`.

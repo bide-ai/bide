@@ -106,13 +106,13 @@ func TestRealAttestationChainAndSignature(t *testing.T) {
 	// The chain and signature are accepted; the key policy then rejects this object, which is a
 	// public key object (extractable) of a key named app_key.
 	err = verifyAttestation(att, "projects/p/locations/l/keyRings/r/cryptoKeys/k/cryptoKeyVersions/1", point, roots)
-	if !errors.Is(err, ErrAttestation) || !strings.Contains(err.Error(), "extractable") {
+	if !errors.Is(err, ErrAttestation) || !strings.Contains(err.Error(), "private key") {
 		t.Fatalf("err = %v", err)
 	}
-	// With the wrong public key the policy fails on the key.
+	// With the wrong public key the policy still fails (this fixture is a public key object).
 	other := bytes.Clone(point)
 	other[10] ^= 1
-	if err := verifyAttestation(att, "v", other, roots); err == nil || !strings.Contains(err.Error(), "public key") {
+	if err := verifyAttestation(att, "v", other, roots); err == nil || !strings.Contains(err.Error(), "private key") {
 		t.Fatalf("other key: %v", err)
 	}
 	// Roots swapped, the chain does not build.
@@ -382,6 +382,10 @@ func TestAttestationPolicyRefusals(t *testing.T) {
 		a    *attrs
 		want string
 	}{
+		"public key class":      {good().set(attrClass, []byte{2}), "private key"},
+		"class missing":         {good().del(attrClass), "private key"},
+		"class two bytes":       {good().set(attrClass, []byte{3, 3}), "private key"},
+		"secret key class":      {good().set(attrClass, []byte{4}), "private key"},
 		"extractable":           {good().set(attrExtractable, []byte{1}), "extractable"},
 		"extractable missing":   {good().del(attrExtractable), "extractable"},
 		"extractable malformed": {good().set(attrExtractable, []byte{2}), "extractable"},

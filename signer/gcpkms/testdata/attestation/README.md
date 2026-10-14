@@ -21,4 +21,4 @@ Test data for attestation verification.
 - `peculiar-v1.att.gz.b64` and `peculiar-v1.chain.pem`: a version 1 attestation (base64 of the gzip
   content) and its certificate chain, from PeculiarVentures/attestation packages/marvell/src/validator.spec.ts
   (MIT License, Copyright PeculiarVentures). The attested object is a public key object with label
-  `app_key`, so it passes the signature and chain checks and fails the key policy checks.
+  `app_key`, so it passes the signature and chain checks and fails the key policy (it is a public-key object, and extractable).

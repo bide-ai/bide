@@ -34,12 +34,14 @@ const (
 
 // PKCS#11 / Marvell attribute tags and values the policy reads.
 const (
+	attrClass       = 0x0000
 	attrKeyType     = 0x0100
 	attrID          = 0x0102
 	attrECPoint     = 0x0120 // the EC public point for an EC key (Marvell's OBJ_ATTR_MODULUS)
 	attrExtractable = 0x0162
 	attrLocal       = 0x0163
 	ckkEC           = 0x03
+	ckoPrivateKey   = 0x03
 )
 
 func attErr(format string, args ...any) error {
@@ -348,6 +350,11 @@ func checkObjects(objs []map[uint32][]byte, version string, pub []byte) error {
 }
 
 func checkObject(o map[uint32][]byte, version string, pub []byte) error {
+	// The private-key object is the one whose non-extractability matters; a public-key object is
+	// always extractable.
+	if cl := o[attrClass]; len(cl) != 1 || cl[0] != ckoPrivateKey {
+		return attErr("the attested object is not a private key")
+	}
 	if kt := o[attrKeyType]; len(kt) != 1 || kt[0] != ckkEC {
 		return attErr("the attested key is not an EC key")
 	}
