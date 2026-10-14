@@ -1,6 +1,6 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { safeText, prettyArgs, clip, parsePending, checkPending, preflight, changedSince, receiptProblem, toHex, sha256, MAX_ARG_LINES } from '../core.js';
+import { safeText, prettyArgs, parsePending, checkPending, preflight, changedSince, receiptProblem, toHex, sha256 } from '../core.js';
 import { canonicalArgs } from '../canon.js';
 
 const te = new TextEncoder();
@@ -30,16 +30,6 @@ test('arguments are shown sorted, numbers as written, unsafe characters escaped'
   assert.match(prettyArgs(new Uint8Array([0x61, 0xff])), /\\xff/);
 });
 
-test('long arguments are clipped and the clip says how much is hidden', () => {
-  const many = Array.from({ length: MAX_ARG_LINES + 5 }, (_, i) => `line ${i}`).join('\n');
-  const c = clip(many);
-  assert.equal(c.text.split('\n').length, MAX_ARG_LINES);
-  assert.ok(c.hidden > 0);
-  const wide = clip('x'.repeat(500));
-  assert.ok(wide.text.endsWith(' [...]') && wide.hidden === 300);
-  assert.equal(clip('short').hidden, 0);
-});
-
 test('a consistent pending call is accepted and its arguments are the raw bytes sent', async () => {
   const body = await pendingJSON({}, '{"b":1.0,"a":2}');
   const parsed = parsePending(body);
@@ -63,6 +53,8 @@ test('an endpoint that is inconsistent or off-target is refused', async () => {
 });
 
 test('preflight refuses what the endpoint says cannot be decided', async () => {
+  assert.match(preflight({ state: 'error', reason: 'approval policy Need = 5', gate: { approvers: [] } }, 'a'), /cannot be evaluated.*Need = 5/);
+  assert.match(preflight({ state: 'single', gate: { approvers: [] } }, 'a'), /single-approver/);
   const f = (over) => ({ state: 'waiting', gate: { approvers: ['alice', 'bob'], decisions: [], passed: false, failed: false }, ...over });
   assert.equal(preflight(f({}), 'alice'), null);
   assert.match(preflight(f({ state: 'decided' }), 'alice'), /not waiting/);
@@ -91,4 +83,9 @@ test('a receipt that is not the decision signed, or carries a proof, is refused'
   assert.match(receiptProblem({ ...rc, signature: 'x' }, d), /signature/);
   assert.match(receiptProblem({ ...rc, anchor: {} }, d), /anchoring proof/);
   assert.match(receiptProblem(null, d), /no receipt/);
+});
+
+test('every member the endpoint can send is accepted, a re-asked gate\'s reason included', () => {
+  const b = te.encode('{"run":"r","call":"c","tool":"t","args":{},"args_sha256":"00","decision_format":"bide.approval.v3","state":"waiting","asked_at":"2026-10-14T09:30:15.123Z","reason":"approval re-required","gate":{"need":1,"approvers":["a"],"approved":0,"denied":0,"passed":false,"failed":false}}');
+  assert.doesNotThrow(() => parsePending(b));
 });

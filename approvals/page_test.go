@@ -1,16 +1,22 @@
 package approvals_test
 
 import (
+	"bufio"
+	"context"
 	"crypto/sha512"
 	"encoding/base64"
 	"encoding/hex"
 	"encoding/json"
+	"io"
+	"net"
 	"net/http"
 	"net/http/httptest"
 	"os"
 	"os/exec"
 	"path/filepath"
+	"reflect"
 	"regexp"
+	"slices"
 	"strings"
 	"sync"
 	"testing"
@@ -201,6 +207,16 @@ func TestPage_ScriptTests(t *testing.T) {
 	cmd := exec.Command(node, "--test", filepath.Join("page", "test")+string(filepath.Separator))
 	files, _ := filepath.Glob(filepath.Join("page", "test", "*.test.mjs"))
 	cmd = exec.Command(node, append([]string{"--test"}, files...)...)
+	// The DOM tests run the script the page ships.
+	script, err := approvals.BuildScriptForTest(true)
+	if err != nil {
+		t.Fatal(err)
+	}
+	pageJS := filepath.Join(t.TempDir(), "page.js")
+	if err := os.WriteFile(pageJS, []byte(script), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	cmd.Env = append(os.Environ(), "PAGE_JS="+pageJS)
 	out, err := cmd.CombinedOutput()
 	if err != nil {
 		t.Fatalf("node --test: %v\n%s", err, out)
@@ -367,4 +383,189 @@ func TestPage_EveryPathAnswersAStalledBody(t *testing.T) {
 		}
 	}
 	wg.Wait()
+}
+
+// The members the page accepts of GET /pending are the json tags of approvals.Pending: a field added
+// to the endpoint's answer and not to the page (PENDING_KEYS) would make the page refuse every call.
+func TestPage_PendingKeysAreTheStructsTags(t *testing.T) {
+	src, err := os.ReadFile(filepath.Join("page", "core.js"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	m := regexp.MustCompile(`const PENDING_KEYS = new Set\(\[([^\]]*)\]\)`).FindStringSubmatch(string(src))
+	if m == nil {
+		t.Fatal("core.js has no PENDING_KEYS")
+	}
+	var js []string
+	for _, q := range regexp.MustCompile(`'([^']+)'`).FindAllStringSubmatch(m[1], -1) {
+		js = append(js, q[1])
+	}
+	var tags []string
+	rt := reflect.TypeFor[approvals.Pending]()
+	for f := range rt.Fields() {
+		if name, _, _ := strings.Cut(f.Tag.Get("json"), ","); name != "" && name != "-" {
+			tags = append(tags, name)
+		}
+	}
+	slices.Sort(js)
+	slices.Sort(tags)
+	if !slices.Equal(js, tags) {
+		t.Fatalf("core.js PENDING_KEYS %v, approvals.Pending tags %v", js, tags)
+	}
+}
+
+// What the handler really sends, in every state it can send it in, is accepted by the page's parser:
+// the answers are written to files and parsed under Node.
+func TestPage_ParsesEveryPendingAnswerTheHandlerGives(t *testing.T) {
+	node := nodeBin(t)
+	dir := t.TempDir()
+	save := func(name string, r *rig, run string) {
+		resp, err := http.Get(r.srv.URL + "/pending?run=" + run + "&call=c1")
+		if err != nil {
+			t.Fatal(err)
+		}
+		defer resp.Body.Close()
+		b, _ := io.ReadAll(resp.Body)
+		if resp.StatusCode != 200 {
+			t.Fatalf("%s: %d %s", name, resp.StatusCode, b)
+		}
+		if err := os.WriteFile(filepath.Join(dir, name+".json"), b, 0o644); err != nil {
+			t.Fatal(err)
+		}
+	}
+	off := []approvals.Option{approvals.WithRateLimit(0, 0), approvals.WithGlobalRateLimit(0, 0)}
+	// waiting, with decisions in it
+	w := newRig(t, off...)
+	w.post(w.decision("alice", true))
+	save("waiting", w, runID)
+	// decided
+	d := newRig(t, off...)
+	d.post(d.decision("alice", true))
+	d.post(d.decision("bob", true))
+	if err := d.run(); err != nil {
+		t.Fatal(err)
+	}
+	save("decided", d, runID)
+	// re-asked, with a reason
+	a := newRigAs(t, "c1", &agent.ApprovalPolicy{Need: 2, Approvers: []string{"alice", "bob", "carol"}}, agent.Identity{Actor: "x", OnBehalfOf: "alice"}, off...)
+	a.policy.ExcludePrincipal = true
+	raw, _ := json.Marshal(agent.ApprovalTally{Need: 2, Approvers: a.policy.Approvers, Approved: 2, ApprovedBy: []string{"alice", "bob"}, DecisionFormat: agent.DecisionFormat})
+	data, _ := agent.JournalEntry(agent.ApprovalTallyStep("c1"), agent.Record{Kind: agent.StepValue, Result: raw})
+	if _, _, err := a.stall.Store.Insert(context.Background(), runID, agent.ApprovalTallyStep("c1"), data); err != nil {
+		t.Fatal(err)
+	}
+	save("reasked", a, runID)
+	// misconfigured (error, with a reason)
+	e := newRig(t, off...)
+	e.policy = agent.ApprovalPolicy{Need: 5, Approvers: []string{"alice", "bob"}}
+	save("error", e, runID)
+	// single
+	s := newRig(t, off...)
+	s.single = true
+	save("single", s, runID)
+	script := `
+const fs = require('fs');
+import('` + filepath.ToSlash(mustAbs(t, filepath.Join("page", "core.js"))) + `').then(({ parsePending }) => {
+  let bad = 0;
+  for (const f of process.argv.slice(1)) {
+    try { parsePending(new Uint8Array(fs.readFileSync(f))); } catch (e) { bad++; console.log(f + ': ' + e.message); }
+  }
+  process.exit(bad ? 1 : 0);
+});`
+	files, _ := filepath.Glob(filepath.Join(dir, "*.json"))
+	if len(files) != 5 {
+		t.Fatalf("%d files", len(files))
+	}
+	if out, err := exec.Command(node, append([]string{"-e", script}, files...)...).CombinedOutput(); err != nil {
+		t.Fatalf("the page's parser refuses an answer the handler gives: %v\n%s", err, out)
+	}
+	// And the reasoned ones carry a reason.
+	for _, name := range []string{"reasked", "error"} {
+		b, _ := os.ReadFile(filepath.Join(dir, name+".json"))
+		if !strings.Contains(string(b), `"reason"`) {
+			t.Errorf("%s has no reason: %s", name, b)
+		}
+	}
+}
+
+func mustAbs(t *testing.T, p string) string {
+	t.Helper()
+	a, err := filepath.Abs(p)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return a
+}
+
+// The CORS preflight is limited like everything else, answered without waiting for a body it
+// does not read, and still before authentication.
+func TestCORS_PreflightIsLimitedAndAnsweredAtOnce(t *testing.T) {
+	const origin = "https://approve.example.com"
+	r := newRig(t, approvals.WithAuth(func(*http.Request, approvals.Access) error { return approvals.ErrUnauthenticated }),
+		approvals.WithCORS(origin), approvals.WithRateLimit(0.001, 3), approvals.WithGlobalRateLimit(0, 0))
+	preflight := func() int {
+		req, _ := http.NewRequest("OPTIONS", r.srv.URL+"/decisions", nil)
+		req.Header.Set("Origin", origin)
+		req.Header.Set("Access-Control-Request-Method", "POST")
+		resp, err := http.DefaultClient.Do(req)
+		if err != nil {
+			t.Fatal(err)
+		}
+		resp.Body.Close()
+		return resp.StatusCode
+	}
+	for i := range 3 {
+		if got := preflight(); got != 204 {
+			t.Fatalf("preflight %d: %d", i+1, got)
+		}
+	}
+	if got := preflight(); got != http.StatusTooManyRequests {
+		t.Fatalf("a fourth preflight from one client at a burst of 3: %d, want 429", got)
+	}
+	// A preflight whose body stalls is answered at once.
+	r2 := newRig(t, approvals.WithAuth(allowAll), approvals.WithCORS(origin), approvals.WithRateLimit(0, 0), approvals.WithGlobalRateLimit(0, 0))
+	c, err := net.Dial("tcp", r2.srv.Listener.Addr().String())
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer c.Close()
+	c.Write([]byte("OPTIONS /decisions HTTP/1.1\r\nHost: x\r\nOrigin: " + origin + "\r\nAccess-Control-Request-Method: POST\r\nContent-Length: 4000\r\n\r\n{"))
+	c.SetReadDeadline(time.Now().Add(700 * time.Millisecond))
+	if line, _ := bufio.NewReader(c).ReadString('\n'); !strings.Contains(line, "204") {
+		t.Fatalf("a preflight with a stalled body: %q, want an immediate 204", line)
+	}
+}
+
+// Credentials cross-origin are allowed only when asked for, to the one origin, and need WithCORS.
+func TestCORS_CredentialsOnlyWhenAskedFor(t *testing.T) {
+	const origin = "https://approve.example.com"
+	for _, creds := range []bool{false, true} {
+		opts := []approvals.Option{approvals.WithAuth(allowAll), approvals.WithCORS(origin), approvals.WithRateLimit(0, 0), approvals.WithGlobalRateLimit(0, 0)}
+		if creds {
+			opts = append(opts, approvals.WithCORSCredentials())
+		}
+		r := newRig(t, opts...)
+		req, _ := http.NewRequest("OPTIONS", r.srv.URL+"/decisions", nil)
+		req.Header.Set("Origin", origin)
+		req.Header.Set("Access-Control-Request-Method", "POST")
+		resp, err := http.DefaultClient.Do(req)
+		if err != nil {
+			t.Fatal(err)
+		}
+		resp.Body.Close()
+		if got := resp.Header.Get("Access-Control-Allow-Credentials"); (got == "true") != creds {
+			t.Errorf("credentials %v: Access-Control-Allow-Credentials %q", creds, got)
+		}
+		req2, _ := http.NewRequest("GET", r.srv.URL+"/pending?run="+runID+"&call=c1", nil)
+		req2.Header.Set("Origin", "https://evil.example.com")
+		resp2, _ := http.DefaultClient.Do(req2)
+		resp2.Body.Close()
+		if resp2.Header.Get("Access-Control-Allow-Credentials") != "" || resp2.Header.Get("Access-Control-Allow-Origin") != "" {
+			t.Error("a foreign origin was allowed, with credentials")
+		}
+	}
+	r := newRig(t)
+	if _, err := approvals.New(r.app, r.verifiers, r.livePolicy(), approvals.WithCORSCredentials()); err == nil {
+		t.Error("WithCORSCredentials without WithCORS built")
+	}
 }

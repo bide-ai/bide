@@ -108,11 +108,18 @@ test('endpoint refusals are shown with their code', async () => {
   await assert.rejects(loadCall(down.fetchFn, base, 'r1', 'c1'), /offline/);
 });
 
-test('requests carry no credentials and follow no redirects', async () => {
-  const seen = [];
-  const ep = await fakeEndpoint();
-  await loadCall(async (u, o) => { seen.push(o); return ep.fetchFn(u, o); }, base, 'r1', 'c1');
-  assert.equal(seen[0].credentials, 'omit');
-  assert.equal(seen[0].redirect, 'error');
-  assert.equal(seen[0].cache, 'no-store');
+test('requests carry the page origin\'s credentials by default, as configured otherwise, and follow no redirects', async () => {
+  const ep = await fakeEndpoint({ post: (b) => new Response(JSON.stringify({ counted: true, receipt: {} }), { status: 200 }) });
+  for (const [mode, want] of [[undefined, 'same-origin'], ['include', 'include'], ['omit', 'omit']]) {
+    const seen = [];
+    const spy = async (u, o) => { seen.push(o); return ep.fetchFn(u, o); };
+    const shown = await (mode === undefined ? loadCall(spy, base, 'r1', 'c1') : loadCall(spy, base, 'r1', 'c1', mode));
+    await decide({ fetchFn: spy, base, shown, approver: 'alice', approved: true, now: NOW, credentials: mode, ...(await keys()) }).catch(() => {});
+    assert.ok(seen.length >= 3, 'the flow made its three requests');
+    for (const o of seen) {
+      assert.equal(o.credentials, want, `a ${o.method} under mode ${mode}`);
+      assert.equal(o.redirect, 'error');
+      assert.equal(o.cache, 'no-store');
+    }
+  }
 });

@@ -88,29 +88,6 @@ function cmpCodePoints(x, y) {
   return a.length - b.length;
 }
 
-export const MAX_ARG_LINES = 40;
-export const MAX_ARG_LINE_CHARS = 200;
-
-// clip limits text to MAX_ARG_LINES lines of at most MAX_ARG_LINE_CHARS characters and returns it
-// with the number of characters it left out (0 when it shows all of it).
-export function clip(text) {
-  const lines = text.split('\n');
-  const out = [];
-  let hidden = 0;
-  lines.forEach((l, i) => {
-    if (i >= MAX_ARG_LINES) {
-      hidden += l.length + 1;
-      return;
-    }
-    const chars = Array.from(l);
-    if (chars.length > MAX_ARG_LINE_CHARS) {
-      hidden += chars.slice(MAX_ARG_LINE_CHARS).join('').length;
-      out.push(chars.slice(0, MAX_ARG_LINE_CHARS).join('') + ' [...]');
-    } else out.push(l);
-  });
-  return { text: out.join('\n'), hidden };
-}
-
 export async function sha256(bytes) {
   return new Uint8Array(await crypto.subtle.digest('SHA-256', bytes));
 }
@@ -120,7 +97,8 @@ export const fromHex = (h) => new Uint8Array(h.match(/../g).map((x) => parseInt(
 export const toBase64 = (u) => btoa(String.fromCharCode(...u));
 export const fromBase64 = (s) => Uint8Array.from(atob(s), (c) => c.charCodeAt(0));
 
-const PENDING_KEYS = new Set(['run', 'call', 'tool', 'args', 'args_text', 'args_sha256', 'decision_format', 'state', 'asked_at', 'gate']);
+// PENDING_KEYS are the members of approvals.Pending (its json tags): a Go test fails when they drift.
+const PENDING_KEYS = new Set(['run', 'call', 'tool', 'args', 'args_text', 'args_sha256', 'decision_format', 'state', 'asked_at', 'reason', 'gate']);
 
 // parsePending reads the endpoint's answer to GET /pending strictly: exactly one JSON object, with
 // no repeated and no unknown member, and the arguments taken as the raw bytes the endpoint sent
@@ -162,6 +140,8 @@ export async function checkPending(parsed, run, call) {
 
 // preflight refuses a decision the endpoint's own report says cannot be made.
 export function preflight(fields, approver) {
+  if (fields.state === 'error') return `the gate cannot be evaluated, so this call takes no decision: ${safeText(String(fields.reason ?? 'the endpoint gives no reason'))}`;
+  if (fields.state === 'single') return 'this is a single-approver gate, which takes no signed decision';
   if (fields.state !== 'waiting') return `the call is not waiting for a decision (the endpoint says it is ${safeText(String(fields.state))})`;
   const g = fields.gate;
   if (!g.approvers.includes(approver)) return `${safeText(approver)} is not an approver of this gate; its approvers are: ${safeText(g.approvers.join(', '))}`;

@@ -165,13 +165,23 @@ func WithPage() Option {
 	return func(h *Handler) error { h.page = true; return nil }
 }
 
+// WithCORSCredentials lets the page send credentials cross-origin (fetch's credentials mode
+// "include", which config.json asks for): cookies, HTTP authentication and, for mutual TLS, the
+// browser's client certificate, which a browser does not present on a cross-origin request made with
+// credentials omitted. It adds Access-Control-Allow-Credentials, which a browser accepts only with the
+// exact origin WithCORS names. It requires WithCORS.
+func WithCORSCredentials() Option {
+	return func(h *Handler) error { h.corsCredentials = true; return nil }
+}
+
 // WithCORS lets a page hosted at origin (an exact origin such as "https://approve.example.com",
 // never "*") call the intake from a browser: it answers the CORS preflight (OPTIONS) before any
 // authentication, since a preflight carries no credentials and a browser can never reach an
 // endpoint that refuses it, and adds the Access-Control headers to responses to that origin. It
-// requires WithAuth. Credentials are not allowed cross-origin (no cookies): authenticate with
-// mutual TLS, which the browser presents on its own, or with a token the hook reads from a header
-// the page cannot set, so a deployment that needs more serves the page from the intake's origin.
+// requires WithAuth. Credentials are not allowed cross-origin unless WithCORSCredentials says so; a
+// deployment that authenticates with a cookie or a client certificate from another origin sets it,
+// and the page's config.json asks for credentials "include". A deployment that needs neither serves
+// the page from the intake's origin.
 func WithCORS(origin string) Option {
 	return func(h *Handler) error {
 		u, err := url.Parse(origin)
@@ -206,6 +216,9 @@ func (h *Handler) cors(w http.ResponseWriter, r *http.Request) bool {
 		return false
 	}
 	w.Header().Set("Access-Control-Allow-Origin", origin)
+	if h.corsCredentials {
+		w.Header().Set("Access-Control-Allow-Credentials", "true")
+	}
 	if r.Method == http.MethodOptions && r.Header.Get("Access-Control-Request-Method") != "" {
 		w.Header().Add("Vary", "Access-Control-Request-Method")
 		w.Header().Add("Vary", "Access-Control-Request-Headers")

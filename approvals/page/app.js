@@ -3,7 +3,7 @@
 // is set with textContent, never as markup. The logic that decides what is signed is in flow.js and
 // core.js, which the tests run against a real endpoint; this file is the glue to the document.
 
-import { clip, keyFingerprint, publicKeyText, prettyArgs, safeText } from './core.js';
+import { keyFingerprint, publicKeyText, prettyArgs, safeText } from './core.js';
 import { Refused, decide, loadCall } from './flow.js';
 
 const $ = (id) => document.getElementById(id);
@@ -52,6 +52,7 @@ async function ed25519Supported() {
 let key = null; // {privateKey, publicKey, publicRaw}
 let shown = null; // loadCall's result for the call on display
 let base = null; // the intake's base URL
+let credentials = 'same-origin'; // fetch's credentials mode (config.json may say "include")
 let scrolledToEnd = true;
 
 async function intakeBase() {
@@ -64,13 +65,13 @@ async function intakeBase() {
       const u = new URL(c.intake);
       if (u.protocol === 'https:' || (u.protocol === 'http:' && ['localhost', '127.0.0.1', '[::1]'].includes(u.hostname))) {
         if (!u.pathname.endsWith('/')) u.pathname += '/';
-        return { url: u, hosted: true };
+        return { url: u, hosted: true, credentials: ['same-origin', 'include', 'omit'].includes(c.credentials) ? c.credentials : 'same-origin' };
       }
     }
   } catch {
     // no config: served by the application
   }
-  return { url: new URL('../', location.href), hosted: false };
+  return { url: new URL('../', location.href), hosted: false, credentials: 'same-origin' };
 }
 
 function fragment() {
@@ -106,21 +107,15 @@ function renderCall() {
   text('gate-decided', (g.decisions ?? []).filter((d) => d.counted).map((d) => `${safeText(d.approver)} ${d.approved ? 'approved' : 'denied'}`).join('; ') || 'nobody yet');
   text('gate-pending', safeText((g.pending ?? []).join(', ')) || 'nobody');
   text('call-state', safeText(f.state));
-  const full = safeFull();
-  const shownText = full ? prettyArgs(shown.args) : clip(prettyArgs(shown.args)).text;
-  const hidden = full ? 0 : clip(prettyArgs(shown.args)).hidden;
-  text('call-args', shownText);
+  // All of the arguments, always: the signature binds every one of them, so none is cut from what the
+  // approver reads. A long value scrolls in its box.
+  text('call-args', prettyArgs(shown.args));
   text('call-digest', shown.subject.argsHex);
-  $('args-hidden').hidden = hidden === 0;
-  text('args-hidden', hidden ? `[${hidden} more characters not shown; the signature binds all of them: show all of the arguments before signing]` : '');
-  $('show-all').hidden = hidden === 0;
+  text('call-reason', f.reason ? safeText(f.reason) : '');
+  $('call-reason').hidden = !f.reason;
   $('call-panel').hidden = false;
   const box = $('call-args');
   scrolledToEnd = box.scrollHeight <= box.clientHeight + 2;
-}
-
-function safeFull() {
-  return $('show-all').dataset.full === '1';
 }
 
 function refresh() {
@@ -154,6 +149,7 @@ async function submit(approved) {
       approved,
       sign: async (msg) => new Uint8Array(await crypto.subtle.sign('Ed25519', key.privateKey, msg)),
       publicKey: { verify: (msg, sig) => crypto.subtle.verify('Ed25519', key.publicKey, sig, msg) },
+      credentials,
     });
     const g = out.response.gate;
     text('result', `${approved ? 'Approved' : 'Rejected'}: signed and recorded by the application. The gate (as the application counts it): ${g.approved} of ${g.need} needed approved, ${g.denied} denied.${g.passed ? ' The gate has its approvals.' : ''}`);
@@ -181,7 +177,7 @@ async function load() {
   }
   text('status', 'Loading the call...');
   try {
-    shown = await loadCall((u, o) => fetch(u, o), base.url, run, call);
+    shown = await loadCall((u, o) => fetch(u, o), base.url, run, call, credentials);
     text('status', '');
     renderCall();
   } catch (e) {
@@ -198,6 +194,7 @@ async function main() {
   }
   const b = await intakeBase();
   base = b;
+  credentials = b.credentials;
   text('origin', b.hosted
     ? `This page is hosted at ${location.origin} and talks to ${b.url.origin}.`
     : `This page was served by the application at ${location.origin}: the application can change what it does. Use a page hosted by your organization for anything that matters.`);
@@ -213,11 +210,6 @@ async function main() {
   $('approver').addEventListener('input', refresh);
   $('approve').addEventListener('click', () => submit(true));
   $('reject').addEventListener('click', () => submit(false));
-  $('show-all').addEventListener('click', () => {
-    $('show-all').dataset.full = '1';
-    renderCall();
-    refresh();
-  });
   $('call-args').addEventListener('scroll', () => {
     const el = $('call-args');
     if (el.scrollTop + el.clientHeight >= el.scrollHeight - 2) {
@@ -226,6 +218,11 @@ async function main() {
     }
   });
   addEventListener('hashchange', load);
+  // The browser enforces the host's Content-Security-Policy: an intake origin that is not in its
+  // connect-src (a config.json that was changed to name another one) is blocked, and said so.
+  document.addEventListener('securitypolicyviolation', (e) => {
+    text('status', `The browser blocked a request to ${safeText(e.blockedURI)} (the policy this page was served under allows only the intake it was deployed for): the page's config.json may have been changed.`);
+  });
   await load();
 }
 

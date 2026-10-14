@@ -8,12 +8,17 @@ import { checkPending, changedSince, parsePending, preflight, receiptProblem, to
 
 export class Refused extends Error {}
 
+// credentials is fetch's credentials mode: 'same-origin' by default, so the cookies, HTTP
+// authentication and TLS client certificate of the page's own origin reach the endpoint the way
+// they do for a page the endpoint serves; 'include' for an endpoint on another origin that
+// authenticates with a cookie or a client certificate (the deployment says so in config.json, and
+// the intake must allow credentials: approvals.WithCORSCredentials); 'omit' for none.
 // loadCall fetches GET /pending and returns {fields, args, subject}, throwing Refused for a call the
 // endpoint describes inconsistently or that is not the one asked for.
-export async function loadCall(fetchFn, base, run, call) {
+export async function loadCall(fetchFn, base, run, call, credentials = 'same-origin') {
   const url = new URL('pending', base);
   url.search = new URLSearchParams({ run, call }).toString();
-  const resp = await fetchFn(url.href, { method: 'GET', redirect: 'error', cache: 'no-store', credentials: 'omit', headers: { Accept: 'application/json' } });
+  const resp = await fetchFn(url.href, { method: 'GET', redirect: 'error', cache: 'no-store', credentials, headers: { Accept: 'application/json' } });
   const bytes = new Uint8Array(await resp.arrayBuffer());
   if (!resp.ok) throw new Refused(await describeError(resp.status, bytes));
   let parsed;
@@ -44,11 +49,11 @@ async function describeError(status, bytes) {
 // key is {privateKey, publicRaw}; sign is (bytes) => Promise<Uint8Array> by that key. It returns
 // {response, receipt} on success, and throws Refused with nothing signed or sent on any difference
 // between what was shown and what the endpoint says now.
-export async function decide({ fetchFn, base, shown, approver, approved, sign, publicKey, now = () => new Date() }) {
+export async function decide({ fetchFn, base, shown, approver, approved, sign, publicKey, credentials = 'same-origin', now = () => new Date() }) {
   const { run, call } = shown.subject;
   const first = preflight(shown.fields, approver);
   if (first) throw new Refused(first);
-  const again = await loadCall(fetchFn, base, run, call).catch((e) => {
+  const again = await loadCall(fetchFn, base, run, call, credentials).catch((e) => {
     throw new Refused(`the endpoint changed while you were deciding; nothing was signed: ${e.message}`);
   });
   const why = preflight(again.fields, approver);
@@ -64,7 +69,7 @@ export async function decide({ fetchFn, base, shown, approver, approved, sign, p
   const body = JSON.stringify({ run, call, approver, approved, decided_at: decidedAt, alg: 'ed25519', signature: signatureB64 });
   let resp;
   try {
-    resp = await fetchFn(new URL('decisions', base).href, { method: 'POST', redirect: 'error', cache: 'no-store', credentials: 'omit', headers: { 'Content-Type': 'application/json', Accept: 'application/json' }, body });
+    resp = await fetchFn(new URL('decisions', base).href, { method: 'POST', redirect: 'error', cache: 'no-store', credentials, headers: { 'Content-Type': 'application/json', Accept: 'application/json' }, body });
   } catch (e) {
     throw new Refused(`the request failed, and the decision may or may not have been recorded: reload this page to see the gate (a decision of yours already recorded is refused as already decided): ${e.message}`);
   }
