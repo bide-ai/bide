@@ -28,6 +28,11 @@ on:
 permissions:
   contents: read
 
+# A new push to a pull request cancels the superseded run; main, the merge queue and the nightly never cancel.
+concurrency:
+  group: models-${{ github.event.pull_request.number || github.ref }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+
 # The pull-request set runs in parallel shards, one job each, by configuration directory: a model's
 # directory, or its regress, findings or limits directory (check.sh's TLC_DIRS). Balanced by the
 # measured TLC times; the plan job fails unless every ci, regress, finding and limit configuration
@@ -48,6 +53,9 @@ jobs:
     name: Models (plan)
     if: github.event_name != 'schedule'
     runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      pull-requests: read # the full-ci label check
     outputs:
       run: ${{ steps.shards.outputs.run }}
       models: ${{ steps.changes.outputs.models }}
@@ -67,12 +75,19 @@ jobs:
         name: Which models changed?
         shell: bash
         env:
+          GH_TOKEN: ${{ github.token }}
+          PR: ${{ github.event.pull_request.number }}
           BASE: ${{ github.event.pull_request.base.sha }}
           HEAD: ${{ github.event.pull_request.head.sha }}
         run: |
           run=true
           models=
-          if [ "${{ github.event_name }}" = "pull_request" ] && files=$(git diff --name-only "$BASE" "$HEAD") && [ -n "$files" ]; then
+          # The full-ci label (read now, so a re-run sees it) checks every model, as the merge queue does.
+          full=false
+          if [ "${{ github.event_name }}" = "pull_request" ] && labels=$(gh api "repos/$GITHUB_REPOSITORY/pulls/$PR" --jq '[.labels[].name] | join(",")'); then
+            case ",$labels," in *,full-ci,*) full=true ;; esac
+          fi
+          if [ "${{ github.event_name }}" = "pull_request" ] && [ "$full" = false ] && files=$(git diff --name-only "$BASE" "$HEAD") && [ -n "$files" ]; then
             echo "Changed files:"; echo "$files"
             if ! echo "$files" | grep -qE '^(spec/tla/check\.sh|spec/tla/tools\.lock|\.github/workflows/models\.yml|\.github/scripts/shards\.sh)$'; then
               models=$(echo "$files" | sed -n 's|^spec/tla/\([^/]*\)/.*|\1|p' | sort -u | while read -r m; do

@@ -8,12 +8,9 @@ name: Coverage
 on:
   push:
     branches: [ main ]
-  pull_request:
-    branches: [ main ]
-    paths-ignore:
-      - '**.md'
-      - 'docs/**'
-      - 'docs-site/**'
+  # Not on pull requests: a pull request's runner budget goes to the required checks. Run it from
+  # the Actions tab on the branch (workflow_dispatch) when a patch's coverage is wanted.
+  workflow_dispatch:
 
 permissions:
   contents: read

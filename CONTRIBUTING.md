@@ -47,9 +47,32 @@ cd examples/observability && GOWORK=off go run .
 
 Some tests need external infrastructure and skip without it: `store/postgres` and `govern/postgreslog` look for `PG_DSN`; `govern/redislog` looks for `REDIS_ADDR`; the external convergence oracle cross-check looks for `GSM_AST_CHECKER`. The default suite is green with none of them set.
 
-Coverage of the published modules is reported to Codecov by the Coverage workflow (`.github/workflows/coverage.yml`) on pushes to main and on pull requests. It is information only: it is not a required check, an upload failure never fails it, and `codecov.yml` sets the project and patch statuses to informational. Run it locally with `scripts/coverage.sh` (it writes `coverage.out`, one merged profile, and prints the total; `go tool cover -html=coverage.out` shows it by line). Examples, benchmarks and the integration module are not measured.
+Coverage of the published modules is reported to Codecov by the Coverage workflow (`.github/workflows/coverage.yml`) on pushes to main, and on demand for a branch (see "What CI runs, and when"). It is information only: it is not a required check, an upload failure never fails it, and `codecov.yml` sets the project and patch statuses to informational. Run it locally with `scripts/coverage.sh` (it writes `coverage.out`, one merged profile, and prints the total; `go tool cover -html=coverage.out` shows it by line). Examples, benchmarks and the integration module are not measured.
 
 The fault-schedule explorations (the tests with `Explore` in their name, in `agent` and `plan`) run at a bound that fits CI by default. `BIDE_EXPLORE=1` runs the full bound (`BIDE_EXPLORE=1 GOWORK=off go test -count=1 -timeout 85m -run Explore ./agent ./plan`, about nine minutes on a development machine, without `-race`), and `BIDE_EXPLORE_SIGS=<file>` appends one line per explored concurrent schedule to that file. The Explore workflow (`.github/workflows/explore.yml`) runs the full bound nightly and on demand; it is not a required check. A new test with a `BIDE_EXPLORE` mode goes in the core module and has `Explore` in its name, or the nightly job does not run it (the job fails on a `BIDE_EXPLORE` test outside the core module).
+
+## What CI runs, and when
+
+GitHub Free allows 20 jobs to run at once across the repository, and one pull request's full run is about 20, so the full matrix runs once per merge queue batch (up to five pull requests), not once per pull request push. A pull request runs a fast subset; the rest runs when the pull request enters the merge queue, and a failure there ejects it.
+
+Every required check reports on every pull request. A check that does not run on a pull request is skipped, which satisfies the requirement; do not read a green skipped check as having run.
+
+| Required check | On a pull request | In the merge queue and on main |
+|---|---|---|
+| `Lint` | modelsync, docs snippets and removed names always; gofmt, vet, doccheck and govulncheck when code changed | also the reproducible-build check |
+| `Test (ubuntu-latest)` | `agent`, `core` and `rest` shards under `-race`, when code changed (only `rest` for a change to `examples/` alone) | also the run without `encoding/json/v2` |
+| `Test (macos-latest)` | skipped | one job, every module, without `-race` |
+| `Test (windows-latest)` | skipped | one job, every module, without `-race` |
+| `Integration (Postgres, Redis)` | skipped | the Postgres and Redis suites against service containers, twice each |
+| `Models` | the TLA+ shards holding a model whose directory under `spec/tla` the change touches | every model |
+| `gsm machine gate` | when the change can alter what a bide program makes (code, less CI scripts, other workflows and tool configuration) | always |
+| `Changelog fragment`, `dco` | always | always |
+
+"Documentation only" means the change touches only `docs/`, `docs-site/`, `assets/`, `spec/tla/`, `.github/ISSUE_TEMPLATE/`, Markdown files, `LICENSE`, `NOTICE`, `DCO` and the `docs`, `bench`, `models` and `explore` workflows; the Go jobs' steps are skipped for it, in the merge queue as well as on a pull request. "Examples only" means every other changed path lies under `examples/` (no other module imports an example module). Both are decided by `.github/scripts/changed-code.sh`; any other change, a failed diff or an unexpected event counts as a code change. The Coverage workflow (not required) no longer runs on pull requests: it runs on main, and from the Actions tab on a branch (`workflow_dispatch`) when a patch's coverage is wanted.
+
+To run the full matrix on a pull request, for a risky change to the journal, leases, sagas, storage, anything OS-specific or the CI itself, add the `full-ci` label and re-run the CI, Models and gsm machine gate workflows from the Actions tab (or push a commit). The label is read when the jobs run, so adding it does not start a run by itself. With the label, the macOS, Windows and Integration jobs, the json/v2 run, the reproducibility check, every model and the gsm gate run on the pull request, as they do in the queue.
+
+Pushing a new commit to a pull request cancels the superseded run of the same workflow; pushes to main, merge queue batches and the nightly are never cancelled. The Linux test shards and the Models shards are balanced by measured time; the longest single package is `agent` on Linux (about four minutes under `-race`). When a shard becomes the slowest check, move modules between shard lines (`TEST_SHARDS`, `MODEL_SHARDS`); the Changes and plan jobs fail unless every module and configuration is on exactly one line. Prefer fewer jobs over a shorter critical path: each job costs a runner start and its setup.
 
 ## Module layout
 
