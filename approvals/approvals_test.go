@@ -1,6 +1,7 @@
 package approvals_test
 
 import (
+	"bufio"
 	"bytes"
 	"context"
 	"crypto/sha256"
@@ -547,30 +548,142 @@ func TestBusy(t *testing.T) {
 	}
 }
 
-// A stalled body holds one in-flight slot for at most the read timeout, and the slot is taken before
-// the body is read, so stalled clients cannot pile up handlers.
-func TestDecision_StalledBodyIsCutOff(t *testing.T) {
-	r := newRig(t, approvals.WithReadTimeout(300*time.Millisecond), approvals.WithMaxInFlight(2),
+// A client that sends headers and stalls holds a slot of the small read pool for at most the read
+// timeout, never a journal-work slot: with the cap on journal work at one, a legitimate request is
+// still served while stalled bodies are pending, and the stalled ones are cut off.
+func TestDecision_StalledBodyHoldsNoJournalSlot(t *testing.T) {
+	r := newRig(t, approvals.WithReadTimeout(300*time.Millisecond), approvals.WithMaxInFlight(1),
 		approvals.WithRateLimit(0, 0), approvals.WithGlobalRateLimit(0, 0))
-	var conns []net.Conn
-	for range 2 {
+	for range 4 {
 		c, err := net.Dial("tcp", r.srv.Listener.Addr().String())
 		if err != nil {
 			t.Fatal(err)
 		}
 		defer c.Close()
 		c.Write([]byte("POST /decisions HTTP/1.1\r\nHost: x\r\nContent-Type: application/json\r\nContent-Length: 4000\r\n\r\n{"))
-		conns = append(conns, c)
 	}
 	time.Sleep(100 * time.Millisecond)
-	if status, _ := r.post(r.decision("alice", true)); status != http.StatusServiceUnavailable {
-		t.Fatalf("with both slots held by stalled bodies: status %d, want 503", status)
+	if status, out := r.get("/pending?run=" + runID + "&call=c1"); status != 200 {
+		t.Fatalf("GET /pending while 4 bodies stall: %d %v", status, out)
 	}
-	time.Sleep(600 * time.Millisecond) // past the read timeout: the stalled requests are cut off
+	time.Sleep(600 * time.Millisecond) // past the read timeout
 	if status, out := r.post(r.decision("alice", true)); status != 200 {
-		t.Fatalf("after the stalled bodies timed out: %d %v", status, out)
+		t.Fatalf("a decision after the stalled bodies timed out: %d %v", status, out)
 	}
-	_ = conns
+}
+
+// With an authorization hook, a request that fails it is refused from the headers alone, before a
+// body is read: stalled unauthenticated POSTs are answered 401 at once and hold nothing.
+func TestDecision_AuthRunsBeforeTheBodyIsRead(t *testing.T) {
+	r := newRig(t, approvals.WithMaxReaders(1, 1), approvals.WithRateLimit(0, 0), approvals.WithGlobalRateLimit(0, 0),
+		approvals.WithAuth(func(req *http.Request, a approvals.Access) error {
+			if req.Header.Get("X-Client") == "" {
+				return approvals.ErrUnauthenticated
+			}
+			return nil
+		}))
+	for i := range 3 { // more stalled requests than the one read slot
+		c, err := net.Dial("tcp", r.srv.Listener.Addr().String())
+		if err != nil {
+			t.Fatal(err)
+		}
+		defer c.Close()
+		c.Write([]byte("POST /decisions HTTP/1.1\r\nHost: x\r\nContent-Type: application/json\r\nContent-Length: 4000\r\n\r\n{"))
+		c.SetReadDeadline(time.Now().Add(2 * time.Second))
+		line, err := bufio.NewReader(c).ReadString('\n')
+		if err != nil || !strings.Contains(line, "401") {
+			t.Fatalf("stalled unauthenticated POST %d: %q %v, want an immediate 401", i, line, err)
+		}
+	}
+	// An authenticated client still gets the one read slot.
+	b, _ := json.Marshal(r.decision("alice", true))
+	if status, out := r.postRaw(b, "application/json", "X-Client", "a"); status != 200 {
+		t.Fatalf("authenticated: %d %v", status, out)
+	}
+}
+
+// The read pool is bounded overall and per client: past either, a request is refused, and the slot is
+// returned when its body arrives or times out.
+func TestDecision_ReadPoolBounds(t *testing.T) {
+	key := approvals.WithClientKey(func(req *http.Request) string { return req.Header.Get("X-Client") })
+	r := newRig(t, approvals.WithMaxReaders(2, 1), approvals.WithReadTimeout(500*time.Millisecond), key,
+		approvals.WithRateLimit(0, 0), approvals.WithGlobalRateLimit(0, 0))
+	stall := func(client string) net.Conn {
+		c, err := net.Dial("tcp", r.srv.Listener.Addr().String())
+		if err != nil {
+			t.Fatal(err)
+		}
+		c.Write([]byte("POST /decisions HTTP/1.1\r\nHost: x\r\nX-Client: " + client + "\r\nContent-Type: application/json\r\nContent-Length: 4000\r\n\r\n{"))
+		return c
+	}
+	status := func(client string) int {
+		b, _ := json.Marshal(r.decision("alice", true))
+		s, _ := r.postRaw(b, "application/json", "X-Client", client)
+		return s
+	}
+	a := stall("a")
+	defer a.Close()
+	time.Sleep(100 * time.Millisecond)
+	if s := status("a"); s != http.StatusTooManyRequests {
+		t.Fatalf("a second concurrent read by client a: %d, want 429", s)
+	}
+	b := stall("b")
+	defer b.Close()
+	time.Sleep(100 * time.Millisecond)
+	if s := status("c"); s != http.StatusServiceUnavailable {
+		t.Fatalf("a third read with the pool of 2 full: %d, want 503", s)
+	}
+	time.Sleep(700 * time.Millisecond) // both stalled reads time out and return their slots
+	if s := status("a"); s != 200 {
+		t.Fatalf("after the stalled reads timed out: %d", s)
+	}
+}
+
+// A replay of a decision after the gate settled answers from the gate's recorded tally, not a fresh
+// recount: the numbers the gate enforced are shown even if the keys the handler resolves now are
+// not the keys that counted then.
+func TestDecision_ReplayAnswersFromTheRecordedTally(t *testing.T) {
+	r := newRig(t)
+	for _, id := range []string{"alice", "bob"} {
+		if status, out := r.post(r.decision(id, true)); status != 200 {
+			t.Fatalf("%s: %d %v", id, status, out)
+		}
+	}
+	if err := r.run(); err != nil || r.charged.Load() != 1 {
+		t.Fatalf("run at quorum: %v (charged %d)", err, r.charged.Load())
+	}
+	b := r.decision("alice", true)
+	delete(r.enrolled, "alice") // a rotation: the key that counted is no longer the one resolved
+	status, out := r.post(b)
+	if status != 200 || out["recorded"] != false {
+		t.Fatalf("replay: %d %v", status, out)
+	}
+	gate := out["gate"].(map[string]any)
+	if gate["approved"] != float64(2) || gate["passed"] != true || out["counted"] != true {
+		t.Fatalf("the replay did not answer from the recorded tally: gate %v counted %v", gate, out["counted"])
+	}
+	_, pend := r.get("/pending?run=" + runID + "&call=c1")
+	if pend["state"] != "decided" || pend["gate"].(map[string]any)["approved"] != float64(2) {
+		t.Fatalf("pending after the tally: %v", pend)
+	}
+}
+
+// With separation of duties the standing excludes the requester, as the gate does: the requester's
+// decision is recorded and does not count, and the response says so.
+func TestDecision_ExcludePrincipalIsHonored(t *testing.T) {
+	pol := &agent.ApprovalPolicy{Need: 2, Approvers: []string{"alice", "bob", "carol"}, ExcludePrincipal: true}
+	r := newRigAs(t, "c1", pol, agent.Identity{Actor: "agent@1", OnBehalfOf: "alice"})
+	status, out := r.post(r.decision("alice", true))
+	if status != 200 || out["counted"] != false || out["reason"] == nil {
+		t.Fatalf("the requester's decision: %d %v", status, out)
+	}
+	if gate := out["gate"].(map[string]any); gate["approved"] != float64(0) {
+		t.Fatalf("the requester's approval counted: %v", gate)
+	}
+	_, out = r.post(r.decision("bob", true))
+	if out["counted"] != true || out["gate"].(map[string]any)["approved"] != float64(1) {
+		t.Fatalf("bob: %v", out)
+	}
 }
 
 // One approver's approve and reject sent at once: either the second is refused as already decided

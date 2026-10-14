@@ -123,9 +123,10 @@ type Gate struct {
 	Approvers []string       `json:"approvers"`
 	Approved  int            `json:"approved"`
 	Denied    int            `json:"denied"`
-	Pending   []string       `json:"pending,omitempty"` // approvers with no counted decision
-	Passed    bool           `json:"passed"`            // approved >= need
-	Failed    bool           `json:"failed"`            // too few approvers left to reach need
+	Pending   []string       `json:"pending,omitempty"`  // approvers with no counted decision
+	Excluded  []string       `json:"excluded,omitempty"` // approvers who fill no seat (separation of duties, or a key problem)
+	Passed    bool           `json:"passed"`             // approved >= need
+	Failed    bool           `json:"failed"`             // too few approvers left to reach need
 	Decisions []GateDecision `json:"decisions,omitempty"`
 }
 
@@ -175,6 +176,9 @@ const (
 	DefaultMaxBodyBytes = 64 << 10
 	// DefaultReadTimeout bounds how long a POST may take to send its body.
 	DefaultReadTimeout = 10 * time.Second
+	// DefaultMaxReaders and DefaultMaxReadersPerClient bound the request bodies being read at once.
+	DefaultMaxReaders          = 32
+	DefaultMaxReadersPerClient = 4
 	// DefaultRate and DefaultBurst are the per-client request rate and burst.
 	DefaultRate  = 2.0
 	DefaultBurst = 10
@@ -196,26 +200,30 @@ type Option func(*Handler) error
 
 // Handler is the intake. Create it with New; it is safe for concurrent use.
 type Handler struct {
-	j           *agent.Journal
-	verifiers   agent.ApproverVerifierFor
-	now         func() time.Time
-	maxBody     int64
-	readTimeout time.Duration
-	auth        func(*http.Request, Access) error
-	clientKey   func(*http.Request) string
-	onErr       func(error)
-	onRec       func(context.Context, Recorded)
-	lim         *limiter
-	rate        float64
-	burst       int
-	gRate       float64
-	gBurst      int
-	maxKeys     int
-	sem         chan struct{} // journal work in flight
-	hooks       chan struct{} // OnRecorded hooks in flight
-	wg          sync.WaitGroup
-	mux         *http.ServeMux
-	inflight    int
+	j                        *agent.Journal
+	verifiers                agent.ApproverVerifierFor
+	now                      func() time.Time
+	maxBody                  int64
+	readTimeout              time.Duration
+	readSem                  chan struct{} // bodies being read, before any work on the journal
+	readMu                   sync.Mutex
+	readBy                   map[string]int // bodies being read, by client
+	maxReaders, maxPerClient int
+	auth                     func(*http.Request, Access) error
+	clientKey                func(*http.Request) string
+	onErr                    func(error)
+	onRec                    func(context.Context, Recorded)
+	lim                      *limiter
+	rate                     float64
+	burst                    int
+	gRate                    float64
+	gBurst                   int
+	maxKeys                  int
+	sem                      chan struct{} // journal work in flight
+	hooks                    chan struct{} // OnRecorded hooks in flight
+	wg                       sync.WaitGroup
+	mux                      *http.ServeMux
+	inflight                 int
 }
 
 // New returns the intake handler over j, the application's own journal: for decisions to be signed
@@ -230,6 +238,7 @@ func New(j *agent.Journal, verifierFor agent.ApproverVerifierFor, opts ...Option
 		return nil, fmt.Errorf("approvals: nil approver verifiers: %w", agent.ErrConfig)
 	}
 	h := &Handler{j: j, verifiers: verifierFor, now: time.Now, maxBody: DefaultMaxBodyBytes, readTimeout: DefaultReadTimeout,
+		maxReaders: DefaultMaxReaders, maxPerClient: DefaultMaxReadersPerClient, readBy: map[string]int{},
 		rate: DefaultRate, burst: DefaultBurst, gRate: DefaultGlobalRate, gBurst: DefaultGlobalBurst,
 		maxKeys: DefaultMaxClients, inflight: DefaultMaxInFlight,
 		clientKey: remoteHost, onErr: func(error) {}}
@@ -244,6 +253,7 @@ func New(j *agent.Journal, verifierFor agent.ApproverVerifierFor, opts ...Option
 	h.lim = newLimiter(h.rate, h.burst, h.gRate, h.gBurst, h.maxKeys, h.now)
 	h.sem = make(chan struct{}, h.inflight)
 	h.hooks = make(chan struct{}, h.inflight)
+	h.readSem = make(chan struct{}, h.maxReaders)
 	h.mux = http.NewServeMux()
 	h.mux.HandleFunc("GET /pending", h.guard(h.pending))
 	h.mux.HandleFunc("POST /decisions", h.guard(h.decide))
@@ -277,8 +287,8 @@ func WithMaxBodyBytes(n int64) Option {
 }
 
 // WithReadTimeout bounds how long a POST /decisions may take to send its body (DefaultReadTimeout).
-// The request holds an in-flight slot while it is read, so a stalled client costs one slot for at
-// most this long. It does not replace http.Server.ReadHeaderTimeout, which bounds the headers
+// The body is read in the read pool (WithMaxReaders), so a stalled client costs one reader for at
+// most this long and no slot for work on the journal. It does not replace http.Server.ReadHeaderTimeout, which bounds the headers
 // before the handler runs: set both.
 func WithReadTimeout(d time.Duration) Option {
 	return func(h *Handler) error {
@@ -290,8 +300,27 @@ func WithReadTimeout(d time.Duration) Option {
 	}
 }
 
+// WithMaxReaders bounds the request bodies being read at once, overall and for one client
+// (DefaultMaxReaders, DefaultMaxReadersPerClient). A body is read before the request takes a slot for
+// work on the journal, in a pool of its own, so a client that stalls while sending cannot starve
+// requests that are working; past either bound a request is refused (503 overall, 429 for a client
+// over its own) with Retry-After. Authorization has run by then (see WithAuth).
+func WithMaxReaders(total, perClient int) Option {
+	return func(h *Handler) error {
+		if total < 1 || perClient < 1 {
+			return configErr("max readers must be at least 1, got %d and %d", total, perClient)
+		}
+		h.maxReaders, h.maxPerClient = total, perClient
+		return nil
+	}
+}
+
 // WithAuth sets a hook that runs for every request, after the rate limit and before the journal is
-// read or written, with what the request asks for. Return nil to allow it, ErrUnauthenticated for
+// read or written, with what the request asks for. A POST /decisions calls it twice: first with the
+// method alone (RunID, ToolUseID and Approver empty), from the headers and the connection, before
+// the body is read, so a client that fails it is refused without costing a stalled read; then with
+// the decision's run, call and approver once the body is parsed. A hook that ties an approver to the
+// caller must therefore treat an empty Approver as "identity only". Return nil to allow it, ErrUnauthenticated for
 // a request with no valid credentials (401), or ErrForbidden, or any other error, to refuse it
 // (403). It is where a deployment checks a client certificate (r.TLS.PeerCertificates) or an
 // identity, and ties an approver id to it (Access.Approver). The signature is the authorization of
@@ -431,12 +460,49 @@ func (h *Handler) work(w http.ResponseWriter) (release func(), ok bool) {
 	}
 }
 
+// reader takes a slot of the read pool for client, or answers 503 (the pool is full) or 429 (the
+// client holds its share of it).
+func (h *Handler) reader(w http.ResponseWriter, client string, onRefuse func()) (release func(), ok bool) {
+	h.readMu.Lock()
+	if h.readBy[client] >= h.maxPerClient {
+		h.readMu.Unlock()
+		onRefuse()
+		w.Header().Set("Retry-After", "1")
+		writeError(w, http.StatusTooManyRequests, "rate_limited", "too many request bodies from this client in progress; retry later")
+		return nil, false
+	}
+	select {
+	case h.readSem <- struct{}{}:
+	default:
+		h.readMu.Unlock()
+		onRefuse()
+		w.Header().Set("Retry-After", "1")
+		writeError(w, http.StatusServiceUnavailable, "busy", "too many request bodies in progress; retry later")
+		return nil, false
+	}
+	h.readBy[client]++
+	h.readMu.Unlock()
+	return func() {
+		h.readMu.Lock()
+		if h.readBy[client]--; h.readBy[client] == 0 {
+			delete(h.readBy, client)
+		}
+		h.readMu.Unlock()
+		<-h.readSem
+	}, true
+}
+
 // authorize runs the hook, if any, and answers a refusal.
-func (h *Handler) authorize(w http.ResponseWriter, r *http.Request, a Access) bool {
+func (h *Handler) authorize(w http.ResponseWriter, r *http.Request, a Access, onRefuse ...func()) bool {
 	if h.auth == nil {
 		return true
 	}
 	err := h.auth(r, a)
+	if err != nil {
+		for _, f := range onRefuse {
+			f()
+		}
+	}
 	switch {
 	case err == nil:
 		return true
@@ -536,11 +602,44 @@ func (h *Handler) gate(g *gateRecords) Gate {
 
 // gateChecks is gate with the classification of every decision record the gate read.
 func (h *Handler) gateChecks(g *gateRecords) (Gate, []agent.DecisionCheck) {
-	p := agent.ApprovalPolicy{Need: g.wait.Need, Approvers: g.wait.Approvers}
+	p := agent.ApprovalPolicy{Need: g.wait.Need, Approvers: g.wait.Approvers, ExcludePrincipal: g.wait.ExcludePrincipal}
 	t, checks := agent.TallyApprovals(g.recs, g.subject, p, h.verifiers)
+	// Once the gate has settled, what it enforced is in its recorded tally, whatever keys the handler
+	// resolves now: that is what a caller sees, for a replay as for GET /pending.
+	byName := make(map[string]agent.Record, len(g.recs))
+	for _, r := range g.recs {
+		byName[r.Name] = r
+	}
+	settled := false
+	if rec, ok := agent.RecordedTally(byName, g.subject.ToolUseID); ok {
+		var rt agent.ApprovalTally
+		if json.Unmarshal(rec.Result, &rt) == nil && rt.DecisionFormat == agent.DecisionFormat {
+			t, settled = rt, true
+		}
+	}
 	out := Gate{Need: t.Need, Approvers: slices.Clone(t.Approvers), Approved: t.Approved, Denied: t.Denied,
-		Pending: slices.Clone(t.Pending), Passed: t.Passed(), Failed: t.Unreachable()}
-	for _, c := range checks {
+		Pending: slices.Clone(t.Pending), Excluded: slices.Clone(t.Excluded), Passed: t.Passed(), Failed: t.Unreachable()}
+	for i := range checks {
+		if settled && checks[i].Counted {
+			// The recorded tally names the approvers whose decision counted, by verdict.
+			by := t.DeniedBy
+			if checks[i].Approved {
+				by = t.ApprovedBy
+			}
+			if !slices.Contains(by, checks[i].Approver) {
+				checks[i].Counted, checks[i].Reason = false, "not counted by the gate's recorded tally"
+			}
+		} else if settled && !checks[i].Counted && checks[i].Reason == agent.ReasonNoKey {
+			// A key no longer resolved: the tally, not the recount, says whether it counted.
+			by := t.DeniedBy
+			if checks[i].Approved {
+				by = t.ApprovedBy
+			}
+			if slices.Contains(by, checks[i].Approver) {
+				checks[i].Counted, checks[i].Reason = true, ""
+			}
+		}
+		c := checks[i]
 		out.Decisions = append(out.Decisions, GateDecision{Approver: c.Approver, Approved: c.Approved, Counted: c.Counted, Reason: c.Reason})
 	}
 	return out, checks
@@ -596,20 +695,29 @@ func (h *Handler) fail(w http.ResponseWriter, err error) {
 }
 
 func (h *Handler) decide(w http.ResponseWriter, r *http.Request) {
-	// The in-flight slot is taken before the body is read, and the read has a deadline of its own, so
-	// a client that sends headers and stalls holds one slot for at most readTimeout, not a goroutine
-	// for as long as the server's timeouts allow (set http.Server.ReadHeaderTimeout too).
-	release, ok := h.work(w)
-	if !ok {
-		return
-	}
-	defer release()
-	_ = http.NewResponseController(w).SetReadDeadline(time.Now().Add(h.readTimeout)) // a writer with no deadlines: the server's own apply
+	// A refusal before the body is read must not wait for it: net/http reads up to 256 KiB of an
+	// unread body before it sends the response, which a stalled client would hold open for as long as
+	// the server's own read timeout allows. A deadline already passed ends that read at once.
+	dropBody := func() { _ = http.NewResponseController(w).SetReadDeadline(time.Now()) }
 	if mt, _, err := mime.ParseMediaType(r.Header.Get("Content-Type")); err != nil || mt != "application/json" {
+		dropBody()
 		writeError(w, http.StatusUnsupportedMediaType, "unsupported_media_type", "send application/json")
 		return
 	}
+	// Who may send a body is decided from the headers and the connection alone (the hook is called
+	// first with the method only), so an unauthenticated client holds nothing while it stalls. The
+	// body is then read in the read pool, under a deadline, and only after it is parsed does the
+	// request take a slot for work on the journal.
+	if !h.authorize(w, r, Access{Method: r.Method}, dropBody) {
+		return
+	}
+	releaseRead, ok := h.reader(w, h.clientKey(r), dropBody)
+	if !ok {
+		return
+	}
+	_ = http.NewResponseController(w).SetReadDeadline(time.Now().Add(h.readTimeout)) // a writer with no deadlines: the server's own apply
 	b, err := io.ReadAll(http.MaxBytesReader(w, r.Body, h.maxBody))
+	releaseRead()
 	if err != nil {
 		var tooBig *http.MaxBytesError
 		if errors.As(err, &tooBig) {
@@ -641,6 +749,11 @@ func (h *Handler) decide(w http.ResponseWriter, r *http.Request) {
 	if !h.authorize(w, r, Access{Method: r.Method, RunID: req.Run, ToolUseID: req.Call, Approver: req.Approver}) {
 		return
 	}
+	release, ok := h.work(w)
+	if !ok {
+		return
+	}
+	defer release()
 	ctx := r.Context()
 	g, err := h.load(ctx, d.RunID, d.ToolUseID)
 	if err != nil {

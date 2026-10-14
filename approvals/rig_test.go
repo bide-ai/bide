@@ -50,6 +50,7 @@ func (m chargeModel) Stream(_ context.Context, req agent.Request) (*agent.Stream
 // rig is an application: a 2-of-{alice,bob,carol} gated "charge" tool over a journal that an
 // audit.AuditedStore signs, with the intake handler mounted on a server.
 type rig struct {
+	identity agent.Identity // the run's acting identity, when set (separation of duties)
 	call     string
 	stall    *stallStore
 	t        *testing.T
@@ -96,7 +97,14 @@ func newRig(t *testing.T, opts ...approvals.Option) *rig {
 // newRigWith is newRig for a call id, and a gate policy other than the 2-of-3 (nil keeps it).
 func newRigWith(t *testing.T, call string, policy *agent.ApprovalPolicy, opts ...approvals.Option) *rig {
 	t.Helper()
-	r := &rig{t: t, call: call, privs: map[string]ed25519.PrivateKey{}, enrolled: map[string]ed25519.PublicKey{},
+	return newRigAs(t, call, policy, agent.Identity{}, opts...)
+}
+
+// newRigAs is newRigWith for a run acting as identity (its OnBehalfOf is the requester a policy with
+// ExcludePrincipal excludes).
+func newRigAs(t *testing.T, call string, policy *agent.ApprovalPolicy, id agent.Identity, opts ...approvals.Option) *rig {
+	t.Helper()
+	r := &rig{t: t, call: call, identity: id, privs: map[string]ed25519.PrivateKey{}, enrolled: map[string]ed25519.PublicKey{},
 		policy: agent.ApprovalPolicy{Need: 2, Approvers: []string{"alice", "bob", "carol"}},
 		now:    time.Date(2026, 10, 13, 12, 0, 0, 0, time.UTC)}
 	for _, id := range []string{"alice", "bob", "carol", "dave"} {
@@ -138,8 +146,12 @@ func (r *rig) run() error {
 		r.charged.Add(1)
 		return "ok", nil
 	}, agent.WithApproval(&r.policy))
+	var ropts []agent.RunOption
+	if !r.identity.Empty() {
+		ropts = append(ropts, agent.WithIdentity(r.identity))
+	}
 	_, err := agenttest.MustNew(chargeModel{id: r.call}, r.app, agent.WithTools(charge), agent.WithApproverVerifiers(r.verifiers)).
-		Run(context.Background(), runID, agent.UserText("pay"))
+		Run(context.Background(), runID, agent.UserText("pay"), ropts...)
 	return err
 }
 
