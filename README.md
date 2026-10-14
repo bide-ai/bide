@@ -203,8 +203,9 @@ record. The gate and the notice are recorded on the same audited trail as the re
 - **k-of-n signed approvals.** A tool built with `WithApproval` halts the run before it executes
   until k of n named approvers have signed a decision over the exact call (`bide.approval.v3`; the
   decision time is inside the signature). An auditor checks offline that k named approvers
-  approved before the action. Approvers decide from a terminal with `bide approve`. See the
-  [approval guide](docs/guides/hitl-approval.md).
+  approved before the action. Approvers decide from a terminal with `bide approve`, either against the journal or, with `-to`, through an
+  approval intake (`approvals.Handler`) your application serves, so the application records the
+  decision through its own audited journal. See the [approval guide](docs/guides/hitl-approval.md).
 - **Separation of duties.** With `ExcludePrincipal`, a gate never counts a decision by the run's
   requester or by a requester of any run above it; the excluded decision stays on the record, marked.
   Bide compares ids; it cannot see that one person holds two identities.
