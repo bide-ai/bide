@@ -279,9 +279,10 @@ finds a decision left outside every head. See
 [A decision written by another process](guides/hitl-approval.md#a-decision-written-by-another-process).
 
 **The approval intake serves m-of-n tool-call gates only.** `approvals.Handler` refuses a
-single-approver gate (no signature to check) and a plan flow node's gate. Two identical decisions
-that race can both be answered `recorded: true` and both start the `OnRecorded` hook; the journal
-holds one record. `GET /pending` shows a call's arguments to any caller the handler lets through, so
+single-approver gate (no signature to check) and a plan flow node's gate. Two different decisions of one approver
+sent at once are both recorded and the first counts (the response says `counted`). The writer of a
+record is told by a clock stamp compared with the record's `recorded_at`, so two writers in different
+processes that stamp the same millisecond could both read as the writer. `GET /pending` shows a call's arguments to any caller the handler lets through, so
 confidential arguments need `WithAuth` or a private network. See
 [Taking decisions over HTTP](guides/hitl-approval.md#taking-decisions-over-http).
 

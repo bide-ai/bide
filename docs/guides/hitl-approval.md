@@ -717,14 +717,20 @@ records a decision only if the call exists and waits, the approver is one the ga
 signature verifies under the key `verifierFor` enrolls for them (`agent.WithDecisionCheck`), and the
 gate re-verifies every record when the run resumes. A replay of a recorded decision is a no-op
 (`recorded: false`, the same place in the journal); a second, different decision by an approver who
-already has one that counts is refused (409). Two identical requests that race may both answer
-`recorded: true` (and both start `OnRecorded`); the journal holds one record.
+already has one that counts is refused (409). Of identical requests that race, one writes
+(`recorded: true`) and the others read it back (`recorded: false`); `OnRecorded` runs for the writer
+only. Two different decisions of one approver sent at once (an approve and a reject) can both be
+recorded, and the first in journal order counts: each response carries `counted` (and a `reason`
+when false), and a client that reports success must check it, as `bide approve -to` does.
 
 **What the handler adds around that.** Requests are read strictly (`application/json` only, one
 object, no unknown or duplicate fields, no trailing data) and bounded (`WithMaxBodyBytes`, 64 KiB by
-default). Rate limits apply before anything is read: per client (2 a second, burst 10) and over all
+default; the body must arrive within `WithReadTimeout`, 10 s, and a request holds an in-flight slot
+while it is read, so a stalled client costs one slot for that long). Set `http.Server.ReadHeaderTimeout`
+too: it bounds the headers, before the handler runs. Rate limits apply before anything is read: per client (2 a second, burst 10) and over all
 clients (50 a second, burst 100), with the client the host of `RemoteAddr` unless `WithClientKey`
-names one (behind a proxy, name the address the proxy vouches for); past `WithMaxClients` new clients
+names one (**behind a reverse proxy or load balancer set it**: otherwise every client is the proxy
+and shares one bucket; read only the header the proxy overwrites); past `WithMaxClients` new clients
 share one bucket, so a flood of sources is limited as one. At most `WithMaxInFlight` (16) requests
 work on the journal at once; more get 503 with `Retry-After`. Errors are `{"error":{"code","message"}}`
 with stable codes, and a store error is reported to `WithOnError`, never to the caller. A request for
@@ -747,8 +753,13 @@ differs, and signs the digest it computed, so what is signed is what is shown; a
 arguments than its journal holds gets a signature its journal refuses, and nothing is recorded. The URL must
 be `https` (`http` only to a loopback address) and a redirect is not followed; `-tls-ca`, `-client-cert` with
 `-client-key`, and `-token-env` (a bearer token read from the named environment variable, never from the
-command line) cover a private CA, mutual TLS and a token. The receipt it writes is the one the endpoint
-returns, checked against the decision signed and against the approver's key; its record, position and leaf
+command line) cover a private CA, mutual TLS and a token. The gate is fetched again after the
+confirmation, and the command refuses, signing nothing, on any difference in the tool, the arguments or
+the gate; what it signs is the subject captured when it displayed the call. If the endpoint says the
+decision does not count (another decision of yours does), the command exits 1 as the local flow does.
+The receipt it writes is the one the endpoint returns, checked against the decision signed and against
+the approver's key, and refused if it carries an anchoring proof (only your own `verify-receipts -update`
+adds one); its record, position and leaf
 hash are the application's word until a signed head covers them (`bide audit verify-receipts -update`).
 If the request fails with no answer, run the command again: the decision may have been recorded, and one
 of yours that counts is refused as already decided.
