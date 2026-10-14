@@ -2494,6 +2494,33 @@ the notifier.
 | `deep-compose-leased` | nightly | Property 6: model 10's life-leased (a saga of two calls, a leased primary and a RecoverLoop worker; an error reply and a crash) with a notifier on the run's halt and its abort. | 935,832 | 13 min |
 | `deep-compose-approval` | nightly | Property 6: a model 10 run waiting for an approval, a RecoverLoop worker, the operator approving and resolving, a crash; a notifier on the approval. | 268,245 | 13 s (4 workers) |
 
+Routing and escalation configurations (states and times from local `check.sh` runs on a shared
+development machine; the `ci` ones were sized to finish in minutes, the large versions are `nightly`):
+
+| Config | Group | What | States | Time |
+|---|---|---|---|---|
+| `esc-unacked` | ci | Escalation, two steps; two processes, a sink that fails once, the event may be resolved at any time. | 1,127,613 | 27 s |
+| `esc-lost` | ci | One step with a lost sink reply. | 1,195,857 | 58 s |
+| `esc-crash` | ci | One step with a crash. | 1,002,682 | 3 min |
+| `esc-undecided` | ci | An approval (`EscMode = "undecided"`): escalated although acknowledged, two steps. | 881,759 | 2 min |
+| `esc-clears` | ci | One process, a sink that fails once: a step's all-clear when the event stops standing. | 1,446 | 1 s |
+| `live-esc` | ci | Liveness of the chain (`EscRaised`, `EscDelivered`, `EscStops`), two processes, event not resolved. | 207,774 | 1 min |
+| `live-esc-undecided` | ci | The same for an approval, one process. | 318 | 1 s |
+| `live-esc-clears` | ci | `ClearsDelivered`, `EscStops`, one process. | 1,446 | 1 s |
+| `route-two` | ci | Two keys for one gate (two receivers), one failing request: both are acknowledged. One process. | 3,811 | 1 s |
+| `deep-esc` | nightly | Every fault at once with two steps. | not run locally | |
+| `deep-esc-clears`, `deep-live-esc`, `deep-live-esc-undecided`, `deep-route-two` | nightly | The larger versions of the `ci` ones above (two processes, with the all-clear, or with the event resolved): `deep-route-two` 3,824,395 states, 23 min; `deep-esc-clears` over 88 million states, 4 hours; `deep-live-esc` 1.1 million, 23 min; `deep-live-esc-undecided` 0.88 million, 32 min. | | |
+
+The vacuity check (`EffectNotReachable`, which TLC must report violated) is: with `Clears`, an
+all-clear is delivered (a step's all-clear is among them); with `Levels` and no `Clears`, the first
+step of a chain is delivered. It was first written as "the last step": in `esc-unacked` (two steps, not acknowledged mode) the last
+step is delivered only if the first step is not acknowledged either, which needs a second failed
+request, and the fault budget of the configuration does not give it, so that vacuity check failed
+(the effect never fires) although the first step is reached. The first step is the effect that
+configuration exists to exercise. The last step of a two-step chain is reached in `esc-undecided`
+(an approval is escalated whatever was acknowledged), where the vacuity check with the old condition
+passed at depth 20, and in `deep-esc`.
+
 ### Regressions: the protocol with one rule broken
 
 Each restores a broken rule behind `Bug` (or a constant) and must fail with its property. Together
@@ -2518,6 +2545,12 @@ they are the mutation check of every property above.
 | `clear-unclaimed` | the all-clear is owed for an event cleared before any delivery was attempted | `ClearOnlyIfTold` (12) |
 | `clear-overdue` | the all-clear has a deadline and goes overdue like an event | `ClearNeverOverdue` (16) |
 | `no-clear` | an event that stopped standing after it was delivered never gets its all-clear | `ClearsDelivered` (19) |
+| `shared-ack` | both receivers of a gate share one key: the first acknowledgement closes the second's | `NoSilentDrop` (liveness) |
+| `esc-early` | a step is observed before its event's deadline | `EscOnlyIfDue` |
+| `esc-skip` | step 2 does not wait for step 1 | `EscChain` |
+| `esc-when-acked` | a step is observed after the event or an earlier step was acknowledged | `EscNotWhenSatisfied` |
+| `no-esc` | no escalation rule, under fairness | `EscRaised` |
+| `no-esc-stop` | a step stands after its event stopped standing | `EscStops` |
 | `compose-in-journal` | the notifier writes the run's journal (its claim as an attempt marker on the run's last call, as a notification run as a Step of the run would) | `LifeStepsOnly` (12) |
 
 ### Limits and findings
