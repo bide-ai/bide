@@ -56,7 +56,7 @@ CONSTANTS
   ResolveVoidOnError,
   \* @type: Str -> Str;
   Policy0,
-  \* @type: Str -> { need: Int, apprs: Set(Str) };
+  \* @type: Str -> { need: Int, apprs: Set(Str), sod: Bool };
   Policies,
   \* @type: Set(Str);
   PolicyChoices,
@@ -84,6 +84,10 @@ CONSTANTS
   MaxRedeploy,
   \* @type: Bool;
   KeyCheck,
+  \* @type: Str;
+  Requester,
+  \* @type: Set(Str);
+  Ancestors,
   \* @type: Str;
   Bug
 
@@ -144,8 +148,10 @@ VARIABLES
   one,
   \* @type: Str -> Seq({ a: Str, h: Str, ok: Bool, k: Str, subj: Str });
   dlog,
-  \* @type: Str -> { rec: Bool, passed: Bool, pol: Str, signers: Set(Str), excl: Int, denials: Int };
+  \* @type: Str -> { rec: Bool, passed: Bool, pol: Str, signers: Set(Str), excl: Int, denials: Int, seated: Set(Str) };
   tally,
+  \* @type: Str -> { rec: Bool, passed: Bool, pol: Str, signers: Set(Str), excl: Int, denials: Int, seated: Set(Str) };
+  stally,
   \* @type: Str -> (Str -> Str);
   policy,
   \* @type: Int;
@@ -160,6 +166,8 @@ VARIABLES
   badPause,
   \* @type: Bool;
   badDeny,
+  \* @type: Bool;
+  badSoD,
   \* @type: Str -> Set(Str);
   keys,
   \* @type: Int;
@@ -180,11 +188,11 @@ VARIABLES
   reused,
   \* @type: Str -> Str;
   snapOne,
-  \* @type: Str -> { rec: Bool, passed: Bool, pol: Str, signers: Set(Str), excl: Int, denials: Int };
+  \* @type: Str -> { rec: Bool, passed: Bool, pol: Str, signers: Set(Str), excl: Int, denials: Int, seated: Set(Str) };
   snapTally,
   \* @type: Str -> Str;
   gp,
-  \* @type: Str -> { rec: Bool, passed: Bool, pol: Str, signers: Set(Str), excl: Int, denials: Int };
+  \* @type: Str -> { rec: Bool, passed: Bool, pol: Str, signers: Set(Str), excl: Int, denials: Int, seated: Set(Str) };
   qt,
   \* @type: Str -> Bool;
   loadDenied,
@@ -219,7 +227,7 @@ ApTwoCalls == [d \in Drivers |-> IF d = "d1" THEN "c1" ELSE "c2"]
 ApOneCall == [d \in Drivers |-> "c1"]
 ApNoNext == [c \in Calls |-> "none"]
 ApNoGate == [c \in Calls |-> "none"]
-ApPols == [n \in {"m"} |-> [need |-> 2, apprs |-> {"a1", "a2", "a3"}]]
+ApPols == [n \in {"m"} |-> [need |-> 2, apprs |-> {"a1", "a2", "a3"}, sod |-> FALSE]]
 
 \* The constants a configuration (apalache/*.cfg) leaves to the solver: every placement of the
 \* drivers D in the processes P and on the calls C, every kind of call (tool, step or flow) for the calls C, whether

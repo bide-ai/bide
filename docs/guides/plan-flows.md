@@ -259,6 +259,19 @@ out, err := flow.Run(ctx, j, runID, in) // runs the node once 2 of 3 have approv
 - **In a loop, the gate is per iteration.** Each iteration's run of a gated node pauses for its own
   decisions on its own input. To approve a whole loop once, gate a node before it.
 - **A gate on an arm not taken never pauses.**
+- **Separation of duties.** A policy with `ExcludePrincipal` never counts the run's requester (see
+  [Human approval](hitl-approval.md#separation-of-duties)). A flow run's requester is the
+  `OnBehalfOf` of the identity it starts with (`agent.WithIdentity` passed to `Run`, or the one its context carries inside an agent run), which the run journals in its
+  `run:principal` and `run:start` (a flow started inside another run's drive also records that
+  run's principal chain, and runs its nodes start record the flow's); a later drive under another principal is `ErrConfig`, and one with none runs under the
+  journaled one. A flow run recorded with no principal (every flow run an earlier version started)
+  keeps none, whatever a later drive carries, and stops at such a gate with `ErrConfig`.
+
+  <!-- docsnip: setup ctx context.Context; j *agent.Journal; flow *plan.Flow[int, int]; runID string; in int -->
+  ```go
+  ops := agent.WithIdentity(agent.Identity{OnBehalfOf: "ops"}) // from your auth layer
+  out, err := flow.Run(ctx, j, runID, in, ops) // ops's own approval of a gated node never counts
+  ```
 - **The digest commits to the gate**, so a paused run cannot be resumed under a flow whose gate was
   removed or changed. A node carries one gate: `plan.Approval` on a `Tool` whose agent tool declares
   another gate is a `Build` error. `Build` refuses an m-of-n gate in a flow with no
@@ -336,7 +349,8 @@ The flow, end to end:
    committed to this signed diagram.**
 
 `Conform` closes the loop on the *path*: it recognizes `run:start` (which must name this flow),
-`flow:digest`, `flow:topology` (whose digest must be this flow's), a node's attempt markers and the not-started records of its claims as internal records
+`run:principal` (which must name the principal and ancestors `run:start` does), a gate's tallies
+and re-tallies (`approval-tally:<key>`, `:v3`, `:sod`), `flow:digest`, `flow:topology` (whose digest must be this flow's), a node's attempt markers and the not-started records of its claims as internal records
 (never a divergence) and verifies the journaled digest **equals** the current flow's `Digest()`. A mismatch is
 reported as a divergence, "ran against a different topology": the run executed under a different
 declared graph than the flow now describes. So `Conform` covers node-visitation and branch choices,
@@ -519,6 +533,12 @@ nodes:
     approval: {need: 2, approvers: [ops, finance, risk]}
 ```
 
+Add `exclude_principal: true` to the block for [separation of
+duties](hitl-approval.md#separation-of-duties): the gate then never counts the run's requester
+(`approval: {need: 2, approvers: [ops, finance, risk], exclude_principal: true}`). It is part of the
+gate, so the flow's digest commits to it, and `bide view -config -diff` reports dropping it as a
+weakened gate.
+
 `Load` and `Validate` reject a block with no approvers, a `need` outside `1..len(approvers)`, or a
 duplicate approver id (or two that differ only by case), or an id that is not printable ASCII, naming the node.
 The gate is enforced as in Go (see [Approval gates on nodes](#approval-gates-on-nodes)): load the flow
@@ -545,7 +565,7 @@ assert:
 
 | Assertion | Holds when |
 |---|---|
-| `every path to <node> passes approval >= K [of N]` | every path from the entry to the node passes a node whose approval gate needs at least K decisions (and, with `of N`, from at most N named approvers). The node's own gate counts. A one-decision gate (`agent.SingleApproval`) counts only for `approval >= 1`. |
+| `every path to <node> passes approval >= K [of N] [excluding the requester]` | every path from the entry to the node passes a node whose approval gate needs at least K decisions (and, with `of N`, from at most N named approvers; and, with `excluding the requester`, never counts the run's requester: `exclude_principal`). The node's own gate counts. A one-decision gate (`agent.SingleApproval`) counts only for `approval >= 1`. |
 | `every path to <node> passes <node>` | every path from the entry to the first node passes the second. |
 | `every path to a terminal passes <node>` | every path from the entry to a terminal node (one with no outgoing edge or arm) passes the node. |
 | `no side effect after <node>` | no node a path from the node reaches is a side effect (a node that is in a loop with itself counts as after itself). |

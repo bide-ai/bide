@@ -11,6 +11,7 @@ import (
 
 	"github.com/bide-ai/bide/agent"
 	"github.com/bide-ai/bide/internal/journalhook"
+	"github.com/bide-ai/bide/internal/toolhook"
 )
 
 // Flow[In, Out] is a built, frozen flow: the reified topology validated by
@@ -91,17 +92,37 @@ type Flow[In, Out any] struct {
 // the decisions agent.Approve and agent.SubmitDecision record, and "approval-tally:<key>" (an
 // m-of-n gate's terminal tally, before the node runs). In a loop body the key is the iteration's,
 // so each iteration is approved on its own.
-func (f *Flow[In, Out]) Run(ctx context.Context, store *agent.Journal, runID string, in In) (Out, error) {
-	out, err := f.run(ctx, store, runID, in)
+//
+// opts takes agent.WithIdentity alone (any other option is ErrConfig): the identity the run acts
+// under, as an agent run's. Without it the identity ctx carries applies (a flow run started inside
+// an agent run's tool call inherits that run's). The run journals the identity's principal
+// (OnBehalfOf, AuthorityRef) with its start, in its run:principal and run:start, as an agent run
+// does: a later drive under another principal is ErrConfig, a drive that passes none runs under the
+// journaled one, and a run recorded with none (every flow run an earlier version started) keeps
+// none. The principal is the requester an approval gate with ExcludePrincipal excludes, and the
+// nodes' code and the runs they start see it (agent.IdentityFrom).
+func (f *Flow[In, Out]) Run(ctx context.Context, store *agent.Journal, runID string, in In, opts ...agent.RunOption) (Out, error) {
+	out, err := f.run(ctx, store, runID, in, opts)
 	f.core.runEnd(store, runID, err)
 	return out, err
 }
 
-func (f *Flow[In, Out]) run(ctx context.Context, store *agent.Journal, runID string, in In) (Out, error) {
+func (f *Flow[In, Out]) run(ctx context.Context, store *agent.Journal, runID string, in In, opts []agent.RunOption) (Out, error) {
 	var out Out
 	c := f.core
 	if err := journalhook.CheckRunID(ctx, runID); err != nil {
 		return out, fmt.Errorf("plan: run %q: %w", c.flowName, err)
+	}
+	anyOpts := make([]any, len(opts))
+	for i, o := range opts {
+		anyOpts[i] = o
+	}
+	actor, onBehalfOf, authorityRef, set, err := journalhook.RunIdentity(anyOpts)
+	if err != nil {
+		return out, fmt.Errorf("plan: run %q: %w", c.flowName, err)
+	}
+	if set {
+		ctx = toolhook.WithIdentity(ctx, actor, onBehalfOf, authorityRef)
 	}
 
 	// The run's start comes first: a drive of a run some other flow, input or entry point started
@@ -112,8 +133,13 @@ func (f *Flow[In, Out]) run(ctx context.Context, store *agent.Journal, runID str
 		return out, fmt.Errorf("plan: run %q: encode flow input: %w (%w)", c.flowName, encErr, agent.ErrConfig)
 	}
 	start := agent.RunStart{Kind: agent.RunKindFlow, Flow: &agent.FlowRef{Name: c.flowName}, Input: agent.UserText(string(input))}
+	// The run's principal, from its identity (agent.WithIdentity, or the one ctx carries): it is
+	// journaled with the start, and it is the requester a gate that excludes the requester reads.
+	if id, ok := agent.IdentityFrom(ctx); ok && (id.OnBehalfOf != "" || id.AuthorityRef != "") {
+		start.Principal = &agent.Principal{OnBehalfOf: id.OnBehalfOf, AuthorityRef: id.AuthorityRef}
+	}
 	// protocol:flows begin Begin BeginStart
-	done, finished, err := journalhook.Begin(ctx, store, runID, start)
+	ctx, done, finished, err := journalhook.Begin(ctx, store, runID, start)
 	if err != nil {
 		return out, fmt.Errorf("plan: run %q: %w", c.flowName, err)
 	}

@@ -70,11 +70,13 @@ type configNode struct {
 }
 
 // configApproval is a node's m-of-n approval block: Need decisions required from the
-// bounded Approvers set. It lowers to agent.ApprovalPolicy; Load rejects a policy
-// agent.ApprovalPolicy.Validate refuses (see configGate).
+// bounded Approvers set, never counting the run's requester when ExcludePrincipal is set. It
+// lowers to agent.ApprovalPolicy; Load rejects a policy agent.ApprovalPolicy.Validate refuses (see
+// configGate).
 type configApproval struct {
-	Need      int      `json:"need"`
-	Approvers []string `json:"approvers"`
+	Need             int      `json:"need"`
+	Approvers        []string `json:"approvers"`
+	ExcludePrincipal bool     `json:"exclude_principal,omitempty"`
 }
 
 // configWire is one wiring element: a discriminated union of EXACTLY ONE of an edge,
@@ -115,7 +117,7 @@ type configWire struct {
 // need outside [1, approvers]), or a block that already declares another gate (a node carries
 // one gate, so a config can neither loosen nor replace a tool's own).
 func configGate(base *agent.ApprovalPolicy, ca *configApproval) (*agent.ApprovalPolicy, []string) {
-	p := &agent.ApprovalPolicy{Need: ca.Need, Approvers: append([]string(nil), ca.Approvers...)}
+	p := &agent.ApprovalPolicy{Need: ca.Need, Approvers: append([]string(nil), ca.Approvers...), ExcludePrincipal: ca.ExcludePrincipal}
 	var why []string
 	n := len(ca.Approvers)
 	if n == 0 {

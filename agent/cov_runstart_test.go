@@ -73,7 +73,7 @@ func TestHoldToStart(t *testing.T) {
 	}
 	for _, c := range cases {
 		t.Run(c.name, func(t *testing.T) {
-			err := holdToStart(ctx, memJournal(), "r", rec(c.have), c.want)
+			_, err := holdToStart(ctx, memJournal(), "r", rec(c.have), c.want)
 			if c.err != errors.Is(err, ErrConfig) || (err != nil && !c.err) {
 				t.Fatalf("holdToStart = %v; want ErrConfig=%v", err, c.err)
 			}
@@ -81,32 +81,32 @@ func TestHoldToStart(t *testing.T) {
 	}
 	t.Run("flow input that is not JSON text", func(t *testing.T) {
 		bad := RunStart{Input: UserText(`{"a":1,"a":2}`), Kind: RunKindFlow, Flow: &FlowRef{Name: "f"}}
-		if err := holdToStart(ctx, memJournal(), "r", rec(flowStart), bad); !errors.Is(err, ErrConfig) {
+		if _, err := holdToStart(ctx, memJournal(), "r", rec(flowStart), bad); !errors.Is(err, ErrConfig) {
 			t.Fatalf("holdToStart = %v; want ErrConfig", err)
 		}
 	})
 	t.Run("a run with no start records the drive's", func(t *testing.T) {
 		j := memJournal()
-		if err := holdToStart(ctx, j, "r", nil, agentStart); err != nil {
+		if _, err := holdToStart(ctx, j, "r", nil, agentStart); err != nil {
 			t.Fatal(err)
 		}
 		got, ok, err := RecordedStart(ctx, j, "r")
 		if err != nil || !ok || got.Input.Text() != "pay" || got.StartedAt == "" {
 			t.Fatalf("RecordedStart = %+v, %v, %v", got, ok, err)
 		}
-		if err := holdToStart(ctx, j, "r", nil, RunStart{Input: UserText("other")}); err == nil || !errors.Is(err, ErrConfig) {
+		if _, err := holdToStart(ctx, j, "r", nil, RunStart{Input: UserText("other")}); err == nil || !errors.Is(err, ErrConfig) {
 			t.Fatalf("a second drive with another input = %v; want ErrConfig", err)
 		}
 	})
 	t.Run("recording the start fails", func(t *testing.T) {
 		j := mustJournal(covInsertFail{NewMemStore(), runStartStep})
-		if err := holdToStart(ctx, j, "r", nil, agentStart); !errors.Is(err, ErrStorage) {
+		if _, err := holdToStart(ctx, j, "r", nil, agentStart); !errors.Is(err, ErrStorage) {
 			t.Fatalf("holdToStart = %v; want ErrStorage", err)
 		}
 	})
 	t.Run("recorded start does not decode", func(t *testing.T) {
 		bad := []Record{{Kind: StepValue, Name: runStartStep, Result: json.RawMessage(`[1]`)}}
-		if err := holdToStart(ctx, memJournal(), "r", bad, agentStart); !errors.Is(err, ErrStorage) {
+		if _, err := holdToStart(ctx, memJournal(), "r", bad, agentStart); !errors.Is(err, ErrStorage) {
 			t.Fatalf("holdToStart = %v; want ErrStorage", err)
 		}
 	})
@@ -116,20 +116,20 @@ func TestHoldToStart(t *testing.T) {
 func TestJournalHook_BeginStoreFaults(t *testing.T) {
 	ctx := context.Background()
 	start := RunStart{Input: UserText(`{}`), Kind: RunKindFlow, Flow: &FlowRef{Name: "f"}}
-	if _, _, err := journalhook.Begin(ctx, mustJournal(covInsertFail{NewMemStore(), runStartStep}), "r", start); err == nil {
+	if _, _, _, err := journalhook.Begin(ctx, mustJournal(covInsertFail{NewMemStore(), runStartStep}), "r", start); err == nil {
 		t.Error("Begin succeeded though run:start could not be recorded")
 	}
 	// The run exists, but its end markers cannot be read.
 	s := NewMemStore()
-	if _, _, err := journalhook.Begin(ctx, mustJournal(s), "r", start); err != nil {
+	if _, _, _, err := journalhook.Begin(ctx, mustJournal(s), "r", start); err != nil {
 		t.Fatal(err)
 	}
-	if _, _, err := journalhook.Begin(ctx, mustJournal(covGetFail{s, runCompleteStep}), "r", start); err == nil {
+	if _, _, _, err := journalhook.Begin(ctx, mustJournal(covGetFail{s, runCompleteStep}), "r", start); err == nil {
 		t.Error("Begin of an existing run succeeded though its end markers could not be read")
 	}
 	badIn := start
 	badIn.Input = UserText(`{"a":1,"a":2}`)
-	if _, _, err := journalhook.Begin(ctx, memJournal(), "r", badIn); !errors.Is(err, ErrConfig) {
+	if _, _, _, err := journalhook.Begin(ctx, memJournal(), "r", badIn); !errors.Is(err, ErrConfig) {
 		t.Errorf("Begin with a flow input that has no canonical form = %v; want ErrConfig", err)
 	}
 }

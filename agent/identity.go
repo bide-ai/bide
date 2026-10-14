@@ -1,6 +1,10 @@
 package agent
 
-import "context"
+import (
+	"context"
+	"fmt"
+	"reflect"
+)
 
 // Identity is the accountability binding for a run: which agent instance acted, on whose behalf,
 // and under what authority. It is assigned by the DEPLOYMENT, not by the model: the operator sets
@@ -43,4 +47,30 @@ func contextWithIdentity(ctx context.Context, id Identity) context.Context {
 func IdentityFrom(ctx context.Context) (Identity, bool) {
 	id, ok := ctx.Value(identityKey{}).(Identity)
 	return id, ok
+}
+
+// flowRunIdentity is journalhook.RunIdentity: the identity a plan flow run's options give. A flow
+// run takes WithIdentity alone: its other settings (the turn limit, a tool filter, a saga, ...) are
+// an agent run's.
+func flowRunIdentity(opts []any) (actor, onBehalfOf, authorityRef string, set bool, err error) {
+	var c runConfig
+	for i, o := range opts {
+		ro, ok := o.(RunOption)
+		if !ok || isNil(ro) {
+			return "", "", "", false, fmt.Errorf("plan flow run option %d is %T, not an agent.RunOption: %w", i, o, ErrConfig)
+		}
+		if err := ro.applyRun(&c); err != nil {
+			return "", "", "", false, err
+		}
+		id := c.identity
+		c.identity = nil
+		if !reflect.DeepEqual(c, runConfig{}) {
+			return "", "", "", false, fmt.Errorf("plan flow run option %d: a flow run takes agent.WithIdentity only: %w", i, ErrConfig)
+		}
+		c.identity = id
+	}
+	if c.identity == nil {
+		return "", "", "", false, nil
+	}
+	return c.identity.Actor, c.identity.OnBehalfOf, c.identity.AuthorityRef, true, nil
 }

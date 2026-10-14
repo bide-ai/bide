@@ -91,12 +91,15 @@ type Principal struct {
 
 // Approval is the detail of an approval_pending event: who may decide and how many must.
 type Approval struct {
-	ToolUseID string          `json:"tool_use_id"`
-	Tool      string          `json:"tool"`
-	Policy    Policy          `json:"policy"`
-	Approvers []string        `json:"approvers"`
-	Approved  int             `json:"approved"`
-	Args      json.RawMessage `json:"args,omitempty"` // only with WithFields(Args(tool))
+	ToolUseID string   `json:"tool_use_id"`
+	Tool      string   `json:"tool"`
+	Policy    Policy   `json:"policy"`
+	Approvers []string `json:"approvers"`
+	Approved  int      `json:"approved"`
+	// Excluded are the approvers who may not decide (separation of duties: requesters of the run,
+	// agent.ApprovalPolicy.ExcludePrincipal); omitted when there are none.
+	Excluded []string        `json:"excluded,omitempty"`
+	Args     json.RawMessage `json:"args,omitempty"` // only with WithFields(Args(tool))
 }
 
 // Policy is the gate's k of n.
@@ -169,7 +172,7 @@ func (w *Webhook) payload(n agent.Notification) Payload {
 	case agent.NotificationApprovalPending:
 		if a := n.Approval; a != nil {
 			p.Step = &Step{OpKind: string(agent.OpTool), OpID: a.ToolUseID, Tool: a.ToolName}
-			ap := &Approval{ToolUseID: a.ToolUseID, Tool: a.ToolName, Policy: Policy{Need: a.Need, Of: a.Of}, Approvers: a.Approvers, Approved: a.Approved}
+			ap := &Approval{ToolUseID: a.ToolUseID, Tool: a.ToolName, Policy: Policy{Need: a.Need, Of: a.Of}, Approvers: a.Approvers, Approved: a.Approved, Excluded: a.Excluded}
 			if ap.Approvers == nil {
 				ap.Approvers = []string{}
 			}

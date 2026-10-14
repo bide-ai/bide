@@ -375,6 +375,22 @@ func load(ctx context.Context, j *agent.Journal, run, call string) (*gateOf, err
 	return &gateOf{recs: recs, view: v, gate: v.Gates[i], call: tu}, nil
 }
 
+// policy is the gate's policy as the journal records it, separation of duties included: the
+// policy every count here runs under, so a requester's decision is never counted (and the run's
+// run:principal, which names the requesters, is in the records counted).
+func (g *gateOf) policy() agent.ApprovalPolicy { return gatePolicy(g.gate) }
+
+// gatePolicy is the m-of-n policy the gate view g records.
+func gatePolicy(g runview.Gate) agent.ApprovalPolicy {
+	return agent.ApprovalPolicy{Need: g.Need, Approvers: g.Approvers, ExcludePrincipal: g.ExcludePrincipal}
+}
+
+// requester reports whether as is a requester of the run the gate g excludes (separation of
+// duties): equal to one of its requesters, ignoring ASCII case, as the gate compares them.
+func requester(g runview.Gate, as string) bool {
+	return g.ExcludePrincipal && (slices.Contains(g.Excluded, as) || slices.ContainsFunc(g.Requesters, func(r string) bool { return agent.SameApprover(as, r) }))
+}
+
 // subject is what the approver signs a decision on, from the records read.
 func (g *gateOf) subject(run string) agent.ApprovalSubject {
 	return agent.ApprovalSubject{RunID: run, ToolUseID: g.call.ID, ToolName: g.call.Name, Args: g.call.Args}
@@ -416,7 +432,7 @@ func (g *gateOf) preflight(run, as string, reject bool, verifierFor agent.Approv
 	// An approver whose counted decision is the one they are making again has nothing to do, even
 	// if the gate has since passed or the run has ended: a retry after a lost response succeeds.
 	if verifierFor != nil && as != "" && slices.Contains(gt.Approvers, as) {
-		_, checks := agent.TallyApprovals(g.recs, g.subject(run), agent.ApprovalPolicy{Need: gt.Need, Approvers: gt.Approvers}, verifierFor)
+		_, checks := agent.TallyApprovals(g.recs, g.subject(run), g.policy(), verifierFor)
 		for _, ck := range checks {
 			if ck.Approver != as || !ck.Counted || ck.Approved == reject {
 				continue
@@ -458,6 +474,9 @@ func (g *gateOf) preflight(run, as string, reject bool, verifierFor agent.Approv
 	if !slices.Contains(gt.Approvers, as) {
 		return refuse("%q is not an approver of the gate on call %s; its approvers are: %s", safe(as), safe(gt.ToolUseID), safe(strings.Join(gt.Approvers, ", ")))
 	}
+	if requester(gt, as) {
+		return refuse("%s is a requester of run %s (the gate excludes the requester: separation of duties); your decision would not count", safe(as), safe(run))
+	}
 	// Refusing on the standing of the gate or on an earlier decision of the approver needs the
 	// decisions verified: a record that does not verify holds nobody's place, and one that nothing
 	// has checked must never lock an approver out or settle a gate (a junk record is one
@@ -467,7 +486,7 @@ func (g *gateOf) preflight(run, as string, reject bool, verifierFor agent.Approv
 	if verifierFor == nil {
 		return nil
 	}
-	t, checks := agent.TallyApprovals(g.recs, g.subject(run), agent.ApprovalPolicy{Need: gt.Need, Approvers: gt.Approvers}, verifierFor)
+	t, checks := agent.TallyApprovals(g.recs, g.subject(run), g.policy(), verifierFor)
 	switch {
 	case t.Passed():
 		return refuse("the gate on call %s already has its %d approval(s) (verified); nothing more is needed: re-run run %s", safe(gt.ToolUseID), gt.Need, safe(run))
@@ -805,7 +824,7 @@ func (c *cmd) after(ctx context.Context, j *agent.Journal, verifierFor, own agen
 		fmt.Fprintf(c.out, "%s\n", gt.Status)
 	case verifierFor != nil:
 		var t agent.ApprovalTally
-		t, counts = agent.TallyApprovals(g.recs, g.subject(f.run), agent.ApprovalPolicy{Need: gt.Need, Approvers: gt.Approvers}, verifierFor)
+		t, counts = agent.TallyApprovals(g.recs, g.subject(f.run), g.policy(), verifierFor)
 		passed, denied = t.Passed(), t.Unreachable()
 		fmt.Fprintf(c.out, "verified tally: %d of %d needed approved%s%s\n", t.Approved, t.Need, names(" by", t.ApprovedBy), names("; denied by", t.DeniedBy))
 		if len(t.Pending) > 0 && !passed && !denied {
@@ -813,7 +832,7 @@ func (c *cmd) after(ctx context.Context, j *agent.Journal, verifierFor, own agen
 		}
 	default:
 		unverified = true
-		passed, denied = len(gt.ApprovedBy) >= gt.Need, len(gt.Approvers)-len(gt.DeniedBy) < gt.Need
+		passed, denied = len(gt.ApprovedBy) >= gt.Need, len(gt.Approvers)-len(gt.Excluded)-len(gt.DeniedBy) < gt.Need
 		fmt.Fprintf(c.out, "%s recorded decisions: %d of %d needed approved%s%s\n", st.BoldFail("UNVERIFIED"), len(gt.ApprovedBy), gt.Need, names(" by", gt.ApprovedBy), names("; denied by", gt.DeniedBy))
 		if len(gt.Pending) > 0 && !passed && !denied {
 			fmt.Fprintf(c.out, "still pending: %s\n", safe(strings.Join(gt.Pending, ", ")))
@@ -827,7 +846,7 @@ func (c *cmd) after(ctx context.Context, j *agent.Journal, verifierFor, own agen
 		// place, so a junk record before this one does not displace it.
 		ownCounts := counts
 		if verifierFor == nil {
-			_, ownCounts = agent.TallyApprovals(g.recs, g.subject(f.run), agent.ApprovalPolicy{Need: gt.Need, Approvers: gt.Approvers}, own)
+			_, ownCounts = agent.TallyApprovals(g.recs, g.subject(f.run), g.policy(), own)
 		}
 		countErr = ownDecisionCounts(mine, ownCounts)
 	}
@@ -877,6 +896,10 @@ type waiting struct {
 	ApprovedBy []string `json:"approved_by,omitempty"`
 	DeniedBy   []string `json:"denied_by,omitempty"`
 	Pending    []string `json:"pending,omitempty"`
+	// Requesters and Excluded: the gate excludes the run's requesters (separation of duties), and
+	// the approvers who fill no seat for it. No command is offered for them.
+	Requesters []string `json:"requesters,omitempty"`
+	Excluded   []string `json:"excluded,omitempty"`
 	AskedAt    string   `json:"asked_at,omitempty"`
 	// Verified says the standing above is the gate's own count (agent.TallyApprovals with the
 	// approvers' keys, -approver-keys). Without it the standing counts the decisions as recorded,
@@ -928,10 +951,13 @@ func (c *cmd) list(ctx context.Context) error {
 				continue
 			}
 			w := waiting{Run: run, Call: g.ToolUseID, Tool: g.ToolName, Single: g.Single, Need: g.Need, Approvers: g.Approvers, ApprovedBy: g.ApprovedBy, DeniedBy: g.DeniedBy, Pending: g.Pending, AskedAt: g.AskedAt}
+			if g.ExcludePrincipal {
+				w.Requesters, w.Excluded = g.Requesters, g.Excluded
+			}
 			if _, tu, found := agent.FindToolCall(recs, g.ToolUseID); found && verifierFor != nil && !g.Single && g.Need > 0 {
 				// The gate's own count, with the approvers' keys: records that do not verify count for
 				// nothing, and a pending approver is one with no valid decision.
-				t, _ := agent.TallyApprovals(recs, agent.ApprovalSubject{RunID: run, ToolUseID: g.ToolUseID, ToolName: tu.Name, Args: tu.Args}, agent.ApprovalPolicy{Need: g.Need, Approvers: g.Approvers}, verifierFor)
+				t, _ := agent.TallyApprovals(recs, agent.ApprovalSubject{RunID: run, ToolUseID: g.ToolUseID, ToolName: tu.Name, Args: tu.Args}, gatePolicy(g), verifierFor)
 				w.Verified, w.ApprovedBy, w.DeniedBy, w.Pending = true, t.ApprovedBy, t.DeniedBy, t.Pending
 				switch {
 				case t.Passed():
@@ -954,7 +980,7 @@ func (c *cmd) list(ctx context.Context) error {
 				line("")
 			case w.Settled != "":
 			default:
-				for _, id := range w.Pending {
+				for _, id := range w.Pending { // a requester is never pending: the gate excludes them
 					line(id)
 				}
 			}
@@ -988,6 +1014,9 @@ func (c *cmd) list(ctx context.Context) error {
 				label = " (decisions as recorded, unverified: give -approver-keys)"
 			}
 			fmt.Fprintf(c.out, "    %d of %d: %s%s%s\n", w.Need, len(w.Approvers), safe(strings.Join(w.Approvers, ", ")), names("; approved by", w.ApprovedBy)+names("; denied by", w.DeniedBy), label)
+			if len(w.Requesters) > 0 {
+				fmt.Fprintf(c.out, "    excluding the requester (separation of duties): requested by %s%s\n", safe(strings.Join(w.Requesters, ", ")), names("; cannot approve:", w.Excluded))
+			}
 			switch w.Settled {
 			case "approved":
 				fmt.Fprintf(c.out, "    %s\n", st.OK("approvals verified: re-run the run and the call runs (agent.Run with the same run ID, or RecoverLoop)"))

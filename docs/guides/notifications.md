@@ -153,7 +153,9 @@ credential and never goes in a payload: an adapter that reads from Postgres repl
 <journal.db>` part with `-postgres "$DSN"` itself.
 
 **In it:** kind, run ID, the step and tool name, the gate's approver IDs and its policy (k of n), the
-run's principal, the times, and a view pointer.
+run's principal, the times, and a view pointer. For a gate with separation of duties
+(`ExcludePrincipal`), `approval.excluded` lists the approvers who are requesters of the run: their
+decisions never count, so a router should not ask them.
 
 **Deliberately not in it:**
 
@@ -166,8 +168,10 @@ run's principal, the times, and a view pointer.
   which reads the call from the journal, not from the message.
 - Any decision about who may approve. The approver list is for routing and is advisory; the gate
   counts a decision only from a listed approver with a verifying signature. The principal is the party
-  the run acts for, which is not always the person who asked, so route away from it as one input and
-  keep your own rule for who the requester is.
+  the run acts for; under separation of duties the gate itself excludes it (and the principals of the
+  runs above it), and `approval.excluded` names the approvers that rules out. Without
+  `ExcludePrincipal`, route away from the principal as one input and keep your own rule for who the
+  requester is.
 
 Anything more is an explicit allowlist, named field by field:
 

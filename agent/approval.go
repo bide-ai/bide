@@ -31,10 +31,18 @@ import (
 // bytes everywhere else (eligibility, the signed decision bytes, the verifier lookup), but a
 // policy may not list two ids that differ only by ASCII case ("alice" and "Alice"): a person
 // reading the policy, or a key lookup that folds case, takes them for one approver.
+//
+// ExcludePrincipal is valid on an m-of-n policy and ErrConfig on SingleApproval. Whether Need stays
+// reachable without the requester depends on the run (who requested it), so the gate checks that
+// when it evaluates a call, not here: a policy whose Need equals the number of approvers can
+// exclude the requester only for runs whose requester is not one of them.
 func (p ApprovalPolicy) Validate() error {
 	if p.one { // SingleApproval, unless its fields were changed since
 		if p.Need != 1 || len(p.Approvers) != 0 {
 			return fmt.Errorf("a SingleApproval policy was changed to Need %d and %d approvers; build an m-of-n policy instead: %w", p.Need, len(p.Approvers), ErrConfig)
+		}
+		if p.ExcludePrincipal {
+			return fmt.Errorf("a SingleApproval policy cannot exclude the principal: its decision (Approve) names no approver; build an m-of-n policy instead: %w", ErrConfig)
 		}
 		return nil
 	}
@@ -329,9 +337,18 @@ type ApprovalTally struct {
 	Pending    []string `json:"pending,omitempty"`     // eligible approvers with no valid decision yet who can still make one, in policy order
 	// Excluded names the eligible approvers who fill no seat, in policy order: their verifier
 	// shares a key identity with another approver's, reports none, or is a typed nil
-	// (ReasonSharedKey, ReasonNoKeyID). They never count, so Unreachable leaves them out. The gate
-	// refuses such a policy before counting, so a tally it journals has none.
+	// (ReasonSharedKey, ReasonNoKeyID), or the policy excludes the requester and the approver is
+	// the requester (ReasonRequester) or the run records no usable requester (ReasonNoRequester).
+	// They never count, so Unreachable leaves them out. The gate refuses a policy with a key
+	// problem, or with no usable requester, before counting, so a tally it journals names at most
+	// the requester here.
 	Excluded []string `json:"excluded,omitempty"`
+	// ExcludePrincipal records that the policy excluded the requester (ApprovalPolicy.ExcludePrincipal),
+	// and Requesters the requesters the count excluded: the principals the run's run:principal
+	// names, those of the runs above it first and the run's own last (RunPrincipal.Requesters);
+	// empty when it records none.
+	ExcludePrincipal bool     `json:"exclude_principal,omitempty"`
+	Requesters       []string `json:"requesters,omitempty"`
 	// Records names every decision record on this call the gate read, valid or not, in
 	// journal order. Evidence must disclose all of them, so an omitted decision is detectable.
 	Records []string `json:"records,omitempty"`
@@ -342,8 +359,13 @@ type ApprovalTally struct {
 	DecisionFormat string `json:"decision_format,omitempty"`
 	// Supersedes names the tally this count replaces: set when the gate re-asks for approval
 	// because the tally recorded under ApprovalTallyStep passed on decisions that predate
-	// DecisionFormat. The re-count is recorded under ApprovalRetallyStep once terminal.
+	// DecisionFormat (the re-count is recorded under ApprovalRetallyStep once terminal), or because
+	// the tally it would go by passed without excluding the requester and its policy now excludes it
+	// (recorded under ApprovalSoDRetallyStep).
 	Supersedes string `json:"supersedes,omitempty"`
+	// reapproval is the ApprovalPending.Reason of a running count that re-asks (PendingReapproval,
+	// PendingSoDReapproval); it is not journaled.
+	reapproval string
 }
 
 // Passed reports whether Need approvals are in.
@@ -376,6 +398,8 @@ const (
 	ReasonAlg         = "signed under another scheme than the approver's key"
 	ReasonNoDecidedAt = "no signed decision time: signed under an earlier decision format than bide.approval.v3, which this version does not accept"
 	ReasonDecidedAt   = "the signed decision time is not in canonical form (2006-01-02T15:04:05.000Z)"
+	ReasonRequester   = "the approver is a requester of the run (its principal, or that of a run above it), whom the policy excludes (separation of duties)"
+	ReasonNoRequester = "the policy excludes the requester, and the run, or a run above it, records no requester principal in printable ASCII"
 )
 
 // protocol:claims begin QCount
@@ -399,6 +423,15 @@ const (
 // what order, or the outcome, and the time a decision was journaled (RecordedAt) is not read.
 // Journal order alone orders decisions.
 //
+// Separation of duties: with p.ExcludePrincipal, the requesters are the principals the run's
+// run:principal record among recs names (RecordedPrincipal, RunPrincipal.Requesters): the run's
+// own and those of every run above it. An approver whose id equals any of them, ignoring ASCII
+// case, never counts (ReasonRequester). When recs hold no run:principal, or one naming an empty or
+// non-ASCII requester, no approver counts (ReasonNoRequester): the rule fails closed rather than
+// count a decision it cannot tell apart from a requester's. A caller that passes only some of a
+// run's records (offline verification, or a gate counting after a request) includes the
+// run:principal.
+//
 // It returns the tally and a classification of every record it considered. It does not
 // validate p (see ApprovalPolicy.ValidateKeys, which the gate runs first and which refuses a
 // policy this rule would count short); a nil verifierFor counts nothing.
@@ -409,6 +442,25 @@ func TallyApprovals(recs []Record, s ApprovalSubject, p ApprovalPolicy, verifier
 		eligible[id] = true
 	}
 	vs, bad, _ := approverSeats(p, verifierFor)
+	if p.ExcludePrincipal {
+		t.ExcludePrincipal = true
+		rp, ok := RecordedPrincipal(recs)
+		if ok {
+			t.Requesters = rp.Requesters()
+		}
+		usable := ok && requesterProblem(rp) == ""
+		for _, id := range p.Approvers {
+			if _, done := bad[id]; done {
+				continue
+			}
+			switch {
+			case !usable:
+				bad[id] = ReasonNoRequester
+			case slices.ContainsFunc(t.Requesters, func(r string) bool { return SameApprover(id, r) }):
+				bad[id] = ReasonRequester
+			}
+		}
+	}
 	decided := make(map[string]bool, len(p.Approvers))
 	var checks []DecisionCheck
 	for _, r := range recs {
@@ -483,6 +535,97 @@ func canonicalTimestamp(s string) bool {
 
 // protocol:claims end
 
+// protocol:claims begin QTally QCount
+
+// SameApprover reports whether two ids name one approver: equal ignoring ASCII case, the rule
+// Validate holds a policy's ids to, and the rule a gate that excludes the requester matches a
+// requester to an approver id by. Approver ids are printable ASCII, so for them strings.ToLower is
+// ASCII case folding; an id outside printable ASCII is equal only to itself.
+func SameApprover(a, b string) bool {
+	if !printableASCII(a) || !printableASCII(b) {
+		return a == b
+	}
+	return strings.ToLower(a) == strings.ToLower(b)
+}
+
+// requesterProblem is why a run's recorded principal p names no usable requester for a policy
+// that excludes the requester, or "" when every requester it names (Requesters) is a non-empty
+// printable ASCII id. An empty entry is a run, the run itself or one above it, that records no
+// principal: who requested is not known, so no one can be excluded for it.
+func requesterProblem(p RunPrincipal) string {
+	reqs := p.Requesters()
+	for i, r := range reqs {
+		who := "the run"
+		if i < len(reqs)-1 {
+			who = fmt.Sprintf("the run %d above it", len(reqs)-1-i)
+		}
+		switch {
+		case r == "":
+			return who + " records no principal (OnBehalfOf)"
+		case !printableASCII(r):
+			return fmt.Sprintf("%s records requester %q, which is not printable ASCII: requester ids, like approver ids, must be printable ASCII (bytes 0x21 to 0x7E, no space) to be compared with them", who, r)
+		}
+	}
+	return ""
+}
+
+// checkRequester is the gate's check of p's requester exclusion against the run's records recs,
+// run on every evaluation, before a recorded tally is read, beside the key check. A policy that
+// excludes the requester is refused (ErrConfig) when:
+//
+//   - the run records no run:principal (RecordedPrincipal), or one that names no usable requester:
+//     the run, or a run above it, records no principal, or one that is not printable ASCII;
+//   - recs hold the request of the call toolUseID before the run:principal: a run an earlier
+//     version started records it only when a drive under this version first loads the run, so it
+//     names the resuming drive's principal, not the requester's;
+//   - the run:start in recs names another principal or other ancestors than the run:principal;
+//   - Need is out of reach once every requester's seat is taken away.
+func checkRequester(p ApprovalPolicy, recs []Record, runID, toolUseID string) error {
+	if !p.ExcludePrincipal {
+		return nil
+	}
+	rp, ok := RecordedPrincipal(recs)
+	if !ok {
+		return fmt.Errorf("the approval policy excludes the requester, but run %s records no requester (no run:principal, or one that does not read strictly): start the run with an identity whose OnBehalfOf names the requester (WithIdentity, for an agent run or a plan flow run): %w", runID, ErrConfig)
+	}
+	at := slices.IndexFunc(recs, IsRunPrincipal)
+	if callIdx, _, found := FindToolCall(recs, toolUseID); found && callIdx < at {
+		return fmt.Errorf("the approval policy excludes the requester, but run %s was started before this version: it recorded its principal (run:principal) only after call %q was requested, so the record names whoever resumed the run, not who requested the call; nothing backfills it, so the run cannot pass this gate (cancel it, and start the work again as a new run): %w", runID, toolUseID, ErrConfig)
+	}
+	if i := slices.IndexFunc(recs, func(r Record) bool { return r.Kind == StepValue && r.Name == runStartStep }); i >= 0 {
+		var st RunStart
+		if err := json.Unmarshal(recs[i].Result, &st); err != nil || !rp.Matches(st) {
+			return fmt.Errorf("the approval policy excludes the requester, but run %s's run:principal and run:start name different principals: %w", runID, ErrConfig)
+		}
+	}
+	if why := requesterProblem(rp); why != "" {
+		return fmt.Errorf("the approval policy excludes the requester, but in run %s %s: %w", runID, why, ErrConfig)
+	}
+	seats := 0
+	for _, id := range p.Approvers {
+		if !slices.ContainsFunc(rp.Requesters(), func(r string) bool { return SameApprover(id, r) }) {
+			seats++
+		}
+	}
+	if seats < p.Need {
+		return fmt.Errorf("the approval policy needs %d of %d approvers and excludes the requesters %q, so only %d can approve: the gate could never pass: %w", p.Need, len(p.Approvers), rp.Requesters(), seats, ErrConfig)
+	}
+	return nil
+}
+
+// protocol:claims end
+
+// requestersFrom is the requesters of the run ctx drives, as its drive bound them: the journaled
+// principals of the run and the runs above it (see openPlan), or nil when it has none. Only the
+// pause note reads it; the gate reads the journal (RecordedPrincipal).
+func requestersFrom(ctx context.Context) []string {
+	chain := chainFrom(ctx)
+	if len(chain) == 0 {
+		return nil
+	}
+	return RunPrincipal{Principal: chain[len(chain)-1], Ancestors: chain[:len(chain)-1]}.Requesters()
+}
+
 // IsApprovalDecision reports whether r is an m-of-n approver decision (written by SubmitDecision)
 // on toolUseID. The single-approver Approve record has no Approver and is not one.
 func IsApprovalDecision(r Record, toolUseID string) bool {
@@ -498,23 +641,68 @@ func ApprovalTallyStep(toolUseID string) string { return "approval-tally:" + enc
 // outcome. The encoded ID has no ':', so the name never collides with another call's tally.
 func ApprovalRetallyStep(toolUseID string) string { return ApprovalTallyStep(toolUseID) + ":v3" }
 
+// ApprovalSoDRetallyStep is the journal name of the terminal tally a gate records when it re-asks
+// for approval because the tally it would otherwise go by passed without excluding the requester,
+// and the gate's policy now excludes it (ApprovalPolicy.ExcludePrincipal: a redeploy added the
+// exclusion, or a drive still running the old policy recorded first). Its Supersedes names that
+// tally. When it is recorded over that tally, it is the gate's outcome.
+func ApprovalSoDRetallyStep(toolUseID string) string { return ApprovalTallyStep(toolUseID) + ":sod" }
+
 // RecordedTally returns the record of the gate's outcome on toolUseID among records keyed by
-// name: the re-approval tally (ApprovalRetallyStep) when one is recorded over a tally that passed
-// on decisions predating DecisionFormat, which is the only case a gate writes one, else the tally
-// (ApprovalTallyStep). A re-approval tally beside any other tally is not the gate's outcome, as
-// tallyGate never reads it, so it is ignored. ok is false when there is no tally.
+// name. It starts from the tally (ApprovalTallyStep); over one that passed on decisions predating
+// DecisionFormat, the re-approval tally (ApprovalRetallyStep) is the outcome when recorded; and
+// over an outcome so far that passed without excluding the requester, the separation-of-duties
+// re-approval tally (ApprovalSoDRetallyStep) is the outcome when it is recorded, excluded the
+// requester, and supersedes exactly that outcome (its Supersedes names it). Those are the only
+// cases a gate writes them, so a re-approval tally beside any other tally is not the gate's outcome
+// and is ignored. ok is false when there is no tally.
 func RecordedTally(byName map[string]Record, toolUseID string) (r Record, ok bool) {
 	r, ok = byName[ApprovalTallyStep(toolUseID)]
 	if !ok {
 		return r, false
 	}
 	var t ApprovalTally
-	if json.Unmarshal(r.Result, &t) == nil && predatesFormat(t) {
+	if json.Unmarshal(r.Result, &t) != nil {
+		return r, true
+	}
+	if predatesFormat(t) {
 		if re, ok := byName[ApprovalRetallyStep(toolUseID)]; ok {
-			return re, true
+			r = re
+			if json.Unmarshal(r.Result, &t) != nil {
+				return r, true
+			}
+		}
+	}
+	if t.Passed() && !t.ExcludePrincipal {
+		if sod, ok := byName[ApprovalSoDRetallyStep(toolUseID)]; ok {
+			var st ApprovalTally
+			if json.Unmarshal(sod.Result, &st) == nil && st.ExcludePrincipal && st.Supersedes == r.Name {
+				return sod, true
+			}
 		}
 	}
 	return r, true
+}
+
+// SupersededTallies returns the names of the tallies that outcome, the gate's outcome (as RecordedTally
+// returns it, among byName) supersedes, oldest first: the tally its Supersedes names, and that
+// one's, and so on. Evidence for a re-approval tally carries them, since they decide that it is
+// the outcome.
+func SupersededTallies(byName map[string]Record, outcome string) []string {
+	var out []string
+	for cur := outcome; len(out) < 3; {
+		var t ApprovalTally
+		r, ok := byName[cur]
+		if !ok || json.Unmarshal(r.Result, &t) != nil || t.Supersedes == "" || t.Supersedes == cur {
+			break
+		}
+		if _, ok := byName[t.Supersedes]; !ok {
+			break
+		}
+		out = append([]string{t.Supersedes}, out...)
+		cur = t.Supersedes
+	}
+	return out
 }
 
 // predatesFormat reports whether t is a tally that passed on decisions signed before
@@ -547,6 +735,10 @@ type ApprovalWait struct {
 	Need       int      `json:"need,omitempty"`        // the m-of-n gate's k
 	Approvers  []string `json:"approvers,omitempty"`   // the m-of-n gate's eligible approvers, in policy order
 	RecordedAt string   `json:"recorded_at,omitempty"` // when the run paused here, by the drive's clock
+	// ExcludePrincipal: the m-of-n gate excludes the requester (ApprovalPolicy.ExcludePrincipal), and
+	// Requesters are the requesters it excludes (RunPrincipal.Requesters).
+	ExcludePrincipal bool     `json:"exclude_principal,omitempty"`
+	Requesters       []string `json:"requesters,omitempty"`
 }
 
 // FindToolCall returns the journal index of the record that requested toolUseID, and the call
@@ -815,6 +1007,10 @@ func (a *Agent) notePending(ctx context.Context, runID string, tu ToolUse, pol *
 	w := ApprovalWait{ToolUseID: tu.ID, ToolName: tu.Name, Single: pol.single(), RecordedAt: noteStamp(clockFrom(ctx))}
 	if !w.Single {
 		w.Need, w.Approvers = pol.Need, slices.Clone(pol.Approvers)
+		w.ExcludePrincipal = pol.ExcludePrincipal
+		if pol.ExcludePrincipal {
+			w.Requesters = requestersFrom(ctx)
+		}
 	}
 	b, err := json.Marshal(w)
 	if err != nil {

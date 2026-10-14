@@ -196,6 +196,10 @@ func TestFlowSchema_PropertiesMatchConfigStructs(t *testing.T) {
 					if ty, ok := p["type"]; ok && ty != "integer" {
 						t.Errorf("%s: schema type %v, Go int", name, ty)
 					}
+				case reflect.Bool:
+					if p["type"] != "boolean" {
+						t.Errorf("%s: schema type %v, Go bool", name, p["type"])
+					}
 				case reflect.Slice:
 					if p["type"] != "array" {
 						t.Errorf("%s: schema type %v, Go slice", name, p["type"])
@@ -373,6 +377,8 @@ func validate(t testing.TB, root jsonObj, v any, s jsonObj, path string) []strin
 			_, okType = v.([]any)
 		case "string":
 			_, okType = v.(string)
+		case "boolean":
+			_, okType = v.(bool)
 		case "integer":
 			f, isNum := v.(float64)
 			okType = isNum && f == math.Trunc(f)

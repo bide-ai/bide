@@ -1,0 +1,19 @@
+{
+  "version": 1,
+  "flow": "maker-checker-refund",
+  "in": "main.Order",
+  "out": "main.Receipt",
+  "entry": "lookup",
+  "nodes": [
+    {"name": "lookup", "block": "lookup"},
+    {"name": "refund", "block": "refund", "approval": {"need": 2, "approvers": ["ops", "finance", "risk"], "exclude_principal": true}},
+    {"name": "notify", "block": "notify"}
+  ],
+  "wiring": [
+    {"edge": ["lookup", "refund"]},
+    {"edge": ["refund", "notify"]}
+  ],
+  "assert": [
+    "every path to refund passes approval >= 2 of 3 excluding the requester"
+  ]
+}

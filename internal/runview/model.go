@@ -138,6 +138,13 @@ type Gate struct {
 	Reapproval bool `json:"reapproval,omitempty"`
 	// Cards is each approver as the page shows them (see ApproverCard); not in the JSON view.
 	Cards []ApproverCard `json:"-"`
+	// ExcludePrincipal: the gate never counts the run's requester (agent.ApprovalPolicy.ExcludePrincipal);
+	// Requesters are the requesters (the run's principal and those of the runs above it), and Excluded
+	// the approvers who fill no seat (the tally's, or before
+	// it, the approver ids equal to the requester ignoring case).
+	ExcludePrincipal bool     `json:"exclude_principal,omitempty"`
+	Requesters       []string `json:"requesters,omitempty"`
+	Excluded         []string `json:"excluded,omitempty"`
 }
 
 // Decision is one recorded approval decision. A signed decision carries two times: DecidedAt, the
@@ -511,6 +518,7 @@ func gates(recs []agent.Record, calls map[string]agent.ToolUse, order []string) 
 		if r, ok := byName[agent.ApprovalPendingStep(id)]; ok && json.Unmarshal(r.Result, &wait) == nil {
 			paused = true
 			g.Single, g.Need, g.Approvers, g.AskedAt = wait.Single, wait.Need, wait.Approvers, wait.RecordedAt
+			g.ExcludePrincipal, g.Requesters = wait.ExcludePrincipal, wait.Requesters
 		}
 		// A flow node's request is when approvers were asked, and what the ordering rule counts from.
 		if r, ok := byName[agent.ApprovalRequestStep(id)]; ok {
@@ -533,6 +541,7 @@ func gates(recs []agent.Record, calls map[string]agent.ToolUse, order []string) 
 				if b, err := json.Marshal(r.Approval); err == nil && string(b) == `{"single":true}` {
 					g.Single = true
 				}
+				g.ExcludePrincipal = g.ExcludePrincipal || r.Approval.ExcludePrincipal
 			}
 		}
 		if t, ok := agent.RecordedTally(byName, id); ok {
@@ -548,6 +557,15 @@ func gates(recs []agent.Record, calls map[string]agent.ToolUse, order []string) 
 				g.Tallied = true
 				g.Need, g.Approvers = tally.Need, tally.Approvers
 				g.ApprovedBy, g.DeniedBy, g.Pending = tally.ApprovedBy, tally.DeniedBy, tally.Pending
+				g.ExcludePrincipal, g.Requesters, g.Excluded = tally.ExcludePrincipal, tally.Requesters, tally.Excluded
+			}
+		}
+		if !g.Tallied && g.ExcludePrincipal {
+			for _, a := range g.Approvers {
+				// The gate's rule for matching a requester to an approver id.
+				if slices.ContainsFunc(g.Requesters, func(r string) bool { return r != "" && agent.SameApprover(a, r) }) {
+					g.Excluded = append(g.Excluded, a)
+				}
 			}
 		}
 		if len(g.Decisions) == 0 && !g.Tallied && g.Need == 0 && !paused {
@@ -559,6 +577,7 @@ func gates(recs []agent.Record, calls map[string]agent.ToolUse, order []string) 
 			// m-of-n call is ignored by the runtime, and must not turn the gate into a single one.
 			for _, d := range g.Decisions {
 				switch {
+				case slices.Contains(g.Excluded, d.Approver): // the requester: never counts
 				case g.Reapproval && d.DecidedAt == "": // signed before the format: never counts now
 				case d.Signed && d.Approved && !slices.Contains(g.ApprovedBy, d.Approver):
 					g.ApprovedBy = append(g.ApprovedBy, d.Approver)
@@ -567,7 +586,7 @@ func gates(recs []agent.Record, calls map[string]agent.ToolUse, order []string) 
 				}
 			}
 			for _, id := range g.Approvers {
-				if !slices.Contains(g.ApprovedBy, id) && !slices.Contains(g.DeniedBy, id) {
+				if !slices.Contains(g.ApprovedBy, id) && !slices.Contains(g.DeniedBy, id) && !slices.Contains(g.Excluded, id) {
 					g.Pending = append(g.Pending, id)
 				}
 			}
@@ -618,6 +637,9 @@ func gateStatus(g Gate) string {
 		counts += fmt.Sprintf(", %d denied", d)
 	}
 	counts += fmt.Sprintf("; %d needed", g.Need)
+	if len(g.Excluded) > 0 {
+		counts += fmt.Sprintf("; %s excluded", strings.Join(g.Excluded, ", "))
+	}
 	if g.Reapproval && a < g.Need {
 		return "approval re-required: the recorded approvals predate " + agent.DecisionFormat + " (" + counts + ")"
 	}
@@ -627,11 +649,11 @@ func gateStatus(g Gate) string {
 	switch {
 	case a >= g.Need && g.Tallied:
 		return "approved (" + counts + ")"
-	case n-d < g.Need && g.Tallied:
+	case n-len(g.Excluded)-d < g.Need && g.Tallied:
 		return "denied (" + counts + ")"
 	case a >= g.Need:
 		return "approvals recorded, unverified (" + counts + "; the gate checks every signature when the run resumes)"
-	case n-d < g.Need:
+	case n-len(g.Excluded)-d < g.Need:
 		return "denials recorded, unverified (" + counts + "; the gate checks every signature when the run resumes)"
 	case g.Tallied:
 		return "closed, not approved (" + counts + ")"

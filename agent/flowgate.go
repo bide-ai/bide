@@ -130,6 +130,28 @@ func flowGate(ctx context.Context, d *Journal, runID, key, node string, args jso
 			return false, fmt.Errorf("plan node %q: %w", node, err)
 		}
 	}
+	// Separation of duties: the requesters are the flow run's journaled principal and those of the
+	// runs above it (its run:principal, held to its run:start), checked on every evaluation, before
+	// a recorded outcome is read, as the keys are. tallyGate checks again over the whole journal,
+	// with the request's position.
+	var requesters []string
+	if !single && pol.ExcludePrincipal {
+		var start []Record
+		for _, name := range []string{runPrincipalStep, runStartStep} {
+			r, ok, err := d.Get(ctx, runID, name)
+			if err != nil {
+				return false, fmt.Errorf("read %s (run %s): %w (%w)", name, runID, err, ErrStorage)
+			}
+			if ok {
+				start = append(start, r)
+			}
+		}
+		if err := checkRequester(*pol, start, runID, key); err != nil {
+			return false, fmt.Errorf("plan node %q: %w", node, err)
+		}
+		rp, _ := RecordedPrincipal(start)
+		requesters = rp.Requesters()
+	}
 
 	// GRead: a recorded outcome is final. A single decision counts only if it follows the gate's
 	// request in the journal: one recorded before it (node keys are predictable) was not made on
@@ -162,10 +184,12 @@ func flowGate(ctx context.Context, d *Journal, runID, key, node string, args jso
 			if err != nil {
 				return false, err
 			}
-			if !predatesFormat(t) {
+			// A denial is final. A pass is final unless it predates this format, or separation of
+			// duties is in play (the policy or the tally excludes the requester): tallyGate then
+			// decides, below, from the whole journal (a re-approval tally may supersede this one).
+			if !t.Passed() || !predatesFormat(t) && !pol.ExcludePrincipal && !t.ExcludePrincipal {
 				return t.Passed(), nil
 			}
-			// It passed on decisions that predate this format: tallyGate asks again, below.
 		}
 	}
 	b, err := marshalJournal(ApprovalRequest{ToolUseID: key, ToolName: node, Args: args, RecordedAt: noteStamp(clockFrom(ctx))})
@@ -202,13 +226,14 @@ func flowGate(ctx context.Context, d *Journal, runID, key, node string, args jso
 	w := ApprovalWait{ToolUseID: key, ToolName: node, Single: single, RecordedAt: noteStamp(clockFrom(ctx))}
 	if !single {
 		w.Need, w.Approvers = pol.Need, slices.Clone(pol.Approvers)
+		w.ExcludePrincipal, w.Requesters = pol.ExcludePrincipal, requesters
 	}
 	if b, err := json.Marshal(w); err == nil {
 		_, _ = d.put(ctx, runID, ApprovalPendingStep(key), Record{Kind: StepValue, Result: b})
 	}
 	pend := &ApprovalPending{RunRef: RunRef{RunID: runID, RootRunID: runID}, ToolUseID: key, ToolName: node, Args: req.Args, Quorum: quorum}
-	if quorum != nil && quorum.Supersedes != "" {
-		pend.Reason = PendingReapproval
+	if quorum != nil {
+		pend.Reason = quorum.reapproval
 	}
 	return false, pend
 }

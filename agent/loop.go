@@ -637,9 +637,7 @@ func (a *Agent) runLoop(ctx context.Context, runID string, d *driveSpec) (Messag
 						evTally.Pending = append([]string(nil), tally.Pending...)
 						fire(ApprovalRequired{ToolUseID: tu.ID, Name: tu.Name, Args: tu.Args, Quorum: &evTally})
 						pend := &ApprovalPending{RunRef: RunRef{RunID: runID, RootRunID: rootRunID(ctx, runID)}, ToolUseID: tu.ID, ToolName: tu.Name, Args: tu.Args, Quorum: &tally}
-						if tally.Supersedes != "" {
-							pend.Reason = PendingReapproval
-						}
+						pend.Reason = tally.reapproval
 						return leave(pend)
 					}
 					approved = tally.Passed()

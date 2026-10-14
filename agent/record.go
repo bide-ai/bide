@@ -361,9 +361,10 @@ type recordReadWire struct {
 // it, and anything else is the m-of-n policy its need and approvers give. The policy is a record of
 // the gate the call ran under; the gate a run enforces is always the registered tool's.
 type storedApproval struct {
-	Single    json.RawMessage `json:"single,omitempty"`
-	Need      int             `json:"need"`
-	Approvers []string        `json:"approvers,omitempty"`
+	Single           json.RawMessage `json:"single,omitempty"`
+	Need             int             `json:"need"`
+	Approvers        []string        `json:"approvers,omitempty"`
+	ExcludePrincipal bool            `json:"exclude_principal,omitempty"`
 }
 
 // policy returns the ApprovalPolicy a stored approval records, or nil for none.
@@ -374,7 +375,7 @@ func (a *storedApproval) policy() *ApprovalPolicy {
 	case string(bytes.TrimSpace(a.Single)) == "true":
 		return SingleApproval()
 	}
-	return &ApprovalPolicy{Need: a.Need, Approvers: a.Approvers}
+	return &ApprovalPolicy{Need: a.Need, Approvers: a.Approvers, ExcludePrincipal: a.ExcludePrincipal}
 }
 
 // markerTime is the time an attempt marker's AttemptedAt records, or the zero time when it records

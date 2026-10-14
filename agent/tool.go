@@ -180,6 +180,17 @@ type ApprovalPolicy struct {
 	Need      int      `json:"need"`                // decisions required to proceed (k), 1 <= Need <= len(Approvers)
 	Approvers []string `json:"approvers,omitempty"` // eligible approver ids, printable ASCII (see Validate); the bounded set (n)
 
+	// ExcludePrincipal is separation of duties ("maker-checker"): the gate never counts a decision
+	// by a requester of the run: the principal the run acts for (Identity.OnBehalfOf), or that of
+	// any run above it, as its run:principal record names them (RunPrincipal.Requesters). An
+	// approver id equal to a requester, ignoring ASCII case, fills no seat (ReasonRequester), and the
+	// gate refuses with ErrConfig a run whose requesters it cannot tell (no run:principal, a run in
+	// the chain with no OnBehalfOf, a requester that is not printable ASCII, a run:principal
+	// journaled after the call's request) and a policy whose Need is unreachable once they are
+	// excluded. It applies to m-of-n policies only: Validate refuses it on SingleApproval, whose
+	// decision names no approver.
+	ExcludePrincipal bool `json:"exclude_principal,omitempty"`
+
 	// one marks the policy SingleApproval returned (and its copies): the one-decision gate. It is
 	// unexported so no literal can set it; MarshalJSON journals it as {"single":true}. The gate a
 	// run enforces is always the registered tool's, never one read back from the journal.
@@ -193,21 +204,27 @@ func SingleApproval() *ApprovalPolicy { return &ApprovalPolicy{Need: 1, one: tru
 
 // MarshalJSON encodes the policy as the journal records it: SingleApproval as {"single":true}, the
 // bide protocol's wire form of the one-decision gate, so an offline reader sees the gate a call ran
-// under without inferring it from a shape; any other policy as {"need":k,"approvers":[...]}.
+// under without inferring it from a shape; any other policy as {"need":k,"approvers":[...]}, with
+// "exclude_principal":true when ExcludePrincipal is set (omitted otherwise, so a policy without it
+// encodes as it did before the field existed).
 func (p ApprovalPolicy) MarshalJSON() ([]byte, error) {
 	if p.one {
 		if p.Need != 1 || len(p.Approvers) != 0 {
 			return nil, fmt.Errorf("a SingleApproval policy was changed to Need %d and %d approvers: %w", p.Need, len(p.Approvers), ErrConfig)
 		}
+		if p.ExcludePrincipal {
+			return nil, fmt.Errorf("a SingleApproval policy cannot exclude the principal: its decision names no approver: %w", ErrConfig)
+		}
 		return []byte(`{"single":true}`), nil
 	}
-	return json.Marshal(approvalWire{Need: p.Need, Approvers: p.Approvers})
+	return json.Marshal(approvalWire{Need: p.Need, Approvers: p.Approvers, ExcludePrincipal: p.ExcludePrincipal})
 }
 
 // UnmarshalJSON decodes what MarshalJSON encodes, strictly, as the bide protocol writes the gate:
 // {"single":true}, with no other member, is SingleApproval; any other policy has need (and
-// approvers) and no single. "single" with any other value, beside need or approvers, a policy
-// with no need, a duplicate or unknown member, or a value of the wrong type is ErrProtocol. It is
+// approvers, and optionally exclude_principal) and no single. "single" with any other value,
+// beside any other member, a policy with no need, a duplicate or unknown member, or a value of the
+// wrong type is ErrProtocol. It is
 // the decoding for a policy being configured or received (a protocol input); the approval inside a
 // stored Record is read leniently instead (see DecodeStoredRecord), so a journal a newer version
 // wrote stays readable.
@@ -227,14 +244,15 @@ func (p *ApprovalPolicy) UnmarshalJSON(b []byte) error {
 	if err := strictjson.Unmarshal(b, &w, &strictjson.Options{Fields: strictjson.SchemaFields}); err != nil {
 		return fmt.Errorf("approval policy: %w (%w)", err, ErrProtocol)
 	}
-	*p = ApprovalPolicy{Need: w.Need, Approvers: w.Approvers}
+	*p = ApprovalPolicy{Need: w.Need, Approvers: w.Approvers, ExcludePrincipal: w.ExcludePrincipal}
 	return nil
 }
 
 // approvalWire is an m-of-n ApprovalPolicy's encoding.
 type approvalWire struct {
-	Need      int      `json:"need"`
-	Approvers []string `json:"approvers,omitempty"`
+	Need             int      `json:"need"`
+	Approvers        []string `json:"approvers,omitempty"`
+	ExcludePrincipal bool     `json:"exclude_principal,omitempty"`
 }
 
 // single reports whether p is the one-decision gate SingleApproval returned.
@@ -246,7 +264,7 @@ func (p *ApprovalPolicy) Clone() *ApprovalPolicy {
 	if p == nil {
 		return nil
 	}
-	return &ApprovalPolicy{Need: p.Need, Approvers: slices.Clone(p.Approvers), one: p.one}
+	return &ApprovalPolicy{Need: p.Need, Approvers: slices.Clone(p.Approvers), ExcludePrincipal: p.ExcludePrincipal, one: p.one}
 }
 
 // checkApproval reports whether p is a gate the agent can enforce (see Validate).

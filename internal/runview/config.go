@@ -96,12 +96,13 @@ func gateText(need int, approvers []string) string {
 	return fmt.Sprintf("%d of %d: %s", need, len(approvers), strings.Join(approvers, ", "))
 }
 
-// topoGateText renders a declared gate: "one decision", or as gateText does.
+// topoGateText renders a declared gate: "one decision", or as gateText does, with " excluding the
+// requester" for a gate that excludes the run's requester.
 func topoGateText(g *plan.TopologyGate) string {
 	if g.Single {
 		return "one decision"
 	}
-	return gateText(g.Need, g.Approvers)
+	return gateText(g.Need, g.Approvers) + exclusionText(g)
 }
 
 // riskSummary counts r's nodes by safety class and gate.

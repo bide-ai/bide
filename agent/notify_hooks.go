@@ -33,6 +33,9 @@ func (e *notifyEngine) eventFromErr(runID string, err error) (notifyEvent, bool)
 		if q := p.Quorum; q != nil {
 			ap.Need, ap.Of, ap.Approved = q.Need, len(q.Approvers), q.Approved
 			ap.Approvers = append([]string(nil), q.Approvers...)
+			if q.ExcludePrincipal {
+				ap.Excluded = append([]string(nil), q.Excluded...)
+			}
 		}
 		return notifyEvent{
 			key: ApprovalKey(p.RunID, p.ToolUseID, 0), kind: NotificationApprovalPending, runID: rootOr(runID, p.RunRef), opRun: p.RunID,

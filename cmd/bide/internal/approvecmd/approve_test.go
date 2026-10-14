@@ -38,6 +38,7 @@ type fixture struct {
 	args     string
 	run      string
 	call     string
+	identity string // the requester the run is driven for, when not empty
 }
 
 const refundArgs = `{"order":1049,"amount":120,"note":"refund <ok>"}`
@@ -50,7 +51,12 @@ func newFixture(t *testing.T, policy *agent.ApprovalPolicy, args string) *fixtur
 // newFixtureAlg is newFixture with every approver's key in scheme alg.
 func newFixtureAlg(t *testing.T, policy *agent.ApprovalPolicy, args string, alg audit.Alg) *fixture {
 	t.Helper()
-	f := &fixture{t: t, dir: t.TempDir(), keys: map[string]string{}, pubs: map[string]audit.Verifier{}, charges: new(atomic.Int32), args: args, run: "refund-1049", call: "c2"}
+	return newFixtureID(t, policy, args, alg, "")
+}
+
+func newFixtureID(t *testing.T, policy *agent.ApprovalPolicy, args string, alg audit.Alg, identity string) *fixture {
+	t.Helper()
+	f := &fixture{identity: identity, t: t, dir: t.TempDir(), keys: map[string]string{}, pubs: map[string]audit.Verifier{}, charges: new(atomic.Int32), args: args, run: "refund-1049", call: "c2"}
 	f.db = filepath.Join(f.dir, "j.db")
 	enrol := map[string]string{}
 	for _, id := range approvers {
@@ -101,7 +107,11 @@ func (f *fixture) drive(policy *agent.ApprovalPolicy, first bool) (*agent.Result
 		return "refunded", nil
 	}, agent.WithApproval(policy))
 	m := agenttest.NewScriptedModel(agenttest.ToolTurn(f.call, "refund", f.args), agenttest.TextTurn("done"))
-	return agenttest.MustNew(m, j, agent.WithTools(refund), agent.WithApproverVerifiers(verify)).Run(context.Background(), f.run, agent.UserText("refund"))
+	var opts []agent.RunOption
+	if f.identity != "" {
+		opts = append(opts, agent.WithIdentity(agent.Identity{Actor: "a", OnBehalfOf: f.identity}))
+	}
+	return agenttest.MustNew(m, j, agent.WithTools(refund), agent.WithApproverVerifiers(verify)).Run(context.Background(), f.run, agent.UserText("refund"), opts...)
 }
 
 var twoOfThree = &agent.ApprovalPolicy{Need: 2, Approvers: approvers}

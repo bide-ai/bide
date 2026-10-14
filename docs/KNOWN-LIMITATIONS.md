@@ -248,6 +248,19 @@ person is your identity provider's job. It refuses two approvers whose verifiers
 but it cannot see that one person holds two different keys. Keep old public keys after a rotation so old evidence still
 verifies. See [Human approval](guides/hitl-approval.md#scope).
 
+**Separation of duties compares ids, not people.** With `ExcludePrincipal`, the gate never counts an
+approver whose id is a requester of the run: its journaled principal (`OnBehalfOf`) or that of a run
+above it, ignoring ASCII case. A requester who also holds another approver's key can still sign as
+that approver, and the requesters and the approvers must be named in one id namespace. A run started
+before this version cannot pass a gate that excludes the requester: it has no `run:principal` from
+before its calls' requests, and nothing backfills one (a principal recorded later would name whoever
+resumed the run, not who requested it), so cancel such a run and start it again. While a rollout
+leaves some processes on a policy without the exclusion and some with it, a call a process on the
+old policy runs may also get a re-tally from a process on the new one (`approval-tally:<id>:sod`),
+and an audit then reports that re-tally as the gate's outcome; drain the old processes before
+relying on the exclusion. See
+[Separation of duties](guides/hitl-approval.md#separation-of-duties).
+
 **A decision's time is the approver's claim.** Each signed decision carries when the approver
 decided (`decided_at`, by their clock, inside the signature) and when it was journaled
 (`recorded_at`, by the clock of the process that submitted it, not signed). The signature stops

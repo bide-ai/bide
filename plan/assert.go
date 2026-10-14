@@ -58,7 +58,7 @@ func (a AssertionResult) Violated() bool { return !a.Holds && !a.Invalid && !a.U
 // inputs, and every Switch arm, loop-back arms included), so a loop is visited once and never
 // enumerated, and a counterexample is a shortest path.
 var (
-	assertGate     = regexp.MustCompile(`^every path to (\S+|"[^"]*") passes approval >= (\d+)(?: of (\d+))?$`)
+	assertGate     = regexp.MustCompile(`^every path to (\S+|"[^"]*") passes approval >= (\d+)(?: of (\d+))?( excluding the requester)?$`)
 	assertTerminal = regexp.MustCompile(`^every path to a terminal passes (\S+|"[^"]*")$`)
 	assertPasses   = regexp.MustCompile(`^every path to (\S+|"[^"]*") passes (\S+|"[^"]*")$`)
 	assertNoSide   = regexp.MustCompile(`^no side effect after (\S+|"[^"]*")$`)
@@ -159,23 +159,29 @@ func (r *ConfigReport) assertions(lines []string) {
 				invalid("want approval >= K of N with 1 <= K <= N")
 				continue
 			}
+			excl := m[4] != ""
 			nodes = []string{target}
 			decide = func() AssertionResult {
 				// A gate counts when it is at least as strict as K of N: it needs K or more decisions,
-				// and (with "of N") from a named set of at most N approvers. A one-decision gate
-				// (agent.SingleApproval) needs one decision from no named set, so it counts only for
-				// "approval >= 1".
+				// and (with "of N") from a named set of at most N approvers, and (with "excluding the
+				// requester") it never counts the run's requester (agent.ApprovalPolicy.ExcludePrincipal).
+				// A one-decision gate (agent.SingleApproval) needs one decision from no named set and
+				// cannot exclude the requester, so it counts only for "approval >= 1".
 				strict := func(x string) bool {
 					g := gates[x]
 					switch {
 					case g == nil:
 						return false
 					case g.Single:
-						return k == 1 && n == -1
+						return k == 1 && n == -1 && !excl
 					}
-					return g.Need >= k && (n == -1 || len(g.Approvers) <= n)
+					return g.Need >= k && (n == -1 || len(g.Approvers) <= n) && (!excl || g.ExcludePrincipal)
 				}
-				return passes(res, adj, entry, func(x string) bool { return x == target }, strict, "an approval gate of at least "+gateSpec(k, n))
+				what := "an approval gate of at least " + gateSpec(k, n)
+				if excl {
+					what += " excluding the requester"
+				}
+				return passes(res, adj, entry, func(x string) bool { return x == target }, strict, what)
 			}
 		} else if m := assertTerminal.FindStringSubmatch(text); m != nil {
 			via := name(m[1])

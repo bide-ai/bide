@@ -52,7 +52,10 @@ func ProveApproval(ctx context.Context, store *agent.Journal, runID, step string
 }
 
 // ApprovalEvidence builds the complete evidence for an m-of-n gated call under one STH, in
-// this order: the model turn that requested the call (Kind "call"), the record that the run
+// this order: for a gate whose tally excluded the requester (agent.ApprovalTally.ExcludePrincipal),
+// the run's run:principal record (Kind "step", Ref "run:principal"; agent.RunPrincipal), which names
+// the requesters and nothing of the run's input; the model turn that requested the call (Kind
+// "call"), the record that the run
 // paused at the gate (agent.ApprovalWait, Kind "step", when the journal holds one: it carries when
 // approvers were asked), every decision record the
 // gate read (Kind "approval", from the journaled tally's Records, in journal order), the
@@ -79,11 +82,12 @@ func ApprovalEvidence(ctx context.Context, store *agent.Journal, runID, toolUseI
 			index[r.Name] = i
 		}
 	}
-	// The gate's outcome, as the runtime reads it (agent.RecordedTally): its re-approval tally
-	// when the tally it first recorded passed on decisions that predate agent.DecisionFormat,
-	// else its tally.
-	byName := make(map[string]agent.Record, 2)
-	for _, n := range []string{agent.ApprovalTallyStep(toolUseID), agent.ApprovalRetallyStep(toolUseID)} {
+	// The gate's outcome, as the runtime reads it (agent.RecordedTally): a re-approval tally over a
+	// tally it supersedes (one that predates agent.DecisionFormat, or one that passed without
+	// excluding the requester when the gate's policy came to exclude it), else its tally.
+	tallyNames := []string{agent.ApprovalTallyStep(toolUseID), agent.ApprovalRetallyStep(toolUseID), agent.ApprovalSoDRetallyStep(toolUseID)}
+	byName := make(map[string]agent.Record, len(tallyNames))
+	for _, n := range tallyNames {
 		if i, ok := index[n]; ok && recs[i].Kind == agent.StepValue {
 			byName[n] = recs[i]
 		}
@@ -121,7 +125,22 @@ func ApprovalEvidence(ctx context.Context, store *agent.Journal, runID, toolUseI
 	if err != nil {
 		return nil, err
 	}
-	out := []EvidenceAction{{Label: call.Name, Kind: KindCall, Ref: toolUseID, Bundle: callPB}}
+	var out []EvidenceAction
+	if tally.ExcludePrincipal {
+		// Separation of duties: the requesters are the principals the run's run:principal names, so
+		// the evidence proves that record (it holds no run input), for VerifyApprovals to recount
+		// with the same exclusion.
+		i := slices.IndexFunc(recs, agent.IsRunPrincipal)
+		if i < 0 {
+			return nil, fmt.Errorf("audit: the gate on call %q excluded the requester, but run %s has no run:principal record naming one", toolUseID, runID)
+		}
+		pb, err := prove(i)
+		if err != nil {
+			return nil, err
+		}
+		out = append(out, EvidenceAction{Label: recs[i].Name, Kind: KindStep, Ref: recs[i].Name, Bundle: pb})
+	}
+	out = append(out, EvidenceAction{Label: call.Name, Kind: KindCall, Ref: toolUseID, Bundle: callPB})
 	if i, ok := index[agent.ApprovalPendingStep(toolUseID)]; ok && recs[i].Kind == agent.StepValue {
 		pb, err := prove(i)
 		if err != nil {
@@ -144,14 +163,19 @@ func ApprovalEvidence(ctx context.Context, store *agent.Journal, runID, toolUseI
 	if err != nil {
 		return nil, err
 	}
-	// A re-approval tally travels with the tally it supersedes: VerifyApprovals honors it only
-	// over a tally that predates agent.DecisionFormat, which it can tell only from that tally.
-	if orig := agent.ApprovalTallyStep(toolUseID); tallyName != orig {
-		origPB, err := prove(index[orig])
+	// A re-approval tally travels with the tallies it supersedes, in journal order: VerifyApprovals
+	// honors it only over the tally it supersedes, which it can tell only from that tally.
+	var superseded []int
+	for _, n := range agent.SupersededTallies(byName, tallyName) {
+		superseded = append(superseded, index[n])
+	}
+	slices.Sort(superseded)
+	for _, i := range superseded {
+		pb, err := prove(i)
 		if err != nil {
 			return nil, err
 		}
-		out = append(out, EvidenceAction{Label: "approval tally (superseded)", Kind: KindApprovalTally, Ref: orig, Bundle: origPB})
+		out = append(out, EvidenceAction{Label: "approval tally (superseded)", Kind: KindApprovalTally, Ref: recs[i].Name, Bundle: pb})
 	}
 	out = append(out,
 		EvidenceAction{Label: "approval tally", Kind: KindApprovalTally, Ref: tallyName, Bundle: tallyPB},
@@ -181,6 +205,12 @@ type ApprovalVerdict struct {
 	// approval-pending record (agent.ApprovalWait); "" when the evidence holds neither with a time
 	// (each decision is then flagged FlagAskedUnknown).
 	AskedAt string `json:"asked_at,omitempty"`
+	// Requesters are the requesters the recount excluded, from the proven run:principal record
+	// (agent.RunPrincipal.Requesters: the principals of the runs above the run, root first, then the
+	// run's own), when the expected policy excludes the requester
+	// (agent.ApprovalPolicy.ExcludePrincipal); empty otherwise, or when the evidence does not prove
+	// one.
+	Requesters []string `json:"requesters,omitempty"`
 	// HeadAt is when the signed tree head the evidence is proven under was signed (its
 	// TimestampNanos, in agent.FormatTimestamp's form): every record it covers, the decisions
 	// included, was journaled by then.
@@ -224,6 +254,15 @@ var (
 // another scheme than its approver's key, does not verify and is listed in Ignored. So does a
 // decision whose signed decision time was changed, is missing (one signed under an earlier
 // decision format), or is not in canonical form.
+//
+// Separation of duties: when the expected policy excludes the requester, or the journaled tally
+// says the gate did, the evidence must prove the run's run:principal record (ApprovalEvidence
+// emits it; it holds the principals and nothing of the run's input), under the same signed tree
+// head and run, before the request. The recount reads the requesters from it, as the gate did, and
+// lists their decisions in Ignored (agent.ReasonRequester). It reports a Problem if the gate's
+// exclusion differs from the expected policy's, if the tally names other requesters than the
+// run:principal, or if the run:principal is missing, not proven, or not before the request; without
+// it the recount counts no one.
 //
 // It reports each counted decision's signed decision time and recorded time in Times, flagged
 // under DefaultDecisionTimeTolerance, and when the run was asked in AskedAt. These are display
@@ -283,16 +322,18 @@ func VerifyApprovals(actions []EvidenceAction, toolUseID string, policy agent.Ap
 	if err != nil {
 		return v, err
 	}
-	// The gate's outcome, as the runtime reads it (agent.RecordedTally): its re-approval tally
-	// when the tally it first recorded passed on decisions that predate agent.DecisionFormat,
-	// else its tally. A re-approval tally beside any other tally is not the gate's outcome.
-	byName := make(map[string]agent.Record, 2)
+	// The gate's outcome, as the runtime reads it (agent.RecordedTally): a re-approval tally over a
+	// tally it supersedes, else its tally. A re-approval tally beside any other tally is not the
+	// gate's outcome. Every tally that decides the choice must be proven, like the outcome (below).
+	byName := make(map[string]agent.Record, 3)
+	tallyAt := map[string]int{}
 	for i, a := range actions {
 		if a.Kind != KindApprovalTally {
 			continue
 		}
 		if _, dup := byName[recs[i].Name]; !dup {
 			byName[recs[i].Name] = recs[i]
+			tallyAt[recs[i].Name] = i
 		}
 	}
 	rt, found := agent.RecordedTally(byName, toolUseID)
@@ -318,7 +359,14 @@ func VerifyApprovals(actions []EvidenceAction, toolUseID string, policy agent.Ap
 	}
 	req, tallyAct, result := &actions[reqI], &actions[tallyI], &actions[resultI]
 	sth, runID := result.Bundle.STH, result.Bundle.RunID
-	for _, a := range []*EvidenceAction{req, tallyAct, result} {
+	mustProve := []*EvidenceAction{req, tallyAct, result}
+	// The tallies the outcome supersedes decide which tally is the outcome: they are proven too, and
+	// must come before it.
+	superseded := agent.SupersededTallies(byName, tallyName)
+	for _, n := range superseded {
+		mustProve = append(mustProve, &actions[tallyAt[n]])
+	}
+	for _, a := range mustProve {
 		if err := a.Bundle.Verify(logV); err != nil {
 			if !errors.Is(err, ErrNotVerified) {
 				return v, err
@@ -344,8 +392,52 @@ func VerifyApprovals(actions []EvidenceAction, toolUseID string, policy agent.Ap
 	if !(reqIdx < tallyIdx && tallyIdx < resultIdx) {
 		problem("records out of order: request at %d, tally at %d, result at %d (want request < tally < result)", reqIdx, tallyIdx, resultIdx)
 	}
+	for _, n := range superseded {
+		if at := actions[tallyAt[n]].Bundle.Inclusion.Index; at >= tallyIdx {
+			problem("the superseded tally %q is at %d, not before the tally that supersedes it at %d", n, at, tallyIdx)
+		}
+	}
 	if tally.Need != policy.Need || !slices.Equal(tally.Approvers, policy.Approvers) {
 		problem("the gate enforced need %d of %v, not the expected need %d of %v", tally.Need, tally.Approvers, policy.Need, policy.Approvers)
+	}
+	// Separation of duties: the run's run:principal names the requesters, proven like the request.
+	var start []agent.Record
+	if policy.ExcludePrincipal || tally.ExcludePrincipal {
+		if tally.ExcludePrincipal != policy.ExcludePrincipal {
+			problem("the gate's exclusion of the requester (exclude_principal %v) differs from the expected policy's (%v)", tally.ExcludePrincipal, policy.ExcludePrincipal)
+		}
+		startI := -1
+		for i, a := range actions {
+			if a.Kind == KindStep && agent.IsRunPrincipal(recs[i]) {
+				startI = i
+				break
+			}
+		}
+		if startI < 0 {
+			problem("the evidence has no run:principal record, which names the requesters the policy excludes; the recount counts no one")
+		} else {
+			sa := &actions[startI]
+			err := sa.Bundle.Verify(logV)
+			if err != nil && !errors.Is(err, ErrNotVerified) {
+				return v, err
+			}
+			switch {
+			case err != nil:
+				problem("the proof of the run:principal record does not verify under the log key; the recount counts no one")
+			case !sameTreeHead(sa.Bundle.STH, sth) || sa.Bundle.RunID != runID:
+				problem("the run:principal record is not proven under the same signed tree head and run as the result; the recount counts no one")
+			case sa.Bundle.Inclusion.Index >= reqIdx:
+				problem("the run:principal record is at %d, not before the request at %d; the recount counts no one", sa.Bundle.Inclusion.Index, reqIdx)
+			default:
+				start = []agent.Record{recs[startI]}
+			}
+		}
+		if rp, ok := agent.RecordedPrincipal(start); ok {
+			v.Requesters = rp.Requesters()
+			if tally.ExcludePrincipal && !slices.Equal(tally.Requesters, v.Requesters) {
+				problem("the gate's tally names requesters %q, but the run's run:principal names %q", tally.Requesters, v.Requesters)
+			}
+		}
 	}
 
 	// The disclosed decisions whose proofs hold, keyed by record name.
@@ -405,7 +497,7 @@ func VerifyApprovals(actions []EvidenceAction, toolUseID string, policy agent.Ap
 	}
 
 	subject := agent.ApprovalSubject{RunID: runID, ToolUseID: toolUseID, ToolName: call.Name, Args: call.Args}
-	got, checks := agent.TallyApprovals(decisions, subject, policy, verifierFor)
+	got, checks := agent.TallyApprovals(append(start, decisions...), subject, policy, verifierFor)
 	for _, c := range checks {
 		if !c.Counted {
 			v.Ignored = append(v.Ignored, IgnoredDecision{Approver: c.Approver, Step: c.Step, Reason: c.Reason})

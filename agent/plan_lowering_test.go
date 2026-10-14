@@ -115,10 +115,10 @@ func TestRunStartHoldsKindAndFlow(t *testing.T) {
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			m := memJournal()
-			if _, _, err := journalhook.Begin(ctx, m, "r", tc.first); err != nil {
+			if _, _, _, err := journalhook.Begin(ctx, m, "r", tc.first); err != nil {
 				t.Fatal(err)
 			}
-			_, _, err := journalhook.Begin(ctx, m, "r", tc.next)
+			_, _, _, err := journalhook.Begin(ctx, m, "r", tc.next)
 			if tc.ok != (err == nil) || err != nil && !errors.Is(err, ErrConfig) {
 				t.Fatalf("second drive: err = %v, want ok=%v (else ErrConfig)", err, tc.ok)
 			}
@@ -259,7 +259,7 @@ func TestFlowInputWithoutCanonicalJSONIsRefused(t *testing.T) {
 	for _, in := range []string{`{"a":1,"a":2}`, `"\ud800"`, `"\udc00x"`, `["\ud800A"]`, "\"\xff\""} {
 		j := memJournal()
 		start := RunStart{Kind: RunKindFlow, Flow: &FlowRef{Name: "f"}, Input: UserText(in)}
-		if _, _, err := journalhook.Begin(ctx, j, "r", start); !errors.Is(err, ErrConfig) {
+		if _, _, _, err := journalhook.Begin(ctx, j, "r", start); !errors.Is(err, ErrConfig) {
 			t.Errorf("Begin with input %q: %v, want ErrConfig", in, err)
 		}
 		if recs, _ := j.History(ctx, "r"); len(recs) != 0 {
@@ -268,10 +268,10 @@ func TestFlowInputWithoutCanonicalJSONIsRefused(t *testing.T) {
 	}
 	// A valid surrogate pair is a character, and compares with the character itself.
 	m := memJournal()
-	if _, _, err := journalhook.Begin(ctx, m, "r", RunStart{Kind: RunKindFlow, Flow: &FlowRef{Name: "f"}, Input: UserText(`"😀"`)}); err != nil {
+	if _, _, _, err := journalhook.Begin(ctx, m, "r", RunStart{Kind: RunKindFlow, Flow: &FlowRef{Name: "f"}, Input: UserText(`"😀"`)}); err != nil {
 		t.Fatal(err)
 	}
-	if _, _, err := journalhook.Begin(ctx, m, "r", RunStart{Kind: RunKindFlow, Flow: &FlowRef{Name: "f"}, Input: UserText("\"\U0001F600\"")}); err != nil {
+	if _, _, _, err := journalhook.Begin(ctx, m, "r", RunStart{Kind: RunKindFlow, Flow: &FlowRef{Name: "f"}, Input: UserText("\"\U0001F600\"")}); err != nil {
 		t.Fatalf("the same character, unescaped: %v", err)
 	}
 }

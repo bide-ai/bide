@@ -44,8 +44,17 @@ var Gate func(ctx context.Context, j any, runID, key, node string, args json.Raw
 // differs from the recorded one is ErrConfig (see agent.RunStart). A run whose completion marker
 // (run:complete) is recorded then returns its Result and done=true, since a finished run is final. A new run costs its header and run:start
 // Inserts (no read of the completion, which a new run cannot hold); an existing run the run:start
-// Insert that finds its recorded start, and one point read of its completion.
-var Begin func(ctx context.Context, j any, runID string, start any) (completed json.RawMessage, done bool, err error)
+// Insert that finds its recorded start, and one point read of its completion. A run with a
+// principal (the identity ctx carries) or ancestors first reads whether run:start exists, and a new
+// one records its run:principal (agent.RunPrincipal) before its run:start. runCtx is ctx with the
+// run's principal chain bound, for the runs the flow's nodes start.
+var Begin func(ctx context.Context, j any, runID string, start any) (runCtx context.Context, completed json.RawMessage, done bool, err error)
+
+// RunIdentity reads a plan flow run's options (each an agent.RunOption): the identity
+// agent.WithIdentity gives, as its Actor, OnBehalfOf and AuthorityRef, and set=false when none does.
+// An option a flow run does not take (every one but WithIdentity), a nil one, or one that is not an
+// agent.RunOption is ErrConfig.
+var RunIdentity func(opts []any) (actor, onBehalfOf, authorityRef string, set bool, err error)
 
 // CheckRunID refuses (ErrConfig) a run ID agent.Run refuses: an empty one, or one of the form the
 // engine reserves for the runs of sub-agents and session turns.

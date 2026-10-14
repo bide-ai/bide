@@ -38,8 +38,8 @@ func TestJournalHook_RefusesWrongTypes(t *testing.T) {
 			_, err := journalhook.Gate(ctx, j, "r", "node:a", "a", nil, SingleApproval(), 7)
 			return err
 		},
-		"Begin journal": func() error { _, _, err := journalhook.Begin(ctx, 7, "r", RunStart{}); return err },
-		"Begin start":   func() error { _, _, err := journalhook.Begin(ctx, j, "r", "start"); return err },
+		"Begin journal": func() error { _, _, _, err := journalhook.Begin(ctx, 7, "r", RunStart{}); return err },
+		"Begin start":   func() error { _, _, _, err := journalhook.Begin(ctx, j, "r", "start"); return err },
 		"Complete journal": func() error {
 			_, err := journalhook.Complete(ctx, 7, "r", json.RawMessage(`1`))
 			return err
@@ -61,7 +61,7 @@ func TestJournalHook_CancelledFlowRunsNothing(t *testing.T) {
 	ctx := context.Background()
 	j := memJournal()
 	start := RunStart{Input: UserText(`{}`), Kind: RunKindFlow, Flow: &FlowRef{Name: "f"}}
-	if _, done, err := journalhook.Begin(ctx, j, "r1", start); err != nil || done {
+	if _, _, done, err := journalhook.Begin(ctx, j, "r1", start); err != nil || done {
 		t.Fatalf("Begin = %v, %v", done, err)
 	}
 	if err := Cancel(ctx, j, "r1", "stop"); err != nil {
@@ -78,7 +78,7 @@ func TestJournalHook_CancelledFlowRunsNothing(t *testing.T) {
 	if _, err := journalhook.Complete(ctx, j, "r1", json.RawMessage(`"done"`)); !errors.Is(err, ErrRunCancelled) {
 		t.Fatalf("Complete on a cancelled flow = %v; want ErrRunCancelled", err)
 	}
-	if _, _, err := journalhook.Begin(ctx, j, "r1", start); !errors.Is(err, ErrRunCancelled) {
+	if _, _, _, err := journalhook.Begin(ctx, j, "r1", start); !errors.Is(err, ErrRunCancelled) {
 		t.Fatalf("Begin on a cancelled flow = %v; want ErrRunCancelled", err)
 	}
 }
@@ -89,7 +89,7 @@ func TestJournalHook_CompleteIsFinal(t *testing.T) {
 	ctx := context.Background()
 	j := memJournal()
 	start := RunStart{Input: UserText(`{"a":1}`), Kind: RunKindFlow, Flow: &FlowRef{Name: "f"}}
-	if _, done, err := journalhook.Begin(ctx, j, "r1", start); err != nil || done {
+	if _, _, done, err := journalhook.Begin(ctx, j, "r1", start); err != nil || done {
 		t.Fatalf("Begin = %v, %v", done, err)
 	}
 	if got, err := journalhook.Complete(ctx, j, "r1", json.RawMessage(`"first"`)); err != nil || string(got) != `"first"` {
@@ -98,13 +98,13 @@ func TestJournalHook_CompleteIsFinal(t *testing.T) {
 	if got, err := journalhook.Complete(ctx, j, "r1", json.RawMessage(`"second"`)); err != nil || string(got) != `"first"` {
 		t.Fatalf("second Complete = %s, %v; want the first result", got, err)
 	}
-	got, done, err := journalhook.Begin(ctx, j, "r1", start)
+	_, got, done, err := journalhook.Begin(ctx, j, "r1", start)
 	if err != nil || !done || string(got) != `"first"` {
 		t.Fatalf("Begin of a finished flow = %s, %v, %v", got, done, err)
 	}
 	other := start
 	other.Input = UserText(`{"a":2}`)
-	if _, _, err := journalhook.Begin(ctx, j, "r1", other); !errors.Is(err, ErrConfig) {
+	if _, _, _, err := journalhook.Begin(ctx, j, "r1", other); !errors.Is(err, ErrConfig) {
 		t.Fatalf("Begin with another input = %v; want ErrConfig", err)
 	}
 }

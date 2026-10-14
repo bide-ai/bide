@@ -1,0 +1,708 @@
+package agent
+
+import (
+	"context"
+	"encoding/json"
+	"errors"
+	"reflect"
+	"slices"
+	"strings"
+	"sync"
+	"testing"
+)
+
+// Separation of duties: an m-of-n policy with ExcludePrincipal never counts a decision by the
+// principal the run acts for (its run:principal record, OnBehalfOf), nor any of the runs above it.
+
+// sodRun drives one run of a fresh agent with a gated "charge" tool, as mofnRun does, under the
+// identity id when it is not empty (a resume passes none: the journaled principal applies).
+func sodRun(store *Journal, runID string, first bool, pol *ApprovalPolicy, verifiers ApproverVerifierFor, charged *int, id Identity) (Message, error) {
+	turns := [][]Emit{textTurn("done")}
+	if first {
+		turns = [][]Emit{toolTurn("c1", "charge", `{}`), textTurn("done")}
+	}
+	charge := &countingTool{name: "charge", approval: pol, calls: charged}
+	a, err := New(&scriptModel{turns: turns}, store, WithTools(charge), WithApproverVerifiers(verifiers))
+	if err != nil {
+		return Message{}, err
+	}
+	var opts []RunOption
+	if !id.Empty() {
+		opts = append(opts, WithIdentity(id))
+	}
+	res, err := a.Run(context.Background(), runID, UserText("pay"), opts...)
+	if err != nil {
+		return Message{}, err
+	}
+	return res.Message, nil
+}
+
+func sodPolicy(need int) *ApprovalPolicy {
+	return &ApprovalPolicy{Need: need, Approvers: abc, ExcludePrincipal: true}
+}
+
+// The requester's approval never counts: with alice as the run's principal, alice and bob
+// approving leaves a 2-of-3 gate pending, and carol's approval passes it. The tally records the
+// exclusion, the requester, and alice as excluded.
+func TestSoD_RequesterApprovalNeverCounts(t *testing.T) {
+	store := memJournal()
+	pol, vf := sodPolicy(2), fakeVerifiers(abc...)
+	var charged int
+	alice := Identity{Actor: "agent@1", OnBehalfOf: "alice"}
+
+	_, err := sodRun(store, "r1", true, pol, vf, &charged, alice)
+	wantPending(t, err, counts{Need: 2, Pending: []string{"bob", "carol"}})
+
+	approveAs(t, store, "r1", "c1", "alice", true)
+	approveAs(t, store, "r1", "c1", "bob", true)
+	_, err = sodRun(store, "r1", false, pol, vf, &charged, Identity{})
+	wantPending(t, err, counts{Need: 2, Approved: 1, ApprovedBy: []string{"bob"}, Pending: []string{"carol"}})
+	var pend *ApprovalPending
+	if errors.As(err, &pend); !slices.Equal(pend.Quorum.Requesters, []string{"alice"}) || !pend.Quorum.ExcludePrincipal || !slices.Equal(pend.Quorum.Excluded, []string{"alice"}) {
+		t.Fatalf("running tally = %+v, want requester alice excluded", *pend.Quorum)
+	}
+	if charged != 0 {
+		t.Fatalf("charge ran %d times on the requester's approval, want 0", charged)
+	}
+
+	approveAs(t, store, "r1", "c1", "carol", true)
+	if _, err := sodRun(store, "r1", false, pol, vf, &charged, Identity{}); err != nil {
+		t.Fatalf("run at quorum without the requester: %v", err)
+	}
+	if charged != 1 {
+		t.Fatalf("charged = %d, want 1", charged)
+	}
+	rec, ok := hasStep(t, store, "r1", ApprovalTallyStep("c1"))
+	if !ok {
+		t.Fatal("no terminal tally")
+	}
+	tally, err := decodeTally("r1", rec)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !tally.ExcludePrincipal || !slices.Equal(tally.Requesters, []string{"alice"}) || !slices.Equal(tally.Excluded, []string{"alice"}) ||
+		!slices.Equal(tally.ApprovedBy, []string{"bob", "carol"}) {
+		t.Fatalf("tally = %+v, want bob and carol counted, alice excluded as the requester", tally)
+	}
+}
+
+// The classification names the reason, so the gate, the viewer and the audit can report it.
+func TestSoD_TallyClassifiesRequester(t *testing.T) {
+	store := memJournal()
+	pol, vf := sodPolicy(2), fakeVerifiers(abc...)
+	var charged int
+	_, _ = sodRun(store, "r1", true, pol, vf, &charged, Identity{OnBehalfOf: "alice"})
+	approveAs(t, store, "r1", "c1", "alice", true)
+	recs, err := store.History(context.Background(), "r1")
+	if err != nil {
+		t.Fatal(err)
+	}
+	_, checks := TallyApprovals(recs, subjectOf(t, store, "r1", "c1"), *pol, vf)
+	if len(checks) != 1 || checks[0].Counted || checks[0].Reason != ReasonRequester {
+		t.Fatalf("checks = %+v, want alice's decision not counted: %q", checks, ReasonRequester)
+	}
+	if got, ok := RecordedPrincipal(recs); !ok || !slices.Equal(got.Requesters(), []string{"alice"}) {
+		t.Fatalf("RecordedPrincipal = %+v, %v, want alice", got, ok)
+	}
+}
+
+// The requester is matched to approver ids ignoring ASCII case, as Validate refuses two approvers
+// that differ only by case: "Alice" requesting excludes approver "alice".
+func TestSoD_RequesterMatchesIgnoringCase(t *testing.T) {
+	store := memJournal()
+	pol, vf := sodPolicy(2), fakeVerifiers(abc...)
+	var charged int
+	_, _ = sodRun(store, "r1", true, pol, vf, &charged, Identity{OnBehalfOf: "Alice"})
+	approveAs(t, store, "r1", "c1", "alice", true)
+	approveAs(t, store, "r1", "c1", "bob", true)
+	_, err := sodRun(store, "r1", false, pol, vf, &charged, Identity{})
+	wantPending(t, err, counts{Need: 2, Approved: 1, ApprovedBy: []string{"bob"}, Pending: []string{"carol"}})
+}
+
+// A requester who is not an approver excludes no one: every approver keeps a seat.
+func TestSoD_RequesterNotAnApprover(t *testing.T) {
+	store := memJournal()
+	pol, vf := sodPolicy(3), fakeVerifiers(abc...)
+	var charged int
+	_, _ = sodRun(store, "r1", true, pol, vf, &charged, Identity{OnBehalfOf: "desk-7"})
+	for _, id := range abc {
+		approveAs(t, store, "r1", "c1", id, true)
+	}
+	if _, err := sodRun(store, "r1", false, pol, vf, &charged, Identity{}); err != nil {
+		t.Fatalf("3 of 3 with a requester outside the approvers: %v", err)
+	}
+	rec, _ := hasStep(t, store, "r1", ApprovalTallyStep("c1"))
+	tally, _ := decodeTally("r1", rec)
+	if !slices.Equal(tally.Requesters, []string{"desk-7"}) || len(tally.Excluded) != 0 || tally.Approved != 3 {
+		t.Fatalf("tally = %+v, want requester desk-7 and no one excluded", tally)
+	}
+}
+
+// Fail closed: a policy that excludes the requester refuses a run that records no principal, and
+// one whose principal is not printable ASCII (it could only look like an approver id), with
+// ErrConfig, and runs nothing.
+func TestSoD_NoUsableRequesterIsConfigError(t *testing.T) {
+	for name, id := range map[string]Identity{
+		"no principal":   {Actor: "agent@1"},
+		"authority only": {AuthorityRef: "grant:1"},
+		"non-ASCII":      {OnBehalfOf: "аlice"}, // Cyrillic a
+		"space":          {OnBehalfOf: "alice smith"},
+		"control":        {OnBehalfOf: "alice\n"},
+	} {
+		t.Run(name, func(t *testing.T) {
+			store := memJournal()
+			var charged int
+			_, err := sodRun(store, "r1", true, sodPolicy(2), fakeVerifiers(abc...), &charged, id)
+			if !errors.Is(err, ErrConfig) || !strings.Contains(err.Error(), "requester") {
+				t.Fatalf("err = %v, want ErrConfig naming the requester", err)
+			}
+			// A run with no principal records no run:principal, and the gate says so.
+			if name == "no principal" && !strings.Contains(err.Error(), "no run:principal") {
+				t.Fatalf("err = %v, want it to name the missing run:principal", err)
+			}
+			if charged != 0 {
+				t.Fatal("the tool ran")
+			}
+			if _, ok := hasStep(t, store, "r1", ApprovalTallyStep("c1")); ok {
+				t.Fatal("a tally was recorded")
+			}
+		})
+	}
+}
+
+// k must stay reachable without the requester: 3 of 3 with the requester among the approvers is
+// refused at the gate (ErrConfig), before any pause, rather than waiting for ever.
+func TestSoD_InfeasibleWithoutRequesterIsConfigError(t *testing.T) {
+	store := memJournal()
+	var charged int
+	_, err := sodRun(store, "r1", true, sodPolicy(3), fakeVerifiers(abc...), &charged, Identity{OnBehalfOf: "carol"})
+	if !errors.Is(err, ErrConfig) || !strings.Contains(err.Error(), "carol") {
+		t.Fatalf("err = %v, want ErrConfig naming the requester", err)
+	}
+	var pend *ApprovalPending
+	if errors.As(err, &pend) {
+		t.Fatal("paused on an unreachable gate")
+	}
+}
+
+// The policy's static check: SingleApproval has no approver ids to exclude, so ExcludePrincipal on
+// it is ErrConfig; on an m-of-n policy it is valid.
+func TestSoD_ValidateSingle(t *testing.T) {
+	p := SingleApproval()
+	p.ExcludePrincipal = true
+	if err := p.Validate(); !errors.Is(err, ErrConfig) {
+		t.Fatalf("Validate(single, exclude) = %v, want ErrConfig", err)
+	}
+	if err := sodPolicy(2).Validate(); err != nil {
+		t.Fatalf("Validate(2 of 3, exclude) = %v", err)
+	}
+}
+
+// The wire form: exclude_principal round-trips, is omitted when false (so an existing policy
+// encodes as before), and is refused beside "single".
+func TestSoD_PolicyJSON(t *testing.T) {
+	b, err := json.Marshal(sodPolicy(2))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if string(b) != `{"need":2,"approvers":["alice","bob","carol"],"exclude_principal":true}` {
+		t.Fatalf("encoding = %s", b)
+	}
+	var back ApprovalPolicy
+	if err := json.Unmarshal(b, &back); err != nil || !reflect.DeepEqual(back, *sodPolicy(2)) {
+		t.Fatalf("decode = %+v, %v", back, err)
+	}
+	b, _ = json.Marshal(ApprovalPolicy{Need: 1, Approvers: []string{"a"}})
+	if string(b) != `{"need":1,"approvers":["a"]}` {
+		t.Fatalf("encoding without exclusion = %s", b)
+	}
+	if err := json.Unmarshal([]byte(`{"single":true,"exclude_principal":true}`), &back); !errors.Is(err, ErrProtocol) {
+		t.Fatalf("single with exclude_principal: %v, want ErrProtocol", err)
+	}
+	if err := json.Unmarshal([]byte(`{"need":1,"approvers":["a"],"exclude_principal":"yes"}`), &back); !errors.Is(err, ErrProtocol) {
+		t.Fatalf("exclude_principal of the wrong type: %v, want ErrProtocol", err)
+	}
+	if c := sodPolicy(2).Clone(); !c.ExcludePrincipal {
+		t.Fatal("Clone dropped ExcludePrincipal")
+	}
+}
+
+// The counting rule fails closed on its own: given records with no run:principal (no requester), a
+// policy that excludes the requester counts no one, and the tally is unreachable rather than
+// passing on whoever signed.
+func TestSoD_TallyWithoutStartCountsNoOne(t *testing.T) {
+	store := memJournal()
+	pol, vf := sodPolicy(1), fakeVerifiers(abc...)
+	var charged int
+	_, _ = sodRun(store, "r1", true, pol, vf, &charged, Identity{OnBehalfOf: "alice"})
+	approveAs(t, store, "r1", "c1", "bob", true)
+	recs, _ := store.History(context.Background(), "r1")
+	recs = slices.DeleteFunc(recs, IsRunPrincipal)
+	tally, checks := TallyApprovals(recs, subjectOf(t, store, "r1", "c1"), *pol, vf)
+	if tally.Passed() || !tally.Unreachable() || len(checks) != 1 || checks[0].Reason != ReasonNoRequester {
+		t.Fatalf("tally = %+v, checks = %+v, want nothing counted (%q)", tally, checks, ReasonNoRequester)
+	}
+}
+
+// The pause note carries the exclusion, so a viewer can show it before any decision.
+func TestSoD_PauseNoteCarriesExclusion(t *testing.T) {
+	store := memJournal()
+	var charged int
+	_, _ = sodRun(store, "r1", true, sodPolicy(2), fakeVerifiers(abc...), &charged, Identity{OnBehalfOf: "alice"})
+	rec, ok := hasStep(t, store, "r1", ApprovalPendingStep("c1"))
+	if !ok {
+		t.Fatal("no pause note")
+	}
+	var w ApprovalWait
+	if err := json.Unmarshal(rec.Result, &w); err != nil || !w.ExcludePrincipal || !slices.Equal(w.Requesters, []string{"alice"}) {
+		t.Fatalf("pause note = %s (%v), want the exclusion and requester alice", rec.Result, err)
+	}
+}
+
+// A gated call inside a sub-agent excludes the sub-run's principal, which a plain sub-agent
+// inherits from its parent run.
+func TestSoD_SubAgentInheritsRequester(t *testing.T) {
+	store := memJournal()
+	pol, vf := sodPolicy(2), fakeVerifiers(abc...)
+	var charged int
+	charge := &countingTool{name: "charge", approval: pol, calls: &charged}
+	childModel := &scriptModel{turns: [][]Emit{toolTurn("c1", "charge", `{}`), textTurn("child done"), textTurn("child done")}}
+	child, err := New(childModel, store, WithTools(charge), WithApproverVerifiers(vf))
+	if err != nil {
+		t.Fatal(err)
+	}
+	sub := MustSubAgent("pay", "pays", child)
+	parent, err := New(&scriptModel{turns: [][]Emit{toolTurn("p1", "pay", `{"task":"go"}`), textTurn("done"), textTurn("done")}}, store, WithTools(sub))
+	if err != nil {
+		t.Fatal(err)
+	}
+	_, err = parent.Run(context.Background(), "root", UserText("pay"), WithIdentity(Identity{OnBehalfOf: "alice"}))
+	var pend *ApprovalPending
+	if !errors.As(err, &pend) {
+		t.Fatalf("err = %v, want the sub-run's gate to pause", err)
+	}
+	// The root run's principal, then the sub-run's own, which it inherited.
+	if pend.Quorum == nil || !slices.Equal(pend.Quorum.Requesters, []string{"alice", "alice"}) || !slices.Equal(pend.Quorum.Excluded, []string{"alice"}) {
+		t.Fatalf("sub-run tally = %+v, want requester alice excluded", pend.Quorum)
+	}
+}
+
+// A run that an earlier version started records its run:principal only when a drive under this version
+// first loads it, after the call was requested; its principal is then whatever that drive was given,
+// not the requester's. The gate refuses to take a requester recorded after the request.
+func TestSoD_RunStartAfterTheRequestIsConfigError(t *testing.T) {
+	ctx := context.Background()
+	src := memJournal()
+	pol, vf := sodPolicy(2), fakeVerifiers(abc...)
+	var charged int
+	_, _ = sodRun(src, "r1", true, pol, vf, &charged, Identity{OnBehalfOf: "alice"})
+	recs, err := src.History(ctx, "r1")
+	if err != nil {
+		t.Fatal(err)
+	}
+	legacy := memJournal() // the same run with no run:start or run:principal, as an earlier version journaled it
+	for _, r := range recs {
+		if r.Name == runStartStep || r.Name == runPrincipalStep {
+			continue
+		}
+		if _, err := legacy.put(ctx, "r1", r.Name, r); err != nil {
+			t.Fatal(err)
+		}
+	}
+	_, err = sodRun(legacy, "r1", false, pol, vf, &charged, Identity{OnBehalfOf: "mallory"})
+	if !errors.Is(err, ErrConfig) || !strings.Contains(err.Error(), "after") {
+		t.Fatalf("err = %v, want ErrConfig: the requester was recorded after the request", err)
+	}
+	if got, _ := RecordedPrincipal(mustHistory(t, legacy, "r1")); !slices.Equal(got.Requesters(), []string{"mallory"}) {
+		t.Fatalf("the late run:principal names %q; the test expects the resuming drive's principal", got.Requesters())
+	}
+}
+
+func mustHistory(t *testing.T, j *Journal, runID string) []Record {
+	t.Helper()
+	recs, err := j.History(context.Background(), runID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return recs
+}
+
+// RecordedPrincipal reads run:principal strictly: a record that names the principal twice, or under
+// a case variant encoding/json would also read, names no requester (the gate then refuses the run).
+func TestSoD_RecordedPrincipalIsStrict(t *testing.T) {
+	rec := func(js string) []Record {
+		return []Record{{Name: runPrincipalStep, Kind: StepValue, Result: json.RawMessage(js)}}
+	}
+	for js, want := range map[string][]string{
+		`{"principal":{"on_behalf_of":"alice"}}`:                                                     {"alice"},
+		`{"principal":{"on_behalf_of":"alice"},"later_field":1}`:                                     {"alice"},
+		`{"principal":{"on_behalf_of":"bob"},"ancestors":[{"on_behalf_of":"alice"}]}`:                {"alice", "bob"},
+		`{"principal":{"on_behalf_of":"alice"},"Principal":{"on_behalf_of":"bob"}}`:                  nil,
+		`{"principal":{"on_behalf_of":"alice","on_behalf_of":"bob"}}`:                                nil,
+		`{"principal":{"On_Behalf_Of":"bob"}}`:                                                       nil,
+		`{"principal":{"on_behalf_of":"bob"},"ancestors":[{"on_behalf_of":"a","ON_BEHALF_OF":"b"}]}`: nil,
+	} {
+		got, ok := RecordedPrincipal(rec(js))
+		if ok != (want != nil) || ok && !slices.Equal(got.Requesters(), want) {
+			t.Errorf("RecordedPrincipal(%s) = %q, %v; want %q", js, got.Requesters(), ok, want)
+		}
+	}
+	two := append(rec(`{"principal":{"on_behalf_of":"alice"}}`), rec(`{"principal":{"on_behalf_of":"bob"}}`)...)
+	if got, ok := RecordedPrincipal(two); ok {
+		t.Errorf("two disagreeing run:principal records: %q", got.Requesters())
+	}
+}
+
+// delegateTool runs a sub-agent tool under another identity, as audit.AttenuatingSubAgent does for a
+// delegation: the sub-run acts on behalf of the delegate, not the parent's principal.
+type delegateTool struct {
+	inner Tool
+	as    Identity
+}
+
+func (d delegateTool) Spec() ToolSpec { return d.inner.Spec() }
+func (d delegateTool) Unwrap() Tool   { return d.inner }
+func (d delegateTool) Call(ctx context.Context, args json.RawMessage) (json.RawMessage, error) {
+	return d.inner.Call(contextWithIdentity(ctx, d.as), args)
+}
+
+// delegatedRun drives root (on behalf of rootID, or no one when it is empty) whose tool "pay"
+// delegates to a sub-agent acting for "desk", whose gated "charge" call pauses.
+func delegatedRun(t *testing.T, store *Journal, pol *ApprovalPolicy, rootID string, first bool) error {
+	t.Helper()
+	var charged int
+	charge := &countingTool{name: "charge", approval: pol, calls: &charged}
+	childTurns := [][]Emit{textTurn("child done")}
+	parentTurns := [][]Emit{textTurn("done")}
+	if first {
+		childTurns = [][]Emit{toolTurn("c1", "charge", `{}`), textTurn("child done")}
+		parentTurns = [][]Emit{toolTurn("p1", "pay", `{"task":"go"}`), textTurn("done")}
+	}
+	child, err := New(&scriptModel{turns: childTurns}, store, WithTools(charge), WithApproverVerifiers(fakeVerifiers(abc...)))
+	if err != nil {
+		t.Fatal(err)
+	}
+	tool := delegateTool{inner: MustSubAgent("pay", "pays", child), as: Identity{Actor: "pay-agent", OnBehalfOf: "desk"}}
+	parent, err := New(&scriptModel{turns: parentTurns}, store, WithTools(tool))
+	if err != nil {
+		t.Fatal(err)
+	}
+	var opts []RunOption
+	if rootID != "" && first {
+		opts = append(opts, WithIdentity(Identity{OnBehalfOf: rootID}))
+	}
+	_, err = parent.Run(context.Background(), "root", UserText("pay"), opts...)
+	return err
+}
+
+// A gate in a delegated sub-run excludes the principal of every run above it, not only the
+// sub-run's own: alice started the root run, the sub-run acts for desk, and alice's approval of
+// the sub-run's call never counts. The sub-run records its ancestors in its run:principal and its
+// run:start when it starts, so its own journal proves them.
+func TestSoD_DelegatedSubRunExcludesAncestors(t *testing.T) {
+	store := memJournal()
+	pol := sodPolicy(2)
+	err := delegatedRun(t, store, pol, "alice", true)
+	var pend *ApprovalPending
+	if !errors.As(err, &pend) {
+		t.Fatalf("err = %v, want the sub-run's gate to pause", err)
+	}
+	if !slices.Equal(pend.Quorum.Requesters, []string{"alice", "desk"}) || !slices.Equal(pend.Quorum.Excluded, []string{"alice"}) {
+		t.Fatalf("tally = %+v, want requesters alice and desk, alice excluded", pend.Quorum)
+	}
+	sub := SubRunID("root", "p1")
+	rp, ok := RecordedPrincipal(mustHistory(t, store, sub))
+	if !ok || rp.Principal.OnBehalfOf != "desk" || len(rp.Ancestors) != 1 || rp.Ancestors[0].OnBehalfOf != "alice" {
+		t.Fatalf("sub-run run:principal = %+v (%v), want desk under alice", rp, ok)
+	}
+	start, _, _ := RecordedStart(context.Background(), store, sub)
+	if !rp.Matches(start) {
+		t.Fatalf("run:start %+v and run:principal %+v disagree", start, rp)
+	}
+	approveAs(t, store, sub, "c1", "alice", true)
+	approveAs(t, store, sub, "c1", "bob", true)
+	err = delegatedRun(t, store, pol, "", false)
+	if !errors.As(err, &pend) || pend.Quorum.Approved != 1 {
+		t.Fatalf("err = %v, want still paused with bob's approval alone counted", err)
+	}
+	approveAs(t, store, sub, "c1", "carol", true)
+	if err := delegatedRun(t, store, pol, "", false); err != nil {
+		t.Fatalf("run at quorum without alice: %v", err)
+	}
+}
+
+// Fail closed: a delegated sub-run under a root run that records no principal has an ancestor
+// whose requester is unknown, so a gate that excludes the requester refuses it.
+func TestSoD_DelegatedUnderAnonymousRootIsConfigError(t *testing.T) {
+	store := memJournal()
+	// The sub-run's ErrConfig reaches the parent as the delegation call's error result.
+	if err := delegatedRun(t, store, sodPolicy(2), "", true); err != nil {
+		t.Fatalf("err = %v", err)
+	}
+	recs := mustHistory(t, store, "root")
+	i := slices.IndexFunc(recs, func(r Record) bool { return r.Kind == StepToolResult && r.ToolUseID == "p1" })
+	if i < 0 || !strings.Contains(string(recs[i].Result), "above it records no principal") {
+		t.Fatalf("the delegation's result does not report the unknown ancestor: %+v", recs[i])
+	}
+	if _, ok := hasStep(t, store, SubRunID("root", "p1"), ApprovalTallyStep("c1")); ok {
+		t.Fatal("the sub-run's gate recorded a tally")
+	}
+}
+
+// run:principal is the first record a run writes, before run:start, and holds the principal alone:
+// not the run's input.
+func TestSoD_RunPrincipalHoldsNoInput(t *testing.T) {
+	store := memJournal()
+	var charged int
+	_, _ = sodRun(store, "r1", true, sodPolicy(2), fakeVerifiers(abc...), &charged, Identity{Actor: "agent@1", OnBehalfOf: "alice", AuthorityRef: "grant:7"})
+	recs := mustHistory(t, store, "r1")
+	pi := slices.IndexFunc(recs, IsRunPrincipal)
+	si := slices.IndexFunc(recs, func(r Record) bool { return r.Name == runStartStep })
+	if pi < 0 || si < 0 || pi > si {
+		t.Fatalf("run:principal at %d, run:start at %d; want the principal first", pi, si)
+	}
+	if string(recs[pi].Result) != `{"principal":{"on_behalf_of":"alice","authority_ref":"grant:7"}}` {
+		t.Fatalf("run:principal = %s", recs[pi].Result)
+	}
+	// A run with no principal, started outside any run, records none.
+	plain := memJournal()
+	_, _ = sodRun(plain, "r2", true, &ApprovalPolicy{Need: 1, Approvers: abc}, fakeVerifiers(abc...), &charged, Identity{Actor: "agent@1"})
+	if slices.ContainsFunc(mustHistory(t, plain, "r2"), IsRunPrincipal) {
+		t.Fatal("a run with no principal recorded a run:principal")
+	}
+}
+
+// A run:principal already in the journal (a concurrent first drive's, or written by someone with
+// journal access before the run started) that names another principal refuses the drive.
+func TestSoD_ForeignRunPrincipalRefused(t *testing.T) {
+	ctx := context.Background()
+	store := memJournal()
+	b, _ := json.Marshal(RunPrincipal{Principal: Principal{OnBehalfOf: "mallory"}})
+	if _, err := store.put(ctx, "r1", runPrincipalStep, Record{Kind: StepValue, Result: b}); err != nil {
+		t.Fatal(err)
+	}
+	var charged int
+	_, err := sodRun(store, "r1", true, sodPolicy(2), fakeVerifiers(abc...), &charged, Identity{OnBehalfOf: "alice"})
+	if !errors.Is(err, ErrConfig) || !strings.Contains(err.Error(), "another principal") {
+		t.Fatalf("err = %v, want ErrConfig: another principal", err)
+	}
+}
+
+// The gate holds run:principal to run:start: a run:principal that names another principal than the
+// run:start (written before the run started, for a run that then started with no principal of its
+// own? not possible through the engine) is refused. Here the records are written directly.
+func TestSoD_PrincipalStartMismatchRefused(t *testing.T) {
+	recs := []Record{
+		{Name: runPrincipalStep, Kind: StepValue, Result: json.RawMessage(`{"principal":{"on_behalf_of":"bob"}}`)},
+		{Name: runStartStep, Kind: StepValue, Result: json.RawMessage(`{"input":"x","principal":{"on_behalf_of":"alice"}}`)},
+	}
+	if err := checkRequester(*sodPolicy(2), recs, "r1", "c1"); !errors.Is(err, ErrConfig) || !strings.Contains(err.Error(), "different principals") {
+		t.Fatalf("err = %v, want ErrConfig naming the mismatch", err)
+	}
+}
+
+// A stored record's approval policy round-trips exclude_principal: the policy a tool result
+// journals reads back as the gate the call ran under.
+func TestSoD_StoredApprovalRoundTrip(t *testing.T) {
+	for _, p := range []*ApprovalPolicy{sodPolicy(2), {Need: 1, Approvers: abc}, SingleApproval()} {
+		data, err := JournalEntry(ToolResultStep("c1"), Record{Kind: StepToolResult, ToolUseID: "c1", Result: json.RawMessage(`"ok"`), Approval: p})
+		if err != nil {
+			t.Fatal(err)
+		}
+		got, err := DecodeStoredRecord("r1", ToolResultStep("c1"), data)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if got.Approval == nil || got.Approval.ExcludePrincipal != p.ExcludePrincipal || got.Approval.Need != p.Need || got.Approval.single() != p.single() {
+			t.Fatalf("policy %+v read back as %+v", p, got.Approval)
+		}
+	}
+}
+
+// A tally recorded under a policy that did not exclude the requester, for a call that has not run,
+// does not decide a gate whose policy now excludes the requester (a redeploy added the exclusion):
+// the gate asks again (PendingSoDReapproval), counts without the requester, and records the new
+// outcome under ApprovalSoDRetallyStep, which supersedes the old tally for every reader.
+func TestSoD_WeakTallySupersededByExcludingPolicy(t *testing.T) {
+	ctx := context.Background()
+	store := memJournal()
+	vf := fakeVerifiers(abc...)
+	var charged int
+	weak, strong := &ApprovalPolicy{Need: 2, Approvers: abc}, sodPolicy(2)
+	_, _ = sodRun(store, "r1", true, weak, vf, &charged, Identity{OnBehalfOf: "alice"})
+	approveAs(t, store, "r1", "c1", "alice", true)
+	approveAs(t, store, "r1", "c1", "bob", true)
+	s := subjectOf(t, store, "r1", "c1")
+	if _, final, err := tallyGate(ctx, store, "r1", s, weak, vf, ""); err != nil || !final {
+		t.Fatalf("the weak gate did not record its tally: %v %v", final, err)
+	}
+	// The redeploy: the call has not run, and its gate now excludes the requester.
+	_, err := sodRun(store, "r1", false, strong, vf, &charged, Identity{})
+	var pend *ApprovalPending
+	if !errors.As(err, &pend) || pend.Reason != PendingSoDReapproval || pend.Quorum.Supersedes != ApprovalTallyStep("c1") || pend.Quorum.Approved != 1 {
+		t.Fatalf("err = %v, want a re-approval pause superseding the weak tally with bob alone counted", err)
+	}
+	if charged != 0 {
+		t.Fatal("the call ran on the weak tally")
+	}
+	approveAs(t, store, "r1", "c1", "carol", true)
+	if _, err := sodRun(store, "r1", false, strong, vf, &charged, Identity{}); err != nil || charged != 1 {
+		t.Fatalf("run at quorum without the requester: %v (charged %d)", err, charged)
+	}
+	byName := map[string]Record{}
+	for _, r := range mustHistory(t, store, "r1") {
+		if r.Kind == StepValue {
+			byName[r.Name] = r
+		}
+	}
+	if rt, ok := RecordedTally(byName, "c1"); !ok || rt.Name != ApprovalSoDRetallyStep("c1") {
+		t.Fatalf("RecordedTally = %q, want the separation-of-duties re-tally", rt.Name)
+	}
+	if got := SupersededTallies(byName, ApprovalSoDRetallyStep("c1")); !slices.Equal(got, []string{ApprovalTallyStep("c1")}) {
+		t.Fatalf("SupersededTallies = %q", got)
+	}
+	// A recorded denial stays final, whatever the policy is now.
+}
+
+// A weak denial is final under an excluding policy: it runs nothing.
+func TestSoD_WeakDenialStaysFinal(t *testing.T) {
+	ctx := context.Background()
+	store := memJournal()
+	vf := fakeVerifiers(abc...)
+	var charged int
+	weak := &ApprovalPolicy{Need: 2, Approvers: abc}
+	_, _ = sodRun(store, "r1", true, weak, vf, &charged, Identity{OnBehalfOf: "alice"})
+	approveAs(t, store, "r1", "c1", "bob", false)
+	approveAs(t, store, "r1", "c1", "carol", false)
+	if tally, final, err := tallyGate(ctx, store, "r1", subjectOf(t, store, "r1", "c1"), sodPolicy(2), vf, ""); err != nil || !final || tally.Passed() {
+		t.Fatalf("tally = %+v final=%v err=%v, want the denial final", tally, final, err)
+	}
+}
+
+// A tally that excluded other requesters than the run's run:principal names is not one the gate
+// wrote: the gate refuses it.
+func TestSoD_ExcludingTallyWithOtherRequestersRefused(t *testing.T) {
+	ctx := context.Background()
+	store := memJournal()
+	vf := fakeVerifiers(abc...)
+	var charged int
+	_, _ = sodRun(store, "r1", true, sodPolicy(2), vf, &charged, Identity{OnBehalfOf: "alice"})
+	b, _ := json.Marshal(ApprovalTally{Need: 2, Approvers: abc, Approved: 2, ApprovedBy: []string{"alice", "bob"},
+		DecisionFormat: DecisionFormat, ExcludePrincipal: true, Requesters: []string{"zed"}})
+	writeRaw(t, store, "r1", ApprovalTallyStep("c1"), Record{Kind: StepValue, Result: b})
+	_, err := sodRun(store, "r1", false, sodPolicy(2), vf, &charged, Identity{})
+	if !errors.Is(err, ErrConfig) || !strings.Contains(err.Error(), `"zed"`) || charged != 0 {
+		t.Fatalf("err = %v (charged %d), want ErrConfig naming the recorded requesters", err, charged)
+	}
+	if _, _, err := tallyGate(ctx, store, "r1", subjectOf(t, store, "r1", "c1"), &ApprovalPolicy{Need: 2, Approvers: abc}, vf, ""); !errors.Is(err, ErrConfig) {
+		t.Fatalf("under a policy that does not exclude the requester: %v, want ErrConfig too", err)
+	}
+}
+
+// raceStore records, just before the gate's own tally is inserted, a weak tally another drive
+// (still running a policy that does not exclude the requester) counted first.
+type raceStore struct {
+	Store
+	weak []byte
+	done bool
+}
+
+func (s *raceStore) Unwrap() Store { return s.Store }
+func (s *raceStore) Insert(ctx context.Context, runID, name string, data []byte) (Entry, bool, error) {
+	if name == ApprovalTallyStep("c1") && !s.done {
+		s.done = true
+		if _, _, err := s.Store.Insert(ctx, runID, name, s.weak); err != nil {
+			return Entry{}, false, err
+		}
+	}
+	return s.Store.Insert(ctx, runID, name, data)
+}
+
+// When another drive's weak tally lands first under the name the excluding gate records, the gate
+// does not go by it: it evaluates again and records the excluding re-tally.
+func TestSoD_ConcurrentWeakTallyRecountedAgain(t *testing.T) {
+	ctx := context.Background()
+	weakTally, _ := json.Marshal(ApprovalTally{Need: 2, Approvers: abc, Approved: 2, ApprovedBy: []string{"alice", "bob"}, DecisionFormat: DecisionFormat})
+	weak, err := JournalEntry(ApprovalTallyStep("c1"), Record{Kind: StepValue, Result: weakTally})
+	if err != nil {
+		t.Fatal(err)
+	}
+	rs := &raceStore{Store: NewMemStore(), weak: weak}
+	store := mustJournal(rs)
+	vf := fakeVerifiers(abc...)
+	var charged int
+	_, _ = sodRun(store, "r1", true, sodPolicy(2), vf, &charged, Identity{OnBehalfOf: "alice"})
+	for _, id := range abc {
+		approveAs(t, store, "r1", "c1", id, true)
+	}
+	tally, final, err := tallyGate(ctx, store, "r1", subjectOf(t, store, "r1", "c1"), sodPolicy(2), vf, "")
+	if err != nil || !final || !tally.ExcludePrincipal || !slices.Equal(tally.ApprovedBy, []string{"bob", "carol"}) || tally.Supersedes != ApprovalTallyStep("c1") {
+		t.Fatalf("tally = %+v final=%v err=%v, want the excluding re-tally over the weak one", tally, final, err)
+	}
+	if !rs.done {
+		t.Fatal("the race was not staged")
+	}
+}
+
+// The approval-pending notification names the approvers a gate excludes as requesters, from the
+// pause and from the pause note, so a notifier routes away from them.
+func TestSoD_NotificationNamesExcluded(t *testing.T) {
+	store := memJournal()
+	var charged int
+	_, err := sodRun(store, "r1", true, sodPolicy(2), fakeVerifiers(abc...), &charged, Identity{OnBehalfOf: "alice"})
+	e := &notifyEngine{cfg: defaultNotifyConfig()}
+	ev, ok := e.eventFromErr("r1", err)
+	if !ok || ev.approval == nil || !slices.Equal(ev.approval.Excluded, []string{"alice"}) {
+		t.Fatalf("event from the pause = %+v, want alice excluded", ev.approval)
+	}
+	evs := e.pendingEvents("r1", mustHistory(t, store, "r1"))
+	if len(evs) != 1 || !slices.Equal(evs[0].approval.Excluded, []string{"alice"}) {
+		t.Fatalf("events from the pause note = %+v, want alice excluded", evs)
+	}
+}
+
+// Two drives race to record the first tally of one call: one runs a policy that does not exclude
+// the requester, the other one that does. Whoever lands first, the excluding drive never goes by a
+// tally that counted the requester, the weaker drive goes by a passing tally, and the journal's
+// outcome excludes the requester.
+func TestSoD_RacingWeakAndExcludingDrives(t *testing.T) {
+	ctx := context.Background()
+	vf := fakeVerifiers(abc...)
+	weak, strong := &ApprovalPolicy{Need: 2, Approvers: abc}, sodPolicy(2)
+	for i := range 50 {
+		store := memJournal()
+		var charged int
+		_, _ = sodRun(store, "r1", true, strong, vf, &charged, Identity{OnBehalfOf: "alice"})
+		for _, id := range abc {
+			approveAs(t, store, "r1", "c1", id, true)
+		}
+		s := subjectOf(t, store, "r1", "c1")
+		var wg sync.WaitGroup
+		var wt, st ApprovalTally
+		var werr, serr error
+		wg.Add(2)
+		go func() { defer wg.Done(); wt, _, werr = tallyGate(ctx, store, "r1", s, weak, vf, "") }()
+		go func() { defer wg.Done(); st, _, serr = tallyGate(ctx, store, "r1", s, strong, vf, "") }()
+		wg.Wait()
+		if werr != nil || serr != nil {
+			t.Fatalf("round %d: %v / %v", i, werr, serr)
+		}
+		if !st.Passed() || !st.ExcludePrincipal || !slices.Equal(st.ApprovedBy, []string{"bob", "carol"}) {
+			t.Fatalf("round %d: the excluding drive went by %+v", i, st)
+		}
+		if !wt.Passed() {
+			t.Fatalf("round %d: the weaker drive went by %+v", i, wt)
+		}
+		byName := map[string]Record{}
+		for _, r := range mustHistory(t, store, "r1") {
+			if r.Kind == StepValue {
+				byName[r.Name] = r
+			}
+		}
+		rt, _ := RecordedTally(byName, "c1")
+		out, err := decodeTally("r1", rt)
+		if err != nil || !out.ExcludePrincipal {
+			t.Fatalf("round %d: the journal's outcome %s = %+v (%v); want one that excludes the requester", i, rt.Name, out, err)
+		}
+	}
+}

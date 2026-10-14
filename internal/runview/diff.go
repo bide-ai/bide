@@ -406,7 +406,7 @@ func safetyText(s string) string {
 	return s
 }
 
-// gateShort is a gate as "2 of 3", "one decision" or "none".
+// gateShort is a gate as "2 of 3", "2 of 3 excluding the requester", "one decision" or "none".
 func gateShort(g *plan.TopologyGate) string {
 	switch {
 	case g == nil:
@@ -414,7 +414,7 @@ func gateShort(g *plan.TopologyGate) string {
 	case g.Single:
 		return "one decision"
 	}
-	return fmt.Sprintf("%d of %d", g.Need, len(g.Approvers))
+	return fmt.Sprintf("%d of %d", g.Need, len(g.Approvers)) + exclusionText(g)
 }
 
 // gateFull is a gate with its approvers: "2 of 3: ops, finance, risk".
@@ -422,7 +422,15 @@ func gateFull(g *plan.TopologyGate) string {
 	if g == nil || g.Single {
 		return gateShort(g)
 	}
-	return gateText(g.Need, g.Approvers)
+	return gateText(g.Need, g.Approvers) + exclusionText(g)
+}
+
+// exclusionText is " excluding the requester" for a gate that excludes the run's requester.
+func exclusionText(g *plan.TopologyGate) string {
+	if g.ExcludePrincipal {
+		return " excluding the requester"
+	}
+	return ""
 }
 
 // gateMove is a gate's change, "approval 1 of 3 -> 2 of 3", with the approvers when they differ.
@@ -464,7 +472,7 @@ func gateEqual(a, b *plan.TopologyGate) bool {
 	if a == nil || b == nil {
 		return a == b
 	}
-	return a.Single == b.Single && a.Need == b.Need && slices.Equal(a.Approvers, b.Approvers)
+	return a.Single == b.Single && a.Need == b.Need && slices.Equal(a.Approvers, b.Approvers) && a.ExcludePrincipal == b.ExcludePrincipal
 }
 
 // accepts reports whether gate a accepts every set of decisions gate b accepts: no approval set
@@ -472,7 +480,8 @@ func gateEqual(a, b *plan.TopologyGate) bool {
 // single-decision gate accepts any gate's decisions (each needs at least one), and only another
 // single-decision gate is accepted by it. For need k of approvers A and need k' of approvers B, the
 // set that passes b with the fewest approvers from A takes every approver B adds outside A, so a
-// accepts b exactly when k' - |B \ A| >= k.
+// accepts b exactly when k' - |B \ A| >= k. A gate that excludes the run's requester does not
+// accept the decisions of one that does not: they may count the requester's approval.
 func accepts(a, b *plan.TopologyGate) bool {
 	switch {
 	case a == nil:
@@ -482,6 +491,8 @@ func accepts(a, b *plan.TopologyGate) bool {
 	case a.Single:
 		return true
 	case b.Single:
+		return false
+	case a.ExcludePrincipal && !b.ExcludePrincipal:
 		return false
 	}
 	outside := 0

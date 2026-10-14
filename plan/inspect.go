@@ -201,7 +201,7 @@ func configTopology(cfg *config) Topology {
 		if ca == nil {
 			return nil
 		}
-		return &TopologyGate{Need: ca.Need, Approvers: append([]string(nil), ca.Approvers...)}
+		return &TopologyGate{Need: ca.Need, Approvers: append([]string(nil), ca.Approvers...), ExcludePrincipal: ca.ExcludePrincipal}
 	}
 	for _, n := range cfg.Nodes {
 		t.Nodes = append(t.Nodes, TopologyNode{Name: n.Name, Block: n.Block, Gate: gateOf(n.Approval)})

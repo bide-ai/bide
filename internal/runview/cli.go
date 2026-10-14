@@ -113,6 +113,7 @@ type flags struct {
 	approverKeys          string
 	need                  int
 	approvers             string
+	excludePrincipal      bool
 }
 
 // Main is the bide view command: it parses args, opens the input, and serves until interrupted.
@@ -143,6 +144,7 @@ func Main(args []string, stdout, stderr io.Writer, stores Stores) int {
 	fs.StringVar(&f.approverKeys, "approver-keys", "", `approver public keys, a JSON object of approver id to key text, e.g. {"ops":"ed25519:ab12..."}, to verify each m-of-n gate's signatures (audit.VerifyApprovals); needs -sth or -evidence`)
 	fs.IntVar(&f.need, "need", 0, "the expected policy's k: verify approvals against -need of -approvers instead of the recorded policy; needs -approvers and -approver-keys")
 	fs.StringVar(&f.approvers, "approvers", "", "the expected policy's approver ids, comma-separated, in policy order; needs -need")
+	fs.BoolVar(&f.excludePrincipal, "exclude-principal", false, "the expected policy excludes the run's requesters (its principal and those of the runs above it) from approving (separation of duties); needs -need")
 	addr := fs.String("addr", "127.0.0.1:8484", "address to serve on: a loopback IP (127.0.0.1 or ::1) or localhost, with a port")
 	color := term.Flag(fs)
 	if err := fs.Parse(args); err != nil {
@@ -234,6 +236,9 @@ func Main(args []string, stdout, stderr io.Writer, stores Stores) int {
 	}
 	if (f.need != 0) != (f.approvers != "") {
 		return usage("-need and -approvers go together")
+	}
+	if f.excludePrincipal && f.need == 0 {
+		return usage("-exclude-principal needs -need and -approvers")
 	}
 	if f.need != 0 && f.approverKeys == "" {
 		return usage("-need and -approvers need -approver-keys")
@@ -365,7 +370,7 @@ func options(f flags, stores Stores) (Options, io.Closer, error) {
 			}
 		}
 		if f.need != 0 {
-			ap.Expected = &agent.ApprovalPolicy{Need: f.need, Approvers: strings.Split(f.approvers, ",")}
+			ap.Expected = &agent.ApprovalPolicy{Need: f.need, Approvers: strings.Split(f.approvers, ","), ExcludePrincipal: f.excludePrincipal}
 		}
 		if f.sth != "" {
 			var h audit.SignedTreeHead

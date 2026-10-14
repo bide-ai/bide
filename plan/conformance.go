@@ -134,6 +134,8 @@ func (c *builderCore) conform(ctx context.Context, store *agent.Journal, runID s
 
 	var diffs []string
 	var haveStart, haveDigest, haveProgress bool
+	var start *agent.RunStart    // the run's start, when it reads
+	var principal []agent.Record // the run's run:principal records
 	var completed *completion
 	// reached reports the divergence, if any, of a record of node n (at loop iteration iter,
 	// -1 outside an iteration) against the replayed routing.
@@ -173,9 +175,12 @@ func (c *builderCore) conform(ctx context.Context, store *agent.Journal, runID s
 		case strings.HasPrefix(r.Name, "approval-pending:"), strings.HasPrefix(r.Name, "approval-tally:"):
 			_, enc, _ := strings.Cut(r.Name, ":")
 			if strings.HasPrefix(r.Name, "approval-tally:") {
-				// A re-approval tally (agent.ApprovalRetallyStep) is the gate's tally name with a
-				// suffix; an encoded key holds no ':', so the suffix is never part of it.
-				enc = strings.TrimSuffix(enc, strings.TrimPrefix(agent.ApprovalRetallyStep(""), agent.ApprovalTallyStep("")))
+				// A re-approval tally (agent.ApprovalRetallyStep, agent.ApprovalSoDRetallyStep) is
+				// the gate's tally name with a suffix; an encoded key holds no ':', so the suffix is
+				// never part of it.
+				for _, retally := range []string{agent.ApprovalRetallyStep(""), agent.ApprovalSoDRetallyStep("")} {
+					enc = strings.TrimSuffix(enc, strings.TrimPrefix(retally, agent.ApprovalTallyStep("")))
+				}
 			}
 			key, ok := gateKeys[enc]
 			if !ok {
@@ -201,6 +206,12 @@ func (c *builderCore) conform(ctx context.Context, store *agent.Journal, runID s
 			if st.Kind != agent.RunKindFlow || st.Flow == nil || st.Flow.Name != c.flowName {
 				diffs = append(diffs, r.Name+" (not a run of this flow)")
 			}
+			start = &st
+
+		case agent.IsRunPrincipal(r):
+			// The run's principal (agent.RunPrincipal), written with its start: checked against the
+			// start below.
+			principal = append(principal, r)
 
 		case r.Name == flowDigestStep:
 			haveDigest = true
@@ -290,6 +301,15 @@ func (c *builderCore) conform(ctx context.Context, store *agent.Journal, runID s
 			}
 			haveProgress = true
 			reached(r.Name, n, iter)
+		}
+	}
+	if len(principal) > 0 {
+		rp, ok := agent.RecordedPrincipal(principal)
+		switch {
+		case !ok:
+			diffs = append(diffs, runPrincipalStep+" (unreadable run principal)")
+		case start != nil && !rp.Matches(*start):
+			diffs = append(diffs, runPrincipalStep+" (names another principal than run:start)")
 		}
 	}
 	if haveProgress && !haveStart {
@@ -434,11 +454,12 @@ func (c *builderCore) replayRouting(choices map[string]string) (live map[string]
 	return live, iters
 }
 
-// runStartStep and runCompleteStep are the keys of the records of how a run started (see
-// agent.RunStart) and that it completed.
+// runStartStep, runPrincipalStep and runCompleteStep are the keys of the records of how a run
+// started (see agent.RunStart), on whose behalf (agent.RunPrincipal), and that it completed.
 const (
-	runStartStep    = "run:start"
-	runCompleteStep = "run:complete"
+	runStartStep     = "run:start"
+	runPrincipalStep = "run:principal"
+	runCompleteStep  = "run:complete"
 )
 
 // parseNodeKey maps a key Run writes for a node ("node:<N>", "node:iter:<i>:<N>" for a loop
