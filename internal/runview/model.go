@@ -529,6 +529,10 @@ func gates(recs []agent.Record, calls map[string]agent.ToolUse, order []string) 
 			}
 			if (r.Kind == agent.StepToolResult || r.Kind == agent.StepSagaFail) && r.ToolUseID == id && r.Approval != nil {
 				g.Need, g.Approvers = r.Approval.Need, r.Approval.Approvers
+				// The policy the call ran under says whether it was a one-decision gate.
+				if b, err := json.Marshal(r.Approval); err == nil && string(b) == `{"single":true}` {
+					g.Single = true
+				}
 			}
 		}
 		if t, ok := agent.RecordedTally(byName, id); ok {
@@ -550,7 +554,9 @@ func gates(recs []agent.Record, calls map[string]agent.ToolUse, order []string) 
 			continue // an ungated call
 		}
 		if !g.Tallied {
-			g.Single = g.Single || len(g.Decisions) > 0 && !g.Decisions[0].Signed
+			// Whether the gate is a one-decision gate comes from the pause note, or the policy the
+			// call ran under, never from the decisions: an unsigned agent.Approve record on an
+			// m-of-n call is ignored by the runtime, and must not turn the gate into a single one.
 			for _, d := range g.Decisions {
 				switch {
 				case g.Reapproval && d.DecidedAt == "": // signed before the format: never counts now
@@ -566,7 +572,8 @@ func gates(recs []agent.Record, calls map[string]agent.ToolUse, order []string) 
 				}
 			}
 		}
-		g.Waiting = (paused || g.Reapproval) && !resulted && !g.Tallied && !(g.Single && len(g.Decisions) > 0)
+		_, singleDecided := singleDecision(g)
+		g.Waiting = (paused || g.Reapproval) && !resulted && !g.Tallied && !(g.Single && singleDecided)
 		g.Status = gateStatus(g)
 		out = append(out, g)
 	}
@@ -577,12 +584,27 @@ func gates(recs []agent.Record, calls map[string]agent.ToolUse, order []string) 
 // approved once k approved, denied once enough denied that k can no longer approve, and pending
 // otherwise. Without the gate's tally the counts are of signed decisions, whose signatures the gate
 // checks when the run resumes.
+// singleDecision is the one-decision gate's decision: the first unsigned record (agent.Approve). A
+// signed record on such a gate is not one.
+func singleDecision(g Gate) (Decision, bool) {
+	if !g.Single {
+		return Decision{}, false
+	}
+	for _, d := range g.Decisions {
+		if !d.Signed {
+			return d, true
+		}
+	}
+	return Decision{}, false
+}
+
 func gateStatus(g Gate) string {
 	if g.Single {
-		if len(g.Decisions) == 0 {
+		d, ok := singleDecision(g)
+		switch {
+		case !ok:
 			return "pending (one decision; none recorded yet)"
-		}
-		if g.Decisions[0].Approved {
+		case d.Approved:
 			return "approved (single decision)"
 		}
 		return "denied (single decision)"
@@ -599,11 +621,18 @@ func gateStatus(g Gate) string {
 	if g.Reapproval && a < g.Need {
 		return "approval re-required: the recorded approvals predate " + agent.DecisionFormat + " (" + counts + ")"
 	}
+	// Only the gate's own tally is a count the gate made. Counted from the decisions recorded, the
+	// numbers are of records whose signatures nothing here has checked (the gate checks them when the
+	// run resumes), so they are never called an approval or a denial.
 	switch {
-	case a >= g.Need:
+	case a >= g.Need && g.Tallied:
 		return "approved (" + counts + ")"
-	case n-d < g.Need:
+	case n-d < g.Need && g.Tallied:
 		return "denied (" + counts + ")"
+	case a >= g.Need:
+		return "approvals recorded, unverified (" + counts + "; the gate checks every signature when the run resumes)"
+	case n-d < g.Need:
+		return "denials recorded, unverified (" + counts + "; the gate checks every signature when the run resumes)"
 	case g.Tallied:
 		return "closed, not approved (" + counts + ")"
 	default:
