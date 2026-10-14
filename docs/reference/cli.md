@@ -853,7 +853,7 @@ Usage of bide audit verify-decision-coverage:
   -now string
     	the time -max-age is measured to, RFC 3339 (default: this machine's clock)
   -pubkey string
-    	the log's public key as <scheme>:<hex> (ed25519, ml-dsa-65, ed25519+ml-dsa-65) or bare ed25519 hex, or a path to a file containing it
+    	the log's public key as <scheme>:<hex> (ed25519, ecdsa-p256, ml-dsa-65, ed25519+ml-dsa-65) or bare ed25519 hex, or a path to a file containing it
 ```
 
 ### bide audit verify-evidence
