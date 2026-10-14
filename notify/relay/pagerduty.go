@@ -7,7 +7,6 @@ import (
 	"net/http"
 	"time"
 
-	"github.com/bide-ai/bide/agent"
 	"github.com/bide-ai/bide/notify"
 )
 
@@ -98,31 +97,27 @@ func (d *PagerDuty) Send(ctx context.Context, p notify.Payload) error {
 // is possible by wrapping the sink, but a resolve must use the same one.
 func DedupKey(p notify.Payload) string { return p.ID }
 
-// ResolveKind is the notification kind that clears an incident. It is a placeholder for the kind
-// the notifier will define for "all clear"; until agent has one, no payload has this kind and
-// every notification triggers. When it lands, set this constant to its value (or pass
-// PagerDutyConfig.ResolveTarget) and wire ClearsKey.
-const ResolveKind = "all_clear"
+// ResolveKind is the notification kind that clears an incident: the notifier's "resolved" kind
+// (agent.NotificationResolved, on branch notify-resolved). Its payload has a top-level clears
+// object whose id is the ID of the event it ends, which is this sink's dedup key for the incident.
+const ResolveKind = "resolved"
 
-// ClearsKey returns the event key a clear notification clears, or "" if p is not a clear. It is the
-// one place that knows how a clear refers to the event it ends.
+// ClearsID returns the ID of the event a clear notification ends, or "" if p is not a clear.
 //
-// TODO(notify-resolved): the clear's payload does not name the event it ends yet; until it does this
-// reports nothing, and DefaultResolveTarget never resolves.
-func ClearsKey(p notify.Payload) string { return "" }
+// TODO(notify-resolved): until that branch merges, notify.Payload has no Clears field and this
+// reports nothing, so DefaultResolveTarget never resolves and every notification triggers. When it
+// merges, return p.Clears.ID here (and nothing else needs to change).
+func ClearsID(p notify.Payload) string { return "" }
 
 // DefaultResolveTarget treats a notification of kind ResolveKind as a resolve of the incident whose
-// dedup key is the ID of the event it clears (the SHA-256 of ClearsKey), and everything else as a
-// trigger.
+// dedup key is the ID of the event it clears (ClearsID), and everything else as a trigger. It
+// resolves nothing while ClearsID is unwired, rather than resolving a guessed incident.
 func DefaultResolveTarget(p notify.Payload) (string, bool) {
 	if p.Kind != ResolveKind {
 		return "", false
 	}
-	k := ClearsKey(p)
-	if k == "" {
-		return "", false
-	}
-	return agent.NotifyID(k), true
+	id := ClearsID(p)
+	return id, id != ""
 }
 
 // DefaultSeverity is the severity of the incident a notification opens: a halt on an unknown outcome

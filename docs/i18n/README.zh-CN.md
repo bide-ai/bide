@@ -147,7 +147,7 @@ Temporal 借助一个服务器和一支 worker 机群提供持久化执行。而
 - **[委派](../../docs/guides/delegation.md)**：子智能体只能收窄的签名能力授权（`Grant`/`SignGrant`），离线核验（`VerifyDelegationChain`），外加从一份干净轨迹中赢得的权限。可在 `examples/govern/delegation`、`examples/govern/authority` 中运行。
 - **[安全模型](../../docs/guides/security-model.md)**：密码学保证的确切范围（完整性、真实性、防篡改性、不可否认性、选择性披露）以及范围之外的内容（机密性）。在依赖审计轨迹之前请读这个。
 - **[治理](../../docs/guides/governance.md)**：Tier-2 受治理状态底座（gsm）。把共享状态描述为一个注册表，而 `Build()` 检查每一种交错都收敛，否则返回一个反例。可在 `examples/govern/mesh`、`examples/govern/compose` 中运行。
-- **[通知](../../docs/guides/notifications.md)**：运行停止或等待批准时通知人：已签名的 HTTPS webhook（`notify.NewWebhook`）、一次调用的接收端验证（`notify.Verify`）、可选的双向 TLS 与密钥固定。
+- **[通知](../../docs/guides/notifications.md)**：运行停止或等待批准时通知人：已签名的 HTTPS webhook（`notify.NewWebhook`）、一次调用的接收端验证（`notify.Verify`）、可选的双向 TLS 与密钥固定。`bide notify test` 检查你的接收端，`bide notify listen` 是本地接收端，`bide notify relay` 转发到 Slack 和 PagerDuty。
 - **[批准](../../docs/guides/hitl-approval.md)**：工具运行之前的持久化人类签核，从 1-of-1 到签名的 m-of-n（`ApprovalPolicy`、`SubmitDecision`），并离线证明 k 位具名批准人在动作之前批准了它（`audit.ApprovalEvidence`、`audit.VerifyApprovals`）。可在 `examples/approval` 中运行。
 - **[Stripe 测试模式退款](../../examples/stripe-refund/README.md)**：在退款中途杀掉智能体；重启时停下而不是退两次款，随后对账器依据 Stripe 自己的记录解决该步骤。可在 `examples/stripe-refund` 中运行。
 - **[法定人数](../../docs/guides/quorum.md)**：受治理的 k-of-n 模型一致（`govern.Quorum`），计票锚定在日志中并可离线重新核对（`bide audit verify-quorum`）。可在 `examples/govern/quorum` 中运行。

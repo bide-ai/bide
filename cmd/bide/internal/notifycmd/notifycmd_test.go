@@ -20,6 +20,8 @@ import (
 	"sync"
 	"testing"
 	"time"
+
+	"github.com/bide-ai/bide/notify"
 )
 
 const (
@@ -307,7 +309,14 @@ func TestPlainHTTPToLocalhostAndReceiverFailures(t *testing.T) {
 }
 
 func TestSecretSources(t *testing.T) {
-	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) { w.WriteHeader(204) }))
+	// A receiver that verifies against the exact secret: a secret with its white space kept would not match.
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if notify.Verify(r, []string{testSecretValue}, 0) != nil {
+			w.WriteHeader(401)
+			return
+		}
+		w.WriteHeader(204)
+	}))
 	defer srv.Close()
 	setEnv(t, nil)
 	code, out, errs := test(t, "-url", srv.URL)

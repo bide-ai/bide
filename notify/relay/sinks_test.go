@@ -257,10 +257,19 @@ func TestPagerDutyResolveHook(t *testing.T) {
 }
 
 func TestPagerDutyDefaultNeverResolvesUntilClearsKeyIsWired(t *testing.T) {
-	if _, ok := DefaultResolveTarget(notify.Payload{Kind: ResolveKind, Key: "clear:x"}); ok {
-		t.Fatal("DefaultResolveTarget resolved with ClearsKey unwired: a clear would resolve the wrong incident")
+	if _, ok := DefaultResolveTarget(notify.Payload{Kind: ResolveKind, Key: "resolved:x"}); ok {
+		t.Fatal("DefaultResolveTarget resolved with ClearsID unwired: a clear would resolve the wrong incident")
 	}
 	if _, ok := DefaultResolveTarget(samplePayload("approval_pending")); ok {
 		t.Fatal("a trigger kind was treated as a clear")
+	}
+}
+
+func TestClipKeepsRunesWhole(t *testing.T) {
+	for n := 4; n < 12; n++ {
+		got := clip(strings.Repeat("é", 20), n)
+		if !utf8.ValidString(got) || len(got) > n {
+			t.Fatalf("clip to %d: %q (%d bytes)", n, got, len(got))
+		}
 	}
 }

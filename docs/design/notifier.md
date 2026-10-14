@@ -625,7 +625,8 @@ does not (the race between the currency check and the send).
   already gives append-if-absent with a verifiable log.
 - **Built-in Slack, PagerDuty, email.** Rejected for the core: each is a dependency, a credential
   model and a changing API. A user points the webhook at them (a Slack incoming webhook, PagerDuty's
-  Events API through a small relay, an email gateway); a community notifier can implement the
+  Events API through a small relay, an email gateway); the shipped relay (`bide notify relay`, package
+  `notify/relay`) is such a relay, outside the core; a community notifier can implement the
   one-method interface.
 - **Notify from `RecoverLoop` only.** A run driven by a plain `Run` call, a timer or `Recover` would
   not notify, and an app without a loop would have no path; hence the drive-end emission and
