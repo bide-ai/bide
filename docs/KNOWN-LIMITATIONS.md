@@ -259,6 +259,18 @@ whose gate passed on them before the upgrade, and whose call has not run, pauses
 (`agent.PendingReapproval`) rather than run on approvals an audit would fail. See
 [A run approved under an earlier decision format](guides/hitl-approval.md#a-run-approved-under-an-earlier-decision-format).
 
+**`bide approve` depends on the approval-pending note.** The journal's record of a gate's policy is the
+informational `approval-pending` note, written once when the run first pauses. If that write was lost,
+`bide approve` refuses the call (it will not take the approvers or the count from a flag), and `bide
+approve -list` does not show it: decide from the application. A decision written by `bide approve`
+goes through the journal's plain store, so it is covered by a signed tree head only at the
+application's next write to the run (`AuditedStore` anchoring is best-effort even there); a receipt
+kept by the approver, checked with `bide audit verify-receipts -update`, can prove a decision
+deleted once a signed head has committed to it; before that, a mismatch is only the approver's claim. A store cannot refuse a second decision of one approver without letting a bad record take their
+place, so concurrent decisions of one approver are both recorded and the first valid one counts. See
+[Deciding from the terminal](guides/hitl-approval.md#deciding-from-the-terminal) and [Decision
+receipts](guides/audit.md#decision-receipts-noticing-a-decision-deleted-before-it-was-anchored).
+
 **A denied flow gate compensates nothing.** A plan flow node whose approval gate is denied never
 runs, but plan flows have no saga mode, so the nodes before it keep their effects and the run stays
 unfinished until it is cancelled. See [Plan flows](guides/plan-flows.md#approval-gates-on-nodes).

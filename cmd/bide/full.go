@@ -7,7 +7,9 @@ import (
 	"flag"
 	"fmt"
 	"io"
+	"os"
 
+	"github.com/bide-ai/bide/cmd/bide/internal/approvecmd"
 	"github.com/bide-ai/bide/cmd/bide/internal/demo"
 	"github.com/bide-ai/bide/cmd/bide/internal/doctor"
 	"github.com/bide-ai/bide/cmd/bide/internal/initcmd"
@@ -57,6 +59,20 @@ func fullCommands() []command {
 				return runview.Main(args, stdout, stderr, stores)
 			},
 			exits: commonExits,
+		},
+		{
+			name:    "approve",
+			summary: "record your signed approval (or -reject) of a call that waits for a decision; -list shows what waits",
+			run: func(args []string, stdout, stderr io.Writer) int {
+				return approvecmd.Main(args, os.Stdin, stdout, stderr, approveStores)
+			},
+			exits: commonExits,
+		},
+		{
+			name:    "keygen",
+			summary: "create an approver key pair for bide approve and print the public key policies and verifiers use",
+			run:     approvecmd.KeygenMain,
+			exits:   commonExits,
 		},
 		{
 			name:    "check",

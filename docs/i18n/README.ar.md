@@ -27,6 +27,8 @@ bide init refund && cd refund && go mod tidy && go run .
 bide view -db run.db
 #    اختياري ودون كتابة شيفرة: استكشف سجلًّا نموذجيًّا من 14 تشغيلًا في كل الحالات
 bide sample
+#    هل تنتظر مكالمة عند بوابة الموافقة؟ اعرضها ووقّع قرارك من الطرفية
+bide approve -db run.db -list
 # 4. أثبِت: تحقّق من أدلة التشغيل دون اتصال
 bide audit verify-evidence -evidence evidence.json -pubkey keys/log.pub
 ```
@@ -257,7 +259,7 @@ gsm، ProofBundle). ويُذكَر ضمان المعمورية الدقيق في
   كسجلّ، ويفحص `Build()` أن كل تشابك يتقارب أو يُعيد مثالًا مضادًّا. قابل للتشغيل: `examples/govern/mesh`،
   `examples/govern/compose`.
 - **[الإشعارات](../../docs/guides/notifications.md)**: إبلاغ شخص عند توقف تشغيل أو انتظاره الموافقة: webhook عبر HTTPS موقَّع (`notify.NewWebhook`)، وتحقق من جهة المستلم باستدعاء واحد (`notify.Verify`)، وTLS متبادل وتثبيت مفتاح اختياريان.
-- **[الموافقة](../../docs/guides/hitl-approval.md)**: توقيع بشري مُعمَّر قبل تشغيل أداة، من 1-من-1 إلى m-من-n
+- **[الموافقة](../../docs/guides/hitl-approval.md)**: توقيع بشري مُعمَّر قبل تشغيل أداة، من 1-من-1 إلى m-من-n يقرّر المُوافِق من الطرفية بالأمر `bide approve` (يعرض الاستدعاء من السجل ثم يوقّع)، ويُنشئ `bide keygen` المفتاح.
   الموقَّعة (`ApprovalPolicy`، `SubmitDecision`)، مع برهان دون اتصال على أن k مُوافِقين مُسمَّين وافقوا قبل الفعل
   (`audit.ApprovalEvidence`، `audit.VerifyApprovals`). قابل للتشغيل: `examples/approval`.
 - **[استرداد عبر وضع الاختبار في Stripe](../../examples/stripe-refund/README.md)**: أوقف وكيل استرداد في منتصف الاسترداد؛ تتوقف إعادة التشغيل بدل أن يُسترد المبلغ مرتين، ثم يحسم المُسوِّي الخطوة من سجل Stripe نفسه. قابل للتشغيل: `examples/stripe-refund`.

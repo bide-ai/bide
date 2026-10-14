@@ -375,6 +375,8 @@ func exitCases(f *exitFixture) []exitCase {
 		// verify-approvals
 		{name: "verify-approvals: no gate for the call", args: approvals(f.evidence, f.keys), want: 1},
 		{name: "verify-approvals: the key file gives two ids one key, one outside the policy", args: approvals(f.evidence, f.sharedKeys), want: 4},
+		{name: "verify-receipts: no flags", args: []string{"verify-receipts"}, want: 2},
+		{name: "verify-receipts: missing receipt", args: []string{"verify-receipts", "-receipt", f.missing, "-journal", f.missing, "-heads", f.missing, "-pubkey", f.pub, "-approver-keys", f.keys}, want: 4},
 		{name: "verify-approvals: no -need", args: []string{"verify-approvals", "-evidence", f.evidence, "-pubkey", f.pub, "-call", "c1", "-approvers", "a", "-approver-keys", f.keys}, want: 2},
 		{name: "verify-approvals: an approver listed twice", args: []string{"verify-approvals", "-evidence", f.missing, "-pubkey", f.pub, "-call", "c1", "-need", "1", "-approvers", "a,a", "-approver-keys", f.missing}, want: 2},
 		{name: "verify-approvals: missing package", args: approvals(f.missing, f.keys), want: 4},
@@ -571,7 +573,7 @@ func TestVersion(t *testing.T) {
 	if code != 0 || !strings.HasPrefix(stdout, "bide ") {
 		t.Fatalf("-version: exit %d:\n%s", code, stdout)
 	}
-	formats := []string{audit.ProofFormat, audit.AbsenceFormat, audit.RunCertificateFormat, audit.EvidenceFormat, audit.STHFormat, audit.JournalExportFormat}
+	formats := []string{audit.ProofFormat, audit.AbsenceFormat, audit.RunCertificateFormat, audit.EvidenceFormat, audit.ReceiptFormat, audit.STHFormat, audit.JournalExportFormat}
 	for _, f := range formats {
 		if !strings.Contains(stdout, f) {
 			t.Errorf("-version does not name format %s:\n%s", f, stdout)

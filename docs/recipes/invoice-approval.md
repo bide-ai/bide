@@ -164,7 +164,8 @@ so a crash during it halts instead of booking twice.
 
 `agent.SingleApproval()` records one unsigned decision. For named approvers who sign the exact input,
 use an `agent.ApprovalPolicy` with `Need` and `Approvers` and give the flow their verifiers: see the
-[refund recipe](refund-approval.md).
+[refund recipe](refund-approval.md). Those approvers decide from a terminal with `bide approve`; a
+single-approver gate takes it too, unsigned, with no `-as` or `-key`.
 
 ## See also
 

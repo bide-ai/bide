@@ -27,6 +27,8 @@ and `help`, and its import graph is the standard library and the core module (se
 | [`bide doctor`](#bide-doctor) | check that a first run can work: Go, SQLite, the module cache, model keys, your project |
 | [`bide sample`](#bide-sample) | write a sample journal of varied runs, with evidence and flow configs, and open bide view on it |
 | [`bide view`](#bide-view) | a read-only local page for one run of a journal, or a flow config's graph |
+| [`bide approve`](#bide-approve) | record your signed approval (or -reject) of a call that waits for a decision; -list shows what waits |
+| [`bide keygen`](#bide-keygen) | create an approver key pair for bide approve and print the public key policies and verifiers use |
 | [`bide check`](#bide-check) | check plan flow configs, for CI: one file:node: message line per problem |
 | [`bide audit`](#bide-audit) | produce and verify audit proofs offline |
 | [`bide version`](#bide-version) | print the version and the artifact formats bide audit reads (-json for JSON) |
@@ -262,6 +264,162 @@ Exit status:
   2  usage error: a bad flag or argument; nothing was read
 ```
 
+## bide approve
+
+Record your signed approval (or -reject) of a call that waits for a decision; -list shows what waits.
+
+```text
+bide approve: record a signed approval, or a rejection, of a call that waits for a decision
+
+  bide approve -db <file> -run <id> -call <tool-use id> -as <approver> -key <key-file> [flags]
+  bide approve -postgres-env <VAR> -run <id> -call <tool-use id> -as <approver> -key <key-file>
+  bide approve -db <file> -list
+
+It reads the call from the journal, never from a flag or a notification, and shows what it is
+about to sign: the run, the tool, the call's arguments (indented JSON, long ones cut; -full shows
+all), the gate (k of n, who has decided, who is pending) and the SHA-256 of the arguments the
+signature binds. It then asks you to type your approver id (or y) to confirm; -yes skips the
+question, for scripts. The decision is signed with your private key (made by bide keygen: Ed25519, ML-DSA-65 or hybrid),
+checked against the call before it is recorded, and recorded with the time you decided.
+
+It refuses, and records nothing, when the call has no waiting gate, the run is not waiting on it,
+the gate already passed or was denied, you are not one of the gate's approvers, you already decided
+(it says what, and when), or the key file can be read by others (on Unix, as ssh refuses one). It
+checks again after you confirm, in case the gate was decided or the run ended while you read. It
+never refuses, and -list never settles a gate, on records it has not verified: without
+-approver-keys the standing is labelled unverified. A call whose approval-pending note was lost (the
+note is the journal's only record of the gate's policy) is refused with a precise message: the
+approvers and the count shown must come from the journal, never from a flag.
+
+If the arguments are longer than the view (40 lines, 200 characters a line), bide approve will not
+sign: the signature binds all of them, and what it hid could be what matters. Rerun with -full. If
+you and another terminal decide as one approver at once, both decisions are recorded, the first
+valid one counts, and the other command exits 1 ("another decision of yours counts").
+
+An m-of-n decision needs -approver-keys, a JSON object of approver id to public key (the file bide
+view -approver-keys reads; bide keygen -as <id> prints an entry): the journal holds approver ids,
+not keys, so this file is the only way to check that your key is the one the application enrols. It
+refuses a key that is not the one enrolled for you before recording anything, and prints a verified
+tally. -unverified decides without it: the decision is recorded even if the key is not the enrolled
+one (then it never counts), a warning says so, and the tally printed counts the decisions recorded,
+labelled unverified. A single-approver gate has no signature, so it takes neither.
+
+A single-approver gate (agent.Approve) has no approver identity and no signature: bide approve
+records the decision as agent.Approve does, takes neither -as nor -key, and says so.
+
+-reject records a rejection: the same checks, the same signature over a denial. One command with a
+flag keeps the checks in one place; a rejection is the same act with the opposite byte, and the
+confirmation prompt says REJECT in capitals.
+
+An m-of-n decision also leaves a receipt (-receipt, default next to -key; mode 0600, never
+overwritten): the signed decision with the call's arguments, the journal record's name and position,
+and when it was recorded; no key material. The decision is signed into the audit log at the app's
+next write to the run (bide approve cannot tell whether the application audits the journal, so it
+says this either way). -verify-receipt <file> -approver-keys <keys> checks a receipt on its own,
+reading no journal; bide audit verify-receipts checks receipts against the journal and its signed
+heads, and flags a decision deleted after signing.
+
+After the decision is recorded, re-run the run's root run ID (agent.Run with the same ID) or let
+RecoverLoop pick it up: the gate counts the decisions and the call runs or is denied. bide approve
+never runs the call.
+
+-list prints the calls in the journal that wait for a decision, each with the bide approve command
+that decides it; -json prints them as JSON. With -approver-keys it counts each gate as the gate does
+(verified); without it the counts are labelled unverified and no gate is called settled. Run and
+call ids that hold control, bidirectional or invisible characters get no command. A Postgres journal is named by -postgres-env, the name
+of the environment variable that holds the DSN, so the password stays out of the argument list,
+the shell history and the commands -list prints; -postgres takes the DSN itself, and the listed
+commands then name $BIDE_POSTGRES_DSN.
+
+Exit status: 0 on success (for -list, even when nothing waits), 1 if the command refused or
+failed, 2 for a usage error.
+
+Flags:
+  -approver-keys string
+    	approver public keys, a JSON object of approver id to key text, e.g. {"ops":"ed25519:ab12..."}, the file bide view -approver-keys reads (bide keygen -as prints an entry): refuse a -key that is not the one enrolled for -as, and verify the tally. Required for an m-of-n gate unless -unverified
+  -as string
+    	your approver id, exactly as the gate's policy lists it (not for a single-approver gate)
+  -call string
+    	the call's tool-use ID (for a plan flow node, its key, such as node:review)
+  -color when
+    	when to color the output: auto (the default: on a terminal, unless NO_COLOR is set or TERM is dumb), always or never
+  -db string
+    	SQLite journal file
+  -full
+    	show all of the call's arguments, not the first lines
+  -json
+    	with -list: print the waiting calls as JSON
+  -key string
+    	your private key file, as bide keygen writes it (Ed25519, ML-DSA-65 or hybrid) (not for a single-approver gate); on Unix it must not be readable by group or others
+  -list
+    	list the calls that wait for a decision, each with its bide approve command; nothing is recorded
+  -postgres string
+    	Postgres journal, a pgx DSN such as postgres://user:pass@host:5432/db; prefer -postgres-env, which keeps the password out of the argument list
+  -postgres-env string
+    	name of the environment variable that holds the Postgres DSN
+  -receipt string
+    	where to write the decision receipt (default: next to -key, named <run>-<call>-<approver>.receipt.json); mode 0600, never overwritten
+  -reject
+    	record a rejection instead of an approval
+  -run string
+    	the run whose journal holds the call: the pause's run ID
+  -unverified
+    	decide an m-of-n gate without -approver-keys: the key is not checked against the one enrolled for you, and the tally is not verified
+  -verify-receipt string
+    	verify a decision receipt on its own, against -approver-keys, instead of deciding anything: its signature over the exact call it states
+  -yes
+    	do not ask for confirmation (for scripts); what is signed is still shown
+
+Exit status:
+  0  success
+  1  failure: an input cannot be read or the command failed; for check, an error was found
+     (with -strict, any problem)
+  2  usage error: a bad flag or argument; nothing was read
+```
+
+## bide keygen
+
+Create an approver key pair for bide approve and print the public key policies and verifiers use.
+
+```text
+usage: bide keygen -out <key-file> [-as <approver id>] [-alg ed25519|ml-dsa-65|ed25519+ml-dsa-65] [-color auto|always|never]
+
+Creates an approver key pair for bide approve. The private key is written to <key-file> (the key's
+seed as hex: 64 characters for ed25519, the default; "ml-dsa-65:" and the seed for ML-DSA-65;
+"ed25519+ml-dsa-65:" and both seeds for a hybrid, for buyers who require post-quantum or hybrid
+signatures) with mode 0600, and is never printed; the public key is written to <key-file>.pub and
+printed, in the form approval policies and verifiers read:
+
+  <scheme>:<hex>        e.g. ed25519:<hex>
+
+An ML-DSA-65 or hybrid public key is long (nearly 4000 hex characters). ML-DSA needs a Go
+build with crypto/mldsa, which the FIPS 140-3 module v1.0.0 lacks.
+
+Enroll that public key as the approver's verifier in the application that runs the gated agent
+(audit.ParsePublicKey reads it), and in the JSON object bide approve -approver-keys and bide view
+-approver-keys read: {"ops": "<scheme>:<hex>"}. With -as, bide keygen prints that JSON entry for
+the id.
+
+It refuses to overwrite a file. The private key file is not encrypted; keep it on the approver's
+own machine, readable only by the approver. Anyone who can read it can sign as the approver.
+
+Flags:
+  -alg string
+    	signature scheme: ed25519, ml-dsa-65 or ed25519+ml-dsa-65 (hybrid) (default "ed25519")
+  -as string
+    	the approver id the key is for: prints the approver-keys entry for it
+  -color when
+    	when to color the output: auto (the default: on a terminal, unless NO_COLOR is set or TERM is dumb), always or never
+  -out string
+    	file to write the private key to (mode 0600); the public key goes to <file>.pub. It must not exist
+
+Exit status:
+  0  success
+  1  failure: an input cannot be read or the command failed; for check, an error was found
+     (with -strict, any problem)
+  2  usage error: a bad flag or argument; nothing was read
+```
+
 ## bide check
 
 Check plan flow configs, for CI: one file:node: message line per problem.
@@ -389,6 +547,22 @@ bide audit: produce and verify audit proof bundles
          5m) after it was recorded or before the run asked for approval, a recorded_at out of
          journal order or after the signed head, and a time that is not canonical (printed
          quoted); these notes never change the verdict
+
+  verify-receipts -receipt <file|dir> -journal <export> -heads <file> -pubkey <hex|file> -approver-keys <file>
+         verify decision receipts (written by bide approve): each signature verifies for the
+         approver's key over the exact call, and the signed tree heads (-heads: a head, or one per
+         line, as the anchor log holds them) commit to the decision where the receipt says it was
+         journaled. Distinct verdicts: anchored (PASS); redacted (anchored), a redaction replaced the
+         record with a tombstone that keeps its leaf hash (PASS); pending, the journal holds it and
+         no head reaches it yet (INFO, exit 0); "receipt not matched by the journal (the approver's
+         claim)", the journal does not hold the decision where the receipt says: a receipt carries no
+         evidence the application ever journaled it, so this proves a deletion only if the receipt
+         is trusted; "decision deleted after signing", only for a receipt that carries an anchoring
+         proof (the decision's record under a signed head), when a signed head that matches the
+         journal commits to something else at its position; unchecked, a head reaches it but does
+         not match the journal given, or the proof does not hold. -update stores the anchoring
+         proof in each receipt file whose decision a signed head now commits to. -receipt,
+         -journal and -heads repeat
 
   prove-absent -journal <file> -sth <file> -key (tool:<id>|policy:<digest>) [-out <file>]
          prove a thing did NOT happen (no such tool call / no action under that policy)
@@ -658,6 +832,32 @@ Usage of bide audit verify-quorum:
     	path to the quorum tally ProofBundle JSON (the quorum/<name>/tally step)
   -vote value
     	path to one vote ProofBundle JSON (a quorum/<name>/vote/<voter> step); repeat once per voter
+```
+
+### bide audit verify-receipts
+
+```text
+Usage of bide audit verify-receipts:
+  -approver-keys string
+    	JSON object of approver id to public key text (<scheme>:<hex>), e.g. {"ops":"ed25519:ab12..."}
+  -color when
+    	when to color the output: auto (the default: on a terminal, unless NO_COLOR is set or TERM is dumb), always or never; -json is never colored
+  -heads value
+    	signed tree heads of the journal: a file with one head, or one head per line (the anchor log a published head is appended to); repeatable
+  -journal value
+    	the run's journal export (audit.ExportJournal), one per run the receipts name; repeatable
+  -json
+    	print one JSON report on stdout instead of the text report
+  -max-clock-skew duration
+    	how far past this machine's clock a signed head's timestamp may be (default 5m0s)
+  -max-input-bytes int
+    	the largest input file, in bytes, the verb reads; a larger one is an error (default 268435456)
+  -pubkey string
+    	the log's public key as <scheme>:<hex> (ed25519, ml-dsa-65, ed25519+ml-dsa-65) or bare ed25519 hex, or a path to a file containing it
+  -receipt value
+    	a decision receipt file, or a directory of *.receipt.json files; repeatable
+  -update
+    	write an anchoring proof into each receipt whose decision a signed head now commits to (an atomic rewrite of the receipt file, mode kept): from then on a signed head that omits the decision proves its deletion; without it the verdict is the approver's claim
 ```
 
 ### bide audit verify-run

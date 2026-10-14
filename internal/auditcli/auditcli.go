@@ -155,6 +155,22 @@ const usageText = `bide audit: produce and verify audit proof bundles
          journal order or after the signed head, and a time that is not canonical (printed
          quoted); these notes never change the verdict
 
+  verify-receipts -receipt <file|dir> -journal <export> -heads <file> -pubkey <hex|file> -approver-keys <file>
+         verify decision receipts (written by bide approve): each signature verifies for the
+         approver's key over the exact call, and the signed tree heads (-heads: a head, or one per
+         line, as the anchor log holds them) commit to the decision where the receipt says it was
+         journaled. Distinct verdicts: anchored (PASS); redacted (anchored), a redaction replaced the
+         record with a tombstone that keeps its leaf hash (PASS); pending, the journal holds it and
+         no head reaches it yet (INFO, exit 0); "receipt not matched by the journal (the approver's
+         claim)", the journal does not hold the decision where the receipt says: a receipt carries no
+         evidence the application ever journaled it, so this proves a deletion only if the receipt
+         is trusted; "decision deleted after signing", only for a receipt that carries an anchoring
+         proof (the decision's record under a signed head), when a signed head that matches the
+         journal commits to something else at its position; unchecked, a head reaches it but does
+         not match the journal given, or the proof does not hold. -update stores the anchoring
+         proof in each receipt file whose decision a signed head now commits to. -receipt,
+         -journal and -heads repeat
+
   prove-absent -journal <file> -sth <file> -key (tool:<id>|policy:<digest>) [-out <file>]
          prove a thing did NOT happen (no such tool call / no action under that policy)
          against a signed key-set head of the matching kind (see audit.SignAbsenceRoot)

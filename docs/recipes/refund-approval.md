@@ -125,6 +125,15 @@ Exit status 0 means two of the three named approvers signed this exact refund be
 auditor needs only the evidence file and public keys. `bide audit verify-evidence` checks the evidence
 package as a whole.
 
+## Approve from a terminal
+
+`bide approve` is the command an approver runs instead of writing code. `bide keygen -out ops.key -as ops`
+makes a key and prints the `approver-keys.json` entry; `bide approve -db run.db -list` shows the calls that
+wait; `bide approve -db run.db -run <run> -call <call> -as ops -key ops.key -approver-keys
+approver-keys.json` shows the refund as the journal holds it, with the SHA-256 the signature binds, asks
+you to confirm, and records the signed decision, leaving a receipt. See [Deciding from the
+terminal](../guides/hitl-approval.md#deciding-from-the-terminal).
+
 ## What a crash does
 
 A crash while the run waits for approvals loses nothing: the requests and decisions are in the journal,

@@ -162,7 +162,8 @@ run's principal, the times, and a view pointer.
 - An approve or resolve link. The notification carries a view pointer only (a `bide view` command,
   and a URL when you set `WithViewURL`). A link that decides on a click is a phishing target, and it
   would bypass the point of the gate, where a decision is signed with the approver's key. Acting from
-  a notification is a non-goal.
+  a notification is a non-goal; the approver runs `bide approve` ([guide](hitl-approval.md#deciding-from-the-terminal)),
+  which reads the call from the journal, not from the message.
 - Any decision about who may approve. The approver list is for routing and is advisory; the gate
   counts a decision only from a listed approver with a verifying signature. The principal is the party
   the run acts for, which is not always the person who asked, so route away from it as one input and

@@ -13,6 +13,8 @@ The gate is part of the tool's spec (`ToolSpec.Approval`), not of its `Safety`, 
 a call may be retried. A `SubAgent` takes `WithApproval` too, so a parent can require approval before
 it delegates. Each call's result journals the policy it ran under (`Record.Approval`).
 
+Approvers can decide from a terminal with [`bide approve`](#deciding-from-the-terminal).
+
 For a typed value rather than a yes/no, use `Interrupt`/`AnswerInterrupt` instead (see the
 [tour](../tour.md#human-in-the-loop)).
 
@@ -382,6 +384,91 @@ decision recorded before the request anyway (written directly) never counts, and
 identical decision afterwards returns `ErrConfig`: see [Flows](flows.md#approval-gates-on-nodes) for
 what that means for the gate. A denial stops the flow with
 `plan.ErrApprovalDenied`. Evidence and `bide audit verify-approvals` take the node's key as the call.
+
+## Deciding from the terminal
+
+An approver who does not write Go decides with `bide approve`, on a journal the gated agent runs
+against (a SQLite file, or Postgres by the name of the environment variable that holds its DSN):
+
+```
+bide keygen -out ops.key -as ops               # once: a key pair; prints the public key to enrol
+bide approve -db run.db -list                  # the calls that wait, each with its command
+bide approve -db run.db -run refund-1049 -call c2 -as ops -key ops.key \
+    -approver-keys approver-keys.json
+```
+
+`bide approve` reads the call from the journal, never from a flag or a notification, and shows what it
+is about to sign: the run, the tool, the call's arguments (indented JSON; long ones are cut, and
+`-full` shows all), the gate (k of n, who has decided, who is pending) and the SHA-256 of the arguments
+the signature binds. That digest is read out of the very bytes that are signed
+(`agent.ApprovalDecisionBytes`), so it is the digest of the call as the journal holds it. Text in the
+arguments that could repaint a terminal or reorder what you read (escape sequences, bidirectional
+overrides) is shown escaped. It then asks you to type your approver id (or `y`); `-yes` skips the
+question for scripts. The decision is signed with your key (Ed25519, ML-DSA-65 or hybrid), checked against the call by
+`agent.WithDecisionCheck` with the public key derived from your private key, and recorded with
+`agent.SubmitDecision`, stamped with your clock in the canonical form. A single-approver gate
+(`agent.Approve`) has no approver id and no signature: `bide approve` records it as `agent.Approve`
+does, takes neither `-as` nor `-key`, and says the decision is unsigned.
+
+`-reject` records a rejection: the same checks and the same signature, over a denial. It is a flag of
+`bide approve`, not a second command, so the checks live in one place and the prompt says `REJECT`.
+
+If the arguments are longer than the view (40 lines, 200 characters a line), `bide approve` will not
+sign, because the signature binds all of them and what is hidden could be the field that matters;
+rerun with `-full`. It records nothing, and says why, when the call has no gate, the run is not waiting on it (it ended, or
+the call has a result), the gate already has its approvals or can no longer pass, you are not one of its
+approvers, you already decided (it names what you decided and when), or your key file can be read by
+others (it checks again after you confirm, in case the gate was decided or the run ended while you
+read). Refusals on the gate's standing or on your earlier decision use only decisions it has verified
+with `-approver-keys`; a junk record in the journal that the gate ignores never locks you out, and
+`-list` without `-approver-keys` labels its counts unverified and calls no gate settled. A call whose
+`approval-pending` note was lost (the note is the journal's only record of the gate's policy) is refused
+with a message that says so: the approvers and the count must come from the journal, never from a
+flag, so decide from the application. If you and another terminal decide as one approver at once, both
+decisions are recorded, the first valid one counts, and the other command exits 1
+("another decision of yours counts"). A store cannot refuse the second record itself without making a
+bad record able to take an approver's place; the counting rule is the constraint. Also: on Unix a private key with any group or other permission bit is refused, as `ssh` refuses one.
+
+A key file is one line of hex: the Ed25519 seed (64 characters, the form `bide demo` writes its log key
+in), `ml-dsa-65:` and the ML-DSA-65 seed, or `ed25519+ml-dsa-65:` and both seeds for a hybrid, for
+buyers who require post-quantum or hybrid signatures (`bide keygen -alg`). `bide approve` holds the key
+only as an `audit.Signer`: it signs the decision bytes, names the scheme and derives the public key
+through that interface, so a signer in an HSM or a KMS can take the file's place later without changing
+the flow (not built yet). `bide keygen` writes the file with mode 0600, never overwrites a file, never
+prints it, and prints the public key in the text policies and verifiers read (`<scheme>:<hex>`, see
+`audit.ParsePublicKey`; an ML-DSA public key is nearly 4000 hex characters, so the command names it by
+its key ID where it shows one). The file is not encrypted: keep it on your own machine. ML-DSA needs a
+Go build with `crypto/mldsa`, which the FIPS 140-3 module v1.0.0 lacks. A passkey signer is a different
+`Alg` (see the [roadmap](../ROADMAP.md#notifications-and-approvals)).
+
+**Which key counts.** The journal records approver ids, not keys: the application's verifiers
+(`agent.WithApproverVerifiers`) hold those. A key that is not the one enrolled for you produces a
+decision that is recorded and never counts (`agent.ReasonBadSig`), and does not take your place. So an
+m-of-n decision requires `-approver-keys`, the file of enrolled public keys that `bide view
+-approver-keys` reads (`bide keygen -as <id>` prints an entry for it): `bide approve` refuses a key that
+is not the one enrolled for `-as`, before anything is recorded, and verifies the tally it prints with the
+counting rule the gate runs (`agent.TallyApprovals`). `-unverified` decides without the file: the
+warning is printed prominently and the tally is labelled unverified, since it counts the decisions
+recorded and the gate checks every signature when the run resumes. A single-approver gate is unsigned and
+takes neither flag.
+
+**Audit log and receipts.** `bide approve` writes the decision through the journal's plain store, so it is in the journal at once. It cannot tell whether the application audits the journal (`audit.AuditedStore` is configured in the application, with its own signer and anchor), so it says the same thing either way: the decision is signed into the audit log at the app's next write to this run, because the first signed tree head published after the decision covers it. That anchoring is best-effort even inside the application: a failed publish never fails the write, `OnError` reports it, and `Reanchor` retries it (see [continuous anchoring](audit.md#continuous-anchoring-auditedstore--the-anchor-port)). Until a head covers the decision, nothing signed contradicts a journal from which it was deleted. So an m-of-n decision also leaves a **receipt** next to your key (`-receipt` names another file; mode 0600; never overwritten): the signed decision with the call's arguments, the journal record's name and position, and when it was recorded, and no key material. `bide approve -verify-receipt <file> -approver-keys <keys>` checks it on its own (the signature over the exact call it states). Keep your receipts: `bide audit verify-receipts` checks them against the journal and the signed heads, and reports a decision the journal does not show where the receipt says as `receipt not matched by the journal (the approver's claim)`; once a signed head commits to the decision, `verify-receipts -update` stores an anchoring proof in the receipt, and only then does a later head that omits it prove `decision deleted after signing` ([audit guide](audit.md#decision-receipts-noticing-a-decision-deleted-before-it-was-anchored)). A receipt holds the call's arguments, as signed, so keep it where you keep the journal.
+
+After the decision is recorded, re-run the pause's `RootRunID` (or let `RecoverLoop` pick it up): the
+gate counts the decisions and the call runs or is denied. `bide approve` never runs the call.
+
+`bide approve -list` shows the calls that wait for a decision, each with the command that decides it
+(`-json` for scripts; `-approver-keys` makes its counts the gate's own). A run or call id that holds a
+control, bidirectional or invisible character, a combining mark, or a space other than the ASCII space
+gets no command line (`approveline.Unsafe`), and the command shows such text escaped; write accented text
+precomposed (NFC). The commands never carry a secret: a Postgres journal is named by
+`-postgres-env VAR`, not by its DSN, and the key by its file. `internal/approveline` builds the same
+line, for a notification to carry.
+
+Deciding on a click in a chat message is out of scope on purpose. A button handled by a server must sign
+with a key the server holds, and one server holding the keys of k approvers collapses k-of-n
+independence: whoever controls the server decides alone. See the [roadmap](../ROADMAP.md#notifications-and-approvals) for approvals
+in the viewer, with keys held in the browser, and with passkeys.
 
 ## Proving the gate held
 

@@ -250,6 +250,7 @@ var verbs = map[string]func(*cli, []string){
 	"verify-run":             (*cli).verifyRun,
 	"verify-evidence":        (*cli).verifyEvidence,
 	"verify-approvals":       (*cli).verifyApprovals,
+	"verify-receipts":        (*cli).verifyReceipts,
 	"prove-absent":           (*cli).proveAbsent,
 	"verify-absent":          (*cli).verifyAbsent,
 }
@@ -410,6 +411,7 @@ var readFormats = []artifactFormat{
 	{"absence bundle", audit.AbsenceFormat, "verify-absent"},
 	{"run certificate", audit.RunCertificateFormat, "verify-run"},
 	{"evidence package", audit.EvidenceFormat, "verify-evidence, verify-approvals"},
+	{"decision receipt", audit.ReceiptFormat, "verify-receipts"},
 	{"signed tree head", audit.STHFormat, "prove, prove-absent, and every head inside an artifact"},
 	{"journal export", audit.JournalExportFormat, "prove, prove-absent"},
 }

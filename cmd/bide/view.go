@@ -29,6 +29,7 @@ import (
 	"io"
 
 	"github.com/bide-ai/bide/agent"
+	"github.com/bide-ai/bide/cmd/bide/internal/approvecmd"
 	"github.com/bide-ai/bide/internal/runview"
 	"github.com/bide-ai/bide/store/postgres"
 	"github.com/bide-ai/bide/store/sqlite"
@@ -52,6 +53,31 @@ var stores = runview.Stores{
 		return s, s, nil
 	},
 	YAML: yamlToJSON,
+}
+
+// approveStores opens the journals bide approve decides on: read-write to record a decision,
+// read-only to list the calls that wait.
+var approveStores = approvecmd.Stores{
+	SQLite: func(path string, readOnly bool) (agent.Store, io.Closer, error) {
+		if readOnly {
+			return stores.SQLite(path)
+		}
+		s, err := sqlite.Open(path)
+		if err != nil {
+			return nil, nil, err
+		}
+		return s, s, nil
+	},
+	Postgres: func(dsn string, readOnly bool) (agent.Store, io.Closer, error) {
+		if readOnly {
+			return stores.Postgres(dsn)
+		}
+		s, err := postgres.Open(context.Background(), dsn)
+		if err != nil {
+			return nil, nil, err
+		}
+		return s, s, nil
+	},
 }
 
 // yamlToJSON converts a YAML flow config to the JSON plan reads. A YAML document is decoded into

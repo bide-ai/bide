@@ -5,6 +5,8 @@
 //	bide doctor                    check that a first run can work, with a fix for each failure
 //	bide sample                    write a sample journal (14 runs, evidence, flow configs) and open bide view on it
 //	bide view -db run.db           a read-only local page for one run of a journal
+//	bide approve -db run.db -list  list the calls waiting for a decision; sign one with -run -call -as -key
+//	bide keygen -out ops.key       create an approver key pair for bide approve
 //	bide check flow.yaml           check a plan flow config, for CI
 //	bide audit verify-evidence ... produce and verify audit proofs offline
 //	bide version                   the version and the artifact formats bide audit reads

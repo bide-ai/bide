@@ -349,6 +349,7 @@ its layout in a `"format"` field:
 | `EvidencePackage` | `bide.audit.evidence.v5` | `audit.EvidenceFormat` |
 | `AnchorEntry` | `bide.audit.anchor-entry.v1` | `audit.AnchorEntryFormat` |
 | `JournalExport` | `bide.audit.journal-export.v1` | `audit.JournalExportFormat` |
+| `DecisionReceipt` | `bide.audit.decision-receipt.v1` | `audit.ReceiptFormat` |
 
 A grant's canonical bytes (`Grant.Bytes`, signed and digested) start with `bide.audit.grant.v2`
 (`audit.GrantFormat`). A bundle looks like this (the record bytes, path, and signature abbreviated):
@@ -462,6 +463,60 @@ the gate enforced a different policy. `bide audit verify-approvals` runs the sam
 command line. `audit.ProveApproval` proves a single decision by its record name. See the
 [approval guide](hitl-approval.md#proving-the-gate-held) and `examples/approval`.
 
+### Decision receipts: noticing a decision deleted before it was anchored
+
+A decision recorded in the journal is covered by a signed tree head only once the application next
+writes to the run (`AuditedStore` signs a head after a write, and a decision written by another
+process, such as `bide approve`, is not one of the application's writes). In that window nothing
+signed contradicts a journal from which the decision is later removed, and the head signed after the
+removal commits to the journal without it. An approver closes the gap with a **receipt**
+(`audit.DecisionReceipt`, written by `bide approve`): the signed decision, the call's arguments as
+signed, the journal record's name and position, and when it was recorded, with no key material.
+
+`DecisionReceipt.Verify(v)` checks a receipt on its own: the arguments hash to `args_sha256`, and the
+signature verifies, under the approver's key, over `agent.ApprovalDecisionBytes` of exactly that run,
+call, tool, arguments, approver, decision and time. `audit.CheckReceipt(receipt, journal, heads, logKey)` then decides whether the signed heads commit to the decision. "Should contain" is positional, never by time: the approver's machine and the application keep
+different clocks and heads reach an anchor out of order, so a head's timestamp and a receipt's
+`recorded_at` (display only) decide nothing. A journal only grows, and the decision is at the receipt's `index`, so a head whose size is above `index`
+commits to a journal prefix that includes that position, and the prefix must hold the decision there.
+`CheckReceipt` rebuilds the prefix's root from the journal and compares it with the head's. The
+verdicts:
+
+| Verdict | Meaning | Failure |
+|---|---|---|
+| `anchored` | a head that matches the journal reaches the position, and the decision is there | no |
+| `redacted (anchored)` | as anchored, and a redaction has since replaced the record with a tombstone that keeps its leaf hash: a legitimate redaction, not a deletion | no |
+| `pending` | the journal holds the decision and no head reaches its position yet (the application has not written to the run since) | no |
+| `decision deleted after signing` | **only for a receipt that carries an anchoring proof** (the decision's record under a signed head A): a signed head B that matches the journal reaches the position and commits to something else there. The log's signer signed A with the decision and B without it | yes |
+| `receipt not matched by the journal (the approver's claim)` | the journal does not hold the decision at the receipt's position (under a matching signed head, or with no head reaching it). Without an anchoring proof nothing shows the application ever journaled the decision: the receipt's `record`, `index` and `leaf_hash` are unsigned, and a decision signed with an approver's key and never submitted yields the same verdict. It proves a deletion only if the receipt is trusted | yes |
+| `unchecked` | a head reaches the position but does not match the journal given, or the receipt's anchoring proof does not hold, so it says nothing of the decision (a journal that does not match a signed head fails its own verification) | yes, in `verify-receipts` |
+
+**Making deletion provable.** When a signed head commits to the decision, `bide audit verify-receipts
+-update` writes the anchoring proof into the receipt file (`audit.AnchorReceipt`: the record's
+inclusion under the smallest signed head that matches the journal, an `audit.ProofBundle` in the
+receipt's `anchor` field; an atomic rewrite that keeps the file's mode and changes nothing the approver
+signed). It is `verify-receipts -update`, not a `bide approve` flag, because `verify-receipts` already
+holds every input (journal export, signed heads, log key, approver keys) and `bide approve` stays a
+signer that needs no anchor. The proof is made only of what holds, and a redacted record, whose bytes
+are gone, cannot get one. From then on a head B that matches the journal and holds something else at
+the position is a contradiction of signed head A, checked against the journal rather than against A:
+the head sizes and the signing order do not matter. The receipt format stays `v1` (the field is
+optional and the format is not yet released). Run `-update` once the decision is anchored, and keep the
+updated receipt.
+
+Without an anchoring proof the receipt's `leaf_hash` is the approver's unsigned claim, so a plain record
+at the position holds only if it is the decision itself (its approver, signature and `decided_at` are
+signature-bound), and the claimed hash is trusted only for a redaction tombstone, which keeps nothing
+else. Only a receipt carrying a valid anchoring proof is evidence against a forged tombstone. The check
+is as fresh as the journal export and the heads supplied: a write or a head that came after them is not
+seen.
+
+Heads that do not verify under the log key, or are of another run, are ignored, and heads are read by
+size, never by arrival order. What this does not do: it checks only decisions whose receipts someone
+kept, so a decision deleted before its approver made a receipt, or before a receipt got its proof, is
+not proved deleted, and a head that stops short of the position says nothing, however late it was
+signed. `bide audit verify-receipts` is the command line (below).
+
 ## CLI reference: `bide audit`
 
 The `bide audit` command ([`cmd/bide`](../../cmd/bide), its code in
@@ -539,6 +594,7 @@ Conventions shared across verbs:
 | `verify-convergence` | `-cert-bundle`, `-policy-bundle`, `-pubkey` | `-checker` | An anchored `ConfluenceCertificate` links to the policy leaf (each bundle must be the leaf it is read as: `audit:convergence:<digest>` and `audit:policy:<digest>`, both `StepValue`); with `-checker`, the oracle's convergence verdict must AGREE with the certificate, so overstated convergence is caught; the compensation-free (CRDT) classification is cross-checked only when the oracle emits a `compensation_free=` line, and otherwise stays producer-reported (the CLI prints a note saying so). |
 | `verify-quorum` | `-name`, `-tally`, `-vote` (repeatable), `-pubkey`, `-k` | `-commit` | A governed k-of-n quorum: the tally and every vote bundle authentic, in the same signed tree and run, and recorded by the quorum named `-name`; the disclosed votes exactly the votes the tally records; the recorded tally recomputes from them (a forged tally is caught); and `votes_for >= k`; with `-commit`, a governed commit (a tool call's result) is anchored in the same tree. |
 | `verify-run` | `-cert`, `-pubkey`, and at least one of `-approved <digest>` (repeatable) / `-approved-file <file>` (both together form one allowlist) | `-checker <astchecker>` | A proof-carrying run certificate: the used-policy set is bound by a signed used-policy head to this run and to the certificate's journal tree, and is a subset of the approved allowlist (only-approved-policies), and every used policy has an anchored, digest-linked convergence certificate in the run's signed tree (policies-convergence-certified); with `-checker`, the oracle's convergence verdict on each used policy must AGREE with its certificate. |
+| `verify-receipts` | `-receipt` (file or directory, repeatable), `-journal` (export per run, repeatable), `-heads` (a head, or one per line; repeatable), `-pubkey`, `-approver-keys` | `-update` (store the anchoring proof) | Decision receipts written by `bide approve`: each signature verifies for the approver's key over the exact call it states, and the signed heads commit to the decision at its journal position (`audit.CheckReceipt`). Prints one line per receipt: PASS when anchored or redacted, INFO when pending (exit 0), FAIL for `decision deleted after signing` (proven receipts only), `receipt not matched by the journal` and `unchecked` (exit 1). A missing journal for a receipt's run, or an unreadable input, is exit 4. |
 | `verify-approvals` | `-evidence`, `-pubkey`, `-call`, `-need`, `-approvers`, `-approver-keys` | `-approved <digest>` (repeatable), `-approved-file <file>` (together, one allowlist, required when the package carries a run certificate) | An m-of-n approval gate from an `EvidencePackage`: the request, every decision the gate read, its recorded tally, and the call's result all verify in one signed tree and in order; recounting the decisions with the approvers' keys (a JSON object of id to key text, `<alg>:<hex>` or bare ed25519 hex; two of the policy's approvers on one key, or a weak key, is an unusable input) against the exact call reproduces the recorded tally; the gate enforced the expected policy; and at least k approved. Catches an omitted decision, which `verify-evidence` alone cannot. |
 | `verify-evidence` | `-evidence`, `-pubkey` | `-approved <digest>` (repeatable), `-approved-file <file>` (together, one allowlist) | A run-level `EvidencePackage`: the format, seal, and key are right, the signed tree head is an authentic journal head of the package's run, every packaged action proof verifies against it with the kind and label its record says, the grant chain is the anchored grants, the consistency proof holds between its two signed heads, and any run certificate is for this run and passes against the given allowlist (required when the package carries one). Prints one line per item and an overall PASS/FAIL. |
 
