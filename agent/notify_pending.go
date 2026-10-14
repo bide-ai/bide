@@ -217,8 +217,6 @@ func (e *notifyEngine) pendingEvents(runID string, recs []Record) []notifyEvent 
 			}
 			key, decided = ApprovalReaskKey(runID, w.ToolUseID, sod), reaskDecidedNames(w.ToolUseID, sod)
 			ap.Reask = w.Reask
-		} else if r.Name != ApprovalPendingStep(w.ToolUseID) {
-			continue
 		}
 		if slices.ContainsFunc(decided, func(n string) bool { return have[n] }) {
 			continue
