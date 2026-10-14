@@ -342,3 +342,56 @@ func TestSoDEvidence_DelegatedSubRun(t *testing.T) {
 		t.Fatalf("verdict = %+v, %v; want bob and carol counted, alice ignored as an ancestor's requester", v, err)
 	}
 }
+
+// A run:principal journaled after the call's request (a run an earlier version started, whose
+// principal a later drive recorded) does not name who requested the call: the gate refuses the
+// run, and an audit of a tally and result written into such a journal reports the order.
+func TestSoDEvidence_PrincipalAfterRequestFails(t *testing.T) {
+	ctx := context.Background()
+	g := newGate(2, []string{"alice", "bob", "carol"}, []string{"alice", "bob", "carol"})
+	g.policy.ExcludePrincipal = true
+	wantPaused(t, g.runAs("alice"), 0)
+	recs, err := g.store.History(ctx, gateRun)
+	if err != nil {
+		t.Fatal(err)
+	}
+	legacy := agenttest.MemJournal() // the run as an earlier version journaled it: no principal
+	for _, r := range recs {
+		if r.Name == "run:start" || r.Name == "run:principal" {
+			continue
+		}
+		if _, err := journaltest.Put(ctx, legacy, gateRun, r.Name, r); err != nil {
+			t.Fatal(err)
+		}
+	}
+	g.store = legacy
+	if err := g.runAs("alice"); !errors.Is(err, agent.ErrConfig) {
+		t.Fatalf("drive of the legacy run = %v; want ErrConfig", err)
+	}
+	g.decide(t, "bob", true, false)
+	g.decide(t, "carol", true, false)
+	var names []string
+	all, _ := legacy.History(ctx, gateRun)
+	for _, r := range all {
+		if agent.IsApprovalDecision(r, "c1") {
+			names = append(names, r.Name)
+		}
+	}
+	forged := agent.ApprovalTally{Need: 2, Approvers: g.policy.Approvers, Approved: 2, ApprovedBy: []string{"bob", "carol"},
+		Excluded: []string{"alice"}, Records: names, DecisionFormat: agent.DecisionFormat, ExcludePrincipal: true, Requesters: []string{"alice"}}
+	b, _ := json.Marshal(forged)
+	if _, err := journaltest.Put(ctx, legacy, gateRun, agent.ApprovalTallyStep("c1"), agent.Record{Kind: agent.StepValue, Result: b}); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := journaltest.Put(ctx, legacy, gateRun, agent.ToolResultStep("c1"), agent.Record{Kind: agent.StepToolResult, ToolUseID: "c1", Result: json.RawMessage(`"ok"`)}); err != nil {
+		t.Fatal(err)
+	}
+	acts, err := audit.ApprovalEvidence(ctx, legacy, gateRun, "c1", g.sth(t, 1700000000))
+	if err != nil {
+		t.Fatal(err)
+	}
+	v, err := audit.VerifyApprovals(acts, "c1", g.policy, g.resolver(), edV(g.logPub))
+	if !errors.Is(err, audit.ErrNotVerified) || v.OK || !hasProblem(v, "not before the request") {
+		t.Fatalf("verdict = %+v, %v; want a problem: the run:principal is not before the request", v, err)
+	}
+}

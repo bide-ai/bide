@@ -155,6 +155,10 @@ func TestSoD_NoUsableRequesterIsConfigError(t *testing.T) {
 			if !errors.Is(err, ErrConfig) || !strings.Contains(err.Error(), "requester") {
 				t.Fatalf("err = %v, want ErrConfig naming the requester", err)
 			}
+			// A run with no principal records no run:principal, and the gate says so.
+			if name == "no principal" && !strings.Contains(err.Error(), "no run:principal") {
+				t.Fatalf("err = %v, want it to name the missing run:principal", err)
+			}
 			if charged != 0 {
 				t.Fatal("the tool ran")
 			}
