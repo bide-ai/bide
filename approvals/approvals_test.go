@@ -678,7 +678,7 @@ func TestDecision_RecordWrittenFirstByAnotherProcess(t *testing.T) {
 	d := agent.Decision{RunID: runID, ToolUseID: "c1", ApproverID: "alice", Approved: true, DecidedAt: at, Alg: agent.Alg(b.Alg)}
 	sig, _ := base64.StdEncoding.DecodeString(b.Signature)
 	d.Signature = sig
-	rec := agent.Record{Kind: agent.StepApproval, ToolUseID: "c1", Approved: true, ApproverSignature: &agent.ApproverSignature{
+	rec := agent.Record{Name: agent.DecisionStep(d), Kind: agent.StepApproval, ToolUseID: "c1", Approved: true, ApproverSignature: &agent.ApproverSignature{
 		Approver: "alice", ApproverAlg: d.Alg, Signature: sig, DecidedAt: b.DecidedAt, RecordedAt: "2026-10-13T11:00:00.000Z"}}
 	data, err := agent.EncodeRecord(rec)
 	if err != nil {
