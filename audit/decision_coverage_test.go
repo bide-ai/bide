@@ -287,6 +287,7 @@ func TestCheckDecisionCoverage_AgreesWithCheckReceipt(t *testing.T) {
 		{"no head reaches it", cg.recs, []audit.SignedTreeHead{cg.before}, false, false},
 		{"decision removed from the export", slices.Delete(slices.Clone(cg.recs), a, a+1), []audit.SignedTreeHead{cg.afterAlice, cg.whole}, false, true},
 		{"export cut short", cg.recs[:a], []audit.SignedTreeHead{cg.afterAlice}, false, true},
+		{"early record replaced behind a head short of the decision", slices.Concat(cg.recs[:1], cg.recs[2:3], cg.recs[2:]), []audit.SignedTreeHead{cg.before}, false, true},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			rep, err := audit.CheckDecisionCoverage(gateRun, tc.recs, tc.heads, v, audit.CoverageBound{})
@@ -305,5 +306,49 @@ func TestCheckDecisionCoverage_AgreesWithCheckReceipt(t *testing.T) {
 				t.Errorf("failed: coverage ok=%v, receipt %q; want failed=%v", rep.OK(), f.Verdict, tc.failed)
 			}
 		})
+	}
+}
+
+// A decision a redaction replaced with a tombstone is still a decision: it is listed, and bounded
+// like any other.
+func TestCheckDecisionCoverage_RedactedDecisionIsListed(t *testing.T) {
+	cg := newCoverageGate(t)
+	b := cg.decision[1]
+	recs := slices.Clone(cg.recs)
+	recs[b] = agent.Record{Name: recs[b].Name, Redacted: true}
+	// The tombstone keeps the record's leaf in every tree, but this one is a stand-in without its
+	// raw bytes, so only the listing is under test: no head is counted for it.
+	rep, err := audit.CheckDecisionCoverage(gateRun, recs, nil, edV(cg.logPub), audit.CoverageBound{MaxRecords: 1})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(rep.Decisions) != 2 || rep.Decisions[1].Note != audit.NoteRedacted {
+		t.Fatalf("decisions %+v, want bob's listed with the note %q", rep.Decisions, audit.NoteRedacted)
+	}
+	// The call's request and pending note are not decisions, whatever their state.
+	recs[1] = agent.Record{Name: agent.ApprovalPendingStep("c1"), Redacted: true}
+	rep, _ = audit.CheckDecisionCoverage(gateRun, recs, nil, edV(cg.logPub), audit.CoverageBound{})
+	if len(rep.Decisions) != 2 {
+		t.Fatalf("a redacted approval-pending note was counted as a decision: %+v", rep.Decisions)
+	}
+}
+
+// When decisions exist and no head counts (a wrong log key makes every head ignored), nothing shows
+// a decision is inside a bound: with a bound set the check fails, and without one it only says so.
+func TestCheckDecisionCoverage_NoCountedHeads(t *testing.T) {
+	cg := newCoverageGate(t)
+	other, _, _ := ed25519.GenerateKey(nil)
+	heads := []audit.SignedTreeHead{cg.before, cg.whole}
+	rep, err := audit.CheckDecisionCoverage(gateRun, cg.recs, heads, edV(other), audit.CoverageBound{})
+	if err != nil || !rep.NoCountedHeads || !rep.OK() || len(rep.RejectedHeads) != 2 {
+		t.Fatalf("no bound: %+v %v", rep, err)
+	}
+	rep, _ = audit.CheckDecisionCoverage(gateRun, cg.recs, heads, edV(other), audit.CoverageBound{MaxRecords: 100})
+	if !rep.NoCountedHeads || rep.OK() {
+		t.Fatalf("with a bound: ok=%v no-counted=%v", rep.OK(), rep.NoCountedHeads)
+	}
+	rep, _ = audit.CheckDecisionCoverage(gateRun, cg.recs, heads, edV(cg.logPub), audit.CoverageBound{MaxRecords: 100})
+	if rep.NoCountedHeads || !rep.OK() {
+		t.Fatalf("with the right key: %+v", rep)
 	}
 }

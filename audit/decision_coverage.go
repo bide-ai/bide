@@ -3,6 +3,7 @@ package audit
 import (
 	"fmt"
 	"slices"
+	"strings"
 	"time"
 
 	"github.com/bide-ai/bide/agent"
@@ -92,11 +93,16 @@ type CoverageReport struct {
 	Decisions      []DecisionCoverage `json:"decisions"`
 	RejectedHeads  []RejectedHead     `json:"rejected_heads,omitempty"`  // ignored: invalid, or not this run's
 	DivergentHeads []DivergentHead    `json:"divergent_heads,omitempty"` // signed for this run, and not this journal's
+	// NoCountedHeads is set when the journal holds decisions and no head counted: every head given
+	// was ignored or divergent (a wrong -pubkey makes every head ignored), or none was given. With a
+	// bound set, OK is false then: nothing shows a decision is inside it.
+	NoCountedHeads bool `json:"no_counted_heads,omitempty"`
+	bounded        bool
 }
 
 // OK reports whether no decision is overdue and no signed head diverges from the journal given.
 func (r CoverageReport) OK() bool {
-	return len(r.DivergentHeads) == 0 &&
+	return len(r.DivergentHeads) == 0 && !(r.NoCountedHeads && r.bounded) &&
 		!slices.ContainsFunc(r.Decisions, func(d DecisionCoverage) bool { return d.Status == CoverageOverdue })
 }
 
@@ -147,18 +153,26 @@ func CheckDecisionCoverage(runID string, recs []agent.Record, heads []SignedTree
 			sizes = append(sizes, h.Size)
 		}
 	}
+	rep.bounded = bound.MaxRecords > 0 || (bound.MaxAge > 0 && !bound.Now.IsZero())
 	slices.Sort(sizes)
 	rep.Heads = len(sizes)
 	if len(sizes) > 0 {
 		rep.LargestHead = sizes[len(sizes)-1]
 	}
 	for i, r := range recs {
-		if r.Kind != agent.StepApproval {
+		// A decision is an approval record, or a redaction tombstone in the place of one (it keeps
+		// its name and its leaf in every tree, but has no kind): an "approval:" step, which is
+		// neither the call's request nor its pending note.
+		redacted := r.Redacted && strings.HasPrefix(r.Name, "approval:")
+		if r.Kind != agent.StepApproval && !redacted {
 			continue
 		}
 		d := DecisionCoverage{Step: r.Name, Approver: r.Approver(), Index: i, RecordedAt: r.RecordedAt(), Behind: len(recs) - 1 - i}
 		if _, err := agent.ParseTimestamp(d.RecordedAt); err != nil {
 			d.Note = NoteNoRecordedTime
+		}
+		if redacted {
+			d.Note = NoteRedacted
 		}
 		if k, _ := slices.BinarySearch(sizes, i+1); k < len(sizes) {
 			d.CoveredBySize = sizes[k] // the smallest head of size at least i+1
@@ -175,11 +189,16 @@ func CheckDecisionCoverage(runID string, recs []agent.Record, heads []SignedTree
 		}
 		rep.Decisions = append(rep.Decisions, d)
 	}
+	rep.NoCountedHeads = len(rep.Decisions) > 0 && rep.Heads == 0
 	return rep, nil
 }
 
 // NoteNoRecordedTime is DecisionCoverage.Note for a decision whose record has no usable recorded_at.
 const NoteNoRecordedTime = "no recorded time"
+
+// NoteRedacted is DecisionCoverage.Note for a decision whose record a redaction replaced with a
+// tombstone: its approver, verdict and recorded_at are gone, and it is bounded like any other.
+const NoteRedacted = "redacted"
 
 // overAge reports whether recordedAt is more than bound.MaxAge+bound.Tolerance before bound.Now.
 // Without an age or a Now there is no age bound, and nothing is over it. Under one, a decision with

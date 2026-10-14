@@ -315,13 +315,19 @@ func CheckReceipt(r DecisionReceipt, journal []agent.Record, heads []SignedTreeH
 	unmatched := ""
 	for _, h := range heads {
 		class, leaves, why := classifyHead(h, r.RunID, logKey, journal)
-		if class == headIgnored || h.Size <= r.Index {
-			continue // not a head of this run that the log key signed, or one that stops short of the position
+		if class == headIgnored {
+			continue // not a head of this run that the log key signed
 		}
-		// The head reaches the decision's position: it must match this journal to say anything.
+		// A head the log key signed for this run that does not match the journal given is evidence
+		// against the journal at any size: a head shorter than the receipt's position still commits
+		// to a prefix, and a prefix with a record replaced (or an export shorter than the head)
+		// must not read as "pending".
 		if class == headDivergent {
 			unmatched = why
 			continue
+		}
+		if h.Size <= r.Index {
+			continue // matches the journal and stops short of the position: it says nothing of the decision
 		}
 		at := time.Unix(0, h.TimestampNanos).UTC().Format(time.RFC3339)
 		switch {

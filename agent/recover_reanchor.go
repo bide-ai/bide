@@ -40,7 +40,9 @@ func (f reanchorOption) applyRecoverLoop(c *recoverConfig) error { return f(c) }
 // WithReanchorTimeout (half the lease TTL by default), so a hung anchor cannot hold a run's lease
 // and a concurrency slot for longer. An error it returns (the deadline's included) goes to
 // WithRecoverErrors, wrapping ErrStorage, and the next pass tries again. fn must be safe for
-// concurrent use, as runs are driven concurrently.
+// concurrent use, as runs are driven concurrently. A drive that ends with several waiting runs
+// (parallel sub-agents) re-signs them one after another under one lease, so its worst case is the
+// number of runs times the timeout; set WithReanchorTimeout with that in mind.
 func WithReanchor(fn func(ctx context.Context, runID string) error) ReanchorOption {
 	return reanchorOption(func(c *recoverConfig) error { c.reanchor, c.reanchorSet = fn, true; return nil })
 }
@@ -69,6 +71,9 @@ func (c recoverConfig) reanchorFunc(store *Journal) func(context.Context, string
 	return nil
 }
 
+// maxWaitingDepth bounds how deep waitingRuns follows wrapped and joined errors.
+const maxWaitingDepth = 64
+
 // waitingRuns returns the runs whose journals hold what a person is deciding: every run err's pauses
 // for an approval or a halt resolution name (and its root, when a pause came from a sub-agent). err
 // is walked as a tree, since parallel sub-agents that wait together return their pauses joined. It
@@ -80,8 +85,11 @@ func waitingRuns(err error) []string {
 			runs = append(runs, id)
 		}
 	}
-	var walk func(error)
-	walk = func(e error) {
+	var walk func(error, int)
+	walk = func(e error, depth int) {
+		if depth > maxWaitingDepth {
+			return // a cycle through Unwrap, or a chain no pause hides behind
+		}
 		switch x := e.(type) {
 		case nil:
 			return
@@ -93,13 +101,13 @@ func waitingRuns(err error) []string {
 			add(x.RootRunID)
 		case interface{ Unwrap() []error }:
 			for _, c := range x.Unwrap() {
-				walk(c)
+				walk(c, depth+1)
 			}
 		case interface{ Unwrap() error }:
-			walk(x.Unwrap())
+			walk(x.Unwrap(), depth+1)
 		}
 	}
-	walk(err)
+	walk(err, 0)
 	return runs
 }
 

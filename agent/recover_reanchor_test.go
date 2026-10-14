@@ -241,3 +241,34 @@ func TestRecover_Reanchors(t *testing.T) {
 		t.Fatalf("Recover with WithReanchor(nil): %v, re-signed %d times in all; want still once", err, s.count("r"))
 	}
 }
+
+// Nested and wrapped joins are all walked, and a chain that loops through Unwrap ends.
+func TestWaitingRuns_NestedJoinsAndCycles(t *testing.T) {
+	p := func(id string) error {
+		return &ApprovalPending{RunRef: RunRef{RunID: id, RootRunID: "root"}, ToolUseID: "c"}
+	}
+	err := fmt.Errorf("drive: %w", errors.Join(p("a"), fmt.Errorf("x: %w, y: %w", errors.Join(p("b"), errors.New("e")), p("c"))))
+	got := waitingRuns(err)
+	for _, id := range []string{"a", "b", "c", "root"} {
+		if !slices.Contains(got, id) {
+			t.Errorf("waitingRuns = %v, misses %s", got, id)
+		}
+	}
+	loop := &cycleErr{}
+	loop.next = loop
+	if got := waitingRuns(loop); got != nil {
+		t.Fatalf("a cycle gave %v", got)
+	}
+	deep := error(p("deep"))
+	for range maxWaitingDepth + 5 {
+		deep = fmt.Errorf("w: %w", deep)
+	}
+	if got := waitingRuns(deep); got != nil {
+		t.Fatalf("a pause deeper than the cap was found: %v", got)
+	}
+}
+
+type cycleErr struct{ next error }
+
+func (e *cycleErr) Error() string { return "cycle" }
+func (e *cycleErr) Unwrap() error { return e.next }

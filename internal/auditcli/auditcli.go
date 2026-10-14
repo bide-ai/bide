@@ -186,7 +186,7 @@ const usageText = `bide audit: produce and verify audit proof bundles
          -max-age, recorded more than that plus -max-age-tolerance before -now (default: this
          machine's clock; the weaker basis, since the recorder's clock is its own). With neither
          bound nothing is overdue; under -max-age a decision with no recorded time (an unsigned
-         agent.Approve decision records none) counts as over it. A head the log key signed for this
+         agent.Approve decision records none) counts as over it, and with a bound set a journal whose decisions no counted head covers at all (a wrong -pubkey) fails, with a WARNING. A head the log key signed for this
          run that does not match the export (the export is shorter than the head, or its prefix
          differs) is divergent, which fails the verb like an overdue decision: a decision deleted
          from an export looks exactly like that, so re-export the journal and run again. Covered
@@ -1080,6 +1080,10 @@ func (c *cli) verifyDecisionCoverage(args []string) {
 			c.printf("INFO  %s: record %d overdue (%s): no signed head covers it, %d records after it, recorded %s\n", who, d.Index, d.Basis, d.Behind, timeText(d.RecordedAt))
 		}
 	}
+	if rep.NoCountedHeads {
+		c.printf("WARNING  the journal holds %d decision(s) and no signed head counted (%d ignored, %d divergent, %d given): check -pubkey is the log's key and -heads the run's heads\n",
+			len(rep.Decisions), len(rep.RejectedHeads), len(rep.DivergentHeads), len(sths))
+	}
 	for _, d := range rep.Decisions {
 		if d.Note != "" {
 			c.printf("note: %s: record %d has %s, so an age bound cannot clear it\n", decisionLabel(d), d.Index, d.Note)
@@ -1090,6 +1094,9 @@ func (c *cli) verifyDecisionCoverage(args []string) {
 	}
 	if overdue > 0 {
 		c.fail("%d of %d decisions are under no signed tree head past the bound", overdue, len(rep.Decisions))
+	}
+	if !rep.OK() {
+		c.fail("no signed head counted, so with a bound set nothing shows any of the %d decision(s) inside it", len(rep.Decisions))
 	}
 	if c.clean() {
 		c.printf("OK: no decision is overdue (%d decisions checked)\n", len(rep.Decisions))

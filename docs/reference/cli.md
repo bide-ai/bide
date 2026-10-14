@@ -641,7 +641,7 @@ bide audit: produce and verify audit proof bundles
          -max-age, recorded more than that plus -max-age-tolerance before -now (default: this
          machine's clock; the weaker basis, since the recorder's clock is its own). With neither
          bound nothing is overdue; under -max-age a decision with no recorded time (an unsigned
-         agent.Approve decision records none) counts as over it. A head the log key signed for this
+         agent.Approve decision records none) counts as over it, and with a bound set a journal whose decisions no counted head covers at all (a wrong -pubkey) fails, with a WARNING. A head the log key signed for this
          run that does not match the export (the export is shorter than the head, or its prefix
          differs) is divergent, which fails the verb like an overdue decision: a decision deleted
          from an export looks exactly like that, so re-export the journal and run again. Covered

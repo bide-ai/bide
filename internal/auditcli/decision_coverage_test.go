@@ -126,6 +126,17 @@ func TestCLI_VerifyDecisionCoverage(t *testing.T) {
 	if code != exitNotVerified || !strings.Contains(stdout, "not counted") || strings.Contains(stdout, "DIVERGENT") {
 		t.Fatalf("a forged head: exit %d\n%s", code, stdout)
 	}
+	// A wrong log key ignores every head: a warning, and with a bound a failure.
+	_, otherPub, _ := ed25519.GenerateKey(rand.Reader)
+	wrongKey := keyText(audit.Ed25519Signer{Priv: otherPub})
+	code, stdout, _ = runCLI("verify-decision-coverage", "-journal", journalPath, "-heads", paths["whole"], "-pubkey", wrongKey)
+	if code != 0 || !strings.Contains(stdout, "WARNING") {
+		t.Fatalf("a wrong key, no bound: exit %d\n%s", code, stdout)
+	}
+	code, stdout, _ = runCLI("verify-decision-coverage", "-journal", journalPath, "-heads", paths["whole"], "-pubkey", wrongKey, "-max-records", "50")
+	if code != exitNotVerified || !strings.Contains(stdout, "WARNING") {
+		t.Fatalf("a wrong key, with a bound: exit %d\n%s", code, stdout)
+	}
 	// An export with alice's decision removed: every head that reaches past it diverges, so the verb
 	// fails (the not-verified class) and says to re-export, instead of passing a shorter list.
 	var x audit.JournalExport
