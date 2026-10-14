@@ -38,7 +38,7 @@ func (f *fixture) intake(wrap func(http.Handler) http.Handler, opts ...approvals
 		v, ok := f.pubs[id]
 		return v, ok
 	}
-	h, err := approvals.New(j, verify, append([]approvals.Option{approvals.WithRateLimit(0, 0), approvals.WithGlobalRateLimit(0, 0)}, opts...)...)
+	h, err := approvals.New(j, verify, append([]approvals.Option{f.livePolicy(), approvals.WithRateLimit(0, 0), approvals.WithGlobalRateLimit(0, 0)}, opts...)...)
 	if err != nil {
 		f.t.Fatal(err)
 	}
@@ -299,7 +299,7 @@ func TestRemote_TLSAndClientCertificates(t *testing.T) {
 	j, closeJ := f.store()
 	defer closeJ()
 	verify := func(id string) (agent.ApproverVerifier, bool) { v, ok := f.pubs[id]; return v, ok }
-	h, err := approvals.New(j, verify, approvals.WithRateLimit(0, 0), approvals.WithGlobalRateLimit(0, 0),
+	h, err := approvals.New(j, verify, f.livePolicy(), approvals.WithRateLimit(0, 0), approvals.WithGlobalRateLimit(0, 0),
 		approvals.WithAuth(func(r *http.Request, a approvals.Access) error {
 			if r.TLS == nil || len(r.TLS.PeerCertificates) == 0 {
 				return approvals.ErrUnauthenticated
@@ -543,4 +543,9 @@ func TestRemote_UncountedDecisionIsNotSuccess(t *testing.T) {
 	if code != 1 || !strings.Contains(errs, "another decision of yours counts") || !strings.Contains(errs, "superseded") {
 		t.Fatalf("exit %d\n%s", code, errs)
 	}
+}
+
+// livePolicy is approvals.WithGatePolicy for the fixture: the policy its "refund" tool is built with.
+func (f *fixture) livePolicy() approvals.Option {
+	return approvals.WithGatePolicy(func(tool string) (*agent.ApprovalPolicy, bool) { return f.policy, tool == "refund" })
 }
