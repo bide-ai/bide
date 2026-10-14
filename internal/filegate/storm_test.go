@@ -11,7 +11,7 @@ import (
 )
 
 // Cancelled waiters never leak the slot or break mutual exclusion; For and Close churn is race-free.
-func TestReviewCancelStormAndChurn(t *testing.T) {
+func TestEnter_CancelStormAndChurn(t *testing.T) {
 	p := filepath.Join(t.TempDir(), "s.db")
 	keep := For(p)
 	defer keep.Close()

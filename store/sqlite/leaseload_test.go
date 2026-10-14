@@ -10,9 +10,9 @@ import (
 	"time"
 )
 
-// Lease statements are not gated: under a sustained queue of journal writers, do they still get the
-// write lock within the lease's TTL?
-func TestReviewLeaseUnderWriteLoad(t *testing.T) {
+// Lease renewals go ahead of queued journal writers: under a sustained queue of 64 writers, every
+// renewal still gets the write lock well within the lease TTL.
+func TestLease_RenewalsSurviveWriteLoad(t *testing.T) {
 	s, err := Open(filepath.Join(t.TempDir(), "j.db"))
 	if err != nil {
 		t.Fatal(err)

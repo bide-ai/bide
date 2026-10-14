@@ -11,7 +11,7 @@ import (
 
 // Two handles on one file under different spellings (relative path, symlinked directory, symlinked
 // file) write concurrently: no deadlock, no BUSY, no lost row.
-func TestReviewAliasedPathsDoNotDeadlock(t *testing.T) {
+func TestOpen_AliasedPathsDoNotDeadlock(t *testing.T) {
 	dir := t.TempDir()
 	real := filepath.Join(dir, "real")
 	os.Mkdir(real, 0o755)
