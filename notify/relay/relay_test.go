@@ -857,3 +857,31 @@ func TestStateFileHoldsNoSecretOrPayload(t *testing.T) {
 		}
 	}
 }
+
+func TestStateFileKeepsRecencyOrderAcrossARestart(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "relay.state")
+	var sends atomic.Int32
+	srv, rg := restartHandler(t, path, &sends, 3)
+	send := func(rg *rig, k string) {
+		rg.raw(t, payloadBody(t, func(p *notify.Payload) { p.ID, p.Key = agent.NotifyID(k), k }), nil)
+	}
+	for _, k := range []string{"a", "b", "c"} {
+		send(rg, k)
+	}
+	srv.Close()
+	sends.Store(0)
+	_, rg = restartHandler(t, path, &sends, 3)
+	send(rg, "d") // evicts the oldest, a
+	if sends.Load() != 1 {
+		t.Fatal("d was not forwarded")
+	}
+	send(rg, "c") // still remembered
+	send(rg, "b")
+	if sends.Load() != 1 {
+		t.Fatalf("a recent event was forgotten after the restart (%d sends)", sends.Load())
+	}
+	send(rg, "a") // the oldest went first
+	if sends.Load() != 2 {
+		t.Fatal("the oldest event outlived a newer one across the restart")
+	}
+}
