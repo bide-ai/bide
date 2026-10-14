@@ -41,6 +41,7 @@ The vocabulary, defined once. Terms are grouped by the layer they belong to. See
 
 ## Accountability
 
+- **Threat model**: what bide prevents, detects and does not address, by actor ([threat model](trust/threat-model.md)); key custody and retention are in the [operations guidance](trust/operations.md).
 - **Merkle tree / STH**: the audit spine. Records hash into a tree; a signed tree head (STH) commits to the whole log. Inclusion and consistency proofs are checkable offline.
 - **Anchoring**: publishing an STH to an independent log, which upgrades integrity to tamper-evidence against the operator.
 - **ProofBundle**: a portable proof that a specific record is included under a signed tree head. It carries the record as the bytes the journal stores for it (`record_bytes`), which the verifier hashes without re-encoding.

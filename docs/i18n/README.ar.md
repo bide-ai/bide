@@ -212,6 +212,8 @@ Transparency ([RFC 6962](https://datatracker.ietf.org/doc/html/rfc6962)، مفح
 gsm، ProofBundle). ويُذكَر ضمان المعمورية الدقيق في **[الضمان](../../docs/GUARANTEE.md)** وحدوده في
 **[القيود المعروفة](../../docs/KNOWN-LIMITATIONS.md)**.
 
+وثائق الثقة (لمراجعي الأمن والمخاطر): [نموذج التهديدات](../../docs/trust/threat-model.md)، [الاستقرار والدعم](../../docs/trust/stability.md)، [المقارنة](../../docs/trust/comparison.md)، [إرشادات التشغيل](../../docs/trust/operations.md)، [التحقق من الإصدارات](../../docs/trust/verify-releases.md) (بالإنجليزية).
+
 **التأليف**
 
 - **[الوصفات](../../docs/recipes/index.md)**: ستة تدفّقات كاملة يمكن نسخها وتشغيلها دون مفتاح API: استرداد بموافقة 2 من 3، والموافقة على فاتورة، وفرز تذاكر الدعم، وتحديث آمن لسجل عميل، ووكيل محيطي ينام ويستيقظ، وwebhook يُبلغ شخصًا عندما يحتاج تشغيل إلى تدخّل بشري.

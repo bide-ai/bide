@@ -1,8 +1,11 @@
 name: Release
 
 # Pushing a v* tag builds the bide binaries and publishes a GitHub
-# Release with generated notes. Run manually (workflow_dispatch) to dry-run the
-# whole pipeline in snapshot mode without tagging or publishing anything.
+# Release with generated notes, an SBOM per archive (syft) and a keyless cosign signature for
+# checksums.txt and each archive (GitHub OIDC; docs/trust/verify-releases.md). Run manually
+# (workflow_dispatch) to dry-run the whole pipeline in snapshot mode without tagging or publishing
+# anything; the dry run builds the SBOMs but skips signing, so it writes nothing to the public
+# transparency log.
 on:
   push:
     tags:
@@ -15,6 +18,10 @@ permissions:
 jobs:
   goreleaser:
     runs-on: ubuntu-latest
+    permissions:
+      contents: write
+      # id-token mints the OIDC token cosign signs with (keyless: no signing key is stored).
+      id-token: write
     env:
       GOWORK: 'off'
     steps:
@@ -29,6 +36,14 @@ jobs:
           go-version: '1.27.2'
       - name: Pin the toolchain
         run: echo "GOTOOLCHAIN=local" >> "$GITHUB_ENV"
+      - name: Install syft
+        uses: anchore/sbom-action/download-syft@v0
+        with:
+          syft-version: v1.54.1
+      - name: Install cosign
+        uses: sigstore/cosign-installer@v4
+        with:
+          cosign-release: v3.1.3
       - name: Validate config
         uses: goreleaser/goreleaser-action@v6
         with:
@@ -48,7 +63,7 @@ jobs:
         with:
           distribution: goreleaser
           version: '~> v2'
-          args: release --clean ${{ github.event_name == 'workflow_dispatch' && '--snapshot' || '' }} ${{ steps.notes.outputs.arg }}
+          args: release --clean ${{ github.event_name == 'workflow_dispatch' && '--snapshot --skip=sign' || '' }} ${{ steps.notes.outputs.arg }}
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
       # The bide formula in bide-ai/homebrew-tap, generated from this release's checksums
@@ -78,6 +93,35 @@ jobs:
           git -C tap -c user.name="github-actions[bot]" -c user.email="41898282+github-actions[bot]@users.noreply.github.com" \
             commit --quiet -s -m "bide ${GITHUB_REF_NAME}"
           git -C tap push --quiet
+
+  # Verify what was just published, as a user would (docs/trust/verify-releases.md): the signature
+  # of checksums.txt and of every archive against the identity of this workflow, and every archive
+  # and SBOM against checksums.txt. A release whose signatures do not verify fails here.
+  verify-signatures:
+    if: github.event_name == 'push'
+    needs: goreleaser
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+    steps:
+      - uses: sigstore/cosign-installer@v4
+        with:
+          cosign-release: v3.1.3
+      - name: Download the release
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: gh release download "${GITHUB_REF_NAME}" -R "${GITHUB_REPOSITORY}" -p 'bide_*' -p 'checksums.txt*' -D rel
+      - name: Verify signatures and checksums
+        run: |
+          set -euo pipefail
+          cd rel
+          id="https://github.com/${GITHUB_REPOSITORY}/.github/workflows/release.yml@refs/tags/${GITHUB_REF_NAME}"
+          issuer="https://token.actions.githubusercontent.com"
+          for f in checksums.txt bide_*.tar.gz; do
+            cosign verify-blob --bundle "$f.sigstore.json" --certificate-identity "$id" --certificate-oidc-issuer "$issuer" "$f"
+          done
+          sha256sum --check --strict checksums.txt
+          ls bide_*.sbom.json >/dev/null
 
   # Rebuild every published binary from the tag on another OS and compare the bytes, so the claim
   # that anyone can reproduce the release is checked on every release (scripts/repro.sh).

@@ -35,6 +35,7 @@ export default defineConfig({
       { text: 'Guides', link: '/guides/plan-flows' },
       { text: 'Reference', link: '/reference/cli' },
       { text: 'Proofs', link: '/formal-verification' },
+      { text: 'Trust', link: '/trust/threat-model' },
       { text: 'Blog', link: '/blog/' },
     ],
     // The order of the product: start, build, inspect, prove; then the reference and the proofs.
@@ -97,6 +98,17 @@ export default defineConfig({
           { text: 'Delegation', link: '/guides/delegation' },
           { text: 'Governance', link: '/guides/governance' },
           { text: 'Quorum', link: '/guides/quorum' },
+        ],
+      },
+      {
+        text: 'Trust',
+        collapsed: false,
+        items: [
+          { text: 'Threat model', link: '/trust/threat-model' },
+          { text: 'Stability and support', link: '/trust/stability' },
+          { text: 'Comparison', link: '/trust/comparison' },
+          { text: 'Operations guidance', link: '/trust/operations' },
+          { text: 'Verifying releases', link: '/trust/verify-releases' },
         ],
       },
       {
