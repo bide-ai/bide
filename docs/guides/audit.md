@@ -521,7 +521,7 @@ What it checks, and the status each event gets:
   is the first or the last created; the open-trail record kinds are a violation on a run's trail.
   `bide audit notifications -db` and `-postgres-env` read the indexes, the segments they name and the
   segments those seal into. A run's events are in the trail of its root run (a plan flow's run is its
-  own root) A trail that breaks a rule is reported with the record
+  own root). A trail that breaks a rule is reported with the record
   and the rule (exit 1).
 - **The journal cross-check.** Every approval gate, unknown-outcome halt (an attempt marker with no
   result) and aborted run a supplied journal shows must be observed in the trail of its root run. A

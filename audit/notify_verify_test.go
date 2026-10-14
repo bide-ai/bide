@@ -930,6 +930,8 @@ func TestVerifyNotifications_TheOpenTrail(t *testing.T) {
 		"a seal into an earlier day":        {[]audit.NotifyTrailExport{recsTrail(t, day(1), segRec(agent.NotifySeal, 1, day(0)))}, "not a later segment"},
 		"a second backfill": {[]audit.NotifyTrailExport{d0, recsTrail(t, day(1), agent.NotifyRecord{Kind: agent.NotifyCheckpoint, At: at(86400), Backfilled: true,
 			Watching: []agent.Watched{{Key: k2, RunID: "r1", At: at(2)}}}, segRec(agent.NotifyBackfilled, 86401, "")), idx}, "recorded 2 times"},
+		"a checkpoint listing an event twice": {[]audit.NotifyTrailExport{recsTrail(t, day(0), agent.NotifyRecord{Kind: agent.NotifyCheckpoint, At: at(1),
+			Watching: []agent.Watched{{Key: k2, RunID: "r1", At: at(1)}, {Key: k2, RunID: "r1", At: at(1)}}})}, "twice"},
 		"a watch with no run":                     {[]audit.NotifyTrailExport{recsTrail(t, day(0), agent.NotifyRecord{Kind: agent.NotifyWatch, Key: k2, At: at(1)})}, "no event key or run"},
 		"a run record in a segment":               {[]audit.NotifyTrailExport{recsTrail(t, day(0), op(agent.NotifyObserved, k2, 1))}, "does not belong"},
 		"a segment no seal reaches":               {[]audit.NotifyTrailExport{d0, d1, recsTrail(t, day(5), segRec(agent.NotifyCheckpoint, 5, "")), idx}, "chain is broken"},
