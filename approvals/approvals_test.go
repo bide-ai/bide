@@ -511,6 +511,9 @@ func TestDecision_UnsupportedGates(t *testing.T) {
 func TestBusy(t *testing.T) {
 	r := newRig(t, approvals.WithMaxInFlight(1), approvals.WithRateLimit(0, 0), approvals.WithGlobalRateLimit(0, 0))
 	release := r.stall.arm()
+	var once sync.Once
+	unblock := func() { once.Do(func() { close(release) }) }
+	t.Cleanup(unblock) // a failure must not leave the request holding the server open
 	first := make(chan int, 1)
 	go func() {
 		status, _ := r.get("/pending?run=" + runID + "&call=c1")
@@ -525,7 +528,7 @@ func TestBusy(t *testing.T) {
 	if resp.StatusCode != http.StatusServiceUnavailable || resp.Header.Get("Retry-After") == "" {
 		t.Fatalf("second request: %d, Retry-After %q", resp.StatusCode, resp.Header.Get("Retry-After"))
 	}
-	close(release)
+	unblock()
 	if status := <-first; status != 200 {
 		t.Fatalf("the request in progress: %d", status)
 	}
