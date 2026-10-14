@@ -186,6 +186,21 @@ func TestReceipt_DeletedWithProof(t *testing.T) {
 	if f := audit.CheckReceipt(bad, tampered, []audit.SignedTreeHead{h}, edV(w.g.logPub)); f.Verdict != audit.ReceiptUnchecked {
 		t.Fatalf("tampered proof: %+v", f)
 	}
+	// A proof whose head signature was forged is not a proof, whatever else in it is right.
+	forged := back
+	fp := *forged.Anchor
+	fp.STH.Signature = append([]byte(nil), fp.STH.Signature...)
+	fp.STH.Signature[0] ^= 1
+	forged.Anchor = &fp
+	if f := audit.CheckReceipt(forged, tampered, []audit.SignedTreeHead{h}, edV(w.g.logPub)); f.Verdict != audit.ReceiptUnchecked {
+		t.Fatalf("forged proof: %+v", f)
+	}
+	// A proof for another position than the receipt names is not this receipt's proof.
+	moved := back
+	moved.Index++
+	if f := audit.CheckReceipt(moved, tampered, []audit.SignedTreeHead{h}, edV(w.g.logPub)); f.Verdict != audit.ReceiptUnchecked {
+		t.Fatalf("proof for another position: %+v", f)
+	}
 	// A proof signed by another key is not a proof.
 	if f := audit.CheckReceipt(back, tampered, []audit.SignedTreeHead{h}, edV(ed25519PubOf(t))); f.Verdict == audit.ReceiptDeleted {
 		t.Fatalf("a proof under a key the auditor does not trust accused: %+v", f)
