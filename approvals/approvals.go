@@ -477,12 +477,14 @@ func remoteHost(r *http.Request) string {
 }
 
 // refuseEarly is called before a response that is sent without the request's body having been read.
-// net/http reads up to 256 KiB of an unread body before it sends a response, which a client that
-// stalls while sending would hold open for as long as the server's own read timeout allows (forever
-// for a server with none). A read deadline that has already passed ends that read at once, so the
-// refusal goes out immediately. It is harmless when the body has been read, or the request has none.
+// net/http reads up to 256 KiB of an unread body before it sends a response, unless the connection
+// is to close after it, which a client that stalls while sending would otherwise hold open for as long
+// as the server's own read timeout allows (forever for a server with none). Asking for the
+// connection to close ends that wait at once. (Setting the read deadline to the past does too, but it
+// also cancels the context of the connection, and with it the next request on a kept-alive one.)
+// Over HTTP/2 the header is ignored and an unread body costs only its stream.
 func refuseEarly(w http.ResponseWriter) {
-	_ = http.NewResponseController(w).SetReadDeadline(time.Now())
+	w.Header().Set("Connection", "close")
 }
 
 // guard rate limits a request before it is read.
@@ -786,8 +788,12 @@ func (h *Handler) decide(w http.ResponseWriter, r *http.Request) {
 	if !ok {
 		return
 	}
-	_ = http.NewResponseController(w).SetReadDeadline(time.Now().Add(h.readTimeout)) // a writer with no deadlines: the server's own apply
+	ctl := http.NewResponseController(w)
+	_ = ctl.SetReadDeadline(time.Now().Add(h.readTimeout)) // a writer with no deadlines: the server's own apply
 	b, err := io.ReadAll(http.MaxBytesReader(w, r.Body, h.maxBody))
+	// The deadline is for the body only: left set, it would expire during the handling after it and
+	// cancel the connection's context.
+	_ = ctl.SetReadDeadline(time.Time{})
 	releaseRead()
 	if err != nil {
 		var tooBig *http.MaxBytesError

@@ -8,6 +8,8 @@ import (
 	"encoding/base64"
 	"encoding/hex"
 	"encoding/json"
+	"fmt"
+	"io"
 	"net"
 	"net/http"
 	"net/http/httptest"
@@ -1056,5 +1058,55 @@ func TestDecision_ReaskedGateIsWaiting(t *testing.T) {
 				t.Fatalf("a decision on the re-asked gate: %d %v", status, out)
 			}
 		})
+	}
+}
+
+// The read deadline set for the body does not outlive it: a decision whose handling takes longer than
+// the read timeout still completes, and a refusal does not poison the connection it was sent on (a
+// deadline left in the past cancels the context of every later request on a kept-alive connection).
+func TestDecision_ReadDeadlineEndsWithTheBody(t *testing.T) {
+	r := newRig(t, approvals.WithReadTimeout(300*time.Millisecond), approvals.WithRateLimit(0, 0), approvals.WithGlobalRateLimit(0, 0))
+	release := r.stall.arm()
+	go func() {
+		time.Sleep(800 * time.Millisecond)
+		close(release)
+	}()
+	status, out := r.post(r.decision("alice", true))
+	if status != 200 {
+		t.Fatalf("a decision handled for longer than the read timeout: %d %v", status, out)
+	}
+}
+
+// A refused request on a kept-alive connection leaves the next request served: the refusal must not
+// cancel the connection's context (it does when the read deadline is set to the past on a connection
+// whose background read is pending), which made the next request on it fail.
+func TestRefusal_DoesNotPoisonTheConnection(t *testing.T) {
+	r := newRig(t, approvals.WithRateLimit(0.001, 2), approvals.WithGlobalRateLimit(0, 0),
+		approvals.WithClientKey(func(req *http.Request) string { return req.Header.Get("X-Client") }))
+	tr := &http.Transport{MaxIdleConnsPerHost: 1}
+	defer tr.CloseIdleConnections()
+	c := &http.Client{Transport: tr}
+	get := func(client string) int {
+		req, _ := http.NewRequest(http.MethodGet, r.srv.URL+"/pending?run="+runID+"&call=c1", nil)
+		req.Header.Set("X-Client", client)
+		resp, err := c.Do(req)
+		if err != nil {
+			t.Fatal(err)
+		}
+		io.Copy(io.Discard, resp.Body)
+		resp.Body.Close()
+		return resp.StatusCode
+	}
+	for i := range 40 {
+		a := fmt.Sprint("a", i)
+		if get(a) != 200 || get(a) != 200 {
+			t.Fatal("setup")
+		}
+		if got := get(a); got != http.StatusTooManyRequests {
+			t.Fatalf("a's third request: %d, want 429", got)
+		}
+		if got := get(fmt.Sprint("b", i)); got != 200 {
+			t.Fatalf("iteration %d: the request after a refusal on the same transport: %d, want 200", i, got)
+		}
 	}
 }
