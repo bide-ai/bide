@@ -1,76 +1,66 @@
 # Roadmap
 
-Where bide is going, in order. The priority is to harden what exists before adding breadth: every item below either strengthens a guarantee bide already makes or prepares for bide to be used from more places without weakening it.
+Where bide is going, in order. Every item below either strengthens a guarantee bide already makes or prepares for bide to be used from more places without weakening it.
 
-This page describes intent, not promises of dates. Shipped work is recorded in the [changelog](../CHANGELOG.md).
-
-## Now: v0.16.0, stabilizing
-
-The current release is v0.16.0 (2026-10-13), and the work now is stabilizing what exists: bug fixes, documentation, tests, soak and chaos runs, and fresh-eyes passes over the code and the docs. No new features are planned for now, and releases stay on 0.x.
-
-- In v0.16.0, bide tells a human when a run needs them (a built-in notifier and a signed webhook, [notifications guide](guides/notifications.md)), approval decisions carry a signed time, the run viewer has a new look, and the SQLite and Postgres stores keep the event trail ([changelog](../CHANGELOG.md)).
-- In v0.15.0, the run viewer covers a whole journal and a flow config's policy: a run list, live mode, a risk map with policy assertions, and a visual diff of two versions of a flow ([run viewer guide](guides/run-viewer.md)).
-- One command, `bide` ([CLI reference](reference/cli.md)), in v0.14.0: `bide init` scaffolds a project with a gated plan flow, `bide check` checks flow configs in CI, and `bide demo` is a one-command crash demo: kill an agent mid-payment and watch it not charge twice, then see the run, its audit proof and its approval signatures in the run viewer.
-- The [launch post](blog/introducing-bide.md): what bide is, a first agent, and one crash resumed from the journal.
-- The [crash-injection benchmark](../benchmarks/README.md) now includes LangGraph (Python) on SQLite and Postgres ([#166](https://github.com/bide-ai/bide/pull/166), [#167](https://github.com/bide-ai/bide/pull/167)); every framework except bide re-fired the charge.
-
-Shipped earlier: v0.14.1 made a plan flow's `Model` node retry-safe (`ReadOnly`) by default and has it send its output type's schema as the response format; v0.13.0 added the run viewer (`bide-view`, now `bide view`; [run viewer guide](guides/run-viewer.md)) and moved to gsm v0.14.0 ([#177](https://github.com/bide-ai/bide/pull/177)); v0.12.0 moved to gsm v0.13.0, which checks event order across federated registries and reports the delivery obligations a confluence certificate now records; v0.11.1 says when a model call has no API key and makes getting started work offline; v0.11.0 gave the redesigned API its final names (P15) and removed the transitional API; v0.10.0 added the Run API (P14), tool specifications (P12), construction under `Build` (P13), four TLA+ models (9 to 12), an Apalache inductive invariant for the claim protocol, the gsm machine gate, and gsm v0.12.0; v0.9.0 put the claim protocol under a model checker and rebuilt the engine around a storage port and a journal with its own format; v0.8.0 made runs recover themselves (`RecoverLoop`) and put one token budget across an agent tree.
+This page lists work that is not done yet. It describes intent, not promises of dates. Shipped work is recorded in the [changelog](../CHANGELOG.md), and the formal models already checked are listed in [Formal verification](formal-verification.md). Releases stay on 0.x.
 
 ## Next
 
 ### The API
 
-The API redesign ([design proposal](https://github.com/bide-ai/bide/pull/64)):
-
-- Done in v0.9.0: a storage port (`Store`) separated from the journal semantics bide owns (`Journal`), with the store contract stated as numbered requirements and a conformance suite every store must pass (P6a); a sealed pause contract (P10); typed model calls (P9); flow nodes lowered onto `agent.Journal.Step` (P5b); and versioned journal and proof formats (P6a, P11).
-- Done in v0.10.0: tool internals on a tool specification, with approval split from safety and tool timeouts (P12); construction under `Build`, with option scopes and `RunInfo` (P13); and one run entry point with per-run options that survive recovery, `Cancel`, `Status` and recovery dispatch, under transitional names (P14).
-- Done in v0.11.0 (P15): the final names, and the transitional API removed (the `Durable` interface, the string entry points, the builder methods, the old `Tool` method set); the journal verbs are Go 1.27 generic methods (`j.Step`, `j.Parallel`, ...). The CHANGELOG lists the changes name by name.
-- Done in v0.13.0 (P16, docs and cleanup): the doccheck allowlist is empty ([#178](https://github.com/bide-ai/bide/pull/178)), the main public API has runnable `Example` tests ([#179](https://github.com/bide-ai/bide/pull/179)), and stale text (P-numbers, migration notes) is out of godoc ([#178](https://github.com/bide-ai/bide/pull/178)).
-- Done in v0.14.0: approval gates on plan flow nodes, enforced by the agent's own gate (the same records, counting rule and evidence), with the flows TLA+ model extended to check that a gated node never runs before k approvals ([plan flows guide](guides/plan-flows.md#approval-gates-on-nodes)).
-- Next: a deadline for a gate that never reaches its approvals, so a run waiting on approvers who do not answer stops on a schedule instead of staying unfinished until it is cancelled; and a way to clear a stale decision written before a gate's request.
-- Next: P16's last step, moving the journal format tag from `v1-dev` to its final value, waits for 1.0.
+- A deadline for a gate that never reaches its approvals, so a run waiting on approvers who do not answer stops on a schedule instead of staying unfinished until it is cancelled; and a way to clear a stale decision written before a gate's request.
+- Moving the journal format tag from `v1-dev` to its final value, which waits for 1.0.
 
 Changes that touch claims, the journal, leases, sagas or proofs are reviewed adversarially before they merge.
 
+### Bank readiness
+
+bide is meant to be usable by banks and other regulated institutions. What that needs beyond today, first items first:
+
+- Key custody: approver and audit-log signing keys held in an HSM or a cloud key service instead of key files, through the existing `audit.Signer` interface, starting with PKCS#11 and AWS KMS (then Azure Key Vault and Google Cloud KMS).
+- Separation of duties: an opt-in approval policy that refuses a decision from the principal who requested the call (maker-checker), checked in the approval gate's formal model (model 1b).
+- Approver identity: approver keys bound to an institution's identity, with certificates from its own CA or keys issued through its SSO, and revocation that the gate and `bide audit` honor.
+- Evidence for regulators: a threat model, a security and versioning policy, signed releases with an SBOM, and guidance on retaining and archiving journals and evidence packages.
+
+This is engineering toward those requirements, not a compliance certification.
+
+### Notifications and approvals
+
+The notifier tells a person when a run needs them ([notifications guide](guides/notifications.md)). Next, in progress first:
+
+- An all-clear notification when an event stops being current (a halt resolved, a gate decided, a run ended), so a receiver can close the incident it opened.
+- `bide notify test` and `bide notify listen`, to check a receiver end to end, and a relay that verifies bide's signed webhooks and forwards them to Slack and PagerDuty.
+- `bide approve`, `bide keygen` and a list of pending approvals: an approver signs a decision with their own key, after seeing the call and its arguments as the journal records them.
+- Proof that notifications went out: a verifier for the notification trail and a `bide audit` check, so an auditor can see that every halt and pending approval was notified and acknowledged, and when.
+- A "Needs attention" list in the run viewer: pending approvals and unresolved halts across a journal.
+- Routing and escalation: different receivers by event kind (approvals to approvers, unknown outcomes to on-call), and an overdue notice that escalates to a second receiver.
+- An approve page in the run viewer, signed in the browser with an Ed25519 key that never leaves it. Later: passkey (WebAuthn) approvals, as a new signature algorithm.
+
+Out of scope: approve buttons in chat that a server signs on an approver's behalf. Keeping each approver's key with that approver is what makes a k-of-n gate k independent decisions.
+
+### Trust and project process
+
+- Trust pages: a threat model beside [SECURITY.md](../SECURITY.md), the stability and versioning policy, and a scoped comparison with Temporal, LangGraph and plain retries (also part of bank readiness, above).
+- A lighter merge-queue CI, so a queued change waits on the checks that matter for it.
+
 ### Formal models of the coordination protocols
 
-The hardest bugs in a durable runtime live in interleavings: two drivers, a crash between two writes, a write that committed although its caller saw an error. bide already tests these with crash sweeps, a reference model and multi-process harnesses. The next step is to check the protocol designs themselves, exhaustively within bounds, with TLA+ (written in PlusCal) and the TLC model checker:
+The hardest bugs in a durable runtime live in interleavings: two drivers, a crash between two writes, a write that committed although its caller saw an error. bide checks its protocol designs with TLA+ models ([spec/tla](../spec/tla/README.md)); a counterexample the checker finds becomes a deterministic Go regression test. Left to do:
 
-1. **Claims and attempts:** claims, not-started records, numbered retries, the resume gate, and halt resolution while a driver may still be live. Invariant: every side effect fires at most once. Done: [model 1](../spec/tla/README.md#model-1-claims-and-attempts).
-2. **The bide protocol,** before any SDK is built on it (see below): done, [spec/tla/protocol](../spec/tla/README.md#model-2-the-bide-protocols-claim-rules), including retry-safe re-dispatch.
-3. **Leases and recovery:** acquire, renew, release, takeover, and a holder that stalls past its lease. Invariant: safety holds with leases failing arbitrarily, because it rests on claims. Model 10 covers the lease and recovery part: lease acquisition, renewal, lapse and takeover, a holder that stalls past its TTL and wakes, `Recover` and `RecoverLoop` passes, and the lease the operator's live-driver check takes, under crashes and ambiguous writes, with each call firing at most once and one live lease holder per epoch. Left, among others: model 1's numbered attempts and remembered claims under a lease that lapses while its holder lives (model 10 reduces each call's claim to one marker, and model 1 holds a lease for a whole drive), renewal errors short of a lapse, `Recover` without a `Leaser`, and a recovery pass's concurrency above 1. Leases are not fenced: a stalled holder that wakes drives beside the run's new holder until its renewer notices, a limit model 10 records.
-4. **The store contract and journal header:** prefix-closed visibility and first-writer races.
-5. **Saga rollback:** parallel siblings, sub-agents and calls that never started.
-6. **Approval and halt resolution,** an extension of model 1: 1-of-1 and m-of-n tallies, final denials, contended and crashed halts, resolution while a driver may be live, and approvers' key sets. Done: [model 1b](../spec/tla/README.md#model-1b-the-approval-gate).
-7. **Sessions:** concurrent sends, turn ordering, starting points, crashes between and within turns, and P14's `Cancel` of a turn's run. Done: [model 12](../spec/tla/README.md#model-12-sessions); it found S1, S2 and S4 (fixed in [#137](https://github.com/bide-ai/bide/pull/137)) and S3 (its rule implemented by P14, [#138](https://github.com/bide-ai/bide/pull/138)).
-8. **Flow semantics:** switch and loop replay, flow completion and per-iteration step scoping. Done: [model 7](../spec/tla/README.md#model-7-flow-semantics), with the lowering of #103.
-9. **The whole-tree budget:** how far concurrent sub-agents can overshoot a shared token budget (low priority). The spend accounting of model calls that the budget counts is done: [model 8](../spec/tla/README.md#model-8-spend-accounting), with #104.
-10. **The tool-call state machine of P12:** tool middleware, retries, sibling calls and the saga rollback's re-run. Done: [model 9](../spec/tla/README.md#model-9-the-tool-call-state-machine); it found T1 to T6 in #117 before it merged.
-11. **The run lifecycle and recovery:** end markers, leases, `Recover` and `RecoverLoop`, and the bounded pickup of a dead holder's run. Done: [model 10](../spec/tla/README.md#model-10-the-run-lifecycle-and-recovery); it found L1 (fixed in #126), L2 and L3, and, extended for P14 in #129, L4 to L7. P14 ([#138](https://github.com/bide-ai/bide/pull/138)) implements the rules adopted for L2 to L7, each tested by a Go test, and each finding is kept as a regression configuration that still fails under its old rule.
-12. **Delegation and sub-run authority, including saga trees:** grants, recorded authority, rollback binding, halts propagating from sub-runs, and programmatic sub-runs. Done: [model 11](../spec/tla/README.md#model-11-delegation-sub-run-authority-and-saga-trees); it found D1 to D3, fixed in [#133](https://github.com/bide-ai/bide/pull/133).
+- **M3 trace validation,** which checks real Go runs against the existing models, so they cannot drift.
+- **Leases and recovery, the rest:** model 10 covers lease acquisition, renewal, lapse and takeover. Left, among others: model 1's numbered attempts and remembered claims under a lease that lapses while its holder lives, renewal errors short of a lapse, `Recover` without a `Leaser`, and a recovery pass's concurrency above 1. Leases are not fenced: a stalled holder that wakes drives beside the run's new holder until its renewer notices, a limit model 10 records.
+- **Candidates:** the store contract and journal header (prefix-closed visibility and first-writer races); saga rollback across parallel siblings, sub-agents and calls that never started; and how far concurrent sub-agents can overshoot a shared token budget (low priority).
+- **Proofs beyond the bounds (Apalache):** the claim model's inductive invariant is checked nightly ([Apalache results](../spec/tla/README.md#apalache-results)). Next: the same for model 9 (tool calls; its typed wrapper is in place, the invariant is not written) and model 10 (the run lifecycle), and checking the claim invariant at more drivers, attempts and claim ids.
 
-Next: **M3 trace validation,** which checks real Go runs against the existing models, so they cannot drift.
-
-The store contract and the whole-tree budget bound remain candidates.
-
-**Proofs beyond the bounds (Apalache).** TLC's results hold only within each configuration's bounds. The claim model also has an inductive invariant, checked nightly by Apalache, that proves, for two drivers over two processes, `AtMostOnce` and `NotStartedExclusive` on one call (attempts 0..3, 8 claim ids) and all four of `AtMostOnce`, `NotStartedExclusive`, `NoLiveOverride` and `AtMostOncePerIntent` with halt resolution and the caller's second call (attempts 0..3, 6 claim ids), without the approval gate, and, under the lease check, assuming no plain run holds the live attempt at the check (`PlainRunIdleAtCheck`), at any depth and for any number and mix of faults within the run's 8 (6) claim ids and attempts 0..3 (claim ids are never reused, so this bounds the number of claims) ([Apalache results](../spec/tla/README.md#apalache-results)). Next: the same for model 9 (tool calls; its typed wrapper is in place, the invariant is not written) and model 10 (the run lifecycle), and checking the claim invariant at more drivers, attempts and claim ids.
-
-Models live in the repository and run in CI. A counterexample the checker finds becomes a deterministic Go regression test.
-
-The design and plan: [formal models of the coordination protocols](design/formal-models.md) (accepted, in progress). Done: models 1, 1b, 2, 7, 8, 9, 10, 11 and 12 are in [spec/tla](../spec/tla/README.md), checked by TLC on every pull request that changes them (all of them when it changes `check.sh`, `tools.lock`, the shard script or the Models workflow), and all of them in the merge queue and on main. The code the models describe is marked, and CI fails a change to it that does not change its model or say why. The overview, with every bug the models caught, is [Formal verification](formal-verification.md).
+The design and plan: [formal models of the coordination protocols](design/formal-models.md).
 
 ### gsm convergence
 
-bide's governance tier (`govern`) builds its state machines with [gsm](https://github.com/blackwell-systems/gsm), whose convergence theorem is proved in Coq/Rocq. bide requires gsm v0.14.0, which carries the gsm work below ([known limitations](KNOWN-LIMITATIONS.md#governed-state-gsm)).
+bide's governance tier (`govern`) builds its state machines with [gsm](https://github.com/blackwell-systems/gsm), whose convergence theorem is proved in Coq/Rocq ([known limitations](KNOWN-LIMITATIONS.md#governed-state-gsm)).
 
-- Done in gsm: `Build` soundness fixes: the commute check accounts for what guards and effects read, and certificates are re-checked ([gsm#2](https://github.com/blackwell-systems/gsm/pull/2)); duplicate event and variable names are refused ([gsm#5](https://github.com/blackwell-systems/gsm/pull/5)); closure results that are not states of the machine are refused ([gsm#6](https://github.com/blackwell-systems/gsm/pull/6)); declared rules copy the caller's slices, and `Certify` certifies the federation as called ([gsm#7](https://github.com/blackwell-systems/gsm/pull/7)); and hardening for unknown registries, coordination points, enum labels, ports, digest names and `DiagnoseCycle` ([gsm#11](https://github.com/blackwell-systems/gsm/pull/11)).
-- Done in gsm: an in-process gate. `Build`, synthesis and `BuildCompositional` return a machine only once the table oracle, Go generated from the Rocq proof, certifies its tables (per component for `BuildCompositional`, where independence across components rests on gsm's footprint check) ([gsm#12](https://github.com/blackwell-systems/gsm/pull/12)); `Build` also runs the rules oracle, generated the same way, when the machine's rules are combinators inside the oracle's fragment and its work is within a cost cap, and reports why when it does not ([gsm#17](https://github.com/blackwell-systems/gsm/pull/17)).
-- Done in bide: **gsm machine gate**, a required CI check that runs the two checkers extracted from gsm's proof on every gsm machine bide's examples build ([#144](https://github.com/bide-ai/bide/pull/144)), against a pinned gsm commit: then the v0.12.0 release commit, which carries both in-process oracles ([#150](https://github.com/bide-ai/bide/pull/150), [#151](https://github.com/bide-ai/bide/pull/151), [#154](https://github.com/bide-ai/bide/pull/154)). It checks the examples' machines in CI, not the machines an application builds at runtime.
-- Done in bide: bide requires gsm v0.12.0, so a `Build` in bide's runtime runs the in-process gate ([#154](https://github.com/bide-ai/bide/pull/154)).
-- Done in gsm, required by bide: event order across federated registries is checked. As of gsm v0.13.0, `Federation.Build` checks cross-registry CC (C1) and repaired CC (C2) and rejects a federation that fails either, and the same checks certify event order on monotone cycles (`cyc_check_gc_lfp`). Like the other federation-level conditions, they are gsm's Go code; the oracle-certified federation item below stays open. bide requires v0.14.0 (since v0.13.0, [#177](https://github.com/bide-ai/bide/pull/177)), and the gsm machine gate is pinned to its release commit.
-- Done in the proof: the rules oracle restructured to work from tables, then into a compact form that keeps its memory near the original's for small event counts, both proved to give the original checker's verdicts ([normalization-confluence#14](https://github.com/blackwell-systems/normalization-confluence/pull/14), [#15](https://github.com/blackwell-systems/normalization-confluence/pull/15)); gsm adopting them, with its cost cap re-derived, comes later.
-- Next: oracle-certified federations. Today `Federation.Build` and `Certificate.Verify` run every component through the in-process gate, but the federation's own conditions (acyclicity, M1, the resolvers' R1/R2 and the monotone-cycle iteration) are checked by gsm's Go code, not by a checker generated from the proof. The plan: mechanize the federation theorems those checks rely on (the operator core, order-independence and the monotone fixed point are mechanized; the federated and resolved convergence theorems in their corrected form, under C1 and C2, and the authority lemma are mechanized in `FederationGRS.v`, with C1 and C2 exact at reachable witnesses in `FederationEventsConverse.v`; the necessity of acyclicity and M1, and R1/R2 as the gluing axiom with the sheaf assembly over the full cover, remain paper-level), prove a federation checker sound against them, extract it to Go like the table oracle, and make `Federation.Build` and `Certificate.Verify` fail closed unless it certifies the federation. Then every machine and every federation gsm returns is certified by a checker generated from the proof.
-- Next: before 1.0, a change to gsm's policy format that puts names in the policy bytes, with `bide audit` still verifying records written under the old format (adding variable kinds to the policy bytes is under consideration).
+- gsm adopting the restructured rules oracle (proved to give the original checker's verdicts in [normalization-confluence#14](https://github.com/blackwell-systems/normalization-confluence/pull/14) and [#15](https://github.com/blackwell-systems/normalization-confluence/pull/15)), with its cost cap re-derived.
+- Oracle-certified federations. Today `Federation.Build` and `Certificate.Verify` run every component through the in-process gate, but the federation's own conditions (acyclicity, M1, the resolvers' R1/R2 and the monotone-cycle iteration) are checked by gsm's Go code, not by a checker generated from the proof. The plan: mechanize the federation theorems those checks rely on (the operator core, order-independence and the monotone fixed point are mechanized; the federated and resolved convergence theorems in their corrected form, under C1 and C2, and the authority lemma are mechanized in `FederationGRS.v`, with C1 and C2 exact at reachable witnesses in `FederationEventsConverse.v`; the necessity of acyclicity and M1, and R1/R2 as the gluing axiom with the sheaf assembly over the full cover, remain paper-level), prove a federation checker sound against them, extract it to Go like the table oracle, and make `Federation.Build` and `Certificate.Verify` fail closed unless it certifies the federation. Then every machine and every federation gsm returns is certified by a checker generated from the proof.
+- Before 1.0, a change to gsm's policy format that puts names in the policy bytes, with `bide audit` still verifying records written under the old format (adding variable kinds to the policy bytes is under consideration).
 
 ### bide underneath other agent frameworks (Go)
 
@@ -81,27 +71,20 @@ bide is a durability and accountability layer, not only a framework of its own. 
 
 ### The visual builder
 
-A visual builder for `plan` flows, built up from read-only tools that use the journal and the config format as they are:
+A visual builder for `plan` flows, built up from the read-only tools that exist today (`bide view`, `bide view -config`, `bide check -diff`; [run viewer guide](guides/run-viewer.md)):
 
-- Done: `bide view`, a read-only local page for one run ([run viewer guide](guides/run-viewer.md)): an agent run's timeline, halts, approval gates with signature checks, and a flow's path over its topology.
-- Done: the journaled topology, `flow:topology`, so a flow run is drawn from its journal alone, its digest checked ([#192](https://github.com/bide-ai/bide/pull/192)).
-- Done: the config viewer, `bide view -config`, which draws a flow definition and marks its problems, with `-check` for CI and `plan/planview` for a program's own Registry ([#193](https://github.com/bide-ai/bide/pull/193)).
-- Done in v0.15.0: the run list, `bide view` with no `-run`: every run in a journal with its kind, state and start time, filtered by state, kind and run ID ([#216](https://github.com/bide-ai/bide/pull/216), [#223](https://github.com/bide-ai/bide/pull/223)).
-- Done in v0.15.0: live mode, where the page of a run in progress, read from SQLite or Postgres, follows the run as records land ([#222](https://github.com/bide-ai/bide/pull/222)).
-- Done in v0.15.0: a risk map on `bide view -config` (each node colored by how it behaves on a crash, with its approval gate) and policy assertions in the config (`assert`), decided on the graph, a violation shown as a counterexample path and reported by `bide check` ([#222](https://github.com/bide-ai/bide/pull/222)).
-- Done in v0.15.0: a visual diff of two versions of a config, `bide check -diff`, with the digest change and a weakened approval gate called out (`-fail-on-weaken` for CI) ([#222](https://github.com/bide-ai/bide/pull/222)).
-- Next: a GitHub Action that posts a config diff on a pull request, and an HTML export of a page.
+- A GitHub Action that posts a config diff on a pull request, and an HTML export of a page.
 - Later: an editor that writes the config.
 
 ## Later: bide beyond Go
 
 ### The bide protocol
 
-A versioned wire protocol ([design](design/protocol.md), accepted; not implemented) that lets code in other languages use bide without reimplementing its guarantees. The Go engine stays the only writer of the journal, claims and proofs; other languages run tools and answer pauses. It supports long-lived workers and serverless functions, and comes with a conformance suite that every SDK must pass. Its claim rules are checked by a formal model (model 2). Implementation follows the engine hardening of the pre-1.0 redesign.
+A versioned wire protocol ([design](design/protocol.md), accepted; not implemented) that lets code in other languages use bide without reimplementing its guarantees. The Go engine stays the only writer of the journal, claims and proofs; other languages run tools and answer pauses. It supports long-lived workers and serverless functions, and comes with a conformance suite that every SDK must pass. Its claim rules are checked by a formal model (model 2).
 
 ### Python and TypeScript SDKs
 
-Thin SDKs over the bide protocol, so agents written in Python and TypeScript get the same guarantees the Go engine enforces, plus a pip-installable verifier (the counterpart of `bide audit`) so Python teams can verify bide proofs directly. They follow the engine hardening and the protocol's implementation.
+Thin SDKs over the bide protocol, so agents written in Python and TypeScript get the same guarantees the Go engine enforces, plus a pip-installable verifier (the counterpart of `bide audit`) so Python teams can verify bide proofs directly. They follow the protocol's implementation.
 
 ### Adapters for Python and TypeScript agent frameworks
 
