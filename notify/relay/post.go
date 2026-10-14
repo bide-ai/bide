@@ -150,6 +150,7 @@ type StatusError struct {
 	Body   string
 }
 
+// Error names the sink, the status and the start of the reply; never a URL.
 func (e *StatusError) Error() string {
 	if e.Body == "" {
 		return fmt.Sprintf("relay: %s answered HTTP %d", e.Sink, e.Status)
