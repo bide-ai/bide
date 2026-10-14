@@ -38,8 +38,8 @@ func TestUsageErrors(t *testing.T) {
 		if code != 2 || !strings.Contains(errOut, tc.want) || out != "" {
 			t.Errorf("%s: code %d, out %q, err %q", name, code, out, errOut)
 		}
-		if strings.Contains(errOut, "secret") && name == "a dsn as argument" && strings.Count(errOut, "secret") > 1 {
-			t.Errorf("%s: the argument is echoed more than once: %q", name, errOut)
+		if strings.Contains(errOut, "secret") {
+			t.Errorf("%s: the argument is echoed: %q", name, errOut)
 		}
 	}
 }

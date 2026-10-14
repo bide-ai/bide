@@ -25,7 +25,7 @@
 // pinned. With WithSchema, the recommended deployment, the search path plays no part. Without it,
 // every Open discovers the schema: the first schema on the search path holding a relation named
 // governed_events, or the first schema on the path when none does yet (see logSchema); it refuses
-// a first relation of that name that is not an ordinary or partitioned table, migrates a legacy
+// a first relation of that name that is not an ordinary table, with no partitions or inheritance, migrates a legacy
 // table in a later schema in place, and logs a warning. Discovery runs again at every Open, so a
 // role that can create a schema earlier on the path (any role with CREATE on the database can
 // create the "$user" schema the default search path puts first) can redirect a restarting
@@ -383,7 +383,7 @@ const nextSeqFunction = "governed_events_next_seq_v1"
 
 // logSchema returns, for the relation name governed_events: the schema of the first relation of
 // that name on the search path, as an unqualified governed_events resolves (NULL when there is
-// none); whether that relation is an ordinary or partitioned table; and current_schema(), where
+// none); whether that relation is an ordinary table; and current_schema(), where
 // the migration creates the table when there is none. newLog records the schema, and refuses a
 // first relation that is not a table (a view, a foreign table, a sequence): appends would go
 // through it while Open checked another table.
@@ -391,7 +391,7 @@ const logSchema = `SELECT
 	(SELECT n.nspname FROM pg_catalog.pg_class AS c JOIN pg_catalog.pg_namespace AS n ON n.oid OPERATOR(pg_catalog.=) c.relnamespace
 		WHERE c.relname OPERATOR(pg_catalog.=) 'governed_events' AND n.nspname OPERATOR(pg_catalog.=) ANY (pg_catalog.current_schemas(false))
 		ORDER BY pg_catalog.array_position(pg_catalog.current_schemas(false), n.nspname) LIMIT 1),
-	(SELECT c.relkind OPERATOR(pg_catalog.=) 'r' OR c.relkind OPERATOR(pg_catalog.=) 'p' FROM pg_catalog.pg_class AS c JOIN pg_catalog.pg_namespace AS n ON n.oid OPERATOR(pg_catalog.=) c.relnamespace
+	(SELECT c.relkind OPERATOR(pg_catalog.=) 'r' FROM pg_catalog.pg_class AS c JOIN pg_catalog.pg_namespace AS n ON n.oid OPERATOR(pg_catalog.=) c.relnamespace
 		WHERE c.relname OPERATOR(pg_catalog.=) 'governed_events' AND n.nspname OPERATOR(pg_catalog.=) ANY (pg_catalog.current_schemas(false))
 		ORDER BY pg_catalog.array_position(pg_catalog.current_schemas(false), n.nspname) LIMIT 1),
 	pg_catalog.current_schema()`
@@ -449,13 +449,13 @@ func nextSeqBody(schema string) string {
 // checked here.
 func (l *Log) checkSchema(ctx context.Context) error {
 	schema := l.schema
-	if err := l.checkTable(ctx, "governed_events", eventsColumns); err != nil {
+	if err := l.checkTable(ctx, "governed_events", eventsSpec); err != nil {
 		return err
 	}
 	if _, _, haveVersion, err := schemaCurrent(ctx, l.db, schema); err != nil {
 		return err
 	} else if haveVersion { // a log from before the version table is version 1 and has none
-		if err := l.checkTable(ctx, versionTable, versionColumns); err != nil {
+		if err := l.checkTable(ctx, versionTable, versionSpec); err != nil {
 			return err
 		}
 	}

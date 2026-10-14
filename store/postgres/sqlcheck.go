@@ -56,7 +56,7 @@ var (
 		"pg_catalog.strpos": true,
 		// the catalog reads in checkSchema and storeSchema
 		"pg_catalog.array_agg": true, "pg_catalog.unnest": true, "pg_catalog.current_schema": true,
-		"pg_catalog.current_schemas": true, "pg_catalog.array_position": true, "pg_catalog.format_type": true,
+		"pg_catalog.current_schemas": true, "pg_catalog.array_position": true, "pg_catalog.format_type": true, "pg_catalog.pg_get_constraintdef": true,
 	}
 	// sqlListWords are the keywords the store's statements follow with a parenthesized list or
 	// subquery. None can name a function: VALUES, ANY, FROM, WHERE, SELECT, ON, AND, OR and NOT

@@ -80,7 +80,8 @@ error.
 	}
 	switch {
 	case fs.NArg() > 0:
-		return usage(fmt.Sprintf("unexpected argument %q (the DSN is never an argument: set -postgres-env)", fs.Arg(0)))
+		// not echoed: a stray argument may be a DSN with a password
+		return usage("unexpected argument (the DSN is never an argument: set -postgres-env)")
 	case *pgEnv == "":
 		return usage("-postgres-env is required: the name of the environment variable holding the DSN")
 	case *schema == "":

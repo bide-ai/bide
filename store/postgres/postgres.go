@@ -73,7 +73,7 @@
 // given and the search path plays no part. Without it, every Open discovers the schema: the first
 // schema on the search path holding a relation named like the steps table, or the first schema on
 // the path (current_schema()), where the migration creates the tables, when none does; it refuses
-// a first relation of that name that is not an ordinary or partitioned table, and logs a warning.
+// a first relation of that name that is not an ordinary table, with no partitions or inheritance, and logs a warning.
 // Discovery runs again at every Open, so a role that can create a schema earlier on the path can
 // redirect a restarting node to a store of its own: any role with CREATE on the database can
 // create the "$user" schema the default search path puts first. Discovery is safe only when every
@@ -575,7 +575,7 @@ func prepare(ctx context.Context, db *sql.DB, cfg config) (*Store, error) {
 // names from then on: the first schema on the search path holding a relation named steps (the
 // steps table, as an unqualified name would resolve), or the first schema on the path, where the
 // migration creates the tables, when none does. It refuses, with ErrConfig, a first relation of
-// that name that is not an ordinary or partitioned table (a view, a foreign table, a sequence):
+// that name that is not an ordinary table, with no partitions or inheritance (a view, a foreign table, a sequence):
 // the store would read and write through it while checking another table.
 func storeSchema(ctx context.Context, db *sql.DB, steps string) (string, error) {
 	var first, current sql.NullString
@@ -607,14 +607,14 @@ func retryScan(ctx context.Context, fn func() error) error {
 }
 
 // firstRelation returns, for the relation name $1: the schema of the first relation of that name
-// on the search path (NULL when there is none); whether that relation is an ordinary or
-// partitioned table; and current_schema(), where the migration creates the tables when there is
+// on the search path (NULL when there is none); whether that relation is an ordinary
+// table; and current_schema(), where the migration creates the tables when there is
 // none.
 const firstRelation = `SELECT
 	(SELECT n.nspname FROM pg_catalog.pg_class AS c JOIN pg_catalog.pg_namespace AS n ON n.oid OPERATOR(pg_catalog.=) c.relnamespace
 		WHERE c.relname OPERATOR(pg_catalog.=) $1 AND n.nspname OPERATOR(pg_catalog.=) ANY (pg_catalog.current_schemas(false))
 		ORDER BY pg_catalog.array_position(pg_catalog.current_schemas(false), n.nspname) LIMIT 1),
-	(SELECT c.relkind OPERATOR(pg_catalog.=) 'r' OR c.relkind OPERATOR(pg_catalog.=) 'p'
+	(SELECT c.relkind OPERATOR(pg_catalog.=) 'r'
 		FROM pg_catalog.pg_class AS c JOIN pg_catalog.pg_namespace AS n ON n.oid OPERATOR(pg_catalog.=) c.relnamespace
 		WHERE c.relname OPERATOR(pg_catalog.=) $1 AND n.nspname OPERATOR(pg_catalog.=) ANY (pg_catalog.current_schemas(false))
 		ORDER BY pg_catalog.array_position(pg_catalog.current_schemas(false), n.nspname) LIMIT 1),
@@ -788,13 +788,13 @@ func (s *Store) checkSchema(ctx context.Context) error {
 			return fmt.Errorf("postgres: check %s: %w (%w)", table, err, agent.ErrStorage)
 		}
 		if !isTable.Bool {
-			return fmt.Errorf("postgres: %s.%s is not an ordinary or partitioned table: %w", quoteIdent(s.schema), table, agent.ErrConfig)
+			return fmt.Errorf("postgres: %s.%s is not an ordinary table, with no partitions or inheritance: %w", quoteIdent(s.schema), table, agent.ErrConfig)
 		}
 	}
 	for _, c := range []struct {
 		table string
-		cols  []column
-	}{{s.t.steps, stepsColumns}, {s.t.leases, leasesColumns}, {s.t.version, versionColumns}} {
+		cols  tableSpec
+	}{{s.t.steps, stepsSpec}, {s.t.leases, leasesSpec}, {s.t.version, versionSpec}} {
 		if err := s.checkTable(ctx, c.table, c.cols); err != nil {
 			return err
 		}
@@ -840,9 +840,9 @@ func (s *Store) checkEvents(ctx context.Context) error {
 		return fmt.Errorf("postgres: check %s: %w (%w)", s.t.events, err, agent.ErrStorage)
 	}
 	if !isTable.Bool {
-		return fmt.Errorf("postgres: %s.%s is not an ordinary or partitioned table: %w", quoteIdent(s.schema), s.t.events, agent.ErrConfig)
+		return fmt.Errorf("postgres: %s.%s is not an ordinary table, with no partitions or inheritance: %w", quoteIdent(s.schema), s.t.events, agent.ErrConfig)
 	}
-	if err := s.checkTable(ctx, s.t.events, eventsColumns); err != nil {
+	if err := s.checkTable(ctx, s.t.events, eventsSpec); err != nil {
 		return err
 	}
 	var ok bool
@@ -876,9 +876,9 @@ const requiredUnique = `SELECT EXISTS (SELECT 1 FROM pg_catalog.pg_index AS i
 				JOIN pg_catalog.pg_attribute AS a ON a.attrelid OPERATOR(pg_catalog.=) i.indrelid AND a.attnum OPERATOR(pg_catalog.=) k)
 			OPERATOR(pg_catalog.=) (SELECT pg_catalog.array_agg(c ORDER BY c) FROM pg_catalog.unnest($3::pg_catalog.text[]) AS c))`
 
-// relationIsTable returns whether the relation $1 in schema $2 is an ordinary or partitioned
+// relationIsTable returns whether the relation $1 in schema $2 is an ordinary
 // table, and no row when there is no such relation.
-const relationIsTable = `SELECT c.relkind OPERATOR(pg_catalog.=) 'r' OR c.relkind OPERATOR(pg_catalog.=) 'p'
+const relationIsTable = `SELECT c.relkind OPERATOR(pg_catalog.=) 'r'
 	FROM pg_catalog.pg_class AS c
 	WHERE c.relname OPERATOR(pg_catalog.=) $1
 		AND c.relnamespace OPERATOR(pg_catalog.=) (SELECT n.oid FROM pg_catalog.pg_namespace AS n WHERE n.nspname OPERATOR(pg_catalog.=) $2)`

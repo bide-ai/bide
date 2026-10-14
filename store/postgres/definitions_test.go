@@ -47,7 +47,27 @@ func TestDefinitionsAreChecked(t *testing.T) {
 		{"lease index on the wrong column", []string{`DROP INDEX S.bide_leases_expiry`, `CREATE INDEX bide_leases_expiry ON S.bide_leases (holder)`}, "is not the one the migration creates"},
 		{"lease index in the wrong collation", []string{`DROP INDEX S.bide_leases_run_c`, `CREATE INDEX bide_leases_run_c ON S.bide_leases (run_id)`}, "is not the one the migration creates"},
 		{"lease index partial", []string{`DROP INDEX S.bide_leases_expiry`, `CREATE INDEX bide_leases_expiry ON S.bide_leases (expiry) WHERE holder <> ''`}, "is not the one the migration creates"},
-		{"lease index unique", []string{`DROP INDEX S.bide_leases_expiry`, `CREATE UNIQUE INDEX bide_leases_expiry ON S.bide_leases (expiry)`}, "is not the one the migration creates"},
+		{"lease index unique", []string{`DROP INDEX S.bide_leases_expiry`, `CREATE UNIQUE INDEX bide_leases_expiry ON S.bide_leases (expiry)`}, "unique index on (expiry)"},
+		{"seq identity always", []string{`ALTER TABLE S.bide_steps ALTER COLUMN seq ADD GENERATED ALWAYS AS IDENTITY`}, "identity"},
+		{"data generated", []string{`ALTER TABLE S.bide_steps DROP COLUMN data`, `ALTER TABLE S.bide_steps ADD COLUMN data bytea GENERATED ALWAYS AS ('\x00'::bytea) STORED NOT NULL`}, "generated"},
+		{"check constraint on data", []string{`ALTER TABLE S.bide_steps ADD CONSTRAINT c CHECK (length(data) < 3)`}, "constraint CHECK"},
+		{"exclusion constraint", []string{`ALTER TABLE S.bide_leases ADD CONSTRAINT x EXCLUDE (holder WITH =)`}, "constraint EXCLUDE"},
+		{"foreign key", []string{`ALTER TABLE S.bide_events ADD CONSTRAINT f FOREIGN KEY (run_id, seq) REFERENCES S.bide_events (run_id, seq)`}, "constraint FOREIGN KEY"},
+		{"extra unique index", []string{`CREATE UNIQUE INDEX u ON S.bide_steps (data)`}, "unique index on (data)"},
+		{"unique index on an expression", []string{`CREATE UNIQUE INDEX u ON S.bide_leases (lower(holder))`}, "unique index"},
+		{"partial unique index", []string{`CREATE UNIQUE INDEX u ON S.bide_events (leaf) WHERE seq > 5`}, "unique index on (leaf)"},
+		{"partitioned steps with a trigger on the partition", []string{
+			`DROP TABLE S.bide_steps`,
+			`CREATE TABLE S.bide_steps (run_id text COLLATE "C" NOT NULL, seq int8 NOT NULL, name text NOT NULL, data bytea NOT NULL, UNIQUE (run_id, seq), UNIQUE (run_id, name)) PARTITION BY HASH (run_id)`,
+			`CREATE TABLE S.bide_steps_p0 PARTITION OF S.bide_steps FOR VALUES WITH (MODULUS 1, REMAINDER 0)`,
+			`CREATE FUNCTION S.evil() RETURNS trigger LANGUAGE plpgsql AS $x$ BEGIN NEW.data := '\x00'; RETURN NEW; END $x$`,
+			`CREATE TRIGGER evil BEFORE INSERT ON S.bide_steps_p0 FOR EACH ROW EXECUTE FUNCTION S.evil()`}, "ordinary table"},
+		{"partitioned events", []string{
+			`DROP TABLE S.bide_events`,
+			`CREATE TABLE S.bide_events (run_id text COLLATE "C" NOT NULL, seq int8 NOT NULL CHECK (seq >= 0), leaf bytea NOT NULL, PRIMARY KEY (run_id, seq)) PARTITION BY HASH (run_id)`,
+			`CREATE TABLE S.bide_events_p0 PARTITION OF S.bide_events FOR VALUES WITH (MODULUS 1, REMAINDER 0)`}, "ordinary table"},
+		{"inheritance child of steps", []string{`CREATE TABLE S.bide_steps_child () INHERITS (S.bide_steps)`}, "partition or inheritance"},
+		{"leases inherits another table", []string{`CREATE TABLE S.parent (run_id text NOT NULL)`, `ALTER TABLE S.bide_leases INHERIT S.parent`}, "partition or inheritance"},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {

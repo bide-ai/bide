@@ -36,15 +36,15 @@ s, err := postgres.Open(ctx, appDSN, postgres.WithSchema("bide"), postgres.Witho
 
 Exactly what `WithoutMigration`, `Open`, `OpenReadOnly` (for the tables) and `Migrate` (after migrating) check, because the migration never alters an existing table and so cannot repair any of it:
 
-- each of the four tables exists and is an ordinary or partitioned table;
-- each has the migration's columns by name, type and `NOT NULL` (`bide_steps`: `run_id text`, `seq bigint`, `name text`, `data bytea`; `bide_leases`: `run_id`, `holder` as `text`, `expiry timestamptz`; `bide_events`: `run_id text`, `seq bigint`, `leaf bytea`; `bide_schema_version`: `id`, `version` as `integer`), none of the `text` columns with a nondeterministic collation (under which different bytes could be one key), and any extra column nullable or with a default so the store's inserts still work. The collation itself is not pinned to `"C"`: a table from v0.7.0 has the default collation and works, because the Lister's queries name `"C"` themselves;
-- the unique indexes the statements arbitrate on, checked at once and covering every row;
-- no trigger of its own, rule or row-level security on any of the four tables (a trigger could rewrite or drop what the store writes; for auditing use pgaudit or a separate table);
+- each of the four tables exists and is an ordinary table, with no partitions or inheritance;
+- each has the migration's columns by name, type and `NOT NULL` (`bide_steps`: `run_id text`, `seq bigint`, `name text`, `data bytea`; `bide_leases`: `run_id`, `holder` as `text`, `expiry timestamptz`; `bide_events`: `run_id text`, `seq bigint`, `leaf bytea`; `bide_schema_version`: `id`, `version` as `integer`), none generated or an identity column, none of the `text` columns with a nondeterministic collation (under which different bytes could be one key), and any extra column nullable or with a default so the store's inserts still work. The collation itself is not pinned to `"C"`: a table from v0.7.0 has the default collation and works, because the Lister's queries name `"C"` themselves;
+- the unique indexes the statements arbitrate on, checked at once and covering every row, and no other unique index (partial or on an expression, or on other columns), no `CHECK` constraint besides the two the migration creates (`seq >= 0` on events, `id = 1` on the version table), and no `EXCLUDE` or foreign-key constraint;
+- no trigger of its own, rule, row-level security, partition or inheritance on any of the four tables, each of which must be an ordinary table (a partition's trigger, or an inheriting child's rows outside the parent's unique indexes, would escape the other checks; a trigger could rewrite or drop what the store writes; for auditing use pgaudit or a separate table);
 - `bide_next_seq_v1` is the function this version creates, owned by the steps table's owner;
 - the two lease indexes are valid, plain (non-unique, non-partial) btree indexes on the leases table with the expected key and collation, so a table or foreign index holding the name is refused;
 - the schema version is this package's.
 
-It does not check check constraints, privileges, partitioning details, table or index storage options, or the contents of the tables.
+It does not check privileges, partitioning details, table or index storage options, or the contents of the tables.
 
 The migration never alters or drops an existing table and never replaces a function, and `Migrate` is idempotent: on a current schema it creates nothing. After you upgrade bide, run `Migrate` (or `bide migrate`) as the owner before starting the new version; a service on `WithoutMigration` then finds the schema it expects, or stops with the error above instead of running on a schema it did not check.
 

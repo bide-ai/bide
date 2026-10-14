@@ -43,6 +43,18 @@ func TestDefinitionsAreChecked(t *testing.T) {
 			`CREATE TRIGGER evil BEFORE INSERT ON S.governed_events FOR EACH ROW EXECUTE FUNCTION S.evil()`}, "a trigger"},
 		{"rule", []string{`CREATE RULE hide AS ON INSERT TO S.governed_events DO INSTEAD NOTHING`}, "a rule"},
 		{"row-level security", []string{`ALTER TABLE S.governed_events ENABLE ROW LEVEL SECURITY`}, "row-level security"},
+		{"seq identity always", []string{`ALTER TABLE S.governed_events ALTER COLUMN seq ADD GENERATED ALWAYS AS IDENTITY`}, "identity"},
+		{"event generated", []string{`ALTER TABLE S.governed_events DROP COLUMN event`, `ALTER TABLE S.governed_events ADD COLUMN event text GENERATED ALWAYS AS ('x') STORED NOT NULL`}, "generated"},
+		{"check constraint on event", []string{`ALTER TABLE S.governed_events ADD CONSTRAINT c CHECK (length(event) < 3)`}, "constraint CHECK"},
+		{"foreign key", []string{`ALTER TABLE S.governed_events ADD CONSTRAINT f FOREIGN KEY (entity, seq) REFERENCES S.governed_events (entity, seq)`}, "constraint FOREIGN KEY"},
+		{"extra unique index", []string{`CREATE UNIQUE INDEX u ON S.governed_events (event)`}, "unique index on (event)"},
+		{"partitioned with a trigger on the partition", []string{
+			`DROP TABLE S.governed_events`,
+			`CREATE TABLE S.governed_events (entity text NOT NULL, seq int8 NOT NULL, event text NOT NULL, append_id text, PRIMARY KEY (entity, seq), UNIQUE (entity, append_id)) PARTITION BY HASH (entity)`,
+			`CREATE TABLE S.governed_events_p0 PARTITION OF S.governed_events FOR VALUES WITH (MODULUS 1, REMAINDER 0)`,
+			`CREATE FUNCTION S.evil() RETURNS trigger LANGUAGE plpgsql AS $x$ BEGIN NEW.event := 'x'; RETURN NEW; END $x$`,
+			`CREATE TRIGGER evil BEFORE INSERT ON S.governed_events_p0 FOR EACH ROW EXECUTE FUNCTION S.evil()`}, "partition or inheritance|does not exist"}, // a partitioned table has no plain append_id index, so the unmigrated check says it is missing
+		{"inheritance child", []string{`CREATE TABLE S.governed_events_child () INHERITS (S.governed_events)`}, "partition or inheritance"},
 		{"version as bigint", []string{`ALTER TABLE S.governed_events_schema_version ALTER COLUMN version TYPE bigint`}, "has type bigint"},
 	}
 	for _, tc := range cases {
@@ -82,10 +94,20 @@ func TestDefinitionsAreChecked(t *testing.T) {
 					t.Errorf("%s refused an acceptable schema: %v", name, err)
 				case tc.want != "" && err == nil:
 					t.Errorf("%s accepted the schema", name)
-				case tc.want != "" && (!strings.Contains(err.Error(), tc.want) || !errors.Is(err, agent.ErrConfig)):
+				case tc.want != "" && (!containsAny(err.Error(), tc.want) || !errors.Is(err, agent.ErrConfig)):
 					t.Errorf("%s: %v, want an ErrConfig error containing %q", name, err, tc.want)
 				}
 			}
 		})
 	}
+}
+
+// containsAny reports whether s contains one of the "|"-separated alternatives in want.
+func containsAny(s, want string) bool {
+	for _, w := range strings.Split(want, "|") {
+		if strings.Contains(s, w) {
+			return true
+		}
+	}
+	return false
 }
