@@ -46,6 +46,7 @@ import (
 	"mime"
 	"net"
 	"net/http"
+	"net/netip"
 	"slices"
 	"strconv"
 	"strings"
@@ -103,7 +104,10 @@ type Pending struct {
 	DecisionFormat string          `json:"decision_format"`     // agent.DecisionFormat: the format a signature must be in
 	State          string          `json:"state"`               // StateWaiting, StateDecided or StateEnded
 	AskedAt        string          `json:"asked_at,omitempty"`  // when the run paused at the gate, by the run's clock
-	Gate           Gate            `json:"gate"`
+	// Reason says why the call waits again after a tally: agent.PendingReapproval or
+	// agent.PendingSoDReapproval. Empty on a call's first ask.
+	Reason string `json:"reason,omitempty"`
+	Gate   Gate   `json:"gate"`
 }
 
 // The states of a gated call (Pending.State).
@@ -155,11 +159,32 @@ type Recorded struct {
 
 // Access is what an authorization hook (WithAuth) is asked to allow.
 type Access struct {
+	// Phase says which call of the hook this is: PhaseRequest for the request's own, PhaseIdentity
+	// for the call a POST /decisions gets before its body is read.
+	Phase     Phase
 	Method    string // http.MethodGet or http.MethodPost
 	RunID     string
 	ToolUseID string
 	Approver  string // the approver a POST names; empty for a GET
 }
+
+// Phase is which call of the authorization hook (WithAuth) an Access belongs to.
+type Phase int
+
+const (
+	// PhaseRequest is the hook's call with everything the request asks for: the method, and for a
+	// call, a decision or a page the run, call and approver it names. A GET makes this call only.
+	// It is the zero value, so a hook that ignores Phase sees full requests as before.
+	PhaseRequest Phase = iota
+	// PhaseIdentity is the call a POST /decisions gets first, before its body is read: RunID,
+	// ToolUseID and Approver are empty, and the hook must only authenticate (who is this, from the
+	// headers and the connection: a bearer token, a client certificate), never decide on what the
+	// request asks for, which it does not yet know. It is refused here without the body being read.
+	// The hook is called again with PhaseRequest once the body is parsed, so it must be idempotent:
+	// the same request makes both calls, and a hook that counts or consumes anything per call
+	// counts a decision twice.
+	PhaseIdentity
+)
 
 var (
 	// ErrUnauthenticated is what a WithAuth hook returns for a request with no valid credentials:
@@ -428,18 +453,41 @@ func (h *Handler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	h.mux.ServeHTTP(w, r)
 }
 
+// remoteHost is the default client key: the host of r.RemoteAddr, except that an IPv6 address stands
+// for its /64 (the unit an operator assigns to one host or site, so a client with a /64 of addresses
+// is one client, not 2^64 of them), and an IPv4 address mapped into IPv6 is the IPv4 address.
 func remoteHost(r *http.Request) string {
 	host, _, err := net.SplitHostPort(r.RemoteAddr)
 	if err != nil {
 		return r.RemoteAddr
 	}
-	return host
+	addr, err := netip.ParseAddr(host)
+	if err != nil {
+		return host
+	}
+	addr = addr.Unmap()
+	if addr.Is6() {
+		if p, err := addr.Prefix(64); err == nil {
+			return p.String()
+		}
+	}
+	return addr.String()
+}
+
+// refuseEarly is called before a response that is sent without the request's body having been read.
+// net/http reads up to 256 KiB of an unread body before it sends a response, which a client that
+// stalls while sending would hold open for as long as the server's own read timeout allows (forever
+// for a server with none). A read deadline that has already passed ends that read at once, so the
+// refusal goes out immediately. It is harmless when the body has been read, or the request has none.
+func refuseEarly(w http.ResponseWriter) {
+	_ = http.NewResponseController(w).SetReadDeadline(time.Now())
 }
 
 // guard rate limits a request before it is read.
 func (h *Handler) guard(next func(http.ResponseWriter, *http.Request)) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
 		if ok, wait := h.lim.take(h.clientKey(r)); !ok {
+			refuseEarly(w)
 			w.Header().Set("Retry-After", strconv.Itoa(max(1, int((wait+time.Second-1)/time.Second))))
 			writeError(w, http.StatusTooManyRequests, "rate_limited", "too many requests; retry later")
 			return
@@ -454,6 +502,7 @@ func (h *Handler) work(w http.ResponseWriter) (release func(), ok bool) {
 	case h.sem <- struct{}{}:
 		return func() { <-h.sem }, true
 	default:
+		refuseEarly(w)
 		w.Header().Set("Retry-After", "1")
 		writeError(w, http.StatusServiceUnavailable, "busy", "too many requests in progress; retry later")
 		return nil, false
@@ -462,11 +511,11 @@ func (h *Handler) work(w http.ResponseWriter) (release func(), ok bool) {
 
 // reader takes a slot of the read pool for client, or answers 503 (the pool is full) or 429 (the
 // client holds its share of it).
-func (h *Handler) reader(w http.ResponseWriter, client string, onRefuse func()) (release func(), ok bool) {
+func (h *Handler) reader(w http.ResponseWriter, client string) (release func(), ok bool) {
 	h.readMu.Lock()
 	if h.readBy[client] >= h.maxPerClient {
 		h.readMu.Unlock()
-		onRefuse()
+		refuseEarly(w)
 		w.Header().Set("Retry-After", "1")
 		writeError(w, http.StatusTooManyRequests, "rate_limited", "too many request bodies from this client in progress; retry later")
 		return nil, false
@@ -475,7 +524,7 @@ func (h *Handler) reader(w http.ResponseWriter, client string, onRefuse func()) 
 	case h.readSem <- struct{}{}:
 	default:
 		h.readMu.Unlock()
-		onRefuse()
+		refuseEarly(w)
 		w.Header().Set("Retry-After", "1")
 		writeError(w, http.StatusServiceUnavailable, "busy", "too many request bodies in progress; retry later")
 		return nil, false
@@ -493,15 +542,13 @@ func (h *Handler) reader(w http.ResponseWriter, client string, onRefuse func()) 
 }
 
 // authorize runs the hook, if any, and answers a refusal.
-func (h *Handler) authorize(w http.ResponseWriter, r *http.Request, a Access, onRefuse ...func()) bool {
+func (h *Handler) authorize(w http.ResponseWriter, r *http.Request, a Access) bool {
 	if h.auth == nil {
 		return true
 	}
 	err := h.auth(r, a)
 	if err != nil {
-		for _, f := range onRefuse {
-			f()
-		}
+		refuseEarly(w)
 	}
 	switch {
 	case err == nil:
@@ -570,6 +617,28 @@ func (h *Handler) load(ctx context.Context, run, call string) (*gateRecords, err
 	return nil, errNoGate
 }
 
+// recordedOutcome is the gate's recorded terminal tally, when it is one the gate would act on. A tally
+// that passed on decisions signed before the current format (agent.PendingReapproval), or without
+// excluding the requester under a policy that now excludes it (agent.PendingSoDReapproval), is not
+// an outcome: the gate asks again when the run resumes, so the call is still waiting. reask names
+// why in that case.
+func recordedOutcome(g *gateRecords, byName map[string]agent.Record) (t agent.ApprovalTally, ok bool, reask string) {
+	rec, found := agent.RecordedTally(byName, g.subject.ToolUseID)
+	if !found {
+		return t, false, ""
+	}
+	if json.Unmarshal(rec.Result, &t) != nil {
+		return t, true, "" // a tally the gate cannot read is the gate's to refuse
+	}
+	switch {
+	case t.Passed() && t.DecisionFormat != agent.DecisionFormat:
+		return t, false, agent.PendingReapproval
+	case t.Passed() && !t.ExcludePrincipal && g.wait.ExcludePrincipal:
+		return t, false, agent.PendingSoDReapproval
+	}
+	return t, true, ""
+}
+
 // state says whether the gate takes decisions: the call has a result or the gate a recorded
 // tally (decided), or the run ended.
 func (h *Handler) state(ctx context.Context, g *gateRecords) (string, error) {
@@ -580,7 +649,7 @@ func (h *Handler) state(ctx context.Context, g *gateRecords) (string, error) {
 			return StateDecided, nil
 		}
 	}
-	if _, ok := agent.RecordedTally(byName, g.subject.ToolUseID); ok {
+	if _, ok, _ := recordedOutcome(g, byName); ok {
 		return StateDecided, nil
 	}
 	st, err := agent.Status(ctx, h.j, g.subject.RunID)
@@ -611,11 +680,8 @@ func (h *Handler) gateChecks(g *gateRecords) (Gate, []agent.DecisionCheck) {
 		byName[r.Name] = r
 	}
 	settled := false
-	if rec, ok := agent.RecordedTally(byName, g.subject.ToolUseID); ok {
-		var rt agent.ApprovalTally
-		if json.Unmarshal(rec.Result, &rt) == nil && rt.DecisionFormat == agent.DecisionFormat {
-			t, settled = rt, true
-		}
+	if rt, ok, _ := recordedOutcome(g, byName); ok && rt.DecisionFormat == agent.DecisionFormat {
+		t, settled = rt, true
 	}
 	out := Gate{Need: t.Need, Approvers: slices.Clone(t.Approvers), Approved: t.Approved, Denied: t.Denied,
 		Pending: slices.Clone(t.Pending), Excluded: slices.Clone(t.Excluded), Passed: t.Passed(), Failed: t.Unreachable()}
@@ -672,6 +738,13 @@ func (h *Handler) pending(w http.ResponseWriter, r *http.Request) {
 	}
 	p := Pending{Run: run, Call: call, Tool: g.subject.ToolName, ArgsSHA256: audit.ApprovalArgsDigest(g.subject),
 		DecisionFormat: agent.DecisionFormat, State: st, AskedAt: g.wait.RecordedAt, Gate: h.gate(g)}
+	if st == StateWaiting {
+		byName := make(map[string]agent.Record, len(g.recs))
+		for _, r := range g.recs {
+			byName[r.Name] = r
+		}
+		_, _, p.Reason = recordedOutcome(g, byName)
+	}
 	switch args := g.subject.Args; {
 	case len(args) == 0:
 		p.Args = json.RawMessage(`{}`)
@@ -695,12 +768,8 @@ func (h *Handler) fail(w http.ResponseWriter, err error) {
 }
 
 func (h *Handler) decide(w http.ResponseWriter, r *http.Request) {
-	// A refusal before the body is read must not wait for it: net/http reads up to 256 KiB of an
-	// unread body before it sends the response, which a stalled client would hold open for as long as
-	// the server's own read timeout allows. A deadline already passed ends that read at once.
-	dropBody := func() { _ = http.NewResponseController(w).SetReadDeadline(time.Now()) }
 	if mt, _, err := mime.ParseMediaType(r.Header.Get("Content-Type")); err != nil || mt != "application/json" {
-		dropBody()
+		refuseEarly(w)
 		writeError(w, http.StatusUnsupportedMediaType, "unsupported_media_type", "send application/json")
 		return
 	}
@@ -708,10 +777,10 @@ func (h *Handler) decide(w http.ResponseWriter, r *http.Request) {
 	// first with the method only), so an unauthenticated client holds nothing while it stalls. The
 	// body is then read in the read pool, under a deadline, and only after it is parsed does the
 	// request take a slot for work on the journal.
-	if !h.authorize(w, r, Access{Method: r.Method}, dropBody) {
+	if !h.authorize(w, r, Access{Phase: PhaseIdentity, Method: r.Method}) {
 		return
 	}
-	releaseRead, ok := h.reader(w, h.clientKey(r), dropBody)
+	releaseRead, ok := h.reader(w, h.clientKey(r))
 	if !ok {
 		return
 	}

@@ -104,3 +104,31 @@ func TestGates_PreV3TallyWaits(t *testing.T) {
 		t.Fatalf("gates after the call ran = %+v", g)
 	}
 }
+
+// TestGates_SoDReaskWaits: a gate whose recorded tally passed without excluding the requester, under
+// a policy that now excludes it, asks again when the run resumes (agent.PendingSoDReapproval): it is
+// waiting, not tallied, and the requester's decision does not count toward the new count. Once the
+// call has run, the tally is shown as it was.
+func TestGates_SoDReaskWaits(t *testing.T) {
+	old, _ := json.Marshal(agent.ApprovalTally{Need: 2, Approvers: []string{"alice", "bob", "carol"}, Approved: 2, ApprovedBy: []string{"alice", "bob"}, DecisionFormat: agent.DecisionFormat})
+	wait, _ := json.Marshal(agent.ApprovalWait{ToolUseID: "c1", ToolName: "refund", Need: 2, Approvers: []string{"alice", "bob", "carol"}, ExcludePrincipal: true, Requesters: []string{"alice"}})
+	sig := func(who string) *agent.ApproverSignature {
+		return &agent.ApproverSignature{Approver: who, ApproverAlg: "ed25519", Signature: []byte(who), DecidedAt: "2026-10-13T12:00:01.000Z"}
+	}
+	recs := []agent.Record{
+		{Name: agent.ApprovalPendingStep("c1"), Kind: agent.StepValue, Result: wait},
+		{Name: "approval:c1:alice:1", Kind: agent.StepApproval, ToolUseID: "c1", Approved: true, ApproverSignature: sig("alice")},
+		{Name: "approval:c1:bob:1", Kind: agent.StepApproval, ToolUseID: "c1", Approved: true, ApproverSignature: sig("bob")},
+		{Name: agent.ApprovalTallyStep("c1"), Kind: agent.StepValue, Result: old},
+	}
+	calls := map[string]agent.ToolUse{"c1": {ID: "c1", Name: "refund"}}
+	g := gates(recs, calls, []string{"c1"})
+	if len(g) != 1 || !g[0].Reapproval || !g[0].Waiting || g[0].Tallied || !slices.Equal(g[0].ApprovedBy, []string{"bob"}) || !slices.Equal(g[0].Excluded, []string{"alice"}) ||
+		!strings.HasPrefix(g[0].Status, "approval re-required") {
+		t.Fatalf("gates = %+v", g)
+	}
+	recs = append(recs, agent.Record{Name: "tool:c1", Kind: agent.StepToolResult, ToolUseID: "c1", Result: []byte(`"ok"`)})
+	if g = gates(recs, calls, []string{"c1"}); len(g) != 1 || g[0].Reapproval || !g[0].Tallied || g[0].Waiting {
+		t.Fatalf("gates after the call ran = %+v", g)
+	}
+}

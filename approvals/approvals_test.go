@@ -11,6 +11,7 @@ import (
 	"net"
 	"net/http"
 	"net/http/httptest"
+	"slices"
 	"strings"
 	"sync"
 	"testing"
@@ -899,5 +900,161 @@ func TestDecision_TwoHandlersOneStore(t *testing.T) {
 			t.Fatalf("iteration %d: %d responses say recorded (want 1), %d hooks (want 1)", i, n, hooks)
 		}
 		mu.Unlock()
+	}
+}
+
+// Every refusal sent before the body is read ends the unread body's read at once, so a stalled client
+// holds nothing: a rate-limited POST, a POST of the wrong content type, and one the hook refuses are
+// each answered immediately.
+func TestDecision_EarlyRefusalsDoNotWaitForTheBody(t *testing.T) {
+	stalled := func(t *testing.T, r *rig, ctype string) string {
+		t.Helper()
+		c, err := net.Dial("tcp", r.srv.Listener.Addr().String())
+		if err != nil {
+			t.Fatal(err)
+		}
+		defer c.Close()
+		c.Write([]byte("POST /decisions HTTP/1.1\r\nHost: x\r\nContent-Type: " + ctype + "\r\nContent-Length: 4000\r\n\r\n{"))
+		c.SetReadDeadline(time.Now().Add(2 * time.Second))
+		line, err := bufio.NewReader(c).ReadString('\n')
+		if err != nil {
+			t.Fatalf("no answer within 2s while the body stalls: %v", err)
+		}
+		return line
+	}
+	t.Run("rate limited", func(t *testing.T) {
+		r := newRig(t, approvals.WithRateLimit(0.001, 1), approvals.WithGlobalRateLimit(0, 0))
+		if status, _ := r.get("/pending?run=" + runID + "&call=c1"); status != 200 {
+			t.Fatalf("setup: %d", status)
+		}
+		if line := stalled(t, r, "application/json"); !strings.Contains(line, "429") {
+			t.Fatalf("%q", line)
+		}
+	})
+	t.Run("globally rate limited", func(t *testing.T) {
+		r := newRig(t, approvals.WithRateLimit(0, 0), approvals.WithGlobalRateLimit(0.001, 1))
+		if status, _ := r.get("/pending?run=" + runID + "&call=c1"); status != 200 {
+			t.Fatalf("setup: %d", status)
+		}
+		if line := stalled(t, r, "application/json"); !strings.Contains(line, "429") {
+			t.Fatalf("%q", line)
+		}
+	})
+	t.Run("wrong content type", func(t *testing.T) {
+		r := newRig(t, approvals.WithRateLimit(0, 0), approvals.WithGlobalRateLimit(0, 0))
+		if line := stalled(t, r, "text/plain"); !strings.Contains(line, "415") {
+			t.Fatalf("%q", line)
+		}
+	})
+	t.Run("refused by the hook", func(t *testing.T) {
+		r := newRig(t, approvals.WithRateLimit(0, 0), approvals.WithGlobalRateLimit(0, 0),
+			approvals.WithAuth(func(*http.Request, approvals.Access) error { return approvals.ErrForbidden }))
+		if line := stalled(t, r, "application/json"); !strings.Contains(line, "403") {
+			t.Fatalf("%q", line)
+		}
+	})
+	t.Run("read pool full", func(t *testing.T) {
+		r := newRig(t, approvals.WithMaxReaders(1, 1), approvals.WithReadTimeout(3*time.Second), approvals.WithRateLimit(0, 0), approvals.WithGlobalRateLimit(0, 0))
+		hold, err := net.Dial("tcp", r.srv.Listener.Addr().String())
+		if err != nil {
+			t.Fatal(err)
+		}
+		defer hold.Close()
+		hold.Write([]byte("POST /decisions HTTP/1.1\r\nHost: x\r\nContent-Type: application/json\r\nContent-Length: 4000\r\n\r\n{"))
+		time.Sleep(150 * time.Millisecond)
+		if line := stalled(t, r, "application/json"); !strings.Contains(line, "429") && !strings.Contains(line, "503") {
+			t.Fatalf("%q", line)
+		}
+	})
+}
+
+// The hook is told which of its two calls this is: the first, before the body, has no ids and only
+// authenticates; the second carries the decision's. A hook that binds the approver to the
+// credential (a client certificate, here a header) enforces the binding in the second only, and a
+// hook with state sees each phase once per request.
+func TestAuth_PhasesAreExplicit(t *testing.T) {
+	var mu sync.Mutex
+	var seen []approvals.Access
+	r := newRig(t, approvals.WithRateLimit(0, 0), approvals.WithGlobalRateLimit(0, 0), approvals.WithOnError(func(err error) { t.Log(err) }),
+		approvals.WithAuth(func(req *http.Request, a approvals.Access) error {
+			mu.Lock()
+			seen = append(seen, a)
+			mu.Unlock()
+			who := req.Header.Get("X-Cert-Subject") // stands for a verified client certificate
+			if who == "" {
+				return approvals.ErrUnauthenticated
+			}
+			if a.Phase == approvals.PhaseIdentity {
+				if a.RunID != "" || a.ToolUseID != "" || a.Approver != "" {
+					t.Errorf("the identity phase carries ids: %+v", a)
+				}
+				return nil
+			}
+			if a.Method == http.MethodPost && who != a.Approver {
+				return approvals.ErrForbidden // a certificate binds one approver
+			}
+			return nil
+		}))
+	b, _ := json.Marshal(r.decision("alice", true))
+	if status, _ := r.postRaw(b, "application/json"); status != 401 {
+		t.Fatalf("no certificate: %d", status)
+	}
+	if status, _ := r.postRaw(b, "application/json", "X-Cert-Subject", "bob"); status != 403 {
+		t.Fatalf("bob's certificate on alice's decision: %d", status)
+	}
+	if status, out := r.postRaw(b, "application/json", "X-Cert-Subject", "alice"); status != 200 {
+		t.Fatalf("alice's own: %d %v", status, out)
+	}
+	mu.Lock()
+	var phases []approvals.Phase
+	for _, a := range seen {
+		phases = append(phases, a.Phase)
+	}
+	seen = nil
+	mu.Unlock()
+	// 401: identity only; 403: identity, request; 200: identity, request.
+	want := []approvals.Phase{approvals.PhaseIdentity, approvals.PhaseIdentity, approvals.PhaseRequest, approvals.PhaseIdentity, approvals.PhaseRequest}
+	if !slices.Equal(phases, want) {
+		t.Fatalf("phases %v, want %v", phases, want)
+	}
+	// A GET is one call, in the request phase.
+	req, _ := http.NewRequest(http.MethodGet, r.srv.URL+"/pending?run="+runID+"&call=c1", nil)
+	req.Header.Set("X-Cert-Subject", "alice")
+	status, _ := r.do(req)
+	mu.Lock()
+	defer mu.Unlock()
+	if status != 200 || len(seen) != 1 || seen[0].Phase != approvals.PhaseRequest {
+		t.Fatalf("GET: %d, %+v", status, seen)
+	}
+}
+
+// A gate whose recorded tally passed without excluding the requester, under a policy that now
+// excludes it (or on decisions that predate the signed format), asks again: it is waiting, not
+// decided, so approvers can decide and the page and CLI show it as pending.
+func TestDecision_ReaskedGateIsWaiting(t *testing.T) {
+	pol := &agent.ApprovalPolicy{Need: 2, Approvers: []string{"alice", "bob", "carol"}, ExcludePrincipal: true}
+	for name, tally := range map[string]agent.ApprovalTally{
+		"requester not excluded":   {Need: 2, Approvers: pol.Approvers, Approved: 2, ApprovedBy: []string{"alice", "bob"}, DecisionFormat: agent.DecisionFormat},
+		"before the signed format": {Need: 2, Approvers: pol.Approvers, Approved: 2, ApprovedBy: []string{"bob", "carol"}, ExcludePrincipal: true, Requesters: []string{"alice"}, DecisionFormat: "bide.approval.v2"},
+	} {
+		t.Run(name, func(t *testing.T) {
+			r := newRigAs(t, "c1", pol, agent.Identity{Actor: "agent@1", OnBehalfOf: "alice"}, approvals.WithRateLimit(0, 0), approvals.WithGlobalRateLimit(0, 0))
+			raw, _ := json.Marshal(tally)
+			data, err := agent.JournalEntry(agent.ApprovalTallyStep("c1"), agent.Record{Kind: agent.StepValue, Result: raw})
+			if err != nil {
+				t.Fatal(err)
+			}
+			if _, _, err := r.stall.Store.Insert(context.Background(), runID, agent.ApprovalTallyStep("c1"), data); err != nil {
+				t.Fatal(err)
+			}
+			_, pend := r.get("/pending?run=" + runID + "&call=c1")
+			if pend["state"] != "waiting" || pend["reason"] == nil || pend["gate"].(map[string]any)["approved"] != float64(0) {
+				t.Fatalf("pending: %v", pend)
+			}
+			status, out := r.post(r.decision("bob", true))
+			if status != 200 || out["recorded"] != true || out["counted"] != true {
+				t.Fatalf("a decision on the re-asked gate: %d %v", status, out)
+			}
+		})
 	}
 }
