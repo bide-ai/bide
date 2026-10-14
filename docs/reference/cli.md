@@ -29,6 +29,7 @@ and `help`, and its import graph is the standard library and the core module (se
 | [`bide view`](#bide-view) | a read-only local page for one run of a journal, or a flow config's graph |
 | [`bide approve`](#bide-approve) | record your signed approval (or -reject) of a call that waits for a decision; -list shows what waits |
 | [`bide keygen`](#bide-keygen) | create an approver key pair for bide approve and print the public key policies and verifiers use |
+| [`bide migrate`](#bide-migrate) | create or check a Postgres journal's schema as its owner, so the service needs no DDL rights |
 | [`bide check`](#bide-check) | check plan flow configs, for CI: one file:node: message line per problem |
 | [`bide audit`](#bide-audit) | produce and verify audit proofs offline |
 | [`bide version`](#bide-version) | print the version and the artifact formats bide audit reads (-json for JSON) |
@@ -412,6 +413,50 @@ Flags:
     	when to color the output: auto (the default: on a terminal, unless NO_COLOR is set or TERM is dumb), always or never
   -out string
     	file to write the private key to (mode 0600); the public key goes to <file>.pub. It must not exist
+
+Exit status:
+  0  success
+  1  failure: an input cannot be read or the command failed; for check, an error was found
+     (with -strict, any problem)
+  2  usage error: a bad flag or argument; nothing was read
+```
+
+## bide migrate
+
+Create or check a Postgres journal's schema as its owner, so the service needs no DDL rights.
+
+```text
+usage: bide migrate -postgres-env <var> -schema <name> [-prefix <p>] [-dry-run]
+
+Creates or checks a Postgres journal's schema, as the role in the DSN, so that the running service
+can open the store with postgres.WithoutMigration under a role that has no DDL rights. Run it
+with the schema's owner at deploy time, and again after upgrading bide.
+
+It creates the tables (bide_steps, bide_leases, bide_events, bide_schema_version), the
+bide_next_seq_v1 function and the lease indexes that are missing, and nothing else: it never
+alters or drops a table or replaces a function, it is idempotent, and it refuses a schema newer
+than this bide's. It reports the schema version before and after ("none" before the first
+migration), and what it created. With -dry-run it runs the migration in a transaction and rolls
+it back, printing the SQL: that shows what would be created and that the role may create it, and
+leaves nothing behind.
+
+The DSN is read from the environment variable -postgres-env names and is never an argument or
+output. -schema is required (the schema must exist; the migration does not create it): without one the tables would
+land in whichever schema the DSN's search path puts first.
+
+Exit status is 0 when the schema is current, 1 when the migration failed, and 2 for a usage
+error.
+
+  -color when
+    	when to color the output: auto (the default: on a terminal, unless NO_COLOR is set or TERM is dumb), always or never
+  -dry-run
+    	run the migration in a transaction, print its SQL, and roll back
+  -postgres-env string
+    	the environment variable holding the owner role's Postgres DSN (required)
+  -prefix string
+    	the table name prefix (empty: "bide_")
+  -schema string
+    	the schema the tables are in; it must exist (required)
 
 Exit status:
   0  success
