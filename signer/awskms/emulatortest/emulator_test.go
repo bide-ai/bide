@@ -5,6 +5,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"net/http"
 	"strings"
 	"testing"
 	"time"
@@ -35,7 +36,7 @@ var schemes = []scheme{
 	{"ecdsa-p256", audit.AlgECDSAP256, types.KeySpecEccNistP256, 65, awskms.ErrNoP256, audit.AlgECDSAP256},
 }
 
-func (sc scheme) config(c *kms.Client, keyID string) awskms.Config {
+func (sc scheme) config(c awskms.API, keyID string) awskms.Config {
 	return awskms.Config{Client: c, KeyID: keyID, Scheme: sc.cfgScheme}
 }
 
@@ -281,14 +282,69 @@ func TestKeyStates(t *testing.T) {
 
 func ptr[T any](v T) *T { return &v }
 
-// Each KMS call is bounded by Config.Timeout: an already-expired deadline fails Open.
-func TestTimeoutBoundsOpen(t *testing.T) {
+// stall is an HTTP client whose requests never complete: they return only when the request's context
+// is done, so the outcome depends on the deadline or cancellation and not on how fast the emulator is
+// or how coarse the clock.
+type stall struct{}
+
+func (stall) Do(req *http.Request) (*http.Response, error) {
+	<-req.Context().Done()
+	return nil, req.Context().Err()
+}
+
+// stalling wraps the real client and sends the named operations through stall.
+type stalling struct {
+	*kms.Client
+	getPublicKey, sign bool
+}
+
+func (c stalling) GetPublicKey(ctx context.Context, in *kms.GetPublicKeyInput, o ...func(*kms.Options)) (*kms.GetPublicKeyOutput, error) {
+	if c.getPublicKey {
+		o = append(o, func(opts *kms.Options) { opts.HTTPClient = stall{} })
+	}
+	return c.Client.GetPublicKey(ctx, in, o...)
+}
+
+func (c stalling) Sign(ctx context.Context, in *kms.SignInput, o ...func(*kms.Options)) (*kms.SignOutput, error) {
+	if c.sign {
+		o = append(o, func(opts *kms.Options) { opts.HTTPClient = stall{} })
+	}
+	return c.Client.Sign(ctx, in, o...)
+}
+
+// Open is bounded by Config.Timeout on each KMS call (the public key read and the self-test
+// signature) and by the caller's context, whichever KMS call is slow.
+func TestOpenHonorsTimeoutAndContext(t *testing.T) {
 	forEachScheme(t, func(t *testing.T, sc scheme, c *kms.Client) {
 		id, _ := newKey(t, c, sc.spec, types.KeyUsageTypeSignVerify)
-		cfg := sc.config(c, id)
-		cfg.Timeout = time.Nanosecond
-		if _, err := awskms.Open(context.Background(), cfg); err == nil {
-			t.Fatal("Open succeeded with a 1ns timeout")
+		for name, client := range map[string]stalling{
+			"GetPublicKey stalls": {Client: c, getPublicKey: true},
+			"self-test stalls":    {Client: c, sign: true},
+		} {
+			cfg := sc.config(client, id)
+			cfg.Timeout = 50 * time.Millisecond
+			start := time.Now()
+			if _, err := awskms.Open(context.Background(), cfg); !errors.Is(err, context.DeadlineExceeded) {
+				t.Errorf("%s: err = %v, want the deadline", name, err)
+			}
+			if d := time.Since(start); d > 10*time.Second {
+				t.Errorf("%s: Open took %v with a 50ms timeout", name, d)
+			}
+
+			// The caller cancels while the call is stalled; the (long) timeout has not expired.
+			cfg.Timeout = time.Hour
+			ctx, cancel := context.WithCancel(context.Background())
+			time.AfterFunc(50*time.Millisecond, cancel)
+			if _, err := awskms.Open(ctx, cfg); !errors.Is(err, context.Canceled) {
+				t.Errorf("%s, cancelled by the caller: err = %v, want context.Canceled", name, err)
+			}
+		}
+
+		// A context cancelled before Open makes no signer.
+		ctx, cancel := context.WithCancel(context.Background())
+		cancel()
+		if s, err := awskms.Open(ctx, sc.config(c, id)); !errors.Is(err, context.Canceled) {
+			t.Errorf("a cancelled context: signer %v, err = %v, want context.Canceled", s, err)
 		}
 	})
 }
