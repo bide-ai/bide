@@ -204,8 +204,12 @@ func TestWithoutMigration_LeastPrivilege(t *testing.T) {
 		if !errors.Is(err, ErrSchemaVersion) || !errors.Is(err, agent.ErrConfig) {
 			t.Fatalf("version %s: %v, want ErrSchemaVersion and ErrConfig", v, err)
 		}
-		if _, err := Migrate(ctx, ownerDSN, WithSchema(schema)); !errors.Is(err, ErrSchemaVersion) {
-			t.Fatalf("Migrate at version %s: %v, want ErrSchemaVersion", v, err)
+		_, merr := Migrate(ctx, ownerDSN, WithSchema(schema))
+		if !errors.Is(merr, ErrSchemaVersion) {
+			t.Fatalf("Migrate at version %s: %v, want ErrSchemaVersion", v, merr)
+		}
+		if v == "2" && !strings.Contains(merr.Error(), "newer bide wrote it") {
+			t.Fatalf("Migrate at version 2 does not say why it refuses: %v", merr)
 		}
 		if ro, err := OpenReadOnly(ctx, appDSN, WithSchema(schema)); err == nil {
 			ro.Close()

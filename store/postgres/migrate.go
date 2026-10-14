@@ -126,7 +126,7 @@ func MigrateDB(ctx context.Context, db *sql.DB, opts ...Option) (MigrationResult
 
 // errSchemaNewer is the error for a database whose schema version v is newer than this version's.
 func errSchemaNewer(v int) error {
-	return fmt.Errorf("postgres: the database's schema version is %d, newer than this version's %d; use a newer version of the program: %w (%w)",
+	return fmt.Errorf("postgres: the database's schema version is %d, newer than this version's %d: a newer bide wrote it, and this version does not know what changed, so it refuses to migrate or use it; use a newer bide: %w (%w)",
 		v, schemaVersion, ErrSchemaVersion, agent.ErrConfig)
 }
 
