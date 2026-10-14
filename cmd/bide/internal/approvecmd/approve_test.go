@@ -800,6 +800,11 @@ func TestKeyLinesNeverShowKeyMaterial(t *testing.T) {
 		"hybrid one seed": "ed25519+ml-dsa-65:" + good,
 		"hybrid three":    "ed25519+ml-dsa-65:" + good + ":" + good + ":" + good,
 		"hybrid bad half": "ed25519+ml-dsa-65:" + good + ":" + strings.Repeat("cd", 31) + "zq",
+		"p256 zero":       "ecdsa-p256:" + strings.Repeat("00", 32),
+		"p256 above n":    "ecdsa-p256:" + strings.Repeat("ff", 32),
+		"p256 short":      "ecdsa-p256:" + strings.Repeat("ab", 16),
+		"p256 not hex":    "ecdsa-p256:" + strings.Repeat("ab", 31) + "zq",
+		"p256 two":        "ecdsa-p256:" + good + ":" + good,
 		"unknown scheme":  "rsa:" + good,
 		"ed25519 two":     good + ":" + good,
 	} {
@@ -1049,4 +1054,37 @@ func word(p string) string {
 		return "'" + p + "'"
 	}
 	return p
+}
+
+// TestRetryUnderRandomizedScheme: bide approve run twice for one approver under ecdsa-p256, whose
+// signatures differ each time, even at one decision time (a retry after a lost response). The
+// second run is refused as already decided before it signs, so it records nothing and writes no
+// second receipt; the first receipt stands and verifies.
+func TestRetryUnderRandomizedScheme(t *testing.T) {
+	at := time.Date(2026, 10, 13, 12, 14, 3, 123_000_000, time.UTC)
+	old := now
+	now = func() time.Time { return at }
+	defer func() { now = old }()
+	f := newFixtureAlg(t, twoOfThree, refundArgs, audit.AlgECDSAP256)
+	first, second := filepath.Join(f.dir, "r1.json"), filepath.Join(f.dir, "r2.json")
+	if code, _, errs := f.run_("", f.as("ops", "-yes", "-receipt", first)...); code != 0 {
+		t.Fatal(errs)
+	}
+	code, _, errs := f.run_("", f.as("ops", "-yes", "-receipt", second)...)
+	if code != 1 || !strings.Contains(errs, "already decided") {
+		t.Fatalf("retry: %d %s", code, errs)
+	}
+	if n := len(f.decisions()); n != 1 {
+		t.Fatalf("%d decision records after a retry, want 1", n)
+	}
+	if _, err := os.Stat(second); err == nil {
+		t.Fatal("the refused retry wrote a receipt")
+	}
+	r := readReceipt(t, first)
+	if err := r.Verify(f.pubs["ops"]); err != nil {
+		t.Fatal(err)
+	}
+	if fnd := audit.CheckReceipt(r, f.allRecords(), nil, f.pubs["ops"]); fnd.Verdict != audit.ReceiptPending {
+		t.Fatalf("%+v", fnd)
+	}
 }

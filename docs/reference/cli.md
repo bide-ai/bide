@@ -383,10 +383,11 @@ Exit status:
 Create an approver key pair for bide approve and print the public key policies and verifiers use.
 
 ```text
-usage: bide keygen -out <key-file> [-as <approver id>] [-alg ed25519|ml-dsa-65|ed25519+ml-dsa-65] [-color auto|always|never]
+usage: bide keygen -out <key-file> [-as <approver id>] [-alg ed25519|ecdsa-p256|ml-dsa-65|ed25519+ml-dsa-65] [-color auto|always|never]
 
 Creates an approver key pair for bide approve. The private key is written to <key-file> (the key's
-seed as hex: 64 characters for ed25519, the default; "ml-dsa-65:" and the seed for ML-DSA-65;
+seed as hex: 64 characters for ed25519, the default; "ecdsa-p256:" and the 32-byte private
+scalar for ECDSA P-256, the scheme most HSMs and cloud KMS sign; "ml-dsa-65:" and the seed for ML-DSA-65;
 "ed25519+ml-dsa-65:" and both seeds for a hybrid, for buyers who require post-quantum or hybrid
 signatures) with mode 0600, and is never printed; the public key is written to <key-file>.pub and
 printed, in the form approval policies and verifiers read:
@@ -406,7 +407,7 @@ own machine, readable only by the approver. Anyone who can read it can sign as t
 
 Flags:
   -alg string
-    	signature scheme: ed25519, ml-dsa-65 or ed25519+ml-dsa-65 (hybrid) (default "ed25519")
+    	signature scheme: ed25519, ecdsa-p256, ml-dsa-65 or ed25519+ml-dsa-65 (hybrid) (default "ed25519")
   -as string
     	the approver id the key is for: prints the approver-keys entry for it
   -color when
@@ -898,7 +899,7 @@ Usage of bide audit verify-receipts:
   -max-input-bytes int
     	the largest input file, in bytes, the verb reads; a larger one is an error (default 268435456)
   -pubkey string
-    	the log's public key as <scheme>:<hex> (ed25519, ml-dsa-65, ed25519+ml-dsa-65) or bare ed25519 hex, or a path to a file containing it
+    	the log's public key as <scheme>:<hex> (ed25519, ecdsa-p256, ml-dsa-65, ed25519+ml-dsa-65) or bare ed25519 hex, or a path to a file containing it
   -receipt value
     	a decision receipt file, or a directory of *.receipt.json files; repeatable
   -update

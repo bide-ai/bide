@@ -434,7 +434,7 @@ decisions are recorded, the first valid one counts, and the other command exits 
 bad record able to take an approver's place; the counting rule is the constraint. Also: on Unix a private key with any group or other permission bit is refused, as `ssh` refuses one.
 
 A key file is one line of hex: the Ed25519 seed (64 characters, the form `bide demo` writes its log key
-in), `ml-dsa-65:` and the ML-DSA-65 seed, or `ed25519+ml-dsa-65:` and both seeds for a hybrid, for
+in), `ecdsa-p256:` and the 32-byte ECDSA P-256 private scalar (the scheme most HSMs and cloud KMS sign; its public key is 130 hex characters, `ecdsa-p256:04...`), `ml-dsa-65:` and the ML-DSA-65 seed, or `ed25519+ml-dsa-65:` and both seeds for a hybrid, for
 buyers who require post-quantum or hybrid signatures (`bide keygen -alg`). `bide approve` holds the key
 only as an `audit.Signer`: it signs the decision bytes, names the scheme and derives the public key
 through that interface, so a signer in an HSM or a KMS can take the file's place later without changing
