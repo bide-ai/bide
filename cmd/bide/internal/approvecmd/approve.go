@@ -198,6 +198,9 @@ func Main(args []string, in io.Reader, stdout, stderr io.Writer, stores Stores) 
 
 // check reports a usage error in the flags, or "".
 func (f flags) check() string {
+	if f.postgresEnv != "" && !approveline.ValidEnvName(f.postgresEnv) {
+		return approveline.NotAnEnvName
+	}
 	if f.verifyReceipt != "" {
 		if f.approverKeys == "" {
 			return "-verify-receipt needs -approver-keys, the file of enrolled approver public keys"

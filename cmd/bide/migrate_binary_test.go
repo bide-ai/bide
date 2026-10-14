@@ -12,7 +12,8 @@ import (
 	"testing"
 )
 
-// bide migrate through the real binary: -schema is required, and a connection failure never shows
+// bide migrate (and the other commands that take -postgres-env) through the real binary: -schema
+// is required, and a connection failure never shows
 // the password of the DSN in the environment, in the URL or the keyword/value form.
 func TestMigrateBinary(t *testing.T) {
 	if testing.Short() {
@@ -38,6 +39,25 @@ func TestMigrateBinary(t *testing.T) {
 			t.Fatal(err)
 		}
 		return code, o.String(), e.String()
+	}
+
+	// A DSN given as -postgres-env's value is refused as a usage error without echoing it, by every
+	// command that takes the flag.
+	for _, args := range [][]string{
+		{"migrate", "-schema", "bide"},
+		{"approve", "-list"},
+		{"doctor", "-offline"},
+	} {
+		for _, dsn := range []string{"postgres://u:hunter2@127.0.0.1:1/db", "host=h password=hunter2 dbname=db", "pw=hunter2"} {
+			cmd := exec.Command(exe, append(args, "-postgres-env", dsn)...)
+			var o, e bytes.Buffer
+			cmd.Stdout, cmd.Stderr = &o, &e
+			err := cmd.Run()
+			ee, ok := err.(*exec.ExitError)
+			if !ok || ee.ExitCode() != 2 || strings.Contains(o.String()+e.String(), "hunter2") || !strings.Contains(e.String(), "takes the name of an environment variable, not a DSN") {
+				t.Errorf("bide %s -postgres-env %q: %v, stdout %q, stderr %q", args[0], dsn, err, o.String(), e.String())
+			}
+		}
 	}
 
 	code, out, errOut := run("postgres://u:hunter2@127.0.0.1:1/db", "-postgres-env", "BIDE_TEST_DSN")

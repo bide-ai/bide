@@ -62,3 +62,14 @@ func TestCommandRefusesUnsafeIDs(t *testing.T) {
 		t.Error("Unsafe misclassifies")
 	}
 }
+
+func TestValidEnvName(t *testing.T) {
+	for s, want := range map[string]bool{
+		"BIDE_POSTGRES_DSN": true, "_x": true, "a1": true,
+		"": false, "1a": false, "postgres://u:p@h/db": false, "host=h password=x": false, "a-b": false, "a b": false, "a\n": false, "é": false,
+	} {
+		if got := ValidEnvName(s); got != want {
+			t.Errorf("ValidEnvName(%q) = %v, want %v", s, got, want)
+		}
+	}
+}

@@ -20,6 +20,7 @@ import (
 	"regexp"
 	"strings"
 
+	"github.com/bide-ai/bide/internal/approveline"
 	"github.com/bide-ai/bide/internal/term"
 	"github.com/bide-ai/bide/store/postgres"
 )
@@ -84,6 +85,8 @@ error.
 		return usage("unexpected argument (the DSN is never an argument: set -postgres-env)")
 	case *pgEnv == "":
 		return usage("-postgres-env is required: the name of the environment variable holding the DSN")
+	case !approveline.ValidEnvName(*pgEnv):
+		return usage(approveline.NotAnEnvName)
 	case *schema == "":
 		return usage("-schema is required: without one the tables land in the first schema on the DSN's search path")
 	}
