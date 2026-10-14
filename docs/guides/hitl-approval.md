@@ -230,7 +230,9 @@ signed decision time in canonical form, and the signature verifies for this call
   the signatures (without it the library cannot tell a re-signing from a bad record, and writes the
   second under a signature-derived name, which the counting rule supersedes). A record that is not the
   approver's valid decision never takes the decision's name. `agent.HeldDecisionStep` finds the record
-  that holds a decision (signature included) wherever it is; `agent.DecisionStep` is only the name
+  that holds a decision (signature included) wherever it is; held is not valid, and with the approvers'
+  resolver it also says whether the record verifies and, in a flow gate, follows the request (a record
+  written before it is held and never verified); `agent.DecisionStep` is only the name
   written first, not a lookup key.
 - **Only valid denials can deny.** Invalid records never count toward "k is unreachable", so they
   cannot force a denial either.

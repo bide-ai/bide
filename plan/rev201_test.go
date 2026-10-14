@@ -135,3 +135,21 @@ func legacyDecisionStep(d agent.Decision) string {
 	h.Write(d.Signature)
 	return "approval:" + url.QueryEscape(d.ToolUseID) + ":" + d.ApproverID + ":" + hex.EncodeToString(h.Sum(nil))
 }
+
+// In a flow gate a decision journaled before the request is held, but not verified: it cannot count.
+func TestRev201_HeldDecisionStepFlagsAPreRequestRecord(t *testing.T) {
+	ctx := context.Background()
+	as, vf := approvers("ops")
+	j := agenttest.MemJournal()
+	refunds := 0
+	f := refundFlow(t, &agent.ApprovalPolicy{Need: 1, Approvers: []string{"ops"}}, vf, &refunds)
+	d, rec := signedDecision(as["ops"], "r1", "node:refund", "refund", `{"order":"order-42","amount":120}`, true)
+	if _, err := journaltest.Put(ctx, j, "r1", agent.DecisionStep(d), rec); err != nil {
+		t.Fatal(err)
+	}
+	asPending(t, func() error { _, err := f.Run(ctx, j, "r1", "order-42"); return err }())
+	_, held, verified, err := agent.HeldDecisionStep(ctx, j, d, vf)
+	if err != nil || !held || verified {
+		t.Fatalf("held %v verified %v %v; want held and not verified", held, verified, err)
+	}
+}

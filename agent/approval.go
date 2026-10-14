@@ -807,25 +807,48 @@ func approvalDecisionStep(toolUseID, approverID string, approved bool, alg Alg, 
 	return approvalStep(toolUseID) + ":" + approverID + ":" + hex.EncodeToString(h.Sum(nil))
 }
 
-// HeldDecisionStep reports whether the journal holds exactly the decision d (signature included) and
-// the name of the record that does: under the identity name (DecisionStep), under the
+// HeldDecisionStep reports whether the journal holds a record of exactly the decision d (signature
+// included) and the name of the record that does: under the identity name (DecisionStep), under the
 // signature-derived name a bad record at the identity name pushes a decision to, or under the name a
 // version that named by signature gave it. A record under another signature is not d, even when it
 // is the same approver's decision of the same verdict and time: a randomized scheme's re-signing is
 // found by SubmitDecision's WithDecisionCheck, which reads the signatures, not here.
-func HeldDecisionStep(ctx context.Context, store *Journal, d Decision) (string, bool, error) {
+//
+// held does not mean valid. It compares the record's fields and signature bytes and verifies nothing:
+// a junk signature written without a check is held. With a verifierFor (the resolver the agent
+// counts with), verified reports that the record verifies for the recorded call under the
+// approver's key and, for a plan flow node's gate, was written after the gate's request, which is the
+// only kind the gate counts. Without one verified is false. A flow gate's record written before the
+// request is held, and never verified.
+func HeldDecisionStep(ctx context.Context, store *Journal, d Decision, verifierFor ApproverVerifierFor) (name string, held, verified bool, err error) {
 	at := FormatTimestamp(d.DecidedAt)
-	for _, name := range []string{decisionIdentityStep(d.ToolUseID, d.ApproverID, d.Approved, d.Alg, at), approvalDecisionStep(d.ToolUseID, d.ApproverID, d.Approved, d.Alg, at, d.Signature)} {
-		r, ok, err := store.Get(ctx, d.RunID, name)
+	for _, n := range []string{decisionIdentityStep(d.ToolUseID, d.ApproverID, d.Approved, d.Alg, at), approvalDecisionStep(d.ToolUseID, d.ApproverID, d.Approved, d.Alg, at, d.Signature)} {
+		r, ok, err := store.Get(ctx, d.RunID, n)
 		if err != nil {
-			return "", false, fmt.Errorf("HeldDecisionStep: read %s (run %s): %w (%w)", name, d.RunID, err, ErrStorage)
+			return "", false, false, fmt.Errorf("HeldDecisionStep: read %s (run %s): %w (%w)", n, d.RunID, err, ErrStorage)
 		}
-		if ok && IsApprovalDecision(r, d.ToolUseID) && r.Approver() == d.ApproverID && r.Approved == d.Approved &&
-			r.ApproverAlg() == d.Alg && r.DecidedAt() == at && bytes.Equal(r.Signature(), d.Signature) {
-			return name, true, nil
+		if !ok || !IsApprovalDecision(r, d.ToolUseID) || r.Approver() != d.ApproverID || r.Approved != d.Approved ||
+			r.ApproverAlg() != d.Alg || r.DecidedAt() != at || !bytes.Equal(r.Signature(), d.Signature) {
+			continue
 		}
+		if verifierFor == nil {
+			return n, true, false, nil
+		}
+		recs, err := store.History(ctx, d.RunID)
+		if err != nil {
+			return "", false, false, fmt.Errorf("HeldDecisionStep: load history %s: %w (%w)", d.RunID, err, ErrStorage)
+		}
+		_, call, found := FindToolCall(recs, d.ToolUseID)
+		v, vok := verifierFor(d.ApproverID)
+		if !found || !vok || v == nil || isNilVerifier(v) {
+			return n, true, false, nil
+		}
+		at, rq := slices.IndexFunc(recs, func(x Record) bool { return x.Name == n }), slices.IndexFunc(recs, func(x Record) bool { return x.Name == ApprovalRequestStep(d.ToolUseID) })
+		counts := rq < 0 || at > rq // an agent call has no request record; a flow node's decision must follow it
+		s := ApprovalSubject{RunID: d.RunID, ToolUseID: d.ToolUseID, ToolName: call.Name, Args: call.Args}
+		return n, true, counts && decisionReason(r, s, v) == "", nil
 	}
-	return "", false, nil
+	return "", false, false, nil
 }
 
 // DecisionStep returns the journal name SubmitDecision gives the record of d first: distinct for each
@@ -833,10 +856,8 @@ func HeldDecisionStep(ctx context.Context, store *Journal, d Decision) (string, 
 // resubmission of it, whatever its signature bytes, which is why that is a no-op. It is not a lookup
 // key: a bad record may hold that name (the decision is then journaled under another), and a decision
 // a version that named by signature wrote is under that name. To tell whether a decision is held, use
-// HeldDecisionStep, ReportWritten, or WithDecisionCheck. A service that takes decisions over a
-// network reads it to tell a decision it records from one it already holds. A zero or
-// non-canonical d.DecidedAt has no record (SubmitDecision refuses it); the name is then of
-// FormatTimestamp's rendering of it.
+// HeldDecisionStep, ReportWritten, or WithDecisionCheck. A zero or non-canonical d.DecidedAt has no record
+// (SubmitDecision refuses it); the name is then of FormatTimestamp's rendering of it.
 func DecisionStep(d Decision) string {
 	return decisionIdentityStep(d.ToolUseID, d.ApproverID, d.Approved, d.Alg, FormatTimestamp(d.DecidedAt))
 }

@@ -38,23 +38,23 @@ func TestHeldDecisionStepFindsTheRecordWhereverItIs(t *testing.T) {
 	junk := Decision{RunID: "r", ToolUseID: "c1", ApproverID: "a", Approved: true, DecidedAt: testDecidedAt, Alg: fakeAlg, Signature: []byte{9, 9, 9}}
 	real := junk
 	real.Signature = append([]byte{1}, base...)
-	if _, ok, err := HeldDecisionStep(ctx, j, real); err != nil || ok {
+	if _, ok, _, err := HeldDecisionStep(ctx, j, real, nil); err != nil || ok {
 		t.Fatalf("before anything: %v %v", ok, err)
 	}
 	if err := SubmitDecision(ctx, j, junk); err != nil {
 		t.Fatal(err)
 	}
-	if name, ok, err := HeldDecisionStep(ctx, j, real); err != nil || ok {
+	if name, ok, _, err := HeldDecisionStep(ctx, j, real, nil); err != nil || ok {
 		t.Fatalf("a junk record at the identity name is not the real decision: %q %v %v", name, ok, err)
 	}
-	if name, ok, err := HeldDecisionStep(ctx, j, junk); err != nil || !ok || name != DecisionStep(junk) {
+	if name, ok, ver, err := HeldDecisionStep(ctx, j, junk, vf); err != nil || !ok || ver || name != DecisionStep(junk) {
 		t.Fatalf("junk: %q %v %v", name, ok, err)
 	}
 	if err := SubmitDecision(ctx, j, real, WithDecisionCheck(vf)); err != nil {
 		t.Fatal(err)
 	}
-	name, ok, err := HeldDecisionStep(ctx, j, real)
-	if err != nil || !ok || name == DecisionStep(real) {
+	name, ok, ver, err := HeldDecisionStep(ctx, j, real, vf)
+	if err != nil || !ok || !ver || name == DecisionStep(real) {
 		t.Fatalf("fallback: %q %v %v", name, ok, err)
 	}
 	if r, _, _ := j.Get(ctx, "r", name); string(r.Signature()) != string(real.Signature) {
@@ -70,7 +70,23 @@ func TestHeldDecisionStepFindsTheRecordWhereverItIs(t *testing.T) {
 	}); err != nil {
 		t.Fatal(err)
 	}
-	if name, ok, err := HeldDecisionStep(ctx, j, l); err != nil || !ok || name != legacy {
+	if name, ok, _, err := HeldDecisionStep(ctx, j, l, nil); err != nil || !ok || name != legacy {
 		t.Fatalf("legacy: %q %v %v", name, ok, err)
+	}
+}
+
+// held is not valid: an invalid signature is held, and verified only when a verifier says so.
+func TestHeldDecisionStepIsNotValidity(t *testing.T) {
+	ctx := context.Background()
+	j, vf, _ := pausedOne(t)
+	junk := Decision{RunID: "r", ToolUseID: "c1", ApproverID: "a", Approved: true, DecidedAt: testDecidedAt, Alg: fakeAlg, Signature: []byte{9, 9, 9}}
+	if err := SubmitDecision(ctx, j, junk); err != nil {
+		t.Fatal(err)
+	}
+	if _, held, ver, err := HeldDecisionStep(ctx, j, junk, nil); err != nil || !held || ver {
+		t.Fatalf("no verifier: held %v verified %v %v", held, ver, err)
+	}
+	if _, held, ver, err := HeldDecisionStep(ctx, j, junk, vf); err != nil || !held || ver {
+		t.Fatalf("a junk signature: held %v verified %v %v", held, ver, err)
 	}
 }
