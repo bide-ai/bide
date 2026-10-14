@@ -807,10 +807,33 @@ func approvalDecisionStep(toolUseID, approverID string, approved bool, alg Alg, 
 	return approvalStep(toolUseID) + ":" + approverID + ":" + hex.EncodeToString(h.Sum(nil))
 }
 
-// DecisionStep returns the journal name SubmitDecision gives the record of d: distinct for each
+// HeldDecisionStep reports whether the journal holds exactly the decision d (signature included) and
+// the name of the record that does: under the identity name (DecisionStep), under the
+// signature-derived name a bad record at the identity name pushes a decision to, or under the name a
+// version that named by signature gave it. A record under another signature is not d, even when it
+// is the same approver's decision of the same verdict and time: a randomized scheme's re-signing is
+// found by SubmitDecision's WithDecisionCheck, which reads the signatures, not here.
+func HeldDecisionStep(ctx context.Context, store *Journal, d Decision) (string, bool, error) {
+	at := FormatTimestamp(d.DecidedAt)
+	for _, name := range []string{decisionIdentityStep(d.ToolUseID, d.ApproverID, d.Approved, d.Alg, at), approvalDecisionStep(d.ToolUseID, d.ApproverID, d.Approved, d.Alg, at, d.Signature)} {
+		r, ok, err := store.Get(ctx, d.RunID, name)
+		if err != nil {
+			return "", false, fmt.Errorf("HeldDecisionStep: read %s (run %s): %w (%w)", name, d.RunID, err, ErrStorage)
+		}
+		if ok && IsApprovalDecision(r, d.ToolUseID) && r.Approver() == d.ApproverID && r.Approved == d.Approved &&
+			r.ApproverAlg() == d.Alg && r.DecidedAt() == at && bytes.Equal(r.Signature(), d.Signature) {
+			return name, true, nil
+		}
+	}
+	return "", false, nil
+}
+
+// DecisionStep returns the journal name SubmitDecision gives the record of d first: distinct for each
 // distinct decision (call, approver, verdict, scheme and decision time), and the same for every
-// resubmission of it, whatever its signature bytes, which is why that is a no-op. (A decision whose
-// name a bad record already holds is journaled under another name; see SubmitDecision.) A service that takes decisions over a
+// resubmission of it, whatever its signature bytes, which is why that is a no-op. It is not a lookup
+// key: a bad record may hold that name (the decision is then journaled under another), and a decision
+// a version that named by signature wrote is under that name. To tell whether a decision is held, use
+// HeldDecisionStep, ReportWritten, or WithDecisionCheck. A service that takes decisions over a
 // network reads it to tell a decision it records from one it already holds. A zero or
 // non-canonical d.DecidedAt has no record (SubmitDecision refuses it); the name is then of
 // FormatTimestamp's rendering of it.
@@ -1010,6 +1033,18 @@ func submitDecision(ctx context.Context, store *Journal, op string, d Decision, 
 			}}, nil
 		})
 	}
+	// A decision journaled by a version that named records by signature, resubmitted with the same
+	// signature, is the same decision: it was a no-op then (one name), and stays one, with or without
+	// a check, so a retry after a lost response or a rolling deploy writes nothing.
+	legacy := approvalDecisionStep(d.ToolUseID, d.ApproverID, d.Approved, d.Alg, decidedAt, d.Signature)
+	if _, held, err := store.getEntry(ctx, d.RunID, legacy); err != nil {
+		return fmt.Errorf("%s: read %s (run %s): %w (%w)", op, legacy, d.RunID, err, ErrStorage)
+	} else if held {
+		if flow {
+			return staleDecision(ctx, store, op, d.RunID, d.ToolUseID, legacy, reqSeq, false)
+		}
+		return nil
+	}
 	got, err := write(name)
 	if err != nil {
 		return err
@@ -1028,7 +1063,7 @@ func submitDecision(ctx context.Context, store *Journal, op string, d Decision, 
 			}
 			return nil
 		}
-		name = approvalDecisionStep(d.ToolUseID, d.ApproverID, d.Approved, d.Alg, decidedAt, d.Signature)
+		name = legacy
 		if _, err := write(name); err != nil {
 			return err
 		}

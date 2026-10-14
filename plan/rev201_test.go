@@ -102,9 +102,10 @@ func TestRev201_StaleSeatOthersCanPass(t *testing.T) {
 	}
 }
 
-// A stale decision under the previous, signature-derived name does not take the name of the
-// approver's identical decision after the pause: the new record has its own name and counts.
-func TestRev201_LegacyNamedStaleDecisionDoesNotBlock(t *testing.T) {
+// A stale decision under the previous, signature-derived name still takes the name of the
+// approver's identical decision after the pause, as before the upgrade: the identical resubmission
+// is not recorded and SubmitDecision says so; re-signing at a new decided_at counts.
+func TestRev201_LegacyNamedStaleDecisionStillBlocksTheIdenticalOne(t *testing.T) {
 	ctx := context.Background()
 	as, vf := approvers("ops")
 	j := agenttest.MemJournal()
@@ -116,11 +117,8 @@ func TestRev201_LegacyNamedStaleDecisionDoesNotBlock(t *testing.T) {
 		t.Fatal(err)
 	}
 	asPending(t, func() error { _, err := f.Run(ctx, j, "r1", "order-42"); return err }())
-	if err := agent.SubmitDecision(ctx, j, d); err != nil {
-		t.Fatalf("SubmitDecision: %v", err)
-	}
-	if _, err := f.Run(ctx, j, "r1", "order-42"); err != nil || refunds != 1 {
-		t.Fatalf("Run = %v, refunds %d", err, refunds)
+	if err := agent.SubmitDecision(ctx, j, d); !errors.Is(err, agent.ErrConfig) {
+		t.Fatalf("SubmitDecision of the identical decision = %v; want ErrConfig", err)
 	}
 }
 
