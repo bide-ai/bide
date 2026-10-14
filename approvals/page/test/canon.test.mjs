@@ -34,11 +34,11 @@ test('the decision bytes match Go on every vector', () => {
 
 test('key order is by UTF-8 bytes, not UTF-16 code units', () => {
   const got = Buffer.from(canonicalArgs(new TextEncoder().encode('{"\\ud800\\udc00":1,"\\ue000":2}'))).toString('utf8');
-  assert.equal(got, '{"":2,"\u{10000}":1}');
+  assert.equal(got, '{"\ue000":2,"\u{10000}":1}');
 });
 
 test('the trim is Go\'s, over UTF-8', () => {
-  assert.equal(Buffer.from(goTrimSpace(new TextEncoder().encode('  x 　'))).toString(), 'x');
+  assert.equal(Buffer.from(goTrimSpace(new TextEncoder().encode('\u00a0 x \u3000'))).toString(), 'x');
   assert.equal(goTrimSpace(new Uint8Array([0xff, 0x20])).length, 1); // an invalid byte stops the trim
 });
 

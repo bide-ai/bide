@@ -12,18 +12,18 @@ const pendingJSON = async (over = {}, argsText = '{"amount":120,"to":"acme"}') =
 };
 
 test('text that could hide content is shown as escapes', () => {
-  assert.equal(safeText('a‮b'), 'a\\u202eb');            // bidirectional override
-  assert.equal(safeText('x​y'), 'x\\u200by');           // zero-width space
-  assert.equal(safeText('⠀ㅤ'), '\\u2800\\u3164');   // blank fillers
-  assert.equal(safeText('a b'), 'a\\u00a0b');           // no-break space
-  assert.equal(safeText('é'), 'e\\u0301');             // a combining mark
+  assert.equal(safeText('a\u202eb'), 'a\\u202eb');            // bidirectional override
+  assert.equal(safeText('x\u200by'), 'x\\u200by');           // zero-width space
+  assert.equal(safeText('\u2800\u3164'), '\\u2800\\u3164');   // blank fillers
+  assert.equal(safeText('a\u00a0b'), 'a\\u00a0b');           // no-break space
+  assert.equal(safeText('e\u0301'), 'e\\u0301');             // a combining mark
   assert.equal(safeText('\x1b[2J'), '\\u001b[2J');           // a terminal escape
   assert.equal(safeText('\u{1F600}\u{E0001}'), '\u{1F600}\\U000e0001');
   assert.equal(safeText('line\nbreak and space'), 'line\nbreak and space');
 });
 
 test('arguments are shown sorted, numbers as written, unsafe characters escaped', () => {
-  const shown = prettyArgs(te.encode('{"b":1.0,"a":"x‮y","c":[1e3,{}]}'));
+  const shown = prettyArgs(te.encode('{"b":1.0,"a":"x\u202ey","c":[1e3,{}]}'));
   assert.equal(shown, '{\n  "a": "x\\u202ey",\n  "b": 1.0,\n  "c": [\n    1e3,\n    {}\n  ]\n}');
   assert.equal(prettyArgs(te.encode('')), '{}');
   assert.match(prettyArgs(te.encode('free text')), /^not JSON: "free text"$/);

@@ -115,7 +115,7 @@ export function parseFirst(b, top = false) {
                 paired = true;
               }
             }
-            if (!paired) out.push('�');
+            if (!paired) out.push('\ufffd');
           } else {
             out.push(String.fromCharCode(u));
           }
