@@ -708,3 +708,138 @@ func TestVerifyNotifications_TheEnginesAllClearHistoryHasNoViolations(t *testing
 		t.Fatalf("events %+v", rep.Events)
 	}
 }
+
+// ---- an all-clear owed after the gate was decided ----
+
+type quorumVerifier string
+
+func (quorumVerifier) Alg() agent.Alg            { return "test" }
+func (v quorumVerifier) PublicKey() []byte       { return []byte(v) }
+func (v quorumVerifier) KeyIDs() []string        { return []string{"test:" + string(v)} }
+func (v quorumVerifier) Verify(m, s []byte) bool { return bytes.Equal(s, append([]byte(v+"|"), m...)) }
+
+// allClearFixture pauses an m-of-n gate, lets a sweep notify it (acknowledged), then has two
+// approvers decide it at decidedAt and the run finish, with no further sweep: the all-clear is owed.
+func allClearFixture(t *testing.T, decidedAt time.Time) (*audit.MemEventStore, audit.NotifyTrailExport, audit.JournalExport) {
+	t.Helper()
+	ctx := context.Background()
+	pol := &agent.ApprovalPolicy{Need: 2, Approvers: []string{"alice", "bob"}}
+	tool := agent.MustFunc("refund", "refund", func(context.Context, struct{}) (string, error) { return "ok", nil }, agent.WithApproval(pol))
+	verifiers := func(id string) (agent.ApproverVerifier, bool) {
+		return quorumVerifier(id), id == "alice" || id == "bob"
+	}
+	j, _ := agent.NewJournal(agent.NewMemStore())
+	a, _ := agent.New(agenttest.NewScriptedModel(agenttest.ToolTurn("c1", "refund", `{}`), agenttest.TextTurn("done")), j,
+		agent.WithTools(tool), agent.WithApproverVerifiers(verifiers))
+	var pend *agent.ApprovalPending
+	if _, err := a.Run(ctx, "r1", agent.UserText("go")); !errors.As(err, &pend) {
+		t.Fatalf("Run = %v", err)
+	}
+	es := audit.NewMemEventStore()
+	if err := agent.NotifyPending(ctx, j, &toggleSink{}, audit.NewNotifyTrail(es), agent.WithNotifyHolder("sweeper")); err != nil {
+		t.Fatal(err)
+	}
+	for _, who := range []string{"alice", "bob"} {
+		sig := append([]byte(who+"|"), agent.ApprovalDecisionBytes(pend.Subject(), who, true, decidedAt)...)
+		err := agent.SubmitDecision(ctx, j, agent.Decision{RunID: "r1", ToolUseID: "c1", ApproverID: who, Approved: true, DecidedAt: decidedAt, Alg: "test", Signature: sig},
+			agent.WithClock(func() time.Time { return decidedAt }))
+		if err != nil {
+			t.Fatal(err)
+		}
+	}
+	if _, err := a.Run(ctx, "r1", agent.UserText("go")); err != nil {
+		t.Fatalf("finishing run: %v", err)
+	}
+	tx, _ := audit.ExportNotifyTrail(ctx, es, trailName)
+	jx, err := audit.ExportJournal(ctx, j, "r1")
+	if err != nil {
+		t.Fatal(err)
+	}
+	return es, tx, jx
+}
+
+func TestVerifyNotifications_AnAllClearOwedAfterTheGateWasDecided(t *testing.T) {
+	decided := time.Now().Truncate(time.Millisecond)
+	_, tx, jx := allClearFixture(t, decided)
+	gate := agent.ApprovalKey("r1", "c1", 0)
+	run := func(now time.Time) (audit.NotifyReport, error) {
+		return audit.VerifyNotifications(audit.NotifyVerifyInput{Trails: []audit.NotifyTrailExport{tx}, Journals: []audit.JournalExport{jx}, Unanchored: true, Now: now})
+	}
+	rep, err := run(decided.Add(time.Minute))
+	if err != nil || statusOf(t, rep, agent.ResolvedKey(gate)) != audit.NotifyStatusNotYetDue {
+		t.Fatalf("within the grace period: %v %+v", err, rep.Events)
+	}
+	rep, err = run(decided.Add(10 * time.Minute))
+	if !errors.Is(err, audit.ErrNotVerified) || statusOf(t, rep, agent.ResolvedKey(gate)) != audit.NotifyStatusNeverNotified {
+		t.Fatalf("after it: %v %+v", err, rep.Events)
+	}
+}
+
+// A gate resolved with no time in the journal (a tool's result) owes an all-clear that cannot be
+// judged late: a warning, which fails the audit only under Strict.
+func TestVerifyNotifications_AnUntimedResolutionIsAWarningAndFailsUnderStrict(t *testing.T) {
+	ctx := context.Background()
+	mem := agent.NewMemStore()
+	j, _ := agent.NewJournal(mem)
+	tool := agent.MustFunc("refund", "refund", func(context.Context, struct{}) (string, error) { return "ok", nil }, agent.WithApproval(agent.SingleApproval()))
+	a, _ := agent.New(agenttest.NewScriptedModel(agenttest.ToolTurn("c1", "refund", `{}`)), j, agent.WithTools(tool))
+	if _, err := a.Run(ctx, "r1", agent.UserText("go")); !errors.As(err, new(*agent.ApprovalPending)) {
+		t.Fatal(err)
+	}
+	es := audit.NewMemEventStore()
+	if err := agent.NotifyPending(ctx, j, &toggleSink{}, audit.NewNotifyTrail(es), agent.WithNotifyHolder("sweeper")); err != nil {
+		t.Fatal(err)
+	}
+	if _, _, err := mem.Insert(ctx, "r1", agent.ToolResultStep("c1"), []byte(`{"name":"`+agent.ToolResultStep("c1")+`","kind":"tool_result","tool_use_id":"c1"}`)); err != nil {
+		t.Fatal(err)
+	}
+	tx, _ := audit.ExportNotifyTrail(ctx, es, trailName)
+	jx, _ := audit.ExportJournal(ctx, j, "r1")
+	in := audit.NotifyVerifyInput{Trails: []audit.NotifyTrailExport{tx}, Journals: []audit.JournalExport{jx}, Unanchored: true, Now: time.Now().Add(time.Hour)}
+	gate := agent.ApprovalKey("r1", "c1", 0)
+	rep, err := audit.VerifyNotifications(in)
+	if err != nil || statusOf(t, rep, agent.ResolvedKey(gate)) != audit.NotifyStatusAllClearUntimed {
+		t.Fatalf("%v %+v", err, rep.Events)
+	}
+	in.Strict = true
+	if _, err := audit.VerifyNotifications(in); !errors.Is(err, audit.ErrNotVerified) {
+		t.Fatalf("strict: %v", err)
+	}
+	// An unobserved decided gate is the other warning.
+	in.Trails = nil
+	in.Strict = false
+	if rep, err := audit.VerifyNotifications(in); err != nil || statusOf(t, rep, gate) != audit.NotifyStatusUnobservedResolved {
+		t.Fatalf("%v %+v", err, rep.Events)
+	}
+	in.Strict = true
+	if _, err := audit.VerifyNotifications(in); !errors.Is(err, audit.ErrNotVerified) {
+		t.Fatalf("strict, unobserved: %v", err)
+	}
+}
+
+// An event observed but never claimed (no delivery attempted) and then decided owes no all-clear.
+func TestVerifyNotifications_NoAllClearIsOwedForAnUnattemptedEvent(t *testing.T) {
+	ctx := context.Background()
+	mem := agent.NewMemStore()
+	j, _ := agent.NewJournal(mem)
+	tool := agent.MustFunc("refund", "refund", func(context.Context, struct{}) (string, error) { return "ok", nil }, agent.WithApproval(agent.SingleApproval()))
+	a, _ := agent.New(agenttest.NewScriptedModel(agenttest.ToolTurn("c1", "refund", `{}`)), j, agent.WithTools(tool))
+	if _, err := a.Run(ctx, "r1", agent.UserText("go")); !errors.As(err, new(*agent.ApprovalPending)) {
+		t.Fatal(err)
+	}
+	if _, _, err := mem.Insert(ctx, "r1", agent.ToolResultStep("c1"), []byte(`{"name":"`+agent.ToolResultStep("c1")+`","kind":"tool_result","tool_use_id":"c1"}`)); err != nil {
+		t.Fatal(err)
+	}
+	jx, _ := audit.ExportJournal(ctx, j, "r1")
+	gate := agent.ApprovalKey("r1", "c1", 0)
+	b := newTrail(t).add(observed(gate, agent.NotificationApprovalPending, 0, 1))
+	rep, err := verifyNotify(t, b, func(in *audit.NotifyVerifyInput) {
+		in.Journals = []audit.JournalExport{jx}
+		in.Now = time.Now().Add(time.Hour)
+	})
+	for _, e := range rep.Events {
+		if e.Key == agent.ResolvedKey(gate) {
+			t.Fatalf("an all-clear is owed for an event never delivered: %+v (err %v)", e, err)
+		}
+	}
+}

@@ -49,6 +49,7 @@ func (c *cli) notifications(args []string) {
 	maxAck := fs.Duration("max-ack", 0, "fail an event not acknowledged within this long of when the run entered its state (0: only each event's recorded deadline)")
 	grace := fs.Duration("grace", 5*time.Minute, "how long after an event began that a missing observation is not yet a failure (the notifier's detection window)")
 	recovery := fs.Duration("recovery-failing-after", 15*time.Minute, "how long a recovery failure episode may be open before a recovery_failing event is owed (the notifier's setting)")
+	strict := fs.Bool("strict", false, "also fail (exit 1) on a warning: a decided gate no notifier observed (unobserved_resolved), or an all-clear owed that cannot be timed (all_clear_untimed)")
 	asOf := fs.String("as-of", "", "judge pending events as of this RFC 3339 time (default now)")
 	c.parse(fs, args)
 
@@ -81,7 +82,7 @@ func (c *cli) notifications(args []string) {
 		now = t
 	}
 
-	in := audit.NotifyVerifyInput{Unanchored: *unanchored, Now: now, MaxAck: *maxAck, Grace: *grace, RecoveryFailingAfter: *recovery, MaxClockSkew: maxClockSkew}
+	in := audit.NotifyVerifyInput{Unanchored: *unanchored, Now: now, MaxAck: *maxAck, Grace: *grace, RecoveryFailingAfter: *recovery, MaxClockSkew: maxClockSkew, Strict: *strict}
 	ok := true
 	if *pubkey != "" {
 		v, err := readPubKey(*pubkey)
@@ -115,7 +116,7 @@ func (c *cli) notifications(args []string) {
 		c.note(unusable(err))
 		return
 	}
-	c.report(rep)
+	c.report(rep, *strict)
 	if b, merr := json.Marshal(rep); merr == nil {
 		c.artifact = b
 	}
@@ -203,7 +204,7 @@ func mapKeys(m map[string]bool) func(yield func(string) bool) {
 }
 
 // report prints the trails and the verdict on each event.
-func (c *cli) report(rep audit.NotifyReport) {
+func (c *cli) report(rep audit.NotifyReport, strict bool) {
 	for _, tr := range rep.Trails {
 		switch {
 		case tr.Anchored:
@@ -226,9 +227,9 @@ func (c *cli) report(rep audit.NotifyReport) {
 	for _, e := range events {
 		mark := "INFO  "
 		switch {
-		case e.Status.Problem():
+		case e.Status.Problem() || strict && e.Status.Warning():
 			mark = "FAIL  "
-		case e.Status == audit.NotifyStatusUnobservedResolved:
+		case e.Status.Warning():
 			mark = "note: WARNING "
 		case e.Status == audit.NotifyStatusAcked || e.Status == audit.NotifyStatusClearedBeforeNotification:
 			mark = "PASS  "

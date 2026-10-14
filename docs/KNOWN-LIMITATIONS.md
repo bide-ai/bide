@@ -311,7 +311,9 @@ and reads the records after the newest head as not attested. Without a head the 
 `UNANCHORED`. The check cannot find an event that left no trace in the journals it was given and no
 record in the trail (a halt that a later result resolved before the audit), cannot say that a person
 read a notification (an acknowledgement is the sink's 2xx), and dates events by the notifying
-processes' clocks. See [Audit](guides/audit.md#notification-evidence-were-the-people-told).
+processes' clocks. An all-clear owed for an event whose resolution the journal does not time (a tool's
+result, a halt resolution, a run's end) cannot be judged late; it is reported as the warning
+`all_clear_untimed`, and `-strict` fails on it. See [Audit](guides/audit.md#notification-evidence-were-the-people-told).
 
 ## Governed state (gsm)
 

@@ -584,7 +584,7 @@ bide audit: produce and verify audit proof bundles
          quoted); these notes never change the verdict
 
   notifications (-trail <file>... [-journal <file>...] | -db <file> | -postgres-env <var>) [-run <id>]
-                (-sth <file>... -pubkey <hex|file> | -unanchored) [-max-ack <duration>] [-as-of <time>]
+                (-sth <file>... -pubkey <hex|file> | -unanchored) [-max-ack <duration>] [-strict] [-as-of <time>]
          verify that every event that needed a person (an unknown-outcome halt, an approval gate,
          an aborted run, a recovery failure, an overdue notice, an all-clear) was notified, and
          when it was acknowledged: each trail's leaves are read strictly (an unknown record kind or
@@ -595,7 +595,7 @@ bide audit: produce and verify audit proof bundles
          journal shows must be observed in its run's trail. Each event gets a verdict: acked,
          acked_late (past its deadline or -max-ack), pending, failing, overdue, cleared before
          notification, never_notified, and the command fails (exit 1) on acked_late, overdue and
-         never_notified. -db and -postgres-env (a variable holding the DSN) read every run, or -run,
+         never_notified (and, with -strict, on the warnings unobserved_resolved and all_clear_untimed). -db and -postgres-env (a variable holding the DSN) read every run, or -run,
          from a store, in the full bide command; the audit-only build reads exported files
 
   prove-absent -journal <file> -sth <file> -key (tool:<id>|policy:<digest>) [-out <file>]
@@ -674,6 +674,8 @@ Usage of bide audit notifications:
     	with -db or -postgres-env: only this run and its sub-runs; default every run
   -sth value
     	a signed tree head over a trail (audit.SignNotifyTrail as JSON); repeat once per trail
+  -strict
+    	also fail (exit 1) on a warning: a decided gate no notifier observed (unobserved_resolved), or an all-clear owed that cannot be timed (all_clear_untimed)
   -trail value
     	a notification trail export (audit.ExportNotifyTrail as JSON); repeat once per trail
   -unanchored
