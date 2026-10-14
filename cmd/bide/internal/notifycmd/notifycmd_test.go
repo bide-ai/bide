@@ -550,5 +550,12 @@ func TestRelayStateFileSurvivesARestart(t *testing.T) {
 	if slack.n() != 1 {
 		t.Fatalf("slack saw %d messages, want 1 across the restart", slack.n())
 	}
+	if code := r2.finish(t); code != 0 {
+		t.Fatalf("stop: exit %d", code)
+	}
+	// A stopped relay has released the lock and closed its lock file: Windows refuses to delete one that is open.
+	if err := os.Remove(state + ".lock"); err != nil {
+		t.Fatalf("the lock file is still open after the relay stopped: %v", err)
+	}
 	noSecretLeaks(t, "relay output", r.stdout.String(), r.stderr.String(), r2.stdout.String(), r2.stderr.String())
 }

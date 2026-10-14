@@ -737,7 +737,12 @@ func restartHandler(t *testing.T, path string, sends *atomic.Int32, size int) (*
 	}
 	srv := httptest.NewServer(h)
 	handlers.Store(srv, h)
-	t.Cleanup(func() { closeSrv(srv) })
+	t.Cleanup(func() {
+		closeSrv(srv)
+		if path != "" {
+			requireStateFree(t, path, "after the test's relay closed")
+		}
+	})
 	return srv, &rig{srv: srv}
 }
 
@@ -1076,7 +1081,11 @@ func coalescingHandler(t *testing.T, path string, delay time.Duration) (*Handler
 		t.Fatal(err)
 	}
 	srv := httptest.NewServer(h)
-	t.Cleanup(srv.Close)
+	t.Cleanup(func() {
+		srv.Close()
+		h.Close() // a relay that was not closed holds its lock file open, which Windows cannot delete
+		requireStateFree(t, path, "after the test's relay closed")
+	})
 	return h, &rig{srv: srv}
 }
 
