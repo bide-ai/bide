@@ -12,6 +12,7 @@ import (
 	"strings"
 	"time"
 
+	gcpkmsclient "cloud.google.com/go/kms/apiv1"
 	"github.com/aws/aws-sdk-go-v2/config"
 	"github.com/aws/aws-sdk-go-v2/service/kms"
 
@@ -19,6 +20,7 @@ import (
 	"github.com/bide-ai/bide/cmd/bide/bide-hsm/internal/keyref"
 	"github.com/bide-ai/bide/cmd/bide/internal/approvecmd"
 	"github.com/bide-ai/bide/signer/awskms"
+	"github.com/bide-ai/bide/signer/gcpkms"
 	"github.com/bide-ai/bide/signer/pkcs11"
 )
 
@@ -36,6 +38,17 @@ type Options struct {
 	// KMSClient returns the KMS client for a region. Nil uses the AWS SDK's default credential
 	// chain with that region. A test supplies a fake.
 	KMSClient func(ctx context.Context, region string) (awskms.API, error)
+	// AllowSoftwareKey lets a Google Cloud KMS key version at protection level SOFTWARE be used.
+	// By default only an HSM-backed version is, and Cloud KMS has no HSM-backed Ed25519 key, so an
+	// Ed25519 key needs this. It applies to a gcpkms: reference only.
+	AllowSoftwareKey bool
+	// VerifyAttestation makes a Google Cloud KMS key version prove, by its Cloud HSM attestation,
+	// that its key was generated in the HSM and cannot be extracted (signer/gcpkms
+	// Config.VerifyAttestation). It applies to a gcpkms: reference only.
+	VerifyAttestation bool
+	// GCPClient returns the Cloud KMS client. Nil uses Google's application default credentials. A
+	// test supplies one connected to an emulator.
+	GCPClient func(ctx context.Context) (gcpkms.API, error)
 	// PIN, when set, replaces the PIN source the reference names. A test uses it to count how often
 	// the token is asked to log in.
 	PIN pkcs11.PINSource
@@ -47,6 +60,10 @@ type Options struct {
 // key is held (Where) and, when the non-extractable check was lifted, says so (Notice).
 func Open(ctx context.Context, ref keyref.Ref, o Options) (audit.Signer, error) {
 	algs := []audit.Alg{audit.AlgEd25519, audit.AlgECDSAP256}
+	if ref.Kind == keyref.KindGCPKMS {
+		// P-256 is Cloud KMS's HSM-backed scheme and the signer's default; Ed25519 is software only.
+		algs = []audit.Alg{audit.AlgECDSAP256, audit.AlgEd25519}
+	}
 	if o.Alg != "" {
 		if o.Alg != audit.AlgEd25519 && o.Alg != audit.AlgECDSAP256 {
 			return nil, fmt.Errorf("-alg %q: want ed25519 or ecdsa-p256: an HSM or KMS key here is one of those", o.Alg)
@@ -72,6 +89,8 @@ func Open(ctx context.Context, ref keyref.Ref, o Options) (audit.Signer, error) 
 			s, err = openPKCS11(ref.PKCS11, alg, o)
 		case keyref.KindAWSKMS:
 			s, err = openKMS(ctx, ref.KMS, alg, o)
+		case keyref.KindGCPKMS:
+			s, err = openGCP(ctx, ref.GCP, alg, o)
 		default:
 			return nil, errors.New("not a key reference")
 		}
@@ -92,6 +111,12 @@ func Open(ctx context.Context, ref keyref.Ref, o Options) (audit.Signer, error) 
 			if k, ok := s.(interface{ KeyARN() string }); ok && ref.Kind == keyref.KindAWSKMS && strings.Contains(ref.KMS.ARN, ":alias/") {
 				d.where += " (resolved to " + k.KeyARN() + ")"
 			}
+			if g, ok := s.(interface{ ProtectionLevel() string }); ok && ref.Kind == keyref.KindGCPKMS {
+				d.where += " (protection level " + g.ProtectionLevel() + ")"
+				if g.ProtectionLevel() != "HSM" && g.ProtectionLevel() != "HSM_SINGLE_TENANT" {
+					d.notice = "-allow-software-key: this key version is at protection level " + g.ProtectionLevel() + ", not in an HSM"
+				}
+			}
 			if ref.Kind == keyref.KindPKCS11 && o.AllowExtractable {
 				d.notice = "-allow-extractable: the token was not required to keep this key non-extractable, so it may be copyable out of the token"
 			}
@@ -99,16 +124,25 @@ func Open(ctx context.Context, ref keyref.Ref, o Options) (audit.Signer, error) 
 		}
 		// Only "this key is not of the scheme tried" moves on to the next scheme: a wrong PIN, a
 		// missing key or a refused permission is the answer, and trying again would repeat it.
-		if i < len(algs)-1 && (errors.Is(err, pkcs11.ErrNoEd25519) || errors.Is(err, awskms.ErrNoEd25519)) {
+		if i < len(algs)-1 && notOfScheme(err, alg) {
 			first = err
 			continue
 		}
-		if first != nil && (errors.Is(err, pkcs11.ErrNoP256) || errors.Is(err, awskms.ErrNoP256)) {
-			return nil, fmt.Errorf("the key is neither an Ed25519 nor an ECDSA P-256 key (as Ed25519: %v; as ECDSA P-256: %w)", first, err)
+		if first != nil && notOfScheme(err, alg) {
+			return nil, fmt.Errorf("the key is neither an Ed25519 nor an ECDSA P-256 key (first attempt: %v; second: %w)", first, err)
 		}
 		return nil, err
 	}
 	return nil, first
+}
+
+// notOfScheme reports whether err says the key is not a key of scheme alg (as opposed to any other
+// failure, which is the answer and is not retried under the other scheme).
+func notOfScheme(err error, alg audit.Alg) bool {
+	if alg == audit.AlgEd25519 {
+		return errors.Is(err, pkcs11.ErrNoEd25519) || errors.Is(err, awskms.ErrNoEd25519) || errors.Is(err, gcpkms.ErrNoEd25519)
+	}
+	return errors.Is(err, pkcs11.ErrNoP256) || errors.Is(err, awskms.ErrNoP256) || errors.Is(err, gcpkms.ErrNoP256)
 }
 
 // described is a signer with where its key is held and a notice for the approver. It forwards Close.
@@ -228,13 +262,50 @@ func openKMS(ctx context.Context, k *keyref.KMS, alg audit.Alg, o Options) (audi
 	}
 	c, err := mk(ctx, k.Region)
 	if err != nil {
-		return nil, fmt.Errorf("awskms: configure the AWS client: %w", err)
+		return nil, credError("awskms: could not load AWS credentials or configuration; set AWS_PROFILE or the standard AWS environment, or check the shared config files", err)
 	}
 	s, err := awskms.Open(ctx, awskms.Config{Client: c, KeyID: k.ARN, Scheme: alg})
 	if err != nil {
 		return nil, err
 	}
 	return s, nil
+}
+
+func openGCP(ctx context.Context, g *keyref.GCPKMS, alg audit.Alg, o Options) (audit.Signer, error) {
+	mk := o.GCPClient
+	if mk == nil {
+		mk = defaultGCP
+	}
+	c, err := mk(ctx)
+	if err != nil {
+		return nil, credError("gcpkms: could not load Google application default credentials; run gcloud auth application-default login or set GOOGLE_APPLICATION_CREDENTIALS", err)
+	}
+	s, err := gcpkms.Open(ctx, gcpkms.Config{Client: c, KeyVersion: g.Version, Scheme: alg,
+		AllowSoftwareKey: o.AllowSoftwareKey, VerifyAttestation: o.VerifyAttestation})
+	if err != nil {
+		return nil, err
+	}
+	return s, nil
+}
+
+func defaultGCP(ctx context.Context) (gcpkms.API, error) {
+	ctx, cancel := context.WithTimeout(ctx, configTimeout)
+	defer cancel()
+	return gcpkmsclient.NewKeyManagementClient(ctx)
+}
+
+// credError is a fixed message for a failure to load cloud credentials or configuration. The SDKs'
+// errors can echo the content of a malformed credentials or config file (a character, a type value, a
+// parse detail), so the message is never built from them; only a context error keeps its identity for
+// errors.Is.
+func credError(msg string, err error) error {
+	switch {
+	case errors.Is(err, context.DeadlineExceeded):
+		return fmt.Errorf("%s: %w", msg, context.DeadlineExceeded)
+	case errors.Is(err, context.Canceled):
+		return fmt.Errorf("%s: %w", msg, context.Canceled)
+	}
+	return errors.New(msg)
 }
 
 // configTimeout bounds loading the AWS configuration, which can reach for the instance metadata

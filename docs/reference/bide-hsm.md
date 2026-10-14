@@ -65,6 +65,13 @@ A key reference is one of:
       An AWS KMS key by its full ARN (alias/<name> in place of key/<id> names an alias, which is
       resolved once). Credentials come from the AWS SDK's default chain (environment, shared
       config, instance or task role); the ARN's region is used.
+  gcpkms:projects/<p>/locations/<l>/keyRings/<r>/cryptoKeys/<k>/cryptoKeyVersions/<n>
+      A Google Cloud KMS key version by its full resource name with the numeric version (no alias,
+      no "latest": signing uses exactly that version). Credentials are Google's application default
+      credentials. Only an HSM-backed version is used unless -allow-software-key (Cloud KMS has no
+      HSM-backed Ed25519 key, so an Ed25519 key needs it, and approve then says so beside the key);
+      -verify-attestation requires the key's Cloud HSM attestation to prove it was generated in the
+      HSM and cannot be extracted.
 
 The key is Ed25519 or ECDSA P-256, the schemes HSMs and KMS sign; -alg names the scheme, and
 without it the key's type is detected. A PKCS#11 key must be marked non-extractable and sensitive
@@ -77,6 +84,8 @@ Flags:
     	the key's scheme: ed25519 or ecdsa-p256 (default: detect it)
   -allow-extractable
     	use a PKCS#11 key the token does not mark non-extractable and sensitive; by default such a key is refused
+  -allow-software-key
+    	use a Google Cloud KMS key version at protection level SOFTWARE; by default only an HSM-backed version is used, and Cloud KMS has no HSM-backed Ed25519 key
   -approver-keys string
     	approver public keys, a JSON object of approver id to key text, e.g. {"ops":"ed25519:ab12..."}, the file bide view -approver-keys reads (bide-hsm pubkey -as prints an entry): refuse a -key that is not the one enrolled for -as, and verify the tally. Required for an m-of-n gate unless -unverified
   -as string
@@ -92,7 +101,7 @@ Flags:
   -json
     	with -list: print the waiting calls as JSON
   -key string
-    	reference to your key in an HSM or KMS: a pkcs11: URI (RFC 7512; quote it) or awskms:<key ARN>; not for a single-approver gate
+    	reference to your key in an HSM or KMS: a pkcs11: URI (RFC 7512; quote it), awskms:<key ARN> or gcpkms:<key version>; not for a single-approver gate
   -list
     	list the calls that wait for a decision, each with its bide-hsm approve command; nothing is recorded
   -postgres string
@@ -107,6 +116,8 @@ Flags:
     	the run whose journal holds the call: the pause's run ID
   -unverified
     	decide an m-of-n gate without -approver-keys: the key is not checked against the one enrolled for you, and the tally is not verified
+  -verify-attestation
+    	for a Google Cloud KMS key version in an HSM, require its Cloud HSM attestation to prove the key was generated there and cannot be extracted
   -verify-receipt string
     	verify a decision receipt on its own, against -approver-keys, instead of deciding anything: its signature over the exact call it states
   -yes
@@ -148,6 +159,13 @@ A key reference is one of:
       An AWS KMS key by its full ARN (alias/<name> in place of key/<id> names an alias, which is
       resolved once). Credentials come from the AWS SDK's default chain (environment, shared
       config, instance or task role); the ARN's region is used.
+  gcpkms:projects/<p>/locations/<l>/keyRings/<r>/cryptoKeys/<k>/cryptoKeyVersions/<n>
+      A Google Cloud KMS key version by its full resource name with the numeric version (no alias,
+      no "latest": signing uses exactly that version). Credentials are Google's application default
+      credentials. Only an HSM-backed version is used unless -allow-software-key (Cloud KMS has no
+      HSM-backed Ed25519 key, so an Ed25519 key needs it, and approve then says so beside the key);
+      -verify-attestation requires the key's Cloud HSM attestation to prove it was generated in the
+      HSM and cannot be extracted.
 
 The key is Ed25519 or ECDSA P-256, the schemes HSMs and KMS sign; -alg names the scheme, and
 without it the key's type is detected. A PKCS#11 key must be marked non-extractable and sensitive
@@ -160,12 +178,16 @@ Flags:
     	the key's scheme: ed25519 or ecdsa-p256 (default: detect it)
   -allow-extractable
     	use a PKCS#11 key the token does not mark non-extractable and sensitive; by default such a key is refused
+  -allow-software-key
+    	use a Google Cloud KMS key version at protection level SOFTWARE; by default only an HSM-backed version is used, and Cloud KMS has no HSM-backed Ed25519 key
   -as string
     	the approver id the key is for: prints the approver-keys entry for it
   -color when
     	when to color the output: auto (the default: on a terminal, unless NO_COLOR is set or TERM is dumb), always or never
   -key string
-    	reference to the key: a pkcs11: URI (quote it) or awskms:<key ARN>
+    	reference to the key: a pkcs11: URI (quote it), awskms:<key ARN> or gcpkms:<key version>
+  -verify-attestation
+    	for a Google Cloud KMS key version in an HSM, require its Cloud HSM attestation to prove the key was generated there and cannot be extracted
 ```
 
 ## bide-hsm version
@@ -212,6 +234,13 @@ A key reference is one of:
       An AWS KMS key by its full ARN (alias/<name> in place of key/<id> names an alias, which is
       resolved once). Credentials come from the AWS SDK's default chain (environment, shared
       config, instance or task role); the ARN's region is used.
+  gcpkms:projects/<p>/locations/<l>/keyRings/<r>/cryptoKeys/<k>/cryptoKeyVersions/<n>
+      A Google Cloud KMS key version by its full resource name with the numeric version (no alias,
+      no "latest": signing uses exactly that version). Credentials are Google's application default
+      credentials. Only an HSM-backed version is used unless -allow-software-key (Cloud KMS has no
+      HSM-backed Ed25519 key, so an Ed25519 key needs it, and approve then says so beside the key);
+      -verify-attestation requires the key's Cloud HSM attestation to prove it was generated in the
+      HSM and cannot be extracted.
 
 The key is Ed25519 or ECDSA P-256, the schemes HSMs and KMS sign; -alg names the scheme, and
 without it the key's type is detected. A PKCS#11 key must be marked non-extractable and sensitive

@@ -92,11 +92,18 @@ func (r result) all() string { return r.out + r.errOut }
 // hsm runs bide-hsm in the process with the fake KMS.
 func hsm(t *testing.T, kms *fakekms.KMS, stdin string, args ...string) result {
 	t.Helper()
-	var out, errb bytes.Buffer
 	d := deps{stores: approvecmd.JournalStores()}
 	if kms != nil {
 		d.kms = kms.Client
 	}
+	return hsmWith(t, d, stdin, args...)
+}
+
+// hsmWith runs bide-hsm in the process with the given dependencies (the journal stores are filled in).
+func hsmWith(t *testing.T, d deps, stdin string, args ...string) result {
+	t.Helper()
+	d.stores = approvecmd.JournalStores()
+	var out, errb bytes.Buffer
 	if len(args) > 1 {
 		args = append(args[:1:1], append([]string{"-color", "never"}, args[1:]...)...)
 	}
@@ -175,6 +182,12 @@ func enrol(t *testing.T, kms *fakekms.KMS, id, ref string, extra ...string) stri
 	if r.code != 0 {
 		t.Fatalf("pubkey %s: %d\n%s", id, r.code, r.all())
 	}
+	return enrolEntry(t, r, id)
+}
+
+// enrolEntry returns the key text of the approver-keys entry a pubkey run printed.
+func enrolEntry(t *testing.T, r result, id string) string {
+	t.Helper()
 	var entry map[string]string
 	for _, l := range strings.Split(r.out, "\n") {
 		if rest, ok := strings.CutPrefix(l, "approver-keys entry  "); ok {

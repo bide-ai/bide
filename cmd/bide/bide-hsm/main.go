@@ -27,6 +27,7 @@ import (
 	"github.com/bide-ai/bide/cmd/bide/internal/approvecmd"
 	"github.com/bide-ai/bide/internal/term"
 	"github.com/bide-ai/bide/signer/awskms"
+	"github.com/bide-ai/bide/signer/gcpkms"
 )
 
 // version is the release version, set by a build with -ldflags "-X main.version=v1.2.3".
@@ -35,6 +36,7 @@ var version = ""
 // deps are what a test replaces: the KMS client and the journal stores.
 type deps struct {
 	kms    func(ctx context.Context, region string) (awskms.API, error)
+	gcp    func(ctx context.Context) (gcpkms.API, error)
 	stores approvecmd.Stores
 }
 
@@ -64,6 +66,13 @@ const keyRefHelp = `A key reference is one of:
       An AWS KMS key by its full ARN (alias/<name> in place of key/<id> names an alias, which is
       resolved once). Credentials come from the AWS SDK's default chain (environment, shared
       config, instance or task role); the ARN's region is used.
+  gcpkms:projects/<p>/locations/<l>/keyRings/<r>/cryptoKeys/<k>/cryptoKeyVersions/<n>
+      A Google Cloud KMS key version by its full resource name with the numeric version (no alias,
+      no "latest": signing uses exactly that version). Credentials are Google's application default
+      credentials. Only an HSM-backed version is used unless -allow-software-key (Cloud KMS has no
+      HSM-backed Ed25519 key, so an Ed25519 key needs it, and approve then says so beside the key);
+      -verify-attestation requires the key's Cloud HSM attestation to prove it was generated in the
+      HSM and cannot be extracted.
 
 The key is Ed25519 or ECDSA P-256, the schemes HSMs and KMS sign; -alg names the scheme, and
 without it the key's type is detected. A PKCS#11 key must be marked non-extractable and sensitive
@@ -134,12 +143,16 @@ func run(args []string, in io.Reader, stdout, stderr io.Writer, d deps) int {
 type keyFlags struct {
 	alg              *string
 	allowExtractable *bool
+	allowSoftware    *bool
+	verifyAttest     *bool
 }
 
 func addKeyFlags(fs *flag.FlagSet) keyFlags {
 	return keyFlags{
 		alg:              fs.String("alg", "", "the key's scheme: ed25519 or ecdsa-p256 (default: detect it)"),
 		allowExtractable: fs.Bool("allow-extractable", false, "use a PKCS#11 key the token does not mark non-extractable and sensitive; by default such a key is refused"),
+		allowSoftware:    fs.Bool("allow-software-key", false, "use a Google Cloud KMS key version at protection level SOFTWARE; by default only an HSM-backed version is used, and Cloud KMS has no HSM-backed Ed25519 key"),
+		verifyAttest:     fs.Bool("verify-attestation", false, "for a Google Cloud KMS key version in an HSM, require its Cloud HSM attestation to prove the key was generated there and cannot be extracted"),
 	}
 }
 
@@ -152,7 +165,14 @@ func (k keyFlags) open(ref string, d deps) (audit.Signer, error) {
 	if *k.allowExtractable && r.Kind != keyref.KindPKCS11 {
 		return nil, errors.New("-allow-extractable applies to a PKCS#11 key only: a KMS key cannot be exported")
 	}
-	return hsmkeys.Open(context.Background(), r, hsmkeys.Options{AllowExtractable: *k.allowExtractable, Alg: audit.Alg(*k.alg), KMSClient: d.kms})
+	if (*k.allowSoftware || *k.verifyAttest) && r.Kind != keyref.KindGCPKMS {
+		return nil, errors.New("-allow-software-key and -verify-attestation apply to a gcpkms: key only")
+	}
+	if *k.allowSoftware && *k.verifyAttest {
+		return nil, errors.New("-allow-software-key and -verify-attestation do not go together: a software key has no HSM attestation")
+	}
+	return hsmkeys.Open(context.Background(), r, hsmkeys.Options{AllowExtractable: *k.allowExtractable, Alg: audit.Alg(*k.alg), KMSClient: d.kms,
+		AllowSoftwareKey: *k.allowSoftware, VerifyAttestation: *k.verifyAttest, GCPClient: d.gcp})
 }
 
 // keySource is the key source of bide-hsm approve.
@@ -161,8 +181,8 @@ func keySource(d deps) approvecmd.KeySource {
 	return approvecmd.KeySource{
 		Prog:         "bide-hsm approve",
 		Usage:        approveUsage,
-		KeyHelp:      "reference to your key in an HSM or KMS: a pkcs11: URI (RFC 7512; quote it) or awskms:<key ARN>; not for a single-approver gate",
-		KeyNoun:      "your key reference, a pkcs11: URI or awskms:<key ARN>",
+		KeyHelp:      "reference to your key in an HSM or KMS: a pkcs11: URI (RFC 7512; quote it), awskms:<key ARN> or gcpkms:<key version>; not for a single-approver gate",
+		KeyNoun:      "your key reference, a pkcs11: URI, awskms:<key ARN> or gcpkms:<key version>",
 		EnrolHelp:    "bide-hsm pubkey -as prints an entry",
 		EnrolCmd:     "bide-hsm pubkey -as",
 		ReceiptWhere: "in the working directory",
@@ -198,7 +218,7 @@ func pubkey(args []string, stdout, stderr io.Writer, d deps) int {
 		fmt.Fprint(fs.Output(), pubkeyUsage)
 		fs.PrintDefaults()
 	}
-	key := fs.String("key", "", "reference to the key: a pkcs11: URI (quote it) or awskms:<key ARN>")
+	key := fs.String("key", "", "reference to the key: a pkcs11: URI (quote it), awskms:<key ARN> or gcpkms:<key version>")
 	as := fs.String("as", "", "the approver id the key is for: prints the approver-keys entry for it")
 	kf := addKeyFlags(fs)
 	color := term.Flag(fs)

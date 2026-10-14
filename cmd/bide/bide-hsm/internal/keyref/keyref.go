@@ -29,6 +29,12 @@
 //
 // A full ARN, so the reference names the region and the account and does not depend on the
 // environment for them. Credentials come from the AWS SDK's default chain.
+//
+//	gcpkms:projects/<p>/locations/<l>/keyRings/<r>/cryptoKeys/<k>/cryptoKeyVersions/<n>
+//
+// A full CryptoKeyVersion resource name with a numeric version: no alias, no "latest", so the
+// reference names one key version and signing uses exactly that. Credentials come from Google's
+// application default credentials.
 package keyref
 
 import (
@@ -50,6 +56,7 @@ type Kind int
 const (
 	KindPKCS11 Kind = iota + 1
 	KindAWSKMS
+	KindGCPKMS
 )
 
 // Ref is a parsed key reference. Exactly one of PKCS11 and KMS is set, as Kind says.
@@ -57,6 +64,7 @@ type Ref struct {
 	Kind   Kind
 	PKCS11 *PKCS11
 	KMS    *KMS
+	GCP    *GCPKMS
 }
 
 // PKCS11 is a parsed pkcs11: URI.
@@ -70,6 +78,11 @@ type PKCS11 struct {
 	PINEnv       string // pin-source=env:...
 	PINPrompt    bool   // pin-source=prompt: ask on the controlling terminal
 	PINProtected bool   // pin-source=protected: the token collects the PIN on its own PIN pad
+}
+
+// GCPKMS is a parsed gcpkms: reference.
+type GCPKMS struct {
+	Version string // the full CryptoKeyVersion resource name
 }
 
 // KMS is a parsed awskms: reference.
@@ -96,6 +109,10 @@ var known = map[string]bool{
 
 var pathAttrs = map[string]bool{"token": true, "slot-id": true, "object": true, "id": true, "type": true}
 var queryAttrs = map[string]bool{"module-path": true, "pin-source": true}
+
+// gcpVersion is the shape of a CryptoKeyVersion resource name, as signer/gcpkms accepts it: the version
+// is the number Cloud KMS assigns, so an alias or "latest" is not a version.
+var gcpVersion = regexp.MustCompile(`^projects/[A-Za-z0-9_:.-]+/locations/[A-Za-z0-9_-]+/keyRings/[A-Za-z0-9_-]+/cryptoKeys/[A-Za-z0-9_-]+/cryptoKeyVersions/[1-9][0-9]*$`)
 
 // kmsARN is a KMS key or alias ARN. An alias is alias/ and a name of letters, digits, / _ and -,
 // without an empty path segment.
@@ -140,8 +157,14 @@ func Parse(s string) (Ref, error) {
 			return Ref{}, err
 		}
 		return Ref{Kind: KindAWSKMS, KMS: k}, nil
+	case strings.HasPrefix(s, "gcpkms:"):
+		v := strings.TrimPrefix(s, "gcpkms:")
+		if !gcpVersion.MatchString(v) {
+			return Ref{}, errors.New("gcpkms: not a CryptoKeyVersion resource name: want gcpkms:projects/<p>/locations/<l>/keyRings/<r>/cryptoKeys/<k>/cryptoKeyVersions/<n> with a numeric version (no alias, no latest, no query)")
+		}
+		return Ref{Kind: KindGCPKMS, GCP: &GCPKMS{Version: v}}, nil
 	}
-	return Ref{}, errors.New("key reference has no scheme bide-hsm knows: want a pkcs11: URI (RFC 7512) or awskms:<key ARN>")
+	return Ref{}, errors.New("key reference has no scheme bide-hsm knows: want a pkcs11: URI (RFC 7512), awskms:<key ARN> or gcpkms:<key version>")
 }
 
 func parseKMS(rest string) (*KMS, error) {
@@ -385,6 +408,8 @@ func (r Ref) String() string {
 	switch r.Kind {
 	case KindAWSKMS:
 		return "awskms:" + r.KMS.ARN
+	case KindGCPKMS:
+		return "gcpkms:" + r.GCP.Version
 	case KindPKCS11:
 		p := r.PKCS11
 		var parts []string

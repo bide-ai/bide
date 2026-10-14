@@ -345,3 +345,39 @@ func TestProtectedPINSource(t *testing.T) {
 		t.Fatalf("on a token without a pad: %v", err)
 	}
 }
+
+// A malformed credentials or config file is reported with a fixed message: the SDKs' errors echo
+// content from the file, which is never shown.
+func TestCredentialLoadErrorsCarryNoFileContent(t *testing.T) {
+	const secret = "s3cr3t-file-content-xyz"
+	dir := t.TempDir()
+	bad := dir + "/bad"
+	if err := os.WriteFile(bad, []byte(secret+" {not json or ini\n[profile "+secret+"\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv("GOOGLE_APPLICATION_CREDENTIALS", bad)
+	t.Setenv("AWS_CONFIG_FILE", bad)
+	t.Setenv("AWS_SHARED_CREDENTIALS_FILE", bad)
+	t.Setenv("AWS_PROFILE", "default")
+	t.Setenv("AWS_EC2_METADATA_DISABLED", "true")
+	for _, ref := range []string{
+		"gcpkms:projects/p/locations/l/keyRings/r/cryptoKeys/k/cryptoKeyVersions/1",
+		"awskms:arn:aws:kms:us-east-1:111122223333:key/abc",
+	} {
+		r, err := keyref.Parse(ref)
+		if err != nil {
+			t.Fatal(err)
+		}
+		_, err = Open(context.Background(), r, Options{AllowSoftwareKey: true})
+		if err == nil || strings.Contains(err.Error(), secret) || strings.Contains(err.Error(), "not json") {
+			t.Fatalf("%s: %v", ref, err)
+		}
+		t.Logf("%s: %v", ref, err)
+	}
+	if err := credError("m", errors.New("parse error near "+secret)); strings.Contains(err.Error(), secret) || errors.Unwrap(err) != nil {
+		t.Fatalf("the SDK's error text is kept: %v", err)
+	}
+	if err := credError("m", context.DeadlineExceeded); !errors.Is(err, context.DeadlineExceeded) {
+		t.Fatalf("a timeout lost its identity: %v", err)
+	}
+}

@@ -199,3 +199,36 @@ func TestRefString(t *testing.T) {
 		t.Fatalf("String = %q", k.String())
 	}
 }
+
+func TestParseGCPKMS(t *testing.T) {
+	const ok = "projects/bank-prod/locations/europe-west2/keyRings/bide/cryptoKeys/approver/cryptoKeyVersions/3"
+	r, err := Parse("gcpkms:" + ok)
+	if err != nil || r.Kind != KindGCPKMS || r.GCP == nil || r.GCP.Version != ok || r.PKCS11 != nil || r.KMS != nil || r.String() != "gcpkms:"+ok {
+		t.Fatalf("%+v %v", r, err)
+	}
+	for name, ref := range map[string]string{
+		"empty":                "gcpkms:",
+		"no version":           "gcpkms:projects/p/locations/l/keyRings/r/cryptoKeys/k",
+		"latest":               "gcpkms:projects/p/locations/l/keyRings/r/cryptoKeys/k/cryptoKeyVersions/latest",
+		"primary":              "gcpkms:projects/p/locations/l/keyRings/r/cryptoKeys/k/cryptoKeyVersions/primary",
+		"version zero":         "gcpkms:projects/p/locations/l/keyRings/r/cryptoKeys/k/cryptoKeyVersions/0",
+		"leading zero":         "gcpkms:projects/p/locations/l/keyRings/r/cryptoKeys/k/cryptoKeyVersions/01",
+		"signed version":       "gcpkms:projects/p/locations/l/keyRings/r/cryptoKeys/k/cryptoKeyVersions/+1",
+		"query":                "gcpkms:projects/p/locations/l/keyRings/r/cryptoKeys/k/cryptoKeyVersions/1?x=" + secret,
+		"fragment":             "gcpkms:projects/p/locations/l/keyRings/r/cryptoKeys/k/cryptoKeyVersions/1#" + secret,
+		"trailing slash":       "gcpkms:projects/p/locations/l/keyRings/r/cryptoKeys/k/cryptoKeyVersions/1/",
+		"empty segment":        "gcpkms:projects//locations/l/keyRings/r/cryptoKeys/k/cryptoKeyVersions/1",
+		"escape":               "gcpkms:projects/p%2e/locations/l/keyRings/r/cryptoKeys/k/cryptoKeyVersions/1",
+		"space":                "gcpkms:projects/p /locations/l/keyRings/r/cryptoKeys/k/cryptoKeyVersions/1",
+		"dot dot":              "gcpkms:projects/p/locations/l/keyRings/r/cryptoKeys/../cryptoKeyVersions/1",
+		"other resource":       "gcpkms:projects/p/locations/l/keyRings/r/importJobs/j/cryptoKeyVersions/1",
+		"uppercase scheme":     "GCPKMS:projects/p/locations/l/keyRings/r/cryptoKeys/k/cryptoKeyVersions/1",
+		"a secret in the path": "gcpkms:projects/" + secret + "/locations/l/keyRings/r/cryptoKeys/k",
+	} {
+		if r, err := Parse(ref); err == nil {
+			t.Errorf("%s: %q parsed as %+v", name, ref, r)
+		} else if strings.Contains(err.Error(), secret) {
+			t.Errorf("%s: the error repeats a value: %v", name, err)
+		}
+	}
+}
