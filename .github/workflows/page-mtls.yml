@@ -8,7 +8,6 @@ name: Page mTLS
 # on pull requests that touch approvals/ and in the merge queue (which does not filter by path).
 on:
   pull_request:
-    branches: [ main ]
     paths:
       - 'approvals/**'
       - '.github/workflows/page-mtls.yml'
