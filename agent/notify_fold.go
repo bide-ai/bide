@@ -127,6 +127,8 @@ type Watched struct {
 type OpenState struct {
 	Watched    []Watched // the events listed, in the order they were
 	Backfilled bool      // the events observed before the open trail existed were listed
+	Backfills  int       // the backfill passes recorded, in this segment and the ones before it
+	BackfillAt time.Time // when the last one was recorded
 	Sealed     string    // the segment that continues this one, "" if it is not sealed
 }
 
@@ -152,9 +154,12 @@ func FoldOpen(recs []NotifyRecord) OpenState {
 				}
 				open[w.Key] = w
 			}
-			st.Backfilled = r.Backfilled
+			st.Backfilled, st.Backfills, st.BackfillAt = r.Backfilled, r.Backfills, r.BackfillAt
+			if r.Backfilled && st.Backfills == 0 {
+				st.Backfills = 1
+			}
 		case NotifyBackfilled:
-			st.Backfilled = true
+			st.Backfilled, st.Backfills, st.BackfillAt = true, st.Backfills+1, r.At
 		case NotifyWatch:
 			if _, ok := open[r.Key]; !ok {
 				open[r.Key] = Watched{Key: r.Key, RunID: r.RunID, At: r.At}

@@ -159,8 +159,8 @@ func checkOpenGroup(trails map[string][]agent.NotifyRecord, skew time.Duration, 
 			}
 		}
 	}
-	if own > 1 {
-		add(segs[0], -1, nil, "the backfill is recorded %d times, once is allowed", own)
+	if own > 2 {
+		add(segs[0], -1, nil, "the backfill is recorded %d times, at most two passes are allowed (the second a day after the first)", own)
 	}
 
 	// The chain: a sealed segment's successor starts with a checkpoint equal to what it folds to.
@@ -182,6 +182,9 @@ func checkOpenGroup(trails map[string][]agent.NotifyRecord, skew time.Duration, 
 		}
 		if cp.Backfilled != st.Backfilled {
 			add(st.Sealed, 0, next, "backfilled is %v, and %s folds to %v", cp.Backfilled, name, st.Backfilled)
+		}
+		if n := max(cp.Backfills, b2i(cp.Backfilled)); n != st.Backfills || !cp.BackfillAt.Equal(st.BackfillAt) {
+			add(st.Sealed, 0, next, "the checkpoint carries %d backfill pass(es), last at %s, and %s folds to %d, last at %s", n, cp.BackfillAt.UTC().Format(time.RFC3339), name, st.Backfills, st.BackfillAt.UTC().Format(time.RFC3339))
 		}
 		if !sameWatched(cp.Watching, st.Watched) {
 			add(st.Sealed, 0, next, "the checkpoint does not equal the events %s lists (%d listed, %d in the checkpoint)", name, len(st.Watched), len(cp.Watching))
@@ -372,6 +375,13 @@ func checkOpenCoverage(trails map[string][]agent.NotifyRecord, skew time.Duratio
 		}
 	}
 	return out
+}
+
+func b2i(b bool) int {
+	if b {
+		return 1
+	}
+	return 0
 }
 
 func sameWatched(a, b []agent.Watched) bool {

@@ -100,7 +100,7 @@ func TestVerifyNotifications_AnchoredAMissingSegmentIsAFinding(t *testing.T) {
 	pub, priv, _ := ed25519.GenerateKey(nil)
 	k1, k2 := agent.ApprovalKey("r1", "c1", 0), agent.ApprovalKey("r1", "c2", 0)
 	d0, h0 := signedRecs(t, priv, day(0), segRec(agent.NotifyCheckpoint, 0, ""), op(agent.NotifyWatch, k1, 1), op(agent.NotifyWatch, k2, 2), segRec(agent.NotifyBackfilled, 4, ""), segRec(agent.NotifySeal, 86400, day(1)))
-	d1, h1 := signedRecs(t, priv, day(1), agent.NotifyRecord{Kind: agent.NotifyCheckpoint, At: at(86400), Backfilled: true,
+	d1, h1 := signedRecs(t, priv, day(1), agent.NotifyRecord{Kind: agent.NotifyCheckpoint, At: at(86400), Backfilled: true, Backfills: 1, BackfillAt: at(4),
 		Watching: []agent.Watched{{Key: k1, RunID: "r1", At: at(1)}, {Key: k2, RunID: "r1", At: at(2)}}})
 	idx, hi := signedRecs(t, priv, agent.OpenIndex(t0.Year()), segRec(agent.NotifySegment, 0, day(0)), segRec(agent.NotifySegment, 86400, day(1)))
 	in := func(xs []audit.NotifyTrailExport, hs []audit.SignedTreeHead) (audit.NotifyReport, error) {
@@ -157,5 +157,18 @@ func TestVerifyNotifications_AClockAtOnARunTrailRecordIsAViolation(t *testing.T)
 	rep, _ := checkTrails(t, b.export())
 	if !strings.Contains(violationsOf(rep), "clock_at") {
 		t.Fatalf("violations = %q", violationsOf(rep))
+	}
+}
+
+// The two backfill passes of a rolling upgrade are carried across segments, and verify.
+func TestVerifyNotifications_TwoBackfillPassesAreCarriedAcrossASegment(t *testing.T) {
+	k1 := agent.ApprovalKey("r1", "c1", 0)
+	day0 := recsTrail(t, day(0), segRec(agent.NotifyCheckpoint, 0, ""), op(agent.NotifyWatch, k1, 1), segRec(agent.NotifyBackfilled, 2, ""),
+		segRec(agent.NotifyBackfilled, 14*3600, ""), segRec(agent.NotifySeal, 86400, day(1)))
+	day1 := recsTrail(t, day(1), agent.NotifyRecord{Kind: agent.NotifyCheckpoint, At: at(86400), Backfilled: true, Backfills: 2, BackfillAt: at(14*3600),
+		Watching: []agent.Watched{{Key: k1, RunID: "r1", At: at(1)}}})
+	idx := recsTrail(t, agent.OpenIndex(t0.Year()), segRec(agent.NotifySegment, 0, day(0)), segRec(agent.NotifySegment, 86400, day(1)))
+	if rep, _ := checkTrails(t, day0, day1, idx); violationsOf(rep) != "" {
+		t.Fatalf("two passes: %s", violationsOf(rep))
 	}
 }

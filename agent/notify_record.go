@@ -117,6 +117,11 @@ type NotifyRecord struct {
 	// checkpoint: the events listed, and whether the backfill is done. seal: the next segment.
 	Watching   []Watched `json:"watching,omitempty"`
 	Backfilled bool      `json:"backfilled,omitempty"`
+	// Backfills is how many backfill passes the carried state holds (at most two), and BackfillAt
+	// when the last one was recorded: a second pass, a day after the first, catches the events an
+	// older process delivered without listing them during a rolling upgrade.
+	Backfills  int       `json:"backfills,omitempty"`
+	BackfillAt time.Time `json:"backfill_at,omitzero"`
 	Next       string    `json:"next,omitempty"`
 
 	// cleared: "resolved", "decided", "ended" or "recovered". observed, for a resolved event: the same
@@ -132,6 +137,7 @@ func (NotifyRecord) agentEvent() {}
 func (r NotifyRecord) Normalized() NotifyRecord {
 	r.At = normTime(r.At)
 	r.ClockAt = normTime(r.ClockAt)
+	r.BackfillAt = normTime(r.BackfillAt)
 	r.EventAt = normTime(r.EventAt)
 	r.DeadlineAt = normTime(r.DeadlineAt)
 	r.Until = normTime(r.Until)

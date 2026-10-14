@@ -613,8 +613,12 @@ What it checks, and the status each event gets:
   earlier than the time and only on open-trail records) (a seal, in
   the day of the segment it seals into), a seal may skip days nobody ran on but not a segment an
   index lists, and every delivered `outcome_unknown`, `approval_pending` or `recovery_failing` event
-  in a run trail is listed on the open trail, or was observed before it and covered by the recorded
-  backfill; the open-trail record kinds are a violation on a run's trail. With signed heads, each
+  in a run trail is listed on the open trail, or was observed before it and covered by a recorded
+  backfill (at most two passes, the second a day after the first, which is what catches an event a
+  process of the previous version delivered, without listing it, during a rolling upgrade; the
+  first new-version scan of an unfinished run lists such an event at once, so during an upgrade
+  the audit can report an event as unlisted until then, and finish upgrading every process within
+  a day of the first new one starting); the open-trail record kinds are a violation on a run's trail. With signed heads, each
   open-trail segment and index needs its own (the same `SignNotifyTrail` heads as a run's trail), so
   a record or a whole segment deleted from either end is found. `bide audit notifications -db` and
   `-postgres-env` read every yearly index from 2026 (the year the open trail began), the segments

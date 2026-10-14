@@ -151,15 +151,38 @@ func (e *notifyEngine) clearScan(ctx context.Context, runID string) error {
 	if err != nil {
 		return err
 	}
-	return e.clearScanFold(ctx, FoldNotify(recs))
+	return e.clearScanFold(ctx, FoldNotify(recs), nil)
 }
 
 // clearScanFold is clearScan over a trail already loaded and folded. It also unlists, from the
 // NotifyOpenTrail, each event for which nothing more is owed.
-func (e *notifyEngine) clearScanFold(ctx context.Context, st NotifyState) error {
+func (e *notifyEngine) clearScanFold(ctx context.Context, st NotifyState, listed map[string]bool) error {
 	var errs []error
 	for _, key := range st.Keys {
 		es := st.Events[key]
+		// An event an older process delivered without listing it (a rolling upgrade) is listed by
+		// the first scan that sees it, so the all-clear does not depend on the one-time backfill.
+		if needsListing(st, key, es) {
+			if listed == nil {
+				_, recs, herr := e.openHead(ctx)
+				if herr != nil {
+					errs = append(errs, herr)
+					listed = map[string]bool{}
+				} else {
+					listed = map[string]bool{}
+					for _, w := range FoldWatch(recs) {
+						listed[w.Key] = true
+					}
+				}
+			}
+			if !listed[key] {
+				if werr := e.watch(ctx, key, es.RunID); werr != nil {
+					errs = append(errs, werr)
+				} else {
+					listed[key] = true
+				}
+			}
+		}
 		if NotificationKind(es.Kind) == NotificationResolved {
 			if es.Open() {
 				e.resumeResolved(es, &st)
@@ -401,7 +424,7 @@ func (e *notifyEngine) openHead(ctx context.Context) (string, []NotifyRecord, er
 			if len(recs) == 0 {
 				cp := NotifyRecord{Kind: NotifyCheckpoint}
 				if prev != nil {
-					cp.Watching, cp.Backfilled = prev.Watched, prev.Backfilled
+					cp.Watching, cp.Backfilled, cp.Backfills, cp.BackfillAt = prev.Watched, prev.Backfilled, prev.Backfills, prev.BackfillAt
 				}
 				e.stamp(&cp, name, nil)
 				if _, aerr := e.appendRec(ctx, name, 0, cp); aerr != nil {
@@ -469,6 +492,10 @@ func (e *notifyEngine) scanOpen(ctx context.Context) error {
 	if err != nil {
 		return err
 	}
+	listed := map[string]bool{}
+	for _, w := range FoldWatch(recs) {
+		listed[w.Key] = true
+	}
 	byRun := map[string][]Watched{}
 	var runs []string
 	for _, w := range FoldWatch(recs) {
@@ -492,7 +519,7 @@ func (e *notifyEngine) scanOpen(ctx context.Context) error {
 				}
 			}
 		}
-		if cerr := e.clearScanFold(ctx, st); cerr != nil {
+		if cerr := e.clearScanFold(ctx, st, listed); cerr != nil {
 			errs = append(errs, cerr)
 		}
 	}
@@ -513,7 +540,8 @@ func (e *notifyEngine) backfillOpen(ctx context.Context) error {
 	if err != nil {
 		return err
 	}
-	if FoldOpen(recs).Backfilled {
+	start := FoldOpen(recs)
+	if !e.backfillDue(start) {
 		return nil
 	}
 	for runID, lerr := range lister.Runs(ctx, RunFilter{}) {
@@ -530,10 +558,7 @@ func (e *notifyEngine) backfillOpen(ctx context.Context) error {
 		st := FoldNotify(trail)
 		for _, key := range st.Keys {
 			es := st.Events[key]
-			if !resolvable(es.Kind) || es.Cleared != nil && es.Rounds == 0 {
-				continue
-			}
-			if r := st.Events[ResolvedKey(key)]; r != nil && r.Acked != nil {
+			if !needsListing(st, key, es) {
 				continue
 			}
 			if werr := e.watch(ctx, key, es.RunID); werr != nil {
@@ -546,8 +571,8 @@ func (e *notifyEngine) backfillOpen(ctx context.Context) error {
 		if herr != nil {
 			return herr
 		}
-		if FoldOpen(recs).Backfilled {
-			return nil
+		if FoldOpen(recs).Backfills > start.Backfills {
+			return nil // another process finished this pass
 		}
 		mark := NotifyRecord{Kind: NotifyBackfilled}
 		e.stamp(&mark, name, recs)
@@ -560,4 +585,32 @@ func (e *notifyEngine) backfillOpen(ctx context.Context) error {
 		}
 	}
 	return fmt.Errorf("notify: trail %s: lost the append race recording the backfill", NotifyOpenTrail)
+}
+
+// secondBackfillAfter is how long after the first backfill pass the second is due. A rolling upgrade
+// leaves processes of the previous version delivering events they do not list; the second pass lists
+// those that a scan has not reached (a run that completed meanwhile). Two passes, ever.
+const secondBackfillAfter = 24 * time.Hour
+
+// backfillDue reports whether a backfill pass is owed given the open trail's state: the first, or,
+// once secondBackfillAfter has passed since it, the second.
+func (e *notifyEngine) backfillDue(st OpenState) bool {
+	switch {
+	case !st.Backfilled:
+		return true
+	case st.Backfills < 2:
+		return e.cfg.now().Sub(st.BackfillAt) > secondBackfillAfter
+	}
+	return false
+}
+
+// needsListing reports whether the event key of trail state st belongs on the open trail: one that
+// can owe an all-clear, other than an event cleared before any delivery was attempted or one whose
+// all-clear was delivered.
+func needsListing(st NotifyState, key string, es *NotifyEvent) bool {
+	if !resolvable(es.Kind) || es.Cleared != nil && es.Rounds == 0 {
+		return false
+	}
+	r := st.Events[ResolvedKey(key)]
+	return r == nil || r.Acked == nil
 }

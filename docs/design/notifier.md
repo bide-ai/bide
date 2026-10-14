@@ -371,6 +371,20 @@ appends `backfilled`. Listing is idempotent, so two processes backfilling at onc
 once and race only for the one marker, and an interrupted backfill starts over. The marker is
 carried by every checkpoint.
 
+*Rolling upgrades.* Processes of the previous version write no open-trail records, so one still
+running after a new process has backfilled delivers events it never lists. Nothing relies on the
+one-time backfill alone: (1) every scan of a run's trail (after each drive, recovery pass and sweep of
+an unfinished run, and for each run the open trail lists) lists any event that belongs on the open
+trail and is not listed, so the first new-version scan of an unfinished run lists what the old
+process delivered, and its all-clear follows when it ends; (2) a second backfill pass runs
+`secondBackfillAfter` (a day) after the first, in any `NotifyPending`, `Recover` or `RecoverLoop`,
+and lists what a scan could not reach (a run the old process saw to completion, which no sweep or
+recovery pass lists as unfinished). There are two passes, ever: the checkpoint carries their count
+(`backfills`) and the time of the last (`backfill_at`). An old process that delivers an event after
+the second pass, in a run that ends before any new-version scan reaches it, leaves it unlisted, and
+the audit reports it ("observed after the open trail began and was never listed"); finish the
+upgrade of every process within the day.
+
 *Roots.* An event is filed under its root run's trail. A plan flow's run is its own root whatever its
 ID holds (a flow named `tenant>flow1` is not a sub-agent of `tenant`): the hook path
 (`RunNotifier.DriveEnd`, from the flow's `RunRef`) and the sweep (from the run's `run:start`, which

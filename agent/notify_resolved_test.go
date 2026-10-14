@@ -1331,3 +1331,113 @@ func TestResolved_ACheckpointWrittenFromBehindIsDatedInItsSegmentsDay(t *testing
 		t.Fatalf("the checkpoint is dated %s, before its segment's day", head[0].At)
 	}
 }
+
+// oldWriter appends the records an earlier version writes for a delivered event: observed, claimed,
+// acknowledged, and nothing on the open trail.
+func oldWriter(t *testing.T, tr NotifyTrail, ev notifyEvent, at time.Time) {
+	t.Helper()
+	ctx := context.Background()
+	recs, _ := tr.Load(ctx, NotifyTrailName(ev.runID))
+	for _, r := range []NotifyRecord{
+		{Kind: NotifyObserved, Key: ev.key, RunID: ev.runID, At: at, EventKind: string(ev.kind), EventAt: at, DeadlineAt: at.Add(time.Minute)},
+		{Kind: NotifyClaimed, Key: ev.key, RunID: ev.runID, At: at, Holder: "old", Until: at.Add(time.Minute)},
+		{Kind: NotifyAcked, Key: ev.key, RunID: ev.runID, At: at, Attempts: 1, Status: 200},
+	} {
+		if err := tr.Append(ctx, NotifyTrailName(ev.runID), len(recs), r); err != nil {
+			t.Fatal(err)
+		}
+		recs = append(recs, r)
+	}
+}
+
+func listedKeys(t *testing.T, e *notifyEngine) map[string]bool {
+	t.Helper()
+	_, recs, err := e.openHead(context.Background())
+	if err != nil {
+		t.Fatal(err)
+	}
+	out := map[string]bool{}
+	for _, w := range FoldWatch(recs) {
+		out[w.Key] = true
+	}
+	return out
+}
+
+// A rolling upgrade: a new process has backfilled, and an old one still running then delivers a halt
+// without listing it. A scan of that run by a new process lists it (the run is unfinished, so every
+// drive, recovery pass and sweep scans it); nothing depends on the one-time backfill.
+func TestResolved_ARollingUpgradeAnOldWritersEventIsListedByTheNextScan(t *testing.T) {
+	ctx := context.Background()
+	clk := sweepClock()
+	j := memJournal()
+	tr, sink := NewMemNotifyTrail(), &fakeSink{}
+	newer := testEngine(t, j, sink, tr, clk, "new")
+	if err := newer.backfillOpen(ctx); err != nil { // the new process starts and backfills: nothing yet
+		t.Fatal(err)
+	}
+	ev := haltEvent()
+	putMarker(t, j, "r", "c1", clk.now().UnixMilli())
+	oldWriter(t, tr, ev, clk.now()) // the old process delivers a halt, lists nothing
+	if listedKeys(t, newer)[ev.key] {
+		t.Fatal("setup: the old writer's event is listed")
+	}
+	scanAndFlush(t, newer, "r")
+	if !listedKeys(t, newer)[ev.key] {
+		t.Fatal("the next scan by a new process did not list the old writer's event")
+	}
+	if len(resolvedCalls(sink)) != 0 {
+		t.Fatal("an all-clear for an event that still stands")
+	}
+	// And when it ends, the all-clear follows, with no sweep before it needing the backfill.
+	putResult(t, j, "r", "c1")
+	scanAndFlush(t, newer, "r")
+	if got := resolvedCalls(sink); len(got) != 1 {
+		t.Fatalf("calls = %+v", sink.calls)
+	}
+}
+
+// The run completes in the old process before any new process scans it, so no sweep or recovery pass
+// lists it as unfinished: a second backfill, a day after the first, finds it. Two passes, ever.
+func TestResolved_ARollingUpgradeASecondBackfillCatchesWhatCompletedMeanwhile(t *testing.T) {
+	ctx := context.Background()
+	clk := sweepClock()
+	j := memJournal()
+	tr, sink := newReadCounter(), &fakeSink{}
+	newer := testEngine(t, j, sink, tr, clk, "new")
+	putMarker(t, j, "r", "c1", clk.now().UnixMilli()) // the run exists in the journal
+	if err := newer.backfillOpen(ctx); err != nil {
+		t.Fatal(err)
+	}
+	ev := haltEvent()
+	oldWriter(t, tr, ev, clk.now())
+	putResult(t, j, "r", "c1")
+	completeRun(t, j, "r") // finished in the old process: not unfinished, never scanned
+
+	clk.advance(time.Hour) // inside the window: no second pass
+	if err := newer.backfillOpen(ctx); err != nil {
+		t.Fatal(err)
+	}
+	if listedKeys(t, newer)[ev.key] {
+		t.Fatal("a second pass ran inside the window")
+	}
+	clk.advance(24 * time.Hour)
+	if err := newer.backfillOpen(ctx); err != nil {
+		t.Fatal(err)
+	}
+	if !listedKeys(t, newer)[ev.key] {
+		t.Fatal("the second pass did not list the event the old process delivered")
+	}
+	scanOpenAndFlush(t, newer)
+	if got := resolvedCalls(sink); len(got) != 1 || got[0].Reason != "ended" {
+		t.Fatalf("calls = %+v", sink.calls)
+	}
+	// No third pass: the run trails are not read again.
+	clk.advance(10 * 24 * time.Hour)
+	tr.reset()
+	if err := newer.backfillOpen(ctx); err != nil {
+		t.Fatal(err)
+	}
+	if n := tr.loads["notify:r"]; n != 0 {
+		t.Fatalf("a third backfill pass read the run's trail %d times", n)
+	}
+}
