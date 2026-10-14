@@ -297,7 +297,9 @@ func TestSoDEvidence_DelegatedSubRun(t *testing.T) {
 	drive := func(first bool) error {
 		sub := agenttest.MustNew(chargeModel{}, g.store, agent.WithTools(charge), agent.WithApproverVerifiers(g.resolver()))
 		tool := audit.AttenuatingSubAgent("exec", "execute", sub, audit.AttenuationConfig{Store: g.store,
-			Narrow: func(parent audit.Grant, name string) audit.Grant { return audit.Grant{ID: "g/" + name, Scope: parent.Scope} }})
+			Narrow: func(parent audit.Grant, name string) audit.Grant {
+				return audit.Grant{ID: "g/" + name, Scope: parent.Scope}
+			}})
 		model := agenttest.NewScriptedModel(agenttest.ToolTurn("p1", "exec", `{"task":"pay"}`), agenttest.TextTurn("ok"))
 		if !first {
 			model = agenttest.NewScriptedModel(agenttest.TextTurn("ok"))
