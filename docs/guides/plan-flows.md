@@ -349,7 +349,8 @@ The flow, end to end:
    committed to this signed diagram.**
 
 `Conform` closes the loop on the *path*: it recognizes `run:start` (which must name this flow),
-`flow:digest`, `flow:topology` (whose digest must be this flow's), a node's attempt markers and the not-started records of its claims as internal records
+`run:principal` (which must name the principal and ancestors `run:start` does), a gate's tallies
+and re-tallies (`approval-tally:<key>`, `:v3`, `:sod`), `flow:digest`, `flow:topology` (whose digest must be this flow's), a node's attempt markers and the not-started records of its claims as internal records
 (never a divergence) and verifies the journaled digest **equals** the current flow's `Digest()`. A mismatch is
 reported as a divergence, "ran against a different topology": the run executed under a different
 declared graph than the flow now describes. So `Conform` covers node-visitation and branch choices,
