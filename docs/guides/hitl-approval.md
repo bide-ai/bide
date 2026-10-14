@@ -840,12 +840,25 @@ says so. Set `connect-src` to the one intake (`approvals.PageCSP(intakeOrigin)`)
 **What has been verified in a browser.** The page was driven in real Chrome for the page served by the
 application: creating and enrolling a key, signing an Approve, a counted decision recorded by the
 application, and a cookie-authenticated same-origin page (the cookie reached both the page and `GET /pending`).
-Mutual TLS, same-origin or cross-origin with `credentials: "include"`, was **not** verified in a browser: it
-needs a client certificate in the browser's certificate store (the login Keychain on macOS), which the test
-setup did not import. The page's fetch options per credentials mode are tested, and the intake's CORS headers
-for credentials are tested, but a deployment that authenticates with client certificates should check the
-page in its own browsers before relying on it: open the page, and confirm that `GET /pending` succeeds
-(the endpoint's `WithAuth` hook sees the certificate) and that a decision is accepted.
+Mutual TLS was verified in Chrome 154 on Linux by a CI job (`Page mTLS (Chrome)`, `approvals/page_mtls_test.go`): a
+test CA, a server certificate for 127.0.0.1 and a client certificate imported into the profile's NSS
+database, Chrome's managed policy `AutoSelectCertificateForUrls` choosing it (headless Chrome cannot show a
+prompt), and an intake over TLS that requires a client certificate the CA issued, whose `WithAuth` hook reads
+`req.TLS.PeerCertificates`. Same-origin (the page from `WithPage`, fetch credentials `same-origin`): Chrome
+presented the certificate for the page's document, script and stylesheet, for both `GET /pending` calls and
+for `POST /decisions`, the hook saw it on each, and the page signed an Approve that the gate counted.
+Cross-origin (the page on its own TLS server that asks for no client certificate, `config.json` with
+`"credentials": "include"`, `WithCORS` and `WithCORSCredentials`): Chrome sent the certificate on the
+preflight, both `GET /pending` calls and the `POST`, the hook saw it on each, and the Approve was counted. With
+`include` but without `WithCORSCredentials` the request was authenticated by the certificate and Chrome then
+refused the page the answer (the page says "Failed to fetch"). Chrome also presented the certificate for a
+cross-origin page whose `config.json` did not ask for `include`; the Fetch standard treats a client
+certificate as a credential, so do not rely on that: other browsers were not tried, and the page asks for
+`include`. What this does not show: macOS and Windows certificate stores (hardware tokens, smart cards),
+Firefox and Safari, a certificate that needs a prompt, or a server that asks for the certificate only on some
+paths. A deployment that authenticates with client certificates should still check the page in its own
+browsers: open the page, and confirm that `GET /pending` succeeds (the endpoint's `WithAuth` hook sees the
+certificate) and that a decision is accepted.
 
 **The page shows every argument.** The signature binds all of the call's arguments, so none is cut from
 what the approver reads (a long value scrolls in its box); the CLI refuses to sign what it had to clip, and

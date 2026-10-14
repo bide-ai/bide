@@ -44,7 +44,7 @@ jobs:
           # Select the test client certificate for the test servers without a prompt (headless Chrome
           # cannot show one). The test servers are on 127.0.0.1.
           sudo tee /etc/opt/chrome/policies/managed/mtls.json >/dev/null <<'JSON'
-          {"AutoSelectCertificateForUrls": ["{\"pattern\":\"https://example.invalid:*\",\"filter\":{}}", "{\"pattern\":\"https://example.invalid\",\"filter\":{}}"]}
+          {"AutoSelectCertificateForUrls": ["{\"pattern\":\"https://127.0.0.1:*\",\"filter\":{}}", "{\"pattern\":\"https://127.0.0.1\",\"filter\":{}}"]}
           JSON
       - name: Install puppeteer-core (from the lockfile)
         working-directory: approvals/page/test/chrome
