@@ -13,6 +13,9 @@ import (
 func TestApproveCommandForTheJournal(t *testing.T) {
 	const dsn = "postgres://app:hunter2@db.internal:5432/bide"
 	abs, _ := filepath.Abs("run.db")
+	if strings.ContainsAny(abs, "\\ ") { // a Windows path: approveline quotes it as one POSIX word
+		abs = "'" + abs + "'"
+	}
 	for name, c := range map[string]struct {
 		f    flags
 		want string
