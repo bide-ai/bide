@@ -148,8 +148,9 @@ func Main(args []string, in io.Reader, stdout, stderr io.Writer, stores Stores) 
 	if msg := f.check(); msg != "" {
 		return usage(msg)
 	}
-	ctx, stop := signalContext()
-	defer stop()
+	// No signal handling: Ctrl-C at the prompt ends the command, and a decision is one journal write,
+	// so an interrupt leaves it recorded or not recorded.
+	ctx := context.Background()
 	c := &cmd{f: f, in: bufio.NewReader(in), out: stdout, st: st, stores: stores}
 	var err error
 	if f.list {
@@ -615,7 +616,7 @@ func (c *cmd) after(ctx context.Context, j *agent.Journal, verifierFor agent.App
 	}
 	switch {
 	case passed:
-		fmt.Fprintf(c.out, "\n%s the gate has its approvals. Next: re-run run %s (agent.Run with the same run ID, or let RecoverLoop resume it); the call then runs.\n", st.Pass(), st.Bold(safe(f.run)))
+		fmt.Fprintf(c.out, "\n%s the gate has its approvals. Next: re-run run %s (agent.Run with the same run ID, or let RecoverLoop resume it; for a sub-agent's run, its root run ID); the call then runs.\n", st.Pass(), st.Bold(safe(f.run)))
 	case denied:
 		fmt.Fprintf(c.out, "\n%s the gate can no longer pass. Next: re-run run %s; the call is denied and the model is told so.\n", st.Cross(), st.Bold(safe(f.run)))
 	default:
