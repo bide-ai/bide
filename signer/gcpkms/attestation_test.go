@@ -128,26 +128,23 @@ func TestRealAttestationChainAndSignature(t *testing.T) {
 		t.Fatalf("tampered content: %v", err)
 	}
 	// The chain with a certificate removed does not build; with one repeated it is refused.
-	pemChain := string(readTestdata(t, "peculiar-v1.chain.pem"))
-	blocks := strings.SplitAfter(pemChain, "-----END CERTIFICATE-----\n")
-	for i := range blocks {
-		if strings.TrimSpace(blocks[i]) == "" {
-			continue
-		}
-		var rest []string
-		for j, b := range blocks {
-			if j != i {
-				rest = append(rest, b)
-			}
+	certs := pemCerts(t, readTestdata(t, "peculiar-v1.chain.pem"))
+	if len(certs) != 4 {
+		t.Fatalf("the fixture chain has %d certificates", len(certs))
+	}
+	for i := range certs {
+		rest := withoutCert(certs, i)
+		if len(rest) != len(certs)-1 {
+			t.Fatalf("variant %d has %d certificates", i, len(rest))
 		}
 		a := &kmspb.KeyOperationAttestation{Format: att.Format, Content: att.Content,
-			CertChains: &kmspb.KeyOperationAttestation_CertificateChains{CaviumCerts: []string{strings.Join(rest, "")}}}
+			CertChains: &kmspb.KeyOperationAttestation_CertificateChains{CaviumCerts: []string{encodeCerts(rest)}}}
 		if err := verifyAttestation(a, "v", point, roots); !errors.Is(err, ErrAttestation) {
 			t.Errorf("chain without certificate %d: %v", i, err)
 		}
 	}
 	a := &kmspb.KeyOperationAttestation{Format: att.Format, Content: att.Content,
-		CertChains: &kmspb.KeyOperationAttestation_CertificateChains{CaviumCerts: []string{pemChain + blocks[0]}}}
+		CertChains: &kmspb.KeyOperationAttestation_CertificateChains{CaviumCerts: []string{encodeCerts(append(certs[:len(certs):len(certs)], certs[0]))}}}
 	if err := verifyAttestation(a, "v", point, roots); err == nil || !strings.Contains(err.Error(), "not part of the chains") {
 		t.Errorf("a repeated certificate: %v", err)
 	}
@@ -855,18 +852,27 @@ func TestRealCloudHSMAttestationVerifies(t *testing.T) {
 	if err := verifyAttestation(att, name, point, newTestHSM(t).roots); err == nil {
 		t.Error("verified under unrelated roots")
 	}
-	for i := range 4 {
-		var keep []string
-		for j, b := range strings.SplitAfter(string(readTestdata(t, "cloudhsm-v2.chain.pem")), "-----END CERTIFICATE-----\n") {
-			if j != i && strings.TrimSpace(b) != "" {
-				keep = append(keep, b)
-			}
+	certs := pemCerts(t, readTestdata(t, "cloudhsm-v2.chain.pem"))
+	if len(certs) != 4 {
+		t.Fatalf("the chain has %d certificates", len(certs))
+	}
+	for i := range certs {
+		rest := withoutCert(certs, i)
+		if len(rest) != 3 {
+			t.Fatalf("variant %d has %d certificates", i, len(rest))
 		}
 		a := &kmspb.KeyOperationAttestation{Format: att.Format, Content: att.Content,
-			CertChains: &kmspb.KeyOperationAttestation_CertificateChains{CaviumCerts: []string{strings.Join(keep, "")}}}
+			CertChains: &kmspb.KeyOperationAttestation_CertificateChains{CaviumCerts: []string{encodeCerts(rest)}}}
 		if err := verifyAttestation(a, name, point, roots); !errors.Is(err, ErrAttestation) {
 			t.Errorf("without certificate %d: %v", i, err)
 		}
+	}
+	// The same chain with CRLF line endings (a Windows checkout) is read the same way.
+	crlf := strings.ReplaceAll(strings.ReplaceAll(string(readTestdata(t, "cloudhsm-v2.chain.pem")), "\r\n", "\n"), "\n", "\r\n")
+	a := &kmspb.KeyOperationAttestation{Format: att.Format, Content: att.Content,
+		CertChains: &kmspb.KeyOperationAttestation_CertificateChains{CaviumCerts: []string{crlf}}}
+	if err := verifyAttestation(a, name, point, roots); err != nil {
+		t.Errorf("a CRLF chain: %v", err)
 	}
 }
 
@@ -883,4 +889,36 @@ func TestOpenWithARealAttestationReachesTheSelfTest(t *testing.T) {
 	if errors.Is(err, ErrAttestation) || !errors.Is(err, ErrBadSignature) {
 		t.Fatalf("err = %v, want the self-test signature to be the first failure", err)
 	}
+}
+
+// pemCerts decodes the PEM certificate blocks of data, whatever its line endings.
+func pemCerts(t *testing.T, data []byte) []*pem.Block {
+	t.Helper()
+	var out []*pem.Block
+	for {
+		var b *pem.Block
+		b, data = pem.Decode(data)
+		if b == nil {
+			return out
+		}
+		out = append(out, b)
+	}
+}
+
+func withoutCert(certs []*pem.Block, i int) []*pem.Block {
+	var out []*pem.Block
+	for j, c := range certs {
+		if j != i {
+			out = append(out, c)
+		}
+	}
+	return out
+}
+
+func encodeCerts(certs []*pem.Block) string {
+	var sb strings.Builder
+	for _, c := range certs {
+		sb.Write(pem.EncodeToMemory(c))
+	}
+	return sb.String()
 }

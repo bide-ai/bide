@@ -4,3 +4,8 @@ internal/tools/oldnames/testdata/** text eol=lf
 
 # Golden files compare byte for byte with what a test writes (LF) on every platform.
 **/testdata/*.golden text eol=lf
+
+# Attestation test data is byte-exact: the attestations are signed binary, and the PEM and JSON
+# files are compared and parsed as written. No line-ending conversion on any platform.
+signer/gcpkms/testdata/attestation/** -text
+signer/gcpkms/testdata/attestation/*.gz binary
