@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"math/rand/v2"
 	"sync"
+	"sync/atomic"
 	"time"
 )
 
@@ -162,6 +163,9 @@ func newNotifyEngine(j *Journal, n Notifier, trail NotifyTrail, opts []NotifyOpt
 }
 
 func (e *notifyEngine) report(err error) {
+	if reportGuard != nil {
+		reportGuard()
+	}
 	if e.cfg.onError != nil && err != nil {
 		e.cfg.onError(err)
 	}
@@ -576,6 +580,14 @@ func (e *notifyEngine) conflictBackoff(ctx context.Context, conflicts int) {
 // store that hangs on one trail holds up that trail's rounds only, and only until they are cancelled.
 // A pass holds it across the store's load and append and the journal reads that decide, never across
 // a Notifier call or a callback.
+// trailLocksHeld counts the trail locks held now, so a test can check that none is held where the
+// engine calls out (see reportGuard).
+var trailLocksHeld atomic.Int64
+
+// reportGuard, set only by tests, runs at every report to the user's error handler: the handler
+// is user code, so it must never run under a trail lock.
+var reportGuard func()
+
 var trailLocks = struct {
 	mu sync.Mutex
 	m  map[string]*trailLock
@@ -610,7 +622,9 @@ func lockTrail(ctx context.Context, name string) (func(), error) {
 		leave()
 		return nil, ctx.Err()
 	}
+	trailLocksHeld.Add(1)
 	return func() {
+		trailLocksHeld.Add(-1)
 		<-l.held
 		leave()
 	}, nil

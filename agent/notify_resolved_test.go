@@ -1831,3 +1831,75 @@ func (h *hangingTrail) Load(ctx context.Context, trail string) ([]NotifyRecord, 
 	}
 	return h.NotifyTrail.Load(ctx, trail)
 }
+
+type trailLoadFails struct{ NotifyTrail }
+
+func (trailLoadFails) Load(context.Context, string) ([]NotifyRecord, error) {
+	return nil, errors.New("store down")
+}
+
+// The trail lock is never held where the engine calls out. A WithNotifyErrors handler that waits for
+// the trail (through the notifier, or any code that does) must not wait on its own caller.
+func TestNotifyTrailLocks_NotHeldAcrossTheErrorHandler(t *testing.T) {
+	name := NotifyTrailName("r")
+	blocked := false
+	handler := func(error) {
+		ctx, cancel := context.WithTimeout(context.Background(), 200*time.Millisecond)
+		defer cancel()
+		if unlock, err := lockTrail(ctx, name); err != nil {
+			blocked = true
+		} else {
+			unlock()
+		}
+	}
+	e := testEngine(t, memJournal(), &fakeSink{}, trailLoadFails{NewMemNotifyTrail()}, resolvedClock(), "p1", WithNotifyErrors(handler))
+	e.recoveryOK(context.Background(), "r")
+	if blocked {
+		t.Fatal("the trail lock is held while the handler runs (recoveryOK)")
+	}
+	e.recoveryFailed(context.Background(), "r", errors.New("x"))
+	if blocked {
+		t.Fatal("the trail lock is held while the handler runs (recoveryFailed)")
+	}
+}
+
+// Every report to the handler is made with no trail lock held: the guard runs at each one and counts
+// the locks held at the time. The scenarios reach the report sites that can follow a trail pass: a
+// failing store (recovery), a delivery that has become failing, and an overdue notice that cannot
+// be delivered.
+func TestNotifyTrailLocks_NoReportIsMadeUnderALock(t *testing.T) {
+	var reports, held int64
+	reportGuard = func() {
+		atomic.AddInt64(&reports, 1)
+		if n := trailLocksHeld.Load(); n != 0 {
+			atomic.AddInt64(&held, n)
+		}
+	}
+	defer func() { reportGuard = nil }()
+	ctx := context.Background()
+	clk := resolvedClock()
+
+	e := testEngine(t, memJournal(), &fakeSink{}, trailLoadFails{NewMemNotifyTrail()}, clk, "p1")
+	e.recoveryOK(ctx, "r")
+	e.recoveryFailed(ctx, "r", errors.New("x"))
+
+	// A delivery that keeps failing becomes failing: reported once its record is written.
+	sink := &fakeSink{fail: 1000}
+	e2 := testEngine(t, memJournal(), sink, NewMemNotifyTrail(), clk, "p2", WithNotifyFailingAfter(1))
+	for range 3 {
+		_, _ = e2.round(ctx, haltEvent())
+		clk.advance(time.Hour)
+	}
+	// An overdue notice that cannot be delivered is reported too.
+	e3 := testEngine(t, memJournal(), &fakeSink{fail: 1000}, NewMemNotifyTrail(), clk, "p3", WithNotifyDeadline(time.Minute))
+	for range 3 {
+		_, _ = e3.round(ctx, haltEvent())
+		clk.advance(10 * time.Minute)
+	}
+	if atomic.LoadInt64(&reports) < 3 {
+		t.Fatalf("the scenarios made %d reports; they do not reach the sites they should", reports)
+	}
+	if h := atomic.LoadInt64(&held); h != 0 {
+		t.Fatalf("a report was made with %d trail lock(s) held", h)
+	}
+}

@@ -156,11 +156,17 @@ func (e *notifyEngine) recoveryFailed(ctx context.Context, runID string, cause e
 	if lerr != nil {
 		return
 	}
-	defer unlock()
+	var reportErr error // the user's handler runs after the trail's lock is released
+	defer func() {
+		unlock()
+		if reportErr != nil {
+			e.report(reportErr)
+		}
+	}()
 	for range maxTrailRetries {
 		recs, err := e.trail.Load(ctx, name)
 		if err != nil {
-			e.report(err)
+			reportErr = err
 			return
 		}
 		st := FoldNotify(recs)
@@ -169,7 +175,7 @@ func (e *notifyEngine) recoveryFailed(ctx context.Context, runID string, cause e
 			rec := NotifyRecord{Kind: NotifyFailingSince, RunID: runID, At: now, Reason: causeClass(cause)}
 			conflict, err := e.appendRec(ctx, name, len(recs), rec)
 			if err != nil {
-				e.report(err)
+				reportErr = err
 				return
 			}
 			if conflict {
@@ -193,11 +199,17 @@ func (e *notifyEngine) recoveryOK(ctx context.Context, runID string) {
 	if lerr != nil {
 		return
 	}
-	defer unlock()
+	var reportErr error // the user's handler runs after the trail's lock is released
+	defer func() {
+		unlock()
+		if reportErr != nil {
+			e.report(reportErr)
+		}
+	}()
 	for range maxTrailRetries {
 		recs, err := e.trail.Load(ctx, name)
 		if err != nil {
-			e.report(err)
+			reportErr = err
 			return
 		}
 		if FoldNotify(recs).FailingSince == nil {
@@ -206,7 +218,7 @@ func (e *notifyEngine) recoveryOK(ctx context.Context, runID string) {
 		rec := NotifyRecord{Kind: NotifyRecovered, RunID: runID, At: e.cfg.now()}
 		conflict, err := e.appendRec(ctx, name, len(recs), rec)
 		if err != nil {
-			e.report(err)
+			reportErr = err
 			return
 		}
 		if !conflict {
