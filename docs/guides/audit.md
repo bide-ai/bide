@@ -147,6 +147,28 @@ it wraps and adds none: `agent.Lease`, `agent.Recover` and `agent.RecoverLoop` f
 store's `Leaser` and `Lister` through it (see `agent.Capability`). Leases are not journaled, so
 acquiring, renewing or releasing one anchors nothing.
 
+**A decision another process wrote is under no head until someone signs again.** An application
+that holds the log key signs only on its own writes. A decision written by another process (a
+command writing the database, an approver's tool) is a journal write the `AuditedStore` did not
+make, so no signed head covers it until the application next writes to that run, and for a
+rejection nobody re-runs that may be never. `agent.RecoverLoop` (and `agent.Recover`, one pass) closes the gap: for each run it drove that ended
+waiting on an approval (`*agent.ApprovalPending`) or a halt resolution (`*agent.OutcomeUnknown`),
+including every one of several joined pauses from parallel sub-agents, it calls `Reanchor` on the
+journal's store (found through `Unwrap`, as `agent.Reanchorer`; `agent.WithReanchor` names another
+function, or `nil` to turn it off, and `agent.WithReanchorTimeout` bounds each call, half the lease
+TTL by default, so a hung anchor cannot hold a run's lease and a concurrency slot). That adds no
+listing and no scan, only a read of each such run's journal, and writes nothing to the journal. A
+decision is signed within one pass **for a run that pass drives and whose re-sign succeeds**: not for
+a run another holder leases, not while the anchor is failing (the error goes to `WithRecoverErrors`
+and the next pass tries again), and not for a run no pass drives. Two things to read in the result:
+"covered" means a signed head includes the record, not that the record is authentic (re-signing
+ratifies what the database holds, an unsigned `agent.Approve` decision or a record written by
+anyone with write access included; `verify-approvals` is the check that a decision is genuine), and
+the per-run lock that keeps an `AuditedStore`'s heads growing is process-local, so a recoverer and
+an application process anchoring one run can publish a size-12 head and then a size-10 one, which a
+monitor can misread as a rollback: read a run's heads by size. To check from outside, see
+`bide audit verify-decision-coverage` below, and for which verb to run, the note under it.
+
 **`Anchor` is a bring-your-own port**: implement `Publish(ctx, runID, sth)` against the
 transparency log you trust (a CT-style log, a notary/timestamping service, another account's
 WORM store, a public ledger). `MemAnchorLog` is the reference: an append-only log that keeps its
@@ -558,6 +580,19 @@ kept, so a decision deleted before its approver made a receipt, or before a rece
 not proved deleted, and a head that stops short of the position says nothing, however late it was
 signed. `bide audit verify-receipts` is the command line (below).
 
+**Which verb to run.** The approver runs `verify-receipts` on the receipts they kept: it asks whether
+*their* decision was kept, and notices one deleted after a head committed to it. The operator or an
+auditor runs `verify-decision-coverage` on a journal export and the heads: it needs no receipts and asks
+whether *every* decision in the journal is under a signed head within a bound, which is how a decision
+left unsigned (no head covers it past `-max-records` or `-max-age`) is found while it is still
+unsigned. They classify heads by one rule and read head files the same way (a head, or an anchor log
+with one per line), so on the same journal and heads they do not disagree: an anchored decision is
+anchored in one and covered in the other; one no head reaches is `pending` in both; a head the log key
+signed for the run that the export does not match (a stale or cut export, or a record removed), of any size, fails
+both. They differ in what they bound: `verify-receipts` has no age or position bound for a pending
+decision, and `verify-decision-coverage` does. Run both when you can.
+
+
 ## CLI reference: `bide audit`
 
 The `bide audit` command ([`cmd/bide`](../../cmd/bide), its code in
@@ -636,6 +671,7 @@ Conventions shared across verbs:
 | `verify-quorum` | `-name`, `-tally`, `-vote` (repeatable), `-pubkey`, `-k` | `-commit` | A governed k-of-n quorum: the tally and every vote bundle authentic, in the same signed tree and run, and recorded by the quorum named `-name`; the disclosed votes exactly the votes the tally records; the recorded tally recomputes from them (a forged tally is caught); and `votes_for >= k`; with `-commit`, a governed commit (a tool call's result) is anchored in the same tree. |
 | `verify-run` | `-cert`, `-pubkey`, and at least one of `-approved <digest>` (repeatable) / `-approved-file <file>` (both together form one allowlist) | `-checker <astchecker>` | A proof-carrying run certificate: the used-policy set is bound by a signed used-policy head to this run and to the certificate's journal tree, and is a subset of the approved allowlist (only-approved-policies), and every used policy has an anchored, digest-linked convergence certificate in the run's signed tree (policies-convergence-certified); with `-checker`, the oracle's convergence verdict on each used policy must AGREE with its certificate. |
 | `verify-receipts` | `-receipt` (file or directory, repeatable), `-journal` (export per run, repeatable), `-heads` (a head, or one per line; repeatable), `-pubkey`, `-approver-keys` | `-update` (store the anchoring proof) | Decision receipts written by `bide approve`: each signature verifies for the approver's key over the exact call it states, and the signed heads commit to the decision at its journal position (`audit.CheckReceipt`). Prints one line per receipt: PASS when anchored or redacted, INFO when pending (exit 0), FAIL for `decision deleted after signing` (proven receipts only), `receipt not matched by the journal` and `unchecked` (exit 1). A missing journal for a receipt's run, or an unreadable input, is exit 4. |
+| `verify-decision-coverage` | `-journal`, `-heads` (repeatable), `-pubkey` | `-max-records <n>`, `-max-age <d>`, `-max-age-tolerance <d>`, `-now <time>` | Every approval decision in a journal export is covered by a signed tree head, or is within the stated bound. A head counts only if it verifies under the key, is a journal head of the export's run, and is the root of the export's own prefix of its size; heads are used by size, in any order, never by arrival or timestamp. A head the log key signed for this run that does **not** match the export (the export is shorter than the head, or its prefix differs) is **divergent**, and fails the verb: a decision deleted from an export, or an export cut before it, looks exactly like that, so re-export the journal and run again. A head that does not verify, or is another run's, is ignored with a note. A decision is `covered`, `pending`, or `overdue`. Overdue by position: the journal holds `-max-records` or more records after the decision and no head covers it (no clock involved). Overdue by age, only with `-max-age`: the decision's unsigned `recorded_at` is more than `-max-age` plus the tolerance before `-now` (default: this machine's clock), the weaker basis since the recorder's clock is its own; a decision with no recorded time (an unsigned `agent.Approve` decision records none) is over an age bound. A decision a redaction replaced with a tombstone is listed too (note `redacted`) and bounded like any other. If the journal holds decisions and no head counts at all (a wrong `-pubkey` ignores every head), the verb prints a WARNING, and fails when a bound is set, since nothing shows any decision inside it. The bounds are only as strong as the export is complete. With no bound nothing is overdue. Halt resolutions are not checked. |
 | `verify-approvals` | `-evidence`, `-pubkey`, `-call`, `-need`, `-approvers`, `-approver-keys` | `-approved <digest>` (repeatable), `-approved-file <file>` (together, one allowlist, required when the package carries a run certificate) | An m-of-n approval gate from an `EvidencePackage`: the request, every decision the gate read, its recorded tally, and the call's result all verify in one signed tree and in order; recounting the decisions with the approvers' keys (a JSON object of id to key text, `<alg>:<hex>` or bare ed25519 hex; two of the policy's approvers on one key, or a weak key, is an unusable input) against the exact call reproduces the recorded tally; the gate enforced the expected policy; and at least k approved. Catches an omitted decision, which `verify-evidence` alone cannot. |
 | `verify-evidence` | `-evidence`, `-pubkey` | `-approved <digest>` (repeatable), `-approved-file <file>` (together, one allowlist) | A run-level `EvidencePackage`: the format, seal, and key are right, the signed tree head is an authentic journal head of the package's run, every packaged action proof verifies against it with the kind and label its record says, the grant chain is the anchored grants, the consistency proof holds between its two signed heads, and any run certificate is for this run and passes against the given allowlist (required when the package carries one). Prints one line per item and an overall PASS/FAIL. |
 

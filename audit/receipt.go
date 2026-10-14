@@ -132,7 +132,9 @@ const (
 	// tombstone that keeps its leaf hash. A legitimate redaction, not a deletion.
 	ReceiptRedacted ReceiptVerdict = "redacted (anchored)"
 	// ReceiptPending: the journal holds the decision and no signed head covers its position yet. The
-	// application's next write to the run signs it into a head; until then this is expected.
+	// application signs it at its next write to the run, or when agent.Recover or RecoverLoop next
+	// finds the run waiting; until then this is expected (bide audit verify-decision-coverage flags a
+	// decision that stays unsigned past a bound).
 	ReceiptPending ReceiptVerdict = "pending"
 	// ReceiptDeleted: the receipt carries an anchoring proof (the decision's record under a signed
 	// head A), and a signed head B that matches the journal given reaches the position and commits
@@ -233,12 +235,21 @@ const (
 )
 
 // classifyHead classifies h against journal, the records of run runID: ignored (invalid, foreign, or
-// not a journal head), matching (with the leaf hashes of its prefix), or divergent (with why). It is
+// not a journal head; why says which), matching (with the leaf hashes of its prefix), or divergent
+// (with why). It is
 // the one place that decides which heads may speak of a journal, for every check that reads heads
 // against an export.
 func classifyHead(h SignedTreeHead, runID string, logKey Verifier, journal []agent.Record) (class headClass, leaves [][]byte, why string) {
-	if h.Kind != TreeJournal || h.RunID != runID || logKey == nil || h.Verify(logKey) != nil {
-		return headIgnored, nil, ""
+	switch {
+	case h.Kind != TreeJournal:
+		return headIgnored, nil, fmt.Sprintf("tree head is a %q tree, not a journal", h.Kind)
+	case h.RunID != runID:
+		return headIgnored, nil, fmt.Sprintf("tree head is for run %q, not %q", h.RunID, runID)
+	case logKey == nil:
+		return headIgnored, nil, "no log key to verify the head under"
+	}
+	if err := h.Verify(logKey); err != nil {
+		return headIgnored, nil, fmt.Sprintf("signature: %v", err)
 	}
 	if h.Size < 0 || h.Size > len(journal) {
 		return headDivergent, nil, fmt.Sprintf("a head of size %d is longer than the journal given (%d records)", h.Size, len(journal))
@@ -304,13 +315,19 @@ func CheckReceipt(r DecisionReceipt, journal []agent.Record, heads []SignedTreeH
 	unmatched := ""
 	for _, h := range heads {
 		class, leaves, why := classifyHead(h, r.RunID, logKey, journal)
-		if class == headIgnored || h.Size <= r.Index {
-			continue // not a head of this run that the log key signed, or one that stops short of the position
+		if class == headIgnored {
+			continue // not a head of this run that the log key signed
 		}
-		// The head reaches the decision's position: it must match this journal to say anything.
+		// A head the log key signed for this run that does not match the journal given is evidence
+		// against the journal at any size: a head shorter than the receipt's position still commits
+		// to a prefix, and a prefix with a record replaced (or an export shorter than the head)
+		// must not read as "pending".
 		if class == headDivergent {
 			unmatched = why
 			continue
+		}
+		if h.Size <= r.Index {
+			continue // matches the journal and stops short of the position: it says nothing of the decision
 		}
 		at := time.Unix(0, h.TimestampNanos).UTC().Format(time.RFC3339)
 		switch {
@@ -338,5 +355,5 @@ func CheckReceipt(r DecisionReceipt, journal []agent.Record, heads []SignedTreeH
 	case !held:
 		return ReceiptFinding{ReceiptUnmatched, fmt.Sprintf("the journal does not hold the decision at position %d (%d records) and no signed head reaches that position. Without an anchoring proof in the receipt this is the approver's claim, not evidence of a deletion", r.Index, len(journal))}
 	}
-	return ReceiptFinding{ReceiptPending, "the journal holds the decision and no signed head covers its position yet; the application's next write to the run signs it into a head"}
+	return ReceiptFinding{ReceiptPending, "the journal holds the decision and no signed head covers its position yet; the application signs it at its next write to the run, or when agent.Recover or RecoverLoop next finds the run waiting (bide audit verify-decision-coverage flags one that stays unsigned past a bound)"}
 }

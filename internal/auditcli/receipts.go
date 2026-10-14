@@ -134,7 +134,7 @@ func (c *cli) verifyReceipts(args []string) {
 		return
 	}
 	if pending > 0 {
-		c.printf("PASS: %d receipt(s) verified; %d not yet signed into a head (the application's next write to the run does it)\n", len(rs), pending)
+		c.printf("PASS: %d receipt(s) verified; %d not yet signed into a head (the application's next write to the run, or a recovery pass, does it)\n", len(rs), pending)
 		return
 	}
 	c.printf("PASS: %d receipt(s) verified and committed to by signed heads\n", len(rs))

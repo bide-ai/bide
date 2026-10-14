@@ -372,6 +372,12 @@ func exitCases(f *exitFixture) []exitCase {
 		{name: "verify-evidence: a bide.audit.evidence.v4 package", args: []string{"verify-evidence", "-evidence", f.evidenceV4, "-pubkey", f.pub}, want: 4},
 		{name: "verify-evidence: another key", args: []string{"verify-evidence", "-evidence", f.evidence, "-pubkey", f.otherPub}, want: 1},
 
+		// verify-decision-coverage
+		{name: "verify-decision-coverage: no decisions", args: []string{"verify-decision-coverage", "-journal", f.journal, "-heads", f.sth, "-pubkey", f.pub}, want: 0},
+		{name: "verify-decision-coverage: a head signed in the future", args: []string{"verify-decision-coverage", "-journal", f.journal, "-heads", f.sthFuture, "-pubkey", f.pub}, want: 1},
+		{name: "verify-decision-coverage: missing journal", args: []string{"verify-decision-coverage", "-journal", f.missing, "-heads", f.sth, "-pubkey", f.pub}, want: 4},
+		{name: "verify-decision-coverage: no -heads", args: []string{"verify-decision-coverage", "-journal", f.journal, "-pubkey", f.pub}, want: 2},
+
 		// verify-approvals
 		{name: "verify-approvals: no gate for the call", args: approvals(f.evidence, f.keys), want: 1},
 		{name: "verify-approvals: the key file gives two ids one key, one outside the policy", args: approvals(f.evidence, f.sharedKeys), want: 4},

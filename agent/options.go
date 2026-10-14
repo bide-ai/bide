@@ -111,6 +111,14 @@ type LeaseControl interface {
 	RecoverLoopOption
 }
 
+// ReanchorOption is a setting for the re-signing of runs that wait on a person: it applies to
+// Recover (RecoverOption) and RecoverLoop (RecoverLoopOption): WithReanchor and
+// WithReanchorTimeout.
+type ReanchorOption interface {
+	RecoverOption
+	RecoverLoopOption
+}
+
 // ===========================================================================
 // Configs
 // ===========================================================================

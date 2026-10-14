@@ -289,9 +289,18 @@ func TestReceipt_AbsentIsAClaim(t *testing.T) {
 	if f := w.check(w.pausedJ, w.before); f.Verdict != audit.ReceiptUnmatched || !f.Verdict.Failed() {
 		t.Fatalf("absent from the journal: %+v", f)
 	}
-	late := headAt(t, &gate{store: freshPaused(t, w), logPriv: w.g.logPriv}, w.g.logPriv, receiptRecordedAt.Add(24*time.Hour))
+	// A head signed later that is a prefix of this very journal and stops short says nothing.
+	lateTH := w.before.TreeHead
+	lateTH.TimestampNanos = receiptRecordedAt.Add(24 * time.Hour).UnixNano()
+	late := signTH(t, lateTH, w.g.logPriv)
 	if f := w.check(w.afterAlice, late); f.Verdict != audit.ReceiptPending {
 		t.Fatalf("a late head that stops short must not accuse: %+v", f)
+	}
+	// One the log key signed for the run over another journal, however short, is divergence: the
+	// journal given is not what was signed.
+	other := headAt(t, &gate{store: freshPaused(t, w), logPriv: w.g.logPriv}, w.g.logPriv, receiptRecordedAt.Add(24*time.Hour))
+	if f := w.check(w.afterAlice, other); !f.Verdict.Failed() {
+		t.Fatalf("a short head that does not match the journal must fail: %+v", f)
 	}
 }
 

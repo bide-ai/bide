@@ -25,6 +25,7 @@ func TestMissingRequiredFlagsIsOneLine(t *testing.T) {
 		{"verify-evidence", nil, "-evidence, -pubkey"},
 		{"verify-approvals", []string{"-evidence", "e.json", "-pubkey", "k", "-approver-keys", "a.json"}, "-call, -need, -approvers"},
 		{"verify-receipts", nil, "-receipt, -journal, -heads, -pubkey, -approver-keys"},
+		{"verify-decision-coverage", nil, "-journal, -pubkey, -heads"},
 		{"prove-absent", nil, "-journal, -sth, -key"},
 		{"verify-absent", nil, "-bundle, -pubkey"},
 	} {

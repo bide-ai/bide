@@ -275,6 +275,18 @@ gate passes it records the new outcome under `approval-tally:<encoded toolUseID>
 version recorded as a denial stays final, since it runs nothing, and a call that already ran under
 the earlier version is not asked again.
 
+### A decision written by another process
+
+When approvers record decisions with a tool that writes the database directly (not through the
+application), the application's `audit.AuditedStore` did not write them, and no signed tree head
+covers them until the application next writes to that run. Run `agent.RecoverLoop` (or `agent.Recover`) over the
+`AuditedStore`: each pass re-signs the runs it found waiting on an approval or a halt resolution,
+so the decision is under a signed head within one pass of a run that pass drives (see
+[the audit guide](audit.md)). Being under a signed head is not being authentic: it means the
+database held the record when the head was signed. `bide audit verify-decision-coverage` checks a journal export
+against the published heads and fails a decision no head covers within a bound you state, by
+journal position (`-max-records`) or by age (`-max-age`, which compares two machines' clocks).
+
 ### Inside a sub-agent
 
 An m-of-n tool inside a `SubAgent` pauses the whole tree: the parent's `Run` returns the sub-run's
@@ -462,7 +474,7 @@ warning is printed prominently and the tally is labelled unverified, since it co
 recorded and the gate checks every signature when the run resumes. A single-approver gate is unsigned and
 takes neither flag.
 
-**Audit log and receipts.** `bide approve` writes the decision through the journal's plain store, so it is in the journal at once. It cannot tell whether the application audits the journal (`audit.AuditedStore` is configured in the application, with its own signer and anchor), so it says the same thing either way: the decision is signed into the audit log at the app's next write to this run, because the first signed tree head published after the decision covers it. That anchoring is best-effort even inside the application: a failed publish never fails the write, `OnError` reports it, and `Reanchor` retries it (see [continuous anchoring](audit.md#continuous-anchoring-auditedstore--the-anchor-port)). Until a head covers the decision, nothing signed contradicts a journal from which it was deleted. So an m-of-n decision also leaves a **receipt** next to your key (`-receipt` names another file; mode 0600; never overwritten): the signed decision with the call's arguments, the journal record's name and position, and when it was recorded, and no key material. `bide approve -verify-receipt <file> -approver-keys <keys>` checks it on its own (the signature over the exact call it states). Keep your receipts: `bide audit verify-receipts` checks them against the journal and the signed heads, and reports a decision the journal does not show where the receipt says as `receipt not matched by the journal (the approver's claim)`; once a signed head commits to the decision, `verify-receipts -update` stores an anchoring proof in the receipt, and only then does a later head that omits it prove `decision deleted after signing` ([audit guide](audit.md#decision-receipts-noticing-a-decision-deleted-before-it-was-anchored)). A receipt holds the call's arguments, as signed, so keep it where you keep the journal.
+**Audit log and receipts.** `bide approve` writes the decision through the journal's plain store, so it is in the journal at once. It cannot tell whether the application audits the journal (`audit.AuditedStore` is configured in the application, with its own signer and anchor), so it says the same thing either way: the decision is signed into the audit log at the app's next write to this run, or when a `RecoverLoop` or `Recover` pass finds the run still waiting and re-signs it ([A decision written by another process](#a-decision-written-by-another-process)), because the first signed tree head published after the decision covers it. That anchoring is best-effort even inside the application: a failed publish never fails the write, `OnError` reports it, and `Reanchor` retries it (see [continuous anchoring](audit.md#continuous-anchoring-auditedstore--the-anchor-port)). Until a head covers the decision, nothing signed contradicts a journal from which it was deleted. So an m-of-n decision also leaves a **receipt** next to your key (`-receipt` names another file; mode 0600; never overwritten): the signed decision with the call's arguments, the journal record's name and position, and when it was recorded, and no key material. `bide approve -verify-receipt <file> -approver-keys <keys>` checks it on its own (the signature over the exact call it states). Keep your receipts: `bide audit verify-receipts` checks them against the journal and the signed heads, and reports a decision the journal does not show where the receipt says as `receipt not matched by the journal (the approver's claim)`; once a signed head commits to the decision, `verify-receipts -update` stores an anchoring proof in the receipt, and only then does a later head that omits it prove `decision deleted after signing` ([audit guide](audit.md#decision-receipts-noticing-a-decision-deleted-before-it-was-anchored)). A receipt holds the call's arguments, as signed, so keep it where you keep the journal.
 
 After the decision is recorded, re-run the pause's `RootRunID` (or let `RecoverLoop` pick it up): the
 gate counts the decisions and the call runs or is denied. `bide approve` never runs the call.
