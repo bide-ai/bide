@@ -112,6 +112,11 @@ func (f *Flow[In, Out]) run(ctx context.Context, store *agent.Journal, runID str
 		return out, fmt.Errorf("plan: run %q: encode flow input: %w (%w)", c.flowName, encErr, agent.ErrConfig)
 	}
 	start := agent.RunStart{Kind: agent.RunKindFlow, Flow: &agent.FlowRef{Name: c.flowName}, Input: agent.UserText(string(input))}
+	// The run's principal, from the identity its context carries (agent.ContextWithIdentity): it is
+	// journaled with the start, and it is the requester a gate that excludes the requester reads.
+	if id, ok := agent.IdentityFrom(ctx); ok && (id.OnBehalfOf != "" || id.AuthorityRef != "") {
+		start.Principal = &agent.Principal{OnBehalfOf: id.OnBehalfOf, AuthorityRef: id.AuthorityRef}
+	}
 	// protocol:flows begin Begin BeginStart
 	done, finished, err := journalhook.Begin(ctx, store, runID, start)
 	if err != nil {

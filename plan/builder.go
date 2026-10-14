@@ -110,6 +110,9 @@ func sameGate(a, b *agent.ApprovalPolicy) bool {
 // gateText renders a gate for an error message: "single approval" or "2 of [ops finance]".
 func gateText(p *agent.ApprovalPolicy) string {
 	if g := topologyGate(p); g != nil && !g.Single {
+		if g.ExcludePrincipal {
+			return fmt.Sprintf("%d of %v excluding the requester", g.Need, g.Approvers)
+		}
 		return fmt.Sprintf("%d of %v", g.Need, g.Approvers)
 	}
 	return "single approval"

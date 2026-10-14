@@ -102,11 +102,13 @@ type TopologyNode struct {
 
 // TopologyGate is a node's approval gate: Single for agent.SingleApproval (one decision, recorded
 // with agent.Approve), otherwise Need signed decisions of the Approvers, in policy order (an
-// m-of-n gate).
+// m-of-n gate), never counting the run's requester when ExcludePrincipal is set
+// (agent.ApprovalPolicy.ExcludePrincipal).
 type TopologyGate struct {
-	Single    bool     `json:"single,omitempty"`
-	Need      int      `json:"need,omitempty"`
-	Approvers []string `json:"approvers,omitempty"`
+	Single           bool     `json:"single,omitempty"`
+	Need             int      `json:"need,omitempty"`
+	Approvers        []string `json:"approvers,omitempty"`
+	ExcludePrincipal bool     `json:"exclude_principal,omitempty"`
 }
 
 // topologyGate is p as a TopologyGate, nil for no gate.
@@ -117,7 +119,7 @@ func topologyGate(p *agent.ApprovalPolicy) *TopologyGate {
 	var g TopologyGate
 	b, err := json.Marshal(p)
 	if err != nil || json.Unmarshal(b, &g) != nil {
-		return &TopologyGate{Need: p.Need, Approvers: append([]string(nil), p.Approvers...)}
+		return &TopologyGate{Need: p.Need, Approvers: append([]string(nil), p.Approvers...), ExcludePrincipal: p.ExcludePrincipal}
 	}
 	return &g
 }

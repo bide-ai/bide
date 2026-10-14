@@ -74,6 +74,11 @@
           "uniqueItems": true,
           "items": { "type": "string", "minLength": 1 },
           "description": "The bounded set of approver ids (printable ASCII, distinct ignoring case)."
+        },
+        "exclude_principal": {
+          "type": "boolean",
+          "default": false,
+          "description": "Separation of duties: never count a decision by the run's requester (the principal the run was started for, its identity's on_behalf_of). A run with no requester is refused at the gate, and so is one whose requester is an approver when need is then out of reach."
         }
       }
     },
@@ -207,8 +212,8 @@
       "anyOf": [
         {
           "title": "approval gate on every path",
-          "pattern": "^\\s*every\\s+path\\s+to\\s+(\\S+|\"[^\"]*\")\\s+passes\\s+approval\\s+>=\\s+(\\d+)(?:\\s+of\\s+(\\d+))?\\s*$",
-          "description": "every path to <node> passes approval >= K [of N]"
+          "pattern": "^\\s*every\\s+path\\s+to\\s+(\\S+|\"[^\"]*\")\\s+passes\\s+approval\\s+>=\\s+(\\d+)(?:\\s+of\\s+(\\d+))?(\\s+excluding\\s+the\\s+requester)?\\s*$",
+          "description": "every path to <node> passes approval >= K [of N] [excluding the requester]"
         },
         {
           "title": "every path to a terminal passes a node",
@@ -234,6 +239,7 @@
       "examples": [
         "every path to charge passes approval >= 2 of 3",
         "every path to charge passes approval >= 1",
+        "every path to charge passes approval >= 2 of 3 excluding the requester",
         "every path to charge passes validate",
         "every path to a terminal passes validate",
         "no side effect after charge",

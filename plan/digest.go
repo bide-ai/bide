@@ -155,6 +155,11 @@ func TopologyDigest(t Topology) (string, error) {
 			for _, id := range g.Approvers {
 				writeField(&b, "n.gate.approver", id)
 			}
+			// Written only when set, so the digest of every gate that does not exclude the
+			// requester is the one it had before the setting existed.
+			if g.ExcludePrincipal {
+				writeField(&b, "n.gate.exclude_principal", "true")
+			}
 		}
 		if k == kindJoin {
 			j, ok := joins[n.Name]

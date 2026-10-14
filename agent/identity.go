@@ -39,6 +39,20 @@ func contextWithIdentity(ctx context.Context, id Identity) context.Context {
 	return context.WithValue(ctx, identityKey{}, id)
 }
 
+// ContextWithIdentity binds id to ctx as the acting identity of the runs driven under it, for a
+// caller that drives a run without run options: a plan flow's run (plan.Flow.Run) journals id's
+// OnBehalfOf and AuthorityRef as the run's principal (RunStart.Principal), as an agent run does with
+// WithIdentity, and a later drive under another principal is ErrConfig. An agent run driven under
+// ctx takes id as its identity unless it is given WithIdentity. The principal's OnBehalfOf is the
+// run's requester, which an approval policy with ExcludePrincipal excludes. An empty id returns ctx
+// unchanged.
+func ContextWithIdentity(ctx context.Context, id Identity) context.Context {
+	if id.Empty() {
+		return ctx
+	}
+	return contextWithIdentity(ctx, id)
+}
+
 // IdentityFrom returns the acting identity bound to ctx, and whether one was set.
 func IdentityFrom(ctx context.Context) (Identity, bool) {
 	id, ok := ctx.Value(identityKey{}).(Identity)
