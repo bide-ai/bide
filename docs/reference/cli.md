@@ -27,6 +27,7 @@ and `help`, and its import graph is the standard library and the core module (se
 | [`bide doctor`](#bide-doctor) | check that a first run can work: Go, SQLite, the module cache, model keys, your project |
 | [`bide sample`](#bide-sample) | write a sample journal of varied runs, with evidence and flow configs, and open bide view on it |
 | [`bide view`](#bide-view) | a read-only local page for one run of a journal, or a flow config's graph |
+| [`bide notify`](#bide-notify) | set up and test the webhook notifier: test a receiver, run a local one, relay to Slack and PagerDuty |
 | [`bide check`](#bide-check) | check plan flow configs, for CI: one file:node: message line per problem |
 | [`bide audit`](#bide-audit) | produce and verify audit proofs offline |
 | [`bide version`](#bide-version) | print the version and the artifact formats bide audit reads (-json for JSON) |
@@ -260,6 +261,195 @@ Exit status:
   1  failure: an input cannot be read or the command failed; for check, an error was found
      (with -strict, any problem)
   2  usage error: a bad flag or argument; nothing was read
+```
+
+## bide notify
+
+Set up and test the webhook notifier: test a receiver, run a local one, relay to Slack and PagerDuty.
+
+```text
+usage: bide notify test   -url <receiver> [-kind <kind>] [secret and TLS flags]
+       bide notify listen [-addr <host:port>] [secret flags]
+       bide notify relay  [-addr <host:port>] [secret flags] [-slack-url-env ...] [-pagerduty-key-env ...]
+
+Set up and test the webhook notifier (agent.WithNotifier with notify.NewWebhook):
+
+  test    sends one signed sample notification to your receiver, with the same payload, signature
+          and TLS options the notifier uses, and reports the TLS handshake, the HTTP status, whether
+          the receiver acknowledged and how long each took
+  listen  starts a local HTTPS receiver with a self-signed certificate that verifies each request
+          and prints the event, so test and listen check a whole setup on one machine
+  relay   a receiver that verifies bide's webhooks and forwards them to Slack (Block Kit) and
+          PagerDuty (Events API v2), dropping redeliveries by delivery ID
+
+The signing secret is read from an environment variable (default BIDE_WEBHOOK_SECRET) or a file
+(-secret-file), never from a flag value, and is never printed or logged. Run bide notify <verb> -h
+for a verb's flags. See docs/guides/notifications.md.
+
+Exit status:
+  0  success
+  1  failure: an input cannot be read or the command failed; for check, an error was found
+     (with -strict, any problem)
+  2  usage error: a bad flag or argument; nothing was read
+```
+
+### bide notify test
+
+```text
+usage: bide notify test -url <receiver> [-kind <kind>] [-secret-env <VAR> | -secret-file <file>]
+                        [-ca <file>] [-pin <hash>] [-client-cert <file> -client-key <file>] [-timeout <d>]
+
+Sends one signed sample notification to the receiver at -url, the way the notifier sends a real
+one (notify.NewWebhook: the same payload, signature, TLS 1.2+ and mutual TLS, CA and pin options),
+and reports the TLS handshake, the HTTP status, whether the receiver acknowledged (answered 2xx)
+and the timing. The sample is for a run that does not exist (its ID starts notify-test-); a relay
+that forwards to Slack or PagerDuty forwards it too. The secret is never printed.
+
+Kinds: approval_pending, outcome_unknown, run_aborted, recovery_failing, notification_overdue.
+
+Exit status: 0 the receiver acknowledged; 1 it did not; 2 usage error.
+
+  -ca string
+    	verify the receiver against the CA certificates in this PEM file instead of the system roots
+  -client-cert string
+    	present this client certificate (PEM) for mutual TLS; needs -client-key
+  -client-key string
+    	the client certificate's private key (PEM)
+  -color when
+    	when to color the output: auto (the default: on a terminal, unless NO_COLOR is set or TERM is dumb), always or never
+  -kind string
+    	the kind of the sample notification: approval_pending, outcome_unknown, run_aborted, recovery_failing, notification_overdue (default "approval_pending")
+  -pin string
+    	require the receiver's key to match this SPKI SHA-256 (64 hex characters or base64); two, comma separated, during a rotation
+  -previous-secret-env string
+    	the environment variable that holds the previous secret, during a rotation (optional) (default "BIDE_WEBHOOK_SECRET_PREVIOUS")
+  -previous-secret-file string
+    	read the previous secret from this file; used instead of -previous-secret-env
+  -secret-env string
+    	the environment variable that holds the signing secret (default "BIDE_WEBHOOK_SECRET")
+  -secret-file string
+    	read the signing secret from this file (leading and trailing white space is dropped); used instead of -secret-env
+  -timeout duration
+    	the request timeout (default 10s)
+  -url string
+    	the receiver's URL, https (http only for localhost)
+  -view-db string
+    	the journal file the payload's view command opens, as WithViewDB does
+  -view-url string
+    	put a view link for the run viewer's base URL in the payload, as WithViewURL does
+```
+
+### bide notify listen
+
+```text
+usage: bide notify listen [-addr <host:port>] [-secret-env <VAR> | -secret-file <file>]
+                          [-cert <file> -key <file>] [-client-ca <file>] [-ca-out <file>] [-json]
+
+Runs a local HTTPS receiver that checks each request with notify.Verify (the signature, the
+timestamp and the signed delivery ID) and prints the verified event, or why it was refused. Use it
+with bide notify test, or point a real notifier at it, to see a whole setup work on one machine.
+
+Without -cert and -key it makes a self-signed certificate for localhost, 127.0.0.1, ::1 (and the
+host of -addr), valid for 24 hours, and writes it to a file (-ca-out, or a new file in the temp
+directory) for the sender's -ca. It prints that file and the certificate's pin (the SPKI SHA-256
+for -pin), and the command that tests it. The secret is never printed.
+
+With -client-ca the receiver requires a client certificate signed by that CA (mutual TLS) and
+prints the certificate's pin for each request.
+
+It answers 204 to a verified request and 401 to any other; it forwards nothing and keeps nothing.
+Stop it with Ctrl-C. Exit status: 0 after a clean stop; 1 failure; 2 usage error.
+
+  -addr string
+    	the address to listen on (default "127.0.0.1:8443")
+  -ca-out string
+    	write the generated certificate here (default: a new file in the temp directory)
+  -cert string
+    	serve this certificate (PEM) instead of a generated one; needs -key
+  -client-ca string
+    	require a client certificate signed by a CA in this PEM file (mutual TLS)
+  -color when
+    	when to color the output: auto (the default: on a terminal, unless NO_COLOR is set or TERM is dumb), always or never
+  -json
+    	print each verified payload as JSON, one line each, instead of a summary
+  -key string
+    	the private key (PEM) of -cert
+  -previous-secret-env string
+    	the environment variable that holds the previous secret, during a rotation (optional) (default "BIDE_WEBHOOK_SECRET_PREVIOUS")
+  -previous-secret-file string
+    	read the previous secret from this file; used instead of -previous-secret-env
+  -secret-env string
+    	the environment variable that holds the signing secret (default "BIDE_WEBHOOK_SECRET")
+  -secret-file string
+    	read the signing secret from this file (leading and trailing white space is dropped); used instead of -secret-env
+```
+
+### bide notify relay
+
+```text
+usage: bide notify relay [-addr <host:port>] [-cert <file> -key <file>] [-client-ca <file>]
+                         [-secret-env <VAR> | -secret-file <file>]
+                         [-slack-url-env <VAR> | -slack-url-file <file>]
+                         [-pagerduty-key-env <VAR> | -pagerduty-key-file <file>] [-view-url <url>]
+
+Receives bide's signed webhooks and forwards each verified notification to Slack and PagerDuty.
+Point bide at it (notify.NewWebhook with the same secret); it needs no bide library or journal.
+
+For each request it checks the signature, the timestamp and the signed delivery ID (notify.Verify)
+and answers 401 to anything else. It then forwards to every configured destination and answers 204
+only when all of them took the notification; if one failed it answers 502, and bide sends the event
+again. Because bide's delivery is at least once, the relay remembers the delivery IDs it forwarded
+(-dedupe of them) and acknowledges a repeat without forwarding it again; after a partial failure
+only the destination that failed is tried again.
+
+  Slack       an incoming webhook URL: a Block Kit message with the run, kind, summary, deadline,
+              who may approve, and an "Open in viewer" button when there is a link (the payload's
+              view.url, else -view-url plus the run ID). The URL is a credential: it is read from
+              the environment or a file, and never printed or logged.
+  PagerDuty   Events API v2: a trigger whose dedup_key is the event's ID (the same on every
+              delivery, so PagerDuty collapses repeats) and a resolve for an all-clear notification.
+              The routing key is read like the Slack URL.
+
+A destination is on when its variable is set or its file is named; at least one is needed. The
+relay never forwards error text or tool arguments, even if bide sends them. bide requires an https
+URL for a receiver (http only for localhost), so give -cert and -key, or run the relay behind a
+proxy that terminates TLS on the same host. Forwarding has a budget (-forward-timeout) below bide's
+10 s request timeout. Stop it with Ctrl-C. Exit status: 0 after a clean stop; 1 failure; 2 usage.
+
+  -addr string
+    	the address to listen on (default "127.0.0.1:8080")
+  -cert string
+    	serve TLS with this certificate (PEM); needs -key. Without it the relay speaks plain http
+  -client-ca string
+    	require a client certificate signed by a CA in this PEM file (mutual TLS); needs -cert
+  -color when
+    	when to color the output: auto (the default: on a terminal, unless NO_COLOR is set or TERM is dumb), always or never
+  -dedupe int
+    	how many delivery IDs to remember (default 10000)
+  -forward-timeout duration
+    	the budget for forwarding one delivery; keep it below bide's request timeout (10 s) (default 8s)
+  -key string
+    	the private key (PEM) of -cert
+  -pagerduty-key-env string
+    	the environment variable that holds the PagerDuty Events API v2 routing key (default "PAGERDUTY_ROUTING_KEY")
+  -pagerduty-key-file string
+    	read the PagerDuty routing key from this file; used instead of -pagerduty-key-env
+  -pagerduty-url string
+    	the PagerDuty Events API endpoint (the EU region has its own) (default "https://events.pagerduty.com/v2/enqueue")
+  -previous-secret-env string
+    	the environment variable that holds the previous secret, during a rotation (optional) (default "BIDE_WEBHOOK_SECRET_PREVIOUS")
+  -previous-secret-file string
+    	read the previous secret from this file; used instead of -previous-secret-env
+  -secret-env string
+    	the environment variable that holds the signing secret (default "BIDE_WEBHOOK_SECRET")
+  -secret-file string
+    	read the signing secret from this file (leading and trailing white space is dropped); used instead of -secret-env
+  -slack-url-env string
+    	the environment variable that holds the Slack incoming webhook URL (default "SLACK_WEBHOOK_URL")
+  -slack-url-file string
+    	read the Slack webhook URL from this file; used instead of -slack-url-env
+  -view-url string
+    	the run viewer's base URL, for the "Open in viewer" button when a notification has no view.url
 ```
 
 ## bide check

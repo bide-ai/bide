@@ -9,7 +9,6 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/bide-ai/bide/internal/auditcli"
 	"github.com/bide-ai/bide/internal/term"
 )
 
@@ -74,11 +73,8 @@ and ` + "`help`" + `, and its import graph is the standard library and the core 
 	}
 	for _, c := range commands {
 		fmt.Fprintf(&b, "\n## bide %s\n\n%s.\n\n```text\n%s```\n", c.name, capitalize(c.summary), commandHelp(c, nil, term.New(false)))
-		if c.name != "audit" {
-			continue
-		}
-		for _, v := range auditcli.Verbs() {
-			fmt.Fprintf(&b, "\n### bide audit %s\n\n```text\n%s```\n", v, commandHelp(c, []string{v}, term.New(false)))
+		for _, v := range c.verbs {
+			fmt.Fprintf(&b, "\n### bide %s %s\n\n```text\n%s```\n", c.name, v, commandHelp(c, []string{v}, term.New(false)))
 		}
 	}
 	return b.String()
