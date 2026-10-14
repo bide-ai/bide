@@ -54,7 +54,7 @@ Practices:
 
 ## Backups
 
-- Back up the database that holds the journal (`bide_steps`, `bide_events`, `bide_leases`, `bide_version`, and the `next_seq` function, or the whole schema) with your normal point-in-time recovery. Backups carry the same sensitivity as the journal.
+- Back up the database that holds the journal (`bide_steps`, `bide_events`, `bide_leases`, `bide_schema_version`, and the `next_seq` function, or the whole schema) with your normal point-in-time recovery. Backups carry the same sensitivity as the journal.
 - **A restore can roll the journal back to an earlier state.** The at-most-once guarantee reduces to "the journal did or did not record this step" ([the guarantee](../GUARANTEE.md)). If you restore a database to a point before a step's attempt marker, bide will no longer know the effect fired, and may fire it again. After a restore, reconcile against the downstream systems before resuming runs: treat runs active at the time of the loss as having unknown outcomes. A rollback is also visible to anyone holding a later anchored head, because the restored log is not consistent with it. Do not "fix" that by re-signing.
 - Restore into a separate environment first and verify (`bide audit`) before pointing production at it.
 - The guarantee needs the store to survive the crash: use Postgres with synchronous commit and replication appropriate to your recovery objectives; SQLite is for one machine on a local disk, not a network file system ([known limitations, stores](../KNOWN-LIMITATIONS.md#stores)).
@@ -71,14 +71,14 @@ Practices:
 
 ## Least-privilege Postgres roles
 
-The Postgres store creates its own tables on `Open`: `bide_steps`, `bide_leases`, `bide_version`, `bide_events` (prefix configurable with `WithTablePrefix`) and a `next_seq` function, in a schema you should pin with `WithSchema`. The journal tables are written by `INSERT` only; the store issues no `UPDATE` or `DELETE` on `bide_steps` or `bide_events`. Leases are inserted, updated and deleted.
+The Postgres store creates its own tables on `Open`: `bide_steps`, `bide_leases`, `bide_schema_version`, `bide_events` (prefix configurable with `WithTablePrefix`) and a `next_seq` function, in a schema you should pin with `WithSchema`. The journal tables are written by `INSERT` only; the store issues no `UPDATE` or `DELETE` on `bide_steps` or `bide_events`. Leases are inserted, updated and deleted.
 
 A recommended split, to be tested against your Postgres version before you rely on it (the library's tests cover the schema-trust cases below; they do not publish a verified minimal-grant script):
 
 | Role | Purpose | Privileges |
 |---|---|---|
 | `bide_owner` | Runs migrations; owns the schema, tables and `next_seq` | Owner. Opens the store once per release to create or upgrade tables and indexes (creating an index requires the table owner, per the store's own error message). Not used by the running service |
-| `bide_app` | The running service | `USAGE` on the schema; `SELECT`, `INSERT` on `bide_steps` and `bide_events`; `SELECT`, `INSERT`, `UPDATE`, `DELETE` on `bide_leases`; `SELECT` on `bide_version`; `EXECUTE` on `next_seq`. No `UPDATE` or `DELETE` on the journal tables, no `CREATE` on the schema, no superuser |
+| `bide_app` | The running service | `USAGE` on the schema; `SELECT`, `INSERT` on `bide_steps` and `bide_events`; `SELECT`, `INSERT`, `UPDATE`, `DELETE` on `bide_leases`; `SELECT` on `bide_schema_version`; `EXECUTE` on `next_seq`. No `UPDATE` or `DELETE` on the journal tables, no `CREATE` on the schema, no superuser |
 | `bide_reader` | `bide view`, auditors, exports | `USAGE` on the schema and `SELECT` on the tables. `OpenReadOnly` also sets `default_transaction_read_only`, so the server refuses writes on its connections |
 
 Notes:

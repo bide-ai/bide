@@ -9,7 +9,7 @@ bide is a library, not a service. You run it inside your own processes against y
 | Asset | What it is | Where it lives |
 |---|---|---|
 | Funds and records, reached through side effects | A charge, a refund, an email, a record update that a tool performs outside bide | The downstream system. bide controls whether and how often the call is made, not what the downstream does with it |
-| The journal | The append-only record of a run: model turns, tool results, attempt markers, approval decisions | Your store: SQLite file or Postgres tables (`bide_steps`, `bide_leases`, `bide_events`, `bide_version` by default) |
+| The journal | The append-only record of a run: model turns, tool results, attempt markers, approval decisions | Your store: SQLite file or Postgres tables (`bide_steps`, `bide_leases`, `bide_events`, `bide_schema_version` by default) |
 | Signing keys | The tree-head (log) key that signs commitments; the grant issuer key that signs delegations | Supplied by the deployment (`audit.Signer`). Files today; see [operations](operations.md) |
 | Approver keys | One key per approver of an m-of-n gate | The approvers. bide holds only public keys (verifiers) |
 | Webhook secrets | HMAC secrets shared with notification receivers | The sender's configuration and the receiver's |

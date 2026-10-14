@@ -1,0 +1,140 @@
+package postgres
+
+// The least-privilege roles docs/trust/operations.md recommends, run for real: an owner role runs
+// the migration, a service role drives runs (a journal write, an attempt claim, a lease, the event
+// store), and a read-only role inspects. If the table in that page is missing a privilege this
+// fails; the denied-statement checks show that the service role cannot edit or remove the journal.
+// Open runs CREATE TABLE IF NOT EXISTS even when the tables exist, which Postgres allows only with
+// CREATE on the schema, so the service role needs it (the test pins that, so a store that gains a
+// no-migration open updates the page). Skips without PG_DSN.
+
+import (
+	"context"
+	"database/sql"
+	"errors"
+	"testing"
+	"time"
+
+	"github.com/bide-ai/bide/agent"
+)
+
+func TestLeastPrivilegeRoles(t *testing.T) {
+	admin, base := rv120Admin(t)
+	ctx := context.Background()
+	const schema, owner, app, reader = "lpschema", "lp_owner", "lp_app", "lp_reader"
+	rv120Role(t, admin, owner)
+	rv120Role(t, admin, app)
+	rv120Role(t, admin, reader)
+	admin.ExecContext(ctx, `DROP SCHEMA IF EXISTS `+schema+` CASCADE`)
+	rv120Exec(t, admin, `CREATE SCHEMA `+schema+` AUTHORIZATION `+owner)
+	t.Cleanup(func() { admin.ExecContext(context.Background(), `DROP SCHEMA IF EXISTS `+schema+` CASCADE`) })
+
+	// 1. The owner opens the store once: tables, indexes and next_seq are created and owned by it.
+	os, err := Open(ctx, rv120DSN(t, base, owner, ""), WithSchema(schema))
+	if err != nil {
+		t.Fatalf("owner: %v", err)
+	}
+	os.Close()
+
+	// 2. The grants of the page's table, and nothing else.
+	rv120Exec(t, admin,
+		`GRANT USAGE ON SCHEMA `+schema+` TO `+app+`, `+reader,
+		`GRANT SELECT, INSERT ON `+schema+`.bide_steps, `+schema+`.bide_events TO `+app,
+		`GRANT SELECT, INSERT, UPDATE, DELETE ON `+schema+`.bide_leases TO `+app,
+		`GRANT SELECT, INSERT ON `+schema+`.bide_schema_version TO `+app,
+		`GRANT SELECT ON `+schema+`.bide_steps, `+schema+`.bide_events, `+schema+`.bide_leases, `+schema+`.bide_schema_version TO `+reader,
+		`REVOKE ALL ON FUNCTION `+schema+`.bide_next_seq_v1(text) FROM PUBLIC`,
+		`GRANT EXECUTE ON FUNCTION `+schema+`.bide_next_seq_v1(text) TO `+app,
+	)
+
+	// 3. Without CREATE on the schema the service role cannot open the store: the migration's
+	// CREATE TABLE IF NOT EXISTS is refused. With it, the role opens the store and drives a run.
+	if x, err := Open(ctx, rv120DSN(t, base, app, ""), WithSchema(schema)); err == nil {
+		x.Close()
+		t.Fatal("a role without CREATE on the schema opened the store: docs/trust/operations.md says it cannot")
+	}
+	rv120Exec(t, admin, `GRANT CREATE ON SCHEMA `+schema+` TO `+app)
+	s, err := Open(ctx, rv120DSN(t, base, app, ""), WithSchema(schema))
+	if err != nil {
+		t.Fatalf("service role cannot open the store: %v", err)
+	}
+	defer s.Close()
+	run := uniqueID(t, "lp-")
+	j, err := agent.NewJournal(s)
+	if err != nil {
+		t.Fatal(err)
+	}
+	fired := 0
+	for i := 0; i < 2; i++ { // the second call replays the recorded result: the claim and the result were read back
+		got, err := j.Step(ctx, run, "pay", func(context.Context) (string, error) { fired++; return "ok", nil })
+		if err != nil || got != "ok" {
+			t.Fatalf("step %d: %q, %v", i, got, err)
+		}
+	}
+	if fired != 1 {
+		t.Fatalf("the effect fired %d times", fired)
+	}
+	ok, err := s.AcquireLease(ctx, run, "node-a", time.Minute)
+	if err != nil || !ok {
+		t.Fatalf("acquire lease: %v, %v", ok, err)
+	}
+	if ok, err := s.RenewLease(ctx, run, "node-a", time.Minute); err != nil || !ok {
+		t.Fatalf("renew lease: %v, %v", ok, err)
+	}
+	if err := s.ReleaseLease(ctx, run, "node-a"); err != nil {
+		t.Fatalf("release lease: %v", err)
+	}
+	if n := 0; true {
+		for _, err := range s.Runs(ctx, agent.RunFilter{}) {
+			if err != nil {
+				t.Fatalf("list runs: %v", err)
+			}
+			n++
+		}
+	}
+	if err := s.EventStore().Append(ctx, run, 0, []byte("leaf")); err != nil {
+		t.Fatalf("event store append: %v", err)
+	}
+	if got, err := s.EventStore().Load(ctx, run); err != nil || len(got) != 1 {
+		t.Fatalf("event store load: %q, %v", got, err)
+	}
+
+	// 4. What the service role must not be able to do, on its own connection.
+	appDB, err := sql.Open("pgx", rv120DSN(t, base, app, ""))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer appDB.Close()
+	for _, q := range []string{
+		`UPDATE ` + schema + `.bide_steps SET data = ''`,
+		`DELETE FROM ` + schema + `.bide_steps`,
+		`UPDATE ` + schema + `.bide_events SET leaf = ''`,
+		`DELETE FROM ` + schema + `.bide_events`,
+		`UPDATE ` + schema + `.bide_schema_version SET version = 0`,
+		`DROP TABLE ` + schema + `.bide_steps`,
+	} {
+		if _, err := appDB.ExecContext(ctx, q); err == nil {
+			t.Errorf("service role ran %q", q)
+		}
+	}
+
+	// 5. The read-only role reads through OpenReadOnly and cannot write.
+	r, err := OpenReadOnly(ctx, rv120DSN(t, base, reader, ""), WithSchema(schema))
+	if err != nil {
+		t.Fatalf("reader: %v", err)
+	}
+	defer r.Close()
+	n := 0
+	for _, err := range r.Load(ctx, run, -1) {
+		if err != nil {
+			t.Fatal(err)
+		}
+		n++
+	}
+	if n == 0 {
+		t.Fatal("the reader sees no records")
+	}
+	if _, _, err := r.Insert(ctx, run, "x", []byte("x")); err == nil || !errors.Is(err, agent.ErrStorage) {
+		t.Fatalf("reader insert: %v", err)
+	}
+}
