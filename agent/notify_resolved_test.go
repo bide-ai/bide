@@ -1233,3 +1233,52 @@ func TestResolved_EverySegmentIsIndexedUnderItsOwnYearInOrder(t *testing.T) {
 		t.Fatalf("indexes = %v, want %v", got, want)
 	}
 }
+
+// A process whose clock runs days ahead seals a segment for a day no other clock has reached. The
+// other processes follow the chain to it and write there, and every record in a segment is dated no
+// earlier than its day, so the open trail stays one a verifier accepts.
+func TestResolved_AClockAheadSealsADayNoOneElseHasReached(t *testing.T) {
+	ctx := context.Background()
+	clkA, clkB := resolvedClock(), resolvedClock()
+	tr := NewMemNotifyTrail()
+	a := testEngine(t, memJournal(), &fakeSink{}, tr, clkA, "a")
+	b := testEngine(t, memJournal(), &fakeSink{}, tr, clkB, "b")
+	if err := b.watch(ctx, "k1", "r"); err != nil {
+		t.Fatal(err)
+	}
+	clkA.advance(3 * 24 * time.Hour) // A is three days ahead
+	if err := a.watch(ctx, "k2", "r"); err != nil {
+		t.Fatal(err)
+	}
+	if err := b.watch(ctx, "k3", "r"); err != nil { // B, on its own day, follows the chain
+		t.Fatal(err)
+	}
+	if err := b.unwatch(ctx, "k1"); err != nil {
+		t.Fatal(err)
+	}
+	name, recs, err := b.openHead(ctx)
+	if err != nil || name != OpenSegment(clkA.now()) {
+		t.Fatalf("head = %s, %v: B did not follow the chain to A's segment", name, err)
+	}
+	got := FoldOpen(recs).Watched
+	if len(got) != 2 || got[0].Key != "k2" || got[1].Key != "k3" {
+		t.Fatalf("listed = %+v, want k2 and k3 (k1 unwatched)", got)
+	}
+	day := segmentDayOf(name)
+	for i, r := range recs {
+		if r.At.Before(day) {
+			t.Errorf("record %d (%s) is dated %s, before its segment's day %s", i, r.Kind, r.At, day)
+		}
+		if i > 0 && r.At.Before(recs[i-1].At) {
+			t.Errorf("record %d (%s) is dated %s, before record %d (%s)", i, r.Kind, r.At, i-1, recs[i-1].At)
+		}
+	}
+	for _, y := range []int{clkA.now().Year()} {
+		idx, _ := tr.Load(ctx, OpenIndex(y))
+		for i, r := range idx {
+			if r.At.Before(segmentDayOf(r.Next)) {
+				t.Errorf("index record %d is dated before the segment it names", i)
+			}
+		}
+	}
+}

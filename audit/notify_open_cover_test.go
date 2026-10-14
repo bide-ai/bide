@@ -122,3 +122,28 @@ func TestVerifyNotifications_AnchoredAMissingSegmentIsAFinding(t *testing.T) {
 	}
 	_ = d1
 }
+
+// Truncation at the old end: the first segment and its index record deleted, the next segment's
+// checkpoint emptied to match. Each trail's signed head still commits to what it had, so the
+// deletions are found (a first segment with an empty checkpoint is not accepted on its word).
+func TestVerifyNotifications_AnchoredTheOldestSegmentDeletedIsFound(t *testing.T) {
+	pub, priv, _ := ed25519.GenerateKey(nil)
+	k1 := agent.ApprovalKey("r1", "c1", 0)
+	_, h0 := signedRecs(t, priv, day(0), segRec(agent.NotifyCheckpoint, 0, ""), op(agent.NotifyWatch, k1, 1), segRec(agent.NotifySeal, 86400, day(1)))
+	_, h1 := signedRecs(t, priv, day(1), agent.NotifyRecord{Kind: agent.NotifyCheckpoint, At: at(86400), Watching: []agent.Watched{{Key: k1, RunID: "r1", At: at(1)}}})
+	_, hi := signedRecs(t, priv, agent.OpenIndex(t0.Year()), segRec(agent.NotifySegment, 0, day(0)), segRec(agent.NotifySegment, 86400, day(1)))
+	// What the attacker leaves: day 1 with an empty checkpoint, and an index without day 0.
+	d1cut, _ := signedRecs(t, priv, day(1), segRec(agent.NotifyCheckpoint, 86400, ""))
+	idxcut, _ := signedRecs(t, priv, agent.OpenIndex(t0.Year()), segRec(agent.NotifySegment, 86400, day(1)))
+	rep, err := audit.VerifyNotifications(audit.NotifyVerifyInput{Trails: []audit.NotifyTrailExport{d1cut, idxcut},
+		Heads: []audit.SignedTreeHead{h0, h1, hi}, Verifier: audit.Ed25519Verifier{Pub: pub}, Now: at(86600)})
+	if err == nil {
+		t.Fatalf("a deleted oldest segment verifies:\n%s", violationsOf(rep))
+	}
+	v := violationsOf(rep)
+	for _, want := range []string{day(0), day(1), agent.OpenIndex(t0.Year())} {
+		if !strings.Contains(v, want) {
+			t.Errorf("no finding names %s:\n%s", want, v)
+		}
+	}
+}

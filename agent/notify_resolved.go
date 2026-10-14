@@ -251,6 +251,29 @@ func (e *notifyEngine) unwatch(ctx context.Context, key string) error {
 	return e.setWatch(ctx, key, "", false)
 }
 
+// segmentDayOf is the UTC day a segment is named for (the zero time for a name that is not one).
+func segmentDayOf(name string) time.Time {
+	t, _ := time.Parse("2006-01-02", strings.TrimPrefix(name, NotifyOpenTrail+":"))
+	return t
+}
+
+// openAt is the time a record appended after recs to the open-trail trail segment carries: the
+// clock's, but no earlier than the segment's day and no earlier than the record before it. A writer
+// whose clock is behind a segment another process's clock ran ahead into follows the chain to it and
+// writes there, and its records are then dated at the segment's start, or after the last record,
+// so the segment stays one whose records fall in its day and in order (which the verifier checks).
+// The time in an open-trail record is structural, not evidence of when something happened.
+func (e *notifyEngine) openAt(segment string, recs []NotifyRecord) time.Time {
+	at := e.cfg.now()
+	if d := segmentDayOf(segment); at.Before(d) {
+		at = d
+	}
+	if n := len(recs); n > 0 && at.Before(recs[n-1].At) {
+		at = recs[n-1].At
+	}
+	return at
+}
+
 func (e *notifyEngine) setWatch(ctx context.Context, key, runID string, want bool) error {
 	for range maxTrailRetries {
 		name, recs, err := e.openHead(ctx)
@@ -267,7 +290,7 @@ func (e *notifyEngine) setWatch(ctx context.Context, key, runID string, want boo
 		if listed == want {
 			return nil
 		}
-		rec := NotifyRecord{Kind: NotifyWatch, Key: key, RunID: runID, At: e.cfg.now()}
+		rec := NotifyRecord{Kind: NotifyWatch, Key: key, RunID: runID, At: e.openAt(name, recs)}
 		if !want {
 			rec.Kind, rec.RunID = NotifyUnwatch, run
 		}
@@ -324,7 +347,7 @@ func (e *notifyEngine) indexSegment(ctx context.Context, name string) error {
 		if slices.ContainsFunc(recs, func(r NotifyRecord) bool { return r.Kind == NotifySegment && r.Next == name }) {
 			return nil
 		}
-		conflict, err := e.appendRec(ctx, idx, len(recs), NotifyRecord{Kind: NotifySegment, At: e.cfg.now(), Next: name})
+		conflict, err := e.appendRec(ctx, idx, len(recs), NotifyRecord{Kind: NotifySegment, At: e.openAt(name, recs), Next: name})
 		if err != nil {
 			return err
 		}
@@ -368,7 +391,7 @@ func (e *notifyEngine) openHead(ctx context.Context) (string, []NotifyRecord, er
 				return "", nil, fmt.Errorf("notify: trail %s: a chain of seals too long to follow", NotifyOpenTrail)
 			}
 			if len(recs) == 0 {
-				cp := NotifyRecord{Kind: NotifyCheckpoint, At: e.cfg.now()}
+				cp := NotifyRecord{Kind: NotifyCheckpoint, At: e.openAt(name, nil)}
 				if prev != nil {
 					cp.Watching, cp.Backfilled = prev.Watched, prev.Backfilled
 				}
@@ -517,7 +540,7 @@ func (e *notifyEngine) backfillOpen(ctx context.Context) error {
 		if FoldOpen(recs).Backfilled {
 			return nil
 		}
-		conflict, aerr := e.appendRec(ctx, name, len(recs), NotifyRecord{Kind: NotifyBackfilled, At: e.cfg.now()})
+		conflict, aerr := e.appendRec(ctx, name, len(recs), NotifyRecord{Kind: NotifyBackfilled, At: e.openAt(name, recs)})
 		if aerr != nil {
 			return aerr
 		}

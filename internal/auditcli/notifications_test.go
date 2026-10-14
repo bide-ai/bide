@@ -523,3 +523,33 @@ func TestNotificationsVerb_TheOpenTrailIsFollowedPastAnyFixedYearBound(t *testin
 		}
 	}
 }
+
+// Two notifiers whose clocks differ by days, over one store: the open trail they write together is
+// one the audit accepts, and each run's event is found.
+func TestNotificationsVerb_AnOpenTrailWrittenByClocksDaysApartVerifies(t *testing.T) {
+	ctx := context.Background()
+	mem, es := agent.NewMemStore(), audit.NewMemEventStore()
+	j, _ := agent.NewJournal(mem)
+	tool := agent.MustFunc("refund", "refund", func(context.Context, struct{}) (string, error) { return "ok", nil }, agent.WithApproval(agent.SingleApproval()))
+	base := time.Now().UTC()
+	drive := func(run string, skew time.Duration, holder string) {
+		a, _ := agent.New(agenttest.NewScriptedModel(agenttest.ToolTurn("c1", "refund", `{}`)), j, agent.WithTools(tool),
+			agent.WithNotifier(&okSink{}, audit.NewNotifyTrail(es), agent.WithNotifyHolder(holder),
+				agent.WithNotifyClock(func() time.Time { return base.Add(skew) })))
+		if _, err := a.Run(ctx, run, agent.UserText("go")); !errors.As(err, new(*agent.ApprovalPending)) {
+			t.Fatal(err)
+		}
+		if err := a.FlushNotifications(ctx); err != nil {
+			t.Fatal(err)
+		}
+	}
+	drive("a", 0, "p-normal")
+	drive("b", 72*time.Hour, "p-ahead") // seals today's segment into one three days on
+	drive("c", 0, "p-normal2")          // follows the chain into the future segment
+	closed := false
+	fakeStores(t, memNotifyStore{mem, es, &closed})
+	code, out, errOut := runCLI("notifications", "-db", "x.db", "-unanchored", "-as-of", base.Add(96*time.Hour).Format(time.RFC3339))
+	if code != 0 || !strings.Contains(out, "approval:a:c1:0") || !strings.Contains(out, "approval:c:c1:0") || strings.Contains(out, "FAIL") {
+		t.Fatalf("exit %d\n%s\n%s", code, out, errOut)
+	}
+}
