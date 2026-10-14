@@ -127,7 +127,7 @@ func newRigAs(t *testing.T, call string, policy *agent.ApprovalPolicy, id agent.
 	if err := r.run(); !agent.IsPause(err) {
 		t.Fatalf("the run did not pause: %v", err)
 	}
-	opts = append([]approvals.Option{approvals.WithClock(r.clock)}, opts...)
+	opts = append([]approvals.Option{approvals.WithClock(r.clock), approvals.WithOnError(func(err error) { t.Log(err) }), r.livePolicy()}, opts...)
 	r.h, err = approvals.New(r.app, r.verifiers, opts...)
 	if err != nil {
 		t.Fatal(err)
@@ -303,4 +303,9 @@ func (s *stallStore) Load(ctx context.Context, runID string, after int64) iter.S
 		}
 	}
 	return s.Store.Load(ctx, runID, after)
+}
+
+// livePolicy is WithGatePolicy for the rig: the policy its tool is built with.
+func (r *rig) livePolicy() approvals.Option {
+	return approvals.WithGatePolicy(func(tool string) (*agent.ApprovalPolicy, bool) { return &r.policy, tool == "charge" })
 }

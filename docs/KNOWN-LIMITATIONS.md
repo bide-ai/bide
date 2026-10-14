@@ -291,7 +291,7 @@ enforced by the gate itself when the run resumes, but is not in the note. If the
 passed under the old policy and the call has not run (a crash between the tally and the call), the gate
 asks again, and a reader that takes the policy from the note shows the gate as decided: the intake then
 refuses the new approvals (`not_waiting`), so nobody can approve through it and the run waits.
-**Give the intake the live policy**: `approvals.WithGatePolicy(func(tool string) (*agent.ApprovalPolicy,
+**The intake requires the live policy** (`approvals.New` fails without it): `approvals.WithGatePolicy(func(tool string) (*agent.ApprovalPolicy,
 bool))` returns each gated tool's policy as the agent is built with it, and the handler counts the gate
 under that (the way the gate does) and uses the note only for a tool it does not know. `bide view` and
 `bide approve`, which read the database with no access to the application's policy, still read the note:

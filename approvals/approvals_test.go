@@ -8,6 +8,7 @@ import (
 	"encoding/base64"
 	"encoding/hex"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"net"
@@ -488,16 +489,24 @@ func TestRateLimit_ManyClientsShareAnOverflowBucket(t *testing.T) {
 
 func TestNew_Config(t *testing.T) {
 	r := newRig(t)
-	if _, err := approvals.New(nil, r.verifiers); err == nil {
+	live := approvals.WithGatePolicy(func(string) (*agent.ApprovalPolicy, bool) { return nil, false })
+	if _, err := approvals.New(nil, r.verifiers, live); err == nil {
 		t.Error("nil journal accepted")
 	}
-	if _, err := approvals.New(r.app, nil); err == nil {
+	if _, err := approvals.New(r.app, nil, live); err == nil {
 		t.Error("nil verifiers accepted")
 	}
-	if _, err := approvals.New(r.app, r.verifiers, approvals.WithMaxBodyBytes(0)); err == nil {
+	if _, err := approvals.New(r.app, r.verifiers, live, approvals.WithMaxBodyBytes(0)); err == nil {
 		t.Error("zero body limit accepted")
 	}
 	_ = audit.AlgEd25519
+	// The live policy is required: a handler that would read a gate's policy from a note written once
+	// can leave a re-asked gate looking decided, with its new approvals refused.
+	for name, opts := range map[string][]approvals.Option{"absent": nil, "nil function": {approvals.WithGatePolicy(nil)}} {
+		if _, err := approvals.New(r.app, r.verifiers, opts...); !errors.Is(err, agent.ErrConfig) || !strings.Contains(err.Error(), "WithGatePolicy") {
+			t.Errorf("%s: %v, want an ErrConfig naming WithGatePolicy", name, err)
+		}
+	}
 }
 
 // A single-approver gate takes no signed decision, and a plan flow node's gate is not served: each
@@ -857,7 +866,7 @@ func TestDecision_TwoHandlersOneStore(t *testing.T) {
 		if err != nil {
 			t.Fatal(err)
 		}
-		h2, err := approvals.New(j2, r.verifiers, append([]approvals.Option{approvals.WithClock(r.clock)}, off...)...)
+		h2, err := approvals.New(j2, r.verifiers, append([]approvals.Option{approvals.WithClock(r.clock), r.livePolicy()}, off...)...)
 		if err != nil {
 			t.Fatal(err)
 		}

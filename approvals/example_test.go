@@ -16,7 +16,11 @@ func ExampleNew() {
 	journal := agenttest.MemJournal()
 	keys := func(id string) (agent.ApproverVerifier, bool) { return nil, false } // the enrolled keys
 
+	policies := map[string]*agent.ApprovalPolicy{
+		"charge": {Need: 2, Approvers: []string{"ops", "finance", "risk"}}, // the policy the tool was built with
+	}
 	h, err := approvals.New(journal, keys,
+		approvals.WithGatePolicy(func(tool string) (*agent.ApprovalPolicy, bool) { p, ok := policies[tool]; return p, ok }),
 		approvals.OnRecorded(func(ctx context.Context, r approvals.Recorded) {
 			if r.Decided {
 				// Re-run r.RootRunID now, or leave it to agent.RecoverLoop.

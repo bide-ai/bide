@@ -16,6 +16,7 @@
 // Mount it under a prefix with http.StripPrefix:
 //
 //	h, err := approvals.New(journal, verifierFor,
+//	    approvals.WithGatePolicy(func(tool string) (*agent.ApprovalPolicy, bool) { p, ok := policies[tool]; return p, ok }),
 //	    approvals.OnRecorded(func(ctx context.Context, r approvals.Recorded) {
 //	        if r.Decided {
 //	            _, _ = agent.Run(ctx, r.RootRunID /* ... */)
@@ -276,6 +277,9 @@ func New(j *agent.Journal, verifierFor agent.ApproverVerifierFor, opts ...Option
 			return nil, err
 		}
 	}
+	if h.policyFor == nil {
+		return nil, configErr("WithGatePolicy is required: the handler counts a gate under the policy the agent is built with, and the pause note it would otherwise read is written once, so a policy changed after the first pause would leave a gate that asks again looking decided, and its new approvals refused")
+	}
 	h.lim = newLimiter(h.rate, h.burst, h.gRate, h.gBurst, h.maxKeys, h.now)
 	h.sem = make(chan struct{}, h.inflight)
 	h.hooks = make(chan struct{}, h.inflight)
@@ -341,17 +345,23 @@ func WithMaxReaders(total, perClient int) Option {
 	}
 }
 
-// WithGatePolicy tells the handler each gated tool's live approval policy, as the application's
-// agent is built with it (the ToolSpec's Approval). Without it the handler reads a gate's policy from
-// the pause note, which the run writes once when it first pauses: a redeploy that changes the policy
-// afterwards (turning on ExcludePrincipal, say) is enforced by the gate when the run resumes, but not
-// in the note. If the gate's recorded tally passed under the old policy and the call has not run, the
-// gate asks again, and a handler that reads the old policy from the note shows the gate as decided
-// and refuses the new approvals (not_waiting). With fn, a gate on a tool it knows is counted under
-// the live policy (its need, approvers and ExcludePrincipal), the way the gate counts; a tool it
-// does not know (ok false) falls back to the note. fn is called for every request that reads a
-// gate, so it should be a lookup. It never sees a single-approver policy's effect: the intake
-// serves m-of-n gates only.
+// WithGatePolicy gives the handler each gated tool's live approval policy, as the application's
+// agent is built with it (the ToolSpec's Approval). It is required: New returns an error wrapping
+// agent.ErrConfig without it. A gate's policy is also in the pause note, which the run writes once
+// when it first pauses, so a redeploy that changes the policy afterwards (turning on ExcludePrincipal,
+// say) is enforced by the gate when the run resumes but is not in the note. If the gate's recorded
+// tally passed under the old policy and the call has not run, the gate asks again; a handler that
+// read the old policy from the note would show the gate as decided and refuse the new approvals
+// (not_waiting), and the run would wait for ever. So a gate on a tool fn knows is counted under the
+// live policy (its need, approvers and ExcludePrincipal), the way the gate counts; for a tool fn does
+// not know (ok false: no policy for it, or a single-approver one, which the intake does not serve)
+// the note is the fallback. fn is called for every request that reads a gate, so it should be a
+// lookup:
+//
+//	approvals.WithGatePolicy(func(tool string) (*agent.ApprovalPolicy, bool) {
+//	    p, ok := policies[tool] // the policies the tools were built with agent.WithApproval
+//	    return p, ok
+//	})
 func WithGatePolicy(fn func(tool string) (*agent.ApprovalPolicy, bool)) Option {
 	return func(h *Handler) error { h.policyFor = fn; return nil }
 }

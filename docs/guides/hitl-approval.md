@@ -688,9 +688,10 @@ application's own `*agent.Journal`, so an `audit.AuditedStore` signs a head over
 That closes the gap [a decision written by another process](#a-decision-written-by-another-process)
 leaves, and it lets the log key stay in the application's HSM.
 
-<!-- docsnip: setup journal *agent.Journal; verifierFor agent.ApproverVerifierFor; mux *http.ServeMux; resume func(context.Context, string) -->
+<!-- docsnip: setup journal *agent.Journal; verifierFor agent.ApproverVerifierFor; mux *http.ServeMux; resume func(context.Context, string); policies map[string]*agent.ApprovalPolicy -->
 ```go
 h, err := approvals.New(journal, verifierFor,
+	approvals.WithGatePolicy(func(tool string) (*agent.ApprovalPolicy, bool) { p, ok := policies[tool]; return p, ok }),
 	approvals.OnRecorded(func(ctx context.Context, r approvals.Recorded) {
 		if r.Decided {
 			resume(ctx, r.RootRunID) // the application's policy: re-run now, or leave it to RecoverLoop
@@ -770,10 +771,12 @@ hash are the application's word until a signed head covers them (`bide audit ver
 If the request fails with no answer, run the command again: the decision may have been recorded, and one
 of yours that counts is refused as already decided.
 
-**The live policy.** The handler reads a gate's policy from its pause note, written once when the run first
-pauses. Tell it the policy the agent is built with (`approvals.WithGatePolicy`, a lookup by tool name), so a
-policy changed after the pause (`ExcludePrincipal` turned on) is honored: otherwise a gate that asks again for
-it looks decided and the intake refuses the approvals it needs (see
+**The live policy is required.** `approvals.WithGatePolicy`, a lookup by tool name of the policy the agent's
+tools are built with, is not optional: `approvals.New` returns an error without it. A gate's policy is also in
+its pause note, written once when the run first pauses, so a policy changed after the pause (`ExcludePrincipal`
+turned on) is in the gate but not the note, and a gate whose tally passed under the old policy asks again
+while a handler that read the note would show it decided and refuse the approvals it needs, so the run would
+wait for ever. A tool the function does not know (`ok` false) falls back to the note (see
 [KNOWN-LIMITATIONS](../KNOWN-LIMITATIONS.md)).
 
 **What it does not serve.** A single-approver gate (`agent.Approve`) has no signature to check, so it
