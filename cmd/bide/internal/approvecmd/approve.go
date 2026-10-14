@@ -17,6 +17,7 @@ import (
 	"fmt"
 	"io"
 	"os"
+	"path/filepath"
 	"slices"
 	"strings"
 	"time"
@@ -105,6 +106,7 @@ type flags struct {
 	approverKeys              string
 	reject, yes, full         bool
 	unverified                bool
+	receipt, verifyReceipt    string
 	list, asJSON              bool
 }
 
@@ -128,6 +130,8 @@ func Main(args []string, in io.Reader, stdout, stderr io.Writer, stores Stores) 
 	fs.StringVar(&f.key, "key", "", "your private key file, as bide keygen writes it (Ed25519, ML-DSA-65 or hybrid) (not for a single-approver gate); on Unix it must not be readable by group or others")
 	fs.StringVar(&f.approverKeys, "approver-keys", "", `approver public keys, a JSON object of approver id to key text, e.g. {"ops":"ed25519:ab12..."}, the file bide view -approver-keys reads (bide keygen -as prints an entry): refuse a -key that is not the one enrolled for -as, and verify the tally. Required for an m-of-n gate unless -unverified`)
 	fs.BoolVar(&f.unverified, "unverified", false, "decide an m-of-n gate without -approver-keys: the key is not checked against the one enrolled for you, and the tally is not verified")
+	fs.StringVar(&f.receipt, "receipt", "", "where to write the decision receipt (default: next to -key, named <run>-<call>-<approver>.receipt.json); mode 0600, never overwritten")
+	fs.StringVar(&f.verifyReceipt, "verify-receipt", "", "verify a decision receipt on its own, against -approver-keys, instead of deciding anything: its signature over the exact call it states")
 	fs.BoolVar(&f.reject, "reject", false, "record a rejection instead of an approval")
 	fs.BoolVar(&f.yes, "yes", false, "do not ask for confirmation (for scripts); what is signed is still shown")
 	fs.BoolVar(&f.full, "full", false, "show all of the call's arguments, not the first lines")
@@ -157,9 +161,12 @@ func Main(args []string, in io.Reader, stdout, stderr io.Writer, stores Stores) 
 	ctx := context.Background()
 	c := &cmd{f: f, in: bufio.NewReader(in), out: stdout, st: st, stores: stores}
 	var err error
-	if f.list {
+	switch {
+	case f.verifyReceipt != "":
+		err = c.verifyReceiptFile()
+	case f.list:
 		err = c.list(ctx)
-	} else {
+	default:
 		err = c.approve(ctx)
 	}
 	if err != nil {
@@ -171,6 +178,20 @@ func Main(args []string, in io.Reader, stdout, stderr io.Writer, stores Stores) 
 
 // check reports a usage error in the flags, or "".
 func (f flags) check() string {
+	if f.verifyReceipt != "" {
+		if f.approverKeys == "" {
+			return "-verify-receipt needs -approver-keys, the file of enrolled approver public keys"
+		}
+		for name, set := range map[string]bool{"-db": f.db != "", "-postgres": f.postgres != "", "-postgres-env": f.postgresEnv != "", "-run": f.run != "", "-call": f.call != "", "-as": f.as != "", "-key": f.key != "", "-reject": f.reject, "-yes": f.yes, "-full": f.full, "-list": f.list, "-json": f.asJSON, "-unverified": f.unverified, "-receipt": f.receipt != ""} {
+			if set {
+				return name + " does not go with -verify-receipt, which reads no journal"
+			}
+		}
+		return ""
+	}
+	if f.receipt != "" && f.list {
+		return "-receipt does not go with -list"
+	}
 	n := 0
 	for _, s := range []string{f.db, f.postgres, f.postgresEnv} {
 		if s != "" {
@@ -181,7 +202,7 @@ func (f flags) check() string {
 		return "give exactly one of -db, -postgres and -postgres-env"
 	}
 	if f.list {
-		for name, set := range map[string]bool{"-run": f.run != "", "-call": f.call != "", "-as": f.as != "", "-key": f.key != "", "-reject": f.reject, "-yes": f.yes, "-full": f.full, "-approver-keys": f.approverKeys != "", "-unverified": f.unverified} {
+		for name, set := range map[string]bool{"-run": f.run != "", "-call": f.call != "", "-as": f.as != "", "-key": f.key != "", "-reject": f.reject, "-yes": f.yes, "-full": f.full, "-approver-keys": f.approverKeys != "", "-unverified": f.unverified, "-receipt": f.receipt != ""} {
 			if set {
 				return name + " does not go with -list"
 			}
@@ -424,6 +445,7 @@ func (c *cmd) approve(ctx context.Context) error {
 	if err != nil {
 		return err
 	}
+	var receiptErr error
 	single := g.gate.Single
 	if single && (f.as != "" || f.key != "") {
 		return refuse("the gate on call %s is a single-approver gate (agent.Approve): its decision carries no approver id and no signature, so -as and -key do not apply; drop them", safe(f.call))
@@ -458,6 +480,12 @@ func (c *cmd) approve(ctx context.Context) error {
 		}
 	}
 
+	receiptPath := ""
+	if !single {
+		if receiptPath, err = c.receiptTarget(); err != nil {
+			return err
+		}
+	}
 	s := g.subject(f.run)
 	c.show(g, s, signer)
 	if !c.confirm(single) {
@@ -492,8 +520,14 @@ func (c *cmd) approve(ctx context.Context) error {
 			return fmt.Errorf("the decision was not recorded: %w", err)
 		}
 		fmt.Fprintf(c.out, "\n%s%s call %s as %s, signed and recorded (decided %s)\n", c.st.Pass(), c.verb(!f.reject), safe(f.call), c.st.Bold(f.as), agent.FormatTimestamp(at))
+		if rerr := c.writeReceipt(ctx, j, s, d, receiptPath); rerr != nil {
+			receiptErr = rerr
+		}
 	}
-	return c.after(ctx, j, verifierFor)
+	if err := c.after(ctx, j, verifierFor); err != nil {
+		return err
+	}
+	return receiptErr
 }
 
 // verb is the past tense of the decision, colored.
@@ -751,4 +785,122 @@ func (c *cmd) list(ctx context.Context) error {
 	}
 	fmt.Fprintf(c.out, "\n%s\n", st.Dim("Replace '"+approveline.KeyFilePlaceholder+"' with the path of your private key (bide keygen makes one) and '"+approveline.KeysFilePlaceholder+"' with the file of enrolled approver public keys. bide approve shows what it signs and asks first."))
 	return nil
+}
+
+// auditLine says when a recorded decision is signed into the audit log. It is the same whatever the
+// journal is: bide approve cannot tell from the journal whether the application audits it (an
+// audit.AuditedStore is configured in the application, and publishes its signed tree heads to its
+// own anchor), and the decision is covered by the first head signed after it is recorded.
+const auditLine = "the decision is signed into the audit log at the app's next write to this run"
+
+// receiptTarget returns -receipt, or "" for the default name (which holds the decision time, known
+// only when it is signed), and checks before anything is signed or recorded that the receipt can be
+// written: a named file must not exist (a receipt is never overwritten) and its directory must.
+func (c *cmd) receiptTarget() (string, error) {
+	p := c.f.receipt
+	dir := filepath.Dir(cmp.Or(p, c.f.key))
+	if p != "" {
+		if _, err := os.Lstat(p); err == nil {
+			return "", refuse("the receipt file %s exists, and a receipt is never overwritten: remove it, or name another with -receipt", p)
+		}
+	}
+	if fi, err := os.Stat(dir); err != nil || !fi.IsDir() {
+		return "", refuse("the directory for the receipt, %s, does not exist: name another file with -receipt", dir)
+	}
+	return p, nil
+}
+
+// defaultReceiptName is <run>-<call>-<approver>-<decided_at>.receipt.json with every character outside
+// letters, digits, dot, dash and underscore written as an underscore, so a run or call id (any
+// string) can place the file only in the key's directory. The decision time keeps one approver's
+// decisions on one call (a first that never counted, then a second) in files of their own; a name
+// that is taken anyway is refused when written, never overwritten.
+func defaultReceiptName(run, call, approver, decidedAt string) string {
+	clean := func(s string) string {
+		var b strings.Builder
+		for _, r := range s {
+			if r >= 'a' && r <= 'z' || r >= 'A' && r <= 'Z' || r >= '0' && r <= '9' || r == '.' || r == '-' || r == '_' {
+				b.WriteRune(r)
+			} else {
+				b.WriteByte('_')
+			}
+		}
+		if b.Len() > 80 {
+			return b.String()[:80]
+		}
+		return b.String()
+	}
+	return strings.TrimLeft(clean(run)+"-"+clean(call)+"-"+clean(approver)+"-"+clean(decidedAt), ".") + ".receipt.json"
+}
+
+// writeReceipt writes the receipt of the decision d just recorded, found in the journal by what the
+// approver signed, to path (mode 0600, exclusive), and prints where it went and when the decision
+// is signed into the audit log. The decision is recorded either way; a receipt that cannot be
+// written is reported as an error, with that said.
+func (c *cmd) writeReceipt(ctx context.Context, j *agent.Journal, s agent.ApprovalSubject, d agent.Decision, path string) error {
+	recs, err := j.History(ctx, c.f.run)
+	if err != nil {
+		return fmt.Errorf("the decision was recorded; reading the journal for its receipt failed: %w", err)
+	}
+	decidedAt := agent.FormatTimestamp(d.DecidedAt)
+	if path == "" {
+		path = filepath.Join(filepath.Dir(c.f.key), defaultReceiptName(c.f.run, c.f.call, c.f.as, decidedAt))
+	}
+	for i := len(recs) - 1; i >= 0; i-- {
+		r := recs[i]
+		if !agent.IsApprovalDecision(r, d.ToolUseID) || r.Approver() != d.ApproverID || r.DecidedAt() != decidedAt || !bytes.Equal(r.Signature(), d.Signature) {
+			continue
+		}
+		rc, err := audit.NewDecisionReceipt(s, d, r, i)
+		if err != nil {
+			return fmt.Errorf("the decision was recorded; its receipt could not be made: %w", err)
+		}
+		b, err := json.MarshalIndent(rc, "", "  ")
+		if err != nil {
+			return fmt.Errorf("the decision was recorded; its receipt could not be made: %w", err)
+		}
+		if err := writeExclusive(path, append(b, '\n'), 0o600); err != nil {
+			return fmt.Errorf("the decision was recorded, but its receipt was not written: %w", err)
+		}
+		fmt.Fprintf(c.out, "%sreceipt %s %s\n", c.st.Pass(), c.st.Path(path), c.st.Dim("(mode 0600; verify it with bide approve -verify-receipt, or bide audit verify-receipts)"))
+		fmt.Fprintf(c.out, "audit: %s\n", auditLine)
+		return nil
+	}
+	return errors.New("the decision was recorded, but its record is not in the journal read back, so no receipt was written")
+}
+
+// verifyReceiptFile is bide approve -verify-receipt: the receipt's signature over the exact call it
+// states, by the key -approver-keys enrols for its approver. It reads no journal.
+func (c *cmd) verifyReceiptFile() error {
+	b, err := os.ReadFile(c.f.verifyReceipt)
+	if err != nil {
+		return fmt.Errorf("receipt %s: %w", c.f.verifyReceipt, unwrapPath(err))
+	}
+	var r audit.DecisionReceipt
+	if err := audit.UnmarshalStrict(b, &r); err != nil {
+		return fmt.Errorf("receipt %s: %w", c.f.verifyReceipt, err)
+	}
+	keys, err := approverKeys(c.f.approverKeys)
+	if err != nil {
+		return err
+	}
+	v, ok := keys[r.Approver]
+	if !ok {
+		return refuse("-approver-keys has no key for the receipt's approver %q", safe(r.Approver))
+	}
+	if err := r.Verify(v); err != nil {
+		return refuse("the receipt does not verify: %s", safe(err.Error()))
+	}
+	st := c.st
+	fmt.Fprintf(c.out, "%ssignature verifies for %s %s call %s (tool %s) of run %s at %s\n", st.Pass(), st.Bold(safe(r.Approver)), approvedWord(r.Approved), safe(r.ToolUseID), safe(r.ToolName), safe(r.RunID), safe(r.DecidedAt))
+	fmt.Fprintf(c.out, "  args SHA-256 %s\n  journal record %s at position %d, recorded %s\n", r.ArgsSHA, safe(r.Record), r.Index, safe(r.RecordedAt))
+	fmt.Fprintf(c.out, "%s\n", st.Dim("this checks the receipt alone; bide audit verify-receipts checks that the signed heads of the journal commit to the decision"))
+	return nil
+}
+
+func approvedWord(approved bool) string {
+	if approved {
+		return "approved"
+	}
+	return "denied"
 }

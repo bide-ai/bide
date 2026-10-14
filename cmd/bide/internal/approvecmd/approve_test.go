@@ -3,6 +3,8 @@ package approvecmd
 import (
 	"bytes"
 	"context"
+	"crypto/ed25519"
+	"crypto/rand"
 	"crypto/sha256"
 	"encoding/hex"
 	"encoding/json"
@@ -838,5 +840,204 @@ func TestKeygenAlg(t *testing.T) {
 	}
 	if code := KeygenMain([]string{"-out", filepath.Join(dir, "x"), "-alg", "rsa"}, io.Discard, io.Discard); code != 2 {
 		t.Fatalf("unknown -alg: %d", code)
+	}
+}
+
+// receiptsIn returns the receipt files in dir.
+func receiptsIn(t *testing.T, dir string) []string {
+	t.Helper()
+	m, _ := filepath.Glob(filepath.Join(dir, "*.receipt.json"))
+	return m
+}
+
+func readReceipt(t *testing.T, path string) audit.DecisionReceipt {
+	t.Helper()
+	b, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var r audit.DecisionReceipt
+	if err := audit.UnmarshalStrict(b, &r); err != nil {
+		t.Fatalf("%s: %v", path, err)
+	}
+	return r
+}
+
+// TestReceipt: a signed decision leaves a receipt next to the key: mode 0600, no key material, the
+// journal position of the record, and verifiable on its own.
+func TestReceipt(t *testing.T) {
+	f := newFixture(t, twoOfThree, refundArgs)
+	code, out, errs := f.run_("", f.as("ops", "-yes")...)
+	if code != 0 {
+		t.Fatalf("%d %s", code, errs)
+	}
+	got := receiptsIn(t, f.dir)
+	if len(got) != 1 {
+		t.Fatalf("receipts: %v", got)
+	}
+	if base := filepath.Base(got[0]); filepath.Dir(got[0]) != f.dir || !strings.HasPrefix(base, "refund-1049-c2-ops-20") || !strings.HasSuffix(base, "Z.receipt.json") {
+		t.Fatalf("default path %s", got[0])
+	}
+	contains(t, "output", out, "receipt "+got[0], "signed into the audit log at the app's next write to this run")
+	if strings.Contains(out, "re-run it") {
+		t.Fatalf("the audit line tells the approver to re-run: %s", out)
+	}
+	if runtime.GOOS != "windows" {
+		if fi, _ := os.Stat(got[0]); fi.Mode().Perm() != 0o600 {
+			t.Fatalf("receipt mode %04o", fi.Mode().Perm())
+		}
+	}
+	raw, _ := os.ReadFile(got[0])
+	seed, _ := os.ReadFile(f.keys["ops"])
+	if strings.Contains(string(raw), strings.TrimSpace(string(seed))) {
+		t.Fatal("the receipt holds key material")
+	}
+	r := readReceipt(t, got[0])
+	if err := r.Verify(f.pubs["ops"]); err != nil {
+		t.Fatal(err)
+	}
+	if r.RunID != f.run || r.ToolUseID != f.call || r.Approver != "ops" || !r.Approved || r.ToolName != "refund" || r.Record == "" || r.RecordedAt == "" {
+		t.Fatalf("%+v", r)
+	}
+	// The record is where the receipt says.
+	recs := f.allRecords()
+	if r.Index <= 0 || r.Index >= len(recs) || recs[r.Index].Name != r.Record {
+		t.Fatalf("index %d does not point at record %q", r.Index, r.Record)
+	}
+	// It checks against the journal: not yet in any signed head, which is pending, not a failure.
+	if fnd := audit.CheckReceipt(r, recs, nil, f.pubs["ops"], 0); fnd.Verdict != audit.ReceiptPending {
+		t.Fatalf("%+v", fnd)
+	}
+
+	// -verify-receipt checks it on its own.
+	var o, e bytes.Buffer
+	if code := Main([]string{"-verify-receipt", got[0], "-approver-keys", f.keysJSON, "-color", "never"}, strings.NewReader(""), &o, &e, stores); code != 0 {
+		t.Fatalf("verify: %d %s", code, e.String())
+	}
+	contains(t, "verify", o.String(), "signature verifies", "ops approved call c2", "args SHA-256 "+r.ArgsSHA)
+	// Any change to what it states fails it.
+	r.Approved = false
+	b, _ := json.Marshal(r)
+	tampered := filepath.Join(f.dir, "tampered.json")
+	_ = os.WriteFile(tampered, b, 0o600)
+	o.Reset()
+	e.Reset()
+	if code := Main([]string{"-verify-receipt", tampered, "-approver-keys", f.keysJSON}, strings.NewReader(""), &o, &e, stores); code != 1 {
+		t.Fatalf("tampered receipt: %d %s", code, o.String())
+	}
+	// The wrong approver's keys, no keys, and a journal flag beside it are refused.
+	for _, args := range [][]string{
+		{"-verify-receipt", got[0]},
+		{"-verify-receipt", got[0], "-approver-keys", f.keysJSON, "-db", f.db},
+		{"-verify-receipt", got[0], "-approver-keys", f.keysJSON, "-run", "x"},
+		{"-verify-receipt", got[0], "-approver-keys", f.keysJSON, "-list"},
+	} {
+		if code := Main(args, strings.NewReader(""), io.Discard, io.Discard, stores); code != 2 {
+			t.Errorf("%v: %d, want 2", args, code)
+		}
+	}
+	if code := Main([]string{"-verify-receipt", got[0], "-approver-keys", f.keysJSON}, nil, io.Discard, io.Discard, stores); code != 0 {
+		t.Errorf("nil stdin: %d", code)
+	}
+	// Another approver's key does not verify it.
+	other := filepath.Join(f.dir, "finance-only.json")
+	_ = os.WriteFile(other, []byte(`{"ops":"`+publicKeyTextOf(t, f.keys["finance"])+`"}`), 0o600)
+	if code := Main([]string{"-verify-receipt", got[0], "-approver-keys", other}, strings.NewReader(""), io.Discard, io.Discard, stores); code != 1 {
+		t.Errorf("another key verified the receipt: %d", code)
+	}
+}
+
+// TestReceiptPath: -receipt names the file; one that exists is never overwritten, and that is found
+// before anything is signed or recorded.
+func TestReceiptPath(t *testing.T) {
+	f := newFixture(t, twoOfThree, refundArgs)
+	taken := filepath.Join(f.dir, "mine.json")
+	if err := os.WriteFile(taken, []byte("keep"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	code, _, errs := f.run_("", f.as("ops", "-yes", "-receipt", taken)...)
+	if code != 1 || !strings.Contains(errs, "exists") || !strings.Contains(errs, "-receipt") {
+		t.Fatalf("%d %s", code, errs)
+	}
+	if n := len(f.decisions()); n != 0 {
+		t.Fatalf("%d decisions recorded before the receipt path was refused", n)
+	}
+	if b, _ := os.ReadFile(taken); string(b) != "keep" {
+		t.Fatal("the existing file was overwritten")
+	}
+	fresh := filepath.Join(f.dir, "sub-nonexistent-dir", "r.json")
+	if code, _, errs := f.run_("", f.as("ops", "-yes", "-receipt", fresh)...); code != 1 || len(f.decisions()) != 0 {
+		t.Fatalf("a receipt path in a missing directory: %d %s (%d decisions)", code, errs, len(f.decisions()))
+	}
+	ok := filepath.Join(f.dir, "ok.json")
+	if code, out, errs := f.run_("", f.as("ops", "-yes", "-receipt", ok)...); code != 0 || !strings.Contains(out, ok) {
+		t.Fatalf("%d %s\n%s", code, errs, out)
+	}
+	if _, err := os.Stat(ok); err != nil {
+		t.Fatal(err)
+	}
+	// Ids with path characters cannot place the default receipt anywhere but next to the key.
+	name := defaultReceiptName("../x/y", "node:review", "ops", "2026-10-13T12:14:03.123Z")
+	if strings.ContainsAny(name, `/\:`) || !strings.HasSuffix(name, ".receipt.json") {
+		t.Fatalf("default name %q has path characters", name)
+	}
+}
+
+// TestSingleGateWritesNoReceipt: an unsigned decision has no signature to keep.
+func TestSingleGateWritesNoReceipt(t *testing.T) {
+	f := newFixture(t, agent.SingleApproval(), refundArgs)
+	if code, _, errs := f.run_("", "-run", f.run, "-call", f.call, "-yes"); code != 0 {
+		t.Fatal(errs)
+	}
+	if got := receiptsIn(t, f.dir); len(got) != 0 {
+		t.Fatalf("receipts: %v", got)
+	}
+}
+
+// TestReceiptOnAnAuditedJournal: the application audits its journal (audit.AuditedStore); bide
+// approve writes the decision through the plain store. Until the application next writes to the run,
+// no signed head covers the decision and its receipt is pending. The application's resume then signs
+// a head over the journal, and the receipt is anchored: the decision is signed into the audit log at
+// the app's next write.
+func TestReceiptOnAnAuditedJournal(t *testing.T) {
+	f := newFixture(t, twoOfThree, refundArgs)
+	for _, id := range []string{"ops", "finance"} {
+		if code, _, errs := f.run_("", f.as(id, "-yes")...); code != 0 {
+			t.Fatalf("%s: %s", id, errs)
+		}
+	}
+	rc := readReceipt(t, receiptsIn(t, f.dir)[0])
+	logPub, logPriv, _ := ed25519.GenerateKey(rand.Reader)
+	logKey := audit.Ed25519Verifier{Pub: logPub}
+	anchor := audit.NewMemAnchorLog()
+	heads := func() []audit.SignedTreeHead {
+		var hs []audit.SignedTreeHead
+		for _, e := range anchor.Entries() {
+			hs = append(hs, e.STH)
+		}
+		return hs
+	}
+	if fnd := audit.CheckReceipt(rc, f.allRecords(), heads(), logKey, 0); fnd.Verdict != audit.ReceiptPending {
+		t.Fatalf("before the app writes: %+v", fnd)
+	}
+
+	// The application resumes the run through its audited store.
+	s, err := sqlite.Open(f.db)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer s.Close()
+	as, err := audit.NewAuditedStore(s, audit.Ed25519Signer{Priv: logPriv}, anchor)
+	if err != nil {
+		t.Fatal(err)
+	}
+	verify := func(id string) (agent.ApproverVerifier, bool) { v, ok := f.pubs[id]; return v, ok }
+	refund := agent.MustFunc("refund", "refund an order", func(context.Context, json.RawMessage) (string, error) { return "refunded", nil }, agent.WithApproval(twoOfThree))
+	m := agenttest.NewScriptedModel(agenttest.ToolTurn(f.call, "refund", f.args), agenttest.TextTurn("done"))
+	if _, err := agenttest.MustNew(m, agenttest.MustJournal(as), agent.WithTools(refund), agent.WithApproverVerifiers(verify)).Run(context.Background(), f.run, agent.UserText("refund")); err != nil {
+		t.Fatal(err)
+	}
+	if fnd := audit.CheckReceipt(rc, f.allRecords(), heads(), logKey, 0); fnd.Verdict != audit.ReceiptAnchored {
+		t.Fatalf("after the app writes: %+v", fnd)
 	}
 }
