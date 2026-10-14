@@ -20,13 +20,42 @@ func TestCommand(t *testing.T) {
 			"bide approve -db run.db -run r -call node:review"},
 		{"quoting stops a hostile id from splitting or running", Journal{SQLite: "my run.db"}, "r'; rm -rf ~ #", "c$(id)", "ops", "k", "ks", false,
 			`bide approve -db 'my run.db' -run 'r'\''; rm -rf ~ #' -call 'c$(id)' -as ops -key k -approver-keys ks`},
+		{"a leading = is quoted (zsh expands =word to a path)", Journal{SQLite: "=ls"}, "=r", "c", "ops", "k", "ks", false,
+			"bide approve -db '=ls' -run '=r' -call c -as ops -key k -approver-keys ks"},
 		{"empty value is an empty word, not a vanished one", Journal{SQLite: "run.db"}, "", "c", "ops", "k", "ks", false,
 			"bide approve -db run.db -run '' -call c -as ops -key k -approver-keys ks"},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
-			if got := Command(tc.j, tc.run, tc.call, tc.approver, tc.key, tc.ks, tc.single); got != tc.want {
-				t.Fatalf("got\n  %s\nwant\n  %s", got, tc.want)
+			got, err := Command(tc.j, tc.run, tc.call, tc.approver, tc.key, tc.ks, tc.single)
+			if err != nil || got != tc.want {
+				t.Fatalf("got\n  %s (%v)\nwant\n  %s", got, err, tc.want)
 			}
 		})
+	}
+}
+
+// TestCommandRefusesUnsafeIDs: a run, call or approver id with a control, bidi, invisible or filler
+// character, or bytes that are not UTF-8, cannot be written into a line a person reads and pastes.
+func TestCommandRefusesUnsafeIDs(t *testing.T) {
+	for _, r := range []rune{0x1b, 0x07, 0x7f, 0x9b, 0x202e, 0x2066, 0x200b, 0x2028, 0x3164, 0x2800, 0x115f, 0x1160, 0xffa0, 0x00ad, 0x180e, 0xfeff} {
+		bad := "c" + string(r) + "x"
+		for i, args := range [][3]string{{bad, "c", "ops"}, {"r", bad, "ops"}, {"r", "c", bad}} {
+			if got, err := Command(Journal{SQLite: "j.db"}, args[0], args[1], args[2], "k", "ks", false); err == nil {
+				t.Errorf("U+%04X in argument %d: accepted: %s", r, i, got)
+			}
+		}
+	}
+	if _, err := Command(Journal{SQLite: "j.db"}, "r\xff", "c", "ops", "k", "ks", false); err == nil {
+		t.Error("invalid UTF-8 accepted")
+	}
+	if _, err := Command(Journal{SQLite: "j\x1b.db"}, "r", "c", "ops", "k", "ks", false); err == nil {
+		t.Error("a control character in the journal path accepted")
+	}
+	// Ordinary non-ASCII text is fine.
+	if _, err := Command(Journal{SQLite: "j.db"}, "заказ-1", "c", "ops", "k", "ks", false); err != nil {
+		t.Errorf("ordinary text refused: %v", err)
+	}
+	if !Unsafe(0x3164) || Unsafe('a') || Unsafe(' ') {
+		t.Error("Unsafe misclassifies")
 	}
 }

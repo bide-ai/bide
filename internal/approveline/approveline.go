@@ -10,8 +10,39 @@
 package approveline
 
 import (
+	"errors"
 	"strings"
+	"unicode"
+	"unicode/utf8"
 )
+
+// ErrUnsafe reports an id that holds a character that cannot be shown or pasted safely.
+var ErrUnsafe = errors.New("approveline: an id holds a control, bidirectional, invisible or filler character, or bytes that are not UTF-8")
+
+// Unsafe reports whether r is a character that renders as nothing, or changes how the text around
+// it is shown or run: a control character, a Unicode format character (bidirectional overrides and
+// isolates, zero-width characters, the soft hyphen), a line or paragraph separator, or one of the
+// fillers that render as blank (Hangul and braille fillers). The command line and the viewer escape
+// them; a line that would carry one is not written.
+func Unsafe(r rune) bool {
+	switch r {
+	case 0x115F, 0x1160, 0x3164, 0xFFA0, 0x2800, 0x180E, 0x2028, 0x2029:
+		return true
+	}
+	return unicode.IsControl(r) || unicode.Is(unicode.Cf, r) || unicode.Is(unicode.Zl, r) || unicode.Is(unicode.Zp, r)
+}
+
+// checkText returns ErrUnsafe if s holds an unsafe character or invalid UTF-8.
+func checkText(s string) error {
+	for i := 0; i < len(s); {
+		r, n := utf8.DecodeRuneInString(s[i:])
+		if r == utf8.RuneError && n <= 1 || Unsafe(r) {
+			return ErrUnsafe
+		}
+		i += n
+	}
+	return nil
+}
 
 // Journal names the journal a command opens: exactly one of SQLite and PostgresEnv.
 type Journal struct {
@@ -37,7 +68,12 @@ const (
 // Arguments are quoted for a POSIX shell, where a value needs it, so an id with a space or a
 // quote (a run ID may be any string) cannot split into two arguments or run a command. A
 // placeholder is quoted too, so a pasted line fails loudly instead of running something else.
-func Command(j Journal, runID, callID, approver, keyFile, keysFile string, single bool) string {
+func Command(j Journal, runID, callID, approver, keyFile, keysFile string, single bool) (string, error) {
+	for _, s := range []string{j.SQLite, j.PostgresEnv, runID, callID, approver, keyFile, keysFile} {
+		if err := checkText(s); err != nil {
+			return "", err
+		}
+	}
 	args := []string{"bide", "approve"}
 	switch {
 	case j.SQLite != "":
@@ -58,7 +94,7 @@ func Command(j Journal, runID, callID, approver, keyFile, keysFile string, singl
 		}
 		args = append(args, "-as", quote(approver), "-key", quote(keyFile), "-approver-keys", quote(keysFile))
 	}
-	return strings.Join(args, " ")
+	return strings.Join(args, " "), nil
 }
 
 // quote returns s as one POSIX shell word: unchanged when it holds only characters that need no
@@ -67,8 +103,8 @@ func quote(s string) string {
 	if s == "" {
 		return "''"
 	}
-	safe := true
-	for i := 0; i < len(s); i++ {
+	safe := s[0] != '=' // zsh expands a word that starts with = to a command's path
+	for i := 0; i < len(s) && safe; i++ {
 		c := s[i]
 		if !(c >= 'a' && c <= 'z' || c >= 'A' && c <= 'Z' || c >= '0' && c <= '9' || strings.IndexByte("_@%+=:,./-", c) >= 0) {
 			safe = false
