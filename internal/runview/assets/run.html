@@ -67,7 +67,7 @@
 
 {{if .Notes}}<section><h2>Not in the journal</h2><ul>{{range .Notes}}<li class="muted">{{.}}</li>{{end}}</ul></section>{{end}}
 
-<section><h2>Timeline <span class="count">{{len .Events}} records</span></h2>
+<section id="timeline"><h2>Timeline <span class="count">{{len .Events}} records</span></h2>
 <ol class="timeline">{{range .Events}}<li class="ev {{.Class}}" id="record-{{.Seq}}">
 <span class="ev-ic">{{icon .IconName}}</span>
 <div class="ev-main">

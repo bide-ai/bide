@@ -411,6 +411,8 @@ markers and re-attempts, tool results with the `Safety` they ran under (read-onl
 effect) and whether `ResolveHalt` reconciled them (with the evidence), approval decisions, the
 approval-pending record and tally, plan nodes and Switch choices, and the end marker.
 
+![bide view's timeline for a refund run: the approvals, the attempt markers, the result ResolveHalt injected and the end marker each carry a time, as an offset from the run's start](img/run-viewer-timeline-dark.png)
+
 - Each row has an anchor, `#record-N`, with a link glyph on hover, so a record can be linked.
 - Each row's **payload** is the record as the journal holds it, indented, in a collapsed `details`
   with its JSON highlighted (a payload over 8 KiB is cut, and says how much); with JavaScript a
