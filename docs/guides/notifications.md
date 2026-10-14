@@ -425,3 +425,35 @@ payload with no `clears` names no incident and is ignored, not turned into a tri
 The sink answering 2xx means your endpoint accepted the request, not that a person read it. The times
 in the trail are the notifying process's clock; anchor the trail's tree head with a timestamp to bound
 them from above.
+
+## Auditing: were the people told?
+
+The trail is evidence, and `bide audit notifications` checks it offline against the run journals:
+that every event that needed a person (an unknown-outcome halt, an approval gate, an aborted run, a
+recovery failure, an overdue notice, an all-clear) was observed, delivered and acknowledged, and
+when. It fails (exit 1) on an event that was never notified, was acknowledged after its deadline (or
+after a bound you set with `-max-ack`), or is still overdue, and on a trail that was reordered,
+had a record deleted, or is not a history a notifier writes.
+
+```
+bide audit notifications -db run.db -sth notify-r1.sth.json -pubkey keys/log.pub
+bide audit notifications -postgres-env BIDE_POSTGRES_DSN -unanchored -max-ack 10m
+```
+
+Two things to set up on your side:
+
+- **Sign and anchor the trail.** The notifier writes the trail; it does not sign it. Call
+  `audit.SignNotifyTrail(ctx, eventStore, agent.NotifyTrailName(runID), signer, time.Now())` on a
+  schedule and publish the head to an `Anchor` (or any log in another trust domain). With a head,
+  a deleted or reordered record is found; without one the report says `UNANCHORED`, and whoever can
+  write the event store could have changed the trail undetected. Records after the newest head are read but
+  not attested by it.
+- **Give it the journals.** The check of the trail alone cannot find a halt or a gate that no
+  notifier ever saw; the cross-check against the journals can. `-db` and `-postgres-env` read both
+  from the store, read-only (the Postgres DSN is read from the named environment variable, never
+  given on the command line). From exported files, pass `-trail` and `-journal` for each run.
+
+The report gives each event its times (when the run entered the state, when the notifier saw it,
+when the sink acknowledged it), the attempts, and how the delivery was authenticated. See
+[Audit: notification evidence](audit.md#notification-evidence-were-the-people-told) for the checks,
+the statuses and what the check cannot see. It proves the sink accepted the request, not that a person read it.

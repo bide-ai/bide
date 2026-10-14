@@ -583,6 +583,21 @@ bide audit: produce and verify audit proof bundles
          journal order or after the signed head, and a time that is not canonical (printed
          quoted); these notes never change the verdict
 
+  notifications (-trail <file>... [-journal <file>...] | -db <file> | -postgres-env <var>) [-run <id>]
+                (-sth <file>... -pubkey <hex|file> | -unanchored) [-max-ack <duration>] [-as-of <time>]
+         verify that every event that needed a person (an unknown-outcome halt, an approval gate,
+         an aborted run, a recovery failure, an overdue notice, an all-clear) was notified, and
+         when it was acknowledged: each trail's leaves are read strictly (an unknown record kind or
+         field is an error) and must be a history a notifier writes (nothing acknowledged twice,
+         nothing out of order, every acknowledgement after a claim); with a signed head (-sth,
+         from audit.SignNotifyTrail) the trail's first records are exactly what the head
+         commits to, so a deleted or reordered record is found; and each gate, halt and abort a
+         journal shows must be observed in its run's trail. Each event gets a verdict: acked,
+         acked_late (past its deadline or -max-ack), pending, failing, overdue, cleared before
+         notification, never_notified, and the command fails (exit 1) on acked_late, overdue and
+         never_notified. -db and -postgres-env (a variable holding the DSN) read every run, or -run,
+         from a store, in the full bide command; the audit-only build reads exported files
+
   prove-absent -journal <file> -sth <file> -key (tool:<id>|policy:<digest>) [-out <file>]
          prove a thing did NOT happen (no such tool call / no action under that policy)
          against a signed key-set head of the matching kind (see audit.SignAbsenceRoot)
@@ -625,6 +640,44 @@ Exit status:
   2  usage error: a bad flag or argument; nothing was read
   3  no verdict: the -checker gave none, or an internal error
   4  an input is unreadable or unusable
+```
+
+### bide audit notifications
+
+```text
+Usage of bide audit notifications:
+  -as-of string
+    	judge pending events as of this RFC 3339 time (default now)
+  -color when
+    	when to color the output: auto (the default: on a terminal, unless NO_COLOR is set or TERM is dumb), always or never; -json is never colored
+  -db string
+    	read the trails and journals from this SQLite journal (opened read-only) instead of from files
+  -grace duration
+    	how long after an event began that a missing observation is not yet a failure (the notifier's detection window) (default 5m0s)
+  -journal value
+    	a run's journal export (audit.ExportJournal as JSON) to cross-check against; repeat once per run
+  -json
+    	print one JSON report on stdout instead of the text report
+  -max-ack duration
+    	fail an event not acknowledged within this long of when the run entered its state (0: only each event's recorded deadline)
+  -max-clock-skew duration
+    	how far past this machine's clock a signed head's timestamp may be (default 5m0s)
+  -max-input-bytes int
+    	the largest input file, in bytes, the verb reads; a larger one is an error (default 268435456)
+  -postgres-env string
+    	read them from the Postgres journal whose DSN is in this environment variable (never given on the command line)
+  -pubkey string
+    	the public key as <scheme>:<hex> (ed25519, ml-dsa-65, ed25519+ml-dsa-65) or bare ed25519 hex, or a path to a file containing it; it verifies every -sth
+  -recovery-failing-after duration
+    	how long a recovery failure episode may be open before a recovery_failing event is owed (the notifier's setting) (default 15m0s)
+  -run string
+    	with -db or -postgres-env: only this run and its sub-runs; default every run
+  -sth value
+    	a signed tree head over a trail (audit.SignNotifyTrail as JSON); repeat once per trail
+  -trail value
+    	a notification trail export (audit.ExportNotifyTrail as JSON); repeat once per trail
+  -unanchored
+    	accept a trail with no signed head: it is read, and nothing attests that it is complete or unaltered
 ```
 
 ### bide audit prove
