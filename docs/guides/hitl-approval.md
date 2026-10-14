@@ -439,7 +439,7 @@ prints it, and prints the public key in the text policies and verifiers read (`<
 `audit.ParsePublicKey`; an ML-DSA public key is nearly 4000 hex characters, so the command names it by
 its key ID where it shows one). The file is not encrypted: keep it on your own machine. ML-DSA needs a
 Go build with `crypto/mldsa`, which the FIPS 140-3 module v1.0.0 lacks. A passkey signer is a different
-`Alg` (see the [roadmap](../ROADMAP.md)).
+`Alg` (see the [roadmap](../ROADMAP.md#notifications-and-approvals)).
 
 **Which key counts.** The journal records approver ids, not keys: the application's verifiers
 (`agent.WithApproverVerifiers`) hold those. A key that is not the one enrolled for you produces a
@@ -465,7 +465,7 @@ line, for a notification to carry.
 
 Deciding on a click in a chat message is out of scope on purpose. A button handled by a server must sign
 with a key the server holds, and one server holding the keys of k approvers collapses k-of-n
-independence: whoever controls the server decides alone. See the [roadmap](../ROADMAP.md) for approvals
+independence: whoever controls the server decides alone. See the [roadmap](../ROADMAP.md#notifications-and-approvals) for approvals
 in the viewer, with keys held in the browser, and with passkeys.
 
 ## Proving the gate held
