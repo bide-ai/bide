@@ -31,6 +31,30 @@ type NotifyTrail interface {
 	Append(ctx context.Context, trail string, seq int, rec NotifyRecord) error
 }
 
+// NotifyTrailAnchorer is an optional capability of a NotifyTrail: one whose records are signed and
+// anchored as they are written (audit.NotifyTrail over an audit.AuditedEventStore) can also be asked
+// to catch up. The notifier calls AnchorTrails with the trails of the runs a NotifyPending sweep or
+// a recovery pass looked at, so a trail that grew while the anchor was unreachable, or whose writer
+// died before it anchored, is signed again without waiting for a new event. It is best effort: an
+// error is reported to the handler of WithNotifyErrors and never affects a delivery, and it must be
+// bounded (it is called inline by the sweep and the recovery pass). A NotifyTrail that does not
+// implement it is simply not asked.
+type NotifyTrailAnchorer interface {
+	AnchorTrails(ctx context.Context, trails []string) error
+}
+
+// anchorTrails asks the engine's trail, if it can, to bring the heads of the named trails up to
+// date. A failure is reported, never returned: anchoring is a side channel of delivery.
+func (e *notifyEngine) anchorTrails(ctx context.Context, trails ...string) {
+	a, ok := e.trail.(NotifyTrailAnchorer)
+	if !ok || ctx.Err() != nil {
+		return
+	}
+	if err := a.AnchorTrails(ctx, trails); err != nil {
+		e.report(fmt.Errorf("notify: anchor trails: %w", err))
+	}
+}
+
 // MemNotifyTrail is an in-memory NotifyTrail, safe for concurrent use.
 type MemNotifyTrail struct {
 	mu     sync.Mutex
