@@ -274,6 +274,9 @@ func (a *Agent) newStart(d *driveSpec, idn Identity) (RunStart, error) {
 	if d.input == nil {
 		return RunStart{}, fmt.Errorf("agent: a run's first drive needs its input: %w", ErrConfig)
 	}
+	if d.typed == nil && d.cfg.outputMode != "" { // as holdDrive refuses it on a later drive
+		return RunStart{}, fmt.Errorf("WithOutputMode applies to a typed run (RunTyped), and this run is not one: %w", ErrConfig)
+	}
 	s := RunStart{Input: *d.input, Saga: d.cfg.saga, Session: d.session, Typed: d.typed, Tools: d.cfg.tools,
 		Settings: RunSettings{MaxTurns: d.cfg.maxTurns, TokenBudget: d.cfg.tokenBudget, SystemPrompt: d.cfg.systemPrompt,
 			Sampling: d.cfg.sampling, ToolChoice: d.cfg.toolChoice}}

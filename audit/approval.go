@@ -144,6 +144,15 @@ func ApprovalEvidence(ctx context.Context, store *agent.Journal, runID, toolUseI
 	if err != nil {
 		return nil, err
 	}
+	// A re-approval tally travels with the tally it supersedes: VerifyApprovals honors it only
+	// over a tally that predates agent.DecisionFormat, which it can tell only from that tally.
+	if orig := agent.ApprovalTallyStep(toolUseID); tallyName != orig {
+		origPB, err := prove(index[orig])
+		if err != nil {
+			return nil, err
+		}
+		out = append(out, EvidenceAction{Label: "approval tally (superseded)", Kind: KindApprovalTally, Ref: orig, Bundle: origPB})
+	}
 	out = append(out,
 		EvidenceAction{Label: "approval tally", Kind: KindApprovalTally, Ref: tallyName, Bundle: tallyPB},
 		result)
