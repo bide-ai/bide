@@ -374,6 +374,9 @@ func TestCredentialLoadErrorsCarryNoFileContent(t *testing.T) {
 		}
 		t.Logf("%s: %v", ref, err)
 	}
+	if err := credError("m", errors.New("parse error near "+secret)); strings.Contains(err.Error(), secret) || errors.Unwrap(err) != nil {
+		t.Fatalf("the SDK's error text is kept: %v", err)
+	}
 	if err := credError("m", context.DeadlineExceeded); !errors.Is(err, context.DeadlineExceeded) {
 		t.Fatalf("a timeout lost its identity: %v", err)
 	}
