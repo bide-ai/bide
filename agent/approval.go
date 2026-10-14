@@ -784,6 +784,16 @@ func approvalDecisionStep(toolUseID, approverID string, approved bool, alg Alg, 
 	return approvalStep(toolUseID) + ":" + approverID + ":" + hex.EncodeToString(h.Sum(nil))
 }
 
+// DecisionStep returns the journal name SubmitDecision gives the record of d: distinct for each
+// distinct decision (approver, verdict, scheme, decision time and signature), and the same for an
+// identical resubmission, which is why that is a no-op. A service that takes decisions over a
+// network reads it to tell a decision it records from one it already holds. A zero or
+// non-canonical d.DecidedAt has no record (SubmitDecision refuses it); the name is then of
+// FormatTimestamp's rendering of it.
+func DecisionStep(d Decision) string {
+	return approvalDecisionStep(d.ToolUseID, d.ApproverID, d.Approved, d.Alg, FormatTimestamp(d.DecidedAt), d.Signature)
+}
+
 // ApproveOption configures SubmitDecision: WithDecisionCheck, or WithClock for the clock that
 // stamps the decision's RecordedAt.
 type ApproveOption interface {

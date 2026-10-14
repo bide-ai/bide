@@ -399,3 +399,8 @@ const runCancelRequestedStep = "run:cancel-requested"
 // runLimitsStep is the key of the n-th amendment of a run's limits (its turn cap or token budget)
 // by a later drive (see RunStart).
 func runLimitsStep(n int) string { return "run:limits:" + strconv.Itoa(n) }
+
+// RootRunID returns the run that drives runID: the run itself, or for a sub-agent's run the root run
+// to re-invoke to continue it (ApprovalPending.RootRunID for a gate inside a sub-agent). For a
+// session's turn run, and the sub-runs inside it, it is the turn run, which the session drives.
+func RootRunID(runID string) string { return treeRootID(runID) }
