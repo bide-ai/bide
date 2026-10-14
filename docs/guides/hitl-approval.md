@@ -778,7 +778,16 @@ the gate; what it signs is the subject captured when it displayed the call. If t
 decision does not count (another decision of yours does), the command exits 1 as the local flow does.
 The receipt it writes is the one the endpoint returns, checked against the decision signed and against
 the approver's key, and refused if it carries an anchoring proof (only your own `verify-receipts -update`
-adds one); its record, position and leaf
+adds one), or names a record that does not have the shape of a decision record of that approver on that
+call (`agent.IsDecisionStepName`: the call's approval prefix, the approver and 64 lowercase hex). After a
+retry of a randomized scheme's decision (`ecdsa-p256`) the endpoint answers from the decision journaled
+first, whose signature differs from the one just sent; the receipt then holds the recorded signature,
+which must verify under your key, and the command prints one line saying so. The scheme's verifiers
+refuse a high-S signature, so an endpoint cannot return the malleable twin `(r, n-s)` of a signature
+(every P-256 signer here, software, KMS, Azure Key Vault, Cloud KMS and PKCS#11, emits low-S). A request
+whose bytes equal a record that verifies under no current key and that the gate does not count is
+refused as an invalid approval, not answered as a replay, and a replay answered from the recorded tally
+after a key rotation carries no `receipt`; its record, position and leaf
 hash are the application's word until a signed head covers them (`bide audit verify-receipts -update`).
 If the request fails with no answer, run the command again: the decision may have been recorded, and one
 of yours that counts is refused as already decided.

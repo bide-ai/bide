@@ -91,8 +91,11 @@ type Response struct {
 	Reason  string `json:"reason,omitempty"`
 	// Receipt is the decision's receipt (audit.DecisionReceipt), built from the journal record, for
 	// the approver to keep: it carries the signed decision, the call's arguments, and where the
-	// journal holds the record. Record, Index, RecordedAt and LeafHash are the application's word.
-	Receipt audit.DecisionReceipt `json:"receipt"`
+	// journal holds the record. Record, Index, RecordedAt and LeafHash are the application's word. It
+	// is absent when the record does not verify under the key the handler resolves now (a replay
+	// after the approver's key was rotated, answered from the gate's recorded tally): a receipt the
+	// approver could not verify would be no receipt.
+	Receipt *audit.DecisionReceipt `json:"receipt,omitempty"`
 }
 
 // Pending is the body of GET /pending: a gated call, from the journal.
@@ -861,6 +864,9 @@ func (h *Handler) decide(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	idx := h.findDecision(g, d)
+	if idx >= 0 && !h.standsFor(g, d, idx) {
+		idx = -1 // a record of d's own bytes that is no decision (the gate ignores it): not a replay
+	}
 	wrote := false
 	if idx < 0 {
 		st, err := h.state(ctx, g)
@@ -903,13 +909,17 @@ func (h *Handler) decide(w http.ResponseWriter, r *http.Request) {
 	// The record the response is about: d's own, or the same decision's under another name.
 	step := g.recs[idx].Name
 	d.Signature = g.recs[idx].Signature()
-	rc, err := audit.NewDecisionReceipt(g.subject, d, g.recs[idx], idx)
-	if err != nil {
-		h.fail(w, err)
-		return
+	var rcp *audit.DecisionReceipt
+	if h.verifiesNow(g, d, idx) {
+		rc, err := audit.NewDecisionReceipt(g.subject, d, g.recs[idx], idx)
+		if err != nil {
+			h.fail(w, err)
+			return
+		}
+		rcp = &rc
 	}
 	gate, checks := h.gateChecks(g)
-	resp := Response{Recorded: wrote, Record: step, Index: idx, RecordedAt: g.recs[idx].RecordedAt(), Gate: gate, Receipt: rc}
+	resp := Response{Recorded: wrote, Record: step, Index: idx, RecordedAt: g.recs[idx].RecordedAt(), Gate: gate, Receipt: rcp}
 	if i := slices.IndexFunc(checks, func(c agent.DecisionCheck) bool { return c.Step == step }); i >= 0 {
 		resp.Counted, resp.Reason = checks[i].Counted, checks[i].Reason
 		// A record this request wrote that the gate supersedes (the same decision was written under
@@ -927,6 +937,34 @@ func (h *Handler) decide(w http.ResponseWriter, r *http.Request) {
 		h.recorded(r.Context(), Recorded{RunID: d.RunID, RootRunID: agent.RootRunID(d.RunID), ToolUseID: d.ToolUseID, Approver: d.ApproverID,
 			Approved: d.Approved, Record: step, Index: idx, Decided: resp.Gate.Passed || resp.Gate.Failed})
 	}
+}
+
+// verifiesNow reports whether the record at idx verifies for the recorded call under the key the
+// handler resolves for the approver now.
+func (h *Handler) verifiesNow(g *gateRecords, d agent.Decision, idx int) bool {
+	v, ok := h.verifiers(d.ApproverID)
+	if !ok || v == nil {
+		return false
+	}
+	r := g.recs[idx]
+	return v.Alg() == r.ApproverAlg() && v.Verify(agent.ApprovalDecisionBytes(g.subject, d.ApproverID, d.Approved, d.DecidedAt), r.Signature())
+}
+
+// standsFor reports whether the record at idx is a decision d may be answered from: it verifies under
+// the key resolved now, or the gate counts it (a replay after a rotation answers from the recorded
+// tally). A record of d's own bytes that is neither is junk the gate ignores; answering a request
+// with it as a replay would hand its sender a receipt for a decision that never counted.
+func (h *Handler) standsFor(g *gateRecords, d agent.Decision, idx int) bool {
+	if h.verifiesNow(g, d, idx) {
+		return true
+	}
+	name := g.recs[idx].Name
+	for _, c := range g.st.Checks {
+		if c.Step == name && c.Counted {
+			return true
+		}
+	}
+	return false
 }
 
 // findDecision is the journal position of d's record: a record with d's own bytes, else the record

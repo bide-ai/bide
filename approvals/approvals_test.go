@@ -675,6 +675,9 @@ func TestDecision_ReplayAnswersFromTheRecordedTally(t *testing.T) {
 	if gate["approved"] != float64(2) || gate["passed"] != true || out["counted"] != true {
 		t.Fatalf("the replay did not answer from the recorded tally: gate %v counted %v", gate, out["counted"])
 	}
+	if out["receipt"] != nil {
+		t.Fatalf("a receipt for a record that does not verify under the key resolved now: %v", out["receipt"])
+	}
 	_, pend := r.get("/pending?run=" + runID + "&call=c1")
 	if pend["state"] != "decided" || pend["gate"].(map[string]any)["approved"] != float64(2) {
 		t.Fatalf("pending after the tally: %v", pend)

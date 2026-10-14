@@ -406,7 +406,7 @@ func TestRemote_BadReceiptIsNotWritten(t *testing.T) {
 					if err := json.Unmarshal(rec.Body.Bytes(), &resp); err != nil {
 						t.Error(err)
 					}
-					tamper(&resp.Receipt)
+					tamper(resp.Receipt)
 					writeTestJSON(w, resp)
 				})
 			})
