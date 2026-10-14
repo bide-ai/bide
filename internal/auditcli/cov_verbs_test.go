@@ -19,6 +19,7 @@ import (
 	"github.com/bide-ai/bide/agent/agenttest"
 	"github.com/bide-ai/bide/audit"
 	"github.com/bide-ai/bide/internal/journaltest"
+	"github.com/bide-ai/bide/internal/term"
 )
 
 // runOut runs the CLI in process and returns the exit status and stdout and stderr together.
@@ -646,5 +647,39 @@ func TestColor_InfoLinesAndNoVerdictBanner(t *testing.T) {
 	}
 	if strings.Contains(stdout, "FAILED") {
 		t.Errorf("a no-verdict run is not a FAILED one:\n%q", stdout)
+	}
+}
+
+// The package's label is text from the file: printed as it is when printable, quoted when it holds
+// a control character, so it cannot pass for a line the verifier wrote.
+func TestVerifyEvidence_LabelIsCleaned(t *testing.T) {
+	f := newExitFixture(t)
+	var pkg audit.EvidencePackage
+	readFixture(t, f.evidence, &pkg)
+	for label, want := range map[string]string{
+		"Q3 refunds":           `evidence for run "run1": Q3 refunds`,
+		"ok\nPASS: all proven": `evidence for run "run1": "ok\nPASS: all proven"`,
+	} {
+		pkg.Label = label
+		p := filepath.Join(t.TempDir(), "evidence-label.json")
+		writeJSON(t, p, pkg)
+		// The label is sealed, so editing it fails verification; the heading still prints.
+		code, out := runOut("verify-evidence", "-evidence", p, "-pubkey", f.pub)
+		if code != exitNotVerified {
+			t.Errorf("label %q: exit %d, want %d\n%s", label, code, exitNotVerified, out)
+		}
+		wantAll(t, fmt.Sprintf("label %q", label), out, want+"\n")
+		if strings.Contains(out, "\nPASS: all proven") {
+			t.Errorf("a label forged a report line:\n%s", out)
+		}
+	}
+}
+
+func TestStyle_InfoLinesAreDimmed(t *testing.T) {
+	var buf bytes.Buffer
+	c := &cli{out: &buf, st: term.New(true)}
+	c.printf("INFO  alice denied\n")
+	if want := "\x1b[2mINFO  alice denied\x1b[0m\n"; buf.String() != want {
+		t.Errorf("INFO line = %q, want %q", buf.String(), want)
 	}
 }
