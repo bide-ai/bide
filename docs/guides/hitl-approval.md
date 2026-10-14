@@ -593,8 +593,9 @@ journal order: for a gate that excluded the requester, the run's `run:principal`
 item: it names the requesters and nothing else); the model turn that requested the
 call (its tool and arguments), the gate's
 `approval-pending` record when the journal holds one (a `step` item: it says when approvers were
-asked), every decision record the gate read, valid or not, the gate's recorded tally, and the
-call's result.
+asked), every decision record the gate read, valid or not, the gate's recorded tally (and, for a
+re-approval tally, the tallies it supersedes, which `VerifyApprovals` proves too), and the call's
+result.
 
 <!-- docsnip: setup ctx context.Context; journal *agent.Journal; runID string; toolUseID string; logSigner audit.Signer -->
 ```go
