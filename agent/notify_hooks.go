@@ -110,9 +110,17 @@ func (e *notifyEngine) driveEnd(runID string, err error) {
 	if IsSubRun(runID) {
 		return // the root run's drive carries the same error up and raises it
 	}
+	e.driveEndRoot(runID, err)
+}
+
+// driveEndRoot is driveEnd for a run its caller says is a root: a plan flow's run (which is its own
+// root whatever its ID holds, and files its events under its own trail, as the sweep does), or one
+// the caller drives itself.
+func (e *notifyEngine) driveEndRoot(runID string, err error) {
 	if ev, ok := e.eventFromErr(runID, err); ok {
-		e.w.submit(ev)
+		e.submit(ev)
 	}
+	e.queueScanTrail(runID) // the drive may have resolved, decided or ended an event already delivered
 }
 
 // causeClass is the closed-set cause of a recovery failure.
@@ -165,7 +173,7 @@ func (e *notifyEngine) recoveryFailed(ctx context.Context, runID string, cause e
 			return // a fresh episode is not due
 		}
 		if st.RecoveryFailingDue(now, e.cfg.recoveryAfter) {
-			e.w.submit(notifyEvent{key: RecoveryKey(runID, st.Episodes), kind: NotificationRecoveryFailing, runID: runID,
+			e.submit(notifyEvent{key: RecoveryKey(runID, st.Episodes), kind: NotificationRecoveryFailing, runID: runID,
 				eventAt: st.FailingSince.At, reason: st.FailingSince.Reason, episode: st.Episodes, err: causeSentinel(st.FailingSince.Reason)})
 		}
 		return
@@ -201,8 +209,9 @@ func (e *notifyEngine) recoveryOK(ctx context.Context, runID string) {
 // (driven), whether it called the Resumer (resumed), and the error (a Resumer that does not drive
 // the run, ErrNotResumable, is passed as the failure it is).
 func (e *notifyEngine) afterRecover(ctx context.Context, runID string, driven, resumed bool, err error) {
+	defer e.queueScan(runID) // after recoveryOK and recoveryFailed: an episode may just have closed
 	if ev, ok := e.eventFromErr(runID, err); ok {
-		e.w.submit(ev)
+		e.submit(ev)
 		e.recoveryOK(ctx, runID) // a halt or a gate is the run waiting for a person: recovery works
 		return
 	}
@@ -242,7 +251,7 @@ func NewRunNotifier(j *Journal, o NotifierOption) (*RunNotifier, error) {
 // DriveEnd tells the notifier that a drive of runID ended with err: it queues the event err raises
 // (a halt, a pending approval, an aborted saga), if any, and returns at once. A drive that ended
 // with another error or none raises nothing.
-func (r *RunNotifier) DriveEnd(runID string, err error) { r.e.driveEnd(runID, err) }
+func (r *RunNotifier) DriveEnd(runID string, err error) { r.e.driveEndRoot(runID, err) }
 
 // Flush waits for the deliveries in flight to finish their round and stops the worker, as
 // Agent.FlushNotifications does.

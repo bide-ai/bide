@@ -15,6 +15,7 @@ Each section says what the limit is, whether it affects you, and what to do abou
 - [Audit and proofs](#audit-and-proofs)
 - [Key custody](#key-custody)
 - [Governed state (gsm)](#governed-state-gsm)
+- [Notifications](#notifications)
 - [Stores](#stores)
 
 ## Durability and recovery
@@ -299,6 +300,8 @@ receipts](guides/audit.md#decision-receipts-noticing-a-decision-deleted-before-i
 runs, but plan flows have no saga mode, so the nodes before it keep their effects and the run stays
 unfinished until it is cancelled. See [Plan flows](guides/plan-flows.md#approval-gates-on-nodes).
 
+**The all-clear is found by a scan, not pushed, and is not ordered after its event.** A `resolved` notification is sent when the next drive, recovery pass or `NotifyPending` sweep touches the run, or reads the open trail (`notify:@open`) that lists every event whose all-clear may be owed, so a decision, a resolution or a completion is noticed by the next pass even in a run that is no longer unfinished. The first sweep or recovery pass after an upgrade reads every run's trail once to list events observed earlier. It can arrive before its event when the event was cleared with a request in flight or its reply lost; a receiver matches them by `clears.id`. It is never overdue. A notifier whose process never runs a sweep or a recovery pass only finds an all-clear when the run is driven again. See [The all-clear](guides/notifications.md#the-all-clear).
+
 **A quorum needs short, fixed answers.** Voters must pick from a set of labels, so a quorum does not
 apply to free-form output. Agreement lowers the risk of one model's mistake, but models can be wrong
 together. A tie is never agreement. See [Quorum](guides/quorum.md#what-a-quorum-does-not-do).
@@ -337,6 +340,17 @@ re-hash everything in it. See [Audit](guides/audit.md#security-model-read-this-f
 cannot be matched against guessed neighbouring records. Key-set leaves are not salted, because an absence proof names its
 neighbouring keys by design, and neither are anchor-log leaves, which hold signed tree heads meant to
 be public.
+
+**Notification evidence is only as strong as the anchor you give the trail.** The notifier writes its
+trail but does not sign it; `bide audit notifications` finds a deleted or reordered record only
+against a signed head (`audit.SignNotifyTrail`) that you create and anchor outside the database,
+and reads the records after the newest head as not attested. Without a head the report says
+`UNANCHORED`. The check cannot find an event that left no trace in the journals it was given and no
+record in the trail (a halt that a later result resolved before the audit), cannot say that a person
+read a notification (an acknowledgement is the sink's 2xx), and dates events by the notifying
+processes' clocks. An all-clear owed for an event whose resolution the journal does not time (a tool's
+result, a halt resolution, a run's end) cannot be judged late; it is reported as the warning
+`all_clear_untimed`, and `-strict` fails on it. See [Audit](guides/audit.md#notification-evidence-were-the-people-told).
 
 **The log key can be in an HSM or KMS only under ed25519 or ecdsa-p256, not under the post-quantum
 schemes.** `ecdsa-p256` is the scheme most HSMs and cloud KMS can sign (AWS KMS, Azure Key Vault,
@@ -444,6 +458,36 @@ bide's required `gsm machine gate` CI check runs the two checkers extracted from
 machine the governance examples build (see `.github/gsm-gate`); it covers those examples, not the
 machines an application builds. See the [roadmap](ROADMAP.md#gsm-convergence) and
 [Convergent governance](guides/governance.md#under-the-hood).
+
+## Notifications
+
+**The relay's memory is in the process.** `bide notify relay` (package `notify/relay`) drops
+redeliveries by delivery ID and drops a trigger whose event it saw cleared, both from bounded
+in-memory caches (`-dedupe`, 10000 by default). After a restart, or once more than that many other
+events have gone by, a late redelivery is forwarded again, and a trigger that arrives after a clear it
+has forgotten reopens the PagerDuty incident. Slack shows a repeat twice. Run one relay: two behind a
+load balancer have separate caches. A lost notification is not among the failures: the relay answers
+2xx only after every destination took the event. It does not forward error text or tool arguments.
+
+**A test notification is a real one to a relay.** `bide notify test` sends a sample for a run that does
+not exist; a relay forwards it to Slack and PagerDuty like any other event.
+
+**Routing and escalation are configuration, not evidence of intent.** The trail records which receiver
+each event went to, when it was observed, claimed and acknowledged, and each step of an escalation
+chain; it does not record the routing rules or the chain that were configured, so it cannot show that an
+event *should* have been escalated and was not (that needs the configuration, which is code under your
+version control). A route is a kind or an approver ID, not a tool or an amount.
+
+**An escalation needs a running process at the deadline.** Deadlines are read by a process with the
+notifier configured (a long-lived `Agent`, `RecoverLoop` or a periodic `NotifyPending`). Nothing alive
+at the deadline means the step is taken at the next pass, late and not lost. A step made after a restart
+rebuilds the event from the trail and the journal: it has the gate's tool, policy and approvers and the
+halted call's tool name, but not a halt's cause (the original's notification has it).
+
+**Acknowledged is not read.** A receiver's 2xx means its endpoint accepted the request. For an event
+that is not an approval, an acknowledged step ends the chain, which a person may not have seen; route
+the step to a receiver that pages. An approval is escalated until it is decided, whatever was
+acknowledged. A chain is at most four steps and is not repeated.
 
 ## Stores
 

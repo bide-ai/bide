@@ -207,3 +207,18 @@ func TestNotifyRecord_JSONOmitsUnsetAndNormalizesZones(t *testing.T) {
 		t.Error("different keys must differ")
 	}
 }
+
+// An event observed with no deadline (a resolved event) is never overdue, however late it is.
+func TestFoldNotify_AnEventWithNoDeadlineIsNeverOverdue(t *testing.T) {
+	at := time.Date(2026, 10, 13, 9, 0, 0, 0, time.UTC)
+	st := FoldNotify([]NotifyRecord{
+		{Kind: NotifyObserved, Key: "resolved:k", RunID: "r", At: at, EventKind: string(NotificationResolved), EventAt: at, Reason: "decided"},
+	})
+	e := st.Events["resolved:k"]
+	if e.Reason != "decided" {
+		t.Fatalf("reason = %q, want the observed record's", e.Reason)
+	}
+	if e.OverdueDue(at.Add(1000 * time.Hour)) {
+		t.Fatal("an event with no deadline was overdue")
+	}
+}

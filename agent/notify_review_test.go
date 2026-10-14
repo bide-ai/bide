@@ -435,8 +435,18 @@ func TestReview_ADecidedGateIsNotReported(t *testing.T) {
 		clk.advance(10 * time.Minute)
 		_, _ = e.round(ctx, ev)
 		_ = e.flush(ctx)
-		if sink.count() > 3 {
+		pending := 0
+		for _, c := range sink.calls {
+			if c.Kind == NotificationApprovalPending {
+				pending++
+			}
+		}
+		if pending > 3 {
 			t.Fatalf("a gate decided %v earlier was delivered as pending after the decision", 10*time.Minute)
+		}
+		// The three failed attempts may have landed, so the receiver is told it is over.
+		if last := sink.calls[len(sink.calls)-1]; last.Kind != NotificationResolved || last.Reason != "decided" {
+			t.Fatalf("last call = %+v, want the all-clear", last)
 		}
 	})
 }
