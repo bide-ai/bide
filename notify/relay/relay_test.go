@@ -834,37 +834,74 @@ func TestStateFileIsBoundedAndKeepsTheNewest(t *testing.T) {
 	}
 }
 
+// requireStateFree fails unless nothing in this process holds the state file's lock or an open
+// handle on its lock file: the lock can be taken again, and the lock file can be deleted (Windows
+// refuses to delete a file with an open handle, and TempDir cleanup is where that shows up).
+func requireStateFree(t *testing.T, path, what string) {
+	t.Helper()
+	f, err := os.OpenFile(path+".lock", os.O_CREATE|os.O_RDWR, 0o600)
+	if err != nil {
+		t.Fatalf("%s: %v", what, err)
+	}
+	held, err := lockFile(f)
+	f.Close()
+	if err != nil || held {
+		t.Errorf("%s: the state lock is still held (held=%v, err=%v)", what, held, err)
+	}
+	if err := os.Remove(path + ".lock"); err != nil {
+		t.Errorf("%s: the lock file cannot be removed, so a handle on it is still open: %v", what, err)
+	}
+}
+
 func TestStateFileProblemsAreRefusedAtStart(t *testing.T) {
 	dir := t.TempDir()
 	bad := filepath.Join(dir, "bad.state")
 	os.WriteFile(bad, []byte("{not json"), 0o600)
 	sink := &funcSink{name: "s"}
-	if _, err := New(Config{Secrets: []string{secret}, Sinks: []Sink{sink}, StatePath: bad}); err == nil {
+	start := func(path string) (*Handler, error) {
+		return New(Config{Secrets: []string{secret}, Sinks: []Sink{sink}, StatePath: path})
+	}
+	if _, err := start(bad); err == nil {
 		t.Error("a corrupt state file was accepted: the relay would run with its memory silently empty")
 	}
-	if _, err := New(Config{Secrets: []string{secret}, Sinks: []Sink{sink}, StatePath: filepath.Join(dir, "missing-dir", "x.state")}); err == nil {
+	requireStateFree(t, bad, "after a corrupt file")
+	missing := filepath.Join(dir, "missing-dir", "x.state")
+	if _, err := start(missing); err == nil {
 		t.Error("an unwritable state path was accepted")
 	}
 	// A refused start releases the lock: once the file is fixed the next start works.
 	os.WriteFile(bad, []byte(`{"version":1,"cleared":[],"seen":[]}`), 0o600)
-	if h, err := New(Config{Secrets: []string{secret}, Sinks: []Sink{sink}, StatePath: bad}); err != nil {
+	if h, err := start(bad); err != nil {
 		t.Errorf("after fixing the file: %v", err)
 	} else {
 		h.Close()
+		requireStateFree(t, bad, "after Close")
 	}
 	os.WriteFile(bad, []byte("{not json"), 0o600)
-	if _, err := New(Config{Secrets: []string{secret}, Sinks: []Sink{sink}, StatePath: bad}); err == nil || strings.Contains(err.Error(), "in use") {
+	if _, err := start(bad); err == nil || strings.Contains(err.Error(), "in use") {
 		t.Errorf("a refused start left the lock held: %v", err)
 	}
+	requireStateFree(t, bad, "after a second corrupt-file refusal")
 	wrong := filepath.Join(dir, "v2.state")
 	os.WriteFile(wrong, []byte(`{"version":2,"cleared":[],"seen":[]}`), 0o600)
-	if _, err := New(Config{Secrets: []string{secret}, Sinks: []Sink{sink}, StatePath: wrong}); err == nil {
+	if _, err := start(wrong); err == nil {
 		t.Error("a state file of another version was accepted")
 	}
+	requireStateFree(t, wrong, "after a wrong version")
 	// A missing file is a first start.
-	if _, err := New(Config{Secrets: []string{secret}, Sinks: []Sink{sink}, StatePath: filepath.Join(dir, "new.state")}); err != nil {
-		t.Errorf("first start: %v", err)
+	fresh := filepath.Join(dir, "new.state")
+	h, err := start(fresh)
+	if err != nil {
+		t.Fatalf("first start: %v", err)
 	}
+	if h2, err := start(fresh); err == nil || !strings.Contains(err.Error(), "in use") {
+		if h2 != nil {
+			h2.Close()
+		}
+		t.Errorf("a second start on a held file: %v", err)
+	}
+	h.Close() // a started relay holds the lock file open until Close, and Windows cannot delete it before
+	requireStateFree(t, fresh, "after Close")
 }
 
 func TestStateFileHoldsNoSecretOrPayload(t *testing.T) {
