@@ -398,8 +398,8 @@ func (e *notifyEngine) roundLocked(ctx context.Context, ev notifyEvent) (roundRe
 			// The holder sends the overdue notice in its own rounds. If it claimed before the event
 			// was overdue it has not had the chance, and may be gone for the whole claim: a peer sends
 			// the notice, under a short claim of its own on the notice's key, so that peers do not
-			// send it together. A holder that is only slow may send it too: one duplicate, which the
-			// notice's stable ID lets the sink drop.
+			// send it together. A holder that is only slow skips the notice while the peer's claim on it is
+			// live, and sends it in a later round if the peer's send never lands.
 			if ev.kind != NotificationOverdue && es.Overdue != nil && es.Claim.At.Before(es.Overdue.At) {
 				if ev.principal == nil {
 					ev.principal = e.principalOf(ctx, ev.runID)
@@ -544,6 +544,8 @@ func (e *notifyEngine) deliverOverdueNotice(ctx context.Context, ev notifyEvent,
 			if conflict {
 				continue
 			}
+		} else if ne.Claim != nil && ne.Claim.Holder != e.holder && e.claimLive(ne, e.cfg.now()) {
+			return // the holder in its own round: a peer is sending the notice under its claim
 		}
 		e.mu.Lock()
 		e.attempts[key]++

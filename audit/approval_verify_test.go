@@ -251,3 +251,52 @@ func TestVerifyApprovals_Errors(t *testing.T) {
 		}
 	}
 }
+
+// A re-approval tally is the gate's outcome only over a tally that predates agent.DecisionFormat,
+// as the runtime reads it (agent.RecordedTally). Beside a v3 denial, a passed re-tally is ignored:
+// both the evidence builder and VerifyApprovals report the denial.
+func TestVerifyApprovals_RetallyBesideCurrentTallyIsIgnored(t *testing.T) {
+	ctx := context.Background()
+	g := newGate(2, []string{"alice", "bob", "carol"}, []string{"alice", "bob", "carol"})
+	wantPaused(t, g.run(), 0)
+	g.decide(t, "alice", false, false)
+	g.decide(t, "bob", false, false)
+	if err := g.run(); err != nil {
+		t.Fatal(err)
+	}
+	// Inject a passed re-tally beside the denial.
+	re, err := json.Marshal(agent.ApprovalTally{Need: 2, Approvers: g.policy.Approvers, Approved: 2, ApprovedBy: []string{"alice", "bob"},
+		DecisionFormat: agent.DecisionFormat, Supersedes: agent.ApprovalTallyStep("c1")})
+	if err != nil {
+		t.Fatal(err)
+	}
+	data, err := agent.JournalEntry(agent.ApprovalRetallyStep("c1"), agent.Record{Kind: agent.StepValue, Result: re})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, _, err := g.store.Store().Insert(ctx, gateRun, agent.ApprovalRetallyStep("c1"), data); err != nil {
+		t.Fatal(err)
+	}
+	sth := g.sth(t, 1700000000)
+	acts, err := audit.ApprovalEvidence(ctx, g.store, gateRun, "c1", sth)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, a := range acts {
+		if a.Kind == audit.KindApprovalTally && a.Ref != agent.ApprovalTallyStep("c1") {
+			t.Fatalf("ApprovalEvidence chose %q, want the denial's tally %q", a.Ref, agent.ApprovalTallyStep("c1"))
+		}
+	}
+	pb, err := audit.ProveStep(ctx, g.store, gateRun, agent.ApprovalRetallyStep("c1"), sth)
+	if err != nil {
+		t.Fatal(err)
+	}
+	acts = append(acts, audit.EvidenceAction{Label: "approval re-tally", Kind: audit.KindApprovalTally, Ref: agent.ApprovalRetallyStep("c1"), Bundle: pb})
+	v, err := audit.VerifyApprovals(acts, "c1", g.policy, g.resolver(), edV(g.logPub))
+	if err := reportErr(v.OK, err); err != nil {
+		t.Fatal(err)
+	}
+	if v.OK || len(v.Problems) != 0 || !slices.Equal(v.DeniedBy, []string{"alice", "bob"}) {
+		t.Fatalf("verdict = %+v, want the denial by alice and bob, not the injected re-tally's pass", v)
+	}
+}

@@ -301,8 +301,8 @@ An independent review of the first implementation found these, and each is now a
   own rounds, so a holder that claimed before the event was overdue, and may be dead for the whole
   claim, would delay it by the claim (an hour at `WithNotifyClaimTTL(time.Hour)`). Such a peer sends
   it under a short claim of its own on the notice's key (long enough for the notice's call and its acknowledgement: a quarter of the event's claim and half a minute, at least two minutes, at most the event's claim), so peers do not send it
-  together; a holder that is only slow may send it too, one duplicate the notice's stable ID lets the
-  sink drop. A holder that claimed after the event was overdue is left to send it, so the common case
+  together; a holder that is only slow skips the notice while a peer's claim on it is live, so the
+  two do not both send it, and sends it in a later round if the peer's send never lands. A holder that claimed after the event was overdue is left to send it, so the common case
   writes no extra claims.
 - **Claim liveness does not trust synchronized clocks.** `claimed.until` is written by one clock and
   read by another. Another holder's claim counts as live until `until` plus a skew margin (default

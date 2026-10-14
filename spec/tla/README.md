@@ -2484,7 +2484,9 @@ they are the mutation check of every property above.
 - `limits/notice-slow-holder` (`NoticeOnce`): one duplicate notice with no crash, lost reply or
   lapse, as the core says: a holder that claimed before the deadline is slow and its round fails, a
   peer sends the notice under its notice claim, and the holder's next round sends it before the
-  peer's acknowledgement is in the trail (17 states). The stable ID lets the sink drop it.
+  peer's acknowledgement is in the trail (17 states). The stable ID lets the sink drop it. The Go
+  code no longer does this: a holder skips the notice while a peer's notice claim is live, so the
+  model's holder-sends-in-round step is looser than the code here.
 - `limits/notice-late-holder-dies` (`NoticeSent`, with long claims): a holder that claimed after
   the deadline and died holds the notice back for its claim, as it holds the event itself (the
   note's accepted cost of a crashed holder).
