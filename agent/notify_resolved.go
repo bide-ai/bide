@@ -304,7 +304,11 @@ func (e *notifyEngine) stamp(rec *NotifyRecord, segment string, recs []NotifyRec
 }
 
 func (e *notifyEngine) setWatch(ctx context.Context, key, runID string, want bool) error {
-	defer lockTrail(NotifyOpenTrail)() // every open-trail segment and index: one writer at a time in this process
+	unlock, lerr := lockTrail(ctx, NotifyOpenTrail) // every open-trail segment and index: one writer at a time in this process
+	if lerr != nil {
+		return lerr
+	}
+	defer unlock()
 	conflicts := 0
 	for step := 0; step < maxTrailSteps && conflicts < maxTrailRetries; step++ {
 		if conflicts > 0 {
@@ -405,7 +409,11 @@ func (e *notifyEngine) indexSegment(ctx context.Context, name string) error {
 // the chain but not in the index gets indexed; and the index names an empty segment only for the
 // very first one, which has nothing to carry. A lookup is O(1) loads however long the gap.
 func (e *notifyEngine) openHead(ctx context.Context) (string, []NotifyRecord, error) {
-	defer lockTrail(NotifyOpenTrail)()
+	unlock, lerr := lockTrail(ctx, NotifyOpenTrail)
+	if lerr != nil {
+		return "", nil, lerr
+	}
+	defer unlock()
 	return e.openHeadLocked(ctx)
 }
 

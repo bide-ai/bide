@@ -409,7 +409,10 @@ const maxTrailSteps = 32
 // at a time runs per trail in the process (lockTrail); the lock is released before anything slow (a
 // delivery, an acknowledgement). A position lost to another process counts in conflicts.
 func (e *notifyEngine) roundStep(ctx context.Context, ev notifyEvent, name string, triedFailing *bool, conflicts *int) (roundResult, error, roundStepAct) {
-	unlock := lockTrail(name)
+	unlock, lerr := lockTrail(ctx, name)
+	if lerr != nil {
+		return roundResult{next: e.cfg.now().Add(e.backoff(e.failCount(ev.key)))}, lerr, stepReturn
+	}
 	var released bool
 	release := func() {
 		if !released {
@@ -567,37 +570,50 @@ func (e *notifyEngine) conflictBackoff(ctx context.Context, conflicts int) {
 }
 
 // trailLocks serialize the load-decide-append passes on one trail within the process, across every
-// engine in it (a drive's notifier, a sweep, a recovery loop). Entries live only while a pass holds or
-// waits for them.
+// engine in it (a drive's notifier, a sweep, a recovery loop). An entry lives only while a pass
+// holds or waits for it (refcounted, deleted at zero), so the map is the size of the trails in use at
+// the moment, not of every run the process has seen. A waiter gives up when its context ends, so a
+// store that hangs on one trail holds up that trail's rounds only, and only until they are cancelled.
+// A pass holds it across the store's load and append and the journal reads that decide, never across
+// a Notifier call or a callback.
 var trailLocks = struct {
 	mu sync.Mutex
 	m  map[string]*trailLock
 }{m: map[string]*trailLock{}}
 
 type trailLock struct {
-	mu   sync.Mutex
+	held chan struct{} // capacity one: a send takes the lock
 	refs int
 }
 
-// lockTrail takes the process-wide lock of the trail called name and returns its release.
-func lockTrail(name string) func() {
+// lockTrail takes the process-wide lock of the trail called name and returns its release, or ctx's
+// error if ctx ends first.
+func lockTrail(ctx context.Context, name string) (func(), error) {
 	trailLocks.mu.Lock()
 	l := trailLocks.m[name]
 	if l == nil {
-		l = &trailLock{}
+		l = &trailLock{held: make(chan struct{}, 1)}
 		trailLocks.m[name] = l
 	}
 	l.refs++
 	trailLocks.mu.Unlock()
-	l.mu.Lock()
-	return func() {
-		l.mu.Unlock()
+	leave := func() {
 		trailLocks.mu.Lock()
 		if l.refs--; l.refs == 0 {
 			delete(trailLocks.m, name)
 		}
 		trailLocks.mu.Unlock()
 	}
+	select {
+	case l.held <- struct{}{}:
+	case <-ctx.Done():
+		leave()
+		return nil, ctx.Err()
+	}
+	return func() {
+		<-l.held
+		leave()
+	}, nil
 }
 
 func (e *notifyEngine) failCount(key string) int {
@@ -767,7 +783,11 @@ func (e *notifyEngine) ack(ctx context.Context, ev notifyEvent, name string, fir
 	delay := e.cfg.ackBackoff
 	for {
 		recorded, err := func() (bool, error) {
-			defer lockTrail(name)() // one pass at a time on the trail in this process
+			unlock, lerr := lockTrail(ctx, name) // one pass at a time on the trail in this process
+			if lerr != nil {
+				return false, lerr
+			}
+			defer unlock()
 			recs, err := e.trail.Load(ctx, name)
 			if err != nil {
 				return false, err
@@ -817,26 +837,38 @@ func (e *notifyEngine) forget(key string) {
 // so a deliverer that is restarted or dies in every round still raises it. It reports the failure to
 // the handler of WithNotifyErrors when it is the process that writes the record.
 func (e *notifyEngine) markFailing(ctx context.Context, ev notifyEvent, name string) {
-	defer lockTrail(name)()
+	if rounds := e.writeFailing(ctx, ev, name); rounds > 0 {
+		e.report(fmt.Errorf("notify: delivery of %s is failing after %d rounds without an acknowledgement (it keeps retrying)", ev.key, rounds))
+	}
+}
+
+// writeFailing appends the failing record under the trail's lock, and returns the rounds it records,
+// 0 if it wrote none; the report to the user's handler is made by the caller, outside the lock.
+func (e *notifyEngine) writeFailing(ctx context.Context, ev notifyEvent, name string) int {
+	unlock, lerr := lockTrail(ctx, name)
+	if lerr != nil {
+		return 0
+	}
+	defer unlock()
 	for range maxTrailRetries {
 		recs, err := e.trail.Load(ctx, name)
 		if err != nil {
-			return
+			return 0
 		}
 		es := FoldNotify(recs).Events[ev.key]
 		if es == nil || !es.Open() || es.Failing != nil || es.Rounds < e.failingRounds() {
-			return
+			return 0
 		}
 		rec := NotifyRecord{Kind: NotifyFailing, Key: ev.key, RunID: ev.runID, At: e.cfg.now(), Failures: es.Rounds}
 		conflict, err := e.appendRec(ctx, name, len(recs), rec)
 		if err != nil {
-			return
+			return 0
 		}
 		if !conflict {
-			e.report(fmt.Errorf("notify: delivery of %s is failing after %d rounds without an acknowledgement (it keeps retrying)", ev.key, es.Rounds))
-			return
+			return es.Rounds
 		}
 	}
+	return 0
 }
 
 // current reports whether ev still stands, and if not why (the reason a cleared record carries).

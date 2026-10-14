@@ -74,13 +74,11 @@ func e2eRun(t *testing.T, sc e2eScenario) {
 	mk := func(name string) agent.Notifier { s := &toggleSink{}; sinks[name] = s; return s }
 	opts := append(sweepOpts(clk), sc.opts(func() agent.Notifier { return mk("default") })...)
 	sweep := func() {
-		var err error
-		for range 5 { // a sweep that loses an append race to its own worker reports it and is safe to repeat
-			if err = agent.NotifyPending(ctx, j, mk("sweep"), trail, opts...); err == nil {
-				return
-			}
+		// A sweep never loses an append race to its own worker: one pass at a time per trail in a
+		// process, and no retry here to hide it.
+		if err := agent.NotifyPending(ctx, j, mk("sweep"), trail, opts...); err != nil {
+			t.Fatalf("sweep: %v", err)
 		}
-		t.Fatalf("sweep: %v", err)
 	}
 	clk.now = clk.now.Add(2 * time.Minute) // a halt is reported once it is a minute old
 	sweep()

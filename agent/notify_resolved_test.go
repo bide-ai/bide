@@ -1729,3 +1729,105 @@ func TestNotifyRound_PositionsLostToAnotherProcessDoNotExhaustTheRetries(t *test
 		t.Fatalf("round = %v, want the lost-race error", err)
 	}
 }
+
+// Listing events on the open trail is one writer at a time per process however many rounds do it:
+// forty goroutines over two engines against a store with a round trip's latency all succeed.
+func TestResolved_ConcurrentWatchesInOneProcessNeverLoseTheirAppendRace(t *testing.T) {
+	ctx := context.Background()
+	tr := NotifyTrail(slowTrail{NewMemNotifyTrail()})
+	engines := []*notifyEngine{
+		testEngine(t, memJournal(), &fakeSink{}, tr, resolvedClock(), "a"),
+		testEngine(t, memJournal(), &fakeSink{}, tr, resolvedClock(), "b"),
+	}
+	var wg sync.WaitGroup
+	errs := make(chan error, 64)
+	for k := range 40 {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			if err := engines[k%2].watch(ctx, fmt.Sprintf("k%d", k), "r"); err != nil {
+				errs <- err
+			}
+		}()
+	}
+	wg.Wait()
+	close(errs)
+	for err := range errs {
+		t.Fatal(err)
+	}
+	if got := listedKeys(t, engines[0]); len(got) != 40 {
+		t.Fatalf("%d events listed, want 40", len(got))
+	}
+}
+
+func trailLockCount() int {
+	trailLocks.mu.Lock()
+	defer trailLocks.mu.Unlock()
+	return len(trailLocks.m)
+}
+
+// The process-wide trail locks are removed when no pass holds or waits for them: a long-lived
+// process that sees many runs does not keep an entry for each.
+func TestNotifyTrailLocks_AreRemovedWhenIdle(t *testing.T) {
+	ctx := context.Background()
+	e := testEngine(t, memJournal(), &fakeSink{}, NewMemNotifyTrail(), resolvedClock(), "p1")
+	for k := range 60 {
+		run := fmt.Sprintf("run%d", k)
+		ev := notifyEvent{key: HaltedKey(run, OpTool, "c1", 100), kind: NotificationOutcomeUnknown, runID: run,
+			halt: &NotifyHalt{Op: OpRef{Kind: OpTool, ID: "c1"}, Cause: HaltCrashed}}
+		if res, err := e.round(ctx, ev); err != nil || !res.done {
+			t.Fatal(res, err)
+		}
+	}
+	if n := trailLockCount(); n != 0 {
+		t.Fatalf("%d trail locks remain after 60 runs' rounds", n)
+	}
+}
+
+// A waiter for a trail's lock gives up when its context ends, and the trail a hung store holds does
+// not hold another trail's rounds.
+func TestNotifyTrailLocks_AHungStoreHoldsItsOwnTrailOnly(t *testing.T) {
+	hold := make(chan struct{})
+	defer close(hold)
+	hung := &hangingTrail{NotifyTrail: NewMemNotifyTrail(), name: "notify:a", release: hold, in: make(chan struct{}, 1)}
+	e := testEngine(t, memJournal(), &fakeSink{}, hung, resolvedClock(), "p1")
+	evA := notifyEvent{key: HaltedKey("a", OpTool, "c1", 1), kind: NotificationOutcomeUnknown, runID: "a", halt: &NotifyHalt{Op: OpRef{Kind: OpTool, ID: "c1"}}}
+	evB := notifyEvent{key: HaltedKey("b", OpTool, "c1", 1), kind: NotificationOutcomeUnknown, runID: "b", halt: &NotifyHalt{Op: OpRef{Kind: OpTool, ID: "c1"}}}
+	go func() { _, _ = e.round(context.Background(), evA) }() // hangs in the store, holding trail a
+	<-hung.in
+	// Another round on trail a waits for the lock, and leaves when its context ends.
+	wctx, cancel := context.WithTimeout(context.Background(), 50*time.Millisecond)
+	defer cancel()
+	evA2 := evA
+	evA2.key = HaltedKey("a", OpTool, "c2", 1)
+	start := time.Now()
+	if _, err := e.round(wctx, evA2); err == nil || time.Since(start) > 2*time.Second {
+		t.Fatalf("a waiter on the hung trail: %v after %v", err, time.Since(start))
+	}
+	// Trail b is not held.
+	done := make(chan error, 1)
+	go func() { _, err := e.round(context.Background(), evB); done <- err }()
+	select {
+	case err := <-done:
+		if err != nil {
+			t.Fatal(err)
+		}
+	case <-time.After(5 * time.Second):
+		t.Fatal("a round on another trail is held by the hung one")
+	}
+}
+
+type hangingTrail struct {
+	NotifyTrail
+	name    string
+	release chan struct{}
+	in      chan struct{}
+	once    sync.Once
+}
+
+func (h *hangingTrail) Load(ctx context.Context, trail string) ([]NotifyRecord, error) {
+	if trail == h.name {
+		h.once.Do(func() { h.in <- struct{}{}; <-h.release })
+	}
+	return h.NotifyTrail.Load(ctx, trail)
+}
