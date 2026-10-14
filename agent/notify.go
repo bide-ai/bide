@@ -26,6 +26,11 @@ const (
 	NotificationRecoveryFailing NotificationKind = "recovery_failing"
 	// NotificationOverdue: an event was not acknowledged by its deadline.
 	NotificationOverdue NotificationKind = "notification_overdue"
+	// NotificationResolved: an outcome_unknown, approval_pending or recovery_failing event that a
+	// receiver has, or may have, stopped being current (the halt was resolved, the gate decided, the
+	// run ended, recovery recovered). Notification.Clears says which event, so a receiver can close
+	// its incident; it is the all clear.
+	NotificationResolved NotificationKind = "resolved"
 )
 
 // NotifyHalt is the structured detail of a NotificationOutcomeUnknown notification.
@@ -45,6 +50,20 @@ type NotifyApproval struct {
 	Approved  int      // approvals counted when the event was observed
 }
 
+// NotifyClears is the structured detail of a NotificationResolved notification: the event it ends.
+// Event keys are never reused (a halt's key holds its attempt marker's time, a gate's its reminder
+// number, a recovery failure's its episode), and an event that has stopped being current does not
+// become current again, so the ID is final: a receiver that gets a clear for an ID may treat every
+// delivery of that ID, before or after the clear, as superseded. That is the whole ordering rule;
+// no sequence number is needed.
+type NotifyClears struct {
+	// Key and ID are the key and the delivery ID (NotifyID(Key)) of the event that stopped being
+	// current, as that event's own notifications carry them.
+	Key, ID string
+	// Kind is the cleared event's kind.
+	Kind NotificationKind
+}
+
 // Notification is one delivery attempt of an event to a Notifier. It holds structured fields only:
 // no tool arguments, results, or error text travel in it, except Err, which is for an in-process
 // Notifier and which a Notifier that sends the notification elsewhere must not forward by default.
@@ -57,7 +76,9 @@ type Notification struct {
 	// RunID is the root run, whose notification trail holds the event.
 	RunID string
 	// EventAt is when the run entered the state: the attempt marker's time for a halt, else the
-	// time the event was first observed. Observed is when a notifier process first saw it.
+	// time the event was first observed. Observed is when a notifier process first saw it. For
+	// NotificationResolved, EventAt is when a notifier found the event no longer current (an upper
+	// bound on when it ended) and Deadline is zero: a clear is never overdue.
 	EventAt, Observed time.Time
 	// Deadline is when the notification is overdue, if not acknowledged by then.
 	Deadline time.Time
@@ -67,8 +88,10 @@ type Notification struct {
 	Halt      *NotifyHalt     // for NotificationOutcomeUnknown
 	Approval  *NotifyApproval // for NotificationApprovalPending
 	Principal *Principal      // the run's principal, nil if it has none
+	Clears    *NotifyClears   // for NotificationResolved
 	// Reason is a code from a closed set, never error text: for NotificationRecoveryFailing the cause
-	// class ("resume_error", "store_error", "not_resumable"), for NotificationOverdue "deadline".
+	// class ("resume_error", "store_error", "not_resumable"), for NotificationOverdue "deadline", for
+	// NotificationResolved why the event ended ("resolved", "decided", "ended", "recovered").
 	Reason string
 	// Err is the typed error that raised the event, for an in-process Notifier.
 	Err error

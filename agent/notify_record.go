@@ -79,7 +79,8 @@ type NotifyRecord struct {
 	// overdue
 	Latency time.Duration `json:"latency,omitempty"` // At minus ObservedAt
 
-	// cleared: "resolved", "decided" or "ended". failing_since: a class of cause, never error text.
+	// cleared: "resolved", "decided", "ended" or "recovered". observed, for a resolved event: the same
+	// code, why the event it clears ended. failing_since: a class of cause, never error text.
 	Reason string `json:"reason,omitempty"`
 }
 
@@ -139,6 +140,11 @@ func AbortedKey(runID string) string { return "aborted:" + encodeID(runID) }
 func RecoveryKey(runID string, episode int) string {
 	return "recovery:" + encodeID(runID) + ":" + strconv.Itoa(episode)
 }
+
+// ResolvedKey is the event key of the all-clear for the event with key: the notification that it
+// stopped being current. It has records of its own in the trail, like the overdue notice, and the
+// delivery ID NotifyID(ResolvedKey(key)).
+func ResolvedKey(key string) string { return "resolved:" + key }
 
 // OverdueKey is the event key of the overdue notice for the event with key.
 func OverdueKey(key string) string { return "overdue:" + key }

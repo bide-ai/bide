@@ -89,9 +89,16 @@ type notifyEvent struct {
 	// an untimed marker needs a read of the journal); key is a provisional one until then.
 	keyFn func(context.Context) (string, error)
 
-	episode int    // for recovery_failing: the episode number
-	origKey string // for an overdue notice: the event it is about
+	episode  int              // for recovery_failing: the episode number
+	origKey  string           // for an overdue notice or an all-clear: the event it is about
+	origKind NotificationKind // for an all-clear: that event's kind
+
+	// scan marks the catch-up job of runID's trail (see clearScan), not an event: key is scanKey.
+	scan bool
 }
+
+// scanKey is the worker key of the catch-up scan of run's trail.
+func scanKey(run string) string { return "scan:" + run }
 
 // notifyEngine runs the notify-once protocol of docs/design/notifier.md over a trail: observe,
 // claim, deliver, acknowledge, with the trail's append-at-position as the only synchronization

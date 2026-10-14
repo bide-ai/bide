@@ -10,6 +10,7 @@ type NotifyEvent struct {
 	EventAt    time.Time
 	ObservedAt time.Time
 	DeadlineAt time.Time
+	Reason     string // recorded at observation: for a resolved event, why the event it clears ended
 
 	Claim   *NotifyRecord // the latest claimed record, nil if never claimed
 	Rounds  int           // how many claimed records the event has
@@ -29,9 +30,9 @@ func (e *NotifyEvent) ClaimLive(now time.Time) bool {
 }
 
 // OverdueDue reports whether the event is open, past its deadline at now, and not yet marked
-// overdue.
+// overdue. An event observed with no deadline (a resolved event, which is never overdue) is not.
 func (e *NotifyEvent) OverdueDue(now time.Time) bool {
-	return e.Open() && e.Overdue == nil && now.After(e.DeadlineAt)
+	return e.Open() && e.Overdue == nil && !e.DeadlineAt.IsZero() && now.After(e.DeadlineAt)
 }
 
 // NotifyState is a notification trail folded to what a notifier needs to decide its next step.
@@ -60,7 +61,7 @@ func FoldNotify(recs []NotifyRecord) NotifyState {
 			if _, dup := st.Events[r.Key]; dup {
 				continue
 			}
-			st.Events[r.Key] = &NotifyEvent{Key: r.Key, Kind: r.EventKind, RunID: r.RunID, EventAt: r.EventAt, ObservedAt: r.At, DeadlineAt: r.DeadlineAt}
+			st.Events[r.Key] = &NotifyEvent{Key: r.Key, Kind: r.EventKind, RunID: r.RunID, EventAt: r.EventAt, ObservedAt: r.At, DeadlineAt: r.DeadlineAt, Reason: r.Reason}
 			st.Keys = append(st.Keys, r.Key)
 		case NotifyClaimed:
 			if e := st.openEvent(r.Key); e != nil {
