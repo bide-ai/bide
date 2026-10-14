@@ -19,6 +19,7 @@ use (
 	./integration
 	./mcptools
 	./signer/awskms
+	./signer/awskms/emulatortest
 	./signer/gcpkms
 	./signer/gcpkms/emulatortest
 	./signer/pkcs11
