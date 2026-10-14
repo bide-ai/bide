@@ -53,6 +53,7 @@ func TestPostgres_AuditedEventStoreHeadsAreAlwaysAPrefixOfTheTrail(t *testing.T)
 	const handles, perHandle = 3, 8
 
 	var wg sync.WaitGroup
+	var audited []*audit.AuditedEventStore
 	for h := range handles {
 		s, err := Open(ctx, dsn)
 		if err != nil {
@@ -63,6 +64,7 @@ func TestPostgres_AuditedEventStoreHeadsAreAlwaysAPrefixOfTheTrail(t *testing.T)
 		if err != nil {
 			t.Fatal(err)
 		}
+		audited = append(audited, a)
 		a.OnError(func(tr string, err error) { t.Errorf("anchor %s: %v", tr, err) })
 		tr := audit.NewNotifyTrail(a)
 		wg.Go(func() {
@@ -86,6 +88,11 @@ func TestPostgres_AuditedEventStoreHeadsAreAlwaysAPrefixOfTheTrail(t *testing.T)
 		})
 	}
 	wg.Wait()
+	for _, a := range audited {
+		if err := a.Flush(ctx); err != nil {
+			t.Fatal(err)
+		}
+	}
 
 	s, err := Open(ctx, dsn)
 	if err != nil {

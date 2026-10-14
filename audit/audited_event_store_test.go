@@ -7,6 +7,7 @@ import (
 	"errors"
 	"fmt"
 	"slices"
+	"strings"
 	"sync"
 	"testing"
 	"time"
@@ -107,6 +108,16 @@ func appendNotify(t *testing.T, tr agent.NotifyTrail, trail string, from, n int)
 	}
 }
 
+// flush waits for the store's background publisher.
+func (r *rig) flush(t *testing.T) {
+	t.Helper()
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
+	if err := r.s.Flush(ctx); err != nil {
+		t.Fatal(err)
+	}
+}
+
 func TestAuditedEventStore_RefusesBadConfiguration(t *testing.T) {
 	_, priv, _ := ed25519.GenerateKey(nil)
 	good := audit.Ed25519Signer{Priv: priv}
@@ -157,8 +168,12 @@ func TestAuditedEventStore_AnchorsEachAppend(t *testing.T) {
 	r.s.WithClock(func() int64 { return t0.UnixNano() })
 	tr := audit.NewNotifyTrail(r.s)
 
-	appendNotify(t, tr, trailName, 0, 3)
+	for i := range 3 {
+		appendNotify(t, tr, trailName, i, 1)
+		r.flush(t) // one head per append when the publisher keeps up
+	}
 	appendNotify(t, tr, "notify:r2", 0, 1)
+	r.flush(t)
 
 	var sizes []int
 	for _, e := range log.Entries() {
@@ -208,11 +223,12 @@ func TestAuditedEventStore_AnchorFailureNeverFailsAnAppendAndReanchorRecovers(t 
 	tr := audit.NewNotifyTrail(r.s)
 
 	appendNotify(t, tr, trailName, 0, 3) // fatal on any append error
+	r.flush(t)
 	if got, err := tr.Load(ctx, trailName); err != nil || len(got) != 3 {
 		t.Fatalf("trail = %d records, %v", len(got), err)
 	}
-	if r.errs.n() != 3 || len(fa.sizes(trailName)) != 0 {
-		t.Fatalf("%d anchor errors (want 3), heads %v", r.errs.n(), fa.sizes(trailName))
+	if r.errs.n() == 0 || len(fa.sizes(trailName)) != 0 {
+		t.Fatalf("%d anchor errors (want some), heads %v", r.errs.n(), fa.sizes(trailName))
 	}
 	if !slices.Equal(r.s.Unanchored(), []string{trailName}) {
 		t.Fatalf("Unanchored = %v", r.s.Unanchored())
@@ -245,8 +261,8 @@ func TestAuditedEventStore_ReanchorPendingCoversEveryFailedTrail(t *testing.T) {
 	tr := audit.NewNotifyTrail(r.s)
 	appendNotify(t, tr, "notify:a", 0, 2)
 	appendNotify(t, tr, "notify:b", 0, 1)
+	r.flush(t)
 	fa.set(false)
-	appendNotify(t, tr, "notify:c", 0, 1) // anchored at once
 
 	if got := r.s.Unanchored(); !slices.Equal(got, []string{"notify:a", "notify:b"}) {
 		t.Fatalf("Unanchored = %v", got)
@@ -269,6 +285,7 @@ func TestAuditedEventStore_CooldownBoundsAttemptsDuringAnOutage(t *testing.T) {
 	tr := audit.NewNotifyTrail(r.s)
 
 	appendNotify(t, tr, trailName, 0, 10)
+	r.flush(t)
 	if fa.tried() != 1 || r.errs.n() != 1 {
 		t.Fatalf("%d publish attempts and %d errors in an outage of 10 appends, want 1 and 1", fa.tried(), r.errs.n())
 	}
@@ -279,6 +296,7 @@ func TestAuditedEventStore_CooldownBoundsAttemptsDuringAnOutage(t *testing.T) {
 	fa.set(false)
 	time.Sleep(120 * time.Millisecond)
 	appendNotify(t, tr, trailName, 10, 1)
+	r.flush(t)
 	if got := fa.sizes(trailName); !slices.Equal(got, []int{11}) {
 		t.Fatalf("heads after the cooldown = %v, want one head of size 11", got)
 	}
@@ -287,8 +305,8 @@ func TestAuditedEventStore_CooldownBoundsAttemptsDuringAnOutage(t *testing.T) {
 	}
 }
 
-// A Publish that never returns and ignores its context cannot stall a write for longer than the
-// timeout, and the writes after it do not wait for the anchor at all.
+// A Publish that never returns and ignores its context holds no write at all, and the publisher
+// itself is released at the timeout, so a Flush returns and later writes are not waited on.
 func TestAuditedEventStore_HungAnchorDoesNotStallWrites(t *testing.T) {
 	hang := make(chan struct{})
 	fa := &trailAnchor{hang: hang}
@@ -297,17 +315,13 @@ func TestAuditedEventStore_HungAnchorDoesNotStallWrites(t *testing.T) {
 	tr := audit.NewNotifyTrail(r.s)
 
 	start := time.Now()
-	appendNotify(t, tr, trailName, 0, 1)
-	if d := time.Since(start); d < 90*time.Millisecond || d > 3*time.Second {
-		t.Fatalf("the first write took %v against a hung anchor, want about the 100ms timeout", d)
+	appendNotify(t, tr, trailName, 0, 21)
+	if d := time.Since(start); d > 50*time.Millisecond*21 {
+		t.Fatalf("21 writes took %v against a hung anchor", d)
 	}
-	if r.errs.n() != 1 || !errors.Is(r.errs.errs[0], context.DeadlineExceeded) {
-		t.Fatalf("errors = %v, want one deadline error", r.errs.errs)
-	}
-	start = time.Now()
-	appendNotify(t, tr, trailName, 1, 20)
-	if d := time.Since(start); d > time.Second || fa.tried() != 1 {
-		t.Fatalf("20 more writes took %v with %d publish attempts: they waited on a hung anchor", d, fa.tried())
+	r.flush(t)
+	if r.errs.n() != 1 || !errors.Is(r.errs.errs[0], context.DeadlineExceeded) || fa.tried() != 1 {
+		t.Fatalf("errors = %v after %d attempts, want one deadline error after one attempt", r.errs.errs, fa.tried())
 	}
 
 	// The anchor comes back: the abandoned publish finishes, and a Reanchor catches the trail up.
@@ -320,14 +334,14 @@ func TestAuditedEventStore_HungAnchorDoesNotStallWrites(t *testing.T) {
 		t.Fatal(err)
 	}
 	sizes := fa.sizes(trailName)
-	if len(sizes) < 2 || sizes[len(sizes)-1] != 21 || !slices.IsSorted(sizes) {
+	if len(sizes) == 0 || sizes[len(sizes)-1] != 21 || !slices.IsSorted(sizes) {
 		t.Fatalf("heads = %v, want growing sizes ending at 21", sizes)
 	}
 }
 
-// A write under a context that is done cannot be anchored: it is reported, remembered, and
-// anchored by the next Reanchor.
-func TestAuditedEventStore_DoneContextIsReportedAndRetried(t *testing.T) {
+// The head is published in the background, so it does not depend on the writer's context: a write
+// whose context is done is anchored all the same.
+func TestAuditedEventStore_AnchoringDoesNotDependOnTheWritersContext(t *testing.T) {
 	fa := &trailAnchor{}
 	r := newRig(t, fa)
 	ctx, cancel := context.WithCancel(context.Background())
@@ -335,14 +349,27 @@ func TestAuditedEventStore_DoneContextIsReportedAndRetried(t *testing.T) {
 	if err := audit.NewNotifyTrail(r.s).Append(ctx, trailName, 0, agent.NotifyRecord{Kind: agent.NotifyClaimed, Key: "k", RunID: "r1", At: t0, Holder: "p"}); err != nil {
 		t.Fatal(err)
 	}
-	if r.errs.n() != 1 || !errors.Is(r.errs.errs[0], context.Canceled) || fa.tried() != 0 {
-		t.Fatalf("errors %v, %d attempts", r.errs.errs, fa.tried())
+	r.flush(t)
+	if r.errs.n() != 0 || !slices.Equal(fa.sizes(trailName), []int{1}) {
+		t.Fatalf("errors %v, heads %v", r.errs.errs, fa.sizes(trailName))
 	}
-	if !slices.Equal(r.s.Unanchored(), []string{trailName}) {
-		t.Fatalf("Unanchored = %v", r.s.Unanchored())
+}
+
+// A slow anchor does not slow a write: the writer returns at once and the publisher catches up
+// with one head for the burst.
+func TestAuditedEventStore_ASlowAnchorDoesNotSlowWrites(t *testing.T) {
+	fa := &trailAnchor{delay: 300 * time.Millisecond}
+	r := newRig(t, fa)
+	tr := audit.NewNotifyTrail(r.s)
+	start := time.Now()
+	appendNotify(t, tr, trailName, 0, 10)
+	if d := time.Since(start); d > 250*time.Millisecond {
+		t.Fatalf("10 writes took %v against an anchor that takes 300ms a head", d)
 	}
-	if err := r.s.ReanchorPending(context.Background()); err != nil || !slices.Equal(fa.sizes(trailName), []int{1}) {
-		t.Fatalf("%v, heads %v", err, fa.sizes(trailName))
+	r.flush(t)
+	sizes := fa.sizes(trailName)
+	if len(sizes) == 0 || sizes[len(sizes)-1] != 10 || len(sizes) > 3 {
+		t.Fatalf("heads %v: want the burst covered by a few heads ending at 10", sizes)
 	}
 }
 
@@ -376,6 +403,7 @@ func TestAuditedEventStore_HeadsOnlyGrowUnderConcurrentAppends(t *testing.T) {
 		})
 	}
 	wg.Wait()
+	r.flush(t)
 
 	sizes := fa.sizes(trailName)
 	if len(sizes) == 0 || sizes[len(sizes)-1] != writers*perWriter {
@@ -397,6 +425,7 @@ func TestAuditedEventStore_ALostRaceAnchorsNothing(t *testing.T) {
 	fa := &trailAnchor{}
 	r := newRig(t, fa)
 	appendNotify(t, audit.NewNotifyTrail(r.s), trailName, 0, 1)
+	r.flush(t)
 	before := fa.tried()
 	if before != 1 {
 		t.Fatalf("%d attempts for the first append", before)
@@ -404,6 +433,7 @@ func TestAuditedEventStore_ALostRaceAnchorsNothing(t *testing.T) {
 	if err := r.s.Append(context.Background(), trailName, 0, []byte("other")); !errors.Is(err, audit.ErrSeqTaken) {
 		t.Fatalf("different leaf = %v, want ErrSeqTaken", err)
 	}
+	r.flush(t)
 	if fa.tried() != before || r.errs.n() != 0 {
 		t.Fatalf("a refused append published a head (%d attempts, %d errors)", fa.tried()-before, r.errs.n())
 	}
@@ -423,6 +453,7 @@ func TestNotifyTrail_AnchorTrailsFindsTheAuditedStoreThroughUnwrap(t *testing.T)
 	r.s.WithCooldown(0)
 	tr := audit.NewNotifyTrail(wrapped{wrapped{r.s}})
 	appendNotify(t, tr, trailName, 0, 2)
+	r.flush(t)
 	fa.set(false)
 
 	var anchorer agent.NotifyTrailAnchorer = tr
@@ -502,8 +533,10 @@ func TestNotifier_AnAnchorOutageNeverFailsADelivery(t *testing.T) {
 	if r.errs.n() == 0 {
 		t.Fatal("the outage was not reported to OnError")
 	}
-	if notifyErrs.n() != 0 {
-		t.Fatalf("the notifier reported %v: an anchor error must not surface as a delivery failure", notifyErrs.errs)
+	for _, err := range notifyErrs.errs {
+		if !strings.Contains(err.Error(), "anchor trails") {
+			t.Fatalf("the notifier reported %v: only anchoring may fail in an anchor outage", err)
+		}
 	}
 }
 
@@ -517,6 +550,7 @@ func TestNotifyPending_ResignsAGrownTrailAfterAnOutage(t *testing.T) {
 	store := agent.NewMemStore()
 	trail := audit.NewNotifyTrail(r.s)
 	notifiedGate(t, store, "told", trail, &recSink{})
+	r.flush(t)
 	if len(fa.sizes("notify:told")) != 0 {
 		t.Fatal("a head was published while the anchor was down")
 	}
@@ -576,4 +610,32 @@ func mustLen(t *testing.T, es audit.EventStore, trail string) int {
 		t.Fatal(err)
 	}
 	return len(l)
+}
+
+// AnchorTrails (the notifier's sweep and recovery pass) respects the cooldown, so a sweep over many
+// trails does not wait out a timeout for each while the anchor is down; Reanchor does not.
+func TestAuditedEventStore_AnchorTrailsRespectsTheCooldownAndReanchorDoesNot(t *testing.T) {
+	ctx := context.Background()
+	fa := &trailAnchor{down: true}
+	r := newRig(t, fa)
+	r.s.WithCooldown(time.Hour)
+	appendNotify(t, audit.NewNotifyTrail(r.s), trailName, 0, 2)
+	r.flush(t)
+	fa.set(false)
+
+	before := fa.tried()
+	if err := r.s.AnchorTrails(ctx, []string{trailName}); err != nil || fa.tried() != before {
+		t.Fatalf("AnchorTrails in the cooldown: %v, %d attempts", err, fa.tried()-before)
+	}
+	if !slices.Equal(r.s.Unanchored(), []string{trailName}) {
+		t.Fatalf("Unanchored = %v", r.s.Unanchored())
+	}
+	if err := r.s.Reanchor(ctx, trailName); err != nil || !slices.Equal(fa.sizes(trailName), []int{2}) {
+		t.Fatalf("Reanchor: %v, heads %v", err, fa.sizes(trailName))
+	}
+	// The anchor answered: the cooldown is over for everyone.
+	appendNotify(t, audit.NewNotifyTrail(r.s), "notify:r2", 0, 1)
+	if err := r.s.AnchorTrails(ctx, []string{"notify:r2"}); err != nil || !slices.Equal(fa.sizes("notify:r2"), []int{1}) {
+		t.Fatalf("after recovery: %v, heads %v", err, fa.sizes("notify:r2"))
+	}
 }

@@ -540,11 +540,12 @@ It checks:
   overdue notice follows its `overdue` record, an all-clear follows the acknowledgement or clearing
   it reports (and an `overdue` record is never written for a `resolved` key), records are dated in
   order within the clock skew, and recovery episodes open and close in turn;
-- with a signed head over the trail (`audit.SignNotifyTrail`, kind `events`, run ID the trail's
-  name), the head verifies and the trail's first `size` leaves are exactly the leaves it commits to,
-  so nothing was dropped, reordered or rewritten before it. Records after the head are read and
-  reported as not attested. Consistency between two heads is not a separate step: each head is
-  checked against the full trail;
+- with signed heads over the trail (`audit.SignNotifyTrail` or the ones `audit.AuditedEventStore`
+  anchors; kind `events`, run ID the trail's name), every head verifies and its first `size` leaves
+  are exactly the leaves it commits to, so nothing was dropped, reordered or rewritten before the
+  newest. Records after the newest head are read and reported as not attested, with their count and
+  the age of the oldest (`-max-unattested` can fail it). Consistency between heads is not a separate
+  step: each head is checked against the full trail;
 - with routing and escalation, the receiver and level each event records are well formed; an
   escalation step is dated after the deadline it follows, in order, for an event that is not
   cleared (nor, unless an approval, acknowledged); an all-clear and an overdue notice go to their
@@ -558,12 +559,39 @@ It checks:
   threshold has a `recovery_failing` event, and an event cleared after a delivery was attempted has
   its all-clear.
 
-**The notifier does not sign its trail.** The trail is an `EventStore` trail: Merkle-committable and
-append-only by the store's contract (`UNIQUE(run_id, seq)`), but a head is signed and anchored only
-if the deployment does it (`audit.SignNotifyTrail`, `audit.Anchor`, as for a journal with
-`AuditedStore`). Without a head the verifier reports the trail `UNANCHORED` and says nothing attests
-it; a design choice to anchor automatically (the notifier signing heads itself) is left open, since
-it puts a signing key in the delivery process.
+**Signing and anchoring the trail.** The trail is an `EventStore` trail: Merkle-committable and
+append-only by the store's contract (`UNIQUE(run_id, seq)`). `audit.AuditedEventStore` wraps that
+store and signs and anchors the trail as it is written, mirroring `AuditedStore` for the journal:
+the same `Signer` (so the HSM, KMS and ECDSA signers work unchanged), the same `Anchor`, and the head
+`audit.SignNotifyTrail` signs (kind `events`, run ID the trail's name).
+
+The design choices, and why:
+
+- **A wrapper over the `EventStore`, found through `Unwrap`.** The trail adapter
+  (`audit.NotifyTrail`) already sits on an `EventStore`, so signing there needs no change to
+  `agent`, which cannot import `audit`. The wrapper also signs any other event trail written through
+  it, and the signing key lives where the store is wired, not in the engine.
+- **Off the delivery path.** A round holds a claim for a fixed budget (`roundBudget`) that counts
+  the store's round trips as short. Publishing inside `Append` would add a signature and a network
+  call to each of a round's appends, and a slow (not failed) anchor would break that arithmetic.
+  `Append` therefore returns when the store has the leaf, and a background publisher publishes the
+  head. A failure goes to `OnError`, never to the delivery, as for `AuditedStore`.
+- **Bounded.** An attempt (read the trail, sign, publish) is abandoned after a timeout, even if the
+  anchor or signer ignores its context, and a failed attempt pauses publishing for a cooldown
+  before one probe, so an outage costs one timeout per cooldown and no goroutine loop.
+- **Heads only grow.** Each trail has a slot held while its head is built and published, and a head
+  is published only if the trail is longer than the last one published. Two processes can still
+  publish out of order; both heads are prefixes of one trail and the verifier compares by size.
+- **A bounded window.** The records between the last published head and the end of the trail are the
+  window. `NotifyPending` (for each run it looks at), the recovery pass (for each run it recovers),
+  and `FlushNotifications` ask the trail to sign again any trail that grew past its last head, or
+  that an earlier attempt failed to publish (`agent.NotifyTrailAnchorer`, optional; best effort,
+  reported to `WithNotifyErrors`, never a delivery error). The verifier reports the window's size
+  and age and can fail it (`-max-unattested`).
+- **The model is unchanged.** Model 14 (`spec/tla/notify`) models the trail's protocol: appends at a
+  position, the lost race, claims, acknowledgements. Anchoring reads the trail after an append has
+  committed, writes only to the anchor, and never changes what `Append` returns or when, so it adds
+  no protocol step and no state the delivery guarantees read; see the model's README.
 
 It reports "approvers were notified at T" with the T1, T2, T3 above, and how the delivery was
 authenticated: `auth` records `signature` (the signature scheme and which secret slot signed, current

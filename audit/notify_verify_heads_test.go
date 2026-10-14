@@ -27,8 +27,18 @@ func autoAnchored(t *testing.T) (*trailBuilder, []audit.SignedTreeHead, ed25519.
 	}
 	s.WithClock(func() int64 { return at(30).UnixNano() })
 	b := &trailBuilder{t: t, es: mem, tr: audit.NewNotifyTrail(s)}
-	b.complete(agent.ApprovalKey("r1", "c1", 0), agent.NotificationApprovalPending, 0)
-	b.complete(agent.ApprovalKey("r1", "c2", 0), agent.NotificationApprovalPending, 5)
+	// One head per record: the publisher is given time to keep up with each append.
+	for _, k := range []struct {
+		key string
+		sec int
+	}{{agent.ApprovalKey("r1", "c1", 0), 0}, {agent.ApprovalKey("r1", "c2", 0), 5}} {
+		for _, rec := range []agent.NotifyRecord{observed(k.key, agent.NotificationApprovalPending, k.sec, k.sec+1), claimed(k.key, k.sec+1), acked(k.key, k.sec+2, k.sec+2)} {
+			b.add(rec)
+			if err := s.Flush(context.Background()); err != nil {
+				t.Fatal(err)
+			}
+		}
+	}
 	var heads []audit.SignedTreeHead
 	for _, e := range log.Entries() {
 		heads = append(heads, e.STH)

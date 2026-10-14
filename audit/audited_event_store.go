@@ -19,9 +19,6 @@ const (
 	// before it probes the anchor again (see AuditedEventStore.WithCooldown).
 	DefaultAnchorCooldown = 30 * time.Second
 
-	// pendingDrain is how many unanchored trails one AnchorTrails call retries besides the ones it
-	// is given, so the recovery pass of one run is not charged for a whole backlog.
-	pendingDrain = 16
 	// anchorBudgetTimeouts bounds one AnchorTrails call to this many timeouts in all.
 	anchorBudgetTimeouts = 10
 )
@@ -41,13 +38,20 @@ const (
 // hook; the trail remains the source of truth, and Reanchor, ReanchorPending and AnchorTrails
 // publish a head that a failure left out.
 //
-// An anchor that is slow or down must not slow the writer, so anchoring is bounded twice. One
-// attempt (reading the trail, signing, publishing) is abandoned after the timeout (default
-// DefaultAnchorTimeout), even if the Anchor or the Signer ignores its context, so a hung anchor
-// holds a write for at most that long. And after a failed or timed-out publish the store skips
-// publishing for the cooldown (default DefaultAnchorCooldown) and then lets a single write probe
-// the anchor, so an outage costs one timeout per cooldown, not one per write. Skipped trails are
-// remembered (Unanchored) and published once the anchor answers.
+// Publishing is off the write's path: Append returns when the inner store has stored the leaf, and
+// a background publisher builds, signs and publishes the head a moment later (Flush waits for it).
+// So a slow or hung anchor, signer or clock cannot lengthen a write, and a notifier's delivery
+// rounds keep the timing the claim arithmetic of the design note assumes. The publisher is bounded
+// in turn: one attempt (reading the trail, signing, publishing) is abandoned after the timeout
+// (default DefaultAnchorTimeout), even if the Anchor or the Signer ignores its context, and after a
+// failed or timed-out publish the store pauses publishing for the cooldown (default
+// DefaultAnchorCooldown) and then lets a single attempt probe the anchor, so an outage costs one
+// timeout per cooldown. Trails not published are remembered (Unanchored) and published by the next
+// append to any trail after the cooldown, or by Reanchor, ReanchorPending or AnchorTrails.
+// The window a head leaves open, from an append to its head, is therefore the publisher's delay
+// when the anchor is healthy, and the outage plus the time to the next sweep when it is not. A
+// process that dies in that window leaves its last records unattested until another process's
+// sweep or recovery pass signs the trail again, and bide audit notifications reports them.
 //
 // Anchoring is serialized per trail: a trail's head is built, signed and published while the
 // trail's slot is held, from the trail as it is then stored, and only if it is longer than the
@@ -71,16 +75,19 @@ type AuditedEventStore struct {
 
 	mu       sync.Mutex
 	trails   map[string]*anchoredTrail
-	failedAt time.Time // when a publish last failed; zero while the anchor is believed healthy
-	probing  bool      // a write is probing the anchor after the cooldown
+	failedAt time.Time     // when a publish last failed; zero while the anchor is believed healthy
+	probing  bool          // a write is probing the anchor after the cooldown
+	running  bool          // the background publisher is running
+	idle     chan struct{} // closed when the running publisher exits
 }
 
 // anchoredTrail is the per-trail state of an AuditedEventStore.
 type anchoredTrail struct {
-	slot  chan struct{} // capacity 1; held while a head is built, signed and published
-	size  int           // the size of the last head published; read and written holding slot
-	dirty bool          // a write or an attempt left the trail possibly unanchored; guarded by mu
-	epoch uint64        // counts the times dirty was set, so a publish clears only what it covered
+	slot     chan struct{} // capacity 1; held while a head is built, signed and published
+	size     int           // the size of the last head published; read and written holding slot
+	dirty    bool          // a write or an attempt left the trail possibly unanchored; guarded by mu
+	epoch    uint64        // counts the times dirty was set, so a publish clears only what it covered
+	appended uint64        // counts the appends that grew the trail, so the publisher knows what it has not seen
 }
 
 var _ EventStore = (*AuditedEventStore)(nil)
@@ -148,13 +155,17 @@ func (a *AuditedEventStore) Load(ctx context.Context, trail string) ([][]byte, e
 	return a.inner.Load(ctx, trail)
 }
 
-// Append stores leaf in the inner store, then publishes a head over the trail if it is longer than
-// the last head published. The anchoring never changes what Append returns. A position taken by a
-// different leaf (ErrSeqTaken) stored nothing of this caller's and publishes nothing. An append
-// that failed otherwise may have committed all the same, so the trail is remembered as possibly
-// unanchored (Unanchored) without touching the anchor. Under a context that is done nothing can be
-// read or published: the write is reported to OnError and remembered, the signal to call
-// ReanchorPending (a notifier's sweep and recovery pass do) once the anchor is reachable.
+// Append stores leaf in the inner store and returns its result, then has a background publisher
+// publish a head over the trail if it is longer than the last head published. The head is built,
+// signed and published off the append's path, so no anchor, signer or clock problem can slow or
+// fail a write, or lengthen a notifier's delivery round: the claim arithmetic of the notifier
+// (docs/design/notifier.md) counts the store's round trips as short, and this keeps it true. A
+// burst of appends to a trail is covered by one head. Flush waits for the publisher.
+//
+// A position taken by a different leaf (ErrSeqTaken) stored nothing of this caller's and publishes
+// nothing. An append that failed otherwise may have committed all the same, so the trail is
+// remembered as possibly unanchored (Unanchored) and tried again with the next write, Reanchor,
+// ReanchorPending or AnchorTrails.
 func (a *AuditedEventStore) Append(ctx context.Context, trail string, seq int, leaf []byte) error {
 	err := a.inner.Append(ctx, trail, seq, leaf)
 	switch {
@@ -164,15 +175,79 @@ func (a *AuditedEventStore) Append(ctx context.Context, trail string, seq int, l
 		a.markDirty(trail)
 		return err
 	}
-	if cerr := ctx.Err(); cerr != nil {
-		a.markDirty(trail)
-		a.report(trail, fmt.Errorf("audit: trail %s: position %d not anchored: context done: %w", trail, seq, cerr))
-		return nil
-	}
-	if aerr := a.anchorTrail(ctx, trail, false); aerr != nil {
-		a.report(trail, aerr)
-	}
+	t := a.trailOf(trail)
+	a.mu.Lock()
+	t.appended++
+	a.mu.Unlock()
+	a.markDirty(trail)
+	a.kick()
 	return nil
+}
+
+// kick starts the background publisher if it is not running.
+func (a *AuditedEventStore) kick() {
+	a.mu.Lock()
+	defer a.mu.Unlock()
+	if a.running {
+		return
+	}
+	a.running, a.idle = true, make(chan struct{})
+	go a.publisher(a.idle)
+}
+
+// publisher publishes a head for every trail appended to and not yet seen, one at a time, then
+// exits; the next append starts it again. A trail it fails to publish stays remembered
+// (Unanchored) and is tried by the next kick, so a down anchor is not hammered by a loop.
+func (a *AuditedEventStore) publisher(idle chan struct{}) {
+	seen := map[string]uint64{} // the appends each trail had when the publisher last tried it
+	for {
+		name, appended, ok := a.nextAppended(seen)
+		if !ok {
+			return // nextAppended cleared running under the lock
+		}
+		seen[name] = appended
+		if err := a.anchorTrail(context.Background(), name, false); err != nil {
+			a.report(name, err)
+		}
+	}
+}
+
+// nextAppended returns a trail with appends the publisher has not seen, the smallest name first.
+// When there is none it marks the publisher stopped, under the same lock a kick takes, so an append
+// racing with the exit starts a new publisher.
+func (a *AuditedEventStore) nextAppended(seen map[string]uint64) (name string, appended uint64, ok bool) {
+	a.mu.Lock()
+	defer a.mu.Unlock()
+	for n, t := range a.trails {
+		if t.dirty && t.appended != seen[n] && (!ok || n < name) {
+			name, appended, ok = n, t.appended, true
+		}
+	}
+	if !ok {
+		a.running = false
+		close(a.idle)
+	}
+	return name, appended, ok
+}
+
+// Flush waits until the background publisher has tried every trail appended to before the call (or
+// ctx is done, whose error it returns). It does not retry what failed: use ReanchorPending. Call
+// it before a process exits, as a notifier does when it is flushed, so the last records are
+// covered; whatever a process leaves behind is covered by the next sweep or recovery pass.
+func (a *AuditedEventStore) Flush(ctx context.Context) error {
+	for {
+		a.mu.Lock()
+		running, idle := a.running, a.idle
+		a.mu.Unlock()
+		if !running {
+			return nil
+		}
+		select {
+		case <-idle:
+		case <-ctx.Done():
+			return ctx.Err()
+		}
+	}
 }
 
 // Reanchor publishes a head over trail now if it holds records no head this store published
@@ -219,9 +294,11 @@ func (a *AuditedEventStore) Unanchored() []string {
 // trails does not wait out a timeout for each while the anchor is down.
 func (a *AuditedEventStore) AnchorTrails(ctx context.Context, trails []string) error {
 	names := slices.Compact(slices.Sorted(slices.Values(trails)))
-	pending := a.Unanchored()
-	pending = slices.DeleteFunc(pending, func(n string) bool { _, dup := slices.BinarySearch(names, n); return dup })
-	names = append(names, pending[:min(len(pending), pendingDrain)]...)
+	for _, n := range a.Unanchored() {
+		if _, dup := slices.BinarySearch(names, n); !dup {
+			names = append(names, n)
+		}
+	}
 
 	if a.coolingDown() {
 		for _, n := range names {
