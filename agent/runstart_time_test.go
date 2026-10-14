@@ -260,7 +260,8 @@ func TestRunStart_StartedAtIsNotRead(t *testing.T) {
 }
 
 // sameDrive fails unless a and b hold the same journal for runID, but for what differs between
-// any two drives: salts, the start time, and each attempt marker's time and claim token.
+// any two drives: salts, the start time, the recorded_at of the records that carry one alone (a
+// single approval, an end marker), and each attempt marker's time and claim token.
 func sameDrive(t *testing.T, a, b *Journal, runID string) {
 	t.Helper()
 	var js [2][]Record
@@ -271,6 +272,9 @@ func sameDrive(t *testing.T, a, b *Journal, runID string) {
 		}
 		for k := range recs {
 			recs[k].salt, recs[k].raw = nil, nil
+			if s := recs[k].ApproverSignature; s != nil && s.Approver == "" {
+				recs[k].ApproverSignature = nil // a recorded_at alone: the time of the drive that wrote it
+			}
 			recs[k].Result = withoutStartTime(t, recs[k])
 			if recs[k].Kind == StepAttempt {
 				recs[k].AttemptedAt, recs[k].claim = 0, ""
