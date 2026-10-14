@@ -304,8 +304,11 @@ the signature would need a new format and would add nothing the gate's check rel
 **Fails closed, at the gate.** Whether `Need` stays reachable without the requester depends on who
 requests, so `Validate` cannot decide it (it refuses `ExcludePrincipal` only on `SingleApproval`,
 whose decision names no approver). The gate refuses with `ErrConfig`, before it reads a recorded
-tally, as the key check does: a run that records no requester, a requester that is not printable
-ASCII, and a policy whose `Need` exceeds the approvers left once the requester is excluded. It
+tally, as the key check does: a run that records no requester, a run whose `run:start` follows the
+call's request (one an earlier version started: its `run:start` names whoever first resumed it under
+this version), a requester that is not printable ASCII, and a policy whose `Need` exceeds the
+approvers left once the requester is excluded. `VerifyApprovals` likewise requires the `run:start`
+before the request. It
 records nothing then: a denial tally would be final, and no approver denied. The counting rule
 itself, given no usable requester, seats no one.
 

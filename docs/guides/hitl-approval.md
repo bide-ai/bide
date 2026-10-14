@@ -339,7 +339,9 @@ runID, in)`.
   desk) excludes no one.
 - **It fails closed.** On every evaluation, before it reads a recorded tally, the gate refuses with
   `ErrConfig` a run that records no requester (no identity, or one with an empty `OnBehalfOf`), a
-  requester that is not printable ASCII (it cannot be compared with approver ids, and could only
+  run that recorded its `run:start` only after the call was requested (a run an earlier version
+  started gets its `run:start` from the first drive under this version, so it names whoever resumed
+  it, not the requester), a requester that is not printable ASCII (it cannot be compared with approver ids, and could only
   look like one), and a policy whose `Need` is out of reach once the requester's seat is taken away
   (3 of 3 where the requester is one of the three). `Validate` cannot check that last case, since it
   depends on who requests; it refuses `ExcludePrincipal` on `SingleApproval()`, whose decision names
