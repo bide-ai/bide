@@ -280,8 +280,8 @@ func New(j *agent.Journal, verifierFor agent.ApproverVerifierFor, opts ...Option
 	h.hooks = make(chan struct{}, h.inflight)
 	h.readSem = make(chan struct{}, h.maxReaders)
 	h.mux = http.NewServeMux()
-	h.mux.HandleFunc("GET /pending", h.guard(h.pending))
-	h.mux.HandleFunc("POST /decisions", h.guard(h.decide))
+	h.mux.HandleFunc("GET /pending", h.pending)
+	h.mux.HandleFunc("POST /decisions", h.decide)
 	return h, nil
 }
 
@@ -452,6 +452,19 @@ func (h *Handler) Wait() { h.wg.Wait() }
 func (h *Handler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	w.Header().Set("Cache-Control", "no-store")
 	w.Header().Set("X-Content-Type-Options", "nosniff")
+	// Only POST /decisions reads a body. Any other request that carries one (or may: its length is
+	// unknown) is answered with the connection closing, so the response does not wait for a body that
+	// is never read (see refuseEarly), whatever the path or method answers, a 404 and a 405 included.
+	if !(r.Method == http.MethodPost && r.URL.Path == "/decisions") && r.ContentLength != 0 {
+		refuseEarly(w)
+	}
+	// Every request goes through the rate limit, the paths that route to nothing included.
+	if ok, wait := h.lim.take(h.clientKey(r)); !ok {
+		refuseEarly(w)
+		w.Header().Set("Retry-After", strconv.Itoa(max(1, int((wait+time.Second-1)/time.Second))))
+		writeError(w, http.StatusTooManyRequests, "rate_limited", "too many requests; retry later")
+		return
+	}
 	h.mux.ServeHTTP(w, r)
 }
 
@@ -485,19 +498,6 @@ func remoteHost(r *http.Request) string {
 // Over HTTP/2 the header is ignored and an unread body costs only its stream.
 func refuseEarly(w http.ResponseWriter) {
 	w.Header().Set("Connection", "close")
-}
-
-// guard rate limits a request before it is read.
-func (h *Handler) guard(next func(http.ResponseWriter, *http.Request)) http.HandlerFunc {
-	return func(w http.ResponseWriter, r *http.Request) {
-		if ok, wait := h.lim.take(h.clientKey(r)); !ok {
-			refuseEarly(w)
-			w.Header().Set("Retry-After", strconv.Itoa(max(1, int((wait+time.Second-1)/time.Second))))
-			writeError(w, http.StatusTooManyRequests, "rate_limited", "too many requests; retry later")
-			return
-		}
-		next(w, r)
-	}
 }
 
 // work takes a slot for work on the journal, or answers 503.

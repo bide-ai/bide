@@ -192,7 +192,7 @@ func TestDecision_RefusalsRecordNothing(t *testing.T) {
 
 // Requests are read strictly and bounded, and a malformed one records nothing.
 func TestDecision_StrictAndBounded(t *testing.T) {
-	r := newRig(t, approvals.WithMaxBodyBytes(2048))
+	r := newRig(t, approvals.WithMaxBodyBytes(2048), approvals.WithRateLimit(0, 0), approvals.WithGlobalRateLimit(0, 0))
 	before := r.records()
 	good, _ := json.Marshal(r.decision("alice", true))
 	withExtra := strings.Replace(string(good), "{", `{"admin":true,`, 1)
@@ -1107,6 +1107,63 @@ func TestRefusal_DoesNotPoisonTheConnection(t *testing.T) {
 		}
 		if got := get(fmt.Sprint("b", i)); got != 200 {
 			t.Fatalf("iteration %d: the request after a refusal on the same transport: %d, want 200", i, got)
+		}
+	}
+}
+
+// stalledStatus sends a request line and headers that announce a 4000-byte body, sends one byte of it,
+// and returns the status line the server answers within 2s ("" if it does not).
+func stalledStatus(t *testing.T, r *rig, method, path, ctype string) string {
+	t.Helper()
+	c, err := net.Dial("tcp", r.srv.Listener.Addr().String())
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer c.Close()
+	c.Write([]byte(method + " " + path + " HTTP/1.1\r\nHost: x\r\nContent-Type: " + ctype + "\r\nContent-Length: 4000\r\n\r\n{"))
+	c.SetReadDeadline(time.Now().Add(700 * time.Millisecond))
+	line, _ := bufio.NewReader(c).ReadString('\n')
+	return strings.TrimSpace(line)
+}
+
+// Every method and path, whatever the handler answers, answers a request whose body stalls without
+// waiting for the body: net/http reads up to 256 KiB of an unread body before it sends any response,
+// 200 included, so a path that does not read the body must not leave the connection open for it. The
+// table is every method against every path (the routes, the paths that route to nothing, a bad query,
+// the root), so a route added later is covered by adding its path.
+func TestEveryPathAnswersAStalledBody(t *testing.T) {
+	r := newRig(t, approvals.WithRateLimit(0, 0), approvals.WithGlobalRateLimit(0, 0))
+	paths := []string{
+		"/pending?run=" + runID + "&call=c1", // a valid call
+		"/pending",                           // bad query
+		"/pending?run=nope&call=c9",          // not found
+		"/decisions",                         // the route that reads a body (text/plain: refused before it)
+		"/nothing", "/", "/page/", "/page/page.js",
+	}
+	var wg sync.WaitGroup
+	for _, method := range []string{"GET", "POST", "PUT", "PATCH", "DELETE", "HEAD", "OPTIONS", "TRACE"} {
+		for _, path := range paths {
+			wg.Go(func() {
+				if got := stalledStatus(t, r, method, path, "text/plain"); got == "" {
+					t.Errorf("%s %s with a stalled body: no response within 700ms", method, path)
+				}
+			})
+		}
+	}
+	wg.Wait()
+}
+
+// Requests that route to nothing are rate limited like the rest: a flood of 404s and 405s from one
+// client does not escape the limit.
+func TestRateLimitCoversEveryPath(t *testing.T) {
+	r := newRig(t, approvals.WithRateLimit(0.001, 2), approvals.WithGlobalRateLimit(0, 0))
+	for i, path := range []string{"/nothing", "/pending/x", "/decisions"} { // a 404, a 404, and a 405 for GET
+		status, _ := r.get(path)
+		if i < 2 && status == http.StatusTooManyRequests {
+			t.Fatalf("%s: limited too early", path)
+		}
+		if i == 2 && status != http.StatusTooManyRequests {
+			t.Fatalf("%s: %d, want 429 once the client has spent its two requests", path, status)
 		}
 	}
 }
