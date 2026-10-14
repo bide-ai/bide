@@ -22,6 +22,8 @@ import (
 	"errors"
 	"fmt"
 	"net/http"
+	"sort"
+	"strings"
 	"sync"
 	"time"
 
@@ -196,6 +198,10 @@ func (h *Handler) forward(ctx context.Context, p notify.Payload, todo []Sink) []
 	}
 	wg.Wait()
 	h.seen.end(p.ID, done)
+	if len(done) > 0 {
+		sort.Strings(done)
+		h.log("relay: delivery %s (%s, run %s) forwarded to %s", short(p.ID), p.Kind, p.RunID, strings.Join(done, ", "))
+	}
 	return failed
 }
 

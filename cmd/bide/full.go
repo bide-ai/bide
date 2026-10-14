@@ -11,6 +11,7 @@ import (
 	"github.com/bide-ai/bide/cmd/bide/internal/demo"
 	"github.com/bide-ai/bide/cmd/bide/internal/doctor"
 	"github.com/bide-ai/bide/cmd/bide/internal/initcmd"
+	"github.com/bide-ai/bide/cmd/bide/internal/notifycmd"
 	"github.com/bide-ai/bide/cmd/bide/internal/samplecmd"
 	"github.com/bide-ai/bide/internal/runview"
 	"github.com/bide-ai/bide/internal/term"
@@ -57,6 +58,13 @@ func fullCommands() []command {
 				return runview.Main(args, stdout, stderr, stores)
 			},
 			exits: commonExits,
+		},
+		{
+			name:    "notify",
+			summary: "set up and test the webhook notifier: test a receiver, run a local one, relay to Slack and PagerDuty",
+			run:     notifycmd.Main,
+			exits:   commonExits,
+			verbs:   notifycmd.Verbs(),
 		},
 		{
 			name:    "check",

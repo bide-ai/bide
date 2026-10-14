@@ -6,6 +6,7 @@
 //	bide sample                    write a sample journal (14 runs, evidence, flow configs) and open bide view on it
 //	bide view -db run.db           a read-only local page for one run of a journal
 //	bide check flow.yaml           check a plan flow config, for CI
+//	bide notify test|listen|relay  set up and test the webhook notifier, and relay it to Slack and PagerDuty
 //	bide audit verify-evidence ... produce and verify audit proofs offline
 //	bide version                   the version and the artifact formats bide audit reads
 //	bide help [command]            the commands, or one command's flags
@@ -26,6 +27,7 @@ import (
 	"io"
 	"os"
 	"runtime/debug"
+	"slices"
 	"strings"
 
 	"github.com/bide-ai/bide/internal/auditcli"
@@ -56,6 +58,9 @@ type command struct {
 	run func(args []string, stdout, stderr io.Writer) int
 	// exits documents the command's exit statuses, for help and the CLI reference.
 	exits string
+	// verbs, if not empty, are the verbs of a command that has them (audit, notify): help and the
+	// CLI reference print each one's flags too.
+	verbs []string
 }
 
 // commonExits are the exit statuses of every command but audit.
@@ -80,6 +85,7 @@ var coreCommands = []command{
 			return auditcli.Main(version, args, stdout, stderr)
 		},
 		exits: auditExits,
+		verbs: auditcli.Verbs(),
 	},
 	{
 		name:    "version",
@@ -149,7 +155,7 @@ func help(args []string, stdout, stderr io.Writer) int {
 		return 0
 	}
 	c, ok := find(args[0])
-	if !ok || len(args) > 2 || (len(args) == 2 && c.name != "audit") {
+	if !ok || len(args) > 2 || (len(args) == 2 && !slices.Contains(c.verbs, args[1])) {
 		fmt.Fprintf(stderr, "%sbide help: unknown command %q\n\n", term.For(stderr, term.Auto).ErrorPrefix(), strings.Join(args, " "))
 		usage(stderr)
 		return 2
