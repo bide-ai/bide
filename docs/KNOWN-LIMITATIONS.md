@@ -284,15 +284,6 @@ sent at once are both recorded and the first counts (the response says `counted`
 confidential arguments need `WithAuth` or a private network. See
 [Taking decisions over HTTP](guides/hitl-approval.md#taking-decisions-over-http).
 
-**Two racing submissions of one decision under a randomized signature can both be journaled.** A decision's
-journal record is named by its signature among other fields, and a randomized scheme (ECDSA from a KMS or an
-HSM) signs one decision into different bytes, so two submissions of it that race (a client retry against its
-first attempt, signed twice) both pass the check that the decision is not journaled yet and both write. The gate
-counts the first and supersedes the second, so the outcome is unaffected, and the duplicate stays in the journal.
-`approvals.Handler` reports `recorded` and runs `OnRecorded` for the request whose record is counted, and for
-no other, so its once-per-decision promise holds; the journal itself does not refuse the second record, because
-that would change how decision records are named. Byte-identical submissions are exactly-once.
-
 **The intake and the viewer learn a gate's policy from its pause note unless told the live one.** The
 `approval-pending` record is informational, insert-once by name, and written when the run first pauses
 at the gate. A redeploy that changes the gate's policy afterwards (adding `ExcludePrincipal`, say) is
