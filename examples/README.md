@@ -8,8 +8,8 @@ API key from the environment; set `OPENROUTER_API_KEY` before running them. Exam
 marked "offline" need no key and no network.
 
 Most examples are packages of the root module: run them from the repository root with
-`go run ./examples/<name>`. Six are their own modules because they import an adapter module with
-its own dependencies (`approval`, `plan`, `mcp`, `observability`, `stripe-refund`, and the `govern` examples); `cd` into the directory and run
+`go run ./examples/<name>`. Seven are their own modules because they import an adapter module with
+its own dependencies (`approval`, `plan`, `mcp`, `observability`, `stripe-refund`, `hsm-signing`, and the `govern` examples); `cd` into the directory and run
 `go run .`, or `go run ./<name>` for a `govern` example (the `go.work` at the root resolves the local modules; with `GOWORK=off` each module's
 `replace` directives do the same).
 
@@ -53,6 +53,7 @@ evaluation, and integration seams.
 | `hedge` | The hedged-model middleware: race a primary against a backup and take the first good answer (offline). | `go run ./examples/hedge` |
 | `eval` | The statistical evaluation harness: labeled cases, metrics, repeated runs, a pass-rate report (offline). | `go run ./examples/eval` |
 | `observability` | OpenTelemetry GenAI spans in one call (`trace.Instrument`), exported to stdout, with token usage and cost on the chat span (offline). Its own module. | `cd examples/observability && go run .` |
+| `hsm-signing` | An agent whose audit log is signed by an Ed25519 key held in a PKCS#11 token (an HSM, or SoftHSM2 to try it): every journal write is anchored with a tree head signed in the token, then the head and an evidence package are verified with the public key alone. PIN from an environment variable or a file, never an argument. Needs cgo and a token (see `docs/guides/key-custody.md`); its test uses SoftHSM2 and skips without it. Its own module. | `cd examples/hsm-signing && BIDE_PKCS11_MODULE=... BIDE_PKCS11_TOKEN=... BIDE_HSM_PIN_FILE=... go run .` |
 | `mcp` | Wiring runtime MCP tools into an agent from an in-memory MCP server, with trusted annotations marking a tool retry-safe (offline). Its own module. | `cd examples/mcp && go run .` |
 | `coordination` | Multi-agent coordination through shared durable state: a gsm-synthesized repair, and a cyclic federation built under a coordination plan (offline). | `cd examples/govern && go run ./coordination` |
 | `webhook` | Driving an agent from an inbound messenger webhook, with idempotent redelivery handling (offline). | `go run ./examples/webhook` |

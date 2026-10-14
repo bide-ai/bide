@@ -95,6 +95,7 @@ export default defineConfig({
           { text: 'Human approval (HITL)', link: '/guides/hitl-approval' },
           { text: 'Notifications', link: '/guides/notifications' },
           { text: 'Security model', link: '/guides/security-model' },
+          { text: 'Key custody (HSM, KMS)', link: '/guides/key-custody' },
           { text: 'Delegation', link: '/guides/delegation' },
           { text: 'Governance', link: '/guides/governance' },
           { text: 'Quorum', link: '/guides/quorum' },

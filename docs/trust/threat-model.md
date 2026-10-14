@@ -10,7 +10,7 @@ bide is a library, not a service. You run it inside your own processes against y
 |---|---|---|
 | Funds and records, reached through side effects | A charge, a refund, an email, a record update that a tool performs outside bide | The downstream system. bide controls whether and how often the call is made, not what the downstream does with it |
 | The journal | The append-only record of a run: model turns, tool results, attempt markers, approval decisions | Your store: SQLite file or Postgres tables (`bide_steps`, `bide_leases`, `bide_events`, `bide_schema_version` by default) |
-| Signing keys | The tree-head (log) key that signs commitments; the grant issuer key that signs delegations | Supplied by the deployment (`audit.Signer`). Files today; see [operations](operations.md) |
+| Signing keys | The tree-head (log) key that signs commitments; the grant issuer key that signs delegations | Supplied by the deployment (`audit.Signer`). Key files, or an Ed25519 key in a PKCS#11 token or AWS KMS ([key custody](../guides/key-custody.md)); see [operations](operations.md) |
 | Approver keys | One key per approver of an m-of-n gate | The approvers. bide holds only public keys (verifiers) |
 | Webhook secrets | HMAC secrets shared with notification receivers | The sender's configuration and the receiver's |
 | Anchored tree heads | Signed heads published to an independent log | The anchor you operate (`audit.Anchor`) |
@@ -59,7 +59,7 @@ Someone with write access to the journal tables, or to the SQLite file, who edit
 
 - **Prevents.** Nothing after the fact. Whoever holds the tree-head key can sign any head, so a forged log can be made self-consistent.
 - **Detects.** A head that is inconsistent with a head already anchored elsewhere (a consistency proof between the two fails). The grant issuer key is deliberately distinct from the tree-head key, so a log operator's key cannot mint authority.
-- **Does not address.** Key revocation and rotation workflow: the runtime does not manage keys. Keep old public keys so old evidence still verifies, and record when a key was retired. Signature schemes include Ed25519, ML-DSA-65 and a hybrid; ML-DSA and FIPS mode are mutually exclusive in the Go toolchain ([security model](../guides/security-model.md#post-quantum-and-hybrid-signatures)). A hardware-backed signer is in progress; until it ships, the shipped examples keep keys in files ([operations](operations.md#key-custody)).
+- **Does not address.** Key revocation and rotation workflow: the runtime does not manage keys. Keep old public keys so old evidence still verifies, and record when a key was retired. Signature schemes include Ed25519, ML-DSA-65 and a hybrid; ML-DSA and FIPS mode are mutually exclusive in the Go toolchain ([security model](../guides/security-model.md#post-quantum-and-hybrid-signatures)). The PKCS#11 and AWS KMS signers keep an Ed25519 key out of the application (tested against SoftHSM2 and a fake KMS client only); the shipped examples other than `examples/hsm-signing` keep keys in files ([operations](operations.md#key-custody)).
 
 ### A compromised approver
 

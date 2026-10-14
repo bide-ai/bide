@@ -50,6 +50,7 @@ The vocabulary, defined once. Terms are grouped by the layer they belong to. See
 - **RunCertificate**: a proof-carrying attestation of behavioral-property compliance over a whole run, checkable offline.
 - **Grant / delegation**: a signed capability a sub-agent can only narrow (attenuate). `VerifyDelegationChain` checks the chain offline; `EarnedAuthority` widens scope from a clean trail.
 - **Quorum**: governed k-of-n agreement among voters, with the tally anchored and re-checkable offline.
+- **Key custody**: where a signing key lives. An `audit.Signer` signs without exposing its key, so the key can sit in a PKCS#11 token (an HSM) or AWS KMS and never in the application's memory or on its disk; verifiers hold only the public key. Ed25519 only today. See [key custody](guides/key-custody.md).
 - **Selective disclosure**: revealing some records while proving the rest exist, without showing their content. It limits what you reveal; it does not encrypt. See the [security model](guides/security-model.md).
 - **Flow / conformance**: the `plan` package is an optional builder of plan flows over the same durable core. A `Flow` is a reified topology of durable steps, authored in typed Go or loaded from declarative config (`plan.Load`); `Topology` and `RenderMermaid` expose its shape, and `Conform` checks a run's journal against it, proving the run followed the declared topology or flagging where it diverged. See the [plan flows guide](guides/plan-flows.md).
 

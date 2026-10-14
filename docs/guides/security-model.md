@@ -185,7 +185,9 @@ plant another validly signed child grant there. The journal itself is trusted at
 it was not rewritten is what anchoring (above) makes provable afterward.
 
 Attribution is only as strong as the key custody behind these signatures. The runtime does not
-manage keys; supplying and protecting them is the deployment's responsibility.
+generate, store or rotate keys; supplying and protecting them is the deployment's responsibility.
+A signing key can live in a PKCS#11 token (an HSM) or in AWS KMS instead of a key file, behind the same
+`audit.Signer` interface: see [Key custody](key-custody.md) for what is supported and its limits.
 
 ## Identity is a claim, not authentication
 
@@ -208,7 +210,8 @@ the claim's truth beyond the key custody behind the run's signatures.
 Signed tree heads sign under a pluggable scheme, all in the Go 1.27 standard library, so choosing
 one adds no dependency:
 
-- `ed25519` (`Ed25519Signer`): small, fast, FIPS-approved.
+- `ed25519` (`Ed25519Signer`): small, fast, FIPS-approved. Its key can be held in a PKCS#11 token or AWS
+  KMS instead of in memory ([Key custody](key-custody.md)).
 - `ml-dsa-65` (`MLDSASigner`, FIPS 204): post-quantum.
 - `ed25519+ml-dsa-65` (`HybridSigner`): accepted only if both signatures verify. Each component
   signs a distinct label followed by the message (`bide.hybrid.ed25519.v1`,
