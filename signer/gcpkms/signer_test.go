@@ -752,6 +752,20 @@ func TestOpenHonoursTheContext(t *testing.T) {
 	}
 }
 
+type ctxKey struct{}
+
+// Open's context reaches every call it makes, the self-test signature included.
+func TestOpenPassesItsContextToTheSelfTest(t *testing.T) {
+	f := newEd(t)
+	ctx := context.WithValue(context.Background(), ctxKey{}, "open")
+	if _, err := Open(ctx, Config{Client: f, KeyVersion: testVersion}); err != nil {
+		t.Fatal(err)
+	}
+	if f.lastCtx.Value(ctxKey{}) != "open" {
+		t.Fatal("the self-test signature ran under another context")
+	}
+}
+
 func TestFormatShowsNoConfiguration(t *testing.T) {
 	s := open(t, newEd(t))
 	for _, out := range []string{fmt.Sprint(s), fmt.Sprintf("%+v", s), fmt.Sprintf("%#v", s), fmt.Sprintf("%s", s)} {

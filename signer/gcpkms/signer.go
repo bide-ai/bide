@@ -298,7 +298,7 @@ func Open(ctx context.Context, cfg Config) (*Signer, error) {
 	// One signature proves the caller may sign with the key and that Cloud KMS's output verifies
 	// under the public key it reported, so a missing permission or a mismatch is found here and not
 	// by the first anchor. It is one billed Cloud KMS operation.
-	if _, err := s.Sign([]byte(selfTest)); err != nil {
+	if _, err := s.sign(ctx, []byte(selfTest)); err != nil {
 		return nil, fmt.Errorf("gcpkms: self-test signature: %w", err)
 	}
 	return s, nil
@@ -364,6 +364,11 @@ func crc32c(b []byte) uint32 { return crc32.Checksum(b, crcTable) }
 // returning it, so a key replaced behind the version name is an error here and not a signature
 // that fails to verify later.
 func (s *Signer) Sign(message []byte) ([]byte, error) {
+	return s.sign(context.Background(), message)
+}
+
+// sign is Sign under ctx, which Open passes so that cancelling Open stops its self-test signature.
+func (s *Signer) sign(ctx context.Context, message []byte) ([]byte, error) {
 	req := &kmspb.AsymmetricSignRequest{Name: s.version}
 	if s.alg == audit.AlgECDSAP256 {
 		h := sha256.Sum256(message)
@@ -377,7 +382,7 @@ func (s *Signer) Sign(message []byte) ([]byte, error) {
 		req.DataCrc32C = wrapperspb.Int64(int64(crc32c(message)))
 	}
 	for attempt := 1; ; attempt++ {
-		sig, retry, err := s.signOnce(req)
+		sig, retry, err := s.signOnce(ctx, req)
 		if err == nil {
 			if s.v == nil || !s.v.Verify(message, sig) {
 				return nil, fmt.Errorf("gcpkms: %s: %w", s.version, ErrBadSignature)
@@ -392,8 +397,8 @@ func (s *Signer) Sign(message []byte) ([]byte, error) {
 
 // signOnce makes one AsymmetricSign call and checks the response. retry reports a failure that
 // Google's integrity guide says to retry: the signature's checksum did not match.
-func (s *Signer) signOnce(req *kmspb.AsymmetricSignRequest) (sig []byte, retry bool, err error) {
-	ctx, cancel := context.WithTimeout(context.Background(), s.timeout)
+func (s *Signer) signOnce(ctx context.Context, req *kmspb.AsymmetricSignRequest) (sig []byte, retry bool, err error) {
+	ctx, cancel := context.WithTimeout(ctx, s.timeout)
 	defer cancel()
 	out, err := s.client.AsymmetricSign(ctx, req)
 	if err != nil {
