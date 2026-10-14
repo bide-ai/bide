@@ -230,7 +230,8 @@ type Handler struct {
 	now                      func() time.Time
 	maxBody                  int64
 	readTimeout              time.Duration
-	readSem                  chan struct{} // bodies being read, before any work on the journal
+	policyFor                func(tool string) (*agent.ApprovalPolicy, bool) // WithGatePolicy
+	readSem                  chan struct{}                                   // bodies being read, before any work on the journal
 	readMu                   sync.Mutex
 	readBy                   map[string]int // bodies being read, by client
 	maxReaders, maxPerClient int
@@ -338,6 +339,21 @@ func WithMaxReaders(total, perClient int) Option {
 		h.maxReaders, h.maxPerClient = total, perClient
 		return nil
 	}
+}
+
+// WithGatePolicy tells the handler each gated tool's live approval policy, as the application's
+// agent is built with it (the ToolSpec's Approval). Without it the handler reads a gate's policy from
+// the pause note, which the run writes once when it first pauses: a redeploy that changes the policy
+// afterwards (turning on ExcludePrincipal, say) is enforced by the gate when the run resumes, but not
+// in the note. If the gate's recorded tally passed under the old policy and the call has not run, the
+// gate asks again, and a handler that reads the old policy from the note shows the gate as decided
+// and refuses the new approvals (not_waiting). With fn, a gate on a tool it knows is counted under
+// the live policy (its need, approvers and ExcludePrincipal), the way the gate counts; a tool it
+// does not know (ok false) falls back to the note. fn is called for every request that reads a
+// gate, so it should be a lookup. It never sees a single-approver policy's effect: the intake
+// serves m-of-n gates only.
+func WithGatePolicy(fn func(tool string) (*agent.ApprovalPolicy, bool)) Option {
+	return func(h *Handler) error { h.policyFor = fn; return nil }
 }
 
 // WithAuth sets a hook that runs for every request, after the rate limit and before the journal is
@@ -614,6 +630,14 @@ func (h *Handler) load(ctx context.Context, run, call string) (*gateRecords, err
 		if r.Kind == agent.StepValue && r.Name == name {
 			if err := audit.UnmarshalStrict(r.Result, &g.wait); err != nil || g.wait.ToolUseID != call {
 				return nil, errNoGate
+			}
+			// The live policy, when the application gives one, is what the gate enforces now.
+			if h.policyFor != nil && !g.wait.Single {
+				if p, ok := h.policyFor(tu.Name); ok && p != nil {
+					if b, err := json.Marshal(p); err == nil && string(b) != `{"single":true}` {
+						g.wait.Need, g.wait.Approvers, g.wait.ExcludePrincipal = p.Need, slices.Clone(p.Approvers), p.ExcludePrincipal
+					}
+				}
 			}
 			return g, nil
 		}

@@ -770,6 +770,12 @@ hash are the application's word until a signed head covers them (`bide audit ver
 If the request fails with no answer, run the command again: the decision may have been recorded, and one
 of yours that counts is refused as already decided.
 
+**The live policy.** The handler reads a gate's policy from its pause note, written once when the run first
+pauses. Tell it the policy the agent is built with (`approvals.WithGatePolicy`, a lookup by tool name), so a
+policy changed after the pause (`ExcludePrincipal` turned on) is honored: otherwise a gate that asks again for
+it looks decided and the intake refuses the approvals it needs (see
+[KNOWN-LIMITATIONS](../KNOWN-LIMITATIONS.md)).
+
 **What it does not serve.** A single-approver gate (`agent.Approve`) has no signature to check, so it
 is refused (422 `single_gate`); a plan flow node's gate (a call id starting `node:`) is refused (422
 `unsupported`); a decision for a gate that already settled, or a run that ended, is 409 `not_waiting`.

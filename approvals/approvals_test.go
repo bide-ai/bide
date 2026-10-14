@@ -13,6 +13,7 @@ import (
 	"net"
 	"net/http"
 	"net/http/httptest"
+	"net/http/httptrace"
 	"slices"
 	"strings"
 	"sync"
@@ -1175,4 +1176,135 @@ func TestRateLimitCoversEveryPath(t *testing.T) {
 	if status, _ := r.get("/decisions"); status != http.StatusTooManyRequests {
 		t.Fatalf("a 405 path: %d, want 429", status)
 	}
+}
+
+// Keep-alive GETs reuse the connection, and chunked or length-less bodies on the paths that do not
+// read one are answered at once.
+func TestKeepAliveAndChunkedBodies(t *testing.T) {
+	r := newRig(t, approvals.WithRateLimit(0, 0), approvals.WithGlobalRateLimit(0, 0))
+	reused := 0
+	for range 3 {
+		req, _ := http.NewRequest("GET", r.srv.URL+"/pending?run="+runID+"&call="+r.call, nil)
+		req = req.WithContext(httptrace.WithClientTrace(req.Context(), &httptrace.ClientTrace{GotConn: func(i httptrace.GotConnInfo) {
+			if i.Reused {
+				reused++
+			}
+		}}))
+		resp, err := http.DefaultClient.Do(req)
+		if err != nil {
+			t.Fatal(err)
+		}
+		io.Copy(io.Discard, resp.Body)
+		resp.Body.Close()
+	}
+	if reused < 2 {
+		t.Fatalf("keep-alive GETs reused the connection %d times, want 2", reused)
+	}
+	for _, rl := range []string{"GET /pending?run=" + runID + "&call=" + r.call, "POST /nothing", "PUT /pending"} {
+		c, err := net.Dial("tcp", r.srv.Listener.Addr().String())
+		if err != nil {
+			t.Fatal(err)
+		}
+		defer c.Close()
+		c.Write([]byte(rl + " HTTP/1.1\r\nHost: x\r\nContent-Type: text/plain\r\nTransfer-Encoding: chunked\r\n\r\n5\r\n{\"a\":"))
+		c.SetReadDeadline(time.Now().Add(700 * time.Millisecond))
+		if line, _ := bufio.NewReader(c).ReadString('\n'); strings.TrimSpace(line) == "" {
+			t.Errorf("%s with a stalled chunked body: no response", rl)
+		}
+	}
+}
+
+// Over HTTP/2 a stalled POST /decisions body ends at the handler's read timeout (the stream is the
+// unit there, and the connection stays usable for others).
+func TestHTTP2StalledDecisionBody(t *testing.T) {
+	r := newRig(t, approvals.WithReadTimeout(500*time.Millisecond), approvals.WithRateLimit(0, 0), approvals.WithGlobalRateLimit(0, 0))
+	srv := httptest.NewUnstartedServer(r.h)
+	srv.EnableHTTP2 = true
+	srv.StartTLS()
+	defer srv.Close()
+	pr, pw := io.Pipe()
+	defer pw.Close()
+	req, _ := http.NewRequest("POST", srv.URL+"/decisions", pr)
+	req.Header.Set("Content-Type", "application/json")
+	go pw.Write([]byte("{"))
+	done := make(chan int, 1)
+	go func() {
+		resp, err := srv.Client().Do(req)
+		if err != nil {
+			done <- -1
+			return
+		}
+		resp.Body.Close()
+		done <- resp.ProtoMajor
+	}()
+	select {
+	case proto := <-done:
+		if proto != 2 && proto != -1 {
+			t.Fatalf("answered over HTTP/%d, want HTTP/2", proto)
+		}
+	case <-time.After(3 * time.Second):
+		t.Fatal("a stalled HTTP/2 body held the request past the handler's read timeout")
+	}
+	// The same connection still serves a request.
+	resp, err := srv.Client().Get(srv.URL + "/pending?run=" + runID + "&call=c1")
+	if err != nil {
+		t.Fatal(err)
+	}
+	resp.Body.Close()
+	if resp.StatusCode != 200 {
+		t.Fatalf("after the stalled stream: %d", resp.StatusCode)
+	}
+}
+
+// A policy turned on for a gate after it first paused (a redeploy adds ExcludePrincipal) is not in the
+// pause note, which is written once. If the gate's recorded tally passed under the old policy and the
+// call has not run, the gate asks again when the run resumes: the intake, told the live policy
+// (WithGatePolicy), shows the gate as waiting and takes the new approvals. Without it the handler
+// cannot tell, and shows the gate as decided.
+func TestDecision_PolicyTurnedOnAfterThePauseIsHonoredWithTheLivePolicy(t *testing.T) {
+	old := &agent.ApprovalPolicy{Need: 2, Approvers: []string{"alice", "bob", "carol"}}
+	live := &agent.ApprovalPolicy{Need: 2, Approvers: []string{"alice", "bob", "carol"}, ExcludePrincipal: true}
+	seed := func(t *testing.T, r *rig) {
+		t.Helper()
+		raw, _ := json.Marshal(agent.ApprovalTally{Need: 2, Approvers: old.Approvers, Approved: 2, ApprovedBy: []string{"alice", "bob"}, DecisionFormat: agent.DecisionFormat})
+		data, err := agent.JournalEntry(agent.ApprovalTallyStep("c1"), agent.Record{Kind: agent.StepValue, Result: raw})
+		if err != nil {
+			t.Fatal(err)
+		}
+		if _, _, err := r.stall.Store.Insert(context.Background(), runID, agent.ApprovalTallyStep("c1"), data); err != nil {
+			t.Fatal(err)
+		}
+	}
+	id := agent.Identity{Actor: "agent@1", OnBehalfOf: "alice"}
+	t.Run("told the live policy", func(t *testing.T) {
+		r := newRigAs(t, "c1", old, id, approvals.WithRateLimit(0, 0), approvals.WithGlobalRateLimit(0, 0),
+			approvals.WithGatePolicy(func(tool string) (*agent.ApprovalPolicy, bool) { return live, tool == "charge" }))
+		seed(t, r)
+		_, pend := r.get("/pending?run=" + runID + "&call=c1")
+		if pend["state"] != "waiting" || pend["reason"] != agent.PendingSoDReapproval {
+			t.Fatalf("pending: %v", pend)
+		}
+		status, out := r.post(r.decision("carol", true))
+		if status != 200 || out["counted"] != true {
+			t.Fatalf("carol's decision on the re-asked gate: %d %v", status, out)
+		}
+	})
+	t.Run("without the live policy the gate looks decided and refuses the approvals", func(t *testing.T) {
+		r := newRigAs(t, "c1", old, id, approvals.WithRateLimit(0, 0), approvals.WithGlobalRateLimit(0, 0))
+		seed(t, r)
+		if _, pend := r.get("/pending?run=" + runID + "&call=c1"); pend["state"] != "decided" {
+			t.Fatalf("pending: %v", pend)
+		}
+		if status, out := r.post(r.decision("carol", true)); status != http.StatusConflict || code(out) != "not_waiting" {
+			t.Fatalf("%d %v", status, out)
+		}
+	})
+	t.Run("a live policy for another tool changes nothing", func(t *testing.T) {
+		r := newRigAs(t, "c1", old, id, approvals.WithRateLimit(0, 0), approvals.WithGlobalRateLimit(0, 0),
+			approvals.WithGatePolicy(func(string) (*agent.ApprovalPolicy, bool) { return live, false }))
+		seed(t, r)
+		if _, pend := r.get("/pending?run=" + runID + "&call=c1"); pend["state"] != "decided" {
+			t.Fatalf("pending: %v", pend)
+		}
+	})
 }
