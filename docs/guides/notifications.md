@@ -493,7 +493,15 @@ absorbs a repeated trigger by its `dedup_key`; Slack shows a repeat twice.
 
 `-state <file>` keeps both caches across restarts. The relay reads the file when it starts (a missing
 file is a first start; one it cannot parse is an error, so the memory is never silently empty) and
-rewrites it atomically after each change, bounded by `-dedupe` like the caches. It holds delivery IDs,
+rewrites it atomically (temporary file, fsync, rename, then an fsync of the directory on Unix; Windows
+cannot sync a directory, and the file's contents are synced before the rename), bounded by `-dedupe` like the caches.
+The whole file is rewritten, so a write costs more the larger `-dedupe` is: about 18 ms at 10000
+entries on a laptop SSD (`BenchmarkStateSave`), mostly the sync. So writes are coalesced: a change to the
+forwarded-delivery set is written within `-state-flush` (1 s by default) together with whatever else
+changed by then, and `Close` writes what is pending. A clear is the exception, written at once, since a
+trigger after a crash is the failure the file prevents. A crash, as opposed to a clean stop, can
+therefore lose the forwarded-delivery entries of the last second: a redelivery of one of those events
+is forwarded once more, a repeat and never a lost notification. A negative `-state-flush` writes every change. It holds delivery IDs,
 cleared IDs and sink names, no payload and no secret. If a write fails the relay logs it and keeps
 forwarding, with its memory in the process as without the file. One file belongs to one relay: the
 relay holds an exclusive operating-system lock (`<file>.lock`, `flock` on Unix, `LockFileEx` on

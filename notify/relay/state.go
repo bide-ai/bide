@@ -36,6 +36,16 @@ type stateStore struct {
 	// beforeRename, if set, runs after the temporary file is written and before it replaces the
 	// state file; tests use it to stop a save at the torn-write point.
 	beforeRename func() error
+	afterRename  func() // test hook: runs after the rename, before the directory sync
+	syncDir      func(dir string) error
+	saves        int
+}
+
+// saveCount is how many state files this store has written.
+func (s *stateStore) saveCount() int {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return s.saves
 }
 
 // acquire takes the exclusive OS lock that makes this process the only relay on the state file. The
@@ -135,6 +145,17 @@ func (s *stateStore) save(d *dedupe, c *idSet) error {
 		os.Remove(tmp)
 		return fmt.Errorf("relay: writing the state file: %w", unwrapPath(werr))
 	}
+	if s.afterRename != nil {
+		s.afterRename()
+	}
+	sync := s.syncDir
+	if sync == nil {
+		sync = syncDir
+	}
+	if err := sync(filepath.Dir(s.path)); err != nil {
+		return fmt.Errorf("relay: syncing the state directory: %w", unwrapPath(err))
+	}
+	s.saves++
 	return nil
 }
 
