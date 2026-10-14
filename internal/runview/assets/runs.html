@@ -5,7 +5,7 @@
 <h1>Runs</h1>
 <p class="muted small">{{if or .Filter.State .Filter.Kind .Filter.Q}}{{.Matched}} of {{.Listed}} runs match{{else}}{{.Listed}} run{{if ne .Listed 1}}s{{end}}{{end}}</p>
 </div>
-{{if .Err}}<p class="bad">Listing failed: {{.Err}}</p>{{end}}
+{{if .Err}}<p class="bad">Reading failed: {{.Err}}</p>{{end}}
 {{range .Notes}}<p class="note">{{.}}</p>{{end}}
 <nav class="chips" aria-label="State">{{range .States}}<a class="chip{{if .On}} on{{end}} chip-{{if .Value}}{{.Value}}{{else}}all{{end}}" href="{{.Link}}"{{if .On}} aria-current="page"{{end}}>{{.Label}} <span class="count">{{.Count}}</span></a>{{end}}</nav>
 <form class="filters" method="get" action="/">

@@ -46,8 +46,11 @@ func TestRunListErrors(t *testing.T) {
 	src := brokenSource{Source: ok, ids: []string{"bad", "good", "empty"}, bad: map[string]bool{"bad": true}, listErr: errors.New("listing cut short")}
 	h := Handler(Options{Source: src})
 	l := listOf(t, h, "")
-	if l.Err != "listing cut short" {
-		t.Errorf("Err = %q, want the listing failure first", l.Err)
+	if l.Err != "listing failed (read error)" || l.Unread < 1 {
+		t.Errorf("Err = %q, unread %d, want the listing failure first, by its class and not the store's text", l.Err, l.Unread)
+	}
+	if v := l.Verdict(); v.Status != StatusUnknown || v.Word == "ALL CLEAR" {
+		t.Errorf("a list with a failed listing says %q (%s)", v.Word, v.Status)
 	}
 	if got := ids(l); len(got) != 1 || got[0] != "good" {
 		t.Errorf("rows = %q, want only the readable run with records (the unreadable and the empty are not listed)", got)
@@ -57,11 +60,12 @@ func TestRunListErrors(t *testing.T) {
 	}
 	src.listErr = nil
 	l = listOf(t, Handler(Options{Source: src}), "")
-	if l.Err != "bad: unreadable bad" {
-		t.Errorf("Err = %q, want the unreadable run named", l.Err)
+	if l.Err != "bad could not be read (read error)" || l.Unread != 1 || l.Empty != 1 {
+		t.Errorf("Err = %q, unread %d, empty %d, want the unreadable run named by class, one unread and one empty", l.Err, l.Unread, l.Empty)
 	}
-	if code, page := get(t, Handler(Options{Source: src}), "/"); code != 200 || !strings.Contains(page, "unreadable bad") {
-		t.Errorf("GET / = %d, page lacks the failure", code)
+	code, page := get(t, Handler(Options{Source: src}), "/")
+	if code != 200 || !strings.Contains(page, "bad could not be read (read error)") || strings.Contains(page, "unreadable bad") {
+		t.Errorf("GET / = %d, page lacks the failure's class or shows the store's text", code)
 	}
 }
 
@@ -87,8 +91,11 @@ func TestRunListNotesAndFilter(t *testing.T) {
 	src := brokenSource{Source: oneRun(t, "r00000"), ids: many}
 	l = listOf(t, Handler(Options{Source: src}), "")
 	want := fmt.Sprintf("Only the first %d of %d matching runs (by run ID) are read.", maxSummarized, maxSummarized+3)
-	if len(l.Notes) != 1 || !strings.Contains(l.Notes[0], want) || l.Listed != maxSummarized+3 {
-		t.Errorf("notes %q, listed %d; want %q", l.Notes, l.Listed, want)
+	if len(l.Notes) < 1 || !strings.Contains(l.Notes[0], want) || l.Listed != maxSummarized+3 || l.Truncated != 3 {
+		t.Errorf("notes %q, listed %d, truncated %d; want %q and 3 truncated", l.Notes, l.Listed, l.Truncated, want)
+	}
+	if v := l.Verdict(); v.Status == StatusClear {
+		t.Errorf("a list cut short at the cap says %q", v.Word)
 	}
 }
 

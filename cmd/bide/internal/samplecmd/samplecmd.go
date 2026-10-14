@@ -138,7 +138,7 @@ a loopback address; stop it with Ctrl-C.
 		v, err := audit.ParsePublicKey(k)
 		return v, err == nil
 	}}
-	opts := runview.Options{Source: runview.JournalSource{J: j}}
+	opts := runview.Options{Source: runview.JournalSource{J: j}, Events: rs.EventStore()}
 	for _, pkg := range res.Evidence {
 		opts.Provers = append(opts.Provers, runview.EvidenceProver(pkg, logV, ap))
 	}
@@ -205,6 +205,9 @@ func WriteFiles(dir string, force bool) (*sample.Result, []string, error) {
 		return nil, nil, err
 	}
 	res, err := sample.Write(context.Background(), s, "")
+	if err == nil {
+		err = writeTrail(s)
+	}
 	if cerr := s.Close(); err == nil {
 		err = cerr
 	}
@@ -247,6 +250,16 @@ func WriteFiles(dir string, force bool) (*sample.Result, []string, error) {
 	return res, names, nil
 }
 
+// writeTrail runs the notifier's sweeps over the sample journal in s, into the notification trail
+// of the same database (see sample.WriteNotifyTrail).
+func writeTrail(s *sqlite.Store) error {
+	j, err := agent.NewJournal(s)
+	if err != nil {
+		return err
+	}
+	return sample.WriteNotifyTrail(context.Background(), j, s.EventStore(), "")
+}
+
 // readme is README.txt: what the directory holds and the commands to try, from its directory.
 func readme(res *sample.Result) string {
 	var b strings.Builder
@@ -267,7 +280,7 @@ RUNS in sample.db
 	b.WriteString(`
 FILES
 
-  sample.db                    the journal (SQLite)
+  sample.db                    the journal (SQLite), with the notification trail of a notifier's two sweeps
   refund-1041.evidence.json    evidence for refund-1041: the completed refund, proven
   refund-1049.evidence.json    evidence for refund-1049, with its gate's two signatures
   log.pub                      the public key both evidence packages are signed with
@@ -278,7 +291,8 @@ FILES
 
 TRY (from this directory)
 
-  Browse the runs (the run list, then a run page):
+  Browse the runs (the run list, then a run page); its Needs attention list shows what was
+  notified, acknowledged, failing and overdue:
     bide view -db sample.db
 
   One run, with its evidence and its gate's signatures verified:

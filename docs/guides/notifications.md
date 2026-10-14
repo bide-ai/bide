@@ -276,6 +276,18 @@ POST it to `https://events.pagerduty.com/v2/enqueue`. For `approval_pending` you
 and for `outcome_unknown` `critical`: a halt on an unknown outcome is the case where a missed alert is
 expensive.
 
+## Where to look
+
+A notification carries a view pointer, and the person who gets it opens the run viewer. `bide view
+-db <journal.db>` opens on the run list, whose headline links to the **Needs attention** list: every
+run that is waiting for approval, halted with an unknown outcome or aborted, newest first, with the
+approval's gate (who approved, who is pending, how long it has waited) or the halt's `ResolveHalt`
+call. Because the viewer reads the notification trail from the same database, each item also says
+whether it was notified and whether the sink acknowledged it, and a run whose recovery keeps failing
+is listed from the trail. That answers "did anyone hear about this?" in one place, and shows an item
+no notifier ever saw (*no notification recorded*) next to the ones that were delivered. See
+[Needs attention](run-viewer.md#needs-attention).
+
 ## What an acknowledgement means
 
 The sink answering 2xx means your endpoint accepted the request, not that a person read it. The times

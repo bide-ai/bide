@@ -176,6 +176,7 @@ bide view: a read-only local web page for one run of a bide journal
 
   bide view -db <file> [-run <id>] [flags]
   bide view -postgres <dsn> [-run <id>] [flags]
+  bide view -postgres-env <VAR> [-run <id>] [flags]
   bide view -journal <export.json> [-journal ...] [-run <id>] [flags]
   bide view -config <flow.yaml|flow.json> [-check [-strict]]
   bide view -config <flow.yaml|flow.json> -diff <old config|git revision> [-check [-fail-on-weaken]]
@@ -191,7 +192,12 @@ store, and it serves on a loopback address only. Stop it with Ctrl-C.
 With no -run the page opens on the run list: each run's kind, state (completed, halted: outcome
 unknown, waiting for approval, in progress, aborted or cancelled), when it started (as its
 run:start records it; none for a run an earlier version journaled) and its record count, newest
-first, filtered by state, kind and run ID.
+first, filtered by state, kind and run ID. Its headline links to the Needs attention list (/attention):
+every run waiting for approval, halted with an unknown outcome or aborted, newest first, with the gate's
+approvers and the ResolveHalt call, and, from -db or -postgres, whether the notifier told someone and
+the sink acknowledged it (the notification trail in the same database). The run list and that list are
+built at most once every 2 seconds, so a page that reloads itself costs the store little. A
+bide approve command shown there is quoted for a POSIX shell, also for a Windows -db path.
 
 From -db or -postgres, the page of a run in progress follows it (live mode): it polls the store
 about once a second for records after the last one it shows, and updates in place until the run
@@ -247,6 +253,8 @@ Flags:
     	the expected policy's k: verify approvals against -need of -approvers instead of the recorded policy; needs -approvers and -approver-keys
   -postgres string
     	Postgres journal to read, a pgx DSN such as postgres://user:pass@host:5432/db, read in sessions the server holds read-only (postgres.OpenReadOnly)
+  -postgres-env string
+    	name of the environment variable that holds the Postgres DSN, instead of -postgres: keeps the password out of the argument list, and is the name the Needs attention list's bide approve commands use
   -pubkey string
     	log public key as <scheme>:<hex>, or bare ed25519 hex, or a file holding it
   -run string

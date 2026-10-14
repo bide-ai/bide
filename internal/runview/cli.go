@@ -17,6 +17,7 @@ import (
 
 	"github.com/bide-ai/bide/agent"
 	"github.com/bide-ai/bide/audit"
+	"github.com/bide-ai/bide/internal/approveline"
 	"github.com/bide-ai/bide/internal/term"
 	"github.com/bide-ai/bide/plan"
 )
@@ -27,6 +28,10 @@ import (
 type Stores struct {
 	SQLite   func(path string) (agent.Store, io.Closer, error)
 	Postgres func(dsn string) (agent.Store, io.Closer, error)
+	// Events returns the notification trail's store beside a store the opener returned, or nil when
+	// the store keeps none. A nil Events means the Needs attention list says nothing about
+	// notification.
+	Events func(agent.Store) audit.EventStore
 	// YAML converts a YAML flow config to the JSON plan reads; nil means this build reads JSON
 	// configs only.
 	YAML func(data []byte) ([]byte, error)
@@ -42,6 +47,7 @@ const usageText = `bide view: a read-only local web page for one run of a bide j
 
   bide view -db <file> [-run <id>] [flags]
   bide view -postgres <dsn> [-run <id>] [flags]
+  bide view -postgres-env <VAR> [-run <id>] [flags]
   bide view -journal <export.json> [-journal ...] [-run <id>] [flags]
   bide view -config <flow.yaml|flow.json> [-check [-strict]]
   bide view -config <flow.yaml|flow.json> -diff <old config|git revision> [-check [-fail-on-weaken]]
@@ -57,7 +63,12 @@ store, and it serves on a loopback address only. Stop it with Ctrl-C.
 With no -run the page opens on the run list: each run's kind, state (completed, halted: outcome
 unknown, waiting for approval, in progress, aborted or cancelled), when it started (as its
 run:start records it; none for a run an earlier version journaled) and its record count, newest
-first, filtered by state, kind and run ID.
+first, filtered by state, kind and run ID. Its headline links to the Needs attention list (/attention):
+every run waiting for approval, halted with an unknown outcome or aborted, newest first, with the gate's
+approvers and the ResolveHalt call, and, from -db or -postgres, whether the notifier told someone and
+the sink acknowledged it (the notification trail in the same database). The run list and that list are
+built at most once every 2 seconds, so a page that reloads itself costs the store little. A
+bide approve command shown there is quoted for a POSIX shell, also for a Windows -db path.
 
 From -db or -postgres, the page of a run in progress follows it (live mode): it polls the store
 about once a second for records after the last one it shows, and updates in place until the run
@@ -90,6 +101,7 @@ Flags:
 // flags are bide view's inputs, as parsed.
 type flags struct {
 	db, postgres          string
+	postgresEnv           string
 	config                string
 	check                 bool
 	strict                bool
@@ -115,6 +127,7 @@ func Main(args []string, stdout, stderr io.Writer, stores Stores) int {
 	}
 	fs.StringVar(&f.db, "db", "", "SQLite journal file to read, opened read-only (sqlite.OpenReadOnly)")
 	fs.StringVar(&f.postgres, "postgres", "", "Postgres journal to read, a pgx DSN such as postgres://user:pass@host:5432/db, read in sessions the server holds read-only (postgres.OpenReadOnly)")
+	fs.StringVar(&f.postgresEnv, "postgres-env", "", "name of the environment variable that holds the Postgres DSN, instead of -postgres: keeps the password out of the argument list, and is the name the Needs attention list's bide approve commands use")
 	fs.Var(&f.journals, "journal", "exported journal (audit.ExportJournal as JSON) to read; repeatable")
 	fs.StringVar(&f.config, "config", "", "a flow config (.json, or .yaml/.yml) to show instead of runs: its declared graph and its problems; nothing runs")
 	fs.BoolVar(&f.check, "check", false, "with -config: serve nothing, print each problem as file:node: message, and exit 1 if any is an error; with -diff, print each change instead")
@@ -161,7 +174,7 @@ func Main(args []string, stdout, stderr io.Writer, stores Stores) int {
 		return usage("-strict checks one config's problems; -diff compares two (run bide check without -diff for the problems)")
 	}
 	if f.config != "" {
-		if f.db != "" || f.postgres != "" || len(f.journals) > 0 || *run != "" || f.sth != "" || f.evidence != "" || f.topo != "" {
+		if f.db != "" || f.postgres != "" || f.postgresEnv != "" || len(f.journals) > 0 || *run != "" || f.sth != "" || f.evidence != "" || f.topo != "" {
 			return usage("-config shows a flow definition; it takes none of the run flags")
 		}
 		c, err := readConfig(f.config, stores.YAML)
@@ -199,13 +212,19 @@ func Main(args []string, stdout, stderr io.Writer, stores Stores) int {
 		return serve(*addr, "", Options{Config: &c}, nil, st, es, stdout, stderr)
 	}
 	inputs := 0
-	for _, set := range []bool{f.db != "", f.postgres != "", len(f.journals) > 0} {
+	for _, set := range []bool{f.db != "", f.postgres != "" || f.postgresEnv != "", len(f.journals) > 0} {
 		if set {
 			inputs++
 		}
 	}
 	if inputs != 1 {
-		return usage("give exactly one of -db, -postgres and -journal")
+		return usage("give exactly one of -db, -postgres (or -postgres-env) and -journal")
+	}
+	if f.postgresEnv != "" && !approveline.ValidEnvName(f.postgresEnv) {
+		return usage(approveline.NotAnEnvName) // the value is not echoed: it may be a DSN with a password
+	}
+	if f.postgres != "" && f.postgresEnv != "" {
+		return usage("give -postgres or -postgres-env, not both")
 	}
 	if (f.sth != "" || f.evidence != "") && f.pubkey == "" {
 		return usage("-sth and -evidence need -pubkey")
@@ -278,14 +297,20 @@ func options(f flags, stores Stores) (Options, io.Closer, error) {
 	var o Options
 	var closer io.Closer
 	open, what := stores.SQLite, f.db
-	if f.postgres != "" {
+	dsn := f.postgres
+	if f.postgresEnv != "" {
+		if dsn = os.Getenv(f.postgresEnv); dsn == "" {
+			return o, nil, fmt.Errorf("-postgres-env %s: the variable is empty or not set", f.postgresEnv)
+		}
+	}
+	if dsn != "" {
 		open, what = stores.Postgres, "the Postgres journal"
 	}
 	if what != "" {
 		if open == nil {
 			return o, nil, errors.New("this build cannot read that store; use -journal")
 		}
-		s, c, err := open(cmp.Or(f.db, f.postgres))
+		s, c, err := open(cmp.Or(f.db, dsn))
 		if err != nil {
 			return o, nil, fmt.Errorf("open %s: %w", what, err)
 		}
@@ -295,6 +320,10 @@ func options(f flags, stores Stores) (Options, io.Closer, error) {
 			return o, nil, err
 		}
 		o.Source, closer = JournalSource{J: j}, c
+		o.ApproveCommand = approveCommand(f)
+		if stores.Events != nil {
+			o.Events = stores.Events(s)
+		}
 	} else {
 		x := Exports{}
 		for _, path := range f.journals {
@@ -444,4 +473,27 @@ func readKey(s string) (audit.Verifier, error) {
 		return nil, fmt.Errorf("public key: %q is neither a key nor a readable file", s)
 	}
 	return audit.ParsePublicKey(strings.TrimSpace(string(b)))
+}
+
+// approveCommand writes the bide approve command line the Needs attention list shows for a waiting
+// call, for the journal the flags name: -db by its absolute path, -postgres-env by the same variable,
+// and a raw -postgres DSN by the placeholder "<VAR>", never the DSN, which holds a password. The
+// approver's own id, key and keys files are left as placeholders (approveline.Command). It refuses an
+// id with a control, bidirectional or invisible character (approveline.ErrUnsafe).
+func approveCommand(f flags) func(runID, toolUseID string, single bool) (string, error) {
+	var j approveline.Journal
+	switch {
+	case f.db != "":
+		j.SQLite = f.db
+		if abs, err := filepath.Abs(f.db); err == nil {
+			j.SQLite = abs
+		}
+	case f.postgresEnv != "":
+		j.PostgresEnv = f.postgresEnv
+	default:
+		j.PostgresEnv = "<VAR>"
+	}
+	return func(runID, toolUseID string, single bool) (string, error) {
+		return approveline.Command(j, runID, toolUseID, "", "", "", single)
+	}
 }

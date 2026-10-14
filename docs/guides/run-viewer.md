@@ -130,6 +130,33 @@ began, by that drive's clock, shown in UTC. The list is ordered by it, newest fi
 by an earlier version, which recorded no start time, shows **none** and is listed after the others,
 by run ID. The journal records no end time, so the list shows none.
 
+The headline's link, and the **need a person** number, open the [Needs attention](#needs-attention)
+list when a run is halted, waiting, failed or has a failing recovery.
+
+The headline is **ALL CLEAR** only when the viewer read everything it should have and found nothing:
+the store lists its runs, every listed run was read (no listing or read failure, none past the cap
+below), no filter narrows the list, the notification trail was read for every run, and no run that
+has not ended has a failing recovery. Anything less is not a clear page, and says what it cannot rule
+out, in a color that is not green:
+
+| Headline | Why |
+|---|---|
+| **CANNOT LIST** | the store has no `agent.Lister`, so the viewer cannot enumerate its runs (open one with `-run`) |
+| **NOT EVERY RUN WAS READ** | a listing or a run's journal failed, or more than 5,000 runs matched; the count of runs not read is on the page and in the JSON (`unread`, `truncated`, `error`) |
+| **NOTHING IN THE JOURNALS NEEDS A PERSON** | no run is halted, waiting or failed, but a recovery failure is not in the journals: without the notify trail (an exported journal, or a trail that could not be read) it cannot be ruled out |
+| **NOTHING IN THIS FILTER NEEDS A PERSON** | a run ID or kind filter is set, so the page speaks for the runs it admits |
+
+When a page has something to do and also did not read everything, its banner says what it left out.
+The JSON of the run list and of the Needs attention list carries `status`, from the same headline:
+`attention`, `clear` or `unknown`, so a script does not have to parse words. The page also shows the
+class of a store error (`store error`, `timed out`), never the store's own text, which can carry a
+connection string. A listed run with no records is counted and noted (`empty`).
+
+The viewer reads each unfinished root run's trail when it loads the list, one read per run, and one
+more to notice a store it cannot read when no run needed one. An event of a run is looked for in the trail of the root its ID names (a sub-agent's) and in the run's own (a flow gate files its pause under its own run); a build that takes more than 30 seconds fails as "timed out" and the page says so. Both lists are served again for two
+seconds, so a page that refreshes itself, or several viewers, cost the store one read of its runs
+per two seconds.
+
 The list shows 50 runs and a **Show more** link for the next 50. To classify a run the viewer reads
 its journal, so one load reads at most 5,000 runs (the first by run ID among those the run ID filter
 admits) and says so when there are more; narrow the run ID filter to reach the others. An exported
@@ -140,12 +167,68 @@ The screenshot is of the journal `bide sample` writes (see
 [Explore a sample journal](#explore-a-sample-journal)); `assets/demo/shots.sh` retakes it, and
 the halted flow, the risk map and the violated assertion below, from `bide sample`.
 
+## Needs attention
+
+The run list's headline says how many runs need a person, and links to the page that lists them:
+`/attention` (as JSON at `/attention.json`). It is every run in the journal that is waiting on a
+human, newest first, so it is the first thing to open when a notification arrives:
+
+![bide view's Needs attention list over the sample journal: two approvals waiting at 2-of-3 gates with who approved and who is pending, two halts with their ResolveHalt snippets, and one aborted saga, newest first](img/run-viewer-attention-dark.png)
+
+Each item is one thing to do, and says since when:
+
+- **Waiting for approval**: the call and its tool, the gate (k of n), who has approved, who has denied
+  and who is still pending, and how long it has waited (from the time the run asked, `AskedAt`).
+  The command that records a decision is shown with it, as `bide approve` writes it
+  (`approveline.Command`): the journal by its absolute path for `-db`, by the variable you gave
+  `-postgres-env` for a Postgres journal, and by the placeholder `<VAR>` when you gave a raw `-postgres`
+  DSN, since a DSN holds a password and is never put in a command. The approver's own id and key files
+  are placeholders too. Every value is quoted for a POSIX shell, so a run or call ID with a quote, a
+  space, `;` or `$(` is one word (also for a Windows `-db` path: the quoting is POSIX's, for a POSIX shell, so in `cmd.exe` or PowerShell quote the path yourself); an ID with a control, bidirectional or invisible character gets
+  *no command (unsafe id)* instead. An exported journal has no store to name, so it shows none.
+- **Halted: outcome unknown**: the operation whose attempt marker is live with no result, when it was
+  attempted, and the `agent.ResolveHalt` call with its `HaltRef`, as on the run's page. Resolve it
+  only after looking the operation up where it ran.
+- **Aborted**: a saga that rolled back, with the reason and the time it aborted (a run aborted by an
+  earlier version records no time, and is dated by its start).
+- **Recovery failing**: a recovery pass has kept failing for the run, and the cause class. The
+  journal does not record this, so it is listed only when the notification trail is available.
+
+A run that has ended (completed, aborted or cancelled) has no approval to give: a run cancelled at a
+gate is not listed for it. A halt stays listed even after the run was cancelled or aborted, since
+ending a run does not say whether the operation it attempted took effect. Items are ordered by the
+time each began; an item whose journal records no time is listed last and says so.
+
+**Notification.** With `-db` or `-postgres` the viewer also reads the notification trail that the
+notifier (`agent.WithNotifier`) keeps in the event store of the same database, and each item then says
+whether it was notified and whether the sink acknowledged it: *notified, acknowledged at ... (HTTP
+204)*, *delivery attempted, not acknowledged*, *delivery failing*, *seen by a notifier, not delivered
+yet*, or *no notification recorded* when no notifier has seen it, and *overdue* when it passed its
+deadline unacknowledged. The deadline is shown too. This is the notifier's record, by its clock:
+a 2xx answer means the sink accepted the request, not that a person read it (see
+[Notifications](notifications.md#what-an-acknowledgement-means)). A trail that cannot be read is
+said on the page, which then does not say that nothing needs a person; the items still show what the
+journals say. An exported journal (`-journal`)
+has no trail, and the page says it does not say whether anyone was told. `bide sample` seeds a trail by running the real notifier's catch-up sweep twice (an
+acknowledged gate and abort, a halt whose sink refuses it, failing and overdue, and a second halt that
+is failing and not yet overdue), so the screenshot above shows each state. A sub-agent's run is matched
+to its root run's trail, where the notifier records its events.
+
+In live mode (`-db` or `-postgres`) the page reloads itself every 5 seconds with a `<meta
+refresh>`, so it needs no JavaScript and stays current as runs stop and are decided; the page says
+so. The reload cannot pause while the tab is hidden without a script, so a hidden tab keeps reloading;
+the two-second cache is what bounds its cost. The list reads only the runs that have no `run:complete`
+marker (the store filters the others out in its listing, so a store of many finished runs costs it
+nothing), so it has no 5,000-run cap, and reads the notification trail of each that has not ended or
+has an item. An aborted or cancelled run is listed too, since a halt outlives either. The page works without JavaScript, like the rest of the viewer.
+
 ## Flags
 
 | Flag | Meaning |
 |---|---|
 | `-db <file>` | SQLite journal to read, opened read-only. Give one of `-db`, `-postgres` and `-journal`. |
 | `-postgres <dsn>` | Postgres journal to read, a pgx DSN; read in read-only sessions. |
+| `-postgres-env <VAR>` | The Postgres journal, its DSN read from this environment variable instead of the command line, so the password stays out of the argument list. The value is a variable's name (letters, digits, underscore); a DSN given here is refused without being echoed. Exclusive with `-postgres`. The Needs attention list's `bide approve` commands name the same variable. |
 | `-journal <file>` | An exported journal (`audit.JournalExport` JSON). Repeat it for several runs. |
 | `-run <id>` | The run whose URL to print. Without it, the printed URL is the [run list](#the-run-list). |
 | `-topology <file>` | A declared topology, as JSON of `flow.Topology()`, to draw a flow run against instead of the topology the run journaled: for a run started before `flow:topology` was journaled, or to check a run against another flow. |

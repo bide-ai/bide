@@ -12,18 +12,24 @@ import (
 type Verdict struct {
 	// Class styles the banner: good, bad, warn, wait or info.
 	Class string
+	// Status is what a script reads of the page (StatusAttention, StatusClear or StatusUnknown); the
+	// JSON of the run list and the Needs attention list carry it.
+	Status string
 	// Word is the state in capitals ("VERIFIED"), Icon its glyph (a name of icons) and Line one
 	// sentence of why.
 	Word, Icon, Line string
 	// Details are further lines the state calls out (a weakened gate's policy).
 	Details []string
 	Stats   []Stat
+	// Link, with LinkText, is a link the banner carries (the run list's to the Needs attention list).
+	Link, LinkText string
 }
 
 // Stat is one key number under the verdict.
 type Stat struct {
 	Value, Label string
 	Sub          string // one line under the label
+	Link         string // where the number links to, if anywhere
 	Class        string // good, bad, warn or empty
 }
 
@@ -272,9 +278,12 @@ func diffVerdict(v *DiffView) Verdict {
 	return d
 }
 
-// Verdict is the run list's headline: what needs a person first.
+// Verdict is the run list's headline: what needs a person first. It is ALL CLEAR only when the
+// journals and the notify trail were read in full and no run has a failing recovery (a recovery
+// failure is not in the journals, and a run never read cannot be called clear); otherwise it says what
+// it cannot rule out (see Coverage.nothingFound).
 func (l RunList) Verdict() Verdict {
-	h, w, f := l.Counts["halted"], l.Counts["waiting"], l.Counts["failed"]
+	h, w, f, r := l.Counts["halted"], l.Counts["waiting"], l.Counts["failed"], l.Recovering
 	var d Verdict
 	switch {
 	case h > 0:
@@ -283,15 +292,23 @@ func (l RunList) Verdict() Verdict {
 		d = Verdict{Class: "wait", Word: fmt.Sprintf("%d WAITING FOR APPROVAL", w), Icon: "wait", Line: "Runs paused at an approval gate."}
 	case f > 0:
 		d = Verdict{Class: "bad", Word: fmt.Sprintf("%d FAILED OR CANCELLED", f), Icon: "x", Line: "Runs that aborted or were cancelled."}
-	case l.All == 0:
-		d = Verdict{Class: "info", Word: "NO RUNS", Icon: "idle", Line: "Nothing to list."}
+	case r > 0:
+		d = Verdict{Class: "bad", Word: fmt.Sprintf("%d RECOVERY FAILING", r), Icon: "halt", Line: "Recovery has kept failing for these runs: see the notify trail."}
 	default:
-		d = Verdict{Class: "good", Word: "ALL CLEAR", Icon: "ok", Line: "No run is halted, waiting or failed."}
+		d = l.Coverage.nothingFound(l.All == 0, "ALL CLEAR", "No run is halted, waiting or failed, and no recovery is failing.")
 	}
+	if h+w+f+r > 0 {
+		d.Status = StatusAttention
+		d.Link, d.LinkText = "/attention", "Open the Needs attention list"
+		if g := l.Gap(); g != "" {
+			d.Details = append(d.Details, "Not everything was read: "+g)
+		}
+	}
+	link := map[bool]string{true: "/attention", false: ""}[h+w+f+r > 0]
 	d.Stats = []Stat{
 		{Value: fmt.Sprint(l.All), Label: "runs", Sub: "newest first"},
 		{Value: fmt.Sprint(l.Counts["completed"]), Label: "completed", Class: "good"},
-		{Value: fmt.Sprint(h + w), Label: "need a person", Sub: fmt.Sprintf("%d halted, %d waiting", h, w), Class: map[bool]string{true: "bad", false: ""}[h+w > 0]},
+		{Value: fmt.Sprint(h + w + r), Label: "need a person", Sub: fmt.Sprintf("%d halted, %d waiting%s", h, w, map[bool]string{true: fmt.Sprintf(", %d recovering", r), false: ""}[l.Trail]), Class: map[bool]string{true: "bad", false: ""}[h+w+r > 0], Link: link},
 		{Value: fmt.Sprint(l.Counts["in-progress"]), Label: "in progress"},
 	}
 	return d

@@ -122,9 +122,15 @@ type RunList struct {
 	// the state filter's counts.
 	Counts map[string]int `json:"counts"`
 	All    int            `json:"all"`
-	More   string         `json:"more,omitempty"` // the page with listPage more rows, when there are more
-	Notes  []string       `json:"notes,omitempty"`
-	Err    string         `json:"error,omitempty"`
+	// Recovering is how many of the runs counted have an open recovery failure episode in the
+	// notification trail and have not ended.
+	Recovering int      `json:"recovering,omitempty"`
+	More       string   `json:"more,omitempty"` // the page with listPage more rows, when there are more
+	Notes      []string `json:"notes,omitempty"`
+	// Status is what the headline says, for a script: attention, clear or unknown. Coverage says what
+	// was read; the headline is ALL CLEAR only when it is complete (see Coverage.nothingFound).
+	Status string `json:"status"`
+	Coverage
 }
 
 // StateOption is one of the state filter's options.
@@ -173,9 +179,14 @@ func query(f ListFilter) string {
 // runList reads the source's runs and summarizes those the filter admits.
 func (o Options) runList(ctx context.Context, f ListFilter) RunList {
 	l := RunList{Filter: f, Counts: map[string]int{}}
-	ids, err := o.Source.Runs(ctx)
-	if err != nil {
-		l.Err = err.Error()
+	l.Coverage = Coverage{Listable: canList(o.Source), Trail: o.Events != nil, Filtered: f.Kind != "" || f.Q != ""}
+	var ids []string
+	if l.Listable {
+		var err error
+		if ids, err = o.Source.Runs(ctx); err != nil {
+			l.Unread++
+			l.Err = "listing failed (" + errClass(err) + ")"
+		}
 	}
 	l.Listed = len(ids)
 	if x, ok := o.Source.(Exports); ok && len(x) == 1 {
@@ -187,19 +198,26 @@ func (o Options) runList(ctx context.Context, f ListFilter) RunList {
 	}
 	slices.Sort(ids)
 	if len(ids) > maxSummarized {
+		l.Truncated = len(ids) - maxSummarized
 		l.Notes = append(l.Notes, "Only the first "+strconv.Itoa(maxSummarized)+" of "+strconv.Itoa(len(ids))+
 			" matching runs (by run ID) are read. Narrow the run ID filter to see the others.")
 		ids = ids[:maxSummarized]
+	}
+	var tr *trailReader
+	if o.Events != nil {
+		tr = newTrailReader(ctx, o.Events)
 	}
 	kinds := map[string]bool{}
 	var rows []RunRow
 	for _, id := range ids {
 		recs, err := o.Source.History(ctx, id)
-		if err != nil {
-			l.Err = cmp.Or(l.Err, id+": "+err.Error())
+		switch {
+		case err != nil:
+			l.Unread++
+			l.Err = cmp.Or(l.Err, id+" could not be read ("+errClass(err)+")")
 			continue
-		}
-		if len(recs) == 0 {
+		case len(recs) == 0:
+			l.Empty++
 			continue
 		}
 		r := summarize(ctx, id, recs)
@@ -210,9 +228,21 @@ func (o Options) runList(ctx context.Context, f ListFilter) RunList {
 		}
 		l.Counts[r.Group]++
 		l.All++
+		// The run's own trail is read, for a run that has not ended: recovery is recorded under the run it
+		// was run for, and a finished run has none to fail.
+		if tr != nil && !ended(r.State) {
+			if fold := tr.of(id); fold.err != nil {
+				l.TrailUnread++
+			} else if fold.st.FailingSince != nil {
+				l.Recovering++
+			}
+		}
 		if f.State == "" || r.Group == f.State {
 			rows = append(rows, r)
 		}
+	}
+	if tr != nil && len(ids) > 0 && !tr.probe(ids[0]) {
+		l.TrailUnread++ // a store that cannot be read is noticed even when no run needed its trail
 	}
 	for k := range kinds {
 		if k != "" {
@@ -226,12 +256,22 @@ func (o Options) runList(ctx context.Context, f ListFilter) RunList {
 		}
 		return strings.Compare(a.ID, b.ID)
 	})
+	if l.TrailUnread > 0 {
+		l.Notes = append(l.Notes, "The notify trail could not be read for "+count(l.TrailUnread, "run")+" ("+errClassNote+"), so the list cannot say whether a recovery is failing.")
+	}
+	if l.Unread > 0 || l.Err != "" {
+		l.Notes = append(l.Notes, count(l.Unread, "run")+" could not be read ("+cmp.Or(l.Err, "read error")+"): the counts above leave them out.")
+	}
+	if l.Empty > 0 {
+		l.Notes = append(l.Notes, count(l.Empty, "listed run")+" hold no records and are not shown.")
+	}
 	l.Matched = len(rows)
 	if len(rows) > f.Limit {
 		rows = rows[:f.Limit]
 		l.More = query(ListFilter{State: f.State, Kind: f.Kind, Q: f.Q, Limit: f.Limit + listPage})
 	}
 	l.Rows = rows
+	l.Status = l.Verdict().Status
 	return l
 }
 

@@ -29,6 +29,7 @@ import (
 	"io"
 
 	"github.com/bide-ai/bide/agent"
+	"github.com/bide-ai/bide/audit"
 	"github.com/bide-ai/bide/cmd/bide/internal/approvecmd"
 	"github.com/bide-ai/bide/internal/runview"
 	"github.com/bide-ai/bide/store/postgres"
@@ -51,6 +52,15 @@ var stores = runview.Stores{
 			return nil, nil, err
 		}
 		return s, s, nil
+	},
+	Events: func(s agent.Store) audit.EventStore {
+		switch s := s.(type) {
+		case *sqlite.Store:
+			return s.EventStore()
+		case *postgres.Store:
+			return s.EventStore()
+		}
+		return nil
 	},
 	YAML: yamlToJSON,
 }

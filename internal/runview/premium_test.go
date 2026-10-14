@@ -238,20 +238,42 @@ func TestDiffVerdictSelection(t *testing.T) {
 }
 
 func TestRunListVerdict(t *testing.T) {
+	full := Coverage{Listable: true, Trail: true}
+	journals := Coverage{Listable: true}
 	for _, c := range []struct {
-		counts map[string]int
-		all    int
+		l      RunList
 		word   string
+		status string
 	}{
-		{map[string]int{"halted": 2, "waiting": 1}, 9, "2 HALTED"},
-		{map[string]int{"waiting": 1}, 4, "1 WAITING FOR APPROVAL"},
-		{map[string]int{"failed": 3}, 4, "3 FAILED OR CANCELLED"},
-		{map[string]int{"completed": 4}, 4, "ALL CLEAR"},
-		{nil, 0, "NO RUNS"},
+		{RunList{Counts: map[string]int{"halted": 2, "waiting": 1}, All: 9, Coverage: journals}, "2 HALTED", StatusAttention},
+		{RunList{Counts: map[string]int{"waiting": 1}, All: 4, Coverage: journals}, "1 WAITING FOR APPROVAL", StatusAttention},
+		{RunList{Counts: map[string]int{"failed": 3}, All: 4, Coverage: journals}, "3 FAILED OR CANCELLED", StatusAttention},
+		{RunList{Counts: map[string]int{"completed": 4}, All: 4, Coverage: full}, "ALL CLEAR", StatusClear},
+		{RunList{Counts: map[string]int{"completed": 4, "in-progress": 1}, All: 5, Coverage: full, Recovering: 1}, "1 RECOVERY FAILING", StatusAttention},
+		{RunList{Counts: map[string]int{"halted": 1}, All: 5, Coverage: full, Recovering: 1}, "1 HALTED", StatusAttention},
+		// Without the whole notify trail the list cannot rule out a failing recovery: never ALL CLEAR.
+		{RunList{Counts: map[string]int{"completed": 4}, All: 4, Coverage: journals}, "NOTHING IN THE JOURNALS NEEDS A PERSON", StatusUnknown},
+		{RunList{Counts: map[string]int{"completed": 4}, All: 4, Coverage: Coverage{Listable: true, Trail: true, TrailUnread: 1}}, "NOTHING IN THE JOURNALS NEEDS A PERSON", StatusUnknown},
+		// Nor from a source that cannot list, that failed, that was cut short, or that a filter narrows.
+		{RunList{All: 0, Coverage: Coverage{Trail: true}}, "CANNOT LIST", StatusUnknown},
+		{RunList{Counts: map[string]int{"completed": 4}, All: 4, Coverage: Coverage{Listable: true, Trail: true, Truncated: 1}}, "NOT EVERY RUN WAS READ", StatusUnknown},
+		{RunList{Counts: map[string]int{"completed": 4}, All: 4, Coverage: Coverage{Listable: true, Trail: true, Unread: 1, Err: "x"}}, "NOT EVERY RUN WAS READ", StatusUnknown},
+		{RunList{Counts: map[string]int{"completed": 4}, All: 4, Coverage: Coverage{Listable: true, Trail: true, Err: "listing failed"}}, "NOT EVERY RUN WAS READ", StatusUnknown},
+		{RunList{Counts: map[string]int{"completed": 4}, All: 4, Coverage: Coverage{Listable: true, Trail: true, Filtered: true}}, "NOTHING IN THIS FILTER NEEDS A PERSON", StatusUnknown},
+		{RunList{Coverage: journals}, "NO RUNS", StatusClear},
 	} {
-		if d := (RunList{Counts: c.counts, All: c.all}).Verdict(); d.Word != c.word {
-			t.Errorf("%v: %q, want %q", c.counts, d.Word, c.word)
+		d := c.l.Verdict()
+		if d.Word != c.word || d.Status != c.status {
+			t.Errorf("%+v: %q (%s), want %q (%s)", c.l.Coverage, d.Word, d.Status, c.word, c.status)
 		}
+	}
+	if d := (RunList{Counts: map[string]int{"completed": 4}, All: 4, Coverage: journals}).Verdict(); !strings.Contains(d.Line, "Recovery failures are not visible without the notify trail") || d.Class == "good" {
+		t.Errorf("no-trail verdict %+v: must say recovery failures are not visible, and not be styled as good", d)
+	}
+	// A page with something to do that did not read everything says so.
+	d := RunList{Counts: map[string]int{"halted": 1}, All: 2, Coverage: Coverage{Listable: true, Truncated: 3}}.Verdict()
+	if len(d.Details) != 1 || !strings.Contains(d.Details[0], "3 runs not read") {
+		t.Errorf("a halted list that was cut short says %q", d.Details)
 	}
 }
 
