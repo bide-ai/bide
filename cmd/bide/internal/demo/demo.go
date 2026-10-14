@@ -3,6 +3,9 @@
 //
 //	bide demo
 //
+// First, for contrast, the same crash without bide: a naive retry with no journal charges the
+// provider twice. Then the bide run, below.
+//
 // A payment agent on a scripted model (agenttest) wants to charge $120 for order 42. Its charge
 // tool has the default Safety (a side effect) and a 2-of-3 approval gate (ops, finance, risk); the
 // demo signs two approvals with keys it generates. The journal is SQLite in a temp directory,
@@ -14,8 +17,11 @@
 //     halts with agent.OutcomeUnknown instead of charging again.
 //  3. The demo looks the charge up at the provider, records it with agent.ResolveHalt and its
 //     evidence, and the run completes. The provider holds exactly one charge.
-//  4. It exports an evidence package and the approvers' public keys, verifies them, and serves the
-//     run on a loopback address in the bide view page (the timeline, the crashed attempt, the
+//     The halt is also delivered to an in-process HTTPS receiver as a signed webhook
+//     (agent.WithNotifier and the notify package), and the receiver verifies the signature.
+//  4. It exports an evidence package and the approvers' public keys, verifies them, changes one
+//     amount in a copy of the journal and shows that the same verification now fails, and serves
+//     the run on a loopback address in the bide view page (the timeline, the crashed attempt, the
 //     resolution, the gate's signatures and the audit proof), and opens a browser on it.
 //
 // Flags: -no-browser prints the page's address without opening a browser, -fast drops the pauses
@@ -48,6 +54,7 @@ import (
 	"github.com/bide-ai/bide/audit"
 	"github.com/bide-ai/bide/internal/runview"
 	"github.com/bide-ai/bide/internal/term"
+	"github.com/bide-ai/bide/notify"
 )
 
 const (
@@ -65,6 +72,9 @@ const (
 	// recording: the demo copies the halted journal there (halted.db) and appends the seconds since
 	// it started at which the halt and the verified proof were printed (marks.txt).
 	recordEnv = "BIDE_DEMO_RECORD"
+
+	// recordPace scales the demo's pauses while recording, so each step holds long enough to read.
+	recordPace = 1.4
 )
 
 // policy is the gate on the charge: 2 of these 3 approvers must sign off.
@@ -79,6 +89,8 @@ const (
 	keysFile     = "approver-keys.json" // approver id -> public key text
 	evidenceFile = "evidence.json"
 	configFile   = "config.json"
+	tamperedFile = "tampered.db" // a copy of the journal with one amount changed
+	naiveDir     = "naive"       // the fake provider of the run without bide
 )
 
 // config is what the parent hands the child through configFile.
@@ -203,20 +215,36 @@ type result struct {
 	anchored  *runview.Proof // the last head the audited store anchored, as bide view -sth does
 	approvals runview.ApprovalCheck
 	logPub    string // the log public key, as bide view -pubkey takes it
+
+	naiveCharges int             // charges the provider holds after the run without bide
+	notified     *notify.Payload // the halt notification the receiver verified
+	tampered     *runview.Proof  // the evidence checked against the tampered copy of the journal
+	tamperedSeq  int             // the record the copy changes
 }
 
 // demo runs the whole story in dir and returns the viewer over the finished run. It fails unless
 // the provider holds exactly one charge, the run completed, and the proof and the gate's
 // signatures verify.
 func demo(ctx context.Context, dir string, cfg config, p *printer, fast bool) (*result, error) {
-	pause := func(d time.Duration) {
-		if !fast {
-			time.Sleep(d)
-		}
-	}
 	rec := newRecorder()
+	pause := func(d time.Duration) {
+		if fast {
+			return
+		}
+		if rec.on() {
+			d = time.Duration(float64(d) * recordPace)
+		}
+		time.Sleep(d)
+	}
 	p.line(p.bold("bide crash demo") + p.dim("  no double charges"))
 	pause(500 * time.Millisecond)
+
+	// 0. For contrast: the same crash with a naive retry and no journal.
+	naive, err := withoutBide(dir, p, pause)
+	if err != nil {
+		return nil, err
+	}
+	pause(1500 * time.Millisecond)
 
 	// Keys: the log operator signs every tree head and the evidence; each approver signs their
 	// decision. All are generated for this run and live only in dir.
@@ -249,11 +277,19 @@ func demo(ctx context.Context, dir string, cfg config, p *printer, fast bool) (*
 	if err != nil {
 		return nil, err
 	}
+	if err := rec.snapshot(dir, "empty"); err != nil {
+		closeJ()
+		return nil, err
+	}
 	_, err = newAgent(j, dir, cfg, nil).Run(ctx, runID, agent.UserText(input))
 	pend, ok := errors.AsType[*agent.ApprovalPending](err)
 	if !ok {
 		closeJ()
 		return nil, fmt.Errorf("the first run did not pause at the approval gate: %v", err)
+	}
+	if err := rec.snapshot(dir, "pending"); err != nil {
+		closeJ()
+		return nil, err
 	}
 	p.more(fmt.Sprintf("gate %d of %d (%s)", policy.Need, len(policy.Approvers), strings.Join(policy.Approvers, ", ")))
 	subject := agent.ApprovalSubject{RunID: runID, ToolUseID: pend.ToolUseID, ToolName: pend.ToolName, Args: pend.Args}
@@ -268,12 +304,19 @@ func demo(ctx context.Context, dir string, cfg config, p *printer, fast bool) (*
 		}
 		p.more(fmt.Sprintf("%-8s %s", id, p.green("approved, signed")))
 	}
+	if err := rec.snapshot(dir, "approved"); err != nil {
+		closeJ()
+		return nil, err
+	}
 	closeJ()
-	pause(600 * time.Millisecond)
+	pause(1000 * time.Millisecond)
 
 	// 2. The agent runs in a child process; the parent kills it after the charge, before the
 	// charge's result is journaled.
 	if err := crash(ctx, dir, p, pause); err != nil {
+		return nil, err
+	}
+	if err := rec.snapshot(dir, "crashed"); err != nil {
 		return nil, err
 	}
 	pause(1000 * time.Millisecond)
@@ -290,7 +333,13 @@ func demo(ctx context.Context, dir string, cfg config, p *printer, fast bool) (*
 			closeJ()
 		}
 	}()
-	_, err = newAgent(j, dir, cfg, nil).Run(ctx, runID, agent.UserText(input))
+	rcv, err := newReceiver()
+	if err != nil {
+		return nil, err
+	}
+	defer rcv.close()
+	resumed := newAgent(j, dir, cfg, nil, agent.WithNotifier(rcv.notifier, agent.NewMemNotifyTrail()))
+	_, err = resumed.Run(ctx, runID, agent.UserText(input))
 	halt, halted := errors.AsType[*agent.OutcomeUnknown](err)
 	charges, cerr := providerCharges(dir)
 	if cerr != nil {
@@ -301,6 +350,10 @@ func demo(ctx context.Context, dir string, cfg config, p *printer, fast bool) (*
 	}
 	p.more(p.yellow(p.bold("halted")) + p.yellow(": outcome unknown: not charging again"))
 	p.more(fmt.Sprintf("provider charges: %d", len(charges)))
+	// The halt is told to a person: a signed webhook, delivered to the receiver, which verifies it.
+	if err := resumed.FlushNotifications(ctx); err != nil {
+		return nil, err
+	}
 	if rec.on() {
 		closeJ()
 		if err := rec.snapshot(dir, "halted"); err != nil {
@@ -310,7 +363,13 @@ func demo(ctx context.Context, dir string, cfg config, p *printer, fast bool) (*
 			return nil, err
 		}
 	}
-	pause(1300 * time.Millisecond)
+	pause(600 * time.Millisecond)
+	notified, err := rcv.verified()
+	if err != nil {
+		return nil, err
+	}
+	p.more(p.yellow("→ ops notified") + "  signed webhook (" + notified.Kind + ")")
+	pause(1500 * time.Millisecond)
 
 	// 4. Look the charge up at the provider, record it, and finish the run.
 	p.step(4, "Resolve", p.blue, fmt.Sprintf("look up order %d at the provider", order))
@@ -342,7 +401,10 @@ func demo(ctx context.Context, dir string, cfg config, p *printer, fast bool) (*
 		return nil, err
 	}
 	p.more(p.blue("run " + string(st.State)))
-	pause(1200 * time.Millisecond)
+	if err := rec.snapshot(dir, "resolved"); err != nil {
+		return nil, err
+	}
+	pause(1300 * time.Millisecond)
 
 	// 5. Export the evidence and the approvers' public keys, and verify them as bide view does.
 	p.step(5, "Prove", p.green, "evidence exported, signed")
@@ -366,7 +428,7 @@ func demo(ctx context.Context, dir string, cfg config, p *printer, fast bool) (*
 	closeJ()
 	closeJ = nil
 
-	res, err := view(ctx, dir, logPub)
+	res, err := view(ctx, dir, filepath.Join(dir, journalFile), logPub)
 	if err != nil {
 		return nil, err
 	}
@@ -387,6 +449,7 @@ func demo(ctx context.Context, dir string, cfg config, p *printer, fast bool) (*
 		return nil, err
 	}
 	res.charges, res.state = len(charges), string(st.State)
+	res.naiveCharges, res.notified = naive, notified
 	var problems []string
 	if res.charges != 1 {
 		problems = append(problems, fmt.Sprintf("the provider holds %d charges, want exactly 1", res.charges))
@@ -407,7 +470,22 @@ func demo(ctx context.Context, dir string, cfg config, p *printer, fast bool) (*
 		res.close()
 		return nil, errors.New(strings.Join(problems, "; "))
 	}
-	pause(500 * time.Millisecond)
+
+	// 6. Change one amount in a copy of the journal: the same verification now fails.
+	pause(1500 * time.Millisecond)
+	if err := tamper(ctx, dir, logPub, res, p, pause); err != nil {
+		res.close()
+		return nil, err
+	}
+	if err := rec.mark("tampered"); err != nil {
+		res.close()
+		return nil, err
+	}
+	pause(2200 * time.Millisecond)
+	if err := rec.mark("final"); err != nil {
+		res.close()
+		return nil, err
+	}
 	p.line("")
 	p.line(p.st.Pass() + p.green(p.bold("charged exactly once.")) + p.dim(fmt.Sprintf("  provider charges: %d", res.charges)))
 	return res, nil
@@ -475,8 +553,9 @@ func child(dir string) int {
 }
 
 // newAgent builds the payment agent over j, with dir's provider and approver keys. after, if set,
-// is called after each charge reaches the provider, before the tool returns.
-func newAgent(j *agent.Journal, dir string, cfg config, after func(charge)) *agent.Agent {
+// is called after each charge reaches the provider, before the tool returns; extra options are added
+// to the agent.
+func newAgent(j *agent.Journal, dir string, cfg config, after func(charge), extra ...agent.Option) *agent.Agent {
 	opts := []agent.ToolOption{agent.WithApproval(&policy)}
 	if cfg.RetrySafe {
 		opts = append(opts, agent.WithSafety(agent.Safety{Idempotent: true}))
@@ -500,5 +579,5 @@ func newAgent(j *agent.Journal, dir string, cfg config, after func(charge)) *age
 		agenttest.ToolTurn(callID, "charge", fmt.Sprintf(`{"order":%d,"amount":%d}`, order, amount)),
 		agenttest.TextTurn(fmt.Sprintf("Charged $%d for order %d.", amount, order)),
 	)
-	return agenttest.MustNew(model, j, agent.WithTools(chargeTool), agent.WithApproverVerifiers(verifiers(keys)))
+	return agenttest.MustNew(model, j, append([]agent.Option{agent.WithTools(chargeTool), agent.WithApproverVerifiers(verifiers(keys))}, extra...)...)
 }
