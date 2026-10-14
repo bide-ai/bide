@@ -798,8 +798,13 @@ func DecisionStep(d Decision) string {
 // true when its Insert won the store's first-writer race, false when the journal already held the
 // decision (an identical resubmission, another writer's record under the same name, a concurrent
 // call that wrote it first, in this process or another). It is false when SubmitDecision returns an
-// error. Of any number of concurrent identical submissions exactly one sees true, which is what a
-// service that acts once per recorded decision needs. wrote must not be shared between calls.
+// error. Of any number of concurrent submissions of byte-identical decisions (the same signature
+// bytes, so the same record name) exactly one sees true, which is what a service that acts once per
+// recorded decision needs. A scheme whose signatures are randomized (ECDSA from a KMS or an HSM) signs
+// one decision into different bytes, each a record name of its own, and SubmitDecision's check
+// that the decision is not already journaled is not one step with its insert: two such submissions
+// racing both write, and both see true. The gate counts one and supersedes the other (the
+// duplicate stays in the journal). wrote must not be shared between calls.
 func ReportWritten(wrote *bool) ApproveOption { return reportWritten{wrote} }
 
 type reportWritten struct{ p *bool }
