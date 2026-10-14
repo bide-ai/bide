@@ -807,6 +807,25 @@ func approvalDecisionStep(toolUseID, approverID string, approved bool, alg Alg, 
 	return approvalStep(toolUseID) + ":" + approverID + ":" + hex.EncodeToString(h.Sum(nil))
 }
 
+// IsDecisionStepName reports whether name has the shape of the journal record name of a decision of
+// approver on call: the call's approval prefix, the approver, and 64 lowercase hex digits. The
+// identity name (DecisionStep), the signature-derived name a bad record at it pushes a decision to,
+// and the name a version that named by signature gave a decision all have it. A client that is told a
+// record name by an endpoint checks it with this before it shows it or writes it to disk.
+func IsDecisionStepName(name, toolUseID, approverID string) bool {
+	prefix := approvalStep(toolUseID) + ":" + approverID + ":"
+	hexPart, ok := strings.CutPrefix(name, prefix)
+	if !ok || len(hexPart) != 64 {
+		return false
+	}
+	for i := 0; i < len(hexPart); i++ {
+		if c := hexPart[i]; !(c >= '0' && c <= '9' || c >= 'a' && c <= 'f') {
+			return false
+		}
+	}
+	return true
+}
+
 // HeldDecisionStep reports whether the journal holds a record of exactly the decision d (signature
 // included) and the name of the record that does: under the identity name (DecisionStep), under the
 // signature-derived name a bad record at the identity name pushes a decision to, or under the name a

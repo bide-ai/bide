@@ -2,6 +2,7 @@ package agent
 
 import (
 	"context"
+	"strings"
 	"testing"
 )
 
@@ -106,6 +107,33 @@ func TestHeldDecisionStepWithAnUnusableResolver(t *testing.T) {
 	} {
 		if _, held, ver, err := HeldDecisionStep(ctx, j, d, vf); err != nil || !held || ver {
 			t.Errorf("%s: held %v verified %v %v", name, held, ver, err)
+		}
+	}
+}
+
+// IsDecisionStepName is the one shape a decision's record name can have: the call's approval prefix,
+// the approver, and 64 lowercase hex, whether it is the identity name, the fallback or a legacy name.
+func TestIsDecisionStepName(t *testing.T) {
+	d := Decision{RunID: "r", ToolUseID: "c1:x", ApproverID: "ops:1", Approved: true, DecidedAt: testDecidedAt, Alg: fakeAlg, Signature: []byte("s")}
+	at := FormatTimestamp(d.DecidedAt)
+	for name, n := range map[string]string{
+		"identity": DecisionStep(d), "fallback/legacy": approvalDecisionStep(d.ToolUseID, d.ApproverID, d.Approved, d.Alg, at, d.Signature),
+	} {
+		if !IsDecisionStepName(n, d.ToolUseID, d.ApproverID) {
+			t.Errorf("%s name %q refused", name, n)
+		}
+	}
+	good := DecisionStep(d)
+	hexTail := good[len(good)-64:]
+	prefix := good[:len(good)-64]
+	for name, n := range map[string]string{
+		"empty": "", "bogus": "approval:bogus\x1b[31m", "no hex": prefix, "short hex": prefix + hexTail[:63], "long hex": prefix + hexTail + "0",
+		"upper hex": prefix + strings.ToUpper(hexTail), "non hex": prefix + strings.Repeat("g", 64), "control": prefix + hexTail[:63] + "\x1b",
+		"other approver": approvalStep(d.ToolUseID) + ":other:" + hexTail, "other call": approvalStep("c2") + ":" + d.ApproverID + ":" + hexTail,
+		"suffix": good + ":extra", "newline": good + "\n",
+	} {
+		if IsDecisionStepName(n, d.ToolUseID, d.ApproverID) {
+			t.Errorf("%s: %q accepted", name, n)
 		}
 	}
 }
