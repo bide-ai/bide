@@ -232,12 +232,14 @@ func (w *notifyWorker) undelivered(ctx context.Context) error {
 		}
 	}
 	w.mu.Unlock()
+	// One budget for the whole recheck, or the caller's deadline if sooner: a hung trail must not
+	// hold the flush for 2s per deferred event. Once it ends the rest are reported as they are.
+	lctx, cancel := context.WithTimeout(ctx, 2*time.Second)
+	defer cancel()
 	var errs []error
 	for _, it := range items {
-		if it.deferred {
-			lctx, cancel := context.WithTimeout(ctx, 2*time.Second) // a hung trail must not hold the flush
+		if it.deferred && lctx.Err() == nil {
 			recs, err := w.e.trail.Load(lctx, NotifyTrailName(it.ev.runID))
-			cancel()
 			if err == nil {
 				key := it.ev.key
 				if es := FoldNotify(recs).Events[key]; es != nil && !es.Open() {

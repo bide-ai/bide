@@ -79,17 +79,21 @@ func ApprovalEvidence(ctx context.Context, store *agent.Journal, runID, toolUseI
 			index[r.Name] = i
 		}
 	}
-	// The gate's outcome: its re-approval tally when it asked again (the tally it first recorded
-	// passed on decisions that predate agent.DecisionFormat), else its tally.
-	tallyName := agent.ApprovalRetallyStep(toolUseID)
-	tallyIdx, ok := index[tallyName]
-	if !ok || recs[tallyIdx].Kind != agent.StepValue {
-		tallyName = agent.ApprovalTallyStep(toolUseID)
-		tallyIdx, ok = index[tallyName]
+	// The gate's outcome, as the runtime reads it (agent.RecordedTally): its re-approval tally
+	// when the tally it first recorded passed on decisions that predate agent.DecisionFormat,
+	// else its tally.
+	byName := make(map[string]agent.Record, 2)
+	for _, n := range []string{agent.ApprovalTallyStep(toolUseID), agent.ApprovalRetallyStep(toolUseID)} {
+		if i, ok := index[n]; ok && recs[i].Kind == agent.StepValue {
+			byName[n] = recs[i]
+		}
 	}
-	if !ok || recs[tallyIdx].Kind != agent.StepValue {
+	rt, ok := agent.RecordedTally(byName, toolUseID)
+	if !ok {
 		return nil, fmt.Errorf("audit: no journaled approval tally for call %q in run %s (not m-of-n gated, or its gate has not decided)", toolUseID, runID)
 	}
+	tallyName := rt.Name
+	tallyIdx := index[tallyName]
 	var tally agent.ApprovalTally
 	if err := UnmarshalStrict(recs[tallyIdx].Result, &tally); err != nil {
 		return nil, fmt.Errorf("audit: decode %s: %w", tallyName, err)
@@ -270,19 +274,26 @@ func VerifyApprovals(actions []EvidenceAction, toolUseID string, policy agent.Ap
 	if err != nil {
 		return v, err
 	}
-	// The gate's outcome is its re-approval tally when the evidence holds one (the gate asked
-	// again because its first tally passed on decisions that predate agent.DecisionFormat), else
-	// its tally.
-	tallyName := agent.ApprovalRetallyStep(toolUseID)
+	// The gate's outcome, as the runtime reads it (agent.RecordedTally): its re-approval tally
+	// when the tally it first recorded passed on decisions that predate agent.DecisionFormat,
+	// else its tally. A re-approval tally beside any other tally is not the gate's outcome.
+	byName := make(map[string]agent.Record, 2)
+	for i, a := range actions {
+		if a.Kind != KindApprovalTally {
+			continue
+		}
+		if _, dup := byName[recs[i].Name]; !dup {
+			byName[recs[i].Name] = recs[i]
+		}
+	}
+	rt, found := agent.RecordedTally(byName, toolUseID)
+	if !found {
+		return v, notVerified("audit: the evidence has no %s for call %q", "approval tally", toolUseID)
+	}
+	tallyName := rt.Name
 	tallyI, err := find(func(a EvidenceAction, r agent.Record) bool {
 		return a.Kind == KindApprovalTally && r.Name == tallyName
 	}, "approval tally")
-	if err != nil {
-		tallyName = agent.ApprovalTallyStep(toolUseID)
-		tallyI, err = find(func(a EvidenceAction, r agent.Record) bool {
-			return a.Kind == KindApprovalTally && r.Name == tallyName
-		}, "approval tally")
-	}
 	if err != nil {
 		return v, err
 	}
