@@ -181,8 +181,14 @@ func (c *cli) readStore(in *audit.NotifyVerifyInput, db, pgEnv, run string) erro
 			roots[id] = true
 		}
 	}
+	// The global trail of events whose all-clear may be owed is read too (once, with every run or
+	// with -run), and checked as a trail of its own.
+	names := []string{agent.NotifyOpenTrail}
 	for _, id := range slices.Sorted(mapKeys(roots)) {
-		x, err := audit.ExportNotifyTrail(ctx, s.Events, agent.NotifyTrailName(id))
+		names = append(names, agent.NotifyTrailName(id))
+	}
+	for _, name := range names {
+		x, err := audit.ExportNotifyTrail(ctx, s.Events, name)
 		if err != nil {
 			return unusable(err)
 		}

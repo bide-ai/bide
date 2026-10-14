@@ -373,7 +373,11 @@ func TestVerifyNotifications_ARealNotifierTrailVerifies(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	rep, err := audit.VerifyNotifications(audit.NotifyVerifyInput{Trails: []audit.NotifyTrailExport{tx}, Journals: []audit.JournalExport{jx}, Unanchored: true})
+	ox, err := audit.ExportNotifyTrail(ctx, es, agent.NotifyOpenTrail)
+	if err != nil {
+		t.Fatal(err)
+	}
+	rep, err := audit.VerifyNotifications(audit.NotifyVerifyInput{Trails: []audit.NotifyTrailExport{tx, ox}, Journals: []audit.JournalExport{jx}, Unanchored: true})
 	if err != nil {
 		t.Fatalf("%v\n%+v", err, rep)
 	}
@@ -840,6 +844,91 @@ func TestVerifyNotifications_NoAllClearIsOwedForAnUnattemptedEvent(t *testing.T)
 	for _, e := range rep.Events {
 		if e.Key == agent.ResolvedKey(gate) {
 			t.Fatalf("an all-clear is owed for an event never delivered: %+v (err %v)", e, err)
+		}
+	}
+}
+
+// ---- the global open trail and operation fields ----
+
+func openTrail(t *testing.T, recs ...agent.NotifyRecord) audit.NotifyTrailExport {
+	t.Helper()
+	es := audit.NewMemEventStore()
+	tr := audit.NewNotifyTrail(es)
+	for i, r := range recs {
+		if err := tr.Append(context.Background(), agent.NotifyOpenTrail, i, r); err != nil {
+			t.Fatal(err)
+		}
+	}
+	x, err := audit.ExportNotifyTrail(context.Background(), es, agent.NotifyOpenTrail)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return x
+}
+
+func watchRec(k agent.NotifyRecordKind, key string, sec int) agent.NotifyRecord {
+	return agent.NotifyRecord{Kind: k, Key: key, RunID: "r1", At: at(sec)}
+}
+
+func TestVerifyNotifications_TheOpenTrail(t *testing.T) {
+	k := agent.ApprovalKey("r1", "c1", 0)
+	verifyOpen := func(recs ...agent.NotifyRecord) (audit.NotifyReport, error) {
+		return audit.VerifyNotifications(audit.NotifyVerifyInput{Trails: []audit.NotifyTrailExport{openTrail(t, recs...)}, Unanchored: true, Now: at(60)})
+	}
+	if rep, err := verifyOpen(watchRec(agent.NotifyWatch, k, 1), watchRec(agent.NotifyWatch, k, 2), watchRec(agent.NotifyUnwatch, k, 3), watchRec(agent.NotifyWatch, k, 4)); err != nil || len(rep.Events) != 0 {
+		t.Fatalf("a valid open trail: %v %+v", err, rep)
+	}
+	for name, recs := range map[string][]agent.NotifyRecord{
+		"unwatch of an unwatched key": {watchRec(agent.NotifyUnwatch, k, 1)},
+		"a run's record":              {{Kind: agent.NotifyObserved, Key: k, RunID: "r1", At: at(1)}},
+		"no key":                      {{Kind: agent.NotifyWatch, RunID: "r1", At: at(1)}},
+		"no run":                      {{Kind: agent.NotifyWatch, Key: k, At: at(1)}},
+		"out of order":                {watchRec(agent.NotifyWatch, k, 1000), watchRec(agent.NotifyUnwatch, k, 1)},
+	} {
+		if _, err := verifyOpen(recs...); !errors.Is(err, audit.ErrNotVerified) {
+			t.Errorf("%s: err = %v, want ErrNotVerified", name, err)
+		}
+	}
+	// Watch and unwatch do not belong on a run's trail.
+	b := newTrail(t).add(agent.NotifyRecord{Kind: agent.NotifyWatch, Key: k, At: at(1)})
+	rep, err := verifyNotify(t, b, nil)
+	if !errors.Is(err, audit.ErrNotVerified) || !strings.Contains(strings.Join(rep.Trails[0].Violations, ";"), "not a run's") {
+		t.Fatalf("watch on a run trail: %v %+v", err, rep.Trails)
+	}
+}
+
+func TestVerifyNotifications_OperationFieldsMatchTheKey(t *testing.T) {
+	gate := agent.ApprovalKey("r1", "c1", 0)
+	halt := agent.HaltedKey("r1", agent.OpTool, "c9", 1234)
+	withOp := func(key string, kind agent.NotificationKind, run, opKind, id string) agent.NotifyRecord {
+		r := observed(key, kind, 0, 1)
+		r.OpRun, r.OpKind, r.OpID = run, opKind, id
+		return r
+	}
+	for name, tc := range map[string]struct {
+		rec  agent.NotifyRecord
+		want string // "" for valid
+	}{
+		"a gate":                   {withOp(gate, agent.NotificationApprovalPending, "r1", "gate", "c1"), ""},
+		"a tool halt":              {withOp(halt, agent.NotificationOutcomeUnknown, "r1", "tool", "c9"), ""},
+		"no fields (older record)": {observed(gate, agent.NotificationApprovalPending, 0, 1), ""},
+		"gate with another call":   {withOp(gate, agent.NotificationApprovalPending, "r1", "gate", "c2"), "does not match"},
+		"gate with another run":    {withOp(gate, agent.NotificationApprovalPending, "r2", "gate", "c1"), "does not match"},
+		"halt with a step kind":    {withOp(halt, agent.NotificationOutcomeUnknown, "r1", "step", "c9"), "does not match"},
+		"halt with the gate kind":  {withOp(halt, agent.NotificationOutcomeUnknown, "r1", "gate", "c9"), "not tool or step"},
+		"gate with the tool kind":  {withOp(gate, agent.NotificationApprovalPending, "r1", "tool", "c1"), "not gate"},
+		"only some fields":         {withOp(gate, agent.NotificationApprovalPending, "r1", "", "c1"), "not all three"},
+		"fields on another kind":   {withOp(agent.AbortedKey("r1"), agent.NotificationRunAborted, "r1", "gate", "c1"), "names an operation"},
+	} {
+		rep, err := verifyNotify(t, newTrail(t).add(tc.rec), nil)
+		if tc.want == "" {
+			if err != nil {
+				t.Errorf("%s: %v", name, err)
+			}
+			continue
+		}
+		if !errors.Is(err, audit.ErrNotVerified) || !strings.Contains(strings.Join(rep.Trails[0].Violations, ";"), tc.want) {
+			t.Errorf("%s: err %v violations %v, want one with %q", name, err, rep.Trails[0].Violations, tc.want)
 		}
 	}
 }

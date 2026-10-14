@@ -511,7 +511,10 @@ What it checks, and the status each event gets:
   follows the deadline and states the latency the times imply; an overdue notice follows the
   `overdue` record it reports, and an all-clear follows the acknowledgement or clearing it reports;
   records are dated in order, within `-max-clock-skew` (the writers' clocks differ); recovery
-  failure episodes open and close in turn. A trail that breaks a rule is reported with the record
+  failure episodes open and close in turn; a halt or approval observation's `op_run`, `op_kind` and
+  `op_id` agree with its key; the global `notify:@open` trail (which lists events whose all-clear may
+  still be owed) holds only `watch` and `unwatch` records, an unwatch only while its event is
+  watched, and those records are a violation on a run's trail. A trail that breaks a rule is reported with the record
   and the rule (exit 1).
 - **The journal cross-check.** Every approval gate, unknown-outcome halt (an attempt marker with no
   result) and aborted run a supplied journal shows must be observed in the trail of its root run. A

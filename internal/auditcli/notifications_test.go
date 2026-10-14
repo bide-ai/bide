@@ -274,7 +274,7 @@ func TestNotificationsVerb_ReadsEveryRunFromAStore(t *testing.T) {
 	fakeStores(t, memNotifyStore{mem, es, &closed})
 
 	code, out, errOut := runCLI("notifications", "-db", "x.db", "-unanchored")
-	if code != 0 || !closed || !strings.Contains(out, "trail notify:a") || !strings.Contains(out, "trail notify:b") || !strings.Contains(out, "PASS: 2 event(s) in 2 trail(s)") {
+	if code != 0 || !closed || !strings.Contains(out, "trail notify:a") || !strings.Contains(out, "trail notify:b") || !strings.Contains(out, "PASS: 2 event(s) in 3 trail(s)") {
 		t.Fatalf("exit %d closed=%v\n%s\n%s", code, closed, out, errOut)
 	}
 	// -run reads one run only.
