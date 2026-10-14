@@ -310,6 +310,24 @@ func TestRecordTimes_SagaEnd(t *testing.T) {
 	}
 }
 
+// The aborted_at and recorded_at of a saga's run:aborted come from one reading of the clock, so
+// they agree even when the clock moves between calls.
+func TestRecordTimes_SagaEndOneReading(t *testing.T) {
+	var n int
+	tick := func() time.Time { n++; return timesB.Add(time.Duration(n) * time.Second) }
+	ctx := contextWithClock(context.Background(), tick)
+	j := memJournal()
+	a := mustNew(turnModel{toolTurn("c1", "boom", `{}`), textTurn("x")}, j, WithTools(failTool("boom")))
+	if _, err := a.Run(ctx, "r", UserText("go"), WithSaga()); err == nil {
+		t.Fatal("want the saga to abort")
+	}
+	rec, _ := hasStep(t, j, "r", runAbortedStep)
+	var v abortValue
+	if err := json.Unmarshal(rec.Result, &v); err != nil || v.AbortedAt == "" || rec.RecordedAt() != v.AbortedAt {
+		t.Fatalf("aborted_at %q and recorded_at %q differ (%v)", v.AbortedAt, rec.RecordedAt(), err)
+	}
+}
+
 // Status never supplies a time: an end marker written before they carried one reports none, a
 // run:aborted that has only its aborted_at reports that, and a recorded_at that is not canonical
 // is not reported.
