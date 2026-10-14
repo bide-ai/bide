@@ -445,6 +445,25 @@ func TestSoDEvidence_SoDRetally(t *testing.T) {
 	if v, err := audit.VerifyApprovals(acts, "c1", weakPol, g.resolver(), edV(g.logPub)); err == nil || v.OK {
 		t.Fatal("the re-tally verified against a policy that does not exclude the requester")
 	}
+	// A superseded tally proven under another head does not decide the outcome.
+	other := g.sth(t, 1700000999)
+	foreign, err := audit.ApprovalEvidence(ctx, g.store, gateRun, "c1", other)
+	if err != nil {
+		t.Fatal(err)
+	}
+	swapped := slices.Clone(acts)
+	for i, a := range swapped {
+		if a.Ref == agent.ApprovalTallyStep("c1") {
+			for _, fa := range foreign {
+				if fa.Ref == a.Ref {
+					swapped[i] = fa
+				}
+			}
+		}
+	}
+	if _, err := audit.VerifyApprovals(swapped, "c1", g.policy, g.resolver(), edV(g.logPub)); !errors.Is(err, audit.ErrNotVerified) {
+		t.Fatalf("a superseded tally under another head: %v; want not verified", err)
+	}
 	// Without the superseded tally the evidence names no outcome.
 	var trimmed []audit.EvidenceAction
 	for _, a := range acts {

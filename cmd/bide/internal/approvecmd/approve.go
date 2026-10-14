@@ -980,10 +980,8 @@ func (c *cmd) list(ctx context.Context) error {
 				line("")
 			case w.Settled != "":
 			default:
-				for _, id := range w.Pending {
-					if !requester(g, id) {
-						line(id)
-					}
+				for _, id := range w.Pending { // a requester is never pending: the gate excludes them
+					line(id)
 				}
 			}
 			if w.Commands == nil {

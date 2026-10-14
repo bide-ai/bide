@@ -10,6 +10,7 @@ import (
 
 	"github.com/bide-ai/bide/agent"
 	"github.com/bide-ai/bide/agent/agenttest"
+	"github.com/bide-ai/bide/internal/journaltest"
 )
 
 // Separation of duties on a plan flow node's gate: the requester is the flow run's principal,
@@ -244,5 +245,32 @@ func TestSoDFlow_NodesSeeTheRunIdentity(t *testing.T) {
 	}
 	if !slices.Equal(seen, []string{"ops", "ops"}) {
 		t.Fatalf("the nodes saw %q; want ops both times", seen)
+	}
+}
+
+// A passing tally that did not exclude the requester, found under a flow node whose gate excludes
+// it (written by another writer of the journal), does not let the node run: the gate asks again.
+func TestSoDFlow_WeakTallyDoesNotDecide(t *testing.T) {
+	ctx := context.Background()
+	as, vf := approvers(opsFinRisk...)
+	j := agenttest.MemJournal()
+	refunds := 0
+	f := refundFlow(t, sodGate(2), vf, &refunds)
+	_, err := f.Run(ctx, j, "r1", "order-42", asRequester("ops"))
+	pend := asPending(t, err)
+	as["ops"].decide(t, j, pend, true)
+	as["finance"].decide(t, j, pend, true)
+	weak, _ := json.Marshal(agent.ApprovalTally{Need: 2, Approvers: opsFinRisk, Approved: 2, ApprovedBy: []string{"ops", "finance"}, DecisionFormat: agent.DecisionFormat})
+	if _, err := journaltest.Put(ctx, j, "r1", agent.ApprovalTallyStep("node:refund"), agent.Record{Kind: agent.StepValue, Result: weak}); err != nil {
+		t.Fatal(err)
+	}
+	_, err = f.Run(ctx, j, "r1", "order-42")
+	pend = asPending(t, err)
+	if refunds != 0 || pend.Reason != agent.PendingSoDReapproval {
+		t.Fatalf("refunds %d, reason %q; want a re-approval pause and no refund", refunds, pend.Reason)
+	}
+	as["risk"].decide(t, j, pend, true)
+	if _, err := f.Run(ctx, j, "r1", "order-42"); err != nil || refunds != 1 {
+		t.Fatalf("Run at quorum = %v (refunds %d)", err, refunds)
 	}
 }

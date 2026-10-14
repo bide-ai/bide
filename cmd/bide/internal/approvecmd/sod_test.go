@@ -99,3 +99,15 @@ func TestSoD_RequesterDecisionNotCounted(t *testing.T) {
 		t.Fatalf("ops unverified = 0, want a refusal\n%s%s", out, errs)
 	}
 }
+
+// Without the approvers' keys, bide approve counts the requester's seat out of the gate: with ops
+// excluded from 2 of 3, finance's denial alone settles it (one seat is left for two approvals).
+func TestSoD_UnverifiedDenialCountsTheExclusion(t *testing.T) {
+	pol := &agent.ApprovalPolicy{Need: 2, Approvers: approvers, ExcludePrincipal: true}
+	f := newFixtureID(t, pol, refundArgs, audit.AlgEd25519, "ops")
+	code, out, errs := f.run_("", f.asUnverified("finance", "-reject", "-yes")...)
+	if code != 0 {
+		t.Fatalf("finance -reject = %d\n%s%s", code, out, errs)
+	}
+	contains(t, "finance -reject", out, "would settle the gate")
+}
