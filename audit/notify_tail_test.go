@@ -213,3 +213,49 @@ func journalGateWith(t *testing.T, run string, approvers []string) (audit.Journa
 	}
 	return x, j
 }
+
+// An escalation chain stops when the journal shows the event resolved, and, for a halt, when it is
+// acknowledged.
+func TestVerifyNotifications_RoutingEscalationStops(t *testing.T) {
+	ctx := context.Background()
+	rt := routing(t, agent.WithNotifyReceiver("lead", nopSink{}),
+		agent.WithNotifyEscalation(agent.NotificationApprovalPending, agent.EscalationStep{Receiver: "lead", Deadline: time.Minute}),
+		agent.WithNotifyEscalation(agent.NotificationOutcomeUnknown, agent.EscalationStep{Receiver: "lead", Deadline: time.Minute}))
+	gate := agent.ApprovalKey("r1", "c1", 0)
+	mem := agent.NewMemStore()
+	j, _ := agent.NewJournal(mem)
+	tool := agent.MustFunc("refund", "refund", func(context.Context, struct{}) (string, error) { return "ok", nil }, agent.WithApproval(agent.SingleApproval()))
+	a, _ := agent.New(agenttest.NewScriptedModel(agenttest.ToolTurn("c1", "refund", `{}`)), j, agent.WithTools(tool))
+	if _, err := a.Run(ctx, "r1", agent.UserText("go")); !errors.As(err, new(*agent.ApprovalPending)) {
+		t.Fatal(err)
+	}
+	b := newTrail(t)
+	deliver(b, obsTo(gate, agent.NotificationApprovalPending, 1, ""), 2, 3)
+	run := func(jx audit.JournalExport) error {
+		_, err := verifyNotify(t, b, func(in *audit.NotifyVerifyInput) {
+			in.Routing, in.Now, in.MaxClockSkew, in.Journals = rt, time.Now().Add(time.Hour), 10*time.Second, []audit.JournalExport{jx}
+		})
+		return err
+	}
+	jx, _ := audit.ExportJournal(ctx, j, "r1")
+	if err := run(jx); !errors.Is(err, audit.ErrNotVerified) {
+		t.Fatalf("an undecided gate owes step 1: %v", err)
+	}
+	if _, _, err := mem.Insert(ctx, "r1", agent.ToolResultStep("c1"), []byte(`{"name":"`+agent.ToolResultStep("c1")+`","kind":"tool_result","tool_use_id":"c1"}`)); err != nil {
+		t.Fatal(err)
+	}
+	jx, _ = audit.ExportJournal(ctx, j, "r1")
+	if err := run(jx); err != nil && strings.Contains(err.Error(), "escalat") {
+		t.Fatalf("a decided gate owes no step: %v", err)
+	}
+	// An acknowledged halt owes no step; an unacknowledged one does.
+	halt := agent.HaltedKey("r1", agent.OpTool, "c9", 1)
+	h := newTrail(t).add(observed(halt, agent.NotificationOutcomeUnknown, 0, 1), claimed(halt, 1), acked(halt, 2, 3))
+	if _, err := verifyNotify(t, h, func(in *audit.NotifyVerifyInput) { in.Routing, in.Now, in.MaxClockSkew = rt, at(2000), 10*time.Second }); err != nil {
+		t.Fatalf("an acknowledged halt owes no step: %v", err)
+	}
+	u := newTrail(t).add(observed(halt, agent.NotificationOutcomeUnknown, 0, 1), claimed(halt, 1))
+	if _, err := verifyNotify(t, u, func(in *audit.NotifyVerifyInput) { in.Routing, in.Now, in.MaxClockSkew = rt, at(2000), 10*time.Second }); err == nil {
+		t.Fatal("an unacknowledged halt owes a step")
+	}
+}
