@@ -26,19 +26,19 @@ func allowAll(*http.Request, approvals.Access) error { return nil }
 func TestPage_OptionsNeedAuth(t *testing.T) {
 	r := newRig(t)
 	for name, opt := range map[string]approvals.Option{"WithPage": approvals.WithPage(), "WithCORS": approvals.WithCORS("https://approve.example.com")} {
-		if _, err := approvals.New(r.app, r.verifiers, opt); err == nil {
+		if _, err := approvals.New(r.app, r.verifiers, r.livePolicy(), opt); err == nil {
 			t.Errorf("%s without WithAuth built", name)
 		}
-		if _, err := approvals.New(r.app, r.verifiers, opt, approvals.WithAuth(allowAll)); err != nil {
+		if _, err := approvals.New(r.app, r.verifiers, r.livePolicy(), opt, approvals.WithAuth(allowAll)); err != nil {
 			t.Errorf("%s with WithAuth: %v", name, err)
 		}
 	}
 	for _, bad := range []string{"*", "https://*.example.com", "https://x.example.com/path", "https://x.example.com?q=1", "ftp://x", "http://example.com", "example.com", "https://u:p@x.example.com", ""} {
-		if _, err := approvals.New(r.app, r.verifiers, approvals.WithCORS(bad), approvals.WithAuth(allowAll)); err == nil {
+		if _, err := approvals.New(r.app, r.verifiers, r.livePolicy(), approvals.WithCORS(bad), approvals.WithAuth(allowAll)); err == nil {
 			t.Errorf("CORS origin %q accepted", bad)
 		}
 	}
-	if _, err := approvals.New(r.app, r.verifiers, approvals.WithCORS("http://localhost:8080"), approvals.WithAuth(allowAll)); err != nil {
+	if _, err := approvals.New(r.app, r.verifiers, r.livePolicy(), approvals.WithCORS("http://localhost:8080"), approvals.WithAuth(allowAll)); err != nil {
 		t.Errorf("http localhost: %v", err)
 	}
 }
