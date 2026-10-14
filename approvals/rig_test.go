@@ -241,6 +241,7 @@ type stallStore struct {
 	mu      sync.Mutex
 	release chan struct{}
 	entered chan struct{}
+	preempt *preemption
 }
 
 func (s *stallStore) Unwrap() agent.Store { return s.Store }
@@ -251,6 +252,30 @@ func (s *stallStore) arm() chan struct{} {
 	defer s.mu.Unlock()
 	s.release = make(chan struct{})
 	return s.release
+}
+
+// preempt, when set, is called before an Insert of the named entry: a competing writer that records
+// the step first, as another process would.
+func (s *stallStore) Insert(ctx context.Context, runID, name string, data []byte) (agent.Entry, bool, error) {
+	s.mu.Lock()
+	p := s.preempt
+	if p != nil && p.name == name {
+		s.preempt = nil
+	} else {
+		p = nil
+	}
+	s.mu.Unlock()
+	if p != nil {
+		if _, _, err := s.Store.Insert(ctx, runID, name, p.data); err != nil {
+			return agent.Entry{}, false, err
+		}
+	}
+	return s.Store.Insert(ctx, runID, name, data)
+}
+
+type preemption struct {
+	name string
+	data []byte
 }
 
 func (s *stallStore) Load(ctx context.Context, runID string, after int64) iter.Seq2[agent.Entry, error] {

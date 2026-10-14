@@ -3,6 +3,7 @@ package approvals_test
 import (
 	"context"
 	"crypto/sha256"
+	"encoding/base64"
 	"encoding/hex"
 	"encoding/json"
 	"net"
@@ -662,5 +663,38 @@ func TestDecision_ConcurrentIdenticalFiresOnce(t *testing.T) {
 			t.Fatalf("iteration %d: %d requests say recorded (want 1), %d hooks (want 1)", i, n, hooks)
 		}
 		mu.Unlock()
+	}
+}
+
+// A record another process wrote first, under the same name, is the one the journal holds: this
+// request did not write it, so it says recorded false and OnRecorded does not run for it.
+func TestDecision_RecordWrittenFirstByAnotherProcess(t *testing.T) {
+	var mu sync.Mutex
+	hooks := 0
+	r := newRig(t, approvals.OnRecorded(func(context.Context, approvals.Recorded) { mu.Lock(); hooks++; mu.Unlock() }),
+		approvals.WithOnError(func(err error) { t.Log(err) }))
+	b := r.decision("alice", true)
+	at, _ := agent.ParseTimestamp(b.DecidedAt)
+	d := agent.Decision{RunID: runID, ToolUseID: "c1", ApproverID: "alice", Approved: true, DecidedAt: at, Alg: agent.Alg(b.Alg)}
+	sig, _ := base64.StdEncoding.DecodeString(b.Signature)
+	d.Signature = sig
+	rec := agent.Record{Kind: agent.StepApproval, ToolUseID: "c1", Approved: true, ApproverSignature: &agent.ApproverSignature{
+		Approver: "alice", ApproverAlg: d.Alg, Signature: sig, DecidedAt: b.DecidedAt, RecordedAt: "2026-10-13T11:00:00.000Z"}}
+	data, err := agent.EncodeRecord(rec)
+	if err != nil {
+		t.Fatal(err)
+	}
+	r.stall.mu.Lock()
+	r.stall.preempt = &preemption{name: agent.DecisionStep(d), data: data}
+	r.stall.mu.Unlock()
+	status, out := r.post(b)
+	if status != 200 || out["recorded"] != false || out["counted"] != true {
+		t.Fatalf("status %d: %v", status, out)
+	}
+	r.h.Wait()
+	mu.Lock()
+	defer mu.Unlock()
+	if hooks != 0 {
+		t.Fatalf("OnRecorded ran %d times for a record this request did not write", hooks)
 	}
 }
