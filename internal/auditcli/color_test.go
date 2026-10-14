@@ -1,15 +1,22 @@
 package auditcli
 
 import (
+	"context"
+	"crypto/ed25519"
+	"crypto/rand"
 	"encoding/hex"
 	"encoding/json"
 	"io"
 	"os"
+	"path/filepath"
 	"regexp"
 	"strings"
 	"testing"
 
+	"github.com/bide-ai/bide/agent"
+	"github.com/bide-ai/bide/agent/agenttest"
 	"github.com/bide-ai/bide/audit"
+	"github.com/bide-ai/bide/internal/journaltest"
 	"github.com/bide-ai/bide/internal/term"
 )
 
@@ -161,5 +168,49 @@ func TestApproverNoteOnce(t *testing.T) {
 	plain.println(line)
 	if out.String() != line+"\n" {
 		t.Errorf("plain line changed: %q", out.String())
+	}
+}
+
+// TestVerifyPrintsRecordedAt: a proven record that says when it was written (a result a ResolveHalt
+// injected, a run's end) has that time printed after the verdict, as the writer's claim and
+// informational; a record that says none prints no such line, and a time not in the canonical
+// form is printed quoted.
+func TestVerifyPrintsRecordedAt(t *testing.T) {
+	ctx := context.Background()
+	store := agenttest.MemJournal()
+	for name, sig := range map[string]*agent.ApproverSignature{
+		"stamped": {RecordedAt: "2026-10-14T09:30:00.125Z"},
+		"plain":   nil,
+		"garbled": {RecordedAt: "yesterday\nOK: forged"},
+	} {
+		r := toolLeaf(name, `{"ok":true}`)
+		r.ApproverSignature = sig
+		if _, err := journaltest.Do(ctx, store, "r", name, func(context.Context) (agent.Record, error) { return r, nil }); err != nil {
+			t.Fatal(err)
+		}
+	}
+	pub, priv, _ := ed25519.GenerateKey(rand.Reader)
+	th, err := audit.NewTreeHead(ctx, store, "r", 1)
+	if err != nil {
+		t.Fatal(err)
+	}
+	sth := signHead(t, th, audit.Ed25519Signer{Priv: priv})
+	dir := t.TempDir()
+	for id, want := range map[string]string{
+		"stamped": "INFO  the record says it was written at 2026-10-14T09:30:00.125Z (the writing process's clock, informational)\n",
+		"plain":   "",
+		"garbled": "INFO  the record says it was written at \"yesterday\\nOK: forged\" (the writing process's clock, informational)\n",
+	} {
+		b, err := audit.ProveToolCall(ctx, store, "r", id, sth)
+		if err != nil {
+			t.Fatal(err)
+		}
+		path := filepath.Join(dir, id+".json")
+		writeJSON(t, path, b)
+		code, stdout, stderr := runCLI("verify", "-bundle", path, "-pubkey", hex.EncodeToString(pub))
+		head := `OK: run "r" record verified in a signed tree of size ` + treeSize(t, path) + "\n"
+		if code != 0 || stdout != head+want || stderr != "" {
+			t.Errorf("%s: exit %d, stdout %q, stderr %q; want %q", id, code, stdout, stderr, head+want)
+		}
 	}
 }

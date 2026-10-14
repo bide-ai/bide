@@ -100,7 +100,9 @@ const usageText = `bide audit: produce and verify audit proof bundles
          build a ProofBundle for one record against a signed tree head
 
   verify -bundle <file> -pubkey <hex|file>
-         verify a ProofBundle offline (its head must be a journal head of the bundle's run)
+         verify a ProofBundle offline (its head must be a journal head of the bundle's run);
+         if the proven record says when it was written (a single approver's decision, a
+         resolved halt, a run's end), print that time as the writing process's claim
 
   verify-governance -policy <file> [-digest <hex>] [-checker <astchecker>]
          recompute the policy digest and, with -checker, run the external verified
@@ -379,6 +381,16 @@ func (c *cli) verify(args []string) {
 	}
 	c.checked(bundle.STH.TreeHead)
 	c.printf("OK: run %q record verified in a signed tree of size %d\n", bundle.RunID, bundle.STH.Size)
+	c.recordedAt(recordOf(bundle))
+}
+
+// recordedAt prints when a proven record says it was written (its recorded_at), if it says: the
+// claim of the process that wrote it, committed to by the proof but not vouched for by any clock,
+// printed through timeText. It adds nothing for a record that records no time.
+func (c *cli) recordedAt(r agent.Record) {
+	if s := r.RecordedAt(); s != "" {
+		c.printf("INFO  the record says it was written at %s (the writing process's clock, informational)\n", timeText(s))
+	}
 }
 
 // verifyBundle checks b is authentic under v. A bundle that does not verify is a FAIL verdict
