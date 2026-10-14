@@ -59,6 +59,7 @@ func NotifyPending(ctx context.Context, j *Journal, n Notifier, trail NotifyTrai
 		if IsSessionRun(runID) {
 			continue // the session drives it
 		}
+		e.queueScan(runID) // an event delivered earlier may have stopped being current
 		if !IsSubRun(runID) {
 			if abortEntry, aborted, err := j.getEntry(ctx, runID, runAbortedStep); err != nil {
 				errs = append(errs, fmt.Errorf("notification sweep: read run %s: %w", runID, err))

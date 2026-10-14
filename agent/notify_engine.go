@@ -193,6 +193,9 @@ func (e *notifyEngine) appendRec(ctx context.Context, trail string, seq int, rec
 // holds the claim. It returns when the event is closed, when another process holds a live claim,
 // or after a round of failed attempts.
 func (e *notifyEngine) round(ctx context.Context, ev notifyEvent) (roundResult, error) {
+	if ev.scan {
+		return e.scanRound(ctx, ev)
+	}
 	e.mu.Lock()
 	km := e.keyMu[ev.key]
 	if km == nil {
@@ -356,12 +359,22 @@ func (e *notifyEngine) roundLocked(ctx context.Context, ev notifyEvent) (roundRe
 			}
 			rec := NotifyRecord{Kind: NotifyObserved, Key: ev.key, RunID: ev.runID, At: now,
 				EventKind: string(ev.kind), EventAt: at, DeadlineAt: now.Add(e.cfg.deadline)}
+			if ev.kind == NotificationResolved {
+				// A clear is never overdue, so it has no deadline; it records why the event ended.
+				rec.DeadlineAt, rec.Reason = time.Time{}, ev.reason
+			}
 			if _, err := e.appendRec(ctx, name, len(recs), rec); err != nil {
 				return roundResult{next: now.Add(e.backoff(e.failCount(ev.key)))}, err
 			}
 			continue // reload: the position may have been taken, and the fold decides either way
 		}
 		if !es.Open() {
+			// An event cleared after a delivery was attempted may have reached its receiver: its
+			// all-clear is owed. Whoever sees it cleared queues it, so a death after the clearing
+			// loses nothing; the all-clear's own records make it once.
+			if es.Cleared != nil && es.Rounds > 0 && resolvable(es.Kind) && st.Events[ResolvedKey(ev.key)] == nil {
+				e.w.submit(clearOf(es, es.Cleared.Reason, es.Cleared.At))
+			}
 			return roundResult{done: true}, nil
 		}
 
@@ -385,7 +398,7 @@ func (e *notifyEngine) roundLocked(ctx context.Context, ev notifyEvent) (roundRe
 			return e.ack(ctx, ev, name, pa.first, pa.attempts, pa.ack)
 		}
 
-		if ev.kind != NotificationOverdue && es.OverdueDue(now) {
+		if ev.kind != NotificationOverdue && ev.kind != NotificationResolved && es.OverdueDue(now) {
 			rec := NotifyRecord{Kind: NotifyOverdue, Key: ev.key, RunID: ev.runID, At: now, Latency: now.Sub(es.ObservedAt)}
 			if _, err := e.appendRec(ctx, name, len(recs), rec); err != nil {
 				return roundResult{next: now.Add(e.backoff(e.failCount(ev.key)))}, err
@@ -577,11 +590,15 @@ func (e *notifyEngine) deliverOverdueNotice(ctx context.Context, ev notifyEvent,
 }
 
 func (e *notifyEngine) notification(ev notifyEvent, es *NotifyEvent, attempt int) Notification {
-	return Notification{
+	n := Notification{
 		ID: NotifyID(ev.key), Key: ev.key, Kind: ev.kind, RunID: ev.runID,
 		EventAt: es.EventAt, Observed: es.ObservedAt, Deadline: es.DeadlineAt, Attempt: attempt,
 		Halt: ev.halt, Approval: ev.approval, Principal: ev.principal, Reason: ev.reason, Err: ev.err,
 	}
+	if ev.kind == NotificationResolved {
+		n.Clears = &NotifyClears{Key: ev.origKey, ID: NotifyID(ev.origKey), Kind: ev.origKind}
+	}
+	return n
 }
 
 // ack records the sink's acknowledgement. The sink has accepted by now, so a failure to record it is
@@ -677,7 +694,7 @@ func (e *notifyEngine) current(ctx context.Context, ev notifyEvent, st NotifySta
 			return false, "resolved", nil
 		}
 		return true, "", nil
-	case NotificationRunAborted:
+	case NotificationRunAborted, NotificationResolved:
 		return true, "", nil
 	}
 	status, err := Status(ctx, e.j, ev.runID)

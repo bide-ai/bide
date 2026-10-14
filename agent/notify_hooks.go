@@ -110,6 +110,7 @@ func (e *notifyEngine) driveEnd(runID string, err error) {
 	if ev, ok := e.eventFromErr(runID, err); ok {
 		e.w.submit(ev)
 	}
+	e.queueScan(runID) // the drive may have resolved, decided or ended an event already delivered
 }
 
 // causeClass is the closed-set cause of a recovery failure.
@@ -198,6 +199,7 @@ func (e *notifyEngine) recoveryOK(ctx context.Context, runID string) {
 // (driven), whether it called the Resumer (resumed), and the error (a Resumer that does not drive
 // the run, ErrNotResumable, is passed as the failure it is).
 func (e *notifyEngine) afterRecover(ctx context.Context, runID string, driven, resumed bool, err error) {
+	defer e.queueScan(runID) // after recoveryOK and recoveryFailed: an episode may just have closed
 	if ev, ok := e.eventFromErr(runID, err); ok {
 		e.w.submit(ev)
 		e.recoveryOK(ctx, runID) // a halt or a gate is the run waiting for a person: recovery works

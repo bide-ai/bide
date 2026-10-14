@@ -45,7 +45,7 @@ func Args(tools ...string) Field {
 }
 
 // Payload is the JSON body of a webhook request, schema bide.notification.v1. Exactly one of Halt,
-// Approval, Abort and Failing is non-nil, where the kind has one. It is exported so a receiver can
+// Approval, Abort, Failing and Clears is non-nil, where the kind has one. It is exported so a receiver can
 // decode it; a receiver must ignore unknown fields.
 type Payload struct {
 	Schema     string     `json:"schema"`
@@ -64,6 +64,8 @@ type Payload struct {
 	Approval   *Approval  `json:"approval"`
 	Abort      *Abort     `json:"abort"`
 	Failing    *Failing   `json:"failing"`
+	// Clears is present for a resolved notification: the event it ends.
+	Clears *Clears `json:"clears"`
 	Reason     string     `json:"reason,omitempty"`
 	View       View       `json:"view"`
 	// Error is present only with WithFields(ErrorText).
@@ -113,6 +115,16 @@ type Abort struct {
 // Failing is the detail of a recovery_failing event; Cause is a class, not text.
 type Failing struct {
 	Cause string `json:"cause"`
+}
+
+// Clears is the detail of a resolved notification, the all-clear: the event that stopped being
+// current. ID and Key are those of that event's own notifications (their "id" and "key"). An event
+// does not become current again and its key is never reused, so a receiver may treat every
+// delivery of ID, before or after this one, as superseded: the all-clear can arrive first.
+type Clears struct {
+	ID   string `json:"id"`
+	Key  string `json:"key"`
+	Kind string `json:"kind"`
 }
 
 // View points at where to look. It never carries an approve or resolve link: acting from a
@@ -202,6 +214,14 @@ func (w *Webhook) payload(n agent.Notification) Payload {
 	case agent.NotificationRecoveryFailing:
 		p.Failing = &Failing{Cause: n.Reason}
 		p.Summary = fmt.Sprintf("Recovery of run %s keeps failing.", run)
+	case agent.NotificationResolved:
+		p.Reason = n.Reason
+		if c := n.Clears; c != nil {
+			p.Clears = &Clears{ID: c.ID, Key: c.Key, Kind: string(c.Kind)}
+			p.Summary = fmt.Sprintf("Run %s: the %s event is over (%s). No action is needed for it.", run, c.Kind, n.Reason)
+		} else {
+			p.Summary = fmt.Sprintf("Run %s: an event that was reported is over (%s).", run, n.Reason)
+		}
 	case agent.NotificationOverdue:
 		p.Reason = n.Reason
 		p.Summary = fmt.Sprintf("A notification for run %s was not acknowledged by its deadline.", run)

@@ -466,7 +466,7 @@ func TestPayloadShape(t *testing.T) {
 	if v := m["view"].(map[string]any); v["command"] != "bide view -db <journal.db> -run orders-1042" || v["url"] != nil {
 		t.Fatalf("view: %v", v)
 	}
-	if m["halt"] != nil || m["abort"] != nil || m["failing"] != nil {
+	if m["halt"] != nil || m["abort"] != nil || m["failing"] != nil || m["clears"] != nil {
 		t.Fatalf("other details must be null: %v", m)
 	}
 	// No principal: null, not an empty object.
@@ -501,6 +501,30 @@ func TestPayloadHaltAndOthers(t *testing.T) {
 	}
 }
 
+func TestPayloadResolvedNamesTheEventItClears(t *testing.T) {
+	w := plainWebhook(t)
+	at := time.Date(2026, 10, 13, 9, 30, 0, 0, time.UTC)
+	key := agent.HaltedKey("r1", agent.OpTool, "call_9", 1)
+	n := agent.Notification{ID: agent.NotifyID(agent.ResolvedKey(key)), Key: agent.ResolvedKey(key), Kind: agent.NotificationResolved,
+		RunID: "r1", EventAt: at, Reason: "resolved", Attempt: 1,
+		Clears: &agent.NotifyClears{Key: key, ID: agent.NotifyID(key), Kind: agent.NotificationOutcomeUnknown}}
+	m, body := notifyJSON(t, w, n)
+	c, ok := m["clears"].(map[string]any)
+	if !ok || c["id"] != agent.NotifyID(key) || c["key"] != key || c["kind"] != "outcome_unknown" {
+		t.Fatalf("clears: %v", m["clears"])
+	}
+	if m["kind"] != "resolved" || m["reason"] != "resolved" || m["id"] != agent.NotifyID(agent.ResolvedKey(key)) ||
+		m["event_at"] != "2026-10-13T09:30:00Z" || m["deadline_at"] != nil {
+		t.Fatalf("resolved: %s", body)
+	}
+	if m["halt"] != nil || m["approval"] != nil || m["abort"] != nil || m["failing"] != nil {
+		t.Fatalf("other details must be null: %s", body)
+	}
+	if !strings.Contains(m["summary"].(string), "outcome_unknown") {
+		t.Fatalf("summary %q", m["summary"])
+	}
+}
+
 func TestPayloadIsMinimalByDefault(t *testing.T) {
 	w := plainWebhook(t)
 	n := approvalWithSecrets()
@@ -518,7 +542,7 @@ func TestPayloadIsMinimalByDefault(t *testing.T) {
 	// Exactly the documented top-level fields: a new one must be a deliberate, reviewed change.
 	want := map[string]bool{"schema": true, "id": true, "key": true, "kind": true, "run_id": true, "event_at": true, "observed_at": true,
 		"deadline_at": true, "attempt": true, "summary": true, "step": true, "halt": true, "principal": true, "approval": true,
-		"abort": true, "failing": true, "view": true}
+		"abort": true, "failing": true, "clears": true, "view": true}
 	for k := range m {
 		if !want[k] {
 			t.Errorf("undocumented top-level field %q", k)

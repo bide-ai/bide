@@ -2,6 +2,7 @@ package agent
 
 import (
 	"context"
+	"errors"
 	"testing"
 	"time"
 )
@@ -349,5 +350,67 @@ func TestResolved_TheSweepSendsTheAllClear(t *testing.T) {
 	}
 	if err := sweep(t, j, sink, trail, clk); err != nil || len(resolvedCalls(sink)) != 1 {
 		t.Fatalf("a later sweep sent it again: %v", err)
+	}
+}
+
+// The drive that follows ResolveHalt tells the notifier, and the receiver gets the all-clear
+// without any sweep.
+func TestResolved_TheDriveAfterResolveHaltSendsTheAllClear(t *testing.T) {
+	ctx := context.Background()
+	charge := MustFunc("charge", "", func(context.Context, struct{}) (string, error) { return "ok", nil })
+	store := markerAt(t, time.Date(2026, 10, 13, 9, 0, 0, 0, time.UTC).UnixMilli())
+	j := mustJournal(store)
+	trail, sink := NewMemNotifyTrail(), &fakeSink{}
+	a := mustNew(NewScriptedModel(TextTurn("done")), j, WithTools(charge), WithNotifier(sink, trail))
+
+	if _, err := a.Run(ctx, "r", UserText("go")); !errorsAsHalt(err) {
+		t.Fatalf("Run = %v, want *OutcomeUnknown", err)
+	}
+	if err := a.FlushNotifications(ctx); err != nil {
+		t.Fatal(err)
+	}
+	if sink.count() != 1 {
+		t.Fatalf("calls = %d, want the halt", sink.count())
+	}
+	if err := ResolveHalt(ctx, j, HaltRef{RunID: "r", Op: OpRef{Kind: OpTool, ID: "c1"}, Cause: HaltCrashed}, Outcome{Result: "charged"}); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := a.Run(ctx, "r", UserText("go")); err != nil {
+		t.Fatalf("Run after the resolution = %v", err)
+	}
+	if err := a.FlushNotifications(ctx); err != nil {
+		t.Fatal(err)
+	}
+	got := resolvedCalls(sink)
+	if len(got) != 1 || got[0].Reason != "ended" && got[0].Reason != "resolved" || got[0].Clears.ID != sink.calls[0].ID {
+		t.Fatalf("calls = %+v", sink.calls)
+	}
+}
+
+func errorsAsHalt(err error) bool {
+	var h *OutcomeUnknown
+	return errors.As(err, &h)
+}
+
+// A recovery pass that ends a run's story queues the scan too, and a pass of a sub-run does not.
+func TestResolved_ARecoveryPassScansTheRunsTrail(t *testing.T) {
+	ctx := context.Background()
+	j := memJournal()
+	trail, sink := NewMemNotifyTrail(), &fakeSink{}
+	e := testEngine(t, j, sink, trail, resolvedClock(), "p1")
+	if res, err := e.round(ctx, haltEvent()); err != nil || !res.done {
+		t.Fatal(res, err)
+	}
+	putResult(t, j, "r", "c1")
+	e.afterRecover(ctx, "r>sub", true, true, nil)
+	if err := e.flush(ctx); err != nil || len(resolvedCalls(sink)) != 0 {
+		t.Fatalf("a sub-run's pass scanned: %v %d", err, len(resolvedCalls(sink)))
+	}
+	e.afterRecover(ctx, "r", true, true, nil)
+	if err := e.flush(ctx); err != nil {
+		t.Fatal(err)
+	}
+	if got := resolvedCalls(sink); len(got) != 1 {
+		t.Fatalf("all-clears = %+v", got)
 	}
 }
