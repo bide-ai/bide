@@ -246,6 +246,7 @@ is in [known limitations](docs/KNOWN-LIMITATIONS.md#governed-state-gsm).
 - **[Human approval](docs/guides/hitl-approval.md)**: sign-off before a tool runs, 1-of-1 to signed m-of-n, with offline proof that k named approvers approved first. Runnable: `examples/approval`.
 - **[A refund against Stripe test mode](examples/stripe-refund/README.md)**: kill a refund agent mid-refund; the restart halts instead of refunding twice, then a reconciler resolves the step from Stripe's own record. Runnable: `examples/stripe-refund`.
 - **[Security model](docs/guides/security-model.md)**: the exact scope of the cryptographic guarantees, and the audit-only build of `bide`. Read before relying on the trail.
+- **[Key custody](docs/guides/key-custody.md)**: audit-log and approver signing keys in a PKCS#11 HSM (SoftHSM2 for tests) or AWS KMS, behind `audit.Signer`. Runnable: `examples/hsm-signing`.
 - **[Delegation](docs/guides/delegation.md)**, **[Governance](docs/guides/governance.md)**, **[Quorum](docs/guides/quorum.md)**: signed grants a sub-agent can only narrow, convergent governed state (gsm), and governed k-of-n agreement.
 
 **Reference**

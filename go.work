@@ -7,6 +7,7 @@ use (
 	./codec/gcf
 	./examples/approval
 	./examples/govern
+	./examples/hsm-signing
 	./examples/mcp
 	./examples/observability
 	./examples/plan
@@ -17,6 +18,8 @@ use (
 	./govern/sqlitelog
 	./integration
 	./mcptools
+	./signer/awskms
+	./signer/pkcs11
 	./store/postgres
 	./store/sqlite
 	./trace

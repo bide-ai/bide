@@ -50,14 +50,14 @@ GITHUB_REPO=${BIDE_GITHUB_REPO:-bide-ai/bide}
 PROXY=https://proxy.golang.org
 
 # Libraries users import. Each is tagged <dir>/vX.Y.Z at every release.
-PUBLISHED="govern store/sqlite store/postgres mcptools trace codec/gcf govern/sqlitelog govern/redislog govern/postgreslog cmd/bide cmd/bide-view"
+PUBLISHED="govern store/sqlite store/postgres mcptools trace codec/gcf govern/sqlitelog govern/redislog govern/postgreslog signer/pkcs11 signer/awskms cmd/bide cmd/bide-view"
 # Published modules whose root package is a command (package main), installed with go install. The
 # consumer check builds them instead of importing them, since a program cannot be imported.
 # cmd/bide-view is a signpost to bide view, tagged one last time at v0.14.0 and then removed.
 COMMANDS="cmd/bide cmd/bide-view"
 # Modules that exist only to keep their dependencies out of the core. They keep their replace
 # directives and are never tagged.
-REPO_ONLY="examples/approval examples/govern examples/mcp examples/observability examples/plan examples/stripe-refund integration benchmarks"
+REPO_ONLY="examples/approval examples/govern examples/hsm-signing examples/mcp examples/observability examples/plan examples/stripe-refund integration benchmarks"
 
 # gorun runs the go command the way the release resolves modules; the release flow below replaces it.
 gorun() { env GOWORK=off go "$@"; }

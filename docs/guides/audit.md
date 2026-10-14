@@ -122,7 +122,8 @@ ag.Run(ctx, runID, agent.UserText(input)) // each step → a signed STH, publish
 ```
 
 The signer is any `audit.Signer`: `Ed25519Signer`, `MLDSASigner`, or `HybridSigner` (see
-[Signature schemes](#signature-schemes-and-post-quantum-anchoring)).
+[Signature schemes](#signature-schemes-and-post-quantum-anchoring)), or an Ed25519 key held in a
+PKCS#11 token or AWS KMS (see [Key custody](key-custody.md)).
 
 On every journal growth (each `Insert` that stores an entry) `AuditedStore` commits the run's
 Merkle root, signs an STH, and calls `Anchor.Publish`. It anchors after every insert, whether it
@@ -883,7 +884,8 @@ binding hold whichever scheme signs. An evidence package names its key by `{alg,
 `EvidencePackage.Verify` refuses a verifier whose scheme or key is not that one. Three schemes are
 available, all in the Go 1.27 standard library, so this adds no dependency:
 
-- `ed25519` (`Ed25519Signer`): small, fast, FIPS-approved.
+- `ed25519` (`Ed25519Signer`): small, fast, FIPS-approved. Its key can be held in a PKCS#11 token or AWS
+  KMS instead of in memory ([Key custody](key-custody.md)).
 - `ml-dsa-65` (`MLDSASigner`, FIPS 204): post-quantum.
 - `ed25519+ml-dsa-65` (`HybridSigner`): accepted only if both signatures verify. Each component
   signs its own label followed by the message (`bide.hybrid.ed25519.v1` and

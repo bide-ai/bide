@@ -13,6 +13,7 @@ Each section says what the limit is, whether it affects you, and what to do abou
 - [Approval and quorum](#approval-and-quorum)
 - [Plan flows](#flows)
 - [Audit and proofs](#audit-and-proofs)
+- [Key custody](#key-custody)
 - [Governed state (gsm)](#governed-state-gsm)
 - [Stores](#stores)
 
@@ -300,6 +301,19 @@ re-hash everything in it. See [Audit](guides/audit.md#security-model-read-this-f
 cannot be matched against guessed neighbouring records. Key-set leaves are not salted, because an absence proof names its
 neighbouring keys by design, and neither are anchor-log leaves, which hold signed tree heads meant to
 be public.
+
+## Key custody
+
+A signing key can be held in a PKCS#11 token or AWS KMS ([Key custody](guides/key-custody.md)). What is and is not supported:
+
+- **Ed25519 only.** The PKCS#11 and KMS signers sign `ed25519` and refuse a token or key that cannot (`ErrNoEd25519`); they never substitute another algorithm. A token or key service with only ECDSA P-256 cannot be used, because bide has no `ecdsa-p256` signature scheme. An `ecdsa-p256` scheme is planned, and the signers will get a P-256 mode when it lands.
+- **No ML-DSA or hybrid in a token.** `audit.HybridSigner` holds a software Ed25519 key, and KMS has no ML-DSA context parameter, so post-quantum and hybrid anchoring use software keys. Hybrid in a token is deferred.
+- **The PKCS#11 signer is tested against SoftHSM2 only.** No hardware HSM has been tried. It uses `CKM_EDDSA` without parameters (pure Ed25519) and needs cgo; a token that requires `CK_EDDSA_PARAMS` for pure Ed25519 is not supported.
+- **The AWS KMS signer is tested against a fake client, never against AWS.** Whether KMS's `ED25519_SHA_512` output verifies under bide's verifier rests on AWS's documentation of that algorithm.
+- **KMS signs at most 4096 bytes.** Tree heads, grants and approver decisions fit unless they carry long text: a tree head is about 110 bytes plus the run ID's length, and an approver decision includes the tool call's arguments. An evidence package seal signs the whole package and exceeds that once the package proves more than a few actions, so `audit.Evidence` fails with `awskms.ErrMessageTooLarge` for such a package. Sealing over a digest of the package, which removes the limit, is planned.
+- **No attestation.** bide does not check that a key was generated in hardware. The PKCS#11 signer can check that the token reports the key as non-extractable (`RequireNonExtractable`, off by default), which is the token's word and not proof, and a token or KMS key is only as separate from the application as its access policy makes it.
+- **Command-line tools that load approver keys from files do not read keys from a token or KMS yet.**
+- **Azure Key Vault and Google Cloud KMS signers do not exist yet.**
 
 ## Governed state (gsm)
 
