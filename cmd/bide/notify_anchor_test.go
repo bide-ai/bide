@@ -41,9 +41,6 @@ func anchoredGate(t *testing.T, s agent.Store, es audit.EventStore, run string, 
 	}
 	dir := t.TempDir()
 	for i, e := range anchor.Entries() {
-		if e.RunID != agent.NotifyTrailName(run) {
-			continue
-		}
 		p := filepath.Join(dir, fmt.Sprintf("head-%d.json", i))
 		b, err := json.Marshal(e.STH)
 		if err != nil {
@@ -98,6 +95,29 @@ func TestAuditNotifications_AutoAnchoredTrailOnSQLite(t *testing.T) {
 		if _, err := db.Exec(q); err != nil {
 			t.Fatal(err)
 		}
+	}
+	// The open trail's segment and index were signed and anchored too, and the verifier read them
+	// against their heads (a run with no -unanchored passed above). Rewriting a record of a segment
+	// after it was anchored is found.
+	if !strings.Contains(out, "trail notify:@open:") {
+		t.Fatalf("the open trail's segment was not read:\n%s", out)
+	}
+	var orig []byte
+	var segName string
+	if err := db.QueryRow(`SELECT run_id, leaf FROM bide_events WHERE run_id LIKE 'notify:@open:2%' AND seq = 0 AND run_id NOT LIKE '%index%'`).Scan(&segName, &orig); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := db.Exec(`UPDATE bide_events SET leaf = ? WHERE run_id = ? AND seq = 0`, append(append([]byte(nil), orig...), ' '), segName); err != nil {
+		t.Fatal(err)
+	}
+	if code, out, _ := runBide(args...); code == 0 {
+		t.Fatalf("a tampered open-trail segment verified:\n%s", out)
+	}
+	if _, err := db.Exec(`UPDATE bide_events SET leaf = ? WHERE run_id = ? AND seq = 0`, orig, segName); err != nil {
+		t.Fatal(err)
+	}
+	if code, out, _ := runBide(args...); code != 0 {
+		t.Fatalf("a restored segment failed: %d\n%s", code, out)
 	}
 	// A record replaced by another valid leaf of the same trail.
 	exec(`UPDATE bide_events SET leaf = (SELECT leaf FROM bide_events WHERE run_id = 'notify:told' AND seq = 0) WHERE run_id = 'notify:told' AND seq = 1`)
