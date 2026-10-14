@@ -221,7 +221,12 @@ signed decision time in canonical form, and the signature verifies for this call
   or a record written straight into the journal is ignored, and the approver's real decision still
   counts when it arrives.
 - **A later decision does not override an earlier valid one.** A change of mind is superseded, the
-  same rule as 1-of-1. Resubmitting the identical decision is a no-op.
+  same rule as 1-of-1. Resubmitting a decision is a no-op: its journal step is named by the decision
+  (call, approver, verdict, scheme and `decided_at`, `agent.DecisionStep`), never by its signature bytes, so a
+  randomized scheme such as `ecdsa-p256`, which signs one decision differently each time, still journals it
+  once, even when two submissions race (with `WithDecisionCheck`; without it the library cannot tell a
+  re-signing from a bad record, and writes the second under a signature-derived name, which the counting
+  rule supersedes). A record that is not the approver's valid decision never takes the decision's name.
 - **Only valid denials can deny.** Invalid records never count toward "k is unreachable", so they
   cannot force a denial either.
 - **One key is one seat.** An approver whose verifier shares a key identity with another approver's,

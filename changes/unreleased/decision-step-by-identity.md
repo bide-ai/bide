@@ -1,0 +1,3 @@
+Section: Fixed
+
+`agent.SubmitDecision` names a decision's journal step by the decision (call, approver, verdict, scheme and decided_at), never by its signature bytes, so re-signing and resubmitting one decision concurrently with a randomized scheme (ECDSA P-256 from a KMS or HSM) journals one record instead of two, and `agent.ReportWritten` reports exactly one write; `agent.DecisionStep` returns the new name. Journals written under the old signature-derived names read, count and verify unchanged, a resubmission of such a decision writes nothing more, and a record that is not the approver's valid decision never takes the name the real decision needs (it is then journaled under the signature-derived name).
