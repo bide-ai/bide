@@ -362,6 +362,9 @@ func (r recorder) snapshot(dir, name string) error {
 // including what its write-ahead log holds, as a file copy of a journal a killed process left would
 // not.
 func copyJournal(src, dst string) error {
+	if _, err := os.Stat(src); err != nil { // opening a missing file would create an empty journal
+		return err
+	}
 	db, err := sql.Open("sqlite", src)
 	if err != nil {
 		return err
