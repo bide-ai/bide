@@ -235,6 +235,22 @@ func (c *cli) readStore(in *audit.NotifyVerifyInput, db, pgEnv, run string) erro
 			queue = append(queue, next)
 		}
 	}
+	// The two trails that belong to no run (the events whose all-clear may be owed, the digest's)
+	// are read whole, so a head over one is checked against all of it: they are read when the audit
+	// is of every run, or when a head names them.
+	for _, name := range []string{agent.NotifyOpenTrail, agent.NotifyDigestTrail} {
+		named := slices.ContainsFunc(in.Heads, func(h audit.SignedTreeHead) bool { return h.RunID == name })
+		if run != "" && !named {
+			continue
+		}
+		x, err := audit.ExportNotifyTrail(ctx, s.Events, name)
+		if err != nil {
+			return unusable(err)
+		}
+		if len(x.Leaves) > 0 {
+			in.Trails = append(in.Trails, x)
+		}
+	}
 	return nil
 }
 

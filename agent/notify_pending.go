@@ -110,13 +110,15 @@ func NotifyPending(ctx context.Context, j *Journal, n Notifier, trail NotifyTrai
 		errs = append(errs, fmt.Errorf("notification sweep: list earlier events: %w", err))
 	}
 	e.queueScanOpen() // the all-clear of a run that is no longer unfinished
-	if err := e.flush(context.WithoutCancel(ctx)); err != nil {
+	if err := e.flushDeliveries(context.WithoutCancel(ctx)); err != nil {
 		errs = append(errs, err)
 	}
 	// Last, after the deliveries have grown the trails: sign again any trail that grew past its last
 	// head, which an anchor outage or a process that died before anchoring left behind. Its failure
 	// goes to WithNotifyErrors, not to the sweep's result: it is not a delivery.
-	e.anchorTrails(ctx, trails...)
+	// The two trails that belong to no run are signed too: the list of events whose all-clear may be
+	// owed, and the digest's.
+	e.anchorTrails(ctx, append(trails, NotifyOpenTrail, NotifyDigestTrail)...)
 	return errors.Join(errs...)
 }
 

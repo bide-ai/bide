@@ -48,7 +48,7 @@ func TestNotifyPending_AsksTheTrailToAnchorTheTrailsItLookedAt(t *testing.T) {
 	if err := sweep(t, j, &fakeSink{}, trail, clk); err != nil {
 		t.Fatal(err)
 	}
-	if got, want := trail.all(), []string{"notify:r1", "notify:r2"}; !slices.Equal(got, want) {
+	if got, want := trail.all(), []string{NotifyDigestTrail, NotifyOpenTrail, "notify:r1", "notify:r2"}; !slices.Equal(got, want) {
 		t.Fatalf("anchored %v, want %v", got, want)
 	}
 	if len(trail.calls) != 1 {

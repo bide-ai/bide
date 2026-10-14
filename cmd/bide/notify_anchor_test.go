@@ -36,9 +36,12 @@ func anchoredGate(t *testing.T, s agent.Store, es audit.EventStore, run string, 
 	}
 	ae.OnError(func(trail string, err error) { t.Errorf("anchoring %s: %v", trail, err) })
 	gateRunOn(t, s, ae, run, true)
+	if err := ae.Flush(context.Background()); err != nil {
+		t.Fatal(err)
+	}
 	dir := t.TempDir()
 	for i, e := range anchor.Entries() {
-		if e.RunID != agent.NotifyTrailName(run) {
+		if e.RunID != agent.NotifyTrailName(run) && e.RunID != agent.NotifyOpenTrail {
 			continue
 		}
 		p := filepath.Join(dir, fmt.Sprintf("head-%d.json", i))
