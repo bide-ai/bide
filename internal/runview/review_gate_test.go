@@ -8,6 +8,7 @@ import (
 	"time"
 
 	"github.com/bide-ai/bide/agent"
+	"github.com/bide-ai/bide/agent/agenttest"
 	"github.com/bide-ai/bide/audit"
 )
 
@@ -32,14 +33,32 @@ func gateOf(t *testing.T, run, call string, mutate func(j *agent.Journal)) Gate 
 	return Gate{}
 }
 
-// A stray unsigned agent.Approve record on an m-of-n call is ignored by the runtime; it must not
-// turn the gate into a one-decision gate, nor let the viewer say "approved (single decision)".
+// pausedGate pauses a run at a 2-of-3 gate and returns its journal.
+func pausedGate(t *testing.T) *agent.Journal {
+	t.Helper()
+	j := agenttest.MemJournal()
+	policy := agent.ApprovalPolicy{Need: 2, Approvers: []string{"ops", "finance", "risk"}}
+	refund := agent.MustFunc("refund", "refund", func(context.Context, struct{}) (string, error) { return "ok", nil }, agent.WithApproval(&policy))
+	verify := func(string) (agent.ApproverVerifier, bool) { return nil, false }
+	m := agenttest.NewScriptedModel(agenttest.ToolTurn("c1", "refund", `{}`), agenttest.TextTurn("done"))
+	if _, err := agenttest.MustNew(m, j, agent.WithTools(refund), agent.WithApproverVerifiers(verify)).Run(context.Background(), "r1", agent.UserText("go")); err == nil {
+		t.Fatal("no pause")
+	}
+	return j
+}
+
+// A stray unsigned agent.Approve record, the first on an m-of-n call, is ignored by the runtime; it
+// must not turn the gate into a one-decision gate, nor let the viewer say "approved (single decision)".
 func TestGate_StrayUnsignedApproveDoesNotMakeItSingle(t *testing.T) {
-	g := gateOf(t, "refund-1043", "c2", func(j *agent.Journal) {
-		if err := agent.Approve(context.Background(), j, "refund-1043", "c2", true); err != nil {
-			t.Fatal(err)
-		}
-	})
+	j := pausedGate(t)
+	if err := agent.Approve(context.Background(), j, "r1", "c1", true); err != nil {
+		t.Fatal(err)
+	}
+	recs, _ := j.History(context.Background(), "r1")
+	var g Gate
+	for _, x := range Build(context.Background(), "r1", recs, nil).Gates {
+		g = x
+	}
 	if g.Single || strings.Contains(g.Status, "single") || strings.HasPrefix(g.Status, "approved") {
 		t.Fatalf("gate = single %v, status %q", g.Single, g.Status)
 	}
