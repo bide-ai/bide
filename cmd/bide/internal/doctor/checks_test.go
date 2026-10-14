@@ -8,6 +8,7 @@ import (
 	"net/http"
 	"os"
 	"path/filepath"
+	"runtime"
 	"strings"
 	"testing"
 )
@@ -82,6 +83,9 @@ func TestVersionCheckBranches(t *testing.T) {
 // TestSQLiteUnwritableTemp: with no usable temporary directory the check fails and says to fix
 // TMPDIR, rather than passing without writing a journal.
 func TestSQLiteUnwritableTemp(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("os.TempDir reads TMP and TEMP on Windows, not TMPDIR")
+	}
 	t.Setenv("TMPDIR", filepath.Join(t.TempDir(), "gone"))
 	r := checkSQLite()
 	if r.Status != Fail || !strings.Contains(r.Detail, "temporary directory") || !strings.Contains(r.Fix, "TMPDIR") {
@@ -159,7 +163,7 @@ func TestWritable(t *testing.T) {
 	if err := os.Mkdir(ro, 0o500); err != nil {
 		t.Fatal(err)
 	}
-	if os.Geteuid() != 0 {
+	if os.Geteuid() != 0 && runtime.GOOS != "windows" { // Windows ignores directory mode bits
 		if err := writable(ro); err == nil || err.Error() != "cannot write there" {
 			t.Errorf("a read-only dir: %v", err)
 		}
