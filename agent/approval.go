@@ -794,14 +794,34 @@ func DecisionStep(d Decision) string {
 	return approvalDecisionStep(d.ToolUseID, d.ApproverID, d.Approved, d.Alg, FormatTimestamp(d.DecidedAt), d.Signature)
 }
 
-// ApproveOption configures SubmitDecision: WithDecisionCheck, or WithClock for the clock that
-// stamps the decision's RecordedAt.
+// ReportWritten makes SubmitDecision set *wrote to whether this call stored the decision's record:
+// true when its Insert won the store's first-writer race, false when the journal already held the
+// decision (an identical resubmission, another writer's record under the same name, a concurrent
+// call that wrote it first, in this process or another). It is false when SubmitDecision returns an
+// error. Of any number of concurrent identical submissions exactly one sees true, which is what a
+// service that acts once per recorded decision needs. wrote must not be shared between calls.
+func ReportWritten(wrote *bool) ApproveOption { return reportWritten{wrote} }
+
+type reportWritten struct{ p *bool }
+
+func (r reportWritten) applyApprove(o *approveOptions) error {
+	if r.p == nil {
+		return fmt.Errorf("ReportWritten: nil pointer: %w", ErrConfig)
+	}
+	*r.p = false
+	o.wrote = r.p
+	return nil
+}
+
+// ApproveOption configures SubmitDecision: WithDecisionCheck, WithClock for the clock that stamps
+// the decision's RecordedAt, or ReportWritten.
 type ApproveOption interface {
 	applyApprove(*approveOptions) error
 }
 
 type approveOptions struct {
 	verifierFor ApproverVerifierFor
+	wrote       *bool // ReportWritten
 	now         func() time.Time
 }
 
@@ -921,6 +941,9 @@ func submitDecision(ctx context.Context, store *Journal, op string, d Decision, 
 		if err := opt.applyApprove(&o); err != nil {
 			return fmt.Errorf("%s: %w", op, err)
 		}
+	}
+	if o.wrote != nil {
+		ctx = context.WithValue(ctx, wroteKey{}, o.wrote)
 	}
 	reqSeq, flow, err := flowDecision(ctx, store, op, d.RunID, d.ToolUseID)
 	if err != nil {

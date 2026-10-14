@@ -493,12 +493,22 @@ func (j *Journal) insert(ctx context.Context, runID, name string, rec Record) ([
 	if err != nil {
 		return nil, fmt.Errorf("encode step %q: %w (%w)", name, err, ErrStorage)
 	}
-	e, _, err := j.store.Insert(ctx, runID, name, data)
+	e, inserted, err := j.store.Insert(ctx, runID, name, data)
 	if err != nil {
 		return nil, storageErr(fmt.Sprintf("record step %q of run %s", name, runID), err)
 	}
+	if inserted {
+		if w, ok := ctx.Value(wroteKey{}).(*bool); ok {
+			*w = true // this call's Insert won the first-writer race: the record is its own
+		}
+	}
 	return e.Data, nil
 }
+
+// wroteKey is the context key under which a caller asks insert to report that its Insert stored the
+// record (see ReportWritten). Only the caller that runs a shared step's function reaches insert, so
+// the flag is set for that caller alone.
+type wroteKey struct{}
 
 // protocol:claims begin Open
 

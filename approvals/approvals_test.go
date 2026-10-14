@@ -1,6 +1,7 @@
 package approvals_test
 
 import (
+	"bytes"
 	"context"
 	"crypto/sha256"
 	"encoding/base64"
@@ -8,6 +9,7 @@ import (
 	"encoding/json"
 	"net"
 	"net/http"
+	"net/http/httptest"
 	"strings"
 	"sync"
 	"testing"
@@ -696,5 +698,67 @@ func TestDecision_RecordWrittenFirstByAnotherProcess(t *testing.T) {
 	defer mu.Unlock()
 	if hooks != 0 {
 		t.Fatalf("OnRecorded ran %d times for a record this request did not write", hooks)
+	}
+}
+
+// Two handlers over one store (two replicas of an application): identical decisions sent to both at
+// once leave one record, exactly one response says recorded, and OnRecorded runs once in all.
+func TestDecision_TwoHandlersOneStore(t *testing.T) {
+	for i := range 20 {
+		var mu sync.Mutex
+		hooks := 0
+		hook := approvals.OnRecorded(func(context.Context, approvals.Recorded) { mu.Lock(); hooks++; mu.Unlock() })
+		off := []approvals.Option{approvals.WithRateLimit(0, 0), approvals.WithGlobalRateLimit(0, 0), hook}
+		r := newRig(t, off...)
+		j2, err := agent.NewJournal(r.app.Store())
+		if err != nil {
+			t.Fatal(err)
+		}
+		h2, err := approvals.New(j2, r.verifiers, append([]approvals.Option{approvals.WithClock(r.clock)}, off...)...)
+		if err != nil {
+			t.Fatal(err)
+		}
+		srv2 := httptest.NewServer(h2)
+		b := r.decision("alice", true)
+		raw, _ := json.Marshal(b)
+		var wg sync.WaitGroup
+		recorded := make(chan bool, 8)
+		start := make(chan struct{})
+		for k := range 8 {
+			url := r.srv.URL
+			if k%2 == 1 {
+				url = srv2.URL
+			}
+			wg.Go(func() {
+				<-start
+				resp, err := http.Post(url+"/decisions", "application/json", bytes.NewReader(raw))
+				if err != nil {
+					t.Error(err)
+					return
+				}
+				defer resp.Body.Close()
+				var out map[string]any
+				_ = json.NewDecoder(resp.Body).Decode(&out)
+				rec, _ := out["recorded"].(bool)
+				recorded <- rec
+			})
+		}
+		close(start)
+		wg.Wait()
+		close(recorded)
+		n := 0
+		for rec := range recorded {
+			if rec {
+				n++
+			}
+		}
+		r.h.Wait()
+		h2.Wait()
+		srv2.Close()
+		mu.Lock()
+		if n != 1 || hooks != 1 {
+			t.Fatalf("iteration %d: %d responses say recorded (want 1), %d hooks (want 1)", i, n, hooks)
+		}
+		mu.Unlock()
 	}
 }

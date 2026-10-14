@@ -672,15 +672,9 @@ func (h *Handler) decide(w http.ResponseWriter, r *http.Request) {
 			writeError(w, http.StatusConflict, "not_waiting", "the gate takes no more decisions: "+st)
 			return
 		}
-		// SubmitDecision reads its clock only when it writes the record (an identical request that
-		// races it shares that write, and a record another process wrote first is read back), so
-		// the stamp says whether this request wrote: the clock was read and the record carries it.
-		var stamp string
-		err = agent.SubmitDecision(ctx, h.j, d, agent.WithDecisionCheck(h.verifiers), agent.WithClock(func() time.Time {
-			t := h.now()
-			stamp = agent.FormatTimestamp(t)
-			return t
-		}))
+		// ReportWritten says whether this request's Insert stored the record: of concurrent identical
+		// requests, in this process or another, exactly one does.
+		err = agent.SubmitDecision(ctx, h.j, d, agent.WithDecisionCheck(h.verifiers), agent.WithClock(h.now), agent.ReportWritten(&wrote))
 		switch {
 		case errors.Is(err, agent.ErrAlreadyDecided):
 			writeError(w, http.StatusConflict, "already_decided", "this approver already has a decision on the call that counts")
@@ -705,7 +699,6 @@ func (h *Handler) decide(w http.ResponseWriter, r *http.Request) {
 			h.fail(w, fmt.Errorf("decision %s recorded but not found in run %s", step, d.RunID))
 			return
 		}
-		wrote = stamp != "" && g.recs[idx].RecordedAt() == stamp
 	}
 	rc, err := audit.NewDecisionReceipt(g.subject, d, g.recs[idx], idx)
 	if err != nil {
