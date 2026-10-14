@@ -86,6 +86,8 @@ CONSTANTS
   KeyCheck,
   \* @type: Str;
   Requester,
+  \* @type: Set(Str);
+  Ancestors,
   \* @type: Str;
   Bug
 

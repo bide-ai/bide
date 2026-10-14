@@ -74,8 +74,10 @@ CONSTANTS
   MaxRedeploy,   \* budget of redeploys that change a tool's gate
   KeyCheck,      \* TRUE: the gate refuses a policy two of whose approvers' key sets meet, or one
                  \* with an empty key set (F5's fix, #109)
-  Requester,     \* the run's requester: the approver id its run:start principal names (OnBehalfOf),
+  Requester,     \* the run's requester: the approver id its run:principal names (OnBehalfOf),
                  \* or "none" when it records none (separation of duties, ExcludePrincipal)
+  Ancestors,     \* the requesters of the runs above it (a delegated sub-run's chain, recorded in its
+                 \* run:principal), each an approver id or "none" for a run that records none
   Bug            \* "none" or a historical rule, see the regression configs
 
 None == "none"
@@ -101,7 +103,7 @@ ASSUME Bug \in {"none", "ReuseNoHold", "HeldPin", "GateNoRetry", "NoMemoAfterCal
                 "MemoOverwrite", "LoserLeads", "PauseAsFailure",
                 "DenialNotFinal", "UnboundSubject", "SlotPerApprover", "NoFoldCheck",
                 "SetEqualityCheck", "NoCountExclusion", "NoRequesterExclusion",
-                "RequesterExactMatch"}
+                "RequesterExactMatch", "OwnPrincipalOnly"}
 ASSUME \A c \in Calls : Kind[c] \in {"tool", "step", "flow"}
 ASSUME MaxEvict \in Nat /\ ResolverProc \in Procs \cup {"none"} /\ ResolveVoidOnError \in BOOLEAN
 ASSUME PlainRunIdleAtCheck \in BOOLEAN
@@ -204,16 +206,24 @@ define
                        /\ Known(a)
                        /\ \/ keys[a] = {}
                           \/ \E b \in Policies[n].apprs \ {a} : Known(b) /\ keys[a] \cap keys[b] # {}
-  \* Separation of duties (ExcludePrincipal): approver id a is the run's requester (equal, or one
-  \* spelling of it: FoldSame, the case rule); ReqIs is that test as the gate runs it (historically,
-  \* RequesterExactMatch, exact ids only).
-  ReqSame(a)    == Requester # None /\ (a = Requester \/ <<a, Requester>> \in FoldSame \/ <<Requester, a>> \in FoldSame)
-  ReqIs(a)      == IF Bug = "RequesterExactMatch" THEN Requester # None /\ a = Requester ELSE ReqSame(a)
-  \* A policy that excludes the requester never seats them, and seats no one when the run records
-  \* no requester (ReasonNoRequester). Historically (NoRequesterExclusion) the count ignored it.
+  \* Separation of duties (ExcludePrincipal): the run's requesters are its own and those of the
+  \* runs above it; approver id a is one of them when it is equal to one, or one spelling of it
+  \* (FoldSame, the case rule). ReqIs is that test as the gate runs it (historically:
+  \* RequesterExactMatch, exact ids only; OwnPrincipalOnly, the run's own requester only).
+  \* NoRequester: the run, or a run above it, records no requester.
+  Requesters    == ({Requester} \cup Ancestors) \ {None}
+  NoRequester   == Requester = None \/ None \in Ancestors
+  SameId(a, r)  == a = r \/ <<a, r>> \in FoldSame \/ <<r, a>> \in FoldSame
+  ReqSame(a)    == \E r \in Requesters : SameId(a, r)
+  ReqIs(a)      == CASE Bug = "RequesterExactMatch" -> a \in Requesters
+                     [] Bug = "OwnPrincipalOnly"    -> Requester # None /\ SameId(a, Requester)
+                     [] OTHER                       -> ReqSame(a)
+  \* A policy that excludes the requester never seats them, and seats no one when the run or a run
+  \* above it records no requester (ReasonNoRequester). Historically (NoRequesterExclusion) the
+  \* count ignored it.
   ReqExcluded(n, a) == /\ Policies[n].sod
                        /\ Bug # "NoRequesterExclusion"
-                       /\ (Requester = None \/ ReqIs(a))
+                       /\ (NoRequester \/ ReqIs(a))
   Excluded(n, a) == KeyExcluded(n, a) \/ ReqExcluded(n, a)
   Seated(c, n, v) == {a \in Policies[n].apprs : ~Excluded(n, a) /\ Counted(c, a) /\ dlog[c][Dec(c, a)].ok = v}
   NVotes(c, n, v) == Cardinality(Seated(c, n, v))
@@ -228,7 +238,7 @@ define
   \* approver); and the requester check (checkRequester): a policy that excludes the requester
   \* needs a run that records one, and need approvers besides them.
   PolValid(n)   == /\ ~\E pr \in FoldSame : pr[1] \in Policies[n].apprs /\ pr[2] \in Policies[n].apprs
-                   /\ Policies[n].sod => /\ Requester # None
+                   /\ Policies[n].sod => /\ ~NoRequester
                                          /\ Cardinality({a \in Policies[n].apprs : ~ReqIs(a)}) >= Policies[n].need
                    /\ KeyCheck => /\ \A x \in Policies[n].apprs \cap DOMAIN keys : keys[x] # {}
                                   /\ \A x, y \in Policies[n].apprs \cap DOMAIN keys :
@@ -718,13 +728,21 @@ KeyExcluded(n, a) == /\ Bug \notin {"NoCountExclusion", "SetEqualityCheck"}
 
 
 
-ReqSame(a)    == Requester # None /\ (a = Requester \/ <<a, Requester>> \in FoldSame \/ <<Requester, a>> \in FoldSame)
-ReqIs(a)      == IF Bug = "RequesterExactMatch" THEN Requester # None /\ a = Requester ELSE ReqSame(a)
+
+
+Requesters    == ({Requester} \cup Ancestors) \ {None}
+NoRequester   == Requester = None \/ None \in Ancestors
+SameId(a, r)  == a = r \/ <<a, r>> \in FoldSame \/ <<r, a>> \in FoldSame
+ReqSame(a)    == \E r \in Requesters : SameId(a, r)
+ReqIs(a)      == CASE Bug = "RequesterExactMatch" -> a \in Requesters
+                   [] Bug = "OwnPrincipalOnly"    -> Requester # None /\ SameId(a, Requester)
+                   [] OTHER                       -> ReqSame(a)
+
 
 
 ReqExcluded(n, a) == /\ Policies[n].sod
                      /\ Bug # "NoRequesterExclusion"
-                     /\ (Requester = None \/ ReqIs(a))
+                     /\ (NoRequester \/ ReqIs(a))
 Excluded(n, a) == KeyExcluded(n, a) \/ ReqExcluded(n, a)
 Seated(c, n, v) == {a \in Policies[n].apprs : ~Excluded(n, a) /\ Counted(c, a) /\ dlog[c][Dec(c, a)].ok = v}
 NVotes(c, n, v) == Cardinality(Seated(c, n, v))
@@ -739,7 +757,7 @@ Signers(c, n) == {dlog[c][Dec(c, a)].h : a \in {x \in Seated(c, n, TRUE) : dlog[
 
 
 PolValid(n)   == /\ ~\E pr \in FoldSame : pr[1] \in Policies[n].apprs /\ pr[2] \in Policies[n].apprs
-                 /\ Policies[n].sod => /\ Requester # None
+                 /\ Policies[n].sod => /\ ~NoRequester
                                        /\ Cardinality({a \in Policies[n].apprs : ~ReqIs(a)}) >= Policies[n].need
                  /\ KeyCheck => /\ \A x \in Policies[n].apprs \cap DOMAIN keys : keys[x] # {}
                                 /\ \A x, y \in Policies[n].apprs \cap DOMAIN keys :
@@ -2133,11 +2151,12 @@ DenialSound ==
                           < Policies[tally[c].pol].need
 
 \* Separation of duties (ExcludePrincipal): a recorded tally under a policy that excludes the
-\* requester was counted for a run that records one, seats none of the requester's approvals, and,
-\* when it passed, rests on need approvals from approvers other than the requester.
+\* requester was counted for a run that, with every run above it, records one; seats none of the
+\* requesters' approvals (the run's own or an ancestor's, under any spelling); and, when it passed,
+\* rests on need approvals from other approvers.
 SeparationOfDuties ==
   \A c \in Calls : (tally[c].rec /\ Policies[tally[c].pol].sod)
-                     => /\ Requester # None
+                     => /\ ~NoRequester
                         /\ \A a \in tally[c].seated : ~ReqSame(a)
                         /\ tally[c].passed => Cardinality(tally[c].seated) >= Policies[tally[c].pol].need
 
