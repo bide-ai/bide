@@ -299,6 +299,8 @@ func TestStatusErrorKeepsOnlyAnAllowListedToken(t *testing.T) {
 		"json error is text": {`{"error":"Something SECRET happened at T000/B000"}`, ""},
 		"too long token":     {strings.Repeat("a", 80), ""},
 		"empty":              {"", ""},
+		"digits only":        {"503", ""},
+		"leading underscore": {"_hidden", ""},
 	}
 	for name, c := range cases {
 		srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {

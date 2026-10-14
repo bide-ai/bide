@@ -833,6 +833,11 @@ func TestStateFileProblemsAreRefusedAtStart(t *testing.T) {
 	if _, err := New(Config{Secrets: []string{secret}, Sinks: []Sink{sink}, StatePath: filepath.Join(dir, "missing-dir", "x.state")}); err == nil {
 		t.Error("an unwritable state path was accepted")
 	}
+	wrong := filepath.Join(dir, "v2.state")
+	os.WriteFile(wrong, []byte(`{"version":2,"cleared":[],"seen":[]}`), 0o600)
+	if _, err := New(Config{Secrets: []string{secret}, Sinks: []Sink{sink}, StatePath: wrong}); err == nil {
+		t.Error("a state file of another version was accepted")
+	}
 	// A missing file is a first start.
 	if _, err := New(Config{Secrets: []string{secret}, Sinks: []Sink{sink}, StatePath: filepath.Join(dir, "new.state")}); err != nil {
 		t.Errorf("first start: %v", err)
