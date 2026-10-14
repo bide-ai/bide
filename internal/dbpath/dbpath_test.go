@@ -87,3 +87,11 @@ func TestCanonical_RefusesHardLinks(t *testing.T) {
 		}
 	}
 }
+
+// A path whose directory is missing is returned (cleaned and absolute), not failed: SQLite reports it.
+func TestCanonical_MissingDirectoryIsLeftToSQLite(t *testing.T) {
+	f := filepath.Join(t.TempDir(), "no", "such", "j.db")
+	if got, err := Canonical(f, true); err != nil || !strings.HasSuffix(got, filepath.Join("no", "such", "j.db")) {
+		t.Fatalf("Canonical = %q, %v", got, err)
+	}
+}

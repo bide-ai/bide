@@ -48,11 +48,11 @@ func Canonical(path string, create bool) (string, error) {
 		return "", err
 	}
 	if _, err := os.Stat(abs); errors.Is(err, os.ErrNotExist) && create {
-		f, err := os.OpenFile(abs, os.O_CREATE|os.O_RDWR, 0o644)
-		if err != nil {
-			return "", err
+		// A file that cannot be created (its directory is missing, say) is left for SQLite to report,
+		// which says what to check.
+		if f, err := os.OpenFile(abs, os.O_CREATE|os.O_RDWR, 0o644); err == nil {
+			f.Close()
 		}
-		f.Close()
 	}
 	if real, err := filepath.EvalSymlinks(abs); err == nil {
 		abs = real
