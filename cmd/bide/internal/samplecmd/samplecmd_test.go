@@ -273,6 +273,21 @@ func TestServe(t *testing.T) {
 			}
 		}
 	}
+	// The page serves the sample's notification trail: a halt that is failing and overdue, a gate
+	// that was acknowledged.
+	var a runview.AttentionList
+	getJSON(t, link+"attention.json", &a)
+	if !a.Trail || a.TrailUnread != 0 {
+		t.Errorf("the Needs attention list has no whole notify trail: %+v", a)
+	}
+	for _, it := range a.Items {
+		switch {
+		case it.RunID == "refund-1042" && (it.Notify == nil || it.Notify.State != runview.NotifyFailing || !it.Notify.Overdue):
+			t.Errorf("refund-1042 notify = %+v, want failing and overdue", it.Notify)
+		case it.RunID == "refund-1043" && (it.Notify == nil || it.Notify.State != runview.NotifyAcked):
+			t.Errorf("refund-1043 notify = %+v, want acked", it.Notify)
+		}
+	}
 	if code := stop(); code != 0 {
 		t.Errorf("exit %d after the stop", code)
 	}

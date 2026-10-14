@@ -12,8 +12,10 @@ import (
 	"net/http"
 	"slices"
 	"strings"
+	"time"
 
 	"github.com/bide-ai/bide/agent"
+	"github.com/bide-ai/bide/audit"
 	"github.com/bide-ai/bide/plan"
 )
 
@@ -24,10 +26,12 @@ var pages = template.Must(template.New("").Funcs(template.FuncMap{
 	"svg":       func(s string) template.HTML { return template.HTML(s) }, // built by svg, every label escaped
 	"icon":      icon,
 	"head":      head,
+	"headr":     headRefresh,
 	"sprite":    sprite,
 	"json":      highlightJSON,
 	"min":       func(a, b int) int { return min(a, b) },
 	"join":      strings.Join,
+	"count":     func(items []AttentionItem, noun string) string { return count(len(items), noun) },
 	"hasPrefix": func(prefix, s string) bool { return strings.HasPrefix(s, prefix) },
 }).ParseFS(assets, "assets/*.html"))
 
@@ -49,6 +53,31 @@ func (s JournalSource) Runs(ctx context.Context) ([]string, error) {
 	}
 	var ids []string
 	for id, err := range l.Runs(ctx, agent.RunFilter{}) {
+		if err != nil {
+			return ids, err
+		}
+		ids = append(ids, id)
+	}
+	return ids, nil
+}
+
+// CanList reports whether the store can enumerate its runs (it has an agent.Lister). A page over one
+// that cannot knows nothing about its runs, and says so.
+func (s JournalSource) CanList() bool {
+	_, ok := agent.Capability[agent.Lister](s.J.Store())
+	return ok
+}
+
+// Unfinished lists the runs that have no run:complete marker, in the store's own query: a run that
+// completed has nothing a person must do, so the Needs attention list reads none. An aborted or
+// cancelled run is listed (a halt outlives either).
+func (s JournalSource) Unfinished(ctx context.Context) ([]string, error) {
+	l, ok := agent.Capability[agent.Lister](s.J.Store())
+	if !ok {
+		return nil, nil
+	}
+	var ids []string
+	for id, err := range l.Runs(ctx, agent.RunFilter{ExcludeHolding: []string{"run:complete"}}) {
 		if err != nil {
 			return ids, err
 		}
@@ -93,14 +122,28 @@ type Options struct {
 	// Diff, when set, makes the handler show a flow definition compared with an earlier one
 	// instead of runs: the page at / and its view as JSON at /diff.json (see BuildDiff).
 	Diff *Diff
+	// Events, when set, is the notification trail's store (the audit.EventStore beside the
+	// journal): the Needs attention list then says for each item whether it was notified and
+	// acknowledged, and lists a run whose recovery keeps failing.
+	Events audit.EventStore
+	// ApproveCommand, when set, writes the bide approve command line that records a decision on a
+	// call of a run (single: a one-decision gate). The Needs attention list shows it with each
+	// pending approval; without it the list says it has none.
+	ApproveCommand func(runID, toolUseID string, single bool) string
+	// Now is the clock the Needs attention list measures waits by; nil is time.Now.
+	Now func() time.Time
+
+	cache *ttlCache // set by Handler: the run list and the Needs attention list are served again for cacheTTL
 }
 
-// Handler serves the run list at / (as JSON at /runs.json; see RunList) and a run at /run?id=<run>
+// Handler serves the run list at / (as JSON at /runs.json; see RunList), the Needs attention list at
+// /attention (as JSON at /attention.json; see AttentionList) and a run at /run?id=<run>
 // (its View as JSON at /run.json?id=<run>, and, for a run in progress in a store, its live updates
 // at /run/live?id=<run>&after=<cursor>).
 // It answers only GET and HEAD, and only requests addressed to a loopback host, so a page on
 // another site cannot read it through a rebound DNS name.
 func Handler(o Options) http.Handler {
+	o.cache = &ttlCache{}
 	mux := http.NewServeMux()
 	mux.Handle("GET /assets/", http.FileServerFS(assets))
 	if o.Config != nil {
@@ -113,10 +156,10 @@ func Handler(o Options) http.Handler {
 		return guard(mux)
 	}
 	mux.HandleFunc("GET /{$}", func(w http.ResponseWriter, r *http.Request) {
-		render(w, "runs.html", o.runList(r.Context(), listFilter(r.URL.Query())))
+		render(w, "runs.html", o.cachedRunList(r.Context(), listFilter(r.URL.Query())))
 	})
 	mux.HandleFunc("GET /runs.json", func(w http.ResponseWriter, r *http.Request) {
-		writeJSON(w, o.runList(r.Context(), listFilter(r.URL.Query())))
+		writeJSON(w, o.cachedRunList(r.Context(), listFilter(r.URL.Query())))
 	})
 	serveRun := func(asJSON bool) http.HandlerFunc {
 		return func(w http.ResponseWriter, r *http.Request) {
@@ -133,6 +176,8 @@ func Handler(o Options) http.Handler {
 			}
 		}
 	}
+	mux.HandleFunc("GET /attention", o.serveAttention(false))
+	mux.HandleFunc("GET /attention.json", o.serveAttention(true))
 	mux.HandleFunc("GET /run", serveRun(false))
 	mux.HandleFunc("GET /run.json", serveRun(true))
 	mux.HandleFunc("GET /run/live", o.serveLive)

@@ -27,6 +27,10 @@ import (
 type Stores struct {
 	SQLite   func(path string) (agent.Store, io.Closer, error)
 	Postgres func(dsn string) (agent.Store, io.Closer, error)
+	// Events returns the notification trail's store beside a store the opener returned, or nil when
+	// the store keeps none. A nil Events means the Needs attention list says nothing about
+	// notification.
+	Events func(agent.Store) audit.EventStore
 	// YAML converts a YAML flow config to the JSON plan reads; nil means this build reads JSON
 	// configs only.
 	YAML func(data []byte) ([]byte, error)
@@ -57,7 +61,10 @@ store, and it serves on a loopback address only. Stop it with Ctrl-C.
 With no -run the page opens on the run list: each run's kind, state (completed, halted: outcome
 unknown, waiting for approval, in progress, aborted or cancelled), when it started (as its
 run:start records it; none for a run an earlier version journaled) and its record count, newest
-first, filtered by state, kind and run ID.
+first, filtered by state, kind and run ID. Its headline links to the Needs attention list (/attention):
+every run waiting for approval, halted with an unknown outcome or aborted, newest first, with the gate's
+approvers and the ResolveHalt call, and, from -db or -postgres, whether the notifier told someone and
+the sink acknowledged it (the notification trail in the same database).
 
 From -db or -postgres, the page of a run in progress follows it (live mode): it polls the store
 about once a second for records after the last one it shows, and updates in place until the run
@@ -295,6 +302,9 @@ func options(f flags, stores Stores) (Options, io.Closer, error) {
 			return o, nil, err
 		}
 		o.Source, closer = JournalSource{J: j}, c
+		if stores.Events != nil {
+			o.Events = stores.Events(s)
+		}
 	} else {
 		x := Exports{}
 		for _, path := range f.journals {

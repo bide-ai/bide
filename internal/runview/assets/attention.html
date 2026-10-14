@@ -1,0 +1,31 @@
+{{define "attention.html"}}{{template "head" (headr (printf "%s · Needs attention · bide view" .Verdict.Word) .Verdict.Class .Verdict.Icon .Refresh)}}
+<link rel="stylesheet" href="/assets/attention.css">
+{{template "verdict" .Verdict}}
+<div class="listhead">
+<h1>Needs attention</h1>
+<p class="muted small">{{count .Items "item"}} from {{.Runs}} run{{if ne .Runs 1}}s{{end}} read, as of {{.Now.Format "15:04:05 UTC"}}{{if .Live}}; this page reloads every {{.Refresh}} seconds{{end}}. <a href="/">All runs</a></p>
+</div>
+{{if .Err}}<p class="bad">Reading failed: {{.Err}}</p>{{end}}
+{{range .Notes}}<p class="note">{{.}}</p>{{end}}
+{{if not .Trail}}<p class="note">No notification trail was given, so this list does not say whether anyone was told. It lists what the journals say needs a person. Recovery failures are known only from the trail.</p>{{end}}
+{{range .Items}}<section class="attn attn-{{.Kind}}">
+<div class="attn-head"><span class="pill attn-kind kind-{{.Kind}}">{{.KindText}}</span>
+<a class="attn-run" href="{{.Link}}">{{.RunID}}</a>{{if .Tool}}<span class="attn-tool">{{.Tool}}</span>{{end}}
+<span class="attn-when">{{if .Waiting}}{{if eq .Kind "approval"}}waiting {{.Waiting}}{{else if eq .Kind "halt"}}halted {{.Waiting}} ago{{else if eq .Kind "aborted"}}aborted {{.Waiting}} ago{{else}}failing for {{.Waiting}}{{end}} <span class="muted small">since {{.SinceText}}</span>{{else}}<span class="muted small">time not journaled</span>{{end}}</span></div>
+<p class="attn-sum">{{.Summary}}</p>
+{{with .Gate}}<dl class="attn-gate">
+<dt>Gate</dt><dd>{{if .Single}}one decision, none recorded yet{{else}}{{.Need}} of {{.Of}} approvers{{end}}</dd>
+{{if not .Single}}<dt>Approved</dt><dd>{{if .ApprovedBy}}{{join .ApprovedBy ", "}}{{else}}<span class="muted">nobody yet</span>{{end}}</dd>
+{{if .DeniedBy}}<dt>Denied</dt><dd>{{join .DeniedBy ", "}}</dd>{{end}}
+<dt>Pending</dt><dd>{{if .Pending}}{{join .Pending ", "}}{{else}}<span class="muted">none</span>{{end}}</dd>{{end}}
+<dt>Status</dt><dd>{{.Status}}</dd>
+</dl>{{end}}
+{{if .Command}}<p class="attn-label">Record a decision</p><pre class="attn-cmd">{{.Command}}</pre>{{end}}
+{{with .Halt}}<p class="attn-label">Outcome unknown: look the operation up where it ran, then record what happened</p><pre class="attn-cmd">agent.ResolveHalt(ctx, journal,
+  {{.Ref}},
+  agent.Outcome{Result: ...})</pre>{{end}}
+{{if .Reason}}{{if eq .Kind "recovery"}}<p class="small muted">Cause class: {{.Reason}}</p>{{end}}{{end}}
+{{with .Notify}}<p class="attn-notify n-{{.Class}}"><span class="nlabel">Notification</span> {{.Text}}{{if not .Deadline.IsZero}} <span class="muted small">(deadline {{.Deadline.UTC.Format "2006-01-02 15:04:05 UTC"}})</span>{{end}}</p>{{end}}
+</section>{{else}}<div class="empty">{{icon .Verdict.Icon}}<p class="etitle">{{.Verdict.Word}}</p><p class="muted">{{.Runs}} run{{if ne .Runs 1}}s{{end}} read. {{.Verdict.Line}}</p></div>{{end}}
+<p class="muted small legendnote">Newest first, by the time each item began: the approval's ask time, the halted attempt's time, the abort's time, or when recovery began failing. An item whose journal records no time comes last. The page reads the runs that have no <code>run:complete</code> marker, and the notification trail of each that has not ended or has an item.</p>
+{{template "foot"}}{{end}}
