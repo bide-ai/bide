@@ -526,6 +526,8 @@ func canonicalTimestamp(s string) bool {
 
 // protocol:claims end
 
+// protocol:claims begin QTally QCount
+
 // sameApprover reports whether two ids name one approver: equal ignoring ASCII case, the rule
 // Validate holds a policy's ids to. Approver ids are printable ASCII, so for them strings.ToLower is
 // ASCII case folding; an id outside ASCII is equal only to itself.
@@ -590,6 +592,8 @@ func checkRequester(p ApprovalPolicy, recs []Record, runID string) error {
 	}
 	return nil
 }
+
+// protocol:claims end
 
 // requesterFrom is the requester of the run ctx drives, as its drive bound it: the journaled
 // principal's OnBehalfOf (see openPlan), or "" when the run has none. Only the pause note reads it;

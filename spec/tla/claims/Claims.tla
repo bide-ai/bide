@@ -58,7 +58,8 @@ CONSTANTS
   \* The approval gate (model 1b). A call's policy is "none", "one" (Approve) or the name of an
   \* m-of-n policy in Policies; a redeploy may change it between drives.
   Policy0,       \* call -> the policy its tool has at the start
-  Policies,      \* name -> [need |-> k, apprs |-> the eligible approver ids]
+  Policies,      \* name -> [need |-> k, apprs |-> the eligible approver ids, sod |-> whether the
+                 \* policy excludes the run's requester (ExcludePrincipal)]
   PolicyChoices, \* the policies a redeploy may switch a call's tool to
   ApproverIds,   \* every approver id a decision can name (eligible or not)
   Actors,        \* the people who submit decisions (an adversary holds no approver's key)
@@ -73,10 +74,12 @@ CONSTANTS
   MaxRedeploy,   \* budget of redeploys that change a tool's gate
   KeyCheck,      \* TRUE: the gate refuses a policy two of whose approvers' key sets meet, or one
                  \* with an empty key set (F5's fix, #109)
+  Requester,     \* the run's requester: the approver id its run:start principal names (OnBehalfOf),
+                 \* or "none" when it records none (separation of duties, ExcludePrincipal)
   Bug            \* "none" or a historical rule, see the regression configs
 
 None == "none"
-NoTally == [rec |-> FALSE, passed |-> FALSE, pol |-> "none", signers |-> {}, excl |-> 0, denials |-> 0]
+NoTally == [rec |-> FALSE, passed |-> FALSE, pol |-> "none", signers |-> {}, excl |-> 0, denials |-> 0, seated |-> {}]
 Gens == 0..MaxGen
 Ids  == 1..MaxIds
 ResolverSet == IF HasResolver THEN {"resolver"} ELSE {}
@@ -97,7 +100,8 @@ ASSUME ResolveClaim \in BOOLEAN /\ LateCommit \in BOOLEAN /\ HasResolver \in BOO
 ASSUME Bug \in {"none", "ReuseNoHold", "HeldPin", "GateNoRetry", "NoMemoAfterCall",
                 "MemoOverwrite", "LoserLeads", "PauseAsFailure",
                 "DenialNotFinal", "UnboundSubject", "SlotPerApprover", "NoFoldCheck",
-                "SetEqualityCheck", "NoCountExclusion"}
+                "SetEqualityCheck", "NoCountExclusion", "NoRequesterExclusion",
+                "RequesterExactMatch"}
 ASSUME \A c \in Calls : Kind[c] \in {"tool", "step", "flow"}
 ASSUME MaxEvict \in Nat /\ ResolverProc \in Procs \cup {"none"} /\ ResolveVoidOnError \in BOOLEAN
 ASSUME PlainRunIdleAtCheck \in BOOLEAN
@@ -196,10 +200,21 @@ define
   Counted(c, a) == Dec(c, a) # 0 /\ CountsFor(c, Dec(c, a))
   \* The count never seats an approver whose key set is empty or meets another eligible
   \* approver's (#109), whatever the resolver answered the gate's check: it may have changed.
-  Excluded(n, a) == /\ Bug \notin {"NoCountExclusion", "SetEqualityCheck"}
-                    /\ Known(a)
-                    /\ \/ keys[a] = {}
-                       \/ \E b \in Policies[n].apprs \ {a} : Known(b) /\ keys[a] \cap keys[b] # {}
+  KeyExcluded(n, a) == /\ Bug \notin {"NoCountExclusion", "SetEqualityCheck"}
+                       /\ Known(a)
+                       /\ \/ keys[a] = {}
+                          \/ \E b \in Policies[n].apprs \ {a} : Known(b) /\ keys[a] \cap keys[b] # {}
+  \* Separation of duties (ExcludePrincipal): approver id a is the run's requester (equal, or one
+  \* spelling of it: FoldSame, the case rule); ReqIs is that test as the gate runs it (historically,
+  \* RequesterExactMatch, exact ids only).
+  ReqSame(a)    == Requester # None /\ (a = Requester \/ <<a, Requester>> \in FoldSame \/ <<Requester, a>> \in FoldSame)
+  ReqIs(a)      == IF Bug = "RequesterExactMatch" THEN Requester # None /\ a = Requester ELSE ReqSame(a)
+  \* A policy that excludes the requester never seats them, and seats no one when the run records
+  \* no requester (ReasonNoRequester). Historically (NoRequesterExclusion) the count ignored it.
+  ReqExcluded(n, a) == /\ Policies[n].sod
+                       /\ Bug # "NoRequesterExclusion"
+                       /\ (Requester = None \/ ReqIs(a))
+  Excluded(n, a) == KeyExcluded(n, a) \/ ReqExcluded(n, a)
   Seated(c, n, v) == {a \in Policies[n].apprs : ~Excluded(n, a) /\ Counted(c, a) /\ dlog[c][Dec(c, a)].ok = v}
   NVotes(c, n, v) == Cardinality(Seated(c, n, v))
   NExcl(n)      == Cardinality({a \in Policies[n].apprs : Excluded(n, a)})
@@ -210,8 +225,11 @@ define
   \* ApprovalPolicy.Validate and ValidateKeys: no two eligible ids that fold to one approver, and
   \* (KeyCheck) no eligible approver the resolver knows with no key, and no two whose key sets
   \* meet (historically SetEqualityCheck: only equal sets refused, and the count seated every
-  \* approver).
+  \* approver); and the requester check (checkRequester): a policy that excludes the requester
+  \* needs a run that records one, and need approvers besides them.
   PolValid(n)   == /\ ~\E pr \in FoldSame : pr[1] \in Policies[n].apprs /\ pr[2] \in Policies[n].apprs
+                   /\ Policies[n].sod => /\ Requester # None
+                                         /\ Cardinality({a \in Policies[n].apprs : ~ReqIs(a)}) >= Policies[n].need
                    /\ KeyCheck => /\ \A x \in Policies[n].apprs \cap DOMAIN keys : keys[x] # {}
                                   /\ \A x, y \in Policies[n].apprs \cap DOMAIN keys :
                                        x # y => IF Bug = "SetEqualityCheck"
@@ -370,7 +388,7 @@ QCount:
   else
     qt := [rec |-> TRUE, passed |-> Passed(CallOf[self], gp), pol |-> gp,
            signers |-> Signers(CallOf[self], gp), excl |-> NExcl(gp),
-           denials |-> NVotes(CallOf[self], gp, FALSE)];
+           denials |-> NVotes(CallOf[self], gp, FALSE), seated |-> Seated(CallOf[self], gp, TRUE)];
   end if;
 QRecord:
   \* The terminal tally, journaled before the tool runs (a retry-safe step: first writer wins, and
@@ -690,10 +708,21 @@ Dec(c, a)     == IF Deciding(c, a) = {} THEN 0 ELSE Min(Deciding(c, a))
 Counted(c, a) == Dec(c, a) # 0 /\ CountsFor(c, Dec(c, a))
 
 
-Excluded(n, a) == /\ Bug \notin {"NoCountExclusion", "SetEqualityCheck"}
-                  /\ Known(a)
-                  /\ \/ keys[a] = {}
-                     \/ \E b \in Policies[n].apprs \ {a} : Known(b) /\ keys[a] \cap keys[b] # {}
+KeyExcluded(n, a) == /\ Bug \notin {"NoCountExclusion", "SetEqualityCheck"}
+                     /\ Known(a)
+                     /\ \/ keys[a] = {}
+                        \/ \E b \in Policies[n].apprs \ {a} : Known(b) /\ keys[a] \cap keys[b] # {}
+
+
+
+ReqSame(a)    == Requester # None /\ (a = Requester \/ <<a, Requester>> \in FoldSame \/ <<Requester, a>> \in FoldSame)
+ReqIs(a)      == IF Bug = "RequesterExactMatch" THEN Requester # None /\ a = Requester ELSE ReqSame(a)
+
+
+ReqExcluded(n, a) == /\ Policies[n].sod
+                     /\ Bug # "NoRequesterExclusion"
+                     /\ (Requester = None \/ ReqIs(a))
+Excluded(n, a) == KeyExcluded(n, a) \/ ReqExcluded(n, a)
 Seated(c, n, v) == {a \in Policies[n].apprs : ~Excluded(n, a) /\ Counted(c, a) /\ dlog[c][Dec(c, a)].ok = v}
 NVotes(c, n, v) == Cardinality(Seated(c, n, v))
 NExcl(n)      == Cardinality({a \in Policies[n].apprs : Excluded(n, a)})
@@ -705,7 +734,10 @@ Signers(c, n) == {dlog[c][Dec(c, a)].h : a \in {x \in Seated(c, n, TRUE) : dlog[
 
 
 
+
 PolValid(n)   == /\ ~\E pr \in FoldSame : pr[1] \in Policies[n].apprs /\ pr[2] \in Policies[n].apprs
+                 /\ Policies[n].sod => /\ Requester # None
+                                       /\ Cardinality({a \in Policies[n].apprs : ~ReqIs(a)}) >= Policies[n].need
                  /\ KeyCheck => /\ \A x \in Policies[n].apprs \cap DOMAIN keys : keys[x] # {}
                                 /\ \A x, y \in Policies[n].apprs \cap DOMAIN keys :
                                      x # y => IF Bug = "SetEqualityCheck"
@@ -971,7 +1003,7 @@ QCount(self) == /\ pc[self] = "QCount"
                            /\ qt' = qt
                       ELSE /\ qt' = [qt EXCEPT ![self] = [rec |-> TRUE, passed |-> Passed(CallOf[self], gp[self]), pol |-> gp[self],
                                                           signers |-> Signers(CallOf[self], gp[self]), excl |-> NExcl(gp[self]),
-                                                          denials |-> NVotes(CallOf[self], gp[self], FALSE)]]
+                                                          denials |-> NVotes(CallOf[self], gp[self], FALSE), seated |-> Seated(CallOf[self], gp[self], TRUE)]]
                            /\ pc' = [pc EXCEPT ![self] = "QRecord"]
                            /\ UNCHANGED << badPause, outcome >>
                 /\ UNCHANGED << marker, nsSet, heldSet, result, toolFail, 
@@ -2093,6 +2125,15 @@ DenialSound ==
   \A c \in Calls : (tally[c].rec /\ ~tally[c].passed)
                      => Cardinality(Policies[tally[c].pol].apprs) - tally[c].excl - tally[c].denials
                           < Policies[tally[c].pol].need
+
+\* Separation of duties (ExcludePrincipal): a recorded tally under a policy that excludes the
+\* requester was counted for a run that records one, seats none of the requester's approvals, and,
+\* when it passed, rests on need approvals from approvers other than the requester.
+SeparationOfDuties ==
+  \A c \in Calls : (tally[c].rec /\ Policies[tally[c].pol].sod)
+                     => /\ Requester # None
+                        /\ \A a \in tally[c].seated : ~ReqSame(a)
+                        /\ tally[c].passed => Cardinality(tally[c].seated) >= Policies[tally[c].pol].need
 
 \* Probe, violated where reachable: a failing tally rests on denials alone. A resolver change that
 \* makes two approvers share a key excludes both seats, and can make the gate deny.

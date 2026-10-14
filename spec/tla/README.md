@@ -710,14 +710,22 @@ resolution all run around it.
 - **A recorded denial is final.** The pre-pass denies a call whose Load read an `Approve(false)`
   or a failing recorded tally, whatever the gate is now (#70), and records the denial as the
   call's result.
+- **Separation of duties (`ExcludePrincipal`).** A policy may exclude the run's requester
+  (`sod`): the approver id the run's journaled principal names (`Requester`, or `"none"` when the
+  run records none), compared as the gate compares ids (equal, or one spelling of it under
+  `FoldSame`). The gate's check (`checkRequester`, every evaluation, before a recorded tally is
+  read) refuses such a policy for a run with no requester, or one whose requester leaves fewer
+  than `need` other approvers; the count never seats the requester, and seats no one when the run
+  records no requester. The requester's key holder (`h1` in the configs) signs like anyone else;
+  only the seat is withheld. The requester is a fact of the run, so it is a constant here.
 
 <!-- modelsync: no-code claims Redeploy ResolverChange -->
 <!-- modelsync: map claims -->
 | Label | Go |
 |---|---|
 | `ApGate` | `Agent.runLoop`'s pre-pass: `decided`/`approvals` and `values` from the Load, then `t.Safety()` |
-| `QTally` | `Agent.quorumTally`: `ApprovalPolicy.Validate` and the key check, `History`, a recorded `ApprovalTallyStep` |
-| `QCount` | `TallyApprovals` with the resolver as it is now: shared and keyless seats excluded (`ReasonSharedKey`, `ReasonNoKeyID`) |
+| `QTally` | `Agent.quorumTally`: `ApprovalPolicy.Validate` and the key check, `History`, the requester check (`checkRequester`), a recorded `ApprovalTallyStep` |
+| `QCount` | `TallyApprovals` with the resolver as it is now: shared and keyless seats excluded (`ReasonSharedKey`, `ReasonNoKeyID`), and the requester under `ExcludePrincipal` (`RecordedRequester`, `ReasonRequester`, `ReasonNoRequester`) |
 | `QRecord` | `quorumTally`'s `step` recording the tally (retry-safe, first writer wins) |
 | `Deny` | the pre-pass's `Journal.put` of the denied result |
 | `Approve1` | `Approve` |
@@ -734,6 +742,7 @@ resolution all run around it.
 | `TallySound` | invariant | a passing recorded tally rests on `need` valid approvals, signed over this exact call, by distinct people (the holders of the signing keys) |
 | `DenialSound` | invariant | a failing recorded tally rests on valid denials and seats the count excluded: an invalid record cannot force a denial |
 | `NoStuckPause` | invariant | the gate never pauses for approvals that are already in (no lockout) |
+| `SeparationOfDuties` | invariant | a recorded tally under a policy that excludes the requester was counted for a run that records one, seats none of the requester's approvals (under any spelling), and, when it passed, rests on `need` approvals from other approvers |
 
 `AtMostOnce`, `NoLiveOverride` and the rest of model 1's properties are checked in the same runs.
 A denial recorded after a drive's Load, on a process whose deployment has no gate, does not stop

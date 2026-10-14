@@ -31,11 +31,20 @@ PairSym   == Permutations({d1, d2})
 NoGate    == [c \in Calls |-> "none"]
 GateOne   == [c \in Calls |-> "one"]
 GateM     == [c \in Calls |-> "m"]
+\* Separation of duties: 2 of {a1, a2, a3} excluding the requester (sod), 3 of them (sodtight: out
+\* of reach once the requester is an approver), and 1 of {a1, a2} (sodfold: for a requester that is
+\* another spelling of a1).
+GateSoD   == [c \in Calls |-> "sod"]
+GateSoDTight == [c \in Calls |-> "sodtight"]
+GateSoDFold  == [c \in Calls |-> "sodfold"]
 \* m: 2 of {a1, a2, a3}; tight: 3 of them; loose: 1 of them; fold: 2 of {a1, a2, a3} where a3 is
 \* a1 spelled differently (FoldSame).
-Pols      == ("m" :> [need |-> 2, apprs |-> {a1, a2, a3}])
-             @@ ("tight" :> [need |-> 3, apprs |-> {a1, a2, a3}])
-             @@ ("loose" :> [need |-> 1, apprs |-> {a1, a2, a3}])
+Pols      == ("m" :> [need |-> 2, apprs |-> {a1, a2, a3}, sod |-> FALSE])
+             @@ ("tight" :> [need |-> 3, apprs |-> {a1, a2, a3}, sod |-> FALSE])
+             @@ ("loose" :> [need |-> 1, apprs |-> {a1, a2, a3}, sod |-> FALSE])
+             @@ ("sod" :> [need |-> 2, apprs |-> {a1, a2, a3}, sod |-> TRUE])
+             @@ ("sodtight" :> [need |-> 3, apprs |-> {a1, a2, a3}, sod |-> TRUE])
+             @@ ("sodfold" :> [need |-> 1, apprs |-> {a1, a2}, sod |-> TRUE])
 NoKeys    == [x \in {} |-> x]
 \* Each approver's verifier accepts a set of keys (KeyIDs).
 Keys      == (a1 :> {k1}) @@ (a2 :> {k2}) @@ (a3 :> {k3})
