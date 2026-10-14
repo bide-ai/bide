@@ -33,8 +33,9 @@ Not supported, and why:
   for ML-DSA, which bide's ML-DSA signatures use for domain separation. Post-quantum anchoring stays with
   software keys; hybrid in a token is deferred (the hybrid scheme stays `ed25519+ml-dsa-65`).
 - **Azure Key Vault.** Planned ([roadmap](../ROADMAP.md#bank-readiness)).
-- **Hardware attestation.** A signer does not check that the key was generated in hardware or that it is
-  non-extractable; that is a property of how the token was provisioned.
+- **Hardware attestation**, except for Google Cloud KMS with `VerifyAttestation` (below). The PKCS#11 and AWS
+  KMS signers do not check that the key was generated in hardware or that it is non-extractable; that is a
+  property of how the token or key was provisioned.
 
 ## PKCS#11
 
@@ -281,8 +282,39 @@ HSM-backed Ed25519 key and points to P-256. `AllowSoftwareKey` widens what `Open
 level found is still pinned and checked on every signature. A
 deployment that must keep the signing key in an HSM, a bank for example, uses the default scheme with an
 `EC_SIGN_P256_SHA256` key version at protection level `HSM` and leaves both options off. The level is what Cloud KMS
-reports; bide does not verify the signed HSM attestation Cloud KMS offers for `HSM` versions, and bide does not look
-inside an external key manager when `AllowExternalKey` is set.
+reports; `Config.VerifyAttestation` (below) checks Cloud KMS's signed HSM attestation, and bide does not look inside an
+external key manager when `AllowExternalKey` is set.
+
+**HSM attestation (`Config.VerifyAttestation`, off by default).** Cloud HSM attaches to each `HSM` key version a
+statement signed by the HSM hardware (Marvell, formerly Cavium) and countersigned through Google's certificates
+([Verify attestations](https://docs.cloud.google.com/kms/docs/attest-key)). With `VerifyAttestation: true`, `Open`
+fails with `gcpkms.ErrAttestation` unless that attestation proves the exact key version is an HSM-resident,
+non-extractable key whose public key is the one `GetPublicKey` returned. It reads the attestation from
+`GetCryptoKeyVersion` (no download, no extra permission), and checks, following Google's reference verifier
+([verify_attestation_chains.py](https://github.com/GoogleCloudPlatform/python-docs-samples/blob/main/kms/attestations/verify_attestation_chains.py)):
+
+1. **The chains.** The certificates in the attestation must build the manufacturer chain (manufacturer root, card,
+   partition) and the owner chain (Google root, then a card and a partition certificate with the same public keys as
+   the manufacturer's), and nothing else may be in them.
+2. **The signature.** The attestation (RSA-2048, PKCS#1 v1.5, SHA-256, the last 256 bytes) must verify under both
+   partition certificates.
+3. **The attested key.** One attested EC object must have the key version's public point, must not be extractable
+   (`0x0162` false), must have been generated on the HSM and not imported (`0x0163` true), and its key ID (`0x0102`) must
+   carry, as its second SHA-256 digest, the digest of the key version's resource name. Properties are never combined
+   across objects. Formats `CAVIUM_V1_COMPRESSED` and `CAVIUM_V2_COMPRESSED` are read; any other format is refused.
+
+The trust anchors are Google's owner root ("Hawksbill Root v1 prod", SHA-256
+`46b5fd35...df0de095`, from Google's sample code and `gstatic.com/cloudhsm/roots`) and Marvell's manufacturer root
+("localca.liquidsecurity.cavium.com", SHA-256 `975757f0...bd69cc28`, from Marvell's
+`liquid_security_certificate.zip`). They are built in, with their fingerprints pinned in the code and a test, so a
+default `Open` works with no setup and a change to either is deliberate. A deployment that has obtained the roots by
+its own checked route sets `Config.AttestationRoots` (both certificates; it replaces the pair) and does not depend on
+the copies in bide. **Validity periods are not enforced**, as in Google's verifier: the statement records a past fact
+(the key was created in that HSM), the HSM certificates are long lived, and Marvell's root already expired on
+2025-11-16 (Google's expires 2030-01-01) without the statement becoming false; there is no revocation. What
+attestation does not prove: that the HSM firmware or Google's operation of it is sound, or that the application's
+`useToSign` access is limited (that is IAM). `VerifyAttestation` needs an `HSM` key version, so it never applies to
+Ed25519 or software keys, and `Open` with it on fails for them.
 
 **What is signed.** Ed25519 sends the message in the request's `data` field and Cloud KMS signs it in PureEdDSA mode
 (RFC 8032), which is what `audit.Ed25519Signer` produces. ECDSA P-256 sends the SHA-256 digest in the `digest`

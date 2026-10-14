@@ -167,7 +167,7 @@ type testHSM struct {
 	mfrRoot, ownRoot *x509.Certificate
 	mfrRootKey       *rsa.PrivateKey
 	ownRootKey       *rsa.PrivateKey
-	partKey          *rsa.PrivateKey
+	partKey, cardKey *rsa.PrivateKey
 	chains           *kmspb.KeyOperationAttestation_CertificateChains
 	roots            *AttestationRoots
 	mfrPart, ownPart *x509.Certificate
@@ -193,6 +193,7 @@ func newTestHSM(t *testing.T) *testHSM {
 		}
 		h := &testHSM{mfrRootKey: key(), ownRootKey: key(), partKey: key()}
 		cardKey := key()
+		h.cardKey = cardKey
 		serial := int64(1)
 		issue := func(subject string, pub *rsa.PublicKey, parent *x509.Certificate, parentKey *rsa.PrivateKey) *x509.Certificate {
 			serial++
@@ -500,6 +501,13 @@ func TestAttestationStructureRefusals(t *testing.T) {
 			t.Errorf("length: %v", err)
 		}
 	})
+	t.Run("bytes after the last attribute", func(t *testing.T) {
+		data := append(make([]byte, 20), goodAttrs(testVersion, pub).object()...)
+		data = append(data, 0, 0, 0)
+		if err := verifyAttestation(h.att(gz(t, resign(data)), v2fmt), testVersion, pub, h.roots); err == nil || !strings.Contains(err.Error(), "after the last") {
+			t.Errorf("%v", err)
+		}
+	})
 	t.Run("duplicate attribute", func(t *testing.T) {
 		a := goodAttrs(testVersion, pub)
 		a.order = append(a.order, attrExtractable) // written twice
@@ -586,12 +594,32 @@ func TestAttestationChainRefusals(t *testing.T) {
 	}
 	// Garbage in the chain fields.
 	for name, s := range map[string]string{"not pem": "hello", "bad der": string(pem.EncodeToMemory(&pem.Block{Type: "CERTIFICATE", Bytes: []byte{1, 2}})),
-		"wrong type": string(pem.EncodeToMemory(&pem.Block{Type: "PRIVATE KEY", Bytes: []byte{1}})), "trailing": full.CaviumCerts[0] + "junk",
+		"wrong type": string(pem.EncodeToMemory(&pem.Block{Type: "PRIVATE KEY", Bytes: []byte{1}})), "trailing": full.CaviumCerts[0] + "junk", "valid DER, wrong PEM type": string(pem.EncodeToMemory(&pem.Block{Type: "PRIVATE KEY", Bytes: h.mfrPart.Raw})),
 		"huge": strings.Repeat("x", maxCertPEMSize+1)} {
 		c := cp()
 		c.CaviumCerts = append([]string{s}, c.CaviumCerts...)
 		if err := verifyAttestation(chains(c), testVersion, pub, h.roots); !errors.Is(err, ErrAttestation) {
 			t.Errorf("%s: %v", name, err)
+		}
+	}
+	// Junk after a valid certificate, with nothing duplicated, is refused too.
+	c = cp()
+	c.CaviumCerts[0] += "junk"
+	if err := verifyAttestation(chains(c), testVersion, pub, h.roots); !errors.Is(err, ErrAttestation) {
+		t.Errorf("trailing junk: %v", err)
+	}
+	// A card certificate signed by the right key but naming another issuer is not issued by the root.
+	{
+		tmpl := &x509.Certificate{SerialNumber: big.NewInt(77), Subject: pkix.Name{CommonName: "Test Card"}, SignatureAlgorithm: x509.SHA256WithRSA}
+		parent := &x509.Certificate{Subject: pkix.Name{CommonName: "Some Other Name"}}
+		der, err := x509.CreateCertificate(rand.Reader, tmpl, parent, &h.cardKey.PublicKey, h.mfrRootKey)
+		if err != nil {
+			t.Fatal(err)
+		}
+		c = cp()
+		c.CaviumCerts = []string{c.CaviumCerts[0], string(pem.EncodeToMemory(&pem.Block{Type: "CERTIFICATE", Bytes: der}))}
+		if err := verifyAttestation(chains(c), testVersion, pub, h.roots); !errors.Is(err, ErrAttestation) {
+			t.Errorf("a card certificate with the wrong issuer name: %v", err)
 		}
 	}
 	// Too many certificates.

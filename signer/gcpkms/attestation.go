@@ -28,7 +28,6 @@ const (
 	maxAttestationSize = 1 << 20 // decompressed
 	maxChainCerts      = 16
 	maxCertPEMSize     = 16 << 10
-	maxObjects         = 2
 	maxAttributes      = 256
 	attestSigSize      = 256 // an RSA-2048 PKCS#1 v1.5 signature over the attestation, at its end
 )
@@ -313,9 +312,6 @@ func parseV1(content []byte) ([]map[uint32][]byte, error) {
 	second := uint32(binary.BigEndian.Uint16(attest[6:]))
 	ends := []uint32{buf}
 	if second != 0 {
-		if second <= first {
-			return nil, errors.New("object offsets out of order")
-		}
 		ends = []uint32{second, buf}
 	}
 	starts := []uint32{first, second}
@@ -358,8 +354,8 @@ func boolAttr(o map[uint32][]byte, tag uint32) (v, ok bool) {
 // checkObjects looks for an attested object that proves pub is an HSM-generated, non-extractable EC key
 // of the key version. It returns the failure of the first object when none does.
 func checkObjects(objs []map[uint32][]byte, version string, pub []byte) error {
-	if len(objs) == 0 || len(objs) > maxObjects {
-		return attErr("%d attested objects", len(objs))
+	if len(objs) == 0 {
+		return attErr("no attested objects")
 	}
 	var first error
 	for _, o := range objs {
@@ -384,7 +380,7 @@ func checkObject(o map[uint32][]byte, version string, pub []byte) error {
 	if ext, ok := boolAttr(o, attrExtractable); !ok || ext {
 		return attErr("the attested key is extractable or does not say it is not")
 	}
-	if local, ok := boolAttr(o, attrLocal); !ok || !local {
+	if local, _ := boolAttr(o, attrLocal); !local { // missing or malformed reads as false
 		return attErr("the attested key was not generated on the HSM (it may be imported)")
 	}
 	// The key ID is two SHA-256 digests in hex; the second is the digest of the key version's resource
