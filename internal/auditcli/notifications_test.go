@@ -285,6 +285,47 @@ func TestNotificationsVerb_ReadsEveryRunFromAStore(t *testing.T) {
 	if code, _, errOut := runCLI("notifications", "-db", "x.db", "-unanchored", "-run", "nope"); code != 4 || !strings.Contains(errOut, "no such run") {
 		t.Fatalf("-run nope: exit %d\n%s", code, errOut)
 	}
+	// A run that needed no one has no trail, and is not listed as one.
+	done, _ := agent.New(agenttest.NewScriptedModel(agenttest.TextTurn("done")), j)
+	if _, err := done.Run(ctx, "d", agent.UserText("go")); err != nil {
+		t.Fatal(err)
+	}
+	if code, out, _ := runCLI("notifications", "-db", "x.db", "-unanchored"); code != 0 || strings.Contains(out, "notify:d") {
+		t.Fatalf("a run with no events: exit %d\n%s", code, out)
+	}
+	// A session's turn is the session's to drive: the notifier does not report it, and neither does the audit.
+	driveToGate := func(run string) { // an engine cannot drive these IDs: copy the entries of a run at a gate
+		t.Helper()
+		tm := agent.NewMemStore() // a store of its own, so the template run is not one the audit reads
+		tj, _ := agent.NewJournal(tm)
+		g, _ := agent.New(agenttest.NewScriptedModel(agenttest.ToolTurn("c1", "refund", `{}`)), tj, agent.WithTools(tool))
+		if _, err := g.Run(ctx, "template", agent.UserText("go")); !errors.As(err, new(*agent.ApprovalPending)) {
+			t.Fatalf("%s: %v", run, err)
+		}
+		for e, err := range tm.Load(ctx, "template", -1) {
+			if err != nil {
+				t.Fatal(err)
+			}
+			if _, _, err := mem.Insert(ctx, run, e.Name, e.Data); err != nil {
+				t.Fatal(err)
+			}
+		}
+	}
+	driveToGate("s>@turn/1")
+	late := time.Now().Add(time.Hour).Format(time.RFC3339)
+	if code, out, _ := runCLI("notifications", "-db", "x.db", "-unanchored", "-as-of", late); code != 0 || strings.Contains(out, "s>@turn") {
+		t.Fatalf("a session turn: exit %d\n%s", code, out)
+	}
+	// -run a covers a's sub-runs: a gate in one of them that no one was told of is found.
+	sub := agent.SubRunID("a", "x1")
+	driveToGate(sub)
+	code, out, _ = runCLI("notifications", "-db", "x.db", "-unanchored", "-as-of", late, "-run", "a")
+	if code != 1 || !strings.Contains(out, "never_notified") || !strings.Contains(out, "approval:a") {
+		t.Fatalf("-run a with an un-notified sub-run gate: exit %d\n%s", code, out)
+	}
+	if code, out, _ := runCLI("notifications", "-db", "x.db", "-unanchored", "-as-of", late, "-run", "b"); code != 0 {
+		t.Fatalf("-run b must not read a's sub-run: exit %d\n%s", code, out)
+	}
 	// A run whose gate was never notified is found in the store, with no trail for it.
 	tool2 := agent.MustFunc("refund", "refund", func(context.Context, struct{}) (string, error) { return "ok", nil }, agent.WithApproval(agent.SingleApproval()))
 	a, _ := agent.New(agenttest.NewScriptedModel(agenttest.ToolTurn("c1", "refund", `{}`)), j, agent.WithTools(tool2))

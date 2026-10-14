@@ -348,6 +348,7 @@ its layout in a `"format"` field:
 | `EvidencePackage` | `bide.audit.evidence.v5` | `audit.EvidenceFormat` |
 | `AnchorEntry` | `bide.audit.anchor-entry.v1` | `audit.AnchorEntryFormat` |
 | `JournalExport` | `bide.audit.journal-export.v1` | `audit.JournalExportFormat` |
+| `NotifyTrailExport` | `bide.audit.notify-trail-export.v1` | `audit.NotifyTrailExportFormat` |
 
 A grant's canonical bytes (`Grant.Bytes`, signed and digested) start with `bide.audit.grant.v2`
 (`audit.GrantFormat`). A bundle looks like this (the record bytes, path, and signature abbreviated):
@@ -360,7 +361,7 @@ A grant's canonical bytes (`Grant.Bytes`, signed and digested) start with `bide.
 ```
 
 The producers (`ProveRecord`, `ProveAbsentBundle`, `CertifyRun`, `ProveCurrentGrant`,
-`EventLog.Prove`, `Evidence`, `SignTreeHead`, `ExportJournal`) set the format; every verifier
+`EventLog.Prove`, `Evidence`, `SignTreeHead`, `ExportJournal`, `ExportNotifyTrail`) set the format; every verifier
 requires it, and `audit.UnmarshalStrict` checks it before it reads anything else, at the top level
 and in every artifact one carries. An artifact without a format, or with another one (a
 `bide.audit.proof.v2` bundle, a signed tree head from before v5, which carried no `format`), fails
@@ -461,6 +462,89 @@ the gate enforced a different policy. `bide audit verify-approvals` runs the sam
 command line. `audit.ProveApproval` proves a single decision by its record name. See the
 [approval guide](hitl-approval.md#proving-the-gate-held) and `examples/approval`.
 
+### Notification evidence: were the people told?
+
+A run that halts on an unknown outcome or waits at an approval gate stops until a person acts, and
+the [notifier](notifications.md) writes what it did about that to its own audited trail
+(`notify:<run>` in an `EventStore`, one salted event leaf per record). `audit.VerifyNotifications`
+and `bide audit notifications` answer the auditor's question from that trail and the run journals,
+offline: was every event that needed a person notified, was it acknowledged, and when?
+
+The trail is not signed by the notifier, and the verifier says what that costs. Its leaves are
+Merkle-committed like any event trail, so `audit.SignNotifyTrail` can sign a tree head over them and you can publish
+that head to an `Anchor`, but nothing does it for you: a deployment signs and anchors on its own
+schedule, as for a journal. Without a signed head the verifier still reads the trail strictly, and
+the report marks it `UNANCHORED`: whoever can write the event store could have deleted or reordered
+records, and nothing in the trail shows it. With a head, the first `head_size` records must be exactly the leaves the head
+commits to, so a deleted, reordered or changed record is found (exit 1). Records after the newest
+head are read and reported as not attested (`tail`), and a record deleted from that tail cannot be
+found. Sign and anchor often enough that the tail is short.
+
+<!-- docsnip: setup ctx context.Context; evStore audit.EventStore; journal *agent.Journal; runID string; signer audit.Signer; verifier audit.Verifier -->
+```go
+trail := agent.NotifyTrailName(runID) // "notify:<run>"
+
+// At the notifier's side, on a schedule: sign a head over the trail and anchor it.
+head, _ := audit.SignNotifyTrail(ctx, evStore, trail, signer, time.Now())
+
+// Export what the auditor needs (or let `bide audit notifications -db` read the stores).
+tx, _ := audit.ExportNotifyTrail(ctx, evStore, trail) // format bide.audit.notify-trail-export.v1
+jx, _ := audit.ExportJournal(ctx, journal, runID)
+
+rep, err := audit.VerifyNotifications(audit.NotifyVerifyInput{
+	Trails: []audit.NotifyTrailExport{tx}, Heads: []audit.SignedTreeHead{head}, Verifier: verifier,
+	Journals: []audit.JournalExport{jx},
+})
+// err wraps audit.ErrNotVerified if an event was never notified, was acknowledged late, or is overdue
+```
+
+What it checks, and the status each event gets:
+
+- **A strict read.** Every leaf must be a notification record of a kind and shape this version
+  reads, in canonical form. An unknown record kind, an unknown field, a duplicate key or a leaf that
+  is not a notification record is an error (exit 4), not a record to skip: a verifier that skipped
+  what it could not read would pass a trail it did not check. (The notifier's own reader keeps such a
+  record in its position so a rolling upgrade keeps delivering; the verifier does not.)
+- **A history a notifier writes.** An event is observed once and first; nothing follows its
+  acknowledgement or clearing; an acknowledgement follows a claim and carries a send time, an
+  attempt count and a 2xx status (or none, for a sink that is not HTTP); an `overdue` record
+  follows the deadline and states the latency the times imply; an overdue notice follows the
+  `overdue` record it reports, and an all-clear follows the acknowledgement or clearing it reports;
+  records are dated in order, within `-max-clock-skew` (the writers' clocks differ); recovery
+  failure episodes open and close in turn. A trail that breaks a rule is reported with the record
+  and the rule (exit 1).
+- **The journal cross-check.** Every approval gate, unknown-outcome halt (an attempt marker with no
+  result) and aborted run a supplied journal shows must be observed in the trail of its root run. A
+  gate with no `observed` record is `never_notified`, even when everything the trail does hold is
+  clean, which is the case a check of the trail alone cannot catch. An event younger than
+  `-grace` (default 5 minutes, the notifier's detection window) is `not_yet_due`.
+  A recovery failure episode open longer than `-recovery-failing-after`, an `overdue` record with
+  no overdue notice, and a clearing after a delivery was attempted with no all-clear are each owed a
+  notification the same way.
+- **A verdict per event.** `acked` (with the times: when the run entered the state, when the
+  notifier saw it, when the sink acknowledged it, the attempts, and how the delivery was
+  authenticated); `acked_late` (acknowledged after the event's recorded deadline, or after
+  `-max-ack` from when the run entered the state); `pending` and `failing` (open, within the deadline);
+  `overdue` (open, past the deadline or `-max-ack`); `cleared_before_notification` and
+  `cleared_unacknowledged` (the event stopped being current first); `never_notified`;
+  `unobserved_resolved` (a gate the journal shows decided that the trail never observed: reported, not
+  a failure). `acked_late`, `overdue` and `never_notified` fail the audit.
+
+```
+$ bide audit notifications -db run.db -sth notify-r1.sth.json -pubkey keys/log.pub
+INFO  trail notify:r1: 6 records; signed head over the first 6 (signed 2026-10-13T09:30:00Z)
+PASS  acked  approval_pending approval:r1:c1:0  began 2026-10-13T09:00:00Z  observed 2026-10-13T09:00:01Z  acknowledged 2026-10-13T09:00:02Z after 2 attempt(s), 2s after it began  [hmac-sha256 current, mTLS, TLS 1.3]
+FAIL  never_notified  outcome_unknown halted:r1:tool:c2:1760346000000  began 2026-10-13T09:05:00Z  (the journal shows the event and the trail has no record of it)
+```
+
+What this does not prove: that anyone read a notification (an acknowledgement is the sink's 2xx,
+and `bide audit` cannot see past the sink); the times are the notifying processes' clocks, bounded
+above only by the head's signed timestamp; an event that left no trace in the journals supplied (a
+halt that a later result resolved, or a gate in a run whose journal was not supplied) and no record
+in the trail cannot be found; and an all-clear owed for an acknowledged event that was later decided
+is found only when the clearing is recorded. Take the public key from the operator out of band, as
+for any signed head.
+
 ## CLI reference: `bide audit`
 
 The `bide audit` command ([`cmd/bide`](../../cmd/bide), its code in
@@ -539,6 +623,7 @@ Conventions shared across verbs:
 | `verify-quorum` | `-name`, `-tally`, `-vote` (repeatable), `-pubkey`, `-k` | `-commit` | A governed k-of-n quorum: the tally and every vote bundle authentic, in the same signed tree and run, and recorded by the quorum named `-name`; the disclosed votes exactly the votes the tally records; the recorded tally recomputes from them (a forged tally is caught); and `votes_for >= k`; with `-commit`, a governed commit (a tool call's result) is anchored in the same tree. |
 | `verify-run` | `-cert`, `-pubkey`, and at least one of `-approved <digest>` (repeatable) / `-approved-file <file>` (both together form one allowlist) | `-checker <astchecker>` | A proof-carrying run certificate: the used-policy set is bound by a signed used-policy head to this run and to the certificate's journal tree, and is a subset of the approved allowlist (only-approved-policies), and every used policy has an anchored, digest-linked convergence certificate in the run's signed tree (policies-convergence-certified); with `-checker`, the oracle's convergence verdict on each used policy must AGREE with its certificate. |
 | `verify-approvals` | `-evidence`, `-pubkey`, `-call`, `-need`, `-approvers`, `-approver-keys` | `-approved <digest>` (repeatable), `-approved-file <file>` (together, one allowlist, required when the package carries a run certificate) | An m-of-n approval gate from an `EvidencePackage`: the request, every decision the gate read, its recorded tally, and the call's result all verify in one signed tree and in order; recounting the decisions with the approvers' keys (a JSON object of id to key text, `<alg>:<hex>` or bare ed25519 hex; two of the policy's approvers on one key, or a weak key, is an unusable input) against the exact call reproduces the recorded tally; the gate enforced the expected policy; and at least k approved. Catches an omitted decision, which `verify-evidence` alone cannot. |
+| `notifications` | exported files: `-trail` (repeatable) and `-pubkey` with `-sth` per trail, or `-unanchored`; or a store: `-db` or `-postgres-env`, with the same | `-journal` (repeatable), `-run <id>` (store only), `-max-ack <duration>`, `-grace <duration>`, `-recovery-failing-after <duration>`, `-as-of <time>` | That every event that needed a person (an unknown-outcome halt, an approval gate, an aborted run, a recovery failure, an overdue notice, an all-clear) was notified and acknowledged in time: the trail is read strictly and is a history a notifier writes; with a signed head, the trail's first records are exactly what the head commits to; every gate, halt and abort a journal shows is observed. Exit 1 on `acked_late`, `overdue`, `never_notified`, or a trail that does not hold together. See [Notification evidence](#notification-evidence-were-the-people-told). |
 | `verify-evidence` | `-evidence`, `-pubkey` | `-approved <digest>` (repeatable), `-approved-file <file>` (together, one allowlist) | A run-level `EvidencePackage`: the format, seal, and key are right, the signed tree head is an authentic journal head of the package's run, every packaged action proof verifies against it with the kind and label its record says, the grant chain is the anchored grants, the consistency proof holds between its two signed heads, and any run certificate is for this run and passes against the given allowlist (required when the package carries one). Prints one line per item and an overall PASS/FAIL. |
 
 The `-checker` flag points at the external verified oracle binary (the `astchecker` extracted from
@@ -552,7 +637,11 @@ so a broken checker is never reported as a policy that does not converge, nor as
 certificate. The digest is recomputed here from a hardcoded
 `gsm-policy-v1` domain-separation tag rather than taken from gsm, so neither root of trust depends
 on the producer. The CLI reads no environment variables but `NO_COLOR` and `TERM`, which decide
-only whether the text report is colored (see below), never a verdict.
+only whether the text report is colored (see below), never a verdict, and the one that
+`notifications -postgres-env <name>` names, which holds a Postgres DSN (so the credential is never
+on a command line). `notifications -db` and `-postgres-env` open the store read-only and are in the
+full `bide` command; the audit-only build (`-tags bide_audit_only`) links no store driver and reads
+exported files.
 
 ### Exit status
 

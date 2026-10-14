@@ -1,6 +1,6 @@
 # Design: tell a human when a run needs them
 
-Status: shipped in v0.16.0 (`agent.WithNotifier`, `agent.NotifyPending`, `plan.Builder.WithNotifier`, the `notify` package, TLA+ Model 14), except the `audit.VerifyNotifications` verifier and the viewer's "Needs attention" view (build plan items 7 and 8), which are not built. It adds a
+Status: shipped in v0.16.0 (`agent.WithNotifier`, `agent.NotifyPending`, `plan.Builder.WithNotifier`, the `notify` package, TLA+ Model 14); `audit.VerifyNotifications` with `bide audit notifications` (build plan item 7) follows in the next release. The viewer's "Needs attention" view (item 8) is not built. It adds a
 small `Notifier` seam, a signed webhook implementation, and an audited delivery trail that gives
 notify-once across crashes and makes the notification itself evidence. The recipe "Get notified when a run needs a human"
 wires the existing hooks to a webhook with an in-process dedupe; this note is the crash-safe,
@@ -438,16 +438,36 @@ Three times for one event, all in the audited trail:
 | T2 | `acked.first_sent_at` (and each `claimed.at`) | the first request was sent |
 | T3 | `acked.acked_at` | the sink answered 2xx |
 
-**`bide audit`.** A verifier `audit.VerifyNotifications(trail, tree head, run evidence)` and a
-`bide audit` verb that runs it (the CLI change belongs to the code PR). It checks:
+**`bide audit`.** `audit.VerifyNotifications` and the verb `bide audit notifications` (shipped;
+see [Audit: notification evidence](../guides/audit.md#notification-evidence-were-the-people-told)).
+It checks:
 
-- the trail's leaves are contiguous and committed under the supplied (optionally signed) tree head,
-  and consistent with an earlier head (`ProveConsistency`), so nothing was dropped or rewritten;
-- for every approval gate in the run's approval evidence, the trail holds `observed` for that gate;
-- `acked_at - observed_at` is within the notify deadline, or an `overdue` record exists for it;
-- no `acked` without an earlier `observed`; no `acked` for a key `cleared`;
-- every `resolved` event's `observed` record follows an `acked` or a `cleared` (with a `claimed`) for the
-  event it clears, and no `overdue` record exists for a `resolved` key.
+- every leaf is a notification record this version reads, strictly (an unknown kind or field is an
+  error, not skipped), and the trail is a history a notifier writes: an event is observed once and
+  first, nothing follows its acknowledgement or clearing, an acknowledgement follows a claim, an
+  overdue notice follows its `overdue` record, an all-clear follows the acknowledgement or clearing
+  it reports (and an `overdue` record is never written for a `resolved` key), records are dated in
+  order within the clock skew, and recovery episodes open and close in turn;
+- with a signed head over the trail (`audit.SignNotifyTrail`, kind `events`, run ID the trail's
+  name), the head verifies and the trail's first `size` leaves are exactly the leaves it commits to,
+  so nothing was dropped, reordered or rewritten before it. Records after the head are read and
+  reported as not attested. Consistency between two heads is not a separate step: each head is
+  checked against the full trail;
+- for every approval gate, unknown-outcome halt and aborted run in the supplied journals
+  (`agent.JournalNotifyEvents`, keyed as the notifier keys them), the trail holds `observed` for
+  it, or the event is younger than the grace period;
+- `acked_at` is within the event's recorded deadline (and within an operator bound, `-max-ack`), or
+  the event is reported `acked_late`; an open event past its deadline is `overdue`;
+- an `overdue` record has an overdue notice, a recovery failure episode open longer than the
+  threshold has a `recovery_failing` event, and an event cleared after a delivery was attempted has
+  its all-clear.
+
+**The notifier does not sign its trail.** The trail is an `EventStore` trail: Merkle-committable and
+append-only by the store's contract (`UNIQUE(run_id, seq)`), but a head is signed and anchored only
+if the deployment does it (`audit.SignNotifyTrail`, `audit.Anchor`, as for a journal with
+`AuditedStore`). Without a head the verifier reports the trail `UNANCHORED` and says nothing attests
+it; a design choice to anchor automatically (the notifier signing heads itself) is left open, since
+it puts a signing key in the delivery process.
 
 It reports "approvers were notified at T" with the T1, T2, T3 above, and how the delivery was
 authenticated: `auth` records `signature` (the signature scheme and which secret slot signed, current
@@ -780,7 +800,7 @@ No durable `EventStore` exists today. `audit` defines the interface and ships on
 | 4 | Notifier core: events at drive end, observe, claim, backoff, `failing`, `overdue`, `recovery_failing`, delivery goroutine | L | 3 | the crash sweep and DST cases from the existing harnesses |
 | 5 | Webhook with HMAC, rotation, HTTPS-only, mTLS and reload | M | the `Notifier` interface only | can start at once |
 | 6 | `NotifyPending` sweep | S | 4 | |
-| 7 | `audit.VerifyNotifications` and the `bide audit` verb | M | 3 | verifier in `audit` can start early; it reads the trail strictly (refuses a record kind it cannot read, unlike the engine's `Load`); the verb is a `cmd/bide` change |
+| 7 | `audit.VerifyNotifications` and the `bide audit notifications` verb (shipped) | M | 3 | verifier in `audit` can start early; it reads the trail strictly (refuses a record kind it cannot read, unlike the engine's `Load`); the verb is a `cmd/bide` change |
 | 8 | Viewer "Needs attention": notified, acknowledged, overdue | M | 3 | reads the trail; `internal/runview` change |
 | 9 | Model 14 (TLC) and its CI shard | M | design approved | starts at once; must land before 4 merges, like the other models |
 | 10 | Guide, recipe update, CHANGELOG, i18n, snippets | S | 4, 5 | docs current with the code |

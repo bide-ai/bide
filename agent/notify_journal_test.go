@@ -119,3 +119,40 @@ func mustLoad(t *testing.T, tr NotifyTrail, name string) []NotifyRecord {
 	}
 	return recs
 }
+
+// A durable step's attempt marker with no result is a halt of kind step, keyed by the step's name.
+func TestJournalNotifyEvents_StepHalt(t *testing.T) {
+	ctx := context.Background()
+	j := memJournal()
+	ms := time.Date(2026, 10, 13, 9, 0, 0, 0, time.UTC).UnixMilli()
+	if _, err := j.do(ctx, "r", stepAttemptStep("pay"), func(context.Context) (Record, error) {
+		return Record{Kind: StepAttempt, AttemptedAt: ms}, nil
+	}); err != nil {
+		t.Fatal(err)
+	}
+	recs, _ := j.History(ctx, "r")
+	evs := JournalNotifyEvents("r", recs)
+	if len(evs) != 1 || evs[0].Key != HaltedKey("r", OpStep, "pay", ms) || evs[0].Kind != NotificationOutcomeUnknown {
+		t.Fatalf("events = %+v, want the step halt %q", evs, HaltedKey("r", OpStep, "pay", ms))
+	}
+}
+
+// A sub-run's gate is keyed by the sub-run, as the notifier keys it, and belongs to the root's trail;
+// a sub-run's abort is not an event of its own (the root run reports its end).
+func TestJournalNotifyEvents_SubRunGateAndAbort(t *testing.T) {
+	ctx := context.Background()
+	j := memJournal()
+	sub := SubRunID("r", "c0")
+	putGate(t, j, sub, ApprovalWait{ToolUseID: "c1", ToolName: "refund", Single: true})
+	if _, _, err := j.putEntry(ctx, sub, runAbortedStep, Record{Kind: StepValue, Result: []byte(`{}`)}); err != nil {
+		t.Fatal(err)
+	}
+	recs, _ := j.History(ctx, sub)
+	evs := JournalNotifyEvents(sub, recs)
+	if len(evs) != 1 {
+		t.Fatalf("events = %+v, want only the gate", evs)
+	}
+	if e := evs[0]; e.Key != ApprovalKey(sub, "c1", 0) || e.RunID != "r" || e.Kind != NotificationApprovalPending {
+		t.Fatalf("gate = %+v", e)
+	}
+}

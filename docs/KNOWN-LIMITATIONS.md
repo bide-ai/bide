@@ -303,6 +303,15 @@ cannot be matched against guessed neighbouring records. Key-set leaves are not s
 neighbouring keys by design, and neither are anchor-log leaves, which hold signed tree heads meant to
 be public.
 
+**Notification evidence is only as strong as the anchor you give the trail.** The notifier writes its
+trail but does not sign it; `bide audit notifications` finds a deleted or reordered record only
+against a signed head (`audit.SignNotifyTrail`) that you create and anchor outside the database,
+and reads the records after the newest head as not attested. Without a head the report says
+`UNANCHORED`. The check cannot find an event that left no trace in the journals it was given and no
+record in the trail (a halt that a later result resolved before the audit), cannot say that a person
+read a notification (an acknowledgement is the sink's 2xx), and dates events by the notifying
+processes' clocks. See [Audit](guides/audit.md#notification-evidence-were-the-people-told).
+
 ## Governed state (gsm)
 
 **A federation built under gsm v0.12.0 was not checked for event order across registries.** bide
