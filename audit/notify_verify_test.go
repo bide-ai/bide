@@ -463,8 +463,16 @@ func TestVerifyNotifications_HeadChecks(t *testing.T) {
 
 	wrongTrail := head
 	wrongTrail.RunID = "notify:r2"
-	journalKind := head
-	journalKind.Kind = audit.TreeJournal
+	lg, err := audit.LoadEventLog(context.Background(), b.es, trailName)
+	if err != nil {
+		t.Fatal(err)
+	}
+	th := lg.TreeHead(trailName, at(30).UnixNano())
+	th.Kind = audit.TreeJournal // validly signed, and a commitment to a journal
+	journalKind, err := audit.SignTreeHead(th, audit.Ed25519Signer{Priv: priv})
+	if err != nil {
+		t.Fatal(err)
+	}
 	for name, tc := range map[string]struct {
 		head audit.SignedTreeHead
 		pub  ed25519.PublicKey
@@ -479,7 +487,7 @@ func TestVerifyNotifications_HeadChecks(t *testing.T) {
 		}
 	}
 	// A head for a trail that was not supplied: the trail was deleted.
-	_, err := audit.VerifyNotifications(audit.NotifyVerifyInput{Heads: []audit.SignedTreeHead{head}, Verifier: audit.Ed25519Verifier{Pub: pub}, Now: at(60)})
+	_, err = audit.VerifyNotifications(audit.NotifyVerifyInput{Heads: []audit.SignedTreeHead{head}, Verifier: audit.Ed25519Verifier{Pub: pub}, Now: at(60)})
 	if !errors.Is(err, audit.ErrNotVerified) {
 		t.Errorf("a head with no trail: %v", err)
 	}
@@ -524,6 +532,11 @@ func TestVerifyNotifications_MalformedLeavesAreRefused(t *testing.T) {
 			t.Errorf("%s: err = %v, want ErrMalformed", name, err)
 		}
 	}
+	kinds := mut(0, `"notify_observed"`, `"notify_teleported"`)
+	kinds.Leaves[0] = bytes.Replace(kinds.Leaves[0], []byte(`"kind":"observed"`), []byte(`"kind":"teleported"`), 1)
+	if _, err := audit.VerifyNotifications(audit.NotifyVerifyInput{Trails: []audit.NotifyTrailExport{kinds}, Unanchored: true, Now: at(60)}); !errors.Is(err, audit.ErrMalformed) || !strings.Contains(err.Error(), "not one this version reads") {
+		t.Errorf("a record kind this version does not know: %v", err)
+	}
 	bad := good
 	bad.Format = "bide.audit.notify-trail-export.v0"
 	if _, err := audit.VerifyNotifications(audit.NotifyVerifyInput{Trails: []audit.NotifyTrailExport{bad}, Unanchored: true}); !errors.Is(err, audit.ErrFormat) {
@@ -555,6 +568,7 @@ func TestVerifyNotifications_InvalidHistoriesAreRefused(t *testing.T) {
 		"recovered with no episode":    {[]agent.NotifyRecord{{Kind: agent.NotifyRecovered, At: at(1)}}, "not open"},
 		"event kind and key differ":    {[]agent.NotifyRecord{observed(k, agent.NotificationOutcomeUnknown, 0, 1)}, "does not begin"},
 		"unknown event kind":           {[]agent.NotifyRecord{observed(k, "teleport", 0, 1)}, "event kind"},
+		"record of another run":        {[]agent.NotifyRecord{func() agent.NotifyRecord { r := obs(); r.RunID = "r2"; return r }()}, "names run"},
 		"no deadline":                  {[]agent.NotifyRecord{func() agent.NotifyRecord { r := obs(); r.DeadlineAt = time.Time{}; return r }()}, "deadline"},
 	} {
 		b := newTrail(t)
