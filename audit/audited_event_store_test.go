@@ -887,7 +887,11 @@ func TestNotifyPending_AFreshProcessSignsTheGlobalTrails(t *testing.T) {
 	for i := 5; i >= 0; i-- {
 		seg := agent.OpenSegment(now.AddDate(0, 0, -i))
 		segs = append(segs, seg)
-		if err := plain.Append(ctx, seg, 0, agent.NotifyRecord{Kind: agent.NotifySeal, At: now, Next: "x"}); err != nil {
+		rec := agent.NotifyRecord{Kind: agent.NotifySeal, At: now, Next: agent.OpenSegment(now.AddDate(0, 0, -i+1))}
+		if i == 0 {
+			rec = agent.NotifyRecord{Kind: agent.NotifyClaimed, Key: "k", At: now, Holder: "p"} // today's segment is open
+		}
+		if err := plain.Append(ctx, seg, 0, rec); err != nil {
 			t.Fatal(err)
 		}
 		if err := plain.Append(ctx, idx, 5-i, agent.NotifyRecord{Kind: agent.NotifySegment, At: now, Next: seg}); err != nil {
