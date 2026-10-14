@@ -21,6 +21,8 @@
 #   \* GROUP: ci | nightly | regress | finding | limit
 #   \* EXPECT: pass | invariant <Name> | liveness | action <Name>
 #   \* VACUITY: skip <reason>   (optional: a passing config in which the effect must never fire)
+#   \* VACUITY-ALSO: <Name>    (optional, repeatable: a further vacuity invariant of the module that
+#                              TLC must also report violated, so the config reaches that effect too)
 #   \* SPEC: <module>.tla       (optional: the module in the model's directory TLC checks, in place
 #                              of its MC module)
 #   \* LIBRARY: <model>...      (optional: other model directories whose modules it extends or
@@ -250,6 +252,19 @@ run_cfg() {
       else
         tail -30 "$out.v"; record "$name (vacuity)" FAIL "exit $status: the effect never fires"
       fi
+      # Each further effect the config names (VACUITY-ALSO) must be reachable too.
+      for also in $(sed -n 's/^\\\* VACUITY-ALSO: *//p' "$cfg"); do
+        tmp="$(dirname "$cfg")/.vacuity-$$.cfg"
+        grep -vE '^(INVARIANTS?|PROPERTY|PROPERTIES)( |$)' "$cfg" >"$tmp"
+        echo "INVARIANT $also" >>"$tmp"
+        tlc "$tmp" "$out.v" "$dir" "$module" "$lib"; status=$tlc_status
+        rm -f "$tmp"
+        if [ "$status" = 12 ] && grep -q "Invariant $also is violated" "$out.v"; then
+          record "$name (vacuity $also)" ok "effect reachable at depth $(stats "$out.v" | sed 's/.*depth \([0-9?]*\).*/\1/')"
+        else
+          tail -30 "$out.v"; record "$name (vacuity $also)" FAIL "exit $status: the effect never fires"
+        fi
+      done
       rm -f "$out.v"
       ;;
     invariant)

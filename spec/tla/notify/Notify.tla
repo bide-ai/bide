@@ -94,7 +94,7 @@ ASSUME FailCount \in {"memory", "trail"} /\ Holder \in {"deliverer", "process"}
 ASSUME Bug \in {"none", "AckFirst", "NoUntil", "NoLapse", "NoSeq", "NoOverdue", "MemFailingSince",
                 "NoStaleCheck", "NoDoneCheck", "AckNoRetry", "NoPeerNotice", "NoNoticeClaim",
                 "ClearEarly", "ClearUnclaimed", "ClearOverdue", "NoClear", "SharedAck",
-                "EscEarly", "EscSkip", "EscWhenAcked", "NoEscStop", "NoEsc"}
+                "EscEarly", "EscSkip", "EscWhenAcked", "NoEscStop", "NoEsc", "DropUnrouted"}
 ASSUME Notice \in BOOLEAN /\ LongClaims \in BOOLEAN /\ Clears \in BOOLEAN
 ASSUME Levels \in 0..2 /\ EscMode \in {"unacked", "undecided"}
 ASSUME Reqs >= 1 /\ FailAfter >= 1 /\ MaxRounds >= 1 /\ Slots >= 1 /\ Episodes \in 0..2
@@ -852,10 +852,38 @@ EscDelivered == \A k \in EscKeys : Has(trail, "observed", k) ~> (Acked(k) \/ Has
 \* The configuration's bound on rounds never blocks a deliverer.
 BoundNotHit == ~boundHit
 
-\* Vacuity (check.sh): a notification is delivered; with Clears, an all-clear is (and, with Levels, a step's
-\* all-clear is among them); with Levels and no Clears, the first step of a chain is.
+\* Vacuity (check.sh): a notification is delivered. With Clears and Levels, an escalation step is
+\* delivered and so is that step's all-clear: the properties about steps and their all-clears hold
+\* vacuously otherwise (the event's own all-clear is not enough). With Levels alone, the first step is
+\* delivered; with Clears alone, an all-clear is.
+EscDelivNotReachable == \A k \in EscKeys : deliv[k] = 0
+EscClearNotReachable == \A k \in EscKeys : deliv[ResOf(k)] = 0
 EffectNotReachable ==
-  IF Clears THEN \A r \in ResKeys : deliv[r] = 0
+  IF Clears /\ Levels > 0 THEN \A k \in EscKeys : deliv[k] = 0 \/ deliv[ResOf(k)] = 0
+  ELSE IF Clears THEN \A r \in ResKeys : deliv[r] = 0
   ELSE IF Levels > 0 THEN \A e \in Events : deliv[EscKey(e, 1)] = 0
   ELSE \A e \in Keys : deliv[e] = 0
+
+(***************************************************************************)
+(* Routing of an approval by its approvers (core: routed in notify_route.go).*)
+(* An approver with a route is reached through it; one with none through the *)
+(* route of the kind, which is therefore delivered to as well whenever any   *)
+(* approver has none, and not otherwise. The deliveries are the keys        *)
+(* to:<receiver>:<key>, each with the records of any key (route-two); this   *)
+(* checks the choice of receivers, over every map of three approvers to two  *)
+(* receivers or no route, and every route of the kind. Bug "DropUnrouted"   *)
+(* leaves the route of the kind out: an unrouted approver is never told.     *)
+(***************************************************************************)
+RAppr == {"a1", "a2", "a3"}
+RRecvs == {"r1", "r2"}
+RMaps == [RAppr -> RRecvs \cup {"none"}]
+RDeliveries(m, kind) ==
+  {m[x] : x \in {y \in RAppr : m[y] # "none"}}
+    \cup (IF Bug # "DropUnrouted" /\ \E z \in RAppr : m[z] = "none" THEN {kind} ELSE {})
+\* (Stated over the state so that TLC reports a violation as one, not as a bad constant.)
+RouteReaches == Len(trail) >= 0 /\ \A m \in RMaps, kind \in RRecvs, a \in RAppr :
+  (IF m[a] = "none" THEN kind ELSE m[a]) \in RDeliveries(m, kind)
+\* The route of the kind is not delivered to when every approver is routed (unless it is routed to).
+RouteNoExtra == Len(trail) >= 0 /\ \A m \in RMaps, kind \in RRecvs :
+  (\A a \in RAppr : m[a] # "none") => RDeliveries(m, kind) = {m[a] : a \in RAppr}
 =============================================================================
