@@ -791,14 +791,6 @@ func (s *Store) checkSchema(ctx context.Context) error {
 			return fmt.Errorf("postgres: %s.%s is not an ordinary table, with no partitions or inheritance: %w", quoteIdent(s.schema), table, agent.ErrConfig)
 		}
 	}
-	for _, c := range []struct {
-		table string
-		cols  tableSpec
-	}{{s.t.steps, stepsSpec}, {s.t.leases, leasesSpec}, {s.t.version, versionSpec}} {
-		if err := s.checkTable(ctx, c.table, c.cols); err != nil {
-			return err
-		}
-	}
 	for _, u := range []struct {
 		table string
 		cols  []string
@@ -814,6 +806,14 @@ func (s *Store) checkSchema(ctx context.Context) error {
 		if !ok {
 			return fmt.Errorf("postgres: table %s has no unique index on exactly (%s) that is checked at once and covers every row; the store depends on it (it turns a race for a position into a retry, or arbitrates ON CONFLICT) and never alters an existing table: %w",
 				u.table, strings.Join(u.cols, ", "), agent.ErrConfig)
+		}
+	}
+	for _, c := range []struct {
+		table string
+		cols  tableSpec
+	}{{s.t.steps, stepsSpec}, {s.t.leases, leasesSpec}, {s.t.version, versionSpec}} {
+		if err := s.checkTable(ctx, c.table, c.cols); err != nil {
+			return err
 		}
 	}
 	var sameNextSeq, sameOwner sql.NullBool
@@ -842,9 +842,6 @@ func (s *Store) checkEvents(ctx context.Context) error {
 	if !isTable.Bool {
 		return fmt.Errorf("postgres: %s.%s is not an ordinary table, with no partitions or inheritance: %w", quoteIdent(s.schema), s.t.events, agent.ErrConfig)
 	}
-	if err := s.checkTable(ctx, s.t.events, eventsSpec); err != nil {
-		return err
-	}
 	var ok bool
 	if err := s.db.QueryRowContext(ctx, requiredUnique, s.t.events, s.schema, []string{"run_id", "seq"}).Scan(&ok); err != nil {
 		return fmt.Errorf("postgres: check the uniqueness of %s: %w (%w)", s.t.events, err, agent.ErrStorage)
@@ -852,6 +849,9 @@ func (s *Store) checkEvents(ctx context.Context) error {
 	if !ok {
 		return fmt.Errorf("postgres: table %s has no unique index on exactly (run_id, seq) that is checked at once and covers every row; the event trail's insert-if-absent arbitrates on it and the store never alters an existing table: %w",
 			s.t.events, agent.ErrConfig)
+	}
+	if err := s.checkTable(ctx, s.t.events, eventsSpec); err != nil {
+		return err
 	}
 	return nil
 }

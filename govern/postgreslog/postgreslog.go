@@ -449,16 +449,6 @@ func nextSeqBody(schema string) string {
 // checked here.
 func (l *Log) checkSchema(ctx context.Context) error {
 	schema := l.schema
-	if err := l.checkTable(ctx, "governed_events", eventsSpec); err != nil {
-		return err
-	}
-	if _, _, haveVersion, err := schemaCurrent(ctx, l.db, schema); err != nil {
-		return err
-	} else if haveVersion { // a log from before the version table is version 1 and has none
-		if err := l.checkTable(ctx, versionTable, versionSpec); err != nil {
-			return err
-		}
-	}
 	for _, cols := range [][]string{{"entity", "seq"}, {"entity", "append_id"}} {
 		var ok bool
 		if err := l.db.QueryRowContext(ctx, `SELECT EXISTS (SELECT 1 FROM pg_catalog.pg_index AS i
@@ -474,6 +464,16 @@ func (l *Log) checkSchema(ctx context.Context) error {
 		if !ok {
 			return fmt.Errorf("postgreslog: governed_events has no unique index on exactly (%s) that is checked at once and covers every row; Append depends on it and Open never alters an existing index: %w",
 				strings.Join(cols, ", "), agent.ErrConfig)
+		}
+	}
+	if err := l.checkTable(ctx, "governed_events", eventsSpec); err != nil {
+		return err
+	}
+	if _, _, haveVersion, err := schemaCurrent(ctx, l.db, schema); err != nil {
+		return err
+	} else if haveVersion { // a log from before the version table is version 1 and has none
+		if err := l.checkTable(ctx, versionTable, versionSpec); err != nil {
+			return err
 		}
 	}
 	var same, sameOwner sql.NullBool

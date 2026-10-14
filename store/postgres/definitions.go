@@ -4,6 +4,7 @@ import (
 	"context"
 	"database/sql"
 	"fmt"
+	"regexp"
 	"slices"
 	"strings"
 
@@ -221,8 +222,11 @@ func (s *Store) checkConstraints(ctx context.Context, table string, spec tableSp
 // normalizeCheck is a CHECK constraint's definition without spaces and parentheses, so that
 // "CHECK ((seq >= 0))" is "CHECKseq>=0".
 func normalizeCheck(def string) string {
+	def = operatorForm.ReplaceAllString(def, "$1") // the server prints OPERATOR(pg_catalog.=) when the search path could shadow it
 	return strings.NewReplacer(" ", "", "(", "", ")", "").Replace(def)
 }
+
+var operatorForm = regexp.MustCompile(`OPERATOR\(pg_catalog\.([^)]+)\)`)
 
 func indexOfColumn(cols []column, name string) int {
 	for i, c := range cols {
