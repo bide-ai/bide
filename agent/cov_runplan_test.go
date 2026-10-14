@@ -3,6 +3,7 @@ package agent
 import (
 	"context"
 	"errors"
+	"strings"
 	"testing"
 )
 
@@ -237,5 +238,41 @@ func TestTallyGate_JournalFaults(t *testing.T) {
 	writeRaw(t, j, "r", ApprovalTallyStep("c1"), Record{Kind: StepValue, Result: []byte(`[1]`)})
 	if _, _, err := tallyGate(ctx, j, "r", subj, pol, vf, ""); !errors.Is(err, ErrStorage) {
 		t.Errorf("corrupt recorded tally = %v; want ErrStorage", err)
+	}
+}
+
+// A call outside the run's tool filter is refused with an error result the model reads, and the tool
+// never runs. When that refusal cannot be recorded, the run stops with the store's error: the model
+// is not shown a refusal that is not in the journal, and the tool still does not run.
+func TestRun_FilteredCallRefusal(t *testing.T) {
+	ctx := context.Background()
+	for _, fail := range []bool{false, true} {
+		var pays, lookups int
+		pay := &countingTool{name: "pay", calls: &pays}
+		lookup := &countingTool{name: "lookup", calls: &lookups}
+		var st Store = NewMemStore()
+		if fail {
+			st = covInsertFail{st, ToolResultStep("c1")}
+		}
+		j := mustJournal(st)
+		m := &scriptModel{turns: [][]Emit{toolTurn("c1", "pay", `{}`), textTurn("done")}}
+		a := mustNew(m, j, WithTools(pay, lookup))
+		_, err := a.Run(ctx, "r", UserText("go"), WithToolFilter("lookup"))
+		if pays != 0 {
+			t.Fatalf("fail=%v: the filtered tool ran %d times", fail, pays)
+		}
+		if fail {
+			if err == nil || errors.Is(err, ErrConfig) {
+				t.Fatalf("Run = %v; want the store's error", err)
+			}
+			continue
+		}
+		if err != nil {
+			t.Fatalf("Run = %v", err)
+		}
+		r, ok, gerr := j.Get(ctx, "r", ToolResultStep("c1"))
+		if gerr != nil || !ok || !r.IsError || !strings.Contains(string(r.Result), "not available") {
+			t.Fatalf("refusal = %+v, %v, %v; want a recorded error result", r, ok, gerr)
+		}
 	}
 }
