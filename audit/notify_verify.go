@@ -793,6 +793,21 @@ func (in NotifyVerifyInput) verdicts(trail string, recs []agent.NotifyRecord, jo
 		}
 		add(v)
 	}
+	// The recovery state (an open failure episode, the episodes closed) is built from records that
+	// carry no event key; if a tail record changed it, the verdicts that rest on it (a
+	// recovery_failing event owed or not) rest on an unattested record.
+	if checkTail && (st.Episodes != headSt.Episodes || (st.FailingSince == nil) != (headSt.FailingSince == nil)) {
+		var oldest time.Duration
+		for _, r := range recs[attested:] {
+			if (r.Kind == agent.NotifyFailingSince || r.Kind == agent.NotifyRecovered) && in.Now.Sub(r.At) > oldest {
+				oldest = in.Now.Sub(r.At)
+			}
+		}
+		if in.MaxTailAge <= 0 || oldest > in.MaxTailAge {
+			add(NotifyEventVerdict{Trail: trail, Key: "recovery-state:" + trail, Kind: "recovery_state", RunID: strings.TrimPrefix(trail, "notify:"), Status: NotifyStatusUnattested,
+				Why: fmt.Sprintf("the recovery state (failing_since, recovered) rests on records after the newest signed head, which nothing attests (the oldest is %s old; -max-unattested is %s)", oldest.Round(time.Second), in.MaxTailAge)})
+		}
+	}
 	missing := func(key, kind, runID string, at time.Time, why string, status NotifyStatus) {
 		if _, ok := seen[key]; ok {
 			return

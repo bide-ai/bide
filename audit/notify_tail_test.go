@@ -297,3 +297,48 @@ func TestVerifyNotifications_TheBoundIsPerEvent(t *testing.T) {
 		t.Fatalf("k2 rests on a recent one: %+v", rep.Events)
 	}
 }
+
+// A keyless record in the tail (recovered, failing_since) changes the recovery state, which decides
+// whether a recovery_failing event is owed: under the strict default that is unattested, and a
+// recovery failure that a tail-only `recovered` silenced must not pass.
+func TestVerifyNotifications_KeylessTailRecordsAreUnattested(t *testing.T) {
+	pub, priv, _ := ed25519.GenerateKey(nil)
+	fail := agent.NotifyRecord{Kind: agent.NotifyFailingSince, At: at(0), RunID: "r1", Reason: "storage"}
+	rec := agent.NotifyRecord{Kind: agent.NotifyRecovered, At: at(3000)}
+	late := func(in *audit.NotifyVerifyInput) { in.Now = at(4000) }
+	for name, tc := range map[string]struct {
+		head, tail []agent.NotifyRecord
+	}{
+		"a recovered only in the tail":     {[]agent.NotifyRecord{fail}, []agent.NotifyRecord{rec}},
+		"a failing_since only in the tail": {nil, []agent.NotifyRecord{{Kind: agent.NotifyFailingSince, At: at(3500), RunID: "r1", Reason: "storage"}}},
+	} {
+		b := newTrail(t)
+		if len(tc.head) == 0 { // a head needs one record: an unrelated complete event
+			b.complete(agent.ApprovalKey("r1", "c0", 0), agent.NotificationApprovalPending, 0)
+		}
+		b.add(tc.head...)
+		head := headFor(t, b, priv)
+		b.add(tc.tail...)
+		rep, err := tailVerify(t, b, head, pub, late)
+		found := false
+		for _, e := range rep.Events {
+			found = found || e.Status == audit.NotifyStatusUnattested
+		}
+		if !errors.Is(err, audit.ErrNotVerified) || !found {
+			t.Errorf("%s: err %v, events %+v", name, err, rep.Events)
+		}
+		// Within a bound that covers the record, it is trusted (documented).
+		if _, err := tailVerify(t, b, head, pub, func(in *audit.NotifyVerifyInput) { late(in); in.MaxTailAge = 2 * time.Hour }); err != nil && strings.Contains(err.Error(), "unattested") {
+			t.Errorf("%s: within the bound: %v", name, err)
+		}
+	}
+	// A keyless record already under the head is attested: no unattested verdict.
+	b := newTrail(t).add(fail, rec)
+	head := headFor(t, b, priv)
+	rep, _ := tailVerify(t, b, head, pub, late)
+	for _, e := range rep.Events {
+		if e.Status == audit.NotifyStatusUnattested {
+			t.Fatalf("attested recovery state flagged: %+v", e)
+		}
+	}
+}

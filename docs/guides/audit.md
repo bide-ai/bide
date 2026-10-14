@@ -550,7 +550,7 @@ the first (`tail_since`) and how long ago that was (`tail_age_ns`), and `-max-un
 older than a bound a failure. An event whose observation, acknowledgement or clearing is only in the
 tail is `unattested`, a problem, because whoever can append to the stored trail could have written it.
 `-max-unattested` (library `MaxTailAge`) is the one knob: with a nonzero bound, an event resting on
-tail records no older than it is accepted, for a live trail between heads. **Those records are
+tail records no older than it is accepted (so is a recovery state, from `failing_since` and `recovered` records, that rests on the tail: a keyless record is judged as the recovery-state verdict `recovery-state:<trail>`), for a live trail between heads. **Those records are
 accepted without a signature, so their content and their times, which whoever appended them wrote, are
 trusted**; the default, 0, is strict. A record deleted from that tail cannot be found.
 
