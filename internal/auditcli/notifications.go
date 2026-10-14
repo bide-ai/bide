@@ -50,6 +50,8 @@ func (c *cli) notifications(args []string) {
 	maxAck := fs.Duration("max-ack", 0, "fail an event not acknowledged within this long of when the run entered its state (0: only each event's recorded deadline)")
 	grace := fs.Duration("grace", 5*time.Minute, "how long after an event began that a missing observation is not yet a failure (the notifier's detection window)")
 	recovery := fs.Duration("recovery-failing-after", 15*time.Minute, "how long a recovery failure episode may be open before a recovery_failing event is owed (the notifier's setting)")
+	acceptTail := fs.Bool("accept-tail", false, "accept verdicts that rest on records after the newest signed head (a live trail between heads); without it such an event is unattested and fails")
+	receivers := fs.String("expect-receivers", "", "comma-separated receivers (\"default\" for the default one) every event that needs a person must have been delivered to; without it per-receiver completeness is not checked")
 	strict := fs.Bool("strict", false, "also fail (exit 1) on a warning: a decided gate no notifier observed (unobserved_resolved), or an all-clear owed that cannot be timed (all_clear_untimed)")
 	asOf := fs.String("as-of", "", "judge pending events as of this RFC 3339 time (default now)")
 	c.parse(fs, args)
@@ -83,7 +85,10 @@ func (c *cli) notifications(args []string) {
 		now = t
 	}
 
-	in := audit.NotifyVerifyInput{Unanchored: *unanchored, Now: now, MaxAck: *maxAck, Grace: *grace, RecoveryFailingAfter: *recovery, MaxClockSkew: maxClockSkew, Strict: *strict}
+	in := audit.NotifyVerifyInput{Unanchored: *unanchored, Now: now, MaxAck: *maxAck, Grace: *grace, RecoveryFailingAfter: *recovery, MaxClockSkew: maxClockSkew, Strict: *strict, AcceptTail: *acceptTail}
+	if *receivers != "" {
+		in.ExpectedReceivers = strings.Split(*receivers, ",")
+	}
 	ok := true
 	if *pubkey != "" {
 		v, err := readPubKey(*pubkey)
@@ -262,7 +267,7 @@ func (c *cli) report(rep audit.NotifyReport, strict bool) {
 		case tr.Anchored:
 			line := fmt.Sprintf("INFO  trail %s: %d records; signed head over the first %d (signed %s)", tr.Trail, tr.Records, tr.HeadSize, tr.HeadTime.Format(time.RFC3339))
 			if tr.Tail > 0 {
-				line += fmt.Sprintf("; the last %d are not attested by it", tr.Tail)
+				line += fmt.Sprintf("; the last %d (%s to %s) are not attested by it", tr.Tail, tr.TailFirstAt.Format(time.RFC3339), tr.TailLastAt.Format(time.RFC3339))
 			}
 			c.println(line)
 		default:

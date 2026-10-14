@@ -1,0 +1,3 @@
+Section: Fixed
+
+`bide audit notifications` no longer lets a verdict rest on records nothing attests. An event whose observation, acknowledgement or clearing is only among the records after the newest signed tree head is now `unattested` (a problem) and fails the audit, because anyone who can append to the stored trail could have written it; the report gives the tail's size and time range, and `-accept-tail` (library `AcceptTail`) accepts it for a live trail between heads. New `-expect-receivers` (library `ExpectedReceivers`) requires every halt, approval, abort and recovery failure to have a delivery to each listed receiver, else `no_delivery`; without it per-receiver completeness is not checked, which is documented.

@@ -542,8 +542,17 @@ schedule, as for a journal. Without a signed head the verifier still reads the t
 the report marks it `UNANCHORED`: whoever can write the event store could have deleted or reordered
 records, and nothing in the trail shows it. With a head, the first `head_size` records must be exactly the leaves the head
 commits to, so a deleted, reordered or changed record is found (exit 1). Records after the newest
-head are read and reported as not attested (`tail`), and a record deleted from that tail cannot be
+head are read and reported as not attested (`tail`, with the time range of its records). An event whose
+observation, acknowledgement or clearing is only in the tail is `unattested`, which fails the audit,
+because whoever can append to the stored trail could have written it; `-accept-tail` (library
+`AcceptTail`) accepts it, for a live trail between heads. A record deleted from the tail cannot be
 found. Sign and anchor often enough that the tail is short.
+
+**Per-receiver completeness.** The trail cannot know the routing, so by default a fan-out that reached
+one receiver passes. `-expect-receivers risk,finance` (library `ExpectedReceivers`; `default` names the
+default receiver) requires every halt, approval, abort and recovery failure to have a delivery to each
+listed receiver; one without is `no_delivery` and fails. Escalation steps, overdue notices and
+all-clears are not checked this way. Without the flag, per-receiver completeness is not checked.
 
 <!-- docsnip: setup ctx context.Context; evStore audit.EventStore; journal *agent.Journal; runID string; signer audit.Signer; verifier audit.Verifier -->
 ```go

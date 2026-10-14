@@ -806,7 +806,7 @@ bide audit: produce and verify audit proof bundles
          quoted); these notes never change the verdict
 
   notifications (-trail <file>... [-journal <file>...] | -db <file> | -postgres-env <var>) [-run <id>]
-                (-sth <file>... -pubkey <hex|file> | -unanchored) [-max-ack <duration>] [-strict] [-as-of <time>]
+                (-sth <file>... -pubkey <hex|file> | -unanchored) [-max-ack <duration>] [-strict] [-accept-tail] [-expect-receivers <a,b>] [-as-of <time>]
          verify that every event that needed a person (an unknown-outcome halt, an approval gate,
          an aborted run, a recovery failure, an overdue notice, an all-clear) was notified, and
          when it was acknowledged: each trail's leaves are read strictly (an unknown record kind or
@@ -817,7 +817,7 @@ bide audit: produce and verify audit proof bundles
          journal shows must be observed in its run's trail. Each event gets a verdict: acked,
          acked_late (past its deadline or -max-ack), pending, failing, overdue, cleared before
          notification, never_notified, and the command fails (exit 1) on acked_late, overdue and
-         never_notified (and, with -strict, on the warnings unobserved_resolved and all_clear_untimed). -db and -postgres-env (a variable holding the DSN) read every run, or -run,
+         never_notified (and, with -strict, on the warnings unobserved_resolved and all_clear_untimed). A verdict that rests on records after the newest signed head is unattested and fails unless -accept-tail; with -expect-receivers, an event with no delivery to a listed receiver is no_delivery and fails. -db and -postgres-env (a variable holding the DSN) read every run, or -run,
          from a store, in the full bide command; the audit-only build reads exported files
 
   verify-receipts -receipt <file|dir> -journal <export> -heads <file> -pubkey <hex|file> -approver-keys <file>
@@ -906,12 +906,16 @@ Exit status:
 
 ```text
 Usage of bide audit notifications:
+  -accept-tail
+    	accept verdicts that rest on records after the newest signed head (a live trail between heads); without it such an event is unattested and fails
   -as-of string
     	judge pending events as of this RFC 3339 time (default now)
   -color when
     	when to color the output: auto (the default: on a terminal, unless NO_COLOR is set or TERM is dumb), always or never; -json is never colored
   -db string
     	read the trails and journals from this SQLite journal (opened read-only) instead of from files
+  -expect-receivers string
+    	comma-separated receivers ("default" for the default one) every event that needs a person must have been delivered to; without it per-receiver completeness is not checked
   -grace duration
     	how long after an event began that a missing observation is not yet a failure (the notifier's detection window) (default 5m0s)
   -journal value

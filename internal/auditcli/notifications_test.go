@@ -408,3 +408,25 @@ func TestNotificationsVerb_ShowsTheReceiverOfEachEventAndASummaryPerReceiver(t *
 		t.Errorf("no summary per receiver:\n%s", out)
 	}
 }
+
+func TestNotificationsVerb_TailAndReceivers(t *testing.T) {
+	key := agent.ApprovalKey("r1", "c1", 0)
+	f := newNotifyFixture(t)
+	f.add(agent.NotifyRecord{Kind: agent.NotifyObserved, Key: key, At: nat(1), EventKind: "approval_pending", EventAt: nat(0), DeadlineAt: nat(301)},
+		agent.NotifyRecord{Kind: agent.NotifyClaimed, Key: key, At: nat(1), Holder: "p1", Until: nat(121)})
+	trail, sth := f.files() // head over the two records
+	f.add(agent.NotifyRecord{Kind: agent.NotifyAcked, Key: key, At: nat(3), FirstSentAt: nat(3), Attempts: 1, Status: 200})
+	x, _ := audit.ExportNotifyTrail(context.Background(), f.es, nTrail)
+	writeJSON(t, trail, x)
+	args := []string{"notifications", "-trail", trail, "-sth", sth, "-pubkey", f.pub, "-as-of", nat(60).Format(time.RFC3339)}
+	code, out, _ := runCLI(args...)
+	if code != 1 || !strings.Contains(out, "FAIL  unattested") || !strings.Contains(out, "not attested by it") {
+		t.Fatalf("exit %d\n%s", code, out)
+	}
+	if code, out, _ := runCLI(append(args, "-accept-tail")...); code != 0 {
+		t.Fatalf("-accept-tail: exit %d\n%s", code, out)
+	}
+	if code, out, _ := runCLI(append(args, "-accept-tail", "-expect-receivers", "default,oncall", "-as-of", nat(3000).Format(time.RFC3339))...); code != 1 || !strings.Contains(out, "no_delivery") {
+		t.Fatalf("-expect-receivers: exit %d\n%s", code, out)
+	}
+}

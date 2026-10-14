@@ -50,12 +50,19 @@ const (
 	// (a tool's result, a run's end), so the all-clear cannot be judged late. A warning, like
 	// unobserved_resolved.
 	NotifyStatusAllClearUntimed NotifyStatus = "all_clear_untimed"
+	// NotifyStatusUnattested: the event's observation, acknowledgement or clearing is in the records
+	// after the newest signed head, which nothing attests: whoever can append to the stored trail
+	// could have written it. A problem unless NotifyVerifyInput.AcceptTail is set.
+	NotifyStatusUnattested NotifyStatus = "unattested"
+	// NotifyStatusNoDelivery: the event was delivered to some receiver and not to an expected one
+	// (NotifyVerifyInput.ExpectedReceivers). A problem.
+	NotifyStatusNoDelivery NotifyStatus = "no_delivery"
 )
 
 // Problem reports whether a status fails an audit.
 func (s NotifyStatus) Problem() bool {
 	switch s {
-	case NotifyStatusAckedLate, NotifyStatusOverdue, NotifyStatusNeverNotified:
+	case NotifyStatusAckedLate, NotifyStatusOverdue, NotifyStatusNeverNotified, NotifyStatusUnattested, NotifyStatusNoDelivery:
 		return true
 	}
 	return false
@@ -83,6 +90,15 @@ type NotifyVerifyInput struct {
 	// Journals are run journals the events are cross-checked against: every gate, halt and abort
 	// they show is expected in the trail of its root run.
 	Journals []JournalExport
+
+	// AcceptTail accepts the verdicts that rest on records after the newest signed head (a live
+	// trail between heads). Without it such an event is NotifyStatusUnattested and fails the audit.
+	AcceptTail bool
+	// ExpectedReceivers, if set, names the receivers (agent.DefaultReceiver for the default one)
+	// every event that needs a person must have been delivered to: an event with no delivery to one
+	// of them is NotifyStatusNoDelivery. Without it, whether each routed receiver was reached is not
+	// checked: the trail alone cannot know the routing.
+	ExpectedReceivers []string
 
 	// Strict makes a warning status (NotifyStatus.Warning) a problem, so an audit fails on it.
 	Strict bool
@@ -114,8 +130,11 @@ type NotifyTrailReport struct {
 	Anchored bool `json:"anchored"`
 	HeadSize int  `json:"head_size,omitempty"`
 	// Tail counts the records after the head: read, but not attested by it.
-	Tail     int       `json:"tail,omitempty"`
-	HeadTime time.Time `json:"head_time,omitzero"`
+	Tail int `json:"tail,omitempty"`
+	// TailFirstAt and TailLastAt are the times of the first and last record of the tail.
+	TailFirstAt time.Time `json:"tail_first_at,omitzero"`
+	TailLastAt  time.Time `json:"tail_last_at,omitzero"`
+	HeadTime    time.Time `json:"head_time,omitzero"`
 	// Violations are the ways the trail is malformed, out of order, or does not match its head.
 	Violations []string `json:"violations,omitempty"`
 }
@@ -362,7 +381,14 @@ func VerifyNotifications(in NotifyVerifyInput) (NotifyReport, error) {
 			switch openTrailKind(name) {
 			case openNone:
 				tr.Violations = append(tr.Violations, checkNotifyTrail(name, recs, in.MaxClockSkew)...)
-				rep.Events = append(rep.Events, in.verdicts(name, recs, owed[name])...)
+				attested := len(recs)
+				if tr.Anchored {
+					attested = tr.HeadSize
+					if tr.Tail > 0 {
+						tr.TailFirstAt, tr.TailLastAt = recs[attested].At, recs[len(recs)-1].At
+					}
+				}
+				rep.Events = append(rep.Events, in.verdicts(name, recs, owed[name], attested)...)
 			default:
 				tr.Violations = append(tr.Violations, openV[name]...)
 			}
@@ -686,8 +712,13 @@ func requirePrefix(bad func(int, string, ...any), i int, key, prefix string) {
 }
 
 // verdicts folds recs and the journal events owed to the trail into a verdict for each event.
-func (in NotifyVerifyInput) verdicts(trail string, recs []agent.NotifyRecord, journal []agent.JournalNotifyEvent) []NotifyEventVerdict {
+func (in NotifyVerifyInput) verdicts(trail string, recs []agent.NotifyRecord, journal []agent.JournalNotifyEvent, attested int) []NotifyEventVerdict {
 	st := agent.FoldNotify(recs)
+	var headSt agent.NotifyState
+	checkTail := attested < len(recs) && !in.AcceptTail
+	if checkTail {
+		headSt = agent.FoldNotify(recs[:attested])
+	}
 	var out []NotifyEventVerdict
 	seen := map[string]int{} // key -> index in out
 	inJournal := map[string]bool{}
@@ -696,7 +727,12 @@ func (in NotifyVerifyInput) verdicts(trail string, recs []agent.NotifyRecord, jo
 	}
 	add := func(v NotifyEventVerdict) { seen[v.Key] = len(out); out = append(out, v) }
 	for _, key := range st.Keys {
-		add(in.verdict(trail, st.Events[key], inJournal[key]))
+		v := in.verdict(trail, st.Events[key], inJournal[key])
+		if he, e := headSt.Events[key], st.Events[key]; checkTail && (he == nil || e.Acked != nil && he.Acked == nil || e.Cleared != nil && he.Cleared == nil) {
+			v.Status = NotifyStatusUnattested
+			v.Why = "the event's observation, acknowledgement or clearing is among the last " + fmt.Sprint(len(recs)-attested) + " record(s), after the newest signed head, which nothing attests"
+		}
+		add(v)
 	}
 	missing := func(key, kind, runID string, at time.Time, why string, status NotifyStatus) {
 		if _, ok := seen[key]; ok {
@@ -731,6 +767,9 @@ func (in NotifyVerifyInput) verdicts(trail string, recs []agent.NotifyRecord, jo
 		}
 	}
 	root := strings.TrimPrefix(trail, "notify:")
+	if len(in.ExpectedReceivers) > 0 {
+		in.checkReceivers(trail, st, &out)
+	}
 	for _, j := range journal {
 		for _, key := range deliveries(j.Key) {
 			e := st.Events[key]
@@ -854,5 +893,54 @@ func checkOpFields(bad func(int, string, ...any), i int, r agent.NotifyRecord, k
 	cut := func(k string) string { return k[:strings.LastIndex(k, ":")] }
 	if cut(r.Key) != cut(want) {
 		bad(i, "key %q does not match its operation (op_run %q, op_kind %q, op_id %q)", r.Key, r.OpRun, r.OpKind, r.OpID)
+	}
+}
+
+// checkReceivers adds a NotifyStatusNoDelivery verdict for every receiver in ExpectedReceivers that
+// an event needing a person was not delivered to. Deliveries of one event are its own key (the
+// default receiver) and its agent.ToKey keys (one per named receiver).
+func (in NotifyVerifyInput) checkReceivers(trail string, st agent.NotifyState, out *[]NotifyEventVerdict) {
+	type group struct {
+		first *agent.NotifyEvent
+		to    map[string]bool
+	}
+	groups := map[string]*group{}
+	var order []string
+	for _, key := range st.Keys {
+		e := st.Events[key]
+		switch agent.NotificationKind(e.Kind) {
+		case agent.NotificationOutcomeUnknown, agent.NotificationApprovalPending, agent.NotificationRunAborted, agent.NotificationRecoveryFailing:
+		default:
+			continue
+		}
+		base := key
+		if _, b, ok := agent.SplitToKey(key); ok {
+			base = b
+		}
+		g := groups[base]
+		if g == nil {
+			g = &group{first: e, to: map[string]bool{}}
+			groups[base] = g
+			order = append(order, base)
+		}
+		g.to[e.ReceiverName()] = true
+	}
+	for _, base := range order {
+		g := groups[base]
+		for _, want := range in.ExpectedReceivers {
+			if g.to[want] {
+				continue
+			}
+			key := agent.ToKey(want, base)
+			if want == agent.DefaultReceiver {
+				key = base
+			}
+			status, why := NotifyStatusNoDelivery, "the event has no delivery to the expected receiver "+want
+			if in.Now.Before(g.first.ObservedAt.Add(in.Grace)) {
+				status, why = NotifyStatusNotYetDue, "observed within the grace period; no delivery to receiver "+want+" yet"
+			}
+			*out = append(*out, NotifyEventVerdict{Trail: trail, Key: key, Kind: g.first.Kind, RunID: g.first.RunID, Status: status, Why: why,
+				EventAt: g.first.EventAt, ObservedAt: g.first.ObservedAt, Receiver: want})
+		}
 	}
 }

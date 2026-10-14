@@ -344,7 +344,9 @@ be public.
 **Notification evidence is only as strong as the anchor you give the trail.** The notifier writes its
 trail but does not sign it; `bide audit notifications` finds a deleted or reordered record only
 against a signed head (`audit.SignNotifyTrail`) that you create and anchor outside the database,
-and reads the records after the newest head as not attested. Without a head the report says
+and fails (`unattested`) an event whose verdict rests on records after the newest head, unless
+`-accept-tail`. It does not check that every routed receiver got a delivery unless given the
+expected receivers (`-expect-receivers`). Without a head the report says
 `UNANCHORED`. The check cannot find an event that left no trace in the journals it was given and no
 record in the trail (a halt that a later result resolved before the audit), cannot say that a person
 read a notification (an acknowledgement is the sink's 2xx), and dates events by the notifying

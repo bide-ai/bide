@@ -560,8 +560,9 @@ Two things to set up on your side:
   `audit.SignNotifyTrail(ctx, eventStore, agent.NotifyTrailName(runID), signer, time.Now())` on a
   schedule and publish the head to an `Anchor` (or any log in another trust domain). With a head,
   a deleted or reordered record is found; without one the report says `UNANCHORED`, and whoever can
-  write the event store could have changed the trail undetected. Records after the newest head are read but
-  not attested by it.
+  write the event store could have changed the trail undetected. An event whose acknowledgement, clearing or
+  observation is only after the newest head is `unattested` and fails (`-accept-tail` accepts it).
+  Add `-expect-receivers a,b` to require a delivery to each routed receiver; without it that is not checked.
 - **Give it the journals.** The check of the trail alone cannot find a halt or a gate that no
   notifier ever saw; the cross-check against the journals can. `-db` and `-postgres-env` read both
   from the store, read-only (the Postgres DSN is read from the named environment variable, never
