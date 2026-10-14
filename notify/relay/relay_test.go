@@ -10,6 +10,7 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"strconv"
 	"strings"
@@ -735,8 +736,19 @@ func restartHandler(t *testing.T, path string, sends *atomic.Int32, size int) (*
 		t.Fatal(err)
 	}
 	srv := httptest.NewServer(h)
-	t.Cleanup(srv.Close)
+	handlers.Store(srv, h)
+	t.Cleanup(func() { closeSrv(srv) })
 	return srv, &rig{srv: srv}
+}
+
+var handlers sync.Map // *httptest.Server -> *Handler
+
+// closeSrv stops a restartHandler server and releases its state lock, as a relay exiting does.
+func closeSrv(srv *httptest.Server) {
+	srv.Close()
+	if h, ok := handlers.LoadAndDelete(srv); ok {
+		h.(*Handler).Close()
+	}
 }
 
 func TestStateFileKeepsClearedIDsAcrossARestart(t *testing.T) {
@@ -749,7 +761,7 @@ func TestStateFileKeepsClearedIDsAcrossARestart(t *testing.T) {
 	if got := rg.raw(t, clear, nil); got != 204 {
 		t.Fatalf("clear: %d", got)
 	}
-	srv.Close() // the relay restarts
+	closeSrv(srv) // the relay restarts
 	sends.Store(0)
 	_, rg = restartHandler(t, path, &sends, 0)
 	if got := rg.raw(t, payloadBody(t, nil), nil); got != 204 || sends.Load() != 0 {
@@ -768,7 +780,7 @@ func TestWithoutAStateFileARestartForgets(t *testing.T) {
 		p.Kind, p.ID, p.Key = "resolved", agent.NotifyID("resolved:k1"), "resolved:k1"
 	})
 	rg.raw(t, clear, nil)
-	srv.Close()
+	closeSrv(srv)
 	sends.Store(0)
 	_, rg = restartHandler(t, "", &sends, 0)
 	if got := rg.raw(t, payloadBody(t, nil), nil); got != 204 || sends.Load() != 1 {
@@ -784,7 +796,7 @@ func TestStateFileKeepsWhichSinksTookAnEventAcrossARestart(t *testing.T) {
 	if got := rg.raw(t, body, nil); got != 204 || sends.Load() != 1 {
 		t.Fatal(got)
 	}
-	srv.Close()
+	closeSrv(srv)
 	_, rg = restartHandler(t, path, &sends, 0)
 	if got := rg.raw(t, body, nil); got != 204 || sends.Load() != 1 {
 		t.Fatalf("redelivery after a restart: %d, %d sends, want 1 in all", got, sends.Load())
@@ -799,7 +811,7 @@ func TestStateFileIsBoundedAndKeepsTheNewest(t *testing.T) {
 		k := "e" + strconv.Itoa(i)
 		rg.raw(t, payloadBody(t, func(p *notify.Payload) { p.ID, p.Key = agent.NotifyID(k), k }), nil)
 	}
-	srv.Close()
+	closeSrv(srv)
 	b, err := os.ReadFile(path)
 	if err != nil {
 		t.Fatal(err)
@@ -849,7 +861,7 @@ func TestStateFileHoldsNoSecretOrPayload(t *testing.T) {
 	var sends atomic.Int32
 	srv, rg := restartHandler(t, path, &sends, 0)
 	rg.raw(t, payloadBody(t, nil), nil)
-	srv.Close()
+	closeSrv(srv)
 	b, _ := os.ReadFile(path)
 	for _, leak := range []string{secret, "run-1", "waiting"} {
 		if strings.Contains(string(b), leak) {
@@ -868,7 +880,7 @@ func TestStateFileKeepsRecencyOrderAcrossARestart(t *testing.T) {
 	for _, k := range []string{"a", "b", "c"} {
 		send(rg, k)
 	}
-	srv.Close()
+	closeSrv(srv)
 	sends.Store(0)
 	_, rg = restartHandler(t, path, &sends, 3)
 	send(rg, "d") // evicts the oldest, a
@@ -883,5 +895,119 @@ func TestStateFileKeepsRecencyOrderAcrossARestart(t *testing.T) {
 	send(rg, "a") // the oldest went first
 	if sends.Load() != 2 {
 		t.Fatal("the oldest event outlived a newer one across the restart")
+	}
+}
+
+// ---- the state lock and torn writes ----
+
+func TestASecondRelayOnTheSameStateFileIsRefused(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "relay.state")
+	sink := &funcSink{name: "s"}
+	first, err := New(Config{Secrets: []string{secret}, Sinks: []Sink{sink}, StatePath: path})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := New(Config{Secrets: []string{secret}, Sinks: []Sink{sink}, StatePath: path}); err == nil || !strings.Contains(err.Error(), "in use by another relay") {
+		t.Fatalf("second relay: %v, want a refusal naming the file", err)
+	}
+	// The refused relay must not have disturbed the first one's file.
+	if _, err := os.ReadFile(path); err != nil {
+		t.Fatal(err)
+	}
+	if err := first.Close(); err != nil {
+		t.Fatal(err)
+	}
+	second, err := New(Config{Secrets: []string{secret}, Sinks: []Sink{sink}, StatePath: path})
+	if err != nil {
+		t.Fatalf("after the first closed: %v", err)
+	}
+	second.Close()
+}
+
+// TestMain lets the test binary act as a relay process that takes the state lock and waits.
+func TestMain(m *testing.M) {
+	if path := os.Getenv("RELAY_TEST_HOLD_STATE"); path != "" {
+		if _, err := New(Config{Secrets: []string{secret}, Sinks: []Sink{&funcSink{name: "s"}}, StatePath: path}); err != nil {
+			fmt.Println("refused:", err)
+			os.Exit(3)
+		}
+		fmt.Println("locked")
+		time.Sleep(time.Minute)
+		os.Exit(0)
+	}
+	os.Exit(m.Run())
+}
+
+func startHolder(t *testing.T, path string) *exec.Cmd {
+	t.Helper()
+	cmd := exec.Command(os.Args[0], "-test.run=^$")
+	cmd.Env = append(os.Environ(), "RELAY_TEST_HOLD_STATE="+path)
+	out, _ := cmd.StdoutPipe()
+	if err := cmd.Start(); err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { cmd.Process.Kill(); cmd.Wait() })
+	line := make(chan string, 1)
+	go func() { b := make([]byte, 64); n, _ := out.Read(b); line <- string(b[:n]) }()
+	select {
+	case l := <-line:
+		if !strings.HasPrefix(l, "locked") {
+			t.Fatalf("holder: %q", l)
+		}
+	case <-time.After(20 * time.Second):
+		t.Fatal("holder did not take the lock")
+	}
+	return cmd
+}
+
+func TestStateLockIsHeldAcrossProcessesAndDiesWithTheHolder(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "relay.state")
+	sink := &funcSink{name: "s"}
+	holder := startHolder(t, path)
+	if _, err := New(Config{Secrets: []string{secret}, Sinks: []Sink{sink}, StatePath: path}); err == nil || !strings.Contains(err.Error(), "in use by another relay") {
+		t.Fatalf("while another process holds it: %v", err)
+	}
+	holder.Process.Kill() // a crash: no Close, no cleanup
+	holder.Wait()
+	var h *Handler
+	var err error
+	for end := time.Now().Add(10 * time.Second); time.Now().Before(end); time.Sleep(50 * time.Millisecond) {
+		if h, err = New(Config{Secrets: []string{secret}, Sinks: []Sink{sink}, StatePath: path}); err == nil {
+			break
+		}
+	}
+	if err != nil {
+		t.Fatalf("after the holder crashed the lock is stale: %v", err)
+	}
+	h.Close()
+}
+
+func TestKilledSaveLeavesTheOldStateLoadable(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "relay.state")
+	var sends atomic.Int32
+	srv, rg := restartHandler(t, path, &sends, 0)
+	rg.raw(t, payloadBody(t, func(p *notify.Payload) { p.ID, p.Key = agent.NotifyID("old"), "old" }), nil)
+	before, _ := os.ReadFile(path)
+	// The next save is killed between writing the temporary file and the rename.
+	h, _ := handlers.Load(srv)
+	h.(*Handler).state.beforeRename = func() error { return errors.New("killed") }
+	rg.raw(t, payloadBody(t, func(p *notify.Payload) { p.ID, p.Key = agent.NotifyID("new"), "new" }), nil)
+	if after, _ := os.ReadFile(path); string(after) != string(before) {
+		t.Fatalf("a save that did not finish changed the state file:\n%s\n%s", before, after)
+	}
+	if tmp, _ := filepath.Glob(path + ".tmp-*"); len(tmp) != 0 {
+		t.Fatalf("a failed save left %v", tmp)
+	}
+	closeSrv(srv)
+	// A real kill leaves the temporary file behind: plant one, with garbage in it.
+	os.WriteFile(path+".tmp-123", []byte("{torn"), 0o600)
+	sends.Store(0)
+	_, rg = restartHandler(t, path, &sends, 0)
+	rg.raw(t, payloadBody(t, func(p *notify.Payload) { p.ID, p.Key = agent.NotifyID("old"), "old" }), nil)
+	if sends.Load() != 0 {
+		t.Fatal("the old state did not load after a killed save")
+	}
+	if tmp, _ := filepath.Glob(path + ".tmp-*"); len(tmp) != 0 {
+		t.Fatalf("a stale temporary file was kept: %v", tmp)
 	}
 }
