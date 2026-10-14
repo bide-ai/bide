@@ -45,25 +45,36 @@ func (c notifyConfig) routing() NotifyRouting {
 }
 
 // Receivers returns the receivers an event of kind is delivered to, sorted: for an approval whose
-// approvers are routed, the receiver of each (one delivery each); else the kind's route, else
-// DefaultReceiver. approvers is the gate's approvers, nil for a 1-of-1 gate.
+// approvers are routed, the receiver of each (one delivery each), and, when any approver of the gate
+// has no route, the kind's route as well (else DefaultReceiver), through which that approver is
+// reached; for any other event, or an approval none of whose approvers is routed, the kind's route,
+// else DefaultReceiver. approvers is the gate's approvers, nil for a 1-of-1 gate.
 func (r NotifyRouting) Receivers(kind NotificationKind, approvers []string) []string {
+	kindRecv := DefaultReceiver
+	if to, ok := r.Routes[kind]; ok {
+		kindRecv = receiverLabel(receiverID(to))
+	}
 	if kind == NotificationApprovalPending && len(r.ApproverRoutes) > 0 {
 		var recvs []string
+		unrouted := false
 		for _, a := range approvers {
-			if to, ok := r.ApproverRoutes[a]; ok && !slices.Contains(recvs, receiverLabel(receiverID(to))) {
+			to, ok := r.ApproverRoutes[a]
+			switch {
+			case !ok:
+				unrouted = true
+			case !slices.Contains(recvs, receiverLabel(receiverID(to))):
 				recvs = append(recvs, receiverLabel(receiverID(to)))
 			}
 		}
 		if len(recvs) > 0 {
+			if unrouted && !slices.Contains(recvs, kindRecv) {
+				recvs = append(recvs, kindRecv)
+			}
 			slices.Sort(recvs)
 			return recvs
 		}
 	}
-	if to, ok := r.Routes[kind]; ok {
-		return []string{receiverLabel(receiverID(to))}
-	}
-	return []string{DefaultReceiver}
+	return []string{kindRecv}
 }
 
 // ApproverRouted reports whether routing depends on a gate's approvers, so that a gate's receivers

@@ -89,9 +89,11 @@ func WithNotifyRoute(kind NotificationKind, receiver string) NotifyOption {
 // WithNotifyApproverRoute sends the approval_pending event of a gate whose approvers include
 // approver to the named receiver. A gate with approvers routed to several receivers is delivered
 // to each of them, as a delivery of its own (key "to:<receiver>:<key>", its own ID, claim and
-// acknowledgement), so that one receiver's acknowledgement is never taken for another's. A gate
-// with none of its approvers routed, and a 1-of-1 gate (which names none), follows
-// WithNotifyRoute(NotificationApprovalPending, ...).
+// acknowledgement), so that one receiver's acknowledgement is never taken for another's. An approver
+// with no route is reached through the route of the kind (WithNotifyRoute(NotificationApprovalPending,
+// ...), else the default receiver), which is delivered to as well whenever any approver of the gate
+// has no route; a gate with none of its approvers routed, and a 1-of-1 gate (which names none), go
+// to the route of the kind alone.
 func WithNotifyApproverRoute(approver, receiver string) NotifyOption {
 	return notifyOption(func(c *notifyConfig) error {
 		if approver == "" {

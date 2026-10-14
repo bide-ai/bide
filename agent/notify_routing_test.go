@@ -3,6 +3,7 @@ package agent
 import (
 	"context"
 	"errors"
+	"slices"
 	"strings"
 	"testing"
 	"time"
@@ -185,7 +186,8 @@ func TestRouting_OneRoutedApproverKeepsTheEventKey(t *testing.T) {
 	if len(routed) != 1 || routed[0].key != approvalEvent().key || routed[0].receiver != "risk" {
 		t.Fatalf("routed = %+v", routed)
 	}
-	// An approver with no route, and a 1-of-1 gate, fall back to the kind's receiver.
+	// A 1-of-1 gate (which names no approvers) goes to the kind's receiver; a gate with an approver
+	// that has no route is also delivered to it (see TestRouting_AnUnroutedApproverStillReachesTheKindsReceiver).
 	if r := e.routed(approvalEvent()); len(r) != 1 || r[0].receiver != "" {
 		t.Fatalf("a gate with no approvers routed to %+v", r)
 	}
@@ -681,4 +683,60 @@ func TestEscalation_AStepAfterARestartCarriesTheEventsDetailFromTheJournal(t *te
 		t.Fatalf("approval detail = %+v", a)
 	}
 
+}
+
+// A gate whose approvers are only partly routed: an approver with no route is reached through the
+// route of the kind, so that receiver is told as well as the routed approvers' ones. Without it the
+// gate carol can decide would be announced to nobody she is reachable through.
+func TestRouting_AnUnroutedApproverStillReachesTheKindsReceiver(t *testing.T) {
+	recv := func(ds []notifyEvent) (r []string) {
+		for _, d := range ds {
+			r = append(r, receiverLabel(d.receiver))
+		}
+		slices.Sort(r)
+		return
+	}
+	t.Run("the default receiver", func(t *testing.T) {
+		e := testEngine(t, memJournal(), &fakeSink{}, NewMemNotifyTrail(), routeClock(), "p1",
+			WithNotifyReceiver("risk", &fakeSink{}), WithNotifyApproverRoute("alice", "risk"))
+		ds := e.routed(approvalEvent("alice", "carol"))
+		if got := recv(ds); !slices.Equal(got, []string{"default", "risk"}) {
+			t.Fatalf("receivers = %v, want default and risk", got)
+		}
+		if ds[0].key == ds[1].key {
+			t.Fatal("two deliveries share a key")
+		}
+	})
+	t.Run("a receiver named by the route of the kind", func(t *testing.T) {
+		e := testEngine(t, memJournal(), &fakeSink{}, NewMemNotifyTrail(), routeClock(), "p1",
+			WithNotifyReceiver("risk", &fakeSink{}), WithNotifyReceiver("approvers", &fakeSink{}),
+			WithNotifyRoute(NotificationApprovalPending, "approvers"), WithNotifyApproverRoute("alice", "risk"))
+		if got := recv(e.routed(approvalEvent("alice", "carol"))); !slices.Equal(got, []string{"approvers", "risk"}) {
+			t.Fatalf("receivers = %v, want approvers and risk", got)
+		}
+	})
+	t.Run("every approver routed leaves the kind's receiver out", func(t *testing.T) {
+		e := testEngine(t, memJournal(), &fakeSink{}, NewMemNotifyTrail(), routeClock(), "p1",
+			WithNotifyReceiver("risk", &fakeSink{}), WithNotifyApproverRoute("alice", "risk"), WithNotifyApproverRoute("carol", "risk"))
+		if got := recv(e.routed(approvalEvent("alice", "carol"))); !slices.Equal(got, []string{"risk"}) {
+			t.Fatalf("receivers = %v, want risk only", got)
+		}
+	})
+	t.Run("the kind's receiver is also the routed one", func(t *testing.T) {
+		e := testEngine(t, memJournal(), &fakeSink{}, NewMemNotifyTrail(), routeClock(), "p1",
+			WithNotifyReceiver("risk", &fakeSink{}), WithNotifyRoute(NotificationApprovalPending, "risk"), WithNotifyApproverRoute("alice", "risk"))
+		ds := e.routed(approvalEvent("alice", "carol"))
+		if got := recv(ds); !slices.Equal(got, []string{"risk"}) || ds[0].key != approvalEvent().key {
+			t.Fatalf("receivers = %v key %s: one delivery under the plain key", got, ds[0].key)
+		}
+	})
+	t.Run("delivered to both", func(t *testing.T) {
+		def, risk := &fakeSink{}, &fakeSink{}
+		e := testEngine(t, memJournal(), def, NewMemNotifyTrail(), routeClock(), "p1",
+			WithNotifyReceiver("risk", risk), WithNotifyApproverRoute("alice", "risk"))
+		mustRound(t, e, approvalEvent("alice", "carol"))
+		if def.count() != 1 || risk.count() != 1 {
+			t.Fatalf("default %d, risk %d; want 1 and 1", def.count(), risk.count())
+		}
+	})
 }

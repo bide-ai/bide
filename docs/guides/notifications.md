@@ -288,11 +288,13 @@ agent.WithNotifyApproverRoute("alice", "risk"),
 agent.WithNotifyApproverRoute("bob", "finance"),
 ```
 
-A gate whose approvers are `alice`, `bob` and `carol` is then delivered to both `risk` and
+A gate whose approvers are `alice` and `bob` is then delivered to both `risk` and
 `finance`, as two deliveries: each has its own key (`to:<receiver>:<key>`), its own ID, its own claim
 and acknowledgement in the trail, and its own retries. One receiver acknowledging does not stand for
-the other, and one being down does not hold the other back. An approver with no route, a 1-of-1 gate
-(which names no approvers) and a gate with none of its approvers routed go to the route of the kind.
+the other, and one being down does not hold the other back. An approver with no route is reached through the route of the kind
+(the default receiver if there is none): if `carol` could also decide that gate, the route of the kind
+would be a third delivery, so that nobody who can decide is left out. A 1-of-1 gate (which names no
+approvers) and a gate with none of its approvers routed go to the route of the kind alone.
 
 **What the trail shows.** All of a run's deliveries are in the one trail, `notify:<run>`, and each
 receiver's are told apart by the `receiver` field of the event's `observed` record (empty for
