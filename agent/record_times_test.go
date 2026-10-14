@@ -6,6 +6,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"slices"
 	"strings"
 	"testing"
 	"time"
@@ -641,4 +642,28 @@ func stripRecordedAt(rs []Record) []bool {
 		}
 	}
 	return had
+}
+
+// stripRecordedAt clears only the recorded_at, reports which records had one, and leaves a signed
+// decision's other fields where they are.
+func TestRecordTimes_StripPresence(t *testing.T) {
+	rs := []Record{
+		{Name: "a"},
+		{Name: "b", ApproverSignature: &ApproverSignature{RecordedAt: stampA}},
+		{Name: "c", ApproverSignature: &ApproverSignature{Approver: "ops", ApproverAlg: "x", Signature: []byte{1}, DecidedAt: stampB, RecordedAt: stampC}},
+		{Name: "d", ApproverSignature: &ApproverSignature{Approver: "ops", DecidedAt: stampB}},
+	}
+	got := stripRecordedAt(rs)
+	if want := []bool{false, true, true, false}; !slices.Equal(got, want) {
+		t.Fatalf("presence = %v, want %v", got, want)
+	}
+	if rs[1].ApproverSignature != nil {
+		t.Errorf("a lone stamp left %+v", rs[1].ApproverSignature)
+	}
+	if s := rs[2].ApproverSignature; s == nil || s.Approver != "ops" || s.DecidedAt != stampB || s.RecordedAt != "" || len(s.Signature) != 1 {
+		t.Errorf("a signed decision's stamp strip = %+v, want everything but recorded_at kept", s)
+	}
+	if s := rs[3].ApproverSignature; s == nil || s.Approver != "ops" {
+		t.Errorf("a signed decision with no stamp changed: %+v", s)
+	}
 }
