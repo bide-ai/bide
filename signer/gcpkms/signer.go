@@ -32,6 +32,16 @@
 // uses the default P-256 scheme and leaves both options off. The level Open found is
 // pinned: a Sign response that reports another level is ErrIntegrity.
 //
+// # HSM attestation
+//
+// Config.VerifyAttestation makes Open verify the Cloud HSM attestation of the key version (read from
+// GetCryptoKeyVersion): the manufacturer and owner certificate chains must lead to pinned roots (built
+// in, or Config.AttestationRoots), both partition certificates must verify the attestation's
+// signature, and an attested EC object must carry the public key GetPublicKey returned, be
+// non-extractable and generated on the HSM, and name the key version. ErrAttestation otherwise.
+// Certificate validity periods are not enforced, as in Google's reference verifier. See the key
+// custody guide for the exact checks.
+//
 // # What Open checks, and what each call needs
 //
 // Config.KeyVersion is the full CryptoKeyVersion resource name, including the numeric version ID:
@@ -222,6 +232,15 @@ type Config struct {
 	// (Cloud EKM, a key manager outside Google). Off by default; bide does not look inside the
 	// external manager.
 	AllowExternalKey bool
+	// VerifyAttestation makes Open fail unless the key version's Cloud HSM attestation proves that
+	// its public key belongs to an EC key generated in the HSM (not imported) that cannot be
+	// extracted, and carries the key version's name (ErrAttestation otherwise). It needs a key
+	// version at an HSM protection level, so it never applies to Ed25519, which has none. See the
+	// key custody guide for what is checked and what is not.
+	VerifyAttestation bool
+	// AttestationRoots replaces the built-in trust anchors (Google's owner root and Marvell's
+	// manufacturer root) used by VerifyAttestation. Optional.
+	AttestationRoots *AttestationRoots
 	// Timeout bounds Open as a whole (its reads and self-test signature share one deadline) and each
 	// Sign as a whole, retries included; zero means DefaultTimeout.
 	Timeout time.Duration
@@ -252,6 +271,8 @@ func Open(ctx context.Context, cfg Config) (*Signer, error) {
 		return nil, fmt.Errorf("gcpkms: Config.Client is required: %w", agent.ErrConfig)
 	case cfg.KeyVersion == "":
 		return nil, fmt.Errorf("gcpkms: Config.KeyVersion is required: %w", agent.ErrConfig)
+	case cfg.AttestationRoots != nil && !cfg.VerifyAttestation:
+		return nil, fmt.Errorf("gcpkms: Config.AttestationRoots is set but Config.VerifyAttestation is not, so nothing would be verified: %w", agent.ErrConfig)
 	case !versionName.MatchString(cfg.KeyVersion):
 		return nil, fmt.Errorf("gcpkms: Config.KeyVersion is not a full CryptoKeyVersion resource name "+
 			"(projects/P/locations/L/keyRings/R/cryptoKeys/K/cryptoKeyVersions/N, numeric version, no alias): %w", agent.ErrConfig)
@@ -310,6 +331,17 @@ func Open(ctx context.Context, cfg Config) (*Signer, error) {
 	pub, err := s.checkPublicKey(pk, want, sentinel)
 	if err != nil {
 		return nil, err
+	}
+	if cfg.VerifyAttestation {
+		roots := cfg.AttestationRoots
+		if roots == nil {
+			if roots, err = defaultAttestationRoots(); err != nil {
+				return nil, err
+			}
+		}
+		if err := verifyAttestation(ver.GetAttestation(), cfg.KeyVersion, pub, roots); err != nil {
+			return nil, err
+		}
 	}
 	v, err := audit.NewVerifier(alg, pub)
 	if err != nil {

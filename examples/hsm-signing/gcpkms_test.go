@@ -105,6 +105,15 @@ func TestCloudKMSRefusals(t *testing.T) {
 	}
 }
 
+// The emulator's keys are software keys with no attestation, so asking for it fails.
+func TestCloudKMSVerifyAttestationRefusesASoftwareKey(t *testing.T) {
+	version := emulatedKMS(t, kmspb.CryptoKeyVersion_EC_SIGN_P256_SHA256)
+	env := map[string]string{"BIDE_GCPKMS_KEY_VERSION": version, "BIDE_GCPKMS_ALLOW_SOFTWARE_KEY": "1", "BIDE_GCPKMS_VERIFY_ATTESTATION": "1"}
+	if err := run(context.Background(), func(k string) string { return env[k] }, &bytes.Buffer{}); !errors.Is(err, gcpkms.ErrAttestation) {
+		t.Fatalf("err = %v", err)
+	}
+}
+
 func TestCloudKMSClientError(t *testing.T) {
 	old := newKMSClient
 	newKMSClient = func(context.Context) (gcpkms.API, func(), error) { return nil, nil, errors.New("no credentials") }
