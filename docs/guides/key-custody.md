@@ -314,7 +314,7 @@ the copies in bide. **Validity periods are not enforced**, as in Google's verifi
 2025-11-16 (Google's expires 2030-01-01) without the statement becoming false; there is no revocation. What
 attestation does not prove: that the HSM firmware or Google's operation of it is sound, or that the application's
 `useToSign` access is limited (that is IAM). `VerifyAttestation` needs an `HSM` key version, so it never applies to
-Ed25519 or software keys, and `Open` with it on fails for them.
+Ed25519 or software keys, and `Open` with it on fails for them. `examples/hsm-signing` turns it on with `BIDE_GCPKMS_VERIFY_ATTESTATION=1`.
 
 **What is signed.** Ed25519 sends the message in the request's `data` field and Cloud KMS signs it in PureEdDSA mode
 (RFC 8032), which is what `audit.Ed25519Signer` produces. ECDSA P-256 sends the SHA-256 digest in the `digest`

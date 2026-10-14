@@ -602,6 +602,12 @@ func TestAttestationChainRefusals(t *testing.T) {
 			t.Errorf("%s: %v", name, err)
 		}
 	}
+	// A valid certificate in a block of the wrong PEM type is not read (nothing duplicated either).
+	c = cp()
+	c.CaviumCerts[0] = string(pem.EncodeToMemory(&pem.Block{Type: "PRIVATE KEY", Bytes: h.mfrPart.Raw}))
+	if err := verifyAttestation(chains(c), testVersion, pub, h.roots); !errors.Is(err, ErrAttestation) {
+		t.Errorf("wrong PEM type: %v", err)
+	}
 	// Junk after a valid certificate, with nothing duplicated, is refused too.
 	c = cp()
 	c.CaviumCerts[0] += "junk"

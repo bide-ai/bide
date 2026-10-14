@@ -32,6 +32,16 @@
 // uses the default P-256 scheme and leaves both options off. The level Open found is
 // pinned: a Sign response that reports another level is ErrIntegrity.
 //
+// # HSM attestation
+//
+// Config.VerifyAttestation makes Open verify the Cloud HSM attestation of the key version (read from
+// GetCryptoKeyVersion): the manufacturer and owner certificate chains must lead to pinned roots (built
+// in, or Config.AttestationRoots), both partition certificates must verify the attestation's
+// signature, and an attested EC object must carry the public key GetPublicKey returned, be
+// non-extractable and generated on the HSM, and name the key version. ErrAttestation otherwise.
+// Certificate validity periods are not enforced, as in Google's reference verifier. See the key
+// custody guide for the exact checks.
+//
 // # What Open checks, and what each call needs
 //
 // Config.KeyVersion is the full CryptoKeyVersion resource name, including the numeric version ID:
