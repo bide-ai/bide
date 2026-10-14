@@ -218,6 +218,19 @@ func ApprovalKey(runID, call string, reminder int) string {
 	return "approval:" + encodeID(runID) + ":" + encodeID(call) + ":" + strconv.Itoa(reminder)
 }
 
+// ApprovalReaskKey is the event key of the approval gate for call on runID asking again over a
+// recorded tally it does not act on (ApprovalPending.Reason): with sod, because its policy now
+// excludes the requester (PendingSoDReapproval); without, because the tally predates
+// DecisionFormat (PendingReapproval). Approvers decide again, so it is an event of its own, not a
+// repeat of the first ask (ApprovalKey).
+func ApprovalReaskKey(runID, call string, sod bool) string {
+	which := "v3"
+	if sod {
+		which = "sod"
+	}
+	return "approval:" + encodeID(runID) + ":" + encodeID(call) + ":reask-" + which
+}
+
 // AbortedKey is the event key of runID reaching run:aborted.
 func AbortedKey(runID string) string { return "aborted:" + encodeID(runID) }
 

@@ -60,6 +60,10 @@ type NotifyApproval struct {
 	// (ApprovalPolicy.ExcludePrincipal), those who are requesters of the run. Their decisions never
 	// count, so a notifier need not ask them.
 	Excluded []string
+	// Reask says why the gate asks again over a recorded tally it does not act on
+	// (PendingReapproval, PendingSoDReapproval), or "" for the gate's first ask. A re-ask is an event
+	// of its own (ApprovalReaskKey): approvers decide again.
+	Reask string
 }
 
 // NotifyClears is the structured detail of a NotificationResolved notification: the event it ends.

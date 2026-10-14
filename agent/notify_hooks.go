@@ -37,8 +37,13 @@ func (e *notifyEngine) eventFromErr(runID string, err error) (notifyEvent, bool)
 				ap.Excluded = append([]string(nil), q.Excluded...)
 			}
 		}
+		key := ApprovalKey(p.RunID, p.ToolUseID, 0)
+		if p.Reason != "" { // the gate asks again: a new ask, not a repeat of the first
+			key = ApprovalReaskKey(p.RunID, p.ToolUseID, p.Reason == PendingSoDReapproval)
+			ap.Reask = p.Reason
+		}
 		return notifyEvent{
-			key: ApprovalKey(p.RunID, p.ToolUseID, 0), kind: NotificationApprovalPending, runID: rootOr(runID, p.RunRef), opRun: p.RunID,
+			key: key, kind: NotificationApprovalPending, runID: rootOr(runID, p.RunRef), opRun: p.RunID,
 			approval: ap, err: err,
 		}, true
 	}
