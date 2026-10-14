@@ -102,7 +102,7 @@ func runVerdict(v *View) Verdict {
 		d = Verdict{Class: "info", Word: "NOT STARTED", Icon: "idle", Line: "The journal holds no run:start for this run."}
 	}
 
-	if t, ok := parseRecorded(v.EndedAt); ok && v.State != string(agent.RunStarted) {
+	if t, ok := parseRecorded(v.EndedAt); ok {
 		d.Details = append(d.Details, "Ended "+t+" UTC, by the clock of the process that wrote the end marker.")
 	}
 	tools, models, effects, reconciled := 0, 0, 0, 0

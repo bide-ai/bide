@@ -205,3 +205,19 @@ func rewritten(t *testing.T, j *agent.Journal, runID string, edit func(*agent.Re
 	}
 	return out
 }
+
+// A resolved halt whose recorded_at is not canonical gets no resolution line, and a one-decision
+// gate alone reports a decision time: an m-of-n gate's times are on its approver cards.
+func TestView_ResolutionLineAndGateTimeNeedCanonicalSingle(t *testing.T) {
+	v := &View{State: "completed", Events: []Event{
+		{Class: "tool", Title: "tool result: charge (c1)", Badges: []string{"reconciled by ResolveHalt"}, RecordedAt: "yesterday"},
+		{Class: "tool", Title: "tool result: other (c2)", RecordedAt: "2026-10-14T09:30:00.125Z"},
+	}}
+	if got := runVerdict(v).Details; len(got) != 0 {
+		t.Errorf("details = %q, want none for a garbled time and for an unreconciled result", got)
+	}
+	multi := Gate{Single: false, Decisions: []Decision{{Approver: "ops", Signed: true, RecordedAt: "2026-10-14T09:00:05.250Z"}}}
+	if got := multi.DecisionAt(); got != "" {
+		t.Errorf("m-of-n DecisionAt = %q, want none", got)
+	}
+}

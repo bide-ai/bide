@@ -33,8 +33,13 @@ func TestEvidence_NotesRecordedAt(t *testing.T) {
 	put("tool:stamped", "stamped", &agent.ApproverSignature{RecordedAt: "2026-10-14T09:30:00.125Z"})
 	put("tool:plain", "plain", nil)
 	put("tool:garbled", "garbled", &agent.ApproverSignature{RecordedAt: "yesterday"})
+	if _, err := journaltest.Do(ctx, j, runID, "run:complete", func(context.Context) (agent.Record, error) {
+		return agent.Record{Kind: agent.StepValue, ApproverSignature: &agent.ApproverSignature{RecordedAt: "2026-10-14T10:00:00.000Z"}}, nil
+	}); err != nil {
+		t.Fatal(err)
+	}
 	pub, priv, _ := ed25519.GenerateKey(rand.Reader)
-	pkg, err := audit.Evidence(ctx, j, runID, edS(priv), 1700000000, audit.WithAllToolCalls())
+	pkg, err := audit.Evidence(ctx, j, runID, edS(priv), 1700000000, audit.WithAllToolCalls(), audit.WithStep("run:complete"))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -48,6 +53,9 @@ func TestEvidence_NotesRecordedAt(t *testing.T) {
 	}
 	if want := "tool call included in the signed log; recorded at 2026-10-14T09:30:00.125Z by the clock of the process that wrote it"; notes["stamped"] != want {
 		t.Errorf("stamped note = %q, want %q", notes["stamped"], want)
+	}
+	if want := "step included in the signed log; recorded at 2026-10-14T10:00:00.000Z by the clock of the process that wrote it"; notes["run:complete"] != want {
+		t.Errorf("step note = %q, want %q", notes["run:complete"], want)
 	}
 	for _, id := range []string{"plain", "garbled"} {
 		if notes[id] != "tool call included in the signed log" || strings.Contains(notes[id], "recorded") {
