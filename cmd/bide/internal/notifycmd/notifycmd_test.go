@@ -621,7 +621,7 @@ func TestReportPrintsAZeroDurationAsUnderOneMillisecond(t *testing.T) {
 	if strings.Contains(got, "0s") || strings.Contains(got, " 0 ms") {
 		t.Errorf("a zero reads as missing:\n%s", got)
 	}
-	if ms(0) != "<1 ms" || ms(time.Millisecond) != "1 ms" {
+	if ms(0) != "<1 ms" || ms(400*time.Microsecond) != "<1 ms" || ms(time.Millisecond) != "1 ms" {
 		t.Errorf("ms: %q %q", ms(0), ms(time.Millisecond))
 	}
 }
