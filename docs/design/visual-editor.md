@@ -1,6 +1,6 @@
 # Design: a visual editor for flow configs
 
-Status: proposed (draft for review). Design only; nothing here is built, and every name below is a
+Status: accepted (the maintainer decided all 12 decisions as recommended on 2026-10-15). Design only; nothing here is built, and every name below is a
 sketch. Written against `main` at 759cf547 and, where it says so, against the open pull request
 #312 (approval deadlines).
 
@@ -161,7 +161,7 @@ and reads and writes only the file named on the command line.
 | Registry for the typed palette | A Go program can embed the editor beside its Registry | The same, but the program becomes a desktop app | Cannot see it (the Registry is Go code) |
 | Offline, air-gapped | Works | Works | Does not |
 | File access | Only the files named at startup | Native dialogs: any file the user picks | Server-side |
-| Build and release | Pure Go; cross-compiles; fits the reproducible-build check | Per-OS builds, a webview toolkit (cgo on macOS and Linux, as far as I know; confirm against the current Wails release), signing and notarization, an update path | Hosting and operations |
+| Build and release | Pure Go; cross-compiles; fits the reproducible-build check | Per-OS builds, a webview toolkit (cgo on macOS and Linux, none on Windows; checked against Wails v2.14.0 and the v3 beta documentation on 2026-10-15), signing and notarization, an update path | Hosting and operations |
 | Rendering engines to test | The user's browser; CI tests Chrome | WKWebView, WebView2 and WebKitGTK | The user's browser |
 | Endpoint approval at a bank | `bide` is already on the machine | A new desktop product to approve, per OS | A new vendor-style service to approve |
 | New dependencies | None beyond the YAML library in the nested module | A large dependency tree in its own module | Server stack |
@@ -178,9 +178,11 @@ and the classifier, so there is no second implementation to drift. The native di
 advantage that is not matched, and it cuts the other way for this editor: the safest property of
 the write path is that it can write only the files named on the command line, and an "open any
 file" dialog widens that. Against it: a bank has to approve and endpoint-manage a new desktop
-product on each operating system; the build stops being pure Go (the webview toolkit needs cgo on
-at least some platforms, so it no longer cross-compiles in one step or fits the repository's
-rebuild-and-compare reproducibility check as is); macOS notarization, Windows code signing and an
+product on each operating system; the build stops being pure Go (Wails needs cgo on macOS and Linux,
+and none on Windows; the latest stable release is v2.14.0 and v3 is still in beta, v3.0.0-beta.30 on
+2026-10-15; so macOS and Linux builds need a native toolchain and WebKit development packages and
+no longer cross-compile in one step, and the repository's
+rebuild-and-compare reproducibility check would not cover them as it stands); macOS notarization, Windows code signing and an
 update path become bide's job; three webview engines have to be tested where today the user's
 browser is; and a large dependency tree enters the project, though in its own module. None of these
 is a reason it cannot be done. Together they are a cost to pay when users ask for a window and not
@@ -715,7 +717,9 @@ matches what `Load` resolves.
 12. **Line endings, encodings and Windows.** CRLF and a byte-order mark must be reproduced exactly
     or refused; the rename-over-existing and path rules differ on Windows. Tested as described under Testing.
 
-## Decisions for the maintainer
+## Decisions
+
+The maintainer decided all 12 as recommended on 2026-10-15. They are recorded as written below.
 
 1. **Local only.** Build `bide edit` as a loopback command with a host-agnostic front end, and do
    not build a hosted editor. Recommend yes.
