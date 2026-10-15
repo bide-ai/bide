@@ -172,7 +172,8 @@ the halted flow, the risk map and the violated assertion below, from `bide sampl
 
 The run list's headline says how many runs need a person, and links to the page that lists them:
 `/attention` (as JSON at `/attention.json`). It is every run in the journal that is waiting on a
-human, newest first, so it is the first thing to open when a notification arrives:
+human, so it is the first thing to open when a notification arrives (gates with a deadline come
+first, nearest deadline first, then the rest newest first):
 
 ![bide view's Needs attention list over the sample journal: two approvals waiting at 2-of-3 gates, two halts whose outcome is unknown and one aborted run, each with what to do and its notification status](img/run-viewer-needs-attention-dark.png)
 
@@ -180,6 +181,11 @@ Each item is one thing to do, and says since when:
 
 - **Waiting for approval**: the call and its tool, the gate (k of n), who has approved, who has denied
   and who is still pending, and how long it has waited (from the time the run asked, `AskedAt`).
+  A gate with a [deadline](hitl-approval.md#deadlines) shows it and the time left (`due in 40m 00s
+  (2026-10-15 10:00:00 UTC)`), flagged *DUE SOON* within the hour. A gate whose deadline has passed
+  but whose expiry no drive has recorded yet is flagged *OVERDUE* and has no command: it refuses
+  decisions, and the run records the expiry the next time it is driven (the call does not run).
+  The JSON gives `expires_at`, `due`, `due_soon` and `overdue` on the item's `gate`.
   The command that records a decision is shown with it, as `bide approve` writes it
   (`approveline.Command`): the journal by its absolute path for `-db`, by the variable you gave
   `-postgres-env` for a Postgres journal, and by the placeholder `<VAR>` when you gave a raw `-postgres`
@@ -197,8 +203,9 @@ Each item is one thing to do, and says since when:
 
 A run that has ended (completed, aborted or cancelled) has no approval to give: a run cancelled at a
 gate is not listed for it. A halt stays listed even after the run was cancelled or aborted, since
-ending a run does not say whether the operation it attempted took effect. Items are ordered by the
-time each began; an item whose journal records no time is listed last and says so.
+ending a run does not say whether the operation it attempted took effect. Gates with a deadline come
+first, the nearest deadline first (a passed one before the rest); the other items are ordered by the
+time each began, newest first, and an item whose journal records no time is listed last and says so.
 
 **Notification.** With `-db` or `-postgres` the viewer also reads the notification trail that the
 notifier (`agent.WithNotifier`) keeps in the event store of the same database, and each item then says
@@ -244,7 +251,7 @@ has an item. An aborted or cancelled run is listed too, since a halt outlives ei
 | `-check` | With `-config`: serve nothing, print each problem as `file:node: message`, and exit 1 if any is an error. `bide check <file>...` is the same check, for several files. |
 | `-strict` | With `-check`: exit 1 on a warning too (`bide check -strict`). |
 | `-diff <old>` | With `-config`: compare it with an earlier version, a file or a git revision; see [Compare two versions of a flow](#compare-two-versions-of-a-flow). With `-check`, print the changes instead of serving the page. |
-| `-fail-on-weaken` | With `-diff -check`: exit 1 if an approval gate was removed or weakened. |
+| `-fail-on-weaken` | With `-diff -check`: exit 1 if an approval gate was removed or weakened (its need lowered, an approver added without raising the need, `exclude_principal` dropped, or its timeout removed or lengthened). |
 | `-addr <host:port>` | Where to listen: a loopback IP or `localhost`, with a port. Default `127.0.0.1:8484`. Any other host is refused. |
 | `-color <when>` | `auto` (the default), `always` or `never`: whether the text output (the address to open, and `-check`'s lines) is colored. `auto` colors a terminal only, unless `NO_COLOR` is set to any value or `TERM` is `dumb`; see [Color](#color). |
 
@@ -301,7 +308,10 @@ and the model's last text are under `details`.
 
 **APPROVAL GATE** (when the run has one). Each gate in a line: the gated call or flow node and where
 it stands (`refund: approved 2 of 3`), the policy, who approved or denied, who is pending, and
-whether the signatures verified (see the Approval gates table below for the full detail).
+whether the signatures verified (see the Approval gates table below for the full detail). A gate
+with a [deadline](hitl-approval.md#deadlines) also says where it stands on the viewer's clock: *due
+in 40m 00s*, *deadline passed 30m 00s ago* (still waiting: no drive has recorded the expiry, and the
+gate refuses decisions), or *expired*, which is the gate's recorded outcome (the call never ran).
 
 **AUDIT PROOF.** Given `-sth` or `-evidence` and `-pubkey`, whether the journal verifies, checked
 with the audit package's own verifiers, as `bide audit` does:
@@ -369,6 +379,14 @@ decision), who approved, who denied, who is pending, and a status such as
 `approved (2 of 3 approvers; 2 needed)`, `denied (...)` or `pending (0 of 3 approvers; 2 needed; ...)`.
 Once the gate decides, the counts are the tally it journaled; before that they are the signed
 decisions recorded so far, whose signatures the gate checks when the run resumes.
+
+**Deadlines.** A gate with a timeout shows it in the policy cell (`times out after 24h`) and its
+deadline in the gate card. A gate that expired has the status `expired (1 of 3 approvers; 2 needed;
+the gate's deadline passed first)`, drawn red like a denial. A signed decision recorded after the
+deadline, or after the gate recorded its expiry, is on the approver's card as *not counted*, with the
+reason (`recorded after the gate's deadline`, or `written after the gate expired`), and is not in
+the counts. The time left is read from the viewer's clock (`Options.Now`); the deadline itself is
+the gate's recorded `approval-deadline` record.
 
 The **Signatures** column says whether the approvals were verified (see AUDIT PROOF):
 
@@ -550,7 +568,10 @@ bide view -db f.db -run triage-demo
 
 `bide view -config` shows a flow definition (a `plan` config, `.json` or `.yaml`) without running
 anything: the declared graph, its Switch arms and loops, each node's approval gate written as
-`2 of 3: ops, finance, risk`, and every problem `plan.InspectConfig` finds, marked on the node, edge
+`2 of 3: ops, finance, risk` with `excluding the requester` ([separation of
+duties](hitl-approval.md#separation-of-duties)) and `times out after 24h` when the block sets
+`exclude_principal` or `timeout` (the box says `gated: 2 of 3 · SoD · 24h`, the Mermaid text and
+the tooltip say it in full), and every problem `plan.InspectConfig` finds, marked on the node, edge
 or arm it belongs to, with the full message in the Problems table and in each mark's tooltip. An
 edge to a name no node declares draws that name as a dashed "not declared" node.
 
@@ -654,7 +675,8 @@ log.Fatal(http.Serve(ln, planview.Handler("refund.json", config, reg)))
 before a change ships. It serves a read-only page (as `bide view` does, on `-addr`) that draws the
 new flow with added nodes and edges in green, removed ones as dashed red ghosts where they were,
 and changed nodes in amber with what changed: the block, the `safety`, or the approval gate
-(`approval 1 of 3 -> 2 of 3`, strengthened or weakened). A summary card counts the changes and
+(`approval 1 of 3 -> 2 of 3`, strengthened or weakened; its approvers, `exclude_principal` and
+`timeout` are compared too). A summary card counts the changes and
 gives the digest before and after, and a weakened approval policy is the verdict, `APPROVAL GATE
 WEAKENED`, above everything else. `bide view -config <file> -diff <old>` is the same page.
 
@@ -709,7 +731,11 @@ it does not check, so `-strict` is a usage error with it.
 **What counts as weakened.** A gate is weakened when some set of approvals the new gate accepts
 would not have passed the old one: the gate was removed (a removed gated node counts, so renaming a
 gated node reads as removing its gate), its need was lowered, an approver was added without raising
-the need to match, or an approver was replaced. Precisely, need k of approvers A becomes need k' of
+the need to match, an approver was replaced, `exclude_principal` was dropped, or its `timeout` was
+removed or lengthened (`approval 2 of 3, times out after 24h -> 2 of 3, no timeout (weakened)`: a run
+can now wait longer, and a decision recorded after the old deadline now counts). Adding a timeout or
+shortening one is a strengthening: the gate fails closed sooner. A change in two directions (a
+higher need with the timeout removed) is not strictly stronger, so it is called weakened. Precisely, need k of approvers A becomes need k' of
 approvers B, and the change is weakened unless k' minus the number of approvers in B and not in A
 is at least k. The reverse is strengthened; the same approvers and need in another policy order is
 reordered. The check compares each node's gate; it does not reason about paths, so a new arm that

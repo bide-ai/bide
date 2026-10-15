@@ -76,6 +76,9 @@ func runVerdict(v *View) Verdict {
 				if len(g.Pending) > 0 {
 					d.Line += "; waiting on " + strings.Join(g.Pending, ", ")
 				}
+				if g.Due != "" {
+					d.Line += "; " + g.Due
+				}
 				break
 			}
 		}

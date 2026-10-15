@@ -37,7 +37,9 @@ type Change struct {
 	// Gate is how the node's approval gate changed: weakened (a set of decisions the new gate
 	// accepts would not have passed the old one: the gate was removed, its need lowered, or an
 	// approver added without raising the need to match), strengthened (the reverse, and not
-	// weakened), or reordered (the same approvers and need in another policy order). Empty when the
+	// weakened), or reordered (the same approvers and need in another policy order). Removing or
+	// lengthening a gate's timeout is a weakening (a run waits longer, and late decisions count), and
+	// adding or shortening one a strengthening (the gate fails closed sooner). Empty when the
 	// gate did not change. A removed node's gate counts as removed.
 	Gate string `json:"gate,omitempty"`
 }
@@ -406,23 +408,30 @@ func safetyText(s string) string {
 	return s
 }
 
-// gateShort is a gate as "2 of 3", "2 of 3 excluding the requester", "one decision" or "none".
-func gateShort(g *plan.TopologyGate) string {
+// gateShort is a gate as "2 of 3", "2 of 3 excluding the requester", "one decision" or "none", with
+// ", times out after 24h" for a gate that has a deadline.
+func gateShort(g *plan.TopologyGate) string { return gateShortT(g, false) }
+
+// gateShortT is gateShort; with showNone, a gate without a deadline says ", no timeout", so a move
+// between a gate with one and a gate without reads as such.
+func gateShortT(g *plan.TopologyGate, showNone bool) string {
 	switch {
 	case g == nil:
 		return "none"
 	case g.Single:
-		return "one decision"
+		return "one decision" + timeoutSuffix(g, showNone)
 	}
-	return fmt.Sprintf("%d of %d", g.Need, len(g.Approvers)) + exclusionText(g)
+	return fmt.Sprintf("%d of %d", g.Need, len(g.Approvers)) + exclusionText(g) + timeoutSuffix(g, showNone)
 }
 
 // gateFull is a gate with its approvers: "2 of 3: ops, finance, risk".
-func gateFull(g *plan.TopologyGate) string {
+func gateFull(g *plan.TopologyGate) string { return gateFullT(g, false) }
+
+func gateFullT(g *plan.TopologyGate, showNone bool) string {
 	if g == nil || g.Single {
-		return gateShort(g)
+		return gateShortT(g, showNone)
 	}
-	return gateText(g.Need, g.Approvers) + exclusionText(g)
+	return gateText(g.Need, g.Approvers) + exclusionText(g) + timeoutSuffix(g, showNone)
 }
 
 // exclusionText is " excluding the requester" for a gate that excludes the run's requester.
@@ -433,12 +442,26 @@ func exclusionText(g *plan.TopologyGate) string {
 	return ""
 }
 
-// gateMove is a gate's change, "approval 1 of 3 -> 2 of 3", with the approvers when they differ.
-func gateMove(a, b *plan.TopologyGate) string {
-	if a != nil && b != nil && !a.Single && !b.Single && slices.Equal(a.Approvers, b.Approvers) {
-		return "approval " + gateShort(a) + " -> " + gateShort(b)
+// timeoutSuffix is ", times out after 24h" for a gate with a deadline; for one without, ", no
+// timeout" when showNone, else "".
+func timeoutSuffix(g *plan.TopologyGate, showNone bool) string {
+	switch t := g.TimeoutText(); {
+	case t != "":
+		return ", times out after " + t
+	case showNone:
+		return ", no timeout"
 	}
-	return "approval " + gateFull(a) + " -> " + gateFull(b)
+	return ""
+}
+
+// gateMove is a gate's change, "approval 1 of 3 -> 2 of 3", with the approvers when they differ and
+// a side's missing timeout spelled out when only the other has one.
+func gateMove(a, b *plan.TopologyGate) string {
+	showNone := a != nil && b != nil && (a.TimeoutMS > 0) != (b.TimeoutMS > 0)
+	if a != nil && b != nil && !a.Single && !b.Single && slices.Equal(a.Approvers, b.Approvers) {
+		return "approval " + gateShortT(a, showNone) + " -> " + gateShortT(b, showNone)
+	}
+	return "approval " + gateFullT(a, showNone) + " -> " + gateFullT(b, showNone)
 }
 
 // gateDetail is the gate item of c's details, without its verdict.
@@ -472,17 +495,34 @@ func gateEqual(a, b *plan.TopologyGate) bool {
 	if a == nil || b == nil {
 		return a == b
 	}
-	return a.Single == b.Single && a.Need == b.Need && slices.Equal(a.Approvers, b.Approvers) && a.ExcludePrincipal == b.ExcludePrincipal
+	return a.Single == b.Single && a.Need == b.Need && slices.Equal(a.Approvers, b.Approvers) && a.ExcludePrincipal == b.ExcludePrincipal && a.TimeoutMS == b.TimeoutMS
 }
 
-// accepts reports whether gate a accepts every set of decisions gate b accepts: no approval set
-// passes b and fails a. No gate accepts everything; a gate accepts nothing that passes no gate. A
+// accepts reports whether gate a accepts everything gate b accepts: no approval set passes b and
+// fails a (acceptsDecisions), and no decision on time under b is late under a (acceptsTiming). No gate accepts everything; a gate accepts nothing that passes no gate. A
 // single-decision gate accepts any gate's decisions (each needs at least one), and only another
 // single-decision gate is accepted by it. For need k of approvers A and need k' of approvers B, the
 // set that passes b with the fewest approvers from A takes every approver B adds outside A, so a
 // accepts b exactly when k' - |B \ A| >= k. A gate that excludes the run's requester does not
 // accept the decisions of one that does not: they may count the requester's approval.
 func accepts(a, b *plan.TopologyGate) bool {
+	return acceptsDecisions(a, b) && acceptsTiming(a, b)
+}
+
+// acceptsTiming reports whether gate a gives approvers at least as long as gate b: a has no
+// deadline, or both do and a's is no shorter. A deadline makes a gate fail closed once it passes, so
+// removing or lengthening one lets a run wait, and accept a decision, later than the old gate did.
+func acceptsTiming(a, b *plan.TopologyGate) bool {
+	switch {
+	case a == nil || a.TimeoutMS <= 0:
+		return true
+	case b == nil || b.TimeoutMS <= 0:
+		return false
+	}
+	return a.TimeoutMS >= b.TimeoutMS
+}
+
+func acceptsDecisions(a, b *plan.TopologyGate) bool {
 	switch {
 	case a == nil:
 		return true

@@ -194,8 +194,9 @@ With no -run the page opens on the run list: each run's kind, state (completed, 
 unknown, waiting for approval, in progress, aborted or cancelled), when it started (as its
 run:start records it; none for a run an earlier version journaled) and its record count, newest
 first, filtered by state, kind and run ID. Its headline links to the Needs attention list (/attention):
-every run waiting for approval, halted with an unknown outcome or aborted, newest first, with the gate's
-approvers and the ResolveHalt call, and, from -db or -postgres, whether the notifier told someone and
+every run waiting for approval, halted with an unknown outcome or aborted, with the gate's
+approvers and its deadline (gates with a deadline come first, the nearest first, and one due within
+the hour is flagged; the rest are newest first) and the ResolveHalt call, and, from -db or -postgres, whether the notifier told someone and
 the sink acknowledged it (the notification trail in the same database). The run list and that list are
 built at most once every 2 seconds, so a page that reloads itself costs the store little. A
 bide approve command shown there is quoted for a POSIX shell, also for a Windows -db path.
@@ -215,8 +216,10 @@ message" for an edge or arm), a violated assertion among them.
 
 With -diff it compares the -config flow with an earlier version of it: the page draws the new flow
 with added nodes and edges in green, removed ones as dashed red ghosts and changed nodes in amber,
-and calls out an approval gate whose policy was weakened (removed, its need lowered, or an approver
-added without raising the need). -diff takes a file, or, when no file has that name, a git
+and calls out an approval gate whose policy was weakened (removed, its need lowered, an approver
+added without raising the need, exclude_principal dropped, or its timeout removed or lengthened);
+a gate made stricter (including a timeout added or shortened, which makes it fail closed sooner)
+is marked strengthened. -diff takes a file, or, when no file has that name, a git
 revision read with git show: <rev>:<path>, or a bare <rev> for the -config file's path at that
 revision. With -check it serves nothing and prints one line per change and a summary line.
 
@@ -553,7 +556,8 @@ RecoverLoop pick it up: the gate counts the decisions and the call runs or is de
 never runs the call.
 
 -list prints the calls in the journal that wait for a decision, each with the bide approve command
-that decides it; -json prints them as JSON. With -approver-keys it counts each gate as the gate does
+that decides it and, for a gate with a deadline (ApprovalPolicy.Timeout), the time left; a gate
+past its deadline is marked and gets no command, since it refuses decisions. -json prints them as JSON. With -approver-keys it counts each gate as the gate does
 (verified); without it the counts are labelled unverified and no gate is called settled. Run and
 call ids that hold control, bidirectional or invisible characters get no command. A Postgres journal is named by -postgres-env, the name
 of the environment variable that holds the DSN, so the password stays out of the argument list,
@@ -737,8 +741,9 @@ be decided. A file with assertions ends with a line counting their verdicts.
 
 With -diff it compares the config with an earlier version of it instead, and serves a read-only
 local page (like bide view) that draws the new flow with added nodes and edges in green, removed
-ones as dashed red ghosts and changed nodes in amber, and calls out a weakened approval policy.
--diff takes a file; when no file has that name, a git revision read with git show: <rev>:<path>
+ones as dashed red ghosts and changed nodes in amber, and calls out a weakened approval policy (a
+gate removed, its need lowered, an approver added without raising the need, exclude_principal
+dropped, or its timeout removed or lengthened). -diff takes a file; when no file has that name, a git revision read with git show: <rev>:<path>
 (git's own form), or a bare <rev> for the config's own path at that revision (bide check
 flows/refund.yaml -diff main). With -check it serves nothing, prints one line per change and a
 summary line, and exits 0: a diff is not a failure, unless -fail-on-weaken finds an approval gate
@@ -757,7 +762,7 @@ NO_COLOR set to any value, turns color off; -color=always keeps it on.
   -diff string
     	compare the one config given with this earlier version: a file, or else a git revision (<rev>:<path>, or <rev> for the config's path at rev)
   -fail-on-weaken
-    	with -diff -check: exit 1 if an approval gate was removed or weakened (its need lowered, or an approver added without raising the need)
+    	with -diff -check: exit 1 if an approval gate was removed or weakened (its need lowered, an approver added without raising the need, exclude_principal dropped, or its timeout removed or lengthened)
   -strict
     	exit 1 on a warning too
 

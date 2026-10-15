@@ -101,7 +101,8 @@ out, err := flow.Run(ctx, journal, runID, order)           // Order in, Receipt 
 - **`Run(ctx, store, runID, in)`** drives the flow sequentially on the runtime and returns the typed
   output. It adds no executor.
 - **`RenderMermaid()`** renders the *declared* topology (contrast `agent.RenderMermaid`, which renders
-  the *actual-ran* path from the journal).
+  the *actual-ran* path from the journal). A gated node's label carries its gate:
+  `approval: 2 of 3 (ops, finance, risk), excluding the requester, times out after 24h`.
 - **`Conform(ctx, store, runID)`** checks a run's journal against the declared topology and returns
   whether it followed the graph (`ok`), the divergences, and an error.
 
@@ -545,6 +546,12 @@ duties](hitl-approval.md#separation-of-duties): the gate then never counts the r
 (`approval: {need: 2, approvers: [ops, finance, risk], exclude_principal: true}`). It is part of the
 gate, so the flow's digest commits to it, and `bide view -config -diff` reports dropping it as a
 weakened gate.
+
+`bide view -config` and `RenderMermaid` show both settings on the gate (`excluding the requester`,
+`times out after 24h`), and `bide check -diff` compares them: dropping `exclude_principal`, or
+removing or lengthening `timeout`, is a weakened gate (a run can wait longer, and a decision after
+the old deadline counts), and adding the exclusion or adding or shortening a timeout is a
+strengthened one.
 
 `Load` and `Validate` reject a block with no approvers, a `need` outside `1..len(approvers)`, or a
 duplicate approver id (or two that differ only by case), or an id that is not printable ASCII, naming the node.

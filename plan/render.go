@@ -37,6 +37,9 @@ func (c *builderCore) renderMermaid() string {
 	for _, n := range c.nodes {
 		id := ids[n.name]
 		label := n.name + " : " + inLabel(n) + " -> " + typeName(n.outType)
+		if g := topologyGate(n.approval); g != nil {
+			label += " | " + gateLabel(g)
+		}
 		if n.kind == kindSwitch {
 			b.WriteString(fmt.Sprintf("  %s{%s}\n", id, mermaid.Label(label)))
 		} else {
@@ -93,6 +96,22 @@ func (c *builderCore) renderMermaid() string {
 	}
 
 	return b.String()
+}
+
+// gateLabel is a node's approval gate for its Mermaid label: "approval: 2 of 3 (ops, finance, risk),
+// excluding the requester, times out after 24h", or "approval: one decision".
+func gateLabel(g *TopologyGate) string {
+	s := "approval: one decision"
+	if !g.Single {
+		s = fmt.Sprintf("approval: %d of %d (%s)", g.Need, len(g.Approvers), strings.Join(g.Approvers, ", "))
+		if g.ExcludePrincipal {
+			s += ", excluding the requester"
+		}
+	}
+	if t := g.TimeoutText(); t != "" {
+		s += ", times out after " + t
+	}
+	return s
 }
 
 // joinEdgeLabel returns the type label for an edge feeding a Join, or "" if the

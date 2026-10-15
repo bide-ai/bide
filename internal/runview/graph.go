@@ -9,6 +9,7 @@ import (
 	"strings"
 
 	"github.com/bide-ai/bide/agent"
+	mmd "github.com/bide-ai/bide/internal/mermaid"
 	"github.com/bide-ai/bide/plan"
 )
 
@@ -320,6 +321,9 @@ func markGates(g *Graph, gates []Gate) {
 			continue
 		}
 		n.GateStatus = gt.Status
+		if gt.Due != "" {
+			n.GateStatus += "; " + gt.Due
+		}
 		n.GateLine, n.GateClass, n.SigLine = gateLines(gt)
 	}
 	g.SVG = svg(g)
@@ -343,7 +347,7 @@ func gateLines(gt Gate) (line, class, sig string) {
 	switch state {
 	case "approved":
 		class = "good"
-	case "denied", "closed, not approved":
+	case "denied", "closed, not approved", "expired":
 		class = "bad"
 	}
 	switch {
@@ -378,7 +382,11 @@ func mermaid(g *Graph) string {
 		return "n" + strconv.Itoa(slices.IndexFunc(g.Nodes, func(x GraphNode) bool { return x.Name == n }))
 	}
 	for _, n := range g.Nodes {
-		fmt.Fprintf(&b, "  %s[%q]:::%s\n", id(n.Name), n.Name, strings.ReplaceAll(n.Status, "-", ""))
+		label := n.Name
+		if n.Status == "declared" && n.Gate != "" {
+			label += " | approval: " + n.Gate // the config page's Mermaid says what each gate requires
+		}
+		fmt.Fprintf(&b, "  %s[%s]:::%s\n", id(n.Name), mmd.Label(label), strings.ReplaceAll(n.Status, "-", ""))
 	}
 	for _, e := range g.Edges {
 		arrow := "-->"
