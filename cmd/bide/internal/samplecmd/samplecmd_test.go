@@ -14,6 +14,7 @@ import (
 	"slices"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -195,32 +196,85 @@ func (s *syncBuffer) String() string {
 
 var viewerLine = regexp.MustCompile(`viewer\s+(http://\S+/)`)
 
-// serve runs bide sample with args until stop, and returns the viewer's address.
-func serve(t *testing.T, args ...string) (link string, stop func() int) {
-	t.Helper()
+// serveWait is how long the tests give bide sample to write its files and start serving: it
+// writes 14 runs through an audited store, and a loaded Windows runner needs far longer than a
+// laptop does (the wait is on the viewer's address, so a fast machine never waits it out).
+var serveWait = 2 * time.Minute
+
+// running counts the bide sample commands start has begun and not seen return.
+var running atomic.Int32
+
+// start runs bide sample with args and returns the viewer's address once it prints it, and a stop
+// that cancels the run and returns its exit status (idempotent). If the viewer does not come up
+// within wait, or the command exits first, start stops the command, waits for it to return (so
+// its files are closed) and returns an error: no path leaves bide sample running over the
+// directory a test is about to remove.
+func start(wait time.Duration, args ...string) (link string, stop func() int, err error) {
 	ctx, cancel := context.WithCancel(context.Background())
 	old := notify
 	notify = func() (context.Context, context.CancelFunc) { return ctx, cancel }
-	t.Cleanup(func() { notify = old })
 	out := &syncBuffer{}
 	done := make(chan int, 1)
-	go func() { done <- Main(args, out, out) }()
-	deadline := time.Now().Add(20 * time.Second)
+	running.Add(1)
+	go func() { defer running.Add(-1); done <- Main(args, out, out) }()
+	var once sync.Once
+	var code int
+	stop = func() int {
+		once.Do(func() { cancel(); code = <-done; notify = old })
+		return code
+	}
+	deadline := time.Now().Add(wait)
 	for {
 		if m := viewerLine.FindStringSubmatch(out.String()); m != nil {
-			link = m[1]
-			break
+			return m[1], stop, nil
 		}
 		select {
-		case code := <-done:
-			t.Fatalf("bide sample exited %d before serving:\n%s", code, out.String())
+		case c := <-done:
+			once.Do(func() { code = c; cancel(); notify = old })
+			return "", stop, fmt.Errorf("bide sample exited %d before serving:\n%s", c, out.String())
 		case <-time.After(20 * time.Millisecond):
 		}
 		if time.Now().After(deadline) {
-			t.Fatalf("bide sample did not serve:\n%s", out.String())
+			text := out.String()
+			stop()
+			return "", stop, fmt.Errorf("bide sample did not serve within %v:\n%s", wait, text)
 		}
 	}
-	return link, func() int { cancel(); return <-done }
+}
+
+// serve runs bide sample with args until stop, and returns the viewer's address. The command is
+// also stopped when the test ends, however it ends, before the test's directory is removed.
+func serve(t *testing.T, args ...string) (link string, stop func() int) {
+	t.Helper()
+	link, stop, err := start(serveWait, args...)
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { stop() })
+	return link, stop
+}
+
+// A sample that does not come up in time is stopped, and its files are closed, before start
+// returns: the directory can be removed at once, which Windows refuses while sample.db is open.
+func TestStartFailureStopsTheCommand(t *testing.T) {
+	dir := t.TempDir()
+	_, stop, err := start(time.Nanosecond, "-out", filepath.Join(dir, "s"), "-no-browser", "-addr", "127.0.0.1:0")
+	if err == nil {
+		stop()
+		t.Skip("the sample served within a nanosecond")
+	}
+	if !strings.Contains(err.Error(), "did not serve") {
+		t.Fatalf("start = %v, want the did-not-serve error", err)
+	}
+	if n := running.Load(); n != 0 {
+		t.Fatalf("%d bide sample command(s) still running after the failed start", n)
+	}
+	if err := os.RemoveAll(dir); err != nil {
+		t.Fatalf("the directory could not be removed after the failed start (is sample.db still open?): %v", err)
+	}
+	if code := stop(); code != 0 && code != 1 {
+		t.Errorf("stop after the failure = %d", code)
+	}
 }
 
 func getJSON(t *testing.T, url string, v any) {
@@ -301,7 +355,7 @@ func TestLive(t *testing.T) {
 	dir := t.TempDir()
 	link, stop := serve(t, "-out", dir, "-no-browser", "-live")
 	defer stop()
-	deadline := time.Now().Add(20 * time.Second)
+	deadline := time.Now().Add(serveWait)
 	for {
 		var v struct{ State string }
 		if resp, err := http.Get(link + "run.json?id=" + sample.LiveRun); err == nil {
