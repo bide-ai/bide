@@ -331,7 +331,9 @@ func TestDecision_QuorumThenRerun(t *testing.T) {
 
 // Concurrent identical submissions leave one record, and every caller is told it is recorded.
 func TestDecision_ConcurrentIdentical(t *testing.T) {
-	r := newRig(t, approvals.WithRateLimit(0, 0), approvals.WithGlobalRateLimit(0, 0))
+	// Sixteen bodies from one client at once exceed the default per-client reader cap (4), which
+	// would answer some of them 429; this test is about identical decisions, not that cap.
+	r := newRig(t, approvals.WithRateLimit(0, 0), approvals.WithGlobalRateLimit(0, 0), approvals.WithMaxReaders(64, 16))
 	before := r.records()
 	b := r.decision("alice", true)
 	var wg sync.WaitGroup
@@ -791,7 +793,7 @@ func TestDecision_ConcurrentIdenticalFiresOnce(t *testing.T) {
 	for i := range 20 {
 		var mu sync.Mutex
 		hooks := 0
-		r := newRig(t, approvals.WithRateLimit(0, 0), approvals.WithGlobalRateLimit(0, 0),
+		r := newRig(t, approvals.WithRateLimit(0, 0), approvals.WithGlobalRateLimit(0, 0), approvals.WithMaxReaders(64, 16),
 			approvals.OnRecorded(func(context.Context, approvals.Recorded) { mu.Lock(); hooks++; mu.Unlock() }))
 		b := r.decision("alice", true)
 		var wg sync.WaitGroup
