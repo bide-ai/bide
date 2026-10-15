@@ -305,8 +305,8 @@ func TestVerifyNotifications_AReaskVerifies(t *testing.T) {
 	rt := newReaskTrail(t)
 	rt.sweep() // the re-ask, and the all-clear of the first ask its tally ended
 	rt.sweep()
-	if rt.sinks[0].n == 0 || rt.sinks[1].n == 0 {
-		t.Fatalf("deliveries: risk=%d finance=%d", rt.sinks[0].n, rt.sinks[1].n)
+	if rt.sinks[0].count() == 0 || rt.sinks[1].count() == 0 {
+		t.Fatalf("deliveries: risk=%d finance=%d", rt.sinks[0].count(), rt.sinks[1].count())
 	}
 	verifyE2E(t, ctx, rt.g.store, rt.es, rt.clk, rt.opts, gateRun, false)
 

@@ -134,6 +134,11 @@ type Notification struct {
 // dedupe should use Notification.ID to do so. Return an error wrapping ErrNotifyPermanent for a
 // failure that retrying within the same round cannot fix (a 4xx other than 429); the event is
 // retried in a later round all the same, since a receiver's configuration can change.
+//
+// Notify may be called from several goroutines at once, for different events (and for an event and
+// the steps of its escalation chain), so an implementation must be safe for concurrent use. One
+// event has at most one call in flight, except that a call abandoned at its time limit may still be
+// running when the next is made.
 type Notifier interface {
 	Notify(ctx context.Context, n Notification) error
 }

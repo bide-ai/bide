@@ -1947,3 +1947,51 @@ func TestNotifyTrailLocks_TheGuardCountsTheCallersOwnLocks(t *testing.T) {
 		t.Fatalf("holds %d after releasing both", n)
 	}
 }
+
+// barrierSink returns from Notify only once two calls are in it at once.
+type barrierSink struct {
+	mu      sync.Mutex
+	in, max int
+	both    chan struct{}
+	once    sync.Once
+}
+
+func (b *barrierSink) Notify(ctx context.Context, n Notification) error {
+	b.mu.Lock()
+	b.in++
+	b.max = max(b.max, b.in)
+	if b.in >= 2 {
+		b.once.Do(func() { close(b.both) })
+	}
+	b.mu.Unlock()
+	select {
+	case <-b.both:
+	case <-time.After(5 * time.Second):
+	case <-ctx.Done():
+	}
+	b.mu.Lock()
+	b.in--
+	b.mu.Unlock()
+	return nil
+}
+
+// The engine calls one Notifier from several goroutines at once: rounds of different events run
+// concurrently on the worker. A Notifier must be safe for concurrent use (the Notifier godoc says
+// so); this is the contract test that makes the property something sinks can rely on.
+func TestNotifier_IsCalledConcurrentlyForDifferentEvents(t *testing.T) {
+	ctx := context.Background()
+	sink := &barrierSink{both: make(chan struct{})}
+	e := testEngine(t, memJournal(), sink, NewMemNotifyTrail(), resolvedClock(), "p1")
+	for _, run := range []string{"a", "b"} {
+		e.w.submit(notifyEvent{key: HaltedKey(run, OpTool, "c1", 1), kind: NotificationOutcomeUnknown, runID: run,
+			halt: &NotifyHalt{Op: OpRef{Kind: OpTool, ID: "c1"}, Cause: HaltCrashed}})
+	}
+	if err := e.flush(ctx); err != nil {
+		t.Fatal(err)
+	}
+	sink.mu.Lock()
+	defer sink.mu.Unlock()
+	if sink.max < 2 {
+		t.Fatalf("at most %d call(s) at once: the engine serialized the Notifier, which the docs say it does not", sink.max)
+	}
+}
