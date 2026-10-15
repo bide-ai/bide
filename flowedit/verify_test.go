@@ -46,6 +46,10 @@ func TestVerifyRefusesHostileOutputs(t *testing.T) {
 			Op{Kind: Insert, Path: []any{"nodes"}, Index: 2, Value: Map{{"name", "nn"}, {"block", "nn"}}},
 			strings.Replace(owned, "  # about z\n", "  # about z\n  - {name: nn, block: nn}\n", 1),
 		},
+		"set a value, and swap two keys on its line": {
+			Op{Kind: Set, Path: []any{"nodes", 0, "block"}, Value: "a2"},
+			strings.Replace(owned, "{name: a, block: a}", "{block: a2, name: a}", 1),
+		},
 		"set a value, and change a line elsewhere": {
 			Op{Kind: Set, Path: []any{"version"}, Value: 2},
 			strings.Replace(strings.Replace(owned, "version: 1", "version: 2", 1), "wiring: []", "wiring: [ ]", 1),
