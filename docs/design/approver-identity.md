@@ -1185,9 +1185,14 @@ Decisions 1, 2, 5, 6 (delta CRLs), 12, 13, 15 and 17.
     *Amended (user, 2026-10-15, after the build and its PKI review):* an **opt-in, off-by-default, per-TSA flag**
     (`Policy.AllowESSV1`, keyed by the TSA certificate's public key) accepts a token that binds its signer by the
     SHA-1 `signingCertificate` attribute alone. Public TSAs such as Sectigo, Entrust and FreeTSA produce only such
-    tokens, and refusing them leaves a bank without them no top tier. What the attribute adds is a tie between the
-    signature and one certificate among those the token carries; who signed is decided by the signature and the path
-    to the auditor's anchors, which SHA-1 does not weaken. The weaker binding stays visible: a `Result` that relied
+    tokens, and refusing them leaves a bank without them no top tier. The external PKI assessment of the build (PR #310, 2026-10-15)
+    gives the reasoning: SHA-1 inside `signingCertificate` is "SHA-1 present", not a real risk. The ESS hash only re-binds
+    the signature to a particular certificate; forging that binding needs a second preimage on SHA-1, which is infeasible,
+    and a chosen-prefix collision would need the issuing CA's cooperation. The verifier independently requires the
+    `SignerIdentifier` match, a chain to the auditor's anchors at `genTime`, the signature verifying under that exact
+    certificate, the EKU and the status hook, so a V1-only token adds no attack path beyond what a compromised TSA key
+    already gives. A SHA-1 CMS digest algorithm is different: it hashes the signed attributes, so a collision there is a
+    collision on signed content, a real risk, and it stays refused. The weaker binding stays visible: a `Result` that relied
     on it has `ESSV1` set and the verdict prints it. SHA-1 as the CMS digest algorithm (Apple) stays refused
     whatever the policy says, and a SHA-1 attribute beside `signingCertificateV2` is checked for consistency only.
 
