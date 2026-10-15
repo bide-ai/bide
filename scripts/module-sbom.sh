@@ -40,8 +40,9 @@ WORK=$(mktemp -d "${TMPDIR:-/tmp}/bide-module-sbom.XXXXXX")
 # The module cache is read-only (a downloaded toolchain even under -modcacherw).
 trap 'chmod -R u+w "$WORK" 2>/dev/null; rm -rf "$WORK"' EXIT
 mkdir -p "$WORK/consumer" "$WORK/empty"
-# Resolved the way a user resolves it: only the public proxy and checksum database, a fresh cache.
-gorun() { env GOWORK=off GOFLAGS="-mod=mod -modcacherw" GOMODCACHE="$WORK/modcache" GOPROXY="$PROXY" GOPRIVATE= GONOPROXY= GONOSUMDB= GOINSECURE= go "$@"; }
+# Resolved the way a user resolves it: only the public proxy and checksum database (named, so an
+# environment that sets GOSUMDB=off or another database does not change it), a fresh cache.
+gorun() { env GOWORK=off GOFLAGS="-mod=mod -modcacherw" GOMODCACHE="$WORK/modcache" GOPROXY="$PROXY" GOSUMDB=sum.golang.org GOPRIVATE= GONOPROXY= GONOSUMDB= GOINSECURE= go "$@"; }
 
 published=$("$here/release.sh" --list-published)
 commands=$("$here/release.sh" --list-commands)

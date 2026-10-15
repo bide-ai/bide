@@ -250,7 +250,7 @@ tree between releases.
    `verify-signatures` job verifies that signature, and the `repro` job rebuilds the bundle on macOS
    and fails unless its sums are the published ones. Its `module-sbom` job waits for the nested
    tags below to reach the Go proxy, then publishes the signed SBOM of the published module set
-   (`scripts/module-sbom.sh`); every SBOM is signed like the archives. Each nested tag runs the Release modules workflow,
+   (`scripts/module-sbom.sh`), which the `verify-module-sbom` job then verifies; every SBOM is signed like the archives. Each nested tag runs the Release modules workflow,
    which fails if the tagged `go.mod` still requires `v0.0.0` or replaces a bide module, or does
    not build with `GOWORK=off`. Check both, the release assets and the Homebrew formula: every
    nested tag has its own Release modules run.
