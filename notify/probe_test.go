@@ -19,7 +19,10 @@ func TestProbeReportsHandshakeStatusAndTiming(t *testing.T) {
 	if !res.TLS || !res.Handshake || res.HandshakeErr != nil || res.TLSVersion != "1.3" || res.Status != 200 || res.Requests != 1 || res.Auth == nil || !res.Auth.CustomCA {
 		t.Fatalf("probe = %+v", res)
 	}
-	if res.HandshakeTime <= 0 || res.Elapsed < res.HandshakeTime {
+	// A loopback handshake can finish inside the clock's resolution (Windows ticks at about 0.5 ms
+	// or more), so a measured zero is a real reading: it is reported (Handshake, TLSVersion), never
+	// required to be positive.
+	if res.HandshakeTime < 0 || res.Elapsed < res.HandshakeTime {
 		t.Fatalf("timing: handshake %v, elapsed %v", res.HandshakeTime, res.Elapsed)
 	}
 	// It sent what Notify sends: a signed request carrying the notification's ID.
