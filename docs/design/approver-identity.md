@@ -653,8 +653,8 @@ anything outside it is refused, never interpreted.
   `signingCertificate` (ESSCertID, SHA-1) only is refused. Other signed attributes are ignored but must be
   well-formed DER.
 - Signature algorithms: the same allowlist as every signed object (ECDSA P-256 or P-384 with SHA-256 or
-  better, RSA PKCS#1 v1.5 or PSS with SHA-256 or better and a 3072-bit minimum modulus or `AllowRSA2048CA`
-  analogue for the TSA key, Ed25519); never SHA-1 or MD5. The signature is verified over the DER signed
+  better, RSA PKCS#1 v1.5 or PSS with SHA-256 or better and a 3072-bit minimum modulus, 2048 only through the same explicit
+  exception with an end date, Ed25519); never SHA-1 or MD5. The signature is verified over the DER signed
   attributes with the signer certificate's key.
 - The signer certificate comes from the token's `certificates` field or from the policy, is chained to a
   TSA anchor the auditor lists (`-trusted-tsa`) at `genTime`, carries the critical `id-kp-timeStamping`
