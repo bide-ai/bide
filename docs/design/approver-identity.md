@@ -168,6 +168,7 @@ own `Canonical`; the verdict records its name and version.
 **Where the rules live.** Not in the journal's `ApprovalPolicy` (which records `need` and approver
 ids and stays as it is). A new value `audit.IdentityPolicy`, handed to the resolver, holds:
 
+<!-- docsnip: skip proposed API in a design note; these types do not exist until build step 1 -->
 ```go
 type IdentityPolicy struct {
     Anchors   *x509.CertPool          // trust anchors for THIS gate (not the system roots)
