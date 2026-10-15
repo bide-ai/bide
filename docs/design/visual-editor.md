@@ -75,7 +75,7 @@ Non-goals:
 - **Signing configs.** "Collaboration, review and signing" says what bide does and does not offer.
 - **Replacing text editing.** The JSON Schema already gives completion in an editor. Text stays a
   first-class way to author, and the editor must keep working on files written that way.
-- **A hosted service.**
+- **A hosted service**, and for now **a desktop app** (see "Where it runs").
 
 ## Users
 
@@ -152,19 +152,50 @@ G4 is inherent to the structural mode and the editor must say so on the node (se
 exactly as `bide view` and `bide check -diff` do (`runview.Listen` refuses a non-loopback address),
 and reads and writes only the file named on the command line.
 
-| | Local `bide edit` | Hosted app |
-|---|---|---|
-| Where the config lives | The user's working tree, in git | A service's storage, or a git integration with credentials |
-| Trust path | The user's own binary, already trusted to run flows | A server in the path of a policy document, with its own auth, storage, logs and operators |
-| Change control | The edit is a file change; the bank's existing review applies | A second system that must be reconciled with git |
-| Registry for the typed palette | A Go program can embed the editor beside its Registry | The Registry is Go code; a hosted editor cannot see it |
-| Deployment | `brew install` or `go install`, as for `bide view` | Hosting, tenancy, uptime, a security review |
-| Offline, air-gapped | Works | Does not |
+| | Local `bide edit` | Wails desktop app | Hosted app |
+|---|---|---|---|
+| Where the config lives | The user's working tree, in git | The same | A service's storage, or a git integration with credentials |
+| Shares `plan.Load`, `InspectConfig` and the diff classifier | Yes, in process (Go imports) | Yes, in process | Only on the server, behind an API |
+| Trust path | The `bide` binary the user already runs | A second signed desktop program | A server in the path of a policy document, with its own auth, storage, logs and operators |
+| Change control | The edit is a file change; the bank's existing review applies | The same | A second system to reconcile with git |
+| Registry for the typed palette | A Go program can embed the editor beside its Registry | The same, but the program becomes a desktop app | Cannot see it (the Registry is Go code) |
+| Offline, air-gapped | Works | Works | Does not |
+| File access | Only the files named at startup | Native dialogs: any file the user picks | Server-side |
+| Build and release | Pure Go; cross-compiles; fits the reproducible-build check | Per-OS builds, a webview toolkit (cgo on macOS and Linux, as far as I know; confirm against the current Wails release), signing and notarization, an update path | Hosting and operations |
+| Rendering engines to test | The user's browser; CI tests Chrome | WKWebView, WebView2 and WebKitGTK | The user's browser |
+| Endpoint approval at a bank | `bide` is already on the machine | A new desktop product to approve, per OS | A new vendor-style service to approve |
+| New dependencies | None beyond the YAML library in the nested module | A large dependency tree in its own module | Server stack |
 
 A bank's change control wants edits reviewed, diffed and signed in the systems it already audits.
 A hosted editor would be one more such system with a copy of the policy in it. It buys sharing and
 no install, neither of which bide's users have asked for, and costs the property that makes the
 review credible: the editor holds nothing the repository does not.
+
+**Wails** (a Go program in a window, using the operating system's webview) was weighed on its merits.
+Its real advantages are in-process Go, offline use and native file dialogs. The first two
+`bide edit` has too: the page is served by the same Go binary that imports `plan`, `InspectConfig`
+and the classifier, so there is no second implementation to drift. The native dialog is the one
+advantage that is not matched, and it cuts the other way for this editor: the safest property of
+the write path is that it can write only the files named on the command line, and an "open any
+file" dialog widens that. Against it: a bank has to approve and endpoint-manage a new desktop
+product on each operating system; the build stops being pure Go (the webview toolkit needs cgo on
+at least some platforms, so it no longer cross-compiles in one step or fits the repository's
+rebuild-and-compare reproducibility check as is); macOS notarization, Windows code signing and an
+update path become bide's job; three webview engines have to be tested where today the user's
+browser is; and a large dependency tree enters the project, though in its own module. None of these
+is a reason it cannot be done. Together they are a cost to pay when users ask for a window and not
+before. Wails is therefore **deferred, not rejected**, and the design keeps the door open
+(next paragraph).
+
+**A host-agnostic front end.** The page talks to Go only through the `/api` requests in the table
+below and uses relative URLs, so any host that can serve the embedded files and route `/api` to the
+handler can show it: the loopback server today, a Wails window's asset handler later. To keep that
+true: no feature may depend on a TCP port or on the URL (the session token lives in a header the
+host supplies, and a desktop host that has no network listener needs none); no use of `window.open`,
+downloads or clipboard permissions that differ across webviews; saving goes through `/api/save`, not
+a browser file API; and the handler is an `http.Handler`, not tied to `net.Listener`. A Wails
+wrapper would then be a small separate module that embeds the same handler, with its own file
+choice policy (which would need its own security review, since it is a wider write surface).
 
 Two ways to start the same editor:
 
@@ -686,8 +717,10 @@ matches what `Load` resolves.
 
 ## Decisions for the maintainer
 
-1. **Local only.** Build `bide edit` as a loopback command and do not build a hosted editor.
-   Recommend yes.
+1. **Where it runs.** Build `bide edit` as a loopback command with a host-agnostic front end; do
+   not build a hosted editor; defer a Wails desktop app until users ask for a window (it would be
+   a separate module reusing the same handler, with its own security review of file access).
+   Recommend yes. The cost of waiting is that users without a browser habit get no native dialog.
 2. **Where the engine lives.** A new nested module `flowedit` (needs a YAML dependency; the root
    stays dependency-free; one more module to tag) rather than inside `cmd/bide`. Recommend the new
    module, because only it lets a Go program embed typed mode.
