@@ -136,6 +136,8 @@ func changeText(st term.Style, c Change) string {
 		where = "node " + st.Bold(c.Node)
 	case "edge":
 		where = "edge " + st.Bold(c.From) + " -> " + st.Bold(c.To)
+	case "switch":
+		where = "switch " + st.Bold(c.Node)
 	default:
 		where = c.What
 	}

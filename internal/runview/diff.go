@@ -57,6 +57,8 @@ func (c Change) String() string {
 		where = "node " + c.Node
 	case "edge":
 		where = "edge " + c.From + " -> " + c.To
+	case "switch":
+		where = "switch " + c.Node
 	default:
 		where = c.What
 	}
@@ -287,10 +289,20 @@ func diffChanges(o, n plan.ConfigReport, oldSafety, newSafety map[string]string)
 	for _, x := range ot.Nodes {
 		oldNode[x.Name] = x
 	}
+	ren := renamedNodes(o, n)
+	renRev := map[string]string{}
+	for from, to := range ren {
+		renRev[to] = from
+	}
+	uOld, uNew := ungatedEffects(o), ungatedEffects(n)
 	newNode := map[string]bool{}
 	for _, x := range nt.Nodes {
 		newNode[x.Name] = true
 		was, ok := oldNode[x.Name]
+		if from, renamed := renRev[x.Name]; renamed {
+			cs = append(cs, Change{Change: "renamed", What: "node", Node: x.Name, Details: []string{from + " -> " + x.Name + ": the same block, safety, gate and edges"}})
+			continue
+		}
 		if !ok {
 			c := Change{Change: "added", What: "node", Node: x.Name, Details: []string{nodeKind(x)}}
 			if s := newSafety[x.Name]; s != "" {
@@ -298,6 +310,10 @@ func diffChanges(o, n plan.ConfigReport, oldSafety, newSafety map[string]string)
 			}
 			if x.Gate != nil {
 				c.Details = append(c.Details, "approval "+gateFull(x.Gate))
+			}
+			if uNew[x.Name] {
+				c.Gate, c.Weakening = "weakened", "path"
+				c.Details = append(c.Details, "new node, "+ungatedWhy(n, x.Name)+" (weakened)")
 			}
 			cs = append(cs, c)
 			continue
@@ -325,16 +341,23 @@ func diffChanges(o, n plan.ConfigReport, oldSafety, newSafety map[string]string)
 			}
 			c.Details = append(c.Details, gateMove(was.Gate, x.Gate)+" ("+g+")")
 		}
-		if d := newlyUngated(o, n, x); d != "" && c.Gate == "" {
+		switch {
+		case c.Gate == "weakened":
+		case uNew[x.Name] && !uOld[x.Name]:
 			c.Gate, c.Weakening = "weakened", "path"
-			c.Details = append(c.Details, d+" (weakened)")
+			c.Details = append(c.Details, ungatedWhy(n, x.Name)+" (weakened)")
+		case uNew[x.Name] && was.Block != x.Block && !(o.Typed && n.Typed):
+			// Without the Registry the block's own approval gate (ToolSpec.Approval) is not visible: a new
+			// block on a node no config gate guards may have none.
+			c.Gate, c.Weakening = "weakened", "block"
+			c.Details = append(c.Details, "block changed on a node no declared gate guards: the new block's own approval gate, if any, is not visible without the plan.Registry (weakened)")
 		}
 		if len(c.Details) > 0 {
 			cs = append(cs, c)
 		}
 	}
 	for _, x := range ot.Nodes {
-		if newNode[x.Name] {
+		if newNode[x.Name] || ren[x.Name] != "" {
 			continue
 		}
 		c := Change{Change: "removed", What: "node", Node: x.Name, Details: []string{nodeKind(x)}}
@@ -357,27 +380,8 @@ func diffChanges(o, n plan.ConfigReport, oldSafety, newSafety map[string]string)
 			cs = append(cs, edgeChange("removed", k, oe.label[k]))
 		}
 	}
+	cs = append(cs, switchChanges(o, n, uNew)...)
 	return append(cs, assertionChanges(o, n)...)
-}
-
-// newlyUngated says, for a node in both versions, when a path now reaches it without an approval
-// gate that none reached before and it may have an effect (its safety is side effect, or not
-// known): "reachable without an approval gate (validate -> receipt), not before". "" otherwise: the
-// node is not an effect, it was already reachable ungated, or it is still gated. A node that lost
-// its own gate is reported as a gate change, not here (the caller skips a change already weakened).
-func newlyUngated(o, n plan.ConfigReport, now plan.TopologyNode) string {
-	if !o.Gated[now.Name] || n.Gated[now.Name] {
-		return ""
-	}
-	why := ""
-	switch n.Safety[now.Name] {
-	case plan.SafetySideEffect:
-	case plan.SafetyUnknown:
-		why = "; its safety is not known"
-	default:
-		return ""
-	}
-	return "reachable without an approval gate (" + strings.Join(n.UngatedPath(now.Name), " -> ") + "), not before" + why
 }
 
 // assertionChanges compares the config's assert lines. A line the new config lacks is removed
@@ -451,7 +455,7 @@ func changeSummary(c Change, loosened string) string {
 		}
 		return "assertion " + loosened + ": " + detail
 	}
-	if c.Weakening == "path" {
+	if c.Weakening == "path" || c.Weakening == "block" || c.Weakening == "condition" {
 		d := c.Details[len(c.Details)-1]
 		d = strings.TrimSuffix(d, " (weakened)")
 		return c.Node + ": " + d

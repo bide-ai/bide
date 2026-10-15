@@ -48,13 +48,38 @@ func TestDiffNewUngatedPathIsWeakened(t *testing.T) {
 	}
 }
 
+// A new node that may have an effect and that no approval gate guards is a weakening: nothing stood
+// in front of it before. A new node behind a gate, or one that is read-only, is not.
+func TestDiffNewUngatedEffectNodeIsWeakened(t *testing.T) {
+	base := gapCfg("", "")
+	got := weakenedOf(t, base, gapCfg(`, {"name": "notify", "block": "notify", "safety": "side_effect"}`, `, {"edge": ["validate", "notify"]}`))
+	if want := []string{"notify: new node, reachable without an approval gate (validate -> notify), not before"}; !slices.Equal(got, want) {
+		t.Errorf("new ungated effect: weakened %q; want %q", got, want)
+	}
+	// Unknown safety counts, and says so; the node is also listed as added.
+	v := diffOf(t, base, gapCfg(`, {"name": "x", "block": "x"}`, `, {"edge": ["validate", "x"]}`), nil, nil)
+	if len(v.Weakened) != 1 || !strings.HasSuffix(v.Weakened[0], "; its safety is not known") || v.Changes[0].Change != "added" || v.Changes[0].Weakening != "path" {
+		t.Errorf("unknown safety: %q, %q", v.Weakened, lines(v.Changes))
+	}
+	for name, to := range map[string]string{
+		"behind a gate":         gapCfg(`, {"name": "notify", "block": "notify", "safety": "side_effect"}`, `, {"edge": ["charge", "notify"]}`),
+		"read-only, ungated":    gapCfg(`, {"name": "log", "block": "log", "safety": "readonly"}`, `, {"edge": ["validate", "log"]}`),
+		"effect, gated itself":  gapCfg(`, {"name": "notify", "block": "notify", "safety": "side_effect", "approval": {"need": 1, "approvers": ["ops"]}}`, `, {"edge": ["validate", "notify"]}`),
+		"unreachable (no edge)": gapCfg(`, {"name": "orphan", "block": "orphan", "safety": "side_effect"}`, ``),
+	} {
+		if got := weakenedOf(t, base, to); len(got) != 0 {
+			t.Errorf("%s: weakened %q", name, got)
+		}
+	}
+}
+
 // Not flagged: a bypass to a node that is not an effect, a new route that is gated, an effect that
-// was already ungated, a new ungated node (nothing was gated before), and a change that gates more.
+// was already ungated, and a change that gates more.
 func TestDiffUngatedPathNotFalselyFlagged(t *testing.T) {
 	base := gapCfg("", "")
 	for name, to := range map[string]string{
 		"read-only node reachable ungated": gapCfg(`, {"name": "log", "block": "log", "safety": "readonly"}`, `, {"edge": ["validate", "log"]}`),
-		"new effect node ungated":          gapCfg(`, {"name": "notify", "block": "notify", "safety": "side_effect"}`, `, {"edge": ["validate", "notify"]}`),
+		"new effect node behind a gate":    gapCfg(`, {"name": "notify", "block": "notify", "safety": "side_effect"}`, `, {"edge": ["charge", "notify"]}`),
 		"new route that is gated":          gapCfg(`, {"name": "review", "block": "review", "safety": "readonly", "approval": {"need": 1, "approvers": ["ops"]}}`, `, {"edge": ["validate", "review"]}, {"edge": ["review", "receipt"]}`),
 		"idempotent node ungated":          gapCfg(`, {"name": "stamp", "block": "stamp", "safety": "idempotent"}`, `, {"edge": ["validate", "stamp"]}`),
 	} {
