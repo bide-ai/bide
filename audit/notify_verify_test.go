@@ -7,6 +7,8 @@ import (
 	"errors"
 	"slices"
 	"strings"
+	"sync"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -385,14 +387,14 @@ func TestVerifyNotifications_ARealNotifierTrailVerifies(t *testing.T) {
 	if err != nil {
 		t.Fatalf("%v\n%+v", err, rep)
 	}
-	if len(rep.Events) != 1 || rep.Events[0].Status != audit.NotifyStatusAcked || !rep.Events[0].InJournal || sink.n != 1 {
-		t.Fatalf("report = %+v (sink %d)", rep.Events, sink.n)
+	if len(rep.Events) != 1 || rep.Events[0].Status != audit.NotifyStatusAcked || !rep.Events[0].InJournal || sink.n.Load() != 1 {
+		t.Fatalf("report = %+v (sink %d)", rep.Events, sink.n.Load())
 	}
 }
 
-type countSink struct{ n int }
+type countSink struct{ n atomic.Int64 }
 
-func (s *countSink) Notify(context.Context, agent.Notification) error { s.n++; return nil }
+func (s *countSink) Notify(context.Context, agent.Notification) error { s.n.Add(1); return nil }
 
 // ---- tamper evidence ----
 
@@ -618,17 +620,21 @@ func TestVerifyNotifications_Inputs(t *testing.T) {
 
 // ---- trails the real engine writes ----
 
-// toggleSink fails (permanently, so a round does not sleep) while down is set.
+// toggleSink fails (permanently, so a round does not sleep) while down is set. The engine calls a
+// Notifier from several goroutines at once, so its state is atomic.
 type toggleSink struct {
-	down bool
-	n    int
+	down atomic.Bool
+	n    atomic.Int64
 }
 
+func (s *toggleSink) setDown(v bool) { s.down.Store(v) }
+func (s *toggleSink) count() int     { return int(s.n.Load()) }
+
 func (s *toggleSink) Notify(context.Context, agent.Notification) error {
-	if s.down {
+	if s.down.Load() {
 		return agent.ErrNotifyPermanent
 	}
-	s.n++
+	s.n.Add(1)
 	return nil
 }
 
@@ -654,7 +660,8 @@ func TestVerifyNotifications_TheEnginesOverdueHistoryHasNoViolations(t *testing.
 		t.Fatal(err)
 	}
 	es := audit.NewMemEventStore()
-	trail, sink := audit.NewNotifyTrail(es), &toggleSink{down: true}
+	trail, sink := audit.NewNotifyTrail(es), &toggleSink{}
+	sink.setDown(true)
 	clk := &stepClock{now: time.Now()}
 	sweep := func() {
 		_ = agent.NotifyPending(ctx, j, sink, trail, sweepOpts(clk)...)
@@ -662,7 +669,7 @@ func TestVerifyNotifications_TheEnginesOverdueHistoryHasNoViolations(t *testing.
 	sweep()
 	clk.now = clk.now.Add(2 * time.Minute)
 	sweep() // past the deadline: overdue, and the notice cannot be delivered either
-	sink.down = false
+	sink.setDown(false)
 	for range 6 { // the claims of the failed rounds lapse and the backoff passes, then both are delivered
 		clk.now = clk.now.Add(30 * time.Second)
 		sweep()
@@ -709,8 +716,8 @@ func TestVerifyNotifications_TheEnginesAllClearHistoryHasNoViolations(t *testing
 	}
 	clk.now = clk.now.Add(time.Second)
 	sweep()
-	if sink.n != 2 {
-		t.Fatalf("%d notifications, want the gate and its all-clear", sink.n)
+	if sink.count() != 2 {
+		t.Fatalf("%d notifications, want the gate and its all-clear", sink.count())
 	}
 	tx, _ := audit.ExportNotifyTrail(ctx, es, trailName)
 	rep, err := audit.VerifyNotifications(audit.NotifyVerifyInput{Trails: []audit.NotifyTrailExport{tx}, Unanchored: true, Now: clk.now})
@@ -1150,5 +1157,26 @@ func TestVerifyNotifications_AResolvedHaltTimesTheAllClear(t *testing.T) {
 	rep, err = run(resolved.Add(10 * time.Minute))
 	if !errors.Is(err, audit.ErrNotVerified) || notifyStatusOf(t, rep, agent.ResolvedKey(key)) != audit.NotifyStatusNeverNotified {
 		t.Fatalf("after it: %v %+v", err, rep.Events)
+	}
+}
+
+// The engine calls one Notifier from several goroutines at once (rounds of different events, an
+// event and the steps of its escalation chain), so a test sink must be safe for concurrent use.
+func TestToggleSinkIsSafeForConcurrentUse(t *testing.T) {
+	s := &toggleSink{}
+	var wg sync.WaitGroup
+	for g := 0; g < 8; g++ {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			for i := 0; i < 500; i++ {
+				_ = s.Notify(context.Background(), agent.Notification{})
+				s.setDown(i%50 == 0)
+			}
+		}()
+	}
+	wg.Wait()
+	if s.count() == 0 {
+		t.Fatal("no call was counted")
 	}
 }

@@ -464,7 +464,9 @@ an event it reported is over: `Notification.Clears` says which; with `agent.Noti
 reply: return nil only once the sink has accepted the notification, and use `Notification.ID`, which
 is the same on every attempt, to drop duplicates at the sink. A `Notification` holds structured
 fields only, and `Err` is for an in-process notifier: a notifier that sends elsewhere should not
-forward error text or tool arguments, which can hold card numbers or personal data. Wrap
+forward error text or tool arguments, which can hold card numbers or personal data. `Notify` may be called from several goroutines at once, for different events (an event and the steps of
+its escalation chain too), so an implementation must be safe for concurrent use: guard any counter, map or
+buffer it keeps. Wrap
 `agent.ErrNotifyPermanent` for a failure a retry in the same round cannot fix, and call
 `agent.ReportNotifyAck` to record how a delivery was authenticated. A plan flow takes the same notifier with `plan.Builder.WithNotifier` (or `plan.WithLoadedNotifier`
 for a loaded config), and code that drives its own runs binds it with `agent.NewRunNotifier`. The

@@ -311,22 +311,35 @@ func (e *notifyEngine) callNotify(ctx context.Context, n Notifier, note Notifica
 	}
 	out := make(chan result, 1)
 	go func() {
+		// The call is no longer in flight once the Notifier has returned, and that is recorded
+		// before the answer is sent: a caller that has its answer may make the next call at once,
+		// and must not find this one still counted (and refuse its own call as abandoned). finish
+		// runs once, from whichever exit comes first.
+		var once sync.Once
+		finish := func(r result) {
+			once.Do(func() {
+				e.mu.Lock()
+				if e.stuck[note.Key]--; e.stuck[note.Key] == 0 {
+					delete(e.stuck, note.Key)
+				}
+				e.stuckAll--
+				e.mu.Unlock()
+				out <- r
+			})
+		}
 		defer func() {
 			if r := recover(); r != nil { // a Notifier that panics fails the call, not the process
-				out <- result{NotifyAck{}, fmt.Errorf("notify: the Notifier panicked: %v", r)}
+				finish(result{NotifyAck{}, fmt.Errorf("notify: the Notifier panicked: %v", r)})
+				return
 			}
-		}()
-		defer func() {
-			e.mu.Lock()
-			if e.stuck[note.Key]--; e.stuck[note.Key] == 0 {
-				delete(e.stuck, note.Key)
-			}
-			e.stuckAll--
-			e.mu.Unlock()
+			// Reached with no answer sent: the Notifier left through runtime.Goexit (a sink that
+			// calls t.FailNow does). The call is over and failed; the caller must not wait for it,
+			// nor the key be blocked by a call counted as in flight for good.
+			finish(result{NotifyAck{}, errors.New("notify: the Notifier exited without returning")})
 		}()
 		var ack NotifyAck
 		err := n.Notify(context.WithValue(cctx, ackKey{}, &ack), note)
-		out <- result{ack, err}
+		finish(result{ack, err})
 	}()
 	late := func(err error) error {
 		if err != nil && errors.Is(err, context.DeadlineExceeded) && ctx.Err() == nil {

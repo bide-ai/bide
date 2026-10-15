@@ -7,6 +7,7 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"strings"
+	"sync"
 	"sync/atomic"
 	"testing"
 	"time"
@@ -320,5 +321,38 @@ func TestStatusErrorKeepsOnlyAnAllowListedToken(t *testing.T) {
 				t.Errorf("%s: error %q leaks %q", name, err, leak)
 			}
 		}
+	}
+}
+
+// The relay's sinks are called from the handler's goroutines at once: they hold no per-call state.
+func TestSinksAreSafeForConcurrentSends(t *testing.T) {
+	var n atomic.Int32
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) { n.Add(1) }))
+	defer srv.Close()
+	slack, err := NewSlack(SlackConfig{WebhookURL: srv.URL, Backoff: time.Millisecond})
+	if err != nil {
+		t.Fatal(err)
+	}
+	pd, err := NewPagerDuty(PagerDutyConfig{RoutingKey: "rk", URL: srv.URL, Backoff: time.Millisecond})
+	if err != nil {
+		t.Fatal(err)
+	}
+	var wg sync.WaitGroup
+	for i := 0; i < 16; i++ {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			p := samplePayload("outcome_unknown")
+			if err := slack.Send(context.Background(), p); err != nil {
+				t.Error(err)
+			}
+			if err := pd.Send(context.Background(), p); err != nil {
+				t.Error(err)
+			}
+		}()
+	}
+	wg.Wait()
+	if n.Load() != 32 {
+		t.Fatalf("%d requests, want 32", n.Load())
 	}
 }

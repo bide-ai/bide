@@ -1,0 +1,3 @@
+Section: Fixed
+
+A notification call that had returned could still be counted as in flight for a moment, so a retry made at once in the same round was refused as "an earlier call was abandoned" although nothing was abandoned. The attempt was lost: the sink saw one call fewer than the round made, and a sink that fails a fixed number of calls then failed a later, unrelated notification instead (seen on Windows, where it made a test see an all-clear delivered twice, the first attempt having failed). The engine now records that a call is over before it hands the answer back, so the next call is never refused spuriously; a call that really is stuck is still not repeated until it returns.

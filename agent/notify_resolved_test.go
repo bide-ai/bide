@@ -6,6 +6,7 @@ import (
 	"errors"
 	"fmt"
 	"math/rand/v2"
+	"runtime"
 	"strings"
 	"sync"
 	"sync/atomic"
@@ -1945,5 +1946,111 @@ func TestNotifyTrailLocks_TheGuardCountsTheCallersOwnLocks(t *testing.T) {
 	u2()
 	if n := trailLocksHeldByCaller(); n != 0 {
 		t.Fatalf("holds %d after releasing both", n)
+	}
+}
+
+// barrierSink returns from Notify only once two calls are in it at once.
+type barrierSink struct {
+	mu      sync.Mutex
+	in, max int
+	both    chan struct{}
+	once    sync.Once
+}
+
+func (b *barrierSink) Notify(ctx context.Context, n Notification) error {
+	b.mu.Lock()
+	b.in++
+	b.max = max(b.max, b.in)
+	if b.in >= 2 {
+		b.once.Do(func() { close(b.both) })
+	}
+	b.mu.Unlock()
+	select {
+	case <-b.both:
+	case <-time.After(5 * time.Second):
+	case <-ctx.Done():
+	}
+	b.mu.Lock()
+	b.in--
+	b.mu.Unlock()
+	return nil
+}
+
+// The engine calls one Notifier from several goroutines at once: rounds of different events run
+// concurrently on the worker. A Notifier must be safe for concurrent use (the Notifier godoc says
+// so); this is the contract test that makes the property something sinks can rely on.
+func TestNotifier_IsCalledConcurrentlyForDifferentEvents(t *testing.T) {
+	ctx := context.Background()
+	sink := &barrierSink{both: make(chan struct{})}
+	e := testEngine(t, memJournal(), sink, NewMemNotifyTrail(), resolvedClock(), "p1")
+	for _, run := range []string{"a", "b"} {
+		e.w.submit(notifyEvent{key: HaltedKey(run, OpTool, "c1", 1), kind: NotificationOutcomeUnknown, runID: run,
+			halt: &NotifyHalt{Op: OpRef{Kind: OpTool, ID: "c1"}, Cause: HaltCrashed}})
+	}
+	if err := e.flush(ctx); err != nil {
+		t.Fatal(err)
+	}
+	sink.mu.Lock()
+	defer sink.mu.Unlock()
+	if sink.max < 2 {
+		t.Fatalf("at most %d call(s) at once: the engine serialized the Notifier, which the docs say it does not", sink.max)
+	}
+}
+
+// A call counts as in flight until the Notifier has returned, but a caller that got its answer may
+// make the next call at once: the bookkeeping of the first must be done before its answer is sent,
+// or the next call is refused as "an earlier call was abandoned" although nothing was abandoned, and
+// the attempt is lost (and the sink sees fewer calls than the round made). Back-to-back calls for one
+// key, many times, with the scheduler squeezed.
+func TestNotifyRound_ABackToBackCallIsNeverRefusedAsAbandoned(t *testing.T) {
+	old := runtime.GOMAXPROCS(2)
+	defer runtime.GOMAXPROCS(old)
+	ctx := context.Background()
+	sink := &fakeSink{fail: 1 << 30} // every call fails, so a round retries at once
+	e := testEngine(t, memJournal(), sink, NewMemNotifyTrail(), resolvedClock(), "p1")
+	note := Notification{ID: "id", Key: "k", Kind: NotificationOutcomeUnknown, RunID: "r"}
+	for i := range 20000 {
+		if _, err := e.callNotify(ctx, sink, note); err == nil || strings.Contains(err.Error(), "abandoned") {
+			t.Fatalf("call %d (first of a pair): %v", i, err)
+		}
+		if _, err := e.callNotify(ctx, sink, note); err == nil || strings.Contains(err.Error(), "abandoned") {
+			t.Fatalf("call %d (second of a pair) was refused although the first had returned: %v", i, err)
+		}
+	}
+	if got := sink.count(); got != 40000 {
+		t.Fatalf("the sink saw %d calls, want 40000", got)
+	}
+}
+
+type goexitSink struct{}
+
+func (goexitSink) Notify(context.Context, Notification) error {
+	runtime.Goexit() // as a sink calling t.FailNow does
+	return nil
+}
+
+// A Notifier that exits its goroutine without returning (runtime.Goexit, as t.FailNow does) fails
+// the call: the caller is told, and the call is not left counted as in flight, which would refuse
+// every later call for the key.
+func TestNotifyRound_AGoexitingNotifierFailsTheCallAndLeaksNothing(t *testing.T) {
+	ctx := context.Background()
+	e := testEngine(t, memJournal(), goexitSink{}, NewMemNotifyTrail(), resolvedClock(), "p1")
+	note := Notification{ID: "id", Key: "k", Kind: NotificationOutcomeUnknown, RunID: "r"}
+	for range 3 {
+		done := make(chan error, 1)
+		go func() { _, err := e.callNotify(ctx, goexitSink{}, note); done <- err }()
+		select {
+		case err := <-done:
+			if err == nil || !strings.Contains(err.Error(), "without returning") {
+				t.Fatalf("callNotify = %v, want an error saying the Notifier exited without returning", err)
+			}
+		case <-time.After(5 * time.Second):
+			t.Fatal("the caller was left waiting for a Notifier that exited")
+		}
+	}
+	e.mu.Lock()
+	defer e.mu.Unlock()
+	if e.stuck["k"] != 0 || e.stuckAll != 0 {
+		t.Fatalf("a Goexit left %d call(s) counted as in flight for the key (%d in all)", e.stuck["k"], e.stuckAll)
 	}
 }

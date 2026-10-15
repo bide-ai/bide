@@ -1,0 +1,3 @@
+Section: Changed
+
+`agent.Notifier` is now documented to be called from several goroutines at once, and a custom Notifier must be safe for concurrent use. The engine has always run the rounds of different events concurrently (up to eight at a time, and an event alongside the steps of its escalation chain), so a Notifier that keeps an unguarded counter, map or buffer has a data race; check yours and guard its state with a mutex or atomics. One event still has at most one call in flight, except that a call abandoned at its time limit may still be running when the next is made. bide's own notifiers (`notify.Webhook`, the relay's Slack and PagerDuty sinks) hold no per-call state and are tested under the race detector with concurrent calls.
