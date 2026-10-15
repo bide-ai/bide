@@ -74,10 +74,10 @@ func (s *stFx) snap(crls ...[]byte) *audit.StatusSnapshot {
 }
 
 // declared fills in the CA issuance interval the fixtures' CRLs keep (no two more than 40 minutes
-// apart) unless the test sets its own; a negative Interval declares none.
+// apart) unless the test sets its own; a negative CAPeriod declares none.
 func declared(p audit.StatusParams) audit.StatusParams {
-	if p.Interval == 0 {
-		p.Interval = 40 * min
+	if p.CAPeriod == 0 {
+		p.CAPeriod = 40 * min
 	}
 	return p
 }
@@ -473,7 +473,7 @@ func TestExpiredCertsOnCRLMakesLCUnbounded(t *testing.T) {
 		Extra: []pkix.Extension{ext(asn1.ObjectIdentifier{2, 5, 29, 60}, false, genTime(t, idT0.Add(-24*hour)))}}
 	der := s.inter.NewCRL(t, retained)
 	pre := s.lcrl(4, idT0, 3*hour) // in force at A and reaching the retained CRL
-	st := s.leafStatus(s.snap(pre, der), audit.StatusParams{W: hour, Interval: 3 * hour})
+	st := s.leafStatus(s.snap(pre, der), audit.StatusParams{W: hour, CAPeriod: 3 * hour})
 	if !st.Unbounded || st.Tier != audit.TierFinal {
 		t.Fatalf("%+v", st)
 	}
@@ -1024,7 +1024,7 @@ func TestUnexpiredIntermediateReachesFinalWithoutLC(t *testing.T) {
 	r0 := s.rcrl(1, idT0, 24*hour+min)                     // in force at A, reaching r1
 	r1 := s.rcrl(2, s.a.Add(24*hour+time.Second), 24*hour) // S >= A + 24h
 	l0 := s.lcrl(1, idT0, 30*min)
-	cs := s.eval(s.snap(r0, r1, l0), audit.StatusParams{Interval: 25 * hour})
+	cs := s.eval(s.snap(r0, r1, l0), audit.StatusParams{CAPeriod: 25 * hour})
 	inter := cs.Certs[1]
 	if inter.Tier != audit.TierFinal || inter.LCKnown || inter.Window != 24*hour {
 		t.Fatalf("an unexpired intermediate with status a full window past A: %+v", inter)
@@ -1034,7 +1034,7 @@ func TestUnexpiredIntermediateReachesFinalWithoutLC(t *testing.T) {
 	}
 	// The same evidence under the design note's earlier literal rule is provisional.
 	defer audit.SetFinalityNeedsLC(true)()
-	inter = s.eval(s.snap(r0, r1, l0), audit.StatusParams{Interval: 25 * hour}).Certs[1]
+	inter = s.eval(s.snap(r0, r1, l0), audit.StatusParams{CAPeriod: 25 * hour}).Certs[1]
 	if inter.Tier != audit.TierProvisional || !strings.Contains(inter.Note, "L(C)") {
 		t.Fatalf("literal rule: %+v", inter)
 	}
@@ -1127,7 +1127,7 @@ func overlappingSeries(s *stFx) (all [][]byte, listed, pruned []byte) {
 func TestOverlappingCRLsOmittedFirstCRLBeyondNotAfter(t *testing.T) {
 	s := newStFx(t)
 	all, _, _ := overlappingSeries(s)
-	p := audit.StatusParams{Interval: 30 * min}
+	p := audit.StatusParams{CAPeriod: 30 * min}
 	// The complete series: the listing is seen.
 	if st := s.leafStatus(s.snap(all...), p); !st.Revoked {
 		t.Fatalf("complete series: %+v", st)
@@ -1140,7 +1140,7 @@ func TestOverlappingCRLsOmittedFirstCRLBeyondNotAfter(t *testing.T) {
 		t.Fatalf("a revoked leaf read as final after omitting one CRL: %+v", st)
 	}
 	// The same through the consecutive-number mode: 3 then 5 is not consecutive.
-	st = s.leafStatus(omitted, audit.StatusParams{Interval: -1, ConsecutiveNumbers: true})
+	st = s.leafStatus(omitted, audit.StatusParams{CAPeriod: -1, ConsecutiveNumbers: true})
 	if st.Tier == audit.TierFinal || st.LCKnown {
 		t.Fatalf("consecutive-number mode: %+v", st)
 	}
@@ -1153,7 +1153,7 @@ func TestOverlappingCRLsOmittedFirstCRLBeyondNotAfter(t *testing.T) {
 	if st := clean.leafStatus(clean.snap(series...), p); st.Tier != audit.TierFinal {
 		t.Fatalf("interval mode, complete: %+v", st)
 	}
-	if st := clean.leafStatus(clean.snap(series...), audit.StatusParams{Interval: -1, ConsecutiveNumbers: true}); st.Tier != audit.TierFinal {
+	if st := clean.leafStatus(clean.snap(series...), audit.StatusParams{CAPeriod: -1, ConsecutiveNumbers: true}); st.Tier != audit.TierFinal {
 		t.Fatalf("consecutive mode, complete: %+v", st)
 	}
 }
@@ -1170,13 +1170,13 @@ func TestNoDeclaredIntervalMeansNeverFinal(t *testing.T) {
 	}
 	// The interval can be given per issuing CA.
 	per := short
-	per.IntervalFor = map[audit.SPKIHash]time.Duration{audit.SPKIHashOf(s.inter.Cert): 40 * min}
+	per.CAPeriodFor = map[audit.SPKIHash]time.Duration{audit.SPKIHashOf(s.inter.Cert): 40 * min}
 	if st := s.c.EvaluateStatus(s.ac, s.a, sn, per).Certs[0]; st.Tier != audit.TierFinal {
-		t.Fatalf("IntervalFor: %+v", st)
+		t.Fatalf("CAPeriodFor: %+v", st)
 	}
 	// Another CA's entry does not apply to this one.
 	other := short
-	other.IntervalFor = map[audit.SPKIHash]time.Duration{audit.SPKIHashOf(s.root.Cert): 40 * min}
+	other.CAPeriodFor = map[audit.SPKIHash]time.Duration{audit.SPKIHashOf(s.root.Cert): 40 * min}
 	if st := s.c.EvaluateStatus(s.ac, s.a, sn, other).Certs[0]; st.Tier == audit.TierFinal {
 		t.Fatalf("an interval declared for another CA applied: %+v", st)
 	}
@@ -1192,7 +1192,7 @@ func TestHoldPlacedAndReleasedBeforeS(t *testing.T) {
 	c1 := s.lcrl(2, idT0.Add(10*min), 10*min, hold) // lists the hold
 	c2 := s.lcrl(3, idT0.Add(20*min), 10*min)       // released: absent
 	c3 := s.lcrl(4, idT0.Add(30*min), 10*min)
-	p := audit.StatusParams{Interval: 10 * min, W: 20 * min, MinW: 10 * min}
+	p := audit.StatusParams{CAPeriod: 10 * min, W: 20 * min, MinW: 10 * min}
 	if st := s.leafStatus(s.snap(c0, c1, c2, c3), p); !st.Revoked || st.ReasonCode != 6 {
 		t.Fatalf("with the CRL that lists the hold: %+v", st)
 	}
@@ -1211,7 +1211,7 @@ func TestExpiredCertsOnCRLIsPerCRL(t *testing.T) {
 		Extra: []pkix.Extension{ext(asn1.ObjectIdentifier{2, 5, 29, 60}, false, genTime(t, idT0.Add(-24*hour)))}})
 	c0 := s.lcrl(1, idT0, day)
 	late := s.lcrl(3, idT0.Add(140*min), day) // no extension; nothing links it to the first CRL beyond notAfter
-	p := audit.StatusParams{Interval: 40 * min, W: 10 * min, MinW: 5 * min}
+	p := audit.StatusParams{CAPeriod: 40 * min, W: 10 * min, MinW: 5 * min}
 	st := s.leafStatus(s.snap(c0, withExt, late), p)
 	if st.S.Equal(idT0.Add(140*min)) || !st.S.Equal(idT0.Add(30*min)) {
 		t.Fatalf("a later CRL without the extension was trusted because another had it: %+v", st)
@@ -1219,7 +1219,7 @@ func TestExpiredCertsOnCRLIsPerCRL(t *testing.T) {
 	// A CRL beyond notAfter that carries the extension does count, on its own account.
 	retained := s.inter.NewCRL(t, testca.CRLOpts{Number: 3, ThisUpdate: idT0.Add(140 * min), NextUpdate: idT0.Add(140*min + day),
 		Extra: []pkix.Extension{ext(asn1.ObjectIdentifier{2, 5, 29, 60}, false, genTime(t, idT0.Add(-24*hour)))}})
-	st = s.leafStatus(s.snap(c0, retained), audit.StatusParams{Interval: 3 * hour, W: 10 * min, MinW: 5 * min})
+	st = s.leafStatus(s.snap(c0, retained), audit.StatusParams{CAPeriod: 3 * hour, W: 10 * min, MinW: 5 * min})
 	if !st.Unbounded || st.Tier != audit.TierFinal || st.Caveat == "" {
 		t.Fatalf("%+v", st)
 	}
@@ -1234,13 +1234,26 @@ func TestLiveCountingUsesStatusBeforeA(t *testing.T) {
 	if st := s.leafStatus(sn, audit.StatusParams{}); st.Tier != audit.TierNoInformation {
 		t.Fatalf("offline: %+v", st)
 	}
-	live := audit.StatusParams{Now: s.a.Add(10 * time.Second), MaxStatusAge: hour}
+	now := s.a.Add(10 * time.Second)
+	// Passing Now only applies freshness: it does not relax the rule that evidence is issued at or
+	// after the decision.
+	if st := s.leafStatus(sn, audit.StatusParams{Now: now, MaxStatusAge: hour}); st.Tier != audit.TierNoInformation {
+		t.Fatalf("Now alone must not relax thisUpdate >= A: %+v", st)
+	}
+	live := audit.StatusParams{Now: now, MaxStatusAge: hour, CountLive: true}
 	st := s.leafStatus(sn, live)
-	if st.Tier != audit.TierProvisional || !st.S.Equal(s.a.Add(-time.Second)) {
+	if st.Tier != audit.TierProvisional || !st.S.Equal(s.a.Add(-time.Second)) || st.Final() {
 		t.Fatalf("live: %+v", st)
 	}
+	if st.Basis != "live count: status issued before the decision (provisional only)" {
+		t.Fatalf("basis %q", st.Basis)
+	}
+	// CountLive judges against the clock: without Now it accepts nothing.
+	if st := s.leafStatus(sn, audit.StatusParams{CountLive: true}); st.Tier != audit.TierNoInformation || !strings.Contains(st.Note, "Now") {
+		t.Fatalf("CountLive without Now: %+v", st)
+	}
 	// Stale live status before A is still refused.
-	stale := audit.StatusParams{Now: s.a.Add(2 * hour), MaxStatusAge: hour}
+	stale := audit.StatusParams{Now: s.a.Add(2 * hour), MaxStatusAge: hour, CountLive: true}
 	if st := s.leafStatus(sn, stale); st.Tier != audit.TierNoInformation || !st.Stale {
 		t.Fatalf("stale: %+v", st)
 	}
@@ -1248,6 +1261,49 @@ func TestLiveCountingUsesStatusBeforeA(t *testing.T) {
 	listed := s.lcrl(2, s.a.Add(-time.Second), 30*min, testca.Revoked(s.leaf.Cert, s.a.Add(-time.Minute), 0))
 	if !s.leafStatus(s.snap(listed), live).Revoked {
 		t.Fatal("a live listing did not revoke")
+	}
+	// The chain says the same: a usable, provisional live count has Err() == nil but is not Final.
+	root := s.rcrl(1, s.a.Add(-time.Second), 30*min)
+	cs := s.eval(s.snap(before, root), live)
+	if cs.Err() != nil || cs.Final() || cs.Tier != audit.TierProvisional {
+		t.Fatalf("chain: err %v final %v tier %v", cs.Err(), cs.Final(), cs.Tier)
+	}
+}
+
+// A finding is verified only when it is Final, and says what it rests on.
+func TestFinalAndBasis(t *testing.T) {
+	s := newStFx(t)
+	c1, c2, cL := series(s)
+	sn := s.snap(c1, c2, cL)
+	st := s.leafStatus(sn, audit.StatusParams{})
+	if !st.Final() || st.Basis != "status issued at or after the decision" || st.Caveat == "" {
+		t.Fatalf("%+v", st)
+	}
+	if prov := s.leafStatus(s.snap(c1, c2), audit.StatusParams{}); prov.Final() || prov.Tier != audit.TierProvisional {
+		t.Fatalf("provisional: %+v", prov)
+	}
+	if rev := s.leafStatus(s.snap(s.lcrl(9, s.a.Add(time.Second), hour, testca.Revoked(s.leaf.Cert, s.a.Add(-time.Minute), 0))), audit.StatusParams{}); rev.Final() {
+		t.Fatalf("revoked: %+v", rev)
+	}
+	if none := s.leafStatus(s.snap(), audit.StatusParams{}); none.Final() || none.Basis != "" {
+		t.Fatalf("no status: %+v", none)
+	}
+	// The chain is final only when every certificate is: the leaf's CRLs every 40 minutes, the
+	// intermediate's (from the root) once a day.
+	per := audit.StatusParams{CAPeriodFor: map[audit.SPKIHash]time.Duration{
+		audit.SPKIHashOf(s.inter.Cert): 40 * min, audit.SPKIHashOf(s.root.Cert): 25 * hour}}
+	r0 := s.rcrl(1, idT0, 25*hour)
+	r1 := s.rcrl(2, idT0.Add(24*hour+time.Minute), 24*hour)
+	cs := s.c.EvaluateStatus(s.ac, s.a, s.snap(c1, c2, cL, r0, r1), per)
+	if !cs.Final() || !cs.Certs[0].Final() || !cs.Certs[1].Final() {
+		t.Fatalf("every certificate final: %+v", cs)
+	}
+	rMid := s.rcrl(3, idT0.Add(30*min), 24*hour)
+	if cs2 := s.c.EvaluateStatus(s.ac, s.a, s.snap(c1, c2, cL, r0, rMid), per); cs2.Final() || cs2.Err() != nil || cs2.Certs[1].Tier != audit.TierProvisional {
+		t.Fatalf("the intermediate only provisional: final %v err %v", cs2.Final(), cs2.Err())
+	}
+	if s.eval(s.snap(c1, c2, cL), audit.StatusParams{}).Final() {
+		t.Fatal("a chain with no status for the intermediate was final")
 	}
 }
 
@@ -1269,7 +1325,7 @@ func TestLiveRefusesFutureDatedCRL(t *testing.T) {
 // L2: publication jitter inside the tolerance is not a gap; beyond it is.
 func TestCoverageTolerance(t *testing.T) {
 	s := newStFx(t)
-	p := audit.StatusParams{Interval: 20 * min, W: 5 * min, MinW: 2 * min}
+	p := audit.StatusParams{CAPeriod: 20 * min, W: 5 * min, MinW: 2 * min}
 	c0 := s.lcrl(1, idT0, 10*min)
 	last := func(delay time.Duration) []byte { return s.lcrl(2, idT0.Add(10*min+delay), 30*min) }
 	if st := s.leafStatus(s.snap(c0, last(30*time.Second)), p); st.Tier != audit.TierFinal {
@@ -1293,7 +1349,7 @@ func TestCoverageTolerance(t *testing.T) {
 		t.Fatalf("a second beyond interval + tolerance: %+v", st)
 	}
 	// An undeclared interval is not "zero": CRLs seconds apart are not shown contiguous either.
-	p.Interval = 0
+	p.CAPeriod = 0
 	p.W, p.MinW = time.Second, time.Millisecond // so that only the missing interval stands in the way
 	near := s.lcrl(2, idT0.Add(10*time.Second), 30*min)
 	if st := s.c.EvaluateStatus(s.ac, s.a, s.snap(s.lcrl(1, idT0, 25*min), near), p).Certs[0]; st.Tier == audit.TierFinal {
@@ -1307,7 +1363,7 @@ func TestCaveatAlwaysStated(t *testing.T) {
 	c0 := s.lcrl(1, idT0, 3*hour)
 	late := s.inter.NewCRL(t, testca.CRLOpts{Number: 2, ThisUpdate: idT0.Add(140 * min), NextUpdate: idT0.Add(170 * min),
 		Extra: []pkix.Extension{ext(asn1.ObjectIdentifier{2, 5, 29, 60}, false, genTime(t, idT0.Add(-24*hour)))}})
-	st := s.leafStatus(s.snap(c0, late), audit.StatusParams{Interval: 3 * hour, W: 10 * min, MinW: 5 * min})
+	st := s.leafStatus(s.snap(c0, late), audit.StatusParams{CAPeriod: 3 * hour, W: 10 * min, MinW: 5 * min})
 	if !st.Unbounded || st.Caveat != "revocations first reported after S are not covered" {
 		t.Fatalf("%+v", st)
 	}
@@ -1397,5 +1453,82 @@ func TestMalformedCRLCatalogue(t *testing.T) {
 	_, err := audit.NewStatusSnapshot().AddCRL(s.inter.RawCRL(t, o))
 	if err == nil || !strings.Contains(err.Error(), "profile") {
 		t.Fatalf("sha-1: %v", err)
+	}
+}
+
+// Eviction is visible: a verdict that needed an evicted CRL says so and is at most provisional, and an
+// audit tool can ask for an unbounded snapshot.
+func TestEvictionIsVisible(t *testing.T) {
+	s := newStFx(t)
+	mk := func(opts ...audit.SnapshotOption) *audit.StatusSnapshot {
+		sn := audit.NewStatusSnapshot(opts...)
+		for i := 0; i < 6; i++ {
+			if _, err := sn.AddCRL(s.lcrl(int64(i+1), idT0.Add(time.Duration(i)*10*min), 20*min)); err != nil {
+				t.Fatal(err)
+			}
+		}
+		return sn
+	}
+	p := audit.StatusParams{CAPeriod: 10 * min, W: 20 * min, MinW: 10 * min}
+	whole := mk(audit.WithUnboundedCRLs())
+	if whole.Evicted() != 0 || whole.Len() != 6 {
+		t.Fatalf("unbounded: %d held, %d evicted", whole.Len(), whole.Evicted())
+	}
+	if st := s.leafStatus(whole, p); !st.Final() || st.EvictionGap {
+		t.Fatalf("unbounded: %+v", st)
+	}
+	small := mk(audit.WithMaxCRLs(3))
+	if small.Evicted() != 3 {
+		t.Fatalf("evicted %d", small.Evicted())
+	}
+	st := s.leafStatus(small, p)
+	if !st.EvictionGap || st.Final() || st.Tier == audit.TierFinal || st.Warning == "" {
+		t.Fatalf("a verdict that needed evicted CRLs: %+v", st)
+	}
+	// A verdict that does not reach back to what was evicted is unaffected: decide at a later A.
+	later := newStFxAt(t, idT0.Add(45*min))
+	if st := later.leafStatus(small, p); st.EvictionGap {
+		t.Fatalf("a later decision does not need the evicted CRLs: %+v", st)
+	}
+}
+
+// The declared CA period is checked against what the series shows.
+func TestObservedGapWarning(t *testing.T) {
+	s := newStFx(t)
+	c0 := s.lcrl(1, idT0, 3*hour)
+	c1 := s.lcrl(2, idT0.Add(45*min), 3*hour)
+	st := s.leafStatus(s.snap(c0, c1), audit.StatusParams{CAPeriod: 20 * min, W: 10 * min, MinW: 5 * min})
+	if !strings.Contains(st.Warning, "gap") || st.Final() {
+		t.Fatalf("%+v", st)
+	}
+	ok := s.leafStatus(s.snap(c0, s.lcrl(2, idT0.Add(15*min), 3*hour)), audit.StatusParams{CAPeriod: 20 * min, W: 10 * min, MinW: 5 * min})
+	if ok.Warning != "" {
+		t.Fatalf("a series inside the declared period warned: %+v", ok)
+	}
+}
+
+// With issuers configured an algorithm outside the profile is refused before any entry is parsed, and
+// RSA-PSS is verified from its parameters.
+func TestAuthenticatedIntakeAlgorithms(t *testing.T) {
+	s := newStFx(t)
+	sn := func() *audit.StatusSnapshot { return audit.NewStatusSnapshot(audit.WithIssuers(s.inter.Cert)) }
+	this, next := s.a.Add(time.Second), s.a.Add(hour)
+	sha1 := asn1.ObjectIdentifier{1, 2, 840, 10045, 4, 1}
+	bad := s.inter.RawCRL(t, testca.RawCRLOpts{Number: big.NewInt(1), This: this, Next: next, InnerAlg: sha1, OuterAlg: sha1,
+		Entries: []testca.RawEntry{{Serial: big.NewInt(5), Time: this, Exts: []pkix.Extension{{Id: asn1.ObjectIdentifier{2, 5, 29, 29}, Critical: true, Value: []byte{0x30, 0x00}}}}}})
+	_, err := sn().AddCRL(bad)
+	if err == nil || !strings.Contains(err.Error(), "outside the profile") {
+		t.Fatalf("SHA-1 with issuers configured must be refused for the algorithm, before the entries: %v", err)
+	}
+	// RSA-PSS: accepted when the issuer made it, refused when another key did.
+	rsaRoot := testca.NewRoot(t, "rsa root", testca.Opts{Key: testca.RSA3072, SigAlg: x509.SHA256WithRSAPSS})
+	pss := rsaRoot.NewCRL(t, testca.CRLOpts{Number: 1, ThisUpdate: this, NextUpdate: next, SigAlg: x509.SHA256WithRSAPSS})
+	if _, err := audit.NewStatusSnapshot(audit.WithIssuers(rsaRoot.Cert)).AddCRL(pss); err != nil {
+		t.Fatalf("PSS by the configured issuer: %v", err)
+	}
+	other := testca.NewRoot(t, "rsa root", testca.Opts{Key: testca.RSA3072, SigAlg: x509.SHA256WithRSAPSS})
+	_, err = audit.NewStatusSnapshot(audit.WithIssuers(other.Cert)).AddCRL(pss)
+	if err == nil || !strings.Contains(err.Error(), "configured issuer") {
+		t.Fatalf("PSS by another key: %v", err)
 	}
 }

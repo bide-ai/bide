@@ -339,7 +339,7 @@ short-lived certificates this design recommends. So, for a certificate `C` and a
   `provisional (short window)`, whatever the tier would otherwise be); and **the series has coverage
   from `A(d)` to `S`**: the latest CRL issued at or before `A(d)` reaches `A(d)` by its `nextUpdate`, and each
   later CRL up to the one at `S` follows its predecessor within the predecessor's `nextUpdate` **and within
-  the CA's declared issuance interval** (policy value `Interval`, per issuing CA if it differs; or, for a CA
+  the CA's declared issuance period** (the policy value `CAPeriod`, per issuing CA if it differs, the same value that bounds `ExecStatusAge`; or, for a CA
   that numbers every CRL consecutively, each CRL number is the previous plus one, a flag off by default;
   a small tolerance absorbs publication jitter). `nextUpdate` alone does not show that nothing lies
   between two CRLs, because a CA may issue before it (hourly issue, 24 hour validity): a producer
@@ -365,8 +365,14 @@ short-lived certificates this design recommends. So, for a certificate `C` and a
   **provisional** iff the best usable status has `S < A(d) + W'`, or `W' < MinW`, or coverage has a gap,
   and a later usable one could still exist; **no information** iff no status falls in `[A(d), L(C)]`, which
   is `not verified: status missing`. **Live counting** may use a fresh CRL issued before `A(d)` (so
-  a decision is not held for a CRL period); such status is `provisional` and never `final`, and a CRL
-  dated more than a tolerance in the future is not fresh. The kit-hash record is tamper evidence (the bundle was
+  a decision is not held for a CRL period), but only when the caller asks for it explicitly
+  (`CountLive`, which needs `Now`); passing `Now` alone applies freshness and never relaxes
+  `thisUpdate >= A(d)`. Such status is `provisional` and never `final`, and its `Basis` says "live count:
+  status issued before the decision (provisional only)". A CRL dated more than a tolerance in the future
+  is not fresh. An evaluation whose `Err()` is nil has usable status and no revocation; it is **verified
+  only if `Final()`**. The snapshot is bounded (a refresher) or unbounded (an audit tool); eviction is
+  counted and a verdict that needed an evicted CRL says so and is at most provisional. A series whose
+  observed gap exceeds the declared `CAPeriod` carries a warning. The kit-hash record is tamper evidence (the bundle was
   not changed after it was assembled), **not completeness evidence**. A pilot CA is checked for its number
   scheme and prune timing before go-live (test plan item 32). Every verdict that rests on status
   states that "revocations first reported after `S` are not covered", whether or not expired entries
@@ -1180,6 +1186,12 @@ against code settled points the text left open, each stated in the rule above so
 when a CRL after `notAfter` is `L(C)`; finality for a certificate unexpired at `S` (the user's decision of
 2026-10-15, one switch in code, `finalityNeedsLC`, kept so the earlier reading can be exercised in tests);
 and rolled-back CRL numbers.
+
+**Requirements this puts on the later changes (v4 decision, gate, audit).** The `approval-identity` record
+stores, for each counted decision, the tier, `S` and the basis, not just "counted". The offline verifier
+recomputes the verdict with `Now` zero and never inherits a live tier from the record. The run viewer and
+`bide approve -list` never show a verified or green state for a provisional or live-count decision: they
+show the tier, its basis and `S`, and "provisional" is visibly not "verified".
 
 Every step updates the guides it touches. The approvals guide states the post-quantum gap (decision 15: a
 certificate-bound approver gives up the hybrid scheme's protection) where it first describes
