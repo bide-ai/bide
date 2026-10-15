@@ -773,8 +773,8 @@ client certificate enforces the binding; it must be idempotent), so a client tha
 a pool of its own (`WithMaxReaders`: 32 overall, 4 per client, each under `WithReadTimeout`, 10 s), and
 only afterwards does the request take a slot for work on the journal. A client that stalls costs one
 reader for that long and starves nothing that is working. Set `http.Server.ReadHeaderTimeout`
-too: it bounds the headers, before the handler runs. Rate limits apply before anything is read: per client (2 a second, burst 10) and over all
-clients (50 a second, burst 100), with the client the host of `RemoteAddr` (an IPv6 address standing for its /64) unless `WithClientKey`
+too: it bounds the headers, before the handler runs. Rate limits apply before anything is read: per client (2 a second, burst 10, `WithRateLimit`) and over all
+clients (50 a second, burst 100, `WithGlobalRateLimit`; a rate of 0 turns either off), with the client the host of `RemoteAddr` (an IPv6 address standing for its /64) unless `WithClientKey`
 names one (**behind a reverse proxy or load balancer set it**: otherwise every client is the proxy
 and shares one bucket; read only the header the proxy overwrites); past `WithMaxClients` new clients
 share one bucket, so a flood of sources is limited as one. At most `WithMaxInFlight` (16) requests
@@ -838,6 +838,44 @@ is refused (422 `single_gate`); a plan flow node's gate (a call id starting `nod
 `OnRecorded` is an accelerator: a run waiting on a decision is also re-driven by `agent.RecoverLoop`,
 and a hook is dropped (and reported) when `WithMaxInFlight` hooks are already running.
 
+**Shutdown.** The `OnRecorded` hooks run after a decision is recorded and may outlive the request. To stop
+gracefully, stop the `http.Server` first and then call `h.Wait()`, which returns once the hooks running now
+have returned.
+
+### Evaluating a gate yourself
+
+A service that tells approvers whether a call still waits (a queue, a dashboard, a bot) should not count
+decisions on its own: `agent.EvaluateGate` reads the journal's records, the policy the tool is built with now
+and the approver verifiers exactly as the agent's gate and the intake do, and records nothing. It returns
+an `agent.GateStanding` whose `Status` is `GateWaiting`, `GateDecided`, `GateSingle`, `GateUngated` or
+`GateMisconfigured`, with the tally, how each decision was classified and `Reason`, why a waiting gate asks
+again. A plan flow node's gate is evaluated with `agent.EvaluateGateAfter`.
+
+<!-- docsnip: setup ctx context.Context; journal *agent.Journal; verifierFor agent.ApproverVerifierFor; policy *agent.ApprovalPolicy; sub agent.ApprovalSubject; returns error -->
+```go
+recs, err := journal.History(ctx, sub.RunID)
+if err != nil {
+	return err
+}
+st := agent.EvaluateGate(recs, sub, policy, verifierFor)
+switch st.Status {
+case agent.GateWaiting:
+	fmt.Printf("%d of %d approvals; asks again: %q\n", st.Tally.Approved, st.Tally.Need, st.Reason)
+case agent.GateDecided:
+	fmt.Println("decided")
+case agent.GateMisconfigured:
+	fmt.Println("the gate cannot be enforced:", st.Err)
+}
+```
+
+`agent.GateReask(tally, excludePrincipal)` is the rule for the `Reason`: it returns why a gate asks again
+instead of acting on a recorded tally (`agent.PendingReapproval` when the tally predates the decision format,
+`agent.PendingSoDReapproval` when it passed without excluding a requester the policy now excludes), or
+`""`. Use it when you have a recorded tally and only the fact that the gate excludes the requester, not a
+policy object. A decision record's name is `agent.DecisionStep(d)`; `agent.HeldDecisionStep` finds the
+record that holds a decision whatever its signature bytes, and `agent.IsDecisionStepName` says whether a
+name has the shape of one.
+
 ## Approving in the browser
 
 For an approver with no `bide` binary, the intake has a browser page: an approver opens a link from a
@@ -866,7 +904,9 @@ modes, and the page says which one it is in:
   gives the same bytes, with a `SHA256SUMS` you check with `sha256sum -c` against the signed
   `approve-page.SHA256SUMS` every release publishes; see [Verifying releases](../trust/verify-releases.md#verify-the-approve-page-bundle)), put it on **a dedicated origin that serves nothing else** (the key lives in that origin's
   IndexedDB, so every script on the origin can use it), and add `config.json` next to it,
-  `{"intake": "https://app.example.com/approvals"}`. Serve it with the policy `approvals.PageCSP(intakeOrigin)`
+  `{"intake": "https://app.example.com/approvals"}`. From Go, `approvals.PageFiles()` returns the files and
+  `approvals.PageSHA256()` their SHA-256 sums (what `approvepage` writes and a release publishes), for a
+  server that embeds the bundle and checks it at start-up. Serve it with the policy `approvals.PageCSP(intakeOrigin)`
   returns. Subresource Integrity in `index.html` pins the script and the stylesheet, but cannot pin the
   entry document itself: pin that by the published hash, checked when you deploy, and review an update
   before you deploy it. On the application, `approvals.WithCORS("https://approve.example.com")` lets that
@@ -965,5 +1005,11 @@ tampered file and one with a decision left out. `examples/approval/flow` does th
 plan flow node loaded from a config (`go run ./flow`), and `examples/approval/makerchecker` shows
 separation of duties: the requester's own approval is recorded but never counts, and the audit
 proves who requested without the run's input (`go run ./makerchecker`).
+
+`examples/intake` (`go run ./examples/intake`, no API key) mounts the intake as above: `WithGatePolicy`,
+`WithAuth` (a bearer token bound to the approver a decision names), `WithPage` and `OnRecorded`, over a
+journal an `audit.AuditedStore` signs. Three approvers sign through it with their own keys, the requester's
+decision is recorded and not counted, a token that decides for another approver is refused, the refund runs
+once, and the receipt the intake returned is checked against the signed heads. Its test checks each of those.
 
 The design and its tradeoffs are in [docs/design/design-mofn-approval.md](../design/design-mofn-approval.md).

@@ -278,6 +278,7 @@ the approver's claim.
 - **Claude's extended thinking works with tools.** Thinking signatures are kept across turns, which the API requires when thinking and tool use are combined.
 - **Tool schemas per provider.** A tool's schema is generated once from its Go type and emitted in each provider's dialect, including OpenAI strict mode and Gemini's subset.
 - **Model adapters.** Native Claude and Gemini, plus any OpenAI-compatible endpoint (OpenAI, Ollama, DeepSeek, Groq, OpenRouter, vLLM, Azure, xAI) via `WithBaseURL`.
+- **Postgres without DDL rights.** `bide migrate` creates or checks the schema as its owner, and `postgres.WithoutMigration` opens the store verifying it instead of creating it, so the service role needs no `CREATE`. See the [Postgres guide](docs/guides/postgres.md).
 - **Failover across nodes.** With Postgres, any node can resume any run. A per-run lease stops two nodes driving the same run, and `agent.RecoverLoop` picks up a crashed node's runs when its lease expires.
 
 **Builders** add the library to their own module: `go get github.com/bide-ai/bide/agent`. Then read [Getting started](docs/getting-started.md), take [the tour](docs/tour.md) of the API, and see the [docs index](docs/README.md).

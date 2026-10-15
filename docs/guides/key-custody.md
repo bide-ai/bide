@@ -171,7 +171,8 @@ change which key signs. It refuses any key that is not of the scheme's spec with
 signing algorithm (`awskms.ErrNoEd25519`, `awskms.ErrNoP256`). For Ed25519 that is `ECC_NIST_EDWARDS25519` and `ED25519_SHA_512`. KMS signs with `ED25519_SHA_512` over the raw
 message (`MessageType` `RAW`), which is pure Ed25519 as RFC 8032 defines it. Like the PKCS#11 signer, it
 signs once at `Open` (one billed request; it also catches a missing `kms:Sign` permission) and verifies each signature against the public key before returning it. Each KMS call has a timeout
-(`Config.Timeout`, default 30 seconds).
+(`Config.Timeout`, default 30 seconds). `Config.GrantTokens` (optional) are passed to `GetPublicKey` and
+`Sign`, for a signer whose permission on the key comes from a KMS grant, so that it applies before the grant has propagated.
 
 The AWS signer is tested two ways in bide's CI, and never against AWS. A fake KMS client holds an Ed25519
 or P-256 key and enforces the call shape KMS documents (key ARN, algorithm, `RAW` or `DIGEST`, the size
@@ -409,6 +410,10 @@ Credentials come from `azidentity` and never from a flag or a field holding a se
 `azidentity.NewDefaultAzureCredential` (workload identity, managed identity, the Azure CLI, the `AZURE_CLIENT_*`
 environment); set `Config.Credential` to pin a specific `azidentity` credential, for example a managed identity
 credential for one identity.
+
+The vault or Managed HSM host in `KeyID` must end in one of the Azure public cloud, Azure China or Azure US
+Government Key Vault or Managed HSM suffixes, and `Open` refuses any other host. `Config.HostSuffixes` replaces
+that list with your own DNS suffixes, for a cloud outside it such as Azure Stack Hub.
 
 What `Open` checks, and refuses with a typed error:
 
