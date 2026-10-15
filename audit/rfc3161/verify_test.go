@@ -614,6 +614,8 @@ func dirName(cn string) []byte {
 // certificate, a disagreeing SHA-1 signingCertificate, and repeated PSS parameters.
 var pkiCases = []negCase{
 	{"tsa directoryName differs from the certificate", kitOpts{}, func(s *tokSpec) { s.tsaRaw = ctx(0, ctx(4, dirName("someone else"))) }, ReasonTSAName},
+	{"tsa dNSName differs from the SAN", kitOpts{dnsNames: []string{"tsa.example.test"}}, func(s *tokSpec) { s.tsaRaw = ctx(0, tlv(0x82, []byte("other.example.test"))) }, ReasonTSAName},
+	{"tsa directoryName differs from the SAN directoryName", kitOpts{sanDirName: dirName("san name")}, func(s *tokSpec) { s.tsaRaw = ctx(0, ctx(4, dirName("not it"))) }, ReasonTSAName},
 	{"tsa dNSName absent from the certificate", kitOpts{}, func(s *tokSpec) { s.tsaRaw = ctx(0, tlv(0x82, []byte("tsa.example.test"))) }, ReasonTSAName},
 	{"tsa name of an unsupported form", kitOpts{}, func(s *tokSpec) {
 		s.tsaRaw = ctx(0, ctx(0, oidDER(asn1.ObjectIdentifier{1, 2, 3}), ctx(0, octets([]byte{1}))))
@@ -650,6 +652,7 @@ func TestPKIAssessmentAccepted(t *testing.T) {
 	}{
 		{"tsa directoryName equals the subject", kitOpts{}, func(s *tokSpec) { s.tsaRaw = ctx(0, ctx(4, s.kit.tsa.RawSubject)) }},
 		{"tsa dNSName in the SAN", kitOpts{dnsNames: []string{"tsa.example.test"}}, func(s *tokSpec) { s.tsaRaw = ctx(0, tlv(0x82, []byte("TSA.example.test"))) }},
+		{"tsa directoryName equals a SAN directoryName", kitOpts{sanDirName: dirName("san name")}, func(s *tokSpec) { s.tsaRaw = ctx(0, ctx(4, dirName("san name"))) }},
 		{"key usage nonRepudiation only", kitOpts{keyUsage: x509.KeyUsageContentCommitment}, nil},
 		{"key usage signature and certSign", kitOpts{keyUsage: x509.KeyUsageDigitalSignature | x509.KeyUsageCertSign}, nil},
 	}

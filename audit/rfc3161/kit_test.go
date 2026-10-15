@@ -131,7 +131,8 @@ type kitOpts struct {
 	keyUsage       x509.KeyUsage // zero means digitalSignature
 	tsaIsCA        bool
 	dnsNames       []string
-	ski            bool // give the TSA certificate a subject key id (needed for SKI signer ids)
+	sanDirName     []byte // a directoryName subjectAltName (Name DER)
+	ski            bool   // give the TSA certificate a subject key id (needed for SKI signer ids)
 }
 
 type kit struct {
@@ -174,6 +175,9 @@ func newKit(t testing.TB, o kitOpts) *kit {
 	if o.keyUsage != 0 {
 		tsaT.KeyUsage = o.keyUsage
 	}
+	if o.sanDirName != nil {
+		tsaT.ExtraExtensions = append(tsaT.ExtraExtensions, pkix.Extension{Id: oidSAN, Value: seq(ctx(4, o.sanDirName))})
+	}
 	if o.tsaIsCA {
 		tsaT.IsCA, tsaT.BasicConstraintsValid = true, true
 	}
@@ -186,7 +190,7 @@ func newKit(t testing.TB, o kitOpts) *kit {
 			ekus = []asn1.ObjectIdentifier{oidKPTimeStamping}
 		}
 		val, _ := asn1.Marshal(ekus)
-		tsaT.ExtraExtensions = []pkix.Extension{{Id: oidExtKeyUsage, Critical: !o.ekuNotCritical, Value: val}}
+		tsaT.ExtraExtensions = append(tsaT.ExtraExtensions, pkix.Extension{Id: oidExtKeyUsage, Critical: !o.ekuNotCritical, Value: val})
 	}
 	der, err = x509.CreateCertificate(rand.Reader, tsaT, k.root, k.tsaKey.Public(), k.rootKey)
 	if err != nil {
