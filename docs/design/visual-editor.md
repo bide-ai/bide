@@ -143,7 +143,7 @@ classifier covers less than the rule needs. Each of these is a way to make a flo
 | G3 | Add an arm or edge that routes around a gated node | The guide says it plainly: the check compares each node's gate and does not reason about paths. The path-level answer exists (`ConfigReport.Gated`, and the `every path to X passes approval` assertions) but the diff does not compare it between versions |
 | G4 | Change a node's `block` to one whose Go registration declares no gate | From the command line only gates the config states are known, so the gate the old block declared in Go is invisible on both sides. With a Registry on both sides the gates are known |
 
-G1 to G3 are classifier gaps and are prerequisites for the editor (phase 1 needs them, see the phased plan).
+G1 to G3 are classifier gaps and are prerequisites for the editor (phase 1 needs them, see the phased plan). Status: being fixed in a separate pull request (in progress).
 G4 is inherent to the structural mode and the editor must say so on the node (see "Structural mode and Go-declared gates").
 
 ## Where it runs
@@ -652,7 +652,7 @@ Each phase is one or more pull requests, each with its docs, changelog fragment 
 - **Phase 0, the engine spike.** The `flowedit` engine with the operations for a node's fields and
   a gate, against the corpus, with property tests and the formatting metric, and no interface.
   Exit: a go or no-go on splicing against the re-emit fallback, decided with numbers
-  (decision 3). In parallel, **prerequisite P1**: the classifier covers G1 to G3 in
+  (decision 3). In parallel, **prerequisite P1** (in progress, in a separate pull request): the classifier covers G1 to G3 in
   `internal/runview`, with the CI flag, tests and docs (this is useful to `bide check -diff` users
   on its own, with or without an editor).
 - **Phase 1, the smallest useful editor.** `bide edit flow.yaml`: the canvas and outline (read),
@@ -717,10 +717,8 @@ matches what `Load` resolves.
 
 ## Decisions for the maintainer
 
-1. **Where it runs.** Build `bide edit` as a loopback command with a host-agnostic front end; do
-   not build a hosted editor; defer a Wails desktop app until users ask for a window (it would be
-   a separate module reusing the same handler, with its own security review of file access).
-   Recommend yes. The cost of waiting is that users without a browser habit get no native dialog.
+1. **Local only.** Build `bide edit` as a loopback command with a host-agnostic front end, and do
+   not build a hosted editor. Recommend yes.
 2. **Where the engine lives.** A new nested module `flowedit` (needs a YAML dependency; the root
    stays dependency-free; one more module to tag) rather than inside `cmd/bide`. Recommend the new
    module, because only it lets a Go program embed typed mode.
@@ -747,3 +745,9 @@ matches what `Load` resolves.
     from the `bide_audit_only` build. Recommend yes.
 11. **First release.** Phase 1 as described (the accountability editor, structural mode), after
     phase 0 and P1, rather than structure editing first. Recommend yes.
+12. **Wails desktop app.** Defer it: start with `bide edit` and the host-agnostic front end, and
+    add a Wails wrapper (a separate module reusing the same handler, with its own security review
+    of file access) only if users ask for a window. Recommend deferring, not rejecting. The cost
+    of waiting is that people who do not want a browser tab get no native file dialog; the cost
+    of building now is per-OS builds, signing and notarization, three webview engines to test,
+    bank endpoint approval of a new desktop product, and a larger dependency tree.
