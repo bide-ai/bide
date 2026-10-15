@@ -206,6 +206,27 @@ func TestStructureRefusals(t *testing.T) {
 		{"trailing bytes inside signed data", func(s *tokSpec) { s.sdExtra = tlv(0x05, nil) }, ReasonMalformed},
 		{"malformed unsigned attributes", func(s *tokSpec) { s.unsigned = ctx(1, []byte{0x30, 0x05, 0x01}) }, ReasonNotDER},
 		{"unsigned attributes not a set of sequences", func(s *tokSpec) { s.unsigned = ctx(1, tlv(0x04, []byte{1})) }, ReasonMalformed},
+		{"signer version 1 with a subject key id", func(s *tokSpec) { s.sidSKI = true; s.siVersion = 1 }, ReasonSignerVersion},
+		{"unknown signer identifier with version 2", func(s *tokSpec) { s.sidRaw = tlv(0x82, []byte{1}); s.siVersion = 2 }, ReasonSignerVersion},
+		{"issuerAndSerialNumber with three elements", func(s *tokSpec) {
+			c := s.kit.tsa
+			s.sidRaw = seq(c.RawIssuer, bigDER(c.SerialNumber), intDER(1))
+		}, ReasonMalformed},
+		{"tstinfo trailing bytes", func(s *tokSpec) {
+			s.defaults()
+			s.tstRaw = append(s.tstInfo(), 0)
+		}, ReasonTrailingBytes},
+		{"ordering FALSE spelled out", func(s *tokSpec) { s.orderingRaw = []byte{1, 1, 0} }, ReasonNotDER},
+		{"ordering with a non-DER true", func(s *tokSpec) { s.orderingRaw = []byte{1, 1, 1} }, ReasonNotDER},
+		{"accuracy seconds that overflow to zero", func(s *tokSpec) { s.accuracy = seq(bigDER(new(big.Int).Lsh(big.NewInt(1), 55))) }, ReasonAccuracy},
+		{"accuracy above a day by its millis", func(s *tokSpec) { s.accuracy = seq(intDER(86400), ctxP(0, []byte{0x01})) }, ReasonAccuracy},
+		{"accuracy millis not minimal", func(s *tokSpec) { s.accuracy = seq(ctxP(0, []byte{0x00, 0x05})) }, ReasonNotDER},
+		{"accuracy millis zero", func(s *tokSpec) { s.accuracy = seq(ctxP(0, []byte{0x00})) }, ReasonAccuracy},
+		{"genTime with a ten-digit fraction", func(s *tokSpec) { s.genTime = s.genTime[:14] + ".0000000001Z" }, ReasonGenTimeFormat},
+		{"genTime without Z", func(s *tokSpec) { s.genTime = s.genTime[:14] + "X" }, ReasonGenTimeFormat},
+		{"genTime on a day that does not exist", func(s *tokSpec) { s.genTime = "20260230120000Z" }, ReasonGenTimeFormat},
+		{"genTime at hour 24", func(s *tokSpec) { s.genTime = "20261015240000Z" }, ReasonGenTimeFormat},
+		{"genTime in month 13", func(s *tokSpec) { s.genTime = "20261301120000Z" }, ReasonGenTimeFormat},
 		{"tstinfo version 2", func(s *tokSpec) { s.tstVersion = 2 }, ReasonTSTVersion},
 		{"critical tstinfo extension", func(s *tokSpec) {
 			s.tstExt = ctx(1, seq(oidDER(asn1.ObjectIdentifier{1, 2, 3, 9}), []byte{1, 1, 0xff}, octets([]byte{5, 0})))
@@ -301,6 +322,13 @@ func TestSignedAttributeRefusals(t *testing.T) {
 		{"ESS issuer differs", func(s *tokSpec) {
 			s.essIssuer = seq(tlv(0x31, seq(oidDER(asn1.ObjectIdentifier{2, 5, 4, 3}), tlv(0x0c, []byte("other")))))
 		}, ReasonESSMismatch},
+		{"ESS certHash of the wrong length", func(s *tokSpec) { s.essCertHash = bytes.Repeat([]byte{1}, 31) }, ReasonMalformed},
+		{"ESS issuerSerial serial differs", func(s *tokSpec) { s.essSerial = big.NewInt(99) }, ReasonESSMismatch},
+		{"ignored attribute holds a constructed OCTET STRING (BER)", func(s *tokSpec) {
+			s.attrHook = func(a [][]byte) [][]byte {
+				return append(a, seq(oidDER(asn1.ObjectIdentifier{1, 2, 3}), setOf(tlv(0x24, octets([]byte{1})))))
+			}
+		}, ReasonNotDER},
 		{"ESS hash is SHA-1", func(s *tokSpec) { s.essHashAlg = oidSHA1; s.essCertHash = sha1sum(s.kit.tsa.Raw) }, ReasonWeakHash},
 		{"ESS hash is SHA-256 spelled out (DER default)", func(s *tokSpec) { s.essHashAlg = oidSHA256 }, ReasonNotDER},
 		{"ESS hash is MD5", func(s *tokSpec) { s.essHashAlg = oidMD5; s.essCertHash = make([]byte, 16) }, ReasonWeakHash},
@@ -338,6 +366,11 @@ func TestAlgorithmRefusals(t *testing.T) {
 			s.pss = true
 			s.sigParams = pssParams(oidSHA1, 20)
 		}, ReasonWeakHash},
+		{"pss hashes both SHA-384 under a SHA-256 signer digest", kitOpts{tsaKey: kRSA3072}, func(s *tokSpec) {
+			s.pss = true
+			s.sigParams = pssParams(oidSHA384, 48)
+		}, ReasonUnsupportedAlgorithm},
+		{"rsa 1024 signer", kitOpts{tsaKey: kRSA1024}, nil, ReasonWeakKey},
 		{"pss with mismatched mgf hash", kitOpts{tsaKey: kRSA3072}, func(s *tokSpec) {
 			s.pss = true
 			s.sigParams = seq(ctx(0, algNull(oidSHA256)), ctx(1, algID(oidMGF1, algNull(oidSHA384))), ctx(2, intDER(32)))
@@ -387,6 +420,7 @@ func TestImprintRefusals(t *testing.T) {
 			s.imprintAlg = oidSHA384
 			s.imprint = make([]byte, 48)
 		}, ReasonImprintMismatch},
+		{"imprint labelled SHA-384 but holding the expected SHA-256 bytes", func(s *tokSpec) { s.imprintAlg = oidSHA384 }, ReasonImprintMismatch},
 		{"imprint algorithm SHA-1", func(s *tokSpec) { s.imprintAlg = oidSHA1; s.imprint = make([]byte, 20) }, ReasonWeakHash},
 		{"imprint algorithm MD5", func(s *tokSpec) { s.imprintAlg = oidMD5; s.imprint = make([]byte, 16) }, ReasonWeakHash},
 		{"imprint algorithm unknown", func(s *tokSpec) { s.imprintAlg = asn1.ObjectIdentifier{1, 2, 3} }, ReasonUnsupportedAlgorithm},
@@ -570,4 +604,25 @@ func TestUnparsableCertificateRefused(t *testing.T) {
 	bad[10] ^= 0xff
 	f.spec.extraCerts = [][]byte{bad}
 	mustRefuse(t, f.spec.build(t), f.expected(), f.policy(), ReasonMalformed)
+}
+
+// The 2048-bit exception never reaches below 2048.
+func TestRSA2048ExceptionDoesNotCover1024(t *testing.T) {
+	f := newFixture(t)
+	f.kit = newKit(t, kitOpts{tsaKey: kRSA1024})
+	f.spec.kit = f.kit
+	pol := f.policy()
+	pol.RSA2048Until = f.gen.Add(time.Hour)
+	mustRefuse(t, f.spec.build(t), f.expected(), pol, ReasonWeakKey)
+}
+
+// A certificate on the path signed with SHA-1 is refused by name.
+func TestSHA1SignedPathCertificateRefused(t *testing.T) {
+	f := newFixture(t)
+	f.kit = newKit(t, kitOpts{rootKey: kRSA3072, rootSigAlg: x509.SHA1WithRSA})
+	f.spec.kit = f.kit
+	if f.kit.tsa.SignatureAlgorithm != x509.SHA1WithRSA {
+		t.Skip("this Go version does not sign certificates with SHA-1")
+	}
+	mustRefuse(t, f.spec.build(t), f.expected(), f.policy(), ReasonWeakHash)
 }

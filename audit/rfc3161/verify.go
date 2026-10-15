@@ -791,6 +791,12 @@ func verifyChain(signer *x509.Certificate, pool []*x509.Certificate, genTime tim
 	if err != nil {
 		var inv x509.CertificateInvalidError
 		var insecure x509.InsecureAlgorithmError
+		// Go reports a SHA-1 or MD5 signature as an unknown authority with a hint; name it.
+		for _, c := range append([]*x509.Certificate{signer}, pool...) {
+			if r := checkCertSignature(c); r != nil && r.Reason == ReasonWeakHash {
+				return nil, r
+			}
+		}
 		switch {
 		case errors.As(err, &insecure):
 			return nil, refuse(ReasonWeakHash, "a certificate on the path uses an insecure algorithm")
@@ -953,13 +959,10 @@ func checkExtensions(n node) *Refusal {
 			if !isUniversal(fs[1], asn1.TagBoolean) || len(fs[1].Bytes) != 1 {
 				return refuse(ReasonMalformed, "extension critical flag is malformed")
 			}
-			switch fs[1].Bytes[0] {
-			case 0:
-				return refuse(ReasonNotDER, "extension critical flag spells out its default FALSE")
-			case 0xff:
-				return refuse(ReasonCriticalExtension, "TSTInfo carries a critical extension the verifier does not know")
+			if fs[1].Bytes[0] != 0xff { // DER omits the default FALSE and writes TRUE as 0xff
+				return refuse(ReasonNotDER, "extension critical flag is not DER TRUE")
 			}
-			return refuse(ReasonNotDER, "extension critical flag is not DER")
+			return refuse(ReasonCriticalExtension, "TSTInfo carries a critical extension the verifier does not know")
 		}
 		if !isOctets(fs[len(fs)-1]) {
 			return refuse(ReasonMalformed, "extension value is not an OCTET STRING")

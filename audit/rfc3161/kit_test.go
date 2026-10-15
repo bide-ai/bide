@@ -86,11 +86,12 @@ const (
 	kRSA3072 keyKind = "rsa3072"
 	kEd25519 keyKind = "ed25519"
 	kEC521   keyKind = "ec521"
+	kRSA1024 keyKind = "rsa1024"
 )
 
 func genKey(t testing.TB, k keyKind) crypto.Signer {
 	t.Helper()
-	if v, ok := keyCache.Load(k); ok && (k == kRSA2048 || k == kRSA3072) {
+	if v, ok := keyCache.Load(k); ok && (k == kRSA2048 || k == kRSA3072 || k == kRSA1024) {
 		return v.(crypto.Signer)
 	}
 	var s crypto.Signer
@@ -102,6 +103,8 @@ func genKey(t testing.TB, k keyKind) crypto.Signer {
 		s, err = ecdsa.GenerateKey(elliptic.P384(), rand.Reader)
 	case kEC521:
 		s, err = ecdsa.GenerateKey(elliptic.P521(), rand.Reader)
+	case kRSA1024:
+		s, err = rsa.GenerateKey(rand.Reader, 1024)
 	case kRSA2048:
 		s, err = rsa.GenerateKey(rand.Reader, 2048)
 	case kRSA3072:
@@ -124,6 +127,7 @@ type kitOpts struct {
 	ekuNotCritical bool
 	notBefore      time.Time
 	notAfter       time.Time
+	rootSigAlg     x509.SignatureAlgorithm
 	ski            bool // give the TSA certificate a subject key id (needed for SKI signer ids)
 }
 
@@ -152,6 +156,7 @@ func newKit(t testing.TB, o kitOpts) *kit {
 		SerialNumber: big.NewInt(1), Subject: pkix.Name{CommonName: "test tsa root"},
 		NotBefore: o.notBefore.Add(-time.Hour), NotAfter: o.notAfter.Add(24 * time.Hour),
 		IsCA: true, BasicConstraintsValid: true, KeyUsage: x509.KeyUsageCertSign | x509.KeyUsageCRLSign,
+		SignatureAlgorithm: o.rootSigAlg,
 	}
 	der, err := x509.CreateCertificate(rand.Reader, rootT, rootT, k.rootKey.Public(), k.rootKey)
 	if err != nil {
@@ -161,6 +166,7 @@ func newKit(t testing.TB, o kitOpts) *kit {
 	tsaT := &x509.Certificate{
 		SerialNumber: big.NewInt(0x1234567), Subject: pkix.Name{CommonName: "test tsa", Organization: []string{"bide"}},
 		NotBefore: o.notBefore, NotAfter: o.notAfter, KeyUsage: x509.KeyUsageDigitalSignature,
+		SignatureAlgorithm: o.rootSigAlg,
 	}
 	if o.ski {
 		tsaT.SubjectKeyId = []byte{1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19, 20}
@@ -226,6 +232,8 @@ type tokSpec struct {
 	essCertHash  []byte
 	essHashAlg   asn1.ObjectIdentifier
 	essIssuer    []byte // replaces issuer name in issuerSerial
+	essSerial    *big.Int
+	orderingRaw  []byte // replaces the ordering element
 	essNoIssuer  bool
 	essV1Only    bool
 	sigFlip      bool
@@ -321,6 +329,9 @@ func (s *tokSpec) tstInfo() []byte {
 	if s.ordering {
 		parts = append(parts, []byte{1, 1, 0xff})
 	}
+	if s.orderingRaw != nil {
+		parts = append(parts, s.orderingRaw)
+	}
 	if s.nonce != nil {
 		parts = append(parts, bigDER(s.nonce))
 	}
@@ -349,7 +360,11 @@ func (s *tokSpec) essV2() []byte {
 		if s.essIssuer != nil {
 			iss = s.essIssuer
 		}
-		parts = append(parts, seq(seq(ctx(4, iss)), bigDER(c.SerialNumber)))
+		ser := c.SerialNumber
+		if s.essSerial != nil {
+			ser = s.essSerial
+		}
+		parts = append(parts, seq(seq(ctx(4, iss)), bigDER(ser)))
 	}
 	return seq(oidDER(oidAttrSigCertV2), setOf(seq(seq(seq(parts...)))))
 }
