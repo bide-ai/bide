@@ -80,10 +80,6 @@ func Apply(src []byte, op Op) (*Result, error) {
 	if err != nil {
 		return nil, err
 	}
-	want, err := model(src, op)
-	if err != nil {
-		return nil, err
-	}
 	var lo, hi int
 	var frag string
 	switch op.Kind {
@@ -101,19 +97,12 @@ func Apply(src []byte, op Op) (*Result, error) {
 	}
 	out := make([]byte, 0, len(src)-(hi-lo)+len(frag))
 	out = append(append(append(out, src[:lo]...), frag...), src[hi:]...)
-	// The verification: what was spliced is what the operation says.
+	// The verification: the result is the old text with the operation applied, and nothing else.
 	if !bytes.Equal(out[:lo], src[:lo]) || !bytes.Equal(out[lo+len(frag):], src[hi:]) {
 		return nil, refuse("internal: bytes outside the edit changed")
 	}
-	got, err := decode(out)
-	if err != nil {
-		return nil, refuse("the result does not parse (%v)", err)
-	}
-	if !reflect.DeepEqual(got, want) {
-		return nil, refuse("the result does not equal the operation applied to the data")
-	}
-	if _, err := parse(out); err != nil {
-		return nil, refuse("the result is not editable (%v)", err)
+	if err := Verify(src, out, op); err != nil {
+		return nil, err
 	}
 	return &Result{Text: out, Lo: lo, Hi: hi, Frag: []byte(frag)}, nil
 }
@@ -144,9 +133,6 @@ func parse(src []byte) (*doc, error) {
 		// A tab can only be inside a scalar or a comment in valid YAML; the scanners below do not model it.
 		return nil, refuse("tab characters")
 	}
-	if err := checkNodes(n.Content[0]); err != nil {
-		return nil, err
-	}
 	d := &doc{src: src, root: n.Content[0], indent: 2}
 	d.lineStart = append(d.lineStart, 0)
 	for i, c := range src {
@@ -156,6 +142,23 @@ func parse(src []byte) (*doc, error) {
 	}
 	d.indent = d.detectIndent()
 	return d, nil
+}
+
+// plainNode refuses a node the splicer cannot place exactly: an alias, an anchored or tagged node,
+// a block scalar. Only an operation that touches such a node is refused; the rest of the file is
+// edited as usual (the verification catches an edit that changes what an alias means).
+func plainNode(n *yaml.Node) error {
+	switch {
+	case n.Kind == yaml.AliasNode:
+		return refuse("alias")
+	case n.Anchor != "":
+		return refuse("anchor")
+	case n.Style&yaml.TaggedStyle != 0:
+		return refuse("explicit tag")
+	case n.Kind == yaml.ScalarNode && n.Style&(yaml.LiteralStyle|yaml.FoldedStyle) != 0:
+		return refuse("block scalar")
+	}
+	return nil
 }
 
 func checkNodes(n *yaml.Node) error {
@@ -260,6 +263,9 @@ func isFlow(n *yaml.Node) bool { return n.Style&yaml.FlowStyle != 0 }
 
 // end returns the byte offset after n's content (a trailing comment is not content).
 func (d *doc) end(n *yaml.Node, inFlow bool) (int, error) {
+	if err := plainNode(n); err != nil {
+		return 0, err
+	}
 	s := d.start(n)
 	switch n.Kind {
 	case yaml.ScalarNode:
@@ -280,13 +286,15 @@ func (d *doc) end(n *yaml.Node, inFlow bool) (int, error) {
 		if len(n.Content) == 0 {
 			return 0, refuse("empty block collection")
 		}
-		last := n.Content[len(n.Content)-1]
-		return d.end(last, false)
+		return d.entryEnd(n, len(n.Content)-1, false)
 	}
 	return 0, refuse("node kind")
 }
 
 func (d *doc) scalarEnd(n *yaml.Node, s int, inFlow bool) (int, error) {
+	if err := plainNode(n); err != nil {
+		return 0, err
+	}
 	if n.Value == "" && n.Style == 0 {
 		return 0, refuse("empty value")
 	}
@@ -418,7 +426,7 @@ func (d *doc) locate(path []any) (loc, error) {
 			}
 			found := false
 			for i := 0; i < len(n.Content); i += 2 {
-				if n.Content[i].Value == p {
+				if n.Content[i].Kind == yaml.ScalarNode && n.Content[i].Value == p {
 					cur = loc{node: n.Content[i+1], parent: n, key: n.Content[i], idx: i + 1, inFlow: flow}
 					found = true
 					break
@@ -509,7 +517,7 @@ func (d *doc) del(op Op) (lo, hi int, frag string, err error) {
 func (d *doc) delEntry(p, ck, first *yaml.Node, flow bool, step, firstIdx int) (int, int, string, error) {
 	n := len(p.Content) / step
 	k := firstIdx / step
-	valEnd, err := d.end(p.Content[firstIdx+step-1], flow)
+	valEnd, err := d.entryEnd(p, firstIdx+step-1, flow)
 	if err != nil {
 		return 0, 0, "", err
 	}
@@ -517,9 +525,27 @@ func (d *doc) delEntry(p, ck, first *yaml.Node, flow bool, step, firstIdx int) (
 	if flow {
 		switch {
 		case k+1 < n:
-			return s, d.start(p.Content[(k+1)*step]), "", nil
+			next := d.start(p.Content[(k+1)*step])
+			if d.lineOf(next) == d.lineOf(valEnd-1) {
+				return s, next, "", nil // the next entry starts on the line this one ends on
+			}
+			after := valEnd
+			for after < len(d.src) && d.src[after] == ' ' {
+				after++
+			}
+			if after < len(d.src) && d.src[after] == ',' {
+				after++
+			}
+			for after < len(d.src) && d.src[after] == ' ' {
+				after++
+			}
+			ls := d.lineStart[d.lineOf(s)]
+			if len(bytes.TrimLeft(d.src[ls:s], " ")) == 0 && after < len(d.src) && d.src[after] == '\n' {
+				return ls, after + 1, "", nil // the entry has its own lines: remove them
+			}
+			return s, after, "", nil
 		case k > 0:
-			prevEnd, err := d.end(p.Content[(k-1)*step+step-1], flow)
+			prevEnd, err := d.entryEnd(p, (k-1)*step+step-1, flow)
 			if err != nil {
 				return 0, 0, "", err
 			}
@@ -545,7 +571,11 @@ func (d *doc) delEntry(p, ck, first *yaml.Node, flow bool, step, firstIdx int) (
 	if len(bytes.TrimLeft(prefix, " ")) != 0 {
 		if p.Kind == yaml.MappingNode && k == 0 && n > 1 && strings.HasSuffix(strings.TrimRight(string(prefix), " "), "-") {
 			// The first key of a "- key: v" item: remove it up to the next key, which takes its place.
-			return s, d.start(p.Content[step]), "", nil
+			next := d.start(p.Content[step])
+			if d.lineOf(next) != d.lineOf(valEnd-1)+1 {
+				return 0, 0, "", refuse("comments or blank lines between the first key and the next")
+			}
+			return s, next, "", nil
 		}
 		return 0, 0, "", refuse("entry shares its line with something else")
 	}
@@ -565,6 +595,9 @@ func (d *doc) insert(op Op) (lo, hi int, frag string, err error) {
 		return 0, 0, "", refuse("insert: %v", err)
 	}
 	p := l.node
+	if err := plainNode(p); err != nil {
+		return 0, 0, "", err
+	}
 	flow := isFlow(p)
 	isMap := p.Kind == yaml.MappingNode
 	if !isMap && p.Kind != yaml.SequenceNode {
@@ -572,7 +605,7 @@ func (d *doc) insert(op Op) (lo, hi int, frag string, err error) {
 	}
 	if isMap {
 		for i := 0; i < len(p.Content); i += 2 {
-			if p.Content[i].Value == op.Key {
+			if p.Content[i].Kind == yaml.ScalarNode && p.Content[i].Value == op.Key {
 				return 0, 0, "", refuse("key exists")
 			}
 		}
@@ -602,7 +635,7 @@ func (d *doc) insert(op Op) (lo, hi int, frag string, err error) {
 			at := d.start(p.Content[idx*step])
 			return at, at, item + ", ", nil
 		}
-		e, err := d.end(p.Content[len(p.Content)-1], true)
+		e, err := d.entryEnd(p, len(p.Content)-1, true)
 		if err != nil {
 			return 0, 0, "", err
 		}
@@ -649,7 +682,7 @@ func (d *doc) insert(op Op) (lo, hi int, frag string, err error) {
 
 // afterLast inserts text (whole lines) after the last entry of block collection p.
 func (d *doc) afterLast(p *yaml.Node, text string) (int, int, string, error) {
-	e, err := d.end(p.Content[len(p.Content)-1], false)
+	e, err := d.entryEnd(p, len(p.Content)-1, false)
 	if err != nil {
 		return 0, 0, "", err
 	}
@@ -729,6 +762,12 @@ func (d *doc) delOnly(p, ck, first *yaml.Node, s, valEnd int) (int, int, string,
 		return 0, 0, "", refuse("key colon not found")
 	}
 	kl := d.lineOf(colon)
+	// Only the entry's own comments go with it: a comment above them, inside the collection, stays.
+	for l := kl + 1; l < d.attached(d.lineOf(s)); l++ {
+		if strings.HasPrefix(strings.TrimLeft(d.lineText(l), " "), "#") {
+			return 0, 0, "", refuse("a comment inside the collection that is not the entry's")
+		}
+	}
 	hi := d.lineEnd(d.lineOf(valEnd - 1))
 	if hi < len(d.src) {
 		hi++
@@ -738,4 +777,48 @@ func (d *doc) delOnly(p, ck, first *yaml.Node, s, valEnd int) (int, int, string,
 		return colon + 1, hi, " " + empty + rest, nil
 	}
 	return colon + 1, hi, " " + empty + rest + "\n", nil
+}
+
+// entryEnd returns the offset after the content of p.Content[i]: for the value of a mapping entry
+// that is empty (a null), the colon after its key.
+func (d *doc) entryEnd(p *yaml.Node, i int, flow bool) (int, error) {
+	n := p.Content[i]
+	if p.Kind == yaml.MappingNode && i%2 == 1 && n.Kind == yaml.ScalarNode && n.Value == "" && n.Style == 0 && n.Tag == "!!null" {
+		k := p.Content[i-1]
+		ke, err := d.scalarEnd(k, d.start(k), flow)
+		if err != nil {
+			return 0, err
+		}
+		c := ke
+		for c < len(d.src) && d.src[c] == ' ' {
+			c++
+		}
+		if c >= len(d.src) || d.src[c] != ':' {
+			return 0, refuse("key colon not found")
+		}
+		return c + 1, nil
+	}
+	return d.end(n, flow)
+}
+
+// applyRaw is Apply without the verification, for diagnosing refusals in tests.
+func applyRaw(src []byte, op Op) (string, error) {
+	d, err := parse(src)
+	if err != nil {
+		return "", err
+	}
+	var lo, hi int
+	var frag string
+	switch op.Kind {
+	case Set:
+		lo, hi, frag, err = d.set(op)
+	case Insert:
+		lo, hi, frag, err = d.insert(op)
+	case Delete:
+		lo, hi, frag, err = d.del(op)
+	}
+	if err != nil {
+		return "", err
+	}
+	return string(src[:lo]) + frag + string(src[hi:]), nil
 }

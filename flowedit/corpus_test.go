@@ -317,6 +317,12 @@ func intended(text string, op Op) (span, bool) {
 		rec(x)
 		return l, c
 	}
+	headLo := func(line0 int) int {
+		for line0 > 0 && strings.HasPrefix(strings.TrimLeft(lines[line0-1], " "), "#") {
+			line0--
+		}
+		return line0
+	}
 	nextLine := func(x *yaml.Node) int {
 		l, c := maxStart(x)
 		best := len(lines) + 1
@@ -328,13 +334,7 @@ func intended(text string, op Op) (span, bool) {
 		if best == len(lines)+1 {
 			return len(lines) - 1
 		}
-		return best - 2 // the line before the next node's line (0-based inclusive)
-	}
-	headLo := func(line0 int) int {
-		for line0 > 0 && strings.HasPrefix(strings.TrimLeft(lines[line0-1], " "), "#") {
-			line0--
-		}
-		return line0
+		return headLo(best-1) - 1 // the line before the comments attached to the next node (0-based inclusive)
 	}
 	// locate the node (or container) at the path
 	cur := n.Content[0]
