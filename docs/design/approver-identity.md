@@ -78,11 +78,25 @@ and a **trust set**; the key is whatever key the presented certificate carries.
   (`alice@bank.example`), because Go's chain verification enforces name constraints on email SANs
   and a human identity is naturally an email address. A **URI SAN with a host**
   (`spiffe://bank.example/approver/alice`) is the alternative for non-mailbox identities. A URI with
-  no host (`urn:...`) is not usable: Go cannot match it against name constraints. The Subject DN
-  (`CN`) is **not** used: `crypto/x509` does not enforce directory-name constraints and a CN is
-  free text.
+  no host (`urn:...`) is not usable: with URI name constraints in the chain, Go refuses it ("URI with
+  empty host cannot be matched against constraints"). The Subject DN (`CN`) is **not** used: a CN is
+  free text, and `crypto/x509` does not enforce directory-name constraints (a non-critical one is
+  ignored; a critical one makes the chain fail with "unhandled critical extension", which is safe
+  but protects nothing). These behaviors were run against Go 1.27.0 and are pinned by the tests in
+  `internal/identitycheck` (test plan item 23).
+
+  Two details from those runs shape the rules. A permitted email constraint written `bank.example`
+  also permits subdomains (`alice@evil.bank.example` verifies), unlike RFC 5280's reading, so a CA
+  that must exclude subdomains adds an excluded subtree `.bank.example`, and the design never relies
+  on a permitted subtree alone to pin a domain: the identity map matches the SAN exactly, and the
+  constraints are defense in depth against a CA issuing outside its remit. And `Certificate.Verify`
+  requires the ServerAuth extended key usage when `VerifyOptions.KeyUsages` is empty, so a leaf
+  carrying only the bank's private OID fails; the verifier passes `ExtKeyUsageAny` and checks the
+  required OID itself against `Certificate.UnknownExtKeyUsage` (a leaf with no EKU at all passes
+  `ExtKeyUsageAny`, so the by-hand check requires the OID to be present).
 - Key usage: digital signature. Extended key usage: a bide approver EKU (a private OID the bank
-  assigns, documented in the guide) so a certificate issued for TLS or mail cannot approve. A bank
+  assigns, documented in the guide), checked by hand as above, so a certificate issued for TLS or
+  mail cannot approve. A bank
   that cannot add an EKU may pin `id-kp-emailProtection` (decision left in the open questions of
   the build; the verifier takes the required EKU as a policy value).
 - Not a CA (`basicConstraints` CA false), RSA 2048 or larger, ECDSA P-256 or P-384, or Ed25519 for
@@ -226,9 +240,12 @@ whose `thisUpdate` falls in that range or later.
 ## Revocation
 
 - **CRL** is required and enough. Parsed with `x509.ParseRevocationList`; the CRL signature is
-  checked against the issuing CA certificate of the chain (`CheckSignatureFrom`); entries carry
-  serial, revocation time, reason code, and the invalidity date extension (OID 2.5.29.24, parsed
-  by bide because the stdlib exposes it only as a raw extension). Unrecognized critical extensions,
+  checked against the issuing CA certificate of the chain (`CheckSignatureFrom`, which fails for
+  any other CA); entries carry serial, revocation time and reason code as fields, and the invalidity
+  date extension (OID 2.5.29.24, a GeneralizedTime) is visible only as a raw entry extension that
+  bide parses. `Certificate.Verify` never consults a CRL, so every revocation check is bide's. The
+  delta CRL indicator and the critical flag are visible in `RevocationList.Extensions`, so refusing
+  delta CRLs is possible. Unrecognized critical extensions,
   **delta CRLs** (OID 2.5.29.27) and **partitioned CRLs** (an issuing distribution point that does
   not cover the certificate) are refused in the first version: "status unknown", never "good".
 - **OCSP** is optional, in a separate module so the core does not import
@@ -532,10 +549,20 @@ set and the same reason:
 21. `bide identity fetch-crl` against a local `httptest` server: atomic replace, stale alarm, archive.
 22. migration: observe mode logs would-be verdicts and counts bare; per-approver enforce; switched
     approver's old bare decision does not count.
-23. a stdlib `x509` behavior check, as a test, for each assumption this note relies on: email name
-    constraints enforced, host-less URI SAN rejected under constraints, directory-name constraints
-    not enforced, `VerifyOptions.CurrentTime` honoured, `ParseRevocationList` entry fields. If a Go
-    release changes one, the test says which assumption broke.
+23. a stdlib `x509` behavior check, as a test, for each assumption this note relies on. **They exist
+    in this PR**, in `internal/identitycheck/x509_assumptions_test.go`, run on Go 1.27.0, and fail
+    naming the assumption if a release changes it:
+    `TestEmailNameConstraintsAreEnforced` (permitted and excluded email subtrees, including that a
+    permitted `bank.example` also permits subdomains), `TestURISANConstraints` (a URI host is
+    constrained, a host-less URI is refused), `TestDirectoryNameConstraintsAreNotEnforced`
+    (non-critical ignored, critical refused as unhandled), `TestVerifyAtAPastTime`
+    (`CurrentTime` honoured on both sides of the window), `TestPrivateEKUMustBeCheckedByHand`
+    (the default requires ServerAuth; a private OID needs `ExtKeyUsageAny` plus a by-hand check),
+    `TestUnknownCriticalExtensionIsRefused`, `TestNonCAIntermediateIsRefused`,
+    `TestPathLenIsEnforced`, `TestRevocationListParsing` (entries, reason, times, signature check,
+    raw invalidity date and delta indicator, Verify ignores revocation), `TestCRLIssuerNeedsCRLSign`,
+    `TestEd25519Leaf`, `TestEmailSANIsReturnedAsIssued` (normalization is the verifier's job). The
+    build keeps them as the assumption checks beside the identity verifier's own tests.
 24. fuzzing the certificate and CRL parsers' wrappers (no panic, no accept of malformed input), and
     mutation checks on the counting rule's identity clauses.
 25. model 1b: the configurations above, including the two expected counterexamples (`WithholdCRL`
