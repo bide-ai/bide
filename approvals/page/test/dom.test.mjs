@@ -15,9 +15,19 @@ function el() {
     addEventListener(t, f) { (listeners[t] ??= []).push(f); }, fire(t) { return Promise.all((listeners[t] ?? []).map((f) => f())); } };
 }
 
+// until polls cond every few milliseconds, failing with what it waited for after ten seconds.
+async function until(cond, what) {
+  for (let i = 0; i < 2000; i++) {
+    if (cond()) return;
+    await new Promise((r) => setTimeout(r, 5));
+  }
+  throw new Error(`timed out waiting for ${what}`);
+}
+
 // run loads the page against an endpoint that answers pendingBody, and returns the elements.
-async function run(pendingBody, { href = 'https://app.example/approvals/page/', config = null } = {}) {
+async function run(pendingBody, { href = 'https://app.example/approvals/page/', config = null, delay = 0 } = {}) {
   const els = new Proxy({}, { get: (t, k) => (t[k] ??= el()) });
+  els['call-panel'].hidden = true; // as in the page's markup: it is shown when the call has loaded
   const store = {};
   const indexedDB = { open() {
     const req = {};
@@ -33,16 +43,18 @@ async function run(pendingBody, { href = 'https://app.example/approvals/page/', 
     fetch: async (u, o) => {
       fetched.push({ url: String(u), opts: o });
       if (String(u).endsWith('config.json')) return config ? { ok: true, json: async () => config } : { ok: false };
+      if (delay) await new Promise((r) => setTimeout(r, delay)); // a slow endpoint, or a slow CI runner
       return { ok: true, status: 200, arrayBuffer: async () => new TextEncoder().encode(pendingBody).buffer };
     },
     addEventListener() {}, console, Promise, Array, Map, Set, Math, Date, JSON, Error, Object, String, Number, Symbol, Function, setTimeout, queueMicrotask };
   vm.createContext(ctx);
   vm.runInContext(script, ctx);
-  await new Promise((r) => setTimeout(r, 200));
+  // Wait for the page to finish loading the call (it shows the panel, or says why not), not for a fixed
+  // time: the load is asynchronous (IndexedDB, two fetches, SHA-256), and a slow runner is slower.
+  await until(() => !els['call-panel'].hidden || !['', 'Loading the call...'].includes(els['status'].textContent), 'the page to load the call');
   await els['create-key'].fire('click');
   els['approver'].value = 'ops';
-  await els['approver'].fire('input');
-  await new Promise((r) => setTimeout(r, 50));
+  await els['approver'].fire('input'); // fire resolves when the handlers have, so nothing is left to sleep for
   return { els, fetched, docListeners };
 }
 
@@ -53,6 +65,11 @@ const pendingWith = (args, over = {}) => {
     gate: { need: 2, approvers: ['ops', 'fin', 'risk'], approved: 0, denied: 0, pending: ['ops', 'fin', 'risk'], passed: false, failed: false }, ...over };
   return JSON.stringify(p).replace('"@@"', a);
 };
+
+test('the harness waits for the page to load the call, however long the endpoint takes (no fixed sleep)', async () => {
+  const { els } = await run(pendingWith({ a: 1, zz_destination: 'ATTACKER-ACCT-9999' }), { delay: 600 });
+  assert.ok(els['call-args'].textContent.includes('ATTACKER-ACCT-9999'));
+});
 
 test('every one of the arguments is on display, so Approve never signs what was cut from view', async () => {
   const lines = {};
