@@ -57,7 +57,7 @@ func TestAcceptedVariants(t *testing.T) {
 		}, nil},
 		{"fraction-genTime", kitOpts{}, func(s *tokSpec) { s.genTime = genTimeText(now)[:14] + ".25Z" }, nil},
 		{"non-critical-tstinfo-extension", kitOpts{}, func(s *tokSpec) {
-			s.tstExt = ctx(1, seq(seq(oidDER(asn1.ObjectIdentifier{1, 2, 3, 9}), octets([]byte{5, 0}))))
+			s.tstExt = ctx(1, seq(oidDER(asn1.ObjectIdentifier{1, 2, 3, 9}), octets([]byte{5, 0})))
 		}, nil},
 		{"ordering-true-and-nonce", kitOpts{}, func(s *tokSpec) { s.ordering = true; s.nonce = big.NewInt(77) }, nil},
 		{"token-without-certs-signer-from-policy", kitOpts{}, func(s *tokSpec) { s.noCerts = true }, func(p *Policy) {}},
@@ -204,14 +204,14 @@ func TestStructureRefusals(t *testing.T) {
 		{"signer version 2", func(s *tokSpec) { s.siVersion = 2 }, ReasonSignerVersion},
 		{"no signed attributes", func(s *tokSpec) { s.noSignedAttr = true }, ReasonNoSignedAttrs},
 		{"trailing bytes inside signed data", func(s *tokSpec) { s.sdExtra = tlv(0x05, nil) }, ReasonMalformed},
-		{"malformed unsigned attributes", func(s *tokSpec) { s.unsigned = ctx(1, []byte{0x30, 0x05, 0x01}) }, ReasonMalformed},
+		{"malformed unsigned attributes", func(s *tokSpec) { s.unsigned = ctx(1, []byte{0x30, 0x05, 0x01}) }, ReasonNotDER},
 		{"unsigned attributes not a set of sequences", func(s *tokSpec) { s.unsigned = ctx(1, tlv(0x04, []byte{1})) }, ReasonMalformed},
 		{"tstinfo version 2", func(s *tokSpec) { s.tstVersion = 2 }, ReasonTSTVersion},
 		{"critical tstinfo extension", func(s *tokSpec) {
-			s.tstExt = ctx(1, seq(seq(oidDER(asn1.ObjectIdentifier{1, 2, 3, 9}), []byte{1, 1, 0xff}, octets([]byte{5, 0}))))
+			s.tstExt = ctx(1, seq(oidDER(asn1.ObjectIdentifier{1, 2, 3, 9}), []byte{1, 1, 0xff}, octets([]byte{5, 0})))
 		}, ReasonCriticalExtension},
 		{"explicit false critical flag (not DER)", func(s *tokSpec) {
-			s.tstExt = ctx(1, seq(seq(oidDER(asn1.ObjectIdentifier{1, 2, 3, 9}), []byte{1, 1, 0}, octets([]byte{5, 0}))))
+			s.tstExt = ctx(1, seq(oidDER(asn1.ObjectIdentifier{1, 2, 3, 9}), []byte{1, 1, 0}, octets([]byte{5, 0})))
 		}, ReasonNotDER},
 		{"accuracy beyond a day", func(s *tokSpec) { s.accuracy = seq(intDER(90000)) }, ReasonAccuracy},
 		{"negative accuracy", func(s *tokSpec) { s.accuracy = seq(intDER(-1)) }, ReasonAccuracy},
