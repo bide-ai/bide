@@ -105,6 +105,14 @@ a warning when it discovers the schema. With the schema pinned, the search path 
 **Migrations have no down step, and the only schema version is 1.** A Postgres store or governed
 log schema at another version is refused (`ErrSchemaVersion`), not converted.
 
+**`WithoutMigration` checks the shape of the schema, not who can use it.** A store opened with
+`postgres.WithoutMigration` (or after `bide migrate`) verifies that the tables, columns, indexes and function the
+migration creates are there and unaltered, and refuses a missing schema or another version. It does not check
+privileges, partitioning details, table or index storage options, or the contents of the tables, so a service
+role that was granted `UPDATE`, `DELETE` or `CREATE` is not noticed. Grant the roles as
+[the operations guidance](trust/operations.md#least-privilege-postgres-roles) sets out and check them in your own
+deployment tooling.
+
 **Renaming the Postgres store's schema needs one step.** The `bide_next_seq_v1` function names
 its schema, so after `ALTER SCHEMA ... RENAME` inserts fail and `Open` refuses it: drop the
 function and `Open` again, and the migration recreates it.

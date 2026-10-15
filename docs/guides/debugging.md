@@ -258,6 +258,16 @@ finishes it. In both cases `resume` is handed a finished run, which `Run` replay
 without firing anything again. The check and the `run:start` read cost four point reads
 (`Store.Get`) for each run the pass drives, and none for the finished runs the filter excluded.
 
+**Re-signing.** When the journal's store is an `audit.AuditedStore` (found through `Unwrap`, as an
+`agent.Reanchorer`), a run whose drive ended waiting on an approval (`*agent.ApprovalPending`) or on a halt
+resolution (`*agent.OutcomeUnknown`), including each of several pauses joined from parallel sub-agents, is
+signed again by the pass: `Reanchor` publishes a signed tree head over the journal as it now stands, so a
+decision an approver's tool wrote straight to the database is under a head within one pass. It adds no
+listing and writes nothing to the journal. `agent.WithReanchor` names another function (or `nil` to turn it
+off) and `agent.WithReanchorTimeout` bounds each call (half the lease TTL by default), so a hung anchor
+cannot hold a run's lease. A failure goes to `WithRecoverErrors` and the next pass tries again. What this
+does and does not establish is in [Audit](audit.md#continuous-anchoring-auditedstore--the-anchor-port).
+
 `ResumeAgent` is the usual `Resumer`: it drives each run under the options its `run:start`
 journaled (a saga as a saga), and takes only the deployment's own options (a Waker, a clock, a
 concurrency cap, an identity's Actor); a journaled setting passed to it is `ErrConfig`, since a

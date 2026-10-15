@@ -563,6 +563,37 @@ notification: `relay.DefaultResolveTarget` takes the `clears.id` of the payload,
 `dedup_key` the event's trigger used, and `PagerDutyConfig.ResolveTarget` replaces it. A `resolved`
 payload with no `clears` names no incident and is ignored, not turned into a trigger.
 
+## The open trail, and upgrading a fleet
+
+Besides a trail per run (`notify:<run>`), the notifier keeps one trail that belongs to no run, the **open
+trail** (`notify:@open`). It lists the events whose all-clear may still be owed: a record before an
+`outcome_unknown`, `approval_pending` or `recovery_failing` event is observed, and another when nothing more is
+owed for it. A sweep or a recovery pass reads it to find the runs that need a scan, including a run that has
+finished since, without reading every finished run. It is kept in one segment per UTC day
+(`notify:@open:<date>`) with a yearly index (`notify:@open:index:<year>`), so a read is bounded by what is
+listed now and not by history, and `bide audit notifications` checks that every delivered event of those kinds
+is listed on it. You do not configure it; with a signed trail (see [Auditing](#auditing-were-the-people-told))
+it is signed and anchored like the others.
+
+A rolling upgrade is the one time that check can be wrong for a while. A process of the previous version
+delivers events without listing them on the open trail. A new-version scan of an unfinished run lists such an
+event at once; the backfill's second pass, no earlier than `agent.WithNotifyUpgradeWindow` (24 hours by
+default) after the first, lists what no scan reached (a run such a process saw through to its end).
+Set the window to the time your upgrade takes to reach every process, a week for a staged rollout across
+regions; it must be positive:
+
+<!-- docsnip: setup journal *agent.Journal; model agent.Model; trail agent.NotifyTrail; sink agent.Notifier; returns error -->
+```go
+a, err := agent.New(model, journal, agent.WithNotifier(sink, trail,
+	agent.WithNotifyUpgradeWindow(7*24*time.Hour), // a staged rollout across regions
+))
+```
+
+An event that a previous-version process delivers after the second pass, in a run that ends before a
+new-version scan reaches it, stays unlisted, and `bide audit notifications` reports it. Until the window
+has passed, an audit during the upgrade may report an event as unlisted that the second pass will list; run
+it again after.
+
 ## Where to look
 
 A notification carries a view pointer, and the person who gets it opens the run viewer. `bide view
@@ -574,6 +605,17 @@ whether it was notified and whether the sink acknowledged it, and a run whose re
 is listed from the trail. That answers "did anyone hear about this?" in one place, and shows an item
 no notifier ever saw (*no notification recorded*) next to the ones that were delivered. See
 [Needs attention](run-viewer.md#needs-attention).
+
+## Runnable example
+
+`examples/notify-routing` (`go run ./examples/notify-routing`, no API key) builds the notifier of the routing
+section above over a refund waiting at a 2-of-2 gate and a charge halted on an unknown outcome, with the trail
+wrapped in `audit.NewAuditedEventStore`. In the first story every receiver answers: the approvals go to the
+risk and finance channels, the halt to on-call, the halt's resolution sends an all-clear, and
+`audit.VerifyNotifications` passes against the trail, the signed heads, the journals and `agent.RoutingOf`;
+then a copy of the trail with one record removed fails. In the second, on-call's endpoint is down: the lead is
+told after the step's deadline, and the audit reports that on-call's acknowledgement was late. Its test checks
+each of these.
 
 ## What an acknowledgement means
 
