@@ -63,7 +63,7 @@ func Verify(old, out []byte, op Op) error {
 		return refuse("the result changes a line outside the entry it operates on")
 	}
 	// 4: the comments
-	return commentOwnership(oldLines, newLines, op, entry)
+	return commentOwnership(oldLines, newLines, op, entry, blockLines(oldLines, on.Content[0]), blockLines(newLines, nn.Content[0]))
 }
 
 // ---- 2: ordered data ----
@@ -265,9 +265,12 @@ func (d *doc) spans(op Op) (lineSpan, lineSpan, bool) {
 	}
 	// ownEnd: the last line the entry owns, 0-based: its own last line, or the line before the
 	// comments attached to the next node when that is later.
-	ownEnd := func(x *yaml.Node) int {
+	ownEnd := func(x *yaml.Node, par int) int {
 		l, c := maxStart(x)
-		own := l - 1
+		own := max(l-1, blockLast(lines, x))
+		if isBlockScalar(x) {
+			own = max(own, blockScalarLast(lines, x.Line-1, par))
+		}
 		next := -1
 		for _, y := range all {
 			if y.Line > l || (y.Line == l && y.Column > c) {
@@ -323,7 +326,7 @@ func (d *doc) spans(op Op) (lineSpan, lineSpan, bool) {
 			first = key
 		}
 		lo := headLo(first.Line - 1)
-		hi := ownEnd(cur)
+		hi := ownEnd(cur, parIndent(parent, key))
 		dashKey := key != nil && parent.Content[0] == key && len(parent.Content) > 2 && !isFlow(parent) &&
 			strings.Contains(lines[key.Line-1][:min(key.Column-1, len(lines[key.Line-1]))], "-")
 		soleDash := key != nil && len(parent.Content) == 2 && !isFlow(parent) &&
@@ -369,10 +372,10 @@ func (d *doc) spans(op Op) (lineSpan, lineSpan, bool) {
 			lo = min(lo, parentKey.Line-1)
 		}
 		eml, _ := maxStart(cur)
-		entry := lineSpan{lo, max(eml-1, first.Line-1)}
+		entry := lineSpan{lo, max(eml-1, first.Line-1, ownEnd0(lines, cur, parIndent(parent, key)))}
 		if soleDash {
 			// the item stays as {}: its line and the comments above are the item's; the value's lines go
-			entry = lineSpan{key.Line, max(eml-1, key.Line)}
+			entry = lineSpan{key.Line, max(eml-1, key.Line, ownEnd0(lines, cur, parIndent(parent, key)))}
 		}
 		if isFlow(parent) {
 			entry = lineSpan{1, 0} // a member of a flow collection owns no comments: they belong to the line
@@ -386,7 +389,7 @@ func (d *doc) spans(op Op) (lineSpan, lineSpan, bool) {
 		if isFlow(cur) {
 			lo := cur.Line - 1
 			ml, _ := maxStart(cur)
-			return lineSpan{lo, max(ownEnd(cur), ml-1, lo)}, lineSpan{}, true
+			return lineSpan{lo, max(ownEnd(cur, 0), ml-1, lo)}, lineSpan{}, true
 		}
 		step := 1
 		if cur.Kind == yaml.MappingNode {
@@ -402,7 +405,12 @@ func (d *doc) spans(op Op) (lineSpan, lineSpan, bool) {
 			return lineSpan{headLo(f.Line - 1), f.Line - 1}, lineSpan{}, true
 		}
 		last := cur.Content[(count-1)*step]
-		return lineSpan{last.Line - 1, ownEnd(cur.Content[len(cur.Content)-1])}, lineSpan{}, true
+		lastV := cur.Content[len(cur.Content)-1]
+		par := cur.Column - 1
+		if cur.Kind == yaml.MappingNode {
+			par = cur.Content[len(cur.Content)-2].Column - 1
+		}
+		return lineSpan{last.Line - 1, ownEnd(lastV, par)}, lineSpan{}, true
 	}
 	return lineSpan{}, lineSpan{}, false
 }
@@ -435,7 +443,7 @@ type comment struct {
 	text  string
 	owner string // the code line it belongs to, without its own trailing comment
 	line  int
-	own   int // the owner's line, -1 for none
+	own   int  // the owner's line, -1 for none
 	kind  byte // 'h' above an entry, 't' trailing, 'o' on its own after a blank line
 }
 
@@ -461,16 +469,17 @@ func splitTrailing(l string) (code, cm string) {
 	return l, ""
 }
 
-func commentsOf(lines []string) []comment {
+func commentsOf(lines []string, skip map[int]bool) []comment {
 	var out []comment
 	n := len(lines)
 	for i := 0; i < n; i++ {
 		t := strings.TrimSpace(lines[i])
 		switch {
+		case skip[i+1]:
 		case t == "":
 		case strings.HasPrefix(t, "#"):
 			j := i + 1
-			for j < n && strings.HasPrefix(strings.TrimSpace(lines[j]), "#") {
+			for j < n && !skip[j+1] && strings.HasPrefix(strings.TrimSpace(lines[j]), "#") {
 				j++
 			}
 			if j < n && strings.TrimSpace(lines[j]) != "" {
@@ -488,7 +497,7 @@ func commentsOf(lines []string) []comment {
 	return out
 }
 
-func commentOwnership(a, b []string, op Op, entry lineSpan) error {
+func commentOwnership(a, b []string, op Op, entry lineSpan, skipOld, skipNew map[int]bool) error {
 	// The changed region is ambiguous when the lines at its edges equal their neighbours (two
 	// "# note" lines, say), so every alignment that explains the difference is tried, and the edit
 	// passes if one of them keeps every comment with its owner.
@@ -513,7 +522,7 @@ func commentOwnership(a, b []string, op Op, entry lineSpan) error {
 	// is not an equal-line shift is.
 	var first error
 	for {
-		err := ownership(a, b, op, entry, x, y)
+		err := ownership(a, b, op, entry, x, y, skipOld, skipNew)
 		if err == nil {
 			return nil
 		}
@@ -531,9 +540,9 @@ func commentOwnership(a, b []string, op Op, entry lineSpan) error {
 	return first
 }
 
-func ownership(a, b []string, op Op, entry lineSpan, ra, rb int) error {
+func ownership(a, b []string, op Op, entry lineSpan, ra, rb int, skipOld, skipNew map[int]bool) error {
 	inRegion := func(l int) bool { return l >= ra && l < rb }
-	oc, nc := commentsOf(a), commentsOf(b)
+	oc, nc := commentsOf(a, skipOld), commentsOf(b, skipNew)
 	used := make([]bool, len(nc))
 	take := func(match func(c comment) bool) bool {
 		for i, c := range nc {
@@ -556,7 +565,9 @@ func ownership(a, b []string, op Op, entry lineSpan, ra, rb int) error {
 		if c.line >= rb {
 			want += shift
 		}
-		if !take(func(x comment) bool { return x.line == want && x.text == c.text && x.kind == c.kind && x.owner == c.owner }) {
+		if !take(func(x comment) bool {
+			return x.line == want && x.text == c.text && x.kind == c.kind && x.owner == c.owner
+		}) {
 			return refuse("a comment lost its entry or moved to another (%q)", c.text)
 		}
 	}
@@ -584,3 +595,83 @@ func ownership(a, b []string, op Op, entry lineSpan, ra, rb int) error {
 }
 
 var _ = fmt.Sprint
+
+func isBlockScalar(n *yaml.Node) bool {
+	return n.Kind == yaml.ScalarNode && n.Style&(yaml.LiteralStyle|yaml.FoldedStyle) != 0
+}
+
+// blockLast returns the 0-based last line of any block scalar inside x, or -1.
+func blockLast(lines []string, x *yaml.Node) int {
+	res := -1
+	switch x.Kind {
+	case yaml.MappingNode:
+		for i := 0; i+1 < len(x.Content); i += 2 {
+			v := x.Content[i+1]
+			if isBlockScalar(v) {
+				res = max(res, blockScalarLast(lines, v.Line-1, x.Content[i].Column-1))
+			} else {
+				res = max(res, blockLast(lines, v))
+			}
+		}
+	case yaml.SequenceNode:
+		for _, c := range x.Content {
+			if isBlockScalar(c) {
+				res = max(res, blockScalarLast(lines, c.Line-1, x.Column-1))
+			} else {
+				res = max(res, blockLast(lines, c))
+			}
+		}
+	}
+	return res
+}
+
+// blockLines returns the lines inside block scalars (after their indicator lines).
+func blockLines(lines []string, root *yaml.Node) map[int]bool {
+	out := map[int]bool{}
+	var walk func(x *yaml.Node)
+	mark := func(v *yaml.Node, par int) {
+		for l := v.Line; l <= blockScalarLast(lines, v.Line-1, par); l++ {
+			out[l] = true
+		}
+	}
+	walk = func(x *yaml.Node) {
+		switch x.Kind {
+		case yaml.MappingNode:
+			for i := 0; i+1 < len(x.Content); i += 2 {
+				if v := x.Content[i+1]; isBlockScalar(v) {
+					mark(v, x.Content[i].Column-1)
+				} else {
+					walk(v)
+				}
+			}
+		case yaml.SequenceNode:
+			for _, c := range x.Content {
+				if isBlockScalar(c) {
+					mark(c, x.Column-1)
+				} else {
+					walk(c)
+				}
+			}
+		}
+	}
+	walk(root)
+	return out
+}
+
+// parIndent is the indentation of the collection that holds the entry whose key is key (nil for a
+// sequence item): the block scalar lines of the entry are indented further.
+func parIndent(parent, key *yaml.Node) int {
+	if key != nil {
+		return key.Column - 1
+	}
+	return parent.Column - 1
+}
+
+// ownEnd0 is the last line of x including the lines of any block scalar in or at x, or -1.
+func ownEnd0(lines []string, x *yaml.Node, par int) int {
+	r := blockLast(lines, x)
+	if isBlockScalar(x) {
+		r = max(r, blockScalarLast(lines, x.Line-1, par))
+	}
+	return r
+}

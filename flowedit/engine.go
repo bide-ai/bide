@@ -658,10 +658,10 @@ func (d *doc) insert(op Op) (lo, hi int, frag string, err error) {
 		dash--
 		gap := first - dash
 		dl := d.lineOf(dash)
-		if len(bytes.TrimLeft(d.src[d.lineStart[dl]:dash], " ")) != 0 {
-			return 0, 0, "", refuse("nested dash")
+		if len(bytes.TrimLeft(d.src[d.lineStart[dl]:dash], " ")) != 0 && idx == 0 {
+			return 0, 0, "", refuse("nested dash: nothing can go before the first item, which shares its line")
 		}
-		pad = strings.Repeat(" ", dash-d.lineStart[dl])
+		pad = strings.Repeat(" ", utf8.RuneCount(d.src[d.lineStart[dl]:dash]))
 		text, err := d.blockItem(pad, gap, op.Value, d.flowHint(op))
 		if err != nil {
 			return 0, 0, "", err
@@ -783,6 +783,9 @@ func (d *doc) delOnly(p, ck, first *yaml.Node, s, valEnd int) (int, int, string,
 // that is empty (a null), the colon after its key.
 func (d *doc) entryEnd(p *yaml.Node, i int, flow bool) (int, error) {
 	n := p.Content[i]
+	if n.Kind == yaml.ScalarNode && n.Style&(yaml.LiteralStyle|yaml.FoldedStyle) != 0 {
+		return d.blockScalarEnd(p, i)
+	}
 	if p.Kind == yaml.MappingNode && i%2 == 1 && n.Kind == yaml.ScalarNode && n.Value == "" && n.Style == 0 && n.Tag == "!!null" {
 		k := p.Content[i-1]
 		ke, err := d.scalarEnd(k, d.start(k), flow)
@@ -821,4 +824,62 @@ func applyRaw(src []byte, op Op) (string, error) {
 		return "", err
 	}
 	return string(src[:lo]) + frag + string(src[hi:]), nil
+}
+
+// parentIndent is the indentation of the collection that holds p.Content[i]: a block scalar's
+// lines must be indented further than it.
+func parentIndent(p *yaml.Node, i int) int {
+	if p.Kind == yaml.MappingNode {
+		return p.Content[i-1].Column - 1
+	}
+	return p.Column - 1
+}
+
+// blockScalarLast returns the 0-based last line of the block scalar that starts at line start0
+// (its indicator line) inside a collection indented parent columns: the last non-blank line that is
+// indented further than parent, or the indicator line when there is none.
+func blockScalarLast(lines []string, start0, parent int) int {
+	last := start0
+	for l := start0 + 1; l < len(lines); l++ {
+		t := lines[l]
+		if strings.TrimSpace(t) == "" {
+			continue
+		}
+		if len(t)-len(strings.TrimLeft(t, " ")) <= parent {
+			break
+		}
+		last = l
+	}
+	return last
+}
+
+// blockScalarEnd returns the offset after the last content line of the block scalar p.Content[i].
+func (d *doc) blockScalarEnd(p *yaml.Node, i int) (int, error) {
+	n := p.Content[i]
+	if err := plainNodeBlock(n); err != nil {
+		return 0, err
+	}
+	s := d.start(n)
+	if s >= len(d.src) || (d.src[s] != '|' && d.src[s] != '>') {
+		return 0, refuse("block scalar not at its indicator")
+	}
+	ind := d.lineText(d.lineOf(s))[s-d.lineStart[d.lineOf(s)]:]
+	ind, _ = splitTrailing(ind)
+	if strings.Contains(ind, "+") {
+		return 0, refuse("block scalar that keeps trailing lines")
+	}
+	lines := strings.Split(string(d.src), "\n")
+	last := blockScalarLast(lines, d.lineOf(s), parentIndent(p, i))
+	return d.lineEnd(last), nil
+}
+
+// plainNodeBlock is plainNode for a block scalar: only its anchor and tag matter.
+func plainNodeBlock(n *yaml.Node) error {
+	if n.Anchor != "" {
+		return refuse("anchor")
+	}
+	if n.Style&yaml.TaggedStyle != 0 {
+		return refuse("explicit tag")
+	}
+	return nil
 }

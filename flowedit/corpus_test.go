@@ -104,12 +104,34 @@ func collect(t testing.TB) []file {
 		fs, _ := filepath.Glob(dir.glob)
 		sort.Strings(fs)
 		for _, f := range fs {
-			if b, err := os.ReadFile(f); err == nil {
-				out = append(out, file{dir.group, filepath.Base(f), string(b), dir.real})
+			b, err := os.ReadFile(f)
+			if err != nil {
+				continue
 			}
+			if dir.real && documents(b) > 1 {
+				// A flow config is one document (the loader reads the first and ignores the rest), so a
+				// file of several is outside the bar; the adversarial set holds one on purpose.
+				multiDoc = append(multiDoc, filepath.Base(f))
+				continue
+			}
+			out = append(out, file{dir.group, filepath.Base(f), string(b), dir.real})
 		}
 	}
 	return out
+}
+
+var multiDoc []string
+
+func documents(b []byte) int {
+	dec := yaml.NewDecoder(bytes.NewReader(b))
+	n := 0
+	for {
+		var v yaml.Node
+		if dec.Decode(&v) != nil {
+			return n
+		}
+		n++
+	}
 }
 
 func generated(n int) []file {
@@ -155,6 +177,9 @@ func like(n *yaml.Node) any {
 			return 7
 		case "!!bool":
 			return true
+		}
+		if strings.ContainsAny(n.Value, "\n\r\t") {
+			return "new"
 		}
 		return "new-" + n.Value
 	}
@@ -793,6 +818,26 @@ func TestCorpusReport(t *testing.T) {
 			}
 		}
 	}
+	// The bar (docs/design/visual-editor.md, decision 3): at least 95 percent of operations touch
+	// only the intended lines, with a refusal counted as a miss, on the real files taken together
+	// (per operation and per file) and on each other group but two. The adversarial files are
+	// hand-written to be refused in part, and the plan-test JSON with tab indentation is read by
+	// another path in the editor.
+	if p := pct(realAll.inSpan, realAll.ops); p < 95 {
+		t.Errorf("real files: %.1f%% of operations within the intended lines, want at least 95%%", p)
+	}
+	if p := realAll.perFile(); p < 95 {
+		t.Errorf("real files: %.1f%% per file within the intended lines, want at least 95%%", p)
+	}
+	for _, g := range order {
+		if g == "adversarial (hand-written)" || g == "plan test configs (JSON)" {
+			continue
+		}
+		if p := pct(groups[g].inSpan, groups[g].ops); p < 95 {
+			t.Errorf("%s: %.1f%% of operations within the intended lines, want at least 95%%", g, p)
+		}
+	}
+	fmt.Fprintf(&b, "\nexternal files left out because they hold several documents: %d %v\n", len(multiDoc), multiDoc)
 	t.Log(b.String())
 	if all.wrong != 0 {
 		t.Errorf("%d operations produced text the oracle disagrees with", all.wrong)
