@@ -448,9 +448,14 @@ func lister(t *testing.T, s agent.Store) {
 	// Breaking early and writing inside the loop neither leak nor deadlock. The deadline detects a
 	// hang, so it scales with what the store's writes cost here: a disk that fsyncs each commit slowly
 	// (a shared Windows runner took 30ms and more) makes the loop's writes slow, not stuck. The loop
-	// writes about two thirds as many entries as the set-up above, which took setup.
+	// writes about two thirds as many entries as the set-up above, which took setup. A hang therefore
+	// fails after at most five minutes; a store too slow to fit that fails at once.
 	setup := time.Since(setupStart)
-	tctx, cancel := context.WithTimeout(ctx, max(time.Minute, 10*setup))
+	budget := min(max(time.Minute, 10*setup), 5*time.Minute)
+	if setup > budget/2 {
+		t.Fatalf("disk too slow for this test: the %d set-up writes took %v, and the loop below (about two thirds as many) gets at most %v", n+len(open), setup, budget)
+	}
+	tctx, cancel := context.WithTimeout(ctx, budget)
 	defer cancel()
 	for range 20 {
 		for _, err := range l.Runs(tctx, agent.RunFilter{Prefix: prefix}) {

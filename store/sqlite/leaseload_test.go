@@ -4,18 +4,22 @@ import (
 	"context"
 	"fmt"
 	"path/filepath"
+	"slices"
 	"sync"
-	"sync/atomic"
 	"testing"
 	"time"
 )
 
-// Lease renewals go ahead of queued journal writers: under a sustained queue of 64 writers, a
-// renewal waits for at most the one write already inside, then runs its own commit. The test
-// checks that property in units of the disk's own commit time, which varies by orders of magnitude
-// between machines (a shared Windows runner stalled commits for seconds), and it sizes the lease
-// TTL from the commit time it measures: a lease cannot outlast a disk stall longer than its TTL, so
-// the TTL must exceed the worst commit (see the Leaser notes in docs/KNOWN-LIMITATIONS.md).
+// Under a sustained queue of 64 writers, a lease renewal is not starved. This is an end-to-end
+// check; the priority itself is guarded by TestLease_StatementsGoAheadOfQueuedWrites, which fails
+// when EnterFirst is replaced by Enter (this test also fails then: see the median check below).
+//
+// The disk's commit time varies by orders of magnitude between machines (a shared Windows runner
+// stalled commits for seconds), so the test sizes the lease TTL from the commit time it measures
+// (TTL = 100 commits, within 3s to 30s; a disk slower than that fails with "disk too slow"), and a
+// lapsed lease fails the test unless the writers stalled too in the window just before it, which
+// makes it the disk, not the queue. A lease cannot outlast a disk stall longer than its TTL (see
+// docs/KNOWN-LIMITATIONS.md). The test runs for twice the TTL (6s to 60s) plus the in-flight writes.
 func TestLease_RenewalsSurviveWriteLoad(t *testing.T) {
 	s, err := Open(filepath.Join(t.TempDir(), "j.db"))
 	if err != nil {
@@ -32,11 +36,19 @@ func TestLease_RenewalsSurviveWriteLoad(t *testing.T) {
 		}
 		commit = max(commit, time.Since(t0))
 	}
-	ttl := max(3*time.Second, 100*commit)
+	ttl := min(max(3*time.Second, 100*commit), 30*time.Second)
+	if commit > ttl/10 {
+		t.Fatalf("disk too slow for this test: a commit took %v, and the longest TTL it uses is %v", commit, ttl)
+	}
 
+	type done struct {
+		at time.Time
+		d  time.Duration
+	}
+	var mu sync.Mutex
+	var inserts []done // every insert under load, with when it finished
 	stop := make(chan struct{})
 	var wg sync.WaitGroup
-	var worstInsert atomic.Int64 // nanoseconds: the slowest insert under load, which includes its wait in the queue
 	for g := 0; g < 64; g++ {
 		wg.Add(1)
 		go func() {
@@ -52,40 +64,42 @@ func TestLease_RenewalsSurviveWriteLoad(t *testing.T) {
 					t.Error(err)
 					return
 				}
-				d := int64(time.Since(t0))
-				for {
-					w := worstInsert.Load()
-					if d <= w || worstInsert.CompareAndSwap(w, d) {
-						break
-					}
-				}
+				mu.Lock()
+				inserts = append(inserts, done{time.Now(), time.Since(t0)})
+				mu.Unlock()
 			}
 		}()
 	}
 	if ok, err := s.AcquireLease(ctx, "L", "me", ttl); err != nil || !ok {
 		t.Fatal(ok, err)
 	}
-	var worstRenew, worstStall time.Duration
+	var renews []time.Duration
 	lastOK := time.Now()
 	end := time.Now().Add(max(6*time.Second, 2*ttl))
 	for time.Now().Before(end) {
 		t0 := time.Now()
 		ok, err := s.RenewLease(ctx, "L", "me", ttl)
-		d := time.Since(t0)
-		worstRenew = max(worstRenew, d)
+		renews = append(renews, time.Since(t0))
 		if err != nil {
 			t.Errorf("renew: %v", err)
 			break
 		}
 		if !ok {
-			// The lease lapsed: no renewal landed for a whole TTL. That is the disk, not the queue,
-			// only if the writers stalled that long too; if they did not, a renewal was starved.
-			stall := time.Duration(worstInsert.Load())
-			worstStall = max(worstStall, stall)
+			// The lease lapsed: no renewal landed for a whole TTL. It is the disk if the writers
+			// stalled in that window too (an insert that finished in it took half a TTL or more);
+			// otherwise a renewal was starved.
+			var stall time.Duration
+			mu.Lock()
+			for _, in := range inserts {
+				if !in.at.Before(lastOK) {
+					stall = max(stall, in.d)
+				}
+			}
+			mu.Unlock()
 			if stall < ttl/2 {
-				t.Errorf("the lease lapsed after %v without a renewal, but the slowest insert took only %v (ttl %v): the renewal was starved by the writers", time.Since(lastOK), stall, ttl)
+				t.Errorf("the lease lapsed after %v without a renewal, but the slowest insert in that window took only %v (ttl %v): the renewal was starved by the writers", time.Since(lastOK), stall, ttl)
 			} else {
-				t.Logf("the lease lapsed after %v: the disk stalled (slowest insert %v, ttl %v)", time.Since(lastOK), stall, ttl)
+				t.Logf("the lease lapsed after %v: the disk stalled (an insert took %v in that window, ttl %v)", time.Since(lastOK), stall, ttl)
 			}
 			break
 		}
@@ -94,13 +108,25 @@ func TestLease_RenewalsSurviveWriteLoad(t *testing.T) {
 	}
 	close(stop)
 	wg.Wait()
-	// Priority: a renewal waits for the write inside and runs its own commit, so it takes about two
-	// commits however many writers queue; the slowest insert under load (64 queued writers) is far
-	// longer, so a renewal as slow as that did not go first.
-	if inserts := time.Duration(worstInsert.Load()); worstRenew > max(4*inserts/5, 10*commit)+250*time.Millisecond && worstStall == 0 {
-		t.Errorf("worst renewal took %v, slowest insert under load %v (unloaded commit %v): renewals are not going ahead of the queue", worstRenew, inserts, commit)
+	// A renewal waits for the one write inside and runs its own commit, about two commits however
+	// many writers queue; an insert waits for the whole queue. If renewals go first, the median
+	// renewal is far shorter than the median insert; the medians are robust to a stall on one commit.
+	mu.Lock()
+	ds := make([]time.Duration, len(inserts))
+	for i, in := range inserts {
+		ds[i] = in.d
 	}
-	t.Logf("ttl %v, unloaded commit %v, worst renew %v, slowest insert %v", ttl, commit, worstRenew, time.Duration(worstInsert.Load()))
+	mu.Unlock()
+	if len(ds) == 0 || len(renews) == 0 {
+		t.Fatalf("no load or no renewals ran (%d inserts, %d renewals)", len(ds), len(renews))
+	}
+	slices.Sort(ds)
+	slices.Sort(renews)
+	mi, mr := ds[len(ds)/2], renews[len(renews)/2]
+	t.Logf("ttl %v, unloaded commit %v, %d inserts (median %v), %d renewals (median %v, worst %v)", ttl, commit, len(ds), mi, len(renews), mr, renews[len(renews)-1])
+	if mr > mi/2 {
+		t.Errorf("median renewal %v against median insert %v: renewals are not going ahead of the queue", mr, mi)
+	}
 }
 
 // A lease statement is admitted ahead of journal writes already queued on the file.
