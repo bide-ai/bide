@@ -57,7 +57,7 @@ func TestWaitingGateShowsItsDeadline(t *testing.T) {
 // A gate with no deadline says nothing of one.
 func TestGateWithoutDeadlineHasNone(t *testing.T) {
 	recs := gateRecs(time.Hour)
-	g := viewAt(append(recs[:2:2]), dlT0).Gates[0]
+	g := viewAt(recs[:2:2], dlT0).Gates[0]
 	if g.ExpiresAt != "" || g.Due != "" || g.Timeout != "" {
 		t.Errorf("gate %+v; want no deadline", g)
 	}

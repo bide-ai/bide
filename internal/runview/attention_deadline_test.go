@@ -23,7 +23,7 @@ func TestAttentionSortsGatesByDeadline(t *testing.T) {
 	for id, timeout := range map[string]time.Duration{"far": 10 * time.Hour, "soon": time.Hour, "late": 20 * time.Minute, "none": 0} {
 		recs := gateRecs(timeout)
 		if timeout == 0 {
-			recs = append(recs[:2:2])
+			recs = recs[:2:2]
 		}
 		src[id] = append([]agent.Record{started()}, recs...)
 	}
