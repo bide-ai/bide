@@ -31,6 +31,8 @@ bide sample
 bide approve -db run.db -list
 # 4. 证明：离线验证这次运行的证据
 bide audit verify-evidence -evidence evidence.json -pubkey keys/log.pub
+# 5. 通知：停机或等待批准时会通知相关人员；离线检查他们确实被通知了
+bide audit notifications -db run.db -pubkey keys/log.pub -sth notify-run.sth.json
 ```
 
 一条仅追加（append-only）的日志，作为一个纯 Go 库，带来五项保证：副作用至多触发一次，即使跨越崩溃也是如此，因此它们无需是幂等的；在单个进程内承载成千上万个并发的持久化运行，它是一个库，无需运行集群；一条可加密验证的审计轨迹（RFC 6962 Merkle 证明，无需信任厂商即可核验）；可证明收敛的共享状态，其收敛条件经过机器核验；以及人保持掌控：k-of-n 签名审批、排除发起人的职责分离、放在 HSM 或云 KMS 中的签名密钥，还有一个通知人并记录通知已发出的通知器。

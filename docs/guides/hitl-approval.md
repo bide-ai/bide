@@ -530,6 +530,12 @@ bide approve -db run.db -run refund-1049 -call c2 -as ops -key ops.key \
     -approver-keys approver-keys.json
 ```
 
+<img src="./img/cli-approve-dark.gif" alt="bide approve in a terminal: a refund waiting at a 2-of-3 gate listed with its pending approvers; ops, the run's requester, refused because the decision would not count; finance shown the call, its arguments and the SHA-256 the signature binds, typing their id, and getting the signed decision, its receipt and a tally of 1 of 2; then risk's approval completing the gate">
+
+The recording is a real run on a refund that ops requested: `ExcludePrincipal` is set (see
+[separation of duties](#separation-of-duties)), so `bide approve` refuses ops before it records
+anything, finance's decision counts as 1 of 2, and risk's makes 2.
+
 `bide approve` reads the call from the journal, never from a flag or a notification, and shows what it
 is about to sign: the run, the tool, the call's arguments (indented JSON; long ones are cut, and
 `-full` shows all), the gate (k of n, who has decided, who is pending) and the SHA-256 of the arguments
@@ -842,6 +848,13 @@ fetches the call again after the confirmation and signs nothing if the tool, arg
 differ, posts the decision, and checks the receipt that comes back (the decision it signed, no
 anchoring proof, a signature that verifies under its own key). The decision flow is the same as
 `bide approve -to`; the page is the same checks in a browser.
+
+<img src="./img/approve-page-waiting-dark.png" alt="The browser approve page for a waiting refund call: the approver's public key and fingerprint, every argument, the arguments' SHA-256, and the Approve and Reject buttons">
+
+<img src="./img/approve-page-signed-dark.png" alt="The same page after Approve: signed and recorded by the application, the gate showing 2 of 2 approvals, and a link to the receipt">
+
+Both are screenshots of the page served by an application (`approvals.WithPage()`), so the page's
+own warning about that mode is visible.
 
 **Who serves the page matters more than anything else about it.** A signature is only as good as the
 code that asks for it. A page the application serves lets the application serve a script that shows one
