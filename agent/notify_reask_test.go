@@ -192,6 +192,20 @@ func TestReask_ForgedNotesAreNotRead(t *testing.T) {
 	}
 	current := ApprovalTally{Need: 2, Approvers: abc, Approved: 2, ApprovedBy: []string{"bob", "carol"}, ExcludePrincipal: true, Requesters: []string{"alice"}, DecisionFormat: DecisionFormat}
 	cases := map[string]func(t *testing.T) *Journal{
+		"sod note for another call": func(t *testing.T) *Journal {
+			s := forge(true, func(w *ApprovalWait) { w.ToolUseID = "c2" })
+			weak := current
+			weak.ExcludePrincipal = false
+			tally(t, s, weak)
+			return s
+		},
+		"sod note with no reason": func(t *testing.T) *Journal {
+			s := forge(true, func(w *ApprovalWait) { w.Reask = "" })
+			weak := current
+			weak.ExcludePrincipal = false
+			tally(t, s, weak)
+			return s
+		},
 		"sod note with no tally":    func(t *testing.T) *Journal { return forge(true, nil) },
 		"format note with no tally": func(t *testing.T) *Journal { return forge(false, nil) },
 		"sod note over a tally that excluded the requester": func(t *testing.T) *Journal {
@@ -236,10 +250,16 @@ func TestReask_ForgedNotesAreNotRead(t *testing.T) {
 				t.Fatalf("LatestPauseNote = %q (%v), want the first note", r.Name, ok)
 			}
 			e := &notifyEngine{cfg: defaultNotifyConfig(), j: store}
-			for _, ev := range e.pendingEvents("r1", recs) {
-				if ev.approval.Reask != "" {
-					t.Fatalf("pending event %s from a forged note", ev.key)
-				}
+			evs := e.pendingEvents("r1", recs)
+			// At most the first ask (a recorded tally decides it): never a second event for the note.
+			if len(evs) > 1 || len(evs) == 1 && (evs[0].key != ApprovalKey("r1", "c1", 0) || evs[0].approval.Reask != "") {
+				t.Fatalf("pending events = %+v; want at most the first ask", evs)
+			}
+			// fillDetail of a re-ask event does not take the forged note's policy.
+			re := notifyEvent{runID: "r1", opRun: "r1", approval: &NotifyApproval{ToolUseID: "c1", Reask: PendingSoDReapproval}}
+			e.fillDetail(context.Background(), &re)
+			if re.approval.ToolName != "" || re.approval.Need != 0 {
+				t.Fatalf("fillDetail took a forged note: %+v", re.approval)
 			}
 			for _, ev := range JournalNotifyEvents("r1", recs) {
 				if ev.Key != ApprovalKey("r1", "c1", 0) {
@@ -260,5 +280,31 @@ func TestReask_GenuineNotesAreRead(t *testing.T) {
 	r, ok := LatestPauseNote(byName, "c1")
 	if !ok || r.Name != ApprovalReaskStep("c1", true) {
 		t.Fatalf("LatestPauseNote = %q (%v), want the sod note", r.Name, ok)
+	}
+}
+
+// ValidReaskNote follows the chain of tallies the gate follows: a separation-of-duties re-ask over a
+// tally that predates the format is valid only over the format re-tally, once that is recorded.
+func TestReask_ValidNoteFollowsTheChainOfTallies(t *testing.T) {
+	rec := func(v any) Record { b, _ := json.Marshal(v); return Record{Kind: StepValue, Result: b} }
+	old := ApprovalTally{Need: 2, Approvers: abc, Approved: 2, ApprovedBy: []string{"bob", "carol"}}
+	retally := ApprovalTally{Need: 2, Approvers: abc, Approved: 2, ApprovedBy: []string{"bob", "carol"}, DecisionFormat: DecisionFormat, Supersedes: ApprovalTallyStep("c1")}
+	byName := map[string]Record{ApprovalTallyStep("c1"): rec(old), ApprovalRetallyStep("c1"): rec(retally)}
+	sodNote := func(over string) ApprovalWait {
+		return ApprovalWait{ToolUseID: "c1", ExcludePrincipal: true, Reask: PendingSoDReapproval, Supersedes: over}
+	}
+	if !ValidReaskNote(byName, "c1", ApprovalReaskStep("c1", true), sodNote(ApprovalRetallyStep("c1"))) {
+		t.Fatal("a sod note over the format re-tally is not valid")
+	}
+	if ValidReaskNote(byName, "c1", ApprovalReaskStep("c1", true), sodNote(ApprovalTallyStep("c1"))) {
+		t.Fatal("a sod note over the tally the format re-tally replaced is valid")
+	}
+	delete(byName, ApprovalRetallyStep("c1"))
+	if ValidReaskNote(byName, "c1", ApprovalReaskStep("c1", true), sodNote(ApprovalTallyStep("c1"))) {
+		t.Fatal("a sod note is valid before the gate has asked for the format")
+	}
+	v3 := ApprovalWait{ToolUseID: "c1", Reask: PendingReapproval, Supersedes: ApprovalTallyStep("c1")}
+	if !ValidReaskNote(byName, "c1", ApprovalReaskStep("c1", false), v3) {
+		t.Fatal("a format note over a tally that predates the format is not valid")
 	}
 }

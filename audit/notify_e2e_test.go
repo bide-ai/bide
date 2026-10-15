@@ -316,6 +316,7 @@ func TestVerifyNotifications_AReaskVerifies(t *testing.T) {
 	}
 	rt.sweep() // the re-ask's all-clear
 	rt.sweep()
+	rt.clk.now = rt.clk.now.Add(time.Hour) // a notification owed and never made is late by now
 	verifyE2E(t, ctx, rt.g.store, rt.es, rt.clk, rt.opts, gateRun, false)
 }
 
