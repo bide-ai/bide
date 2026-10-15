@@ -429,6 +429,32 @@ agent.SubmitDecision(ctx, journal, agent.Decision{RunID: pend.RunID, ToolUseID: 
 
 Затем `audit.ApprovalEvidence` и `audit.VerifyApprovals` (или `bide audit verify-approvals`) доказывают офлайн, что k именованных одобряющих подписали именно этот вызов *до* его выполнения, по ожидаемой политике, на основе свидетельств, из которых нельзя незаметно выбросить решение. Каждому одобряющему нужен собственный ключ: политика, в которой два одобряющих сводятся к одному ключу, отклоняется с `ErrConfig`, ведь владелец этого ключа мог бы подписать за обоих. См. [руководство по одобрению](../../docs/guides/hitl-approval.md); запускается в разных процессах в `examples/approval`.
 
+**Разделение обязанностей**: задайте `ExcludePrincipal`, и шлюз никогда не учитывает решение инициатора прогона, так что тот, кто начал действие, не может его одобрить (maker-checker):
+
+<!-- docsnip: setup type RefundArgs struct{}; doRefund func(context.Context, RefundArgs) (string, error) -->
+```go
+refund := agent.MustFunc("refund", "refund the order", doRefund,
+	agent.WithApproval(&agent.ApprovalPolicy{
+		Need:             2,
+		Approvers:        []string{"ops", "finance", "risk"},
+		ExcludePrincipal: true, // the run's requester may not approve
+	}))
+```
+
+Инициатор это `OnBehalfOf` из `agent.Identity`, с которой развёртывание запускает прогон; принципалы вышестоящих прогонов тоже учитываются. Исключённое решение остаётся в записи с пометкой. Bide сравнивает идентификаторы и не видит, что у одного человека их два. См. [разделение обязанностей](../../docs/guides/hitl-approval.md#separation-of-duties).
+
+**Решение из терминала**: одобряющий, не пишущий на Go, использует `bide approve`. Команда читает вызов из журнала, показывает его аргументы и SHA-256, к которому привязана подпись, просит подтверждения, подписывает ключом одобряющего, записывает решение и пишет квитанцию:
+
+```
+bide approve -db run.db -list                  # the calls that wait, each with its command
+bide approve -db run.db -run refund-1049 -call c2 -as finance -key finance.key \
+    -approver-keys approver-keys.json
+```
+
+Аргументы, слишком длинные для показа, она не подписывает без `-full`, а если решение не будет засчитано, ничего не записывает. См. [решение из терминала](../../docs/guides/hitl-approval.md#deciding-from-the-terminal).
+
+**Оповещение людей**: прогон, остановившийся из-за неизвестного исхода или ждущий у шлюза одобрения, поднимает уведомление (`agent.WithNotifier`, доставка подписанным вебхуком `notify.NewWebhook`). `agent.WithNotifyRoute` направляет каждый вид события получателю (`WithNotifyApproverRoute` направляет одобрение по одобряющему), а `agent.WithNotifyEscalation` оповещает следующего получателя, цепочкой не длиннее четырёх шагов, если событие не подтверждено к сроку (одобрение: не решено к нему). Подтверждение означает, что конечная точка ответила 2xx, а не что человек прочитал сообщение. См. [маршрутизацию и эскалацию](../../docs/guides/notifications.md#routing-and-escalation).
+
 ## Ошибки
 
 Сбои классифицируются часовыми ошибками (sentinel errors), сопоставляемыми через `errors.Is`. Два яруса: **категория** (грубый класс) и **условие** (конкретная причина), которое оборачивает свою категорию, так что сопоставление работает на том уровне, который вам нужен:

@@ -527,6 +527,32 @@ k مُوافِقين مُسمَّين وقّعوا على هذا النداء ب
 مُوافِقان إلى مفتاح واحد، لأن حامل ذلك المفتاح يستطيع التوقيع عنهما معًا. انظر [دليل الموافقة](../../docs/guides/hitl-approval.md)؛ قابل للتشغيل عبر عمليات منفصلة في
 `examples/approval`.
 
+**فصل المهام**: اضبط `ExcludePrincipal` فلا تحتسب البوابة قرار مُقدِّم طلب التشغيلة أبدًا، فمن بدأ إجراءً لا يستطيع اعتماده أيضًا (maker-checker):
+
+<!-- docsnip: setup type RefundArgs struct{}; doRefund func(context.Context, RefundArgs) (string, error) -->
+```go
+refund := agent.MustFunc("refund", "refund the order", doRefund,
+	agent.WithApproval(&agent.ApprovalPolicy{
+		Need:             2,
+		Approvers:        []string{"ops", "finance", "risk"},
+		ExcludePrincipal: true, // the run's requester may not approve
+	}))
+```
+
+مُقدِّم الطلب هو `OnBehalfOf` في `agent.Identity` التي يبدأ بها النشر التشغيلة، ويُحتسب كذلك أصحاب التشغيلات الأعلى. ويبقى القرار المستبعَد في السجل موسومًا. يقارن Bide المعرّفات، ولا يرى أن شخصًا واحدًا يملك معرّفين. انظر [فصل المهام](../../docs/guides/hitl-approval.md#separation-of-duties).
+
+**القرار من الطرفية**: المعتمِد الذي لا يكتب Go يستخدم `bide approve`. يقرأ الاستدعاء من السجل، ويعرض وسائطه وقيمة SHA-256 التي يرتبط بها التوقيع، ويطلب تأكيدًا، ويوقّع بمفتاح المعتمِد، ويسجّل القرار ويكتب إيصالًا:
+
+```
+bide approve -db run.db -list                  # the calls that wait, each with its command
+bide approve -db run.db -run refund-1049 -call c2 -as finance -key finance.key \
+    -approver-keys approver-keys.json
+```
+
+ولا يوقّع وسائط أطول من أن تُعرض ما لم تمرّر `-full`، ولا يسجّل شيئًا إذا كان القرار لن يُحتسب. انظر [القرار من الطرفية](../../docs/guides/hitl-approval.md#deciding-from-the-terminal).
+
+**إبلاغ الناس**: التشغيلة التي تتوقف عند نتيجة مجهولة أو تنتظر عند بوابة موافقة تُصدر إشعارًا (`agent.WithNotifier`، يُسلَّم عبر webhook موقَّع `notify.NewWebhook`). يرسل `agent.WithNotifyRoute` كل نوع من الأحداث إلى مستقبِل (ويوجّه `WithNotifyApproverRoute` الموافقة بحسب المعتمِد)، ويبلغ `agent.WithNotifyEscalation` المستقبِل التالي، في سلسلة من أربع خطوات على الأكثر، حين لا يُقَرّ بالحدث قبل موعده النهائي (الموافقة: لا يُبتّ فيها قبله). والإقرار يعني أن نقطة النهاية ردّت بـ 2xx، لا أن شخصًا قرأه. انظر [التوجيه والتصعيد](../../docs/guides/notifications.md#routing-and-escalation).
+
 ## الأخطاء
 
 تُصنَّف الإخفاقات بأخطاء دالّة (sentinel errors) تُطابَق بـ `errors.Is`. مستويان: **صنف (category)** (الفئة العامة) و**شرط (condition)** (سبب محدّد) يلفّ صنفه،
