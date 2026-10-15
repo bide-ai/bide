@@ -643,7 +643,10 @@ func TestCertificatePolicyOIDsAreReadable(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	l := root.leaf(t, leafKey(t), func(c *x509.Certificate) { c.Policies = []x509.OID{policy}; c.EmailAddresses = []string{"a@bank.example"} })
+	l := root.leaf(t, leafKey(t), func(c *x509.Certificate) {
+		c.Policies = []x509.OID{policy}
+		c.EmailAddresses = []string{"a@bank.example"}
+	})
 	found := false
 	for _, o := range l.Policies {
 		found = found || o.Equal(policy)
@@ -670,5 +673,48 @@ func TestLeafKeyTypesAreDistinguishable(t *testing.T) {
 		if got := fmt.Sprintf("%T", l.PublicKey); got != tc.want {
 			t.Errorf("%s: PublicKey is %s, want %s", name, got, tc.want)
 		}
+	}
+}
+
+// Assumption: a delta CRL's indicator carries the base CRL number as a DER INTEGER in a critical
+// extension the standard library hands over raw, and CRLNumber is a field, so the design's base plus
+// delta merge (the delta's base number must not exceed the base CRL's number, and the delta's own number
+// must exceed it) can be checked from parsed values. removeFromCRL entries appear in deltas.
+func TestDeltaCRLIndicatorCarriesTheBaseNumber(t *testing.T) {
+	root := newCA(t, nil)
+	base := root.crl(t, &x509.RevocationList{Number: big.NewInt(40), ThisUpdate: t0, NextUpdate: t0.Add(7 * 24 * time.Hour),
+		RevokedCertificateEntries: []x509.RevocationListEntry{{SerialNumber: big.NewInt(5), RevocationTime: t0.Add(-time.Hour), ReasonCode: 6}}})
+	ind, _ := asn1.Marshal(big.NewInt(40))
+	delta := root.crl(t, &x509.RevocationList{Number: big.NewInt(43), ThisUpdate: t0.Add(2 * time.Hour), NextUpdate: t0.Add(26 * time.Hour),
+		RevokedCertificateEntries: []x509.RevocationListEntry{
+			{SerialNumber: big.NewInt(5), RevocationTime: t0.Add(time.Hour), ReasonCode: 8}, // the hold is released
+			{SerialNumber: big.NewInt(6), RevocationTime: t0.Add(90 * time.Minute), ReasonCode: 1},
+		},
+		ExtraExtensions: []pkix.Extension{{Id: oidDeltaCRLIndicator, Critical: true, Value: ind}}})
+	baseNum := new(big.Int)
+	found := false
+	for _, e := range delta.Extensions {
+		if e.Id.Equal(oidDeltaCRLIndicator) {
+			if !e.Critical {
+				t.Fatal("the delta CRL indicator must be critical")
+			}
+			if _, err := asn1.Unmarshal(e.Value, &baseNum); err != nil {
+				t.Fatal(err)
+			}
+			found = true
+		}
+	}
+	if !found || baseNum.Cmp(base.Number) != 0 || delta.Number.Cmp(base.Number) <= 0 {
+		t.Fatalf("indicator %v, base number %v, delta number %v", baseNum, base.Number, delta.Number)
+	}
+	reasons := map[int64]int{}
+	for _, e := range delta.RevokedCertificateEntries {
+		reasons[e.SerialNumber.Int64()] = e.ReasonCode
+	}
+	if reasons[5] != 8 || reasons[6] != 1 {
+		t.Fatalf("delta entries: %v", reasons)
+	}
+	if base.CheckSignatureFrom(root.cert) != nil || delta.CheckSignatureFrom(root.cert) != nil {
+		t.Fatal("base and delta must both verify under their issuer")
 	}
 }
