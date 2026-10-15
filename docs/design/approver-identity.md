@@ -141,7 +141,7 @@ and a **trust set**; the key is whatever key the presented certificate carries.
   apply to `v4` unchanged. CA certificates and CRLs may be signed with: **RSA (PKCS#1 v1.5 or PSS) with SHA-256 or better and a
   modulus of at least 3072 bits** (2048 only through an explicit `AllowRSA2048CA` policy value with an end
   date, since many bank roots and AD CS issuing CAs are RSA-2048 today), **ECDSA P-256 or P-384** with
-  SHA-256 or SHA-384, Ed25519, or ML-DSA-65; never SHA-1 or MD5. Go refuses a SHA-1 certificate signature but **accepts a SHA-1 CRL signature** (`TestSHA1CRLSignatureHandling`), and reads no RSA modulus limit above 1024 bits, so bide checks the algorithm of every CRL and the modulus of every CA key itself (`TestRSA2048CAVerifiesInGoSoBideMustEnforceModulus`). The leaf schemes above are narrower than
+  SHA-256 or SHA-384, Ed25519, or ML-DSA-65; never SHA-1 or MD5, and the same allowlist applies to **every signed object the verifier accepts**: CRLs, OCSP responses and their responder certificates, and RFC 3161 tokens (CMS digest and signature algorithms) and the TSA certificate. Whether `x/crypto/ocsp` accepts SHA-1 signatures is confirmed by a test when that module is built; bide's own check does not depend on the answer. Go refuses a SHA-1 certificate signature but **accepts a SHA-1 CRL signature** (`TestSHA1CRLSignatureHandling`), and reads no RSA modulus limit above 1024 bits, so bide checks the algorithm of every CRL and the modulus of every CA key itself (`TestRSA2048CAVerifiesInGoSoBideMustEnforceModulus`). The leaf schemes above are narrower than
   the CA schemes on purpose: a leaf must be something a decision scheme can verify, a CA need not be. A hybrid approver stays bare-key
   (see Scope), and certificate-bound approvers therefore give up hybrid protection: a recorded
   limitation.
@@ -224,9 +224,9 @@ the log signer claimed for the first head that included the record, and two more
 
 - **Head times must be non-decreasing in size.** Over all signed heads of the run (sorted by size), a
   larger head with a timestamp earlier than a smaller head's, beyond `ClockTolerance` (default 60 s,
-  covering two writers with skewed clocks), marks the offending heads (the smaller heads stamped later than a larger head)
-  as **contradictory**. A decision is `not verified: contradictory head times` only when its smallest
-  covering head, or the pair that fixes its `A`, is implicated; other decisions of the run stay
+  covering two writers with skewed clocks), marks **both members of each inverted pair** (the larger head stamped early and the smaller head stamped later) as
+  **contradictory**; the larger head stamped early is the dangerous one for revocation, because it can pull `A` earlier for the decisions it first covers. A decision is `not verified: contradictory head times` only when its smallest
+  covering head, or the pair that fixes its `A`, is implicated (any decision whose `A` comes from either member of an inverted pair is `not verified` unless waived); other decisions of the run stay
   verifiable, so one skewed or planted head does not make a whole run unauditable. Nothing is repaired
   silently: an **explicit, recorded waiver** (`-waive-head-times`, naming the heads and the reason, signed
   by the auditor) is the only way past it.
@@ -334,14 +334,20 @@ short-lived certificates this design recommends. So, for a certificate `C` and a
 - Verdicts: **final** iff all of: there is usable status `S >= A(d) + W'`; `W' >= MinW` (a floor, default
   30 min: a decision made a minute before `notAfter` has a window of about one CRL period and is
   `provisional (short window)`, whatever the tier would otherwise be); and **the series is complete from
-  `S` to `L(C)`**, meaning the CRL at `L(C)` is in the series and the `CRLNumber`s from `S` to it are
-  contiguous (for a base with deltas, the same holds for the merged series). Without that, a producer
+  `S` to `L(C)`**, meaning the CRL at `L(C)` is present and verified, and the series from `S` to it has
+  **time coverage**: ordered by `thisUpdate`, each CRL's `thisUpdate` is no later than its predecessor's
+  `nextUpdate` (for a base with deltas, the same holds for the merged view, and the view at `L(C)` is
+  built from the base the delta names). `CRLNumber` need only increase (RFC 5280 section 5.2.3 requires
+  nothing more, and a CA may skip numbers or share one counter between bases and deltas), so a gap in the
+  numbers is not by itself a gap in coverage. Without this, a producer
   could omit a usable CRL inside `[A + W, L(C)]` that lists the certificate and present an earlier clean
   one as `S`. **provisional** iff the best usable status has `S < A(d) + W'`, or the series is not complete
   to `L(C)`, and a later usable one could still exist; **no information** iff no status falls in
   `[A(d), L(C)]`, which is `not verified: status missing`. The kit-hash record is tamper evidence (the
   bundle was not changed after it was assembled), **not completeness evidence**; completeness comes from
-  the contiguous series and the CRL at `L(C)`. The verdict states that
+  the CRL at `L(C)`, which RFC 5280 section 3.3 makes list every revocation up to its issue time, and
+  from time coverage, which also guarantees that a `certificateHold` listed and released before `L(C)` was
+  seen. A pilot CA is checked for its number scheme and prune timing before go-live (test plan item 32). The verdict states that
   "revocations first reported after `L(C)` are not covered" unless `expiredCertsOnCRL` or contractual
   retention applies.
 - **Evidence is journaled when the decision is counted.** The gate records, in the `approval-identity`
@@ -364,8 +370,8 @@ Rules for reading entries:
   `[A, L]`. A listing in any CRL of the series is a revocation from its time on; a later CRL that no
   longer lists the serial does not undo it. `certificateHold` (6) is treated as revoked for any decision
   during the hold, and a release (`removeFromCRL`, 8, which appears only in delta CRLs) never
-  retroactively validates it. A gap in `CRLNumber` between archived CRLs is "no information" for the
-  interval. A cache refuses a CRL whose `CRLNumber` is lower than the cached one for the same issuer key
+  retroactively validates it. A gap in time coverage (a CRL's `thisUpdate` later than the previous CRL's `nextUpdate`) is "no
+  information" for the interval; a gap in the `CRLNumber` values alone is not. A cache refuses a CRL whose `CRLNumber` is lower than the cached one for the same issuer key
   (a rollback).
 - **Every non-anchor certificate** of the accepted chain needs status under the same rule (RFC 5280
   section 6.1.3(a)(3)): an intermediate revoked with `E_int <= A(d)` invalidates the decision. For CA
@@ -487,9 +493,17 @@ archived at decision time. Mapping CA behavior to what this design needs:
   *series* rule the removal is a view operation only: the archived listing of a held certificate stays a
   revocation for decisions during the hold (the `certificateHold` rule), whatever a later delta removes. A
   delta is cumulative since its base, so one delta with the base is enough, and every delta and base is
-  archived in the series; a gap in `CRLNumber` between the archived base and the delta used is "no
-  information" for the interval. The usable-for-absence window applies to the delta's `thisUpdate` as it
+  archived in the series; a gap in time coverage between the archived base and the delta used is "no
+  information" for the interval. The first CRL after `notAfter` is evaluated as a merged view built from
+  the base its delta names: a base issued just after expiry may already have pruned the entry, so the
+  merged view, not the base alone, is the `L(C)` evidence, and the entry-level rule below applies. The usable-for-absence window applies to the delta's `thisUpdate` as it
   does to a full CRL's, and the listing-only rule applies to anything after `L(C)`.
+- **Critical entry extensions make a CRL unusable.** A CRL entry carrying a critical extension bide does not
+  process (for example `certificateIssuer`, 2.5.29.29, which marks an indirect entry) makes the whole CRL
+  "status unknown" (RFC 5280 sections 5.3 and 6.3.3), as a critical CRL-level extension does. Go exposes
+  entry extensions with their critical flag, so this is checked by bide and tested. The merged
+  `nextUpdate` (the earlier of base and delta) governs staleness, so a week-old base does not make a
+  fresh delta fresh and is not accepted on its own `nextUpdate`.
 - **Where CRLs come from.** The refresher fetches **only from URLs configured in the `IdentityPolicy`**;
   a certificate's CRL distribution point is a consistency check (it must equal a configured URL), never
   a thing to fetch. The intake accepts a chain from a client, and fetching URLs named in client-supplied
@@ -646,7 +660,8 @@ intermediates, `Distrust` times, EKU, policy OID, `Canonical` name and version, 
 erasure stays tractable and a run does not carry every person id of the gate), the accepted chain and
 anchor per counted decision, the **hashes of the status bytes the gate relied on**, the time source, and
 the rules and verifier versions. The status bytes themselves (a CRL can be megabytes) are stored once, by
-content hash, in an insert-once `approval-status:<sha256>` record shared by every call that relied on
+content hash, in an insert-once `approval-status:<sha256>` record that is **per run** (deduplicated within a run, never a
+global store, so a run stays self-contained and per-run redaction works) and shared by every call of the run that relied on
 them, so the journal does not repeat a CRL per call (long-term validation keeps its copy). Older binaries ignore it. The identity map, grace values and the rest change over time; without
 them in the record the mapping at `A(d)` is unknowable years later.
 
@@ -664,6 +679,10 @@ three layers, and only the first prevents anything:
    an old process that counted bare keys) is treated by the new gate as **superseded, and the gate
    re-asks** through the existing re-ask mechanism. This does not stop that old process from having acted
    on its own count; it stops the new fleet from trusting it, and leaves a record an auditor can see.
+   If the superseded plain-name tally already led to an execution by an old process, the re-ask **must not
+   re-run the call**: the execution record is kept and the decision is flagged `disputed`. Anyone able to
+   write a plain-name tally can force identity-bound gates into re-asks; that is an availability effect
+   only and the same trust boundary as the journal itself.
 3. *Audit.* The pause note (`ApprovalWait`, decoded leniently, pinned by a test) gains additive fields
    written when the gate is created: `identity_bound`, `identity_kinds` (a digest of the sorted
    `approver=bare|cert` pairs) and `identity_policy_digest`. The auditor requires the
@@ -742,11 +761,11 @@ Properties that must hold (invariants unless noted):
   recovery, `RecoverLoop` resume and retry of a retry-safe tool alike (one pre-execution function), with
   `RoutineGrace` applied the same at execution as at count time.
 - **FinalNeedsCompleteSeries**: a decision is never `final` unless the CRL at `L(C)` is in the series and
-  the `CRLNumber`s from `S` to it are contiguous, and `W' >= MinW`; omitting a usable listing CRL from the
+  the series from `S` to it has time coverage, and `W' >= MinW`; omitting a usable listing CRL from the
   middle of the series must fail the property (the N2 counterexample).
 - **DistrustAfter**: no decision with `A(d)` at or after an anchor's or intermediate's distrust time
   counts under it, status signed by that issuer at or after the time is "no information", the auditor's
-  overlay applies in addition to the recorded policy, and decisions before it are unaffected; with a compromised-CA action (`MisIssue`
+  overlay applies in addition to the recorded policy, and decisions before it are unaffected, except where their status evidence comes from the distrusted issuer after that time (that evidence is "no information", so such a decision drops to `provisional` or `not verified: status missing`); with a compromised-CA action (`MisIssue`
   after the compromise time) and no `Distrust` the forged decisions count, with it they do not.
 - **StaleNeverUncounts**: stale or missing status never removes a counted decision (the gate pauses); a
   revocation with `E <= A(d)` removes it permanently; no flapping.
@@ -895,7 +914,8 @@ asserting the same counted set and the same reason:
     present: per `E` versus `A`. With `expiredCertsOnCRL` on CRL 2: usable. `W'` shrinks for a decision
     near `notAfter`.
 13. `certificateHold` then release: the series still invalidates decisions with `A` in the hold; a gap in
-    `CRLNumber` is "no information" for the interval.
+    time coverage is "no information" for the interval, and a gap in `CRLNumber` values with coverage is
+    not.
 14. an intermediate revoked with `E_int <= A`: leaf decisions do not count; leaf status checked for every
     non-root certificate.
 15. **time evidence** (H2): head times not non-decreasing in size beyond `ClockTolerance`: the run is
@@ -957,7 +977,7 @@ asserting the same counted set and the same reason:
     against OpenSSL for the same chains.
 31. **confirmation-pass gaps** (each a test): `W'` near zero gives `provisional (short window)` below
     `MinW`; a producer omitting a listing CRL from the middle of `[A + W, L(C)]` cannot reach `final`
-    (the series must be contiguous to the CRL at `L(C)`, and `L(C)` is the first CRL strictly after
+    (the series must have time coverage to the CRL at `L(C)`, and `L(C)` is the first CRL strictly after
     `notAfter`); startup refuses `CAPeriod > ExecStatusAge / 2`, and a 30 min CRL against a 15 min
     `ExecStatusAge` is refused rather than pausing half the time; the alarm is at 50% everywhere; the
     post-terminal hold: stale status holds without writing a tally, a revoked-before-execution decision
@@ -979,13 +999,24 @@ asserting the same counted set and the same reason:
     exceed the base's, a delta older than its base, a delta from another issuer key or with an issuing
     distribution point, a missing indicator, a non-critical indicator: each is "status unknown" and never a
     partial answer; `removeFromCRL` removes an entry from the merged view but the archived hold still
-    invalidates decisions during it; a gap in the series between base and delta is "no information"; an AD
+    invalidates decisions during it; a gap in time coverage between base and delta is "no information"; an AD
     CS-style cadence (weekly base, hourly delta, 8 h certificates) gives `final` for a decision whose
     window the deltas cover; a delta replayed from before a revocation is refused by the number rule.
 30. model 1b: the configurations above, including the expected counterexamples (`WithholdCRL` and
     `RollbackCRL` without the freshness and number rules; `SkewHead` without the non-decreasing rule;
     `MisIssue` without name constraints; the direct-write deadlock without the gate's `Anchor` step), and
     the Go refinement test.
+
+32. **delta and pilot-CA conformance** (against a real CA, not only the test CA): a pilot-CA conformance
+    check run against the bank's actual CA (AD CS, and OpenSSL `ca -gencrl` and smallstep as independent
+    implementations) records its `CRLNumber` scheme (consecutive, skipping, shared base and delta counter),
+    its prune timing in the base-and-delta regime (does the merged view at the first CRL after `notAfter`
+    still list a revoked, expired certificate?), and its behaviour on `certificateHold` and
+    `removeFromCRL`; a critical entry extension (`certificateIssuer`) makes the CRL unusable; a week-old
+    base with a fresh delta is stale by the earlier `nextUpdate`; a series with skipped numbers but time
+    coverage reaches `final`, and a series with a time gap does not; the SHA-1 refusal holds for a
+    hand-built CRL, OCSP response and RFC 3161 token (bide's own check, not Go's), and the OCSP library's
+    SHA-1 behaviour is recorded by a test.
 
 ## Build plan (after the decisions)
 
@@ -994,7 +1025,7 @@ asserting the same counted set and the same reason:
    step, the **execution-time status re-check** and its state transitions, the `:ident` tally suffix, `DistrustAfter`, the **RFC 3161 token verification for
    gates that set `IndependentTime`**; test CA; model 1b configurations. An independent PKI review of
    this design, and of step 1 before it merges, gates the work; the critical and high findings of the
-   assessment are exit criteria for step 1.
+   assessment are exit criteria for step 1, with the pilot-CA conformance check (test plan item 32).
 2. CRL refresher, `bide identity`, live gate pause behavior, intake `cert` and 503, `bide approve -cert`,
    bide-hsm certificate pairing, the pause-note fields and the `approval-identity` record, and **delta CRL
    merging** (base and delta archive, indicator and number checks, `removeFromCRL`).
@@ -1096,7 +1127,8 @@ These are engineering choices the design settles; each can be reopened if the us
 16. **Staging and review.** Four steps, each its own reviewed PR; an independent PKI review of the design
     before the build and of step 1 before it merges; the critical and high assessment findings are exit
     criteria for step 1, together with the confirmation pass's findings N2, N3, N5 and the downgrade
-    residual; commands under `bide identity` (`fetch-crl`, `check`, `kit`).
+    residual, and the conformance check of the pilot CA (test plan item 32: number scheme, prune timing in
+    the delta regime, critical entry extensions) passing; commands under `bide identity` (`fetch-crl`, `check`, `kit`).
 
 ### Still open for the user
 
