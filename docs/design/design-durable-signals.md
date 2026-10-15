@@ -71,8 +71,9 @@ func Ack(ctx context.Context, d *Journal, runID, channel, key string) error
 ```go
 // Signal delivers a single-shot signal to a run, journaled at-most-once by name: a redelivery
 // (a retried webhook) is a no-op and the first payload wins. Safe from any process; the
-// store's PK / ON CONFLICT is the cross-process dedup. After delivering, wake the run.
-func (j *Journal) Signal[T any](ctx context.Context, runID, name string, payload T) error
+// store's PK / ON CONFLICT is the cross-process dedup. After delivering, wake the run. The
+// record notes when it was written (recorded_at, WithClock else the context's clock), informational.
+func (j *Journal) Signal[T any](ctx context.Context, runID, name string, payload T, opts ...AnswerOption) error
 
 // Enqueue appends a message to an ordered channel for a run, deduped by key: a redelivery with
 // the same (runID, channel, key) is a no-op and the first payload wins. At-most-once per key.
