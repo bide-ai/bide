@@ -28,6 +28,35 @@
 (* while its holder is still in its round (a stalled or slow POST) only    *)
 (* within the budget MaxSlow.                                              *)
 (*                                                                          *)
+(* The all-clear (Clears): an event that stops being current, and that a   *)
+(* receiver was, or may have been, told of (a claim is the trace of a      *)
+(* delivery attempt: a request can land although its reply is lost), is    *)
+(* owed a resolved notification. It is a key of its own, r_<event>, with   *)
+(* the records and the rounds of any key, and one difference: no deadline, *)
+(* so it is never overdue. It is owed once the event is acked, or cleared  *)
+(* with a claim in the trail, and not current; a deliverer pass may start  *)
+(* it then (the catch-up scan of a drive end, a recovery pass or a sweep). *)
+(* An event still open with a claim and no longer current is cleared by    *)
+(* the ordinary step 3 first. An event never claimed is not told of.       *)
+(*                                                                          *)
+(* Routing and escalation (Levels). Routing needs no variable of its own: *)
+(* an event goes to one receiver, and a gate whose approvers are routed to *)
+(* several is several keys (to:<receiver>:<key>), each a key of its own    *)
+(* with the records, the claims and the rounds of any key, so each         *)
+(* receiver has its own acknowledgement. Two Events model two receivers    *)
+(* of one gate; Bug "SharedAck" is the one-key fan-out, in which one        *)
+(* receiver's acknowledgement closes the other's. Escalation: an event e   *)
+(* that is not acknowledged by its deadline (EscMode "unacked") or, for an *)
+(* approval, still stands (EscMode "undecided"), has the keys x<l>_e,      *)
+(* l = 1..Levels, the steps of a bounded chain. Step l is observed, by the *)
+(* ordinary step 2, only if the prefix the deliverer loaded shows e not    *)
+(* cleared, and (unacked) neither e nor an earlier step acknowledged, and  *)
+(* e's deadline (l = 1) or step l-1's own deadline has passed, step l-1    *)
+(* observed; the append at the loaded position makes that check atomic     *)
+(* with the observation. A step stops being current with e, has no         *)
+(* overdue record (its deadline is the next step's), and gets an           *)
+(* all-clear like any other key.                                           *)
+(*                                                                          *)
 (* The lifecycle is an input: cur[e] is whether event e still stands in    *)
 (* the run's journal (a halt not resolved, an approval not decided, a run  *)
 (* aborted). No action of the protocol writes it; NotifyLifecycle.tla      *)
@@ -52,6 +81,9 @@ CONSTANTS
   Resolve,    \* the environment may end an event (ResolveHalt, a decision, the run ended)
   UseLease,     \* a deliverer starts only under the run's lease (the usual deliverer)
   Notice,     \* model the overdue notice (sent by the holder in its round, or by a peer)
+  Levels,     \* escalation steps per event (0: none)
+  EscMode,    \* "unacked": e not acknowledged by its deadline; "undecided": e still stands
+  Clears,     \* model the all-clear: a resolved notification, key r_<event>, for each event
   LongClaims, \* an event's claim may outlast any round (a long WithNotifyClaimTTL): its lapse
               \* is not assumed (no fairness); a notice's short claim still lapses
   Holder,     \* what a claim names: "deliverer" (a deliverer of a process incarnation) or
@@ -60,15 +92,28 @@ CONSTANTS
 
 ASSUME FailCount \in {"memory", "trail"} /\ Holder \in {"deliverer", "process"}
 ASSUME Bug \in {"none", "AckFirst", "NoUntil", "NoLapse", "NoSeq", "NoOverdue", "MemFailingSince",
-                "NoStaleCheck", "NoDoneCheck", "AckNoRetry", "NoPeerNotice", "NoNoticeClaim"}
-ASSUME Notice \in BOOLEAN /\ LongClaims \in BOOLEAN
+                "NoStaleCheck", "NoDoneCheck", "AckNoRetry", "NoPeerNotice", "NoNoticeClaim",
+                "ClearEarly", "ClearUnclaimed", "ClearOverdue", "NoClear", "SharedAck",
+                "EscEarly", "EscSkip", "EscWhenAcked", "NoEscStop", "NoEsc", "DropUnrouted"}
+ASSUME Notice \in BOOLEAN /\ LongClaims \in BOOLEAN /\ Clears \in BOOLEAN
+ASSUME Levels \in 0..2 /\ EscMode \in {"unacked", "undecided"}
 ASSUME Reqs >= 1 /\ FailAfter >= 1 /\ MaxRounds >= 1 /\ Slots >= 1 /\ Episodes \in 0..2
 
 None == "none"
 NoHolder == <<"none", 0, 0>>
 RecKeys == <<"rec0", "rec1">>
 RecKey(k) == RecKeys[k + 1]
-Keys == Events \cup {RecKey(k) : k \in 0..Episodes - 1}
+\* The all-clear of event e has a key of its own (resolved:<key>), with its own records.
+ResOf(e) == "r_" \o e
+\* The steps of event e's escalation chain (x<l>_<e>): keys of their own, from step 1 to Levels.
+EscKey(e, l) == "x" \o (IF l = 1 THEN "1" ELSE "2") \o "_" \o e
+EscKeys == {EscKey(e, l) : e \in Events, l \in 1..Levels}
+EscBase == [k \in EscKeys |-> CHOOSE e \in Events : \E l \in 1..Levels : k = EscKey(e, l)]
+EscLvl == [k \in EscKeys |-> CHOOSE l \in 1..Levels : k = EscKey(EscBase[k], l)]
+\* The keys an all-clear is owed for: the events and the steps of their chains.
+ClearEvents == Events \cup EscKeys
+ResKeys == IF Clears THEN {ResOf(e) : e \in ClearEvents} ELSE {}
+Keys == Events \cup EscKeys \cup {RecKey(k) : k \in 0..Episodes - 1} \cup ResKeys
 \* The overdue notice of event e has a key of its own (overdue:<key>), with its own records.
 NoticeOf(e) == "n_" \o e
 NoticeKeys == {NoticeOf(e) : e \in Keys}
@@ -135,6 +180,8 @@ LastClaim(s, e) == IF ClaimsOf(s, e) = {} THEN 0
                    ELSE CHOOSE i \in ClaimsOf(s, e) : \A j \in ClaimsOf(s, e) : j <= i
 \* Step 1's stop: acked (Bug "NoDoneCheck": not read) or cleared.
 Done(s, e) == (Bug # "NoDoneCheck" /\ Has(s, "acked", e)) \/ Has(s, "cleared", e)
+              \* Bug "SharedAck": one receiver's acknowledgement closes the other's (one key for both).
+              \/ (Bug = "SharedAck" /\ e \in Events /\ \E o \in Events : o # e /\ Has(s, "acked", o))
 Acked(e) == Has(trail, "acked", e)
 NoticeAcked(e) == Has(trail, "acked", NoticeOf(e))
 \* The position of e's overdue record in s, 0 if none.
@@ -156,7 +203,9 @@ LiveOther(a, s, e) == LET l == LastClaim(s, e) IN
 \* Step 3's check, read at the step: the journal for an event of the run, the trail (or, Bug
 \* "MemFailingSince", the failing passes) for recovery_failing.
 Current(e) ==
-  IF e \in Events THEN cur[e]
+  IF e \in ResKeys THEN TRUE   \* an all-clear is a fact: it never stops being owed
+  ELSE IF e \in EscKeys THEN Bug = "NoEscStop" \/ cur[EscBase[e]]   \* a step stands while its event does
+  ELSE IF e \in Events THEN cur[e]
   ELSE IF Durable THEN EpisodeOpen(trail) /\ e = RecKey(NRec(trail))
   ELSE broken /\ e = RecKey(opened - 1)
 
@@ -166,6 +215,24 @@ FailRounds == (FailAfter + Reqs - 1) \div Reqs
 FailingDue(a, s, e) ==
   IF FailCount = "trail" THEN Cardinality(ClaimsOf(s, e)) >= FailRounds
   ELSE fails[a][e] >= FailAfter
+
+\* Whether the event a key stands for still stands in the journal: an event's own cur, a step's its
+\* event's.
+CurK(k) == IF k \in EscKeys THEN cur[EscBase[k]] ELSE cur[k]
+
+\* The escalation chain. A step is not owed once its event is satisfied: acknowledged, or the step
+\* before it was (EscMode "unacked"); an approval ("undecided") is satisfied only by being decided
+\* (it stops standing). Read on the prefix s a deliverer loaded, so the append that observes the step
+\* is refused if the trail has moved.
+Satisfied(s, b) == EscMode = "unacked" /\ (Has(s, "acked", b) \/ \E l \in 1..Levels : Has(s, "acked", EscKey(b, l)))
+EscOK(s, k) ==
+  LET b == EscBase[k]
+      l == EscLvl[k]
+      prevDue == IF l = 1 \/ Bug = "EscSkip" THEN b \in past
+                 ELSE EscKey(b, l - 1) \in past /\ Has(s, "observed", EscKey(b, l - 1))
+  IN /\ Bug = "EscEarly" \/ prevDue
+     /\ cur[b] /\ ~Has(s, "cleared", b)
+     /\ Bug = "EscWhenAcked" \/ ~Satisfied(s, b)
 
 \* A deliverer is in its round: sending the notice or the event under its claim, or holding the
 \* sink's acceptance.
@@ -201,12 +268,31 @@ Init == InitProto /\ cur = [e \in Events |-> TRUE]
 (* The deliverers                                                          *)
 (***************************************************************************)
 
+\* Who may have been told of e: a delivery of it was attempted. A claim is its trace: the request
+\* can land although its reply is lost.
+Told(e) == ClaimsOf(trail, e) # {}
+\* The all-clear of e is owed: e is closed (acked, or cleared) and no longer stands, and a delivery
+\* of it was attempted. Bug "ClearEarly": owed while e stands; "ClearUnclaimed": owed with no
+\* attempt; "NoClear": never owed.
+Owed(e) ==
+  /\ Clears /\ Bug # "NoClear"
+  /\ Bug = "ClearEarly" \/ ~CurK(e)
+  /\ Acked(e) \/ Has(trail, "cleared", e)
+  /\ Bug = "ClearUnclaimed" \/ Told(e)
+\* A pass may start on a key the journal shows as standing, one the trail holds open, or an
+\* all-clear that is owed.
+Startable(e) ==
+  \/ e \in Events /\ cur[e]
+  \/ Open(e)
+  \/ e \in EscKeys /\ Bug # "NoEsc" /\ EscOK(trail, e)
+  \/ \E o \in ClearEvents : e = ResOf(o) /\ Owed(o)
+
 \* A pass starts (the drive-end handoff, a RecoverLoop pass, a NotifyPending sweep) for a key the
 \* journal shows as standing, or one the trail holds open; it loads the trail. Under UseLease the
 \* process takes the run's lease, unless another process holds it.
 Start(a, e) ==
   /\ pc[a] = "idle"
-  /\ (e \in Events /\ cur[e]) \/ Open(e)
+  /\ Startable(e)
   /\ ~Done(trail, e)
   /\ UseLease => lease \in {None, a[1]}
   /\ lease' = IF UseLease THEN a[1] ELSE lease
@@ -238,9 +324,11 @@ Decide(a) ==
      IN
      IF Done(s, e) THEN FinishVars(a) /\ UNCHANGED <<boundHit, len>>
      ELSE IF ok[a] THEN To("acked")
-     ELSE IF ~Has(s, "observed", e) THEN To("observed")
+     ELSE IF ~Has(s, "observed", e) THEN
+       IF e \in EscKeys /\ ~EscOK(s, e) THEN FinishVars(a) /\ UNCHANGED <<boundHit, len>>
+       ELSE To("observed")
      ELSE IF Bug # "NoStaleCheck" /\ ~Current(e) THEN To("cleared")
-     ELSE IF Bug # "NoOverdue" /\ e \in past /\ ~Has(s, "overdue", e) THEN To("overdue")
+     ELSE IF Bug # "NoOverdue" /\ e \in past /\ e \notin EscKeys /\ ~Has(s, "overdue", e) THEN To("overdue")
      ELSE IF FailingDue(a, s, e) /\ ~Has(s, "failing", e) THEN To("failing")
      \* Another holder's live claim: stop. If that claim was taken before the event went overdue,
      \* its holder may be gone for the whole claim, so this deliverer sends the overdue notice under
@@ -277,7 +365,7 @@ Write(a) ==
          taken == Len(trail) # len[a]
          put == IF taken THEN [trail EXCEPT ![at] = r] ELSE Append(trail, r)
          isClaim == act[a] = "claimed"
-         lateNow == isClaim /\ e \in past /\ ~Has(trail, "overdue", e)
+         lateNow == isClaim /\ e \in past /\ e \notin EscKeys /\ ~Has(trail, "overdue", e)
          failNow == isClaim /\ failed[e] >= FailAfter /\ ~Has(trail, "failing", e)
          \* What the deliverer does once its record is in at position at.
          Won == IF isClaim THEN
@@ -506,6 +594,11 @@ ClaimLapse(i) ==
                  memFS, memD, deliv, stale, late, failed, lateFail, crashes, lost, ambig, sfail,
                  boundHit>>
 
+\* The keys that have a deadline_at: not an all-clear, which is never overdue (it is a statement
+\* that nothing needs doing; missing one leaves an incident open, which fails safe). Bug
+\* "ClearOverdue": it has one.
+DeadlineKeys == IF Bug = "ClearOverdue" THEN Keys ELSE Keys \ ResKeys
+
 \* An observed event's deadline_at passes.
 Deadline(e) ==
   /\ Has(trail, "observed", e) /\ e \notin past
@@ -558,7 +651,7 @@ ProtoNext ==
 \* Time and the faults of the world, which the lifecycle (cur) is not part of.
 TimeNext ==
   \/ \E i \in Pos(trail) : ClaimLapse(i)
-  \/ \E e \in Keys : Deadline(e)
+  \/ \E e \in DeadlineKeys : Deadline(e)
   \/ Elapse \/ \E p \in Procs : ElapseMem(p)
   \/ Break \/ Fix \/ LeaseLapse
 EnvNext == \E e \in Events : ResolveEvent(e)
@@ -578,7 +671,7 @@ Fairness ==
   /\ \A a \in Dlv : WF_vars(DlvNext(a))
   /\ \A p \in Procs : WF_vars(RecFail(p)) /\ WF_vars(RecOK(p)) /\ WF_vars(ElapseMem(p))
   /\ \A i \in 1..MaxLen : WF_vars(ClaimLapse(i) /\ (LongClaims => trail[i].e \in NoticeKeys))
-  /\ \A e \in Keys : WF_vars(Deadline(e))
+  /\ \A e \in DeadlineKeys : WF_vars(Deadline(e))
   /\ WF_vars(Elapse) /\ WF_vars(LeaseLapse)
 LiveSpec == Spec /\ Fairness
 
@@ -661,8 +754,9 @@ ClaimWon ==
 \* 4. Overdue is raised by the deadline: at most one round of a key is claimed past its deadline
 \* before overdue is in the trail (the one whose check raced the deadline); and, under fairness,
 \* an open event past its deadline gets overdue.
-OverdueBounded == \A e \in Keys : late[e] <= 1
-OverdueRaised == \A e \in Keys : (e \in past /\ Open(e)) ~> (~Open(e) \/ Has(trail, "overdue", e))
+OverdueKeys == Keys \ EscKeys   \* a step has no overdue record: its deadline is the next step's
+OverdueBounded == \A e \in OverdueKeys : late[e] <= 1
+OverdueRaised == \A e \in OverdueKeys : (e \in past /\ Open(e)) ~> (~Open(e) \/ Has(trail, "overdue", e))
 
 \* 4. The overdue notice. It is sent (acked) while the event is open and overdue, under fairness;
 \* with long claims (LongClaims), whenever the event's last claim predates its overdue record,
@@ -709,9 +803,87 @@ NoStaleDelivery == \A e \in Keys : stale[e] = 0
 \* What the design does not claim (limits/not-exactly-once): exactly once.
 ExactlyOnce == \A e \in Keys : deliv[e] <= 1
 
+\* 8. The all-clear (Clears). None is observed, let alone delivered, for an event that still stands;
+\* none for an event nobody was told of; none before the event is closed (acked, or cleared by the
+\* ordinary step 3); and an all-clear never goes overdue. The inputs it relies on: an event that
+\* stops standing does not stand again (ResolveEvent only clears cur), and keys are not reused.
+ClearNeverEarly ==
+  Clears => \A e \in ClearEvents :
+    (Has(trail, "observed", ResOf(e)) \/ deliv[ResOf(e)] > 0) => ~CurK(e)
+ClearOnlyIfTold ==
+  Clears => \A e \in ClearEvents : Has(trail, "observed", ResOf(e)) => Told(e)
+ClearAfterClose ==
+  Clears => \A e \in ClearEvents : Has(trail, "observed", ResOf(e)) => Acked(e) \/ Has(trail, "cleared", e)
+ClearNeverOverdue ==
+  \A r \in ResKeys : ~Has(trail, "overdue", r) /\ ~Has(trail, "observed", NoticeOf(r)) /\ ndeliv[r] = 0
+\* Under fairness, with a sink that accepts in the end: every event that stopped standing after a
+\* delivery of it was attempted gets its all-clear acknowledged.
+ClearsDelivered ==
+  Clears => \A e \in ClearEvents : (~CurK(e) /\ Told(e)) ~> Acked(ResOf(e))
+\* What does not hold (limits/clear-before-event): the all-clear is not delivered after the event.
+\* An event cleared while its request was in flight or its reply lost is never acked, and its
+\* all-clear is delivered all the same; a receiver matches them by key, in either order.
+ClearAfterEventAck ==
+  Clears => \A e \in ClearEvents : Acked(ResOf(e)) => Acked(e)
+
+\* 9. Escalation (Levels). A step is observed only when it is due and its event is not satisfied, on
+\* the very prefix the append is made at (so no step is observed after the event, or an earlier step,
+\* was acknowledged, or after the event was cleared); steps are observed in order; the chain ends at
+\* Levels (its keys are all there are).
+EscDue(k) == IF EscLvl[k] = 1 THEN EscBase[k] \in past ELSE EscKey(EscBase[k], 1) \in past
+EscOnlyIfDue == \A k \in EscKeys : Has(trail, "observed", k) => EscDue(k)
+ObsPos(s, k) == CHOOSE i \in Pos(s) : s[i].k = "observed" /\ s[i].e = k
+EscChain ==
+  \A k \in EscKeys : (EscLvl[k] > 1 /\ Has(trail, "observed", k)) =>
+    Has(trail, "observed", EscKey(EscBase[k], 1)) /\ ObsPos(trail, EscKey(EscBase[k], 1)) < ObsPos(trail, k)
+EscNotWhenSatisfied ==
+  \A k \in EscKeys : Has(trail, "observed", k) =>
+    LET pre == SubSeq(trail, 1, ObsPos(trail, k) - 1)
+    IN ~Satisfied(pre, EscBase[k]) /\ ~Has(pre, "cleared", EscBase[k])
+\* Under fairness: a step that is due and whose event is not satisfied is observed, unless that
+\* changes first (the event stops standing, is satisfied, or cleared).
+EscRaised == \A k \in EscKeys : EscOK(trail, k) ~> (Has(trail, "observed", k) \/ ~EscOK(trail, k))
+\* A step observed for an event that no longer stands is closed (cleared, or acked before): the chain
+\* stops. And a step observed for one that stands is acknowledged (a sink that accepts in the end).
+EscStops ==
+  \A k \in EscKeys : (~cur[EscBase[k]] /\ Has(trail, "observed", k)) ~> (Acked(k) \/ Has(trail, "cleared", k))
+EscDelivered == \A k \in EscKeys : Has(trail, "observed", k) ~> (Acked(k) \/ Has(trail, "cleared", k))
+
 \* The configuration's bound on rounds never blocks a deliverer.
 BoundNotHit == ~boundHit
 
-\* Vacuity (check.sh): a notification is delivered.
-EffectNotReachable == \A e \in Keys : deliv[e] = 0
+\* Vacuity (check.sh): a notification is delivered. With Clears and Levels, an escalation step is
+\* delivered and so is that step's all-clear: the properties about steps and their all-clears hold
+\* vacuously otherwise (the event's own all-clear is not enough). With Levels alone, the first step is
+\* delivered; with Clears alone, an all-clear is.
+EscDelivNotReachable == \A k \in EscKeys : deliv[k] = 0
+EscClearNotReachable == \A k \in EscKeys : deliv[ResOf(k)] = 0
+EffectNotReachable ==
+  IF Clears /\ Levels > 0 THEN \A k \in EscKeys : deliv[k] = 0 \/ deliv[ResOf(k)] = 0
+  ELSE IF Clears THEN \A r \in ResKeys : deliv[r] = 0
+  ELSE IF Levels > 0 THEN \A e \in Events : deliv[EscKey(e, 1)] = 0
+  ELSE \A e \in Keys : deliv[e] = 0
+
+(***************************************************************************)
+(* Routing of an approval by its approvers (core: routed in notify_route.go).*)
+(* An approver with a route is reached through it; one with none through the *)
+(* route of the kind, which is therefore delivered to as well whenever any   *)
+(* approver has none, and not otherwise. The deliveries are the keys        *)
+(* to:<receiver>:<key>, each with the records of any key (route-two); this   *)
+(* checks the choice of receivers, over every map of three approvers to two  *)
+(* receivers or no route, and every route of the kind. Bug "DropUnrouted"   *)
+(* leaves the route of the kind out: an unrouted approver is never told.     *)
+(***************************************************************************)
+RAppr == {"a1", "a2", "a3"}
+RRecvs == {"r1", "r2"}
+RMaps == [RAppr -> RRecvs \cup {"none"}]
+RDeliveries(m, kind) ==
+  {m[x] : x \in {y \in RAppr : m[y] # "none"}}
+    \cup (IF Bug # "DropUnrouted" /\ \E z \in RAppr : m[z] = "none" THEN {kind} ELSE {})
+\* (Stated over the state so that TLC reports a violation as one, not as a bad constant.)
+RouteReaches == Len(trail) >= 0 /\ \A m \in RMaps, kind \in RRecvs, a \in RAppr :
+  (IF m[a] = "none" THEN kind ELSE m[a]) \in RDeliveries(m, kind)
+\* The route of the kind is not delivered to when every approver is routed (unless it is routed to).
+RouteNoExtra == Len(trail) >= 0 /\ \A m \in RMaps, kind \in RRecvs :
+  (\A a \in RAppr : m[a] # "none") => RDeliveries(m, kind) = {m[a] : a \in RAppr}
 =============================================================================

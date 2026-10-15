@@ -104,6 +104,7 @@ type cli struct {
 	st             term.Style      // the report's colors: off under -json and off a terminal
 	head           *audit.TreeHead // the signed tree a verify verb checked, for the banner
 	approverNote   bool            // a styled line dropped approverNote, which the banner says once
+	orphans        []string        // notifications: runs the open trail lists that have no journal in the store
 }
 
 // errStyle is the style of an error line on stderr: off under -json, as the report is.
@@ -250,10 +251,11 @@ var verbs = map[string]func(*cli, []string){
 	"verify-run":               (*cli).verifyRun,
 	"verify-evidence":          (*cli).verifyEvidence,
 	"verify-approvals":         (*cli).verifyApprovals,
-	"verify-receipts":          (*cli).verifyReceipts,
-	"verify-decision-coverage": (*cli).verifyDecisionCoverage,
+	"notifications":            (*cli).notifications,
 	"prove-absent":             (*cli).proveAbsent,
 	"verify-absent":            (*cli).verifyAbsent,
+	"verify-receipts":          (*cli).verifyReceipts,
+	"verify-decision-coverage": (*cli).verifyDecisionCoverage,
 }
 
 // Verbs returns the name of every verb, sorted.
@@ -413,8 +415,9 @@ var readFormats = []artifactFormat{
 	{"run certificate", audit.RunCertificateFormat, "verify-run"},
 	{"evidence package", audit.EvidenceFormat, "verify-evidence, verify-approvals"},
 	{"decision receipt", audit.ReceiptFormat, "verify-receipts"},
-	{"signed tree head", audit.STHFormat, "prove, prove-absent, and every head inside an artifact"},
-	{"journal export", audit.JournalExportFormat, "prove, prove-absent"},
+	{"signed tree head", audit.STHFormat, "prove, prove-absent, notifications, and every head inside an artifact"},
+	{"journal export", audit.JournalExportFormat, "prove, prove-absent, notifications"},
+	{"notify trail export", audit.NotifyTrailExportFormat, "notifications"},
 }
 
 func printVersion(w io.Writer, asJSON bool, st term.Style) {

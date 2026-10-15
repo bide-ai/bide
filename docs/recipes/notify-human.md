@@ -277,6 +277,9 @@ variable or a secret store, not in the code: anyone who has it can post to the c
 carries the run ID and tool name, never the tool's arguments or results, which can hold card numbers or
 personal data. Add detail only after deciding who may read it.
 
+The built-in notifier ([Notifications](../guides/notifications.md)) does this with a signed webhook, and
+`bide notify relay` forwards it to Slack and PagerDuty; `bide notify test` checks a receiver.
+
 In a service, call `n.Handle` in the same three places as the program does. Do not approve or resolve
 from a link in the message: decide with `bide approve` (it shows the call from the journal, then signs and checks the decision),
 in the viewer, or with `SubmitDecision` and `agent.ResolveHalt`, where the decision is signed and checked.
@@ -292,9 +295,9 @@ The `sent` map is in memory, so this recipe is a notifier, not a guarantee:
   the halt. A service that runs `RecoverLoop` finds it again; one that only calls `Run` does not.
 - **A failed POST is retried only when the event is reported again.** The event is marked sent after a 2xx,
   so a failure is retried on the next pass, but a run that is reported once (the error from `Run`) is not.
-- **There is no deadline or escalation.** A message nobody reads is not noticed.
+- **There is no deadline, escalation or routing.** A message nobody reads is not noticed, and every message goes to one place.
 
-The built-in notifier closes these gaps: its delivery state is kept in an audited log, so it survives restarts and crashes, retries without end, and is itself evidence of when the approvers were told. See the [notifications guide](../guides/notifications.md) and the [design note](../design/notifier.md). This recipe stays as the smallest notifier you can write by hand.
+The built-in notifier closes these gaps: its delivery state is kept in an audited log, so it survives restarts and crashes, retries without end, and is itself evidence of when the approvers were told, which `bide audit notifications` checks offline. It also sends an all-clear when an event stops being current, so the incident it opened can be closed, routes events to different receivers (approvals to the approvers' channel, halts to on-call), and escalates an event nobody acknowledged, or an approval nobody decided, to a second receiver with a deadline of its own. See the [notifications guide](../guides/notifications.md) and the [design note](../design/notifier.md). This recipe stays as the smallest notifier you can write by hand.
 
 ## What the viewer shows
 

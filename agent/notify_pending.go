@@ -24,6 +24,12 @@ import (
 // delivery that failed (those events are retried by the next sweep) and any run it could not read;
 // it does not stop at the first.
 //
+// When the trail signs and anchors its records (audit.NewAuditedEventStore beneath audit.NewNotifyTrail),
+// the sweep also signs again the trail of each run it looked at that grew past its last signed head,
+// within the anchor's timeout, so an outage of the anchor leaves an unattested stretch of trail only
+// until the next sweep; a failure is reported to the handler of WithNotifyErrors and is not the
+// sweep's error.
+//
 // What it can see is narrower than a drive. A gate is found from the run's approval-pending record.
 // A halt is found from an attempt marker that no not-started record voids and that has no result
 // after WithNotifyHaltAge (default 5 minutes): it cannot tell a halted effect from one a process it
@@ -47,6 +53,8 @@ func NotifyPending(ctx context.Context, j *Journal, n Notifier, trail NotifyTrai
 		return err
 	}
 	var errs []error
+	seen := map[string]bool{} // the trails of the runs the sweep looked at
+	var trails []string
 	for runID, err := range lister.Runs(ctx, sweepFilter) {
 		if err != nil {
 			errs = append(errs, fmt.Errorf("list runs for the notification sweep: %w (%w)", err, ErrStorage))
@@ -58,6 +66,11 @@ func NotifyPending(ctx context.Context, j *Journal, n Notifier, trail NotifyTrai
 		}
 		if IsSessionRun(runID) {
 			continue // the session drives it
+		}
+		e.queueScan(runID) // an event delivered earlier may have stopped being current
+		if name := NotifyTrailName(treeRootID(runID)); !seen[name] {
+			seen[name] = true
+			trails = append(trails, name)
 		}
 		if !IsSubRun(runID) {
 			if abortEntry, aborted, err := j.getEntry(ctx, runID, runAbortedStep); err != nil {
@@ -75,7 +88,7 @@ func NotifyPending(ctx context.Context, j *Journal, n Notifier, trail NotifyTrai
 					continue
 				}
 				ev := notifyEvent{key: AbortedKey(runID), kind: NotificationRunAborted, runID: runID, reason: "saga_aborted"}
-				if _, err := e.round(ctx, ev); err != nil {
+				if err := e.roundRouted(ctx, ev); err != nil {
 					errs = append(errs, fmt.Errorf("notification sweep: run %s: %w", runID, err))
 				}
 				continue
@@ -86,15 +99,29 @@ func NotifyPending(ctx context.Context, j *Journal, n Notifier, trail NotifyTrai
 			errs = append(errs, fmt.Errorf("notification sweep: read run %s: %w", runID, err))
 			continue
 		}
+		e.queueScanTrail(runStartRoot(runID, recs)) // a flow run with a mark in its ID is its own root
 		for _, ev := range e.pendingEvents(runID, recs) {
-			if _, err := e.round(ctx, ev); err != nil {
+			if err := e.roundRouted(ctx, ev); err != nil {
 				errs = append(errs, fmt.Errorf("notification sweep: run %s: %w", runID, err))
 			}
 		}
 	}
-	if err := e.flush(context.WithoutCancel(ctx)); err != nil {
+	if err := e.backfillOpen(ctx); err != nil { // events observed before the open trail existed
+		errs = append(errs, fmt.Errorf("notification sweep: list earlier events: %w", err))
+	}
+	e.queueScanOpen() // the all-clear of a run that is no longer unfinished
+	if err := e.flushDeliveries(context.WithoutCancel(ctx)); err != nil {
 		errs = append(errs, err)
 	}
+	// Last, after the deliveries have grown the trails: sign again any trail that grew past its last
+	// head, which an anchor outage or a process that died before anchoring left behind. Its failure
+	// goes to WithNotifyErrors, not to the sweep's result: it is not a delivery.
+	// The trails that belong to no run are signed too: the digest's and the open trail's segments and
+	// index (the list of events whose all-clear may be owed).
+	if _, ok := e.trail.(NotifyTrailAnchorer); ok {
+		trails = append(trails, e.globalTrails(ctx)...)
+	}
+	e.anchorTrails(ctx, trails...)
 	return errors.Join(errs...)
 }
 
@@ -143,10 +170,27 @@ func newestTime(recs []Record) (time.Time, bool) {
 // unfinished ones and the aborted ones.
 var sweepFilter = RunFilter{ExcludeHolding: []string{runCompleteStep, runCancelledStep}}
 
+// runStartRoot is the root run whose trail holds the events of runID, from its history: a plan
+// flow's run (its run:start records RunKindFlow) is its own root, whatever its ID holds, as the
+// flow files its events under; any other run is attributed to the root its ID names (treeRootID),
+// so a sub-agent's run is its root run's.
+func runStartRoot(runID string, recs []Record) string {
+	for _, r := range recs {
+		if r.Kind == StepValue && r.Name == runStartStep {
+			var s RunStart
+			if json.Unmarshal(r.Result, &s) == nil && s.kind() == RunKindFlow {
+				return runID
+			}
+			break
+		}
+	}
+	return treeRootID(runID)
+}
+
 // pendingEvents returns the events journaled in recs, the history of the unfinished run runID, that
 // still need a person. A sub-agent's run (its ID holds '>') is attributed to its root run.
 func (e *notifyEngine) pendingEvents(runID string, recs []Record) []notifyEvent {
-	root := treeRootID(runID)
+	root := runStartRoot(runID, recs)
 	have := make(map[string]bool, len(recs))
 	for _, r := range recs {
 		have[r.Name] = true

@@ -47,6 +47,8 @@ type exitFixture struct {
 	brokenFirst, brokenSecond                        string // no verdict on one policy, a disagreement on the other
 	fakePolicy                                       string // a tool result shaped like the policy leaf
 	absUnknownKey, allow                             string // allow: both policies' digests, one per line
+	notifyTrail, notifyTrailCut, notifyTrailLate     string // notification trails: complete, with its ack deleted, acknowledged past its deadline
+	notifySTH, notifySTHLate                         string // signed heads over the complete and the late trail
 }
 
 func must[T any](v T, err error) T {
@@ -191,6 +193,28 @@ func newExitFixture(t *testing.T) *exitFixture {
 	}
 	f.evidenceCert = file("evidence-cert.json", pkg)
 
+	// Notification trails, signed under the log key: complete, with the ack deleted, and late.
+	for _, tc := range []struct {
+		name   string
+		ackSec int
+		trail  *string
+		sth    *string
+	}{{"notify", 3, &f.notifyTrail, &f.notifySTH}, {"notify-late", 400, &f.notifyTrailLate, &f.notifySTHLate}} {
+		nf := newNotifyFixtureAt(t, priv).event(agent.ApprovalKey("r1", "c1", 0), agent.NotificationApprovalPending, tc.ackSec)
+		x, err := audit.ExportNotifyTrail(ctx, nf.es, nTrail)
+		if err != nil {
+			t.Fatal(err)
+		}
+		h, err := audit.SignNotifyTrail(ctx, nf.es, nTrail, signer, nat(30))
+		if err != nil {
+			t.Fatal(err)
+		}
+		*tc.trail, *tc.sth = file(tc.name+"-trail.json", x), file(tc.name+"-sth.json", h)
+		if tc.name == "notify" {
+			x.Leaves = slices.Delete(slices.Clone(x.Leaves), 2, 3)
+			f.notifyTrailCut = file("notify-trail-cut.json", x)
+		}
+	}
 	f.keys = file("keys.json", map[string]string{"a": f.pub})
 	f.sharedKeys = file("shared-keys.json", map[string]string{"a": f.pub, "b": f.pub})
 	f.identityPub = "01" + strings.Repeat("00", 31)
@@ -253,6 +277,9 @@ func exitCases(f *exitFixture) []exitCase {
 	}
 	approvals := func(evidence, keys string, extra ...string) []string {
 		return append([]string{"verify-approvals", "-evidence", evidence, "-pubkey", f.pub, "-call", "c1", "-need", "1", "-approvers", "a", "-approver-keys", keys}, extra...)
+	}
+	notif := func(trail, sth string) []string {
+		return []string{"notifications", "-trail", trail, "-sth", sth, "-pubkey", f.pub, "-as-of", "2026-10-13T09:01:00Z"}
 	}
 	return []exitCase{
 		// The command line itself.
@@ -372,6 +399,18 @@ func exitCases(f *exitFixture) []exitCase {
 		{name: "verify-evidence: a bide.audit.evidence.v4 package", args: []string{"verify-evidence", "-evidence", f.evidenceV4, "-pubkey", f.pub}, want: 4},
 		{name: "verify-evidence: another key", args: []string{"verify-evidence", "-evidence", f.evidence, "-pubkey", f.otherPub}, want: 1},
 
+		// notifications
+		{name: "notifications: genuine", args: notif(f.notifyTrail, f.notifySTH), want: 0},
+		{name: "notifications: a record deleted", args: notif(f.notifyTrailCut, f.notifySTH), want: 1},
+		{name: "notifications: acknowledged late", args: notif(f.notifyTrailLate, f.notifySTHLate), want: 1},
+		{name: "notifications: another key", args: []string{"notifications", "-trail", f.notifyTrail, "-sth", f.notifySTH, "-pubkey", f.otherPub, "-as-of", "2026-10-13T09:01:00Z"}, want: 1},
+		{name: "notifications: no head, not -unanchored", args: []string{"notifications", "-trail", f.notifyTrail, "-pubkey", f.pub, "-as-of", "2026-10-13T09:01:00Z"}, want: 1},
+		{name: "notifications: -unanchored", args: []string{"notifications", "-trail", f.notifyTrail, "-unanchored", "-as-of", "2026-10-13T09:01:00Z"}, want: 0},
+		{name: "notifications: nothing to read", args: []string{"notifications", "-unanchored"}, want: 2},
+		{name: "notifications: no -pubkey", args: []string{"notifications", "-trail", f.notifyTrail}, want: 2},
+		{name: "notifications: missing trail file", args: []string{"notifications", "-trail", f.missing, "-unanchored"}, want: 4},
+		{name: "notifications: trail not JSON", args: []string{"notifications", "-trail", f.notJSON, "-unanchored"}, want: 4},
+		{name: "notifications: a journal export as the trail (format)", args: []string{"notifications", "-trail", f.journal, "-unanchored"}, want: 4},
 		// verify-decision-coverage
 		{name: "verify-decision-coverage: no decisions", args: []string{"verify-decision-coverage", "-journal", f.journal, "-heads", f.sth, "-pubkey", f.pub}, want: 0},
 		{name: "verify-decision-coverage: a head signed in the future", args: []string{"verify-decision-coverage", "-journal", f.journal, "-heads", f.sthFuture, "-pubkey", f.pub}, want: 1},
@@ -579,7 +618,7 @@ func TestVersion(t *testing.T) {
 	if code != 0 || !strings.HasPrefix(stdout, "bide ") {
 		t.Fatalf("-version: exit %d:\n%s", code, stdout)
 	}
-	formats := []string{audit.ProofFormat, audit.AbsenceFormat, audit.RunCertificateFormat, audit.EvidenceFormat, audit.ReceiptFormat, audit.STHFormat, audit.JournalExportFormat}
+	formats := []string{audit.ProofFormat, audit.AbsenceFormat, audit.RunCertificateFormat, audit.EvidenceFormat, audit.ReceiptFormat, audit.STHFormat, audit.JournalExportFormat, audit.NotifyTrailExportFormat}
 	for _, f := range formats {
 		if !strings.Contains(stdout, f) {
 			t.Errorf("-version does not name format %s:\n%s", f, stdout)

@@ -4,12 +4,16 @@ import "time"
 
 // NotifyEvent is the state of one event, folded from a notification trail.
 type NotifyEvent struct {
-	Key        string
-	Kind       string // the NotificationKind recorded at observation
-	RunID      string
-	EventAt    time.Time
-	ObservedAt time.Time
-	DeadlineAt time.Time
+	Key                 string
+	Kind                string // the NotificationKind recorded at observation
+	RunID               string
+	EventAt             time.Time
+	ObservedAt          time.Time
+	DeadlineAt          time.Time
+	OpRun, OpKind, OpID string // recorded at observation for a halt or an approval (see NotifyRecord)
+	Reason              string // recorded at observation: for a resolved event, why the event it clears ended
+	Receiver            string // recorded at observation: the receiver the event is to, "" for the default
+	Level               int    // recorded at observation: the step of an escalated event's chain, 0 otherwise
 
 	Claim   *NotifyRecord // the latest claimed record, nil if never claimed
 	Rounds  int           // how many claimed records the event has
@@ -29,9 +33,9 @@ func (e *NotifyEvent) ClaimLive(now time.Time) bool {
 }
 
 // OverdueDue reports whether the event is open, past its deadline at now, and not yet marked
-// overdue.
+// overdue. An event observed with no deadline (a resolved event, which is never overdue) is not.
 func (e *NotifyEvent) OverdueDue(now time.Time) bool {
-	return e.Open() && e.Overdue == nil && now.After(e.DeadlineAt)
+	return e.Open() && e.Overdue == nil && !e.DeadlineAt.IsZero() && now.After(e.DeadlineAt)
 }
 
 // NotifyState is a notification trail folded to what a notifier needs to decide its next step.
@@ -60,7 +64,8 @@ func FoldNotify(recs []NotifyRecord) NotifyState {
 			if _, dup := st.Events[r.Key]; dup {
 				continue
 			}
-			st.Events[r.Key] = &NotifyEvent{Key: r.Key, Kind: r.EventKind, RunID: r.RunID, EventAt: r.EventAt, ObservedAt: r.At, DeadlineAt: r.DeadlineAt}
+			st.Events[r.Key] = &NotifyEvent{Key: r.Key, Kind: r.EventKind, RunID: r.RunID, EventAt: r.EventAt, ObservedAt: r.At, DeadlineAt: r.DeadlineAt, Reason: r.Reason,
+				OpRun: r.OpRun, OpKind: r.OpKind, OpID: r.OpID, Receiver: r.Receiver, Level: r.Level}
 			st.Keys = append(st.Keys, r.Key)
 		case NotifyClaimed:
 			if e := st.openEvent(r.Key); e != nil {
@@ -109,4 +114,101 @@ func (s *NotifyState) openEvent(key string) *NotifyEvent {
 // now, so a recovery_failing event is due. It is false with no open episode.
 func (s *NotifyState) RecoveryFailingDue(now time.Time, d time.Duration) bool {
 	return s.FailingSince != nil && now.Sub(s.FailingSince.At) > d
+}
+
+// Watched is an event on the open trail whose all-clear may still be owed.
+type Watched struct {
+	Key   string    `json:"key"`
+	RunID string    `json:"run_id"`
+	At    time.Time `json:"at"` // when it was listed
+}
+
+// OpenState is one open-trail segment folded.
+type OpenState struct {
+	Watched        []Watched     // the events listed, in the order they were
+	Backfilled     bool          // the events observed before the open trail existed were listed
+	Backfills      int           // the backfill passes recorded, in this segment and the ones before it
+	BackfillAt     time.Time     // when the last one was recorded
+	BackfillWindow time.Duration // the window the first pass recorded
+	Sealed         string        // the segment that continues this one, "" if it is not sealed
+}
+
+// FoldOpen folds an open-trail segment, in append order. A checkpoint is read only as the first
+// record; a watch for a key already listed is ignored; an unwatch removes the key, and a later watch
+// lists it again; nothing after a seal counts; a record of another kind is ignored.
+func FoldOpen(recs []NotifyRecord) OpenState {
+	var st OpenState
+	var order []string
+	open := map[string]Watched{}
+	for i, r := range recs {
+		if st.Sealed != "" {
+			break
+		}
+		switch r.Kind {
+		case NotifyCheckpoint:
+			if i != 0 {
+				continue
+			}
+			for _, w := range r.Watching {
+				if _, ok := open[w.Key]; !ok {
+					order = append(order, w.Key)
+				}
+				open[w.Key] = w
+			}
+			st.Backfilled, st.Backfills, st.BackfillAt, st.BackfillWindow = r.Backfilled, r.Backfills, r.BackfillAt, r.BackfillWindow
+			if r.Backfilled && st.Backfills == 0 {
+				st.Backfills = 1
+			}
+		case NotifyBackfilled:
+			if st.Backfills == 0 {
+				st.BackfillWindow = r.BackfillWindow
+			}
+			st.Backfilled, st.Backfills, st.BackfillAt = true, st.Backfills+1, r.At
+		case NotifyWatch:
+			if _, ok := open[r.Key]; !ok {
+				open[r.Key] = Watched{Key: r.Key, RunID: r.RunID, At: r.At}
+				order = append(order, r.Key)
+			}
+		case NotifyUnwatch:
+			delete(open, r.Key)
+		case NotifySeal:
+			st.Sealed = r.Next
+		}
+	}
+	for _, k := range order {
+		if w, ok := open[k]; ok {
+			st.Watched = append(st.Watched, w)
+			delete(open, k) // a key listed, unlisted and listed again appears once
+		}
+	}
+	return st
+}
+
+// FoldWatch is the events FoldOpen lists.
+func FoldWatch(recs []NotifyRecord) []Watched { return FoldOpen(recs).Watched }
+
+// LastSegment is the segment named by the last NotifySegment record of an open-trail index, "" if
+// there is none.
+func LastSegment(recs []NotifyRecord) string {
+	for i := len(recs) - 1; i >= 0; i-- {
+		if recs[i].Kind == NotifySegment {
+			return recs[i].Next
+		}
+	}
+	return ""
+}
+
+// ReceiverName is the name of the receiver the event is to: DefaultReceiver when none is recorded.
+func (e *NotifyEvent) ReceiverName() string { return receiverLabel(e.Receiver) }
+
+// ByReceiver groups the keys of the events in the trail by the receiver they are to
+// (DefaultReceiver for the default one), each in the order observed: the per-receiver view of a
+// run's deliveries, whose acknowledgement an auditor reads from Events[key].
+func (s NotifyState) ByReceiver() map[string][]string {
+	out := map[string][]string{}
+	for _, k := range s.Keys {
+		r := s.Events[k].ReceiverName()
+		out[r] = append(out[r], k)
+	}
+	return out
 }

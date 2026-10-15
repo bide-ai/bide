@@ -371,6 +371,7 @@ its layout in a `"format"` field:
 | `EvidencePackage` | `bide.audit.evidence.v6` (v5 still verifies, see [below](#the-run-level-evidence-bundle-evidencepackage)) | `audit.EvidenceFormat` |
 | `AnchorEntry` | `bide.audit.anchor-entry.v1` | `audit.AnchorEntryFormat` |
 | `JournalExport` | `bide.audit.journal-export.v1` | `audit.JournalExportFormat` |
+| `NotifyTrailExport` | `bide.audit.notify-trail-export.v1` | `audit.NotifyTrailExportFormat` |
 | `DecisionReceipt` | `bide.audit.decision-receipt.v1` | `audit.ReceiptFormat` |
 
 A grant's canonical bytes (`Grant.Bytes`, signed and digested) start with `bide.audit.grant.v2`
@@ -384,7 +385,7 @@ A grant's canonical bytes (`Grant.Bytes`, signed and digested) start with `bide.
 ```
 
 The producers (`ProveRecord`, `ProveAbsentBundle`, `CertifyRun`, `ProveCurrentGrant`,
-`EventLog.Prove`, `Evidence`, `SignTreeHead`, `ExportJournal`) set the format; every verifier
+`EventLog.Prove`, `Evidence`, `SignTreeHead`, `ExportJournal`, `ExportNotifyTrail`) set the format; every verifier
 requires it, and `audit.UnmarshalStrict` checks it before it reads anything else, at the top level
 and in every artifact one carries. An artifact without a format, or with another one (a
 `bide.audit.proof.v2` bundle, a signed tree head from before v5, which carried no `format`), fails
@@ -525,6 +526,158 @@ gate read, if the recount disagrees with the recorded tally, or if
 the gate enforced a different policy. `bide audit verify-approvals` runs the same check from the
 command line. `audit.ProveApproval` proves a single decision by its record name. See the
 [approval guide](hitl-approval.md#proving-the-gate-held) and `examples/approval`.
+
+### Notification evidence: were the people told?
+
+A run that halts on an unknown outcome or waits at an approval gate stops until a person acts, and
+the [notifier](notifications.md) writes what it did about that to its own audited trail
+(`notify:<run>` in an `EventStore`, one salted event leaf per record). `audit.VerifyNotifications`
+and `bide audit notifications` answer the auditor's question from that trail and the run journals,
+offline: was every event that needed a person notified, was it acknowledged, and when?
+
+The trail is signed and anchored when the application asks for it, and the verifier says what each case
+costs. Wrap the trail's event store in an `audit.AuditedEventStore` (see the
+[notifications guide](notifications.md#auditing-were-the-people-told)) and every growth of a trail
+publishes a signed tree head to an `Anchor`, as `AuditedStore` does for a journal, with the same
+`Signer`. Without it, `audit.SignNotifyTrail` signs a head by hand. Without any signed head the
+verifier still reads the trail strictly, and the report marks it `UNANCHORED`: whoever can write the
+event store could have deleted or reordered records, and nothing in the trail shows it. With heads, the
+first `head_size` records must be exactly the leaves the newest head commits to, and every other head
+the trail was given must match the prefix it names, so a deleted, reordered or changed record is
+found (exit 1) even when it was rewritten after the newest head was published. Records after the
+newest head are read and reported as not attested: the report gives their count (`tail`), the time of
+the first (`tail_since`) and how long ago that was (`tail_age_ns`), and `-max-unattested` makes a gap
+older than a bound a failure. An event whose observation, acknowledgement or clearing is only in the
+tail is `unattested`, a problem, because whoever can append to the stored trail could have written it.
+`-max-unattested` (library `MaxTailAge`) is the one knob: with a nonzero bound, an event resting on
+tail records no older than it is accepted (so is a recovery state, from `failing_since` and `recovered` records, that rests on the tail: a keyless record is judged as the recovery-state verdict `recovery-state:<trail>`), for a live trail between heads. **Those records are
+accepted without a signature, so their content and their times, which whoever appended them wrote, are
+trusted**; the default, 0, is strict. A record deleted from that tail cannot be found.
+
+**Per-receiver completeness.** The trail cannot know the routing, so by default a fan-out that reached
+one receiver passes. `-routing routing.json` (library `Routing`) takes the notifier's routing, which you write with
+`agent.RoutingOf(opts...)` from the same options you pass the notifier, so the two cannot differ: each
+halt, approval, abort and recovery failure must have a delivery to the receivers `NotifyRouting.Receivers`
+gives it (the method the notifier routes by: the kind's route, or for an approval the receivers of its
+approvers, which needs the gate's journal), and each escalation step that is due (its deadline and the
+grace passed, the event neither acknowledged nor, for an approval, cleared or resolved) must have a
+delivery to its chain's receiver. One without is `no_delivery` and fails. Overdue notices and
+all-clears are not checked this way. Without `-routing`, per-receiver completeness is not checked.
+
+<!-- docsnip: setup ctx context.Context; evStore audit.EventStore; journal *agent.Journal; runID string; signer audit.Signer; verifier audit.Verifier -->
+```go
+trail := agent.NotifyTrailName(runID) // "notify:<run>"
+
+// At the notifier's side: an audit.AuditedEventStore around evStore signs and anchors the trail as it
+// is written. To sign a head by hand instead, on a schedule:
+head, _ := audit.SignNotifyTrail(ctx, evStore, trail, signer, time.Now())
+
+// Export what the auditor needs (or let `bide audit notifications -db` read the stores).
+tx, _ := audit.ExportNotifyTrail(ctx, evStore, trail) // format bide.audit.notify-trail-export.v1
+jx, _ := audit.ExportJournal(ctx, journal, runID)
+
+rep, err := audit.VerifyNotifications(audit.NotifyVerifyInput{
+	Trails: []audit.NotifyTrailExport{tx}, Heads: []audit.SignedTreeHead{head}, Verifier: verifier,
+	Journals: []audit.JournalExport{jx},
+})
+// err wraps audit.ErrNotVerified if an event was never notified, was acknowledged late, or is overdue
+```
+
+What it checks, and the status each event gets:
+
+- **A strict read.** Every leaf must be a notification record of a kind and shape this version
+  reads, in canonical form. An unknown record kind, an unknown field, a duplicate key or a leaf that
+  is not a notification record is an error (exit 4), not a record to skip: a verifier that skipped
+  what it could not read would pass a trail it did not check. (The notifier's own reader keeps such a
+  record in its position so a rolling upgrade keeps delivering; the verifier does not.)
+- **A history a notifier writes.** An event is observed once and first; nothing follows its
+  acknowledgement or clearing; an acknowledgement follows a claim and carries a send time, an
+  attempt count and a 2xx status (or none, for a sink that is not HTTP); an `overdue` record
+  follows the deadline and states the latency the times imply; an overdue notice follows the
+  `overdue` record it reports, and an all-clear follows the acknowledgement or clearing it reports;
+  records are dated in order, within `-max-clock-skew` (the writers' clocks differ); recovery
+  failure episodes open and close in turn; a halt or approval observation's `op_run`, `op_kind` and
+  `op_id` agree with its key; the open trail, which lists the events whose all-clear may still be owed, is a chain of
+  daily segments (`notify:@open:<date>`) joined by seals, with a yearly index of segments
+  (`notify:@open:index:<year>`): each sealed segment's successor starts with a checkpoint equal to
+  what the sealed one folds to (`agent.FoldOpen`), an unwatch happens only while its event is listed,
+  nothing follows a seal, the backfill is recorded once, only the first segment starts without a
+  checkpoint, the index lists the segments in creation order, each in the index of its own year, and a
+  segment it names exists unless it is the first or the last created (with signed heads, any missing
+  segment is a finding: a deleted newest segment, or one a writer has not created yet, which a sweep
+  repairs, so run the audit again); every record is dated within its segment's UTC day (a record
+  written by a process whose clock is behind its segment, because another process's clock ran ahead
+  and sealed into a later day, has its time moved later, to the segment's start or just after the
+  record before it, and keeps its own clock reading in `clock_at`: a time is only ever moved
+  later, so a delivery never looks earlier than it was, and the verifier requires `clock_at` to be
+  earlier than the time and only on open-trail records) (a seal, in
+  the day of the segment it seals into), a seal may skip days nobody ran on but not a segment an
+  index lists, and every delivered `outcome_unknown`, `approval_pending` or `recovery_failing` event
+  in a run trail is listed on the open trail, or was observed before it and covered by a recorded
+  backfill (at most two passes, the second no earlier than the window the first recorded (`WithNotifyUpgradeWindow`, a day by default), which is what catches an event a
+  process of the previous version delivered, without listing it, during a rolling upgrade; the
+  first new-version scan of an unfinished run lists such an event at once, so during an upgrade
+  the audit can report an event as unlisted until then, and set the window to the time the upgrade
+  takes to reach every process); the open-trail record kinds are a violation on a run's trail. With signed heads, each
+  open-trail segment and index needs its own (the same `SignNotifyTrail` heads as a run's trail), so
+  a record or a whole segment deleted from either end is found. `bide audit notifications -db` and
+  `-postgres-env` read every yearly index from 2026 (the year the open trail began), the segments
+  they name and the segments those seal into (and the index of each segment's year, however far
+  ahead), and a run that the open trail lists but that has no journal in the store is reported as a
+  warning (`-strict` fails on it) while its trail is verified all the same. A run's events are in the trail of its root run (a plan flow's run is its
+  own root). A trail that breaks a rule is reported with the record
+  and the rule (exit 1).
+- **Routing and escalation.** Each event's receiver and, for an escalation step, its level are in
+  the trail (the `receiver` and `level` of its `observed` record), so every verdict names the
+  receiver and the report counts statuses per receiver (`CountsByReceiver`; `bide audit
+  notifications` prints a line for each). A receiver's `acked` is the answer to whether that receiver
+  was told. The history rules extend to the chain: an escalation step (`escalated:<level>:<key>`)
+  must follow an observed event of a kind that is escalated, not cleared and, unless it is an
+  approval, not acknowledged (itself or an earlier step); it must be dated after the event's
+  deadline (step 1) or the previous step's own deadline (later steps, whose predecessor must be
+  observed); its level agrees with its key and is within the bound of four; it is never overdue; an
+  all-clear and an overdue notice go to the receiver of their event; a delivery to one of several
+  receivers (`to:<receiver>:<key>`) names that receiver in its record. The cross-check accepts any
+  delivery of a gate (`to:<receiver>:<key>`) as the gate being observed, and judges each delivery
+  on its own. What it cannot know is the routing and escalation that was configured: a gate whose
+  trail shows one delivery may have been routed to two receivers, and a halt that was never
+  escalated may have had no chain.
+- **The journal cross-check.** Every approval gate, unknown-outcome halt (an attempt marker with no
+  result) and aborted run a supplied journal shows must be observed in the trail of its root run. A
+  gate with no `observed` record is `never_notified`, even when everything the trail does hold is
+  clean, which is the case a check of the trail alone cannot catch. An event younger than
+  `-grace` (default 5 minutes, the notifier's detection window) is `not_yet_due`.
+  A recovery failure episode open longer than `-recovery-failing-after`, an `overdue` record with
+  no overdue notice, and a clearing after a delivery was attempted with no all-clear are each owed a
+  notification the same way.
+- **A verdict per event.** `acked` (with the times: when the run entered the state, when the
+  notifier saw it, when the sink acknowledged it, the attempts, and how the delivery was
+  authenticated); `acked_late` (acknowledged after the event's recorded deadline, or after
+  `-max-ack` from when the run entered the state); `pending` and `failing` (open, within the deadline);
+  `overdue` (open, past the deadline or `-max-ack`); `cleared_before_notification` and
+  `cleared_unacknowledged` (the event stopped being current first); `never_notified`;
+  `unobserved_resolved` (a gate the journal shows decided that the trail never observed) and
+  `all_clear_untimed` (an acknowledged event the journal shows resolved, with no all-clear in the
+  trail, where the journal holds no time for the resolution): warnings, shown as `note: WARNING`, that
+  fail the audit only under `-strict`. `acked_late`, `overdue` and `never_notified` always fail it.
+- **A late all-clear.** An approval gate decided by m-of-n decisions carries each decision's
+  `recorded_at`; if the newest is older than `-grace` and the trail, which acknowledged the gate,
+  has no all-clear, the all-clear is `never_notified`.
+
+```
+$ bide audit notifications -db run.db -sth notify-r1.sth.json -pubkey keys/log.pub
+INFO  trail notify:r1: 6 records; signed head over the first 6 (signed 2026-10-13T09:30:00Z)
+PASS  acked  approval_pending approval:r1:c1:0  began 2026-10-13T09:00:00Z  observed 2026-10-13T09:00:01Z  acknowledged 2026-10-13T09:00:02Z after 2 attempt(s), 2s after it began  [hmac-sha256 current, mTLS, TLS 1.3]
+FAIL  never_notified  outcome_unknown halted:r1:tool:c2:1760346000000  began 2026-10-13T09:05:00Z  (the journal shows the event and the trail has no record of it)
+```
+
+What this does not prove: that anyone read a notification (an acknowledgement is the sink's 2xx,
+and `bide audit` cannot see past the sink); the times are the notifying processes' clocks, bounded
+above only by the head's signed timestamp; an event that left no trace in the journals supplied (a
+halt that a later result resolved, or a gate in a run whose journal was not supplied) and no record
+in the trail cannot be found; and an all-clear owed for an event whose resolution the journal does not
+time (a tool's result, a halt resolution, a run's end) is a warning, not a verdict. Take the public key from the operator out of band, as
+for any signed head.
 
 ### Decision receipts: noticing a decision deleted before it was anchored
 
@@ -673,6 +826,7 @@ Conventions shared across verbs:
 | `verify-receipts` | `-receipt` (file or directory, repeatable), `-journal` (export per run, repeatable), `-heads` (a head, or one per line; repeatable), `-pubkey`, `-approver-keys` | `-update` (store the anchoring proof) | Decision receipts written by `bide approve`: each signature verifies for the approver's key over the exact call it states, and the signed heads commit to the decision at its journal position (`audit.CheckReceipt`). Prints one line per receipt: PASS when anchored or redacted, INFO when pending (exit 0), FAIL for `decision deleted after signing` (proven receipts only), `receipt not matched by the journal` and `unchecked` (exit 1). A missing journal for a receipt's run, or an unreadable input, is exit 4. |
 | `verify-decision-coverage` | `-journal`, `-heads` (repeatable), `-pubkey` | `-max-records <n>`, `-max-age <d>`, `-max-age-tolerance <d>`, `-now <time>` | Every approval decision in a journal export is covered by a signed tree head, or is within the stated bound. A head counts only if it verifies under the key, is a journal head of the export's run, and is the root of the export's own prefix of its size; heads are used by size, in any order, never by arrival or timestamp. A head the log key signed for this run that does **not** match the export (the export is shorter than the head, or its prefix differs) is **divergent**, and fails the verb: a decision deleted from an export, or an export cut before it, looks exactly like that, so re-export the journal and run again. A head that does not verify, or is another run's, is ignored with a note. A decision is `covered`, `pending`, or `overdue`. Overdue by position: the journal holds `-max-records` or more records after the decision and no head covers it (no clock involved). Overdue by age, only with `-max-age`: the decision's unsigned `recorded_at` is more than `-max-age` plus the tolerance before `-now` (default: this machine's clock), the weaker basis since the recorder's clock is its own; a decision with no recorded time (an unsigned `agent.Approve` decision records none) is over an age bound. A decision a redaction replaced with a tombstone is listed too (note `redacted`) and bounded like any other. If the journal holds decisions and no head counts at all (a wrong `-pubkey` ignores every head), the verb prints a WARNING, and fails when a bound is set, since nothing shows any decision inside it. The bounds are only as strong as the export is complete. With no bound nothing is overdue. Halt resolutions are not checked. |
 | `verify-approvals` | `-evidence`, `-pubkey`, `-call`, `-need`, `-approvers`, `-approver-keys` | `-approved <digest>` (repeatable), `-approved-file <file>` (together, one allowlist, required when the package carries a run certificate); `-exclude-principal` (the expected policy excludes the run's requester: the package must prove the run's `run:principal`, the requesters' decisions are listed as ignored, and a gate that did not exclude the requester fails) | An m-of-n approval gate from an `EvidencePackage`: the request, every decision the gate read, its recorded tally, and the call's result all verify in one signed tree and in order; recounting the decisions with the approvers' keys (a JSON object of id to key text, `<alg>:<hex>` or bare ed25519 hex; two of the policy's approvers on one key, or a weak key, is an unusable input) against the exact call reproduces the recorded tally; the gate enforced the expected policy; and at least k approved. Catches an omitted decision, which `verify-evidence` alone cannot. |
+| `notifications` | exported files: `-trail` (repeatable) and `-pubkey` with `-sth` per trail, or `-unanchored`; or a store: `-db` or `-postgres-env`, with the same | `-journal` (repeatable), `-run <id>` (store only), `-strict`, `-max-ack <duration>`, `-grace <duration>`, `-recovery-failing-after <duration>`, `-as-of <time>` | That every event that needed a person (an unknown-outcome halt, an approval gate, an aborted run, a recovery failure, an overdue notice, an all-clear) was notified and acknowledged in time: the trail is read strictly and is a history a notifier writes; with a signed head, the trail's first records are exactly what the head commits to; every gate, halt and abort a journal shows is observed. Exit 1 on `acked_late`, `overdue`, `never_notified`, or a trail that does not hold together. See [Notification evidence](#notification-evidence-were-the-people-told). |
 | `verify-evidence` | `-evidence`, `-pubkey` | `-approved <digest>` (repeatable), `-approved-file <file>` (together, one allowlist) | A run-level `EvidencePackage`: the format, seal, and key are right, the signed tree head is an authentic journal head of the package's run, every packaged action proof verifies against it with the kind and label its record says, the grant chain is the anchored grants, the consistency proof holds between its two signed heads, and any run certificate is for this run and passes against the given allowlist (required when the package carries one). Prints one line per item and an overall PASS/FAIL. |
 
 The `-checker` flag points at the external verified oracle binary (the `astchecker` extracted from
@@ -686,7 +840,11 @@ so a broken checker is never reported as a policy that does not converge, nor as
 certificate. The digest is recomputed here from a hardcoded
 `gsm-policy-v1` domain-separation tag rather than taken from gsm, so neither root of trust depends
 on the producer. The CLI reads no environment variables but `NO_COLOR` and `TERM`, which decide
-only whether the text report is colored (see below), never a verdict.
+only whether the text report is colored (see below), never a verdict, and the one that
+`notifications -postgres-env <name>` names, which holds a Postgres DSN (so the credential is never
+on a command line). `notifications -db` and `-postgres-env` open the store read-only and are in the
+full `bide` command; the audit-only build (`-tags bide_audit_only`) links no store driver and reads
+exported files.
 
 ### Exit status
 

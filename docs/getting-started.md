@@ -62,7 +62,7 @@ The real model is sent the refund type's JSON schema as structured output. To ga
 ## Install
 
 There are two things to install, for two audiences. The `bide` command (`bide init`, `bide demo`, `bide sample`, `bide view`,
-`bide approve`, `bide keygen`, `bide check`, `bide migrate`, `bide audit`; see the [CLI reference](reference/cli.md)) is one program for everyone,
+`bide approve`, `bide keygen`, `bide check`, `bide notify`, `bide migrate`, `bide audit`; see the [CLI reference](reference/cli.md)) is one program for everyone,
 installed as above. An approver whose key is in an HSM or a KMS also builds `bide-hsm` from source ([reference](reference/bide-hsm.md)). To build agents, add the library to a module of your own.
 
 In a module of your own (`go mod init example.com/hello` in a new directory):

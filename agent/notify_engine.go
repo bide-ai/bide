@@ -22,11 +22,17 @@ type notifyConfig struct {
 	recoveryAfter time.Duration
 	haltAge       time.Duration
 	abortedWithin time.Duration
+	upgradeWindow time.Duration // how long after the first backfill the second pass runs
 	skew          time.Duration // margin added to another holder's claim before it counts as lapsed
 	maxInflight   int           // rounds in flight at once in the worker
 	holder        string
 	overdue       Notifier
 	onError       func(error)
+
+	receivers      map[string]Notifier                   // named receivers besides the default
+	routes         map[NotificationKind]string           // receiver by kind
+	approverRoutes map[string]string                     // receiver by approver
+	escalation     map[NotificationKind][]EscalationStep // chain by kind
 
 	// Not options: tests set them.
 	roundAttempts  int           // requests per round
@@ -47,6 +53,7 @@ func defaultNotifyConfig() notifyConfig {
 		recoveryAfter:  15 * time.Minute,
 		haltAge:        5 * time.Minute,
 		abortedWithin:  24 * time.Hour,
+		upgradeWindow:  24 * time.Hour,
 		holder:         defaultHolder(),
 		roundAttempts:  3,
 		attemptBackoff: time.Second,
@@ -89,9 +96,24 @@ type notifyEvent struct {
 	// an untimed marker needs a read of the journal); key is a provisional one until then.
 	keyFn func(context.Context) (string, error)
 
-	episode int    // for recovery_failing: the episode number
-	origKey string // for an overdue notice: the event it is about
+	episode  int              // for recovery_failing: the episode number
+	origKey  string           // for an overdue notice, an all-clear or an escalation: the event it is about
+	origKind NotificationKind // for an all-clear or an escalation: that event's kind
+
+	receiver string        // the receiver the event is to: "" for the default (see receiverID)
+	level    int           // for an escalation: its step of the chain, from 1
+	deadline time.Duration // when set, the event's own deadline, in place of the notifier's
+
+	// chase marks the escalation chase of base (see escRound), not an event: key is chaseKey.
+	chase bool
+	base  *notifyEvent
+
+	// scan marks the catch-up job of runID's trail (see clearScan), not an event: key is scanKey.
+	scan bool
 }
+
+// scanKey is the worker key of the catch-up scan of run's trail.
+func scanKey(run string) string { return "scan:" + run }
 
 // notifyEngine runs the notify-once protocol of docs/design/notifier.md over a trail: observe,
 // claim, deliver, acknowledge, with the trail's append-at-position as the only synchronization
@@ -111,6 +133,7 @@ type notifyEngine struct {
 	fails    map[string]int        // failed attempts made by this process, per key
 	firstAt  map[string]time.Time  // when this process first sent each key
 	stuck    map[string]int        // Notify calls started and not returned (abandoned ones included), per event key
+	globalAt time.Time             // when a recovery pass last signed the global trails again
 	stuckAll int                   // and in all
 	w        *notifyWorker
 }
@@ -127,6 +150,9 @@ func newNotifyEngine(j *Journal, n Notifier, trail NotifyTrail, opts []NotifyOpt
 	if cfg.claimTTL <= 0 || cfg.deadline <= 0 {
 		return nil, fmt.Errorf("WithNotifier: non-positive deadline or claim TTL: %w", ErrConfig)
 	}
+	if err := cfg.validateRouting(); err != nil {
+		return nil, err
+	}
 	e := &notifyEngine{j: j, n: n, trail: trail, cfg: cfg,
 		holder:   fmt.Sprintf("%s/%s/%016x", cfg.holder, kind, rand.Uint64()),
 		attempts: map[string]int{}, fails: map[string]int{}, firstAt: map[string]time.Time{},
@@ -136,6 +162,9 @@ func newNotifyEngine(j *Journal, n Notifier, trail NotifyTrail, opts []NotifyOpt
 }
 
 func (e *notifyEngine) report(err error) {
+	if reportGuard != nil {
+		reportGuard()
+	}
 	if e.cfg.onError != nil && err != nil {
 		e.cfg.onError(err)
 	}
@@ -186,6 +215,12 @@ func (e *notifyEngine) appendRec(ctx context.Context, trail string, seq int, rec
 // holds the claim. It returns when the event is closed, when another process holds a live claim,
 // or after a round of failed attempts.
 func (e *notifyEngine) round(ctx context.Context, ev notifyEvent) (roundResult, error) {
+	if ev.scan {
+		return e.scanRound(ctx, ev)
+	}
+	if ev.chase {
+		return e.escRound(ctx, ev)
+	}
 	e.mu.Lock()
 	km := e.keyMu[ev.key]
 	if km == nil {
@@ -206,6 +241,12 @@ func (e *notifyEngine) round(ctx context.Context, ev notifyEvent) (roundResult, 
 	res, err := e.roundLocked(ctx, ev)
 	if res.done {
 		e.forget(ev.key)
+		if err == nil && ev.kind == NotificationResolved && ev.origKey != "" {
+			// Nothing more is owed for the event: unlist it (a scan does it too, if this fails).
+			if uerr := e.unwatch(ctx, ev.origKey); uerr != nil {
+				e.report(uerr)
+			}
+		}
 	}
 	return res, err
 }
@@ -271,6 +312,11 @@ func (e *notifyEngine) callNotify(ctx context.Context, n Notifier, note Notifica
 	out := make(chan result, 1)
 	go func() {
 		defer func() {
+			if r := recover(); r != nil { // a Notifier that panics fails the call, not the process
+				out <- result{NotifyAck{}, fmt.Errorf("notify: the Notifier panicked: %v", r)}
+			}
+		}()
+		defer func() {
 			e.mu.Lock()
 			if e.stuck[note.Key]--; e.stuck[note.Key] == 0 {
 				delete(e.stuck, note.Key)
@@ -333,99 +379,252 @@ func (e *notifyEngine) pace(es *NotifyEvent) time.Time {
 func (e *notifyEngine) roundLocked(ctx context.Context, ev notifyEvent) (roundResult, error) {
 	name := NotifyTrailName(ev.runID)
 	triedFailing := false
-	for range maxTrailRetries {
-		recs, err := e.trail.Load(ctx, name)
-		if err != nil {
-			return roundResult{next: e.cfg.now().Add(e.backoff(e.failCount(ev.key)))}, err
+	conflicts := 0
+	for steps := 0; steps < maxTrailSteps && conflicts < maxTrailRetries; steps++ {
+		if conflicts > 0 {
+			e.conflictBackoff(ctx, conflicts) // another process took the position: do not retry in step
 		}
-		st := FoldNotify(recs)
-		now := e.cfg.now()
-		es := st.Events[ev.key]
-
-		if es == nil {
-			at := ev.eventAt
-			if at.IsZero() {
-				at = now
-			}
-			rec := NotifyRecord{Kind: NotifyObserved, Key: ev.key, RunID: ev.runID, At: now,
-				EventKind: string(ev.kind), EventAt: at, DeadlineAt: now.Add(e.cfg.deadline)}
-			if _, err := e.appendRec(ctx, name, len(recs), rec); err != nil {
-				return roundResult{next: now.Add(e.backoff(e.failCount(ev.key)))}, err
-			}
-			continue // reload: the position may have been taken, and the fold decides either way
+		res, err, act := e.roundStep(ctx, ev, name, &triedFailing, &conflicts)
+		if act == stepReturn {
+			return res, err
 		}
-		if !es.Open() {
-			return roundResult{done: true}, nil
-		}
-
-		cur, reason, err := e.current(ctx, ev, st)
-		if err != nil {
-			return roundResult{next: now.Add(e.backoff(e.failCount(ev.key)))}, err
-		}
-		if !cur {
-			rec := NotifyRecord{Kind: NotifyCleared, Key: ev.key, RunID: ev.runID, At: now, Reason: reason}
-			if _, err := e.appendRec(ctx, name, len(recs), rec); err != nil {
-				return roundResult{next: now.Add(e.backoff(e.failCount(ev.key)))}, err
-			}
-			continue
-		}
-
-		// A delivery this process made and could not record: record it, do not send again.
-		e.mu.Lock()
-		pa, owed := e.unacked[ev.key]
-		e.mu.Unlock()
-		if owed {
-			return e.ack(ctx, ev, name, pa.first, pa.attempts, pa.ack)
-		}
-
-		if ev.kind != NotificationOverdue && es.OverdueDue(now) {
-			rec := NotifyRecord{Kind: NotifyOverdue, Key: ev.key, RunID: ev.runID, At: now, Latency: now.Sub(es.ObservedAt)}
-			if _, err := e.appendRec(ctx, name, len(recs), rec); err != nil {
-				return roundResult{next: now.Add(e.backoff(e.failCount(ev.key)))}, err
-			}
-			continue // reload: the round that delivers the event sends the notice
-		}
-		// Rounds that claimed the event and never acknowledged it, crashed ones included, make it
-		// failing before another round starts.
-		if es.Failing == nil && es.Rounds >= e.failingRounds() && !triedFailing {
-			triedFailing = true
-			e.markFailing(ctx, ev, name)
-			continue // reload: the trail has a record more
-		}
-
-		live := e.claimLive(es, now)
-		if live && es.Claim.Holder != e.holder {
-			// The holder sends the overdue notice in its own rounds. If it claimed before the event
-			// was overdue it has not had the chance, and may be gone for the whole claim: a peer sends
-			// the notice, under a short claim of its own on the notice's key, so that peers do not
-			// send it together. A holder that is only slow skips the notice while the peer's claim on it is
-			// live, and sends it in a later round if the peer's send never lands.
-			if ev.kind != NotificationOverdue && es.Overdue != nil && es.Claim.At.Before(es.Overdue.At) {
-				if ev.principal == nil {
-					ev.principal = e.principalOf(ctx, ev.runID)
-				}
-				e.deliverOverdueNotice(ctx, ev, es, name, true)
-			}
-			return roundResult{next: es.Claim.Until.Add(e.cfg.skew), deferred: fmt.Errorf("notify: %s is held by another deliverer's claim until %s; not delivered by this process", ev.key, es.Claim.Until.Format(time.RFC3339))}, nil // another deliverer has it
-		}
-		if !live || es.Claim.Until.Sub(now) <= e.roundBudget() {
-			if pace := e.pace(es); now.Before(pace) && !live {
-				return roundResult{next: pace, deferred: fmt.Errorf("notify: %s is waiting out its backoff until %s; not delivered by this process", ev.key, pace.Format(time.RFC3339))}, nil // too soon after the last round, whoever ran it
-			}
-			rec := NotifyRecord{Kind: NotifyClaimed, Key: ev.key, RunID: ev.runID, At: now,
-				Holder: e.holder, Until: now.Add(e.cfg.claimTTL)}
-			conflict, err := e.appendRec(ctx, name, len(recs), rec)
-			if err != nil {
-				return roundResult{next: now.Add(e.backoff(e.failCount(ev.key)))}, err
-			}
-			if conflict {
-				continue // someone else claimed first: reload and see
-			}
-		}
-		return e.deliver(ctx, ev, es, name)
 	}
 	return roundResult{next: e.cfg.now().Add(e.backoff(e.failCount(ev.key)))},
 		fmt.Errorf("notify: trail %s: lost the append race %d times in a row for %s", name, maxTrailRetries, ev.key)
+}
+
+// roundStepAct says what a step of a round leaves the round to do.
+type roundStepAct int
+
+const (
+	stepRetry  roundStepAct = iota // reload the trail and decide again
+	stepReturn                     // the round is over: return the step's result
+)
+
+// maxTrailSteps bounds the steps of one round, whatever their outcome: a step that made an append
+// (an observation, an overdue record) is progress and not a lost race, so it does not count against
+// maxTrailRetries, but a round must still end.
+const maxTrailSteps = 32
+
+// roundStep is one pass of a round: load the trail, decide, and make at most one append. The events
+// of a run share its trail, and rounds of different keys in this process (a drive's notifier, a
+// sweep, the worker) would lose the position to each other over and over if they raced, so one pass
+// at a time runs per trail in the process (lockTrail); the lock is released before anything slow (a
+// delivery, an acknowledgement). A position lost to another process counts in conflicts.
+func (e *notifyEngine) roundStep(ctx context.Context, ev notifyEvent, name string, triedFailing *bool, conflicts *int) (roundResult, error, roundStepAct) {
+	unlock, lerr := lockTrail(ctx, name)
+	if lerr != nil {
+		return roundResult{next: e.cfg.now().Add(e.backoff(e.failCount(ev.key)))}, lerr, stepReturn
+	}
+	var released bool
+	release := func() {
+		if !released {
+			released = true
+			unlock()
+		}
+	}
+	defer release()
+	fail := func(err error, now time.Time) (roundResult, error, roundStepAct) {
+		return roundResult{next: now.Add(e.backoff(e.failCount(ev.key)))}, err, stepReturn
+	}
+	// appended records the outcome of an append that is retried whatever happens: a lost position
+	// counts as a conflict; any other error ends the round.
+	appended := func(conflict bool, err error, now time.Time) (roundResult, error, roundStepAct) {
+		if err != nil {
+			return fail(err, now)
+		}
+		if conflict {
+			*conflicts++
+		}
+		return roundResult{}, nil, stepRetry
+	}
+
+	recs, err := e.trail.Load(ctx, name)
+	if err != nil {
+		return roundResult{next: e.cfg.now().Add(e.backoff(e.failCount(ev.key)))}, err, stepReturn
+	}
+	st := FoldNotify(recs)
+	now := e.cfg.now()
+	es := st.Events[ev.key]
+
+	if es == nil {
+		if ev.kind == NotificationEscalated {
+			// A step is observed only if it is due on the trail this append is made at (the
+			// append at len(recs) fails if the trail has moved), and its event still stands.
+			due, err := e.escalationDue(ctx, ev, st, now)
+			if err != nil {
+				return fail(err, now)
+			}
+			if !due {
+				return roundResult{done: true}, nil, stepReturn // the watch decides again when it is
+			}
+		}
+		at := ev.eventAt
+		if at.IsZero() {
+			at = now
+		}
+		// An event that can stop being current is listed before it is observed, so no event that
+		// is delivered is missing from the list a sweep reads (see NotifyOpenTrail).
+		if resolvable(string(ev.kind)) {
+			if err := e.watch(ctx, ev.key, ev.runID); err != nil {
+				return fail(err, now)
+			}
+		}
+		dl := e.cfg.deadline
+		if ev.deadline > 0 {
+			dl = ev.deadline
+		}
+		rec := NotifyRecord{Kind: NotifyObserved, Key: ev.key, RunID: ev.runID, At: now,
+			EventKind: string(ev.kind), EventAt: at, DeadlineAt: now.Add(dl), Receiver: ev.receiver, Level: ev.level}
+		rec.OpRun, rec.OpKind, rec.OpID = ev.operation()
+		if ev.kind == NotificationResolved {
+			// A clear is never overdue, so it has no deadline; it records why the event ended.
+			rec.DeadlineAt, rec.Reason = time.Time{}, ev.reason
+		}
+		conflict, aerr := e.appendRec(ctx, name, len(recs), rec)
+		return appended(conflict, aerr, now) // reload: the position may have been taken, and the fold decides either way
+	}
+	if !es.Open() {
+		// An event cleared after a delivery was attempted may have reached its receiver: its
+		// all-clear is owed. Whoever sees it cleared queues it, so a death after the clearing
+		// loses nothing; the all-clear's own records make it once.
+		if es.Cleared != nil && es.Rounds > 0 && resolvable(es.Kind) && st.Events[ResolvedKey(ev.key)] == nil {
+			e.w.submit(clearOf(es, es.Cleared.Reason, es.Cleared.At))
+		}
+		return roundResult{done: true}, nil, stepReturn
+	}
+
+	cur, reason, err := e.current(ctx, ev, st)
+	if err != nil {
+		return fail(err, now)
+	}
+	if !cur {
+		rec := NotifyRecord{Kind: NotifyCleared, Key: ev.key, RunID: ev.runID, At: now, Reason: reason}
+		conflict, aerr := e.appendRec(ctx, name, len(recs), rec)
+		return appended(conflict, aerr, now)
+	}
+
+	// A delivery this process made and could not record: record it, do not send again.
+	e.mu.Lock()
+	pa, owed := e.unacked[ev.key]
+	e.mu.Unlock()
+	if owed {
+		release()
+		res, err := e.ack(ctx, ev, name, pa.first, pa.attempts, pa.ack)
+		return res, err, stepReturn
+	}
+
+	if ev.kind != NotificationOverdue && ev.kind != NotificationResolved && ev.kind != NotificationEscalated && es.OverdueDue(now) {
+		rec := NotifyRecord{Kind: NotifyOverdue, Key: ev.key, RunID: ev.runID, At: now, Latency: now.Sub(es.ObservedAt)}
+		conflict, aerr := e.appendRec(ctx, name, len(recs), rec)
+		return appended(conflict, aerr, now) // reload: the round that delivers the event sends the notice
+	}
+	// Rounds that claimed the event and never acknowledged it, crashed ones included, make it
+	// failing before another round starts.
+	if es.Failing == nil && es.Rounds >= e.failingRounds() && !*triedFailing {
+		*triedFailing = true
+		release()
+		e.markFailing(ctx, ev, name)
+		return roundResult{}, nil, stepRetry // reload: the trail has a record more
+	}
+
+	live := e.claimLive(es, now)
+	if live && es.Claim.Holder != e.holder {
+		release()
+		// The holder sends the overdue notice in its own rounds. If it claimed before the event
+		// was overdue it has not had the chance, and may be gone for the whole claim: a peer sends
+		// the notice, under a short claim of its own on the notice's key, so that peers do not
+		// send it together. A holder that is only slow skips the notice while the peer's claim on it is
+		// live, and sends it in a later round if the peer's send never lands.
+		if ev.kind != NotificationOverdue && es.Overdue != nil && es.Claim.At.Before(es.Overdue.At) {
+			if ev.principal == nil {
+				ev.principal = e.principalOf(ctx, ev.runID)
+			}
+			e.deliverOverdueNotice(ctx, ev, es, name, true)
+		}
+		return roundResult{next: es.Claim.Until.Add(e.cfg.skew), deferred: fmt.Errorf("notify: %s is held by another deliverer's claim until %s; not delivered by this process", ev.key, es.Claim.Until.Format(time.RFC3339))}, nil, stepReturn // another deliverer has it
+	}
+	if !live || es.Claim.Until.Sub(now) <= e.roundBudget() {
+		if pace := e.pace(es); now.Before(pace) && !live {
+			return roundResult{next: pace, deferred: fmt.Errorf("notify: %s is waiting out its backoff until %s; not delivered by this process", ev.key, pace.Format(time.RFC3339))}, nil, stepReturn // too soon after the last round, whoever ran it
+		}
+		rec := NotifyRecord{Kind: NotifyClaimed, Key: ev.key, RunID: ev.runID, At: now,
+			Holder: e.holder, Until: now.Add(e.cfg.claimTTL)}
+		conflict, aerr := e.appendRec(ctx, name, len(recs), rec)
+		if aerr != nil {
+			return fail(aerr, now)
+		}
+		if conflict {
+			*conflicts++ // someone else claimed first: reload and see
+			return roundResult{}, nil, stepRetry
+		}
+	}
+	release()
+	res, derr := e.deliver(ctx, ev, es, name)
+	return res, derr, stepReturn
+}
+
+// conflictBackoff waits a little before a round retries after losing a position to another process:
+// exponential from a millisecond, capped, with jitter, so processes that keep colliding drift
+// apart. The round's own claim and budget are unaffected (it holds none yet).
+func (e *notifyEngine) conflictBackoff(ctx context.Context, conflicts int) {
+	d := time.Millisecond << min(conflicts, 6)
+	_ = e.cfg.sleep(ctx, e.cfg.jitter(d))
+}
+
+// trailLocks serialize the load-decide-append passes on one trail within the process, across every
+// engine in it (a drive's notifier, a sweep, a recovery loop). An entry lives only while a pass
+// holds or waits for it (refcounted, deleted at zero), so the map is the size of the trails in use at
+// the moment, not of every run the process has seen. A waiter gives up when its context ends, so a
+// store that hangs on one trail holds up that trail's rounds only, and only until they are cancelled.
+// A pass holds it across the store's load and append and the journal reads that decide, never across
+// a Notifier call or a callback.
+// reportGuard, set only by tests, runs at every report to the user's error handler: the handler
+// is user code, so it must never run under a trail lock.
+var reportGuard func()
+
+var trailLocks = struct {
+	mu sync.Mutex
+	m  map[string]*trailLock
+}{m: map[string]*trailLock{}}
+
+type trailLock struct {
+	held chan struct{} // capacity one: a send takes the lock
+	refs int
+}
+
+// lockTrail takes the process-wide lock of the trail called name and returns its release, or ctx's
+// error if ctx ends first.
+func lockTrail(ctx context.Context, name string) (func(), error) {
+	trailLocks.mu.Lock()
+	l := trailLocks.m[name]
+	if l == nil {
+		l = &trailLock{held: make(chan struct{}, 1)}
+		trailLocks.m[name] = l
+	}
+	l.refs++
+	trailLocks.mu.Unlock()
+	leave := func() {
+		trailLocks.mu.Lock()
+		if l.refs--; l.refs == 0 {
+			delete(trailLocks.m, name)
+		}
+		trailLocks.mu.Unlock()
+	}
+	select {
+	case l.held <- struct{}{}:
+	case <-ctx.Done():
+		leave()
+		return nil, ctx.Err()
+	}
+	forget := noteLockTaken()
+	return func() {
+		if forget != nil {
+			forget()
+		}
+		<-l.held
+		leave()
+	}, nil
 }
 
 func (e *notifyEngine) failCount(key string) int {
@@ -487,7 +686,7 @@ func (e *notifyEngine) notifierFor(ev notifyEvent) Notifier {
 	if ev.kind == NotificationOverdue && e.cfg.overdue != nil {
 		return e.cfg.overdue
 	}
-	return e.n
+	return e.notifierOf(ev)
 }
 
 // deliverOverdueNotice sends the notice that es, which is overdue, is not acknowledged. The deliverer
@@ -508,7 +707,7 @@ func (e *notifyEngine) deliverOverdueNotice(ctx context.Context, ev notifyEvent,
 		return
 	}
 	notice := notifyEvent{key: key, kind: NotificationOverdue, runID: ev.runID, origKey: ev.key, reason: "deadline",
-		principal: ev.principal, eventAt: es.Overdue.At}
+		principal: ev.principal, eventAt: es.Overdue.At, receiver: ev.receiver}
 	for range maxTrailRetries {
 		recs, err := e.trail.Load(ctx, name)
 		if err != nil {
@@ -522,7 +721,7 @@ func (e *notifyEngine) deliverOverdueNotice(ctx context.Context, ev notifyEvent,
 		if ne == nil {
 			now := e.cfg.now()
 			rec := NotifyRecord{Kind: NotifyObserved, Key: key, RunID: ev.runID, At: now,
-				EventKind: string(NotificationOverdue), EventAt: es.Overdue.At, DeadlineAt: now.Add(e.cfg.deadline)}
+				EventKind: string(NotificationOverdue), EventAt: es.Overdue.At, DeadlineAt: now.Add(e.cfg.deadline), Receiver: ev.receiver}
 			if _, err := e.appendRec(ctx, name, len(recs), rec); err != nil {
 				e.report(err)
 				return
@@ -570,11 +769,19 @@ func (e *notifyEngine) deliverOverdueNotice(ctx context.Context, ev notifyEvent,
 }
 
 func (e *notifyEngine) notification(ev notifyEvent, es *NotifyEvent, attempt int) Notification {
-	return Notification{
+	n := Notification{
 		ID: NotifyID(ev.key), Key: ev.key, Kind: ev.kind, RunID: ev.runID,
 		EventAt: es.EventAt, Observed: es.ObservedAt, Deadline: es.DeadlineAt, Attempt: attempt,
 		Halt: ev.halt, Approval: ev.approval, Principal: ev.principal, Reason: ev.reason, Err: ev.err,
+		Receiver: receiverLabel(ev.receiver),
 	}
+	switch ev.kind {
+	case NotificationResolved:
+		n.Clears = &NotifyClears{Key: ev.origKey, ID: NotifyID(ev.origKey), Kind: ev.origKind}
+	case NotificationEscalated:
+		n.Escalates = &NotifyEscalates{Key: ev.origKey, ID: NotifyID(ev.origKey), Kind: ev.origKind, Level: ev.level}
+	}
+	return n
 }
 
 // ack records the sink's acknowledgement. The sink has accepted by now, so a failure to record it is
@@ -586,21 +793,28 @@ func (e *notifyEngine) ack(ctx context.Context, ev notifyEvent, name string, fir
 	limit := e.cfg.now().Add(e.cfg.claimTTL / 8)
 	delay := e.cfg.ackBackoff
 	for {
-		recs, err := e.trail.Load(ctx, name)
-		if err != nil {
-			lastErr = err
-		} else {
+		recorded, err := func() (bool, error) {
+			unlock, lerr := lockTrail(ctx, name) // one pass at a time on the trail in this process
+			if lerr != nil {
+				return false, lerr
+			}
+			defer unlock()
+			recs, err := e.trail.Load(ctx, name)
+			if err != nil {
+				return false, err
+			}
 			if es := FoldNotify(recs).Events[ev.key]; es != nil && !es.Open() {
-				return roundResult{done: true}, nil // closed meanwhile (cleared, or acked by a racing process)
+				return true, nil // closed meanwhile (cleared, or acked by a racing process)
 			}
 			rec := NotifyRecord{Kind: NotifyAcked, Key: ev.key, RunID: ev.runID, At: e.cfg.now(),
 				FirstSentAt: first, Attempts: attempts, Status: ack.Status, Auth: ack.Auth}
 			conflict, aerr := e.appendRec(ctx, name, len(recs), rec)
-			if aerr == nil && !conflict {
-				return roundResult{done: true}, nil
-			}
-			lastErr = aerr // nil on a lost race: reload and decide again
+			return aerr == nil && !conflict, aerr // nil error on a lost race: reload and decide again
+		}()
+		if recorded {
+			return roundResult{done: true}, nil
 		}
+		lastErr = err
 		remaining := limit.Sub(e.cfg.now())
 		if ctx.Err() != nil || remaining <= 0 {
 			break
@@ -634,25 +848,38 @@ func (e *notifyEngine) forget(key string) {
 // so a deliverer that is restarted or dies in every round still raises it. It reports the failure to
 // the handler of WithNotifyErrors when it is the process that writes the record.
 func (e *notifyEngine) markFailing(ctx context.Context, ev notifyEvent, name string) {
+	if rounds := e.writeFailing(ctx, ev, name); rounds > 0 {
+		e.report(fmt.Errorf("notify: delivery of %s is failing after %d rounds without an acknowledgement (it keeps retrying)", ev.key, rounds))
+	}
+}
+
+// writeFailing appends the failing record under the trail's lock, and returns the rounds it records,
+// 0 if it wrote none; the report to the user's handler is made by the caller, outside the lock.
+func (e *notifyEngine) writeFailing(ctx context.Context, ev notifyEvent, name string) int {
+	unlock, lerr := lockTrail(ctx, name)
+	if lerr != nil {
+		return 0
+	}
+	defer unlock()
 	for range maxTrailRetries {
 		recs, err := e.trail.Load(ctx, name)
 		if err != nil {
-			return
+			return 0
 		}
 		es := FoldNotify(recs).Events[ev.key]
 		if es == nil || !es.Open() || es.Failing != nil || es.Rounds < e.failingRounds() {
-			return
+			return 0
 		}
 		rec := NotifyRecord{Kind: NotifyFailing, Key: ev.key, RunID: ev.runID, At: e.cfg.now(), Failures: es.Rounds}
 		conflict, err := e.appendRec(ctx, name, len(recs), rec)
 		if err != nil {
-			return
+			return 0
 		}
 		if !conflict {
-			e.report(fmt.Errorf("notify: delivery of %s is failing after %d rounds without an acknowledgement (it keeps retrying)", ev.key, es.Rounds))
-			return
+			return es.Rounds
 		}
 	}
+	return 0
 }
 
 // current reports whether ev still stands, and if not why (the reason a cleared record carries).
@@ -670,8 +897,20 @@ func (e *notifyEngine) current(ctx context.Context, ev notifyEvent, st NotifySta
 			return false, "resolved", nil
 		}
 		return true, "", nil
-	case NotificationRunAborted:
+	case NotificationRunAborted, NotificationResolved:
 		return true, "", nil
+	case NotificationEscalated:
+		// A step stands while the event it escalates does: it is not acknowledged by a receiver
+		// being told, and a chain ends only when the event stops being current.
+		o := st.Events[ev.origKey]
+		if o == nil || o.Cleared != nil {
+			return false, "resolved", nil
+		}
+		base, ok := eventFromKey(o)
+		if !ok {
+			return true, "", nil
+		}
+		return e.current(ctx, base, st)
 	}
 	status, err := Status(ctx, e.j, ev.runID)
 	if err != nil {

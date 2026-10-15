@@ -27,6 +27,7 @@ and `help`, and its import graph is the standard library and the core module (se
 | [`bide doctor`](#bide-doctor) | check that a first run can work: Go, SQLite, the module cache, model keys, your project |
 | [`bide sample`](#bide-sample) | write a sample journal of varied runs, with evidence and flow configs, and open bide view on it |
 | [`bide view`](#bide-view) | a read-only local page for one run of a journal, or a flow config's graph |
+| [`bide notify`](#bide-notify) | set up and test the webhook notifier: test a receiver, run a local one, relay to Slack and PagerDuty |
 | [`bide approve`](#bide-approve) | record your signed approval (or -reject) of a call that waits for a decision; -list shows what waits |
 | [`bide keygen`](#bide-keygen) | create an approver key pair for bide approve and print the public key policies and verifiers use |
 | [`bide migrate`](#bide-migrate) | create or check a Postgres journal's schema as its owner, so the service needs no DDL rights |
@@ -273,6 +274,202 @@ Exit status:
   1  failure: an input cannot be read or the command failed; for check, an error was found
      (with -strict, any problem)
   2  usage error: a bad flag or argument; nothing was read
+```
+
+## bide notify
+
+Set up and test the webhook notifier: test a receiver, run a local one, relay to Slack and PagerDuty.
+
+```text
+usage: bide notify test   -url <receiver> [-kind <kind>] [secret and TLS flags]
+       bide notify listen [-addr <host:port>] [secret flags]
+       bide notify relay  [-addr <host:port>] [secret flags] [-slack-url-env ...] [-pagerduty-key-env ...]
+
+Set up and test the webhook notifier (agent.WithNotifier with notify.NewWebhook):
+
+  test    sends one signed sample notification to your receiver, with the same payload, signature
+          and TLS options the notifier uses, and reports the TLS handshake, the HTTP status, whether
+          the receiver acknowledged and how long each took
+  listen  starts a local HTTPS receiver with a self-signed certificate that verifies each request
+          and prints the event, so test and listen check a whole setup on one machine
+  relay   a receiver that verifies bide's webhooks and forwards them to Slack (Block Kit) and
+          PagerDuty (Events API v2), dropping redeliveries by delivery ID
+
+The signing secret is read from an environment variable (default BIDE_WEBHOOK_SECRET) or a file
+(-secret-file), never from a flag value, and is never printed or logged. Run bide notify <verb> -h
+for a verb's flags. See docs/guides/notifications.md.
+
+Exit status:
+  0  success
+  1  failure: an input cannot be read or the command failed; for check, an error was found
+     (with -strict, any problem)
+  2  usage error: a bad flag or argument; nothing was read
+```
+
+### bide notify test
+
+```text
+usage: bide notify test -url <receiver> [-kind <kind>] [-secret-env <VAR> | -secret-file <file>]
+                        [-ca <file>] [-pin <hash>] [-client-cert <file> -client-key <file>] [-timeout <d>]
+
+Sends one signed sample notification to the receiver at -url, the way the notifier sends a real
+one (notify.NewWebhook: the same payload, signature, TLS 1.2+ and mutual TLS, CA and pin options),
+and reports the TLS handshake, the HTTP status, whether the receiver acknowledged (answered 2xx)
+and the timing. The sample is for a run that does not exist (its ID starts notify-test-); a relay
+that forwards to Slack or PagerDuty forwards it too. The secret is never printed.
+
+Kinds: approval_pending, outcome_unknown, run_aborted, recovery_failing, notification_overdue, resolved, escalated. A resolved is the all-clear of the approval_pending with the same -run: send that first, then
+the resolved, to see a relay open and then close a PagerDuty incident.
+
+Exit status: 0 the receiver acknowledged; 1 it did not; 2 usage error.
+
+  -ca string
+    	verify the receiver against the CA certificates in this PEM file instead of the system roots
+  -client-cert string
+    	present this client certificate (PEM) for mutual TLS; needs -client-key
+  -client-key string
+    	the client certificate's private key (PEM)
+  -color when
+    	when to color the output: auto (the default: on a terminal, unless NO_COLOR is set or TERM is dumb), always or never
+  -kind string
+    	the kind of the sample notification: approval_pending, outcome_unknown, run_aborted, recovery_failing, notification_overdue, resolved, escalated (default "approval_pending")
+  -pin string
+    	require the receiver's key to match this SPKI SHA-256 (64 hex characters or base64); two, comma separated, during a rotation
+  -previous-secret-env string
+    	the environment variable that holds the previous secret, during a rotation (optional) (default "BIDE_WEBHOOK_SECRET_PREVIOUS")
+  -previous-secret-file string
+    	read the previous secret from this file; used instead of -previous-secret-env
+  -run string
+    	the sample's run ID (default: notify-test-<random>, a new event each time). Send an approval_pending and then a resolved for the same -run to test a relay's all-clear
+  -secret-env string
+    	the environment variable that holds the signing secret (default "BIDE_WEBHOOK_SECRET")
+  -secret-file string
+    	read the signing secret from this file (leading and trailing white space is dropped); used instead of -secret-env
+  -timeout duration
+    	the request timeout (default 10s)
+  -url string
+    	the receiver's URL, https (http only for localhost)
+  -view-db string
+    	the journal file the payload's view command opens, as WithViewDB does
+  -view-url string
+    	put a view link for the run viewer's base URL in the payload, as WithViewURL does
+```
+
+### bide notify listen
+
+```text
+usage: bide notify listen [-addr <host:port>] [-secret-env <VAR> | -secret-file <file>]
+                          [-cert <file> -key <file>] [-client-ca <file>] [-ca-out <file>] [-json]
+
+Runs a local HTTPS receiver that checks each request with notify.Verify (the signature, the
+timestamp and the signed delivery ID) and prints the verified event, or why it was refused. Use it
+with bide notify test, or point a real notifier at it, to see a whole setup work on one machine.
+
+Without -cert and -key it makes a self-signed certificate for localhost, 127.0.0.1, ::1 (and the
+host of -addr), valid for 24 hours, and writes it to a file (-ca-out, or a new file in the temp
+directory) for the sender's -ca. It prints that file and the certificate's pin (the SPKI SHA-256
+for -pin), and the command that tests it. The secret is never printed.
+
+With -client-ca the receiver requires a client certificate signed by that CA (mutual TLS) and
+prints the certificate's pin for each request.
+
+It answers 204 to a verified request and 401 to any other; it forwards nothing and keeps nothing.
+Stop it with Ctrl-C. Exit status: 0 after a clean stop; 1 failure; 2 usage error.
+
+  -addr string
+    	the address to listen on (default "127.0.0.1:8443")
+  -ca-out string
+    	write the generated certificate here (default: a new file in the temp directory)
+  -cert string
+    	serve this certificate (PEM) instead of a generated one; needs -key
+  -client-ca string
+    	require a client certificate signed by a CA in this PEM file (mutual TLS)
+  -color when
+    	when to color the output: auto (the default: on a terminal, unless NO_COLOR is set or TERM is dumb), always or never
+  -json
+    	print each verified payload as JSON, one line each, instead of a summary
+  -key string
+    	the private key (PEM) of -cert
+  -previous-secret-env string
+    	the environment variable that holds the previous secret, during a rotation (optional) (default "BIDE_WEBHOOK_SECRET_PREVIOUS")
+  -previous-secret-file string
+    	read the previous secret from this file; used instead of -previous-secret-env
+  -secret-env string
+    	the environment variable that holds the signing secret (default "BIDE_WEBHOOK_SECRET")
+  -secret-file string
+    	read the signing secret from this file (leading and trailing white space is dropped); used instead of -secret-env
+```
+
+### bide notify relay
+
+```text
+usage: bide notify relay [-addr <host:port>] [-cert <file> -key <file>] [-client-ca <file>]
+                         [-secret-env <VAR> | -secret-file <file>]
+                         [-slack-url-env <VAR> | -slack-url-file <file>]
+                         [-pagerduty-key-env <VAR> | -pagerduty-key-file <file>] [-view-url <url>]
+
+Receives bide's signed webhooks and forwards each verified notification to Slack and PagerDuty.
+Point bide at it (notify.NewWebhook with the same secret); it needs no bide library or journal.
+
+For each request it checks the signature, the timestamp and the signed delivery ID (notify.Verify)
+and answers 401 to anything else. It then forwards to every configured destination and answers 204
+only when all of them took the notification; if one failed it answers 502, and bide sends the event
+again. Because bide's delivery is at least once, the relay remembers the delivery IDs it forwarded
+(-dedupe of them; -state keeps them across a restart) and acknowledges a repeat without forwarding it again; after a partial failure
+only the destination that failed is tried again.
+
+  Slack       an incoming webhook URL: a Block Kit message with the run, kind, summary, deadline,
+              who may approve, and an "Open in viewer" button when there is a link (the payload's
+              view.url, else -view-url plus the run ID). The URL is a credential: it is read from
+              the environment or a file, and never printed or logged.
+  PagerDuty   Events API v2: a trigger whose dedup_key is the event's ID (the same on every
+              delivery, so PagerDuty collapses repeats) and a resolve for an all-clear notification.
+              The routing key is read like the Slack URL.
+
+A destination is on when its variable is set or its file is named; at least one is needed. The
+relay never forwards error text or tool arguments, even if bide sends them. bide requires an https
+URL for a receiver (http only for localhost), so give -cert and -key, or run the relay behind a
+proxy that terminates TLS on the same host. Forwarding has a budget (-forward-timeout) below bide's
+10 s request timeout. Stop it with Ctrl-C. Exit status: 0 after a clean stop; 1 failure; 2 usage.
+
+  -addr string
+    	the address to listen on (default "127.0.0.1:8080")
+  -cert string
+    	serve TLS with this certificate (PEM); needs -key. Without it the relay speaks plain http
+  -client-ca string
+    	require a client certificate signed by a CA in this PEM file (mutual TLS); needs -cert
+  -color when
+    	when to color the output: auto (the default: on a terminal, unless NO_COLOR is set or TERM is dumb), always or never
+  -dedupe int
+    	how many delivery IDs to remember (default 10000)
+  -forward-timeout duration
+    	the budget for forwarding one delivery; keep it below bide's request timeout (10 s) (default 8s)
+  -key string
+    	the private key (PEM) of -cert
+  -pagerduty-key-env string
+    	the environment variable that holds the PagerDuty Events API v2 routing key (default "PAGERDUTY_ROUTING_KEY")
+  -pagerduty-key-file string
+    	read the PagerDuty routing key from this file; used instead of -pagerduty-key-env
+  -pagerduty-url string
+    	the PagerDuty Events API endpoint (the EU region has its own) (default "https://events.pagerduty.com/v2/enqueue")
+  -previous-secret-env string
+    	the environment variable that holds the previous secret, during a rotation (optional) (default "BIDE_WEBHOOK_SECRET_PREVIOUS")
+  -previous-secret-file string
+    	read the previous secret from this file; used instead of -previous-secret-env
+  -secret-env string
+    	the environment variable that holds the signing secret (default "BIDE_WEBHOOK_SECRET")
+  -secret-file string
+    	read the signing secret from this file (leading and trailing white space is dropped); used instead of -secret-env
+  -slack-url-env string
+    	the environment variable that holds the Slack incoming webhook URL (default "SLACK_WEBHOOK_URL")
+  -slack-url-file string
+    	read the Slack webhook URL from this file; used instead of -slack-url-env
+  -state string
+    	keep the delivery IDs forwarded and the events cleared in this file, so they survive a restart (without it a restart forgets them); one relay per file, enforced by a lock
+  -state-flush duration
+    	with -state: how long a change may wait so a burst costs one file write; a clear is always written at once, and a crash can lose the last window of forwarded-delivery entries (negative: write every change) (default 1s)
+  -view-url string
+    	the run viewer's base URL, for the "Open in viewer" button when a notification has no view.url
 ```
 
 ## bide approve
@@ -640,6 +837,25 @@ bide audit: produce and verify audit proof bundles
          journal order or after the signed head, and a time that is not canonical (printed
          quoted); these notes never change the verdict
 
+  notifications (-trail <file>... [-journal <file>...] | -db <file> | -postgres-env <var>) [-run <id>]
+                (-sth <file>... -pubkey <hex|file> | -unanchored) [-max-ack <duration>] [-max-unattested <duration>]
+                [-strict] [-routing <file>] [-as-of <time>]
+         verify that every event that needed a person (an unknown-outcome halt, an approval gate,
+         an aborted run, a recovery failure, an overdue notice, an all-clear) was notified, and
+         when it was acknowledged: each trail's leaves are read strictly (an unknown record kind or
+         field is an error) and must be a history a notifier writes (nothing acknowledged twice,
+         nothing out of order, every acknowledgement after a claim); with signed heads (-sth, from
+         audit.SignNotifyTrail or the anchor log of a notifier that anchors its trail, any
+         number per trail, each verified) the trail's first records are exactly what the newest
+         head commits to, so a deleted or reordered record is found, and the records after it
+         are reported with how many there are and how long the oldest has gone unattested
+         (-max-unattested fails a gap older than that, and bounds the tail an event may rest on); and each gate, halt and abort a
+         journal shows must be observed in its run's trail. Each event gets a verdict: acked,
+         acked_late (past its deadline or -max-ack), pending, failing, overdue, cleared before
+         notification, never_notified, and the command fails (exit 1) on acked_late, overdue and
+         never_notified (and, with -strict, on the warnings unobserved_resolved and all_clear_untimed). A verdict that rests on records after the newest signed head is unattested and fails unless every tail record it rests on is within -max-unattested (default 0: strict; records within a nonzero bound are accepted without a signature); with -routing (the notifier's routing, agent.RoutingOf as JSON), an event with no delivery to a receiver it routes to, or a due escalation step with none, is no_delivery and fails. -db and -postgres-env (a variable holding the DSN) read every run, or -run,
+         from a store, in the full bide command; the audit-only build reads exported files
+
   verify-receipts -receipt <file|dir> -journal <export> -heads <file> -pubkey <hex|file> -approver-keys <file>
          verify decision receipts (written by bide approve): each signature verifies for the
          approver's key over the exact call, and the signed tree heads (-heads: a head, or one per
@@ -720,6 +936,50 @@ Exit status:
   2  usage error: a bad flag or argument; nothing was read
   3  no verdict: the -checker gave none, or an internal error
   4  an input is unreadable or unusable
+```
+
+### bide audit notifications
+
+```text
+Usage of bide audit notifications:
+  -as-of string
+    	judge pending events as of this RFC 3339 time (default now)
+  -color when
+    	when to color the output: auto (the default: on a terminal, unless NO_COLOR is set or TERM is dumb), always or never; -json is never colored
+  -db string
+    	read the trails and journals from this SQLite journal (opened read-only) instead of from files
+  -grace duration
+    	how long after an event began that a missing observation is not yet a failure (the notifier's detection window) (default 5m0s)
+  -journal value
+    	a run's journal export (audit.ExportJournal as JSON) to cross-check against; repeat once per run
+  -json
+    	print one JSON report on stdout instead of the text report
+  -max-ack duration
+    	fail an event not acknowledged within this long of when the run entered its state (0: only each event's recorded deadline)
+  -max-clock-skew duration
+    	how far past this machine's clock a signed head's timestamp may be (default 5m0s)
+  -max-input-bytes int
+    	the largest input file, in bytes, the verb reads; a larger one is an error (default 268435456)
+  -max-unattested duration
+    	how long records after a trail's newest signed head may stay unattested: a trail with one older fails, and an event resting on tail records no older than this is accepted WITHOUT a signature, so its content and times (written by whoever appended it) are trusted; 0 (default): strict, an event resting on the tail fails (unattested)
+  -postgres-env string
+    	read them from the Postgres journal whose DSN is in this environment variable (never given on the command line)
+  -pubkey string
+    	the public key as <scheme>:<hex> (ed25519, ecdsa-p256, ml-dsa-65, ed25519+ml-dsa-65) or bare ed25519 hex, or a path to a file containing it; it verifies every -sth
+  -recovery-failing-after duration
+    	how long a recovery failure episode may be open before a recovery_failing event is owed (the notifier's setting) (default 15m0s)
+  -routing string
+    	the notifier's routing as JSON (agent.RoutingOf, from the options the notifier was built with): every event must have been delivered to the receivers it routes to, and each due escalation step to its receiver; without it per-receiver completeness is not checked
+  -run string
+    	with -db or -postgres-env: only this run and its sub-runs; default every run
+  -sth value
+    	a signed tree head over a trail, as JSON (audit.SignNotifyTrail, or an entry's sth from the anchor log of a notifier that anchors its trail); repeat for as many as you have, any number per trail: each must verify and match a prefix of the trail, the largest is the newest
+  -strict
+    	also fail (exit 1) on a warning: a decided gate no notifier observed (unobserved_resolved), or an all-clear owed that cannot be timed (all_clear_untimed)
+  -trail value
+    	a notification trail export (audit.ExportNotifyTrail as JSON); repeat once per trail
+  -unanchored
+    	accept a trail with no signed head: it is read, and nothing attests that it is complete or unaltered
 ```
 
 ### bide audit prove

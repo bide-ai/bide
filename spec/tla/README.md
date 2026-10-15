@@ -2403,6 +2403,33 @@ kinds. The note called it model 13, a number model 13 (probes) already has.
   recorded as the notice's `acked`; otherwise the next round sends it again while the event is
   open. With `LongClaims`, an event's claim is not assumed to lapse (a long claim TTL), while a
   notice's short claim is.
+- **The all-clear** (`Clears`, as in the core at the all-clear change). An event that stops
+  standing after a delivery of it was attempted is owed a resolved notification, a key of its own
+  (`r_<event>`, `resolved:<key>` in the core) with the records and the rounds of any key, and no
+  deadline, so it is never overdue. It is owed when the event is acked, or cleared with a claim in
+  the trail (a claim is the trace of a delivery attempt: a request can land although its reply is
+  lost), and the event no longer stands; an event still open with a claim is cleared by step 3 first.
+  A deliverer pass may start on it then: the catch-up scan of a drive end, a recovery pass or a
+  sweep, or the scan of the open trail that reaches a run that completed meanwhile (an event is
+  listed there before it is observed; the trail is kept in sealed daily segments), which the model, like every start, leaves to the fair
+  deliverers; the listing and the scan are checked by the Go tests. An event never claimed is
+  not told of, and `run_aborted` (never non-current in the core) has none. The recovery_failing
+  episodes' all-clears use the same machinery and are not modelled. The input assumption: an event
+  that stops standing does not stand again, which the keys guarantee (never reused).
+- **Routing and escalation** (`Levels`, `EscMode`, as in the core at the routing change). Routing
+  needs no variable: an event goes to one receiver, and a gate routed to several receivers is several
+  keys (`to:<receiver>:<key>`), each with the records, claims and rounds of any key, so each receiver
+  has its own acknowledgement; two `Events` are two receivers of one gate, and `Bug = "SharedAck"` is
+  the one-key fan-out in which the first acknowledgement closes the other. Escalation gives each event
+  `e` the keys `x1_e`, `x2_e` (up to `Levels`), the steps of a bounded chain. A step is observed, by the
+  ordinary step 2, only if the prefix the deliverer loaded shows `e` not cleared and (`EscMode =
+  "unacked"`) neither `e` nor an earlier step acknowledged, and `e`'s deadline (step 1) or the previous
+  step's own deadline has passed with that step observed; the append at the loaded position makes the
+  check atomic with the observation. `EscMode = "undecided"` is an approval: acknowledgement does not
+  satisfy it, only `e` ceasing to stand. A step stands while `e` does (`Current`), has no `overdue`
+  record (its deadline is the next step's) and, with `Clears`, an all-clear like any key. The chain's end
+  is structural: the keys are the finite set. The watch job and the worker's dedupe are not modelled
+  (the model's fair deliverers start on whatever the trail makes startable).
 - **The sink.** A request is accepted, accepted with its reply lost (`MaxLost`), or fails
   (`MaxFail`; `NoBudget`: the sink never accepts).
 - **Time.** Abstract: a claim lapsing, a deadline passing and `D` passing since `failing_since`
@@ -2450,6 +2477,16 @@ another key) and the digest (the same records and fold).
 | 7 | `Terminal`, `Once` | invariant | once a key is acked or cleared nothing more is appended for it; `observed`, `overdue`, `failing`, `acked` and `cleared` are each appended at most once per key |
 | | `ObservedFirst` | invariant | every record of a key follows its `observed` (the verifier's rule) |
 | | `StaleStops` | liveness | an observed event that is resolved ends cleared or acked |
+| 8 | `ClearNeverEarly`, `ClearOnlyIfTold`, `ClearAfterClose` | invariant | with `Clears`: no all-clear is observed or delivered for an event that still stands, none for an event nobody was told of (no claim), none before the event is acked or cleared |
+| 8 | `ClearNeverOverdue` | invariant | an all-clear has no `overdue` record and no overdue notice |
+| 8 | `ClearsDelivered` | liveness | every event that stopped standing after a delivery of it was attempted gets its all-clear acked (a sink that accepts in the end) |
+| 8 | `ClearAfterEventAck` | limit | does not hold: an event cleared with its request failed is never acked, and its all-clear is delivered all the same (`limits/clear-before-event`) |
+| 9 | `EscOnlyIfDue` | invariant | a step is observed only after its deadline (the event's, or the previous step's) has passed |
+| 9 | `EscChain` | invariant | step 2 is observed after step 1, in the trail's order |
+| 9 | `EscNotWhenSatisfied` | invariant | no step is observed after the event, or an earlier step, was acknowledged (an approval: never, by acknowledgement), or after the event was cleared, on the very prefix the append is made at |
+| 9 | `EscRaised` | liveness | a due step for an event that is not satisfied is observed, unless the event stops standing, is satisfied or cleared first |
+| 9 | `EscDelivered`, `EscStops` | liveness | a step observed is acked or cleared (a sink that accepts in the end); a step for an event that no longer stands is closed |
+| 9 | `NoSilentDrop` over two keys | liveness | with two receivers of one gate, each key is acked: one receiver's acknowledgement does not stand for the other (`route-two`; `regress/shared-ack` breaks it) |
 | | `BoundNotHit` | invariant | the configuration's round bound never stops a delivery |
 
 Property 6 needs no more than `LifeStepsOnly`: model 10's actions read no notify variable, so
@@ -2485,6 +2522,10 @@ the notifier.
 | `live-notice-long` | ci | The overdue notice with long claims: a holder that claimed before the deadline and died does not hold the notice back, a peer sends it; a crash. | 271,025 | 1 min |
 | `compose-resolve` | ci | Property 6: model 10's life-resolve (a leased primary, one Recover pass, the operator resolving halts; an error reply and a crash) with a notifier on the run's halt. | 254,606 | 2 min |
 | `compose-notify-reach` | ci | Vacuity of the notifier in the composition: a notification is delivered (NotifyNotReachable must be violated). | 2,165 | 4 s |
+| `notify-clear` | ci | The all-clear: two processes deliver one event and its all-clear (key `r_e1`); the event may stop standing at any time; a crash. No all-clear for an event that stands, none for one nobody was told of, none before the event is closed, none overdue. | 496,868 | 9 s |
+| `notify-clear-lost` | ci | The all-clear with a lost sink reply and a claim that lapses mid-round. | 738,858 | 14 s |
+| `live-clear` | ci | Liveness of the all-clear (`ClearsDelivered`, `NoSilentDrop`, `StaleStops`): every step and time weakly fair; a failed request. | 456,617 | 3 min |
+| `deep-live-clear-crash` | nightly | Liveness of the all-clear with a crash. | 993,707 | 5 min |
 | `deep-notice` | nightly | The overdue notice with a crash, a lost reply and a claim that lapses mid-round. | 2,365,395 | 27 s (8 workers) |
 | `deep-live-notice` | nightly | The overdue notice, under fairness, with a crash and a failed request. | 1,231,263 | 6 min |
 | `deep-faults` | nightly | Every fault at once: a crash, a lost reply, a trail append error, a failed request and a claim that lapses mid-round; two processes. | 7,565,060 | 21 min |
@@ -2496,6 +2537,57 @@ the notifier.
 | `deep-live-lost` | nightly | Liveness with a lost reply and a trail append that errors. | 77,709 | 1 min |
 | `deep-compose-leased` | nightly | Property 6: model 10's life-leased (a saga of two calls, a leased primary and a RecoverLoop worker; an error reply and a crash) with a notifier on the run's halt and its abort. | 935,832 | 13 min |
 | `deep-compose-approval` | nightly | Property 6: a model 10 run waiting for an approval, a RecoverLoop worker, the operator approving and resolving, a crash; a notifier on the approval. | 268,245 | 13 s (4 workers) |
+
+The `ci` configurations of model 14 are in two directories so that two CI shards run them:
+`notify/` (the fast ones) and `notify/ci-live/` (`live-notify`, `live-sink-down`, `live-notice-long`,
+`live-clear`, `compose-resolve`: minutes each), and its regressions and limits are a third shard.
+`live-clear-crash` (about 5 minutes) is nightly as `deep-live-clear-crash`; `live-clear` and
+`live-clear-crash` differ only in a crash, and `live-esc-clears` and `notify-clear` still check the
+all-clear with the event and with a crash in CI.
+
+Routing and escalation configurations (states and times from local `check.sh` runs on a shared
+development machine; the `ci` ones were sized to finish in minutes; `esc-unacked`, `esc-lost`, `esc-crash` and `esc-undecided` (1M to 7M states, 27 s to 3 min on a fast 10-core machine with several workers, too slow for one CI worker) are `nightly` as `deep-*`, and the safety properties of the chain (`EscOnlyIfDue`, `EscChain`, `EscNotWhenSatisfied`) are checked in CI only through the regressions that break each and the small liveness configs):
+
+| Config | Group | What | States | Time |
+|---|---|---|---|---|
+| `deep-esc-unacked` | nightly | Escalation, two steps; two processes, a sink that fails once, the event may be resolved at any time. | 1,127,613 | 27 s |
+| `deep-esc-lost` | nightly | One step with a lost sink reply. | 1,195,857 | 58 s |
+| `deep-esc-crash` | nightly | One step with a crash. | 1,002,682 | 3 min |
+| `deep-esc-undecided` | nightly | An approval (`EscMode = "undecided"`): escalated although acknowledged, two steps. | 881,759 | 2 min |
+| `esc-clears` | ci | One process, a sink that fails once. Too small to deliver a step (see below): the all-clear properties for the event itself. | 1,446 | 1 s |
+| `live-esc` | ci | Liveness of the chain (`EscRaised`, `EscDelivered`, `EscStops`), two processes, event not resolved. | 207,774 | 1 min |
+| `live-esc-undecided` | ci | The same for an approval, one process. | 318 | 1 s |
+| `live-esc-clears` | ci | `ClearsDelivered`, `EscStops`, one process. | 1,446 | 1 s |
+| `route-two` | ci | Two keys for one gate (two receivers), one failing request: both are acknowledged. One process. | 3,811 | 1 s |
+| `deep-esc` | nightly | Every fault at once with two steps. | not run locally | |
+| `deep-esc-clears` | nightly | Two processes, a sink that fails once, with the all-clear: the step properties non-vacuously, both vacuity effects checked. | not run to completion locally (over 15 min) | |
+| `deep-live-esc`, `deep-live-esc-undecided`, `deep-route-two` | nightly | The larger versions of the `ci` ones above (two processes, with the all-clear, or with the event resolved): `deep-route-two` 3,824,395 states, 23 min; `deep-live-esc` 1.1 million, 23 min; `deep-live-esc-undecided` 0.88 million, 32 min. | | |
+
+The vacuity check (`EffectNotReachable`, which TLC must report violated) is: with `Clears` and
+`Levels`, an escalation step is delivered and so is that step's all-clear (a state with both for one
+step; the event's own all-clear is not enough, since it would let the step properties hold
+vacuously); with `Clears` alone, an all-clear; with `Levels` alone, the first step of a chain; else a
+delivery. `EscDelivNotReachable` and `EscClearNotReachable` are its two halves, and a configuration
+may name further ones to check with `\* VACUITY-ALSO: <Name>` (`check.sh` runs each as an invariant that
+TLC must report violated); `deep-esc-clears` names both.
+
+Reaching a step's all-clear takes two processes (one retrying the event, one escalating it) and a
+failed request, which the one-process `esc-clears` and `live-esc-clears` (CI-sized, a second each) do
+not have; their step properties therefore hold only vacuously for steps. They say so with `VACUITY:
+skip`, and `regress/esc-clears-reach-step` and `-reach-clear` (a few seconds) check, at the
+two-process bound, that a step and a step's all-clear are delivered. The properties over steps with
+`Clears` are checked non-vacuously only by the nightly `deep-esc-clears`, which is large (it did not
+finish in 15 minutes locally; not run to completion). The vacuity condition was first written as
+"the last step" and then "the first step"; the former failed for a two-step chain whose sink accepts
+at its first request (the last step is reached only if the first step's receiver also fails), the
+latter was too weak under `Clears` (found in review): it let the event's own all-clear satisfy it.
+
+Routing of an approval by its approvers is checked by `RouteReaches` and `RouteNoExtra` (in
+`route-two`, over every map of three approvers to two receivers or no route and every route of the
+kind): every approver is reached, through its route or through the route of the kind, which is
+delivered to when any approver has no route and not otherwise. `regress/drop-unrouted` (`Bug =
+"DropUnrouted"`) leaves the route of the kind out, as the core did before the fix, and fails
+`RouteReaches`.
 
 ### Regressions: the protocol with one rule broken
 
@@ -2517,12 +2609,28 @@ they are the mutation check of every property above.
 | `failing-count-memory` | N1, adopted: failures counted in each process's memory | `FailingBy` (15) |
 | `no-peer-notice` | only the holder sends the overdue notice (with long claims) | `PeerCovers` (19) |
 | `no-notice-claim` | peers send the notice with no claim of their own on its key | `NoticeDupBound` (21) |
+| `clear-early` | the all-clear is owed as soon as the event is acked, while it still stands | `ClearNeverEarly` (13) |
+| `clear-unclaimed` | the all-clear is owed for an event cleared before any delivery was attempted | `ClearOnlyIfTold` (12) |
+| `clear-overdue` | the all-clear has a deadline and goes overdue like an event | `ClearNeverOverdue` (16) |
+| `no-clear` | an event that stopped standing after it was delivered never gets its all-clear | `ClearsDelivered` (19) |
+| `drop-unrouted` | an approval with an unrouted approver is not delivered to the route of the kind | `RouteReaches` (depth 0) |
+| `esc-clears-reach-step`, `esc-clears-reach-clear` | reachability: with `Clears`, a step and a step's all-clear are delivered (the vacuity probes, inverted) | `EscDelivNotReachable` (14 states deep), `EscClearNotReachable` (depth 23) |
+| `shared-ack` | both receivers of a gate share one key: the first acknowledgement closes the second's | `NoSilentDrop` (liveness) |
+| `esc-early` | a step is observed before its event's deadline | `EscOnlyIfDue` |
+| `esc-skip` | step 2 does not wait for step 1 | `EscChain` |
+| `esc-when-acked` | a step is observed after the event or an earlier step was acknowledged | `EscNotWhenSatisfied` |
+| `no-esc` | no escalation rule, under fairness | `EscRaised` |
+| `no-esc-stop` | a step stands after its event stopped standing | `EscStops` |
 | `compose-in-journal` | the notifier writes the run's journal (its claim as an attempt marker on the run's last call, as a notification run as a Step of the run would) | `LifeStepsOnly` (12) |
 
 ### Limits and findings
 
 - `limits/stale-alert` (`NoStaleDelivery`): the race the note documents. The currency check and
   the send are not atomic, so a request is accepted for an event resolved a moment before.
+- `limits/clear-before-event` (`ClearAfterEventAck`): the all-clear is not promised after the
+  event. An event whose request failed and that stopped standing is cleared, never acknowledged,
+  and its all-clear is delivered all the same (a request that failed may have landed); the
+  all-clear names the event's key, which is how a receiver matches them in either order.
 - `limits/not-exactly-once` (`ExactlyOnce`): at least once, not exactly once; a lost reply alone
   makes a second delivery.
 - `limits/notice-slow-holder` (`NoticeOnce`): one duplicate notice with no crash, lost reply or
@@ -2558,6 +2666,17 @@ they are the mutation check of every property above.
   timeout that succeeds later; the configurations without `MaxSlow` (`live-notice-long` among them,
   with `NoticeDupBound` under long claims) have none.
 
+**Signing and anchoring the trail is outside the model, and changes none of its properties.**
+`audit.AuditedEventStore` publishes a signed tree head over the trail after an append has committed.
+It reads the trail, writes only to the anchor, and does not alter the result or the timing of the
+append: a background publisher does the work, so a round's appends cost what they did (the claim
+arithmetic of `N2`/`N3`, which counts the store's round trips as short, still holds, and `Notify.tla`'s
+`ASSUME` over the claim TTLs is not touched). No delivery property reads the anchor or the head
+(`NotifyOnce`, `NoticeOnce`, the liveness properties, the composition with model 10), and the head
+adds no step that writes the trail. What anchoring adds are properties of the evidence, not of
+delivery: heads grow, and each commits to a prefix of the trail. They are checked by Go tests
+(`audit/audited_event_store_test.go`), not by this model.
+
 Two rules the model needed, which the note implies but does not state: the claim's holder is
 unique per process incarnation and per deliverer (`holder-process`), and an `acked` append that
 errors is retried in place with the round's claim kept (`ack-no-retry`).
@@ -2569,7 +2688,9 @@ standalone configuration (two event keys on one trail in `deep-compose-leased`),
 episode (two nightly, in one process), two requests a round, and up to three faults among a crash, a
 lost reply, a trail append error, a failed request and a claim that lapses mid-round on pull
 requests (all five at once nightly); the composition with model 10 at its `life-resolve` bounds
-(`life-leased` and a one-run approval nightly). Times are abstract steps, so any relation between a
+(`life-leased` and a one-run approval nightly). The all-clear is a second key on the trail, so its
+configurations use one process-crash or one lost reply and a claim lapse, not all three at once, and
+leave recovery_failing's all-clear and the composition with model 10 out. Times are abstract steps, so any relation between a
 claim's two minutes, the deadline's five and `D`'s fifteen is covered. A bug that needs two events
 interleaving in the standalone model with faults, two concurrent episodes, or more than two of one
 fault is outside the check. Two events at once outgrew a nightly run (over 55 million states with

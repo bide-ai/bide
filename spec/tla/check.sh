@@ -21,6 +21,8 @@
 #   \* GROUP: ci | nightly | regress | finding | limit
 #   \* EXPECT: pass | invariant <Name> | liveness | action <Name>
 #   \* VACUITY: skip <reason>   (optional: a passing config in which the effect must never fire)
+#   \* VACUITY-ALSO: <Name>    (optional, repeatable: a further vacuity invariant of the module that
+#                              TLC must also report violated, so the config reaches that effect too)
 #   \* SPEC: <module>.tla       (optional: the module in the model's directory TLC checks, in place
 #                              of its MC module)
 #   \* LIBRARY: <model>...      (optional: other model directories whose modules it extends or
@@ -48,8 +50,9 @@
 # TLC_JOBS (default 1: how many configs run at a time; above 1, each runs with one TLC worker),
 # TLC_MODELS (default every model: the model directories whose configs a group runs, such as
 # "claims toolcall"), TLC_DIRS (default every directory: the configuration directories a group
-# runs, each a model's directory or its regress, findings or limits directory, such as
-# "claims claims/limits"; CI's Models shards), TLC_JAVA_OPTS (extra JVM options).
+# runs, each a model's directory or its regress, findings, limits or ci-* directory, such as
+# "claims claims/limits"; CI's Models shards; a ci-* directory, such as notify/ci-live, holds ci
+# configurations of the model that a shard of their own runs), TLC_JAVA_OPTS (extra JVM options).
 set -euo pipefail
 
 here=$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)
@@ -217,7 +220,7 @@ run_cfg() {
   cfg=$(cd "$(dirname "$cfg")" && pwd)/$(basename "$cfg")
   name=${cfg#"$here"/}
   dir=$(dirname "$cfg")
-  [ -n "$(mc_of "$dir")" ] || dir=$(dirname "$dir") # regress/, findings/, limits/: the MC module above
+  [ -n "$(mc_of "$dir")" ] || dir=$(dirname "$dir") # regress/, findings/, limits/, ci-*/: the MC module above
   expect=$(meta EXPECT "$cfg")
   kind=${expect%% *}
   want=${expect#* }
@@ -250,6 +253,19 @@ run_cfg() {
       else
         tail -30 "$out.v"; record "$name (vacuity)" FAIL "exit $status: the effect never fires"
       fi
+      # Each further effect the config names (VACUITY-ALSO) must be reachable too.
+      for also in $(sed -n 's/^\\\* VACUITY-ALSO: *//p' "$cfg"); do
+        tmp="$(dirname "$cfg")/.vacuity-$$.cfg"
+        grep -vE '^(INVARIANTS?|PROPERTY|PROPERTIES)( |$)' "$cfg" >"$tmp"
+        echo "INVARIANT $also" >>"$tmp"
+        tlc "$tmp" "$out.v" "$dir" "$module" "$lib"; status=$tlc_status
+        rm -f "$tmp"
+        if [ "$status" = 12 ] && grep -q "Invariant $also is violated" "$out.v"; then
+          record "$name (vacuity $also)" ok "effect reachable at depth $(stats "$out.v" | sed 's/.*depth \([0-9?]*\).*/\1/')"
+        else
+          tail -30 "$out.v"; record "$name (vacuity $also)" FAIL "exit $status: the effect never fires"
+        fi
+      done
       rm -f "$out.v"
       ;;
     invariant)
@@ -296,16 +312,16 @@ models() {
 }
 
 # dirs: fail unless each TLC_DIRS entry is a configuration directory group_cfgs reads (a model's
-# directory, or its regress, findings or limits directory), so a misspelt entry cannot select
+# directory, or its regress, findings, limits or ci-* directory), so a misspelt entry cannot select
 # nothing.
 dirs() {
   local d
   for d in ${TLC_DIRS:-}; do
     case "$d" in
-      */regress|*/findings|*/limits) [ -n "$(mc_of "$here/${d%/*}" 2>/dev/null)" ] && [ -d "$here/$d" ] ;;
+      */regress|*/findings|*/limits|*/ci-*) [ -n "$(mc_of "$here/${d%/*}" 2>/dev/null)" ] && [ -d "$here/$d" ] ;;
       */*) false ;;
       *) [ -n "$(mc_of "$here/$d" 2>/dev/null)" ] ;;
-    esac || die "TLC_DIRS: $d is not a model directory under spec/tla or its regress, findings or limits directory"
+    esac || die "TLC_DIRS: $d is not a model directory under spec/tla or its regress, findings, limits or ci-* directory"
   done
 }
 
@@ -322,7 +338,7 @@ in_dirs() {
 group_cfgs() {
   local m cfg
   for m in $(models); do
-    for cfg in "$here/$m"/*.cfg "$here/$m"/regress/*.cfg "$here/$m"/findings/*.cfg "$here/$m"/limits/*.cfg; do
+    for cfg in "$here/$m"/*.cfg "$here/$m"/regress/*.cfg "$here/$m"/findings/*.cfg "$here/$m"/limits/*.cfg "$here/$m"/ci-*/*.cfg; do
       [ -f "$cfg" ] || continue
       [ "$(meta GROUP "$cfg")" = "$1" ] || continue
       in_dirs "$cfg" || continue

@@ -5,7 +5,9 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"slices"
 	"sync"
+	"time"
 )
 
 // ErrTrailConflict is returned by NotifyTrail.Append when the position is already taken by a
@@ -29,6 +31,80 @@ type NotifyTrail interface {
 	// landed although it saw an error. A seq below it holding a different record is
 	// ErrTrailConflict. A seq above the length is an error, not a conflict.
 	Append(ctx context.Context, trail string, seq int, rec NotifyRecord) error
+}
+
+// NotifyTrailAnchorer is an optional capability of a NotifyTrail: one whose records are signed and
+// anchored as they are written (audit.NotifyTrail over an audit.AuditedEventStore) can also be asked
+// to catch up. The notifier calls AnchorTrails with the trails of the runs a NotifyPending sweep or
+// a recovery pass looked at, so a trail that grew while the anchor was unreachable, or whose writer
+// died before it anchored, is signed again without waiting for a new event. It is best effort: an
+// error is reported to the handler of WithNotifyErrors and never affects a delivery, and it must be
+// bounded (it is called inline by the sweep and the recovery pass). A NotifyTrail that does not
+// implement it is simply not asked.
+type NotifyTrailAnchorer interface {
+	AnchorTrails(ctx context.Context, trails []string) error
+}
+
+// anchorTrails asks the engine's trail, if it can, to bring the heads of the named trails up to
+// date. A failure is reported, never returned: anchoring is a side channel of delivery.
+func (e *notifyEngine) anchorTrails(ctx context.Context, trails ...string) {
+	a, ok := e.trail.(NotifyTrailAnchorer)
+	if !ok || ctx.Err() != nil {
+		return
+	}
+	trails = slices.Compact(slices.Sorted(slices.Values(trails)))
+	if err := a.AnchorTrails(ctx, trails); err != nil {
+		e.report(fmt.Errorf("notify: anchor trails: %w", err))
+	}
+}
+
+// recentSegments is how many of the open trail's newest segments a catch-up signs again besides
+// today's: a sealed segment is final, so its last head is the one that matters, and a few cover a
+// process that was down for a while.
+const recentSegments = 3
+
+// globalEvery is how often a recovery pass signs the global trails again: a pass visits every
+// unfinished run, and they need it once per interval, not once per run.
+const globalEvery = time.Minute
+
+// globalDue reports whether the global trails are due to be signed again by a recovery pass, and
+// if so books the next time.
+func (e *notifyEngine) globalDue() bool {
+	e.mu.Lock()
+	defer e.mu.Unlock()
+	now := e.cfg.now()
+	if !e.globalAt.IsZero() && now.Sub(e.globalAt) < globalEvery {
+		return false
+	}
+	e.globalAt = now
+	return true
+}
+
+// globalTrails are the trails that belong to no run and that a catch-up signs again: the digest's,
+// the open trail's index for this year and the last, today's open segment and the newest few
+// before it. Reading the indexes is best effort: an error is reported and the names found so far
+// are used.
+func (e *notifyEngine) globalTrails(ctx context.Context) []string {
+	now := e.cfg.now()
+	names := []string{NotifyDigestTrail, OpenSegment(now)}
+	var segs []string
+	for _, yr := range []int{now.UTC().Year() - 1, now.UTC().Year()} {
+		idx := OpenIndex(yr)
+		recs, err := e.trail.Load(ctx, idx)
+		if err != nil {
+			e.report(fmt.Errorf("notify: read %s to anchor the open trail: %w", idx, err))
+			continue
+		}
+		if len(recs) > 0 {
+			names = append(names, idx)
+		}
+		for _, r := range recs {
+			if r.Kind == NotifySegment && !slices.Contains(segs, r.Next) {
+				segs = append(segs, r.Next)
+			}
+		}
+	}
+	return append(names, segs[max(0, len(segs)-recentSegments):]...)
 }
 
 // MemNotifyTrail is an in-memory NotifyTrail, safe for concurrent use.

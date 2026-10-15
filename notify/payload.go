@@ -45,7 +45,7 @@ func Args(tools ...string) Field {
 }
 
 // Payload is the JSON body of a webhook request, schema bide.notification.v1. Exactly one of Halt,
-// Approval, Abort and Failing is non-nil, where the kind has one. It is exported so a receiver can
+// Approval, Abort, Failing and Clears is non-nil, where the kind has one. It is exported so a receiver can
 // decode it; a receiver must ignore unknown fields.
 type Payload struct {
 	Schema     string     `json:"schema"`
@@ -64,8 +64,16 @@ type Payload struct {
 	Approval   *Approval  `json:"approval"`
 	Abort      *Abort     `json:"abort"`
 	Failing    *Failing   `json:"failing"`
-	Reason     string     `json:"reason,omitempty"`
-	View       View       `json:"view"`
+	// Clears is present for a resolved notification: the event it ends.
+	Clears *Clears `json:"clears"`
+	// Escalates is present for an escalated notification: the event that was not acknowledged (an
+	// approval: not decided) by its deadline, and the step of the chain this is. The event's own
+	// detail (halt, approval, step) is filled in as the event's own notifications carry it.
+	Escalates *Escalates `json:"escalates"`
+	// Receiver is the name of the receiver this request is to ("default" for the notifier's own).
+	Receiver string `json:"receiver,omitempty"`
+	Reason   string `json:"reason,omitempty"`
+	View     View   `json:"view"`
 	// Error is present only with WithFields(ErrorText).
 	Error string `json:"error,omitempty"`
 }
@@ -118,6 +126,25 @@ type Failing struct {
 	Cause string `json:"cause"`
 }
 
+// Clears is the detail of a resolved notification, the all-clear: the event that stopped being
+// current. ID and Key are those of that event's own notifications (their "id" and "key"). An event
+// does not become current again and its key is never reused, so a receiver may treat every
+// delivery of ID, before or after this one, as superseded: the all-clear can arrive first.
+type Clears struct {
+	ID   string `json:"id"`
+	Key  string `json:"key"`
+	Kind string `json:"kind"`
+}
+
+// Escalates is the detail of an escalated notification. ID and Key are those of the event's own
+// notifications (their "id" and "key"); Level is the step of the escalation chain, from 1.
+type Escalates struct {
+	ID    string `json:"id"`
+	Key   string `json:"key"`
+	Kind  string `json:"kind"`
+	Level int    `json:"level"`
+}
+
 // View points at where to look. It never carries an approve or resolve link: acting from a
 // notification is a non-goal, and a link that decides on a click is a phishing target.
 type View struct {
@@ -148,6 +175,16 @@ func tp(t time.Time) *time.Time {
 }
 
 func (w *Webhook) payload(n agent.Notification) Payload {
+	if n.Kind == agent.NotificationEscalated && n.Escalates != nil {
+		// The event's own detail, under the escalation's identity.
+		inner := n
+		inner.Kind = n.Escalates.Kind
+		p := w.payload(inner)
+		p.ID, p.Key, p.Kind, p.Reason = n.ID, n.Key, string(n.Kind), n.Reason
+		p.Escalates = &Escalates{ID: n.Escalates.ID, Key: n.Escalates.Key, Kind: string(n.Escalates.Kind), Level: n.Escalates.Level}
+		p.Summary = fmt.Sprintf("Escalation %d: %s Its notification was not acknowledged, or it is not decided, by its deadline.", n.Escalates.Level, p.Summary)
+		return p
+	}
 	p := Payload{
 		Schema:     Schema,
 		ID:         n.ID,
@@ -158,6 +195,7 @@ func (w *Webhook) payload(n agent.Notification) Payload {
 		ObservedAt: tp(n.Observed),
 		DeadlineAt: tp(n.Deadline),
 		Attempt:    n.Attempt,
+		Receiver:   n.Receiver,
 		View:       View{Command: w.viewCommand(n.RunID)},
 	}
 	if w.viewURL != "" {
@@ -205,6 +243,14 @@ func (w *Webhook) payload(n agent.Notification) Payload {
 	case agent.NotificationRecoveryFailing:
 		p.Failing = &Failing{Cause: n.Reason}
 		p.Summary = fmt.Sprintf("Recovery of run %s keeps failing.", run)
+	case agent.NotificationResolved:
+		p.Reason = n.Reason
+		if c := n.Clears; c != nil {
+			p.Clears = &Clears{ID: c.ID, Key: c.Key, Kind: string(c.Kind)}
+			p.Summary = fmt.Sprintf("Run %s: the %s event is over (%s). No action is needed for it.", run, c.Kind, n.Reason)
+		} else {
+			p.Summary = fmt.Sprintf("Run %s: an event that was reported is over (%s).", run, n.Reason)
+		}
 	case agent.NotificationOverdue:
 		p.Reason = n.Reason
 		p.Summary = fmt.Sprintf("A notification for run %s was not acknowledged by its deadline.", run)
