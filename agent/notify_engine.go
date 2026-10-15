@@ -910,7 +910,7 @@ func (e *notifyEngine) current(ctx context.Context, ev notifyEvent, st NotifySta
 			return false, "resolved", nil
 		}
 		return true, "", nil
-	case NotificationRunAborted, NotificationResolved:
+	case NotificationRunAborted, NotificationResolved, NotificationApprovalExpired:
 		return true, "", nil
 	case NotificationEscalated:
 		// A step stands while the event it escalates does: it is not acknowledged by a receiver
