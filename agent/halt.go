@@ -56,10 +56,15 @@ func Approve(ctx context.Context, d *Journal, runID, toolUseID string, approved 
 			name = n
 		}
 	}
-	if _, err := d.do(ctx, runID, name, func(context.Context) (Record, error) {
+	got, err := d.do(ctx, runID, name, func(context.Context) (Record, error) {
 		return Record{Kind: StepApproval, ToolUseID: toolUseID, Approved: approved, ApproverSignature: recordedStamp(o.now)}, nil
-	}); err != nil {
+	})
+	if err != nil {
 		return err
+	}
+	if string(got.Result) == expiredDecision {
+		// The gate recorded its expiry as the decision first: this one was not recorded.
+		return fmt.Errorf("Approve: the approval gate on %s in run %s recorded its expiry, so the decision was not recorded: %w (%w)", toolUseID, runID, ErrApprovalExpired, ErrConfig)
 	}
 	if flow {
 		return staleDecision(ctx, d, "Approve", runID, toolUseID, name, reqSeq, true)

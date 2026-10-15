@@ -314,3 +314,37 @@ func (s *insertLog) Insert(ctx context.Context, runID, name string, data []byte)
 	s.inserts = append(s.inserts, name)
 	return s.Store.Insert(ctx, runID, name, data)
 }
+
+// A recorded expiry is final whatever the deciding process's clock says: SubmitDecision with a clock
+// still before the deadline refuses, and Approve on a one-decision gate whose expiry holds the
+// decision's name reports it.
+func TestDeadline_RecordedExpiryRefusesASkewedClock(t *testing.T) {
+	early := &testClock{t: deadlineT0.Add(10 * time.Minute)}
+	t.Run("m-of-n", func(t *testing.T) {
+		store := memJournal()
+		clk := &testClock{t: deadlineT0}
+		pol := &ApprovalPolicy{Need: 2, Approvers: abc, Timeout: time.Hour}
+		vf := fakeVerifiers(abc...)
+		var charged int
+		_, _ = deadlineRun(clk, store, "r1", true, pol, vf, &charged)
+		clk.t = deadlineT0.Add(2 * time.Hour)
+		_, _ = deadlineRun(clk, store, "r1", false, pol, vf, &charged)
+		sig := fakeSign("bob", ApprovalDecisionBytes(subjectOf(t, store, "r1", "c1"), "bob", true, testDecidedAt))
+		if err := decideAs(contextWithClock(context.Background(), early.now), store, "r1", "c1", "bob", true, sig); !errors.Is(err, ErrApprovalExpired) {
+			t.Fatalf("SubmitDecision with a clock before the deadline after the recorded expiry = %v; want ErrApprovalExpired", err)
+		}
+	})
+	t.Run("single", func(t *testing.T) {
+		store := memJournal()
+		clk := &testClock{t: deadlineT0}
+		pol := SingleApproval()
+		pol.Timeout = time.Hour
+		var charged int
+		_, _ = deadlineRun(clk, store, "r1", true, pol, nil, &charged)
+		clk.t = deadlineT0.Add(2 * time.Hour)
+		_, _ = deadlineRun(clk, store, "r1", false, pol, nil, &charged)
+		if err := Approve(contextWithClock(context.Background(), early.now), store, "r1", "c1", true); !errors.Is(err, ErrApprovalExpired) {
+			t.Fatalf("Approve with a clock before the deadline after the recorded expiry = %v; want ErrApprovalExpired", err)
+		}
+	})
+}
