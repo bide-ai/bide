@@ -187,7 +187,10 @@ Each item is one thing to do, and says since when:
   decisions, and the run records the expiry the next time it is driven (the call does not run).
   The JSON gives `expires_at`, `due`, `due_soon` and `overdue` on the item's `gate`.
 
-  ![bide view's Needs attention list over refunds waiting at gates with a deadline: one overdue with no command, one due in 39 minutes and flagged DUE SOON, one due tomorrow](img/run-viewer-deadline-attention-dark.png)
+    <picture>
+    <source media="(prefers-color-scheme: dark)" srcset="./img/run-viewer-deadline-attention-dark.png">
+    <img src="./img/run-viewer-deadline-attention-light.png" alt="bide view's Needs attention list over refunds waiting at gates with a deadline: one overdue with no command, one due in 39 minutes and flagged DUE SOON, one due tomorrow">
+  </picture>
   The command that records a decision is shown with it, as `bide approve` writes it
   (`approveline.Command`): the journal by its absolute path for `-db`, by the variable you gave
   `-postgres-env` for a Postgres journal, and by the placeholder `<VAR>` when you gave a raw `-postgres`
@@ -390,7 +393,10 @@ reason (`recorded after the gate's deadline`, or `written after the gate expired
 the counts. The time left is read from the viewer's clock (`Options.Now`); the deadline itself is
 the gate's recorded `approval-deadline` record.
 
-![bide view on a run whose gate expired: the gate card says expired with the deadline and timeout, with one of two approvals counted](img/run-viewer-gate-expired-dark.png)
+<picture>
+  <source media="(prefers-color-scheme: dark)" srcset="./img/run-viewer-gate-expired-dark.png">
+  <img src="./img/run-viewer-gate-expired-light.png" alt="bide view on a run whose gate expired: the gate card says expired with the deadline and timeout, with one of two approvals counted">
+</picture>
 
 Both images come from `assets/demo/shots-deadline.sh`, which writes a small journal with the real
 agent runtime and a controllable clock (`assets/demo/setup/deadline.go`).

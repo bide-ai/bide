@@ -8,7 +8,7 @@
 # few seconds, so the capture runs on a virtual clock short of the first refresh.
 #
 #   assets/demo/shots-deadline.sh              # dark, into docs/guides/img
-#   THEME=light OUT=/tmp/shots assets/demo/shots-deadline.sh
+#   THEME=light assets/demo/shots-deadline.sh  # the light variants, which the guide embeds with <picture>
 #
 # Needs a Chromium-based browser (set CHROME to its binary if it is not found). The pages hold
 # times, so the images differ from run to run in those digits only.
