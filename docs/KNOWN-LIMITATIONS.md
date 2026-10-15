@@ -551,6 +551,14 @@ record shape change between pre-releases, so a later pre-release does not refuse
 journal even where it reads it differently. Finish or resolve runs before upgrading between
 pre-releases. At 1.0 the tag becomes `bide.journal.v1`, and 1.0 refuses every pre-release journal.
 
+**A SQLite lease TTL must exceed the disk's worst commit.** A lease renewal is a committed write.
+`store/sqlite` puts it ahead of the journal writes queued in its process, so it waits for at most the
+one write already inside, but it cannot commit faster than the disk: a commit that stalls for longer
+than the lease TTL (a saturated shared disk, antivirus, a network-backed volume that should not hold
+the file) lets the lease lapse, and the run's drive is cancelled with `agent.ErrLeaseLost`. Choose
+`agent.WithLeaseTTL` several times the worst commit latency you see on the storage (the default TTL is
+sized for local SSDs); on slow or shared storage use a longer TTL or Postgres.
+
 **One SQLite file, one name, one link.** SQLite coordinates the connections to a WAL-mode database
 through files it names from the path it was given, so two handles that reach one file by different
 names can each take the WAL for their own and corrupt the database ([SQLite: how to
