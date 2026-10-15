@@ -312,8 +312,10 @@ type RawCRLOpts struct {
 	Extensions  []pkix.Extension
 	PadBytes    int // adds a non-critical unknown extension of about this many bytes
 	// InnerAlg and OuterAlg override the signature algorithm identifiers in the TBSCertList and in
-	// the CertificateList (the signature itself is still the CA key's).
+	// the CertificateList (the signature itself is still the CA key's). OuterParams is the full DER of
+	// the outer identifier's parameters (for RSASSA-PSS).
 	InnerAlg, OuterAlg asn1.ObjectIdentifier
+	OuterParams        []byte
 	// Indefinite re-encodes the outer SEQUENCE with an indefinite length (BER).
 	Indefinite bool
 	// NoAKI omits the authority key identifier extension.
@@ -323,7 +325,10 @@ type RawCRLOpts struct {
 // RawCRL builds and signs a CRL by marshalling the TBSCertList itself.
 func (c *CA) RawCRL(tb testing.TB, o RawCRLOpts) []byte {
 	tb.Helper()
-	type algID struct{ Algorithm asn1.ObjectIdentifier }
+	type algID struct {
+		Algorithm  asn1.ObjectIdentifier
+		Parameters asn1.RawValue `asn1:"optional"`
+	}
 	type entry struct {
 		Serial *big.Int
 		Time   time.Time
@@ -378,7 +383,7 @@ func (c *CA) RawCRL(tb testing.TB, o RawCRLOpts) []byte {
 		pad, _ := asn1.Marshal(make([]byte, o.PadBytes))
 		exts = append(exts, pkix.Extension{Id: asn1.ObjectIdentifier{1, 3, 6, 1, 4, 1, 99999, 8}, Value: pad})
 	}
-	t := tbs{Version: 1, Sig: algID{inner}, Issuer: asn1.RawValue{FullBytes: c.Cert.RawSubject}, This: o.This, Next: o.Next, Exts: exts}
+	t := tbs{Version: 1, Sig: algID{Algorithm: inner}, Issuer: asn1.RawValue{FullBytes: c.Cert.RawSubject}, This: o.This, Next: o.Next, Exts: exts}
 	if o.OmitVersion {
 		t.Version = 0
 	}
@@ -400,7 +405,7 @@ func (c *CA) RawCRL(tb testing.TB, o RawCRLOpts) []byte {
 		TBS asn1.RawValue
 		Alg algID
 		Sig asn1.BitString
-	}{asn1.RawValue{FullBytes: tbsDER}, algID{outer}, asn1.BitString{Bytes: sigBytes, BitLength: 8 * len(sigBytes)}})
+	}{asn1.RawValue{FullBytes: tbsDER}, algID{Algorithm: outer, Parameters: asn1.RawValue{FullBytes: o.OuterParams}}, asn1.BitString{Bytes: sigBytes, BitLength: 8 * len(sigBytes)}})
 	if err != nil {
 		tb.Fatal(err)
 	}

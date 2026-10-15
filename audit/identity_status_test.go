@@ -1532,3 +1532,77 @@ func TestAuthenticatedIntakeAlgorithms(t *testing.T) {
 		t.Fatalf("PSS by another key: %v", err)
 	}
 }
+
+// RSASSA-PSS parameters outside the profile are refused before the entries are parsed: a SHA-1 hash,
+// a salt that is not the digest length, MGF1 over another hash, another trailer, or garbage.
+func TestPSSParametersOutsideTheProfile(t *testing.T) {
+	s := newStFx(t)
+	this, next := s.a.Add(time.Second), s.a.Add(hour)
+	sha1 := asn1.ObjectIdentifier{1, 3, 14, 3, 2, 26}
+	sha256 := asn1.ObjectIdentifier{2, 16, 840, 1, 101, 3, 4, 2, 1}
+	sha384 := asn1.ObjectIdentifier{2, 16, 840, 1, 101, 3, 4, 2, 2}
+	mgf1 := asn1.ObjectIdentifier{1, 2, 840, 113549, 1, 1, 8}
+	pssOID := asn1.ObjectIdentifier{1, 2, 840, 113549, 1, 1, 10}
+	mustM := func(v any, params string) []byte {
+		b, err := asn1.MarshalWithParams(v, params)
+		if err != nil {
+			t.Fatal(err)
+		}
+		return b
+	}
+	alg := func(oid asn1.ObjectIdentifier, params ...[]byte) []byte {
+		var inner []byte
+		inner = append(inner, mustM(oid, "")...)
+		for _, p := range params {
+			inner = append(inner, p...)
+		}
+		return mustM(asn1.RawValue{Class: asn1.ClassUniversal, Tag: asn1.TagSequence, IsCompound: true, Bytes: inner}, "")
+	}
+	mgf := func(hash asn1.ObjectIdentifier) []byte { return alg(mgf1, alg(hash)) }
+	params := func(hash asn1.ObjectIdentifier, mgfHash asn1.ObjectIdentifier, salt, trailer int) []byte {
+		var b []byte
+		b = append(b, mustM(asn1.RawValue{Class: asn1.ClassContextSpecific, Tag: 0, IsCompound: true, Bytes: alg(hash)}, "")...)
+		b = append(b, mustM(asn1.RawValue{Class: asn1.ClassContextSpecific, Tag: 1, IsCompound: true, Bytes: mgf(mgfHash)}, "")...)
+		b = append(b, mustM(asn1.RawValue{Class: asn1.ClassContextSpecific, Tag: 2, IsCompound: true, Bytes: mustM(salt, "")}, "")...)
+		b = append(b, mustM(asn1.RawValue{Class: asn1.ClassContextSpecific, Tag: 3, IsCompound: true, Bytes: mustM(trailer, "")}, "")...)
+		return mustM(asn1.RawValue{Class: asn1.ClassUniversal, Tag: asn1.TagSequence, IsCompound: true, Bytes: b}, "")
+	}
+	for name, p := range map[string][]byte{
+		"sha-1 hash":           params(sha1, sha1, 20, 1),
+		"salt not the digest":  params(sha256, sha256, 20, 1),
+		"mgf1 over another":    params(sha256, sha384, 32, 1),
+		"trailer other than 1": params(sha256, sha256, 32, 2),
+		"garbage":              {0x30, 0x01, 0xff},
+		"no parameters":        nil,
+	} {
+		o := testca.RawCRLOpts{Number: big.NewInt(1), This: this, Next: next, InnerAlg: pssOID, OuterAlg: pssOID, OuterParams: p,
+			Entries: []testca.RawEntry{{Serial: big.NewInt(5), Time: this, Exts: []pkix.Extension{{Id: asn1.ObjectIdentifier{2, 5, 29, 29}, Critical: true, Value: []byte{0x30, 0x00}}}}}}
+		_, err := audit.NewStatusSnapshot(audit.WithIssuers(s.inter.Cert)).AddCRL(s.inter.RawCRL(t, o))
+		if err == nil || !strings.Contains(err.Error(), "outside the profile") {
+			t.Fatalf("%s: %v", name, err)
+		}
+	}
+}
+
+func TestMaxCRLsOfZeroIsOneNotUnbounded(t *testing.T) {
+	s := newStFx(t)
+	sn := audit.NewStatusSnapshot(audit.WithMaxCRLs(0))
+	for i := 0; i < 3; i++ {
+		if _, err := sn.AddCRL(s.lcrl(int64(i+1), idT0.Add(time.Duration(i)*min), 30*min)); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if sn.Len() != 1 || sn.Evicted() != 2 {
+		t.Fatalf("%d held, %d evicted", sn.Len(), sn.Evicted())
+	}
+}
+
+func TestNoWarningWithoutADeclaredPeriod(t *testing.T) {
+	s := newStFx(t)
+	c0 := s.lcrl(1, idT0, 3*hour)
+	c1 := s.lcrl(2, idT0.Add(45*min), 3*hour)
+	st := s.c.EvaluateStatus(s.ac, s.a, s.snap(c0, c1), audit.StatusParams{W: 10 * min, MinW: 5 * min}).Certs[0]
+	if st.Warning != "" {
+		t.Fatalf("%+v", st)
+	}
+}
