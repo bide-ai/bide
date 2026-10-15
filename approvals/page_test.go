@@ -11,6 +11,7 @@ import (
 	"net"
 	"net/http"
 	"net/http/httptest"
+	"net/url"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -465,7 +466,7 @@ func TestPage_ParsesEveryPendingAnswerTheHandlerGives(t *testing.T) {
 	save("single", s, runID)
 	script := `
 const fs = require('fs');
-import('` + filepath.ToSlash(mustAbs(t, filepath.Join("page", "core.js"))) + `').then(({ parsePending }) => {
+import('` + fileURL(mustAbs(t, filepath.Join("page", "core.js"))) + `').then(({ parsePending }) => {
   let bad = 0;
   for (const f of process.argv.slice(1)) {
     try { parsePending(new Uint8Array(fs.readFileSync(f))); } catch (e) { bad++; console.log(f + ': ' + e.message); }
@@ -486,6 +487,16 @@ import('` + filepath.ToSlash(mustAbs(t, filepath.Join("page", "core.js"))) + `')
 			t.Errorf("%s has no reason: %s", name, b)
 		}
 	}
+}
+
+// fileURL is the file: URL of an absolute path, which Node's ES module loader needs on Windows (a
+// drive letter is not a scheme it accepts).
+func fileURL(abs string) string {
+	p := filepath.ToSlash(abs)
+	if !strings.HasPrefix(p, "/") {
+		p = "/" + p
+	}
+	return (&url.URL{Scheme: "file", Path: p}).String()
 }
 
 func mustAbs(t *testing.T, p string) string {

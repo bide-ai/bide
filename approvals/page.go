@@ -1,6 +1,7 @@
 package approvals
 
 import (
+	"bytes"
 	"crypto/sha256"
 	"crypto/sha512"
 	"embed"
@@ -49,6 +50,7 @@ func buildScript(withApp bool) (string, error) {
 		if err != nil {
 			return "", err
 		}
+		src = bytes.ReplaceAll(src, []byte("\r\n"), []byte("\n")) // a checkout that converted line endings still builds the same bundle
 		body := string(src)
 		body = importLine.ReplaceAllString(body, "")
 		// Restore the imports as bindings of the modules they name.
@@ -92,11 +94,13 @@ func buildPage() {
 		pageErr = err
 		return
 	}
+	css = bytes.ReplaceAll(css, []byte("\r\n"), []byte("\n"))
 	tmpl, err := pageSource.ReadFile("page/index.template.html")
 	if err != nil {
 		pageErr = err
 		return
 	}
+	tmpl = bytes.ReplaceAll(tmpl, []byte("\r\n"), []byte("\n"))
 	files := map[string][]byte{"page.js": []byte(script), "app.css": css}
 	html := sriRef.ReplaceAllStringFunc(string(tmpl), func(m string) string {
 		name := sriRef.FindStringSubmatch(m)[1]
