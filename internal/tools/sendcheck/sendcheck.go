@@ -329,9 +329,6 @@ func (ix *pkgIndex) afterSend(fset *token.FileSet, list []ast.Stmt, out *[]strin
 	for i, s := range list {
 		if k, ok := ix.falls(s); ok {
 			for _, t := range list[i+1:] {
-				if terminates(t) {
-					break
-				}
 				ast.Inspect(t, func(n ast.Node) bool {
 					if b, ok := bookkeeping(n); ok {
 						*out = append(*out, "after "+k+": "+b+" "+exprString(fset, n))
