@@ -12,6 +12,10 @@
 #     test does not see those files change, so a change to any module file clears all results;
 #   - tests that build or run another package (go build): listed in .github/uncached-tests.txt and
 #     always run (check-uncached.sh keeps the list complete).
+# Soundness for tests that read files of the tree relies on go test's record of the files a test
+# opens (content hashes, and the listing of a directory it reads) and on every CI job starting from a
+# fresh checkout, whose file modification times are all new: nothing here depends on a stale mtime
+# matching. Files outside the module root are not recorded at all.
 # A push to main runs every test fresh (FRESH=true) and saves the cache, so a stale result cannot
 # outlive the next merge.
 set -euo pipefail

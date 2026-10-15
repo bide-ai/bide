@@ -16,7 +16,7 @@ libraries() { # libraries ROOT MODEL...: the model directories under ROOT/spec/t
   for d in "$root"/spec/tla/*/; do
     d=$(basename "$d")
     for m in "$@"; do
-      if grep -qsE "^.. LIBRARY:([[:space:]]+[^[:space:]]+)*[[:space:]]+$m([[:space:]]|\$)" "$root"/spec/tla/"$d"/*.cfg "$root"/spec/tla/"$d"/*/*.cfg; then
+      if grep -qsE "^.. LIBRARY:[[:space:]]*([^[:space:]]+[[:space:]]+)*$m([[:space:]]|\$)" "$root"/spec/tla/"$d"/*.cfg "$root"/spec/tla/"$d"/*/*.cfg; then
         echo "$d"
       fi
     done
@@ -25,7 +25,7 @@ libraries() { # libraries ROOT MODEL...: the model directories under ROOT/spec/t
 
 if [ "${1:-}" = --self-test ]; then
   tmp=$(mktemp -d); trap 'rm -rf "$tmp"' EXIT
-  for d in a b c d e f; do mkdir -p "$tmp/spec/tla/$d"; done
+  for d in a b c d e f h i; do mkdir -p "$tmp/spec/tla/$d"; done
   mkdir -p "$tmp/spec/tla/g/limits"
   printf '\\* LIBRARY: m\n' > "$tmp/spec/tla/a/x.cfg"
   printf '\\* LIBRARY: other  m\n' > "$tmp/spec/tla/b/x.cfg"
@@ -33,9 +33,11 @@ if [ "${1:-}" = --self-test ]; then
   printf '\\* LIBRARY:  m  other\n' > "$tmp/spec/tla/d/x.cfg"
   printf '\\* LIBRARY: mm\n' > "$tmp/spec/tla/e/x.cfg"
   printf '\\* LIBRARY: other\n' > "$tmp/spec/tla/f/x.cfg"
+  printf '\\* LIBRARY:m\n' > "$tmp/spec/tla/h/x.cfg"
+  printf '\\* LIBRARY:other m\n' > "$tmp/spec/tla/i/x.cfg"
   printf '\\* LIBRARY: other\tm\n' > "$tmp/spec/tla/g/limits/x.cfg"
   got=$(libraries "$tmp" m | LC_ALL=C sort -u | tr '\n' ' ')
-  [ "$got" = "a b c d g " ] || { echo "self-test: got '$got', want 'a b c d g '"; exit 1; }
+  [ "$got" = "a b c d g h i " ] || { echo "self-test: got '$got', want 'a b c d g h i '"; exit 1; }
   echo "self-test: ok"; exit 0
 fi
 [ $# -ge 1 ] || { echo "usage: $0 MODEL... | --self-test" >&2; exit 2; }
