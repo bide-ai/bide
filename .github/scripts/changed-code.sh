@@ -1,8 +1,14 @@
 #!/usr/bin/env bash
 # changed-code.sh: read the changed file paths on stdin and decide whether any is code. Exits 0
 # (printing the code paths) if one is, or if the list is empty (no files found is a doubt, and a
-# doubt counts as code); exits 1 if every path is documentation, an asset, a TLA+ specification
-# or an issue template, which no Go build or test reads.
+# doubt counts as code); exits 1 if every path is documentation (Markdown at the top level or under
+# docs/, changes/ and .github/, and images under docs/ and assets/), docs-site/, a TLA+
+# specification or an issue template, which no Go build or test reads.
+#
+# A path is code, whatever its directory, when it is a Go file, a go.mod, go.sum or go.work file,
+# anything under a testdata directory, a Markdown file inside a package (a test or go:embed may read
+# it), or, under docs/ and assets/, a file that is not a document or an image (a script, a
+# program, JSON). An unlisted extension is code: the list of safe ones is short on purpose.
 #
 # Used by ci.yml (the Changes job) and gsm-gate.yml to skip work for documentation-only pull
 # requests.
@@ -39,6 +45,30 @@ if [ "${1:-}" = --self-test ]; then
   t 0 --gsm agent/run.go
   t 1 --gsm docs/guide.md
   t 0 --gsm docs/reference/cli.md
+  # Go files and the files tests read count as code wherever they are (assets/demo/setup/deadline.go
+  # was merged unformatted as a documentation-only change).
+  t 0 "" assets/demo/setup/deadline.go
+  t 0 "" assets/demo/browser-shots/intake/main.go docs/guide.md
+  t 0 "" docs/guides/snippet.go
+  t 0 "" docs-site/x.go
+  t 0 "" spec/tla/claims/x.go
+  t 0 "" docs/go.mod
+  t 0 "" docs-site/testdata/x.json
+  t 0 "" spec/tla/testdata/a.cfg
+  t 0 "" assets/demo/go.sum
+  t 0 "" go.work
+  t 0 "" internal/tools/docsnip/testdata/ok.md
+  t 0 "" audit/rfc3161/testdata/README.md
+  t 0 "" benchmarks/README.md
+  t 0 "" cmd/bide/internal/x/page.md
+  t 0 "" docs/guides/data.json
+  t 0 "" assets/demo/shots-deadline.sh
+  t 1 "" docs/guides/img/a.png assets/demo/shot.svg docs/i18n/ru/README.md
+  t 1 "" CHANGELOG.md changes/unreleased/x.md .github/pull_request_template.md .github/gsm-gate/README.md
+  t 1 "" docs-site/config.mjs docs-site/package.json spec/tla/claims/Claims.tla spec/tla/check.sh .github/ISSUE_TEMPLATE/bug.yml
+  t 0 --gsm assets/demo/setup/deadline.go
+  t 0 --examples-only examples/plan/README.md
+  t 1 --examples-only assets/demo/setup/deadline.go
   t 1 --gsm .github/workflows/ci.yml scripts/x.sh
   t 0 --gsm .github/gsm-gate/machines.txt
   echo "self-test: ok"; exit 0
@@ -50,7 +80,15 @@ if [ -z "$files" ]; then
   exit 0
 fi
 # The TLA+ models have their own workflow (models.yml), which decides which of them to check.
-other=$(echo "$files" | grep -vE '^(docs/|docs-site/|assets/|spec/tla/|\.github/ISSUE_TEMPLATE/)|\.md$|^(LICENSE|NOTICE|DCO)$|^\.github/workflows/(docs|bench|models|explore)\.yml$' || true)
+docs_re='^(docs/|docs-site/|assets/|spec/tla/|\.github/ISSUE_TEMPLATE/)|^[^/]*\.md$|^(changes|\.github)/.*\.md$|^(LICENSE|NOTICE|DCO)$|^\.github/workflows/(docs|bench|models|explore)\.yml$'
+other=$(echo "$files" | grep -vE "$docs_re" || true)
+# Paths that look like documentation but that Go builds, tests or tools read.
+docs_like=$(echo "$files" | grep -E "$docs_re" || true)
+codeish=$( { echo "$docs_like" | grep -E '\.go$|(^|/)go\.(mod|sum|work|work\.sum)$|(^|/)testdata/' || true
+             echo "$docs_like" | grep -E '^(docs|assets)/' | grep -vE '\.(md|png|jpe?g|gif|svg|webp|avif|ico|txt|mp4|webm|pdf|cast)$' || true; } | grep -v '^$' || true)
+if [ -n "$codeish" ]; then
+  other=$(printf '%s\n%s\n' "$other" "$codeish" | grep -v '^$' | LC_ALL=C sort -u)
+fi
 # Documents that Go tests compare with the code count as code: the command reference tests
 # (cmd/bide, cmd/bide/bide-hsm reference_test.go) fail when docs/reference/cli.md or bide-hsm.md
 # differs from the commands' help, and doccheck and TestRepoReleaseNotes read docs/releases/.
