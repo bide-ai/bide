@@ -96,14 +96,22 @@ func TestUntouchedBytesStay(t *testing.T) {
 // What the engine will not splice, it refuses, and the text is the caller's still.
 func TestRefusals(t *testing.T) {
 	for name, src := range map[string]string{
-		"anchor":       "version: 1\nflow: &f refund\nnodes: []\n",
-		"alias":        "a: &x [1]\nversion: 1\nnodes: *x\n",
-		"merge key":    "base: &b {a: 1}\nnodes:\n  - <<: *b\n",
-		"tag":          "version: 1\nflow: !!str refund\nnodes: []\n",
-		"two docs":     "version: 1\nnodes: []\n---\nversion: 1\n",
-		"crlf":         "version: 1\r\nflow: a\r\nnodes: []\r\n",
-		"bom":          "\xef\xbb\xbfversion: 1\nflow: a\nnodes: []\n",
-		"block scalar": "version: 1\nflow: |\n  a\nnodes: []\n",
+		"anchor":               "version: 1\nflow: &f refund\nnodes: []\n",
+		"alias":                "a: &x [1]\nversion: 1\nnodes: *x\n",
+		"merge key":            "base: &b {a: 1}\nnodes:\n  - <<: *b\n",
+		"tag":                  "version: 1\nflow: !!str refund\nnodes: []\n",
+		"two docs":             "version: 1\nnodes: []\n---\nversion: 1\n",
+		"crlf":                 "version: 1\r\nflow: a\r\nnodes: []\r\n",
+		"bom":                  "\xef\xbb\xbfversion: 1\nflow: a\nnodes: []\n",
+		"block scalar":         "version: 1\nflow: |\n  a\nnodes: []\n",
+		"crlf json":            "{\r\n  \"version\": 1,\r\n  \"flow\": \"a\"\r\n}\r\n",
+		"bom json":             "\xef\xbb\xbf{\"version\": 1, \"flow\": \"a\"}\n",
+		"two json docs":        "{\"version\": 1, \"flow\": \"a\"}\n{\"version\": 1}\n",
+		"doc end then another": "version: 1\nflow: a\n...\n---\nversion: 2\n",
+		"lone cr":              "version: 1\rflow: a\n",
+		"not utf-8":            "version: 1\nflow: \xff\n",
+		"empty":                "",
+		"a sequence":           "- a\n- b\n",
 	} {
 		_, err := Apply([]byte(src), Op{Kind: Set, Path: []any{"flow"}, Value: "x"})
 		var rf *Refusal

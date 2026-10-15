@@ -23,7 +23,7 @@ concurrency:
 # fails if a module in the tree is missing from this list or from go.work;
 # benchmarks is the one module left out of both (bench.yml runs it on demand).
 env:
-  MODULES: ". mcptools trace store/sqlite store/postgres govern govern/redislog govern/sqlitelog govern/postgreslog codec/gcf signer/pkcs11 signer/awskms signer/azurekv signer/gcpkms signer/gcpkms/emulatortest signer/awskms/emulatortest cmd/bide cmd/bide/bide-hsm cmd/bide/bide-hsm/emulatortest cmd/bide/bide-hsm/azuretest cmd/bide-view examples/approval examples/plan examples/mcp examples/observability examples/govern examples/stripe-refund examples/hsm-signing integration"
+  MODULES: ". mcptools trace flowedit store/sqlite store/postgres govern govern/redislog govern/sqlitelog govern/postgreslog codec/gcf signer/pkcs11 signer/awskms signer/azurekv signer/gcpkms signer/gcpkms/emulatortest signer/awskms/emulatortest cmd/bide cmd/bide/bide-hsm cmd/bide/bide-hsm/emulatortest cmd/bide/bide-hsm/azuretest cmd/bide-view examples/approval examples/plan examples/mcp examples/observability examples/govern examples/stripe-refund examples/hsm-signing integration"
   UNLISTED_MODULES: "benchmarks"
   # The Linux test shards, one job each, balanced by measured time: the core's agent package alone
   # (".:agent", the package in the core's agent directory, not its subpackages; the longest -race
@@ -34,7 +34,7 @@ env:
   TEST_SHARDS: |
     agent: .:agent
     core: .
-    rest: mcptools trace store/sqlite store/postgres govern govern/redislog govern/sqlitelog govern/postgreslog codec/gcf signer/pkcs11 signer/awskms signer/azurekv signer/gcpkms signer/gcpkms/emulatortest signer/awskms/emulatortest cmd/bide cmd/bide/bide-hsm cmd/bide/bide-hsm/emulatortest cmd/bide/bide-hsm/azuretest cmd/bide-view examples/approval examples/plan examples/mcp examples/observability examples/govern examples/stripe-refund examples/hsm-signing integration
+    rest: mcptools trace flowedit store/sqlite store/postgres govern govern/redislog govern/sqlitelog govern/postgreslog codec/gcf signer/pkcs11 signer/awskms signer/azurekv signer/gcpkms signer/gcpkms/emulatortest signer/awskms/emulatortest cmd/bide cmd/bide/bide-hsm cmd/bide/bide-hsm/emulatortest cmd/bide/bide-hsm/azuretest cmd/bide-view examples/approval examples/plan examples/mcp examples/observability examples/govern examples/stripe-refund examples/hsm-signing integration
 
 jobs:
   # Decides what a run needs. The merge queue is where the full matrix runs, once per batch of

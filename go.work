@@ -15,6 +15,7 @@ use (
 	./examples/observability
 	./examples/plan
 	./examples/stripe-refund
+	./flowedit
 	./govern
 	./govern/postgreslog
 	./govern/redislog

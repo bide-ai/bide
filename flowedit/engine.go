@@ -102,6 +102,17 @@ func Apply(src []byte, op Op) (res *Result, err error) {
 	if err != nil {
 		return nil, err
 	}
+	return commit(src, lo, hi, frag, op)
+}
+
+// commit is the one place text leaves the engine. It splices frag over src[lo:hi] and returns the
+// result only when the splice is in range, leaves every byte outside it alone, and passes Verify
+// for op. Every successful Apply goes through it, so no output path skips the check; a test hands
+// it hostile splices to prove it.
+func commit(src []byte, lo, hi int, frag string, op Op) (*Result, error) {
+	if lo < 0 || lo > hi || hi > len(src) {
+		return nil, refuse("internal: the edit range [%d, %d) is outside the text", lo, hi)
+	}
 	out := make([]byte, 0, len(src)-(hi-lo)+len(frag))
 	out = append(append(append(out, src[:lo]...), frag...), src[hi:]...)
 	// The verification: the result is the old text with the operation applied, and nothing else.
@@ -818,28 +829,6 @@ func (d *doc) entryEnd(p *yaml.Node, i int, flow bool) (int, error) {
 		return c + 1, nil
 	}
 	return d.end(n, flow)
-}
-
-// applyRaw is Apply without the verification, for diagnosing refusals in tests.
-func applyRaw(src []byte, op Op) (string, error) {
-	d, err := parse(src)
-	if err != nil {
-		return "", err
-	}
-	var lo, hi int
-	var frag string
-	switch op.Kind {
-	case Set:
-		lo, hi, frag, err = d.set(op)
-	case Insert:
-		lo, hi, frag, err = d.insert(op)
-	case Delete:
-		lo, hi, frag, err = d.del(op)
-	}
-	if err != nil {
-		return "", err
-	}
-	return string(src[:lo]) + frag + string(src[hi:]), nil
 }
 
 // parentIndent is the indentation of the collection that holds p.Content[i]: a block scalar's
