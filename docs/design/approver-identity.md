@@ -1,13 +1,13 @@
 # Design: approver identity and revocation
 
-Status: proposed, revision 4 (the user decided four points on 2026-10-15; see Decisions). Design only; nothing here is built. Revision 2 folded in an adversarial
+Status: proposed, revision 5. All 16 decisions are settled (the user decided on 2026-10-15; see Decisions). Revision 5 folds in the external assessor's confirmation pass on revision 3 (seven new medium findings and two partial resolutions). Design only; nothing here is built. Revision 2 folded in an adversarial
 review (the time rule, the status rule, anchoring order, record placement) and the `crypto/x509`
 behaviors checked by running code. Revision 3 folds in an external PKI assessment (one critical, five
 high, eleven medium findings): the absence-of-entry rule for CRLs, revocation latency and a status
 re-check at execution, CA compromise, time-source independence, one person one seat on an immutable
 identifier, the identity-bound downgrade, and an algorithm and issuance-assurance profile. The
 assessment disagreed with five of the earlier recommended decisions; they are reconsidered below.
-The decisions at the end are the user's; the build waits for them. This is bank readiness item 1.
+The 16 decisions at the end are settled; the build can start once this revision is confirmed. This is bank readiness item 1.
 
 Today an approver is a hand-enrolled public key: a map from an approver id to a key
 (`agent.WithApproverVerifiers`, the `-approver-keys` file). That is enough to show that the holder of
@@ -138,8 +138,11 @@ and a **trust set**; the key is whatever key the presented certificate carries.
   `ml-dsa-65` (RSA and P-384 leaves are refused until a decision scheme exists for them). The scheme is
   **derived from the certificate's SPKI**, and a record whose `approver_alg` differs from it is not
   counted (algorithm-confusion guard); the ECDSA low-S rule and DER strictness of the existing schemes
-  apply to `v4` unchanged. CA signature algorithms are allow-listed (ECDSA with SHA-256 or better,
-  Ed25519, ML-DSA-65; no SHA-1, no RSA PKCS#1 v1.5 with SHA-1/MD5). A hybrid approver stays bare-key
+  apply to `v4` unchanged. CA certificates and CRLs may be signed with: **RSA (PKCS#1 v1.5 or PSS) with SHA-256 or better and a
+  modulus of at least 3072 bits** (2048 only through an explicit `AllowRSA2048CA` policy value with an end
+  date, since many bank roots and AD CS issuing CAs are RSA-2048 today), **ECDSA P-256 or P-384** with
+  SHA-256 or SHA-384, Ed25519, or ML-DSA-65; never SHA-1 or MD5. Go refuses a SHA-1 certificate signature but **accepts a SHA-1 CRL signature** (`TestSHA1CRLSignatureHandling`), and reads no RSA modulus limit above 1024 bits, so bide checks the algorithm of every CRL and the modulus of every CA key itself (`TestRSA2048CAVerifiesInGoSoBideMustEnforceModulus`). The leaf schemes above are narrower than
+  the CA schemes on purpose: a leaf must be something a decision scheme can verify, a CA need not be. A hybrid approver stays bare-key
   (see Scope), and certificate-bound approvers therefore give up hybrid protection: a recorded
   limitation.
 - Unknown critical extensions on the leaf or an intermediate make the chain fail (`Verify` does this
@@ -151,7 +154,12 @@ the `run:principal` requester (`ExcludePrincipal`), and the approver-id mapping 
 approvers. The default: Unicode NFC, then lowercase the whole email (local part included; the bank
 states that its directory is case-insensitive), ASCII only (internationalized addresses are refused
 until a bank asks), no trimming or alias folding (`a.smith` and `asmith` are different identities
-unless the identity map says otherwise). URI: scheme and host lowercase, path exact. The comparison
+unless the identity map says otherwise). URI identifiers use a **strict profile** and anything else is refused (Go returns a URI SAN exactly as issued, so two spellings stay two strings: `TestURISANIsNotNormalisedByGo`): scheme `https` (or the bank's one
+fixed scheme), no userinfo, no explicit port, no query, no fragment, no percent-encoding, no trailing
+slash, a lowercase host equal to the configured host, and a path that matches the policy's fixed pattern
+(default `/person/` followed by 32 lowercase hex digits, or a lowercase UUID). A CA that could issue one
+person's id in two spellings would give one person two seats; the profile leaves one spelling. The
+case-folding of the seat key therefore applies to the email kind only, and is a no-op for the URI kind. The comparison
 is bytes after this, never substring or suffix. A bank with a different directory rule supplies its
 own `Canonical`; the verdict records its name and version.
 
@@ -216,9 +224,12 @@ the log signer claimed for the first head that included the record, and two more
 
 - **Head times must be non-decreasing in size.** Over all signed heads of the run (sorted by size), a
   larger head with a timestamp earlier than a smaller head's, beyond `ClockTolerance` (default 60 s,
-  covering two writers with skewed clocks), makes the run's time evidence **contradictory**: every
-  cert-bound decision of the run is `not verified: contradictory head times`. The kit is rejected, not
-  repaired.
+  covering two writers with skewed clocks), marks the offending heads (the smaller heads stamped later than a larger head)
+  as **contradictory**. A decision is `not verified: contradictory head times` only when its smallest
+  covering head, or the pair that fixes its `A`, is implicated; other decisions of the run stay
+  verifiable, so one skewed or planted head does not make a whole run unauditable. Nothing is repaired
+  silently: an **explicit, recorded waiver** (`-waive-head-times`, naming the heads and the reason, signed
+  by the auditor) is the only way past it.
 - **The auditor enumerates heads from the anchor log, not from the producer.** How an auditor knows
   there is no earlier covering head than the one in the kit: they list the run's heads in the anchor
   log (an independent party) and compute the smallest covering size over that list. A head that the
@@ -232,8 +243,11 @@ is the same party the operator-adversary may influence. Therefore:
 - The **top tier requires an independent time source**, and a gate above the bank's value threshold
   sets `IndependentTime` so a decision **does not count** without one (RFC 3161 token verification is
   therefore in the first build step, not the last). `A(d)` is the earliest time that an independent
-  source attests, otherwise the smallest covering head's time. The independent source is: an RFC 3161 token over the covering head (or
-  its hash) from a TSA the auditor trusts, or an anchor-log receipt carrying the log operator's own
+  source attests, otherwise the smallest covering head's time. "Independent" means a different administrative domain and different key
+  custody from the log signer, and the auditor lists the time authorities they trust (`-trusted-tsa`). The
+  independent source is: an RFC 3161 token over the covering head (or its hash), whose imprint must match
+  and whose `genTime` must not be earlier than the head it stamps (less `ClockTolerance`), from a TSA whose
+  certificate carries the critical `id-kp-timeStamping` EKU (RFC 3161 section 2.3), from a TSA the auditor trusts, or an anchor-log receipt carrying the log operator's own
   signed time (today `audit.AnchorEntry` carries a sequence number and a head, no time; a time-bearing
   anchor receipt is added in the build). The verdict prints the source.
 - With only the log signer's clock the best tier is lower and says so.
@@ -259,6 +273,12 @@ is the same party the operator-adversary may influence. Therefore:
 window. It cannot make a signed tree head that does not cover its record exist earlier than it was
 signed. If the thief's write is after `E`, rule 5 rejects it. If the thief wrote before `E` and the CA
 later records an earlier compromise date, `E` moves earlier and rule 5 rejects it too.
+
+**Reanchor is not a free signing oracle.** The gate verifies a decision's chain, identifier,
+EKU and signature **before** it asks the application to anchor, so a junk decision cannot cause a head to
+be signed, and it rate-limits anchoring per run (by default one forced head per 10 s). The log key may be
+an HSM or KMS key with quotas and cost, and any submitter of a direct-write decision could otherwise drive
+it.
 
 **Anchor first.** A cert-bound decision is **not counted until a signed head covers it.** The live gate
 and the auditor therefore use the same `A(d)`, computed by the same function over heads from the same
@@ -294,9 +314,12 @@ scheduled CRL issued after the certificate's `notAfter`, unless the CRL carries 
 and a verifier that reads that absence as "not revoked" would report a false assurance, for exactly the
 short-lived certificates this design recommends. So, for a certificate `C` and a decision `d`:
 
-- `L(C)` is the `thisUpdate` of the **first regularly scheduled CRL issued at or after `notAfter(C)`** (the
-  CA's published schedule; with no schedule, conservatively `notAfter(C)`), or unbounded when the CRL
-  carries `expiredCertsOnCRL` or retention is contractual and recorded in the policy.
+- `L(C)` is the `thisUpdate` of the **first CRL in the archived series issued strictly after
+  `notAfter(C)`**, derived from the series itself rather than from a configured schedule. RFC 5280
+  section 3.3 lets a CA drop the entry once it has appeared on one regularly scheduled CRL issued beyond
+  the certificate's validity period, so that CRL still lists every revocation up to its issue time. `L(C)`
+  is unbounded when the CRL carries `expiredCertsOnCRL` or retention is contractual and recorded in the
+  policy. While no CRL after `notAfter` exists yet, `L(C)` is unknown and the verdict cannot be `final`.
 - A CRL is **usable for absence** iff `A(d) <= thisUpdate <= L(C)`, it is the right issuer, its signature
   verifies, and its `CRLNumber` fits the series. An OCSP response is usable on the same terms with
   `thisUpdate`, and only while the certificate is within its validity period (RFC 6960 section 2.2: "good"
@@ -308,9 +331,17 @@ short-lived certificates this design recommends. So, for a certificate `C` and a
   (default 24 h) cut to what the certificate's own life and the CA's schedule leave. A decision made near
   the end of a certificate's life has little window; that is a property of short-lived certificates,
   stated rather than hidden.
-- Verdicts: **final** iff there is usable status `S >= A(d) + W'`; **provisional** iff the best usable
-  status has `S < A(d) + W'` and a later usable one could still exist (`now < L(C)`); **no information**
-  iff no status falls in `[A(d), L(C)]`, which is `not verified: status missing`. The verdict states that
+- Verdicts: **final** iff all of: there is usable status `S >= A(d) + W'`; `W' >= MinW` (a floor, default
+  30 min: a decision made a minute before `notAfter` has a window of about one CRL period and is
+  `provisional (short window)`, whatever the tier would otherwise be); and **the series is complete from
+  `S` to `L(C)`**, meaning the CRL at `L(C)` is in the series and the `CRLNumber`s from `S` to it are
+  contiguous (for a base with deltas, the same holds for the merged series). Without that, a producer
+  could omit a usable CRL inside `[A + W, L(C)]` that lists the certificate and present an earlier clean
+  one as `S`. **provisional** iff the best usable status has `S < A(d) + W'`, or the series is not complete
+  to `L(C)`, and a later usable one could still exist; **no information** iff no status falls in
+  `[A(d), L(C)]`, which is `not verified: status missing`. The kit-hash record is tamper evidence (the
+  bundle was not changed after it was assembled), **not completeness evidence**; completeness comes from
+  the contiguous series and the CRL at `L(C)`. The verdict states that
   "revocations first reported after `L(C)` are not covered" unless `expiredCertsOnCRL` or contractual
   retention applies.
 - **Evidence is journaled when the decision is counted.** The gate records, in the `approval-identity`
@@ -339,6 +370,12 @@ Rules for reading entries:
 - **Every non-anchor certificate** of the accepted chain needs status under the same rule (RFC 5280
   section 6.1.3(a)(3)): an intermediate revoked with `E_int <= A(d)` invalidates the decision. For CA
   certificates `cACompromise` and `DistrustAfter` apply (below).
+- **`DistrustAfter` also governs status.** A CRL or OCSP response signed by a distrusted issuer key, with
+  `thisUpdate` at or after that key's distrust time, is "no information": an attacker holding a
+  compromised CA key can sign clean CRLs for the period after the compromise.
+- **The auditor can supply distrust.** A compromise is usually found after the decisions it affected, so
+  the recorded policy of the time has no entry. `bide audit verify-approvals -distrust spki=time` (repeatable)
+  applies the auditor's distrust times **in addition to** the recorded policy, to chains and to status.
 - **CA compromise and rollover.** `Distrust[spki]` marks a time after which an anchor or intermediate is
   not trusted for decisions with `A(d) >=` that time, so the bank can end trust in a compromised CA from
   its compromise time without voiding the history before it (removing the anchor would void all of it).
@@ -377,9 +414,9 @@ Every cert-bound decision gets one line that carries its basis, not a bare word:
 `counts  A=<time> (source: rfc3161 <tsa> | anchor-receipt <log> | log-signer clock only), status S=<time>
 (<issuer> CRL #<n>), window W'=<d>, policy P=<digest>, rules v<n>, verifier go<version>`
 
-and a tier: **confirmed** (independent time source, status final), **log-clock** (status final, time
-from the log signer only, earlier heads excluded by the anchor list), **provisional** (a later status
-could change it), **disputed** (below), **not verified** (with the reason: chain, SAN, EKU, expired,
+and a tier: **independent-final** (independent time source, status final, series complete), **logclock-final**
+(status final, time from the log signer only, earlier heads excluded by the anchor list), **provisional**
+(a later status could change it, the window is short, or the series is incomplete), **disputed** (below), **not verified** (with the reason: chain, SAN, EKU, expired,
 revoked at `E`, no covering head, contradictory head times, status missing). The word "verified" is
 not a tier: a verdict without its time source and status time would overclaim. The verdict records the
 Go version of the verifier and the rules version, and the build ships **pinned test vectors** (a fixed
@@ -405,13 +442,15 @@ audit's to show; deciding what to do about an executed action is not.
 | `RoutineGrace` | for revocation reasons other than compromise (affiliationChanged 3, superseded 4, cessationOfOperation 5, privilegeWithdrawn 9), a decision with `A < E + RoutineGrace` still counts | 0 | covers a CRL published minutes after an offboarding; minutes, never hours; compromise reasons and unspecified never get grace |
 | `W` | compromise-reporting window for the offline `final` verdict | 24 h | from the bank's incident process; cut to `W'` by the certificate's life |
 | `MaxStatusAge` | live: oldest usable status when a decision is counted | **1 h** | an earlier draft said 24 h, which exceeds the lifetime of the certificates it protects and makes revocation add almost nothing beyond expiry; choose from risk and certificate lifetime, never above a quarter of the shortest lifetime |
-| `ExecStatusAge` | live: oldest usable status immediately before the call executes | **15 min** | closes the gap between counting and acting; high-value gates use OCSP or a CRL period at or under this |
-| refresher | CRL fetch interval | `MaxStatusAge / 4`; alarm at 50% of `MaxStatusAge` | |
+| `ExecStatusAge` | live: oldest usable status immediately before the call executes | **set from the CA's actual period; no constant default** | closes the gap between counting and acting. The policy declares the CA's CRL period (`CAPeriod`) and **startup refuses a policy with `CAPeriod > ExecStatusAge / 2`** (a CRL on a 30 min period is up to 30 min old, so a 15 min age would pause about half the time). 15 min needs a CA period of 7 min or less, or OCSP; a 30 min CA period gives `ExecStatusAge` of 1 h. The resulting latency is printed |
+| refresher | CRL fetch interval | `min(MaxStatusAge, ExecStatusAge) / 4`; alarm at 50% of the smaller of the two | |
+| `MinW` | floor on `W'` for a `final` verdict | 30 min | a decision near `notAfter` is `provisional (short window)` below it |
 
 **The published revocation latency.** A bank can state the number: the time from the CA recording a
-revocation to a gate refusing to act on it is at most *CA publication delay + refresher interval +
-`ExecStatusAge`*. The guide makes the operator compute and record it. With a daily CRL it is a day; the
-design does not hide that.
+revocation to a gate refusing to act on it is at most *CA publication delay + the CA's CRL period (or the
+delta period) + `ExecStatusAge`*, with `ExecStatusAge` required to be at least twice the declared CA
+period. The guide makes the operator compute and record it. With a daily CRL it is a day; the design does
+not hide that.
 
 ### CRL cadence and the CA that cannot meet it
 
@@ -423,7 +462,7 @@ archived at decision time. Mapping CA behavior to what this design needs:
 | Full CRLs, period at most `MaxStatusAge / 2` | yes | the default `MaxStatusAge` of 1 h needs a period of 30 min or less; a bank with a 4 h period sets `MaxStatusAge` to 8 h only for certificates of at least 32 h, and accepts the longer revocation latency |
 | Weekly base CRL plus daily or hourly **delta** CRLs (the Microsoft AD CS default) | yes | the verifier merges a base and its delta (below). The status time is the delta's `thisUpdate`, so the delta period is the one that counts toward `MaxStatusAge`; the weekly base only has to be present and numbered consistently |
 | Daily full CRL, certificates of 8 h | not final | a decision usually has no usable CRL inside its certificate's life: provisional or "status missing". Shorten the CRL period, set `expiredCertsOnCRL`, or use OCSP |
-| No revocation for short-lived certificates (expiry is the control) | only by explicit policy | `Status: NotRequired` is accepted only for a certificate whose lifetime is at most `ShortLived` (default off, bank-set, hours); revocation latency then equals the lifetime, and the verdict says status was not required (decision 6) |
+| No revocation for short-lived certificates (expiry is the control) | only by explicit policy | `Status: NotRequired` is accepted only for a leaf whose lifetime is at most `ShortLived` (default off, bank-set, capped at 24 h) **and** whose certificate carries a CA-asserted policy OID for short-lived issuance; intermediates still need status; revocation latency then equals the lifetime, and the verdict says status was not required (decision 6) |
 
 ## Revocation
 
@@ -477,7 +516,18 @@ archived at decision time. Mapping CA behavior to what this design needs:
   against a snapshot no older than `ExecStatusAge`. If a counted decision's chain now shows `E <= A(d)`,
   or status is stale, the call **does not run**: the gate pauses with a named needs-attention reason, and
   the operator re-asks or cancels (a revoked decision is a dispute, not an automatic deny). The model
-  adds this as a property (`NoExecAfterKnownRevocation`).
+  adds this as a property (`NoExecAfterKnownRevocation`). The state transitions are specified, not left
+  to the implementer:
+  - the terminal tally stays in the journal as history and is the record of what was counted;
+  - a **stale-status hold** writes nothing authoritative: the run returns a pending state with a named
+    reason (`PendingIdentityStatus`), and executes when a fresh snapshot passes, with the same tally;
+  - a **revoked-before-execution hold** (`E <= A(d)` for a counted decision) writes an insert-once
+    `approval-exec-hold:<id>` record (the status digest, the decision, `E`, the reason) and supersedes the
+    tally through the existing re-ask path under the name `approval-tally:<id>:ident-reask`, the way the
+    `:sod` re-ask does; the approvers decide again, and the earlier tally is no longer authoritative;
+  - **every path that can run the tool goes through one pre-execution function**: the first execution,
+    crash recovery and `RecoverLoop` resume, a retry of a retry-safe tool, and any halt-resolution that
+    would proceed. `RoutineGrace`, `E` and `A(d)` are the same functions at execution as at count time.
 - **Counting is sticky in one direction.** Stale or missing status never removes a decision that was
   counted: the gate pauses (it does not flap to deny and back). A revocation with `E <= A(d)` removes it
   permanently. A decision counted in a terminal tally stays counted in that tally; only the execution
@@ -590,25 +640,43 @@ certificate-bound decision by guessing its time alone.
 strictly (`decodeTally`; an unknown field is `ErrStorage`, pinned by a test), so a field added to it
 would make an older binary fail the read, not pause. The identity environment of a terminal count is
 written as a separate insert-once record, `approval-identity:<encoded call id>`, beside the tally. It
-holds the **full effective-dated `IdentityPolicy`** in force (anchors by key id and fingerprint, pinned
-intermediates, `Distrust` times, the identity map for every approver, EKU, policy OID, `Canonical`
-name and version, status and grace values), the accepted chain and anchor per counted decision, the
-**status bytes the gate relied on** (long-term validation), the time source, and the rules and verifier
-versions. Older binaries ignore it. The identity map, grace values and the rest change over time; without
+holds the **effective-dated `IdentityPolicy`** in force (anchors by key id and fingerprint, pinned
+intermediates, `Distrust` times, EKU, policy OID, `Canonical` name and version, status and grace values),
+**a digest of the identity roster and only the counted approvers' identifiers** (not the whole roster, so
+erasure stays tractable and a run does not carry every person id of the gate), the accepted chain and
+anchor per counted decision, the **hashes of the status bytes the gate relied on**, the time source, and
+the rules and verifier versions. The status bytes themselves (a CRL can be megabytes) are stored once, by
+content hash, in an insert-once `approval-status:<sha256>` record shared by every call that relied on
+them, so the journal does not repeat a CRL per call (long-term validation keeps its copy). Older binaries ignore it. The identity map, grace values and the rest change over time; without
 them in the record the mapping at `A(d)` is unknowable years later.
 
-**The downgrade is visible in the journal.** The pause note (`ApprovalWait`, decoded leniently, pinned
-by a test) gains additive fields written when the gate is created: `identity_bound`, `identity_kinds` (a
-digest of the sorted `approver=bare|cert` pairs) and `identity_policy_digest` (a digest of the full
-policy, anchor fingerprints included). The **auditor requires the `approval-identity` record whenever
-the note says the gate had a certificate-bound approver**, requires its policy digest to equal the
-note's, and reports a missing record as `not verified: identity data stripped`. An auditor who holds the
-bank's expected policy also fails any decision from an approver that policy marks identity-bound if the
-tally lacks the record (a stale replica or a rolled-back deploy counted it as a bare key). Observe mode
-is **time-boxed** (a maximum duration, default 30 days, after which the policy refuses to start in
-observe mode), and at the switch the old bare key is removed from the resolver, not left as a fallback.
-A fleet version floor is checked at start: the identity-bound gate refuses to evaluate in a process
-whose build predates the feature (the process reads the note's fields and sees what it does not know).
+**The downgrade is detectable, not prevented, and what each part can do is stated plainly.** There are
+three layers, and only the first prevents anything:
+
+1. *Live, prevention.* A process that predates this feature has none of this code and cannot refuse to
+   count a bare-key signature, so **the protection is to roll the whole fleet before enabling a
+   certificate-bound approver and to remove the old bare key from every resolver at the switch** (an old
+   process without the old key cannot count a stolen v3 signature). There is no version-floor mechanism
+   that an old binary would honor, and the note does not claim one.
+2. *Live, for the new fleet.* An identity-bound gate records its terminal tally under a distinct name,
+   `approval-tally:<id>:ident`, the same device the format and separation-of-duties re-tallies use
+   (`:v3`, `:sod`). A tally under the plain name on an identity-bound gate (written by a stale replica or
+   an old process that counted bare keys) is treated by the new gate as **superseded, and the gate
+   re-asks** through the existing re-ask mechanism. This does not stop that old process from having acted
+   on its own count; it stops the new fleet from trusting it, and leaves a record an auditor can see.
+3. *Audit.* The pause note (`ApprovalWait`, decoded leniently, pinned by a test) gains additive fields
+   written when the gate is created: `identity_bound`, `identity_kinds` (a digest of the sorted
+   `approver=bare|cert` pairs) and `identity_policy_digest`. The auditor requires the
+   `approval-identity` record whenever the note says the gate had a certificate-bound approver, requires
+   its policy digest to equal the note's, and reports a missing record as `not verified: identity data
+   stripped`. **A gate created by an old process has no such field, which looks like a bare-key gate.**
+   So for any gate the bank classifies as identity-required, **the auditor's expected policy of record is a
+   required input** (`-expected-policy`); without it the verdict says "identity binding of this gate is
+   not established by the journal". The expected policy also fails any decision from an approver it marks
+   identity-bound when the tally lacks the record or lacks the `:ident` name.
+
+Observe mode is **time-boxed** (default 30 days, after which the policy refuses to start in observe
+mode).
 
 **The kit is bound to the journal.** `bide identity kit` writes an insert-once record,
 `approval-identity-kit:<encoded call id>`, with the hash of the bundle it assembled; the head that covers
@@ -670,8 +738,15 @@ Properties that must hold (invariants unless noted):
 - **NoExecAfterKnownRevocation**: the call never runs while a counted decision's chain shows `E <= A(d)`
   in a snapshot no older than `ExecStatusAge`, or while status is stale. Without the execution re-check
   the property fails (a decision counted before a revocation still authorizes the action).
+- **NoExecAfterKnownRevocation covers recovery**: the property holds for first execution, crash
+  recovery, `RecoverLoop` resume and retry of a retry-safe tool alike (one pre-execution function), with
+  `RoutineGrace` applied the same at execution as at count time.
+- **FinalNeedsCompleteSeries**: a decision is never `final` unless the CRL at `L(C)` is in the series and
+  the `CRLNumber`s from `S` to it are contiguous, and `W' >= MinW`; omitting a usable listing CRL from the
+  middle of the series must fail the property (the N2 counterexample).
 - **DistrustAfter**: no decision with `A(d)` at or after an anchor's or intermediate's distrust time
-  counts under it, and decisions before it are unaffected; with a compromised-CA action (`MisIssue`
+  counts under it, status signed by that issuer at or after the time is "no information", the auditor's
+  overlay applies in addition to the recorded policy, and decisions before it are unaffected; with a compromised-CA action (`MisIssue`
   after the compromise time) and no `Distrust` the forged decisions count, with it they do not.
 - **StaleNeverUncounts**: stale or missing status never removes a counted decision (the gate pauses); a
   revocation with `E <= A(d)` removes it permanently; no flapping.
@@ -729,9 +804,16 @@ Ed25519 (heads, CA signatures) are on NIST's deprecation path (IR 8547). The kit
 verifier version, the Go version and the relevant `GODEBUG` settings (`x509usepolicies`, `x509sha1`,
 `x509negativeserial`) so a verdict is reproducible; freezes the identity bundle format for the
 retention period with pinned test vectors (a "current format only" policy would orphan archived
-bundles); and carries an **archive timestamp** (an RFC 3161 token over the bundle hash), renewed
-periodically in the manner of ERS (RFC 4998) and of PAdES-LTA/CAdES-A (ETSI EN 319 142, 319 122). The
-retention trust assumptions (the algorithms and the TSA trusted at archive time) are stated in the kit.
+bundles); **archives the verifier itself** (the source revision and the hash of a reproducible build, and
+recommends archiving the binary) so a verdict can be re-run when toolchains move; and carries an
+**archive timestamp** (an RFC 3161 token over the bundle hash) from the first build that ships the kit
+(step 3), renewed periodically in the manner of ERS (RFC 4998) and PAdES-LTA/CAdES-A (ETSI EN 319 142,
+319 122), with the renewal tool in step 4. The archive timestamp covers the TSA certificate's own status
+and validity at token time, which is the same problem again one level up. The bundle contains
+covering-head proofs in the evidence formats of its day, and the project's pre-1.0 policy is that a
+verifier reads only the current format of each artifact: until 1.0, freezing the bundle alone does not
+protect the chain of evidence, which is why the verifier is archived with it. The retention trust
+assumptions (the algorithms and the TSA trusted at archive time) are stated in the kit.
 
 **The offline auditor's kit** is a directory: the evidence package, the identity bundle (chains,
 covering-head proofs, time attestations, the archived CRL/OCSP series), and a README listing what the
@@ -741,7 +823,7 @@ head can be computed independently). `bide audit verify-approvals -identity ... 
 -anchor-log ...` needs nothing else and no network. Keep the archive for the retention period,
 including the CRLs: the archived series is the evidence, because a CA drops expired entries.
 
-**Stale CRL in production.** The refresher alarms before staleness (at 75% of `MaxStatusAge`). At
+**Stale CRL in production.** The refresher alarms before staleness (at 50% of `MaxStatusAge`, the same figure as everywhere else in this note). At
 staleness gates pause with a named needs-attention reason; the notifier says which CA and since when.
 There is **no break-glass in the core**: weakening the policy is a deploy of a changed `IdentityPolicy`,
 a visible, reviewable diff.
@@ -873,6 +955,25 @@ asserting the same counted set and the same reason:
     limits; the CA key rollover (a CRL signed by the old key still accepted for its certificates);
     `DistrustAfter` on both sides of the time; a cross-validator check of the name-constraint profile
     against OpenSSL for the same chains.
+31. **confirmation-pass gaps** (each a test): `W'` near zero gives `provisional (short window)` below
+    `MinW`; a producer omitting a listing CRL from the middle of `[A + W, L(C)]` cannot reach `final`
+    (the series must be contiguous to the CRL at `L(C)`, and `L(C)` is the first CRL strictly after
+    `notAfter`); startup refuses `CAPeriod > ExecStatusAge / 2`, and a 30 min CRL against a 15 min
+    `ExecStatusAge` is refused rather than pausing half the time; the alarm is at 50% everywhere; the
+    post-terminal hold: stale status holds without writing a tally, a revoked-before-execution decision
+    writes `approval-exec-hold` and re-asks through `approval-tally:<id>:ident-reask`, and a crash
+    recovery, a `RecoverLoop` resume and a retry all pass through the same check; a plain-name tally on an
+    identity-bound gate is superseded and the gate re-asks; the auditor's `-expected-policy` is required
+    for an identity-required gate and its absence is reported; the auditor's `-distrust` overlay turns a
+    chain and a CRL signed by the distrusted issuer after the time into "not verified" and "no
+    information"; one skewed or planted head implicates only the decisions it fixes, and the waiver is
+    recorded; `Reanchor` is not invoked for a decision whose chain or signature fails, and is rate
+    limited; a TSA token whose imprint mismatches, or whose `genTime` precedes the head it stamps, or from
+    a TSA not on the auditor's list, does not count as independent; URI identifiers with a port, a
+    trailing slash, percent-encoding, a query, an upper-case path or userinfo are refused; an RSA-3072 CA
+    verifies and an RSA-2048 CA is refused unless `AllowRSA2048CA` is set, P-384 CAs verify, SHA-1 is
+    refused; the kit archives the verifier hash and the archive timestamp; status bytes are stored once by
+    hash and the identity record carries the roster digest and only the counted identifiers.
 29. **delta CRLs** (decided 2026-10-15): base plus delta merges and the status time is the delta's
     `thisUpdate`; a delta with a base number above the base's CRL number, a delta whose number does not
     exceed the base's, a delta older than its base, a delta from another issuer key or with an issuing
@@ -890,16 +991,17 @@ asserting the same counted set and the same reason:
 
 1. Certificate verification, identity policy, canonicalization, `v4` decision bytes, new reasons,
    `TallyApprovals` and `EvaluateGate` with a static status snapshot, the head source and anchor-first
-   step, the **execution-time status re-check**, `DistrustAfter`, the **RFC 3161 token verification for
+   step, the **execution-time status re-check** and its state transitions, the `:ident` tally suffix, `DistrustAfter`, the **RFC 3161 token verification for
    gates that set `IndependentTime`**; test CA; model 1b configurations. An independent PKI review of
    this design, and of step 1 before it merges, gates the work; the critical and high findings of the
    assessment are exit criteria for step 1.
 2. CRL refresher, `bide identity`, live gate pause behavior, intake `cert` and 503, `bide approve -cert`,
    bide-hsm certificate pairing, the pause-note fields and the `approval-identity` record, and **delta CRL
    merging** (base and delta archive, indicator and number checks, `removeFromCRL`).
-3. Identity bundle, covering-head proofs and time attestations in the kit, the anchor-log time receipt,
+3. Identity bundle, covering-head proofs and time attestations in the kit, **the archive timestamp and
+   the archived verifier hash**, the anchor-log time receipt,
    `bide audit verify-approvals -identity`, the verdict lines and tiers, receipts with chains.
-4. OCSP module (optional), archive timestamps and renewal for the kit.
+4. OCSP module (optional), the archive-timestamp renewal tool for the kit.
 
 Every step updates the guides it touches. The approvals guide states the post-quantum gap (decision 15: a
 certificate-bound approver gives up the hybrid scheme's protection) where it first describes
@@ -918,7 +1020,7 @@ Decisions 1, 2, 5, 6 (delta CRLs), 12, 13 and 15.
    covering head; head times must be non-decreasing; the auditor enumerates heads from the anchor log. A
    gate the bank marks above a value threshold sets `IndependentTime`: it **refuses to count a decision
    without an RFC 3161 token or another independent time source** (RFC 3161 verification is in build step
-   1). Below the threshold the log signer's clock is accepted and the verdict is labeled `log-clock`. A
+   1). Below the threshold the log signer's clock is accepted and the verdict is labeled `logclock-final`. A
    bank without a TSA or a time-bearing anchor can set no gate above the threshold.
 5. **Revocation effect.** A decision stands iff `A(d) < E`, `E = min(invalidityDate, revocationTime)`.
    On `keyCompromise` (and `cACompromise`, `aACompromise`) with no invalidity date the revocation voids
@@ -933,7 +1035,9 @@ Decisions 1, 2, 5, 6 (delta CRLs), 12, 13 and 15.
 12. **The full chain is stored in the decision record by default** (the journal stays self-contained and
     the Merkle trail covers it); a **by-reference mode** (a salted commitment in the record, the
     certificate retained elsewhere) is a configured option for banks whose privacy review requires it.
-    `GET /pending` requires authentication in either mode.
+    `GET /pending` requires authentication in either mode. A bank under GDPR chooses by-reference before
+    go-live; the identity record keeps a roster digest and only the counted identifiers, and status bytes
+    are stored once by hash.
 
 1. **Identifier.** The seat key is an **opaque, immutable person id in a URI SAN with a host**; an email
    SAN is accepted as the identifier only with a bank-evidenced control that mailboxes are one per person
@@ -959,22 +1063,26 @@ These are engineering choices the design settles; each can be reopened if the us
    first scheduled CRL at or after `notAfter` (unbounded with `expiredCertsOnCRL` or contractual
    retention); later CRLs only add rejections; `W = 24 h` cut to `W'`; the gate journals the status it
    relied on; `anchorGrace = 60 s` with the leaf verified at `min(A, notAfter)`; `skew` 2 min,
-   `ClockTolerance` 60 s.
-6. (rest) **Latency and CRL policy.** `MaxStatusAge` default 1 h and `ExecStatusAge` 15 min with a status
-   re-check immediately before the call runs, a published latency number, monotonic CRL numbers, alarm at
-   50%; CRLs fetched only from configured URLs by the refresher; `Status: NotRequired` only by explicit
+   `ClockTolerance` 60 s; a `final` verdict needs `W' >= MinW` (30 min) and a series complete to the CRL at
+   `L(C)` (derived from the archived series, first CRL strictly after `notAfter`).
+6. (rest) **Latency and CRL policy.** `MaxStatusAge` default 1 h; `ExecStatusAge` set from the CA's actual
+   period (startup refuses `CAPeriod > ExecStatusAge / 2`) with a status re-check immediately before the
+   call runs on every execution path, a published latency number, monotonic CRL numbers, alarm at 50%; CRLs fetched only from configured URLs by the refresher; `Status: NotRequired` only by explicit
    policy for short-lived certificates (default off).
 7. **Stale or missing status.** The live gate pauses with a named needs-attention reason (at count time
    and at execution) and the intake returns 503; no deny, no break-glass in the core; staleness never
    uncounts a counted decision.
 8. **CA compromise.** Status for every non-anchor certificate; per-anchor and per-intermediate
-   `DistrustAfter` against `A(d)`; a stated CA key rollover procedure; trust anchors per gate or policy,
+   `DistrustAfter` against `A(d)`, applied to chains **and to status signed by the distrusted issuer**, with
+   an auditor-supplied `-distrust` overlay; a stated CA key rollover procedure; trust anchors per gate or policy,
    never the system roots.
 9. **Seats and downgrade.** The seat is the canonical identifier, bare-key approvers included in the
    identity map, plus the dynamic same-leaf-key check; pinned intermediates and exactly one valid chain;
    the pause note records the approver kinds and a digest of the full policy; the auditor requires the
    `approval-identity` record on bound gates; observe mode is time-boxed (30 days), the old bare key is
-   removed at the switch, and a fleet version floor is checked at start.
+   removed at the switch; the live protection is rolling the fleet first (no version floor an old binary
+   would honor is claimed); identity-bound gates record their tally under `:ident` and a plain-name tally is
+   superseded; the auditor's expected policy of record is a required input for identity-required gates.
 10. **Evidence and kit.** A separate identity bundle (not evidence v7), bound to the journal by an
     anchored kit-hash record, carrying the full effective-dated policy; the kit records the verifier, Go
     version and `GODEBUG`; the bundle format is frozen with pinned vectors; an archive timestamp is
@@ -987,7 +1095,8 @@ These are engineering choices the design settles; each can be reopened if the us
     principals; `ExcludePrincipal` also compares the verified identifier.
 16. **Staging and review.** Four steps, each its own reviewed PR; an independent PKI review of the design
     before the build and of step 1 before it merges; the critical and high assessment findings are exit
-    criteria for step 1; commands under `bide identity` (`fetch-crl`, `check`, `kit`).
+    criteria for step 1, together with the confirmation pass's findings N2, N3, N5 and the downgrade
+    residual; commands under `bide identity` (`fetch-crl`, `check`, `kit`).
 
 ### Still open for the user
 
