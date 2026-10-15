@@ -156,6 +156,7 @@ jobs:
           MQ_HEAD: ${{ github.event.merge_group.head_sha }}
           MQ_REF: ${{ github.event.merge_group.head_ref }}
         run: |
+          # -count=1: cheap, and it reads the spec files and the marked regions, so it always runs.
           go test -count=1 -run '^TestProtocolVocabulary' ./agent/
           body() { # body N: write pull request N's description to a file and print its path
             gh api "repos/$REPO/pulls/$1" --jq '.body // ""' > "$RUNNER_TEMP/pr-$1.txt"
@@ -193,6 +194,13 @@ jobs:
           # test shard; the self-test proves a missing, doubled or unknown entry fails.
           .github/scripts/shards.sh --self-test
           SHARDS="$TEST_SHARDS" .github/scripts/shards.sh check-packages
+          # Every test file that starts a process is in a package of the list of tests that always
+          # run, or in the list of those whose result depends only on the test binary.
+          .github/scripts/check-uncached.sh --self-test
+          .github/scripts/check-uncached.sh
+          # The docs-only test (changed-code.sh) is what lets a pull request or a queue batch skip
+          # the Go jobs: its cases include the documents the Go tests read.
+          .github/scripts/changed-code.sh --self-test
       - name: Every module is published or repo-only
         if: needs.changes.outputs.code != 'false'
         run: |
@@ -232,6 +240,7 @@ jobs:
           done
           # The verifier's build of the bide command (audit, version and help only) must build and
           # pass its own tests; TestAuditOnlyBuildIsCore checks its import graph in every build.
+          # -count=1: the architecture test runs go list, whose result the test cache cannot see change.
           echo "== vet and test cmd/bide -tags bide_audit_only =="
           ( cd cmd/bide && go vet -tags bide_audit_only ./... && go test -tags bide_audit_only -count=1 . )
       - name: Reproducible bide builds
@@ -302,7 +311,11 @@ jobs:
       - uses: actions/setup-go@v5
         with:
           go-version: '1.27'
-          cache-dependency-path: '**/go.sum'
+          cache: false # the go-cache action below restores the build and test cache
+      - uses: ./.github/actions/go-cache
+        id: gocache
+        with:
+          name: linux-${{ matrix.shard }}
       - uses: actions/setup-node@v4
         with:
           node-version: '22' # the approve page's script tests (approvals/page) run under Node: Ed25519 in WebCrypto needs 20 or later
@@ -312,8 +325,19 @@ jobs:
           SHARD: ${{ matrix.shard }}
         # For each line of the shard's plan (a module's directory, then "./..." or the packages of
         # it this shard owns): go build the packages with non-test Go files, as go build ./...
-        # does, then go test -race -count=1 every package.
-        run: SHARDS="$TEST_SHARDS" .github/scripts/shards.sh run "$SHARD" -race -count=1
+        # does, then go test -race every package. No -count=1: a package whose test binary and
+        # inputs are unchanged reuses its cached result (gocache.sh, shards.sh run), except the
+        # packages in .github/uncached-tests.txt, which always run. A push to main starts from an
+        # empty test cache, so main runs every test.
+        run: SHARDS="$TEST_SHARDS" .github/scripts/shards.sh run "$SHARD" -race
+      # Only a push to main saves the cache: a cache saved on a pull request or a merge queue branch
+      # is not readable by other runs, and would only evict the useful ones.
+      - uses: actions/cache/save@v4
+        if: github.event_name == 'push'
+        with:
+          path: ${{ steps.gocache.outputs.paths }}
+          key: go-${{ runner.os }}-linux-${{ matrix.shard }}-${{ github.sha }}
+
 
   test-nojsonv2:
     name: Test (ubuntu-latest, without encoding/json/v2)
@@ -325,18 +349,28 @@ jobs:
       - uses: actions/setup-go@v5
         with:
           go-version: '1.27'
-          cache-dependency-path: '**/go.sum'
+          cache: false # the go-cache action below restores the build and test cache
+      - uses: ./.github/actions/go-cache
+        id: gocache
+        with:
+          name: linux-nojsonv2
       - name: Test without encoding/json/v2 (core, govern and integration modules)
         shell: bash
         # encoding/json/v2 is a Go experiment in Go 1.27, on by default. bide does not depend on it,
         # and the journal encoding must be identical with and without it, so the core module is
         # also tested with the experiment off, as are govern and the core's tests that moved to
         # the integration module.
-        run: |
-          for m in . govern integration; do
-            echo "== $m =="
-            ( cd "$m" && GOEXPERIMENT=nojsonv2 go test -count=1 ./... )
-          done
+        env:
+          GOEXPERIMENT: nojsonv2
+          MODULES: . govern integration
+        run: .github/scripts/shards.sh run-modules
+      # Only a push to main saves the cache: a cache saved on a pull request or a merge queue branch
+      # is not readable by other runs, and would only evict the useful ones.
+      - uses: actions/cache/save@v4
+        if: github.event_name == 'push'
+        with:
+          path: ${{ steps.gocache.outputs.paths }}
+          key: go-${{ runner.os }}-linux-nojsonv2-${{ github.sha }}
 
   # The required check for Linux. It always reports: success when the Changes job succeeded and
   # either only documentation changed or every shard and the json/v2 job succeeded; a failed,
@@ -374,17 +408,25 @@ jobs:
       - uses: actions/setup-go@v5
         with:
           go-version: '1.27'
-          cache-dependency-path: '**/go.sum'
+          cache: false # the go-cache action below restores the build and test cache
+      - uses: ./.github/actions/go-cache
+        id: gocache
+        with:
+          name: macos
       - uses: actions/setup-node@v4
         with:
           node-version: '22' # the approve page's script tests (approvals/page) run under Node: Ed25519 in WebCrypto needs 20 or later
       - name: Build & test (all modules)
         shell: bash
-        run: |
-          for m in $MODULES; do
-            echo "== $m =="
-            ( cd "$m" && go build ./... && go test -count=1 ./... )
-          done
+        # No -count=1 (see the Linux shards).
+        run: .github/scripts/shards.sh run-modules
+      # Only a push to main saves the cache: a cache saved on a pull request or a merge queue branch
+      # is not readable by other runs, and would only evict the useful ones.
+      - uses: actions/cache/save@v4
+        if: github.event_name == 'push'
+        with:
+          path: ${{ steps.gocache.outputs.paths }}
+          key: go-${{ runner.os }}-macos-${{ github.sha }}
 
   test-windows:
     name: Test (windows-latest)
@@ -396,17 +438,25 @@ jobs:
       - uses: actions/setup-go@v5
         with:
           go-version: '1.27'
-          cache-dependency-path: '**/go.sum'
+          cache: false # the go-cache action below restores the build and test cache
+      - uses: ./.github/actions/go-cache
+        id: gocache
+        with:
+          name: windows
       - uses: actions/setup-node@v4
         with:
           node-version: '22' # the approve page's script tests (approvals/page) run under Node: Ed25519 in WebCrypto needs 20 or later
       - name: Build & test (all modules)
         shell: bash
-        run: |
-          for m in $MODULES; do
-            echo "== $m =="
-            ( cd "$m" && go build ./... && go test -count=1 ./... )
-          done
+        # No -count=1 (see the Linux shards).
+        run: .github/scripts/shards.sh run-modules
+      # Only a push to main saves the cache: a cache saved on a pull request or a merge queue branch
+      # is not readable by other runs, and would only evict the useful ones.
+      - uses: actions/cache/save@v4
+        if: github.event_name == 'push'
+        with:
+          path: ${{ steps.gocache.outputs.paths }}
+          key: go-${{ runner.os }}-windows-${{ github.sha }}
 
   integration:
     # Also runs the PKCS#11 signer's SoftHSM2 tests (signer/pkcs11, examples/hsm-signing) and
