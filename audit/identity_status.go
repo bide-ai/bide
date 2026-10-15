@@ -308,7 +308,7 @@ func parseCRL(der []byte, hash [32]byte, maxEntries int) (*crlView, error) {
 				return unreadable("the expiredCertsOnCRL extension is malformed")
 			}
 			v.expiredFrom = t
-		case e.Id.Equal(oidCRLNumber), e.Id.Equal(oidAuthorityKeyID), e.Id.Equal(oidIssuerAltName), e.Id.Equal(oidFreshestCRL):
+		case (e.Id.Equal(oidCRLNumber) || e.Id.Equal(oidAuthorityKeyID) || e.Id.Equal(oidIssuerAltName) || e.Id.Equal(oidFreshestCRL)) && !e.Critical:
 		case e.Critical:
 			return unreadable("the CRL has a critical extension %s that bide does not process", e.Id)
 		}

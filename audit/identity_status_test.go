@@ -1256,9 +1256,9 @@ func TestLiveRefusesFutureDatedCRL(t *testing.T) {
 	s := newStFx(t)
 	now := idT0.Add(10 * time.Second)
 	live := audit.StatusParams{Now: now, MaxStatusAge: 6 * hour}
-	future := s.lcrl(1, now.Add(time.Hour), 30*min)
+	future := s.lcrl(1, now.Add(30*min), 30*min) // inside the leaf's life, so only the future date can refuse it
 	if st := s.leafStatus(s.snap(future), live); st.Tier != audit.TierNoInformation {
-		t.Fatalf("an hour ahead: %+v", st)
+		t.Fatalf("half an hour ahead: %+v", st)
 	}
 	jitter := s.lcrl(1, now.Add(30*time.Second), 30*min)
 	if st := s.leafStatus(s.snap(jitter), live); st.Tier == audit.TierNoInformation {
@@ -1281,6 +1281,22 @@ func TestCoverageTolerance(t *testing.T) {
 	p.CoverageTolerance = 5 * min
 	if st := s.leafStatus(s.snap(c0, last(2*min)), p); st.Tier != audit.TierFinal {
 		t.Fatalf("a 5 minute tolerance: %+v", st)
+	}
+	// Exactly interval + tolerance apart is still contiguous (and one second more is not).
+	p.CoverageTolerance = time.Minute
+	exact := s.lcrl(2, idT0.Add(21*min), 30*min) // 20m interval + 1m tolerance after c0
+	if st := s.leafStatus(s.snap(s.lcrl(1, idT0, 25*min), exact), p); st.Tier != audit.TierFinal {
+		t.Fatalf("exactly interval + tolerance: %+v", st)
+	}
+	over := s.lcrl(2, idT0.Add(21*min+time.Second), 30*min)
+	if st := s.leafStatus(s.snap(s.lcrl(1, idT0, 25*min), over), p); st.Tier == audit.TierFinal {
+		t.Fatalf("a second beyond interval + tolerance: %+v", st)
+	}
+	// An undeclared interval is not "zero": CRLs seconds apart are not shown contiguous either.
+	p.Interval = -1
+	near := s.lcrl(2, idT0.Add(10*time.Second), 30*min)
+	if st := s.leafStatus(s.snap(s.lcrl(1, idT0, 25*min), near), p); st.Tier == audit.TierFinal {
+		t.Fatalf("no declared interval: %+v", st)
 	}
 }
 
