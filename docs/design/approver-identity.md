@@ -644,9 +644,15 @@ default one second) and `Result.Latest()` is the time to use for "existed by"; t
 certificate; the TSA certificate may not be a CA and its key usage must be signing only; `Policy.DistrustAfter`
 retires TSA keys; `Policy.AcceptedPolicies` pins policy OIDs; `Expected.Now` bounds `genTime` from above for a
 live gate; a SHA-1 `signingCertificate` beside a V2 attribute is checked for consistency only. Of ten public
-TSAs tried on 2026-10-15 the profile accepts six (DigiCert, GlobalSign, QuoVadis, SSL.com, Microsoft,
-SwissSign) and refuses four (Sectigo, Entrust, FreeTSA: SHA-1 `signingCertificate` only; Apple: SHA-1 as the
-digest algorithm); a bank must choose its TSA from the first group. Unused certificates in a token must parse and are then ignored (the path comes from the auditor's anchors); `Normalize` returns the token with only the path's certificates, and because two encodings of one attestation are distinct byte strings, the identity bundle and kit must key and store tokens by their normalized bytes (or by the attested fields), never by the received bytes.
+TSA endpoints tried on 2026-10-15 the profile accepts six by default (DigiCert, GlobalSign, QuoVadis, SSL.com,
+Microsoft, SwissSign), three with the opt-in (Sectigo, Entrust, FreeTSA: SHA-1 `signingCertificate` only) and
+refuses one (Apple: SHA-1 as the digest algorithm); a bank must choose its TSA from the first group, or opt in per TSA key for the V1-only ones (decision 17, amended). Unused certificates in a token must parse and are then ignored (the path comes from the auditor's anchors); `Normalize` returns the token with only the path's certificates, and because two encodings of one attestation are distinct byte strings, the identity bundle and kit must key and store tokens by their normalized bytes (or by the attested fields), never by the received bytes.
+
+**Prerequisite before any gate calls the verifier (PKI review, M3):** the reference `Policy.CertStatus` hook
+built on the status rule (the status-rule PR) must exist and be wired. The token's path is judged at its own
+`genTime`, which the holder of a retired or compromised TSA key chooses, so the status function (every non-anchor
+certificate as of `genTime`, with the usable-for-absence window), `Policy.DistrustAfter` and the accuracy cap are
+the only controls on back-dating. `rfc3161.StatusUnknown` is the fail-closed placeholder until then.
 
 **Profile (each point a refusal when violated):**
 
@@ -1176,6 +1182,14 @@ Decisions 1, 2, 5, 6 (delta CRLs), 12, 13, 15 and 17.
     outside the profile refused. Real-TSA vectors (OpenSSL `ts` and DigiCert verify; FreeTSA is refused, see "RFC 3161 token verifier"), differential tests
     against `openssl ts -verify`, negative vectors and fuzzing are step-1 exit criteria. Rejected: a
     third-party CMS library in the core, and an optional module that the top tier would depend on.
+    *Amended (user, 2026-10-15, after the build and its PKI review):* an **opt-in, off-by-default, per-TSA flag**
+    (`Policy.AllowESSV1`, keyed by the TSA certificate's public key) accepts a token that binds its signer by the
+    SHA-1 `signingCertificate` attribute alone. Public TSAs such as Sectigo, Entrust and FreeTSA produce only such
+    tokens, and refusing them leaves a bank without them no top tier. What the attribute adds is a tie between the
+    signature and one certificate among those the token carries; who signed is decided by the signature and the path
+    to the auditor's anchors, which SHA-1 does not weaken. The weaker binding stays visible: a `Result` that relied
+    on it has `ESSV1` set and the verdict prints it. SHA-1 as the CMS digest algorithm (Apple) stays refused
+    whatever the policy says, and a SHA-1 attribute beside `signingCertificateV2` is checked for consistency only.
 
 ### Decided by recommendation (technical, 2026-10-15)
 

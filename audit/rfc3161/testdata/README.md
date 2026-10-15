@@ -14,19 +14,19 @@ runs at the token's `genTime`, so a vector does not expire when its certificates
 | `sslcom/` | `http://ts.ssl.com` (accuracy 1 s) | verifies |
 | `microsoft/` | `http://timestamp.acs.microsoft.com` (accuracy 500 ms) | verifies |
 | `swisssign/` | `http://tsa.swisssign.net` (qualified TSA, accuracy 500 ms) | verifies |
-| `freetsa/` | `https://freetsa.org/tsr` (ECDSA P-384, SHA-512) | refused: `signing-certificate-v1-only` |
-| `sectigo/` | `http://timestamp.sectigo.com` | refused: `signing-certificate-v1-only` |
-| `entrust/` | `http://timestamp.entrust.net/TSS/RFC3161sha2TS` | refused: `signing-certificate-v1-only` |
+| `freetsa/` | `https://freetsa.org/tsr` (ECDSA P-384, SHA-512) | refused by default (`signing-certificate-v1-only`); verifies with `Policy.AllowESSV1`, result labelled |
+| `sectigo/` | `http://timestamp.sectigo.com` (anchor: USERTrust RSA, through the cross-signed path the token carries) | same as FreeTSA |
+| `entrust/` | `http://timestamp.entrust.net/TSS/RFC3161sha2TS` (this endpoint returned tokens signed by Sectigo's TSA) | same as FreeTSA |
 | `apple/` | `http://timestamp.apple.com/ts01` | refused: `weak-hash` (SHA-1 as the signer digest algorithm) |
 
 Not usable: Certum answered without a token, and Harica and Actalis were unreachable.
 
-The refused tokens are valid RFC 3161 tokens (OpenSSL verifies the ones that have a root here). They
-are outside the verifier's profile because they identify the signer by the SHA-1 `signingCertificate`
-attribute alone, with no `signingCertificateV2`, or use SHA-1 as the digest algorithm (design note,
-decision 17: SHA-1 is never accepted). **A bank that picks Sectigo, Entrust, FreeTSA or Apple as its
-time authority cannot use the top tier with this verifier.** DigiCert, GlobalSign, QuoVadis, SSL.com,
-Microsoft and SwissSign tokens verify. The set is one request per TSA on one day: a TSA can change
+These tokens are valid RFC 3161 tokens that OpenSSL verifies. FreeTSA, Sectigo and Entrust identify the
+signer by the SHA-1 `signingCertificate` attribute alone, with no `signingCertificateV2`: refused by
+default, accepted with the per-TSA opt-in (design note, decision 17 as amended). Apple uses SHA-1 as the
+CMS digest algorithm, which is refused whatever the policy says. **A bank that picks Apple as its time
+authority cannot use the top tier with this verifier.** DigiCert, GlobalSign, QuoVadis, SSL.com,
+Microsoft and SwissSign tokens verify without the opt-in. The set is one request per TSA on one day: a TSA can change
 its token format, and a different policy or key of the same operator can differ.
 
 Trust anchors. `root.pem` is the self-signed root that anchors the token's path: for DigiCert,

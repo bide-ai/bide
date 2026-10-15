@@ -412,10 +412,13 @@ head twice gives two different valid signatures (ed25519 and ML-DSA give the sam
 P-384, RSA of 3072 bits or more (2048 only through `Policy.RSA2048Until`) or Ed25519, and the signed
 attributes `contentType`, `messageDigest` and `signingCertificateV2`. It is a component: no command or
 gate calls it yet. A token that binds its signer only through the SHA-1 `signingCertificate` attribute
-is refused with `signing-certificate-v1-only`, and one that uses SHA-1 as its digest algorithm with
-`weak-hash`. **Of ten public TSAs tried on 2026-10-15, six produce tokens that verify (DigiCert,
-GlobalSign, QuoVadis, SSL.com, Microsoft, SwissSign) and four are refused (Sectigo, Entrust, FreeTSA
-and Apple); a bank must pick a TSA from the first group or the top tier is unavailable.**
+is refused with `signing-certificate-v1-only` unless the policy opts in for that TSA's key
+(`Policy.AllowESSV1`, off by default, per TSA); a result that relied on the opt-in has
+`Result.ESSV1` set and a verdict should show it. A token that uses SHA-1 as its CMS digest algorithm
+is refused with `weak-hash` whatever the policy says. **Of ten public TSA endpoints tried on
+2026-10-15, six produce tokens that verify by default (DigiCert, GlobalSign, QuoVadis, SSL.com,
+Microsoft, SwissSign), three verify only with the opt-in (Sectigo, Entrust, whose endpoint returned
+tokens signed by Sectigo's TSA, and FreeTSA) and one cannot be used (Apple: SHA-1 digest algorithm).**
 Also refused: SHA-3 and SHA-224 hashes, ECDSA P-521, `crls` and attribute certificates, a token
 that carries any certificate Go's parser rejects even when unused, a SHA-256 default spelled out in
 `ESSCertIDv2`, and an accuracy above `Policy.MaxAccuracy` (one second by default). The stated accuracy

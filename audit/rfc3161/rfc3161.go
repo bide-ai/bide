@@ -17,8 +17,10 @@
 //     digest, genTime a DER GeneralizedTime, accuracy added to the tolerance, nonce equal to the
 //     caller's when one is expected, ordering and tsa ignored, any critical extension refused.
 //   - The signed attributes contentType, messageDigest and signingCertificateV2 each exactly once
-//     and matching. A token with the SHA-1 signingCertificate attribute only is refused (FreeTSA
-//     tokens are of this kind); when signingCertificateV2 is present, other attributes, including
+//     and matching. A token with the SHA-1 signingCertificate attribute only is refused unless
+//     Policy.AllowESSV1 lists the TSA's key (FreeTSA, Sectigo and Entrust tokens are of this kind),
+//     and the result is then labelled Result.ESSV1; SHA-1 as the CMS digest algorithm is refused
+//     whatever the policy says. When signingCertificateV2 is present, other attributes, including
 //     signingCertificate, are ignored but must be well-formed DER.
 //   - Signature algorithms: ECDSA P-256 or P-384, RSA PKCS#1 v1.5 or PSS, Ed25519, with SHA-256 or
 //     better; RSA moduli of at least 3072 bits (2048 only through Policy.RSA2048Until). SHA-1, MD5

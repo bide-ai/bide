@@ -867,3 +867,12 @@ func TestESSV1OptInBuilt(t *testing.T) {
 	g.spec.digestOID = oidSHA1
 	mustRefuse(t, g.spec.build(t), g.expected(), p, ReasonWeakHash)
 }
+
+func TestESSV1OnlyTwiceIsRefused(t *testing.T) {
+	f := newFixture(t)
+	f.spec.essV1Only = true
+	f.spec.attrHook = func(a [][]byte) [][]byte { return append(a, f.spec.essV1()) }
+	p := f.policy()
+	p.AllowESSV1 = []*x509.Certificate{f.kit.tsa}
+	mustRefuse(t, f.spec.build(t), f.expected(), p, ReasonDuplicateAttr)
+}
