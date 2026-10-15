@@ -1107,8 +1107,8 @@ first (`audit.IdentityPolicy`, `CertIdentity.VerifyChain`, the default `Canonica
 `internal/testca` test CA). It differs from the sketch in the Binding section in four ways, none of which
 changes a rule: `Anchors` is a `[]*x509.Certificate` (a pool cannot be listed, and the identity record
 names anchors by key); `AllowEmailProtectionEKU` is the explicit switch for accepting
-`id-kp-emailProtection` from a dedicated approver CA; `Skew`, `AnchorGrace` and `AllowRSA2048CAUntil` are
-policy fields (the last is the dated exception for RSA-2048 CAs, applied against `A(d)`); and the
+`id-kp-emailProtection` from a dedicated approver CA; `Skew`, `AnchorGrace` and `RSA2048Until` are
+policy fields (the last is the dated, exclusive exception for RSA-2048 CAs, applied against `A(d)` and named like the RFC 3161 verifier policy field); and the
 compiled form is `CertIdentity`, so a policy is checked once at startup and then immutable.
 
 Every step updates the guides it touches. The approvals guide states the post-quantum gap (decision 15: a

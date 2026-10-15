@@ -76,9 +76,11 @@ type IdentityPolicy struct {
 	// AnchorGrace is how long after the leaf's notAfter a decision may first become provable
 	// (A <= notAfter + AnchorGrace). Zero means 60 seconds.
 	AnchorGrace time.Duration
-	// AllowRSA2048CAUntil permits RSA-2048 CA keys for decisions provable at or before the time (many
-	// bank roots are still RSA-2048). Zero refuses them: the default is RSA-3072 or better.
-	AllowRSA2048CAUntil time.Time
+	// RSA2048Until permits RSA-2048 CA keys while the attested time (here A(d), the time the decision
+	// became provable) is strictly before it; many bank roots are still RSA-2048. Zero refuses them,
+	// and anything under 2048 bits is always refused: the default is RSA-3072 or better. The field has
+	// the same meaning and name in the RFC 3161 verifier's policy.
+	RSA2048Until time.Time
 }
 
 const (
@@ -119,7 +121,7 @@ func (p IdentityPolicy) Compile() (*CertIdentity, error) {
 		anchors: x509.NewCertPool(), anchorBy: map[SPKIHash]*x509.Certificate{},
 		inter: map[SPKIHash]bool{}, distrust: map[SPKIHash]time.Time{}, identity: map[string]string{},
 		kind: p.IDKind, eku: slices.Clone(p.EKU), emailEKU: p.AllowEmailProtectionEKU, policy: p.Policy,
-		canon: p.Canonical, maxChain: p.MaxChain, skew: p.Skew, grace: p.AnchorGrace, rsa2048: p.AllowRSA2048CAUntil,
+		canon: p.Canonical, maxChain: p.MaxChain, skew: p.Skew, grace: p.AnchorGrace, rsa2048: p.RSA2048Until,
 	}
 	if !p.IDKind.valid() {
 		return cfgErr("identifier kind %q is not %q or %q", p.IDKind, IDPersonURI, IDEmail)
@@ -478,7 +480,7 @@ func caKeyAllowed(pub any, at, rsa2048Until time.Time) error {
 		case bits >= 2048 && !rsa2048Until.IsZero() && (at.IsZero() || !at.After(rsa2048Until)):
 			return nil
 		}
-		return fmt.Errorf("RSA key of %d bits is below the profile (3072; 2048 only under an unexpired AllowRSA2048CAUntil)", bits)
+		return fmt.Errorf("RSA key of %d bits is below the profile (3072; 2048 only under an unexpired RSA2048Until)", bits)
 	case *ecdsa.PublicKey:
 		if k.Curve == elliptic.P256() || k.Curve == elliptic.P384() {
 			return nil

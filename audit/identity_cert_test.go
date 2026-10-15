@@ -710,7 +710,7 @@ func TestRSA2048CAOnlyThroughADatedException(t *testing.T) {
 	f := &fixture{root: root, inter: inter}
 	l := inter.NewLeaf(t, testca.Opts{SigAlg: x509.SHA256WithRSA})
 	p := f.policy()
-	p.AllowRSA2048CAUntil = idT0.Add(24 * time.Hour)
+	p.RSA2048Until = idT0.Add(24 * time.Hour)
 	c, err := p.Compile()
 	if err != nil {
 		t.Fatalf("Compile with the exception: %v", err)
