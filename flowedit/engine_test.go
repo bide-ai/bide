@@ -67,3 +67,28 @@ func TestApplyExamples(t *testing.T) {
 	}
 }
 
+
+// A comment directly above an entry goes with it; a comment after a blank line stays.
+func TestDeleteTakesAttachedComments(t *testing.T) {
+	out := apply(t, sample, Op{Kind: Delete, Path: []any{"nodes", 1}})
+	if strings.Contains(out, "the gated one") || strings.Contains(out, "# gated") || strings.Contains(out, "name: charge") {
+		t.Errorf("the entry or its comments are still there:\n%s", out)
+	}
+	if !strings.Contains(out, "# nodes, in digest order") || !strings.Contains(out, "# yaml-language-server") {
+		t.Errorf("a comment that belongs to the file was removed:\n%s", out)
+	}
+}
+
+// Blank lines, comments and the spacing before a trailing comment are the original bytes.
+func TestUntouchedBytesStay(t *testing.T) {
+	r, err := Apply([]byte(sample), Op{Kind: Set, Path: []any{"nodes", 2, "block"}, Value: "other"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got := string(r.Text[:r.Lo]) + string(r.Text[r.Lo+len(r.Frag):]); got != sample[:r.Lo]+sample[r.Hi:] {
+		t.Errorf("bytes outside the edit changed")
+	}
+	if !strings.Contains(string(r.Text), "flow: refund   # the label\n\n# nodes") {
+		t.Errorf("spacing or a blank line changed:\n%s", r.Text)
+	}
+}
