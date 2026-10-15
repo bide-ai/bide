@@ -407,6 +407,7 @@ func lister(t *testing.T, s agent.Store) {
 	prefix := runID(t) + "/"
 	const n = 1100 // more than two pages of a paged store
 	var all, open []string
+	setupStart := time.Now()
 	for i := range n {
 		id := fmt.Sprintf("%s%04d", prefix, i)
 		all = append(all, id)
@@ -444,8 +445,17 @@ func lister(t *testing.T, s agent.Store) {
 	if got := list(agent.RunFilter{Prefix: prefix + "no-such-run"}); len(got) != 0 {
 		t.Fatalf("Runs over an unused prefix yields %v", got)
 	}
-	// Breaking early and writing inside the loop neither leak nor deadlock.
-	tctx, cancel := context.WithTimeout(ctx, time.Minute)
+	// Breaking early and writing inside the loop neither leak nor deadlock. The deadline detects a
+	// hang, so it scales with what the store's writes cost here: a disk that fsyncs each commit slowly
+	// (a shared Windows runner took 30ms and more) makes the loop's writes slow, not stuck. The loop
+	// writes about two thirds as many entries as the set-up above, which took setup. A hang therefore
+	// fails after at most five minutes; a store too slow to fit that fails at once.
+	setup := time.Since(setupStart)
+	budget := min(max(time.Minute, 10*setup), 5*time.Minute)
+	if setup > budget/2 {
+		t.Fatalf("disk too slow for this test: the %d set-up writes took %v, and the loop below (about two thirds as many) gets at most %v", n+len(open), setup, budget)
+	}
+	tctx, cancel := context.WithTimeout(ctx, budget)
 	defer cancel()
 	for range 20 {
 		for _, err := range l.Runs(tctx, agent.RunFilter{Prefix: prefix}) {
