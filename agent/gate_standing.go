@@ -174,6 +174,11 @@ func recountFor(recs []Record, s ApprovalSubject, t ApprovalTally, pol *Approval
 	}
 	_, checks := TallyApprovals(recs, s, *pol, verifierFor)
 	for i := range checks {
+		if t.Expired && !slices.Contains(t.Records, checks[i].Step) {
+			// The expiry was recorded first: a decision it did not read was written after it.
+			checks[i].Counted, checks[i].Reason = false, ReasonAfterExpiry
+			continue
+		}
 		by := t.DeniedBy
 		if checks[i].Approved {
 			by = t.ApprovedBy

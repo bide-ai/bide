@@ -687,6 +687,11 @@ resolution all run around it.
   after it is `"late"`, which the gate reads as the expiry). A gate past its deadline with no
   terminal count records the expiry where its outcome goes: the tally (`exp`) under its name, or
   the 1-of-1 decision (`"exp"`, `ApExpire`), so an expiry and a passing tally race for one record.
+  The model treats a decision's time stamp and its write as one step. The race in which a decision
+  stamped before the deadline is written after the gate read the journal (it does not count, the
+  expiry stands, and readers label it `ReasonAfterExpiry`) is checked by the Go test
+  `TestDeadline_OnTimeQuorumRacingExpiry`, not by the model. Deadlines on plan flow node gates
+  are checked by Go tests (`plan/deadline_test.go`), not by model 7.
 - **m-of-n (`SubmitDecision`).** Each decision is its own record, in journal order: the approver
   id it names, the person who signed, the verdict, the key it was signed with, and whether it was
   signed over this exact call or another call or other arguments (`Subjects`). People sign as an
@@ -957,7 +962,7 @@ invalid records, and that a counted signature binds the request's input is check
 | `GRead` | `runGate` through `journalhook.Gate` to `flowGate`: the gate's recorded outcome (`approval-tally:<node key>`, or `Approve`'s record if it follows the request); else the request (`approval-request:<node key>`) |
 | `GCount` | `flowGate`'s count (`tallyGate` over the records after the request, `TallyApprovals`): a terminal tally is recorded before the node runs, else the drive pauses (`*agent.ApprovalPending`) |
 | `GPause` | `runGate`: a denying tally stops the run (`ErrApprovalDenied`); a passing one lets the node's Step run |
-| `ADecide` | `agent.SubmitDecision` (or `agent.Approve`; in a flow's run both refuse a node key with no request, `flowDecision`, and report one whose name an earlier record holds, `staleDecision`): an approver's decision on a gate, recorded whether a driver runs or not; an early one (with `Early`) stands for a record written directly, and is final for that approver |
+| `ADecide` | `agent.SubmitDecision` (or `agent.Approve`; in a flow's run both refuse a node key with no request, `flowDecision`, and report one whose name an earlier record holds, `staleDecision`): an approver's decision on a gate, recorded whether a driver runs or not; an early one (with `Early`) stands for a record written directly, and the approver may decide again after the request |
 
 | Property | Kind | Statement |
 |---|---|---|

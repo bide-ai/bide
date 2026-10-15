@@ -213,7 +213,9 @@ iteration, with this input.
    name: decision names are first-writer-wins and ed25519 signatures are deterministic, so the
    approver's identical decision afterwards is not recorded, and `Approve` and `SubmitDecision`
    report that (`ErrConfig`) instead of returning nil. For a `SingleApproval` gate the name is the
-   gate's one decision, so the gate cannot pass (it fails closed) and the run is cancelled. For an
+   gate's one decision; `Approve` then records the real decision under a second name
+   (`approval:<call>:after-request`), which the gate honours, so the stale record does not block
+   the gate ([approval deadlines](approval-deadlines.md#clearing-a-stale-decision)). For an
    m-of-n gate the approver signs again: since v3 a decision's name hashes its signed `decided_at`,
    so a decision re-signed at a new time is a new record, written after the request, and counts.
    The seat is not lost. (`flows/limits/gate-early-stuck` stated the v2 limit, where it was;

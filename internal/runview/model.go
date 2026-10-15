@@ -166,6 +166,10 @@ type Decision struct {
 	Signed     bool   `json:"signed"`
 	DecidedAt  string `json:"decided_at,omitempty"`
 	RecordedAt string `json:"recorded_at,omitempty"`
+	// Note says why a recorded decision did not count, when the journal alone would make it look
+	// as if it should have: agent.ReasonAfterExpiry for one written after the gate's expiry.
+	Note string `json:"note,omitempty"`
+	name string
 }
 
 // Build reads the run's records into a View. recs is the run's journal in order (header
@@ -560,7 +564,7 @@ func gates(recs []agent.Record, calls map[string]agent.ToolUse, order []string) 
 				resulted = true
 			}
 			if r.Kind == agent.StepApproval && r.ToolUseID == id {
-				g.Decisions = append(g.Decisions, Decision{Approver: r.Approver(), Approved: r.Approved, Signed: r.Approver() != "", DecidedAt: r.DecidedAt(), RecordedAt: r.RecordedAt()})
+				g.Decisions = append(g.Decisions, Decision{Approver: r.Approver(), Approved: r.Approved, Signed: r.Approver() != "", DecidedAt: r.DecidedAt(), RecordedAt: r.RecordedAt(), name: r.Name})
 			}
 			if (r.Kind == agent.StepToolResult || r.Kind == agent.StepSagaFail) && r.ToolUseID == id && r.Approval != nil {
 				g.Need, g.Approvers = r.Approval.Need, r.Approval.Approvers
@@ -588,6 +592,13 @@ func gates(recs []agent.Record, calls map[string]agent.ToolUse, order []string) 
 				g.Need, g.Approvers = tally.Need, tally.Approvers
 				g.ApprovedBy, g.DeniedBy, g.Pending = tally.ApprovedBy, tally.DeniedBy, tally.Pending
 				g.ExcludePrincipal, g.Requesters, g.Excluded = tally.ExcludePrincipal, tally.Requesters, tally.Excluded
+				if tally.Expired {
+					for i := range g.Decisions {
+						if g.Decisions[i].Signed && !slices.Contains(tally.Records, g.Decisions[i].name) {
+							g.Decisions[i].Note = agent.ReasonAfterExpiry
+						}
+					}
+				}
 			}
 		}
 		if !g.Tallied && g.ExcludePrincipal {

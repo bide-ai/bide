@@ -487,6 +487,8 @@ func VerifyApprovals(actions []EvidenceAction, toolUseID string, policy agent.Ap
 			ignore("inclusion proof does not verify under the log key")
 		case !sameTreeHead(a.Bundle.STH, sth) || a.Bundle.RunID != runID:
 			ignore("not proven under the same signed tree head and run as the result")
+		case !read[r.Name] && tally.Expired:
+			ignore(agent.ReasonAfterExpiry)
 		case !read[r.Name]:
 			ignore("not read by the gate (recorded after it decided)")
 		default:

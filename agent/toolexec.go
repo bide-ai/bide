@@ -99,6 +99,9 @@ func tallyGate(ctx context.Context, store *Journal, runID string, s ApprovalSubj
 //
 // A recorded denial is final whatever the policy is now: it runs nothing.
 func tallyGateOnce(ctx context.Context, store *Journal, runID string, s ApprovalSubject, pol *ApprovalPolicy, verifierFor ApproverVerifierFor, since string) (_ ApprovalTally, final, again bool, _ error) {
+	// The clock is read before the journal, so a decision written between the two is in the count
+	// rather than racing an expiry decided on a later reading.
+	now := clockFrom(ctx)()
 	recs, err := store.History(ctx, runID)
 	if err != nil {
 		return ApprovalTally{}, false, false, fmt.Errorf("load history %s: %w (%w)", runID, err, ErrStorage)
@@ -116,7 +119,7 @@ func tallyGateOnce(ctx context.Context, store *Journal, runID string, s Approval
 		// under the name its count would take, so an expiry and a passing tally cannot both be
 		// recorded: the first writer is the outcome.
 		_, expiresAt, ok := RecordedDeadline(recs, s.ToolUseID)
-		if !ok || !pastDeadline(clockFrom(ctx)(), expiresAt) {
+		if !ok || !pastDeadline(now, expiresAt) {
 			return tally, false, false, nil
 		}
 		tally.Expired = true

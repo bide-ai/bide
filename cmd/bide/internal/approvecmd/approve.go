@@ -804,6 +804,9 @@ func (c *cmd) show(g *gateOf, s agent.ApprovalSubject, sg audit.Signer) (clipped
 			if c.f.approverKeys == "" {
 				label = " (recorded, unverified)"
 			}
+			if d.Note != "" {
+				label += " (" + d.Note + ")"
+			}
 			row("decided", fmt.Sprintf("%s %s at %s%s", safe(d.Approver), verdict(d.Approved), safe(d.DecidedAt), label))
 		}
 		row("pending", safe(strings.Join(gt.Pending, ", ")))

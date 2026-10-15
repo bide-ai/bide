@@ -37,9 +37,15 @@ outcome takes, so an expiry and a passing tally cannot both be recorded:
   (the one it is counting under: its own, or a re-ask's step);
 - `SingleApproval`: the gate's single decision record, a denial with `expired: true`.
 
-Insert-once by name makes the first writer the outcome. Whichever wins is what the call does: a
-passing tally recorded first runs the call even if the deadline passes a moment later, and an
-expiry recorded first means the call never runs. The expiry is a denial in every other respect: an
+Insert-once by name makes the first writer the outcome: whichever outcome is recorded first is what
+the call does. A passing tally recorded first runs the call even if the deadline passes a moment
+later, and an expiry recorded first means the call never runs. A decision whose write lands after
+the expiry does not count, even if it was stamped on time: the gate reads the clock, then the
+journal, then records its outcome, and a decision written between the read and the record is not
+in the count. That fails closed (the call does not run), and every reader says why the decision
+did not count (`agent.ReasonAfterExpiry`, "not counted: written after the gate expired":
+`EvaluateGate`, `bide view`, `bide approve` and `audit.VerifyApprovals`), so the journal does
+not look contradictory. The expiry is a denial in every other respect: an
 agent's model reads the call's result as denied (`"tool call denied: the approval gate expired"`),
 a plan flow returns `plan.ErrApprovalExpired` (which wraps `plan.ErrApprovalDenied`), a saga treats
 it as a denial, and a late approval never reopens it.
@@ -60,7 +66,8 @@ unchanged: a requester's decision fills no seat, and a deadline does not make it
 
 **k-of-n partial tallies.** An expiry records the count at the time it is recorded (who approved,
 who denied, who is pending, every decision record it read), like any terminal tally, so the
-evidence shows how far the gate got. A count that reaches k is recorded as a pass, never an expiry.
+evidence shows how far the gate got. A count that reaches k when the gate reads the journal is
+recorded as a pass, never an expiry; decisions written after that read are not in it (see above).
 
 **Plan flows.** The flow gate records the deadline from its `approval-request`, and only
 decisions recorded after the request and at or before `expires_at` count. A gate in a loop has a

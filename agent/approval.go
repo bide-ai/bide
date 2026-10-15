@@ -410,6 +410,9 @@ const (
 	ReasonRequester   = "the approver is a requester of the run (its principal, or that of a run above it), whom the policy excludes (separation of duties)"
 	ReasonNoRequester = "the policy excludes the requester, and the run, or a run above it, records no requester principal in printable ASCII"
 	ReasonLate        = "recorded after the gate's deadline (approval-deadline), or with no recorded time on a gate that has one"
+	// ReasonAfterExpiry: the decision's write landed after the gate recorded its expiry, even if it
+	// was stamped before the deadline. The expiry, recorded first, is the outcome.
+	ReasonAfterExpiry = "not counted: written after the gate expired"
 )
 
 // protocol:claims begin QCount
