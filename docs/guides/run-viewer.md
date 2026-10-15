@@ -251,7 +251,7 @@ has an item. An aborted or cancelled run is listed too, since a halt outlives ei
 | `-check` | With `-config`: serve nothing, print each problem as `file:node: message`, and exit 1 if any is an error. `bide check <file>...` is the same check, for several files. |
 | `-strict` | With `-check`: exit 1 on a warning too (`bide check -strict`). |
 | `-diff <old>` | With `-config`: compare it with an earlier version, a file or a git revision; see [Compare two versions of a flow](#compare-two-versions-of-a-flow). With `-check`, print the changes instead of serving the page. |
-| `-fail-on-weaken` | With `-diff -check`: exit 1 if an approval gate was removed or weakened (its need lowered, an approver added without raising the need, `exclude_principal` dropped, or its timeout removed or lengthened). |
+| `-fail-on-weaken` | With `-diff -check`: exit 1 if an approval gate was removed or weakened (its need lowered, an approver added without raising the need, `exclude_principal` dropped, or its timeout removed or lengthened), an effect became reachable without a gate, or an `assert` line was removed or loosened. |
 | `-addr <host:port>` | Where to listen: a loopback IP or `localhost`, with a port. Default `127.0.0.1:8484`. Any other host is refused. |
 | `-color <when>` | `auto` (the default), `always` or `never`: whether the text output (the address to open, and `-check`'s lines) is colored. `auto` colors a terminal only, unless `NO_COLOR` is set to any value or `TERM` is `dumb`; see [Color](#color). |
 
@@ -738,9 +738,30 @@ shortening one is a strengthening: the gate fails closed sooner. A change in two
 higher need with the timeout removed) is not strictly stronger, so it is called weakened. Precisely, need k of approvers A becomes need k' of
 approvers B, and the change is weakened unless k' minus the number of approvers in B and not in A
 is at least k. The reverse is strengthened; the same approvers and need in another policy order is
-reordered. The check compares each node's gate; it does not reason about paths, so a new arm that
-routes around a gated node shows as an added edge, not as a weakened policy. Read the graph for
-that.
+reordered. 
+
+Two more kinds of change are weakenings, reported with the gate changes (`-fail-on-weaken` exits 1
+on them too, and the page's verdict reads `SAFETY CHECK WEAKENED` when no gate policy itself was
+weakened):
+
+- **A new path around a gate.** A node that has an effect (its `safety` is `side_effect`, or is not
+  known: a config checked without its `plan.Registry` does not state it) that every path from the
+  entry reached through an approval gate before, and that a path now reaches without one, is
+  reported with the path: `receipt: reachable without an approval gate (validate -> receipt), not
+  before`. It uses the same reading as the Side effects card (`ConfigReport.Gated`). A node that is
+  read-only or idempotent, a node already reachable ungated, a node that is new in the file, a new
+  route that passes a gate, and a node whose own gate was removed (reported as a gate change) are not
+  reported this way. A rename of a gated node reads as the gate removed and a new ungated node.
+- **An `assert` line removed or loosened.** A line the new config lacks is reported as removed,
+  unless a different line for the same node replaces it: `every path to T passes approval >= K [of N]
+  [excluding the requester]` is loosened by a lower K, a larger N (or an N where there was none), or
+  dropping `excluding the requester`, and tightened by the reverse (a strengthening). Other assertion
+  forms are compared by their text (spacing and the quoting of a node name aside): a line that
+  changed is a removal of the old line and an added line. A new line that matches none removed is
+  listed as added, not as a weakening.
+
+The check still does not reason about the path to a node that is not an effect, and it compares
+assertions as written, not what they would decide.
 
 **The digest.** From the command line the comparison is structural, as `bide check` is, so it
 shows no digest. Package `plan/planview` serves the same page (`DiffHandler`) and text
