@@ -325,3 +325,69 @@ func quoteAll(ss []string) []string {
 	}
 	return out
 }
+
+// gateAssertion is an assertion of the form "every path to T passes approval >= K [of N]
+// [excluding the requester]".
+type gateAssertion struct {
+	target string
+	k, n   int // n is -1 without "of N"
+	excl   bool
+}
+
+func parseGateAssertion(text string) (gateAssertion, bool) {
+	m := assertGate.FindStringSubmatch(strings.Join(strings.Fields(text), " "))
+	if m == nil {
+		return gateAssertion{}, false
+	}
+	ga := gateAssertion{k: -1, n: -1, excl: m[4] != ""}
+	ga.target = m[1]
+	if u, err := strconv.Unquote(m[1]); err == nil {
+		ga.target = u
+	}
+	ga.k, _ = strconv.Atoi(m[2])
+	if m[3] != "" {
+		ga.n, _ = strconv.Atoi(m[3])
+	}
+	return ga, true
+}
+
+// CompareAssertions relates two assertion lines of a config, for comparing two versions of it. It
+// returns "equal" for the same assertion (spacing and quoting of a node name aside); "stronger" when
+// b is a different assertion that holds only where a holds, which only the approval form decides
+// ("every path to T passes approval >= K [of N] [excluding the requester]": b is stronger when it
+// names the same T and needs at least a's K, from a set no larger than a's N, and excludes the
+// requester wherever a does); "weaker" when both are of that form for the same T and b is not
+// stronger or equal, so a config could satisfy b and violate a; and "" otherwise (different forms or
+// targets, which the comparison cannot relate).
+func CompareAssertions(a, b string) string {
+	if strings.Join(strings.Fields(a), " ") == strings.Join(strings.Fields(b), " ") {
+		return "equal"
+	}
+	ga, okA := parseGateAssertion(a)
+	gb, okB := parseGateAssertion(b)
+	if !okA || !okB || ga.target != gb.target {
+		return ""
+	}
+	if ga == gb {
+		return "equal"
+	}
+	if gb.k >= ga.k && (ga.n == -1 || gb.n != -1 && gb.n <= ga.n) && (!ga.excl || gb.excl) {
+		return "stronger"
+	}
+	return "weaker"
+}
+
+// UngatedPath is a shortest path of node names from the entry to node that passes no approval gate,
+// or nil when every path to node passes one (or the entry cannot reach it): the evidence behind
+// Gated[node] being false.
+func (r ConfigReport) UngatedPath(node string) []string {
+	adj, entry := graphOf(r.Topology)
+	gate := map[string]bool{}
+	for _, n := range r.Topology.Nodes {
+		gate[n.Name] = n.Gate != nil
+	}
+	if gate[entry] {
+		return nil
+	}
+	return shortestPath(adj, []string{entry}, func(x string) bool { return x == node }, func(x string) bool { return gate[x] })
+}

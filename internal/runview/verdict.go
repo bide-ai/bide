@@ -256,6 +256,9 @@ func diffVerdict(v *DiffView) Verdict {
 	var d Verdict
 	n := len(v.Changes)
 	switch {
+	case len(v.Weakened) > 0 && len(v.weakKinds) == len(v.Weakened) && !slices.Contains(v.weakKinds, "gate"):
+		d = Verdict{Class: "bad", Word: "SAFETY CHECK WEAKENED", Icon: "halt", Line: "An effect is newly reachable without an approval gate, or an assertion was removed or loosened",
+			Details: v.Weakened}
 	case len(v.Weakened) > 0:
 		d = Verdict{Class: "bad", Word: "APPROVAL GATE WEAKENED", Icon: "halt", Line: "Approval policy weakened",
 			Details: v.Weakened}
@@ -275,7 +278,7 @@ func diffVerdict(v *DiffView) Verdict {
 	case v.OldDigest != "" && v.NewDigest != "":
 		digest = Stat{Value: "new", Label: "digest", Sub: "paused runs cannot resume", Class: "warn"}
 	}
-	gate := Stat{Value: "0", Label: "gates weakened", Sub: fmt.Sprintf("%d strengthened", len(v.Strengthened))}
+	gate := Stat{Value: "0", Label: "weakened", Sub: fmt.Sprintf("%d strengthened", len(v.Strengthened))}
 	if len(v.Weakened) > 0 {
 		gate.Value, gate.Class = fmt.Sprint(len(v.Weakened)), "bad"
 	}
