@@ -556,7 +556,7 @@ side-effect or safety-unknown node, a new one included) that is now reachable wi
 as a new arm around a gated node causes; a Switch condition changed beside an ungated effect (the
 predicates are not read, so it asks for a review); a block changed on an ungated effect node when
 checked without the Registry (the block's own gate is not visible); and an `assert` line removed or
-loosened. A node renamed with the same block, safety, gate and edges is `renamed`, not a weakening. See [Compare two versions of a
+loosened. A node renamed with the same block, safety and edges is `renamed`, not a removal and an addition; a gate that changed with it is reported on it. See [Compare two versions of a
 flow](run-viewer.md#compare-two-versions-of-a-flow).
 
 `Load` and `Validate` reject a block with no approvers, a `need` outside `1..len(approvers)`, or a

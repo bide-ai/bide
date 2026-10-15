@@ -21,10 +21,10 @@ func TestDiffRename(t *testing.T) {
 	var renamed []string
 	for _, c := range v.Changes {
 		if c.Change == "renamed" {
-			renamed = append(renamed, c.Node+" from "+c.Details[0])
+			renamed = append(renamed, c.Node+": "+c.Details[0])
 		}
 	}
-	if len(v.Weakened) != 0 || len(renamed) != 1 || !strings.HasPrefix(renamed[0], "receipt2 from receipt -> receipt2") {
+	if len(v.Weakened) != 0 || len(renamed) != 1 || renamed[0] != "receipt2: was receipt, with the same block, safety, gate and edges" {
 		t.Errorf("rename of a gated effect: weakened %q, renamed %q, changes %q", v.Weakened, renamed, lines(v.Changes))
 	}
 	// An ungated effect renamed: it was ungated before.
@@ -49,8 +49,28 @@ func TestDiffRename(t *testing.T) {
 		t.Errorf("gated node renamed: weakened %q", got)
 	}
 	nogate := strings.Replace(pay, `, "approval": {"need": 2, "approvers": ["ops", "finance", "risk"]}`, "", 1)
-	if got := weakenedOf(t, base, nogate); len(got) < 2 {
-		t.Errorf("renamed and ungated: weakened %q; want the gate and the effect behind it", got)
+	v = diffOf(t, base, nogate, nil, nil)
+	if len(v.Weakened) != 2 || !strings.HasPrefix(v.Weakened[0], "pay: approval 2 of 3: ops, finance, risk -> none") || !strings.HasPrefix(v.Weakened[1], "receipt: reachable without") {
+		t.Errorf("renamed and ungated: weakened %q; want the renamed node's gate and the effect behind it", v.Weakened)
+	}
+	var line string
+	for _, c := range v.Changes {
+		if c.Change == "renamed" {
+			line = c.String()
+		}
+	}
+	if line != "renamed node pay: was charge; approval 2 of 3: ops, finance, risk -> none (weakened)" {
+		t.Errorf("rename line = %q", line)
+	}
+	// Loosened with the rename: a renamed node, one change.
+	loose := strings.Replace(pay, `"need": 2`, `"need": 1`, 1)
+	if got := weakenedOf(t, base, loose); len(got) != 1 || got[0] != "pay: approval 2 of 3 -> 1 of 3" {
+		t.Errorf("renamed and loosened: %q", got)
+	}
+	// Renamed and tightened: a strengthening.
+	tight := strings.Replace(pay, `"need": 2`, `"need": 3`, 1)
+	if v := diffOf(t, base, tight, nil, nil); len(v.Weakened) != 0 || len(v.Strengthened) != 1 {
+		t.Errorf("renamed and tightened: %q, %q", v.Weakened, v.Strengthened)
 	}
 	// Two neighbours renamed at once pair up through each other.
 	both := rename(rename(base, "charge", "pay"), "receipt", "receipt2")
@@ -73,7 +93,7 @@ func TestDiffSwitchConditions(t *testing.T) {
 	}
 	arm := func(p, to string) string { return `{"pred": "` + p + `", "to": "` + to + `"}` }
 	got := weakenedOf(t, sw(arm("large", "charge"), "small"), sw(arm("tiny", "charge"), "small"))
-	if len(got) != 1 || !strings.HasPrefix(got[0], "validate: arm conditions changed (removed large>charge:false:false:0; when tiny -> charge) while another arm reaches an ungated effect (small)") {
+	if len(got) != 1 || !strings.HasPrefix(got[0], "validate: arm conditions changed (removed when large -> charge; when tiny -> charge) while another arm reaches an ungated effect (small)") {
 		t.Errorf("swapped condition: %q", got)
 	}
 	v := diffOf(t, sw(arm("large", "charge"), "small"), sw(arm("tiny", "charge"), "small"), nil, nil)

@@ -39,9 +39,10 @@ func ungatedWhy(n plan.ConfigReport, node string) string {
 }
 
 // renamedNodes pairs each node only the old topology has with a node only the new one has when they
-// are the same node under another name: the same block, kind, safety and gate, the same entry role,
-// and the same edges and Switch arms once the renamed nodes' names are mapped. A rename that also
-// changes any of those is not paired: it is judged on what changed. It returns old name -> new name.
+// are the same node under another name: the same block, kind and safety, the same entry role, and the
+// same edges and Switch arms once the renamed nodes' names are mapped. The gate may differ: the
+// caller reports it as the renamed node's gate change. A rename that also changes any of the rest is
+// not paired: it is judged on what changed. It returns old name -> new name.
 func renamedNodes(o, n plan.ConfigReport) map[string]string {
 	ot, nt := o.Topology, n.Topology
 	oldNode := map[string]plan.TopologyNode{}
@@ -88,7 +89,7 @@ func renamedNodes(o, n plan.ConfigReport) map[string]string {
 				continue
 			}
 			ro, an := oldNode[r], newNode[a]
-			if ro.Block != an.Block || ro.Kind != an.Kind || o.Safety[r] != n.Safety[a] || !gateEqual(ro.Gate, an.Gate) {
+			if ro.Block != an.Block || ro.Kind != an.Kind || o.Safety[r] != n.Safety[a] {
 				continue
 			}
 			if slices.Equal(incident(ot, r, blur(removedOnly)), incident(nt, a, blur(addedOnly))) {
@@ -147,13 +148,13 @@ func switchChanges(o, n plan.ConfigReport, ungated map[string]bool) []Change {
 	key := func(a plan.TopologyBranchArm) string {
 		return fmt.Sprintf("%s>%s:%t:%t:%d", a.Pred, a.Target, a.Else, a.LoopBack, a.LoopMax)
 	}
-	oldArms := map[string]map[string]bool{}
+	oldArms := map[string]map[string]plan.TopologyBranchArm{}
 	for _, b := range o.Topology.Branches {
 		if oldArms[b.Over] == nil {
-			oldArms[b.Over] = map[string]bool{}
+			oldArms[b.Over] = map[string]plan.TopologyBranchArm{}
 		}
 		for _, a := range b.Arms {
-			oldArms[b.Over][key(a)] = true
+			oldArms[b.Over][key(a)] = a
 		}
 	}
 	gate := map[string]bool{}
@@ -201,13 +202,13 @@ func switchChanges(o, n plan.ConfigReport, ungated map[string]bool) []Change {
 		var changed []string
 		for _, a := range b.Arms {
 			newKeys[key(a)] = true
-			if !old[key(a)] {
+			if _, ok := old[key(a)]; !ok {
 				changed = append(changed, armText(a))
 			}
 		}
-		for k := range old {
+		for k, a := range old {
 			if !newKeys[k] {
-				changed = append(changed, "removed "+k)
+				changed = append(changed, "removed "+armText(a))
 			}
 		}
 		if len(changed) == 0 {
@@ -216,7 +217,7 @@ func switchChanges(o, n plan.ConfigReport, ungated map[string]bool) []Change {
 		slices.Sort(changed)
 		var other []string
 		for _, a := range b.Arms {
-			if old[key(a)] {
+			if _, ok := old[key(a)]; ok {
 				other = append(other, reaches(a.Target)...)
 			}
 		}

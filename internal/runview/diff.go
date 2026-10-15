@@ -300,9 +300,20 @@ func diffChanges(o, n plan.ConfigReport, oldSafety, newSafety map[string]string)
 		newNode[x.Name] = true
 		was, ok := oldNode[x.Name]
 		if from, renamed := renRev[x.Name]; renamed {
-			c := Change{Change: "renamed", What: "node", Node: x.Name, Details: []string{from + " -> " + x.Name + ": the same block, safety, gate and edges"}}
+			c := Change{Change: "renamed", What: "node", Node: x.Name, Details: []string{"was " + from}}
+			old := oldNode[from]
+			if g := gateChange(old.Gate, x.Gate); g != "" {
+				// Renamed, and its gate changed with it.
+				c.Gate = g
+				if g == "weakened" {
+					c.Weakening = "gate"
+				}
+				c.Details = append(c.Details, gateMove(old.Gate, x.Gate)+" ("+g+")")
+			} else {
+				c.Details[0] += ", with the same block, safety, gate and edges"
+			}
 			// The node is the same, but a gate upstream of it may be gone.
-			if uNew[x.Name] && !uOld[from] {
+			if c.Gate == "" && uNew[x.Name] && !uOld[from] {
 				c.Gate, c.Weakening = "weakened", "path"
 				c.Details = append(c.Details, ungatedWhy(n, x.Name)+" (weakened)")
 			}

@@ -753,10 +753,11 @@ weakened):
   was raised to `side_effect` or dropped, and a node that is new (`new node, reachable without ...`):
   a new effect with no approval in front of it. A node that is read-only or idempotent, one already
   reachable ungated, one behind a gate, and one the entry cannot reach are not reported. A rename is
-  not a new node: a removed node and an added node with the same block, kind, safety and gate and the
-  same edges and Switch arms (under the new names) are one node, listed as `renamed`; one that also
-  changes any of those is judged on the change (a renamed node that lost its gate, or whose route
-  changed, is reported). A gate removed upstream of a renamed node is still reported for it.
+  not a new node: a removed node and an added node with the same block, kind and safety and the
+  same edges and Switch arms (under the new names) are one node, listed as `renamed`; a gate that
+  changed with the rename is reported on it (`renamed node pay: was charge; approval 2 of 3 -> 1 of 3
+  (weakened)`); one that also changes the block, safety or edges is judged on those changes (a
+  renamed node whose route changed is reported). A gate removed upstream of a renamed node is still reported for it.
 - **A Switch condition changed beside an ungated effect.** The check cannot read a predicate, so it
   cannot tell which inputs now take which arm. When a Switch gains, loses or changes an arm
   condition and another arm of it leads, without a gate, to an effect (a node reported above as

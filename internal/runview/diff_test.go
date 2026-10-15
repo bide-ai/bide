@@ -151,8 +151,8 @@ func TestDiffGates(t *testing.T) {
 	// A gated node removed takes its gate with it: weakened, as a rename of a gated node is.
 	gone := `{"version": 1, "flow": "f", "nodes": [{"name": "a", "block": "a"}, {"name": "pay2", "block": "pay"}], "wiring": [{"edge": ["a", "pay2"]}]}`
 	v := diffOf(t, withGate(g(2, "ops", "finance")), gone, nil, nil)
-	// pay2 is not pay renamed (it has no gate), so it is also a new ungated node that may have an effect.
-	if !slices.Equal(v.Weakened, []string{"pay2: new node, reachable without an approval gate (a -> pay2), not before; its safety is not known", "pay: approval 2 of 2: ops, finance -> none"}) {
+	// pay2 is pay renamed, without its gate: reported as the renamed node's gate removed.
+	if !slices.Equal(v.Weakened, []string{"pay2: approval 2 of 2: ops, finance -> none"}) {
 		t.Errorf("a removed gated node: weakened %q, changes %q", v.Weakened, lines(v.Changes))
 	}
 
