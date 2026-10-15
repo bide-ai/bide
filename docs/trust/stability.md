@@ -16,6 +16,55 @@ This page states what bide promises about versions today, derived from what the 
 - A change that alters a documented guarantee also updates [the guarantee](../GUARANTEE.md) and [known limitations](../KNOWN-LIMITATIONS.md) in the same pull request.
 - Security fixes use the `Security` section. Vulnerabilities are reported privately ([SECURITY.md](../../SECURITY.md)).
 
+## Package stability
+
+Every package of the published modules carries one of three labels. The labels are declared in one table in `internal/tools/apiref/labels.go`, and the [SDK API reference](../reference/api/index.md) is generated with them. A test fails when this table and that one differ, or when a package has no label.
+
+- **stable**: the library is built around the package and the guarantees rest on it. A change to its API is announced as **Breaking:** in the changelog; pre-1.0, a minor version may still make one.
+- **experimental**: new or still moving. It may change in any minor release, with a changelog entry but without a deprecation period.
+- **building block, not yet used by approval gates**: implemented and tested, but no approval gate calls it yet, so no guarantee rests on it. Its API may change before a gate uses it.
+
+Two groups of symbols are labelled apart from their package. In `audit`, the certificate verification core (`IdentityPolicy`, `CertIdentity`, `ApproverCert`, `CertError`, `SPKIHash`, the canonicalizer types) and, in `agent`, the `ReasonNoCert`, `ReasonCertChain`, `ReasonCertIdentity`, `ReasonCertUsage` and `ReasonCertWindow` reasons are a building block: the approval gates do not count certificate-bound decisions yet. The API reference marks each such symbol.
+
+| Package | Stability |
+|---|---|
+| `agent` | stable |
+| `agent/agenttest` | stable |
+| `agent/storetest` | stable |
+| `approvals` | stable |
+| `audit` | stable |
+| `audit/eventstoretest` | stable |
+| `audit/rfc3161` | building block, not yet used by approval gates |
+| `audit/verify` | stable |
+| `chaos` | experimental |
+| `codec/gcf` | stable |
+| `eval` | experimental |
+| `govern` | experimental |
+| `govern/eventlogtest` | experimental |
+| `govern/postgreslog` | experimental |
+| `govern/redislog` | experimental |
+| `govern/sqlitelog` | experimental |
+| `mcptools` | stable |
+| `middleware` | stable |
+| `model/anthropic` | stable |
+| `model/gemini` | stable |
+| `model/modeltest` | stable |
+| `model/openai` | stable |
+| `model/provider` | stable |
+| `notify` | stable |
+| `notify/relay` | experimental |
+| `plan` | experimental |
+| `plan/planview` | experimental |
+| `schema` | stable |
+| `signer/awskms` | stable |
+| `signer/azurekv` | stable |
+| `signer/gcpkms` | stable |
+| `signer/pkcs11` | stable |
+| `signer/pkcs11/pkcs11test` | stable |
+| `store/postgres` | stable |
+| `store/sqlite` | stable |
+| `trace` | stable |
+
 ## Journal and proof formats
 
 Formats carry their own version tags, and a reader refuses what it does not read rather than guessing.
