@@ -85,6 +85,12 @@ type IdentityPolicy struct {
 	RSA2048Until           time.Time
 	MaxLeafLifetime        time.Duration
 	RequireNameConstraints bool
+	// RequirePolicyOnCAs refuses a path in which an issuing CA carries no certificatePolicies
+	// extension (an anchor that does not issue the leaf directly is not required to). Without it a
+	// CA with no extension is unconstrained, so the bank's policy OID is only the leaf's assertion.
+	// Recommended: put certificatePolicies on the issuing CA, naming the approver policy, and set
+	// this. It is off by default only so that a policy can be adopted before the CA is reissued.
+	RequirePolicyOnCAs bool
 }
 
 const (
@@ -118,6 +124,7 @@ type CertIdentity struct {
 	rsa2048  time.Time
 	maxLife  time.Duration
 	needNC   bool
+	needPol  bool
 }
 
 // Compile validates the policy and fixes a copy of it. Every failure is an error wrapping
@@ -131,7 +138,7 @@ func (p IdentityPolicy) Compile() (*CertIdentity, error) {
 		inter: map[SPKIHash]bool{}, distrust: map[SPKIHash]time.Time{}, identity: map[string]string{},
 		kind: p.IDKind, eku: slices.Clone(p.EKU), emailEKU: p.AllowEmailProtectionEKU, policy: p.Policy,
 		canon: p.Canonical, maxChain: p.MaxChain, skew: p.Skew, grace: p.AnchorGrace, rsa2048: p.RSA2048Until,
-		maxLife: p.MaxLeafLifetime, needNC: p.RequireNameConstraints,
+		maxLife: p.MaxLeafLifetime, needNC: p.RequireNameConstraints, needPol: p.RequirePolicyOnCAs,
 	}
 	if !p.IDKind.valid() {
 		return cfgErr("identifier kind %q is not %q or %q", p.IDKind, IDPersonURI, IDEmail)
@@ -531,6 +538,9 @@ func (c *CertIdentity) checkPath(path []*x509.Certificate, a time.Time) error {
 		if err := c.caPermitsPolicy(cert, i, inhibitAny); err != nil {
 			return err
 		}
+		if c.needPol && len(cert.Policies) == 0 && (i < len(path)-1 || len(path) == 2) {
+			return certErr(agent.ReasonCertUsage, "CA certificate %d carries no certificatePolicies, which the policy requires of an issuing CA", i)
+		}
 	}
 	if c.needNC && !slices.ContainsFunc(path[1:], c.constrainsKind) {
 		return certErr(agent.ReasonCertChain, "no CA of the path carries a permitted-subtree name constraint for the %q identifier kind", c.kind)
@@ -542,7 +552,8 @@ func (c *CertIdentity) checkPath(path []*x509.Certificate, a time.Time) error {
 // states the policies it issues under and does not include the required one (or anyPolicy) cannot
 // issue a leaf that passes for it. A CA with no certificatePolicies extension is unconstrained.
 // Policy mappings are not processed (a mapped policy cannot be judged without the RFC 5280 policy
-// tree), so a CA that maps policies is refused rather than guessed at; inhibitAnyPolicy anywhere in
+// tree), so a CA that maps policies is refused rather than guessed at (this rules out cross-certified
+// hierarchies that map policies between their domains); inhibitAnyPolicy anywhere in
 // the path withdraws the anyPolicy allowance.
 func (c *CertIdentity) caPermitsPolicy(ca *x509.Certificate, i int, inhibitAny bool) error {
 	if len(ca.PolicyMappings) > 0 {

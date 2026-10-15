@@ -1316,3 +1316,72 @@ func withNC(p audit.IdentityPolicy) audit.IdentityPolicy {
 	p.RequireNameConstraints = true
 	return p
 }
+
+// RequirePolicyOnCAs: an issuing CA that states no certificate policies is refused, so the policy
+// restriction is a statement of the CA and not only an assertion on the leaf.
+func TestRequirePolicyOnCAs(t *testing.T) {
+	withPol := func(c *x509.Certificate) { c.Policies = []x509.OID{testca.PolicyOID} }
+	check := func(name string, root, inter func(*x509.Certificate), want bool) {
+		t.Helper()
+		r := testca.NewRoot(t, "root", testca.Opts{Mutate: root})
+		i := r.NewIntermediate(t, "inter", testca.Opts{Mutate: inter})
+		f := &fixture{root: r, inter: i}
+		p := f.policy()
+		p.RequirePolicyOnCAs = true
+		_, err := verifyAs(mustCompile(t, p), "alice", i.NewLeaf(t, testca.Opts{}))
+		if want && err != nil {
+			t.Fatalf("%s: %v", name, err)
+		}
+		if !want {
+			if err == nil {
+				t.Fatalf("%s: accepted", name)
+			}
+			wantReason(t, err, agent.ReasonCertUsage)
+		}
+	}
+	check("intermediate states the policy", nil, withPol, true)
+	check("intermediate states policies and the root does not", nil, withPol, true) // roots are not required to
+	check("intermediate states no policies", nil, nil, false)
+	check("root states a policy, intermediate does not", withPol, nil, false)
+
+	// Off by default.
+	f := newFixture(t)
+	if _, err := verifyAs(mustCompile(t, f.policy()), "alice", f.leaf(t, nil)); err != nil {
+		t.Fatalf("default: %v", err)
+	}
+	// A leaf issued directly by the anchor: the anchor is the issuing CA and must state policies.
+	r := testca.NewRoot(t, "root", testca.Opts{})
+	p := (&fixture{root: r, inter: r.NewIntermediate(t, "unused", testca.Opts{})}).policy()
+	p.Inter = nil
+	p.RequirePolicyOnCAs = true
+	_, err := verifyAs(mustCompile(t, p), "alice", r.NewLeaf(t, testca.Opts{}))
+	wantReason(t, err, agent.ReasonCertUsage)
+	rp := testca.NewRoot(t, "root p", testca.Opts{Mutate: withPol})
+	p.Anchors = []*x509.Certificate{rp.Cert}
+	if _, err := verifyAs(mustCompile(t, p), "alice", rp.NewLeaf(t, testca.Opts{})); err != nil {
+		t.Fatalf("anchor that issues the leaf states the policy: %v", err)
+	}
+}
+
+// RequireNameConstraints for the email kind needs an email constraint, not a URI one.
+func TestRequireNameConstraintsEmailKind(t *testing.T) {
+	root := testca.NewRoot(t, "root", testca.Opts{})
+	mail := func(c *x509.Certificate) { c.URIs = nil; c.EmailAddresses = []string{"alice@bank.example"} }
+	uriOnly := root.NewIntermediate(t, "uri", testca.Opts{Mutate: func(c *x509.Certificate) { c.PermittedURIDomains = []string{"idp.bank.example"} }})
+	emailOnly := root.NewIntermediate(t, "mail", testca.Opts{Mutate: func(c *x509.Certificate) { c.PermittedEmailAddresses = []string{"bank.example"} }})
+	for name, tc := range map[string]struct {
+		inter *testca.CA
+		ok    bool
+	}{"email constraint": {emailOnly, true}, "uri constraint only": {uriOnly, false}} {
+		f := &fixture{root: root, inter: tc.inter}
+		p := emailPolicy(f)
+		p.RequireNameConstraints = true
+		_, err := verifyAs(mustCompile(t, p), "alice", tc.inter.NewLeaf(t, testca.Opts{Mutate: mail}))
+		if tc.ok && err != nil {
+			t.Fatalf("%s: %v", name, err)
+		}
+		if !tc.ok {
+			wantReason(t, err, agent.ReasonCertChain)
+		}
+	}
+}

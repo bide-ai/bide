@@ -1147,7 +1147,13 @@ pattern is matched against the whole path; `Distrust` must name a configured key
 key usage is exactly the required OID (or exactly `emailProtection` in dedicated-CA mode) and its key
 usage is digital signature, optionally with content commitment, and nothing else; `MaxLeafLifetime`
 (default 24 hours, at most 31 days) and ceilings of 10 minutes on `Skew` and `AnchorGrace`; and an
-optional `RequireNameConstraints`.
+optional `RequireNameConstraints`. A CA with no `certificatePolicies` extension is unconstrained by default,
+which leaves the bank's policy OID as only the leaf's assertion; `RequirePolicyOnCAs` refuses such an
+issuing CA (an anchor that does not issue the leaf itself is exempt). Banks should put
+`certificatePolicies` naming the approver policy on the issuing CA and set it; it is off by default only
+so that the policy can be adopted before the CA is reissued. Refusing `policyMappings` rules out
+cross-certified hierarchies that map policies between their domains: such a hierarchy needs a separate
+approver CA outside the mapping, or a later step that implements the RFC 5280 policy tree.
 
 Every step updates the guides it touches. The approvals guide states the post-quantum gap (decision 15: a
 certificate-bound approver gives up the hybrid scheme's protection) where it first describes
