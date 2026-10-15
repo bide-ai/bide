@@ -321,6 +321,9 @@ func markGates(g *Graph, gates []Gate) {
 			continue
 		}
 		n.GateStatus = gt.Status
+		if gt.Due != "" {
+			n.GateStatus += "; " + gt.Due
+		}
 		n.GateLine, n.GateClass, n.SigLine = gateLines(gt)
 	}
 	g.SVG = svg(g)
@@ -344,7 +347,7 @@ func gateLines(gt Gate) (line, class, sig string) {
 	switch state {
 	case "approved":
 		class = "good"
-	case "denied", "closed, not approved":
+	case "denied", "closed, not approved", "expired":
 		class = "bad"
 	}
 	switch {

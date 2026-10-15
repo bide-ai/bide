@@ -64,8 +64,9 @@ With no -run the page opens on the run list: each run's kind, state (completed, 
 unknown, waiting for approval, in progress, aborted or cancelled), when it started (as its
 run:start records it; none for a run an earlier version journaled) and its record count, newest
 first, filtered by state, kind and run ID. Its headline links to the Needs attention list (/attention):
-every run waiting for approval, halted with an unknown outcome or aborted, newest first, with the gate's
-approvers and the ResolveHalt call, and, from -db or -postgres, whether the notifier told someone and
+every run waiting for approval, halted with an unknown outcome or aborted, with the gate's
+approvers and its deadline (gates with a deadline come first, the nearest first, and one due within
+the hour is flagged; the rest are newest first) and the ResolveHalt call, and, from -db or -postgres, whether the notifier told someone and
 the sink acknowledged it (the notification trail in the same database). The run list and that list are
 built at most once every 2 seconds, so a page that reloads itself costs the store little. A
 bide approve command shown there is quoted for a POSIX shell, also for a Windows -db path.
@@ -85,8 +86,10 @@ message" for an edge or arm), a violated assertion among them.
 
 With -diff it compares the -config flow with an earlier version of it: the page draws the new flow
 with added nodes and edges in green, removed ones as dashed red ghosts and changed nodes in amber,
-and calls out an approval gate whose policy was weakened (removed, its need lowered, or an approver
-added without raising the need). -diff takes a file, or, when no file has that name, a git
+and calls out an approval gate whose policy was weakened (removed, its need lowered, an approver
+added without raising the need, exclude_principal dropped, or its timeout removed or lengthened);
+a gate made stricter (including a timeout added or shortened, which makes it fail closed sooner)
+is marked strengthened. -diff takes a file, or, when no file has that name, a git
 revision read with git show: <rev>:<path>, or a bare <rev> for the -config file's path at that
 revision. With -check it serves nothing and prints one line per change and a summary line.
 

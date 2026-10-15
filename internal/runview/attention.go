@@ -18,7 +18,7 @@ import (
 )
 
 // AttentionList is the Needs attention page: every unfinished run that needs a person, and every
-// aborted run, newest first. It is built from each run's journal alone (the same View the run page
+// aborted run: gates with a deadline first, the nearest first, then the rest newest first. It is built from each run's journal alone (the same View the run page
 // shows), plus, when Options.Events is given, the run's notification trail. A load reads the runs
 // that have no run:complete marker (a store lists them in its query), so it reads no finished run
 // and has no cap.
@@ -97,6 +97,25 @@ type AttentionGate struct {
 	Pending    []string `json:"pending,omitempty"`
 	Reapproval bool     `json:"reapproval,omitempty"`
 	Status     string   `json:"status"` // the run page's gate status
+	// ExpiresAt is the gate's recorded deadline, empty for a gate with none. Due says where it stands
+	// on the list's clock (Gate.Due), DueSoon that it falls within dueSoonWindow (or has passed), and
+	// Overdue that it has passed with no expiry recorded: the gate refuses decisions, and the run
+	// records the expiry when it is next driven.
+	ExpiresAt string `json:"expires_at,omitempty"`
+	Due       string `json:"due,omitempty"`
+	DueSoon   bool   `json:"due_soon,omitempty"`
+	Overdue   bool   `json:"overdue,omitempty"`
+}
+
+// dueSoonWindow is how close to its deadline a waiting gate is flagged on the Needs attention list.
+const dueSoonWindow = time.Hour
+
+// deadline is when the item's gate expires, zero for an item without a deadline.
+func (i AttentionItem) deadline() time.Time {
+	if i.Gate == nil {
+		return time.Time{}
+	}
+	return parseTime(i.Gate.ExpiresAt)
 }
 
 // Notify states, in the order a delivery goes through them.
@@ -152,12 +171,12 @@ func (l AttentionList) Verdict() Verdict {
 		if len(itemsByKind(l.Items, AttentionApproval)) < n {
 			cls, icon = "bad", "halt"
 		}
-		d = Verdict{Class: cls, Status: StatusAttention, Word: strconv.Itoa(n) + " NEED" + map[bool]string{true: "S", false: ""}[n == 1] + " A PERSON", Icon: icon, Line: "Newest first. Each item says what to do."}
+		d = Verdict{Class: cls, Status: StatusAttention, Word: strconv.Itoa(n) + " NEED" + map[bool]string{true: "S", false: ""}[n == 1] + " A PERSON", Icon: icon, Line: "Gates with a deadline first, then newest first. Each item says what to do."}
 		if g := l.Gap(); g != "" {
 			d.Details = append(d.Details, "Not everything was read: "+g)
 		}
 	}
-	d.Stats = []Stat{{Value: strconv.Itoa(n), Label: "to do", Sub: "newest first", Class: map[bool]string{true: "bad", false: ""}[n > 0]}}
+	d.Stats = []Stat{{Value: strconv.Itoa(n), Label: "to do", Sub: "by deadline, then newest", Class: map[bool]string{true: "bad", false: ""}[n > 0]}}
 	for _, k := range []struct{ kind, label string }{{AttentionApproval, "waiting for approval"}, {AttentionHalt, "halted"}, {AttentionAborted, "aborted"}, {AttentionRecovery, "recovery failing"}} {
 		if c := len(itemsByKind(l.Items, k.kind)); c > 0 || k.kind != AttentionRecovery || l.Trail {
 			d.Stats = append(d.Stats, Stat{Value: strconv.Itoa(c), Label: k.label})
@@ -176,10 +195,7 @@ const noApproveNote = "No approve command: this viewer does not know the journal
 
 // attention reads the unfinished runs and lists those that need a person.
 func (o Options) attention(ctx context.Context) AttentionList {
-	now := time.Now()
-	if o.Now != nil {
-		now = o.Now()
-	}
+	now := o.now()
 	l := AttentionList{Now: now.UTC(), Items: []AttentionItem{}}
 	l.Coverage = Coverage{Listable: canList(o.Source), Trail: o.Events != nil}
 	_, l.Live = o.Source.(Follower)
@@ -265,7 +281,19 @@ func (o Options) attention(ctx context.Context) AttentionList {
 	if o.ApproveCommand == nil && len(itemsByKind(l.Items, AttentionApproval)) > 0 {
 		l.Notes = append(l.Notes, noApproveNote)
 	}
+	// Gates with a deadline come first, the nearest deadline first (a passed one before the rest);
+	// everything else is newest first.
 	slices.SortStableFunc(l.Items, func(a, b AttentionItem) int {
+		switch da, db := a.deadline(), b.deadline(); {
+		case !da.IsZero() && !db.IsZero():
+			if c := da.Compare(db); c != 0 {
+				return c
+			}
+		case !da.IsZero():
+			return -1
+		case !db.IsZero():
+			return 1
+		}
 		if c := b.Since.Compare(a.Since); c != 0 {
 			return c
 		}
@@ -307,14 +335,27 @@ func (o Options) runItems(v *View, recs []agent.Record) []AttentionItem {
 	// A run with its end marker has no approval to give, whatever its gates still say (a run
 	// cancelled at a gate keeps the gate's pause record).
 	over := ended(v.State)
-	for _, g := range v.Gates {
+	now := o.now()
+	gates := slices.Clone(v.Gates)
+	markDeadlines(gates, now)
+	for _, g := range gates {
 		if !g.Waiting || over {
 			continue
 		}
 		it := AttentionItem{Kind: AttentionApproval, KindText: "waiting for approval", RunID: v.RunID, Call: g.ToolUseID, Tool: g.ToolName,
 			Since: cmp.Or(parseTime(g.AskedAt), started), Gate: &AttentionGate{Single: g.Single, Need: g.Need, Of: len(g.Approvers), Approvers: g.Approvers,
-				ApprovedBy: g.ApprovedBy, DeniedBy: g.DeniedBy, Pending: g.Pending, Reapproval: g.Reapproval, Status: g.Status}}
+				ApprovedBy: g.ApprovedBy, DeniedBy: g.DeniedBy, Pending: g.Pending, Reapproval: g.Reapproval, Status: g.Status,
+				ExpiresAt: g.ExpiresAt, Due: g.Due, Overdue: g.Overdue}}
 		it.Summary = "Approval for " + cmp.Or(g.ToolName, g.ToolUseID) + " is waiting."
+		if at := parseTime(g.ExpiresAt); !at.IsZero() {
+			it.Gate.DueSoon = at.Sub(now) <= dueSoonWindow
+		}
+		if g.Overdue {
+			// The gate refuses decisions, so there is no command to write.
+			it.Summary = "The deadline of the approval for " + cmp.Or(g.ToolName, g.ToolUseID) + " passed with no decision; the run records the expiry when it is next driven."
+			out = append(out, it)
+			continue
+		}
 		if o.ApproveCommand != nil {
 			cmd, err := o.ApproveCommand(v.RunID, g.ToolUseID, g.Single)
 			switch {
