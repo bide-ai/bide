@@ -112,7 +112,7 @@ function renderCall() {
   text('call-args', prettyArgs(shown.args));
   text('call-digest', shown.subject.argsHex);
   text('call-reason', f.reason ? safeText(f.reason) : '');
-  $('call-reason').hidden = !f.reason;
+  $('call-reason').hidden = $('call-reason-label').hidden = !f.reason;
   $('call-panel').hidden = false;
   const box = $('call-args');
   scrolledToEnd = box.scrollHeight <= box.clientHeight + 2;
