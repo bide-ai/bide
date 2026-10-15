@@ -98,14 +98,8 @@ jobs:
                 [ -d "spec/tla/$m" ] && echo "$m"; done | tr '\n' ' ' | sed 's/ $//')
               # A model whose configurations name a changed model in a LIBRARY line (model 14's
               # composition with model 10) reads that model's modules, so it is checked too.
-              for d in spec/tla/*/; do
-                d=$(basename "$d")
-                for m in $models; do
-                  if grep -qsE "^.. LIBRARY:( [^ ]+)* $m( |\$)" spec/tla/"$d"/*.cfg spec/tla/"$d"/*/*.cfg; then
-                    models="$models $d"
-                  fi
-                done
-              done
+              # shellcheck disable=SC2086 # models is a list
+              [ -z "$models" ] || models="$models $(.github/scripts/model-libraries.sh $models)"
               models=$(echo $models | tr ' ' '\n' | sort -u | tr '\n' ' ' | sed 's/ $//')
               if [ -z "$models" ]; then
                 run=false
@@ -125,6 +119,7 @@ jobs:
       - name: Every configuration is in exactly one shard
         run: |
           .github/scripts/shards.sh --self-test
+          .github/scripts/model-libraries.sh --self-test
           SHARDS="$MODEL_SHARDS" .github/scripts/shards.sh check-models .
       # The shards holding a changed model (every shard when no model is named).
       - id: shards

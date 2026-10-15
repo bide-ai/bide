@@ -194,10 +194,13 @@ jobs:
           # test shard; the self-test proves a missing, doubled or unknown entry fails.
           .github/scripts/shards.sh --self-test
           SHARDS="$TEST_SHARDS" .github/scripts/shards.sh check-packages
-          # Every package whose tests build or run another program is in the list of tests that
-          # always run, as the test cache cannot see that program change.
+          # Every test file that starts a process is in a package of the list of tests that always
+          # run, or in the list of those whose result depends only on the test binary.
           .github/scripts/check-uncached.sh --self-test
           .github/scripts/check-uncached.sh
+          # The docs-only test (changed-code.sh) is what lets a pull request or a queue batch skip
+          # the Go jobs: its cases include the documents the Go tests read.
+          .github/scripts/changed-code.sh --self-test
       - name: Every module is published or repo-only
         if: needs.changes.outputs.code != 'false'
         run: |

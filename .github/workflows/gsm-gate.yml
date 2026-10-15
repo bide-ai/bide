@@ -37,24 +37,17 @@ jobs:
       # On a pull request the gate runs only when the change can alter what a bide program makes
       # (changed-code.sh --gsm: code, less CI scripts, other workflows and tool configuration), or
       # the pull request has the full-ci label. Otherwise the rest of the job is skipped and the job
-      # still reports, so the required check passes. Pushes to main always run it, the merge queue
-      # unless the batch changes only documentation, and so does any doubt (the file list or the labels cannot be read).
+      # still reports, so the required check passes. Pushes to main and the merge queue always run it
+      # (it is the only check of the @doc rules before main, even for a documentation-only batch),
+      # and so does any doubt (the file list or the labels cannot be read).
       - id: changes
         name: Does the change need the gate?
         env:
           GH_TOKEN: ${{ github.token }}
           EVENT: ${{ github.event_name }}
           PR: ${{ github.event.pull_request.number }}
-          MQ_BASE: ${{ github.event.merge_group.base_sha }}
-          MQ_HEAD: ${{ github.event.merge_group.head_sha }}
         run: |
           code=true
-          # A merge queue batch that changes only documentation (changed-code.sh, the same test as
-          # ci.yml's Changes job) skips the gate; any other batch runs it, as does a failed lookup.
-          if [ "$EVENT" = merge_group ] && files=$(gh api --paginate "repos/$GITHUB_REPOSITORY/compare/$MQ_BASE...$MQ_HEAD" --jq '.files[].filename') && [ -n "$files" ]; then
-            echo "Changed files in the batch:"; echo "$files"
-            echo "$files" | .github/scripts/changed-code.sh >/dev/null || code=false
-          fi
           if [ "$EVENT" = pull_request ] && files=$(gh api --paginate "repos/$GITHUB_REPOSITORY/pulls/$PR/files" --jq '.[].filename') && [ -n "$files" ] && labels=$(gh api "repos/$GITHUB_REPOSITORY/pulls/$PR" --jq '[.labels[].name] | join(",")'); then
             echo "Changed files:"; echo "$files"
             case ",$labels," in
