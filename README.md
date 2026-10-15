@@ -244,6 +244,9 @@ record. The gate and the notice are recorded on the same audited trail as the re
 - **Separation of duties.** With `ExcludePrincipal`, a gate never counts a decision by the run's
   requester or by a requester of any run above it; the excluded decision stays on the record, marked.
   Bide compares ids; it cannot see that one person holds two identities.
+- **Deadlines.** With `Timeout`, a gate that gets no approval in time expires: the expiry is recorded
+  as the gate's outcome, the call never runs, a late decision never counts, and the notifier says so
+  (`approval_expired`). See [Deadlines](docs/guides/hitl-approval.md#deadlines).
 - **Keys outside the application.** Audit-log and approver signing keys can live in a PKCS#11 HSM,
   AWS KMS, Google Cloud KMS or Azure Key Vault behind one `audit.Signer` interface, in
   Ed25519 or ECDSA P-256. Verifiers hold only the public key. This is key custody, not a
@@ -309,7 +312,7 @@ the approver's claim.
 
 **Guides: inspect**
 
-- **[Run viewer](docs/guides/run-viewer.md)**: `bide view`, a read-only local page for a journal's runs (a run list filtered by state, kind and ID, and a Needs attention list of every run waiting for a person, with whether it was notified and acknowledged) and for one run (the timeline, a flow's path, halts, approval gates and the audit verdict, following a run in progress), `bide view -config` for a flow config (a risk map of each node's crash behavior, and policy assertions such as `every path to charge passes approval >= 2 of 3`, a violation drawn as a counterexample path), and `bide check` for its problems and assertions in CI, as text, with `-diff` to compare two versions of a flow and flag a weakened approval gate.
+- **[Run viewer](docs/guides/run-viewer.md)**: `bide view`, a read-only local page for a journal's runs (a run list filtered by state, kind and ID, and a Needs attention list of every run waiting for a person, nearest approval deadline first, with whether it was notified and acknowledged) and for one run (the timeline, a flow's path, halts, approval gates and the audit verdict, following a run in progress), `bide view -config` for a flow config (a risk map of each node's crash behavior, and policy assertions such as `every path to charge passes approval >= 2 of 3`, a violation drawn as a counterexample path), and `bide check` for its problems and assertions in CI, as text, with `-diff` to compare two versions of a flow and flag a weakened approval gate (including a dropped `exclude_principal` or a removed or longer `timeout`).
 - **[Debugging and recovery](docs/guides/debugging.md)**: `Replay`, `ReplayEvents`, Mermaid run diagrams, and `Recover`.
 
 **Guides: prove and govern**

@@ -251,8 +251,10 @@ is the run's end.
 ## Approval and quorum
 
 **Approvers are a fixed, named set.** An m-of-n approval gate names its approvers up front. There are
-no weighted votes, role rules (such as "at least one from risk"), delegated approval, or deadline for
-a gate that never reaches k. bide checks signatures against the keys you provide; linking a key to a
+no weighted votes, role rules (such as "at least one from risk"), or delegated approval. A gate
+that never reaches k waits until its deadline (`ApprovalPolicy.Timeout`), and with none until the
+run is cancelled; a deadline is checked against the clocks of the processes involved, so clock skew
+moves its edge. bide checks signatures against the keys you provide; linking a key to a
 person is your identity provider's job. It refuses two approvers whose verifiers resolve to one key,
 but it cannot see that one person holds two different keys. Keep old public keys after a rotation so old evidence still
 verifies. See [Human approval](guides/hitl-approval.md#scope).
@@ -414,6 +416,32 @@ halves are the concrete `Ed25519Signer` and `MLDSASigner` types that hold their 
 HSM or cloud KMS signs ML-DSA yet. A buyer who needs both a hardware-held key and post-quantum
 protection has to choose one for now. ECDSA P-256 signatures are randomized, so signing one tree
 head twice gives two different valid signatures (ed25519 and ML-DSA give the same bytes).
+
+**The RFC 3161 token verifier reads a narrow profile and refuses everything else.** `audit/rfc3161`
+(standard library only) accepts a DER token with one `SignerInfo`, SHA-256 or better, ECDSA P-256 or
+P-384, RSA of 3072 bits or more (2048 only through `Policy.RSA2048Until`) or Ed25519, and the signed
+attributes `contentType`, `messageDigest` and `signingCertificateV2`. It is a component: no command or
+gate calls it yet. A token that binds its signer only through the SHA-1 `signingCertificate` attribute
+is refused with `signing-certificate-v1-only` unless the policy opts in for that TSA's key
+(`Policy.AllowESSV1`, off by default, per TSA); a result that relied on the opt-in has
+`Result.ESSV1` set and a verdict should show it. A token that uses SHA-1 as its CMS digest algorithm
+is refused with `weak-hash` whatever the policy says. **Of ten public TSA endpoints tried on
+2026-10-15, six produce tokens that verify by default (DigiCert, GlobalSign, QuoVadis, SSL.com,
+Microsoft, SwissSign), three verify only with the opt-in (Sectigo, Entrust, whose endpoint returned
+tokens signed by Sectigo's TSA, and FreeTSA) and one cannot be used (Apple: SHA-1 digest algorithm).**
+Also refused: SHA-3 and SHA-224 hashes, ECDSA P-521, `crls` and attribute certificates, a token
+that carries any certificate Go's parser rejects even when unused, a SHA-256 default spelled out in
+`ESSCertIDv2`, and an accuracy above `Policy.MaxAccuracy` (one second by default). The stated accuracy
+widens the window in which genTime may precede the stamped head, which is why it is capped, and the
+latest the token proves is `Result.Latest()`, not `GenTime`. The TSA certificate path is judged at the
+token's own `genTime`, which the holder of a retired or compromised TSA key chooses: bound that with
+`Policy.DistrustAfter`, a status function that checks every non-anchor certificate as of `genTime`
+(`Policy.CertStatus` is mandatory; `rfc3161.StatusUnknown` is the fail-closed placeholder; the package
+fetches no CRL or OCSP response), and, for long-term evidence, renewal by an archive timestamp.
+The time bounds use the caller's clocks (the head's, and `Expected.Now` for a live gate), so a log
+clock running ahead refuses a genuine token. The verifier takes the token, not the `TimeStampResp`:
+the caller checks the `PKIStatus`. OpenSSL accepts more than the profile does; the cases are listed
+in `audit/rfc3161/openssl_test.go` (`opensslAccepts`). The reverse also holds once: a parseable but corrupted certificate in the token that the path does not use is ignored here and rejected by OpenSSL. Tokens that differ only in such certificates attest the same thing but are different byte strings; `rfc3161.Normalize` strips them, and anything keyed on token bytes should use its output.
 
 **Evidence sealed before format v6 keeps its older seal.** A `bide.audit.evidence.v5` package, whose
 seal covers the whole package JSON, still verifies (`bide audit verify-evidence` notes the format),

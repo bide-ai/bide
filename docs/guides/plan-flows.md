@@ -101,7 +101,8 @@ out, err := flow.Run(ctx, journal, runID, order)           // Order in, Receipt 
 - **`Run(ctx, store, runID, in)`** drives the flow sequentially on the runtime and returns the typed
   output. It adds no executor.
 - **`RenderMermaid()`** renders the *declared* topology (contrast `agent.RenderMermaid`, which renders
-  the *actual-ran* path from the journal).
+  the *actual-ran* path from the journal). A gated node's label carries its gate:
+  `approval: 2 of 3 (ops, finance, risk), excluding the requester, times out after 24h`.
 - **`Conform(ctx, store, runID)`** checks a run's journal against the declared topology and returns
   whether it followed the graph (`ok`), the divergences, and an error.
 
@@ -245,15 +246,22 @@ out, err := flow.Run(ctx, j, runID, in) // runs the node once 2 of 3 have approv
   `agent.SubmitDecision` refuse (`ErrConfig`) a decision on a node key whose gate has recorded no
   request yet; in a loop, each iteration's key gets its request when that iteration reaches the gate.
   (This applies to a flow's runs; an agent's tool call keeps its rules whatever its ID looks like.)
-  A decision written into the journal before the request by other means never counts and keeps its
-  name: the approver's identical decision afterwards is not recorded, and `Approve` or
-  `SubmitDecision` returns `ErrConfig` saying so. For a `SingleApproval` gate that blocks the gate
-  (cancel the run with `agent.Cancel`). For an m-of-n gate the approver signs again at a new time
-  (a new `DecidedAt`): that is a new decision, recorded after the request, and it counts. A
+  A decision written into the journal before the request by other means never counts. For a
+  `SingleApproval` gate it holds the decision's first name, so `Approve` records the real decision
+  under the gate's second name, which the gate honours: the stale record does not block the gate.
+  For an m-of-n gate the approver signs again at a new time (a new `DecidedAt`): that is a new
+  decision, recorded after the request, and it counts; resubmitting the identical stale decision
+  returns `ErrConfig` saying so. A
   `SingleApproval` gate is decided with `agent.Approve(ctx, j, pend.RunID, pend.ToolUseID, ok)`.
 - **A denial stops the run.** A gate whose quorum can no longer be reached (or an `Approve(false)`)
   never runs the node: `Run` returns an error wrapping `plan.ErrApprovalDenied`, and so does every
   later drive. Nothing is compensated (flows have no saga); `agent.Cancel` ends the run.
+- **A deadline stops the wait.** A gate with a timeout (`ApprovalPolicy.Timeout`, or `timeout:
+  48h` in a config `approval` block) that has no approval by its deadline expires: `Run` returns
+  `plan.ErrApprovalExpired` (which wraps `plan.ErrApprovalDenied`), the node never runs, and every
+  later drive returns the same. The deadline is measured from the gate's recorded request and
+  recorded once (`approval-deadline:<node key>`); in a loop each iteration has its own. See
+  [Human approval](hitl-approval.md#deadlines).
 - **A pause survives a crash.** Every fact the gate uses is in the journal; decisions recorded while
   no process runs the flow are counted by the next `Run`, and a gate that passed is never asked again.
 - **In a loop, the gate is per iteration.** Each iteration's run of a gated node pauses for its own
@@ -538,6 +546,12 @@ duties](hitl-approval.md#separation-of-duties): the gate then never counts the r
 (`approval: {need: 2, approvers: [ops, finance, risk], exclude_principal: true}`). It is part of the
 gate, so the flow's digest commits to it, and `bide view -config -diff` reports dropping it as a
 weakened gate.
+
+`bide view -config` and `RenderMermaid` show both settings on the gate (`excluding the requester`,
+`times out after 24h`), and `bide check -diff` compares them: dropping `exclude_principal`, or
+removing or lengthening `timeout`, is a weakened gate (a run can wait longer, and a decision after
+the old deadline counts), and adding the exclusion or adding or shortening a timeout is a
+strengthened one.
 
 `Load` and `Validate` reject a block with no approvers, a `need` outside `1..len(approvers)`, or a
 duplicate approver id (or two that differ only by case), or an id that is not printable ASCII, naming the node.

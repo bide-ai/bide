@@ -16,8 +16,8 @@ import (
 )
 
 // A decision recorded before the request (by a writer the API no longer allows, e.g. a run
-// journaled before the fix) must not leave the gate undecidable: after the pause, Approve must
-// take effect, or refuse loudly.
+// journaled before the fix) must not leave the gate undecidable: after the pause, Approve takes
+// effect.
 func TestRev201_StaleSingleDecisionBlocksGate(t *testing.T) {
 	ctx := context.Background()
 	j := agenttest.MemJournal()
@@ -34,8 +34,28 @@ func TestRev201_StaleSingleDecisionBlocksGate(t *testing.T) {
 	if aerr == nil && refunds == 0 {
 		t.Fatalf("Approve returned nil but the gate stays paused forever")
 	}
-	if !errors.Is(aerr, agent.ErrConfig) || !strings.Contains(aerr.Error(), "recorded before the gate's request") || refunds != 0 {
-		t.Fatalf("Approve after a stale decision = %v (refunds %d); want ErrConfig naming it, and the node not run", aerr, refunds)
+	// The stale record never counts and no longer blocks: Approve records the real decision under
+	// the gate's second name, and the node runs on it once.
+	if aerr != nil || err != nil || refunds != 1 {
+		t.Fatalf("Approve after a stale decision = %v, Run = %v (refunds %d); want the decision recorded and the node run once", aerr, err, refunds)
+	}
+}
+
+// The same with a denial: the stale approval does not stand in for it.
+func TestRev201_StaleSingleDecisionThenDenial(t *testing.T) {
+	ctx := context.Background()
+	j := agenttest.MemJournal()
+	refunds := 0
+	f := refundFlow(t, agent.SingleApproval(), nil, &refunds)
+	if _, err := journaltest.Put(ctx, j, "r1", "approval:node%3Arefund", agent.Record{Kind: agent.StepApproval, ToolUseID: "node:refund", Approved: true}); err != nil {
+		t.Fatal(err)
+	}
+	asPending(t, func() error { _, err := f.Run(ctx, j, "r1", "order-42"); return err }())
+	if err := agent.Approve(ctx, j, "r1", "node:refund", false); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := f.Run(ctx, j, "r1", "order-42"); !errors.Is(err, ErrApprovalDenied) || refunds != 0 {
+		t.Fatalf("Run after a denial over a stale approval = %v (refunds %d); want ErrApprovalDenied", err, refunds)
 	}
 }
 

@@ -131,6 +131,10 @@ func cards(g Gate, p *Proof) []ApproverCard {
 			c.State = "denied"
 		default:
 			c.State = "pending"
+			// A decision written after the gate's expiry: on record, but the expiry was the outcome.
+			if i := slices.IndexFunc(g.Decisions, func(d Decision) bool { return d.Approver == n && d.Note != "" }); i >= 0 {
+				c.Why = g.Decisions[i].Note
+			}
 		}
 		if c.State != "pending" {
 			t, ok, many := decisionTime(g, chk, headAt, n, c.State == "approved")

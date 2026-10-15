@@ -17,6 +17,7 @@ import (
 	"time"
 
 	"github.com/bide-ai/bide/agent"
+	"github.com/bide-ai/bide/plan"
 )
 
 // View is everything the run page shows, built from the run's records alone (see Build).
@@ -155,6 +156,20 @@ type Gate struct {
 	ExcludePrincipal bool     `json:"exclude_principal,omitempty"`
 	Requesters       []string `json:"requesters,omitempty"`
 	Excluded         []string `json:"excluded,omitempty"`
+	// ExpiresAt is the gate's recorded deadline (agent.ApprovalDeadline), in the journal's timestamp
+	// form, and Timeout the timeout it was opened with ("24h"); both empty for a gate with none.
+	ExpiresAt string `json:"expires_at,omitempty"`
+	Timeout   string `json:"timeout,omitempty"`
+	// Expired: the gate's recorded outcome is its expiry (agent.GateStanding.Expired): the call never
+	// ran, and a decision is not counted.
+	Expired bool `json:"expired,omitempty"`
+	// Overdue: the gate still waits and the viewer's clock is past ExpiresAt. Only a drive of the run
+	// records the expiry; until then the gate refuses decisions (agent.ErrApprovalExpired) and the
+	// run is not finished.
+	Overdue bool `json:"overdue,omitempty"`
+	// Due says where the deadline stands on the viewer's clock ("due in 40m 00s (... UTC)"); empty
+	// for a gate with no deadline.
+	Due string `json:"due,omitempty"`
 }
 
 // Decision is one recorded approval decision. A signed decision carries two times: DecidedAt, the
@@ -166,6 +181,10 @@ type Decision struct {
 	Signed     bool   `json:"signed"`
 	DecidedAt  string `json:"decided_at,omitempty"`
 	RecordedAt string `json:"recorded_at,omitempty"`
+	// Note says why a recorded decision did not count, when the journal alone would make it look
+	// as if it should have: agent.ReasonAfterExpiry for one written after the gate's expiry.
+	Note string `json:"note,omitempty"`
+	name string
 }
 
 // Build reads the run's records into a View. recs is the run's journal in order (header
@@ -560,7 +579,7 @@ func gates(recs []agent.Record, calls map[string]agent.ToolUse, order []string) 
 				resulted = true
 			}
 			if r.Kind == agent.StepApproval && r.ToolUseID == id {
-				g.Decisions = append(g.Decisions, Decision{Approver: r.Approver(), Approved: r.Approved, Signed: r.Approver() != "", DecidedAt: r.DecidedAt(), RecordedAt: r.RecordedAt()})
+				g.Decisions = append(g.Decisions, Decision{Approver: r.Approver(), Approved: r.Approved, Signed: r.Approver() != "", DecidedAt: r.DecidedAt(), RecordedAt: r.RecordedAt(), name: r.Name})
 			}
 			if (r.Kind == agent.StepToolResult || r.Kind == agent.StepSagaFail) && r.ToolUseID == id && r.Approval != nil {
 				g.Need, g.Approvers = r.Approval.Need, r.Approval.Approvers
@@ -570,6 +589,16 @@ func gates(recs []agent.Record, calls map[string]agent.ToolUse, order []string) 
 				}
 				g.ExcludePrincipal = g.ExcludePrincipal || r.Approval.ExcludePrincipal
 			}
+		}
+		var expiresAt time.Time
+		if d, at, ok := agent.RecordedDeadline(recs, id); ok {
+			expiresAt = at
+			g.ExpiresAt, g.Timeout = agent.FormatTimestamp(at), (&plan.TopologyGate{TimeoutMS: d.TimeoutMS}).TimeoutText()
+			since := ""
+			if strings.HasPrefix(id, "node:") {
+				since = agent.ApprovalRequestStep(id)
+			}
+			g.Expired = agent.EvaluateGateAfter(recs, agent.ApprovalSubject{ToolUseID: id}, nil, nil, since).Expired
 		}
 		if t, ok := agent.RecordedTally(byName, id); ok {
 			var tally agent.ApprovalTally
@@ -588,6 +617,23 @@ func gates(recs []agent.Record, calls map[string]agent.ToolUse, order []string) 
 				g.Need, g.Approvers = tally.Need, tally.Approvers
 				g.ApprovedBy, g.DeniedBy, g.Pending = tally.ApprovedBy, tally.DeniedBy, tally.Pending
 				g.ExcludePrincipal, g.Requesters, g.Excluded = tally.ExcludePrincipal, tally.Requesters, tally.Excluded
+				if tally.Expired {
+					for i := range g.Decisions {
+						if g.Decisions[i].Signed && !slices.Contains(tally.Records, g.Decisions[i].name) {
+							g.Decisions[i].Note = agent.ReasonAfterExpiry
+						}
+					}
+				}
+			}
+		}
+		// A signed decision recorded after the gate's deadline never counts (agent.ReasonLate), whether
+		// or not a drive has recorded the expiry yet.
+		if !expiresAt.IsZero() {
+			for i := range g.Decisions {
+				d := &g.Decisions[i]
+				if t, err := agent.ParseTimestamp(d.RecordedAt); d.Signed && d.Note == "" && (err != nil || t.After(expiresAt)) {
+					d.Note = "not counted: " + agent.ReasonLate
+				}
 			}
 		}
 		if !g.Tallied && g.ExcludePrincipal {
@@ -608,6 +654,7 @@ func gates(recs []agent.Record, calls map[string]agent.ToolUse, order []string) 
 			for _, d := range g.Decisions {
 				switch {
 				case slices.Contains(g.Excluded, d.Approver): // the requester: never counts
+				case d.Note != "": // written after the deadline: never counts
 				case g.Reapproval && d.DecidedAt == "": // signed before the format: never counts now
 				case d.Signed && d.Approved && !slices.Contains(g.ApprovedBy, d.Approver):
 					g.ApprovedBy = append(g.ApprovedBy, d.Approver)
@@ -651,6 +698,8 @@ func gateStatus(g Gate) string {
 	if g.Single {
 		d, ok := singleDecision(g)
 		switch {
+		case g.Expired:
+			return "expired (one decision; the gate's deadline passed before one was recorded)"
 		case !ok:
 			return "pending (one decision; none recorded yet)"
 		case d.Approved:
@@ -680,6 +729,8 @@ func gateStatus(g Gate) string {
 	// numbers are of records whose signatures nothing here has checked (the gate checks them when the
 	// run resumes), so they are never called an approval or a denial.
 	switch {
+	case g.Expired:
+		return "expired (" + counts + "; the gate's deadline passed first)"
 	case a >= g.Need && g.Tallied:
 		return "approved (" + counts + ")"
 	case n-len(g.Excluded)-d < g.Need && g.Tallied:
@@ -823,4 +874,28 @@ func maxTime(a, b time.Time) time.Time {
 		return b
 	}
 	return a
+}
+
+// MarkDeadlines sets Due and Overdue on each gate with a recorded deadline, for where it stands on
+// now: due in so long, overdue (the gate waits past it and no drive has recorded the expiry yet), or
+// expired. Build leaves them empty, since it reads no clock; the pages and bide approve -list call
+// this with theirs.
+func MarkDeadlines(gates []Gate, now time.Time) {
+	for i := range gates {
+		g := &gates[i]
+		at := parseTime(g.ExpiresAt)
+		if at.IsZero() {
+			continue
+		}
+		when := at.Format("2006-01-02 15:04:05") + " UTC"
+		switch {
+		case g.Expired:
+			g.Due = "expired (the deadline was " + when + ")"
+		case g.Waiting && !now.Before(at):
+			g.Overdue = true
+			g.Due = "deadline passed " + durText(now.Sub(at)) + " ago (" + when + "); the expiry is recorded when the run is next driven"
+		case g.Waiting:
+			g.Due = "due in " + durText(at.Sub(now)) + " (" + when + ")"
+		}
+	}
 }

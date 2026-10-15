@@ -3,6 +3,8 @@ package plan
 import (
 	"encoding/json"
 	"reflect"
+	"strings"
+	"time"
 
 	"github.com/bide-ai/bide/agent"
 )
@@ -109,6 +111,24 @@ type TopologyGate struct {
 	Need             int      `json:"need,omitempty"`
 	Approvers        []string `json:"approvers,omitempty"`
 	ExcludePrincipal bool     `json:"exclude_principal,omitempty"`
+	// TimeoutMS is the gate's deadline in milliseconds (ApprovalPolicy.Timeout), zero for none.
+	TimeoutMS int64 `json:"timeout_ms,omitempty"`
+}
+
+// TimeoutText is the gate's deadline as a short duration ("24h", "1h30m", "90s"), or "" for a gate
+// with none (or a nil gate). It is the text the viewer, the diff and RenderMermaid show.
+func (g *TopologyGate) TimeoutText() string {
+	if g == nil || g.TimeoutMS <= 0 {
+		return ""
+	}
+	s := (time.Duration(g.TimeoutMS) * time.Millisecond).String()
+	if strings.HasSuffix(s, "m0s") {
+		s = strings.TrimSuffix(s, "0s")
+	}
+	if strings.HasSuffix(s, "h0m") {
+		s = strings.TrimSuffix(s, "0m")
+	}
+	return s
 }
 
 // topologyGate is p as a TopologyGate, nil for no gate.
@@ -119,7 +139,7 @@ func topologyGate(p *agent.ApprovalPolicy) *TopologyGate {
 	var g TopologyGate
 	b, err := json.Marshal(p)
 	if err != nil || json.Unmarshal(b, &g) != nil {
-		return &TopologyGate{Need: p.Need, Approvers: append([]string(nil), p.Approvers...), ExcludePrincipal: p.ExcludePrincipal}
+		return &TopologyGate{Need: p.Need, Approvers: append([]string(nil), p.Approvers...), ExcludePrincipal: p.ExcludePrincipal, TimeoutMS: p.Timeout.Milliseconds()}
 	}
 	return &g
 }

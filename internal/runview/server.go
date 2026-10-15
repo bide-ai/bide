@@ -206,6 +206,14 @@ func writeJSON(w http.ResponseWriter, v any) {
 	_ = enc.Encode(v)
 }
 
+// now is the viewer's clock (Options.Now, else time.Now).
+func (o Options) now() time.Time {
+	if o.Now != nil {
+		return o.Now()
+	}
+	return time.Now()
+}
+
 // view builds the run's View, or nil for a run with no records.
 func (o Options) view(ctx context.Context, runID string) (*View, error) {
 	recs, seqs, err := o.history(ctx, runID)
@@ -254,6 +262,7 @@ func (o Options) viewOf(ctx context.Context, runID string, recs []agent.Record, 
 		signatures(&v.Gates[i], v.Proof)
 		v.Gates[i].Cards = cards(v.Gates[i], v.Proof)
 	}
+	MarkDeadlines(v.Gates, o.now())
 	markGates(v.Graph, v.Gates) // the graph's gated nodes say whether their signatures verified
 	follow(v, seqs)
 	v.Verdict = runVerdict(v)

@@ -213,7 +213,9 @@ iteration, with this input.
    name: decision names are first-writer-wins and ed25519 signatures are deterministic, so the
    approver's identical decision afterwards is not recorded, and `Approve` and `SubmitDecision`
    report that (`ErrConfig`) instead of returning nil. For a `SingleApproval` gate the name is the
-   gate's one decision, so the gate cannot pass (it fails closed) and the run is cancelled. For an
+   gate's one decision; `Approve` then records the real decision under a second name
+   (`approval:<call>:after-request`), which the gate honours, so the stale record does not block
+   the gate ([approval deadlines](approval-deadlines.md#clearing-a-stale-decision)). For an
    m-of-n gate the approver signs again: since v3 a decision's name hashes its signed `decided_at`,
    so a decision re-signed at a new time is a new record, written after the request, and counts.
    The seat is not lost. (`flows/limits/gate-early-stuck` stated the v2 limit, where it was;
@@ -570,7 +572,8 @@ graph-first runtime can back, because the proof comes from the journal, not the 
 
 ## Deferred, and how it composes
 
-- **Deadline to resolve a stuck gate.** A gate that never reaches k should be resolvable by a
+- **Deadline to resolve a stuck gate.** Shipped as `ApprovalPolicy.Timeout`; see
+  [approval deadlines](approval-deadlines.md). The original note: a gate that never reaches k should be resolvable by a
   durable deadline (deny on expiry, or escalate). This is exactly the deadline/obligation
   feature: the obligation is "reach k approvals by T," and its breach proof is the absence of a
   passing tally before the STH at T. Build obligations, then wire the timeout in.

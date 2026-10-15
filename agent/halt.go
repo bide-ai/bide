@@ -43,13 +43,31 @@ func Approve(ctx context.Context, d *Journal, runID, toolUseID string, approved 
 	if err != nil {
 		return err
 	}
-	if _, err := d.do(ctx, runID, approvalStep(toolUseID), func(context.Context) (Record, error) {
-		return Record{Kind: StepApproval, ToolUseID: toolUseID, Approved: approved, ApproverSignature: recordedStamp(o.now)}, nil
-	}); err != nil {
+	if err := checkNotExpired(ctx, d, "Approve", runID, toolUseID, o.now); err != nil {
 		return err
 	}
+	name := approvalStep(toolUseID)
 	if flow {
-		return staleDecision(ctx, d, "Approve", runID, toolUseID, approvalStep(toolUseID), reqSeq, true)
+		// A record written before the gate's request holds the decision's first name: it never
+		// counts, and the decision is recorded under the second name, which the gate honours.
+		if _, _, n, err := flowSingle(ctx, d, runID, toolUseID); err != nil {
+			return err
+		} else if n != "" {
+			name = n
+		}
+	}
+	got, err := d.do(ctx, runID, name, func(context.Context) (Record, error) {
+		return Record{Kind: StepApproval, ToolUseID: toolUseID, Approved: approved, ApproverSignature: recordedStamp(o.now)}, nil
+	})
+	if err != nil {
+		return err
+	}
+	if string(got.Result) == expiredDecision {
+		// The gate recorded its expiry as the decision first: this one was not recorded.
+		return fmt.Errorf("Approve: the approval gate on %s in run %s recorded its expiry, so the decision was not recorded: %w (%w)", toolUseID, runID, ErrApprovalExpired, ErrConfig)
+	}
+	if flow {
+		return staleDecision(ctx, d, "Approve", runID, toolUseID, name, reqSeq, true)
 	}
 	return nil
 }

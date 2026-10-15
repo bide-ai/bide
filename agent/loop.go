@@ -172,6 +172,7 @@ func (a *Agent) runLoop(ctx context.Context, runID string, d *driveSpec) (Messag
 	attemptedAtMs := map[string]int64{} // tool-use ID -> attempt marker's Unix-millis timestamp
 	decided := map[string]bool{}        // tool-use IDs with a recorded approval decision
 	approvals := map[string]bool{}      // tool-use ID -> approve(true)/deny(false)
+	singles := map[string]Record{}      // tool-use ID -> its recorded one-decision record (Approve, or the gate's expiry)
 	values := map[string]Record{}       // StepValue records by name (an m-of-n gate's terminal tally)
 	modelSeq := 0
 	// The run's token usage, rebuilt from the journal and kept up to date from each record the
@@ -197,6 +198,7 @@ func (a *Agent) runLoop(ctx context.Context, runID string, d *driveSpec) (Messag
 			}
 			decided[r.ToolUseID] = true
 			approvals[r.ToolUseID] = r.Approved
+			singles[r.ToolUseID] = r
 		case StepValue:
 			values[r.Name] = r
 		}
@@ -607,22 +609,32 @@ func (a *Agent) runLoop(ctx context.Context, runID string, d *driveSpec) (Messag
 			// protocol:lifecycle end
 			spec := a.specs[tu.Name]
 			// protocol:lifecycle begin DOpen
-			// protocol:claims begin ApGate Deny
+			// protocol:claims begin ApGate Deny ApExpire
 			// A recorded denial is final, whatever the tool's gate is now: a human's Approve(false)
 			// or an m-of-n gate's terminal tally that did not pass. The gate may have been removed
 			// or loosened since (a redeploy), and the call must still not run. A recorded approval
 			// is not carried over the same way: a gate that is still configured decides by its
 			// current policy, so a tightened policy applies to a call not yet run.
-			denied := decided[tu.ID] && !approvals[tu.ID]
+			//
+			// A deadline (ApprovalPolicy.Timeout) is recorded once, when the gate first waits, and an
+			// expiry is recorded as the gate's outcome: a one-decision gate's decision record, or the
+			// tally. Either is final, like any recorded denial, and the model reads ExpiredResult.
+			_, expAt, hasDeadline := RecordedDeadline(recs, tu.ID)
+			expired := decided[tu.ID] && singleExpired(singles[tu.ID], expAt, hasDeadline)
+			denied := expired || decided[tu.ID] && !approvals[tu.ID]
 			if r, ok := RecordedTally(values, tu.ID); ok && !denied {
 				tally, err := decodeTally(runID, r)
 				if err != nil {
 					return leave(err)
 				}
-				denied = !tally.Passed()
+				denied, expired = !tally.Passed(), tally.Expired
 			}
 			if pol := spec.Approval; !denied && pol != nil {
 				var approved bool
+				expAt, hasDeadline, err := openDeadline(ctx, a.store, runID, tu.ID, pol, recs)
+				if err != nil {
+					return leave(err)
+				}
 				if !pol.single() {
 					// m-of-n: the decision is the tally over the journaled per-approver records.
 					tally, final, err := a.quorumTally(ctx, runID, tu, pol)
@@ -641,8 +653,20 @@ func (a *Agent) runLoop(ctx context.Context, runID string, d *driveSpec) (Messag
 						noteReask(ctx, a.store, runID, tu.ID, tu.Name, pol, tally)
 						return leave(pend)
 					}
-					approved = tally.Passed()
+					approved, expired = tally.Passed(), tally.Expired
 				} else {
+					if !decided[tu.ID] && hasDeadline && pastDeadline(clockFrom(ctx)(), expAt) {
+						// The deadline passed with no decision: the expiry is the decision, insert-once,
+						// so an Approve that landed first is the decision instead.
+						r, err := a.store.do(ctx, runID, approvalStep(tu.ID), func(context.Context) (Record, error) {
+							return Record{Kind: StepApproval, ToolUseID: tu.ID, Approved: false, Result: json.RawMessage(expiredDecision), ApproverSignature: recordedStamp(clockFrom(ctx))}, nil
+						})
+						if err != nil {
+							return leave(err)
+						}
+						decided[tu.ID], approvals[tu.ID], singles[tu.ID] = true, r.Approved, r
+						expired = singleExpired(r, expAt, true)
+					}
 					if !decided[tu.ID] {
 						if live {
 							a.notePending(ctx, runID, tu, pol)
@@ -650,12 +674,15 @@ func (a *Agent) runLoop(ctx context.Context, runID string, d *driveSpec) (Messag
 						fire(ApprovalRequired{ToolUseID: tu.ID, Name: tu.Name, Args: tu.Args})
 						return leave(&ApprovalPending{RunRef: RunRef{RunID: runID, RootRunID: rootRunID(ctx, runID)}, ToolUseID: tu.ID, ToolName: tu.Name, Args: tu.Args})
 					}
-					approved = approvals[tu.ID]
+					approved = approvals[tu.ID] && !expired
 				}
 				denied = !approved
 			}
 			if denied { // record a denial and let the model react
-				const deniedResult = `"tool call denied by human"`
+				deniedResult := `"tool call denied by human"`
+				if expired {
+					deniedResult = ExpiredResult
+				}
 				if _, err := a.store.put(ctx, runID, ToolResultStep(tu.ID), Record{Kind: StepToolResult, ToolUseID: tu.ID, IsError: true, Result: json.RawMessage(deniedResult), Safety: recordedSafety(*spec), Approval: spec.Approval.Clone()}); err != nil {
 					return leave(err)
 				}

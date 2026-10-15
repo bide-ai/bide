@@ -15,3 +15,6 @@ signer/gcpkms/testdata/attestation/*.gz binary
 # what Go writes (LF). No line-ending conversion on any platform.
 approvals/page/** text eol=lf
 agent/testdata/canonical_args_vectors.json text eol=lf
+
+# RFC 3161 vectors are signed DER and PEM, and the fuzz corpus holds exact bytes: byte-exact on every platform.
+audit/rfc3161/testdata/** -text

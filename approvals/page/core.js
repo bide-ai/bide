@@ -98,7 +98,7 @@ export const toBase64 = (u) => btoa(String.fromCharCode(...u));
 export const fromBase64 = (s) => Uint8Array.from(atob(s), (c) => c.charCodeAt(0));
 
 // PENDING_KEYS are the members of approvals.Pending (its json tags): a Go test fails when they drift.
-const PENDING_KEYS = new Set(['run', 'call', 'tool', 'args', 'args_text', 'args_sha256', 'decision_format', 'state', 'asked_at', 'reason', 'gate']);
+const PENDING_KEYS = new Set(['run', 'call', 'tool', 'args', 'args_text', 'args_sha256', 'decision_format', 'state', 'asked_at', 'expires_at', 'reason', 'gate']);
 
 // parsePending reads the endpoint's answer to GET /pending strictly: exactly one JSON object, with
 // no repeated and no unknown member, and the arguments taken as the raw bytes the endpoint sent
@@ -142,6 +142,7 @@ export async function checkPending(parsed, run, call) {
 export function preflight(fields, approver) {
   if (fields.state === 'error') return `the gate cannot be evaluated, so this call takes no decision: ${safeText(String(fields.reason ?? 'the endpoint gives no reason'))}`;
   if (fields.state === 'single') return 'this is a single-approver gate, which takes no signed decision';
+  if (fields.state === 'expired') return `the gate's deadline has passed${fields.expires_at ? ` (${safeText(String(fields.expires_at))})` : ''}: it takes no more decisions, and the call will not run`;
   if (fields.state !== 'waiting') return `the call is not waiting for a decision (the endpoint says it is ${safeText(String(fields.state))})`;
   const g = fields.gate;
   if (!g.approvers.includes(approver)) return `${safeText(approver)} is not an approver of this gate; its approvers are: ${safeText(g.approvers.join(', '))}`;

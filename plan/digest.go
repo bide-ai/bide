@@ -160,6 +160,11 @@ func TopologyDigest(t Topology) (string, error) {
 			if g.ExcludePrincipal {
 				writeField(&b, "n.gate.exclude_principal", "true")
 			}
+			// The deadline likewise: a paused run cannot be resumed under a flow whose gate's
+			// deadline was added, removed or changed.
+			if g.TimeoutMS != 0 {
+				writeField(&b, "n.gate.timeout_ms", strconv.FormatInt(g.TimeoutMS, 10))
+			}
 		}
 		if k == kindJoin {
 			j, ok := joins[n.Name]

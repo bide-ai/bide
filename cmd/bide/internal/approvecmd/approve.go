@@ -119,7 +119,8 @@ RecoverLoop pick it up: the gate counts the decisions and the call runs or is de
 never runs the call.
 
 -list prints the calls in the journal that wait for a decision, each with the bide approve command
-that decides it; -json prints them as JSON. With -approver-keys it counts each gate as the gate does
+that decides it and, for a gate with a deadline (ApprovalPolicy.Timeout), the time left; a gate
+past its deadline is marked and gets no command, since it refuses decisions. -json prints them as JSON. With -approver-keys it counts each gate as the gate does
 (verified); without it the counts are labelled unverified and no gate is called settled. Run and
 call ids that hold control, bidirectional or invisible characters get no command. A Postgres journal is named by -postgres-env, the name
 of the environment variable that holds the DSN, so the password stays out of the argument list,
@@ -507,6 +508,9 @@ func (g *gateOf) preflight(run, as string, reject bool, verifierFor agent.Approv
 	case string(agent.RunCompleted), string(agent.RunAborted), string(agent.RunCancelled):
 		return refuse("run %s has ended (%s); it does not wait on call %s", safe(run), g.view.StateText, safe(gt.ToolUseID))
 	}
+	if dl, at, ok := agent.RecordedDeadline(g.recs, gt.ToolUseID); ok && !now().Before(at) {
+		return refuse("the gate on call %s expired at %s (its deadline): it takes no more decisions, and the call will not run", safe(gt.ToolUseID), safe(dl.ExpiresAt))
+	}
 	if gt.Tallied {
 		out := "passed"
 		if len(gt.ApprovedBy) < gt.Need {
@@ -801,6 +805,9 @@ func (c *cmd) show(g *gateOf, s agent.ApprovalSubject, sg audit.Signer) (clipped
 			if c.f.approverKeys == "" {
 				label = " (recorded, unverified)"
 			}
+			if d.Note != "" {
+				label += " (" + d.Note + ")"
+			}
 			row("decided", fmt.Sprintf("%s %s at %s%s", safe(d.Approver), verdict(d.Approved), safe(d.DecidedAt), label))
 		}
 		row("pending", safe(strings.Join(gt.Pending, ", ")))
@@ -957,6 +964,13 @@ type waiting struct {
 	Requesters []string `json:"requesters,omitempty"`
 	Excluded   []string `json:"excluded,omitempty"`
 	AskedAt    string   `json:"asked_at,omitempty"`
+	// ExpiresAt is the gate's recorded deadline, Timeout its length, and Due where it stands on this
+	// command's clock. Overdue: the deadline has passed and no drive has recorded the expiry; the gate
+	// refuses decisions, so no command is offered.
+	ExpiresAt string `json:"expires_at,omitempty"`
+	Timeout   string `json:"timeout,omitempty"`
+	Due       string `json:"due,omitempty"`
+	Overdue   bool   `json:"overdue,omitempty"`
 	// Verified says the standing above is the gate's own count (agent.TallyApprovals with the
 	// approvers' keys, -approver-keys). Without it the standing counts the decisions as recorded,
 	// signatures unchecked, and is never taken to settle the gate.
@@ -1002,11 +1016,13 @@ func (c *cmd) list(ctx context.Context) error {
 			return fmt.Errorf("read run %s: %w", safe(run), err)
 		}
 		v := runview.Build(ctx, run, recs, nil)
+		runview.MarkDeadlines(v.Gates, now())
 		for _, g := range v.Gates {
 			if !g.Waiting || v.State == string(agent.RunCompleted) || v.State == string(agent.RunAborted) || v.State == string(agent.RunCancelled) {
 				continue
 			}
-			w := waiting{Run: run, Call: g.ToolUseID, Tool: g.ToolName, Single: g.Single, Need: g.Need, Approvers: g.Approvers, ApprovedBy: g.ApprovedBy, DeniedBy: g.DeniedBy, Pending: g.Pending, AskedAt: g.AskedAt}
+			w := waiting{Run: run, Call: g.ToolUseID, Tool: g.ToolName, Single: g.Single, Need: g.Need, Approvers: g.Approvers, ApprovedBy: g.ApprovedBy, DeniedBy: g.DeniedBy, Pending: g.Pending, AskedAt: g.AskedAt,
+				ExpiresAt: g.ExpiresAt, Timeout: g.Timeout, Due: g.Due, Overdue: g.Overdue}
 			if g.ExcludePrincipal {
 				w.Requesters, w.Excluded = g.Requesters, g.Excluded
 			}
@@ -1032,6 +1048,7 @@ func (c *cmd) list(ctx context.Context) error {
 				w.Commands = append(w.Commands, cmdline)
 			}
 			switch {
+			case g.Overdue: // the gate refuses decisions
 			case g.Single:
 				line("")
 			case w.Settled != "":
@@ -1064,7 +1081,18 @@ func (c *cmd) list(ctx context.Context) error {
 		fmt.Fprintf(c.out, "\n  run %s  call %s  tool %s\n", st.Bold(safe(w.Run)), st.Bold(safe(w.Call)), st.Bold(safe(w.Tool)))
 		if w.Single {
 			fmt.Fprintf(c.out, "    one approver, one decision (unsigned)\n")
-		} else {
+		}
+		if w.Due != "" {
+			text := w.Due
+			if w.Timeout != "" {
+				text += "; times out after " + w.Timeout
+			}
+			if w.Overdue {
+				text = st.Fail(text)
+			}
+			fmt.Fprintf(c.out, "    %s\n", text)
+		}
+		if !w.Single {
 			label := ""
 			if !w.Verified {
 				label = " (decisions as recorded, unverified: give -approver-keys)"

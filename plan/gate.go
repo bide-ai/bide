@@ -16,6 +16,12 @@ import (
 // (agent.Cancel).
 var ErrApprovalDenied = errors.New("approval denied")
 
+// ErrApprovalExpired is returned (wrapped, naming the node) by Flow.Run when a node's approval gate
+// expired: its deadline (agent.ApprovalPolicy.Timeout) passed with no approval. It wraps both
+// agent.ErrApprovalExpired and ErrApprovalDenied: an expiry is a denial in every other respect, and
+// every later drive returns it.
+var ErrApprovalExpired = fmt.Errorf("%w (%w)", agent.ErrApprovalExpired, ErrApprovalDenied)
+
 // protocol:flows begin GRead GPause
 
 // runGate holds node, run under its key key with the decoded input, at its approval gate. It
@@ -41,6 +47,9 @@ func runGate(ctx context.Context, store *agent.Journal, runID string, c *builder
 		var pend *agent.ApprovalPending
 		if errors.As(err, &pend) {
 			return err
+		}
+		if errors.Is(err, agent.ErrApprovalExpired) {
+			return fmt.Errorf("plan: run %q: step %q (%s): %w: %w", c.flowName, node.name, key, ErrApprovalExpired, err)
 		}
 		return fmt.Errorf("plan: run %q: approval gate of step %q: %w", c.flowName, node.name, err)
 	}

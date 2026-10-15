@@ -97,12 +97,29 @@ func gateText(need int, approvers []string) string {
 }
 
 // topoGateText renders a declared gate: "one decision", or as gateText does, with " excluding the
-// requester" for a gate that excludes the run's requester.
+// requester" for a gate that excludes the run's requester; either with ", times out after 24h" for a
+// gate that has a deadline.
 func topoGateText(g *plan.TopologyGate) string {
 	if g.Single {
-		return "one decision"
+		return "one decision" + timeoutSuffix(g, false)
 	}
-	return gateText(g.Need, g.Approvers) + exclusionText(g)
+	return gateText(g.Need, g.Approvers) + exclusionText(g) + timeoutSuffix(g, false)
+}
+
+// gateBoxLine is a declared gate in a node's box: "gated: 2 of 3", then " · SoD" for a gate that
+// excludes the requester and " · 24h" for one with a deadline (the tooltip spells both out).
+func gateBoxLine(g *plan.TopologyGate) string {
+	s := "gated: " + topoGateText(g)
+	if !g.Single {
+		s = fmt.Sprintf("gated: %d of %d", g.Need, len(g.Approvers))
+	}
+	if g.ExcludePrincipal {
+		s += " · SoD"
+	}
+	if t := g.TimeoutText(); t != "" {
+		s += " · " + t
+	}
+	return s
 }
 
 // riskSummary counts r's nodes by safety class and gate.
@@ -215,10 +232,7 @@ func configGraph(r plan.ConfigReport) *Graph {
 		}
 		if n.Gate != nil {
 			gn.Gate = topoGateText(n.Gate)
-			gn.GateLine, gn.GateClass = "gated: "+gn.Gate, "gated"
-			if !n.Gate.Single {
-				gn.GateLine = fmt.Sprintf("gated: %d of %d", n.Gate.Need, len(n.Gate.Approvers))
-			}
+			gn.GateLine, gn.GateClass = gateBoxLine(n.Gate), "gated"
 		}
 		if ps := at[n.Name]; len(ps) > 0 {
 			gn.Status = "problem"

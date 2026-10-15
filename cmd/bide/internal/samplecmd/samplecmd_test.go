@@ -216,11 +216,9 @@ func start(wait time.Duration, args ...string) (link string, stop func() int, er
 	out := &syncBuffer{}
 	done := make(chan int, 1)
 	running.Add(1)
-	go func() {
-		code := Main(args, out, out)
-		running.Add(-1) // before the answer: whoever gets it may check the count at once
-		done <- code
-	}()
+	// The count drops before the status is sent, so whoever receives the status sees the command
+	// as no longer running (a deferred decrement would run after the send).
+	go func() { code := Main(args, out, out); running.Add(-1); done <- code }()
 	var once sync.Once
 	var code int
 	stop = func() int {

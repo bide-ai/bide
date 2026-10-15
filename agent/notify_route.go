@@ -39,7 +39,7 @@ type EscalationStep struct {
 // receiver of the event it is about (an escalated event, its step's).
 func routableKind(k NotificationKind) bool {
 	switch k {
-	case NotificationOutcomeUnknown, NotificationApprovalPending, NotificationRunAborted, NotificationRecoveryFailing:
+	case NotificationOutcomeUnknown, NotificationApprovalPending, NotificationApprovalExpired, NotificationRunAborted, NotificationRecoveryFailing:
 		return true
 	}
 	return false
@@ -71,7 +71,7 @@ func WithNotifyReceiver(name string, n Notifier) NotifyOption {
 
 // WithNotifyRoute sends events of kind to the named receiver instead of the default one. kind is
 // one a run raises: NotificationOutcomeUnknown, NotificationApprovalPending,
-// NotificationRunAborted or NotificationRecoveryFailing. The all-clear of an event goes to the
+// NotificationApprovalExpired, NotificationRunAborted or NotificationRecoveryFailing. The all-clear of an event goes to the
 // receiver the event went to; an overdue notice too, unless WithOverdueNotifier says otherwise.
 func WithNotifyRoute(kind NotificationKind, receiver string) NotifyOption {
 	return notifyOption(func(c *notifyConfig) error {
@@ -251,6 +251,8 @@ func kindOfKey(key string) NotificationKind {
 		return NotificationApprovalPending
 	case strings.HasPrefix(key, "recovery:"):
 		return NotificationRecoveryFailing
+	case strings.HasPrefix(key, "expired:"):
+		return NotificationApprovalExpired
 	}
 	return ""
 }
