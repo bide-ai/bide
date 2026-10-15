@@ -58,8 +58,14 @@ wrong key, a UI showing stale arguments). The first implementation had four gaps
 ### Design
 
 - **One record per decision, first valid decision counts.** Decision records are named
-  `approval:<call>:<approver>:<sha256(approved || signature)>`, so an approver's records never
-  collide and an identical resubmission is a no-op. The counting rule takes each approver's first
+  `approval:<call>:<approver>:<sha256("identity" || approved || scheme || decided_at)>`: the name is the
+  decision's identity and never its signature bytes, so every re-signing of one decision (ECDSA from
+  a KMS or HSM signs it differently each time) maps to one name, and concurrent submissions race on
+  one key where the first writer wins. Journals written before this named records
+  `<sha256(approved || scheme || decided_at || signature)>`; they read and count as before, and
+  `SubmitDecision` still uses that form as a fallback when a record that is not the approver's valid
+  decision (a junk signature written without a check) already holds the identity name, so a bad
+  record never takes the name the real decision needs. The counting rule takes each approver's first
   record that is eligible and whose signature verifies; invalid records never occupy a place and
   never count toward "unreachable". (Closes 1.)
 - **The signature binds the call.** `ApprovalDecisionBytes` v2 (`bide.approval.v2`) adds the tool

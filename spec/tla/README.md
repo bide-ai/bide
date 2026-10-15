@@ -738,7 +738,7 @@ resolution all run around it.
 | `QDecide` | `tallyGateOnce` after the write: the gate goes by the record the journal holds, and counts again when it is one the policy supersedes (another drive's weaker tally landed first) |
 | `Deny` | the pre-pass's `Journal.put` of the denied result |
 | `Approve1` | `Approve` |
-| `Submit` | `SubmitDecision` (without `WithDecisionCheck`: the gate never depends on it) |
+| `Submit` | `SubmitDecision` (without `WithDecisionCheck`: the gate never depends on it). The record is named by the decision's identity, not its signature (`decisionIdentityStep`), so fewer records are written than the model allows (it forbids only an exact repeat and allows any other append); the counting rule ignores extra records, so no property depends on the count |
 | `Redeploy` | a new deployment of a process's tools |
 | `ResolverChange` | the verifier resolver answering differently (a rotation, a new key file) |
 

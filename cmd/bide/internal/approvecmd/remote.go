@@ -352,8 +352,8 @@ func (c *cmd) approveRemote(ctx context.Context) error {
 	if err := audit.UnmarshalStrict(rb, &resp); err != nil {
 		return fmt.Errorf("the decision was sent, and the endpoint's answer is not a decision response (it may have been recorded): %w", err)
 	}
-	if resp.Record != agent.DecisionStep(d) {
-		return fmt.Errorf("the endpoint recorded a decision named %s, not the one signed (%s); check the gate before relying on it", safe(resp.Record), agent.DecisionStep(d))
+	if !agent.IsDecisionStepName(resp.Record, f.call, f.as) {
+		return fmt.Errorf("the endpoint's answer names %q as the journal record of the decision, which is not the name of a decision record of %s on %s (it may have been recorded); check the gate before relying on it", safe(resp.Record), safe(f.as), safe(f.call))
 	}
 	st := c.st
 	how := "signed and recorded by the application"
@@ -362,7 +362,7 @@ func (c *cmd) approveRemote(ctx context.Context) error {
 	}
 	fmt.Fprintf(c.out, "\n%s%s call %s as %s, %s (decided %s)\n", st.Pass(), c.verb(!f.reject), safe(f.call), st.Bold(f.as), how, agent.FormatTimestamp(at))
 	c.remoteStanding(resp.Gate)
-	if err := c.remoteReceipt(resp.Receipt, d, s, signer, receiptPath); err != nil {
+	if err := c.remoteReceipt(resp.Receipt, resp.Record, d, s, signer, receiptPath); err != nil {
 		return err
 	}
 	if !resp.Counted {
@@ -390,21 +390,30 @@ func (c *cmd) remoteStanding(g approvals.Gate) {
 // remoteReceipt checks the receipt the endpoint returned against the decision just signed, and
 // writes it where the local flow writes its receipt. A receipt that is not this decision, or does
 // not verify under the approver's own key, is not written.
-func (c *cmd) remoteReceipt(rc audit.DecisionReceipt, d agent.Decision, s agent.ApprovalSubject, sg audit.Signer, path string) error {
+func (c *cmd) remoteReceipt(rcp *audit.DecisionReceipt, record string, d agent.Decision, s agent.ApprovalSubject, sg audit.Signer, path string) error {
+	if rcp == nil {
+		return errors.New("the decision was recorded, but the endpoint returned no receipt for it (it holds a record of the decision that does not verify under the key it resolves now), so none was written")
+	}
+	rc := *rcp
 	own, err := audit.NewVerifier(sg.Alg(), sg.PublicKey())
 	if err != nil {
 		return fmt.Errorf("the decision was recorded; your key is not a usable verification key, so no receipt was written: %w", err)
 	}
 	if rc.RunID != d.RunID || rc.ToolUseID != d.ToolUseID || rc.ToolName != s.ToolName || rc.Approver != d.ApproverID || rc.Approved != d.Approved ||
-		rc.DecidedAt != agent.FormatTimestamp(d.DecidedAt) || rc.Alg != d.Alg || !bytes.Equal(rc.Signature, d.Signature) ||
-		rc.ArgsSHA != audit.ApprovalArgsDigest(s) || rc.Record != agent.DecisionStep(d) {
+		rc.DecidedAt != agent.FormatTimestamp(d.DecidedAt) || rc.Alg != d.Alg || rc.ArgsSHA != audit.ApprovalArgsDigest(s) || rc.Record != record || !agent.IsDecisionStepName(rc.Record, d.ToolUseID, d.ApproverID) {
 		return errors.New("the decision was recorded, but the receipt the endpoint returned is not this decision, so none was written")
 	}
 	if rc.Anchor != nil {
 		return errors.New("the decision was recorded, but the receipt the endpoint returned carries an anchoring proof, which only your own verify-receipts -update may add, so none was written")
 	}
+	// The recorded signature may differ from the one just sent (a retry of a randomized scheme's
+	// decision answers from the record journaled first); it must verify under the approver's own key
+	// for the same decision, which Verify checks.
 	if err := rc.Verify(own); err != nil {
 		return fmt.Errorf("the decision was recorded, but the receipt the endpoint returned does not verify, so none was written: %w", err)
+	}
+	if !bytes.Equal(rc.Signature, d.Signature) {
+		fmt.Fprintln(c.out, "note: the recorded signature differs from the one just sent: the endpoint answered from the decision journaled first (a retry of a randomized scheme, such as ecdsa-p256, signs one decision into different bytes); the receipt holds the recorded signature, which verifies under your key")
 	}
 	if path == "" {
 		path = filepath.Join(c.src.receiptDir(c.f.key), defaultReceiptName(c.f.run, c.f.call, c.f.as, rc.DecidedAt))

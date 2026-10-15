@@ -41,6 +41,9 @@ var keyConstructors = map[string]func(string) string{
 	"approvalDecisionStep": func(s string) string {
 		return approvalDecisionStep(s, "ops:1", true, "ed25519", "2026-10-13T12:14:03.123Z", []byte(s))
 	},
+	"decisionIdentityStep": func(s string) string {
+		return decisionIdentityStep(s, "ops:3", true, "ed25519", "2026-10-13T12:14:03.123Z")
+	},
 	"DecisionStep": func(s string) string {
 		return DecisionStep(Decision{ToolUseID: s, ApproverID: "ops:2", Approved: true, Alg: "ed25519",
 			DecidedAt: time.Date(2026, 10, 13, 12, 14, 3, 123e6, time.UTC), Signature: []byte(s)})
@@ -143,11 +146,14 @@ func TestEncodeID_IsBoundedAndPlain(t *testing.T) {
 
 // Every key built from a tool-use ID is short, printable ASCII, whatever the ID.
 func TestToolUseIDKeys_AreBoundedAndPrintable(t *testing.T) {
-	for _, name := range []string{"ToolResultStep", "toolAttemptStep", "approvalStep", "approvalDecisionStep", "ApprovalTallyStep", "ApprovalRetallyStep", "sagaCompensateStep", "sagaArgsStep"} {
+	for _, name := range []string{"ToolResultStep", "toolAttemptStep", "approvalStep", "approvalDecisionStep", "decisionIdentityStep", "ApprovalTallyStep", "ApprovalRetallyStep", "sagaCompensateStep", "sagaArgsStep"} {
 		for _, id := range adversarialToolUseIDs() {
 			k := keyConstructors[name](id)
 			if name == "approvalDecisionStep" {
 				k = approvalDecisionStep(id, "ops", true, "ed25519", "2026-10-13T12:14:03.123Z", nil)
+			}
+			if name == "decisionIdentityStep" {
+				k = decisionIdentityStep(id, "ops", true, "ed25519", "2026-10-13T12:14:03.123Z")
 			}
 			if len(k) > 256 || strings.IndexFunc(k, func(r rune) bool { return r < 0x21 || r > 0x7e }) >= 0 {
 				t.Fatalf("%s(%.30q) = %.60q (%d bytes), not short printable ASCII", name, id, k, len(k))
@@ -234,6 +240,7 @@ func TestEngineKeys_ConstructorsAreListed(t *testing.T) {
 func TestEngineKeys_WritesUseConstructors(t *testing.T) {
 	forwarders := map[string]bool{
 		"ClaimAttempt:name":      true, // its callers are checked here
+		"submitDecision:name":    true, // decisionIdentityStep, or approvalDecisionStep for a decision whose identity name a bad record holds
 		"retryNotStarted:key":    true, // a live marker's own key, read from the journal, as Journal.retryNotStarted takes it
 		"step:name":              true, // its callers are checked here
 		"Step:name":              true, // a developer-chosen name, refused if reserved (checkStepName)

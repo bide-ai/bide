@@ -675,6 +675,9 @@ func TestDecision_ReplayAnswersFromTheRecordedTally(t *testing.T) {
 	if gate["approved"] != float64(2) || gate["passed"] != true || out["counted"] != true {
 		t.Fatalf("the replay did not answer from the recorded tally: gate %v counted %v", gate, out["counted"])
 	}
+	if out["receipt"] != nil {
+		t.Fatalf("a receipt for a record that does not verify under the key resolved now: %v", out["receipt"])
+	}
 	_, pend := r.get("/pending?run=" + runID + "&call=c1")
 	if pend["state"] != "decided" || pend["gate"].(map[string]any)["approved"] != float64(2) {
 		t.Fatalf("pending after the tally: %v", pend)
@@ -1535,7 +1538,9 @@ func TestDecision_ARetryWithADifferentSignatureIsNotRecordedTwice(t *testing.T) 
 	for i := range 60 {
 		var mu sync.Mutex
 		hooks := 0
-		r := newRig(t, approvals.WithRateLimit(0, 0), approvals.WithGlobalRateLimit(0, 0),
+		// Eight requests from one client are in flight at once: the per-client cap on bodies being read
+		// must admit them all, or a 429 (a flake under load) is not what the test is about.
+		r := newRig(t, approvals.WithRateLimit(0, 0), approvals.WithGlobalRateLimit(0, 0), approvals.WithMaxReaders(64, 16),
 			approvals.OnRecorded(func(context.Context, approvals.Recorded) { mu.Lock(); hooks++; mu.Unlock() }))
 		r.randomized = true
 		base := r.decision("alice", true)

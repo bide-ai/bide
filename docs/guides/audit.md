@@ -1221,8 +1221,9 @@ malleable: `(r, n-s)` verifies whenever `(r, s)` does.
 
 Two differences from Ed25519 to know about. Signing is randomized (`crypto/ecdsa` mixes the key and
 the message into the nonce), so signing the same tree head twice gives two different valid signatures
-where Ed25519 and ML-DSA give the same bytes; an approver who resubmits a decision adds a second
-record, which the counting rule ignores (it takes an approver's first acceptable record). And the
+where Ed25519 and ML-DSA give the same bytes; a decision's journal record is named by the
+decision (call, approver, verdict, scheme, decided_at), not by its signature, so re-signing and
+resubmitting one decision, even concurrently, is one record (`agent.DecisionStep`). And the
 scheme works inside the FIPS 140-3 module (`crypto/ecdsa`), unlike ML-DSA.
 
 **P-256 is not a hybrid half.** The hybrid scheme stays `ed25519+ml-dsa-65`. A hybrid exists for its

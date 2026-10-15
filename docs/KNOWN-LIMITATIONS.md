@@ -262,6 +262,13 @@ and an audit then reports that re-tally as the gate's outcome; drain the old pro
 relying on the exclusion. See
 [Separation of duties](guides/hitl-approval.md#separation-of-duties).
 
+**Journals written before the decision step was keyed by identity.** A decision recorded by an earlier
+version is named by its signature (`approval:<call>:<approver>:<hash with the signature>`). It reads,
+counts and verifies as before, and `bide audit` and evidence read it unchanged; an identical resubmission is a no-op with or without a check, and a re-signing under different bytes
+(`WithDecisionCheck`) finds it by what it says and writes nothing more. Only a randomized
+scheme re-signing submitted without `WithDecisionCheck` can still add a duplicate record, which the counting
+rule supersedes. See [Human approval](guides/hitl-approval.md).
+
 **A decision's time is the approver's claim.** Each signed decision carries when the approver
 decided (`decided_at`, by their clock, inside the signature) and when it was journaled
 (`recorded_at`, by the clock of the process that submitted it, not signed). The signature stops
@@ -300,6 +307,17 @@ after a policy change that adds `ExcludePrincipal`, re-drive the run (or let `Re
 standing is read from the gate's own tally, and decide through the intake. A note that is refreshed on
 a re-ask would need a new record kind every reader understands, a change to the journal's format of its
 own.
+
+**The browser approve page is as strong as the origin that serves it, and no stronger than a key a
+script can use.** A page the application serves can sign anything the approver's key will sign (the
+page says so); the design is a bundle hosted by the approver's organization on a dedicated origin and
+pinned by its published hashes, whose entry document Subresource Integrity cannot pin, so the hash is
+checked at deploy time. The page's key is non-extractable but usable by any script on its origin, and the
+page's confirmation steps (the typed id, the buttons, the scroll to the end) are aids, not controls. It
+supports Ed25519 only (WebCrypto has no ML-DSA), one browser per approver id, and key enrolment needs a
+fingerprint comparison out of band. Gates for high-value actions should wait for passkeys (WebAuthn),
+which are not built: they need a new signature scheme in the gate and the auditor. See
+[Approving in the browser](guides/hitl-approval.md#approving-in-the-browser).
 
 **Decisions signed before `bide.approval.v3` must be signed again.** They no longer verify. A run
 whose gate passed on them before the upgrade, and whose call has not run, pauses to ask again

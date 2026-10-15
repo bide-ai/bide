@@ -1,6 +1,6 @@
 # Design: a browser page for approving a call
 
-Status: decided, not built. The user decided the questions at the end of this note (below), and the page is built as its own pull request after the intake merges. It follows the approval intake
+Status: built (the page, `approvals.WithPage`, `approvals.WithCORS`, `cmd/approvepage`, and the golden vectors); the passkey follow-up is not. The user decided the questions at the end of this note (below), and the page was built to this note. It follows the approval intake
 (`approvals.Handler`, [Taking decisions over HTTP](../guides/hitl-approval.md#taking-decisions-over-http)),
 which already takes a signed decision over HTTP and shows a pending call. The page is the client that
 lets an approver who has no `bide` binary sign one. This revision folds in an adversarial review of
@@ -129,8 +129,9 @@ valid signature (safe) or lets two different arguments canonicalize alike (not).
 
 As in the CLI: all of the arguments, in a monospace block set with `textContent` (never `innerHTML`),
 with control characters, bidirectional overrides and zero-width characters shown visibly as escapes.
-Very long values are shown in full behind a scroll. Signing is disabled until the approver has
-reached the end, as an aid against signing what was not read (see "Controls").
+Very long values are shown in full in a scroll box and are never clipped: a clipped view with Approve
+enabled would sign arguments the approver did not read, which the CLI refuses to do. Signing is also disabled
+until the approver has reached the end of the box, as an aid (see "Controls").
 
 ## Same-origin, locked down
 

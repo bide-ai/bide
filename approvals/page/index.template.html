@@ -1,0 +1,60 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<meta name="referrer" content="no-referrer">
+<title>Approve a call</title>
+<link rel="stylesheet" href="app.css" integrity="{{sri app.css}}">
+</head>
+<body>
+<main>
+<h1>Approve a call</h1>
+<p id="origin"></p>
+<p id="status" role="status"></p>
+
+<section id="key-panel" hidden>
+<h2>Your key</h2>
+<p>Public key (send this to whoever enrols your key): <code id="key-public"></code></p>
+<p>Fingerprint, to read aloud when you enrol it, to a person who compares it with the key they enrol:</p>
+<p><code id="key-fingerprint"></code></p>
+<p class="note">The private key stays in this browser, usable only to sign. Clearing this site's data loses it; a lost key is replaced by a new one that must be enrolled again.</p>
+</section>
+<button id="create-key" type="button" hidden>Create my key</button>
+
+<section id="call-panel" hidden>
+<h2>The call</h2>
+<dl>
+<dt>Run</dt><dd id="call-run"></dd>
+<dt>Call</dt><dd id="call-call"></dd>
+<dt>Tool</dt><dd id="call-tool"></dd>
+<dt>Asked</dt><dd id="call-asked"></dd>
+<dt>State</dt><dd id="call-state"></dd>
+<dt>Note</dt><dd id="call-reason" hidden></dd>
+<dt>Gate</dt><dd id="gate-need"></dd>
+<dt>Decided</dt><dd id="gate-decided"></dd>
+<dt>Pending</dt><dd id="gate-pending"></dd>
+</dl>
+<h3>Arguments</h3>
+<pre id="call-args" tabindex="0"></pre>
+<p>SHA-256 of the arguments, computed here from what is shown above: <code id="call-digest"></code></p>
+<p class="note">Your signature binds this digest with the run, call, tool, your id, your decision and its time, and nothing else.</p>
+
+<h3>Your decision</h3>
+<label for="approver">Your approver id</label>
+<input id="approver" type="text" autocomplete="off" spellcheck="false">
+<p id="why" role="status"></p>
+<button id="approve" type="button" disabled>Approve</button>
+<button id="reject" type="button" class="reject" disabled>REJECT</button>
+<p class="note">The checks above the buttons help you not to sign by mistake. They do not protect against a hostile page: only the page you opened, and where it is hosted, do.</p>
+</section>
+
+<section id="result-panel" hidden>
+<h2>Result</h2>
+<p id="result" role="status"></p>
+<a id="receipt" hidden>Download your receipt</a>
+</section>
+</main>
+<script type="module" src="page.js" integrity="{{sri page.js}}"></script>
+</body>
+</html>

@@ -26,3 +26,17 @@ func TestDecision_AForgedRecordDoesNotStandInForTheGenuineDecision(t *testing.T)
 		t.Fatalf("the genuine decision was not recorded or counted: the forged record stood in for it")
 	}
 }
+
+// A replay of a recorded decision is found by its bytes, whatever name its record has, so it replays as itself:
+// not written again, found by its bytes, and counted.
+func TestDecision_AReplayIsFoundByItsBytes(t *testing.T) {
+	r := newRig(t, approvals.WithRateLimit(0, 0), approvals.WithGlobalRateLimit(0, 0))
+	first := r.decision("alice", true)
+	if status, out := r.post(first); status != 200 || out["recorded"] != true {
+		t.Fatalf("first: %d %v", status, out)
+	}
+	status, out := r.post(first)
+	if status != 200 || out["recorded"] != false || out["counted"] != true {
+		t.Fatalf("replay: %d %v", status, out)
+	}
+}
