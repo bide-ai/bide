@@ -407,6 +407,19 @@ HSM or cloud KMS signs ML-DSA yet. A buyer who needs both a hardware-held key an
 protection has to choose one for now. ECDSA P-256 signatures are randomized, so signing one tree
 head twice gives two different valid signatures (ed25519 and ML-DSA give the same bytes).
 
+**The RFC 3161 token verifier reads a narrow profile and refuses everything else.** `audit/rfc3161`
+(standard library only) accepts a DER token with one `SignerInfo`, SHA-256 or better, ECDSA P-256 or
+P-384, RSA of 3072 bits or more (2048 only through `Policy.RSA2048Until`) or Ed25519, and the signed
+attributes `contentType`, `messageDigest` and `signingCertificateV2`. It is a component: no command or
+gate calls it yet. A token that binds its signer only through the SHA-1 `signingCertificate` attribute
+is refused with `signing-certificate-v1-only`; FreeTSA's tokens are of this kind (OpenSSL accepts
+them), so FreeTSA cannot serve as a time authority, while DigiCert's carry both attributes and verify.
+Also refused: SHA-3 and SHA-224 hashes, ECDSA P-521, `crls` and attribute certificates, and a token
+that carries any certificate Go's parser rejects, even an unused one (stricter than OpenSSL, which
+accepts some of those). Not checked: the TSTInfo `tsa` name against the certificate subject. The status
+of the TSA certificate at `genTime` is decided by a function the caller must supply
+(`Policy.CertStatus`); the package does not fetch CRLs or OCSP responses.
+
 **Evidence sealed before format v6 keeps its older seal.** A `bide.audit.evidence.v5` package, whose
 seal covers the whole package JSON, still verifies (`bide audit verify-evidence` notes the format),
 but it cannot be re-sealed and its seal cannot be produced by a signer that refuses large messages.

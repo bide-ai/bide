@@ -35,6 +35,7 @@ Formats carry their own version tags, and a reader refuses what it does not read
 - **Pre-1.0, a verifier reads only the current format of each artifact** ([security model](../guides/security-model.md)). An artifact written under an older tag fails with `audit.ErrFormat` (not the format this version reads), distinct from `audit.ErrNotVerified`.
 - **Therefore, to re-verify old evidence, keep the `bide` binary that produced it, or one built from its tag.** Release binaries are reproducible from their tag (`scripts/repro.sh`), and `go install github.com/bide-ai/bide/cmd/bide@vX.Y.Z` fetches an old version. [Operations](operations.md#retention-and-archiving) lists what to archive with the evidence.
 - Inclusion proofs carry the record as stored bytes and ignore fields they do not know, so a record written by a newer release still verifies under the same proof format.
+- The RFC 3161 time-stamp token verifier `audit/rfc3161` (stdlib only) is a new, pre-1.0 package; its refusal reasons (`rfc3161.Reason`) are stable names, but its `Policy` and `Expected` fields may change before a gate uses it ([known limitations](../KNOWN-LIMITATIONS.md#audit-and-proofs)).
 - The standalone verifier `audit/verify` (stdlib only) is cross-checked bit for bit with the SDK and can be vendored at a fixed version.
 - Some tag changes ship in minor releases and are listed as **Breaking:** in the changelog. Read the changelog's Breaking entries before upgrading and, if you hold long-lived evidence, re-verify a sample with the new version before retiring the old one.
 
