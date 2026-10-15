@@ -106,8 +106,11 @@ type Approval struct {
 	Approved  int      `json:"approved"`
 	// Excluded are the approvers who may not decide (separation of duties: requesters of the run,
 	// agent.ApprovalPolicy.ExcludePrincipal); omitted when there are none.
-	Excluded []string        `json:"excluded,omitempty"`
-	Args     json.RawMessage `json:"args,omitempty"` // only with WithFields(Args(tool))
+	Excluded []string `json:"excluded,omitempty"`
+	// Reask says why the gate asks again over a recorded tally (agent.PendingReapproval,
+	// agent.PendingSoDReapproval); omitted on the gate's first ask.
+	Reask string          `json:"reask,omitempty"`
+	Args  json.RawMessage `json:"args,omitempty"` // only with WithFields(Args(tool))
 }
 
 // Policy is the gate's k of n.
@@ -210,7 +213,7 @@ func (w *Webhook) payload(n agent.Notification) Payload {
 	case agent.NotificationApprovalPending:
 		if a := n.Approval; a != nil {
 			p.Step = &Step{OpKind: string(agent.OpTool), OpID: a.ToolUseID, Tool: a.ToolName}
-			ap := &Approval{ToolUseID: a.ToolUseID, Tool: a.ToolName, Policy: Policy{Need: a.Need, Of: a.Of}, Approvers: a.Approvers, Approved: a.Approved, Excluded: a.Excluded}
+			ap := &Approval{ToolUseID: a.ToolUseID, Tool: a.ToolName, Policy: Policy{Need: a.Need, Of: a.Of}, Approvers: a.Approvers, Approved: a.Approved, Excluded: a.Excluded, Reask: a.Reask}
 			if ap.Approvers == nil {
 				ap.Approvers = []string{}
 			}

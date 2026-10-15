@@ -177,6 +177,17 @@ func ApprovalEvidence(ctx context.Context, store *agent.Journal, runID, toolUseI
 		}
 		out = append(out, EvidenceAction{Label: "approval tally (superseded)", Kind: KindApprovalTally, Ref: recs[i].Name, Bundle: pb})
 	}
+	// The gate's re-ask notes (agent.ApprovalReaskStep), when it asked again: when, why, and the
+	// policy it asked under (Kind "step").
+	for _, n := range []string{agent.ApprovalReaskStep(toolUseID, false), agent.ApprovalReaskStep(toolUseID, true)} {
+		if i, ok := index[n]; ok && recs[i].Kind == agent.StepValue {
+			pb, err := prove(i)
+			if err != nil {
+				return nil, err
+			}
+			out = append(out, EvidenceAction{Label: n, Kind: KindStep, Ref: n, Bundle: pb})
+		}
+	}
 	out = append(out,
 		EvidenceAction{Label: "approval tally", Kind: KindApprovalTally, Ref: tallyName, Bundle: tallyPB},
 		result)
@@ -211,6 +222,12 @@ type ApprovalVerdict struct {
 	// (agent.ApprovalPolicy.ExcludePrincipal); empty otherwise, or when the evidence does not prove
 	// one.
 	Requesters []string `json:"requesters,omitempty"`
+	// Reask and ReaskedAt: when the gate asked again over a recorded tally it did not act on, why
+	// (agent.PendingReapproval, agent.PendingSoDReapproval) and when (its recorded_at, by the run's
+	// clock), from the newest proven re-ask note (agent.ApprovalReaskStep); empty when the evidence
+	// holds none. Display only, like AskedAt.
+	Reask     string `json:"reask,omitempty"`
+	ReaskedAt string `json:"reasked_at,omitempty"`
 	// HeadAt is when the signed tree head the evidence is proven under was signed (its
 	// TimestampNanos, in agent.FormatTimestamp's form): every record it covers, the decisions
 	// included, was journaled by then.
@@ -507,6 +524,7 @@ func VerifyApprovals(actions []EvidenceAction, toolUseID string, policy agent.Ap
 		v.Times = append(v.Times, DecisionTime{Approver: c.Approver, Step: c.Step, DecidedAt: r.DecidedAt(), RecordedAt: r.RecordedAt()})
 	}
 	v.AskedAt = askedAt(actions, recs, recs[reqI], flowNode, toolUseID, sth, runID, logV)
+	v.Reask, v.ReaskedAt = reaskedAt(actions, recs, toolUseID, sth, runID, logV)
 	if at := agent.FormatTimestamp(time.Unix(0, sth.TimestampNanos)); validTimestamp(at) {
 		v.HeadAt = at
 	}

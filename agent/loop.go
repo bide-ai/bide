@@ -638,6 +638,7 @@ func (a *Agent) runLoop(ctx context.Context, runID string, d *driveSpec) (Messag
 						fire(ApprovalRequired{ToolUseID: tu.ID, Name: tu.Name, Args: tu.Args, Quorum: &evTally})
 						pend := &ApprovalPending{RunRef: RunRef{RunID: runID, RootRunID: rootRunID(ctx, runID)}, ToolUseID: tu.ID, ToolName: tu.Name, Args: tu.Args, Quorum: &tally}
 						pend.Reason = tally.reapproval
+						noteReask(ctx, a.store, runID, tu.ID, tu.Name, pol, tally)
 						return leave(pend)
 					}
 					approved = tally.Passed()

@@ -287,7 +287,11 @@ CLEAR`. The cards below the verdict are short: a label, a value and a line, with
   started and its outcome was lost, for example to a crash). A resume returns
   `*agent.OutcomeUnknown` until the outcome is recorded. See Halts below.
 - **waiting for approval**: the run paused at an approval gate (it journaled `approval-pending:`
-  for the call) and the gate has not decided.
+  for the call) and the gate has not decided. A gate that asked again (its policy came to exclude the
+  requester, or its tally predates the decision format) journals a re-ask note
+  (`approval-pending:<id>:sod` or `:v3`); the viewer reads the newest note, so it shows the gate
+  waiting under the policy it asks under, with the re-approval reason, and the timeline shows "asked
+  again for approval".
 - **started**: the run is in progress, as far as the journal shows.
 - **completed**, **aborted**, **cancelled**: the run's first end marker, with the reason a
   cancellation or abort recorded.

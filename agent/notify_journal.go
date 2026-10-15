@@ -53,8 +53,9 @@ func JournalNotifyEvents(runID string, recs []Record) []JournalNotifyEvent {
 	for _, r := range recs {
 		have[r.Name] = true
 	}
+	byName := valuesByName(recs)
 	var out []JournalNotifyEvent
-	for _, r := range recs {
+	for i, r := range recs {
 		if r.Kind != StepValue || !strings.HasPrefix(r.Name, "approval-pending:") {
 			continue
 		}
@@ -67,11 +68,23 @@ func JournalNotifyEvents(runID string, recs []Record) []JournalNotifyEvent {
 			Key: ApprovalKey(runID, w.ToolUseID, 0), Kind: NotificationApprovalPending, RunID: root, At: at,
 			Current: !slices.ContainsFunc(gateDecidedNames(w.ToolUseID), func(n string) bool { return have[n] }),
 		}
+		first := 0
+		if w.Reask != "" || r.Name != ApprovalPendingStep(w.ToolUseID) {
+			// A re-ask note is an ask of its own, owed a notification of its own; one the journal does
+			// not prove (ValidReaskNote) is not an event.
+			if !ValidReaskNote(byName, w.ToolUseID, r.Name, w) {
+				continue
+			}
+			sod := w.Reask == PendingSoDReapproval
+			ev.Key = ApprovalReaskKey(runID, w.ToolUseID, sod)
+			ev.Current = !slices.ContainsFunc(reaskDecidedNames(w.ToolUseID, sod), func(n string) bool { return have[n] })
+			first = i + 1 // the decisions that resolve it come after the note
+		}
 		if !w.Single {
 			ev.Approvers = slices.Clone(w.Approvers)
 		}
 		if !ev.Current {
-			for _, d := range recs {
+			for _, d := range recs[first:] {
 				// A signed m-of-n decision or a single approver's (Approve): either resolves the gate.
 				if d.Kind != StepApproval || d.ToolUseID != w.ToolUseID {
 					continue
@@ -130,4 +143,17 @@ func JournalNotifyEvents(runID string, recs []Record) []JournalNotifyEvent {
 		}
 	}
 	return out
+}
+
+// valuesByName is the first StepValue record of each name in recs.
+func valuesByName(recs []Record) map[string]Record {
+	m := make(map[string]Record, len(recs))
+	for _, r := range recs {
+		if r.Kind == StepValue {
+			if _, dup := m[r.Name]; !dup {
+				m[r.Name] = r
+			}
+		}
+	}
+	return m
 }

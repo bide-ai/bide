@@ -196,6 +196,7 @@ func (e *notifyEngine) pendingEvents(runID string, recs []Record) []notifyEvent 
 		have[r.Name] = true
 	}
 	now := e.cfg.now()
+	byName := valuesByName(recs)
 	var out []notifyEvent
 
 	for _, r := range recs {
@@ -203,10 +204,24 @@ func (e *notifyEngine) pendingEvents(runID string, recs []Record) []notifyEvent 
 			continue
 		}
 		var w ApprovalWait
-		if err := json.Unmarshal(r.Result, &w); err != nil || w.ToolUseID == "" || slices.ContainsFunc(gateDecidedNames(w.ToolUseID), func(n string) bool { return have[n] }) {
+		if err := json.Unmarshal(r.Result, &w); err != nil || w.ToolUseID == "" {
 			continue
 		}
 		ap := &NotifyApproval{ToolUseID: w.ToolUseID, ToolName: w.ToolName}
+		// The first pause note, or a re-ask note (ApprovalReaskStep): each is its own ask, decided by
+		// its own outcome.
+		key, decided := ApprovalKey(runID, w.ToolUseID, 0), gateDecidedNames(w.ToolUseID)
+		if w.Reask != "" || r.Name != ApprovalPendingStep(w.ToolUseID) {
+			sod := w.Reask == PendingSoDReapproval
+			if !ValidReaskNote(byName, w.ToolUseID, r.Name, w) {
+				continue
+			}
+			key, decided = ApprovalReaskKey(runID, w.ToolUseID, sod), reaskDecidedNames(w.ToolUseID, sod)
+			ap.Reask = w.Reask
+		}
+		if slices.ContainsFunc(decided, func(n string) bool { return have[n] }) {
+			continue
+		}
 		if !w.Single {
 			ap.Need, ap.Of, ap.Approvers = w.Need, len(w.Approvers), append([]string(nil), w.Approvers...)
 			if w.ExcludePrincipal {
@@ -217,7 +232,7 @@ func (e *notifyEngine) pendingEvents(runID string, recs []Record) []notifyEvent 
 				}
 			}
 		}
-		out = append(out, notifyEvent{key: ApprovalKey(runID, w.ToolUseID, 0), kind: NotificationApprovalPending, runID: root, opRun: runID, approval: ap})
+		out = append(out, notifyEvent{key: key, kind: NotificationApprovalPending, runID: root, opRun: runID, approval: ap})
 	}
 
 	live := liveAttempts(recs)

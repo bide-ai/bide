@@ -668,27 +668,35 @@ func (h *Handler) load(ctx context.Context, run, call string) (*gateRecords, err
 		return nil, errNoGate
 	}
 	g := &gateRecords{recs: recs, subject: agent.ApprovalSubject{RunID: run, ToolUseID: call, ToolName: tu.Name, Args: tu.Args}}
-	name := agent.ApprovalPendingStep(call)
+	byName := map[string]agent.Record{}
 	for _, r := range recs {
-		if r.Kind == agent.StepValue && r.Name == name {
-			if err := audit.UnmarshalStrict(r.Result, &g.wait); err != nil || g.wait.ToolUseID != call {
-				return nil, errNoGate
+		if r.Kind == agent.StepValue {
+			if _, dup := byName[r.Name]; !dup {
+				byName[r.Name] = r
 			}
-			// The policy the gate enforces now: the application's live one for a tool it knows, else
-			// the pause note's (written once, when the run first paused).
-			g.pol = policyOfNote(g.wait)
-			if p, ok := h.policyFor(tu.Name); ok {
-				g.pol = p // nil: the tool has no gate now
-			}
-			since := ""
-			if strings.HasPrefix(call, "node:") {
-				since = agent.ApprovalRequestStep(call) // a plan flow node's gate counts the decisions after its request
-			}
-			g.st = agent.EvaluateGateAfter(recs, g.subject, g.pol, h.verifiers, since)
-			return g, nil
 		}
 	}
-	return nil, errNoGate
+	// The newest pause note: a gate that asked again (agent.ApprovalReaskStep) records the policy it
+	// asks under there; the first note keeps the policy of the first pause.
+	r, ok := agent.LatestPauseNote(byName, call)
+	if !ok {
+		return nil, errNoGate
+	}
+	if err := audit.UnmarshalStrict(r.Result, &g.wait); err != nil || g.wait.ToolUseID != call {
+		return nil, errNoGate
+	}
+	// The policy the gate enforces now: the application's live one for a tool it knows, else the
+	// newest pause note's.
+	g.pol = policyOfNote(g.wait)
+	if p, ok := h.policyFor(tu.Name); ok {
+		g.pol = p // nil: the tool has no gate now
+	}
+	since := ""
+	if strings.HasPrefix(call, "node:") {
+		since = agent.ApprovalRequestStep(call) // a plan flow node's gate counts the decisions after its request
+	}
+	g.st = agent.EvaluateGateAfter(recs, g.subject, g.pol, h.verifiers, since)
+	return g, nil
 }
 
 // policyOfNote is the policy a pause note records.

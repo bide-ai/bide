@@ -185,6 +185,41 @@ func askedAt(actions []EvidenceAction, recs []agent.Record, request agent.Record
 	return ""
 }
 
+// reaskedAt returns why and when the gate on toolUseID asked again, from the newest proven re-ask
+// note among actions (agent.ApprovalReaskStep: the separation-of-duties one over the format one), a
+// KindStep action under sth and runID that reads strictly and that the evidence's tallies prove
+// (agent.ValidReaskNote); "" and "" when there is none.
+func reaskedAt(actions []EvidenceAction, recs []agent.Record, toolUseID string, sth SignedTreeHead, runID string, logV Verifier) (reason, at string) {
+	byName := map[string]agent.Record{}
+	for _, r := range recs {
+		if r.Kind == agent.StepValue {
+			if _, dup := byName[r.Name]; !dup {
+				byName[r.Name] = r
+			}
+		}
+	}
+	for _, name := range []string{agent.ApprovalReaskStep(toolUseID, true), agent.ApprovalReaskStep(toolUseID, false)} {
+		for i, a := range actions {
+			r := recs[i]
+			if a.Kind != KindStep || r.Kind != agent.StepValue || r.Name != name {
+				continue
+			}
+			if a.Bundle.Verify(logV) != nil || !sameTreeHead(a.Bundle.STH, sth) || a.Bundle.RunID != runID {
+				continue
+			}
+			var w agent.ApprovalWait
+			if err := UnmarshalStrict(r.Result, &w); err != nil || w.ToolUseID != toolUseID || !agent.ValidReaskNote(byName, toolUseID, name, w) {
+				continue
+			}
+			if _, err := agent.ParseTimestamp(w.RecordedAt); err != nil {
+				w.RecordedAt = ""
+			}
+			return w.Reask, w.RecordedAt
+		}
+	}
+	return "", ""
+}
+
 // validTimestamp reports whether s is in agent.FormatTimestamp's one form.
 func validTimestamp(s string) bool {
 	_, err := agent.ParseTimestamp(s)

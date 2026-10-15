@@ -312,10 +312,16 @@ func Build(ctx context.Context, runID string, recs []agent.Record, flow *Flow) *
 			var w agent.ApprovalWait
 			_ = json.Unmarshal(r.Result, &w)
 			e.Class, e.Title = "approval", "waiting for approval: "+w.ToolName+" ("+w.ToolUseID+")"
+			if w.Reask != "" {
+				e.Title = "asked again for approval: " + w.ToolName + " (" + w.ToolUseID + ")"
+			}
 			if w.Single {
 				e.Detail = "one decision"
 			} else {
 				e.Detail = fmt.Sprintf("%d of %d: %s", w.Need, len(w.Approvers), strings.Join(w.Approvers, ", "))
+				if w.ExcludePrincipal {
+					e.Detail += ", excluding the requester"
+				}
 			}
 		case strings.HasPrefix(r.Name, "approval-request:"):
 			q, _ := flowRequest(r)
@@ -534,7 +540,9 @@ func gates(recs []agent.Record, calls map[string]agent.ToolUse, order []string) 
 		g := Gate{ToolUseID: id, ToolName: calls[id].Name}
 		var wait agent.ApprovalWait
 		paused := false
-		if r, ok := byName[agent.ApprovalPendingStep(id)]; ok && json.Unmarshal(r.Result, &wait) == nil {
+		// The newest pause note: a gate that asked again (agent.ApprovalReaskStep) records the policy it
+		// asks under there, while the first note keeps the policy of the first pause.
+		if r, ok := agent.LatestPauseNote(byName, id); ok && json.Unmarshal(r.Result, &wait) == nil {
 			paused = true
 			g.Single, g.Need, g.Approvers, g.AskedAt = wait.Single, wait.Need, wait.Approvers, wait.RecordedAt
 			g.ExcludePrincipal, g.Requesters = wait.ExcludePrincipal, wait.Requesters

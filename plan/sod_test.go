@@ -269,9 +269,17 @@ func TestSoDFlow_WeakTallyDoesNotDecide(t *testing.T) {
 	if refunds != 0 || pend.Reason != agent.PendingSoDReapproval {
 		t.Fatalf("refunds %d, reason %q; want a re-approval pause and no refund", refunds, pend.Reason)
 	}
+	// The re-ask is noted, with the policy the gate asks under, for a reader with only the journal.
+	if r, ok, err := j.Get(ctx, "r1", agent.ApprovalReaskStep("node:refund", true)); err != nil || !ok || !strings.Contains(string(r.Result), `"exclude_principal":true`) {
+		t.Fatalf("re-ask note = %s (%v, %v)", r.Result, ok, err)
+	}
 	as["risk"].decide(t, j, pend, true)
 	if _, err := f.Run(ctx, j, "r1", "order-42"); err != nil || refunds != 1 {
 		t.Fatalf("Run at quorum = %v (refunds %d)", err, refunds)
+	}
+	// Conform reads the re-ask note and the re-tally as the gate's own records.
+	if ok, diffs, err := f.Conform(ctx, j, "r1"); err != nil || !ok {
+		t.Fatalf("Conform = %v %v %v", ok, diffs, err)
 	}
 }
 

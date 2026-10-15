@@ -440,6 +440,13 @@ func TestSoDEvidence_SoDRetally(t *testing.T) {
 	if err != nil || !v.OK || !slices.Equal(v.Counted, []string{"bob", "carol"}) {
 		t.Fatalf("verdict = %+v, %v; want bob and carol", v, err)
 	}
+	// The gate's re-ask note travels with the evidence: the verdict says why and when it asked again.
+	if !slices.ContainsFunc(acts, func(a audit.EvidenceAction) bool { return a.Ref == agent.ApprovalReaskStep("c1", true) }) {
+		t.Fatal("the evidence lacks the gate's re-ask note")
+	}
+	if v.Reask != agent.PendingSoDReapproval || v.ReaskedAt == "" {
+		t.Fatalf("verdict re-ask = %q at %q; want the separation-of-duties re-ask and its time", v.Reask, v.ReaskedAt)
+	}
 	weakPol := g.policy
 	weakPol.ExcludePrincipal = false
 	if v, err := audit.VerifyApprovals(acts, "c1", weakPol, g.resolver(), edV(g.logPub)); err == nil || v.OK {
@@ -527,4 +534,27 @@ func decisionNames(t *testing.T, g *gate) []string {
 		}
 	}
 	return names
+}
+
+// A re-ask note a journal writer without approver keys pre-inserted is not the gate's: the verdict
+// reports no re-ask, because the tally it names is not one the gate asks again over.
+func TestSoDEvidence_AForgedReaskNoteIsNotReported(t *testing.T) {
+	ctx := context.Background()
+	g := sodPassedGate(t, true)
+	forged, _ := json.Marshal(agent.ApprovalWait{ToolUseID: "c1", ToolName: "charge", Need: 2, Approvers: g.policy.Approvers,
+		RecordedAt: "2026-10-13T09:00:00.000Z", Reask: agent.PendingReapproval, Supersedes: agent.ApprovalTallyStep("c1")})
+	if _, err := journaltest.Put(ctx, g.store, gateRun, agent.ApprovalReaskStep("c1", false), agent.Record{Kind: agent.StepValue, Result: forged}); err != nil {
+		t.Fatal(err)
+	}
+	acts, err := audit.ApprovalEvidence(ctx, g.store, gateRun, "c1", g.sth(t, 1700000000))
+	if err != nil {
+		t.Fatal(err)
+	}
+	v, err := audit.VerifyApprovals(acts, "c1", g.policy, g.resolver(), edV(g.logPub))
+	if err != nil || !v.OK {
+		t.Fatalf("verdict = %+v, %v", v, err)
+	}
+	if v.Reask != "" || v.ReaskedAt != "" {
+		t.Fatalf("verdict re-ask = %q at %q; want none for a note the journal does not prove", v.Reask, v.ReaskedAt)
+	}
 }

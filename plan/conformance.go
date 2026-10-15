@@ -181,6 +181,11 @@ func (c *builderCore) conform(ctx context.Context, store *agent.Journal, runID s
 				for _, retally := range []string{agent.ApprovalRetallyStep(""), agent.ApprovalSoDRetallyStep("")} {
 					enc = strings.TrimSuffix(enc, strings.TrimPrefix(retally, agent.ApprovalTallyStep("")))
 				}
+			} else {
+				// A re-ask note (agent.ApprovalReaskStep) is the pause note's name with a suffix.
+				for _, sod := range []bool{false, true} {
+					enc = strings.TrimSuffix(enc, strings.TrimPrefix(agent.ApprovalReaskStep("", sod), agent.ApprovalPendingStep("")))
+				}
 			}
 			key, ok := gateKeys[enc]
 			if !ok {
