@@ -1,0 +1,3 @@
+Section: Changed
+
+`agent.Approve` and `agent.Cancel` take a trailing option (`...ApproveOption`, `...CancelOption`; `Journal.AnswerInterrupt` and `Journal.Signal` take `...AnswerOption`), so they no longer assign to a variable of the old function type without a wrapper; and `Record.ApproverSignature` is no longer non-nil only for a signed m-of-n decision: it also carries a lone `recorded_at` on single approvals, `ResolveHalt` results, end markers, interrupt answers and signals, so test for a signed decision with `Record.Approver() != ""` (or `IsApprovalDecision`), not with `ApproverSignature != nil`.

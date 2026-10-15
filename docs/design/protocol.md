@@ -757,7 +757,9 @@ data: {"v":1,"run_id":"acme/order-1234","type":"tool_completed","tool_completed"
 
 `{"run_id": "acme/order-1234", "reason": "customer withdrew"}` writes `run:cancelled {reason, by}`
 [redesign D1; `by` is engine work] and wakes the run (6.4). Idempotent; the first reason is kept.
-Cancelling a finished run fails with `failed_precondition`/`RUN_FINISHED`.
+Cancelling a finished run fails with `failed_precondition`/`RUN_FINISHED`. The record notes
+`recorded_at` (`Record.RecordedAt`, the engine clock, informational: nothing reads it), as every
+end marker does.
 
 ### 7.7 ExportEvidence
 
@@ -782,7 +784,8 @@ a pause inside a sub-agent is the sub-run.
 `approval:<enc id>` (`Approve`, `agent/halt.go`) with the approver credential's key ID
 [engine work]: an unsigned decision is attributable only to the credential that submitted it, so
 the journal names it. A recorded denial is final (#70). `Approve` and `SubmitDecision` never satisfy
-each other's gate. Errors: `not_found`/`NO_SUCH_CALL`, `already_exists`/`ALREADY_ANSWERED`.
+each other's gate. The record notes `recorded_at` (`Record.RecordedAt`, the engine clock; unsigned,
+informational: nothing reads it). Errors: `not_found`/`NO_SUCH_CALL`, `already_exists`/`ALREADY_ANSWERED`.
 
 ### 8.2 SubmitDecision (m-of-n, signed)
 
@@ -870,6 +873,9 @@ Writes the reconciled result under `tool:<enc id>` (`ResolveHaltRef`, `agent/hal
   minutes**. `contended`: `WithMinHaltAge` as on `main`, with `min_halt_age` from the request and an
   engine minimum. Too early: `failed_precondition`/`HALT_TOO_YOUNG` with `resolvable_at`.
 - **`WithoutLiveDriverCheck` is never reachable over the wire.**
+- The recorded result notes `recorded_at` (`Record.RecordedAt`, the engine clock). The resolver
+  signs nothing, so it is the engine's claim, anchored by the Merkle trail once a signed head covers
+  it, and informational: no floor, gate or replay reads it.
 - `ResolveHaltRef` must accept `worker_lost` and the unknown-report anchor for retry-safe calls
   (10.9) [engine work].
 - A late completion after a resolution with a different outcome is rejected (`COMPLETION_CONFLICT`)

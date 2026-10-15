@@ -36,7 +36,12 @@ if pend, ok := errors.AsType[*agent.ApprovalPending](err); ok {
 }
 ```
 
-The first decision recorded for a tool call wins. A denial is fed back to the model as the tool
+The first decision recorded for a tool call wins. The record notes when it was written
+(`Record.RecordedAt`, `recorded_at`): the clock of the process that called `Approve` (its
+`agent.WithClock`, else the run's clock on `ctx`, else its wall clock), kept from the first call. It
+is not signed (a 1-of-1 decision carries no signature), so it is that process's claim, anchored by
+the journal's Merkle trail once a signed head covers it, and the gate never reads it. `bide view`
+shows it on the timeline and the gate card; a decision an earlier version recorded has none. A denial is fed back to the model as the tool
 result `tool call denied by human`, so the model can react rather than the run failing.
 
 A recorded denial is final even if the tool's gate is removed or loosened before the run is driven

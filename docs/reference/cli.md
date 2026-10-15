@@ -782,7 +782,9 @@ bide audit: produce and verify audit proof bundles
          build a ProofBundle for one record against a signed tree head
 
   verify -bundle <file> -pubkey <hex|file>
-         verify a ProofBundle offline (its head must be a journal head of the bundle's run)
+         verify a ProofBundle offline (its head must be a journal head of the bundle's run);
+         if the proven record says when it was written (a single approver's decision, a
+         resolved halt, a run's end), print that time as the writing process's claim
 
   verify-governance -policy <file> [-digest <hex>] [-checker <astchecker>]
          recompute the policy digest and, with -checker, run the external verified
@@ -818,7 +820,9 @@ bide audit: produce and verify audit proof bundles
          verify a portable evidence package offline and print a plain-English report: the
          format, seal (a digest of the package, or the whole package for an older v5 package), key, and run binding, then one line per proven action (tool call, step,
          grant), plus the run certificate (checked against the given allowlist, required when
-         the package carries one) and consistency proof if present
+         the package carries one) and consistency proof if present; a tool call or step whose
+         record says when it was written (a resolved halt, a run's end) shows that time as the
+         writing process's claim
 
   verify-approvals -evidence <file> -pubkey <hex|file> -call <tool-use-id|node-key> -need <k>
                    -approvers <id,id,...> -approver-keys <file> [-approved <digest>...] [-approved-file <file>]

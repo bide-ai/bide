@@ -549,6 +549,9 @@ func (e EvidencePackage) Verify(v Verifier, opts ...EvidenceVerifyOption) (Evide
 			} else {
 				item.Verified = true
 				item.Note = itemSuccessNote(item.Kind, item.Label)
+				if r, err := a.Bundle.Record(); err == nil && (a.Kind == KindTool || a.Kind == KindStep) {
+					item.Note += recordedNote(r)
+				}
 			}
 		}
 		return item, nil
@@ -729,6 +732,19 @@ func sameSignedGrant(sg SignedGrant, rec agent.Record) bool {
 }
 
 // itemSuccessNote phrases the plain-English success line for a verified item by kind.
+// recordedNote is the note's tail for a proven record that says when it was written (a result a
+// ResolveHalt injected, an end marker proven as a step): "; recorded at <time> by the writer's
+// clock". It is the writing process's claim, informational (agent.Record.RecordedAt): the proof
+// commits to it, and the signed head's time bounds it, but nothing vouches for the clock. A time
+// that is not in the canonical form is not shown, and a record with none adds nothing.
+func recordedNote(r agent.Record) string {
+	s := r.RecordedAt()
+	if _, err := agent.ParseTimestamp(s); err != nil {
+		return ""
+	}
+	return "; recorded at " + s + " by the clock of the process that wrote it"
+}
+
 func itemSuccessNote(kind EvidenceKind, label string) string {
 	switch kind {
 	case KindTool:

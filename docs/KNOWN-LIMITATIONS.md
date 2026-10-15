@@ -319,6 +319,15 @@ fingerprint comparison out of band. Gates for high-value actions should wait for
 which are not built: they need a new signature scheme in the gate and the auditor. See
 [Approving in the browser](guides/hitl-approval.md#approving-in-the-browser).
 
+**A resolution's, a single approval's, an answer's and a run's end time are the writer's claim.** Each of these
+records notes when it was written (`recorded_at`), by the clock of the process that wrote it, and
+nothing signs it: an m-of-n approver signs their `decided_at`, but a single approver (`agent.Approve`)
+and the operator who resolves a halt (`agent.ResolveHalt`) hold no key the runtime knows, so their
+time is anchored only by the journal's Merkle trail once a signed head covers the record, and no
+clock is vouched for. A record written before the times existed has none and is reported as having
+none. A tool result a model-driven call produced has no `recorded_at` (the attempt marker's
+`attempted_at` is its time). Nothing reads these times to decide anything.
+
 **Decisions signed before `bide.approval.v3` must be signed again.** They no longer verify. A run
 whose gate passed on them before the upgrade, and whose call has not run, pauses to ask again
 (`agent.PendingReapproval`) rather than run on approvals an audit would fail. See
@@ -396,9 +405,10 @@ use freely lets an attacker who controls the process sign a rewritten trail, so 
 KMS signer. The check cannot find an event that left no trace in the journals it was given and no
 record in the trail (a halt that a later result resolved before the audit), cannot say that a person
 read a notification (an acknowledgement is the sink's 2xx), and dates events by the notifying
-processes' clocks. An all-clear owed for an event whose resolution the journal does not time (a tool's
-result, a halt resolution, a run's end) cannot be judged late; it is reported as the warning
-`all_clear_untimed`, and `-strict` fails on it. See [Audit](guides/audit.md#notification-evidence-were-the-people-told).
+processes' clocks and the resolving processes' (the `recorded_at` of a decision or a `ResolveHalt`
+result, unsigned). An all-clear owed for a journal an earlier version wrote, whose resolving record
+holds no time, cannot be judged late and is reported as the warning `all_clear_untimed` (`-strict`
+fails on it). See [Audit](guides/audit.md#notification-evidence-were-the-people-told).
 
 **The log key can be in an HSM or KMS only under ed25519 or ecdsa-p256, not under the post-quantum
 schemes.** `ecdsa-p256` is the scheme most HSMs and cloud KMS can sign (AWS KMS, Azure Key Vault,

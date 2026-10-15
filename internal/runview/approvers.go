@@ -157,6 +157,18 @@ func cards(g Gate, p *Proof) []ApproverCard {
 	return out
 }
 
+// DecisionAt is when a one-decision gate's decision was journaled, as the page shows it
+// ("2026-10-13 12:14:03.123"): the claim of the process that called agent.Approve, not signed. It
+// is empty for an m-of-n gate (its approver cards show the times), for a gate with no decision,
+// and for a decision that records none. A time that is not in the canonical form is not shown.
+func (g Gate) DecisionAt() string {
+	if !g.Single || len(g.Decisions) == 0 {
+		return ""
+	}
+	s, _ := parseRecorded(g.Decisions[0].RecordedAt)
+	return s
+}
+
 // HasTimes reports whether any of the gate's approver cards shows a decision time.
 func (g Gate) HasTimes() bool {
 	return slices.ContainsFunc(g.Cards, func(c ApproverCard) bool { return c.DecidedAt != "" || c.RecordedAt != "" })

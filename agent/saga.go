@@ -191,11 +191,13 @@ func (a *Agent) rollback(ctx context.Context, runID string, cause error, causeTe
 		}
 		// run:aborted records why and when (abortValue): the time is informational, for listing and for
 		// the notifier's catch-up; nothing that drives, resumes or recovers a run reads it.
-		name, value := runAbortedStep, mustJSONValue(abortValue{Reason: causeText, AbortedAt: startStamp(clockFrom(ctx))})
+		endAt := clockFrom(ctx)() // one reading for both the aborted_at and the recorded_at
+		endNow := func() time.Time { return endAt }
+		name, value := runAbortedStep, mustJSONValue(abortValue{Reason: causeText, AbortedAt: startStamp(endNow)})
 		if cancel != nil {
 			name, value = runCancelledStep, mustJSONValue(cancelReason{Reason: causeText})
 		}
-		first, err := writeEnd(ctx, a.store, runID, name, Record{Kind: StepValue, Result: value}, endOthers(name, true))
+		first, err := writeEnd(ctx, a.store, runID, name, Record{Kind: StepValue, Result: value, ApproverSignature: recordedStamp(endNow)}, endOthers(name, true))
 		switch {
 		case err != nil:
 			cerr = fmt.Errorf("saga %s: record the finished rollback: %w (%w)", runID, err, ErrStorage)

@@ -31,7 +31,10 @@ type View struct {
 	State     string `json:"state"`
 	StateText string `json:"state_text"` // State as the page shows it ("halted: outcome unknown")
 	Terminal  string `json:"terminal,omitempty"`
-	Records   int    `json:"records"`
+	// EndedAt is when the run's first end marker was written, by the clock of the process that wrote
+	// it (agent.RunStatus.EndedAt); empty when the run has not ended or the marker records no time.
+	EndedAt string `json:"ended_at,omitempty"`
+	Records int    `json:"records"`
 
 	Events    []Event      `json:"events"`
 	Halts     []Halt       `json:"halts,omitempty"`
@@ -61,9 +64,12 @@ type Event struct {
 	Title  string   `json:"title"`
 	Detail string   `json:"detail,omitempty"`
 	Badges []string `json:"badges,omitempty"`
+	// RecordedAt is the record's own recorded_at, verbatim, on the records that carry one: the
+	// claim of the process that wrote it, informational (see agent.Record.RecordedAt).
+	RecordedAt string `json:"recorded_at,omitempty"`
 
 	// What the page adds to the row; none of it is in the JSON view.
-	At      time.Time `json:"-"` // when the journal says the record happened (a start or an attempt marker), else zero
+	At      time.Time `json:"-"` // when the journal says the record happened (a start, an attempt marker, or a record's recorded_at), else zero
 	Payload string    `json:"-"` // the record as indented JSON, cut to a readable size (see prettyJSON)
 	Rel     string    `json:"-"` // At as an offset from the run's start ("+3.2s")
 	Abs     string    `json:"-"` // At in UTC, for the hover
@@ -71,9 +77,10 @@ type Event struct {
 }
 
 // TimeBar is a timeline row's span on the run's clock, in percent of the whole: from the row's own
-// time to the next timestamped record's. The journal timestamps only the run's start and its
-// attempt markers, so this is how long the attempt had been open when the next one was written, an
-// upper bound on the operation, not its duration.
+// time to the next timestamped record's. The journal timestamps the run's start, its attempt
+// markers, and the records that note when they were written (a single approver's decision, a
+// resolved halt, an end marker), so for an attempt this is how long it had been open when the next
+// timestamped record was written, an upper bound on the operation, not its duration.
 type TimeBar struct {
 	X, W  float64
 	Label string
@@ -167,7 +174,7 @@ func Build(ctx context.Context, runID string, recs []agent.Record, flow *Flow) *
 	v := &View{RunID: runID, Records: len(recs), State: string(agent.RunNotStarted)}
 	if j, err := agent.NewJournal(staticStore{recs: recs}); err == nil {
 		if st, err := agent.Status(ctx, j, runID); err == nil {
-			v.State, v.Terminal = string(st.State), st.Terminal
+			v.State, v.Terminal, v.EndedAt = string(st.State), st.Terminal, st.EndedAt
 		}
 	}
 
@@ -323,6 +330,15 @@ func Build(ctx context.Context, runID string, recs []agent.Record, flow *Flow) *
 			e.Class, e.Title, e.Detail = "node", r.Name, "chose "+short(r.Result)
 		default:
 			e.Detail = short(r.Result)
+		}
+		// A record that notes when it was written (a single approver's decision, a ResolveHalt result,
+		// an end marker) has its place on the run's clock, if the note is in the canonical form. A
+		// decision signed by an m-of-n approver has its own card; its journaling time places the row.
+		if s := r.RecordedAt(); s != "" {
+			e.RecordedAt = s
+			if t, err := agent.ParseTimestamp(s); err == nil && e.At.IsZero() {
+				e.At = t
+			}
 		}
 		v.Events = append(v.Events, e)
 	}
@@ -736,7 +752,13 @@ func timeline(evs []Event, start time.Time) {
 	if origin.IsZero() {
 		origin = evs[at[0]].At
 	}
-	last := evs[at[len(at)-1]].At
+	// The span is the earliest to the latest time, not the first to the last in journal order: a
+	// record stamped by a process whose clock is behind (a resume on another host) can sit earlier
+	// than the rows before it, and must not erase the others' bars.
+	lo, hi := origin, origin
+	for _, i := range at {
+		lo, hi = minTime(lo, evs[i].At), maxTime(hi, evs[i].At)
+	}
 	for _, i := range at {
 		e := &evs[i]
 		e.Abs = e.At.UTC().Format("2006-01-02 15:04:05.000 UTC")
@@ -745,22 +767,22 @@ func timeline(evs []Event, start time.Time) {
 			e.Rel = "start"
 		}
 	}
-	span := last.Sub(origin)
+	span := hi.Sub(lo)
 	if span <= 0 || len(at) < 2 {
 		return
 	}
 	for k, i := range at {
 		e := &evs[i]
-		from := e.At.Sub(origin)
+		from := e.At.Sub(lo)
 		to := from
 		label := "last timestamped record"
 		if k+1 < len(at) {
-			to = evs[at[k+1]].At.Sub(origin)
+			to = evs[at[k+1]].At.Sub(lo)
 			label = durText(to-from) + " until the next timestamped record"
 		}
 		bar := &TimeBar{X: 100 * float64(from) / float64(span), W: 100 * float64(to-from) / float64(span), Label: label}
 		bar.W = max(bar.W, 1.2)
-		bar.X = min(bar.X, 100-bar.W)
+		bar.X = min(bar.X, 100-bar.W) // lo is the earliest time, so X is never negative
 		e.Bar = bar
 	}
 }
@@ -779,4 +801,18 @@ func durText(d time.Duration) string {
 		return fmt.Sprintf("%dh %02dm", int(d.Hours()), int(d.Minutes())%60)
 	}
 	return fmt.Sprintf("%dd %dh", int(d.Hours())/24, int(d.Hours())%24)
+}
+
+func minTime(a, b time.Time) time.Time {
+	if b.Before(a) {
+		return b
+	}
+	return a
+}
+
+func maxTime(a, b time.Time) time.Time {
+	if b.After(a) {
+		return b
+	}
+	return a
 }

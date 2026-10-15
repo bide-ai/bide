@@ -166,6 +166,7 @@ when it is one.
 The screenshot is of the journal `bide sample` writes (see
 [Explore a sample journal](#explore-a-sample-journal)); `assets/demo/shots.sh` retakes it, and
 the halted flow, the risk map and the violated assertion below, from `bide sample`.
+`assets/demo/shots-approval.sh` retakes the approval run's screenshots (halted, verified, timeline) by driving `examples/approval`.
 
 ## Needs attention
 
@@ -265,7 +266,10 @@ state is never carried by color alone), and three or four key numbers under it. 
 | `FAILED` | the run aborted or was cancelled, or it completed but its proof or an approval gate's signatures do not verify |
 | `IN PROGRESS` | the run has started and has no end marker yet |
 
-The numbers are the journal records, how many of them the signed head covers, the first approval
+When the run's end marker notes when it was written, the verdict adds a line, `Ended <time> UTC`, and
+a result that `agent.ResolveHalt` injected adds one, `A halt was resolved at <time> UTC`. Both are
+the clock of the process that wrote the record, not a time anything signs, and a journal an earlier
+version wrote shows neither. The numbers are the journal records, how many of them the signed head covers, the first approval
 gate's approvals (`2/3` with its signature verdict), the operations whose outcome is unknown, the
 flow nodes reached, and the tool results. A config page opens with `N POLICY VIOLATIONS` (the
 violated assertions), `N CONFIG ERRORS`, `N ASSERTIONS UNDECIDED`, `ALL ASSERTIONS HOLD` or `NO
@@ -391,7 +395,9 @@ the recorded one (the approver's clock runs ahead) and a signed time before the 
 approval (their clock runs behind, or the decision was signed in advance); the gate orders
 decisions by journal position, never by these times, so a note never changes the outcome (see
 [When a decision was made](hitl-approval.md#when-a-decision-was-made)). With approver keys the times
-are those of the decision the recount counted. A one-decision gate is not signed and has no cards.
+are those of the decision the recount counted. A one-decision gate is not signed and has no cards;
+its "who decided" detail says when the decision was recorded, by the clock of the process that
+called `Approve`.
 
 **Proof path.** With a signed head (`-sth`) or an evidence package (`-evidence`), a small diagram
 of the proof the audit package verified for the last record the head covers: the record's leaf
@@ -406,14 +412,20 @@ markers and re-attempts, tool results with the `Safety` they ran under (read-onl
 effect) and whether `ResolveHalt` reconciled them (with the evidence), approval decisions, the
 approval-pending record and tally, plan nodes and Switch choices, and the end marker.
 
+![bide view's timeline for a refund run: the approvals, the attempt markers, the result ResolveHalt injected and the end marker each carry a time, as an offset from the run's start](img/run-viewer-timeline-dark.png)
+
 - Each row has an anchor, `#record-N`, with a link glyph on hover, so a record can be linked.
 - Each row's **payload** is the record as the journal holds it, indented, in a collapsed `details`
   with its JSON highlighted (a payload over 8 KiB is cut, and says how much); with JavaScript a
   **Copy** button copies it.
-- The journal timestamps only the run's start and its attempt markers, so only those rows show a
-  time: an offset from the start (`+3.2s`) with the absolute UTC time on hover, and a bar spanning
-  from that time to the next timestamped record's (an upper bound on how long the attempt had been
-  open, not the operation's duration: the journal records no end time).
+- The journal timestamps the run's start, its attempt markers, and the records that note when they
+  were written (`recorded_at`: a single approver's decision, a signed m-of-n decision, a result
+  `ResolveHalt` injected, and the end marker), so only those rows show a time: an offset from the
+  start (`+3.2s`) with the absolute UTC time on hover, and a bar spanning from that time to the next
+  timestamped record's (for an attempt, an upper bound on how long it had been open, not the
+  operation's duration). A `recorded_at` is the writing process's claim, not a signed time, and one
+  that is not in the canonical form places no row. The JSON view carries it on the event
+  (`recorded_at`) and the run's `ended_at`.
 
 ## Theme, keyboard and sharing
 

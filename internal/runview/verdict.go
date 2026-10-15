@@ -2,6 +2,7 @@ package runview
 
 import (
 	"fmt"
+	"slices"
 	"strings"
 
 	"github.com/bide-ai/bide/agent"
@@ -101,11 +102,17 @@ func runVerdict(v *View) Verdict {
 		d = Verdict{Class: "info", Word: "NOT STARTED", Icon: "idle", Line: "The journal holds no run:start for this run."}
 	}
 
+	if t, ok := parseRecorded(v.EndedAt); ok {
+		d.Details = append(d.Details, "Ended "+t+" UTC, by the clock of the process that wrote the end marker.")
+	}
 	tools, models, effects, reconciled := 0, 0, 0, 0
 	for _, e := range v.Events {
 		switch e.Class {
 		case "tool":
 			tools++
+			if t, ok := parseRecorded(e.RecordedAt); ok && slices.Contains(e.Badges, "reconciled by ResolveHalt") {
+				d.Details = append(d.Details, "A halt was resolved at "+t+" UTC: "+e.Title+", by the clock of the process that resolved it.")
+			}
 			for _, b := range e.Badges {
 				if strings.HasPrefix(b, "side effect") {
 					effects++
@@ -312,4 +319,18 @@ func (l RunList) Verdict() Verdict {
 		{Value: fmt.Sprint(l.Counts["in-progress"]), Label: "in progress"},
 	}
 	return d
+}
+
+// parseRecorded is a recorded time as the page shows it ("2026-10-13 12:14:03.123"), and false for
+// one that is empty or not in the canonical form: the page shows no time rather than one it cannot
+// read.
+func parseRecorded(s string) (string, bool) {
+	if s == "" {
+		return "", false
+	}
+	t, err := agent.ParseTimestamp(s)
+	if err != nil {
+		return "", false
+	}
+	return t.Format("2006-01-02 15:04:05.000"), true
 }

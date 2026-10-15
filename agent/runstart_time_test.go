@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"reflect"
 	"regexp"
+	"slices"
 	"testing"
 	"time"
 )
@@ -260,10 +261,12 @@ func TestRunStart_StartedAtIsNotRead(t *testing.T) {
 }
 
 // sameDrive fails unless a and b hold the same journal for runID, but for what differs between
-// any two drives: salts, the start time, and each attempt marker's time and claim token.
+// any two drives: salts, the start time, the recorded_at of the records that carry one alone (a
+// single approval, an end marker), and each attempt marker's time and claim token.
 func sameDrive(t *testing.T, a, b *Journal, runID string) {
 	t.Helper()
 	var js [2][]Record
+	var presence [2][]bool
 	for i, j := range []*Journal{a, b} {
 		recs, err := j.History(context.Background(), runID)
 		if err != nil {
@@ -276,7 +279,11 @@ func sameDrive(t *testing.T, a, b *Journal, runID string) {
 				recs[k].AttemptedAt, recs[k].claim = 0, ""
 			}
 		}
+		presence[i] = stripRecordedAt(recs)
 		js[i] = recs
+	}
+	if !slices.Equal(presence[0], presence[1]) {
+		t.Fatalf("the journals differ in which records carry a recorded_at:\n %s\n %s", dumpRecords(js[0]), dumpRecords(js[1]))
 	}
 	if !reflect.DeepEqual(js[0], js[1]) {
 		t.Fatalf("journals differ:\n %s\n %s", dumpRecords(js[0]), dumpRecords(js[1]))

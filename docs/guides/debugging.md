@@ -348,8 +348,12 @@ of a cancelled run returns `ErrRunCancelled`, with a `Result`. The keys `run:com
 `run:aborted` and `run:cancelled` are distinct, so two can land; the first in journal order is the
 run's end for every reader, and every writer of one reads the markers back and reports the first.
 `agent.Status(ctx, j, runID)` reads a run's `RunStatus` (`not_started`, `started`, `completed`,
-`aborted`, `cancelled`, the end marker's text, the record count) from one `Load`; a paused, halted
-or limit-stopped run is `started`, since pauses are not journaled.
+`aborted`, `cancelled`, the end marker's text, when it was written as `EndedAt`, the record count)
+from one `Load`; a paused, halted or limit-stopped run is `started`, since pauses are not
+journaled. `EndedAt` is the `recorded_at` the end marker notes (`Record.RecordedAt`: the writing
+process's clock, `agent.WithClock` on `Cancel`, else the run's clock, else the wall clock); it is
+empty for a run with no end marker and for one whose marker records no time (written by an earlier
+version), and nothing that drives a run reads it.
 
 **Pauses re-surface; they are not errors.** A re-driven run that is still waiting returns an
 `agent.Pause` (`*ApprovalPending`, `*InterruptPending`, `*TimerPending`, `*SignalPending`,

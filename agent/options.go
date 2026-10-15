@@ -88,12 +88,15 @@ type ConcurrencyOption interface {
 }
 
 // ClockOption is a clock that applies to an agent (Option), to one run (RunOption), to a halt
-// resolution (ResolveOption), and to a recorded approver decision (ApproveOption): WithClock.
+// resolution (ResolveOption), to a recorded approver decision (ApproveOption), and to a
+// cancellation (CancelOption), and to an interrupt answer or signal (AnswerOption): WithClock.
 type ClockOption interface {
 	Option
 	RunOption
 	ResolveOption
 	ApproveOption
+	CancelOption
+	AnswerOption
 }
 
 // SafetyOption is a Safety that applies to a tool (ToolOption) and to a step (StepOption):
@@ -719,9 +722,10 @@ func (f clockOption) applyResolve(c *resolveConfig) error {
 
 // WithClock sets the clock that reads "now": for a run (an agent's runs, or one run), the clock
 // its durable timers (Sleep, WaitUntil, AwaitFor) measure against and that stamps the times it
-// records (RunStart.StartedAt, ApprovalWait.RecordedAt); for ResolveHalt, the clock
-// WithMinHaltAge measures against; for SubmitDecision, the clock that stamps the decision's
-// RecordedAt. The default is time.Now. Deployments leave it unset; tests
+// records (RunStart.StartedAt, ApprovalWait.RecordedAt, the end markers' RecordedAt); for
+// ResolveHalt, the one clock of the call: WithMinHaltAge measures against it, and it stamps the claim marker and the outcome's RecordedAt (the context's clock is not read);
+// for SubmitDecision, Approve and Cancel, the clock that stamps the record's RecordedAt. The
+// default is time.Now. Deployments leave it unset; tests
 // pass a controllable clock to advance time deterministically. A nil now is ErrConfig.
 func WithClock(now func() time.Time) ClockOption { return clockOption(now) }
 

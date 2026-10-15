@@ -127,18 +127,42 @@ func Interrupt[T any](ctx context.Context, name string, prompt any) (T, error) {
 // point name (see Interrupt); then re-invoke Run with the pause's RootRunID to continue.
 // It is idempotent: the first value for a (runID, name) wins. The value survives a crash:
 // it is a journaled step.
-func (j *Journal) AnswerInterrupt[T any](ctx context.Context, runID, name string, value T) error {
+//
+// The record notes when it was written (Record.RecordedAt), by WithClock's clock, else the clock
+// ctx carries, else the wall clock: the claim of the process that answered, set by the first
+// answer and kept by the idempotent calls after it. It is informational; nothing reads it.
+func (j *Journal) AnswerInterrupt[T any](ctx context.Context, runID, name string, value T, opts ...AnswerOption) error {
 	if runID == "" {
 		return fmt.Errorf("AnswerInterrupt: empty runID: %w", ErrConfig)
+	}
+	cfg := answerConfig{now: clockFrom(ctx)}
+	if err := applyOptions("AnswerInterrupt", &cfg, opts, AnswerOption.applyAnswer); err != nil {
+		return err
 	}
 	b, err := marshalJournal(value)
 	if err != nil {
 		return fmt.Errorf("agent: encode interrupt answer for %q: %w (%w)", name, err, ErrConfig)
 	}
 	_, err = j.do(ctx, runID, interruptStep(name), func(context.Context) (Record, error) {
-		return Record{Kind: StepValue, Result: b}, nil
+		return Record{Kind: StepValue, Result: b, ApproverSignature: recordedStamp(cfg.now)}, nil
 	})
 	return err
+}
+
+// AnswerOption configures AnswerInterrupt and Signal: WithClock, the clock that stamps the
+// record's RecordedAt.
+type AnswerOption interface {
+	applyAnswer(*answerConfig) error
+}
+
+type answerConfig struct{ now func() time.Time }
+
+func (f clockOption) applyAnswer(c *answerConfig) error {
+	if err := f.check(); err != nil {
+		return err
+	}
+	c.now = f
+	return nil
 }
 
 func interruptStep(name string) string { return "interrupt:" + name }
@@ -492,16 +516,24 @@ func Await[T any](ctx context.Context, name string) (T, error) {
 //
 // Signal only records the payload. After delivering, re-invoke Run with the pause's RootRunID
 // to resume the awaiting run: directly, or via a Waker scheduled at the current time.
-func (j *Journal) Signal[T any](ctx context.Context, runID, name string, payload T) error {
+//
+// The record notes when it was written (Record.RecordedAt), by WithClock's clock, else the clock
+// ctx carries, else the wall clock; the first delivery sets it. It is informational; nothing
+// reads it.
+func (j *Journal) Signal[T any](ctx context.Context, runID, name string, payload T, opts ...AnswerOption) error {
 	if runID == "" {
 		return fmt.Errorf("Signal: empty runID: %w", ErrConfig)
+	}
+	cfg := answerConfig{now: clockFrom(ctx)}
+	if err := applyOptions("Signal", &cfg, opts, AnswerOption.applyAnswer); err != nil {
+		return err
 	}
 	b, err := marshalJournal(payload)
 	if err != nil {
 		return fmt.Errorf("agent: encode signal %q: %w (%w)", name, err, ErrConfig)
 	}
 	_, err = j.do(ctx, runID, signalStep(name), func(context.Context) (Record, error) {
-		return Record{Kind: StepSignal, Result: b}, nil
+		return Record{Kind: StepSignal, Result: b, ApproverSignature: recordedStamp(cfg.now)}, nil
 	})
 	return err
 }

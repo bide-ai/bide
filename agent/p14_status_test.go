@@ -3,6 +3,7 @@ package agent
 import (
 	"context"
 	"testing"
+	"time"
 )
 
 // Rule 7 (L6): Status reads a prefix of the journal (one Load), so it never reports a completed run
@@ -69,11 +70,12 @@ func TestP14Rule07_StatusStates(t *testing.T) {
 		t.Fatalf("Status of a run completed first = %+v, %v", st, err)
 	}
 	pcStart(t, j, "c", false)
-	if err := Cancel(ctx, j, "c", "operator said so"); err != nil {
+	cancelledAt := time.Date(2026, 10, 14, 1, 2, 3, 456_000_000, time.UTC)
+	if err := Cancel(ctx, j, "c", "operator said so", WithClock(func() time.Time { return cancelledAt })); err != nil {
 		t.Fatal(err)
 	}
 	pcMark(t, j, "c", runCompleteStep, "")
-	if st, err := Status(ctx, j, "c"); err != nil || st != (RunStatus{State: RunCancelled, Terminal: "operator said so", Records: 4}) {
+	if st, err := Status(ctx, j, "c"); err != nil || st != (RunStatus{State: RunCancelled, Terminal: "operator said so", Records: 4, EndedAt: "2026-10-14T01:02:03.456Z"}) {
 		t.Fatalf("Status of a run cancelled first = %+v, %v", st, err)
 	}
 	pcStart(t, j, "a", true)
