@@ -901,12 +901,18 @@ asserting the same counted set and the same reason:
    `bide audit verify-approvals -identity`, the verdict lines and tiers, receipts with chains.
 4. OCSP module (optional), archive timestamps and renewal for the kit.
 
+Every step updates the guides it touches. The approvals guide states the post-quantum gap (decision 15: a
+certificate-bound approver gives up the hybrid scheme's protection) where it first describes
+certificate-bound approvers.
+
 ## Decisions
 
 Numbers are stable across revisions. The assessment disagreed with the earlier recommendation on 2, 4, 9
 and 13 and added caveats to 1 and 5; they are folded into the text below.
 
 ### Decided by the user, 2026-10-15
+
+Decisions 1, 2, 5, 6 (delta CRLs), 12, 13 and 15.
 
 2. **Independent time above a value threshold.** `A(d)` is the earliest independent time, else the smallest
    covering head; head times must be non-decreasing; the auditor enumerates heads from the anchor log. A
@@ -928,6 +934,19 @@ and 13 and added caveats to 1 and 5; they are folded into the text below.
     the Merkle trail covers it); a **by-reference mode** (a salted commitment in the record, the
     certificate retained elsewhere) is a configured option for banks whose privacy review requires it.
     `GET /pending` requires authentication in either mode.
+
+1. **Identifier.** The seat key is an **opaque, immutable person id in a URI SAN with a host**; an email
+   SAN is accepted as the identifier only with a bank-evidenced control that mailboxes are one per person
+   and never reassigned; exactly one SAN; never the Subject DN; case-folded. This depends on the bank's
+   directory (can it put an opaque person id in a certificate?). *Decided: yes.*
+13. **Issuance assurance and EKU.** A certificate policy OID that the CA asserts only after MFA step-up
+    and a hardware-bound or attested key is required; a bank-assigned private EKU OID by default;
+    `id-kp-emailProtection` only on a dedicated issuing CA; bide enforces the EKU of every CA on the chain
+    itself. This needs the bank's CA to assert a policy OID and to enforce MFA and key protection at
+    issuance, which is the bank's capability, not bide's. *Decided: yes.*
+15. **Post-quantum.** `ml-dsa-65` approvers can be certificate-bound (the standard library supports
+    ML-DSA certificates); the hybrid scheme stays bare-key, so certificate-bound approvers give up hybrid
+    protection (a recorded limitation). *Decided: accept the gap and state it in the guide.*
 
 ### Decided by recommendation (technical, 2026-10-15)
 
@@ -972,15 +991,4 @@ These are engineering choices the design settles; each can be reopened if the us
 
 ### Still open for the user
 
-1. **Identifier.** The seat key is an **opaque, immutable person id in a URI SAN with a host**; an email
-   SAN is accepted as the identifier only with a bank-evidenced control that mailboxes are one per person
-   and never reassigned; exactly one SAN; never the Subject DN; case-folded. This depends on the bank's
-   directory (can it put an opaque person id in a certificate?). *Recommend: yes.*
-13. **Issuance assurance and EKU.** A certificate policy OID that the CA asserts only after MFA step-up
-    and a hardware-bound or attested key is required; a bank-assigned private EKU OID by default;
-    `id-kp-emailProtection` only on a dedicated issuing CA; bide enforces the EKU of every CA on the chain
-    itself. This needs the bank's CA to assert a policy OID and to enforce MFA and key protection at
-    issuance, which is the bank's capability, not bide's. *Recommend: yes.*
-15. **Post-quantum.** `ml-dsa-65` approvers can be certificate-bound (the standard library supports
-    ML-DSA certificates); the hybrid scheme stays bare-key, so certificate-bound approvers give up hybrid
-    protection (a recorded limitation). *Recommend: accept the gap and say so in the guide.*
+None. Every decision is settled.
