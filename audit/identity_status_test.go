@@ -312,12 +312,13 @@ func TestEffectiveTimeValuesAndCompromiseFlag(t *testing.T) {
 
 // ---- the series: absence, L(C), windows, tiers ----
 
-// Timeline used below (leaf valid T0-1h .. T0+1h, A = T0+5s):
+// Timeline used below (leaf valid T0-1h .. T0+1h, A = T0+5s). Each CRL is issued no later than the
+// previous one's nextUpdate, so the series has no gap:
 //
-//	c1 T0+10s .. +30m   c2 T0+40m .. +30m (covers to T0+70m)   cL T0+70m .. +30m   c9 T0+2h20m
+//	c1 T0 .. +30m (in force at A)   c2 T0+30m .. +40m   cL T0+70m .. +30m (the first beyond notAfter)
 func series(s *stFx) (c1, c2, cL []byte) {
-	return s.lcrl(1, idT0.Add(10*time.Second), 30*min),
-		s.lcrl(2, idT0.Add(40*min), 30*min),
+	return s.lcrl(1, idT0, 30*min),
+		s.lcrl(2, idT0.Add(30*min), 40*min),
 		s.lcrl(3, idT0.Add(70*min), 30*min)
 }
 
@@ -374,9 +375,9 @@ func TestListingBeforeADoesRevoke(t *testing.T) {
 
 func TestProvisionalWhenTheWindowIsNotCovered(t *testing.T) {
 	s := newStFx(t)
-	c1, _, _ := series(s)
-	// Only c1: S = T0+10s is before A + W' (W' = W = 24h while L is unknown).
-	st := s.leafStatus(s.snap(c1), audit.StatusParams{})
+	_, c2, _ := series(s)
+	// Only c2: S = T0+30m is before A + W' (W' = W = 24h while L is unknown).
+	st := s.leafStatus(s.snap(c2), audit.StatusParams{})
 	if st.Tier != audit.TierProvisional {
 		t.Fatalf("%+v", st)
 	}
@@ -420,9 +421,10 @@ func TestWindowParameterCapsW(t *testing.T) {
 func TestExpirySequence(t *testing.T) {
 	s := newStFx(t)
 	rev := testca.Revoked(s.leaf.Cert, idT0.Add(20*min), 0) // R > A: the decision stands
-	crl1 := s.lcrl(1, idT0.Add(30*min), 40*min, rev)        // next update T0+70m
-	crlL := s.lcrl(2, idT0.Add(70*min), 30*min, rev)        // the first beyond notAfter still lists it
-	crl2 := s.lcrl(3, idT0.Add(140*min), 30*min)            // pruned: no longer lists it
+	crl0 := s.lcrl(1, idT0, 30*min)                         // in force at A
+	crl1 := s.lcrl(2, idT0.Add(30*min), 40*min, rev)        // next update T0+70m
+	crlL := s.lcrl(3, idT0.Add(70*min), 30*min, rev)        // the first beyond notAfter still lists it
+	crl2 := s.lcrl(4, idT0.Add(140*min), 30*min)            // pruned: no longer lists it
 
 	// CRL 2 alone: nothing establishes that it is the first CRL beyond notAfter, so its silence is no
 	// information, never "not revoked".
@@ -431,7 +433,7 @@ func TestExpirySequence(t *testing.T) {
 		t.Fatalf("CRL 2 alone: %+v", st)
 	}
 	// CRL 1 present: per E versus A. E = R > A, so the decision counts, and the listing is seen.
-	st = s.leafStatus(s.snap(crl1, crl2), audit.StatusParams{})
+	st = s.leafStatus(s.snap(crl0, crl1, crl2), audit.StatusParams{})
 	if st.Revoked {
 		t.Fatalf("E = R > A must not revoke: %+v", st)
 	}
@@ -439,7 +441,7 @@ func TestExpirySequence(t *testing.T) {
 		t.Fatalf("a gap between CRL 1 and CRL 2 cannot be final: %+v", st)
 	}
 	// The complete series: final, and still not revoked because R > A.
-	st = s.leafStatus(s.snap(crl1, crlL, crl2), audit.StatusParams{})
+	st = s.leafStatus(s.snap(crl0, crl1, crlL, crl2), audit.StatusParams{})
 	if st.Revoked || st.Tier != audit.TierFinal {
 		t.Fatalf("complete series: %+v", st)
 	}
@@ -461,7 +463,8 @@ func TestExpiredCertsOnCRLMakesLCUnbounded(t *testing.T) {
 	retained := testca.CRLOpts{Number: 5, ThisUpdate: idT0.Add(140 * min), NextUpdate: idT0.Add(170 * min),
 		Extra: []pkix.Extension{ext(asn1.ObjectIdentifier{2, 5, 29, 60}, false, genTime(t, idT0.Add(-24*hour)))}}
 	der := s.inter.NewCRL(t, retained)
-	st := s.leafStatus(s.snap(der), audit.StatusParams{W: hour})
+	pre := s.lcrl(4, idT0, 3*hour) // in force at A and reaching the retained CRL
+	st := s.leafStatus(s.snap(pre, der), audit.StatusParams{W: hour})
 	if !st.Unbounded || st.Tier != audit.TierFinal {
 		t.Fatalf("%+v", st)
 	}
@@ -484,15 +487,15 @@ func TestExpiredCertsOnCRLMakesLCUnbounded(t *testing.T) {
 // A gap in time coverage between the CRLs from S back to L(C) is not final; a gap in CRL numbers alone is fine.
 func TestTimeCoverageNotNumbers(t *testing.T) {
 	s := newStFx(t)
-	c1 := s.lcrl(10, idT0.Add(10*time.Second), 30*min)
-	c2 := s.lcrl(50, idT0.Add(40*min), 30*min) // numbers jump: that alone is nothing
+	c1 := s.lcrl(10, idT0, 30*min)
+	c2 := s.lcrl(50, idT0.Add(30*min), 40*min) // numbers jump: that alone is nothing
 	cL := s.lcrl(51, idT0.Add(70*min), 30*min)
 	if st := s.leafStatus(s.snap(c1, c2, cL), audit.StatusParams{}); st.Tier != audit.TierFinal {
 		t.Fatalf("number gap only: %+v", st)
 	}
 	// A time gap: c1 covers only to T0+40m but the next CRL we have is at T0+75m.
 	cLate := s.lcrl(52, idT0.Add(75*min), 30*min)
-	short := s.lcrl(11, idT0.Add(10*time.Second), 20*min)
+	short := s.lcrl(11, idT0, 20*min)
 	st := s.leafStatus(s.snap(short, cLate), audit.StatusParams{})
 	if st.Tier == audit.TierFinal {
 		t.Fatalf("time gap: %+v", st)
@@ -740,4 +743,277 @@ func TestSnapshotIsSafeForConcurrentUse(t *testing.T) {
 		}()
 	}
 	wg.Wait()
+}
+
+// ---- CRLs the standard library will not build: marshalled by hand and signed ----
+
+func TestRawCRLBuilderMakesAUsableCRL(t *testing.T) {
+	s := newStFx(t)
+	raw := s.inter.RawCRL(t, testca.RawCRLOpts{Number: big.NewInt(9), This: s.a.Add(time.Second), Next: s.a.Add(hour)})
+	sn := audit.NewStatusSnapshot()
+	info, err := sn.AddCRL(raw)
+	if err != nil {
+		t.Fatalf("a well-formed hand-built CRL: %v", err)
+	}
+	if info.Number.Int64() != 9 {
+		t.Fatalf("number %v", info.Number)
+	}
+	if st := s.leafStatus(sn, audit.StatusParams{}); st.Tier == audit.TierNoInformation {
+		t.Fatalf("the hand-built CRL verifies under its issuer and is usable: %+v", st)
+	}
+}
+
+func TestAddCRLRefusesMalformedCRLsTheLibraryWillNotBuild(t *testing.T) {
+	s := newStFx(t)
+	this, next := s.a.Add(time.Second), s.a.Add(hour)
+	for name, tc := range map[string]struct {
+		o    testca.RawCRLOpts
+		want string
+	}{
+		"no CRL number":                {testca.RawCRLOpts{This: this, Next: next}, "CRL number"},
+		"negative CRL number":          {testca.RawCRLOpts{Number: big.NewInt(-1), This: this, Next: next}, "CRL number"},
+		"no nextUpdate":                {testca.RawCRLOpts{Number: big.NewInt(1), This: this, OmitNext: true}, "nextUpdate"},
+		"zero thisUpdate":              {testca.RawCRLOpts{Number: big.NewInt(1), Next: next}, "thisUpdate"},
+		"nextUpdate = thisUpdate":      {testca.RawCRLOpts{Number: big.NewInt(1), This: this, Next: this}, "nextUpdate"},
+		"nextUpdate before thisUpdate": {testca.RawCRLOpts{Number: big.NewInt(1), This: this, Next: this.Add(-time.Hour)}, "nextUpdate"},
+	} {
+		_, err := audit.NewStatusSnapshot().AddCRL(s.inter.RawCRL(t, tc.o))
+		if err == nil {
+			t.Fatalf("%s: accepted", name)
+		}
+		wantStatusErr(t, err, agent.ReasonStatusUnknown)
+		if !strings.Contains(err.Error(), tc.want) {
+			t.Fatalf("%s: refused for another reason: %v", name, err)
+		}
+	}
+}
+
+func TestAddCRLSizeAndEntryLimits(t *testing.T) {
+	s := newStFx(t)
+	this, next := s.a.Add(time.Second), s.a.Add(hour)
+	huge := s.inter.RawCRL(t, testca.RawCRLOpts{Number: big.NewInt(1), This: this, Next: next, PadBytes: 65 << 20})
+	if len(huge) <= 64<<20 {
+		t.Fatalf("test setup: %d bytes", len(huge))
+	}
+	_, err := audit.NewStatusSnapshot().AddCRL(huge)
+	wantStatusErr(t, err, agent.ReasonStatusUnknown)
+	if !strings.Contains(err.Error(), "bytes, outside") {
+		t.Fatalf("refused for another reason than size: %v", err)
+	}
+	defer audit.SetMaxCRLEntries(2)()
+	three := s.inter.RawCRL(t, testca.RawCRLOpts{Number: big.NewInt(1), This: this, Next: next, Serials: []*big.Int{big.NewInt(1), big.NewInt(2), big.NewInt(3)}})
+	_, err = audit.NewStatusSnapshot().AddCRL(three)
+	wantStatusErr(t, err, agent.ReasonStatusUnknown)
+	if !strings.Contains(err.Error(), "entries") {
+		t.Fatalf("refused for another reason than the entry count: %v", err)
+	}
+	two := s.inter.RawCRL(t, testca.RawCRLOpts{Number: big.NewInt(2), This: this, Next: next, Serials: []*big.Int{big.NewInt(1), big.NewInt(2)}})
+	if _, err := audit.NewStatusSnapshot().AddCRL(two); err != nil {
+		t.Fatalf("exactly the limit: %v", err)
+	}
+}
+
+// ---- refusals that a more general one could mask ----
+
+func TestAddCRLSpecificRefusals(t *testing.T) {
+	s := newStFx(t)
+	this := idT0
+	cases := map[string]struct {
+		o    testca.CRLOpts
+		want string
+	}{
+		"non-critical delta indicator": {testca.CRLOpts{Extra: []pkix.Extension{ext(asn1.ObjectIdentifier{2, 5, 29, 27}, false, []byte{0x02, 0x01, 0x01})}}, "delta"},
+		"non-critical certificateIssuer": {testca.CRLOpts{Entries: []x509.RevocationListEntry{{SerialNumber: big.NewInt(5), RevocationTime: this,
+			ExtraExtensions: []pkix.Extension{ext(asn1.ObjectIdentifier{2, 5, 29, 29}, false, []byte{0x30, 0x00})}}}}, "indirect"},
+		"reason code 7":  {testca.CRLOpts{Entries: []x509.RevocationListEntry{{SerialNumber: big.NewInt(5), RevocationTime: this, ReasonCode: 7}}}, "reason code"},
+		"reason code 11": {testca.CRLOpts{Entries: []x509.RevocationListEntry{{SerialNumber: big.NewInt(5), RevocationTime: this, ReasonCode: 11}}}, "reason code"},
+	}
+	for name, tc := range cases {
+		tc.o.Number, tc.o.ThisUpdate, tc.o.NextUpdate = 5, this, this.Add(hour)
+		der, err := s.inter.TryCRL(tc.o)
+		if err != nil {
+			t.Logf("%s: the standard library will not create it: %v", name, err)
+			continue
+		}
+		_, err = audit.NewStatusSnapshot().AddCRL(der)
+		if err == nil {
+			t.Fatalf("%s: accepted", name)
+		}
+		if !strings.Contains(err.Error(), tc.want) {
+			t.Fatalf("%s: refused for another reason: %v", name, err)
+		}
+	}
+}
+
+// A CRL with the issuer's name and key identifier but another key is told apart by its signature alone.
+func TestForgedCRLWithTheIssuersNameAndKeyIDIsIgnored(t *testing.T) {
+	s := newStFx(t)
+	forger := testca.NewRoot(t, "inter", testca.Opts{Mutate: func(c *x509.Certificate) {
+		c.Subject = s.inter.Cert.Subject
+		c.SubjectKeyId = s.inter.Cert.SubjectKeyId
+	}})
+	forged := forger.NewCRL(t, testca.CRLOpts{Number: 1, ThisUpdate: idT0.Add(10 * time.Second), NextUpdate: idT0.Add(hour),
+		Entries: []x509.RevocationListEntry{testca.Revoked(s.leaf.Cert, idT0.Add(-time.Hour), 0)}})
+	st := s.leafStatus(s.snap(forged), audit.StatusParams{})
+	if st.Revoked || st.Tier != audit.TierNoInformation {
+		t.Fatalf("a CRL signed by another key was read: %+v", st)
+	}
+}
+
+// Two different CRLs under one CRL number: the later is not a legitimate successor.
+func TestSameNumberDifferentCRLIsNotEvidence(t *testing.T) {
+	s := newStFx(t)
+	first := s.lcrl(5, idT0.Add(10*time.Second), 30*min)
+	second := s.lcrl(5, idT0.Add(20*min), 30*min)
+	st := s.leafStatus(s.snap(first, second), audit.StatusParams{})
+	if !st.S.Equal(idT0.Add(10 * time.Second)) {
+		t.Fatalf("S = %v: the second CRL under the same number was relied on", st.S)
+	}
+}
+
+// A live evaluation with no age limit accepts no evidence, even for a CRL issued this instant.
+func TestLiveNeedsAPositiveMaxStatusAge(t *testing.T) {
+	s := newStFx(t)
+	this := idT0.Add(10 * time.Second)
+	sn := s.snap(s.lcrl(1, this, 30*min))
+	st := s.leafStatus(sn, audit.StatusParams{Now: this})
+	if st.Tier != audit.TierNoInformation {
+		t.Fatalf("%+v", st)
+	}
+}
+
+func TestRevokedFindingCarriesNoEvidenceOfAbsence(t *testing.T) {
+	s := newStFx(t)
+	c1, c2, cL := series(s)
+	listed := s.lcrl(9, idT0.Add(20*time.Second), 30*min, testca.Revoked(s.leaf.Cert, s.a.Add(-time.Minute), 0))
+	st := s.leafStatus(s.snap(c1, c2, cL, listed), audit.StatusParams{})
+	if !st.Revoked || st.Tier != audit.TierNoInformation || len(st.Used) != 0 || !st.S.IsZero() {
+		t.Fatalf("%+v", st)
+	}
+}
+
+// The chain's tier is its weakest certificate's, whichever certificate that is.
+func TestChainTierIsTheWeakestCertificate(t *testing.T) {
+	s := newStFx(t)
+	now := idT0.Add(10 * time.Second)
+	// Only the intermediate has status: the leaf is the weakest.
+	cs := s.eval(s.snap(s.rcrl(1, now, 30*min)), audit.StatusParams{})
+	if cs.Certs[0].Tier != audit.TierNoInformation || cs.Certs[1].Tier == audit.TierNoInformation || cs.Tier != audit.TierNoInformation {
+		t.Fatalf("%+v", cs)
+	}
+}
+
+// Distrust from the policy and from the overlay both apply, the earlier winning.
+func TestDistrustTakesTheEarlierOfPolicyAndOverlay(t *testing.T) {
+	s := newStFx(t)
+	ih := audit.SPKIHashOf(s.inter.Cert)
+	crl := s.lcrl(1, idT0.Add(30*time.Second), 30*min)
+	run := func(policy, overlay time.Time) audit.StatusTier {
+		p := s.policy()
+		if !policy.IsZero() {
+			p.Distrust = map[audit.SPKIHash]time.Time{ih: policy}
+		}
+		c := mustCompile(t, p)
+		ac, err := c.VerifyChain("alice", s.leaf.Chain(), idT0, idT0.Add(5*time.Second))
+		if err != nil {
+			t.Fatal(err)
+		}
+		var ov map[audit.SPKIHash]time.Time
+		if !overlay.IsZero() {
+			ov = map[audit.SPKIHash]time.Time{ih: overlay}
+		}
+		return c.EvaluateStatus(ac, idT0.Add(5*time.Second), s.snap(crl), audit.StatusParams{Distrust: ov}).Certs[0].Tier
+	}
+	late, early := idT0.Add(hour), idT0.Add(10*time.Second)
+	if run(late, early) != audit.TierNoInformation {
+		t.Fatal("an earlier overlay did not apply over a later policy date")
+	}
+	if run(early, late) != audit.TierNoInformation {
+		t.Fatal("an earlier policy date did not apply over a later overlay")
+	}
+	if run(late, late) == audit.TierNoInformation {
+		t.Fatal("distrust in the future applied")
+	}
+}
+
+// ---- finality for a certificate unexpired at S, and the caveat ----
+
+// The user's decision (2026-10-15): for a certificate still unexpired at S, completeness is a usable
+// S >= A + W', W' >= MinW and time coverage from A to S; L(C) is needed only when S falls after
+// notAfter. An issuing CA certificate, valid for a year, can therefore reach final.
+func TestUnexpiredIntermediateReachesFinalWithoutLC(t *testing.T) {
+	s := newStFx(t)
+	// The root's CRLs for the intermediate: one in force at A, then one a full window later.
+	r0 := s.rcrl(1, idT0, 24*hour+min)                     // in force at A, reaching r1
+	r1 := s.rcrl(2, s.a.Add(24*hour+time.Second), 24*hour) // S >= A + 24h
+	l0 := s.lcrl(1, idT0, 30*min)
+	cs := s.eval(s.snap(r0, r1, l0), audit.StatusParams{})
+	inter := cs.Certs[1]
+	if inter.Tier != audit.TierFinal || inter.LCKnown || inter.Window != 24*hour {
+		t.Fatalf("an unexpired intermediate with status a full window past A: %+v", inter)
+	}
+	if inter.Caveat != "revocations first reported after S are not covered" {
+		t.Fatalf("caveat %q", inter.Caveat)
+	}
+	// The same evidence under the design note's earlier literal rule is provisional.
+	defer audit.SetFinalityNeedsLC(true)()
+	inter = s.eval(s.snap(r0, r1, l0), audit.StatusParams{}).Certs[1]
+	if inter.Tier != audit.TierProvisional || !strings.Contains(inter.Note, "L(C)") {
+		t.Fatalf("literal rule: %+v", inter)
+	}
+}
+
+// A leaf is judged on L(C) once S falls after its notAfter: CRLs past notAfter that cannot be shown
+// to include the first one beyond it are no evidence (a leaf cannot reach final on them).
+func TestLeafPastNotAfterNeedsLC(t *testing.T) {
+	s := newStFx(t)
+	c1, _, _ := series(s)
+	late := s.lcrl(9, idT0.Add(5*hour), 30*min) // far past notAfter, nothing links it to c1
+	st := s.leafStatus(s.snap(c1, late), audit.StatusParams{W: 10 * min})
+	if st.Tier == audit.TierFinal || st.LCKnown {
+		t.Fatalf("%+v", st)
+	}
+	// With the link (the first CRL beyond notAfter, reached by the one before it) it can be final.
+	_, c2, cL := series(s)
+	st = s.leafStatus(s.snap(c1, c2, cL), audit.StatusParams{})
+	if st.Tier != audit.TierFinal || !st.LCKnown {
+		t.Fatalf("%+v", st)
+	}
+	// A leaf that is still unexpired at S is final without L(C) when the window is short enough.
+	st = s.leafStatus(s.snap(c1, c2), audit.StatusParams{W: 20 * min, MinW: 10 * min})
+	if st.Tier != audit.TierFinal || st.LCKnown {
+		t.Fatalf("unexpired at S: %+v", st)
+	}
+}
+
+// Time coverage from the CRL in force at A to S: a gap anywhere, including before the first CRL
+// issued after A, is not final.
+func TestCoverageFromAToS(t *testing.T) {
+	s := newStFx(t)
+	w := audit.StatusParams{W: 20 * min, MinW: 10 * min}
+	inForce := s.lcrl(1, idT0, 10*min)          // T0 .. T0+10m
+	next := s.lcrl(2, idT0.Add(10*min), 20*min) // contiguous
+	last := s.lcrl(3, idT0.Add(30*min), 30*min) // contiguous: S = T0+30m >= A + 20m
+	if st := s.leafStatus(s.snap(inForce, next, last), w); st.Tier != audit.TierFinal {
+		t.Fatalf("contiguous: %+v", st)
+	}
+	// No CRL in force at A (the earliest is issued after A): a gap from A.
+	if st := s.leafStatus(s.snap(next, last), w); st.Tier == audit.TierFinal {
+		t.Fatalf("no CRL in force at A: %+v", st)
+	}
+	// The CRL in force at A lapsed before A.
+	lapsed := s.lcrl(1, idT0.Add(-time.Hour), 30*min)
+	if st := s.leafStatus(s.snap(lapsed, next, last), w); st.Tier == audit.TierFinal {
+		t.Fatalf("the CRL before A had lapsed: %+v", st)
+	}
+	// A gap in the middle.
+	gap := s.lcrl(2, idT0.Add(11*min), 20*min)
+	if st := s.leafStatus(s.snap(inForce, gap, last), w); st.Tier == audit.TierFinal {
+		t.Fatalf("gap between CRLs: %+v", st)
+	}
+	// The evidence is still usable as provisional, and says why it is not final.
+	st := s.leafStatus(s.snap(inForce, gap, last), w)
+	if st.Tier != audit.TierProvisional || !strings.Contains(st.Note, "coverage") {
+		t.Fatalf("%+v", st)
+	}
 }

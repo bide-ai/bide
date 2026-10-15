@@ -336,23 +336,29 @@ short-lived certificates this design recommends. So, for a certificate `C` and a
   stated rather than hidden.
 - Verdicts: **final** iff all of: there is usable status `S >= A(d) + W'`; `W' >= MinW` (a floor, default
   30 min: a decision made a minute before `notAfter` has a window of about one CRL period and is
-  `provisional (short window)`, whatever the tier would otherwise be); and **the series is complete from
-  `S` to `L(C)`**, meaning the CRL at `L(C)` is present and verified, and the series from `S` to it has
-  **time coverage**: ordered by `thisUpdate`, each CRL's `thisUpdate` is no later than its predecessor's
-  `nextUpdate` (for a base with deltas, the same holds for the merged view, and the view at `L(C)` is
-  built from the base the delta names). `CRLNumber` need only increase (RFC 5280 section 5.2.3 requires
-  nothing more, and a CA may skip numbers or share one counter between bases and deltas), so a gap in the
-  numbers is not by itself a gap in coverage. Without this, a producer
-  could omit a usable CRL inside `[A + W, L(C)]` that lists the certificate and present an earlier clean
-  one as `S`. **provisional** iff the best usable status has `S < A(d) + W'`, or the series is not complete
-  to `L(C)`, and a later usable one could still exist; **no information** iff no status falls in
-  `[A(d), L(C)]`, which is `not verified: status missing`. The kit-hash record is tamper evidence (the
-  bundle was not changed after it was assembled), **not completeness evidence**; completeness comes from
-  the CRL at `L(C)`, which RFC 5280 section 3.3 makes list every revocation up to its issue time, and
-  from time coverage, which also guarantees that a `certificateHold` listed and released before `L(C)` was
-  seen. A pilot CA is checked for its number scheme and prune timing before go-live (test plan item 32). The verdict states that
-  "revocations first reported after `L(C)` are not covered" unless `expiredCertsOnCRL` or contractual
-  retention applies.
+  `provisional (short window)`, whatever the tier would otherwise be); and **the series has time
+  coverage from `A(d)` to `S`**: the latest CRL issued at or before `A(d)` has a `nextUpdate` that reaches
+  `A(d)`, and each later CRL up to the one at `S` was issued no later than its predecessor's `nextUpdate`
+  (for a base with deltas, the same holds for the merged view). The CRL at `S` is then present and
+  verified; when `L(C)` is established, `S` is that CRL (it is always usable, and the latest). The user
+  decided this on 2026-10-15, replacing the earlier "complete from `S` to `L(C)`", which is vacuous once
+  the CRL at `L(C)` is present and which would make every chain through an unexpired CA certificate
+  provisional for years. `L(C)` exists to know when a CA may have **pruned** an entry (RFC 5280 section 3.3,
+  only after `notAfter`), so it is required only when `S` falls after `notAfter(C)`: such a `S` must be the
+  CRL at `L(C)`, which is `L(C)` only if the CRL before it promised it in time (its `nextUpdate` reaches
+  it). `CRLNumber` need only increase (RFC 5280 section 5.2.3 requires nothing more, and a CA may skip
+  numbers or share one counter between bases and deltas), so a gap in the numbers is not by itself a gap
+  in coverage; a CRL dated later than another with a higher number is not a legitimate successor, and its
+  silence is not evidence of absence. Time coverage is what stops a producer omitting a usable CRL in
+  `[A(d), S]` that lists the certificate, or a `certificateHold` listed and released inside a gap, and
+  presenting an earlier clean one as `S`. **provisional** iff the best usable status has `S < A(d) + W'`,
+  or `W' < MinW`, or coverage has a gap, and a later usable one could still exist; **no information** iff no
+  status falls in `[A(d), L(C)]`, which is `not verified: status missing`. A CRL after `notAfter` that
+  cannot be shown to be the first one beyond it is not evidence of absence (test plan 12: CRL 2 alone is
+  no information). The kit-hash record is tamper evidence (the bundle was not changed after it was
+  assembled), **not completeness evidence**. A pilot CA is checked for its number scheme and prune timing
+  before go-live (test plan item 32). Every verdict that rests on status states that "revocations first
+  reported after `S` are not covered", unless `expiredCertsOnCRL` or contractual retention applies.
 - **Evidence is journaled when the decision is counted.** The gate records, in the `approval-identity`
   record (insert-once, under the Merkle trail), the exact status bytes it relied on, so what the gate knew
   survives the loss of an archive (long-term validation, as PAdES-LTV does). That snapshot may predate `A`
@@ -1157,22 +1163,11 @@ so that the policy can be adopted before the CA is reissued. Refusing `policyMap
 cross-certified hierarchies that map policies between their domains: such a hierarchy needs a separate
 approver CA outside the mapping, or a later step that implements the RFC 5280 policy tree.
 
-The status rule landed next (`audit.StatusSnapshot`, `CertIdentity.EvaluateStatus`). Reading the
-rule against code settled three points the text left open, each stated here so the text and the code agree:
-
-- *When a CRL after `notAfter` is `L(C)`.* A CRL with `thisUpdate` beyond `notAfter` is `L(C)` only if the CRL
-  before it in the series has a `nextUpdate` that reaches it. Otherwise a CRL may be missing between them
-  and this one may be a later CRL from which the entry was already pruned. This is what makes "CRL 2
-  alone is no information" (test plan 12) hold: a CRL that cannot be shown to be the first one beyond
-  `notAfter` is not evidence of absence.
-- *Unexpired certificates.* The rule that a verdict is `final` only when the CRL at `L(C)` is present
-  would make every chain through an unexpired CA certificate provisional for years. `L(C)` exists to know
-  when a CA may have pruned an entry, which it cannot do before `notAfter`. The code therefore judges a
-  certificate with no CRL beyond its `notAfter` by `S >= A + W'` and `W' >= MinW` alone, and applies the
-  `L(C)` and coverage rules when `L(C)` is established. This is one switch (`finalityNeedsLC`) pending the
-  user's confirmation.
-- *Rolled-back numbers.* A CRL dated later than another with a higher CRL number is not a legitimate
-  successor: its listings count, its silence is not evidence of absence.
+The status rule landed next (`audit.StatusSnapshot`, `CertIdentity.EvaluateStatus`). Reading the rule
+against code settled points the text left open, each stated in the rule above so text and code agree:
+when a CRL after `notAfter` is `L(C)`; finality for a certificate unexpired at `S` (the user's decision of
+2026-10-15, one switch in code, `finalityNeedsLC`, kept so the earlier reading can be exercised in tests);
+and rolled-back CRL numbers.
 
 Every step updates the guides it touches. The approvals guide states the post-quantum gap (decision 15: a
 certificate-bound approver gives up the hybrid scheme's protection) where it first describes

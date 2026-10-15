@@ -26,20 +26,25 @@ import (
 // strong is that evidence (a tier).
 
 const (
-	maxCRLBytes   = 64 << 20 // a larger CRL is refused before parsing
-	maxCRLEntries = 4_000_000
+	maxCRLBytes = 64 << 20 // a larger CRL is refused before parsing
 
 	defaultW    = 24 * time.Hour   // compromise-reporting window
 	defaultMinW = 30 * time.Minute // floor on the window for a final verdict
 )
 
+// maxCRLEntries bounds the revocations one CRL may list. A variable only so a test can lower it.
+var maxCRLEntries = 4_000_000
+
 // finalityNeedsLC chooses how a certificate that is still unexpired at the latest usable status is
-// judged. false (the recommended reading, pending the user's decision on the design note's literal
-// text): no CA can have pruned an entry of an unexpired certificate, so L(C) is not needed and the
-// status is final once it reaches A+W'. true: the note's literal rule, under which a chain through an
+// judged. false (the user's decision of 2026-10-15): no CA can have pruned an entry of an unexpired
+// certificate, so L(C) is not needed and the status is final once it reaches A+W' with time
+// coverage from A. true: the design note's earlier literal rule, under which a chain through an
 // unexpired CA certificate is provisional until that CA certificate has expired and a CRL beyond
-// it exists.
-const finalityNeedsLC = false
+// it exists. A variable only so a test can exercise both.
+var finalityNeedsLC = false
+
+// statusCaveat is stated with every verdict that rests on status: later reports are outside it.
+const statusCaveat = "revocations first reported after S are not covered"
 
 var (
 	oidCRLNumber           = asn1.ObjectIdentifier{2, 5, 29, 20}
@@ -314,6 +319,9 @@ type CertStatus struct {
 	Used [][32]byte
 	// Note says why the tier is not final.
 	Note string
+	// Caveat is stated with the verdict: what the status does not cover. Empty when expired entries
+	// are retained (Unbounded) or there is no status.
+	Caveat string
 }
 
 // ChainStatus is the finding for every non-anchor certificate of an accepted chain, leaf first.
@@ -539,13 +547,16 @@ func evalCert(cert, issuer *x509.Certificate, a time.Time, all []*crlView, p Sta
 	st.Window = w
 
 	st.Tier = TierProvisional
+	if !st.Unbounded {
+		st.Caveat = statusCaveat
+	}
 	switch {
 	case st.S.Before(a.Add(w)):
 		st.Note = "status ends before A + W'; a later CRL could still change the answer"
 	case w < p.MinW:
 		st.Note = "short window: the certificate's life leaves less than MinW after the decision"
-	case !st.Unbounded && lcIdx >= 0 && !coveredTo(views, st.S, st.LC):
-		st.Note = "the CRLs from S to L(C) leave a gap in time coverage"
+	case !coveredFrom(views, a, st.S):
+		st.Note = "the CRLs from the one in force at A to S leave a gap in time coverage"
 	case !st.Unbounded && lcIdx < 0 && finalityNeedsLC:
 		st.Note = "no CRL beyond notAfter is established yet, so L(C) is unknown"
 	default:
@@ -554,22 +565,29 @@ func evalCert(cert, issuer *x509.Certificate, a time.Time, all []*crlView, p Sta
 	return st
 }
 
-// coveredTo reports whether the CRLs with thisUpdate in [from, to] form a chain in which each one
-// was issued no later than its predecessor's nextUpdate, starting at from and ending at to.
-func coveredTo(views []*crlView, from, to time.Time) bool {
-	var prev *crlView
-	for _, v := range views {
-		if v.this.Before(from) || v.this.After(to) {
-			continue
+// coveredFrom reports whether the CRLs form a chain of time coverage from the one in force at a to
+// the one issued at to: the latest CRL issued at or before a must reach a (nextUpdate), and each
+// later CRL up to the one at to was issued no later than its predecessor's nextUpdate. A gap means a
+// revocation, or a certificateHold listed and released, could have gone unseen.
+func coveredFrom(views []*crlView, a, to time.Time) bool {
+	start := -1
+	for i, v := range views {
+		if !v.this.After(a) {
+			start = i
 		}
-		if prev == nil {
-			if !v.this.Equal(from) {
-				return false
-			}
-		} else if v.this.After(prev.next) {
+	}
+	if start < 0 || views[start].next.Before(a) {
+		return false
+	}
+	prev := views[start]
+	for _, v := range views[start+1:] {
+		if prev.this.Equal(to) || prev.this.After(to) {
+			break
+		}
+		if v.this.After(prev.next) {
 			return false
 		}
 		prev = v
 	}
-	return prev != nil && prev.this.Equal(to)
+	return prev.this.Equal(to)
 }

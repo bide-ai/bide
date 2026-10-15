@@ -14,6 +14,7 @@ import (
 	"crypto/mldsa"
 	"crypto/rand"
 	"crypto/rsa"
+	"crypto/sha256"
 	"crypto/x509"
 	"crypto/x509/pkix"
 	"encoding/asn1"
@@ -288,4 +289,89 @@ func WithInvalidity(e x509.RevocationListEntry, inv time.Time) x509.RevocationLi
 	}
 	e.ExtraExtensions = append(e.ExtraExtensions, pkix.Extension{Id: asn1.ObjectIdentifier{2, 5, 29, 24}, Value: v})
 	return e
+}
+
+// RawCRLOpts shapes a hand-built CRL for inputs the standard library will not create: a missing CRL
+// number, missing or backwards times, padding. The CRL is signed with the CA's key (ECDSA P-256 or
+// Ed25519 CAs only) so it verifies; only its content is malformed.
+type RawCRLOpts struct {
+	Number     *big.Int // nil omits the cRLNumber extension
+	This, Next time.Time
+	OmitNext   bool
+	Serials    []*big.Int // revoked at This, no reason
+	Extensions []pkix.Extension
+	PadBytes   int // adds a non-critical unknown extension of about this many bytes
+}
+
+// RawCRL builds and signs a CRL by marshalling the TBSCertList itself.
+func (c *CA) RawCRL(tb testing.TB, o RawCRLOpts) []byte {
+	tb.Helper()
+	type algID struct{ Algorithm asn1.ObjectIdentifier }
+	type entry struct {
+		Serial *big.Int
+		Time   time.Time
+	}
+	type tbs struct {
+		Version int `asn1:"optional"`
+		Sig     algID
+		Issuer  asn1.RawValue
+		This    time.Time
+		Next    time.Time        `asn1:"optional"`
+		Revoked []entry          `asn1:"optional"`
+		Exts    []pkix.Extension `asn1:"tag:0,optional,explicit"`
+	}
+	var sigAlg asn1.ObjectIdentifier
+	var sign func(msg []byte) []byte
+	switch k := c.Key.(type) {
+	case *ecdsa.PrivateKey:
+		sigAlg = asn1.ObjectIdentifier{1, 2, 840, 10045, 4, 3, 2}
+		sign = func(msg []byte) []byte {
+			h := sha256.Sum256(msg)
+			sig, err := ecdsa.SignASN1(rand.Reader, k, h[:])
+			if err != nil {
+				tb.Fatal(err)
+			}
+			return sig
+		}
+	case ed25519.PrivateKey:
+		sigAlg = asn1.ObjectIdentifier{1, 3, 101, 112}
+		sign = func(msg []byte) []byte { return ed25519.Sign(k, msg) }
+	default:
+		tb.Fatalf("testca: RawCRL cannot sign with %T", c.Key)
+	}
+	exts := append([]pkix.Extension(nil), o.Extensions...)
+	if len(c.Cert.SubjectKeyId) > 0 {
+		kid, _ := asn1.Marshal(asn1.RawValue{Class: asn1.ClassContextSpecific, Tag: 0, Bytes: c.Cert.SubjectKeyId})
+		aki, _ := asn1.Marshal(asn1.RawValue{Class: asn1.ClassUniversal, Tag: asn1.TagSequence, IsCompound: true, Bytes: kid})
+		exts = append(exts, pkix.Extension{Id: asn1.ObjectIdentifier{2, 5, 29, 35}, Value: aki})
+	}
+	if o.Number != nil {
+		n, _ := asn1.Marshal(o.Number)
+		exts = append(exts, pkix.Extension{Id: asn1.ObjectIdentifier{2, 5, 29, 20}, Value: n})
+	}
+	if o.PadBytes > 0 {
+		pad, _ := asn1.Marshal(make([]byte, o.PadBytes))
+		exts = append(exts, pkix.Extension{Id: asn1.ObjectIdentifier{1, 3, 6, 1, 4, 1, 99999, 8}, Value: pad})
+	}
+	t := tbs{Version: 1, Sig: algID{sigAlg}, Issuer: asn1.RawValue{FullBytes: c.Cert.RawSubject}, This: o.This, Next: o.Next, Exts: exts}
+	if o.OmitNext {
+		t.Next = time.Time{}
+	}
+	for _, s := range o.Serials {
+		t.Revoked = append(t.Revoked, entry{s, o.This})
+	}
+	tbsDER, err := asn1.Marshal(t)
+	if err != nil {
+		tb.Fatal(err)
+	}
+	sigBytes := sign(tbsDER)
+	list, err := asn1.Marshal(struct {
+		TBS asn1.RawValue
+		Alg algID
+		Sig asn1.BitString
+	}{asn1.RawValue{FullBytes: tbsDER}, algID{sigAlg}, asn1.BitString{Bytes: sigBytes, BitLength: 8 * len(sigBytes)}})
+	if err != nil {
+		tb.Fatal(err)
+	}
+	return list
 }
