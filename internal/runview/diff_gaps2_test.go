@@ -162,3 +162,71 @@ func TestDiffGatedCoverageJoinsAndLoops(t *testing.T) {
 		t.Errorf("bypass of the loop: weakened %q", got)
 	}
 }
+
+// A rename does not hide a change next to it: a gate upstream gone leaves the renamed effect
+// reachable ungated; a renamed node whose safety changed is not the same node; one whose entry role,
+// edges or arm predicate differ is not either.
+func TestDiffRenameDoesNotHideChanges(t *testing.T) {
+	base := gapCfg("", "")
+	moved := strings.NewReplacer(`"name": "receipt"`, `"name": "receipt2"`, `["charge", "receipt"]`, `["charge", "receipt2"]`).Replace(base)
+	ungated := strings.Replace(moved, `, "approval": {"need": 2, "approvers": ["ops", "finance", "risk"]}`, "", 1)
+	got := weakenedOf(t, base, ungated)
+	if len(got) != 2 || !strings.HasPrefix(got[0], "charge: approval") || !strings.HasPrefix(got[1], "receipt2: reachable without an approval gate (validate -> charge -> receipt2)") {
+		t.Errorf("renamed effect behind a removed gate: %q", got)
+	}
+	// readonly -> side_effect while renamed.
+	log := func(name, safety string) string {
+		return gapCfg(`, {"name": "`+name+`", "block": "log", "safety": "`+safety+`"}`, `, {"edge": ["validate", "`+name+`"]}`)
+	}
+	if got := weakenedOf(t, log("log", "readonly"), log("log2", "side_effect")); len(got) != 1 {
+		t.Errorf("renamed and made an effect: %q", got)
+	}
+	// renamedNodes directly: the pairing's own conditions.
+	pairs := func(oldCfg, newCfg string) map[string]string {
+		return renamedNodes(plan.InspectConfig([]byte(oldCfg), nil), plan.InspectConfig([]byte(newCfg), nil))
+	}
+	two := func(entry, a, b, edge string) string {
+		return `{"version": 1, "flow": "f", "entry": "` + entry + `", "nodes": [{"name": "` + a + `", "block": "w", "safety": "readonly"}, {"name": "` + b + `", "block": "w", "safety": "readonly"}], "wiring": [{"edge": ` + edge + `}]}`
+	}
+	// n1 -> n2 against m2 -> m1 (the same shape, the edge reversed): the blurred match pairs n1 with m1
+	// and n2 with m2, which the exact check rejects.
+	if m := pairs(two("n1", "n1", "n2", `["n1", "n2"]`), two("m2", "m1", "m2", `["m2", "m1"]`)); len(m) != 2 || m["n1"] != "m2" || m["n2"] != "m1" {
+		t.Errorf("chain renamed in the other order: %v", m)
+	}
+	// The entry moved: the node that was the entry is not the node that is not.
+	one := func(entry, name string) string {
+		return `{"version": 1, "flow": "f", "entry": "` + entry + `", "nodes": [{"name": "` + name + `", "block": "w", "safety": "readonly"}, {"name": "z", "block": "q", "safety": "readonly"}], "wiring": [{"edge": ["` + name + `", "z"]}]}`
+	}
+	if m := pairs(one("r1", "r1"), one("z", "a1")); len(m) != 0 {
+		t.Errorf("entry moved: paired %v", m)
+	}
+	if m := pairs(one("r1", "r1"), one("a1", "a1")); len(m) != 1 || m["r1"] != "a1" {
+		t.Errorf("entry renamed with the node: %v", m)
+	}
+	// An arm's predicate changed at the same time.
+	arm := func(pred, to string) string {
+		return `{"version": 1, "flow": "f", "entry": "s", "nodes": [{"name": "s", "block": "s", "safety": "readonly"}, {"name": "` + to + `", "block": "w", "safety": "readonly"}, {"name": "z", "block": "z", "safety": "readonly"}], "wiring": [{"switch": "s", "when": [{"pred": "` + pred + `", "to": "` + to + `"}], "else": "z"}]}`
+	}
+	if m := pairs(arm("large", "r1"), arm("tiny", "a1")); len(m) != 0 {
+		t.Errorf("arm predicate changed: paired %v", m)
+	}
+	if m := pairs(arm("large", "r1"), arm("large", "a1")); len(m) != 1 {
+		t.Errorf("arm renamed target: %v", m)
+	}
+}
+
+// An unchanged-arm walk stops at a gate: an arm that leads through a gate to an effect another route
+// also reaches ungated is not an ungated arm.
+func TestDiffSwitchOtherArmThroughGate(t *testing.T) {
+	cfg := func(p string) string {
+		return `{"version": 1, "flow": "f", "entry": "validate",
+	  "nodes": [{"name": "validate", "block": "validate", "safety": "readonly"},
+	            {"name": "note", "block": "note", "safety": "readonly"},
+	            {"name": "charge", "block": "charge", "safety": "side_effect", "approval": {"need": 1, "approvers": ["ops"]}},
+	            {"name": "receipt", "block": "receipt", "safety": "side_effect"}],
+	  "wiring": [{"switch": "validate", "when": [{"pred": "` + p + `", "to": "note"}], "else": "charge"}, {"edge": ["charge", "receipt"]}, {"edge": ["validate", "receipt"]}]}`
+	}
+	if got := weakenedOf(t, cfg("large"), cfg("tiny")); len(got) != 0 {
+		t.Errorf("weakened %q; want none: the unchanged arm passes the gate", got)
+	}
+}
