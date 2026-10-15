@@ -616,6 +616,7 @@ verify.
 
 ## See also
 
+- [Retention and archiving](retention.md): keeping public keys, rotating and retiring keys without breaking old verification.
 - [Security model: key custody](security-model.md#key-custody): what each key signs and why they are distinct.
 - [Audit](audit.md#signature-schemes-and-post-quantum-anchoring): the signature schemes.
 - [Known limitations](../KNOWN-LIMITATIONS.md#key-custody).

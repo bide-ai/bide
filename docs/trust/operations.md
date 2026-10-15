@@ -35,6 +35,8 @@ Recommendations:
 
 ## Retention and archiving
 
+The full guide is [Retention and archiving](../guides/retention.md): what to keep, how to archive it so it verifies years later, key rotation and what deletion does to the proofs. This section is the short form.
+
 To re-verify a run's evidence later, an auditor needs all of the following. Retain them together, for as long as your regulation or contract requires.
 
 1. **The journal records of the run**, as stored (an exported journal, `audit.JournalExport`, or the database rows). Proofs are over the stored bytes, including each record's random salt, so a transformed copy does not verify. Records are not encrypted ([security model](../guides/security-model.md#what-is-not-guaranteed-confidentiality)); apply the same access control to the archive as to the database.
