@@ -311,22 +311,26 @@ func (e *notifyEngine) callNotify(ctx context.Context, n Notifier, note Notifica
 	}
 	out := make(chan result, 1)
 	go func() {
-		defer func() {
-			if r := recover(); r != nil { // a Notifier that panics fails the call, not the process
-				out <- result{NotifyAck{}, fmt.Errorf("notify: the Notifier panicked: %v", r)}
-			}
-		}()
-		defer func() {
+		// The call is no longer in flight once the Notifier has returned, and that is recorded
+		// before the answer is sent: a caller that has its answer may make the next call at once,
+		// and must not find this one still counted (and refuse its own call as abandoned).
+		finish := func(r result) {
 			e.mu.Lock()
 			if e.stuck[note.Key]--; e.stuck[note.Key] == 0 {
 				delete(e.stuck, note.Key)
 			}
 			e.stuckAll--
 			e.mu.Unlock()
+			out <- r
+		}
+		defer func() {
+			if r := recover(); r != nil { // a Notifier that panics fails the call, not the process
+				finish(result{NotifyAck{}, fmt.Errorf("notify: the Notifier panicked: %v", r)})
+			}
 		}()
 		var ack NotifyAck
 		err := n.Notify(context.WithValue(cctx, ackKey{}, &ack), note)
-		out <- result{ack, err}
+		finish(result{ack, err})
 	}()
 	late := func(err error) error {
 		if err != nil && errors.Is(err, context.DeadlineExceeded) && ctx.Err() == nil {

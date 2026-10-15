@@ -6,6 +6,7 @@ import (
 	"errors"
 	"fmt"
 	"math/rand/v2"
+	"runtime"
 	"strings"
 	"sync"
 	"sync/atomic"
@@ -1993,5 +1994,30 @@ func TestNotifier_IsCalledConcurrentlyForDifferentEvents(t *testing.T) {
 	defer sink.mu.Unlock()
 	if sink.max < 2 {
 		t.Fatalf("at most %d call(s) at once: the engine serialized the Notifier, which the docs say it does not", sink.max)
+	}
+}
+
+// A call counts as in flight until the Notifier has returned, but a caller that got its answer may
+// make the next call at once: the bookkeeping of the first must be done before its answer is sent,
+// or the next call is refused as "an earlier call was abandoned" although nothing was abandoned, and
+// the attempt is lost (and the sink sees fewer calls than the round made). Back-to-back calls for one
+// key, many times, with the scheduler squeezed.
+func TestNotifyRound_ABackToBackCallIsNeverRefusedAsAbandoned(t *testing.T) {
+	old := runtime.GOMAXPROCS(2)
+	defer runtime.GOMAXPROCS(old)
+	ctx := context.Background()
+	sink := &fakeSink{fail: 1 << 30} // every call fails, so a round retries at once
+	e := testEngine(t, memJournal(), sink, NewMemNotifyTrail(), resolvedClock(), "p1")
+	note := Notification{ID: "id", Key: "k", Kind: NotificationOutcomeUnknown, RunID: "r"}
+	for i := range 20000 {
+		if _, err := e.callNotify(ctx, sink, note); err == nil || strings.Contains(err.Error(), "abandoned") {
+			t.Fatalf("call %d (first of a pair): %v", i, err)
+		}
+		if _, err := e.callNotify(ctx, sink, note); err == nil || strings.Contains(err.Error(), "abandoned") {
+			t.Fatalf("call %d (second of a pair) was refused although the first had returned: %v", i, err)
+		}
+	}
+	if got := sink.count(); got != 40000 {
+		t.Fatalf("the sink saw %d calls, want 40000", got)
 	}
 }
