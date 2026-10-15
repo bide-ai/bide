@@ -8,7 +8,8 @@
 # the gate, and bide approve is the real command, recorded with charmbracelet/vhs in a real
 # terminal, so the colors are the ones bide picks on its own (-color=auto).
 #
-#   assets/demo/approve.sh
+#   assets/demo/approve.sh              # both
+#   VARIANTS=light assets/demo/approve.sh
 #
 # Needs vhs (which brings ttyd and ffmpeg) and python3.
 set -euo pipefail
@@ -45,7 +46,7 @@ Output "$work/$variant.gif"
 Set Shell "bash"
 Set FontSize 15
 Set Width 1200
-Set Height 840
+Set Height 820
 Set Padding 20
 Set Theme "$theme"
 Set TypingSpeed 18ms
@@ -69,7 +70,7 @@ Sleep 500ms
 Type "bide approve -db refund.db -run refund-1049 -call c2 -as finance -key finance.key -approver-keys approver-keys.json"
 Sleep 400ms
 Enter
-Sleep 7s
+Sleep 5s
 Type "finance"
 Sleep 700ms
 Enter
@@ -83,7 +84,7 @@ Sleep 5s
 Type "risk"
 Sleep 700ms
 Enter
-Sleep 6s
+Sleep 5s
 TAPE
   vhs "$work/$variant.tape" > /dev/null
   [ -s "$work/$variant.gif" ] || { echo "approve.sh: vhs wrote no $variant.gif" >&2; exit 1; }
@@ -92,5 +93,6 @@ TAPE
   ls -l "$img/cli-approve-$variant.gif"
 }
 
-record dark "Dracula"
-record light "Github"
+for v in ${VARIANTS:-dark light}; do
+  case $v in dark) record dark "Dracula" ;; light) record light "Catppuccin Latte" ;; esac
+done

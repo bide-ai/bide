@@ -31,6 +31,8 @@ bide sample
 bide approve -db run.db -list
 # 4. أثبِت: تحقّق من أدلة التشغيل دون اتصال
 bide audit verify-evidence -evidence evidence.json -pubkey keys/log.pub
+# 5. أبلِغ: يُبلَّغ شخص عند التوقف أو انتظار الموافقة؛ وتحقّق دون اتصال من أنه أُبلغ
+bide audit notifications -db run.db -pubkey keys/log.pub -sth notify-run.sth.json
 ```
 
 سجلٌّ واحد لا يقبل إلا الإلحاق (append-only journal)، في مكتبة Go خالصة، يمنح خمس ضمانات: آثار جانبية تُنفَّذ مرة واحدة على

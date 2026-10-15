@@ -590,6 +590,15 @@ bide audit notifications -db run.db -pubkey keys/log.pub -max-unattested 10m $(f
 bide audit notifications -postgres-env BIDE_POSTGRES_DSN -unanchored -max-ack 10m
 ```
 
+Run against a journal where one refund's waiting approval was delivered, acknowledged and covered by
+signed heads, it passes (exit 0):
+
+<img src="./img/cli-audit-notifications-pass-dark.png" alt="bide audit notifications on run refund-2001: the trails with their signed heads, then a green PASS line for its approval_pending event, acknowledged by the webhook after one attempt with hmac-sha256 and TLS 1.3, and a final PASS saying every event that needed a person was notified">
+
+Against a run whose approval waits and which no notifier saw, it fails (exit 1) with `never_notified`:
+
+<img src="./img/cli-audit-notifications-fail-dark.png" alt="bide audit notifications on run refund-2002: a red FAIL never_notified line for its approval_pending event, saying the journal shows the event and the trail has no record of it, and a final FAIL: 1 problem">
+
 Two things to set up on your side:
 
 - **Sign and anchor the trail.** Wrap the event store the trail lives in with an

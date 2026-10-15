@@ -8,7 +8,8 @@
 # real command, recorded with charmbracelet/vhs in a real terminal, so the colors are the ones
 # bide picks on its own (-color=auto).
 #
-#   assets/demo/notifications.sh
+#   assets/demo/notifications.sh        # both
+#   VARIANTS=light assets/demo/notifications.sh
 #
 # Needs vhs (which brings ttyd and ffmpeg) and python3 with Pillow.
 set -euo pipefail
@@ -62,8 +63,9 @@ pass1="bide audit notifications -db notify.db -pubkey log.pub -run refund-2001"
 pass2="  -sth heads/refund-2001.json -sth heads/open-$day.json -sth heads/open-index-$year.json"
 fail1="bide audit notifications -db notify.db -pubkey log.pub -run refund-2002"
 fail2="  -sth heads/open-$day.json -sth heads/open-index-$year.json"
-for t in "dark Dracula" "light Github"; do
-  set -- $t
+for t in "dark Dracula" "light Catppuccin Latte"; do
+  set -- $t; v=$1; shift; th="$*"; set -- "$v" "$th"
+  case " ${VARIANTS:-dark light} " in *" $1 "*) ;; *) continue ;; esac
   shot "cli-audit-notifications-pass-$1" "$2" 330 "$pass1" "$pass2"
   shot "cli-audit-notifications-fail-$1" "$2" 330 "$fail1" "$fail2"
 done

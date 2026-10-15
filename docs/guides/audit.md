@@ -545,6 +545,10 @@ and `bide audit notifications` answer the auditor's question from that trail and
 offline: was every event that needed a person notified, was it acknowledged, and when? A gate that asks
 again over a tally it does not act on (see [a run approved under an earlier decision format](hitl-approval.md#a-run-approved-under-an-earlier-decision-format)) is an event of its own, owed its own notification.
 
+<img src="./img/cli-audit-notifications-pass-dark.png" alt="bide audit notifications on run refund-2001: the trails with their signed heads, then a green PASS line for its approval_pending event, acknowledged by the webhook after one attempt with hmac-sha256 and TLS 1.3, and a final PASS saying every event that needed a person was notified">
+
+<img src="./img/cli-audit-notifications-fail-dark.png" alt="bide audit notifications on run refund-2002: a red FAIL never_notified line for its approval_pending event, saying the journal shows the event and the trail has no record of it, and a final FAIL: 1 problem">
+
 The trail is signed and anchored when the application asks for it, and the verifier says what each case
 costs. Wrap the trail's event store in an `audit.AuditedEventStore` (see the
 [notifications guide](notifications.md#auditing-were-the-people-told)) and every growth of a trail

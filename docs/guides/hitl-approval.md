@@ -530,6 +530,12 @@ bide approve -db run.db -run refund-1049 -call c2 -as ops -key ops.key \
     -approver-keys approver-keys.json
 ```
 
+<img src="./img/cli-approve-dark.gif" alt="bide approve in a terminal: a refund waiting at a 2-of-3 gate listed with its pending approvers; ops, the run's requester, refused because the decision would not count; finance shown the call, its arguments and the SHA-256 the signature binds, typing their id, and getting the signed decision, its receipt and a tally of 1 of 2; then risk's approval completing the gate">
+
+The recording is a real run on a refund that ops requested: `ExcludePrincipal` is set (see
+[separation of duties](#separation-of-duties)), so `bide approve` refuses ops before it records
+anything, finance's decision counts as 1 of 2, and risk's makes 2.
+
 `bide approve` reads the call from the journal, never from a flag or a notification, and shows what it
 is about to sign: the run, the tool, the call's arguments (indented JSON; long ones are cut, and
 `-full` shows all), the gate (k of n, who has decided, who is pending) and the SHA-256 of the arguments

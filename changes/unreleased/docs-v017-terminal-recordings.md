@@ -1,0 +1,3 @@
+Section: Changed
+
+The README and the approval, notifications and audit guides now show real recordings of `bide approve` (a refund at a 2-of-3 gate: the requester refused, then finance reviews the call and its SHA-256 and signs, then risk completes the gate) and of `bide audit notifications` (one run passing on a signed trail, one failing on an approval nobody was notified of), each in dark and light. `assets/demo/approve.sh` and `assets/demo/notifications.sh` regenerate them from `assets/demo/setup/`, which drives the real runtime and notifier, and `assets/demo/optimize-png.py` shrinks screenshots.
