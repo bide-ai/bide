@@ -849,6 +849,13 @@ differ, posts the decision, and checks the receipt that comes back (the decision
 anchoring proof, a signature that verifies under its own key). The decision flow is the same as
 `bide approve -to`; the page is the same checks in a browser.
 
+<img src="./img/approve-page-waiting-dark.png" alt="The browser approve page for a waiting refund call: the approver's public key and fingerprint, every argument, the arguments' SHA-256, and the Approve and Reject buttons">
+
+<img src="./img/approve-page-signed-dark.png" alt="The same page after Approve: signed and recorded by the application, the gate showing 2 of 2 approvals, and a link to the receipt">
+
+Both are screenshots of the page served by an application (`approvals.WithPage()`), so the page's
+own warning about that mode is visible.
+
 **Who serves the page matters more than anything else about it.** A signature is only as good as the
 code that asks for it. A page the application serves lets the application serve a script that shows one
 call and signs another, with the approver's real key, and the endpoint cannot tell. So there are two

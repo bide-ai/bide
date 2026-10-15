@@ -79,6 +79,17 @@ Status: working v0, live-verified end to end. Requires Go 1.27.
   </picture>
 </p>
 
+<p align="center">
+  <picture>
+    <source media="(prefers-color-scheme: dark)" srcset="docs/guides/img/approve-page-waiting-dark.png">
+    <img src="docs/guides/img/approve-page-waiting-light.png" width="49%" alt="The browser approve page for a waiting refund call: the approver's public key and fingerprint, every argument, the arguments' SHA-256, and the Approve and Reject buttons">
+  </picture>
+  <picture>
+    <source media="(prefers-color-scheme: dark)" srcset="docs/guides/img/run-viewer-needs-attention-dark.png">
+    <img src="docs/guides/img/run-viewer-needs-attention-light.png" width="49%" alt="bide view's Needs attention list: two approvals waiting, two halts whose outcome is unknown and one aborted run, each with what to do and its notification status">
+  </picture>
+</p>
+
 **Decide from a terminal, and prove people were told.** `bide approve` shows the call it reads from the journal, its arguments and the SHA-256 your signature binds, refuses a requester whose decision would not count, and leaves a receipt. `bide audit notifications` checks offline, against the run journals and the signed trail, that every halt and every waiting approval was delivered and acknowledged in time, and fails on one nobody was told about. See the [approval guide](docs/guides/hitl-approval.md#deciding-from-the-terminal) and the [notifications guide](docs/guides/notifications.md#auditing-were-the-people-told).
 
 **See a flow's risk before it ships.** `bide view -config flow.yaml` colors each node by what a crash does to it (a side effect halts and asks; a read-only step re-runs) and checks the flow's `assert:` policy, such as `every path to charge passes approval >= 2 of 3`, on the graph. A violation comes with its shortest counterexample path, in red. `bide check flow.yaml` runs the same checks in CI and exits 1. See the [run viewer guide](docs/guides/run-viewer.md#check-a-flow-config).

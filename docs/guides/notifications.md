@@ -433,6 +433,12 @@ PagerDuty incident, send `-kind approval_pending -run notify-test-demo`, then `-
 notify-test-demo`: the `resolved` is the all-clear of that approval. `-ca`, `-pin`, `-client-cert` and `-client-key`
 are the receiver-side checks of the [mutual TLS](#mutual-tls-a-private-ca-and-a-key-pin) section;
 `-view-url` and `-view-db` shape the payload's view pointer as `WithViewURL` and `WithViewDB` do.
+What the relay sends Slack for a waiting approval, and its all-clear once the approval is decided, as a local stub received them (drawn from the Block Kit payloads the relay delivered; these are previews of the payloads, not screenshots of Slack):
+
+<img src="./img/notify-relay-slack-approval-dark.png" alt="The Slack message bide notify relay sends for a pending approval, rendered from its Block Kit payload: a preview of the payload, not a screenshot of Slack">
+
+<img src="./img/notify-relay-slack-resolved-dark.png" alt="The relay's All clear message for the same approval once it is decided, rendered from its Block Kit payload: a preview, not a screenshot of Slack">
+
 Each test is a new event, so a receiver that drops redeliveries does not drop the second test. The
 sample is for a run called `notify-test-<hex>`, which does not exist: a relay forwards it like any other
 event, so a test against a relay posts a real message to Slack and opens a real PagerDuty incident.

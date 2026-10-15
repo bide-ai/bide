@@ -174,7 +174,7 @@ The run list's headline says how many runs need a person, and links to the page 
 `/attention` (as JSON at `/attention.json`). It is every run in the journal that is waiting on a
 human, newest first, so it is the first thing to open when a notification arrives:
 
-![bide view's Needs attention list over the sample journal: two approvals waiting at 2-of-3 gates with who approved and who is pending, two halts with their ResolveHalt snippets, and one aborted saga, newest first](img/run-viewer-attention-dark.png)
+![bide view's Needs attention list over the sample journal: two approvals waiting at 2-of-3 gates, two halts whose outcome is unknown and one aborted run, each with what to do and its notification status](img/run-viewer-needs-attention-dark.png)
 
 Each item is one thing to do, and says since when:
 
