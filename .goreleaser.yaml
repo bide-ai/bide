@@ -81,7 +81,8 @@ sboms:
 # Keyless signatures: cosign signs with the release workflow's GitHub OIDC identity (no key to
 # keep), and each signature is a Sigstore bundle (signature, Fulcio certificate and Rekor entry)
 # named <file>.sigstore.json. `checksum` signs checksums.txt, which lists every archive and SBOM, so
-# one verification covers them all; `archive` signs each archive on its own. docs/trust/verify-releases.md
+# one verification covers them all; `archive` signs each archive on its own, and `sbom` each SBOM, so
+# an SBOM handed to a vulnerability scanner or an inventory carries its own proof of origin. docs/trust/verify-releases.md
 # has the verification commands. The release workflow skips this in its snapshot dry run, so a dry
 # run writes nothing to the public transparency log.
 signs:
@@ -94,6 +95,12 @@ signs:
   - id: archive
     cmd: cosign
     artifacts: archive
+    signature: "${artifact}.sigstore.json"
+    args: ["sign-blob", "--yes", "--bundle=${signature}", "${artifact}"]
+    output: true
+  - id: sbom
+    cmd: cosign
+    artifacts: sbom
     signature: "${artifact}.sigstore.json"
     args: ["sign-blob", "--yes", "--bundle=${signature}", "${artifact}"]
     output: true

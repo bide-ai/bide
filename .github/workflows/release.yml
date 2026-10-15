@@ -1,8 +1,9 @@
 name: Release
 
 # Pushing a v* tag builds the bide binaries and publishes a GitHub
-# Release with generated notes, an SBOM per archive (syft) and a keyless cosign signature for
-# checksums.txt and each archive (GitHub OIDC; docs/trust/verify-releases.md). Run manually
+# Release with generated notes, an SBOM per archive (syft) and one for the published module set
+# (scripts/module-sbom.sh), and a keyless cosign signature for checksums.txt, each archive and each
+# SBOM (GitHub OIDC; docs/trust/verify-releases.md). Run manually
 # (workflow_dispatch) to dry-run the whole pipeline in snapshot mode without tagging or publishing
 # anything; the dry run builds the SBOMs but skips signing, so it writes nothing to the public
 # transparency log.
@@ -37,7 +38,7 @@ jobs:
       - name: Pin the toolchain
         run: echo "GOTOOLCHAIN=local" >> "$GITHUB_ENV"
       - name: Install syft
-        uses: anchore/sbom-action/download-syft@v0
+        uses: anchore/sbom-action/download-syft@v0.24.3
         with:
           syft-version: v1.54.1
       - name: Install cosign
@@ -115,12 +116,69 @@ jobs:
             commit --quiet -s -m "bide ${GITHUB_REF_NAME}"
           git -C tap push --quiet
 
+  # The SBOM of the published Go module set: what an application gets with `go get`, beside the
+  # per-archive SBOMs of the binary (scripts/module-sbom.sh resolves the release's consumer module
+  # through the public proxy and lists it with syft). The nested module tags follow the root tag by
+  # minutes (scripts/release.sh), so it waits for the proxy to serve them all, then signs the SBOM
+  # like checksums.txt and attaches it. The manual dry run generates it for the latest release and
+  # neither signs nor uploads it.
+  module-sbom:
+    needs: goreleaser
+    runs-on: ubuntu-latest
+    timeout-minutes: 120
+    permissions:
+      contents: write
+      id-token: write
+    env:
+      GOWORK: 'off'
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - uses: actions/setup-go@v5
+        with:
+          go-version: '1.27.2'
+      - name: Pin the toolchain
+        run: echo "GOTOOLCHAIN=local" >> "$GITHUB_ENV"
+      - name: Install syft
+        uses: anchore/sbom-action/download-syft@v0.24.3
+        with:
+          syft-version: v1.54.1
+      - name: Install cosign
+        if: github.event_name == 'push'
+        uses: sigstore/cosign-installer@v4.1.2
+        with:
+          cosign-release: v3.1.3
+      - name: Version
+        id: version
+        run: |
+          if [ "${GITHUB_REF_TYPE}" = "tag" ]; then v="${GITHUB_REF_NAME}"; else v=$(git tag -l 'v[0-9]*.[0-9]*.[0-9]*' --sort=-v:refname | head -n 1); fi
+          echo "version=$v" >> "$GITHUB_OUTPUT"
+          echo "file=bide_${v#v}_modules.sbom.json" >> "$GITHUB_OUTPUT"
+      - name: Module SBOM
+        env:
+          VERSION: ${{ steps.version.outputs.version }}
+          FILE: ${{ steps.version.outputs.file }}
+        run: |
+          scripts/module-sbom.sh "$VERSION" "$FILE" --wait 90
+          jq -r '.packages[] | "\(.name) \(.versionInfo)"' "$FILE" | sort | head -n 40
+      - name: Sign and attach the module SBOM
+        if: github.event_name == 'push'
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          FILE: ${{ steps.version.outputs.file }}
+        run: |
+          set -euo pipefail
+          cosign sign-blob --yes --bundle="$FILE.sigstore.json" "$FILE"
+          gh release upload "$GITHUB_REF_NAME" "$FILE" "$FILE.sigstore.json" --clobber
+
   # Verify what was just published, as a user would (docs/trust/verify-releases.md): the signature
-  # of checksums.txt and of every archive against the identity of this workflow, and every archive
-  # and SBOM against checksums.txt. A release whose signatures do not verify fails here.
+  # of checksums.txt, of every archive and of every SBOM (the module set's included) against the
+  # identity of this workflow, and every archive and SBOM against checksums.txt. A release whose
+  # signatures do not verify fails here.
   verify-signatures:
     if: github.event_name == 'push'
-    needs: goreleaser
+    needs: [goreleaser, module-sbom]
     runs-on: ubuntu-latest
     permissions:
       contents: read
@@ -138,7 +196,8 @@ jobs:
           cd rel
           id="https://github.com/${GITHUB_REPOSITORY}/.github/workflows/release.yml@refs/tags/${GITHUB_REF_NAME}"
           issuer="https://token.actions.githubusercontent.com"
-          for f in checksums.txt approve-page.SHA256SUMS bide_*.tar.gz; do
+          ls bide_*_modules.sbom.json >/dev/null
+          for f in checksums.txt approve-page.SHA256SUMS bide_*.tar.gz bide_*.sbom.json; do
             cosign verify-blob --bundle "$f.sigstore.json" --certificate-identity "$id" --certificate-oidc-issuer "$issuer" "$f"
           done
           sha256sum --check --strict checksums.txt
