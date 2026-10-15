@@ -213,7 +213,12 @@ run's principal, the times, and a view pointer. For a gate with separation of du
 (`ExcludePrincipal`), `approval.excluded` lists the approvers who are requesters of the run: their
 decisions never count, so a router should not ask them. When the gate asks again over a recorded tally it does not act on
 (a redeploy turned on `ExcludePrincipal`, or the tally predates the decision format),
-`approval.reask` says why: it is a notification of its own, since approvers must decide again.
+`approval.reask` says why: it is a notification of its own, since approvers must decide again. Its
+event key is `approval:<run>:<call>:reask-sod` or `:reask-v3` (`agent.ApprovalReaskKey`); it is routed by
+the approvers of the policy the gate asks under (`WithNotifyApproverRoute`), is escalated like the first
+ask, and gets its all-clear when the gate's re-tally or the call's result is recorded, not when the
+tally it asks over (which the gate does not act on) is. `audit.VerifyNotifications` owes it a
+notification like any other event.
 
 **Deliberately not in it:**
 

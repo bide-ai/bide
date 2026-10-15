@@ -294,7 +294,10 @@ first pause; `bide view`, `bide approve`, the intake's note fallback, notificati
 the newest note (`agent.LatestPauseNote`), so a gate that asks again after a policy change shows as
 waiting under the policy it asks under. A notification for a re-ask is an event of its own
 (`agent.ApprovalReaskKey`, and `reask` in the webhook payload). Like the first note, the gate never
-reads it.
+reads it. The note is insert-once by name, so a journal writer without approver keys could pre-insert
+one; readers therefore honor a re-ask note only if the journal holds a recorded tally the gate would ask
+again over for that reason, and the note names it (`agent.ValidReaskNote`). A note the journal does not
+prove is ignored, and the reader falls back to the first note.
 
 ### A run approved under an earlier decision format
 

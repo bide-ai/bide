@@ -542,7 +542,8 @@ A run that halts on an unknown outcome or waits at an approval gate stops until 
 the [notifier](notifications.md) writes what it did about that to its own audited trail
 (`notify:<run>` in an `EventStore`, one salted event leaf per record). `audit.VerifyNotifications`
 and `bide audit notifications` answer the auditor's question from that trail and the run journals,
-offline: was every event that needed a person notified, was it acknowledged, and when?
+offline: was every event that needed a person notified, was it acknowledged, and when? A gate that asks
+again over a tally it does not act on (see [a run approved under an earlier decision format](hitl-approval.md#a-run-approved-under-an-earlier-decision-format)) is an event of its own, owed its own notification.
 
 The trail is signed and anchored when the application asks for it, and the verifier says what each case
 costs. Wrap the trail's event store in an `audit.AuditedEventStore` (see the

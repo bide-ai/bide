@@ -73,7 +73,7 @@ Step that crashes mid-POST would halt that run on the notifier, a halt about a h
 | Kind | Fires when | Event key |
 |---|---|---|
 | `outcome_unknown` | a drive ends with `*OutcomeUnknown` | `halted:<run>:<op kind>:<op id>:<attempt marker time, Unix ms>` |
-| `approval_pending` | a drive ends with `*ApprovalPending` | `approval:<run>:<call id>:<r>` |
+| `approval_pending` | a drive ends with `*ApprovalPending` | `approval:<run>:<call id>:<r>`; a gate that asks again over a tally it does not act on is an event of its own, `approval:<run>:<call id>:reask-sod` or `:reask-v3` (`ApprovalReaskKey`) |
 | `run_aborted` | the run reaches the `run:aborted` end marker | `aborted:<run>` |
 | `recovery_failing` | a run has kept failing recovery for longer than `D` (default 15 minutes): a Resumer error, not resumable, or store errors | `recovery:<run>:<k>` |
 | `notification_overdue` | an event is not acknowledged by its deadline (below) | `overdue:<event key>` |
@@ -501,7 +501,13 @@ An independent review of the first implementation found these, and each is now a
   sweeps or processes look at an undelivered event, it writes about four claims an hour at the cap.
 - **A decided gate is not reported.** "Current" reads what the gate itself reads: the single
   approver's decision (`approval:<call>`), an m-of-n gate's terminal tally, the tool's result, and,
-  for a plan flow's gate, the node's own result (`node:<name>`). The sweep applies the same test.
+  for a plan flow's gate, the node's own result (`node:<name>`). The sweep applies the same test. A gate
+  that asks again (`reask-sod`, `reask-v3`) is decided only by its re-tally (`approval-tally:<call>:sod`
+  or `:v3`) or the tool's result: the tally it asks over is what the gate does not act on. The key says
+  which ask an event is, so the catch-up scan and an escalation rebuilt from the trail ask the re-ask's
+  question, and take its policy and approvers from the re-ask note (`approval-pending:<call>:sod` or
+  `:v3`) when the journal proves it (`agent.ValidReaskNote`). A re-ask is routed by the approvers of the
+  policy it asks under, like the first ask.
 - **A run that was aborted has a catch-up path.** `NotifyPending` also reads runs holding
   `run:aborted` (completed and cancelled runs are excluded from the listing) and raises
   `run_aborted` for any whose trail has no event, if the abort was within `WithNotifyAbortedWithin`
