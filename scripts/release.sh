@@ -4,7 +4,7 @@
 #   scripts/release.sh vX.Y.Z [--push] [--ref REF] [--remote NAME] [--no-test] [--keep]
 #   scripts/release.sh --check-tag TAG     (CI: the module a nested tag names is releasable)
 #   scripts/release.sh --check-classification
-#   scripts/release.sh --list-published
+#   scripts/release.sh --list-published | --list-commands | --consumer-main   (scripts/module-sbom.sh)
 #   scripts/release.sh --assemble-changelog vX.Y.Z YYYY-MM-DD   (release PR: fragments into CHANGELOG.md)
 #   scripts/release.sh --self-test
 #
@@ -101,6 +101,21 @@ bide_requires() {
 libraries() {
   local m
   for m in $PUBLISHED; do in_list "$m" $COMMANDS || echo "$m"; done
+}
+
+# consumer_main: the main.go of a consumer module that imports the core and every library. The
+# release's last check builds it, and scripts/module-sbom.sh lists what it resolves.
+consumer_main() {
+  local m
+  echo "// Command check imports every published bide module."
+  echo "package main"
+  echo
+  echo "import ("
+  echo "	_ \"$ROOT_MODULE/agent\""
+  for m in $(libraries); do echo "	_ \"$(module_path "$m")\""; done
+  echo ")"
+  echo
+  echo "func main() {}"
 }
 
 # check_classification root: every module in the tree is either published or repo-only, not both,
@@ -317,6 +332,17 @@ self_test() {
   in_list cmd/bide-view $(libraries) && { echo "self-test: the consumer would import the bide-view signpost"; fail=true; }
   in_list cmd/bide/bide-hsm $(libraries) && { echo "self-test: the consumer would import the bide-hsm command"; fail=true; }
   in_list cmd/bide/bide-hsm $PUBLISHED || { echo "self-test: bide-hsm is not published"; fail=true; }
+  # The consumer (the release's last check and the module SBOM) imports the core and every library,
+  # and no command; the module SBOM lists the commands as tools.
+  local main
+  main=$(PUBLISHED="a cmd/x b" COMMANDS="cmd/x" consumer_main)
+  printf '%s\n' "$main" | grep -qx "	_ \"$ROOT_MODULE/agent\"" || { echo "self-test: the consumer does not import the core"; fail=true; }
+  printf '%s\n' "$main" | grep -qx "	_ \"$ROOT_MODULE/a\"" || { echo "self-test: the consumer does not import library a"; fail=true; }
+  printf '%s\n' "$main" | grep -qx "	_ \"$ROOT_MODULE/b\"" || { echo "self-test: the consumer does not import library b"; fail=true; }
+  printf '%s\n' "$main" | grep -q "cmd/x" && { echo "self-test: the consumer imports a command"; fail=true; }
+  printf '%s\n' "$main" | grep -qx 'package main' || { echo "self-test: the consumer is not a main package"; fail=true; }
+  [ "$(PUBLISHED="a cmd/x b" COMMANDS="cmd/x" "$0" --list-commands 2>/dev/null | tr '\n' ' ')" = "cmd/bide cmd/bide/bide-hsm cmd/bide-view " ] ||
+    { echo "self-test: --list-commands does not print the commands"; fail=true; }
   self_test_push || fail=true
   self_test_changelog || fail=true
   $fail && return 1
@@ -327,6 +353,8 @@ case "${1:-}" in
   --check-tag) [ $# -eq 2 ] || usage; check_tag "$2"; exit ;;
   --check-classification) check_classification "$(git rev-parse --show-toplevel)" && echo "release: every module is classified"; exit ;;
   --list-published) for m in $PUBLISHED; do echo "$m"; done; exit ;;
+  --list-commands) for m in $COMMANDS; do echo "$m"; done; exit ;;
+  --consumer-main) consumer_main; exit ;;
   --self-test) self_test; exit ;;
   --assemble-changelog) [ $# -eq 3 ] || usage; assemble_changelog "$2" "$3"; exit ;;
   ""|-h|--help) usage ;;
@@ -516,17 +544,7 @@ mkdir -p "$C"
 (
   cd "$C"
   printf 'module example.com/bide-release-check\n\ngo 1.27.0\n' > go.mod
-  {
-    echo "// Command check imports every published bide module."
-    echo "package main"
-    echo
-    echo "import ("
-    echo "	_ \"$ROOT_MODULE/agent\""
-    for m in $(libraries); do echo "	_ \"$(module_path "$m")\""; done
-    echo ")"
-    echo
-    echo "func main() {}"
-  } > main.go
+  consumer_main > main.go
   # shellcheck disable=SC2046
   gorun get "$ROOT_MODULE@$VERSION" $(for m in $(libraries); do echo "$(module_path "$m")@$VERSION"; done) 2>"$WORK/get.log" || { cat "$WORK/get.log"; die "go get failed"; }
   # A command is a tool of the consumer (go get -tool), so tidy keeps it, and it is built as one.
