@@ -19,29 +19,29 @@ import (
 // or a session's. The functions and constants named *Step build those keys; a test asserts each
 // one starts with a prefix listed here.
 var reservedPrefixes = []string{
-	"@",                 // the journal header @journal, and engine-internal steps: @llm/<n>, @saga/compensate/<call>, @saga/args/<call>, @retrieval/<layer>, @spend/<id>, @spend-late/<id>, @subrun/<call>/<name>
-	"run:",              // run:start, run:complete, run:aborted, run:cancelled, run:cancel-requested, run:limits:<n>
-	"tool:",             // a tool call's result: tool:<call>
-	"attempt:",          // attempt markers: attempt:tool:<call>, attempt:step:<name>, attempt:retry:<n>:..., attempt:not-started:<claim>:<marker>
-	"approval:",         // approval decisions: approval:<call>[:<approver>:<digest>]
-	"approval-tally:",   // an m-of-n gate's tally
-	"approval-pending:", // that a run paused at a gate (ApprovalWait, informational)
-	"approval-request:", // the request of a plan flow node's gate (ApprovalRequest)
+	"@",                  // the journal header @journal, and engine-internal steps: @llm/<n>, @saga/compensate/<call>, @saga/args/<call>, @retrieval/<layer>, @spend/<id>, @spend-late/<id>, @subrun/<call>/<name>
+	"run:",               // run:start, run:complete, run:aborted, run:cancelled, run:cancel-requested, run:limits:<n>
+	"tool:",              // a tool call's result: tool:<call>
+	"attempt:",           // attempt markers: attempt:tool:<call>, attempt:step:<name>, attempt:retry:<n>:..., attempt:not-started:<claim>:<marker>
+	"approval:",          // approval decisions: approval:<call>[:<approver>:<digest>]
+	"approval-tally:",    // an m-of-n gate's tally
+	"approval-pending:",  // that a run paused at a gate (ApprovalWait, informational)
+	"approval-request:",  // the request of a plan flow node's gate (ApprovalRequest)
 	"approval-deadline:", // a gate's deadline, recorded once when it first waits (ApprovalDeadline)
-	"signal:",           // Signal / Await
-	"await-timeout:",    // AwaitFor's deadline
-	"await-resolved:",   // AwaitFor's outcome
-	"timer:",            // Sleep / WaitUntil
-	"interrupt:",        // Interrupt / Resume
-	"chan:",             // Enqueue
-	"chanack:",          // Ack
-	"turn/",             // a session's completed turns
-	"start/",            // a session's started turns
-	"from/",             // a session turn's starting transcript
-	"audit:",            // the audit package's leaves
-	"node:",             // a plan flow's nodes, run as Steps: node:<name>, node:iter:<n>:<name> (see planNodeStep)
-	"switch:",           // a plan flow's branch choices: switch:<over>, switch:iter:<n>:<over>
-	"flow:",             // a plan flow's topology digest and topology: flow:digest, flow:topology
+	"signal:",            // Signal / Await
+	"await-timeout:",     // AwaitFor's deadline
+	"await-resolved:",    // AwaitFor's outcome
+	"timer:",             // Sleep / WaitUntil
+	"interrupt:",         // Interrupt / Resume
+	"chan:",              // Enqueue
+	"chanack:",           // Ack
+	"turn/",              // a session's completed turns
+	"start/",             // a session's started turns
+	"from/",              // a session turn's starting transcript
+	"audit:",             // the audit package's leaves
+	"node:",              // a plan flow's nodes, run as Steps: node:<name>, node:iter:<n>:<name> (see planNodeStep)
+	"switch:",            // a plan flow's branch choices: switch:<over>, switch:iter:<n>:<over>
+	"flow:",              // a plan flow's topology digest and topology: flow:digest, flow:topology
 }
 
 // planNodePrefix starts the key of every plan flow node, which package plan runs as a Step through
