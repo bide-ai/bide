@@ -10,6 +10,7 @@
 package main
 
 import (
+	"bytes"
 	"context"
 	"crypto/ed25519"
 	"crypto/rand"
@@ -18,6 +19,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"io"
 	"os"
 	"path/filepath"
 	"strings"
@@ -351,11 +353,21 @@ func writeJSON(path string, v any) error {
 	return os.WriteFile(path, append(b, '\n'), 0o600)
 }
 
-// yamlToJSON converts flow.yaml to the JSON plan.Load reads.
+// yamlToJSON converts flow.yaml to the JSON plan.Load reads. A flow config is one document: a
+// second one is an error, not something to leave unread.
 func yamlToJSON(data []byte) ([]byte, error) {
+	dec := yaml.NewDecoder(bytes.NewReader(data))
 	var v any
-	if err := yaml.Unmarshal(data, &v); err != nil {
+	if err := dec.Decode(&v); err != nil && !errors.Is(err, io.EOF) {
 		return nil, err
+	}
+	var next any
+	switch err := dec.Decode(&next); {
+	case errors.Is(err, io.EOF):
+	case err != nil:
+		return nil, err
+	default:
+		return nil, errors.New("flow.yaml has more than one YAML document; a flow config is one document")
 	}
 	return json.Marshal(v)
 }

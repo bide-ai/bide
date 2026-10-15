@@ -200,3 +200,13 @@ func TestRealModelShapedReplies(t *testing.T) {
 		t.Fatalf("the provider holds %d refunds, want exactly 1", n)
 	}
 }
+
+// TestYAMLToJSONOneDocument: flow.yaml is one document; a second one is refused, not left unread.
+func TestYAMLToJSONOneDocument(t *testing.T) {
+	if _, err := yamlToJSON([]byte("flow: a\n---\nflow: b\n")); err == nil || !strings.Contains(err.Error(), "more than one YAML document") {
+		t.Errorf("two documents: %v, want a refusal", err)
+	}
+	if out, err := yamlToJSON([]byte("---\nflow: a\n...\n")); err != nil || !strings.Contains(string(out), `"flow":"a"`) {
+		t.Errorf("one document: %s, %v", out, err)
+	}
+}

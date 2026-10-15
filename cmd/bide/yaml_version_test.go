@@ -60,3 +60,36 @@ func TestReleaseVersion(t *testing.T) {
 		t.Errorf("from source: %q, want empty", got)
 	}
 }
+
+// TestYAMLToJSONOneDocument: a flow config is one document. A second one is refused, with a
+// message that says so, whatever it holds, instead of being read as if it were not there (the
+// JSON path refuses data after the value). A leading "---" and a closing "..." are one document.
+func TestYAMLToJSONOneDocument(t *testing.T) {
+	for name, doc := range map[string]string{
+		"two flows":          "version: 1\nflow: a\nnodes: []\n---\nversion: 1\nflow: b\nnodes: []\n",
+		"empty second":       "version: 1\nflow: a\nnodes: []\n---\n",
+		"second is a scalar": "version: 1\nflow: a\nnodes: []\n---\nx\n",
+		"comment then two":   "# c\n---\nflow: a\n---\nflow: b\n",
+	} {
+		if _, err := yamlToJSON([]byte(doc)); err == nil || !strings.Contains(err.Error(), "more than one YAML document") {
+			t.Errorf("%s: %v, want a refusal naming the second document", name, err)
+		}
+	}
+	if _, err := yamlToJSON([]byte("version: 1\nflow: a\n---\nflow: [b\n")); err == nil {
+		t.Error("a malformed second document was accepted")
+	}
+	for name, doc := range map[string]string{
+		"plain":           "version: 1\nflow: a\nnodes: []\n",
+		"start and end":   "---\nversion: 1\nflow: a\nnodes: []\n...\n",
+		"comments around": "# head\n---\nversion: 1\nflow: a\nnodes: []\n# tail\n",
+	} {
+		out, err := yamlToJSON([]byte(doc))
+		if err != nil {
+			t.Errorf("%s: %v", name, err)
+			continue
+		}
+		if !strings.Contains(string(out), `"flow":"a"`) {
+			t.Errorf("%s: converted to %s", name, out)
+		}
+	}
+}
