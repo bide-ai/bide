@@ -8,6 +8,7 @@ import (
 	"crypto/ecdsa"
 	"crypto/ed25519"
 	"crypto/elliptic"
+	"crypto/mldsa"
 	"crypto/rand"
 	"crypto/x509"
 	"crypto/x509/pkix"
@@ -550,5 +551,53 @@ func TestSeveralSANsAreAllReturned(t *testing.T) {
 	}
 	if len(l.EmailAddresses) != 2 || len(l.DNSNames) != 1 || len(l.URIs) != 1 {
 		t.Fatalf("SANs: %v %v %v", l.EmailAddresses, l.DNSNames, l.URIs)
+	}
+}
+
+// Assumption (corrects the first draft of the design note, which assumed a post-quantum gap in the
+// standard library): crypto/x509 in Go 1.27 parses and verifies ML-DSA keys and signatures in
+// certificates. A certificate-bound approver can therefore sign with ml-dsa-65 under a certificate from
+// an ML-DSA CA, or under an ECDSA CA. The hybrid scheme (ed25519+ml-dsa-65) has no single X.509
+// certificate form, so a hybrid approver stays bare-key. Both are pinned: if a release drops the
+// support, or a form for the hybrid appears, this fails to prompt a review of the note.
+func TestMLDSACertificatesAreSupported(t *testing.T) {
+	ck, err := mldsa.GenerateKey(mldsa.MLDSA65())
+	if err != nil {
+		t.Skipf("ml-dsa is not available in this build: %v", err)
+	}
+	caTpl := &x509.Certificate{SerialNumber: big.NewInt(1), Subject: pkix.Name{CommonName: "pq root"}, NotBefore: t0.Add(-time.Hour), NotAfter: t0.Add(24 * time.Hour),
+		IsCA: true, BasicConstraintsValid: true, KeyUsage: x509.KeyUsageCertSign | x509.KeyUsageCRLSign}
+	cder, err := x509.CreateCertificate(rand.Reader, caTpl, caTpl, ck.PublicKey(), ck)
+	if err != nil {
+		t.Fatalf("an ML-DSA root: %v", err)
+	}
+	croot, err := x509.ParseCertificate(cder)
+	if err != nil || croot.SignatureAlgorithm.String() != "ML-DSA-65" {
+		t.Fatalf("parse: %v (sigalg %v)", err, croot.SignatureAlgorithm)
+	}
+	lk, _ := mldsa.GenerateKey(mldsa.MLDSA65())
+	ltpl := &x509.Certificate{SerialNumber: big.NewInt(2), Subject: pkix.Name{CommonName: "pq leaf"}, NotBefore: t0.Add(-time.Hour), NotAfter: t0.Add(time.Hour),
+		EmailAddresses: []string{"alice@bank.example"}, KeyUsage: x509.KeyUsageDigitalSignature}
+	lder, err := x509.CreateCertificate(rand.Reader, ltpl, croot, lk.PublicKey(), ck)
+	if err != nil {
+		t.Fatalf("an ML-DSA leaf under an ML-DSA root: %v", err)
+	}
+	leaf, err := x509.ParseCertificate(lder)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, ok := leaf.PublicKey.(*mldsa.PublicKey); !ok {
+		t.Fatalf("leaf public key is %T", leaf.PublicKey)
+	}
+	roots := x509.NewCertPool()
+	roots.AddCert(croot)
+	if _, err := leaf.Verify(x509.VerifyOptions{Roots: roots, CurrentTime: t0, KeyUsages: []x509.ExtKeyUsage{x509.ExtKeyUsageAny}}); err != nil {
+		t.Fatalf("a chain signed by an ML-DSA CA: %v", err)
+	}
+	// An ML-DSA leaf under an ECDSA root, the migration path.
+	root := newCA(t, nil)
+	l := root.leaf(t, lk.PublicKey(), func(c *x509.Certificate) { c.EmailAddresses = []string{"alice@bank.example"} })
+	if err := root.verify(l, t0, x509.ExtKeyUsageAny); err != nil {
+		t.Fatalf("an ML-DSA leaf under an ECDSA root: %v", err)
 	}
 }
