@@ -1294,6 +1294,7 @@ func TestCoverageTolerance(t *testing.T) {
 	}
 	// An undeclared interval is not "zero": CRLs seconds apart are not shown contiguous either.
 	p.Interval = 0
+	p.W, p.MinW = time.Second, time.Millisecond // so that only the missing interval stands in the way
 	near := s.lcrl(2, idT0.Add(10*time.Second), 30*min)
 	if st := s.c.EvaluateStatus(s.ac, s.a, s.snap(s.lcrl(1, idT0, 25*min), near), p).Certs[0]; st.Tier == audit.TierFinal {
 		t.Fatalf("no declared interval: %+v", st)
