@@ -23,6 +23,7 @@
 package main
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
 	"errors"
@@ -71,11 +72,21 @@ var approveStores = approvecmd.JournalStores()
 
 // yamlToJSON converts a YAML flow config to the JSON plan reads. A YAML document is decoded into
 // plain values (a duplicate key is an error, as plan's strict JSON reading refuses one), and every
-// mapping key must be a string.
+// mapping key must be a string. A config is one document: a second one is an error, as data after
+// the value is in JSON, and not read as if it were not there.
 func yamlToJSON(data []byte) ([]byte, error) {
+	dec := yaml.NewDecoder(bytes.NewReader(data))
 	var v any
-	if err := yaml.Unmarshal(data, &v); err != nil {
+	if err := dec.Decode(&v); err != nil && !errors.Is(err, io.EOF) {
 		return nil, err
+	}
+	var next any
+	switch err := dec.Decode(&next); {
+	case errors.Is(err, io.EOF):
+	case err != nil:
+		return nil, err
+	default:
+		return nil, errors.New("more than one YAML document: a flow config is one document")
 	}
 	v, err := jsonValue(v)
 	if err != nil {

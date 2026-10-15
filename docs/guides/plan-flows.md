@@ -705,6 +705,10 @@ JSON is the loader (and tool-emit / interchange) format; the core loader stays s
 dependency-free. YAML is a thin authoring front-end that decodes into the same config struct, not a
 core dependency, so the two formats are just front-ends to one loader.
 
+A YAML config is one document. `bide check`, `bide view -config` and a `bide init` project refuse a file that holds a
+second one (a `---` followed by more), as the JSON loader refuses data after the value; a leading `---` and a closing `...`
+are one document. Before this was checked, the second document was read by nothing and went unnoticed.
+
 ## Limits
 
 - Fan-in is fixed-arity (`Join2`/`Join3`); unbounded or ragged fan-in is not supported.
