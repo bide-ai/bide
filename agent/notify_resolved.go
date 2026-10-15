@@ -248,6 +248,12 @@ func (e *notifyEngine) clearScanFold(ctx context.Context, st NotifyState, listed
 			if cur {
 				continue
 			}
+			if reason == "expired" && ev.approval != nil {
+				// The gate expired: the expiry is an event of its own (a fact, raised once by key),
+				// besides the pending approval's all-clear.
+				e.w.submit(notifyEvent{key: ExpiredKey(cmp.Or(ev.opRun, ev.runID), ev.approval.ToolUseID), kind: NotificationApprovalExpired,
+					runID: ev.runID, opRun: ev.opRun, approval: &NotifyApproval{ToolUseID: ev.approval.ToolUseID, ToolName: ev.approval.ToolName}, eventAt: e.cfg.now()})
+			}
 			if es.Acked != nil {
 				e.w.submit(clearOf(es, reason, e.cfg.now()))
 			} else if _, rerr := e.round(ctx, ev); rerr != nil { // writes cleared, and queues the all-clear

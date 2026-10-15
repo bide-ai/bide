@@ -950,10 +950,41 @@ func (e *notifyEngine) current(ctx context.Context, ev notifyEvent, st NotifySta
 	if ev.approval != nil {
 		decided, err := e.gateDecided(ctx, opRun, ev.approval.ToolUseID, ev.approval.Reask)
 		if err != nil || decided {
+			if err == nil && e.gateExpired(ctx, opRun, ev.approval.ToolUseID) {
+				return false, "expired", nil
+			}
 			return false, "decided", err
 		}
 	}
 	return true, "", nil
+}
+
+// gateExpired reports whether the gate of call on run ended in its expiry: the gate's expiry
+// record, or a decision recorded after its deadline, for a one-decision gate; an expired tally
+// (any of its steps); or the call's result the model reads for an expiry. A read error counts as
+// not expired: the all-clear then says "decided", which is also true.
+func (e *notifyEngine) gateExpired(ctx context.Context, run, call string) bool {
+	if r, ok, err := e.j.Get(ctx, run, ToolResultStep(call)); err == nil && ok && string(r.Result) == ExpiredResult {
+		return true
+	}
+	for _, name := range []string{ApprovalTallyStep(call), ApprovalRetallyStep(call), ApprovalSoDRetallyStep(call)} {
+		if r, ok, err := e.j.Get(ctx, run, name); err == nil && ok {
+			if t, err := decodeTally(run, r); err == nil && t.Expired {
+				return true
+			}
+		}
+	}
+	var expiresAt time.Time
+	dl, hasDeadline, err := e.j.Get(ctx, run, ApprovalDeadlineStep(call))
+	if err == nil && hasDeadline {
+		_, expiresAt, hasDeadline = decodeDeadline(dl, call)
+	}
+	for _, name := range []string{approvalStep(call), approvalAfterRequestStep(call)} {
+		if r, ok, err := e.j.Get(ctx, run, name); err == nil && ok && r.Approver() == "" && singleExpired(r, expiresAt, hasDeadline) {
+			return true
+		}
+	}
+	return false
 }
 
 func (e *notifyEngine) hasRecord(ctx context.Context, run, name string) (bool, error) {
@@ -982,7 +1013,7 @@ func (e *notifyEngine) gateDecided(ctx context.Context, run, call, reask string)
 
 // gateDecidedNames are the journal names whose presence ends the gate of call.
 func gateDecidedNames(call string) []string {
-	return []string{approvalStep(call), ApprovalTallyStep(call), ToolResultStep(call), call}
+	return []string{approvalStep(call), approvalAfterRequestStep(call), ApprovalTallyStep(call), ToolResultStep(call), call}
 }
 
 // reaskDecidedNames are the records that end a re-ask of call's gate (see ApprovalReaskStep): its

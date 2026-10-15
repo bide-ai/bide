@@ -99,6 +99,7 @@ TypeCommon ==
   /\ submits = 0
   /\ redeploys = 0
   /\ expired = [c \in Calls |-> FALSE]
+  /\ badExp = FALSE
   /\ badFire = FALSE
   /\ badPause = FALSE
   /\ badDeny = FALSE

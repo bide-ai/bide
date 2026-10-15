@@ -23,6 +23,7 @@ import (
 // kinds are the notification kinds a sample can be, in the order help lists them.
 var kinds = []agent.NotificationKind{
 	agent.NotificationApprovalPending,
+	agent.NotificationApprovalExpired,
 	agent.NotificationOutcomeUnknown,
 	agent.NotificationRunAborted,
 	agent.NotificationRecoveryFailing,
@@ -58,6 +59,11 @@ func sampleNotification(kind agent.NotificationKind, now time.Time, run string) 
 	case agent.NotificationApprovalPending:
 		n.Key = agent.ApprovalKey(run, "call_test", 0)
 		n.Approval = &agent.NotifyApproval{ToolUseID: "call_test", ToolName: "refund", Need: 2, Of: 3, Approvers: []string{"alice", "bob", "carol"}, Approved: 1}
+	case agent.NotificationApprovalExpired:
+		// The expiry of the approval a test of kind approval_pending sends for the same run.
+		n.Key = agent.ExpiredKey(run, "call_test")
+		n.Approval = &agent.NotifyApproval{ToolUseID: "call_test", ToolName: "refund"}
+		n.Deadline = time.Time{}
 	case agent.NotificationOutcomeUnknown:
 		at := n.EventAt
 		n.Key = agent.HaltedKey(run, agent.OpTool, "call_test", at.UnixMilli())

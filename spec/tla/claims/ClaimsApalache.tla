@@ -176,6 +176,8 @@ VARIABLES
   resChanges,
   \* @type: Str -> Bool;
   expired,
+  \* @type: Bool;
+  badExp,
   \* @type: Str -> Str;
   pc,
   \* @type: Str -> Int;
