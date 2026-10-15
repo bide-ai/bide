@@ -170,6 +170,10 @@ func (w *notifyWorker) runRound(ctx context.Context, p *pendingNotify) {
 	if err == nil {
 		res, err = w.e.safeRound(ctx, ev)
 	}
+	// The user's error handler hears of the failure while the round is still in flight, on purpose:
+	// a flush waits for the round, and so for the report, so a process that flushes and exits has
+	// delivered every report. (RecoverLoop's handler runs after its slot is released instead: no
+	// one waits there for a report, and the slot is a scarce resource.) The handler must not flush.
 	if err != nil && ctx.Err() == nil {
 		w.e.report(err)
 	}
@@ -281,6 +285,9 @@ func (w *notifyWorker) undelivered(ctx context.Context) error {
 // it cancels the rounds in flight (a Notifier that honors its context returns) and returns ctx's
 // error without waiting for one that does not.
 func (e *notifyEngine) flush(ctx context.Context) error {
+	if e.inErrorHandler() {
+		return fmt.Errorf("agent: a notifier flush was called from a WithNotifyErrors handler, which would wait for the round that is calling the handler: flush from outside it: %w", ErrConfig)
+	}
 	err := e.flushDeliveries(ctx)
 	// The deliveries have written their last records: have a trail that signs them sign them now,
 	// within ctx, so a process that stops cleanly leaves nothing unattested. A failure is reported,

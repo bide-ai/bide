@@ -421,8 +421,14 @@ func (a *AuditedEventStore) anchorTrail(ctx context.Context, trail string, force
 	}
 	res := make(chan error, 1)
 	go func() {
-		defer func() { <-t.slot }()
-		res <- a.publishGrown(tctx, trail, t, force)
+		// The slot is released before the answer is sent: a caller that has its answer may publish
+		// the next head at once, and must not find the slot still held. A panic or an exit of the
+		// goroutine releases it too.
+		release := sync.OnceFunc(func() { <-t.slot })
+		defer release()
+		err := a.publishGrown(tctx, trail, t, force)
+		release()
+		res <- err
 	}()
 	select {
 	case err := <-res:

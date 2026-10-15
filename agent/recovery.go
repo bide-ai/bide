@@ -933,13 +933,24 @@ func RecoverLoop(ctx context.Context, store *Journal, resume Resumer, opts ...Re
 			wg.Add(1)
 			go func() {
 				defer wg.Done()
-				defer func() {
+				// The run's slot and in-flight mark are released before the error is handed to the
+				// user's handler (WithRecoverErrors): the handler is user code and may take as long as
+				// it likes, and the slot must not be held for it. A panic or an exit releases them too.
+				freed := false
+				free := func() {
+					if freed {
+						return
+					}
+					freed = true
 					mu.Lock()
 					delete(inFlight, runID)
 					mu.Unlock()
 					<-slots
-				}()
-				if _, err := recoverRun(ctx, store, runID, resume, cfg); err != nil {
+				}
+				defer free()
+				_, err := recoverRun(ctx, store, runID, resume, cfg)
+				free()
+				if err != nil {
 					report(err)
 				}
 			}()

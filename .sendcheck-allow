@@ -1,0 +1,11 @@
+# Goroutines that send or close and also have bookkeeping after the send (a deferred call, or a
+# statement), where the order is safe. One per line: path|enclosing function|everything flagged,
+# joined by " ; " # why. The key lists every deferred call and every bookkeeping statement after a
+# send, so a new one in an allowlisted goroutine is a new finding. An entry that matches no goroutine
+# is an error. See internal/tools/sendcheck.
+agent/notify_engine.go|callNotify|defer func() { if r := recover(); r != nil { finish(result{NotifyA... # finish is a sync.Once: the in-flight count is given back, and then the answer is sent, from whichever exit comes first; the deferred func only reaches it on a panic or Goexit
+agent/notify_worker.go|startLocked|defer func() { w.exited() close(done) }() # the deferred func does its bookkeeping (w.exited) first and closes done last
+agent/stream.go|startStream|defer func() { mu.Lock() closed = true close(as.ch) mu.Unlock() }(... # the result is sent before the events channel closes, and a receiver drains the events channel to its close before it reads the result, so it never sees a half-closed stream
+agent/subagent.go|Call|defer func() { if r := recover(); r != nil { ch <- result{err: fmt... # the deferred func only turns a panic into the answer; there is no bookkeeping behind the send
+audit/audited_event_store.go|anchorTrail|defer release() # release is a sync.OnceFunc that has already run before the answer is sent; the deferred call is the panic and Goexit path
+store/postgres/nextseq_behaviour_test.go|TestPostgres_NextSeqQueuesWithEarlierVersions|defer tx.Rollback() # the transaction was committed before the answer, so the rollback is a no-op; no state is left for the receiver to see

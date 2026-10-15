@@ -38,6 +38,15 @@ trail or a payload, and never appear in an error.
 The same option goes to `agent.RecoverLoop`, which is what catches an event whose process died before
 the first record of it.
 
+**The error handler.** `agent.WithNotifyErrors(fn)` receives the notifier's own failures: a delivery
+that has become failing, a trail error. `fn` may be called from several goroutines, and it is called
+while the round for that event is still in flight, so that `FlushNotifications` waits for it and a
+process that flushes and exits has delivered every report. So `fn` must be short (log, count, send
+the error to a channel), and it must not call `FlushNotifications`, `RunNotifier.Flush` or anything
+else that waits for the notifier to settle: that would wait for the round that is calling it. A flush
+from inside `fn` returns an error wrapping `agent.ErrConfig` at once instead of hanging. The error
+handler of `agent.WithRecoverErrors` is different: it runs after the failing run's slot is released.
+
 ## The request
 
 `POST <url>` with `Content-Type: application/json` and three headers:

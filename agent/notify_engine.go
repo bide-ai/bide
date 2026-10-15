@@ -126,16 +126,17 @@ type notifyEngine struct {
 	// holder is the name this engine's claims carry (see newNotifyEngine).
 	holder string
 
-	mu       sync.Mutex
-	unacked  map[string]pendingAck // deliveries the sink accepted whose acknowledgement could not be recorded
-	keyMu    map[string]*keyLock   // one round at a time per key, in this engine; present while one is held or waited for
-	attempts map[string]int        // delivery attempts made by this process, per key
-	fails    map[string]int        // failed attempts made by this process, per key
-	firstAt  map[string]time.Time  // when this process first sent each key
-	stuck    map[string]int        // Notify calls started and not returned (abandoned ones included), per event key
-	globalAt time.Time             // when a recovery pass last signed the global trails again
-	stuckAll int                   // and in all
-	w        *notifyWorker
+	mu        sync.Mutex
+	unacked   map[string]pendingAck // deliveries the sink accepted whose acknowledgement could not be recorded
+	keyMu     map[string]*keyLock   // one round at a time per key, in this engine; present while one is held or waited for
+	attempts  map[string]int        // delivery attempts made by this process, per key
+	fails     map[string]int        // failed attempts made by this process, per key
+	firstAt   map[string]time.Time  // when this process first sent each key
+	stuck     map[string]int        // Notify calls started and not returned (abandoned ones included), per event key
+	globalAt  time.Time             // when a recovery pass last signed the global trails again
+	stuckAll  int                   // and in all
+	inHandler map[uint64]int        // goroutines now inside the user's error handler, by goroutine ID
+	w         *notifyWorker
 }
 
 // newNotifyEngine builds an engine for deliverer kind ("drive", "recover", "sweep", "flow"). Its
@@ -166,8 +167,31 @@ func (e *notifyEngine) report(err error) {
 		reportGuard()
 	}
 	if e.cfg.onError != nil && err != nil {
+		// Remember which goroutine is in the handler, so a flush from it can be refused: a flush
+		// waits for the round that is calling the handler, which is waiting for the flush.
+		id := goroutineID()
+		e.mu.Lock()
+		if e.inHandler == nil {
+			e.inHandler = map[uint64]int{}
+		}
+		e.inHandler[id]++
+		e.mu.Unlock()
+		defer func() {
+			e.mu.Lock()
+			if e.inHandler[id]--; e.inHandler[id] <= 0 {
+				delete(e.inHandler, id)
+			}
+			e.mu.Unlock()
+		}()
 		e.cfg.onError(err)
 	}
+}
+
+// inErrorHandler reports whether the calling goroutine is inside the user's error handler.
+func (e *notifyEngine) inErrorHandler() bool {
+	e.mu.Lock()
+	defer e.mu.Unlock()
+	return len(e.inHandler) > 0 && e.inHandler[goroutineID()] > 0
 }
 
 // pendingAck is what an engine owes the trail for a delivery the sink accepted: the next round
