@@ -1,6 +1,7 @@
 package flowedit
 
 import (
+	"errors"
 	"strings"
 	"testing"
 )
@@ -67,7 +68,6 @@ func TestApplyExamples(t *testing.T) {
 	}
 }
 
-
 // A comment directly above an entry goes with it; a comment after a blank line stays.
 func TestDeleteTakesAttachedComments(t *testing.T) {
 	out := apply(t, sample, Op{Kind: Delete, Path: []any{"nodes", 1}})
@@ -90,5 +90,26 @@ func TestUntouchedBytesStay(t *testing.T) {
 	}
 	if !strings.Contains(string(r.Text), "flow: refund   # the label\n\n# nodes") {
 		t.Errorf("spacing or a blank line changed:\n%s", r.Text)
+	}
+}
+
+// What the engine will not splice, it refuses, and the text is the caller's still.
+func TestRefusals(t *testing.T) {
+	for name, src := range map[string]string{
+		"anchor":       "version: 1\nflow: &f refund\nnodes: []\n",
+		"alias":        "a: &x [1]\nversion: 1\nnodes: *x\n",
+		"merge key":    "base: &b {a: 1}\nnodes:\n  - <<: *b\n",
+		"tag":          "version: 1\nflow: !!str refund\nnodes: []\n",
+		"two docs":     "version: 1\nnodes: []\n---\nversion: 1\n",
+		"crlf":         "version: 1\r\nflow: a\r\nnodes: []\r\n",
+		"bom":          "\xef\xbb\xbfversion: 1\nflow: a\nnodes: []\n",
+		"block scalar": "version: 1\nflow: |\n  a\nnodes: []\n",
+		"tab":          "version: 1\nflow: a\t# c\nnodes: []\n",
+	} {
+		_, err := Apply([]byte(src), Op{Kind: Set, Path: []any{"flow"}, Value: "x"})
+		var rf *Refusal
+		if !errors.As(err, &rf) {
+			t.Errorf("%s: want a refusal, got %v", name, err)
+		}
 	}
 }

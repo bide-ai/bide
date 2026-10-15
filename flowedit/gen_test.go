@@ -58,7 +58,7 @@ func (e *emitter) str(s string) string {
 	}
 	needs := strings.ContainsAny(s, ":#,[]{}\"'") || strings.ContainsAny(s[:min(1, len(s))], "-&*!|>%@`") || strings.TrimSpace(s) != s || s == ""
 	switch {
-	case q == 1 || (needs && strings.Contains(s, "\"") && !strings.Contains(s, "'") ):
+	case q == 1 || (needs && strings.Contains(s, "\"") && !strings.Contains(s, "'")):
 		return "'" + strings.ReplaceAll(s, "'", "''") + "'"
 	case q == 2 || needs:
 		return `"` + strings.ReplaceAll(strings.ReplaceAll(s, `\`, `\\`), `"`, `\"`) + `"`

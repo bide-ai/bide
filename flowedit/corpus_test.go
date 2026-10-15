@@ -559,13 +559,13 @@ func outside(old, new string, sp span) bool {
 // ---- the measurement ----
 
 type tally struct {
-	files, ops                    int
-	applied, inSpan, refused      int
-	oneLine, setOps               int
-	wrong                         int // applied but disagreeing with the independent oracle: must be 0
-	baseline, baselineOK          int
-	refusals                      map[string]int
-	byKind                        [3][2]int // [kind][ops, in span]
+	files, ops               int
+	applied, inSpan, refused int
+	oneLine, setOps          int
+	wrong                    int // applied but disagreeing with the independent oracle: must be 0
+	baseline, baselineOK     int
+	refusals                 map[string]int
+	byKind                   [3][2]int // [kind][ops, in span]
 }
 
 func (ta *tally) add(f file) {
