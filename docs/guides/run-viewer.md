@@ -187,10 +187,11 @@ Each item is one thing to do, and says since when:
   decisions, and the run records the expiry the next time it is driven (the call does not run).
   The JSON gives `expires_at`, `due`, `due_soon` and `overdue` on the item's `gate`.
 
-    <picture>
-    <source media="(prefers-color-scheme: dark)" srcset="./img/run-viewer-deadline-attention-dark.png">
-    <img src="./img/run-viewer-deadline-attention-light.png" alt="bide view's Needs attention list over refunds waiting at gates with a deadline: one overdue with no command, one due in 39 minutes and flagged DUE SOON, one due tomorrow">
+  <picture>
+  <source media="(prefers-color-scheme: dark)" srcset="./img/run-viewer-deadline-attention-dark.png">
+  <img src="./img/run-viewer-deadline-attention-light.png" alt="bide view's Needs attention list over refunds waiting at gates with a deadline: one overdue with no command, one due in 39 minutes and flagged DUE SOON, one due tomorrow">
   </picture>
+
   The command that records a decision is shown with it, as `bide approve` writes it
   (`approveline.Command`): the journal by its absolute path for `-db`, by the variable you gave
   `-postgres-env` for a Postgres journal, and by the placeholder `<VAR>` when you gave a raw `-postgres`
