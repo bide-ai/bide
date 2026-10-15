@@ -1,3 +1,0 @@
-Section: Fixed
-
-`signer/awskms`: `Open` pinned whatever key ARN `GetPublicKey` returned, so a redirected endpoint or a wrong answer naming another key, or another account's, was accepted and signed with; it now requires a key ARN or key ID to come back as that key, and an alias ARN to resolve to a key in its own partition, region and account (an alias name to a key ARN), and refuses otherwise with `agent.ErrConfig` before signing. `bide approve` and `bide-hsm` also refuse a key file or PIN file that another user owns, and open it without blocking so a named pipe is refused rather than waited on.

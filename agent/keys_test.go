@@ -51,6 +51,7 @@ var keyConstructors = map[string]func(string) string{
 	"ApprovalTallyStep":      ApprovalTallyStep,
 	"ApprovalRetallyStep":    ApprovalRetallyStep,
 	"ApprovalSoDRetallyStep": ApprovalSoDRetallyStep,
+	"ApprovalReaskStep":      func(s string) string { return ApprovalReaskStep(s, len(s)%2 == 0) },
 	"sagaCompensateStep":     sagaCompensateStep,
 	"sagaArgsStep":           sagaArgsStep,
 	"subRunLinkStep":         func(s string) string { return subRunLinkStep(s, s) },
@@ -146,7 +147,7 @@ func TestEncodeID_IsBoundedAndPlain(t *testing.T) {
 
 // Every key built from a tool-use ID is short, printable ASCII, whatever the ID.
 func TestToolUseIDKeys_AreBoundedAndPrintable(t *testing.T) {
-	for _, name := range []string{"ToolResultStep", "toolAttemptStep", "approvalStep", "approvalDecisionStep", "decisionIdentityStep", "ApprovalTallyStep", "ApprovalRetallyStep", "sagaCompensateStep", "sagaArgsStep"} {
+	for _, name := range []string{"ToolResultStep", "toolAttemptStep", "approvalStep", "approvalDecisionStep", "decisionIdentityStep", "ApprovalTallyStep", "ApprovalRetallyStep", "ApprovalSoDRetallyStep", "ApprovalPendingStep", "ApprovalReaskStep", "sagaCompensateStep", "sagaArgsStep"} {
 		for _, id := range adversarialToolUseIDs() {
 			k := keyConstructors[name](id)
 			if name == "approvalDecisionStep" {

@@ -211,7 +211,14 @@ credential and never goes in a payload: an adapter that reads from Postgres repl
 **In it:** kind, run ID, the step and tool name, the gate's approver IDs and its policy (k of n), the
 run's principal, the times, and a view pointer. For a gate with separation of duties
 (`ExcludePrincipal`), `approval.excluded` lists the approvers who are requesters of the run: their
-decisions never count, so a router should not ask them.
+decisions never count, so a router should not ask them. When the gate asks again over a recorded tally it does not act on
+(a redeploy turned on `ExcludePrincipal`, or the tally predates the decision format),
+`approval.reask` says why: it is a notification of its own, since approvers must decide again. Its
+event key is `approval:<run>:<call>:reask-sod` or `:reask-v3` (`agent.ApprovalReaskKey`); it is routed by
+the approvers of the policy the gate asks under (`WithNotifyApproverRoute`), is escalated like the first
+ask, and gets its all-clear when the gate's re-tally or the call's result is recorded, not when the
+tally it asks over (which the gate does not act on) is. `audit.VerifyNotifications` owes it a
+notification like any other event.
 
 **Deliberately not in it:**
 
@@ -426,6 +433,12 @@ PagerDuty incident, send `-kind approval_pending -run notify-test-demo`, then `-
 notify-test-demo`: the `resolved` is the all-clear of that approval. `-ca`, `-pin`, `-client-cert` and `-client-key`
 are the receiver-side checks of the [mutual TLS](#mutual-tls-a-private-ca-and-a-key-pin) section;
 `-view-url` and `-view-db` shape the payload's view pointer as `WithViewURL` and `WithViewDB` do.
+What the relay sends Slack for a waiting approval, and its all-clear once the approval is decided, as a local stub received them (drawn from the Block Kit payloads the relay delivered; these are previews of the payloads, not screenshots of Slack):
+
+<img src="./img/notify-relay-slack-approval-dark.png" alt="The Slack message bide notify relay sends for a pending approval, rendered from its Block Kit payload: a preview of the payload, not a screenshot of Slack">
+
+<img src="./img/notify-relay-slack-resolved-dark.png" alt="The relay's All clear message for the same approval once it is decided, rendered from its Block Kit payload: a preview, not a screenshot of Slack">
+
 Each test is a new event, so a receiver that drops redeliveries does not drop the second test. The
 sample is for a run called `notify-test-<hex>`, which does not exist: a relay forwards it like any other
 event, so a test against a relay posts a real message to Slack and opens a real PagerDuty incident.
@@ -582,6 +595,15 @@ bide audit notifications -db run.db -sth notify-r1.sth.json -pubkey keys/log.pub
 bide audit notifications -db run.db -pubkey keys/log.pub -max-unattested 10m $(for f in anchor/notify-r1-*.json; do echo -sth $f; done)
 bide audit notifications -postgres-env BIDE_POSTGRES_DSN -unanchored -max-ack 10m
 ```
+
+Run against a journal where one refund's waiting approval was delivered, acknowledged and covered by
+signed heads, it passes (exit 0):
+
+<img src="./img/cli-audit-notifications-pass-dark.png" alt="bide audit notifications on run refund-2001: the trails with their signed heads, then a green PASS line for its approval_pending event, acknowledged by the webhook after one attempt with hmac-sha256 and TLS 1.3, and a final PASS saying every event that needed a person was notified">
+
+Against a run whose approval waits and which no notifier saw, it fails (exit 1) with `never_notified`:
+
+<img src="./img/cli-audit-notifications-fail-dark.png" alt="bide audit notifications on run refund-2002: a red FAIL never_notified line for its approval_pending event, saying the journal shows the event and the trail has no record of it, and a final FAIL: 1 problem">
 
 Two things to set up on your side:
 

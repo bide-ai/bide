@@ -739,6 +739,113 @@ type ApprovalWait struct {
 	// Requesters are the requesters it excludes (RunPrincipal.Requesters).
 	ExcludePrincipal bool     `json:"exclude_principal,omitempty"`
 	Requesters       []string `json:"requesters,omitempty"`
+	// Reask and Supersedes are set on a re-ask note (ApprovalReaskStep): why the gate asks again
+	// (PendingReapproval, PendingSoDReapproval) and the recorded tally it does not act on. The
+	// policy fields of such a note are the policy the gate asks again under.
+	Reask      string `json:"reask,omitempty"`
+	Supersedes string `json:"supersedes,omitempty"`
+}
+
+// ApprovalReaskStep is the journal name of the pause note a gate writes when it asks again over a
+// recorded tally it does not act on: with sod, a tally that passed without excluding the requester
+// under a policy that now excludes it (its outcome is recorded under ApprovalSoDRetallyStep);
+// without, a tally that passed on decisions predating DecisionFormat (ApprovalRetallyStep). It holds
+// an ApprovalWait with Reask and Supersedes set and the policy the gate asks again under, written
+// only if absent, by every drive that pauses at the re-ask: the first writer wins, and a drive that
+// crashed before writing it leaves it to the next.
+//
+// The ApprovalPendingStep note is insert-once, so it keeps the policy of the first pause; a reader
+// that has the journal but not the application's policy (bide view, bide approve, an audit) reads the
+// newest note (LatestPauseNote) to see the gate as it now waits. Like the first note, it is
+// informational: the gate never reads it.
+func ApprovalReaskStep(toolUseID string, sod bool) string {
+	if sod {
+		return ApprovalPendingStep(toolUseID) + ":sod"
+	}
+	return ApprovalPendingStep(toolUseID) + ":v3"
+}
+
+// LatestPauseNote returns the newest pause note on toolUseID among records keyed by name: the
+// separation-of-duties re-ask note (ApprovalReaskStep with sod), else the format re-ask note, else
+// the first pause note (ApprovalPendingStep). A gate re-asks for the format before it re-asks for
+// separation of duties, so this order is journal order. A re-ask note counts only if the journal
+// proves it (ValidReaskNote): the note is insert-once by name, so a journal writer without approver
+// keys could pre-insert one, and it is not read as the gate's ask unless a recorded tally the gate
+// would ask again over is there. byName must hold the call's tallies as well as its notes. ok is
+// false when there is none.
+func LatestPauseNote(byName map[string]Record, toolUseID string) (r Record, ok bool) {
+	for _, n := range []string{ApprovalReaskStep(toolUseID, true), ApprovalReaskStep(toolUseID, false), ApprovalPendingStep(toolUseID)} {
+		r, ok := byName[n]
+		if !ok || r.Kind != StepValue {
+			continue
+		}
+		if n != ApprovalPendingStep(toolUseID) {
+			var w ApprovalWait
+			if json.Unmarshal(r.Result, &w) != nil || !ValidReaskNote(byName, toolUseID, n, w) {
+				continue
+			}
+		}
+		return r, true
+	}
+	return Record{}, false
+}
+
+// ValidReaskNote reports whether w, the content of the record named name (ApprovalReaskStep of
+// toolUseID), is a re-ask note the journal proves: its Reask is the reason its name stands for, and
+// its Supersedes names a recorded tally (among byName) that GateReask would ask again over for that
+// reason, namely the call's tally for a format re-ask, and for a separation-of-duties re-ask the
+// outcome so far (the format re-approval tally when the tally predates DecisionFormat and that one is
+// recorded, else the tally) under a policy that excludes the requester. The gate writes a note only
+// at such a point, so a note without it was not written by the gate.
+func ValidReaskNote(byName map[string]Record, toolUseID, name string, w ApprovalWait) bool {
+	sod := name == ApprovalReaskStep(toolUseID, true)
+	if !sod && name != ApprovalReaskStep(toolUseID, false) || w.ToolUseID != toolUseID {
+		return false
+	}
+	want := PendingReapproval
+	if sod {
+		want = PendingSoDReapproval
+	}
+	if w.Reask != want || sod && !w.ExcludePrincipal {
+		return false
+	}
+	base := ApprovalTallyStep(toolUseID)
+	if sod {
+		if r, ok := byName[base]; ok {
+			var t ApprovalTally
+			if json.Unmarshal(r.Result, &t) == nil && predatesFormat(t) {
+				if _, ok := byName[ApprovalRetallyStep(toolUseID)]; ok {
+					base = ApprovalRetallyStep(toolUseID)
+				}
+			}
+		}
+	}
+	r, ok := byName[base]
+	if !ok || w.Supersedes != base {
+		return false
+	}
+	var t ApprovalTally
+	return json.Unmarshal(r.Result, &t) == nil && GateReask(t, sod) == want
+}
+
+// noteReask records, unless it is recorded already, the re-ask note of the gate on toolUseID: it
+// asks again under pol, with the running count t (whose reapproval says why and Supersedes over
+// what). Every drive that pauses at a re-ask calls it, so a note lost to a crash is written by the
+// next. Nothing reads the record to decide, so a failed write is dropped.
+func noteReask(ctx context.Context, j *Journal, runID, toolUseID, toolName string, pol *ApprovalPolicy, t ApprovalTally) {
+	if t.reapproval == "" || pol == nil || pol.single() {
+		return
+	}
+	w := ApprovalWait{ToolUseID: toolUseID, ToolName: toolName, Need: pol.Need, Approvers: slices.Clone(pol.Approvers),
+		RecordedAt: noteStamp(clockFrom(ctx)), ExcludePrincipal: pol.ExcludePrincipal, Reask: t.reapproval, Supersedes: t.Supersedes}
+	if pol.ExcludePrincipal {
+		w.Requesters = slices.Clone(t.Requesters)
+	}
+	b, err := json.Marshal(w)
+	if err != nil {
+		return
+	}
+	_, _ = j.put(ctx, runID, ApprovalReaskStep(toolUseID, t.reapproval == PendingSoDReapproval), Record{Kind: StepValue, Result: b})
 }
 
 // FindToolCall returns the journal index of the record that requested toolUseID, and the call

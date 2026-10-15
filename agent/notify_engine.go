@@ -935,7 +935,7 @@ func (e *notifyEngine) current(ctx context.Context, ev notifyEvent, st NotifySta
 		return true, "", nil
 	}
 	if ev.approval != nil {
-		decided, err := e.gateDecided(ctx, opRun, ev.approval.ToolUseID)
+		decided, err := e.gateDecided(ctx, opRun, ev.approval.ToolUseID, ev.approval.Reask)
 		if err != nil || decided {
 			return false, "decided", err
 		}
@@ -951,8 +951,15 @@ func (e *notifyEngine) hasRecord(ctx context.Context, run, name string) (bool, e
 // gateDecided reports whether the gate of call on run has what the gate itself reads: a single
 // approver's decision (approval:<call>), an m-of-n gate's terminal tally (approval-tally:<call>),
 // the tool's result, or, for a plan flow's node whose key is call, the node's own result.
-func (e *notifyEngine) gateDecided(ctx context.Context, run, call string) (bool, error) {
-	for _, name := range gateDecidedNames(call) {
+//
+// For a re-ask (reask set), the gate's re-tally or the call's result instead: the recorded tally it
+// asks again over is what it does not act on.
+func (e *notifyEngine) gateDecided(ctx context.Context, run, call, reask string) (bool, error) {
+	names := gateDecidedNames(call)
+	if reask != "" {
+		names = reaskDecidedNames(call, reask == PendingSoDReapproval)
+	}
+	for _, name := range names {
 		if ok, err := e.hasRecord(ctx, run, name); err != nil || ok {
 			return ok, err
 		}
@@ -963,4 +970,14 @@ func (e *notifyEngine) gateDecided(ctx context.Context, run, call string) (bool,
 // gateDecidedNames are the journal names whose presence ends the gate of call.
 func gateDecidedNames(call string) []string {
 	return []string{approvalStep(call), ApprovalTallyStep(call), ToolResultStep(call), call}
+}
+
+// reaskDecidedNames are the records that end a re-ask of call's gate (see ApprovalReaskStep): its
+// re-tally, or the call's result.
+func reaskDecidedNames(call string, sod bool) []string {
+	re := ApprovalRetallyStep(call)
+	if sod {
+		re = ApprovalSoDRetallyStep(call)
+	}
+	return []string{re, ToolResultStep(call), call}
 }

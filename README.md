@@ -5,9 +5,9 @@
 </p>
 
 <p align="center">
-  <strong>Durable AI agents in Go, for agents that move money, change records, or act under audit.</strong>
+  <strong>Durable, accountable AI agents in Go, for agents that move money, change records, or act under audit.</strong>
   <br>
-  Side effects fire at most once, even across a crash. Every action is provable afterwards.
+  A Go framework for AI agents that move money: risky calls approved, every action recorded and verifiable.
 </p>
 
 <p align="center"><img src="assets/crash-demo.gif" width="100%" alt="bide demo: without bide a restart retries the charge and the provider charges twice; with bide an agent is killed mid-charge, the restart halts with outcome unknown and notifies ops with a signed webhook, the charge is resolved from the provider's record, bide view shows the run with its audit proof and 2-of-3 approval signatures verified, and changing one amount in a copy of the journal makes verification fail"></p>
@@ -32,14 +32,19 @@ bide sample
 bide approve -db run.db -list
 # 4. Prove: verify the run's evidence offline
 bide audit verify-evidence -evidence evidence.json -pubkey keys/log.pub
+# 5. Be told, and prove it: a halt or a waiting approval notifies a person; check offline that they were
+bide audit notifications -db run.db -pubkey keys/log.pub -sth notify-run.sth.json
 ```
 
-One append-only journal, in a plain-Go library, gives four guarantees:
+One append-only journal, in a plain-Go library, gives five guarantees:
 
 - Side effects fire at most once, even across a crash, so they need not be idempotent.
 - Thousands of concurrent durable runs in one process. It is a library; there is no cluster to run.
 - A cryptographically verifiable audit trail: RFC 6962 Merkle proofs, checkable offline without trusting the vendor.
 - Provably convergent shared state: the convergence conditions are machine-checked.
+- People in control: k-of-n signed approvals with the requester excluded (separation of duties), signing keys in an HSM or a cloud KMS, and a notifier that tells a person and records that it did.
+
+Bide is built toward what a bank asks of software that moves money: keys outside the application, separation of duties, a tamper-evident trail, explicit failure modes. It is not certified against, and does not claim compliance with, any standard; [key custody](docs/guides/key-custody.md) and the [threat model](docs/trust/threat-model.md) state what is and is not covered.
 
 **Ambient agents.** An ambient agent runs unattended: it sleeps until a trigger (a schedule or an
 event) wakes it, works over hours or days, and pauses to ask a human only when it needs judgment,
@@ -56,13 +61,44 @@ Status: working v0, live-verified end to end. Requires Go 1.27.
   <img src="docs/guides/img/run-viewer-config-assert-dark.png" width="49%" alt="bide view -config: a violated policy assertion, its shortest counterexample path drawn in red">
 </p>
 
+<p align="center">
+  <picture>
+    <source media="(prefers-color-scheme: dark)" srcset="docs/guides/img/cli-approve-dark.gif">
+    <img src="docs/guides/img/cli-approve-light.gif" width="100%" alt="bide approve in a terminal: a refund waiting at a 2-of-3 gate listed with its pending approvers; ops, the run's requester, refused because the decision would not count; finance shown the call, its arguments and the SHA-256 the signature binds, typing their id, and getting the signed decision, its receipt and a tally of 1 of 2; then risk's approval completing the gate">
+  </picture>
+</p>
+
+<p align="center">
+  <picture>
+    <source media="(prefers-color-scheme: dark)" srcset="docs/guides/img/cli-audit-notifications-pass-dark.png">
+    <img src="docs/guides/img/cli-audit-notifications-pass-light.png" width="49%" alt="bide audit notifications on run refund-2001: its approval_pending event was delivered by the webhook, acknowledged after one attempt, and sits on a trail with a signed head; PASS, every event that needed a person was notified">
+  </picture>
+  <picture>
+    <source media="(prefers-color-scheme: dark)" srcset="docs/guides/img/cli-audit-notifications-fail-dark.png">
+    <img src="docs/guides/img/cli-audit-notifications-fail-light.png" width="49%" alt="bide audit notifications on run refund-2002: a red FAIL never_notified, because the journal shows an approval waiting and the trail has no record that anyone was told">
+  </picture>
+</p>
+
+<p align="center">
+  <picture>
+    <source media="(prefers-color-scheme: dark)" srcset="docs/guides/img/approve-page-waiting-dark.png">
+    <img src="docs/guides/img/approve-page-waiting-light.png" width="49%" alt="The browser approve page for a waiting refund call: the approver's public key and fingerprint, every argument, the arguments' SHA-256, and the Approve and Reject buttons">
+  </picture>
+  <picture>
+    <source media="(prefers-color-scheme: dark)" srcset="docs/guides/img/run-viewer-needs-attention-dark.png">
+    <img src="docs/guides/img/run-viewer-needs-attention-light.png" width="49%" alt="bide view's Needs attention list: two approvals waiting, two halts whose outcome is unknown and one aborted run, each with what to do and its notification status">
+  </picture>
+</p>
+
+**Decide from a terminal, and prove people were told.** `bide approve` shows the call it reads from the journal, its arguments and the SHA-256 your signature binds, refuses a requester whose decision would not count, and leaves a receipt. `bide audit notifications` checks offline, against the run journals and the signed trail, that every halt and every waiting approval was delivered and acknowledged in time, and fails on one nobody was told about. See the [approval guide](docs/guides/hitl-approval.md#deciding-from-the-terminal) and the [notifications guide](docs/guides/notifications.md#auditing-were-the-people-told).
+
 **See a flow's risk before it ships.** `bide view -config flow.yaml` colors each node by what a crash does to it (a side effect halts and asks; a read-only step re-runs) and checks the flow's `assert:` policy, such as `every path to charge passes approval >= 2 of 3`, on the graph. A violation comes with its shortest counterexample path, in red. `bide check flow.yaml` runs the same checks in CI and exits 1. See the [run viewer guide](docs/guides/run-viewer.md#check-a-flow-config).
 
 <p align="center"><img src="assets/divider-wave-2.png" width="100%" alt=""></p>
 
-## One journal, four guarantees
+## One journal, five guarantees
 
-The agent loop is about 40 lines. The four guarantees come from the durable, append-only journal
+The agent loop is about 40 lines. The five guarantees come from the durable, append-only journal
 underneath it.
 
 ### 1 · At most once (measured)
@@ -117,7 +153,7 @@ flight at a time, each blocking ~100ms on the model, finish in about half a seco
 wall-clock on a 10-core Apple silicon Mac (measured at v0.7.0), and about one second on a standard 4-vCPU CI runner,
 on a few thousand goroutines and tens of MB (`go run ./cmd/bench -runs 20000 -concurrency 5000
 -latency 50ms`; reproducible with the [Benchmark workflow](.github/workflows/bench.yml)). This measures throughput; per-call latency is the provider's. At high fan-out the limit is the
-durable store's write throughput. Every concurrent run keeps all four guarantees. For reliability
+durable store's write throughput. Every concurrent run is on the same journal, so it keeps the guarantees above. For reliability
 under load there are per-attempt timeouts, retry with backoff that classifies transient and
 terminal errors, hedged model calls (race a backup, take the first, for tail latency and provider
 failover), and a rate limiter for model and tool calls
@@ -191,6 +227,39 @@ conditions, on discrete, deterministic state, not "agents always agree". Details
 [governance guide](docs/guides/governance.md); the exact scope (causal delivery and `Independent`
 pairs, delivery obligations, which checks are proof-generated versus Go, and gsm version history)
 is in [known limitations](docs/KNOWN-LIMITATIONS.md#governed-state-gsm).
+
+### 5 · People in control
+
+When an agent is about to move money, a person decides, and what that person decided is on the
+record. The gate and the notice are recorded on the same audited trail as the rest, and the keys sign it.
+
+- **k-of-n signed approvals.** A tool built with `WithApproval` halts the run before it executes
+  until k of n named approvers have signed a decision over the exact call (`bide.approval.v3`; the
+  decision time is inside the signature). An auditor checks offline that k named approvers
+  approved before the action. Approvers decide from a terminal with `bide approve`, either against the journal or, with `-to`, through an
+  approval intake (`approvals.Handler`) your application serves, so the application records the
+  decision through its own audited journal. An approver can also open a link from a notification and
+  sign in a browser page with a non-extractable key (a page your organization hosts; it needs
+  `WithAuth`). See the [approval guide](docs/guides/hitl-approval.md).
+- **Separation of duties.** With `ExcludePrincipal`, a gate never counts a decision by the run's
+  requester or by a requester of any run above it; the excluded decision stays on the record, marked.
+  Bide compares ids; it cannot see that one person holds two identities.
+- **Keys outside the application.** Audit-log and approver signing keys can live in a PKCS#11 HSM,
+  AWS KMS, Google Cloud KMS or Azure Key Vault behind one `audit.Signer` interface, in
+  Ed25519 or ECDSA P-256. Verifiers hold only the public key. This is key custody, not a
+  compliance certification: [key custody](docs/guides/key-custody.md) lists what each signer is
+  tested against (SoftHSM2 and emulators, never a live cloud) and what it does not check.
+- **A notice with a record.** A run that halts or waits for approval
+  raises a notification (a signed HTTPS webhook, `notify.NewWebhook`), routed by kind or approver
+  and escalated when nobody acknowledges it by a deadline, and an audited trail records each
+  attempt and whether the sink acknowledged it. A `resolved` all-clear closes the event when it
+  stops being current. The trail can be signed and anchored with the same signers as the journal
+  (opt-in; publishing is best effort and never delays a delivery). An acknowledgement means your
+  endpoint answered 2xx, not that a person read it. See [notifications](docs/guides/notifications.md).
+
+The scope is in [known limitations](docs/KNOWN-LIMITATIONS.md#approval-and-quorum): approvers are a
+fixed, named set; linking a key to a person is your identity provider's job; a decision's time is
+the approver's claim.
 
 ### vs. durable-execution and agent runtimes
 

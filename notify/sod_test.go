@@ -19,3 +19,17 @@ func TestPayloadExcludedApprovers(t *testing.T) {
 		t.Fatalf("payload = %s, want excluded alice", raw)
 	}
 }
+
+// The approval payload says when the gate asks again, and omits it on the first ask.
+func TestPayloadReask(t *testing.T) {
+	n := sampleApproval()
+	_, plain := notifyJSON(t, plainWebhook(t), n)
+	if strings.Contains(plain, `"reask"`) {
+		t.Fatalf("first ask carries reask: %s", plain)
+	}
+	n.Approval.Reask = "approval re-required"
+	_, raw := notifyJSON(t, plainWebhook(t), n)
+	if !strings.Contains(raw, `"reask":"approval re-required"`) {
+		t.Fatalf("payload = %s", raw)
+	}
+}

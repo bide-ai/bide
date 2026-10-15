@@ -41,7 +41,7 @@ jobs:
         with:
           syft-version: v1.54.1
       - name: Install cosign
-        uses: sigstore/cosign-installer@v4
+        uses: sigstore/cosign-installer@v4.1.2
         with:
           cosign-release: v3.1.3
       - name: Validate config
@@ -66,6 +66,27 @@ jobs:
           args: release --clean ${{ github.event_name == 'workflow_dispatch' && '--snapshot --skip=sign' || '' }} ${{ steps.notes.outputs.arg }}
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+      # The approve page's SHA256SUMS (approvals/cmd/approvepage), published and signed with every
+      # release. Subresource Integrity in the page's index.html pins its script and stylesheet, but no
+      # browser mechanism pins the entry document itself, so an organization that hosts the page checks
+      # every file it serves against these sums (docs/trust/verify-releases.md). The bundle is built
+      # from the tag, its own SHA256SUMS is checked, and on a tag push the file is signed keylessly like
+      # checksums.txt and attached to the release. The manual dry run builds and checks it only.
+      - name: Approve page SHA256SUMS
+        run: |
+          set -euo pipefail
+          go run ./approvals/cmd/approvepage -out approve-page
+          (cd approve-page && sha256sum --check --strict SHA256SUMS)
+          cp approve-page/SHA256SUMS approve-page.SHA256SUMS
+          cat approve-page.SHA256SUMS
+      - name: Publish the approve page SHA256SUMS
+        if: github.event_name == 'push'
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          set -euo pipefail
+          cosign sign-blob --yes --bundle=approve-page.SHA256SUMS.sigstore.json approve-page.SHA256SUMS
+          gh release upload "$GITHUB_REF_NAME" approve-page.SHA256SUMS approve-page.SHA256SUMS.sigstore.json --clobber
       # The bide formula in bide-ai/homebrew-tap, generated from this release's checksums
       # (scripts/brew-formula.sh): a formula, not a cask, so Linux keeps Homebrew. It replaces the
       # bide-audit formula and records the rename, so brew upgrade moves bide-audit users to bide.
@@ -104,20 +125,20 @@ jobs:
     permissions:
       contents: read
     steps:
-      - uses: sigstore/cosign-installer@v4
+      - uses: sigstore/cosign-installer@v4.1.2
         with:
           cosign-release: v3.1.3
       - name: Download the release
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-        run: gh release download "${GITHUB_REF_NAME}" -R "${GITHUB_REPOSITORY}" -p 'bide_*' -p 'checksums.txt*' -D rel
+        run: gh release download "${GITHUB_REF_NAME}" -R "${GITHUB_REPOSITORY}" -p 'bide_*' -p 'checksums.txt*' -p 'approve-page.SHA256SUMS*' -D rel
       - name: Verify signatures and checksums
         run: |
           set -euo pipefail
           cd rel
           id="https://github.com/${GITHUB_REPOSITORY}/.github/workflows/release.yml@refs/tags/${GITHUB_REF_NAME}"
           issuer="https://token.actions.githubusercontent.com"
-          for f in checksums.txt bide_*.tar.gz; do
+          for f in checksums.txt approve-page.SHA256SUMS bide_*.tar.gz; do
             cosign verify-blob --bundle "$f.sigstore.json" --certificate-identity "$id" --certificate-oidc-issuer "$issuer" "$f"
           done
           sha256sum --check --strict checksums.txt
@@ -140,3 +161,15 @@ jobs:
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: scripts/repro.sh "${GITHUB_REF_NAME}"
+      # The approve page bundle is deterministic: rebuilt from the tag on another OS, its SHA256SUMS
+      # must equal the published one byte for byte, and the files must match it.
+      - name: Rebuild the approve page and compare its sums
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          GOWORK: 'off'
+        run: |
+          set -euo pipefail
+          gh release download "${GITHUB_REF_NAME}" -R "${GITHUB_REPOSITORY}" -p approve-page.SHA256SUMS -D published
+          go run ./approvals/cmd/approvepage -out approve-page
+          cmp approve-page/SHA256SUMS published/approve-page.SHA256SUMS
+          (cd approve-page && shasum -a 256 --check --strict SHA256SUMS)

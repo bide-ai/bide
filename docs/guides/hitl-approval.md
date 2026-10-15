@@ -36,7 +36,12 @@ if pend, ok := errors.AsType[*agent.ApprovalPending](err); ok {
 }
 ```
 
-The first decision recorded for a tool call wins. A denial is fed back to the model as the tool
+The first decision recorded for a tool call wins. The record notes when it was written
+(`Record.RecordedAt`, `recorded_at`): the clock of the process that called `Approve` (its
+`agent.WithClock`, else the run's clock on `ctx`, else its wall clock), kept from the first call. It
+is not signed (a 1-of-1 decision carries no signature), so it is that process's claim, anchored by
+the journal's Merkle trail once a signed head covers it, and the gate never reads it. `bide view`
+shows it on the timeline and the gate card; a decision an earlier version recorded has none. A denial is fed back to the model as the tool
 result `tool call denied by human`, so the model can react rather than the run failing.
 
 A recorded denial is final even if the tool's gate is removed or loosened before the run is driven
@@ -278,6 +283,22 @@ decides, and an auditor can see when approvers were asked. The run writes it onc
 the call, and a resume writes nothing. It is informational only: the gate, a resume and recovery never
 read it, and a failed write of it is dropped.
 
+When the gate asks again over a recorded tally it does not act on (a tally that predates
+`bide.approval.v3`, or one that passed without excluding the requester under a policy that now
+excludes it), the drive that pauses at the re-ask also records a re-ask note:
+`approval-pending:<encoded toolUseID>:v3` or `:sod` (`agent.ApprovalReaskStep`), an
+`agent.ApprovalWait` with the policy the gate asks under, why (`Reask`) and the tally it asks over
+(`Supersedes`). It is written only if absent (the first writer wins), by every drive that pauses at
+the re-ask, so one lost to a crash is written by the next. The first note keeps the policy of the
+first pause; `bide view`, `bide approve`, the intake's note fallback, notifications and evidence read
+the newest note (`agent.LatestPauseNote`), so a gate that asks again after a policy change shows as
+waiting under the policy it asks under. A notification for a re-ask is an event of its own
+(`agent.ApprovalReaskKey`, and `reask` in the webhook payload). Like the first note, the gate never
+reads it. The note is insert-once by name, so a journal writer without approver keys could pre-insert
+one; readers therefore honor a re-ask note only if the journal holds a recorded tally the gate would ask
+again over for that reason, and the note names it (`agent.ValidReaskNote`). A note the journal does not
+prove is ignored, and the reader falls back to the first note.
+
 ### A run approved under an earlier decision format
 
 A run that an earlier version paused at an m-of-n gate, approved under `bide.approval.v2` (decisions
@@ -508,6 +529,12 @@ bide approve -db run.db -list                  # the calls that wait, each with 
 bide approve -db run.db -run refund-1049 -call c2 -as ops -key ops.key \
     -approver-keys approver-keys.json
 ```
+
+<img src="./img/cli-approve-dark.gif" alt="bide approve in a terminal: a refund waiting at a 2-of-3 gate listed with its pending approvers; ops, the run's requester, refused because the decision would not count; finance shown the call, its arguments and the SHA-256 the signature binds, typing their id, and getting the signed decision, its receipt and a tally of 1 of 2; then risk's approval completing the gate">
+
+The recording is a real run on a refund that ops requested: `ExcludePrincipal` is set (see
+[separation of duties](#separation-of-duties)), so `bide approve` refuses ops before it records
+anything, finance's decision counts as 1 of 2, and risk's makes 2.
 
 `bide approve` reads the call from the journal, never from a flag or a notification, and shows what it
 is about to sign: the run, the tool, the call's arguments (indented JSON; long ones are cut, and
@@ -797,8 +824,9 @@ tools are built with, is not optional: `approvals.New` returns an error without 
 its pause note, written once when the run first pauses, so a policy changed after the pause (`ExcludePrincipal`
 turned on) is in the gate but not the note, and a gate whose tally passed under the old policy asks again
 while a handler that read the note would show it decided and refuse the approvals it needs, so the run would
-wait for ever. A tool the function does not know (`ok` false) falls back to the note (see
-[KNOWN-LIMITATIONS](../KNOWN-LIMITATIONS.md)). The handler evaluates the gate with `agent.EvaluateGate`, the
+wait for ever. A tool the function does not know (`ok` false) falls back to the newest pause note, which
+holds the policy the gate asks under once a drive has re-asked (`agent.ApprovalReaskStep`); before any
+drive re-asks, the journal does not know about a redeploy, which is why the live policy is required. The handler evaluates the gate with `agent.EvaluateGate`, the
 function the agent's own gate evaluates with, so the two agree: a gate the gate would refuse (an invalid
 policy, approvers on one key, a requester the run does not record) is state `error` on `GET /pending` and `409
 gate_misconfigured` on `POST /decisions`; a one-decision gate is state `single`; a live policy that changed
@@ -821,6 +849,13 @@ differ, posts the decision, and checks the receipt that comes back (the decision
 anchoring proof, a signature that verifies under its own key). The decision flow is the same as
 `bide approve -to`; the page is the same checks in a browser.
 
+<img src="./img/approve-page-waiting-dark.png" alt="The browser approve page for a waiting refund call: the approver's public key and fingerprint, every argument, the arguments' SHA-256, and the Approve and Reject buttons">
+
+<img src="./img/approve-page-signed-dark.png" alt="The same page after Approve: signed and recorded by the application, the gate showing 2 of 2 approvals, and a link to the receipt">
+
+Both are screenshots of the page served by an application (`approvals.WithPage()`), so the page's
+own warning about that mode is visible.
+
 **Who serves the page matters more than anything else about it.** A signature is only as good as the
 code that asks for it. A page the application serves lets the application serve a script that shows one
 call and signs another, with the approver's real key, and the endpoint cannot tell. So there are two
@@ -828,8 +863,8 @@ modes, and the page says which one it is in:
 
 - **Hosted by the approver's organization (the design).** Write the bundle with
   `go run github.com/bide-ai/bide/approvals/cmd/approvepage -out ./site` (deterministic: the same release
-  gives the same bytes, with a `SHA256SUMS` you check with `sha256sum -c` against the sums the release
-  publishes), put it on **a dedicated origin that serves nothing else** (the key lives in that origin's
+  gives the same bytes, with a `SHA256SUMS` you check with `sha256sum -c` against the signed
+  `approve-page.SHA256SUMS` every release publishes; see [Verifying releases](../trust/verify-releases.md#verify-the-approve-page-bundle)), put it on **a dedicated origin that serves nothing else** (the key lives in that origin's
   IndexedDB, so every script on the origin can use it), and add `config.json` next to it,
   `{"intake": "https://app.example.com/approvals"}`. Serve it with the policy `approvals.PageCSP(intakeOrigin)`
   returns. Subresource Integrity in `index.html` pins the script and the stylesheet, but cannot pin the

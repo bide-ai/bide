@@ -154,6 +154,10 @@ Section: Fixed
   name order. One fragment holds one entry: a change with several entries adds several files.
 - A reference like `[#240]` needs no link definition: assembling adds `[#240]: .../pull/240` to the
   end of the changelog when it is missing.
+- Put anything shaped like an HTML tag in backticks: a placeholder such as `<time>`, a generic
+  such as `List<T>`. The docs site (VitePress) builds from the changelog and reads a bare `<word>`
+  as an HTML element, which fails its build; `changelog lint` refuses one outside a code span
+  (autolinks such as `<https://...>` and comparisons such as `a < b` are fine).
 - Internal-only changes (CI, tests, docs, examples, refactors with no API or behavior change) need
   no fragment.
 
@@ -173,9 +177,9 @@ go run ./internal/tools/changelog check -base origin/main -head HEAD
 
 The core module and the library modules are released together under one version. Published
 modules, tagged `<dir>/vX.Y.Z` at every release: `govern`, `store/sqlite`, `store/postgres`, `mcptools`,
-`trace`, `codec/gcf`, `govern/sqlitelog`, `govern/redislog`, `govern/postgreslog`, `signer/pkcs11`, `signer/awskms`, and the commands
+`trace`, `codec/gcf`, `govern/sqlitelog`, `govern/redislog`, `govern/postgreslog`, `signer/pkcs11`, `signer/awskms`, `signer/azurekv`, `signer/gcpkms`, and the commands
 `cmd/bide`, `cmd/bide/bide-hsm` (installed from source with `go install`, never built into the release archives: it needs cgo) and `cmd/bide-view` (the latter one last time, at v0.14.0). Repo-only
-modules, never tagged: `examples/*`, `integration`, `benchmarks`. The lists live in
+modules, never tagged: `examples/*`, `integration`, `benchmarks` and the test-only emulator modules (`signer/awskms/emulatortest`, `signer/gcpkms/emulatortest`, `cmd/bide/bide-hsm/emulatortest`, `cmd/bide/bide-hsm/azuretest`). The lists live in
 `scripts/release.sh`, and the Lint job fails if a module is in neither.
 
 On main every nested module requires the core at the placeholder `v0.0.0` through a `replace`
@@ -232,7 +236,12 @@ tree between releases.
    `docs/releases/vX.Y.Z.md` as its notes), the Homebrew formula (`bide.rb`, attached to the
    release, and pushed to bide-ai/homebrew-tap when the `HOMEBREW_TAP_TOKEN` secret is set; see
    [The Homebrew tap by hand](#the-homebrew-tap-by-hand)), and the `repro` job, which rebuilds every binary
-   from the tag on macOS and fails unless the bytes match (`scripts/repro.sh`); each nested tag runs the Release modules workflow,
+   from the tag on macOS and fails unless the bytes match (`scripts/repro.sh`). The Release workflow
+   also builds the approve page bundle from the tag (`go run ./approvals/cmd/approvepage`), signs its
+   `SHA256SUMS` keylessly and attaches it to the release as `approve-page.SHA256SUMS` (with its
+   `.sigstore.json` bundle), because Subresource Integrity cannot pin the page's entry document; the
+   `verify-signatures` job verifies that signature, and the `repro` job rebuilds the bundle on macOS
+   and fails unless its sums are the published ones. Each nested tag runs the Release modules workflow,
    which fails if the tagged `go.mod` still requires `v0.0.0` or replaces a bide module, or does
    not build with `GOWORK=off`. Check both, the release assets and the Homebrew formula: every
    nested tag has its own Release modules run.

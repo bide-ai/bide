@@ -57,8 +57,77 @@ func ParseFragment(name, content string) (Fragment, error) {
 	if strings.HasPrefix(body, "- ") || strings.HasPrefix(body, "#") {
 		return f, fmt.Errorf("%s: write the entry text without the leading \"- \" or heading", name)
 	}
+	if tag := bareTag(body); tag != "" {
+		return f, fmt.Errorf("%s: %q outside backticks: the docs site (VitePress) reads it as an HTML element and fails to build; put it in backticks", name, tag)
+	}
 	f.Text = body
 	return f, nil
+}
+
+var (
+	// autolink is a Markdown autolink, which renders as a link and is not an HTML element.
+	autolink = regexp.MustCompile(`^<(?:[A-Za-z][A-Za-z0-9+.-]{1,31}:[^\s<>]*|[A-Za-z0-9.!#$%&'*+/=?^_{|}~-]+@[A-Za-z0-9](?:[A-Za-z0-9.-]*[A-Za-z0-9])?)>`)
+	// tagStart is what makes "<" start HTML: a letter (an element), "/" (an end tag) or "!" (a
+	// comment or declaration). "a < b", "<=" and "<-" are text.
+	tagStart = regexp.MustCompile(`^<[A-Za-z/!]`)
+)
+
+// bareTag returns the first "<...>" in text that Markdown would pass through as HTML: one outside
+// a code span, not escaped with a backslash, and not an autolink. A code span is a run of
+// backticks closed by a run of the same length (CommonMark); an unclosed run is literal text.
+func bareTag(text string) string {
+	for i := 0; i < len(text); {
+		switch {
+		case text[i] == '\\' && i+1 < len(text):
+			i += 2
+		case text[i] == '`':
+			n := 1
+			for i+n < len(text) && text[i+n] == '`' {
+				n++
+			}
+			if end := closingRun(text[i+n:], n); end >= 0 {
+				i += n + end + n
+			} else {
+				i += n
+			}
+		case text[i] == '<':
+			rest := text[i:]
+			if autolink.MatchString(rest) || !tagStart.MatchString(rest) {
+				i++
+				continue
+			}
+			end := strings.IndexByte(rest, '>')
+			if end < 0 {
+				end = len(rest) - 1
+			}
+			if end > 40 {
+				end = 40
+			}
+			return rest[:end+1]
+		default:
+			i++
+		}
+	}
+	return ""
+}
+
+// closingRun returns the index in s of the first run of exactly n backticks, or -1.
+func closingRun(s string, n int) int {
+	for i := 0; i < len(s); {
+		if s[i] != '`' {
+			i++
+			continue
+		}
+		j := i
+		for j < len(s) && s[j] == '`' {
+			j++
+		}
+		if j-i == n {
+			return i
+		}
+		i = j
+	}
+	return -1
 }
 
 // ReadFragments parses every fragment under root/changes/unreleased, sorted by file name. A

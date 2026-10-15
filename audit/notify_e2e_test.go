@@ -3,6 +3,7 @@ package audit_test
 import (
 	"context"
 	"crypto/ed25519"
+	"encoding/json"
 	"errors"
 	"slices"
 	"testing"
@@ -11,6 +12,7 @@ import (
 	"github.com/bide-ai/bide/agent"
 	"github.com/bide-ai/bide/agent/agenttest"
 	"github.com/bide-ai/bide/audit"
+	"github.com/bide-ai/bide/internal/journaltest"
 )
 
 // The notifier's own trail, written by the real engine under every routing shape, must verify: no
@@ -102,7 +104,15 @@ func e2eRun(t *testing.T, sc e2eScenario) {
 		}
 	}
 
-	jx, err := audit.ExportJournal(ctx, j, "r1")
+	verifyE2E(t, ctx, j, es, clk, opts, "r1", sc.escalate)
+}
+
+// verifyE2E exports runID's journal and the notifier's trails from es, signs the trails, and verifies
+// them with VerifyNotifications: unsigned and signed, with and without the routing opts give. With
+// escalate, an acknowledgement reported late or an event reported overdue is not a problem.
+func verifyE2E(t *testing.T, ctx context.Context, j *agent.Journal, es audit.EventStore, clk *stepClock, opts []agent.NotifyOption, runID string, escalate bool) {
+	t.Helper()
+	jx, err := audit.ExportJournal(ctx, j, runID)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -111,7 +121,7 @@ func e2eRun(t *testing.T, sc e2eScenario) {
 	for _, y := range []int{time.Now().UTC().Year(), time.Now().UTC().Year() + 1} {
 		names = append(names, agent.OpenIndex(y))
 	}
-	names = append(names, trailName, agent.OpenSegment(clk.now), agent.OpenSegment(time.Now()))
+	names = append(names, agent.NotifyTrailName(runID), agent.OpenSegment(clk.now), agent.OpenSegment(time.Now()))
 	seen := map[string]bool{}
 	for _, n := range names {
 		if seen[n] {
@@ -150,12 +160,12 @@ func e2eRun(t *testing.T, sc e2eScenario) {
 			if withRouting {
 				in.Routing = &routing
 			}
-			if sc.escalate { // an unresolved event is judged overdue past its deadline however it was delivered
+			if escalate { // an unresolved event is judged overdue past its deadline however it was delivered
 				in.MaxAck = 0
 			}
 			rep, err := audit.VerifyNotifications(in)
 			problems := rep.Problems
-			if sc.escalate { // the original of an unacknowledged-by-design chain may be reported late; nothing else
+			if escalate { // the original of an unacknowledged-by-design chain may be reported late; nothing else
 				problems = nil
 				for _, p := range rep.Problems {
 					if !(len(p) > 0 && (contains(p, "acked_late") || contains(p, "overdue"))) {
@@ -236,5 +246,102 @@ func TestVerifyNotifications_TheRealEnginesTrailVerifiesUnderEveryRoutingShape(t
 		}},
 	} {
 		t.Run(sc.name, func(t *testing.T) { e2eRun(t, sc) })
+	}
+}
+
+// reaskTrail is a run that paused under a weak policy (notified by a sweep), took two approvals
+// whose passing tally a crashed drive recorded, was redeployed with ExcludePrincipal and driven
+// again: its gate asks again. sweep runs the notifier once, a minute later.
+type reaskTrail struct {
+	g     *gate
+	es    *audit.MemEventStore
+	clk   *stepClock
+	opts  []agent.NotifyOption
+	sweep func()
+	sinks []*toggleSink
+}
+
+func newReaskTrail(t *testing.T) *reaskTrail {
+	t.Helper()
+	ctx := context.Background()
+	g := newGate(2, []string{"alice", "bob", "carol"}, []string{"alice", "bob", "carol"})
+	g.policy = agent.ApprovalPolicy{Need: 2, Approvers: []string{"alice", "bob", "carol"}}
+	wantPaused(t, g.runAs("alice"), 0)
+	rt := &reaskTrail{g: g, es: audit.NewMemEventStore(), clk: &stepClock{now: time.Now()}}
+	trail := audit.NewNotifyTrail(rt.es)
+	risk, fin := &toggleSink{}, &toggleSink{}
+	rt.sinks = []*toggleSink{risk, fin}
+	rt.opts = append(sweepOpts(rt.clk), agent.WithNotifyReceiver("risk", risk), agent.WithNotifyReceiver("finance", fin),
+		agent.WithNotifyApproverRoute("alice", "risk"), agent.WithNotifyApproverRoute("bob", "finance"), agent.WithNotifyApproverRoute("carol", "finance"))
+	rt.sweep = func() {
+		t.Helper()
+		rt.clk.now = rt.clk.now.Add(time.Minute)
+		if err := agent.NotifyPending(ctx, g.store, &toggleSink{}, trail, rt.opts...); err != nil {
+			t.Fatalf("sweep: %v", err)
+		}
+	}
+	rt.sweep() // the first ask
+
+	g.decide(t, "alice", true, false)
+	g.decide(t, "bob", true, false)
+	weak, _ := json.Marshal(agent.ApprovalTally{Need: 2, Approvers: g.policy.Approvers, Approved: 2, ApprovedBy: []string{"alice", "bob"},
+		DecisionFormat: agent.DecisionFormat, Records: decisionNames(t, g)})
+	if _, err := journaltest.Put(ctx, g.store, gateRun, agent.ApprovalTallyStep("c1"), agent.Record{Kind: agent.StepValue, Result: weak}); err != nil {
+		t.Fatal(err)
+	}
+	g.policy.ExcludePrincipal = true // the redeploy
+	var pend *agent.ApprovalPending
+	if err := g.runAs(""); !errors.As(err, &pend) || pend.Reason != agent.PendingSoDReapproval {
+		t.Fatalf("drive under the excluding policy = %v; want a re-approval pause", err)
+	}
+	return rt
+}
+
+// A gate that asks again is its own event: the real engine's trail for that run verifies against the
+// journal with no problem, signed and unsigned, with and without routing, while the re-ask stands
+// and after it is decided.
+func TestVerifyNotifications_AReaskVerifies(t *testing.T) {
+	ctx := context.Background()
+	rt := newReaskTrail(t)
+	rt.sweep() // the re-ask, and the all-clear of the first ask its tally ended
+	rt.sweep()
+	if rt.sinks[0].n == 0 || rt.sinks[1].n == 0 {
+		t.Fatalf("deliveries: risk=%d finance=%d", rt.sinks[0].n, rt.sinks[1].n)
+	}
+	verifyE2E(t, ctx, rt.g.store, rt.es, rt.clk, rt.opts, gateRun, false)
+
+	rt.g.decide(t, "carol", true, false)
+	if err := rt.g.runAs(""); err != nil || rt.g.charged != 1 {
+		t.Fatalf("drive at quorum = %v (charged %d)", err, rt.g.charged)
+	}
+	rt.sweep() // the re-ask's all-clear
+	rt.sweep()
+	rt.clk.now = rt.clk.now.Add(time.Hour) // a notification owed and never made is late by now
+	verifyE2E(t, ctx, rt.g.store, rt.es, rt.clk, rt.opts, gateRun, false)
+}
+
+// A re-ask nobody was told about is found: the journal owes a notification under the re-ask's key,
+// which the first ask's does not satisfy.
+func TestVerifyNotifications_AnUnnotifiedReaskIsFound(t *testing.T) {
+	ctx := context.Background()
+	rt := newReaskTrail(t) // no sweep since the gate asked again
+	jx, err := audit.ExportJournal(ctx, rt.g.store, gateRun)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var trails []audit.NotifyTrailExport
+	for _, n := range []string{agent.NotifyTrailName(gateRun)} {
+		x, err := audit.ExportNotifyTrail(ctx, rt.es, n)
+		if err != nil {
+			t.Fatal(err)
+		}
+		trails = append(trails, x)
+	}
+	rep, _ := audit.VerifyNotifications(audit.NotifyVerifyInput{Trails: trails, Journals: []audit.JournalExport{jx}, Unanchored: true, Now: rt.clk.now.Add(time.Hour)})
+	if !slices.ContainsFunc(rep.Problems, func(p string) bool { return contains(p, agent.ApprovalReaskKey(gateRun, "c1", true)) }) {
+		t.Fatalf("problems = %q; want the unnotified re-ask named", rep.Problems)
+	}
+	if slices.ContainsFunc(rep.Problems, func(p string) bool { return contains(p, "approval_pending "+agent.ApprovalKey(gateRun, "c1", 0)) }) {
+		t.Fatalf("problems = %q; the first ask was notified", rep.Problems)
 	}
 }

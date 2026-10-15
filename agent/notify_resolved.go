@@ -80,9 +80,10 @@ func eventFromKey(es *NotifyEvent) (notifyEvent, bool) {
 			return notifyEvent{}, false
 		}
 		ev.opRun, ev.halt = run, &NotifyHalt{Op: OpRef{Kind: OpKind(kind), ID: op}}
-	case NotificationApprovalPending: // approval:<run>:<call>:<reminder>
+	case NotificationApprovalPending: // approval:<run>:<call>:<reminder>, or :reask-sod, :reask-v3
+		reask := reaskOfKey(parts)
 		if es.OpID != "" && es.OpKind == "gate" {
-			ev.opRun, ev.approval = es.OpRun, &NotifyApproval{ToolUseID: es.OpID}
+			ev.opRun, ev.approval = es.OpRun, &NotifyApproval{ToolUseID: es.OpID, Reask: reask}
 			return ev, true
 		}
 		run, ok1 := dec(1)
@@ -90,7 +91,7 @@ func eventFromKey(es *NotifyEvent) (notifyEvent, bool) {
 		if len(parts) != 4 || parts[0] != "approval" || !ok1 || !ok2 {
 			return notifyEvent{}, false
 		}
-		ev.opRun, ev.approval = run, &NotifyApproval{ToolUseID: call}
+		ev.opRun, ev.approval = run, &NotifyApproval{ToolUseID: call, Reask: reask}
 	case NotificationRecoveryFailing: // recovery:<run>:<episode>
 		episode, err := strconv.Atoi(parts[len(parts)-1])
 		if len(parts) != 3 || parts[0] != "recovery" || err != nil {
@@ -101,6 +102,21 @@ func eventFromKey(es *NotifyEvent) (notifyEvent, bool) {
 		return notifyEvent{}, false
 	}
 	return ev, true
+}
+
+// reaskOfKey is the ApprovalPending.Reason an approval key's parts name: PendingSoDReapproval or
+// PendingReapproval for the key of a re-ask (ApprovalReaskKey), "" for the first ask or a reminder.
+func reaskOfKey(parts []string) string {
+	if len(parts) != 4 || parts[0] != "approval" {
+		return ""
+	}
+	switch parts[3] {
+	case "reask-sod":
+		return PendingSoDReapproval
+	case "reask-v3":
+		return PendingReapproval
+	}
+	return ""
 }
 
 // scanRound runs the catch-up scan of ev.runID's trail as a round of the worker.

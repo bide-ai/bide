@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"errors"
 	"reflect"
+	"slices"
 	"testing"
 )
 
@@ -130,6 +131,11 @@ func journalsEqual(t *testing.T, a, b *Journal, runID string) {
 			rs[i].salt, rs[i].raw = nil, nil
 			rs[i].Result = withoutStartTime(t, rs[i])
 		}
+	}
+	// A recorded_at is the time of the drive that wrote it, so it differs; which records carry one
+	// must not.
+	if pa, pb := stripRecordedAt(ra), stripRecordedAt(rb); !slices.Equal(pa, pb) {
+		t.Fatalf("the journals differ in which records carry a recorded_at:\n orig   %s\n replay %s", dumpRecords(ra), dumpRecords(rb))
 	}
 	if !reflect.DeepEqual(ra, rb) {
 		t.Fatalf("replayed journal differs:\n orig   %s\n replay %s", dumpRecords(ra), dumpRecords(rb))

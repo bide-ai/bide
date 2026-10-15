@@ -331,7 +331,9 @@ func TestDecision_QuorumThenRerun(t *testing.T) {
 
 // Concurrent identical submissions leave one record, and every caller is told it is recorded.
 func TestDecision_ConcurrentIdentical(t *testing.T) {
-	r := newRig(t, approvals.WithRateLimit(0, 0), approvals.WithGlobalRateLimit(0, 0))
+	// Sixteen bodies from one client at once exceed the default per-client reader cap (4), which
+	// would answer some of them 429; this test is about identical decisions, not that cap.
+	r := newRig(t, approvals.WithRateLimit(0, 0), approvals.WithGlobalRateLimit(0, 0), approvals.WithMaxReaders(64, 16))
 	before := r.records()
 	b := r.decision("alice", true)
 	var wg sync.WaitGroup
@@ -791,7 +793,7 @@ func TestDecision_ConcurrentIdenticalFiresOnce(t *testing.T) {
 	for i := range 20 {
 		var mu sync.Mutex
 		hooks := 0
-		r := newRig(t, approvals.WithRateLimit(0, 0), approvals.WithGlobalRateLimit(0, 0),
+		r := newRig(t, approvals.WithRateLimit(0, 0), approvals.WithGlobalRateLimit(0, 0), approvals.WithMaxReaders(64, 16),
 			approvals.OnRecorded(func(context.Context, approvals.Recorded) { mu.Lock(); hooks++; mu.Unlock() }))
 		b := r.decision("alice", true)
 		var wg sync.WaitGroup
@@ -1309,6 +1311,23 @@ func TestDecision_PolicyTurnedOnAfterThePauseIsHonoredWithTheLivePolicy(t *testi
 		}
 		if status, out := r.post(r.decision("carol", true)); status != http.StatusConflict || code(out) != "not_waiting" {
 			t.Fatalf("%d %v", status, out)
+		}
+	})
+	t.Run("after a re-drive that asked again, the newest pause note is followed", func(t *testing.T) {
+		r := newRigAs(t, "c1", old, id, approvals.WithRateLimit(0, 0), approvals.WithGlobalRateLimit(0, 0),
+			approvals.WithGatePolicy(func(string) (*agent.ApprovalPolicy, bool) { return nil, false }))
+		seed(t, r)
+		r.policy = *live // the redeploy, and a re-drive under it: the gate asks again and notes it
+		if err := r.run(); !agent.IsPause(err) {
+			t.Fatalf("re-drive = %v", err)
+		}
+		_, pend := r.get("/pending?run=" + runID + "&call=c1")
+		if pend["state"] != "waiting" || pend["reason"] != agent.PendingSoDReapproval {
+			t.Fatalf("pending: %v", pend)
+		}
+		status, out := r.post(r.decision("carol", true))
+		if status != 200 || out["counted"] != true {
+			t.Fatalf("carol's decision on the re-asked gate: %d %v", status, out)
 		}
 	})
 	t.Run("a live policy for another tool changes nothing", func(t *testing.T) {
