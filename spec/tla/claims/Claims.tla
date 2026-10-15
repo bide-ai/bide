@@ -72,6 +72,7 @@ CONSTANTS
   MaxApprove1,   \* budget of Approve calls (1-of-1)
   MaxSubmit,     \* budget of SubmitDecision calls (m-of-n)
   MaxRedeploy,   \* budget of redeploys that change a tool's gate
+  HasDeadline,   \* TRUE: the gate has a deadline (ApprovalPolicy.Timeout) that may pass
   KeyCheck,      \* TRUE: the gate refuses a policy two of whose approvers' key sets meet, or one
                  \* with an empty key set (F5's fix, #109)
   Requester,     \* the run's requester: the approver id its run:principal names (OnBehalfOf),
@@ -81,7 +82,8 @@ CONSTANTS
   Bug            \* "none" or a historical rule, see the regression configs
 
 None == "none"
-NoTally == [rec |-> FALSE, passed |-> FALSE, pol |-> "none", signers |-> {}, excl |-> 0, denials |-> 0, seated |-> {}]
+NoTally == [rec |-> FALSE, passed |-> FALSE, pol |-> "none", signers |-> {}, excl |-> 0, denials |-> 0, seated |-> {},
+             exp |-> FALSE, late |-> FALSE]
 Gens == 0..MaxGen
 Ids  == 1..MaxIds
 ResolverSet == IF HasResolver THEN {"resolver"} ELSE {}
@@ -103,7 +105,8 @@ ASSUME Bug \in {"none", "ReuseNoHold", "HeldPin", "GateNoRetry", "NoMemoAfterCal
                 "MemoOverwrite", "LoserLeads", "PauseAsFailure",
                 "DenialNotFinal", "UnboundSubject", "SlotPerApprover", "NoFoldCheck",
                 "SetEqualityCheck", "NoCountExclusion", "NoRequesterExclusion",
-                "RequesterExactMatch", "OwnPrincipalOnly", "WeakTallyStands"}
+                "RequesterExactMatch", "OwnPrincipalOnly", "WeakTallyStands", "LateCounts"}
+ASSUME HasDeadline \in BOOLEAN
 ASSUME \A c \in Calls : Kind[c] \in {"tool", "step", "flow"}
 ASSUME MaxEvict \in Nat /\ ResolverProc \in Procs \cup {"none"} /\ ResolveVoidOnError \in BOOLEAN
 ASSUME PlainRunIdleAtCheck \in BOOLEAN
@@ -145,12 +148,19 @@ variables
   lost       = {},
   \* Ghost: the claim ids an eviction from pendingClaims forgot.
   evicted    = {},
-  \* The approval gate. one[c]: the 1-of-1 decision (approval:<id>): "none", "yes" or "no".
+  \* The approval gate. one[c]: the 1-of-1 decision (approval:<id>): "none", "yes" or "no"; with a
+  \* deadline, "exp" (the gate recorded the expiry there) or "late" (a decision recorded after the
+  \* deadline, which the gate reads as the expiry; historically, LateCounts, an approval stood:
+  \* "lyes").
   one        = [c \in Calls |-> "none"],
   \* dlog[c]: the m-of-n decision records in journal order, each [a (approver id), h (who
-  \* signed), ok (approved), valid (the signature verifies: h holds a's key), subj].
+  \* signed), ok (approved), valid (the signature verifies: h holds a's key), subj, late (recorded
+  \* after the gate's deadline)].
   dlog       = [c \in Calls |-> <<>>],
-  \* tally[c]: the terminal tally (approval-tally:<id>): [rec (recorded), passed, pol].
+  \* expired[c]: the clock has passed the call's recorded deadline (approval-deadline:<id>).
+  expired    = [c \in Calls |-> FALSE],
+  \* tally[c]: the terminal tally (approval-tally:<id>): [rec (recorded), passed, pol, exp (an
+  \* expiry), late (ghost: a seated approval was recorded after the deadline)].
   tally      = [c \in Calls |-> NoTally],
   \* stally[c]: the separation-of-duties re-tally (approval-tally:<id>:sod), recorded by a gate whose
   \* policy excludes the requester over a recorded tally that passed without excluding it.
@@ -202,6 +212,7 @@ define
   Known(a)      == a \in DOMAIN keys
   CountsFor(c, i) == LET r == dlog[c][i] IN
                      Known(r.a) /\ r.k \in keys[r.a] /\ (r.subj = "this" \/ Bug = "UnboundSubject")
+                     /\ (~r.late \/ Bug = "LateCounts")
   Deciding(c, a) == {i \in DOMAIN dlog[c] :
                       dlog[c][i].a = a /\ (Bug = "SlotPerApprover" \/ CountsFor(c, i))}
   Dec(c, a)     == IF Deciding(c, a) = {} THEN 0 ELSE Min(Deciding(c, a))
@@ -254,7 +265,7 @@ define
   \* The gate's recorded outcome (RecordedTally): the re-tally over the tally it supersedes.
   Outcome(c)    == IF stally[c].rec THEN stally[c] ELSE tally[c]
   \* A recorded denial: an Approve(false), or a recorded outcome that did not pass.
-  Denied(c)     == one[c] = "no" \/ (Outcome(c).rec /\ ~Outcome(c).passed)
+  Denied(c)     == one[c] \in {"no", "exp", "late"} \/ (Outcome(c).rec /\ ~Outcome(c).passed)
   \* A recorded outcome that holds separation of duties: it passed under a policy that excludes the
   \* requester, seating none of the requesters.
   SoDHeld(c)    == LET t == Outcome(c) IN t.rec /\ t.passed /\ Policies[t.pol].sod /\ \A a \in t.seated : ~ReqSame(a)
@@ -264,14 +275,14 @@ define
   \* A recorded sufficient approval for a drive whose gate is n: an Approve(true), or a passing
   \* recorded tally (either; a weaker deployment may run on the tally the re-tally supersedes), and
   \* for a gate that excludes the requester, a passing outcome that held separation of duties.
-  SufficientFor(c, n) == \/ one[c] = "yes"
+  SufficientFor(c, n) == \/ one[c] \in {"yes", "lyes"}
                          \/ n \notin {"none", "one"} /\ Policies[n].sod /\ SoDHeld(c)
                          \/ (n \in {"none", "one"} \/ ~Policies[n].sod)
                             /\ \E t \in {tally[c], stally[c]} : t.rec /\ t.passed
   \* The approvals already in, by the counting rule without its history: every seated approver's
   \* first valid decision over this call (for NoStuckPause).
   TrueDeciding(c, a) == {i \in DOMAIN dlog[c] : dlog[c][i].a = a /\ Known(a) /\ dlog[c][i].k \in keys[a]
-                                                /\ dlog[c][i].subj = "this"}
+                                                /\ dlog[c][i].subj = "this" /\ ~dlog[c][i].late}
   TrueDec(c, a) == IF TrueDeciding(c, a) = {} THEN 0 ELSE Min(TrueDeciding(c, a))
   TrueVoters(c, n, v) == {a \in Policies[n].apprs : ~Excluded(n, a) /\ TrueDec(c, a) # 0
                                                   /\ dlog[c][TrueDec(c, a)].ok = v}
@@ -382,15 +393,17 @@ GateWrite:
   end if;
 ApGate:
   \* The loop's pre-pass for the call. A recorded denial is final whatever the gate is now (#70).
-  if (snapOne = "no" \/ (snapTally.rec /\ ~snapTally.passed)) /\ Bug # "DenialNotFinal" then
+  if (snapOne \in {"no", "exp", "late"} \/ (snapTally.rec /\ ~snapTally.passed)) /\ Bug # "DenialNotFinal" then
     goto Deny;
   elsif policy[ProcOf[self]][CallOf[self]] = "none" then
     goto Claim;
   elsif policy[ProcOf[self]][CallOf[self]] = "one" then
     gp := "one";
-    if snapOne = "none" then
+    if snapOne = "none" /\ expired[CallOf[self]] then
+      goto ApExpire;
+    elsif snapOne = "none" then
       outcome := "pause_approval"; goto Finish;
-    elsif snapOne = "yes" then
+    elsif snapOne \in {"yes", "lyes"} then
       goto Claim;
     else
       goto Deny;
@@ -398,6 +411,11 @@ ApGate:
   else
     gp := policy[ProcOf[self]][CallOf[self]]; goto QTally;
   end if;
+ApExpire:
+  \* A one-decision gate past its deadline records the expiry as its decision, insert-once: an
+  \* Approve that landed first is the decision (one recorded after the deadline reads as the expiry).
+  if one[CallOf[self]] = "none" then one[CallOf[self]] := "exp"; end if;
+  if one[CallOf[self]] \in {"yes", "lyes"} then goto Claim; else goto Deny; end if;
 QTally:
   \* quorumTally: the policy and key checks (every evaluation, before a recorded tally is read),
   \* then a fresh History read; a recorded tally stands.
@@ -413,7 +431,14 @@ QTally:
 QCount:
   \* TallyApprovals: the count, with the resolver as it is now (it may have changed since the
   \* check); pause unless the count is final.
-  if ~Passed(CallOf[self], gp) /\ ~Unreach(CallOf[self], gp) then
+  if ~Passed(CallOf[self], gp) /\ ~Unreach(CallOf[self], gp) /\ expired[CallOf[self]] then
+    \* Past the deadline with no terminal count: the expiry, recorded under the outcome's name.
+    qt := [rec |-> TRUE, passed |-> FALSE, pol |-> gp,
+           signers |-> Signers(CallOf[self], gp), excl |-> NExcl(gp),
+           denials |-> NVotes(CallOf[self], gp, FALSE),
+           seated |-> IF Policies[gp].sod THEN Seated(CallOf[self], gp, TRUE) ELSE {},
+           exp |-> TRUE, late |-> FALSE];
+  elsif ~Passed(CallOf[self], gp) /\ ~Unreach(CallOf[self], gp) then
     if Cardinality(TrueVoters(CallOf[self], gp, TRUE)) >= Policies[gp].need then
       badPause := TRUE;
     end if;
@@ -424,7 +449,9 @@ QCount:
            denials |-> NVotes(CallOf[self], gp, FALSE),
            \* Ghost for SeparationOfDuties, kept only where it is checked, so the other policies'
            \* state spaces stay as they were.
-           seated |-> IF Policies[gp].sod THEN Seated(CallOf[self], gp, TRUE) ELSE {}];
+           seated |-> IF Policies[gp].sod THEN Seated(CallOf[self], gp, TRUE) ELSE {},
+           exp |-> FALSE,
+           late |-> \E a \in Seated(CallOf[self], gp, TRUE) : dlog[CallOf[self]][Dec(CallOf[self], a)].late];
   end if;
 QRecord:
   \* The terminal tally, journaled before the tool runs (a retry-safe step: first writer wins, and
@@ -716,8 +743,9 @@ end algorithm; *)
 VARIABLES marker, nsSet, heldSet, result, toolFail, lateMarker, lateNS, 
           lateResult, pending, fl, waiters, jres, cid, oldId, toRetry, lease, 
           rids, rcid, ambig, crashes, cancels, evictions, fired, firedAt, 
-          lost, evicted, one, dlog, tally, stally, policy, approves1, submits, 
-          redeploys, badFire, badPause, badDeny, badSoD, keys, resChanges, pc
+          lost, evicted, one, dlog, expired, tally, stally, policy, approves1, 
+          submits, redeploys, badFire, badPause, badDeny, badSoD, keys, 
+          resChanges, pc
 
 (* define statement *)
 Voided(c, x)  == marker[c][x] # 0 /\ <<c, x, marker[c][x]>> \in nsSet
@@ -750,6 +778,7 @@ Window  == {"ClaimNS", "Hold", "Win", "WinnerWait", "Call", "Record", "NotStarte
 Known(a)      == a \in DOMAIN keys
 CountsFor(c, i) == LET r == dlog[c][i] IN
                    Known(r.a) /\ r.k \in keys[r.a] /\ (r.subj = "this" \/ Bug = "UnboundSubject")
+                   /\ (~r.late \/ Bug = "LateCounts")
 Deciding(c, a) == {i \in DOMAIN dlog[c] :
                     dlog[c][i].a = a /\ (Bug = "SlotPerApprover" \/ CountsFor(c, i))}
 Dec(c, a)     == IF Deciding(c, a) = {} THEN 0 ELSE Min(Deciding(c, a))
@@ -802,7 +831,7 @@ PolValid(n)   == /\ ~\E pr \in FoldSame : pr[1] \in Policies[n].apprs /\ pr[2] \
 
 Outcome(c)    == IF stally[c].rec THEN stally[c] ELSE tally[c]
 
-Denied(c)     == one[c] = "no" \/ (Outcome(c).rec /\ ~Outcome(c).passed)
+Denied(c)     == one[c] \in {"no", "exp", "late"} \/ (Outcome(c).rec /\ ~Outcome(c).passed)
 
 
 SoDHeld(c)    == LET t == Outcome(c) IN t.rec /\ t.passed /\ Policies[t.pol].sod /\ \A a \in t.seated : ~ReqSame(a)
@@ -812,14 +841,14 @@ Superseded(n, c) == Policies[n].sod /\ Outcome(c).passed /\ ~Policies[Outcome(c)
 
 
 
-SufficientFor(c, n) == \/ one[c] = "yes"
+SufficientFor(c, n) == \/ one[c] \in {"yes", "lyes"}
                        \/ n \notin {"none", "one"} /\ Policies[n].sod /\ SoDHeld(c)
                        \/ (n \in {"none", "one"} \/ ~Policies[n].sod)
                           /\ \E t \in {tally[c], stally[c]} : t.rec /\ t.passed
 
 
 TrueDeciding(c, a) == {i \in DOMAIN dlog[c] : dlog[c][i].a = a /\ Known(a) /\ dlog[c][i].k \in keys[a]
-                                              /\ dlog[c][i].subj = "this"}
+                                              /\ dlog[c][i].subj = "this" /\ ~dlog[c][i].late}
 TrueDec(c, a) == IF TrueDeciding(c, a) = {} THEN 0 ELSE Min(TrueDeciding(c, a))
 TrueVoters(c, n, v) == {a \in Policies[n].apprs : ~Excluded(n, a) /\ TrueDec(c, a) # 0
                                                 /\ dlog[c][TrueDec(c, a)].ok = v}
@@ -830,9 +859,9 @@ VARIABLES g, gg, reply, outcome, won, reused, snapOne, snapTally, gp, qt,
 vars == << marker, nsSet, heldSet, result, toolFail, lateMarker, lateNS, 
            lateResult, pending, fl, waiters, jres, cid, oldId, toRetry, lease, 
            rids, rcid, ambig, crashes, cancels, evictions, fired, firedAt, 
-           lost, evicted, one, dlog, tally, stally, policy, approves1, 
-           submits, redeploys, badFire, badPause, badDeny, badSoD, keys, 
-           resChanges, pc, g, gg, reply, outcome, won, reused, snapOne, 
+           lost, evicted, one, dlog, expired, tally, stally, policy, 
+           approves1, submits, redeploys, badFire, badPause, badDeny, badSoD, 
+           keys, resChanges, pc, g, gg, reply, outcome, won, reused, snapOne, 
            snapTally, gp, qt, loadDenied, rc, rg, rreply, rclaimed >>
 
 ProcSet == (Drivers) \cup (ResolverSet)
@@ -866,6 +895,7 @@ Init == (* Global variables *)
         /\ evicted = {}
         /\ one = [c \in Calls |-> "none"]
         /\ dlog = [c \in Calls |-> <<>>]
+        /\ expired = [c \in Calls |-> FALSE]
         /\ tally = [c \in Calls |-> NoTally]
         /\ stally = [c \in Calls |-> NoTally]
         /\ policy = [p \in Procs |-> Policy0]
@@ -905,12 +935,12 @@ Start(self) == /\ pc[self] = "Start"
                                lateMarker, lateNS, lateResult, pending, fl, 
                                waiters, jres, cid, oldId, toRetry, lease, rids, 
                                rcid, ambig, crashes, cancels, evictions, fired, 
-                               firedAt, lost, evicted, one, dlog, tally, 
-                               stally, policy, approves1, submits, redeploys, 
-                               badFire, badPause, badDeny, badSoD, keys, 
-                               resChanges, g, gg, reply, outcome, won, reused, 
-                               snapOne, snapTally, gp, qt, loadDenied, rc, rg, 
-                               rreply, rclaimed >>
+                               firedAt, lost, evicted, one, dlog, expired, 
+                               tally, stally, policy, approves1, submits, 
+                               redeploys, badFire, badPause, badDeny, badSoD, 
+                               keys, resChanges, g, gg, reply, outcome, won, 
+                               reused, snapOne, snapTally, gp, qt, loadDenied, 
+                               rc, rg, rreply, rclaimed >>
 
 Open(self) == /\ pc[self] = "Open"
               /\ IF self \in LeasedDrivers
@@ -950,10 +980,10 @@ Open(self) == /\ pc[self] = "Open"
                               lateMarker, lateNS, lateResult, pending, fl, 
                               waiters, jres, toRetry, rids, rcid, ambig, 
                               crashes, cancels, evictions, fired, firedAt, 
-                              lost, evicted, one, dlog, tally, stally, policy, 
-                              approves1, submits, redeploys, badFire, badPause, 
-                              badDeny, badSoD, keys, resChanges, reply, qt, rc, 
-                              rg, rreply, rclaimed >>
+                              lost, evicted, one, dlog, expired, tally, stally, 
+                              policy, approves1, submits, redeploys, badFire, 
+                              badPause, badDeny, badSoD, keys, resChanges, 
+                              reply, qt, rc, rg, rreply, rclaimed >>
 
 GateTake(self) == /\ pc[self] = "GateTake"
                   /\ IF Bug # "GateNoRetry" /\ oldId[self] \in pending[ProcOf[self]][CallOf[self]][gg[self]]
@@ -968,12 +998,12 @@ GateTake(self) == /\ pc[self] = "GateTake"
                                   lateMarker, lateNS, lateResult, fl, waiters, 
                                   jres, cid, toRetry, lease, rids, rcid, ambig, 
                                   crashes, cancels, evictions, fired, firedAt, 
-                                  lost, evicted, one, dlog, tally, stally, 
-                                  policy, approves1, submits, redeploys, 
-                                  badFire, badPause, badDeny, badSoD, keys, 
-                                  resChanges, g, gg, reply, won, reused, 
-                                  snapOne, snapTally, gp, qt, loadDenied, rc, 
-                                  rg, rreply, rclaimed >>
+                                  lost, evicted, one, dlog, expired, tally, 
+                                  stally, policy, approves1, submits, 
+                                  redeploys, badFire, badPause, badDeny, 
+                                  badSoD, keys, resChanges, g, gg, reply, won, 
+                                  reused, snapOne, snapTally, gp, qt, 
+                                  loadDenied, rc, rg, rreply, rclaimed >>
 
 GateWrite(self) == /\ pc[self] = "GateWrite"
                    /\ \/ /\ reply' = [reply EXCEPT ![self] = "ok"]
@@ -1010,14 +1040,15 @@ GateWrite(self) == /\ pc[self] = "GateWrite"
                                    lateMarker, lateResult, fl, waiters, jres, 
                                    cid, toRetry, lease, rids, rcid, crashes, 
                                    cancels, evictions, fired, firedAt, lost, 
-                                   evicted, one, dlog, tally, stally, policy, 
-                                   approves1, submits, redeploys, badFire, 
-                                   badPause, badDeny, badSoD, keys, resChanges, 
-                                   g, gg, won, reused, snapOne, snapTally, gp, 
-                                   qt, loadDenied, rc, rg, rreply, rclaimed >>
+                                   evicted, one, dlog, expired, tally, stally, 
+                                   policy, approves1, submits, redeploys, 
+                                   badFire, badPause, badDeny, badSoD, keys, 
+                                   resChanges, g, gg, won, reused, snapOne, 
+                                   snapTally, gp, qt, loadDenied, rc, rg, 
+                                   rreply, rclaimed >>
 
 ApGate(self) == /\ pc[self] = "ApGate"
-                /\ IF (snapOne[self] = "no" \/ (snapTally[self].rec /\ ~snapTally[self].passed)) /\ Bug # "DenialNotFinal"
+                /\ IF (snapOne[self] \in {"no", "exp", "late"} \/ (snapTally[self].rec /\ ~snapTally[self].passed)) /\ Bug # "DenialNotFinal"
                       THEN /\ pc' = [pc EXCEPT ![self] = "Deny"]
                            /\ UNCHANGED << outcome, gp >>
                       ELSE /\ IF policy[ProcOf[self]][CallOf[self]] = "none"
@@ -1025,13 +1056,16 @@ ApGate(self) == /\ pc[self] = "ApGate"
                                       /\ UNCHANGED << outcome, gp >>
                                  ELSE /\ IF policy[ProcOf[self]][CallOf[self]] = "one"
                                             THEN /\ gp' = [gp EXCEPT ![self] = "one"]
-                                                 /\ IF snapOne[self] = "none"
-                                                       THEN /\ outcome' = [outcome EXCEPT ![self] = "pause_approval"]
-                                                            /\ pc' = [pc EXCEPT ![self] = "Finish"]
-                                                       ELSE /\ IF snapOne[self] = "yes"
-                                                                  THEN /\ pc' = [pc EXCEPT ![self] = "Claim"]
-                                                                  ELSE /\ pc' = [pc EXCEPT ![self] = "Deny"]
+                                                 /\ IF snapOne[self] = "none" /\ expired[CallOf[self]]
+                                                       THEN /\ pc' = [pc EXCEPT ![self] = "ApExpire"]
                                                             /\ UNCHANGED outcome
+                                                       ELSE /\ IF snapOne[self] = "none"
+                                                                  THEN /\ outcome' = [outcome EXCEPT ![self] = "pause_approval"]
+                                                                       /\ pc' = [pc EXCEPT ![self] = "Finish"]
+                                                                  ELSE /\ IF snapOne[self] \in {"yes", "lyes"}
+                                                                             THEN /\ pc' = [pc EXCEPT ![self] = "Claim"]
+                                                                             ELSE /\ pc' = [pc EXCEPT ![self] = "Deny"]
+                                                                       /\ UNCHANGED outcome
                                             ELSE /\ gp' = [gp EXCEPT ![self] = policy[ProcOf[self]][CallOf[self]]]
                                                  /\ pc' = [pc EXCEPT ![self] = "QTally"]
                                                  /\ UNCHANGED outcome
@@ -1040,11 +1074,31 @@ ApGate(self) == /\ pc[self] = "ApGate"
                                 waiters, jres, cid, oldId, toRetry, lease, 
                                 rids, rcid, ambig, crashes, cancels, evictions, 
                                 fired, firedAt, lost, evicted, one, dlog, 
-                                tally, stally, policy, approves1, submits, 
-                                redeploys, badFire, badPause, badDeny, badSoD, 
-                                keys, resChanges, g, gg, reply, won, reused, 
-                                snapOne, snapTally, qt, loadDenied, rc, rg, 
-                                rreply, rclaimed >>
+                                expired, tally, stally, policy, approves1, 
+                                submits, redeploys, badFire, badPause, badDeny, 
+                                badSoD, keys, resChanges, g, gg, reply, won, 
+                                reused, snapOne, snapTally, qt, loadDenied, rc, 
+                                rg, rreply, rclaimed >>
+
+ApExpire(self) == /\ pc[self] = "ApExpire"
+                  /\ IF one[CallOf[self]] = "none"
+                        THEN /\ one' = [one EXCEPT ![CallOf[self]] = "exp"]
+                        ELSE /\ TRUE
+                             /\ one' = one
+                  /\ IF one'[CallOf[self]] \in {"yes", "lyes"}
+                        THEN /\ pc' = [pc EXCEPT ![self] = "Claim"]
+                        ELSE /\ pc' = [pc EXCEPT ![self] = "Deny"]
+                  /\ UNCHANGED << marker, nsSet, heldSet, result, toolFail, 
+                                  lateMarker, lateNS, lateResult, pending, fl, 
+                                  waiters, jres, cid, oldId, toRetry, lease, 
+                                  rids, rcid, ambig, crashes, cancels, 
+                                  evictions, fired, firedAt, lost, evicted, 
+                                  dlog, expired, tally, stally, policy, 
+                                  approves1, submits, redeploys, badFire, 
+                                  badPause, badDeny, badSoD, keys, resChanges, 
+                                  g, gg, reply, outcome, won, reused, snapOne, 
+                                  snapTally, gp, qt, loadDenied, rc, rg, 
+                                  rreply, rclaimed >>
 
 QTally(self) == /\ pc[self] = "QTally"
                 /\ IF ~PolValid(gp[self]) /\ Bug # "NoFoldCheck"
@@ -1063,39 +1117,49 @@ QTally(self) == /\ pc[self] = "QTally"
                                 waiters, jres, cid, oldId, toRetry, lease, 
                                 rids, rcid, ambig, crashes, cancels, evictions, 
                                 fired, firedAt, lost, evicted, one, dlog, 
-                                tally, stally, policy, approves1, submits, 
-                                redeploys, badFire, badPause, badDeny, badSoD, 
-                                keys, resChanges, g, gg, reply, won, reused, 
-                                snapOne, snapTally, gp, qt, loadDenied, rc, rg, 
-                                rreply, rclaimed >>
+                                expired, tally, stally, policy, approves1, 
+                                submits, redeploys, badFire, badPause, badDeny, 
+                                badSoD, keys, resChanges, g, gg, reply, won, 
+                                reused, snapOne, snapTally, gp, qt, loadDenied, 
+                                rc, rg, rreply, rclaimed >>
 
 QCount(self) == /\ pc[self] = "QCount"
-                /\ IF ~Passed(CallOf[self], gp[self]) /\ ~Unreach(CallOf[self], gp[self])
-                      THEN /\ IF Cardinality(TrueVoters(CallOf[self], gp[self], TRUE)) >= Policies[gp[self]].need
-                                 THEN /\ badPause' = TRUE
-                                 ELSE /\ TRUE
-                                      /\ UNCHANGED badPause
-                           /\ outcome' = [outcome EXCEPT ![self] = "pause_approval"]
-                           /\ pc' = [pc EXCEPT ![self] = "Finish"]
-                           /\ qt' = qt
-                      ELSE /\ qt' = [qt EXCEPT ![self] = [rec |-> TRUE, passed |-> Passed(CallOf[self], gp[self]), pol |-> gp[self],
+                /\ IF ~Passed(CallOf[self], gp[self]) /\ ~Unreach(CallOf[self], gp[self]) /\ expired[CallOf[self]]
+                      THEN /\ qt' = [qt EXCEPT ![self] = [rec |-> TRUE, passed |-> FALSE, pol |-> gp[self],
                                                           signers |-> Signers(CallOf[self], gp[self]), excl |-> NExcl(gp[self]),
                                                           denials |-> NVotes(CallOf[self], gp[self], FALSE),
-                                                         
-                                                         
-                                                          seated |-> IF Policies[gp[self]].sod THEN Seated(CallOf[self], gp[self], TRUE) ELSE {}]]
+                                                          seated |-> IF Policies[gp[self]].sod THEN Seated(CallOf[self], gp[self], TRUE) ELSE {},
+                                                          exp |-> TRUE, late |-> FALSE]]
                            /\ pc' = [pc EXCEPT ![self] = "QRecord"]
                            /\ UNCHANGED << badPause, outcome >>
+                      ELSE /\ IF ~Passed(CallOf[self], gp[self]) /\ ~Unreach(CallOf[self], gp[self])
+                                 THEN /\ IF Cardinality(TrueVoters(CallOf[self], gp[self], TRUE)) >= Policies[gp[self]].need
+                                            THEN /\ badPause' = TRUE
+                                            ELSE /\ TRUE
+                                                 /\ UNCHANGED badPause
+                                      /\ outcome' = [outcome EXCEPT ![self] = "pause_approval"]
+                                      /\ pc' = [pc EXCEPT ![self] = "Finish"]
+                                      /\ qt' = qt
+                                 ELSE /\ qt' = [qt EXCEPT ![self] = [rec |-> TRUE, passed |-> Passed(CallOf[self], gp[self]), pol |-> gp[self],
+                                                                     signers |-> Signers(CallOf[self], gp[self]), excl |-> NExcl(gp[self]),
+                                                                     denials |-> NVotes(CallOf[self], gp[self], FALSE),
+                                                                    
+                                                                    
+                                                                     seated |-> IF Policies[gp[self]].sod THEN Seated(CallOf[self], gp[self], TRUE) ELSE {},
+                                                                     exp |-> FALSE,
+                                                                     late |-> \E a \in Seated(CallOf[self], gp[self], TRUE) : dlog[CallOf[self]][Dec(CallOf[self], a)].late]]
+                                      /\ pc' = [pc EXCEPT ![self] = "QRecord"]
+                                      /\ UNCHANGED << badPause, outcome >>
                 /\ UNCHANGED << marker, nsSet, heldSet, result, toolFail, 
                                 lateMarker, lateNS, lateResult, pending, fl, 
                                 waiters, jres, cid, oldId, toRetry, lease, 
                                 rids, rcid, ambig, crashes, cancels, evictions, 
                                 fired, firedAt, lost, evicted, one, dlog, 
-                                tally, stally, policy, approves1, submits, 
-                                redeploys, badFire, badDeny, badSoD, keys, 
-                                resChanges, g, gg, reply, won, reused, snapOne, 
-                                snapTally, gp, loadDenied, rc, rg, rreply, 
-                                rclaimed >>
+                                expired, tally, stally, policy, approves1, 
+                                submits, redeploys, badFire, badDeny, badSoD, 
+                                keys, resChanges, g, gg, reply, won, reused, 
+                                snapOne, snapTally, gp, loadDenied, rc, rg, 
+                                rreply, rclaimed >>
 
 QRecord(self) == /\ pc[self] = "QRecord"
                  /\ \/ /\ reply' = [reply EXCEPT ![self] = "ok"]
@@ -1130,9 +1194,9 @@ QRecord(self) == /\ pc[self] = "QRecord"
                                  waiters, jres, cid, oldId, toRetry, lease, 
                                  rids, rcid, crashes, cancels, evictions, 
                                  fired, firedAt, lost, evicted, one, dlog, 
-                                 policy, approves1, submits, redeploys, 
-                                 badFire, badPause, badDeny, badSoD, keys, 
-                                 resChanges, g, gg, won, reused, snapOne, 
+                                 expired, policy, approves1, submits, 
+                                 redeploys, badFire, badPause, badDeny, badSoD, 
+                                 keys, resChanges, g, gg, won, reused, snapOne, 
                                  snapTally, gp, qt, loadDenied, rc, rg, rreply, 
                                  rclaimed >>
 
@@ -1147,10 +1211,10 @@ QDecide(self) == /\ pc[self] = "QDecide"
                                  waiters, jres, cid, oldId, toRetry, lease, 
                                  rids, rcid, ambig, crashes, cancels, 
                                  evictions, fired, firedAt, lost, evicted, one, 
-                                 dlog, tally, stally, policy, approves1, 
-                                 submits, redeploys, badFire, badPause, 
-                                 badDeny, badSoD, keys, resChanges, g, gg, 
-                                 reply, outcome, won, reused, snapOne, 
+                                 dlog, expired, tally, stally, policy, 
+                                 approves1, submits, redeploys, badFire, 
+                                 badPause, badDeny, badSoD, keys, resChanges, 
+                                 g, gg, reply, outcome, won, reused, snapOne, 
                                  snapTally, gp, qt, loadDenied, rc, rg, rreply, 
                                  rclaimed >>
 
@@ -1185,11 +1249,11 @@ Deny(self) == /\ pc[self] = "Deny"
                               lateNS, pending, fl, waiters, jres, cid, oldId, 
                               toRetry, lease, rids, rcid, crashes, cancels, 
                               evictions, fired, firedAt, lost, evicted, one, 
-                              dlog, tally, stally, policy, approves1, submits, 
-                              redeploys, badFire, badPause, badDeny, badSoD, 
-                              keys, resChanges, g, gg, won, reused, snapOne, 
-                              snapTally, gp, qt, loadDenied, rc, rg, rreply, 
-                              rclaimed >>
+                              dlog, expired, tally, stally, policy, approves1, 
+                              submits, redeploys, badFire, badPause, badDeny, 
+                              badSoD, keys, resChanges, g, gg, won, reused, 
+                              snapOne, snapTally, gp, qt, loadDenied, rc, rg, 
+                              rreply, rclaimed >>
 
 Claim(self) == /\ pc[self] = "Claim"
                /\ g[self] <= MaxGen
@@ -1212,8 +1276,8 @@ Claim(self) == /\ pc[self] = "Claim"
                                lateMarker, lateNS, lateResult, fl, waiters, 
                                jres, oldId, lease, rids, rcid, ambig, crashes, 
                                cancels, evictions, fired, firedAt, lost, 
-                               evicted, one, dlog, tally, stally, policy, 
-                               approves1, submits, redeploys, badFire, 
+                               evicted, one, dlog, expired, tally, stally, 
+                               policy, approves1, submits, redeploys, badFire, 
                                badPause, badDeny, badSoD, keys, resChanges, g, 
                                gg, reply, outcome, won, snapOne, snapTally, gp, 
                                qt, loadDenied, rc, rg, rreply, rclaimed >>
@@ -1254,9 +1318,9 @@ ClaimRetry(self) == /\ pc[self] = "ClaimRetry"
                                     lateMarker, lateResult, fl, waiters, jres, 
                                     cid, oldId, lease, rids, rcid, crashes, 
                                     cancels, evictions, fired, firedAt, lost, 
-                                    evicted, one, dlog, tally, stally, policy, 
-                                    approves1, submits, redeploys, badFire, 
-                                    badPause, badDeny, badSoD, keys, 
+                                    evicted, one, dlog, expired, tally, stally, 
+                                    policy, approves1, submits, redeploys, 
+                                    badFire, badPause, badDeny, badSoD, keys, 
                                     resChanges, g, gg, outcome, won, reused, 
                                     snapOne, snapTally, gp, qt, loadDenied, rc, 
                                     rg, rreply, rclaimed >>
@@ -1302,12 +1366,12 @@ ClaimInsert(self) == /\ pc[self] = "ClaimInsert"
                                      lateResult, pending, fl, waiters, jres, 
                                      oldId, toRetry, lease, rids, rcid, 
                                      crashes, cancels, evictions, fired, 
-                                     firedAt, lost, evicted, one, dlog, tally, 
-                                     stally, policy, approves1, submits, 
-                                     redeploys, badFire, badPause, badDeny, 
-                                     badSoD, keys, resChanges, g, gg, outcome, 
-                                     reused, snapOne, snapTally, gp, qt, 
-                                     loadDenied, rc, rg, rreply, rclaimed >>
+                                     firedAt, lost, evicted, one, dlog, 
+                                     expired, tally, stally, policy, approves1, 
+                                     submits, redeploys, badFire, badPause, 
+                                     badDeny, badSoD, keys, resChanges, g, gg, 
+                                     outcome, reused, snapOne, snapTally, gp, 
+                                     qt, loadDenied, rc, rg, rreply, rclaimed >>
 
 ClaimNS(self) == /\ pc[self] = "ClaimNS"
                  /\ \/ /\ reply' = [reply EXCEPT ![self] = "ok"]
@@ -1342,11 +1406,11 @@ ClaimNS(self) == /\ pc[self] = "ClaimNS"
                                  lateResult, fl, waiters, jres, cid, oldId, 
                                  toRetry, lease, rids, rcid, crashes, cancels, 
                                  evictions, fired, firedAt, lost, evicted, one, 
-                                 dlog, tally, stally, policy, approves1, 
-                                 submits, redeploys, badFire, badPause, 
-                                 badDeny, badSoD, keys, resChanges, g, gg, won, 
-                                 reused, snapOne, snapTally, gp, qt, 
-                                 loadDenied, rc, rg, rreply, rclaimed >>
+                                 dlog, expired, tally, stally, policy, 
+                                 approves1, submits, redeploys, badFire, 
+                                 badPause, badDeny, badSoD, keys, resChanges, 
+                                 g, gg, won, reused, snapOne, snapTally, gp, 
+                                 qt, loadDenied, rc, rg, rreply, rclaimed >>
 
 Hold(self) == /\ pc[self] = "Hold"
               /\ \/ /\ reply' = [reply EXCEPT ![self] = "ok"]
@@ -1379,11 +1443,11 @@ Hold(self) == /\ pc[self] = "Hold"
                               lateNS, lateResult, fl, waiters, jres, cid, 
                               oldId, toRetry, lease, rids, rcid, crashes, 
                               cancels, evictions, fired, firedAt, lost, 
-                              evicted, one, dlog, tally, stally, policy, 
-                              approves1, submits, redeploys, badFire, badPause, 
-                              badDeny, badSoD, keys, resChanges, g, gg, reused, 
-                              snapOne, snapTally, gp, qt, loadDenied, rc, rg, 
-                              rreply, rclaimed >>
+                              evicted, one, dlog, expired, tally, stally, 
+                              policy, approves1, submits, redeploys, badFire, 
+                              badPause, badDeny, badSoD, keys, resChanges, g, 
+                              gg, reused, snapOne, snapTally, gp, qt, 
+                              loadDenied, rc, rg, rreply, rclaimed >>
 
 Lost(self) == /\ pc[self] = "Lost"
               /\ IF Kind[CallOf[self]] = "flow"
@@ -1404,11 +1468,12 @@ Lost(self) == /\ pc[self] = "Lost"
                               lateMarker, lateNS, lateResult, pending, fl, 
                               waiters, jres, cid, oldId, toRetry, lease, rids, 
                               rcid, ambig, crashes, cancels, evictions, fired, 
-                              firedAt, lost, evicted, one, dlog, tally, stally, 
-                              policy, approves1, submits, redeploys, badFire, 
-                              badPause, badDeny, badSoD, keys, resChanges, gg, 
-                              reply, won, reused, snapOne, snapTally, gp, qt, 
-                              loadDenied, rc, rg, rreply, rclaimed >>
+                              firedAt, lost, evicted, one, dlog, expired, 
+                              tally, stally, policy, approves1, submits, 
+                              redeploys, badFire, badPause, badDeny, badSoD, 
+                              keys, resChanges, gg, reply, won, reused, 
+                              snapOne, snapTally, gp, qt, loadDenied, rc, rg, 
+                              rreply, rclaimed >>
 
 Join(self) == /\ pc[self] = "Join"
               /\ IF fl[ProcOf[self]][CallOf[self]] # None
@@ -1425,11 +1490,12 @@ Join(self) == /\ pc[self] = "Join"
                               lateMarker, lateNS, lateResult, pending, jres, 
                               cid, oldId, toRetry, lease, rids, rcid, ambig, 
                               crashes, cancels, evictions, fired, firedAt, 
-                              lost, evicted, one, dlog, tally, stally, policy, 
-                              approves1, submits, redeploys, badFire, badPause, 
-                              badDeny, badSoD, keys, resChanges, g, gg, reply, 
-                              outcome, won, reused, snapOne, snapTally, gp, qt, 
-                              loadDenied, rc, rg, rreply, rclaimed >>
+                              lost, evicted, one, dlog, expired, tally, stally, 
+                              policy, approves1, submits, redeploys, badFire, 
+                              badPause, badDeny, badSoD, keys, resChanges, g, 
+                              gg, reply, outcome, won, reused, snapOne, 
+                              snapTally, gp, qt, loadDenied, rc, rg, rreply, 
+                              rclaimed >>
 
 LoserRead(self) == /\ pc[self] = "LoserRead"
                    /\ IF result[CallOf[self]] # None
@@ -1441,11 +1507,12 @@ LoserRead(self) == /\ pc[self] = "LoserRead"
                                    waiters, jres, cid, oldId, toRetry, lease, 
                                    rids, rcid, ambig, crashes, cancels, 
                                    evictions, fired, firedAt, lost, evicted, 
-                                   one, dlog, tally, stally, policy, approves1, 
-                                   submits, redeploys, badFire, badPause, 
-                                   badDeny, badSoD, keys, resChanges, g, gg, 
-                                   reply, won, reused, snapOne, snapTally, gp, 
-                                   qt, loadDenied, rc, rg, rreply, rclaimed >>
+                                   one, dlog, expired, tally, stally, policy, 
+                                   approves1, submits, redeploys, badFire, 
+                                   badPause, badDeny, badSoD, keys, resChanges, 
+                                   g, gg, reply, won, reused, snapOne, 
+                                   snapTally, gp, qt, loadDenied, rc, rg, 
+                                   rreply, rclaimed >>
 
 LoserLead(self) == /\ pc[self] = "LoserLead"
                    /\ fl' = [fl EXCEPT ![(ProcOf[self])][(CallOf[self])] = None]
@@ -1459,8 +1526,8 @@ LoserLead(self) == /\ pc[self] = "LoserLead"
                                    lateMarker, lateNS, lateResult, pending, 
                                    cid, oldId, toRetry, lease, rids, rcid, 
                                    ambig, crashes, cancels, evictions, fired, 
-                                   firedAt, lost, evicted, one, dlog, tally, 
-                                   stally, policy, approves1, submits, 
+                                   firedAt, lost, evicted, one, dlog, expired, 
+                                   tally, stally, policy, approves1, submits, 
                                    redeploys, badFire, badPause, badDeny, 
                                    badSoD, keys, resChanges, g, gg, reply, won, 
                                    reused, snapOne, snapTally, gp, qt, 
@@ -1478,11 +1545,11 @@ LoserWait(self) == /\ pc[self] = "LoserWait"
                                    waiters, cid, oldId, toRetry, lease, rids, 
                                    rcid, ambig, crashes, cancels, evictions, 
                                    fired, firedAt, lost, evicted, one, dlog, 
-                                   tally, stally, policy, approves1, submits, 
-                                   redeploys, badFire, badPause, badDeny, 
-                                   badSoD, keys, resChanges, g, gg, reply, won, 
-                                   reused, snapOne, snapTally, gp, qt, 
-                                   loadDenied, rc, rg, rreply, rclaimed >>
+                                   expired, tally, stally, policy, approves1, 
+                                   submits, redeploys, badFire, badPause, 
+                                   badDeny, badSoD, keys, resChanges, g, gg, 
+                                   reply, won, reused, snapOne, snapTally, gp, 
+                                   qt, loadDenied, rc, rg, rreply, rclaimed >>
 
 Win(self) == /\ pc[self] = "Win"
              /\ IF fl[ProcOf[self]][CallOf[self]] # None
@@ -1496,11 +1563,12 @@ Win(self) == /\ pc[self] = "Win"
                              lateMarker, lateNS, lateResult, pending, jres, 
                              cid, oldId, toRetry, lease, rids, rcid, ambig, 
                              crashes, cancels, evictions, fired, firedAt, lost, 
-                             evicted, one, dlog, tally, stally, policy, 
-                             approves1, submits, redeploys, badFire, badPause, 
-                             badDeny, badSoD, keys, resChanges, g, gg, reply, 
-                             outcome, won, reused, snapOne, snapTally, gp, qt, 
-                             loadDenied, rc, rg, rreply, rclaimed >>
+                             evicted, one, dlog, expired, tally, stally, 
+                             policy, approves1, submits, redeploys, badFire, 
+                             badPause, badDeny, badSoD, keys, resChanges, g, 
+                             gg, reply, outcome, won, reused, snapOne, 
+                             snapTally, gp, qt, loadDenied, rc, rg, rreply, 
+                             rclaimed >>
 
 WinnerWait(self) == /\ pc[self] = "WinnerWait"
                     /\ jres[self] # None
@@ -1516,7 +1584,7 @@ WinnerWait(self) == /\ pc[self] = "WinnerWait"
                                     fl, waiters, cid, oldId, toRetry, lease, 
                                     rids, rcid, ambig, crashes, cancels, 
                                     evictions, fired, firedAt, lost, evicted, 
-                                    one, dlog, tally, stally, policy, 
+                                    one, dlog, expired, tally, stally, policy, 
                                     approves1, submits, redeploys, badFire, 
                                     badPause, badDeny, badSoD, keys, 
                                     resChanges, g, gg, reply, won, reused, 
@@ -1565,11 +1633,11 @@ Call(self) == /\ pc[self] = "Call"
               /\ UNCHANGED << marker, nsSet, heldSet, result, lateMarker, 
                               lateNS, lateResult, pending, cid, oldId, toRetry, 
                               lease, rids, rcid, ambig, crashes, evictions, 
-                              lost, evicted, one, dlog, tally, stally, policy, 
-                              approves1, submits, redeploys, badPause, keys, 
-                              resChanges, g, gg, reply, won, reused, snapOne, 
-                              snapTally, gp, qt, loadDenied, rc, rg, rreply, 
-                              rclaimed >>
+                              lost, evicted, one, dlog, expired, tally, stally, 
+                              policy, approves1, submits, redeploys, badPause, 
+                              keys, resChanges, g, gg, reply, won, reused, 
+                              snapOne, snapTally, gp, qt, loadDenied, rc, rg, 
+                              rreply, rclaimed >>
 
 Record(self) == /\ pc[self] = "Record"
                 /\ \/ /\ reply' = [reply EXCEPT ![self] = "ok"]
@@ -1604,10 +1672,10 @@ Record(self) == /\ pc[self] = "Record"
                 /\ UNCHANGED << marker, nsSet, heldSet, toolFail, lateMarker, 
                                 lateNS, pending, cid, oldId, toRetry, lease, 
                                 rids, rcid, crashes, cancels, evictions, fired, 
-                                firedAt, lost, evicted, one, dlog, tally, 
-                                stally, policy, approves1, submits, redeploys, 
-                                badFire, badPause, badDeny, badSoD, keys, 
-                                resChanges, g, gg, won, reused, snapOne, 
+                                firedAt, lost, evicted, one, dlog, expired, 
+                                tally, stally, policy, approves1, submits, 
+                                redeploys, badFire, badPause, badDeny, badSoD, 
+                                keys, resChanges, g, gg, won, reused, snapOne, 
                                 snapTally, gp, qt, loadDenied, rc, rg, rreply, 
                                 rclaimed >>
 
@@ -1643,8 +1711,8 @@ NotStarted(self) == /\ pc[self] = "NotStarted"
                                     lateMarker, lateResult, fl, waiters, jres, 
                                     cid, oldId, toRetry, lease, rids, rcid, 
                                     crashes, cancels, evictions, fired, 
-                                    firedAt, lost, evicted, one, dlog, tally, 
-                                    stally, policy, approves1, submits, 
+                                    firedAt, lost, evicted, one, dlog, expired, 
+                                    tally, stally, policy, approves1, submits, 
                                     redeploys, badFire, badPause, badDeny, 
                                     badSoD, keys, resChanges, g, gg, outcome, 
                                     won, reused, snapOne, snapTally, gp, qt, 
@@ -1662,22 +1730,23 @@ Finish(self) == /\ pc[self] = "Finish"
                                 lateMarker, lateNS, lateResult, pending, fl, 
                                 waiters, jres, cid, oldId, toRetry, rids, rcid, 
                                 ambig, crashes, cancels, evictions, fired, 
-                                firedAt, lost, evicted, one, dlog, tally, 
-                                stally, policy, approves1, submits, redeploys, 
-                                badFire, badPause, badDeny, badSoD, keys, 
-                                resChanges, g, gg, reply, outcome, won, reused, 
-                                snapOne, snapTally, gp, qt, loadDenied, rc, rg, 
-                                rreply, rclaimed >>
+                                firedAt, lost, evicted, one, dlog, expired, 
+                                tally, stally, policy, approves1, submits, 
+                                redeploys, badFire, badPause, badDeny, badSoD, 
+                                keys, resChanges, g, gg, reply, outcome, won, 
+                                reused, snapOne, snapTally, gp, qt, loadDenied, 
+                                rc, rg, rreply, rclaimed >>
 
 driver(self) == Start(self) \/ Open(self) \/ GateTake(self)
-                   \/ GateWrite(self) \/ ApGate(self) \/ QTally(self)
-                   \/ QCount(self) \/ QRecord(self) \/ QDecide(self)
-                   \/ Deny(self) \/ Claim(self) \/ ClaimRetry(self)
-                   \/ ClaimInsert(self) \/ ClaimNS(self) \/ Hold(self)
-                   \/ Lost(self) \/ Join(self) \/ LoserRead(self)
-                   \/ LoserLead(self) \/ LoserWait(self) \/ Win(self)
-                   \/ WinnerWait(self) \/ Call(self) \/ Record(self)
-                   \/ NotStarted(self) \/ Finish(self)
+                   \/ GateWrite(self) \/ ApGate(self) \/ ApExpire(self)
+                   \/ QTally(self) \/ QCount(self) \/ QRecord(self)
+                   \/ QDecide(self) \/ Deny(self) \/ Claim(self)
+                   \/ ClaimRetry(self) \/ ClaimInsert(self)
+                   \/ ClaimNS(self) \/ Hold(self) \/ Lost(self)
+                   \/ Join(self) \/ LoserRead(self) \/ LoserLead(self)
+                   \/ LoserWait(self) \/ Win(self) \/ WinnerWait(self)
+                   \/ Call(self) \/ Record(self) \/ NotStarted(self)
+                   \/ Finish(self)
 
 RCheck(self) == /\ pc[self] = "RCheck"
                 /\ \E c \in Calls:
@@ -1701,12 +1770,12 @@ RCheck(self) == /\ pc[self] = "RCheck"
                                 lateMarker, lateNS, lateResult, pending, fl, 
                                 waiters, jres, cid, oldId, toRetry, rids, rcid, 
                                 ambig, crashes, cancels, evictions, fired, 
-                                firedAt, lost, evicted, one, dlog, tally, 
-                                stally, policy, approves1, submits, redeploys, 
-                                badFire, badPause, badDeny, badSoD, keys, 
-                                resChanges, g, gg, reply, outcome, won, reused, 
-                                snapOne, snapTally, gp, qt, loadDenied, rreply, 
-                                rclaimed >>
+                                firedAt, lost, evicted, one, dlog, expired, 
+                                tally, stally, policy, approves1, submits, 
+                                redeploys, badFire, badPause, badDeny, badSoD, 
+                                keys, resChanges, g, gg, reply, outcome, won, 
+                                reused, snapOne, snapTally, gp, qt, loadDenied, 
+                                rreply, rclaimed >>
 
 RClaim(self) == /\ pc[self] = "RClaim"
                 /\ rg[self] + 1 <= MaxGen
@@ -1720,12 +1789,12 @@ RClaim(self) == /\ pc[self] = "RClaim"
                                 lateMarker, lateNS, lateResult, fl, waiters, 
                                 jres, cid, oldId, lease, rids, rcid, ambig, 
                                 crashes, cancels, evictions, fired, firedAt, 
-                                lost, evicted, one, dlog, tally, stally, 
-                                policy, approves1, submits, redeploys, badFire, 
-                                badPause, badDeny, badSoD, keys, resChanges, g, 
-                                gg, reply, outcome, won, reused, snapOne, 
-                                snapTally, gp, qt, loadDenied, rc, rg, rreply, 
-                                rclaimed >>
+                                lost, evicted, one, dlog, expired, tally, 
+                                stally, policy, approves1, submits, redeploys, 
+                                badFire, badPause, badDeny, badSoD, keys, 
+                                resChanges, g, gg, reply, outcome, won, reused, 
+                                snapOne, snapTally, gp, qt, loadDenied, rc, rg, 
+                                rreply, rclaimed >>
 
 RRetry(self) == /\ pc[self] = "RRetry"
                 /\ LET i == Min(toRetry[self]) IN
@@ -1763,11 +1832,11 @@ RRetry(self) == /\ pc[self] = "RRetry"
                                 lateResult, fl, waiters, jres, cid, oldId, 
                                 lease, rids, rcid, crashes, cancels, evictions, 
                                 fired, firedAt, lost, evicted, one, dlog, 
-                                tally, stally, policy, approves1, submits, 
-                                redeploys, badFire, badPause, badDeny, badSoD, 
-                                keys, resChanges, g, gg, reply, outcome, won, 
-                                reused, snapOne, snapTally, gp, qt, loadDenied, 
-                                rc, rg, rclaimed >>
+                                expired, tally, stally, policy, approves1, 
+                                submits, redeploys, badFire, badPause, badDeny, 
+                                badSoD, keys, resChanges, g, gg, reply, 
+                                outcome, won, reused, snapOne, snapTally, gp, 
+                                qt, loadDenied, rc, rg, rclaimed >>
 
 RInsert(self) == /\ pc[self] = "RInsert"
                  /\ Free # {}
@@ -1808,10 +1877,10 @@ RInsert(self) == /\ pc[self] = "RInsert"
                                  lateResult, pending, fl, waiters, jres, cid, 
                                  oldId, toRetry, lease, crashes, cancels, 
                                  evictions, fired, firedAt, lost, evicted, one, 
-                                 dlog, tally, stally, policy, approves1, 
-                                 submits, redeploys, badFire, badPause, 
-                                 badDeny, badSoD, keys, resChanges, g, gg, 
-                                 reply, outcome, won, reused, snapOne, 
+                                 dlog, expired, tally, stally, policy, 
+                                 approves1, submits, redeploys, badFire, 
+                                 badPause, badDeny, badSoD, keys, resChanges, 
+                                 g, gg, reply, outcome, won, reused, snapOne, 
                                  snapTally, gp, qt, loadDenied, rc, rg >>
 
 RClaimNS(self) == /\ pc[self] = "RClaimNS"
@@ -1846,12 +1915,12 @@ RClaimNS(self) == /\ pc[self] = "RClaimNS"
                                   lateMarker, lateResult, fl, waiters, jres, 
                                   cid, oldId, toRetry, lease, rids, rcid, 
                                   crashes, cancels, evictions, fired, firedAt, 
-                                  lost, evicted, one, dlog, tally, stally, 
-                                  policy, approves1, submits, redeploys, 
-                                  badFire, badPause, badDeny, badSoD, keys, 
-                                  resChanges, g, gg, reply, outcome, won, 
-                                  reused, snapOne, snapTally, gp, qt, 
-                                  loadDenied, rc, rg, rclaimed >>
+                                  lost, evicted, one, dlog, expired, tally, 
+                                  stally, policy, approves1, submits, 
+                                  redeploys, badFire, badPause, badDeny, 
+                                  badSoD, keys, resChanges, g, gg, reply, 
+                                  outcome, won, reused, snapOne, snapTally, gp, 
+                                  qt, loadDenied, rc, rg, rclaimed >>
 
 RWrite(self) == /\ pc[self] = "RWrite"
                 /\ IF ResolverProc # "none" /\ fl[ResolverProc][rc[self]] # None
@@ -1868,12 +1937,12 @@ RWrite(self) == /\ pc[self] = "RWrite"
                                 lateMarker, lateNS, lateResult, pending, jres, 
                                 cid, oldId, toRetry, lease, rids, rcid, ambig, 
                                 crashes, cancels, evictions, fired, firedAt, 
-                                lost, evicted, one, dlog, tally, stally, 
-                                policy, approves1, submits, redeploys, badFire, 
-                                badPause, badDeny, badSoD, keys, resChanges, g, 
-                                gg, reply, outcome, won, reused, snapOne, 
-                                snapTally, gp, qt, loadDenied, rc, rg, rreply, 
-                                rclaimed >>
+                                lost, evicted, one, dlog, expired, tally, 
+                                stally, policy, approves1, submits, redeploys, 
+                                badFire, badPause, badDeny, badSoD, keys, 
+                                resChanges, g, gg, reply, outcome, won, reused, 
+                                snapOne, snapTally, gp, qt, loadDenied, rc, rg, 
+                                rreply, rclaimed >>
 
 RRecord(self) == /\ pc[self] = "RRecord"
                  /\ \/ /\ rreply' = [rreply EXCEPT ![self] = "ok"]
@@ -1911,11 +1980,12 @@ RRecord(self) == /\ pc[self] = "RRecord"
                                  lateNS, pending, cid, oldId, toRetry, lease, 
                                  rids, rcid, crashes, cancels, evictions, 
                                  fired, firedAt, lost, evicted, one, dlog, 
-                                 tally, stally, policy, approves1, submits, 
-                                 redeploys, badFire, badPause, badDeny, badSoD, 
-                                 keys, resChanges, g, gg, reply, outcome, won, 
-                                 reused, snapOne, snapTally, gp, qt, 
-                                 loadDenied, rc, rg, rclaimed >>
+                                 expired, tally, stally, policy, approves1, 
+                                 submits, redeploys, badFire, badPause, 
+                                 badDeny, badSoD, keys, resChanges, g, gg, 
+                                 reply, outcome, won, reused, snapOne, 
+                                 snapTally, gp, qt, loadDenied, rc, rg, 
+                                 rclaimed >>
 
 RWait(self) == /\ pc[self] = "RWait"
                /\ jres[self] # None
@@ -1928,12 +1998,12 @@ RWait(self) == /\ pc[self] = "RWait"
                                lateMarker, lateNS, lateResult, pending, fl, 
                                waiters, cid, oldId, toRetry, lease, rids, rcid, 
                                ambig, crashes, cancels, evictions, fired, 
-                               firedAt, lost, evicted, one, dlog, tally, 
-                               stally, policy, approves1, submits, redeploys, 
-                               badFire, badPause, badDeny, badSoD, keys, 
-                               resChanges, g, gg, reply, outcome, won, reused, 
-                               snapOne, snapTally, gp, qt, loadDenied, rc, rg, 
-                               rreply, rclaimed >>
+                               firedAt, lost, evicted, one, dlog, expired, 
+                               tally, stally, policy, approves1, submits, 
+                               redeploys, badFire, badPause, badDeny, badSoD, 
+                               keys, resChanges, g, gg, reply, outcome, won, 
+                               reused, snapOne, snapTally, gp, qt, loadDenied, 
+                               rc, rg, rreply, rclaimed >>
 
 RNotStarted(self) == /\ pc[self] = "RNotStarted"
                      /\ \/ /\ rreply' = [rreply EXCEPT ![self] = "ok"]
@@ -1967,12 +2037,13 @@ RNotStarted(self) == /\ pc[self] = "RNotStarted"
                                      lateMarker, lateResult, fl, waiters, jres, 
                                      cid, oldId, toRetry, lease, rids, rcid, 
                                      crashes, cancels, evictions, fired, 
-                                     firedAt, lost, evicted, one, dlog, tally, 
-                                     stally, policy, approves1, submits, 
-                                     redeploys, badFire, badPause, badDeny, 
-                                     badSoD, keys, resChanges, g, gg, reply, 
-                                     outcome, won, reused, snapOne, snapTally, 
-                                     gp, qt, loadDenied, rc, rg, rclaimed >>
+                                     firedAt, lost, evicted, one, dlog, 
+                                     expired, tally, stally, policy, approves1, 
+                                     submits, redeploys, badFire, badPause, 
+                                     badDeny, badSoD, keys, resChanges, g, gg, 
+                                     reply, outcome, won, reused, snapOne, 
+                                     snapTally, gp, qt, loadDenied, rc, rg, 
+                                     rclaimed >>
 
 RRelease(self) == /\ pc[self] = "RRelease"
                   /\ IF lease = self
@@ -1985,11 +2056,12 @@ RRelease(self) == /\ pc[self] = "RRelease"
                                   waiters, jres, cid, oldId, toRetry, rids, 
                                   rcid, ambig, crashes, cancels, evictions, 
                                   fired, firedAt, lost, evicted, one, dlog, 
-                                  tally, stally, policy, approves1, submits, 
-                                  redeploys, badFire, badPause, badDeny, 
-                                  badSoD, keys, resChanges, g, gg, reply, 
-                                  outcome, won, reused, snapOne, snapTally, gp, 
-                                  qt, loadDenied, rc, rg, rreply, rclaimed >>
+                                  expired, tally, stally, policy, approves1, 
+                                  submits, redeploys, badFire, badPause, 
+                                  badDeny, badSoD, keys, resChanges, g, gg, 
+                                  reply, outcome, won, reused, snapOne, 
+                                  snapTally, gp, qt, loadDenied, rc, rg, 
+                                  rreply, rclaimed >>
 
 resolver(self) == RCheck(self) \/ RClaim(self) \/ RRetry(self)
                      \/ RInsert(self) \/ RClaimNS(self) \/ RWrite(self)
@@ -2018,7 +2090,7 @@ Termination == <>(\A self \in ProcSet: pc[self] = "Done")
 
 \* The approval gate's journal and environment.
 ApVars == <<one, dlog, tally, stally, badSoD, policy, approves1, submits, redeploys, badFire, badPause, badDeny,
-             keys, resChanges>>
+             keys, resChanges, expired>>
 
 \* A process dies: its drives restart from Open with empty locals, its pendingClaims and
 \* flights are gone, a lease it held lapses, and the claim ids it knew become lost.
@@ -2098,12 +2170,16 @@ CoreVars == <<marker, nsSet, heldSet, result, toolFail, lateMarker, lateNS, late
               evictions, fired, firedAt, lost, evicted, badFire, badPause, badDeny, pc, g, gg, reply,
               outcome, won, reused, snapOne, snapTally, gp, qt, loadDenied, rc, rg, rreply, rclaimed>>
 
-\* Approve (1-of-1): the first decision recorded for the call wins.
+\* Approve (1-of-1): the first decision recorded for the call wins. One recorded after the deadline
+\* is late (Approve refuses one by its clock; one that lands as the deadline passes is read as the
+\* expiry); historically (LateCounts) it counted.
 Approve1(c, v) ==
   /\ approves1 < MaxApprove1
   /\ approves1' = approves1 + 1
-  /\ one' = IF one[c] = "none" THEN [one EXCEPT ![c] = v] ELSE one
-  /\ UNCHANGED <<dlog, tally, stally, badSoD, policy, submits, redeploys, keys, resChanges>>
+  /\ one' = IF one[c] = "none" THEN [one EXCEPT ![c] = CASE ~expired[c] -> v
+                                                                   [] Bug = "LateCounts" -> IF v = "yes" THEN "lyes" ELSE v
+                                                                   [] OTHER -> "late"] ELSE one
+  /\ UNCHANGED <<dlog, tally, stally, badSoD, policy, submits, redeploys, keys, resChanges, expired>>
   /\ UNCHANGED CoreVars
 
 \* SubmitDecision (m-of-n): person h signs a decision naming approver a with key k. It counts only
@@ -2112,7 +2188,7 @@ Approve1(c, v) ==
 \* approver with a key they hold that a resolver maps to it; an actor holding no key forges.
 Held(h) == {k \in DOMAIN Holder : Holder[k] = h}
 Submit(c, h, a, v, sj, k) ==
-  LET r == [a |-> a, h |-> h, ok |-> v, k |-> k, subj |-> sj] IN
+  LET r == [a |-> a, h |-> h, ok |-> v, k |-> k, subj |-> sj, late |-> expired[c]] IN
   /\ submits < MaxSubmit
   /\ \/ /\ k \in Held(h)
         /\ \/ a \in DOMAIN KeyOf /\ k \in KeyOf[a]
@@ -2121,7 +2197,7 @@ Submit(c, h, a, v, sj, k) ==
   /\ \A i \in DOMAIN dlog[c] : dlog[c][i] # r
   /\ submits' = submits + 1
   /\ dlog' = [dlog EXCEPT ![c] = Append(dlog[c], r)]
-  /\ UNCHANGED <<one, tally, stally, badSoD, policy, approves1, redeploys, keys, resChanges>>
+  /\ UNCHANGED <<one, tally, stally, badSoD, policy, approves1, redeploys, keys, resChanges, expired>>
   /\ UNCHANGED CoreVars
 
 \* A redeploy of process p changes the call's tool gate (removed, loosened, tightened or made
@@ -2132,7 +2208,7 @@ Redeploy(p, c, n) ==
   /\ \A d \in Drivers : ProcOf[d] = p => pc[d] \in {"Start", "Open", "Finish", "Done"}
   /\ redeploys' = redeploys + 1
   /\ policy' = [policy EXCEPT ![p][c] = n]
-  /\ UNCHANGED <<one, dlog, tally, stally, badSoD, approves1, submits, keys, resChanges>>
+  /\ UNCHANGED <<one, dlog, tally, stally, badSoD, approves1, submits, keys, resChanges, expired>>
   /\ UNCHANGED CoreVars
 
 \* The verifier resolver changes (a key rotated, a key file redeployed): the gate's next check and
@@ -2142,11 +2218,20 @@ ResolverChange ==
   /\ keys # KeyOf2
   /\ resChanges' = resChanges + 1
   /\ keys' = KeyOf2
-  /\ UNCHANGED <<one, dlog, tally, stally, badSoD, policy, approves1, submits, redeploys>>
+  /\ UNCHANGED <<one, dlog, tally, stally, badSoD, policy, approves1, submits, redeploys, expired>>
+  /\ UNCHANGED CoreVars
+
+\* The clock passes the call's recorded deadline: once, and only for a gate that has one.
+Expire(c) ==
+  /\ HasDeadline
+  /\ ~expired[c]
+  /\ expired' = [expired EXCEPT ![c] = TRUE]
+  /\ UNCHANGED <<one, dlog, tally, stally, badSoD, policy, approves1, submits, redeploys, keys, resChanges>>
   /\ UNCHANGED CoreVars
 
 ApprovalEnv ==
   \/ ResolverChange
+  \/ \E c \in Calls : Expire(c)
   \/ \E c \in Calls :
        \/ \E v \in {"yes", "no"} : Approve1(c, v)
        \/ \E h \in Actors, a \in ApproverIds, v \in BOOLEAN, sj \in Subjects,
@@ -2258,6 +2343,23 @@ NoDenyWithoutDenials ==
   \A c \in Calls : (tally[c].rec /\ ~tally[c].passed)
                      => Cardinality(Policies[tally[c].pol].apprs) - tally[c].denials
                           < Policies[tally[c].pol].need
+
+\* Approval deadlines. An expired gate never runs its call: an expiry recorded as the outcome (the
+\* one-decision gate's, or the tally's) leaves the effect unfired.
+ExpiredNeverRuns ==
+  \A c \in Calls : (one[c] \in {"exp", "late"} \/ (tally[c].rec /\ tally[c].exp)) => fired[c] = 0
+
+\* A passing outcome never rests on an approval recorded after the deadline.
+LateNeverCounts ==
+  \A c \in Calls : /\ one[c] # "lyes"
+                  /\ \A t \in {tally[c], stally[c]} : (t.rec /\ t.passed) => ~t.late
+
+\* An outcome is recorded once: a recorded decision, tally or expiry never changes, so an expiry and
+\* a passing tally cannot both be the outcome.
+OutcomeOnce ==
+  [][\A c \in Calls : /\ one[c] # "none" => one'[c] = one[c]
+                     /\ tally[c].rec => tally'[c] = tally[c]
+                     /\ stally[c].rec => stally'[c] = stally[c]]_vars
 
 \* The gate never waits for approvals that are already in (no lockout).
 NoStuckPause == ~badPause
