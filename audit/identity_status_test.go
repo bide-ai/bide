@@ -1293,9 +1293,9 @@ func TestCoverageTolerance(t *testing.T) {
 		t.Fatalf("a second beyond interval + tolerance: %+v", st)
 	}
 	// An undeclared interval is not "zero": CRLs seconds apart are not shown contiguous either.
-	p.Interval = -1
+	p.Interval = 0
 	near := s.lcrl(2, idT0.Add(10*time.Second), 30*min)
-	if st := s.leafStatus(s.snap(s.lcrl(1, idT0, 25*min), near), p); st.Tier == audit.TierFinal {
+	if st := s.c.EvaluateStatus(s.ac, s.a, s.snap(s.lcrl(1, idT0, 25*min), near), p).Certs[0]; st.Tier == audit.TierFinal {
 		t.Fatalf("no declared interval: %+v", st)
 	}
 }
@@ -1367,6 +1367,16 @@ func TestMalformedCRLCatalogue(t *testing.T) {
 			o.Entries = []testca.RawEntry{{Serial: big.NewInt(5), Time: this.Add(time.Hour)}}
 			return o
 		}(), false},
+		"duplicate entry extension": {func() testca.RawCRLOpts {
+			o := base()
+			o.Entries = []testca.RawEntry{{Serial: big.NewInt(5), Time: this, Exts: []pkix.Extension{{Id: asn1.ObjectIdentifier{2, 5, 29, 21}, Value: []byte{0x0a, 0x01, 0x01}}, {Id: asn1.ObjectIdentifier{2, 5, 29, 21}, Value: []byte{0x0a, 0x01, 0x02}}}}}
+			return o
+		}(), true},
+		"critical freshestCRL": {func() testca.RawCRLOpts {
+			o := base()
+			o.Extensions = []pkix.Extension{{Id: asn1.ObjectIdentifier{2, 5, 29, 46}, Critical: true, Value: []byte{0x30, 0x00}}}
+			return o
+		}(), true},
 		"no authority key identifier": {func() testca.RawCRLOpts { o := base(); o.NoAKI = true; return o }(), false},
 	} {
 		_, err := audit.NewStatusSnapshot().AddCRL(s.inter.RawCRL(t, tc.o))
