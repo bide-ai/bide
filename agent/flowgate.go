@@ -163,7 +163,7 @@ func flowGate(ctx context.Context, d *Journal, runID, key, node string, args jso
 			return false, err
 		}
 		if ok {
-			return singleOutcome(ctx, d, runID, key, node, r)
+			return singleOutcome(ctx, d, runID, key, node, r, pol)
 		}
 	} else {
 		r, ok, err := d.Get(ctx, runID, ApprovalTallyStep(key))
@@ -203,11 +203,14 @@ func flowGate(ctx context.Context, d *Journal, runID, key, node string, args jso
 	}
 
 	// The gate's deadline (ApprovalPolicy.Timeout), measured from the request and recorded once.
+	// The flow's digest commits to its gates' timeouts, so only a gate with one has a deadline.
 	var opened []Record
-	if r, ok, err := d.Get(ctx, runID, ApprovalDeadlineStep(key)); err != nil {
-		return false, fmt.Errorf("read %s (run %s): %w (%w)", ApprovalDeadlineStep(key), runID, err, ErrStorage)
-	} else if ok {
-		opened = append(opened, r)
+	if pol.Timeout > 0 {
+		if r, ok, err := d.Get(ctx, runID, ApprovalDeadlineStep(key)); err != nil {
+			return false, fmt.Errorf("read %s (run %s): %w (%w)", ApprovalDeadlineStep(key), runID, err, ErrStorage)
+		} else if ok {
+			opened = append(opened, r)
+		}
 	}
 	expAt, hasDeadline, err := openDeadline(ctx, d, runID, key, pol, append(opened, got))
 	if err != nil {
@@ -228,7 +231,7 @@ func flowGate(ctx context.Context, d *Journal, runID, key, node string, args jso
 		if err != nil {
 			return false, err
 		}
-		return singleOutcome(ctx, d, runID, key, node, r)
+		return singleOutcome(ctx, d, runID, key, node, r, pol)
 	}
 
 	// GCount: an m-of-n gate counts the journal and records a terminal tally.
@@ -305,7 +308,14 @@ func flowSingle(ctx context.Context, d *Journal, runID, key string) (r Record, o
 // singleOutcome is what a plan flow node's one-decision gate does with its decision r: run on an
 // approval recorded by the deadline, return the expiry (ErrApprovalExpired) for the gate's expiry
 // record or a decision recorded after the deadline, and deny otherwise.
-func singleOutcome(ctx context.Context, d *Journal, runID, key, node string, r Record) (bool, error) {
+func singleOutcome(ctx context.Context, d *Journal, runID, key, node string, r Record, pol *ApprovalPolicy) (bool, error) {
+	if string(r.Result) == expiredDecision {
+		return false, expiredErr(node, "")
+	}
+	if pol.Timeout <= 0 {
+		// The flow's digest commits to its gates' timeouts, so a run of this flow has no deadline.
+		return r.Approved, nil
+	}
 	dl, ok, err := d.Get(ctx, runID, ApprovalDeadlineStep(key))
 	if err != nil {
 		return false, fmt.Errorf("read %s (run %s): %w (%w)", ApprovalDeadlineStep(key), runID, err, ErrStorage)

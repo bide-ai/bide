@@ -109,6 +109,8 @@ type TopologyGate struct {
 	Need             int      `json:"need,omitempty"`
 	Approvers        []string `json:"approvers,omitempty"`
 	ExcludePrincipal bool     `json:"exclude_principal,omitempty"`
+	// TimeoutMS is the gate's deadline in milliseconds (ApprovalPolicy.Timeout), zero for none.
+	TimeoutMS int64 `json:"timeout_ms,omitempty"`
 }
 
 // topologyGate is p as a TopologyGate, nil for no gate.
@@ -119,7 +121,7 @@ func topologyGate(p *agent.ApprovalPolicy) *TopologyGate {
 	var g TopologyGate
 	b, err := json.Marshal(p)
 	if err != nil || json.Unmarshal(b, &g) != nil {
-		return &TopologyGate{Need: p.Need, Approvers: append([]string(nil), p.Approvers...), ExcludePrincipal: p.ExcludePrincipal}
+		return &TopologyGate{Need: p.Need, Approvers: append([]string(nil), p.Approvers...), ExcludePrincipal: p.ExcludePrincipal, TimeoutMS: p.Timeout.Milliseconds()}
 	}
 	return &g
 }

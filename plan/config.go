@@ -9,6 +9,7 @@ import (
 	"sort"
 	"strconv"
 	"strings"
+	"time"
 	"unicode"
 
 	"github.com/bide-ai/bide/agent"
@@ -77,6 +78,9 @@ type configApproval struct {
 	Need             int      `json:"need"`
 	Approvers        []string `json:"approvers"`
 	ExcludePrincipal bool     `json:"exclude_principal,omitempty"`
+	// Timeout is the gate's deadline (ApprovalPolicy.Timeout), as a Go duration ("48h", "90m");
+	// empty for none. It must be positive and a whole number of milliseconds.
+	Timeout string `json:"timeout,omitempty"`
 }
 
 // configWire is one wiring element: a discriminated union of EXACTLY ONE of an edge,
@@ -119,6 +123,17 @@ type configWire struct {
 func configGate(base *agent.ApprovalPolicy, ca *configApproval) (*agent.ApprovalPolicy, []string) {
 	p := &agent.ApprovalPolicy{Need: ca.Need, Approvers: append([]string(nil), ca.Approvers...), ExcludePrincipal: ca.ExcludePrincipal}
 	var why []string
+	if ca.Timeout != "" {
+		d, err := time.ParseDuration(ca.Timeout)
+		switch {
+		case err != nil:
+			why = append(why, fmt.Sprintf("approval.timeout %q is not a duration such as \"48h\" or \"90m\"", ca.Timeout))
+		case d <= 0 || d%time.Millisecond != 0:
+			why = append(why, fmt.Sprintf("approval.timeout %q must be positive and a whole number of milliseconds", ca.Timeout))
+		default:
+			p.Timeout = d
+		}
+	}
 	n := len(ca.Approvers)
 	if n == 0 {
 		why = append(why, "approval.approvers must be non-empty")

@@ -2317,10 +2317,10 @@ TallySound ==
     (t.rec /\ t.passed) => Cardinality(t.signers) >= Policies[t.pol].need
 
 \* A recorded failing tally rests on valid, call-bound denials and seats the count excluded: an
-\* invalid record cannot force a denial.
+\* invalid record cannot force a denial. (An expiry rests on the deadline instead: ExpiryAfterDeadline.)
 DenialSound ==
   \A c \in Calls : \A t \in {tally[c], stally[c]} :
-    (t.rec /\ ~t.passed) => Cardinality(Policies[t.pol].apprs) - t.excl - t.denials < Policies[t.pol].need
+    (t.rec /\ ~t.passed /\ ~t.exp) => Cardinality(Policies[t.pol].apprs) - t.excl - t.denials < Policies[t.pol].need
 
 \* Separation of duties (ExcludePrincipal): a recorded tally under a policy that excludes the
 \* requester was counted for a run that, with every run above it, records one; seats none of the
@@ -2349,6 +2349,10 @@ NoDenyWithoutDenials ==
 ExpiredNeverRuns ==
   \A c \in Calls : (one[c] \in {"exp", "late"} \/ (tally[c].rec /\ tally[c].exp)) => fired[c] = 0
 
+\* An expiry is recorded only once the deadline has passed.
+ExpiryAfterDeadline ==
+  \A c \in Calls : (one[c] = "exp" \/ \E t \in {tally[c], stally[c]} : t.rec /\ t.exp) => expired[c]
+
 \* A passing outcome never rests on an approval recorded after the deadline.
 LateNeverCounts ==
   \A c \in Calls : /\ one[c] # "lyes"
@@ -2357,9 +2361,9 @@ LateNeverCounts ==
 \* An outcome is recorded once: a recorded decision, tally or expiry never changes, so an expiry and
 \* a passing tally cannot both be the outcome.
 OutcomeOnce ==
-  [][\A c \in Calls : /\ one[c] # "none" => one'[c] = one[c]
-                     /\ tally[c].rec => tally'[c] = tally[c]
-                     /\ stally[c].rec => stally'[c] = stally[c]]_vars
+  [][\A c \in Calls : /\ (one[c] # "none" => one'[c] = one[c])
+                     /\ (tally[c].rec => tally'[c] = tally[c])
+                     /\ (stally[c].rec => stally'[c] = stally[c])]_vars
 
 \* The gate never waits for approvals that are already in (no lockout).
 NoStuckPause == ~badPause

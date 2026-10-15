@@ -79,6 +79,11 @@
           "type": "boolean",
           "default": false,
           "description": "Separation of duties: never count a decision by the run's requester (the principal the run was started for, its identity's on_behalf_of). A run with no requester is refused at the gate, and so is one whose requester is an approver when need is then out of reach."
+        },
+        "timeout": {
+          "type": "string",
+          "pattern": "^([0-9]+(\\.[0-9]+)?(ns|us|µs|ms|s|m|h))+$",
+          "description": "The gate's deadline, as a Go duration (\"48h\", \"90m\"): a node still waiting this long after its request was recorded expires, is never run, and the flow returns plan.ErrApprovalExpired. Positive and a whole number of milliseconds. Absent: no deadline."
         }
       }
     },
