@@ -40,8 +40,9 @@ func TestFlowGate_SingleDecisionAfterRequest(t *testing.T) {
 	}
 }
 
-// A single decision recorded under the gate's name before its request cannot count: the gate stays
-// paused, and Approve reports that the gate cannot pass (ErrConfig).
+// A single decision recorded under the gate's name before its request never counts: the gate stays
+// paused. Approve then records the real decision under the gate's second name, which the gate
+// honours, so the stale record does not block the gate.
 func TestFlowGate_DecisionBeforeRequestCannotCount(t *testing.T) {
 	ctx := context.Background()
 	j := memJournal()
@@ -50,11 +51,14 @@ func TestFlowGate_DecisionBeforeRequestCannotCount(t *testing.T) {
 	if _, err := flowGate(ctx, j, "r1", "node:pay", "pay", json.RawMessage(`1`), SingleApproval(), nil); !errors.As(err, &pend) {
 		t.Fatalf("gate with a pre-request decision = %v; want the pause", err)
 	}
-	if err := Approve(ctx, j, "r1", "node:pay", true); !errors.Is(err, ErrConfig) {
-		t.Fatalf("Approve over a pre-request decision = %v; want ErrConfig", err)
+	if err := Approve(ctx, j, "r1", "node:pay", false); err != nil {
+		t.Fatalf("Approve over a pre-request decision = %v; want it recorded under the second name", err)
 	}
-	if _, err := flowGate(ctx, j, "r1", "node:pay", "pay", json.RawMessage(`1`), SingleApproval(), nil); !errors.As(err, &pend) {
-		t.Fatalf("gate after the refused Approve = %v; want it still paused", err)
+	if _, ok, _ := j.Get(ctx, "r1", approvalAfterRequestStep("node:pay")); !ok {
+		t.Fatal("no decision under the second name")
+	}
+	if got, err := flowGate(ctx, j, "r1", "node:pay", "pay", json.RawMessage(`1`), SingleApproval(), nil); err != nil || got {
+		t.Fatalf("gate after Approve(false) = %v, %v; want the denial, not the stale approval", got, err)
 	}
 }
 

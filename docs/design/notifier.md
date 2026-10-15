@@ -77,6 +77,7 @@ Step that crashes mid-POST would halt that run on the notifier, a halt about a h
 | `run_aborted` | the run reaches the `run:aborted` end marker | `aborted:<run>` |
 | `recovery_failing` | a run has kept failing recovery for longer than `D` (default 15 minutes): a Resumer error, not resumable, or store errors | `recovery:<run>:<k>` |
 | `notification_overdue` | an event is not acknowledged by its deadline (below) | `overdue:<event key>` |
+| `approval_expired` | the all-clear of an `approval_pending` event finds the gate expired (its deadline passed with no approval; reason `expired`) | `expired:<run>:<call id>` |
 | `resolved` | an `outcome_unknown`, `approval_pending` or `recovery_failing` event that a receiver was, or may have been, told of stopped being current: the all-clear (below) | `resolved:<event key>` |
 | `digest` | a periodic summary of runs halted or waiting longer than `X` (below) | `digest:<bucket>` |
 
@@ -219,7 +220,7 @@ source of truth.
 | `watch`, `unwatch` | in a segment of the open trail `notify:@open:<date>`, not a run's: an event whose all-clear may be owed is listed before it is observed, and unlisted when nothing more is owed | `key`, `run`, `at` |
 | `checkpoint`, `seal`, `backfilled` | in an open-trail segment: the listed set carried into a new segment (first record), the pointer to the next segment (last record), the one-time listing of earlier events | `watching`, `backfilled`; `next` |
 | `segment` | in the open trail's index `notify:@open:index:<year>`: a segment was created | `next` |
-| `cleared` | the event stopped being current, while it was still open | `key`, `at`, `reason` (`resolved`, `decided`, `ended`, `recovered`) |
+| `cleared` | the event stopped being current, while it was still open | `key`, `at`, `reason` (`resolved`, `decided`, `expired`, `ended`, `recovered`) |
 
 The fold of an event: **open** until `acked` or `cleared`; **claimed** if the last `claimed` has
 `until` in the future. An acknowledged event is never `cleared` afterwards (the first terminal record
@@ -292,7 +293,7 @@ and `acked` records, the same claim race, retry, backoff and `failing` record, a
 no longer current, in either of two states:
 
 - *acknowledged*: the receiver was told. The all-clear says the event is over, with the reason
-  (`resolved`, `decided`, `ended`, `recovered`) the currency check gives;
+  (`resolved`, `decided`, `expired`, `ended`, `recovered`) the currency check gives;
 - *cleared after a delivery was attempted* (the trail holds a `claimed` for it): the receiver may have
   been told, since a request can land although its reply was lost or its call abandoned. Clearing
   stops the event's own delivery, so the all-clear is the only message the receiver gets about it,

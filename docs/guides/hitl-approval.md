@@ -499,6 +499,45 @@ same way, and so is a key a verifier cannot use (it reports no identity). If `Ta
 handed such a resolver directly, the approvers it cannot seat are listed in the tally's `Excluded`,
 never count, and are not waited on: when too few seats remain to reach `Need`, the gate denies.
 
+### Deadlines
+
+A gate can have a deadline: give the policy a `Timeout` (a whole number of milliseconds; zero, the
+default, is no deadline).
+
+<!-- docsnip: setup type RefundArgs struct{}; doRefund func(context.Context, RefundArgs) (string, error) -->
+```go
+refund := agent.MustFunc("refund", "refund an order", doRefund,
+	agent.WithApproval(&agent.ApprovalPolicy{Need: 2, Approvers: []string{"ops", "finance", "risk"}, Timeout: 48 * time.Hour}))
+```
+
+`SingleApproval()` takes one too (`p := agent.SingleApproval(); p.Timeout = time.Hour`).
+
+- **Measured from the request, fixed once.** The first time the gate waits it records
+  `approval-deadline:<call>` (`agent.ApprovalDeadline`): when the request was recorded (the
+  `approval-pending` note's time, or a plan flow node's `approval-request`) and that plus the
+  timeout. From then on the gate reads the deadline from that record: a redeploy that changes the
+  timeout does not move a gate already waiting.
+- **The expiry is the gate's outcome.** A drive that finds the deadline passed with no terminal
+  count records the expiry where the outcome goes (the tally, `expired: true`; or a one-decision
+  gate's decision record), insert-once, so an expiry and a passing tally cannot both be recorded:
+  the first one written is the outcome. The call never runs: the model reads
+  `agent.ExpiredResult` as the call's result, a plan flow returns `plan.ErrApprovalExpired`, and
+  a late approval never reopens it.
+- **Late decisions do not count.** A decision recorded after the deadline is not counted
+  (`agent.ReasonLate`), even before a drive records the expiry. `SubmitDecision`, `Approve`, the
+  approvals endpoint and `bide approve` refuse a decision on a gate past its deadline, or whose
+  expiry is recorded whatever their own clock says (`agent.ErrApprovalExpired`), and record nothing. The outcome is whichever is recorded first: the
+  gate reads the clock, then the journal, and records a pass if the approvals it read suffice, so
+  approvals already written by the deadline win when the run is driven later. A decision whose
+  write lands after the expiry does not count, even if it was stamped on time; readers label it
+  "not counted: written after the gate expired" (`agent.ReasonAfterExpiry`).
+- **Seen by readers.** `agent.EvaluateGate` reports `Expired` and the `Deadline`; the approvals
+  endpoint's `GET /pending` gives `expires_at` and the state `expired`; the notifier sends
+  `approval_expired` and closes the pending approval with the reason `expired`
+  ([Notifications](notifications.md)).
+- **Clocks.** The deadline is read with the run's clock (`WithClock`) and a decision's time is the
+  deciding process's; skew between them moves the edge by the skew.
+
 ### On a plan flow node
 
 A [plan flow](plan-flows.md#approval-gates-on-nodes) node takes the same gate: `plan.Approval(policy)` in
@@ -986,7 +1025,8 @@ a key a script can use is not a per-signature human gesture. See also
   two approvers on one key, but it cannot see that one person holds two different keys: issuing each
   person one key is the identity provider's job too.
 - The approver set is bounded and fixed per policy. There are no weighted votes, role predicates
-  ("at least one from risk"), delegated approval, or deadline to resolve a gate that never reaches k.
+  ("at least one from risk"), or delegated approval. A gate that never reaches k waits until its
+  deadline, when it has one ([Deadlines](#deadlines)), and until the run is cancelled otherwise.
 - Separation of duties excludes requesters by id: the run's and those of the runs above it. It does
   not exclude someone who holds an approver's key and also requests under another id.
 - The tally does not record which key verified each approver (each decision does record its scheme,

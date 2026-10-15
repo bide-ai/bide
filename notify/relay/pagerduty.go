@@ -133,7 +133,7 @@ func DefaultSeverity(p notify.Payload) string {
 	switch p.Kind {
 	case "outcome_unknown", "notification_overdue", "escalated":
 		return "critical"
-	case "run_aborted", "recovery_failing":
+	case "run_aborted", "recovery_failing", "approval_expired":
 		return "error"
 	case "approval_pending":
 		return "warning"

@@ -6,6 +6,7 @@ import (
 	"regexp"
 	"strconv"
 	"strings"
+	"time"
 
 	"github.com/bide-ai/bide/agent"
 )
@@ -201,7 +202,11 @@ func configTopology(cfg *config) Topology {
 		if ca == nil {
 			return nil
 		}
-		return &TopologyGate{Need: ca.Need, Approvers: append([]string(nil), ca.Approvers...), ExcludePrincipal: ca.ExcludePrincipal}
+		g := &TopologyGate{Need: ca.Need, Approvers: append([]string(nil), ca.Approvers...), ExcludePrincipal: ca.ExcludePrincipal}
+		if d, err := time.ParseDuration(ca.Timeout); err == nil && d > 0 {
+			g.TimeoutMS = d.Milliseconds()
+		}
+		return g
 	}
 	for _, n := range cfg.Nodes {
 		t.Nodes = append(t.Nodes, TopologyNode{Name: n.Name, Block: n.Block, Gate: gateOf(n.Approval)})

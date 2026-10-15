@@ -191,6 +191,16 @@ type ApprovalPolicy struct {
 	// decision names no approver.
 	ExcludePrincipal bool `json:"exclude_principal,omitempty"`
 
+	// Timeout, when positive, is the gate's deadline: a call (or plan flow node) still waiting
+	// Timeout after its request was recorded expires. The gate records the deadline once, when it
+	// first waits (approval-deadline:<call>, see ApprovalDeadline), and from then on reads it from
+	// that record, so a redeploy that changes Timeout does not move a gate already waiting. An
+	// expiry is recorded as the gate's outcome, insert-once like a tally, so it is final: the call
+	// never runs (it is denied, with ErrApprovalExpired), and a decision recorded after the
+	// deadline never counts. Zero means no deadline. It must be a whole number of milliseconds,
+	// as it is journaled (timeout_ms), and is never negative (Validate).
+	Timeout time.Duration `json:"-"`
+
 	// one marks the policy SingleApproval returned (and its copies): the one-decision gate. It is
 	// unexported so no literal can set it; MarshalJSON journals it as {"single":true}. The gate a
 	// run enforces is always the registered tool's, never one read back from the journal.
@@ -215,9 +225,12 @@ func (p ApprovalPolicy) MarshalJSON() ([]byte, error) {
 		if p.ExcludePrincipal {
 			return nil, fmt.Errorf("a SingleApproval policy cannot exclude the principal: its decision names no approver: %w", ErrConfig)
 		}
+		if p.Timeout != 0 {
+			return json.Marshal(singleWire{Single: true, TimeoutMS: p.Timeout.Milliseconds()})
+		}
 		return []byte(`{"single":true}`), nil
 	}
-	return json.Marshal(approvalWire{Need: p.Need, Approvers: p.Approvers, ExcludePrincipal: p.ExcludePrincipal})
+	return json.Marshal(approvalWire{Need: p.Need, Approvers: p.Approvers, ExcludePrincipal: p.ExcludePrincipal, TimeoutMS: p.Timeout.Milliseconds()})
 }
 
 // UnmarshalJSON decodes what MarshalJSON encodes, strictly, as the bide protocol writes the gate:
@@ -234,25 +247,39 @@ func (p *ApprovalPolicy) UnmarshalJSON(b []byte) error {
 		return fmt.Errorf("approval policy: %w (%w)", err, ErrProtocol)
 	}
 	if raw, ok := members["single"]; ok {
-		if string(bytes.TrimSpace(raw)) != "true" || len(members) != 1 {
-			return fmt.Errorf(`approval policy: "single" must be true and alone, as {"single":true}: %w`, ErrProtocol)
+		_, timed := members["timeout_ms"]
+		if string(bytes.TrimSpace(raw)) != "true" || len(members) != 1 && !(timed && len(members) == 2) {
+			return fmt.Errorf(`approval policy: "single" must be true, alone or with "timeout_ms", as {"single":true}: %w`, ErrProtocol)
+		}
+		var w singleWire
+		if err := strictjson.Unmarshal(b, &w, nil); err != nil {
+			return fmt.Errorf("approval policy: %w (%w)", err, ErrProtocol)
 		}
 		*p = *SingleApproval()
+		p.Timeout = time.Duration(w.TimeoutMS) * time.Millisecond
 		return nil
 	}
 	var w approvalWire // need is required: its tag has no omitempty
 	if err := strictjson.Unmarshal(b, &w, &strictjson.Options{Fields: strictjson.SchemaFields}); err != nil {
 		return fmt.Errorf("approval policy: %w (%w)", err, ErrProtocol)
 	}
-	*p = ApprovalPolicy{Need: w.Need, Approvers: w.Approvers, ExcludePrincipal: w.ExcludePrincipal}
+	*p = ApprovalPolicy{Need: w.Need, Approvers: w.Approvers, ExcludePrincipal: w.ExcludePrincipal, Timeout: time.Duration(w.TimeoutMS) * time.Millisecond}
 	return nil
 }
 
-// approvalWire is an m-of-n ApprovalPolicy's encoding.
+// approvalWire is an m-of-n ApprovalPolicy's encoding. timeout_ms is omitted when zero, so a policy
+// with no deadline encodes as it did before the field existed.
 type approvalWire struct {
 	Need             int      `json:"need"`
 	Approvers        []string `json:"approvers,omitempty"`
 	ExcludePrincipal bool     `json:"exclude_principal,omitempty"`
+	TimeoutMS        int64    `json:"timeout_ms,omitempty"`
+}
+
+// singleWire is the encoding of a SingleApproval with a deadline.
+type singleWire struct {
+	Single    bool  `json:"single"`
+	TimeoutMS int64 `json:"timeout_ms,omitempty"`
 }
 
 // single reports whether p is the one-decision gate SingleApproval returned.
@@ -264,7 +291,7 @@ func (p *ApprovalPolicy) Clone() *ApprovalPolicy {
 	if p == nil {
 		return nil
 	}
-	return &ApprovalPolicy{Need: p.Need, Approvers: slices.Clone(p.Approvers), ExcludePrincipal: p.ExcludePrincipal, one: p.one}
+	return &ApprovalPolicy{Need: p.Need, Approvers: slices.Clone(p.Approvers), ExcludePrincipal: p.ExcludePrincipal, Timeout: p.Timeout, one: p.one}
 }
 
 // checkApproval reports whether p is a gate the agent can enforce (see Validate).

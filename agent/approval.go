@@ -37,6 +37,9 @@ import (
 // when it evaluates a call, not here: a policy whose Need equals the number of approvers can
 // exclude the requester only for runs whose requester is not one of them.
 func (p ApprovalPolicy) Validate() error {
+	if p.Timeout < 0 || p.Timeout%time.Millisecond != 0 {
+		return fmt.Errorf("approval policy Timeout %s: want zero (no deadline) or a positive whole number of milliseconds: %w", p.Timeout, ErrConfig)
+	}
 	if p.one { // SingleApproval, unless its fields were changed since
 		if p.Need != 1 || len(p.Approvers) != 0 {
 			return fmt.Errorf("a SingleApproval policy was changed to Need %d and %d approvers; build an m-of-n policy instead: %w", p.Need, len(p.Approvers), ErrConfig)
@@ -363,13 +366,19 @@ type ApprovalTally struct {
 	// the tally it would go by passed without excluding the requester and its policy now excludes it
 	// (recorded under ApprovalSoDRetallyStep).
 	Supersedes string `json:"supersedes,omitempty"`
+	// Expired is set on the tally of a gate whose deadline passed with no terminal count: the
+	// expiry, recorded as the gate's outcome. It does not pass, whatever the counts say. ExpiresAt
+	// is the deadline the gate enforced (the approval-deadline record's), on an expiry and on any
+	// tally of a gate with a deadline.
+	Expired   bool   `json:"expired,omitempty"`
+	ExpiresAt string `json:"expires_at,omitempty"`
 	// reapproval is the ApprovalPending.Reason of a running count that re-asks (PendingReapproval,
 	// PendingSoDReapproval); it is not journaled.
 	reapproval string
 }
 
 // Passed reports whether Need approvals are in.
-func (t ApprovalTally) Passed() bool { return t.Approved >= t.Need }
+func (t ApprovalTally) Passed() bool { return !t.Expired && t.Approved >= t.Need }
 
 // Unreachable reports whether Need can no longer be reached: fewer approvers remain who have
 // not denied, and are not Excluded, than approvals are required. Only valid denials count toward
@@ -400,6 +409,10 @@ const (
 	ReasonDecidedAt   = "the signed decision time is not in canonical form (2006-01-02T15:04:05.000Z)"
 	ReasonRequester   = "the approver is a requester of the run (its principal, or that of a run above it), whom the policy excludes (separation of duties)"
 	ReasonNoRequester = "the policy excludes the requester, and the run, or a run above it, records no requester principal in printable ASCII"
+	ReasonLate        = "recorded after the gate's deadline (approval-deadline), or with no recorded time on a gate that has one"
+	// ReasonAfterExpiry: the decision's write landed after the gate recorded its expiry, even if it
+	// was stamped before the deadline. The expiry, recorded first, is the outcome.
+	ReasonAfterExpiry = "not counted: written after the gate expired"
 )
 
 // protocol:claims begin QCount
@@ -1146,6 +1159,9 @@ func submitDecision(ctx context.Context, store *Journal, op string, d Decision, 
 	}
 	reqSeq, flow, err := flowDecision(ctx, store, op, d.RunID, d.ToolUseID)
 	if err != nil {
+		return err
+	}
+	if err := checkNotExpired(ctx, store, op, d.RunID, d.ToolUseID, o.now); err != nil {
 		return err
 	}
 	name := decisionIdentityStep(d.ToolUseID, d.ApproverID, d.Approved, d.Alg, decidedAt)

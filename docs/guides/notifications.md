@@ -141,8 +141,12 @@ Schema `bide.notification.v1`:
 }
 ```
 
-`kind` is `outcome_unknown`, `approval_pending`, `run_aborted`, `recovery_failing`,
-`notification_overdue`, `resolved` or `escalated`. At most one of `halt`, `approval`, `abort`,
+`kind` is `outcome_unknown`, `approval_pending`, `approval_expired`, `run_aborted`,
+`recovery_failing`, `notification_overdue`, `resolved` or `escalated`. `approval_expired` says that
+an approval gate's deadline (`ApprovalPolicy.Timeout`) passed with no approval, so the call will not
+run; it is sent when the pending approval's all-clear finds the expiry, whose reason is then
+`expired` (the other reasons: `resolved`, `decided`, `ended`, `recovered`), and it carries the
+gate's `approval` detail. At most one of `halt`, `approval`, `abort`,
 `failing` and `clears` is set, as the kind says; an `escalated` notification carries the detail of the
 event it escalates and sets `escalates` (see [Routing and escalation](#routing-and-escalation)), and
 every payload names its `receiver`. `summary` is generated from the structured fields, so a chat
@@ -284,7 +288,9 @@ the point: if the approval is still undecided when the five minutes are up (even
 channel acknowledged the message), `lead` is told, and the chain continues while the gate stands.
 
 **Routing.** A route sends the events of one kind to one receiver. The kinds are `outcome_unknown`,
-`approval_pending`, `run_aborted` and `recovery_failing`; an event with no route goes to `default`.
+`approval_pending`, `approval_expired`, `run_aborted` and `recovery_failing`; an event with no route
+goes to `default`. An `approval_expired` event follows the approver routes as `approval_pending`
+does.
 The all-clear of an event goes to the receiver the event went to, so that the incident it closes is
 the one that was opened; an overdue notice does too, unless `WithOverdueNotifier` names another.
 For an approval you may also route by approver:
@@ -427,8 +433,8 @@ says which stage failed and what to try, and exits 1:
 | `HTTP 502` or `503` | The receiver failed or is busy. bide retries these. |
 | `no response ... connection refused` | Nothing is listening at that address. |
 
-`-kind` picks the sample's kind (`approval_pending` by default; `outcome_unknown`, `run_aborted`,
-`recovery_failing`, `notification_overdue` and `resolved` too). To watch a relay open and close a
+`-kind` picks the sample's kind (`approval_pending` by default; `approval_expired`, `outcome_unknown`,
+`run_aborted`, `recovery_failing`, `notification_overdue` and `resolved` too). To watch a relay open and close a
 PagerDuty incident, send `-kind approval_pending -run notify-test-demo`, then `-kind resolved -run
 notify-test-demo`: the `resolved` is the all-clear of that approval. `-ca`, `-pin`, `-client-cert` and `-client-key`
 are the receiver-side checks of the [mutual TLS](#mutual-tls-a-private-ca-and-a-key-pin) section;
@@ -478,8 +484,8 @@ For each request the relay verifies the signature, the timestamp and the signed 
 - **PagerDuty** gets an Events API v2 `trigger` whose `dedup_key` is the event's notification ID (the
   `id` of the payload, the SHA-256 of the event key). It is the same on every delivery of the event,
   so PagerDuty folds repeats into one incident; a resolve names the same key. Severity follows the
-  kind: `outcome_unknown` and `notification_overdue` are `critical`, `run_aborted` and
-  `recovery_failing` are `error`, and `approval_pending` is `warning`. `-pagerduty-url` points at the
+  kind: `outcome_unknown` and `notification_overdue` are `critical`, `run_aborted`,
+  `recovery_failing` and `approval_expired` are `error`, and `approval_pending` is `warning`. `-pagerduty-url` points at the
   EU endpoint.
 - Error text and tool arguments are never forwarded, even if the sender allowed them with
   `WithFields`: a message in a chat room or on a pager has left the access control the viewer applies.

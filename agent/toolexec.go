@@ -99,6 +99,9 @@ func tallyGate(ctx context.Context, store *Journal, runID string, s ApprovalSubj
 //
 // A recorded denial is final whatever the policy is now: it runs nothing.
 func tallyGateOnce(ctx context.Context, store *Journal, runID string, s ApprovalSubject, pol *ApprovalPolicy, verifierFor ApproverVerifierFor, since string) (_ ApprovalTally, final, again bool, _ error) {
+	// The clock is read before the journal, so a decision written between the two is in the count
+	// rather than racing an expiry decided on a later reading.
+	now := clockFrom(ctx)()
 	recs, err := store.History(ctx, runID)
 	if err != nil {
 		return ApprovalTally{}, false, false, fmt.Errorf("load history %s: %w (%w)", runID, err, ErrStorage)
@@ -112,7 +115,14 @@ func tallyGateOnce(ctx context.Context, store *Journal, runID string, s Approval
 	}
 	tally := c.tally
 	if !tally.Passed() && !tally.Unreachable() {
-		return tally, false, false, nil
+		// A gate whose recorded deadline the clock has reached records its expiry as its outcome,
+		// under the name its count would take, so an expiry and a passing tally cannot both be
+		// recorded: the first writer is the outcome.
+		_, expiresAt, ok := RecordedDeadline(recs, s.ToolUseID)
+		if !ok || !pastDeadline(now, expiresAt) {
+			return tally, false, false, nil
+		}
+		tally.Expired = true
 	}
 	tally.DecisionFormat = DecisionFormat
 	// The step the count is recorded under, by its constructor: the first count under the tally's own
@@ -165,6 +175,7 @@ func countGate(recs []Record, runID string, s ApprovalSubject, pol *ApprovalPoli
 		}
 	}
 	name, supersedes := ApprovalTallyStep(s.ToolUseID), ""
+	dl, expiresAt, hasDeadline := RecordedDeadline(recs, s.ToolUseID)
 	if rt, ok := RecordedTally(byName, s.ToolUseID); ok {
 		t, err := decodeTally(runID, rt)
 		if err != nil {
@@ -197,8 +208,26 @@ func countGate(recs []Record, runID string, s ApprovalSubject, pol *ApprovalPoli
 			recs = nil
 		}
 	}
+	// With a deadline, a decision recorded after it never counts (ReasonLate): it is left out of the
+	// count, and of the tally's Records, so the evidence recount agrees.
+	var late []DecisionCheck
+	if hasDeadline {
+		kept := make([]Record, 0, len(recs))
+		for _, r := range recs {
+			if IsApprovalDecision(r, s.ToolUseID) && lateFor(r.RecordedAt(), expiresAt) {
+				late = append(late, DecisionCheck{Step: r.Name, Approver: r.Approver(), Approved: r.Approved, Reason: ReasonLate})
+				continue
+			}
+			kept = append(kept, r)
+		}
+		recs = kept
+	}
 	tally, checks := TallyApprovals(recs, s, *pol, verifierFor)
+	checks = append(checks, late...)
 	tally.Supersedes = supersedes
+	if hasDeadline {
+		tally.ExpiresAt = dl.ExpiresAt
+	}
 	if !tally.Passed() && !tally.Unreachable() {
 		switch name {
 		case ApprovalRetallyStep(s.ToolUseID):

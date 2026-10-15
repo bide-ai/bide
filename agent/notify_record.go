@@ -234,6 +234,12 @@ func ApprovalReaskKey(runID, call string, sod bool) string {
 // AbortedKey is the event key of runID reaching run:aborted.
 func AbortedKey(runID string) string { return "aborted:" + encodeID(runID) }
 
+// ExpiredKey is the event key of the expiry of the approval gate for call on runID
+// (NotificationApprovalExpired).
+func ExpiredKey(runID, call string) string {
+	return "expired:" + encodeID(runID) + ":" + encodeID(call)
+}
+
 // RecoveryKey is the event key of runID's episode-th recovery failure (episode counts the
 // recovered records before it, from zero).
 func RecoveryKey(runID string, episode int) string {

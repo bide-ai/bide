@@ -228,6 +228,14 @@ func (w *Webhook) payload(n agent.Notification) Payload {
 		} else {
 			p.Summary = fmt.Sprintf("Run %s is waiting for approval.", run)
 		}
+	case agent.NotificationApprovalExpired:
+		if a := n.Approval; a != nil {
+			p.Step = &Step{OpKind: string(agent.OpTool), OpID: a.ToolUseID, Tool: a.ToolName}
+			p.Approval = &Approval{ToolUseID: a.ToolUseID, Tool: a.ToolName, Approvers: []string{}}
+			p.Summary = fmt.Sprintf("The approval gate of call %s in run %s expired: its deadline passed with no approval, and the call will not run.", a.ToolUseID, run)
+		} else {
+			p.Summary = fmt.Sprintf("An approval gate in run %s expired.", run)
+		}
 	case agent.NotificationOutcomeUnknown:
 		if h := n.Halt; h != nil {
 			p.Step = &Step{OpKind: string(h.Op.Kind), OpID: h.Op.ID, Tool: h.Op.ToolName}

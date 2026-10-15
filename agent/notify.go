@@ -31,6 +31,11 @@ const (
 	// run ended, recovery recovered). Notification.Clears says which event, so a receiver can close
 	// its incident; it is the all clear.
 	NotificationResolved NotificationKind = "resolved"
+	// NotificationApprovalExpired: an approval gate a receiver was, or may have been, told of
+	// (approval_pending) expired: its deadline (ApprovalPolicy.Timeout) passed with no approval, so
+	// the call will not run. It is raised when the pending approval's all-clear finds the expiry
+	// (its reason is "expired"), and it is a fact: it never stops being current.
+	NotificationApprovalExpired NotificationKind = "approval_expired"
 	// NotificationEscalated: an outcome_unknown, approval_pending or recovery_failing event was not
 	// acknowledged (an approval: not decided) by its deadline, and the next receiver of its
 	// escalation chain is told. Notification.Escalates says which event and which step of the chain.
@@ -123,7 +128,7 @@ type Notification struct {
 	Receiver string
 	// Reason is a code from a closed set, never error text: for NotificationRecoveryFailing the cause
 	// class ("resume_error", "store_error", "not_resumable"), for NotificationOverdue "deadline", for
-	// NotificationResolved why the event ended ("resolved", "decided", "ended", "recovered").
+	// NotificationResolved why the event ended ("resolved", "decided", "expired", "ended", "recovered").
 	Reason string
 	// Err is the typed error that raised the event, for an in-process Notifier.
 	Err error

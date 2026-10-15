@@ -190,6 +190,7 @@ func clip(s string, n int) string {
 
 var kindTitles = map[string]string{
 	"approval_pending":     "Approval pending",
+	"approval_expired":     "Approval expired",
 	"outcome_unknown":      "Run halted: outcome unknown",
 	"run_aborted":          "Run aborted",
 	"recovery_failing":     "Recovery failing",

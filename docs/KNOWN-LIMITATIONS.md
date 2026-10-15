@@ -251,8 +251,10 @@ is the run's end.
 ## Approval and quorum
 
 **Approvers are a fixed, named set.** An m-of-n approval gate names its approvers up front. There are
-no weighted votes, role rules (such as "at least one from risk"), delegated approval, or deadline for
-a gate that never reaches k. bide checks signatures against the keys you provide; linking a key to a
+no weighted votes, role rules (such as "at least one from risk"), or delegated approval. A gate
+that never reaches k waits until its deadline (`ApprovalPolicy.Timeout`), and with none until the
+run is cancelled; a deadline is checked against the clocks of the processes involved, so clock skew
+moves its edge. bide checks signatures against the keys you provide; linking a key to a
 person is your identity provider's job. It refuses two approvers whose verifiers resolve to one key,
 but it cannot see that one person holds two different keys. Keep old public keys after a rotation so old evidence still
 verifies. See [Human approval](guides/hitl-approval.md#scope).

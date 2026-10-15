@@ -54,7 +54,7 @@ func (r NotifyRouting) Receivers(kind NotificationKind, approvers []string) []st
 	if to, ok := r.Routes[kind]; ok {
 		kindRecv = receiverLabel(receiverID(to))
 	}
-	if kind == NotificationApprovalPending && len(r.ApproverRoutes) > 0 {
+	if (kind == NotificationApprovalPending || kind == NotificationApprovalExpired) && len(r.ApproverRoutes) > 0 {
 		var recvs []string
 		unrouted := false
 		for _, a := range approvers {

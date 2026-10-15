@@ -83,6 +83,8 @@ CONSTANTS
   \* @type: Int;
   MaxRedeploy,
   \* @type: Bool;
+  HasDeadline,
+  \* @type: Bool;
   KeyCheck,
   \* @type: Str;
   Requester,
@@ -146,11 +148,11 @@ VARIABLES
   evicted,
   \* @type: Str -> Str;
   one,
-  \* @type: Str -> Seq({ a: Str, h: Str, ok: Bool, k: Str, subj: Str });
+  \* @type: Str -> Seq({ a: Str, h: Str, ok: Bool, k: Str, subj: Str, late: Bool });
   dlog,
-  \* @type: Str -> { rec: Bool, passed: Bool, pol: Str, signers: Set(Str), excl: Int, denials: Int, seated: Set(Str) };
+  \* @type: Str -> { rec: Bool, passed: Bool, pol: Str, signers: Set(Str), excl: Int, denials: Int, seated: Set(Str), exp: Bool, late: Bool };
   tally,
-  \* @type: Str -> { rec: Bool, passed: Bool, pol: Str, signers: Set(Str), excl: Int, denials: Int, seated: Set(Str) };
+  \* @type: Str -> { rec: Bool, passed: Bool, pol: Str, signers: Set(Str), excl: Int, denials: Int, seated: Set(Str), exp: Bool, late: Bool };
   stally,
   \* @type: Str -> (Str -> Str);
   policy,
@@ -172,6 +174,10 @@ VARIABLES
   keys,
   \* @type: Int;
   resChanges,
+  \* @type: Str -> Bool;
+  expired,
+  \* @type: Bool;
+  badExp,
   \* @type: Str -> Str;
   pc,
   \* @type: Str -> Int;
@@ -188,11 +194,11 @@ VARIABLES
   reused,
   \* @type: Str -> Str;
   snapOne,
-  \* @type: Str -> { rec: Bool, passed: Bool, pol: Str, signers: Set(Str), excl: Int, denials: Int, seated: Set(Str) };
+  \* @type: Str -> { rec: Bool, passed: Bool, pol: Str, signers: Set(Str), excl: Int, denials: Int, seated: Set(Str), exp: Bool, late: Bool };
   snapTally,
   \* @type: Str -> Str;
   gp,
-  \* @type: Str -> { rec: Bool, passed: Bool, pol: Str, signers: Set(Str), excl: Int, denials: Int, seated: Set(Str) };
+  \* @type: Str -> { rec: Bool, passed: Bool, pol: Str, signers: Set(Str), excl: Int, denials: Int, seated: Set(Str), exp: Bool, late: Bool };
   qt,
   \* @type: Str -> Bool;
   loadDenied,
