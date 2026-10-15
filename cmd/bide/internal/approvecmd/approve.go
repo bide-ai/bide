@@ -507,6 +507,9 @@ func (g *gateOf) preflight(run, as string, reject bool, verifierFor agent.Approv
 	case string(agent.RunCompleted), string(agent.RunAborted), string(agent.RunCancelled):
 		return refuse("run %s has ended (%s); it does not wait on call %s", safe(run), g.view.StateText, safe(gt.ToolUseID))
 	}
+	if dl, at, ok := agent.RecordedDeadline(g.recs, gt.ToolUseID); ok && !now().Before(at) {
+		return refuse("the gate on call %s expired at %s (its deadline): it takes no more decisions, and the call will not run", safe(gt.ToolUseID), safe(dl.ExpiresAt))
+	}
 	if gt.Tallied {
 		out := "passed"
 		if len(gt.ApprovedBy) < gt.Need {
