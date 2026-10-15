@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"crypto/sha256"
 	"crypto/x509"
+	"crypto/x509/pkix"
 	"encoding/asn1"
 	"fmt"
 	"math/big"
@@ -26,14 +27,15 @@ import (
 // strong is that evidence (a tier).
 
 const (
-	maxCRLBytes = 64 << 20 // a larger CRL is refused before parsing
+	defaultMaxCRLBytes   = 16 << 20 // a larger CRL is refused before parsing (WithLimits changes it)
+	defaultMaxCRLEntries = 1_000_000
+	defaultMaxCRLs       = 1024 // CRLs a snapshot keeps; the oldest by thisUpdate are evicted beyond it
+
+	defaultCoverageTolerance = time.Minute
 
 	defaultW    = 24 * time.Hour   // compromise-reporting window
 	defaultMinW = 30 * time.Minute // floor on the window for a final verdict
 )
-
-// maxCRLEntries bounds the revocations one CRL may list. A variable only so a test can lower it.
-var maxCRLEntries = 4_000_000
 
 // finalityNeedsLC chooses how a certificate that is still unexpired at the latest usable status is
 // judged. false (the user's decision of 2026-10-15): no CA can have pruned an entry of an unexpired
@@ -106,15 +108,50 @@ type sigKey struct{ crl, issuer [32]byte }
 // StatusSnapshot is a set of CRLs: what a gate fetched, or an auditor's archived series. It is safe
 // for concurrent use.
 type StatusSnapshot struct {
-	mu    sync.Mutex
-	views []*crlView
-	by    map[[32]byte]*crlView
-	sigs  map[sigKey]bool // memo: does this CRL verify under this issuer certificate
+	mu         sync.Mutex
+	views      []*crlView
+	by         map[[32]byte]*crlView
+	sigs       map[sigKey]bool // memo: does this CRL verify under this issuer certificate
+	issuers    []*x509.Certificate
+	maxBytes   int
+	maxEntries int
+	maxCRLs    int
 }
 
+// SnapshotOption configures NewStatusSnapshot.
+type SnapshotOption func(*StatusSnapshot)
+
+// WithIssuers names the CA certificates whose CRLs the snapshot is for. A CRL is then authenticated
+// before its entries are built: its signature must verify under one of them or AddCRL refuses it.
+// Without issuers the snapshot accepts any well-formed CRL and authenticates only when a chain is
+// evaluated, which costs memory for CRLs that are later discarded; a refresher that knows its issuer
+// should always set it.
+func WithIssuers(certs ...*x509.Certificate) SnapshotOption {
+	return func(s *StatusSnapshot) { s.issuers = append(s.issuers, certs...) }
+}
+
+// WithLimits sets the largest CRL accepted in bytes and in entries (defaults 16 MiB and 1,000,000).
+func WithLimits(maxBytes, maxEntries int) SnapshotOption {
+	return func(s *StatusSnapshot) { s.maxBytes, s.maxEntries = maxBytes, maxEntries }
+}
+
+// WithMaxCRLs bounds how many CRLs the snapshot keeps (default 1024). Beyond it the CRL with the
+// earliest thisUpdate is evicted, so a long-running refresher does not grow without limit. A policy
+// that needs a longer series for a decision (the journal's evidence) keeps it in the archive, not
+// here.
+func WithMaxCRLs(n int) SnapshotOption { return func(s *StatusSnapshot) { s.maxCRLs = n } }
+
 // NewStatusSnapshot returns an empty snapshot.
-func NewStatusSnapshot() *StatusSnapshot {
-	return &StatusSnapshot{by: map[[32]byte]*crlView{}, sigs: map[sigKey]bool{}}
+func NewStatusSnapshot(opts ...SnapshotOption) *StatusSnapshot {
+	s := &StatusSnapshot{by: map[[32]byte]*crlView{}, sigs: map[sigKey]bool{},
+		maxBytes: defaultMaxCRLBytes, maxEntries: defaultMaxCRLEntries, maxCRLs: defaultMaxCRLs}
+	for _, o := range opts {
+		o(s)
+	}
+	if s.maxCRLs < 1 {
+		s.maxCRLs = 1
+	}
+	return s
 }
 
 // Len is the number of distinct CRLs held.
@@ -135,8 +172,8 @@ func (s *StatusSnapshot) Len() int {
 // them is a separate step). The signature is not checked here: that needs the issuing certificate,
 // which belongs to a chain (see CertIdentity.EvaluateStatus).
 func (s *StatusSnapshot) AddCRL(der []byte) (CRLInfo, error) {
-	if len(der) == 0 || len(der) > maxCRLBytes {
-		return CRLInfo{}, statusErr(agent.ReasonStatusUnknown, "the CRL is %d bytes, outside 1 to %d", len(der), maxCRLBytes)
+	if len(der) == 0 || len(der) > s.maxBytes {
+		return CRLInfo{}, statusErr(agent.ReasonStatusUnknown, "the CRL is %d bytes, outside 1 to %d", len(der), s.maxBytes)
 	}
 	hash := sha256.Sum256(der)
 	s.mu.Lock()
@@ -146,9 +183,16 @@ func (s *StatusSnapshot) AddCRL(der []byte) (CRLInfo, error) {
 	}
 	s.mu.Unlock()
 
-	v, err := parseCRL(der, hash)
+	authenticated, err := s.authenticate(der)
 	if err != nil {
 		return CRLInfo{}, err
+	}
+	v, err := parseCRL(der, hash, s.maxEntries)
+	if err != nil {
+		return CRLInfo{}, err
+	}
+	if len(s.issuers) > 0 && !authenticated && !slices.ContainsFunc(s.issuers, func(c *x509.Certificate) bool { return v.rl.CheckSignatureFrom(c) == nil }) {
+		return CRLInfo{}, statusErr(agent.ReasonStatusUnknown, "the CRL signature does not verify under any configured issuer")
 	}
 	s.mu.Lock()
 	defer s.mu.Unlock()
@@ -157,7 +201,65 @@ func (s *StatusSnapshot) AddCRL(der []byte) (CRLInfo, error) {
 	}
 	s.by[hash] = v
 	s.views = append(s.views, v)
+	for len(s.views) > s.maxCRLs {
+		oldest := 0
+		for i, x := range s.views {
+			if x.this.Before(s.views[oldest].this) {
+				oldest = i
+			}
+		}
+		gone := s.views[oldest]
+		s.views = slices.Delete(s.views, oldest, oldest+1)
+		delete(s.by, gone.hash)
+		for k := range s.sigs {
+			if k.crl == gone.hash {
+				delete(s.sigs, k)
+			}
+		}
+	}
 	return v.info(), nil
+}
+
+// outerCRL is the CertificateList envelope: enough to check the signature without reading entries.
+type outerCRL struct {
+	TBS asn1.RawValue
+	Alg pkix.AlgorithmIdentifier
+	Sig asn1.BitString
+}
+
+// crlSigAlgs maps the algorithm identifiers whose OID alone fixes the algorithm. RSA-PSS carries
+// parameters and is authenticated after the full parse instead.
+var crlSigAlgs = map[string]x509.SignatureAlgorithm{
+	"1.2.840.10045.4.3.2":     x509.ECDSAWithSHA256,
+	"1.2.840.10045.4.3.3":     x509.ECDSAWithSHA384,
+	"1.2.840.113549.1.1.11":   x509.SHA256WithRSA,
+	"1.2.840.113549.1.1.12":   x509.SHA384WithRSA,
+	"1.2.840.113549.1.1.13":   x509.SHA512WithRSA,
+	"1.3.101.112":             x509.PureEd25519,
+	"2.16.840.1.101.3.4.3.18": x509.MLDSA65,
+}
+
+// authenticate checks the CRL signature against the configured issuers before the entries are built.
+// It reports true when it did verify. With no issuers, or an algorithm it cannot identify from the
+// OID alone, it returns false and the caller authenticates after parsing.
+func (s *StatusSnapshot) authenticate(der []byte) (bool, error) {
+	if len(s.issuers) == 0 {
+		return false, nil
+	}
+	var o outerCRL
+	if rest, err := asn1.Unmarshal(der, &o); err != nil || len(rest) != 0 {
+		return false, statusErr(agent.ReasonStatusUnknown, "the CRL envelope does not parse")
+	}
+	algo, ok := crlSigAlgs[o.Alg.Algorithm.String()]
+	if !ok {
+		return false, nil
+	}
+	if !slices.ContainsFunc(s.issuers, func(c *x509.Certificate) bool {
+		return c.CheckSignature(algo, o.TBS.FullBytes, o.Sig.RightAlign()) == nil
+	}) {
+		return false, statusErr(agent.ReasonStatusUnknown, "the CRL signature does not verify under any configured issuer")
+	}
+	return true, nil
 }
 
 func (v *crlView) info() CRLInfo {
@@ -168,7 +270,7 @@ func (v *crlView) info() CRLInfo {
 	return CRLInfo{Hash: v.hash, Number: new(big.Int).Set(v.number), ThisUpdate: v.this, NextUpdate: v.next, Entries: n}
 }
 
-func parseCRL(der []byte, hash [32]byte) (*crlView, error) {
+func parseCRL(der []byte, hash [32]byte, maxEntries int) (*crlView, error) {
 	unreadable := func(format string, args ...any) (*crlView, error) {
 		return nil, statusErr(agent.ReasonStatusUnknown, format, args...)
 	}
@@ -189,7 +291,12 @@ func parseCRL(der []byte, hash [32]byte) (*crlView, error) {
 		return unreadable("the CRL has no usable thisUpdate and nextUpdate (nextUpdate absent means status unknown)")
 	}
 	v := &crlView{hash: hash, rl: rl, number: rl.Number, this: rl.ThisUpdate, next: rl.NextUpdate, entries: map[string][]crlEntry{}}
+	seen := map[string]bool{}
 	for _, e := range rl.Extensions {
+		if seen[e.Id.String()] {
+			return unreadable("the CRL carries the extension %s twice", e.Id)
+		}
+		seen[e.Id.String()] = true
 		switch {
 		case e.Id.Equal(oidIssuingDistPoint):
 			return unreadable("the CRL carries an issuing distribution point (a partitioned CRL cannot be matched correctly)")
@@ -206,8 +313,8 @@ func parseCRL(der []byte, hash [32]byte) (*crlView, error) {
 			return unreadable("the CRL has a critical extension %s that bide does not process", e.Id)
 		}
 	}
-	if len(rl.RevokedCertificateEntries) > maxCRLEntries {
-		return unreadable("the CRL has %d entries, over the limit of %d", len(rl.RevokedCertificateEntries), maxCRLEntries)
+	if len(rl.RevokedCertificateEntries) > maxEntries {
+		return unreadable("the CRL has %d entries, over the limit of %d", len(rl.RevokedCertificateEntries), maxEntries)
 	}
 	for i, re := range rl.RevokedCertificateEntries {
 		if re.SerialNumber == nil || re.RevocationTime.IsZero() {
@@ -220,7 +327,12 @@ func parseCRL(der []byte, hash [32]byte) (*crlView, error) {
 		case re.ReasonCode == 8:
 			return unreadable("entry %d is removeFromCRL in a full CRL", i)
 		}
+		entrySeen := map[string]bool{}
 		for _, x := range re.Extensions {
+			if entrySeen[x.Id.String()] {
+				return unreadable("entry %d carries the extension %s twice", i, x.Id)
+			}
+			entrySeen[x.Id.String()] = true
 			switch {
 			case x.Id.Equal(oidEntryCertIssuer):
 				return unreadable("entry %d carries certificateIssuer (an indirect CRL)", i)
@@ -290,8 +402,24 @@ type StatusParams struct {
 	// thisUpdate at or after the date is no information. It is the auditor's overlay.
 	Distrust map[SPKIHash]time.Time
 	// Retained says the bank's CA keeps the entries of expired certificates for as long as audits
-	// need them (recorded retention in the policy), as expiredCertsOnCRL does per CRL.
+	// need them (recorded retention in the policy), as expiredCertsOnCRL does per CRL. It is the
+	// bank's recorded statement, not something the CRLs show.
 	Retained bool
+	// Interval is the CA's declared issuance interval: consecutive CRLs of the series are issued no
+	// further apart than this. Time coverage, and so the first CRL beyond notAfter (L(C)), is shown by
+	// it, not by nextUpdate: a CA may issue earlier than nextUpdate (hourly issue, 24 hour validity),
+	// so a producer who omits a CRL cannot be caught by nextUpdate alone. Zero declares nothing: with
+	// no Interval and no ConsecutiveNumbers no verdict is final.
+	Interval time.Duration
+	// IntervalFor overrides Interval for the issuing CA with the given key.
+	IntervalFor map[SPKIHash]time.Duration
+	// ConsecutiveNumbers is for a CA whose CRL numbers increase by exactly one with every CRL it
+	// issues (bases and deltas alike): consecutive numbers then show that no CRL lies between two.
+	// Off by default; a CA that skips numbers, shares a counter oddly or resets after a restore would
+	// otherwise never reach final.
+	ConsecutiveNumbers bool
+	// CoverageTolerance absorbs publication jitter in time coverage (default one minute).
+	CoverageTolerance time.Duration
 }
 
 // CertStatus is the status finding for one certificate of a chain.
@@ -366,6 +494,9 @@ func (c *CertIdentity) EvaluateStatus(ac *ApproverCert, a time.Time, s *StatusSn
 	}
 	if p.MinW <= 0 {
 		p.MinW = defaultMinW
+	}
+	if p.CoverageTolerance <= 0 {
+		p.CoverageTolerance = defaultCoverageTolerance
 	}
 	out := ChainStatus{Tier: TierFinal}
 	for i := 0; i+1 < len(ac.Chain); i++ {
@@ -487,39 +618,53 @@ func evalCert(cert, issuer *x509.Certificate, a time.Time, all []*crlView, p Sta
 		views = append(views, v)
 	}
 
-	// Retention and L(C).
-	for _, v := range views {
-		if !v.expiredFrom.IsZero() && !cert.NotAfter.Before(v.expiredFrom) {
-			st.Unbounded = true
-		}
+	// How consecutive CRLs of the series are shown to have nothing between them: issued within the
+	// predecessor's nextUpdate, and within the declared issuance interval of it (or with the next
+	// CRL number). nextUpdate alone is not enough: a CA may issue earlier than it.
+	interval := p.Interval
+	if iv, ok := p.IntervalFor[SPKIHashOf(issuer)]; ok {
+		interval = iv
 	}
-	st.Unbounded = st.Unbounded || p.Retained
-	lcIdx := -1
-	if !st.Unbounded {
-		i := slices.IndexFunc(views, func(v *crlView) bool { return v.this.After(cert.NotAfter) })
-		// The first CRL beyond notAfter is L(C) only if the CRL before it promised it in time: the
-		// predecessor's nextUpdate reaches it. Otherwise a CRL may be missing between them, and this
-		// one may be a later CRL from which the entry was already pruned.
-		if i > 0 && !views[i-1].next.Before(views[i].this) {
-			lcIdx = i
-			st.LC, st.LCKnown = views[i].this, true
+	contig := func(prev, v *crlView) bool {
+		if v.this.After(prev.next.Add(p.CoverageTolerance)) {
+			return false
 		}
+		if p.ConsecutiveNumbers && v.number.Cmp(new(big.Int).Add(prev.number, big.NewInt(1))) == 0 {
+			return true
+		}
+		return interval > 0 && v.this.Sub(prev.this) <= interval+p.CoverageTolerance
+	}
+	retains := func(v *crlView) bool {
+		return p.Retained || (!v.expiredFrom.IsZero() && !cert.NotAfter.Before(v.expiredFrom))
 	}
 
-	// Usable as evidence of absence: issued at or after A, and no later than L(C).
+	// L(C): the first CRL beyond notAfter, established only if the series shows nothing was issued
+	// between it and its predecessor. Otherwise it may be a later CRL from which the entry was already
+	// pruned (RFC 5280 section 3.3 lets a CA drop it once it has appeared on one regularly scheduled
+	// CRL beyond notAfter).
+	lcIdx := -1
+	if i := slices.IndexFunc(views, func(v *crlView) bool { return v.this.After(cert.NotAfter) }); i > 0 && contig(views[i-1], views[i]) {
+		lcIdx = i
+		st.LC, st.LCKnown = views[i].this, true
+	}
+
+	// Usable as evidence of absence: issued at or after A (live counting also takes a fresh CRL
+	// issued before A; its verdict cannot be final, because a revocation effective before A may be
+	// reported after it), and, beyond notAfter, only if that CRL itself keeps expired entries or is L(C).
+	live := !p.Now.IsZero()
 	var usable []*crlView
 	for _, v := range views {
-		if v.this.Before(a) {
+		if v.this.Before(a) && !live {
 			continue
 		}
-		if !st.Unbounded && v.this.After(cert.NotAfter) && !(lcIdx >= 0 && v.this.Equal(st.LC)) {
+		if v.this.After(cert.NotAfter) && !retains(v) && !(lcIdx >= 0 && v == views[lcIdx]) {
 			continue
 		}
 		usable = append(usable, v)
 	}
 	fresh := usable[:0:0]
 	for _, v := range usable {
-		if !p.Now.IsZero() && (p.MaxStatusAge <= 0 || !p.Now.Before(v.next) || p.Now.Sub(v.this) > p.MaxStatusAge) {
+		if live && (p.MaxStatusAge <= 0 || !p.Now.Before(v.next) || p.Now.Sub(v.this) > p.MaxStatusAge || v.this.After(p.Now.Add(p.CoverageTolerance))) {
 			continue
 		}
 		fresh = append(fresh, v)
@@ -528,17 +673,34 @@ func evalCert(cert, issuer *x509.Certificate, a time.Time, all []*crlView, p Sta
 		st.Stale = len(usable) > 0
 		switch {
 		case len(usable) > 0:
-			st.Note = "the CRLs after the decision are past nextUpdate or older than MaxStatusAge"
+			st.Note = "the CRLs after the decision are past nextUpdate, older than MaxStatusAge or dated in the future"
 		default:
 			st.Note = "no CRL issued after the decision verifies under the certificate's issuer"
 		}
 		return st
 	}
 	usable = fresh
+	// S is the latest usable CRL that time coverage reaches from A. A later CRL beyond a gap is no
+	// evidence of continuity, but it does not undo the status as of S: its listings already count.
+	// When no usable CRL is reached, S is the latest one and the verdict says why it is not final.
+	reached := -1
+	for i := len(usable) - 1; i >= 0; i-- {
+		if coveredFrom(views, a, usable[i].this, contig) {
+			reached = i
+			break
+		}
+	}
+	covered := reached >= 0
+	if !covered {
+		reached = len(usable) - 1
+	}
+	usable = usable[:reached+1]
 	for _, v := range usable {
 		st.Used = append(st.Used, v.hash)
 	}
-	st.S = usable[len(usable)-1].this
+	sView := usable[len(usable)-1]
+	st.S = sView.this
+	st.Unbounded = retains(sView)
 
 	w := p.W
 	if st.LCKnown && !st.Unbounded {
@@ -547,15 +709,15 @@ func evalCert(cert, issuer *x509.Certificate, a time.Time, all []*crlView, p Sta
 	st.Window = w
 
 	st.Tier = TierProvisional
-	if !st.Unbounded {
-		st.Caveat = statusCaveat
-	}
+	st.Caveat = statusCaveat
 	switch {
 	case st.S.Before(a.Add(w)):
 		st.Note = "status ends before A + W'; a later CRL could still change the answer"
 	case w < p.MinW:
 		st.Note = "short window: the certificate's life leaves less than MinW after the decision"
-	case !coveredFrom(views, a, st.S):
+	case !covered && interval <= 0 && !p.ConsecutiveNumbers:
+		st.Note = "no CA issuance interval is declared, so time coverage cannot be shown"
+	case !covered:
 		st.Note = "the CRLs from the one in force at A to S leave a gap in time coverage"
 	case !st.Unbounded && lcIdx < 0 && finalityNeedsLC:
 		st.Note = "no CRL beyond notAfter is established yet, so L(C) is unknown"
@@ -565,11 +727,12 @@ func evalCert(cert, issuer *x509.Certificate, a time.Time, all []*crlView, p Sta
 	return st
 }
 
-// coveredFrom reports whether the CRLs form a chain of time coverage from the one in force at a to
-// the one issued at to: the latest CRL issued at or before a must reach a (nextUpdate), and each
-// later CRL up to the one at to was issued no later than its predecessor's nextUpdate. A gap means a
-// revocation, or a certificateHold listed and released, could have gone unseen.
-func coveredFrom(views []*crlView, a, to time.Time) bool {
+// coveredFrom reports whether the CRLs form a chain of coverage from the one in force at a to the
+// one issued at to: the latest CRL issued at or before a must reach a (nextUpdate), and each later
+// CRL up to the one at to must follow its predecessor by contig (nextUpdate and the declared
+// issuance interval). A gap means a revocation, or a certificateHold listed and released, could have
+// gone unseen.
+func coveredFrom(views []*crlView, a, to time.Time, contig func(prev, v *crlView) bool) bool {
 	start := -1
 	for i, v := range views {
 		if !v.this.After(a) {
@@ -584,7 +747,7 @@ func coveredFrom(views []*crlView, a, to time.Time) bool {
 		if prev.this.Equal(to) || prev.this.After(to) {
 			break
 		}
-		if v.this.After(prev.next) {
+		if !contig(prev, v) {
 			return false
 		}
 		prev = v

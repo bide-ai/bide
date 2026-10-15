@@ -7,10 +7,3 @@ func SetFinalityNeedsLC(v bool) func() {
 	finalityNeedsLC = v
 	return func() { finalityNeedsLC = old }
 }
-
-// SetMaxCRLEntries lowers the entry cap for a test and returns the function that restores it.
-func SetMaxCRLEntries(n int) func() {
-	old := maxCRLEntries
-	maxCRLEntries = n
-	return func() { maxCRLEntries = old }
-}

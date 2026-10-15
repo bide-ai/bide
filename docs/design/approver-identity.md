@@ -336,29 +336,41 @@ short-lived certificates this design recommends. So, for a certificate `C` and a
   stated rather than hidden.
 - Verdicts: **final** iff all of: there is usable status `S >= A(d) + W'`; `W' >= MinW` (a floor, default
   30 min: a decision made a minute before `notAfter` has a window of about one CRL period and is
-  `provisional (short window)`, whatever the tier would otherwise be); and **the series has time
-  coverage from `A(d)` to `S`**: the latest CRL issued at or before `A(d)` has a `nextUpdate` that reaches
-  `A(d)`, and each later CRL up to the one at `S` was issued no later than its predecessor's `nextUpdate`
-  (for a base with deltas, the same holds for the merged view). The CRL at `S` is then present and
-  verified; when `L(C)` is established, `S` is that CRL (it is always usable, and the latest). The user
-  decided this on 2026-10-15, replacing the earlier "complete from `S` to `L(C)`", which is vacuous once
-  the CRL at `L(C)` is present and which would make every chain through an unexpired CA certificate
-  provisional for years. `L(C)` exists to know when a CA may have **pruned** an entry (RFC 5280 section 3.3,
-  only after `notAfter`), so it is required only when `S` falls after `notAfter(C)`: such a `S` must be the
-  CRL at `L(C)`, which is `L(C)` only if the CRL before it promised it in time (its `nextUpdate` reaches
-  it). `CRLNumber` need only increase (RFC 5280 section 5.2.3 requires nothing more, and a CA may skip
-  numbers or share one counter between bases and deltas), so a gap in the numbers is not by itself a gap
-  in coverage; a CRL dated later than another with a higher number is not a legitimate successor, and its
-  silence is not evidence of absence. Time coverage is what stops a producer omitting a usable CRL in
-  `[A(d), S]` that lists the certificate, or a `certificateHold` listed and released inside a gap, and
-  presenting an earlier clean one as `S`. **provisional** iff the best usable status has `S < A(d) + W'`,
-  or `W' < MinW`, or coverage has a gap, and a later usable one could still exist; **no information** iff no
-  status falls in `[A(d), L(C)]`, which is `not verified: status missing`. A CRL after `notAfter` that
-  cannot be shown to be the first one beyond it is not evidence of absence (test plan 12: CRL 2 alone is
-  no information). The kit-hash record is tamper evidence (the bundle was not changed after it was
-  assembled), **not completeness evidence**. A pilot CA is checked for its number scheme and prune timing
-  before go-live (test plan item 32). Every verdict that rests on status states that "revocations first
-  reported after `S` are not covered", unless `expiredCertsOnCRL` or contractual retention applies.
+  `provisional (short window)`, whatever the tier would otherwise be); and **the series has coverage
+  from `A(d)` to `S`**: the latest CRL issued at or before `A(d)` reaches `A(d)` by its `nextUpdate`, and each
+  later CRL up to the one at `S` follows its predecessor within the predecessor's `nextUpdate` **and within
+  the CA's declared issuance interval** (policy value `Interval`, per issuing CA if it differs; or, for a CA
+  that numbers every CRL consecutively, each CRL number is the previous plus one, a flag off by default;
+  a small tolerance absorbs publication jitter). `nextUpdate` alone does not show that nothing lies
+  between two CRLs, because a CA may issue before it (hourly issue, 24 hour validity): a producer
+  who omits one CRL would otherwise get a later, pruned CRL accepted. With no declared interval and no
+  consecutive-number mode nothing is final. The user decided this on 2026-10-15, replacing the earlier
+  "complete from `S` to `L(C)`", which is vacuous once the CRL at `L(C)` is present and which would
+  make every chain through an unexpired CA certificate provisional for years. `L(C)` exists to know
+  when a CA may have **pruned** an entry (RFC 5280 section 3.3, only after `notAfter`), so it is required
+  only when `S` falls after `notAfter(C)`. A CRL beyond `notAfter` is evidence of absence only if it is
+  `L(C)`, the first one beyond `notAfter` and shown by the same interval rule to follow its predecessor,
+  or if **it itself** carries `expiredCertsOnCRL` with a date reaching `notAfter` (judged per CRL, never
+  for the series from one CRL; contractual retention recorded in the policy is the bank's statement and
+  is reported as such). `CRLNumber` need only increase (RFC 5280 section 5.2.3 requires nothing more, and
+  a CA may skip numbers or share one counter between bases and deltas), so a gap in the numbers is
+  not by itself a gap in coverage; a CRL dated later than another with a higher number is not a legitimate
+  successor, and its silence is not evidence of absence. `S` is the latest usable CRL that coverage
+  reaches from `A(d)`: a later CRL beyond a gap is no evidence of continuity but does not undo the status
+  as of `S`, and its listings still count. **Holds.** Any listing, a `certificateHold` included, revokes from
+  its time on, and a release never restores validity, so a decision made during a hold stays refused.
+  A hold placed and released between two CRLs is invisible to any CRL; a hold released before `S` is
+  seen only through the series, which is why coverage from `A(d)` to `S` is required for `final`.
+  Banks should not use `certificateHold` on approver certificates (revoke and re-issue instead).
+  **provisional** iff the best usable status has `S < A(d) + W'`, or `W' < MinW`, or coverage has a gap,
+  and a later usable one could still exist; **no information** iff no status falls in `[A(d), L(C)]`, which
+  is `not verified: status missing`. **Live counting** may use a fresh CRL issued before `A(d)` (so
+  a decision is not held for a CRL period); such status is `provisional` and never `final`, and a CRL
+  dated more than a tolerance in the future is not fresh. The kit-hash record is tamper evidence (the bundle was
+  not changed after it was assembled), **not completeness evidence**. A pilot CA is checked for its number
+  scheme and prune timing before go-live (test plan item 32). Every verdict that rests on status
+  states that "revocations first reported after `S` are not covered", whether or not expired entries
+  are retained.
 - **Evidence is journaled when the decision is counted.** The gate records, in the `approval-identity`
   record (insert-once, under the Merkle trail), the exact status bytes it relied on, so what the gate knew
   survives the loss of an archive (long-term validation, as PAdES-LTV does). That snapshot may predate `A`
