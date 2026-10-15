@@ -691,6 +691,19 @@ func TestCorpusReport(t *testing.T) {
 		fmt.Fprintf(&b, "  %6d  %s\n", r.v, r.k)
 	}
 	t.Log(b.String())
+	// The bar (docs/design/visual-editor.md, decision 3): at least 95 percent of operations touch
+	// only the intended lines, with a refusal counted as a miss. The JSON configs with tab
+	// indentation are outside it: the editor reads JSON by another path, and the YAML engine
+	// refuses tabs.
+	for _, g := range order {
+		ta := groups[g]
+		if g == "plan test configs (JSON)" {
+			continue
+		}
+		if p := pct(ta.inSpan, ta.ops); p < 95 {
+			t.Errorf("%s: %.1f%% of operations within the intended lines, want at least 95%%", g, p)
+		}
+	}
 	if all.wrong != 0 {
 		t.Errorf("%d operations produced text the oracle disagrees with", all.wrong)
 	}
