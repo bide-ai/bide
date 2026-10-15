@@ -86,3 +86,17 @@ func TestRunPageShowsDeadline(t *testing.T) {
 		}
 	}
 }
+
+// A gate due in exactly the window is flagged due soon; one a second beyond it is not.
+func TestDueSoonWindowEdge(t *testing.T) {
+	for _, c := range []struct {
+		timeout time.Duration
+		soon    bool
+	}{{dueSoonWindow, true}, {dueSoonWindow + time.Second, false}} {
+		src := Exports{"r": append([]agent.Record{started()}, gateRecs(c.timeout)...)}
+		l := attentionOf(t, Handler(Options{Source: src, Now: func() time.Time { return dlT0 }}))
+		if got := itemsOf(l, AttentionApproval)[0].Gate.DueSoon; got != c.soon {
+			t.Errorf("due in %s: due_soon = %v, want %v", c.timeout, got, c.soon)
+		}
+	}
+}

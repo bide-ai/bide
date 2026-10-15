@@ -337,7 +337,7 @@ func (o Options) runItems(v *View, recs []agent.Record) []AttentionItem {
 	over := ended(v.State)
 	now := o.now()
 	gates := slices.Clone(v.Gates)
-	markDeadlines(gates, now)
+	MarkDeadlines(gates, now)
 	for _, g := range gates {
 		if !g.Waiting || over {
 			continue

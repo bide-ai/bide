@@ -876,9 +876,11 @@ func maxTime(a, b time.Time) time.Time {
 	return a
 }
 
-// markDeadlines says, for each gate with a recorded deadline, where it stands on now: due in so
-// long, overdue (the gate waits past it and no drive has recorded the expiry yet), or expired.
-func markDeadlines(gates []Gate, now time.Time) {
+// MarkDeadlines sets Due and Overdue on each gate with a recorded deadline, for where it stands on
+// now: due in so long, overdue (the gate waits past it and no drive has recorded the expiry yet), or
+// expired. Build leaves them empty, since it reads no clock; the pages and bide approve -list call
+// this with theirs.
+func MarkDeadlines(gates []Gate, now time.Time) {
 	for i := range gates {
 		g := &gates[i]
 		at := parseTime(g.ExpiresAt)
