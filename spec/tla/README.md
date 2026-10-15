@@ -2525,7 +2525,7 @@ the notifier.
 | `notify-clear` | ci | The all-clear: two processes deliver one event and its all-clear (key `r_e1`); the event may stop standing at any time; a crash. No all-clear for an event that stands, none for one nobody was told of, none before the event is closed, none overdue. | 496,868 | 9 s |
 | `notify-clear-lost` | ci | The all-clear with a lost sink reply and a claim that lapses mid-round. | 738,858 | 14 s |
 | `live-clear` | ci | Liveness of the all-clear (`ClearsDelivered`, `NoSilentDrop`, `StaleStops`): every step and time weakly fair; a failed request. | 456,617 | 3 min |
-| `live-clear-crash` | ci | Liveness of the all-clear with a crash. | 993,707 | 5 min |
+| `deep-live-clear-crash` | nightly | Liveness of the all-clear with a crash. | 993,707 | 5 min |
 | `deep-notice` | nightly | The overdue notice with a crash, a lost reply and a claim that lapses mid-round. | 2,365,395 | 27 s (8 workers) |
 | `deep-live-notice` | nightly | The overdue notice, under fairness, with a crash and a failed request. | 1,231,263 | 6 min |
 | `deep-faults` | nightly | Every fault at once: a crash, a lost reply, a trail append error, a failed request and a claim that lapses mid-round; two processes. | 7,565,060 | 21 min |
@@ -2537,6 +2537,13 @@ the notifier.
 | `deep-live-lost` | nightly | Liveness with a lost reply and a trail append that errors. | 77,709 | 1 min |
 | `deep-compose-leased` | nightly | Property 6: model 10's life-leased (a saga of two calls, a leased primary and a RecoverLoop worker; an error reply and a crash) with a notifier on the run's halt and its abort. | 935,832 | 13 min |
 | `deep-compose-approval` | nightly | Property 6: a model 10 run waiting for an approval, a RecoverLoop worker, the operator approving and resolving, a crash; a notifier on the approval. | 268,245 | 13 s (4 workers) |
+
+The `ci` configurations of model 14 are in two directories so that two CI shards run them:
+`notify/` (the fast ones) and `notify/ci-live/` (`live-notify`, `live-sink-down`, `live-notice-long`,
+`live-clear`, `compose-resolve`: minutes each), and its regressions and limits are a third shard.
+`live-clear-crash` (about 5 minutes) is nightly as `deep-live-clear-crash`; `live-clear` and
+`live-clear-crash` differ only in a crash, and `live-esc-clears` and `notify-clear` still check the
+all-clear with the event and with a crash in CI.
 
 Routing and escalation configurations (states and times from local `check.sh` runs on a shared
 development machine; the `ci` ones were sized to finish in minutes; `esc-unacked`, `esc-lost`, `esc-crash` and `esc-undecided` (1M to 7M states, 27 s to 3 min on a fast 10-core machine with several workers, too slow for one CI worker) are `nightly` as `deep-*`, and the safety properties of the chain (`EscOnlyIfDue`, `EscChain`, `EscNotWhenSatisfied`) are checked in CI only through the regressions that break each and the small liveness configs):
