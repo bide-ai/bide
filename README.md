@@ -205,7 +205,9 @@ record. The gate and the notice are recorded on the same audited trail as the re
   decision time is inside the signature). An auditor checks offline that k named approvers
   approved before the action. Approvers decide from a terminal with `bide approve`, either against the journal or, with `-to`, through an
   approval intake (`approvals.Handler`) your application serves, so the application records the
-  decision through its own audited journal. See the [approval guide](docs/guides/hitl-approval.md).
+  decision through its own audited journal. An approver can also open a link from a notification and
+  sign in a browser page with a non-extractable key (a page your organization hosts; it needs
+  `WithAuth`). See the [approval guide](docs/guides/hitl-approval.md).
 - **Separation of duties.** With `ExcludePrincipal`, a gate never counts a decision by the run's
   requester or by a requester of any run above it; the excluded decision stays on the record, marked.
   Bide compares ids; it cannot see that one person holds two identities.
@@ -215,9 +217,12 @@ record. The gate and the notice are recorded on the same audited trail as the re
   compliance certification: [key custody](docs/guides/key-custody.md) lists what each signer is
   tested against (SoftHSM2 and emulators, never a live cloud) and what it does not check.
 - **A notice with a record.** A run that halts or waits for approval
-  raises a notification (a signed HTTPS webhook, `notify.NewWebhook`), and an audited trail records
-  each attempt and whether the sink acknowledged it. An acknowledgement means your endpoint
-  answered 2xx, not that a person read it. See [notifications](docs/guides/notifications.md).
+  raises a notification (a signed HTTPS webhook, `notify.NewWebhook`), routed by kind or approver
+  and escalated when nobody acknowledges it by a deadline, and an audited trail records each
+  attempt and whether the sink acknowledged it. A `resolved` all-clear closes the event when it
+  stops being current. The trail can be signed and anchored with the same signers as the journal
+  (opt-in; publishing is best effort and never delays a delivery). An acknowledgement means your
+  endpoint answered 2xx, not that a person read it. See [notifications](docs/guides/notifications.md).
 
 The scope is in [known limitations](docs/KNOWN-LIMITATIONS.md#approval-and-quorum): approvers are a
 fixed, named set; linking a key to a person is your identity provider's job; a decision's time is
