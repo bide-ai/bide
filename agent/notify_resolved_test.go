@@ -2021,3 +2021,36 @@ func TestNotifyRound_ABackToBackCallIsNeverRefusedAsAbandoned(t *testing.T) {
 		t.Fatalf("the sink saw %d calls, want 40000", got)
 	}
 }
+
+type goexitSink struct{}
+
+func (goexitSink) Notify(context.Context, Notification) error {
+	runtime.Goexit() // as a sink calling t.FailNow does
+	return nil
+}
+
+// A Notifier that exits its goroutine without returning (runtime.Goexit, as t.FailNow does) fails
+// the call: the caller is told, and the call is not left counted as in flight, which would refuse
+// every later call for the key.
+func TestNotifyRound_AGoexitingNotifierFailsTheCallAndLeaksNothing(t *testing.T) {
+	ctx := context.Background()
+	e := testEngine(t, memJournal(), goexitSink{}, NewMemNotifyTrail(), resolvedClock(), "p1")
+	note := Notification{ID: "id", Key: "k", Kind: NotificationOutcomeUnknown, RunID: "r"}
+	for range 3 {
+		done := make(chan error, 1)
+		go func() { _, err := e.callNotify(ctx, goexitSink{}, note); done <- err }()
+		select {
+		case err := <-done:
+			if err == nil || !strings.Contains(err.Error(), "without returning") {
+				t.Fatalf("callNotify = %v, want an error saying the Notifier exited without returning", err)
+			}
+		case <-time.After(5 * time.Second):
+			t.Fatal("the caller was left waiting for a Notifier that exited")
+		}
+	}
+	e.mu.Lock()
+	defer e.mu.Unlock()
+	if e.stuck["k"] != 0 || e.stuckAll != 0 {
+		t.Fatalf("a Goexit left %d call(s) counted as in flight for the key (%d in all)", e.stuck["k"], e.stuckAll)
+	}
+}
