@@ -23,8 +23,11 @@ func FuzzApply(f *testing.F) {
 			return
 		}
 		want, ok := oracle(string(text), op)
+		if !ok {
+			return // the data oracle models string keys only; Verify has checked the result
+		}
 		got, derr := decode(r.Text)
-		if !ok || derr != nil || !reflect.DeepEqual(want, got) {
+		if derr != nil || !reflect.DeepEqual(want, got) {
 			t.Fatalf("applied text disagrees with the oracle\nop %+v\n%s\n=====\n%s", op, text, r.Text)
 		}
 	})

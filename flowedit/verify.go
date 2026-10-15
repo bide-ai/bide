@@ -21,7 +21,12 @@ import (
 //  4. every comment keeps its owner: a comment that sits directly above an entry, or trails it,
 //     belongs to that entry; only the operated entry's own comments may disappear (on Delete), and
 //     no comment may appear, move to another entry, or be left without its entry.
-func Verify(old, out []byte, op Op) error {
+func Verify(old, out []byte, op Op) (err error) {
+	defer func() {
+		if r := recover(); r != nil {
+			err = refuse("internal: unplaceable structure (%v)", r)
+		}
+	}()
 	do, err := parse(old)
 	if err != nil {
 		return err

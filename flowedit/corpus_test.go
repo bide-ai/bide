@@ -269,10 +269,30 @@ func uniq(a ...int) []int {
 
 func oracle(src string, op Op) (any, bool) {
 	v, err := decode([]byte(src))
-	if err != nil {
-		return nil, false
+	if err != nil || !stringKeys(v) {
+		return nil, false // the data oracle models string keys only; Verify checks the rest
 	}
 	return rebuild(v, op.Path, op), true
+}
+
+func stringKeys(v any) bool {
+	switch x := v.(type) {
+	case map[string]any:
+		for _, e := range x {
+			if !stringKeys(e) {
+				return false
+			}
+		}
+	case []any:
+		for _, e := range x {
+			if !stringKeys(e) {
+				return false
+			}
+		}
+	case map[any]any:
+		return false
+	}
+	return true
 }
 
 func rebuild(v any, path []any, op Op) any {

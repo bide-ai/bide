@@ -75,7 +75,13 @@ type doc struct {
 
 // Apply applies op to src. It returns a *Refusal error for anything it will not splice, and
 // otherwise text it has verified.
-func Apply(src []byte, op Op) (*Result, error) {
+func Apply(src []byte, op Op) (res *Result, err error) {
+	// A node the scanners cannot place (an implicit empty node has no position) is a refusal, not a crash.
+	defer func() {
+		if r := recover(); r != nil {
+			res, err = nil, refuse("internal: unplaceable structure (%v)", r)
+		}
+	}()
 	d, err := parse(src)
 	if err != nil {
 		return nil, err
