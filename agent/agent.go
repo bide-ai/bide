@@ -1,4 +1,6 @@
-// Package agent is a durability-first, Go-idiomatic toolkit for building AI agents.
+// Package agent is the core of bide, a Go framework for AI agents that move money: a
+// durability-first, Go-idiomatic toolkit whose side effects fire at most once, whose approvals are
+// signed and counted by k-of-n, and whose every action is provable afterwards.
 //
 // The agent loop journals every step to a Journal over a Store via named-step memoization
 // and resumes after a crash — reusing recorded steps, re-running

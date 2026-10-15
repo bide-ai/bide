@@ -1,5 +1,7 @@
 # Getting started
 
+Bide is a Go framework for AI agents that move money: risky calls approved, every action recorded and verifiable. An agent's side effects fire at most once, even across a crash; people stay in control through signed approvals; and every action is recorded and provable afterwards. This page gets you to a first run that shows all three.
+
 ## Prerequisites
 
 - Go 1.27 or newer (the core uses generic methods). If `go version` is older, upgrade or set `GOTOOLCHAIN=go1.27.0`. With the default `GOTOOLCHAIN=auto`, go fetches 1.27 by itself inside a project whose `go.mod` asks for it (`bide init` writes one), and `bide doctor` reports an older Go as a warning; with `GOTOOLCHAIN=local` or a pinned older toolchain it is a failure.
@@ -202,5 +204,6 @@ See [module structure](reference/module-structure.md) for the layout and [CONTRI
 - Complete flows to copy and run (a refund with a 2-of-3 approval, invoice approval, ticket triage, a safe record update, an ambient agent, a webhook that tells a person when a run needs them): the [recipes](recipes/index.md).
 - The vocabulary: [Concepts](CONCEPTS.md).
 - Authoring flows as typed topology instead of plain Go: the [plan flows guide](guides/plan-flows.md) (the optional `plan` builder and declarative config).
+- People in control: [human approval](guides/hitl-approval.md) (k-of-n signed, with separation of duties), [notifications](guides/notifications.md), and [key custody](guides/key-custody.md) (signing keys in an HSM or a cloud KMS).
 - The precise guarantee and its bounds: [Guarantee](GUARANTEE.md), [Known limitations](KNOWN-LIMITATIONS.md).
 - The full map: the [docs index](README.md).
