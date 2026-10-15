@@ -2,7 +2,8 @@
 //
 // A pull request adds one fragment file instead of editing CHANGELOG.md, so pull requests do not
 // conflict on it. A fragment is a "Section: <name>" line (Added, Changed, Fixed, Removed or
-// Security), a blank line, and the entry text as one paragraph.
+// Security), a blank line, and the entry text as one paragraph, with anything shaped like an HTML
+// tag ("<time>", "List<T>") in backticks, since the docs site reads a bare one as HTML.
 //
 // Usage, from the repository root:
 //

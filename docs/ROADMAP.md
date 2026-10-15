@@ -18,30 +18,17 @@ Changes that touch claims, the journal, leases, sagas or proofs are reviewed adv
 bide is meant to be usable by banks and other regulated institutions. What that needs beyond today, first items first:
 
 - Key custody: Ed25519 and ECDSA P-256 audit-log and approver signing keys in a PKCS#11 HSM, AWS KMS or Google Cloud KMS, and ECDSA P-256 keys in Azure Key Vault or Managed HSM, through `audit.Signer` have shipped ([key custody guide](guides/key-custody.md)). The command-line approval tool takes PKCS#11, AWS KMS, Google Cloud KMS and Azure Key Vault keys too (`bide-hsm approve`, with a PKCS#11 URI, a KMS key ARN, a Cloud KMS key version or a Key Vault key identifier). Next: a trial against a hardware HSM.
-- Separation of duties: an opt-in approval policy that refuses a decision from the principal who requested the call (maker-checker), checked in the approval gate's formal model (model 1b).
 - Approver identity: approver keys bound to an institution's identity, with certificates from its own CA or keys issued through its SSO, and revocation that the gate and `bide audit` honor.
-- Evidence for regulators: a threat model, a security and versioning policy, signed releases with an SBOM, and guidance on retaining and archiving journals and evidence packages.
 
 This is engineering toward those requirements, not a compliance certification.
 
 ### Notifications and approvals
 
-The notifier tells a person when a run needs them ([notifications guide](guides/notifications.md)). Next, in progress first:
+The notifier tells a person when a run needs them, routes and escalates, sends an all-clear and can sign its trail; approvers decide with `bide approve`, `bide-hsm approve` or the approve page ([notifications guide](guides/notifications.md), [human approval guide](guides/hitl-approval.md)). Next:
 
-- An all-clear notification when an event stops being current (a halt resolved, a gate decided, a run ended), so a receiver can close the incident it opened.
-- `bide notify test` and `bide notify listen`, to check a receiver end to end, and a relay that verifies bide's signed webhooks and forwards them to Slack and PagerDuty.
-- `bide approve`, `bide keygen` and a list of pending approvals: an approver signs a decision with their own key, after seeing the call and its arguments as the journal records them.
-- Proof that notifications went out: a verifier for the notification trail and a `bide audit` check, so an auditor can see that every halt and pending approval was notified and acknowledged, and when.
-- A "Needs attention" list in the run viewer: pending approvals and unresolved halts across a journal.
-- Routing and escalation: different receivers by event kind (approvals to approvers, unknown outcomes to on-call), and an overdue notice that escalates to a second receiver.
-- An approve page in the run viewer, signed in the browser with an Ed25519 key that never leaves it. Later: passkey (WebAuthn) approvals, as a new signature algorithm.
+- Passkey (WebAuthn) approvals on the approve page, as a new signature algorithm. Gates for high-value actions should wait for them.
 
 Out of scope: approve buttons in chat that a server signs on an approver's behalf. Keeping each approver's key with that approver is what makes a k-of-n gate k independent decisions.
-
-### Trust and project process
-
-- Trust pages: a threat model beside [SECURITY.md](../SECURITY.md), the stability and versioning policy, and a scoped comparison with Temporal, LangGraph and plain retries (also part of bank readiness, above).
-- A lighter merge-queue CI, so a queued change waits on the checks that matter for it.
 
 ### Formal models of the coordination protocols
 

@@ -36,7 +36,7 @@ The design therefore has two deployment modes, and says plainly what each gives:
    endpoint; every other request is authenticated as before. The organization pins the bundle. Subresource Integrity covers
    only a script or stylesheet a page loads, not the HTML document that loads it, so the entry
    document itself is pinned another way: the release publishes the SHA-256 of every file in the
-   bundle in its signed checksums, the organization verifies them when it deploys and reviews an
+   bundle as `approve-page.SHA256SUMS`, signed keylessly like the release's checksums, the organization verifies them when it deploys and reviews an
    update first, and the entry document is a minimal loader that carries `integrity` attributes for
    the script and stylesheet (so a changed script is refused by the browser even if the host is
    changed to serve it). A host that can change the entry document can still change what runs, which

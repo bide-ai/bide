@@ -1,3 +1,0 @@
-Section: Added
-
-The PKCS#11 and AWS KMS signers take `Config.Scheme`, `audit.AlgEd25519` (the default) or `audit.AlgECDSAP256`, for HSMs and key services that cannot sign Ed25519: PKCS#11 signs the SHA-256 of the message with `CKM_ECDSA` on a P-256 key, and KMS signs the digest with `ECDSA_SHA_256` on an `ECC_NIST_P256` key; both return bide's canonical low-S `r||s`, and a key of the other scheme is refused (`ErrNoP256`, `ErrNoEd25519`) instead of used under the wrong one. Under P-256 KMS has no message-size limit. `pkcs11.CKRError` and the new P-256 tests are covered in the key custody guide.

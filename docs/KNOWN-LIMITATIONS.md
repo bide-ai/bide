@@ -294,6 +294,17 @@ confidential arguments need `WithAuth` or a private network. See
 
 **Until the run is driven again, a viewer that cannot see the live policy shows a gate asking again as decided.** A redeploy that changes a gate's policy (adding `ExcludePrincipal`, say) is enforced by the gate when the run resumes. If the recorded tally passed under the old policy and the call has not run (a crash between the tally and the call), the gate asks again, and writes a re-ask note with the policy it asks under (`approval-pending:<id>:sod` or `:v3`); `bide view`, `bide approve`, the intake's fallback, notifications, evidence and `plan.Conform` read the newest note. The note is written by the drive, so before the run is re-driven (by you or `RecoverLoop`) a reader with no access to the application's policy still shows the gate as decided. The intake does not have this gap: `approvals.New` requires the live policy (`approvals.WithGatePolicy`) and counts the gate under it.
 
+**The browser approve page is as strong as the origin that serves it, and no stronger than a key a
+script can use.** A page the application serves can sign anything the approver's key will sign (the
+page says so); the design is a bundle hosted by the approver's organization on a dedicated origin and
+pinned by its published hashes (`approve-page.SHA256SUMS`, signed with each release), whose entry document Subresource Integrity cannot pin, so the hash is
+checked at deploy time. The page's key is non-extractable but usable by any script on its origin, and the
+page's confirmation steps (the typed id, the buttons, the scroll to the end) are aids, not controls. It
+supports Ed25519 only (WebCrypto has no ML-DSA), one browser per approver id, and key enrolment needs a
+fingerprint comparison out of band. Gates for high-value actions should wait for passkeys (WebAuthn),
+which are not built: they need a new signature scheme in the gate and the auditor. See
+[Approving in the browser](guides/hitl-approval.md#approving-in-the-browser).
+
 **A resolution's, a single approval's, an answer's and a run's end time are the writer's claim.** Each of these
 records notes when it was written (`recorded_at`), by the clock of the process that wrote it, and
 nothing signs it: an m-of-n approver signs their `decided_at`, but a single approver (`agent.Approve`)

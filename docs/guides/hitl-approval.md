@@ -863,8 +863,8 @@ modes, and the page says which one it is in:
 
 - **Hosted by the approver's organization (the design).** Write the bundle with
   `go run github.com/bide-ai/bide/approvals/cmd/approvepage -out ./site` (deterministic: the same release
-  gives the same bytes, with a `SHA256SUMS` you check with `sha256sum -c` against the sums the release
-  publishes), put it on **a dedicated origin that serves nothing else** (the key lives in that origin's
+  gives the same bytes, with a `SHA256SUMS` you check with `sha256sum -c` against the signed
+  `approve-page.SHA256SUMS` every release publishes; see [Verifying releases](../trust/verify-releases.md#verify-the-approve-page-bundle)), put it on **a dedicated origin that serves nothing else** (the key lives in that origin's
   IndexedDB, so every script on the origin can use it), and add `config.json` next to it,
   `{"intake": "https://app.example.com/approvals"}`. Serve it with the policy `approvals.PageCSP(intakeOrigin)`
   returns. Subresource Integrity in `index.html` pins the script and the stylesheet, but cannot pin the
