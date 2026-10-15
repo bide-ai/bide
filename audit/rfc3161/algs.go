@@ -145,25 +145,22 @@ func parsePSS(a algIdent, digest crypto.Hash) (sigAlg, *Refusal) {
 	}
 	var hashAlg, mgfAlg *node
 	salt := 20
+	last := -1
 	for _, c := range cs {
-		switch {
-		case isCtx(c, 0, true) && hashAlg == nil && mgfAlg == nil:
-			in, r := only(c, "PSS hash")
-			if r != nil {
-				return sigAlg{}, r
-			}
+		if c.Class != asn1.ClassContextSpecific || !c.IsCompound || c.Tag <= last || c.Tag > 2 {
+			return sigAlg{}, refuse(ReasonMalformed, "unexpected, repeated or misordered element in RSASSA-PSS parameters")
+		}
+		last = c.Tag
+		in, r := only(c, "PSS parameter")
+		if r != nil {
+			return sigAlg{}, r
+		}
+		switch c.Tag {
+		case 0:
 			hashAlg = &in
-		case isCtx(c, 1, true) && mgfAlg == nil:
-			in, r := only(c, "PSS mask generation")
-			if r != nil {
-				return sigAlg{}, r
-			}
+		case 1:
 			mgfAlg = &in
-		case isCtx(c, 2, true):
-			in, r := only(c, "PSS salt length")
-			if r != nil {
-				return sigAlg{}, r
-			}
+		case 2:
 			v, r := smallOf(in, "PSS salt length")
 			if r != nil {
 				return sigAlg{}, r
@@ -172,8 +169,6 @@ func parsePSS(a algIdent, digest crypto.Hash) (sigAlg, *Refusal) {
 				return sigAlg{}, refuse(ReasonUnsupportedAlgorithm, "PSS salt length %d", v)
 			}
 			salt = int(v)
-		default:
-			return sigAlg{}, refuse(ReasonMalformed, "unexpected element in RSASSA-PSS parameters")
 		}
 	}
 	if hashAlg == nil || mgfAlg == nil {

@@ -128,6 +128,9 @@ type kitOpts struct {
 	notBefore      time.Time
 	notAfter       time.Time
 	rootSigAlg     x509.SignatureAlgorithm
+	keyUsage       x509.KeyUsage // zero means digitalSignature
+	tsaIsCA        bool
+	dnsNames       []string
 	ski            bool // give the TSA certificate a subject key id (needed for SKI signer ids)
 }
 
@@ -166,7 +169,13 @@ func newKit(t testing.TB, o kitOpts) *kit {
 	tsaT := &x509.Certificate{
 		SerialNumber: big.NewInt(0x1234567), Subject: pkix.Name{CommonName: "test tsa", Organization: []string{"bide"}},
 		NotBefore: o.notBefore, NotAfter: o.notAfter, KeyUsage: x509.KeyUsageDigitalSignature,
-		SignatureAlgorithm: o.rootSigAlg,
+		SignatureAlgorithm: o.rootSigAlg, DNSNames: o.dnsNames,
+	}
+	if o.keyUsage != 0 {
+		tsaT.KeyUsage = o.keyUsage
+	}
+	if o.tsaIsCA {
+		tsaT.IsCA, tsaT.BasicConstraintsValid = true, true
 	}
 	if o.ski {
 		tsaT.SubjectKeyId = []byte{1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19, 20}
@@ -205,6 +214,7 @@ type tokSpec struct {
 	ordering   bool
 	nonce      *big.Int
 	tstExt     []byte // full DER of [1] extensions, or nil
+	tsaRaw     []byte // full DER of the [0] tsa GeneralName, or nil
 	tstRaw     []byte // replaces the whole TSTInfo when non-nil
 
 	// CMS
@@ -334,6 +344,9 @@ func (s *tokSpec) tstInfo() []byte {
 	}
 	if s.nonce != nil {
 		parts = append(parts, bigDER(s.nonce))
+	}
+	if s.tsaRaw != nil {
+		parts = append(parts, s.tsaRaw)
 	}
 	if s.tstExt != nil {
 		parts = append(parts, s.tstExt)

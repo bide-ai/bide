@@ -639,7 +639,14 @@ read; a certificate in the token that Go's parser rejects refuses the token even
 differential test); `accuracy` is refused above 24 hours; `Policy.RSA2048Until` applies the 2048-bit
 exception against `genTime`; the TSA certificate status rule is a function the caller must supply
 (`Policy.CertStatus`), so it is never skipped silently; Ed25519 requires the SHA-512 digest algorithm
-(RFC 8419); the `tsa` name in `TSTInfo` is not compared with the certificate.
+(RFC 8419). The independent PKI review of the build added: accepted `accuracy` is capped (`Policy.MaxAccuracy`,
+default one second) and `Result.Latest()` is the time to use for "existed by"; the `tsa` name must match the
+certificate; the TSA certificate may not be a CA and its key usage must be signing only; `Policy.DistrustAfter`
+retires TSA keys; `Policy.AcceptedPolicies` pins policy OIDs; `Expected.Now` bounds `genTime` from above for a
+live gate; a SHA-1 `signingCertificate` beside a V2 attribute is checked for consistency only. Of ten public
+TSAs tried on 2026-10-15 the profile accepts six (DigiCert, GlobalSign, QuoVadis, SSL.com, Microsoft,
+SwissSign) and refuses four (Sectigo, Entrust, FreeTSA: SHA-1 `signingCertificate` only; Apple: SHA-1 as the
+digest algorithm); a bank must choose its TSA from the first group.
 
 **Profile (each point a refusal when violated):**
 

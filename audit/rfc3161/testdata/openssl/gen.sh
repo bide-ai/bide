@@ -23,7 +23,7 @@ signer_digest = \$ENV::DIGEST
 default_policy = tsa_policy1
 other_policies = tsa_policy1
 digests = sha256, sha384, sha512
-accuracy = secs:1, millisecs:500
+accuracy = \$ENV::ACC
 ordering = no
 tsa_name = no
 ess_cert_id_chain = no
@@ -40,8 +40,8 @@ subjectKeyIdentifier = hash
 authorityKeyIdentifier = keyid
 CNF
 
-gen() { # name keyspec digest
-  VEC=$1; DIGEST=$3; export VEC DIGEST
+gen() { # name keyspec digest accuracy
+  VEC=$1; DIGEST=$3; ACC=$4; export VEC DIGEST ACC
   case "$2" in
     ec256) openssl genpkey -algorithm EC -pkeyopt ec_paramgen_curve:P-256 -out root-$1.key 2>/dev/null
            openssl genpkey -algorithm EC -pkeyopt ec_paramgen_curve:P-256 -out tsa-$1.key 2>/dev/null ;;
@@ -62,7 +62,8 @@ gen() { # name keyspec digest
   openssl ts -reply -in resp-$1.tsr -out token-$1.tok -token_out
   rm -f tsa-$1.csr root-$1.srl root-$1.key tsa-$1.key
 }
-gen ec256 ec256 sha256
-gen ec384 ec384 sha384
-gen rsa3072 rsa3072 sha256
+gen ec256 ec256 sha256 secs:1
+gen ec384 ec384 sha384 secs:1
+gen rsa3072 rsa3072 sha256 secs:1
+gen ec256wide ec256 sha256 secs:1,millisecs:500
 rm -f serial tsa-chain-*.pem

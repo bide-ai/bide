@@ -86,6 +86,7 @@ type signerInfo struct {
 type essID struct {
 	hash      crypto.Hash
 	certHash  []byte
+	v1Hash    []byte // SHA-1 signingCertificate hash, when that attribute is present (consistency only)
 	issuerRaw []byte // nil when issuerSerial is absent
 	serial    *big.Int
 }
@@ -98,6 +99,7 @@ type tstInfo struct {
 	genTime     time.Time
 	accuracy    time.Duration
 	nonce       *big.Int
+	tsa         *node
 }
 
 func verify(token []byte, exp Expected, pol Policy, maxCerts int) (*Result, *Refusal) {
@@ -254,6 +256,28 @@ func verify(token []byte, exp Expected, pol Policy, maxCerts int) (*Result, *Ref
 		return nil, r
 	}
 
+	if pol.MaxAccuracy < 0 || pol.MaxAccuracy > maxAccuracy {
+		return nil, refuse(ReasonAccuracy, "invalid accuracy cap")
+	}
+	maxAcc := pol.MaxAccuracy
+	if maxAcc == 0 {
+		maxAcc = DefaultMaxAccuracy
+	}
+	if tst.accuracy > maxAcc {
+		return nil, refuse(ReasonAccuracy, "the token states an accuracy of %s, the cap is %s", tst.accuracy, maxAcc)
+	}
+	if len(pol.AcceptedPolicies) > 0 {
+		ok := false
+		for _, p := range pol.AcceptedPolicies {
+			if p.String() == tst.policy {
+				ok = true
+			}
+		}
+		if !ok {
+			return nil, refuse(ReasonPolicy, "TSA policy %s is not accepted", tst.policy)
+		}
+	}
+
 	// signer certificate
 	var parsed []*x509.Certificate
 	seen := map[string]bool{}
@@ -285,6 +309,14 @@ func verify(token []byte, exp Expected, pol Policy, maxCerts int) (*Result, *Ref
 	if r := checkEKU(signer); r != nil {
 		return nil, r
 	}
+	if r := checkTSACert(signer); r != nil {
+		return nil, r
+	}
+	if tst.tsa != nil {
+		if r := checkTSAName(*tst.tsa, signer); r != nil {
+			return nil, r
+		}
+	}
 
 	// the token signature, over the DER SET OF signed attributes (RFC 5652 section 5.4)
 	if r := checkSignature(signer, si); r != nil {
@@ -302,6 +334,10 @@ func verify(token []byte, exp Expected, pol Policy, maxCerts int) (*Result, *Ref
 	if tst.genTime.Before(earliest) {
 		return nil, refuse(ReasonGenTimeBeforeHead, "genTime %s is earlier than the head time %s less tolerance and accuracy",
 			tst.genTime.Format(time.RFC3339Nano), exp.HeadTime.UTC().Format(time.RFC3339Nano))
+	}
+
+	if !exp.Now.IsZero() && tst.genTime.Add(-tst.accuracy).After(exp.Now.Add(pol.ClockTolerance)) {
+		return nil, refuse(ReasonGenTimeFuture, "genTime %s is later than now plus the tolerance", tst.genTime.Format(time.RFC3339Nano))
 	}
 
 	// the chain and the status rule, at genTime
@@ -471,7 +507,7 @@ func checkSignedAttrs(si *signerInfo, eContent []byte) (*essID, *Refusal) {
 		}
 	}
 	var contentType, msgDigest, sigCertV2 []node
-	v1 := false
+	var v1Vals []node
 	for _, a := range si.attrs {
 		if !isSeq(a) {
 			return nil, refuse(ReasonMalformed, "a signed attribute is not a SEQUENCE")
@@ -509,7 +545,7 @@ func checkSignedAttrs(si *signerInfo, eContent []byte) (*essID, *Refusal) {
 			}
 		default:
 			if o.Equal(oidSigningCertificateV1) {
-				v1 = true
+				v1Vals = append(v1Vals, vals...)
 			}
 			for _, v := range vals {
 				if r := wellFormed(v, 1); r != nil {
@@ -528,7 +564,7 @@ func checkSignedAttrs(si *signerInfo, eContent []byte) (*essID, *Refusal) {
 		return nil, refuse(ReasonMissingAttr, "no messageDigest signed attribute")
 	}
 	if len(sigCertV2) == 0 {
-		if v1 {
+		if len(v1Vals) > 0 {
 			return nil, refuse(ReasonESSV1Only, "only the SHA-1 signingCertificate attribute is present")
 		}
 		return nil, refuse(ReasonMissingAttr, "no signingCertificateV2 signed attribute")
@@ -548,7 +584,19 @@ func checkSignedAttrs(si *signerInfo, eContent []byte) (*essID, *Refusal) {
 	if !bytes.Equal(h.Sum(nil), msgDigest[0].Bytes) {
 		return nil, refuse(ReasonMessageDigest, "messageDigest differs from the hash of the TSTInfo")
 	}
-	return parseESSCertIDv2(sigCertV2[0])
+	e, r := parseESSCertIDv2(sigCertV2[0])
+	if r != nil {
+		return nil, r
+	}
+	if len(v1Vals) > 1 {
+		return nil, refuse(ReasonDuplicateAttr, "signingCertificate appears more than once")
+	}
+	if len(v1Vals) == 1 {
+		if e.v1Hash, r = parseESSV1(v1Vals[0]); r != nil {
+			return nil, r
+		}
+	}
+	return e, nil
 }
 
 func parseESSCertIDv2(n node) (*essID, *Refusal) {
@@ -684,6 +732,9 @@ func selectSigner(certs []*x509.Certificate, si *signerInfo, e *essID) (*x509.Ce
 	}
 	if signer == nil {
 		return nil, refuse(ReasonESSMismatch, "no matching certificate has the hash in signingCertificateV2")
+	}
+	if e.v1Hash != nil && !bytes.Equal(e.v1Hash, sha1Sum(signer.Raw)) {
+		return nil, refuse(ReasonESSMismatch, "the signingCertificate attribute names a different certificate than signingCertificateV2")
 	}
 	if e.issuerRaw != nil && (!bytes.Equal(e.issuerRaw, signer.RawIssuer) || e.serial.Cmp(signer.SerialNumber) != 0) {
 		return nil, refuse(ReasonESSMismatch, "signingCertificateV2 issuerSerial differs from the certificate")
@@ -824,6 +875,9 @@ func verifyChain(signer *x509.Certificate, pool []*x509.Certificate, genTime tim
 }
 
 func checkPath(chain []*x509.Certificate, genTime time.Time, pol Policy) *Refusal {
+	if distrusted(chain, pol.DistrustAfter, func(d Distrust) bool { return !genTime.Before(d.After) }) {
+		return refuse(ReasonTSADistrusted, "a key on the path is distrusted from before genTime %s", genTime.Format(time.RFC3339))
+	}
 	for k, c := range chain {
 		if r := checkKey(c.PublicKey, genTime, pol.RSA2048Until, "a certificate on the path"); r != nil {
 			return r
@@ -915,10 +969,11 @@ func parseTSTInfo(b []byte) (*tstInfo, *Refusal) {
 		}
 		rest2 = rest2[1:]
 	}
-	if len(rest2) > 0 && isCtx(rest2[0], 0, true) { // tsa: not compared with the certificate
+	if len(rest2) > 0 && isCtx(rest2[0], 0, true) { // tsa: compared with the signer certificate
 		if r := wellFormed(rest2[0], 1); r != nil {
 			return nil, r
 		}
+		t.tsa = &rest2[0]
 		rest2 = rest2[1:]
 	}
 	if len(rest2) > 0 && isCtx(rest2[0], 1, true) {

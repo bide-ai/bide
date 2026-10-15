@@ -7,7 +7,6 @@ import (
 	"crypto/x509"
 	"encoding/asn1"
 	"encoding/hex"
-	"encoding/pem"
 	"math/big"
 	"os"
 	"path/filepath"
@@ -82,14 +81,38 @@ type vector struct {
 
 var realVectors = []vector{
 	{dir: "openssl", tokFile: "token-ec256.tok", respFile: "resp-ec256.tsr", reqFile: "req-ec256.tsq", rootFile: "root-ec256.pem",
-		genTime: time.Date(2026, 10, 15, 16, 8, 30, 0, time.UTC), policy: "1.2.3.4.1", serial: "02", signerCN: "bide test TSA ec256", accuracy: 1500 * time.Millisecond},
+		genTime: time.Date(2026, 10, 15, 16, 35, 27, 0, time.UTC), policy: "1.2.3.4.1", serial: "02", signerCN: "bide test TSA ec256", accuracy: time.Second},
 	{dir: "openssl", tokFile: "token-ec384.tok", respFile: "resp-ec384.tsr", reqFile: "req-ec384.tsq", rootFile: "root-ec384.pem",
-		genTime: time.Date(2026, 10, 15, 16, 8, 31, 0, time.UTC), policy: "1.2.3.4.1", serial: "02", signerCN: "bide test TSA ec384", accuracy: 1500 * time.Millisecond},
+		genTime: time.Date(2026, 10, 15, 16, 35, 27, 0, time.UTC), policy: "1.2.3.4.1", serial: "02", signerCN: "bide test TSA ec384", accuracy: time.Second},
 	{dir: "openssl", tokFile: "token-rsa3072.tok", respFile: "resp-rsa3072.tsr", reqFile: "req-rsa3072.tsq", rootFile: "root-rsa3072.pem",
-		genTime: time.Date(2026, 10, 15, 16, 8, 31, 0, time.UTC), policy: "1.2.3.4.1", serial: "02", signerCN: "bide test TSA rsa3072", accuracy: 1500 * time.Millisecond},
+		genTime: time.Date(2026, 10, 15, 16, 35, 28, 0, time.UTC), policy: "1.2.3.4.1", serial: "02", signerCN: "bide test TSA rsa3072", accuracy: time.Second},
 	{dir: "digicert", tokFile: "token.tok", respFile: "response.tsr", reqFile: "request.tsq", rootFile: "root.pem",
 		genTime: time.Date(2026, 10, 15, 15, 59, 57, 0, time.UTC), policy: "2.16.840.1.114412.7.1", serial: "de23b3b402fe586d6396427664a53de1",
 		signerCN: "DigiCert SHA256 RSA4096 Timestamp Responder 2026 1"},
+	{dir: "globalsign", tokFile: "token.tok", respFile: "response.tsr", reqFile: "request.tsq", rootFile: "root.pem",
+		genTime: time.Date(2026, 10, 15, 16, 42, 14, 0, time.UTC), policy: "1.3.6.1.4.1.4146.2.3.2.2", serial: "5b87383c751168801d5a9254598cf1125a807e7a",
+		signerCN: "Globalsign R45 TSA for CodeSign 202510", accuracy: time.Second},
+	{dir: "quovadis", tokFile: "token.tok", respFile: "response.tsr", reqFile: "request.tsq", rootFile: "root.pem",
+		genTime: time.Date(2026, 10, 15, 16, 42, 23, 0, time.UTC), policy: "1.3.6.1.4.1.8024.0.2000.6", serial: "699bc991854a11cc",
+		signerCN: "tsaeu2025rsa2.digicert.eu", accuracy: 997 * time.Millisecond},
+	{dir: "sslcom", tokFile: "token.tok", respFile: "response.tsr", reqFile: "request.tsq", rootFile: "root.pem",
+		genTime: time.Date(2026, 10, 15, 16, 42, 16, 0, time.UTC), policy: "1.3.6.1.4.1.38064.1.3.6.1", serial: "66384f692e3cd3b0",
+		signerCN: "SSL.com Timestamping Unit 2025 E1", accuracy: time.Second},
+	{dir: "microsoft", tokFile: "token.tok", respFile: "response.tsr", reqFile: "request.tsq", rootFile: "root.pem",
+		genTime: time.Date(2026, 10, 15, 16, 42, 17, 947_000_000, time.UTC), policy: "1.3.6.1.4.1.601.10.3.1", serial: "6ac8e5fcf1c6",
+		signerCN: "Microsoft Public RSA Time Stamping Authority", accuracy: 500 * time.Millisecond},
+	{dir: "swisssign", tokFile: "token.tok", respFile: "response.tsr", reqFile: "request.tsq", rootFile: "root.pem",
+		genTime: time.Date(2026, 10, 15, 16, 42, 22, 0, time.UTC), policy: "2.16.756.1.89.1.1.3.5", serial: "6f08ffd74547c4af",
+		signerCN: "SwissSign ZertES TSA UNIT A 2024 - 2", accuracy: 500 * time.Millisecond},
+}
+
+// refusedVectors are real tokens from public TSAs that the profile refuses, with the reason. They
+// are valid RFC 3161 tokens; each names something the profile never accepts.
+var refusedVectors = map[string]Reason{
+	"freetsa": ReasonESSV1Only,
+	"sectigo": ReasonESSV1Only,
+	"entrust": ReasonESSV1Only,
+	"apple":   ReasonWeakHash, // SHA-1 as the signer digest algorithm
 }
 
 func (v vector) policyFor(t testing.TB) Policy {
@@ -145,24 +168,38 @@ func TestRealTSAVectors(t *testing.T) {
 	}
 }
 
-// FreeTSA's token is valid RFC 3161 (OpenSSL verifies it) but identifies its signer by the SHA-1
-// signingCertificate attribute only, which the profile never accepts.
-func TestFreeTSATokenIsOutsideTheProfile(t *testing.T) {
-	v := vector{dir: "freetsa", tokFile: "token.tok", respFile: "response.tsr", reqFile: "request.tsq", rootFile: "root.pem",
-		genTime: time.Date(2026, 10, 15, 15, 59, 57, 0, time.UTC)}
+// The refused real tokens are valid RFC 3161 tokens that the profile does not interpret: the SHA-1
+// signingCertificate attribute alone, or SHA-1 as the signer digest algorithm.
+func TestRefusedRealVectors(t *testing.T) {
+	for dir, want := range refusedVectors {
+		t.Run(dir, func(t *testing.T) {
+			tok := readTestdata(t, dir, "token.tok")
+			if !bytes.Equal(tok, tokenOfResponse(t, readTestdata(t, dir, "response.tsr"))) {
+				t.Fatal("the stored token is not the response's token")
+			}
+			v := vector{dir: dir, reqFile: "request.tsq", genTime: time.Date(2026, 10, 15, 16, 0, 0, 0, time.UTC)}
+			pol := Policy{Roots: x509.NewCertPool(), CertStatus: StatusUnknown}
+			mustRefuse(t, tok, v.expected(t), pol, want)
+			if !want.OutsideProfile() {
+				t.Error("must be classed as outside the profile")
+			}
+		})
+	}
+}
+
+// A token that states 1.5 s of accuracy is refused under the default cap of one second, accepted
+// when the policy allows it, and then bounds the head comparison and Latest.
+func TestWideAccuracyVector(t *testing.T) {
+	v := vector{dir: "openssl", tokFile: "token-ec256wide.tok", respFile: "resp-ec256wide.tsr", reqFile: "req-ec256wide.tsq", rootFile: "root-ec256wide.pem",
+		genTime: time.Date(2026, 10, 15, 16, 35, 28, 0, time.UTC)}
 	tok := readTestdata(t, v.dir, v.tokFile)
-	if !bytes.Equal(tok, tokenOfResponse(t, readTestdata(t, v.dir, v.respFile))) {
-		t.Fatal("the stored token is not the response's token")
-	}
-	e := v.expected(t)
+	mustRefuse(t, tok, v.expected(t), v.policyFor(t), ReasonAccuracy)
 	pol := v.policyFor(t)
-	mustRefuse(t, tok, e, pol, ReasonESSV1Only)
-	if !ReasonESSV1Only.OutsideProfile() {
-		t.Error("v1-only must be classed as outside the profile")
+	pol.MaxAccuracy = 1500 * time.Millisecond
+	res := mustAccept(t, tok, v.expected(t), pol)
+	if res.Accuracy != 1500*time.Millisecond || !res.Latest().Equal(v.genTime.Add(1500*time.Millisecond)) {
+		t.Errorf("accuracy %v latest %v", res.Accuracy, res.Latest())
 	}
-	// the certificate is still the one the real chain names: the refusal is about the profile
-	blk, _ := pem.Decode(readTestdata(t, "freetsa", "tsa.pem"))
-	if _, err := x509.ParseCertificate(blk.Bytes); err != nil {
-		t.Fatal(err)
-	}
+	pol.MaxAccuracy = 1499 * time.Millisecond
+	mustRefuse(t, tok, v.expected(t), pol, ReasonAccuracy)
 }

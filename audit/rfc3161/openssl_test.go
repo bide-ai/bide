@@ -3,6 +3,7 @@ package rfc3161
 import (
 	"bytes"
 	"crypto/x509"
+	"encoding/asn1"
 	"encoding/pem"
 	"fmt"
 	"os"
@@ -247,6 +248,160 @@ func TestDifferentialBuiltTokens(t *testing.T) {
 						t.Fatalf("byte %d: Go accepts, openssl rejects: %s", pos, out)
 					}
 				}
+			}
+		})
+	}
+}
+
+// osslFor prepares OpenSSL to verify tokens of one fixture's kit.
+func osslFor(t *testing.T, ossl string, f *fixture) osslCase {
+	t.Helper()
+	dir := t.TempDir()
+	rootPEM := filepath.Join(dir, "root.pem")
+	if err := os.WriteFile(rootPEM, pem.EncodeToMemory(&pem.Block{Type: "CERTIFICATE", Bytes: f.kit.root.Raw}), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	query := filepath.Join(dir, "q.tsq")
+	if out, err := exec.Command(ossl, "ts", "-query", "-digest", fmt.Sprintf("%x", f.digest), "-sha256", "-no_nonce", "-cert", "-out", query).CombinedOutput(); err != nil {
+		t.Fatalf("openssl ts -query: %v: %s", err, out)
+	}
+	return osslCase{openssl: ossl, root: rootPEM, query: query, tokFile: filepath.Join(dir, "t.der"), at: f.gen}
+}
+
+// opensslAccepts lists the negative cases that OpenSSL accepts although the Go verifier refuses
+// them: the intentional strictness of the profile (DER forms of defaults, canonical order, hashes
+// OpenSSL tolerates, claims OpenSSL does not check). Every other negative case must be refused by
+// OpenSSL too, and the list may not hold a case OpenSSL now rejects.
+var opensslAccepts = map[string]string{
+	"ESS hash is SHA-1":                             "OpenSSL has no algorithm allowlist; the profile never accepts SHA-1, MD5 or SHA-224",
+	"ESS hash is SHA-256 spelled out (DER default)": "a DER form of a default value or a BER-style encoding that OpenSSL tolerates",
+	"TSA certificate is a CA":                       "OpenSSL does not reject the CA flag on the signer (the assessment expected it to; measured otherwise)",
+	"accuracy above a day by its millis":            "OpenSSL does not bound or range-check the accuracy",
+	"accuracy beyond a day":                         "OpenSSL does not bound or range-check the accuracy",
+	"accuracy millis zero":                          "OpenSSL does not bound or range-check the accuracy",
+	"accuracy seconds that overflow to zero":        "OpenSSL does not bound or range-check the accuracy",
+	"contentType attribute names another type":      "OpenSSL does not compare the contentType attribute with the content type",
+	"critical tstinfo extension":                    "OpenSSL does not refuse critical TSTInfo extensions",
+	"duplicate contentType":                         "OpenSSL reads one instance of a repeated signed attribute; the profile requires exactly one",
+	"duplicate messageDigest":                       "OpenSSL reads one instance of a repeated signed attribute; the profile requires exactly one",
+	"duplicate signingCertificateV2":                "OpenSSL reads one instance of a repeated signed attribute; the profile requires exactly one",
+	"ecdsa with SHA-1":                              "OpenSSL has no algorithm allowlist; the profile never accepts SHA-1, MD5 or SHA-224",
+	"ecdsa with SHA-224":                            "OpenSSL has no algorithm allowlist; the profile never accepts SHA-1, MD5 or SHA-224",
+	"explicit false critical flag (not DER)":        "a DER form of a default value or a BER-style encoding that OpenSSL tolerates",
+	"genTime at hour 24":                            "OpenSSL does not re-validate the genTime text strictly",
+	"genTime in month 13":                           "OpenSSL does not re-validate the genTime text strictly",
+	"genTime on a day that does not exist":          "OpenSSL does not re-validate the genTime text strictly",
+	"genTime with a ten-digit fraction":             "OpenSSL does not re-validate the genTime text strictly",
+	"genTime with impossible date":                  "OpenSSL does not re-validate the genTime text strictly",
+	"genTime with ten fraction digits":              "OpenSSL does not re-validate the genTime text strictly",
+	"genTime with trailing zero fraction":           "OpenSSL does not re-validate the genTime text strictly",
+	"genTime with zone offset":                      "OpenSSL does not re-validate the genTime text strictly",
+	"genTime without Z":                             "OpenSSL does not re-validate the genTime text strictly",
+	"messageDigest with two values":                 "OpenSSL reads the first value of a signed attribute",
+	"missing contentType":                           "OpenSSL does not require the contentType signed attribute",
+	"negative accuracy":                             "OpenSSL does not bound or range-check the accuracy",
+	"ordering FALSE spelled out":                    "a DER form of a default value or a BER-style encoding that OpenSSL tolerates",
+	"ordering with a non-DER true":                  "a DER form of a default value or a BER-style encoding that OpenSSL tolerates",
+	"p-521 signer":                                  "OpenSSL has no key-size or curve allowlist; the profile does",
+	"rsa 1024 signer":                               "OpenSSL has no key-size or curve allowlist; the profile does",
+	"rsa 2048 CA":                                   "OpenSSL has no key-size or curve allowlist; the profile does",
+	"rsa 2048 signer":                               "OpenSSL has no key-size or curve allowlist; the profile does",
+	"rsa signature algorithm on an EC key":          "OpenSSL takes the key type from the certificate and has no algorithm allowlist",
+	"rsa with MD5":                                  "OpenSSL has no algorithm allowlist; the profile never accepts SHA-1, MD5 or SHA-224",
+	"rsa with SHA-1":                                "OpenSSL has no algorithm allowlist; the profile never accepts SHA-1, MD5 or SHA-224",
+	"rsa with SHA-224":                              "OpenSSL has no algorithm allowlist; the profile never accepts SHA-1, MD5 or SHA-224",
+	"signed attributes not in DER order":            "OpenSSL verifies over the received bytes without requiring DER SET OF order",
+	"signed data version 1":                         "OpenSSL does not check the SignedData version",
+	"signer version 2":                              "OpenSSL does not check the SignerInfo version against the identifier form",
+	"signer version 3 with issuer and serial":       "OpenSSL does not check the SignerInfo version against the identifier form",
+	"signingCertificate (SHA-1) only":               "OpenSSL accepts the SHA-1 signingCertificate attribute alone; the profile never trusts SHA-1",
+	"signingCertificate twice":                      "OpenSSL reads one instance of a repeated signed attribute; the profile requires exactly one",
+	"tstinfo trailing bytes":                        "OpenSSL ignores bytes after the TSTInfo",
+	"two digest algorithms":                         "OpenSSL does not require exactly one digestAlgorithms entry",
+	"unknown signature algorithm":                   "OpenSSL takes the key type from the certificate and has no algorithm allowlist",
+}
+
+// TestDifferentialNegativeVectors replays every negative vector against OpenSSL. Each token is
+// re-signed with a structural fault, so a refusal exercises parsing, not a broken signature. The
+// claim is bounded to these classes: where OpenSSL accepts and Go refuses, the case is listed and
+// justified; there is no case where Go accepts and OpenSSL refuses (the accepted variants below).
+func TestDifferentialNegativeVectors(t *testing.T) {
+	ossl := requireOpenSSL(t)
+	var groups = [][]negCase{structureCases, attrCases, algCases, imprintCases, pkiCases}
+	seen := map[string]bool{}
+	for _, g := range groups {
+		for _, c := range g {
+			c := c
+			t.Run(c.name, func(t *testing.T) {
+				f, tok := c.build(t)
+				if _, err := Verify(tok, f.expected(), f.policy()); err == nil {
+					t.Fatal("the Go verifier accepts a negative vector")
+				}
+				ok, out := osslFor(t, ossl, f).accepts(tok)
+				_, listed := opensslAccepts[c.name]
+				switch {
+				case ok && !listed:
+					t.Errorf("OpenSSL accepts %q, Go refuses (%s): add it to opensslAccepts with the reason, or fix the verifier", c.name, c.want)
+				case !ok && listed:
+					t.Errorf("%q is listed in opensslAccepts but OpenSSL rejects it: %s", c.name, firstLine(out))
+				}
+				seen[c.name] = true
+			})
+		}
+	}
+	for name := range opensslAccepts {
+		if !seen[name] {
+			t.Errorf("opensslAccepts names %q, which is not a negative vector", name)
+		}
+	}
+}
+
+func firstLine(s string) string {
+	lines := strings.Split(strings.TrimSpace(s), "\n")
+	for _, l := range lines {
+		if !strings.HasPrefix(l, "Using configuration") {
+			return l
+		}
+	}
+	return ""
+}
+
+// The accepted variants (and the PKI-assessment ones) are accepted by OpenSSL as well, except the
+// forms its PKCS#7 API cannot read (subject-key-id signer identifiers, Ed25519).
+func TestDifferentialAcceptedVariants(t *testing.T) {
+	ossl := requireOpenSSL(t)
+	now := time.Now()
+	cases := []struct {
+		name string
+		kit  kitOpts
+		mut  func(*tokSpec)
+	}{
+		{"p384", kitOpts{tsaKey: kEC384}, nil},
+		{"no issuerSerial", kitOpts{}, nil},
+		{"unsigned attrs", kitOpts{}, func(s *tokSpec) { s.unsigned = ctx(1, seq(oidDER(asn1.ObjectIdentifier{1, 2, 3}), setOf(intDER(1)))) }},
+		{"v1 and v2", kitOpts{}, func(s *tokSpec) { s.attrHook = func(a [][]byte) [][]byte { return append(a, s.essV1()) } }},
+		{"fraction genTime", kitOpts{}, func(s *tokSpec) { s.genTime = genTimeText(now.UTC())[:14] + ".25Z" }},
+		{"tsa name = subject", kitOpts{}, func(s *tokSpec) { s.tsaRaw = ctx(0, ctx(4, s.kit.tsa.RawSubject)) }},
+		{"nonRepudiation only", kitOpts{keyUsage: x509.KeyUsageContentCommitment}, nil},
+		{"critical-free extension", kitOpts{}, func(s *tokSpec) {
+			s.tstExt = ctx(1, seq(oidDER(asn1.ObjectIdentifier{1, 2, 3, 9}), octets([]byte{5, 0})))
+		}},
+	}
+	for _, c := range cases {
+		t.Run(c.name, func(t *testing.T) {
+			f := newFixture(t)
+			f.kit = newKit(t, c.kit)
+			f.spec.kit = f.kit
+			if c.name == "no issuerSerial" {
+				f.spec.essNoIssuer = true
+			}
+			if c.mut != nil {
+				c.mut(&f.spec)
+			}
+			tok := f.spec.build(t)
+			mustAccept(t, tok, f.expected(), f.policy())
+			if ok, out := osslFor(t, ossl, f).accepts(tok); !ok {
+				t.Fatalf("Go accepts, OpenSSL rejects: %s", firstLine(out))
 			}
 		})
 	}

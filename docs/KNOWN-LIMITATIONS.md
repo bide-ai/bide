@@ -412,13 +412,23 @@ head twice gives two different valid signatures (ed25519 and ML-DSA give the sam
 P-384, RSA of 3072 bits or more (2048 only through `Policy.RSA2048Until`) or Ed25519, and the signed
 attributes `contentType`, `messageDigest` and `signingCertificateV2`. It is a component: no command or
 gate calls it yet. A token that binds its signer only through the SHA-1 `signingCertificate` attribute
-is refused with `signing-certificate-v1-only`; FreeTSA's tokens are of this kind (OpenSSL accepts
-them), so FreeTSA cannot serve as a time authority, while DigiCert's carry both attributes and verify.
-Also refused: SHA-3 and SHA-224 hashes, ECDSA P-521, `crls` and attribute certificates, and a token
-that carries any certificate Go's parser rejects, even an unused one (stricter than OpenSSL, which
-accepts some of those). Not checked: the TSTInfo `tsa` name against the certificate subject. The status
-of the TSA certificate at `genTime` is decided by a function the caller must supply
-(`Policy.CertStatus`); the package does not fetch CRLs or OCSP responses.
+is refused with `signing-certificate-v1-only`, and one that uses SHA-1 as its digest algorithm with
+`weak-hash`. **Of ten public TSAs tried on 2026-10-15, six produce tokens that verify (DigiCert,
+GlobalSign, QuoVadis, SSL.com, Microsoft, SwissSign) and four are refused (Sectigo, Entrust, FreeTSA
+and Apple); a bank must pick a TSA from the first group or the top tier is unavailable.**
+Also refused: SHA-3 and SHA-224 hashes, ECDSA P-521, `crls` and attribute certificates, a token
+that carries any certificate Go's parser rejects even when unused, a SHA-256 default spelled out in
+`ESSCertIDv2`, and an accuracy above `Policy.MaxAccuracy` (one second by default). The stated accuracy
+widens the window in which genTime may precede the stamped head, which is why it is capped, and the
+latest the token proves is `Result.Latest()`, not `GenTime`. The TSA certificate path is judged at the
+token's own `genTime`, which the holder of a retired or compromised TSA key chooses: bound that with
+`Policy.DistrustAfter`, a status function that checks every non-anchor certificate as of `genTime`
+(`Policy.CertStatus` is mandatory; `rfc3161.StatusUnknown` is the fail-closed placeholder; the package
+fetches no CRL or OCSP response), and, for long-term evidence, renewal by an archive timestamp.
+The time bounds use the caller's clocks (the head's, and `Expected.Now` for a live gate), so a log
+clock running ahead refuses a genuine token. The verifier takes the token, not the `TimeStampResp`:
+the caller checks the `PKIStatus`. OpenSSL accepts more than the profile does; the cases are listed
+in `audit/rfc3161/openssl_test.go` (`opensslAccepts`).
 
 **Evidence sealed before format v6 keeps its older seal.** A `bide.audit.evidence.v5` package, whose
 seal covers the whole package JSON, still verifies (`bide audit verify-evidence` notes the format),

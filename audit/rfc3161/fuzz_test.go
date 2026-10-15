@@ -2,6 +2,7 @@ package rfc3161
 
 import (
 	"bytes"
+	"crypto"
 	"fmt"
 	"os"
 	"path/filepath"
@@ -159,4 +160,53 @@ func TestWriteSeedCorpus(t *testing.T) {
 			t.Fatal(err)
 		}
 	}
+}
+
+func allNegCases() []negCase {
+	var all []negCase
+	for _, g := range [][]negCase{structureCases, attrCases, algCases, imprintCases, pkiCases} {
+		all = append(all, g...)
+	}
+	return all
+}
+
+// FuzzSpec is the structure-aware target: it builds correctly signed tokens whose structure carries
+// one or two of the faults of the negative vectors (the second case's changes layer over the
+// first's), optionally flips a byte of the result, and checks that the verifier does not panic,
+// returns a refusal for what it rejects, and accepts only a token that attests the expected digest
+// by the kit's TSA. Faults can cancel (a second case may repair the first), so acceptance is allowed;
+// what it may never do is attest anything else.
+func FuzzSpec(f *testing.F) {
+	all := allNegCases()
+	for i := range all {
+		f.Add(uint16(i), uint16(len(all)), uint16(0), byte(0))
+	}
+	f.Add(uint16(3), uint16(40), uint16(200), byte(1))
+	f.Fuzz(func(t *testing.T, a, b, pos uint16, x byte) {
+		fx := newFixture(t)
+		ca := all[int(a)%len(all)]
+		fx.kit = newKit(t, ca.kit)
+		fx.spec.kit = fx.kit
+		if ca.mut != nil {
+			ca.mut(&fx.spec)
+		}
+		if i := int(b) % (len(all) + 1); i < len(all) && all[i].mut != nil {
+			all[i].mut(&fx.spec)
+		}
+		tok := fx.spec.build(t)
+		if x != 0 {
+			tok[int(pos)%len(tok)] ^= x
+		}
+		res, err := Verify(tok, fx.expected(), fx.policy())
+		if err != nil {
+			var r *Refusal
+			if !asRefusal(err, &r) {
+				t.Fatalf("error %v is not a refusal", err)
+			}
+			return
+		}
+		if res.Hash != crypto.SHA256 || !bytes.Equal(res.Imprint, fx.digest) || !res.Signer.Equal(fx.kit.tsa) {
+			t.Fatalf("accepted a token attesting something else: %+v", res)
+		}
+	})
 }
