@@ -477,7 +477,7 @@ func caKeyAllowed(pub any, at, rsa2048Until time.Time) error {
 		switch {
 		case bits >= 3072:
 			return nil
-		case bits >= 2048 && !rsa2048Until.IsZero() && (at.IsZero() || !at.After(rsa2048Until)):
+		case bits >= 2048 && !rsa2048Until.IsZero() && (at.IsZero() || at.Before(rsa2048Until)):
 			return nil
 		}
 		return fmt.Errorf("RSA key of %d bits is below the profile (3072; 2048 only under an unexpired RSA2048Until)", bits)
