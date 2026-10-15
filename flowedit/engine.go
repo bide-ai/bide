@@ -70,7 +70,8 @@ type doc struct {
 	src       []byte
 	root      *yaml.Node
 	lineStart []int
-	indent    int // detected indent step, 2 by default
+	indent    int  // detected indent step, 2 by default
+	js        bool // a JSON-style document: the root is a flow mapping, so new text is written as JSON
 }
 
 // Apply applies op to src. It returns a *Refusal error for anything it will not splice, and
@@ -135,10 +136,6 @@ func parse(src []byte) (*doc, error) {
 	if n.Kind != yaml.DocumentNode || len(n.Content) != 1 || n.Content[0].Kind != yaml.MappingNode {
 		return nil, refuse("the document is not a mapping")
 	}
-	if bytes.Contains(src, []byte("\t")) {
-		// A tab can only be inside a scalar or a comment in valid YAML; the scanners below do not model it.
-		return nil, refuse("tab characters")
-	}
 	d := &doc{src: src, root: n.Content[0], indent: 2}
 	d.lineStart = append(d.lineStart, 0)
 	for i, c := range src {
@@ -147,6 +144,7 @@ func parse(src []byte) (*doc, error) {
 		}
 	}
 	d.indent = d.detectIndent()
+	d.js = isFlow(d.root)
 	return d, nil
 }
 
@@ -225,7 +223,7 @@ func (d *doc) lineText(l int) string { return string(d.src[d.lineStart[l]:d.line
 // attached returns the first line of the comment lines directly above line l (no blank line
 // between): the comments that belong to the entry that starts on l.
 func (d *doc) attached(l int) int {
-	for l > 0 && strings.HasPrefix(strings.TrimLeft(d.lineText(l-1), " "), "#") {
+	for l > 0 && strings.HasPrefix(strings.TrimLeft(d.lineText(l-1), " \t"), "#") {
 		l--
 	}
 	return l
@@ -341,10 +339,10 @@ func (d *doc) scalarEnd(n *yaml.Node, s int, inFlow bool) (int, error) {
 		i := s
 		for i < len(src) && src[i] != '\n' {
 			c := src[i]
-			if c == ':' && (i+1 >= len(src) || src[i+1] == ' ' || src[i+1] == '\n' || (inFlow && strings.IndexByte(",]}", src[i+1]) >= 0)) {
+			if c == ':' && (i+1 >= len(src) || src[i+1] == ' ' || src[i+1] == '\t' || src[i+1] == '\n' || (inFlow && strings.IndexByte(",]}", src[i+1]) >= 0)) {
 				break
 			}
-			if c == '#' && i > s && src[i-1] == ' ' {
+			if c == '#' && i > s && (src[i-1] == ' ' || src[i-1] == '\t') {
 				break
 			}
 			if inFlow && strings.IndexByte(",[]{}", c) >= 0 {
@@ -353,7 +351,7 @@ func (d *doc) scalarEnd(n *yaml.Node, s int, inFlow bool) (int, error) {
 			i++
 		}
 		e := i
-		for e > s && src[e-1] == ' ' {
+		for e > s && (src[e-1] == ' ' || src[e-1] == '\t') {
 			e--
 		}
 		return d.confirmScalar(n, s, e)
@@ -402,7 +400,7 @@ func (d *doc) flowEnd(s int) (int, error) {
 				}
 			}
 		case '#':
-			if i > 0 && (d.src[i-1] == ' ' || d.src[i-1] == '\n') {
+			if i > 0 && (d.src[i-1] == ' ' || d.src[i-1] == '\t' || d.src[i-1] == '\n') {
 				return 0, refuse("comment inside a flow collection")
 			}
 		}
@@ -486,7 +484,7 @@ func (d *doc) set(op Op) (lo, hi int, frag string, err error) {
 	case l.node.Style&yaml.SingleQuotedStyle != 0:
 		q = '\''
 	}
-	f, err := scalar(op.Value, q, l.inFlow)
+	f, err := scalar(op.Value, q, l.inFlow, d.js)
 	return s, e, f, err
 }
 
@@ -536,17 +534,17 @@ func (d *doc) delEntry(p, ck, first *yaml.Node, flow bool, step, firstIdx int) (
 				return s, next, "", nil // the next entry starts on the line this one ends on
 			}
 			after := valEnd
-			for after < len(d.src) && d.src[after] == ' ' {
+			for after < len(d.src) && (d.src[after] == ' ' || d.src[after] == '\t') {
 				after++
 			}
 			if after < len(d.src) && d.src[after] == ',' {
 				after++
 			}
-			for after < len(d.src) && d.src[after] == ' ' {
+			for after < len(d.src) && (d.src[after] == ' ' || d.src[after] == '\t') {
 				after++
 			}
 			ls := d.lineStart[d.lineOf(s)]
-			if len(bytes.TrimLeft(d.src[ls:s], " ")) == 0 && after < len(d.src) && d.src[after] == '\n' {
+			if len(bytes.TrimLeft(d.src[ls:s], " \t")) == 0 && after < len(d.src) && d.src[after] == '\n' {
 				return ls, after + 1, "", nil // the entry has its own lines: remove them
 			}
 			return s, after, "", nil
@@ -574,7 +572,7 @@ func (d *doc) delEntry(p, ck, first *yaml.Node, flow bool, step, firstIdx int) (
 	}
 	line := d.lineOf(s)
 	prefix := d.src[d.lineStart[line]:s]
-	if len(bytes.TrimLeft(prefix, " ")) != 0 {
+	if len(bytes.TrimLeft(prefix, " \t")) != 0 {
 		if p.Kind == yaml.MappingNode && k == 0 && n > 1 && strings.HasSuffix(strings.TrimRight(string(prefix), " "), "-") {
 			// The first key of a "- key: v" item: remove it up to the next key, which takes its place.
 			next := d.start(p.Content[step])
@@ -634,6 +632,18 @@ func (d *doc) insert(op Op) (lo, hi int, frag string, err error) {
 			return 0, 0, "", err
 		}
 		s := d.start(p)
+		if ind, ok := d.itemLines(p, step); ok {
+			// One entry to a line, as pretty-printed JSON has it: the new entry gets a line of its own.
+			if idx < n {
+				at := d.lineStart[d.lineOf(d.start(p.Content[idx*step]))]
+				return at, at, ind + item + ",\n", nil
+			}
+			end, err := d.entryEnd(p, len(p.Content)-1, true)
+			if err != nil {
+				return 0, 0, "", err
+			}
+			return end, end, ",\n" + ind + item, nil
+		}
 		switch {
 		case n == 0:
 			return s + 1, s + 1, item, nil
@@ -761,7 +771,7 @@ func (d *doc) delOnly(p, ck, first *yaml.Node, s, valEnd int) (int, int, string,
 		return 0, 0, "", err
 	}
 	colon := ke
-	for colon < len(d.src) && d.src[colon] == ' ' {
+	for colon < len(d.src) && (d.src[colon] == ' ' || d.src[colon] == '\t') {
 		colon++
 	}
 	if colon >= len(d.src) || d.src[colon] != ':' {
@@ -770,7 +780,7 @@ func (d *doc) delOnly(p, ck, first *yaml.Node, s, valEnd int) (int, int, string,
 	kl := d.lineOf(colon)
 	// Only the entry's own comments go with it: a comment above them, inside the collection, stays.
 	for l := kl + 1; l < d.attached(d.lineOf(s)); l++ {
-		if strings.HasPrefix(strings.TrimLeft(d.lineText(l), " "), "#") {
+		if strings.HasPrefix(strings.TrimLeft(d.lineText(l), " \t"), "#") {
 			return 0, 0, "", refuse("a comment inside the collection that is not the entry's")
 		}
 	}
@@ -799,7 +809,7 @@ func (d *doc) entryEnd(p *yaml.Node, i int, flow bool) (int, error) {
 			return 0, err
 		}
 		c := ke
-		for c < len(d.src) && d.src[c] == ' ' {
+		for c < len(d.src) && (d.src[c] == ' ' || d.src[c] == '\t') {
 			c++
 		}
 		if c >= len(d.src) || d.src[c] != ':' {
@@ -888,4 +898,30 @@ func plainNodeBlock(n *yaml.Node) error {
 		return refuse("explicit tag")
 	}
 	return nil
+}
+
+// itemLines reports whether every entry of flow collection p starts a line of its own, after
+// nothing but the same indentation, and returns that indentation.
+func (d *doc) itemLines(p *yaml.Node, step int) (string, bool) {
+	n := len(p.Content) / step
+	if n == 0 {
+		return "", false
+	}
+	ind := ""
+	prev := d.lineOf(d.start(p))
+	for i := 0; i < n; i++ {
+		s := d.start(p.Content[i*step])
+		l := d.lineOf(s)
+		pre := string(d.src[d.lineStart[l]:s])
+		if l <= prev || strings.TrimLeft(pre, " \t") != "" {
+			return "", false
+		}
+		if i == 0 {
+			ind = pre
+		} else if pre != ind {
+			return "", false
+		}
+		prev = l
+	}
+	return ind, true
 }

@@ -263,7 +263,7 @@ func (d *doc) spans(op Op) (lineSpan, lineSpan, bool) {
 		return l, c
 	}
 	headLo := func(l0 int) int {
-		for l0 > 0 && l0-1 < len(lines) && strings.HasPrefix(strings.TrimLeft(lines[l0-1], " "), "#") {
+		for l0 > 0 && l0-1 < len(lines) && strings.HasPrefix(strings.TrimLeft(lines[l0-1], " \t"), "#") {
 			l0--
 		}
 		return l0
@@ -464,10 +464,10 @@ func splitTrailing(l string) (code, cm string) {
 			q = 0
 		case q == 0 && (c == '"' || c == '\''):
 			// a quote starts a quoted scalar only at the start of a token
-			if i == 0 || strings.IndexByte(" [{,:-", l[i-1]) >= 0 {
+			if i == 0 || strings.IndexByte(" \t[{,:-", l[i-1]) >= 0 {
 				q = c
 			}
-		case q == 0 && c == '#' && (i == 0 || l[i-1] == ' '):
+		case q == 0 && c == '#' && (i == 0 || l[i-1] == ' ' || l[i-1] == '\t'):
 			return strings.TrimRight(l[:i], " "), l[i:]
 		}
 	}

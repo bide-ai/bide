@@ -2,6 +2,7 @@ package flowedit
 
 import (
 	"bytes"
+	"encoding/json"
 	"fmt"
 	"reflect"
 	"slices"
@@ -20,7 +21,7 @@ func isComposite(v any) bool {
 }
 
 // scalar renders a scalar. q is the quote of the scalar it replaces (0 plain).
-func scalar(v any, q byte, flow bool) (string, error) {
+func scalar(v any, q byte, flow, js bool) (string, error) {
 	switch x := v.(type) {
 	case int:
 		return strconv.Itoa(x), nil
@@ -29,6 +30,15 @@ func scalar(v any, q byte, flow bool) (string, error) {
 	case string:
 		if strings.ContainsAny(x, "\n\r\t") {
 			return "", refuse("a string with a line break or tab")
+		}
+		if js {
+			var b bytes.Buffer
+			e := json.NewEncoder(&b)
+			e.SetEscapeHTML(false)
+			if err := e.Encode(x); err != nil {
+				return "", err
+			}
+			return strings.TrimSuffix(b.String(), "\n"), nil
 		}
 		dq := func() string {
 			b, _ := yaml.Marshal(&yaml.Node{Kind: yaml.ScalarNode, Tag: "!!str", Value: x, Style: yaml.DoubleQuotedStyle})
@@ -56,12 +66,12 @@ func scalar(v any, q byte, flow bool) (string, error) {
 	return "", refuse("value type %T", v)
 }
 
-func flowValue(v any) (string, error) {
+func flowValue(v any, js bool) (string, error) {
 	switch x := v.(type) {
 	case []any:
 		parts := make([]string, len(x))
 		for i, e := range x {
-			s, err := flowValue(e)
+			s, err := flowValue(e, js)
 			if err != nil {
 				return "", err
 			}
@@ -71,11 +81,11 @@ func flowValue(v any) (string, error) {
 	case Map:
 		parts := make([]string, len(x))
 		for i, kv := range x {
-			k, err := scalar(kv.Key, 0, true)
+			k, err := scalar(kv.Key, 0, true, js)
 			if err != nil {
 				return "", err
 			}
-			s, err := flowValue(kv.Val)
+			s, err := flowValue(kv.Val, js)
 			if err != nil {
 				return "", err
 			}
@@ -83,18 +93,18 @@ func flowValue(v any) (string, error) {
 		}
 		return "{" + strings.Join(parts, ", ") + "}", nil
 	}
-	return scalar(v, 0, true)
+	return scalar(v, 0, true, js)
 }
 
 func (d *doc) flowItem(isMap bool, op Op, _ bool) (string, error) {
-	v, err := flowValue(op.Value)
+	v, err := flowValue(op.Value, d.js)
 	if err != nil {
 		return "", err
 	}
 	if !isMap {
 		return v, nil
 	}
-	k, err := scalar(op.Key, 0, true)
+	k, err := scalar(op.Key, 0, true, d.js)
 	if err != nil {
 		return "", err
 	}
@@ -102,16 +112,16 @@ func (d *doc) flowItem(isMap bool, op Op, _ bool) (string, error) {
 }
 
 func (d *doc) blockEntry(pad, key string, v any, flow bool) (string, error) {
-	k, err := scalar(key, 0, false)
+	k, err := scalar(key, 0, false, false)
 	if err != nil {
 		return "", err
 	}
 	if !isComposite(v) {
-		s, err := scalar(v, 0, false)
+		s, err := scalar(v, 0, false, false)
 		return pad + k + ": " + s + "\n", err
 	}
 	if flow || empty(v) {
-		s, err := flowValue(v)
+		s, err := flowValue(v, false)
 		return pad + k + ": " + s + "\n", err
 	}
 	inner := pad + strings.Repeat(" ", d.indent)
@@ -159,11 +169,11 @@ func (d *doc) blockMap(pad string, m Map) (string, error) {
 func (d *doc) blockItem(pad string, gap int, v any, flow bool) (string, error) {
 	dash := pad + "-" + strings.Repeat(" ", gap-1)
 	if !isComposite(v) {
-		s, err := scalar(v, 0, false)
+		s, err := scalar(v, 0, false, false)
 		return dash + s + "\n", err
 	}
 	if flow || empty(v) {
-		s, err := flowValue(v)
+		s, err := flowValue(v, false)
 		return dash + s + "\n", err
 	}
 	m, ok := v.(Map)

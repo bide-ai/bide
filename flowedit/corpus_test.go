@@ -2,6 +2,7 @@ package flowedit
 
 import (
 	"bytes"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"io/fs"
@@ -59,7 +60,19 @@ func collect(t testing.TB) []file {
 			return
 		}
 		seen[text] = true
-		out = append(out, file{group, name, text, group == "repo YAML files" || group == "YAML in the docs"})
+		out = append(out, file{group, name, text, group == "repo YAML files" || group == "YAML in the docs" || group == "JSON configs (valid JSON)"})
+	}
+	// JSON configs: files, and raw strings in Go sources. Those that are not valid JSON are test
+	// templates with a placeholder where a value goes (ASSERT, APPROVAL); they are measured apart.
+	addJSON := func(name, text string) {
+		if !strings.Contains(text, `"nodes"`) {
+			return
+		}
+		if json.Valid([]byte(text)) {
+			add("JSON configs (valid JSON)", name, text)
+		} else {
+			add("JSON test templates (placeholders)", name, text)
+		}
 	}
 	filepath.WalkDir(root, func(p string, d fs.DirEntry, err error) error {
 		if err != nil {
@@ -84,11 +97,12 @@ func collect(t testing.TB) []file {
 			for i, m := range fence.FindAllSubmatch(b, -1) {
 				add("YAML in the docs", fmt.Sprintf("%s#%d", rel, i), string(m[1])+"\n")
 			}
+		case ".json":
+			addJSON(rel, string(b))
 		case ".go":
-			if strings.HasSuffix(p, "_test.go") && strings.Contains(rel, "plan/") {
+			if strings.HasPrefix(rel, "plan/") || strings.HasPrefix(rel, "examples/") {
 				for i, m := range rawGo.FindAllSubmatch(b, -1) {
-					add("plan test configs (JSON)", fmt.Sprintf("%s#%d", rel, i), string(m[1]))
-					add("plan test configs (JSON, tabs as spaces)", fmt.Sprintf("%s#%d", rel, i), strings.ReplaceAll(string(m[1]), "\t", "  "))
+					addJSON(fmt.Sprintf("%s#%d", rel, i), string(m[1]))
 				}
 			}
 		}
@@ -112,6 +126,7 @@ func collect(t testing.TB) []file {
 				// A flow config is one document (the loader reads the first and ignores the rest), so a
 				// file of several is outside the bar; the adversarial set holds one on purpose.
 				multiDoc = append(multiDoc, filepath.Base(f))
+				multiDocFiles = append(multiDocFiles, file{dir.group, filepath.Base(f), string(b), true})
 				continue
 			}
 			out = append(out, file{dir.group, filepath.Base(f), string(b), dir.real})
@@ -121,6 +136,7 @@ func collect(t testing.TB) []file {
 }
 
 var multiDoc []string
+var multiDocFiles []file
 
 func documents(b []byte) int {
 	dec := yaml.NewDecoder(bytes.NewReader(b))
@@ -802,7 +818,17 @@ func TestCorpusReport(t *testing.T) {
 		groups[g].addTo(&all)
 	}
 	fmt.Fprintf(&b, "\n")
-	row("REAL FILES (repo + docs + external)", &realAll)
+	row("REAL, single-document files (headline)", &realAll)
+	strict := realAll
+	strict.rates = append([]fileRate(nil), realAll.rates...)
+	for _, f := range multiDocFiles {
+		n := len(ops(f.text))
+		strict.files++
+		strict.ops += n
+		strict.refused += n
+		strict.rates = append(strict.rates, fileRate{name: f.name, ops: n})
+	}
+	row(fmt.Sprintf("REAL, with the %d multi-document files as misses", len(multiDocFiles)), &strict)
 	row("ALL", &all)
 	fmt.Fprintf(&b, "\nwrong (applied text that disagrees with the independent oracle, or a non-refusal error): %d\n", all.wrong)
 	for k, n := range []string{"set", "insert", "delete"} {
@@ -830,7 +856,7 @@ func TestCorpusReport(t *testing.T) {
 		for _, r := range rs {
 			fmt.Fprintf(&b, "  %6d  %s\n", r.v, r.k)
 		}
-		if g == "REAL" || g == "external open-source files" || g == "adversarial (hand-written)" {
+		if g == "REAL" || g == "external open-source files" || g == "JSON configs (valid JSON)" || g == "adversarial (hand-written)" {
 			for _, w := range ta.worst(6) {
 				if w.ok < w.ops {
 					fmt.Fprintf(&b, "    worst file: %-60s %5.1f%% of %d\n", w.name, pct(w.ok, w.ops), w.ops)
@@ -844,13 +870,13 @@ func TestCorpusReport(t *testing.T) {
 	// hand-written to be refused in part, and the plan-test JSON with tab indentation is read by
 	// another path in the editor.
 	if p := pct(realAll.inSpan, realAll.ops); p < 95 {
-		t.Errorf("real files: %.1f%% of operations within the intended lines, want at least 95%%", p)
+		t.Errorf("real single-document files: %.1f%% of operations within the intended lines, want at least 95%%", p)
 	}
 	if p := realAll.perFile(); p < 95 {
 		t.Errorf("real files: %.1f%% per file within the intended lines, want at least 95%%", p)
 	}
 	for _, g := range order {
-		if g == "adversarial (hand-written)" || g == "plan test configs (JSON)" {
+		if g == "adversarial (hand-written)" || g == "JSON test templates (placeholders)" {
 			continue
 		}
 		if p := pct(groups[g].inSpan, groups[g].ops); p < 95 {

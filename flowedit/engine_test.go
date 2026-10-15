@@ -104,12 +104,39 @@ func TestRefusals(t *testing.T) {
 		"crlf":         "version: 1\r\nflow: a\r\nnodes: []\r\n",
 		"bom":          "\xef\xbb\xbfversion: 1\nflow: a\nnodes: []\n",
 		"block scalar": "version: 1\nflow: |\n  a\nnodes: []\n",
-		"tab":          "version: 1\nflow: a\t# c\nnodes: []\n",
 	} {
 		_, err := Apply([]byte(src), Op{Kind: Set, Path: []any{"flow"}, Value: "x"})
 		var rf *Refusal
 		if !errors.As(err, &rf) {
 			t.Errorf("%s: want a refusal, got %v", name, err)
 		}
+	}
+}
+
+const tabJSON = "{\n\t\"version\": 1,\n\t\"flow\": \"f\",\n\t\"nodes\": [\n\t\t{\"name\": \"a\", \"block\": \"a\"},\n\t\t{\"name\": \"b\", \"block\": \"b\"}\n\t]\n}\n"
+
+// A JSON file indented with tabs is edited like any other: a new entry gets a line of its own, with
+// the same tabs, and is written as JSON.
+func TestTabIndentedJSON(t *testing.T) {
+	out := apply(t, tabJSON, Op{Kind: Insert, Path: []any{"nodes"}, Index: 2, Value: Map{{"name", "c"}, {"block", "c"}}})
+	want := "\t\t{\"name\": \"b\", \"block\": \"b\"},\n\t\t{\"name\": \"c\", \"block\": \"c\"}\n\t]"
+	if !strings.Contains(out, want) {
+		t.Errorf("appended entry:\n%s", out)
+	}
+	out = apply(t, tabJSON, Op{Kind: Insert, Path: []any{"nodes"}, Index: 0, Value: Map{{"name", "c"}, {"block", "c"}}})
+	if !strings.Contains(out, "\t\"nodes\": [\n\t\t{\"name\": \"c\", \"block\": \"c\"},\n\t\t{\"name\": \"a\"") {
+		t.Errorf("entry at the front:\n%s", out)
+	}
+	out = apply(t, tabJSON, Op{Kind: Insert, Path: nil, Key: "entry", Value: "a"})
+	if !strings.Contains(out, "\t]\n,\n\t\"entry\": \"a\"\n}") && !strings.Contains(out, "\t],\n\t\"entry\": \"a\"\n}") {
+		t.Errorf("new key:\n%s", out)
+	}
+	out = apply(t, tabJSON, Op{Kind: Delete, Path: []any{"nodes", 1}})
+	if strings.Contains(out, `"b"`) || !strings.Contains(out, "\t\t{\"name\": \"a\", \"block\": \"a\"}\n\t]") {
+		t.Errorf("deleted entry:\n%s", out)
+	}
+	out = apply(t, tabJSON, Op{Kind: Set, Path: []any{"flow"}, Value: "g"})
+	if !strings.Contains(out, "\t\"flow\": \"g\",\n") {
+		t.Errorf("set:\n%s", out)
 	}
 }
