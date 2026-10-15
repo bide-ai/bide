@@ -8,7 +8,7 @@ This page lists work that is not done yet. It describes intent, not promises of 
 
 ### The API
 
-- A deadline for a gate that never reaches its approvals, so a run waiting on approvers who do not answer stops on a schedule instead of staying unfinished until it is cancelled; and a way to clear a stale decision written before a gate's request.
+- Done: a deadline for a gate that never reaches its approvals (`ApprovalPolicy.Timeout`; the expiry is recorded as the gate's outcome and checked by model 1b), and a stale decision written before a flow gate's request no longer blocks it ([design](design/approval-deadlines.md)).
 - Moving the journal format tag from `v1-dev` to its final value, which waits for 1.0.
 
 Changes that touch claims, the journal, leases, sagas or proofs are reviewed adversarially before they merge.

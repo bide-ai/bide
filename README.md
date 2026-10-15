@@ -244,6 +244,9 @@ record. The gate and the notice are recorded on the same audited trail as the re
 - **Separation of duties.** With `ExcludePrincipal`, a gate never counts a decision by the run's
   requester or by a requester of any run above it; the excluded decision stays on the record, marked.
   Bide compares ids; it cannot see that one person holds two identities.
+- **Deadlines.** With `Timeout`, a gate that gets no approval in time expires: the expiry is recorded
+  as the gate's outcome, the call never runs, a late decision never counts, and the notifier says so
+  (`approval_expired`). See [Deadlines](docs/guides/hitl-approval.md#deadlines).
 - **Keys outside the application.** Audit-log and approver signing keys can live in a PKCS#11 HSM,
   AWS KMS, Google Cloud KMS or Azure Key Vault behind one `audit.Signer` interface, in
   Ed25519 or ECDSA P-256. Verifiers hold only the public key. This is key custody, not a

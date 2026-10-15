@@ -99,6 +99,8 @@ func requestStamp(recs []Record, toolUseID string) string {
 	return ""
 }
 
+// protocol:claims begin Expire
+
 // openDeadline returns the deadline of the gate on toolUseID: the recorded one, or, for a policy
 // with a Timeout and none recorded, the one it records now (insert-once: another drive's, recorded
 // first, is the one returned). recs are the run's records as the caller read them, for the recorded
@@ -136,6 +138,8 @@ func openDeadline(ctx context.Context, d *Journal, runID, toolUseID string, pol 
 
 // pastDeadline reports whether now has reached expiresAt.
 func pastDeadline(now time.Time, expiresAt time.Time) bool { return !now.Before(expiresAt) }
+
+// protocol:claims end
 
 // checkNotExpired refuses (ErrApprovalExpired, ErrConfig) a decision on the gate of toolUseID whose
 // recorded deadline the clock has reached: it could not count. One point read of the deadline.

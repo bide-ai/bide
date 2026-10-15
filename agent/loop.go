@@ -609,7 +609,7 @@ func (a *Agent) runLoop(ctx context.Context, runID string, d *driveSpec) (Messag
 			// protocol:lifecycle end
 			spec := a.specs[tu.Name]
 			// protocol:lifecycle begin DOpen
-			// protocol:claims begin ApGate Deny
+			// protocol:claims begin ApGate Deny ApExpire
 			// A recorded denial is final, whatever the tool's gate is now: a human's Approve(false)
 			// or an m-of-n gate's terminal tally that did not pass. The gate may have been removed
 			// or loosened since (a redeploy), and the call must still not run. A recorded approval

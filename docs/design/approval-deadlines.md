@@ -1,6 +1,6 @@
 # Design: approval deadlines, and clearing a stale decision
 
-Status: proposed. Two roadmap items for the approval gate (see
+Status: shipped. Two roadmap items for the approval gate (see
 [Human approval](../guides/hitl-approval.md) and [m-of-n approval](design-mofn-approval.md)):
 
 - A deadline for a gate that never gets its approvals, so a run waiting on approvers who do not

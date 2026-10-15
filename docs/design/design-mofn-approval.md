@@ -570,7 +570,8 @@ graph-first runtime can back, because the proof comes from the journal, not the 
 
 ## Deferred, and how it composes
 
-- **Deadline to resolve a stuck gate.** A gate that never reaches k should be resolvable by a
+- **Deadline to resolve a stuck gate.** Shipped as `ApprovalPolicy.Timeout`; see
+  [approval deadlines](approval-deadlines.md). The original note: a gate that never reaches k should be resolvable by a
   durable deadline (deny on expiry, or escalate). This is exactly the deadline/obligation
   feature: the obligation is "reach k approvals by T," and its breach proof is the absence of a
   passing tally before the STH at T. Build obligations, then wire the timeout in.

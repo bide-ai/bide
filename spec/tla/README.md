@@ -682,6 +682,11 @@ resolution all run around it.
 
 - **1-of-1 (`Approve`).** `approval:<id>` holds the first decision recorded (`Approve1`, either
   verdict, at any time).
+- **Deadlines (`HasDeadline`).** The clock may pass the gate's recorded deadline once (`Expire`).
+  A decision recorded after it is late (`late` on an m-of-n record; a 1-of-1 decision recorded
+  after it is `"late"`, which the gate reads as the expiry). A gate past its deadline with no
+  terminal count records the expiry where its outcome goes: the tally (`exp`) under its name, or
+  the 1-of-1 decision (`"exp"`, `ApExpire`), so an expiry and a passing tally race for one record.
 - **m-of-n (`SubmitDecision`).** Each decision is its own record, in journal order: the approver
   id it names, the person who signed, the verdict, the key it was signed with, and whether it was
   signed over this exact call or another call or other arguments (`Subjects`). People sign as an
@@ -736,7 +741,9 @@ resolution all run around it.
 | `QCount` | `TallyApprovals` with the resolver as it is now: shared and keyless seats excluded (`ReasonSharedKey`, `ReasonNoKeyID`), and the requester under `ExcludePrincipal` (`RecordedPrincipal`, `ReasonRequester`, `ReasonNoRequester`) |
 | `QRecord` | `quorumTally`'s `step` recording the tally (retry-safe, first writer wins), or, over a tally the policy supersedes, the separation-of-duties re-tally (`ApprovalSoDRetallyStep`) |
 | `QDecide` | `tallyGateOnce` after the write: the gate goes by the record the journal holds, and counts again when it is one the policy supersedes (another drive's weaker tally landed first) |
-| `Deny` | the pre-pass's `Journal.put` of the denied result |
+| `Deny` | the pre-pass's `Journal.put` of the denied result (`ExpiredResult` for an expiry) |
+| `ApExpire` | the pre-pass's one-decision gate past its deadline (`openDeadline`, `pastDeadline`): the expiry recorded as the decision, insert-once (`approvalStep`, `expiredDecision`) |
+| `Expire` | the clock reaching the gate's recorded deadline (`approval-deadline:<id>`, `ApprovalDeadline`); `countGate` leaves out decisions recorded after it (`lateFor`, `ReasonLate`), and `tallyGateOnce` records the expiry (`ApprovalTally.Expired`) under the name its count would take |
 | `Approve1` | `Approve` |
 | `Submit` | `SubmitDecision` (without `WithDecisionCheck`: the gate never depends on it). The record is named by the decision's identity, not its signature (`decisionIdentityStep`), so fewer records are written than the model allows (it forbids only an exact repeat and allows any other append); the counting rule ignores extra records, so no property depends on the count |
 | `Redeploy` | a new deployment of a process's tools |
@@ -751,6 +758,10 @@ resolution all run around it.
 | `TallySound` | invariant | a passing recorded tally rests on `need` valid approvals, signed over this exact call, by distinct people (the holders of the signing keys) |
 | `DenialSound` | invariant | a failing recorded tally rests on valid denials and seats the count excluded: an invalid record cannot force a denial |
 | `NoStuckPause` | invariant | the gate never pauses for approvals that are already in (no lockout) |
+| `ExpiredNeverRuns` | invariant | no drive fires the effect of a call whose gate, as the drive's deployment has it, recorded an expiry as its outcome |
+| `LateNeverCounts` | invariant | a passing outcome never rests on an approval recorded after the deadline |
+| `ExpiryAfterDeadline` | invariant | an expiry is recorded only once the deadline has passed |
+| `OutcomeOnce` | action property | a recorded decision, tally or expiry never changes, so an expiry and a passing tally cannot both be the outcome |
 | `SeparationOfDuties` | invariant | a recorded tally or re-tally under a policy that excludes the requester was counted for a run that, with every run above it, records one, seats none of the requesters' approvals (the run's own or an ancestor's, under any spelling), and, when it passed, rests on `need` approvals from other approvers; and no effect fires under a gate that excludes the requester, as the firing drive's deployment has it, without an outcome that held separation of duties |
 
 `AtMostOnce`, `NoLiveOverride` and the rest of model 1's properties are checked in the same runs.
@@ -778,6 +789,8 @@ every drive that read the denial.
 | `ap-sod-redeploy` | ci | separation of duties added by a redeploy: 2 of 3 without the exclusion, and one process's redeploy makes it exclude the requester `a1`; `h1` and `h2` approve; two drivers in two processes. A tally the old deployment records, `a1` counted, never lets a drive under the new one fire | 7,693 | 2 s |
 | `ap-sod-chain` | ci | a delegated sub-run: its own requester is `a2`, the run above it was requested by `a1`; 1 of 3 excluding the requesters; `h1`, `h2` and `h3` sign, and only `h3` may count | 1,911 | 7 s |
 | `ap-sod-anonymous-ancestor` | ci | a delegated sub-run under a root run that records no principal: the gate refuses the policy | 102 | 3 s |
+| `ap-deadline-m-cross` | ci | `ap-m-cross` with a deadline: a passing tally and an expiry race for one record while decisions arrive and the deadline passes | 3,946,321 | 1 min |
+| `ap-deadline-one-cross` | ci | `ap-one-cross` with a deadline: an `Approve` and the expiry race for the one decision record, and an `Approve` after the deadline is late | 579,434 | 10 s |
 | `deep-ap-m-same` | nightly | m-of-n, two drivers in one process, three decisions, a redeploy; 1 error reply | 5,252,508 | 6 min |
 
 Regressions (a regression's state count is the states TLC explored until the violation, with one TLC worker, and varies with the worker count): `regress/ap-denial-not-final` (#70: a recorded denial honoured only while the tool
@@ -796,7 +809,8 @@ compared with approver ids exactly, so another spelling of the requester's id co
 excluded, so the root run's requester approves the delegated call; `SeparationOfDuties`, 23
 states), `regress/ap-sod-weak-tally-stands` (a recorded tally stands whatever the policy is now,
 so the old deployment's tally, counting the requester, lets a drive under the excluding policy
-fire; `SeparationOfDuties`, 5,382 states). Accepted: `limits/ap-resolver-change-denies`
+fire; `SeparationOfDuties`, 5,382 states), `regress/ap-late-counts` (approval deadlines: a
+decision recorded after the deadline counted; `LateNeverCounts`, about 36,000 states). Accepted: `limits/ap-resolver-change-denies`
 (a change that makes two approvers share a key excludes both seats, and the gate can deny with
 no denial recorded; `NoDenyWithoutDenials`, 8 states).
 
