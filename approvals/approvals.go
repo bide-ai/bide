@@ -270,6 +270,10 @@ type Handler struct {
 // as they are written, j's store must be the audit.AuditedStore (or wrap it). verifierFor resolves
 // an approver id to the key enrolled for it, as agent.WithApproverVerifiers does; a decision whose
 // approver has no key, or whose signature does not verify under it, is refused.
+//
+// WithGatePolicy is required: New returns an error wrapping agent.ErrConfig without it, because
+// the handler counts a gate under the policy the agent is built with. WithAuth is required only
+// with WithPage or WithCORS, which expose a call's arguments to a browser.
 func New(j *agent.Journal, verifierFor agent.ApproverVerifierFor, opts ...Option) (*Handler, error) {
 	if j == nil {
 		return nil, fmt.Errorf("approvals: nil journal: %w", agent.ErrConfig)
