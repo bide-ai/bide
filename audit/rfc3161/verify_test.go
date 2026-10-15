@@ -751,3 +751,77 @@ func base14(s *tokSpec) string {
 	}
 	return "20261015120000"
 }
+
+// A parseable but corrupted certificate that the path does not use is ignored: the result and the
+// chain are identical (an intentional divergence from OpenSSL, which rejects such a token).
+func TestUnusedParseableCertificateIsIgnored(t *testing.T) {
+	f := newFixture(t)
+	base := mustAccept(t, f.spec.build(t), f.expected(), f.policy())
+	other := newKit(t, kitOpts{})
+	bad := append([]byte(nil), other.root.Raw...)
+	bad[len(bad)-1] ^= 1 // inside the signature value: still parses
+	if _, err := x509.ParseCertificate(bad); err != nil {
+		t.Fatal(err)
+	}
+	f.spec.extraCerts = [][]byte{bad}
+	res := mustAccept(t, f.spec.build(t), f.expected(), f.policy())
+	if !res.GenTime.Equal(base.GenTime) || !res.Signer.Equal(base.Signer) || !sameChain(res.Chain, base.Chain) ||
+		!bytes.Equal(res.Imprint, base.Imprint) || res.Serial.Cmp(base.Serial) != 0 {
+		t.Fatalf("an unused certificate changed the result: %+v vs %+v", res, base)
+	}
+}
+
+func TestNormalize(t *testing.T) {
+	f := newFixture(t)
+	f.spec.extraCerts = [][]byte{newKit(t, kitOpts{}).root.Raw, newKit(t, kitOpts{}).tsa.Raw}
+	tok := f.spec.build(t)
+	res := mustAccept(t, tok, f.expected(), f.policy())
+	norm, err := Normalize(tok, res)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(norm) >= len(tok) {
+		t.Fatalf("normalized %d bytes, received %d", len(norm), len(tok))
+	}
+	res2 := mustAccept(t, norm, f.expected(), f.policy())
+	if !res2.GenTime.Equal(res.GenTime) || !sameChain(res2.Chain, res.Chain) || !res2.Signer.Equal(res.Signer) {
+		t.Fatal("normalizing changed what the token attests")
+	}
+	again, err := Normalize(norm, res2)
+	if err != nil || !bytes.Equal(again, norm) {
+		t.Fatalf("normalization is not idempotent: %v", err)
+	}
+	// two encodings of one attestation normalize to the same bytes
+	g := newFixture(t)
+	g.kit, g.spec.kit, g.digest, g.spec.imprint, g.head, g.gen = f.kit, f.kit, f.digest, f.spec.imprint, f.head, f.gen
+	g.spec.genTime = f.spec.genTime
+	g.spec.extraCerts = [][]byte{newKit(t, kitOpts{}).root.Raw}
+	tok2 := g.spec.build(t)
+	res3 := mustAccept(t, tok2, g.expected(), g.policy())
+	n2, err := Normalize(tok2, res3)
+	if err != nil {
+		t.Fatal(err)
+	}
+	_ = n2 // ECDSA signatures are randomized, so the two tokens differ in the signature; only the cert field is compared below
+	if len(n2) != len(norm) {
+		t.Errorf("normalized lengths differ: %d vs %d", len(n2), len(norm))
+	}
+
+	// a policy-supplied signer: the certificates field disappears
+	h := newFixture(t)
+	h.spec.noCerts = true
+	pol := h.policy()
+	pol.Intermediates = []*x509.Certificate{h.kit.tsa}
+	tok3 := h.spec.build(t)
+	r3 := mustAccept(t, tok3, h.expected(), pol)
+	n3, err := Normalize(tok3, r3)
+	if err != nil || !bytes.Equal(n3, tok3) {
+		t.Fatalf("a token without certificates must come back unchanged: %v", err)
+	}
+	if _, err := Normalize(tok, nil); !errors.Is(err, ErrConfig) {
+		t.Errorf("nil result: %v", err)
+	}
+	if _, err := Normalize([]byte{1, 2}, res); err == nil {
+		t.Error("garbage normalized")
+	}
+}

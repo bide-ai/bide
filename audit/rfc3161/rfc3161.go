@@ -48,9 +48,12 @@
 // presented. Policy.RSA2048Until is evaluated against genTime, so it is bounded by the same
 // back-dating window.
 //
-// Certificates in the token that are not used are still read: one that Go's parser rejects refuses
-// the token (a parseable but unused certificate is ignored; the path is built only from the
-// auditor's anchors).
+// Unused certificates. Every certificate in the token must parse (one that Go's parser rejects
+// refuses the token); a parseable certificate the path does not use is ignored, even if corrupted,
+// because the path is built only from the auditor's anchors. This is an intentional divergence from
+// OpenSSL, which rejects a token holding a corrupted unused certificate; the others are listed in
+// openssl_test.go. Normalize strips the unused certificates, and two encodings of one attestation
+// are distinct byte strings, so anything keyed on token bytes should key on the normalized form.
 package rfc3161
 
 import (

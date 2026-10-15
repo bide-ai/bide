@@ -428,7 +428,7 @@ fetches no CRL or OCSP response), and, for long-term evidence, renewal by an arc
 The time bounds use the caller's clocks (the head's, and `Expected.Now` for a live gate), so a log
 clock running ahead refuses a genuine token. The verifier takes the token, not the `TimeStampResp`:
 the caller checks the `PKIStatus`. OpenSSL accepts more than the profile does; the cases are listed
-in `audit/rfc3161/openssl_test.go` (`opensslAccepts`).
+in `audit/rfc3161/openssl_test.go` (`opensslAccepts`). The reverse also holds once: a parseable but corrupted certificate in the token that the path does not use is ignored here and rejected by OpenSSL. Tokens that differ only in such certificates attest the same thing but are different byte strings; `rfc3161.Normalize` strips them, and anything keyed on token bytes should use its output.
 
 **Evidence sealed before format v6 keeps its older seal.** A `bide.audit.evidence.v5` package, whose
 seal covers the whole package JSON, still verifies (`bide audit verify-evidence` notes the format),

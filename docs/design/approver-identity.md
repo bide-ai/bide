@@ -646,7 +646,7 @@ retires TSA keys; `Policy.AcceptedPolicies` pins policy OIDs; `Expected.Now` bou
 live gate; a SHA-1 `signingCertificate` beside a V2 attribute is checked for consistency only. Of ten public
 TSAs tried on 2026-10-15 the profile accepts six (DigiCert, GlobalSign, QuoVadis, SSL.com, Microsoft,
 SwissSign) and refuses four (Sectigo, Entrust, FreeTSA: SHA-1 `signingCertificate` only; Apple: SHA-1 as the
-digest algorithm); a bank must choose its TSA from the first group.
+digest algorithm); a bank must choose its TSA from the first group. Unused certificates in a token must parse and are then ignored (the path comes from the auditor's anchors); `Normalize` returns the token with only the path's certificates, and because two encodings of one attestation are distinct byte strings, the identity bundle and kit must key and store tokens by their normalized bytes (or by the attested fields), never by the received bytes.
 
 **Profile (each point a refusal when violated):**
 
