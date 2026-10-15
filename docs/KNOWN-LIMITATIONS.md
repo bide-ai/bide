@@ -303,6 +303,8 @@ clock is vouched for. A record written before the times existed has none and is 
 none. A tool result a model-driven call produced has no `recorded_at` (the attempt marker's
 `attempted_at` is its time). Nothing reads these times to decide anything.
 
+**A re-ask note is proven in what it supersedes, not in the policy it states.** Readers honor a re-ask note only where the journal holds a recorded tally the gate would ask again over and the note's `Supersedes` names it (`agent.ValidReaskNote`), so a note pre-inserted without that is ignored. A journal writer who does have write access can still pre-insert a note with the correct `Supersedes` and a forged `Need`, `Approvers` or `Requesters`; readers that only have the journal (`bide view`, `bide approve`, the intake's fallback, notification details, the verdict's `Reask`) then display that policy. It changes what is shown, not what counts: the gate never reads the note, every decision is signed by an approver's key, and the intake and the gate count under the application's live policy.
+
 **Decisions signed before `bide.approval.v3` must be signed again.** They no longer verify. A run
 whose gate passed on them before the upgrade, and whose call has not run, pauses to ask again
 (`agent.PendingReapproval`) rather than run on approvals an audit would fail. See
