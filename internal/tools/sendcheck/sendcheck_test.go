@@ -95,7 +95,7 @@ func ordered(out chan int, release func()) {
 func TestTheAllowlistNeedsAReasonAndMustMatch(t *testing.T) {
 	dir := t.TempDir()
 	write(t, dir, "a.go", bad)
-	key := "a.go|start|inFlight.Add(-1)"
+	key := "a.go|start|defer inFlight.Add(-1)"
 	allow := filepath.Join(dir, "allow")
 	for name, tc := range map[string]struct {
 		content string
@@ -115,5 +115,203 @@ func TestTheAllowlistNeedsAReasonAndMustMatch(t *testing.T) {
 				t.Fatalf("exit %d, want %d: %s", code, tc.code, stderr.String())
 			}
 		})
+	}
+}
+
+func findings(t *testing.T, src string) string {
+	t.Helper()
+	dir := t.TempDir()
+	write(t, dir, "a.go", src)
+	var stderr bytes.Buffer
+	code := check(dir, "", &stderr)
+	if code == 0 {
+		return ""
+	}
+	return stderr.String()
+}
+
+func TestFollowsASendIntoAHelper(t *testing.T) {
+	got := findings(t, `package p
+
+import "sync"
+
+var mu sync.Mutex
+var n int
+
+func send(ch chan int) { ch <- 1 }
+
+func helper(ch chan int) {
+	go func() {
+		defer func() { mu.Lock(); n--; mu.Unlock() }()
+		send(ch)
+	}()
+}
+`)
+	if !strings.Contains(got, "call send") {
+		t.Fatalf("a send through a helper was not found: %q", got)
+	}
+}
+
+func TestHelpersThatDoNotTakeAChannelAreNotSends(t *testing.T) {
+	// close, Done and the like are named in many packages; only a function handed a channel counts.
+	if got := findings(t, `package p
+
+type g struct{ ch chan int }
+
+func (x *g) signal() { x.ch <- 1 }
+
+func start(x *g, release func()) {
+	go func() {
+		defer release()
+		x.signal()
+	}()
+}
+`); got != "" {
+		t.Fatalf("flagged: %q", got)
+	}
+}
+
+func TestFindsBookkeepingAfterASendThatIsNotDeferred(t *testing.T) {
+	got := findings(t, `package p
+
+import "sync"
+
+var mu sync.Mutex
+var n int
+
+func afterSend(ch chan int) {
+	go func() {
+		ch <- 1
+		mu.Lock()
+		n--
+		mu.Unlock()
+	}()
+}
+`)
+	for _, want := range []string{"after send: decrement", "after send: Unlock"} {
+		if !strings.Contains(got, want) {
+			t.Fatalf("%q not found: %q", want, got)
+		}
+	}
+}
+
+func TestOnlyBookkeepingOnTheSamePathAfterTheSendCounts(t *testing.T) {
+	if got := findings(t, `package p
+
+var n int
+
+func branches(ch chan int, fail bool) {
+	go func() {
+		if fail {
+			ch <- 1
+			return // the send path ends here
+		}
+		n--
+		ch <- 2
+	}()
+}
+
+func before(ch chan int) {
+	go func() {
+		n--
+		ch <- 1 // bookkeeping first: fine
+	}()
+}
+`); got != "" {
+		t.Fatalf("flagged: %q", got)
+	}
+	if got := findings(t, `package p
+
+var n int
+
+func inBranch(ch chan int, ok bool) {
+	go func() {
+		if ok {
+			ch <- 1
+		}
+		n-- // reached after the send when ok
+	}()
+}
+`); !strings.Contains(got, "decrement") {
+		t.Fatalf("a send in a branch that falls through was not found: %q", got)
+	}
+}
+
+func TestCountsFunctionLiteralsNestedInTheGoroutine(t *testing.T) {
+	got := findings(t, `package p
+
+var n int
+
+func nested(ch chan int) {
+	go func() {
+		defer func() { n-- }()
+		func() { ch <- 1 }()
+	}()
+}
+`)
+	if !strings.Contains(got, "send ch") {
+		t.Fatalf("a send in a nested literal was not found: %q", got)
+	}
+}
+
+func TestAnAmbiguousNameIsCheckedAgainstEveryDeclaration(t *testing.T) {
+	// Two functions called work: go work(...) could run either, so either being unsafe counts.
+	got := findings(t, `package p
+
+type a struct{}
+type b struct{}
+
+func (b) work() {}
+func (a) work(out chan int, release func()) { defer release(); out <- 1 }
+
+func start(x a, out chan int) { go x.work(out, func() {}) }
+`)
+	if !strings.Contains(got, "defer release()") {
+		t.Fatalf("an ambiguous name was skipped: %q", got)
+	}
+}
+
+func TestAGoroutineStartedFromALocalFunctionValueIsFollowed(t *testing.T) {
+	got := findings(t, `package p
+
+var n int
+
+func start(out chan int) {
+	run := func() {
+		defer func() { n-- }()
+		out <- 1
+	}
+	go run()
+}
+`)
+	if !strings.Contains(got, "defer func() { n-- }()") {
+		t.Fatalf("go run() was not followed: %q", got)
+	}
+}
+
+func TestAGoroutineItCannotResolveIsReported(t *testing.T) {
+	got := findings(t, `package p
+
+func start(fn func()) { go fn() }
+`)
+	if !strings.Contains(got, "cannot be resolved") {
+		t.Fatalf("an unresolvable go statement was skipped: %q", got)
+	}
+}
+
+func TestAnAllowlistEntryDoesNotAbsorbANewDeferredCall(t *testing.T) {
+	dir := t.TempDir()
+	allow := filepath.Join(dir, "allow")
+	write(t, dir, "allow", "a.go|start|defer inFlight.Add(-1) # reviewed\n")
+	write(t, dir, "a.go", bad)
+	var stderr bytes.Buffer
+	if code := check(dir, allow, &stderr); code != 0 {
+		t.Fatalf("exit %d: %s", code, stderr.String())
+	}
+	// The goroutine gains a second bookkeeping defer: the entry no longer matches, and it is reviewed again.
+	write(t, dir, "a.go", strings.Replace(bad, "defer inFlight.Add(-1)", "defer inFlight.Add(-1)\n\t\tdefer other.Add(-1)", 1)+"\nvar other atomic.Int32\n")
+	stderr.Reset()
+	if code := check(dir, allow, &stderr); code != 1 || !strings.Contains(stderr.String(), "other.Add(-1)") || !strings.Contains(stderr.String(), "matches no goroutine") {
+		t.Fatalf("exit %d: %s", code, stderr.String())
 	}
 }
