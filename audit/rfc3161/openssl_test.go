@@ -125,8 +125,7 @@ func sameChain(a, b []*x509.Certificate) bool {
 func TestDifferentialRealVectors(t *testing.T) {
 	ossl := requireOpenSSL(t)
 	all := append([]vector(nil), realVectors...)
-	all = append(all, vector{dir: "freetsa", tokFile: "token.tok", respFile: "response.tsr", reqFile: "request.tsq", rootFile: "root.pem",
-		genTime: time.Date(2026, 10, 15, 15, 59, 57, 0, time.UTC)})
+	all = append(all, v1Vectors...)
 	for _, v := range all {
 		t.Run(v.dir+"/"+v.tokFile, func(t *testing.T) {
 			c := newOsslCase(t, ossl, v)
@@ -135,11 +134,17 @@ func TestDifferentialRealVectors(t *testing.T) {
 			if !ok {
 				t.Fatalf("openssl rejects a stored vector: %s", out)
 			}
-			_, err := Verify(tok, v.expected(t), v.policyFor(t))
-			if v.dir == "freetsa" {
+			pol := v.policyFor(t)
+			_, err := Verify(tok, v.expected(t), pol)
+			if _, v1 := refusedVectors[v.dir]; v1 {
+				// OpenSSL accepts a SHA-1-only token; the profile refuses it unless the TSA key is allowed
 				var r *Refusal
-				if !asRefusal(err, &r) || !r.Reason.OutsideProfile() {
-					t.Fatalf("freetsa: err = %v, want an outside-profile refusal", err)
+				if !asRefusal(err, &r) || r.Reason != ReasonESSV1Only {
+					t.Fatalf("%s: err = %v, want signing-certificate-v1-only", v.dir, err)
+				}
+				pol.AllowESSV1 = []*x509.Certificate{v.signerCert(t)}
+				if res, err := Verify(tok, v.expected(t), pol); err != nil || !res.ESSV1 {
+					t.Fatalf("%s with the opt-in: %v", v.dir, err)
 				}
 				return
 			}
@@ -340,6 +345,11 @@ func TestDifferentialNegativeVectors(t *testing.T) {
 				ok, out := osslFor(t, ossl, f).accepts(tok)
 				_, listed := opensslAccepts[c.name]
 				switch {
+				case !opensslMeasured(ossl):
+					// The list was measured with OpenSSL 4; another version may differ (3.x accepts a
+					// genTime without seconds, for example). Informational only; the rule that matters,
+					// that nothing the Go verifier accepts is rejected by OpenSSL, is enforced elsewhere.
+					t.Logf("openssl accepts=%v, listed=%v", ok, listed)
 				case ok && !listed:
 					t.Errorf("OpenSSL accepts %q, Go refuses (%s): add it to opensslAccepts with the reason, or fix the verifier", c.name, c.want)
 				case !ok && listed:
@@ -405,4 +415,10 @@ func TestDifferentialAcceptedVariants(t *testing.T) {
 			}
 		})
 	}
+}
+
+// opensslMeasured reports whether ossl is the OpenSSL major version that opensslAccepts was measured with.
+func opensslMeasured(ossl string) bool {
+	out, err := exec.Command(ossl, "version").Output()
+	return err == nil && strings.HasPrefix(string(out), "OpenSSL 4.")
 }

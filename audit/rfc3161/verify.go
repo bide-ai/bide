@@ -84,8 +84,10 @@ type signerInfo struct {
 }
 
 type essID struct {
-	hash      crypto.Hash
-	certHash  []byte
+	hash     crypto.Hash
+	certHash []byte
+	v1Only   bool // bound by the SHA-1 signingCertificate attribute alone
+
 	v1Hash    []byte // SHA-1 signingCertificate hash, when that attribute is present (consistency only)
 	issuerRaw []byte // nil when issuerSerial is absent
 	serial    *big.Int
@@ -302,6 +304,11 @@ func verify(token []byte, exp Expected, pol Policy, maxCerts int) (*Result, *Ref
 		return nil, r
 	}
 
+	essV1 := attrs.v1Only
+	if essV1 && !allowedESSV1(signer, pol.AllowESSV1) {
+		return nil, refuse(ReasonESSV1Only, "the token binds its signer only by the SHA-1 signingCertificate attribute, which the policy does not allow for this TSA key")
+	}
+
 	// the signer certificate: key, extended key usage
 	if r := checkKey(signer.PublicKey, tst.genTime, pol.RSA2048Until, "the TSA certificate"); r != nil {
 		return nil, r
@@ -347,7 +354,7 @@ func verify(token []byte, exp Expected, pol Policy, maxCerts int) (*Result, *Ref
 	}
 	return &Result{
 		GenTime: tst.genTime, Accuracy: tst.accuracy, Hash: tst.imprintHash, Imprint: append([]byte(nil), tst.imprint...),
-		PolicyOID: tst.policy, Serial: tst.serial, Signer: signer, Chain: chain,
+		PolicyOID: tst.policy, Serial: tst.serial, Signer: signer, Chain: chain, ESSV1: essV1,
 	}, nil
 }
 
@@ -508,6 +515,8 @@ func checkSignedAttrs(si *signerInfo, eContent []byte) (*essID, *Refusal) {
 	}
 	var contentType, msgDigest, sigCertV2 []node
 	var v1Vals []node
+	v1only := false
+
 	for _, a := range si.attrs {
 		if !isSeq(a) {
 			return nil, refuse(ReasonMalformed, "a signed attribute is not a SEQUENCE")
@@ -564,11 +573,18 @@ func checkSignedAttrs(si *signerInfo, eContent []byte) (*essID, *Refusal) {
 		return nil, refuse(ReasonMissingAttr, "no messageDigest signed attribute")
 	}
 	if len(sigCertV2) == 0 {
-		if len(v1Vals) > 0 {
-			return nil, refuse(ReasonESSV1Only, "only the SHA-1 signingCertificate attribute is present")
+		if len(v1Vals) == 0 {
+			return nil, refuse(ReasonMissingAttr, "no signingCertificateV2 signed attribute")
 		}
-		return nil, refuse(ReasonMissingAttr, "no signingCertificateV2 signed attribute")
+		if len(v1Vals) > 1 {
+			return nil, refuse(ReasonDuplicateAttr, "signingCertificate appears more than once")
+		}
+		// The signer is bound by SHA-1 alone. The binding is read here and used only if the policy
+		// allows it for the signer's key (see Policy.AllowESSV1); the SHA-1 never protects anything
+		// the signature and the path do not.
+		v1only = true
 	}
+
 	ctOID, r := oidOf(contentType[0], "contentType attribute value")
 	if r != nil {
 		return nil, r
@@ -584,6 +600,13 @@ func checkSignedAttrs(si *signerInfo, eContent []byte) (*essID, *Refusal) {
 	if !bytes.Equal(h.Sum(nil), msgDigest[0].Bytes) {
 		return nil, refuse(ReasonMessageDigest, "messageDigest differs from the hash of the TSTInfo")
 	}
+	if v1only {
+		hash, issuer, serial, r := parseESSV1(v1Vals[0])
+		if r != nil {
+			return nil, r
+		}
+		return &essID{hash: crypto.SHA1, certHash: hash, v1Only: true, issuerRaw: issuer, serial: serial}, nil
+	}
 	e, r := parseESSCertIDv2(sigCertV2[0])
 	if r != nil {
 		return nil, r
@@ -592,7 +615,7 @@ func checkSignedAttrs(si *signerInfo, eContent []byte) (*essID, *Refusal) {
 		return nil, refuse(ReasonDuplicateAttr, "signingCertificate appears more than once")
 	}
 	if len(v1Vals) == 1 {
-		if e.v1Hash, r = parseESSV1(v1Vals[0]); r != nil {
+		if e.v1Hash, _, _, r = parseESSV1(v1Vals[0]); r != nil {
 			return nil, r
 		}
 	}
@@ -666,36 +689,11 @@ func parseESSCertIDv2(n node) (*essID, *Refusal) {
 		return nil, refuse(ReasonMalformed, "ESSCertIDv2 certHash has %d bytes", len(e.certHash))
 	}
 	if j < len(fs) {
-		is := fs[j]
+		var r *Refusal
+		if e.issuerRaw, e.serial, r = parseIssuerSerial(fs[j]); r != nil {
+			return nil, r
+		}
 		j++
-		if !isSeq(is) {
-			return nil, refuse(ReasonMalformed, "issuerSerial is not a SEQUENCE")
-		}
-		iss, r := kids(is)
-		if r != nil {
-			return nil, r
-		}
-		if len(iss) != 2 || !isSeq(iss[0]) {
-			return nil, refuse(ReasonMalformed, "issuerSerial is malformed")
-		}
-		gns, r := kids(iss[0])
-		if r != nil {
-			return nil, r
-		}
-		if len(gns) != 1 || !isCtx(gns[0], 4, true) {
-			return nil, refuse(ReasonMalformed, "issuerSerial issuer is not a single directoryName")
-		}
-		name, r := only(gns[0], "issuerSerial directoryName")
-		if r != nil {
-			return nil, r
-		}
-		if !isSeq(name) {
-			return nil, refuse(ReasonMalformed, "issuerSerial directoryName is not a Name")
-		}
-		e.issuerRaw = name.FullBytes
-		if e.serial, r = bigOf(iss[1], "issuerSerial serial number"); r != nil {
-			return nil, r
-		}
 	}
 	if j != len(fs) {
 		return nil, refuse(ReasonMalformed, "unexpected element in ESSCertIDv2")
@@ -731,13 +729,13 @@ func selectSigner(certs []*x509.Certificate, si *signerInfo, e *essID) (*x509.Ce
 		}
 	}
 	if signer == nil {
-		return nil, refuse(ReasonESSMismatch, "no matching certificate has the hash in signingCertificateV2")
+		return nil, refuse(ReasonESSMismatch, "no matching certificate has the hash in the signing certificate attribute")
 	}
 	if e.v1Hash != nil && !bytes.Equal(e.v1Hash, sha1Sum(signer.Raw)) {
 		return nil, refuse(ReasonESSMismatch, "the signingCertificate attribute names a different certificate than signingCertificateV2")
 	}
 	if e.issuerRaw != nil && (!bytes.Equal(e.issuerRaw, signer.RawIssuer) || e.serial.Cmp(signer.SerialNumber) != 0) {
-		return nil, refuse(ReasonESSMismatch, "signingCertificateV2 issuerSerial differs from the certificate")
+		return nil, refuse(ReasonESSMismatch, "the signing certificate issuerSerial differs from the certificate")
 	}
 	return signer, nil
 }
@@ -1128,4 +1126,37 @@ func parseGenTime(b []byte) (time.Time, *Refusal) {
 		return bad("is not a valid date and time")
 	}
 	return t, nil
+}
+
+// parseIssuerSerial reads IssuerSerial: one directoryName and a serial number.
+func parseIssuerSerial(is node) ([]byte, *big.Int, *Refusal) {
+	if !isSeq(is) {
+		return nil, nil, refuse(ReasonMalformed, "issuerSerial is not a SEQUENCE")
+	}
+	iss, r := kids(is)
+	if r != nil {
+		return nil, nil, r
+	}
+	if len(iss) != 2 || !isSeq(iss[0]) {
+		return nil, nil, refuse(ReasonMalformed, "issuerSerial is malformed")
+	}
+	gns, r := kids(iss[0])
+	if r != nil {
+		return nil, nil, r
+	}
+	if len(gns) != 1 || !isCtx(gns[0], 4, true) {
+		return nil, nil, refuse(ReasonMalformed, "issuerSerial issuer is not a single directoryName")
+	}
+	name, r := only(gns[0], "issuerSerial directoryName")
+	if r != nil {
+		return nil, nil, r
+	}
+	if !isSeq(name) {
+		return nil, nil, refuse(ReasonMalformed, "issuerSerial directoryName is not a Name")
+	}
+	serial, r := bigOf(iss[1], "issuerSerial serial number")
+	if r != nil {
+		return nil, nil, r
+	}
+	return name.FullBytes, serial, nil
 }

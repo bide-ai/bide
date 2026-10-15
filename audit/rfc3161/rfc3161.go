@@ -201,6 +201,13 @@ type Policy struct {
 	// may be that much earlier than the head less ClockTolerance), so a bank sets it to what its
 	// TSA actually states.
 	MaxAccuracy time.Duration
+	// AllowESSV1 lists TSA certificates (matched by public key) whose tokens may bind the signer by
+	// the SHA-1 signingCertificate attribute alone, without signingCertificateV2. It is off by default
+	// and per TSA: a token from an unlisted key, or one with SHA-1 as its digest algorithm, is
+	// refused regardless. The signature and the path to the auditor's anchors still decide who
+	// signed; the SHA-1 only ties the signature to one certificate among those the token carries.
+	// A result that relies on it has Result.ESSV1 set so the weaker binding stays visible.
+	AllowESSV1 []*x509.Certificate
 	// AcceptedPolicies lists the TSA policy OIDs the caller accepts; empty accepts any, and the
 	// caller then must check Result.PolicyOID itself.
 	AcceptedPolicies []asn1.ObjectIdentifier
@@ -260,6 +267,9 @@ type Result struct {
 	// Signer is the TSA certificate and Chain the verified path from it to the anchor.
 	Signer *x509.Certificate
 	Chain  []*x509.Certificate
+	// ESSV1 is true when the signer was bound only by the SHA-1 signingCertificate attribute (allowed
+	// by Policy.AllowESSV1), a weaker binding that a verdict should show.
+	ESSV1 bool
 }
 
 // Latest is the latest the token allows for the moment it was issued: GenTime plus Accuracy. It is

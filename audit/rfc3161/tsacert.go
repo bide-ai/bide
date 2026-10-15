@@ -5,6 +5,7 @@ import (
 	"crypto/sha1" //nolint:gosec // only to detect a signingCertificate attribute that disagrees; SHA-1 is never trusted
 	"crypto/x509"
 	"encoding/asn1"
+	"math/big"
 	"net"
 	"strings"
 )
@@ -110,49 +111,61 @@ func checkTSAName(gn node, c *x509.Certificate) *Refusal {
 	return no()
 }
 
-// parseESSV1 reads the SHA-1 signingCertificate attribute value and returns the hash of its first
-// certificate identifier. It is used only to detect a disagreement with the signer certificate.
-func parseESSV1(n node) ([]byte, *Refusal) {
+// parseESSV1 reads the SHA-1 signingCertificate attribute value and returns the hash, issuer and
+// serial of its first certificate identifier (issuer and serial are nil when absent).
+func parseESSV1(n node) ([]byte, []byte, *big.Int, *Refusal) {
 	if !isSeq(n) {
-		return nil, refuse(ReasonMalformed, "SigningCertificate is not a SEQUENCE")
+		return nil, nil, nil, refuse(ReasonMalformed, "SigningCertificate is not a SEQUENCE")
 	}
 	cs, r := kids(n)
 	if r != nil {
-		return nil, r
+		return nil, nil, nil, r
 	}
 	if len(cs) == 0 || len(cs) > 2 || !isSeq(cs[0]) {
-		return nil, refuse(ReasonMalformed, "SigningCertificate is malformed")
+		return nil, nil, nil, refuse(ReasonMalformed, "SigningCertificate is malformed")
 	}
 	if len(cs) == 2 {
 		if r := wellFormed(cs[1], 1); r != nil {
-			return nil, r
+			return nil, nil, nil, r
 		}
 	}
 	ids, r := kids(cs[0])
 	if r != nil {
-		return nil, r
+		return nil, nil, nil, r
 	}
 	if len(ids) == 0 || !isSeq(ids[0]) {
-		return nil, refuse(ReasonMalformed, "SigningCertificate names no certificate")
+		return nil, nil, nil, refuse(ReasonMalformed, "SigningCertificate names no certificate")
 	}
 	for _, o := range ids[1:] {
 		if r := wellFormed(o, 1); r != nil {
-			return nil, r
+			return nil, nil, nil, r
 		}
 	}
 	fs, r := kids(ids[0])
 	if r != nil {
-		return nil, r
+		return nil, nil, nil, r
 	}
 	if len(fs) == 0 || len(fs) > 2 || !isOctets(fs[0]) || len(fs[0].Bytes) != sha1.Size {
-		return nil, refuse(ReasonMalformed, "ESSCertID is malformed")
+		return nil, nil, nil, refuse(ReasonMalformed, "ESSCertID is malformed")
 	}
 	if len(fs) == 2 {
-		if r := wellFormed(fs[1], 1); r != nil {
-			return nil, r
+		issuer, serial, r := parseIssuerSerial(fs[1])
+		if r != nil {
+			return nil, nil, nil, r
+		}
+		return fs[0].Bytes, issuer, serial, nil
+	}
+	return fs[0].Bytes, nil, nil, nil
+}
+
+// allowedESSV1 reports whether the policy lists a certificate with the signer's public key.
+func allowedESSV1(signer *x509.Certificate, allow []*x509.Certificate) bool {
+	for _, a := range allow {
+		if a != nil && bytes.Equal(a.RawSubjectPublicKeyInfo, signer.RawSubjectPublicKeyInfo) {
+			return true
 		}
 	}
-	return fs[0].Bytes, nil
+	return false
 }
 
 func sha1Sum(b []byte) []byte { s := sha1.Sum(b); return s[:] }

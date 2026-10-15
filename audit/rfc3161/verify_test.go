@@ -802,9 +802,12 @@ func TestNormalize(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	_ = n2 // ECDSA signatures are randomized, so the two tokens differ in the signature; only the cert field is compared below
-	if len(n2) != len(norm) {
-		t.Errorf("normalized lengths differ: %d vs %d", len(n2), len(norm))
+	// ECDSA signatures are randomized, so the two tokens differ in the signature; the certificate
+	// fields are what normalization makes equal: both hold the signer and the root, nothing else.
+	for _, c := range [][]byte{n2, norm} {
+		if !bytes.Contains(c, f.kit.tsa.Raw) || !bytes.Contains(c, f.kit.root.Raw) {
+			t.Error("a normalized token lost a certificate of the path")
+		}
 	}
 
 	// a policy-supplied signer: the certificates field disappears
@@ -824,4 +827,43 @@ func TestNormalize(t *testing.T) {
 	if _, err := Normalize([]byte{1, 2}, res); err == nil {
 		t.Error("garbage normalized")
 	}
+}
+
+// Built tokens that bind the signer by the SHA-1 attribute alone.
+func TestESSV1OptInBuilt(t *testing.T) {
+	f := newFixture(t)
+	f.spec.essV1Only = true
+	tok := f.spec.build(t)
+	mustRefuse(t, tok, f.expected(), f.policy(), ReasonESSV1Only)
+
+	p := f.policy()
+	p.AllowESSV1 = []*x509.Certificate{f.kit.tsa}
+	if res := mustAccept(t, tok, f.expected(), p); !res.ESSV1 {
+		t.Error("not labelled")
+	}
+	// the listing is by key: a different TSA is not covered
+	p.AllowESSV1 = []*x509.Certificate{newKit(t, kitOpts{}).tsa, nil}
+	mustRefuse(t, tok, f.expected(), p, ReasonESSV1Only)
+	// the SHA-1 binding still has to name the signer certificate
+	p = f.policy()
+	p.AllowESSV1 = []*x509.Certificate{f.kit.tsa}
+	g := newFixture(t)
+	g.kit, g.spec.kit, g.digest, g.spec.imprint, g.head, g.gen, g.spec.genTime = f.kit, f.kit, f.digest, f.spec.imprint, f.head, f.gen, f.spec.genTime
+	g.spec.essV1Only = true
+	g.spec.attrHook = func(a [][]byte) [][]byte {
+		a[2] = seq(oidDER(oidSigningCertificateV1), setOf(seq(seq(seq(octets(bytes.Repeat([]byte{4}, 20)))))))
+		return a
+	}
+	mustRefuse(t, g.spec.build(t), g.expected(), p, ReasonESSMismatch)
+	// and its issuerSerial, when present, is compared too
+	g.spec.attrHook = func(a [][]byte) [][]byte {
+		c := f.kit.tsa
+		a[2] = seq(oidDER(oidSigningCertificateV1), setOf(seq(seq(seq(octets(sha1sum(c.Raw)), seq(seq(ctx(4, dirName("x"))), bigDER(c.SerialNumber)))))))
+		return a
+	}
+	mustRefuse(t, g.spec.build(t), g.expected(), p, ReasonESSMismatch)
+	// SHA-1 as the CMS digest algorithm is refused whatever the policy says
+	g.spec.attrHook = nil
+	g.spec.digestOID = oidSHA1
+	mustRefuse(t, g.spec.build(t), g.expected(), p, ReasonWeakHash)
 }

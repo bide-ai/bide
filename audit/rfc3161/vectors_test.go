@@ -7,6 +7,7 @@ import (
 	"crypto/x509"
 	"encoding/asn1"
 	"encoding/hex"
+	"encoding/pem"
 	"math/big"
 	"os"
 	"path/filepath"
@@ -106,13 +107,36 @@ var realVectors = []vector{
 		signerCN: "SwissSign ZertES TSA UNIT A 2024 - 2", accuracy: 500 * time.Millisecond},
 }
 
+// v1Vectors are the real tokens that bind the signer by the SHA-1 signingCertificate attribute
+// alone: refused by default, verified with Policy.AllowESSV1 for the TSA's key. The Entrust endpoint
+// returned tokens signed by Sectigo's TSA, so the two vectors share a signer key.
+var v1Vectors = []vector{
+	{dir: "freetsa", tokFile: "token.tok", respFile: "response.tsr", reqFile: "request.tsq", rootFile: "root.pem",
+		genTime: time.Date(2026, 10, 15, 15, 59, 57, 0, time.UTC), policy: "1.2.3.4.1", serial: "0934d022", signerCN: "www.freetsa.org"},
+	{dir: "sectigo", tokFile: "token.tok", respFile: "response.tsr", reqFile: "request.tsq", rootFile: "root.pem",
+		genTime: time.Date(2026, 10, 15, 16, 42, 15, 0, time.UTC), policy: "1.3.6.1.4.1.6449.2.1.1", serial: "ab0dd978125a87be59f5cf473b78038f33477fb8",
+		signerCN: "Sectigo Public Time Stamping Signer R37"},
+	{dir: "entrust", tokFile: "token.tok", respFile: "response.tsr", reqFile: "request.tsq", rootFile: "root.pem",
+		genTime: time.Date(2026, 10, 15, 16, 42, 16, 0, time.UTC), policy: "1.3.6.1.4.1.6449.2.1.1", serial: "168dfaed5dfd433973cdd067a3bd59dab2f1b942",
+		signerCN: "Sectigo Public Time Stamping Signer R37"},
+}
+
+func (v vector) signerCert(t testing.TB) *x509.Certificate {
+	blk, _ := pem.Decode(readTestdata(t, v.dir, "tsa.pem"))
+	c, err := x509.ParseCertificate(blk.Bytes)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return c
+}
+
 // refusedVectors are real tokens from public TSAs that the profile refuses, with the reason. They
 // are valid RFC 3161 tokens; each names something the profile never accepts.
 var refusedVectors = map[string]Reason{
 	"freetsa": ReasonESSV1Only,
 	"sectigo": ReasonESSV1Only,
 	"entrust": ReasonESSV1Only,
-	"apple":   ReasonWeakHash, // SHA-1 as the signer digest algorithm
+	"apple":   ReasonWeakHash, // SHA-1 as the signer digest algorithm: refused even with AllowESSV1
 }
 
 func (v vector) policyFor(t testing.TB) Policy {
@@ -202,4 +226,44 @@ func TestWideAccuracyVector(t *testing.T) {
 	}
 	pol.MaxAccuracy = 1499 * time.Millisecond
 	mustRefuse(t, tok, v.expected(t), pol, ReasonAccuracy)
+}
+
+// With Policy.AllowESSV1 for the TSA's key, the SHA-1-only tokens verify and the result is labelled.
+func TestESSV1OptIn(t *testing.T) {
+	for _, v := range v1Vectors {
+		t.Run(v.dir, func(t *testing.T) {
+			tok := readTestdata(t, v.dir, v.tokFile)
+			mustRefuse(t, tok, v.expected(t), v.policyFor(t), ReasonESSV1Only) // off by default
+			pol := v.policyFor(t)
+			pol.AllowESSV1 = []*x509.Certificate{v.signerCert(t)}
+			res := mustAccept(t, tok, v.expected(t), pol)
+			if !res.ESSV1 {
+				t.Error("a result that relied on the SHA-1 binding must say so")
+			}
+			if !res.GenTime.Equal(v.genTime) || res.PolicyOID != v.policy || hex.EncodeToString(res.Serial.Bytes()) != v.serial || res.Signer.Subject.CommonName != v.signerCN {
+				t.Errorf("result %v %s %x %q", res.GenTime, res.PolicyOID, res.Serial.Bytes(), res.Signer.Subject.CommonName)
+			}
+			// a different TSA's key does not unlock it
+			other := vector{dir: "sectigo"}
+			if v.dir == "sectigo" || v.dir == "entrust" {
+				other = vector{dir: "freetsa"}
+			}
+			pol.AllowESSV1 = []*x509.Certificate{other.signerCert(t)}
+			mustRefuse(t, tok, v.expected(t), pol, ReasonESSV1Only)
+		})
+	}
+	t.Run("a SignedData with V2 is never labelled", func(t *testing.T) {
+		v := realVectors[3]
+		pol := v.policyFor(t)
+		res := mustAccept(t, readTestdata(t, v.dir, v.tokFile), v.expected(t), pol)
+		if res.ESSV1 {
+			t.Error("a V2 token is labelled ESSV1")
+		}
+	})
+	t.Run("a SHA-1 digest algorithm stays refused with the opt-in", func(t *testing.T) {
+		tok := readTestdata(t, "apple", "token.tok")
+		pol := Policy{Roots: x509.NewCertPool(), CertStatus: StatusUnknown, AllowESSV1: []*x509.Certificate{v1Vectors[0].signerCert(t)}}
+		v := vector{dir: "apple", reqFile: "request.tsq", genTime: time.Date(2026, 10, 15, 16, 0, 0, 0, time.UTC)}
+		mustRefuse(t, tok, v.expected(t), pol, ReasonWeakHash)
+	})
 }
