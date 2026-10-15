@@ -60,6 +60,39 @@ func TestParseFragment(t *testing.T) {
 	}
 }
 
+// A bare <word> outside a code span is an HTML element to VitePress, which builds the docs site
+// from CHANGELOG.md and fails on an element with no end tag ("<time>" in a quoted message did).
+func TestParseFragmentRefusesBareTags(t *testing.T) {
+	for name, text := range map[string]string{
+		"placeholder":       "exits with \"already recorded at <time>\"",
+		"generic":           "a List<T> of them",
+		"closing tag":       "ends with </div>",
+		"comment":           "a <!-- note --> here",
+		"unclosed backtick": "a `x <y> z",
+		"after a span":      "`a` then <b>",
+		"short span":        "``a`` <b> ``c``",
+	} {
+		_, err := ParseFragment("x.md", "Section: Fixed\n\n"+text+"\n")
+		if err == nil || !strings.Contains(err.Error(), "backticks") {
+			t.Errorf("%s: %q: got %v, want a bare-tag error", name, text, err)
+		}
+	}
+	for name, text := range map[string]string{
+		"in a span":        "exits with `already recorded at <time>`",
+		"generic in span":  "a `List<T>` of them",
+		"double backticks": "``a `<b>` c`` and more",
+		"comparison":       "when a < b and c > d, or x <= y",
+		"arrow":            "a <- b",
+		"autolink":         "see <https://example.com/a?b=c>",
+		"mail autolink":    "write to <security@example.com>",
+		"escaped":          "a \\<time> literal",
+	} {
+		if _, err := ParseFragment("x.md", "Section: Fixed\n\n"+text+"\n"); err != nil {
+			t.Errorf("%s: %q: %v", name, text, err)
+		}
+	}
+}
+
 func TestSectionOrderAndGrouping(t *testing.T) {
 	got := Section([]Fragment{
 		frag(t, "b.md", "Section: Fixed\n\nfix b\n"),

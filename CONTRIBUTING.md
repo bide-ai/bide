@@ -154,6 +154,10 @@ Section: Fixed
   name order. One fragment holds one entry: a change with several entries adds several files.
 - A reference like `[#240]` needs no link definition: assembling adds `[#240]: .../pull/240` to the
   end of the changelog when it is missing.
+- Put anything shaped like an HTML tag in backticks: a placeholder such as `<time>`, a generic
+  such as `List<T>`. The docs site (VitePress) builds from the changelog and reads a bare `<word>`
+  as an HTML element, which fails its build; `changelog lint` refuses one outside a code span
+  (autolinks such as `<https://...>` and comparisons such as `a < b` are fine).
 - Internal-only changes (CI, tests, docs, examples, refactors with no API or behavior change) need
   no fragment.
 
