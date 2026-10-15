@@ -1,0 +1,13 @@
+version: 1
+flow: f
+nodes:
+- {name: a, block: a}
+- name: b
+  block: b
+  approval:
+    need: 1
+    approvers:
+    - ops
+    - finance
+wiring:
+- edge: [a, b]

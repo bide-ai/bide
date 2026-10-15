@@ -1,0 +1,17 @@
+version: 1
+flow: f
+in:
+out: ~
+entry: null
+nodes:
+  - name: a
+    block: a
+    safety:
+  - {name: b, block: b, safety: ~}
+  - name: c
+    block: ""
+    approval:
+wiring:
+  - switch: a
+    when: []
+    else:

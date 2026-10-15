@@ -1,0 +1,12 @@
+version: 1
+flow: f
+nodes:
+  - name: a
+    block: a
+    prompt: >-
+      folded text
+      continues here
+
+  - {name: b, block: b}
+assert:
+  - b reachable

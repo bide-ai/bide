@@ -1,0 +1,10 @@
+version: 1
+flow:
+  # the label comes next
+  f
+nodes:
+  - name: a
+    block:
+      # which block
+      a
+  - {name: b, block: b}

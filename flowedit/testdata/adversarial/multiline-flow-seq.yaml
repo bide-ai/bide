@@ -1,0 +1,11 @@
+version: 1
+flow: f
+nodes:
+  - name: a
+    block: a
+    approval:
+      need: 2
+      approvers: [ops,
+                  finance,
+                  risk]
+  - {name: b, block: b}

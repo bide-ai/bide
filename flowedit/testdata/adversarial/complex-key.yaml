@@ -1,0 +1,7 @@
+version: 1
+flow: f
+? [x, y]
+: a pair key
+nodes:
+  - {name: a, block: a}
+  - {name: b, block: b}

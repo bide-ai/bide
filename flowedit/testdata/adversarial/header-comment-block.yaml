@@ -1,0 +1,36 @@
+# line 0 of a long header
+# line 1 of a long header
+# line 2 of a long header
+# line 3 of a long header
+# line 4 of a long header
+# line 5 of a long header
+# line 6 of a long header
+# line 7 of a long header
+# line 8 of a long header
+# line 9 of a long header
+# line 10 of a long header
+# line 11 of a long header
+# line 12 of a long header
+# line 13 of a long header
+# line 14 of a long header
+# line 15 of a long header
+# line 16 of a long header
+# line 17 of a long header
+# line 18 of a long header
+# line 19 of a long header
+# line 20 of a long header
+# line 21 of a long header
+# line 22 of a long header
+# line 23 of a long header
+# line 24 of a long header
+# line 25 of a long header
+# line 26 of a long header
+# line 27 of a long header
+# line 28 of a long header
+# line 29 of a long header
+
+version: 1
+flow: f
+nodes:
+  - {name: a, block: a}
+  - {name: b, block: b}

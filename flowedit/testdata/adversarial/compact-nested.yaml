@@ -1,0 +1,6 @@
+version: 1
+flow: f
+nodes:
+  - - not
+    - a mapping
+  - {name: b, block: b}

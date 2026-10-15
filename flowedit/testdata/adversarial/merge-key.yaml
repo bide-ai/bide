@@ -1,0 +1,8 @@
+version: 1
+flow: f
+base: &base {safety: readonly}
+nodes:
+  - {name: a, block: a, <<: *base}
+  - name: b
+    block: b
+    <<: *base

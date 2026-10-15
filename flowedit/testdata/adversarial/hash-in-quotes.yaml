@@ -1,0 +1,5 @@
+version: 1
+flow: "a # not a comment"
+nodes:
+  - {name: "a: b", block: 'x # y'}   # a real comment
+  - {name: 'it''s', block: b}

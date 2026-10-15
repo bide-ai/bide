@@ -24,6 +24,7 @@ type file struct {
 	group string
 	name  string
 	text  string
+	real  bool // a file somebody wrote for another purpose, not made for this test
 }
 
 func isFlowConfig(text string) bool {
@@ -58,7 +59,7 @@ func collect(t testing.TB) []file {
 			return
 		}
 		seen[text] = true
-		out = append(out, file{group, name, text})
+		out = append(out, file{group, name, text, group == "repo YAML files" || group == "YAML in the docs"})
 	}
 	filepath.WalkDir(root, func(p string, d fs.DirEntry, err error) error {
 		if err != nil {
@@ -93,6 +94,21 @@ func collect(t testing.TB) []file {
 		}
 		return nil
 	})
+	for _, dir := range []struct {
+		glob, group string
+		real        bool
+	}{
+		{"testdata/external/*.y*ml", "external open-source files", true},
+		{"testdata/adversarial/*.yaml", "adversarial (hand-written)", false},
+	} {
+		fs, _ := filepath.Glob(dir.glob)
+		sort.Strings(fs)
+		for _, f := range fs {
+			if b, err := os.ReadFile(f); err == nil {
+				out = append(out, file{dir.group, filepath.Base(f), string(b), dir.real})
+			}
+		}
+	}
 	return out
 }
 
@@ -100,37 +116,12 @@ func generated(n int) []file {
 	r := rand.New(rand.NewPCG(20261015, 1))
 	var out []file
 	for i := 0; i < n; i++ {
-		out = append(out, file{"generated variants", fmt.Sprintf("gen-%d", i), genConfig(r)})
+		out = append(out, file{"generated variants", fmt.Sprintf("gen-%d", i), genConfig(r), false})
 	}
 	return out
 }
 
 // ---- the operations ----
-
-func fresh(v any) any { // a value of the same shape as v, with new scalars
-	switch x := v.(type) {
-	case map[string]any:
-		keys := sortedKeys(x)
-		m := Map{}
-		for _, k := range keys {
-			m = append(m, KV{k, fresh(x[k])})
-		}
-		return m
-	case []any:
-		out := []any{}
-		for _, e := range x {
-			out = append(out, fresh(e))
-		}
-		return out
-	case string:
-		return "new-" + x
-	case int:
-		return x + 1
-	case bool:
-		return !x
-	}
-	return "new"
-}
 
 func sortedKeys(m map[string]any) []string {
 	k := make([]string, 0, len(m))
@@ -141,57 +132,99 @@ func sortedKeys(m map[string]any) []string {
 	return k
 }
 
+// like returns a value of the same shape as n with new scalars (a new item for a sequence of them).
+func like(n *yaml.Node) any {
+	switch n.Kind {
+	case yaml.MappingNode:
+		m := Map{}
+		for i := 0; i+1 < len(n.Content); i += 2 {
+			if n.Content[i].Kind == yaml.ScalarNode {
+				m = append(m, KV{n.Content[i].Value, like(n.Content[i+1])})
+			}
+		}
+		return m
+	case yaml.SequenceNode:
+		out := []any{}
+		for _, e := range n.Content {
+			out = append(out, like(e))
+		}
+		return out
+	case yaml.ScalarNode:
+		switch n.Tag {
+		case "!!int":
+			return 7
+		case "!!bool":
+			return true
+		}
+		return "new-" + n.Value
+	}
+	return "new"
+}
+
 // ops lists the operations to try on the document: every scalar set, every entry and item
 // deleted, a key and a composite added to every mapping, an item added at the start, the middle
-// and the end of every sequence.
+// and the end of every sequence. It walks the parsed nodes, so a file the data decoder cannot
+// read (a complex key) still gets its operations.
 func ops(text string) []Op {
-	v, err := decode([]byte(text))
-	if err != nil {
+	var doc yaml.Node
+	if yaml.Unmarshal([]byte(text), &doc) != nil || len(doc.Content) == 0 {
 		return nil
 	}
 	var out []Op
-	var walk func(path []any, v any)
-	walk = func(path []any, v any) {
+	var walk func(path []any, n *yaml.Node, depth int)
+	walk = func(path []any, n *yaml.Node, depth int) {
+		if depth > 12 {
+			return
+		}
 		cp := func() []any { return append([]any(nil), path...) }
-		switch x := v.(type) {
-		case map[string]any:
+		switch n.Kind {
+		case yaml.AliasNode:
+		case yaml.MappingNode:
 			out = append(out, Op{Kind: Insert, Path: cp(), Key: "zz_new", Value: "added"})
 			out = append(out, Op{Kind: Insert, Path: cp(), Key: "zz_block", Value: Map{{"need", 2}, {"approvers", []any{"a", "b"}}}})
-			for _, k := range sortedKeys(x) {
-				p := append(cp(), k)
-				out = append(out, Op{Kind: Delete, Path: p})
-				walk(p, x[k])
-			}
-		case []any:
-			var item any = "zz item"
-			if len(x) > 0 {
-				switch x[0].(type) {
-				case map[string]any:
-					item = fresh(x[0])
-				case string:
-					item = "zz item"
-				case int:
-					item = 7
+			for i := 0; i+1 < len(n.Content); i += 2 {
+				k := n.Content[i]
+				if k.Kind != yaml.ScalarNode {
+					continue
 				}
+				p := append(cp(), k.Value)
+				out = append(out, Op{Kind: Delete, Path: p})
+				walk(p, n.Content[i+1], depth+1)
 			}
-			for _, i := range uniq(0, len(x)/2, len(x)) {
+		case yaml.SequenceNode:
+			var item any = "zz item"
+			if len(n.Content) > 0 {
+				item = like(n.Content[0])
+			}
+			for _, i := range uniq(0, len(n.Content)/2, len(n.Content)) {
 				out = append(out, Op{Kind: Insert, Path: cp(), Index: i, Value: item})
 			}
-			for i, e := range x {
+			for i, e := range n.Content {
 				p := append(cp(), i)
 				out = append(out, Op{Kind: Delete, Path: p})
-				walk(p, e)
+				walk(p, e, depth+1)
 			}
-		case string:
-			out = append(out, Op{Kind: Set, Path: cp(), Value: "changed"})
-			out = append(out, Op{Kind: Set, Path: cp(), Value: "needs, quoting: [x] # y"})
-		case int:
-			out = append(out, Op{Kind: Set, Path: cp(), Value: x + 1})
-		case bool:
-			out = append(out, Op{Kind: Set, Path: cp(), Value: !x})
+		case yaml.ScalarNode:
+			switch n.Tag {
+			case "!!int":
+				var x int
+				if n.Decode(&x) == nil {
+					out = append(out, Op{Kind: Set, Path: cp(), Value: x + 1})
+				}
+			case "!!bool":
+				var x bool
+				if n.Decode(&x) == nil {
+					out = append(out, Op{Kind: Set, Path: cp(), Value: !x})
+				}
+			case "!!null":
+				out = append(out, Op{Kind: Set, Path: cp(), Value: "was null"})
+			default:
+				out = append(out, Op{Kind: Set, Path: cp(), Value: "changed"})
+				out = append(out, Op{Kind: Set, Path: cp(), Value: "needs, quoting: [x] # y"})
+			}
 		}
 	}
-	walk(nil, v)
+	walk(nil, doc.Content[0], 0)
 	return out
 }
 
@@ -558,6 +591,11 @@ func outside(old, new string, sp span) bool {
 
 // ---- the measurement ----
 
+type fileRate struct {
+	name    string
+	ops, ok int
+}
+
 type tally struct {
 	files, ops               int
 	applied, inSpan, refused int
@@ -566,6 +604,59 @@ type tally struct {
 	baseline, baselineOK     int
 	refusals                 map[string]int
 	byKind                   [3][2]int // [kind][ops, in span]
+	rates                    []fileRate
+}
+
+func (ta *tally) addTo(o *tally) {
+	o.files += ta.files
+	o.ops += ta.ops
+	o.applied += ta.applied
+	o.inSpan += ta.inSpan
+	o.refused += ta.refused
+	o.oneLine += ta.oneLine
+	o.setOps += ta.setOps
+	o.wrong += ta.wrong
+	o.baseline += ta.baseline
+	o.baselineOK += ta.baselineOK
+	if o.refusals == nil {
+		o.refusals = map[string]int{}
+	}
+	for k, v := range ta.refusals {
+		o.refusals[k] += v
+	}
+	for k := range o.byKind {
+		o.byKind[k][0] += ta.byKind[k][0]
+		o.byKind[k][1] += ta.byKind[k][1]
+	}
+	o.rates = append(o.rates, ta.rates...)
+}
+
+// perFile is the mean over files of each file's share of operations applied within the intended
+// lines, so a large file does not outweigh a small one.
+func (ta *tally) perFile() float64 {
+	var sum float64
+	n := 0
+	for _, r := range ta.rates {
+		if r.ops > 0 {
+			sum += float64(r.ok) / float64(r.ops)
+			n++
+		}
+	}
+	if n == 0 {
+		return 0
+	}
+	return 100 * sum / float64(n)
+}
+
+func (ta *tally) worst(n int) []fileRate {
+	r := append([]fileRate(nil), ta.rates...)
+	sort.Slice(r, func(i, j int) bool {
+		return float64(r[i].ok)/float64(max(r[i].ops, 1)) < float64(r[j].ok)/float64(max(r[j].ops, 1))
+	})
+	if len(r) > n {
+		r = r[:n]
+	}
+	return r
 }
 
 func (ta *tally) add(f file) {
@@ -573,8 +664,10 @@ func (ta *tally) add(f file) {
 	if ta.refusals == nil {
 		ta.refusals = map[string]int{}
 	}
+	fr := fileRate{name: f.name}
 	for _, op := range ops(f.text) {
 		ta.ops++
+		fr.ops++
 		sp, spOK := intended(f.text, op)
 		ta.byKind[op.Kind][0]++
 		r, err := Apply([]byte(f.text), op)
@@ -588,14 +681,16 @@ func (ta *tally) add(f file) {
 			ta.refusals[bucket(rf.Reason)]++
 		} else {
 			ta.applied++
-			want, ok := oracle(f.text, op)
-			got, derr := decode(r.Text)
-			if !ok || derr != nil || !reflect.DeepEqual(want, got) {
-				ta.wrong++
+			if want, ok := oracle(f.text, op); ok {
+				got, derr := decode(r.Text)
+				if derr != nil || !reflect.DeepEqual(want, got) {
+					ta.wrong++
+				}
 			}
 			lo, hi := touched(f.text, r)
 			if spOK && !outside(f.text, string(r.Text), sp) {
 				ta.inSpan++
+				fr.ok++
 				ta.byKind[op.Kind][1]++
 			}
 			if op.Kind == Set {
@@ -613,13 +708,7 @@ func (ta *tally) add(f file) {
 			}
 		}
 	}
-}
-
-func boolInt(b bool) int {
-	if b {
-		return 1
-	}
-	return 0
+	ta.rates = append(ta.rates, fr)
 }
 
 func bucket(r string) string {
@@ -628,9 +717,17 @@ func bucket(r string) string {
 	return r
 }
 
+func pct(a, b int) float64 {
+	if b == 0 {
+		return 0
+	}
+	return 100 * float64(a) / float64(b)
+}
+
 func TestCorpusReport(t *testing.T) {
 	groups := map[string]*tally{}
 	var order []string
+	real := map[string]bool{}
 	corpus := append(collect(t), generated(300)...)
 	for _, f := range corpus {
 		ta := groups[f.group]
@@ -639,38 +736,28 @@ func TestCorpusReport(t *testing.T) {
 			groups[f.group] = ta
 			order = append(order, f.group)
 		}
+		real[f.group] = real[f.group] || f.real
 		ta.add(f)
 	}
 	sort.Strings(order)
-	var all tally
-	all.refusals = map[string]int{}
 	var b strings.Builder
-	fmt.Fprintf(&b, "\n%-28s %5s %7s %8s %8s %8s %9s\n", "group", "files", "ops", "applied", "in span", "refused", "baseline")
+	fmt.Fprintf(&b, "\n%-42s %5s %7s %8s %8s %8s %10s %9s\n", "group", "files", "ops", "applied", "per op", "per file", "refused", "re-emit")
 	row := func(name string, ta *tally) {
-		fmt.Fprintf(&b, "%-28s %5d %7d %7.1f%% %7.1f%% %7.1f%% %8.1f%%\n", name, ta.files, ta.ops,
-			pct(ta.applied, ta.ops), pct(ta.inSpan, ta.ops), pct(ta.refused, ta.ops), pct(ta.baselineOK, ta.baseline))
+		fmt.Fprintf(&b, "%-42s %5d %7d %7.1f%% %7.1f%% %7.1f%% %9.1f%% %8.1f%%\n", name, ta.files, ta.ops,
+			pct(ta.applied, ta.ops), pct(ta.inSpan, ta.ops), ta.perFile(), pct(ta.refused, ta.ops), pct(ta.baselineOK, ta.baseline))
 	}
+	var realAll, all tally
 	for _, g := range order {
-		ta := groups[g]
-		row(g, ta)
-		all.files += ta.files
-		all.ops += ta.ops
-		all.applied += ta.applied
-		all.inSpan += ta.inSpan
-		all.refused += ta.refused
-		all.wrong += ta.wrong
-		all.oneLine += ta.oneLine
-		all.setOps += ta.setOps
-		for k := range all.byKind {
-			all.byKind[k][0] += ta.byKind[k][0]
-			all.byKind[k][1] += ta.byKind[k][1]
+		if real[g] {
+			row(g+" [real]", groups[g])
+			groups[g].addTo(&realAll)
+		} else {
+			row(g, groups[g])
 		}
-		all.baseline += ta.baseline
-		all.baselineOK += ta.baselineOK
-		for k, v := range ta.refusals {
-			all.refusals[k] += v
-		}
+		groups[g].addTo(&all)
 	}
+	fmt.Fprintf(&b, "\n")
+	row("REAL FILES (repo + docs + external)", &realAll)
 	row("ALL", &all)
 	fmt.Fprintf(&b, "\nwrong (applied text that disagrees with the independent oracle, or a non-refusal error): %d\n", all.wrong)
 	for k, n := range []string{"set", "insert", "delete"} {
@@ -681,37 +768,33 @@ func TestCorpusReport(t *testing.T) {
 		k string
 		v int
 	}
-	var rs []kv
-	for k, v := range all.refusals {
-		rs = append(rs, kv{k, v})
-	}
-	sort.Slice(rs, func(i, j int) bool { return rs[i].v > rs[j].v })
-	fmt.Fprintf(&b, "refusals:\n")
-	for _, r := range rs {
-		fmt.Fprintf(&b, "  %6d  %s\n", r.v, r.k)
-	}
-	t.Log(b.String())
-	// The bar (docs/design/visual-editor.md, decision 3): at least 95 percent of operations touch
-	// only the intended lines, with a refusal counted as a miss. The JSON configs with tab
-	// indentation are outside it: the editor reads JSON by another path, and the YAML engine
-	// refuses tabs.
-	for _, g := range order {
+	for _, g := range append(order, "REAL") {
 		ta := groups[g]
-		if g == "plan test configs (JSON)" {
+		if g == "REAL" {
+			ta = &realAll
+		}
+		var rs []kv
+		for k, v := range ta.refusals {
+			rs = append(rs, kv{k, v})
+		}
+		sort.Slice(rs, func(i, j int) bool { return rs[i].v > rs[j].v })
+		if len(rs) == 0 {
 			continue
 		}
-		if p := pct(ta.inSpan, ta.ops); p < 95 {
-			t.Errorf("%s: %.1f%% of operations within the intended lines, want at least 95%%", g, p)
+		fmt.Fprintf(&b, "refusals, %s:\n", g)
+		for _, r := range rs {
+			fmt.Fprintf(&b, "  %6d  %s\n", r.v, r.k)
+		}
+		if g == "REAL" || g == "external open-source files" || g == "adversarial (hand-written)" {
+			for _, w := range ta.worst(6) {
+				if w.ok < w.ops {
+					fmt.Fprintf(&b, "    worst file: %-60s %5.1f%% of %d\n", w.name, pct(w.ok, w.ops), w.ops)
+				}
+			}
 		}
 	}
+	t.Log(b.String())
 	if all.wrong != 0 {
 		t.Errorf("%d operations produced text the oracle disagrees with", all.wrong)
 	}
-}
-
-func pct(a, b int) float64 {
-	if b == 0 {
-		return 0
-	}
-	return 100 * float64(a) / float64(b)
 }

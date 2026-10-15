@@ -1,0 +1,6 @@
+version: 1
+flow: a flow with a
+  long label that continues
+nodes:
+  - {name: a, block: a}
+  - {name: b, block: b}

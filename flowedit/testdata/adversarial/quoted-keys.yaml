@@ -1,0 +1,7 @@
+"version": 1
+"flow": "f"
+'nodes':
+  - {"name": "a", 'block': a}
+  - {name: b, block: b}
+"wiring":
+  - "edge": [a, b]

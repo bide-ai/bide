@@ -1,0 +1,8 @@
+version: 1
+flow: f
+nodes:
+  - # the first node
+    name: a
+    block: a
+  -   name: b
+      block: b
