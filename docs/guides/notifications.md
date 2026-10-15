@@ -250,7 +250,7 @@ out and puts detail behind the viewer, where access control applies.
 
 One notifier can serve several receivers: the approvers' channel, the on-call pager, a manager. Each
 is a `Notifier` of its own (usually a webhook with its own URL and secret, and its own
-adapter, see [Slack](#slack) and [PagerDuty](#pagerduty)), named with `WithNotifyReceiver`. The notifier given to `WithNotifier`
+adapter, see [Slack and PagerDuty](#slack-and-pagerduty-through-the-relay)), named with `WithNotifyReceiver`. The notifier given to `WithNotifier`
 is the receiver `default`.
 
 <!-- docsnip: setup journal *agent.Journal; model agent.Model; store audit.EventStore; approvers, oncall, lead, ops *notify.Webhook; returns error -->

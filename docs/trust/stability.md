@@ -25,14 +25,16 @@ Formats carry their own version tags, and a reader refuses what it does not read
 | Journal | `bide.journal.v1-dev` | Every run's journal starts with a header naming its format. A version refuses a run whose header it does not support, or that has none, with `*agent.JournalVersionError`. **Before 1.0 the tag is not bumped when keys or record shape change, so resuming a run across pre-releases is not promised** ([known limitations, stores](../KNOWN-LIMITATIONS.md#stores)). At 1.0 the tag becomes `bide.journal.v1` and 1.0 refuses every pre-release journal |
 | Store schema | integer version in the store | A store refuses a database whose schema version is newer than it knows (`ErrConfig`). Older databases gain new tables on `Open` where the release says so |
 | Signed tree head | `bide.audit.sth.v5` | Domain-separated and signed together with its scheme, kind and run |
-| Evidence package | `bide.audit.evidence.v5` | Verified field by field |
+| Evidence package | `bide.audit.evidence.v6` | Verified field by field; its seal signs the SHA-256 of the package. A `bide.audit.evidence.v5` package still verifies under its original seal (a note says so) and is never produced; v4 and older are refused with `audit.ErrFormat` |
 | Proof bundle, absence, runcert, grant, journal export, event inclusion | each has its own `bide.audit.*` tag (for example `proof.v3`, `runcert.v3`, `journal-export.v1`) | See the source constants in `audit/` |
+| Decision receipt | `bide.audit.decision-receipt.v1` | The signed decision an approver keeps, checked on its own and against signed tree heads |
+| Notification trail export | `bide.audit.notify-trail-export.v1` | Read strictly: an unknown record kind or field is an error |
 | Approval decision | `bide.approval.v3` | Decisions signed under `v2` no longer verify and must be signed again; a pending run asks again rather than run on them |
 | Notification payload | `bide.notification.v1` | Receivers should ignore unknown fields |
 
 ### What stays verifiable across versions
 
-- **Pre-1.0, a verifier reads only the current format of each artifact** ([security model](../guides/security-model.md)). An artifact written under an older tag fails with `audit.ErrFormat` (not the format this version reads), distinct from `audit.ErrNotVerified`.
+- **Pre-1.0, a verifier reads only the current format of each artifact** ([security model](../guides/security-model.md)), with one exception: an evidence package in the previous format, `bide.audit.evidence.v5`, still verifies (see [known limitations](../KNOWN-LIMITATIONS.md)). An artifact written under any other older tag fails with `audit.ErrFormat` (not the format this version reads), distinct from `audit.ErrNotVerified`.
 - **Therefore, to re-verify old evidence, keep the `bide` binary that produced it, or one built from its tag.** Release binaries are reproducible from their tag (`scripts/repro.sh`), and `go install github.com/bide-ai/bide/cmd/bide@vX.Y.Z` fetches an old version. [Operations](operations.md#retention-and-archiving) lists what to archive with the evidence.
 - Inclusion proofs carry the record as stored bytes and ignore fields they do not know, so a record written by a newer release still verifies under the same proof format.
 - The standalone verifier `audit/verify` (stdlib only) is cross-checked bit for bit with the SDK and can be vendored at a fixed version.

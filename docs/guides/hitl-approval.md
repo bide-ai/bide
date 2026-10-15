@@ -514,7 +514,7 @@ that requests a tool call, and its terminal tally before the node runs. Only dec
 after that request count, and `Approve` and `SubmitDecision` refuse a node key that has none yet
 (`ErrConfig`), since node keys, unlike tool-use IDs, can be guessed before the run gets there. A
 decision recorded before the request anyway (written directly) never counts, and the approver's
-identical decision afterwards returns `ErrConfig`: see [Flows](flows.md#approval-gates-on-nodes) for
+identical decision afterwards returns `ErrConfig`: see [Plan flows](plan-flows.md#approval-gates-on-nodes) for
 what that means for the gate. A denial stops the flow with
 `plan.ErrApprovalDenied`. Evidence and `bide audit verify-approvals` take the node's key as the call.
 

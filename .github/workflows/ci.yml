@@ -268,6 +268,11 @@ jobs:
         # annotates its free identifiers with <!-- docsnip: setup ... -->, or is pseudo-code with
         # <!-- docsnip: skip reason -->; see CONTRIBUTING.md. Runs on documentation-only changes.
         run: go run ./internal/tools/docsnip
+      - name: docs links resolve
+        # Every relative link in README.md, examples/README.md and docs/ names a file that exists
+        # and, with a #fragment, a heading that exists. The docs site sets ignoreDeadLinks, so this
+        # is the check. Runs on documentation-only changes, which skip the doccheck step above.
+        run: go run ./internal/tools/doccheck -root . -links
       - name: no removed API names
         # No name the pre-1.0 redesign removed (docs/design/api-v1.md, section 10.2: RunSaga,
         # ResolveHaltRef, agent.Durable, the pause aliases, ...) appears in Go code, godoc or docs,

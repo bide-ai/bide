@@ -5,13 +5,19 @@
 // It also checks the release notes in docs/releases: each becomes a GitHub Release body, so every
 // link and image there must be absolute (see CheckReleaseNotes).
 //
+// It also checks that every relative link in README.md, examples/README.md and docs/ resolves, to
+// a file and to a heading when it has a #fragment (see CheckLinks).
+//
 // Findings listed in the allowlist (.doccheck-allow by default) are tolerated. The list may only
 // shrink: an entry whose identifier is now documented, or no longer exists, fails the check
 // until the entry is deleted. New code never gets an entry; document it instead.
 //
 // Usage, from the repository root:
 //
-//	go run ./internal/tools/doccheck [-root dir] [-allow file]
+//	go run ./internal/tools/doccheck [-root dir] [-allow file] [-links]
+//
+// With -links only the links in the documentation are checked, which is what CI runs on a pull
+// request that changes nothing but documentation.
 //
 // The exit status is 0 when clean, 1 on findings or stale entries, and 2 when the check could
 // not run.
@@ -33,12 +39,28 @@ func run(args []string, stdout, stderr io.Writer) int {
 	fl.SetOutput(stderr)
 	root := fl.String("root", ".", "repository root; every Go package below it is checked")
 	allow := fl.String("allow", ".doccheck-allow", "allowlist file; empty for none")
+	linksOnly := fl.Bool("links", false, "check only that the relative links in README.md, examples/README.md and docs/ resolve")
 	if err := fl.Parse(args); err != nil {
 		return 2
 	}
 	if fl.NArg() != 0 {
 		fmt.Fprintf(stderr, "doccheck: unexpected arguments %q\n", fl.Args())
 		return 2
+	}
+	if *linksOnly {
+		links, err := CheckLinks(*root)
+		if err != nil {
+			fmt.Fprintf(stderr, "doccheck: %v\n", err)
+			return 2
+		}
+		for _, f := range links {
+			fmt.Fprintln(stdout, f)
+		}
+		if len(links) > 0 {
+			fmt.Fprintf(stderr, "doccheck: %d broken links in the docs\n", len(links))
+			return 1
+		}
+		return 0
 	}
 	list := &Allowlist{}
 	if *allow != "" {
@@ -72,8 +94,16 @@ func run(args []string, stdout, stderr io.Writer) int {
 	for _, f := range notes {
 		fmt.Fprintln(stdout, f)
 	}
-	if len(unlisted) > 0 || len(stale) > 0 || len(notes) > 0 {
-		fmt.Fprintf(stderr, "doccheck: %d undocumented, %d stale allowlist entries, %d relative links in release notes\n", len(unlisted), len(stale), len(notes))
+	links, err := CheckLinks(*root)
+	if err != nil {
+		fmt.Fprintf(stderr, "doccheck: %v\n", err)
+		return 2
+	}
+	for _, f := range links {
+		fmt.Fprintln(stdout, f)
+	}
+	if len(unlisted) > 0 || len(stale) > 0 || len(notes) > 0 || len(links) > 0 {
+		fmt.Fprintf(stderr, "doccheck: %d undocumented, %d stale allowlist entries, %d relative links in release notes, %d broken links in the docs\n", len(unlisted), len(stale), len(notes), len(links))
 		return 1
 	}
 	return 0
