@@ -241,3 +241,51 @@ func (l *Leaf) ChainWithRoot() [][]byte {
 	}
 	return append(out, ca.DER)
 }
+
+// CRLOpts shapes one CRL signed by a CA.
+type CRLOpts struct {
+	Number     int64
+	ThisUpdate time.Time
+	NextUpdate time.Time
+	Entries    []x509.RevocationListEntry
+	Extra      []pkix.Extension // raw CRL extensions, such as the delta indicator or expiredCertsOnCRL
+	SigAlg     x509.SignatureAlgorithm
+}
+
+// NewCRL signs a CRL as c and returns its DER.
+func (c *CA) NewCRL(tb testing.TB, o CRLOpts) []byte {
+	tb.Helper()
+	der, err := c.TryCRL(o)
+	if err != nil {
+		tb.Fatal(err)
+	}
+	return der
+}
+
+// TryCRL is NewCRL that reports an error when the standard library refuses to create the CRL.
+func (c *CA) TryCRL(o CRLOpts) ([]byte, error) {
+	tpl := &x509.RevocationList{
+		Number: big.NewInt(o.Number), ThisUpdate: o.ThisUpdate, NextUpdate: o.NextUpdate,
+		RevokedCertificateEntries: o.Entries, ExtraExtensions: o.Extra, SignatureAlgorithm: o.SigAlg,
+	}
+	der, err := x509.CreateRevocationList(rand.Reader, tpl, c.Cert, c.Key)
+	if err != nil {
+		return nil, fmt.Errorf("testca: create CRL: %w", err)
+	}
+	return der, nil
+}
+
+// Revoked is an entry for the serial of cert revoked at t with reason code code (0 omits it).
+func Revoked(cert *x509.Certificate, t time.Time, code int) x509.RevocationListEntry {
+	return x509.RevocationListEntry{SerialNumber: cert.SerialNumber, RevocationTime: t, ReasonCode: code}
+}
+
+// WithInvalidity adds an invalidity date (entry extension 2.5.29.24) to e.
+func WithInvalidity(e x509.RevocationListEntry, inv time.Time) x509.RevocationListEntry {
+	v, err := asn1.MarshalWithParams(inv.UTC(), "generalized")
+	if err != nil {
+		panic(err)
+	}
+	e.ExtraExtensions = append(e.ExtraExtensions, pkix.Extension{Id: asn1.ObjectIdentifier{2, 5, 29, 24}, Value: v})
+	return e
+}

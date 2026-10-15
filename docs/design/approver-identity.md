@@ -1113,15 +1113,17 @@ asserting the same counted set and the same reason:
 
 ## Build plan (after the decisions)
 
-1. Certificate verification, identity policy, canonicalization, `v4` decision bytes, new reasons,
+1. Certificate verification, identity policy, canonicalization, CRL parsing, the status rule and **delta
+   CRL merging**, `v4` decision bytes, new reasons,
    `TallyApprovals` and `EvaluateGate` with a static status snapshot, the head source and anchor-first
    step, the **execution-time status re-check** and its state transitions, the `:ident` tally suffix, `DistrustAfter`, the **strict stdlib RFC 3161 token verifier (decision 17) for
    gates that set `IndependentTime`**; test CA; model 1b configurations. An independent PKI review of
    this design, and of step 1 before it merges, gates the work; the critical and high findings of the
    assessment are exit criteria for step 1, with the pilot-CA conformance check (test plan item 32) and the RFC 3161 verifier's evidence (item 33).
 2. CRL refresher, `bide identity`, live gate pause behavior, intake `cert` and 503, `bide approve -cert`,
-   bide-hsm certificate pairing, the pause-note fields and the `approval-identity` record, and **delta CRL
-   merging** (base and delta archive, indicator and number checks, `removeFromCRL`).
+   bide-hsm certificate pairing, the pause-note fields and the `approval-identity` record. (Delta CRL
+   merging is in step 1, decided by the user on 2026-10-15; the refresher fetches and archives deltas but
+   the merge itself is part of the status rule built in step 1.)
 3. Identity bundle, covering-head proofs and time attestations in the kit, **the archive timestamp and
    the archived verifier hash**, the anchor-log time receipt,
    `bide audit verify-approvals -identity`, the verdict lines and tiers, receipts with chains.
@@ -1154,6 +1156,23 @@ issuing CA (an anchor that does not issue the leaf itself is exempt). Banks shou
 so that the policy can be adopted before the CA is reissued. Refusing `policyMappings` rules out
 cross-certified hierarchies that map policies between their domains: such a hierarchy needs a separate
 approver CA outside the mapping, or a later step that implements the RFC 5280 policy tree.
+
+The status rule landed next (`audit.StatusSnapshot`, `CertIdentity.EvaluateStatus`). Reading the
+rule against code settled three points the text left open, each stated here so the text and the code agree:
+
+- *When a CRL after `notAfter` is `L(C)`.* A CRL with `thisUpdate` beyond `notAfter` is `L(C)` only if the CRL
+  before it in the series has a `nextUpdate` that reaches it. Otherwise a CRL may be missing between them
+  and this one may be a later CRL from which the entry was already pruned. This is what makes "CRL 2
+  alone is no information" (test plan 12) hold: a CRL that cannot be shown to be the first one beyond
+  `notAfter` is not evidence of absence.
+- *Unexpired certificates.* The rule that a verdict is `final` only when the CRL at `L(C)` is present
+  would make every chain through an unexpired CA certificate provisional for years. `L(C)` exists to know
+  when a CA may have pruned an entry, which it cannot do before `notAfter`. The code therefore judges a
+  certificate with no CRL beyond its `notAfter` by `S >= A + W'` and `W' >= MinW` alone, and applies the
+  `L(C)` and coverage rules when `L(C)` is established. This is one switch (`finalityNeedsLC`) pending the
+  user's confirmation.
+- *Rolled-back numbers.* A CRL dated later than another with a higher CRL number is not a legitimate
+  successor: its listings count, its silence is not evidence of absence.
 
 Every step updates the guides it touches. The approvals guide states the post-quantum gap (decision 15: a
 certificate-bound approver gives up the hybrid scheme's protection) where it first describes
