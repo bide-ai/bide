@@ -7,7 +7,8 @@
 # with charmbracelet/vhs in a real terminal, so the colors are the ones bide picks on its own
 # (-color=auto), 1200 pixels wide.
 #
-#   assets/demo/cli.sh
+#   assets/demo/cli.sh                                   # all four, dark
+#   THEME=light ONLY=cli-diff-weakened assets/demo/cli.sh   # one, in the light variant the guides embed with <picture>
 #
 # Needs vhs (which brings ttyd and ffmpeg) and python3.
 set -euo pipefail
@@ -15,6 +16,13 @@ set -euo pipefail
 here=$(cd "$(dirname "$0")" && pwd)
 root=$(cd "$here/../.." && pwd)
 img=$root/docs/guides/img
+theme=${THEME:-dark}
+only=${ONLY:-}
+case $theme in
+  dark) vhs_theme=Dracula ;;
+  light) vhs_theme="Builtin Tango Light" ;;
+  *) echo "cli.sh: THEME is dark or light" >&2; exit 1 ;;
+esac
 work=$(mktemp -d)
 trap 'kill $(jobs -p) 2>/dev/null || true; rm -rf "$work"' EXIT
 
@@ -50,6 +58,8 @@ PY
 
 shot() { # name height dir command...: one screenshot of the command's output (SHOT_WAIT: seconds)
   local name=$1 height=$2 dir=$3; shift 3
+  [ -z "$only" ] || [ "$only" = "$name" ] || return 0
+  name=$name-$theme
   local wait=${SHOT_WAIT:-1.5}
   cat > "$work/$name.tape" <<TAPE
 Output "$work/$name.gif"
@@ -58,7 +68,7 @@ Set FontSize 16
 Set Width 1200
 Set Height $height
 Set Padding 20
-Set Theme "Dracula"
+Set Theme "$vhs_theme"
 Set TypingSpeed 5ms
 Hide
 Type "cd $dir && export PATH=$work/bin:\$PATH && PS1='\$ ' && clear"
@@ -68,21 +78,24 @@ Show
 Type "$*"
 Enter
 Sleep ${wait}s
-Screenshot "$img/$name.png"
+Screenshot "$work/$name.raw.png"
 Sleep 1s
 TAPE
   rm -f "$img/$name.png"
   vhs "$work/$name.tape" > /dev/null
-  [ -s "$img/$name.png" ] || { echo "cli.sh: vhs wrote no $name.png" >&2; exit 1; }
+  [ -s "$work/$name.raw.png" ] || { echo "cli.sh: vhs wrote no $name.png" >&2; exit 1; }
+  python3 "$here/optimize-png.py" "$work/$name.raw.png" "$img/$name.png"
   echo "$img/$name.png"
 }
 
-shot cli-check-violation-dark 250 "$work/sample" "bide check flows/refund-bypass.yaml flows/refund-v1.yaml"
-shot cli-diff-weakened-dark 300 "$work" "bide check flows/refund-v1.yaml -diff flows/refund-v2.yaml -check"
-shot cli-audit-verified-dark 330 "$work/run" "bide audit verify-evidence -evidence evidence.json -pubkey log.pub"
-shot cli-audit-failed-dark 350 "$work/run" "bide audit verify-evidence -evidence evidence-edited.json -pubkey log.pub"
+shot cli-check-violation 250 "$work/sample" "bide check flows/refund-bypass.yaml flows/refund-v1.yaml"
+shot cli-diff-weakened 300 "$work" "bide check flows/refund-v1.yaml -diff flows/refund-v2.yaml -check"
+shot cli-audit-verified 330 "$work/run" "bide audit verify-evidence -evidence evidence.json -pubkey log.pub"
+shot cli-audit-failed 350 "$work/run" "bide audit verify-evidence -evidence evidence-edited.json -pubkey log.pub"
 
 # A project bide init scaffolded, built against this checkout; built once first so go run . is quick.
-(cd "$work" && "$work/bin/bide" init -dev "$root" refund > /dev/null)
-(cd "$work/refund" && GOWORK=off GOFLAGS=-mod=mod go mod tidy > /dev/null 2>&1 && GOWORK=off GOFLAGS=-mod=mod go build ./...)
-SHOT_WAIT=6 shot cli-init-run-dark 330 "$work/refund" "go run ."
+if [ -z "$only" ] || [ "$only" = cli-init-run ]; then
+  (cd "$work" && "$work/bin/bide" init -dev "$root" refund > /dev/null)
+  (cd "$work/refund" && GOWORK=off GOFLAGS=-mod=mod go mod tidy > /dev/null 2>&1 && GOWORK=off GOFLAGS=-mod=mod go build ./...)
+  SHOT_WAIT=6 shot cli-init-run 330 "$work/refund" "go run ."
+fi

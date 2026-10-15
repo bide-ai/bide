@@ -396,8 +396,10 @@ the gate's recorded `approval-deadline` record.
 
 <picture>
   <source media="(prefers-color-scheme: dark)" srcset="./img/run-viewer-gate-expired-dark.png">
-  <img src="./img/run-viewer-gate-expired-light.png" alt="bide view on a run whose gate expired: the gate card says expired with the deadline and timeout, with one of two approvals counted">
+  <img src="./img/run-viewer-gate-expired-light.png" alt="bide view on a run whose gate expired: the approvers, where finance's approval counted and risk's is marked not counted because it was written after the gate expired, the gate row with status expired, and the timeline down to the approval tally with expired true and the refused tool call">
 </picture>
+
+In the expired-gate run, risk's approval was stamped and recorded a second before the deadline, but its write landed after the gate read the journal and before the gate recorded its expiry; the expiry, recorded first, is the outcome, so the approval is not counted and the call never ran.
 
 Both images come from `assets/demo/shots-deadline.sh`, which writes a small journal with the real
 agent runtime and a controllable clock (`assets/demo/setup/deadline.go`).
@@ -735,7 +737,10 @@ On a terminal the lines are colored as the page is (added green, removed red, ch
 weakened gate moves to the top, in bold red, and the summary's counts and digest go on lines of
 their own:
 
-<img src="./img/cli-diff-weakened-dark.png" alt="bide check -diff -check on a terminal: approval policy weakened called out first in bold red, then the changes with added in green, removed in red and changed in amber">
+<picture>
+  <source media="(prefers-color-scheme: dark)" srcset="./img/cli-diff-weakened-dark.png">
+  <img src="./img/cli-diff-weakened-light.png" alt="bide check -diff -check on a terminal: approval policy weakened called out first in bold red, then the changes with added in green, removed in red and changed in amber">
+</picture>
 
 A diff is not a failure: it exits 0, unless `-fail-on-weaken` finds a weakened gate (exit 1). An
 old or new version that cannot be read as a flow config exits 1; a version with config errors is

@@ -559,6 +559,13 @@ checked without the Registry (the block's own gate is not visible); and an `asse
 loosened. A node renamed with the same block, safety and edges is `renamed`, not a removal and an addition; a gate that changed with it is reported on it. See [Compare two versions of a
 flow](run-viewer.md#compare-two-versions-of-a-flow).
 
+On a terminal, with the weakened gate first:
+
+<picture>
+  <source media="(prefers-color-scheme: dark)" srcset="./img/cli-diff-weakened-dark.png">
+  <img src="./img/cli-diff-weakened-light.png" alt="bide check -diff -check on a terminal: approval policy weakened called out first in bold red, then the changes with added in green, removed in red and changed in amber">
+</picture>
+
 `Load` and `Validate` reject a block with no approvers, a `need` outside `1..len(approvers)`, or a
 duplicate approver id (or two that differ only by case), or an id that is not printable ASCII, naming the node.
 The gate is enforced as in Go (see [Approval gates on nodes](#approval-gates-on-nodes)): load the flow

@@ -2,7 +2,7 @@
 # shots-deadline.sh: regenerate the run viewer guide's screenshots of gates with a deadline:
 # docs/guides/img/run-viewer-deadline-attention (the Needs attention list: a gate overdue, one due
 # soon and one due tomorrow) and run-viewer-gate-expired (a run whose gate expired, with one of two
-# approvals). assets/demo/setup/deadline.go writes the journal with the real agent runtime and a
+# approvals and a second one written after the expiry, from the approvers down through the timeline). assets/demo/setup/deadline.go writes the journal with the real agent runtime and a
 # controllable clock, so the times are relative to now; the pages are captured with a headless
 # Chromium-based browser at 1200 pixels wide, as shots.sh does. The pages refresh themselves every
 # few seconds, so the capture runs on a virtual clock short of the first refresh.
@@ -55,4 +55,14 @@ serve() { # port args...: bide view, read-only, on a loopback port
 }
 serve "$port" -db deadline.db
 shot run-viewer-deadline-attention "http://127.0.0.1:$port/attention" 1450
-shot run-viewer-gate-expired "http://127.0.0.1:$port/run?id=refund-2004" 1000
+shot run-viewer-gate-expired "http://127.0.0.1:$port/run?id=refund-2004" 2800
+# Keep the page from the Approvers heading down to the end of the timeline, as a palette PNG.
+python3 - "$out/run-viewer-gate-expired-$theme.png" <<'PY'
+import sys
+from PIL import Image, ImageChops
+f = sys.argv[1]
+im = Image.open(f).convert("RGB")
+bg = Image.new("RGB", im.size, im.getpixel((2, im.height - 2)))
+bottom = ImageChops.difference(im, bg).getbbox()[3]
+im.crop((0, 650, im.width, min(im.height, bottom + 24))).quantize(colors=256, dither=Image.Dither.NONE).save(f, optimize=True)
+PY
