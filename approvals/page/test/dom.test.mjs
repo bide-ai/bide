@@ -66,6 +66,17 @@ test('every one of the arguments is on display, so Approve never signs what was 
   assert.equal(els['approve'].disabled, false, 'Approve is available once the id is typed and every argument is shown');
 });
 
+test('the Note row is shown with its label only when there is a reason (a hidden value must not leave its label in the grid, shifting every row after it)', async () => {
+  const none = await run(pendingWith({ a: 1 }));
+  assert.equal(none.els['call-reason'].hidden, true);
+  assert.equal(none.els['call-reason-label'].hidden, true, 'the label goes with the value');
+  const some = await run(pendingWith({ a: 1 }, { reason: 'approval re-required' }));
+  assert.equal(some.els['call-reason'].hidden, false);
+  assert.equal(some.els['call-reason-label'].hidden, false);
+  const tmpl = fs.readFileSync(new URL('../index.template.html', import.meta.url), 'utf8');
+  assert.match(tmpl, /<dt id="call-reason-label" hidden>Note<\/dt><dd id="call-reason" hidden>/, 'the page starts with both hidden');
+});
+
 test('a re-asked gate is shown with its reason, and decidable', async () => {
   const { els } = await run(pendingWith({ a: 1 }, { reason: 'approval re-required: the recorded approvals were counted without excluding the requester' }));
   assert.ok(els['call-reason'].textContent.includes('re-required'));
