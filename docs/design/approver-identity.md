@@ -1127,6 +1127,34 @@ asserting the same counted set and the same reason:
    `bide audit verify-approvals -identity`, the verdict lines and tiers, receipts with chains.
 4. OCSP module (optional), the archive-timestamp renewal tool for the kit.
 
+**Build progress.** Step 1 is built as a sequence of changes. The certificate verification core landed
+first (`audit.IdentityPolicy`, `CertIdentity.VerifyChain`, the default `Canonicalizer`, and the
+`internal/testca` test CA). It differs from the sketch in the Binding section in four ways, none of which
+changes a rule: `Anchors` is a `[]*x509.Certificate` (a pool cannot be listed, and the identity record
+names anchors by key); `AllowEmailProtectionEKU` is the explicit switch for accepting
+`id-kp-emailProtection` from a dedicated approver CA; `Skew`, `AnchorGrace` and `RSA2048Until` are
+policy fields (the last is the dated, exclusive exception for RSA-2048 CAs, applied against `A(d)` and named like the RFC 3161 verifier policy field); and the
+compiled form is `CertIdentity`, so a policy is checked once at startup and then immutable. The independent
+assessment of that change (pki-audit-313) added to it: certificate policies nest along the chain like
+extended key usages (a CA that states policies not including the required one, or `anyPolicy` where
+`inhibitAnyPolicy` does not apply, cannot issue a leaf for it; a CA that maps policies is refused, because
+the mapping cannot be judged without the full RFC 5280 policy tree, and `Certificate.Verify` does not
+enforce a CA's policy restriction, pinned by an assumption test); chains that differ only in
+certificates for the same keys (a renewed root, a reissued intermediate) are one chain, with the
+recorded certificate chosen deterministically, while chains through different keys stay ambiguous and
+are refused; the default person-URI pattern is one spelling (32 lowercase hex digits) and a configured
+pattern is matched against the whole path; `Distrust` must name a configured key; the leaf's extended
+key usage is exactly the required OID (or exactly `emailProtection` in dedicated-CA mode) and its key
+usage is digital signature, optionally with content commitment, and nothing else; `MaxLeafLifetime`
+(default 24 hours, at most 31 days) and ceilings of 10 minutes on `Skew` and `AnchorGrace`; and an
+optional `RequireNameConstraints`. A CA with no `certificatePolicies` extension is unconstrained by default,
+which leaves the bank's policy OID as only the leaf's assertion; `RequirePolicyOnCAs` refuses such an
+issuing CA (an anchor that does not issue the leaf itself is exempt). Banks should put
+`certificatePolicies` naming the approver policy on the issuing CA and set it; it is off by default only
+so that the policy can be adopted before the CA is reissued. Refusing `policyMappings` rules out
+cross-certified hierarchies that map policies between their domains: such a hierarchy needs a separate
+approver CA outside the mapping, or a later step that implements the RFC 5280 policy tree.
+
 Every step updates the guides it touches. The approvals guide states the post-quantum gap (decision 15: a
 certificate-bound approver gives up the hybrid scheme's protection) where it first describes
 certificate-bound approvers.

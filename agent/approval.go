@@ -415,6 +415,17 @@ const (
 	ReasonAfterExpiry = "not counted: written after the gate expired"
 )
 
+// Reasons a certificate-bound approver's decision does not count (docs/design/approver-identity.md).
+// audit.CertError carries one of them with the precise cause, so a caller can both branch on the
+// category and show the cause.
+const (
+	ReasonNoCert       = "the approver is certificate-bound and the decision carries no usable certificate chain"
+	ReasonCertChain    = "the certificate chain does not verify to exactly one chain under this gate's trust anchors and pinned intermediates"
+	ReasonCertIdentity = "the certificate does not carry the approver's identity as its one identifier"
+	ReasonCertUsage    = "the certificate is not usable for approving (key usage, extended key usage, policy, key type or CA flag)"
+	ReasonCertWindow   = "the decision time, or the time it became provable, is outside the certificate's validity"
+)
+
 // protocol:claims begin QCount
 
 // TallyApprovals is the m-of-n counting rule, shared by the gate and offline verification so
