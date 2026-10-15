@@ -186,3 +186,67 @@ func TestDiffGapsText(t *testing.T) {
 		t.Errorf("verdict word %q", got)
 	}
 }
+
+// G1, the other half: an assert line kept as it was is no protection when it stops holding. A line
+// that held and is now violated, cannot be decided or no longer reads is a weakening, with what
+// changed; a line that did not hold before, or still holds, is not.
+func TestDiffAssertionNoLongerHolds(t *testing.T) {
+	term := "every path to a terminal passes charge"
+	for _, c := range []struct {
+		name       string
+		oldN, oldW string
+		newN, newW string
+		asserts    []string
+		weak       string // the one expected weakened entry, "" for none
+	}{
+		{"held, now violated by a read-only route", "", "", `, {"name": "audit", "block": "audit", "safety": "readonly"}`, `, {"edge": ["validate", "audit"]}`,
+			[]string{term}, "assertion no longer holds: " + term + " (violated, counterexample: validate -> audit)"},
+		{"reachable, now unreachable", `, {"name": "audit", "block": "audit", "safety": "readonly"}`, `, {"edge": ["validate", "audit"]}`, `, {"name": "audit", "block": "audit", "safety": "readonly"}`, "",
+			[]string{"audit reachable"}, "assertion no longer holds: audit reachable (violated"},
+		{"names a node the new config dropped", `, {"name": "audit", "block": "audit", "safety": "readonly"}`, `, {"edge": ["validate", "audit"]}`, "", "",
+			[]string{"audit reachable"}, "assertion no longer holds: audit reachable (invalid"},
+		{"held, now undecided", "", "", `, {"name": "audit", "block": "audit"}`, `, {"edge": ["receipt", "audit"]}`,
+			[]string{"no side effect after receipt"}, "assertion no longer holds: no side effect after receipt (undecided"},
+		{"unchanged and still holds", "", "", "", "", []string{term}, ""},
+		{"violated before and after", `, {"name": "audit", "block": "audit", "safety": "readonly"}`, `, {"edge": ["validate", "audit"]}`,
+			`, {"name": "audit", "block": "audit", "safety": "readonly"}, {"name": "audit2", "block": "audit", "safety": "readonly"}`, `, {"edge": ["validate", "audit"]}, {"edge": ["validate", "audit2"]}`,
+			[]string{term}, ""},
+	} {
+		oldCfg := gapCfg(c.oldN, c.oldW, c.asserts...)
+		newCfg := gapCfg(c.newN, c.newW, c.asserts...)
+		var got []string
+		for _, w := range weakenedOf(t, oldCfg, newCfg) {
+			if strings.HasPrefix(w, "assertion ") {
+				got = append(got, w)
+			}
+		}
+		switch {
+		case c.weak == "" && len(got) > 0, c.weak != "" && (len(got) != 1 || !strings.HasPrefix(got[0], c.weak)):
+			t.Errorf("%s: weakened %q; want %q", c.name, got, c.weak)
+		}
+	}
+}
+
+// A line that held and now violates is a weakening even when nothing else in the diff is: the text
+// output names it, the verdict says the safety check was weakened, and -fail-on-weaken would exit 1.
+func TestDiffAssertionNoLongerHoldsReported(t *testing.T) {
+	term := "every path to a terminal passes charge"
+	oldCfg := gapCfg("", "", term)
+	newCfg := gapCfg(`, {"name": "audit", "block": "audit", "safety": "readonly"}`, `, {"edge": ["validate", "audit"]}`, term)
+	var out bytes.Buffer
+	weak, err := CheckDiff(&out, Diff{Old: Config{Name: "old", Data: []byte(oldCfg)}, New: Config{Name: "new", Data: []byte(newCfg)}})
+	if err != nil || !weak {
+		t.Fatalf("weak %v, err %v\n%s", weak, err, out.String())
+	}
+	for _, want := range []string{
+		"new: weakened: assertion no longer holds: " + term + " (violated, counterexample: validate -> audit)",
+		"changed assertion: " + term + ": held before, now violated (weakened)",
+	} {
+		if !strings.Contains(out.String(), want) {
+			t.Errorf("output lacks %q:\n%s", want, out.String())
+		}
+	}
+	if w := diffOf(t, oldCfg, newCfg, nil, nil).Verdict.Word; w != "SAFETY CHECK WEAKENED" {
+		t.Errorf("verdict word %q", w)
+	}
+}

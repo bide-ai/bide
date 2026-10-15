@@ -133,7 +133,7 @@ ones as dashed red ghosts and changed nodes in amber, and calls out a weakened a
 gate removed, its need lowered, an approver added without raising the need, exclude_principal
 dropped, or its timeout removed or lengthened), an effect (a new one included) that no gate guards and none did before, a Switch condition changed
 beside an ungated effect, a block changed on an ungated effect node (without the Registry), or an assert
-line removed or loosened. -diff takes a file; when no file has that name, a git revision read with git show: <rev>:<path>
+line removed, loosened, or kept and no longer holding. -diff takes a file; when no file has that name, a git revision read with git show: <rev>:<path>
 (git's own form), or a bare <rev> for the config's own path at that revision (bide check
 flows/refund.yaml -diff main). With -check it serves nothing, prints one line per change and a
 summary line, and exits 0: a diff is not a failure, unless -fail-on-weaken finds an approval gate
@@ -149,7 +149,7 @@ NO_COLOR set to any value, turns color off; -color=always keeps it on.
 	strict := fs.Bool("strict", false, "exit 1 on a warning too")
 	diff := fs.String("diff", "", "compare the one config given with this earlier version: a file, or else a git revision (<rev>:<path>, or <rev> for the config's path at rev)")
 	check := fs.Bool("check", false, "with -diff: serve nothing and print each change, then a summary line")
-	failOnWeaken := fs.Bool("fail-on-weaken", false, "with -diff -check: exit 1 if an approval gate was removed or weakened (its need lowered, an approver added without raising the need, exclude_principal dropped, its timeout removed or lengthened, an effect that no gate guards and none did before, a Switch condition changed beside one, or an assert line removed or loosened)")
+	failOnWeaken := fs.Bool("fail-on-weaken", false, "with -diff -check: exit 1 if an approval gate was removed or weakened (its need lowered, an approver added without raising the need, exclude_principal dropped, its timeout removed or lengthened, an effect that no gate guards and none did before, a Switch condition changed beside one, or an assert line removed, loosened, or kept and no longer holding)")
 	addr := fs.String("addr", "127.0.0.1:8484", "with -diff: address to serve the page on, a loopback IP (127.0.0.1 or ::1) or localhost, with a port")
 	color := term.Flag(fs)
 	files, err := parseInterspersed(fs, args)
