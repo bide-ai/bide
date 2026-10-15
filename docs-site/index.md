@@ -3,8 +3,8 @@ layout: home
 
 hero:
   name: bide
-  text: The accountability layer for AI agents that move money
-  tagline: Durable, accountable agents in Go on one append-only journal. Side effects that fire at most once, people in control, every action provable afterwards.
+  text: Durable, accountable AI agents in Go
+  tagline: "A Go framework for AI agents that move money: risky calls approved, every action recorded and verifiable."
   image:
     src: /bide-avatar.png
     alt: bide

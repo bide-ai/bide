@@ -7,7 +7,7 @@
 <p align="center">
   <strong>Durable, accountable AI agents in Go, for agents that move money, change records, or act under audit.</strong>
   <br>
-  The accountability layer for AI agents that move money: side effects fire at most once, even across a crash; people stay in control; every action is provable afterwards.
+  A Go framework for AI agents that move money: risky calls approved, every action recorded and verifiable.
 </p>
 
 <p align="center"><img src="assets/crash-demo.gif" width="100%" alt="bide demo: without bide a restart retries the charge and the provider charges twice; with bide an agent is killed mid-charge, the restart halts with outcome unknown and notifies ops with a signed webhook, the charge is resolved from the provider's record, bide view shows the run with its audit proof and 2-of-3 approval signatures verified, and changing one amount in a copy of the journal makes verification fail"></p>

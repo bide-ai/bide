@@ -1,4 +1,4 @@
-// Package agent is the core of bide, the accountability layer for AI agents that move money: a
+// Package agent is the core of bide, a Go framework for AI agents that move money: a
 // durability-first, Go-idiomatic toolkit whose side effects fire at most once, whose approvals are
 // signed and counted by k-of-n, and whose every action is provable afterwards.
 //

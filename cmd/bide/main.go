@@ -1,5 +1,5 @@
-// Command bide is the command line of bide, the accountability layer for AI agents that move
-// money: one program for everyone who does not import the library.
+// Command bide is the command line of bide, a Go framework for AI agents that move money: one
+// program for everyone who does not import the library.
 //
 //	bide init refund               scaffold a project: a gated plan flow, ready for go run .
 //	bide demo                      kill an agent mid-payment and watch it not charge twice
@@ -144,7 +144,7 @@ func find(name string) (command, bool) {
 // summaries dim. A command's own -h text (flag package output) stays plain.
 func usage(w io.Writer) {
 	st := term.For(w, term.Auto)
-	fmt.Fprintf(w, "bide: the accountability layer for AI agents that move money. %s\n\n  bide <command> [flags]\n\n%s\n", st.Heading("Usage:"), st.Heading("Commands:"))
+	fmt.Fprintf(w, "bide: build AI agents that move money, and account for every action. %s\n\n  bide <command> [flags]\n\n%s\n", st.Heading("Usage:"), st.Heading("Commands:"))
 	for _, c := range commands {
 		fmt.Fprintf(w, "  %s%s %s\n", st.Bold(c.name), strings.Repeat(" ", max(0, 8-len(c.name))), st.Dim(c.summary))
 	}

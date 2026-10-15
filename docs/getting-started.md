@@ -1,6 +1,6 @@
 # Getting started
 
-Bide is the accountability layer for AI agents that move money: an agent's side effects fire at most once, even across a crash; people stay in control through signed approvals; and every action is provable afterwards. This page gets you to a first run that shows all three.
+Bide is a Go framework for AI agents that move money: risky calls approved, every action recorded and verifiable. An agent's side effects fire at most once, even across a crash; people stay in control through signed approvals; and every action is recorded and provable afterwards. This page gets you to a first run that shows all three.
 
 ## Prerequisites
 
