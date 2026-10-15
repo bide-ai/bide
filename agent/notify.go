@@ -336,6 +336,13 @@ func WithOverdueNotifier(n Notifier) NotifyOption {
 // WithNotifyErrors sets the function that receives the notifier's own failures: a trail or store
 // error, a delivery that has become failing, a trail position it kept losing. Without it they are
 // dropped (delivery retries regardless). It may be called from several goroutines.
+//
+// The handler hears of a failure while the notifier's round for that event is still in flight, so
+// that a FlushNotifications waits for it: a process that flushes and exits has delivered every
+// report. It follows that the handler must not itself call FlushNotifications (or RunNotifier.Flush,
+// or anything that waits for the notifier to settle): it would wait for the round that is calling it.
+// Such a flush returns an error wrapping ErrConfig at once instead of waiting. Keep the handler
+// short (log, count, hand the error to a channel): a slow one holds the round's slot in the worker.
 func WithNotifyErrors(fn func(error)) NotifyOption {
 	return notifyOption(func(c *notifyConfig) error {
 		c.onError = fn

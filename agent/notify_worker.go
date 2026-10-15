@@ -285,6 +285,9 @@ func (w *notifyWorker) undelivered(ctx context.Context) error {
 // it cancels the rounds in flight (a Notifier that honors its context returns) and returns ctx's
 // error without waiting for one that does not.
 func (e *notifyEngine) flush(ctx context.Context) error {
+	if e.inErrorHandler() {
+		return fmt.Errorf("agent: a notifier flush was called from a WithNotifyErrors handler, which would wait for the round that is calling the handler: flush from outside it: %w", ErrConfig)
+	}
 	err := e.flushDeliveries(ctx)
 	// The deliveries have written their last records: have a trail that signs them sign them now,
 	// within ctx, so a process that stops cleanly leaves nothing unattested. A failure is reported,
