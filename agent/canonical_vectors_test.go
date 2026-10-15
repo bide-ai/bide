@@ -280,15 +280,15 @@ func TestCanonicalVectors(t *testing.T) {
 // The cases that matter are pinned by value, so a regenerated file cannot quietly change them.
 func TestCanonicalVectors_PinnedCases(t *testing.T) {
 	for in, want := range map[string]string{
-		`{"b":1,"a":2}`:               `{"a":2,"b":1}`,
-		`{"a":1,"a":2}`:               `{"a":2}`,
-		`[1.0, 1e3, -0]`:              `[1.0,1e3,-0]`,
-		`"\ud800"`:                    "\"\ufffd\"",
+		`{"b":1,"a":2}`:                 `{"a":2,"b":1}`,
+		`{"a":1,"a":2}`:                 `{"a":2}`,
+		`[1.0, 1e3, -0]`:                `[1.0,1e3,-0]`,
+		`"\ud800"`:                      "\"\ufffd\"",
 		`{"\ud800\udc00":1,"\ue000":2}`: "{\"\ue000\":2,\"\U00010000\":1}",
-		`"<&>\u2028"`:                 "\"<&>\\u2028\"",
-		`{"a":1}]`:                    `{"a":1}`,
-		`{"a":1} x`:                   `{"a":1} x`,
-		"":                            `{}`,
+		`"<&>\u2028"`:                   "\"<&>\\u2028\"",
+		`{"a":1}]`:                      `{"a":1}`,
+		`{"a":1} x`:                     `{"a":1} x`,
+		"":                              `{}`,
 	} {
 		if got := string(canonicalArgs([]byte(in))); got != want {
 			t.Errorf("canonicalArgs(%q) = %q, want %q", in, got, want)
