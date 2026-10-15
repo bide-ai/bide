@@ -414,12 +414,22 @@ func TestCanonicalizer(t *testing.T) {
 	if got, err := cz.Canonical(audit.IDPersonURI, testca.Person(7)); err != nil || got != testca.Person(7) {
 		t.Fatalf("person uri: %q, %v", got, err)
 	}
+	// One form by default: the dashed UUID spelling of the same 128 bits is refused, so one person
+	// cannot hold the hex and the dashed spelling as two identities.
 	uuid := "https://idp.bank.example/person/123e4567-e89b-42d3-a456-426614174000"
-	if got, err := cz.Canonical(audit.IDPersonURI, uuid); err != nil || got != uuid {
-		t.Fatalf("lowercase uuid path: %q, %v", got, err)
+	if got, err := cz.Canonical(audit.IDPersonURI, uuid); err == nil {
+		t.Fatalf("the dashed UUID spelling was accepted by default as %q", got)
 	}
-	if _, err := cz.Canonical(audit.IDPersonURI, strings.ToUpper(uuid)); err == nil {
+	uz := audit.NewCanonicalizer(audit.CanonicalConfig{Host: "idp.bank.example",
+		Path: regexp.MustCompile(`/person/[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}`)})
+	if got, err := uz.Canonical(audit.IDPersonURI, uuid); err != nil || got != uuid {
+		t.Fatalf("lowercase uuid path under a UUID pattern: %q, %v", got, err)
+	}
+	if _, err := uz.Canonical(audit.IDPersonURI, strings.ToUpper(uuid)); err == nil {
 		t.Fatal("uppercase uuid accepted")
+	}
+	if _, err := uz.Canonical(audit.IDPersonURI, testca.Person(1)); err == nil {
+		t.Fatal("the hex spelling was accepted under a UUID pattern")
 	}
 	// A URI canonicalizer needs its host.
 	nohost := audit.NewCanonicalizer(audit.CanonicalConfig{})
@@ -499,11 +509,10 @@ func TestKeyUsageAndExtendedKeyUsage(t *testing.T) {
 		}
 		wantReason(t, err, agent.ReasonCertUsage)
 	}
-	// Extra EKUs next to the required one do not matter; the required one must be present.
+	// The leaf's extended key usage is exclusive: an approver key is not shared across purposes.
 	l := f.leaf(t, func(c *x509.Certificate) { c.ExtKeyUsage = []x509.ExtKeyUsage{x509.ExtKeyUsageClientAuth} })
-	if _, err := verifyAs(c, "alice", l); err != nil {
-		t.Fatalf("required EKU next to clientAuth: %v", err)
-	}
+	_, err := verifyAs(c, "alice", l)
+	wantReason(t, err, agent.ReasonCertUsage)
 }
 
 func TestEmailProtectionEKUOnlyOnADedicatedCA(t *testing.T) {
@@ -618,26 +627,30 @@ func TestChainLength(t *testing.T) {
 	wantReason(t, err, agent.ReasonCertChain)
 }
 
-// A reissued intermediate for one key, both pinned, gives two valid chains: ambiguity is refused.
-func TestTwoValidChainsAreRefused(t *testing.T) {
+// A reissued intermediate for one key, both carried and pinned (by key), is one chain: certificates
+// for the same key are the same authority. Which certificate is recorded is deterministic.
+func TestReissuedIntermediateIsOneChain(t *testing.T) {
 	root := testca.NewRoot(t, "root", testca.Opts{})
 	key := testca.NewKey(t, testca.P256)
 	i1 := root.NewIntermediate(t, "inter", testca.Opts{KeyWith: key})
 	i2 := root.NewIntermediate(t, "inter", testca.Opts{KeyWith: key}) // same key, new certificate
 	f := &fixture{root: root, inter: i1}
 	p := f.policy()
-	// Pinning is by key, so one pin admits both certificates.
-	p.Inter = []audit.SPKIHash{audit.SPKIHashOf(i1.Cert)}
 	if audit.SPKIHashOf(i1.Cert) != audit.SPKIHashOf(i2.Cert) {
 		t.Fatal("test setup: the two intermediates must share a key")
 	}
 	l := i1.NewLeaf(t, testca.Opts{})
-	chain := [][]byte{l.DER, i1.DER, i2.DER}
-	_, err := mustCompile(t, p).VerifyChain("alice", chain, idT0, idT0)
-	wantReason(t, err, agent.ReasonCertChain)
-	// Carrying only one of them is not ambiguous.
-	if _, err := mustCompile(t, p).VerifyChain("alice", [][]byte{l.DER, i1.DER}, idT0, idT0); err != nil {
-		t.Fatalf("one certificate for the key: %v", err)
+	c := mustCompile(t, p)
+	a, err := c.VerifyChain("alice", [][]byte{l.DER, i1.DER, i2.DER}, idT0, idT0)
+	if err != nil {
+		t.Fatalf("two certificates for one pinned key: %v", err)
+	}
+	b, err := c.VerifyChain("alice", [][]byte{l.DER, i2.DER, i1.DER}, idT0, idT0)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !a.Chain[1].Equal(b.Chain[1]) {
+		t.Fatal("the recorded intermediate depends on the carried order")
 	}
 }
 
@@ -711,6 +724,7 @@ func TestRSA2048CAOnlyThroughADatedException(t *testing.T) {
 	f := &fixture{root: root, inter: inter}
 	l := inter.NewLeaf(t, testca.Opts{SigAlg: x509.SHA256WithRSA, Mutate: func(c *x509.Certificate) { c.NotAfter = idT0.Add(72 * time.Hour) }})
 	p := f.policy()
+	p.MaxLeafLifetime = 96 * time.Hour
 	p.RSA2048Until = idT0.Add(24 * time.Hour)
 	c, err := p.Compile()
 	if err != nil {
@@ -1020,4 +1034,285 @@ func TestEmailLocalPartDots(t *testing.T) {
 	if got, err := cz.Canonical(audit.IDEmail, "a.b@x.example"); err != nil || got != "a.b@x.example" {
 		t.Fatalf("%q, %v", got, err)
 	}
+}
+
+// ---- review of the first version (pki-audit-313) ----
+
+func oidOf(t *testing.T, s string) x509.OID {
+	t.Helper()
+	o, err := x509.ParseOID(s)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return o
+}
+
+// M1: certificate policies nest along the chain: a CA restricted to other policies cannot issue a
+// leaf that passes for the bank's.
+func TestCertificatePoliciesNestAlongTheChain(t *testing.T) {
+	P := testca.PolicyOID
+	Q := oidOf(t, "1.3.6.1.4.1.99999.2.9")
+	anyP := oidOf(t, "2.5.29.32.0")
+	type tc struct {
+		name        string
+		inter, root func(*x509.Certificate)
+		ok          bool
+	}
+	pol := func(os ...x509.OID) func(*x509.Certificate) {
+		return func(c *x509.Certificate) { c.Policies = os }
+	}
+	inhibitAny := func(c *x509.Certificate) {
+		v, _ := asn1.Marshal(2)
+		c.ExtraExtensions = []pkix.Extension{{Id: asn1.ObjectIdentifier{2, 5, 29, 54}, Critical: true, Value: v}}
+	}
+	for _, c := range []tc{
+		{"intermediate restricted to another policy", pol(Q), nil, false},
+		{"intermediate with ours", pol(P), nil, true},
+		{"intermediate with ours and another", pol(Q, P), nil, true},
+		{"intermediate with anyPolicy", pol(anyP), nil, true},
+		{"intermediate with no policies extension", nil, nil, true},
+		{"root restricted to another policy", nil, pol(Q), false},
+		{"root with ours, intermediate restricted", pol(Q), pol(P), false},
+		{"root and intermediate with ours", pol(P), pol(P), true},
+		{"intermediate maps policies (unsupported)", func(c *x509.Certificate) {
+			c.Policies = []x509.OID{P}
+			// policyMappings: a SEQUENCE OF SEQUENCE { issuerDomainPolicy, subjectDomainPolicy }
+			qb, _ := asn1.Marshal(asn1.ObjectIdentifier{1, 3, 6, 1, 4, 1, 99999, 2, 9})
+			pb, _ := asn1.Marshal(asn1.ObjectIdentifier{1, 3, 6, 1, 4, 1, 99999, 2, 1})
+			pair, _ := asn1.Marshal(asn1.RawValue{Class: asn1.ClassUniversal, Tag: asn1.TagSequence, IsCompound: true, Bytes: append(qb, pb...)})
+			all, _ := asn1.Marshal(asn1.RawValue{Class: asn1.ClassUniversal, Tag: asn1.TagSequence, IsCompound: true, Bytes: pair})
+			c.ExtraExtensions = []pkix.Extension{{Id: asn1.ObjectIdentifier{2, 5, 29, 33}, Value: all}}
+		}, nil, false},
+		{"anyPolicy where inhibitAnyPolicy applies", pol(anyP), inhibitAny, false},
+		{"our policy where inhibitAnyPolicy applies", pol(P), inhibitAny, true},
+	} {
+		root := testca.NewRoot(t, "root", testca.Opts{Mutate: c.root})
+		inter := root.NewIntermediate(t, "inter", testca.Opts{Mutate: c.inter})
+		f := &fixture{root: root, inter: inter}
+		_, err := verifyAs(mustCompile(t, f.policy()), "alice", inter.NewLeaf(t, testca.Opts{}))
+		if c.ok && err != nil {
+			t.Fatalf("%s: %v", c.name, err)
+		}
+		if !c.ok {
+			if err == nil {
+				t.Fatalf("%s: accepted", c.name)
+			}
+			wantReason(t, err, agent.ReasonCertUsage)
+		}
+	}
+}
+
+// M2: a renewed root (a new certificate over the same key) can sit next to the old one in the
+// anchors; chains that differ only in that certificate are one chain.
+func TestRenewedRootIsOneChain(t *testing.T) {
+	key := testca.NewKey(t, testca.P256)
+	r1 := testca.NewRoot(t, "root", testca.Opts{KeyWith: key})
+	r2 := testca.NewRoot(t, "root", testca.Opts{KeyWith: key})
+	inter := r1.NewIntermediate(t, "inter", testca.Opts{})
+	f := &fixture{root: r1, inter: inter}
+	p := f.policy()
+	p.Anchors = []*x509.Certificate{r1.Cert, r2.Cert}
+	c := mustCompile(t, p)
+	got, err := verifyAs(c, "alice", inter.NewLeaf(t, testca.Opts{}))
+	if err != nil {
+		t.Fatalf("two certificates for the root key: %v", err)
+	}
+	if got.Anchor != audit.SPKIHashOf(r1.Cert) {
+		t.Fatal("the anchor is recorded by key")
+	}
+	// The same with the anchors listed the other way round gives the same chain.
+	p.Anchors = []*x509.Certificate{r2.Cert, r1.Cert}
+	got2, err := verifyAs(mustCompile(t, p), "alice", inter.NewLeaf(t, testca.Opts{}))
+	if err != nil || got2.Anchor != got.Anchor {
+		t.Fatalf("reversed anchors: %v", err)
+	}
+}
+
+// The older root certificate can have expired by A while the renewed one covers it (inside the grace
+// after the leaf expired): the chain through the valid one is the one that counts.
+func TestRenewedRootOldCertificateExpired(t *testing.T) {
+	key := testca.NewKey(t, testca.P256)
+	r1 := testca.NewRoot(t, "root", testca.Opts{KeyWith: key, Mutate: func(c *x509.Certificate) { c.NotAfter = idT0.Add(20 * time.Second) }})
+	r2 := testca.NewRoot(t, "root", testca.Opts{KeyWith: key})
+	inter := r1.NewIntermediate(t, "inter", testca.Opts{Mutate: func(c *x509.Certificate) { c.NotAfter = idT0.Add(24 * time.Hour) }})
+	f := &fixture{root: r1, inter: inter}
+	for _, order := range [][]*x509.Certificate{{r1.Cert, r2.Cert}, {r2.Cert, r1.Cert}} {
+		p := f.policy()
+		p.Anchors = order
+		c := mustCompile(t, p)
+		l := inter.NewLeaf(t, testca.Opts{Mutate: func(c *x509.Certificate) { c.NotAfter = idT0.Add(10 * time.Second) }})
+		if _, err := c.VerifyChain("alice", l.Chain(), idT0, idT0.Add(40*time.Second)); err != nil {
+			t.Fatalf("old root expired at A, renewed root valid: %v", err)
+		}
+	}
+}
+
+// Two different anchor keys over one pinned intermediate key are two chains to two anchors: refused.
+func TestCrossSignedByTwoAnchorsIsAmbiguous(t *testing.T) {
+	k := testca.NewKey(t, testca.P256)
+	ra := testca.NewRoot(t, "root a", testca.Opts{})
+	rb := testca.NewRoot(t, "root b", testca.Opts{})
+	ia := ra.NewIntermediate(t, "inter", testca.Opts{KeyWith: k})
+	ib := rb.NewIntermediate(t, "inter", testca.Opts{KeyWith: k})
+	f := &fixture{root: ra, inter: ia}
+	p := f.policy()
+	p.Anchors = []*x509.Certificate{ra.Cert, rb.Cert}
+	l := ia.NewLeaf(t, testca.Opts{})
+	_, err := mustCompile(t, p).VerifyChain("alice", [][]byte{l.DER, ia.DER, ib.DER}, idT0, idT0)
+	wantReason(t, err, agent.ReasonCertChain)
+}
+
+// L1: a Distrust entry for a key that is neither an anchor nor a pinned intermediate is a mistake
+// that would leave a compromised CA trusted.
+func TestDistrustMustNameAConfiguredKey(t *testing.T) {
+	f := newFixture(t)
+	p := f.policy()
+	p.Distrust = map[audit.SPKIHash]time.Time{{1, 2, 3}: idT0}
+	if _, err := p.Compile(); !errors.Is(err, agent.ErrConfig) {
+		t.Fatalf("distrust of an unknown key: %v", err)
+	}
+	p.Distrust = map[audit.SPKIHash]time.Time{audit.SPKIHashOf(f.root.Cert): idT0, audit.SPKIHashOf(f.inter.Cert): idT0}
+	if _, err := p.Compile(); err != nil {
+		t.Fatalf("distrust of an anchor and a pinned intermediate: %v", err)
+	}
+}
+
+// L2: a configured path pattern must match the whole path.
+func TestConfiguredPathPatternMatchesTheWholePath(t *testing.T) {
+	cz := audit.NewCanonicalizer(audit.CanonicalConfig{Host: "idp.bank.example", Path: regexp.MustCompile(`/person/[0-9a-f]+`)})
+	if got, err := cz.Canonical(audit.IDPersonURI, "https://idp.bank.example/person/abc123"); err != nil || got == "" {
+		t.Fatalf("exact: %v", err)
+	}
+	for _, bad := range []string{"https://idp.bank.example/person/abc/extra", "https://idp.bank.example/x/person/abc", "https://idp.bank.example/person/abcZ"} {
+		if got, err := cz.Canonical(audit.IDPersonURI, bad); err == nil {
+			t.Fatalf("%q accepted as %q by an unanchored pattern", bad, got)
+		}
+	}
+	// An alternation cannot match a shorter prefix and pass.
+	alt := audit.NewCanonicalizer(audit.CanonicalConfig{Host: "idp.bank.example", Path: regexp.MustCompile(`/p|/p/long`)})
+	if got, err := alt.Canonical(audit.IDPersonURI, "https://idp.bank.example/p/long"); err != nil || got == "" {
+		t.Fatalf("alternation: %v", err)
+	}
+	if _, err := alt.Canonical(audit.IDPersonURI, "https://idp.bank.example/p/extra"); err == nil {
+		t.Fatal("a prefix match was accepted")
+	}
+}
+
+// L3 and L5: the leaf's usages are exclusive.
+func TestLeafUsagesAreExclusive(t *testing.T) {
+	f := newFixture(t)
+	ku := func(k x509.KeyUsage) func(*x509.Certificate) { return func(c *x509.Certificate) { c.KeyUsage = k } }
+	eku := func(known []x509.ExtKeyUsage, unknown ...asn1.ObjectIdentifier) func(*x509.Certificate) {
+		return func(c *x509.Certificate) { c.ExtKeyUsage, c.UnknownExtKeyUsage = known, unknown }
+	}
+	p := f.policy()
+	p.AllowEmailProtectionEKU = true
+	c := mustCompile(t, p)
+	for name, tc := range map[string]struct {
+		mut func(*x509.Certificate)
+		ok  bool
+	}{
+		"digitalSignature only":                    {ku(x509.KeyUsageDigitalSignature), true},
+		"digitalSignature and contentCommitment":   {ku(x509.KeyUsageDigitalSignature | x509.KeyUsageContentCommitment), true},
+		"digitalSignature and keyCertSign":         {ku(x509.KeyUsageDigitalSignature | x509.KeyUsageCertSign), false},
+		"digitalSignature and cRLSign":             {ku(x509.KeyUsageDigitalSignature | x509.KeyUsageCRLSign), false},
+		"digitalSignature and keyEncipherment":     {ku(x509.KeyUsageDigitalSignature | x509.KeyUsageKeyEncipherment), false},
+		"digitalSignature and keyAgreement":        {ku(x509.KeyUsageDigitalSignature | x509.KeyUsageKeyAgreement), false},
+		"private oid only":                         {eku(nil, testca.EKU), true},
+		"private oid and clientAuth":               {eku([]x509.ExtKeyUsage{x509.ExtKeyUsageClientAuth}, testca.EKU), false},
+		"private oid and anyExtendedKeyUsage":      {eku([]x509.ExtKeyUsage{x509.ExtKeyUsageAny}, testca.EKU), false},
+		"private oid and another private oid":      {eku(nil, testca.EKU, asn1.ObjectIdentifier{1, 3, 6, 1, 4, 1, 99999, 1, 2}), false},
+		"emailProtection only (dedicated CA mode)": {eku([]x509.ExtKeyUsage{x509.ExtKeyUsageEmailProtection}), true},
+		"emailProtection and serverAuth":           {eku([]x509.ExtKeyUsage{x509.ExtKeyUsageEmailProtection, x509.ExtKeyUsageServerAuth}), false},
+		"private oid and emailProtection together": {eku([]x509.ExtKeyUsage{x509.ExtKeyUsageEmailProtection}, testca.EKU), false},
+	} {
+		_, err := verifyAs(c, "alice", f.leaf(t, tc.mut))
+		if tc.ok && err != nil {
+			t.Fatalf("%s: %v", name, err)
+		}
+		if !tc.ok {
+			if err == nil {
+				t.Fatalf("%s: accepted", name)
+			}
+			wantReason(t, err, agent.ReasonCertUsage)
+		}
+	}
+}
+
+// L4: short-lived certificates are the premise of the revocation argument, and the proof-window
+// tolerances have ceilings.
+func TestLeafLifetimeAndToleranceCeilings(t *testing.T) {
+	f := newFixture(t)
+	life := func(d time.Duration) func(*x509.Certificate) {
+		return func(c *x509.Certificate) { c.NotBefore, c.NotAfter = idT0.Add(-time.Hour), idT0.Add(-time.Hour+d) }
+	}
+	c := mustCompile(t, f.policy()) // default 24h
+	if _, err := verifyAs(c, "alice", f.leaf(t, life(24*time.Hour))); err != nil {
+		t.Fatalf("exactly the default lifetime: %v", err)
+	}
+	_, err := verifyAs(c, "alice", f.leaf(t, life(24*time.Hour+time.Second)))
+	wantReason(t, err, agent.ReasonCertWindow)
+	_, err = verifyAs(c, "alice", f.leaf(t, life(10*365*24*time.Hour)))
+	wantReason(t, err, agent.ReasonCertWindow)
+	p := f.policy()
+	p.MaxLeafLifetime = 72 * time.Hour
+	if _, err := verifyAs(mustCompile(t, p), "alice", f.leaf(t, life(72*time.Hour))); err != nil {
+		t.Fatalf("configured lifetime: %v", err)
+	}
+	for name, mut := range map[string]func(*audit.IdentityPolicy){
+		"lifetime over the ceiling": func(p *audit.IdentityPolicy) { p.MaxLeafLifetime = 32 * 24 * time.Hour },
+		"negative lifetime":         func(p *audit.IdentityPolicy) { p.MaxLeafLifetime = -time.Hour },
+		"skew over 10 minutes":      func(p *audit.IdentityPolicy) { p.Skew = 10*time.Minute + time.Second },
+		"grace over 10 minutes":     func(p *audit.IdentityPolicy) { p.AnchorGrace = 10*time.Minute + time.Second },
+	} {
+		p := f.policy()
+		mut(&p)
+		if _, err := p.Compile(); !errors.Is(err, agent.ErrConfig) {
+			t.Fatalf("%s: %v", name, err)
+		}
+	}
+	for name, mut := range map[string]func(*audit.IdentityPolicy){
+		"lifetime at the ceiling": func(p *audit.IdentityPolicy) { p.MaxLeafLifetime = 31 * 24 * time.Hour },
+		"skew at 10 minutes":      func(p *audit.IdentityPolicy) { p.Skew = 10 * time.Minute },
+		"grace at 10 minutes":     func(p *audit.IdentityPolicy) { p.AnchorGrace = 10 * time.Minute },
+	} {
+		p := f.policy()
+		mut(&p)
+		if _, err := p.Compile(); err != nil {
+			t.Fatalf("%s: %v", name, err)
+		}
+	}
+}
+
+// Informational: a bank can require that a CA in the path is name-constrained for the identifier kind.
+func TestRequireNameConstraints(t *testing.T) {
+	plain := newFixture(t)
+	p := plain.policy()
+	p.RequireNameConstraints = true
+	_, err := verifyAs(mustCompile(t, p), "alice", plain.leaf(t, nil))
+	wantReason(t, err, agent.ReasonCertChain)
+
+	root := testca.NewRoot(t, "root", testca.Opts{})
+	constrained := root.NewIntermediate(t, "inter", testca.Opts{Mutate: func(c *x509.Certificate) { c.PermittedURIDomains = []string{"idp.bank.example"} }})
+	f := &fixture{root: root, inter: constrained}
+	if _, err := verifyAs(mustCompile(t, withNC(f.policy())), "alice", constrained.NewLeaf(t, testca.Opts{})); err != nil {
+		t.Fatalf("URI constraint for a URI policy: %v", err)
+	}
+	// A constraint for another kind does not count.
+	emailOnly := root.NewIntermediate(t, "inter2", testca.Opts{Mutate: func(c *x509.Certificate) { c.PermittedEmailAddresses = []string{"bank.example"} }})
+	f2 := &fixture{root: root, inter: emailOnly}
+	_, err = verifyAs(mustCompile(t, withNC(f2.policy())), "alice", emailOnly.NewLeaf(t, testca.Opts{}))
+	wantReason(t, err, agent.ReasonCertChain)
+	// The anchor may carry the constraint.
+	rootNC := testca.NewRoot(t, "root nc", testca.Opts{Mutate: func(c *x509.Certificate) { c.PermittedURIDomains = []string{"idp.bank.example"} }})
+	interNC := rootNC.NewIntermediate(t, "inter", testca.Opts{})
+	f3 := &fixture{root: rootNC, inter: interNC}
+	if _, err := verifyAs(mustCompile(t, withNC(f3.policy())), "alice", interNC.NewLeaf(t, testca.Opts{})); err != nil {
+		t.Fatalf("constraint on the anchor: %v", err)
+	}
+}
+
+func withNC(p audit.IdentityPolicy) audit.IdentityPolicy {
+	p.RequireNameConstraints = true
+	return p
 }

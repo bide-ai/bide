@@ -1134,7 +1134,20 @@ changes a rule: `Anchors` is a `[]*x509.Certificate` (a pool cannot be listed, a
 names anchors by key); `AllowEmailProtectionEKU` is the explicit switch for accepting
 `id-kp-emailProtection` from a dedicated approver CA; `Skew`, `AnchorGrace` and `RSA2048Until` are
 policy fields (the last is the dated, exclusive exception for RSA-2048 CAs, applied against `A(d)` and named like the RFC 3161 verifier policy field); and the
-compiled form is `CertIdentity`, so a policy is checked once at startup and then immutable.
+compiled form is `CertIdentity`, so a policy is checked once at startup and then immutable. The independent
+assessment of that change (pki-audit-313) added to it: certificate policies nest along the chain like
+extended key usages (a CA that states policies not including the required one, or `anyPolicy` where
+`inhibitAnyPolicy` does not apply, cannot issue a leaf for it; a CA that maps policies is refused, because
+the mapping cannot be judged without the full RFC 5280 policy tree, and `Certificate.Verify` does not
+enforce a CA's policy restriction, pinned by an assumption test); chains that differ only in
+certificates for the same keys (a renewed root, a reissued intermediate) are one chain, with the
+recorded certificate chosen deterministically, while chains through different keys stay ambiguous and
+are refused; the default person-URI pattern is one spelling (32 lowercase hex digits) and a configured
+pattern is matched against the whole path; `Distrust` must name a configured key; the leaf's extended
+key usage is exactly the required OID (or exactly `emailProtection` in dedicated-CA mode) and its key
+usage is digital signature, optionally with content commitment, and nothing else; `MaxLeafLifetime`
+(default 24 hours, at most 31 days) and ceilings of 10 minutes on `Skew` and `AnchorGrace`; and an
+optional `RequireNameConstraints`.
 
 Every step updates the guides it touches. The approvals guide states the post-quantum gap (decision 15: a
 certificate-bound approver gives up the hybrid scheme's protection) where it first describes

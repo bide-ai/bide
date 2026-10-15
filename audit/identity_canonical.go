@@ -48,12 +48,15 @@ type CanonicalConfig struct {
 	// Host is the one URI host accepted, in lowercase. Empty means no URI identifier is accepted.
 	Host string
 	// Path matches the URI path (the part after the host, starting with "/"). Empty means the
-	// default: "/person/" followed by 32 lowercase hex digits or by a lowercase UUID. The expression
-	// is matched against the whole path.
+	// default: "/person/" followed by 32 lowercase hex digits. It is matched against the whole
+	// path, whatever anchors the expression has. Configure exactly one spelling of the id.
 	Path *regexp.Regexp
 }
 
-var defaultPersonPath = regexp.MustCompile(`^/person/(?:[0-9a-f]{32}|[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12})$`)
+// defaultPersonPath is one spelling of a 128-bit person id: 32 lowercase hex digits. The dashed UUID
+// rendering of the same value is a second spelling, so it is not accepted by default; a bank whose
+// ids are dashed UUIDs configures that pattern instead (and only that).
+var defaultPersonPath = regexp.MustCompile(`^/person/[0-9a-f]{32}$`)
 
 // NewCanonicalizer returns the default canonicalizer, "bide.default" version 1.
 //
@@ -75,6 +78,10 @@ func NewCanonicalizer(cfg CanonicalConfig) Canonicalizer {
 	}
 	if c.path == nil {
 		c.path = defaultPersonPath
+	} else {
+		// Force a whole-path match: an unanchored expression, or an alternation that matches a
+		// prefix, must not accept extra text around the id.
+		c.path = regexp.MustCompile(`^(?:` + c.path.String() + `)$`)
 	}
 	return c
 }

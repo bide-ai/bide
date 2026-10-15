@@ -1,6 +1,7 @@
 package audit
 
 import (
+	"cmp"
 	"crypto/ecdsa"
 	"crypto/ed25519"
 	"crypto/elliptic"
@@ -12,6 +13,7 @@ import (
 	"errors"
 	"fmt"
 	"slices"
+	"sort"
 	"strconv"
 	"time"
 
@@ -80,7 +82,9 @@ type IdentityPolicy struct {
 	// became provable) is strictly before it; many bank roots are still RSA-2048. Zero refuses them,
 	// and anything under 2048 bits is always refused: the default is RSA-3072 or better. The field has
 	// the same meaning and name in the RFC 3161 verifier's policy.
-	RSA2048Until time.Time
+	RSA2048Until           time.Time
+	MaxLeafLifetime        time.Duration
+	RequireNameConstraints bool
 }
 
 const (
@@ -88,6 +92,9 @@ const (
 	maxMaxChain        = 8
 	defaultSkew        = 2 * time.Minute
 	defaultAnchorGrace = 60 * time.Second
+	maxTolerance       = 10 * time.Minute // ceiling on Skew and AnchorGrace
+	defaultLeafLife    = 24 * time.Hour
+	maxLeafLife        = 31 * 24 * time.Hour
 	maxCertDER         = 16 << 10 // a larger certificate is refused before parsing
 	maxSerialBits      = 159      // RFC 5280: at most 20 octets, positive
 	maxDetail          = 160
@@ -109,6 +116,8 @@ type CertIdentity struct {
 	skew     time.Duration
 	grace    time.Duration
 	rsa2048  time.Time
+	maxLife  time.Duration
+	needNC   bool
 }
 
 // Compile validates the policy and fixes a copy of it. Every failure is an error wrapping
@@ -122,6 +131,7 @@ func (p IdentityPolicy) Compile() (*CertIdentity, error) {
 		inter: map[SPKIHash]bool{}, distrust: map[SPKIHash]time.Time{}, identity: map[string]string{},
 		kind: p.IDKind, eku: slices.Clone(p.EKU), emailEKU: p.AllowEmailProtectionEKU, policy: p.Policy,
 		canon: p.Canonical, maxChain: p.MaxChain, skew: p.Skew, grace: p.AnchorGrace, rsa2048: p.RSA2048Until,
+		maxLife: p.MaxLeafLifetime, needNC: p.RequireNameConstraints,
 	}
 	if !p.IDKind.valid() {
 		return cfgErr("identifier kind %q is not %q or %q", p.IDKind, IDPersonURI, IDEmail)
@@ -147,6 +157,15 @@ func (p IdentityPolicy) Compile() (*CertIdentity, error) {
 	if c.grace == 0 {
 		c.grace = defaultAnchorGrace
 	}
+	if c.skew > maxTolerance || c.grace > maxTolerance {
+		return cfgErr("Skew and AnchorGrace are at most %s: a larger tolerance widens the proof window beyond what the design bounds", maxTolerance)
+	}
+	switch {
+	case c.maxLife < 0 || c.maxLife > maxLeafLife:
+		return cfgErr("MaxLeafLifetime %s is outside 0 to %s", c.maxLife, maxLeafLife)
+	case c.maxLife == 0:
+		c.maxLife = defaultLeafLife
+	}
 	if c.canon == nil {
 		if p.IDKind != IDEmail {
 			return cfgErr("an %q policy needs a Canonicalizer (it holds the URI host)", p.IDKind)
@@ -170,6 +189,10 @@ func (p IdentityPolicy) Compile() (*CertIdentity, error) {
 		c.inter[h] = true
 	}
 	for h, t := range p.Distrust {
+		// A mistyped hash would leave a compromised CA trusted while the bank believes it distrusted.
+		if _, anchor := c.anchorBy[h]; !anchor && !c.inter[h] {
+			return cfgErr("Distrust names the key %x, which is neither a trust anchor nor a pinned intermediate", h[:8])
+		}
 		c.distrust[h] = t
 	}
 	if len(p.Identity) == 0 {
@@ -271,7 +294,12 @@ func quote(s string) string {
 //     kind whose canonical value is the approver's identity;
 //   - notBefore <= decidedAt <= notAfter, decidedAt <= A + skew, and A <= notAfter + anchorGrace.
 //
-// It does not check revocation status or the signature. An error is always a *CertError.
+// It does not check revocation status or the signature (the decision verifier built from
+// ApproverCert.PublicKey refuses weak Ed25519 keys when the signature is checked, so KeyHash is over
+// bytes that step must still vet). Every carried certificate must parse, pinned or not: one
+// unparseable certificate refuses the chain. The signature algorithm profile is SHA-256 or better,
+// with ECDSA limited to SHA-256 and SHA-384 as the design note says (the RFC 3161 verifier also
+// accepts SHA-512 on ECDSA). An error is always a *CertError.
 func (c *CertIdentity) VerifyChain(approverID string, chain [][]byte, decidedAt, anchoredAt time.Time) (*ApproverCert, error) {
 	want, ok := c.identity[approverID]
 	if !ok {
@@ -317,21 +345,47 @@ func (c *CertIdentity) VerifyChain(approverID string, chain [][]byte, decidedAt,
 		}
 		return nil, certErr(agent.ReasonCertChain, "the chain does not verify: %v", err)
 	}
-	if len(chains) != 1 {
-		return nil, certErr(agent.ReasonCertChain, "%d valid chains build from the carried certificates; exactly one is required", len(chains))
+	// Chains that differ only in a certificate for the same key (a renewed root, a reissued
+	// intermediate) are one chain; chains through different keys are ambiguous and refused.
+	groups := map[string][][]*x509.Certificate{}
+	for _, ch := range chains {
+		var k []byte
+		for _, cert := range ch {
+			h := SPKIHashOf(cert)
+			k = append(k, h[:]...)
+		}
+		groups[string(k)] = append(groups[string(k)], ch)
 	}
-	path := chains[0]
-	if len(path) > c.maxChain {
-		return nil, certErr(agent.ReasonCertChain, "the path has %d certificates, over the limit of %d", len(path), c.maxChain)
+	if len(groups) != 1 {
+		return nil, certErr(agent.ReasonCertChain, "%d valid chains through different keys build from the carried certificates; exactly one is required", len(groups))
 	}
+	var cands [][]*x509.Certificate
+	for _, g := range groups {
+		cands = g
+	}
+	sort.Slice(cands, func(i, j int) bool { return chainDigest(cands[i]) < chainDigest(cands[j]) })
 
 	// The leaf's role comes before the CAs' profile so a wrong-purpose certificate is named for that.
 	scheme, pub, err := c.checkLeaf(leaf)
 	if err != nil {
 		return nil, err
 	}
-	if err := c.checkPath(path, anchoredAt); err != nil {
-		return nil, err
+	var path []*x509.Certificate
+	var pathErr error
+	for _, cand := range cands {
+		if len(cand) > c.maxChain {
+			pathErr = cmp.Or(pathErr, certErr(agent.ReasonCertChain, "the path has %d certificates, over the limit of %d", len(cand), c.maxChain))
+			continue
+		}
+		if err := c.checkPath(cand, anchoredAt); err != nil {
+			pathErr = cmp.Or(pathErr, err)
+			continue
+		}
+		path = cand
+		break
+	}
+	if path == nil {
+		return nil, pathErr
 	}
 
 	ident, err := c.leafIdentifier(leaf)
@@ -367,11 +421,20 @@ func (c *CertIdentity) checkLeaf(leaf *x509.Certificate) (Alg, []byte, error) {
 	if leaf.IsCA {
 		return "", nil, certErr(agent.ReasonCertUsage, "the leaf is marked as a CA")
 	}
+	// Key usage is exclusive to signing: an approver key is not also a certificate-signing,
+	// encipherment or agreement key.
+	const allowedKU = x509.KeyUsageDigitalSignature | x509.KeyUsageContentCommitment
 	if leaf.KeyUsage&x509.KeyUsageDigitalSignature == 0 {
 		return "", nil, certErr(agent.ReasonCertUsage, "the leaf's key usage does not include digitalSignature")
 	}
-	if !c.leafHasEKU(leaf) {
-		return "", nil, certErr(agent.ReasonCertUsage, "the leaf does not carry the extended key usage %s", c.eku)
+	if extra := leaf.KeyUsage &^ allowedKU; extra != 0 {
+		return "", nil, certErr(agent.ReasonCertUsage, "the leaf's key usage has bits beyond digitalSignature and contentCommitment (0x%x)", int(extra))
+	}
+	if leaf.NotAfter.Sub(leaf.NotBefore) > c.maxLife {
+		return "", nil, certErr(agent.ReasonCertWindow, "the leaf is valid for %s, over the limit of %s", leaf.NotAfter.Sub(leaf.NotBefore), c.maxLife)
+	}
+	if _, err := c.leafEKUMode(leaf); err != nil {
+		return "", nil, err
 	}
 	if !slices.ContainsFunc(leaf.Policies, c.policy.Equal) {
 		return "", nil, certErr(agent.ReasonCertUsage, "the leaf does not assert the certificate policy %s", c.policy)
@@ -397,11 +460,27 @@ func (c *CertIdentity) checkLeaf(leaf *x509.Certificate) (Alg, []byte, error) {
 	return "", nil, certErr(agent.ReasonCertUsage, "the leaf's key is %T, which no decision scheme can verify (ed25519, ecdsa-p256 and ml-dsa-65 only)", leaf.PublicKey)
 }
 
-func (c *CertIdentity) leafHasEKU(cert *x509.Certificate) bool {
-	if slices.ContainsFunc(cert.UnknownExtKeyUsage, c.eku.Equal) {
-		return true
+// leafEKU is how the leaf qualifies on extended key usage.
+type leafEKU int
+
+const (
+	ekuApprover leafEKU = iota // exactly the required OID
+	ekuEmail                   // exactly id-kp-emailProtection (dedicated approver CA mode)
+)
+
+// leafEKUMode requires the leaf's extended key usage to be exactly the required OID, or, when the
+// policy allows it, exactly emailProtection: an approver key is not shared across purposes, and a
+// leaf that mixes the two modes is refused.
+func (c *CertIdentity) leafEKUMode(cert *x509.Certificate) (leafEKU, error) {
+	switch {
+	case len(cert.ExtKeyUsage) == 0 && len(cert.UnknownExtKeyUsage) == 1 && c.eku.Equal(cert.UnknownExtKeyUsage[0]):
+		return ekuApprover, nil
+	case c.emailEKU && len(cert.UnknownExtKeyUsage) == 0 && len(cert.ExtKeyUsage) == 1 && cert.ExtKeyUsage[0] == x509.ExtKeyUsageEmailProtection:
+		return ekuEmail, nil
+	case slices.ContainsFunc(cert.UnknownExtKeyUsage, c.eku.Equal) || (c.emailEKU && slices.Contains(cert.ExtKeyUsage, x509.ExtKeyUsageEmailProtection)):
+		return 0, certErr(agent.ReasonCertUsage, "the leaf carries the extended key usage %s together with others; an approver certificate carries exactly one", c.eku)
 	}
-	return c.emailEKU && slices.Contains(cert.ExtKeyUsage, x509.ExtKeyUsageEmailProtection)
+	return 0, certErr(agent.ReasonCertUsage, "the leaf does not carry the extended key usage %s", c.eku)
 }
 
 // ekuMatch is the usage the leaf is judged on, for nesting along the chain.
@@ -412,11 +491,10 @@ func (c *CertIdentity) caPermits(ca, leaf *x509.Certificate) bool {
 	if slices.Contains(ca.ExtKeyUsage, x509.ExtKeyUsageAny) {
 		return true
 	}
-	if slices.ContainsFunc(leaf.UnknownExtKeyUsage, c.eku.Equal) {
-		return slices.ContainsFunc(ca.UnknownExtKeyUsage, c.eku.Equal)
+	if mode, err := c.leafEKUMode(leaf); err == nil && mode == ekuEmail {
+		return slices.Contains(ca.ExtKeyUsage, x509.ExtKeyUsageEmailProtection)
 	}
-	// The leaf is accepted on emailProtection (leafHasEKU checked that).
-	return slices.Contains(ca.ExtKeyUsage, x509.ExtKeyUsageEmailProtection)
+	return slices.ContainsFunc(ca.UnknownExtKeyUsage, c.eku.Equal)
 }
 
 // checkPath applies what the standard library does not: EKU nesting, the algorithm profile, the
@@ -424,6 +502,7 @@ func (c *CertIdentity) caPermits(ca, leaf *x509.Certificate) bool {
 // the distrust dates.
 func (c *CertIdentity) checkPath(path []*x509.Certificate, a time.Time) error {
 	leaf := path[0]
+	inhibitAny := slices.ContainsFunc(path, func(x *x509.Certificate) bool { return x.InhibitAnyPolicy > 0 || x.InhibitAnyPolicyZero })
 	for i, cert := range path {
 		if cert.SerialNumber.Sign() <= 0 || cert.SerialNumber.BitLen() > maxSerialBits {
 			return certErr(agent.ReasonCertChain, "certificate %d has a serial number outside 1 to 20 octets", i)
@@ -449,8 +528,54 @@ func (c *CertIdentity) checkPath(path []*x509.Certificate, a time.Time) error {
 		if !c.caPermits(cert, leaf) {
 			return certErr(agent.ReasonCertUsage, "CA certificate %d has extended key usages that do not permit %s", i, c.eku)
 		}
+		if err := c.caPermitsPolicy(cert, i, inhibitAny); err != nil {
+			return err
+		}
+	}
+	if c.needNC && !slices.ContainsFunc(path[1:], c.constrainsKind) {
+		return certErr(agent.ReasonCertChain, "no CA of the path carries a permitted-subtree name constraint for the %q identifier kind", c.kind)
 	}
 	return nil
+}
+
+// caPermitsPolicy nests certificate policies along the chain, as extended key usages are: a CA that
+// states the policies it issues under and does not include the required one (or anyPolicy) cannot
+// issue a leaf that passes for it. A CA with no certificatePolicies extension is unconstrained.
+// Policy mappings are not processed (a mapped policy cannot be judged without the RFC 5280 policy
+// tree), so a CA that maps policies is refused rather than guessed at; inhibitAnyPolicy anywhere in
+// the path withdraws the anyPolicy allowance.
+func (c *CertIdentity) caPermitsPolicy(ca *x509.Certificate, i int, inhibitAny bool) error {
+	if len(ca.PolicyMappings) > 0 {
+		return certErr(agent.ReasonCertUsage, "CA certificate %d maps certificate policies, which is not supported", i)
+	}
+	if len(ca.Policies) == 0 {
+		return nil
+	}
+	if slices.ContainsFunc(ca.Policies, c.policy.Equal) {
+		return nil
+	}
+	if !inhibitAny && slices.ContainsFunc(ca.Policies, anyPolicy.Equal) {
+		return nil
+	}
+	return certErr(agent.ReasonCertUsage, "CA certificate %d is restricted to other certificate policies than %s", i, c.policy)
+}
+
+var anyPolicy = mustOID("2.5.29.32.0")
+
+func mustOID(s string) x509.OID {
+	o, err := x509.ParseOID(s)
+	if err != nil {
+		panic(err)
+	}
+	return o
+}
+
+// constrainsKind reports whether the CA carries a permitted name constraint for the identifier kind.
+func (c *CertIdentity) constrainsKind(ca *x509.Certificate) bool {
+	if c.kind == IDEmail {
+		return len(ca.PermittedEmailAddresses) > 0
+	}
+	return len(ca.PermittedURIDomains) > 0
 }
 
 // sigAlgAllowed is the signature algorithm profile for the signatures on the certificates of a
@@ -546,4 +671,13 @@ func (c *CertIdentity) leafIdentifier(leaf *x509.Certificate) (string, error) {
 		return "", certErr(agent.ReasonCertIdentity, "the leaf's identifier %s is outside the accepted profile: %v", quote(string(e.Bytes)), err)
 	}
 	return ident, nil
+}
+
+// chainDigest orders equivalent chains deterministically.
+func chainDigest(ch []*x509.Certificate) string {
+	h := sha256.New()
+	for _, c := range ch {
+		h.Write(c.Raw)
+	}
+	return string(h.Sum(nil))
 }
