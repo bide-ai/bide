@@ -1,9 +1,9 @@
 name: Models
 
-# TLA+ models of the coordination protocols (spec/tla/README.md). In the merge queue and on main: the
-# PlusCal translation check, the checker self-test, and every "ci", "regress", "finding" and "limit"
-# configuration of every model. On a pull request: the same, for the models whose directory under
-# spec/tla the pull request changes, and the models whose configurations name a changed one in a
+# TLA+ models of the coordination protocols (spec/tla/README.md). On main: the PlusCal translation
+# check, the checker self-test, and every "ci", "regress", "finding" and "limit" configuration of
+# every model. On a pull request and in the merge queue: the same, for the models whose directory
+# under spec/tla the pull request (or the batch) changes, and the models whose configurations name a changed one in a
 # LIBRARY line (all of them when it changes check.sh, tools.lock, shards.sh or this file).
 # Nightly (and on demand): the "nightly" configurations, with larger bounds and the liveness checks
 # at the larger fault budget; and, in a job of its own beside it, the Apalache checks (symbolic and
@@ -67,10 +67,11 @@ jobs:
         with:
           fetch-depth: 0
       # TLC reads only the model's own directory under spec/tla, the tools and check.sh, so a pull
-      # request checks the models whose directory it changes (all of them when it changes check.sh,
+      # request, and a merge queue batch (against the queue's base), checks the models whose
+      # directory it changes (all of them when it changes check.sh,
       # tools.lock, shards.sh or this file) and no others: a change to the Go code a model describes
       # must change the model or carry a Protocol-Impact override (modelsync, in the Lint job), so
-      # its model runs whenever its rules change. merge_group and pushes to main always run every
+      # its model runs whenever its rules change. Pushes to main and the nightly always run every
       # model, and so does any doubt: a failed diff or an unexpected event. This job failing fails
       # the Models check.
       - id: changes
@@ -79,17 +80,18 @@ jobs:
         env:
           GH_TOKEN: ${{ github.token }}
           PR: ${{ github.event.pull_request.number }}
-          BASE: ${{ github.event.pull_request.base.sha }}
-          HEAD: ${{ github.event.pull_request.head.sha }}
+          EVENT: ${{ github.event_name }}
+          BASE: ${{ github.event.pull_request.base.sha || github.event.merge_group.base_sha }}
+          HEAD: ${{ github.event.pull_request.head.sha || github.event.merge_group.head_sha }}
         run: |
           run=true
           models=
-          # The full-ci label (read now, so a re-run sees it) checks every model, as the merge queue does.
+          # The full-ci label (read now, so a re-run sees it) checks every model.
           full=false
-          if [ "${{ github.event_name }}" = "pull_request" ] && labels=$(gh api "repos/$GITHUB_REPOSITORY/pulls/$PR" --jq '[.labels[].name] | join(",")'); then
+          if [ "$EVENT" = pull_request ] && labels=$(gh api "repos/$GITHUB_REPOSITORY/pulls/$PR" --jq '[.labels[].name] | join(",")'); then
             case ",$labels," in *,full-ci,*) full=true ;; esac
           fi
-          if [ "${{ github.event_name }}" = "pull_request" ] && [ "$full" = false ] && files=$(git diff --name-only "$BASE" "$HEAD") && [ -n "$files" ]; then
+          if [ "$EVENT" != push ] && [ "$full" = false ] && files=$(git diff --name-only "$BASE" "$HEAD") && [ -n "$files" ]; then
             echo "Changed files:"; echo "$files"
             if ! echo "$files" | grep -qE '^(spec/tla/check\.sh|spec/tla/tools\.lock|\.github/workflows/models\.yml|\.github/scripts/shards\.sh)$'; then
               models=$(echo "$files" | sed -n 's|^spec/tla/\([^/]*\)/.*|\1|p' | sort -u | while read -r m; do
@@ -109,7 +111,7 @@ jobs:
                 run=false
                 echo "No model changed (spec/tla/<model>/, check.sh, tools.lock, shards.sh, models.yml): the models are not re-checked."
               else
-                echo "Models changed: $models (the merge queue checks every model)"
+                echo "Models changed: $models (a push to main and the nightly check every model)"
               fi
             fi
           fi

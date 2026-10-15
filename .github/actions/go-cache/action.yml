@@ -1,0 +1,36 @@
+name: Go cache
+description: >-
+  Restore the Go build and test cache the last push to main saved, and clear the cached test
+  results when they cannot be trusted (gocache.sh). A job saves the cache with
+  actions/cache/save, on a push to main only: caches saved on a pull request or a merge queue
+  branch are not readable by other runs.
+inputs:
+  name:
+    description: Cache name, one per job (the OS is added)
+    required: true
+outputs:
+  paths:
+    description: The directories to save
+    value: ${{ steps.paths.outputs.paths }}
+runs:
+  using: composite
+  steps:
+    - id: paths
+      shell: bash
+      run: |
+        {
+          echo "paths<<EOF"
+          go env GOCACHE
+          go env GOMODCACHE
+          echo "EOF"
+        } >> "$GITHUB_OUTPUT"
+    - uses: actions/cache/restore@v4
+      with:
+        path: ${{ steps.paths.outputs.paths }}
+        key: go-${{ runner.os }}-${{ inputs.name }}-${{ github.sha }}
+        restore-keys: go-${{ runner.os }}-${{ inputs.name }}-
+    - name: Prepare the cache (clear cached test results if untrusted)
+      shell: bash
+      env:
+        FRESH: ${{ github.event_name == 'push' }}
+      run: .github/scripts/gocache.sh prepare

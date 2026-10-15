@@ -1,0 +1,17 @@
+# Packages whose tests run the go tool to build or run a program (go build, go run, ...), or run
+# node, bash or sh over files of the tree. go test reuses an unchanged package's cached result, and
+# cannot see such a program or script change, so CI runs these
+# packages with -count=1 (.github/scripts/shards.sh run) and every other package from the test
+# cache. One package directory per line, relative to the repository root.
+# .github/scripts/check-uncached.sh (Lint) fails when a test file that runs the go tool for more than
+# "go list" and "go mod" is in a package missing here, and when an entry has no such test.
+approvals
+cmd/bide
+cmd/bide/bide-hsm
+cmd/bide/internal/initcmd
+examples/approval
+examples/plan
+examples/stripe-refund
+integration/bideaudit
+internal/auditcli
+model/provider
