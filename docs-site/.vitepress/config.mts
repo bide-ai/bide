@@ -110,6 +110,7 @@ export default defineConfig({
           { text: 'Stability and support', link: '/trust/stability' },
           { text: 'Comparison', link: '/trust/comparison' },
           { text: 'Operations guidance', link: '/trust/operations' },
+          { text: 'Retention and archiving', link: '/guides/retention' },
           { text: 'Verifying releases', link: '/trust/verify-releases' },
         ],
       },
