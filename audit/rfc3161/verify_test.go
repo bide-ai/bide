@@ -561,3 +561,13 @@ func TestErrorsAreRefusals(t *testing.T) {
 		t.Error("error text spans lines")
 	}
 }
+
+// A certificate that does not parse is refused even when it is not the signer's: the token is held
+// to DER throughout, and OpenSSL rejects such a token too (found by the differential test).
+func TestUnparsableCertificateRefused(t *testing.T) {
+	f := newFixture(t)
+	bad := append([]byte(nil), f.kit.root.Raw...)
+	bad[10] ^= 0xff
+	f.spec.extraCerts = [][]byte{bad}
+	mustRefuse(t, f.spec.build(t), f.expected(), f.policy(), ReasonMalformed)
+}

@@ -1,0 +1,30 @@
+oid_section = new_oids
+[ new_oids ]
+tsa_policy1 = 1.2.3.4.1
+[ tsa ]
+default_tsa = tsa_config1
+[ tsa_config1 ]
+serial = ./serial
+crypto_device = builtin
+signer_cert = ./tsa-$ENV::VEC.pem
+certs = ./tsa-chain-$ENV::VEC.pem
+signer_key = ./tsa-$ENV::VEC.key
+signer_digest = $ENV::DIGEST
+default_policy = tsa_policy1
+other_policies = tsa_policy1
+digests = sha256, sha384, sha512
+accuracy = secs:1, millisecs:500
+ordering = no
+tsa_name = no
+ess_cert_id_chain = no
+ess_cert_id_alg = sha256
+[ ext_root ]
+basicConstraints = critical, CA:TRUE
+keyUsage = critical, keyCertSign, cRLSign
+subjectKeyIdentifier = hash
+[ ext_tsa ]
+basicConstraints = CA:FALSE
+keyUsage = critical, digitalSignature
+extendedKeyUsage = critical, timeStamping
+subjectKeyIdentifier = hash
+authorityKeyIdentifier = keyid

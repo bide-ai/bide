@@ -257,8 +257,12 @@ func verify(token []byte, exp Expected, pol Policy, maxCerts int) (*Result, *Ref
 	// signer certificate
 	var parsed []*x509.Certificate
 	seen := map[string]bool{}
-	for _, c := range certNodes {
-		if cert, err := x509.ParseCertificate(c.FullBytes); err == nil && !seen[string(cert.Raw)] {
+	for k, c := range certNodes {
+		cert, err := x509.ParseCertificate(c.FullBytes)
+		if err != nil {
+			return nil, refuse(ReasonMalformed, "certificate %d in the token does not parse: %v", k, err)
+		}
+		if !seen[string(cert.Raw)] {
 			seen[string(cert.Raw)] = true
 			parsed = append(parsed, cert)
 		}
