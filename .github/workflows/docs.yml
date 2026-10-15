@@ -7,7 +7,9 @@ name: Docs
 #
 # A pull request that touches the docs builds the site too (nothing is uploaded or
 # deployed), so a page VitePress cannot build fails the pull request instead of the
-# deploy from main.
+# deploy from main. The job "Docs build" reports on every pull request and every merge queue
+# batch, building only when the docs changed (a step decides, not a path filter on the workflow,
+# which would leave the check missing on other pull requests), so it can be a required check.
 
 on:
   push:
@@ -18,11 +20,7 @@ on:
       - 'CHANGELOG.md'
       - '.github/workflows/docs.yml'
   pull_request:
-    paths:
-      - 'docs/**'
-      - 'docs-site/**'
-      - 'CHANGELOG.md'
-      - '.github/workflows/docs.yml'
+  merge_group:
   workflow_dispatch:
 
 permissions:
@@ -32,35 +30,56 @@ permissions:
 
 concurrency:
   # Deploys queue one after another; a pull request's build only replaces its own older run.
-  group: ${{ github.event_name == 'pull_request' && format('docs-pr-{0}', github.ref) || 'pages' }}
+  group: ${{ (github.event_name == 'pull_request' || github.event_name == 'merge_group') && format('docs-pr-{0}', github.ref) || 'pages' }}
   cancel-in-progress: ${{ github.event_name == 'pull_request' }}
 
 jobs:
   build:
+    name: Docs build
     runs-on: ubuntu-latest
-    defaults:
-      run:
-        working-directory: docs-site
     steps:
       - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      # A pull request or a merge queue batch builds only when it touches what the site is built
+      # from (the paths the push trigger lists); any doubt builds.
+      - id: changed
+        name: Did the docs change?
+        shell: bash
+        env:
+          EVENT: ${{ github.event_name }}
+          BASE: ${{ github.event.pull_request.base.sha || github.event.merge_group.base_sha }}
+          HEAD: ${{ github.event.pull_request.head.sha || github.event.merge_group.head_sha }}
+        run: |
+          build=true
+          if { [ "$EVENT" = pull_request ] || [ "$EVENT" = merge_group ]; } && files=$(git diff --name-only "$BASE" "$HEAD") && [ -n "$files" ]; then
+            echo "$files"
+            echo "$files" | grep -qE '^(docs/|docs-site/|CHANGELOG\.md$|\.github/workflows/docs\.yml$)' || build=false
+          fi
+          echo "build=$build" | tee -a "$GITHUB_OUTPUT"
       - uses: actions/setup-node@v4
+        if: steps.changed.outputs.build != 'false'
         with:
           node-version: 20
       - name: Install
+        if: steps.changed.outputs.build != 'false'
+        working-directory: docs-site
         run: npm install
       - name: Build
+        if: steps.changed.outputs.build != 'false'
+        working-directory: docs-site
         run: npm run docs:build
       - uses: actions/configure-pages@v5
-        if: github.event_name != 'pull_request'
+        if: github.event_name == 'push' || github.event_name == 'workflow_dispatch'
         with:
           enablement: true
       - uses: actions/upload-pages-artifact@v3
-        if: github.event_name != 'pull_request'
+        if: github.event_name == 'push' || github.event_name == 'workflow_dispatch'
         with:
           path: docs-site/.vitepress/dist
 
   deploy:
-    if: github.event_name != 'pull_request'
+    if: github.event_name == 'push' || github.event_name == 'workflow_dispatch'
     needs: build
     runs-on: ubuntu-latest
     environment:
