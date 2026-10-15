@@ -1061,6 +1061,8 @@ func TestVerifyNotifications_EscalationStepOperationFields(t *testing.T) {
 		if !errors.Is(err, audit.ErrNotVerified) || !strings.Contains(viol, tc.want) {
 			t.Errorf("%s: %v %v", name, err, viol)
 		}
+	}
+}
 
 // ---- all-clear times from the records that resolve an event ----
 
