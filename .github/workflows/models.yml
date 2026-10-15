@@ -194,8 +194,26 @@ jobs:
       - name: Every shard passed
         run: .github/scripts/shards.sh verdict "${{ needs.plan.result }}" "${{ needs.plan.outputs.run }}" "shards=${{ needs.shard.result }}"
 
+  # The nightly configurations of model 14 (notify) are large, and several take hours alone, so each
+  # runs as a job of its own (a job is capped at 6 hours); every other model's run together in
+  # models-nightly. The list is check.sh's own, so a new nightly configuration needs no edit here.
+  nightly-notify-list:
+    name: Nightly notify configurations
+    if: github.event_name == 'schedule' || (github.event_name == 'workflow_dispatch' && inputs.only != 'apalache')
+    runs-on: ubuntu-latest
+    outputs:
+      cfgs: ${{ steps.list.outputs.cfgs }}
+      others: ${{ steps.list.outputs.others }}
+    steps:
+      - uses: actions/checkout@v4
+      - id: list
+        run: |
+          echo "cfgs=$(TLC_MODELS=notify spec/tla/check.sh list nightly | jq -R . | jq -sc .)" >> "$GITHUB_OUTPUT"
+          echo "others=$(for m in spec/tla/*/; do m=$(basename "$m"); ls spec/tla/$m/*MC.tla >/dev/null 2>&1 && [ "$m" != notify ] && echo "$m"; done | tr '\n' ' ')" >> "$GITHUB_OUTPUT"
+
   models-nightly:
     name: Models (nightly)
+    needs: nightly-notify-list
     if: github.event_name == 'schedule' || (github.event_name == 'workflow_dispatch' && inputs.only != 'apalache')
     runs-on: ubuntu-latest
     timeout-minutes: 240
@@ -209,8 +227,33 @@ jobs:
         with:
           path: ~/.cache/bide-tla
           key: tla-tools-${{ hashFiles('spec/tla/tools.lock') }}
-      - name: Nightly configurations
+      - name: Nightly configurations (every model but notify)
+        env:
+          TLC_MODELS: ${{ needs.nightly-notify-list.outputs.others }}
         run: spec/tla/check.sh nightly
+
+  models-nightly-notify:
+    name: Models (nightly notify)
+    needs: nightly-notify-list
+    if: github.event_name == 'schedule' || (github.event_name == 'workflow_dispatch' && inputs.only != 'apalache')
+    runs-on: ubuntu-latest
+    timeout-minutes: 350
+    strategy:
+      fail-fast: false
+      matrix:
+        cfg: ${{ fromJSON(needs.nightly-notify-list.outputs.cfgs) }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: '21'
+      - uses: actions/cache@v4
+        with:
+          path: ~/.cache/bide-tla
+          key: tla-tools-${{ hashFiles('spec/tla/tools.lock') }}
+      - name: ${{ matrix.cfg }}
+        run: spec/tla/check.sh run "${{ matrix.cfg }}"
 
   # One job per Apalache configuration (spec/tla/*/apalache/*.cfg, and the TLC cross-checks in
   # spec/tla/*/apalache/tlc/), in parallel: the largest
