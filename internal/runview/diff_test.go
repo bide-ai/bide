@@ -28,7 +28,7 @@ const diffV1 = `{"version": 1, "flow": "refund", "entry": "validate",
 const diffV2 = `{"version": 1, "flow": "refund", "entry": "validate",
   "nodes": [{"name": "validate", "block": "validate", "safety": "side_effect"},
             {"name": "charge", "block": "charge", "approval": {"need": 2, "approvers": ["ops", "finance", "risk"]}},
-            {"name": "review", "block": "review"}, {"name": "receipt", "block": "receipt"}],
+            {"name": "review", "block": "review", "safety": "readonly"}, {"name": "receipt", "block": "receipt"}],
   "wiring": [{"switch": "validate", "when": [{"pred": "large", "to": "charge"}], "else": "review"},
              {"edge": ["charge", "receipt"]}]}`
 
@@ -56,7 +56,7 @@ func TestDiffChanges(t *testing.T) {
 	want := []string{
 		"changed node validate: safety (the block's) -> side_effect",
 		"changed node charge: approval 1 of 3 -> 2 of 3 (strengthened)",
-		"added node review: block review",
+		"added node review: block review; safety readonly",
 		"removed node skip: block skip",
 		"added edge validate -> review: else",
 		"removed edge validate -> skip: else",
@@ -73,7 +73,8 @@ func TestDiffChanges(t *testing.T) {
 
 	// The reverse diff weakens the gate.
 	v = diffOf(t, diffV2, diffV1, nil, nil)
-	if !slices.Equal(v.Weakened, []string{"charge: approval 2 of 3 -> 1 of 3"}) {
+	// skip, which replaces review, has no stated safety: a new node that may have an effect, ungated.
+	if !slices.Equal(v.Weakened, []string{"charge: approval 2 of 3 -> 1 of 3", "skip: new node, reachable without an approval gate (validate -> skip), not before; its safety is not known"}) {
 		t.Errorf("reverse: weakened %q", v.Weakened)
 	}
 
@@ -85,7 +86,7 @@ func TestDiffChanges(t *testing.T) {
 	want = []string{
 		"changed flow: f -> g",
 		"changed entry: a -> b",
-		"changed node a: block a -> a2",
+		"changed node a: block a -> a2; block changed on a node no declared gate guards: the new block's own approval gate, if any, is not visible without the plan.Registry (weakened)",
 		"changed edge b -> a: loop again, at most 3 -> loop again, at most 5",
 		"changed edge b -> c: when p -> when q",
 	}
@@ -150,7 +151,8 @@ func TestDiffGates(t *testing.T) {
 	// A gated node removed takes its gate with it: weakened, as a rename of a gated node is.
 	gone := `{"version": 1, "flow": "f", "nodes": [{"name": "a", "block": "a"}, {"name": "pay2", "block": "pay"}], "wiring": [{"edge": ["a", "pay2"]}]}`
 	v := diffOf(t, withGate(g(2, "ops", "finance")), gone, nil, nil)
-	if !slices.Equal(v.Weakened, []string{"pay: approval 2 of 2: ops, finance -> none"}) {
+	// pay2 is pay renamed, without its gate: reported as the renamed node's gate removed.
+	if !slices.Equal(v.Weakened, []string{"pay2: approval 2 of 2: ops, finance -> none"}) {
 		t.Errorf("a removed gated node: weakened %q, changes %q", v.Weakened, lines(v.Changes))
 	}
 
@@ -170,7 +172,7 @@ func TestDiffDigest(t *testing.T) {
 	for _, err := range []error{
 		reg2.RegisterStep("validate", func(_ context.Context, o order) (order, error) { return o, nil }),
 		reg2.RegisterStep("charge", func(_ context.Context, o order) (order, error) { return o, nil }),
-		reg2.RegisterStep("review", func(_ context.Context, o order) (string, error) { return "review " + o.ID, nil }),
+		reg2.RegisterStep("review", func(_ context.Context, o order) (string, error) { return "review " + o.ID, nil }, plan.ReadOnly()),
 		reg2.RegisterStep("receipt", func(_ context.Context, o order) (string, error) { return o.ID, nil }),
 		reg2.RegisterPredicate("large", func(o order) bool { return o.Amount > 100 }),
 	} {

@@ -42,6 +42,11 @@ type Change struct {
 	// adding or shortening one a strengthening (the gate fails closed sooner). Empty when the
 	// gate did not change. A removed node's gate counts as removed.
 	Gate string `json:"gate,omitempty"`
+	// Weakening says what a weakened change weakened: "gate" (an approval policy: the gate was
+	// removed, loosened, or lost its exclusion of the requester or its deadline), "path" (an
+	// effect node newly reachable without passing an approval gate) or "assertion" (an assert line
+	// removed or loosened). Empty for a change that weakened nothing.
+	Weakening string `json:"weakening,omitempty"`
 }
 
 // String is the change as one line: "changed node charge: approval 1 of 3 -> 2 of 3 (strengthened)".
@@ -52,6 +57,8 @@ func (c Change) String() string {
 		where = "node " + c.Node
 	case "edge":
 		where = "edge " + c.From + " -> " + c.To
+	case "switch":
+		where = "switch " + c.Node
 	default:
 		where = c.What
 	}
@@ -73,8 +80,10 @@ type DiffView struct {
 	OldDigest string   `json:"old_digest,omitempty"`
 	NewDigest string   `json:"new_digest,omitempty"`
 	Changes   []Change `json:"changes"`
-	// Weakened and Strengthened name each node whose approval gate changed that way, with how:
-	// "charge: approval 2 of 3 -> 1 of 3".
+	// Weakened and Strengthened name each change that made the flow's approval checks weaker or
+	// stronger, with how: "charge: approval 2 of 3 -> 1 of 3" for a gate, "receipt: reachable
+	// without an approval gate (validate -> receipt), not before" for a new ungated path to an
+	// effect, "assertion removed: every path to charge passes approval >= 2 of 3" for an assert line.
 	Weakened     []string `json:"weakened,omitempty"`
 	Strengthened []string `json:"strengthened,omitempty"`
 	Counts       Counts   `json:"counts"`
@@ -85,6 +94,8 @@ type DiffView struct {
 	Graph     *Graph `json:"graph,omitempty"`
 	// Verdict is the answer the page opens with (see diffVerdict); it is not in the JSON view.
 	Verdict Verdict `json:"-"`
+	// weakKinds is the Weakening of each Weakened entry, in order.
+	weakKinds []string
 }
 
 // Counts are a diff's changes by kind.
@@ -143,9 +154,10 @@ func BuildDiff(d Diff) (*DiffView, error) {
 		}
 		switch c.Gate {
 		case "weakened":
-			v.Weakened = append(v.Weakened, c.Node+": "+gateDetail(c))
+			v.Weakened = append(v.Weakened, changeSummary(c, "loosened"))
+			v.weakKinds = append(v.weakKinds, c.Weakening)
 		case "strengthened":
-			v.Strengthened = append(v.Strengthened, c.Node+": "+gateDetail(c))
+			v.Strengthened = append(v.Strengthened, changeSummary(c, "tightened"))
 		}
 	}
 	v.Graph = diffGraph(o.Topology, n.Topology, v.Changes)
@@ -170,8 +182,12 @@ func CheckDiffStyled(w io.Writer, d Diff, st term.Style) (weakened bool, err err
 	}
 	name := st.Dim(v.Name)
 	weak := func() {
-		for _, s := range v.Weakened {
-			fmt.Fprintf(w, "%s%s: %s\n", st.Cross(), name, st.BoldFail("approval policy weakened: "+s))
+		for i, s := range v.Weakened {
+			what := "weakened: "
+			if i < len(v.weakKinds) && v.weakKinds[i] == "gate" {
+				what = "approval policy weakened: "
+			}
+			fmt.Fprintf(w, "%s%s: %s\n", st.Cross(), name, st.BoldFail(what+s))
 		}
 	}
 	if st.On() {
@@ -273,10 +289,37 @@ func diffChanges(o, n plan.ConfigReport, oldSafety, newSafety map[string]string)
 	for _, x := range ot.Nodes {
 		oldNode[x.Name] = x
 	}
+	ren := renamedNodes(o, n)
+	renRev := map[string]string{}
+	for from, to := range ren {
+		renRev[to] = from
+	}
+	uOld, uNew := ungatedEffects(o), ungatedEffects(n)
 	newNode := map[string]bool{}
 	for _, x := range nt.Nodes {
 		newNode[x.Name] = true
 		was, ok := oldNode[x.Name]
+		if from, renamed := renRev[x.Name]; renamed {
+			c := Change{Change: "renamed", What: "node", Node: x.Name, Details: []string{"was " + from}}
+			old := oldNode[from]
+			if g := gateChange(old.Gate, x.Gate); g != "" {
+				// Renamed, and its gate changed with it.
+				c.Gate = g
+				if g == "weakened" {
+					c.Weakening = "gate"
+				}
+				c.Details = append(c.Details, gateMove(old.Gate, x.Gate)+" ("+g+")")
+			} else {
+				c.Details[0] += ", with the same block, safety, gate and edges"
+			}
+			// The node is the same, but a gate upstream of it may be gone.
+			if c.Gate == "" && uNew[x.Name] && !uOld[from] {
+				c.Gate, c.Weakening = "weakened", "path"
+				c.Details = append(c.Details, ungatedWhy(n, x.Name)+" (weakened)")
+			}
+			cs = append(cs, c)
+			continue
+		}
 		if !ok {
 			c := Change{Change: "added", What: "node", Node: x.Name, Details: []string{nodeKind(x)}}
 			if s := newSafety[x.Name]; s != "" {
@@ -284,6 +327,10 @@ func diffChanges(o, n plan.ConfigReport, oldSafety, newSafety map[string]string)
 			}
 			if x.Gate != nil {
 				c.Details = append(c.Details, "approval "+gateFull(x.Gate))
+			}
+			if uNew[x.Name] {
+				c.Gate, c.Weakening = "weakened", "path"
+				c.Details = append(c.Details, "new node, "+ungatedWhy(n, x.Name)+" (weakened)")
 			}
 			cs = append(cs, c)
 			continue
@@ -306,19 +353,33 @@ func diffChanges(o, n plan.ConfigReport, oldSafety, newSafety map[string]string)
 		}
 		if g := gateChange(was.Gate, x.Gate); g != "" {
 			c.Gate = g
+			if g == "weakened" {
+				c.Weakening = "gate"
+			}
 			c.Details = append(c.Details, gateMove(was.Gate, x.Gate)+" ("+g+")")
+		}
+		switch {
+		case c.Gate == "weakened":
+		case uNew[x.Name] && !uOld[x.Name]:
+			c.Gate, c.Weakening = "weakened", "path"
+			c.Details = append(c.Details, ungatedWhy(n, x.Name)+" (weakened)")
+		case uNew[x.Name] && was.Block != x.Block && !(o.Typed && n.Typed):
+			// Without the Registry the block's own approval gate (ToolSpec.Approval) is not visible: a new
+			// block on a node no config gate guards may have none.
+			c.Gate, c.Weakening = "weakened", "block"
+			c.Details = append(c.Details, "block changed on a node no declared gate guards: the new block's own approval gate, if any, is not visible without the plan.Registry (weakened)")
 		}
 		if len(c.Details) > 0 {
 			cs = append(cs, c)
 		}
 	}
 	for _, x := range ot.Nodes {
-		if newNode[x.Name] {
+		if newNode[x.Name] || ren[x.Name] != "" {
 			continue
 		}
 		c := Change{Change: "removed", What: "node", Node: x.Name, Details: []string{nodeKind(x)}}
 		if x.Gate != nil {
-			c.Gate = "weakened"
+			c.Gate, c.Weakening = "weakened", "gate"
 			c.Details = append(c.Details, gateMove(x.Gate, nil)+", with the node (weakened)")
 		}
 		cs = append(cs, c)
@@ -336,7 +397,87 @@ func diffChanges(o, n plan.ConfigReport, oldSafety, newSafety map[string]string)
 			cs = append(cs, edgeChange("removed", k, oe.label[k]))
 		}
 	}
+	cs = append(cs, switchChanges(o, n, uNew)...)
+	return append(cs, assertionChanges(o, n)...)
+}
+
+// assertionChanges compares the config's assert lines. A line the new config lacks is removed
+// (weakened), unless a line only the new config has is stronger than it (tightened, strengthened: a
+// higher need, a smaller approver set, or the requester excluded), or weaker (loosened, weakened) for
+// the same node; a line only the new config has, and relates to none removed, is added.
+func assertionChanges(o, n plan.ConfigReport) []Change {
+	var cs []Change
+	text := func(r plan.ConfigReport) []string {
+		var out []string
+		for _, a := range r.Assertions {
+			out = append(out, a.Text)
+		}
+		return out
+	}
+	oldT, newT := text(o), text(n)
+	same := func(a, b string) bool { return plan.CompareAssertions(a, b) == "equal" }
+	inOther := func(list []string, t string) bool {
+		return slices.ContainsFunc(list, func(x string) bool { return same(x, t) })
+	}
+	var added []string
+	for _, t := range newT {
+		if !inOther(oldT, t) {
+			added = append(added, t)
+		}
+	}
+	used := map[string]bool{}
+	for _, t := range oldT {
+		if inOther(newT, t) {
+			continue
+		}
+		rel, with := "", ""
+		for _, a := range added {
+			if used[a] {
+				continue
+			}
+			switch r := plan.CompareAssertions(t, a); {
+			case r == "stronger" && rel != "stronger":
+				rel, with = r, a
+			case r == "weaker" && rel == "":
+				rel, with = r, a
+			}
+		}
+		switch rel {
+		case "stronger":
+			used[with] = true
+			cs = append(cs, Change{Change: "changed", What: "assertion", Gate: "strengthened", Details: []string{t + " -> " + with + " (strengthened)"}})
+		case "weaker":
+			used[with] = true
+			cs = append(cs, Change{Change: "changed", What: "assertion", Gate: "weakened", Weakening: "assertion", Details: []string{t + " -> " + with + " (weakened)"}})
+		default:
+			cs = append(cs, Change{Change: "removed", What: "assertion", Gate: "weakened", Weakening: "assertion", Details: []string{t + " (weakened)"}})
+		}
+	}
+	for _, a := range added {
+		if !used[a] {
+			cs = append(cs, Change{Change: "added", What: "assertion", Details: []string{a}})
+		}
+	}
 	return cs
+}
+
+// changeSummary is c as an entry of DiffView.Weakened or Strengthened. loosened is the verb of an
+// assertion that changed ("loosened", or "tightened" for a strengthening).
+func changeSummary(c Change, loosened string) string {
+	detail, _, _ := strings.Cut(strings.Join(c.Details, "; "), " (")
+	if c.What == "assertion" {
+		// The detail was cut at its first " (", which an assertion's text never holds.
+		if c.Change == "removed" {
+			return "assertion removed: " + detail
+		}
+		return "assertion " + loosened + ": " + detail
+	}
+	if c.Weakening == "path" || c.Weakening == "block" || c.Weakening == "condition" {
+		d := c.Details[len(c.Details)-1]
+		d = strings.TrimSuffix(d, " (weakened)")
+		return c.Node + ": " + d
+	}
+	return c.Node + ": " + gateDetail(c)
 }
 
 func edgeChange(change string, k [2]string, label string) Change {
