@@ -218,6 +218,18 @@ tree between releases.
    It checks that HEAD is `origin/main`, that CI passed for it, that the release notes and the
    changelog section exist, and that no tag exists yet (a dry run reports these as warnings), then
    runs every step below and ends with `dry run complete`.
+
+   "CI passed" for the dry run and the preflight means a completed `ci.yml` push run of the release
+   commit on main succeeded and none failed, or, while no push run has completed, a successful
+   `ci.yml` merge queue run (event `merge_group`) of a commit with the same tree (compared by tree
+   SHA through the API, not by commit). That lets the dry run overlap main's CI. The queue's run
+   is weaker than main's (it reuses the test cache and skips the Go jobs for a documentation-only
+   batch), so before a `--push` release pushes the root tag, which cannot be undone, it checks main's
+   push runs of the commit again, whatever the preflight found: it polls every 30 seconds for up to
+   an hour (`BIDE_CI_POLL_SECS`, `BIDE_CI_WAIT_SECS`) while any is still going (a manual re-run
+   included, even after an earlier run passed), tags only if all passed, and otherwise stops with
+   nothing tagged (run it again when they have passed). A failed or cancelled push run stops a
+   release whatever the queue found; a queue run of another tree, or one that failed, never counts.
 3. Release, on the maintainer's go only:
 
    ```
