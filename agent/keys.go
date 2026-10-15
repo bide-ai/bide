@@ -27,6 +27,7 @@ var reservedPrefixes = []string{
 	"approval-tally:",   // an m-of-n gate's tally
 	"approval-pending:", // that a run paused at a gate (ApprovalWait, informational)
 	"approval-request:", // the request of a plan flow node's gate (ApprovalRequest)
+	"approval-deadline:", // a gate's deadline, recorded once when it first waits (ApprovalDeadline)
 	"signal:",           // Signal / Await
 	"await-timeout:",    // AwaitFor's deadline
 	"await-resolved:",   // AwaitFor's outcome

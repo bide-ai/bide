@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"slices"
+	"time"
 
 	"github.com/bide-ai/bide/internal/strictjson"
 )
@@ -157,22 +158,12 @@ func flowGate(ctx context.Context, d *Journal, runID, key, node string, args jso
 	// request in the journal: one recorded before it (node keys are predictable) was not made on
 	// the node's input.
 	if single {
-		e, ok, err := d.getEntry(ctx, runID, approvalStep(key))
+		r, ok, _, err := flowSingle(ctx, d, runID, key)
 		if err != nil {
-			return false, fmt.Errorf("read %s (run %s): %w (%w)", approvalStep(key), runID, err, ErrStorage)
+			return false, err
 		}
 		if ok {
-			q, qok, err := d.getEntry(ctx, runID, ApprovalRequestStep(key))
-			if err != nil {
-				return false, fmt.Errorf("read %s (run %s): %w (%w)", ApprovalRequestStep(key), runID, err, ErrStorage)
-			}
-			r, derr := decodeStored(runID, approvalStep(key), e.Data)
-			if derr != nil {
-				return false, derr
-			}
-			if qok && q.Seq < e.Seq && r.Kind == StepApproval && r.Approver() == "" {
-				return r.Approved, nil
-			}
+			return singleOutcome(ctx, d, runID, key, node, r)
 		}
 	} else {
 		r, ok, err := d.Get(ctx, runID, ApprovalTallyStep(key))
@@ -187,6 +178,9 @@ func flowGate(ctx context.Context, d *Journal, runID, key, node string, args jso
 			// A denial is final. A pass is final unless it predates this format, or separation of
 			// duties is in play (the policy or the tally excludes the requester): tallyGate then
 			// decides, below, from the whole journal (a re-approval tally may supersede this one).
+			if t.Expired {
+				return false, expiredErr(node, t.ExpiresAt)
+			}
 			if !t.Passed() || !predatesFormat(t) && !pol.ExcludePrincipal && !t.ExcludePrincipal {
 				return t.Passed(), nil
 			}
@@ -208,6 +202,35 @@ func flowGate(ctx context.Context, d *Journal, runID, key, node string, args jso
 		return false, fmt.Errorf("plan node %q: run %s recorded the gate's request for node %q with input %s, not this drive's %s; resume it with the flow and input it started with: %w", node, runID, req.ToolName, req.Args, args, ErrConfig)
 	}
 
+	// The gate's deadline (ApprovalPolicy.Timeout), measured from the request and recorded once.
+	var opened []Record
+	if r, ok, err := d.Get(ctx, runID, ApprovalDeadlineStep(key)); err != nil {
+		return false, fmt.Errorf("read %s (run %s): %w (%w)", ApprovalDeadlineStep(key), runID, err, ErrStorage)
+	} else if ok {
+		opened = append(opened, r)
+	}
+	expAt, hasDeadline, err := openDeadline(ctx, d, runID, key, pol, append(opened, got))
+	if err != nil {
+		return false, err
+	}
+	if single && hasDeadline && pastDeadline(clockFrom(ctx)(), expAt) {
+		// No decision by the deadline: the expiry is the decision, insert-once under the name a
+		// decision takes now, so an Approve that landed first is the decision instead.
+		name := approvalStep(key)
+		if _, _, n, err := flowSingle(ctx, d, runID, key); err != nil {
+			return false, err
+		} else if n != "" {
+			name = n
+		}
+		r, err := d.do(ctx, runID, name, func(context.Context) (Record, error) {
+			return Record{Kind: StepApproval, ToolUseID: key, Approved: false, Result: json.RawMessage(expiredDecision), ApproverSignature: recordedStamp(clockFrom(ctx))}, nil
+		})
+		if err != nil {
+			return false, err
+		}
+		return singleOutcome(ctx, d, runID, key, node, r)
+	}
+
 	// GCount: an m-of-n gate counts the journal and records a terminal tally.
 	var quorum *ApprovalTally
 	if !single {
@@ -217,6 +240,9 @@ func flowGate(ctx context.Context, d *Journal, runID, key, node string, args jso
 			return false, err
 		}
 		if final {
+			if t.Expired {
+				return false, expiredErr(node, t.ExpiresAt)
+			}
 			return t.Passed(), nil
 		}
 		quorum = &t
@@ -240,3 +266,64 @@ func flowGate(ctx context.Context, d *Journal, runID, key, node string, args jso
 }
 
 // protocol:flows end
+
+// approvalAfterRequestStep is the second name a plan flow node's one-decision gate takes a decision
+// under, when a record written before the gate's request holds its first name (approvalStep): that
+// record never counts, and Approve records the real decision here, which the gate honours.
+func approvalAfterRequestStep(key string) string { return approvalStep(key) + ":after-request" }
+
+// flowSingle reads the decision of a plan flow node's one-decision gate on key: the record under
+// approvalStep(key), or, when that one predates the gate's request, under
+// approvalAfterRequestStep(key); a record that predates the request never counts. ok reports a
+// decision; name is the step a decision takes now (where Approve, or the gate's expiry, writes).
+func flowSingle(ctx context.Context, d *Journal, runID, key string) (r Record, ok bool, name string, err error) {
+	q, qok, err := d.getEntry(ctx, runID, ApprovalRequestStep(key))
+	if err != nil {
+		return Record{}, false, "", fmt.Errorf("read %s (run %s): %w (%w)", ApprovalRequestStep(key), runID, err, ErrStorage)
+	}
+	name = approvalStep(key)
+	for _, n := range []string{approvalStep(key), approvalAfterRequestStep(key)} {
+		e, ok, err := d.getEntry(ctx, runID, n)
+		if err != nil {
+			return Record{}, false, "", fmt.Errorf("read %s (run %s): %w (%w)", n, runID, err, ErrStorage)
+		}
+		if !ok {
+			return Record{}, false, n, nil
+		}
+		r, err := decodeStored(runID, n, e.Data)
+		if err != nil {
+			return Record{}, false, "", err
+		}
+		if qok && q.Seq < e.Seq && r.Kind == StepApproval && r.Approver() == "" {
+			return r, true, n, nil
+		}
+		name = approvalAfterRequestStep(key) // the first name is held by a record before the request
+	}
+	return Record{}, false, name, nil
+}
+
+// singleOutcome is what a plan flow node's one-decision gate does with its decision r: run on an
+// approval recorded by the deadline, return the expiry (ErrApprovalExpired) for the gate's expiry
+// record or a decision recorded after the deadline, and deny otherwise.
+func singleOutcome(ctx context.Context, d *Journal, runID, key, node string, r Record) (bool, error) {
+	dl, ok, err := d.Get(ctx, runID, ApprovalDeadlineStep(key))
+	if err != nil {
+		return false, fmt.Errorf("read %s (run %s): %w (%w)", ApprovalDeadlineStep(key), runID, err, ErrStorage)
+	}
+	var expiresAt time.Time
+	var at string
+	if ok {
+		var dd ApprovalDeadline
+		dd, expiresAt, ok = decodeDeadline(dl, key)
+		at = dd.ExpiresAt
+	}
+	if singleExpired(r, expiresAt, ok) {
+		return false, expiredErr(node, at)
+	}
+	return r.Approved, nil
+}
+
+// expiredErr is the error a plan flow node's expired gate returns.
+func expiredErr(node, at string) error {
+	return fmt.Errorf("plan node %q: its approval gate's deadline (%s) passed with no approval: %w", node, at, ErrApprovalExpired)
+}

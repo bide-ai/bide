@@ -2,6 +2,7 @@ package agent
 
 import (
 	"slices"
+	"time"
 )
 
 // GateStatus is where an approval gate stands on one call, as the gate itself reads it.
@@ -47,6 +48,13 @@ type GateStanding struct {
 	Ran, Denied bool
 	// SingleDecided, SingleApproved: for GateSingle, a recorded unsigned decision and its verdict.
 	SingleDecided, SingleApproved bool
+	// Expired: the gate's recorded outcome is its expiry (its deadline passed with no terminal
+	// count); Status is GateDecided and Denied is set. Deadline is the gate's recorded deadline
+	// (approval-deadline:<call>), zero for a gate with none. A waiting gate past its Deadline is
+	// still GateWaiting (only a drive records the expiry), and a decision on it is refused
+	// (ErrApprovalExpired): a reader compares Deadline with its clock.
+	Expired  bool
+	Deadline time.Time
 }
 
 // EvaluateGate says where the approval gate stands on the call s in runID's journal recs, under the
@@ -71,14 +79,25 @@ func EvaluateGate(recs []Record, s ApprovalSubject, pol *ApprovalPolicy, verifie
 // counts only the decisions recorded after the gate's request, the step ApprovalRequestStep(key)
 // names, and whose result is the key's own record. With since "" it is EvaluateGate.
 func EvaluateGateAfter(recs []Record, s ApprovalSubject, pol *ApprovalPolicy, verifierFor ApproverVerifierFor, since string) GateStanding {
+	st := evaluateGate(recs, s, pol, verifierFor, since)
+	if _, at, ok := RecordedDeadline(recs, s.ToolUseID); ok {
+		st.Deadline = at
+	}
+	return st
+}
+
+func evaluateGate(recs []Record, s ApprovalSubject, pol *ApprovalPolicy, verifierFor ApproverVerifierFor, since string) GateStanding {
+	_, expAt, hasDeadline := RecordedDeadline(recs, s.ToolUseID)
 	// A recorded result: the call ran, or was denied (a denial is recorded as a result).
 	var singleDecided, singleApproved bool
+	var single Record
 	for _, r := range recs {
 		switch {
 		case r.Kind == StepValue && r.Name == s.ToolUseID && planNodeKey(s.ToolUseID):
 			return GateStanding{Status: GateDecided, Ran: true} // a plan flow node's result is its key's own record
 		case (r.Kind == StepToolResult || r.Kind == StepSagaFail) && r.ToolUseID == s.ToolUseID:
-			st := GateStanding{Status: GateDecided, Ran: true, Denied: r.Kind == StepToolResult && r.IsError && string(r.Result) == `"tool call denied by human"`}
+			denial := r.Kind == StepToolResult && r.IsError && (string(r.Result) == `"tool call denied by human"` || string(r.Result) == ExpiredResult)
+			st := GateStanding{Status: GateDecided, Ran: true, Denied: denial, Expired: denial && string(r.Result) == ExpiredResult}
 			// The tally the gate recorded, for a reader that shows how it was decided.
 			byName := map[string]Record{}
 			for _, x := range recs {
@@ -97,9 +116,9 @@ func EvaluateGateAfter(recs []Record, s ApprovalSubject, pol *ApprovalPolicy, ve
 		case since != "" && r.Name == since:
 			// A flow gate honours a single decision only if it follows the request: one recorded
 			// before it (node keys are predictable) was not made on the node's input, as flowGate reads it.
-			singleDecided, singleApproved = false, false
+			singleDecided, singleApproved, single = false, false, Record{}
 		case r.Kind == StepApproval && r.ToolUseID == s.ToolUseID && r.Approver() == "":
-			singleDecided, singleApproved = true, r.Approved // the last one, as the loop reads it
+			singleDecided, singleApproved, single = true, r.Approved, r // the last one, as the loop reads it
 		}
 	}
 	byName := map[string]Record{}
@@ -112,6 +131,9 @@ func EvaluateGateAfter(recs []Record, s ApprovalSubject, pol *ApprovalPolicy, ve
 	}
 	// A recorded denial is final, whatever the gate is now: a human's Approve(false) or a tally that
 	// did not pass.
+	if singleDecided && singleExpired(single, expAt, hasDeadline) {
+		return GateStanding{Status: GateDecided, Denied: true, Expired: true}
+	}
 	if singleDecided && !singleApproved {
 		return GateStanding{Status: GateDecided, Denied: true}
 	}
@@ -121,7 +143,7 @@ func EvaluateGateAfter(recs []Record, s ApprovalSubject, pol *ApprovalPolicy, ve
 			return GateStanding{Status: GateMisconfigured, Err: err}
 		}
 		if !t.Passed() {
-			return GateStanding{Status: GateDecided, Denied: true, Tally: t, Recorded: true, Checks: recountFor(recs, s, t, pol, verifierFor)}
+			return GateStanding{Status: GateDecided, Denied: true, Expired: t.Expired, Tally: t, Recorded: true, Checks: recountFor(recs, s, t, pol, verifierFor)}
 		}
 	}
 	switch {
@@ -138,7 +160,7 @@ func EvaluateGateAfter(recs []Record, s ApprovalSubject, pol *ApprovalPolicy, ve
 		return GateStanding{Status: GateMisconfigured, Err: err}
 	}
 	if c.recorded {
-		return GateStanding{Status: GateDecided, Tally: c.tally, Recorded: true, Checks: recountFor(recs, s, c.tally, pol, verifierFor)}
+		return GateStanding{Status: GateDecided, Tally: c.tally, Recorded: true, Expired: c.tally.Expired, Denied: !c.tally.Passed(), Checks: recountFor(recs, s, c.tally, pol, verifierFor)}
 	}
 	return GateStanding{Status: GateWaiting, Tally: c.tally, Checks: c.checks, Reason: c.tally.reapproval}
 }
