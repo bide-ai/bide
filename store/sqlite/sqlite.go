@@ -565,6 +565,10 @@ func (s *Store) leaseExec(ctx context.Context, busy time.Duration, query string,
 
 // AcquireLease implements agent.Leaser with one upsert: it grants the lease when the run is
 // unleased, already held by holder (a renewal), or the current lease has expired.
+//
+// The TTL must exceed the disk's worst commit latency: a lease statement is a committed write, which
+// runs ahead of this process's queued journal writes but cannot finish faster than the disk commits,
+// so a commit that stalls for longer than the TTL lets the lease lapse (agent.ErrLeaseLost).
 func (s *Store) AcquireLease(ctx context.Context, runID, holder string, ttl time.Duration) (bool, error) {
 	n, err := s.leaseExec(ctx, leaseBusyTimeout(ttl), `
 		INSERT INTO `+s.t.leases+` (run_id, holder, expiry) VALUES (?, ?, unixepoch('subsec') + ?)

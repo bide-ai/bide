@@ -424,6 +424,32 @@ agent.SubmitDecision(ctx, journal, agent.Decision{RunID: pend.RunID, ToolUseID: 
 
 然后，`audit.ApprovalEvidence` 与 `audit.VerifyApprovals`（或 `bide audit verify-approvals`）离线证明：k 位具名批准人在这次确切的调用运行*之前*、依照预期的策略签核了它，所依据的证据不可能在不被察觉的情况下漏掉任何一份决定。每位批准人都需要自己的密钥：若策略中有两位批准人解析到同一个密钥，该策略会以 `ErrConfig` 被拒绝，因为持有该密钥的人可以替两人签名。见[批准指南](../../docs/guides/hitl-approval.md)；可跨独立进程在 `examples/approval` 中运行。
 
+**职责分离**：设置 `ExcludePrincipal` 后，关卡从不计入运行发起人的决定，因此发起某个动作的人不能同时批准它（maker-checker）：
+
+<!-- docsnip: setup type RefundArgs struct{}; doRefund func(context.Context, RefundArgs) (string, error) -->
+```go
+refund := agent.MustFunc("refund", "refund the order", doRefund,
+	agent.WithApproval(&agent.ApprovalPolicy{
+		Need:             2,
+		Approvers:        []string{"ops", "finance", "risk"},
+		ExcludePrincipal: true, // the run's requester may not approve
+	}))
+```
+
+发起人是部署启动该运行时所用 `agent.Identity` 的 `OnBehalfOf`，其上层各运行的主体同样计入。被排除的决定仍留在记录中并被标明。Bide 比较的是 id，无法看出同一个人持有两个 id。参见[职责分离](../../docs/guides/hitl-approval.md#separation-of-duties)。
+
+**在终端中决定**：不写 Go 的批准人使用 `bide approve`。它从日志中读取调用，显示其参数和签名所绑定的 SHA-256，请求确认，用批准人的密钥签名，记录该决定并写下一份回执：
+
+```
+bide approve -db run.db -list                  # the calls that wait, each with its command
+bide approve -db run.db -run refund-1049 -call c2 -as finance -key finance.key \
+    -approver-keys approver-keys.json
+```
+
+参数太长而无法完整显示时，除非传入 `-full`，它不会签名；决定不会被计入时，它什么也不记录。参见[在终端中决定](../../docs/guides/hitl-approval.md#deciding-from-the-terminal)。
+
+**通知相关人员**：运行因结果未知而停机或在批准关卡等待时，会发出通知（`agent.WithNotifier`，由已签名的 webhook `notify.NewWebhook` 投递）。`agent.WithNotifyRoute` 把每一类事件送到某个接收方（`WithNotifyApproverRoute` 按批准人路由批准事件），当事件在截止时间前未被确认（批准事件：未被决定）时，`agent.WithNotifyEscalation` 会通知下一个接收方，链最多四步。确认的意思是端点返回了 2xx，而不是有人读过它。参见[路由与升级](../../docs/guides/notifications.md#routing-and-escalation)。
+
 ## 错误
 
 失败以哨兵错误（sentinel error）来分类，由 `errors.Is` 匹配。两层：一个**类别（category）**（粗粒度的类）和一个**条件（condition）**（一个具体的成因），后者包裹其类别，因此匹配可以在你需要的任一层级上工作：

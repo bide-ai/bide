@@ -24,6 +24,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/bide-ai/bide/internal/term"
 	"github.com/bide-ai/bide/notify"
 )
 
@@ -598,5 +599,29 @@ func TestHintClassifiesByErrorTypeNotText(t *testing.T) {
 	}
 	if got := hint(notify.ProbeResult{}, errors.New("no such host, in words only")); strings.Contains(got, "does not resolve") {
 		t.Errorf("words alone were taken for a DNS failure: %q", got)
+	}
+}
+
+// A timing below the clock's resolution reads as zero (Windows); the report says "<1 ms", which a
+// reader takes as measured and fast, not as missing.
+func TestReportPrintsAZeroDurationAsUnderOneMillisecond(t *testing.T) {
+	n, err := sampleNotification(kinds[0], time.Now(), "")
+	if err != nil {
+		t.Fatal(err)
+	}
+	res := notify.ProbeResult{Status: 204, TLS: true, Handshake: true, TLSVersion: "1.3", Requests: 1}
+	var out bytes.Buffer
+	report(&out, term.New(false), "https://127.0.0.1:1/", n, res, nil)
+	got := out.String()
+	for _, want := range []string{"ok: TLS 1.3 in <1 ms", "HTTP 204, acknowledged (1 request, <1 ms in all)"} {
+		if !strings.Contains(got, want) {
+			t.Errorf("report lacks %q:\n%s", want, got)
+		}
+	}
+	if strings.Contains(got, "0s") || strings.Contains(got, " 0 ms") {
+		t.Errorf("a zero reads as missing:\n%s", got)
+	}
+	if ms(0) != "<1 ms" || ms(400*time.Microsecond) != "<1 ms" || ms(time.Millisecond) != "1 ms" {
+		t.Errorf("ms: %q %q", ms(0), ms(time.Millisecond))
 	}
 }

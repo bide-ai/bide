@@ -420,8 +420,9 @@ propagates. No new persistence model.
 determines whether the feature is an accountability primitive or a glorified counter. A bare
 `approverID string` makes "2 of 3 approved" only as trustworthy as whoever called `ApproveAs`.
 Each decision should carry the approver's signature, reusing the signing machinery already in
-the grant/delegation code, so the tally inherits non-repudiation and the evidence bundle proves
-*these specific approvers* decided.
+the grant/delegation code, so the tally inherits attribution to a key (a software key under SSO-issued
+certificates is not a legal non-repudiation or qualified-signature claim; see
+[approver identity](approver-identity.md)) and the evidence bundle proves *these specific keys* decided.
 
 - *Authenticating* the approver id (that the caller is really "finance") stays the caller's
   identity provider's job, brought in via ports/MCP, consistent with the SDK's BYO non-goals.

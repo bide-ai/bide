@@ -1,0 +1,14 @@
+# Test files that start a process and whose result is still a function of the test binary and the
+# module files, so go test may reuse an unchanged package's cached result. One "path: reason" per
+# line. Everything else that starts a process is in a package of uncached-tests.txt (always run).
+# .github/scripts/check-uncached.sh (Lint) keeps both lists complete; a file here must not list
+# packages with a pattern ("./...") or use the TestImports templates.
+# A change to the process calls of a file listed here (a new command, a new argument, a Dir, a
+# different program) needs its reason re-checked: the entry vouches for the calls as they were.
+agent/architecture_test.go: go list -deps of agent (its own import graph, in the test binary) and go mod edit (go.mod changes clear the test cache)
+agent/option_scopes_test.go: go list -export -deps of agent (its own import graph)
+cmd/bench/main_test.go: re-runs the test binary (os.Args[0])
+model/modeltest/modeltest_test.go: re-runs the test binary
+notify/relay/relay_test.go: re-runs the test binary
+plan/architecture_test.go: go list -deps of plan (its own import graph)
+schema/decode_test.go: re-runs the test binary

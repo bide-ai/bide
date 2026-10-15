@@ -598,6 +598,32 @@ holds that key could sign as both. A [plan flow node](guides/plan-flows.md#appro
 takes the same gate. See the [approval guide](guides/hitl-approval.md); runnable across
 separate processes in `examples/approval` (and `examples/approval/flow` for a gated flow node).
 
+**Separation of duties**: set `ExcludePrincipal` and the gate never counts a decision by the run's requester, so whoever initiated an action cannot also approve it (maker-checker):
+
+<!-- docsnip: setup type RefundArgs struct{}; doRefund func(context.Context, RefundArgs) (string, error) -->
+```go
+refund := agent.MustFunc("refund", "refund the order", doRefund,
+	agent.WithApproval(&agent.ApprovalPolicy{
+		Need:             2,
+		Approvers:        []string{"ops", "finance", "risk"},
+		ExcludePrincipal: true, // the run's requester may not approve
+	}))
+```
+
+The requester is the `OnBehalfOf` of the `agent.Identity` the deployment starts the run with, and the principals of the runs above it count too. An excluded decision stays on the record, marked. Bide compares ids; it cannot see one person holding two of them. See [separation of duties](guides/hitl-approval.md#separation-of-duties).
+
+**Deciding from a terminal**: an approver who does not write Go uses `bide approve`. It reads the call from the journal, shows its arguments and the SHA-256 the signature binds, asks for confirmation, signs with the approver's key, records the decision and writes a receipt:
+
+```
+bide approve -db run.db -list                  # the calls that wait, each with its command
+bide approve -db run.db -run refund-1049 -call c2 -as finance -key finance.key \
+    -approver-keys approver-keys.json
+```
+
+It will not sign arguments too long to show unless you pass `-full`, and it records nothing when the decision would not count. See [deciding from the terminal](guides/hitl-approval.md#deciding-from-the-terminal).
+
+**Telling people**: a run that halts on an unknown outcome or waits at an approval gate raises a notification (`agent.WithNotifier`, delivered by a signed webhook, `notify.NewWebhook`). `agent.WithNotifyRoute` sends each kind of event to a receiver (`WithNotifyApproverRoute` routes an approval by approver), and `agent.WithNotifyEscalation` tells the next receiver, in a chain of at most four steps, when an event is not acknowledged by its deadline (an approval: not decided by it). An acknowledgement means the endpoint answered 2xx, not that a person read it. See [routing and escalation](guides/notifications.md#routing-and-escalation).
+
 ## Errors
 
 Failures are classified with sentinel errors matched by `errors.Is`. Two tiers: a **category** (the coarse class) and a

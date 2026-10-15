@@ -13,8 +13,8 @@ milestones, is the design note [formal models of the coordination protocols](des
 
 At a glance:
 
-- **11 models** (1, 1b, 2, 7, 8, 9, 10, 11, 12, 13 and 14), each checked on every pull request that changes it,
-  and all of them in the merge queue and on main. **Models** is a required check.
+- **11 models** (1, 1b, 2, 7, 8, 9, 10, 11, 12, 13 and 14), each checked on every pull request and merge queue batch that changes it,
+  and all of them on main and nightly. **Models** is a required check.
 - **290 configurations** in the merge queue (116 that must pass, each also run for vacuity, and 174
   that must fail with their named property: the regression, finding and limit configurations and
   four `ci` reachability checks), and **102 larger ones nightly**.
@@ -209,19 +209,19 @@ same for bugs found by review and testing before the models existed, back to #31
 
 | Where | What | Time |
 |---|---|---|
-| Every pull request, the merge queue and main (**Models**, required) | The checker self-test, the PlusCal translation check, and every `ci`, `regress`, `finding` and `limit` configuration (290: 120 `ci`, 146 `regress`, 1 `finding`, 23 `limit`), each passing one also run for vacuity, four at a time; on a pull request, of the models it changes | 3.1 to 12.7 minutes (median 4.9) for every model on the CI runner, start to finish over the last 40 pushes to main, in six parallel shard jobs (nine since model 14, which has three: its fast configurations, its slow liveness and composition ones in `notify/ci-live`, and its regressions) that the **Models** job stands for (each shard's timeout 30 minutes) |
+| Every pull request, the merge queue and main (**Models**, required) | The checker self-test, the PlusCal translation check, and every `ci`, `regress`, `finding` and `limit` configuration (290: 120 `ci`, 146 `regress`, 1 `finding`, 23 `limit`), each passing one also run for vacuity, four at a time; on a pull request or a merge queue batch, of the models it changes (on main, every model) | 3.1 to 12.7 minutes (median 4.9) for every model on the CI runner, start to finish over the last 40 pushes to main, in six parallel shard jobs (nine since model 14, which has three: its fast configurations, its slow liveness and composition ones in `notify/ci-live`, and its regressions) that the **Models** job stands for (each shard's timeout 30 minutes) |
 | Nightly and on demand (**Models (nightly)**) | The 92 `nightly` configurations: more faults, more drivers, liveness at two error replies, weak A3 (late commits) | About 1 hour 50 minutes on the CI runner (1 hour 40 minutes measured before this split, plus about 7 minutes moved from pull requests, and model 10's four P14 configurations, about 6 minutes on the development machine; job timeout 4 hours) |
 | Nightly and on demand (**Explore (full bound)**) | The Go fault-schedule explorations of the claim protocol and of flow lowering at their full bound (`BIDE_EXPLORE=1`); every pull request runs them at a smaller bound under `-race` in the Test job | About 15 to 22 minutes |
 | Nightly and on demand (**Apalache (nightly)**) | `spec/tla/check.sh apalache`: model 1's inductive invariant (the one-step checks of each scope, the resolver scope's step split in four, and a vacuity check), a bounded symbolic regression that must fail, TLC checks that the invariant holds in every reachable state of three configurations, and a type check of model 9's wrapper ([Apalache](../spec/tla/README.md#apalache)) | One job per configuration (eleven), in parallel with each other and with the TLC nightly job; the time on the runner is given in [Apalache results](../spec/tla/README.md#apalache-results) (job timeout 350 minutes) |
 | Every pull request (**Lint**, required) | `modelsync` and `TestProtocolVocabulary` (next section) | Part of Lint |
 
-On a pull request, the Models steps check only the models whose directory under `spec/tla/` it
+On a pull request and in the merge queue (against the queue's base), the Models steps check only the models whose directory under `spec/tla/` it
 changes, and the models whose configurations name a changed one in a `LIBRARY` line (every model
 when it changes `check.sh`, `tools.lock`, `.github/scripts/shards.sh` or the workflow); otherwise
 the job reports success without re-checking. TLC reads nothing outside the model's directory and
 the directories its `LIBRARY` lines name, and a change to the Go code a model describes must change the model or carry a
-`Protocol-Impact` override (the Lint job), so this skips no check whose result could differ. The
-merge queue and pushes to main always run every model. Workflows: `.github/workflows/models.yml` and
+`Protocol-Impact` override (the Lint job), so this skips no check whose result could differ. Pushes
+to main and the nightly always run every model. Workflows: `.github/workflows/models.yml` and
 `.github/workflows/explore.yml`.
 
 **What a counterexample looks like.** When a property fails, TLC prints the violated invariant (or

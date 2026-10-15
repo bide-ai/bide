@@ -20,6 +20,11 @@
 #   shards.sh run NAME FLAG...       run shard NAME's plan: in each module's directory, go build the
 #                                    packages with non-test Go files (as go build ./... skips a
 #                                    test-only package), then go test FLAG... the packages
+#   shards.sh run-modules FLAG...    the same over every module of $MODULES (all its packages): go
+#                                    build, then go test FLAG...; a package in the uncached list
+#                                    (.github/uncached-tests.txt, or $UNCACHED) runs with -count=1,
+#                                    the others as given, so without -count=1 in FLAG... an
+#                                    unchanged package reuses its cached test result (also in run)
 #   shards.sh check-modules          fail unless every module in $MODULES has a module entry in
 #                                    exactly one shard, every package entry is in exactly one shard
 #                                    and names a package directory of a module in $MODULES, and
@@ -136,17 +141,49 @@ plan() {
   done
 }
 
+# The packages whose tests are never taken from the test cache (UNCACHED, default
+# .github/uncached-tests.txt, relative to the directory the script runs in; none if it is absent):
+# their tests run programs the test binary does not contain (go build of another package, go run),
+# which go test's cache cannot see change. See that file.
+uncached=${UNCACHED:-.github/uncached-tests.txt}
+
+# run_pkgs MODULE PKGS FLAG...: go build the packages of PKGS (a module's package arguments) with
+# non-test Go files, then go test FLAG... them: the packages in the uncached list with -count=1, the
+# others as given, so an unchanged package reuses its cached result unless FLAG... holds -count=1.
+run_pkgs() {
+  local m=$1 pkgs=$2 build p mp rel fresh= cached=
+  shift 2
+  build=$(cd "$m" && go list -f '{{if .GoFiles}}{{.ImportPath}}{{end}}' $pkgs) || return 1
+  if [ -n "$build" ]; then (cd "$m" && go build $build) || return 1; fi
+  if [ ! -f "$uncached" ]; then (cd "$m" && go test "$@" $pkgs); return; fi
+  while read -r p mp; do
+    rel=${p#"$mp"}; rel=${rel#/}
+    [ "$m" = . ] || rel=$m${rel:+/$rel}
+    [ -n "$rel" ] || rel=.
+    if ! grep -qxF -- "$rel" "$uncached"; then cached+=" $p"; else fresh+=" $p"; fi
+  done < <(cd "$m" && go list -f '{{.ImportPath}} {{.Module.Path}}' $pkgs)
+  if [ -n "$fresh" ]; then (cd "$m" && go test "$@" -count=1 $fresh) || return 1; fi
+  if [ -n "$cached" ]; then (cd "$m" && go test "$@" $cached) || return 1; fi
+}
+
 run_shard() {
-  local name=$1 plan m pkgs build
+  local name=$1 plan m pkgs
   shift
   plan=$(plan "$name") || { echo "$plan"; return 1; }
   echo "$plan"
   while read -r m pkgs; do
     echo "== $m =="
-    build=$(cd "$m" && go list -f '{{if .GoFiles}}{{.ImportPath}}{{end}}' $pkgs) || return 1
-    if [ -n "$build" ]; then (cd "$m" && go build $build) || return 1; fi
-    (cd "$m" && go test "$@" $pkgs) || return 1
+    run_pkgs "$m" "$pkgs" "$@" || return 1
   done <<< "$plan"
+}
+
+# run_modules FLAG...: run_pkgs over every module of $MODULES (all its packages).
+run_modules() {
+  local m
+  for m in ${MODULES:?}; do
+    echo "== $m =="
+    run_pkgs "$m" ./... "$@" || return 1
+  done
 }
 
 check_packages() {
@@ -299,6 +336,17 @@ self_test() {
   expect pass "a shard with a test-only package" rn y '^ok .*example.com/r/t'
   expect pass "a shard of one package" rn x '^?.*example.com/r/p'
   expect fail "a shard whose test fails" rn y 'never printed'
+  # An unchanged package reuses its cached result, except a package in the uncached list, which
+  # always runs.
+  mkdir -p "$g/c" "$g/u"
+  for d in c u; do printf 'package %s\n' "$d" > "$g/$d/x.go"; printf 'package %s\n\nimport "testing"\n\nfunc TestX(t *testing.T) {}\n' "$d" > "$g/$d/x_test.go"; done
+  printf 'u\n' > "$g/uncached"
+  cr() { # cr FLAG...: run the c and u packages twice, the second run's output into $tmp/cr
+    (cd "$g" && export GOWORK=off GOFLAGS= GOTOOLCHAIN=local GOCACHE="$tmp/gocache" UNCACHED="$g/uncached" SHARDS=$'x: .:c .:u'
+     "$self" run x "$@" > /dev/null 2>&1; "$self" run x "$@" > "$tmp/cr" 2>&1)
+  }
+  cr; expect pass "an unchanged package is cached" grep -q 'example.com/r/c.*(cached)' "$tmp/cr"
+  expect pass "a package in the uncached list is not cached" bash -c "! grep -q 'example.com/r/u.*(cached)' '$tmp/cr'"
   # Models, against the real check.sh in a scratch tree.
   local t=$tmp/repo/spec/tla
   mkdir -p "$t/a/regress" "$t/a/limits" "$t/b/limits" "$t/notamodel"
@@ -352,6 +400,7 @@ case "${1:-}" in
   json) parse; printf '%s\n' "${names[@]}" | jq -R . | jq -cs . ;;
   plan) plan "${2:-}" ;;
   run) shift; [ $# -ge 1 ] || { err "run: NAME FLAG..."; exit 1; }; run_shard "$@" ;;
+  run-modules) shift; run_modules "$@" ;;
   check-packages) check_packages ;;
   get)
     parse

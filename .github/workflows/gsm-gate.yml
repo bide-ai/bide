@@ -37,8 +37,9 @@ jobs:
       # On a pull request the gate runs only when the change can alter what a bide program makes
       # (changed-code.sh --gsm: code, less CI scripts, other workflows and tool configuration), or
       # the pull request has the full-ci label. Otherwise the rest of the job is skipped and the job
-      # still reports, so the required check passes. Pushes to main and the merge queue always run
-      # it, and so does any doubt (the file list or the labels cannot be read).
+      # still reports, so the required check passes. Pushes to main and the merge queue always run it
+      # (it is the only check of the @doc rules before main, even for a documentation-only batch),
+      # and so does any doubt (the file list or the labels cannot be read).
       - id: changes
         name: Does the change need the gate?
         env:

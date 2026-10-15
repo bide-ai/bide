@@ -14,7 +14,9 @@
 # module is released from a commit made for the purpose:
 #
 #   1. The root module is tagged vX.Y.Z at REF (default HEAD, which must be origin/main with a green
-#      CI run), the tag is pushed, and the script waits until the module proxy serves it.
+#      CI run: main's push run for the commit, or a green merge queue run of the same tree, which
+#      lets the preflight and a dry run go on while main's push run goes; a --push release then
+#      waits for that push run (up to an hour) and tags only if it passed; see ci_status), the tag is pushed, and the script waits until the module proxy serves it.
 #   2. In stages, each published module whose bide dependencies are already released gets a
 #      go.mod that requires them at vX.Y.Z with their replace directives dropped, and a go.sum
 #      resolved through the proxy (`go mod tidy`). The module is built, vetted and tested with
@@ -198,6 +200,67 @@ main_check() {
   fi
 }
 
+# ci_status REPO SHA TREE: whether CI passed for the release commit SHA, whose tree is TREE:
+#   "success" every ci.yml push run of SHA on main has completed and passed (a run still going, a
+#             manual re-run for one, is not a pass: see push_ci_state);
+#   "queue"   no push run has completed and passed yet, none failed, and a ci.yml run of the merge queue (event
+#             merge_group) succeeded on a commit with the same tree as SHA. The queue runs the matrix
+#             on the batch before it lands on main, and the commit it creates on main has the tree
+#             the queue tested. That lets the preflight and a dry run go on while main's push run
+#             goes, but it is weaker than the push run (the queue reuses the test cache and skips the
+#             Go jobs for a documentation-only batch; main's run starts from an empty test cache), so
+#             the root tag is not pushed until the push run has passed (root_tag_gate);
+#   "failure" a completed push run of SHA failed or was cancelled (this wins over a green queue run:
+#             the same tree failed on main);
+#   "none"    no completed push run of SHA, and no successful queue run of this tree;
+#   "unknown" GitHub could not be queried.
+# Trees are compared, not commit SHAs: the queue's commit is not the commit that lands on main.
+# A queue run that failed does not count, however many; a different tree does not count either.
+ci_status() {
+  local repo=$1 sha=$2 tree=$3 push heads head t
+  push=$(push_ci_state "$repo" "$sha")
+  case "$push" in success|failure) echo "$push"; return ;; unknown) echo unknown; return ;; esac
+  heads=$(gh run list -R "$repo" --workflow ci.yml --event merge_group --status success --limit 100 --json headSha --jq '.[].headSha' 2>/dev/null) || { echo unknown; return; }
+  for head in $heads; do
+    t=$(gh api "repos/$repo/git/commits/$head" --jq .tree.sha 2>/dev/null) || continue
+    if [ "$t" = "$tree" ]; then echo "queue"; return; fi
+  done
+  echo none
+}
+
+# push_ci_state REPO SHA: the state of main's ci.yml push runs of SHA: "failure" when a completed one
+# failed or was cancelled, "running" when one has not completed, "success" when all completed and
+# passed, "none" when there is none yet, "unknown" when GitHub could not be queried.
+push_ci_state() {
+  gh run list -R "$1" --workflow ci.yml --commit "$2" --event push --json status,conclusion \
+    --jq 'if length == 0 then "none" elif any(.[]; .status == "completed" and .conclusion != "success") then "failure" elif any(.[]; .status != "completed") then "running" else "success" end' 2>/dev/null || echo unknown
+}
+
+# root_tag_gate REPO SHA BASIS: run just before the root tag is pushed, which cannot be undone (the
+# module proxy keeps it). BASIS is what the preflight found ("success" or "queue", see ci_status).
+# It does not trust the preflight alone: it polls (the first poll answers at once when the push run
+# has passed), so a push run started since, a manual re-run, is waited for, and one that then fails
+# stops the release even though an earlier run passed. It polls every
+# BIDE_CI_POLL_SECS (30) for up to BIDE_CI_WAIT_SECS (3600), for main's push run of SHA to complete,
+# and passes only if it succeeded; a failed run, or one still going or missing when the time is up,
+# stops the release before anything is tagged. Returns 0 to go on, 1 to stop.
+root_tag_gate() {
+  local repo=$1 sha=$2 basis=$3 poll=${BIDE_CI_POLL_SECS:-30} wait=${BIDE_CI_WAIT_SECS:-3600} n i st
+  n=$(awk -v w="$wait" -v p="$poll" 'BEGIN { n = int(w / p); if (n < 1) n = 1; print n }')
+  [ "$basis" != queue ] || note "the preflight rested on the merge queue's run of the same tree, which is weaker than main's push run" >&2
+  note "checking main's CI push run of $sha before tagging (waits up to $((wait / 60)) min for one that is still going)" >&2
+  for ((i = 1; i <= n; i++)); do
+    st=$(push_ci_state "$repo" "$sha")
+    case "$st" in
+      success) note "main's CI push run of $sha passed" >&2; return 0 ;;
+      failure) echo "release: main's CI push run of $sha failed; the merge queue's run passed, but the release stops before tagging" >&2; return 1 ;;
+    esac
+    [ "$i" -lt "$n" ] && sleep "$poll"
+  done
+  echo "release: main's CI push run of $sha is $st after $((wait / 60)) min; nothing was tagged (re-run the release when it has passed)" >&2
+  return 1
+}
+
 # GitHub creates no push event, and so runs no workflow (Release modules, Release), for the tags
 # of a push that carries more than three tags.
 MAX_TAGS_PER_PUSH=3
@@ -215,6 +278,93 @@ push_tags() {
       batch=()
     fi
   done
+}
+
+# self_test_ci: ci_status against a fake gh that serves fixture runs (the real jq filters run on
+# them): a green push run; a failed push run beside a green queue run of the same tree; a green
+# queue run of the same tree and no push run; a green queue run of another tree; a failed queue run
+# of the same tree; a queue commit the API cannot read; GitHub unreachable.
+self_test_ci() {
+  command -v jq >/dev/null 2>&1 || { echo "self-test: jq is not installed; skipping the CI status cases"; return 0; }
+  local tmp ok=true want got; tmp=$(mktemp -d)
+  mkdir -p "$tmp/bin" "$tmp/fx"
+  cat > "$tmp/bin/gh" <<'GH'
+#!/usr/bin/env bash
+# A fake gh: "run list" serves $FX/push.json or $FX/mg.json (filtered by --status like gh), "api
+# repos/R/git/commits/SHA" serves $FX/tree-SHA; $FX/down makes every call fail.
+[ ! -e "$FX/down" ] || exit 1
+expr= prev= status=
+for a in "$@"; do
+  [ "$prev" = --jq ] && expr=$a
+  [ "$prev" = --status ] && status=$a
+  prev=$a
+done
+case "$*" in
+  *"--event push"*)
+    f=$FX/push.json
+    if [ -e "$FX/push.1.json" ]; then # a sequence: one file per call, the last repeats
+      n=$(( $(cat "$FX/n" 2>/dev/null || echo 0) + 1 )); echo "$n" > "$FX/n"
+      f=$FX/push.$n.json; [ -e "$f" ] || { n=$(ls "$FX"/push.[0-9]*.json | wc -l | tr -d ' '); f=$FX/push.$n.json; }
+    fi ;;
+  *"--event merge_group"*) f=$FX/mg.json ;;
+  "api repos/"*"/git/commits/"*) sha=${2##*/}; [ -f "$FX/tree-$sha" ] || exit 1; cat "$FX/tree-$sha"; exit 0 ;;
+  *) exit 1 ;;
+esac
+if [ -n "$status" ]; then jq -c --arg s "$status" 'map(select(.conclusion == $s))' "$f" | jq -r "$expr"; else jq -r "$expr" "$f"; fi
+GH
+  chmod +x "$tmp/bin/gh"
+  local T=tree-of-release
+  ci_case() { # ci_case WANT PUSH-JSON MERGE-GROUP-JSON DESCRIPTION [down]
+    rm -f "$tmp/fx/down" "$tmp/fx"/tree-*
+    printf '%s' "$2" > "$tmp/fx/push.json"; printf '%s' "$3" > "$tmp/fx/mg.json"
+    printf '%s\n' "$T" > "$tmp/fx/tree-q-same"; printf 'tree-of-another\n' > "$tmp/fx/tree-q-other"
+    [ -z "${5:-}" ] || : > "$tmp/fx/down"
+    got=$(FX="$tmp/fx" PATH="$tmp/bin:$PATH" ci_status example/r release-sha "$T")
+    [ "$got" = "$1" ] || { echo "self-test: $4: got $got, want $1"; ok=false; }
+  }
+  local pass='[{"status":"completed","conclusion":"success"}]' fail='[{"status":"completed","conclusion":"success"},{"status":"completed","conclusion":"failure"}]'
+  local q_same='[{"conclusion":"success","headSha":"q-same"}]' q_other='[{"conclusion":"success","headSha":"q-other"}]'
+  local q_failed='[{"conclusion":"failure","headSha":"q-same"}]' q_unreadable='[{"conclusion":"success","headSha":"q-gone"},{"conclusion":"success","headSha":"q-same"}]'
+  ci_case success "$pass" '[]' "a green push run"
+  ci_case failure "$fail" "$q_same" "a failed push run beside a green queue run of the same tree"
+  ci_case queue '[]' "$q_same" "a green queue run of the same tree, no push run"
+  ci_case queue '[{"status":"in_progress","conclusion":""}]' "$q_same" "a green queue run of the same tree, the push run still going"
+  ci_case none '[{"status":"completed","conclusion":"success"},{"status":"in_progress","conclusion":""}]' '[]' "a green push run and a re-run still going, no queue run"
+  ci_case queue '[{"status":"completed","conclusion":"success"},{"status":"in_progress","conclusion":""}]' "$q_same" "a green push run and a re-run still going, a green queue run of the same tree"
+  ci_case none '[]' "$q_other" "a green queue run of another tree"
+  ci_case none '[]' "$q_failed" "a failed queue run of the same tree"
+  ci_case none '[]' '[]' "no run at all"
+  ci_case queue '[]' "$q_unreadable" "a queue commit the API cannot read before one that matches"
+  ci_case unknown "$pass" "$q_same" "GitHub unreachable" down
+  # root_tag_gate: the fake gh serves push.1.json, push.2.json, ... one per call (the last one repeats).
+  gate_case() { # gate_case WANT BASIS DESCRIPTION PUSH-JSON...
+    local want=$1 basis=$2 desc=$3 k=0 f
+    shift 3
+    rm -f "$tmp/fx/n" "$tmp/fx"/push.[0-9]*.json
+    for f in "$@"; do k=$((k + 1)); printf '%s' "$f" > "$tmp/fx/push.$k.json"; done
+    rm -f "$tmp/fx/down"
+    got=$(FX="$tmp/fx" PATH="$tmp/bin:$PATH" BIDE_CI_POLL_SECS=0.1 BIDE_CI_WAIT_SECS=1 root_tag_gate example/r release-sha "$basis" >/dev/null 2>&1 && echo go || echo stop)
+    [ "$got" = "$want" ] || { echo "self-test: $desc: the gate said $got, want $want"; ok=false; }
+  }
+  local running='[{"status":"in_progress","conclusion":""}]' pass_and_rerun='[{"status":"completed","conclusion":"success"},{"status":"in_progress","conclusion":""}]'
+  gate_case go queue "the push run still going, then green: the root tag is pushed" "$running" "$running" "$pass"
+  gate_case stop queue "the push run still going, then failed (a later green run does not undo it): stopped before tagging" "$running" "$fail" "$pass"
+  gate_case stop queue "the push run never completes: stopped at the time limit" "$running"
+  gate_case stop queue "no push run appears: stopped at the time limit" '[]'
+  gate_case stop queue "the push run is already failed" "$fail"
+  gate_case go queue "the push run already green" "$pass"
+  gate_case go success "the push run is green and the preflight saw it" "$pass"
+  gate_case stop success "a re-run of the push run started after a green one (the preflight saw green) and fails" "$pass_and_rerun" "$fail"
+  gate_case go success "a re-run of the push run is going after a green one, then passes" "$pass_and_rerun" "$pass"
+  gate_case stop queue "an earlier run passed, a re-run is still going at the time limit" "$pass_and_rerun"
+  gate_case stop queue "a completed run failed while another is going: stops at once, not after the other passes" '[{"status":"completed","conclusion":"failure"},{"status":"in_progress","conclusion":""}]' "$pass"
+  # The gate comes before the root tag is created and pushed (the self-test cannot run a release).
+  local gate_line tag_line
+  gate_line=$(grep -n 'root_tag_gate "\$GITHUB_REPO"' "${BASH_SOURCE[0]}" | head -1 | cut -d: -f1)
+  tag_line=$(grep -n 'git -C "\$CLONE" tag -a "\$VERSION"' "${BASH_SOURCE[0]}" | head -1 | cut -d: -f1)
+  { [ -n "$gate_line" ] && [ -n "$tag_line" ] && [ "$gate_line" -lt "$tag_line" ]; } || { echo "self-test: the root tag gate does not come before the root tag"; ok=false; }
+  rm -rf "$tmp"
+  $ok
 }
 
 # self_test_push: push_tags pushes ten tags (more than a release stage holds, and not a multiple of
@@ -318,6 +468,7 @@ self_test() {
   in_list cmd/bide/bide-hsm $(libraries) && { echo "self-test: the consumer would import the bide-hsm command"; fail=true; }
   in_list cmd/bide/bide-hsm $PUBLISHED || { echo "self-test: bide-hsm is not published"; fail=true; }
   self_test_push || fail=true
+  self_test_ci || fail=true
   self_test_changelog || fail=true
   $fail && return 1
   echo "self-test: ok"
@@ -379,10 +530,15 @@ case "$(main_check "$SHA" "$(git -C "$REPO" rev-parse "$REMOTE/main" 2>/dev/null
   resuming) note "$SHA is not $REMOTE/main any more, but $VERSION is on $REMOTE at it; resuming" ;;
   *) problem "$SHA is not $REMOTE/main" ;;
 esac
+CI_BASIS=none
 if command -v gh >/dev/null 2>&1; then
-  ci=$(gh run list -R "$GITHUB_REPO" --workflow ci.yml --commit "$SHA" --event push --json status,conclusion \
-    --jq '[.[] | select(.status == "completed")] | map(.conclusion) | if length == 0 then "none" elif all(. == "success") then "success" else "failure" end' 2>/dev/null || echo "unknown")
-  if [ "$ci" = "success" ]; then note "CI on main is green for $SHA"; else problem "CI for $SHA on main is $ci, not green"; fi
+  ci=$(ci_status "$GITHUB_REPO" "$SHA" "$(git -C "$REPO" rev-parse "$SHA^{tree}" 2>/dev/null || true)")
+  case "$ci" in
+    success) note "CI on main is green for $SHA" ;;
+    queue) note "no completed CI run on main for $SHA yet, but the merge queue's run of the same tree passed: the preflight and a dry run go on; a --push release waits for main's push run to pass before it tags the root module" ;;
+    *) problem "CI for $SHA on main is $ci, not green (and no merge queue run of the same tree passed)" ;;
+  esac
+  CI_BASIS=$ci
 else
   problem "gh is not installed, so CI status for $SHA cannot be checked"
 fi
@@ -446,6 +602,8 @@ wait_resolve() {
 # ---- 1. the root tag -------------------------------------------------------------------------
 say "root: $ROOT_MODULE $VERSION"
 if ! $ROOT_TAGGED; then
+  # The one step that cannot be undone: on a queue-only basis, main's push run must pass first.
+  if $PUSH; then root_tag_gate "$GITHUB_REPO" "$SHA" "$CI_BASIS" || die "not tagging $VERSION"; fi
   git -C "$CLONE" tag -a "$VERSION" -m "bide $VERSION" "$SHA"
   push_tags "$VERSION"
 fi
