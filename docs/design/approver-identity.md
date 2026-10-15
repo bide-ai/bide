@@ -1,13 +1,13 @@
 # Design: approver identity and revocation
 
-Status: proposed, revision 5. All 16 decisions are settled (the user decided on 2026-10-15; see Decisions). Revision 5 folds in the external assessor's confirmation pass on revision 3 (seven new medium findings and two partial resolutions). Design only; nothing here is built. Revision 2 folded in an adversarial
+Status: proposed, revision 5. All 17 decisions are settled (the user decided on 2026-10-15; see Decisions). Revision 5 folds in the external assessor's confirmation pass on revision 3 (seven new medium findings and two partial resolutions). Design only; nothing here is built. Revision 2 folded in an adversarial
 review (the time rule, the status rule, anchoring order, record placement) and the `crypto/x509`
 behaviors checked by running code. Revision 3 folds in an external PKI assessment (one critical, five
 high, eleven medium findings): the absence-of-entry rule for CRLs, revocation latency and a status
 re-check at execution, CA compromise, time-source independence, one person one seat on an immutable
 identifier, the identity-bound downgrade, and an algorithm and issuance-assurance profile. The
 assessment disagreed with five of the earlier recommended decisions; they are reconsidered below.
-The 16 decisions at the end are settled; the build can start once this revision is confirmed. This is bank readiness item 1.
+The 17 decisions at the end are settled; the build can start once this revision is confirmed. This is bank readiness item 1.
 
 Today an approver is a hand-enrolled public key: a map from an approver id to a key
 (`agent.WithApproverVerifiers`, the `-approver-keys` file). That is enough to show that the holder of
@@ -62,7 +62,9 @@ Not claimed:
 - The core module is standard library only for this feature: `crypto/x509`
   (`ParseCertificate`, `Certificate.Verify` with `VerifyOptions.CurrentTime`,
   `ParseRevocationList`, `RevocationList.CheckSignatureFrom`). OCSP
-  (`golang.org/x/crypto/ocsp`) may live only in an optional module.
+  (`golang.org/x/crypto/ocsp`) may live only in an optional module. RFC 3161 token verification is also
+  standard library only: a narrow, strict CMS verifier on `encoding/asn1` (decision 17), with no third-party
+  CMS dependency.
 - SSO is the bank's. Its SSO issues short-lived certificates through its existing PKI (smallstep,
   Vault PKI, ADCS, or another). bide verifies certificates. It never speaks OIDC.
 
@@ -623,6 +625,64 @@ receipt, when there is one), and the status series. `bide audit verify-approvals
 bundle.json -trust-anchors roots.pem -anchor-log log.json` and prints the verdict lines above. A package
 with bare-key approvers verifies exactly as today.
 
+## RFC 3161 token verifier (step 1 component)
+
+The standard library has no CMS (`SignedData`) parser, and the top tier and the archive timestamp both
+rest on RFC 3161 tokens. The project verifies them with **a small strict verifier in the core module on
+`encoding/asn1`** (decision 17, the user's), not a dependency. Its safety comes from a narrow profile:
+anything outside it is refused, never interpreted.
+
+**Profile (each point a refusal when violated):**
+
+- DER only. The token is re-parsed with `asn1.Unmarshal` and the remaining bytes must be empty; BER,
+  indefinite lengths and non-minimal encodings are refused. The signed attributes are re-encoded as a
+  DER `SET OF` for the signature check (RFC 5652 section 5.4), and the verifier checks that the original
+  bytes already were that encoding.
+- A `ContentInfo` of type `id-signedData` with `SignedData` version 3, **exactly one `SignerInfo`**, exactly
+  one `digestAlgorithms` entry equal to the signer's, encapsulated content type `id-ct-TSTInfo`
+  (1.2.840.113549.1.9.16.1.4), and the content present (not detached).
+- `TSTInfo` version 1; a message imprint hash algorithm of **SHA-256 or better** and an imprint equal to
+  the hash the verifier computed over the covering head (or the bundle); `genTime` as a `GeneralizedTime`
+  with no fraction beyond what the profile reads; `accuracy` read when present and added to the tolerance;
+  `nonce` equal to the request's when the verifier made the request; `ordering` ignored; unknown critical
+  extensions in `TSTInfo` refused.
+- **Required signed attributes**, each exactly once: `contentType` (equal to `id-ct-TSTInfo`),
+  `messageDigest` (equal to the hash of the encapsulated `TSTInfo` octets, with the signer's digest
+  algorithm), and `signingCertificateV2` (`ESSCertIDv2`, hash SHA-256 or better, equal to the hash of the
+  signer certificate the verifier selects, and the `issuerSerial` equal when present). A token with
+  `signingCertificate` (ESSCertID, SHA-1) only is refused. Other signed attributes are ignored but must be
+  well-formed DER.
+- Signature algorithms: the same allowlist as every signed object (ECDSA P-256 or P-384 with SHA-256 or
+  better, RSA PKCS#1 v1.5 or PSS with SHA-256 or better and a 3072-bit minimum modulus or `AllowRSA2048CA`
+  analogue for the TSA key, Ed25519); never SHA-1 or MD5. The signature is verified over the DER signed
+  attributes with the signer certificate's key.
+- The signer certificate comes from the token's `certificates` field or from the policy, is chained to a
+  TSA anchor the auditor lists (`-trusted-tsa`) at `genTime`, carries the critical `id-kp-timeStamping`
+  EKU as its **only** EKU (RFC 3161 section 2.3), and has its own status checked at `genTime` by the status
+  rule (the archive timestamp covers that status, as described under long-term validation).
+- Limits: the token size, the number of certificates, and the nesting depth are capped before parsing;
+  the verifier never allocates from a length it has not bounded against the input.
+- Everything else is refused with a named reason: more than one `SignerInfo`, `unsignedAttrs` used for
+  anything the verifier reads (they are never trusted), `crls` or `attrCertificates` present, an unknown
+  `SignerIdentifier` form, or a `version` other than the expected one.
+
+**Evidence of correctness (exit criteria for step 1):**
+
+- *Test vectors from real TSAs*, kept in the repository as fixtures with the request that produced them:
+  tokens from OpenSSL `ts` (own test TSA), DigiCert, and FreeTSA, plus tokens from the bank's TSA when it
+  has one. Each vector is verified and its `genTime`, imprint and signer are asserted.
+- *Differential tests* against `openssl ts -verify` on valid and mutated tokens: the Go verifier must never
+  accept what OpenSSL rejects for a reason inside the profile, and any token the Go verifier refuses for
+  being outside the profile is recorded as such, not as a failure.
+- *Negative vectors* for each refusal above (BER, two signers, SHA-1 `ESSCertID`, missing or duplicated
+  signed attribute, wrong `messageDigest`, wrong imprint, `genTime` earlier than the head it stamps,
+  non-timestamping EKU, an extra EKU, expired TSA certificate, revoked TSA certificate, trailing bytes).
+- *Fuzzing*: `go test -fuzz` on the token parser (no panic, no unbounded allocation, no accept of a
+  mutated valid token unless the mutation is in an ignored field), run in CI for a fixed budget and
+  corpus-checked in.
+- *Independent review*: the verifier is the single piece of hand-written cryptographic parsing in the
+  feature; the step-1 PKI review reads it first.
+
 ## Journal and format changes
 
 **The decision record** (`ApproverSignature`) gains `approver_cert` (the leaf-first DER chain, base64 in
@@ -975,6 +1035,13 @@ asserting the same counted set and the same reason:
     limits; the CA key rollover (a CRL signed by the old key still accepted for its certificates);
     `DistrustAfter` on both sides of the time; a cross-validator check of the name-constraint profile
     against OpenSSL for the same chains.
+33. **RFC 3161 verifier** (decision 17): real-TSA vectors (OpenSSL `ts`, DigiCert, FreeTSA) verify with the
+    asserted `genTime`, imprint and signer; differential tests against `openssl ts -verify` on valid and
+    mutated tokens; one negative vector per profile refusal (BER or indefinite length, trailing bytes, two
+    `SignerInfo`s, SHA-1 `ESSCertID` only, missing or duplicated `contentType`, `messageDigest` or
+    `signingCertificateV2`, wrong `messageDigest`, wrong imprint, `genTime` earlier than the head it stamps,
+    EKU not exactly `id-kp-timeStamping`, expired or revoked TSA certificate, unlisted TSA, SHA-1 or MD5
+    anywhere, oversized input); a fuzz target with a CI budget and a checked-in corpus.
 31. **confirmation-pass gaps** (each a test): `W'` near zero gives `provisional (short window)` below
     `MinW`; a producer omitting a listing CRL from the middle of `[A + W, L(C)]` cannot reach `final`
     (the series must have time coverage to the CRL at `L(C)`, and `L(C)` is the first CRL strictly after
@@ -1022,10 +1089,10 @@ asserting the same counted set and the same reason:
 
 1. Certificate verification, identity policy, canonicalization, `v4` decision bytes, new reasons,
    `TallyApprovals` and `EvaluateGate` with a static status snapshot, the head source and anchor-first
-   step, the **execution-time status re-check** and its state transitions, the `:ident` tally suffix, `DistrustAfter`, the **RFC 3161 token verification for
+   step, the **execution-time status re-check** and its state transitions, the `:ident` tally suffix, `DistrustAfter`, the **strict stdlib RFC 3161 token verifier (decision 17) for
    gates that set `IndependentTime`**; test CA; model 1b configurations. An independent PKI review of
    this design, and of step 1 before it merges, gates the work; the critical and high findings of the
-   assessment are exit criteria for step 1, with the pilot-CA conformance check (test plan item 32).
+   assessment are exit criteria for step 1, with the pilot-CA conformance check (test plan item 32) and the RFC 3161 verifier's evidence (item 33).
 2. CRL refresher, `bide identity`, live gate pause behavior, intake `cert` and 503, `bide approve -cert`,
    bide-hsm certificate pairing, the pause-note fields and the `approval-identity` record, and **delta CRL
    merging** (base and delta archive, indicator and number checks, `removeFromCRL`).
@@ -1045,7 +1112,7 @@ and 13 and added caveats to 1 and 5; they are folded into the text below.
 
 ### Decided by the user, 2026-10-15
 
-Decisions 1, 2, 5, 6 (delta CRLs), 12, 13 and 15.
+Decisions 1, 2, 5, 6 (delta CRLs), 12, 13, 15 and 17.
 
 2. **Independent time above a value threshold.** `A(d)` is the earliest independent time, else the smallest
    covering head; head times must be non-decreasing; the auditor enumerates heads from the anchor log. A
@@ -1082,6 +1149,13 @@ Decisions 1, 2, 5, 6 (delta CRLs), 12, 13 and 15.
 15. **Post-quantum.** `ml-dsa-65` approvers can be certificate-bound (the standard library supports
     ML-DSA certificates); the hybrid scheme stays bare-key, so certificate-bound approvers give up hybrid
     protection (a recorded limitation). *Decided: accept the gap and state it in the guide.*
+
+17. **RFC 3161 tokens are verified by a strict stdlib-only verifier** (user, 2026-10-15) on `encoding/asn1`,
+    with the narrow profile in "RFC 3161 token verifier": exactly one `SignerInfo`, SHA-256 or better, the
+    `contentType`, `messageDigest` and `signingCertificateV2` signed attributes checked, DER only, everything
+    outside the profile refused. Real-TSA vectors (OpenSSL `ts`, DigiCert, FreeTSA), differential tests
+    against `openssl ts -verify`, negative vectors and fuzzing are step-1 exit criteria. Rejected: a
+    third-party CMS library in the core, and an optional module that the top tier would depend on.
 
 ### Decided by recommendation (technical, 2026-10-15)
 
@@ -1127,8 +1201,9 @@ These are engineering choices the design settles; each can be reopened if the us
 16. **Staging and review.** Four steps, each its own reviewed PR; an independent PKI review of the design
     before the build and of step 1 before it merges; the critical and high assessment findings are exit
     criteria for step 1, together with the confirmation pass's findings N2, N3, N5 and the downgrade
-    residual, and the conformance check of the pilot CA (test plan item 32: number scheme, prune timing in
-    the delta regime, critical entry extensions) passing; commands under `bide identity` (`fetch-crl`, `check`, `kit`).
+    residual, the conformance check of the pilot CA (test plan item 32: number scheme, prune timing in
+    the delta regime, critical entry extensions) passing, and the RFC 3161 verifier's vectors, differential
+    tests and fuzzing (test plan item 33) passing; commands under `bide identity` (`fetch-crl`, `check`, `kit`).
 
 ### Still open for the user
 
