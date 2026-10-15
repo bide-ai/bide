@@ -2,8 +2,10 @@
 //
 // The standard library has no CMS (SignedData) parser, so this package reads the token itself with
 // encoding/asn1 under a narrow, strict profile: anything outside the profile is refused with a
-// named Reason, never interpreted. It is the independent time source behind a gate that requires
-// one (docs/design/approver-identity.md, "RFC 3161 token verifier").
+// named Reason, never interpreted. It is the building block for the independent time source of a
+// gate that requires one (docs/design/approver-identity.md, "RFC 3161 token verifier"). No gate,
+// approvals endpoint or command calls it yet: nothing in bide asks for or checks a token until it
+// is wired in.
 //
 // The profile, each point a refusal when violated:
 //

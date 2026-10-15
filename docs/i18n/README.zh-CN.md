@@ -162,7 +162,7 @@ Temporal 借助一个服务器和一支 worker 机群提供持久化执行。而
 - **[可观测性](../../docs/guides/observability.md)**：一行搞定 OTel gen_ai span（`trace.Instrument`）：span 分类法、子智能体嵌套、token 到成本，以及内容捕获的隐私默认值。可在 `examples/observability` 中运行。
 - **[消息](../../docs/guides/messaging.md)**：从一个入站 webhook（Slack、Telegram、SMS、Discord）驱动一个智能体，且重投递安全：一个被重试的 webhook 会重放，而不是重复触发。可在 `examples/webhook` 中运行。
 - **[调试与恢复](../../docs/guides/debugging.md)**：确定性重放（`Replay`）、事件重建（`ReplayEvents`）、Mermaid 运行图，以及重新驱动被中断运行的崩溃恢复（`Recover`）。
-- **[运行查看器](../../docs/guides/run-viewer.md)**：`bide view`，一个只读的本地页面，用于查看日志中的各次运行（可按状态、类型和 ID 过滤的运行列表，以及“需要关注”列表：每个在等人处理的运行，并标明是否已通知、是否已确认），也用于查看单次运行（时间线、流程的路径、停机、批准关卡和审计结论，可跟随进行中的运行）；`bide view -config` 查看流程配置（每个节点的崩溃行为风险图，以及诸如 `every path to charge passes approval >= 2 of 3` 的策略断言，违反时以反例路径画出）；`bide check` 在 CI 中以文本形式检查其问题与断言，`-diff` 可比较一个流程的两个版本并标出被削弱的批准关卡。
+- **[运行查看器](../../docs/guides/run-viewer.md)**：`bide view`，一个只读的本地页面，用于查看日志中的各次运行（可按状态、类型和 ID 过滤的运行列表，以及“需要关注”列表：每个在等人处理的运行，批准期限最近的排在前面，并标明是否已通知、是否已确认），也用于查看单次运行（时间线、流程的路径、停机、批准关卡和审计结论，可跟随进行中的运行）；`bide view -config` 查看流程配置（每个节点的崩溃行为风险图，以及诸如 `every path to charge passes approval >= 2 of 3` 的策略断言，违反时以反例路径画出）；`bide check` 在 CI 中以文本形式检查其问题与断言，`-diff` 可比较一个流程的两个版本并标出被削弱的批准关卡（包括被去掉的 `exclude_principal`，以及被移除或加长的 `timeout`）。
 
 **问责与治理**
 

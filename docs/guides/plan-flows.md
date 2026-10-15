@@ -297,8 +297,8 @@ out, err := flow.Run(ctx, j, runID, in) // runs the node once 2 of 3 have approv
   that `agent.Recover` or `agent.RecoverLoop` drive is covered by the option given to them as well.
   See [extension points](../reference/extension-points.md#notifier-tell-a-person-a-run-needs-them).
 
-`examples/approval/flow` runs the whole story from a config: the pause, two approvals, one refund,
-and the offline check.
+`examples/approval/flow` runs the whole story from a config (its gate has `timeout: 48h`): the pause, two
+approvals, one refund, and the offline check.
 
 ![bide view on a gated refund flow: the refund node approved 2 of 3, signatures verified](./img/flow-gate-approved-dark.png)
 
