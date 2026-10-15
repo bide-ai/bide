@@ -1,0 +1,9 @@
+{
+  "name": "bide-browser-shots",
+  "private": true,
+  "type": "module",
+  "description": "Regenerates the browser images of the docs (assets/demo/browser-shots/README.md)",
+  "dependencies": {
+    "puppeteer-core": "25.14.0"
+  }
+}
