@@ -525,8 +525,8 @@ refund := agent.MustFunc("refund", "refund an order", doRefund,
   a late approval never reopens it.
 - **Late decisions do not count.** A decision recorded after the deadline is not counted
   (`agent.ReasonLate`), even before a drive records the expiry. `SubmitDecision`, `Approve`, the
-  approvals endpoint and `bide approve` refuse a decision on a gate past its deadline
-  (`agent.ErrApprovalExpired`) and record nothing. The outcome is whichever is recorded first: the
+  approvals endpoint and `bide approve` refuse a decision on a gate past its deadline, or whose
+  expiry is recorded whatever their own clock says (`agent.ErrApprovalExpired`), and record nothing. The outcome is whichever is recorded first: the
   gate reads the clock, then the journal, and records a pass if the approvals it read suffice, so
   approvals already written by the deadline win when the run is driven later. A decision whose
   write lands after the expiry does not count, even if it was stamped on time; readers label it
