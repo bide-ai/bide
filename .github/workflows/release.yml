@@ -41,7 +41,7 @@ jobs:
         with:
           syft-version: v1.54.1
       - name: Install cosign
-        uses: sigstore/cosign-installer@v4
+        uses: sigstore/cosign-installer@v4.1.2
         with:
           cosign-release: v3.1.3
       - name: Validate config
@@ -125,7 +125,7 @@ jobs:
     permissions:
       contents: read
     steps:
-      - uses: sigstore/cosign-installer@v4
+      - uses: sigstore/cosign-installer@v4.1.2
         with:
           cosign-release: v3.1.3
       - name: Download the release
