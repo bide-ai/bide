@@ -170,6 +170,10 @@ func (w *notifyWorker) runRound(ctx context.Context, p *pendingNotify) {
 	if err == nil {
 		res, err = w.e.safeRound(ctx, ev)
 	}
+	// The user's error handler hears of the failure while the round is still in flight, on purpose:
+	// a flush waits for the round, and so for the report, so a process that flushes and exits has
+	// delivered every report. (RecoverLoop's handler runs after its slot is released instead: no
+	// one waits there for a report, and the slot is a scarce resource.) The handler must not flush.
 	if err != nil && ctx.Err() == nil {
 		w.e.report(err)
 	}
