@@ -81,7 +81,7 @@ func TestParseFragmentRefusesBareTags(t *testing.T) {
 		"in a span":        "exits with `already recorded at <time>`",
 		"generic in span":  "a `List<T>` of them",
 		"double backticks": "``a `<b>` c`` and more",
-		"inner longer run": "`a `` <b> ` closes only on a single backtick",
+		"inner longer run": "`x ``` <c> ` closes only on a single backtick",
 		"comparison":       "when a < b and c > d, or x <= y",
 		"arrow":            "a <- b",
 		"autolink":         "see <https://example.com/a?b=c>",
