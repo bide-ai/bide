@@ -101,10 +101,10 @@ func run(dir string) error {
 	}
 
 	for _, r := range []refund{
-		{"refund-2001", "2001", time.Hour, 20 * time.Minute},    // due in 40 minutes
-		{"refund-2002", "2002", 24 * time.Hour, 2 * time.Hour},  // due in 22 hours
-		{"refund-2003", "2003", time.Hour, 90 * time.Minute},    // overdue by 30 minutes, expiry not recorded
-		{"refund-2004", "2004", time.Hour, 3 * time.Hour},       // expired
+		{"refund-2001", "2001", time.Hour, 20 * time.Minute},   // due in 40 minutes
+		{"refund-2002", "2002", 24 * time.Hour, 2 * time.Hour}, // due in 22 hours
+		{"refund-2003", "2003", time.Hour, 90 * time.Minute},   // overdue by 30 minutes, expiry not recorded
+		{"refund-2004", "2004", time.Hour, 3 * time.Hour},      // expired
 	} {
 		if err := ask(r); err != nil {
 			return err
