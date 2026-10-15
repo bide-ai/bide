@@ -7,6 +7,7 @@
 # .github/scripts/check-uncached.sh (Lint) fails for a test file that starts a process and is in
 # neither this list nor cache-sound-tests.txt, and for an entry here that starts no process.
 approvals
+audit/rfc3161
 cmd/bide
 cmd/bide/bide-hsm
 cmd/bide/bide-hsm/internal/hsmkeys

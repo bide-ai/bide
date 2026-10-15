@@ -633,6 +633,27 @@ rest on RFC 3161 tokens. The project verifies them with **a small strict verifie
 `encoding/asn1`** (decision 17, the user's), not a dependency. Its safety comes from a narrow profile:
 anything outside it is refused, never interpreted.
 
+**Status: built** in `audit/rfc3161` (step 1 component, not yet called by any gate). Where the profile
+below left a choice, the build reads it this way: `unsignedAttrs` may be present and are held to DER but never
+read; a certificate in the token that Go's parser rejects refuses the token even when unused (found by the
+differential test); `accuracy` is refused above 24 hours; `Policy.RSA2048Until` applies the 2048-bit
+exception against `genTime`; the TSA certificate status rule is a function the caller must supply
+(`Policy.CertStatus`), so it is never skipped silently; Ed25519 requires the SHA-512 digest algorithm
+(RFC 8419). The independent PKI review of the build added: accepted `accuracy` is capped (`Policy.MaxAccuracy`,
+default one second) and `Result.Latest()` is the time to use for "existed by"; the `tsa` name must match the
+certificate; the TSA certificate may not be a CA and its key usage must be signing only; `Policy.DistrustAfter`
+retires TSA keys; `Policy.AcceptedPolicies` pins policy OIDs; `Expected.Now` bounds `genTime` from above for a
+live gate; a SHA-1 `signingCertificate` beside a V2 attribute is checked for consistency only. Of ten public
+TSA endpoints tried on 2026-10-15 the profile accepts six by default (DigiCert, GlobalSign, QuoVadis, SSL.com,
+Microsoft, SwissSign), three with the opt-in (Sectigo, Entrust, FreeTSA: SHA-1 `signingCertificate` only) and
+refuses one (Apple: SHA-1 as the digest algorithm); a bank must choose its TSA from the first group, or opt in per TSA key for the V1-only ones (decision 17, amended). Unused certificates in a token must parse and are then ignored (the path comes from the auditor's anchors); `Normalize` returns the token with only the path's certificates, and because two encodings of one attestation are distinct byte strings, the identity bundle and kit must key and store tokens by their normalized bytes (or by the attested fields), never by the received bytes.
+
+**Prerequisite before any gate calls the verifier (PKI review, M3):** the reference `Policy.CertStatus` hook
+built on the status rule (the status-rule PR) must exist and be wired. The token's path is judged at its own
+`genTime`, which the holder of a retired or compromised TSA key chooses, so the status function (every non-anchor
+certificate as of `genTime`, with the usable-for-absence window), `Policy.DistrustAfter` and the accuracy cap are
+the only controls on back-dating. `rfc3161.StatusUnknown` is the fail-closed placeholder until then.
+
 **Profile (each point a refusal when violated):**
 
 - DER only. The token is re-parsed with `asn1.Unmarshal` and the remaining bytes must be empty; BER,
@@ -671,7 +692,11 @@ anything outside it is refused, never interpreted.
 
 - *Test vectors from real TSAs*, kept in the repository as fixtures with the request that produced them:
   tokens from OpenSSL `ts` (own test TSA), DigiCert, and FreeTSA, plus tokens from the bank's TSA when it
-  has one. Each vector is verified and its `genTime`, imprint and signer are asserted.
+  has one. Each vector is verified and its `genTime`, imprint and signer are asserted. **FreeTSA is a
+  refused vector, not a verified one:** its tokens identify the signer by the SHA-1 `signingCertificate`
+  attribute only (no `signingCertificateV2`), which the profile never accepts, so its token is kept as the
+  real-world case of a refusal for being outside the profile (OpenSSL accepts it; DigiCert's tokens carry
+  both attributes and verify).
 - *Differential tests* against `openssl ts -verify` on valid and mutated tokens: the Go verifier must never
   accept what OpenSSL rejects for a reason inside the profile, and any token the Go verifier refuses for
   being outside the profile is recorded as such, not as a failure.
@@ -1036,8 +1061,8 @@ asserting the same counted set and the same reason:
     limits; the CA key rollover (a CRL signed by the old key still accepted for its certificates);
     `DistrustAfter` on both sides of the time; a cross-validator check of the name-constraint profile
     against OpenSSL for the same chains.
-33. **RFC 3161 verifier** (decision 17): real-TSA vectors (OpenSSL `ts`, DigiCert, FreeTSA) verify with the
-    asserted `genTime`, imprint and signer; differential tests against `openssl ts -verify` on valid and
+33. **RFC 3161 verifier** (decision 17): real-TSA vectors (OpenSSL `ts`, DigiCert) verify with the
+    asserted `genTime`, imprint and signer, and the FreeTSA token is refused as `signing-certificate-v1-only`; differential tests against `openssl ts -verify` on valid and
     mutated tokens; one negative vector per profile refusal (BER or indefinite length, trailing bytes, two
     `SignerInfo`s, SHA-1 `ESSCertID` only, missing or duplicated `contentType`, `messageDigest` or
     `signingCertificateV2`, wrong `messageDigest`, wrong imprint, `genTime` earlier than the head it stamps,
@@ -1154,9 +1179,22 @@ Decisions 1, 2, 5, 6 (delta CRLs), 12, 13, 15 and 17.
 17. **RFC 3161 tokens are verified by a strict stdlib-only verifier** (user, 2026-10-15) on `encoding/asn1`,
     with the narrow profile in "RFC 3161 token verifier": exactly one `SignerInfo`, SHA-256 or better, the
     `contentType`, `messageDigest` and `signingCertificateV2` signed attributes checked, DER only, everything
-    outside the profile refused. Real-TSA vectors (OpenSSL `ts`, DigiCert, FreeTSA), differential tests
+    outside the profile refused. Real-TSA vectors (OpenSSL `ts` and DigiCert verify; FreeTSA is refused, see "RFC 3161 token verifier"), differential tests
     against `openssl ts -verify`, negative vectors and fuzzing are step-1 exit criteria. Rejected: a
     third-party CMS library in the core, and an optional module that the top tier would depend on.
+    *Amended (user, 2026-10-15, after the build and its PKI review):* an **opt-in, off-by-default, per-TSA flag**
+    (`Policy.AllowESSV1`, keyed by the TSA certificate's public key) accepts a token that binds its signer by the
+    SHA-1 `signingCertificate` attribute alone. Public TSAs such as Sectigo, Entrust and FreeTSA produce only such
+    tokens, and refusing them leaves a bank without them no top tier. The external PKI assessment of the build (PR #310, 2026-10-15)
+    gives the reasoning: SHA-1 inside `signingCertificate` is "SHA-1 present", not a real risk. The ESS hash only re-binds
+    the signature to a particular certificate; forging that binding needs a second preimage on SHA-1, which is infeasible,
+    and a chosen-prefix collision would need the issuing CA's cooperation. The verifier independently requires the
+    `SignerIdentifier` match, a chain to the auditor's anchors at `genTime`, the signature verifying under that exact
+    certificate, the EKU and the status hook, so a V1-only token adds no attack path beyond what a compromised TSA key
+    already gives. A SHA-1 CMS digest algorithm is different: it hashes the signed attributes, so a collision there is a
+    collision on signed content, a real risk, and it stays refused. The weaker binding stays visible: a `Result` that relied
+    on it has `ESSV1` set and the verdict prints it. SHA-1 as the CMS digest algorithm (Apple) stays refused
+    whatever the policy says, and a SHA-1 attribute beside `signingCertificateV2` is checked for consistency only.
 
 ### Decided by recommendation (technical, 2026-10-15)
 
