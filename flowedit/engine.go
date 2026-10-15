@@ -13,6 +13,7 @@ import (
 	"bytes"
 	"errors"
 	"fmt"
+	"io"
 	"reflect"
 	"sort"
 	"strings"
@@ -141,8 +142,10 @@ func parse(src []byte) (*doc, error) {
 		return nil, refuse("does not parse: %v", err)
 	}
 	var extra yaml.Node
-	if err := dec.Decode(&extra); err == nil {
-		return nil, refuse("more than one document")
+	// Only a clean end of input means one document: a second document, and text after the first
+	// that does not parse as a document, are both refused.
+	if err := dec.Decode(&extra); !errors.Is(err, io.EOF) {
+		return nil, refuse("more than one document, or text after the document")
 	}
 	if n.Kind != yaml.DocumentNode || len(n.Content) != 1 || n.Content[0].Kind != yaml.MappingNode {
 		return nil, refuse("the document is not a mapping")
