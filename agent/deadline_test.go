@@ -255,3 +255,62 @@ func approveAt(t *testing.T, clk *testClock, store *Journal, approverID string) 
 		t.Fatalf("decideAs(%s): %v", approverID, err)
 	}
 }
+
+// An expiry tally never passes, whatever its counts say (a tally hand-written with enough
+// approvals and the expiry is not a pass), and EvaluateGate reads a recorded expiry tally as the
+// gate's expired outcome before the call's result is recorded.
+func TestDeadline_ExpiryTallyNeverPasses(t *testing.T) {
+	if (ApprovalTally{Need: 1, Approved: 2, Expired: true}).Passed() {
+		t.Fatal("an expiry tally passed")
+	}
+	store := memJournal()
+	clk := &testClock{t: deadlineT0}
+	pol := &ApprovalPolicy{Need: 2, Approvers: abc, Timeout: time.Hour}
+	vf := fakeVerifiers(abc...)
+	var charged int
+	_, _ = deadlineRun(clk, store, "r1", true, pol, vf, &charged)
+	clk.t = deadlineT0.Add(2 * time.Hour)
+	_, _ = deadlineRun(clk, store, "r1", false, pol, vf, &charged)
+	recs, _ := store.History(context.Background(), "r1")
+	cut := recs[:0:0]
+	for _, r := range recs {
+		if r.Name == ToolResultStep("c1") {
+			break
+		}
+		cut = append(cut, r)
+	}
+	st := EvaluateGate(cut, subjectOf(t, store, "r1", "c1"), pol, vf)
+	if st.Status != GateDecided || !st.Expired || !st.Denied || !st.Recorded {
+		t.Fatalf("EvaluateGate on the expiry tally alone = %+v; want decided, denied, expired", st)
+	}
+}
+
+// A drive of a gate that already recorded its deadline reads it from the journal and writes nothing
+// for it.
+func TestDeadline_ReplayDoesNotRewriteTheDeadline(t *testing.T) {
+	cs := &insertLog{Store: NewMemStore()}
+	store := mustJournal(cs)
+	clk := &testClock{t: deadlineT0}
+	pol := &ApprovalPolicy{Need: 2, Approvers: abc, Timeout: time.Hour}
+	vf := fakeVerifiers(abc...)
+	var charged int
+	_, _ = deadlineRun(clk, store, "r1", true, pol, vf, &charged)
+	cs.inserts = nil
+	_, _ = deadlineRun(clk, store, "r1", false, pol, vf, &charged)
+	for _, n := range cs.inserts {
+		if n == ApprovalDeadlineStep("c1") {
+			t.Fatal("a later drive wrote the deadline again")
+		}
+	}
+}
+
+// insertLog is a Store that lists the names of the Inserts made through it.
+type insertLog struct {
+	Store
+	inserts []string
+}
+
+func (s *insertLog) Insert(ctx context.Context, runID, name string, data []byte) (Entry, bool, error) {
+	s.inserts = append(s.inserts, name)
+	return s.Store.Insert(ctx, runID, name, data)
+}
