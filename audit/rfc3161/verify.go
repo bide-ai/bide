@@ -1069,7 +1069,7 @@ func parseGenTime(b []byte) (time.Time, *Refusal) {
 		}
 	}
 	t := time.Date(f[0], time.Month(f[1]), f[2], f[3], f[4], f[5], nanos, time.UTC)
-	if t.Year() != f[0] || int(t.Month()) != f[1] || t.Day() != f[2] || t.Hour() != f[3] || t.Minute() != f[4] || t.Second() != f[5] {
+	if t.Format("20060102150405") != string(b[:14]) { // a normalized date (February 30, hour 24) differs
 		return bad("is not a valid date and time")
 	}
 	return t, nil
