@@ -9,6 +9,7 @@ import (
 	"math/big"
 	"net"
 	"net/url"
+	"regexp"
 	"strings"
 	"testing"
 	"time"
@@ -708,7 +709,7 @@ func TestRSA2048CAOnlyThroughADatedException(t *testing.T) {
 	root := testca.NewRoot(t, "root", testca.Opts{Key: testca.RSA2048, SigAlg: x509.SHA256WithRSA})
 	inter := root.NewIntermediate(t, "inter", testca.Opts{Key: testca.RSA2048, SigAlg: x509.SHA256WithRSA})
 	f := &fixture{root: root, inter: inter}
-	l := inter.NewLeaf(t, testca.Opts{SigAlg: x509.SHA256WithRSA})
+	l := inter.NewLeaf(t, testca.Opts{SigAlg: x509.SHA256WithRSA, Mutate: func(c *x509.Certificate) { c.NotAfter = idT0.Add(72 * time.Hour) }})
 	p := f.policy()
 	p.RSA2048Until = idT0.Add(24 * time.Hour)
 	c, err := p.Compile()
@@ -718,7 +719,13 @@ func TestRSA2048CAOnlyThroughADatedException(t *testing.T) {
 	if _, err := c.VerifyChain("alice", l.Chain(), idT0, idT0); err != nil {
 		t.Fatalf("RSA-2048 CA inside the exception: %v", err)
 	}
-	// The exception has an end date, applied against A: after it the same chain does not count.
+	// The exception has an end date, applied against A and exclusive: at the date the chain does not count.
+	if _, err := c.VerifyChain("alice", l.Chain(), idT0, idT0.Add(24*time.Hour-time.Nanosecond)); err != nil {
+		t.Fatalf("just before the end date: %v", err)
+	}
+	if _, err = c.VerifyChain("alice", l.Chain(), idT0, idT0.Add(24*time.Hour)); err == nil {
+		t.Fatal("RSA-2048 CA accepted at the end date itself")
+	}
 	_, err = c.VerifyChain("alice", l.Chain(), idT0, idT0.Add(24*time.Hour+time.Second))
 	if err == nil {
 		t.Fatal("RSA-2048 CA accepted after the exception ended")
@@ -906,5 +913,111 @@ func TestPolicyIsSnapshottedAtCompile(t *testing.T) {
 	p.Inter[0] = audit.SPKIHash{}
 	if _, err := verifyAs(c, "alice", f.leaf(t, nil)); err != nil {
 		t.Fatalf("compiled policy followed a later mutation: %v", err)
+	}
+}
+
+// decided_at after notAfter is refused even when the decision became provable inside the grace.
+func TestDecidedAfterNotAfterInsideTheGrace(t *testing.T) {
+	f := newFixture(t)
+	c := mustCompile(t, f.policy())
+	l := f.leaf(t, nil)
+	na := l.Cert.NotAfter
+	_, err := c.VerifyChain("alice", l.Chain(), na.Add(10*time.Second), na.Add(20*time.Second))
+	wantReason(t, err, agent.ReasonCertWindow)
+}
+
+// A P-521 CA key is outside the profile even when the signature algorithm is allowed.
+func TestP521CAKeyWithAnAllowedSignatureAlgorithm(t *testing.T) {
+	root := testca.NewRoot(t, "root", testca.Opts{Key: testca.P521, SigAlg: x509.ECDSAWithSHA384})
+	inter := root.NewIntermediate(t, "inter", testca.Opts{Key: testca.P256, SigAlg: x509.ECDSAWithSHA384})
+	f := &fixture{root: root, inter: inter}
+	if _, err := f.policy().Compile(); err == nil {
+		t.Fatal("Compile accepted a P-521 trust anchor")
+	}
+	// Past Compile (a P-521 intermediate under a P-256 root) the path check refuses it too.
+	root2 := testca.NewRoot(t, "root2", testca.Opts{})
+	inter2 := root2.NewIntermediate(t, "inter2", testca.Opts{Key: testca.P521})
+	f2 := &fixture{root: root2, inter: inter2}
+	l := inter2.NewLeaf(t, testca.Opts{SigAlg: x509.ECDSAWithSHA384})
+	_, err := verifyAs(mustCompile(t, f2.policy()), "alice", l)
+	wantReason(t, err, agent.ReasonCertChain)
+}
+
+// MaxChain bounds what is carried: padding with repeats of an acceptable certificate is refused
+// although the path itself is short enough.
+func TestCarriedPaddingIsRefused(t *testing.T) {
+	f := newFixture(t)
+	p := f.policy()
+	p.MaxChain = 3
+	c := mustCompile(t, p)
+	l := f.leaf(t, nil)
+	if _, err := c.VerifyChain("alice", l.Chain(), idT0, idT0); err != nil {
+		t.Fatal(err)
+	}
+	_, err := c.VerifyChain("alice", append(l.Chain(), f.inter.DER, f.inter.DER), idT0, idT0)
+	wantReason(t, err, agent.ReasonCertChain)
+}
+
+// MaxChain 0 selects the default of 4, not "no certificates".
+func TestDefaultMaxChain(t *testing.T) {
+	f := newFixture(t)
+	p := f.policy()
+	p.MaxChain = 0
+	if _, err := verifyAs(mustCompile(t, p), "alice", f.leaf(t, nil)); err != nil {
+		t.Fatalf("default MaxChain: %v", err)
+	}
+}
+
+// A certificate over the size limit is refused unparsed, though well formed.
+func TestOversizedCertificateIsRefused(t *testing.T) {
+	f := newFixture(t)
+	c := mustCompile(t, f.policy())
+	l := f.leaf(t, func(c *x509.Certificate) {
+		c.ExtraExtensions = []pkix.Extension{{Id: asn1.ObjectIdentifier{1, 3, 6, 1, 4, 1, 99999, 7}, Value: mustMarshal(t, make([]byte, 20<<10))}}
+	})
+	if len(l.DER) <= 16<<10 {
+		t.Fatalf("test setup: certificate is %d bytes", len(l.DER))
+	}
+	_, err := verifyAs(c, "alice", l)
+	wantReason(t, err, agent.ReasonCertChain)
+	if !strings.Contains(err.Error(), "bytes, outside") {
+		t.Fatalf("refused for another reason than size: %v", err)
+	}
+}
+
+// The strict URI profile does not rest on the default path pattern alone.
+func TestURIProfileWithAPermissiveConfiguredPath(t *testing.T) {
+	cz := audit.NewCanonicalizer(audit.CanonicalConfig{Host: "idp.bank.example", Path: regexp.MustCompile(`^/.*$`)})
+	ok := "https://idp.bank.example/anything/1"
+	if got, err := cz.Canonical(audit.IDPersonURI, ok); err != nil || got != ok {
+		t.Fatalf("%q: %q, %v", ok, got, err)
+	}
+	for _, bad := range []string{
+		"https://idp.bank.example/a?x=1", "https://idp.bank.example/a#x", "https://idp.bank.example/a%41",
+		"https://u@idp.bank.example/a", "https://idp.bank.example/a\\b", "https://idp.bank.example/a/",
+		"https://idp.bank.example/a//b", "https://idp.bank.example/a/./b", "https://idp.bank.example/a/../b",
+		"https://idp.bank.example", "https://idp.bank.example/\u00e9", "https://idp.bank.example/a b",
+		"https://IDP.bank.example/a", "https://idp.bank.example:443/a", "http://idp.bank.example/a",
+	} {
+		if got, err := cz.Canonical(audit.IDPersonURI, bad); err == nil {
+			t.Fatalf("%q accepted as %q", bad, got)
+		}
+	}
+	// The default pattern refuses a path outside /person/.
+	def := audit.NewCanonicalizer(audit.CanonicalConfig{Host: "idp.bank.example"})
+	if _, err := def.Canonical(audit.IDPersonURI, "https://idp.bank.example/user/"+strings.Repeat("0", 32)); err == nil {
+		t.Fatal("a path outside /person/ accepted")
+	}
+}
+
+func TestEmailLocalPartDots(t *testing.T) {
+	cz := audit.NewCanonicalizer(audit.CanonicalConfig{})
+	for _, bad := range []string{"a..b@x.example", ".a@x.example", "a.@x.example"} {
+		if got, err := cz.Canonical(audit.IDEmail, bad); err == nil {
+			t.Fatalf("%q accepted as %q", bad, got)
+		}
+	}
+	if got, err := cz.Canonical(audit.IDEmail, "a.b@x.example"); err != nil || got != "a.b@x.example" {
+		t.Fatalf("%q, %v", got, err)
 	}
 }
