@@ -1538,7 +1538,9 @@ func TestDecision_ARetryWithADifferentSignatureIsNotRecordedTwice(t *testing.T) 
 	for i := range 60 {
 		var mu sync.Mutex
 		hooks := 0
-		r := newRig(t, approvals.WithRateLimit(0, 0), approvals.WithGlobalRateLimit(0, 0),
+		// Eight requests from one client are in flight at once: the per-client cap on bodies being read
+		// must admit them all, or a 429 (a flake under load) is not what the test is about.
+		r := newRig(t, approvals.WithRateLimit(0, 0), approvals.WithGlobalRateLimit(0, 0), approvals.WithMaxReaders(64, 16),
 			approvals.OnRecorded(func(context.Context, approvals.Recorded) { mu.Lock(); hooks++; mu.Unlock() }))
 		r.randomized = true
 		base := r.decision("alice", true)

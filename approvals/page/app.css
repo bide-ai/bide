@@ -1,0 +1,26 @@
+body { font: 16px/1.5 system-ui, sans-serif; margin: 0; background: #f6f6f4; color: #1d1d1b; }
+main { max-width: 46rem; margin: 0 auto; padding: 1.5rem 1rem 3rem; }
+h1 { font-size: 1.5rem; }
+h2 { font-size: 1.15rem; margin-top: 2rem; }
+h3 { font-size: 1rem; margin-top: 1.5rem; }
+dl { display: grid; grid-template-columns: 6rem 1fr; gap: .25rem 1rem; }
+dt { color: #555; }
+dd { margin: 0; overflow-wrap: anywhere; }
+pre { background: #fff; border: 1px solid #bbb; padding: .75rem; max-height: 18rem; overflow: auto; white-space: pre-wrap; overflow-wrap: anywhere; font: 14px/1.4 ui-monospace, monospace; }
+code { font: 14px ui-monospace, monospace; overflow-wrap: anywhere; }
+input { font: inherit; padding: .4rem .5rem; width: 16rem; max-width: 100%; }
+button { font: inherit; padding: .5rem 1rem; border: 1px solid #333; background: #1d4d1d; color: #fff; border-radius: 4px; cursor: pointer; }
+button.reject { background: #7a1c1c; }
+button:disabled { background: #999; border-color: #999; cursor: not-allowed; }
+.warn { color: #7a4b00; border-left: 4px solid #c98400; padding-left: .5rem; }
+.note { color: #555; font-size: .9rem; }
+.ok { color: #1d4d1d; font-weight: 600; }
+.bad { color: #7a1c1c; font-weight: 600; }
+@media (prefers-color-scheme: dark) {
+  body { background: #161615; color: #e8e8e4; }
+  pre { background: #1f1f1e; border-color: #555; }
+  dt, .note { color: #aaa; }
+  .warn { color: #e0b060; }
+  .ok { color: #7cc47c; }
+  .bad { color: #e08080; }
+}

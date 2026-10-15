@@ -1,0 +1,57 @@
+name: Page mTLS
+
+# The approve page in real Chrome, authenticated by a TLS client certificate, in both of its modes
+# (the page served by the intake, and the page hosted on another origin with credentials "include").
+# On Linux Chrome reads client certificates from the NSS database of its HOME, which the test sets
+# up for itself (approvals/page_mtls_test.go); this workflow installs what the test needs around
+# it: libnss3-tools, Chrome's managed policy that picks the certificate, and puppeteer-core. Runs
+# on pull requests that touch approvals/ and in the merge queue (which does not filter by path).
+on:
+  pull_request:
+    paths:
+      - 'approvals/**'
+      - '.github/workflows/page-mtls.yml'
+  merge_group:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: page-mtls-${{ github.event.pull_request.number || github.ref }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+
+jobs:
+  mtls:
+    name: Page mTLS (Chrome)
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v5
+        with:
+          go-version: '1.27'
+          cache-dependency-path: '**/go.sum'
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+      - name: Install the NSS tools and Chrome's certificate policy
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y libnss3-tools
+          google-chrome-stable --version
+          sudo mkdir -p /etc/opt/chrome/policies/managed
+          # Select the test client certificate for the test servers without a prompt (headless Chrome
+          # cannot show one). The test servers are on 127.0.0.1.
+          sudo tee /etc/opt/chrome/policies/managed/mtls.json >/dev/null <<'JSON'
+          {"AutoSelectCertificateForUrls": ["{\"pattern\":\"https://127.0.0.1:*\",\"filter\":{}}", "{\"pattern\":\"https://127.0.0.1\",\"filter\":{}}"]}
+          JSON
+      - name: Install puppeteer-core (from the lockfile)
+        working-directory: approvals/page/test/chrome
+        run: npm ci --ignore-scripts
+      - name: Drive the page in Chrome with a client certificate
+        env:
+          GOWORK: 'off'
+          BIDE_MTLS_BROWSER: '1' # with CI set, a missing Chrome or tool fails the test instead of skipping it
+          CHROME_BIN: /usr/bin/google-chrome-stable
+        run: go test ./approvals/ -run TestPage_ClientCertificateInChrome -count=1 -v

@@ -9,3 +9,9 @@ internal/tools/oldnames/testdata/** text eol=lf
 # files are compared and parsed as written. No line-ending conversion on any platform.
 signer/gcpkms/testdata/attestation/** -text
 signer/gcpkms/testdata/attestation/*.gz binary
+
+# The approve page's sources and the canonical-arguments vectors are byte-exact: the page bundle is
+# built from the embedded bytes and published with their hashes, and the vectors are compared with
+# what Go writes (LF). No line-ending conversion on any platform.
+approvals/page/** text eol=lf
+agent/testdata/canonical_args_vectors.json text eol=lf
