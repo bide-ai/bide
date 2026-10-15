@@ -199,6 +199,7 @@ func TestReask_ForgedNotesAreNotRead(t *testing.T) {
 			tally(t, s, weak)
 			return s
 		},
+		"sod note with no reason and no tally": func(t *testing.T) *Journal { return forge(true, func(w *ApprovalWait) { w.Reask = "" }) },
 		"sod note with no reason": func(t *testing.T) *Journal {
 			s := forge(true, func(w *ApprovalWait) { w.Reask = "" })
 			weak := current
