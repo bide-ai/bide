@@ -1,3 +1,0 @@
-Section: Added
-
-Each release publishes the approve page bundle's SHA-256 sums, `approve-page.SHA256SUMS` (the `SHA256SUMS` that `go run ./approvals/cmd/approvepage -out <dir>` writes), signed keylessly with cosign like `checksums.txt` (`approve-page.SHA256SUMS.sigstore.json`), because Subresource Integrity pins the page's script and stylesheet but cannot pin its entry document. The release workflow builds the bundle from the tag and checks it, the `verify-signatures` job verifies the signature, and the `repro` job rebuilds the bundle on macOS and fails unless its sums equal the published ones. `docs/trust/verify-releases.md` shows how an organization that hosts the page checks the files it serves against them.

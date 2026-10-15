@@ -1,3 +1,0 @@
-Section: Added
-
-`bide-hsm` takes an `azurekv:https://<vault>.vault.azure.net/keys/<name>/<32-hex-version>` key reference for an approver key in Azure Key Vault or Managed HSM: the version is pinned (a base identifier, a port, credentials, a query, a fragment, an upper-case host or a host outside the Azure public, China and US Government Key Vault suffixes is refused, and the error repeats no value from the reference), the key is ECDSA P-256 (`-alg ed25519` is refused), only an HSM-protected key is used unless `-allow-software-key`, and credentials are the Azure SDK's default chain. Tested against the Azure SDK's fake Key Vault server in the test-only module `cmd/bide/bide-hsm/azuretest`, never against Azure.
