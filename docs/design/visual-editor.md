@@ -338,10 +338,18 @@ read-only with the reason ("edit this in the source pane"), and every other node
 The refusal is a feature: a refused edit costs the user a text edit, a wrong splice costs a
 reviewer's trust.
 
-**JSON configs** have no comments, so only order, indentation, and number spelling matter. The
-engine keeps an ordered model of the document, keeps numbers as written, and re-emits with the
-file's detected indent. A JSON edit is therefore a re-emit with a verified round trip, not a
-splice.
+**JSON configs** go through the same engine, because JSON is YAML flow style: the phase 0 spike
+(`flowedit`, pull request #317) splices JSON files, tab-indented ones included, and writes new text
+as JSON (quoted keys and strings), one entry to a line when the collection it joins is
+pretty-printed. A JSON file has no comments, so the comment-ownership checks have nothing to do
+there; the data, key-order and line checks still run on every result.
+
+**Where YAML becomes JSON today.** `plan.Load` reads strict JSON only. A `.yaml` or `.yml` file is
+converted by `yamlToJSON` in `cmd/bide/view.go` (for `bide view -config` and `bide check`), and the
+`bide init` project template carries its own copy for its embedded `flow.yaml`. Both call
+`yaml.Unmarshal`, which reads the first document and ignores any later one without a word (issue
+#320). The editor refuses a file of more than one document, and counts it as a miss in the
+measurement; the loader should refuse it too.
 
 **If the spike fails.** The fallback is the `yaml.Node` re-emit, with the cost shown in
 the editor: the first save of a file would normalize blank lines and indent, and the editor would
