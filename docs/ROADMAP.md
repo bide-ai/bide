@@ -18,7 +18,7 @@ Changes that touch claims, the journal, leases, sagas or proofs are reviewed adv
 bide is meant to be usable by banks and other regulated institutions. What that needs beyond today, first items first:
 
 - Key custody: Ed25519 and ECDSA P-256 audit-log and approver signing keys in a PKCS#11 HSM, AWS KMS or Google Cloud KMS, and ECDSA P-256 keys in Azure Key Vault or Managed HSM, through `audit.Signer` have shipped ([key custody guide](guides/key-custody.md)). The command-line approval tool takes PKCS#11, AWS KMS, Google Cloud KMS and Azure Key Vault keys too (`bide-hsm approve`, with a PKCS#11 URI, a KMS key ARN, a Cloud KMS key version or a Key Vault key identifier). Next: a trial against a hardware HSM.
-- Release evidence: every release is signed keylessly with cosign, rebuilt byte for byte on a second operating system, and carries signed SPDX SBOMs for each binary archive and for the published Go module set ([verifying releases](trust/verify-releases.md)).
+- Release evidence: every release is signed keylessly with cosign, rebuilt byte for byte on a second operating system, and carries signed SPDX SBOMs for each binary archive and for the published Go module set ([verifying releases](trust/verify-releases.md)). Next: build provenance, SLSA provenance attestations for the release archives that record how and from what each was built.
 - Approver identity: approver keys bound to an institution's identity, with certificates from its own CA or keys issued through its SSO, and revocation that the gate and `bide audit` honor.
 
 This is engineering toward those requirements, not a compliance certification.
