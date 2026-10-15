@@ -13,6 +13,7 @@ import (
 	"crypto/x509"
 	"crypto/x509/pkix"
 	"encoding/asn1"
+	"fmt"
 	"math/big"
 	"net/url"
 	"strings"
@@ -188,6 +189,9 @@ func TestDirectoryNameConstraintsAreNotEnforced(t *testing.T) {
 		if !critical && err != nil {
 			t.Fatalf("a non-critical unsupported constraint should be ignored: %v", err)
 		}
+		if critical && (err == nil || !strings.Contains(err.Error(), "unhandled critical extension")) {
+			t.Fatalf("ASSUMPTION BROKEN: a critical directoryName constraint must fail the chain as an unhandled critical extension, got %v", err)
+		}
 	}
 }
 
@@ -306,12 +310,8 @@ func TestPathLenIsEnforced(t *testing.T) {
 // extensions, which the design parses itself.
 func TestRevocationListParsing(t *testing.T) {
 	root := newCA(t, nil)
-	invalidity, err := asn1.Marshal(t0.Add(-3 * time.Hour).UTC())
-	if err != nil {
-		t.Fatal(err)
-	}
 	// GeneralizedTime is what RFC 5280 requires for the invalidity date.
-	invalidity, err = asn1.MarshalWithParams(t0.Add(-3*time.Hour).UTC(), "generalized")
+	invalidity, err := asn1.MarshalWithParams(t0.Add(-3*time.Hour).UTC(), "generalized")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -599,5 +599,76 @@ func TestMLDSACertificatesAreSupported(t *testing.T) {
 	l := root.leaf(t, lk.PublicKey(), func(c *x509.Certificate) { c.EmailAddresses = []string{"alice@bank.example"} })
 	if err := root.verify(l, t0, x509.ExtKeyUsageAny); err != nil {
 		t.Fatalf("an ML-DSA leaf under an ECDSA root: %v", err)
+	}
+}
+
+// Assumption (found by the external PKI assessment, and checked here): with ExtKeyUsageAny, Verify
+// does not enforce extended-key-usage nesting along the chain. A leaf with the private EKU issued by an
+// intermediate whose own EKU is restricted to serverAuth verifies. A bank that scopes an issuing CA by
+// the CA's EKU gets no enforcement from crypto/x509 here, so bide walks the verified chain and enforces
+// the EKU of every CA certificate that carries one.
+func TestChainEKUNestingIsNotEnforcedUnderAny(t *testing.T) {
+	root := newCA(t, nil)
+	ik, _ := ecdsa.GenerateKey(elliptic.P256(), rand.Reader)
+	itpl := &x509.Certificate{SerialNumber: big.NewInt(21), Subject: pkix.Name{CommonName: "server-only intermediate"},
+		NotBefore: t0.Add(-12 * time.Hour), NotAfter: t0.Add(24 * time.Hour), IsCA: true, BasicConstraintsValid: true,
+		KeyUsage: x509.KeyUsageCertSign | x509.KeyUsageCRLSign, ExtKeyUsage: []x509.ExtKeyUsage{x509.ExtKeyUsageServerAuth}}
+	der, err := x509.CreateCertificate(rand.Reader, itpl, root.cert, &ik.PublicKey, root.key)
+	if err != nil {
+		t.Fatal(err)
+	}
+	icert, _ := x509.ParseCertificate(der)
+	inter := &ca{icert, ik}
+	l := inter.leaf(t, leafKey(t), func(c *x509.Certificate) { c.EmailAddresses = []string{"a@bank.example"} }) // private EKU only
+	roots := x509.NewCertPool()
+	roots.AddCert(root.cert)
+	pool := x509.NewCertPool()
+	pool.AddCert(icert)
+	if _, err := l.Verify(x509.VerifyOptions{Roots: roots, Intermediates: pool, CurrentTime: t0, KeyUsages: []x509.ExtKeyUsage{x509.ExtKeyUsageAny}}); err != nil {
+		t.Fatalf("ASSUMPTION CHANGED: Any now enforces chain EKU nesting (%v); the by-hand chain walk may become redundant", err)
+	}
+	if len(icert.ExtKeyUsage) != 1 || icert.ExtKeyUsage[0] != x509.ExtKeyUsageServerAuth {
+		t.Fatal("the intermediate's EKU is not readable for the by-hand walk")
+	}
+}
+
+// Assumption: certificate policy OIDs are readable, so a bank's issuing CA can assert a policy only
+// after MFA step-up and a hardware-bound key, and bide can require it. Go 1.24 and later issue and
+// parse policies as Certificate.Policies (x509.OID); PolicyIdentifiers is the legacy int32-limited form
+// and is empty when only Policies is set. The GODEBUG x509usepolicies controls whether Verify applies
+// policy validation; the design reads Policies itself and records the GODEBUG in the kit.
+func TestCertificatePolicyOIDsAreReadable(t *testing.T) {
+	root := newCA(t, nil)
+	policy, err := x509.ParseOID("1.3.6.1.4.1.99999.2.1")
+	if err != nil {
+		t.Fatal(err)
+	}
+	l := root.leaf(t, leafKey(t), func(c *x509.Certificate) { c.Policies = []x509.OID{policy}; c.EmailAddresses = []string{"a@bank.example"} })
+	found := false
+	for _, o := range l.Policies {
+		found = found || o.Equal(policy)
+	}
+	if !found {
+		t.Fatalf("policies: %v", l.Policies)
+	}
+}
+
+// Assumption: the leaf key type is readable from the parsed certificate, so the decision scheme is
+// derived from the SPKI and a mismatch with the record's approver_alg can be refused.
+func TestLeafKeyTypesAreDistinguishable(t *testing.T) {
+	root := newCA(t, nil)
+	edpub, _, _ := ed25519.GenerateKey(rand.Reader)
+	pq, err := mldsa.GenerateKey(mldsa.MLDSA65())
+	if err != nil {
+		t.Skip("ml-dsa is not available in this build")
+	}
+	for name, tc := range map[string]struct {
+		pub  any
+		want string
+	}{"ecdsa": {leafKey(t), "*ecdsa.PublicKey"}, "ed25519": {edpub, "ed25519.PublicKey"}, "ml-dsa": {pq.PublicKey(), "*mldsa.PublicKey"}} {
+		l := root.leaf(t, tc.pub, nil)
+		if got := fmt.Sprintf("%T", l.PublicKey); got != tc.want {
+			t.Errorf("%s: PublicKey is %s, want %s", name, got, tc.want)
+		}
 	}
 }
