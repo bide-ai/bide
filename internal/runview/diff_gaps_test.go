@@ -62,6 +62,13 @@ func TestDiffUngatedPathNotFalselyFlagged(t *testing.T) {
 			t.Errorf("%s: weakened %q", name, got)
 		}
 	}
+	// A read-only node behind the gate that a new route reaches ungated is no effect.
+	withAudit := func(wiring string) string {
+		return gapCfg(`, {"name": "audit", "block": "audit", "safety": "readonly"}`, `, {"edge": ["charge", "audit"]}`+wiring)
+	}
+	if got := weakenedOf(t, withAudit(""), withAudit(`, {"edge": ["validate", "audit"]}`)); len(got) != 0 {
+		t.Errorf("read-only node: weakened %q", got)
+	}
 	// receipt was ungated before and after: not newly ungated.
 	open := strings.Replace(gapCfg("", ""), `, "approval": {"need": 2, "approvers": ["ops", "finance", "risk"]}`, "", 1)
 	if got := weakenedOf(t, open, strings.Replace(open, `"wiring": [`, `"wiring": [{"edge": ["validate", "receipt"]}, `, 1)); len(got) != 0 {
@@ -107,6 +114,7 @@ func TestDiffAssertions(t *testing.T) {
 		{"respelled", []string{two}, []string{"every  path to receipt passes approval >= 2 of 3"}, nil, false},
 		{"tightened", []string{two}, []string{"every path to receipt passes approval >= 3 of 3"}, nil, true},
 		{"added", nil, []string{two}, nil, false},
+		{"stronger and weaker variants added", []string{two}, []string{"every path to receipt passes approval >= 1 of 3", "every path to receipt passes approval >= 3 of 3"}, nil, true},
 		{"reordered", []string{two, "receipt reachable"}, []string{"receipt reachable", two}, nil, false},
 	} {
 		v := diffOf(t, gapCfg("", "", c.from...), gapCfg("", "", c.to...), nil, nil)
@@ -115,6 +123,15 @@ func TestDiffAssertions(t *testing.T) {
 		}
 		if (len(v.Strengthened) > 0) != c.strong {
 			t.Errorf("%s: strengthened %q", c.name, v.Strengthened)
+		}
+		var shown []string
+		for _, ch := range v.Changes {
+			if ch.What == "assertion" {
+				shown = append(shown, ch.Change)
+			}
+		}
+		if c.name == "added" && !slices.Equal(shown, []string{"added"}) || c.name == "unchanged" && len(shown) != 0 || c.name == "stronger and weaker variants added" && !slices.Equal(shown, []string{"changed", "added"}) {
+			t.Errorf("%s: assertion changes %q", c.name, shown)
 		}
 		// An assertion change is a change: a diff with no other change still lists it.
 		if len(c.weak) > 0 && len(v.Changes) == 0 {

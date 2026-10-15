@@ -26,3 +26,23 @@ func TestCompareAssertions(t *testing.T) {
 		}
 	}
 }
+
+func TestUngatedPath(t *testing.T) {
+	cfg := func(entryGate string) []byte {
+		return []byte(`{"version": 1, "flow": "f", "entry": "a",
+		  "nodes": [{"name": "a", "block": "a"` + entryGate + `}, {"name": "b", "block": "b", "approval": {"need": 1, "approvers": ["ops"]}}, {"name": "c", "block": "c"}],
+		  "wiring": [{"edge": ["a", "b"]}, {"edge": ["b", "c"]}, {"edge": ["a", "c"]}]}`)
+	}
+	r := InspectConfig(cfg(""), nil)
+	if p := r.UngatedPath("c"); len(p) != 2 || p[0] != "a" || p[1] != "c" {
+		t.Errorf("path to c = %v, want a -> c", p)
+	}
+	if p := r.UngatedPath("b"); p != nil {
+		t.Errorf("path to the gated node b = %v, want none (its own gate is on the way)", p)
+	}
+	// With the entry gated every path passes a gate.
+	r = InspectConfig(cfg(`, "approval": {"need": 1, "approvers": ["ops"]}`), nil)
+	if p := r.UngatedPath("c"); p != nil || !r.Gated["c"] {
+		t.Errorf("entry gated: path %v, gated %v", p, r.Gated["c"])
+	}
+}

@@ -325,7 +325,7 @@ func diffChanges(o, n plan.ConfigReport, oldSafety, newSafety map[string]string)
 			}
 			c.Details = append(c.Details, gateMove(was.Gate, x.Gate)+" ("+g+")")
 		}
-		if d := newlyUngated(o, n, was, x); d != "" && c.Gate == "" {
+		if d := newlyUngated(o, n, x); d != "" && c.Gate == "" {
 			c.Gate, c.Weakening = "weakened", "path"
 			c.Details = append(c.Details, d+" (weakened)")
 		}
@@ -363,10 +363,10 @@ func diffChanges(o, n plan.ConfigReport, oldSafety, newSafety map[string]string)
 // newlyUngated says, for a node in both versions, when a path now reaches it without an approval
 // gate that none reached before and it may have an effect (its safety is side effect, or not
 // known): "reachable without an approval gate (validate -> receipt), not before". "" otherwise: the
-// node is not an effect, it was already reachable ungated, it lost its own gate (reported as a gate
-// change), or it is still gated.
-func newlyUngated(o, n plan.ConfigReport, was, now plan.TopologyNode) string {
-	if !o.Gated[now.Name] || n.Gated[now.Name] || was.Gate != nil && now.Gate == nil {
+// node is not an effect, it was already reachable ungated, or it is still gated. A node that lost
+// its own gate is reported as a gate change, not here (the caller skips a change already weakened).
+func newlyUngated(o, n plan.ConfigReport, now plan.TopologyNode) string {
+	if !o.Gated[now.Name] || n.Gated[now.Name] {
 		return ""
 	}
 	why := ""
@@ -395,7 +395,9 @@ func assertionChanges(o, n plan.ConfigReport) []Change {
 	}
 	oldT, newT := text(o), text(n)
 	same := func(a, b string) bool { return plan.CompareAssertions(a, b) == "equal" }
-	inOther := func(list []string, t string) bool { return slices.ContainsFunc(list, func(x string) bool { return same(x, t) }) }
+	inOther := func(list []string, t string) bool {
+		return slices.ContainsFunc(list, func(x string) bool { return same(x, t) })
+	}
 	var added []string
 	for _, t := range newT {
 		if !inOther(oldT, t) {
