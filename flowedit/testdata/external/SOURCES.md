@@ -40,5 +40,3 @@ prometheus/prometheus | documentation/examples/prometheus-docker.yml | 81e74054d
 prometheus/prometheus | documentation/examples/prometheus-dockerswarm.yml | 81e74054db40f26bc59a43d8734c6cd022a97d8d | Apache-2.0 | prometheus_prometheus-documentation_examples_prometheus-dockerswarm.yml
 prometheus/prometheus | documentation/examples/prometheus-eureka.yml | 81e74054db40f26bc59a43d8734c6cd022a97d8d | Apache-2.0 | prometheus_prometheus-documentation_examples_prometheus-eureka.yml
 prometheus/prometheus | documentation/examples/prometheus-hetzner.yml | 81e74054db40f26bc59a43d8734c6cd022a97d8d | Apache-2.0 | prometheus_prometheus-documentation_examples_prometheus-hetzner.yml
-kubernetes/examples | {"message":"Not | d6b8cd27eacb51e651a1aa6f7c190a28713eff6e | Apache-2.0 | kubernetes_examples-{"message":"Not
-kubernetes/examples | Found","documentation_url":"https://docs.github.com/rest/repos/contents#get-repository-content","status":"404"} | d6b8cd27eacb51e651a1aa6f7c190a28713eff6e | Apache-2.0 | kubernetes_examples-Found","documentation_url":"https:__docs.github.com_rest_repos_contents#get-repository-content","status":"404"}

@@ -4,9 +4,9 @@
 // operation says (it re-parses the result and compares it with the operation applied to the
 // data). When it cannot splice safely it refuses, and says why; it never returns unverified text.
 //
-// This is the phase 0 spike: generic operations on paths (Set, Insert, Delete), measured over a
-// corpus by the tests in this package. The editor's own operations (set a node's approval, add an
-// edge) are built on these.
+// The operations here are generic, on paths (Set, Insert, Delete), and are measured over a corpus
+// by the tests in this package. The editor's own operations (set a node's approval, add an edge)
+// are built on these. Text leaves the package from one place only, commit, which a test pins.
 package flowedit
 
 import (
@@ -56,6 +56,7 @@ type Map []KV
 // Refusal is why the engine would not apply an operation. The text is untouched.
 type Refusal struct{ Reason string }
 
+// Error describes the refusal, starting with "flowedit: refused:".
 func (r *Refusal) Error() string { return "flowedit: refused: " + r.Reason }
 
 func refuse(f string, a ...any) error { return &Refusal{fmt.Sprintf(f, a...)} }
