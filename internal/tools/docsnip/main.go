@@ -137,6 +137,9 @@ func run(args []string, stdout, stderr io.Writer) int {
 	return 0
 }
 
+// generatedAPIDir is the generated API reference, which a directory search leaves out.
+const generatedAPIDir = "docs/reference/api"
+
 // markdownFiles expands paths (files, or directories searched for *.md) into sorted,
 // slash-separated paths relative to root.
 func markdownFiles(root string, paths []string) ([]string, error) {
@@ -156,6 +159,11 @@ func markdownFiles(root string, paths []string) ([]string, error) {
 				return err
 			}
 			if d.IsDir() && d.Name() == "node_modules" {
+				return filepath.SkipDir
+			}
+			// The SDK API reference is generated from the Go sources (internal/tools/apiref), so its
+			// declarations are the packages' own; it is not hand-written code to compile.
+			if rel, err := filepath.Rel(root, path); err == nil && d.IsDir() && filepath.ToSlash(rel) == generatedAPIDir {
 				return filepath.SkipDir
 			}
 			if !d.IsDir() && strings.HasSuffix(d.Name(), ".md") {

@@ -101,25 +101,11 @@ Pre-1.0, a minor version may include breaking changes in any package.
 	b.WriteString("\n## Packages\n\n| Package | Stability | Synopsis |\n|---|---|---|\n")
 	for _, m := range mods {
 		for _, p := range m.Packages {
-			link := pagesOf(m)[0].name + "#" + anchor(p)
+			link := pagesOf(m)[0].name
 			if pagesOf(m)[0].one {
 				link = strings.ReplaceAll(p.Rel, "/", "-") + ".md"
 			}
 			fmt.Fprintf(&b, "| [`%s`](%s) | %s | %s |\n", p.Rel, link, p.Label, cell(p.Synopsis))
-		}
-	}
-	return b.String()
-}
-
-// anchor is the heading id VitePress gives the package's heading.
-func anchor(p *Package) string {
-	var b strings.Builder
-	for _, r := range strings.ToLower(p.Rel) {
-		switch {
-		case r >= 'a' && r <= 'z', r >= '0' && r <= '9', r == '-':
-			b.WriteRune(r)
-		default:
-			b.WriteRune('-')
 		}
 	}
 	return b.String()

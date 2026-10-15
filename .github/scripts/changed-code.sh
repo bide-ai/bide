@@ -34,6 +34,8 @@ if [ "${1:-}" = --self-test ]; then
   t 0 "" agent/run.go
   t 0 "" docs/reference/cli.md
   t 0 "" docs/reference/bide-hsm.md
+  t 0 "" docs/reference/api/agent.md
+  t 0 "" docs/trust/stability.md
   t 0 "" docs/releases/v0.17.0.md
   t 1 "" docs/reference/module-structure.md
   t 0 "" docs/guide.md agent/run.go
@@ -41,6 +43,7 @@ if [ "${1:-}" = --self-test ]; then
   t 0 --examples-only examples/plan/main.go
   t 1 --examples-only examples/plan/main.go agent/run.go
   t 1 --examples-only docs/reference/cli.md
+  t 1 --examples-only docs/reference/api/index.md
   t 1 --examples-only docs/guide.md
   t 0 --gsm agent/run.go
   t 1 --gsm docs/guide.md
@@ -91,8 +94,10 @@ if [ -n "$codeish" ]; then
 fi
 # Documents that Go tests compare with the code count as code: the command reference tests
 # (cmd/bide, cmd/bide/bide-hsm reference_test.go) fail when docs/reference/cli.md or bide-hsm.md
-# differs from the commands' help, and doccheck and TestRepoReleaseNotes read docs/releases/.
-tested=$(echo "$files" | grep -E '^docs/(reference/(cli|bide-hsm)\.md|releases/)' || true)
+# differs from the commands' help, TestAPIReference (internal/tools/apiref) fails when
+# docs/reference/api/ or the package table in docs/trust/stability.md differs from the sources, and
+# doccheck and TestRepoReleaseNotes read docs/releases/.
+tested=$(echo "$files" | grep -E '^docs/(reference/(cli|bide-hsm)\.md|reference/api/|trust/stability\.md|releases/)' || true)
 if [ -n "$tested" ]; then
   other=$(printf '%s\n%s\n' "$other" "$tested" | grep -v '^$' | LC_ALL=C sort -u)
 fi
