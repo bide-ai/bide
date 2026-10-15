@@ -53,7 +53,7 @@ func TestCheckDiff(t *testing.T) {
 	const v1, v2 = "../../examples/plan/flows/refund-v1.yaml", "../../examples/plan/flows/refund-v2.yaml"
 	code, stdout, stderr := runBide("check", v2, "-diff", v1, "-check")
 	if code != 0 || !strings.Contains(stdout, v2+": changed node charge: approval 1 of 3 -> 2 of 3 (strengthened)\n") ||
-		!strings.Contains(stdout, v2+": added node review: block review\n") || !strings.Contains(stdout, v2+": removed node skip: block skip\n") {
+		!strings.Contains(stdout, v2+": added node review: block review; safety readonly\n") || !strings.Contains(stdout, v2+": removed node skip: block skip\n") {
 		t.Errorf("bide check %s -diff %s -check: exit %d\n%s%s", v2, v1, code, stdout, stderr)
 	}
 	if code, stdout, stderr := runBide("check", v2, "-diff", v1, "-check", "-fail-on-weaken"); code != 0 {

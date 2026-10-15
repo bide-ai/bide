@@ -1,5 +1,5 @@
 [33m~[0m [2m../../examples/plan/flows/refund-v2.yaml[0m: [33mchanged[0m node [1mcharge[0m: [33mapproval 1 of 3[0m -> 2 of 3 [32m(strengthened)[0m
-[32m+[0m [2m../../examples/plan/flows/refund-v2.yaml[0m: [32madded[0m node [1mreview[0m: block review
+[32m+[0m [2m../../examples/plan/flows/refund-v2.yaml[0m: [32madded[0m node [1mreview[0m: block review; safety [32mreadonly[0m
 [31m-[0m [2m../../examples/plan/flows/refund-v2.yaml[0m: [31mremoved[0m node [1mskip[0m: block skip
 [32m+[0m [2m../../examples/plan/flows/refund-v2.yaml[0m: [32madded[0m edge [1mvalidate[0m -> [1mreview[0m: else
 [31m-[0m [2m../../examples/plan/flows/refund-v2.yaml[0m: [31mremoved[0m edge [1mvalidate[0m -> [1mskip[0m: else

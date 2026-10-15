@@ -551,9 +551,12 @@ weakened gate.
 `times out after 24h`), and `bide check -diff` compares them: dropping `exclude_principal`, or
 removing or lengthening `timeout`, is a weakened gate (a run can wait longer, and a decision after
 the old deadline counts), and adding the exclusion or adding or shortening a timeout is a
-strengthened one. It also reports a weakening that is not a gate's own change: a side-effect (or
-safety-unknown) node newly reachable without passing a gate, which a new arm around a gated node
-causes, and an `assert` line removed or loosened. See [Compare two versions of a
+strengthened one. It also reports a weakening that is not a gate's own change: an effect (a
+side-effect or safety-unknown node, a new one included) that is now reachable without passing a gate,
+as a new arm around a gated node causes; a Switch condition changed beside an ungated effect (the
+predicates are not read, so it asks for a review); a block changed on an ungated effect node when
+checked without the Registry (the block's own gate is not visible); and an `assert` line removed or
+loosened. A node renamed with the same block, safety, gate and edges is `renamed`, not a weakening. See [Compare two versions of a
 flow](run-viewer.md#compare-two-versions-of-a-flow).
 
 `Load` and `Validate` reject a block with no approvers, a `need` outside `1..len(approvers)`, or a

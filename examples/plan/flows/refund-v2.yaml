@@ -8,7 +8,7 @@ entry: validate
 nodes:
   - {name: validate, block: validate, safety: readonly}
   - {name: charge, block: charge, approval: {need: 2, approvers: [ops, finance, risk]}}
-  - {name: review, block: review}
+  - {name: review, block: review, safety: readonly}
   - {name: receipt, block: receipt}
 wiring:
   - switch: validate

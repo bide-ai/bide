@@ -193,7 +193,9 @@ func switchChanges(o, n plan.ConfigReport, ungated map[string]bool) []Change {
 	for _, b := range n.Topology.Branches {
 		old, had := oldArms[b.Over]
 		if !had {
-			continue // a new Switch: its arms are new nodes' edges, judged by the nodes
+			// A new Switch: no arm is unchanged, so no arm counts as "another arm" below, and its arms
+			// are new nodes' edges, judged by the nodes. The skip is an optimisation.
+			continue
 		}
 		newKeys := map[string]bool{}
 		var changed []string

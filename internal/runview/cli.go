@@ -88,7 +88,9 @@ With -diff it compares the -config flow with an earlier version of it: the page 
 with added nodes and edges in green, removed ones as dashed red ghosts and changed nodes in amber,
 and calls out an approval gate whose policy was weakened (removed, its need lowered, an approver
 added without raising the need, exclude_principal dropped, or its timeout removed or lengthened),
-an effect newly reachable without passing an approval gate, or an assert line removed or loosened;
+an effect (a new one included) reachable without passing an approval gate that was not before, a Switch
+condition changed beside an ungated effect, a block changed on an ungated effect node without the Registry,
+or an assert line removed or loosened;
 a gate made stricter (including a timeout added or shortened, which makes it fail closed sooner)
 is marked strengthened. -diff takes a file, or, when no file has that name, a git
 revision read with git show: <rev>:<path>, or a bare <rev> for the -config file's path at that

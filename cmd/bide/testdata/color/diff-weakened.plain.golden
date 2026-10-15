@@ -1,5 +1,5 @@
 ../../examples/plan/flows/refund-v1.yaml: changed node charge: approval 2 of 3 -> 1 of 3 (weakened)
-../../examples/plan/flows/refund-v1.yaml: added node skip: block skip
+../../examples/plan/flows/refund-v1.yaml: added node skip: block skip; safety readonly
 ../../examples/plan/flows/refund-v1.yaml: removed node review: block review
 ../../examples/plan/flows/refund-v1.yaml: added edge validate -> skip: else
 ../../examples/plan/flows/refund-v1.yaml: removed edge validate -> review: else

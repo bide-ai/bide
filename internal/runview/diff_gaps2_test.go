@@ -2,6 +2,7 @@ package runview
 
 import (
 	"context"
+	"slices"
 	"strings"
 	"testing"
 
@@ -178,8 +179,9 @@ func TestDiffRenameDoesNotHideChanges(t *testing.T) {
 	log := func(name, safety string) string {
 		return gapCfg(`, {"name": "`+name+`", "block": "log", "safety": "`+safety+`"}`, `, {"edge": ["validate", "`+name+`"]}`)
 	}
-	if got := weakenedOf(t, log("log", "readonly"), log("log2", "side_effect")); len(got) != 1 {
-		t.Errorf("renamed and made an effect: %q", got)
+	v := diffOf(t, log("log", "readonly"), log("log2", "side_effect"), nil, nil)
+	if len(v.Weakened) != 1 || slices.ContainsFunc(v.Changes, func(c Change) bool { return c.Change == "renamed" }) {
+		t.Errorf("renamed and made an effect: %q, changes %q", v.Weakened, lines(v.Changes))
 	}
 	// renamedNodes directly: the pairing's own conditions.
 	pairs := func(oldCfg, newCfg string) map[string]string {
@@ -192,6 +194,17 @@ func TestDiffRenameDoesNotHideChanges(t *testing.T) {
 	// and n2 with m2, which the exact check rejects.
 	if m := pairs(two("n1", "n1", "n2", `["n1", "n2"]`), two("m2", "m1", "m2", `["m2", "m1"]`)); len(m) != 2 || m["n1"] != "m2" || m["n2"] != "m1" {
 		t.Errorf("chain renamed in the other order: %v", m)
+	}
+	// Two like nodes whose only edge runs the other way round look alike when names are blurred, and
+	// are not paired once the edge is checked under the pairing.
+	pair := func(n1, n2, from, to string) string {
+		return `{"version": 1, "flow": "f", "entry": "z", "nodes": [{"name": "z", "block": "z", "safety": "readonly"}, {"name": "q", "block": "q", "safety": "readonly"}, {"name": "` + n1 + `", "block": "w", "safety": "readonly"}, {"name": "` + n2 + `", "block": "w", "safety": "readonly"}], "wiring": [{"edge": ["z", "q"]}, {"edge": ["` + from + `", "` + to + `"]}]}`
+	}
+	if m := pairs(pair("r1", "r2", "r1", "r2"), pair("a1", "a2", "a2", "a1")); len(m) != 0 {
+		t.Errorf("an edge the other way round: paired %v", m)
+	}
+	if m := pairs(pair("r1", "r2", "r1", "r2"), pair("a1", "a2", "a1", "a2")); len(m) != 2 {
+		t.Errorf("an edge the same way round: paired %v", m)
 	}
 	// The entry moved: the node that was the entry is not the node that is not.
 	one := func(entry, name string) string {

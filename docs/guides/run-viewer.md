@@ -251,7 +251,7 @@ has an item. An aborted or cancelled run is listed too, since a halt outlives ei
 | `-check` | With `-config`: serve nothing, print each problem as `file:node: message`, and exit 1 if any is an error. `bide check <file>...` is the same check, for several files. |
 | `-strict` | With `-check`: exit 1 on a warning too (`bide check -strict`). |
 | `-diff <old>` | With `-config`: compare it with an earlier version, a file or a git revision; see [Compare two versions of a flow](#compare-two-versions-of-a-flow). With `-check`, print the changes instead of serving the page. |
-| `-fail-on-weaken` | With `-diff -check`: exit 1 if an approval gate was removed or weakened (its need lowered, an approver added without raising the need, `exclude_principal` dropped, or its timeout removed or lengthened), an effect became reachable without a gate, or an `assert` line was removed or loosened. |
+| `-fail-on-weaken` | With `-diff -check`: exit 1 if an approval gate was removed or weakened (its need lowered, an approver added without raising the need, `exclude_principal` dropped, or its timeout removed or lengthened), an effect became reachable without a gate, a Switch condition changed beside an ungated effect, or an `assert` line was removed or loosened. |
 | `-addr <host:port>` | Where to listen: a loopback IP or `localhost`, with a port. Default `127.0.0.1:8484`. Any other host is refused. |
 | `-color <when>` | `auto` (the default), `always` or `never`: whether the text output (the address to open, and `-check`'s lines) is colored. `auto` colors a terminal only, unless `NO_COLOR` is set to any value or `TERM` is `dumb`; see [Color](#color). |
 
@@ -709,7 +709,7 @@ weakened gate and a summary, each prefixed with the new file's name:
 
 ```text
 flows/refund-v1.yaml: changed node charge: approval 2 of 3 -> 1 of 3 (weakened)
-flows/refund-v1.yaml: added node skip: block skip
+flows/refund-v1.yaml: added node skip: block skip; safety readonly
 flows/refund-v1.yaml: removed node review: block review
 flows/refund-v1.yaml: added edge validate -> skip: else
 flows/refund-v1.yaml: removed edge validate -> review: else
@@ -744,14 +744,30 @@ Two more kinds of change are weakenings, reported with the gate changes (`-fail-
 on them too, and the page's verdict reads `SAFETY CHECK WEAKENED` when no gate policy itself was
 weakened):
 
-- **A new path around a gate.** A node that has an effect (its `safety` is `side_effect`, or is not
-  known: a config checked without its `plan.Registry` does not state it) that every path from the
-  entry reached through an approval gate before, and that a path now reaches without one, is
-  reported with the path: `receipt: reachable without an approval gate (validate -> receipt), not
-  before`. It uses the same reading as the Side effects card (`ConfigReport.Gated`). A node that is
-  read-only or idempotent, a node already reachable ungated, a node that is new in the file, a new
-  route that passes a gate, and a node whose own gate was removed (reported as a gate change) are not
-  reported this way. A rename of a gated node reads as the gate removed and a new ungated node.
+- **An effect no gate guards.** A node that may have an effect (its `safety` is `side_effect`, or is
+  not known: a config checked without its `plan.Registry` does not state it) and that a path from the
+  entry reaches without passing an approval gate (the reading behind the Side effects card,
+  `ConfigReport.Gated`) is reported when it was not such a node before, with the path:
+  `receipt: reachable without an approval gate (validate -> receipt), not before`. That covers a new
+  arm or edge around a gate, a gate removed upstream, a read-only or idempotent node whose `safety`
+  was raised to `side_effect` or dropped, and a node that is new (`new node, reachable without ...`):
+  a new effect with no approval in front of it. A node that is read-only or idempotent, one already
+  reachable ungated, one behind a gate, and one the entry cannot reach are not reported. A rename is
+  not a new node: a removed node and an added node with the same block, kind, safety and gate and the
+  same edges and Switch arms (under the new names) are one node, listed as `renamed`; one that also
+  changes any of those is judged on the change (a renamed node that lost its gate, or whose route
+  changed, is reported). A gate removed upstream of a renamed node is still reported for it.
+- **A Switch condition changed beside an ungated effect.** The check cannot read a predicate, so it
+  cannot tell which inputs now take which arm. When a Switch gains, loses or changes an arm
+  condition and another arm of it leads, without a gate, to an effect (a node reported above as
+  possibly having one), it reports `arm conditions changed (...) while another arm reaches an ungated
+  effect (small): review which inputs take which arm`, as a weakening. It is conservative: it asks for
+  a review and does not say the change is wrong, and it fires on a condition edit even when the
+  ungated arm was there before.
+- **A block changed without the Registry.** Without a `plan.Registry` (the command-line check) a
+  block's own approval gate (`ToolSpec.Approval`, set in Go) is not visible, so a block changed on an
+  effect node that no gate in the config guards is reported as weakened: the new block may have no
+  gate. With the Registry the gate is seen and the change is judged by what shows.
 - **An `assert` line removed or loosened.** A line the new config lacks is reported as removed,
   unless a different line for the same node replaces it: `every path to T passes approval >= K [of N]
   [excluding the requester]` is loosened by a lower K, a larger N (or an N where there was none), or
@@ -760,8 +776,10 @@ weakened):
   changed is a removal of the old line and an added line. A new line that matches none removed is
   listed as added, not as a weakening.
 
-The check still does not reason about the path to a node that is not an effect, and it compares
-assertions as written, not what they would decide.
+The check still does not read predicates (above), does not reason about nodes that are not effects,
+and compares assertions as written, not what they would decide. An effect node's safety comes from the
+config, or the Registry; a node whose safety the config leaves out is treated as an effect, so state
+`safety: readonly` where it holds to keep a read-only step from being reported.
 
 **The digest.** From the command line the comparison is structural, as `bide check` is, so it
 shows no digest. Package `plan/planview` serves the same page (`DiffHandler`) and text
