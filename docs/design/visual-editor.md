@@ -1,0 +1,716 @@
+# Design: a visual editor for flow configs
+
+Status: proposed (draft for review). Design only; nothing here is built, and every name below is a
+sketch. Written against `main` at 759cf547 and, where it says so, against the open pull request
+#312 (approval deadlines).
+
+The note covers who edits and who reviews a flow, where the editor runs, how it edits a config
+without damaging the file, how it presents approval gates and shows a weakened one, how edits are
+saved, reviewed and signed, the security posture, accessibility, the technology, the tests and the
+phases. The decisions it needs from the maintainer are at the end.
+
+## Summary
+
+- **A lowering front-end, and only that.** The editor reads and writes the config `plan.Load`
+  reads. It adds no executor, no store and no state of its own. The run is the run `plan` already
+  makes: at-most-once, halted on ambiguity, journaled, provable.
+- **Local, not hosted.** A `bide edit flow.yaml` command serves a page on a loopback address, as
+  `bide view` does, and writes only the files it was given. A hosted editor is not recommended.
+- **The Go side is the authority.** The page holds the text and draws; every edit is an operation
+  sent to Go, which applies it to the file's text, runs `plan.InspectConfig` and the same
+  classifier `bide check -diff` uses, and returns the new text and the report. The browser has no
+  second validator.
+- **Edits are small splices of the file's text**, not a re-render of it, so comments, ordering,
+  flow-style mappings and blank lines survive. Where the engine cannot splice safely it refuses and
+  says so.
+- **Nothing weakens silently.** The editor shows every weakening against a baseline, as a banner
+  that stays until the edit is undone or accepted, and saving a weakened config needs an explicit
+  confirmation. Checking this against the code found four ways a config can get weaker that
+  `bide check -diff` does not report today (G1 to G4 below). Three are classifier gaps to close
+  before the editor ships; the fourth is inherent to the structural check and the editor marks it.
+- **Smallest useful first release:** edit a node's approval gate, safety and asserts in a
+  config, see the verdict and the diff live, and save. Structure editing, a typed block palette and
+  run comparison follow.
+
+## The gate this passes
+
+bide's rule for any authoring surface is that it may add a way to author and may not add a way to
+execute, and that the runtime stays the headline. Two questions decide whether a surface is built:
+
+1. **Does it lower to the core?** Yes. The editor's output is a flow config. `plan.Load` builds the
+   same `*Flow` from it that it builds from a hand-written file, and `Run` is unchanged. There is
+   no editor-only key: the config is read strictly, so a key `Load` does not know is a parse error,
+   which also means the editor cannot smuggle layout or any other metadata into the file.
+2. **Does the substrate stay the headline?** This is a presentation matter and the note holds
+   itself to it: the editor is documented as a tool in the flow guide and the run viewer guide,
+   not as a README feature, and its page leads with the gate and the verdict, the same words the
+   viewer uses, not with a canvas.
+
+The expression-surfaces note this principle comes from is kept in the go-agents repository and is
+not in this one; the two questions are restated here so the note stands alone.
+
+## Goals and non-goals
+
+Goals:
+
+1. Edit a flow config's structure and its accountability settings (approval gates, safety, bounded
+   loops, assertions) without hand-writing YAML.
+2. Show, while editing, what `bide check` and `bide view -config` would show: problems on the node
+   or edge they belong to, the risk map, the assertion verdicts with counterexample paths.
+3. Make a weaker flow impossible to produce without the author seeing that it is weaker.
+4. Leave a hand-written file recognizable: the diff of an edit is the edit.
+5. Fit a bank's change control: the editor produces a reviewable diff of a text file in git, and
+   nothing else.
+6. Usable by keyboard and screen reader, not only by pointer.
+
+Non-goals:
+
+- **Writing Go.** A config places and wires nodes; step bodies and predicates stay registered Go.
+  The editor never writes or edits Go, and a predicate is chosen by name.
+- **A new executor, a debugger, or a way to run a flow.** The editor does not start runs. The run
+  viewer already shows runs; the editor links to it and does not duplicate it.
+- **Free-form positioning.** The layout is derived (see "No layout in the file"), so there are no stored coordinates
+  and no dragging a node to a place.
+- **Accounts, sharing, comments, or real-time collaboration.** Git is the collaboration layer.
+- **Signing configs.** "Collaboration, review and signing" says what bide does and does not offer.
+- **Replacing text editing.** The JSON Schema already gives completion in an editor. Text stays a
+  first-class way to author, and the editor must keep working on files written that way.
+- **A hosted service.**
+
+## Users
+
+| Who | What they do | What they need from the editor |
+|---|---|---|
+| Flow author (an engineer, often the same person who registered the blocks) | Creates and changes flows | Fast structure edits; type-compatible connections when the Registry is known; a file they still recognize |
+| Policy owner (risk, compliance, an approver-set owner) | Changes who must approve what, deadlines, assertions; rarely touches structure | A form for the gate, not YAML; the verdict on what the change does to the flow's policy |
+| Reviewer (a second engineer or a change-control board) | Reads a diff, decides to merge | Not the editor. The text diff, `bide check -diff` and a rendering of the change; the editor must make their job easier by producing small diffs |
+| Auditor | Reads what a flow was, after the fact | Not the editor. The run viewer and `bide audit` |
+
+The reviewer is the user the design is built around. An editor is judged by the diff it leaves.
+
+## What exists, checked against the code
+
+| Piece | Where | What the editor uses it for |
+|---|---|---|
+| Strict config reader, version 1, snake_case keys | `plan/config.go` (`parseConfig`, `config`, `configNode`, `configApproval`, `configWire`) | The definition of a valid document; unknown keys are errors |
+| JSON Schema, Draft 2020-12 | `plan/schema/flow.schema.json`, kept equal to the structs by `plan/schema_test.go` | Editor-side shape checks in a text editor; a test oracle here |
+| `plan.InspectConfig(data, reg)` | `plan/inspect.go` | The report: problems by node, edge or arm; `Topology`; `Digest` (with a Registry only); `Safety`; `Assertions`; `Gated` (every path to a node passes a gate) |
+| `Topology()`, `RenderMermaid`, `TopologyDigest` | `plan/topology.go`, `plan/render.go`, `plan/digest.go` | The declared graph; the digest commits to node, edge and arm order |
+| Layered layout and SVG, server-side | `internal/runview/layout.go`, `svg.go` | The canvas. Nodes already carry `data-id`, `tabindex="0"` and `aria-label` |
+| Config page, risk map, assertion counterexamples | `internal/runview` (`BuildConfig`), `docs/guides/run-viewer.md` | The read-only half of the editor |
+| `bide check -diff`, the gate classifier | `internal/runview/diff.go` (`BuildDiff`, `gateChange`, `accepts`), `cmd/bide/full.go` | The weakening verdict, reused as a library |
+| YAML to JSON conversion | `cmd/bide/view.go` (`yamlToJSON`), `go.yaml.in/yaml/v3` in `cmd/bide/go.mod` | YAML is read in the `cmd/bide` module; the root module requires nothing |
+| Loopback listener and Host check | `internal/runview/server.go` (`Listen`, `guard`) | The same posture for the editor's server |
+| Approve page build | `approvals/page.go` (`//go:embed`, `PageFiles`, `PageSHA256`), `approvals/page/*.js` | Hand-written JS, embedded, no bundler |
+| Browser test job | `.github/workflows/page-mtls.yml`, `approvals/page/test/chrome/package.json` (puppeteer-core, pinned by lockfile) | The model for the editor's Chrome job |
+
+Facts that shape the design:
+
+- **The root module requires no dependency at all** (`go.mod` has no `require`). `plan.Load` reads
+  JSON; YAML is decoded by `yamlToJSON` in the `cmd/bide` module, which is also where the one YAML
+  dependency lives. Whatever edits YAML therefore cannot live in the root module.
+- **`bide check` and `bide view -config` are structural.** Block, predicate and merge names, the
+  types and the digest are checked only with a `plan.Registry`, which a Go program supplies through
+  `plan/planview`. From the command line a gate declared only in Go reads as missing
+  (`docs/guides/plan-flows.md`, "Policy assertions").
+- **A `plan.Registry` cannot be listed.** `plan/registry.go` has `Register*` methods and no
+  accessor that returns the registered blocks, their types, safety or gates. A typed palette needs a
+  new read-only method (see "Registry description" under the phased plan).
+- **`assert` lines are not enforced at run time.** `Load` ignores them and they are not in the
+  digest (`config.Assert`). They are checked by `bide check`, `bide view -config` and
+  `InspectConfig`. An editor that adds an assertion adds a check that CI can fail on, not a runtime
+  guard, and must say so.
+- **Budget caps and obligations are not config keys.** The only budget in the repository is the
+  per-run token budget `agent.WithTokenBudget` (`agent/budget_tree.go`), set in Go on an agent. The
+  word "obligation" in the repository means gsm's delivery obligations in a convergence
+  certificate (`govern/confluence.go`) and, in `docs/design/design-mofn-approval.md`, the idea of
+  "reach k approvals by T", which is what the approval deadline of #312 (`timeout` in the
+  `approval` block) implements. There is no flow-level budget or obligation key to lower to. See
+  decision 6.
+- **The approval `timeout` key is not on `main`.** It is added by #312 (`configApproval.Timeout`,
+  and a pattern in the schema). This note treats it as present once #312 merges.
+
+### Gaps in `bide check -diff` found while checking
+
+The editor's "never weakens silently" rule leans on the diff classifier. Read against the code, the
+classifier covers less than the rule needs. Each of these is a way to make a flow weaker that
+`bide check -diff -check -fail-on-weaken` does not flag today:
+
+| # | Edit | Why it is not reported |
+|---|---|---|
+| G1 | Delete an `assert` line, or change one so it holds more easily | `internal/runview/diff.go` has no handling of assertions; `Change` has no kind for them |
+| G2 | Remove or lengthen an approval `timeout` (once #312 lands) | `gateEqual` compares `Single`, `Need`, `Approvers` and `ExcludePrincipal`; #312 changes `TopologyGate` and `configGate` but not `diff.go`, so a changed deadline reads as no change |
+| G3 | Add an arm or edge that routes around a gated node | The guide says it plainly: the check compares each node's gate and does not reason about paths. The path-level answer exists (`ConfigReport.Gated`, and the `every path to X passes approval` assertions) but the diff does not compare it between versions |
+| G4 | Change a node's `block` to one whose Go registration declares no gate | From the command line only gates the config states are known, so the gate the old block declared in Go is invisible on both sides. With a Registry on both sides the gates are known |
+
+G1 to G3 are classifier gaps and are prerequisites for the editor (phase 1 needs them, see the phased plan).
+G4 is inherent to the structural mode and the editor must say so on the node (see "Structural mode and Go-declared gates").
+
+## Where it runs
+
+**Recommendation: a local command, `bide edit <file>`.** It serves a page on a loopback address,
+exactly as `bide view` and `bide check -diff` do (`runview.Listen` refuses a non-loopback address),
+and reads and writes only the file named on the command line.
+
+| | Local `bide edit` | Hosted app |
+|---|---|---|
+| Where the config lives | The user's working tree, in git | A service's storage, or a git integration with credentials |
+| Trust path | The user's own binary, already trusted to run flows | A server in the path of a policy document, with its own auth, storage, logs and operators |
+| Change control | The edit is a file change; the bank's existing review applies | A second system that must be reconciled with git |
+| Registry for the typed palette | A Go program can embed the editor beside its Registry | The Registry is Go code; a hosted editor cannot see it |
+| Deployment | `brew install` or `go install`, as for `bide view` | Hosting, tenancy, uptime, a security review |
+| Offline, air-gapped | Works | Does not |
+
+A bank's change control wants edits reviewed, diffed and signed in the systems it already audits.
+A hosted editor would be one more such system with a copy of the policy in it. It buys sharing and
+no install, neither of which bide's users have asked for, and costs the property that makes the
+review credible: the editor holds nothing the repository does not.
+
+Two ways to start the same editor:
+
+1. `bide edit flow.yaml` (the `cmd/bide` binary). **Structural mode**: it knows block names only
+   from the config itself, cannot check types, and shows no digest.
+2. A Go program embeds the editor beside its Registry, as `planview` embeds the config page
+   today. **Typed mode**: a palette of registered blocks with their types, type-compatible
+   connections, the digest, and Go-declared gates and safety visible. A `bide edit -blocks
+   blocks.json` form (a description a program exports) gives typed mode without embedding.
+
+`bide edit` is not part of a `bide_audit_only` build (`cmd/bide/auditonly.go` leaves
+`fullCommands()` empty and links no YAML decoder). The audit-only binary exists so an auditor runs
+a small program that cannot write files; it stays that way.
+
+## The editing model
+
+### The document lives in the browser; Go is a pure function plus a write gate
+
+The page holds the file's current text and a short undo history of earlier texts. The server holds
+no document: each request carries the text, and the response carries the new text and what Go
+computed from it. Config files are kilobytes, so sending the whole text is cheap and removes every
+question of server-side state, sessions and cache invalidation.
+
+| Request | Carries | Returns |
+|---|---|---|
+| `GET /api/doc` | nothing | The file's text, its hash, the baseline text and name |
+| `POST /api/apply` | text, one operation | New text, or a refusal naming why; the report; the graph |
+| `POST /api/report` | text (after a source edit) | The report and graph for the text |
+| `POST /api/save` | text, the hash of the file as read | `200` after an atomic write, or `409` if the file on disk changed |
+
+The report is `plan.InspectConfig` (with the Registry in typed mode), the graph is the viewer's
+`BuildConfig` output, and the weakening verdict is `runview.BuildDiff` of the text against the
+baseline. The page renders them and computes nothing about the flow itself. There is one validator,
+the one `bide check` runs; the JSON Schema is not run in the browser, because a second validator
+would drift (the schema test exists precisely because the schema and the code can disagree).
+
+### Three panes, one selection
+
+- **Canvas.** The layered SVG the viewer draws, with a node's gate shown as the same corner badge
+  (`2/3`) and its text (`2 of 3: ops, finance, risk`), problems marked on the node or edge they
+  belong to, and the risk map colors with their glyphs. Selecting a node selects it everywhere.
+- **Outline.** The nodes, wiring and assertions as a list in config order. This is not a
+  convenience: node and wiring order are part of the digest (`TopologyDigest` commits to nodes,
+  edges and arms in declared order), so order is data, and the outline is where a reorder is made
+  and seen. It is also the accessible representation (see Accessibility).
+- **Inspector.** The selected node, edge, arm, join or assertion as a form. Node: name, block
+  (a text field with the names used in the file; a picker in typed mode), safety (only the values
+  `Load` accepts for it, which in typed mode is exactly the lowering-only rule), and the
+  **approval** section (below). Arm: predicate, target, `loop_max`. Join: inputs, merge block.
+- **Source.** A read-write text view of the file, as an escape hatch. A change typed there goes
+  through `/api/report`, so the other panes update and the engine's rules about what it can splice
+  apply to the next operation.
+
+### No layout in the file
+
+The layout is a function of the topology (`internal/runview/layout.go` is deterministic and breaks
+ties on the declared order). The editor stores no coordinates, because the config format has no key
+for them and the loader would refuse one, and because a picture whose positions the author chose
+could say something the topology does not. The cost is that a user cannot arrange the canvas. The
+benefit is that the canvas is the same picture `bide view -config` draws for the same file, and a
+reviewer who opens the diff page sees what the author saw.
+
+### Operations
+
+Every edit is an operation with a small, closed vocabulary. Go applies it to the text and the
+result is checked (below).
+
+- Nodes: add (name, block), remove, rename, set block, set safety, move (reorder).
+- Gate: set or clear the `approval` block; set `need`, add or remove an approver, set
+  `exclude_principal`, set or clear `timeout`.
+- Wiring: add or remove an edge; add a switch, add or remove an arm, set the `else`; set an arm's
+  `loop_max`; add or remove a join and its inputs and merge.
+- Config: set the entry, the flow name, `in` and `out`.
+- Assertions: add, edit or remove a line, from the grammar's six forms as templates.
+
+Rename rewrites the node's name in every wiring element and the entry, and in assertion lines
+only through the assertion grammar `plan` parses (the editor does not regex over free text). A
+rename that cannot be applied everywhere is refused with the places it could not reach. Remove
+reports what it will also remove (the edges and arms that name the node, the comments attached to
+it) before it applies.
+
+**What the editor does not offer, because `Load` would refuse it:** raising a node's `safety`
+above what Go declares (typed mode knows the ceiling; structural mode shows the lowering rule and
+lets `Load` be the check, which the banner says), replacing a block's own gate, an `else` and an
+edge from the same node, and the other structural rules in `docs/guides/plan-flows.md`
+("Load-time validation"). The report still catches them if they arrive through the source pane.
+
+### Validation, live
+
+After each operation the report is recomputed and shown: errors and warnings on their nodes,
+edges and arms, the assertion verdicts with the counterexample path drawn, the risk map, and, in
+typed mode, the digest. The page labels the mode, in the verdict area, in the words the viewer
+uses: "structural check only: blocks and types are checked when a program loads the flow". A file
+can be saved with errors (an editor must be able to hold a half-built flow), and the page says it
+has errors every time it shows the save control.
+
+Because the check runs where `bide check` runs, there is nothing for the editor to disagree with.
+CI runs `bide check` on the saved file and gets the same answer.
+
+### Round-tripping a hand-written file
+
+This is the hard part and the one that decides whether anyone keeps using the editor, so the note
+says what was checked and what is claimed.
+
+**What a YAML library does on its own.** Parsing the example flow into `go.yaml.in/yaml/v3`'s
+`yaml.Node` and writing it back (checked with the version in `cmd/bide/go.mod`) keeps comments
+(head, line and foot), key order and flow-style mappings (`{name: validate, block: validate}`), but
+drops blank lines, normalizes the space before a trailing comment, and applies its own indent. A
+re-emit therefore gives a diff that touches lines the author did not change. `yaml.Node` has `Line`
+and `Column` for a node's start and no end position, so it cannot say which bytes a node occupies.
+
+**The approach: splice, then verify.**
+
+1. Parse the text to a `yaml.Node` tree and index each node by its path and start position.
+2. Compute the byte range an operation changes, from node start positions and the following
+   sibling's start (or the end of the parent), pulled back over the comment lines and blank lines
+   that precede that sibling.
+3. Render only the new fragment, in the style of its siblings: a node added to a list of
+   flow-style mappings is a flow-style mapping, one added to block-style items is a block item,
+   with the file's indent, line ending and quote habit.
+4. Splice the fragment into the original bytes. Everything outside the range is byte-identical by
+   construction.
+5. **Verify before returning.** Re-parse the result and check that it equals the model the
+   operation should produce (the decoded JSON of the old text with the operation applied to the
+   data), and that the bytes outside the changed range are unchanged. If either check fails, the
+   operation is refused; the engine never returns text it has not verified.
+
+Comment attachment follows one rule that the page states: a comment block directly above a node
+(no blank line between) and a trailing comment on its line belong to the node, and are removed
+with it; a comment separated by a blank line belongs to the file. The pre-save diff shows any
+comment an operation removes.
+
+**What the engine refuses to splice, and says so:** anchors, aliases and merge keys (`yamlToJSON`
+resolves them, so a file may legally use them, but a splice inside an alias is ambiguous); more
+than one document; tags; a node the end-of-range computation cannot place unambiguously; a file
+with a byte-order mark or mixed line endings it cannot reproduce. The affected node is shown
+read-only with the reason ("edit this in the source pane"), and every other node stays editable.
+The refusal is a feature: a refused edit costs the user a text edit, a wrong splice costs a
+reviewer's trust.
+
+**JSON configs** have no comments, so only order, indentation, and number spelling matter. The
+engine keeps an ordered model of the document, keeps numbers as written, and re-emits with the
+file's detected indent. A JSON edit is therefore a re-emit with a verified round trip, not a
+splice.
+
+**If the spike fails.** The fallback is the `yaml.Node` re-emit, with the cost shown in
+the editor: the first save of a file would normalize blank lines and indent, and the editor would
+offer that as a separate "normalize formatting" step (its own diff, its own commit) before any
+semantic edit, so the semantic diff stays small. Phase 0 (see the phased plan) decides between the two with
+numbers from a corpus, before any interface is built.
+
+## Gates and the accountability blocks
+
+### What is a "block" in the editor
+
+A block is a form over config keys that exist. The editor presents:
+
+| Block | Config it writes | Lowers to |
+|---|---|---|
+| **Approval gate** | `approval: {need, approvers, exclude_principal, timeout}` on a node or join | `agent.ApprovalPolicy` on the node's gate; journaled request, decisions and tally; checked offline by `audit.VerifyApprovals` |
+| **Separation of duties** | `exclude_principal: true` inside the gate | The gate never counts the run's requester |
+| **Deadline** | `timeout` inside the gate (after #312) | The gate expires; the node is never run; `plan.ErrApprovalExpired` |
+| **Safety class** | `safety: readonly | idempotent | side_effect` | The node's behavior on an ambiguous crash: halt or re-run |
+| **Bounded loop** | an arm's `loop_max` | A finite back-edge |
+| **Policy assertion** | a line in `assert` | A check by `bide check` (not enforced at run time) |
+
+Each of these is a form that writes keys `Load` already reads. The inspector's gate section shows
+`need` as "k of n" beside the approver list, rejects what `configGate` rejects (no approvers,
+`need` outside `1..n`, a repeated or case-colliding id, an id that is not printable ASCII) as the
+user types, and explains separation of duties in one line: "never counts the person who started
+the run". It cannot check that an approver has an enrolled key; the page says approvers' keys are
+supplied at load time (`WithLoadedApproverVerifiers`).
+
+**Budget caps and obligations are not blocks in this design.** There is no config key for either
+and nothing for an editor to lower them to. Showing a "budget" block would draw something the
+runtime does not enforce, which is the fork the gate above forbids. If the maintainer wants them,
+the order is a design of the key and its runtime meaning first (in `plan`, with the journal and
+proof story), then a form. Until then the closest real things are the deadline, the bounded loop
+and the assertions, and the page uses those names. See decision 6.
+
+### Weakening is shown in the editor, by the same code as in CI
+
+The baseline is the config the author starts from, and the editor always has one:
+
+- With a git working tree, the file at `HEAD` by default, or at the revision `-base <rev>` names
+  (the resolution `bide check -diff` already does with `git show`). The baseline is the committed
+  policy, not the session, so weakening in two saves is still weakening against `HEAD`.
+- Without git, the file as it was when the editor opened it.
+
+After each operation the editor runs `runview.BuildDiff(baseline, text)` and shows the result. A
+weakened gate is a banner at the top of the page in the viewer's verdict style: the glyph, the
+words `APPROVAL GATE WEAKENED`, and each item (`charge: approval 2 of 3 -> 1 of 3`). It stays until
+the edit is undone or the text no longer weakens. It is not dismissible, because a banner that can
+be closed is a warning that can be missed.
+
+**Saving a weakened config needs one explicit confirmation** that lists each weakened item. The
+confirmation is not written into the file, because the format has nowhere to carry it and must not
+grow one for this: the control that stops a weakened policy merging is the pull request, where
+`bide check -diff -check -fail-on-weaken` fails and a policy owner must approve (see "Collaboration, review and signing"). The
+editor's confirmation exists so the author never saves a weaker policy by accident.
+
+**One classifier.** The editor does not reimplement `gateChange` or `accepts`. A test saves the
+edited text and compares the editor's verdict with `CheckDiff` on the same two files; they must
+agree on every case in a table of edits. If the classifier gains a category, the editor shows it
+because it shows what the classifier returns.
+
+**The classifier first needs to cover G1 to G3** (above), as a change to `internal/runview` that
+CI and the editor both get:
+
+- G1: a removed or changed `assert` line is reported, and so is an assertion that held at the
+  baseline and is violated or undecided now.
+- G2: a gate whose `timeout` was removed or lengthened is weakened; shortened is strengthened. This
+  needs a rule decision (decision 5), because a shorter deadline also makes a pending run expire
+  sooner, which is stricter about time and not about who approves.
+- G3: for each node, compare `ConfigReport.Gated` between the two versions; a node that every path
+  reached through a gate before, and some path now reaches without one, is reported as "reachable
+  without approval" with the shortest path (the counterexample machinery for assertions exists).
+  The classifier should say plainly that this is the path-level check the per-node gate comparison
+  lacks.
+
+**Structural mode and Go-declared gates (G4).** When a node's `block` changes and the editor does
+not have the Registry, it marks the node: "gate not checked: a block can declare a gate in Go". The
+mark is part of the weakening verdict (an unknown, not a pass), and the save confirmation lists it.
+Typed mode removes the unknown, because the gates are then known on both sides.
+
+### Declared next to what ran
+
+The viewer already draws a flow run's declared topology, taken from the journal after its digest
+is checked against `flow:digest`, with the path the run took and a conformance card
+(`docs/guides/run-viewer.md`, "CONFORMANCE"). The editor adds the question the author has: how does
+the file I am editing differ from the flow a run actually used? In a later phase, `bide edit -run
+<id> -db ...` loads the run's journaled topology as a second baseline and shows the same diff the
+config diff page shows (added, removed and changed nodes, weakened gates), with the run's path
+drawn on the current canvas. That tells an author, before merging, which in-flight runs a change
+would affect: a changed digest means a paused run under the old flow will not resume under the new
+one (`docs/guides/run-viewer.md`, "The digest").
+
+What it claims: the file's topology differs from, or equals, the topology the run journaled. What
+it does not: that the run followed the file. That is conformance, and `Conform` and the viewer's
+card do it. Conformance sees which steps ran and which Switch arm was taken, not what a step did
+inside; the editor does not change that.
+
+## Saving
+
+- **Explicit save.** The file is written only when the user presses Save. No autosave: a policy
+  file should not change on a keystroke.
+- **Atomic and checked.** Write to a temporary file in the same directory and rename over the
+  target, keeping the mode. `POST /api/save` carries the hash of the file as it was read; if the
+  file on disk has changed since, the answer is `409` and the page shows the on-disk diff and
+  offers to reload, never to overwrite. On Windows the rename-over-existing is done with the
+  platform's replace call, and a test covers it.
+- **Only the named files.** The set of writable paths is fixed at startup from the command line,
+  resolved once, and re-checked at write time. There is no "open another file" endpoint.
+- **No server-side state.** The server keeps the allowed paths and the session token in memory and
+  nothing else. Close the tab and the unsaved edits are gone, and the page warns before it closes
+  with unsaved edits.
+- **The user commits.** The editor does not run `git add`, `commit` or `push`. It shows the diff of
+  the bytes it would write (a plain unified diff) before save, so formatting churn and removed
+  comments are visible. It reads git only to resolve the baseline, with the same `git show` call
+  `-diff` makes.
+
+## Collaboration, review and signing
+
+**Git is the collaboration layer.** Two people editing the same flow merge their branches; the
+editor's compare-and-swap on save only stops it from overwriting a change made behind its back. No
+real-time editing, no comments, no shared session: each would be state outside git.
+
+**Review uses artifacts that already exist.** The reviewer reads the text diff (small, because the
+edit was a splice), and opens `bide check <file> -diff <rev>` for the graph with added nodes in
+green, removed ones as ghosts and weakened gates called out, or reads its `-check` text in CI. The
+planned GitHub Action that posts that text on a pull request (ROADMAP, "The visual builder") is the
+reviewer's view; the editor needs nothing in it.
+
+**What a bank's change control can build on, without bide building anything for it:**
+
+1. Signed commits and branch protection, which are git's.
+2. A code-owners rule that requires a policy owner to approve any change under the flows directory
+   that touches an `approval` block, and `bide check -diff -check -fail-on-weaken` as a required
+   status (after G1 to G3, a stronger one).
+3. The topology digest: a run journals `flow:digest`, so a run is bound to the exact topology it
+   ran under, and the digest of the merged config (from a program with the Registry) can be
+   recorded in the change ticket and compared with what the journal shows. The editor shows the
+   digest in typed mode so an author can paste it into the ticket.
+
+**Signing edits.** The editor does not sign. Two distinct things could be meant:
+
+- Signing the *commit* is git's, and recommended; nothing to build.
+- Signing the *config file* with a bide signer (the HSM and KMS signers exist for journals) and
+  having `Load` refuse an unsigned config would put a signature check in the runtime's load path.
+  That is a runtime and protocol change with its own design, and an editor feature that reached it
+  would be an executor change in disguise. It is out of scope here; decision 8 records it.
+
+The editor never holds a signing key and signs nothing, which is also why it can be a local page
+with a simple security posture.
+
+## Security
+
+The editor is a web server that can write files, which the viewer deliberately is not. The posture
+is the viewer's plus what a write endpoint adds.
+
+**Inherited from the viewer** (`internal/runview/server.go`):
+
+- Listens only on a loopback IP or `localhost` (`Listen` refuses anything else); the default is
+  a loopback address with a port of its own.
+- Answers only requests whose `Host` is a loopback address, which defeats DNS rebinding.
+- `Content-Security-Policy` that allows only same-origin resources, `X-Content-Type-Options:
+  nosniff`. The editor's policy is the stricter set the approve page uses: `default-src 'none';
+  script-src 'self'; style-src 'self'; img-src 'self' data:; connect-src 'self'; base-uri 'none';
+  form-action 'none'; frame-ancestors 'none'`, plus `Referrer-Policy: no-referrer` and
+  `Cache-Control: no-store`. No inline script, no inline style, no event-handler attributes.
+- **No remote code.** Every script, style and icon is embedded in the binary (`go:embed`). No CDN,
+  no web font, no analytics, no outbound request from the page or the server.
+
+**Added for writes:**
+
+- A per-process random token (128 bits) printed in the URL fragment the command opens, so it never
+  appears in a `Referer`, and sent by the page in a request header on every `/api` call. Compared in
+  constant time. A request without it is refused.
+- Every `/api` request is `POST` with `Content-Type: application/json` and a body limit (1 MiB), so
+  a cross-origin form post cannot make one, and the `Origin` must equal the server's own origin
+  (absent or foreign is refused).
+- Writes only to the paths fixed at startup; the path is re-resolved at write time and a target
+  that has become a symlink outside the original directory is refused.
+- Config text is untrusted data: node names, block names, comments and assertion lines are put in
+  the page with `textContent` and attribute setters, never `innerHTML`. The graph SVG, which the
+  server generates with names escaped, is parsed with `DOMParser` and adopted, not assigned as
+  markup.
+
+**What this does and does not defend against.** It defends against another web page or local
+process writing through the editor and against a hostile config file attacking the person who opens
+it. It does not defend against a person who controls the machine, who can edit the file directly.
+It also does not make the editor the control: a compromised or buggy editor could write a weaker
+policy, so the controls that matter are downstream and independent of it, the diff, `bide check`
+and the pull request. That is why the weakening verdict is computed in Go from the bytes that will
+be written, shown in the editor, and enforced again in CI from the committed bytes. The approve
+page's central problem (who serves the script an approver signs with) does not arise, because the
+editor signs nothing and its output is a text file a person reviews.
+
+## Accessibility
+
+A graph editor is the kind of tool that is easy to build only for a mouse. Requirements:
+
+- **Every operation is reachable without a pointer and without dragging.** Connecting two nodes is
+  an inspector action ("add an edge from this node to [a node]") and an outline action; dragging
+  from a port is an extra, not the way. Reordering is "move up" and "move down" in the outline.
+- **The outline is the primary accessible view**: a list in config order, with each node's gate and
+  problems as text, navigable with arrow keys, and every change announced through an `aria-live`
+  region (the verdict and the first new problem). The canvas is a second, visual view of the same
+  selection; its nodes are already focusable and labelled (`svg.go`).
+- **State is never carried by color alone.** The viewer already pairs each verdict and risk class
+  with a glyph and words; the editor keeps that, including for the weakened banner.
+- **Reduced motion and contrast.** The flowing-dash animation stops under `prefers-reduced-motion`
+  as it does in the viewer; light and dark themes use the viewer's tokens, including its theme
+  toggle that works with no script.
+- **Focus is managed.** After an operation the focus returns to the thing the user changed;
+  dialogs trap focus and return it; the weakened confirmation lists each item as text.
+- **Forms are real forms**: labels bound to inputs, errors tied to their fields by
+  `aria-describedby`, no placeholder-only labels.
+
+Tested by a keyboard-only end-to-end run and an automated check (see Testing); an automated check
+finds a fraction of problems, so the keyboard run and a manual screen-reader pass at each phase are
+the gate.
+
+## Technology
+
+Keep the repository's stance: no heavy dependency, nothing to trust that is not reviewed here.
+
+- **Server and engine, Go.** A new nested module, `github.com/bide-ai/bide/flowedit`, holds the
+  edit engine (it needs `go.yaml.in/yaml/v3`, which the root module must not require), the HTTP
+  handler and the embedded page. `cmd/bide` imports it for `bide edit`; a Go program imports it to
+  embed typed mode. It imports the viewer's `internal/runview` for the graph and the classifier,
+  which Go permits because the module's path is under the root's (`cmd/bide` does the same). The
+  root module and its stdlib-only rule are untouched. The cost: one more nested module to tag in
+  the release (the release script tags the root and nested modules together).
+- **Page, plain JavaScript.** Hand-written ES modules served from `go:embed`, with no framework,
+  no bundler, no transpiler and no `npm` in the build, the way `approvals/page/*.js` and the
+  viewer's `assets/*.js` are. The approve page is about 42 KB of JS, CSS and HTML in all; the
+  viewer's scripts are about 28 KB. The editor needs more, and the proposed budget is **150 KB
+  uncompressed for all page files**, asserted by a test so growth is a visible decision. If the
+  outline and inspector outgrow plain modules, the answer to consider is a small vendored library
+  (a few KB, source in the repository), not a build chain (decision 4).
+- **Deterministic by construction.** With no build step, the bytes served are the bytes in the
+  repository; `go:embed` plus the Go build's own reproducibility (`-trimpath`, the release's
+  rebuild-and-compare) are the determinism. A test pins the file list and sizes. The approve page
+  publishes `approve-page.SHA256SUMS` because an organization hosts it on its own origin; the
+  editor is served by the binary itself, so the binary's checksum and signature already cover it
+  and a separate sums file adds nothing.
+- **No node on the user's machine.** Nothing in `bide edit` runs node. Node appears only in tests
+  (`node:test` for engine-independent page logic, as in `approvals/page/test`; puppeteer-core,
+  pinned by a lockfile, for Chrome).
+- **Types.** JS stays untyped, with JSDoc on the request and response shapes and a Go test that
+  decodes the page's expected shapes from the Go structs, so the contract is checked from one side.
+
+## Testing
+
+Per the repository's rules: each behavior is specified by a failing test first, and the key tests
+are mutation-checked after the commit.
+
+**Round-trip and engine (the highest-risk code).**
+
+- **Property tests** over a corpus (every file in `examples/plan/flows`, the configs the schema
+  test and `plan/fuzz_config_test.go` use, and generated files in both flow and block styles, with
+  comments and blank lines in every position the grammar allows). For each file and each
+  operation: bytes outside the changed range are identical; the result re-parses; the decoded
+  document equals the old document with the operation applied to the data; `Undo` restores the
+  exact bytes; applying a no-op operation (setting a value to itself) returns identical bytes.
+- **Fuzz target** `FuzzApply` over (text, operation) pairs: the engine must return either verified
+  text or a refusal, never text that fails the check, and never panic.
+- **Refusals are specified**: anchors, aliases, merge keys, tags, multiple documents, a byte-order
+  mark, CRLF, tabs in odd places, each with a test that the file is read, shown, refused for the
+  edit, and left byte-identical.
+- **Formatting-preservation metric** for the spike: over the corpus, the fraction of operations
+  whose diff touches only the intended lines, compared with the `yaml.Node` re-emit baseline.
+
+**Schema and plan conformance.**
+
+- Every text the engine produces validates under `plan/schema/flow.schema.json` (using the
+  validator the schema test already has, moved to a shared internal package so both use one) and
+  gives the same `InspectConfig` errors as the model the operation should have produced.
+- The operation vocabulary is generated from the structs: a test fails when `config`, `configNode`,
+  `configApproval` or `configWire` gains a key the editor has no operation or an explicit "not
+  editable" entry for, so the editor cannot fall behind the format silently.
+- `plan.Load` on the saved text builds a flow whose `Topology()` equals the editor's graph, in a
+  typed-mode test.
+
+**Weakening.**
+
+- A table of edits, each with its expected verdict (removed gate, lowered need, added approver
+  without raising the need, replaced approver, dropped `exclude_principal`, removed or lengthened
+  `timeout`, removed or changed `assert`, a new arm around a gated node, a block change in
+  structural mode, a rename of a gated node), run through the editor and through
+  `CheckDiff -fail-on-weaken` on the saved files, which must agree. A case the classifier misses is
+  a failing test that names the gap.
+- The banner cannot be dismissed, and a weakened save without the confirmation is refused by the
+  server and not only by the page.
+
+**Server and security.** Table tests for each refusal: no token, wrong token, wrong `Host`, wrong
+or absent `Origin`, wrong content type, oversized body, a path outside the allowed set, a symlink
+swapped in after startup, a changed file (`409`), a read-only file, a full disk (the original is
+untouched). A test that every response carries the headers above, as the approve page's test does.
+Windows tests for the rename and for path handling, with `GOOS=windows go vet` per module.
+
+**Browser tests.** A Chrome job modeled on `.github/workflows/page-mtls.yml` (puppeteer-core 25.14.0
+from the lockfile, runs on pull requests that touch the editor and in the merge queue): open the
+editor on a sample, change a gate, see the verdict and the weakened banner, save, and check the
+file on disk; a keyboard-only run through the same steps; a check that no console error, no
+inline-script CSP violation and no network request outside the origin occurred. An axe-core run is
+an optional addition, pinned by lockfile.
+
+## Phased plan
+
+Each phase is one or more pull requests, each with its docs, changelog fragment and tests.
+
+- **Phase 0, the engine spike.** The `flowedit` engine with the operations for a node's fields and
+  a gate, against the corpus, with property tests and the formatting metric, and no interface.
+  Exit: a go or no-go on splicing against the re-emit fallback, decided with numbers
+  (decision 3). In parallel, **prerequisite P1**: the classifier covers G1 to G3 in
+  `internal/runview`, with the CI flag, tests and docs (this is useful to `bide check -diff` users
+  on its own, with or without an editor).
+- **Phase 1, the smallest useful editor.** `bide edit flow.yaml`: the canvas and outline (read),
+  the inspector for a node's block, safety and **approval gate** (need, approvers, separation of
+  duties, deadline once #312 is in), the assertions panel with the six forms as templates and live
+  verdicts, the source pane, the baseline and the weakened banner, the pre-save diff, atomic save.
+  Structural mode only. This covers what a policy owner does, which is the part of editing that is
+  most error-prone by hand and most important to review, without structure editing.
+- **Phase 2, structure.** Add, remove, rename and reorder nodes; edges, switches, arms, `else`,
+  `loop_max`, joins; drag to connect as an extra; undo and redo.
+- **Phase 3, typed mode.** A read-only `Registry` description (below), `-blocks`, embedding in a Go
+  program, a palette, type-compatible connections, the digest, Go-declared gates and safety visible
+  (which ends G4's "unknown").
+- **Phase 4, compare with a run.** `-run` and the stores the viewer already opens: a run's
+  journaled topology as a baseline, the run's path on the canvas, and which runs the change would
+  affect.
+
+**Registry description (phase 3).** A new exported, read-only method on `plan.Registry` that returns,
+for each registered block: its name, kind (step, tool, model, join), input and output type names,
+the safety it declares and the gate it declares; each predicate with its switched type; each merge
+block with its arity and input types. It is a published API addition to the `plan` package, so it
+needs the maintainer's approval as such (decision 7), with godoc, an example, and a test that it
+matches what `Load` resolves.
+
+## Risks
+
+1. **Round-trip fidelity.** The splice engine is the most delicate code in the project's tooling.
+   Mitigations: verify-before-return, refuse rather than guess, the property and fuzz tests, and the
+   phase 0 go or no-go. A wrong splice that passes verification would still be seen in the pre-save
+   diff and the review.
+2. **Users expect a free canvas.** A graph tool that will not let you move a node reads as
+   unfinished. The deterministic layout is a decision, not an omission, and the guide says why (the
+   picture equals the one the reviewer sees); it may still disappoint people. No mitigation is
+   proposed beyond saying so.
+3. **The editor becomes the pitch.** Visual flow tools are a crowded category and competing there
+   gives up bide's position. Mitigation: the editor is documented as a tool in guides, not in the
+   README's lead; its page leads with the gate and the verdict; the first release is the
+   accountability editing, not general graph drawing.
+4. **False assurance from assertions.** `assert` is checked by `bide check`, not enforced by the
+   runtime. An editor that makes assertions easy to add can make a flow look more governed than it
+   is. The assertion panel says "checked in CI, not at run time" beside the list, and the run
+   viewer's assertion text should say the same where it does not.
+5. **Structural mode passes what `Load` refuses.** A saved file can fail `Load` on a type or a
+   block name. The page says "structural check only" wherever it shows a clean verdict, and typed
+   mode is the answer for a team that wants more.
+6. **A write-capable local server.** The surface is small and specified (see Security), but
+   it is the first write endpoint in `bide view`'s family. It is a separate command from the viewer
+   so the viewer stays read-only, and it is absent from the audit-only build.
+7. **The classifier is the control, and it has gaps** (G1 to G4). If the editor shipped before P1,
+   its banner would be weaker than the claim. P1 is a prerequisite for phase 1, not an
+   improvement.
+8. **Format drift.** A new config key not in the editor makes it a partial editor. The generated
+   vocabulary test turns that into a failing test.
+9. **YAML library maintenance.** The editor depends on `go.yaml.in/yaml/v3` in a nested module, as
+   `cmd/bide` already does; a change of library would be a change to that module only.
+10. **Scope creep toward Go.** Requests to edit predicates, step bodies or prompts in the page are
+    requests for a different product. The answer is the registry and names.
+11. **Accessibility debt.** A canvas can be accessible only if the outline is built first and kept
+    complete; the phase gate includes the keyboard and screen-reader passes.
+12. **Line endings, encodings and Windows.** CRLF and a byte-order mark must be reproduced exactly
+    or refused; the rename-over-existing and path rules differ on Windows. Tested as described under Testing.
+
+## Decisions for the maintainer
+
+1. **Local only.** Build `bide edit` as a loopback command and do not build a hosted editor.
+   Recommend yes.
+2. **Where the engine lives.** A new nested module `flowedit` (needs a YAML dependency; the root
+   stays dependency-free; one more module to tag) rather than inside `cmd/bide`. Recommend the new
+   module, because only it lets a Go program embed typed mode.
+3. **Round-trip strategy.** Splice-and-verify, decided by a phase 0 spike with a stated bar
+   (recommend: at least 95 percent of operations on the corpus touch only the intended lines, no
+   unverified output ever), falling back to a `yaml.Node` re-emit with a separate "normalize
+   formatting" step. Recommend approving the spike, not the full build.
+4. **Frontend stack.** Plain ES modules, no framework or bundler, 150 KB budget, enforced by a
+   test. Recommend yes; revisit a small vendored library only if the budget is exceeded.
+5. **Weakening rule.** Save of a weakened config needs an explicit confirmation, against a baseline
+   of git `HEAD` (or `-base`), and the classifier is extended first for G1 to G3 as its own pull
+   request. Includes the rule for deadlines: removing or lengthening a `timeout` counts as
+   weakened. Recommend yes to all three.
+6. **Budget caps and obligations.** Do not show them in the editor until each has a config key and
+   a runtime meaning designed in `plan` first. Recommend not promising them; if wanted, the next
+   step is a design note for the key, not editor work.
+7. **A read-only `Registry` description in `plan`.** A published API addition, needed for typed
+   mode. Recommend yes, in phase 3, with the maintainer reviewing the signature.
+8. **Config signing at load time.** Out of scope for the editor. Recommend using signed commits,
+   branch protection and the required `-fail-on-weaken` check, and treating a signed-config
+   `Load` as a separate runtime design if a bank asks for it.
+9. **Derived layout only.** No stored coordinates, no dragging a node to a place. Recommend yes.
+10. **Name and build.** The command is `bide edit`, present in the full `bide` binary and absent
+    from the `bide_audit_only` build. Recommend yes.
+11. **First release.** Phase 1 as described (the accountability editor, structural mode), after
+    phase 0 and P1, rather than structure editing first. Recommend yes.
