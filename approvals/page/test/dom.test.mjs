@@ -16,7 +16,7 @@ function el() {
 }
 
 // run loads the page against an endpoint that answers pendingBody, and returns the elements.
-async function run(pendingBody, { href = 'https://app.example/approvals/page/', config = null } = {}) {
+async function run(pendingBody, { href = 'https://app.example/approvals/page/', config = null, delay = 0 } = {}) {
   const els = new Proxy({}, { get: (t, k) => (t[k] ??= el()) });
   const store = {};
   const indexedDB = { open() {
@@ -33,6 +33,7 @@ async function run(pendingBody, { href = 'https://app.example/approvals/page/', 
     fetch: async (u, o) => {
       fetched.push({ url: String(u), opts: o });
       if (String(u).endsWith('config.json')) return config ? { ok: true, json: async () => config } : { ok: false };
+      if (delay) await new Promise((r) => setTimeout(r, delay)); // a slow endpoint, or a slow CI runner
       return { ok: true, status: 200, arrayBuffer: async () => new TextEncoder().encode(pendingBody).buffer };
     },
     addEventListener() {}, console, Promise, Array, Map, Set, Math, Date, JSON, Error, Object, String, Number, Symbol, Function, setTimeout, queueMicrotask };
@@ -53,6 +54,11 @@ const pendingWith = (args, over = {}) => {
     gate: { need: 2, approvers: ['ops', 'fin', 'risk'], approved: 0, denied: 0, pending: ['ops', 'fin', 'risk'], passed: false, failed: false }, ...over };
   return JSON.stringify(p).replace('"@@"', a);
 };
+
+test('the harness waits for the page to load the call, however long the endpoint takes (no fixed sleep)', async () => {
+  const { els } = await run(pendingWith({ a: 1, zz_destination: 'ATTACKER-ACCT-9999' }), { delay: 600 });
+  assert.ok(els['call-args'].textContent.includes('ATTACKER-ACCT-9999'));
+});
 
 test('every one of the arguments is on display, so Approve never signs what was cut from view', async () => {
   const lines = {};
