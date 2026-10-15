@@ -618,6 +618,7 @@ var pkiCases = []negCase{
 	{"tsa name of an unsupported form", kitOpts{}, func(s *tokSpec) {
 		s.tsaRaw = ctx(0, ctx(0, oidDER(asn1.ObjectIdentifier{1, 2, 3}), ctx(0, octets([]byte{1}))))
 	}, ReasonTSAName},
+	{"key usage keyCertSign only", kitOpts{keyUsage: x509.KeyUsageCertSign}, nil, ReasonTSAKeyUsage},
 	{"key usage keyEncipherment only", kitOpts{keyUsage: x509.KeyUsageKeyEncipherment}, nil, ReasonTSAKeyUsage},
 	{"key usage signature plus keyEncipherment", kitOpts{keyUsage: x509.KeyUsageDigitalSignature | x509.KeyUsageKeyEncipherment}, nil, ReasonTSAKeyUsage},
 	{"TSA certificate is a CA", kitOpts{tsaIsCA: true}, nil, ReasonTSAKeyUsage},
@@ -724,6 +725,13 @@ func TestGenTimeNotInTheFuture(t *testing.T) {
 	mustAccept(t, tok, e, p)
 	e.Now = f.gen
 	mustAccept(t, tok, e, f.policy())
+	// the stated accuracy counts in the token's favour: genTime less accuracy is not after Now
+	f.spec.accuracy = seq(intDER(1))
+	tok = f.spec.build(t)
+	e.Now = f.gen.Add(-time.Second)
+	mustAccept(t, tok, e, f.policy())
+	e.Now = f.gen.Add(-time.Second - time.Millisecond)
+	mustRefuse(t, tok, e, f.policy(), ReasonGenTimeFuture)
 }
 
 func TestStatusUnknownRefuses(t *testing.T) {
