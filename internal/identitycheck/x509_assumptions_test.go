@@ -408,3 +408,147 @@ func TestEmailSANIsReturnedAsIssued(t *testing.T) {
 		t.Fatalf("emails: %v", l.EmailAddresses)
 	}
 }
+
+func (c *ca) intermediate(t *testing.T, key *ecdsa.PrivateKey, serial int64) *ca {
+	t.Helper()
+	tpl := &x509.Certificate{SerialNumber: big.NewInt(serial), Subject: pkix.Name{CommonName: "test intermediate"},
+		NotBefore: t0.Add(-12 * time.Hour), NotAfter: t0.Add(24 * 30 * time.Hour),
+		IsCA: true, BasicConstraintsValid: true, KeyUsage: x509.KeyUsageCertSign | x509.KeyUsageCRLSign}
+	der, err := x509.CreateCertificate(rand.Reader, tpl, c.cert, &key.PublicKey, c.key)
+	if err != nil {
+		t.Fatal(err)
+	}
+	cert, err := x509.ParseCertificate(der)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return &ca{cert, key}
+}
+
+func (c *ca) crl(t *testing.T, tpl *x509.RevocationList) *x509.RevocationList {
+	t.Helper()
+	der, err := x509.CreateRevocationList(rand.Reader, tpl, c.cert, c.key)
+	if err != nil {
+		t.Fatal(err)
+	}
+	rl, err := x509.ParseRevocationList(der)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return rl
+}
+
+// Assumption: the CRL number is exposed as RevocationList.Number, so a cache can refuse a CRL whose
+// number is lower than the one it holds (a rollback to a list that predates a revocation).
+func TestCRLNumberIsVisible(t *testing.T) {
+	root := newCA(t, nil)
+	older := root.crl(t, &x509.RevocationList{Number: big.NewInt(10), ThisUpdate: t0, NextUpdate: t0.Add(time.Hour)})
+	newer := root.crl(t, &x509.RevocationList{Number: big.NewInt(11), ThisUpdate: t0.Add(time.Hour), NextUpdate: t0.Add(2 * time.Hour),
+		RevokedCertificateEntries: []x509.RevocationListEntry{{SerialNumber: big.NewInt(9), RevocationTime: t0}}})
+	if older.Number == nil || newer.Number == nil || older.Number.Cmp(newer.Number) >= 0 {
+		t.Fatalf("numbers: %v %v", older.Number, newer.Number)
+	}
+	// Both verify under the root: the signature does not say which is newer, so the cache must.
+	if older.CheckSignatureFrom(root.cert) != nil || newer.CheckSignatureFrom(root.cert) != nil {
+		t.Fatal("a CRL does not verify under its issuer")
+	}
+}
+
+// Assumption: certificateHold (6) and removeFromCRL (8) reason codes round-trip as ReasonCode. A held
+// certificate that is later released disappears from a full CRL, so the design reads the whole series
+// of archived CRLs and treats any listing as a revocation from its time on.
+func TestHoldAndRemoveReasonCodesAreVisible(t *testing.T) {
+	root := newCA(t, nil)
+	rl := root.crl(t, &x509.RevocationList{Number: big.NewInt(1), ThisUpdate: t0, NextUpdate: t0.Add(time.Hour),
+		RevokedCertificateEntries: []x509.RevocationListEntry{
+			{SerialNumber: big.NewInt(1), RevocationTime: t0, ReasonCode: 6},
+			{SerialNumber: big.NewInt(2), RevocationTime: t0, ReasonCode: 8},
+			{SerialNumber: big.NewInt(3), RevocationTime: t0, ReasonCode: 1},
+		}})
+	got := map[int64]int{}
+	for _, e := range rl.RevokedCertificateEntries {
+		got[e.SerialNumber.Int64()] = e.ReasonCode
+	}
+	if got[1] != 6 || got[2] != 8 || got[3] != 1 {
+		t.Fatalf("reason codes: %v", got)
+	}
+}
+
+// Assumption: the issuing distribution point (2.5.29.28, partitioned CRLs) and expiredCertsOnCRL
+// (2.5.29.60) are visible in RevocationList.Extensions with their critical flag, so the design can
+// refuse a partitioned CRL and recognize one that keeps expired entries.
+func TestPartitionAndExpiredCertsExtensionsAreVisible(t *testing.T) {
+	root := newCA(t, nil)
+	idp, _ := asn1.Marshal(struct{}{})
+	expired, _ := asn1.MarshalWithParams(t0.Add(-365*24*time.Hour).UTC(), "generalized")
+	rl := root.crl(t, &x509.RevocationList{Number: big.NewInt(1), ThisUpdate: t0, NextUpdate: t0.Add(time.Hour),
+		ExtraExtensions: []pkix.Extension{
+			{Id: asn1.ObjectIdentifier{2, 5, 29, 28}, Critical: true, Value: idp},
+			{Id: asn1.ObjectIdentifier{2, 5, 29, 60}, Value: expired},
+		}})
+	seen := map[string]bool{}
+	for _, e := range rl.Extensions {
+		seen[e.Id.String()] = e.Critical
+	}
+	if crit, ok := seen["2.5.29.28"]; !ok || !crit {
+		t.Fatalf("issuing distribution point not visible as critical: %v", seen)
+	}
+	if _, ok := seen["2.5.29.60"]; !ok {
+		t.Fatalf("expiredCertsOnCRL not visible: %v", seen)
+	}
+}
+
+// Assumption: Certificate.Verify does not check the revocation of any certificate of the chain, an
+// intermediate included, and it can return more than one chain when the intermediate pool holds two
+// certificates for the same key. So the design pins the permitted intermediates (by public key hash)
+// and checks status for every non-root certificate of the chain it accepted, not only the leaf.
+func TestIntermediatesNeedPinningAndStatusToo(t *testing.T) {
+	root := newCA(t, nil)
+	ik, _ := ecdsa.GenerateKey(elliptic.P256(), rand.Reader)
+	i1 := root.intermediate(t, ik, 11)
+	i2 := root.intermediate(t, ik, 12) // the same key, reissued under another serial
+	l := i1.leaf(t, leafKey(t), func(c *x509.Certificate) { c.EmailAddresses = []string{"a@bank.example"} })
+	roots := x509.NewCertPool()
+	roots.AddCert(root.cert)
+	pool := x509.NewCertPool()
+	pool.AddCert(i1.cert)
+	pool.AddCert(i2.cert)
+	chains, err := l.Verify(x509.VerifyOptions{Roots: roots, Intermediates: pool, CurrentTime: t0, KeyUsages: []x509.ExtKeyUsage{x509.ExtKeyUsageAny}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(chains) < 2 {
+		t.Fatalf("expected one chain per reissued intermediate, got %d", len(chains))
+	}
+	// The root lists the first intermediate as revoked; Verify does not care.
+	rl := root.crl(t, &x509.RevocationList{Number: big.NewInt(1), ThisUpdate: t0, NextUpdate: t0.Add(time.Hour),
+		RevokedCertificateEntries: []x509.RevocationListEntry{{SerialNumber: big.NewInt(11), RevocationTime: t0.Add(-time.Minute), ReasonCode: 1}}})
+	if _, err := l.Verify(x509.VerifyOptions{Roots: roots, Intermediates: pool, CurrentTime: t0, KeyUsages: []x509.ExtKeyUsage{x509.ExtKeyUsageAny}}); err != nil {
+		t.Fatalf("Verify consulted revocation: %v", err)
+	}
+	if rl.CheckSignatureFrom(root.cert) != nil || len(rl.RevokedCertificateEntries) != 1 {
+		t.Fatal("the root's CRL for its intermediates")
+	}
+	// The intermediate issues the CRL for its leaves, and it verifies under the intermediate, not the root.
+	irl := i1.crl(t, &x509.RevocationList{Number: big.NewInt(1), ThisUpdate: t0, NextUpdate: t0.Add(time.Hour)})
+	if irl.CheckSignatureFrom(i1.cert) != nil || irl.CheckSignatureFrom(root.cert) == nil {
+		t.Fatal("an intermediate's CRL must verify under that intermediate only")
+	}
+}
+
+// Assumption: a certificate may carry several SANs of several kinds, all returned by the parser, so
+// the verifier must count them: exactly one SAN, of the configured kind, or the certificate is refused.
+func TestSeveralSANsAreAllReturned(t *testing.T) {
+	root := newCA(t, nil)
+	l := root.leaf(t, leafKey(t), func(c *x509.Certificate) {
+		c.EmailAddresses = []string{"alice@bank.example", "bob@bank.example"}
+		c.DNSNames = []string{"host.bank.example"}
+		c.URIs = []*url.URL{{Scheme: "spiffe", Host: "bank.example", Path: "/a"}}
+	})
+	if err := root.verify(l, t0, x509.ExtKeyUsageAny); err != nil {
+		t.Fatal(err)
+	}
+	if len(l.EmailAddresses) != 2 || len(l.DNSNames) != 1 || len(l.URIs) != 1 {
+		t.Fatalf("SANs: %v %v %v", l.EmailAddresses, l.DNSNames, l.URIs)
+	}
+}
