@@ -1017,3 +1017,15 @@ func TestCoverageFromAToS(t *testing.T) {
 		t.Fatalf("%+v", st)
 	}
 }
+
+// A CRL issued exactly at A is the one in force at A.
+func TestCRLIssuedAtAIsInForceAtA(t *testing.T) {
+	s := newStFx(t)
+	w := audit.StatusParams{W: 20 * min, MinW: 10 * min}
+	atA := s.lcrl(1, s.a, 10*min)
+	next := s.lcrl(2, s.a.Add(10*min), 20*min)
+	last := s.lcrl(3, s.a.Add(30*min), 30*min)
+	if st := s.leafStatus(s.snap(atA, next, last), w); st.Tier != audit.TierFinal {
+		t.Fatalf("%+v", st)
+	}
+}
