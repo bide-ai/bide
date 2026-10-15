@@ -428,6 +428,32 @@ agent.SubmitDecision(ctx, journal, agent.Decision{RunID: pend.RunID, ToolUseID: 
 
 फिर `audit.ApprovalEvidence` और `audit.VerifyApprovals` (या `bide audit verify-approvals`) ऑफ़लाइन सिद्ध करते हैं कि k नामित अनुमोदकों ने ठीक इसी कॉल पर उसके चलने से *पहले*, अपेक्षित नीति के तहत, हस्ताक्षर-स्वीकृति दी, ऐसे साक्ष्य से जो किसी निर्णय को बिना पकड़े छोड़ नहीं सकता। हर अनुमोदक की अपनी कुंजी होनी चाहिए: जिस नीति के दो अनुमोदक एक ही कुंजी पर पहुँचते हैं, उसे `ErrConfig` के साथ अस्वीकार किया जाता है, क्योंकि उस कुंजी का धारक दोनों की ओर से हस्ताक्षर कर सकता है। देखें [अनुमोदन गाइड](../../docs/guides/hitl-approval.md); अलग-अलग प्रोसेसों के आर-पार `examples/approval` में चलाने योग्य।
 
+**कर्तव्यों का पृथक्करण**: `ExcludePrincipal` सेट करें तो गेट रन के अनुरोधकर्ता का निर्णय कभी नहीं गिनता, इसलिए जिसने कार्रवाई शुरू की वह उसे अनुमोदित भी नहीं कर सकता (maker-checker):
+
+<!-- docsnip: setup type RefundArgs struct{}; doRefund func(context.Context, RefundArgs) (string, error) -->
+```go
+refund := agent.MustFunc("refund", "refund the order", doRefund,
+	agent.WithApproval(&agent.ApprovalPolicy{
+		Need:             2,
+		Approvers:        []string{"ops", "finance", "risk"},
+		ExcludePrincipal: true, // the run's requester may not approve
+	}))
+```
+
+अनुरोधकर्ता वह `OnBehalfOf` है जो उस `agent.Identity` में है जिससे डिप्लॉयमेंट रन शुरू करता है; ऊपर के रनों के प्रिंसिपल भी गिने जाते हैं। बाहर रखा गया निर्णय चिह्नित होकर रिकॉर्ड में रहता है। Bide id की तुलना करता है; यह नहीं देख सकता कि एक व्यक्ति के पास दो id हैं। देखें [कर्तव्यों का पृथक्करण](../../docs/guides/hitl-approval.md#separation-of-duties)।
+
+**टर्मिनल से निर्णय**: जो अनुमोदक Go नहीं लिखता वह `bide approve` का उपयोग करता है। यह जर्नल से कॉल पढ़ता है, उसके तर्क और वह SHA-256 दिखाता है जिससे हस्ताक्षर बँधा है, पुष्टि माँगता है, अनुमोदक की कुंजी से हस्ताक्षर करता है, निर्णय दर्ज करता है और एक रसीद लिखता है:
+
+```
+bide approve -db run.db -list                  # the calls that wait, each with its command
+bide approve -db run.db -run refund-1049 -call c2 -as finance -key finance.key \
+    -approver-keys approver-keys.json
+```
+
+जो तर्क दिखाने के लिए बहुत लंबे हैं उन पर यह `-full` के बिना हस्ताक्षर नहीं करता, और निर्णय न गिना जाए तो कुछ दर्ज नहीं करता। देखें [टर्मिनल से निर्णय](../../docs/guides/hitl-approval.md#deciding-from-the-terminal)।
+
+**लोगों को बताना**: जो रन अज्ञात परिणाम पर रुकता है या अनुमोदन गेट पर प्रतीक्षा करता है, वह एक सूचना उठाता है (`agent.WithNotifier`, हस्ताक्षरित वेबहुक `notify.NewWebhook` से पहुँचाई जाती है)। `agent.WithNotifyRoute` हर प्रकार की घटना एक प्राप्तकर्ता को भेजता है (`WithNotifyApproverRoute` अनुमोदन को अनुमोदक के आधार पर रूट करता है), और जब घटना की समय-सीमा तक पावती नहीं मिलती (अनुमोदन: निर्णय नहीं हुआ) तब `agent.WithNotifyEscalation` अगले प्राप्तकर्ता को सूचित करता है, अधिकतम चार चरणों की शृंखला में। पावती का अर्थ है कि एंडपॉइंट ने 2xx लौटाया, यह नहीं कि किसी व्यक्ति ने उसे पढ़ा। देखें [रूटिंग और एस्केलेशन](../../docs/guides/notifications.md#routing-and-escalation)।
+
 ## त्रुटियाँ
 
 विफलताएँ प्रहरी त्रुटियों (sentinel errors) से वर्गीकृत होती हैं जिन्हें `errors.Is` मिलाता है। दो स्तर: एक **श्रेणी (category)** (मोटा वर्ग) और एक **स्थिति (condition)** (एक विशिष्ट कारण) जो अपनी श्रेणी को लपेटती है, ताकि एक मिलान जिस भी स्तर पर आपको ज़रूरत हो वहाँ काम करे:

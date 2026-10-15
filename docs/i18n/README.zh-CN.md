@@ -50,6 +50,8 @@ Bide 朝着银行对处理资金的软件的要求构建：密钥置于应用之
 
 **发布前看清流程的风险。** `bide view -config flow.yaml` 按崩溃对每个节点的影响为其着色（副作用会停下并询问；只读步骤会重新运行），并在图上检查流程的 `assert:` 策略，例如 `every path to charge passes approval >= 2 of 3`。违反时会以红色给出最短的反例路径。`bide check flow.yaml` 在 CI 中执行相同的检查，并以退出码 1 结束。参见[运行查看器指南](../../docs/guides/run-viewer.md#check-a-flow-config)。
 
+**在终端中决定，并证明人们得到了通知。** `bide approve` 显示它从日志中读到的调用、其参数以及你的签名所绑定的 SHA-256，拒绝其决定不会被计入的发起人，并留下一份回执；之后 `bide audit verify-receipts` 会对照已签名的树头检查该回执，以发现在某个树头已承诺该决定之后被删除的决定。`bide audit notifications` 对照运行日志和已签名的轨迹离线检查：每一次停机和每一个等待中的批准是否都已及时送达并被确认，对无人被告知的情形则判定失败。参见[批准指南](../../docs/guides/hitl-approval.md#deciding-from-the-terminal)、[审计指南](../../docs/guides/audit.md#decision-receipts-noticing-a-decision-deleted-before-it-was-anchored)和[通知指南](../../docs/guides/notifications.md#auditing-were-the-people-told)。
+
 ## 一条日志，五项保证
 
 智能体循环约 40 行。五项保证来自其下那条持久化、仅追加的日志。
@@ -159,6 +161,7 @@ Temporal 借助一个服务器和一支 worker 机群提供持久化执行。而
 - **[可观测性](../../docs/guides/observability.md)**：一行搞定 OTel gen_ai span（`trace.Instrument`）：span 分类法、子智能体嵌套、token 到成本，以及内容捕获的隐私默认值。可在 `examples/observability` 中运行。
 - **[消息](../../docs/guides/messaging.md)**：从一个入站 webhook（Slack、Telegram、SMS、Discord）驱动一个智能体，且重投递安全：一个被重试的 webhook 会重放，而不是重复触发。可在 `examples/webhook` 中运行。
 - **[调试与恢复](../../docs/guides/debugging.md)**：确定性重放（`Replay`）、事件重建（`ReplayEvents`）、Mermaid 运行图，以及重新驱动被中断运行的崩溃恢复（`Recover`）。
+- **[运行查看器](../../docs/guides/run-viewer.md)**：`bide view`，一个只读的本地页面，用于查看日志中的各次运行（可按状态、类型和 ID 过滤的运行列表，以及“需要关注”列表：每个在等人处理的运行，并标明是否已通知、是否已确认），也用于查看单次运行（时间线、流程的路径、停机、批准关卡和审计结论，可跟随进行中的运行）；`bide view -config` 查看流程配置（每个节点的崩溃行为风险图，以及诸如 `every path to charge passes approval >= 2 of 3` 的策略断言，违反时以反例路径画出）；`bide check` 在 CI 中以文本形式检查其问题与断言，`-diff` 可比较一个流程的两个版本并标出被削弱的批准关卡。
 
 **问责与治理**
 
@@ -174,6 +177,8 @@ Temporal 借助一个服务器和一支 worker 机群提供持久化执行。而
 
 **参考与内部机制**
 
+- **[CLI 参考](../../docs/reference/cli.md)**：每个 `bide` 命令、标志和退出状态。
+- **[模块结构](../../docs/reference/module-structure.md)**：多模块布局。
 - **[扩展点](../../docs/reference/extension-points.md)**：端口与适配器（`Model`、`Store`、`Tool`、`Compensator`、`Retriever`、`Anchor`、`EventStore`），附一个"实现你自己的存储"的演练。
 - **[bide 如何被验证](../../docs/testing/verification.md)**：没有失败测试就没有修复、变异检查、崩溃与取消扫描、强制交错、一致性测试套件、协调协议的 TLA+ 模型检验，以及 CI 强制执行的内容。
 - **[形式化验证](../../docs/formal-verification.md)**：bide 协调协议的 TLA+ 模型（每个 pull request 用 TLC 检验，每晚用 Apalache 检验：一个归纳不变式证明认领协议的“至多一次”规则在任意深度下成立，适用于两个驱动者、有界的尝试次数和认领 ID）、每个模型保证什么并覆盖哪些代码、模型发现或确认的每个缺陷，以及模型不覆盖的范围。
