@@ -3,7 +3,6 @@ package audit
 import (
 	"context"
 	"crypto/ed25519"
-	"fmt"
 	"runtime"
 	"testing"
 	"time"
@@ -26,17 +25,18 @@ func TestAnchorTrail_TheSlotIsFreeWhenTheAnswerIsReturned(t *testing.T) {
 	}
 	trail := NewNotifyTrail(inner) // appends to the inner store: nothing publishes behind this test's back
 	ctx := context.Background()
-	at := time.Now()
+	rec := agent.NotifyRecord{Kind: agent.NotifyClaimed, Key: "k", RunID: "r", At: time.Now(), Holder: "p"}
+	if err := trail.Append(ctx, "notify:r", 0, rec); err != nil {
+		t.Fatal(err)
+	}
+	// The first call publishes the head; the rest find nothing new, which is the same goroutine, the
+	// same slot and a much cheaper pass, so the window can be hit tens of thousands of times.
 	for i := range 20000 {
-		rec := agent.NotifyRecord{Kind: agent.NotifyClaimed, Key: fmt.Sprintf("k%d", i), RunID: "r", At: at, Holder: "p"}
-		if err := trail.Append(ctx, "notify:r", i, rec); err != nil {
-			t.Fatal(err)
-		}
 		if err := a.anchorTrail(ctx, "notify:r", true); err != nil {
-			t.Fatalf("head %d: %v", i, err)
+			t.Fatalf("call %d: %v", i, err)
 		}
 		if n := len(a.trailOf("notify:r").slot); n != 0 {
-			t.Fatalf("head %d: the trail's slot is still held when anchorTrail returned", i)
+			t.Fatalf("call %d: the trail's slot is still held when anchorTrail returned", i)
 		}
 	}
 }
